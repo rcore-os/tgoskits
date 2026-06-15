@@ -129,14 +129,6 @@ cargo xtask qemu \
 
 ### AxVisor Shell（LoongArch64，需要 QEMU-LVZ）
 
-首次使用先安装固定版本 QEMU-LVZ：
-
-```bash
-./scripts/setup_qemu_lvz.sh
-```
-
-安装完成后，quick-start 会自动发现缓存中的 QEMU-LVZ：
-
 ```bash
 ./scripts/quick-start.sh qemu-loongarch64 start
 ```
@@ -145,15 +137,7 @@ cargo xtask qemu \
 
 启动成功标志：输出中出现 `Welcome to AxVisor Shell!`
 
-Linux guest 启动使用 virtio-blk rootfs：
-
-```bash
-./scripts/quick-start.sh qemu-loongarch64 run --linux
-```
-
-该流程使用的仓库内 VM 模板是 `configs/vms/qemu/loongarch64/linux-rootfs-smp1.toml`；quick-start 会复制到 `tmp/configs/linux-rootfs-smp1.toml`，再只修改临时配置中的镜像路径。
-
-> **注意**：标准版 `qemu-system-loongarch64` 通常不会暴露 LoongArch 虚拟化扩展。请先运行一次 `./scripts/setup_qemu_lvz.sh`，或者通过 `AXBUILD_QEMU_SYSTEM_LOONGARCH64=/path/to/qemu-system-loongarch64` 指向一个已经确认支持虚拟化扩展的二进制。
+> **注意**：标准版 `qemu-system-loongarch64` 通常不会暴露 LoongArch 虚拟化扩展。请使用 `QEMU-LVZ`，或者通过 `AXBUILD_QEMU_SYSTEM_LOONGARCH64=/path/to/qemu-system-loongarch64` 指向一个已经确认支持虚拟化扩展的二进制。
 
 ## 5. setup_qemu.sh 做了什么
 
@@ -181,7 +165,7 @@ VM 配置中的 `kernel_path` 指向了不存在的文件。运行 `./scripts/se
 
 ### LoongArch64 下出现 `Hardware support: false`，随后 panic
 
-这说明当前启动使用的 LoongArch QEMU 二进制没有提供虚拟化扩展。请先运行一次 `./scripts/setup_qemu_lvz.sh`，或在运行 `./scripts/quick-start.sh qemu-loongarch64 start` 前导出 `AXBUILD_QEMU_SYSTEM_LOONGARCH64`，把它指向一个已验证支持虚拟化扩展的 `qemu-system-loongarch64`。
+这说明当前启动使用的 LoongArch QEMU 二进制没有提供虚拟化扩展。请切换到 `QEMU-LVZ`，或在运行 `./scripts/quick-start.sh qemu-loongarch64 start` 前导出 `AXBUILD_QEMU_SYSTEM_LOONGARCH64`，把它指向一个已验证支持虚拟化扩展的 `qemu-system-loongarch64`。
 
 ### `Auto syncing from registry ... timed out`
 

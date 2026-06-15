@@ -34,14 +34,6 @@ struct LoongArchUefiRamRegion {
 }
 
 mod linux;
-#[cfg(target_arch = "loongarch64")]
-mod loongarch_elf;
-#[cfg(target_arch = "loongarch64")]
-mod loongarch_image;
-#[cfg(target_arch = "loongarch64")]
-mod loongarch_linux;
-#[cfg(target_arch = "loongarch64")]
-mod loongarch_zboot;
 #[cfg(target_arch = "x86_64")]
 mod x86;
 #[cfg(target_arch = "x86_64")]
@@ -229,9 +221,6 @@ impl ImageLoader {
                 info!("dtb_load_gpa not provided");
             }
         }
-
-        #[cfg(target_arch = "loongarch64")]
-        loongarch_linux::setup_bootinfo(self.vm.clone(), &self.config)?;
 
         self.load_boot_image_from_memory(vm_imags.bios)?;
 
@@ -448,50 +437,6 @@ impl ImageLoader {
     }
 
     fn load_kernel_from_memory(&self, kernel: &[u8]) -> AxResult {
-        #[cfg(target_arch = "loongarch64")]
-        if let Some(info) = loongarch_zboot::try_load_streamed_image(kernel, self.vm.clone())? {
-            self.vm.with_config(|config| {
-                config.cpu_config.bsp_entry = info.entry;
-                config.cpu_config.ap_entry = info.entry;
-            });
-            info!(
-                "LoongArch zboot Image entry set to {:#x}",
-                info.entry.as_usize()
-            );
-            return Ok(());
-        }
-
-        #[cfg(target_arch = "loongarch64")]
-        if let Some(image) = loongarch_zboot::decompress(kernel)? {
-            return self.load_kernel_from_memory(&image.payload);
-        }
-
-        #[cfg(target_arch = "loongarch64")]
-        if let Some(info) = loongarch_elf::try_load(kernel, self.vm.clone())? {
-            self.vm.with_config(|config| {
-                config.cpu_config.bsp_entry = info.entry;
-                config.cpu_config.ap_entry = info.entry;
-            });
-            info!(
-                "LoongArch ELF kernel entry set to {:#x}",
-                info.entry.as_usize()
-            );
-            return Ok(());
-        }
-
-        #[cfg(target_arch = "loongarch64")]
-        if let Some(info) = loongarch_image::try_load(kernel, self.vm.clone())? {
-            self.vm.with_config(|config| {
-                config.cpu_config.bsp_entry = info.entry;
-                config.cpu_config.ap_entry = info.entry;
-            });
-            info!(
-                "LoongArch Linux Image entry set to {:#x}",
-                info.entry.as_usize()
-            );
-            return Ok(());
-        }
-
         load_vm_image_from_memory(kernel, self.kernel_load_gpa, self.vm.clone())
     }
 
@@ -804,29 +749,6 @@ pub fn load_vm_image_from_memory(
         ax_err!(
             InvalidData,
             format!("VM image was only partially loaded: {buffer_pos}/{image_size} bytes")
-        )
-    }
-}
-
-#[cfg(target_arch = "loongarch64")]
-pub fn zero_vm_memory(load_addr: GuestPhysAddr, size: usize, vm: AxVMRef) -> AxResult {
-    let image_load_regions = vm.get_image_load_region(load_addr, size)?;
-    let mut zeroed_size = 0;
-
-    for region in image_load_regions {
-        unsafe {
-            core::ptr::write_bytes(region.as_mut_ptr(), 0, region.len());
-        }
-        axvm::clean_dcache_range((region.as_ptr() as usize).into(), region.len());
-        zeroed_size += region.len();
-    }
-
-    if zeroed_size == size {
-        Ok(())
-    } else {
-        ax_err!(
-            InvalidData,
-            format!("VM memory was only partially zeroed: {zeroed_size}/{size} bytes")
         )
     }
 }
@@ -1214,9 +1136,6 @@ pub mod fs {
                 )?;
             }
         }
-
-        #[cfg(target_arch = "loongarch64")]
-        loongarch_linux::setup_bootinfo(loader.vm.clone(), &loader.config)?;
 
         Ok(())
     }

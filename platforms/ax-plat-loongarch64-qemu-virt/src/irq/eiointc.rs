@@ -63,7 +63,6 @@ pub fn enable_irq(irq: usize) {
         iocsr_write_d(addr, iocsr_read_d(addr) | bit);
     }
 }
-
 pub fn disable_irq(irq: usize) {
     let (offset, bit) = split_bit(irq);
     let addr = EIOINTC_REG_ENABLE + offset;
@@ -79,10 +78,6 @@ pub fn claim_irq() -> Option<usize> {
     }
     None
 }
-/// Write back the ISR bit to acknowledge (clear) the interrupt.
-/// Must be called after claim_irq() to allow the EIOINTC to deliver
-/// subsequent interrupts. In hypervisor passthrough mode, the host must not
-/// claim the IRQ first; the guest owns the claim/complete sequence.
 pub fn complete_irq(irq: usize) {
     let (offset, bit) = split_bit(irq);
     iocsr_write_d(EIOINTC_REG_ISR + offset, bit);

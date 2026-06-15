@@ -171,14 +171,6 @@ Success indicator: `Hello, world!` appears in the output.
 
 ### AxVisor Shell (LoongArch64, requires QEMU-LVZ)
 
-Install QEMU-LVZ once. The script reuses the local cache if it exists; otherwise it fetches the latest QEMU-LVZ source and builds it:
-
-```bash
-./scripts/setup_qemu_lvz.sh
-```
-
-After that, quick-start and `cargo xtask axvisor qemu` auto-detect the cached binary:
-
 ```bash
 ./scripts/quick-start.sh qemu-loongarch64 start
 ```
@@ -187,15 +179,7 @@ This command launches AxVisor directly and enters the built-in shell instead of 
 
 Success indicator: `Welcome to AxVisor Shell!` appears in the output.
 
-For the Linux guest flow with a virtio-blk rootfs, run:
-
-```bash
-./scripts/quick-start.sh qemu-loongarch64 run --linux
-```
-
-The tracked VM template for this flow is `configs/vms/qemu/loongarch64/linux-rootfs-smp1.toml`; quick-start copies it to `tmp/configs/linux-rootfs-smp1.toml`. The managed rootfs path is `tmp/axbuild/rootfs/rootfs-loongarch64-alpine.img`: if it is already present it is reused, otherwise `cargo xtask` downloads the latest matching archive from `rcore-os/tgosimages`.
-
-> **Note**: Stock `qemu-system-loongarch64` usually does not expose LoongArch virtualization extensions. Run `./scripts/setup_qemu_lvz.sh` once, or set `AXBUILD_QEMU_SYSTEM_LOONGARCH64=/path/to/qemu-system-loongarch64` to a validated virtualization-capable binary.
+> **Note**: Stock `qemu-system-loongarch64` usually does not expose LoongArch virtualization extensions. Use `QEMU-LVZ`, or set `AXBUILD_QEMU_SYSTEM_LOONGARCH64=/path/to/qemu-system-loongarch64` to a validated virtualization-capable binary.
 
 ## 5. What Does setup_qemu.sh Do?
 
@@ -227,7 +211,7 @@ QEMU is not installed. Run the `apt install` command from Step 1.
 
 ### `Hardware support: false` followed by a panic on LoongArch64
 
-AxVisor was launched with a LoongArch QEMU binary that does not provide virtualization extensions. Run `./scripts/setup_qemu_lvz.sh` once, or export `AXBUILD_QEMU_SYSTEM_LOONGARCH64` to point at a validated `qemu-system-loongarch64` binary before running `./scripts/quick-start.sh qemu-loongarch64 start`.
+AxVisor was launched with a LoongArch QEMU binary that does not provide virtualization extensions. Switch to `QEMU-LVZ`, or export `AXBUILD_QEMU_SYSTEM_LOONGARCH64` to point at a validated `qemu-system-loongarch64` binary before running `./scripts/quick-start.sh qemu-loongarch64 start`.
 
 ### `Auto syncing from registry ... timed out`
 

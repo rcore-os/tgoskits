@@ -12,7 +12,7 @@ use crate::config::{devices::UART_PADDR, plat::PHYS_VIRT_OFFSET};
 static UART: LazyInit<SpinNoIrq<Uart16550<MmioBackend>>> = LazyInit::new();
 
 const CSR_GSTAT: u16 = 0x50;
-const GSTAT_PVM: usize = 1 << 1;
+const GSTAT_PGM: usize = 1 << 1;
 
 fn uart_config(input_irq_enabled: bool) -> Config {
     Config {
@@ -31,7 +31,7 @@ fn in_guest_mode() -> bool {
     unsafe {
         core::arch::asm!("csrrd {}, {}", out(reg) gstat, const CSR_GSTAT);
     }
-    (gstat & GSTAT_PVM) != 0
+    (gstat & GSTAT_PGM) != 0
 }
 
 pub(crate) fn init_early() {

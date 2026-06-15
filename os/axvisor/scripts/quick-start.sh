@@ -26,16 +26,6 @@ error() {
     echo -e "${RED}[ERROR]${NC} $1"
 }
 
-qemu_lvz_cache_binary() {
-    local cache_root="${AXVISOR_QEMU_LVZ_CACHE:-$HOME/.cache/axvisor/qemu-lvz}"
-    local latest="$cache_root/latest/bin/qemu-system-loongarch64"
-    if [[ -x "$latest" ]]; then
-        printf '%s\n' "$latest"
-        return 0
-    fi
-    find "$cache_root" -mindepth 3 -maxdepth 3 -path '*/bin/qemu-system-loongarch64' -type f -executable 2>/dev/null | sort | head -n 1
-}
-
 # Execute command and display it
 run_cmd() {
     echo -e "${BLUE}$@${NC}"
@@ -105,8 +95,6 @@ Launch Options (for run/start commands):
         -a, --arceos        Launch single ArceOS guest (default)
     QEMU LoongArch64:
         --axvisor           Launch AxVisor shell smoke (default)
-        -l, --linux         Launch single Linux guest with virtio-blk rootfs
-        --linux-rootfs      Launch single Linux guest with virtio-blk rootfs
     QEMU x86_64:
         -n, --nimbos        Launch single NimbOS guest (default)
         -l, --linux         Launch single Linux guest
@@ -137,9 +125,7 @@ Examples:
 
     # QEMU LoongArch64
     $0 qemu-loongarch64 start --axvisor             # One-step: prepare + launch AxVisor shell
-    $0 qemu-loongarch64 start --linux               # One-step: launch Linux with virtio-blk rootfs
-    $0 qemu-loongarch64 start --linux-rootfs        # Same as above
-    $0 qemu-loongarch64 start                       # Same as --axvisor (default)
+    $0 qemu-loongarch64 start                       # Same as above (default axvisor)
 
     # QEMU x86_64
     $0 qemu-x86_64 start --nimbos                   # One-step: prepare + launch NimbOS
@@ -178,19 +164,11 @@ EOF
 }
 
 run_axvisor_qemu() {
-    local axvisor_dir
-    local workspace_root
-    axvisor_dir="$(pwd)"
-    workspace_root="$(cd ../.. && pwd)"
-    run_cmd bash -c 'cd "$1" && shift && cargo xtask axvisor qemu "$@"' _ "$workspace_root" "$@"
+    run_cmd cargo xtask qemu "$@"
 }
 
 run_axvisor_uboot() {
-    local axvisor_dir
-    local workspace_root
-    axvisor_dir="$(pwd)"
-    workspace_root="$(cd ../.. && pwd)"
-    run_cmd bash -c 'cd "$1" && shift && cargo xtask axvisor uboot "$@"' _ "$workspace_root" "$@"
+    run_cmd cargo xtask uboot "$@"
 }
 
 ensure_ostool() {
@@ -315,25 +293,20 @@ setup_qemu_loongarch64() {
 
     info "Preparing board config file..."
     run_cmd cp configs/board/qemu-loongarch64.toml tmp/configs/
-    run_cmd cp configs/board/qemu-loongarch64-linux.toml tmp/configs/
-
-    info "Preparing Linux guest rootfs config file..."
-    run_cmd cp configs/vms/qemu/loongarch64/linux-rootfs-smp1.toml tmp/configs/
 
     info "Preparing QEMU config file..."
     run_cmd cp configs/qemu/qemu-loongarch64.toml tmp/configs/qemu-loongarch64-runtime.toml
 
-    local cached_qemu
-    cached_qemu="$(qemu_lvz_cache_binary)"
-
     if [[ -n "${AXBUILD_QEMU_SYSTEM_LOONGARCH64:-}" ]]; then
         info "Using explicit LoongArch QEMU override: ${AXBUILD_QEMU_SYSTEM_LOONGARCH64}"
-    elif [[ -n "$cached_qemu" && -x "$cached_qemu" ]]; then
-        info "Detected cached QEMU-LVZ at $cached_qemu"
+    elif [[ -x "$HOME/QEMU-LVZ/build/qemu-system-loongarch64" ]]; then
+        info "Detected QEMU-LVZ at $HOME/QEMU-LVZ/build/qemu-system-loongarch64"
+    elif [[ -x "$HOME/qemu-lvz/build/qemu-system-loongarch64" ]]; then
+        info "Detected QEMU-LVZ at $HOME/qemu-lvz/build/qemu-system-loongarch64"
     elif command -v qemu-system-loongarch64 &> /dev/null; then
         warn "Using qemu-system-loongarch64 from PATH. Stock QEMU usually lacks LoongArch virtualization extensions; prefer QEMU-LVZ."
     else
-        warn "No LoongArch QEMU binary detected. Run ./scripts/setup_qemu_lvz.sh once, or set AXBUILD_QEMU_SYSTEM_LOONGARCH64."
+        warn "No LoongArch QEMU binary detected. Set AXBUILD_QEMU_SYSTEM_LOONGARCH64 or install QEMU-LVZ before running."
     fi
 
     info "=== QEMU LoongArch64 Preparation Complete ==="
@@ -344,81 +317,6 @@ run_qemu_loongarch64_axvisor() {
     run_axvisor_qemu \
         --config "$(pwd)/tmp/configs/qemu-loongarch64.toml" \
         --qemu-config "$(pwd)/tmp/configs/qemu-loongarch64-runtime.toml"
-}
-
-loongarch64_qemu_binary() {
-    local cached_qemu
-    cached_qemu="$(qemu_lvz_cache_binary)"
-
-    if [[ -n "${AXBUILD_QEMU_SYSTEM_LOONGARCH64:-}" ]]; then
-        printf '%s\n' "${AXBUILD_QEMU_SYSTEM_LOONGARCH64}"
-    elif [[ -n "$cached_qemu" && -x "$cached_qemu" ]]; then
-        printf '%s\n' "$cached_qemu"
-    elif command -v qemu-system-loongarch64 &> /dev/null; then
-        command -v qemu-system-loongarch64
-    else
-        return 1
-    fi
-}
-
-run_axvisor_qemu_with_loongarch64_qemu() {
-    local qemu_bin
-    local qemu_dir
-    qemu_bin="$(loongarch64_qemu_binary)" || {
-        error "LoongArch qemu-system-loongarch64 not found. Run ./scripts/setup_qemu_lvz.sh once, or set AXBUILD_QEMU_SYSTEM_LOONGARCH64."
-        exit 1
-    }
-    qemu_dir="$(dirname "$qemu_bin")"
-    info "Using LoongArch QEMU: $qemu_bin"
-    "$qemu_bin" --version | head -n 1
-    if [[ "$qemu_bin" == "$(command -v qemu-system-loongarch64 2>/dev/null || true)" ]]; then
-        warn "PATH qemu-system-loongarch64 may not support LoongArch LVZ. If boot fails, run ./scripts/setup_qemu_lvz.sh."
-    fi
-    PATH="$qemu_dir:$PATH" run_axvisor_qemu "$@"
-}
-
-ensure_loongarch64_host_rootfs() {
-    local workspace_root="$1"
-    local rootfs="$workspace_root/tmp/axbuild/rootfs/rootfs-loongarch64-alpine.img"
-    if [[ -f "$rootfs" ]]; then
-        return 0
-    fi
-
-    info "Creating minimal AxVisor host rootfs: $rootfs"
-    run_cmd mkdir -p "$(dirname "$rootfs")"
-    run_cmd dd if=/dev/zero of="$rootfs" bs=1M count=1024 status=none
-    run_cmd mkfs.ext4 -q -F "$rootfs"
-}
-
-ensure_loongarch64_guest_rootfs() {
-    local workspace_root="$1"
-    local rootfs="$workspace_root/tmp/axbuild/rootfs/rootfs-loongarch64-alpine.img"
-
-    if [[ -f "$rootfs" ]]; then
-        info "Using cached LoongArch managed rootfs: $rootfs"
-        return 0
-    fi
-
-    info "LoongArch managed rootfs is missing; cargo xtask will download the latest tgosimages rootfs."
-}
-
-run_qemu_loongarch64_linux() {
-    info "=== Launching QEMU LoongArch64 Linux Guest with virtio-blk rootfs ==="
-    setup_qemu_loongarch64
-
-    local workspace_root
-    workspace_root="$(cd ../.. && pwd)"
-
-    ensure_loongarch64_guest_rootfs "$workspace_root"
-
-    run_axvisor_qemu_with_loongarch64_qemu \
-        --config "$(pwd)/tmp/configs/qemu-loongarch64-linux.toml" \
-        --qemu-config "$(pwd)/tmp/configs/qemu-loongarch64-runtime.toml" \
-        --vmconfigs "$(pwd)/tmp/configs/linux-rootfs-smp1.toml"
-}
-
-run_qemu_loongarch64_linux_rootfs() {
-    run_qemu_loongarch64_linux
 }
 
 # ============================================================================
@@ -1105,10 +1003,14 @@ cmd_run_qemu_loongarch64() {
             run_qemu_loongarch64_axvisor
             ;;
         -l|--linux)
-            run_qemu_loongarch64_linux
-            ;;
-        --linux-rootfs)
-            run_qemu_loongarch64_linux_rootfs
+            error "Unsupported combination: QEMU LoongArch64 quick start does not launch a Linux guest yet"
+            echo ""
+            echo "QEMU LoongArch64 quick start currently supports the following mode:"
+            echo "  - AxVisor shell smoke (use --axvisor)"
+            echo ""
+            echo "To launch a Linux guest, please use:"
+            echo "  $0 qemu-aarch64 start --linux"
+            exit 1
             ;;
         -a|--arceos)
             error "Unsupported combination: QEMU LoongArch64 quick start does not launch an ArceOS guest yet"
@@ -1140,8 +1042,6 @@ cmd_run_qemu_loongarch64() {
             echo ""
             echo "QEMU LoongArch64 platform supports the following options:"
             echo "  --axvisor       Launch AxVisor shell smoke"
-            echo "  -l, --linux     Launch Linux guest with virtio-blk rootfs"
-            echo "  --linux-rootfs  Launch Linux guest with virtio-blk rootfs"
             exit 1
             ;;
     esac
@@ -1150,7 +1050,7 @@ cmd_run_qemu_loongarch64() {
 cmd_start_qemu_loongarch64() {
     local mode="$1"
     case "$mode" in
-        --axvisor|-l|--linux|--linux-rootfs|"")
+        --axvisor|"")
             ;;
         *)
             cmd_run_qemu_loongarch64 "$mode"
