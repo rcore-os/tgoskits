@@ -5,6 +5,5 @@ features = [
 ]
 log = "Info"
 max_cpu_num = 1
-plat_dyn = true
 target = "loongarch64-unknown-none-softfloat"
 vm_configs = []
