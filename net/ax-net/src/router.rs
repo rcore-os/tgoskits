@@ -31,7 +31,7 @@ use spin::RwLock;
 use crate::{
     LISTEN_TABLE,
     config::{DeviceBinding, InterfaceId, RouteInfo},
-    consts::{SOCKET_BUFFER_SIZE, STANDARD_MTU},
+    consts::{DEVICE_TX_QUEUE_SIZE, SOCKET_BUFFER_SIZE, STANDARD_MTU},
     device::{ArpEntry, Device},
 };
 
@@ -156,7 +156,7 @@ impl DeviceHandle {
             name,
             inner: Arc::new(Mutex::new(device)),
             rx_queue: queues.rx.clone(),
-            tx_queue: Arc::new(BoundedPacketQueue::new(SOCKET_BUFFER_SIZE)),
+            tx_queue: Arc::new(BoundedPacketQueue::new(DEVICE_TX_QUEUE_SIZE)),
             rx_wake: Arc::new(WaitQueue::new()),
             tx_wake: Arc::new(WaitQueue::new()),
             rx_waker: Waker::from(Arc::new(DeviceRxWake {
@@ -365,6 +365,10 @@ impl Router {
 
     pub fn start_tx_workers(&self) {
         for device in &self.devices {
+            // Skip loopback: it uses fast path (no worker needed)
+            if device.interface_id == InterfaceId::LOOPBACK {
+                continue;
+            }
             let device = device.clone();
             let name = format!("{}-tx", device.name);
             ax_task::spawn_with_name(move || device_tx_worker(device), name);
@@ -373,6 +377,10 @@ impl Router {
 
     pub fn start_rx_workers(&self) {
         for device in &self.devices {
+            // Skip loopback: packets injected directly in dispatch
+            if device.interface_id == InterfaceId::LOOPBACK {
+                continue;
+            }
             let device = device.clone();
             let name = format!("{}-rx", device.name);
             ax_task::spawn_with_name(move || device_rx_worker(device), name);
@@ -519,7 +527,19 @@ impl Router {
                         };
 
                         let dev = &self.devices[route.dev];
-                        poll_next |= dev.enqueue_tx(route.next_hop, packet.into_inner());
+                        // Loopback fast path: inject directly to RX queue
+                        if dev.interface_id == InterfaceId::LOOPBACK {
+                            let rx = RxPacket {
+                                interface_id: InterfaceId::LOOPBACK,
+                                bytes: packet.into_inner().to_vec().into_boxed_slice(),
+                            };
+                            if self.queues.rx.push(rx).is_err() {
+                                warn!("Loopback: RX queue full, dropping packet to {}", dst_addr);
+                            }
+                            poll_next = true;
+                        } else {
+                            poll_next |= dev.enqueue_tx(route.next_hop, packet.into_inner());
+                        }
                     }
                 }
                 IpVersion::Ipv6 => {
@@ -542,7 +562,19 @@ impl Router {
                         };
 
                         let dev = &self.devices[route.dev];
-                        poll_next |= dev.enqueue_tx(route.next_hop, packet.into_inner());
+                        // Loopback fast path
+                        if dev.interface_id == InterfaceId::LOOPBACK {
+                            let rx = RxPacket {
+                                interface_id: InterfaceId::LOOPBACK,
+                                bytes: packet.into_inner().to_vec().into_boxed_slice(),
+                            };
+                            if self.queues.rx.push(rx).is_err() {
+                                warn!("Loopback: RX queue full, dropping packet to {}", dst_addr);
+                            }
+                            poll_next = true;
+                        } else {
+                            poll_next |= dev.enqueue_tx(route.next_hop, packet.into_inner());
+                        }
                     }
                 }
             }

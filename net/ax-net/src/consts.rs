@@ -9,6 +9,18 @@ pub const RAW_TX_BUF_LEN: usize = 64 * 1024;
 pub const LISTEN_QUEUE_SIZE: usize = 512;
 
 pub const SOCKET_BUFFER_SIZE: usize = 64;
+
+/// Per-device TX queue capacity.
+///
+/// Sized to absorb bursty traffic without drops while keeping memory bounded.
+/// 128 slots × 1500 bytes = 192KB per network device (acceptable for embedded).
+///
+/// Rationale:
+/// - At 1Gbps, 128 packets = ~1.5ms of buffering
+/// - Handles typical burst scenarios (ARP resolution, TCP slow start)
+/// - Reduces packet loss under momentary TX worker scheduling delays
+pub const DEVICE_TX_QUEUE_SIZE: usize = 128;
+
 /// Number of outbound packets that can be queued while waiting for ARP
 /// resolution of the next hop.
 ///

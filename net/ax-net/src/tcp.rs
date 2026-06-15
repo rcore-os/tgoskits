@@ -27,7 +27,7 @@ use crate::{
     general::GeneralOptions,
     get_control, get_service, interface_by_id,
     options::{Configurable, GetSocketOption, SetSocketOption, TcpInfo, TcpInfoOptions, TcpState},
-    poll_interfaces_now, request_poll,
+    request_poll,
     state::*,
 };
 
@@ -687,28 +687,39 @@ impl Pollable for TcpSocket {
 
 impl Drop for TcpSocket {
     fn drop(&mut self) {
+        let should_orphan = self.with_smol_socket(|socket| {
+            matches!(
+                socket.state(),
+                smol::State::Established
+                    | smol::State::CloseWait
+                    | smol::State::FinWait1
+                    | smol::State::FinWait2
+                    | smol::State::Closing
+                    | smol::State::LastAck
+                    | smol::State::TimeWait
+            ) || socket.send_queue() > 0
+        });
+
+        // Initiate graceful shutdown (send FIN if connected)
         if let Err(err) = self.shutdown(Shutdown::Both) {
             warn!("TCP socket {}: shutdown failed: {}", self.handle, err);
         }
-        self.flush_pending_output_before_remove();
+
+        // Unbind from API layer (port registry, etc.)
         self.unregister_bound_endpoint();
-        SOCKET_SET.remove(self.handle);
-        // This is crucial for the close messages to be sent.
-        request_poll();
-    }
-}
 
-impl TcpSocket {
-    fn flush_pending_output_before_remove(&self) {
-        const CLOSE_FLUSH_POLLS: usize = 64;
-
-        for _ in 0..CLOSE_FLUSH_POLLS {
-            poll_interfaces_now();
-            if self.with_smol_socket(|socket| socket.send_queue() == 0) {
-                return;
-            }
-            ax_task::yield_now();
+        if should_orphan {
+            // Keep the smoltcp socket alive after the user-facing handle is gone.
+            let timestamp = smoltcp::time::Instant::from_micros_const(
+                (ax_hal::time::monotonic_time_nanos() / 1_000) as i64,
+            );
+            crate::orphan::add_orphan(self.handle, timestamp);
+        } else {
+            SOCKET_SET.remove(self.handle);
         }
+
+        // Wake net-poll worker to process teardown
+        crate::request_poll();
     }
 }
 

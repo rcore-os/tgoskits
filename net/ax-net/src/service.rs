@@ -1,3 +1,48 @@
+//! Network service and control plane.
+//!
+//! # Lock Ordering Rules
+//!
+//! To prevent deadlocks, acquire coarser locks before finer locks:
+//!
+//! 1. **SERVICE** (`Mutex<Service>`)
+//!    - Most coarse-grained, protects entire protocol stack
+//!    - Held during `Service::poll()` and waker registration
+//!
+//! 2. **SOCKET_SET.inner** (`Mutex<SocketSet>`)
+//!    - smoltcp socket set (all TCP/UDP/raw/DNS sockets)
+//!    - Acquired during poll, socket operations, and state queries
+//!    - Never acquire SERVICE while holding this lock
+//!
+//! 3. **TCP_BOUND_PORTS** (`Mutex<HashMap<u16, Vec<...>>>`)
+//!    - Tracks TCP bind() registrations
+//!    - Hold duration: registration/unregistration only
+//!
+//! 4. **Per-port LISTEN_TABLE entries** (`Arc<Mutex<Option<ListenTableEntryInner>>>`)
+//!    - Most granular, one mutex per port
+//!
+//! # Correct Patterns
+//!
+//! ```ignore
+//! // ✓ SERVICE → SOCKET_SET (poll path)
+//! fn poll_interfaces_now() {
+//!     get_service().poll(&mut SOCKET_SET.inner.lock())
+//! }
+//!
+//! // ✓ SOCKET_SET → LISTEN_TABLE (accept readiness check)
+//! fn TcpSocket::poll_listener() {
+//!     let sockets = SOCKET_SET.inner.lock();
+//!     LISTEN_TABLE.can_accept(port, &sockets)
+//! }
+//! ```
+//!
+//! # Forbidden Patterns
+//!
+//! ```ignore
+//! // ✗ SOCKET_SET → SERVICE (deadlock risk)
+//! let sockets = SOCKET_SET.inner.lock();
+//! get_service().do_something();  // WRONG
+//! ```
+
 use alloc::{boxed::Box, format, string::String, vec, vec::Vec};
 use core::{
     pin::Pin,
@@ -513,6 +558,10 @@ impl Service {
         let socket_state_changed =
             self.iface.poll(timestamp, &mut self.router, sockets) == PollResult::SocketStateChanged;
         let dhcp_poll_next = self.poll_dhcp(timestamp);
+
+        // Reap orphaned TCP sockets using the SocketSet already held by poll_once().
+        crate::orphan::reap_orphans(timestamp, sockets);
+
         self.router.dispatch(timestamp) || dhcp_poll_next || socket_state_changed
     }
 
