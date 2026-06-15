@@ -64,17 +64,17 @@ enum Commands {
         #[command(subcommand)]
         command: config::Command,
     },
-    /// TGOS image management
-    Image(image::ImageArgs),
     /// Backtrace host-side helpers
     Backtrace {
         #[command(subcommand)]
         command: backtrace::Command,
     },
+    /// TGOS image management
+    Image(image::ImageArgs),
     /// Axvisor host-side commands
     Axvisor {
         #[command(subcommand)]
-        command: Box<axvisor::Command>,
+        command: axvisor::Command,
     },
     /// ArceOS build commands
     Arceos {
@@ -100,9 +100,9 @@ async fn run_root_cli(cli: Cli) -> anyhow::Result<()> {
         Commands::SyncLint(args) => sync_lint::run_sync_lint_command(&args),
         Commands::Board { command } => board::execute(command).await,
         Commands::Config { command } => config::execute(command),
-        Commands::Image(args) => image::run(args).await,
         Commands::Backtrace { command } => backtrace::execute(command),
-        Commands::Axvisor { command } => Axvisor::new()?.execute(*command).await,
+        Commands::Image(args) => image::run(args).await,
+        Commands::Axvisor { command } => Axvisor::new()?.execute(command).await,
         Commands::Arceos { command } => ArceOS::new()?.execute(command).await,
         Commands::Starry { command } => Starry::new()?.execute(command).await,
     }

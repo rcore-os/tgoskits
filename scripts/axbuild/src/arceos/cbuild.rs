@@ -762,44 +762,6 @@ fn link_c_app(
         .with_context(|| format!("failed to link {}", elf_path.display()))
 }
 
-fn lld_machine(arch: &str) -> anyhow::Result<&'static str> {
-    match arch {
-        "aarch64" => Ok("aarch64elf"),
-        "loongarch64" => Ok("elf64loongarch"),
-        "riscv64" => Ok("elf64lriscv"),
-        "x86_64" => Ok("elf_x86_64"),
-        arch => bail!("unsupported ArceOS C link architecture `{arch}`"),
-    }
-}
-
-fn libgcc(arch: &str, features: &[String]) -> anyhow::Result<Option<PathBuf>> {
-    if !has_feature(features, "fp-simd") || !matches!(arch, "riscv64" | "aarch64") {
-        return Ok(None);
-    }
-    let output = Command::new(cc_for_arch(arch))
-        .arg("-print-libgcc-file-name")
-        .stdout(Stdio::piped())
-        .output()
-        .context("failed to query libgcc path")?;
-    if !output.status.success() {
-        bail!("failed to query libgcc path with status {}", output.status);
-    }
-    let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    Ok((!path.is_empty()).then(|| PathBuf::from(path)))
-}
-
-fn platform_name(env: &std::collections::HashMap<String, String>) -> String {
-    env.get("AX_PLATFORM")
-        .cloned()
-        .unwrap_or_else(|| "qemu".to_string())
-}
-
-fn sanitize_name(name: &str) -> String {
-    name.chars()
-        .map(|ch| if ch.is_ascii_alphanumeric() { ch } else { '-' })
-        .collect()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1095,4 +1057,42 @@ mod tests {
         assert!(link_scripts.search_dirs.contains(&somehal_out));
         assert!(link_scripts.search_dirs.contains(&someboot_out));
     }
+}
+
+fn lld_machine(arch: &str) -> anyhow::Result<&'static str> {
+    match arch {
+        "aarch64" => Ok("aarch64elf"),
+        "loongarch64" => Ok("elf64loongarch"),
+        "riscv64" => Ok("elf64lriscv"),
+        "x86_64" => Ok("elf_x86_64"),
+        arch => bail!("unsupported ArceOS C link architecture `{arch}`"),
+    }
+}
+
+fn libgcc(arch: &str, features: &[String]) -> anyhow::Result<Option<PathBuf>> {
+    if !has_feature(features, "fp-simd") || !matches!(arch, "riscv64" | "aarch64") {
+        return Ok(None);
+    }
+    let output = Command::new(cc_for_arch(arch))
+        .arg("-print-libgcc-file-name")
+        .stdout(Stdio::piped())
+        .output()
+        .context("failed to query libgcc path")?;
+    if !output.status.success() {
+        bail!("failed to query libgcc path with status {}", output.status);
+    }
+    let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    Ok((!path.is_empty()).then(|| PathBuf::from(path)))
+}
+
+fn platform_name(env: &std::collections::HashMap<String, String>) -> String {
+    env.get("AX_PLATFORM")
+        .cloned()
+        .unwrap_or_else(|| "qemu".to_string())
+}
+
+fn sanitize_name(name: &str) -> String {
+    name.chars()
+        .map(|ch| if ch.is_ascii_alphanumeric() { ch } else { '-' })
+        .collect()
 }

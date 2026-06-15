@@ -13,7 +13,6 @@ use crate::context::{
 pub mod board;
 pub mod build;
 pub mod config;
-pub mod context;
 pub mod rootfs;
 pub mod test;
 
@@ -410,25 +409,6 @@ mod tests {
     use clap::Parser;
 
     use super::*;
-    use crate::{
-        axvisor::context::AxvisorContext,
-        context::{resolve_workspace_member_dir, workspace_root_path},
-    };
-
-    #[test]
-    fn context_resolves_workspace_root() {
-        let ctx = AxvisorContext::new().unwrap();
-        assert_eq!(
-            ctx.workspace_root(),
-            workspace_root_path().unwrap().as_path()
-        );
-        assert_eq!(
-            ctx.axvisor_dir(),
-            resolve_workspace_member_dir(crate::axvisor::build::AXVISOR_PACKAGE)
-                .unwrap()
-                .as_path()
-        );
-    }
 
     #[test]
     fn default_qemu_template_path_uses_axvisor_script_location() {

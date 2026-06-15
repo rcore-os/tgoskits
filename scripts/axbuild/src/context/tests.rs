@@ -7,19 +7,46 @@ use std::{
     sync::{LazyLock, Mutex},
 };
 
+use ostool::invocation::{Invocation, InvocationOptions};
 use tempfile::tempdir;
 
 use super::*;
 
 fn test_app_context(root: &Path) -> AppContext {
     AppContext {
-        invocation: AppContext::new_invocation(None, false).unwrap(),
+        invocation: test_invocation(root),
         build_config_path: None,
         root: root.to_path_buf(),
         member_dirs: HashMap::from([("axvisor".to_string(), root.join("os/axvisor"))]),
         original_path: env::var_os("PATH").unwrap_or_default(),
         debug: false,
     }
+}
+
+fn test_invocation(root: &Path) -> Invocation {
+    let manifest_path = root.join("Cargo.toml");
+    if !manifest_path.exists() {
+        fs::create_dir_all(root.join("src")).unwrap();
+        fs::write(root.join("src/lib.rs"), "").unwrap();
+        fs::write(
+            &manifest_path,
+            r#"[package]
+name = "test-workspace"
+version = "0.1.0"
+edition = "2021"
+
+[workspace]
+"#,
+        )
+        .unwrap();
+    }
+    Invocation::new(InvocationOptions::new(
+        Some(manifest_path),
+        None,
+        None,
+        false,
+    ))
+    .unwrap()
 }
 
 fn resolve_arceos_build_info_path(
@@ -191,7 +218,7 @@ fn axvisor_snapshot_load_returns_default_when_missing() {
 fn snapshot_store_round_trips() {
     let root = tempdir().unwrap();
     let snapshot = ArceosCommandSnapshot {
-        package: Some("ax-helloworld".into()),
+        package: Some("arceos-helloworld".into()),
         arch: Some("aarch64".into()),
         target: Some("target".into()),
         plat_dyn: Some(true),
@@ -307,7 +334,7 @@ fn prepare_request_uses_snapshot_and_default_target() {
         root.path(),
         ARCEOS_SNAPSHOT_FILE,
         r#"
-package = "ax-helloworld"
+package = "arceos-helloworld"
 
 [qemu]
 qemu_config = "configs/qemu.toml"
@@ -320,7 +347,7 @@ qemu_config = "configs/qemu.toml"
     let (request, snapshot) =
         prepare_arceos_request(&app, BuildCliArgs::default(), None, None).unwrap();
 
-    assert_eq!(request.package, "ax-helloworld");
+    assert_eq!(request.package, "arceos-helloworld");
     assert_eq!(request.arch, DEFAULT_ARCEOS_ARCH);
     assert_eq!(request.target, DEFAULT_ARCEOS_TARGET);
     assert_eq!(request.plat_dyn, None);
@@ -342,7 +369,7 @@ fn prepare_request_explicit_config_drops_snapshot_plat_dyn() {
 package = "from-snapshot"
 arch = "riscv64"
 target = "riscv64gc-unknown-none-elf"
-plat_dyn = true
+plat_dyn = false
 smp = 4
 
 [qemu]
@@ -357,7 +384,7 @@ qemu_config = "configs/snapshot-qemu.toml"
         &app,
         BuildCliArgs {
             config: Some(PathBuf::from("/tmp/build-riscv64.toml")),
-            package: Some("arceos-display".into()),
+            package: Some("arceos-test-suit".into()),
             arch: None,
             target: Some("riscv64gc-unknown-none-elf".into()),
             plat_dyn: None,
@@ -369,7 +396,7 @@ qemu_config = "configs/snapshot-qemu.toml"
     )
     .unwrap();
 
-    assert_eq!(request.package, "arceos-display");
+    assert_eq!(request.package, "arceos-test-suit");
     assert_eq!(request.plat_dyn, None);
     assert_eq!(request.smp, None);
     assert_eq!(request.qemu_config, None);
@@ -397,7 +424,7 @@ fn prepare_request_resolves_arceos_target_from_arch() {
         &app,
         BuildCliArgs {
             config: None,
-            package: Some("ax-helloworld".into()),
+            package: Some("arceos-helloworld".into()),
             arch: Some("x86_64".into()),
             target: None,
             plat_dyn: None,
@@ -485,7 +512,7 @@ fn prepare_request_cli_target_drops_stale_arceos_runtime_paths() {
         root.path(),
         ARCEOS_SNAPSHOT_FILE,
         r#"
-package = "ax-helloworld"
+package = "arceos-helloworld"
 arch = "aarch64"
 target = "aarch64-unknown-none-softfloat"
 
@@ -534,7 +561,7 @@ fn prepare_axvisor_request_prefers_cli_over_snapshot() {
 config = "os/axvisor/.build.toml"
 arch = "riscv64"
 target = "riscv64gc-unknown-none-elf"
-plat_dyn = true
+plat_dyn = false
 vmconfigs = ["tmp/snapshot-vm.toml"]
 
 [qemu]
@@ -608,49 +635,6 @@ uboot_config = "configs/snapshot-uboot.toml"
     assert_eq!(
         snapshot.uboot.uboot_config,
         Some(PathBuf::from("/tmp/uboot.toml"))
-    );
-}
-
-#[test]
-fn prepare_axvisor_request_cli_config_drops_stale_vmconfigs() {
-    let root = tempdir().unwrap();
-    write_snapshot_text(
-        root.path(),
-        AXVISOR_SNAPSHOT_FILE,
-        r#"
-config = "os/axvisor/configs/board/qemu-x86_64.toml"
-arch = "x86_64"
-target = "x86_64-unknown-none"
-vmconfigs = ["os/axvisor/configs/vms/arceos-x86_64-qemu-smp1.toml"]
-"#,
-    )
-    .unwrap();
-
-    let app = test_app_context(root.path());
-
-    let (request, snapshot) = prepare_axvisor_request(
-        &app,
-        AxvisorCliArgs {
-            config: Some(PathBuf::from(
-                "os/axvisor/configs/board/asus-nuc15crh-x86_64.toml",
-            )),
-            arch: None,
-            target: None,
-            plat_dyn: None,
-            smp: None,
-            debug: false,
-            vmconfigs: vec![],
-        },
-        None,
-        None,
-    )
-    .unwrap();
-
-    assert!(request.vmconfigs.is_empty());
-    assert!(snapshot.vmconfigs.is_empty());
-    assert_eq!(
-        request.build_info_path,
-        PathBuf::from("os/axvisor/configs/board/asus-nuc15crh-x86_64.toml")
     );
 }
 
@@ -891,6 +875,57 @@ target = "aarch64-unknown-none-softfloat"
 }
 
 #[test]
+fn prepare_axvisor_request_explicit_config_drops_snapshot_vmconfigs() {
+    let root = tempdir().unwrap();
+    let explicit = root
+        .path()
+        .join("test-suit/axvisor/normal/qemu/build-x86_64-unknown-none.toml");
+    fs::create_dir_all(explicit.parent().unwrap()).unwrap();
+    fs::write(
+        &explicit,
+        r#"
+target = "x86_64-unknown-none"
+features = []
+log = "Info"
+vm_configs = ["os/axvisor/configs/vms/qemu/x86_64/arceos-smp1.toml"]
+"#,
+    )
+    .unwrap();
+    write_snapshot_text(
+        root.path(),
+        AXVISOR_SNAPSHOT_FILE,
+        r#"
+arch = "x86_64"
+target = "x86_64-unknown-none"
+vmconfigs = ["os/axvisor/configs/vms/qemu/x86_64/linux-vmx-smp1.toml"]
+"#,
+    )
+    .unwrap();
+
+    let app = test_app_context(root.path());
+
+    let (request, snapshot) = prepare_axvisor_request(
+        &app,
+        AxvisorCliArgs {
+            config: Some(explicit.clone()),
+            arch: None,
+            target: None,
+            plat_dyn: None,
+            smp: None,
+            debug: false,
+            vmconfigs: vec![],
+        },
+        None,
+        None,
+    )
+    .unwrap();
+
+    assert_eq!(request.build_info_path, explicit);
+    assert!(request.vmconfigs.is_empty());
+    assert!(snapshot.vmconfigs.is_empty());
+}
+
+#[test]
 fn starry_snapshot_load_returns_default_when_missing() {
     let root = tempdir().unwrap();
     let snapshot = StarryCommandSnapshot::load(root.path()).unwrap();
@@ -1071,7 +1106,6 @@ fn prepare_starry_request_explicit_config_target_overrides_snapshot_target() {
         &config,
         r#"
 target = "riscv64gc-unknown-none-elf"
-env = {}
 features = ["sg2002"]
 log = "Info"
 "#,
