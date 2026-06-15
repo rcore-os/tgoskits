@@ -57,6 +57,11 @@ impl TimerRuntime {
         self.wheel.remove(key);
     }
 
+    #[cfg(feature = "irq")]
+    fn next_deadline(&self) -> Option<TimeValue> {
+        self.wheel.keys().next().map(|key| key.deadline)
+    }
+
     fn wake(&mut self) {
         if self.wheel.is_empty() {
             return;
@@ -84,6 +89,11 @@ percpu_static! {
 pub(crate) fn check_timer_events() {
     // SAFETY: only called in timer::check_events
     unsafe { TIMER_RUNTIME.current_ref_mut_raw() }.wake();
+}
+
+#[cfg(feature = "irq")]
+pub(crate) fn next_timer_deadline() -> Option<TimeValue> {
+    with_current(|r| r.next_deadline())
 }
 
 fn with_current<R>(f: impl FnOnce(&mut TimerRuntime) -> R) -> R {
@@ -119,6 +129,8 @@ pub async fn sleep(duration: Duration) {
 pub async fn sleep_until(deadline: TimeValue) {
     let key = with_current(|r| r.add(deadline));
     if let Some(key) = key {
+        #[cfg(feature = "irq")]
+        crate::timers::maybe_reprogram_timer(deadline);
         TimerFuture(key).await;
     }
 }

@@ -1,6 +1,6 @@
 [package]
 name = "ax-driver"
-version = "0.7.1"
+version = "0.8.0"
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
@@ -23,6 +23,7 @@ net = ["dep:rd-net"]
 display = ["dep:ax-errno", "dep:rdif-display"]
 input = ["dep:ax-errno", "dep:rdif-input"]
 vsock = ["dep:ax-errno", "dep:rdif-vsock"]
+rtc = ["plat-dyn"]
 
 virtio-core = ["dep:ax-alloc", "dep:virtio-drivers", "virtio-drivers/alloc"]
 virtio = ["virtio-core"]
@@ -41,6 +42,13 @@ ixgbe = ["net", "pci", "dep:ax-alloc", "dep:ixgbe-driver"]
 fxmac = ["net", "dep:ax-alloc", "dep:ax-crate-interface", "dep:fxmac_rs"]
 intel-net = ["net", "pci", "dep:eth-intel"]
 realtek-rtl8125 = ["net", "pci", "dep:realtek-rtl8125"]
+aic8800-wifi = [
+    "net",
+    "plat-dyn",
+    "dep:aic8800",
+    "dep:sdhci-cv1800",
+    "dep:sdio-host",
+]
 
 usb = ["dep:crab-usb"]
 rockchip-dwc-xhci = ["usb", "plat-dyn", "rockchip-soc", "rockchip-pm"]
@@ -98,6 +106,7 @@ list-pci-devices = ["pci"]
 pci-list-devices = ["list-pci-devices"]
 
 [dependencies]
+aic8800 = { workspace = true, optional = true }
 anyhow = { workspace = true }
 arm-scmi-rs = { workspace = true, optional = true }
 ax-alloc = { workspace = true, optional = true }
@@ -137,6 +146,8 @@ rockchip-pm = { workspace = true, optional = true }
 rockchip-soc = { workspace = true, optional = true }
 phytium-mci-host = { workspace = true, optional = true }
 sdhci-host = { workspace = true, optional = true }
+sdhci-cv1800 = { workspace = true, optional = true }
+sdio-host = { workspace = true, optional = true }
 sdmmc-protocol = { workspace = true, default-features = false, optional = true }
 sg200x-bsp = { workspace = true, optional = true }
 simple-ahci = { workspace = true, optional = true }
@@ -149,3 +160,6 @@ riscv_goldfish = "0.1"
 
 [target.'cfg(target_arch = "aarch64")'.dependencies]
 ax-arm-pl031.workspace = true
+
+[target.'cfg(target_arch = "x86_64")'.dependencies]
+x86.workspace = true

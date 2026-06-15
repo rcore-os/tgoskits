@@ -70,7 +70,8 @@ use crate::{
         InterfaceKind, Ipv4InterfaceConfig, RouteInfo,
     },
     consts::STANDARD_MTU,
-    device::ArpEntry,
+    device::{ArpEntry, EthernetDevice},
+    dhcp_server::DhcpServer,
     router::{RouteDecision, Router, SharedRouteTable},
 };
 
@@ -250,6 +251,33 @@ impl NetControl {
             .write()
             .replace_ipv4_rules_for_interface(update.interface_id, routes);
     }
+
+    fn add_interface(&self, interface: NetInterface, routes: Vec<crate::router::Rule>) {
+        self.routes
+            .write()
+            .replace_ipv4_rules_for_interface(interface.id, routes);
+        self.state.write().interfaces.push(interface);
+    }
+
+    fn allocate_interface_id(&self) -> InterfaceId {
+        let state = self.state.read();
+        let next = state
+            .interfaces
+            .iter()
+            .map(|interface| interface.id.get())
+            .max()
+            .unwrap_or(InterfaceId::LOOPBACK.get())
+            .saturating_add(1);
+        InterfaceId::new(next)
+    }
+
+    fn contains_interface_name(&self, name: &str) -> bool {
+        self.state
+            .read()
+            .interfaces
+            .iter()
+            .any(|interface| interface.name == name)
+    }
 }
 
 pub struct Service {
@@ -258,6 +286,7 @@ pub struct Service {
     control: Arc<NetControl>,
     timeout: Option<Pin<Box<dyn Future<Output = ()> + Send>>>,
     dhcp: Vec<DhcpState>,
+    dhcp_server: Option<DhcpServer>,
 }
 
 #[derive(Clone)]
@@ -502,7 +531,47 @@ impl Service {
             control,
             timeout: None,
             dhcp: Vec::new(),
+            dhcp_server: None,
         }
+    }
+
+    pub fn register_static_device(
+        &mut self,
+        name: String,
+        dev: EthernetDevice,
+        mac: EthernetAddress,
+        cidr: Ipv4Cidr,
+    ) -> usize {
+        if self.control.contains_interface_name(&name) {
+            panic!("interface name conflict: {}", name);
+        }
+
+        let interface_id = self.control.allocate_interface_id();
+        let metric = 100;
+        let dev = self.router.add_device(interface_id, Box::new(dev));
+        let routes = self
+            .router
+            .ipv4_rules(dev, interface_id, metric, Some(cidr), None);
+        Self::set_interface_ipv4(&mut self.iface, None, Some(cidr));
+        self.control.add_interface(
+            NetInterface {
+                id: interface_id,
+                name,
+                kind: InterfaceKind::Ethernet,
+                mac: Some(mac),
+                ipv4: Some(cidr),
+                gateway: None,
+                mtu: STANDARD_MTU,
+                metric,
+                flags: InterfaceFlags::UP
+                    | InterfaceFlags::RUNNING
+                    | InterfaceFlags::BROADCAST
+                    | InterfaceFlags::MULTICAST,
+            },
+            routes,
+        );
+        self.router.start_device_workers(dev);
+        dev
     }
 
     pub fn enable_dhcp(
@@ -527,6 +596,26 @@ impl Service {
         !self.dhcp.is_empty()
     }
 
+    pub fn enable_dhcp_server(
+        &mut self,
+        dev: usize,
+        server_ip: Ipv4Address,
+        client_ip: Ipv4Address,
+        subnet_mask: Ipv4Address,
+    ) {
+        let Some(interface_id) = self.router.interface_id_for_dev(dev) else {
+            warn!("[dhcp-srv] invalid device index {dev}");
+            return;
+        };
+        self.dhcp_server = Some(DhcpServer::new(
+            dev,
+            interface_id,
+            server_ip,
+            client_ip,
+            subnet_mask,
+        ));
+    }
+
     /// Returns true once DHCP has produced at least one usable interface.
     ///
     /// Startup should not block on every DHCP-enabled NIC: one isolated or
@@ -539,10 +628,12 @@ impl Service {
     pub fn poll(&mut self, sockets: &mut SocketSet) -> bool {
         let timestamp = now();
         let mut dhcp_events = Vec::new();
+        let mut dhcp_server_replies = Vec::new();
 
         self.router.wake_rx_workers();
         {
             let dhcp = &mut self.dhcp;
+            let dhcp_server = &mut self.dhcp_server;
             self.router
                 .poll(timestamp, sockets, |interface_id, packet| {
                     for state in dhcp.iter_mut() {
@@ -550,10 +641,24 @@ impl Service {
                             dhcp_events.push(event);
                         }
                     }
+                    if let Some(server) = dhcp_server.as_mut()
+                        && let Some(reply) = server.process_packet(interface_id, packet)
+                    {
+                        dhcp_server_replies.push((server.dev, reply));
+                    }
                 });
         }
         for event in dhcp_events {
             self.handle_dhcp_event(event);
+        }
+        let mut dhcp_server_sent = false;
+        for (dev, reply) in dhcp_server_replies {
+            dhcp_server_sent |= self.router.send_on_device(
+                dev,
+                IpAddress::Ipv4(Ipv4Address::BROADCAST),
+                &reply,
+                timestamp,
+            );
         }
         let socket_state_changed =
             self.iface.poll(timestamp, &mut self.router, sockets) == PollResult::SocketStateChanged;
@@ -562,7 +667,10 @@ impl Service {
         // Reap orphaned TCP sockets using the SocketSet already held by poll_once().
         crate::orphan::reap_orphans(timestamp, sockets);
 
-        self.router.dispatch(timestamp) || dhcp_poll_next || socket_state_changed
+        self.router.dispatch(timestamp)
+            || dhcp_poll_next
+            || dhcp_server_sent
+            || socket_state_changed
     }
 
     pub fn next_poll_at(&mut self, sockets: &SocketSet) -> Option<Instant> {
@@ -693,6 +801,14 @@ impl Service {
 
     pub fn arp_entries(&self) -> Vec<ArpEntry> {
         self.router.arp_entries(now())
+    }
+
+    pub fn eth0_ipv4_config(&self) -> Option<Ipv4InterfaceConfig> {
+        self.control.ipv4_config("eth0")
+    }
+
+    pub fn wake_all_devices(&self) {
+        self.router.wake_all_devices();
     }
 
     pub fn register_waker(&mut self, binding: DeviceBinding, waker: &Waker) {

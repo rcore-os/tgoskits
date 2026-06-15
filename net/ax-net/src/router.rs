@@ -240,10 +240,6 @@ impl RouteTable {
         });
     }
 
-    pub fn select_route(&self, dst: &IpAddress) -> Option<RouteDecision> {
-        self.select_route_if(dst, |_| true)
-    }
-
     pub fn select_route_if(
         &self,
         dst: &IpAddress,
@@ -356,6 +352,10 @@ impl Router {
         self.devices.len() - 1
     }
 
+    pub fn interface_id_for_dev(&self, dev: usize) -> Option<InterfaceId> {
+        self.devices.get(dev).map(|device| device.interface_id)
+    }
+
     pub fn device_names(&self) -> Vec<String> {
         self.devices
             .iter()
@@ -364,27 +364,46 @@ impl Router {
     }
 
     pub fn start_tx_workers(&self) {
-        for device in &self.devices {
-            // Skip loopback: it uses fast path (no worker needed)
-            if device.interface_id == InterfaceId::LOOPBACK {
-                continue;
-            }
-            let device = device.clone();
-            let name = format!("{}-tx", device.name);
-            ax_task::spawn_with_name(move || device_tx_worker(device), name);
+        for dev in 0..self.devices.len() {
+            self.start_device_tx_worker(dev);
         }
     }
 
     pub fn start_rx_workers(&self) {
-        for device in &self.devices {
-            // Skip loopback: packets injected directly in dispatch
-            if device.interface_id == InterfaceId::LOOPBACK {
-                continue;
-            }
-            let device = device.clone();
-            let name = format!("{}-rx", device.name);
-            ax_task::spawn_with_name(move || device_rx_worker(device), name);
+        for dev in 0..self.devices.len() {
+            self.start_device_rx_worker(dev);
         }
+    }
+
+    pub fn start_device_workers(&self, dev: usize) {
+        self.start_device_rx_worker(dev);
+        self.start_device_tx_worker(dev);
+    }
+
+    fn start_device_tx_worker(&self, dev: usize) {
+        let Some(device) = self.devices.get(dev) else {
+            return;
+        };
+        // Skip loopback: it uses fast path (no worker needed)
+        if device.interface_id == InterfaceId::LOOPBACK {
+            return;
+        }
+        let device = device.clone();
+        let name = format!("{}-tx", device.name);
+        ax_task::spawn_with_name(move || device_tx_worker(device), name);
+    }
+
+    fn start_device_rx_worker(&self, dev: usize) {
+        let Some(device) = self.devices.get(dev) else {
+            return;
+        };
+        // Skip loopback: packets injected directly in dispatch
+        if device.interface_id == InterfaceId::LOOPBACK {
+            return;
+        }
+        let device = device.clone();
+        let name = format!("{}-rx", device.name);
+        ax_task::spawn_with_name(move || device_rx_worker(device), name);
     }
 
     pub fn set_ipv4_config(
@@ -465,7 +484,19 @@ impl Router {
         packet: &[u8],
         _timestamp: Instant,
     ) -> bool {
-        self.devices[dev].enqueue_tx(next_hop, packet)
+        let device = &self.devices[dev];
+        if device.interface_id == InterfaceId::LOOPBACK {
+            let rx = RxPacket {
+                interface_id: InterfaceId::LOOPBACK,
+                bytes: packet.to_vec().into_boxed_slice(),
+            };
+            if self.queues.rx.push(rx).is_err() {
+                warn!("Loopback: RX queue full, dropping packet to {}", next_hop);
+                return false;
+            }
+            return true;
+        }
+        device.enqueue_tx(next_hop, packet)
     }
 
     pub fn arp_entries(&self, timestamp: Instant) -> Vec<ArpEntry> {
@@ -485,6 +516,13 @@ impl Router {
 
     pub fn wake_rx_workers(&self) {
         for device in &self.devices {
+            device.rx_wake.notify_one(true);
+        }
+    }
+
+    pub fn wake_all_devices(&self) {
+        for device in &self.devices {
+            device.inner.lock().wake_rx();
             device.rx_wake.notify_one(true);
         }
     }
@@ -545,6 +583,7 @@ impl Router {
                 IpVersion::Ipv6 => {
                     let packet = smoltcp::wire::Ipv6Packet::new_checked(packet)
                         .expect("got invalid IPv6 packet");
+                    let src_addr = IpAddress::Ipv6(packet.src_addr());
                     let dst_addr = IpAddress::Ipv6(packet.dst_addr());
                     if packet.dst_addr().is_multicast() {
                         let buf = packet.into_inner();
@@ -556,8 +595,12 @@ impl Router {
                         }
                     } else {
                         let routes = self.table.read();
-                        let Some(route) = routes.select_route(&dst_addr) else {
-                            warn!("No route found for destination: {}", dst_addr);
+                        let Some(route) = routes.select_route_for_source(&dst_addr, &src_addr)
+                        else {
+                            warn!(
+                                "No route found for source {} destination {}",
+                                src_addr, dst_addr
+                            );
                             continue;
                         };
 
@@ -769,7 +812,7 @@ mod tests {
         ));
 
         let route = table
-            .select_route(&IpAddress::Ipv4(Ipv4Address::new(10, 0, 1, 99)))
+            .select_route_if(&IpAddress::Ipv4(Ipv4Address::new(10, 0, 1, 99)), |_| true)
             .unwrap();
         assert_eq!(route.dev, 1);
         assert_eq!(route.interface_id, IF1);
@@ -801,7 +844,7 @@ mod tests {
             100,
         ));
 
-        let route = table.select_route(&dst).unwrap();
+        let route = table.select_route_if(&dst, |_| true).unwrap();
         assert_eq!(route.interface_id, IF1);
         assert_eq!(route.metric, 100);
         assert_eq!(
@@ -831,7 +874,7 @@ mod tests {
             100,
         ));
 
-        let route = table.select_route(&dst).unwrap();
+        let route = table.select_route_if(&dst, |_| true).unwrap();
         assert_eq!(route.interface_id, IF0);
         assert_eq!(
             route.next_hop,

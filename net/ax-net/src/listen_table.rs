@@ -1,8 +1,9 @@
 use alloc::{boxed::Box, collections::VecDeque, sync::Arc, vec, vec::Vec};
-use core::ops::DerefMut;
+use core::{ops::DerefMut, task::Waker};
 
 use ax_errno::{AxError, AxResult};
 use ax_sync::Mutex;
+use axpoll::PollSet;
 use smoltcp::{
     iface::{SocketHandle, SocketSet},
     socket::tcp::{self, SocketBuffer, State},
@@ -20,6 +21,7 @@ struct ListenTableEntryInner {
     listen_endpoint: IpListenEndpoint,
     backlog: usize,
     syn_queue: VecDeque<PendingTcp>,
+    accept_poll: Arc<PollSet>,
 }
 
 #[derive(Clone, Copy)]
@@ -41,6 +43,7 @@ impl ListenTableEntryInner {
             listen_endpoint,
             backlog,
             syn_queue: VecDeque::with_capacity(backlog),
+            accept_poll: Arc::new(PollSet::new()),
         }
     }
 
@@ -162,6 +165,18 @@ impl ListenTable {
         Err(AxError::WouldBlock)
     }
 
+    pub fn register_accept_waker(&self, port: u16, sockets: &mut SocketSet<'_>, waker: &Waker) {
+        if let Some(entry) = self.listen_entry(port).lock().as_ref() {
+            entry.accept_poll.register(waker);
+            let accept_waker = Waker::from(entry.accept_poll.clone());
+            for pending in &entry.syn_queue {
+                let socket: &mut tcp::Socket = sockets.get_mut(pending.accepted.handle);
+                socket.register_recv_waker(&accept_waker);
+                socket.register_send_waker(&accept_waker);
+            }
+        }
+    }
+
     pub fn incoming_tcp_packet(
         &self,
         src: IpEndpoint,
@@ -201,6 +216,7 @@ impl ListenTable {
                     remote_endpoint: src,
                 },
             });
+            entry.accept_poll.wake();
         }
     }
 }

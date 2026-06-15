@@ -1,21 +1,21 @@
-use rdrive::{IrqId, probe::OnProbeError};
+use rdif_intc::IrqId;
+use rdrive::probe::OnProbeError;
 use someboot::PagingError;
 
 use crate::setup::MmioRaw;
 
 pub trait PlatOp {
+    type ActiveIrq;
+
     fn irq_set_enable(irq: IrqId, enable: bool);
 
     fn send_ipi(_irq: IrqId, _target: crate::irq::IpiTarget) {
         panic!("IPI is not implemented for this dynamic platform");
     }
 
-    fn irq_handler() -> someboot::irq::IrqId;
+    fn begin_irq(raw: usize) -> Option<Self::ActiveIrq>;
 
-    fn irq_handler_with_raw(raw: usize) -> Option<someboot::irq::IrqId> {
-        let _ = raw;
-        Some(Self::irq_handler())
-    }
+    fn active_irq_id(active: &Self::ActiveIrq) -> IrqId;
 
     fn systick_irq() -> IrqId;
 

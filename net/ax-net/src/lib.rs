@@ -24,6 +24,7 @@ extern crate std;
 mod config;
 mod consts;
 mod device;
+mod dhcp_server;
 mod general;
 mod listen_table;
 /// Socket option types and the [`Configurable`](options::Configurable) trait.
@@ -46,17 +47,21 @@ pub mod unix;
 pub mod vsock;
 mod wrapper;
 
-use alloc::{borrow::ToOwned, boxed::Box, format, sync::Arc, task::Wake, vec, vec::Vec};
+use alloc::{
+    borrow::ToOwned, boxed::Box, format, string::String, sync::Arc, task::Wake, vec, vec::Vec,
+};
 use core::{
+    future::poll_fn,
     net::IpAddr,
     sync::atomic::{AtomicBool, Ordering},
-    task::Waker,
+    task::{Poll, Waker},
     time::Duration,
 };
 
 use ax_errno::{AxError, AxResult, ax_err_type};
 use ax_sync::Mutex;
-use ax_task::WaitQueue;
+use ax_task::{WaitQueue, future::block_on};
+use axpoll::PollSet;
 use smoltcp::{
     socket::dns::{self, GetQueryResultError, StartQueryError},
     wire::{DnsQueryType, EthernetAddress, IpAddress, Ipv4Address, Ipv4Cidr},
@@ -100,6 +105,8 @@ static NET_POLL_REQUESTED: AtomicBool = AtomicBool::new(false);
 static NET_POLL_WAKE: WaitQueue = WaitQueue::new();
 static NET_POLL_DEVICE_WAKER: LazyLock<Waker> =
     LazyLock::new(|| Waker::from(Arc::new(NetPollWake)));
+static OOB_RX_SIGNAL: PollSet = PollSet::new();
+static OOB_POLL_TASK_STARTED: AtomicBool = AtomicBool::new(false);
 
 const DHCP_BOOTSTRAP_ATTEMPTS: usize = 200;
 const DHCP_BOOTSTRAP_POLL_INTERVAL: Duration = Duration::from_millis(10);
@@ -440,6 +447,86 @@ pub fn ipv4_config(name: &str) -> Option<Ipv4InterfaceConfig> {
 
 pub fn default_routes() -> Vec<RouteInfo> {
     get_control().default_routes()
+}
+
+/// Runtime configuration for a statically addressed Ethernet device.
+///
+/// This is used by drivers that appear after the normal device-probe phase,
+/// for example Wi-Fi AP mode devices.
+pub struct NetConfig {
+    pub name: String,
+    pub ip: [u8; 4],
+    pub prefix_len: u8,
+    pub dhcp_server_client_ip: Option<[u8; 4]>,
+    pub dedicated_poll: bool,
+}
+
+/// Registers an extra Ethernet device with a static IPv4 address.
+///
+/// If `dedicated_poll` is set, RX readiness is driven by [`notify_oob_rx`]
+/// instead of the shared Ethernet IRQ framework.
+pub fn register_device_with_config(dev: Box<dyn EthernetDriver>, config: NetConfig) {
+    let mac = EthernetAddress(dev.mac_address());
+    let server_ip = Ipv4Address::new(config.ip[0], config.ip[1], config.ip[2], config.ip[3]);
+    let cidr = Ipv4Cidr::new(server_ip, config.prefix_len);
+    let eth_dev = if config.dedicated_poll {
+        EthernetDevice::new_oob_rx(config.name.clone(), dev, Some(cidr))
+    } else {
+        EthernetDevice::new(config.name.clone(), dev, Some(cidr))
+    };
+    let dev_idx = get_service().register_static_device(config.name.clone(), eth_dev, mac, cidr);
+    if let Some(client_ip) = config.dhcp_server_client_ip {
+        let client_ip = Ipv4Address::new(client_ip[0], client_ip[1], client_ip[2], client_ip[3]);
+        get_service().enable_dhcp_server(
+            dev_idx,
+            server_ip,
+            client_ip,
+            prefix_to_mask(config.prefix_len),
+        );
+    }
+
+    if config.dedicated_poll
+        && OOB_POLL_TASK_STARTED
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
+    {
+        start_oob_poll_task(config.name);
+    }
+    request_poll();
+}
+
+/// Wakes the out-of-band RX poll task.
+pub fn notify_oob_rx() {
+    OOB_RX_SIGNAL.wake();
+}
+
+pub fn eth0_ipv4_config() -> Option<Ipv4InterfaceConfig> {
+    get_service().eth0_ipv4_config()
+}
+
+fn prefix_to_mask(prefix_len: u8) -> Ipv4Address {
+    let mask = if prefix_len == 0 {
+        0
+    } else {
+        u32::MAX << (32 - prefix_len)
+    };
+    Ipv4Address::from_bits(mask)
+}
+
+fn start_oob_poll_task(ifname: String) {
+    let task_name = format!("{ifname}-oob-poll");
+    ax_task::spawn_with_name(
+        move || {
+            info!("start OOB network poll task for {ifname}");
+            block_on(poll_fn(|cx| {
+                OOB_RX_SIGNAL.register(cx.waker());
+                poll_interfaces();
+                get_service().wake_all_devices();
+                Poll::<()>::Pending
+            }));
+        },
+        task_name,
+    );
 }
 
 fn next_poll_delay() -> Duration {

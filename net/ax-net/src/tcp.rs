@@ -1,8 +1,8 @@
-use alloc::{vec, vec::Vec};
+use alloc::{sync::Arc, vec, vec::Vec};
 use core::{
     net::{Ipv4Addr, SocketAddr},
     sync::atomic::{AtomicBool, AtomicI32, AtomicU32, Ordering},
-    task::Context,
+    task::{Context, Waker},
 };
 
 use ax_errno::{AxError, AxResult, LinuxError, ax_bail, ax_err_type};
@@ -27,7 +27,7 @@ use crate::{
     general::GeneralOptions,
     get_control, get_service, interface_by_id,
     options::{Configurable, GetSocketOption, SetSocketOption, TcpInfo, TcpInfoOptions, TcpState},
-    request_poll,
+    poll_interfaces_now, request_poll,
     state::*,
 };
 
@@ -65,6 +65,8 @@ pub struct TcpSocket {
     keep_count: AtomicU32,
     user_timeout_millis: AtomicU32,
     rx_closed: AtomicBool,
+    poll_rx: Arc<PollSet>,
+    poll_tx: Arc<PollSet>,
     poll_rx_closed: PollSet,
 }
 
@@ -87,6 +89,8 @@ impl TcpSocket {
             keep_count: AtomicU32::new(TCP_KEEPCNT_DEFAULT),
             user_timeout_millis: AtomicU32::new(TCP_USER_TIMEOUT_DEFAULT_MS),
             rx_closed: AtomicBool::new(false),
+            poll_rx: Arc::new(PollSet::new()),
+            poll_tx: Arc::new(PollSet::new()),
             poll_rx_closed: PollSet::new(),
         }
     }
@@ -121,6 +125,8 @@ impl TcpSocket {
             keep_count: AtomicU32::new(TCP_KEEPCNT_DEFAULT),
             user_timeout_millis: AtomicU32::new(TCP_USER_TIMEOUT_DEFAULT_MS),
             rx_closed: AtomicBool::new(false),
+            poll_rx: Arc::new(PollSet::new()),
+            poll_tx: Arc::new(PollSet::new()),
             poll_rx_closed: PollSet::new(),
         };
         let endpoint = endpoint_from_ip_endpoint(local_endpoint);
@@ -419,7 +425,7 @@ impl SocketOps for TcpSocket {
 
         // Here our state must be `CONNECTING`, and only one thread can run here.
         self.general.send_poller(self, || {
-            request_poll();
+            poll_interfaces_now();
             let events = self.poll_connect();
             if !events.contains(IoEvents::OUT) {
                 Err(AxError::WouldBlock)
@@ -470,7 +476,7 @@ impl SocketOps for TcpSocket {
 
         let bound_port = self.bound_endpoint()?.port;
         self.general.recv_poller(self, || {
-            request_poll();
+            poll_interfaces_now();
             let accepted = {
                 let mut sockets = SOCKET_SET.inner.lock();
                 LISTEN_TABLE.accept(bound_port, &mut sockets)?
@@ -494,7 +500,7 @@ impl SocketOps for TcpSocket {
         // SAFETY: `self.handle` should be initialized in a connected socket.
         let extra_nb = options.flags.contains(crate::SendFlags::DONTWAIT);
         let result = self.general.send_poller_with(self, extra_nb, || {
-            request_poll();
+            poll_interfaces_now();
             self.with_smol_socket(|socket| {
                 if !socket.is_active() {
                     Err(AxError::NotConnected)
@@ -517,7 +523,7 @@ impl SocketOps for TcpSocket {
         // network stack immediately. For loopback, this causes loopback.send()
         // to run, which wakes any epoll wakers registered on the peer socket.
         if result.is_ok() {
-            request_poll();
+            poll_interfaces_now();
         }
         result
     }
@@ -531,7 +537,7 @@ impl SocketOps for TcpSocket {
         }
         let extra_nb = options.flags.contains(RecvFlags::DONTWAIT);
         self.general.recv_poller_with(self, extra_nb, || {
-            request_poll();
+            poll_interfaces_now();
             self.with_smol_socket(|socket| {
                 if socket.recv_queue() > 0 {
                     if options.flags.contains(RecvFlags::PEEK) {
@@ -578,7 +584,7 @@ impl SocketOps for TcpSocket {
         if available > 0 {
             return Ok(available);
         }
-        request_poll();
+        poll_interfaces_now();
         Ok(self.with_smol_socket(|socket| socket.recv_queue()))
     }
 
@@ -668,12 +674,23 @@ impl Pollable for TcpSocket {
     }
 
     fn register(&self, context: &mut Context<'_>, events: IoEvents) {
+        if self.is_listening() && events.intersects(IoEvents::IN | IoEvents::RDHUP) {
+            let port = self.bound_endpoint.lock().port;
+            if port != 0 {
+                let mut sockets = SOCKET_SET.inner.lock();
+                LISTEN_TABLE.register_accept_waker(port, &mut sockets, context.waker());
+            }
+        }
         self.with_smol_socket(|socket| {
             if events.intersects(IoEvents::IN | IoEvents::RDHUP) {
-                socket.register_recv_waker(context.waker());
+                self.poll_rx.register(context.waker());
+                let waker = Waker::from(self.poll_rx.clone());
+                socket.register_recv_waker(&waker);
             }
             if events.contains(IoEvents::OUT) {
-                socket.register_send_waker(context.waker());
+                self.poll_tx.register(context.waker());
+                let waker = Waker::from(self.poll_tx.clone());
+                socket.register_send_waker(&waker);
             }
         });
         if events.intersects(IoEvents::IN | IoEvents::OUT | IoEvents::RDHUP) {

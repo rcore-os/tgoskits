@@ -48,6 +48,24 @@ pub(crate) fn add_orphan(handle: SocketHandle, timestamp: Instant) {
 /// Removes sockets whose background TCP teardown no longer needs stack state.
 pub(crate) fn reap_orphans(timestamp: Instant, sockets: &mut SocketSet<'_>) {
     const ORPHAN_MAX_LINGER: i64 = 60_000_000; // 60 seconds in microseconds
+    const ORPHAN_MAX_SOCKETS: usize = 1024;
+
+    let overflow = {
+        let mut orphans = ORPHAN_SOCKETS.lock();
+        let overflow = orphans.len().saturating_sub(ORPHAN_MAX_SOCKETS);
+        if overflow == 0 {
+            Vec::new()
+        } else {
+            orphans
+                .drain(..overflow)
+                .map(|orphan| orphan.handle)
+                .collect()
+        }
+    };
+    for handle in overflow {
+        sockets.remove(handle);
+        warn!("Reaped orphan socket {handle} because orphan pool is full");
+    }
 
     ORPHAN_SOCKETS.lock().retain(|orphan| {
         let keep = {

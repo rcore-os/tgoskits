@@ -20,7 +20,21 @@ pub trait ArchConsoleOps {
     fn read_byte() -> Option<u8> {
         None
     }
+
+    fn irq_num() -> Option<usize> {
+        None
+    }
+
+    fn set_input_irq_enabled(_enabled: bool) {}
+
+    fn handle_irq() -> u32 {
+        0
+    }
 }
+
+pub const CONSOLE_IRQ_RX_READY: u32 = 1 << 0;
+pub const CONSOLE_IRQ_RX_ERROR: u32 = 1 << 1;
+pub const CONSOLE_IRQ_OVERRUN: u32 = 1 << 2;
 
 pub(crate) fn debug_to_memory_desc() -> Option<MemoryDescriptor> {
     let debug_base = unsafe { DEBUG_BASE };
@@ -183,6 +197,18 @@ pub fn read_byte() -> Option<u8> {
             None
         }
     }
+}
+
+pub fn irq_num() -> Option<usize> {
+    <crate::arch::Arch as crate::ArchTrait>::Console::irq_num()
+}
+
+pub fn set_input_irq_enabled(enabled: bool) {
+    <crate::arch::Arch as crate::ArchTrait>::Console::set_input_irq_enabled(enabled);
+}
+
+pub fn handle_irq() -> u32 {
+    <crate::arch::Arch as crate::ArchTrait>::Console::handle_irq()
 }
 
 static EARLYCON_SENDER: EarlyconSenderCell = EarlyconSenderCell(UnsafeCell::new(None));
