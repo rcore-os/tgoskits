@@ -7,7 +7,10 @@ use core::{
 
 use ax_errno::{AxError, AxResult};
 use ax_runtime::hal::time::TimeValue;
-use ax_task::{current, future, future::block_on};
+use ax_task::{
+    current, future,
+    future::{block_on, interruptible},
+};
 use axpoll::{IoEvents, Pollable};
 use linux_raw_sys::general::{POLLNVAL, RLIMIT_NOFILE, pollfd, timespec};
 use starry_signal::SignalSet;
@@ -127,25 +130,25 @@ fn do_poll(
     let fds = FdPollSet(fds);
 
     with_blocked_signals(sigmask, || {
-        match block_on(future::timeout(
-            timeout,
-            poll_fn(|cx| {
-                let mut res = collect_ready_poll_events(&fds, &revent_indices, poll_fds);
-                if res > 0 {
-                    return Poll::Ready(Ok(res as _));
-                }
+        let wait = poll_fn(|cx| {
+            let mut res = collect_ready_poll_events(&fds, &revent_indices, poll_fds);
+            if res > 0 {
+                return Poll::Ready(Ok(res as _));
+            }
 
-                fds.register(cx, IoEvents::empty());
+            fds.register(cx, IoEvents::empty());
 
-                res = collect_ready_poll_events(&fds, &revent_indices, poll_fds);
-                if res > 0 {
-                    return Poll::Ready(Ok(res as _));
-                }
-                Poll::Pending
-            }),
-        )) {
-            Ok(r) => r,
-            Err(_) => Ok(0),
+            res = collect_ready_poll_events(&fds, &revent_indices, poll_fds);
+            if res > 0 {
+                return Poll::Ready(Ok(res as _));
+            }
+            Poll::Pending
+        });
+
+        match block_on(interruptible(future::timeout(timeout, wait))) {
+            Ok(Ok(r)) => r,
+            Ok(Err(_)) => Ok(0),
+            Err(err) => Err(err.into()),
         }
     })
 }
@@ -181,7 +184,6 @@ pub fn sys_ppoll(
     let timeout = nullable!(timeout.get_as_ref())?
         .map(|ts| ts.try_into_time_value())
         .transpose()?;
-    // TODO: handle signal
     let res = do_poll(
         &mut poll_fds,
         timeout,
