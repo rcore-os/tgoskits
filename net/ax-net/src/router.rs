@@ -486,15 +486,7 @@ impl Router {
     ) -> bool {
         let device = &self.devices[dev];
         if device.interface_id == InterfaceId::LOOPBACK {
-            let rx = RxPacket {
-                interface_id: InterfaceId::LOOPBACK,
-                bytes: packet.to_vec().into_boxed_slice(),
-            };
-            if self.queues.rx.push(rx).is_err() {
-                warn!("Loopback: RX queue full, dropping packet to {}", next_hop);
-                return false;
-            }
-            return true;
+            return inject_loopback_rx(&self.queues.rx, next_hop, packet);
         }
         device.enqueue_tx(next_hop, packet)
     }
@@ -559,16 +551,9 @@ impl Router {
                         };
 
                         let dev = &self.devices[route.dev];
-                        // Loopback fast path: inject directly to RX queue
                         if dev.interface_id == InterfaceId::LOOPBACK {
-                            let rx = RxPacket {
-                                interface_id: InterfaceId::LOOPBACK,
-                                bytes: packet.into_inner().to_vec().into_boxed_slice(),
-                            };
-                            if self.queues.rx.push(rx).is_err() {
-                                warn!("Loopback: RX queue full, dropping packet to {}", dst_addr);
-                            }
-                            poll_next = true;
+                            poll_next |=
+                                inject_loopback_rx(&self.queues.rx, dst_addr, packet.into_inner());
                         } else {
                             poll_next |= dev.enqueue_tx(route.next_hop, packet.into_inner());
                         }
@@ -599,16 +584,9 @@ impl Router {
                         };
 
                         let dev = &self.devices[route.dev];
-                        // Loopback fast path
                         if dev.interface_id == InterfaceId::LOOPBACK {
-                            let rx = RxPacket {
-                                interface_id: InterfaceId::LOOPBACK,
-                                bytes: packet.into_inner().to_vec().into_boxed_slice(),
-                            };
-                            if self.queues.rx.push(rx).is_err() {
-                                warn!("Loopback: RX queue full, dropping packet to {}", dst_addr);
-                            }
-                            poll_next = true;
+                            poll_next |=
+                                inject_loopback_rx(&self.queues.rx, dst_addr, packet.into_inner());
                         } else {
                             poll_next |= dev.enqueue_tx(route.next_hop, packet.into_inner());
                         }
@@ -618,6 +596,26 @@ impl Router {
         }
         poll_next
     }
+}
+
+/// Injects a loopback packet into the router RX queue.
+///
+/// Returns `true` when the packet was queued; callers should continue polling
+/// so smoltcp can immediately consume the injected RX packet.
+fn inject_loopback_rx(
+    rx_queue: &BoundedPacketQueue<RxPacket>,
+    dst_addr: IpAddress,
+    packet: &[u8],
+) -> bool {
+    let rx = RxPacket {
+        interface_id: InterfaceId::LOOPBACK,
+        bytes: packet.to_vec().into_boxed_slice(),
+    };
+    if rx_queue.push(rx).is_err() {
+        warn!("Loopback: RX queue full, dropping packet to {}", dst_addr);
+        return false;
+    }
+    true
 }
 
 fn device_tx_worker(device: Arc<DeviceHandle>) {

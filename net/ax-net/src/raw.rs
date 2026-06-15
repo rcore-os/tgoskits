@@ -31,7 +31,7 @@ use crate::{
     general::GeneralOptions,
     get_control, interface_by_id,
     options::{Configurable, GetSocketOption, SetSocketOption},
-    poll_interfaces_now, request_poll,
+    request_poll,
 };
 
 pub(crate) fn new_raw_socket(
@@ -374,7 +374,7 @@ impl SocketOps for RawSocket {
                 }
                 Ok(written)
             })?;
-            poll_interfaces_now();
+            request_poll();
             Ok(written)
         })
     }

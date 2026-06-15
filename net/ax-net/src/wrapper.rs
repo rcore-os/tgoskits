@@ -56,16 +56,23 @@ impl<'a> SocketSetWrapper<'a> {
             addr: (!addr.is_unspecified()).then_some(addr),
             port,
         };
-        let wildcard = UdpBindKey { addr: None, port };
         let mut binds = self.udp_binds.lock();
-        if binds.contains_key(&key) || (key.addr.is_some() && binds.contains_key(&wildcard)) {
-            return Err(AxError::AddrInUse);
-        }
-        if key.addr.is_none() && binds.keys().any(|bind| bind.port == port) {
+        if !udp_bind_available(&binds, key) {
             return Err(AxError::AddrInUse);
         }
         binds.insert(key, handle);
         Ok(())
+    }
+
+    pub fn udp_port_available(&self, addr: IpAddress, port: u16) -> bool {
+        if port == 0 {
+            return true;
+        }
+        let key = UdpBindKey {
+            addr: (!addr.is_unspecified()).then_some(addr),
+            port,
+        };
+        udp_bind_available(&self.udp_binds.lock(), key)
     }
 
     pub fn udp_unbind(&self, handle: SocketHandle) {
@@ -78,5 +85,72 @@ impl<'a> SocketSetWrapper<'a> {
         self.udp_unbind(handle);
         self.inner.lock().remove(handle);
         debug!("socket {}: destroyed", handle);
+    }
+}
+
+fn udp_bind_available(binds: &HashMap<UdpBindKey, SocketHandle>, key: UdpBindKey) -> bool {
+    let wildcard = UdpBindKey {
+        addr: None,
+        port: key.port,
+    };
+    if binds.contains_key(&key) || (key.addr.is_some() && binds.contains_key(&wildcard)) {
+        return false;
+    }
+    key.addr.is_some() || !binds.keys().any(|bind| bind.port == key.port)
+}
+
+#[cfg(test)]
+mod tests {
+    use alloc::vec;
+
+    use smoltcp::{
+        iface::SocketSet,
+        socket::udp,
+        storage::PacketMetadata,
+        wire::{IpAddress, Ipv4Address},
+    };
+
+    use super::*;
+
+    fn key(addr: Option<Ipv4Address>, port: u16) -> UdpBindKey {
+        UdpBindKey {
+            addr: addr.map(IpAddress::Ipv4),
+            port,
+        }
+    }
+
+    fn handle() -> SocketHandle {
+        let mut sockets = SocketSet::new(vec![]);
+        sockets.add(udp::Socket::new(
+            udp::PacketBuffer::new(vec![PacketMetadata::EMPTY; 1], vec![0; 8]),
+            udp::PacketBuffer::new(vec![PacketMetadata::EMPTY; 1], vec![0; 8]),
+        ))
+    }
+
+    #[test]
+    fn udp_bind_rules_allow_distinct_specific_addresses() {
+        let mut binds = HashMap::new();
+        binds.insert(key(Some(Ipv4Address::new(192, 0, 2, 10)), 5353), handle());
+
+        assert!(udp_bind_available(
+            &binds,
+            key(Some(Ipv4Address::new(198, 51, 100, 20)), 5353)
+        ));
+        assert!(!udp_bind_available(
+            &binds,
+            key(Some(Ipv4Address::new(192, 0, 2, 10)), 5353)
+        ));
+        assert!(!udp_bind_available(&binds, key(None, 5353)));
+    }
+
+    #[test]
+    fn udp_bind_rules_reject_specific_after_wildcard() {
+        let mut binds = HashMap::new();
+        binds.insert(key(None, 5354), handle());
+
+        assert!(!udp_bind_available(
+            &binds,
+            key(Some(Ipv4Address::new(192, 0, 2, 10)), 5354)
+        ));
     }
 }

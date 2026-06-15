@@ -24,6 +24,16 @@ struct OrphanSocket {
     orphaned_at: Instant,
 }
 
+impl OrphanSocket {
+    fn linger_micros(&self, timestamp: Instant) -> i64 {
+        timestamp.total_micros() - self.orphaned_at.total_micros()
+    }
+
+    fn linger_expired(&self, timestamp: Instant) -> bool {
+        self.linger_micros(timestamp) >= ORPHAN_MAX_LINGER
+    }
+}
+
 /// Global orphan socket pool.
 ///
 /// Accessed by:
@@ -31,6 +41,9 @@ struct OrphanSocket {
 /// - net-poll worker to reap finished orphans
 static ORPHAN_SOCKETS: LazyLock<Mutex<Vec<OrphanSocket>>> =
     LazyLock::new(|| Mutex::new(Vec::new()));
+
+const ORPHAN_MAX_LINGER: i64 = 60_000_000; // 60 seconds in microseconds
+const ORPHAN_MAX_SOCKETS: usize = 1024;
 
 /// Move a TCP socket to the orphan pool.
 ///
@@ -45,28 +58,21 @@ pub(crate) fn add_orphan(handle: SocketHandle, timestamp: Instant) {
 /// Reap finished orphan sockets.
 ///
 /// Called from net-poll worker on every poll cycle.
-/// Removes sockets whose background TCP teardown no longer needs stack state.
+/// Removes orphan sockets after their background TCP teardown completes.
+///
+/// # Removal Conditions
+///
+/// - **Closed**: immediate removal (connection fully closed)
+/// - **TimeWait**: removed after smoltcp timeout (~10s, max 60s)
+/// - **FinWait1/FinWait2/LastAck/Closing**: kept until smoltcp transitions to Closed (max 60s)
+/// - **Unexpected states** (Listen/SynSent/Established): force remove after 60s
+///
+/// # Overflow Protection
+///
+/// If the orphan pool exceeds 1024 sockets, closed or max-linger-expired entries
+/// are removed first. Connections still inside the linger window are preserved
+/// so normal FIN/TIME_WAIT teardown can complete.
 pub(crate) fn reap_orphans(timestamp: Instant, sockets: &mut SocketSet<'_>) {
-    const ORPHAN_MAX_LINGER: i64 = 60_000_000; // 60 seconds in microseconds
-    const ORPHAN_MAX_SOCKETS: usize = 1024;
-
-    let overflow = {
-        let mut orphans = ORPHAN_SOCKETS.lock();
-        let overflow = orphans.len().saturating_sub(ORPHAN_MAX_SOCKETS);
-        if overflow == 0 {
-            Vec::new()
-        } else {
-            orphans
-                .drain(..overflow)
-                .map(|orphan| orphan.handle)
-                .collect()
-        }
-    };
-    for handle in overflow {
-        sockets.remove(handle);
-        warn!("Reaped orphan socket {handle} because orphan pool is full");
-    }
-
     ORPHAN_SOCKETS.lock().retain(|orphan| {
         let keep = {
             let socket = sockets.get_mut::<tcp::Socket>(orphan.handle);
@@ -75,19 +81,18 @@ pub(crate) fn reap_orphans(timestamp: Instant, sockets: &mut SocketSet<'_>) {
                 tcp::State::TimeWait => {
                     // TIME_WAIT should expire naturally (smoltcp default: 10s)
                     // But force cleanup after max linger to prevent leaks
-                    let elapsed = timestamp.total_micros() - orphan.orphaned_at.total_micros();
-                    elapsed < ORPHAN_MAX_LINGER
+                    !orphan.linger_expired(timestamp)
                 }
                 tcp::State::LastAck | tcp::State::FinWait1 | tcp::State::FinWait2 => {
-                    // Still tearing down, keep alive
-                    true
+                    // Still tearing down, but keep a hard resource bound.
+                    !orphan.linger_expired(timestamp)
                 }
-                tcp::State::Closing => true,
+                tcp::State::Closing => !orphan.linger_expired(timestamp),
                 _ => {
                     // Unexpected state for orphan (Listen/SynSent/SynReceived/Established)
                     // Force remove after max linger
-                    let elapsed = timestamp.total_micros() - orphan.orphaned_at.total_micros();
-                    if elapsed >= ORPHAN_MAX_LINGER {
+                    let elapsed = orphan.linger_micros(timestamp);
+                    if orphan.linger_expired(timestamp) {
                         warn!(
                             "Orphan socket {} in unexpected state {:?} after {}s, force removing",
                             orphan.handle,
@@ -108,6 +113,45 @@ pub(crate) fn reap_orphans(timestamp: Instant, sockets: &mut SocketSet<'_>) {
         }
         keep
     });
+
+    reap_overflow(timestamp, sockets, ORPHAN_MAX_SOCKETS);
+}
+
+fn reap_overflow(timestamp: Instant, sockets: &mut SocketSet<'_>, limit: usize) {
+    let overflow = {
+        let orphans = ORPHAN_SOCKETS.lock();
+        orphans.len().saturating_sub(limit)
+    };
+    if overflow == 0 {
+        return;
+    }
+
+    let mut removed = Vec::new();
+    ORPHAN_SOCKETS.lock().retain(|orphan| {
+        if removed.len() >= overflow {
+            return true;
+        }
+        let socket = sockets.get_mut::<tcp::Socket>(orphan.handle);
+        if socket.state() == tcp::State::Closed || orphan.linger_expired(timestamp) {
+            removed.push(orphan.handle);
+            false
+        } else {
+            true
+        }
+    });
+
+    for handle in &removed {
+        sockets.remove(*handle);
+        warn!("Reaped orphan socket {handle} because orphan pool is full");
+    }
+
+    let remaining_overflow = ORPHAN_SOCKETS.lock().len().saturating_sub(limit);
+    if remaining_overflow > 0 {
+        warn!(
+            "Orphan socket pool exceeds limit by {remaining_overflow}; keeping sockets that are \
+             still tearing down"
+        );
+    }
 }
 
 /// Get current orphan socket count (for diagnostics).

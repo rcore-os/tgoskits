@@ -24,7 +24,7 @@ use crate::{
     general::GeneralOptions,
     get_control, interface_by_id,
     options::{Configurable, GetSocketOption, SetSocketOption},
-    poll_interfaces_now, request_poll,
+    request_poll,
 };
 
 /// Buffered state for MSG_MORE corking: captures the target endpoint
@@ -399,7 +399,7 @@ impl SocketOps for UdpSocket {
                     Ok(cur_read)
                 }
             })?;
-            poll_interfaces_now();
+            request_poll();
             Ok(result)
         })
     }
@@ -545,13 +545,20 @@ fn get_ephemeral_port() -> AxResult<u16> {
     static CURR: Mutex<u16> = Mutex::new(PORT_START);
     let mut curr = CURR.lock();
 
-    let port = *curr;
-    if *curr == PORT_END {
-        *curr = PORT_START;
-    } else {
-        *curr += 1;
+    let mut tries = 0;
+    while tries <= PORT_END - PORT_START {
+        let port = *curr;
+        if *curr == PORT_END {
+            *curr = PORT_START;
+        } else {
+            *curr += 1;
+        }
+        if SOCKET_SET.udp_port_available(IpAddress::Ipv4(Ipv4Addr::UNSPECIFIED), port) {
+            return Ok(port);
+        }
+        tries += 1;
     }
-    Ok(port)
+    ax_bail!(AddrInUse, "no available ports")
 }
 
 #[cfg(test)]

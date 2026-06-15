@@ -27,7 +27,7 @@ use crate::{
     general::GeneralOptions,
     get_control, get_service, interface_by_id,
     options::{Configurable, GetSocketOption, SetSocketOption, TcpInfo, TcpInfoOptions, TcpState},
-    poll_interfaces_now, request_poll,
+    request_poll,
     state::*,
 };
 
@@ -268,11 +268,11 @@ impl TcpSocket {
 
     fn poll_listener(&self) -> IoEvents {
         let mut events = IoEvents::empty();
-        let port = self.bound_endpoint().unwrap().port;
+        let endpoint = self.bound_endpoint().unwrap();
         let sockets = SOCKET_SET.inner.lock();
         events.set(
             IoEvents::IN,
-            LISTEN_TABLE.can_accept(port, &sockets).unwrap(),
+            LISTEN_TABLE.can_accept(endpoint, &sockets).unwrap(),
         );
         events
     }
@@ -392,10 +392,9 @@ impl SocketOps for TcpSocket {
                 if local_addr.port() == 0 {
                     local_addr.set_port(get_ephemeral_port()?);
                 }
-                if !self.general.reuse_address() && !LISTEN_TABLE.can_listen(local_addr.port()) {
-                    return Err(AxError::AddrInUse);
+                if self.bound_endpoint.lock().port != 0 {
+                    return Err(AxError::InvalidInput);
                 }
-
                 let endpoint = IpListenEndpoint {
                     addr: if local_addr.ip().is_unspecified() {
                         None
@@ -404,8 +403,8 @@ impl SocketOps for TcpSocket {
                     },
                     port: local_addr.port(),
                 };
-                if self.bound_endpoint.lock().port != 0 {
-                    return Err(AxError::InvalidInput);
+                if !self.general.reuse_address() && !LISTEN_TABLE.can_listen(endpoint) {
+                    return Err(AxError::AddrInUse);
                 }
                 let binding = get_control().local_binding_for(&endpoint)?;
                 self.register_bound_endpoint(endpoint)?;
@@ -421,13 +420,11 @@ impl SocketOps for TcpSocket {
     fn connect(&self, remote_addr: SocketAddrEx) -> AxResult {
         let remote_addr = remote_addr.into_ip()?;
         self.start_connect(remote_addr)?;
-
-        // Hack: let the server listen
-        ax_task::yield_now();
+        request_poll();
 
         // Here our state must be `CONNECTING`, and only one thread can run here.
         self.general.send_poller(self, || {
-            poll_interfaces_now();
+            request_poll();
             let events = self.poll_connect();
             if !events.contains(IoEvents::OUT) {
                 Err(AxError::WouldBlock)
@@ -478,12 +475,12 @@ impl SocketOps for TcpSocket {
             ax_bail!(InvalidInput, "not listening");
         }
 
-        let bound_port = self.bound_endpoint()?.port;
+        let bound_endpoint = self.bound_endpoint()?;
         self.general.recv_poller(self, || {
-            poll_interfaces_now();
+            request_poll();
             let accepted = {
                 let mut sockets = SOCKET_SET.inner.lock();
-                LISTEN_TABLE.accept(bound_port, &mut sockets)?
+                LISTEN_TABLE.accept(bound_endpoint, &mut sockets)?
             };
             Ok({
                 let socket = TcpSocket::new_connected(
@@ -504,7 +501,7 @@ impl SocketOps for TcpSocket {
         // SAFETY: `self.handle` should be initialized in a connected socket.
         let extra_nb = options.flags.contains(crate::SendFlags::DONTWAIT);
         let result = self.general.send_poller_with(self, extra_nb, || {
-            poll_interfaces_now();
+            request_poll();
             self.with_smol_socket(|socket| {
                 if !socket.is_active() {
                     Err(AxError::NotConnected)
@@ -523,11 +520,8 @@ impl SocketOps for TcpSocket {
                 }
             })
         });
-        // Poll again after writing so the data is transmitted through the
-        // network stack immediately. For loopback, this causes loopback.send()
-        // to run, which wakes any epoll wakers registered on the peer socket.
         if result.is_ok() {
-            poll_interfaces_now();
+            request_poll();
         }
         result
     }
@@ -541,7 +535,7 @@ impl SocketOps for TcpSocket {
         }
         let extra_nb = options.flags.contains(RecvFlags::DONTWAIT);
         self.general.recv_poller_with(self, extra_nb, || {
-            poll_interfaces_now();
+            request_poll();
             self.with_smol_socket(|socket| {
                 if socket.recv_queue() > 0 {
                     if options.flags.contains(RecvFlags::PEEK) {
@@ -588,7 +582,7 @@ impl SocketOps for TcpSocket {
         if available > 0 {
             return Ok(available);
         }
-        poll_interfaces_now();
+        request_poll();
         Ok(self.with_smol_socket(|socket| socket.recv_queue()))
     }
 
@@ -651,7 +645,7 @@ impl SocketOps for TcpSocket {
         // listener
         if let Ok(guard) = self.state.lock(State::Listening) {
             guard.transit(State::Closed, || {
-                LISTEN_TABLE.unlisten(self.bound_endpoint()?.port);
+                LISTEN_TABLE.unlisten(self.bound_endpoint()?);
                 self.unregister_bound_endpoint();
                 *self.bound_endpoint.lock() = empty_endpoint();
                 request_poll();
@@ -681,8 +675,9 @@ impl Pollable for TcpSocket {
         if self.is_listening() && events.intersects(IoEvents::IN | IoEvents::RDHUP) {
             let port = self.bound_endpoint.lock().port;
             if port != 0 {
+                let endpoint = *self.bound_endpoint.lock();
                 let mut sockets = SOCKET_SET.inner.lock();
-                LISTEN_TABLE.register_accept_waker(port, &mut sockets, context.waker());
+                LISTEN_TABLE.register_accept_waker(endpoint, &mut sockets, context.waker());
             }
         }
         self.with_smol_socket(|socket| {
@@ -912,7 +907,8 @@ fn unregister_tcp_bound(endpoint: IpListenEndpoint) {
 }
 
 fn tcp_port_available(port: u16) -> bool {
-    LISTEN_TABLE.can_listen(port) && !TCP_BOUND_PORTS.lock().contains_key(&port)
+    LISTEN_TABLE.can_listen(IpListenEndpoint { addr: None, port })
+        && !TCP_BOUND_PORTS.lock().contains_key(&port)
 }
 
 fn listen_addrs_conflict(

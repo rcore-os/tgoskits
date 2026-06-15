@@ -1,5 +1,5 @@
 use alloc::{boxed::Box, collections::VecDeque, sync::Arc, vec, vec::Vec};
-use core::{ops::DerefMut, task::Waker};
+use core::task::Waker;
 
 use ax_errno::{AxError, AxResult};
 use ax_sync::Mutex;
@@ -71,7 +71,7 @@ impl ListenTableEntryInner {
     }
 }
 
-type ListenTableEntry = Arc<Mutex<Option<Box<ListenTableEntryInner>>>>;
+type ListenTableEntry = Arc<Mutex<Vec<ListenTableEntryInner>>>;
 
 pub struct ListenTable {
     tcp: Box<[ListenTableEntry]>,
@@ -89,60 +89,84 @@ impl ListenTable {
         Self { tcp }
     }
 
-    pub fn can_listen(&self, port: u16) -> bool {
-        self.tcp[port as usize].lock().is_none()
+    pub fn can_listen(&self, listen_endpoint: IpListenEndpoint) -> bool {
+        self.tcp[listen_endpoint.port as usize]
+            .lock()
+            .iter()
+            .all(|entry| !listen_addrs_conflict(entry.listen_endpoint.addr, listen_endpoint.addr))
     }
 
     pub fn listen(&self, listen_endpoint: IpListenEndpoint, backlog: usize) -> AxResult {
         let port = listen_endpoint.port;
         assert_ne!(port, 0);
-        let mut entry = self.tcp[port as usize].lock();
-        if entry.is_none() {
-            *entry = Some(Box::new(ListenTableEntryInner::new(
-                listen_endpoint,
-                backlog,
-            )));
-            Ok(())
-        } else {
-            warn!("socket already listening on port {port}");
-            Err(AxError::AddrInUse)
+        let mut entries = self.tcp[port as usize].lock();
+        if entries
+            .iter()
+            .any(|entry| listen_addrs_conflict(entry.listen_endpoint.addr, listen_endpoint.addr))
+        {
+            warn!("socket already listening on {}", listen_endpoint);
+            return Err(AxError::AddrInUse);
         }
+        entries.push(ListenTableEntryInner::new(listen_endpoint, backlog));
+        Ok(())
     }
 
-    pub fn unlisten(&self, port: u16) {
-        debug!("TCP socket unlisten on {}", port);
-        let handles = self.tcp[port as usize]
-            .lock()
-            .take()
-            .map(|entry| (*entry).into_handles())
-            .unwrap_or_default();
+    pub fn unlisten(&self, listen_endpoint: IpListenEndpoint) {
+        debug!("TCP socket unlisten on {}", listen_endpoint);
+        let handles = {
+            let mut entries = self.tcp[listen_endpoint.port as usize].lock();
+            let Some(idx) = entries
+                .iter()
+                .position(|entry| entry.listen_endpoint == listen_endpoint)
+            else {
+                return;
+            };
+            entries.swap_remove(idx).into_handles()
+        };
         for handle in handles {
             SOCKET_SET.remove(handle);
         }
     }
 
-    fn listen_entry(&self, port: u16) -> Arc<Mutex<Option<Box<ListenTableEntryInner>>>> {
+    fn listen_entry(&self, port: u16) -> Arc<Mutex<Vec<ListenTableEntryInner>>> {
         self.tcp[port as usize].clone()
     }
 
     // Callers pass the locked SocketSet to keep the global order:
     // SERVICE -> SOCKET_SET -> listen entry.
-    pub fn can_accept(&self, port: u16, sockets: &SocketSet<'_>) -> AxResult<bool> {
-        if let Some(entry) = self.listen_entry(port).lock().as_ref() {
-            Ok(entry
+    pub fn can_accept(
+        &self,
+        listen_endpoint: IpListenEndpoint,
+        sockets: &SocketSet<'_>,
+    ) -> AxResult<bool> {
+        let entries = self.listen_entry(listen_endpoint.port);
+        let table = entries.lock();
+        if let Some(entry) = table
+            .iter()
+            .find(|entry| entry.listen_endpoint == listen_endpoint)
+        {
+            return Ok(entry
                 .syn_queue
                 .iter()
-                .any(|pending| is_acceptable(sockets, pending.accepted.handle)))
-        } else {
+                .any(|pending| is_acceptable(sockets, pending.accepted.handle)));
+        }
+        {
             warn!("accept before listen");
             Err(AxError::InvalidInput)
         }
     }
 
-    pub fn accept(&self, port: u16, sockets: &mut SocketSet<'_>) -> AxResult<AcceptedTcp> {
-        let entry = self.listen_entry(port);
-        let mut table = entry.lock();
-        let Some(entry) = table.deref_mut() else {
+    pub fn accept(
+        &self,
+        listen_endpoint: IpListenEndpoint,
+        sockets: &mut SocketSet<'_>,
+    ) -> AxResult<AcceptedTcp> {
+        let entries = self.listen_entry(listen_endpoint.port);
+        let mut table = entries.lock();
+        let Some(entry) = table
+            .iter_mut()
+            .find(|entry| entry.listen_endpoint == listen_endpoint)
+        else {
             warn!("accept before listen");
             return Err(AxError::InvalidInput);
         };
@@ -171,8 +195,18 @@ impl ListenTable {
         Err(AxError::WouldBlock)
     }
 
-    pub fn register_accept_waker(&self, port: u16, sockets: &mut SocketSet<'_>, waker: &Waker) {
-        if let Some(entry) = self.listen_entry(port).lock().as_ref() {
+    pub fn register_accept_waker(
+        &self,
+        listen_endpoint: IpListenEndpoint,
+        sockets: &mut SocketSet<'_>,
+        waker: &Waker,
+    ) {
+        let entries = self.listen_entry(listen_endpoint.port);
+        let table = entries.lock();
+        if let Some(entry) = table
+            .iter()
+            .find(|entry| entry.listen_endpoint == listen_endpoint)
+        {
             entry.accept_poll.register(waker);
             let accept_waker = Waker::from(entry.accept_poll.clone());
             for pending in &entry.syn_queue {
@@ -189,7 +223,12 @@ impl ListenTable {
         dst: IpEndpoint,
         sockets: &mut SocketSet<'_>,
     ) {
-        if let Some(entry) = self.listen_entry(dst.port).lock().deref_mut() {
+        let entries = self.listen_entry(dst.port);
+        let mut table = entries.lock();
+        if let Some(entry) = table
+            .iter_mut()
+            .find(|entry| entry.can_accept_endpoint(dst))
+        {
             if !entry.can_accept_endpoint(dst) {
                 return;
             }
@@ -230,6 +269,13 @@ impl ListenTable {
     }
 }
 
+fn listen_addrs_conflict(
+    a: Option<smoltcp::wire::IpAddress>,
+    b: Option<smoltcp::wire::IpAddress>,
+) -> bool {
+    a.is_none() || b.is_none() || a == b
+}
+
 fn is_acceptable(sockets: &SocketSet<'_>, handle: SocketHandle) -> bool {
     let socket: &tcp::Socket = sockets.get(handle);
     match socket.state() {
@@ -242,4 +288,46 @@ fn is_acceptable(sockets: &SocketSet<'_>, handle: SocketHandle) -> bool {
 fn is_closed_without_data(sockets: &SocketSet<'_>, handle: SocketHandle) -> bool {
     let socket: &tcp::Socket = sockets.get(handle);
     matches!(socket.state(), State::Closed) && socket.recv_queue() == 0
+}
+
+#[cfg(test)]
+mod tests {
+    use smoltcp::wire::{IpAddress, Ipv4Address};
+
+    use super::*;
+
+    fn endpoint(addr: Option<Ipv4Address>, port: u16) -> IpListenEndpoint {
+        IpListenEndpoint {
+            addr: addr.map(IpAddress::Ipv4),
+            port,
+        }
+    }
+
+    #[test]
+    fn allows_same_port_on_distinct_specific_addresses() {
+        let table = ListenTable::new();
+        let first = endpoint(Some(Ipv4Address::new(192, 0, 2, 10)), 8080);
+        let second = endpoint(Some(Ipv4Address::new(198, 51, 100, 20)), 8080);
+
+        assert!(table.can_listen(first));
+        table.listen(first, 16).unwrap();
+        assert!(table.can_listen(second));
+        table.listen(second, 16).unwrap();
+
+        table.unlisten(first);
+        assert!(table.can_listen(first));
+        assert!(!table.can_listen(second));
+    }
+
+    #[test]
+    fn wildcard_listener_conflicts_with_specific_addresses() {
+        let table = ListenTable::new();
+        let wildcard = endpoint(None, 8081);
+        let specific = endpoint(Some(Ipv4Address::new(192, 0, 2, 10)), 8081);
+
+        table.listen(wildcard, 16).unwrap();
+
+        assert!(!table.can_listen(specific));
+        assert_eq!(table.listen(specific, 16), Err(AxError::AddrInUse));
+    }
 }

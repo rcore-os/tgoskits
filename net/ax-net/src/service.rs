@@ -2,45 +2,58 @@
 //!
 //! # Lock Ordering Rules
 //!
-//! To prevent deadlocks, acquire coarser locks before finer locks:
+//! To prevent deadlocks, locks must be acquired from outermost to innermost.
+//! Never acquire an outer lock while holding an inner lock.
+//!
+//! **Lock hierarchy (outermost → innermost):**
 //!
 //! 1. **SERVICE** (`Mutex<Service>`)
-//!    - Most coarse-grained, protects entire protocol stack
+//!    - Outermost, protects entire protocol stack
 //!    - Held during `Service::poll()` and waker registration
 //!
 //! 2. **SOCKET_SET.inner** (`Mutex<SocketSet>`)
 //!    - smoltcp socket set (all TCP/UDP/raw/DNS sockets)
 //!    - Acquired during poll, socket operations, and state queries
-//!    - Never acquire SERVICE while holding this lock
+//!    - ⚠️ Never acquire SERVICE while holding this lock
 //!
 //! 3. **TCP_BOUND_PORTS** (`Mutex<HashMap<u16, Vec<...>>>`)
 //!    - Tracks TCP bind() registrations
 //!    - Hold duration: registration/unregistration only
 //!
-//! 4. **Per-port LISTEN_TABLE entries** (`Arc<Mutex<Option<ListenTableEntryInner>>>`)
-//!    - Most granular, one mutex per port
+//! 4. **Per-port LISTEN_TABLE buckets** (`Arc<Mutex<Vec<ListenTableEntryInner>>>`)
+//!    - Innermost, most granular (one mutex per TCP port)
+//!
+//! **Acquisition order rule:**
+//! ```text
+//! SERVICE → SOCKET_SET → TCP_BOUND_PORTS → LISTEN_TABLE
+//! (outer)                                         (inner)
+//! ```
 //!
 //! # Correct Patterns
 //!
 //! ```ignore
-//! // ✓ SERVICE → SOCKET_SET (poll path)
-//! fn poll_interfaces_now() {
-//!     get_service().poll(&mut SOCKET_SET.inner.lock())
+//! // ✓ Lightweight trigger: socket paths request the dedicated worker.
+//! fn socket_operation() {
+//!     request_poll()
 //! }
 //!
-//! // ✓ SOCKET_SET → LISTEN_TABLE (accept readiness check)
+//! // ✓ Outer → Inner: SOCKET_SET → LISTEN_TABLE (accept readiness)
 //! fn TcpSocket::poll_listener() {
 //!     let sockets = SOCKET_SET.inner.lock();
-//!     LISTEN_TABLE.can_accept(port, &sockets)
+//!     LISTEN_TABLE.can_accept(endpoint, &sockets)
 //! }
 //! ```
 //!
 //! # Forbidden Patterns
 //!
 //! ```ignore
-//! // ✗ SOCKET_SET → SERVICE (deadlock risk)
+//! // ✗ Inner → Outer: SOCKET_SET → SERVICE (DEADLOCK!)
 //! let sockets = SOCKET_SET.inner.lock();
-//! get_service().do_something();  // WRONG
+//! get_service().do_something();  // WRONG: reverse order
+//!
+//! // ✗ Holding any lock while calling wake() (may re-enter via async I/O)
+//! let sockets = SOCKET_SET.inner.lock();
+//! waker.wake();  // WRONG: potential self-deadlock
 //! ```
 
 use alloc::{boxed::Box, format, string::String, vec, vec::Vec};
