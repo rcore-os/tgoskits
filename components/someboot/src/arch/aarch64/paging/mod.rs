@@ -30,11 +30,9 @@ pub fn enable_mmu() -> ! {
     let v_sp = meta.stack_top_virt;
     let v_entry = __kimage_va(mmu_entry_phys) as usize;
 
-    // Keep the final pre-relocation UART write short, and avoid printing after
-    // SCTLR.M is set. During that transition `is_mmu_enabled()` already
-    // observes the hardware bit, so the early console may use its atomic lock
-    // while this code is still on the pre-relocation path.
-    println!("Enabling MMU...");
+    // Do not touch the debug UART in this final pre-relocation window. Some
+    // boards can leave the early PL011 TX FIFO full here; blocking on a debug
+    // byte would prevent us from ever reaching the relocated entry.
     setup_sctlr();
 
     super::relocate::reset();

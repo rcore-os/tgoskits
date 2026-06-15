@@ -306,15 +306,26 @@ impl EarlyconCell {
 
 impl Con for EarlyconCell {
     fn write_bytes(&self, bytes: &[u8]) -> usize {
+        const MAX_NO_PROGRESS_SPINS: usize = 1 << 20;
+
         let mut written = 0;
+        let mut no_progress_spins = 0;
         while written < bytes.len() {
             let Some(n) = self.try_write(&bytes[written..]) else {
                 return bytes.len();
             };
             if n == 0 {
+                no_progress_spins += 1;
+                if no_progress_spins >= MAX_NO_PROGRESS_SPINS {
+                    // Early console output is best-effort. If the UART stops
+                    // accepting bytes, report the rest as consumed so boot does
+                    // not hang inside logging.
+                    return bytes.len();
+                }
                 core::hint::spin_loop();
                 continue;
             }
+            no_progress_spins = 0;
             written += n;
         }
         written
