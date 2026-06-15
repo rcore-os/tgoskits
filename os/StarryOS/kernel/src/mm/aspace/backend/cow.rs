@@ -142,6 +142,22 @@ impl CowBackend {
         }
     }
 
+    /// PTE flags for fault-in of file-backed private pages.
+    ///
+    /// Read faults keep PTEs read-only so the first store still faults into
+    /// [`Self::handle_cow_fault`] for RSS reclassify (Linux `PAGE_COPY` path).
+    fn pte_flags_for_fault_in(
+        &self,
+        vma_flags: MappingFlags,
+        access_flags: MappingFlags,
+    ) -> MappingFlags {
+        if self.file.is_some() && !access_flags.contains(MappingFlags::WRITE) {
+            vma_flags - MappingFlags::WRITE
+        } else {
+            vma_flags
+        }
+    }
+
     /// True when VMA allows write but the resident PTE is still read-only (Cow
     /// deferred first-write path after `mprotect(+W)` on a file-backed mapping).
     fn cow_deferred_file_write(&self, vma_flags: MappingFlags, pte_flags: MappingFlags) -> bool {
@@ -219,7 +235,8 @@ impl CowBackend {
                 return Err(err);
             }
         }
-        if let Err(err) = pt.map(vaddr, frame, self.size, flags) {
+        let pte_flags = self.pte_flags_for_fault_in(flags, access_flags);
+        if let Err(err) = pt.map(vaddr, frame, self.size, pte_flags) {
             self.deinit_frame(frame);
             return Err(err.into());
         }
@@ -268,7 +285,8 @@ impl CowBackend {
             let frame = self.alloc_new_frame(false)?;
             let dst = unsafe { slice::from_raw_parts_mut(phys_to_virt(frame).as_mut_ptr(), ps) };
             dst.copy_from_slice(&buf[k * ps..(k + 1) * ps]);
-            if let Err(err) = pt.map(addr, frame, self.size, flags) {
+            let pte_flags = self.pte_flags_for_fault_in(flags, access_flags);
+            if let Err(err) = pt.map(addr, frame, self.size, pte_flags) {
                 self.deinit_frame(frame);
                 return Err(err.into());
             }
