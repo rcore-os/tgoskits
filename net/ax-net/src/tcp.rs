@@ -690,11 +690,25 @@ impl Drop for TcpSocket {
         if let Err(err) = self.shutdown(Shutdown::Both) {
             warn!("TCP socket {}: shutdown failed: {}", self.handle, err);
         }
-        poll_interfaces_now();
+        self.flush_pending_output_before_remove();
         self.unregister_bound_endpoint();
         SOCKET_SET.remove(self.handle);
         // This is crucial for the close messages to be sent.
         request_poll();
+    }
+}
+
+impl TcpSocket {
+    fn flush_pending_output_before_remove(&self) {
+        const CLOSE_FLUSH_POLLS: usize = 64;
+
+        for _ in 0..CLOSE_FLUSH_POLLS {
+            poll_interfaces_now();
+            if self.with_smol_socket(|socket| socket.send_queue() == 0) {
+                return;
+            }
+            ax_task::yield_now();
+        }
     }
 }
 
