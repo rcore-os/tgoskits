@@ -37,7 +37,7 @@ fn probe_pci(mut probe: ProbePci<'_>) -> Result<(), OnProbeError> {
 
     endpoint.update_command(|mut cmd| {
         cmd.insert(CommandRegister::MEMORY_ENABLE | CommandRegister::BUS_MASTER_ENABLE);
-        cmd.remove(CommandRegister::INTERRUPT_DISABLE);
+        cmd.insert(CommandRegister::INTERRUPT_DISABLE);
         cmd
     });
 

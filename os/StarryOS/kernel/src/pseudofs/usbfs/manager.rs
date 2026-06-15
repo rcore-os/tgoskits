@@ -1316,13 +1316,18 @@ pub(super) fn discover_hosts() -> (Vec<UsbHostState>, Vec<PendingUsbIrqSlot>) {
         };
 
         let irq_num = guard.irq_num();
-        let irq_handler = guard.take_irq_handler();
+        let irq_handler = match irq_num {
+            Some(_) => guard
+                .take_irq_handler()
+                .map(|(irq_num, handler)| (Some(irq_num), handler)),
+            None => guard.take_event_handler().map(|handler| (None, handler)),
+        };
         drop(guard);
 
-        if let Some((irq, handler)) = irq_handler {
-            debug_assert_eq!(irq_num, Some(irq));
+        if let Some((slot_irq_num, handler)) = irq_handler {
+            debug_assert_eq!(irq_num, slot_irq_num);
             irq_slots.push(PendingUsbIrqSlot {
-                irq_num: irq,
+                irq_num: slot_irq_num,
                 device_id,
                 bus_num,
                 handler,

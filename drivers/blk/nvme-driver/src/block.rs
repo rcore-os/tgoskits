@@ -1,16 +1,15 @@
-use alloc::{boxed::Box, sync::Arc, vec, vec::Vec};
+use alloc::{boxed::Box, sync::Arc, vec::Vec};
 use core::{
     any::Any,
     cell::UnsafeCell,
-    sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
+    sync::atomic::{AtomicUsize, Ordering},
 };
 
 use dma_api::CoherentArray;
 use log::warn;
 use rdif_block::{
-    BlkError, CompletionSink, DeviceInfo, DriverGeneric, Event, IQueue, IdList, Interface,
-    IrqHandler, IrqSourceInfo, IrqSourceList, QueueInfo, QueueLimits, Request, RequestFlags,
-    RequestId, RequestOp, RequestStatus, validate_request,
+    BlkError, CompletionSink, DeviceInfo, DriverGeneric, IQueue, Interface, QueueInfo, QueueLimits,
+    Request, RequestFlags, RequestId, RequestOp, RequestStatus, validate_request,
 };
 
 use crate::{
@@ -21,7 +20,6 @@ use crate::{
 
 const MAX_PRP_LIST_PAGES: usize = 1;
 const DEFAULT_QUEUE_DEPTH: usize = 64;
-const LEGACY_INTERRUPT_VECTOR: u32 = 0;
 
 struct NvmeBlockInner {
     nvme: Nvme,
@@ -32,16 +30,11 @@ pub struct NvmeBlockDriver {
     name: &'static str,
     inner: Arc<NvmeBlockOwner>,
     queue_depth: usize,
-    irq_handler_taken: bool,
 }
 
 struct NvmeBlockOwner {
     inner: UnsafeCell<NvmeBlockInner>,
     next_queue_id: AtomicUsize,
-    irq_enabled: AtomicBool,
-    irq_masked: AtomicBool,
-    pending_irq: AtomicU64,
-    created_queues: AtomicU64,
 }
 
 impl NvmeBlockDriver {
@@ -85,13 +78,8 @@ impl NvmeBlockDriver {
             inner: Arc::new(NvmeBlockOwner {
                 inner: UnsafeCell::new(NvmeBlockInner { nvme, namespace }),
                 next_queue_id: AtomicUsize::new(0),
-                irq_enabled: AtomicBool::new(false),
-                irq_masked: AtomicBool::new(true),
-                pending_irq: AtomicU64::new(0),
-                created_queues: AtomicU64::new(0),
             }),
             queue_depth: queue_depth.max(1),
-            irq_handler_taken: false,
         }
     }
 
@@ -121,46 +109,18 @@ impl NvmeBlockDriver {
 }
 
 // SAFETY: RDIF queue ownership removes task-side sharing of an IO queue. The
-// exported IRQ handler only touches atomics and never borrows the controller.
-// The owner keeps the controller and MMIO mapping alive until all queues and
-// handlers are dropped.
+// owner keeps the controller and MMIO mapping alive until all queues are
+// dropped.
 unsafe impl Send for NvmeBlockOwner {}
 
 // SAFETY: Mutable controller access is scoped through `with_mut` during queue
-// creation and namespace queries. Runtime IRQ callbacks use only atomics.
+// creation and namespace queries.
 unsafe impl Sync for NvmeBlockOwner {}
 
 impl NvmeBlockOwner {
     fn with_mut<R>(&self, f: impl FnOnce(&mut NvmeBlockInner) -> R) -> R {
         let inner = unsafe { &mut *self.inner.get() };
         f(inner)
-    }
-
-    fn mask_irq(&self) {
-        if self
-            .irq_masked
-            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-            .is_ok()
-        {
-            self.with_mut(|inner| {
-                inner.nvme.mask_interrupt_vector(LEGACY_INTERRUPT_VECTOR);
-            });
-        }
-    }
-
-    fn unmask_irq(&self) -> bool {
-        if self
-            .irq_masked
-            .compare_exchange(true, false, Ordering::AcqRel, Ordering::Acquire)
-            .is_ok()
-        {
-            self.with_mut(|inner| {
-                inner.nvme.unmask_interrupt_vector(LEGACY_INTERRUPT_VECTOR);
-            });
-            true
-        } else {
-            false
-        }
     }
 }
 
@@ -206,70 +166,10 @@ impl Interface for NvmeBlockDriver {
                 inner.nvme.page_size(),
                 queue,
                 prp_lists,
-                Arc::clone(&self.inner),
             ))
         })?;
 
-        self.inner
-            .created_queues
-            .fetch_or(1 << id, Ordering::AcqRel);
         Some(Box::new(queue))
-    }
-
-    fn enable_irq(&self) {
-        let _ = self.inner.unmask_irq();
-        self.inner.irq_enabled.store(true, Ordering::Release);
-    }
-
-    fn disable_irq(&self) {
-        self.inner.irq_enabled.store(false, Ordering::Release);
-        self.inner.mask_irq();
-    }
-
-    fn is_irq_enabled(&self) -> bool {
-        self.inner.irq_enabled.load(Ordering::Acquire)
-    }
-
-    fn irq_sources(&self) -> IrqSourceList {
-        let queues = IdList::from_bits(self.inner.created_queues.load(Ordering::Acquire));
-        vec![IrqSourceInfo::legacy(queues)]
-    }
-
-    fn take_irq_handler(&mut self, source_id: usize) -> Option<Box<dyn IrqHandler>> {
-        if source_id != 0 || self.irq_handler_taken {
-            return None;
-        }
-        self.irq_handler_taken = true;
-        Some(Box::new(NvmeIrqHandler {
-            inner: Arc::clone(&self.inner),
-        }))
-    }
-}
-
-struct NvmeIrqHandler {
-    inner: Arc<NvmeBlockOwner>,
-}
-
-impl IrqHandler for NvmeIrqHandler {
-    fn handle_irq(&self) -> Event {
-        if !self.inner.irq_enabled.load(Ordering::Acquire) {
-            return Event::none();
-        }
-        self.inner.mask_irq();
-        let pending = self.inner.pending_irq.swap(0, Ordering::AcqRel);
-        if pending == 0 {
-            Event::from_queue_bits(self.inner.created_queues.load(Ordering::Acquire))
-        } else {
-            Event::from_queue_bits(pending)
-        }
-    }
-
-    fn on_drain_complete(&self) -> Event {
-        if self.inner.irq_enabled.load(Ordering::Acquire) && self.inner.unmask_irq() {
-            Event::from_queue_bits(self.inner.created_queues.load(Ordering::Acquire))
-        } else {
-            Event::none()
-        }
     }
 }
 
@@ -284,7 +184,6 @@ struct NvmeBlockQueue {
     slots: Vec<RequestSlot>,
     free_cids: Vec<usize>,
     free_prp_lists: Vec<CoherentArray<u64>>,
-    owner: Arc<NvmeBlockOwner>,
 }
 
 struct RequestSlot {
@@ -317,7 +216,6 @@ impl NvmeBlockQueue {
         page_size: usize,
         queue: HardwareQueue,
         prp_lists: Vec<CoherentArray<u64>>,
-        owner: Arc<NvmeBlockOwner>,
     ) -> Self {
         let mut slots = Vec::with_capacity(depth + 1);
         slots.resize_with(depth + 1, || RequestSlot {
@@ -337,7 +235,6 @@ impl NvmeBlockQueue {
             slots,
             free_cids,
             free_prp_lists: prp_lists,
-            owner,
         }
     }
 
@@ -396,10 +293,11 @@ impl NvmeBlockQueue {
     }
 
     fn build_prp_mapping(&mut self, request: &Request<'_>) -> Result<PrpMapping, BlkError> {
-        let mut pages = Vec::new();
+        let mut prps = PrpPageAccumulator::new();
         for segment in request.segments.iter() {
-            push_prp_pages(&mut pages, segment.bus, segment.len, self.page_size)?;
+            prps.push_segment(segment.bus, segment.len, self.page_size)?;
         }
+        let pages = prps.into_pages();
         let prp1 = *pages.first().ok_or(BlkError::InvalidRequest)?;
         let prp2 = match pages.len() {
             1 => 0,
@@ -447,14 +345,6 @@ impl NvmeBlockQueue {
             }
         }
     }
-
-    fn insert_pending_irq(&self) {
-        if self.owner.irq_enabled.load(Ordering::Acquire) && self.id < u64::BITS as usize {
-            self.owner
-                .pending_irq
-                .fetch_or(1 << self.id, Ordering::AcqRel);
-        }
-    }
 }
 
 // SAFETY: NVMe queues may access submitted request DMA segments until the
@@ -484,7 +374,6 @@ unsafe impl IQueue for NvmeBlockQueue {
         };
         self.slots[cid].state = SlotState::Pending;
         self.queue.submit_io_data(command);
-        self.insert_pending_irq();
         Ok(RequestId::new(cid))
     }
 
@@ -542,29 +431,81 @@ fn alloc_prp_lists(nvme: &Nvme, depth: usize) -> NvmeResult<Vec<CoherentArray<u6
     Ok(lists)
 }
 
-fn push_prp_pages(
-    pages: &mut Vec<u64>,
-    mut addr: u64,
-    mut len: usize,
-    page_size: usize,
-) -> Result<(), BlkError> {
-    if page_size == 0 || len == 0 {
-        return Err(BlkError::InvalidRequest);
+#[derive(Default)]
+struct PrpPageAccumulator {
+    pages: Vec<u64>,
+    last_end: Option<u64>,
+    current_page_end: Option<u64>,
+}
+
+impl PrpPageAccumulator {
+    const fn new() -> Self {
+        Self {
+            pages: Vec::new(),
+            last_end: None,
+            current_page_end: None,
+        }
     }
 
-    while len > 0 {
-        pages.push(addr);
-        let offset = addr as usize % page_size;
-        let chunk = page_size.saturating_sub(offset).min(len);
-        if chunk == 0 {
+    fn into_pages(self) -> Vec<u64> {
+        self.pages
+    }
+
+    fn push_segment(&mut self, addr: u64, len: usize, page_size: usize) -> Result<(), BlkError> {
+        if page_size == 0 || len == 0 {
             return Err(BlkError::InvalidRequest);
         }
-        addr = addr
-            .checked_add(chunk as u64)
+        let page_size = u64::try_from(page_size).map_err(|_| BlkError::InvalidRequest)?;
+        let end = addr
+            .checked_add(u64::try_from(len).map_err(|_| BlkError::InvalidRequest)?)
             .ok_or(BlkError::InvalidRequest)?;
-        len -= chunk;
+        let mut cursor = addr;
+
+        while cursor < end {
+            self.ensure_page_entry(cursor, page_size)?;
+            let page_end = self.current_page_end.ok_or(BlkError::InvalidRequest)?;
+            let chunk_end = page_end.min(end);
+            if chunk_end <= cursor {
+                return Err(BlkError::InvalidRequest);
+            }
+            cursor = chunk_end;
+            self.last_end = Some(cursor);
+        }
+
+        Ok(())
     }
-    Ok(())
+
+    fn ensure_page_entry(&mut self, cursor: u64, page_size: u64) -> Result<(), BlkError> {
+        let Some(last_end) = self.last_end else {
+            self.push_page(cursor, page_size)?;
+            return Ok(());
+        };
+        let current_page_end = self.current_page_end.ok_or(BlkError::InvalidRequest)?;
+
+        if cursor < last_end {
+            return Err(BlkError::InvalidRequest);
+        }
+        if cursor == last_end && cursor < current_page_end {
+            return Ok(());
+        }
+        if cursor != last_end && last_end != current_page_end {
+            return Err(BlkError::InvalidRequest);
+        }
+        if !cursor.is_multiple_of(page_size) {
+            return Err(BlkError::InvalidRequest);
+        }
+        self.push_page(cursor, page_size)
+    }
+
+    fn push_page(&mut self, addr: u64, page_size: u64) -> Result<(), BlkError> {
+        let page_base = addr / page_size * page_size;
+        let page_end = page_base
+            .checked_add(page_size)
+            .ok_or(BlkError::InvalidRequest)?;
+        self.pages.push(addr);
+        self.current_page_end = Some(page_end);
+        Ok(())
+    }
 }
 
 fn device_info(name: &'static str, namespace: Namespace) -> DeviceInfo {
@@ -581,6 +522,7 @@ fn limits(
     namespace: Namespace,
     max_inflight: usize,
 ) -> QueueLimits {
+    let dma_alignment = page_size.max(namespace.lba_size.max(1));
     let prp_entries = page_size / core::mem::size_of::<u64>();
     let max_bytes = page_size.saturating_mul(prp_entries + 1);
     let max_blocks = max_bytes
@@ -590,7 +532,7 @@ fn limits(
         .min(u16::MAX as usize + 1) as u32;
     QueueLimits {
         dma_mask,
-        dma_alignment: namespace.lba_size.max(1),
+        dma_alignment,
         max_inflight: max_inflight.max(1),
         max_blocks_per_request: max_blocks,
         max_segments: prp_entries + 1,
@@ -599,5 +541,72 @@ fn limits(
         supports_flush: true,
         supports_discard: false,
         supports_write_zeroes: false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{PrpPageAccumulator, limits};
+    use crate::Namespace;
+
+    #[test]
+    fn queue_limits_align_dma_to_nvme_page_size() {
+        let namespace = Namespace {
+            id: 1,
+            lba_size: 512,
+            lba_count: 1024,
+            metadata_size: 0,
+        };
+        let limits = limits(u64::MAX, 4096, namespace, 8);
+
+        assert_eq!(limits.dma_alignment, 4096);
+        assert_eq!(limits.max_segments, 513);
+        assert_eq!(limits.max_segment_size, 4096 * 513);
+        assert!(limits.max_blocks_per_request >= 8);
+    }
+
+    #[test]
+    fn queue_limits_keep_prp_capacity_tied_to_controller_page() {
+        let namespace = Namespace {
+            id: 1,
+            lba_size: 8192,
+            lba_count: 1024,
+            metadata_size: 0,
+        };
+        let limits = limits(u64::MAX, 4096, namespace, 8);
+
+        assert_eq!(limits.dma_alignment, 8192);
+        assert_eq!(limits.max_segments, 513);
+        assert_eq!(limits.max_segment_size, 4096 * 513);
+        assert_eq!(limits.max_blocks_per_request, 256);
+    }
+
+    #[test]
+    fn prp_pages_split_at_controller_page_boundaries() {
+        let mut pages = PrpPageAccumulator::new();
+
+        pages.push_segment(0x1800, 4096, 4096).unwrap();
+
+        assert_eq!(pages.into_pages(), [0x1800, 0x2000]);
+    }
+
+    #[test]
+    fn prp_pages_coalesce_contiguous_split_segments() {
+        let mut pages = PrpPageAccumulator::new();
+
+        pages.push_segment(0x1000, 4096, 4096).unwrap();
+        pages.push_segment(0x2000, 2048, 4096).unwrap();
+        pages.push_segment(0x2800, 2048, 4096).unwrap();
+
+        assert_eq!(pages.into_pages(), [0x1000, 0x2000]);
+    }
+
+    #[test]
+    fn prp_pages_reject_unaligned_non_contiguous_segment() {
+        let mut pages = PrpPageAccumulator::new();
+
+        pages.push_segment(0x1000, 2048, 4096).unwrap();
+
+        assert!(pages.push_segment(0x2800, 512, 4096).is_err());
     }
 }

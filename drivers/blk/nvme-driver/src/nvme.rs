@@ -194,7 +194,7 @@ impl Nvme {
                 io_queue.cq.len() as _,
                 io_queue.cq.bus_addr(),
                 true,
-                true,
+                false,
                 0,
             );
             self.admin_queue.command_sync(data)?;

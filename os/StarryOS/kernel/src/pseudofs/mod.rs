@@ -69,10 +69,12 @@ pub fn tmp_tmpfs() -> Option<Arc<tmp::MemoryFs>> {
 }
 
 fn mount_at(fs: &FsContext, path: &str, mount_fs: Filesystem) -> LinuxResult<()> {
-    if fs.resolve(path).is_err() {
+    let initial_resolve = fs.resolve(path);
+    if initial_resolve.is_err() {
         fs.create_dir(path, DIR_PERMISSION, 0, 0)?;
     }
-    fs.resolve(path)?.mount(&mount_fs)?;
+    let loc = fs.resolve(path)?;
+    loc.mount(&mount_fs)?;
     info!("Mounted {} at {}", mount_fs.name(), path);
     Ok(())
 }

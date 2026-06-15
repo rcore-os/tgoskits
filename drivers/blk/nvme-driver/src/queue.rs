@@ -246,13 +246,35 @@ impl CompletionStatus {
         self.0 & 1 > 0
     }
 
+    fn status_field(&self) -> u16 {
+        (self.0 >> 1) & 0x7ff
+    }
+
     pub(crate) fn is_success(&self) -> bool {
-        self.0 & (1 << 1) == 0
+        self.status_field() == 0
     }
 
     // pub fn do_not_retry(&self) -> bool {
     //     self.0 & (1 << 15) > 0
     // }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::CompletionStatus;
+
+    #[test]
+    fn completion_status_ignores_phase_for_success() {
+        assert!(CompletionStatus(0).is_success());
+        assert!(CompletionStatus(1).is_success());
+    }
+
+    #[test]
+    fn completion_status_checks_full_status_field() {
+        assert!(!CompletionStatus(1 | (1 << 2)).is_success());
+        assert!(!CompletionStatus(1 | (1 << 9)).is_success());
+        assert!(!CompletionStatus(1 | (1 << 11)).is_success());
+    }
 }
 
 pub struct NvmeQueue {
