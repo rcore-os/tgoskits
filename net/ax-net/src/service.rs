@@ -693,7 +693,7 @@ impl Service {
         // Reap orphaned TCP sockets using the SocketSet already held by poll_once().
         crate::orphan::reap_orphans(timestamp, sockets);
 
-        self.router.dispatch(timestamp)
+        self.router.dispatch(timestamp, sockets)
             || dhcp_poll_next
             || dhcp_server_sent
             || socket_state_changed

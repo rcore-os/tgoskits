@@ -34,6 +34,12 @@ impl OrphanSocket {
     }
 }
 
+#[derive(Clone, Copy)]
+enum ReapReason {
+    Closed,
+    Expired,
+}
+
 /// Global orphan socket pool.
 ///
 /// Accessed by:
@@ -73,21 +79,30 @@ pub(crate) fn add_orphan(handle: SocketHandle, timestamp: Instant) {
 /// are removed first. Connections still inside the linger window are preserved
 /// so normal FIN/TIME_WAIT teardown can complete.
 pub(crate) fn reap_orphans(timestamp: Instant, sockets: &mut SocketSet<'_>) {
-    ORPHAN_SOCKETS.lock().retain(|orphan| {
-        let keep = {
+    let mut removed = Vec::new();
+    let remaining_overflow = {
+        let mut orphans = ORPHAN_SOCKETS.lock();
+        orphans.retain(|orphan| {
             let socket = sockets.get_mut::<tcp::Socket>(orphan.handle);
-            match socket.state() {
-                tcp::State::Closed => false, // Fully closed, safe to remove
+            let state = socket.state();
+            let reason = match state {
+                tcp::State::Closed => Some(ReapReason::Closed),
                 tcp::State::TimeWait => {
                     // TIME_WAIT should expire naturally (smoltcp default: 10s)
                     // But force cleanup after max linger to prevent leaks
-                    !orphan.linger_expired(timestamp)
+                    orphan
+                        .linger_expired(timestamp)
+                        .then_some(ReapReason::Expired)
                 }
                 tcp::State::LastAck | tcp::State::FinWait1 | tcp::State::FinWait2 => {
                     // Still tearing down, but keep a hard resource bound.
-                    !orphan.linger_expired(timestamp)
+                    orphan
+                        .linger_expired(timestamp)
+                        .then_some(ReapReason::Expired)
                 }
-                tcp::State::Closing => !orphan.linger_expired(timestamp),
+                tcp::State::Closing => orphan
+                    .linger_expired(timestamp)
+                    .then_some(ReapReason::Expired),
                 _ => {
                     // Unexpected state for orphan (Listen/SynSent/SynReceived/Established)
                     // Force remove after max linger
@@ -99,53 +114,31 @@ pub(crate) fn reap_orphans(timestamp: Instant, sockets: &mut SocketSet<'_>) {
                             socket.state(),
                             elapsed / 1_000_000
                         );
-                        false
+                        Some(ReapReason::Expired)
                     } else {
-                        true
+                        None
                     }
                 }
+            };
+
+            if let Some(reason) = reason {
+                removed.push((orphan.handle, reason));
+                false
+            } else {
+                true
             }
-        };
-
-        if !keep {
-            sockets.remove(orphan.handle);
-            debug!("Reaped orphan socket {}", orphan.handle);
-        }
-        keep
-    });
-
-    reap_overflow(timestamp, sockets, ORPHAN_MAX_SOCKETS);
-}
-
-fn reap_overflow(timestamp: Instant, sockets: &mut SocketSet<'_>, limit: usize) {
-    let overflow = {
-        let orphans = ORPHAN_SOCKETS.lock();
-        orphans.len().saturating_sub(limit)
+        });
+        orphans.len().saturating_sub(ORPHAN_MAX_SOCKETS)
     };
-    if overflow == 0 {
-        return;
+
+    for (handle, reason) in removed {
+        sockets.remove(handle);
+        match reason {
+            ReapReason::Closed => debug!("Reaped closed orphan socket {}", handle),
+            ReapReason::Expired => warn!("Reaped expired orphan socket {}", handle),
+        }
     }
 
-    let mut removed = Vec::new();
-    ORPHAN_SOCKETS.lock().retain(|orphan| {
-        if removed.len() >= overflow {
-            return true;
-        }
-        let socket = sockets.get_mut::<tcp::Socket>(orphan.handle);
-        if socket.state() == tcp::State::Closed || orphan.linger_expired(timestamp) {
-            removed.push(orphan.handle);
-            false
-        } else {
-            true
-        }
-    });
-
-    for handle in &removed {
-        sockets.remove(*handle);
-        warn!("Reaped orphan socket {handle} because orphan pool is full");
-    }
-
-    let remaining_overflow = ORPHAN_SOCKETS.lock().len().saturating_sub(limit);
     if remaining_overflow > 0 {
         warn!(
             "Orphan socket pool exceeds limit by {remaining_overflow}; keeping sockets that are \

@@ -522,7 +522,7 @@ impl Router {
         }
     }
 
-    pub fn dispatch(&mut self, _timestamp: Instant) -> bool {
+    pub fn dispatch(&mut self, _timestamp: Instant, sockets: &mut SocketSet<'_>) -> bool {
         let mut poll_next = false;
         while let Ok((_, packet)) = self.tx_buffer.dequeue() {
             match IpVersion::of_packet(packet).expect("got invalid IP packet") {
@@ -552,8 +552,12 @@ impl Router {
 
                         let dev = &self.devices[route.dev];
                         if dev.interface_id == InterfaceId::LOOPBACK {
-                            poll_next |=
-                                inject_loopback_rx(&self.queues.rx, dst_addr, packet.into_inner());
+                            poll_next |= inject_loopback_rx_direct(
+                                &mut self.rx_buffer,
+                                dst_addr,
+                                packet.into_inner(),
+                                sockets,
+                            );
                         } else {
                             poll_next |= dev.enqueue_tx(route.next_hop, packet.into_inner());
                         }
@@ -585,8 +589,12 @@ impl Router {
 
                         let dev = &self.devices[route.dev];
                         if dev.interface_id == InterfaceId::LOOPBACK {
-                            poll_next |=
-                                inject_loopback_rx(&self.queues.rx, dst_addr, packet.into_inner());
+                            poll_next |= inject_loopback_rx_direct(
+                                &mut self.rx_buffer,
+                                dst_addr,
+                                packet.into_inner(),
+                                sockets,
+                            );
                         } else {
                             poll_next |= dev.enqueue_tx(route.next_hop, packet.into_inner());
                         }
@@ -596,6 +604,21 @@ impl Router {
         }
         poll_next
     }
+}
+
+fn inject_loopback_rx_direct(
+    rx_buffer: &mut PacketBuffer,
+    dst_addr: IpAddress,
+    packet: &[u8],
+    sockets: &mut SocketSet<'_>,
+) -> bool {
+    snoop_tcp_packet(packet, sockets);
+    let Ok(dst) = rx_buffer.enqueue(packet.len(), InterfaceId::LOOPBACK) else {
+        warn!("Loopback: RX buffer full, dropping packet to {}", dst_addr);
+        return false;
+    };
+    dst.copy_from_slice(packet);
+    true
 }
 
 /// Injects a loopback packet into the router RX queue.
