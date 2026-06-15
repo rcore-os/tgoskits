@@ -133,7 +133,6 @@ pub fn enable_mmu() -> ! {
     let v_entry = __kimage_va(super::entry::mmu_entry as *const () as usize) as usize;
     println!("x86_64 switching CR3 and resetting relocations before high-half jump");
 
-    crate::mem::mmu::set_mmu_enabled();
     super::relocate::reset();
 
     unsafe {
