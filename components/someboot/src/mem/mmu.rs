@@ -43,7 +43,12 @@ pub(crate) fn is_kernel_relocated() -> bool {
         return true;
     }
 
-    crate::arch::Arch::kernel_space().contains(&(is_kernel_relocated as *const () as usize))
+    let current = is_kernel_relocated as *const () as usize;
+    // DMW/direct-map windows, such as LoongArch64's 0x9000... cached mapping,
+    // are kernel-accessible but still run before the image has jumped to its
+    // linked virtual address. Treat relocation as complete only after the
+    // current code address reaches the kernel image virtual range.
+    current >= crate::consts::VM_LOAD_ADDRESS
 }
 
 pub trait PageTableOp {
