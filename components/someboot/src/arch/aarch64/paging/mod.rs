@@ -30,11 +30,11 @@ pub fn enable_mmu() -> ! {
     let v_sp = meta.stack_top_virt;
     let v_entry = __kimage_va(mmu_entry_phys) as usize;
 
-    // Avoid printing after SCTLR.M is set and before the branch to the linked
-    // virtual entry. During that transition `is_mmu_enabled()` already observes
-    // the hardware bit, so the early console may use its atomic lock while this
-    // code is still on the pre-relocation path.
-    println!("Enabling MMU, jumping to {v_entry:#x}, sp={v_sp:#x}");
+    // Keep the final pre-relocation UART write short, and avoid printing after
+    // SCTLR.M is set. During that transition `is_mmu_enabled()` already
+    // observes the hardware bit, so the early console may use its atomic lock
+    // while this code is still on the pre-relocation path.
+    println!("Enabling MMU...");
     setup_sctlr();
 
     super::relocate::reset();
