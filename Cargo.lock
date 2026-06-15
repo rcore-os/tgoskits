@@ -1805,7 +1805,7 @@ name = "axloader"
 version = "0.5.11"
 dependencies = [
  "anyhow",
- "httpboot-protocol",
+ "httpboot-protocol 0.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "object 0.38.1",
  "uefi",
  "uefi-raw",
@@ -2579,7 +2579,7 @@ version = "3.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "faf9468729b8cbcea668e36183cb69d317348c2e08e994829fb56ebfdfbaac34"
 dependencies = [
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -3614,7 +3614,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -3814,8 +3814,8 @@ checksum = "9844ddc3a6e533d62bba727eb6c28b5d360921d5175e9ff0f1e621a5c590a4d5"
 
 [[package]]
 name = "fitimage"
-version = "0.1.4"
-source = "git+https://github.com/Josen-B/ostool.git?branch=httpboot#adb1452dcd078887650867831a2ec3f786bd2dd3"
+version = "0.1.5"
+source = "git+https://github.com/drivercraft/ostool.git?rev=6c83120729da0404f8100fa9f483e09edf1ec491#6c83120729da0404f8100fa9f483e09edf1ec491"
 dependencies = [
  "anyhow",
  "byteorder",
@@ -4300,7 +4300,13 @@ checksum = "6dbf3de79e51f3d586ab4cb9d5c3e2c14aa28ed23d180cf89b4df0454a69cc87"
 [[package]]
 name = "httpboot-protocol"
 version = "0.1.0"
-source = "git+https://github.com/Josen-B/ostool.git?branch=httpboot#adb1452dcd078887650867831a2ec3f786bd2dd3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f9e48f721c2af981b140072743b055002dd6911a508e747138145bc5d5b9e18b"
+
+[[package]]
+name = "httpboot-protocol"
+version = "0.1.0"
+source = "git+https://github.com/drivercraft/ostool.git?rev=6c83120729da0404f8100fa9f483e09edf1ec491#6c83120729da0404f8100fa9f483e09edf1ec491"
 dependencies = [
  "serde",
  "serde_json",
@@ -4688,7 +4694,7 @@ checksum = "3640c1c38b8e4e43584d8df18be5fc6b0aa314ce6ebf51b53313d4306cca8e46"
 dependencies = [
  "hermit-abi",
  "libc",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -4792,8 +4798,8 @@ dependencies = [
 
 [[package]]
 name = "jkconfig"
-version = "0.2.4"
-source = "git+https://github.com/Josen-B/ostool.git?branch=httpboot#adb1452dcd078887650867831a2ec3f786bd2dd3"
+version = "0.2.5"
+source = "git+https://github.com/drivercraft/ostool.git?rev=6c83120729da0404f8100fa9f483e09edf1ec491#6c83120729da0404f8100fa9f483e09edf1ec491"
 dependencies = [
  "anyhow",
  "cargo_metadata",
@@ -5537,7 +5543,7 @@ version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7957b9740744892f114936ab4a57b3f487491bbeafaf8083688b16841a4240e5"
 dependencies = [
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -5775,8 +5781,8 @@ dependencies = [
 
 [[package]]
 name = "ostool"
-version = "0.22.1"
-source = "git+https://github.com/Josen-B/ostool.git?branch=httpboot#adb1452dcd078887650867831a2ec3f786bd2dd3"
+version = "0.23.0"
+source = "git+https://github.com/drivercraft/ostool.git?rev=6c83120729da0404f8100fa9f483e09edf1ec491#6c83120729da0404f8100fa9f483e09edf1ec491"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -5789,9 +5795,9 @@ dependencies = [
  "env_logger",
  "fitimage",
  "futures",
- "httpboot-protocol",
+ "httpboot-protocol 0.1.0 (git+https://github.com/drivercraft/ostool.git?rev=6c83120729da0404f8100fa9f483e09edf1ec491)",
  "indicatif",
- "jkconfig 0.2.4",
+ "jkconfig 0.2.5",
  "log",
  "lzma-rs",
  "network-interface",
@@ -7184,7 +7190,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys 0.12.1",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -7243,7 +7249,7 @@ dependencies = [
  "security-framework",
  "security-framework-sys",
  "webpki-root-certs",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -8283,7 +8289,7 @@ dependencies = [
  "getrandom 0.4.2",
  "once_cell",
  "rustix 1.1.4",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -8293,7 +8299,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "230a1b821ccbd75b185820a1f1ff7b14d21da1e442e22c0863ea5f08771a8874"
 dependencies = [
  "rustix 1.1.4",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -9024,8 +9030,8 @@ dependencies = [
 
 [[package]]
 name = "uboot-shell"
-version = "0.2.4"
-source = "git+https://github.com/Josen-B/ostool.git?branch=httpboot#adb1452dcd078887650867831a2ec3f786bd2dd3"
+version = "0.2.5"
+source = "git+https://github.com/drivercraft/ostool.git?rev=6c83120729da0404f8100fa9f483e09edf1ec491#6c83120729da0404f8100fa9f483e09edf1ec491"
 dependencies = [
  "colored",
  "futures",
@@ -9680,7 +9686,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
