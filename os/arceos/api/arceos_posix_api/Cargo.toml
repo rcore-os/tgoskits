@@ -31,6 +31,7 @@ pipe = ["fd"]
 select = ["fd"]
 poll = ["fd"]
 epoll = ["fd"]
+use-hermit-types = []
 
 [dependencies]
 # ArceOS modules

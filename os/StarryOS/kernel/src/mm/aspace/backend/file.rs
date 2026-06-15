@@ -8,7 +8,7 @@ use core::sync::atomic::{AtomicUsize, Ordering};
 
 use ax_errno::{AxError, AxResult};
 use ax_fs_ng::vfs::{CachedFile, FileFlags};
-use ax_memory_addr::{PAGE_SIZE_4K, VirtAddr, VirtAddrRange};
+use ax_memory_addr::{PAGE_SIZE_4K, PhysAddr, VirtAddr, VirtAddrRange};
 use ax_runtime::hal::paging::{MappingFlags, PageSize, PageTableCursor, PagingError};
 use ax_sync::Mutex;
 use axfs_ng_vfs::Location;
@@ -360,7 +360,12 @@ impl BackendOps for FileBackend {
                             // through the stale mapping.
                             to_be_evicted.push(evicted);
                         }
-                        pt.map(addr, page.paddr()?, PageSize::Size4K, map_flags)?;
+                        pt.map(
+                            addr,
+                            PhysAddr::from(page.paddr()?),
+                            PageSize::Size4K,
+                            map_flags,
+                        )?;
                         pages += 1;
                         Ok(())
                     })?;

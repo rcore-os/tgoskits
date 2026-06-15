@@ -4,7 +4,9 @@ use alloc::{boxed::Box, sync::Arc};
 use ax_errno::AxError;
 use ax_errno::AxResult;
 
-use crate::block_runtime::BlockDeviceHandle;
+pub mod runtime;
+
+use runtime::BlockDeviceHandle;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct BlockRegion {
@@ -72,7 +74,7 @@ impl<T: FsBlockDevice + ?Sized> FsBlockDevice for Box<T> {
 }
 
 #[cfg(any(feature = "ext4", feature = "fat"))]
-pub struct RegionBlockDevice<T> {
+pub(crate) struct RegionBlockDevice<T> {
     inner: T,
     region: BlockRegion,
 }

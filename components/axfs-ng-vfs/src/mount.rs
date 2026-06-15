@@ -11,14 +11,14 @@ use core::{
     task::Context,
 };
 
-use axpoll::{IoEvents, Pollable};
 use hashbrown::HashMap;
 use inherit_methods_macro::inherit_methods;
 use log::warn;
 
 use crate::{
-    DirEntry, DirEntrySink, Filesystem, FilesystemOps, Metadata, MetadataUpdate, Mutex, MutexGuard,
-    NodeFlags, NodePermission, NodeType, OpenOptions, ReferenceKey, TypeMap, VfsError, VfsResult,
+    DirEntry, DirEntrySink, Filesystem, FilesystemOps, FsIoEvents, FsPollable, Metadata,
+    MetadataUpdate, Mutex, MutexGuard, NodeFlags, NodePermission, NodeType, OpenOptions,
+    ReferenceKey, TypeMap, VfsError, VfsResult,
     path::{DOT, DOTDOT, PathBuf},
 };
 
@@ -747,8 +747,8 @@ impl Location {
 }
 
 #[inherit_methods(from = "self.entry")]
-impl Pollable for Location {
-    fn poll(&self) -> IoEvents;
+impl FsPollable for Location {
+    fn poll(&self) -> FsIoEvents;
 
-    fn register(&self, context: &mut Context<'_>, events: IoEvents);
+    fn register(&self, context: &mut Context<'_>, events: FsIoEvents);
 }

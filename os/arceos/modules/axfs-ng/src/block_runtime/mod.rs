@@ -1,28 +1,4 @@
-pub mod device;
-pub mod dma;
-pub mod future;
-pub mod irq;
-#[cfg(test)]
-mod queue;
-pub mod request;
-
-#[cfg(test)]
-pub use device::NoopDrainWake;
-pub use device::{
-    BlockCompletionMode, BlockDeviceHandle, BlockDrainWake, BlockRuntime, BlockRuntimeConfig,
-    QueueRuntime, map_blk_err_to_ax_err,
-};
-pub use dma::{BlockDmaBuffer, BlockDmaDirection, BlockDmaProvider, DmaBufferGuard};
-#[cfg(test)]
-pub use dma::{VecDmaBuffer, VecDmaProvider};
-pub use future::BlockIoFutureState;
-pub use irq::{BlockIrqBridge, DrainEvents};
-#[cfg(test)]
-pub use queue::{CompletionDrain, CompletionSink, RequestPoller};
-pub use request::{
-    PendingRequest, PendingTable, PollClaim, PollProgress, RequestKey, RequestState,
-    RuntimeRequestId,
-};
+pub use crate::block::runtime::*;
 
 #[cfg(test)]
 mod tests {
@@ -39,13 +15,13 @@ mod tests {
 
     use ax_errno::AxError;
     use rdif_block::{
-        BlkError, CompletionHint, DeviceInfo, DriverGeneric, IQueue, QueueInfo, QueueLimits,
-        Request, RequestId, RequestOp, RequestStatus,
+        BlkError, CompletionHint, DeviceInfo, DriverGeneric, IQueue, Interface, QueueInfo,
+        QueueLimits, Request, RequestId, RequestOp, RequestStatus,
     };
     use spin::Mutex as SpinNoIrq;
 
     use super::*;
-    use crate::os::{BlockTaskOps, set_task_ops};
+    use crate::os::{BlockTaskOps, install_dma_op, set_task_ops};
 
     static TEST_TASK_OPS: TestTaskOps = TestTaskOps;
     static NEXT_TEST_TASK_ID: AtomicU64 = AtomicU64::new(1_000_000);
@@ -131,6 +107,7 @@ mod tests {
 
     fn install_test_task_ops() {
         set_task_ops(&TEST_TASK_OPS);
+        install_dma_op(&VEC_DMA_OP);
     }
 
     fn with_blocking_task<R>(f: impl FnOnce() -> R) -> R {
@@ -189,16 +166,15 @@ mod tests {
     }
 
     fn noop_config() -> BlockRuntimeConfig {
-        BlockRuntimeConfig::new(Arc::new(VecDmaProvider), Arc::new(NoopDrainWake))
+        install_test_task_ops();
+        BlockRuntimeConfig::new(Arc::new(NoopDrainWake))
     }
 
     fn channel_config(tx: mpsc::Sender<()>) -> BlockRuntimeConfig {
-        BlockRuntimeConfig::new(
-            Arc::new(VecDmaProvider),
-            Arc::new(ChannelDrainWake {
-                tx: std::sync::Mutex::new(tx),
-            }),
-        )
+        install_test_task_ops();
+        BlockRuntimeConfig::new(Arc::new(ChannelDrainWake {
+            tx: std::sync::Mutex::new(tx),
+        }))
     }
 
     #[derive(Default)]
@@ -701,8 +677,11 @@ mod tests {
         .unwrap();
         let chunk = planner.plan(0, 512).unwrap().next().unwrap();
         let guard = DmaBufferGuard::new(
-            Box::new(VecDmaBuffer::new(512)),
-            BlockDmaDirection::Read,
+            &VEC_DMA_OP,
+            u64::MAX,
+            512,
+            1,
+            dma_api::DmaDirection::FromDevice,
             chunk,
             None,
         )
@@ -1007,6 +986,43 @@ mod tests {
         }
     }
 
+    struct MockInterface {
+        name: &'static str,
+        queue: Option<Box<dyn IQueue>>,
+        info: QueueInfo,
+    }
+
+    impl MockInterface {
+        fn new(queue: MockQueue) -> Self {
+            let info = queue.info();
+            Self {
+                name: "mock-rdif",
+                queue: Some(Box::new(queue)),
+                info,
+            }
+        }
+    }
+
+    impl DriverGeneric for MockInterface {
+        fn name(&self) -> &str {
+            self.name
+        }
+    }
+
+    impl Interface for MockInterface {
+        fn device_info(&self) -> DeviceInfo {
+            self.info.device
+        }
+
+        fn queue_limits(&self) -> QueueLimits {
+            self.info.limits
+        }
+
+        fn create_queue(&mut self) -> Option<Box<dyn IQueue>> {
+            self.queue.take()
+        }
+    }
+
     #[test]
     fn block_device_read_uses_submit_poll_and_wait_token() {
         let (tx, rx) = mpsc::channel();
@@ -1035,6 +1051,22 @@ mod tests {
         let buf = handle.join().unwrap();
 
         assert_eq!(buf[0], 3);
+    }
+
+    #[test]
+    fn runtime_builds_sync_device_from_rdif_interface() {
+        install_test_task_ops();
+        let runtime = BlockRuntime::from_rdif_devices([RdifBlockDevice::new(
+            "mock-rdif",
+            None,
+            Box::new(MockInterface::new(MockQueue::new())),
+        )]);
+        assert_eq!(runtime.devices().len(), 1);
+
+        let mut buf = alloc::vec![0u8; 512];
+        runtime.devices()[0].read_blocks(7, &mut buf).unwrap();
+
+        assert_eq!(buf[0], 7);
     }
 
     #[test]

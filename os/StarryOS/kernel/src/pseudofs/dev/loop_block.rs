@@ -1,12 +1,9 @@
-use alloc::{boxed::Box, collections::BTreeMap, sync::Arc, vec, vec::Vec};
+use alloc::{boxed::Box, collections::BTreeMap, sync::Arc, vec::Vec};
 use core::sync::atomic::{AtomicBool, Ordering};
 
 use ax_errno::{AxError, AxResult, LinuxError};
 use ax_fs_ng::{
-    block_runtime::{
-        BlockDeviceHandle, BlockDmaBuffer, BlockDmaDirection, BlockDmaProvider, BlockDrainWake,
-        BlockIrqBridge, BlockRuntimeConfig,
-    },
+    block::runtime::{BlockDeviceHandle, BlockDrainWake, BlockIrqBridge, BlockRuntimeConfig},
     vfs::FileBackend,
 };
 use ax_kspin::SpinNoIrq;
@@ -46,63 +43,6 @@ impl CacheData {
             dirty: AtomicBool::new(false),
             mounted: AtomicBool::new(false),
         }
-    }
-}
-
-struct LoopDmaBuffer {
-    bytes: Vec<u8>,
-    bus: u64,
-}
-
-impl LoopDmaBuffer {
-    fn new(len: usize) -> Self {
-        let mut bytes = vec![0u8; len.max(1)];
-        let bus = bytes.as_mut_ptr() as u64;
-        Self { bytes, bus }
-    }
-}
-
-impl BlockDmaBuffer for LoopDmaBuffer {
-    fn len(&self) -> usize {
-        self.bytes.len()
-    }
-
-    fn bus_addr(&self) -> u64 {
-        self.bus
-    }
-
-    fn as_mut_ptr(&mut self) -> *mut u8 {
-        self.bytes.as_mut_ptr()
-    }
-
-    fn prepare_for_submit(&mut self, direction: BlockDmaDirection, src: Option<&[u8]>) {
-        if direction == BlockDmaDirection::Write
-            && let Some(src) = src
-        {
-            self.bytes[..src.len()].copy_from_slice(src);
-        }
-    }
-
-    fn complete_after_submit(&mut self, direction: BlockDmaDirection, dst: Option<&mut [u8]>) {
-        if direction == BlockDmaDirection::Read
-            && let Some(dst) = dst
-        {
-            dst.copy_from_slice(&self.bytes[..dst.len()]);
-        }
-    }
-}
-
-struct LoopDmaProvider;
-
-impl BlockDmaProvider for LoopDmaProvider {
-    fn alloc(
-        &self,
-        _dma_mask: u64,
-        len: usize,
-        _align: usize,
-        _direction: BlockDmaDirection,
-    ) -> Result<Box<dyn BlockDmaBuffer>, BlkError> {
-        Ok(Box::new(LoopDmaBuffer::new(len)))
     }
 }
 
@@ -294,7 +234,7 @@ impl LoopDevice {
             "loop",
             [Box::new(LoopQueue::new(cd, self.ro.load(Ordering::Relaxed))) as Box<dyn IQueue>],
             Arc::new(BlockIrqBridge::new()),
-            BlockRuntimeConfig::new(Arc::new(LoopDmaProvider), Arc::new(LoopDrainWake)),
+            BlockRuntimeConfig::new(Arc::new(LoopDrainWake)),
         )
         .map_err(|_| AxError::Io)?;
         Ok(handle)

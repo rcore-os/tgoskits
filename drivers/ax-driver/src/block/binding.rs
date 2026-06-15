@@ -56,12 +56,11 @@ pub struct PlatformBlockDevice {
     info: BindingInfo,
 }
 
-/// A probed block device before `ax-driver` wraps it in the synchronous
-/// compatibility facade.
+/// A probed block device exposed through the portable `rdif-block` interface.
 ///
-/// Runtime code that wants to build an async submit/poll block stack should use
-/// this form and create/poll `rdif_block::IQueue` objects directly.
-pub struct RawBlockDevice {
+/// Runtime code should use this form and create/poll `rdif_block::IQueue`
+/// objects directly, installing IRQ handlers according to the OS policy.
+pub struct RdifBlockDevice {
     name: String,
     irq_num: Option<usize>,
     interface: Box<dyn Interface>,
@@ -283,7 +282,7 @@ impl Block {
     }
 }
 
-impl RawBlockDevice {
+impl RdifBlockDevice {
     pub fn name(&self) -> &str {
         &self.name
     }
@@ -436,7 +435,7 @@ impl TryFrom<Device<PlatformBlockDevice>> for Block {
     }
 }
 
-impl TryFrom<Device<PlatformBlockDevice>> for RawBlockDevice {
+impl TryFrom<Device<PlatformBlockDevice>> for RdifBlockDevice {
     type Error = AxError;
 
     fn try_from(base: Device<PlatformBlockDevice>) -> Result<Self, Self::Error> {
@@ -547,18 +546,26 @@ pub fn take_block_devices() -> Vec<Block> {
         .collect()
 }
 
-pub fn take_raw_block_devices() -> Vec<RawBlockDevice> {
+pub fn take_rdif_block_devices() -> Vec<RdifBlockDevice> {
     rdrive::get_list::<PlatformBlockDevice>()
         .into_iter()
-        .filter_map(|dev| match RawBlockDevice::try_from(dev) {
+        .filter_map(|dev| match RdifBlockDevice::try_from(dev) {
             Ok(block) => Some(block),
             Err(err) => {
-                warn!("failed to take raw block device: {err:?}");
+                warn!("failed to take rdif block device: {err:?}");
                 None
             }
         })
         .collect()
 }
+
+#[deprecated(note = "use take_rdif_block_devices")]
+pub fn take_raw_block_devices() -> Vec<RdifBlockDevice> {
+    take_rdif_block_devices()
+}
+
+#[deprecated(note = "use RdifBlockDevice")]
+pub type RawBlockDevice = RdifBlockDevice;
 
 #[cfg(feature = "irq")]
 fn take_legacy_irq_handler(

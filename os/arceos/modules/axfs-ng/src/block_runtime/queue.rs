@@ -1,11 +1,7 @@
-#[cfg(not(test))]
-use ax_kspin::SpinNoIrq;
 use rdif_block::{BlkError, CompletionHint, RequestId, RequestStatus};
-#[cfg(test)]
-use spin::Mutex as SpinNoIrq;
 
 use super::{DrainEvents, PendingTable, PollClaim, PollProgress, RequestKey};
-use crate::os::wake_task;
+use crate::os::{sync::IrqMutex as SpinNoIrq, wake_task};
 
 struct ClaimedQueueBatch {
     queue_id: usize,

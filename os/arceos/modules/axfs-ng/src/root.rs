@@ -7,7 +7,10 @@ use alloc::{
 
 use crate::{
     BlockDeviceHandle, BlockRegion, FilesystemKind,
-    block::{FsBlockDevice, boxed_native_handle_block_device},
+    block::{
+        FsBlockDevice, boxed_native_handle_block_device,
+        runtime::{BlockRuntime, RdifBlockDevice},
+    },
     detect_filesystem, init_detected_filesystem, init_filesystem,
     volume::{
         BlockReader, BlockVolume, DiskId, Error as VolumeError,
@@ -170,6 +173,14 @@ pub fn init_root(
     } else {
         init_filesystem(selected.handle, region, &description);
     }
+}
+
+pub fn init_root_from_rdif(
+    block_devs: impl IntoIterator<Item = RdifBlockDevice>,
+    bootargs: Option<&str>,
+) {
+    let runtime = BlockRuntime::install_from_rdif_devices(block_devs);
+    init_root(runtime.devices().iter().cloned(), bootargs);
 }
 
 fn collect_disks(
@@ -555,7 +566,7 @@ mod tests {
     };
 
     use super::*;
-    use crate::block_runtime::{BlockIrqBridge, BlockRuntimeConfig, NoopDrainWake, VecDmaProvider};
+    use crate::block::runtime::{BlockIrqBridge, BlockRuntimeConfig, NoopDrainWake};
 
     struct TestQueue;
 
@@ -619,7 +630,7 @@ mod tests {
     }
 
     fn raw_disk(filesystem: Option<FilesystemKind>) -> DiscoveredDisk {
-        let config = BlockRuntimeConfig::new(Arc::new(VecDmaProvider), Arc::new(NoopDrainWake));
+        let config = BlockRuntimeConfig::new(Arc::new(NoopDrainWake));
         DiscoveredDisk {
             disk_index: 0,
             handle: BlockDeviceHandle::new(

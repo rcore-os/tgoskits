@@ -1,27 +1,32 @@
-use alloc::{boxed::Box, string::String, sync::Arc, vec::Vec};
-use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use alloc::{boxed::Box, format, string::String, sync::Arc, vec::Vec};
+use core::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 
 use ax_errno::{AxError, AxResult};
-#[cfg(not(test))]
-use ax_kspin::SpinNoIrq;
+use dma_api::DmaDirection;
 use rdif_block::{
     BlkError, CompletionHint, CompletionSink as RdifCompletionSink, DeviceInfo, IQueue, QueueInfo,
     Request, RequestFlags, RequestId, RequestOp, RequestStatus, TransferChunk, TransferPlanner,
     TransferRuntimeCaps, validate_request,
 };
-#[cfg(test)]
-use spin::Mutex as SpinNoIrq;
 
 use super::{
-    BlockDmaDirection, BlockDmaProvider, BlockIrqBridge, DmaBufferGuard, DrainEvents, PendingTable,
-    PollClaim, PollProgress, RequestKey,
+    BlockIrqBridge, DmaBufferGuard, DrainEvents, PendingTable, PollClaim, PollProgress, RequestKey,
 };
-use crate::os::{current_task_id, notify_waiters, task_wait_until, task_yield, wake_task};
+use crate::os::{
+    BlockIrqOutcome, BlockIrqRegistration, current_task_id, dma_op, notify_waiters,
+    register_shared_block_irq, spawn_task, sync::IrqMutex as SpinNoIrq, task_wait_until,
+    task_yield, wake_task,
+};
 
 const DEFAULT_MAX_TRANSFER_BYTES: usize = 1024 * 1024;
 const DEFAULT_SUBMIT_WINDOW: usize = 32;
 
 type CompletionRecord = (RequestId, Result<(), BlkError>);
+
+static BLOCK_DRAIN_DEVICE_BITS: AtomicU64 = AtomicU64::new(0);
+static BLOCK_DRAIN_FULL_SCAN: AtomicBool = AtomicBool::new(false);
+static BLOCK_DRAIN_SPAWNED: spin::Once<()> = spin::Once::new();
+static BLOCK_RUNTIME: spin::Once<Arc<BlockRuntime>> = spin::Once::new();
 
 #[derive(Clone, Copy)]
 struct WindowEntry {
@@ -53,6 +58,26 @@ struct BarrierWaiter {
     task_id: u64,
 }
 
+struct RuntimeDrainWake {
+    device_index: usize,
+}
+
+impl BlockDrainWake for RuntimeDrainWake {
+    fn wake_drain(&self) {
+        mark_block_drain_device_with_resched(self.device_index, false);
+    }
+
+    fn wake_drain_from_irq(&self) {
+        mark_block_drain_device_with_resched(self.device_index, true);
+    }
+}
+
+#[derive(Clone, Copy)]
+struct DrainSelection {
+    full_scan: bool,
+    device_bits: u64,
+}
+
 struct DataIoGuard<'a> {
     device: &'a BlockDeviceHandle,
 }
@@ -78,6 +103,10 @@ impl Drop for FlushBarrierGuard<'_> {
 
 pub trait BlockDrainWake: Send + Sync {
     fn wake_drain(&self);
+
+    fn wake_drain_from_irq(&self) {
+        self.wake_drain();
+    }
 }
 
 #[cfg(test)]
@@ -111,7 +140,6 @@ impl BlockCompletionMode {
 }
 
 pub struct BlockRuntimeConfig {
-    pub dma: Arc<dyn BlockDmaProvider>,
     pub drain_wake: Arc<dyn BlockDrainWake>,
     pub completion_mode: BlockCompletionMode,
     pub max_transfer_bytes: usize,
@@ -120,9 +148,8 @@ pub struct BlockRuntimeConfig {
 }
 
 impl BlockRuntimeConfig {
-    pub fn new(dma: Arc<dyn BlockDmaProvider>, drain_wake: Arc<dyn BlockDrainWake>) -> Self {
+    pub fn new(drain_wake: Arc<dyn BlockDrainWake>) -> Self {
         Self {
-            dma,
             drain_wake,
             completion_mode: BlockCompletionMode::Polling,
             max_transfer_bytes: DEFAULT_MAX_TRANSFER_BYTES,
@@ -140,7 +167,6 @@ pub struct BlockDeviceHandle {
     queue_progress_waiters: SpinNoIrq<Vec<QueueProgressWaiter>>,
     barrier_waiters: SpinNoIrq<Vec<BarrierWaiter>>,
     bridge: Arc<BlockIrqBridge>,
-    dma: Arc<dyn BlockDmaProvider>,
     drain_wake: Arc<dyn BlockDrainWake>,
     submit_window: usize,
     completion_mode: AtomicUsize,
@@ -185,12 +211,14 @@ impl QueueRuntime {
 
 pub struct BlockRuntime {
     devices: Vec<Arc<BlockDeviceHandle>>,
+    irq_registrations: Vec<Box<dyn BlockIrqRegistration>>,
 }
 
 impl BlockRuntime {
     pub fn new() -> Self {
         Self {
             devices: Vec::new(),
+            irq_registrations: Vec::new(),
         }
     }
 
@@ -201,11 +229,138 @@ impl BlockRuntime {
     pub fn devices(&self) -> &[Arc<BlockDeviceHandle>] {
         &self.devices
     }
+
+    pub fn push_irq_registration(&mut self, registration: Box<dyn BlockIrqRegistration>) {
+        self.irq_registrations.push(registration);
+    }
 }
 
 impl Default for BlockRuntime {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+pub struct RdifBlockDevice {
+    name: String,
+    irq_num: Option<usize>,
+    interface: Box<dyn rdif_block::Interface>,
+}
+
+impl RdifBlockDevice {
+    pub fn new(
+        name: impl Into<String>,
+        irq_num: Option<usize>,
+        interface: Box<dyn rdif_block::Interface>,
+    ) -> Self {
+        Self {
+            name: name.into(),
+            irq_num,
+            interface,
+        }
+    }
+
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    pub const fn irq_num(&self) -> Option<usize> {
+        self.irq_num
+    }
+
+    pub fn interface(&self) -> &dyn rdif_block::Interface {
+        &*self.interface
+    }
+
+    pub fn interface_mut(&mut self) -> &mut dyn rdif_block::Interface {
+        &mut *self.interface
+    }
+
+    pub fn enable_irq(&self) {
+        self.interface.enable_irq();
+    }
+
+    pub fn disable_irq(&self) {
+        self.interface.disable_irq();
+    }
+
+    pub fn is_irq_enabled(&self) -> bool {
+        self.interface.is_irq_enabled()
+    }
+
+    pub fn take_irq_handler(
+        &mut self,
+        source_id: usize,
+    ) -> Option<(usize, Box<dyn rdif_block::IrqHandler>)> {
+        let irq_num = self.irq_num?;
+        self.interface
+            .take_irq_handler(source_id)
+            .map(|handler| (irq_num, handler))
+    }
+}
+
+pub struct BlockIrqAction {
+    handler: Box<dyn rdif_block::IrqHandler>,
+    device: Arc<BlockDeviceHandle>,
+    device_index: usize,
+}
+
+impl BlockIrqAction {
+    pub fn new(
+        handler: Box<dyn rdif_block::IrqHandler>,
+        device: Arc<BlockDeviceHandle>,
+        device_index: usize,
+    ) -> Self {
+        Self {
+            handler,
+            device,
+            device_index,
+        }
+    }
+
+    pub fn run(&self) -> BlockIrqOutcome {
+        let event = self.handler.handle_irq();
+        if self.device.record_driver_event_for_pending(event) {
+            self.device.drain_wake.wake_drain_from_irq();
+            notify_waiters();
+            BlockIrqOutcome::Wake
+        } else {
+            BlockIrqOutcome::Handled
+        }
+    }
+
+    pub const fn device_index(&self) -> usize {
+        self.device_index
+    }
+}
+
+impl BlockRuntime {
+    pub fn from_rdif_devices(devices: impl IntoIterator<Item = RdifBlockDevice>) -> Self {
+        let mut runtime = Self::new();
+        for block in devices {
+            let device_index = runtime.devices.len();
+            let drain_wake = Arc::new(RuntimeDrainWake { device_index });
+            match build_rdif_block_device(block, device_index, drain_wake) {
+                Ok(registered) => {
+                    let (device, registrations) = registered;
+                    for registration in registrations {
+                        runtime.push_irq_registration(registration);
+                    }
+                    runtime.push_device(device);
+                }
+                Err(err) => warn!("failed to register rdif filesystem block device: {err:?}"),
+            }
+        }
+        runtime
+    }
+
+    pub fn install_from_rdif_devices(
+        devices: impl IntoIterator<Item = RdifBlockDevice>,
+    ) -> Arc<BlockRuntime> {
+        let runtime = Arc::new(Self::from_rdif_devices(devices));
+        BLOCK_RUNTIME.call_once(|| runtime.clone());
+        spawn_block_drain_task(runtime.clone());
+        runtime
     }
 }
 
@@ -253,7 +408,6 @@ impl BlockDeviceHandle {
             queue_progress_waiters: SpinNoIrq::new(Vec::new()),
             barrier_waiters: SpinNoIrq::new(Vec::new()),
             bridge,
-            dma: config.dma,
             drain_wake: config.drain_wake,
             submit_window: config.submit_window.max(1),
             completion_mode: AtomicUsize::new(config.completion_mode.as_usize()),
@@ -721,8 +875,8 @@ impl BlockDeviceHandle {
         validate_io(info, block_id, buf_len)?;
 
         let direction = match op {
-            RequestOp::Read => BlockDmaDirection::Read,
-            RequestOp::Write => BlockDmaDirection::Write,
+            RequestOp::Read => DmaDirection::FromDevice,
+            RequestOp::Write => DmaDirection::ToDevice,
             _ => return Err(AxError::InvalidInput),
         };
         let active_queues = self.active_queues();
@@ -925,19 +1079,18 @@ impl BlockDeviceHandle {
         queue: &mut QueueRuntime,
         info: QueueInfo,
         op: RequestOp,
-        direction: BlockDmaDirection,
+        direction: DmaDirection,
         chunk: TransferChunk,
         write_src: Option<&[u8]>,
     ) -> Result<WindowEntry, BlkError> {
         let chunk_range = chunk.byte_offset..chunk.byte_offset + chunk.byte_len;
         let src = write_src.map(|src| &src[chunk_range.clone()]);
+        let dma_op = dma_op().ok_or(BlkError::Io)?;
         let mut guard = DmaBufferGuard::new(
-            self.dma.alloc(
-                info.limits.dma_mask,
-                chunk.byte_len,
-                info.limits.dma_alignment.max(1),
-                direction,
-            )?,
+            dma_op,
+            info.limits.dma_mask,
+            chunk.byte_len,
+            info.limits.dma_alignment.max(1),
             direction,
             chunk,
             src,
@@ -1185,6 +1338,132 @@ impl BlockDeviceHandle {
         }
         self.wake_barrier_waiters();
     }
+}
+
+type BlockIrqRegistrations = Vec<Box<dyn BlockIrqRegistration>>;
+type RegisteredRdifBlockDevice = (Arc<BlockDeviceHandle>, BlockIrqRegistrations);
+type RegisterIrqResult = Result<BlockIrqRegistrations, (AxError, BlockIrqRegistrations)>;
+
+fn build_rdif_block_device(
+    mut block: RdifBlockDevice,
+    device_index: usize,
+    drain_wake: Arc<dyn BlockDrainWake>,
+) -> Result<RegisteredRdifBlockDevice, AxError> {
+    let name = String::from(block.name());
+    let mut queues: Vec<Box<dyn IQueue>> = Vec::new();
+    while let Some(queue) = block.interface_mut().create_queue() {
+        queues.push(queue);
+    }
+    if queues.is_empty() {
+        return Err(AxError::BadState);
+    }
+
+    let bridge = Arc::new(BlockIrqBridge::new());
+    let device = BlockDeviceHandle::new(
+        name.clone(),
+        queues,
+        bridge,
+        BlockRuntimeConfig::new(drain_wake),
+    )
+    .map_err(map_blk_err_to_ax_err)?;
+
+    let registrations = match register_rdif_irq_handlers(&mut block, device.clone(), device_index)
+        .and_then(|registrations| {
+            block.enable_irq();
+            if block.is_irq_enabled() {
+                Ok(registrations)
+            } else {
+                Err((AxError::Unsupported, registrations))
+            }
+        }) {
+        Ok(registrations) => registrations,
+        Err((err, registrations)) => {
+            block.disable_irq();
+            drop(registrations);
+            if name == "nvme" {
+                return Err(err);
+            }
+            warn!("rdif filesystem block device {name} falls back to polling without IRQ: {err:?}");
+            Vec::new()
+        }
+    };
+    if !registrations.is_empty() {
+        device.set_completion_mode(BlockCompletionMode::IrqDriven);
+        warn!("rdif filesystem block device {name} registered with IRQ-driven completion");
+    }
+    info!("registered rdif filesystem block device {name}");
+    Ok((device, registrations))
+}
+
+fn register_rdif_irq_handlers(
+    block: &mut RdifBlockDevice,
+    device: Arc<BlockDeviceHandle>,
+    device_index: usize,
+) -> RegisterIrqResult {
+    let irq_sources = block.interface().irq_sources();
+    if irq_sources.is_empty() {
+        return Err((AxError::Unsupported, Vec::new()));
+    }
+
+    let mut registrations = Vec::new();
+    for source in irq_sources {
+        let Some((irq_num, handler)) = block.take_irq_handler(source.id) else {
+            return Err((AxError::Unsupported, registrations));
+        };
+        let action = BlockIrqAction::new(handler, device.clone(), device_index);
+        match register_shared_block_irq(format!("{}/{}", device.name(), source.id), irq_num, action)
+        {
+            Ok(registration) => registrations.push(registration),
+            Err(err) => return Err((err, registrations)),
+        }
+    }
+    Ok(registrations)
+}
+
+fn mark_block_drain_device_with_resched(device_index: usize, resched: bool) {
+    if device_index < u64::BITS as usize {
+        BLOCK_DRAIN_DEVICE_BITS.fetch_or(1 << device_index, Ordering::AcqRel);
+    } else {
+        BLOCK_DRAIN_FULL_SCAN.store(true, Ordering::Release);
+    }
+    let _ = resched;
+    notify_waiters();
+}
+
+fn block_drain_has_pending() -> bool {
+    BLOCK_DRAIN_FULL_SCAN.load(Ordering::Acquire)
+        || BLOCK_DRAIN_DEVICE_BITS.load(Ordering::Acquire) != 0
+}
+
+fn take_block_drain_selection() -> DrainSelection {
+    DrainSelection {
+        full_scan: BLOCK_DRAIN_FULL_SCAN.swap(false, Ordering::AcqRel),
+        device_bits: BLOCK_DRAIN_DEVICE_BITS.swap(0, Ordering::AcqRel),
+    }
+}
+
+fn drain_selection_contains(selection: DrainSelection, device_index: usize) -> bool {
+    selection.full_scan
+        || (device_index < u64::BITS as usize && selection.device_bits & (1 << device_index) != 0)
+}
+
+fn spawn_block_drain_task(runtime: Arc<BlockRuntime>) {
+    BLOCK_DRAIN_SPAWNED.call_once(|| {
+        spawn_task(
+            String::from("block_drain"),
+            Box::new(move || {
+                loop {
+                    task_wait_until(block_drain_has_pending);
+                    let selection = take_block_drain_selection();
+                    for (device_index, device) in runtime.devices().iter().enumerate() {
+                        if drain_selection_contains(selection, device_index) {
+                            device.drain_events();
+                        }
+                    }
+                }
+            }),
+        );
+    });
 }
 
 impl BlockDeviceHandle {

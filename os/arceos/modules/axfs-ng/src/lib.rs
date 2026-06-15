@@ -15,17 +15,18 @@ extern crate log;
 use alloc::sync::Arc;
 
 pub mod api;
-mod block;
+pub mod block;
 pub mod block_runtime;
+pub mod file;
 pub mod fops;
 mod fs;
+mod fs_core;
 mod highlevel;
 pub mod os;
 pub mod root;
 pub mod volume;
 
-pub use block::BlockRegion;
-pub use block_runtime::BlockDeviceHandle;
+pub use block::{BlockRegion, runtime::BlockDeviceHandle};
 #[cfg(feature = "vfs")]
 pub use highlevel::*;
 #[cfg(feature = "vfs")]

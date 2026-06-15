@@ -15,16 +15,14 @@ times = []
 std = []
 
 [dependencies]
-ax-alloc = { workspace = true }
 ax-errno = { workspace = true }
 axfs-ng-vfs = { workspace = true }
 ax-io = { workspace = true, features = ["alloc"] }
-ax-memory-addr = { workspace = true }
-axpoll = { workspace = true }
 ax-sync = { workspace = true }
 bitflags = "2.10"
 cfg-if = { workspace = true }
 chrono = { workspace = true }
+dma-api = { workspace = true }
 intrusive-collections = "0.9"
 ax-kspin = { workspace = true }
 log = { workspace = true }

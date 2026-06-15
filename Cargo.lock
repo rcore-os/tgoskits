@@ -785,17 +785,15 @@ dependencies = [
 name = "ax-fs-ng"
 version = "0.5.19"
 dependencies = [
- "ax-alloc",
  "ax-errno 0.6.0",
  "ax-io",
  "ax-kspin",
- "ax-memory-addr",
  "ax-sync",
  "axfs-ng-vfs",
- "axpoll",
  "bitflags 2.13.0",
  "cfg-if",
  "chrono",
+ "dma-api",
  "intrusive-collections",
  "log",
  "lru 0.16.4",
@@ -1388,14 +1386,13 @@ name = "axfs-ng-vfs"
 version = "0.5.0"
 dependencies = [
  "ax-errno 0.6.0",
- "ax-kspin",
- "axpoll",
  "bitflags 2.13.0",
  "cfg-if",
  "hashbrown 0.16.1",
  "inherit-methods-macro",
  "log",
  "smallvec",
+ "spin 0.12.0",
 ]
 
 [[package]]

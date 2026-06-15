@@ -8,10 +8,9 @@ use core::any::Any;
 
 use axfs_ng_vfs::{
     DeviceId, DirEntry, DirEntrySink, DirNode, DirNodeOps, FileNode, FileNodeOps, FilesystemOps,
-    Metadata, MetadataUpdate, NodeFlags, NodeOps, NodePermission, NodeType, Reference, VfsError,
-    VfsResult, WeakDirEntry,
+    FsIoEvents, FsPollable, Metadata, MetadataUpdate, NodeFlags, NodeOps, NodePermission, NodeType,
+    Reference, VfsError, VfsResult, WeakDirEntry,
 };
-use axpoll::{IoEvents, Pollable};
 use rsext4::{BLOCK_SIZE, bmalloc::InodeNumber};
 
 use super::{
@@ -328,12 +327,12 @@ impl FileNodeOps for Inode {
     }
 }
 
-impl Pollable for Inode {
-    fn poll(&self) -> IoEvents {
-        IoEvents::IN | IoEvents::OUT
+impl FsPollable for Inode {
+    fn poll(&self) -> FsIoEvents {
+        FsIoEvents::IN | FsIoEvents::OUT
     }
 
-    fn register(&self, _context: &mut core::task::Context<'_>, _events: IoEvents) {}
+    fn register(&self, _context: &mut core::task::Context<'_>, _events: FsIoEvents) {}
 }
 
 impl DirNodeOps for Inode {

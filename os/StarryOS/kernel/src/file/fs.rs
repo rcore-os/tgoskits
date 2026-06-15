@@ -11,7 +11,7 @@ use ax_fs_ng::vfs::{FS_CONTEXT, FileBackend, FileFlags, FsContext};
 use ax_io::{Seek, SeekFrom};
 use ax_sync::Mutex;
 use ax_task::future::{block_on, poll_io};
-use axfs_ng_vfs::{Location, Metadata, NodeFlags};
+use axfs_ng_vfs::{FsIoEvents, FsPollable, Location, Metadata, NodeFlags};
 use axpoll::{IoEvents, Pollable};
 use linux_raw_sys::general::{AT_EMPTY_PATH, AT_FDCWD, AT_SYMLINK_NOFOLLOW, O_APPEND, O_EXCL};
 use starry_vm::VmPtr;
@@ -157,6 +157,14 @@ fn path_for(loc: &Location) -> Cow<'static, str> {
         .map_or_else(|_| "<error>".into(), |f| Cow::Owned(f.to_string()))
 }
 
+fn fs_events_to_io(events: FsIoEvents) -> IoEvents {
+    IoEvents::from_bits_truncate(events.bits())
+}
+
+fn io_events_to_fs(events: IoEvents) -> FsIoEvents {
+    FsIoEvents::from_bits_truncate(events.bits())
+}
+
 impl FileLike for File {
     fn read(&self, dst: &mut IoDst) -> AxResult<usize> {
         let inner = self.inner();
@@ -266,11 +274,13 @@ impl FileLike for File {
 }
 impl Pollable for File {
     fn poll(&self) -> IoEvents {
-        self.inner().location().poll()
+        fs_events_to_io(self.inner().location().poll())
     }
 
     fn register(&self, context: &mut Context<'_>, events: IoEvents) {
-        self.inner().location().register(context, events);
+        self.inner()
+            .location()
+            .register(context, io_events_to_fs(events));
     }
 }
 
@@ -336,7 +346,7 @@ impl FileLike for Directory {
 }
 impl Pollable for Directory {
     fn poll(&self) -> IoEvents {
-        IoEvents::IN | IoEvents::OUT
+        fs_events_to_io(FsIoEvents::IN | FsIoEvents::OUT)
     }
 
     fn register(&self, _context: &mut Context<'_>, _events: IoEvents) {}

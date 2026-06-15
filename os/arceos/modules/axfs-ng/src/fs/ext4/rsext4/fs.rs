@@ -1,14 +1,16 @@
 use alloc::{boxed::Box, sync::Arc};
 use core::cell::OnceCell;
 
-use ax_sync::{Mutex, MutexGuard};
 use axfs_ng_vfs::{
     DirEntry, DirNode, Filesystem, FilesystemOps, Reference, StatFs, VfsResult, path::MAX_NAME_LEN,
 };
 use rsext4::{Jbd2Dev, bmalloc::InodeNumber, superblock::Ext4Superblock};
 
 use super::{Ext4Disk, Inode, util::into_vfs_err};
-use crate::block::{BlockRegion, FsBlockDevice};
+use crate::{
+    block::{BlockRegion, FsBlockDevice},
+    os::sync::{SleepMutex as Mutex, SleepMutexGuard as MutexGuard},
+};
 
 const EXT4_ROOT_INO: u32 = 2;
 

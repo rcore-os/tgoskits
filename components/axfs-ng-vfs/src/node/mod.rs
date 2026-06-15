@@ -15,7 +15,6 @@ use core::{
     task::Context,
 };
 
-use axpoll::{IoEvents, Pollable};
 use bitflags::bitflags;
 pub use dir::*;
 pub use file::*;
@@ -23,8 +22,8 @@ use inherit_methods_macro::inherit_methods;
 use smallvec::SmallVec;
 
 use crate::{
-    FilesystemOps, Metadata, MetadataUpdate, Mutex, MutexGuard, NodeType, VfsError, VfsResult,
-    path::PathBuf,
+    FilesystemOps, FsIoEvents, FsPollable, Metadata, MetadataUpdate, Mutex, MutexGuard, NodeType,
+    VfsError, VfsResult, path::PathBuf,
 };
 
 bitflags! {
@@ -385,15 +384,15 @@ impl DirEntry {
     }
 }
 
-impl Pollable for DirEntry {
-    fn poll(&self) -> IoEvents {
+impl FsPollable for DirEntry {
+    fn poll(&self) -> FsIoEvents {
         match &self.0.node {
             Node::File(file) => file.poll(),
-            Node::Dir(_dir) => IoEvents::IN | IoEvents::OUT,
+            Node::Dir(_dir) => FsIoEvents::IN | FsIoEvents::OUT,
         }
     }
 
-    fn register(&self, context: &mut Context<'_>, events: IoEvents) {
+    fn register(&self, context: &mut Context<'_>, events: FsIoEvents) {
         match &self.0.node {
             Node::File(file) => file.register(context, events),
             Node::Dir(_) => {}

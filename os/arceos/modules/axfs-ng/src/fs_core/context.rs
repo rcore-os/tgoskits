@@ -7,8 +7,6 @@ use alloc::{
 };
 
 use ax_io::{Read, Write};
-use ax_kspin::SpinNoIrq;
-use ax_sync::Mutex;
 #[cfg(feature = "vfs")]
 use axfs_ng_vfs::Mountpoint;
 use axfs_ng_vfs::{
@@ -17,7 +15,10 @@ use axfs_ng_vfs::{
 };
 use spin::Once;
 
-use super::File;
+use crate::{
+    file::File,
+    os::sync::{IrqMutex, SleepMutex as Mutex},
+};
 
 /// Maximum number of symlinks that will be followed during path resolution.
 pub const SYMLINKS_MAX: usize = 40;
@@ -32,7 +33,7 @@ pub static ROOT_FS_CONTEXT: Once<FsContext> = Once::new();
 /// [`FsContext::propagate_pivot_root`] to iterate over every task's
 /// filesystem context and apply the same root / cwd fixup that Linux
 /// performs in `chroot_fs_refs()` after `pivot_root(2)`.
-static FS_REGISTRY: SpinNoIrq<Vec<Weak<Mutex<FsContext>>>> = SpinNoIrq::new(Vec::new());
+static FS_REGISTRY: IrqMutex<Vec<Weak<Mutex<FsContext>>>> = IrqMutex::new(Vec::new());
 
 /// Register an `FsContext` in the global [`FS_REGISTRY`].
 fn register_fs_context(ctx: &Arc<Mutex<FsContext>>) {
