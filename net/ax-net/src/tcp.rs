@@ -907,6 +907,8 @@ fn unregister_tcp_bound(endpoint: IpListenEndpoint) {
 }
 
 fn tcp_port_available(port: u16) -> bool {
+    // Ephemeral ports are selected conservatively: avoid any port that has a
+    // listener or bound socket on any local address.
     LISTEN_TABLE.can_listen(IpListenEndpoint { addr: None, port })
         && !TCP_BOUND_PORTS.lock().contains_key(&port)
 }

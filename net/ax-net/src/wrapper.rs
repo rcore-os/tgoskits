@@ -2,7 +2,6 @@ use alloc::vec;
 
 use ax_errno::{AxError, AxResult};
 use ax_sync::Mutex;
-use event_listener::Event;
 use hashbrown::HashMap;
 use smoltcp::{
     iface::{SocketHandle, SocketSet},
@@ -18,7 +17,6 @@ struct UdpBindKey {
 
 pub(crate) struct SocketSetWrapper<'a> {
     pub inner: Mutex<SocketSet<'a>>,
-    pub new_socket: Event,
     udp_binds: Mutex<HashMap<UdpBindKey, SocketHandle>>,
 }
 
@@ -26,7 +24,6 @@ impl<'a> SocketSetWrapper<'a> {
     pub fn new() -> Self {
         Self {
             inner: Mutex::new(SocketSet::new(vec![])),
-            new_socket: Event::new(),
             udp_binds: Mutex::new(HashMap::new()),
         }
     }
@@ -34,7 +31,6 @@ impl<'a> SocketSetWrapper<'a> {
     pub fn add<T: AnySocket<'a>>(&self, socket: T) -> SocketHandle {
         let handle = self.inner.lock().add(socket);
         debug!("socket {}: created", handle);
-        self.new_socket.notify(1);
         handle
     }
 

@@ -229,9 +229,6 @@ impl ListenTable {
             .iter_mut()
             .find(|entry| entry.can_accept_endpoint(dst))
         {
-            if !entry.can_accept_endpoint(dst) {
-                return;
-            }
             if entry.syn_queue.len() >= entry.backlog {
                 // SYN queue is full, drop the packet
                 warn!("SYN queue overflow!");
