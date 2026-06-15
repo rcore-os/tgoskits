@@ -11,6 +11,8 @@
  *   - fork + COW         clone_map + parent/child RSS invariants across COW write
  *   - MAP_PRIVATE file   RssFile on read fault; single-process write → Anon
  *   - MAP_PRIVATE RW     write-first fault counts as RssAnon
+ *   - MAP_PRIVATE RW     read-then-write without mprotect → File then Anon
+ *   - fork RW file       parent read, child write; parent RSS stable
  *   - fork dirty file    child COW on already-Anon private file page
  *   - memfd MAP_SHARED   RssShmem on shared fault
  *   - /proc/<child>      parent reads child memory stats after fork()
@@ -425,6 +427,187 @@ static void test_map_private_file_write_first_fault(long page_size)
            "write-first fault counts as RssAnon");
     expect(rss_file_after <= rss_file_before + page_kb * RSS_TOUCH_TOLERANCE,
            "write-first fault does not significantly increase RssFile");
+
+    munmap(map, (size_t)page_size);
+    close(fd);
+    unlink(path);
+}
+
+static void test_map_private_file_read_then_write(long page_size)
+{
+    char path[] = "/tmp/proc-mem-monitor-rwrt-XXXXXX";
+    int fd = mkstemp(path);
+    long page_kb = page_size / 1024;
+    long rss_anon_before = 0;
+    long rss_file_before = 0;
+    long rss_anon_after_read = 0;
+    long rss_file_after_read = 0;
+    long rss_anon_after_write = 0;
+    long rss_file_after_write = 0;
+    unsigned long statm_shared_before = 0;
+    unsigned long statm_shared_after_read = 0;
+    unsigned long statm_shared_after_write = 0;
+    unsigned long statm_size = 0;
+    unsigned long statm_resident = 0;
+    unsigned long statm_text = 0;
+    unsigned long statm_data = 0;
+    unsigned char buf[4096];
+    void *map = MAP_FAILED;
+    volatile char *page = NULL;
+
+    expect(fd >= 0, "mkstemp for RW read-then-write probe");
+    memset(buf, 0x5a, sizeof(buf));
+    expect(write(fd, buf, sizeof(buf)) == (ssize_t)sizeof(buf), "write temp file page");
+    expect(ftruncate(fd, (off_t)sizeof(buf)) == 0, "truncate temp file");
+
+    rss_anon_before = read_self_status_kb("RssAnon");
+    rss_file_before = read_self_status_kb("RssFile");
+    read_statm_fields_from(
+        "/proc/self/statm",
+        &statm_size,
+        &statm_resident,
+        &statm_shared_before,
+        &statm_text,
+        &statm_data
+    );
+
+    map = mmap(NULL, (size_t)page_size, PROT_READ | PROT_WRITE, MAP_PRIVATE, fd, 0);
+    expect(map != MAP_FAILED, "mmap MAP_PRIVATE file read-write without mprotect");
+    page = (volatile char *)map;
+    expect(page[0] == (char)0x5a, "read fault on RW MAP_PRIVATE file mapping");
+
+    rss_anon_after_read = read_self_status_kb("RssAnon");
+    rss_file_after_read = read_self_status_kb("RssFile");
+    read_statm_fields_from(
+        "/proc/self/statm",
+        &statm_size,
+        &statm_resident,
+        &statm_shared_after_read,
+        &statm_text,
+        &statm_data
+    );
+    expect(rss_file_after_read >= rss_file_before + page_kb,
+           "read fault increases RssFile on RW mmap");
+    expect(rss_anon_after_read <= rss_anon_before + page_kb * RSS_TOUCH_TOLERANCE,
+           "read fault does not significantly increase RssAnon on RW mmap");
+    expect(statm_shared_after_read >= statm_shared_before + 1,
+           "statm shared grows after read fault on RW mmap");
+
+    page[0] = 0x42;
+    rss_anon_after_write = read_self_status_kb("RssAnon");
+    rss_file_after_write = read_self_status_kb("RssFile");
+    read_statm_fields_from(
+        "/proc/self/statm",
+        &statm_size,
+        &statm_resident,
+        &statm_shared_after_write,
+        &statm_text,
+        &statm_data
+    );
+    expect(rss_anon_after_write >= rss_anon_after_read + page_kb,
+           "RW mmap read-then-write increases RssAnon");
+    expect(rss_file_after_write + page_kb <= rss_file_after_read,
+           "RW mmap read-then-write transfers RssFile to RssAnon");
+    expect(statm_shared_after_write + 1 <= statm_shared_after_read,
+           "statm shared drops after RW mmap File to Anon transfer");
+
+    munmap(map, (size_t)page_size);
+    close(fd);
+    unlink(path);
+}
+
+static void test_fork_rw_file_read_child_write(long page_size)
+{
+    char path[] = "/tmp/proc-mem-monitor-frw-XXXXXX";
+    int fd = mkstemp(path);
+    long page_kb = page_size / 1024;
+    long parent_file_after_read = 0;
+    long parent_anon_after_read = 0;
+    long parent_file_after_child = 0;
+    long parent_anon_after_child = 0;
+    long child_rss_file = 0;
+    long child_rss_anon = 0;
+    int notify[2];
+    int release[2];
+    unsigned char buf[4096];
+    void *map = MAP_FAILED;
+    volatile char *page = NULL;
+    pid_t child = 0;
+    pid_t reported_pid = -1;
+    char child_status[64];
+    char byte = 0;
+    int status = 0;
+
+    expect(fd >= 0, "mkstemp for fork RW file read-child-write probe");
+    memset(buf, 0x5a, sizeof(buf));
+    expect(write(fd, buf, sizeof(buf)) == (ssize_t)sizeof(buf), "write temp file");
+    expect(ftruncate(fd, (off_t)sizeof(buf)) == 0, "truncate temp file");
+
+    map = mmap(NULL, (size_t)page_size, PROT_READ | PROT_WRITE, MAP_PRIVATE, fd, 0);
+    expect(map != MAP_FAILED, "mmap MAP_PRIVATE file read-write before fork");
+    page = (volatile char *)map;
+    expect(page[0] == (char)0x5a, "parent read fault on RW MAP_PRIVATE file");
+    parent_file_after_read = read_self_status_kb("RssFile");
+    parent_anon_after_read = read_self_status_kb("RssAnon");
+
+    expect(pipe(notify) == 0, "notify pipe for fork RW file sync");
+    expect(pipe(release) == 0, "release pipe for fork RW file sync");
+
+    child = fork();
+    expect(child >= 0, "fork for RW file read-child-write probe");
+
+    if (child == 0) {
+        close(notify[0]);
+        close(release[1]);
+        page[0] = 0x43;
+        reported_pid = getpid();
+        if (write(notify[1], &reported_pid, sizeof(reported_pid)) !=
+            (ssize_t)sizeof(reported_pid)) {
+            _exit(1);
+        }
+        close(notify[1]);
+        if (read(release[0], &byte, 1) != 1) {
+            _exit(1);
+        }
+        close(release[0]);
+        close(fd);
+        _exit(0);
+    }
+
+    close(notify[1]);
+    close(release[0]);
+    expect(read(notify[0], &reported_pid, sizeof(reported_pid)) ==
+               (ssize_t)sizeof(reported_pid),
+           "read child pid after RW file COW write");
+    close(notify[0]);
+    expect(reported_pid == child, "child pid matches fork return");
+
+    snprintf(child_status, sizeof(child_status), "/proc/%d/status", child);
+    child_rss_file = read_status_kb_from(child_status, "RssFile");
+    child_rss_anon = read_status_kb_from(child_status, "RssAnon");
+    expect(child_rss_anon >= parent_anon_after_read + page_kb,
+           "child RW file COW write increases RssAnon");
+    expect(child_rss_file + page_kb <= parent_file_after_read,
+           "child RW file COW write transfers RssFile to RssAnon");
+
+    parent_file_after_child = read_self_status_kb("RssFile");
+    parent_anon_after_child = read_self_status_kb("RssAnon");
+    expect(parent_file_after_child + page_kb > parent_file_after_read,
+           "parent RssFile must not drop by a page after child COW write");
+    expect(parent_file_after_child <=
+               parent_file_after_read + page_kb * RSS_TOUCH_TOLERANCE,
+           "parent RssFile stable within tolerance after child COW write");
+    expect(parent_anon_after_child + page_kb > parent_anon_after_read,
+           "parent RssAnon must not drop by a page after child COW write");
+    expect(parent_anon_after_child <=
+               parent_anon_after_read + page_kb * RSS_TOUCH_TOLERANCE,
+           "parent RssAnon stable within tolerance after child COW write");
+
+    expect(write(release[1], "D", 1) == 1, "release fork RW file child");
+    close(release[1]);
+    expect(waitpid(child, &status, 0) == child, "waitpid fork RW file child");
+    expect(WIFEXITED(status) && WEXITSTATUS(status) == 0,
+           "fork RW file child exits cleanly");
 
     munmap(map, (size_t)page_size);
     close(fd);
@@ -1157,6 +1340,8 @@ int main(void)
     test_lazy_and_touch_rss(page_size);
     test_map_private_file_rss(page_size);
     test_map_private_file_write_first_fault(page_size);
+    test_map_private_file_read_then_write(page_size);
+    test_fork_rw_file_read_child_write(page_size);
     test_fork_mprotect_only_sibling_unmap(page_size);
     test_fork_reclassify_writer_sibling_unmap(page_size);
     test_mremap_move_private_file_rss(page_size);
