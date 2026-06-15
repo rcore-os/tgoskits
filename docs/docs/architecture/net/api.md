@@ -366,7 +366,35 @@ let udp = ax_net::udp::UdpSocket::new();
 udp.bind_device(eth1.id)?;
 ```
 
-绑定具体本地地址时，`ax-net` 会根据地址所属接口设置 `DeviceBinding`。例如 `UdpSocket::bind()` 调用 `get_control().local_binding_for(&endpoint)?`（[udp.rs#L157](net/ax-net/src/udp.rs#L157)）从监听地址反查接口。未绑定接口的 connect/sendto 会按 route decision 自动选择源地址和出接口。
+绑定具体本地地址时，`ax-net` 会根据地址所属接口设置 `DeviceBinding`。例如 `UdpSocket::bind()` 调用 `get_control().local_binding_for(&endpoint)?`（[udp.rs](net/ax-net/src/udp.rs)）从监听地址反查接口。未绑定接口的 connect/sendto 会按 route decision 自动选择源地址和出接口。
+
+## 动态设备注册与 OOB RX
+
+用于运行时添加 Ethernet 设备（如 Wi-Fi AP 模式启动后），以及 SDIO Wi-Fi 等 out-of-band RX 设备：
+
+```rust
+pub struct NetConfig {
+    pub name: String,
+    pub ip: [u8; 4],
+    pub prefix_len: u8,
+    pub dhcp_server_client_ip: Option<[u8; 4]>,
+    pub dedicated_poll: bool,    // true = 使用 notify_oob_rx() 驱动 RX
+}
+
+pub fn register_device_with_config(dev: Box<dyn EthernetDriver>, config: NetConfig);
+pub fn notify_oob_rx();          // SDIO Wi-Fi 收到数据后调用
+pub fn eth0_ipv4_config() -> Option<Ipv4InterfaceConfig>;
+```
+
+`register_device_with_config()` 在 `Service` 中调用 `register_static_device()` 添加设备和路由，可选启用 DHCP server（`enable_dhcp_server()`）。`dedicated_poll = true` 时设备用 `EthernetDevice::new_oob_rx()` 创建，RX 就绪由驱动线程调用 `notify_oob_rx()` 唤醒独立 poll task（`{ifname}-oob-poll`），不经过 Ethernet IRQ 框架。
+
+## Per-address Listen 支持
+
+`ListenTable` 和 `SocketSetWrapper` 支持 Linux 语义的同端口不同地址 listen/bind：
+
+- `LISTEN_TABLE.listen(endpoint, backlog)`：`ListenTableEntry` 是 `Vec<ListenTableEntryInner>`，每个 entry 存储完整的 `IpListenEndpoint`。
+- `listen_addrs_conflict(a, b)`：wildcard（`None`）与所有地址冲突；两个 `Some(addr)` 仅当相等时冲突。
+- `SocketSetWrapper::udp_bind_available()`：UDP 同端口不同地址允许共存，wildcard 与所有冲突。
 
 ## TCP listen/accept
 

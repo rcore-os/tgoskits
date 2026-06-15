@@ -24,7 +24,11 @@ TGOSKits 的网络能力收敛在 `net/ax-net`。它是 ArceOS、StarryOS 和 Ax
 | ARP | `EthernetDevice` 内部 `neighbors: HashMap`（已解析条目, 300s TTL）+ `pending_neighbors: HashMap`（等待 ARP reply 条目, 1s 重试） + `pending_packets: PacketBuffer`（暂存待 ARP 解析后发送的包） | 完整 |
 | 多 NIC 路由 | `RouteTable` 最长前缀匹配 + metric 排序 + per-interface 替换 | 完整 |
 | IRQ 感知 | `EthernetIrqRegistrar` + `EthernetIrqAction` + IRQ→wake 转换 | 完整 |
-| Loopback | 自包含 `LoopbackDevice`，直接 buffer 回环，不封装 Ethernet 帧 | 完整 |
+| Loopback | 零状态 `LoopbackDevice` + `Router::dispatch()` 快速路径 inline 注入 `rx_buffer`，不经设备 worker | 完整 |
+| TCP orphan 回收 | `orphan.rs`：Drop 后保留 smoltcp socket 直到 FIN/TIME_WAIT 完成，RFC 793 合规 | 完整 |
+| DHCP 服务器（SoftAP） | `dhcp_server.rs`：最简单客户端 DHCP 服务器，Discover→Offer、Request→Ack | 完整 |
+| OOB RX（SDIO Wi-Fi） | `EthernetDevice::new_oob_rx()` + `notify_oob_rx()` + 独立 poll task | 完整 |
+| 动态设备注册 | `register_device_with_config()` 运行时添加静态 IP 设备（Wi-Fi AP） | 完整 |
 
 ## 线程与锁模型
 
@@ -37,6 +41,7 @@ TGOSKits 的网络能力收敛在 `net/ax-net`。它是 ArceOS、StarryOS 和 Ax
 | `{ifname}-tx` worker | 每网卡一个，从 `DeviceHandle::tx_queue` 取包调用 driver send | `device.tx_wake.wait_until()` |
 | 调用者线程 | 应用/内核线程调用 socket API | `StateLock::lock()`、`block_on(poll_io())` |
 | `vsock-poll` worker | vsock 设备轮询，事件分发到 `VSOCK_CONN_MANAGER` | 自适应频率 sleep（100μs→10ms） |
+| `{ifname}-oob-poll` | OOB RX 设备（如 SDIO Wi-Fi）的专用 poll task | `OOB_RX_SIGNAL.wait()` |
 
 ### 全局锁顺序
 

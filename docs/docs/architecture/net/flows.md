@@ -80,7 +80,7 @@ let lo_ip = Ipv4Cidr::new(Ipv4Address::new(127,0,0,1), 8);
 router.add_rule(Rule::new(lo_ip.into(), None, lo_dev, lo_id, lo_ip.address().into(), 0));
 ```
 
-Loopback 设备注册后，立即安装直连路由 `127.0.0.0/8 → lo_dev`，源地址 `127.0.0.1`，metric 0。`LoopbackDevice` 的 `send()`/`recv()` 直接在内部 buffer 中回环，不经过 Ethernet 帧封装。
+Loopback 设备注册后，立即安装直连路由 `127.0.0.0/8 → lo_dev`，源地址 `127.0.0.1`，metric 0。`LoopbackDevice` 是零状态占位类型，真正的回环数据路径在 `Router::dispatch()` 中以快速路径实现（见 [loopback 快速路径](architecture.md#loopback-快速路径)）。
 
 **步骤 3 — 注册 Ethernet 设备**（[lib.rs#L205-L292](net/ax-net/src/lib.rs#L205-L292)）
 
@@ -304,7 +304,7 @@ sequenceDiagram
     Note over RouterTx: IP packet 进入 Router.tx_buffer
     App->>App: request_poll() → 唤醒 net-poll
     Note over net-poll: === poll_until_idle() → dispatch() ===
-    Router->>Router: dispatch(timestamp)
+    Router->>Router: dispatch(timestamp, sockets)
     loop tx_buffer.dequeue()
         Router->>Router: parse IP version
         alt IPv4 unicast
@@ -374,9 +374,9 @@ fn transmit(&mut self, _timestamp: Instant) -> Option<Self::TxToken<'_>> {
 
 `TxToken::consume()` 将 smoltcp 构造的 IP 包写入 `Router.tx_buffer`，metadata 设为 `TX_INTERFACE_PLACEHOLDER`（占位符，出接口由 `dispatch()` 决定）。
 
-**步骤 3 — Router::dispatch() 选择出接口**（[router.rs#L498-L557](net/ax-net/src/router.rs#L498-L557)）
+**步骤 3 — Router::dispatch() 选择出接口**（[router.rs](net/ax-net/src/router.rs)）
 
-`dispatch()` 在 smoltcp `Interface::poll()` 返回后执行，从 `tx_buffer` 取出 IP 包：
+`dispatch()` 接收 `&mut SocketSet`，在 smoltcp `Interface::poll()` 返回后执行，从 `tx_buffer` 取出 IP 包：
 
 ```rust
 while let Ok((_, packet)) = self.tx_buffer.dequeue() {
@@ -397,10 +397,16 @@ while let Ok((_, packet)) = self.tx_buffer.dequeue() {
                 let routes = self.table.read();
                 let Some(route) = routes.select_route_for_source(&dst_addr, &src_addr) else {
                     warn!("No route found for source {} destination {}", src_addr, dst_addr);
-                    continue;    // 丢包但不 panic
+                    continue;
                 };
                 let dev = &self.devices[route.dev];
-                poll_next |= dev.enqueue_tx(route.next_hop, packet.into_inner());
+                if dev.interface_id == InterfaceId::LOOPBACK {
+                    // Loopback 快速路径：直接注入 rx_buffer + snoop TCP
+                    poll_next |= inject_loopback_rx_direct(
+                        &mut self.rx_buffer, dst_addr, packet.into_inner(), sockets);
+                } else {
+                    poll_next |= dev.enqueue_tx(route.next_hop, packet.into_inner());
+                }
             }
         }
         IpVersion::Ipv6 => { /* 类似逻辑 */ }
@@ -411,7 +417,7 @@ while let Ok((_, packet)) = self.tx_buffer.dequeue() {
 关键点：
 
 - **出接口不由 socket binding 决定**，而是由 IP 包的 `(源地址, 目的地址)` 在路由表中查 `select_route_for_source()` 决定。
-- 源地址由 smoltcp 根据 socket binding 或 connect 时的路由查询结果注入。
+- **Loopback 快速路径**：当出接口是 loopback 时，`inject_loopback_rx_direct()` 在写入 `rx_buffer` 前执行 `snoop_tcp_packet()`，使回环 TCP SYN 在**同一个 `Service::poll()` 周期内**被 smoltcp 消费，不经过设备 worker。
 - 广播包发往所有 Ethernet 设备。
 - 查不到路由时 `warn!` + `continue`，不 panic。
 
@@ -545,23 +551,23 @@ sequenceDiagram
     end
 ```
 
-`TcpSocket::connect()`（[tcp.rs#L415-L432](net/ax-net/src/tcp.rs#L415-L432)）：
+`TcpSocket::connect()`（[tcp.rs](net/ax-net/src/tcp.rs)）：
 
 1. `start_connect()` 查路由获取源地址，在 smoltcp socket 上调用 `connect()`。
-2. **`ax_task::yield_now()`** — 这是一个 hack：让出当前任务，让 net-poll worker 有机会处理 SYN 发送和 SYN-ACK 接收。
+2. `request_poll()` 唤醒 net-poll worker 处理 SYN 发送和 SYN-ACK 接收。
 3. 在 `send_poller` 闭包中循环 `poll_connect()`，每次 `request_poll()` 触发协议栈推进。
 4. 连接成功返回 `Ok(())`，连接失败返回对应错误（`ConnectionRefused` 等）。
 
 ### 5.2 Listen + Accept
 
-`listen()`（[tcp.rs#L434-L462](net/ax-net/src/tcp.rs#L434-L462)）：
+`listen()`（[tcp.rs](net/ax-net/src/tcp.rs)）：
 
 1. 状态转换 `Idle → Listening`。
 2. 分配端口（如果未绑定）。
-3. 在 `LISTEN_TABLE` 注册 `(port, backlog)`。
-4. 设置 `DeviceBinding`。
+3. 在 `LISTEN_TABLE` 注册 `(IpListenEndpoint, backlog)`。`ListenTable` 支持同端口不同地址 listen（per-address listen），用 `Vec<ListenTableEntryInner>` 存储。
+4. 设置 `DeviceBinding`（仅当 `bound_if.is_some()` 时）。
 
-`accept()`（[tcp.rs#L464-L487](net/ax-net/src/tcp.rs#L464-L487)）：
+`accept()`（[tcp.rs](net/ax-net/src/tcp.rs)）：
 
 ```rust
 fn accept(&self) -> AxResult<Socket> {
@@ -837,12 +843,13 @@ fn poll_once() -> bool {
 ```
 1. Service lock (get_service())
 2. SocketSet lock (SOCKET_SET.inner.lock())
-   ├─ Router::poll()      — drain RX queue → rx_buffer
+   ├─ Router::poll()      — drain RX queue → rx_buffer，snoop DHCP client/server
    ├─ smoltcp Interface::poll(timestamp, router, sockets)
    │   ├─ Router::receive() / Router::transmit()  (phy::Device trait)
    │   └─ TCP/UDP/ICMP state machine
-   ├─ Router::dispatch()  — tx_buffer → per-device tx_queue
-   └─ poll_dhcp()         — DHCP retry packets
+   ├─ poll_dhcp()         — DHCP client retry packets
+   ├─ reap_orphans()      — 回收已完成 teardown 的 orphan TCP socket
+   └─ Router::dispatch(timestamp, sockets)  — tx_buffer → 设备/loopback 快速路径
 3. 释放 SocketSet lock
 4. 释放 Service lock
 5. wake socket waiters (在锁外部)
