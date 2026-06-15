@@ -1,14 +1,15 @@
 use std::{
     fs,
-    io::Write,
+    io::{Read, Write},
     path::{Path, PathBuf},
     time::{Duration, SystemTime},
 };
 
-use anyhow::{Context, anyhow};
+use anyhow::{Context, anyhow, bail};
 use futures_util::StreamExt;
 use indicatif::{ProgressBar, ProgressStyle};
 use reqwest::{StatusCode, header};
+use sha2::{Digest, Sha256};
 use tokio::{fs as tokio_fs, io::AsyncWriteExt};
 
 const DOWNLOAD_LOCK_STALE_AFTER: Duration = Duration::from_secs(60 * 60 * 2);
@@ -46,6 +47,67 @@ pub(crate) async fn download_file(
     path: &Path,
 ) -> anyhow::Result<()> {
     download_file_inner(client, url, path, true).await
+}
+
+pub(crate) async fn download_file_verified_sha256(
+    client: &reqwest::Client,
+    url: &str,
+    path: &Path,
+    expected_sha256: &str,
+) -> anyhow::Result<()> {
+    if path.exists() {
+        match verify_file_sha256(path, expected_sha256) {
+            Ok(true) => {
+                println!("file already exists and passed checksum verification");
+                return Ok(());
+            }
+            Ok(false) => {
+                println!("existing file checksum mismatch, re-downloading...");
+            }
+            Err(err) => {
+                println!("failed to verify existing file: {err}, re-downloading...");
+            }
+        }
+        tokio_fs::remove_file(path)
+            .await
+            .with_context(|| format!("failed to remove {}", path.display()))?;
+    }
+
+    download_file(client, url, path).await?;
+    match verify_file_sha256(path, expected_sha256) {
+        Ok(true) => Ok(()),
+        Ok(false) => {
+            let _ = tokio_fs::remove_file(path).await;
+            bail!("downloaded file checksum mismatch for {url}");
+        }
+        Err(err) => {
+            let _ = tokio_fs::remove_file(path).await;
+            Err(err)
+        }
+    }
+}
+
+pub(crate) fn file_sha256(path: &Path) -> anyhow::Result<String> {
+    let mut file =
+        fs::File::open(path).with_context(|| format!("failed to open {}", path.display()))?;
+    let mut hasher = Sha256::new();
+    let mut buffer = [0; 8192];
+
+    loop {
+        let bytes_read = file
+            .read(&mut buffer)
+            .with_context(|| format!("failed to read {}", path.display()))?;
+        if bytes_read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..bytes_read]);
+    }
+
+    Ok(format!("{:x}", hasher.finalize()))
+}
+
+pub(crate) fn verify_file_sha256(path: &Path, expected_sha256: &str) -> anyhow::Result<bool> {
+    Ok(file_sha256(path)? == expected_sha256)
 }
 
 async fn download_file_inner(

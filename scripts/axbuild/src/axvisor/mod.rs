@@ -6,19 +6,14 @@ use ostool::{
     build::config::Cargo,
 };
 
-use crate::{
-    axvisor::context::AxvisorContext,
-    context::{
-        AppContext, AxvisorCliArgs, AxvisorRequestPaths, ResolvedAxvisorRequest,
-        SnapshotPersistence,
-    },
+use crate::context::{
+    AppContext, AxvisorCliArgs, AxvisorRequestPaths, ResolvedAxvisorRequest, SnapshotPersistence,
 };
 
 pub mod board;
 pub mod build;
 pub mod config;
 pub mod context;
-pub mod image;
 pub mod rootfs;
 pub mod test;
 
@@ -39,8 +34,6 @@ pub enum Command {
     Defconfig(ArgsDefconfig),
     /// Board config helpers
     Config(ArgsConfig),
-    /// Guest image management
-    Image(image::Args),
 }
 
 #[derive(Args, Clone)]
@@ -227,7 +220,6 @@ pub enum ConfigCommand {
 
 pub struct Axvisor {
     app: AppContext,
-    ctx: AxvisorContext,
 }
 
 impl From<&ArgsBuild> for AxvisorCliArgs {
@@ -247,8 +239,7 @@ impl From<&ArgsBuild> for AxvisorCliArgs {
 impl Axvisor {
     pub fn new() -> anyhow::Result<Self> {
         let app = AppContext::new()?;
-        let ctx = AxvisorContext::new()?;
-        Ok(Self { app, ctx })
+        Ok(Self { app })
     }
 
     pub async fn execute(&mut self, command: Command) -> anyhow::Result<()> {
@@ -259,7 +250,6 @@ impl Axvisor {
             Command::Board(args) => self.board(args).await,
             Command::Defconfig(args) => self.defconfig(args),
             Command::Config(args) => self.config(args),
-            Command::Image(args) => self.image(args).await,
             Command::Test(args) => self.test(args).await,
         }
     }
@@ -328,10 +318,6 @@ impl Axvisor {
             }
         }
         Ok(())
-    }
-
-    async fn image(&self, args: image::Args) -> anyhow::Result<()> {
-        image::run(args, &self.ctx).await
     }
 
     async fn test(&mut self, args: ArgsTest) -> anyhow::Result<()> {
@@ -424,7 +410,10 @@ mod tests {
     use clap::Parser;
 
     use super::*;
-    use crate::context::{resolve_workspace_member_dir, workspace_root_path};
+    use crate::{
+        axvisor::context::AxvisorContext,
+        context::{resolve_workspace_member_dir, workspace_root_path},
+    };
 
     #[test]
     fn context_resolves_workspace_root() {

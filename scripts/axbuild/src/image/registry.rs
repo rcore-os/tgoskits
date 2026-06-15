@@ -172,19 +172,16 @@ impl ImageRegistry {
     }
 
     fn render_verbose(&self, entries: &[&ImageEntry]) -> String {
-        let mut out = String::new();
-        out.push_str(&format!(
-            "{:<25} {:<12} {:<15} {:<50}\n",
-            "Name", "Version", "Architecture", "Description"
-        ));
-        out.push_str(&format!("{}\n", "-".repeat(102)));
-        for image in entries {
-            out.push_str(&format!(
-                "{:<25} {:<12} {:<15} {:<50}\n",
-                image.name, image.version, image.arch, image.description
-            ));
-        }
-        out
+        let rows: Vec<TableRow> = entries
+            .iter()
+            .map(|image| TableRow {
+                name: image.name.clone(),
+                version: image.version.clone(),
+                arch: image.arch.clone(),
+                description: image.description.clone(),
+            })
+            .collect();
+        render_rows(&rows)
     }
 
     fn render_merged(&self, entries: &[&ImageEntry]) -> String {
@@ -193,25 +190,24 @@ impl ImageRegistry {
                 m.entry(e.name.as_str()).or_default().push(*e);
                 m
             });
-        let mut out = String::new();
-        out.push_str(&format!(
-            "{:<25} {:<12} {:<15} {:<50}\n",
-            "Name", "Version", "Architecture", "Description"
-        ));
-        out.push_str(&format!("{}\n", "-".repeat(102)));
-        for (name, vers) in by_name {
-            let first = vers.first().expect("non-empty grouped entries");
-            let version_str = if vers.len() == 1 {
-                "1 version".to_string()
-            } else {
-                format!("{} versions", vers.len())
-            };
-            out.push_str(&format!(
-                "{:<25} {:<12} {:<15} {:<50}\n",
-                name, version_str, first.arch, first.description
-            ));
-        }
-        out
+        let rows: Vec<TableRow> = by_name
+            .into_iter()
+            .map(|(name, vers)| {
+                let first = vers.first().expect("non-empty grouped entries");
+                let version = if vers.len() == 1 {
+                    "1 version".to_string()
+                } else {
+                    format!("{} versions", vers.len())
+                };
+                TableRow {
+                    name: name.to_string(),
+                    version,
+                    arch: first.arch.clone(),
+                    description: first.description.clone(),
+                }
+            })
+            .collect();
+        render_rows(&rows)
     }
 
     pub fn find(&self, spec: ImageSpecRef<'_>) -> Option<&ImageEntry> {
@@ -227,6 +223,62 @@ impl ImageRegistry {
                 .max_by(|a, b| a.released_at.cmp(&b.released_at)),
         }
     }
+}
+
+struct TableRow {
+    name: String,
+    version: String,
+    arch: String,
+    description: String,
+}
+
+fn render_rows(rows: &[TableRow]) -> String {
+    let name_width = column_width("Name", rows.iter().map(|row| row.name.as_str()));
+    let version_width = column_width("Version", rows.iter().map(|row| row.version.as_str()));
+    let arch_width = column_width("Architecture", rows.iter().map(|row| row.arch.as_str()));
+    let description_width = column_width(
+        "Description",
+        rows.iter().map(|row| row.description.as_str()),
+    );
+    let total_width = name_width + version_width + arch_width + description_width + 6;
+
+    let mut out = String::new();
+    push_table_row(
+        &mut out,
+        ["Name", "Version", "Architecture", "Description"],
+        [name_width, version_width, arch_width, description_width],
+    );
+    out.push_str(&format!("{}\n", "-".repeat(total_width)));
+    for row in rows {
+        push_table_row(
+            &mut out,
+            [&row.name, &row.version, &row.arch, &row.description],
+            [name_width, version_width, arch_width, description_width],
+        );
+    }
+    out
+}
+
+fn column_width<'a>(header: &str, values: impl Iterator<Item = &'a str>) -> usize {
+    values
+        .map(str::len)
+        .chain(std::iter::once(header.len()))
+        .max()
+        .expect("header length is always present")
+}
+
+fn push_table_row(out: &mut String, cells: [&str; 4], widths: [usize; 4]) {
+    out.push_str(&format!(
+        "{:<name_width$}  {:<version_width$}  {:<arch_width$}  {:<description_width$}\n",
+        cells[0],
+        cells[1],
+        cells[2],
+        cells[3],
+        name_width = widths[0],
+        version_width = widths[1],
+        arch_width = widths[2],
+        description_width = widths[3],
+    ));
 }
 
 fn merge_entries(sources: impl IntoIterator<Item = Vec<ImageEntry>>) -> Vec<ImageEntry> {
@@ -291,6 +343,41 @@ mod tests {
         assert!(table.contains("linux"));
         assert!(table.contains("2 versions"));
         assert!(table.contains("nimbos"));
+    }
+
+    #[test]
+    fn render_merged_aligns_long_names() {
+        let images = ImageRegistry {
+            images: vec![
+                ImageEntry {
+                    name: "initramfs-loongarch64-busybox.cpio.gz".to_string(),
+                    version: "0.0.1".to_string(),
+                    released_at: Some("2025-01-01T00:00:00Z".parse().unwrap()),
+                    description: "BusyBox initramfs for loongarch64".to_string(),
+                    sha256: "abc".to_string(),
+                    arch: "loongarch64".to_string(),
+                    url: "https://example.com/initramfs.tar.gz".to_string(),
+                },
+                ImageEntry {
+                    name: "qemu-riscv64".to_string(),
+                    version: "0.0.1".to_string(),
+                    released_at: Some("2025-01-02T00:00:00Z".parse().unwrap()),
+                    description: "Guest image bundle".to_string(),
+                    sha256: "def".to_string(),
+                    arch: "riscv64".to_string(),
+                    url: "https://example.com/qemu.tar.gz".to_string(),
+                },
+            ],
+        };
+
+        let table = images.render_table(false, None);
+        let version_column = table.lines().next().unwrap().find("Version").unwrap();
+        for line in table.lines().skip(2) {
+            assert_eq!(
+                &line[version_column..version_column + "1 version".len()],
+                "1 version"
+            );
+        }
     }
 
     #[test]
