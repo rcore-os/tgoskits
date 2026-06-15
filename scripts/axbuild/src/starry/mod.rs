@@ -11,7 +11,7 @@ use ostool::{
 
 use crate::{
     context::{AppContext, ResolvedStarryRequest, SnapshotPersistence, StarryCliArgs},
-    test::{case as qemu_case, qemu},
+    test::{case as qemu_case, host_http::HostHttpServerGuard, qemu},
 };
 
 pub(crate) mod apk;
@@ -630,6 +630,12 @@ impl Starry {
             qemu::qemu_timeout_summary(&qemu)
         );
         println!("  rootfs: {}", prepared_assets.rootfs_path.display());
+
+        let _host_http_server = test_case
+            .host_http_server
+            .as_ref()
+            .map(|config| HostHttpServerGuard::start(config, &test_case.name))
+            .transpose()?;
 
         let result = self
             .app

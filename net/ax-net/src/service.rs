@@ -804,4 +804,26 @@ mod tests {
         service.dhcp[1].address = Some(Ipv4Cidr::new(Ipv4Address::new(192, 0, 2, 10), 24));
         assert!(service.dhcp_configured());
     }
+
+    #[test]
+    fn interface_address_table_handles_loopback_and_two_ethernet_addresses() {
+        let routes = Arc::new(spin::RwLock::new(RouteTable::new()));
+        let router = Router::new(routes.clone());
+        let control = Arc::new(NetControl::new(Vec::new(), routes, Vec::new()));
+        let mut service = Service::new(router, control);
+
+        let lo = Ipv4Cidr::new(Ipv4Address::new(127, 0, 0, 1), 8);
+        let eth0 = Ipv4Cidr::new(Ipv4Address::new(10, 0, 2, 15), 24);
+        let eth1 = Ipv4Cidr::new(Ipv4Address::new(10, 0, 3, 15), 24);
+
+        service.iface.update_ip_addrs(|ip_addrs| {
+            ip_addrs.push(lo.into()).unwrap();
+        });
+        Service::set_interface_ipv4(&mut service.iface, None, Some(eth0));
+        Service::set_interface_ipv4(&mut service.iface, None, Some(eth1));
+
+        assert!(service.iface.ip_addrs().contains(&IpCidr::Ipv4(lo)));
+        assert!(service.iface.ip_addrs().contains(&IpCidr::Ipv4(eth0)));
+        assert!(service.iface.ip_addrs().contains(&IpCidr::Ipv4(eth1)));
+    }
 }

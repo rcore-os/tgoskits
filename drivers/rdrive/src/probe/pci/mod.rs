@@ -17,12 +17,6 @@ static PCIE: Once<Mutex<Vec<PcieEnumterator>>> = Once::new();
 
 pub type FnOnProbe = fn(ProbePci<'_>) -> Result<(), OnProbeError>;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-struct Id {
-    vendor: u16,
-    device: u16,
-}
-
 pub fn new_driver_generic(
     mmio_base: usize,
     mmio_size: usize,
@@ -148,7 +142,7 @@ impl DerefMut for EndpointRc {
 
 struct PcieEnumterator {
     ctrl: Device<PcieController>,
-    probed: BTreeSet<Id>,
+    probed: BTreeSet<PciAddress>,
 }
 
 impl PcieEnumterator {
@@ -184,11 +178,8 @@ impl PcieEnumterator {
     ) -> Result<(), ProbeError> {
         let intx_route = endpoint.intx_route;
         let endpoint = endpoint.endpoint;
-        let id = Id {
-            vendor: endpoint.vendor_id(),
-            device: endpoint.device_id(),
-        };
-        if self.probed.contains(&id) {
+        let address = endpoint.address();
+        if self.probed.contains(&address) {
             return Ok(());
         }
 
@@ -212,7 +203,7 @@ impl PcieEnumterator {
             let plat_dev = PlatformDevice::new(desc);
             match (pci_probe)(ProbePci::new(info, &mut endpoint, plat_dev)) {
                 Ok(_) => {
-                    self.probed.insert(id);
+                    self.probed.insert(address);
                     return Ok(());
                 }
                 Err(e) => match e {
