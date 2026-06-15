@@ -26,17 +26,29 @@ extern crate alloc;
 #[macro_use]
 extern crate log;
 
+mod bus;
 mod config;
 mod device;
+mod irq;
+mod legacy;
+mod model;
 mod range_alloc;
+mod registry;
+mod resource;
 
 pub use axdevice_base::{
     AccessWidth, BaseDeviceOps, BaseMmioDeviceOps, BasePortDeviceOps, BaseSysRegDeviceOps, Port,
     SysRegAddr,
 };
 pub use axvm_types::GuestPhysAddr;
+pub use bus::{BusAccess, BusAddress, BusKind, BusOp, BusResponse};
 pub use config::AxVmDeviceConfig;
 pub use device::{AxEmuDevices, AxVmDevices};
+pub use irq::{IrqLine, IrqSink, IrqTarget, MsiMessage};
+pub use legacy::{LegacyDeviceAdapter, LegacyDeviceInner};
+pub use model::{DeviceError, DeviceId, DeviceOps, DeviceResult};
+pub use registry::DeviceRegistry;
+pub use resource::{DeviceCapabilities, PciBarKind, Resource};
 #[cfg(target_arch = "x86_64")]
 pub use x86_vlapic::IoApicInterrupt;
 // pub use virtio_dev::*;

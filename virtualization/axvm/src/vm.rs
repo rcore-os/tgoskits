@@ -20,7 +20,7 @@ use ax_errno::{AxError, AxResult, ax_err, ax_err_type};
 use ax_kspin::SpinNoIrq as Mutex;
 use ax_memory_addr::{align_down_4k, align_up_4k};
 use axaddrspace::{AddrSpace, MappingFlags};
-use axdevice::{AxVmDeviceConfig, AxVmDevices};
+use axdevice::{AxVmDeviceConfig, AxVmDevices, BusAccess, BusResponse, DeviceError};
 use axdevice_base::AccessWidth;
 use axvcpu::{AxVCpu, AxVCpuExitReason};
 #[cfg(target_arch = "x86_64")]
@@ -65,6 +65,56 @@ fn sign_extend_value(value: usize, width: AccessWidth) -> usize {
         AccessWidth::Word => (value as i16) as isize as usize,
         AccessWidth::Dword => (value as i32) as isize as usize,
         AccessWidth::Qword => value,
+    }
+}
+
+fn device_error_to_ax_error(error: DeviceError) -> AxError {
+    match error {
+        DeviceError::Backend(error) => error,
+        DeviceError::DeviceNotFound { .. } => {
+            ax_err_type!(NotFound, format!("device dispatch failed: {error}"))
+        }
+        DeviceError::InvalidAccessWidth { .. }
+        | DeviceError::BusAddressMismatch { .. }
+        | DeviceError::AddressOutOfRange { .. } => {
+            ax_err_type!(InvalidInput, format!("device dispatch failed: {error}"))
+        }
+        DeviceError::UnsupportedOperation => {
+            ax_err_type!(Unsupported, format!("device dispatch failed: {error}"))
+        }
+        DeviceError::ReadOnly { .. } | DeviceError::WriteOnly { .. } => {
+            ax_err_type!(PermissionDenied, format!("device dispatch failed: {error}"))
+        }
+        DeviceError::DuplicateDeviceId { .. } | DeviceError::ResourceConflict { .. } => {
+            ax_err_type!(BadState, format!("device dispatch failed: {error}"))
+        }
+    }
+}
+
+fn unexpected_device_response(access: BusAccess, response: BusResponse) -> AxError {
+    ax_err_type!(
+        BadState,
+        format!("unexpected device response {response:?} for access {access:?}")
+    )
+}
+
+fn dispatch_device_read(devices: &AxVmDevices, access: BusAccess) -> AxResult<usize> {
+    match devices
+        .dispatch_bus_access(access)
+        .map_err(device_error_to_ax_error)?
+    {
+        BusResponse::Read { value } => Ok(value),
+        response => Err(unexpected_device_response(access, response)),
+    }
+}
+
+fn dispatch_device_write(devices: &AxVmDevices, access: BusAccess) -> AxResult {
+    match devices
+        .dispatch_bus_access(access)
+        .map_err(device_error_to_ax_error)?
+    {
+        BusResponse::Write => Ok(()),
+        response => Err(unexpected_device_response(access, response)),
     }
 }
 
@@ -586,7 +636,10 @@ impl AxVM {
                         reg_width,
                         signed_ext,
                     } => {
-                        let raw = self.get_devices().handle_mmio_read(addr, width)?;
+                        let raw = dispatch_device_read(
+                            self.get_devices(),
+                            BusAccess::mmio_read(addr, width),
+                        )?;
                         let masked = raw & width_mask(width);
                         let val = if signed_ext {
                             sign_extend_value(masked, width)
@@ -596,11 +649,16 @@ impl AxVM {
                         vcpu.set_gpr(reg, val);
                     }
                     AxVCpuExitReason::MmioWrite { addr, width, data } => {
-                        self.get_devices()
-                            .handle_mmio_write(addr, width, data as usize)?;
+                        dispatch_device_write(
+                            self.get_devices(),
+                            BusAccess::mmio_write(addr, width, data as usize),
+                        )?;
                     }
                     AxVCpuExitReason::IoRead { port, width } => {
-                        let val = self.get_devices().handle_port_read(port, width)?;
+                        let val = dispatch_device_read(
+                            self.get_devices(),
+                            BusAccess::pio_read(port, width),
+                        )?;
                         #[cfg(not(target_arch = "riscv64"))]
                         vcpu.set_gpr(0, val); // The target is always eax/ax/al, todo: handle access_width correctly
 
@@ -608,23 +666,27 @@ impl AxVM {
                         vcpu.set_gpr(riscv_vcpu::GprIndex::A0 as usize, val);
                     }
                     AxVCpuExitReason::IoWrite { port, width, data } => {
-                        self.get_devices()
-                            .handle_port_write(port, width, data as usize)?;
+                        dispatch_device_write(
+                            self.get_devices(),
+                            BusAccess::pio_write(port, width, data as usize),
+                        )?;
                     }
                     AxVCpuExitReason::SysRegRead { addr, reg } => {
-                        let val = self.get_devices().handle_sys_reg_read(
-                            addr,
-                            // Generally speaking, the width of system register is fixed and needless to be specified.
-                            // AccessWidth::Qword here is just a placeholder, may be changed in the future.
-                            AccessWidth::Qword,
+                        let val = dispatch_device_read(
+                            self.get_devices(),
+                            BusAccess::sysreg_read(
+                                addr,
+                                // Generally speaking, the width of system register is fixed and needless to be specified.
+                                // AccessWidth::Qword here is just a placeholder, may be changed in the future.
+                                AccessWidth::Qword,
+                            ),
                         )?;
                         vcpu.set_gpr(reg, val);
                     }
                     AxVCpuExitReason::SysRegWrite { addr, value } => {
-                        self.get_devices().handle_sys_reg_write(
-                            addr,
-                            AccessWidth::Qword,
-                            value as usize,
+                        dispatch_device_write(
+                            self.get_devices(),
+                            BusAccess::sysreg_write(addr, AccessWidth::Qword, value as usize),
                         )?;
                     }
                     AxVCpuExitReason::NestedPageFault { addr, access_flags } => {

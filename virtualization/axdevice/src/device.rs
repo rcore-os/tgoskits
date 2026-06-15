@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use alloc::{sync::Arc, vec::Vec};
+use alloc::{format, rc::Rc, sync::Arc, vec, vec::Vec};
 use core::ops::Range;
 
 #[cfg(target_arch = "aarch64")]
@@ -32,7 +32,10 @@ use riscv_vplic::VPlicGlobal;
 #[cfg(target_arch = "x86_64")]
 use x86_vlapic::{EmulatedIoApic, EmulatedPit, EmulatedSerialPort, IoApicInterrupt};
 
-use crate::{AxVmDeviceConfig, range_alloc::RangeAllocator};
+use crate::{
+    AxVmDeviceConfig, BusAccess, BusResponse, DeviceCapabilities, DeviceId, DeviceRegistry,
+    DeviceResult, LegacyDeviceAdapter, Resource, range_alloc::RangeAllocator,
+};
 
 /// A set of emulated device types that can be accessed by a specific address range type.
 pub struct AxEmuDevices<R: DeviceAddrRange> {
@@ -93,6 +96,8 @@ pub struct AxVmDevices {
     emu_mmio_devices: AxEmuMmioDevices,
     emu_sys_reg_devices: AxEmuSysRegDevices,
     emu_port_devices: AxEmuPortDevices,
+    registry: DeviceRegistry,
+    next_device_id: usize,
     #[cfg(target_arch = "x86_64")]
     x86_ioapic: Option<Arc<EmulatedIoApic>>,
     #[cfg(target_arch = "x86_64")]
@@ -137,6 +142,8 @@ impl AxVmDevices {
             emu_mmio_devices: AxEmuMmioDevices::new(),
             emu_sys_reg_devices: AxEmuSysRegDevices::new(),
             emu_port_devices: AxEmuPortDevices::new(),
+            registry: DeviceRegistry::new(),
+            next_device_id: 0,
             #[cfg(target_arch = "x86_64")]
             x86_ioapic: None,
             #[cfg(target_arch = "x86_64")]
@@ -428,19 +435,66 @@ impl AxVmDevices {
         }
     }
 
-    /// Add a MMIO device to the device list
+    fn alloc_device_id(&mut self) -> DeviceId {
+        let id = DeviceId::new(self.next_device_id);
+        self.next_device_id += 1;
+        id
+    }
+
+    fn register_legacy_device(&mut self, adapter: LegacyDeviceAdapter) {
+        if let Err(err) = self.registry.register_device(Rc::new(adapter)) {
+            panic!("failed to register legacy device in DeviceRegistry: {err}");
+        }
+    }
+
+    /// Add a MMIO device to the device list.
     pub fn add_mmio_dev(&mut self, dev: Arc<dyn BaseMmioDeviceOps>) {
+        let id = self.alloc_device_id();
+        let name = format!("legacy-mmio-{}", dev.emu_type());
+        let resources = vec![Resource::Mmio(dev.address_range())];
+        self.register_legacy_device(LegacyDeviceAdapter::mmio(
+            id,
+            name,
+            resources,
+            DeviceCapabilities::none(),
+            Arc::clone(&dev),
+        ));
         self.emu_mmio_devices.add_dev(dev);
     }
 
-    /// Add a system register device to the device list
+    /// Add a system register device to the device list.
     pub fn add_sys_reg_dev(&mut self, dev: Arc<dyn BaseSysRegDeviceOps>) {
+        let id = self.alloc_device_id();
+        let name = format!("legacy-sysreg-{}", dev.emu_type());
+        let resources = vec![Resource::SysReg(dev.address_range())];
+        self.register_legacy_device(LegacyDeviceAdapter::sysreg(
+            id,
+            name,
+            resources,
+            DeviceCapabilities::none(),
+            Arc::clone(&dev),
+        ));
         self.emu_sys_reg_devices.add_dev(dev);
     }
 
-    /// Add a port device to the device list
+    /// Add a port device to the device list.
     pub fn add_port_dev(&mut self, dev: Arc<dyn BasePortDeviceOps>) {
+        let id = self.alloc_device_id();
+        let name = format!("legacy-pio-{}", dev.emu_type());
+        let resources = vec![Resource::Pio(dev.address_range())];
+        self.register_legacy_device(LegacyDeviceAdapter::pio(
+            id,
+            name,
+            resources,
+            DeviceCapabilities::none(),
+            Arc::clone(&dev),
+        ));
         self.emu_port_devices.add_dev(dev);
+    }
+
+    /// Dispatches a normalized bus access through the new device registry.
+    pub fn dispatch_bus_access(&self, access: BusAccess) -> DeviceResult<BusResponse> {
+        self.registry.dispatch(access)
     }
 
     /// Iterates over the MMIO devices in the set.
