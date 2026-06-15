@@ -130,6 +130,13 @@ fn to_cargo_config(
     metadata: &cargo_metadata::Metadata,
 ) -> anyhow::Result<Cargo> {
     config.target = request.target.clone();
+    let makefile_features = crate::build::makefile_features_from_env();
+    crate::build::apply_makefile_features_with_metadata(
+        &mut config.build_info,
+        &request.package,
+        &makefile_features,
+        metadata,
+    );
     let known_platforms = platform_feature_names(metadata);
     reject_unsupported_nested_platform_features(&config.build_info.features, &known_platforms)?;
     let plat_dyn = config
@@ -571,11 +578,47 @@ fn load_build_config(request: &ResolvedAxvisorRequest) -> anyhow::Result<LoadedA
 
 #[cfg(test)]
 mod tests {
-    use std::{fs, path::Path};
+    use std::{
+        env,
+        ffi::{OsStr, OsString},
+        fs,
+        path::Path,
+        sync::{LazyLock, Mutex},
+    };
 
     use tempfile::tempdir;
 
     use super::*;
+
+    static ENV_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
+
+    struct TempEnvVar {
+        key: &'static str,
+        original: Option<OsString>,
+    }
+
+    impl TempEnvVar {
+        fn set(key: &'static str, value: impl AsRef<OsStr>) -> Self {
+            let original = env::var_os(key);
+            unsafe {
+                env::set_var(key, value);
+            }
+            Self { key, original }
+        }
+    }
+
+    impl Drop for TempEnvVar {
+        fn drop(&mut self) {
+            match self.original.as_ref() {
+                Some(value) => unsafe {
+                    env::set_var(self.key, value);
+                },
+                None => unsafe {
+                    env::remove_var(self.key);
+                },
+            }
+        }
+    }
 
     fn write_board(axvisor_dir: &Path, name: &str, body: &str) -> PathBuf {
         let path = axvisor_dir
@@ -1093,6 +1136,45 @@ log = "Info"
         assert!(cargo.features.contains(&"ax-driver/plat-dyn".to_string()));
         assert!(!cargo.features.contains(&"ax-hal/x86-qemu-q35".to_string()));
         assert!(!cargo.features.contains(&"ax-hal/x86-pc".to_string()));
+    }
+
+    #[test]
+    fn load_cargo_config_applies_stack_protector_from_makefile_features() {
+        let _env_lock = ENV_LOCK.lock().unwrap();
+        let _features = TempEnvVar::set("FEATURES", "stack-protector");
+        let root = tempdir().unwrap();
+        let config_path = root.path().join(".build.toml");
+        fs::write(
+            &config_path,
+            r#"
+features = ["ept-level-4", "fs", "vmx"]
+log = "Info"
+"#,
+        )
+        .unwrap();
+
+        let cargo = load_cargo_config(&ResolvedAxvisorRequest {
+            package: AXVISOR_PACKAGE.to_string(),
+            axvisor_dir: root.path().join("os/axvisor"),
+            arch: "x86_64".to_string(),
+            target: "x86_64-unknown-none".to_string(),
+            plat_dyn: None,
+            smp: None,
+            debug: false,
+            build_info_path: config_path,
+            qemu_config: None,
+            uboot_config: None,
+            vmconfigs: vec![],
+        })
+        .unwrap();
+
+        assert!(
+            cargo
+                .features
+                .contains(&"ax-std/stack-protector".to_string())
+        );
+        let config = fs::read_to_string(cargo.extra_config.unwrap()).unwrap();
+        assert!(config.contains(r#""-Zstack-protector=strong""#));
     }
 
     #[test]
