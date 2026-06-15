@@ -67,16 +67,17 @@ isolation lands.
 ## Kernel Regression Tests
 
 Kernel-level semantics (pipe poll, pidfd, rsext4 open-unlink, mount namespace
-isolation, etc.) are covered separately by **test-nix-prereqs**:
+isolation, etc.) are covered separately by the **qemu-smp1/system** grouped suite:
 
 ```bash
-cargo xtask starry test qemu --arch x86_64 -c test-nix-prereqs
-cargo xtask starry test qemu --arch aarch64 -c test-nix-prereqs
+cargo xtask starry test qemu --arch x86_64 -c qemu-smp1/system
+cargo xtask starry test qemu --arch aarch64 -c qemu-smp1/system
 ```
 
-That grouped case contains focused C-language regression tests independent of
-the Nix app workflow, making them reviewable and runnable across CI targets.
-See `test-suit/starryos/qemu-smp1/test-nix-prereqs/`.
+These C-language regression tests were migrated from the former
+`test-nix-prereqs` case and now live alongside other kernel regression tests
+under the unified system grouped suite.
+See `test-suit/starryos/qemu-smp1/system/`.
 
 ## File Structure
 
