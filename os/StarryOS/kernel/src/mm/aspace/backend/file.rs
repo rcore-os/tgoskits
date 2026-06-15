@@ -338,8 +338,19 @@ impl BackendOps for FileBackend {
         let file_data = self.0.file_data.lock();
         let start_page =
             ((range.start - file_data.start) / PAGE_SIZE_4K) as u32 + file_data.offset_page;
+        // Pages at or beyond EOF must not be eagerly backed (Linux SIGBUS past EOF;
+        // without this bound MAP_POPULATE over a sparse mapping exhausts RAM).
+        let eof_page = self
+            .0
+            .cache
+            .file_len()
+            .unwrap_or(u64::MAX)
+            .div_ceil(PAGE_SIZE_4K as u64);
         for (i, addr) in pages_in(range, PageSize::Size4K)?.enumerate() {
             let pn = start_page + i as u32;
+            if (pn as u64) >= eof_page {
+                continue;
+            }
             match pt.query(addr) {
                 Ok((paddr, page_flags, _)) => {
                     if access_flags.contains(MappingFlags::WRITE)
