@@ -11,7 +11,7 @@ edition.workspace = true
 license.workspace = true
 name = "starryos"
 repository.workspace = true
-version = "0.5.15"
+version = "0.5.16"
 
 [features]
 default = []
@@ -29,6 +29,10 @@ smp = ["ax-feat/smp", "axplat-dyn?/smp", "ax-hal/smp"]
 sg2002 = [
   "ax-hal/riscv64-sg2002",
   "starry-kernel/sg2002",
+]
+sg2002-wifi = [
+  "ax-hal/riscv64-sg2002",
+  "starry-kernel/sg2002-wifi",
 ]
 sg2002-dyn = [
   "plat-dyn",

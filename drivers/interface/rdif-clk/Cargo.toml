@@ -1,6 +1,6 @@
 [package]
 name = "rdif-clk"
-version = "0.5.2"
+version = "0.5.3"
 edition.workspace = true
 authors = ["周睿 <zrufo747@outlook.com>"]
 repository.workspace = true

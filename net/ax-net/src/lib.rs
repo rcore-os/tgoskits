@@ -24,6 +24,7 @@ extern crate std;
 mod config;
 mod consts;
 mod device;
+mod dhcp_server;
 mod general;
 mod listen_table;
 /// Socket option types and the [`Configurable`](options::Configurable) trait.
@@ -47,13 +48,17 @@ mod wrapper;
 
 use alloc::{borrow::ToOwned, boxed::Box, vec, vec::Vec};
 use core::{
+    future::poll_fn,
     net::IpAddr,
     sync::atomic::{AtomicBool, Ordering},
+    task::Poll,
     time::Duration,
 };
 
 use ax_errno::{AxError, AxResult, ax_err_type};
 use ax_sync::Mutex;
+use ax_task::future::block_on;
+use axpoll::PollSet;
 use smoltcp::{
     socket::dns::{self, GetQueryResultError, StartQueryError},
     wire::{DnsQueryType, EthernetAddress, IpAddress, Ipv4Address, Ipv4Cidr},
@@ -89,6 +94,11 @@ static SOCKET_SET: LazyLock<SocketSetWrapper> = LazyLock::new(SocketSetWrapper::
 static SERVICE: Once<Mutex<Service>> = Once::new();
 static POLLING_INTERFACES: AtomicBool = AtomicBool::new(false);
 static POLL_AGAIN: AtomicBool = AtomicBool::new(false);
+
+/// Signalled by [`notify_oob_rx`] to wake the out-of-band RX poll task, for
+/// devices whose RX arrives outside the ethernet IRQ framework (e.g. SDIO).
+static OOB_RX_SIGNAL: PollSet = PollSet::new();
+static OOB_POLL_TASK_STARTED: AtomicBool = AtomicBool::new(false);
 
 const DHCP_BOOTSTRAP_ATTEMPTS: usize = 200;
 const DHCP_BOOTSTRAP_POLL_INTERVAL: Duration = Duration::from_millis(10);
@@ -250,6 +260,104 @@ pub fn poll_interfaces() {
 
 pub fn arp_entries() -> Vec<ArpEntry> {
     get_service().arp_entries()
+}
+
+/// Stack-agnostic configuration for registering an already-wrapped ethernet
+/// device with a static IPv4 and optional services.
+///
+/// This carries no notion of "Wi-Fi" or "SoftAP" — it is the generic policy the
+/// protocol stack applies. Link-type-specific policy (e.g. a SoftAP's choice of
+/// addresses and DHCP-server lease) is decided by the caller (board/runtime) and
+/// passed in as data.
+pub struct NetConfig {
+    /// Interface name (e.g. `"wlan0"`).
+    pub name: alloc::string::String,
+    /// This interface's static address / gateway.
+    pub ip: [u8; 4],
+    pub prefix_len: u8,
+    /// If set, run a built-in DHCP server handing out this single address.
+    pub dhcp_server_client_ip: Option<[u8; 4]>,
+    /// Spawn a dedicated poll task woken via [`notify_oob_rx`]. Needed for
+    /// out-of-band RX devices (e.g. SDIO) that sit outside the ethernet IRQ
+    /// framework.
+    pub dedicated_poll: bool,
+}
+
+/// Registers an already-wrapped ethernet device with a static IPv4 and the
+/// services described by `config`. The network service must already be
+/// initialized (via [`init_network`]).
+///
+/// This is the generic, link-type-agnostic registration entry point. A SoftAP
+/// is just one caller that fills in a static IP + DHCP server + dedicated poll.
+pub fn register_device_with_config(dev: Box<dyn EthernetDriver>, config: NetConfig) {
+    let server_ip = Ipv4Address::new(config.ip[0], config.ip[1], config.ip[2], config.ip[3]);
+    let cidr = Ipv4Cidr::new(server_ip, config.prefix_len);
+
+    let mac = EthernetAddress(dev.mac_address());
+    // A dedicated-poll device gets RX out-of-band (via `notify_oob_rx` →
+    // `wake_rx`), so its socket wakers must be armed even though it has no
+    // ethernet IRQ registration.
+    let eth_dev = if config.dedicated_poll {
+        EthernetDevice::new_oob_rx(config.name.clone(), dev, Some(cidr))
+    } else {
+        EthernetDevice::new(config.name.clone(), dev, Some(cidr))
+    };
+
+    {
+        let mut s = get_service();
+        let dev_idx = s.register_static_device(config.name.clone(), eth_dev, cidr);
+        if let Some(client) = config.dhcp_server_client_ip {
+            let client_ip = Ipv4Address::new(client[0], client[1], client[2], client[3]);
+            let subnet_mask = prefix_to_mask(config.prefix_len);
+            s.enable_dhcp_server(dev_idx, server_ip, client_ip, subnet_mask);
+        }
+    }
+
+    info!("{}: up, mac {mac}, ip {cidr}", config.name);
+    if config.dedicated_poll {
+        start_oob_poll_task(config.name);
+    }
+}
+
+/// Wakes the out-of-band RX poll task; intended as a device RX-data callback.
+///
+/// A device whose RX path sits outside the ethernet IRQ framework (e.g. an SDIO
+/// chip owning its own card interrupt) registers this as its RX callback. It
+/// only signals here; the dedicated poll task does the actual stack polling, so
+/// the device's RX thread is never blocked on the stack.
+pub fn notify_oob_rx() {
+    OOB_RX_SIGNAL.wake();
+}
+
+/// Spawns the out-of-band RX poll task (idempotent across all such devices).
+///
+/// `ifname` names the task (e.g. `wlan0` → `wlan0-poll`). One shared task drives
+/// `poll_interfaces()` for every dedicated-poll device, woken by [`notify_oob_rx`].
+fn start_oob_poll_task(ifname: alloc::string::String) {
+    if OOB_POLL_TASK_STARTED.swap(true, Ordering::AcqRel) {
+        return;
+    }
+    ax_task::spawn_with_name(
+        || {
+            block_on(poll_fn(|cx| {
+                // Register first to avoid lost wakeups.
+                OOB_RX_SIGNAL.register(cx.waker());
+                poll_interfaces();
+                get_service().wake_all_devices();
+                Poll::<()>::Pending
+            }));
+        },
+        alloc::format!("{ifname}-poll"),
+    );
+}
+
+fn prefix_to_mask(prefix_len: u8) -> Ipv4Address {
+    let bits: u32 = if prefix_len == 0 {
+        0
+    } else {
+        u32::MAX << (32 - prefix_len.min(32) as u32)
+    };
+    Ipv4Address::from_bits(bits)
 }
 
 pub fn eth0_ipv4_config() -> Option<Ipv4InterfaceConfig> {

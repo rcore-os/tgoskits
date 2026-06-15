@@ -1,6 +1,6 @@
 [package]
 name = "pcie"
-version = "0.6.3"
+version = "0.6.4"
 edition.workspace = true
 autotests = false
 authors = ["周睿 <zrufo747@outlook.com>"]

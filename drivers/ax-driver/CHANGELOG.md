@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.0](https://github.com/rcore-os/tgoskits/compare/ax-driver-v0.7.1...ax-driver-v0.8.0) - 2026-06-12
+
+### Added
+
+- *(ax-driver)* add dynamic platform rtc support ([#1242](https://github.com/rcore-os/tgoskits/pull/1242))
+
+### Fixed
+
+- *(somehal)* route LoongArch ACPI GSIs through PCH-PIC
+
+### Other
+
+- *(irq)* carry ACPI IRQ routing metadata
+- *(ax-driver)* normalize FDT PCI IRQ source resolution
+- *(ax-driver)* register devices with binding info
+- *(rdrive)* carry probe context and PCI INTx routes
+
 ## [0.7.1](https://github.com/rcore-os/tgoskits/compare/ax-driver-v0.7.0...ax-driver-v0.7.1) - 2026-06-11
 
 ### Fixed

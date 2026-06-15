@@ -3,6 +3,7 @@
 #include <fcntl.h>
 #include <unistd.h>
 #include <stdlib.h>
+#include <sys/mount.h>
 #include <sys/stat.h>
 #include <limits.h>
 
@@ -81,6 +82,18 @@ int main(void)
               "/sys/class/graphics/fb0 应可 lstat");
     CHECK(S_ISLNK(st.st_mode),
           "/sys/class/graphics/fb0 应是软链");
+
+    /* /sys/fs/cgroup 必须由 sysfs 自身提供 —— sysfs 盖在 /sys 上后
+     * rootfs 里的同名目录不可见，systemd 在这里挂 cgroup 层级 */
+    CHECK_RET(stat("/sys/fs", &st), 0, "/sys/fs 应可 stat");
+    CHECK(S_ISDIR(st.st_mode), "/sys/fs 应是目录");
+    CHECK_RET(stat("/sys/fs/cgroup", &st), 0, "/sys/fs/cgroup 应可 stat");
+    CHECK(S_ISDIR(st.st_mode), "/sys/fs/cgroup 应是目录");
+
+    CHECK_RET(mount("none", "/sys/fs/cgroup", "tmpfs", 0, NULL), 0,
+              "tmpfs 应能挂载到 /sys/fs/cgroup");
+    CHECK_RET(umount2("/sys/fs/cgroup", 0), 0,
+              "应能卸载 /sys/fs/cgroup 上的 tmpfs");
 
     TEST_DONE();
 }
