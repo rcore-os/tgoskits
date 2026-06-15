@@ -129,8 +129,8 @@ pub(crate) unsafe fn gstat_set_gid(gid: usize) {
 }
 
 #[inline(always)]
-pub(crate) unsafe fn gstat_set_pvm(pvm: bool) {
-    set_csr_bit::<CSR_GSTAT>(1, pvm);
+pub(crate) unsafe fn gstat_set_pgm(pgm: bool) {
+    set_csr_bit::<CSR_GSTAT>(2, pgm);
 }
 
 #[inline(always)]
@@ -235,6 +235,16 @@ fn current_hwis() -> usize {
     (read_gintc() & GINTC_HWIS_MASK) >> GINTC_HWIS_SHIFT
 }
 
+pub fn set_hwi_interrupts(mask: usize) {
+    let hwis = (mask >> INT_HWI0) & GINTC_HWIS_MASK;
+    unsafe {
+        let mut gintc = read_gintc();
+        gintc &= !GINTC_HWIS_MASK;
+        gintc |= (hwis << GINTC_HWIS_SHIFT) & GINTC_HWIS_MASK;
+        write_gintc(gintc);
+    }
+}
+
 unsafe fn pulse_hwi(vector: usize) {
     let hwis_bit = 1 << (vector - INT_HWI0);
 
@@ -260,15 +270,24 @@ pub fn inject_interrupt(vector: usize) {
 
     unsafe {
         if (INT_HWI0..=INT_HWI7).contains(&vector) {
-            if INJECT_INT_LOGS.fetch_add(1, Ordering::Relaxed) < 16 {
-                log::debug!(
-                    "LoongArch vcpu pulse HWI: vector={}, gintc_before={:#x}, hwis_before={:#x}",
+            let log_index = INJECT_INT_LOGS.fetch_add(1, Ordering::Relaxed);
+            if log_index < 16 {
+                log::trace!(
+                    "LoongArch vcpu pulse HWI before: vector={}, gintc={:#x}, hwis={:#x}",
                     vector,
                     read_gintc(),
                     current_hwis()
                 );
             }
             pulse_hwi(vector);
+            if log_index < 16 {
+                log::trace!(
+                    "LoongArch vcpu pulse HWI after: vector={}, gintc={:#x}, hwis={:#x}",
+                    vector,
+                    read_gintc(),
+                    current_hwis()
+                );
+            }
         } else {
             let estat = gcsr_read::<GCSR_ESTAT>();
             gcsr_write::<GCSR_ESTAT>(estat | (1usize << vector));

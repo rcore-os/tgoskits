@@ -21,6 +21,13 @@ const X86_RESERVED_RAM_RANGES: &[RawRange] = &[
     (0, 0x20_0000),
 ];
 
+#[cfg(target_arch = "loongarch64")]
+const LOONGARCH_RESERVED_RAM_RANGES: &[RawRange] = &[
+    // Keep the low RAM identity-mappable for passthrough DMA used by the
+    // LoongArch QEMU virt machine.
+    (0, 0x1000_0000),
+];
+
 struct MemIfImpl;
 
 fn push_non_overlapping<const N: usize>(list: &mut Vec<RawRange, N>, range: RawRange) {
@@ -76,6 +83,10 @@ impl MemIf for MemIfImpl {
             let mut list = Vec::new();
             #[cfg(target_arch = "x86_64")]
             for &range in X86_RESERVED_RAM_RANGES {
+                push_non_overlapping(&mut list, range);
+            }
+            #[cfg(target_arch = "loongarch64")]
+            for &range in LOONGARCH_RESERVED_RAM_RANGES {
                 push_non_overlapping(&mut list, range);
             }
             for r in somehal::mem::memory_map() {

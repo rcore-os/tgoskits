@@ -69,6 +69,7 @@ pub(crate) fn prepare_loongarch_linux_memory_vmconfigs(
     let rootfs_path = qemu_rootfs_path(request, workspace_root, explicit_rootfs)?;
     let out_dir = workspace_root.join("tmp/axbuild/axvisor/loongarch64");
     let kernel_path = out_dir.join("linux-qemu");
+    let firmware_path = loongarch_uefi_firmware_path(workspace_root);
     let mut prepared_vmconfigs = Vec::with_capacity(request.vmconfigs.len());
 
     for vmconfig in &request.vmconfigs {
@@ -102,12 +103,19 @@ pub(crate) fn prepare_loongarch_linux_memory_vmconfigs(
         );
         fs::create_dir_all(&out_dir)
             .with_context(|| format!("failed to create {}", out_dir.display()))?;
-        let patched = content
+        let mut patched = content
             .replace("image_location = \"fs\"", "image_location = \"memory\"")
             .replace(
                 "kernel_path = \"/guest/linux/linux-qemu\"",
                 &format!("kernel_path = \"{}\"", kernel_path.display()),
             );
+        if let Some(firmware_path) = &firmware_path {
+            patched = replace_toml_string_value(
+                &patched,
+                "uefi_firmware_path",
+                &firmware_path.display().to_string(),
+            );
+        }
         fs::write(&prepared_vmconfig, patched)
             .with_context(|| format!("failed to write {}", prepared_vmconfig.display()))?;
         prepared_vmconfigs.push(prepared_vmconfig);
@@ -117,15 +125,39 @@ pub(crate) fn prepare_loongarch_linux_memory_vmconfigs(
     Ok(())
 }
 
+fn loongarch_uefi_firmware_path(workspace_root: &Path) -> Option<PathBuf> {
+    [
+        PathBuf::from("/tmp/ostool/ovmf/loongarch64/code.fd"),
+        workspace_root.join("tmp/ostool/ovmf/loongarch64/code.fd"),
+        workspace_root.join("tmp/loongarch-uefi-stage1/assets/qemu-binary/QEMU_EFI.fd"),
+    ]
+    .into_iter()
+    .find(|path| path.exists())
+}
+
+fn replace_toml_string_value(content: &str, key: &str, value: &str) -> String {
+    let prefix = format!("{key} = ");
+    content
+        .lines()
+        .map(|line| {
+            if line.trim_start().starts_with(&prefix) {
+                let indent_len = line.len() - line.trim_start().len();
+                format!("{}{}\"{}\"", &line[..indent_len], prefix, value)
+            } else {
+                line.to_string()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+        + "\n"
+}
+
 fn ensure_loongarch_busybox_serial_init(rootfs_path: &Path, out_dir: &Path) -> anyhow::Result<()> {
     let Some(inittab) = rootfs::inject::read_text_file(rootfs_path, "/etc/inittab")? else {
         return Ok(());
     };
     let replacement_content = loongarch_busybox_inittab();
-    if inittab == replacement_content
-        || (!inittab.contains("/sbin/openrc") && !inittab.contains("/etc/init.d/rcS"))
-        || rootfs_file_exists(rootfs_path, "/sbin/openrc")?
-    {
+    if inittab == replacement_content || rootfs_file_exists(rootfs_path, "/sbin/openrc")? {
         return Ok(());
     }
 

@@ -21,7 +21,7 @@ mod create;
 mod device;
 mod parser;
 mod print;
-mod vm_fdt;
+pub(crate) mod vm_fdt;
 
 use alloc::{collections::BTreeMap, format, vec::Vec};
 
@@ -40,7 +40,7 @@ use fdt_parser::Fdt;
 pub use parser::*;
 
 use axvm::config::AxVMConfig;
-use axvmconfig::AxVMCrateConfig;
+use axvmconfig::{AxVMCrateConfig, VMBootProtocol};
 
 use crate::config::{get_vm_dtb_arc, vmcfg};
 
@@ -96,11 +96,65 @@ pub fn get_loongarch_guest_irq_routes(vm_id: usize) -> Vec<LoongArchGuestIrqRout
         .unwrap_or_default()
 }
 
+#[cfg(target_arch = "loongarch64")]
+fn handle_uefi_fdt_operations(
+    vm_config: &mut AxVMConfig,
+    vm_create_config: &mut AxVMCrateConfig,
+) -> AxResult {
+    const LOONGARCH_UEFI_FDT_BASE: usize = 0x0010_0000;
+
+    info!(
+        "VM[{}] uses LoongArch UEFI boot protocol, keeping firmware DTB at {:#x}",
+        vm_config.id(),
+        LOONGARCH_UEFI_FDT_BASE
+    );
+    vm_config.set_dtb_load_gpa(LOONGARCH_UEFI_FDT_BASE.into());
+    vm_create_config.kernel.dtb_load_addr = Some(LOONGARCH_UEFI_FDT_BASE);
+    store_loongarch_guest_irq_routes(vm_config.id(), loongarch_qemu_uefi_irq_routes());
+    Ok(())
+}
+
+#[cfg(target_arch = "loongarch64")]
+fn loongarch_qemu_uefi_irq_routes() -> Vec<LoongArchGuestIrqRoute> {
+    const HOST_UART_IRQ: usize = 2;
+    const HOST_PCI_INTX_BASE: usize = 16;
+    const GUEST_UART_PCH_INPUT: usize = 2;
+    const GUEST_PCH_INTX_BASE: usize = 16;
+
+    let mut routes = Vec::from([LoongArchGuestIrqRoute {
+        physical_irq: HOST_UART_IRQ,
+        guest_vector: GUEST_UART_PCH_INPUT,
+    }]);
+    routes.extend((0..4).map(|idx| LoongArchGuestIrqRoute {
+        physical_irq: HOST_PCI_INTX_BASE + idx,
+        guest_vector: GUEST_PCH_INTX_BASE + idx,
+    }));
+    routes
+}
+
+#[cfg(not(target_arch = "loongarch64"))]
+fn handle_uefi_fdt_operations(
+    vm_config: &mut AxVMConfig,
+    vm_create_config: &mut AxVMCrateConfig,
+) -> AxResult {
+    info!(
+        "VM[{}] uses UEFI boot protocol, skipping guest DTB handling",
+        vm_config.id()
+    );
+    vm_config.clear_dtb_load_gpa();
+    vm_create_config.kernel.dtb_load_addr = None;
+    Ok(())
+}
+
 /// Handle all FDT-related operations for guest architectures that boot with DTB.
 pub fn handle_fdt_operations(
     vm_config: &mut AxVMConfig,
     vm_create_config: &mut AxVMCrateConfig,
 ) -> AxResult {
+    if vm_create_config.kernel.effective_boot_protocol() == VMBootProtocol::Uefi {
+        return handle_uefi_fdt_operations(vm_config, vm_create_config);
+    }
+
     let host_fdt_bytes = try_get_host_fdt();
 
     if let Some(host_fdt_bytes) = host_fdt_bytes {
@@ -153,6 +207,24 @@ pub fn handle_fdt_operations(
             "VM[{}] DTB not found in memory, skipping...",
             vm_config.id()
         );
+        let unresolved_passthrough_devices = vm_config
+            .pass_through_devices()
+            .iter()
+            .filter(|device| device.length == 0)
+            .cloned()
+            .collect::<Vec<_>>();
+        if !unresolved_passthrough_devices.is_empty() {
+            warn!(
+                "VM[{}] clearing {} unresolved passthrough discovery device(s)",
+                vm_config.id(),
+                unresolved_passthrough_devices.len()
+            );
+            for device in unresolved_passthrough_devices {
+                vm_config.remove_pass_through_device(device);
+            }
+        }
+        vm_config.clear_dtb_load_gpa();
+        vm_create_config.kernel.dtb_load_addr = None;
     }
     Ok(())
 }

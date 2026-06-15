@@ -6,6 +6,7 @@ extern crate alloc;
 mod context_frame;
 mod exception;
 pub mod host;
+mod mmio;
 mod pcpu;
 mod registers;
 mod vcpu;

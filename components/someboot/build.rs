@@ -115,6 +115,8 @@ impl Build {
     }
 
     fn prepare_loongarch64(&mut self) {
+        self.kernel_paddr =
+            env_u64("SOMEBOOT_LOONGARCH64_KERNEL_LOAD_PADDR").unwrap_or(0x8000_0000);
         self.kernel_vaddr = 0xffff_ffff_8000_0000;
 
         println!("cargo:rustc-cfg=efi");

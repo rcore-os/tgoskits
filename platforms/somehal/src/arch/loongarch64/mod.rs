@@ -8,6 +8,14 @@ mod pch_pic;
 
 pub struct Plat;
 
+pub fn debug_external_irq_snapshot(inputs: &[usize]) {
+    info!(
+        "LoongArch EIOINTC pending summary: {:?}",
+        eiointc::debug_pending_summary()
+    );
+    pch_pic::debug_summary(inputs);
+}
+
 const IOCSR_IPI_SEND_CPU_SHIFT: u32 = 16;
 const IOCSR_IPI_SEND_BLOCKING: u32 = 1 << 31;
 

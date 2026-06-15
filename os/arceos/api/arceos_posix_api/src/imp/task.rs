@@ -34,6 +34,7 @@ pub fn sys_getpid() -> c_int {
 /// Exit current task
 #[track_caller]
 pub fn sys_exit(exit_code: c_int) -> ! {
+    ax_hal::console::write_text_bytes(b"[ax-posix-api] sys_exit\n");
     debug!("sys_exit <= {exit_code}");
     #[cfg(feature = "multitask")]
     ax_task::exit(exit_code);

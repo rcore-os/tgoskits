@@ -54,7 +54,7 @@ fn make_ipi_send_value(cpu_id: usize, vector: u32, blocking: bool) -> u32 {
 
 /// Registers the virtual interrupt injector used by hypervisor builds.
 #[cfg(feature = "hypervisor")]
-pub fn register_virtual_irq_injector(injector: fn(usize, usize, usize)) {
+pub fn register_virtual_irq_injector(injector: fn(usize, usize, usize, usize)) {
     VIRTUAL_IRQ_INJECTOR.store(injector as *mut (), Ordering::Release);
     info!("LoongArch platform virtual IRQ injector registered");
 }
@@ -224,10 +224,11 @@ impl IrqIf for IrqIfImpl {
                 // SAFETY: The injector is registered through
                 // register_virtual_irq_injector as a valid function pointer.
                 unsafe {
-                    core::mem::transmute::<*mut (), fn(usize, usize, usize)>(injector)(
+                    core::mem::transmute::<*mut (), fn(usize, usize, usize, usize)>(injector)(
                         vm_id,
                         vcpu_id,
                         guest_vector,
+                        ex_irq,
                     );
                 }
                 return Some(ex_irq);
@@ -308,7 +309,7 @@ impl IrqIf for IrqIfImpl {
 #[cfg(feature = "hypervisor")]
 #[impl_plat_interface]
 impl ax_plat::irq::LoongArchHvIrqIf for IrqIfImpl {
-    fn register_virtual_irq_injector(injector: fn(usize, usize, usize)) {
+    fn register_virtual_irq_injector(injector: fn(usize, usize, usize, usize)) {
         register_virtual_irq_injector(injector);
     }
 

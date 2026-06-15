@@ -99,6 +99,36 @@ pub fn inject_vm_vcpu_interrupt(vm_id: VMId, vcpu_id: usize, vector: usize) -> A
     crate::runtime::vcpus::queue_interrupt(vm_id, vcpu_id, vector)
 }
 
+/// Inject a routed external interrupt into a VM's vCPU.
+#[cfg(target_arch = "loongarch64")]
+pub fn inject_vm_vcpu_external_interrupt(
+    vm_id: VMId,
+    vcpu_id: usize,
+    vector: usize,
+    physical_irq: usize,
+) -> AxResult {
+    use crate::AsVCpuTask;
+
+    let current = crate::host::task::current_task();
+    if let Some(task) = current.try_as_vcpu_task()
+        && task.vm().id() == vm_id
+        && task.vcpu.id() == vcpu_id
+    {
+        let Some(vector) = task
+            .vm()
+            .loongarch_external_irq_vector(vector, physical_irq)
+        else {
+            return Ok(());
+        };
+        return task
+            .vcpu
+            .get_arch_vcpu()
+            .inject_external_interrupt(vector, physical_irq);
+    }
+
+    crate::runtime::vcpus::queue_external_interrupt(vm_id, vcpu_id, vector, physical_irq)
+}
+
 /// Return the current VM ID from the vCPU currently executing on this CPU.
 pub fn current_vm_id() -> Option<VMId> {
     get_current_vcpu::<AxArchVCpuImpl>().map(|vcpu| vcpu.vm_id())

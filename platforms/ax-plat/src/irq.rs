@@ -275,7 +275,7 @@ pub trait IrqIf {
 #[def_plat_interface]
 pub trait LoongArchHvIrqIf {
     /// Registers the virtual interrupt injector used by hypervisor builds.
-    fn register_virtual_irq_injector(injector: fn(usize, usize, usize));
+    fn register_virtual_irq_injector(injector: fn(usize, usize, usize, usize));
 
     /// Routes one physical EIOINTC/PCH-PIC IRQ to a guest CPU interrupt vector.
     fn register_guest_irq_route(
@@ -288,7 +288,7 @@ pub trait LoongArchHvIrqIf {
 
 /// Registers the virtual interrupt injector used by LoongArch hypervisor builds.
 #[cfg(target_arch = "loongarch64")]
-pub fn register_loongarch_virtual_irq_injector(injector: fn(usize, usize, usize)) {
+pub fn register_loongarch_virtual_irq_injector(injector: fn(usize, usize, usize, usize)) {
     crate::__priv::call_interface!(LoongArchHvIrqIf::register_virtual_irq_injector(injector));
 }
 

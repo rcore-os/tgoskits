@@ -35,9 +35,11 @@ use riscv_vplic::VPlicGlobal;
 #[cfg(target_arch = "x86_64")]
 use x86_vlapic::{EmulatedIoApic, EmulatedPit, EmulatedSerialPort, IoApicInterrupt};
 
+#[cfg(target_arch = "loongarch64")]
+use crate::LoongArchPchPic;
 use crate::{
-    AxVmDeviceConfig, DeviceBuildContext, DeviceBundle, DeviceFactoryRegistry, PollableDeviceOps,
-    range_alloc::RangeAllocator,
+    AxVmDeviceConfig, DeviceBuildContext, DeviceBundle, DeviceFactoryRegistry, FwCfg,
+    PollableDeviceOps, range_alloc::RangeAllocator,
 };
 
 #[inline]
@@ -80,6 +82,11 @@ pub struct AxVmDevices {
     /// x86 16550 serial port — kept for type-specific access.
     #[cfg(target_arch = "x86_64")]
     x86_serial: Option<Arc<EmulatedSerialPort>>,
+    /// LoongArch PCH-PIC — kept for type-specific access.
+    #[cfg(target_arch = "loongarch64")]
+    loongarch_pch_pic: Option<Arc<LoongArchPchPic>>,
+    /// QEMU fw_cfg — kept for DMA access routing.
+    fw_cfg: Option<Arc<FwCfg>>,
     /// IVC channel range allocator
     ivc_channel: Option<Mutex<RangeAllocator>>,
 }
@@ -99,6 +106,9 @@ impl AxVmDevices {
             x86_pit: None,
             #[cfg(target_arch = "x86_64")]
             x86_serial: None,
+            #[cfg(target_arch = "loongarch64")]
+            loongarch_pch_pic: None,
+            fw_cfg: None,
             ivc_channel: None,
         }
     }
@@ -156,6 +166,8 @@ impl AxVmDevices {
                 | EmulatedDeviceType::GPPTRedistributor
                 | EmulatedDeviceType::GPPTDistributor
                 | EmulatedDeviceType::GPPTITS
+                | EmulatedDeviceType::FwCfg
+                | EmulatedDeviceType::LoongArchPchPic
                 | EmulatedDeviceType::X86IoApic
                 | EmulatedDeviceType::X86Pit
                 | EmulatedDeviceType::PPPTGlobal
@@ -402,6 +414,36 @@ impl AxVmDevices {
                             config.emu_type
                         );
                     }
+                }
+                EmulatedDeviceType::LoongArchPchPic => {
+                    #[cfg(target_arch = "loongarch64")]
+                    {
+                        let pch_pic =
+                            Arc::new(LoongArchPchPic::new(config.base_gpa.into(), config.length));
+                        this.register(MmioDeviceAdapter::from_arc(pch_pic.clone())
+                            as Arc<dyn Device + Send + Sync + 'static>)
+                            .map_err(|e| {
+                                ax_err_type!(
+                                    InvalidInput,
+                                    format!("register loongarch pch-pic: {e:?}")
+                                )
+                            })?;
+                        this.loongarch_pch_pic = Some(pch_pic);
+                        info!(
+                            "LoongArch PCH-PIC initialized with base GPA {:#x} and length {:#x}",
+                            config.base_gpa, config.length
+                        );
+                    }
+                    #[cfg(not(target_arch = "loongarch64"))]
+                    {
+                        warn!(
+                            "emu type: {} is not supported on this platform",
+                            config.emu_type
+                        );
+                    }
+                }
+                EmulatedDeviceType::FwCfg => {
+                    debug!("fw_cfg device is initialized when runtime image payloads are added");
                 }
                 EmulatedDeviceType::IVCChannel => {
                     if this.ivc_channel.is_none() {
@@ -921,6 +963,31 @@ impl AxVmDevices {
         self.x86_serial
             .as_ref()
             .is_some_and(|serial| serial.poll_irq())
+    }
+
+    /// Add a QEMU fw_cfg MMIO device to the device list.
+    pub fn add_fw_cfg_dev(&mut self, dev: Arc<FwCfg>) -> AxResult {
+        self.register(MmioDeviceAdapter::from_arc(dev.clone())
+            as Arc<dyn Device + Send + Sync + 'static>)
+            .map_err(|e| ax_err_type!(InvalidInput, format!("register fw_cfg: {e:?}")))?;
+        self.fw_cfg = Some(dev);
+        Ok(())
+    }
+
+    /// Returns the fw_cfg device that owns `addr`, if any.
+    pub fn fw_cfg_for_dma_addr(&self, addr: GuestPhysAddr) -> Option<Arc<FwCfg>> {
+        self.fw_cfg
+            .as_ref()
+            .filter(|fw_cfg| fw_cfg.is_dma_address(addr))
+            .cloned()
+    }
+
+    /// Assert a LoongArch PCH-PIC input and return the routed EIOINTC vector.
+    #[cfg(target_arch = "loongarch64")]
+    pub fn loongarch_pch_pic_assert_irq(&self, irq: usize) -> Option<Option<usize>> {
+        self.loongarch_pch_pic
+            .as_ref()
+            .map(|pch_pic| pch_pic.set_irq_level(irq, true))
     }
 
     // ─── Find helpers ───────────────────────────────────────────────

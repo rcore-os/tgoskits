@@ -233,6 +233,25 @@ mod loongarch64 {
                 );
             }
         }
+
+        fn inject_external_interrupt(
+            vm_id: usize,
+            vcpu_id: usize,
+            vector: usize,
+            physical_irq: usize,
+        ) {
+            if let Err(err) = crate::runtime::vcpus::queue_external_interrupt(
+                vm_id,
+                vcpu_id,
+                vector,
+                physical_irq,
+            ) {
+                warn!(
+                    "failed to queue LoongArch external interrupt vector={vector:#x}, \
+                     physical_irq={physical_irq:#x} for VM[{vm_id}] VCpu[{vcpu_id}]: {err:?}"
+                );
+            }
+        }
     }
 }
 

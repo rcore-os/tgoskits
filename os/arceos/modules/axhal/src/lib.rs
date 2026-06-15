@@ -58,7 +58,7 @@ pub mod irq;
 pub mod loongarch64_hv_irq {
     const EIOINTC_IRQ: usize = 3;
 
-    pub fn register_virtual_irq_injector(injector: fn(usize, usize, usize)) {
+    pub fn register_virtual_irq_injector(injector: fn(usize, usize, usize, usize)) {
         ax_plat::irq::register_loongarch_virtual_irq_injector(injector);
     }
 

@@ -590,6 +590,11 @@ pub fn update_fdt(
     vm: AxVMRef,
     crate_config: &AxVMCrateConfig,
 ) -> AxResult {
+    info!(
+        "Updating guest FDT for VM[{}], input size={:#x}",
+        vm.id(),
+        dtb_size
+    );
     // Fix up the cached DTB against the runtime layout before boot.
     let fdt_bytes = unsafe { core::slice::from_raw_parts(fdt_src.as_ptr(), dtb_size) };
     let fdt = Fdt::from_bytes(fdt_bytes).map_err(|e| {
@@ -610,10 +615,21 @@ pub fn update_fdt(
             })
         })
         .transpose()?;
+    info!("Patching guest FDT runtime layout for VM[{}]", vm.id());
     let new_fdt_bytes =
         patch_guest_fdt_for_runtime(&fdt, &vm.memory_regions(), crate_config, host_fdt.as_ref())?;
     // Recompute the DTB load address from the runtime memory layout.
+    info!(
+        "Patched guest FDT for VM[{}], output size={:#x}",
+        vm.id(),
+        new_fdt_bytes.len()
+    );
     let dest_addr = calculate_dtb_load_addr(vm.clone(), new_fdt_bytes.len())?;
+    info!(
+        "Loading guest FDT for VM[{}] at {:#x}",
+        vm.id(),
+        dest_addr.as_usize()
+    );
 
     load_vm_image_from_memory(&new_fdt_bytes, dest_addr, vm)
 }
@@ -722,11 +738,15 @@ pub(crate) fn calculate_dtb_load_addr(vm: AxVMRef, fdt_size: usize) -> AxResult<
         })?;
 
     let dtb_addr = vm.with_config(|config| {
-        let dtb_addr = if let Some(addr) = config.image_config.dtb_load_gpa
-            && !main_memory.is_identical()
-        {
+        #[cfg(target_arch = "loongarch64")]
+        let use_configured_dtb_addr = config.image_config.dtb_load_gpa.is_some();
+        #[cfg(not(target_arch = "loongarch64"))]
+        let use_configured_dtb_addr =
+            config.image_config.dtb_load_gpa.is_some() && !main_memory.is_identical();
+
+        let dtb_addr = if use_configured_dtb_addr {
             // If dtb_load_gpa is already set, use the original value
-            addr
+            config.image_config.dtb_load_gpa.unwrap()
         } else {
             // If dtb_load_gpa is None, calculate based on memory size and FDT size
             let main_memory_size = main_memory.size().min(512 * MB);

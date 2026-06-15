@@ -48,7 +48,7 @@ pub unsafe extern "C" fn _head() {
         ".long _stext - _head",         // BaseOfCode
 
         // Extra header fields
-        ".quad 0",                      // ImageBase
+        ".quad {phys_link_kaddr}",      // ImageBase
         ".long PAGE_SIZE",              // SectionAlignment (PECOFF_SEGMENT_ALIGN)
         ".long PECOFF_FILE_ALIGN",      // FileAlignment (PECOFF_FILE_ALIGN)
         ".short 0",                     // MajorOperatingSystemVersion

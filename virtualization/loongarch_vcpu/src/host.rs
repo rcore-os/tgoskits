@@ -30,6 +30,9 @@ pub trait LoongArchVcpuHostIf {
 
     /// Queue an interrupt for a vCPU.
     fn inject_interrupt(vm_id: usize, vcpu_id: usize, vector: usize);
+
+    /// Queue a routed external interrupt for a vCPU.
+    fn inject_external_interrupt(vm_id: usize, vcpu_id: usize, vector: usize, physical_irq: usize);
 }
 
 #[cfg(target_arch = "loongarch64")]

@@ -30,6 +30,9 @@ mod adapter;
 mod config;
 mod device;
 mod factory;
+mod fw_cfg;
+#[cfg(target_arch = "loongarch64")]
+mod loongarch_pch_pic;
 mod range_alloc;
 mod registration;
 
@@ -46,6 +49,9 @@ pub use factory::{
     DeviceBuildContext, DeviceFactory, DeviceFactoryRegistry, IrqResolver,
     register_builtin_factories,
 };
+pub use fw_cfg::{FwCfg, FwCfgPlatformConfig, FwCfgRamRegion};
+#[cfg(target_arch = "loongarch64")]
+pub use loongarch_pch_pic::LoongArchPchPic;
 pub use registration::{DeviceBundle, DeviceRegistration, PollableDeviceOps};
 #[cfg(target_arch = "x86_64")]
 pub use x86_vlapic::IoApicInterrupt;

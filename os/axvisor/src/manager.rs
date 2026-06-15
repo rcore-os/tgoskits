@@ -227,11 +227,12 @@ impl AxvmManager {
 }
 
 #[cfg(target_arch = "loongarch64")]
-fn inject_loongarch_platform_irq(vm_id: usize, vcpu_id: usize, vector: usize) {
-    if let Err(err) = axvm::inject_vm_vcpu_interrupt(vm_id, vcpu_id, vector) {
+fn inject_loongarch_platform_irq(vm_id: usize, vcpu_id: usize, vector: usize, physical_irq: usize) {
+    if let Err(err) = axvm::inject_vm_vcpu_external_interrupt(vm_id, vcpu_id, vector, physical_irq)
+    {
         warn!(
-            "failed to inject LoongArch platform IRQ {vector:#x} for VM[{vm_id}] VCpu[{vcpu_id}]: \
-             {err:?}"
+            "failed to inject LoongArch platform IRQ {vector:#x}/physical {physical_irq:#x} for \
+             VM[{vm_id}] VCpu[{vcpu_id}]: {err:?}"
         );
     }
 }
@@ -240,30 +241,36 @@ fn inject_loongarch_platform_irq(vm_id: usize, vcpu_id: usize, vector: usize) {
 fn init_loongarch_passthrough_irq_routes() {
     let mut matched = 0usize;
     for vm in axvm::get_vm_list() {
+        let routes = crate::fdt::get_loongarch_guest_irq_routes(vm.id());
+        if !routes.is_empty() {
+            matched += 1;
+            let vcpu_id = 0usize;
+            info!(
+                "Registering {} LoongArch passthrough IRQ route(s) for VM[{}]",
+                routes.len(),
+                vm.id()
+            );
+            for route in routes {
+                ax_std::os::arceos::modules::ax_hal::loongarch64_hv_irq::register_guest_irq_route(
+                    route.physical_irq,
+                    vm.id(),
+                    vcpu_id,
+                    route.guest_vector,
+                );
+            }
+            continue;
+        }
+
         let passthrough = vm.with_config(|cfg| !cfg.pass_through_devices().is_empty());
         if !passthrough {
             continue;
         }
 
         matched += 1;
-        let vcpu_id = 0usize;
-        let routes = crate::fdt::get_loongarch_guest_irq_routes(vm.id());
-        if routes.is_empty() {
-            warn!(
-                "VM[{}] has passthrough devices but no LoongArch guest IRQ route parsed from DTB",
-                vm.id()
-            );
-            continue;
-        }
-
-        for route in routes {
-            ax_std::os::arceos::modules::ax_hal::loongarch64_hv_irq::register_guest_irq_route(
-                route.physical_irq,
-                vm.id(),
-                vcpu_id,
-                route.guest_vector,
-            );
-        }
+        warn!(
+            "VM[{}] has passthrough devices but no LoongArch guest IRQ route parsed from DTB",
+            vm.id()
+        );
     }
 
     if matched > 1 {

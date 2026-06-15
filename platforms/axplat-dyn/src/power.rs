@@ -16,6 +16,7 @@ impl PowerIf for PowerImpl {
 
     /// Shutdown the whole system.
     fn system_off() -> ! {
+        ax_plat::console::write_text_bytes(b"[axplat-dyn] system_off\n");
         somehal::power::shutdown()
     }
 

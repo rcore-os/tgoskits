@@ -57,11 +57,19 @@ pub fn start() {
     }
 
     // Do not exit until all VMs are stopped.
+    info!(
+        "VMM wait enter, running VM count: {}",
+        RUNNING_VM_COUNT.load(Ordering::Acquire)
+    );
     crate::host::task::wait_queue_wait_until(&VMM, || {
         let vm_count = RUNNING_VM_COUNT.load(Ordering::Acquire);
-        debug!("a VM exited, current running VM count: {vm_count}");
+        info!("VMM wait condition check, running VM count: {vm_count}");
         vm_count == 0
     });
+    info!(
+        "VMM wait leave, running VM count: {}",
+        RUNNING_VM_COUNT.load(Ordering::Acquire)
+    );
 }
 
 pub fn add_running_vm_count(count: usize) {

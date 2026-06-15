@@ -141,6 +141,7 @@ impl ArchTrait for Arch {
     }
 
     fn shutdown() -> ! {
+        crate::console::_write_str("[someboot loongarch64] shutdown entered\n");
         if efi_stub::is_uefi_available() {
             efi_stub::reset(
                 efi_stub::ResetType::SHUTDOWN,

@@ -5,23 +5,82 @@
 .equ CSR_CRMD,         0x0
 .equ CSR_PRMD,         0x1
 .equ CSR_ECFG,         0x4
+.equ CSR_EENTRY,       0xc
+.equ CSR_ASID,         0x18
+.equ CSR_PGDL,         0x19
+.equ CSR_PGDH,         0x1a
 .equ CSR_BADI,         0x8
 .equ CSR_SAVE0,        0x30
 .equ CSR_SAVE1,        0x31
 .equ CSR_PGD,          0x1b
+.equ CSR_PWCL,         0x1c
+.equ CSR_PWCH,         0x1d
+.equ CSR_STLBPS,       0x1e
 .equ CSR_TLBRERA,      0x8a
+.equ CSR_TLBRENTRY,    0x88
 .equ CSR_TLBRSAVE,     0x8b
 .equ CSR_TLBRELO0,     0x8c
 .equ CSR_TLBRELO1,     0x8d
 .equ CSR_TLBREHI,      0x8e
 .equ CSR_TLBRPRMD,     0x8f
 .equ CSR_GSTAT_PVM,    0x2
-.equ CSR_PRMD_PIE,     0x4
 .equ CSR_TLBRPRMD_PGM, 0x8
 .equ CSR_GTLBC_TGID,   0xff0000
-.equ CSR_GTLBC_TGID0,  0x0
 .equ CSR_TIMER_IE,     0x800
 .equ CSR_CRMD_IE,      0x4
+.equ STAGE2_PWCL,      0x13e4d52c
+.equ STAGE2_PWCH,      0x267
+.equ STAGE2_STLBPS,    12
+.equ STAGE2_ASID,      1
+.equ ECFG_VS_MASK,     0x70000
+.equ ECFG_VS_5,        0x50000
+
+.macro SWITCH_TO_GUEST_TRANSLATION
+    ld.d    $t0, $sp, {guest_tlbrentry}
+    csrwr   $t0, CSR_TLBRENTRY
+    ld.d    $t0, $sp, {guest_eentry}
+    csrwr   $t0, CSR_EENTRY
+    csrrd   $t1, CSR_ECFG
+    li.d    $t0, ECFG_VS_MASK
+    andn    $t1, $t1, $t0
+    li.d    $t0, ECFG_VS_5
+    or      $t1, $t1, $t0
+    csrwr   $t1, CSR_ECFG
+
+    li.d    $t0, STAGE2_PWCL
+    csrwr   $t0, CSR_PWCL
+    li.d    $t0, STAGE2_PWCH
+    csrwr   $t0, CSR_PWCH
+    li.d    $t0, STAGE2_STLBPS
+    csrwr   $t0, CSR_STLBPS
+    csrwr   $a1, CSR_PGDL
+    csrwr   $a1, CSR_PGDH
+    li.d    $t0, STAGE2_ASID
+    csrwr   $t0, CSR_ASID
+    invtlb  0x0, $r0, $r0
+.endm
+
+.macro RESTORE_HOST_TRANSLATION
+    ld.d    $t0, $sp, {host_eentry}
+    csrwr   $t0, CSR_EENTRY
+    ld.d    $t0, $sp, {host_ecfg}
+    csrwr   $t0, CSR_ECFG
+    ld.d    $t0, $sp, {host_tlbrentry}
+    csrwr   $t0, CSR_TLBRENTRY
+    ld.d    $t0, $sp, {host_asid}
+    csrwr   $t0, CSR_ASID
+    ld.d    $t0, $sp, {host_pwcl}
+    csrwr   $t0, CSR_PWCL
+    ld.d    $t0, $sp, {host_pwch}
+    csrwr   $t0, CSR_PWCH
+    ld.d    $t0, $sp, {host_stlbps}
+    csrwr   $t0, CSR_STLBPS
+    ld.d    $t0, $sp, {host_pgdl}
+    csrwr   $t0, CSR_PGDL
+    ld.d    $t0, $sp, {host_pgdh}
+    csrwr   $t0, CSR_PGDH
+    invtlb  0x0, $r0, $r0
+.endm
 
 .macro SAVE_GUEST_REGS
     st.d    $r0,  $sp, 0
@@ -225,25 +284,16 @@
     li.d    $t0, CSR_CRMD_IE
     csrxchg $zero, $t0, CSR_CRMD
 
-    li.d    $t0, CSR_PRMD_PIE
-    csrwr   $t0, CSR_PRMD
+    csrwr   $zero, CSR_PRMD
 
     csrrd   $t1, CSR_TLBRERA
     li.d    $t0, -2
     and     $t1, $t1, $t0
     csrwr   $t1, CSR_TLBRERA
 
-    csrrd   $t1, CSR_GTLBC
-    li.d    $t0, CSR_GTLBC_TGID
-    andn    $t1, $t1, $t0
-    ori     $t1, $t1, CSR_GTLBC_TGID0
-    csrwr   $t1, CSR_GTLBC
-
-    li.d    $t0, CSR_GSTAT_PVM
-    csrxchg $t0, $t0, CSR_GSTAT
-
     csrrd   $t0, CSR_ECFG
-    ori     $t0, $t0, CSR_TIMER_IE
+    li.d    $t1, CSR_TIMER_IE
+    andn    $t0, $t0, $t1
     csrwr   $t0, CSR_ECFG
 .endm
 
@@ -391,6 +441,9 @@
     and     $t1, $t1, $t0
     csrwr   $t1, CSR_TLBRPRMD
 
+    li.d    $t0, CSR_GSTAT_PVM
+    csrxchg $t0, $t0, CSR_GSTAT
+
     ld.d    $r1,  $sp, 8
     ld.d    $r2,  $sp, 16
     ld.d    $r4,  $sp, 32
@@ -428,9 +481,10 @@
 .global _run_guest
 _run_guest:
     move    $t1, $ra
-    addi.d  $t0, $a0, 792
+    addi.d  $t0, $a0, {ctx_size}
     csrwr   $t0, 0x33
     move    $sp, $a0
+    SWITCH_TO_GUEST_TRANSLATION
     PREPARE_GUEST_ENTRY
     RESTORE_GUEST_REGS
     ertn
@@ -467,9 +521,10 @@ _guest_tlb_refill_vector:
     DISABLE_TIMER_IRQ_WITH_SAVED_GUEST_T0_T1
     csrwr   $sp, 0x502
     csrrd   $sp, 0x33
-    addi.d  $sp, $sp, -792
+    addi.d  $sp, $sp, -{ctx_size}
     SAVE_GUEST_REGS
     ENTER_HOST_MODE
+    RESTORE_HOST_TRANSLATION
     li.d    $a0, 0
     b       _guest_exit
 
@@ -604,9 +659,10 @@ _irq_handler_vector:
     DISABLE_TIMER_IRQ_WITH_SAVED_GUEST_T0_T1
     csrwr   $sp, 0x502
     csrrd   $sp, 0x33
-    addi.d  $sp, $sp, -792
+    addi.d  $sp, $sp, -{ctx_size}
     SAVE_GUEST_REGS
     ENTER_HOST_MODE
+    RESTORE_HOST_TRANSLATION
     li.d    $a0, 1
     b       _guest_exit
 
@@ -615,9 +671,10 @@ _sync_handler_vector:
     DISABLE_TIMER_IRQ_WITH_SAVED_GUEST_T0_T1
     csrwr   $sp, 0x502
     csrrd   $sp, 0x33
-    addi.d  $sp, $sp, -792
+    addi.d  $sp, $sp, -{ctx_size}
     SAVE_GUEST_REGS
     ENTER_HOST_MODE
+    RESTORE_HOST_TRANSLATION
     li.d    $a0, 0
     b       _guest_exit
 
@@ -626,8 +683,9 @@ _hvc_handler_vector:
     DISABLE_TIMER_IRQ_WITH_SAVED_GUEST_T0_T1
     csrwr   $sp, 0x502
     csrrd   $sp, 0x33
-    addi.d  $sp, $sp, -792
+    addi.d  $sp, $sp, -{ctx_size}
     SAVE_GUEST_REGS
     ENTER_HOST_MODE
+    RESTORE_HOST_TRANSLATION
     li.d    $a0, 0
     b       _guest_exit
