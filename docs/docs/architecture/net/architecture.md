@@ -1,670 +1,341 @@
 ---
-sidebar_position: 3
-sidebar_label: "架构设计"
+sidebar_position: 2
+sidebar_label: "总体架构"
 ---
 
-# 网络栈总体架构
+# 总体架构
 
-`ax-net` 使用单协议栈、多接口、多设备模型。所有 TCP/UDP/raw socket 仍共享一个 smoltcp `Interface` 和一个 `SocketSet`，但接口、路由、DNS、DHCP 和设备收发已经从单 `eth0` 假设扩展为多接口模型。
+`ax-net` 是 ArceOS/StarryOS 的网络协议栈 crate。它以 smoltcp 作为单一 TCP/IP 协议核心，在外层补齐多接口、多设备、路由、DNS、DHCP、Linux socket 语义和设备驱动适配。
+
+整体设计可以概括为：
+
+- **单协议栈核心**：所有 IP socket 共享一个 smoltcp `Interface` 和一个全局 `SocketSet`。
+- **多设备适配层**：`Router` 对 smoltcp 暴露一个 `phy::Device`，内部聚合 loopback 和多个 Ethernet 设备。
+- **控制面与数据面分离**：接口 registry、路由表和 DNS registry 独立于收发路径，可返回只读快照。
+- **专用 poll worker**：socket 热路径只请求 poll，由 `net-poll` worker 独占推进 smoltcp。
+- **兼容 POSIX/Linux socket 语义**：支持 bind/listen/connect/accept、poll readiness、`SO_BINDTODEVICE`、TCP orphan teardown、Unix domain socket 和可选 vsock。
+
+## 核心设计
+
+`ax-net` 的核心选择是 **Single Interface + Router as Device**：不为每个网卡创建独立 smoltcp `Interface`，而是让所有 IP socket 共享一个 smoltcp `Interface` 和一个全局 `SocketSet`，再用 `Router` 作为虚拟 `Device` 聚合 loopback 与多个 Ethernet 设备。
+
+这种结构保留了 socket 语义的一致性：
+
+| 语义 | 单协议栈核心中的处理方式 |
+| --- | --- |
+| wildcard listen (`0.0.0.0:port`) | 一个 `ListenTable` entry 覆盖所有可用接口 |
+| per-address listen/bind | `IpListenEndpoint` + `DeviceBinding` 做地址/接口约束 |
+| ephemeral port 分配 | 在全局 TCP/UDP 端口表中仲裁，避免跨接口重复占用 |
+| route change / DHCP 更新 | `RouteTable` 和接口地址原子更新，socket 不需要迁移 |
+| poll readiness | 全局 `SocketSet` 中统一计算 readiness 并唤醒调用者 |
+
+如果改成每设备一个 `Interface`/`SocketSet`，这些语义需要在多个协议栈实例之间重新仲裁，例如 wildcard listen 要在所有接口创建 listener，accept queue 要跨实例聚合，端口冲突也要引入中心协调。当前模型更符合多宿主主机上的普通 socket 语义。
+
+### 总体拓扑
 
 ```mermaid
 flowchart TB
-    subgraph Public["public API"]
-        ApiSocket["tcp / udp / raw / unix / vsock"]
-        ApiIface["interfaces() / routes() / DNS APIs"]
-        ApiPoll["request_poll() / poll_interfaces()"]
+    subgraph Api["Public API"]
+        Init["init_network() / init_vsock()"]
+        Query["interfaces() / routes() / arp_entries()"]
+        DnsApi["dns_servers() / dns_query()"]
+        Sockets["TcpSocket / UdpSocket / RawSocket / UnixSocket / VsockSocket"]
+        PollApi["request_poll() / poll_interfaces()"]
     end
 
-    subgraph Control["control plane"]
-        Registry["Interface registry"]
+    subgraph Control["Control plane"]
+        NetControl["NetControl"]
+        IfaceRegistry["Interface registry"]
         Routes["RouteTable"]
-        Dns["DnsRegistry entries"]
+        DnsRegistry["DNS registry"]
         Binding["DeviceBinding"]
     end
 
-    subgraph Core["single protocol core"]
-        SocketSet["SocketSetWrapper"]
+    subgraph Core["Single protocol core"]
         Service["Service"]
-        Smol["smoltcp Interface"]
-        Dhcp["per-interface DhcpState"]
-        Router["Router as smoltcp Device"]
+        SmolIface["smoltcp Interface"]
+        SocketSet["SocketSetWrapper"]
+        Listen["ListenTable"]
+        Orphan["TCP orphan reaper"]
+        DhcpClient["DHCP client states"]
+        DhcpServer["DHCP server"]
     end
 
-    subgraph Queues["device queues"]
-        RxQ["bounded RX queue"]
-        TxQ0["bounded TX queue: eth0"]
-        TxQ1["bounded TX queue: eth1"]
-        Wake["poll wake flag / WaitQueue"]
+    subgraph MultiDev["Router as MultiDevice"]
+        Router["Router implements smoltcp::phy::Device"]
+        RxBuffer["Router.rx_buffer"]
+        TxBuffer["Router.tx_buffer"]
+        RxQueue["shared RX queue"]
+        TxQueues["per-device TX queues"]
     end
 
-    subgraph Devices["device workers"]
-        Lo["LoopbackDevice"]
-        Eth0["EthernetDevice eth0"]
-        Eth1["EthernetDevice eth1"]
-        RdNet["rd-net / rdif-eth driver"]
+    subgraph DeviceLayer["Device layer"]
+        Loopback["LoopbackDevice"]
+        Ethernet["EthernetDevice"]
+        RdNet["RdNetDriver"]
+        Hardware["rd-net / physical NIC"]
     end
 
-    Public --> Control
-    ApiSocket --> SocketSet
-    ApiPoll --> Service
+    Api --> Control
+    Sockets --> SocketSet
+    PollApi --> Service
     Control --> Service
-    Service --> Smol
-    Service --> Dhcp
-    Smol --> Router
-    Router --> RxQ
-    Router --> TxQ0
-    Router --> TxQ1
-    RxQ --> Eth0
-    RxQ --> Eth1
-    TxQ0 --> Eth0
-    TxQ1 --> Eth1
-    Eth0 --> RdNet
-    Eth1 --> RdNet
-    Lo --> Router
+    Service --> SmolIface
+    Service --> DhcpClient
+    Service --> DhcpServer
+    Service --> Orphan
+    SmolIface --> Router
+    SocketSet --> SmolIface
+    Listen --> SocketSet
+    Router --> RxBuffer
+    Router --> TxBuffer
+    Router --> RxQueue
+    Router --> TxQueues
+    Router --> Routes
+    TxQueues --> Ethernet
+    RxQueue --> Router
+    Loopback --> Router
+    Ethernet --> RdNet
+    RdNet --> Hardware
 ```
 
-## 源码组织
+### 组件分层
 
-整个 crate 源于 [net/ax-net/src/](net/ax-net/src/)，入口为 [net/ax-net/src/lib.rs](net/ax-net/src/lib.rs)。模块划分与职责如下：
+| 层级 | 主要职责 | 关键源码 | 详细文档 |
+| --- | --- | --- | --- |
+| Public API | 初始化、接口查询、DNS、socket facade、poll trigger | [lib.rs](net/ax-net/src/lib.rs), [socket.rs](net/ax-net/src/socket.rs), [options.rs](net/ax-net/src/options.rs) | [API 参考](api.md) |
+| Control plane | 接口 registry、路由决策、DNS 来源、运行期配置提交 | [service.rs](net/ax-net/src/service.rs), [config.rs](net/ax-net/src/config.rs), [router.rs](net/ax-net/src/router.rs) | [控制面](control.md) |
+| Single protocol core | 一个 smoltcp `Interface`、全局 `SocketSet`、socket backend、DHCP、orphan 回收、poll 调度 | [service.rs](net/ax-net/src/service.rs), [wrapper.rs](net/ax-net/src/wrapper.rs), [tcp.rs](net/ax-net/src/tcp.rs), [udp.rs](net/ax-net/src/udp.rs), [listen_table.rs](net/ax-net/src/listen_table.rs), [orphan.rs](net/ax-net/src/orphan.rs) | 本文、[Socket 系统](sockets.md) |
+| Multi-device Router | smoltcp `Device` 适配、TX 路由、RX 汇聚、loopback 快速路径 | [router.rs](net/ax-net/src/router.rs) | [多设备实现](devices.md) |
+| Device layer | Ethernet 封装/解封装、ARP、IRQ/OOB RX、rd-net 适配 | [device/](net/ax-net/src/device/) | [多设备实现](devices.md) |
+| Configuration | 静态网络配置、DHCP、MTU、缓冲区、feature | [config.rs](net/ax-net/src/config.rs), [consts.rs](net/ax-net/src/consts.rs), `Cargo.toml` | [配置参考](configuration.md) |
+| Integration and tests | OS 集成、启动流程、测试范围 | `ax-runtime`, `starry-kernel`, `ax-api` | [集成](integration.md), [测试](testing.md) |
 
-| 模块 | 角色 | 关键类型 |
+### TCP/IP 分层映射
+
+| TCP/IP 层 | ax-net 组件 | 主要职责 |
 | --- | --- | --- |
-| [lib.rs](net/ax-net/src/lib.rs) | public facade，初始化网络、启动 poll worker、导出 API | `init_network`, `request_poll`, `net_poll_worker` |
-| [config.rs](net/ax-net/src/config.rs) | 配置与接口信息类型 | `InterfaceId`, `NetworkConfig`, `InterfaceInfo`, `DeviceBinding` |
-| [service.rs](net/ax-net/src/service.rs) | 控制面 + 协议核心调度 | `Service`, `NetControl`, `DhcpState` |
-| [router.rs](net/ax-net/src/router.rs) | 路由表、有界队列、smoltcp `Device` 适配 | `Router`, `RouteTable`, `RouteDecision` |
-| [wrapper.rs](net/ax-net/src/wrapper.rs) | 全局 `SocketSet` 包装与端口冲突仲裁 | `SocketSetWrapper` |
-| [socket.rs](net/ax-net/src/socket.rs) | 统一 socket 抽象 | `SocketOps`, `Socket`, `SocketAddrEx` |
-| [options.rs](net/ax-net/src/options.rs) | socket 选项与 `Configurable` trait | `GetSocketOption`, `SetSocketOption`, `TcpInfo` |
-| [general.rs](net/ax-net/src/general.rs) | 通用 socket 选项、非阻塞/超时/poll helper | `GeneralOptions` |
-| [state.rs](net/ax-net/src/state.rs) | socket 状态机锁 | `StateLock`, `StateGuard` |
-| [listen_table.rs](net/ax-net/src/listen_table.rs) | TCP listen/accept 表与 SYN 预创建 | `ListenTable` |
-| [tcp.rs](net/ax-net/src/tcp.rs) / [udp.rs](net/ax-net/src/udp.rs) / [raw.rs](net/ax-net/src/raw.rs) | IP socket 实现 | `TcpSocket`, `UdpSocket`, `RawSocket` |
-| [orphan.rs](net/ax-net/src/orphan.rs) | TCP orphan socket 回收（RFC 793 TIME_WAIT） | `add_orphan`, `reap_orphans` |
-| [dhcp_server.rs](net/ax-net/src/dhcp_server.rs) | 最简 DHCP 服务器（SoftAP 模式） | `DhcpServer` |
-| [unix/](net/ax-net/src/unix/) | Unix domain socket | `UnixSocket`, `Transport` |
-| [vsock/](net/ax-net/src/vsock/) | 可选 vsock 支持（`vsock` feature） | `VsockSocket`, `VsockTransport` |
-| [device/](net/ax-net/src/device/) | loopback、Ethernet、rd-net、vsock 设备适配 | `Device`, `EthernetDevice`, `RdNetDriver` |
-| [consts.rs](net/ax-net/src/consts.rs) | 缓冲区大小等常量 | `STANDARD_MTU`, `SOCKET_BUFFER_SIZE` |
+| 应用层 | `SocketOps`, `Socket`, `Configurable` | socket API、options、poll readiness、地址类型统一 |
+| 传输层 | smoltcp TCP/UDP/raw socket + `tcp.rs`/`udp.rs`/`raw.rs` | TCP 状态机、UDP datagram、raw packet、端口仲裁和 Linux 语义补齐 |
+| 网络层 | smoltcp `Interface`, `Router`, `RouteTable`, DHCP/DNS 辅助 | IP packet 处理、路由、接口地址、DHCP client/server、DNS 查询 |
+| 链路层 | `EthernetDevice`, `LoopbackDevice`, `RdNetDriver` | Ethernet frame、ARP、IRQ/OOB RX、rd-net 驱动适配 |
 
-## 全局单例
+smoltcp 负责 TCP/IP 协议核心；`ax-net` 负责多接口、多设备、设备生命周期、socket 兼容语义和 OS 集成。
 
-`ax-net` 通过若干 `Once` / `LazyLock` 全局单例持有协议核心与控制面，定义在 [net/ax-net/src/lib.rs#L89-L103](net/ax-net/src/lib.rs#L89-L103)：
+## Public API
 
-```rust
-static LISTEN_TABLE: LazyLock<ListenTable> = LazyLock::new(ListenTable::new);
-static SOCKET_SET: LazyLock<SocketSetWrapper> = LazyLock::new(SocketSetWrapper::new);
+Public API 是上层 OS 模块进入 `ax-net` 的边界，主要定义在 [lib.rs](net/ax-net/src/lib.rs)、[socket.rs](net/ax-net/src/socket.rs) 和 [options.rs](net/ax-net/src/options.rs)。它不暴露 smoltcp 的内部类型，而是提供面向 ArceOS/StarryOS 的稳定能力：
 
-static SERVICE: Once<Mutex<Service>> = Once::new();
-static NET_CONTROL: Once<Arc<NetControl>> = Once::new();
-static POLLING_INTERFACES: AtomicBool = AtomicBool::new(false);
-static POLL_AGAIN: AtomicBool = AtomicBool::new(false);
-static NET_POLL_REQUESTED: AtomicBool = AtomicBool::new(false);
-static NET_POLL_WAKE: WaitQueue = WaitQueue::new();
-static NET_POLL_DEVICE_WAKER: LazyLock<Waker> =
-    LazyLock::new(|| Waker::from(Arc::new(NetPollWake)));
-```
+| API 类别 | 代表接口 | 架构作用 |
+| --- | --- | --- |
+| 初始化 | `init_network()`、`init_vsock()` | 建立 `Service`、`Router`、`NetControl`、设备 worker 和 net-poll worker |
+| 接口查询 | `interfaces()`、`interface_by_name()`、`ipv4_config()`、`default_routes()`、`arp_entries()` | 从控制面或设备层返回只读快照 |
+| DNS | `dns_servers()`、`dns_query()`、`dns_query_timeout()` | 读取 DNS registry，并通过临时 smoltcp DNS socket 查询 |
+| Socket facade | `TcpSocket`、`UdpSocket`、`RawSocket`、`UnixSocket`、`VsockSocket` | 为 syscall/POSIX 层提供统一 socket backend |
+| Poll 触发 | `request_poll()`、`poll_interfaces()` | 唤醒专用 net-poll worker，避免应用线程同步驱动协议栈 |
+| Socket options | `GetSocketOption`、`SetSocketOption`、`Configurable` | 覆盖通用 `SO_*`、`TCP_*`、`IP_*` 选项 |
 
-- `SOCKET_SET` 是所有 IP socket（TCP/UDP/raw/DNS）共享的 smoltcp `SocketSet`。
-- `SERVICE` 持有 `Service`（smoltcp `Interface` + `Router` + DHCP 状态），被 mutex 保护。
-- `NET_CONTROL` 持有只读控制面（接口 registry、路由表、DNS），可在不持有 `Service` 锁的情况下被查询。
-- `NET_POLL_WAKE` 是 `net-poll` worker 的等待队列，`request_poll()` 通过它唤醒 worker。
-
-## 接口标识
-
-`InterfaceId(u32)` 是 `ax-net` 内部接口 ID，同时也是 StarryOS 暴露给 Linux ABI 的 ifindex 数值来源。定义在 [net/ax-net/src/config.rs#L8-L38](net/ax-net/src/config.rs#L8-L38)：
-
-```rust
-#[derive(Debug, Clone, Copy, Eq, PartialEq, Ord, PartialOrd, Hash)]
-pub struct InterfaceId(u32);
-
-impl InterfaceId {
-    pub const LOOPBACK: Self = Self(1);
-    pub const fn new(raw: u32) -> Self { Self(raw) }
-    pub const fn get(self) -> u32 { self.0 }
-    /// Convert to Linux ifindex (i32).
-    pub const fn to_linux_ifindex(self) -> i32 { self.0 as i32 }
-    pub const fn from_linux_ifindex(ifindex: i32) -> Option<Self> { /* ... */ }
-}
-```
-
-- `InterfaceId::LOOPBACK == 1`，固定对应 `lo`。
-- Ethernet 接口从 `2` 开始，默认发现顺序为 `eth0`、`eth1`（见 [lib.rs](net/ax-net/src/lib.rs#L221) 中 `InterfaceId::new((order as u32) + 2)`）。
-- `InterfaceInfo`（[config.rs#L58-L70](net/ax-net/src/config.rs#L58-L70)）是对外只读快照，包含 ID、名称、类型、MAC、IPv4、MTU、flags 和 metric。
-
-```rust
-pub struct InterfaceInfo {
-    pub id: InterfaceId,
-    pub name: String,
-    pub kind: InterfaceKind,
-    pub mac: Option<EthernetAddress>,
-    pub ipv4: Option<Ipv4InterfaceConfig>,
-    pub mtu: usize,
-    pub flags: InterfaceFlags,
-    pub metric: u32,
-}
-```
+Public API 的职责是做边界收敛：上层不需要知道某个 socket 是否由 smoltcp、Unix transport 或 vsock transport 实现，也不需要直接操作 `Service`、`Router` 或 `SocketSet`。具体 API 列表见 [API 参考](api.md)。
 
 ## 控制面
 
-控制面由 `NetControl`（[service.rs#L45-L50](net/ax-net/src/service.rs#L45-L50)）统一持有：
+控制面负责“网络配置如何被发现、保存、查询和用于决策”。它不直接收发 packet，也不推进 smoltcp poll；数据面只在需要路由、接口地址或 DNS 信息时读取控制面快照。
 
-```rust
-pub struct NetControl {
-    state: RwLock<ControlState>,
-    pub(crate) routes: SharedRouteTable,
-}
+```mermaid
+flowchart TB
+    subgraph Sources["配置来源"]
+        Static["NetworkConfig / InterfaceConfig"]
+        DhcpAck["DHCP ACK"]
+        SocketBind["bind(addr) / SO_BINDTODEVICE"]
+    end
+
+    subgraph State["NetControl"]
+        Registry["Interface registry"]
+        Routes["SharedRouteTable"]
+        Dns["DNS registry"]
+    end
+
+    subgraph Consumers["消费者"]
+        Query["interfaces() / default_routes() / dns_servers()"]
+        Dispatch["Router::dispatch() route lookup"]
+        Socket["socket bind/connect/listen"]
+        DnsQuery["dns_query() server selection"]
+    end
+
+    Static --> Registry
+    Static --> Routes
+    Static --> Dns
+    DhcpAck --> Commit["commit_interface_update()"]
+    Commit --> Registry
+    Commit --> Routes
+    Commit --> Dns
+    SocketBind --> Binding["DeviceBinding"]
+    Binding --> Socket
+    Registry --> Query
+    Routes --> Query
+    Dns --> Query
+    Routes --> Dispatch
+    Routes --> DnsQuery
 ```
 
-内部 `ControlState` 保存 `Vec<NetInterface>`（接口 registry）与 `Vec<DnsServerEntry>`（DNS 来源信息）。控制面提供：
+控制面由 `NetControl` 持有：
 
-- `interfaces()` / `interface_by_name()` / `interface_by_id()`：名称与 ID 查询（[service.rs#L81-L107](net/ax-net/src/service.rs#L81-L107)）。
-- `select_route()`：按目的地址查路由，并校验目标接口 `UP`（[service.rs#L147-L174](net/ax-net/src/service.rs#L147-L174)）。
-- `local_binding_for()`：把本地监听地址映射为 `DeviceBinding`（[service.rs#L122-L135](net/ax-net/src/service.rs#L122-L135)）。
-- `commit_interface_update()`：DHCP ACK 等运行期更新通过一次性事务提交接口地址、smoltcp IP 地址、路由和 DNS，避免外部看到半更新状态（[service.rs#L175-L198](net/ax-net/src/service.rs#L175-L198)）。
+- `ControlState`：接口 registry 和 DNS server entries。
+- `SharedRouteTable`：路由规则，按最长前缀、metric、插入顺序排序。
+- `DeviceBinding`：表达 `SO_BINDTODEVICE` 或本地地址绑定推导出的接口约束。
 
-控制面查询不进入设备锁，也不直接推进 smoltcp poll。`select_route_if`（[router.rs#L245](net/ax-net/src/router.rs#L245)）会传入一个 `is_usable` 闭包，跳过未 `UP` 的接口：
+### 初始化注册
 
-```rust
-pub fn select_route_if(&self, dst, mut is_usable: impl FnMut(InterfaceId) -> bool)
-    -> Option<RouteDecision>
-{
-    self.rules.iter()
-        .find(|rule| rule.filter.contains_addr(dst) && is_usable(rule.interface_id))
-        .map(|rule| RouteDecision { /* ... */ })
-}
+`init_network()` 根据 `NetworkConfig` 和发现到的 Ethernet 设备创建接口 registry：
+
+- `lo` 固定为 `InterfaceId::LOOPBACK`。
+- Ethernet 接口从 ifindex 2 开始按发现顺序分配 `InterfaceId`。
+- 静态 IPv4、DHCP 开关、metric、DNS server 和默认路由在初始化时写入 `NetControl`。
+- `Router` 使用同一份 `SharedRouteTable`，所以控制面的路由更新会直接影响后续 TX dispatch。
+
+### 运行期更新
+
+DHCP client 在 `Service::poll()` 中运行。收到 DHCP ACK 后，`Service` 通过 `commit_interface_update()` 一次性提交：
+
+- 接口 IPv4 地址和 flags。
+- smoltcp `Interface` 的 IP address 列表。
+- 当前接口的 IPv4 路由。
+- 当前接口贡献的 DNS server。
+
+这里使用事务式更新，是为了避免外部查询看到“地址已更新但路由/DNS 还没更新”的中间状态。
+
+### 查询路径
+
+`interfaces()`、`interface_by_name()`、`interface_by_id()`、`ipv4_config()`、`default_routes()` 和 `dns_servers()` 都返回快照。调用方拿到的是当时的只读视图，不持有内部锁，也不应该假设快照会随 DHCP 或接口状态变化自动更新。
+
+### 路由选择
+
+路由表按以下优先级排序：
+
+1. 最长前缀优先。
+2. 同前缀时低 metric 优先。
+3. 同前缀同 metric 时保留插入顺序。
+
+普通查询使用 `select_route(dst)`，会过滤未 `UP` 的接口。TX dispatch 使用 `select_route_for_source(dst, src)`，同时匹配 smoltcp 已经选出的源地址，避免多宿主主机从错误接口发出带另一接口源地址的包。
+
+### 绑定约束
+
+`DeviceBinding` 是控制面和 socket 语义的连接点：
+
+- `bind(具体本地地址)` 会推导该地址所属接口。
+- `SO_BINDTODEVICE` 会显式限制 socket 只使用某个接口。
+- wildcard bind 不绑定具体接口，由路由表在发送时选择。
+
+这些约束会影响 socket readiness 注册、端口/listen 语义和路由可用性过滤。更细的规则见[控制面](control.md)。
+
+## Single protocol core
+
+Single protocol core 是 `ax-net` 的协议状态中心，由 `Service`、smoltcp `Interface`、全局 `SocketSetWrapper`、`ListenTable`、DHCP 状态和 TCP orphan 回收共同组成。
+
+### Socket system
+
+IP socket 共享 smoltcp `SocketSet`，但 Linux/POSIX 语义由 `ax-net` 自己补齐：
+
+- `SocketOps` 统一 TCP/UDP/raw/Unix/vsock backend。
+- `GeneralOptions` 维护非阻塞、超时、`SO_REUSEADDR`、`SO_BINDTODEVICE` 等通用选项。
+- `SocketSetWrapper` 增加 UDP bind 冲突仲裁。
+- `TCP_BOUND_PORTS` 和 `ListenTable` 共同维护 TCP bind/listen 端口语义。
+- `ListenTable` 在 RX snoop 阶段预创建 TCP socket，支持 accept queue 和 per-address listen。
+- `orphan.rs` 在用户关闭仍处于 teardown 的 TCP socket 后继续推进 FIN/TIME_WAIT，避免破坏 TCP 关闭语义。
+
+Unix domain socket 和 vsock 不走 smoltcp IP 层，但通过同一个 public socket facade 暴露给上层。细节见[Socket 系统](sockets.md)。
+
+### 专用 poll worker
+
+smoltcp 的 `Interface::poll()` 由 `net-poll` worker 独占推进。socket 操作、设备 IRQ/OOB RX 和 DNS 等路径只调用 `request_poll()` 触发唤醒，不在应用线程里同步驱动整个协议栈。
+
+```mermaid
+sequenceDiagram
+    participant App as socket caller
+    participant Wake as request_poll()
+    participant Worker as net-poll worker
+    participant Service as Service::poll()
+    participant Smol as smoltcp Interface
+
+    App->>Wake: send/recv/connect/accept needs progress
+    Wake->>Worker: notify NET_POLL_WAKE
+    Worker->>Service: poll_until_idle()
+    Service->>Smol: Interface::poll()
+    Service->>Service: DHCP/orphan/TX dispatch
+    Smol-->>App: readiness waker wakes blocked caller
 ```
 
-`RouteTable` 还提供 `select_route_for_source(dst, src)`（[router.rs#L262](net/ax-net/src/router.rs#L262)），用于在 TX dispatch 时同时匹配目的地址和源地址。例如，多宿主（multi-homed）主机有两个接口分别有不同源 IP，发送到同一目的地的包需根据 smoltcp 注入的源地址选择正确的出接口。
+这个模型避免应用线程和协议栈驱动线程互相抢协议栈锁，也保证 TCP 重传、keepalive、DHCP 和设备收包不会依赖某个应用线程继续运行。
 
-### 路由排序策略
+## Router as MultiDevice
 
-`sort_rules()` 的三级排序（[router.rs#L235-L240](net/ax-net/src/router.rs#L235-L240)）：
+`Router` 是 single protocol core 和真实设备之间的适配层。它位于 smoltcp 的 `phy::Device` 边界上，对上提供一个 IP medium 设备，对下管理多个 `DeviceHandle`。
 
-1. **最长前缀优先**：`b.filter.prefix_len().cmp(&a.filter.prefix_len())` — 更长的前缀排在前面
-2. **低 metric 优先**：同前缀长度时，`a.metric.cmp(&b.metric)` — metric 更小的优先
-3. **插入顺序稳定**：同前缀同 metric 时，`a.order.cmp(&b.order)` — order 由 `next_order` 自增产生
+| 子组件 | 职责 |
+| --- | --- |
+| `Router.rx_buffer` | smoltcp 从这里取 RX IP packet |
+| `Router.tx_buffer` | smoltcp 把待发送 IP packet 写到这里 |
+| `RouterQueues::rx` | 所有 Ethernet RX worker 共享的有界 RX 队列 |
+| `DeviceHandle.tx_queue` | 每个真实设备独立的有界 TX 队列 |
+| `RouteTable` | TX dispatch 的出接口和 next-hop 决策依据 |
+| loopback fast path | 回环包直接写入 `rx_buffer`，不经过设备 worker |
 
-这使得 `select_route_if` 使用 `find()` 返回第一个匹配项（即最高优先级的路由）。
+`Router::poll()` 负责把设备 RX 队列推进到 smoltcp RX buffer；`Router::dispatch()` 负责把 smoltcp TX buffer 中的包按路由分发到 loopback 或真实设备。更细的 worker、队列和 ARP 行为见[多设备实现](devices.md)。
 
-`SocketSetWrapper`（[wrapper.rs](net/ax-net/src/wrapper.rs)）在 smoltcp 原生 `SocketSet` 之上增加了 UDP 端口冲突仲裁。原生 smoltcp 允许多个 UDP socket bind 同一端口（由上层保证），`ax-net` 在此层实现 `SO_REUSEADDR` 语义：
+## Device layer
 
-```rust
-pub(crate) struct SocketSetWrapper<'a> {
-    pub inner: Mutex<SocketSet<'a>>,   // smoltcp SocketSet
-    udp_binds: Mutex<HashMap<UdpBindKey, SocketHandle>>,  // UDP 端口占用表
-}
+设备层把不同来源的网络设备统一成 `ax-net` 内部 `Device` trait：
+
+| 设备类型 | 主要源码 | 作用 |
+| --- | --- | --- |
+| `LoopbackDevice` | [device/loopback.rs](net/ax-net/src/device/loopback.rs) | 零状态占位；真实回环数据路径由 `Router` 快速路径完成 |
+| `EthernetDevice` | [device/ethernet.rs](net/ax-net/src/device/ethernet.rs) | Ethernet frame 解析/封装、ARP neighbor 表、pending packet、IRQ/OOB RX |
+| `RdNetDriver` | [device/driver.rs](net/ax-net/src/device/driver.rs) | 将 `rd-net` RX/TX queue 适配为 `EthernetDriver` |
+| `VsockDevice` | [device/vsock.rs](net/ax-net/src/device/vsock.rs) | 可选 vsock 设备注册和事件入口 |
+
+这一层是协议栈和硬件驱动框架的能力边界。`ax-net` 不直接依赖 FDT、PCI、MMIO、DMA 或平台 IRQ ABI，而是通过 `EthernetDriver`、`EthernetIrqRegistrar` 和 OOB RX 通知机制接入实际设备。
+
+## 数据面流程
+
+### RX 路径
+
+```mermaid
+flowchart LR
+    Hw["NIC / rd-net RX"] --> Eth["EthernetDevice::recv()"]
+    Eth --> Arp["ARP / Ethernet 解封装"]
+    Arp --> RxQ["RouterQueues::rx"]
+    RxQ --> RouterPoll["Router::poll()"]
+    RouterPoll --> Snoop["DHCP / TCP SYN snoop"]
+    Snoop --> RxBuf["Router.rx_buffer"]
+    RxBuf --> Smol["smoltcp Interface::poll()"]
+    Smol --> Sock["SocketSet socket RX buffer"]
+    Sock --> App["recv()/accept()/poll()"]
 ```
 
-UDP bind 仲裁规则（[wrapper.rs](net/ax-net/src/wrapper.rs) `udp_bind_available()`）：
+RX worker 只负责从真实设备取包并推入共享 RX 队列。协议处理发生在 `Service::poll()` 内：先由 `Router::poll()` 把 RX 队列 drain 到 `rx_buffer`，再由 smoltcp `Interface::poll()` 交付给 TCP/UDP/raw socket。
 
-- **精确 bind**（如 `192.168.1.1:53`）：如果已有同地址同端口则拒绝；如果有 wildcard `0.0.0.0:53` 则拒绝。
-- **Wildcard bind**（`0.0.0.0:53`）：如果任何地址已占用同一端口则拒绝。
-- **`SO_REUSEADDR`**：设置后跳过仲裁。
+### TX 路径
 
-`udp_port_available()` 暴露给 ephemeral port 分配器（UDP 和 TCP），避免分配到已占用的端口。
-
-## TCP 端口绑定仲裁
-
-除了 `ListenTable`（管理 `listen()` 端口），`ax-net` 还有独立的 `TCP_BOUND_PORTS`（[tcp.rs](net/ax-net/src/tcp.rs)）来追踪已 bind 但尚未 listen 的端口：
-
-```rust
-static TCP_BOUND_PORTS: LazyLock<Mutex<HashMap<u16, Vec<Option<IpAddress>>>>> =
-    LazyLock::new(|| Mutex::new(HashMap::new()));
-
-fn register_tcp_bound(endpoint: IpListenEndpoint) -> AxResult;
-fn unregister_tcp_bound(endpoint: IpListenEndpoint);
+```mermaid
+flowchart LR
+    App["send()/connect()"] --> Sock["SocketSet socket TX buffer"]
+    Sock --> Smol["smoltcp Interface::poll()"]
+    Smol --> TxBuf["Router.tx_buffer"]
+    TxBuf --> Dispatch["Router::dispatch()"]
+    Dispatch --> Route["RouteTable select_route_for_source()"]
+    Route --> Loop["loopback: direct rx_buffer injection"]
+    Route --> TxQ["Ethernet: per-device TX queue"]
+    TxQ --> Eth["EthernetDevice::send()"]
+    Eth --> Arp["ARP / next-hop MAC"]
+    Arp --> Hw["rd-net TX / NIC"]
 ```
 
-两个系统协同工作：
-- `LISTEN_TABLE`：管理已进入 `listen()` 状态的端口及 SYN 队列，防止同一端口被多次 listen。
-- `TCP_BOUND_PORTS`：追踪已 bind（可能尚未 listen）的端口和地址，防止地址冲突的重复 bind。`register_tcp_bound()` 在 `bind()`、`listen()`、`connect()` 中被调用；`unregister_tcp_bound()` 在 `shutdown()`、`Drop` 和错误回退中被调用。
-- `tcp_port_available(port)`：同时检查两个表，确保 `get_ephemeral_port()` 不会分配到已被 bind 或已在 listen 的端口。
+普通 Ethernet 发送会进入设备 TX worker，由 `EthernetDevice` 完成 ARP 和 Ethernet frame 封装。loopback 不走外部设备队列：`Router::dispatch()` 选中 `InterfaceId::LOOPBACK` 时直接把 IP packet 注入 `rx_buffer`，因此本机回环连接可在同一个 poll 周期内继续推进。
 
-`listen_addrs_conflict(a, b)` 判断两个 `IpListenEndpoint` 是否冲突：任一为 `None`（wildcard）即冲突，或两者值相等即冲突。
+### DHCP 和 DNS
 
-## Socket 状态机
+DHCP client/server 都位于 `Service::poll()` 调度内，但不依赖 smoltcp 的普通 socket API：
 
-`StateLock`（[state.rs](net/ax-net/src/state.rs)）为 socket 提供基于 CAS 的轻量状态转换锁：
-
-```
-Idle ──bind──→ Idle (不变，但注册 endpoint)
-Idle ──listen──→ Listening
-Idle ──connect──→ Connecting ──SYN/SYN+ACK──→ Connected
-Listening ──accept──→ Listening (不变，但生成新 socket)
-Connected ──close──→ Closed
-```
-
-核心 API：
-
-```rust
-pub fn lock(&self, expect: State) -> Result<StateGuard<'_>, State> {
-    // CAS: expect → Busy，失败返回当前状态
-}
-pub fn transit<R>(self, new: State, f: impl FnOnce() -> AxResult<R>) -> AxResult<R> {
-    // 执行 f()，成功则写 new 状态，失败则回退到原始状态
-}
-```
-
-`StateLock` 保证绑定/监听/连接等操作的原子性：并发 bind+connect 在同一 socket 上只能有一个成功。
-
-## TCP Listen Table 与 SYN Pre-create
-
-`ListenTable`（[listen_table.rs](net/ax-net/src/listen_table.rs)）是 TCP 监听的核心数据结构。它包含 65536 个槽位（每端口一个 `Arc<Mutex<Option<Box<ListenTableEntryInner>>>>`），每个活跃端口存储：
-
-```rust
-struct ListenTableEntryInner {
-    listen_endpoint: IpListenEndpoint,  // 监听地址和端口
-    backlog: usize,                      // SYN 队列容量（clamp 到 LISTEN_QUEUE_SIZE=512）
-    syn_queue: VecDeque<PendingTcp>,     // 预创建的连接
-}
-```
-
-### SYN 预创建机制
-
-`snoop_tcp_packet()`（[router.rs](net/ax-net/src/router.rs#L474-L500)）在 RX 路径中拦截 TCP SYN 包：
-
-1. 解析 TCP 包头，检查 SYN 标志。
-2. 查 `LISTEN_TABLE` 是否存在匹配的 listening entry。
-3. 如果 SYN queue 未满，**预创建**一个 `TcpSocket` 并调用 `socket.listen()`，将其加入 `syn_queue`。
-4. smoltcp 随后 `Interface::poll()` 完成三次握手。
-5. `accept()` 时直接从前端取出已完成握手的 socket，无需阻塞等待。
-
-SYN queue 满时丢弃 SYN 包（打 warning），由客户端重传机制保证可靠性。
-
-### accept() 流程
-
-`ListenTable::accept()`（[listen_table.rs#L133-L157](net/ax-net/src/listen_table.rs#L133-L157)）：
-
-1. 遍历 `syn_queue`。
-2. 跳过已关闭且无未读数据的 socket（`is_closed_without_data`），移除并销毁。
-3. 返回第一个已完成握手的 socket（`is_acceptable` 检查 TCP state 为 Established/CloseWait/FinWait1/FinWait2 等可 accept 状态）。
-4. 为减少慢速枚举，`idx > 0` 时打印 warning。
-
-## 通用 Poll 与超时
-
-`GeneralOptions`（[general.rs](net/ax-net/src/general.rs)）为所有 socket 类型提供通用设施：
-
-```rust
-pub(crate) struct GeneralOptions {
-    nonblock: AtomicBool,             // O_NONBLOCK
-    reuse_address: AtomicBool,        // SO_REUSEADDR
-    send_timeout_nanos: AtomicU64,    // SO_SNDTIMEO
-    recv_timeout_nanos: AtomicU64,    // SO_RCVTIMEO
-    bound_if: AtomicU32,              // SO_BINDTODEVICE (InterfaceId)
-    socket_type: AtomicI32,           // SOCK_STREAM/DGRAM/RAW
-    domain: i32,                      // AF_INET/AF_UNIX/AF_VSOCK
-    protocol: i32,                    // IPPROTO_TCP/UDP/ICMP
-}
-```
-
-提供的 poll helper：
-
-- `send_poller()` / `recv_poller()`：阻塞等待 I/O 就绪或超时。内部流程：检查 `nonblock` → 调用 `register_waker()` 注册到 `Service` → `block_on(poll_io())` 自旋等待 → 超时检查 → 执行操作 → 成功或返回错误。
-- `send_poller_with()`：支持指定是否检测 HUP 事件。
-- `register_waker()`：根据 `DeviceBinding` 将调用者 waker 注册到对应设备的 `PollSet`。
-
-### socket.domain / socket.protocol / socket_type 常量
-
-每个 socket 创建时固化：
-
-| socket 类型 | socket_type (SOCK_\*) | domain (AF_\*) | protocol (IPPROTO_\*) |
-| --- | --- | --- | --- |
-| `TcpSocket` | 1 (STREAM) | 2 (INET) | 6 (TCP) |
-| `UdpSocket` | 2 (DGRAM) | 2 (INET) | 17 (UDP) |
-| `RawSocket` | 3 (RAW) | 2 (INET) | 根据 `IpProtocol` |
-| `UnixSocket` (stream) | 1 (STREAM) | 1 (UNIX) | 0 |
-| `UnixSocket` (dgram) | 2 (DGRAM) | 1 (UNIX) | 0 |
-| `VsockSocket` | 1 (STREAM) | 40 (VSOCK) | 0 |
-
-## Router 内部结构
-
-`Router`（[router.rs](net/ax-net/src/router.rs)）是 smoltcp 与多设备之间的适配层：
-
-```rust
-pub struct Router {
-    rx_buffer: PacketBuffer,           // smoltcp Device RX buffer（64 个 MTU 槽位）
-    tx_buffer: PacketBuffer,           // smoltcp Device TX buffer
-    queues: Arc<RouterQueues>,         // 全局 RX 队列（所有设备共享）
-    devices: Vec<Arc<DeviceHandle>>,   // 设备列表（按 add_device() 顺序）
-    table: SharedRouteTable,           // 路由表
-}
-```
-
-### BoundedPacketQueue
-
-`BoundedPacketQueue<T>` 是有界 MPSC 队列，容量默认 `SOCKET_BUFFER_SIZE=64`：
-
-```rust
-struct BoundedPacketQueue<T> {
-    inner: Mutex<VecDeque<T>>,
-    capacity: usize,
-    len: AtomicUsize,      // 无锁长度读取，用于 is_empty() 检查
-}
-```
-
-- `push()`：加锁，满则返回 `Err(T)`（上层丢弃并打 warning）。
-- `pop()`：加锁，空返回 `None`。
-- `is_empty()`：原子读 `len`，无锁。
-
-### DeviceHandle
-
-每设备一个 `DeviceHandle`，持有设备锁、收发队列和唤醒机制：
-
-```rust
-struct DeviceHandle {
-    interface_id: InterfaceId,
-    name: String,
-    inner: Arc<Mutex<Box<dyn Device>>>,       // 设备 trait object
-    rx_queue: Arc<BoundedPacketQueue<RxPacket>>,  // 指向 RouterQueues::rx（共享）
-    tx_queue: Arc<BoundedPacketQueue<TxPacket>>,  // 独立 TX 队列
-    rx_wake: Arc<WaitQueue>,                      // 唤醒 RX worker
-    tx_wake: Arc<WaitQueue>,                      // 唤醒 TX worker
-    rx_waker: Waker,                               // 驱动→rx_wake 的转换器
-}
-```
-
-RX 队列是所有设备共享的（`RouterQueues::rx`），因为 smoltcp 从同一个 `Router::rx_buffer` 消费；TX 队列每设备独立，由 `dispatch()` 按路由决策分发。
-
-### TX Dispatch
-
-`Router::dispatch()`（[router.rs](net/ax-net/src/router.rs)）接收 `&mut SocketSet`，从 `tx_buffer` 取出 smoltcp 发出的 IP 包：
-
-- **IPv4 广播**（dst=255.255.255.255）：复制到所有非 loopback Ethernet 设备。
-- **IPv4 单播**：按 `select_route_for_source()` 选路由（要求源地址匹配）。如果出接口是 loopback，走快速路径 `inject_loopback_rx_direct()`（snoop TCP + 直接写入 `rx_buffer`）；否则推入对应设备 TX 队列。
-- **IPv6 多播**：复制到所有非 loopback Ethernet 设备。
-- **IPv6 单播**：按 `select_route_for_source()` 选路由，同样有 loopback 快速路径。
-
-### RX 数据流
-
-`Router::poll()`（[router.rs#L476-L490](net/ax-net/src/router.rs#L476-L490)）：
-
-1. 从 `RouterQueues::rx` 循环出队，填充 `rx_buffer`。
-2. 每包先调 `snoop_tcp_packet()` 检查 TCP SYN，预创建 listen socket。
-3. 再调 snoop 回调（DHCP packet 分发）。
-4. `rx_buffer` 满则停止出队（剩余包留在队列供下次 poll）。
-
-## Ethernet 设备实现
-
-`EthernetDevice`（[ethernet.rs](net/ax-net/src/device/ethernet.rs)）是 `Device` trait 的主要实现：
-
-```rust
-pub struct EthernetDevice {
-    name: String,
-    inner: Arc<EthernetIrqState>,        // 共享 IRQ 状态
-    neighbors: HashMap<IpAddress, Neighbor>,           // ARP 缓存
-    pending_neighbors: HashMap<IpAddress, PendingNeighbor>, // 等待 ARP reply
-    ip: Option<Ipv4Cidr>,                // 本机 IP
-    pending_packets: PacketBuffer<IpAddress>,  // ARP-pending 发包队列（128 个槽位）
-}
-```
-
-### ARP 处理
-
-`EthernetDevice::recv()` 处理入站 Ethernet 帧：
-
-1. 调用 `EthernetDriver::receive()` 从硬件获取一帧。
-2. 解析 `EthernetFrame`，按 `EthernetProtocol` 分派：
-   - **ARP**：更新 neighbor 表（reply 和 gratuitous request），从 `pending_packets` 释放等待的包。
-   - **IPv4/IPv6**：encapsulation 检查，将 payload 写入 smoltcp `PacketBuffer`。
-
-`send()` 路径：
-
-1. 查 `neighbors` 表，有则直接发送。
-2. 无则检查 `pending_neighbors`：如果已发送 ARP request 未超时，将包写入 `pending_packets`。
-3. 否则发送 ARP request，记录到 `pending_neighbors`。
-4. Neighbor TTL = 300s（与 Linux 一致），ARP retry = 1s。
-
-### IRQ 模型
-
-`EthernetIrqState` 管理 IRQ 注册和驱动锁：
-
-```rust
-struct EthernetIrqState {
-    irq: Option<usize>,
-    irq_registration: spin::Once<Box<dyn EthernetIrqRegistration>>,
-    driver: SpinNoIrq<Box<dyn EthernetDriver>>,
-    poll_ready: PollSet,
-}
-```
-
-IRQ 处理链：
-1. `ax-runtime` 通过 `set_ethernet_irq_registrar()` 注册 `EthernetIrqRegistrar`。
-2. `EthernetDevice::new()` 中通过 `registrar.register_shared(name, irq, action)` 注册 IRQ handler。
-3. IRQ 触发时调用 `handle_ethernet_irq()`：运行 `driver.handle_irq()`，如果返回 `RX_READY` 则 `poll_ready.wake()` 唤醒 RX worker。
-4. 如果没有注册 IRQ registrar，回退到纯 poll 模式（RX worker 的 `rx_wake.wait()` 可被 `request_poll()` 路径唤醒）。
-
-### RdNetDriver
-
-`RdNetDriver`（[driver.rs](net/ax-net/src/device/driver.rs)）是 `EthernetDriver` trait 的 `rd-net` 适配实现。内部持有 `rd_net::TxQueue` 和 `rd_net::RxQueue`，通过预取 `RX_PREFETCH_TARGET=1` 个包到 `pending_rx: VecDeque` 减少锁竞争。`alloc_tx_buffer()` 返回 `VecTxBuffer`（栈友好），`transmit()` 执行硬件发送。
-
-## Loopback 快速路径
-
-`LoopbackDevice`（[loopback.rs](net/ax-net/src/device/loopback.rs)）是一个零状态占位类型（`pub struct LoopbackDevice;`），其 `Device` trait 实现全部是 no-op。真正的 loopback 数据路径在 `Router` 中以**快速路径**实现，绕过设备 worker 和 `LoopbackDevice::send()/recv()`：
-
-- **TX 方向**（`Router::dispatch()`，[router.rs](net/ax-net/src/router.rs)）：当路由决策选中 loopback 接口时，调用 `inject_loopback_rx_direct()` 直接将 IP 包写入 `Router.rx_buffer`（smoltcp 的 RX token 来源），并在写入前执行 `snoop_tcp_packet()` 预创建 TCP listen socket。这样回环包在**同一个 `Service::poll()` 周期内**被 smoltcp 消费，无需等待设备 worker 调度。
-- **DHCP/特殊发包**（`Router::send_on_device()`）：对 loopback 设备调用 `inject_loopback_rx()` 写入共享 `RouterQueues::rx` 有界队列，由下一轮 `Router::poll()` 消费。
-- **Worker 跳过**：`start_tx_workers()` 和 `start_rx_workers()` 显式跳过 `InterfaceId::LOOPBACK`，不为 loopback 创建线程。
-
-这种设计避免了在 loopback 路径上引入设备线程调度延迟，对 riscv64 单核等慢速目标尤其重要。
-
-## 数据面 poll 流程
-
-`Service::poll()`（[service.rs](net/ax-net/src/service.rs)）在每个 poll 周期执行：
-
-```rust
-pub fn poll(&mut self, sockets: &mut SocketSet) -> bool {
-    let timestamp = now();
-    let mut dhcp_events = Vec::new();
-    let mut dhcp_server_replies = Vec::new();
-    // 1. Router::poll()：从 RX 队列消费包到 smoltcp buffer，同时 snoop 回调分发
-    //    DHCP client 和 DHCP server 的入站包
-    self.router.poll(timestamp, sockets, |interface_id, packet| {
-        // DHCP client: DhcpState::process_packet()
-        // DHCP server: DhcpServer::process_packet() -> reply bytes
-    });
-    // 2. 处理 DHCP client 事件（更新地址、路由、DNS）
-    for event in dhcp_events { self.handle_dhcp_event(event); }
-    // 3. DHCP server 回复通过 send_on_device() 广播出去
-    for (dev, reply) in dhcp_server_replies { self.router.send_on_device(...); }
-    // 4. smoltcp Interface::poll()：协议状态机推进
-    let socket_state_changed = self.iface.poll(timestamp, &mut self.router, sockets);
-    // 5. DHCP client 发包定时器
-    let dhcp_poll_next = self.poll_dhcp(timestamp);
-    // 6. 回收已完成 teardown 的 orphan TCP socket
-    crate::orphan::reap_orphans(timestamp, sockets);
-    // 7. TX dispatch：将 smoltcp 输出的包路由到设备（含 loopback 快速路径）
-    self.router.dispatch(timestamp, sockets)
-        || dhcp_poll_next || dhcp_server_sent || socket_state_changed
-}
-```
-
-关键变更：`dispatch()` 现在接收 `&mut SocketSet`，使 loopback 快速路径能在注入 RX buffer 前执行 `snoop_tcp_packet()`。`reap_orphans()` 在持有 SocketSet 锁时执行，避免额外锁获取。
-
-## net-poll Worker
-
-`net_poll_worker`（[lib.rs#L479-L489](net/ax-net/src/lib.rs#L479-L489)）是协议核心的唯一驱动线程：
-
-```rust
-fn net_poll_worker() {
-    loop {
-        let delay = next_poll_delay();          // smoltcp poll_at() 建议延迟
-        let timed_out = NET_POLL_WAKE.wait_timeout_until(delay,
-            || NET_POLL_REQUESTED.load(Acquire));  // 等 request_poll() 或超时
-        if !timed_out { NET_POLL_REQUESTED.store(false, Release); }
-        poll_until_idle();                       // 循环 poll 直到无新事件
-    }
-}
-```
-
-`poll_until_idle()` 使用 `POLLING_INTERFACES` CAS 锁防止重入（同一时刻最多一个 poll 进行中），内部循环调用 `poll_once()` 直到 `POLL_AGAIN` 为 false。循环内**不 yield**——net-poll worker 是专用线程，在有工作（`poll_once() == true`）时持续批量处理以最大化吞吐。空闲时 `next_poll_delay()` 返回最多 100ms 的 idle poll interval。
-
-## DHCP 状态机
-
-`DhcpState`（[service.rs#L269-L510](net/ax-net/src/service.rs#L269-L510)）维护 per-interface DHCP 客户端：
-
-```
-Discovering ──Offer──→ Requesting ──ACK──→ Bound
-    │                     │                    │
-    └──timeout→retry──    └──timeout→retry──   └──NAK→Discovering (reset)
-```
-
-- **Discovering**：广播 DHCPDISCOVER，指数退避重试（1,2,4,8... 最多 16 秒间隔）。
-- **Requesting**：收到 DHCPOFFER 后广播 DHCPREQUEST。
-- **Bound**：收到 DHCPACK，状态转为 Bound。NAK 触发 reset → Discovering。
-
-`process_packet()` 按 ingress `InterfaceId` 匹配、解析 IPv4→UDP→DHCP，校验 `transaction_id` 和 `client_hardware_address` 防止误收。`poll_packet()` 在非 Bound 状态且重试时间到达时构造 DHCP 发包。
-
-`dhcp_transaction_id(mac)` 将 MAC 地址低 32 位与 `wall_time_nanos()` 混合生成 transaction ID。
-
-## TCP Orphan Socket 回收
-
-当用户关闭 TCP socket（`TcpSocket::drop()`）时，如果连接仍处于活跃 teardown 状态（Established/CloseWait/FinWait*/LastAck/Closing/TimeWait）或有未发送数据，socket 不会立即从 smoltcp `SocketSet` 移除，而是转为 **orphan** 状态，由后台回收（[orphan.rs](net/ax-net/src/orphan.rs)）：
-
-- **目的**：保证 RFC 793 合规的 FIN 四次挥手和 TIME_WAIT，避免对端连接悬挂。
-- **机制**：`Drop` 中调用 `socket.close()` 发起 FIN，然后 `add_orphan()` 将 `SocketHandle` 移入全局 `ORPHAN_SOCKETS: Mutex<Vec<OrphanSocket>>`。
-- **回收**：`reap_orphans()` 在每个 `Service::poll()` 周期中调用，检查每个 orphan 的 smoltcp TCP state：
-  - `Closed` → 立即移除（`ReapReason::Closed`）
-  - `TimeWait/FinWait1/FinWait2/LastAck/Closing` → 保留直到 smoltcp 自然超时，但最长 60 秒（`ORPHAN_MAX_LINGER`）后强制移除（`ReapReason::Expired`）
-  - 其他意外状态 → 60 秒后强制移除并 warn
-- **溢出保护**：`ORPHAN_MAX_SOCKETS = 1024`，超限时只 warn 不强制清除正在 teardown 的连接，避免 FIN 丢失。
-
-## DHCP 服务器（SoftAP 模式）
-
-`DhcpServer`（[dhcp_server.rs](net/ax-net/src/dhcp_server.rs)）是最简 IPv4 DHCP 服务器，用于 Wi-Fi SoftAP 模式给单个客户端分配地址：
-
-- 单客户端、单地址租约（`leased_to: Option<EthernetAddress>`），足够 AP 验证 ping/ssh。
-- 不依赖 smoltcp 的 DHCP socket，手工解析/封装 `DhcpRepr → UdpRepr → Ipv4Repr`。
-- 处理 Discover→Offer、Request→Ack，回复广播 IPv4 包。
-- 通过 `Service::enable_dhcp_server(dev, server_ip, client_ip, subnet_mask)` 启用，回复包通过 `Router::send_on_device()` 广播。
-- 入站包在 `Router::poll()` 的 snoop 回调中分发，与 DHCP client 路径完全独立。
-
-## DNS 解析流程
-
-`dns_query()`（[lib.rs#L506-L536](net/ax-net/src/lib.rs#L506-L536)）：
-
-1. `dns_servers()` 获取按 (metric, interface_id, server_ip) 排序的去重 DNS server 列表。
-2. 过滤不可路由的 server（通过 `select_route()` 检查可达性）。
-3. 在 `SOCKET_SET` 中创建 `dns::Socket`，发起 A 记录查询。
-4. 循环 `request_poll()` + `yield_now()`，检查 `get_query_result()`。
-5. 默认 5 秒超时（`DNS_DEFAULT_TIMEOUT`），超时返回 `ETIMEDOUT`。
-6. `DnsSocketGuard` 在 drop 时从 `SOCKET_SET` 移除 DNS socket。
-
-执行顺序：
-
-```text
-Service::poll()
-  -> Router::poll() drain RX queue
-  -> DHCP packet snoop
-  -> smoltcp Interface::poll()
-  -> poll DHCP retry
-  -> Router::dispatch() route TX packets
-```
-
-`Router`（[router.rs#L318-L326](net/ax-net/src/router.rs#L318-L326)）是 smoltcp `phy::Device` 适配层。它对 smoltcp 实现 `phy::Device` trait（[router.rs#L672](net/ax-net/src/router.rs#L672)），对外只暴露 IP 层（`Medium::Ip`）：
-
-```rust
-impl smoltcp::phy::Device for Router {
-    type RxToken<'a> = RxToken<'a>;
-    type TxToken<'a> = TxToken<'a>;
-    fn receive(&mut self, _timestamp: Instant) -> Option<(Self::RxToken<'_>, Self::TxToken<'_>)> { /* ... */ }
-    fn transmit(&mut self, _timestamp: Instant) -> Option<Self::TxToken<'_>> { /* ... */ }
-    fn capabilities(&self) -> DeviceCapabilities {
-        let mut caps = DeviceCapabilities::default();
-        caps.medium = Medium::Ip;
-        caps.max_transmission_unit = STANDARD_MTU;
-        caps.max_burst_size = Some(SOCKET_BUFFER_SIZE);
-        caps
-    }
-}
-```
-
-设备 worker 不直接访问 `Router` 本体，只和 `RouterQueues` / per-device TX queue 交互：
-
-- RX worker（[router.rs#L575](net/ax-net/src/router.rs#L575)）从 rd-net 设备读取 packet，复制到有界 RX queue，并 `request_poll()`。
-- smoltcp `RxToken`（[router.rs#L656](net/ax-net/src/router.rs#L656)）从 RX buffer 读 packet，并保留 ingress `InterfaceId` 元数据。
-- smoltcp `TxToken`（[router.rs#L642](net/ax-net/src/router.rs#L642)）只写入 TX buffer；真实出接口由 `Router::dispatch()`（[router.rs#L498](net/ax-net/src/router.rs#L498)）根据 IP 包源/目的地址和路由表选择。
-- TX worker（[router.rs#L559](net/ax-net/src/router.rs#L559)）从对应设备 TX queue 发包。
-
-## 设备能力边界（Device trait）
-
-`ax-net` 不直接依赖硬件驱动框架。所有设备实现统一的内部 `Device` trait（[device/mod.rs#L33-L55](net/ax-net/src/device/mod.rs#L33-L55)）：
-
-```rust
-pub trait Device: Send + Sync {
-    fn name(&self) -> &str;
-    fn recv(&mut self, interface_id: InterfaceId,
-            buffer: &mut PacketBuffer<InterfaceId>, timestamp: Instant,
-            snoop: &mut dyn FnMut(&[u8])) -> bool;
-    /// Sends a packet to the next hop. Returns true if receive became ready.
-    fn send(&mut self, next_hop: IpAddress, packet: &[u8], timestamp: Instant) -> bool;
-    fn set_ipv4_addr(&mut self, _addr: Option<Ipv4Cidr>) {}
-    fn arp_entries(&self, _timestamp: Instant) -> Vec<ArpEntry> { Vec::new() }
-    fn register_waker(&self, waker: &Waker);
-}
-```
-
-两个实现：
-
-- `LoopbackDevice`（[device/loopback.rs](net/ax-net/src/device/loopback.rs)）：零状态占位类型，`Device` trait 全为 no-op。真正的回环在 `Router::dispatch()` 的快速路径中完成（见 [Loopback 快速路径](#loopback-快速路径)）。
-- `EthernetDevice`（[device/ethernet.rs](net/ax-net/src/device/ethernet.rs)）：维护 ARP 邻居表（`NEIGHBOR_TTL = 300s`）、pending packet 队列、Ethernet 帧封装/解析，并对接 IRQ 适配。支持两种 RX 就绪模式：IRQ 驱动（`new()`）和 out-of-band 驱动（`new_oob_rx()`，用于 SDIO Wi-Fi 等自带中断线程的设备）。
-
-`EthernetDevice` 之下是能力边界 trait `EthernetDriver`（[device/driver.rs#L70-L82](net/ax-net/src/device/driver.rs#L70-L82)），由 `RdNetDriver`（[device/driver.rs#L128](net/ax-net/src/device/driver.rs#L128)）包装 `rd-net` 的 `TxQueue` / `RxQueue` 实现。这样 `ax-net` 避免直接依赖 FDT、PCI、MMIO、DMA、VirtIO 或平台 IRQ ABI。
-
-## SocketSetWrapper
-
-全局 socket 容器 `SocketSetWrapper`（[wrapper.rs](net/ax-net/src/wrapper.rs)）除了持有 smoltcp `SocketSet`，还维护 UDP 端口冲突仲裁（`udp_binds`）：
-
-```rust
-pub(crate) struct SocketSetWrapper<'a> {
-    pub inner: Mutex<SocketSet<'a>>,
-    udp_binds: Mutex<HashMap<UdpBindKey, SocketHandle>>,
-}
-```
-
-`udp_bind()` 实现 Linux 语义的端口复用规则：具体地址与通配地址互斥，相同地址端口冲突返回 `AddrInUse`（除非 `SO_REUSEADDR`）。`udp_port_available()` 暴露给 ephemeral port 分配器使用。
-
-## 为什么不是 multi-smoltcp domain
-
-多个 smoltcp 实例可以让不同 NIC 的协议处理并行，但会引入更复杂的 socket 语义：
-
-- TCP wildcard listen 需要在多个 `SocketSet` 创建 listener 并聚合 accept queue。
-- UDP wildcard bind 需要聚合多个 backend 的 recv readiness。
-- 端口冲突检查需要跨 domain 统一仲裁。
-- 动态路由切换会涉及 socket backend 迁移或重新绑定。
-- `SO_BINDTODEVICE`、AF_PACKET、raw socket 和 multicast 的接口集合语义会更复杂。
-
-因此当前 `ax-net` 优先保留单协议栈语义，用多接口 registry、路由决策和设备队列解耦补齐功能和部分性能优化。
-
-## Socket backend 分层
-
-`Socket` 枚举（[socket.rs#L253-L265](net/ax-net/src/socket.rs#L253-L265)）聚合 5 类 backend，统一实现 `SocketOps` + `Configurable`：
-
-| Backend | 类型 | 协议核心 | 源码 |
-| --- | --- | --- | --- |
-| `TcpSocket` | SOCK_STREAM / AF_INET | smoltcp TCP socket | [tcp.rs#L50](net/ax-net/src/tcp.rs#L50) |
-| `UdpSocket` | SOCK_DGRAM / AF_INET | smoltcp UDP socket | [udp.rs#L50](net/ax-net/src/udp.rs#L50) |
-| `RawSocket` | SOCK_RAW / AF_INET | smoltcp raw socket | [raw.rs#L50](net/ax-net/src/raw.rs#L50) |
-| `UnixSocket` | SOCK_STREAM/SOCK_DGRAM / AF_UNIX | 自包含 `Transport`（不经 smoltcp） | [unix/mod.rs#L70](net/ax-net/src/unix/mod.rs#L70) |
-| `VsockSocket` | SOCK_STREAM / AF_VSOCK | `rdif-vsock` 驱动 + ring buffer | [vsock/mod.rs#L68](net/ax-net/src/vsock/mod.rs#L68) |
-
-IP 类 socket 通过 `SOCKET_SET.add()` 注册到全局 `SocketSet`，获得 `SocketHandle`；Unix / vsock 不依赖 smoltcp，各自维护连接状态。
-
-## Socket 状态机
-
-IP socket 使用 `StateLock`（[state.rs#L32-L57](net/ax-net/src/state.rs#L32-L57)）做无锁状态转换，避免在 socket 上长期持锁：
-
-```rust
-pub(crate) enum State { Idle, Busy, Connecting, Connected, Listening, Closed }
-
-pub struct StateLock(AtomicU8);
-impl StateLock {
-    pub fn lock(&self, expect: State) -> Result<StateGuard<'_>, State> {
-        // CAS: expect -> Busy
-    }
-}
-```
-
-`StateGuard::transit()`（[state.rs#L65-L76](net/ax-net/src/state.rs#L65-L76)）在执行操作时把状态临时置为 `Busy`，操作成功才提交新状态，失败回滚。这样并发 `connect` / `accept` 不会互相破坏。
-
-非阻塞与超时由 `GeneralOptions`（[general.rs#L113-L145](net/ax-net/src/general.rs#L113-L145)）统一处理，基于 `axpoll::poll_io` 与 `block_on`/`timeout` 实现 `send_poller_with` / `recv_poller_with`。
+- DHCP client 由 per-interface `DhcpState` 维护 Discover/Request/Bound 状态，收到 ACK 后通过 `commit_interface_update()` 更新地址、路由和 DNS。
+- DHCP server 位于 [dhcp_server.rs](net/ax-net/src/dhcp_server.rs)，面向 SoftAP 场景，手工解析/封装 DHCP/UDP/IPv4 包，并通过 `Router::send_on_device()` 发包。
+- DNS 查询使用 smoltcp `dns::Socket` 临时加入全局 `SocketSet`，查询完成后由 guard 自动移除。

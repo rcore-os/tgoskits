@@ -1,6 +1,6 @@
 ---
-sidebar_position: 8
-sidebar_label: "测试与已知限制"
+sidebar_position: 10
+sidebar_label: "测试与限制"
 ---
 
 # 测试与限制
@@ -19,7 +19,11 @@ sidebar_label: "测试与已知限制"
 - 接口 down / 不可用时跳过 route。
 - default route 查询。
 - bounded RX/TX queue 满时行为。
+- `QueuedPacket` 超 MTU 拒绝、队列路径无每包堆分配。
+- loopback dispatch 直接注入 `Router.rx_buffer`，并在注入前触发 TCP SYN snoop。
 - DHCP bootstrap 和 per-interface 状态。
+- DHCP server Discover/Request 回复。
+- TCP orphan 在 Closed/Expired/overflow 场景下的回收。
 - TCP/UDP bind 到具体本地地址后保留接口绑定。
 - 未绑定 TCP/UDP connect 按 route decision 选择接口。
 
@@ -36,7 +40,7 @@ cargo test -p ax-net
 | 模块 | 关键测试点 | 优先级 |
 | --- | --- | --- |
 | `RouteTable` | 添加/删除/替换规则、排序验证、默认路由查询、`select_route_if` with mock filter | 高 |
-| `ListenTable` | port 冲突、backlog 上限、`can_listen`/`listen`/`unlisten`、SYN 队列溢出、`can_accept`/`accept` | 高 |
+| `ListenTable` | port 冲突、per-address listen、wildcard 冲突、backlog 上限、`can_listen`/`listen`/`unlisten`、SYN 队列溢出、`can_accept`/`accept` | 高 |
 | `SocketSetWrapper` | UDP bind 冲突仲裁（精确/wildcard/SO_REUSEADDR）、add/remove | 中 |
 | `StateLock` | Idle→Busy CAS、transit 成功/失败回退、状态读取一致性 | 中 |
 | `GeneralOptions` | nonblock/send_timeout/recv_timeout、device_binding 读写、Atomic 一致性 | 中 |
@@ -46,6 +50,8 @@ cargo test -p ax-net
 | `UnixSocket` | stream pair send/recv、cmsg 传递、datagram pair、abstract namespace bind/connect | 中 |
 | `VsockSocket` | bind/listen/connect/accept 状态转换、send/recv | 低（需 `vsock` feature） |
 | `DhcpState` | Discovering→Offer→Requesting→ACK→Bound 状态机、NAK→reset、`process_packet` 校验 | 中 |
+| `DhcpServer` | Discover→Offer、Request→Ack、错误 xid/mac/interface 过滤、单客户端租约覆盖 | 中 |
+| `orphan` | Closed 立即回收、teardown 超时回收、overflow 只回收 Closed 且保留正在 teardown 的 socket | 高 |
 | DNS | `dns_query_timeout` 超时、不可路由 server 过滤、`DnsSocketGuard` drop | 中 |
 
 ## 接口路由测试
@@ -129,6 +135,11 @@ Test: bind_device
 
 Test: SO_REUSEADDR
   两个 TcpSocket 都设 SO_REUSEADDR → 都可以 bind 同一端口
+
+Test: per-address listen
+  listen(127.0.0.1:8080) 与 listen(10.0.2.15:8080) 可以共存
+  listen(0.0.0.0:8080) 与任一具体地址 listener 冲突
+  SYN 目的地址只进入匹配 listener 的 syn_queue
 ```
 
 ## 已知 Debug 定位指南
@@ -140,8 +151,8 @@ Test: SO_REUSEADDR
 1. DHCP 未完成 — 检查 `dhcp_configured()` 返回值。
 2. 默认路由未提交 — 检查 `default_routes()` 是否非空。
 3. 接口未 UP — 检查 `interface_by_id(id).flags` 包含 `UP`。
-4. `next_poll_delay()` 使用 wall clock 而非 monotonic clock — 可能导致 poll 延迟。
-5. RX worker 沉睡 — `device.rx_wake` 未被通知。
+4. RX worker 沉睡 — `device.rx_wake` 未被通知。
+5. 设备 TX/RX queue 满 — 检查是否有 worker 未运行或 driver 长时间阻塞。
 
 检查方法：
 
@@ -172,5 +183,5 @@ info!("arp entries: {:?}", ax_net::arp_entries());
 
 1. 检查 `NET_POLL_REQUESTED` atomic 标志。
 2. 检查 `NET_POLL_WAKE` 是否有竞争。
-3. 检查 `poll_until_idle()` 中的 CAS 锁是否一直失败。
+3. 检查 `poll_until_idle()` 中的 CAS 锁是否一直失败；正常情况下只有 `net-poll` worker 会持续驱动协议栈，socket 热路径只负责 `request_poll()`。
 4. 检查 `next_poll_delay()` 返回值 — 如果 smoltcp `poll_at()` 返回 `None`，idle poll interval 为 100ms。

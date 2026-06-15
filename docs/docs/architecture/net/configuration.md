@@ -1,9 +1,9 @@
 ---
-sidebar_position: 3
+sidebar_position: 7
 sidebar_label: "配置参考"
 ---
 
-# 配置与 Feature
+# 配置参考
 
 `ax-net` 的配置目标是用结构化数据表达接口意图，而不是依赖旧的全局单网口环境变量。每个 Ethernet 接口可以独立使用静态 IPv4 或 DHCP，并携带 metric 和 DNS 配置。
 
@@ -53,6 +53,7 @@ pub const RAW_TX_BUF_LEN: usize = 64 * 1024;
 pub const LISTEN_QUEUE_SIZE: usize = 512;
 pub const SOCKET_BUFFER_SIZE: usize = 64;
 pub const ETHERNET_MAX_PENDING_PACKETS: usize = 128;
+pub const DEVICE_TX_QUEUE_SIZE: usize = 128;
 ```
 
 `ETHERNET_MAX_PENDING_PACKETS` 取 128 而非 32，是为了容纳应用启动时多个并发 TCP 连接的首个 SYN 突发，以及长连接在 `NEIGHBOR_TTL` 过期后重新进入 ARP-pending 队列的 burst（见源码注释 [consts.rs#L14-L27](net/ax-net/src/consts.rs#L14-L27)）。
@@ -132,7 +133,7 @@ pub struct StaticIpConfig {
 - `dhcp = true` 且 `static_ip.is_some()`。
 - 静态 IP 为 unspecified。
 - prefix 大于 32。
-- gateway 为 unspecified。
+- gateway 可以为 unspecified，表示不安装默认路由。
 - DNS server 为 unspecified。
 - 显式配置没有匹配任何设备。
 - 接口名冲突。
@@ -206,6 +207,8 @@ let config = NetworkConfig {
 
 ## 接口命名与 ID 分配
 
+> 以下为运行时常量与默认值。
+
 `InterfaceId` 数值的分配规则：
 
 | InterfaceId | 接口 | 说明 |
@@ -221,7 +224,7 @@ let config = NetworkConfig {
 - 直连路由的 metric 与接口配置相同。
 - 默认路由的 metric 与接口配置相同。
 - 路由表排序：最长前缀匹配 > 低 metric 优先 > 同 metric 稳定插入顺序。
-- 未配置 metric 的接口默认为 `u32::MAX`。
+- 未显式配置的 Ethernet 接口默认启用 DHCP，metric 默认为 100；fallback DNS 来源使用 `u32::MAX`，因此会排在接口级 DNS 之后。
 - 同一目的地址存在多个匹配路由时，优先选择 metric 较低且接口 `UP` 的路由。
 
 ## TCP Keep-Alive 默认值
@@ -278,10 +281,11 @@ const TCP_INFO_DEFAULT_REORDERING: u32 = 3;
 | --- | --- | --- |
 | `Router::rx_buffer` | [router.rs#L326](net/ax-net/src/router.rs#L326) | `SOCKET_BUFFER_SIZE` 个 MTU 槽位 × 1500 字节 |
 | `Router::tx_buffer` | [router.rs#L330](net/ax-net/src/router.rs#L330) | 同上 |
-| `RouterQueues::rx` | [router.rs#L335](net/ax-net/src/router.rs#L335) | `SOCKET_BUFFER_SIZE` 个 `RxPacket` |
-| `DeviceHandle::tx_queue` | [router.rs#L140](net/ax-net/src/router.rs#L140) | `SOCKET_BUFFER_SIZE` 个 `TxPacket` |
+| `RouterQueues::rx` | [router.rs](net/ax-net/src/router.rs) | `SOCKET_BUFFER_SIZE` 个 inline `RxPacket`（每包最多 MTU） |
+| `DeviceHandle::tx_queue` | [router.rs](net/ax-net/src/router.rs) | `DEVICE_TX_QUEUE_SIZE` 个 inline `TxPacket`（每包最多 MTU） |
 | `EthernetDevice::pending_packets` | [ethernet.rs#L123](net/ax-net/src/device/ethernet.rs#L123) | `ETHERNET_MAX_PENDING_PACKETS`（128）个 IP 包 |
-| `LoopbackDevice::buffer` | [loopback.rs#L17](net/ax-net/src/device/loopback.rs#L17) | `SOCKET_BUFFER_SIZE` 个 MTU 槽位 × 1500 字节 |
+
+`LoopbackDevice` 不维护独立 buffer。普通 smoltcp loopback TX 在 `Router::dispatch()` 中直接注入 `Router::rx_buffer`；`send_on_device()` 的 loopback 特殊发包才进入共享 `RouterQueues::rx`，且同样使用 inline `QueuedPacket`。
 
 ## Unix Stream 缓冲区
 

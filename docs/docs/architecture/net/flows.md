@@ -1,5 +1,5 @@
 ---
-sidebar_position: 5
+sidebar_position: 8
 sidebar_label: "运行时流程"
 ---
 
@@ -167,7 +167,7 @@ sequenceDiagram
     end
     DevLock-->>RxW: unlock
     loop rx_buffer.dequeue()
-        RxW->>RxQ: push(RxPacket{interface_id, bytes})
+        RxW->>RxQ: push(RxPacket{interface_id, QueuedPacket})
         alt 队列满
             RxW->>RxW: warn + drop packet
         end
@@ -227,7 +227,11 @@ while rx_buffer.is_empty()
 
 ```rust
 while let Ok((interface_id, packet)) = rx_buffer.dequeue() {
-    let rx = RxPacket { interface_id, bytes: packet.to_vec().into_boxed_slice() };
+    let Some(bytes) = QueuedPacket::new(packet) else {
+        warn!("{}: RX packet exceeds MTU, dropping packet", device.name);
+        continue;
+    };
+    let rx = RxPacket { interface_id, bytes };
     if device.rx_queue.push(rx).is_err() {
         warn!("{}: RX queue is full, dropping packet", device.name);
         break;
@@ -237,7 +241,7 @@ while let Ok((interface_id, packet)) = rx_buffer.dequeue() {
 }
 ```
 
-`rx_queue` 是 `BoundedPacketQueue`，容量 `SOCKET_BUFFER_SIZE = 64`（[consts.rs#L12](net/ax-net/src/consts.rs#L12)）。队列满时丢弃剩余包并 break，避免在队列已满时继续从 driver 拷贝。
+`rx_queue` 是 `BoundedPacketQueue<RxPacket>`，容量 `SOCKET_BUFFER_SIZE = 64`。`RxPacket` 内部使用 `[u8; STANDARD_MTU] + len` 的 inline `QueuedPacket`，不为每个包分配 `Box<[u8]>`。队列满时丢弃剩余包并 break，避免在队列已满时继续从 driver 拷贝。
 
 **步骤 4 — Router drain 共享 RX 队列**
 
@@ -246,13 +250,14 @@ while let Ok((interface_id, packet)) = rx_buffer.dequeue() {
 ```rust
 while !self.rx_buffer.is_full() {
     let Some(packet) = self.queues.rx.pop() else { break; };
-    snoop_tcp_packet(&packet.bytes, sockets);    // 预创建 listen socket
-    snoop(packet.interface_id, &packet.bytes);    // DHCP snoop 回调
-    let Ok(dst) = self.rx_buffer.enqueue(packet.bytes.len(), packet.interface_id) else {
+    let bytes = packet.bytes.as_slice();
+    snoop_tcp_packet(bytes, sockets);            // 预创建 listen socket
+    snoop(packet.interface_id, bytes);           // DHCP snoop 回调
+    let Ok(dst) = self.rx_buffer.enqueue(bytes.len(), packet.interface_id) else {
         warn!("Router RX buffer is full, dropping packet");
         break;
     };
-    dst.copy_from_slice(&packet.bytes);
+    dst.copy_from_slice(bytes);
 }
 ```
 
@@ -278,12 +283,12 @@ while !self.rx_buffer.is_full() {
 ```
 driver RX ring
   → [copy] PacketBuffer (local, capacity=1, MTU=1500)
-  → [copy] BoundedPacketQueue (per-device, capacity=64)
+  → [copy] BoundedPacketQueue<QueuedPacket> (shared RX queue, capacity=64, no heap allocation per packet)
   → [copy] Router.rx_buffer (PacketBuffer, shared, capacity from smoltcp config)
   → [zero-copy ref] RxToken → smoltcp Interface::poll
 ```
 
-每次 hop 最多一次内存拷贝。最坏路径有 3 次拷贝（driver → local buffer → queue → router buffer），但通过有界队列控制了背压。
+每次 hop 最多一次内存拷贝。最坏路径有 3 次拷贝（driver → local buffer → queue → router buffer），但通过有界 inline queue 控制了背压并避免每包堆分配。
 
 ---
 
@@ -431,7 +436,7 @@ while let Ok((_, packet)) = self.tx_buffer.dequeue() {
 fn device_tx_worker(device: Arc<DeviceHandle>) {
     loop {
         if let Some(packet) = device.tx_queue.pop() {
-            let poll_next = device.inner.lock().send(packet.next_hop, &packet.bytes, now());
+            let poll_next = device.inner.lock().send(packet.next_hop, packet.bytes.as_slice(), now());
             if poll_next { crate::request_poll(); }
         } else {
             device.tx_wake.wait_until(|| !device.tx_queue.is_empty());
@@ -471,7 +476,7 @@ socket.send(data)
   → [copy] smoltcp socket TX buffer
   → [smoltcp 内部] IP packet 构造
   → [TxToken::consume → copy] Router.tx_buffer
-  → [dispatch → copy] DeviceHandle.tx_queue
+  → [dispatch → copy] DeviceHandle.tx_queue (QueuedPacket inline, no heap allocation per packet)
   → [EthernetDevice::send → copy] driver TX buffer
 ```
 
@@ -539,14 +544,13 @@ sequenceDiagram
     Control-->>Sock: RouteDecision { source, dev, next_hop }
     Sock->>Sock: state: Idle → Connecting
     Sock->>SockSet: smoltcp socket.connect(remote, local)
-    Sock->>Sock: yield_now() (让 net-poll 处理 SYN)
     Sock->>Poll: request_poll()
     loop poll_connect()
         Sock->>SockSet: socket.state() == Connected?
         alt Connected
             Sock-->>App: Ok
         else still connecting
-            Sock->>Poll: request_poll() → yield
+            Sock->>Poll: register waker + request_poll() → yield
         end
     end
 ```
@@ -571,12 +575,12 @@ sequenceDiagram
 
 ```rust
 fn accept(&self) -> AxResult<Socket> {
-    let bound_port = self.bound_endpoint()?.port;
+    let bound_endpoint = self.bound_endpoint()?;
     self.general.recv_poller(self, || {
         request_poll();
         let accepted = {
             let mut sockets = SOCKET_SET.inner.lock();
-            LISTEN_TABLE.accept(bound_port, &mut sockets)?
+            LISTEN_TABLE.accept(bound_endpoint, &mut sockets)?
         };
         Ok(TcpSocket::new_connected(accepted.handle, ...).into())
     })
@@ -858,7 +862,7 @@ fn poll_once() -> bool {
 **严格禁止**：
 
 - 禁止在持有设备锁（`DeviceHandle.inner`）时进入 `Service` 或 `SocketSet` 锁。
-- 禁止在持有 control-plane 写锁（`NetControl.state.write()`）时进入 smoltcp poll。
+- 禁止在持有 control 写锁（`NetControl.state.write()`）时进入 smoltcp poll。
 - 锁的获取和释放严格嵌套，不允许跨层级持有。
 
 ### Waker 注册路径
@@ -885,7 +889,7 @@ socket.send/recv/connect returns WouldBlock
 | --- | --- | --- | --- |
 | RX | IRQ → rx_wake → rx_worker → rx_queue | 设备锁 → RX 队列（无 Service 锁） | driver recv + 1 次 copy |
 | TX | socket.send → smoltcp buffer → dispatch → tx_queue | Service 锁 → SocketSet 锁 → 路由表读锁 | smoltcp TCP 状态机 + ARP |
-| TCP connect | socket.connect → smoltcp connect → yield → poll | Service 锁 → SocketSet 锁 | RTT × 1.5（SYN + SYN-ACK） |
+| TCP connect | socket.connect → smoltcp connect → request_poll → poll | Service 锁 → SocketSet 锁 | RTT × 1.5（SYN + SYN-ACK） |
 | DHCP | poll_dhcp → send_on_device → RX → process_packet | Service 锁 → 路由表写锁 | DHCP server 响应时间 |
 | DNS | dns_query_timeout → add socket → poll loop | Service 锁 → SocketSet 锁 | DNS server RTT |
 | Poll | request_poll → net-poll worker → poll_until_idle | POLLING_INTERFACES 原子 → Service 锁 → SocketSet 锁 | smoltcp poll duration |
@@ -1039,7 +1043,7 @@ sequenceDiagram
     Eth->>Router: packet 进入 rx_buffer
     Router->>Router: snoop_tcp_packet(bytes)
     Router->>ListenTbl: incoming_tcp_packet(src, dst, sockets)
-    ListenTbl->>ListenTbl: 查 port → ListenTableEntryInner
+    ListenTbl->>ListenTbl: 查 port bucket → 匹配目的地址的 ListenTableEntryInner
     ListenTbl->>SockSet: add(new TcpSocket)
     ListenTbl->>ListenTbl: socket.listen(dst.port)
     ListenTbl->>ListenTbl: syn_queue.push_back(PendingTcp)
@@ -1052,7 +1056,7 @@ sequenceDiagram
     Smol->>Smol: socket.state → Established
     Smol->>SockSet: socket can_accept() = true
 
-    App->>ListenTbl: accept(port, sockets)
+    App->>ListenTbl: accept(bound_endpoint, sockets)
     ListenTbl->>ListenTbl: 遍历 syn_queue
     ListenTbl->>SockSet: is_acceptable(handle)?
     alt Established
