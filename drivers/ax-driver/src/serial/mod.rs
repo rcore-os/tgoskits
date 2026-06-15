@@ -406,9 +406,22 @@ fn serial_device_info(
         mapped_base,
         baudrate,
         irq_num: binding_info.irq_num(),
-        rx_polling_required: false,
+        rx_polling_required: serial_rx_polling_required(info.node.as_node()),
         binding_info,
     }
+}
+
+fn serial_rx_polling_required(node: &fdt_edit::Node) -> bool {
+    node.compatibles().any(|compatible| {
+        compatible == "snps,dw-apb-uart" && rdrive::with_fdt(is_cvitek_cv181x).unwrap_or(false)
+    })
+}
+
+fn is_cvitek_cv181x(fdt: &Fdt) -> bool {
+    fdt.node(fdt.root_id()).is_some_and(|root| {
+        root.compatibles()
+            .any(|compatible| compatible == "cvitek,cv181x")
+    })
 }
 
 fn serial_binding_info(info: &FdtInfo<'_>, fdt_path: &str) -> BindingInfo {
@@ -572,9 +585,29 @@ mod tests {
         assert_eq!(serial_alias_index(&fdt, "/soc/uart@3000"), None);
     }
 
+    #[test]
+    fn detects_cvitek_cv181x_root_for_sg2002_serial_polling() {
+        let fdt = minimal_serial_alias_fdt_with_root_compatible(&["cvitek,cv181x"]);
+
+        assert!(is_cvitek_cv181x(&fdt));
+
+        let fdt = minimal_serial_alias_fdt_with_root_compatible(&["test,board"]);
+
+        assert!(!is_cvitek_cv181x(&fdt));
+    }
+
     fn minimal_serial_alias_fdt() -> Fdt {
+        minimal_serial_alias_fdt_with_root_compatible(&[])
+    }
+
+    fn minimal_serial_alias_fdt_with_root_compatible(compatibles: &[&str]) -> Fdt {
         let mut fdt = Fdt::new();
         let root = fdt.root_id();
+        if !compatibles.is_empty() {
+            fdt.node_mut(root)
+                .unwrap()
+                .set_property(prop_strs("compatible", compatibles));
+        }
         let aliases = fdt.add_node(root, Node::new("aliases"));
         fdt.node_mut(aliases)
             .unwrap()
