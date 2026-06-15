@@ -43,18 +43,19 @@ use core::{
 };
 
 use ax_alloc::GlobalPage;
-use ax_memory_addr::{PAGE_SIZE_4K, PhysAddrRange};
 use ax_errno::AxResult;
+use ax_memory_addr::{PAGE_SIZE_4K, PhysAddrRange};
 use ax_runtime::hal::{mem::virt_to_phys, time::monotonic_time};
 use ax_sync::Mutex;
 use axfs_ng_vfs::{NodeFlags, VfsError, VfsResult};
 use axpoll::{IoEvents, PollSet, Pollable};
 use bytemuck::bytes_of;
+use linux_raw_sys::general::O_CLOEXEC;
 use starry_vm::{VmMutPtr, VmPtr, vm_load, vm_write_slice};
 
 use super::drm::{
-    DRM_CAP_ADDFB2_MODIFIERS, DRM_CAP_CRTC_IN_VBLANK_EVENT, DRM_CAP_DUMB_BUFFER,
-    DRM_CAP_PRIME, DRM_CAP_TIMESTAMP_MONOTONIC, DRM_EVENT_FLIP_COMPLETE, DRM_FORMAT_ARGB8888,
+    DRM_CAP_ADDFB2_MODIFIERS, DRM_CAP_CRTC_IN_VBLANK_EVENT, DRM_CAP_DUMB_BUFFER, DRM_CAP_PRIME,
+    DRM_CAP_TIMESTAMP_MONOTONIC, DRM_EVENT_FLIP_COMPLETE, DRM_FORMAT_ARGB8888,
     DRM_FORMAT_MOD_INVALID, DRM_FORMAT_MOD_LINEAR, DRM_FORMAT_XRGB8888, DRM_IOCTL_AUTH_MAGIC,
     DRM_IOCTL_DROP_MASTER, DRM_IOCTL_GET_CAP, DRM_IOCTL_GET_MAGIC, DRM_IOCTL_GET_UNIQUE,
     DRM_IOCTL_MODE_ADDFB2, DRM_IOCTL_MODE_ATOMIC, DRM_IOCTL_MODE_CREATE_DUMB,
@@ -78,9 +79,10 @@ use super::drm::{
     DrmModeModeInfo, DrmModeObjGetProperties, DrmModePropertyEnum, DrmPrimeHandle, DrmSetClientCap,
     DrmSetVersion, DrmUnique, DrmVersion, DrmWaitVblank,
 };
-use crate::file::{FileLike, add_file_like};
-use linux_raw_sys::general::O_CLOEXEC;
-use crate::pseudofs::{DeviceMmap, DeviceOps};
+use crate::{
+    file::{FileLike, add_file_like},
+    pseudofs::{DeviceMmap, DeviceOps},
+};
 
 pub const DRIVER_NAME: &str = "starry-simpledrm";
 pub const DRIVER_DATE: &str = "2026-04-19";
@@ -921,8 +923,7 @@ impl Card0 {
         let ptr = arg as *mut DrmPrimeHandle;
         let mut req: DrmPrimeHandle = ptr.vm_read().map_err(|_| VfsError::BadAddress)?;
 
-        let file = crate::file::get_file_like(req.fd)
-            .map_err(|_| VfsError::BadFileDescriptor)?;
+        let file = crate::file::get_file_like(req.fd).map_err(|_| VfsError::BadFileDescriptor)?;
         let dma_buf: &DmaBufGem = file
             .as_any()
             .downcast_ref::<DmaBufGem>()
