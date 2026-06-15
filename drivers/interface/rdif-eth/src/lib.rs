@@ -164,6 +164,63 @@ pub trait Interface: DriverGeneric {
 
     /// Handle a device interrupt, returning which queues have events.
     fn handle_irq(&mut self) -> Event;
+
+    /// Optional wireless control plane.
+    ///
+    /// A plain wired NIC returns `None` (the default). A wireless device
+    /// returns its [`WifiControl`] so the upper layers can drive STA/SoftAP
+    /// control, link policy and out-of-band RX wake-up through the *same* net
+    /// device model — no separate Wi-Fi device type or registration path.
+    fn wifi_control(&mut self) -> Option<&mut dyn WifiControl> {
+        None
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Optional wireless control plane
+// ---------------------------------------------------------------------------
+
+/// Wireless link policy a device reports for itself, so the protocol stack can
+/// apply it without any Wi-Fi/SoftAP-specific knowledge.
+///
+/// This is plain data carried alongside the device; the stack only sees a
+/// static IPv4 + optional single-client DHCP server lease.
+#[derive(Clone, Copy, Debug)]
+pub struct WifiLinkPolicy {
+    /// This interface's static address / SoftAP gateway.
+    pub ip: [u8; 4],
+    /// Prefix length for [`ip`](Self::ip).
+    pub prefix_len: u8,
+    /// If set, run a built-in DHCP server handing out this single address.
+    pub dhcp_server_client_ip: Option<[u8; 4]>,
+}
+
+/// Optional control plane for a wireless [`Interface`].
+///
+/// Bundles the wireless-specific capabilities (STA connect, SoftAP start, MAC,
+/// out-of-band RX wake, link policy) onto the same object that carries the data
+/// plane. A chip driver implements this on its `Interface` device so wireless
+/// devices need no bespoke lifecycle trait or registration path.
+pub trait WifiControl {
+    /// Connect to a network in STA mode (scan + associate + authenticate).
+    fn connect(&mut self, ssid: &str, password: &str) -> Result<(), NetError>;
+
+    /// Disconnect from the current STA network.
+    fn disconnect(&mut self) -> Result<(), NetError>;
+
+    /// Start an open (unencrypted) SoftAP broadcasting `ssid` on `channel`.
+    fn start_ap_open(&mut self, ssid: &[u8], channel: u8) -> Result<(), NetError>;
+
+    /// Register a wake callback for out-of-band RX.
+    ///
+    /// SDIO Wi-Fi delivers RX outside the ethernet IRQ framework, so the driver
+    /// calls this `wake` when a data frame has been enqueued, to nudge the
+    /// stack's per-device poll task.
+    fn set_rx_wake(&mut self, wake: fn());
+
+    /// The link policy this device wants applied once the stack is up. `None`
+    /// means "no special policy" (e.g. a STA that will use DHCP like any NIC).
+    fn link_policy(&self) -> Option<WifiLinkPolicy>;
 }
 
 // ---------------------------------------------------------------------------

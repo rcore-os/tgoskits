@@ -166,6 +166,13 @@ impl Router {
         entries
     }
 
+    /// Wakes RX readiness on every device (used by the SDIO WiFi poll task).
+    pub fn wake_all_devices(&self) {
+        for device in &self.devices {
+            device.wake_rx();
+        }
+    }
+
     pub fn ipv4_config_for_dev(&self, dev: usize) -> Option<Ipv4InterfaceConfig> {
         self.table.rules.iter().find_map(|rule| match rule.filter {
             IpCidr::Ipv4(address) if rule.dev == dev && address.prefix_len() != 0 => {

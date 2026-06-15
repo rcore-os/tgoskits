@@ -61,4 +61,7 @@ vf2:
 sg2002:
 	$(MAKE) ARCH=riscv64 APP_FEATURES=sg2002 MYPLAT=ax-plat-riscv64-sg2002 BUS=mmio SMP=1 UIMAGE=y LOG=info build
 
+sg2002-wifi:
+	$(MAKE) ARCH=riscv64 APP_FEATURES=sg2002-wifi MYPLAT=ax-plat-riscv64-sg2002 BUS=mmio SMP=1 UIMAGE=y LOG=info build
+
 .PHONY: build run justrun debug disasm clean

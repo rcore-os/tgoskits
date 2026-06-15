@@ -80,6 +80,7 @@ net = [
     "dep:ax-net",
     "ax-runtime/net",
 ]
+aic8800-wifi = ["net", "ax-runtime/aic8800-wifi"]
 vsock = ["ax-runtime/vsock"]
 
 # Display

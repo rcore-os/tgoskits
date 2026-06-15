@@ -18,7 +18,8 @@ use smoltcp::{
 };
 
 use crate::{
-    SOCKET_SET, config::Ipv4InterfaceConfig, consts::STANDARD_MTU, device::ArpEntry, router::Router,
+    SOCKET_SET, config::Ipv4InterfaceConfig, consts::STANDARD_MTU, device::ArpEntry,
+    dhcp_server::DhcpServer, router::Router,
 };
 
 fn now() -> Instant {
@@ -30,6 +31,7 @@ pub struct Service {
     router: Router,
     timeout: Option<Pin<Box<dyn Future<Output = ()> + Send>>>,
     dhcp: Option<DhcpState>,
+    dhcp_server: Option<DhcpServer>,
     static_dns: Vec<Ipv4Address>,
 }
 
@@ -207,6 +209,7 @@ impl Service {
             router,
             timeout: None,
             dhcp: None,
+            dhcp_server: None,
             static_dns,
         }
     }
@@ -214,6 +217,37 @@ impl Service {
     pub fn enable_dhcp(&mut self, dev: usize, mac: EthernetAddress) {
         self.dhcp = Some(DhcpState::new(dev, mac));
         info!("eth0: DHCP enabled");
+    }
+
+    /// 注册一个带静态 IPv4 的设备(如 SoftAP 接口),返回设备索引。
+    pub fn register_static_device(
+        &mut self,
+        name: alloc::string::String,
+        dev: crate::device::EthernetDevice,
+        cidr: Ipv4Cidr,
+    ) -> usize {
+        let dev_idx = self.router.add_device(Box::new(dev));
+        self.router.set_ipv4_config(dev_idx, Some(cidr), None);
+        Self::set_interface_ipv4(&mut self.iface, None, Some(cidr));
+        info!("{name}: static ip {cidr}");
+        dev_idx
+    }
+
+    /// 在指定设备上启用内置 DHCP 服务器(SoftAP 给客户端分配地址)。
+    pub fn enable_dhcp_server(
+        &mut self,
+        dev: usize,
+        server_ip: Ipv4Address,
+        client_ip: Ipv4Address,
+        subnet_mask: Ipv4Address,
+    ) {
+        self.dhcp_server = Some(DhcpServer::new(dev, server_ip, client_ip, subnet_mask));
+        info!("dev {dev}: DHCP server enabled (lease {client_ip})");
+    }
+
+    /// 唤醒所有设备的 RX 就绪(SDIO WiFi 带外收包后由 poll 任务调用)。
+    pub fn wake_all_devices(&self) {
+        self.router.wake_all_devices();
     }
 
     pub fn dhcp_enabled(&self) -> bool {
@@ -243,9 +277,11 @@ impl Service {
     pub fn poll(&mut self, sockets: &mut SocketSet) -> bool {
         let timestamp = now();
         let mut dhcp_events = Vec::new();
+        let mut dhcp_server_replies: Vec<(usize, Vec<u8>)> = Vec::new();
 
         {
             let dhcp = &mut self.dhcp;
+            let dhcp_server = &mut self.dhcp_server;
             self.router.poll(timestamp, sockets, |dev, packet| {
                 if let Some(event) = dhcp
                     .as_mut()
@@ -253,14 +289,31 @@ impl Service {
                 {
                     dhcp_events.push(event);
                 }
+                if let Some(reply) = dhcp_server
+                    .as_mut()
+                    .and_then(|srv| srv.process_packet(dev, packet))
+                {
+                    dhcp_server_replies.push((dev, reply));
+                }
             });
         }
         for event in dhcp_events {
             self.handle_dhcp_event(event);
         }
+        let mut server_sent = false;
+        for (dev, reply) in dhcp_server_replies {
+            if self.router.send_on_device(
+                dev,
+                IpAddress::Ipv4(Ipv4Address::BROADCAST),
+                &reply,
+                timestamp,
+            ) {
+                server_sent = true;
+            }
+        }
         self.iface.poll(timestamp, &mut self.router, sockets);
         let dhcp_poll_next = self.poll_dhcp(timestamp);
-        self.router.dispatch(timestamp) || dhcp_poll_next
+        self.router.dispatch(timestamp) || dhcp_poll_next || server_sent
     }
 
     fn poll_dhcp(&mut self, timestamp: Instant) -> bool {

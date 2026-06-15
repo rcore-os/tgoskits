@@ -1,0 +1,5 @@
+# AIC8800 firmware blobs are fetched on demand by the xtask build tooling
+# (see scripts/axbuild/src/firmware.rs) and integrity-checked against pinned
+# SHA-256 digests. They are intentionally not vendored into version control.
+*.bin
+*.ini
