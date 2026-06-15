@@ -9,9 +9,12 @@ description = "AIC8800 Wi-Fi driver core (SDIO, firmware, WPA2, SoftAP). OS-inde
 # Vendor firmware blobs are not vendored into git or the package tarball; the
 # build script provisions them into OUT_DIR (from $AIC8800_FIRMWARE_DIR, the
 # in-tree `firmware/` dir populated by `cargo xtask`, or the pinned upstream
-# source) and verifies each against its SHA-256. The `firmware/` dir is excluded
-# from the package so the tarball stays blob-free and builds standalone.
-exclude = ["firmware/"]
+# source) and verifies each against its SHA-256. Only the top-level blob dir is
+# excluded — the leading slash anchors the glob to the package root so it does
+# NOT also match the `src/fw/firmware/` source module (required to build).
+# Without the anchor, `firmware/` matches at any depth and the tarball drops
+# `src/fw/firmware/{mod,data,upload}.rs`, breaking standalone builds.
+exclude = ["/firmware/"]
 
 [features]
 default = []
