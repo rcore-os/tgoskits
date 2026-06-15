@@ -1,6 +1,6 @@
 [package]
 name = "ax-driver"
-version = "0.7.1"
+version = "0.8.0"
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
@@ -42,6 +42,13 @@ ixgbe = ["net", "pci", "dep:ax-alloc", "dep:ixgbe-driver"]
 fxmac = ["net", "dep:ax-alloc", "dep:ax-crate-interface", "dep:fxmac_rs"]
 intel-net = ["net", "pci", "dep:eth-intel"]
 realtek-rtl8125 = ["net", "pci", "dep:realtek-rtl8125"]
+aic8800-wifi = [
+    "net",
+    "plat-dyn",
+    "dep:aic8800",
+    "dep:sdhci-cv1800",
+    "dep:sdio-host",
+]
 
 usb = ["dep:crab-usb"]
 rockchip-dwc-xhci = ["usb", "plat-dyn", "rockchip-soc", "rockchip-pm"]
@@ -50,6 +57,7 @@ xhci-pci = ["usb", "pci"]
 serial = ["plat-dyn", "dep:some-serial"]
 sg2002-placeholder = ["plat-dyn"]
 rknpu = ["plat-dyn", "rockchip-pm", "rockchip-soc", "dep:rockchip-npu"]
+rga = ["plat-dyn", "dep:rockchip-rga"]
 rockchip-sdhci = [
     "block",
     "plat-dyn",
@@ -99,6 +107,7 @@ list-pci-devices = ["pci"]
 pci-list-devices = ["list-pci-devices"]
 
 [dependencies]
+aic8800 = { workspace = true, optional = true }
 anyhow = { workspace = true }
 arm-scmi-rs = { workspace = true, optional = true }
 ax-alloc = { workspace = true, optional = true }
@@ -134,10 +143,13 @@ rdrive.workspace = true
 rdrive-macros.workspace = true
 rk3588-pci = { workspace = true, optional = true }
 rockchip-npu = { workspace = true, optional = true }
+rockchip-rga = { workspace = true, optional = true }
 rockchip-pm = { workspace = true, optional = true }
 rockchip-soc = { workspace = true, optional = true }
 phytium-mci-host = { workspace = true, optional = true }
 sdhci-host = { workspace = true, optional = true }
+sdhci-cv1800 = { workspace = true, optional = true }
+sdio-host = { workspace = true, optional = true }
 sdmmc-protocol = { workspace = true, default-features = false, optional = true }
 sg200x-bsp = { workspace = true, optional = true }
 simple-ahci = { workspace = true, optional = true }

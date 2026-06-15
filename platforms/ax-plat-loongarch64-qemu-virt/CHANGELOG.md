@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.14](https://github.com/rcore-os/tgoskits/compare/ax-plat-loongarch64-qemu-virt-v0.5.13...ax-plat-loongarch64-qemu-virt-v0.5.14) - 2026-06-12
+
+### Fixed
+
+- *(ci)* stabilize x86 Starry QEMU timing ([#1245](https://github.com/rcore-os/tgoskits/pull/1245))
+- *(loongarch64)* ack timer irq before dispatch ([#1222](https://github.com/rcore-os/tgoskits/pull/1222))
+
+### Other
+
+- *(ax-driver)* register devices with binding info
+
 ## [0.5.13](https://github.com/rcore-os/tgoskits/compare/ax-plat-loongarch64-qemu-virt-v0.5.12...ax-plat-loongarch64-qemu-virt-v0.5.13) - 2026-06-11
 
 ### Fixed

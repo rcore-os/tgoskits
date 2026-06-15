@@ -92,6 +92,12 @@ struct PendingNeighbor {
 struct EthernetIrqState {
     irq: Option<usize>,
     irq_registration: spin::Once<Box<dyn EthernetIrqRegistration>>,
+    /// RX readiness is delivered out-of-band (outside the ethernet IRQ
+    /// framework) via [`Device::wake_rx`] — e.g. an SDIO Wi-Fi chip that owns
+    /// its own card interrupt and pokes the stack through `notify_oob_rx`. Such
+    /// a device has no `irq_registration`, so it still needs `register_waker` to
+    /// arm `poll_ready`.
+    oob_rx: bool,
     driver: SpinNoIrq<Box<dyn EthernetDriver>>,
     poll_ready: PollSet,
 }
@@ -133,10 +139,28 @@ impl EthernetDevice {
     const ARP_REQUEST_RETRY: Duration = Duration::from_secs(1);
 
     pub fn new(name: String, inner: Box<dyn EthernetDriver>, ip: Option<Ipv4Cidr>) -> Self {
+        Self::new_inner(name, inner, ip, false)
+    }
+
+    /// Like [`new`](Self::new) but for a device whose RX readiness arrives
+    /// out-of-band (via [`Device::wake_rx`]) rather than through the ethernet
+    /// IRQ framework. Such a device has no IRQ registration, so `register_waker`
+    /// must still arm `poll_ready` for it.
+    pub fn new_oob_rx(name: String, inner: Box<dyn EthernetDriver>, ip: Option<Ipv4Cidr>) -> Self {
+        Self::new_inner(name, inner, ip, true)
+    }
+
+    fn new_inner(
+        name: String,
+        inner: Box<dyn EthernetDriver>,
+        ip: Option<Ipv4Cidr>,
+        oob_rx: bool,
+    ) -> Self {
         let irq = inner.irq_num();
         let mut inner = Arc::new(EthernetIrqState {
             irq,
             irq_registration: spin::Once::new(),
+            oob_rx,
             driver: SpinNoIrq::new(inner),
             poll_ready: PollSet::new(),
         });
@@ -561,8 +585,17 @@ impl Device for EthernetDevice {
             .collect()
     }
 
+    fn wake_rx(&self) {
+        self.inner.poll_ready.wake();
+    }
+
     fn register_waker(&self, waker: &Waker) {
-        if self.inner.irq_registration.get().is_some() {
+        // Arm the poll waker only when there is a wake source: either an IRQ
+        // registration drives `poll_ready` from `handle_ethernet_irq`, or the
+        // device delivers RX out-of-band (e.g. SDIO Wi-Fi) and pokes it via
+        // `wake_rx`. A pure-polling device with neither must not register here,
+        // or its waker would sit on a `poll_ready` that is never woken.
+        if self.inner.irq_registration.get().is_some() || self.inner.oob_rx {
             self.inner.poll_ready.register(waker);
         }
     }
