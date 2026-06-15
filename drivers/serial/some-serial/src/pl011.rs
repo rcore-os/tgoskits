@@ -1,15 +1,7 @@
-extern crate alloc;
-
-use alloc::sync::Arc;
-use core::{
-    num::NonZeroU32,
-    ptr::NonNull,
-    sync::atomic::{AtomicU32, Ordering},
-};
+use core::{num::NonZeroU32, ptr::NonNull};
 
 use rdif_serial::{
-    BSerial, InterfaceRaw, SerialDirection, SerialDyn, SerialEvent, TIrqHandler, TRxQueue,
-    TTxQueue, TransBytesError, TransferError,
+    BSerial, InterfaceRaw, SerialDirection, SerialDyn, SerialEvent, TransBytesError, TransferError,
 };
 use tock_registers::{interfaces::*, register_bitfields, register_structs, registers::*};
 
@@ -149,6 +141,7 @@ unsafe impl Sync for Pl011Registers {}
 pub struct Pl011 {
     base: Reg,
     clock_freq: u32,
+    event: SerialEvent,
 }
 
 impl Pl011 {
@@ -165,7 +158,11 @@ impl Pl011 {
     pub fn new(base: NonNull<u8>, clock_freq: u32) -> Self {
         let base = Reg(base.cast());
 
-        Self { base, clock_freq }
+        Self {
+            base,
+            clock_freq,
+            event: SerialEvent::empty(),
+        }
     }
 
     pub fn new_boxed(base: NonNull<u8>, clock_freq: u32) -> BSerial {
@@ -368,10 +365,12 @@ impl Pl011 {
             event |= SerialEvent::RX_ERROR | SerialEvent::OVERRUN;
         }
 
-        event
+        self.push_event(event);
+        event | self.peek_event()
     }
 
     pub fn try_write(&mut self, bytes: &[u8]) -> usize {
+        let _ = self.take_event(SerialEvent::TX_READY);
         let mut written = 0;
         for &byte in bytes {
             if !self.pending(SerialDirection::Output) {
@@ -384,6 +383,8 @@ impl Pl011 {
     }
 
     pub fn try_read(&mut self, bytes: &mut [u8]) -> Result<usize, TransBytesError> {
+        let _ =
+            self.take_event(SerialEvent::RX_READY | SerialEvent::RX_ERROR | SerialEvent::OVERRUN);
         let mut count = 0;
         for byte in bytes.iter_mut() {
             if !self.pending(SerialDirection::Input) {
@@ -432,7 +433,22 @@ impl Pl011 {
         }
 
         self.registers().uarticr.set(mis.get());
+        self.push_event(event);
         event
+    }
+
+    fn push_event(&mut self, event: SerialEvent) {
+        self.event.insert(event);
+    }
+
+    fn take_event(&mut self, mask: SerialEvent) -> SerialEvent {
+        let event = self.event & mask;
+        self.event.remove(mask);
+        event
+    }
+
+    fn peek_event(&self) -> SerialEvent {
+        self.event
     }
 
     fn read_byte(&mut self) -> Option<Result<u8, TransferError>> {
@@ -467,11 +483,6 @@ unsafe impl Send for Reg {}
 unsafe impl Sync for Reg {}
 
 impl InterfaceRaw for Pl011 {
-    type SharedState = Pl011SharedState;
-    type TxQueue = Pl011TxQueue;
-    type RxQueue = Pl011RxQueue;
-    type IrqHandler = Pl011IrqHandler;
-
     fn name(&self) -> &str {
         "PL011 UART"
     }
@@ -608,233 +619,20 @@ impl InterfaceRaw for Pl011 {
         Pl011::get_irq_mask(self)
     }
 
-    fn new_shared_state(&self) -> Self::SharedState {
-        Pl011SharedState::new()
-    }
-
-    fn tx_queue(&self, shared: &Self::SharedState) -> Self::TxQueue {
-        Pl011TxQueue {
-            base: self.base,
-            shared: shared.clone(),
-        }
-    }
-
-    fn rx_queue(&self, shared: &Self::SharedState) -> Self::RxQueue {
-        Pl011RxQueue {
-            base: self.base,
-            shared: shared.clone(),
-        }
-    }
-
-    fn irq_handler(&self, shared: &Self::SharedState) -> Self::IrqHandler {
-        Pl011IrqHandler {
-            base: self.base,
-            shared: shared.clone(),
-        }
-    }
-}
-
-#[derive(Clone)]
-pub struct Pl011SharedState {
-    event_bits: Arc<AtomicU32>,
-}
-
-impl Pl011SharedState {
-    fn new() -> Self {
-        Self {
-            event_bits: Arc::new(AtomicU32::new(0)),
-        }
-    }
-
-    fn push_event(&self, event: SerialEvent) {
-        if !event.is_empty() {
-            self.event_bits.fetch_or(event.bits(), Ordering::AcqRel);
-        }
-    }
-
-    fn take_event(&self, mask: SerialEvent) -> SerialEvent {
-        let old = self.event_bits.fetch_and(!mask.bits(), Ordering::AcqRel);
-        SerialEvent::from_bits_retain(old) & mask
-    }
-
-    fn peek_event(&self) -> SerialEvent {
-        SerialEvent::from_bits_retain(self.event_bits.load(Ordering::Acquire))
-    }
-}
-
-pub struct Pl011TxQueue {
-    base: Reg,
-    shared: Pl011SharedState,
-}
-
-impl Pl011TxQueue {
-    fn registers(&self) -> &Pl011Registers {
-        unsafe { &*self.base.0.as_ptr() }
-    }
-}
-
-impl TTxQueue for Pl011TxQueue {
-    fn base_addr(&self) -> usize {
-        self.base.0.as_ptr() as usize
-    }
-
     fn poll(&mut self) -> SerialEvent {
-        if !self.registers().uartfr.is_set(UARTFR::TXFF) {
-            let event = SerialEvent::TX_READY;
-            self.shared.push_event(event);
-            event
-        } else {
-            self.shared.peek_event() & SerialEvent::TX_READY
-        }
+        Pl011::poll(self)
     }
 
     fn try_write(&mut self, bytes: &[u8]) -> usize {
-        let _ = self.shared.take_event(SerialEvent::TX_READY);
-        let mut written = 0;
-        for &byte in bytes {
-            if self.registers().uartfr.is_set(UARTFR::TXFF) {
-                break;
-            }
-            self.registers().uartdr.set(byte as _);
-            written += 1;
-        }
-        written
-    }
-}
-
-pub struct Pl011RxQueue {
-    base: Reg,
-    shared: Pl011SharedState,
-}
-
-impl Pl011RxQueue {
-    fn registers(&self) -> &Pl011Registers {
-        unsafe { &*self.base.0.as_ptr() }
-    }
-
-    fn read_byte(&self) -> Option<Result<u8, TransferError>> {
-        if self.registers().uartfr.is_set(UARTFR::RXFE) {
-            return None;
-        }
-
-        let dr = self.registers().uartdr.extract();
-        let data = dr.read(UARTDR::DATA) as u8;
-
-        if dr.is_set(UARTDR::FE) {
-            return Some(Err(TransferError::Framing));
-        }
-        if dr.is_set(UARTDR::PE) {
-            return Some(Err(TransferError::Parity));
-        }
-        if dr.is_set(UARTDR::OE) {
-            return Some(Err(TransferError::Overrun(data)));
-        }
-        if dr.is_set(UARTDR::BE) {
-            return Some(Err(TransferError::Break));
-        }
-
-        Some(Ok(data))
-    }
-}
-
-impl TRxQueue for Pl011RxQueue {
-    fn base_addr(&self) -> usize {
-        self.base.0.as_ptr() as usize
-    }
-
-    fn poll(&mut self) -> SerialEvent {
-        let mut event = SerialEvent::empty();
-        let fr = self.registers().uartfr.extract();
-        if !fr.is_set(UARTFR::RXFE) {
-            event |= SerialEvent::RX_READY;
-        }
-
-        let rsr = self.registers().uartrsr_ecr.extract();
-        if rsr.is_set(UARTRSR_ECR::FE) || rsr.is_set(UARTRSR_ECR::PE) || rsr.is_set(UARTRSR_ECR::BE)
-        {
-            event |= SerialEvent::RX_ERROR;
-        }
-        if rsr.is_set(UARTRSR_ECR::OE) {
-            event |= SerialEvent::RX_ERROR | SerialEvent::OVERRUN;
-        }
-
-        self.shared.push_event(event);
-        event
-            | (self.shared.peek_event()
-                & (SerialEvent::RX_READY | SerialEvent::RX_ERROR | SerialEvent::OVERRUN))
+        Pl011::try_write(self, bytes)
     }
 
     fn try_read(&mut self, bytes: &mut [u8]) -> Result<usize, TransBytesError> {
-        let _ = self
-            .shared
-            .take_event(SerialEvent::RX_READY | SerialEvent::RX_ERROR | SerialEvent::OVERRUN);
-        let mut count = 0;
-        for byte in bytes.iter_mut() {
-            if self.registers().uartfr.is_set(UARTFR::RXFE) {
-                break;
-            }
-            match self.read_byte() {
-                Some(Ok(b)) => {
-                    *byte = b;
-                }
-                Some(Err(TransferError::Overrun(b))) => {
-                    *byte = b;
-                    count += 1;
-                    return Err(TransBytesError {
-                        bytes_transferred: count,
-                        kind: TransferError::Overrun(b),
-                    });
-                }
-                Some(Err(e)) => {
-                    return Err(TransBytesError {
-                        bytes_transferred: count,
-                        kind: e,
-                    });
-                }
-                None => break,
-            }
-            count += 1;
-        }
-        Ok(count)
-    }
-}
-
-pub struct Pl011IrqHandler {
-    base: Reg,
-    shared: Pl011SharedState,
-}
-
-impl Pl011IrqHandler {
-    fn registers(&self) -> &Pl011Registers {
-        unsafe { &*self.base.0.as_ptr() }
-    }
-}
-
-impl TIrqHandler for Pl011IrqHandler {
-    fn base_addr(&self) -> usize {
-        self.base.0.as_ptr() as usize
+        Pl011::try_read(self, bytes)
     }
 
-    fn handle_irq(&self) -> SerialEvent {
-        let mis = self.registers().uartmis.extract();
-        let mut event = SerialEvent::empty();
-
-        if mis.is_set(UARTIS::RX) || mis.is_set(UARTIS::RT) {
-            event |= SerialEvent::RX_READY;
-        }
-        if mis.is_set(UARTIS::TX) {
-            event |= SerialEvent::TX_READY;
-        }
-        if mis.is_set(UARTIS::FE) || mis.is_set(UARTIS::PE) || mis.is_set(UARTIS::BE) {
-            event |= SerialEvent::RX_ERROR;
-        }
-        if mis.is_set(UARTIS::OE) {
-            event |= SerialEvent::RX_ERROR | SerialEvent::OVERRUN;
-        }
-
-        self.registers().uarticr.set(mis.get());
-        self.shared.push_event(event);
-        event
+    fn handle_irq(&mut self) -> SerialEvent {
+        Pl011::handle_irq(self)
     }
 }
 
@@ -885,16 +683,31 @@ impl Pl011 {
 #[cfg(test)]
 mod tests {
     use core::ptr::NonNull;
+    use std::boxed::Box;
 
     use super::*;
 
-    fn pl011_with_overrun_data() -> (alloc::boxed::Box<Pl011Registers>, Pl011) {
-        let mut regs = alloc::boxed::Box::new(unsafe { core::mem::zeroed::<Pl011Registers>() });
-        regs.uartdr
-            .set((UARTDR::DATA.val(0xab) + UARTDR::OE::SET).into());
+    fn pl011_with_registers() -> (Box<Pl011Registers>, Pl011) {
+        let mut regs = Box::new(unsafe { core::mem::zeroed::<Pl011Registers>() });
         let ptr = NonNull::from(regs.as_mut()).cast::<u8>();
         let uart = Pl011::new(ptr, 24_000_000);
         (regs, uart)
+    }
+
+    fn pl011_with_overrun_data() -> (Box<Pl011Registers>, Pl011) {
+        let (regs, uart) = pl011_with_registers();
+        regs.uartdr
+            .set((UARTDR::DATA.val(0xab) + UARTDR::OE::SET).into());
+        (regs, uart)
+    }
+
+    fn write_test_reg(regs: &mut Pl011Registers, offset: usize, value: u32) {
+        unsafe {
+            (regs as *mut Pl011Registers)
+                .cast::<u32>()
+                .add(offset / core::mem::size_of::<u32>())
+                .write_volatile(value);
+        }
     }
 
     #[test]
@@ -914,8 +727,8 @@ mod tests {
     #[test]
     fn split_rx_reports_overrun_instead_of_swallowing_it() {
         let (_regs, uart) = pl011_with_overrun_data();
-        let shared = uart.new_shared_state();
-        let mut rx = uart.rx_queue(&shared);
+        let mut serial = SerialDyn::new_boxed(uart);
+        let mut rx = serial.take_rx().expect("RX queue should be available");
 
         let mut buf = [0];
         let err = rx
@@ -925,5 +738,27 @@ mod tests {
         assert_eq!(buf[0], 0xab);
         assert_eq!(err.bytes_transferred, 1);
         assert_eq!(err.kind, TransferError::Overrun(0xab));
+    }
+
+    #[test]
+    fn split_tx_poll_sees_irq_saved_tx_ready_event() {
+        let (mut regs, uart) = pl011_with_registers();
+        let mut serial = SerialDyn::new_boxed(uart);
+        let mut tx = serial.take_tx().expect("TX queue should be available");
+        let irq = serial
+            .take_irq_handler()
+            .expect("IRQ handler should be available");
+
+        write_test_reg(&mut regs, 0x040, UARTIS::TX::SET.value);
+        assert!(irq.handle_irq().tx_ready());
+
+        write_test_reg(&mut regs, 0x018, UARTFR::TXFF::SET.value);
+        assert!(
+            tx.poll().tx_ready(),
+            "TX queue should observe TX_READY saved by IRQ"
+        );
+
+        assert_eq!(tx.try_write(b"x"), 0);
+        assert!(!tx.poll().tx_ready());
     }
 }

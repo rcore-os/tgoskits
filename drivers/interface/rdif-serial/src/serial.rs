@@ -5,6 +5,7 @@ use core::{
 };
 
 use rdif_base::DriverGeneric;
+use spin::Mutex;
 
 use super::{
     BIrqHandler, BRxQueue, BSerial, BTxQueue, InterfaceRaw, InterruptMask, SetBackError,
@@ -13,8 +14,8 @@ use super::{
 
 pub struct SerialDyn<T: InterfaceRaw> {
     name: String,
-    control: T,
-    shared: T::SharedState,
+    base_addr: usize,
+    control: Arc<Mutex<T>>,
     tx_taken: Arc<AtomicBool>,
     rx_taken: Arc<AtomicBool>,
     irq_taken: Arc<AtomicBool>,
@@ -23,11 +24,11 @@ pub struct SerialDyn<T: InterfaceRaw> {
 impl<T: InterfaceRaw> SerialDyn<T> {
     pub fn new_boxed(control: T) -> BSerial {
         let name = String::from(control.name());
-        let shared = control.new_shared_state();
+        let base_addr = control.base_addr();
         Box::new(Self {
             name,
-            control,
-            shared,
+            base_addr,
+            control: Arc::new(Mutex::new(control)),
             tx_taken: Arc::new(AtomicBool::new(false)),
             rx_taken: Arc::new(AtomicBool::new(false)),
             irq_taken: Arc::new(AtomicBool::new(false)),
@@ -37,65 +38,66 @@ impl<T: InterfaceRaw> SerialDyn<T> {
 
 impl<T: InterfaceRaw> super::Interface for SerialDyn<T> {
     fn base_addr(&self) -> usize {
-        self.control.base_addr()
+        self.base_addr
     }
 
     fn set_config(&mut self, config: &crate::Config) -> Result<(), crate::ConfigError> {
-        self.control.set_config(config)
+        self.control.lock().set_config(config)
     }
 
     fn baudrate(&self) -> u32 {
-        self.control.baudrate()
+        self.control.lock().baudrate()
     }
 
     fn data_bits(&self) -> crate::DataBits {
-        self.control.data_bits()
+        self.control.lock().data_bits()
     }
 
     fn stop_bits(&self) -> crate::StopBits {
-        self.control.stop_bits()
+        self.control.lock().stop_bits()
     }
 
     fn parity(&self) -> crate::Parity {
-        self.control.parity()
+        self.control.lock().parity()
     }
 
     fn clock_freq(&self) -> Option<NonZeroU32> {
-        self.control.clock_freq()
+        self.control.lock().clock_freq()
     }
 
     fn open(&mut self) {
-        self.control.open();
+        self.control.lock().open();
     }
 
     fn close(&mut self) {
-        self.control.close();
+        self.control.lock().close();
     }
 
     fn enable_loopback(&mut self) {
-        self.control.enable_loopback()
+        self.control.lock().enable_loopback()
     }
 
     fn disable_loopback(&mut self) {
-        self.control.disable_loopback()
+        self.control.lock().disable_loopback()
     }
 
     fn is_loopback_enabled(&self) -> bool {
-        self.control.is_loopback_enabled()
+        self.control.lock().is_loopback_enabled()
     }
 
     fn set_irq_mask(&mut self, mask: InterruptMask) {
-        self.control.set_irq_mask(mask);
+        self.control.lock().set_irq_mask(mask);
     }
 
     fn get_irq_mask(&self) -> InterruptMask {
-        self.control.get_irq_mask()
+        self.control.lock().get_irq_mask()
     }
 
     fn take_tx(&mut self) -> Option<BTxQueue> {
         take_flag(&self.tx_taken)?;
         Some(Box::new(TxQueue {
-            inner: self.control.tx_queue(&self.shared),
+            base_addr: self.base_addr,
+            control: self.control.clone(),
             taken: self.tx_taken.clone(),
         }))
     }
@@ -103,7 +105,8 @@ impl<T: InterfaceRaw> super::Interface for SerialDyn<T> {
     fn take_rx(&mut self) -> Option<BRxQueue> {
         take_flag(&self.rx_taken)?;
         Some(Box::new(RxQueue {
-            inner: self.control.rx_queue(&self.shared),
+            base_addr: self.base_addr,
+            control: self.control.clone(),
             taken: self.rx_taken.clone(),
         }))
     }
@@ -111,7 +114,8 @@ impl<T: InterfaceRaw> super::Interface for SerialDyn<T> {
     fn take_irq_handler(&mut self) -> Option<BIrqHandler> {
         take_flag(&self.irq_taken)?;
         Some(Box::new(IrqHandler {
-            inner: self.control.irq_handler(&self.shared),
+            base_addr: self.base_addr,
+            control: self.control.clone(),
             taken: self.irq_taken.clone(),
         }))
     }
@@ -139,84 +143,86 @@ impl<T: InterfaceRaw> DriverGeneric for SerialDyn<T> {
     fn name(&self) -> &str {
         &self.name
     }
-
-    fn raw_any(&self) -> Option<&dyn core::any::Any> {
-        Some(self)
-    }
-
-    fn raw_any_mut(&mut self) -> Option<&mut dyn core::any::Any> {
-        Some(self)
-    }
 }
 
-pub struct TxQueue<T: TTxQueue> {
-    inner: T,
+pub struct TxQueue<T: InterfaceRaw> {
+    base_addr: usize,
+    control: Arc<Mutex<T>>,
     taken: Arc<AtomicBool>,
 }
 
-impl<T: TTxQueue> Drop for TxQueue<T> {
+impl<T: InterfaceRaw> Drop for TxQueue<T> {
     fn drop(&mut self) {
         self.taken.store(false, Ordering::Release);
     }
 }
 
-impl<T: TTxQueue> TTxQueue for TxQueue<T> {
+impl<T: InterfaceRaw> TTxQueue for TxQueue<T> {
     fn base_addr(&self) -> usize {
-        self.inner.base_addr()
+        self.base_addr
     }
 
     fn poll(&mut self) -> crate::SerialEvent {
-        self.inner.poll()
+        self.control.lock().poll() & crate::SerialEvent::TX_READY
     }
 
     fn try_write(&mut self, bytes: &[u8]) -> usize {
-        self.inner.try_write(bytes)
+        self.control.lock().try_write(bytes)
     }
 }
 
-pub struct RxQueue<T: TRxQueue> {
-    inner: T,
+pub struct RxQueue<T: InterfaceRaw> {
+    base_addr: usize,
+    control: Arc<Mutex<T>>,
     taken: Arc<AtomicBool>,
 }
 
-impl<T: TRxQueue> Drop for RxQueue<T> {
+impl<T: InterfaceRaw> Drop for RxQueue<T> {
     fn drop(&mut self) {
         self.taken.store(false, Ordering::Release);
     }
 }
 
-impl<T: TRxQueue> TRxQueue for RxQueue<T> {
+impl<T: InterfaceRaw> TRxQueue for RxQueue<T> {
     fn base_addr(&self) -> usize {
-        self.inner.base_addr()
+        self.base_addr
     }
 
     fn poll(&mut self) -> crate::SerialEvent {
-        self.inner.poll()
+        self.control.lock().poll()
+            & (crate::SerialEvent::RX_READY
+                | crate::SerialEvent::RX_ERROR
+                | crate::SerialEvent::OVERRUN)
     }
 
     fn try_read(&mut self, bytes: &mut [u8]) -> Result<usize, TransBytesError> {
-        self.inner.try_read(bytes)
+        self.control.lock().try_read(bytes)
     }
 }
 
-pub struct IrqHandler<T: TIrqHandler> {
-    inner: T,
+pub struct IrqHandler<T: InterfaceRaw> {
+    base_addr: usize,
+    control: Arc<Mutex<T>>,
     taken: Arc<AtomicBool>,
 }
 
-impl<T: TIrqHandler> Drop for IrqHandler<T> {
+impl<T: InterfaceRaw> Drop for IrqHandler<T> {
     fn drop(&mut self) {
         self.taken.store(false, Ordering::Release);
     }
 }
 
-impl<T: TIrqHandler> TIrqHandler for IrqHandler<T> {
+impl<T: InterfaceRaw> TIrqHandler for IrqHandler<T> {
     fn base_addr(&self) -> usize {
-        self.inner.base_addr()
+        self.base_addr
     }
 
     fn handle_irq(&self) -> crate::SerialEvent {
-        self.inner.handle_irq()
+        if let Some(mut control) = self.control.try_lock() {
+            control.handle_irq()
+        } else {
+            crate::SerialEvent::empty()
+        }
     }
 }
 

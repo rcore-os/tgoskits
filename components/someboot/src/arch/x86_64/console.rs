@@ -28,6 +28,11 @@ const LSR_RX_ERROR_MASK: u8 = 0x1e;
 
 impl crate::console::ArchConsoleOps for Console {
     fn init() -> bool {
+        // someboot runs before the normal allocator is available, so the early
+        // serial path must stay on the raw register-level driver. Do not use
+        // `new_port_boxed()`/`SerialDyn` here: those runtime wrappers allocate
+        // `Box`/`Arc` state and split the port into queue handles for the OS
+        // driver model.
         let mut uart = some_serial::ns16550::Ns16550::new_port(COM1_PORT, COM1_CLOCK_HZ);
         uart.open();
         crate::console::set_earlycon_serial(crate::console::EarlySerial::Ns16550Port(uart));

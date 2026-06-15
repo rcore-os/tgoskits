@@ -249,13 +249,16 @@ impl<T> EarlyconMutex<T> {
     }
 
     fn with_lock<R>(&self, f: impl FnOnce(&mut T) -> R) -> R {
-        // Do not replace this with a normal spin mutex. On AArch64, exclusive
-        // atomic instructions such as LDXR/LDAXR are not reliable before the
-        // MMU is enabled, so the early console must avoid touching the atomic
-        // lock word on that path. Before MMU setup, someboot is still in the
-        // single-core early-output phase and can access the serial object
-        // directly; after MMU setup, the atomic lock below provides real
-        // exclusion for later console users.
+        // Do not replace this with a normal spin mutex or the rdif SerialDyn
+        // wrapper. someboot runs before the normal allocator is available, so
+        // early serial must keep the raw register-level driver in place instead
+        // of allocating Box/Arc-backed split queue handles. On AArch64,
+        // exclusive atomic instructions such as LDXR/LDAXR are not reliable
+        // before the MMU is enabled, so the early console must also avoid
+        // touching the atomic lock word on that path. Before MMU setup,
+        // someboot is still in the single-core early-output phase and can
+        // access the serial object directly; after MMU setup, the atomic lock
+        // below provides real exclusion for later console users.
         if !crate::mem::mmu::is_mmu_enabled() {
             return unsafe { f(&mut *self.inner.get()) };
         }

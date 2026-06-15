@@ -7,7 +7,7 @@ use core::{any::Any, num::NonZeroU32, ptr::NonNull};
 use heapless::{String, Vec};
 use rdif_serial::{
     BSerial, Config, ConfigError, DataBits, DriverGeneric, InterfaceRaw, InterruptMask, Parity,
-    SerialDyn, StopBits,
+    SerialDyn, SerialEvent, StopBits, TransBytesError,
 };
 
 use super::{
@@ -521,6 +521,7 @@ impl Ns16550<RockchipFiqPort> {
             base,
             clock_freq,
             saved_lsr: LineStatusFlags::empty(),
+            event: rdif_serial::SerialEvent::empty(),
         }
     }
 }
@@ -582,11 +583,6 @@ impl DriverGeneric for RockchipFiqSerial {
 }
 
 impl InterfaceRaw for RockchipFiqSerial {
-    type SharedState = super::Ns16550SharedState;
-    type TxQueue = super::Ns16550TxQueue<RockchipFiqPort>;
-    type RxQueue = super::Ns16550RxQueue<RockchipFiqPort>;
-    type IrqHandler = super::Ns16550IrqHandler<RockchipFiqPort>;
-
     fn name(&self) -> &str {
         "Rockchip FIQ Debugger UART"
     }
@@ -647,20 +643,20 @@ impl InterfaceRaw for RockchipFiqSerial {
         self.serial.get_irq_mask()
     }
 
-    fn new_shared_state(&self) -> Self::SharedState {
-        self.serial.new_shared_state()
+    fn poll(&mut self) -> SerialEvent {
+        self.serial.poll()
     }
 
-    fn tx_queue(&self, shared: &Self::SharedState) -> Self::TxQueue {
-        self.serial.tx_queue(shared)
+    fn try_write(&mut self, bytes: &[u8]) -> usize {
+        self.serial.try_write(bytes)
     }
 
-    fn rx_queue(&self, shared: &Self::SharedState) -> Self::RxQueue {
-        self.serial.rx_queue(shared)
+    fn try_read(&mut self, bytes: &mut [u8]) -> Result<usize, TransBytesError> {
+        self.serial.try_read(bytes)
     }
 
-    fn irq_handler(&self, shared: &Self::SharedState) -> Self::IrqHandler {
-        self.serial.irq_handler(shared)
+    fn handle_irq(&mut self) -> SerialEvent {
+        self.serial.handle_irq()
     }
 }
 

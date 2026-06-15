@@ -196,11 +196,6 @@ impl Config {
 }
 
 pub trait InterfaceRaw: Send + Any + 'static {
-    type SharedState: Clone + Send + Sync + 'static;
-    type TxQueue: TTxQueue;
-    type RxQueue: TRxQueue;
-    type IrqHandler: TIrqHandler;
-
     fn name(&self) -> &str;
 
     fn base_addr(&self) -> usize;
@@ -231,10 +226,10 @@ pub trait InterfaceRaw: Send + Any + 'static {
     /// 获取当前中断使能掩码
     fn get_irq_mask(&self) -> InterruptMask;
 
-    fn new_shared_state(&self) -> Self::SharedState;
-    fn tx_queue(&self, shared: &Self::SharedState) -> Self::TxQueue;
-    fn rx_queue(&self, shared: &Self::SharedState) -> Self::RxQueue;
-    fn irq_handler(&self, shared: &Self::SharedState) -> Self::IrqHandler;
+    fn poll(&mut self) -> SerialEvent;
+    fn try_write(&mut self, bytes: &[u8]) -> usize;
+    fn try_read(&mut self, bytes: &mut [u8]) -> Result<usize, TransBytesError>;
+    fn handle_irq(&mut self) -> SerialEvent;
 }
 
 #[derive(Clone, Copy)]
@@ -325,7 +320,6 @@ pub trait TIrqHandler: Send + Sync + 'static {
 
 #[cfg(test)]
 mod tests {
-    use alloc::sync::Arc;
     use core::{
         num::NonZeroU32,
         sync::atomic::{AtomicU32, AtomicUsize, Ordering},
@@ -394,93 +388,23 @@ mod tests {
 
     struct MockSerial {
         base: usize,
-    }
-
-    impl MockSerial {
-        fn new(base: usize) -> Self {
-            Self { base }
-        }
-    }
-
-    struct MockShared {
         packed: AtomicU32,
         bytes: AtomicUsize,
         irq_count: AtomicUsize,
     }
 
-    struct MockTxQueue {
-        base: usize,
-        shared: Arc<MockShared>,
-    }
-
-    impl TTxQueue for MockTxQueue {
-        fn base_addr(&self) -> usize {
-            self.base
-        }
-
-        fn poll(&mut self) -> SerialEvent {
-            SerialEvent::TX_READY
-        }
-
-        fn try_write(&mut self, bytes: &[u8]) -> usize {
-            let mut packed = 0;
-            let written = bytes.len().min(4);
-            for (index, byte) in bytes.iter().copied().take(written).enumerate() {
-                packed |= (byte as u32) << (index * 8);
+    impl MockSerial {
+        fn new(base: usize) -> Self {
+            Self {
+                base,
+                packed: AtomicU32::new(0),
+                bytes: AtomicUsize::new(0),
+                irq_count: AtomicUsize::new(0),
             }
-            self.shared.packed.store(packed, Ordering::Release);
-            self.shared.bytes.store(written, Ordering::Release);
-            written
-        }
-    }
-
-    struct MockRxQueue {
-        base: usize,
-        shared: Arc<MockShared>,
-    }
-
-    impl TRxQueue for MockRxQueue {
-        fn base_addr(&self) -> usize {
-            self.base
-        }
-
-        fn poll(&mut self) -> SerialEvent {
-            SerialEvent::RX_READY
-        }
-
-        fn try_read(&mut self, bytes: &mut [u8]) -> Result<usize, TransBytesError> {
-            let available = self.shared.bytes.swap(0, Ordering::AcqRel);
-            let read = available.min(bytes.len());
-            let packed = self.shared.packed.load(Ordering::Acquire);
-            for (index, out) in bytes.iter_mut().take(read).enumerate() {
-                *out = ((packed >> (index * 8)) & 0xff) as u8;
-            }
-            Ok(read)
-        }
-    }
-
-    struct MockIrqHandler {
-        base: usize,
-        shared: Arc<MockShared>,
-    }
-
-    impl TIrqHandler for MockIrqHandler {
-        fn base_addr(&self) -> usize {
-            self.base
-        }
-
-        fn handle_irq(&self) -> SerialEvent {
-            self.shared.irq_count.fetch_add(1, Ordering::AcqRel);
-            SerialEvent::TX_READY
         }
     }
 
     impl InterfaceRaw for MockSerial {
-        type SharedState = Arc<MockShared>;
-        type TxQueue = MockTxQueue;
-        type RxQueue = MockRxQueue;
-        type IrqHandler = MockIrqHandler;
-
         fn name(&self) -> &str {
             "mock serial"
         }
@@ -531,33 +455,34 @@ mod tests {
             InterruptMask::empty()
         }
 
-        fn new_shared_state(&self) -> Self::SharedState {
-            Arc::new(MockShared {
-                packed: AtomicU32::new(0),
-                bytes: AtomicUsize::new(0),
-                irq_count: AtomicUsize::new(0),
-            })
+        fn poll(&mut self) -> SerialEvent {
+            SerialEvent::TX_READY | SerialEvent::RX_READY
         }
 
-        fn tx_queue(&self, shared: &Self::SharedState) -> Self::TxQueue {
-            MockTxQueue {
-                base: self.base,
-                shared: shared.clone(),
+        fn try_write(&mut self, bytes: &[u8]) -> usize {
+            let mut packed = 0;
+            let written = bytes.len().min(4);
+            for (index, byte) in bytes.iter().copied().take(written).enumerate() {
+                packed |= (byte as u32) << (index * 8);
             }
+            self.packed.store(packed, Ordering::Release);
+            self.bytes.store(written, Ordering::Release);
+            written
         }
 
-        fn rx_queue(&self, shared: &Self::SharedState) -> Self::RxQueue {
-            MockRxQueue {
-                base: self.base,
-                shared: shared.clone(),
+        fn try_read(&mut self, bytes: &mut [u8]) -> Result<usize, TransBytesError> {
+            let available = self.bytes.swap(0, Ordering::AcqRel);
+            let read = available.min(bytes.len());
+            let packed = self.packed.load(Ordering::Acquire);
+            for (index, out) in bytes.iter_mut().take(read).enumerate() {
+                *out = ((packed >> (index * 8)) & 0xff) as u8;
             }
+            Ok(read)
         }
 
-        fn irq_handler(&self, shared: &Self::SharedState) -> Self::IrqHandler {
-            MockIrqHandler {
-                base: self.base,
-                shared: shared.clone(),
-            }
+        fn handle_irq(&mut self) -> SerialEvent {
+            self.irq_count.fetch_add(1, Ordering::AcqRel);
+            SerialEvent::TX_READY
         }
     }
 }
