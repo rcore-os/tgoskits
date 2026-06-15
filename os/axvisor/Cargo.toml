@@ -50,6 +50,7 @@ sdmmc = [
 ]
 rockchip-pm = ["ax-driver/rockchip-pm"]
 serial = []
+stack-protector = ["ax-std/stack-protector"]
 
 [dependencies]
 spin = { workspace = true }

@@ -60,6 +60,7 @@ stack-guard-page = [
     "ax-task/stack-guard-page",
     "ax-runtime/stack-guard-page",
 ]
+stack-protector = ["ax-runtime/stack-protector"]
 
 # File system
 fs = [

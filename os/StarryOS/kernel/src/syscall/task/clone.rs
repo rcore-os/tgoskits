@@ -420,7 +420,7 @@ impl CloneArgs {
         // Block the parent until the child exec's or exits.
         if needs_vfork_block {
             new_proc_data.wait_vfork_done();
-            let _ = super::ptrace::ptrace_notify_vfork_done(parent_pid, tid as Pid);
+            let _ = super::ptrace::ptrace_notify_vfork_done(parent_pid, parent_tid, tid as Pid);
         }
 
         Ok(tid as _)

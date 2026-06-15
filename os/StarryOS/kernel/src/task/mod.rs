@@ -738,8 +738,7 @@ pub struct ProcessData {
     ptrace_ss_saved_insn: SpinNoIrq<BTreeMap<u32, (usize, usize)>>,
 
     /// FP register snapshot captured when entering ptrace stop, keyed by TID.
-    /// Stored as raw bytes to avoid arch-specific crate dependency.
-    ptrace_stop_fp_data: SpinNoIrq<BTreeMap<u32, ([u64; 32], usize)>>,
+    ptrace_stop_fp_data: SpinNoIrq<BTreeMap<u32, PtraceStopFpData>>,
 
     /// Linux process personality flags. Starry does not randomize userspace
     /// mappings yet, but debuggers still probe and set ADDR_NO_RANDOMIZE.
@@ -768,6 +767,40 @@ pub struct ProcessData {
     /// `SIGCONT` (continue) and `SIGKILL` (force-resume so the kill proceeds).
     cont_event: Arc<PollSet>,
 }
+
+#[cfg(target_arch = "riscv64")]
+#[derive(Clone, Copy)]
+pub struct PtraceStopFpData {
+    pub regs: [u64; 32],
+    pub fcsr: usize,
+}
+
+#[cfg(target_arch = "aarch64")]
+#[derive(Clone, Copy)]
+pub struct PtraceStopFpData {
+    pub regs: [u128; 32],
+    pub fpcr: u32,
+    pub fpsr: u32,
+}
+
+#[cfg(target_arch = "loongarch64")]
+#[derive(Clone, Copy)]
+pub struct PtraceStopFpData {
+    pub regs: [u64; 32],
+    pub fp_high: [u64; 32],
+    pub fp_lasx_hi0: [u64; 32],
+    pub fp_lasx_hi1: [u64; 32],
+    pub fcc: [u8; 8],
+    pub fcsr: u32,
+}
+
+#[cfg(not(any(
+    target_arch = "riscv64",
+    target_arch = "aarch64",
+    target_arch = "loongarch64"
+)))]
+#[derive(Clone, Copy)]
+pub struct PtraceStopFpData;
 
 impl ProcessData {
     /// Create a new [`ProcessData`].
@@ -1576,23 +1609,62 @@ impl ProcessData {
         let mut fp = ax_cpu::FpState::default();
         fp.save();
         fp.fs = riscv::register::sstatus::read().fs();
-        self.ptrace_stop_fp_data
-            .lock()
-            .insert(tid, (fp.fp, fp.fcsr));
+        self.ptrace_stop_fp_data.lock().insert(
+            tid,
+            PtraceStopFpData {
+                regs: fp.fp,
+                fcsr: fp.fcsr,
+            },
+        );
     }
 
-    #[cfg(not(target_arch = "riscv64"))]
+    #[cfg(target_arch = "aarch64")]
+    pub fn save_current_fp_for_ptrace(&self, tid: u32) {
+        let mut fp = ax_cpu::FpState::default();
+        fp.save();
+        self.ptrace_stop_fp_data.lock().insert(
+            tid,
+            PtraceStopFpData {
+                regs: fp.regs,
+                fpcr: fp.fpcr,
+                fpsr: fp.fpsr,
+            },
+        );
+    }
+
+    #[cfg(target_arch = "loongarch64")]
+    pub fn save_current_fp_for_ptrace(&self, tid: u32) {
+        let mut fp = ax_cpu::FpuState::default();
+        fp.save();
+        self.ptrace_stop_fp_data.lock().insert(
+            tid,
+            PtraceStopFpData {
+                regs: fp.fp,
+                fp_high: fp.fp_high,
+                fp_lasx_hi0: fp.fp_lasx_hi0,
+                fp_lasx_hi1: fp.fp_lasx_hi1,
+                fcc: fp.fcc,
+                fcsr: fp.fcsr,
+            },
+        );
+    }
+
+    #[cfg(not(any(
+        target_arch = "riscv64",
+        target_arch = "aarch64",
+        target_arch = "loongarch64"
+    )))]
     pub fn save_current_fp_for_ptrace(&self, _tid: u32) {}
 
     #[cfg(target_arch = "riscv64")]
     pub fn restore_current_fp_for_ptrace(&self, tid: u32, uctx: &mut UserContext) {
-        let Some((fp, fcsr)) = self.ptrace_stop_fp_data.lock().remove(&tid) else {
+        let Some(fp) = self.ptrace_stop_fp_data.lock().remove(&tid) else {
             return;
         };
 
         let fp_state = ax_cpu::FpState {
-            fp,
-            fcsr,
+            fp: fp.regs,
+            fcsr: fp.fcsr,
             fs: riscv::register::sstatus::FS::Dirty,
         };
 
@@ -1603,14 +1675,51 @@ impl ProcessData {
         uctx.sstatus.set_fs(riscv::register::sstatus::FS::Dirty);
     }
 
-    #[cfg(not(target_arch = "riscv64"))]
+    #[cfg(target_arch = "aarch64")]
+    pub fn restore_current_fp_for_ptrace(&self, tid: u32, _uctx: &mut UserContext) {
+        let Some(fp) = self.ptrace_stop_fp_data.lock().remove(&tid) else {
+            return;
+        };
+
+        let fp_state = ax_cpu::FpState {
+            regs: fp.regs,
+            fpcr: fp.fpcr,
+            fpsr: fp.fpsr,
+        };
+
+        fp_state.restore();
+    }
+
+    #[cfg(target_arch = "loongarch64")]
+    pub fn restore_current_fp_for_ptrace(&self, tid: u32, _uctx: &mut UserContext) {
+        let Some(fp) = self.ptrace_stop_fp_data.lock().remove(&tid) else {
+            return;
+        };
+
+        let fp_state = ax_cpu::FpuState {
+            fp: fp.regs,
+            fp_high: fp.fp_high,
+            fp_lasx_hi0: fp.fp_lasx_hi0,
+            fp_lasx_hi1: fp.fp_lasx_hi1,
+            fcc: fp.fcc,
+            fcsr: fp.fcsr,
+        };
+
+        fp_state.restore();
+    }
+
+    #[cfg(not(any(
+        target_arch = "riscv64",
+        target_arch = "aarch64",
+        target_arch = "loongarch64"
+    )))]
     pub fn restore_current_fp_for_ptrace(&self, _tid: u32, _uctx: &mut UserContext) {}
 
-    pub fn ptrace_stop_fp_data_for(&self, tid: u32) -> Option<([u64; 32], usize)> {
+    pub fn ptrace_stop_fp_data_for(&self, tid: u32) -> Option<PtraceStopFpData> {
         self.ptrace_stop_fp_data.lock().get(&tid).copied()
     }
 
-    pub fn set_ptrace_stop_fp_data_for(&self, tid: u32, data: ([u64; 32], usize)) -> bool {
+    pub fn set_ptrace_stop_fp_data_for(&self, tid: u32, data: PtraceStopFpData) -> bool {
         self.ptrace_stop_fp_data.lock().insert(tid, data).is_some()
     }
 
