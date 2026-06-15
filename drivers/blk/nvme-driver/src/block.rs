@@ -1,21 +1,23 @@
-use alloc::{boxed::Box, sync::Arc, vec::Vec};
+use alloc::{boxed::Box, sync::Arc, vec, vec::Vec};
 use core::{
     any::Any,
     cell::UnsafeCell,
-    sync::atomic::{AtomicUsize, Ordering},
+    hint::spin_loop,
+    sync::atomic::{AtomicBool, AtomicU16, AtomicU64, AtomicUsize, Ordering},
 };
 
 use dma_api::CoherentArray;
 use log::warn;
 use rdif_block::{
-    BlkError, CompletionSink, DeviceInfo, DriverGeneric, IQueue, Interface, QueueInfo, QueueLimits,
-    Request, RequestFlags, RequestId, RequestOp, RequestStatus, validate_request,
+    BlkError, CompletionSink, DeviceInfo, DriverGeneric, Event, IQueue, IdList, Interface,
+    IrqHandler, IrqSourceInfo, IrqSourceList, QueueInfo, QueueLimits, Request, RequestFlags,
+    RequestId, RequestOp, RequestStatus, validate_request,
 };
 
 use crate::{
     Namespace, Nvme,
     err::{Error as NvmeError, Result as NvmeResult},
-    queue::{CommandSet, NvmeQueue as HardwareQueue},
+    queue::{CommandSet, NvmeCompletion, NvmeQueue as HardwareQueue},
 };
 
 const MAX_PRP_LIST_PAGES: usize = 1;
@@ -34,7 +36,13 @@ pub struct NvmeBlockDriver {
 
 struct NvmeBlockOwner {
     inner: UnsafeCell<NvmeBlockInner>,
+    queues: UnsafeCell<Vec<Arc<NvmeQueueCore>>>,
     next_queue_id: AtomicUsize,
+    created_queue_bits: AtomicU64,
+    irq_enabled: AtomicBool,
+    irq_handler_taken: AtomicBool,
+    irq_supported: bool,
+    interrupt_vector: u32,
 }
 
 impl NvmeBlockDriver {
@@ -73,11 +81,19 @@ impl NvmeBlockDriver {
         namespace: Namespace,
         queue_depth: usize,
     ) -> Self {
+        let irq_supported = nvme.io_queue_interrupts_enabled();
+        let interrupt_vector = nvme.interrupt_vector();
         Self {
             name,
             inner: Arc::new(NvmeBlockOwner {
                 inner: UnsafeCell::new(NvmeBlockInner { nvme, namespace }),
+                queues: UnsafeCell::new(Vec::new()),
                 next_queue_id: AtomicUsize::new(0),
+                created_queue_bits: AtomicU64::new(0),
+                irq_enabled: AtomicBool::new(false),
+                irq_handler_taken: AtomicBool::new(false),
+                irq_supported,
+                interrupt_vector,
             }),
             queue_depth: queue_depth.max(1),
         }
@@ -108,19 +124,29 @@ impl NvmeBlockDriver {
     }
 }
 
-// SAFETY: RDIF queue ownership removes task-side sharing of an IO queue. The
-// owner keeps the controller and MMIO mapping alive until all queues are
-// dropped.
+// SAFETY: RDIF queue ownership removes task-side sharing of an IO queue. IRQ
+// sharing is mediated by per-queue `NvmeQueueCore` claim guards, and the owner
+// keeps the controller and MMIO mapping alive until all queues are dropped.
 unsafe impl Send for NvmeBlockOwner {}
 
 // SAFETY: Mutable controller access is scoped through `with_mut` during queue
-// creation and namespace queries.
+// creation and namespace queries. The queue registry is populated before the
+// IRQ handler is taken and then read-only for the handler lifetime.
 unsafe impl Sync for NvmeBlockOwner {}
 
 impl NvmeBlockOwner {
     fn with_mut<R>(&self, f: impl FnOnce(&mut NvmeBlockInner) -> R) -> R {
         let inner = unsafe { &mut *self.inner.get() };
         f(inner)
+    }
+
+    fn register_queue(&self, queue: Arc<NvmeQueueCore>) {
+        let queues = unsafe { &mut *self.queues.get() };
+        queues.push(queue);
+    }
+
+    fn queues(&self) -> &[Arc<NvmeQueueCore>] {
+        unsafe { &*self.queues.get() }
     }
 }
 
@@ -157,7 +183,7 @@ impl Interface for NvmeBlockDriver {
             let queue = inner.nvme.take_io_queue(id)?;
             let depth = self.queue_depth.min(queue.depth().saturating_sub(1).max(1));
             let prp_lists = alloc_prp_lists(&inner.nvme, depth).ok()?;
-            Some(NvmeBlockQueue::new(
+            Some(NvmeQueueCore::new(
                 id,
                 depth,
                 self.name,
@@ -169,18 +195,99 @@ impl Interface for NvmeBlockDriver {
             ))
         })?;
 
-        Some(Box::new(queue))
+        self.inner.register_queue(queue.clone());
+        self.inner
+            .created_queue_bits
+            .fetch_or(1 << id, Ordering::Release);
+        Some(Box::new(NvmeBlockQueue { core: queue }))
+    }
+
+    fn enable_irq(&self) {
+        if !self.inner.irq_supported {
+            return;
+        }
+        let vector = self.inner.interrupt_vector;
+        self.inner
+            .with_mut(|inner| inner.nvme.unmask_interrupt_vector(vector));
+        self.inner.irq_enabled.store(true, Ordering::Release);
+    }
+
+    fn disable_irq(&self) {
+        if !self.inner.irq_supported {
+            return;
+        }
+        let vector = self.inner.interrupt_vector;
+        self.inner
+            .with_mut(|inner| inner.nvme.mask_interrupt_vector(vector));
+        self.inner.irq_enabled.store(false, Ordering::Release);
+    }
+
+    fn is_irq_enabled(&self) -> bool {
+        self.inner.irq_supported && self.inner.irq_enabled.load(Ordering::Acquire)
+    }
+
+    fn irq_sources(&self) -> IrqSourceList {
+        let queue_bits = self.inner.created_queue_bits.load(Ordering::Acquire);
+        if !self.inner.irq_supported || queue_bits == 0 {
+            return Vec::new();
+        }
+        vec![IrqSourceInfo::legacy(IdList::from_bits(queue_bits))]
+    }
+
+    fn take_irq_handler(&mut self, source_id: usize) -> Option<Box<dyn IrqHandler>> {
+        if source_id != 0 || !self.inner.irq_supported {
+            return None;
+        }
+        if self.inner.created_queue_bits.load(Ordering::Acquire) == 0 {
+            return None;
+        }
+        if self.inner.irq_handler_taken.swap(true, Ordering::AcqRel) {
+            return None;
+        }
+        Some(Box::new(NvmeBlockIrqHandler {
+            owner: self.inner.clone(),
+        }))
+    }
+}
+
+struct NvmeBlockIrqHandler {
+    owner: Arc<NvmeBlockOwner>,
+}
+
+impl IrqHandler for NvmeBlockIrqHandler {
+    fn handle_irq(&self) -> Event {
+        if !self.owner.irq_enabled.load(Ordering::Acquire) {
+            return Event::none();
+        }
+        let mut event = Event::none();
+        for queue in self.owner.queues() {
+            if queue.drain_irq_completions() {
+                event.push_queue(queue.id());
+            }
+        }
+        event
     }
 }
 
 struct NvmeBlockQueue {
+    core: Arc<NvmeQueueCore>,
+}
+
+struct NvmeQueueCore {
     id: usize,
     name: &'static str,
     namespace: Namespace,
     dma_mask: u64,
     page_size: usize,
     depth: usize,
-    queue: HardwareQueue,
+    queue: UnsafeCell<HardwareQueue>,
+    state: UnsafeCell<NvmeQueueState>,
+    completion_cache: CompletionCache,
+    state_claimed: AtomicBool,
+    cq_claimed: AtomicBool,
+}
+
+struct NvmeQueueState {
     slots: Vec<RequestSlot>,
     free_cids: Vec<usize>,
     free_prp_lists: Vec<CoherentArray<u64>>,
@@ -199,13 +306,37 @@ enum SlotState {
     Failed,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct CachedCompletion {
+    cid: usize,
+    status: CompletionStatus,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct CompletionStatus {
+    success: bool,
+    raw_status: u16,
+    result: u64,
+}
+
+struct CompletionCache {
+    entries: Vec<CompletionCacheEntry>,
+}
+
+struct CompletionCacheEntry {
+    ready: AtomicBool,
+    success: AtomicBool,
+    raw_status: AtomicU16,
+    result: AtomicU64,
+}
+
 struct PrpMapping {
     prp1: u64,
     prp2: u64,
     prp_list: Option<CoherentArray<u64>>,
 }
 
-impl NvmeBlockQueue {
+impl NvmeQueueCore {
     #[allow(clippy::too_many_arguments)]
     fn new(
         id: usize,
@@ -216,7 +347,7 @@ impl NvmeBlockQueue {
         page_size: usize,
         queue: HardwareQueue,
         prp_lists: Vec<CoherentArray<u64>>,
-    ) -> Self {
+    ) -> Arc<Self> {
         let mut slots = Vec::with_capacity(depth + 1);
         slots.resize_with(depth + 1, || RequestSlot {
             state: SlotState::Free,
@@ -224,18 +355,27 @@ impl NvmeBlockQueue {
         });
         let free_cids = (1..=depth).rev().collect();
 
-        Self {
+        Arc::new(Self {
             id,
             name,
             namespace,
             dma_mask,
             page_size,
             depth,
-            queue,
-            slots,
-            free_cids,
-            free_prp_lists: prp_lists,
-        }
+            queue: UnsafeCell::new(queue),
+            state: UnsafeCell::new(NvmeQueueState {
+                slots,
+                free_cids,
+                free_prp_lists: prp_lists,
+            }),
+            completion_cache: CompletionCache::new(depth + 1),
+            state_claimed: AtomicBool::new(false),
+            cq_claimed: AtomicBool::new(false),
+        })
+    }
+
+    const fn id(&self) -> usize {
+        self.id
     }
 
     fn queue_info(&self) -> QueueInfo {
@@ -246,6 +386,79 @@ impl NvmeBlockQueue {
         }
     }
 
+    fn with_claim<R>(&self, f: impl FnOnce(&mut NvmeQueueState) -> R) -> R {
+        while self
+            .state_claimed
+            .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+            .is_err()
+        {
+            spin_loop();
+        }
+        let state = unsafe { &mut *self.state.get() };
+        let result = f(state);
+        self.state_claimed.store(false, Ordering::Release);
+        result
+    }
+
+    fn with_cq_claim<R>(&self, f: impl FnOnce(&HardwareQueue) -> R) -> R {
+        while self
+            .cq_claimed
+            .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+            .is_err()
+        {
+            spin_loop();
+        }
+        let queue = unsafe { &*self.queue.get() };
+        let result = f(queue);
+        self.cq_claimed.store(false, Ordering::Release);
+        result
+    }
+
+    fn try_with_cq_claim<R>(&self, f: impl FnOnce(&HardwareQueue) -> R) -> Option<R> {
+        if self
+            .cq_claimed
+            .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+            .is_err()
+        {
+            return None;
+        }
+        let queue = unsafe { &*self.queue.get() };
+        let result = f(queue);
+        self.cq_claimed.store(false, Ordering::Release);
+        Some(result)
+    }
+
+    fn drain_irq_completions(&self) -> bool {
+        self.try_with_cq_claim(drain_hardware_completions_to_vec)
+            .map(|completions| self.cache_completions(completions))
+            .unwrap_or(true)
+    }
+
+    fn drain_completions(&self) -> bool {
+        let completions = self.with_cq_claim(drain_hardware_completions_to_vec);
+        self.cache_completions(completions)
+    }
+
+    fn cache_completions(&self, completions: Vec<CachedCompletion>) -> bool {
+        if completions.is_empty() {
+            return false;
+        }
+        self.completion_cache.extend(completions);
+        true
+    }
+}
+
+// SAFETY: Slot, CID, and completion-cache access is serialized through
+// `state_claimed`; hardware CQ access is serialized through `cq_claimed`. SQ
+// submission is only driven by the single RDIF queue owner. The MMIO mapping
+// and DMA buffers outlive this core through the owner/interface lifetime.
+unsafe impl Send for NvmeQueueCore {}
+
+// SAFETY: Shared references are used by task context and hard IRQ context, but
+// shared mutable state is guarded as described in the `Send` impl.
+unsafe impl Sync for NvmeQueueCore {}
+
+impl NvmeQueueState {
     fn alloc_cid(&mut self) -> Result<usize, BlkError> {
         self.free_cids.pop().ok_or(BlkError::Retry)
     }
@@ -260,14 +473,20 @@ impl NvmeBlockQueue {
         }
     }
 
-    fn build_command(&mut self, cid: usize, request: &Request<'_>) -> Result<CommandSet, BlkError> {
+    fn build_command(
+        &mut self,
+        namespace: Namespace,
+        page_size: usize,
+        cid: usize,
+        request: &Request<'_>,
+    ) -> Result<CommandSet, BlkError> {
         let cid = u16::try_from(cid).map_err(|_| BlkError::InvalidRequest)?;
         match request.op {
             RequestOp::Read | RequestOp::Write => {
-                let prp = self.build_prp_mapping(request)?;
+                let prp = self.build_prp_mapping(page_size, request)?;
                 let command = match request.op {
                     RequestOp::Read => CommandSet::nvm_cmd_read_with_cid(
-                        self.namespace.id,
+                        namespace.id,
                         prp.prp1,
                         prp.prp2,
                         request.lba,
@@ -275,7 +494,7 @@ impl NvmeBlockQueue {
                         cid,
                     ),
                     RequestOp::Write => CommandSet::nvm_cmd_write_with_cid(
-                        self.namespace.id,
+                        namespace.id,
                         prp.prp1,
                         prp.prp2,
                         request.lba,
@@ -287,15 +506,19 @@ impl NvmeBlockQueue {
                 self.slots[usize::from(cid)].prp_list = prp.prp_list;
                 Ok(command)
             }
-            RequestOp::Flush => Ok(CommandSet::nvm_cmd_flush_with_cid(self.namespace.id, cid)),
+            RequestOp::Flush => Ok(CommandSet::nvm_cmd_flush_with_cid(namespace.id, cid)),
             RequestOp::Discard | RequestOp::WriteZeroes => Err(BlkError::NotSupported),
         }
     }
 
-    fn build_prp_mapping(&mut self, request: &Request<'_>) -> Result<PrpMapping, BlkError> {
+    fn build_prp_mapping(
+        &mut self,
+        page_size: usize,
+        request: &Request<'_>,
+    ) -> Result<PrpMapping, BlkError> {
         let mut prps = PrpPageAccumulator::new();
         for segment in request.segments.iter() {
-            prps.push_segment(segment.bus, segment.len, self.page_size)?;
+            prps.push_segment(segment.bus, segment.len, page_size)?;
         }
         let pages = prps.into_pages();
         let prp1 = *pages.first().ok_or(BlkError::InvalidRequest)?;
@@ -303,7 +526,7 @@ impl NvmeBlockQueue {
             1 => 0,
             2 => pages[1],
             _ => {
-                let list_entries = self.page_size / core::mem::size_of::<u64>();
+                let list_entries = page_size / core::mem::size_of::<u64>();
                 if pages.len() - 1 > list_entries * MAX_PRP_LIST_PAGES {
                     return Err(BlkError::InvalidRequest);
                 }
@@ -329,20 +552,97 @@ impl NvmeBlockQueue {
         })
     }
 
-    fn drain_completions(&mut self) {
-        while let Some(completion) = self.queue.poll_completion() {
-            let cid = usize::from(completion.command_id);
-            if let Some(slot) = self.slots.get_mut(cid) {
-                slot.state = if completion.status.is_success() {
-                    SlotState::Complete
-                } else {
-                    warn!(
-                        "nvme queue {} request {} failed: status={:#x}, result={:#x}",
-                        self.id, cid, completion.status.0, completion.result
-                    );
-                    SlotState::Failed
-                };
+    fn consume_cached_completions(&mut self, queue_id: usize, cache: &CompletionCache) -> usize {
+        cache.drain_into_slots(queue_id, &mut self.slots)
+    }
+}
+
+fn drain_hardware_completions_to_vec(queue: &HardwareQueue) -> Vec<CachedCompletion> {
+    let mut completions = Vec::new();
+    while let Some(completion) = queue.poll_completion() {
+        completions.push(CachedCompletion::from(completion));
+    }
+    completions
+}
+
+impl CompletionCache {
+    fn new(capacity: usize) -> Self {
+        let mut entries = Vec::with_capacity(capacity);
+        entries.resize_with(capacity, CompletionCacheEntry::new);
+        Self { entries }
+    }
+
+    fn extend(&self, completions: Vec<CachedCompletion>) {
+        for completion in completions {
+            self.record(completion);
+        }
+    }
+
+    fn record(&self, completion: CachedCompletion) {
+        let Some(entry) = self.entries.get(completion.cid) else {
+            return;
+        };
+        entry
+            .success
+            .store(completion.status.success, Ordering::Relaxed);
+        entry
+            .raw_status
+            .store(completion.status.raw_status, Ordering::Relaxed);
+        entry
+            .result
+            .store(completion.status.result, Ordering::Relaxed);
+        entry.ready.store(true, Ordering::Release);
+    }
+
+    fn drain_into_slots(&self, queue_id: usize, slots: &mut [RequestSlot]) -> usize {
+        let mut consumed = 0;
+        for (cid, entry) in self.entries.iter().enumerate() {
+            if !entry.ready.swap(false, Ordering::AcqRel) {
+                continue;
             }
+            let Some(slot) = slots.get_mut(cid) else {
+                continue;
+            };
+            let status = CompletionStatus {
+                success: entry.success.load(Ordering::Relaxed),
+                raw_status: entry.raw_status.load(Ordering::Relaxed),
+                result: entry.result.load(Ordering::Relaxed),
+            };
+            slot.state = if status.success {
+                SlotState::Complete
+            } else {
+                warn!(
+                    "nvme queue {} request {} failed: status={:#x}, result={:#x}",
+                    queue_id, cid, status.raw_status, status.result
+                );
+                SlotState::Failed
+            };
+            consumed += 1;
+        }
+        consumed
+    }
+}
+
+impl CompletionCacheEntry {
+    fn new() -> Self {
+        Self {
+            ready: AtomicBool::new(false),
+            success: AtomicBool::new(false),
+            raw_status: AtomicU16::new(0),
+            result: AtomicU64::new(0),
+        }
+    }
+}
+
+impl From<NvmeCompletion> for CachedCompletion {
+    fn from(completion: NvmeCompletion) -> Self {
+        Self {
+            cid: usize::from(completion.command_id),
+            status: CompletionStatus {
+                success: completion.status.is_success(),
+                raw_status: completion.status.0,
+                result: completion.result,
+            },
         }
     }
 }
@@ -352,47 +652,59 @@ impl NvmeBlockQueue {
 // after completion/error, and no segment pointers are accessed after that.
 unsafe impl IQueue for NvmeBlockQueue {
     fn id(&self) -> usize {
-        self.id
+        self.core.id()
     }
 
     fn info(&self) -> QueueInfo {
-        self.queue_info()
+        self.core.queue_info()
     }
 
     fn submit_request(&mut self, request: Request<'_>) -> Result<RequestId, BlkError> {
-        let info = self.queue_info();
+        let info = self.core.queue_info();
         validate_request(info, &request)?;
-        self.drain_completions();
+        let namespace = self.core.namespace;
+        let page_size = self.core.page_size;
+        let queue_id = self.core.id();
 
-        let cid = self.alloc_cid()?;
-        let command = match self.build_command(cid, &request) {
-            Ok(command) => command,
-            Err(err) => {
-                self.free_cid(cid);
-                return Err(err);
-            }
-        };
-        self.slots[cid].state = SlotState::Pending;
-        self.queue.submit_io_data(command);
-        Ok(RequestId::new(cid))
+        self.core.drain_completions();
+        self.core.with_claim(|state| {
+            state.consume_cached_completions(queue_id, &self.core.completion_cache);
+
+            let cid = state.alloc_cid()?;
+            let command = match state.build_command(namespace, page_size, cid, &request) {
+                Ok(command) => command,
+                Err(err) => {
+                    state.free_cid(cid);
+                    return Err(err);
+                }
+            };
+            state.slots[cid].state = SlotState::Pending;
+            let queue = unsafe { &*self.core.queue.get() };
+            queue.submit_io_data(command);
+            Ok(RequestId::new(cid))
+        })
     }
 
     fn poll_request(&mut self, request: RequestId) -> Result<RequestStatus, BlkError> {
-        self.drain_completions();
+        let queue_id = self.core.id();
+        self.core.drain_completions();
+        self.core.with_claim(|state| {
+            state.consume_cached_completions(queue_id, &self.core.completion_cache);
 
-        let cid = usize::from(request);
-        match self.slots.get(cid).map(|slot| slot.state) {
-            Some(SlotState::Pending) => Ok(RequestStatus::Pending),
-            Some(SlotState::Complete) => {
-                self.free_cid(cid);
-                Ok(RequestStatus::Complete)
+            let cid = usize::from(request);
+            match state.slots.get(cid).map(|slot| slot.state) {
+                Some(SlotState::Pending) => Ok(RequestStatus::Pending),
+                Some(SlotState::Complete) => {
+                    state.free_cid(cid);
+                    Ok(RequestStatus::Complete)
+                }
+                Some(SlotState::Failed) => {
+                    state.free_cid(cid);
+                    Err(BlkError::Io)
+                }
+                Some(SlotState::Free) | None => Err(BlkError::InvalidRequest),
             }
-            Some(SlotState::Failed) => {
-                self.free_cid(cid);
-                Err(BlkError::Io)
-            }
-            Some(SlotState::Free) | None => Err(BlkError::InvalidRequest),
-        }
+        })
     }
 
     fn poll_completions(
@@ -400,26 +712,30 @@ unsafe impl IQueue for NvmeBlockQueue {
         requests: &[RequestId],
         sink: &mut dyn CompletionSink,
     ) -> Result<(), BlkError> {
-        self.drain_completions();
+        let queue_id = self.core.id();
+        self.core.drain_completions();
+        self.core.with_claim(|state| {
+            state.consume_cached_completions(queue_id, &self.core.completion_cache);
 
-        for &request in requests {
-            let cid = usize::from(request);
-            match self.slots.get(cid).map(|slot| slot.state) {
-                Some(SlotState::Pending) => {}
-                Some(SlotState::Complete) => {
-                    self.free_cid(cid);
-                    sink.complete(request, Ok(()));
-                }
-                Some(SlotState::Failed) => {
-                    self.free_cid(cid);
-                    sink.complete(request, Err(BlkError::Io));
-                }
-                Some(SlotState::Free) | None => {
-                    sink.complete(request, Err(BlkError::InvalidRequest))
+            for &request in requests {
+                let cid = usize::from(request);
+                match state.slots.get(cid).map(|slot| slot.state) {
+                    Some(SlotState::Pending) => {}
+                    Some(SlotState::Complete) => {
+                        state.free_cid(cid);
+                        sink.complete(request, Ok(()));
+                    }
+                    Some(SlotState::Failed) => {
+                        state.free_cid(cid);
+                        sink.complete(request, Err(BlkError::Io));
+                    }
+                    Some(SlotState::Free) | None => {
+                        sink.complete(request, Err(BlkError::InvalidRequest))
+                    }
                 }
             }
-        }
-        Ok(())
+            Ok(())
+        })
     }
 }
 
@@ -546,7 +862,10 @@ fn limits(
 
 #[cfg(test)]
 mod tests {
-    use super::{PrpPageAccumulator, limits};
+    use super::{
+        CachedCompletion, CompletionCache, CompletionStatus, PrpPageAccumulator, RequestSlot,
+        SlotState, limits,
+    };
     use crate::Namespace;
 
     #[test]
@@ -608,5 +927,76 @@ mod tests {
         pages.push_segment(0x1000, 2048, 4096).unwrap();
 
         assert!(pages.push_segment(0x2800, 512, 4096).is_err());
+    }
+
+    #[test]
+    fn cached_completion_does_not_complete_slot_until_task_consumes_it() {
+        let cache = CompletionCache::new(4);
+        let mut slots = test_slots(4);
+        slots[2].state = SlotState::Pending;
+
+        cache.extend(alloc::vec![CachedCompletion::success(2)]);
+
+        assert_eq!(slots[2].state, SlotState::Pending);
+        assert_eq!(cache.drain_into_slots(0, &mut slots), 1);
+        assert_eq!(slots[2].state, SlotState::Complete);
+    }
+
+    #[test]
+    fn cached_failed_completion_marks_slot_failed_in_task_context() {
+        let cache = CompletionCache::new(4);
+        let mut slots = test_slots(4);
+        slots[3].state = SlotState::Pending;
+
+        cache.extend(alloc::vec![CachedCompletion::failed(3, 0x4002)]);
+
+        assert_eq!(cache.drain_into_slots(0, &mut slots), 1);
+        assert_eq!(slots[3].state, SlotState::Failed);
+    }
+
+    #[test]
+    fn cached_completion_is_consumed_once() {
+        let cache = CompletionCache::new(2);
+        let mut slots = test_slots(2);
+        slots[1].state = SlotState::Pending;
+
+        cache.extend(alloc::vec![CachedCompletion::success(1)]);
+
+        assert_eq!(cache.drain_into_slots(0, &mut slots), 1);
+        assert_eq!(cache.drain_into_slots(0, &mut slots), 0);
+        assert_eq!(slots[1].state, SlotState::Complete);
+    }
+
+    fn test_slots(count: usize) -> alloc::vec::Vec<RequestSlot> {
+        (0..count)
+            .map(|_| RequestSlot {
+                state: SlotState::Free,
+                prp_list: None,
+            })
+            .collect()
+    }
+
+    impl CachedCompletion {
+        const fn success(cid: usize) -> Self {
+            Self {
+                cid,
+                status: CompletionStatus {
+                    success: true,
+                    raw_status: 0,
+                    result: 0,
+                },
+            }
+        }
+
+        const fn failed(cid: usize, raw_status: u16) -> Self {
+            Self {
+                cid,
+                status: CompletionStatus {
+                    success: false,
+                    raw_status,
+                    result: 0,
+                },
+            }
+        }
     }
 }

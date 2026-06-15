@@ -12,8 +12,8 @@ use core::{
 
 use ax_fs_ng::{
     block_runtime::{
-        BlockDeviceHandle, BlockDmaBuffer, BlockDmaDirection, BlockDmaProvider, BlockDrainWake,
-        BlockIrqBridge, BlockRuntime, BlockRuntimeConfig,
+        BlockCompletionMode, BlockDeviceHandle, BlockDmaBuffer, BlockDmaDirection,
+        BlockDmaProvider, BlockDrainWake, BlockIrqBridge, BlockRuntime, BlockRuntimeConfig,
     },
     os::{AddressTranslator, BlockTaskOps, BlockTimeProvider},
 };
@@ -22,6 +22,7 @@ use rdif_block::{BlkError, IQueue};
 use spin::Once;
 
 static BLOCK_DRAIN_WQ: ax_task::WaitQueue = ax_task::WaitQueue::new();
+static BLOCK_IO_WAIT_WQ: ax_task::WaitQueue = ax_task::WaitQueue::new();
 static BLOCK_DRAIN_DEVICE_BITS: AtomicU64 = AtomicU64::new(0);
 static BLOCK_DRAIN_FULL_SCAN: AtomicBool = AtomicBool::new(false);
 static BLOCK_DRAIN_SPAWNED: Once<()> = Once::new();
@@ -60,8 +61,20 @@ impl BlockTaskOps for RuntimeTaskOps {
         ax_task::yield_now();
     }
 
+    fn task_wait(&self) {
+        BLOCK_IO_WAIT_WQ.wait();
+    }
+
+    fn task_wait_until(&self, condition: &dyn Fn() -> bool) {
+        BLOCK_IO_WAIT_WQ.wait_until(condition);
+    }
+
     fn wake_task(&self, task_id: u64) {
         let _ = ax_task::wake_task_by_id(task_id);
+    }
+
+    fn notify_waiters(&self) {
+        BLOCK_IO_WAIT_WQ.notify_all(false);
     }
 }
 
@@ -82,12 +95,16 @@ struct DrainSelection {
 }
 
 fn mark_block_drain_device(device_index: usize) {
+    mark_block_drain_device_with_resched(device_index, false);
+}
+
+fn mark_block_drain_device_with_resched(device_index: usize, resched: bool) {
     if device_index < u64::BITS as usize {
         BLOCK_DRAIN_DEVICE_BITS.fetch_or(1 << device_index, Ordering::AcqRel);
     } else {
         BLOCK_DRAIN_FULL_SCAN.store(true, Ordering::Release);
     }
-    BLOCK_DRAIN_WQ.notify_one(false);
+    BLOCK_DRAIN_WQ.notify_one(resched);
 }
 
 fn block_drain_has_pending() -> bool {
@@ -190,22 +207,17 @@ struct BlockIrqState {
 }
 
 #[cfg(feature = "irq")]
-impl BlockIrqState {
-    fn on_drain_complete(&self) -> bool {
-        let event = self.handler.on_drain_complete();
-        self.device.record_driver_event_for_pending(event)
-    }
-}
-
-#[cfg(feature = "irq")]
 unsafe fn handle_block_irq(
     _ctx: ax_hal::irq::IrqContext,
     data: NonNull<()>,
 ) -> ax_hal::irq::IrqReturn {
     let state = unsafe { data.cast::<BlockIrqState>().as_ref() };
     let event = state.handler.handle();
-    state.device.record_driver_event(event);
-    mark_block_drain_device(state.device_index);
+    if state.device.record_driver_event_for_pending(event) {
+        mark_block_drain_device_with_resched(state.device_index, true);
+        BLOCK_IO_WAIT_WQ.notify_all(true);
+        return ax_hal::irq::IrqReturn::Wake;
+    }
     ax_hal::irq::IrqReturn::Handled
 }
 
@@ -324,6 +336,9 @@ fn build_block_device(
         Err((err, registrations)) => {
             block.interface().disable_irq();
             drop(registrations);
+            if name == "nvme" {
+                return Err(err);
+            }
             warn!(
                 "submit/poll filesystem block device {name} falls back to polling without IRQ: \
                  {err:?}"
@@ -331,6 +346,10 @@ fn build_block_device(
             Vec::new()
         }
     };
+    if !irq_states.is_empty() {
+        device.set_completion_mode(BlockCompletionMode::IrqDriven);
+        warn!("submit/poll filesystem block device {name} registered with IRQ-driven completion");
+    }
 
     info!("registered submit/poll filesystem block device {name}");
     #[cfg(feature = "irq")]
@@ -382,17 +401,6 @@ fn spawn_block_drain_task(runtime: Arc<BlockRuntime>) {
                 for (device_index, device) in runtime.devices().iter().enumerate() {
                     if drain_selection_contains(selection, device_index) {
                         device.drain_events();
-                    }
-                }
-                #[cfg(feature = "irq")]
-                if let Some(registrations) = BLOCK_IRQ_REGISTRATIONS.get() {
-                    for registration in registrations {
-                        let state = registration.state();
-                        if drain_selection_contains(selection, state.device_index)
-                            && state.on_drain_complete()
-                        {
-                            mark_block_drain_device(state.device_index);
-                        }
                     }
                 }
             },

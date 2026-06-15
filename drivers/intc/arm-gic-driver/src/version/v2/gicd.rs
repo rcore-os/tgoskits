@@ -144,13 +144,8 @@ impl DistributorReg {
 
     /// Set default priorities for SPI (ID 32..max_interrupts-1)
     pub(crate) fn set_default_spi_priorities(&self, max_interrupts: u32) {
-        let total_regs = max_interrupts.div_ceil(4) as usize;
-        let total_regs = total_regs.min(self.IPRIORITYR.len());
-
-        // SPI starts from interrupt ID 32
-        let spi_start_id = 32;
-
-        for i in spi_start_id..total_regs {
+        let total_interrupts = (max_interrupts as usize).min(self.IPRIORITYR.len());
+        for i in 32..total_interrupts {
             self.IPRIORITYR[i].set(0xA0);
         }
     }
@@ -163,15 +158,8 @@ impl DistributorReg {
             return;
         }
 
-        let spi_start = 32;
-        let num_spis = max_interrupts - spi_start;
-        let num_regs = num_spis.div_ceil(4) as usize;
-        let target_reg_start = (spi_start / 4) as usize;
-        let target_reg_end = target_reg_start + num_regs;
-        let target_reg_end = target_reg_end.min(self.ITARGETSR.len());
-
-        // Set all SPIs to target CPU 0 by default (0x01)
-        for i in target_reg_start..target_reg_end {
+        let total_interrupts = (max_interrupts as usize).min(self.ITARGETSR.len());
+        for i in 32..total_interrupts {
             self.ITARGETSR[i].set(0x01);
         }
     }

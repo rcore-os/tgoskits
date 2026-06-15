@@ -25,12 +25,33 @@ pub struct Nvme {
     sqes: u32,
     cqes: u32,
     page_size: usize,
+    io_queue_interrupts: bool,
+    interrupt_vector: u32,
 }
 
 #[derive(Debug, Clone, Copy)]
 pub struct Config {
     pub page_size: usize,
     pub io_queue_pair_count: usize,
+    pub io_queue_interrupts: bool,
+    pub interrupt_vector: u32,
+}
+
+impl Config {
+    pub const fn new(page_size: usize, io_queue_pair_count: usize) -> Self {
+        Self {
+            page_size,
+            io_queue_pair_count,
+            io_queue_interrupts: false,
+            interrupt_vector: 0,
+        }
+    }
+
+    pub const fn with_intx_irq(mut self) -> Self {
+        self.io_queue_interrupts = true;
+        self.interrupt_vector = 0;
+        self
+    }
 }
 
 impl Nvme {
@@ -73,6 +94,8 @@ impl Nvme {
             sqes: 6,
             cqes: 4,
             page_size: config.page_size,
+            io_queue_interrupts: config.io_queue_interrupts,
+            interrupt_vector: config.interrupt_vector,
         };
 
         let version = s.version();
@@ -118,6 +141,9 @@ impl Nvme {
         debug!("Controller: {:?}", controller);
 
         self.num_ns = controller.number_of_namespaces as _;
+        if config.io_queue_interrupts {
+            self.mask_interrupt_vector(config.interrupt_vector);
+        }
         self.config_io_queue(config)?;
 
         debug!("IO queue ok.");
@@ -158,15 +184,15 @@ impl Nvme {
     // 3. enable ctrl
     fn nvme_configure_admin_queue(&mut self) {
         self.reg().set_admin_submission_and_completion_queue_size(
-            self.admin_queue.sq.len(),
-            self.admin_queue.cq.len(),
+            self.admin_queue.sq_len(),
+            self.admin_queue.cq_len(),
         );
 
         self.reg()
-            .set_admin_submission_queue_base_address(self.admin_queue.sq.bus_addr());
+            .set_admin_submission_queue_base_address(self.admin_queue.sq_bus_addr());
 
         self.reg()
-            .set_admin_completion_queue_base_address(self.admin_queue.cq.bus_addr());
+            .set_admin_completion_queue_base_address(self.admin_queue.cq_bus_addr());
     }
 
     fn config_io_queue(&mut self, config: Config) -> Result {
@@ -191,18 +217,18 @@ impl Nvme {
 
             let data = CommandSet::create_io_completion_queue(
                 io_queue.qid,
-                io_queue.cq.len() as _,
-                io_queue.cq.bus_addr(),
+                io_queue.cq_len() as _,
+                io_queue.cq_bus_addr(),
                 true,
-                false,
-                0,
+                config.io_queue_interrupts,
+                config.interrupt_vector,
             );
             self.admin_queue.command_sync(data)?;
 
             let data = CommandSet::create_io_submission_queue(
                 io_queue.qid,
-                io_queue.sq.len() as _,
-                io_queue.sq.bus_addr(),
+                io_queue.sq_len() as _,
+                io_queue.sq_bus_addr(),
                 true,
                 0,
                 io_queue.qid,
@@ -223,6 +249,14 @@ impl Nvme {
 
     pub fn page_size(&self) -> usize {
         self.page_size
+    }
+
+    pub fn io_queue_interrupts_enabled(&self) -> bool {
+        self.io_queue_interrupts
+    }
+
+    pub fn interrupt_vector(&self) -> u32 {
+        self.interrupt_vector
     }
 
     pub fn mask_interrupt_vector(&mut self, vector: u32) {
@@ -354,4 +388,20 @@ pub struct Namespace {
     pub lba_size: usize,
     pub lba_count: usize,
     pub metadata_size: usize,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Config;
+
+    #[test]
+    fn config_defaults_to_polling_and_can_enable_intx() {
+        let config = Config::new(4096, 1);
+        assert!(!config.io_queue_interrupts);
+        assert_eq!(config.interrupt_vector, 0);
+
+        let irq_config = config.with_intx_irq();
+        assert!(irq_config.io_queue_interrupts);
+        assert_eq!(irq_config.interrupt_vector, 0);
+    }
 }

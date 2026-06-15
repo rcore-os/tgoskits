@@ -486,12 +486,33 @@ impl DataBlockCache {
         block_dev: &mut Jbd2Dev<B>,
         block_num: AbsoluteBN,
     ) -> Ext4Result<()> {
-        self.inner.lock().do_evict(block_dev, block_num)
+        let (dirty_block, block_size) = self.inner.lock().block_for_evict(block_num);
+        if let Some((generation, data)) = dirty_block {
+            Self::write_block_static(block_dev, block_num, &data, block_size)?;
+            self.inner
+                .lock()
+                .remove_if_generation(block_num, generation);
+        } else {
+            self.inner.lock().remove_clean(block_num);
+        }
+        Ok(())
     }
 
     /// Flushes all dirty cached blocks to disk.
     pub fn flush_all<B: BlockDevice>(&self, block_dev: &mut Jbd2Dev<B>) -> Ext4Result<()> {
-        self.inner.lock().do_flush_all(block_dev)
+        let (dirty_blocks, block_size) = self.inner.lock().dirty_blocks_for_flush();
+        if dirty_blocks.is_empty() {
+            return Ok(());
+        }
+
+        Self::write_dirty_runs(block_dev, &dirty_blocks, block_size)?;
+
+        let flushed_blocks = dirty_blocks
+            .into_iter()
+            .map(|(block_num, generation, _)| (block_num, generation))
+            .collect::<Vec<_>>();
+        self.inner.lock().mark_flushed(&flushed_blocks);
+        Ok(())
     }
 
     /// Flushes one cached block to disk.
@@ -500,7 +521,12 @@ impl DataBlockCache {
         block_dev: &mut Jbd2Dev<B>,
         block_num: AbsoluteBN,
     ) -> Ext4Result<()> {
-        self.inner.lock().do_flush(block_dev, block_num)
+        let (dirty_block, block_size) = self.inner.lock().block_for_flush(block_num);
+        if let Some((generation, data)) = dirty_block {
+            Self::write_block_static(block_dev, block_num, &data, block_size)?;
+            self.inner.lock().mark_flushed(&[(block_num, generation)]);
+        }
+        Ok(())
     }
 
     /// Invalidate one cached block without flushing it.
@@ -539,6 +565,40 @@ impl DataBlockCache {
         let len = core::cmp::min(data.len(), block_size);
         buf[..len].copy_from_slice(&data[..len]);
         block_dev.write_blocks(&buf, block_num, 1, false)?;
+        Ok(())
+    }
+
+    fn write_dirty_runs<B: BlockDevice>(
+        block_dev: &mut Jbd2Dev<B>,
+        dirty_blocks: &[(AbsoluteBN, u64, Vec<u8>)],
+        block_size: usize,
+    ) -> Ext4Result<()> {
+        let max_part_size = BLOCK_SIZE * 100;
+        let mut idx = 0usize;
+        while idx < dirty_blocks.len() {
+            let (start_block, ..) = dirty_blocks[idx];
+            let mut run_len = 1usize;
+
+            while idx + run_len < dirty_blocks.len() && run_len <= max_part_size {
+                let expected = start_block.checked_add_usize(run_len)?;
+                if dirty_blocks[idx + run_len].0 == expected {
+                    run_len += 1;
+                } else {
+                    break;
+                }
+            }
+
+            let mut buf: Vec<u8> = Vec::with_capacity(block_size * run_len);
+            for off in 0..run_len {
+                buf.extend_from_slice(&dirty_blocks[idx + off].2);
+            }
+
+            let run_len_u32 =
+                u32::try_from(run_len).map_err(|_| Ext4Error::from(Errno::EOVERFLOW))?;
+            block_dev.write_blocks(&buf, start_block, run_len_u32, false)?;
+
+            idx += run_len;
+        }
         Ok(())
     }
 }
@@ -598,89 +658,65 @@ impl DataBlockCacheInner {
         })
     }
 
-    fn do_evict<B: BlockDevice>(
-        &mut self,
-        block_dev: &mut Jbd2Dev<B>,
-        block_num: AbsoluteBN,
-    ) -> Ext4Result<()> {
-        if let Some(cached) = self.cache.remove(&block_num)
-            && cached.dirty
-        {
-            DataBlockCache::write_block_static(
-                block_dev,
-                cached.block_num,
-                &cached.data,
-                self.block_size,
-            )?;
-        }
-        Ok(())
+    fn block_for_evict(&self, block_num: AbsoluteBN) -> (Option<(u64, Vec<u8>)>, usize) {
+        let dirty_block = self.cache.get(&block_num).and_then(|cached| {
+            cached
+                .dirty
+                .then(|| (cached.generation, cached.data.clone()))
+        });
+        (dirty_block, self.block_size)
     }
 
-    fn do_flush<B: BlockDevice>(
-        &mut self,
-        block_dev: &mut Jbd2Dev<B>,
-        block_num: AbsoluteBN,
-    ) -> Ext4Result<()> {
-        if let Some(cached) = self.cache.get(&block_num)
-            && cached.dirty
+    fn remove_if_generation(&mut self, block_num: AbsoluteBN, generation: u64) {
+        if self
+            .cache
+            .get(&block_num)
+            .is_some_and(|cached| cached.generation == generation)
         {
-            let data = cached.data.clone();
-            DataBlockCache::write_block_static(block_dev, block_num, &data, self.block_size)?;
-
-            if let Some(cached) = self.cache.get_mut(&block_num) {
-                cached.dirty = false;
-            }
+            self.cache.remove(&block_num);
         }
-        Ok(())
     }
 
-    fn do_flush_all<B: BlockDevice>(&mut self, block_dev: &mut Jbd2Dev<B>) -> Ext4Result<()> {
-        let mut dirty_blocks: Vec<(AbsoluteBN, Vec<u8>)> = self
+    fn remove_clean(&mut self, block_num: AbsoluteBN) {
+        if self
+            .cache
+            .get(&block_num)
+            .is_some_and(|cached| !cached.dirty)
+        {
+            self.cache.remove(&block_num);
+        }
+    }
+
+    fn block_for_flush(&self, block_num: AbsoluteBN) -> (Option<(u64, Vec<u8>)>, usize) {
+        let dirty_block = self.cache.get(&block_num).and_then(|cached| {
+            cached
+                .dirty
+                .then(|| (cached.generation, cached.data.clone()))
+        });
+        (dirty_block, self.block_size)
+    }
+
+    fn dirty_blocks_for_flush(&self) -> (Vec<(AbsoluteBN, u64, Vec<u8>)>, usize) {
+        let mut dirty_blocks: Vec<(AbsoluteBN, u64, Vec<u8>)> = self
             .cache
             .values()
             .filter(|cached| cached.dirty)
-            .map(|cached| (cached.block_num, cached.data.clone()))
+            .map(|cached| (cached.block_num, cached.generation, cached.data.clone()))
             .collect();
 
-        if dirty_blocks.is_empty() {
-            return Ok(());
-        }
+        dirty_blocks.sort_by_key(|(block_num, ..)| *block_num);
+        (dirty_blocks, self.block_size)
+    }
 
-        dirty_blocks.sort_by_key(|(block_num, _)| *block_num);
-
-        // Batch contiguous dirty blocks into one `write_blocks` call.
-        let max_part_size = BLOCK_SIZE * 100;
-        let block_size = self.block_size;
-        let mut idx = 0usize;
-        while idx < dirty_blocks.len() {
-            let (start_block, _) = dirty_blocks[idx];
-            let mut run_len = 1usize;
-
-            while idx + run_len < dirty_blocks.len() && run_len <= max_part_size {
-                let expected = start_block.checked_add_usize(run_len)?;
-                if dirty_blocks[idx + run_len].0 == expected {
-                    run_len += 1;
-                } else {
-                    break;
-                }
+    fn mark_flushed(&mut self, blocks: &[(AbsoluteBN, u64)]) {
+        for (block_num, generation) in blocks {
+            if let Some(cached) = self.cache.get_mut(block_num)
+                && cached.generation == *generation
+            {
+                cached.dirty = false;
+                cached.generation += 1;
             }
-
-            let mut buf: Vec<u8> = Vec::with_capacity(block_size * run_len);
-            for off in 0..run_len {
-                buf.extend_from_slice(&dirty_blocks[idx + off].1);
-            }
-
-            let run_len_u32 =
-                u32::try_from(run_len).map_err(|_| Ext4Error::from(Errno::EOVERFLOW))?;
-            block_dev.write_blocks(&buf, start_block, run_len_u32, false)?;
-
-            idx += run_len;
         }
-
-        for cached in self.cache.values_mut() {
-            cached.dirty = false;
-        }
-        Ok(())
     }
 }
 

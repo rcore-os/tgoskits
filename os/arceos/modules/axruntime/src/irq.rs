@@ -30,6 +30,10 @@ impl Registration {
             }
         }
     }
+
+    pub fn handle(&self) -> Option<IrqHandle> {
+        self.handle
+    }
 }
 
 impl Drop for Registration {
@@ -66,6 +70,10 @@ impl<T> HandlerRegistration<T> {
 
     pub fn state(&self) -> &T {
         &self.state
+    }
+
+    pub fn handle(&self) -> Option<IrqHandle> {
+        self._registration.handle()
     }
 }
 

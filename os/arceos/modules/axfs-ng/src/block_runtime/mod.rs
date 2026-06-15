@@ -9,8 +9,8 @@ pub mod request;
 #[cfg(test)]
 pub use device::NoopDrainWake;
 pub use device::{
-    BlockDeviceHandle, BlockDrainWake, BlockRuntime, BlockRuntimeConfig, QueueRuntime,
-    map_blk_err_to_ax_err,
+    BlockCompletionMode, BlockDeviceHandle, BlockDrainWake, BlockRuntime, BlockRuntimeConfig,
+    QueueRuntime, map_blk_err_to_ax_err,
 };
 pub use dma::{BlockDmaBuffer, BlockDmaDirection, BlockDmaProvider, DmaBufferGuard};
 #[cfg(test)]
@@ -90,6 +90,27 @@ mod tests {
             *ready = false;
         }
 
+        fn task_wait(&self) {
+            self.task_yield();
+        }
+
+        fn task_wait_until(&self, condition: &dyn Fn() -> bool) {
+            if !test_task_is_blocking() {
+                while !condition() {
+                    std::thread::yield_now();
+                }
+                return;
+            }
+            let state = current_test_task_state();
+            let mut ready = state.ready.lock().unwrap();
+            while !condition() {
+                while !*ready {
+                    ready = state.cvar.wait(ready).unwrap();
+                }
+                *ready = false;
+            }
+        }
+
         fn wake_task(&self, task_id: u64) {
             let Some(state) = test_tasks().lock().unwrap().get(&task_id).cloned() else {
                 return;
@@ -97,6 +118,14 @@ mod tests {
             let mut ready = state.ready.lock().unwrap();
             *ready = true;
             state.cvar.notify_one();
+        }
+
+        fn notify_waiters(&self) {
+            for state in test_tasks().lock().unwrap().values() {
+                let mut ready = state.ready.lock().unwrap();
+                *ready = true;
+                state.cvar.notify_all();
+            }
         }
     }
 
@@ -1058,6 +1087,39 @@ mod tests {
         assert_eq!(device.drain_hint(CompletionHint::Queue { queue_id: 0 }), 1);
         let buf = handle.join().unwrap();
         assert_eq!(buf[0], 4);
+    }
+
+    #[test]
+    fn irq_driven_wait_does_not_self_schedule_drain() {
+        let bridge = Arc::new(BlockIrqBridge::new());
+        let (tx, rx) = mpsc::channel();
+        let mut config = channel_config(tx);
+        config.completion_mode = BlockCompletionMode::IrqDriven;
+        let device = BlockDeviceHandle::new(
+            "mock",
+            [Box::new(MockQueue::with_pending_polls_before_complete(2)) as Box<dyn IQueue>],
+            bridge.clone(),
+            config,
+        )
+        .unwrap();
+
+        let fs_dev = device.clone();
+        let handle = std::thread::spawn(move || {
+            let mut buf = alloc::vec![0u8; 512];
+            with_blocking_task(|| fs_dev.read_blocks(5, &mut buf)).unwrap();
+            buf
+        });
+
+        assert!(
+            rx.recv_timeout(std::time::Duration::from_millis(100))
+                .is_err()
+        );
+        assert_eq!(device.pending_queue_ready_events(), 0);
+        bridge.record_hint(CompletionHint::Queue { queue_id: 0 });
+        assert_eq!(device.drain_events(), 1);
+
+        let buf = handle.join().unwrap();
+        assert_eq!(buf[0], 5);
     }
 
     #[test]

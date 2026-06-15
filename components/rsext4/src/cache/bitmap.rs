@@ -329,12 +329,34 @@ impl BitmapCache {
         block_dev: &mut Jbd2Dev<B>,
         key: &CacheKey,
     ) -> Ext4Result<()> {
-        self.inner.lock().do_evict(block_dev, key)
+        let dirty_bitmap = self.inner.lock().bitmap_for_evict(key);
+        if let Some((generation, block_num, data)) = dirty_bitmap {
+            Self::write_bitmap_static(block_dev, block_num, &data)?;
+            self.inner.lock().remove_if_generation(key, generation);
+        } else {
+            self.inner.lock().remove_clean(key);
+        }
+        Ok(())
     }
 
     /// Flushes all dirty bitmaps to disk.
     pub fn flush_all<B: BlockDevice>(&self, block_dev: &mut Jbd2Dev<B>) -> Ext4Result<()> {
-        self.inner.lock().do_flush_all(block_dev)
+        let dirty_bitmaps = self.inner.lock().dirty_bitmaps_for_flush();
+
+        if dirty_bitmaps.is_empty() {
+            return Ok(());
+        }
+
+        for (_, _, block_num, data) in &dirty_bitmaps {
+            Self::write_bitmap_static(block_dev, *block_num, data)?;
+        }
+
+        let flushed_keys = dirty_bitmaps
+            .into_iter()
+            .map(|(key, generation, ..)| (key, generation))
+            .collect::<Vec<_>>();
+        self.inner.lock().mark_flushed(&flushed_keys);
+        Ok(())
     }
 
     /// Flushes one bitmap to disk.
@@ -343,7 +365,12 @@ impl BitmapCache {
         block_dev: &mut Jbd2Dev<B>,
         key: &CacheKey,
     ) -> Ext4Result<()> {
-        self.inner.lock().do_flush(block_dev, key)
+        let dirty_bitmap = self.inner.lock().bitmap_for_flush(key);
+        if let Some((generation, block_num, data)) = dirty_bitmap {
+            Self::write_bitmap_static(block_dev, block_num, &data)?;
+            self.inner.lock().mark_flushed(&[(*key, generation)]);
+        }
+        Ok(())
     }
 
     /// Clears the cache without flushing.
@@ -416,67 +443,71 @@ impl BitmapCacheInner {
         Some((lru_key, lru_gen, dirty_info))
     }
 
-    fn do_evict<B: BlockDevice>(
-        &mut self,
-        block_dev: &mut Jbd2Dev<B>,
-        key: &CacheKey,
-    ) -> Ext4Result<()> {
-        if let Some(bitmap) = self.cache.remove(key)
-            && bitmap.dirty
-        {
-            BitmapCache::write_bitmap_static(block_dev, bitmap.block_num, &bitmap.data)?;
-        }
-        Ok(())
+    fn bitmap_for_evict(&self, key: &CacheKey) -> Option<(u64, AbsoluteBN, Vec<u8>)> {
+        self.cache.get(key).and_then(|bitmap| {
+            bitmap
+                .dirty
+                .then(|| (bitmap.generation, bitmap.block_num, bitmap.data.clone()))
+        })
     }
 
-    fn do_flush<B: BlockDevice>(
-        &mut self,
-        block_dev: &mut Jbd2Dev<B>,
-        key: &CacheKey,
-    ) -> Ext4Result<()> {
-        if let Some(bitmap) = self.cache.get(key)
-            && bitmap.dirty
+    fn remove_if_generation(&mut self, key: &CacheKey, generation: u64) {
+        if self
+            .cache
+            .get(key)
+            .is_some_and(|bitmap| bitmap.generation == generation)
         {
-            let data = bitmap.data.clone();
-            BitmapCache::write_bitmap_static(block_dev, bitmap.block_num, &data)?;
-            if let Some(bitmap) = self.cache.get_mut(key) {
-                bitmap.dirty = false;
-            }
+            self.cache.remove(key);
         }
-        Ok(())
     }
 
-    fn do_flush_all<B: BlockDevice>(&mut self, block_dev: &mut Jbd2Dev<B>) -> Ext4Result<()> {
-        let mut dirty_bitmaps: Vec<(CacheKey, AbsoluteBN, Vec<u8>)> = self
+    fn remove_clean(&mut self, key: &CacheKey) {
+        if self.cache.get(key).is_some_and(|bitmap| !bitmap.dirty) {
+            self.cache.remove(key);
+        }
+    }
+
+    fn bitmap_for_flush(&self, key: &CacheKey) -> Option<(u64, AbsoluteBN, Vec<u8>)> {
+        self.cache.get(key).and_then(|bitmap| {
+            bitmap
+                .dirty
+                .then(|| (bitmap.generation, bitmap.block_num, bitmap.data.clone()))
+        })
+    }
+
+    fn dirty_bitmaps_for_flush(&self) -> Vec<(CacheKey, u64, AbsoluteBN, Vec<u8>)> {
+        let mut dirty_bitmaps: Vec<(CacheKey, u64, AbsoluteBN, Vec<u8>)> = self
             .cache
             .iter()
             .filter(|(_, bitmap)| bitmap.dirty)
-            .map(|(key, bitmap)| (*key, bitmap.block_num, bitmap.data.clone()))
+            .map(|(key, bitmap)| {
+                (
+                    *key,
+                    bitmap.generation,
+                    bitmap.block_num,
+                    bitmap.data.clone(),
+                )
+            })
             .collect();
 
-        if dirty_bitmaps.is_empty() {
-            return Ok(());
-        }
-
-        dirty_bitmaps.sort_by_key(|(_, block_num, _)| *block_num);
+        dirty_bitmaps.sort_by_key(|(_, _, block_num, _)| *block_num);
 
         debug!(
             "BitmapCache::flush_all: dirty_entries={}",
             dirty_bitmaps.len()
         );
+        dirty_bitmaps
+    }
 
-        for (key, block_num, data) in dirty_bitmaps {
-            debug!(
-                "BitmapCache::flush_all: writing bitmap key=({}:{:?}) block_num={}",
-                key.group_id, key.bitmap_type, block_num
-            );
-            BitmapCache::write_bitmap_static(block_dev, block_num, &data)?;
+    fn mark_flushed(&mut self, keys: &[(CacheKey, u64)]) {
+        for (key, generation) in keys {
+            if let Some(bitmap) = self.cache.get_mut(key)
+                && bitmap.generation == *generation
+            {
+                bitmap.dirty = false;
+                bitmap.generation += 1;
+            }
         }
-
-        for bitmap in self.cache.values_mut() {
-            bitmap.dirty = false;
-        }
-        Ok(())
     }
 }
 

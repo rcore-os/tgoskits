@@ -37,7 +37,7 @@ fn probe_pci(mut probe: ProbePci<'_>) -> Result<(), OnProbeError> {
 
     endpoint.update_command(|mut cmd| {
         cmd.insert(CommandRegister::MEMORY_ENABLE | CommandRegister::BUS_MASTER_ENABLE);
-        cmd.insert(CommandRegister::INTERRUPT_DISABLE);
+        cmd.remove(CommandRegister::INTERRUPT_DISABLE);
         cmd
     });
 
@@ -56,16 +56,13 @@ fn probe_pci(mut probe: ProbePci<'_>) -> Result<(), OnProbeError> {
         u64::MAX,
         axklib::dma::op(),
         axklib::mmio::op(),
-        Config {
-            page_size: DEFAULT_PAGE_SIZE,
-            io_queue_pair_count: DEFAULT_IO_QUEUE_PAIRS,
-        },
+        Config::new(DEFAULT_PAGE_SIZE, DEFAULT_IO_QUEUE_PAIRS).with_intx_irq(),
     )
     .map_err(|err| OnProbeError::other(format!("failed to initialize NVMe: {err:?}")))?;
     let driver = NvmeBlockDriver::from_nvme(nvme).map_err(|err| {
         OnProbeError::other(format!("failed to create NVMe block driver: {err:?}"))
     })?;
-    let irq = probe.register_block(driver, PciIrqRequirement::Optional)?;
-    info!("NVMe block device registered at {address} with irq {irq:?}");
+    let irq = probe.register_block(driver, PciIrqRequirement::Required)?;
+    info!("NVMe block device registered at {address} with irq={irq:?}");
     Ok(())
 }

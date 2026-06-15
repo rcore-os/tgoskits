@@ -21,11 +21,19 @@ impl IrqSourceInfo {
 pub type IrqSourceList = Vec<IrqSourceInfo>;
 
 pub trait IrqHandler: Send + Sync + 'static {
+    /// Handle a device interrupt in hard IRQ context.
+    ///
+    /// Implementations must acknowledge or clear the device-side interrupt
+    /// source before returning. The returned event is a stable hint for the OS
+    /// runtime; task context is still responsible for consuming completions and
+    /// completing block requests.
+    ///
+    /// Hard IRQ handlers must not call OS task, wake, or filesystem APIs, must
+    /// not copy DMA buffers for completed requests, and must not update an OS
+    /// block runtime pending table. Drivers that need to consume device queue
+    /// state to clear the interrupt should cache those completions internally
+    /// and return a queue-level event.
     fn handle_irq(&self) -> Event;
-
-    fn on_drain_complete(&self) -> Event {
-        Event::none()
-    }
 }
 
 #[repr(transparent)]
@@ -268,5 +276,13 @@ mod tests {
 
         assert_eq!(event.completions.len(), MAX_COMPLETION_HINTS);
         assert!(event.queues.contains(5));
+    }
+
+    #[test]
+    fn queue_event_represents_driver_local_completion_ready() {
+        let event = Event::from_hint(CompletionHint::Queue { queue_id: 2 });
+
+        assert!(event.queues.contains(2));
+        assert_eq!(event.completions.len(), 1);
     }
 }

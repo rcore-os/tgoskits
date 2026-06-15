@@ -120,10 +120,6 @@ impl BlockIrqHandler {
         }
         event
     }
-
-    pub fn on_drain_complete(&self) -> rdif_block::Event {
-        self.handler.on_drain_complete()
-    }
 }
 
 #[cfg(not(feature = "irq"))]

@@ -16,7 +16,7 @@ use super::{
     BlockDmaDirection, BlockDmaProvider, BlockIrqBridge, DmaBufferGuard, DrainEvents, PendingTable,
     PollClaim, PollProgress, RequestKey,
 };
-use crate::os::{current_task_id, task_yield, wake_task};
+use crate::os::{current_task_id, notify_waiters, task_wait_until, task_yield, wake_task};
 
 const DEFAULT_MAX_TRANSFER_BYTES: usize = 1024 * 1024;
 const DEFAULT_SUBMIT_WINDOW: usize = 32;
@@ -88,9 +88,32 @@ impl BlockDrainWake for NoopDrainWake {
     fn wake_drain(&self) {}
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum BlockCompletionMode {
+    Polling,
+    IrqDriven,
+}
+
+impl BlockCompletionMode {
+    const fn as_usize(self) -> usize {
+        match self {
+            Self::Polling => 0,
+            Self::IrqDriven => 1,
+        }
+    }
+
+    const fn from_usize(value: usize) -> Self {
+        match value {
+            1 => Self::IrqDriven,
+            _ => Self::Polling,
+        }
+    }
+}
+
 pub struct BlockRuntimeConfig {
     pub dma: Arc<dyn BlockDmaProvider>,
     pub drain_wake: Arc<dyn BlockDrainWake>,
+    pub completion_mode: BlockCompletionMode,
     pub max_transfer_bytes: usize,
     pub max_segments: usize,
     pub submit_window: usize,
@@ -101,6 +124,7 @@ impl BlockRuntimeConfig {
         Self {
             dma,
             drain_wake,
+            completion_mode: BlockCompletionMode::Polling,
             max_transfer_bytes: DEFAULT_MAX_TRANSFER_BYTES,
             max_segments: usize::MAX,
             submit_window: DEFAULT_SUBMIT_WINDOW,
@@ -119,6 +143,7 @@ pub struct BlockDeviceHandle {
     dma: Arc<dyn BlockDmaProvider>,
     drain_wake: Arc<dyn BlockDrainWake>,
     submit_window: usize,
+    completion_mode: AtomicUsize,
     drain_running: AtomicBool,
     active_data_ops: AtomicUsize,
     flush_active: AtomicBool,
@@ -231,6 +256,7 @@ impl BlockDeviceHandle {
             dma: config.dma,
             drain_wake: config.drain_wake,
             submit_window: config.submit_window.max(1),
+            completion_mode: AtomicUsize::new(config.completion_mode.as_usize()),
             drain_running: AtomicBool::new(false),
             active_data_ops: AtomicUsize::new(0),
             flush_active: AtomicBool::new(false),
@@ -246,6 +272,15 @@ impl BlockDeviceHandle {
         &self.name
     }
 
+    pub fn completion_mode(&self) -> BlockCompletionMode {
+        BlockCompletionMode::from_usize(self.completion_mode.load(Ordering::Acquire))
+    }
+
+    pub fn set_completion_mode(&self, mode: BlockCompletionMode) {
+        self.completion_mode
+            .store(mode.as_usize(), Ordering::Release);
+    }
+
     pub fn queue_ids(&self) -> Vec<usize> {
         self.queues
             .iter()
@@ -255,6 +290,10 @@ impl BlockDeviceHandle {
 
     pub fn pending_queue_bits(&self) -> u64 {
         self.pending.lock().pending_queue_bits()
+    }
+
+    pub fn has_pending_requests(&self) -> bool {
+        self.pending.lock().pending_queue_bits() != 0
     }
 
     pub fn device_info(&self) -> DeviceInfo {
@@ -559,6 +598,7 @@ impl BlockDeviceHandle {
         if let Some(task_id) = task_id {
             wake_task(task_id);
         }
+        notify_waiters();
     }
 
     fn queue_id_for_key(&self, key: RequestKey) -> Option<usize> {
@@ -585,6 +625,7 @@ impl BlockDeviceHandle {
         for task_id in waiters {
             wake_task(task_id);
         }
+        notify_waiters();
     }
 
     pub(crate) fn read_blocks(&self, block_id: u64, buf: &mut [u8]) -> AxResult {
@@ -1021,10 +1062,15 @@ impl BlockDeviceHandle {
         {
             return Ok(());
         }
-        self.record_queue_ready_for_keys(&keys);
-        self.drain_wake.wake_drain();
+        if self.completion_mode() == BlockCompletionMode::Polling {
+            self.record_queue_ready_for_keys(&keys);
+            self.drain_wake.wake_drain();
+        }
         if task_id != 0 {
-            task_yield();
+            task_wait_until(|| {
+                keys.iter()
+                    .any(|&key| self.pending.lock().result(key).is_some())
+            });
         } else {
             core::hint::spin_loop();
         }
@@ -1045,10 +1091,12 @@ impl BlockDeviceHandle {
             self.remove_queue_progress_waiter(queue_id, task_id);
             return Ok(true);
         }
-        self.bridge.record_queue_ready(queue_id);
-        self.drain_wake.wake_drain();
+        if self.completion_mode() == BlockCompletionMode::Polling {
+            self.bridge.record_queue_ready(queue_id);
+            self.drain_wake.wake_drain();
+        }
         if task_id != 0 {
-            task_yield();
+            task_wait_until(|| self.pending.lock().keys_for_queue(queue_id).is_empty());
         } else {
             core::hint::spin_loop();
         }
@@ -1084,10 +1132,18 @@ impl BlockDeviceHandle {
                     {
                         break result;
                     }
-                    self.record_queue_ready_for_keys(&[key]);
-                    self.drain_wake.wake_drain();
+                    if self.completion_mode() == BlockCompletionMode::Polling {
+                        self.record_queue_ready_for_keys(&[key]);
+                        self.drain_wake.wake_drain();
+                    }
                     if task_id != 0 {
-                        task_yield();
+                        task_wait_until(|| {
+                            self.pending
+                                .lock()
+                                .request(key)
+                                .and_then(|request| request.result())
+                                .is_some()
+                        });
                     } else {
                         core::hint::spin_loop();
                     }
