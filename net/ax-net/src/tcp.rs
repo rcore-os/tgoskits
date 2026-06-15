@@ -410,7 +410,9 @@ impl SocketOps for TcpSocket {
                 let binding = get_control().local_binding_for(&endpoint)?;
                 self.register_bound_endpoint(endpoint)?;
                 *self.bound_endpoint.lock() = endpoint;
-                self.general.set_device_binding(binding);
+                if binding.bound_if.is_some() {
+                    self.general.set_device_binding(binding);
+                }
                 debug!("TCP socket {}: binding to {}", self.handle, local_addr);
                 Ok(())
             })
@@ -459,7 +461,9 @@ impl SocketOps for TcpSocket {
                 if register_bound {
                     self.bound_registered.store(true, Ordering::Release);
                 }
-                self.general.set_device_binding(binding);
+                if binding.bound_if.is_some() {
+                    self.general.set_device_binding(binding);
+                }
                 debug!("listening on {}", bound_endpoint);
                 Ok(())
             })?;
@@ -793,11 +797,18 @@ impl TcpSocket {
                 // Record original bind state before modifying
                 let was_unbound_or_unspecified =
                     bound_endpoint.addr.is_none_or(|addr| addr.is_unspecified());
+                let had_explicit_device_binding = self.general.device_binding().bound_if.is_some();
 
                 // Fill source address if unbound or bound to 0.0.0.0
                 if bound_endpoint.addr.is_none_or(|addr| addr.is_unspecified()) {
-                    bound_endpoint.addr =
-                        Some(get_control().select_route(&remote_endpoint.addr)?.source);
+                    bound_endpoint.addr = Some(
+                        get_control()
+                            .select_route_with_binding(
+                                &remote_endpoint.addr,
+                                self.general.device_binding(),
+                            )?
+                            .source,
+                    );
                 }
                 if bound_endpoint.port == 0 {
                     bound_endpoint.port = get_ephemeral_port()?;
@@ -841,7 +852,7 @@ impl TcpSocket {
 
                 // Only set device binding if was originally unbound or bound to 0.0.0.0
                 // Binding to a specific IP should lock the interface
-                if was_unbound_or_unspecified {
+                if !had_explicit_device_binding && was_unbound_or_unspecified {
                     self.general
                         .set_device_binding(get_control().local_binding_for(&bound_endpoint)?);
                 }
@@ -1032,6 +1043,37 @@ mod tests {
             socket.general.device_binding(),
             DeviceBinding {
                 bound_if: Some(PEER_IF)
+            }
+        );
+    }
+
+    #[test]
+    fn connect_rejects_unroutable_bound_device() {
+        let _guard = network_test_guard();
+        init_split_route_network();
+
+        let socket = TcpSocket::new();
+        let nonblocking = true;
+        socket
+            .set_option(SetSocketOption::NonBlocking(&nonblocking))
+            .unwrap();
+        socket.bind_device(LOCAL_IF).unwrap();
+        socket
+            .bind(SocketAddrEx::Ip(SocketAddr::new(
+                IpAddr::V4(Ipv4Addr::UNSPECIFIED),
+                0,
+            )))
+            .unwrap();
+
+        assert!(
+            socket
+                .start_connect(SocketAddr::new(IpAddr::V4(PEER_ADDR), 80))
+                .is_err()
+        );
+        assert_eq!(
+            socket.general.device_binding(),
+            DeviceBinding {
+                bound_if: Some(LOCAL_IF)
             }
         );
     }

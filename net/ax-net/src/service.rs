@@ -191,10 +191,24 @@ impl NetControl {
     }
 
     pub fn select_route(&self, dst_addr: &IpAddress) -> AxResult<RouteDecision> {
+        self.select_route_with_binding(dst_addr, DeviceBinding::default())
+    }
+
+    pub fn select_route_with_binding(
+        &self,
+        dst_addr: &IpAddress,
+        binding: DeviceBinding,
+    ) -> AxResult<RouteDecision> {
         let state = self.state.read();
         let routes = self.routes.read();
         let route = routes
             .select_route_if(dst_addr, |interface_id| {
+                if binding
+                    .bound_if
+                    .is_some_and(|bound_if| bound_if != interface_id)
+                {
+                    return false;
+                }
                 state
                     .interfaces
                     .iter()
@@ -630,7 +644,6 @@ impl Service {
         let mut dhcp_events = Vec::new();
         let mut dhcp_server_replies = Vec::new();
 
-        self.router.wake_rx_workers();
         {
             let dhcp = &mut self.dhcp;
             let dhcp_server = &mut self.dhcp_server;

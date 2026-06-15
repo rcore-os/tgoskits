@@ -63,6 +63,12 @@ impl ListenTableEntryInner {
             .map(|pending| pending.accepted.handle)
             .collect()
     }
+
+    fn has_pending(&self, src: IpEndpoint, dst: IpEndpoint) -> bool {
+        self.syn_queue.iter().any(|pending| {
+            pending.accepted.local_endpoint == dst && pending.accepted.remote_endpoint == src
+        })
+    }
 }
 
 type ListenTableEntry = Arc<Mutex<Option<Box<ListenTableEntryInner>>>>;
@@ -190,6 +196,9 @@ impl ListenTable {
             if entry.syn_queue.len() >= entry.backlog {
                 // SYN queue is full, drop the packet
                 warn!("SYN queue overflow!");
+                return;
+            }
+            if entry.has_pending(src, dst) {
                 return;
             }
 

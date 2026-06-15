@@ -120,7 +120,9 @@ impl RawSocket {
         if is_loopback_address(remote) {
             return Ok(remote);
         }
-        Ok(get_control().select_route(&remote)?.source)
+        Ok(get_control()
+            .select_route_with_binding(&remote, self.general.device_binding())?
+            .source)
     }
 
     fn parse_ip_packet<'a>(&self, packet: &'a [u8]) -> AxResult<(IpAddress, &'a [u8])> {
@@ -243,7 +245,11 @@ impl SocketOps for RawSocket {
         let remote_addr = remote_addr.into_ip()?;
         let remote = self.check_ip_version(remote_addr.ip().into())?;
         if self.local_addr.read().is_none() {
-            *self.local_addr.write() = Some(get_control().select_route(&remote)?.source);
+            *self.local_addr.write() = Some(
+                get_control()
+                    .select_route_with_binding(&remote, self.general.device_binding())?
+                    .source,
+            );
         }
         *self.peer_addr.write() = Some(remote);
         let local = (*self.local_addr.read()).expect("raw socket local address");

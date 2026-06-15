@@ -154,9 +154,6 @@ pub fn init_network(mut net_devs: EthernetDeviceList, config: NetworkConfig) {
             if static_cfg.prefix_len > 32 {
                 panic!("Invalid static IP for {}: prefix length > 32", cfg.name);
             }
-            if static_cfg.gateway.is_unspecified() {
-                panic!("Invalid gateway for {}: unspecified address", cfg.name);
-            }
         }
         for (i, dns) in cfg.dns_servers.iter().enumerate() {
             if dns.is_unspecified() {
@@ -231,7 +228,10 @@ pub fn init_network(mut net_devs: EthernetDeviceList, config: NetworkConfig) {
         let static_ip = cfg.and_then(|cfg| cfg.static_ip.as_ref());
         let ipv4 =
             static_ip.map(|cfg| Ipv4Cidr::new(Ipv4Address::from(cfg.ip.octets()), cfg.prefix_len));
-        let gateway = static_ip.map(|cfg| Ipv4Address::from(cfg.gateway.octets()));
+        let gateway = static_ip.and_then(|cfg| {
+            (!cfg.gateway.is_unspecified()).then(|| Ipv4Address::from(cfg.gateway.octets()))
+        });
+        let dhcp_enabled = cfg.is_none_or(|cfg| cfg.dhcp);
         let eth_dev = router.add_device(id, Box::new(EthernetDevice::new(name.clone(), dev, ipv4)));
 
         info!("{name}:");
@@ -251,9 +251,11 @@ pub fn init_network(mut net_devs: EthernetDeviceList, config: NetworkConfig) {
             if let Some(gateway) = gateway {
                 info!("  gw:   {}", gateway);
             }
-        } else {
+        } else if dhcp_enabled {
             dhcp_ifaces.push((id, eth_dev, name.clone(), mac, metric));
             info!("  mode: dhcp");
+        } else {
+            info!("  mode: none");
         }
         if let Some(cfg) = cfg {
             dns.extend(

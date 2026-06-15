@@ -514,12 +514,6 @@ impl Router {
         }
     }
 
-    pub fn wake_rx_workers(&self) {
-        for device in &self.devices {
-            device.rx_wake.notify_one(true);
-        }
-    }
-
     pub fn wake_all_devices(&self) {
         for device in &self.devices {
             device.inner.lock().wake_rx();

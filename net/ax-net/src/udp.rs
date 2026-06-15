@@ -94,6 +94,12 @@ impl UdpSocket {
             None => Err(AxError::NotConnected),
         }
     }
+
+    fn source_for_remote(&self, remote: &IpAddress) -> AxResult<IpAddress> {
+        Ok(get_control()
+            .select_route_with_binding(remote, self.general.device_binding())?
+            .source)
+    }
 }
 
 impl Configurable for UdpSocket {
@@ -169,7 +175,9 @@ impl SocketOps for UdpSocket {
             self.with_smol_socket(|socket| socket.close());
             return Err(err);
         }
-        self.general.set_device_binding(binding);
+        if binding.bound_if.is_some() {
+            self.general.set_device_binding(binding);
+        }
 
         *guard = Some(local_endpoint);
         info!("UDP socket {}: bound on {}", self.handle, endpoint);
@@ -194,13 +202,13 @@ impl SocketOps for UdpSocket {
         let (src, should_update_binding) = if let Some(local_ep) = *local {
             if local_ep.addr.is_unspecified() {
                 // Bound to 0.0.0.0, use route decision
-                (get_control().select_route(&remote_addr.addr)?.source, true)
+                (self.source_for_remote(&remote_addr.addr)?, true)
             } else {
                 // Bound to specific IP, use that address and keep interface
                 (local_ep.addr, false)
             }
         } else {
-            (get_control().select_route(&remote_addr.addr)?.source, true)
+            (self.source_for_remote(&remote_addr.addr)?, true)
         };
 
         *guard = Some((remote_addr, src));
@@ -242,12 +250,12 @@ impl SocketOps for UdpSocket {
                     // Use bound address if bound to specific IP
                     let src = if let Some(local_ep) = *self.local_addr.read() {
                         if local_ep.addr.is_unspecified() {
-                            get_control().select_route(&addr.addr)?.source
+                            self.source_for_remote(&addr.addr)?
                         } else {
                             local_ep.addr
                         }
                     } else {
-                        get_control().select_route(&addr.addr)?.source
+                        self.source_for_remote(&addr.addr)?
                     };
                     (addr, src)
                 }
@@ -292,12 +300,12 @@ impl SocketOps for UdpSocket {
                 // Use bound address if bound to specific IP, otherwise route decision
                 let src = if let Some(local_ep) = *self.local_addr.read() {
                     if local_ep.addr.is_unspecified() {
-                        get_control().select_route(&addr.addr)?.source
+                        self.source_for_remote(&addr.addr)?
                     } else {
                         local_ep.addr
                     }
                 } else {
-                    get_control().select_route(&addr.addr)?.source
+                    self.source_for_remote(&addr.addr)?
                 };
                 Some((addr, src))
             }
@@ -610,6 +618,33 @@ mod tests {
             socket.general.device_binding(),
             DeviceBinding {
                 bound_if: Some(PEER_IF)
+            }
+        );
+    }
+
+    #[test]
+    fn connect_rejects_unroutable_bound_device() {
+        let _guard = network_test_guard();
+        init_split_route_network();
+
+        let socket = UdpSocket::new();
+        socket.bind_device(LOCAL_IF).unwrap();
+        socket
+            .bind(SocketAddrEx::Ip(SocketAddr::new(
+                IpAddr::V4(Ipv4Addr::UNSPECIFIED),
+                0,
+            )))
+            .unwrap();
+
+        assert!(
+            socket
+                .connect(SocketAddrEx::Ip(SocketAddr::new(IpAddr::V4(PEER_ADDR), 53)))
+                .is_err()
+        );
+        assert_eq!(
+            socket.general.device_binding(),
+            DeviceBinding {
+                bound_if: Some(LOCAL_IF)
             }
         );
     }
