@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use alloc::{boxed::Box, format, sync::Arc, vec::Vec};
+use alloc::{boxed::Box, format, string::String, sync::Arc, vec::Vec};
 use core::{alloc::Layout, fmt};
 
 use ax_cpumask::CpuMask;
@@ -20,9 +20,11 @@ use ax_errno::{AxError, AxResult, ax_err, ax_err_type};
 use ax_kspin::SpinNoIrq as Mutex;
 use ax_memory_addr::{align_down_4k, align_up_4k};
 use axaddrspace::{AddrSpace, MappingFlags};
+#[cfg(target_arch = "loongarch64")]
+use axdevice::FwCfgRamRegion;
 use axdevice::{
-    AxVmDeviceConfig, AxVmDevices, DeviceBuildContext, DeviceFactoryRegistry,
-    register_builtin_factories,
+    AxVmDeviceConfig, AxVmDevices, DeviceBuildContext, DeviceFactoryRegistry, FwCfg,
+    FwCfgPlatformConfig, register_builtin_factories,
 };
 use axdevice_base::AccessWidth;
 #[cfg(target_arch = "aarch64")]
@@ -81,6 +83,26 @@ struct AxVMInnerConst {
 
 unsafe impl Send for AxVMInnerConst {}
 unsafe impl Sync for AxVMInnerConst {}
+
+struct PendingFwCfg {
+    base: GuestPhysAddr,
+    size: usize,
+    kernel: &'static [u8],
+    initrd: Option<&'static [u8]>,
+    cmdline: Option<String>,
+    cpu_num: u16,
+    platform: FwCfgPlatformConfig,
+}
+
+pub struct FwCfgDeviceConfig {
+    pub base: GuestPhysAddr,
+    pub size: usize,
+    pub kernel: &'static [u8],
+    pub initrd: Option<&'static [u8]>,
+    pub cmdline: Option<String>,
+    pub cpu_num: u16,
+    pub platform: Option<FwCfgPlatformConfig>,
+}
 
 /// Represents a memory region in a virtual machine.
 #[derive(Debug, Clone)]
@@ -176,6 +198,7 @@ pub struct AxVM {
     id: usize,
     inner_const: Once<AxVMInnerConst>,
     inner_mut: Mutex<AxVMInnerMut>,
+    pending_fw_cfg: Mutex<Option<PendingFwCfg>>,
 }
 
 impl AxVM {
@@ -198,6 +221,7 @@ impl AxVM {
                 memory_regions: Vec::new(),
                 vm_status: VMStatus::Loading,
             }),
+            pending_fw_cfg: Mutex::new(None),
         });
 
         info!("VM created: id={}", result.id());
@@ -248,7 +272,7 @@ impl AxVM {
         let dtb_addr = inner_mut.config.image_config().dtb_load_gpa;
         let vcpu_id_pcpu_sets = inner_mut.config.phys_cpu_ls.get_vcpu_affinities_pcpu_ids();
 
-        info!("dtb_load_gpa: {dtb_addr:?}");
+        debug!("dtb_load_gpa: {dtb_addr:?}");
         debug!("id: {}, VCpuIdPCpuSets: {vcpu_id_pcpu_sets:#x?}", self.id());
 
         let mut vcpu_list = Vec::with_capacity(vcpu_id_pcpu_sets.len());
@@ -409,6 +433,8 @@ impl AxVM {
                 let _ = (); // silence unused warning on non-aarch64
             }
         }
+
+        self.add_special_emulated_devices(&mut devices)?;
 
         // Setup VCpus.
         for vcpu in &vcpu_list {
@@ -605,6 +631,110 @@ impl AxVM {
         &self.inner_const().interrupt_fabric
     }
 
+    /// Assert a routed LoongArch platform IRQ in the guest interrupt model.
+    #[cfg(target_arch = "loongarch64")]
+    pub(crate) fn loongarch_external_irq_vector(
+        &self,
+        fallback_vector: usize,
+        physical_irq: usize,
+    ) -> Option<usize> {
+        match self
+            .get_devices()
+            .loongarch_pch_pic_assert_irq(fallback_vector)
+        {
+            Some(Some(vector)) => Some(vector),
+            Some(None) => None,
+            None => Some(fallback_vector),
+        }
+    }
+
+    /// Queue a QEMU fw_cfg device that will be attached during VM initialization.
+    pub fn add_fw_cfg_device(&self, config: FwCfgDeviceConfig) -> AxResult {
+        let mut pending = self.pending_fw_cfg.lock();
+        if pending.is_some() {
+            return ax_err!(
+                AlreadyExists,
+                format!("VM[{}] fw_cfg device already exists", self.id())
+            );
+        }
+        *pending = Some(PendingFwCfg {
+            base: config.base,
+            size: config.size,
+            kernel: config.kernel,
+            initrd: config.initrd,
+            cmdline: config.cmdline,
+            cpu_num: config.cpu_num,
+            platform: config
+                .platform
+                .unwrap_or_else(|| self.fw_cfg_platform_config()),
+        });
+        debug!(
+            "VM[{}] queued fw_cfg device: base={:#x}, size={:#x}, kernel={} bytes, initrd={:?}",
+            self.id(),
+            config.base.as_usize(),
+            config.size,
+            config.kernel.len(),
+            config.initrd.map(|data| data.len())
+        );
+        Ok(())
+    }
+
+    fn add_special_emulated_devices(&self, devices: &mut AxVmDevices) -> AxResult {
+        if let Some(pending) = self.pending_fw_cfg.lock().take() {
+            debug!(
+                "VM[{}] adding fw_cfg MMIO device at [{:#x},{:#x})",
+                self.id(),
+                pending.base.as_usize(),
+                pending.base.as_usize() + pending.size
+            );
+            devices.add_fw_cfg_dev(Arc::new(FwCfg::new(
+                pending.base,
+                pending.size,
+                pending.kernel,
+                pending.initrd,
+                pending.cmdline.as_deref(),
+                pending.cpu_num,
+                pending.platform,
+            )))?;
+        }
+        Ok(())
+    }
+
+    fn fw_cfg_platform_config(&self) -> FwCfgPlatformConfig {
+        #[cfg(target_arch = "loongarch64")]
+        {
+            let inner = self.inner_mut.lock();
+            let mut ram_regions = inner
+                .memory_regions
+                .iter()
+                .map(|region| FwCfgRamRegion {
+                    base: region.gpa.as_usize() as u64,
+                    size: region.size() as u64,
+                })
+                .filter(|region| region.size != 0)
+                .collect::<Vec<_>>();
+            ram_regions.sort_by_key(|region| region.base);
+
+            if !ram_regions.is_empty() {
+                let ram_regions: &'static [FwCfgRamRegion] =
+                    Box::leak(ram_regions.into_boxed_slice());
+                debug!(
+                    "VM[{}] LoongArch fw_cfg RAM regions: {:?}",
+                    self.id(),
+                    ram_regions
+                );
+                return FwCfgPlatformConfig {
+                    ram_regions,
+                    srat_regions: ram_regions,
+                    ..FwCfgPlatformConfig::default()
+                };
+            }
+        }
+
+        FwCfgPlatformConfig::default()
+    }
+
+
     /// Run a vCPU according to the given vcpu_id.
     ///
     /// ## Arguments
@@ -653,8 +783,7 @@ impl AxVM {
                         vcpu.set_gpr(reg, val);
                     }
                     AxVCpuExitReason::MmioWrite { addr, width, data } => {
-                        self.get_devices()
-                            .handle_mmio_write(addr, width, data as usize)?;
+                        self.handle_mmio_write(addr, width, data as usize)?;
                     }
                     AxVCpuExitReason::IoRead { port, width } => {
                         let val = self.get_devices().handle_port_read(port, width)?;
@@ -709,6 +838,21 @@ impl AxVM {
                 Err(err)
             }
         }
+    }
+
+    fn handle_mmio_write(&self, addr: GuestPhysAddr, width: AccessWidth, data: usize) -> AxResult {
+        if let Some(fw_cfg) = self.get_devices().fw_cfg_for_dma_addr(addr) {
+            if let Some(desc_addr) = fw_cfg.write_dma_address(addr, width, data)? {
+                fw_cfg.process_dma(
+                    desc_addr,
+                    |gpa, buffer| self.read_from_guest(gpa, buffer),
+                    |gpa, buffer| self.write_to_guest(gpa, buffer),
+                )?;
+            }
+            return Ok(());
+        }
+
+        self.get_devices().handle_mmio_write(addr, width, data)
     }
 
     fn handle_nested_page_fault(&self, addr: GuestPhysAddr, access_flags: MappingFlags) -> bool {

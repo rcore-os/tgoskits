@@ -106,7 +106,7 @@ impl IrqIf for IrqIfImpl {
 impl ax_plat::irq::LoongArchHvIrqIf for IrqIfImpl {
     fn register_virtual_irq_injector(injector: fn(usize, usize, usize, usize)) {
         LOONGARCH_VIRTUAL_IRQ_INJECTOR.store(injector as *mut (), Ordering::Release);
-        info!("LoongArch dynamic platform virtual IRQ injector registered");
+        debug!("LoongArch dynamic platform virtual IRQ injector registered");
     }
 
     fn register_guest_irq_route(

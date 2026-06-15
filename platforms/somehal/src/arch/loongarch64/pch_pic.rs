@@ -64,7 +64,7 @@ pub fn debug_summary(inputs: &[usize]) {
         let pol1 = pic.read_w(PCH_PIC_POL + 4);
         let clr0 = pic.read_w(PCH_PIC_CLR);
         let clr1 = pic.read_w(PCH_PIC_CLR + 4);
-        info!(
+        debug!(
             "LoongArch PCH-PIC summary: base_vector={}, vector_count={}, mask=[{:#x},{:#x}], \
              htmsi=[{:#x},{:#x}], edge=[{:#x},{:#x}], pol=[{:#x},{:#x}], clr=[{:#x},{:#x}]",
             pic.base_vector,
@@ -86,7 +86,7 @@ pub fn debug_summary(inputs: &[usize]) {
             }
             let route = pic.read_b(PCH_INT_ROUTE + input);
             let htvec = pic.read_b(PCH_INT_HTVEC + input);
-            info!("LoongArch PCH-PIC input {input}: route={route:#x}, htvec={htvec:#x}");
+            debug!("LoongArch PCH-PIC input {input}: route={route:#x}, htvec={htvec:#x}");
         }
     });
 }
@@ -325,7 +325,7 @@ impl Interface for PchPic {
             );
             return self.base_vector.into();
         };
-        info!(
+        debug!(
             "LoongArch ACPI PCH-PIC route: gsi={}, input={}, vector={}, trigger={:?}, \
              polarity={:?}",
             route.gsi, route.controller_input, vector, route.trigger, route.polarity

@@ -148,7 +148,7 @@ pub fn init_guest_vm(raw_cfg: &str) -> AxResult<usize> {
         feature = "fs",
         any(target_arch = "x86_64", target_arch = "loongarch64")
     ))]
-    info!(
+    debug!(
         "VM[{}] host filesystem release check: image_location={:?}, passthrough_devices={}, \
          passthrough_addresses={}, required={}",
         vm_create_config.base.id,
@@ -365,7 +365,7 @@ fn vm_alloc_memory_regions(vm_create_config: &AxVMCrateConfig, vm: &AxVMRef) -> 
     };
 
     for memory in &vm_create_config.kernel.memory_regions {
-        info!(
+        debug!(
             "VM[{}] allocating memory region: gpa={:#x}, size={:#x}, map_type={:?}",
             vm.id(),
             memory.gpa,
@@ -405,7 +405,7 @@ fn vm_alloc_memory_regions(vm_create_config: &AxVMCrateConfig, vm: &AxVMRef) -> 
                 })?;
             }
         }
-        info!(
+        debug!(
             "VM[{}] memory region allocated: gpa={:#x}, size={:#x}, map_type={:?}",
             vm.id(),
             memory.gpa,

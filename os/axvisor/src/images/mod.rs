@@ -133,7 +133,7 @@ impl ImageLoader {
 
     pub fn load(&mut self) -> AxResult {
         self.config.kernel.validate_boot_config()?;
-        info!(
+        debug!(
             "Loading VM[{}] images into memory region: gpa={:#x}, hva={:#x}, size={:#}",
             self.vm.id(),
             self.main_memory.gpa,
@@ -162,7 +162,7 @@ impl ImageLoader {
     /// Load VM images from memory
     /// into the guest VM's memory space based on the VM configuration.
     fn load_vm_images_from_memory(&mut self) -> AxResult {
-        info!("Loading VM[{}] images from memory", self.config.base.id);
+        debug!("Loading VM[{}] images from memory", self.config.base.id);
 
         let vm_imags = memory_images_for_vm(&self.config)?;
 
@@ -383,7 +383,7 @@ impl ImageLoader {
         kernel: &'static [u8],
         ramdisk: Option<&'static [u8]>,
     ) -> AxResult {
-        info!(
+        debug!(
             "VM[{}] configuring LoongArch UEFI fw_cfg payloads from memory: kernel={} bytes, \
              ramdisk={:?}",
             self.config.base.id,
@@ -399,7 +399,7 @@ impl ImageLoader {
 
         let ram_regions = self.loongarch_uefi_ram_regions();
         let dtb = build_loongarch_uefi_firmware_dtb(&ram_regions)?;
-        info!(
+        debug!(
             "VM[{}] loading internally generated LoongArch UEFI firmware DTB: {} bytes at \
              {:#x}",
             self.config.base.id,
@@ -423,7 +423,7 @@ impl ImageLoader {
             .memory_regions()
             .into_iter()
             .inspect(|region| {
-                info!(
+                trace!(
                     "VM[{}] LoongArch UEFI firmware candidate RAM: gpa={:#x}, hpa={:#x}, size={:#x}",
                     self.config.base.id,
                     region.gpa.as_usize(),
@@ -440,7 +440,7 @@ impl ImageLoader {
             .collect::<Vec<_>>();
         ram_regions.sort_by_key(|region| region.base);
 
-        info!(
+        debug!(
             "VM[{}] LoongArch UEFI firmware RAM regions: {:?}",
             self.config.base.id, ram_regions
         );
@@ -1233,7 +1233,7 @@ pub mod fs {
                 None
             };
 
-            info!(
+            debug!(
                 "VM[{}] configuring LoongArch UEFI fw_cfg payloads from filesystem: kernel={} \
                  bytes, ramdisk={:?}",
                 self.config.base.id,

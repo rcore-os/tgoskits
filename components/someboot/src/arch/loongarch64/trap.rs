@@ -149,9 +149,9 @@ fn tlbrentry_addr() -> usize {
     virt_to_phys((eentry_addr() + 80 * VECSIZE) as *const u8)
 }
 
-pub fn per_cpu_trap_init(is_primary: bool) {
+pub fn per_cpu_trap_init(_is_primary: bool) {
     setup_vint_size();
-    configure_exception_vector(is_primary);
+    configure_exception_vector();
 }
 
 pub(crate) fn init_entries_for_secondary() {
@@ -166,21 +166,11 @@ fn setup_vint_size() {
 }
 
 /// 配置异常向量
-fn configure_exception_vector(verbose: bool) {
+fn configure_exception_vector() {
     let eentry_addr = eentry_addr();
-    if verbose {
-        println!("Setting EENTRY to {:#x}", eentry_addr);
-    }
     eentry::set_eentry(eentry_addr);
-    let val = eentry::read().eentry();
-    if verbose {
-        println!("EENTRY set to {:#x}", val);
-    }
 
     let tlbrentry_addr = tlbrentry_addr();
-    if verbose {
-        println!("Setting TLBRENTRY to {:#x}", tlbrentry_addr);
-    }
     tlbrentry::set_tlbrentry(tlbrentry_addr);
 }
 
@@ -196,7 +186,6 @@ fn do_vint(_tf: &mut TrapFrame) {
 #[unsafe(no_mangle)]
 extern "C" fn do_page_fault(tf: &TrapFrame, write: usize, address: usize) -> ! {
     crate::console::_write_str("[someboot trap] do_page_fault\n");
-    println!("do_page_fault called");
 
     let estat = estat::read();
     let ecode = estat.ecode();
@@ -231,7 +220,6 @@ extern "C" fn do_page_fault(tf: &TrapFrame, write: usize, address: usize) -> ! {
 #[unsafe(no_mangle)]
 extern "C" fn do_tlb_refill(tf: &TrapFrame, address: usize) -> ! {
     crate::console::_write_str("[someboot trap] do_tlb_refill\n");
-    println!("do_tlb_refill called");
 
     panic_on_exception(
         "TLB REFILL",
@@ -666,7 +654,6 @@ global_asm!(
 #[unsafe(no_mangle)]
 extern "C" fn do_reserved_exception(tf: &TrapFrame) -> ! {
     crate::console::_write_str("[someboot trap] do_reserved_exception\n");
-    println!("*** do_reserved_exception 被调用 ***");
     let estat = estat::read();
     let ecode = estat.ecode();
     let esubcode = estat.esubcode();
@@ -690,24 +677,12 @@ extern "C" fn do_reserved_exception(tf: &TrapFrame) -> ! {
 #[unsafe(no_mangle)]
 extern "C" fn do_address_error(tf: &TrapFrame, badv: usize) -> ! {
     crate::console::_write_str("[someboot trap] do_address_error\n");
-    println!("\n*** do_address_error 被调用 ***");
-    println!("BADV (错误地址): {:#x}", badv);
 
     let estat = estat::read();
     let ecode = estat.ecode();
     let esubcode = estat.esubcode();
 
-    println!("ESTAT.ECODE: {:#x}", ecode);
-    println!("ESTAT.ESUBCODE: {:#x}", esubcode);
-    println!("ERA (PC): {:#x}", tf.era);
-
-    // ADF 和 ADE 都使用 Ecode 0x8，这里统一处理
-    // 根据子码或其他信息区分具体类型（如果需要）
     let fault_type = "Address Error";
-    let _ = ecode; // 避免未使用警告
-
-    println!("异常类型: {}", fault_type);
-    println!("*** 开始 panic ***\n");
 
     panic_on_exception(
         "ADDRESS ERROR",

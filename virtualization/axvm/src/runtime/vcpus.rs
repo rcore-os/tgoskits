@@ -565,25 +565,20 @@ fn vcpu_run() {
         return;
     };
 
-    info!("VM[{}] VCpu[{}] waiting for running", vm.id(), vcpu.id());
+    debug!("VM[{}] VCpu[{}] waiting for running", vm.id(), vcpu.id());
     wait_for(&vm_vcpus, || vm.running());
 
-    info!("VM[{}] VCpu[{}] running...", vm.id(), vcpu.id());
+    debug!("VM[{}] VCpu[{}] running...", vm.id(), vcpu.id());
     #[cfg(target_arch = "x86_64")]
     super::x86_irq::enable_ioapic_irq_forwarding(&vm, &vcpu);
     mark_vcpu_running(vm_id);
 
-    let mut first_run_logged = false;
     loop {
         inject_pending_interrupts(vm_id, vcpu_id, &vcpu);
 
         #[cfg(target_arch = "x86_64")]
         super::x86_irq::drain_pending_ioapic_irqs(&vm, &vcpu);
 
-        if !first_run_logged {
-            info!("VM[{vm_id}] VCpu[{vcpu_id}] entering vm.run_vcpu");
-            first_run_logged = true;
-        }
         match vm.run_vcpu(vcpu_id) {
             Ok(exit_reason) => {
                 #[cfg(target_arch = "loongarch64")]
@@ -700,7 +695,7 @@ fn vcpu_run() {
                         entry_point,
                         arg,
                     } => {
-                        info!(
+                        debug!(
                             "VM[{vm_id}]'s VCpu[{vcpu_id}] try to boot target_cpu [{target_cpu}] \
                              entry_point={entry_point:x} arg={arg:#x}"
                         );
@@ -805,7 +800,7 @@ fn vcpu_run() {
                 vm_id, vcpu_id
             );
             wait_for(&vm_vcpus, || !vm.suspending());
-            info!("VM[{}] VCpu[{}] resumed from suspend", vm_id, vcpu_id);
+            debug!("VM[{}] VCpu[{}] resumed from suspend", vm_id, vcpu_id);
             continue;
         }
 

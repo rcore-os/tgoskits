@@ -1199,7 +1199,7 @@ fn register_guest_timer(
         ctx.gcsr_tval = 0;
         ctx.gcsr_estat |= TIMER_BIT;
         if GUEST_TIMER_LOGS.fetch_add(1, Ordering::Relaxed) < 64 {
-            log::warn!(
+            log::trace!(
                 "LoongArch guest timer immediate: tcfg={:#x}, estat={:#x}",
                 ctx.gcsr_tcfg,
                 ctx.gcsr_estat
@@ -1212,7 +1212,7 @@ fn register_guest_timer(
     let delay_ns = host::ticks_to_nanos(init_ticks);
     let deadline_ns = host::current_time_nanos().saturating_add(delay_ns);
     if GUEST_TIMER_LOGS.fetch_add(1, Ordering::Relaxed) < 64 {
-        log::warn!(
+        log::trace!(
             "LoongArch guest timer arm: tcfg={:#x}, init_ticks={}, delay_ns={}, deadline_ns={}",
             ctx.gcsr_tcfg,
             init_ticks,
@@ -1296,7 +1296,7 @@ fn emulate_guest_csr(
 }
 
 fn emulate_cacop(ctx: &mut LoongArchContextFrame, _ins: usize) -> AxVCpuExitReason {
-    log::info!(
+    log::trace!(
         "LoongArch GSPR cacop emulation skipped at guest_pc={:#x}",
         get_guest_pc(ctx)
     );
