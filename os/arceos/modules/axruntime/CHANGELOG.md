@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.0](https://github.com/rcore-os/tgoskits/compare/ax-runtime-v0.6.2...ax-runtime-v0.7.0) - 2026-06-12
+
+### Added
+
+- *(ax-driver)* add dynamic platform rtc support ([#1242](https://github.com/rcore-os/tgoskits/pull/1242))
+- *(irq)* enhance IRQ request handling and state restoration logic
+- *(axruntime)* add runtime IRQ registration adapters
+
+### Fixed
+
+- *(starry)* reprogram timer for short deadlines ([#1250](https://github.com/rcore-os/tgoskits/pull/1250))
+- *(ci)* stabilize x86 Starry QEMU timing ([#1245](https://github.com/rcore-os/tgoskits/pull/1245))
+- *(axruntime)* ensure aarch64 SMP IPI readiness before app init ([#1196](https://github.com/rcore-os/tgoskits/pull/1196))
+
+### Other
+
+- *(ax-net)* unify network stack into single net/ax-net crate, r… ([#1203](https://github.com/rcore-os/tgoskits/pull/1203))
+
 ## [0.6.2](https://github.com/rcore-os/tgoskits/compare/ax-runtime-v0.6.1...ax-runtime-v0.6.2) - 2026-06-11
 
 ### Other
