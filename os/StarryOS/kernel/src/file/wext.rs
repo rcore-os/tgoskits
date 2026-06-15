@@ -152,7 +152,10 @@ fn read_iw_point(arg: usize, max: usize) -> AxResult<Vec<u8>> {
     }
     let mut buf = alloc::vec![MaybeUninit::<u8>::uninit(); len];
     vm_read_slice(ptr as *const u8, &mut buf)?;
-    Ok(buf.into_iter().map(|v| unsafe { v.assume_init() }).collect())
+    Ok(buf
+        .into_iter()
+        .map(|v| unsafe { v.assume_init() })
+        .collect())
 }
 
 // ---------------------------------------------------------------------------
@@ -221,21 +224,27 @@ fn commit(ifname: &str) -> AxResult<usize> {
             let ssid = pending.ssid.ok_or(AxError::InvalidInput)?;
             let ssid = core::str::from_utf8(&ssid).map_err(|_| AxError::InvalidInput)?;
             let password = pending.passphrase.unwrap_or_default();
-            ax_net::reconfigure_wifi(ifname, ax_net::WifiMode::Station {
-                ssid,
-                password: &password,
-            })?;
+            ax_net::reconfigure_wifi(
+                ifname,
+                ax_net::WifiMode::Station {
+                    ssid,
+                    password: &password,
+                },
+            )?;
         }
         StagedMode::AccessPoint => {
             let ssid = pending.ssid.ok_or(AxError::InvalidInput)?;
             let channel = pending.channel.unwrap_or(AP_CHANNEL_DEFAULT);
-            ax_net::reconfigure_wifi(ifname, ax_net::WifiMode::AccessPoint {
-                ssid: &ssid,
-                channel,
-                ip: AP_SERVER_IP,
-                prefix_len: AP_PREFIX_LEN,
-                dhcp_client_ip: Some(AP_CLIENT_IP),
-            })?;
+            ax_net::reconfigure_wifi(
+                ifname,
+                ax_net::WifiMode::AccessPoint {
+                    ssid: &ssid,
+                    channel,
+                    ip: AP_SERVER_IP,
+                    prefix_len: AP_PREFIX_LEN,
+                    dhcp_client_ip: Some(AP_CLIENT_IP),
+                },
+            )?;
         }
     }
 

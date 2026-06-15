@@ -185,11 +185,9 @@ impl Net {
     /// `Net` is consumed into a driver. Used to drive runtime Wi-Fi mode
     /// switching from a separate task/syscall context.
     pub fn wifi_control_handle(&self) -> Option<WifiControlHandle> {
-        self.wifi_control()
-            .is_some()
-            .then(|| WifiControlHandle {
-                inner: self.inner.clone(),
-            })
+        self.wifi_control().is_some().then(|| WifiControlHandle {
+            inner: self.inner.clone(),
+        })
     }
 }
 
