@@ -8,7 +8,7 @@ use ax_errno::{AxResult, ax_err_type};
 use ax_hal::time::{NANOS_PER_MICROS, TimeValue, monotonic_time_nanos, wall_time_nanos};
 use ax_task::future::sleep_until;
 use smoltcp::{
-    iface::{Interface, SocketSet},
+    iface::{Interface, PollResult, SocketSet},
     phy::ChecksumCapabilities,
     time::{Duration as SmolDuration, Instant},
     wire::{
@@ -510,9 +510,10 @@ impl Service {
         for event in dhcp_events {
             self.handle_dhcp_event(event);
         }
-        self.iface.poll(timestamp, &mut self.router, sockets);
+        let socket_state_changed =
+            self.iface.poll(timestamp, &mut self.router, sockets) == PollResult::SocketStateChanged;
         let dhcp_poll_next = self.poll_dhcp(timestamp);
-        self.router.dispatch(timestamp) || dhcp_poll_next
+        self.router.dispatch(timestamp) || dhcp_poll_next || socket_state_changed
     }
 
     pub fn next_poll_at(&mut self, sockets: &SocketSet) -> Option<Instant> {

@@ -27,7 +27,7 @@ use crate::{
     general::GeneralOptions,
     get_control, get_service, interface_by_id,
     options::{Configurable, GetSocketOption, SetSocketOption, TcpInfo, TcpInfoOptions, TcpState},
-    request_poll,
+    poll_interfaces_now, request_poll,
     state::*,
 };
 
@@ -668,6 +668,14 @@ impl Pollable for TcpSocket {
     }
 
     fn register(&self, context: &mut Context<'_>, events: IoEvents) {
+        self.with_smol_socket(|socket| {
+            if events.intersects(IoEvents::IN | IoEvents::RDHUP) {
+                socket.register_recv_waker(context.waker());
+            }
+            if events.contains(IoEvents::OUT) {
+                socket.register_send_waker(context.waker());
+            }
+        });
         if events.intersects(IoEvents::IN | IoEvents::OUT | IoEvents::RDHUP) {
             self.general.register_waker(context.waker());
         }
@@ -682,6 +690,7 @@ impl Drop for TcpSocket {
         if let Err(err) = self.shutdown(Shutdown::Both) {
             warn!("TCP socket {}: shutdown failed: {}", self.handle, err);
         }
+        poll_interfaces_now();
         self.unregister_bound_endpoint();
         SOCKET_SET.remove(self.handle);
         // This is crucial for the close messages to be sent.

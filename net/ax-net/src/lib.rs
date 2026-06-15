@@ -385,7 +385,10 @@ fn poll_until_idle() {
         }
 
         while POLL_AGAIN.swap(false, Ordering::AcqRel) {
-            while poll_once() {}
+            while poll_once() {
+                #[cfg(not(test))]
+                ax_task::yield_now();
+            }
         }
         POLLING_INTERFACES.store(false, Ordering::Release);
         if !POLL_AGAIN.load(Ordering::Acquire) {
@@ -400,6 +403,10 @@ fn poll_until_idle() {
 /// synchronously drives the whole protocol stack from the caller's context.
 pub fn poll_interfaces() {
     request_poll();
+}
+
+pub(crate) fn poll_interfaces_now() {
+    poll_until_idle();
 }
 
 /// Request network polling.

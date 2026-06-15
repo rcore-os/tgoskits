@@ -31,7 +31,7 @@ use crate::{
     general::GeneralOptions,
     get_control, interface_by_id,
     options::{Configurable, GetSocketOption, SetSocketOption},
-    request_poll,
+    poll_interfaces_now, request_poll,
 };
 
 pub(crate) fn new_raw_socket(
@@ -53,6 +53,7 @@ pub struct RawSocket {
     local_addr: RwLock<Option<IpAddress>>,
     peer_addr: RwLock<Option<IpAddress>>,
     loopback_rx: Mutex<Option<(IpAddress, vec::Vec<u8>)>>,
+    deferred_rx: Mutex<Option<(IpAddress, vec::Vec<u8>)>>,
     ttl: RwLock<Option<u8>>,
     rx_closed: AtomicBool,
     tx_closed: AtomicBool,
@@ -71,6 +72,7 @@ impl RawSocket {
             local_addr: RwLock::new(None),
             peer_addr: RwLock::new(None),
             loopback_rx: Mutex::new(None),
+            deferred_rx: Mutex::new(None),
             ttl: RwLock::new(None),
             rx_closed: AtomicBool::new(false),
             tx_closed: AtomicBool::new(false),
@@ -134,6 +136,10 @@ impl RawSocket {
                 Ok((IpAddress::Ipv6(packet.src_addr()), packet.payload()))
             }
         }
+    }
+
+    fn source_matches_peer(&self, source: IpAddress) -> bool {
+        self.peer_addr.read().is_none_or(|peer| source == peer)
     }
 }
 
@@ -266,7 +272,7 @@ impl SocketOps for RawSocket {
 
         self.general.send_poller_with(self, extra_nb, || {
             request_poll();
-            self.with_smol_socket(|socket| {
+            let written = self.with_smol_socket(|socket| {
                 if !socket.can_send() {
                     return Err(AxError::WouldBlock);
                 }
@@ -361,7 +367,9 @@ impl SocketOps for RawSocket {
                     *self.loopback_rx.lock() = Some((local, reply));
                 }
                 Ok(written)
-            })
+            })?;
+            poll_interfaces_now();
+            Ok(written)
         })
     }
 
@@ -377,24 +385,45 @@ impl SocketOps for RawSocket {
             self.with_smol_socket(|socket| {
                 loop {
                     if let Some((source, packet)) = if options.flags.contains(RecvFlags::PEEK) {
+                        self.deferred_rx.lock().clone()
+                    } else {
+                        self.deferred_rx.lock().take()
+                    } {
+                        if !self.source_matches_peer(source) {
+                            *self.deferred_rx.lock() = Some((source, packet));
+                            return Err(AxError::WouldBlock);
+                        }
+
+                        if let Some(from) = options.from.as_deref_mut() {
+                            *from = SocketAddrEx::Ip(SocketAddr::new(source.into(), 0));
+                        }
+
+                        let written = dst.write(&packet)?;
+                        return Ok(if options.flags.contains(RecvFlags::TRUNCATE) {
+                            packet.len()
+                        } else {
+                            written
+                        });
+                    }
+
+                    let loopback_packet = if options.flags.contains(RecvFlags::PEEK) {
                         self.loopback_rx.lock().clone()
                     } else {
                         self.loopback_rx.lock().take()
-                    } {
-                        let peer_mismatch =
-                            matches!(*self.peer_addr.read(), Some(peer) if source != peer);
-                        if !peer_mismatch {
-                            if let Some(from) = options.from.as_deref_mut() {
-                                *from = SocketAddrEx::Ip(SocketAddr::new(source.into(), 0));
-                            }
-
-                            let written = dst.write(&packet)?;
-                            return Ok(if options.flags.contains(RecvFlags::TRUNCATE) {
-                                packet.len()
-                            } else {
-                                written
-                            });
+                    };
+                    if let Some((source, packet)) = loopback_packet
+                        && self.source_matches_peer(source)
+                    {
+                        if let Some(from) = options.from.as_deref_mut() {
+                            *from = SocketAddrEx::Ip(SocketAddr::new(source.into(), 0));
                         }
+
+                        let written = dst.write(&packet)?;
+                        return Ok(if options.flags.contains(RecvFlags::TRUNCATE) {
+                            packet.len()
+                        } else {
+                            written
+                        });
                     }
 
                     let packet = if options.flags.contains(RecvFlags::PEEK) {
@@ -403,6 +432,7 @@ impl SocketOps for RawSocket {
                         if let Some(peer) = *self.peer_addr.read()
                             && source != peer
                         {
+                            *self.deferred_rx.lock() = Some((source, packet.to_vec()));
                             return Err(AxError::WouldBlock);
                         }
                         packet
@@ -411,9 +441,8 @@ impl SocketOps for RawSocket {
                     };
                     let (source, packet) = self.parse_ip_packet(packet)?;
 
-                    if let Some(peer) = *self.peer_addr.read()
-                        && source != peer
-                    {
+                    if !self.source_matches_peer(source) {
+                        *self.deferred_rx.lock() = Some((source, packet.to_vec()));
                         continue;
                     }
 
@@ -473,12 +502,30 @@ impl Pollable for RawSocket {
         });
         events.set(
             IoEvents::IN,
-            events.contains(IoEvents::IN) || self.loopback_rx.lock().is_some(),
+            events.contains(IoEvents::IN)
+                || self
+                    .loopback_rx
+                    .lock()
+                    .as_ref()
+                    .is_some_and(|(source, _)| self.source_matches_peer(*source))
+                || self
+                    .deferred_rx
+                    .lock()
+                    .as_ref()
+                    .is_some_and(|(source, _)| self.source_matches_peer(*source)),
         );
         events
     }
 
     fn register(&self, context: &mut Context<'_>, events: IoEvents) {
+        self.with_smol_socket(|socket| {
+            if events.contains(IoEvents::IN) {
+                socket.register_recv_waker(context.waker());
+            }
+            if events.contains(IoEvents::OUT) {
+                socket.register_send_waker(context.waker());
+            }
+        });
         if events.intersects(IoEvents::IN | IoEvents::OUT) {
             self.general.register_waker(context.waker());
         }

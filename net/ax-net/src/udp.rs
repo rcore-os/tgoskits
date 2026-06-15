@@ -24,7 +24,7 @@ use crate::{
     general::GeneralOptions,
     get_control, interface_by_id,
     options::{Configurable, GetSocketOption, SetSocketOption},
-    request_poll,
+    poll_interfaces_now, request_poll,
 };
 
 /// Buffered state for MSG_MORE corking: captures the target endpoint
@@ -391,8 +391,7 @@ impl SocketOps for UdpSocket {
                     Ok(cur_read)
                 }
             })?;
-            // Flush TX so loopback packets reach the receiver immediately.
-            request_poll();
+            poll_interfaces_now();
             Ok(result)
         })
     }
@@ -511,6 +510,14 @@ impl Pollable for UdpSocket {
     }
 
     fn register(&self, context: &mut Context<'_>, events: IoEvents) {
+        self.with_smol_socket(|socket| {
+            if events.contains(IoEvents::IN) {
+                socket.register_recv_waker(context.waker());
+            }
+            if events.contains(IoEvents::OUT) {
+                socket.register_send_waker(context.waker());
+            }
+        });
         if events.intersects(IoEvents::IN | IoEvents::OUT) {
             self.general.register_waker(context.waker());
         }
