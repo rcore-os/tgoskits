@@ -5,7 +5,7 @@ args = [
     "la464",
     "-nographic",
     "-m",
-    "2G",
+    "512M",
     "-device",
     "nvme,serial=deadbeef,drive=nvm",
     "-drive",
@@ -22,7 +22,7 @@ args = [
     "virtio-tablet-pci",
 ]
 uefi = false
-to_bin = false
+to_bin = true
 shell_prefix = "root@starry:"
 test_commands = [
     '''

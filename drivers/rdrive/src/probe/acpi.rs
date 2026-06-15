@@ -1546,21 +1546,13 @@ fn read_loongarch_bio_pic_entry(
     }
 
     let entry = unsafe { (base.add(offset) as *const RawMadtBioPic).read_unaligned() };
-    let id = entry.id;
-    let address = entry.address;
-    let size = entry.size;
-    let gsi_base = entry.gsi_base;
-    info!(
-        "LoongArch MADT BIO_PIC: id={}, address={:#x}, size={:#x}, gsi_base={}",
-        id, address, size, gsi_base
-    );
 
     routing.add_pch_pic(AcpiPchPic {
-        id,
-        address,
-        mmio_size: size,
+        id: entry.id,
+        address: entry.address,
+        mmio_size: entry.size,
         gsi_count: LOONGARCH_PCH_PIC_GSI_COUNT,
-        gsi_base: u32::from(gsi_base),
+        gsi_base: u32::from(entry.gsi_base),
     });
 }
 

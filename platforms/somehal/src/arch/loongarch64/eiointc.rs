@@ -58,14 +58,6 @@ pub fn complete_irq(irq: usize) {
     complete_irq_for(irq, EIOINTC_VECTOR_COUNT);
 }
 
-pub fn debug_pending_summary() -> [u64; 4] {
-    let mut pending = [0; 4];
-    for (reg, slot) in pending.iter_mut().enumerate() {
-        *slot = iocsr_read_d(EIOINTC_REG_ISR + reg * 8);
-    }
-    pending
-}
-
 fn probe_eiointc_fdt(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
     register_eiointc(probe.into_platform_device())
 }

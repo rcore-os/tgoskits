@@ -5,7 +5,7 @@ args = [
     "la464",
     "-nographic",
     "-m",
-    "2G",
+    "512M",
     "-smp",
     "4",
     "-device",
@@ -18,7 +18,7 @@ args = [
     "user,id=net0",
 ]
 uefi = false
-to_bin = false
+to_bin = true
 shell_prefix = "root@starry:"
 test_commands = [
     '''

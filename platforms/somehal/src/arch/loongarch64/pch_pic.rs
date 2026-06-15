@@ -15,10 +15,7 @@ const DEFAULT_PCH_PIC_SIZE: usize = 0x400;
 
 const PCH_PIC_ID: usize = 0x00;
 const PCH_PIC_MASK: usize = 0x20;
-const PCH_PIC_HTMSI_EN: usize = 0x40;
 const PCH_PIC_EDGE: usize = 0x60;
-const PCH_PIC_CLR: usize = 0x80;
-const PCH_INT_ROUTE: usize = 0x100;
 const PCH_PIC_POL: usize = 0x3e0;
 const PCH_INT_HTVEC: usize = 0x200;
 
@@ -48,45 +45,6 @@ pub fn set_irq_enable(irq: usize, enable: bool) {
             pic.enable_irq(irq);
         } else {
             pic.disable_irq(irq);
-        }
-    });
-}
-
-pub fn debug_summary(inputs: &[usize]) {
-    with_pch_pic("debugging PCH-PIC state", |pic| {
-        let mask0 = pic.read_w(PCH_PIC_MASK);
-        let mask1 = pic.read_w(PCH_PIC_MASK + 4);
-        let htmsi0 = pic.read_w(PCH_PIC_HTMSI_EN);
-        let htmsi1 = pic.read_w(PCH_PIC_HTMSI_EN + 4);
-        let edge0 = pic.read_w(PCH_PIC_EDGE);
-        let edge1 = pic.read_w(PCH_PIC_EDGE + 4);
-        let pol0 = pic.read_w(PCH_PIC_POL);
-        let pol1 = pic.read_w(PCH_PIC_POL + 4);
-        let clr0 = pic.read_w(PCH_PIC_CLR);
-        let clr1 = pic.read_w(PCH_PIC_CLR + 4);
-        debug!(
-            "LoongArch PCH-PIC summary: base_vector={}, vector_count={}, mask=[{:#x},{:#x}], \
-             htmsi=[{:#x},{:#x}], edge=[{:#x},{:#x}], pol=[{:#x},{:#x}], clr=[{:#x},{:#x}]",
-            pic.base_vector,
-            pic.vector_count,
-            mask0,
-            mask1,
-            htmsi0,
-            htmsi1,
-            edge0,
-            edge1,
-            pol0,
-            pol1,
-            clr0,
-            clr1
-        );
-        for &input in inputs {
-            if input >= pic.vector_count {
-                continue;
-            }
-            let route = pic.read_b(PCH_INT_ROUTE + input);
-            let htvec = pic.read_b(PCH_INT_HTVEC + input);
-            debug!("LoongArch PCH-PIC input {input}: route={route:#x}, htvec={htvec:#x}");
         }
     });
 }
@@ -289,10 +247,6 @@ impl PchPic {
     }
 
     fn read_w(&self, offset: usize) -> u32 {
-        self.mmio.read(offset)
-    }
-
-    fn read_b(&self, offset: usize) -> u8 {
         self.mmio.read(offset)
     }
 

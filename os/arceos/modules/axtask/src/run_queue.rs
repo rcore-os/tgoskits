@@ -615,11 +615,9 @@ impl<G: BaseGuard> CurrentRunQueueRef<'_, G> {
     pub fn exit_current(&mut self, exit_code: i32) -> ! {
         let curr = &self.current_task;
         debug!("task exit: {}, exit_code={}", curr.id_name(), exit_code);
-        ax_hal::console::write_text_bytes(b"[axtask] exit_current\n");
         assert!(curr.is_running(), "task is not running: {:?}", curr.state());
         assert!(!curr.is_idle());
         if curr.is_init() {
-            ax_hal::console::write_text_bytes(b"[axtask] init task exiting, calling system_off\n");
             // Safety: it is called from `current_run_queue::<NoPreemptIrqSave>().exit_current(exit_code)`,
             // which disabled IRQs and preemption.
             unsafe {

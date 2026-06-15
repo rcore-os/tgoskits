@@ -35,9 +35,7 @@ fn panic_primary(info: &PanicInfo) -> ! {
 }
 
 fn panic_message(info: &PanicInfo) {
-    ax_hal::console::write_text_bytes(b"[axruntime panic] entering panic_message\n");
     ax_println!("{}", info);
-    ax_hal::console::write_text_bytes(b"[axruntime panic] leaving panic_message\n");
 }
 
 fn panic_backtrace() {
@@ -51,7 +49,6 @@ fn should_print_panic_backtrace() -> bool {
 }
 
 fn panic_shutdown() -> ! {
-    ax_hal::console::write_text_bytes(b"[axruntime panic] system_off from panic_shutdown\n");
     ax_hal::power::system_off()
 }
 

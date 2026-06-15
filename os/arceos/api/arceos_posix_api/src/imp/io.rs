@@ -6,7 +6,7 @@ use ax_io::prelude::*;
 
 use crate::ctypes;
 #[cfg(feature = "fd")]
-use crate::imp::fd_ops::{FileLike, get_file_like};
+use crate::imp::fd_ops::get_file_like;
 
 /// Read data from the file indicated by `fd`.
 ///
@@ -38,9 +38,6 @@ fn write_impl(fd: c_int, buf: *const c_void, count: usize) -> LinuxResult<ctypes
     let src = unsafe { core::slice::from_raw_parts(buf as *const u8, count) };
     #[cfg(feature = "fd")]
     {
-        if fd == 1 || fd == 2 {
-            return Ok(super::stdio::stdout().write(src)? as ctypes::ssize_t);
-        }
         Ok(get_file_like(fd)?.write(src)? as ctypes::ssize_t)
     }
     #[cfg(not(feature = "fd"))]

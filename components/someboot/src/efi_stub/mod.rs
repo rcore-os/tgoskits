@@ -389,7 +389,6 @@ pub fn is_uefi_available() -> bool {
 
 #[cfg(target_arch = "loongarch64")]
 pub fn reset(reset_type: ResetType, status: Status, data: Option<&[u8]>) -> ! {
-    crate::console::_write_str("[someboot efi_stub] reset via UEFI\n");
     info!("Resetting system via UEFI...");
     uefi::runtime::reset(reset_type, status, data)
 }

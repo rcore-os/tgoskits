@@ -29,7 +29,7 @@ use axdevice::{
 use axdevice_base::AccessWidth;
 #[cfg(target_arch = "aarch64")]
 use axdevice_base::DeviceRegistry as _;
-use axvcpu::{AxVCpu, AxVCpuExitReason, VCpuState};
+use axvcpu::{AxArchVCpu, AxVCpu, AxVCpuExitReason, VCpuState};
 #[cfg(target_arch = "x86_64")]
 use axvm_types::EmulatedDeviceType;
 use axvm_types::{GuestPhysAddr, HostPhysAddr, HostVirtAddr};
@@ -814,7 +814,36 @@ impl AxVM {
                         )?;
                     }
                     AxVCpuExitReason::NestedPageFault { addr, access_flags } => {
-                        if !self.handle_nested_page_fault(addr, access_flags) {
+                        if self.get_devices().find_mmio_dev(addr).is_some() {
+                            if let Some(mmio_exit) =
+                                vcpu.get_arch_vcpu().decode_mmio_fault(addr, access_flags)
+                            {
+                                match mmio_exit {
+                                    AxVCpuExitReason::MmioRead {
+                                        addr,
+                                        width,
+                                        reg,
+                                        reg_width,
+                                        signed_ext,
+                                    } => {
+                                        let raw = self.get_devices().handle_mmio_read(addr, width)?;
+                                        let masked = raw & width_mask(width);
+                                        let val = if signed_ext {
+                                            sign_extend_value(masked, width)
+                                        } else {
+                                            masked & width_mask(reg_width)
+                                        };
+                                        vcpu.set_gpr(reg, val);
+                                    }
+                                    AxVCpuExitReason::MmioWrite { addr, width, data } => {
+                                        self.handle_mmio_write(addr, width, data as usize)?;
+                                    }
+                                    exit_reason => break Ok(exit_reason),
+                                }
+                            } else {
+                                break Ok(AxVCpuExitReason::NestedPageFault { addr, access_flags });
+                            }
+                        } else if !self.handle_nested_page_fault(addr, access_flags) {
                             break Ok(AxVCpuExitReason::NestedPageFault { addr, access_flags });
                         }
                     }

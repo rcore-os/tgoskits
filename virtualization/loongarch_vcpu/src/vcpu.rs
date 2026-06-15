@@ -15,12 +15,12 @@ use crate::{
     context_frame::LoongArchContextFrame,
     host,
     registers::{
-        CSR_ASID, CSR_CRMD, CSR_ECFG, CSR_GCTL, CSR_GINTC, CSR_GSTAT, CSR_GTLBC, CSR_KSAVE_KSP,
-        CSR_PGDH, CSR_PGDL, CSR_PRMD, CSR_PWCH, CSR_PWCL, CSR_STLBPS, CSR_TLBRENTRY, INT_HWI0,
-        INT_HWI7, INT_IPI, INT_TIMER, csr_read, csr_write, gcfg_set_gpm_num, gcfg_set_matc,
-        gcfg_set_toci, gcfg_set_toe, gcfg_set_tohu, gcfg_set_top, gcfg_set_topi, gcfg_set_toti,
-        get_ecfg_vs, gintc_set_hwi_passthrough, gstat_set_gid, gstat_set_pgm, gtlbc_set_tgid,
-        gtlbc_set_use_tgid, set_ecfg_line_enabled, set_ecfg_vs,
+        CSR_ASID, CSR_CRMD, CSR_ECFG, CSR_KSAVE_KSP, CSR_PGDH, CSR_PGDL, CSR_PRMD, CSR_PWCH,
+        CSR_PWCL, CSR_STLBPS, CSR_TLBRENTRY, INT_HWI0, INT_HWI7, INT_IPI, INT_TIMER, csr_read,
+        csr_write, gcfg_set_gpm_num, gcfg_set_matc, gcfg_set_toci, gcfg_set_toe, gcfg_set_tohu,
+        gcfg_set_top, gcfg_set_topi, gcfg_set_toti, get_ecfg_vs, gintc_set_hwi_passthrough,
+        gstat_set_gid, gstat_set_pgm, gtlbc_set_tgid, gtlbc_set_use_tgid, set_ecfg_line_enabled,
+        set_ecfg_vs,
     },
 };
 
@@ -134,29 +134,6 @@ pub struct LoongArchVCpuSetupConfig {
     pub firmware_boot: bool,
 }
 
-#[cfg(target_arch = "loongarch64")]
-#[derive(Clone, Copy, Debug)]
-pub struct LoongArchVCpuDebugState {
-    pub sepc: usize,
-    pub gcsr_crmd: usize,
-    pub gcsr_ectl: usize,
-    pub gcsr_estat: usize,
-    pub gcsr_era: usize,
-    pub gcsr_badv: usize,
-    pub gcsr_eentry: usize,
-    pub gcsr_tcfg: usize,
-    pub gcsr_tval: usize,
-    pub gcsr_tlbrentry: usize,
-    pub gcsr_tlbrbadv: usize,
-    pub gcsr_tlbrera: usize,
-    pub host_estat: usize,
-    pub host_era: usize,
-    pub host_badv: usize,
-    pub host_tlbrbadv: usize,
-    pub host_tlbrera: usize,
-    pub last_badi: usize,
-}
-
 impl AxArchVCpu for LoongArchVCpu {
     type CreateConfig = LoongArchVCpuCreateConfig;
     type SetupConfig = LoongArchVCpuSetupConfig;
@@ -238,77 +215,6 @@ impl AxArchVCpu for LoongArchVCpu {
                     self.ctx.gcsr_ectl
                 );
             }
-            if !self.entry_logged
-                || self.ctx.gcsr_estat & self.ctx.gcsr_ectl & (1usize << INT_HWI0) != 0
-            {
-                let gintc = unsafe { csr_read::<CSR_GINTC>() };
-                log::debug!(
-                    "LoongArch guest first entry: VM[{}] VCpu[{}] sepc={:#x}, gera={:#x}, \
-                     a0={:#x}, a1={:#x}, a2={:#x}, sp={:#x}, stage2_root={:#x}, estat={:#x}, \
-                     ecfg={:#x}, gintc={:#x}",
-                    self.vm_id,
-                    self.vcpu_id,
-                    self.ctx.sepc,
-                    self.ctx.gcsr_era,
-                    self.ctx.get_a0(),
-                    self.ctx.get_a1(),
-                    self.ctx.get_a2(),
-                    self.ctx.x[3],
-                    self.stage2_root.as_usize(),
-                    self.ctx.gcsr_estat,
-                    self.ctx.gcsr_ectl,
-                    gintc,
-                );
-                let (
-                    gstat,
-                    gcfg,
-                    gtlbc,
-                    gintc,
-                    host_crmd,
-                    host_ecfg,
-                    host_pgdl,
-                    host_pgdh,
-                    host_pwcl,
-                    host_pwch,
-                    host_stlbps,
-                    host_tlbrentry,
-                ) = unsafe {
-                    (
-                        csr_read::<CSR_GSTAT>(),
-                        csr_read::<CSR_GCTL>(),
-                        csr_read::<CSR_GTLBC>(),
-                        csr_read::<CSR_GINTC>(),
-                        csr_read::<CSR_CRMD>(),
-                        csr_read::<CSR_ECFG>(),
-                        csr_read::<CSR_PGDL>(),
-                        csr_read::<CSR_PGDH>(),
-                        csr_read::<CSR_PWCL>(),
-                        csr_read::<CSR_PWCH>(),
-                        csr_read::<CSR_STLBPS>(),
-                        csr_read::<CSR_TLBRENTRY>(),
-                    )
-                };
-                log::debug!(
-                    "LoongArch guest entry CSR: gstat={:#x}, gcfg={:#x}, gtlbc={:#x}, \
-                     gintc={:#x}, host_crmd={:#x}, host_ecfg={:#x}, host_pgdl={:#x}, \
-                     host_pgdh={:#x}, host_pwcl={:#x}, host_pwch={:#x}, host_stlbps={:#x}, \
-                     host_tlbrentry={:#x}",
-                    gstat,
-                    gcfg,
-                    gtlbc,
-                    gintc,
-                    host_crmd,
-                    host_ecfg,
-                    host_pgdl,
-                    host_pgdh,
-                    host_pwcl,
-                    host_pwch,
-                    host_stlbps,
-                    host_tlbrentry,
-                );
-                self.entry_logged = true;
-            }
-            log::debug!("LoongArch guest entry context:\n{}", self.ctx);
             let exit_reason = unsafe {
                 save_host_sp();
                 self.run_guest()
@@ -339,12 +245,7 @@ impl AxArchVCpu for LoongArchVCpu {
         let _ = self.cpu_id;
         #[cfg(target_arch = "loongarch64")]
         unsafe {
-            log::debug!(
-                "LoongArch VCpu[{}] bind: save host translation",
-                self.vcpu_id
-            );
             self.save_host_translation_state();
-            log::debug!("LoongArch VCpu[{}] bind: done", self.vcpu_id);
         }
         Ok(())
     }
@@ -425,30 +326,6 @@ impl AxArchVCpu for LoongArchVCpu {
 }
 
 impl LoongArchVCpu {
-    #[cfg(target_arch = "loongarch64")]
-    pub fn debug_state(&self) -> LoongArchVCpuDebugState {
-        LoongArchVCpuDebugState {
-            sepc: self.ctx.sepc,
-            gcsr_crmd: self.ctx.gcsr_crmd,
-            gcsr_ectl: self.ctx.gcsr_ectl,
-            gcsr_estat: self.ctx.gcsr_estat,
-            gcsr_era: self.ctx.gcsr_era,
-            gcsr_badv: self.ctx.gcsr_badv,
-            gcsr_eentry: self.ctx.gcsr_eentry,
-            gcsr_tcfg: self.ctx.gcsr_tcfg,
-            gcsr_tval: self.ctx.gcsr_tval,
-            gcsr_tlbrentry: self.ctx.gcsr_tlbrentry,
-            gcsr_tlbrbadv: self.ctx.gcsr_tlbrbadv,
-            gcsr_tlbrera: self.ctx.gcsr_tlbrera,
-            host_estat: self.ctx.host_estat,
-            host_era: self.ctx.host_era,
-            host_badv: self.ctx.host_badv,
-            host_tlbrbadv: self.ctx.host_tlbrbadv,
-            host_tlbrera: self.ctx.host_tlbrera,
-            last_badi: self.last_badi,
-        }
-    }
-
     #[cfg(target_arch = "loongarch64")]
     pub fn inject_external_interrupt(&mut self, vector: usize, physical_irq: usize) -> AxResult {
         if let Some(hwi) =

@@ -157,8 +157,7 @@ impl GenericPTE for LA64PTE {
     }
 
     fn set_paddr(&mut self, paddr: PhysAddr) {
-        self.0 =
-            (self.0 & !Self::PHYS_ADDR_MASK) | (paddr.as_usize() as u64 & Self::PHYS_ADDR_MASK);
+        self.0 = (self.0 & !Self::PHYS_ADDR_MASK) | (paddr.as_usize() as u64 & Self::PHYS_ADDR_MASK)
     }
 
     fn set_flags(&mut self, flags: MappingFlags, is_huge: bool) {
