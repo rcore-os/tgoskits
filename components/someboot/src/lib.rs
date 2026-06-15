@@ -86,6 +86,7 @@ pub trait ArchTrait {
     fn virt_to_phys(vaddr: *const u8) -> usize;
 
     fn kernel_space() -> core::ops::Range<usize>;
+    fn is_mmu_enabled() -> bool;
 
     fn kernel_page_table() -> PageTableInfo;
     fn set_kernel_page_table(val: PageTableInfo);

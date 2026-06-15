@@ -158,7 +158,6 @@ fn efi_entry() {
 }
 
 pub(crate) fn mmu_entry() -> ! {
-    crate::mem::mmu::set_mmu_enabled();
     println!("MMU ok...");
     crate::prime_entry()
 }

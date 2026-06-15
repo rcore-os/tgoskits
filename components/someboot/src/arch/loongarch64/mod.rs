@@ -287,6 +287,10 @@ impl ArchTrait for Arch {
         addrspace::PAGE_OFFSET..usize::MAX
     }
 
+    fn is_mmu_enabled() -> bool {
+        crmd::read().pg()
+    }
+
     fn cpu_on(hartid: usize, entry: usize, arg: usize) -> Result<(), CpuOnError> {
         power::cpu_on(hartid, entry, arg)
     }

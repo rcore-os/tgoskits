@@ -4,10 +4,9 @@
 
 use core::ptr::NonNull;
 
-use rdif_serial::{BSerial, InterfaceRaw, SerialDyn};
+use rdif_serial::{BSerial, SerialDyn};
 
 use super::{Kind, Ns16550};
-use crate::ns16550::{Ns16550IrqHandler, Ns16550Receiver, Ns16550Sender};
 
 #[derive(Clone)]
 pub struct Mmio {
@@ -43,15 +42,9 @@ impl Ns16550<Mmio> {
         };
 
         Ns16550 {
-            base: base.clone(),
+            base,
             clock_freq,
-            irq: Some(Ns16550IrqHandler { base: base.clone() }),
-            tx: Some(crate::Sender::Ns16550MmioSender(Ns16550Sender {
-                base: base.clone(),
-            })),
-            rx: Some(crate::Receiver::Ns16550MmioReceiver(Ns16550Receiver {
-                base,
-            })),
+            saved_lsr: super::registers::LineStatusFlags::empty(),
         }
     }
 
@@ -59,13 +52,5 @@ impl Ns16550<Mmio> {
         let mut serial = Ns16550::new_mmio(base, clock_freq, reg_width);
         serial.open();
         SerialDyn::new_boxed(serial)
-    }
-
-    pub fn take_tx(&mut self) -> Option<crate::Sender> {
-        self.tx.take()
-    }
-
-    pub fn take_rx(&mut self) -> Option<crate::Receiver> {
-        self.rx.take()
     }
 }

@@ -13,8 +13,8 @@ use bitflags::bitflags;
 pub use rdif_base::{DriverGeneric, KError};
 
 pub type BIrqHandler = Box<dyn TIrqHandler>;
-pub type BSender = Box<dyn TSender>;
-pub type BReceiver = Box<dyn TReceiver>;
+pub type BTxQueue = Box<dyn TTxQueue>;
+pub type BRxQueue = Box<dyn TRxQueue>;
 pub type BSerial = Box<dyn Interface>;
 
 impl DriverGeneric for Box<dyn Interface> {
@@ -111,7 +111,7 @@ pub enum Parity {
 
 bitflags! {
     /// 中断状态标志
-    #[derive(Debug, Clone, Copy)]
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     pub struct InterruptMask: u32 {
         /// received data, including error data
         const RX_AVAILABLE = 0x01;
@@ -127,6 +127,38 @@ impl InterruptMask {
     pub fn tx_empty(&self) -> bool {
         self.contains(InterruptMask::TX_EMPTY)
     }
+}
+
+bitflags! {
+    /// Stable serial events returned by poll and IRQ paths.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct SerialEvent: u32 {
+        const RX_READY = 0x01;
+        const TX_READY = 0x02;
+        const RX_ERROR = 0x04;
+        const TX_ERROR = 0x08;
+        const OVERRUN = 0x10;
+    }
+}
+
+impl SerialEvent {
+    pub fn rx_ready(&self) -> bool {
+        self.contains(SerialEvent::RX_READY)
+    }
+
+    pub fn tx_ready(&self) -> bool {
+        self.contains(SerialEvent::TX_READY)
+    }
+
+    pub fn rx_error(&self) -> bool {
+        self.intersects(SerialEvent::RX_ERROR | SerialEvent::OVERRUN)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SerialDirection {
+    Input,
+    Output,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -164,9 +196,10 @@ impl Config {
 }
 
 pub trait InterfaceRaw: Send + Any + 'static {
+    type SharedState: Clone + Send + Sync + 'static;
+    type TxQueue: TTxQueue;
+    type RxQueue: TRxQueue;
     type IrqHandler: TIrqHandler;
-    type Sender: TSender;
-    type Receiver: TReceiver;
 
     fn name(&self) -> &str;
 
@@ -198,12 +231,10 @@ pub trait InterfaceRaw: Send + Any + 'static {
     /// 获取当前中断使能掩码
     fn get_irq_mask(&self) -> InterruptMask;
 
-    fn irq_handler(&mut self) -> Option<Self::IrqHandler>;
-    fn take_tx(&mut self) -> Option<Self::Sender>;
-    fn take_rx(&mut self) -> Option<Self::Receiver>;
-
-    fn set_tx(&mut self, tx: Self::Sender) -> Result<(), SetBackError>;
-    fn set_rx(&mut self, rx: Self::Receiver) -> Result<(), SetBackError>;
+    fn new_shared_state(&self) -> Self::SharedState;
+    fn tx_queue(&self, shared: &Self::SharedState) -> Self::TxQueue;
+    fn rx_queue(&self, shared: &Self::SharedState) -> Self::RxQueue;
+    fn irq_handler(&self, shared: &Self::SharedState) -> Self::IrqHandler;
 }
 
 #[derive(Clone, Copy)]
@@ -213,13 +244,16 @@ pub struct SetBackError {
 }
 
 impl SetBackError {
-    /// Create a new SetBackError
-    /// # Safety
     pub fn new(want: usize, actual: usize) -> Self {
-        Self {
-            want: want as _,
-            actual: actual as _,
-        }
+        Self { want, actual }
+    }
+
+    pub fn want(&self) -> usize {
+        self.want
+    }
+
+    pub fn actual(&self) -> usize {
+        self.actual
     }
 }
 
@@ -229,7 +263,7 @@ impl Debug for SetBackError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         write!(
             f,
-            "Failed to set back, base address not eq  {:#x} != {:#x}",
+            "failed to restore serial handle: base address mismatch {:#x} != {:#x}",
             self.want, self.actual
         )
     }
@@ -242,9 +276,6 @@ impl Display for SetBackError {
 }
 
 pub trait Interface: DriverGeneric {
-    fn irq_handler(&mut self) -> Option<Box<dyn TIrqHandler>>;
-    fn take_tx(&mut self) -> Option<Box<dyn TSender>>;
-    fn take_rx(&mut self) -> Option<Box<dyn TReceiver>>;
     /// Base address of the serial port
     fn base_addr(&self) -> usize;
 
@@ -256,57 +287,277 @@ pub trait Interface: DriverGeneric {
     fn parity(&self) -> Parity;
     fn clock_freq(&self) -> Option<NonZeroU32>;
 
+    fn open(&mut self);
+    fn close(&mut self);
+
     fn enable_loopback(&mut self);
     fn disable_loopback(&mut self);
     fn is_loopback_enabled(&self) -> bool;
 
-    fn enable_interrupts(&mut self, mask: InterruptMask);
-    fn disable_interrupts(&mut self, mask: InterruptMask);
-    fn get_enabled_interrupts(&self) -> InterruptMask;
+    fn set_irq_mask(&mut self, mask: InterruptMask);
+    fn get_irq_mask(&self) -> InterruptMask;
+
+    fn take_tx(&mut self) -> Option<BTxQueue>;
+    fn take_rx(&mut self) -> Option<BRxQueue>;
+    fn take_irq_handler(&mut self) -> Option<BIrqHandler>;
+
+    fn set_tx(&mut self, tx: BTxQueue) -> Result<(), SetBackError>;
+    fn set_rx(&mut self, rx: BRxQueue) -> Result<(), SetBackError>;
+    fn set_irq_handler(&mut self, irq: BIrqHandler) -> Result<(), SetBackError>;
+}
+
+pub trait TTxQueue: Send + 'static {
+    fn base_addr(&self) -> usize;
+    fn poll(&mut self) -> SerialEvent;
+    fn try_write(&mut self, bytes: &[u8]) -> usize;
+}
+
+pub trait TRxQueue: Send + 'static {
+    fn base_addr(&self) -> usize;
+    fn poll(&mut self) -> SerialEvent;
+    fn try_read(&mut self, bytes: &mut [u8]) -> Result<usize, TransBytesError>;
 }
 
 pub trait TIrqHandler: Send + Sync + 'static {
-    fn clean_interrupt_status(&self) -> InterruptMask;
+    fn base_addr(&self) -> usize;
+    fn handle_irq(&self) -> SerialEvent;
 }
 
-pub trait TSender: Send + 'static {
-    fn write_byte(&mut self, byte: u8) -> bool;
+#[cfg(test)]
+mod tests {
+    use alloc::sync::Arc;
+    use core::{
+        num::NonZeroU32,
+        sync::atomic::{AtomicU32, AtomicUsize, Ordering},
+    };
 
-    fn write_bytes(&mut self, bytes: &[u8]) -> usize {
-        let mut written = 0;
-        for &byte in bytes.iter() {
-            if !self.write_byte(byte) {
-                break;
-            }
-            written += 1;
-        }
-        written
+    use super::*;
+
+    #[test]
+    fn serial_event_reports_readiness_and_errors() {
+        let event = SerialEvent::RX_READY | SerialEvent::OVERRUN;
+
+        assert!(event.rx_ready());
+        assert!(!event.tx_ready());
+        assert!(event.rx_error());
     }
-}
 
-pub trait TReceiver: Send + 'static {
-    fn read_byte(&mut self) -> Option<Result<u8, TransferError>>;
+    #[test]
+    fn split_handle_drop_restores_take_lifecycle() {
+        let mut serial = SerialDyn::new_boxed(MockSerial::new(0x1000));
 
-    /// Recv data into buf, return recv bytes. If return bytes is less than buf.len(), it means no more data.
-    fn read_bytes(&mut self, bytes: &mut [u8]) -> Result<usize, TransBytesError> {
-        let mut read_count = 0;
-        for byte in bytes.iter_mut() {
-            match self.read_byte() {
-                Some(Ok(b)) => {
-                    *byte = b;
-                }
-                Some(Err(e)) => {
-                    return Err(TransBytesError {
-                        bytes_transferred: read_count,
-                        kind: e,
-                    });
-                }
-                None => break,
-            }
+        let tx = serial.take_tx().expect("first TX take should work");
+        assert!(serial.take_tx().is_none());
+        drop(tx);
+        assert!(serial.take_tx().is_some());
 
-            read_count += 1;
+        let rx = serial.take_rx().expect("first RX take should work");
+        assert!(serial.take_rx().is_none());
+        drop(rx);
+        assert!(serial.take_rx().is_some());
+
+        let irq = serial
+            .take_irq_handler()
+            .expect("first IRQ handler take should work");
+        assert!(serial.take_irq_handler().is_none());
+        drop(irq);
+        assert!(serial.take_irq_handler().is_some());
+    }
+
+    #[test]
+    fn split_restore_rejects_base_mismatch() {
+        let mut left = SerialDyn::new_boxed(MockSerial::new(0x1000));
+        let mut right = SerialDyn::new_boxed(MockSerial::new(0x2000));
+        let tx = left.take_tx().expect("TX handle should be available");
+
+        let err = right
+            .set_tx(tx)
+            .expect_err("wrong serial should reject restored TX handle");
+        assert_eq!(err.want(), 0x2000);
+        assert_eq!(err.actual(), 0x1000);
+    }
+
+    #[test]
+    fn split_queues_forward_try_io_to_shared_raw_device() {
+        let mut serial = SerialDyn::new_boxed(MockSerial::new(0x1000));
+        let mut tx = serial.take_tx().expect("TX handle should be available");
+        let mut rx = serial.take_rx().expect("RX handle should be available");
+
+        let written = tx.try_write(b"abc");
+        assert_eq!(written, 3);
+
+        let mut buf = [0; 4];
+        let read = rx.try_read(&mut buf).expect("RX read should succeed");
+        assert_eq!(read, 3);
+        assert_eq!(&buf[..read], b"abc");
+    }
+
+    struct MockSerial {
+        base: usize,
+    }
+
+    impl MockSerial {
+        fn new(base: usize) -> Self {
+            Self { base }
+        }
+    }
+
+    struct MockShared {
+        packed: AtomicU32,
+        bytes: AtomicUsize,
+        irq_count: AtomicUsize,
+    }
+
+    struct MockTxQueue {
+        base: usize,
+        shared: Arc<MockShared>,
+    }
+
+    impl TTxQueue for MockTxQueue {
+        fn base_addr(&self) -> usize {
+            self.base
         }
 
-        Ok(read_count)
+        fn poll(&mut self) -> SerialEvent {
+            SerialEvent::TX_READY
+        }
+
+        fn try_write(&mut self, bytes: &[u8]) -> usize {
+            let mut packed = 0;
+            let written = bytes.len().min(4);
+            for (index, byte) in bytes.iter().copied().take(written).enumerate() {
+                packed |= (byte as u32) << (index * 8);
+            }
+            self.shared.packed.store(packed, Ordering::Release);
+            self.shared.bytes.store(written, Ordering::Release);
+            written
+        }
+    }
+
+    struct MockRxQueue {
+        base: usize,
+        shared: Arc<MockShared>,
+    }
+
+    impl TRxQueue for MockRxQueue {
+        fn base_addr(&self) -> usize {
+            self.base
+        }
+
+        fn poll(&mut self) -> SerialEvent {
+            SerialEvent::RX_READY
+        }
+
+        fn try_read(&mut self, bytes: &mut [u8]) -> Result<usize, TransBytesError> {
+            let available = self.shared.bytes.swap(0, Ordering::AcqRel);
+            let read = available.min(bytes.len());
+            let packed = self.shared.packed.load(Ordering::Acquire);
+            for (index, out) in bytes.iter_mut().take(read).enumerate() {
+                *out = ((packed >> (index * 8)) & 0xff) as u8;
+            }
+            Ok(read)
+        }
+    }
+
+    struct MockIrqHandler {
+        base: usize,
+        shared: Arc<MockShared>,
+    }
+
+    impl TIrqHandler for MockIrqHandler {
+        fn base_addr(&self) -> usize {
+            self.base
+        }
+
+        fn handle_irq(&self) -> SerialEvent {
+            self.shared.irq_count.fetch_add(1, Ordering::AcqRel);
+            SerialEvent::TX_READY
+        }
+    }
+
+    impl InterfaceRaw for MockSerial {
+        type SharedState = Arc<MockShared>;
+        type TxQueue = MockTxQueue;
+        type RxQueue = MockRxQueue;
+        type IrqHandler = MockIrqHandler;
+
+        fn name(&self) -> &str {
+            "mock serial"
+        }
+
+        fn base_addr(&self) -> usize {
+            self.base
+        }
+
+        fn set_config(&mut self, _config: &Config) -> Result<(), ConfigError> {
+            Ok(())
+        }
+
+        fn baudrate(&self) -> u32 {
+            115_200
+        }
+
+        fn data_bits(&self) -> DataBits {
+            DataBits::Eight
+        }
+
+        fn stop_bits(&self) -> StopBits {
+            StopBits::One
+        }
+
+        fn parity(&self) -> Parity {
+            Parity::None
+        }
+
+        fn clock_freq(&self) -> Option<NonZeroU32> {
+            NonZeroU32::new(1_843_200)
+        }
+
+        fn open(&mut self) {}
+
+        fn close(&mut self) {}
+
+        fn enable_loopback(&mut self) {}
+
+        fn disable_loopback(&mut self) {}
+
+        fn is_loopback_enabled(&self) -> bool {
+            false
+        }
+
+        fn set_irq_mask(&mut self, _mask: InterruptMask) {}
+
+        fn get_irq_mask(&self) -> InterruptMask {
+            InterruptMask::empty()
+        }
+
+        fn new_shared_state(&self) -> Self::SharedState {
+            Arc::new(MockShared {
+                packed: AtomicU32::new(0),
+                bytes: AtomicUsize::new(0),
+                irq_count: AtomicUsize::new(0),
+            })
+        }
+
+        fn tx_queue(&self, shared: &Self::SharedState) -> Self::TxQueue {
+            MockTxQueue {
+                base: self.base,
+                shared: shared.clone(),
+            }
+        }
+
+        fn rx_queue(&self, shared: &Self::SharedState) -> Self::RxQueue {
+            MockRxQueue {
+                base: self.base,
+                shared: shared.clone(),
+            }
+        }
+
+        fn irq_handler(&self, shared: &Self::SharedState) -> Self::IrqHandler {
+            MockIrqHandler {
+                base: self.base,
+                shared: shared.clone(),
+            }
+        }
     }
 }

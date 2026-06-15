@@ -89,7 +89,7 @@ pad_kallsyms_to_section() {
     fi
 
     if [ "$kallsyms_size" -lt "$section_size" ]; then
-        truncate -s "$section_size" "$kallsyms"
+        dd if=/dev/zero bs=1 count=$((section_size - kallsyms_size)) >> "$kallsyms" 2>/dev/null
     fi
 }
 
@@ -109,11 +109,9 @@ generate_kallsyms() {
     rust-objcopy --update-section .kallsyms="$kallsyms" "$KERNEL_ELF"
 }
 
-refresh_bin_if_present() {
+refresh_bin() {
     bin="${KERNEL_ELF%.elf}.bin"
-    if [ -f "$bin" ]; then
-        rust-objcopy --strip-all -O binary "$KERNEL_ELF" "$bin"
-    fi
+    rust-objcopy --strip-all -O binary "$KERNEL_ELF" "$bin"
 }
 
 if [ -z "${KERNEL_ELF:-}" ]; then
@@ -123,4 +121,4 @@ fi
 
 ensure_tools
 generate_kallsyms
-refresh_bin_if_present
+refresh_bin

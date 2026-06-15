@@ -2,7 +2,7 @@ use kernutil::StaticCell;
 use page_table_generic::PageTable;
 pub use page_table_generic::{PagingError, PagingResult};
 
-use crate::mem::ram::Ram;
+use crate::{ArchTrait, mem::ram::Ram};
 
 pub type ArchPageTable<A> = PageTable<<crate::arch::Arch as crate::ArchTrait>::P, A>;
 
@@ -10,7 +10,6 @@ pub type ArchPte = <<crate::arch::Arch as crate::ArchTrait>::P as page_table_gen
 
 static BOOT_TABLE: StaticCell<ArchPageTable<Ram>> = StaticCell::uninit();
 pub static mut BOOT_TABLE_ADDR: usize = 0;
-static mut MMU_ENABLED: bool = false;
 
 pub(crate) fn new_boot_table() -> ArchPageTable<Ram> {
     ArchPageTable::<Ram>::new(Ram).unwrap()
@@ -36,11 +35,15 @@ pub(crate) fn boot_table_addr() -> usize {
 }
 
 pub(crate) fn is_mmu_enabled() -> bool {
-    unsafe { MMU_ENABLED }
+    crate::arch::Arch::is_mmu_enabled()
 }
 
-pub(crate) fn set_mmu_enabled() {
-    unsafe { MMU_ENABLED = true };
+pub(crate) fn is_kernel_relocated() -> bool {
+    if crate::consts::VM_LOAD_ADDRESS == crate::consts::KERNEL_LOAD_ADDRESS {
+        return true;
+    }
+
+    crate::arch::Arch::kernel_space().contains(&(is_kernel_relocated as *const () as usize))
 }
 
 pub trait PageTableOp {

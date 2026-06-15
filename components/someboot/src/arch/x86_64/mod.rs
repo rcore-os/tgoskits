@@ -30,7 +30,7 @@ impl ArchTrait for Arch {
     type Console = console::Console;
 
     fn _va(paddr: usize) -> *mut u8 {
-        if mmu::is_mmu_enabled() {
+        if mmu::is_kernel_relocated() {
             paddr.wrapping_add(addrspace::PHYS_VIRT_OFFSET) as *mut u8
         } else {
             paddr as *mut u8
@@ -88,6 +88,10 @@ impl ArchTrait for Arch {
 
     fn kernel_space() -> core::ops::Range<usize> {
         addrspace::KERNEL_SPACE_BASE..usize::MAX
+    }
+
+    fn is_mmu_enabled() -> bool {
+        unsafe { x86::controlregs::cr0().contains(x86::controlregs::Cr0::CR0_ENABLE_PAGING) }
     }
 
     fn kernel_page_table() -> PageTableInfo {

@@ -82,8 +82,8 @@ mod tests {
             .parity(Parity::None);
         serial.set_config(&config).expect("failed to set config");
 
-        let mut tx = serial.take_tx().expect("missing tx");
-        let mut rx = serial.take_rx().expect("missing rx");
+        let mut tx = serial.take_tx().expect("missing TX queue");
+        let mut rx = serial.take_rx().expect("missing RX queue");
         clean_rx(&mut rx);
 
         test_serial_tx_rx_one(serial, &mut tx, &mut rx, b"Hello\n").expect("loopback failed");
@@ -217,7 +217,7 @@ mod tests {
             .next()
             .expect("uart interrupt missing");
 
-        let serial = match driver_type {
+        let mut serial = match driver_type {
             DriverType::Pl011 => some_serial::pl011::Pl011::new_boxed(base, clock),
             DriverType::Ns16550Mmio => {
                 some_serial::ns16550::Ns16550::new_mmio_boxed(base, clock, 4)

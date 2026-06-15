@@ -2,9 +2,14 @@ mod ntty;
 mod ptm;
 mod pts;
 mod pty;
+mod serial;
 mod terminal;
 
-use alloc::sync::{Arc, Weak};
+use alloc::{
+    format,
+    string::{String, ToString},
+    sync::{Arc, Weak},
+};
 use core::{any::Any, ops::Deref, sync::atomic::Ordering, task::Context};
 
 use ax_errno::{AxError, AxResult};
@@ -22,10 +27,13 @@ use self::terminal::{
     termios::{Termios, Termios2},
 };
 pub use self::{
-    ntty::{N_TTY, NTtyDriver},
+    ntty::NTtyDriver,
     ptm::Ptmx,
     pts::PtsDir,
     pty::PtyDriver,
+    serial::{
+        SerialTtyDriver, arm_console_irq, bind_console_to, console_device, serial_tty_entries,
+    },
 };
 use crate::{
     pseudofs::DeviceOps,
@@ -34,6 +42,17 @@ use crate::{
 
 const ANSI_CURSOR_POSITION_REQUEST: &[u8] = b"\x1b[6n";
 const ANSI_CURSOR_POSITION_RESPONSE: &[u8] = b"\x1b[1;1R";
+
+pub fn terminal_device_path(term: &(dyn Any + Send + Sync)) -> Option<String> {
+    if term.is::<NTtyDriver>() {
+        Some("/dev/console".to_string())
+    } else if let Some(pts) = term.downcast_ref::<PtyDriver>() {
+        Some(format!("/dev/pts/{}", pts.pty_number()))
+    } else {
+        term.downcast_ref::<SerialTtyDriver>()
+            .map(|tty| format!("/dev/ttyS{}", tty.serial_number()))
+    }
+}
 
 /// Tty device
 pub struct Tty<R, W> {
@@ -122,7 +141,13 @@ impl<R: TtyRead, W: TtyWrite> DeviceOps for Tty<R, W> {
                 // Faultable user memory access inside an atomic context (preemption
                 // disabled) will call might_sleep() in handle_page_fault and panic.
                 let termios = Arc::new(Termios2::new((arg as *const Termios).vm_read()?));
-                *self.terminal.termios.lock() = termios;
+                let old = {
+                    let mut guard = self.terminal.termios.lock();
+                    let old = guard.clone();
+                    *guard = termios.clone();
+                    old
+                };
+                self.writer.termios_changed(old.as_ref(), termios.as_ref());
                 if cmd == TCSETSF {
                     self.ldisc.lock().drain_input();
                 }
@@ -130,7 +155,13 @@ impl<R: TtyRead, W: TtyWrite> DeviceOps for Tty<R, W> {
             TCSETS2 | TCSETSF2 | TCSETSW2 => {
                 // TODO: drain output?
                 let termios = Arc::new((arg as *const Termios2).vm_read()?);
-                *self.terminal.termios.lock() = termios;
+                let old = {
+                    let mut guard = self.terminal.termios.lock();
+                    let old = guard.clone();
+                    *guard = termios.clone();
+                    old
+                };
+                self.writer.termios_changed(old.as_ref(), termios.as_ref());
                 if cmd == TCSETSF2 {
                     self.ldisc.lock().drain_input();
                 }

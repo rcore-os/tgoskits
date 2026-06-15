@@ -39,8 +39,6 @@ mod cvi_usb_camera;
 mod pinmux;
 #[cfg(all(feature = "sg2002", not(feature = "plat-dyn")))]
 pub(super) mod pwm;
-#[cfg(feature = "sg2002")]
-mod tty_serial;
 
 use alloc::{format, sync::Arc};
 use core::any::Any;
@@ -286,13 +284,26 @@ fn builder(fs: Arc<SimpleFs>) -> DirMaker {
             Arc::new(tty::CurrentTty),
         ),
     );
+    for entry in tty::serial_tty_entries() {
+        let number = entry.number();
+        let minor = u32::try_from(64 + number).unwrap_or(u32::MAX);
+        root.add(
+            format!("ttyS{number}"),
+            Device::new(
+                fs.clone(),
+                NodeType::CharacterDevice,
+                DeviceId::new(4, minor),
+                entry.tty(),
+            ),
+        );
+    }
     root.add(
         "console",
         Device::new(
             fs.clone(),
             NodeType::CharacterDevice,
             DeviceId::new(5, 1),
-            tty::N_TTY.clone(),
+            tty::console_device(),
         ),
     );
 
@@ -481,27 +492,6 @@ fn builder(fs: Arc<SimpleFs>) -> DirMaker {
                 ion_device,
             ),
         );
-        root.add(
-            "ttyS1",
-            Device::new(
-                fs.clone(),
-                NodeType::CharacterDevice,
-                DeviceId::new(4, 65),
-                Arc::new(tty_serial::new_tty_s1(115200)),
-            ),
-        );
-        root.add(
-            "ttyS2",
-            Device::new(
-                fs.clone(),
-                NodeType::CharacterDevice,
-                DeviceId::new(4, 66),
-                Arc::new(tty_serial::new_tty_s2(115200)),
-            ),
-        );
-    }
-    #[cfg(all(feature = "sg2002", not(feature = "plat-dyn")))]
-    {
         root.add(
             "cvi-camera0",
             Device::new(
