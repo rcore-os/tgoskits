@@ -86,7 +86,8 @@ pub struct CowBackend {
     name: Option<String>,
     shared: bool,
     /// True after this address space upgrades the mapping to writable via
-    /// `mprotect(+W)` or a writable `mmap` (per-aspace; fork clones start false).
+    /// `mprotect(+W)` or a writable `mmap` (per-aspace; fork inherits via
+    /// [`Clone`]).
     write_upgraded: Cell<bool>,
 }
 
