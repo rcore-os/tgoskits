@@ -1317,7 +1317,6 @@ dependencies = [
  "addr2line 0.26.1",
  "anyhow",
  "ax-config-gen",
- "axloader",
  "axvmconfig",
  "cargo_metadata",
  "chrono",
@@ -3475,7 +3474,8 @@ checksum = "9844ddc3a6e533d62bba727eb6c28b5d360921d5175e9ff0f1e621a5c590a4d5"
 [[package]]
 name = "fitimage"
 version = "0.1.4"
-source = "git+https://github.com/Josen-B/ostool.git?branch=httpboot#b99dd04980c0a2b3b6482a722bde4084fd88cf84"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "92edd7c1c55efd27b5a17dd6d505affafcfe48dfaed7423d4c4ae7361e56a7d8"
 dependencies = [
  "anyhow",
  "byteorder",
@@ -3973,11 +3973,7 @@ checksum = "6dbf3de79e51f3d586ab4cb9d5c3e2c14aa28ed23d180cf89b4df0454a69cc87"
 [[package]]
 name = "httpboot-protocol"
 version = "0.1.0"
-source = "git+https://github.com/Josen-B/ostool.git?branch=httpboot#b99dd04980c0a2b3b6482a722bde4084fd88cf84"
-dependencies = [
- "serde",
- "serde_json",
-]
+source = "git+https://github.com/Josen-B/ostool.git?branch=httpboot#ee24c63703aac5a258857793c7783734ff1ea273"
 
 [[package]]
 name = "httpdate"
@@ -4483,7 +4479,8 @@ dependencies = [
 [[package]]
 name = "jkconfig"
 version = "0.2.4"
-source = "git+https://github.com/Josen-B/ostool.git?branch=httpboot#b99dd04980c0a2b3b6482a722bde4084fd88cf84"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d4cbaedffb63dabcbab61e23e0adc1fc7bc0d7420f2f56124e2bc0002d9274ab"
 dependencies = [
  "anyhow",
  "cargo_metadata",
@@ -5460,7 +5457,8 @@ dependencies = [
 [[package]]
 name = "ostool"
 version = "0.22.1"
-source = "git+https://github.com/Josen-B/ostool.git?branch=httpboot#b99dd04980c0a2b3b6482a722bde4084fd88cf84"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ada76a46f68ee817f9c32b8374939b7d456eb6165654284e2f28e8db89585ca4"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -5473,7 +5471,6 @@ dependencies = [
  "env_logger",
  "fitimage",
  "futures",
- "httpboot-protocol",
  "indicatif",
  "jkconfig 0.2.4",
  "log",
@@ -8682,7 +8679,8 @@ dependencies = [
 [[package]]
 name = "uboot-shell"
 version = "0.2.4"
-source = "git+https://github.com/Josen-B/ostool.git?branch=httpboot#b99dd04980c0a2b3b6482a722bde4084fd88cf84"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2237321472e37a34980340e0a6f8ba406167fb010209ead2f0e594bdfb718e02"
 dependencies = [
  "colored",
  "futures",

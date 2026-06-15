@@ -272,8 +272,6 @@ test-simple = { version = "0.3.4", path = "components/crate_interface/test_crate
 test-weak = { version = "0.3.4", path = "components/crate_interface/test_crates/test-weak" }
 test-weak-partial = { version = "0.3.4", path = "components/crate_interface/test_crates/test-weak-partial" }
 tg-xtask = { version = "0.5.11", path = "xtask" }
-axloader = { version = "0.5.11", path = "bootloader/axloader" }
-httpboot-protocol = { git = "https://github.com/Josen-B/ostool.git", branch = "httpboot" }
 x86_vcpu = { version = "0.5.12", path = "virtualization/x86_vcpu", default-features = false }
 x86_vlapic = { version = "0.4.13", path = "virtualization/x86_vlapic" }
 page-table-generic = { version = "0.7.3", path = "memory/page-table-generic" }
@@ -307,11 +305,10 @@ mmio-api = { version = "0.2.2", path = "memory/mmio-api" }
 lock_api = { version = "0.4", default-features = false }
 log = "0.4"
 spin = "0.12"
-ostool = { git = "https://github.com/Josen-B/ostool.git", branch = "httpboot" }
+ostool = { version = "0.22.1" }
 riscv = { version = "0.16.1", default-features = false }
 sbi-rt = { version = "0.0.4", default-features = false }
 uefi = "0.37.0"
-uefi-raw = "0.14.0"
 fdt-edit = "0.2.3"
 fdt-raw = "0.3"
 thiserror = { version = "2", default-features = false }
