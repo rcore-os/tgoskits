@@ -35,6 +35,23 @@ pub type VCpuId = usize;
 /// Interrupt vector number injected into a guest.
 pub type InterruptVector = u8;
 
+/// Interrupt trigger mode.
+///
+/// Represents the trigger mode of an interrupt in a platform-neutral way.
+/// Architectures that do not distinguish between edge and level triggering
+/// can ignore this parameter.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InterruptTriggerMode {
+    /// Edge-triggered interrupt.
+    EdgeTriggered,
+    /// Level-triggered interrupt.
+    LevelTriggered,
+}
+
+/// Identifier of an interrupt line within a virtual machine.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct IrqLineId(pub usize);
+
 /// The maximum number of virtual CPUs supported in a virtual machine.
 pub const MAX_VCPU_NUM: usize = 64;
 
