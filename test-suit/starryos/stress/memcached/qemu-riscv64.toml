@@ -1,0 +1,51 @@
+args = [
+    "-nographic", "-cpu", "rv64",
+    "-m", "512M",
+    "-device", "virtio-blk-pci,drive=disk0",
+    "-drive", "id=disk0,if=none,format=raw,file=${workspace}/tmp/axbuild/rootfs/rootfs-riscv64-alpine.img",
+    "-device", "virtio-net-pci,netdev=net0",
+    "-netdev", "user,id=net0",
+]
+uefi = false
+to_bin = true
+shell_prefix = "root@starry:"
+args = [
+    "-nographic", "-cpu", "rv64",
+    "-m", "512M",
+    "-device", "virtio-blk-pci,drive=disk0",
+    "-drive", "id=disk0,if=none,format=raw,file=${workspace}/tmp/axbuild/rootfs/rootfs-riscv64-alpine.img",
+    "-device", "virtio-net-pci,netdev=net0",
+    "-netdev", "user,id=net0",
+]
+uefi = false
+to_bin = true
+shell_prefix = "root@starry:"
+shell_init_cmd = '''
+{ \
+apk update >/dev/null 2>&1 && apk add memcached busybox-extras 2>&1 && \
+memcached -u root -l 127.0.0.1 -p 11211 -m 16 -c 16 -d 2>&1 && \
+sleep 2 && \
+echo "MEMCACHED_START_OK" && \
+{ printf "set starry_key 0 60 12\r\nhello_starry\r\nget starry_key\r\nquit\r\n"; } | nc 127.0.0.1 11211 > /tmp/memcached.out 2>&1 && \
+cat /tmp/memcached.out && \
+grep -q "STORED" /tmp/memcached.out && \
+grep -q "VALUE starry_key" /tmp/memcached.out && \
+grep -q "hello_starry" /tmp/memcached.out && \
+echo "MEMCACHED_SET_GET_OK" && \
+{ printf "stats\r\nquit\r\n"; } | nc 127.0.0.1 11211 > /tmp/memcached-stats.out 2>&1 && \
+cat /tmp/memcached-stats.out && \
+grep -q "STAT pid" /tmp/memcached-stats.out && \
+echo "MEMCACHED_STATS_OK" && \
+MEMCACHED_PID=$(pidof memcached 2>/dev/null | awk '{print $1}') && \
+test -n "$MEMCACHED_PID" && \
+echo "MEMCACHED_PID=$MEMCACHED_PID"
+} || { echo "MEMCACHED_TEST_FAILED"; echo "=== memcached output ==="; cat /tmp/memcached.out 2>&1; echo "=== stats output ==="; cat /tmp/memcached-stats.out 2>&1; echo "=== end ==="; exit 1; }; \
+echo "KILLING_MEMCACHED=$MEMCACHED_PID"; \
+kill -9 "$MEMCACHED_PID" 2>&1; sleep 1; \
+pkill -9 memcached 2>&1; sleep 1; \
+echo "KILL_DONE"; \
+echo "MEMCACHED_TEST_DONE=$(date +%s)"
+'''
+success_regex = ["(?m)^MEMCACHED_TEST_DONE=\\d+\\s*$"]
+fail_regex = ['(?m)^(?:\x1b\[[0-9;]*[A-Za-z])*panicked at(?:\s|$)', '(?m)^MEMCACHED_TEST_FAILED\s*$']
+timeout = 1800
