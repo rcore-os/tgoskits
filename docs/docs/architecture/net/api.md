@@ -1,107 +1,340 @@
 ---
 sidebar_position: 6
-sidebar_label: "API 参考"
+sidebar_label: "对外接口"
 ---
 
-# 网络栈 Public API
+# 对外接口
 
-本文汇总 `ax-net` 的正式 public API，并说明哪些 API 属于系统初始化、接口查询、socket、设备适配和 DNS。
+`ax-net` 的 public API 面向三类调用方：启动阶段的 runtime、系统 ABI/socket 层，以及设备驱动适配层。API 设计保持一个原则：外部通过稳定的接口 ID、快照和 trait object 访问网络栈，不直接接触 `Service`、`Router`、smoltcp `SocketSet` 等内部对象。
 
-## 初始化 API
+核心 re-export 定义在 [lib.rs](net/ax-net/src/lib.rs)：
 
-定义在 [net/ax-net/src/lib.rs](net/ax-net/src/lib.rs)：
+```rust
+pub use self::{
+    config::{
+        DeviceBinding, InterfaceConfig, InterfaceFlags, InterfaceId, InterfaceInfo,
+        InterfaceKind, InterfaceMatcher, Ipv4InterfaceConfig, NetworkConfig,
+        RouteInfo, StaticIpConfig,
+    },
+    device::{
+        ArpEntry, EthernetDeviceList, EthernetDriver, EthernetIrqAction,
+        EthernetIrqOutcome, EthernetIrqRegistrar, EthernetIrqRegistration,
+        EthernetIrqRegistrationError, NetDeviceError, NetDeviceResult,
+        NetIrqEvents, NetRxBuffer, NetTxBuffer, RdNetDriver,
+        set_ethernet_irq_registrar,
+    },
+    socket::{
+        CMsgData, RecvFlags, RecvOptions, SendFlags, SendOptions,
+        Shutdown, Socket, SocketAddrEx, SocketOps,
+    },
+};
+```
+
+## API 分层
+
+public API 按生命周期和调用方分为：
+
+- 初始化与配置 API：由 `ax-runtime` 或平台初始化代码调用。
+- 运行时查询 API：由系统 ABI、诊断接口、`/proc`、ioctl 等读取网络状态。
+- Socket facade API：由 syscall/socket 层创建并操作具体 socket。
+- Socket option API：由 getsockopt/setsockopt 层转发。
+- 设备驱动 API：由 NIC driver、IRQ registrar、运行期设备注册路径使用。
+- DNS/ARP 辅助 API：由 resolver 和 Linux 兼容层使用。
+
+API 边界如下：
+
+```mermaid
+flowchart TB
+    Runtime["ax-runtime / platform init"] --> Init["init_network() / init_vsock()"]
+    Drivers["NIC drivers"] --> DriverApi["EthernetDriver / IRQ registrar"]
+    Syscall["socket syscalls"] --> SocketApi["SocketOps / Socket enum"]
+    Abi["ioctl / proc / diagnostics"] --> QueryApi["interfaces() / routes / arp"]
+    Resolver["resolver"] --> DnsApi["dns_query() / dns_servers()"]
+
+    Init --> Internal["Service + NetControl + Router"]
+    DriverApi --> Internal
+    SocketApi --> Internal
+    QueryApi --> Internal
+    DnsApi --> Internal
+```
+
+## 初始化与配置
+
+初始化 API 构造全局网络栈。它们是全局单例初始化入口，不返回 `Service` 或 `Router` 的可变引用。
+
+### NetworkConfig
+
+`NetworkConfig` 描述启动时的接口配置：
+
+```rust
+pub struct NetworkConfig {
+    pub interfaces: Vec<InterfaceConfig>,
+    pub default_dns_servers: Vec<Ipv4Addr>,
+}
+
+pub struct InterfaceConfig {
+    pub name: String,
+    pub match_by: InterfaceMatcher,
+    pub static_ip: Option<StaticIpConfig>,
+    pub dhcp: bool,
+    pub metric: u32,
+    pub dns_servers: Vec<Ipv4Addr>,
+}
+```
+
+`InterfaceMatcher` 支持按探测顺序、MAC 或 driver name 匹配设备：
+
+```rust
+pub enum InterfaceMatcher {
+    ByOrder(usize),
+    ByMac(EthernetAddress),
+    ByDriverName(String),
+}
+```
+
+静态 IPv4 配置使用：
+
+```rust
+pub struct StaticIpConfig {
+    pub ip: Ipv4Addr,
+    pub prefix_len: u8,
+    pub gateway: Ipv4Addr,
+}
+```
+
+配置语义：
+
+- `lo` 由 `ax-net` 固定创建，不通过 `NetworkConfig` 覆盖。
+- 未显式匹配的 Ethernet 设备按默认策略加入接口 registry。
+- `static_ip` 和 `dhcp` 表达互斥配置。
+- `metric` 同时影响路由选择和 DNS server 排序。
+- `default_dns_servers` 是接口级 DNS 不可用时的 fallback 来源。
+
+### init_network
 
 ```rust
 pub fn init_network(net_devs: EthernetDeviceList, config: NetworkConfig);
-pub fn poll_interfaces();
-pub fn request_poll();
-
-#[cfg(feature = "vsock")]
-pub fn init_vsock(vsock_devs: VsockDeviceList);
 ```
 
-说明：
+调用方传入已发现的 Ethernet driver 列表和结构化配置。初始化会完成：
 
-- `init_network()` 由 `ax-runtime` 调用，只能调用一次（重复调用 panic，见 [lib.rs](net/ax-net/src/lib.rs)）。
-- `request_poll()` 是轻量 poll 请求入口，socket 和设备路径应调用它。
-- `poll_interfaces()` 保留为 public trigger/debug 入口，内部仅转调 `request_poll()`（[lib.rs](net/ax-net/src/lib.rs)），不会在调用者线程里同步执行 `Service::poll()`。
-- `init_vsock()` 仅在 `vsock` feature 下存在。
+- 创建 loopback。
+- 为每个 Ethernet 设备分配 `InterfaceId` 和接口名。
+- 创建 `Router`、`NetControl`、smoltcp `Interface` 和全局 `SocketSet`。
+- 安装静态地址、DHCP client 状态、DNS entries 和 route rules。
+- 启动非 loopback 设备的 RX/TX worker。
+- 启动专用 net-poll worker。
 
-## 接口查询 API
+`init_network()` 是一次性初始化入口，重复初始化会触发全局单例保护。
+
+### Poll Trigger
+
+```rust
+pub fn request_poll();
+pub fn poll_interfaces();
+```
+
+`request_poll()` 是 socket、设备和控制路径使用的轻量进度请求入口：
+
+```rust
+pub fn request_poll() {
+    NET_POLL_REQUESTED.store(true, Ordering::Release);
+    NET_POLL_WAKE.notify_one(true);
+}
+```
+
+`poll_interfaces()` 保留为 public trigger/debug API，内部只转调 `request_poll()`，不会在调用者线程中同步执行完整 `Service::poll()`。
+
+### Vsock 初始化
+
+```rust
+#[cfg(feature = "vsock")]
+pub fn init_vsock(vsock_devs: VsockDeviceList);
+
+#[cfg(feature = "vsock")]
+pub type VsockDevice = Box<dyn rdif_vsock::Interface>;
+#[cfg(feature = "vsock")]
+pub type VsockDeviceList = Vec<VsockDevice>;
+```
+
+vsock 不进入 smoltcp `SocketSet`，也不实现 `ax-net` 内部 IP `Device` trait。它通过 `rdif_vsock::Interface` 和 vsock connection manager 进入 AF_VSOCK socket backend。
+
+## 运行时查询
+
+查询 API 返回只读快照。调用方不应持有快照并假设其永久有效；DHCP、运行期设备注册或后续 link state 更新都可能改变接口、路由和 DNS 状态。
+
+### 接口快照
 
 ```rust
 pub fn interfaces() -> Vec<InterfaceInfo>;
 pub fn interface_by_name(name: &str) -> Option<InterfaceInfo>;
 pub fn interface_by_id(id: InterfaceId) -> Option<InterfaceInfo>;
 pub fn ipv4_config(name: &str) -> Option<Ipv4InterfaceConfig>;
-pub fn default_routes() -> Vec<RouteInfo>;
-pub fn arp_entries() -> Vec<ArpEntry>;
 ```
 
-这些 API 返回只读快照。调用方不应保存快照后假设其永久有效；DHCP 更新或后续接口状态变化可能改变地址、路由和 DNS。
-
-## 接口类型
-
-`InterfaceId` 与 `InterfaceFlags` 定义在 [config.rs](net/ax-net/src/config.rs)：
+`InterfaceId` 是稳定接口 ID，同时作为 StarryOS/Linux ifindex 来源：
 
 ```rust
 pub struct InterfaceId(u32);
 
-pub enum InterfaceKind {
-    Loopback,
-    Ethernet,
-}
-
-bitflags::bitflags! {
-    pub struct InterfaceFlags: u32 {
-        const UP = 1 << 0;
-        const RUNNING = 1 << 1;
-        const LOOPBACK = 1 << 2;
-        const BROADCAST = 1 << 3;
-        const MULTICAST = 1 << 4;
-    }
+impl InterfaceId {
+    pub const LOOPBACK: Self = Self(1);
+    pub const fn new(raw: u32) -> Self;
+    pub const fn get(self) -> u32;
+    pub const fn to_linux_ifindex(self) -> i32;
+    pub const fn from_linux_ifindex(ifindex: i32) -> Option<Self>;
 }
 ```
 
-`InterfaceInfo` 见 [config.rs](net/ax-net/src/config.rs)。`InterfaceId` 同时作为 StarryOS Linux ifindex 数值来源：
+`InterfaceInfo` 是 public snapshot：
 
 ```rust
+pub struct InterfaceInfo {
+    pub id: InterfaceId,
+    pub name: String,
+    pub kind: InterfaceKind,
+    pub mac: Option<EthernetAddress>,
+    pub ipv4: Option<Ipv4InterfaceConfig>,
+    pub mtu: usize,
+    pub flags: InterfaceFlags,
+    pub metric: u32,
+}
+```
+
+系统 ABI 映射应使用 `InterfaceId`，而不是假设 `eth0`：
+
+```rust
+let info = ax_net::interface_by_name("eth1").ok_or(AxError::NoSuchDevice)?;
 let linux_ifindex = info.id.to_linux_ifindex();
 let id = InterfaceId::from_linux_ifindex(linux_ifindex).unwrap();
 ```
 
-## Socket API
-
-主要 socket 类型（见 [lib.rs](net/ax-net/src/lib.rs)）：
+### 路由快照
 
 ```rust
-pub mod tcp;
-pub mod udp;
-pub mod raw;
-pub mod unix;
-
-#[cfg(feature = "vsock")]
-pub mod vsock;
+pub fn default_routes() -> Vec<RouteInfo>;
 ```
 
-统一 socket trait `SocketOps`（[net/ax-net/src/socket.rs](net/ax-net/src/socket.rs)）：
+`RouteInfo` 是对外 route snapshot，不暴露 Router 内部 device index：
+
+```rust
+pub struct RouteInfo {
+    pub filter: IpCidr,
+    pub via: Option<IpAddress>,
+    pub interface_id: InterfaceId,
+    pub source: IpAddress,
+    pub metric: u32,
+}
+```
+
+调用方可用它实现 route 诊断、默认网关展示或 Linux 兼容查询；socket 发送路径不应自行遍历 `RouteInfo`，而应通过 socket backend 调用控制面的 route decision。
+
+### ARP 快照
+
+```rust
+pub fn arp_entries() -> Vec<ArpEntry>;
+```
+
+`ArpEntry` 用于 `/proc/net/arp` 等兼容层：
+
+```rust
+pub struct ArpEntry {
+    pub ip_addr: [u8; 4],
+    pub hw_type: u16,
+    pub flags: u16,
+    pub hw_addr: [u8; 6],
+    pub device: String,
+}
+```
+
+`device` 字段是真实接口名。loopback 不产生 ARP entry。
+
+### 兼容 helper
+
+```rust
+pub fn eth0_ipv4_config() -> Option<Ipv4InterfaceConfig>;
+```
+
+该函数是旧调用方的 convenience helper。新代码应优先使用 `ipv4_config(name)` 或接口 registry API，避免重新引入固定 `eth0` 假设。
+
+## Socket Facade
+
+socket API 统一 AF_INET、AF_UNIX 和 AF_VSOCK 的公共操作形状。协议细节由具体 backend 负责。
+
+### SocketAddrEx
+
+```rust
+pub enum SocketAddrEx {
+    Ip(SocketAddr),
+    Unix(UnixSocketAddr),
+    #[cfg(feature = "vsock")]
+    Vsock(VsockAddr),
+}
+```
+
+地址族不匹配时，`into_ip()`、`into_unix()`、`into_vsock()` 返回对应错误，调用方不需要手工 match 所有 backend。
+
+### Send/Recv Options
+
+```rust
+pub type CMsgData = Box<dyn Any + Send + Sync>;
+
+pub struct SendOptions {
+    pub to: Option<SocketAddrEx>,
+    pub flags: SendFlags,
+    pub cmsg: Vec<CMsgData>,
+}
+
+pub struct RecvOptions<'a> {
+    pub from: Option<&'a mut SocketAddrEx>,
+    pub flags: RecvFlags,
+    pub cmsg: Option<&'a mut Vec<CMsgData>>,
+    pub truncated: Option<&'a mut bool>,
+}
+```
+
+`SendFlags` 和 `RecvFlags` 使用 Linux `MSG_*` 数值，便于 syscall 层直接转换：
+
+```rust
+bitflags! {
+    pub struct SendFlags: u32 {
+        const OOB = 0x01;
+        const DONTROUTE = 0x04;
+        const DONTWAIT = 0x40;
+        const EOR = 0x80;
+        const CONFIRM = 0x800;
+        const NOSIGNAL = 0x4000;
+        const MORE = 0x8000;
+    }
+
+    pub struct RecvFlags: u32 {
+        const PEEK = 0x01;
+        const TRUNCATE = 0x02;
+        const DONTWAIT = 0x40;
+    }
+}
+```
+
+`Shutdown::{Read, Write, Both}` 表达 `shutdown(2)` 的半关闭方向。
+
+### SocketOps
 
 ```rust
 pub trait SocketOps: Configurable {
     fn bind(&self, local_addr: SocketAddrEx) -> AxResult;
     fn connect(&self, remote_addr: SocketAddrEx) -> AxResult;
-    fn listen(&self, _backlog: usize) -> AxResult { Err(AxError::OperationNotSupported) }
-    fn accept(&self) -> AxResult<Socket> { Err(AxError::OperationNotSupported) }
+    fn listen(&self, _backlog: usize) -> AxResult;
+    fn accept(&self) -> AxResult<Socket>;
     fn send(&self, src: impl Read + IoBuf, options: SendOptions) -> AxResult<usize>;
     fn recv(&self, dst: impl Write + IoBufMut, options: RecvOptions<'_>) -> AxResult<usize>;
-    fn recv_available(&self) -> AxResult<usize> { Err(AxError::OperationNotSupported) }
+    fn recv_available(&self) -> AxResult<usize>;
     fn local_addr(&self) -> AxResult<SocketAddrEx>;
     fn peer_addr(&self) -> AxResult<SocketAddrEx>;
     fn shutdown(&self, how: Shutdown) -> AxResult;
 }
 ```
 
-`Socket` 枚举（[socket.rs](net/ax-net/src/socket.rs)）统一各 backend，并对 `SocketOps` / `Configurable` 做透传分派：
+`Socket` 枚举把统一 API 分发给各 backend：
 
 ```rust
 pub enum Socket {
@@ -114,28 +347,65 @@ pub enum Socket {
 }
 ```
 
-`SocketAddrEx`（[socket.rs](net/ax-net/src/socket.rs)）支持：
+支持的 backend：
 
-- IP socket address
-- Unix domain socket address
-- vsock address（`vsock` feature）
+| Backend | 构造入口 | 地址族/类型 |
+| --- | --- | --- |
+| `tcp::TcpSocket` | `TcpSocket::new()` | AF_INET / SOCK_STREAM |
+| `udp::UdpSocket` | `UdpSocket::new()` | AF_INET / SOCK_DGRAM |
+| `raw::RawSocket` | `RawSocket::new(ip_version, ip_protocol)` | AF_INET / SOCK_RAW |
+| `unix::UnixSocket` | `UnixSocket::new(Transport)` | AF_UNIX / stream,dgram |
+| `vsock::VsockSocket` | `VsockSocket::new(VsockTransport)` | AF_VSOCK / stream |
+
+### 设备绑定
+
+TCP、UDP 和 raw socket 提供直接绑定接口：
 
 ```rust
-pub enum SocketAddrEx {
-    Ip(SocketAddr),
-    Unix(UnixSocketAddr),
-    #[cfg(feature = "vsock")]
-    Vsock(VsockAddr),
+impl TcpSocket {
+    pub fn bind_device(&self, interface_id: InterfaceId) -> AxResult;
+}
+impl UdpSocket {
+    pub fn bind_device(&self, interface_id: InterfaceId) -> AxResult;
+}
+impl RawSocket {
+    pub fn bind_device(&self, interface_id: InterfaceId) -> AxResult;
 }
 ```
 
-## Socket options
+不存在的接口返回 `AxError::NoSuchDevice`。成功后内部设置：
 
-[options.rs](net/ax-net/src/options.rs) 通过 `define_options!` 宏（[options.rs](net/ax-net/src/options.rs)）一次性生成 `GetSocketOption<'a>` 和 `SetSocketOption<'a>` 两个枚举，覆盖 SO_\* / TCP_\* / IP_\* 三层选项：
+```rust
+pub struct DeviceBinding {
+    pub bound_if: Option<InterfaceId>,
+}
+```
+
+绑定具体本地地址时，TCP/UDP/raw backend 也会通过控制面反查该地址所属接口，并把 route/waker 选择限制到对应接口。未绑定接口的 connect/sendto 由 route decision 自动选择源地址和出接口。
+
+## Socket Options
+
+socket option API 使用一个 get enum 和一个 set enum 表达 SO_*、TCP_* 和 IP_*。
+
+### Configurable
+
+```rust
+#[enum_dispatch]
+pub trait Configurable {
+    fn get_option_inner(&self, opt: &mut GetSocketOption) -> AxResult<bool>;
+    fn set_option_inner(&self, opt: SetSocketOption) -> AxResult<bool>;
+
+    fn get_option(&self, mut opt: GetSocketOption) -> AxResult { /* dispatch */ }
+    fn set_option(&self, opt: SetSocketOption) -> AxResult { /* dispatch */ }
+}
+```
+
+`get_option()` / `set_option()` 在 backend 返回 `supported = false` 时映射为 `ENOPROTOOPT`，调用方不需要自己区分“协议不支持”和“选项值非法”。
+
+### Option 集合
 
 ```rust
 define_options! {
-    // ---- Socket level options (SO_*) ----
     ReuseAddress(bool),
     Error(i32),
     DontRoute(bool),
@@ -152,7 +422,6 @@ define_options! {
     SocketDomain(i32),
     BindToDevice(Option<InterfaceId>),
 
-    // --- TCP level options (TCP_*) ----
     NoDelay(bool),
     MaxSegment(usize),
     TcpKeepIdle(u32),
@@ -161,44 +430,35 @@ define_options! {
     TcpUserTimeout(u32),
     TcpInfo(TcpInfo),
 
-    // ---- IP level options (IP_*) ----
     Ttl(u8),
     RecvErr(bool),
 
-    // ---- Extra options ----
     NonBlocking(bool),
 }
 ```
 
-`Configurable` trait（[options.rs](net/ax-net/src/options.rs)）提供 `get_option` / `set_option`，未支持的选项返回 `ENOPROTOOPT`：
+通用选项由 `GeneralOptions` 实现，协议特有选项由具体 socket backend 继续处理。`TcpInfo` 是 transport-independent TCP_INFO snapshot：
 
 ```rust
-#[enum_dispatch]
-pub trait Configurable {
-    fn get_option_inner(&self, opt: &mut GetSocketOption) -> AxResult<bool>;
-    fn set_option_inner(&self, opt: SetSocketOption) -> AxResult<bool>;
-    fn get_option(&self, mut opt: GetSocketOption) -> AxResult { /* ... */ }
-    fn set_option(&self, opt: SetSocketOption) -> AxResult { /* ... */ }
+pub struct TcpInfo {
+    pub state: TcpState,
+    pub options: TcpInfoOptions,
+    pub rto_micros: u32,
+    pub snd_mss: u32,
+    pub rcv_mss: u32,
+    pub notsent_bytes: u32,
+    pub pmtu: u32,
+    pub snd_cwnd: u32,
+    pub rcv_space: u32,
+    pub snd_wnd: u32,
+    pub rcv_wnd: u32,
+    // 省略其他 Linux TCP_INFO 兼容字段
 }
 ```
 
-通用选项（非阻塞、超时、`SO_BINDTODEVICE` 等）由 `GeneralOptions`（[general.rs](net/ax-net/src/general.rs)）实现，各 socket backend 的 `get_option_inner` / `set_option_inner` 先尝试 `GeneralOptions`，再处理自身特有选项。`TcpInfo`（[options.rs](net/ax-net/src/options.rs)）提供 transport-independent 的 TCP_INFO 快照。
+## DNS 与名称解析
 
-`SO_BINDTODEVICE` 在 `ax-net` 内表达为 `DeviceBinding`（[config.rs](net/ax-net/src/config.rs)）：
-
-```rust
-#[derive(Debug, Clone, Copy, Default, Eq, PartialEq)]
-pub struct DeviceBinding {
-    pub bound_if: Option<InterfaceId>,
-}
-```
-
-语义：
-
-- `None`：未绑定接口，按 route decision 选择出接口。
-- `Some(id)`：只允许对应接口参与 route/waker/device 选择。
-
-## DNS API
+DNS API 位于 [lib.rs](net/ax-net/src/lib.rs)，使用控制面的 DNS registry 和 route decision。
 
 ```rust
 pub fn dns_servers() -> Vec<Ipv4Address>;
@@ -206,37 +466,23 @@ pub fn dns_query(name: &str) -> AxResult<Vec<IpAddr>>;
 pub fn dns_query_timeout(name: &str, timeout: Duration) -> AxResult<Vec<IpAddr>>;
 ```
 
-说明：
+语义：
 
-- `dns_servers()` 返回按 (metric, interface_id, server_ip) 排序去重的 DNS server 列表。来源包括 DHCP、静态配置和 fallback。
-- `dns_query()` 使用 5 秒默认超时（`DNS_DEFAULT_TIMEOUT`）。内部过滤不可路由的 DNS server，创建临时 `dns::Socket`，循环 poll 直到解析完成或超时。
-- 查询结束后 `DnsSocketGuard` 自动从 `SOCKET_SET` 移除临时 socket。
+- `dns_servers()` 返回按 `(metric, interface_id, server_ip)` 排序并去重的 IPv4 DNS server。
+- DNS server 来源包括 DHCP、接口静态配置和 global fallback。
+- `dns_query()` 使用默认 5 秒超时。
+- `dns_query_timeout()` 会跳过不可路由的 DNS server。
+- 查询期间临时创建 smoltcp DNS socket，结束后由 guard 从 `SOCKET_SET` 移除。
 
-## ARP API
+## 设备驱动 API
 
-```rust
-pub fn arp_entries() -> Vec<ArpEntry>;
-```
+设备驱动 API 是 low-level NIC 和 `ax-net` 之间的能力边界。驱动提供 buffer 和 IRQ 语义，协议栈不依赖具体 DMA ring 或虚拟队列实现。
 
-返回所有 Ethernet 设备上已解析的 ARP 条目快照（[ArpEntry](net/ax-net/src/device/mod.rs)）：
-
-```rust
-pub struct ArpEntry {
-    pub ip_addr: [u8; 4],
-    pub hw_type: u16,
-    pub flags: u16,
-    pub hw_addr: [u8; 6],
-    pub device: String,        // 真实接口名
-}
-```
-
-## 设备 Driver API
-
-### EthernetDriver（能力边界 trait）
-
-定义在 [device/driver.rs](net/ax-net/src/device/driver.rs)：
+### EthernetDriver
 
 ```rust
+pub type EthernetDeviceList = Vec<Box<dyn EthernetDriver>>;
+
 pub trait EthernetDriver: Send + Sync {
     fn device_name(&self) -> &str;
     fn irq_num(&self) -> Option<usize>;
@@ -252,7 +498,24 @@ pub trait EthernetDriver: Send + Sync {
 }
 ```
 
-`RdNetDriver` 是该 trait 的标准实现（基于 `rd-net`），`EthernetDeviceList` 即 `Vec<Box<dyn EthernetDriver>>`。
+RX/TX buffer trait：
+
+```rust
+pub trait NetRxBuffer: Send {
+    fn packet(&self) -> &[u8];
+    fn packet_len(&self) -> usize {
+        self.packet().len()
+    }
+}
+
+pub trait NetTxBuffer: Send {
+    fn packet(&self) -> &[u8];
+    fn packet_mut(&mut self) -> &mut [u8];
+    fn packet_len(&self) -> usize;
+}
+```
+
+`RdNetDriver` 是基于 `rd-net` 的标准适配实现。
 
 ### IRQ 注册
 
@@ -269,110 +532,9 @@ pub trait EthernetIrqRegistrar: Send + Sync {
 }
 ```
 
-`EthernetIrqAction` 封装 `(data: NonNull<()>, handler: unsafe fn(NonNull<()>) -> EthernetIrqOutcome)` 对，由 `ax-runtime` 注册。IRQ 触发时 `handle_ethernet_irq()` → `driver.handle_irq()` → 返回 `RX_READY` 时 wake RX worker。
+`EthernetIrqAction` 封装平台 IRQ 回调。IRQ handler 返回 `EthernetIrqOutcome::Wake` 时，Ethernet adapter 会唤醒设备 RX worker 和 net-poll 路径。
 
-## Vsock API（`vsock` feature）
-
-```rust
-#[cfg(feature = "vsock")]
-pub fn init_vsock(vsock_devs: VsockDeviceList);
-
-// types:
-pub struct VsockAddr;
-pub struct VsockConnId;
-pub type VsockDevice = Box<dyn rdif_vsock::Interface>;
-pub type VsockDeviceList = Vec<VsockDevice>;
-```
-
-`VsockDevice` 是 `rdif_vsock::Interface` trait object，表示 vsock 设备事件/收发接口。它不等同于 `ax-net` 内部的 IP `Device` trait，也不进入 smoltcp `SocketSet`。
-
-## bind_device 方法
-
-每个 socket 类型提供独立的接口绑定方法（不通过 socket option）：
-
-```rust
-impl TcpSocket {
-    pub fn bind_device(&self, interface_id: InterfaceId) -> AxResult;
-}
-impl UdpSocket {
-    pub fn bind_device(&self, interface_id: InterfaceId) -> AxResult;
-}
-impl RawSocket {
-    pub fn bind_device(&self, interface_id: InterfaceId) -> AxResult;
-}
-```
-
-校验现有接口，不存在返回 `AxError::NoSuchDevice`。内部设置 `DeviceBinding { bound_if: Some(id) }`。
-
-## Socket 构造 API
-
-```rust
-impl TcpSocket {
-    pub fn new() -> Self;                          // 创建 Idle 状态 socket
-    fn new_connected(handle, local_ep, remote_ep) -> Self;  // accept 内部使用
-}
-
-impl UdpSocket {
-    pub fn new() -> Self;
-}
-
-impl RawSocket {
-    pub fn new(ip_version: IpVersion, ip_protocol: IpProtocol) -> Self;
-}
-
-impl UnixSocket {
-    pub fn new(transport: impl Into<Transport>) -> Self;
-    // 其中 Transport::Stream(StreamTransport) 或 Transport::Dgram(DgramTransport)
-}
-
-impl VsockSocket {
-    pub fn new(transport: impl Into<VsockTransport>) -> Self;
-    // VsockTransport::Stream(VsockStreamTransport)
-}
-```
-
-Unix stream transport 通过 `StreamTransport::new_pair(pid)` 创建 socketpair，Unix datagram transport 通过 `DgramTransport::new_pair(pid)` 创建 pair。
-
-## Ephemeral Port 分配
-
-未在 public API 中暴露，但 TCP bind 和 UDP bind 在 `port == 0` 时调用内部函数分配临时端口（从 `49152` 开始，即 IANA 动态端口范围的下界）。
-
-## Unix Namespace API
-
-```rust
-pub fn register_unix_namespace(ns: impl UnixNamespace + 'static);
-```
-
-StarryOS 通过此 API 注入文件系统 namespace（路径解析和 inode 管理）。`UnixNamespace` trait 定义在 [unix/namespace.rs](net/ax-net/src/unix/namespace.rs)。
-
-## TCP / UDP / raw 接口绑定
-
-TCP、UDP 和 raw socket 提供 `bind_device(InterfaceId)`，例如 `TcpSocket::bind_device()`（[tcp.rs](net/ax-net/src/tcp.rs)）：
-
-```rust
-pub fn bind_device(&self, interface_id: InterfaceId) -> AxResult {
-    if interface_by_id(interface_id).is_none() {
-        return Err(AxError::NoSuchDevice);
-    }
-    self.general.set_device_binding(DeviceBinding {
-        bound_if: Some(interface_id),
-    });
-    Ok(())
-}
-```
-
-```rust
-let eth1 = ax_net::interface_by_name("eth1").ok_or(AxError::NoSuchDevice)?;
-
-let udp = ax_net::udp::UdpSocket::new();
-udp.bind_device(eth1.id)?;
-```
-
-绑定具体本地地址时，`ax-net` 会根据地址所属接口设置 `DeviceBinding`。例如 `UdpSocket::bind()` 调用 `get_control().local_binding_for(&endpoint)?`（[udp.rs](net/ax-net/src/udp.rs)）从监听地址反查接口。未绑定接口的 connect/sendto 会按 route decision 自动选择源地址和出接口。
-
-## 动态设备注册与 OOB RX
-
-用于运行时添加 Ethernet 设备（如 Wi-Fi AP 模式启动后），以及 SDIO Wi-Fi 等 out-of-band RX 设备：
+### 动态设备注册
 
 ```rust
 pub struct NetConfig {
@@ -380,20 +542,67 @@ pub struct NetConfig {
     pub ip: [u8; 4],
     pub prefix_len: u8,
     pub dhcp_server_client_ip: Option<[u8; 4]>,
-    pub dedicated_poll: bool,    // true = 使用 notify_oob_rx() 驱动 RX
+    pub dedicated_poll: bool,
 }
 
 pub fn register_device_with_config(dev: Box<dyn EthernetDriver>, config: NetConfig);
-pub fn notify_oob_rx();          // SDIO Wi-Fi 收到数据后调用
-pub fn eth0_ipv4_config() -> Option<Ipv4InterfaceConfig>;
+pub fn notify_oob_rx();
 ```
 
-`register_device_with_config()` 在 `Service` 中调用 `register_static_device()` 添加设备和路由，可选启用 DHCP server（`enable_dhcp_server()`）。`dedicated_poll = true` 时设备用 `EthernetDevice::new_oob_rx()` 创建，RX 就绪由驱动线程调用 `notify_oob_rx()` 唤醒独立 poll task（`{ifname}-oob-poll`），不经过 Ethernet IRQ 框架。
+`register_device_with_config()` 用于运行期加入静态 IPv4 Ethernet 设备，例如 Wi-Fi AP 模式设备。它会：
 
-## Per-address Listen 支持
+- 创建 `EthernetDevice` 或 OOB RX `EthernetDevice`。
+- 分配新的 `InterfaceId`。
+- 更新 smoltcp address list、接口 registry 和 route table。
+- 启动该设备的 RX/TX worker。
+- 可选启用内置单客户端 DHCP server。
 
-`ListenTable` 和 `SocketSetWrapper` 支持 Linux 语义的同端口不同地址 listen/bind：
+`dedicated_poll = true` 时，设备 RX readiness 不走 Ethernet IRQ registrar，而由外部驱动线程调用 `notify_oob_rx()` 唤醒 OOB poll task。
 
-- `LISTEN_TABLE.listen(endpoint, backlog)`：`ListenTableEntry` 是 `Vec<ListenTableEntryInner>`，每个 entry 存储完整的 `IpListenEndpoint`。
-- `listen_addrs_conflict(a, b)`：wildcard（`None`）与所有地址冲突；两个 `Some(addr)` 仅当相等时冲突。
-- `SocketSetWrapper::udp_bind_available()`：UDP 同端口不同地址允许共存，wildcard 与所有冲突。
+## Unix Namespace API
+
+Unix path socket 需要外部文件系统 namespace provider：
+
+```rust
+pub fn register_unix_namespace(ns: impl UnixNamespace + 'static);
+```
+
+abstract Unix socket 使用 `ax-net` 内部内存 namespace；path socket 通过注册的 `UnixNamespace` 完成路径绑定和解析。
+
+## 兼容语义
+
+这些 API 语义影响 syscall 层和测试用例，应作为稳定约定维护。
+
+### Per-address Bind/Listen
+
+TCP listen 和 UDP bind 支持 Linux 风格 wildcard/specific-address 冲突：
+
+- wildcard 地址与同端口所有具体地址冲突。
+- 两个具体地址只有地址相同时冲突。
+- TCP 由 `TCP_BOUND_PORTS` 和 `ListenTable` 共同维护。
+- UDP 由 `SocketSetWrapper` 的 `udp_binds` side table 维护。
+- `SO_REUSEADDR` 会影响 UDP wrapper side table 注册，但不绕过 smoltcp 自身状态检查。
+
+### Ephemeral Port
+
+TCP/UDP 在 bind port 为 `0` 时分配临时端口。临时端口范围从 `49152` 开始，符合 IANA dynamic/private port 下界。该分配器不是 public API，但影响 `bind(0)` 和自动 bind 行为。
+
+### Error Mapping
+
+常见错误约定：
+
+| 场景 | 错误 |
+| --- | --- |
+| 绑定不存在接口 | `AxError::NoSuchDevice` |
+| 绑定本机不存在地址 | `AxError::NoSuchDeviceOrAddress` |
+| 地址/端口冲突 | `AxError::AddrInUse` |
+| 操作不支持 | `AxError::OperationNotSupported` |
+| nonblocking 或 `MSG_DONTWAIT` 下 would block | `AxError::WouldBlock` |
+| 不支持的 socket option | Linux `ENOPROTOOPT` 映射 |
+
+### API 使用建议
+
+- 新代码使用 `interfaces()`、`interface_by_name()`、`interface_by_id()` 和 `ipv4_config(name)`，不要依赖 `eth0_ipv4_config()`。
+- socket 发送路径不要直接使用 `default_routes()` 自行选路，应交给 TCP/UDP/raw backend。
+- 设备驱动只实现 `EthernetDriver`，不要直接接触 `Router` 或 `SocketSet`。
+- 需要唤醒协议栈进度时调用 `request_poll()`，不要从调用者上下文同步 poll smoltcp。

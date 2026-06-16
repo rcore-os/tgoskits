@@ -5,35 +5,60 @@ sidebar_label: "Socket 系统"
 
 # Socket 系统
 
-`ax-net` 的 socket 抽象层向上暴露统一 API，向下对接 smoltcp（IP 类 socket）或自包含传输（Unix/vsock）。本文从源码层描述 backend 分层、端口仲裁、状态机和通用 poll 设施。
+`ax-net` 的 socket 层向上提供统一的 POSIX-like socket facade，向下分别连接 smoltcp IP socket、内核 Unix domain socket transport 和可选 vsock transport。IP 类 socket 共享单个 smoltcp `SocketSet`，但 TCP 监听、UDP bind 冲突、raw packet 过滤、Unix namespace 和 vsock connection manager 都由 `ax-net` 在协议核心外补齐。
 
-## Backend 分层
+核心源码：
 
-`Socket` 枚举（[socket.rs](net/ax-net/src/socket.rs)）聚合 5 类 backend，统一实现 `SocketOps` + `Configurable`：
+| 源码 | 职责 |
+| --- | --- |
+| [socket.rs](net/ax-net/src/socket.rs) | 统一地址、send/recv 选项、`SocketOps` trait、`Socket` 枚举分发 |
+| [general.rs](net/ax-net/src/general.rs) | 通用 socket 选项、超时、nonblocking、`SO_BINDTODEVICE`、poll helper |
+| [wrapper.rs](net/ax-net/src/wrapper.rs) | 全局 smoltcp `SocketSet` 包装和 UDP bind side table |
+| [state.rs](net/ax-net/src/state.rs) | TCP 等 socket 的轻量状态门禁 |
+| [listen_table.rs](net/ax-net/src/listen_table.rs) | TCP listen bucket、SYN/accept 队列、accept waker |
+| [tcp.rs](net/ax-net/src/tcp.rs) | TCP stream socket、端口仲裁、connect/listen/accept、orphan 接入 |
+| [udp.rs](net/ax-net/src/udp.rs) | UDP datagram socket、connected peer、MSG_MORE corking、route-aware source selection |
+| [raw.rs](net/ax-net/src/raw.rs) | Raw IP socket、ICMP loopback、peer filter、deferred RX |
+| [unix/](net/ax-net/src/unix/mod.rs) | Unix stream/datagram transport、abstract/path namespace |
+| [vsock/](net/ax-net/src/vsock/mod.rs) | 可选 AF_VSOCK facade 和 stream transport |
 
-```rust
-// socket.rs
-pub enum Socket {
-    Tcp(Box<TcpSocket>),
-    Udp(Box<UdpSocket>),
-    Raw(Box<RawSocket>),
-    Unix(Box<UnixSocket>),
-    #[cfg(feature = "vsock")]
-    Vsock(Box<VsockSocket>),
-}
+## 设计边界
+
+socket 层通过 `SocketOps` trait 和 `Socket` 枚举把系统调用语义映射到协议栈内部对象。它将 AF_INET、AF_UNIX、AF_VSOCK 的地址统一为 `SocketAddrEx`，将 `bind/connect/listen/accept/send/recv/shutdown` 统一为 trait 方法，并通过 `GeneralOptions` 维护 `O_NONBLOCK`、`SO_REUSEADDR`、超时和 `SO_BINDTODEVICE` 等通用选项。
+
+IP 类 socket（TCP/UDP/raw）持有 smoltcp `SocketHandle`，注册到全局 `SocketSetWrapper`。socket 层补齐 smoltcp 不直接提供的 POSIX 语义——TCP accept queue（`ListenTable`）、UDP wildcard bind 冲突（`udp_binds` side table）、raw connected-peer 过滤。出接口选择由控制面 `NetControl` 在 bind/connect 时决策，实际发包由 `Router::dispatch()` 在 net-poll worker 中完成；socket 操作本身不同步推进 `Interface::poll()`，只调用 `request_poll()` 请求 worker 推进。
+
+Unix domain socket 和 vsock 不经过 smoltcp，各自维护独立的 transport、namespace 和连接状态，但共享 `SocketOps`/`Configurable`/`Pollable` 入口，向上层呈现一致的 socket facade。
+
+典型关系如下：
+
+```mermaid
+flowchart TB
+    Syscall["syscall / ABI layer"] --> Facade["Socket enum + SocketOps"]
+    Facade --> General["GeneralOptions"]
+    Facade --> Inet["TCP / UDP / Raw"]
+    Facade --> Unix["Unix transport"]
+    Facade --> Vsock["Vsock transport"]
+
+    Inet --> SocketSet["SocketSetWrapper"]
+    SocketSet --> Smol["smoltcp SocketSet"]
+    Inet --> Control["NetControl route/bind decision"]
+    Inet --> Poll["Pollable + poll_io"]
+    Poll --> NetPoll["request_poll() / net-poll worker"]
+
+    Inet --> TcpSide["TCP_BOUND_PORTS / ListenTable"]
+    SocketSet --> UdpSide["udp_binds side table"]
+    Unix --> UnixNs["abstract/path namespace"]
+    Vsock --> VsockMgr["connection_manager"]
 ```
 
-| Backend | 类型 | 协议核心 | 源码 |
-| --- | --- | --- | --- |
-| `TcpSocket` | SOCK_STREAM / AF_INET | smoltcp TCP socket | [tcp.rs](net/ax-net/src/tcp.rs) |
-| `UdpSocket` | SOCK_DGRAM / AF_INET | smoltcp UDP socket | [udp.rs](net/ax-net/src/udp.rs) |
-| `RawSocket` | SOCK_RAW / AF_INET | smoltcp raw socket + ICMP loopback | [raw.rs](net/ax-net/src/raw.rs) |
-| `UnixSocket` | SOCK_STREAM/SOCK_DGRAM / AF_UNIX | 自包含 `Transport`（不经 smoltcp） | [unix/mod.rs](net/ax-net/src/unix/mod.rs) |
-| `VsockSocket` | SOCK_STREAM / AF_VSOCK | `rdif-vsock` 驱动 + ring buffer | [vsock/mod.rs](net/ax-net/src/vsock/mod.rs) |
+## 公共 Facade
 
-IP 类 socket（TCP/UDP/Raw/DNS）通过 `SOCKET_SET.add()` 注册到全局 `SocketSet`，获得 `SocketHandle`。Unix 和 vsock 不依赖 smoltcp，各自维护连接状态。
+公共 facade 定义跨协议族共享的数据形状和操作入口。系统调用层只需要持有 `Socket`，不需要知道底层是 smoltcp、Unix transport 还是 vsock connection manager。
 
-`SocketAddrEx` 统一地址类型：
+### 地址与选项
+
+`SocketAddrEx` 是跨地址族的统一地址类型：
 
 ```rust
 // socket.rs
@@ -45,114 +70,248 @@ pub enum SocketAddrEx {
 }
 ```
 
-`SocketOps` trait 是所有 backend 的统一接口：
+send/recv 选项保留 Linux `MSG_*` 语义：
 
 ```rust
-// socket.rs
+pub struct SendOptions {
+    pub to: Option<SocketAddrEx>,
+    pub flags: SendFlags,
+    pub cmsg: Vec<CMsgData>,
+}
+
+pub struct RecvOptions<'a> {
+    pub from: Option<&'a mut SocketAddrEx>,
+    pub flags: RecvFlags,
+    pub cmsg: Option<&'a mut Vec<CMsgData>>,
+    pub truncated: Option<&'a mut bool>,
+}
+```
+
+其中 `MSG_DONTWAIT` 只影响当前调用，不修改 socket 自身的 `O_NONBLOCK`；`MSG_PEEK`、`MSG_TRUNC`、`MSG_MORE` 由具体 transport 按协议语义解释。
+
+### SocketOps
+
+`SocketOps` 是所有 backend 的统一接口：
+
+```rust
 pub trait SocketOps: Configurable {
     fn bind(&self, local_addr: SocketAddrEx) -> AxResult;
     fn connect(&self, remote_addr: SocketAddrEx) -> AxResult;
-    fn listen(&self, _backlog: usize) -> AxResult { Err(AxError::OperationNotSupported) }
-    fn accept(&self) -> AxResult<Socket> { Err(AxError::OperationNotSupported) }
+    fn listen(&self, _backlog: usize) -> AxResult {
+        Err(AxError::OperationNotSupported)
+    }
+    fn accept(&self) -> AxResult<Socket> {
+        Err(AxError::OperationNotSupported)
+    }
     fn send(&self, src: impl Read + IoBuf, options: SendOptions) -> AxResult<usize>;
     fn recv(&self, dst: impl Write + IoBufMut, options: RecvOptions<'_>) -> AxResult<usize>;
+    fn recv_available(&self) -> AxResult<usize> {
+        Err(AxError::OperationNotSupported)
+    }
     fn local_addr(&self) -> AxResult<SocketAddrEx>;
     fn peer_addr(&self) -> AxResult<SocketAddrEx>;
     fn shutdown(&self, how: Shutdown) -> AxResult;
 }
 ```
 
-TCP 实现完整 stream 接口（含 `listen`/`accept`）；UDP 实现 datagram 的 bind/connect/send/recv/poll，不支持 `listen`/`accept`；Raw socket 不实现 `listen`/`accept`；Unix/vsock 有各自独立的 transport trait。
+默认实现只给出“不支持”的语义，具体 backend 再按协议覆盖。例如 TCP 支持 `listen/accept`，UDP/raw 不支持；Unix stream 支持 accept，Unix datagram 不按 TCP listen 语义工作；vsock 提供 stream transport。
 
-## SocketSetWrapper
+### Backend 分发
 
-全局 socket 容器（[wrapper.rs](net/ax-net/src/wrapper.rs)）在 smoltcp `SocketSet` 之上增加 UDP 端口冲突仲裁：
+`Socket` 枚举负责把统一 API 分发到具体 backend：
 
 ```rust
-// wrapper.rs
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-struct UdpBindKey {
-    addr: Option<IpAddress>,
-    port: u16,
+pub enum Socket {
+    Udp(Box<UdpSocket>),
+    Tcp(Box<TcpSocket>),
+    Raw(Box<RawSocket>),
+    Unix(Box<UnixSocket>),
+    #[cfg(feature = "vsock")]
+    Vsock(Box<VsockSocket>),
+}
+```
+
+| Backend | 地址族/类型 | 协议核心 | 关键状态 |
+| --- | --- | --- | --- |
+| `TcpSocket` | AF_INET / SOCK_STREAM | smoltcp TCP socket | `StateLock`、`TCP_BOUND_PORTS`、`ListenTable`、orphan |
+| `UdpSocket` | AF_INET / SOCK_DGRAM | smoltcp UDP socket | UDP bind side table、connected peer、cork |
+| `RawSocket` | AF_INET / SOCK_RAW | smoltcp raw socket | local/peer filter、loopback RX、deferred RX |
+| `UnixSocket` | AF_UNIX / stream,dgram | in-kernel transport | abstract/path namespace、stream/dgram transport |
+| `VsockSocket` | AF_VSOCK / stream | rdif-vsock transport | connection manager、stream ring buffers |
+
+## 共享 Socket 状态
+
+共享状态层包含三类内容：通用 socket 选项、smoltcp handle 空间，以及状态转换门禁。它们不表达某个协议的完整语义，只提供所有 backend 复用的基础设施。
+
+### GeneralOptions
+
+`GeneralOptions` 被 TCP、UDP、raw、Unix、vsock transport 复用，用来维护通用 socket option 和阻塞等待入口：
+
+```rust
+// general.rs
+pub(crate) struct GeneralOptions {
+    nonblock: AtomicBool,
+    reuse_address: AtomicBool,
+    send_timeout_nanos: AtomicU64,
+    recv_timeout_nanos: AtomicU64,
+    bound_if: AtomicU32,
+    socket_type: AtomicI32,
+    domain: i32,
+    protocol: i32,
+}
+```
+
+构造时固定 `(SOCK_*, AF_*, IPPROTO_*)`，后续 `getsockopt()` 直接从这里读取：
+
+| socket | SOCK_* | AF_* | protocol |
+| --- | --- | --- | --- |
+| TCP | `SOCK_STREAM` | `AF_INET` | `IPPROTO_TCP` |
+| UDP | `SOCK_DGRAM` | `AF_INET` | `IPPROTO_UDP` |
+| Raw | `SOCK_RAW` | `AF_INET` | 创建时指定的 `IpProtocol` |
+| Unix stream | `SOCK_STREAM` | `AF_UNIX` | `0` |
+| Unix dgram | `SOCK_DGRAM` | `AF_UNIX` | `0` |
+| Vsock stream | `SOCK_STREAM` | `AF_VSOCK` | `0` |
+
+`bound_if` 保存的是稳定的 `InterfaceId`，不是 Router 内部设备索引：
+
+```rust
+pub fn set_device_binding(&self, binding: DeviceBinding) {
+    self.bound_if.store(
+        binding.bound_if.map_or(0, InterfaceId::get),
+        Ordering::Release,
+    );
 }
 
+pub fn device_binding(&self) -> DeviceBinding {
+    let raw = self.bound_if.load(Ordering::Acquire);
+    DeviceBinding {
+        bound_if: (raw != 0).then_some(InterfaceId::new(raw)),
+    }
+}
+```
+
+### SocketSetWrapper
+
+TCP、UDP 和 raw socket 都注册到同一个 smoltcp `SocketSet`，由 `SocketSetWrapper` 持有：
+
+```rust
 pub(crate) struct SocketSetWrapper<'a> {
     pub inner: Mutex<SocketSet<'a>>,
     udp_binds: Mutex<HashMap<UdpBindKey, SocketHandle>>,
 }
 ```
 
-`add()` 和 `with_socket_mut()` 是对 smoltcp API 的薄封装；`remove()` 额外调用 `udp_unbind()`。
+统一 `SocketSet` 的意义：
 
-### UDP 端口仲裁
+- TCP/UDP/raw 共享同一 handle 空间。
+- net-poll worker 可以一次性推进所有 IP socket。
+- TCP listen table 和 orphan reaper 可以通过 handle 操作 child socket。
+- 不需要为每个接口复制 socket set，wildcard listen 和动态 route 选择保持简单。
 
-`udp_bind_available()` 实现默认 UDP bind 冲突仲裁。`SO_REUSEADDR` 不在该函数内部处理，而是在 `UdpSocket::bind()` 中通过 `general.reuse_address()` 决定是否跳过 `SOCKET_SET.udp_bind()` 这张 side table：
+`SocketSetWrapper` 只封装 smoltcp socket 访问，不持有 `Service` 锁，也不直接唤醒任务：
 
 ```rust
-// wrapper.rs
+pub fn with_socket_mut<T: AnySocket<'a>, R, F>(&self, handle: SocketHandle, f: F) -> R
+where
+    F: FnOnce(&mut T) -> R,
+{
+    let mut set = self.inner.lock();
+    let socket = set.get_mut(handle);
+    f(socket)
+}
+```
+
+### StateLock
+
+`StateLock` 是 TCP 等 socket 的轻量状态门禁，避免同一个 socket 上并发 `bind/connect/listen` 进入不一致状态：
+
+```rust
+#[repr(u8)]
+pub(crate) enum State {
+    Idle = 0,
+    Busy = 1,
+    Connecting = 2,
+    Connected = 3,
+    Listening = 4,
+    Closed = 5,
+}
+
+pub struct StateLock(AtomicU8);
+```
+
+`lock(expect)` 通过 CAS 把期望状态临时切到 `Busy`，`StateGuard::transit()` 在操作成功后提交新状态，失败时回退旧状态：
+
+```rust
+pub fn lock(&self, expect: State) -> Result<StateGuard<'_>, State> {
+    match self.0.compare_exchange(
+        expect as u8,
+        State::Busy as u8,
+        Ordering::Acquire,
+        Ordering::Acquire,
+    ) {
+        Ok(_) => Ok(StateGuard(self, expect as u8)),
+        Err(old) => Err(old.try_into().expect("invalid state")),
+    }
+}
+```
+
+典型 TCP 公共状态流：
+
+```text
+Idle --bind--> Idle
+Idle --listen--> Listening
+Idle --connect--> Connecting --established--> Connected
+Listening --accept--> Listening
+Connected --shutdown/drop--> Closed or orphaned smoltcp socket
+```
+
+## 端口与监听仲裁
+
+端口仲裁是 POSIX 兼容语义的一部分，不能完全交给 smoltcp。`ax-net` 使用 TCP 和 UDP 各自的 side table 表达 wildcard/specific-address 冲突关系。
+
+### UDP Bind Side Table
+
+UDP bind side table 位于 `SocketSetWrapper`，用于补齐 Linux 风格的 wildcard bind 冲突：
+
+```rust
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+struct UdpBindKey {
+    addr: Option<IpAddress>,
+    port: u16,
+}
+
 fn udp_bind_available(binds: &HashMap<UdpBindKey, SocketHandle>, key: UdpBindKey) -> bool {
-    let wildcard = UdpBindKey { addr: None, port: key.port };
-    // 精确 bind：同地址同端口冲突 || wildcard 已占用冲突
+    let wildcard = UdpBindKey {
+        addr: None,
+        port: key.port,
+    };
     if binds.contains_key(&key) || (key.addr.is_some() && binds.contains_key(&wildcard)) {
         return false;
     }
-    // Wildcard bind：任何地址已占用同一端口则冲突
     key.addr.is_some() || !binds.keys().any(|bind| bind.port == key.port)
 }
 ```
 
-| bind 类型 | 示例 | 拒绝条件 |
+| bind 类型 | 示例 | 冲突规则 |
 | --- | --- | --- |
-| 精确 bind | `192.168.1.1:53` | 同地址同端口已存在，或 wildcard `0.0.0.0:53` 已存在 |
-| Wildcard bind | `0.0.0.0:53` | 任何地址已占用同一端口 |
-| `SO_REUSEADDR` | — | `UdpSocket::bind()` 跳过 wrapper 的 UDP bind side table；smoltcp 自身仍会执行 socket 状态/地址可用性检查 |
+| 精确地址 | `192.168.1.10:53` | 同地址同端口冲突；同端口 wildcard 已存在也冲突 |
+| Wildcard | `0.0.0.0:53` | 任意地址已占用该端口即冲突 |
+| `SO_REUSEADDR` | socket option | `UdpSocket::bind()` 跳过 wrapper 的 UDP bind side table；smoltcp 仍执行自身 bind 检查 |
 
-`udp_port_available()` 暴露给 ephemeral port 分配器使用。
+### TCP Bound Ports
 
-## TCP 端口仲裁
-
-除了 `ListenTable`（管理 `listen()` 端口），`ax-net` 还有独立的 `TCP_BOUND_PORTS`（[tcp.rs](net/ax-net/src/tcp.rs)）追踪已 bind 但尚未 listen 的端口：
+TCP 除了 listen table，还需要记录“已经 bind 但还没有 listen/connect 完成”的端口所有权：
 
 ```rust
-// tcp.rs
 static TCP_BOUND_PORTS: LazyLock<Mutex<HashMap<u16, Vec<Option<IpAddress>>>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
-fn register_tcp_bound(endpoint: IpListenEndpoint) -> AxResult {
-    if endpoint.port == 0 { return Ok(()); }
-    let mut bound_ports = TCP_BOUND_PORTS.lock();
-    let bound_addrs = bound_ports.entry(endpoint.port).or_default();
-    if bound_addrs.iter().any(|&addr| listen_addrs_conflict(addr, endpoint.addr)) {
-        return Err(AxError::AddrInUse);
-    }
-    bound_addrs.push(endpoint.addr);
-    Ok(())
-}
-
-fn unregister_tcp_bound(endpoint: IpListenEndpoint) {
-    if endpoint.port != 0 {
-        let mut bound_ports = TCP_BOUND_PORTS.lock();
-        if let Some(bound_addrs) = bound_ports.get_mut(&endpoint.port) {
-            if let Some(idx) = bound_addrs.iter().position(|&addr| addr == endpoint.addr) {
-                bound_addrs.swap_remove(idx);
-            }
-            if bound_addrs.is_empty() { bound_ports.remove(&endpoint.port); }
-        }
-    }
-}
-```
-
-地址冲突判定：
-
-```rust
 fn listen_addrs_conflict(a: Option<IpAddress>, b: Option<IpAddress>) -> bool {
     a.is_none() || b.is_none() || a == b
 }
 ```
 
-即 wildcard 与所有地址冲突，两个具体地址仅相等时冲突。这与 `ListenTable` 的同端口多地址 listen 语义一致。
-
-`tcp_port_available()` 同时检查两表：
+语义是 wildcard 与所有地址冲突，两个具体地址仅在相等时冲突。ephemeral TCP 端口分配同时检查 listen table 和 bound table：
 
 ```rust
 fn tcp_port_available(port: u16) -> bool {
@@ -161,126 +320,74 @@ fn tcp_port_available(port: u16) -> bool {
 }
 ```
 
-## Socket 状态机
+这里用 wildcard endpoint 检查 listen table 是有意的保守策略：自动分配 ephemeral port 时，只要该端口已经存在任何 listen entry，就不再分配给主动连接 socket。
 
-`StateLock`（[state.rs](net/ax-net/src/state.rs)）提供基于 CAS 的轻量状态转换锁，所有 socket 类型共享：
+### ListenTable
 
-```rust
-// state.rs
-#[repr(u8)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum State { Idle = 0, Busy = 1, Connecting = 2,
-                         Connected = 3, Listening = 4, Closed = 5 }
-
-pub struct StateLock(AtomicU8);
-
-impl StateLock {
-    pub fn get(&self) -> State {
-        self.0.load(Ordering::Acquire).try_into().expect("invalid state")
-    }
-
-    pub fn lock(&self, expect: State) -> Result<StateGuard<'_>, State> {
-        match self.0.compare_exchange(expect as u8, State::Busy as u8,
-                                       Ordering::Acquire, Ordering::Acquire) {
-            Ok(_) => Ok(StateGuard(self, expect as u8)),
-            Err(old) => Err(old.try_into().expect("invalid state")),
-        }
-    }
-}
-```
-
-状态转换图：
-
-```
-Idle ──bind──→ Idle (不变，但注册 endpoint)
-Idle ──listen──→ Listening
-Idle ──connect──→ Connecting ──SYN/SYN+ACK──→ Connected
-Listening ──accept──→ Listening (不变，但生成新 socket)
-Connected ──close──→ Closed
-```
-
-`StateGuard::transit()` 在执行操作时临时置为 `Busy`，成功提交新状态，失败回退：
+`ListenTable` 是 TCP passive open 的核心数据结构。smoltcp 没有“一个 public listen socket 管理多个 child socket”的 POSIX 对象模型，所以 `ax-net` 在外部维护 accept queue：
 
 ```rust
-// state.rs
-#[must_use]
-pub struct StateGuard<'a>(&'a StateLock, u8);
-
-impl StateGuard<'_> {
-    pub fn transit<R>(self, new: State, f: impl FnOnce() -> AxResult<R>) -> AxResult<R> {
-        match f() {
-            Ok(result) => { self.0.0.store(new as u8, Ordering::Release); Ok(result) }
-            Err(err) => { self.0.0.store(self.1, Ordering::Release); Err(err) }
-        }
-    }
-}
-```
-
-并发 `bind`/`connect`/`listen` 在同一 socket 上只有第一个成功——后续操作在 `lock(expect)` 时 CAS 失败。
-
-## ListenTable
-
-`ListenTable`（[listen_table.rs](net/ax-net/src/listen_table.rs)）是 TCP 监听的核心数据结构。65536 个端口 bucket，每端口一个 `Arc<Mutex<Vec<ListenTableEntryInner>>>`，支持同端口不同地址 listen：
-
-```rust
-// listen_table.rs
 struct ListenTableEntryInner {
     listen_endpoint: IpListenEndpoint,
-    backlog: usize,                      // clamp 到 LISTEN_QUEUE_SIZE=512
+    backlog: usize,
     syn_queue: VecDeque<PendingTcp>,
     accept_poll: Arc<PollSet>,
 }
 
 pub struct ListenTable {
-    tcp: Box<[ListenTableEntry]>,        // [Arc<Mutex<Vec<Inner>>>; 65536]
+    tcp: Box<[ListenTableEntry]>,
 }
 ```
 
-### listen/unlisten
+`tcp` 是 65536 个端口 bucket，每个 bucket 存放该端口下的多个具体地址 listener。`listen()` 检查 wildcard/specific 冲突后插入 entry：
 
 ```rust
-pub fn can_listen(&self, endpoint: IpListenEndpoint) -> bool {
-    self.tcp[endpoint.port as usize].lock().iter()
-        .all(|entry| !listen_addrs_conflict(entry.listen_endpoint.addr, endpoint.addr))
-}
-
-pub fn listen(&self, endpoint: IpListenEndpoint, backlog: usize) -> AxResult {
-    let mut entries = self.tcp[endpoint.port as usize].lock();
-    if entries.iter().any(|e| listen_addrs_conflict(e.listen_endpoint.addr, endpoint.addr)) {
+pub fn listen(&self, listen_endpoint: IpListenEndpoint, backlog: usize) -> AxResult {
+    let port = listen_endpoint.port;
+    let mut entries = self.tcp[port as usize].lock();
+    if entries
+        .iter()
+        .any(|entry| listen_addrs_conflict(entry.listen_endpoint.addr, listen_endpoint.addr))
+    {
         return Err(AxError::AddrInUse);
     }
-    entries.push(ListenTableEntryInner::new(endpoint, backlog));
+    entries.push(ListenTableEntryInner::new(listen_endpoint, backlog));
     Ok(())
 }
 ```
 
-### SYN 预创建
+### SYN 预创建与 accept
 
-`snoop_tcp_packet()` 在 `Router::poll()` 中拦截 TCP SYN 包（`tcp_packet.syn() && !tcp_packet.ack()`），调用 `incoming_tcp_packet()` 预创建 socket。
+`Router::poll()` 在 RX 路径 snoop TCP SYN 包，`incoming_tcp_packet()` 匹配 listen endpoint 后预创建 child smoltcp socket，并推入 listener 的 `syn_queue`。这样每条 pending 连接都有自己的 smoltcp TCP 状态机，可以独立完成 SYN-RECEIVED 到 ESTABLISHED 的推进。
 
-`incoming_tcp_packet()` 在 `syn_queue` 未满时创建新 `TcpSocket` 并调用 `socket.listen()`，推入队列供后续 `accept()` 获取。
-
-### accept()
+`accept()` 遍历 `syn_queue`，清理已经关闭且无数据的 child，返回第一个可接受 socket：
 
 ```rust
-pub fn accept(&self, endpoint: IpListenEndpoint, sockets: &mut SocketSet) -> AxResult<AcceptedTcp> {
-    let entries = self.tcp[endpoint.port as usize].clone();
+pub fn accept(
+    &self,
+    listen_endpoint: IpListenEndpoint,
+    sockets: &mut SocketSet<'_>,
+) -> AxResult<AcceptedTcp> {
+    let entries = self.listen_entry(listen_endpoint.port);
     let mut table = entries.lock();
-    let entry = table.iter_mut()
-        .find(|e| e.listen_endpoint == endpoint)
-        .ok_or(AxError::InvalidInput)?;
+    let Some(entry) = table
+        .iter_mut()
+        .find(|entry| entry.listen_endpoint == listen_endpoint)
+    else {
+        return Err(AxError::InvalidInput);
+    };
 
-    // 遍历 syn_queue，跳过 Closed 且无数据的 socket
+    let syn_queue: &mut VecDeque<PendingTcp> = &mut entry.syn_queue;
     let mut idx = 0;
-    while idx < entry.syn_queue.len() {
-        let handle = entry.syn_queue[idx].accepted.handle;
+    while idx < syn_queue.len() {
+        let handle = syn_queue[idx].accepted.handle;
         if is_closed_without_data(sockets, handle) {
-            entry.syn_queue.swap_remove_front(idx);
+            syn_queue.swap_remove_front(idx);
             sockets.remove(handle);
             continue;
         }
         if is_acceptable(sockets, handle) {
-            return Ok(entry.syn_queue.swap_remove_front(idx).unwrap().accepted);
+            return Ok(syn_queue.swap_remove_front(idx).unwrap().accepted);
         }
         idx += 1;
     }
@@ -288,66 +395,329 @@ pub fn accept(&self, endpoint: IpListenEndpoint, sockets: &mut SocketSet) -> AxR
 }
 ```
 
-可 accept 的状态：`Established | CloseWait | FinWait1 | FinWait2 | Closing | LastAck | TimeWait`。
+可接受状态包括已经建立以及已经进入关闭流程但仍可被 userspace 观察的 child，例如 `Established`、`CloseWait`、`FinWait*`、`Closing`、`LastAck`、`TimeWait`。
 
-## 通用 Poll 与超时
+## IP Socket Backend
 
-`GeneralOptions`（[general.rs](net/ax-net/src/general.rs)）为所有 socket 提供通用的非阻塞、超时和 poll 设施：
+TCP、UDP 和 raw socket 都持有 smoltcp `SocketHandle`，但它们在 public 语义、side table 和 packet 格式上差异很大。
+
+### TCP Socket
+
+`TcpSocket` 包装 smoltcp stream socket，并维护 public TCP 状态、端口注册、peer endpoint、keepalive/TCP_INFO 选项和 readiness poll set：
 
 ```rust
-// general.rs
-pub(crate) struct GeneralOptions {
-    nonblock: AtomicBool,             // O_NONBLOCK
-    reuse_address: AtomicBool,        // SO_REUSEADDR
-    send_timeout_nanos: AtomicU64,    // SO_SNDTIMEO (0 = 无限)
-    recv_timeout_nanos: AtomicU64,    // SO_RCVTIMEO
-    bound_if: AtomicU32,              // SO_BINDTODEVICE (InterfaceId, 0 = 未绑定)
-    socket_type: AtomicI32,           // SOCK_STREAM(1)/DGRAM(2)/RAW(3)
-    domain: i32,                      // AF_INET(2)/AF_UNIX(1)/AF_VSOCK(40)
-    protocol: i32,                    // IPPROTO_TCP(6)/UDP(17)/ICMP(1)
+pub struct TcpSocket {
+    state: StateLock,
+    handle: SocketHandle,
+    bound_endpoint: Mutex<IpListenEndpoint>,
+    peer_endpoint: Mutex<Option<IpEndpoint>>,
+    bound_registered: AtomicBool,
+    general: GeneralOptions,
+    pending_error: AtomicI32,
+    keep_idle_secs: AtomicU32,
+    keep_interval_secs: AtomicU32,
+    keep_count: AtomicU32,
+    user_timeout_millis: AtomicU32,
+    rx_closed: AtomicBool,
+    poll_rx: Arc<PollSet>,
+    poll_tx: Arc<PollSet>,
+    poll_rx_closed: PollSet,
 }
 ```
 
-构造函数按 socket 类型固化 `(socket_type, domain, protocol)`：
+TCP socket 的主要职责：
 
-| socket | SOCK_* | AF_* | IPPROTO_* |
-| --- | --- | --- | --- |
-| `TcpSocket` | 1 (STREAM) | 2 (INET) | 6 (TCP) |
-| `UdpSocket` | 2 (DGRAM) | 2 (INET) | 17 (UDP) |
-| `RawSocket` | 3 (RAW) | 2 (INET) | 根据 `IpProtocol` |
-| `UnixSocket` stream | 1 (STREAM) | 1 (UNIX) | 0 |
-| `UnixSocket` dgram | 2 (DGRAM) | 1 (UNIX) | 0 |
-| `VsockSocket` | 1 (STREAM) | 40 (VSOCK) | 0 |
+- `bind()`：通过控制面校验本地地址并注册 `TCP_BOUND_PORTS`。
+- `connect()`：选择 route/source，绑定 ephemeral port，启动 smoltcp connect，然后 `request_poll()`。
+- `listen()`：把 endpoint 移入 `ListenTable`。
+- `accept()`：从 `ListenTable` 取出 child handle，构造已连接 `TcpSocket`。
+- `send/recv()`：只操作 smoltcp socket buffer，不同步驱动完整 interface poll。
+- `drop()`：必要时把未完全关闭的 smoltcp socket移入 orphan reaper。
 
-### 核心 Poller
+### UDP Socket
 
-`send_poller_with()` 和 `recv_poller_with()` 是通用的阻塞/非阻塞等待入口。当前源码不手写循环，而是把一次 socket 操作闭包交给 `ax_task::future::poll_io()`，再套上 send/recv timeout：
+`UdpSocket` 是 datagram backend，保留本地 endpoint、connected peer 和 `MSG_MORE` cork 状态：
 
 ```rust
-// general.rs
+struct CorkState {
+    buf: Vec<u8>,
+    remote: IpEndpoint,
+    source: IpAddress,
+}
+
+pub struct UdpSocket {
+    handle: SocketHandle,
+    local_addr: RwLock<Option<IpEndpoint>>,
+    peer_addr: RwLock<Option<(IpEndpoint, IpAddress)>>,
+    general: GeneralOptions,
+    cork: Mutex<Option<CorkState>>,
+}
+```
+
+设计要点：
+
+- bind 时通过 `SocketSetWrapper::udp_bind()` 记录 wildcard/specific ownership。
+- connect/sendto 时通过控制面 route decision 选择源地址。
+- connected UDP 保存 `(peer endpoint, selected source)`，recv 时过滤不匹配 peer 的 datagram。
+- `MSG_MORE` 会把多次 send 合并为一个 datagram，并固定第一次 send 的 remote/source，避免后续调用改变目标。
+- drop 时从 UDP bind side table 中移除 handle。
+
+### Raw Socket
+
+`RawSocket` 暴露 IP 层以上、TCP/UDP 以下的 packet-oriented 接口：
+
+```rust
+pub struct RawSocket {
+    handle: SocketHandle,
+    ip_version: IpVersion,
+    local_addr: RwLock<Option<IpAddress>>,
+    peer_addr: RwLock<Option<IpAddress>>,
+    loopback_rx: Mutex<Option<(IpAddress, Vec<u8>)>>,
+    deferred_rx: Mutex<Option<(IpAddress, Vec<u8>)>>,
+    ttl: RwLock<Option<u8>>,
+    rx_closed: AtomicBool,
+    tx_closed: AtomicBool,
+    general: GeneralOptions,
+}
+```
+
+raw socket 有两个特别路径：
+
+- `loopback_rx` 保存本地快速路径产生、尚未被 recv 取走的 loopback packet。
+- `deferred_rx` 保存 connected-peer 过滤时暂存的非当前可交付 packet，格式保持为一致的 wire packet，避免 peek/filter 后破坏 smoltcp receive queue 语义。
+
+发送时，如果没有显式本地地址，raw socket 通过控制面按 remote 选择 source；loopback 目的地址走本地路径，非 loopback 目的地址交给 smoltcp raw socket 和 Router dispatch。
+
+## Local Transport Backend
+
+Unix 和 vsock 不经过 smoltcp `SocketSet`，但共享 `SocketOps`、`Configurable` 和 `Pollable` 入口。它们的状态机和缓冲区由各自 transport 管理。
+
+### Unix Socket
+
+Unix socket facade 维护公共 local/remote 地址，具体 stream/datagram 语义交给 `Transport`：
+
+```rust
+pub enum UnixSocketAddr {
+    Unnamed,
+    Abstract(Arc<[u8]>),
+    Path(Arc<str>),
+}
+
+pub enum Transport {
+    Stream(StreamTransport),
+    Dgram(DgramTransport),
+}
+
+pub struct UnixSocket {
+    transport: Transport,
+    local_addr: Mutex<UnixSocketAddr>,
+    remote_addr: Mutex<UnixSocketAddr>,
+}
+```
+
+namespace 分两类：
+
+- abstract namespace：`ABSTRACT_BINDS: HashMap<Arc<[u8]>, BindSlot>`，完全位于内存。
+- path namespace：通过 `register_unix_namespace()` 注入外部 VFS namespace provider。
+
+`BindSlot` 同时容纳 stream listener 和 datagram endpoint，因此同一路径下 stream/dgram ownership 由 transport 分别仲裁：
+
+```rust
+pub struct BindSlot {
+    stream: Mutex<Option<stream::Bind>>,
+    dgram: Mutex<Option<dgram::Bind>>,
+}
+```
+
+Unix socket 的 accept 使用 transport 自己的 `Pollable`，不涉及 `request_poll()` 或 smoltcp：
+
+```rust
+let (transport, peer_addr) =
+    block_on(poll_io(&self.transport, IoEvents::IN, nonblocking, || {
+        self.transport.try_accept()
+    }))?;
+```
+
+### Vsock Socket
+
+vsock 是可选 feature，不属于 IP 协议，也不通过 smoltcp poll。facade 只把 `SocketOps` 映射到 `VsockTransport`：
+
+```rust
+pub enum VsockTransport {
+    Stream(VsockStreamTransport),
+}
+
+pub struct VsockSocket {
+    transport: VsockTransport,
+}
+```
+
+核心连接状态位于 `vsock::connection_manager`，设备事件由 vsock 设备层推进。transport enum 提供 stream variant，并为后续 datagram 扩展保留结构。
+
+## Poll 与唤醒
+
+socket 阻塞语义基于 `Pollable` + `poll_io()`。应用线程只注册 waker 并等待 readiness；协议栈推进由 net-poll worker 或本地 transport 自己的 poll set 完成。
+
+### 通用 poll helper
+
+`GeneralOptions` 提供 send/recv 两类阻塞 helper：
+
+```rust
 pub fn send_poller_with<P: Pollable, F: FnMut() -> AxResult<T>, T>(
-    &self, pollable: &P, extra_nb: bool, f: F) -> AxResult<T>
-{
+    &self,
+    pollable: &P,
+    extra_nonblocking: bool,
+    f: F,
+) -> AxResult<T> {
     block_on(timeout(
         self.send_timeout(),
         poll_io(
             pollable,
             IoEvents::OUT,
-            self.nonblocking() || extra_nb,
+            self.nonblocking() || extra_nonblocking,
             f,
         ),
     ))?
 }
 ```
 
-流程：`poll_io()` 先调用 `f()`；如果返回 `WouldBlock` 且当前调用不是 nonblocking，则通过 `pollable.register(context, IoEvents::OUT/IN)` 注册 waker，挂起当前任务，等待 readiness 或 timeout 后重试。`GeneralOptions::register_waker()` 只是提供给具体 socket 的 `Pollable::register()` 使用，用于把同一个 waker 注册到符合 `DeviceBinding` 的设备唤醒路径。
+`poll_io()` 的流程：
 
-`register_waker()` 根据 `DeviceBinding` 选择性注册到匹配的设备：
+1. 先执行一次 socket 操作闭包。
+2. 如果成功，直接返回。
+3. 如果返回 `WouldBlock` 且是 nonblocking 或 `MSG_DONTWAIT`，立即返回错误。
+4. 否则调用 `Pollable::register()` 注册 waker，挂起当前任务。
+5. 被唤醒或 timeout 后重试闭包。
+
+### IP socket readiness
+
+TCP/UDP/raw 的 `poll()` 都会先 `request_poll()`，表示需要专用 net-poll worker 推进 smoltcp：
 
 ```rust
-pub(crate) fn register_waker(&self, waker: &Waker) {
+impl Pollable for UdpSocket {
+    fn poll(&self) -> IoEvents {
+        request_poll();
+        if self.local_addr.read().is_none() {
+            return IoEvents::empty();
+        }
+        let mut events = IoEvents::empty();
+        self.with_smol_socket(|socket| {
+            events.set(IoEvents::IN, socket.can_recv());
+            events.set(IoEvents::OUT, socket.can_send());
+        });
+        events
+    }
+}
+```
+
+注册 waker 时分两层：
+
+- 向 smoltcp socket 注册 recv/send waker，等待协议 socket buffer 状态变化。
+- 通过 `GeneralOptions::register_waker()` 向匹配 `DeviceBinding` 的设备注册 waker，等待设备 RX 触发下一轮 net-poll。
+
+```rust
+pub fn register_waker(&self, waker: &Waker) {
     get_service().register_waker(self.device_binding(), waker);
 }
 ```
 
-绑定 `DeviceBinding { bound_if: Some(eth0) }` 时只注册到 eth0 的 waker，避免被无关设备唤醒。
+TCP listener 还有额外 accept waker：`ListenTable::register_accept_waker()` 会把 userspace waker 放到 listener 的 `accept_poll`，并把 `accept_poll` 转成 waker 注册到 pending child 的 recv/send readiness 上。
+
+### Local transport readiness
+
+Unix/vsock 不调用 `request_poll()`。它们的 `Pollable` 由 transport 内部 `PollSet`、channel 或 connection manager 状态驱动。这样 AF_UNIX/AF_VSOCK 的等待路径不会依赖 IP net-poll worker。
+
+## 生命周期与清理
+
+socket drop 需要清理 public side table，但不能破坏协议栈还需要推进的状态。
+
+### TCP orphan
+
+TCP drop 时，如果 smoltcp socket 已经进入需要继续关闭或 TIME-WAIT 的状态，socket 不会立即从 `SocketSet` 删除，而是交给 orphan reaper：
+
+```text
+TcpSocket::drop
+  -> unregister_tcp_bound / unlisten if needed
+  -> if smoltcp socket still needs protocol cleanup:
+       orphan::register_orphan(handle, timestamp)
+     else:
+       SOCKET_SET.remove(handle)
+```
+
+这样 FIN、LAST-ACK、TIME-WAIT 等状态仍由 net-poll worker 推进，避免应用对象释放后协议状态被过早销毁。
+
+### UDP/raw cleanup
+
+UDP drop 会调用 `SOCKET_SET.remove(handle)`，wrapper 在 remove 中清除 UDP bind side table：
+
+```rust
+pub fn remove(&self, handle: SocketHandle) {
+    self.udp_unbind(handle);
+    self.inner.lock().remove(handle);
+}
+```
+
+raw drop 会先 `shutdown(Shutdown::Both)`，再移除 smoltcp raw socket。raw 的 `loopback_rx` 和 `deferred_rx` 是 socket 本地暂存状态，随对象释放。
+
+### Listen cleanup
+
+TCP listener unlisten 时会从 listen table 删除 entry，并销毁尚未 accept 的 child socket handle：
+
+```rust
+pub fn unlisten(&self, listen_endpoint: IpListenEndpoint) {
+    let handles = {
+        let mut entries = self.tcp[listen_endpoint.port as usize].lock();
+        let Some(idx) = entries
+            .iter()
+            .position(|entry| entry.listen_endpoint == listen_endpoint)
+        else {
+            return;
+        };
+        entries.swap_remove(idx).into_handles()
+    };
+    for handle in handles {
+        SOCKET_SET.remove(handle);
+    }
+}
+```
+
+## 并发边界
+
+socket 层并发边界围绕三类锁：`SERVICE`、`SOCKET_SET.inner`、协议 side table。原则是 socket 操作只在必要范围内持锁，并通过 `request_poll()` 交给 net-poll worker 推进协议核心。
+
+### 锁顺序
+
+典型锁顺序：
+
+```text
+net-poll path:
+  SERVICE -> SOCKET_SET.inner -> smoltcp sockets
+
+TCP listen/accept path:
+  SOCKET_SET.inner -> LISTEN_TABLE bucket
+
+TCP bind path:
+  TCP_BOUND_PORTS -> LISTEN_TABLE check
+
+UDP bind path:
+  SOCKET_SET.inner / udp_binds
+
+control-assisted bind/send path:
+  NetControl.state -> RouteTable
+```
+
+需要避免的反向路径：
+
+- 持设备锁时进入 `SocketSet` 或 `Service`。
+- 持 `SocketSet` 时执行可能阻塞的用户 buffer IO。
+- socket 热路径直接调用完整 interface poll。
+
+### 热路径原则
+
+TCP/UDP/raw 的 send/connect/recv 路径只做三件事：
+
+1. 操作对应 smoltcp socket 或本地 socket 状态。
+2. 调用 `request_poll()` 请求专用 net-poll worker 推进协议栈。
+3. 在 `WouldBlock` 时通过 `Pollable::register()` 注册 waker 并让出当前任务。
+
+这个模型保持应用线程和协议栈驱动线程分离，避免 socket 调用者临时成为 smoltcp interface owner。

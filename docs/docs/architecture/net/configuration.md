@@ -5,11 +5,25 @@ sidebar_label: "配置参考"
 
 # 配置参考
 
-`ax-net` 的配置目标是用结构化数据表达接口意图，而不是依赖旧的全局单网口环境变量。每个 Ethernet 接口可以独立使用静态 IPv4 或 DHCP，并携带 metric 和 DNS 配置。
+`ax-net` 的配置由结构化 `NetworkConfig`、Cargo feature、运行时设备注册参数和一组集中常量组成。配置目标是明确表达每个接口的意图，避免旧式单网口全局变量和隐式 `eth0` 假设。
 
-## Cargo Feature
+核心源码：
 
-`ax-net` 的 feature 定义在 [net/ax-net/Cargo.toml](net/ax-net/Cargo.toml)：
+| 配置域 | 源码 |
+| --- | --- |
+| feature | [Cargo.toml](net/ax-net/Cargo.toml) |
+| 接口配置模型 | [config.rs](net/ax-net/src/config.rs) |
+| 初始化解析与校验 | [lib.rs](net/ax-net/src/lib.rs) `init_network()` |
+| 缓冲区/队列常量 | [consts.rs](net/ax-net/src/consts.rs) |
+| TCP keepalive / TCP_INFO 默认值 | [tcp.rs](net/ax-net/src/tcp.rs) |
+| DHCP/DNS 默认值 | [lib.rs](net/ax-net/src/lib.rs), [service.rs](net/ax-net/src/service.rs) |
+| Ethernet ARP 默认值 | [device/ethernet.rs](net/ax-net/src/device/ethernet.rs) |
+
+## 构建配置
+
+构建配置决定是否启用可选协议族。基础 TCP、UDP、raw、Unix domain socket、DNS、DHCP 和 Ethernet 能力不需要额外 feature。
+
+### Cargo Feature
 
 ```toml
 [features]
@@ -18,11 +32,18 @@ vsock = ["dep:rdif-vsock"]
 
 | feature | 作用 |
 | --- | --- |
-| `vsock` | 启用 `rdif-vsock` 依赖和 vsock socket / device 支持 |
+| `vsock` | 启用 `rdif-vsock` 依赖、AF_VSOCK socket backend 和 vsock device 初始化 |
 
-启用后，`lib.rs` 中通过 `#[cfg(feature = "vsock")]` 条件编译导出 `init_vsock()`（[lib.rs](net/ax-net/src/lib.rs)）、`vsock` 模块（[lib.rs](net/ax-net/src/lib.rs)）以及 `Socket::Vsock` 变体（[socket.rs](net/ax-net/src/socket.rs)）。基础 TCP、UDP、raw、Unix domain socket、DNS、DHCP 和 Ethernet 能力不需要额外 feature。
+启用 `vsock` 后导出：
 
-smoltcp 在 [Cargo.toml](net/ax-net/Cargo.toml) 中固定启用以下能力：
+- `init_vsock(vsock_devs)`。
+- `vsock` 模块。
+- `Socket::Vsock` 变体。
+- `VsockDevice` / `VsockDeviceList` 类型别名。
+
+### smoltcp 能力
+
+`ax-net` 固定启用的 smoltcp 能力包括：
 
 - `alloc`
 - `log`
@@ -38,39 +59,32 @@ smoltcp 在 [Cargo.toml](net/ax-net/Cargo.toml) 中固定启用以下能力：
 - `socket-dhcpv4`
 - `socket-dns`
 
-## 缓冲区常量
+Router 对 smoltcp 暴露 `Medium::Ip`，Ethernet frame 处理在 `EthernetDevice` 中完成。
 
-socket 与设备缓冲区大小集中定义在 [net/ax-net/src/consts.rs](net/ax-net/src/consts.rs)：
+## 启动配置模型
 
-```rust
-pub const STANDARD_MTU: usize = 1500;
-pub const TCP_RX_BUF_LEN: usize = 64 * 1024;
-pub const TCP_TX_BUF_LEN: usize = 64 * 1024;
-pub const UDP_RX_BUF_LEN: usize = 64 * 1024;
-pub const UDP_TX_BUF_LEN: usize = 64 * 1024;
-pub const RAW_RX_BUF_LEN: usize = 64 * 1024;
-pub const RAW_TX_BUF_LEN: usize = 64 * 1024;
-pub const LISTEN_QUEUE_SIZE: usize = 512;
-pub const SOCKET_BUFFER_SIZE: usize = 64;
-pub const ETHERNET_MAX_PENDING_PACKETS: usize = 128;
-pub const DEVICE_TX_QUEUE_SIZE: usize = 128;
-```
+启动配置通过 `NetworkConfig` 传入 `init_network()`。它描述“哪些设备应该成为哪些接口，以及接口如何获得 IPv4/DNS/metric”。
 
-`ETHERNET_MAX_PENDING_PACKETS` 取 128 而非 32，是为了容纳应用启动时多个并发 TCP 连接的首个 SYN 突发，以及长连接在 `NEIGHBOR_TTL` 过期后重新进入 ARP-pending 队列的 burst（见源码注释 [consts.rs](net/ax-net/src/consts.rs)）。
-
-## NetworkConfig
-
-定义在 [net/ax-net/src/config.rs](net/ax-net/src/config.rs)：
+### NetworkConfig
 
 ```rust
 #[derive(Debug, Clone, Default)]
 pub struct NetworkConfig {
-    /// Per-interface configuration.
     pub interfaces: Vec<InterfaceConfig>,
-    /// DNS servers used when no interface-level DNS server is available.
     pub default_dns_servers: Vec<Ipv4Addr>,
 }
+```
 
+语义：
+
+- `interfaces` 是显式接口配置列表。
+- 未显式匹配的 Ethernet 设备按默认策略注册。
+- `default_dns_servers` 是 fallback DNS 来源，metric 为 `u32::MAX`。
+- `lo` 固定由 `ax-net` 创建，不出现在 `NetworkConfig` 中。
+
+### InterfaceConfig
+
+```rust
 #[derive(Debug, Clone)]
 pub struct InterfaceConfig {
     pub name: String,
@@ -82,11 +96,18 @@ pub struct InterfaceConfig {
 }
 ```
 
-`NetworkConfig` 由 `ax-runtime` 构造并传入 `ax_net::init_network()`。`ax-net` 不再读取旧的全局 `AX_IP`、`AX_GW`、`AX_PREFIX_LEN`、`AX_DNS` 单网口语义。
+字段语义：
 
-## InterfaceMatcher
+| 字段 | 语义 |
+| --- | --- |
+| `name` | 对外接口名，例如 `eth0`、`uplink0` |
+| `match_by` | 将配置绑定到某个探测到的 Ethernet driver |
+| `static_ip` | 静态 IPv4 配置；与 `dhcp` 互斥 |
+| `dhcp` | 是否启用 DHCP client |
+| `metric` | 接口路由和接口级 DNS 优先级，值越小越优先 |
+| `dns_servers` | 绑定到该接口的静态 DNS server |
 
-显式接口配置通过 `InterfaceMatcher` 匹配真实设备，定义在 [config.rs](net/ax-net/src/config.rs)：
+### InterfaceMatcher
 
 ```rust
 #[derive(Debug, Clone)]
@@ -99,17 +120,13 @@ pub enum InterfaceMatcher {
 
 匹配规则：
 
-- `ByOrder(0)` 匹配第一个发现的 Ethernet 设备，通常命名为 `eth0`。
-- `ByMac(mac)` 用 MAC 地址匹配设备。
-- `ByDriverName(name)` 用 driver 暴露的设备名匹配。
-- 显式配置必须匹配唯一设备。
-- 未显式配置的 Ethernet 设备默认启用 DHCP。
+- `ByOrder(0)` 匹配第一个发现的 Ethernet device。
+- `ByMac(mac)` 按 MAC 地址匹配。
+- `ByDriverName(name)` 按 driver 暴露的设备名匹配。
+- 同一设备不能被多个配置匹配。
+- 每个显式配置必须匹配到一个设备。
 
-匹配逻辑在 `find_interface_config()`（[lib.rs](net/ax-net/src/lib.rs)），多配置匹配同一设备会 panic。
-
-## 静态 IPv4
-
-`StaticIpConfig` 定义在 [config.rs](net/ax-net/src/config.rs)：
+### StaticIpConfig
 
 ```rust
 #[derive(Debug, Clone)]
@@ -120,53 +137,220 @@ pub struct StaticIpConfig {
 }
 ```
 
-静态接口初始化时会：
+静态接口初始化会：
 
-- 设置接口 IPv4 地址。
+- 将 `ip/prefix_len` 加入 smoltcp `Interface` address list。
 - 安装直连路由。
-- 如果 gateway 有效，安装默认路由。
-- 将接口级 DNS server 记录为静态 DNS 来源。
+- 如果 `gateway != 0.0.0.0`，安装默认路由。
+- 将 `dns_servers` 记录为 `DnsSource::Static`。
 
-配置错误会在初始化时 panic，包括：
+`gateway = 0.0.0.0` 表示不安装默认路由。
 
-- 接口名为保留名 `lo`。
-- `dhcp = true` 且 `static_ip.is_some()`。
-- 静态 IP 为 unspecified。
-- prefix 大于 32。
-- gateway 可以为 unspecified，表示不安装默认路由。
-- DNS server 为 unspecified。
-- 显式配置没有匹配任何设备。
-- 接口名冲突。
+## 初始化校验
 
-这些校验集中在 `init_network()` 开头（[lib.rs](net/ax-net/src/lib.rs)）。
+`init_network()` 对配置执行 fail-fast 校验。启动阶段配置错误直接 panic，避免系统在半初始化网络状态下运行。
 
-## DHCP
+### 校验规则
 
-未显式配置的 Ethernet 接口默认 DHCP。显式配置也可以设置 `dhcp = true`。
+| 配置项 | 规则 |
+| --- | --- |
+| 接口名 | 不能是 `lo`，不能重复 |
+| `static_ip` + `dhcp` | 不能同时启用 |
+| 静态 IP | 不能是 `0.0.0.0` |
+| prefix | 不能大于 32 |
+| gateway | 可以是 `0.0.0.0`，表示无默认路由 |
+| DNS server | 不能是 `0.0.0.0` |
+| matcher | 每个显式配置必须匹配唯一设备 |
 
-DHCP 行为：
+### 默认策略
 
-- 每个 DHCP 接口独立 `DhcpState`。
-- DHCP packet 按 ingress `InterfaceId` 分发。
-- DHCP ACK 更新对应接口 IPv4、gateway、路由和 DNS。
-- 启动等待只要求任一 DHCP 接口成功配置，避免一个断开的接口阻塞系统启动。
-- DHCP 租约续期、过期回收和地址冲突检测仍属于后续增强。
+未显式配置的 Ethernet 设备：
+
+- 名称为 `eth{order}`。
+- `InterfaceId = order + 2`。
+- metric 为 `100`。
+- 默认启用 DHCP。
+- 无静态接口级 DNS。
+
+loopback：
+
+- 名称为 `lo`。
+- `InterfaceId::LOOPBACK == 1`。
+- 地址为 `127.0.0.1/8`。
+- metric 为 `0`。
+- flags 包含 `UP | RUNNING | LOOPBACK`。
 
 ## DNS 配置
 
-DNS server 来源分三类：
+DNS server 来源分三类，并按 metric 排序后去重。
 
-| 来源 | 说明 |
+| 来源 | 创建时机 | metric | interface_id |
+| --- | --- | --- | --- |
+| DHCP | DHCP ACK | 对应接口 metric | 对应接口 |
+| Static | `InterfaceConfig::dns_servers` | 对应接口 metric | 对应接口 |
+| Fallback | `NetworkConfig::default_dns_servers` | `u32::MAX` | loopback |
+
+对外 `dns_servers()` 只返回地址列表。DNS 查询时还会过滤不可路由 server：
+
+```text
+dns_servers()
+  -> sort by (metric, interface_id, server_ip)
+  -> dedup
+  -> dns_query_timeout()
+  -> select_route(server) must succeed
+```
+
+## 路由与 Metric
+
+路由表排序策略：
+
+1. 最长前缀匹配。
+2. 低 metric 优先。
+3. 同 metric 按插入顺序稳定选择。
+
+每个静态或 DHCP IPv4 接口会生成：
+
+- 直连路由：`interface_cidr -> dev`。
+- 默认路由：`0.0.0.0/0 -> gateway`，仅 gateway 存在时安装。
+
+多网口场景下，metric 用于选择默认路由和 DNS server 优先级；socket 已绑定接口时，route lookup 还会叠加 `DeviceBinding` 过滤。
+
+## 运行时设备配置
+
+运行期可以注册静态 IPv4 Ethernet 设备，主要用于 Wi-Fi AP 等晚于启动阶段出现的设备。
+
+### NetConfig
+
+```rust
+pub struct NetConfig {
+    pub name: String,
+    pub ip: [u8; 4],
+    pub prefix_len: u8,
+    pub dhcp_server_client_ip: Option<[u8; 4]>,
+    pub dedicated_poll: bool,
+}
+```
+
+### register_device_with_config
+
+```rust
+pub fn register_device_with_config(dev: Box<dyn EthernetDriver>, config: NetConfig);
+pub fn notify_oob_rx();
+```
+
+注册过程：
+
+- 根据 `dedicated_poll` 创建普通或 OOB RX `EthernetDevice`。
+- 分配新的 `InterfaceId`。
+- 将静态 IPv4 加入 smoltcp address list。
+- 添加接口 registry、route table 和 worker。
+- `dhcp_server_client_ip` 存在时启用内置单客户端 DHCP server。
+- 调用 `request_poll()` 让 net-poll worker 看到新状态。
+
+`dedicated_poll = true` 时，驱动侧收到 out-of-band RX 事件后调用 `notify_oob_rx()`。
+
+## 资源预算
+
+缓冲区和队列常量集中定义在 [consts.rs](net/ax-net/src/consts.rs)。这些值共同决定嵌入式目标上的默认内存占用。
+
+### Socket Buffer
+
+```rust
+pub const TCP_RX_BUF_LEN: usize = 64 * 1024;
+pub const TCP_TX_BUF_LEN: usize = 64 * 1024;
+pub const UDP_RX_BUF_LEN: usize = 64 * 1024;
+pub const UDP_TX_BUF_LEN: usize = 64 * 1024;
+pub const RAW_RX_BUF_LEN: usize = 64 * 1024;
+pub const RAW_TX_BUF_LEN: usize = 64 * 1024;
+```
+
+这些是每个 socket 的默认协议缓冲区大小。
+
+### Router / Device Queue
+
+```rust
+pub const STANDARD_MTU: usize = 1500;
+pub const SOCKET_BUFFER_SIZE: usize = 64;
+pub const DEVICE_TX_QUEUE_SIZE: usize = 128;
+pub const ETHERNET_MAX_PENDING_PACKETS: usize = 128;
+pub const LISTEN_QUEUE_SIZE: usize = 512;
+```
+
+| 常量 | 含义 |
 | --- | --- |
-| DHCP | DHCP ACK 下发，绑定来源接口和 metric |
-| Static | `InterfaceConfig::dns_servers` |
-| Fallback | `NetworkConfig::default_dns_servers` |
+| `STANDARD_MTU` | Router 和 Ethernet 默认 MTU |
+| `SOCKET_BUFFER_SIZE` | Router RX/TX smoltcp-facing packet buffer 槽位数 |
+| `DEVICE_TX_QUEUE_SIZE` | 每设备 TX queue 槽位数 |
+| `ETHERNET_MAX_PENDING_PACKETS` | ARP resolution pending packet 上限 |
+| `LISTEN_QUEUE_SIZE` | TCP listen backlog clamp 上限 |
 
-内部记录为 `DnsServerEntry`，对外 `dns_servers()` 返回按 metric 和接口 ID 排序后的去重地址列表。
+Router queue 中的 packet 使用 inline `[u8; STANDARD_MTU] + len`，不为每个 queued packet 分配 `Box<[u8]>`。
 
-DNS 查询时会先检查 DNS server 是否可路由，不可路由则尝试下一个 server。
+### Unix Stream Buffer
+
+Unix stream transport 使用 `ringbuf::HeapRb<u8>`：
+
+```rust
+const BUF_SIZE: usize = 64 * 1024;
+```
+
+socketpair 两个方向各 64 KiB，总计约 128 KiB 数据缓冲区。
+
+## 协议默认值
+
+协议默认值集中在对应模块中，影响兼容行为和超时策略。
+
+### TCP Keepalive
+
+```rust
+const TCP_KEEPIDLE_DEFAULT_SECS: u32 = 7200;
+const TCP_KEEPINTVL_DEFAULT_SECS: u32 = 75;
+const TCP_KEEPCNT_DEFAULT: u32 = 9;
+const TCP_USER_TIMEOUT_DEFAULT_MS: u32 = 0;
+
+const TCP_KEEPIDLE_MAX_SECS: u32 = 32767;
+const TCP_KEEPINTVL_MAX_SECS: u32 = 32767;
+const TCP_KEEPCNT_MAX: u32 = 127;
+```
+
+`TCP_USER_TIMEOUT_DEFAULT_MS = 0` 表示使用协议栈默认策略。
+
+### TCP_INFO
+
+```rust
+const TCP_INFO_DEFAULT_MSS: u32 = 1460;
+const TCP_INFO_DEFAULT_PMTU: u32 = 1500;
+const TCP_INFO_INITIAL_RTO_MICROS: u32 = 1_000_000;
+const TCP_INFO_DEFAULT_REORDERING: u32 = 3;
+```
+
+这些值用于填充 `TcpInfo` 中无法直接从 smoltcp 获得或需要 Linux 兼容默认值的字段。
+
+### DHCP / DNS / ARP
+
+| 常量 | 值 | 含义 |
+| --- | --- | --- |
+| `DNS_DEFAULT_TIMEOUT` | 5s | `dns_query()` 默认超时 |
+| `DHCP_BOOTSTRAP_ATTEMPTS` | 200 | DHCP bootstrap 最大轮数 |
+| `DHCP_BOOTSTRAP_POLL_INTERVAL` | 10ms | DHCP bootstrap 每轮 sleep |
+| `DHCP_MAX_RETRY_SHIFT` | 4 | DHCP 指数退避上限，最大 16s |
+| `NEIGHBOR_TTL` | 300s | ARP neighbor cache TTL |
+| `ARP_REQUEST_RETRY` | 1s | ARP request 重试间隔 |
+
+### Ephemeral Port
+
+TCP 和 UDP 的 `bind(0)` 从 IANA dynamic/private port 下界开始分配：
+
+```rust
+const PORT_START: u16 = 0xc000; // 49152
+const PORT_END: u16 = 0xffff;
+```
+
+TCP 分配会避开任何已 listen 或已 bind 的同端口；UDP 分配使用 UDP bind side table 检查 wildcard/specific-address 冲突。
 
 ## 配置示例
+
+### 双静态网口
 
 ```rust
 use alloc::{string::ToString, vec};
@@ -205,94 +389,26 @@ let config = NetworkConfig {
 };
 ```
 
-## 接口命名与 ID 分配
-
-> 以下为运行时常量与默认值。
-
-`InterfaceId` 数值的分配规则：
-
-| InterfaceId | 接口 | 说明 |
-| --- | --- | --- |
-| 0 | `TX_INTERFACE_PLACEHOLDER` | 内部占位符（[router.rs](net/ax-net/src/router.rs)），不出现在任何 public API 中 |
-| 1 | `lo` | Loopback，固定 ID |
-| 2+ | `eth0`, `eth1`, ... | Ethernet 设备，按发现顺序（`net_devs.drain(..)`）递增 |
-
-默认命名 `"eth{order}"`，但配置中的 `name` 字段会覆盖默认名称。接口名不允许冲突，且 `"lo"` 为保留名。
-
-## 路由 Metric 行为
-
-- 直连路由的 metric 与接口配置相同。
-- 默认路由的 metric 与接口配置相同。
-- 路由表排序：最长前缀匹配 > 低 metric 优先 > 同 metric 稳定插入顺序。
-- 未显式配置的 Ethernet 接口默认启用 DHCP，metric 默认为 100；fallback DNS 来源使用 `u32::MAX`，因此会排在接口级 DNS 之后。
-- 同一目的地址存在多个匹配路由时，优先选择 metric 较低且接口 `UP` 的路由。
-
-## TCP Keep-Alive 默认值
-
-TCP keep-alive 相关常量定义在 [tcp.rs](net/ax-net/src/tcp.rs)：
+### DHCP 主接口 + fallback DNS
 
 ```rust
-const TCP_KEEPIDLE_DEFAULT_SECS: u32 = 7200;   // 2小时空闲后开始探测
-const TCP_KEEPINTVL_DEFAULT_SECS: u32 = 75;    // 探测间隔 75s
-const TCP_KEEPCNT_DEFAULT: u32 = 9;            // 最多 9 次探测
-const TCP_USER_TIMEOUT_DEFAULT_MS: u32 = 0;    // 默认不限制
+let config = NetworkConfig {
+    interfaces: vec![InterfaceConfig {
+        name: "eth0".to_string(),
+        match_by: InterfaceMatcher::ByOrder(0),
+        static_ip: None,
+        dhcp: true,
+        metric: 100,
+        dns_servers: vec![],
+    }],
+    default_dns_servers: vec![Ipv4Addr::new(8, 8, 8, 8)],
+};
 ```
 
-上限约束：
+## 配置建议
 
-```rust
-const TCP_KEEPIDLE_MAX_SECS: u32 = 32767;      // ~9.1 小时
-const TCP_KEEPINTVL_MAX_SECS: u32 = 32767;
-const TCP_KEEPCNT_MAX: u32 = 127;
-```
-
-`TCP_USER_TIMEOUT_DEFAULT_MS = 0` 表示使用 smoltcp 内置默认超时。
-
-## TCP_INFO 默认值
-
-`TcpInfo` 快照中的默认/估计值（[tcp.rs](net/ax-net/src/tcp.rs)）：
-
-```rust
-const TCP_INFO_DEFAULT_MSS: u32 = 1460;           // 1500 - 20(IP) - 20(TCP)
-const TCP_INFO_DEFAULT_PMTU: u32 = 1500;
-const TCP_INFO_INITIAL_RTO_MICROS: u32 = 1_000_000;  // 1s 初始 RTO
-const TCP_INFO_DEFAULT_REORDERING: u32 = 3;
-```
-
-## Ephemeral Port 范围
-
-自动端口分配（TCP/UDP bind 时 `port == 0`）从 `49152`（IANA 动态端口范围下界，`0xC000`）开始，逐个尝试直到找到未占用端口。
-
-## 超时与 Poll 间隔
-
-| 常量 | 位置 | 值 | 说明 |
-| --- | --- | --- | --- |
-| `DNS_DEFAULT_TIMEOUT` | [lib.rs](net/ax-net/src/lib.rs) | 5s | DNS 查询超时 |
-| `DHCP_BOOTSTRAP_ATTEMPTS` | [lib.rs](net/ax-net/src/lib.rs) | 200 | DHCP bootstrap 最大重试次数 |
-| `DHCP_BOOTSTRAP_POLL_INTERVAL` | [lib.rs](net/ax-net/src/lib.rs) | 10ms | DHCP bootstrap poll 间隔 |
-| `DHCP_MAX_RETRY_SHIFT` | [service.rs](net/ax-net/src/service.rs) | 4 | DHCP 指数退避最大位移（最大 16s） |
-| `NEIGHBOR_TTL` | [ethernet.rs](net/ax-net/src/device/ethernet.rs) | 300s | ARP neighbor 缓存 TTL |
-| `ARP_REQUEST_RETRY` | [ethernet.rs](net/ax-net/src/device/ethernet.rs) | 1s | ARP 请求重试间隔 |
-| Idle poll interval | [lib.rs](net/ax-net/src/lib.rs) | 100ms | net-poll worker 空闲轮询间隔 |
-
-## Router 缓冲区配置
-
-| 名称 | 位置 | 容量 |
-| --- | --- | --- |
-| `Router::rx_buffer` | [router.rs](net/ax-net/src/router.rs) | `SOCKET_BUFFER_SIZE` 个 MTU 槽位 × 1500 字节 |
-| `Router::tx_buffer` | [router.rs](net/ax-net/src/router.rs) | 同上 |
-| `RouterQueues::rx` | [router.rs](net/ax-net/src/router.rs) | `SOCKET_BUFFER_SIZE` 个 inline `RxPacket`（每包最多 MTU） |
-| `DeviceHandle::tx_queue` | [router.rs](net/ax-net/src/router.rs) | `DEVICE_TX_QUEUE_SIZE` 个 inline `TxPacket`（每包最多 MTU） |
-| `EthernetDevice::pending_packets` | [ethernet.rs](net/ax-net/src/device/ethernet.rs) | `ETHERNET_MAX_PENDING_PACKETS`（128）个 IP 包 |
-
-`LoopbackDevice` 不维护独立 buffer。普通 smoltcp loopback TX 在 `Router::dispatch()` 中直接注入 `Router::rx_buffer`；`send_on_device()` 的 loopback 特殊发包才进入共享 `RouterQueues::rx`，且同样使用 inline `QueuedPacket`。
-
-## Unix Stream 缓冲区
-
-Unix stream transport 使用 `ringbuf::HeapRb<u8>` 作为双向通道：
-
-```rust
-const BUF_SIZE: usize = 64 * 1024;     // 64 KiB 每方向
-```
-
-一对 socketpair 的总内存开销为 `2 × 64 KiB = 128 KiB`。
+- 多网口默认路由通过 metric 控制，主出口使用较小 metric。
+- `gateway = 0.0.0.0` 用于只有直连路由的静态接口。
+- 需要稳定接口名时优先使用 `ByMac` 或 `ByDriverName`，避免依赖探测顺序。
+- 新代码通过 `ipv4_config(name)` 查询地址，不依赖 `eth0_ipv4_config()`。
+- 提高队列常量时应按“每 socket”或“每设备”的乘数估算内存，而不是只看单个 buffer。
