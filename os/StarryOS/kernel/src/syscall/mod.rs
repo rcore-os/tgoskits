@@ -879,12 +879,16 @@ pub fn handle_syscall(uctx: &mut UserContext) {
             uctx.arg3() as _,
         ),
 
+        // The new mount API (fsopen/fsconfig/fsmount/move_mount, plus
+        // fspick/open_tree) is not implemented. Report ENOSYS instead of
+        // handing back a dummy fd: systemd probes this API and only falls back
+        // to the classic mount(2) — which we do support — when the entry point
+        // reports "not supported". A fake fd traps it into the new path, where
+        // the follow-up fsconfig then hard-fails and aborts the mount.
+        Sysno::fsopen | Sysno::fspick | Sysno::open_tree => Err(AxError::Unsupported),
+
         // dummy fds
-        Sysno::userfaultfd
-        | Sysno::fsopen
-        | Sysno::fspick
-        | Sysno::open_tree
-        | Sysno::memfd_secret => sys_dummy_fd(sysno),
+        Sysno::userfaultfd | Sysno::memfd_secret => sys_dummy_fd(sysno),
 
         Sysno::bpf => crate::ebpf::sys_bpf(uctx.arg0() as _, uctx.arg1(), uctx.arg2() as _),
         Sysno::perf_event_open => crate::perf::sys_perf_event_open(
