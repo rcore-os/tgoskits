@@ -592,11 +592,15 @@ impl Wpa2Handshake {
 
         if has_ack && !has_mic {
             // M1: ACK=1, MIC=0
-            log::debug!("[wpa2] === Processing M1 ===");
+            log::debug!(
+                "[wpa2] === M1 === key_info=0x{:04x} replay={:02x?}",
+                hdr.key_info,
+                hdr.replay_counter
+            );
             self.process_m1(&hdr, eapol)
         } else if has_ack && has_mic && has_install && has_enc {
             // M3: ACK=1, MIC=1, Install=1, EncKeyData=1
-            log::debug!("[wpa2] === Processing M3 ===");
+            log::debug!("[wpa2] === M3 === key_info=0x{:04x}", hdr.key_info);
             self.process_m3(&hdr, eapol)
         } else {
             log::warn!(
@@ -643,8 +647,10 @@ impl Wpa2Handshake {
 
         self.state = HandshakeState::M2Sent;
         log::debug!(
-            "[wpa2] M2 built ({} bytes), MIC={:02x?}...",
+            "[wpa2] M2 built ({} bytes), snonce={:02x?}.. anonce={:02x?}.. MIC={:02x?}",
             m2.len(),
+            &self.snonce[..4],
+            &self.anonce[..4],
             &mic[..4]
         );
 

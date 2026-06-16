@@ -83,7 +83,7 @@ fn process_cmd_tx(bus: &WifiBus) -> bool {
         return false;
     }
 
-    log::warn!("[wifi-tx] process_cmd_tx: found pending CMD");
+    log::trace!("[wifi-tx] process_cmd_tx: found pending CMD");
 
     let cmd_buf = bus.cmd.pending.lock().take();
     let Some(mut cmd) = cmd_buf else {
@@ -92,7 +92,7 @@ fn process_cmd_tx(bus: &WifiBus) -> bool {
 
     bus.cmd.pending_flag.store(false, Ordering::Release);
 
-    log::warn!(
+    log::trace!(
         "[wifi-tx] CMD frame header: [{:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} \
          {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x}]",
         cmd.first().unwrap_or(&0),
@@ -173,7 +173,7 @@ fn process_data_tx(bus: &WifiBus) -> bool {
 
     // 未连接则清空队列
     if vif_idx == 0xFF {
-        log::warn!("[wifi-tx] process_data_tx: vif=0xFF, draining queue");
+        log::trace!("[wifi-tx] process_data_tx: vif=0xFF, draining queue");
         while let Some(_) = bus.tx.queue.lock().pop_front() {
             bus.tx.pktcnt.fetch_sub(1, Ordering::AcqRel);
         }
@@ -255,7 +255,7 @@ fn send_single_data_frame(
             log::error!("[wifi-tx] MGMT write_fifo failed: {:?}", e);
             return false;
         }
-        log::info!(
+        log::debug!(
             "[wifi-tx] MGMT frame sent ({} bytes 802.11)",
             frame.data.len()
         );
@@ -277,7 +277,7 @@ fn send_single_data_frame(
         Err(_) => return false,
     };
 
-    log::warn!(
+    log::trace!(
         "[wifi-tx] DATA TX: dst={:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x} etype=0x{:04x} len={}",
         eth_frame[0],
         eth_frame[1],
@@ -473,7 +473,7 @@ fn tx_process(bus: &WifiBus) -> bool {
     let pending_cmd = bus.cmd.pending_flag.load(Ordering::Acquire);
     let pending_data = bus.tx.pktcnt.load(Ordering::Acquire);
     if pending_cmd || pending_data > 0 {
-        log::warn!(
+        log::trace!(
             "[wifi-tx] tx_process: pending_cmd={} pending_data={}",
             pending_cmd,
             pending_data
@@ -531,7 +531,7 @@ pub fn enqueue_mgmt_frame(bus: &WifiBus, mgmt_frame: Vec<u8>) -> Result<(), TxEr
     drop(queue);
 
     let cnt = bus.tx.pktcnt.fetch_add(1, Ordering::AcqRel) + 1;
-    log::warn!("[wifi-tx] enqueue: pktcnt={}", cnt);
+    log::trace!("[wifi-tx] enqueue: pktcnt={}", cnt);
     bus.tx.wake_pollset.wake();
     Ok(())
 }
