@@ -703,21 +703,33 @@ impl BlockDeviceHandle {
     fn finish_poll(
         &self,
         key: RequestKey,
-        result: Result<RequestStatus, BlkError>,
+        mut result: Result<RequestStatus, BlkError>,
     ) -> Option<bool> {
-        let task_id = match result {
-            Ok(RequestStatus::Pending) => match self.pending.lock().finish_pending_poll(key) {
-                PollProgress::Pending => None,
-                PollProgress::Repoll => return None,
-                PollProgress::Complete => None,
-            },
-            Ok(RequestStatus::Complete) => self.pending.lock().complete(key, Ok(())),
-            Err(err) => self.pending.lock().complete(key, Err(err)),
-        };
-        if !matches!(result, Ok(RequestStatus::Pending)) {
-            self.wake_completed_request(key, task_id);
+        loop {
+            match result {
+                Ok(RequestStatus::Pending) => match self.pending.lock().finish_pending_poll(key) {
+                    PollProgress::Pending | PollProgress::Complete => return Some(false),
+                    PollProgress::Repoll => {
+                        let submitted = self
+                            .pending
+                            .lock()
+                            .request(key)
+                            .map(|request| request.submitted_request())?;
+                        result = self.poll_request(submitted.queue_id, submitted.request_id);
+                    }
+                },
+                Ok(RequestStatus::Complete) => {
+                    let task_id = self.pending.lock().complete(key, Ok(()));
+                    self.wake_completed_request(key, task_id);
+                    return Some(true);
+                }
+                Err(err) => {
+                    let task_id = self.pending.lock().complete(key, Err(err));
+                    self.wake_completed_request(key, task_id);
+                    return Some(true);
+                }
+            }
         }
-        Some(!matches!(result, Ok(RequestStatus::Pending)))
     }
 
     fn wake_completed_request(&self, key: RequestKey, task_id: Option<u64>) {

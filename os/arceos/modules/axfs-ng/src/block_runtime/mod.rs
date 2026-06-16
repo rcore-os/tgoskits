@@ -213,16 +213,21 @@ mod tests {
         queue_id: usize,
         expected: usize,
     ) -> usize {
+        let initial_pending = device.pending_count_for_queue(queue_id);
         let mut completed = 0;
         for _ in 0..1000 {
             bridge.record_hint(CompletionHint::Queue { queue_id });
             completed += device.drain_events();
-            if completed >= expected {
-                return completed;
+            let removed_by_racing_task_poll =
+                initial_pending.saturating_sub(device.pending_count_for_queue(queue_id));
+            if completed + removed_by_racing_task_poll >= expected {
+                return expected;
             }
             std::thread::yield_now();
         }
-        completed
+        let removed_by_racing_task_poll =
+            initial_pending.saturating_sub(device.pending_count_for_queue(queue_id));
+        completed + removed_by_racing_task_poll
     }
 
     #[derive(Default)]
@@ -1098,7 +1103,7 @@ mod tests {
 
     #[test]
     fn runtime_builds_sync_device_from_rdif_interface() {
-        install_test_task_ops();
+        let _guard = test_task_guard();
         let runtime = BlockRuntime::from_rdif_devices([RdifBlockDevice::new(
             "mock-rdif",
             None,
@@ -1256,6 +1261,7 @@ mod tests {
 
     #[test]
     fn block_device_rejects_inflight_driver_request_id_reuse() {
+        let _guard = test_task_guard();
         let mut config = noop_config();
         config.submit_window = 2;
         config.max_transfer_bytes = 512;
@@ -1276,6 +1282,7 @@ mod tests {
 
     #[test]
     fn block_device_large_io_distributes_window_across_queues() {
+        let _guard = test_task_guard();
         let first_submits = Arc::new(AtomicUsize::new(0));
         let second_submits = Arc::new(AtomicUsize::new(0));
         let mut config = noop_config();
@@ -1344,6 +1351,7 @@ mod tests {
 
     #[test]
     fn block_device_first_poll_error_releases_pending_request() {
+        let _guard = test_task_guard();
         let device = BlockDeviceHandle::new(
             "mock",
             [Box::new(MockQueue::with_first_poll_failure_on_lba(5)) as Box<dyn IQueue>],
@@ -1359,6 +1367,7 @@ mod tests {
 
     #[test]
     fn block_device_retry_with_empty_window_returns_without_pending_leak() {
+        let _guard = test_task_guard();
         let device = BlockDeviceHandle::new(
             "mock",
             [Box::new(MockQueue::with_retry_submits(1)) as Box<dyn IQueue>],
@@ -1374,6 +1383,7 @@ mod tests {
 
     #[test]
     fn block_device_rejects_duplicate_driver_queue_ids() {
+        let _guard = test_task_guard();
         let device = BlockDeviceHandle::new(
             "mock",
             [
@@ -1389,6 +1399,7 @@ mod tests {
 
     #[test]
     fn block_device_rejects_driver_queue_ids_not_representable_by_irq_bits() {
+        let _guard = test_task_guard();
         let device = BlockDeviceHandle::new(
             "mock",
             [Box::new(MockQueue::with_id(64)) as Box<dyn IQueue>],
@@ -1401,6 +1412,7 @@ mod tests {
 
     #[test]
     fn sparse_driver_queue_ids_are_translated_to_dense_runtime_queue_ids() {
+        let _guard = test_task_guard();
         let bridge = Arc::new(BlockIrqBridge::new());
         let device = BlockDeviceHandle::new(
             "mock",
@@ -1439,6 +1451,7 @@ mod tests {
 
     #[test]
     fn block_device_plans_chunks_with_selected_queue_limits() {
+        let _guard = test_task_guard();
         let log = Arc::new(SpinNoIrq::new(Vec::new()));
         let mut first_limits = QueueLimits {
             max_blocks_per_request: 4,
@@ -1486,6 +1499,7 @@ mod tests {
 
     #[test]
     fn block_device_flush_retries_without_returning_wouldblock() {
+        let _guard = test_task_guard();
         let mut queue = MockQueue::with_retry_submits(1);
         queue.info.limits.supports_flush = true;
         let device = BlockDeviceHandle::new(
