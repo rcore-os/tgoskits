@@ -1,10 +1,5 @@
 use alloc::{format, vec::Vec};
-use core::{
-    num::NonZeroUsize,
-    ptr::NonNull,
-    sync::atomic::{AtomicBool, Ordering},
-    time::Duration,
-};
+use core::{num::NonZeroUsize, ptr::NonNull, time::Duration};
 
 use dma_api::DeviceDma;
 use log::{info, warn};
@@ -17,7 +12,7 @@ use rdrive::{
 use sdmmc_protocol::{
     BlockPoll, BlockTransferMode, Error, OperationPoll,
     error::Phase,
-    sdio::{CardInfo, CardInitPreference, SdioHost, SdioInitScratch, SdioSdmmc},
+    sdio::{CardInfo, CardInitPreference, SdioInitScratch, SdioSdmmc},
 };
 
 use crate::{
@@ -91,9 +86,7 @@ fn probe(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
     let dev = MciBlockDevice {
         raw: Some(raw),
         capacity_blocks: card_info.capacity_blocks.unwrap_or(0),
-        irq_enabled: AtomicBool::new(false),
         queue_created: false,
-        irq_handler_taken: false,
     };
     let irq = probe.register_block(dev)?;
     info!("phytium-mci block device registered irq={:?}", irq);
@@ -166,9 +159,7 @@ fn is_absent_card_init_error(err: Error) -> bool {
 struct MciBlockDevice {
     raw: Option<SharedDriver<PhytiumSdMmc>>,
     capacity_blocks: u64,
-    irq_enabled: AtomicBool,
     queue_created: bool,
-    irq_handler_taken: bool,
 }
 
 struct MciBlockQueue {
@@ -220,83 +211,8 @@ impl rdif_block::Interface for MciBlockDevice {
         })
     }
 
-    fn enable_irq(&self) {
-        if let Some(raw) = &self.raw {
-            let mut enabled = false;
-            raw.with_mut(|raw| {
-                if let Err(err) = SdioHost::enable_completion_irq(raw.host_mut()) {
-                    warn!("phytium-mci: enable completion IRQ failed: {:?}", err);
-                    return;
-                }
-                enabled = true;
-            });
-            self.irq_enabled.store(enabled, Ordering::Release);
-        }
-    }
-
-    fn disable_irq(&self) {
-        if let Some(raw) = &self.raw {
-            raw.with_mut(|raw| {
-                if let Err(err) = SdioHost::disable_completion_irq(raw.host_mut()) {
-                    warn!("phytium-mci: disable completion IRQ failed: {:?}", err);
-                }
-            });
-        }
-        self.irq_enabled.store(false, Ordering::Release);
-    }
-
-    fn is_irq_enabled(&self) -> bool {
-        self.irq_enabled.load(Ordering::Acquire)
-    }
-
-    fn irq_sources(&self) -> rdif_block::IrqSourceList {
-        alloc::vec![rdif_block::IrqSourceInfo::legacy(
-            rdif_block::IdList::from_bits(1),
-        )]
-    }
-
-    fn take_irq_handler(
-        &mut self,
-        source_id: usize,
-    ) -> Option<alloc::boxed::Box<dyn rdif_block::IrqHandler>> {
-        if source_id != 0 {
-            return None;
-        }
-        if self.irq_handler_taken {
-            return None;
-        }
-        let raw = self.raw.as_ref()?.clone();
-        self.irq_handler_taken = true;
-        Some(alloc::boxed::Box::new(MciBlockIrqHandler { raw }))
-    }
-}
-
-struct MciBlockIrqHandler {
-    raw: SharedDriver<PhytiumSdMmc>,
-}
-
-impl rdif_block::IrqHandler for MciBlockIrqHandler {
-    fn handle_irq(&self) -> rdif_block::Event {
-        self.raw
-            .try_with_mut(|raw| block_event_from_mci_irq(raw.host_mut().handle_irq()))
-            .unwrap_or_else(rdif_block::Event::none)
-    }
-}
-
-fn block_event_from_mci_irq(irq_event: phytium_mci_host::Event) -> rdif_block::Event {
-    match irq_event {
-        phytium_mci_host::Event::None => rdif_block::Event::none(),
-        phytium_mci_host::Event::CommandComplete
-        | phytium_mci_host::Event::TransferComplete
-        | phytium_mci_host::Event::ReceiveReady
-        | phytium_mci_host::Event::TransmitReady
-        | phytium_mci_host::Event::Error { .. }
-        | phytium_mci_host::Event::Other { .. } => {
-            let mut event = rdif_block::Event::none();
-            event.queues.insert(0);
-            event
-        }
-    }
+    // The Phytium MCI block state machine still needs task-side polling between
+    // command/data/stop phases, so do not advertise rdif IRQ-driven completion.
 }
 
 // SAFETY: MciBlockQueue owns a single pending request slot and does not access
