@@ -948,9 +948,11 @@ impl PhytiumMci {
     }
 
     fn program_idmac_registers(&self, desc_dma: u64) {
-        self.regs
-            .ctrl()
-            .update(|r| r.with_use_internal_dmac(true).with_int_enable(true));
+        self.regs.ctrl().update(|r| {
+            r.with_dma_enable(true)
+                .with_use_internal_dmac(true)
+                .with_int_enable(true)
+        });
         self.regs
             .bmod()
             .write(self.regs.bmod().read() | BMOD_FIXED_BURST | BMOD_IDMAC_ENABLE);
@@ -1309,6 +1311,7 @@ mod tests {
 
     const RINTSTS_WORD: usize = 17;
     const STATUS_WORD: usize = 18;
+    const CTRL_WORD: usize = 0;
     const BMOD_WORD: usize = 32;
     const PLDMND_WORD: usize = 33;
     const DBADDRL_WORD: usize = 34;
@@ -1332,6 +1335,10 @@ mod tests {
             mmio[BMOD_WORD],
             0x200 | BMOD_FIXED_BURST | BMOD_IDMAC_ENABLE
         );
+        let ctrl = crate::regs::Ctrl::from_bits(mmio[CTRL_WORD]);
+        assert!(ctrl.dma_enable());
+        assert!(ctrl.use_internal_dmac());
+        assert!(ctrl.int_enable());
         assert_eq!(mmio[PLDMND_WORD], 0);
         assert_eq!(mmio[DBADDRL_WORD], 0x8000_0000);
         assert_eq!(mmio[DBADDRL_WORD + 1], 1);
