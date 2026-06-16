@@ -265,7 +265,7 @@ pub fn sys_mmap(
 
     // IonBufferFile 特殊处理：直接线性映射物理地址，跳过通用 file_mmap/device_mmap 路径。
     // 这样可以避免通用路径中 `range.start += offset` 对 Ion buffer 的错误偏移。
-    #[cfg(all(feature = "sg2002", not(feature = "plat-dyn")))]
+    #[cfg(feature = "sg2002")]
     if let Some(ref file) = file {
         use crate::file::ion::IonBufferFile;
         if let Some(ion_file) = file.downcast_ref::<IonBufferFile>() {
