@@ -265,3 +265,21 @@ pub fn send_mm_add_if_req_typed(
         Err(CmdError::InvalidResponse)
     }
 }
+
+/// 发送 MM_REMOVE_IF_REQ —— 释放固件侧的虚拟接口（VIF）。
+///
+/// 对应 Linux: struct mm_remove_if_req { u8_l inst_nbr; }（仅 1 字节，即 vif_idx）。
+/// MM_REMOVE_IF_CFM 无 payload。
+///
+/// 模式切换（STA↔AP）前必须调用，否则旧 VIF 在固件中永不释放，
+/// `vif_idx` 被新接口覆盖后会造成 VIF 泄漏与寻址错乱。
+pub fn send_mm_remove_if_req(
+    bus: &Arc<WifiBus>,
+    vif_idx: u8,
+    timeout_ms: u64,
+) -> Result<(), CmdError> {
+    let param = [vif_idx];
+    send_cmd(bus, MM_REMOVE_IF_REQ, TASK_MM, &param, timeout_ms)?;
+    log::debug!("[cmd_mgr] MM_REMOVE_IF done (vif_idx={})", vif_idx);
+    Ok(())
+}

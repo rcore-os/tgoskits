@@ -8,6 +8,7 @@ mod dir;
 mod dyn_debug;
 mod file;
 mod fs;
+pub(crate) mod overlay;
 pub(crate) mod proc;
 mod sysfs;
 mod tmp;

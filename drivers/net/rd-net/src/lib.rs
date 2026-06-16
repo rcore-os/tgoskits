@@ -176,6 +176,55 @@ impl Net {
             inner: self.inner.clone(),
         }
     }
+
+    /// Detaches a standalone control-plane handle for this device.
+    ///
+    /// Returns `None` for a plain wired NIC. The handle clones the same
+    /// `Arc<NetInner>` the data plane uses (like [`Net::irq_handler`]), so the
+    /// control plane (STA/SoftAP switch, link policy) stays reachable *after*
+    /// `Net` is consumed into a driver. Used to drive runtime Wi-Fi mode
+    /// switching from a separate task/syscall context.
+    pub fn wifi_control_handle(&self) -> Option<WifiControlHandle> {
+        self.wifi_control().is_some().then(|| WifiControlHandle {
+            inner: self.inner.clone(),
+        })
+    }
+}
+
+/// Standalone handle to a device's wireless control plane.
+///
+/// Holds a clone of the device's `Arc<NetInner>`, so it keeps working after the
+/// originating [`Net`] has been consumed into a data-plane driver. See
+/// [`Net::wifi_control_handle`].
+pub struct WifiControlHandle {
+    inner: Arc<NetInner>,
+}
+
+unsafe impl Send for WifiControlHandle {}
+unsafe impl Sync for WifiControlHandle {}
+
+impl WifiControlHandle {
+    /// Access the wireless control plane.
+    ///
+    /// # Safety / concurrency
+    ///
+    /// This aliases the same `Interface` the data plane drives. The caller must
+    /// not invoke control operations concurrently with the device's RX/TX or
+    /// poll path on the same interface. In practice mode switching is issued
+    /// from a syscall/task context that is serialized against the stack's poll
+    /// task, never from inside an RX callback.
+    #[allow(clippy::mut_from_ref)]
+    pub fn wifi_control(&self) -> Option<&mut dyn WifiControl> {
+        let iface = unsafe { &mut **self.inner.interface.get() };
+        iface.wifi_control()
+    }
+
+    /// The device's current MAC address (may change across a mode switch as the
+    /// firmware re-creates its VIF).
+    pub fn mac_address(&self) -> [u8; 6] {
+        let iface = unsafe { &mut **self.inner.interface.get() };
+        iface.mac_address()
+    }
 }
 
 fn make_pool(

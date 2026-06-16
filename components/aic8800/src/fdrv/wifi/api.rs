@@ -31,9 +31,9 @@ use crate::{
         protocol::{
             lmac_msg::*, send_apm_stop_req, send_eapol_data_frame, send_get_mac_addr_req,
             send_me_chan_config_req, send_me_config_req, send_me_set_ps_mode_req,
-            send_mm_add_if_req, send_mm_add_if_req_typed, send_mm_set_filter_req,
-            send_mm_start_req, send_reset_req, send_rf_calib_req, send_set_control_port_req,
-            start_open_ap, wait_for_eapol,
+            send_mm_add_if_req, send_mm_add_if_req_typed, send_mm_remove_if_req,
+            send_mm_set_filter_req, send_mm_start_req, send_reset_req, send_rf_calib_req,
+            send_set_control_port_req, start_open_ap, wait_for_eapol,
         },
         wifi::manager::{self, build_wpa2_rsn_ie_from_ap, disconnect},
     },
@@ -225,6 +225,62 @@ impl WifiClient {
     // Phase 1: LMAC 配置
     // ================================================================
 
+    /// 释放当前固件侧 VIF，把驱动状态复位到「无接口」基线。
+    ///
+    /// 模式切换（STA↔AP）前的必备步骤：固件里一次只持有一个 VIF，
+    /// `bus.conn.vif_idx` 是其唯一真值（初值 `0xFF` 表示无 VIF）。若不先
+    /// 释放旧 VIF 就发起新一轮 `MM_ADD_IF`，旧 VIF 在固件中永不回收、
+    /// `vif_idx` 被覆盖，造成 VIF 泄漏与寻址错乱。
+    ///
+    /// 行为：
+    ///   1. 若处于 STA 已连接态，先尽力 `disconnect`（忽略错误，保证对端收到 deauth）；
+    ///   2. 若存在有效 VIF（`vif_idx != 0xFF`），发送 `MM_REMOVE_IF_REQ` 释放；
+    ///   3. 复位连接状态、`vif_idx`、`sta_idx` 与缓存的 MAC。
+    ///
+    /// 无有效 VIF 时为安全空操作（首次进入某模式即此情形）。
+    pub fn teardown_vif(&mut self, timeout_ms: u64) -> Result<(), WifiError> {
+        let vif_idx = self
+            .bus
+            .conn
+            .vif_idx
+            .load(core::sync::atomic::Ordering::Acquire);
+
+        if vif_idx == 0xFF {
+            // 无 VIF：首次进入,直接返回。
+            return Ok(());
+        }
+
+        // STA 已连接时先尽力断开,让对端收到 deauth（失败不阻断拆除）。
+        if self.get_status() == ConnectionStatus::Connected
+            && let Err(e) = disconnect(&self.bus, vif_idx, 3)
+        {
+            log::warn!(
+                "[WifiClient] teardown: best-effort disconnect failed: {:?}",
+                e
+            );
+        }
+
+        send_mm_remove_if_req(&self.bus, vif_idx, timeout_ms).map_err(WifiError::from)?;
+        log::info!("[WifiClient] teardown: removed vif_idx={}", vif_idx);
+
+        // 复位驱动侧状态到「无接口」基线。
+        self.bus
+            .conn
+            .set_status(crate::fdrv::core::STATUS_DISCONNECTED);
+        self.bus
+            .conn
+            .vif_idx
+            .store(0xFF, core::sync::atomic::Ordering::Release);
+        self.bus
+            .conn
+            .sta_idx
+            .store(0xFF, core::sync::atomic::Ordering::Release);
+        *self.bus.conn.ap_mac.lock() = None;
+        self.vif_idx = 0xFF;
+
+        Ok(())
+    }
+
     /// 执行完整 LMAC 配置（初始化后必须调用一次）
     ///
     /// 厂商 D80 序列 (rwnx_main.c):
@@ -246,6 +302,9 @@ impl WifiClient {
         chip: ChipVariant,
         timeout_ms: u64,
     ) -> Result<[u8; 6], WifiError> {
+        // 模式切换/重入：先释放可能存在的旧 VIF（AP 或上一轮 STA）。
+        self.teardown_vif(timeout_ms)?;
+
         send_rf_calib_req(&self.bus, chip, timeout_ms).map_err(WifiError::from)?;
 
         let mac = send_get_mac_addr_req(&self.bus, timeout_ms).map_err(WifiError::from)?;
@@ -299,6 +358,9 @@ impl WifiClient {
         timeout_ms: u64,
     ) -> Result<Vec<u8>, WifiError> {
         log::info!("[WifiClient] === start_ap_open START ===");
+
+        // 模式切换/重入：先释放可能存在的旧 VIF（上一轮 STA 或 AP）。
+        self.teardown_vif(timeout_ms)?;
 
         // ---- 基础 LMAC 配置 ----
         send_rf_calib_req(&self.bus, chip, timeout_ms).map_err(WifiError::from)?;
