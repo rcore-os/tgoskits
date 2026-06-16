@@ -143,6 +143,25 @@ impl RawSocket {
     fn source_matches_peer(&self, source: IpAddress) -> bool {
         self.peer_addr.read().is_none_or(|peer| source == peer)
     }
+
+    fn deliver_packet(
+        &self,
+        source: IpAddress,
+        packet: &[u8],
+        dst: &mut (impl Write + IoBufMut),
+        options: &mut RecvOptions<'_>,
+    ) -> AxResult<usize> {
+        if let Some(from) = options.from.as_deref_mut() {
+            *from = SocketAddrEx::Ip(SocketAddr::new(source.into(), 0));
+        }
+
+        let written = dst.write(packet)?;
+        Ok(if options.flags.contains(RecvFlags::TRUNCATE) {
+            packet.len()
+        } else {
+            written
+        })
+    }
 }
 
 fn is_loopback_address(addr: IpAddress) -> bool {
@@ -389,81 +408,51 @@ impl SocketOps for RawSocket {
         self.general.recv_poller_with(self, extra_nb, || {
             request_poll();
             self.with_smol_socket(|socket| {
-                loop {
-                    if let Some((source, packet)) = if options.flags.contains(RecvFlags::PEEK) {
-                        self.deferred_rx.lock().clone()
-                    } else {
-                        self.deferred_rx.lock().take()
-                    } {
-                        if !self.source_matches_peer(source) {
-                            *self.deferred_rx.lock() = Some((source, packet));
-                            return Err(AxError::WouldBlock);
-                        }
-
-                        if let Some(from) = options.from.as_deref_mut() {
-                            *from = SocketAddrEx::Ip(SocketAddr::new(source.into(), 0));
-                        }
-
-                        let written = dst.write(&packet)?;
-                        return Ok(if options.flags.contains(RecvFlags::TRUNCATE) {
-                            packet.len()
-                        } else {
-                            written
-                        });
-                    }
-
-                    let loopback_packet = if options.flags.contains(RecvFlags::PEEK) {
-                        self.loopback_rx.lock().clone()
-                    } else {
-                        self.loopback_rx.lock().take()
-                    };
-                    if let Some((source, packet)) = loopback_packet
-                        && self.source_matches_peer(source)
-                    {
-                        if let Some(from) = options.from.as_deref_mut() {
-                            *from = SocketAddrEx::Ip(SocketAddr::new(source.into(), 0));
-                        }
-
-                        let written = dst.write(&packet)?;
-                        return Ok(if options.flags.contains(RecvFlags::TRUNCATE) {
-                            packet.len()
-                        } else {
-                            written
-                        });
-                    }
-
-                    let packet = if options.flags.contains(RecvFlags::PEEK) {
-                        let packet = socket.peek().map_err(|_| AxError::WouldBlock)?;
-                        let (source, _) = self.parse_ip_packet(packet)?;
-                        if let Some(peer) = *self.peer_addr.read()
-                            && source != peer
-                        {
-                            *self.deferred_rx.lock() = Some((source, packet.to_vec()));
-                            return Err(AxError::WouldBlock);
-                        }
-                        packet
-                    } else {
-                        socket.recv().map_err(|_| AxError::WouldBlock)?
-                    };
-                    let (source, packet) = self.parse_ip_packet(packet)?;
-
+                if let Some((source, packet)) = if options.flags.contains(RecvFlags::PEEK) {
+                    self.deferred_rx.lock().clone()
+                } else {
+                    self.deferred_rx.lock().take()
+                } {
                     if !self.source_matches_peer(source) {
-                        *self.deferred_rx.lock() = Some((source, packet.to_vec()));
-                        continue;
+                        *self.deferred_rx.lock() = Some((source, packet));
+                        return Err(AxError::WouldBlock);
                     }
-
-                    if let Some(from) = options.from.as_deref_mut() {
-                        *from = SocketAddrEx::Ip(SocketAddr::new(source.into(), 0));
-                    }
-
-                    let written = dst.write(packet)?;
-                    // TODO: set options.truncated when user buffer < packet size.
-                    return Ok(if options.flags.contains(RecvFlags::TRUNCATE) {
-                        packet.len()
-                    } else {
-                        written
-                    });
+                    let (_, payload) = self.parse_ip_packet(&packet)?;
+                    return self.deliver_packet(source, payload, &mut dst, &mut options);
                 }
+
+                if let Some((source, packet)) = if options.flags.contains(RecvFlags::PEEK) {
+                    self.loopback_rx.lock().clone()
+                } else {
+                    self.loopback_rx.lock().take()
+                } {
+                    if !self.source_matches_peer(source) {
+                        *self.loopback_rx.lock() = Some((source, packet));
+                        return Err(AxError::WouldBlock);
+                    }
+                    return self.deliver_packet(source, &packet, &mut dst, &mut options);
+                }
+
+                let wire_packet = if options.flags.contains(RecvFlags::PEEK) {
+                    let packet = socket.peek().map_err(|_| AxError::WouldBlock)?;
+                    let (source, _) = self.parse_ip_packet(packet)?;
+                    if let Some(peer) = *self.peer_addr.read()
+                        && source != peer
+                    {
+                        return Err(AxError::WouldBlock);
+                    }
+                    packet
+                } else {
+                    socket.recv().map_err(|_| AxError::WouldBlock)?
+                };
+                let (source, packet) = self.parse_ip_packet(wire_packet)?;
+
+                if !self.source_matches_peer(source) {
+                    *self.deferred_rx.lock() = Some((source, wire_packet.to_vec()));
+                    return Err(AxError::WouldBlock);
+                }
+
+                self.deliver_packet(source, packet, &mut dst, &mut options)
             })
         })
     }
