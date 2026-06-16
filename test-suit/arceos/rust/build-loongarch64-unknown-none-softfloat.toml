@@ -1,0 +1,9 @@
+features = [
+    "ax-driver/plat-dyn",
+]
+log = "Info"
+max_cpu_num = 4
+
+[env]
+BACKTRACE = "y"
+DWARF = "y"

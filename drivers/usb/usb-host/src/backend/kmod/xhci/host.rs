@@ -76,6 +76,16 @@ impl CoreOp for Xhci {
         )
     }
 
+    fn enable_irq(&mut self) -> Result<()> {
+        Self::enable_irq(self);
+        Ok(())
+    }
+
+    fn disable_irq(&mut self) -> Result<()> {
+        Self::disable_irq(self);
+        Ok(())
+    }
+
     fn kernel(&self) -> &Kernel {
         &self.kernel
     }
@@ -449,7 +459,7 @@ impl Xhci {
 
             let bus_addr = scratchpad_buf_arr.bus_addr();
 
-            self.dev_mut()?.dcbaa.set(0, bus_addr);
+            self.dev_mut()?.dcbaa.set_cpu(0, bus_addr);
 
             debug!("Setting up {buf_count} scratchpads, at {bus_addr:#0x}");
             scratchpad_buf_arr

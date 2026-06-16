@@ -26,7 +26,7 @@ use hashbrown::HashMap;
 
 use crate::{
     mm::{AddrSpace, Backend, SharedPages},
-    task::AsThread,
+    task::{AsThread, ProcessData},
 };
 
 /// Wait queue used by futex.
@@ -195,32 +195,82 @@ impl WaitQueue {
         )))??
     }
 
+    fn wake_locked(queue: &mut VecDeque<Waiter>, count: usize, mask: u32, wakers: &mut Vec<Waker>) {
+        let base = wakers.len();
+        queue.retain(|waiter| {
+            if waiter.state.cancelled.load(AtomicOrdering::SeqCst) {
+                false
+            } else if wakers.len() - base >= count || (waiter.bitset & mask) == 0 {
+                true
+            } else {
+                waiter.state.woken.store(true, AtomicOrdering::SeqCst);
+                wakers.push(waiter.waker.clone());
+                false
+            }
+        });
+    }
+
     /// Wakes up at most `count` tasks whose bitset intersects with the given
     /// bitmask.
     pub fn wake(&self, count: usize, mask: u32) -> usize {
-        let wakers = {
+        let mut wakers = Vec::new();
+        {
             let mut inner = self.inner.lock();
-            let mut wakers = Vec::new();
-
-            inner.queue.retain(|waiter| {
-                if waiter.state.cancelled.load(AtomicOrdering::SeqCst) {
-                    false
-                } else if wakers.len() >= count || (waiter.bitset & mask) == 0 {
-                    true
-                } else {
-                    waiter.state.woken.store(true, AtomicOrdering::SeqCst);
-                    wakers.push(waiter.waker.clone());
-                    false
-                }
-            });
-            wakers
-        };
+            Self::wake_locked(&mut inner.queue, count, mask, &mut wakers);
+        }
 
         let woke = wakers.len();
         for waker in wakers {
             waker.wake();
         }
         woke
+    }
+
+    /// Serializes a FUTEX_WAKE_OP user RMW with both futex wait queues.
+    pub fn wake_op(
+        &self,
+        wake_count: usize,
+        target: &WaitQueue,
+        wake2_count: usize,
+        condition: impl FnOnce() -> AxResult<bool>,
+    ) -> AxResult<usize> {
+        let mut condition = Some(condition);
+        let mut wakers = Vec::new();
+
+        match core::ptr::from_ref(self).cmp(&core::ptr::from_ref(target)) {
+            Ordering::Less => {
+                let mut src = self.inner.lock();
+                let mut dst = target.inner.lock();
+                let wake_second = condition.take().expect("condition used once")()?;
+                Self::wake_locked(&mut src.queue, wake_count, u32::MAX, &mut wakers);
+                if wake_second {
+                    Self::wake_locked(&mut dst.queue, wake2_count, u32::MAX, &mut wakers);
+                }
+            }
+            Ordering::Greater => {
+                let mut dst = target.inner.lock();
+                let mut src = self.inner.lock();
+                let wake_second = condition.take().expect("condition used once")()?;
+                Self::wake_locked(&mut src.queue, wake_count, u32::MAX, &mut wakers);
+                if wake_second {
+                    Self::wake_locked(&mut dst.queue, wake2_count, u32::MAX, &mut wakers);
+                }
+            }
+            Ordering::Equal => {
+                let mut src = self.inner.lock();
+                let wake_second = condition.take().expect("condition used once")()?;
+                Self::wake_locked(&mut src.queue, wake_count, u32::MAX, &mut wakers);
+                if wake_second {
+                    Self::wake_locked(&mut src.queue, wake2_count, u32::MAX, &mut wakers);
+                }
+            }
+        }
+
+        let woke = wakers.len();
+        for waker in wakers {
+            waker.wake();
+        }
+        Ok(woke)
     }
 
     fn wake_requeue_locked(
@@ -409,18 +459,27 @@ impl FutexKey {
     }
 
     /// Shortcut to create a `FutexKey` for the current task's address space.
+    ///
+    /// Private futex keys do not need the VMA walk — they resolve to the
+    /// process‑local futex table regardless of the backing VMA.  Skipping
+    /// the aspace lock for `Private` avoids contention with the mmap/munmap
+    /// paths that also hold the aspace lock across long page-table operations,
+    /// which could otherwise deadlock with concurrent CLONE_THREAD futex
+    /// wait/wake pairs.
     pub fn new_current(address: usize, mode: FutexKeyMode) -> Self {
+        if matches!(mode, FutexKeyMode::Private) {
+            return Self::Private { address };
+        }
         let curr = current();
         let aspace_arc = curr.as_thread().proc_data.aspace();
         let aspace = aspace_arc.lock();
         Self::new(&aspace, address, mode)
     }
 
-    /// Best-effort variant for teardown paths that may be reached after a
-    /// faultable user-memory access.
-    pub fn new_current_teardown(address: usize) -> Self {
-        let curr = current();
-        let aspace_arc = curr.as_thread().proc_data.aspace();
+    /// Teardown variant that is anchored to the exiting process instead of
+    /// whatever scheduler task is currently running on this CPU.
+    pub fn new_for_process_teardown(proc_data: &ProcessData, address: usize) -> Self {
+        let aspace_arc = proc_data.aspace();
         let Some(aspace) = aspace_arc.try_lock() else {
             return Self::Private { address };
         };
@@ -575,8 +634,14 @@ static SHARED_FUTEX_TABLES: Mutex<FutexTables> = Mutex::new(FutexTables::new());
 
 /// Returns the futex table for the given key.
 pub fn futex_table_for(key: &FutexKey) -> Arc<FutexTable> {
+    let curr = current();
+    futex_table_for_process(curr.as_thread().proc_data.as_ref(), key)
+}
+
+/// Returns the futex table for a key in a known process context.
+pub fn futex_table_for_process(proc_data: &ProcessData, key: &FutexKey) -> Arc<FutexTable> {
     match key {
-        FutexKey::Private { .. } => current().as_thread().proc_data.futex_table.clone(),
+        FutexKey::Private { .. } => proc_data.futex_table.clone(),
         FutexKey::Shared { region, .. } => {
             let ptr = match region {
                 Ok(pages) => Weak::as_ptr(pages) as usize,

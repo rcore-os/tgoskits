@@ -7,12 +7,12 @@ use alloc::{
 
 use ax_alloc::{UsageKind, global_allocator};
 use ax_errno::{AxError, AxResult};
-use ax_hal::{
+use ax_memory_addr::{DynPageIter, PAGE_SIZE_4K, PhysAddr, VirtAddr, VirtAddrRange};
+use ax_memory_set::MappingBackend;
+use ax_runtime::hal::{
     mem::{phys_to_virt, virt_to_phys},
     paging::{MappingFlags, PageSize, PageTable, PageTableCursor},
 };
-use ax_memory_addr::{DynPageIter, PAGE_SIZE_4K, PhysAddr, VirtAddr, VirtAddrRange};
-use ax_memory_set::MappingBackend;
 use ax_sync::Mutex;
 use enum_dispatch::enum_dispatch;
 
@@ -29,8 +29,10 @@ fn divide_page(size: usize, page_size: PageSize) -> usize {
     size >> (page_size as usize).trailing_zeros()
 }
 
-fn alloc_frame(zeroed: bool, size: PageSize) -> AxResult<PhysAddr> {
-    let page_size = size as usize;
+/// Allocates a single page frame of the given size, returning its physical address.
+/// The caller is responsible for deallocating the frame with `dealloc_frame`.
+pub(crate) fn alloc_frame(zeroed: bool, page_size: PageSize) -> AxResult<PhysAddr> {
+    let page_size = page_size as usize;
     let num_pages = page_size / PAGE_SIZE_4K;
     let vaddr = VirtAddr::from(
         global_allocator()
@@ -45,9 +47,10 @@ fn alloc_frame(zeroed: bool, size: PageSize) -> AxResult<PhysAddr> {
     Ok(paddr)
 }
 
-fn dealloc_frame(frame: PhysAddr, align: PageSize) {
+/// Deallocates a single page frame previously allocated with `alloc_frame`.
+pub(crate) fn dealloc_frame(frame: PhysAddr, page_size: PageSize) {
     let vaddr = phys_to_virt(frame);
-    let page_size: usize = align.into();
+    let page_size: usize = page_size.into();
     let num_pages = page_size / PAGE_SIZE_4K;
     global_allocator().dealloc_pages(vaddr.as_usize(), num_pages, UsageKind::VirtMem);
 }

@@ -1,6 +1,6 @@
 # `axdevice`
 
-> 路径：`components/axdevice`
+> 路径：`virtualization/axdevice`
 > 类型：库 crate
 > 分层：组件层 / 虚拟化设备分发层
 > 版本：`0.2.1`
@@ -65,7 +65,7 @@
 - `emu_mmio_devices`
 - `emu_sys_reg_devices`
 - `emu_port_devices`
-- `ivc_channel: Option<Mutex<RangeAllocator<usize>>>`
+- `ivc_channel: Option<Mutex<RangeAllocator>>`
 
 前三者决定地址访问分发，最后一个则是 Inter-VM Communication 区间分配器，用于在配置的 IVC GPA 范围内按 4K 对齐切片。
 
@@ -79,7 +79,7 @@ flowchart TD
     B --> C[遍历 EmulatedDeviceConfig]
     C --> D{按 EmulatedDeviceType 匹配}
     D --> E[实例化具体设备对象]
-    D --> F[初始化 IVC RangeAllocator]
+    D --> F[初始化内部 IVC RangeAllocator]
     D --> G[不支持类型发出 warn]
     E --> H[加入 MMIO/sysreg/port 容器]
 ```
@@ -194,7 +194,7 @@ let mut devices = AxVmDevices::new(config);
 
 `IVCChannel` 在本 crate 中不是一个 MMIO 设备对象，而是一个 GPA 区间分配器：
 
-- 初始化时只建立 `RangeAllocator`。
+- 初始化时只建立 `axdevice` 内部的 IVC `RangeAllocator`。
 - 分配和释放必须满足 4K 对齐。
 - 重复声明多个 IVCChannel 配置时，仅首次生效，后续配置会被忽略并打印告警。
 
@@ -209,7 +209,7 @@ let mut devices = AxVmDevices::new(config);
 | `axdevice_base` | 统一设备 trait 定义 |
 | `axvmconfig` | 设备配置和设备类型枚举 |
 | `axaddrspace` | GPA、端口、系统寄存器地址类型与访问宽度 |
-| `range-alloc-arceos` | IVC 区间分配 |
+| 内部 `range_alloc` 模块 | IVC 区间分配 |
 | `memory_addr` | 4K 对齐检查等辅助能力 |
 | `ax-errno` | 统一错误类型 |
 | `spin` | IVC 分配器锁 |
@@ -218,7 +218,7 @@ let mut devices = AxVmDevices::new(config);
 
 ### 主要消费者
 
-- `components/axvm`：直接持有 `AxVmDevices` 并在 VM exit 中调用分发接口。
+- `virtualization/axvm`：直接持有 `AxVmDevices` 并在 VM exit 中调用分发接口。
 - `os/axvisor`：通过 `axvm` 间接消费，是当前仓库中的核心落地点。
 - 测试代码：`tests/test.rs` 直接用 mock MMIO 设备验证分发语义。
 

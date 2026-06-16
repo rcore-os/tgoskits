@@ -11,6 +11,51 @@ use crate::{
 };
 
 const CAPABILITY_VERSION_3: u32 = 0x20080522;
+const PERSONALITY_GET: u32 = 0xffff_ffff;
+const PR_THP_DISABLE_EXCEPT_ADVISED: usize = 1 << 1;
+const MPOL_DEFAULT: i32 = 0;
+const MPOL_PREFERRED: i32 = 1;
+const MPOL_BIND: i32 = 2;
+const MPOL_INTERLEAVE: i32 = 3;
+const MPOL_LOCAL: i32 = 4;
+const MPOL_PREFERRED_MANY: i32 = 5;
+const MPOL_WEIGHTED_INTERLEAVE: i32 = 6;
+const MPOL_F_NODE: usize = 1 << 0;
+const MPOL_F_ADDR: usize = 1 << 1;
+const MPOL_F_MEMS_ALLOWED: usize = 1 << 2;
+const MPOL_F_STATIC_NODES: i32 = 1 << 15;
+const MPOL_F_RELATIVE_NODES: i32 = 1 << 14;
+const MPOL_MODE_FLAGS: i32 = MPOL_F_STATIC_NODES | MPOL_F_RELATIVE_NODES;
+const MPOL_MF_STRICT: u32 = 1 << 0;
+const MPOL_MF_MOVE: u32 = 1 << 1;
+const MPOL_MF_MOVE_ALL: u32 = 1 << 2;
+const MPOL_MF_VALID: u32 = MPOL_MF_STRICT | MPOL_MF_MOVE | MPOL_MF_MOVE_ALL;
+
+/// Split a NUMA policy mode from its optional mode flags.
+fn parse_mempolicy_mode(mode: i32) -> AxResult<i32> {
+    if mode < 0 {
+        return Err(AxError::InvalidInput);
+    }
+    let policy = mode & !MPOL_MODE_FLAGS;
+    match policy {
+        MPOL_DEFAULT
+        | MPOL_PREFERRED
+        | MPOL_BIND
+        | MPOL_INTERLEAVE
+        | MPOL_LOCAL
+        | MPOL_PREFERRED_MANY
+        | MPOL_WEIGHTED_INTERLEAVE => Ok(policy),
+        _ => Err(AxError::InvalidInput),
+    }
+}
+
+/// Validate a user nodemask pointer when a policy consumes it.
+fn check_nodemask(nodemask: *const usize, maxnode: usize) -> AxResult<()> {
+    if !nodemask.is_null() && maxnode > 0 {
+        nodemask.vm_read()?;
+    }
+    Ok(())
+}
 
 /// Validate the cap header and return the target pid (0 means self).
 fn validate_cap_header(header_ptr: *mut __user_cap_header_struct) -> AxResult<u32> {
@@ -46,6 +91,10 @@ pub fn sys_capget(
     data: *mut __user_cap_data_struct,
 ) -> AxResult<isize> {
     let pid = validate_cap_header(header)?;
+
+    if data.is_null() {
+        return Ok(0);
+    }
 
     let cred = cred_for_pid(pid)?;
     let caps = if cred.euid == 0 { u32::MAX } else { 0 };
@@ -83,14 +132,131 @@ pub fn sys_umask(mask: u32) -> AxResult<isize> {
     Ok(old as isize)
 }
 
+pub fn sys_personality(persona: usize) -> AxResult<isize> {
+    let curr = current();
+    let proc_data = &curr.as_thread().proc_data;
+    let old = proc_data.personality();
+    if persona as u32 != PERSONALITY_GET {
+        proc_data.replace_personality(persona);
+    }
+    Ok(old as isize)
+}
+
+/// Get NUMA memory policy for a thread.
+///
+/// For single-node systems (which StarryOS currently models), all memory
+/// is on node 0 with default policy MPOL_DEFAULT.
+///
+/// Arguments:
+/// - policy: output pointer for policy mode (MPOL_DEFAULT, MPOL_BIND, etc.)
+/// - nodemask: output pointer for node mask bitmap
+/// - maxnode: size of nodemask bitmap in bits
+/// - addr: memory address to query (when MPOL_F_ADDR flag set)
+/// - flags: MPOL_F_NODE, MPOL_F_ADDR, MPOL_F_MEMS_ALLOWED
+///
+/// Returns 0 on success, or -errno on error.
 pub fn sys_get_mempolicy(
-    _policy: *mut i32,
-    _nodemask: *mut usize,
-    _maxnode: usize,
+    policy: *mut i32,
+    nodemask: *mut usize,
+    maxnode: usize,
     _addr: usize,
-    _flags: usize,
+    flags: usize,
 ) -> AxResult<isize> {
-    warn!("Dummy get_mempolicy called");
+    debug!(
+        "sys_get_mempolicy <= policy: {:?}, nodemask: {:?}, maxnode: {}, flags: {:#x}",
+        policy, nodemask, maxnode, flags
+    );
+
+    if flags & !(MPOL_F_NODE | MPOL_F_ADDR | MPOL_F_MEMS_ALLOWED) != 0 {
+        return Err(AxError::InvalidInput);
+    }
+    if flags & MPOL_F_MEMS_ALLOWED != 0 && flags != MPOL_F_MEMS_ALLOWED {
+        return Err(AxError::InvalidInput);
+    }
+    if flags & MPOL_F_NODE != 0 && flags & MPOL_F_ADDR == 0 {
+        return Err(AxError::InvalidInput);
+    }
+
+    // StarryOS models one NUMA node, so every query resolves to node 0.
+    if flags & MPOL_F_MEMS_ALLOWED != 0 {
+        if !nodemask.is_null() && maxnode > 0 {
+            nodemask.vm_write(1usize)?;
+        }
+        return Ok(0);
+    }
+
+    if flags & MPOL_F_NODE != 0 {
+        if !policy.is_null() {
+            policy.vm_write(0i32)?;
+        }
+        return Ok(0);
+    }
+
+    if !policy.is_null() {
+        policy.vm_write(MPOL_DEFAULT)?;
+    }
+
+    if !nodemask.is_null() && maxnode > 0 {
+        nodemask.vm_write(1usize)?;
+    }
+
+    Ok(0)
+}
+
+/// Set NUMA memory policy for a thread.
+///
+/// For single-node systems, this is a no-op that always succeeds.
+///
+/// Arguments:
+/// - mode: policy mode (MPOL_DEFAULT, MPOL_BIND, MPOL_INTERLEAVE, etc.)
+/// - nodemask: node mask bitmap
+/// - maxnode: size of nodemask bitmap in bits
+///
+/// Returns 0 on success.
+pub fn sys_set_mempolicy(mode: i32, nodemask: *const usize, maxnode: usize) -> AxResult<isize> {
+    debug!("sys_set_mempolicy <= mode: {}", mode);
+
+    let policy = parse_mempolicy_mode(mode)?;
+    if policy != MPOL_DEFAULT {
+        check_nodemask(nodemask, maxnode)?;
+    }
+
+    // Single-node system: accept valid policies and ignore placement.
+    Ok(0)
+}
+
+/// Bind memory range to NUMA nodes.
+///
+/// For single-node systems, this is a no-op that always succeeds.
+///
+/// Arguments:
+/// - addr: start address of memory range
+/// - len: length of memory range
+/// - mode: policy mode
+/// - nodemask: node mask bitmap
+/// - maxnode: size of nodemask bitmap in bits
+/// - flags: MPOL_MF_STRICT, MPOL_MF_MOVE, MPOL_MF_MOVE_ALL
+///
+/// Returns 0 on success.
+pub fn sys_mbind(
+    addr: usize,
+    len: usize,
+    mode: i32,
+    nodemask: *const usize,
+    maxnode: usize,
+    flags: u32,
+) -> AxResult<isize> {
+    debug!("sys_mbind <= mode: {}", mode);
+
+    let policy = parse_mempolicy_mode(mode)?;
+    if addr & 0xfff != 0 || len == 0 || flags & !MPOL_MF_VALID != 0 {
+        return Err(AxError::InvalidInput);
+    }
+    if policy != MPOL_DEFAULT {
+        check_nodemask(nodemask, maxnode)?;
+    }
+
+    // Single-node system: accept valid bindings and ignore placement.
     Ok(0)
 }
 
@@ -100,6 +266,7 @@ pub fn sys_get_mempolicy(
 /// - PR_SET_NAME: set the name of the calling thread, using the value pointed to by `arg2`
 /// - PR_GET_NAME: get the name of the calling
 /// - PR_SET_SECCOMP: enable seccomp mode, with the mode specified in `arg2`
+/// - PR_SET_CHILD_SUBREAPER / PR_GET_CHILD_SUBREAPER: control orphan reparenting
 /// - PR_MCE_KILL: set the machine check exception policy
 /// - PR_SET_MM options: set various memory management options (start/end code/data/brk/stack)
 pub fn sys_prctl(
@@ -136,6 +303,21 @@ pub fn sys_prctl(
             let sig = current().as_thread().pdeathsig() as i32;
             (arg2 as *mut i32).vm_write(sig)?;
         }
+        PR_SET_CHILD_SUBREAPER => {
+            current()
+                .as_thread()
+                .proc_data
+                .proc
+                .set_child_subreaper(arg2 != 0);
+        }
+        PR_GET_CHILD_SUBREAPER => {
+            let enabled = if current().as_thread().proc_data.proc.is_child_subreaper() {
+                1
+            } else {
+                0
+            };
+            (arg2 as *mut i32).vm_write(enabled)?;
+        }
         PR_CAPBSET_READ => {
             if arg2 > CAP_LAST_CAP as usize {
                 return Err(AxError::InvalidInput);
@@ -162,8 +344,52 @@ pub fn sys_prctl(
         }
         PR_SET_SECCOMP => {}
         PR_MCE_KILL => {}
+        PR_SET_NO_NEW_PRIVS => {
+            if arg2 != 1 || arg3 != 0 || arg4 != 0 || arg5 != 0 {
+                return Err(AxError::InvalidInput);
+            }
+            current().as_thread().set_no_new_privs();
+        }
+        PR_GET_NO_NEW_PRIVS => {
+            return Ok(current().as_thread().no_new_privs() as isize);
+        }
+        PR_SET_THP_DISABLE => {
+            // Linux reserves arg4/arg5 for this option; non-zero values are invalid.
+            if arg4 != 0 || arg5 != 0 {
+                return Err(AxError::InvalidInput);
+            }
+            // StarryOS does not implement transparent huge pages, but userspace
+            // may use this prctl as a compatibility hint and query it later.
+            // Linux returns 0, 1, or 3 from PR_GET_THP_DISABLE:
+            //   0: enabled, 1: disabled, 3: disabled except advised mappings.
+            let thp_disable = match (arg2, arg3) {
+                (0, 0) => 0,
+                (0, _) => return Err(AxError::InvalidInput),
+                (_, 0) => 1,
+                (_, PR_THP_DISABLE_EXCEPT_ADVISED) => 1 | PR_THP_DISABLE_EXCEPT_ADVISED,
+                _ => return Err(AxError::InvalidInput),
+            };
+            current()
+                .as_thread()
+                .proc_data
+                .set_thp_disable(thp_disable as u32);
+        }
+        PR_GET_THP_DISABLE => {
+            // PR_GET_THP_DISABLE takes no additional arguments and returns the
+            // process-local state recorded by PR_SET_THP_DISABLE.
+            if arg2 != 0 || arg3 != 0 || arg4 != 0 || arg5 != 0 {
+                return Err(AxError::InvalidInput);
+            }
+            return Ok(current().as_thread().proc_data.thp_disable() as isize);
+        }
         PR_SET_MM => {
             // not implemented; but avoid annoying warnings
+            return Err(AxError::InvalidInput);
+        }
+        PR_SET_VMA => {
+            if arg2 == PR_SET_VMA_ANON_NAME as usize {
+                return Ok(0);
+            }
             return Err(AxError::InvalidInput);
         }
         _ => {

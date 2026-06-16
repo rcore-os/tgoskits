@@ -1,14 +1,14 @@
-use alloc::sync::Arc;
+use alloc::{boxed::Box, sync::Arc};
 use core::marker::PhantomPinned;
 
-use ax_driver::{AxBlockDevice, PartitionRegion};
-use ax_kspin::{SpinNoPreempt as Mutex, SpinNoPreemptGuard as MutexGuard};
+use ax_kspin::{SpinNoIrq as Mutex, SpinNoIrqGuard as MutexGuard};
 use axfs_ng_vfs::{
     DirEntry, Filesystem, FilesystemOps, Reference, StatFs, VfsResult, path::MAX_NAME_LEN,
 };
 use slab::Slab;
 
 use super::{dir::FatDirNode, disk::SeekableDisk, ff, util::into_vfs_err};
+use crate::block::{BlockRegion, FsBlockDevice};
 
 pub struct FatFilesystemInner {
     pub inner: ff::FileSystem,
@@ -32,7 +32,7 @@ pub struct FatFilesystem {
 }
 
 impl FatFilesystem {
-    pub fn new(dev: AxBlockDevice, region: PartitionRegion) -> VfsResult<Filesystem> {
+    pub fn new(dev: Box<dyn FsBlockDevice>, region: BlockRegion) -> VfsResult<Filesystem> {
         let disk = SeekableDisk::new(dev, region);
         let mut inner = FatFilesystemInner {
             inner: ff::FileSystem::new(disk, fatfs::FsOptions::new())
@@ -63,6 +63,13 @@ impl FatFilesystem {
 }
 
 impl FatFilesystem {
+    /// Locks the shared FAT state.
+    ///
+    /// FAT operations may perform block I/O while this guard is held. The
+    /// current rootfs setup can also run in early atomic contexts where a
+    /// blocking mutex trips `might_sleep()`, so use `SpinNoIrq` instead of the
+    /// older `SpinNoPreempt` to close same-CPU IRQ reentry without changing the
+    /// boot-time calling contract.
     pub(crate) fn lock(&self) -> MutexGuard<'_, FatFilesystemInner> {
         self.inner.lock()
     }

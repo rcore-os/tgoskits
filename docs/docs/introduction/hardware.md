@@ -108,7 +108,7 @@ flowchart TD
 
 | 优先级 | 系统 | 命令 | 预期结果 |
 |--------|------|------|---------|
-| 1 | ArceOS | `cargo xtask arceos qemu --package ax-helloworld --arch riscv64` | QEMU 输出 "Hello, world!" 后退出 |
+| 1 | ArceOS | `cargo xtask arceos qemu --package arceos-helloworld --arch riscv64` | QEMU 输出 "Hello, world!" 后退出 |
 | 2 | StarryOS | `cargo xtask starry qemu --target riscv64` | 启动 Shell 并执行冒烟命令（首次自动准备 rootfs） |
 | 3 | Axvisor | `cargo xtask axvisor test qemu --target aarch64` | Guest 输出 "guest test pass!"（首次自动下载 Guest 镜像） |
 
@@ -148,16 +148,16 @@ Axvisor 通过硬编码的测试组管理板级支持，每组对应一块物理
 
 | 开发板 | SoC | Guest OS | VM 配置 | 测试状态 |
 |--------|-----|----------|---------|---------|
-| **qemu-aarch64** | — (QEMU) | Linux | `linux-aarch64-qemu-smp1.toml` | ✅ CI 自动运行 |
-| **qemu-riscv64** | — (QEMU) | ArceOS | `arceos-riscv64-qemu-smp1.toml` | 配置就绪 |
-| **OrangePi-5-Plus** | RK3588 | Linux | `linux-aarch64-orangepi5p-smp1.toml` | ✅ CI self-hosted |
-| **phytiumpi** | 飞腾 E2000 | Linux | `linux-aarch64-e2000-smp1.toml` | ✅ CI self-hosted |
-| **ROC-RK3568-PC** | RK3568 | Linux | `linux-aarch64-rk3568-smp1.toml` | ✅ CI self-hosted |
-| **RDK-S100** | — | Linux | `linux-aarch64-s100-smp1.toml` | ✅ CI self-hosted |
+| **qemu-aarch64** | — (QEMU) | Linux | `qemu/aarch64/linux-smp1.toml` | ✅ CI 自动运行 |
+| **qemu-riscv64** | — (QEMU) | ArceOS | `qemu/riscv64/arceos-smp1.toml` | 配置就绪 |
+| **OrangePi-5-Plus** | RK3588 | Linux | `orangepi-5-plus/linux-smp1.toml` | ✅ CI self-hosted |
+| **phytiumpi** | 飞腾 E2000 | Linux | `phytiumpi/linux-smp1.toml` | ✅ CI self-hosted |
+| **ROC-RK3568-PC** | RK3568 | Linux | `roc-rk3568-pc/linux-smp1.toml` | ✅ CI self-hosted |
+| **RDK-S100** | — | Linux | `rdk-s100/linux-smp1.toml` | ✅ CI self-hosted |
 
 板级配置位于 `os/axvisor/configs/`：
 - `board/<board_name>.toml` — 构建配置（编译选项、内核特性）
-- `vms/<vm_config>.toml` — 虚拟机配置（内存、CPU、设备列表）
+- `vms/<platform>/<guest>-<variant>.toml` — 虚拟机配置（内存、CPU、设备列表）
 
 ### StarryOS 开发板
 

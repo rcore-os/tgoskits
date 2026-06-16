@@ -1,36 +1,41 @@
 //! Special devices
 
 mod card0;
-#[cfg(all(feature = "rknpu", not(any(windows, unix))))]
+#[cfg(feature = "rknpu")]
 mod card1;
-#[cfg(all(feature = "rknpu", not(any(windows, unix))))]
+#[cfg(feature = "rknpu")]
 mod dma_heap;
 mod drm;
 #[cfg(feature = "input")]
 pub mod event;
 mod fb;
+#[cfg(feature = "k230-kpu")]
+mod kpu;
 #[cfg(feature = "dev-log")]
 mod log;
 mod r#loop;
+#[cfg(feature = "ext4")]
+mod loop_block;
 #[cfg(feature = "ext4")]
 pub use r#loop::LoopDevice;
 #[cfg(feature = "sg2002")]
 pub mod ion;
 #[cfg(feature = "memtrack")]
 mod memtrack;
-#[cfg(all(feature = "rknpu", not(any(windows, unix))))]
-mod rknpu_card;
-#[cfg(all(feature = "rknpu", not(any(windows, unix))))]
+#[cfg(feature = "rknpu")]
 mod rknpu_drm;
+mod rtc;
 #[cfg(feature = "sg2002")]
 pub mod tpu;
 pub mod tty;
 
-#[cfg(feature = "sg2002")]
+#[cfg(all(feature = "sg2002", not(feature = "plat-dyn")))]
 mod cvi_camera;
-#[cfg(feature = "sg2002")]
+#[cfg(all(feature = "sg2002", not(feature = "plat-dyn")))]
+mod cvi_usb_camera;
+#[cfg(all(feature = "sg2002", not(feature = "plat-dyn")))]
 mod pinmux;
-#[cfg(feature = "sg2002")]
+#[cfg(all(feature = "sg2002", not(feature = "plat-dyn")))]
 pub(super) mod pwm;
 #[cfg(feature = "sg2002")]
 mod tty_serial;
@@ -75,6 +80,32 @@ impl DeviceOps for Null {
 
     fn flags(&self) -> NodeFlags {
         NodeFlags::NON_CACHEABLE | NodeFlags::STREAM
+    }
+}
+
+/// Placeholder root block device. starry has no real block-device backend for
+/// the root mount; this node exists only so tools that resolve the root device
+/// by scanning /dev (e.g. busybox `rdev`) can find a block node whose `rdev`
+/// matches the root filesystem's `st_dev`. Real block I/O is unsupported:
+/// read/write return `EIO` rather than silently succeeding, so the node never
+/// masquerades as a working disk for `dd`/`blkid`/`fsck`.
+struct RootBlk;
+
+impl DeviceOps for RootBlk {
+    fn read_at(&self, _buf: &mut [u8], _offset: u64) -> VfsResult<usize> {
+        Err(AxError::Io)
+    }
+
+    fn write_at(&self, _buf: &[u8], _offset: u64) -> VfsResult<usize> {
+        Err(AxError::Io)
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+
+    fn flags(&self) -> NodeFlags {
+        NodeFlags::NON_CACHEABLE
     }
 }
 
@@ -218,6 +249,20 @@ fn builder(fs: Arc<SimpleFs>) -> DirMaker {
             Arc::new(Random::new()),
         ),
     );
+    // Root block device node. Its rdev must equal the root filesystem's st_dev
+    // so that tools resolving the root device by scanning /dev (e.g. busybox
+    // `rdev`, which stats "/" then looks for a block node with a matching
+    // st_rdev) can find it. The root mount is the first mount, so its
+    // `DEVICE_COUNTER` id is 1 (== `DeviceId::new(0, 1).0`).
+    root.add(
+        "vda",
+        Device::new(
+            fs.clone(),
+            NodeType::BlockDevice,
+            DeviceId::new(0, 1),
+            Arc::new(RootBlk),
+        ),
+    );
     if ax_display::has_display() {
         root.add(
             "fb0",
@@ -265,7 +310,7 @@ fn builder(fs: Arc<SimpleFs>) -> DirMaker {
     #[cfg(feature = "dev-log")]
     root.add(
         "log",
-        crate::pseudofs::SimpleFile::new(fs.clone(), NodeType::Socket, || Ok(b"")),
+        crate::pseudofs::SimpleFile::new(fs.clone(), NodeType::Socket, || Ok("")),
     );
 
     #[cfg(feature = "memtrack")]
@@ -288,17 +333,39 @@ fn builder(fs: Arc<SimpleFs>) -> DirMaker {
             Arc::new(CpuDmaLatency),
         ),
     );
-
-    #[cfg(feature = "kcov")]
     root.add(
-        "kcov",
+        "rtc0",
         Device::new(
             fs.clone(),
             NodeType::CharacterDevice,
-            DeviceId::new(10, 57),
-            Arc::new(crate::kcov::KcovDevice),
+            rtc::RTC0_DEVICE_ID,
+            Arc::new(rtc::Rtc),
         ),
     );
+
+    #[cfg(feature = "k230-kpu")]
+    {
+        if let Some(kpu_device) = kpu::KpuDevice::probe().map(Arc::new) {
+            root.add(
+                "kpu",
+                Device::new(
+                    fs.clone(),
+                    NodeType::CharacterDevice,
+                    kpu::KPU_DEVICE_ID,
+                    kpu_device.clone(),
+                ),
+            );
+            root.add(
+                "kpu0",
+                Device::new(
+                    fs.clone(),
+                    NodeType::CharacterDevice,
+                    kpu::KPU_DEVICE_ID,
+                    kpu_device,
+                ),
+            );
+        }
+    }
 
     // This is mounted to a tmpfs in `new_procfs`
     root.add(
@@ -338,7 +405,7 @@ fn builder(fs: Arc<SimpleFs>) -> DirMaker {
         ),
     );
 
-    #[cfg(all(feature = "rknpu", not(any(windows, unix))))]
+    #[cfg(feature = "rknpu")]
     {
         // DMA heap devices (rknpu only)
         let mut dma_heap_dir = DirMapping::new();
@@ -430,6 +497,9 @@ fn builder(fs: Arc<SimpleFs>) -> DirMaker {
                 Arc::new(tty_serial::new_tty_s2(115200)),
             ),
         );
+    }
+    #[cfg(all(feature = "sg2002", not(feature = "plat-dyn")))]
+    {
         root.add(
             "cvi-camera0",
             Device::new(
@@ -437,6 +507,15 @@ fn builder(fs: Arc<SimpleFs>) -> DirMaker {
                 NodeType::CharacterDevice,
                 DeviceId::new(10, 201),
                 Arc::new(cvi_camera::CviCamera::new()),
+            ),
+        );
+        root.add(
+            "cvi-usb-camera0",
+            Device::new(
+                fs.clone(),
+                NodeType::CharacterDevice,
+                DeviceId::new(10, 202),
+                Arc::new(cvi_usb_camera::CviCamera::new()),
             ),
         );
         root.add(

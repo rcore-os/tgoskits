@@ -39,16 +39,14 @@
 需要特别注意的是：结构体中虽然保留了 `CR` 字段，但当前公开 API 并未直接暴露对 `CR` 的操作。这意味着该 crate 假设硬件或更早的初始化阶段已经把设备置于可工作的状态。
 
 ### 1.4 在仓库中的实际使用主线
-在本仓库里，`ax-arm-pl031` 最重要的真实接入路径不在它自己内部，而在 `ax-plat-aarch64-peripherals`：
+在本仓库里，`ax-arm-pl031` 的真实接入路径不在它自己内部，而在动态平台驱动注册和平台时间路径中：
 
 ```mermaid
 flowchart TD
-    A["ax-plat-aarch64-qemu-virt::init_early"] --> B["generic_timer::init_early"]
-    B --> C["pl031::init_early(rtc_base)"]
-    C --> D["Rtc::new(mmio_ptr)"]
-    D --> E["get_unix_timestamp()"]
-    E --> F["计算 RTC_EPOCHOFFSET_NANOS"]
-    F --> G["wall_time = monotonic_time + offset"]
+    A["axplat-dyn / somehal discovers RTC"] --> B["ax-driver dynamic RTC probe"]
+    B --> C["Rtc::new(mmio_ptr)"]
+    C --> D["get_unix_timestamp()"]
+    D --> E["提供墙钟或 RTC 设备能力"]
 ```
 
 也就是说，`ax-arm-pl031` 在平台栈中的主要角色不是“持续提供复杂时钟服务”，而是**在极早期读一次硬件墙钟，建立单调时间到真实墙钟的偏移量**。
@@ -98,9 +96,9 @@ let _ = secs;
 ```mermaid
 graph LR
     chrono["chrono (optional)"] --> current["ax-arm-pl031"]
-    current --> peripherals["ax-plat-aarch64-peripherals"]
-    peripherals --> qemuvirt["ax-plat-aarch64-qemu-virt"]
-    qemuvirt --> arceos["ArceOS aarch64 平台路径"]
+    current --> driver["ax-driver dynamic RTC probe"]
+    driver --> dyn["axplat-dyn"]
+    dyn --> arceos["ArceOS aarch64 动态平台路径"]
 ```
 
 ### 直接依赖
@@ -108,11 +106,10 @@ graph LR
 - `chrono` 是可选依赖，用于提供更方便的时间表示层。
 
 ### 主要消费者
-- `ax-plat-aarch64-peripherals`：这是本仓库中最重要的直接消费者，会在平台初始化时用 `Rtc` 标定墙钟偏移。
+- `ax-driver` 动态平台 RTC probe：在动态平台设备发现后注册 PL031 RTC 能力。
 
 ### 3.3 间接消费者
-- `ax-plat-aarch64-qemu-virt` 在启用 `rtc` 时会间接使用。
-- 通过 `axplat` / `ax-hal` 共享这条平台路径的 ArceOS 栈。
+- 通过 `axplat-dyn` / `ax-hal` 共享这条平台路径的 ArceOS 栈。
 - StarryOS、Axvisor 的依赖图中可能间接出现该 crate，但是否实际启用取决于具体平台包与 feature 组合。
 
 ## 开发指南
@@ -127,7 +124,7 @@ ax-arm-pl031 = { workspace = true }
 ### 4.2 使用与修改约束
 1. `Rtc::new()` 只应在平台已经完成 MMIO 映射之后调用。
 2. 若要新增对 `CR` 或更多寄存器的控制，需要先确认这是否属于该 crate 的职责，而不是应留在平台层。
-3. 若修改时间单位或返回类型，必须同步评估 `ax-plat-aarch64-peripherals` 中墙钟偏移计算的影响。
+3. 若修改时间单位或返回类型，必须同步评估动态平台 RTC 注册和墙钟偏移计算的影响。
 4. 对 `chrono` 路径的修改要注意 `u32` 秒到 `DateTime<Utc>` 的转换边界。
 
 ### 4.3 关键开发建议
@@ -146,7 +143,7 @@ ax-arm-pl031 = { workspace = true }
 - `chrono` 路径的边界转换行为。
 
 ### 集成测试
-- 在 aarch64 QEMU virt + `rtc` feature 下验证墙钟偏移是否正确建立。
+- 在 aarch64 动态平台 + `rtc` feature 下验证墙钟偏移是否正确建立。
 - 验证未调用 `pl031::init_early()` 的平台是否会维持 `epochoffset_nanos == 0`。
 
 ### 覆盖率
@@ -197,7 +194,7 @@ Axvisor 的依赖图可能会间接包含 `ax-arm-pl031`，但它更多体现为
 ```mermaid
 graph LR
     current["ax-arm-pl031"]
-    ax_plat_aarch64_peripherals["ax-plat-aarch64-peripherals"] --> current
+    ax_driver_rtc["ax-driver dynamic RTC probe"] --> current
 ```
 
 ### 直接依赖
@@ -207,19 +204,19 @@ graph LR
 - 未检测到额外的间接本地依赖，或依赖深度主要停留在第一层。
 
 ### 3.3 被依赖情况
-- `ax-plat-aarch64-peripherals`
+- `ax-driver` 动态平台 RTC probe
 
 ### 被依赖情况
 - `arceos-affinity`
-- `ax-helloworld`
-- `ax-helloworld-myplat`
-- `ax-httpclient`
-- `ax-httpserver`
+- `arceos-helloworld`
+- `arceos-helloworld-myplat`
+- `arceos-httpclient`
+- `arceos-httpserver`
 - `arceos-irq`
 - `arceos-memtest`
 - `arceos-parallel`
 - `arceos-priority`
-- `ax-shell`
+- `arceos-shell`
 - `arceos-sleep`
 - `arceos-wait-queue`
 - 另外还有 `31` 个同类项未在此展开
@@ -261,7 +258,7 @@ ax-arm-pl031 = { workspace = true }
 
 ## 跨项目定位
 ### ArceOS
-`ax-arm-pl031` 主要通过 `arceos-affinity`、`ax-helloworld`、`ax-helloworld-myplat`、`ax-httpclient`、`ax-httpserver`、`arceos-irq` 等（另有 26 项） 等上层 crate 被 ArceOS 间接复用，通常处于更底层的公共依赖层。
+`ax-arm-pl031` 主要通过 `arceos-affinity`、`arceos-helloworld`、`arceos-helloworld-myplat`、`arceos-httpclient`、`arceos-httpserver`、`arceos-irq` 等（另有 26 项） 等上层 crate 被 ArceOS 间接复用，通常处于更底层的公共依赖层。
 
 ### StarryOS
 `ax-arm-pl031` 主要通过 `starry-kernel`、`starryos`、`starryos-test` 等上层 crate 被 StarryOS 间接复用，通常处于更底层的公共依赖层。

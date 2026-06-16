@@ -6,7 +6,7 @@ keywords.workspace = true
 license.workspace = true
 name = "axbuild"
 repository.workspace = true
-version = "0.4.7"
+version = "0.4.12"
 description = "An OS build lib toolkit used by arceos"
 
 [target.'cfg(any(windows, unix))'.dependencies]
@@ -15,7 +15,7 @@ ax-config-gen = { workspace = true }
 axvmconfig = { workspace = true, features = ["std"] }
 cargo_metadata = "0.23"
 chrono = { version = "0.4", features = ["serde"] }
-clap = { version = "4.6", features = ["derive"], optional = true }
+clap = { version = "4.6", features = ["derive"] }
 colored = { version = "3" }
 env_logger = { workspace = true }
 futures-util = "0.3"
@@ -34,7 +34,8 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = { version = "1" }
 sha2 = { version = "0.10" }
 tar = { version = "0.4" }
-tokio = { version = "1.0", features = ["fs", "io-util", "macros", "process", "rt-multi-thread", "time"], optional = true }
+tempfile = "3"
+tokio = { version = "1.0", features = ["fs", "io-util", "macros", "process", "rt-multi-thread", "time"] }
 toml.workspace = true
 tracing = "0.1"
 tracing-log = "0.2"
@@ -46,14 +47,12 @@ quote = "1"
 syn = { version = "2", features = ["full", "visit"] }
 walkdir = "2"
 
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = [
+    "Win32_Foundation",
+    "Win32_System_Console",
+    "Win32_System_Pipes",
+] }
+
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
-
-[features]
-clap = ["dep:clap", "dep:tokio"]
-cli = ["dep:clap", "tokio"]
-default = ["cli"]
-tokio = ["dep:tokio", "dep:clap"]
-
-[dev-dependencies]
-tempfile = "3"

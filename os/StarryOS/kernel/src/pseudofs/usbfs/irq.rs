@@ -1,11 +1,12 @@
 use alloc::{boxed::Box, sync::Arc, vec::Vec};
 use core::{
     cell::UnsafeCell,
+    ptr::NonNull,
     sync::atomic::{AtomicBool, Ordering},
 };
 
+use ax_kspin::SpinNoIrq;
 use ax_lazyinit::LazyInit;
-use crab_usb::{Event, EventHandler};
 use rdrive::DeviceId as RDriveDeviceId;
 
 use super::manager::UsbFsManager;
@@ -17,14 +18,15 @@ pub(super) struct PendingUsbIrqSlot {
     pub(super) irq_num: usize,
     pub(super) device_id: RDriveDeviceId,
     pub(super) bus_num: u8,
-    pub(super) handler: EventHandler,
+    pub(super) handler: ax_driver::usb::UsbHostIrqHandler,
 }
 
 pub(super) struct UsbIrqSlot {
     device_id: RDriveDeviceId,
     bus_num: u8,
-    handler: EventHandler,
+    handler: ax_driver::usb::UsbHostIrqHandler,
     dirty: AtomicBool,
+    handle: SpinNoIrq<Option<ax_runtime::hal::irq::IrqHandle>>,
 }
 
 pub(super) struct UsbIrqRegistry {
@@ -55,6 +57,7 @@ impl UsbIrqRegistry {
                 bus_num: slot.bus_num,
                 handler: slot.handler,
                 dirty: AtomicBool::new(false),
+                handle: SpinNoIrq::new(None),
             });
         }
         Self {
@@ -92,10 +95,36 @@ pub(super) fn init_globals(manager: Arc<UsbFsManager>, pending_slots: Vec<Pendin
                     irq_num, slot.bus_num, slot.device_id
                 );
             }
-            if !ax_hal::irq::register(irq_num, usbfs_irq_handler) {
-                warn!("usbfs: failed to register IRQ callback for IRQ {}", irq_num);
+            match ax_runtime::hal::irq::request_shared_irq(
+                irq_num,
+                usbfs_raw_irq_handler,
+                NonNull::dangling(),
+            ) {
+                Ok(handle) => {
+                    if let Some(slot) = registry.slot(irq_num) {
+                        *slot.handle.lock() = Some(handle);
+                    }
+                }
+                Err(err) => {
+                    warn!("usbfs: failed to register IRQ callback for IRQ {irq_num}: {err:?}");
+                }
             }
         }
+    }
+}
+
+pub(super) fn free_irq(irq_num: usize) {
+    let Some(registry) = USBFS_IRQ_REGISTRY.get() else {
+        return;
+    };
+    let Some(slot) = registry.slot(irq_num) else {
+        return;
+    };
+    let Some(handle) = slot.handle.lock().take() else {
+        return;
+    };
+    if let Err(err) = ax_runtime::hal::irq::free_irq(handle) {
+        warn!("usbfs: failed to free IRQ callback for IRQ {irq_num}: {err:?}");
     }
 }
 
@@ -126,29 +155,29 @@ fn usbfs_irq_handler(irq_num: usize) {
     let mut stopped_events = 0usize;
     loop {
         handler_calls += 1;
-        match slot.handler.handle_event() {
-            Event::PortChange { port } => {
+        match slot.handler.handle() {
+            crab_usb::Event::PortChange { port } => {
                 port_events += 1;
                 trace!(
                     "usbfs: IRQ {} bus {} host {:?}: port change on port {}",
                     irq_num, slot.bus_num, slot.device_id, port
                 );
             }
-            Event::TransferActivity { count } => {
+            crab_usb::Event::TransferActivity { count } => {
                 transfer_events += count;
                 trace!(
                     "usbfs: IRQ {} bus {} host {:?}: {} transfer event(s)",
                     irq_num, slot.bus_num, slot.device_id, count
                 );
             }
-            Event::Stopped => {
+            crab_usb::Event::Stopped => {
                 stopped_events += 1;
                 trace!(
                     "usbfs: IRQ {} bus {} host {:?}: event handler stopped",
                     irq_num, slot.bus_num, slot.device_id
                 );
             }
-            Event::Nothing => break,
+            crab_usb::Event::Nothing => break,
         }
     }
 
@@ -176,4 +205,12 @@ fn usbfs_irq_handler(irq_num: usize) {
             manager.refresh_event.notify(1);
         }
     }
+}
+
+unsafe fn usbfs_raw_irq_handler(
+    ctx: ax_runtime::hal::irq::IrqContext,
+    _data: NonNull<()>,
+) -> ax_runtime::hal::irq::IrqReturn {
+    usbfs_irq_handler(ctx.irq.0);
+    ax_runtime::hal::irq::IrqReturn::Handled
 }

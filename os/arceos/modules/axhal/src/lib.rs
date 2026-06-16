@@ -6,10 +6,7 @@
 //!
 //! Currently supported platforms (specify by cargo features):
 //!
-//! - `x86-pc`: Standard PC with x86_64 ISA.
-//! - `riscv64-qemu-virt`: QEMU virt machine with RISC-V ISA.
-//! - `aarch64-qemu-virt`: QEMU virt machine with AArch64 ISA.
-//! - `aarch64-raspi`: Raspberry Pi with AArch64 ISA.
+//! - `plat-dyn`: Runtime-discovered platform, including x86_64, AArch64 and RISC-V QEMU boards.
 //! - `dummy`: If none of the above platform is selected, the dummy platform
 //!   will be used. In this platform, most of the operations are no-op or
 //!   `unimplemented!()`. This platform is mainly used for [cargo test].
@@ -37,27 +34,9 @@ extern crate log;
 #[macro_use]
 extern crate ax_memory_addr;
 
-cfg_if::cfg_if! {
-    if #[cfg(feature = "myplat")] {
-        // link the custom platform crate in your application.
-    }
-    else if #[cfg(plat_dyn)] {
-        extern crate axplat_dyn;
-    }
-    else if #[cfg(all(target_os = "none", feature = "defplat"))] {
-        #[cfg(target_arch = "x86_64")]
-        extern crate ax_plat_x86_pc;
-        #[cfg(target_arch = "aarch64")]
-        extern crate ax_plat_aarch64_qemu_virt;
-        #[cfg(target_arch = "riscv64")]
-        extern crate ax_plat_riscv64_qemu_virt;
-        #[cfg(target_arch = "loongarch64")]
-        extern crate ax_plat_loongarch64_qemu_virt;
-    } else {
-        // Link the dummy platform implementation to pass cargo test.
-        mod dummy;
-    }
-}
+#[path = "platform.rs"]
+mod platform_select;
+pub use platform_select::selected as platform;
 
 pub mod dtb;
 pub mod mem;
@@ -72,9 +51,6 @@ pub mod irq;
 
 #[cfg(feature = "paging")]
 pub mod paging;
-
-#[cfg(feature = "starry-kcov")]
-pub mod kcov;
 
 /// Console input and output.
 pub mod console {
@@ -110,18 +86,27 @@ pub mod context {
     pub use ax_cpu::{TaskContext, TrapFrame};
 }
 
+pub use ax_cpu as cpu;
 pub use ax_cpu::asm;
 #[cfg(feature = "uspace")]
 pub use ax_cpu::uspace;
 pub use ax_plat::init::init_later;
 #[cfg(feature = "smp")]
-pub use ax_plat::init::{init_early_secondary, init_later_secondary};
+pub use ax_plat::init::init_later_secondary;
 
 /// Initializes the platform and boot argument.
 /// This function should be called as early as possible.
 pub fn init_early(cpu_id: usize, arg: usize) {
     dtb::init(arg);
+    ax_cpu::init::init_trap();
     ax_plat::init::init_early(cpu_id, arg);
+}
+
+/// Initializes the CPU trap vector and platform early state for a secondary CPU.
+#[cfg(feature = "smp")]
+pub fn init_early_secondary(cpu_id: usize) {
+    ax_cpu::init::init_trap();
+    ax_plat::init::init_early_secondary(cpu_id);
 }
 
 /// Gets the number of CPUs running in the system.
@@ -136,11 +121,11 @@ pub fn init_early(cpu_id: usize, arg: usize) {
 pub fn cpu_num() -> usize {
     #[cfg(feature = "smp")]
     {
-        use spin::Lazy;
+        use spin::LazyLock;
 
         /// The number of CPUs in the system. Based on the number declared by the
         /// platform crate and limited by the configured maximum CPU number.
-        static CPU_NUM: Lazy<usize> = Lazy::new(|| {
+        static CPU_NUM: LazyLock<usize> = LazyLock::new(|| {
             let max_cpu_num = ax_config::plat::MAX_CPU_NUM;
             let plat_cpu_num = ax_plat::power::cpu_num();
             let cpu_num = plat_cpu_num.min(max_cpu_num);

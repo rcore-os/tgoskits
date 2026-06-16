@@ -7,6 +7,47 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0](https://github.com/rcore-os/tgoskits/compare/ax-api-v0.5.19...ax-api-v0.6.0) - 2026-06-12
+
+### Fixed
+
+- *(axtask)* improve might_sleep diagnostics and coverage ([#1235](https://github.com/rcore-os/tgoskits/pull/1235))
+- *(axtask)* use monotonic deadlines for sleeps ([#1240](https://github.com/rcore-os/tgoskits/pull/1240))
+
+### Other
+
+- *(ax-net)* unify network stack into single net/ax-net crate, r… ([#1203](https://github.com/rcore-os/tgoskits/pull/1203))
+
+## [0.5.19](https://github.com/rcore-os/tgoskits/compare/ax-api-v0.5.18...ax-api-v0.5.19) - 2026-06-11
+
+### Other
+
+- updated the following local packages: ax-alloc, ax-config, ax-hal, ax-mm, ax-task, ax-ipi, ax-sync, ax-display, ax-dma, ax-fs, ax-net, ax-runtime, ax-feat
+
+## [0.5.18](https://github.com/rcore-os/tgoskits/compare/ax-api-v0.5.17...ax-api-v0.5.18) - 2026-06-09
+
+### Added
+
+- *(std)* unify std-aware ArceOS builds ([#1080](https://github.com/rcore-os/tgoskits/pull/1080))
+
+## [0.5.17](https://github.com/rcore-os/tgoskits/compare/ax-api-v0.5.16...ax-api-v0.5.17) - 2026-06-03
+
+### Added
+
+- *(axtask)* add task stack guard page support ([#811](https://github.com/rcore-os/tgoskits/pull/811))
+
+### Other
+
+- *(ax-alloc)* remove ax-allocator dependency, simplify to TLSF/buddy-slab backends ([#987](https://github.com/rcore-os/tgoskits/pull/987))
+- *(drivers)* split shared driver stack from ArceOS ([#831](https://github.com/rcore-os/tgoskits/pull/831))
+- Refactor workspace structure and update dependencies ([#864](https://github.com/rcore-os/tgoskits/pull/864))
+
+## [0.5.16](https://github.com/rcore-os/tgoskits/compare/ax-api-v0.5.15...ax-api-v0.5.16) - 2026-05-22
+
+### Other
+
+- updated the following local packages: ax-errno, ax-hal, ax-task, ax-runtime, ax-feat, ax-io, ax-alloc, ax-mm, ax-dma, ax-driver, ax-sync, ax-display, ax-fs, ax-ipi, ax-net
+
 ## [0.5.15](https://github.com/rcore-os/tgoskits/compare/ax-api-v0.5.14...ax-api-v0.5.15) - 2026-05-19
 
 ### Other

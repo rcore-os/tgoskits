@@ -2,8 +2,11 @@ use alloc::{borrow::Cow, boxed::Box, format, sync::Arc, vec::Vec};
 
 use ax_sync::Mutex;
 use axfs_ng_vfs::{VfsError, VfsResult};
-use lazy_static::lazy_static;
-use sg200x_bsp::pwm::{Pwm, PwmChannel, PwmInstance, PwmMode, PwmPolarity};
+use sg200x_bsp::{
+    pwm::{Pwm, PwmChannel, PwmMode, PwmPolarity},
+    soc::PWM0_BASE,
+};
+use spin::LazyLock;
 
 use crate::pseudofs::{
     DirMaker, NodeOpsMux, RwFile, SimpleDir, SimpleDirOps, SimpleFile, SimpleFileOperation,
@@ -46,8 +49,8 @@ impl PwmSysfsState {
     fn new() -> Self {
         let mut chips = Vec::with_capacity(PWM_SYSFS_CHIPS as usize);
         for index in 0..PWM_SYSFS_CHIPS {
-            let instance = PwmInstance::from_index(index).unwrap();
-            let pwm = Pwm::new_with_offset(instance, ax_config::plat::PHYS_VIRT_OFFSET);
+            let pwm_addr = PWM0_BASE + index as usize * 0x1000 + ax_config::plat::PHYS_VIRT_OFFSET;
+            let pwm = unsafe { Pwm::new(pwm_addr) };
             chips.push(PwmChipState {
                 pwm,
                 channels: [PwmChannelState::default(); PWM_SYSFS_CHANNELS_PER_CHIP as usize],
@@ -57,9 +60,8 @@ impl PwmSysfsState {
     }
 }
 
-lazy_static! {
-    static ref PWM_SYSFS_STATE: Mutex<PwmSysfsState> = Mutex::new(PwmSysfsState::new());
-}
+static PWM_SYSFS_STATE: LazyLock<Mutex<PwmSysfsState>> =
+    LazyLock::new(|| Mutex::new(PwmSysfsState::new()));
 
 struct PwmClassDir {
     fs: Arc<SimpleFs>,

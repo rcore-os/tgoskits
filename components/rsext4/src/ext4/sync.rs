@@ -12,7 +12,7 @@ impl Ext4FileSystem {
     ) -> Ext4Result<()> {
         info!("Syncing filesystem...");
         self.datablock_cache.flush_all(block_dev)?;
-        self.inodetable_cahce.flush_all(block_dev)?;
+        self.inodetable_cache.flush_all(block_dev)?;
         self.bitmap_cache.flush_all(block_dev)?;
         self.sync_group_descriptors(block_dev)?;
         self.sync_superblock(block_dev)?;
@@ -31,6 +31,7 @@ impl Ext4FileSystem {
         // Mark clean in memory first so that sync_filesystem writes the
         // superblock with s_state = EXT4_VALID_FS through the journal.
         self.superblock.s_state = Self::clean_state(&self.superblock);
+        self.superblock.s_feature_incompat &= !Ext4Superblock::EXT4_FEATURE_INCOMPAT_RECOVER;
 
         self.sync_filesystem(block_dev)?;
 

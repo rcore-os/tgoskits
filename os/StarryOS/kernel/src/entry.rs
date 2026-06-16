@@ -4,7 +4,7 @@ use alloc::{
 };
 
 use ax_fs::FS_CONTEXT;
-use ax_hal::uspace::UserContext;
+use ax_runtime::hal::cpu::uspace::UserContext;
 use ax_sync::Mutex;
 use ax_task::{AxTaskExt, spawn_task};
 use starry_process::{Pid, Process};
@@ -13,14 +13,27 @@ use crate::{
     file::FD_TABLE,
     mm::{copy_from_kernel, load_user_app, new_user_aspace_empty},
     pseudofs::{self, dev::tty::N_TTY},
-    task::{ProcessData, Thread, add_task_to_table, new_user_task, spawn_alarm_task},
+    task::{ProcessData, ProcessImage, Thread, add_task_to_table, new_user_task, spawn_alarm_task},
+    tracepoint::tracepoint_init,
 };
 
 /// Initialize and run initproc.
 pub fn init(args: &[String], envs: &[String]) {
     static_keys::global_init();
+    tracepoint_init().expect("Failed to initialize tracepoints");
+
+    crate::ebpf::init_ebpf();
+    crate::perf::perf_event_init();
+
+    crate::kmod::init_kmod();
+
+    #[cfg(feature = "kprobe_test")]
+    crate::kprobe::kprobe_test();
+
     pseudofs::mount_all().expect("Failed to mount pseudofs");
     spawn_alarm_task();
+
+    ax_alloc::register_page_reclaim_fn(ax_fs::page_cache_reclaim);
 
     let loc = FS_CONTEXT
         .lock()
@@ -38,7 +51,7 @@ pub fn init(args: &[String], envs: &[String]) {
         })
         .expect("Failed to create user address space");
 
-    let (entry_vaddr, ustack_top) = load_user_app(&mut uspace, None, args, envs)
+    let (entry_vaddr, ustack_top, auxv) = load_user_app(&mut uspace, loc, &args[0], args, envs)
         .unwrap_or_else(|e| panic!("Failed to load user app: {}", e));
 
     let uctx = UserContext::new(entry_vaddr.into(), ustack_top, 0);
@@ -53,11 +66,11 @@ pub fn init(args: &[String], envs: &[String]) {
 
     let proc = ProcessData::new(
         proc,
-        path.to_string(),
-        Arc::new(args.to_vec()),
+        ProcessImage::new(path.to_string(), Arc::new(args.to_vec()), auxv),
         Arc::new(Mutex::new(uspace)),
         Arc::default(),
         None,
+        pid,
         false,
     );
 
@@ -67,7 +80,7 @@ pub fn init(args: &[String], envs: &[String]) {
             .expect("Failed to add stdio");
     }
 
-    let thr = Thread::new(pid, proc, None);
+    let thr = Thread::new(pid, proc, None, starry_signal::SignalSet::default());
     *task.task_ext_mut() = Some(AxTaskExt::from_impl(thr));
 
     let task = spawn_task(task);

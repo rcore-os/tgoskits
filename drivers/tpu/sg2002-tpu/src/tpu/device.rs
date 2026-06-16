@@ -6,13 +6,16 @@
 use alloc::collections::VecDeque;
 use core::{
     cell::Cell,
-    sync::atomic::{AtomicU32, Ordering},
+    sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering},
 };
 
-use spin::Mutex;
+use ax_kspin::SpinNoPreempt as Mutex;
 
 use super::{
-    TDMA_PHYS_BASE, TIU_PHYS_BASE, error::TpuError, platform::TpuRuntimeState, tdma::TdmaRegs,
+    TDMA_PHYS_BASE, TIU_PHYS_BASE,
+    error::TpuError,
+    platform::{DelayFn, TiuIrqCallback, TpuRuntimeState},
+    tdma::TdmaRegs,
     tiu::TiuRegs,
 };
 
@@ -76,15 +79,37 @@ struct TpuDeviceInner {
     runtime: TpuRuntimeState,
     /// 任务工作队列
     kernel_work: TpuKernelWork,
+    /// TIU 中断回调
+    tiu_irq_callback: Option<TiuIrqCallback>,
 }
 
 /// SG2002 TPU 设备（仅硬件层）
 pub struct Sg2002Tpu {
-    /// 内部状态 (使用 Mutex 保护)
+    /// TDMA 寄存器基地址
+    tdma_vaddr: *mut u8,
+    /// TIU 寄存器基地址
+    tiu_vaddr: *mut u8,
+    /// 内部状态 (使用自旋锁保护)
     inner: Mutex<TpuDeviceInner>,
     /// 序列号计数器
     seq_counter: AtomicU32,
+    /// TDMA 中断到达标志
+    irq_pending: AtomicBool,
+    /// 外部 IRQ handler 命中次数
+    irq_handler_hits: AtomicU64,
+    /// MMIO 轮询兜底命中次数
+    poll_fallback_hits: AtomicU64,
+    /// 是否已经提示过兜底路径
+    fallback_warned: AtomicBool,
+    /// 轮询等待时的延时函数指针（0 表示未注入，退化为自旋）。
+    delay_fn: AtomicUsize,
 }
+
+/// 等待 TDMA 完成时每轮轮询之间的延时（微秒）。
+///
+/// 注入延时函数后，`wait_irq` 每隔该间隔检查一次中断标志/硬件状态，
+/// 而非空转自旋，从而既能精确计时又能给出有界的超时。
+const WAIT_POLL_INTERVAL_US: u64 = 100;
 
 impl Sg2002Tpu {
     /// 创建未初始化的 TPU 设备
@@ -107,14 +132,57 @@ impl Sg2002Tpu {
     /// 调用者必须确保虚拟地址有效
     pub unsafe fn from_vaddr(tdma_vaddr: *mut u8, tiu_vaddr: *mut u8) -> Self {
         Self {
+            tdma_vaddr,
+            tiu_vaddr,
             inner: Mutex::new(TpuDeviceInner {
                 tdma: unsafe { TdmaRegs::new(tdma_vaddr) },
                 tiu: unsafe { TiuRegs::new(tiu_vaddr) },
                 state: TpuState::Uninitialized,
                 runtime: TpuRuntimeState::default(),
                 kernel_work: TpuKernelWork::default(),
+                tiu_irq_callback: None,
             }),
             seq_counter: AtomicU32::new(0),
+            irq_pending: AtomicBool::new(false),
+            irq_handler_hits: AtomicU64::new(0),
+            poll_fallback_hits: AtomicU64::new(0),
+            fallback_warned: AtomicBool::new(false),
+            delay_fn: AtomicUsize::new(0),
+        }
+    }
+
+    /// 注册 TIU 中断回调。
+    ///
+    /// 回调将在检测到 TIU BD 中断标志时被调用。
+    pub fn register_tiu_irq_callback(&self, callback: TiuIrqCallback) {
+        let mut inner = self.inner.lock();
+        inner.tiu_irq_callback = Some(callback);
+    }
+
+    /// 清除 TIU 中断回调。
+    pub fn clear_tiu_irq_callback(&self) {
+        let mut inner = self.inner.lock();
+        inner.tiu_irq_callback = None;
+    }
+
+    /// 注册轮询等待时的延时函数（由 OS glue 注入，见 [`DelayFn`]）。
+    ///
+    /// 注入后 `wait_irq` 会以 [`WAIT_POLL_INTERVAL_US`] 为间隔定时轮询，
+    /// 而非空转自旋；未注入时退化为 `spin_loop`。
+    pub fn set_delay_fn(&self, delay_fn: DelayFn) {
+        self.delay_fn.store(delay_fn as usize, Ordering::Release);
+    }
+
+    /// 等待一轮轮询间隔：注入了延时函数则按 `usecs` 精确延时，否则自旋。
+    fn wait_poll_interval(&self, usecs: u64) {
+        let raw = self.delay_fn.load(Ordering::Acquire);
+        if raw != 0 {
+            // SAFETY: `delay_fn` 仅由 `set_delay_fn` 写入一个合法的 `DelayFn`
+            // 函数指针，非零即有效。
+            let delay: DelayFn = unsafe { core::mem::transmute::<usize, DelayFn>(raw) };
+            delay(usecs);
+        } else {
+            core::hint::spin_loop();
         }
     }
 
@@ -148,12 +216,26 @@ impl Sg2002Tpu {
     ///
     /// 返回是否有错误发生
     pub fn handle_irq(&self) -> bool {
-        let mut inner = self.inner.lock();
-        // 先获取需要的引用，避免同时借用
-        let tdma = &inner.tdma as *const TdmaRegs;
-        let tiu = &inner.tiu as *const TiuRegs;
-        let runtime = &mut inner.runtime;
-        unsafe { super::platform::handle_tdma_irq(&*tdma, &*tiu, runtime) }
+        let tdma = unsafe { TdmaRegs::new(self.tdma_vaddr) };
+        let reg_value = tdma.read(super::tdma::TDMA_INT_MASK);
+        let int_status = (reg_value >> 16) & !super::tdma::TDMA_MASK_INIT;
+        if int_status == 0 {
+            return false;
+        }
+        let has_error =
+            int_status != super::tdma::TDMA_INT_EOD && int_status != super::tdma::TDMA_INT_EOPMU;
+        tdma.clear_interrupt();
+        self.irq_handler_hits.fetch_add(1, Ordering::AcqRel);
+        self.irq_pending.store(true, Ordering::Release);
+        has_error
+    }
+
+    /// 返回中断统计：(外部 IRQ 命中次数, MMIO 轮询兜底次数)。
+    pub fn irq_stats(&self) -> (u64, u64) {
+        (
+            self.irq_handler_hits.load(Ordering::Acquire),
+            self.poll_fallback_hits.load(Ordering::Acquire),
+        )
     }
 
     /// 获取下一个序列号
@@ -206,8 +288,12 @@ impl Sg2002Tpu {
             inner.runtime.irq_received = false;
 
             // 执行 DMA buffer
-            let result =
-                self.run_dmabuf_internal(inner, task.dmabuf_vaddr as *const u8, task.dmabuf_paddr);
+            let result = self.run_dmabuf_internal(
+                inner,
+                task.seq_no,
+                task.dmabuf_vaddr as *const u8,
+                task.dmabuf_paddr,
+            );
 
             task.ret = match result {
                 Ok(_) => 0,
@@ -228,6 +314,7 @@ impl Sg2002Tpu {
     fn run_dmabuf_internal(
         &self,
         inner: &mut TpuDeviceInner,
+        seq_no: u32,
         dmabuf_vaddr: *const u8,
         dmabuf_paddr: u64,
     ) -> Result<(), TpuError> {
@@ -239,33 +326,58 @@ impl Sg2002Tpu {
 
         // 简化版超时检查 (使用 Cell 实现内部可变性)
         let timeout_counter = Cell::new(0u64);
-        let timeout_limit = 1_000_000_000u64; // 大约 10 秒
+        let timeout_limit = 10_000_000_000u64; // 大约 10 秒
+        // 等待 TDMA 完成的总超时（约 10 秒），以轮询间隔为步长。
+        const WAIT_TIMEOUT_US: u64 = 10_000_000;
+        let wait_poll_steps = WAIT_TIMEOUT_US / WAIT_POLL_INTERVAL_US;
+        self.irq_pending.store(false, Ordering::Release);
+        let tdma_irq_poll = unsafe { TdmaRegs::new(self.tdma_vaddr) };
 
         let wait_irq = || -> Result<(), TpuError> {
-            // 轮询等待中断
-            // 简化实现：直接返回 Ok，由 poll_cmdbuf_done 处理超时
-            let mut counter = timeout_counter.get();
-            while counter < timeout_limit {
-                counter += 1;
-                timeout_counter.set(counter);
-                core::hint::spin_loop();
-                // 简化：假设执行一定迭代后完成
-                if counter > 10000 {
-                    break;
+            // 优先等待外部 IRQ；每隔 `WAIT_POLL_INTERVAL_US` 检查一次，期间
+            // 通过注入的延时函数精确计时，而非空转自旋。
+            let mut steps = 0u64;
+            while steps < wait_poll_steps {
+                if self.irq_pending.swap(false, Ordering::AcqRel) {
+                    return Ok(());
                 }
+
+                // 兜底：若外部 IRQ 未投递到内核，直接读取 TDMA 中断状态寄存器。
+                let int_status = tdma_irq_poll.get_int_status();
+                if int_status == super::tdma::TDMA_INT_EOD
+                    || int_status == super::tdma::TDMA_INT_EOPMU
+                {
+                    tdma_irq_poll.clear_interrupt();
+                    self.poll_fallback_hits.fetch_add(1, Ordering::AcqRel);
+                    if self
+                        .fallback_warned
+                        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+                        .is_ok()
+                    {
+                        warn!("[TPU] external IRQ path not observed yet, using MMIO poll fallback");
+                    }
+                    return Ok(());
+                }
+
+                self.wait_poll_interval(WAIT_POLL_INTERVAL_US);
+                steps += 1;
             }
-            if counter >= timeout_limit {
-                return Err(TpuError::Timeout);
-            }
-            Ok(())
+            Err(TpuError::Timeout)
         };
 
-        let timeout_checker = || -> bool { timeout_counter.get() > timeout_limit };
+        let timeout_checker = || -> bool {
+            let next = timeout_counter.get().saturating_add(1);
+            timeout_counter.set(next);
+            next > timeout_limit
+        };
 
         // 使用指针避免同时借用
         let tdma = &inner.tdma as *const TdmaRegs;
         let tiu = &inner.tiu as *const TiuRegs;
+        let tiu_irq_callback = inner.tiu_irq_callback;
         let runtime = &mut inner.runtime;
+        runtime.current_seq_no = seq_no;
+        runtime.tiu_irq_callback = tiu_irq_callback;
 
         let result = unsafe {
             super::platform::run_dmabuf(

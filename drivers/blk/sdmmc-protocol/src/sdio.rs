@@ -20,7 +20,12 @@ use crate::{
 };
 
 /// Host IRQ event category returned by portable controller cores.
+///
+/// Marked `#[non_exhaustive]`: new event categories (e.g. card-detect,
+/// re-tuning required) may be added before 1.0; downstream match sites must
+/// keep a `_ => ...` arm.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum HostEventKind {
     /// No runtime action is required.
     #[default]
@@ -40,7 +45,10 @@ pub enum HostEventKind {
 }
 
 /// Hardware engine affected by a host IRQ event.
+///
+/// Marked `#[non_exhaustive]` for forward compatibility.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum HostEventSource {
     /// Whole controller or unknown source.
     #[default]
@@ -71,7 +79,11 @@ impl HostEvent for () {
 }
 
 /// SDIO bus width
+///
+/// Marked `#[non_exhaustive]`: UHS-II / SD Express widths may be added before
+/// 1.0; downstream match sites must keep a `_ => ...` arm.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum BusWidth {
     /// 1-bit bus
     Bit1,
@@ -83,7 +95,12 @@ pub enum BusWidth {
 }
 
 /// SDIO clock speed
+///
+/// Marked `#[non_exhaustive]`: HS400 / HS400_ES / SD Express modes are
+/// expected to land before 1.0; downstream match sites must keep a
+/// `_ => ...` arm.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum ClockSpeed {
     /// Identification clock used during card reset / OCR negotiation.
     Identification,
@@ -109,7 +126,11 @@ pub enum ClockSpeed {
 
 /// Bus signaling voltage. Default-speed and HS modes use 3.3 V; UHS-I
 /// and HS200/HS400 require switching to 1.8 V via CMD11.
+///
+/// Marked `#[non_exhaustive]`: SD Express may introduce additional voltage
+/// domains; downstream match sites must keep a `_ => ...` arm.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum SignalVoltage {
     /// 3.3 V (or 3.0 V — they share an IO domain on most controllers).
     /// The bus comes up here at power-on.
@@ -224,20 +245,121 @@ pub trait SdioHost {
     /// Register the task that should be woken when command or data progress is
     /// possible. Polling-only hosts may keep the default no-op implementation.
     fn register_waker(&mut self, _waker: &Waker) {}
+
+    /// Optional monotonic wall-clock source, in milliseconds.
+    ///
+    /// `None` (the default) means the host has no clock; the protocol layer
+    /// falls back to the poll-counter timeouts documented in
+    /// [`SdioInitTiming`] / [`MmcSwitchTiming`]. `Some(t)` switches the
+    /// ACMD41 / CMD1 power-up and MMC `CMD6 SWITCH` busy-wait budgets to
+    /// wall-clock deadlines, making timeouts independent of caller poll
+    /// cadence.
+    ///
+    /// The protocol layer keeps both checks active whenever a clock is
+    /// available — whichever fires first surfaces as `Error::Timeout`. So a
+    /// host that opts in via this method gets accurate timeouts even when
+    /// glue polls very slowly, and is still protected by the poll budget if
+    /// the clock unexpectedly stalls.
+    ///
+    /// Implementations must be monotonic across calls within a single host
+    /// instance. Resolution finer than 1 ms is fine but not required —
+    /// jiffies at 100 Hz works. Wraparound at `u64` milliseconds
+    /// (~584 million years) is safe to ignore.
+    fn now_ms(&self) -> Option<u64> {
+        None
+    }
 }
 
+/// Poll-cadence contract for [`SdioSdmmc::poll_init_request`] and the
+/// [`MmcSwitchRequest`] busy-wait sub-state.
+///
+/// The protocol layer does not own a wall clock. Every internal "elapsed
+/// time" counter (ACMD41 / CMD1 power-up budget, MMC `CMD6 SWITCH` busy-wait
+/// budget) increments by exactly one tick per `poll_*` invocation and is
+/// compared against [`SdioInitTiming::MAX_POLLS`] / [`MmcSwitchTiming::MAX_POLLS`].
+/// That means timeouts are expressed in **poll iterations**, not seconds.
+///
+/// Caller glue (executor yield, OS sleep, IRQ wakeup) **MUST pace `poll_*`
+/// invocations at roughly [`SdioInitTiming::POLL_TICK_MS_HINT`]** — failing
+/// to do so does not produce undefined behavior, but the observed timeout
+/// will diverge from the documented budget:
+///
+/// - Tight `loop { poll() }` → ACMD41 1 s budget collapses to microseconds.
+/// - Executor that wakes only on hardware IRQ with no fallback timer →
+///   budget extends to seconds because the tick counter advances slowly.
+///
+/// The 10 ms cadence matches the SD spec's recommended ACMD41 retry rate
+/// (sect. 4.2.3) and gives ~100 retries before the protocol layer surfaces
+/// `Error::Timeout`.
+///
+/// # Wall-clock escape hatch
+///
+/// Hosts that implement [`SdioHost::now_ms`] get an additional wall-clock
+/// deadline check layered on top of the poll counter:
+/// [`SdioInitTiming::TIMEOUT_MS`] / [`MmcSwitchTiming::TIMEOUT_MS`] are
+/// enforced against `now_ms() - submit_time_ms`, so the budgets stay
+/// accurate no matter how slow or fast the caller polls. The poll counter
+/// is still consulted as a fallback that fires if the clock unexpectedly
+/// stalls; whichever check trips first surfaces as `Error::Timeout`.
 struct SdioInitTiming;
 
 impl SdioInitTiming {
-    const TIMEOUT_MS: u32 = 1_000;
-    const POLL_MS: u32 = 10;
+    /// Wall-time the protocol layer **assumes** elapses between two
+    /// successive `poll_init_request` invocations. Document-only — the
+    /// protocol code itself never multiplies anything by this constant.
+    /// Caller glue should pace polls at approximately this cadence.
+    const POLL_TICK_MS_HINT: u32 = 10;
+
+    /// Maximum number of `poll_init_request` iterations the protocol layer
+    /// will tolerate while waiting for ACMD41 (SD) or CMD1 (MMC) to report
+    /// `card_powered_up`. At the [`Self::POLL_TICK_MS_HINT`] cadence this is
+    /// equivalent to ~1 second.
+    const MAX_POLLS: u32 = 100;
+
+    /// Wall-clock budget for ACMD41 / CMD1 power-up retries, enforced when
+    /// the host implements [`SdioHost::now_ms`]. Matches the SD spec's
+    /// recommended 1 s ACMD41 retry window (sect. 4.2.3).
+    const TIMEOUT_MS: u64 = 1_000;
 }
 
 struct MmcSwitchTiming;
 
 impl MmcSwitchTiming {
-    const TIMEOUT_MS: u32 = 250;
-    const POLL_MS: u32 = SdioInitTiming::POLL_MS;
+    /// Maximum number of poll iterations spent waiting for an MMC
+    /// `CMD6 SWITCH` to leave the Programming state. At the
+    /// [`SdioInitTiming::POLL_TICK_MS_HINT`] cadence this is equivalent to
+    /// ~250 ms — long enough to absorb worst-case `GENERIC_CMD6_TIME` while
+    /// short enough that a hung card surfaces as `Error::Timeout` rather
+    /// than blocking init forever.
+    const MAX_POLLS: u32 = 25;
+
+    /// Wall-clock budget for the MMC `CMD6 SWITCH` busy-wait, enforced when
+    /// the host implements [`SdioHost::now_ms`]. Sized to match `MAX_POLLS`
+    /// at the recommended poll cadence so clock-aware and poll-only hosts
+    /// see the same effective budget.
+    const TIMEOUT_MS: u64 = 250;
+}
+
+/// Return whether the wall-clock budget for ACMD41 / CMD1 power-up has
+/// elapsed. `started_ms` is the time the busy-wait phase began (captured
+/// from [`SdioHost::now_ms`] on the first not-ready response). The check is
+/// a no-op when either the host has no clock or the budget has not been
+/// armed yet.
+fn power_up_deadline_passed<H: SdioHost>(host: &H, started_ms: Option<u64>) -> bool {
+    match (started_ms, host.now_ms()) {
+        (Some(started), Some(now)) => now.saturating_sub(started) >= SdioInitTiming::TIMEOUT_MS,
+        _ => false,
+    }
+}
+
+/// Return whether the wall-clock budget for MMC `CMD6 SWITCH` has elapsed.
+/// See [`power_up_deadline_passed`] for the contract.
+fn mmc_switch_deadline_passed<H: SdioHost>(host: &H, request: &MmcSwitchRequest) -> bool {
+    let elapsed_exceeded = match (request.started_ms, host.now_ms()) {
+        (Some(started), Some(now)) => now.saturating_sub(started) >= MmcSwitchTiming::TIMEOUT_MS,
+        _ => false,
+    };
+    elapsed_exceeded || request.polls >= MmcSwitchTiming::MAX_POLLS
 }
 
 /// SDIO mode SD/MMC driver
@@ -248,6 +370,7 @@ pub struct SdioSdmmc<H: SdioHost> {
     bus_width: BusWidth,
     kind: CardKind,
     sd_speed_selection_enabled: bool,
+    sd_uhs_selection_enabled: bool,
 }
 
 pub struct SdioDataRequest<'a, H: SdioHost + 'a> {
@@ -277,7 +400,12 @@ pub struct MmcSwitchRequest {
     rca: u16,
     index: u8,
     value: u8,
-    elapsed_ms: u32,
+    polls: u32,
+    /// Wall-clock submit time captured from [`SdioHost::now_ms`], used as
+    /// the start of the [`MmcSwitchTiming::TIMEOUT_MS`] window. `None`
+    /// means the host has no clock and only [`MmcSwitchTiming::MAX_POLLS`]
+    /// gates the busy-wait.
+    started_ms: Option<u64>,
     state: MmcSwitchRequestState,
 }
 
@@ -288,7 +416,11 @@ enum MmcSwitchRequestState {
 }
 
 /// Card initialization probe order.
+///
+/// Marked `#[non_exhaustive]`: SDIO-only / no-SD-fallback modes may be added
+/// before 1.0; downstream match sites must keep a `_ => ...` arm.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum CardInitPreference {
     /// Probe SD first, then fall back to MMC.
     SdFirst,
@@ -297,6 +429,10 @@ pub enum CardInitPreference {
 }
 
 /// Caller-owned scratch buffers for SD/MMC initialization data commands.
+///
+/// Keeping the buffers on the caller's side keeps the `SdioInitRequest`
+/// transferable across `Send` boundaries without pinning, and lets bring-up
+/// code reuse the same backing storage across retries.
 pub struct SdioInitScratch {
     ext_csd: [u8; 512],
     switch_status: [u8; 64],
@@ -317,6 +453,84 @@ impl Default for SdioInitScratch {
     }
 }
 
+/// Pointer to a fixed-size scratch buffer with runtime borrow tracking.
+///
+/// The init state machine is *self-referential*: an in-flight data request
+/// (`ExtCsdRequest`, `SwitchFunctionRequest`) lends the buffer to the host
+/// for the duration of a transfer, and the host's `DataRequest<'a>` type
+/// ties that lifetime back to the scratch. Rust's borrow checker can't
+/// express "host has the buffer until the next `poll_*` reports Complete"
+/// inside `SdioInitRequest`, so the code uses a raw pointer.
+///
+/// `ScratchSlot` keeps that pointer but adds a debug-time `lent` flag, so
+/// any future state-machine path that tries to peek into the buffer while
+/// it's still on loan to the host (which would be a use-after-free /
+/// aliasing UB on real hardware) trips an assertion in development builds.
+/// In release builds the flag is still tracked but the assertions compile
+/// down to nothing, preserving the zero-overhead intent.
+///
+/// # Safety
+///
+/// Constructing a `ScratchSlot` is safe: the constructor takes a `&'a mut`
+/// reference and the surrounding [`SdioInitRequest`] carries `'a` so the
+/// underlying storage cannot be dropped while the slot is reachable. The
+/// pointer-based accessors (`lend`, `peek`) are `unsafe` to call when the
+/// borrow state lies (i.e. you returned the buffer to the host without
+/// calling `release`); the `_ = lend(); release()` discipline below makes
+/// that hard to get wrong.
+struct ScratchSlot<const N: usize> {
+    ptr: core::ptr::NonNull<[u8; N]>,
+    lent: bool,
+}
+
+impl<const N: usize> ScratchSlot<N> {
+    fn new(buf: &mut [u8; N]) -> Self {
+        Self {
+            ptr: core::ptr::NonNull::from(buf),
+            lent: false,
+        }
+    }
+
+    /// Hand the buffer to a data-engine call site. Records that the buffer
+    /// is on loan; pair with [`Self::release`] once the request completes.
+    ///
+    /// # Safety
+    ///
+    /// The returned `&mut [u8; N]` is aliased with the raw pointer held by
+    /// this slot. Caller must ensure no other path reads through the slot
+    /// (via `peek` / `lend`) until [`Self::release`] is called. The init
+    /// state machine satisfies this by gating all access on
+    /// `request.{ext_csd,switch_function}_request.is_some()`.
+    unsafe fn lend<'b>(&mut self) -> &'b mut [u8; N] {
+        debug_assert!(
+            !self.lent,
+            "scratch slot lent twice without release; this is a state-machine bug"
+        );
+        self.lent = true;
+        unsafe { &mut *self.ptr.as_ptr() }
+    }
+
+    /// Mark the buffer as no longer owned by the host so `peek` is safe.
+    /// Idempotent.
+    fn release(&mut self) {
+        self.lent = false;
+    }
+
+    /// Read-only view, valid after the host has released the buffer.
+    ///
+    /// # Safety
+    ///
+    /// Caller must call this only when the buffer is not on loan to a host
+    /// data engine. The `debug_assert!` traps the bug in dev builds.
+    unsafe fn peek<'b>(&self) -> &'b [u8; N] {
+        debug_assert!(
+            !self.lent,
+            "scratch slot peeked while still lent to host; this is a state-machine bug"
+        );
+        unsafe { &*self.ptr.as_ptr() }
+    }
+}
+
 /// Submitted SDIO initialization transaction.
 pub struct SdioInitRequest<'a, H: SdioHost + 'a> {
     state: SdioInitState,
@@ -327,12 +541,20 @@ pub struct SdioInitRequest<'a, H: SdioHost + 'a> {
     cid: Option<CidResponse>,
     capacity_blocks: Option<u64>,
     parsed_ext_csd: Option<crate::ext_csd::ExtCsd>,
-    acmd41_elapsed_ms: u32,
-    mmc_elapsed_ms: u32,
+    acmd41_polls: u32,
+    mmc_polls: u32,
+    /// Wall-clock time captured the first time ACMD41 reported the SD card
+    /// was not yet powered up. Used together with
+    /// [`SdioInitTiming::TIMEOUT_MS`] to surface an accurate timeout when
+    /// the host implements [`SdioHost::now_ms`].
+    acmd41_started_ms: Option<u64>,
+    /// MMC counterpart to `acmd41_started_ms`, captured on the first CMD1
+    /// not-ready response.
+    mmc_started_ms: Option<u64>,
     mmc_ocr_arg: u32,
     needs_pace: bool,
-    ext_csd_buf: core::ptr::NonNull<[u8; 512]>,
-    switch_status_buf: core::ptr::NonNull<[u8; 64]>,
+    ext_csd_buf: ScratchSlot<512>,
+    switch_status_buf: ScratchSlot<64>,
     ext_csd_request: Option<ExtCsdRequest<'a, H>>,
     switch_function_request: Option<SwitchFunctionRequest<'a, H>>,
     mmc_switch_request: Option<MmcSwitchRequest>,
@@ -356,12 +578,14 @@ impl<'a, H: SdioHost + 'a> SdioInitRequest<'a, H> {
             cid: None,
             capacity_blocks: None,
             parsed_ext_csd: None,
-            acmd41_elapsed_ms: 0,
-            mmc_elapsed_ms: 0,
+            acmd41_polls: 0,
+            mmc_polls: 0,
+            acmd41_started_ms: None,
+            mmc_started_ms: None,
             mmc_ocr_arg: 0,
             needs_pace: false,
-            ext_csd_buf: core::ptr::NonNull::from(&mut scratch.ext_csd),
-            switch_status_buf: core::ptr::NonNull::from(&mut scratch.switch_status),
+            ext_csd_buf: ScratchSlot::new(&mut scratch.ext_csd),
+            switch_status_buf: ScratchSlot::new(&mut scratch.switch_status),
             ext_csd_request: None,
             switch_function_request: None,
             mmc_switch_request: None,
@@ -463,6 +687,7 @@ impl<H: SdioHost> SdioSdmmc<H> {
             bus_width: BusWidth::Bit1,
             kind: CardKind::Sd,
             sd_speed_selection_enabled: true,
+            sd_uhs_selection_enabled: true,
         }
     }
 
@@ -483,6 +708,16 @@ impl<H: SdioHost> SdioSdmmc<H> {
     /// UHS-I timing.
     pub fn set_sd_speed_selection_enabled(&mut self, enabled: bool) {
         self.sd_speed_selection_enabled = enabled;
+    }
+
+    /// Enable or disable UHS-I SD access-mode selection.
+    ///
+    /// When disabled while SD speed selection remains enabled, initialization
+    /// still uses CMD6 to select legacy HighSpeed when the card supports it,
+    /// but it does not try CMD11 voltage switching, SDR50, SDR104, DDR50, or
+    /// tuning.
+    pub fn set_sd_uhs_selection_enabled(&mut self, enabled: bool) {
+        self.sd_uhs_selection_enabled = enabled;
     }
 
     /// Which card family the driver detected. Meaningful only after a
@@ -651,12 +886,14 @@ impl<H: SdioHost> SdioSdmmc<H> {
         value: u8,
     ) -> Result<MmcSwitchRequest, Error> {
         let cmd = crate::cmd::cmd6_mmc_switch(access, index, value);
+        let started_ms = self.host.now_ms();
         self.host.submit_command(&cmd)?;
         Ok(MmcSwitchRequest {
             rca: self.rca,
             index,
             value,
-            elapsed_ms: 0,
+            polls: 0,
+            started_ms,
             state: MmcSwitchRequestState::PollSwitch,
         })
     }
@@ -688,21 +925,19 @@ impl<H: SdioHost> SdioSdmmc<H> {
                     if r1.ready_for_data() && matches!(r1.current_state(), CardState::Transfer) {
                         return Ok(OperationPoll::Complete(()));
                     }
-                    if request.elapsed_ms >= MmcSwitchTiming::TIMEOUT_MS {
+                    if mmc_switch_deadline_passed(&self.host, request) {
                         return Err(Error::Timeout(ErrorContext::for_cmd(Phase::Init, 6)));
                     }
-                    request.elapsed_ms =
-                        request.elapsed_ms.saturating_add(MmcSwitchTiming::POLL_MS);
+                    request.polls = request.polls.saturating_add(1);
                     let cmd = crate::cmd::cmd13(request.rca);
                     self.host.submit_command(&cmd)?;
                     Ok(OperationPoll::Pending)
                 }
                 CommandResponsePoll::Complete(_) => {
-                    if request.elapsed_ms >= MmcSwitchTiming::TIMEOUT_MS {
+                    if mmc_switch_deadline_passed(&self.host, request) {
                         return Err(Error::Timeout(ErrorContext::for_cmd(Phase::Init, 6)));
                     }
-                    request.elapsed_ms =
-                        request.elapsed_ms.saturating_add(MmcSwitchTiming::POLL_MS);
+                    request.polls = request.polls.saturating_add(1);
                     let cmd = crate::cmd::cmd13(request.rca);
                     self.host.submit_command(&cmd)?;
                     Ok(OperationPoll::Pending)
@@ -714,6 +949,21 @@ impl<H: SdioHost> SdioSdmmc<H> {
 
 impl<H: SdioHost> SdioSdmmc<H> {
     /// Submit SD/MMC card initialization without waiting for completion.
+    ///
+    /// # Poll-cadence contract
+    ///
+    /// The returned [`SdioInitRequest`] expects the caller to drive it via
+    /// repeated [`Self::poll_init_request`] calls. The protocol layer does
+    /// not own a clock — its ACMD41 / CMD1 timeouts and MMC `CMD6 SWITCH`
+    /// busy-waits count poll iterations, not wall-time. Caller glue
+    /// (executor yield, OS sleep, IRQ wakeup) **must space `poll_*`
+    /// invocations by approximately
+    /// [`SdioInitTiming::POLL_TICK_MS_HINT`] (10 ms)**. See
+    /// [`SdioInitTiming`] / [`MmcSwitchTiming`] for the full contract.
+    /// `take_needs_pace` on the returned request reports when the protocol
+    /// layer specifically wants the caller to wait before re-polling
+    /// (used during ACMD41 power-up); ordinary pending states do not set
+    /// it but still benefit from the same cadence.
     pub fn submit_init<'a>(
         &mut self,
         scratch: &'a mut SdioInitScratch,
@@ -733,17 +983,44 @@ impl<H: SdioHost> SdioSdmmc<H> {
     where
         H: 'a,
     {
-        info!("sdio: init starting");
+        debug!("sdio: init starting");
+        // Best-effort cleanup of any state a previous, aborted init may have
+        // left on the host (e.g. UHS_MODE bits, 4-bit bus, 50 MHz clock).
+        // We can't propagate failures here without poisoning the caller's
+        // retry path — `set_*` calls below run with `?` so the actual
+        // identification-mode requirements are enforced.
+        self.abort_init();
+
         self.host.set_bus_width(BusWidth::Bit1)?;
         self.host.set_clock(ClockSpeed::Identification)?;
 
-        info!("sdio: CMD0 reset");
+        debug!("sdio: CMD0 reset");
         self.host.submit_command(&crate::cmd::CMD0)?;
         Ok(SdioInitRequest::new(preference, scratch))
     }
 
     /// Advance a submitted initialization request without blocking.
+    ///
+    /// On any terminal `Err` the controller is reset back toward an
+    /// identification-mode-compatible state (1-bit bus, 400 kHz clock, 3.3 V
+    /// signaling) so a retry from a fresh [`submit_init`](Self::submit_init)
+    /// starts from a known baseline. `Ok(OperationPoll::Pending)` does not
+    /// trigger the reset; only terminal failures do.
     pub fn poll_init_request<'a>(
+        &mut self,
+        request: &mut SdioInitRequest<'a, H>,
+    ) -> Result<OperationPoll<CardInfo>, Error> {
+        match self.poll_init_inner(request) {
+            Ok(progress) => Ok(progress),
+            Err(err) => {
+                warn!("sdio: init aborted ({:?}), resetting host", err);
+                self.abort_init();
+                Err(err)
+            }
+        }
+    }
+
+    fn poll_init_inner<'a>(
         &mut self,
         request: &mut SdioInitRequest<'a, H>,
     ) -> Result<OperationPoll<CardInfo>, Error> {
@@ -762,7 +1039,7 @@ impl<H: SdioHost> SdioSdmmc<H> {
                             request.state = SdioInitState::PollCmd8;
                         }
                         CardInitPreference::MmcFirst => {
-                            info!("sdio: MMC-first init, trying CMD1");
+                            debug!("sdio: MMC-first init, trying CMD1");
                             self.host.submit_command(&crate::cmd::cmd1(0))?;
                             request.state = SdioInitState::PollMmcInitial;
                         }
@@ -774,7 +1051,7 @@ impl<H: SdioHost> SdioSdmmc<H> {
                 Ok(CommandResponsePoll::Pending) => Ok(OperationPoll::Pending),
                 Ok(CommandResponsePoll::Complete(Response::R7(resp))) => {
                     request.sd_v2 = resp.verify(0x01, 0xAA);
-                    info!("sdio: CMD8 sd_v2={}", request.sd_v2);
+                    debug!("sdio: CMD8 sd_v2={}", request.sd_v2);
                     let cmd55 = crate::cmd::cmd55(0);
                     self.host.submit_command(&cmd55)?;
                     request.state = SdioInitState::PollAcmd41Cmd55;
@@ -785,7 +1062,7 @@ impl<H: SdioHost> SdioSdmmc<H> {
                 | Err(Error::BadResponse(_))
                 | Err(Error::Crc(_)) => {
                     request.sd_v2 = false;
-                    info!("sdio: CMD8 sd_v2=false");
+                    debug!("sdio: CMD8 sd_v2=false");
                     let cmd55 = crate::cmd::cmd55(0);
                     self.host.submit_command(&cmd55)?;
                     request.state = SdioInitState::PollAcmd41Cmd55;
@@ -802,7 +1079,7 @@ impl<H: SdioHost> SdioSdmmc<H> {
                     Ok(OperationPoll::Pending)
                 }
                 Err(_sd_err) => {
-                    info!(
+                    debug!(
                         "sdio: ACMD41 prologue failed ({:?}), trying MMC CMD1",
                         _sd_err
                     );
@@ -822,18 +1099,23 @@ impl<H: SdioHost> SdioSdmmc<H> {
                         self.host.submit_command(&crate::cmd::CMD2)?;
                         request.state = SdioInitState::PollCmd2;
                     } else {
-                        if request.acmd41_elapsed_ms >= SdioInitTiming::TIMEOUT_MS {
+                        let elapsed_exceeded =
+                            power_up_deadline_passed(&self.host, request.acmd41_started_ms);
+                        if request.acmd41_polls >= SdioInitTiming::MAX_POLLS || elapsed_exceeded {
                             warn!(
-                                "sdio: ACMD41 timed out after {}ms, trying MMC CMD1",
-                                request.acmd41_elapsed_ms
+                                "sdio: ACMD41 timed out after {} polls (~{} ms at the recommended \
+                                 cadence), trying MMC CMD1",
+                                request.acmd41_polls,
+                                request.acmd41_polls * SdioInitTiming::POLL_TICK_MS_HINT,
                             );
                             self.host.submit_command(&crate::cmd::cmd1(0))?;
                             request.state = SdioInitState::PollMmcInitial;
                             return Ok(OperationPoll::Pending);
                         }
-                        request.acmd41_elapsed_ms = request
-                            .acmd41_elapsed_ms
-                            .saturating_add(SdioInitTiming::POLL_MS);
+                        if request.acmd41_started_ms.is_none() {
+                            request.acmd41_started_ms = self.host.now_ms();
+                        }
+                        request.acmd41_polls = request.acmd41_polls.saturating_add(1);
                         let cmd55 = crate::cmd::cmd55(0);
                         self.host.submit_command(&cmd55)?;
                         request.state = SdioInitState::PollAcmd41Cmd55;
@@ -842,13 +1124,13 @@ impl<H: SdioHost> SdioSdmmc<H> {
                     Ok(OperationPoll::Pending)
                 }
                 Ok(CommandResponsePoll::Complete(_)) => {
-                    info!("sdio: ACMD41 returned bad response, trying MMC CMD1");
+                    debug!("sdio: ACMD41 returned bad response, trying MMC CMD1");
                     self.host.submit_command(&crate::cmd::cmd1(0))?;
                     request.state = SdioInitState::PollMmcInitial;
                     Ok(OperationPoll::Pending)
                 }
                 Err(_sd_err) => {
-                    info!("sdio: ACMD41 failed ({:?}), trying MMC CMD1", _sd_err);
+                    debug!("sdio: ACMD41 failed ({:?}), trying MMC CMD1", _sd_err);
                     self.host.submit_command(&crate::cmd::cmd1(0))?;
                     request.state = SdioInitState::PollMmcInitial;
                     Ok(OperationPoll::Pending)
@@ -893,13 +1175,21 @@ impl<H: SdioHost> SdioSdmmc<H> {
                         self.host.submit_command(&crate::cmd::CMD2)?;
                         request.state = SdioInitState::PollCmd2;
                     } else {
-                        if request.mmc_elapsed_ms >= SdioInitTiming::TIMEOUT_MS {
-                            warn!("sdio: CMD1 timed out after {}ms", request.mmc_elapsed_ms);
+                        let elapsed_exceeded =
+                            power_up_deadline_passed(&self.host, request.mmc_started_ms);
+                        if request.mmc_polls >= SdioInitTiming::MAX_POLLS || elapsed_exceeded {
+                            warn!(
+                                "sdio: CMD1 timed out after {} polls (~{} ms at the recommended \
+                                 cadence)",
+                                request.mmc_polls,
+                                request.mmc_polls * SdioInitTiming::POLL_TICK_MS_HINT,
+                            );
                             return Err(Error::Timeout(ErrorContext::for_cmd(Phase::Init, 1)));
                         }
-                        request.mmc_elapsed_ms = request
-                            .mmc_elapsed_ms
-                            .saturating_add(SdioInitTiming::POLL_MS);
+                        if request.mmc_started_ms.is_none() {
+                            request.mmc_started_ms = self.host.now_ms();
+                        }
+                        request.mmc_polls = request.mmc_polls.saturating_add(1);
                         let cmd = crate::cmd::cmd1(request.mmc_ocr_arg);
                         self.host.submit_command(&cmd)?;
                         request.needs_pace = true;
@@ -936,7 +1226,7 @@ impl<H: SdioHost> SdioSdmmc<H> {
                             return Err(Error::BadResponse(ErrorContext::for_cmd(Phase::Init, 3)));
                         }
                     };
-                    info!("sdio: CMD3 rca={:#x}", self.rca);
+                    debug!("sdio: CMD3 rca={:#x}", self.rca);
                     let cmd9 = crate::cmd::cmd9(self.rca);
                     self.host.submit_command(&cmd9)?;
                     request.state = SdioInitState::PollCmd9;
@@ -998,18 +1288,22 @@ impl<H: SdioHost> SdioSdmmc<H> {
                 let kind = request.kind.ok_or(Error::InvalidArgument)?;
                 match kind {
                     CardKind::Sd => {
+                        self.host.set_clock(ClockSpeed::Default)?;
                         if self.sd_speed_selection_enabled {
                             request.state = SdioInitState::PrepareSdSpeed;
                         } else {
-                            self.host.set_clock(ClockSpeed::Default)?;
-                            info!("sdio: SD speed selection disabled; staying at default speed");
+                            debug!("sdio: SD speed selection disabled; staying at default speed");
                             request.state = SdioInitState::Complete;
                         }
                         Ok(OperationPoll::Pending)
                     }
                     CardKind::Mmc => {
-                        info!("sdio: read MMC EXT_CSD");
-                        let ext_csd = unsafe { request.ext_csd_buf.as_mut() };
+                        debug!("sdio: read MMC EXT_CSD");
+                        // SAFETY: the slot's debug_assert traps re-lending; the
+                        // returned reference's lifetime is bound to the host's
+                        // DataRequest via SwitchFunctionRequest/ExtCsdRequest,
+                        // and we release on the Complete arm below.
+                        let ext_csd = unsafe { request.ext_csd_buf.lend() };
                         request.ext_csd_request = Some(self.submit_read_ext_csd(ext_csd)?);
                         request.state = SdioInitState::PollMmcExtCsd;
                         Ok(OperationPoll::Pending)
@@ -1025,8 +1319,13 @@ impl<H: SdioHost> SdioSdmmc<H> {
                     OperationPoll::Pending => Ok(OperationPoll::Pending),
                     OperationPoll::Complete(()) => {
                         request.ext_csd_request = None;
+                        request.ext_csd_buf.release();
+                        // SAFETY: we just released the slot above; the host
+                        // has finished writing the buffer (DataCommandPoll::
+                        // Complete is the host's promise) and nothing else
+                        // holds a reference.
                         let csd = crate::ext_csd::ExtCsd::from_bytes(unsafe {
-                            *request.ext_csd_buf.as_ref()
+                            *request.ext_csd_buf.peek()
                         });
                         if let Some(sectors) = csd.sector_count() {
                             request.capacity_blocks = Some(sectors as u64);
@@ -1053,11 +1352,11 @@ impl<H: SdioHost> SdioSdmmc<H> {
                                 Ok(OperationPoll::Pending)
                             }
                             Err(err) if matches!(request.current_bus_width, BusWidth::Bit8) => {
-                                info!("sdio: 8-bit refused ({:?}), trying 4-bit", err);
+                                debug!("sdio: 8-bit refused ({:?}), trying 4-bit", err);
                                 submit_mmc_bus_width_or_continue(self, request, BusWidth::Bit4)
                             }
                             Err(err) if matches!(request.current_bus_width, BusWidth::Bit4) => {
-                                info!("sdio: 4-bit refused ({:?}), staying at 1-bit", err);
+                                debug!("sdio: 4-bit refused ({:?}), staying at 1-bit", err);
                                 request.state = SdioInitState::PrepareMmcSpeed;
                                 Ok(OperationPoll::Pending)
                             }
@@ -1066,12 +1365,12 @@ impl<H: SdioHost> SdioSdmmc<H> {
                     }
                     Err(err) if matches!(request.current_bus_width, BusWidth::Bit8) => {
                         request.mmc_switch_request = None;
-                        info!("sdio: 8-bit refused ({:?}), trying 4-bit", err);
+                        debug!("sdio: 8-bit refused ({:?}), trying 4-bit", err);
                         submit_mmc_bus_width_or_continue(self, request, BusWidth::Bit4)
                     }
                     Err(err) if matches!(request.current_bus_width, BusWidth::Bit4) => {
                         request.mmc_switch_request = None;
-                        info!("sdio: 4-bit refused ({:?}), staying at 1-bit", err);
+                        debug!("sdio: 4-bit refused ({:?}), staying at 1-bit", err);
                         request.state = SdioInitState::PrepareMmcSpeed;
                         Ok(OperationPoll::Pending)
                     }
@@ -1089,7 +1388,7 @@ impl<H: SdioHost> SdioSdmmc<H> {
                 {
                     request.mmc_hs200_attempted = true;
                     match self.host.switch_voltage(SignalVoltage::V180) {
-                        Ok(()) | Err(Error::UnsupportedCommand) => {
+                        Ok(()) => {
                             let switch_request = self.submit_mmc_switch(
                                 0b11,
                                 crate::cmd::ext_csd::HS_TIMING as u8,
@@ -1099,6 +1398,13 @@ impl<H: SdioHost> SdioSdmmc<H> {
                             request.state = SdioInitState::PollMmcHs200Switch;
                             return Ok(OperationPoll::Pending);
                         }
+                        // The host has no way to actually drive the IO rail
+                        // at 1.8 V (controllers like the rk3568 SDHCI MVP
+                        // refuse here on purpose); HS200 requires 1.8 V, so
+                        // skip the attempt entirely instead of leaving the
+                        // controller's 1.8 V Signaling Enable bit set while
+                        // running the bus at 3.3 V.
+                        Err(Error::UnsupportedCommand) => {}
                         Err(err) => debug!("sdio: switch_voltage(V180) failed ({:?})", err),
                     }
                     self.rollback_to_hs_compat();
@@ -1174,21 +1480,23 @@ impl<H: SdioHost> SdioSdmmc<H> {
                     Ok(OperationPoll::Complete(())) => {
                         request.mmc_switch_request = None;
                         if let Err(_e) = self.host.set_clock(ClockSpeed::HighSpeed) {
-                            info!("sdio: host refused HighSpeed clock ({:?})", _e);
+                            debug!("sdio: host refused HighSpeed clock ({:?})", _e);
                         }
                         request.state = SdioInitState::Complete;
                         Ok(OperationPoll::Pending)
                     }
                     Err(_e) => {
                         request.mmc_switch_request = None;
-                        info!("sdio: MMC HS_TIMING switch refused ({:?})", _e);
+                        debug!("sdio: MMC HS_TIMING switch refused ({:?})", _e);
                         request.state = SdioInitState::Complete;
                         Ok(OperationPoll::Pending)
                     }
                 }
             }
             SdioInitState::PrepareSdSpeed => {
-                let buf = unsafe { request.switch_status_buf.as_mut() };
+                // SAFETY: see ext_csd lend above; release happens on the
+                // PollSdSwitchFunctionCheck Complete arm below.
+                let buf = unsafe { request.switch_status_buf.lend() };
                 let switch_request =
                     self.submit_switch_function(&crate::cmd::cmd6_sd_access_mode(false, 0), buf)?;
                 request.switch_function_request = Some(switch_request);
@@ -1204,9 +1512,12 @@ impl<H: SdioHost> SdioSdmmc<H> {
                     Ok(OperationPoll::Pending) => Ok(OperationPoll::Pending),
                     Ok(OperationPoll::Complete(())) => {
                         request.switch_function_request = None;
+                        request.switch_status_buf.release();
+                        // SAFETY: just released above; host promised the data
+                        // phase is done via DataCommandPoll::Complete.
                         let status =
-                            SwitchStatus::from_raw(unsafe { *request.switch_status_buf.as_ref() });
-                        info!(
+                            SwitchStatus::from_raw(unsafe { *request.switch_status_buf.peek() });
+                        debug!(
                             "sdio: SD access mode support hs={} sdr50={} sdr104={} ddr50={} \
                              s18a={}",
                             status.access_mode_supported(SdAccessMode::HighSpeed.function()),
@@ -1220,6 +1531,7 @@ impl<H: SdioHost> SdioSdmmc<H> {
                     }
                     Err(err) => {
                         request.switch_function_request = None;
+                        request.switch_status_buf.release();
                         warn!("sdio: SD speed selection skipped ({:?})", err);
                         request.state = SdioInitState::Complete;
                         Ok(OperationPoll::Pending)
@@ -1240,8 +1552,11 @@ impl<H: SdioHost> SdioSdmmc<H> {
                             Ok(()) => submit_sd_access_mode_switch(self, request, mode),
                             Err(err) => {
                                 warn!("sdio: SD {} failed ({:?})", mode.name(), err);
+                                // SAFETY: no switch_function_request is in
+                                // flight on this branch (CMD11 path uses the
+                                // command channel), so the slot is not lent.
                                 let status = SwitchStatus::from_raw(unsafe {
-                                    *request.switch_status_buf.as_ref()
+                                    *request.switch_status_buf.peek()
                                 });
                                 submit_next_sd_access_mode(self, request, status)
                             }
@@ -1250,8 +1565,9 @@ impl<H: SdioHost> SdioSdmmc<H> {
                     Err(err) => {
                         request.command_request = None;
                         warn!("sdio: SD {} failed ({:?})", mode.name(), err);
+                        // SAFETY: same as above — no in-flight data request.
                         let status =
-                            SwitchStatus::from_raw(unsafe { *request.switch_status_buf.as_ref() });
+                            SwitchStatus::from_raw(unsafe { *request.switch_status_buf.peek() });
                         submit_next_sd_access_mode(self, request, status)
                     }
                 }
@@ -1266,8 +1582,10 @@ impl<H: SdioHost> SdioSdmmc<H> {
                     Ok(OperationPoll::Pending) => Ok(OperationPoll::Pending),
                     Ok(OperationPoll::Complete(())) => {
                         request.switch_function_request = None;
+                        request.switch_status_buf.release();
+                        // SAFETY: just released above.
                         let status =
-                            SwitchStatus::from_raw(unsafe { *request.switch_status_buf.as_ref() });
+                            SwitchStatus::from_raw(unsafe { *request.switch_status_buf.peek() });
                         if status.selected_function(1) != mode.function() {
                             warn!("sdio: SD {} failed (function mismatch)", mode.name());
                             submit_next_sd_access_mode(self, request, status)
@@ -1284,9 +1602,11 @@ impl<H: SdioHost> SdioSdmmc<H> {
                     }
                     Err(err) => {
                         request.switch_function_request = None;
+                        request.switch_status_buf.release();
                         warn!("sdio: SD {} failed ({:?})", mode.name(), err);
+                        // SAFETY: just released above.
                         let status =
-                            SwitchStatus::from_raw(unsafe { *request.switch_status_buf.as_ref() });
+                            SwitchStatus::from_raw(unsafe { *request.switch_status_buf.peek() });
                         submit_next_sd_access_mode(self, request, status)
                     }
                 }
@@ -1308,8 +1628,11 @@ impl<H: SdioHost> SdioSdmmc<H> {
                     OperationPoll::Complete(_) => {
                         request.status_request = None;
                         warn!("sdio: SD {} failed (bad status)", mode.name());
+                        // SAFETY: PollSdStatus is reached after the switch
+                        // request released the slot in PollSdSetAccessMode;
+                        // no data request is in flight.
                         let status =
-                            SwitchStatus::from_raw(unsafe { *request.switch_status_buf.as_ref() });
+                            SwitchStatus::from_raw(unsafe { *request.switch_status_buf.peek() });
                         submit_next_sd_access_mode(self, request, status)
                     }
                 }
@@ -1335,6 +1658,36 @@ impl<H: SdioHost> SdioSdmmc<H> {
         }
     }
 
+    /// Best-effort host + driver reset after a failed or abandoned init.
+    ///
+    /// Init can leave the controller in any number of partially-programmed
+    /// states: 4-bit/8-bit bus already negotiated, clock raised to HS@52,
+    /// HOST_CONTROL2 UHS bits set from a HS200 attempt, 1.8 V signaling
+    /// armed. None of those are safe defaults for a subsequent retry that
+    /// expects to start by replaying CMD0 in identification mode.
+    ///
+    /// This helper:
+    ///
+    /// - Asks the host to drop back to identification clock, 1-bit bus, and
+    ///   3.3 V signaling. Errors from each call are swallowed — we're
+    ///   already on the error path and want maximum cleanup, not a second
+    ///   failure mid-recovery.
+    /// - Clears the driver's cached card state (RCA, kind, bus width,
+    ///   high-capacity flag) so subsequent calls don't act on stale data
+    ///   from the aborted card.
+    ///
+    /// Idempotent: calling it twice or on a fresh driver is a no-op
+    /// modulo the (already-defaulted) field stores.
+    fn abort_init(&mut self) {
+        let _ = self.host.switch_voltage(SignalVoltage::V330);
+        let _ = self.host.set_clock(ClockSpeed::Identification);
+        let _ = self.host.set_bus_width(BusWidth::Bit1);
+        self.rca = 0;
+        self.high_capacity = false;
+        self.bus_width = BusWidth::Bit1;
+        self.kind = CardKind::Sd;
+    }
+
     /// Best-effort rollback after a failed HS200 attempt. Drops the
     /// controller clock back to default speed; the outer `init` will
     /// then re-program HS_TIMING=1 + HighSpeed in its fallback branch.
@@ -1342,6 +1695,11 @@ impl<H: SdioHost> SdioSdmmc<H> {
     /// path and want to give the rest of `init` the best shot at
     /// recovering.
     fn rollback_to_hs_compat(&mut self) {
+        // Drop any 1.8 V signaling the HS200 attempt may have armed on the
+        // controller. Without this, the IO sampling stays at the 1.8 V
+        // reference while we drive the bus back at 3.3 V, so the very next
+        // data transfer (e.g. the FS layer's CMD17 at LBA 0) times out.
+        let _ = self.host.switch_voltage(SignalVoltage::V330);
         let _ = self.host.set_clock(ClockSpeed::Default);
     }
 }
@@ -1369,7 +1727,7 @@ fn submit_next_sd_access_mode<'a, H: SdioHost + 'a>(
     status: SwitchStatus,
 ) -> Result<OperationPoll<CardInfo>, Error> {
     let ocr = request.ocr.ok_or(Error::InvalidArgument)?;
-    let candidates = if ocr.s18a() {
+    let candidates = if driver.sd_uhs_selection_enabled && ocr.s18a() {
         &[
             SdAccessMode::Sdr104,
             SdAccessMode::Sdr50,
@@ -1387,14 +1745,14 @@ fn submit_next_sd_access_mode<'a, H: SdioHost + 'a>(
             continue;
         }
         if matches!(mode, SdAccessMode::HighSpeed) {
-            info!("sdio: trying SD HighSpeed");
+            debug!("sdio: trying SD HighSpeed");
         } else {
-            info!("sdio: trying SD {}", mode.name());
+            debug!("sdio: trying SD {}", mode.name());
         }
         return submit_sd_access_mode(driver, request, mode);
     }
 
-    info!("sdio: SD card stayed at default speed");
+    debug!("sdio: SD card stayed at default speed");
     request.state = SdioInitState::Complete;
     Ok(OperationPoll::Pending)
 }
@@ -1421,7 +1779,12 @@ fn submit_sd_access_mode_switch<'a, H: SdioHost + 'a>(
     request: &mut SdioInitRequest<'a, H>,
     mode: SdAccessMode,
 ) -> Result<OperationPoll<CardInfo>, Error> {
-    let buf = unsafe { request.switch_status_buf.as_mut() };
+    // SAFETY: the prior switch_function_request was either consumed and
+    // released in PollSdSwitchFunctionCheck Complete, or never lent (CMD11
+    // voltage-switch failure path); release defensively so a re-entered
+    // path doesn't keep the slot flagged.
+    request.switch_status_buf.release();
+    let buf = unsafe { request.switch_status_buf.lend() };
     request.switch_function_request = Some(
         driver
             .submit_switch_function(&crate::cmd::cmd6_sd_access_mode(true, mode.function()), buf)?,
@@ -1479,6 +1842,7 @@ pub struct CardInfo {
 /// - CMD8 has no response and ACMD41 also fails, but CMD1 reports
 ///   power-up → eMMC / MMC
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum CardKind {
     /// SD memory card (SDSC / SDHC / SDXC).
     Sd,
@@ -1499,6 +1863,7 @@ mod tests {
     enum MockEvent {
         Command(Command),
         Clock(ClockSpeed),
+        Voltage(SignalVoltage),
     }
 
     /// Mock host that replays canned responses in order. Used to verify the
@@ -1533,6 +1898,11 @@ mod tests {
         /// `execute_tuning` call.
         last_tuning_cmd: Option<u8>,
         pending_polls: usize,
+        /// Optional monotonic clock value returned from
+        /// [`SdioHost::now_ms`]. Tests advance this directly to verify the
+        /// wall-clock timeout path; `None` keeps the legacy poll-counter
+        /// behavior used by every pre-existing test.
+        now_ms: Option<u64>,
     }
 
     struct MockDataRequest<'a> {
@@ -1558,6 +1928,7 @@ mod tests {
                 tuning_result: None,
                 last_tuning_cmd: None,
                 pending_polls: 0,
+                now_ms: None,
             }
         }
 
@@ -1580,6 +1951,7 @@ mod tests {
                 tuning_result: None,
                 last_tuning_cmd: None,
                 pending_polls: 0,
+                now_ms: None,
             }
         }
     }
@@ -1682,6 +2054,7 @@ mod tests {
 
         fn switch_voltage(&mut self, v: SignalVoltage) -> Result<(), Error> {
             self.last_voltage = Some(v);
+            self.events.push(MockEvent::Voltage(v));
             if let Some(e) = self.voltage_switch_result {
                 return Err(e);
             }
@@ -1694,6 +2067,10 @@ mod tests {
                 return Err(e);
             }
             Ok(())
+        }
+
+        fn now_ms(&self) -> Option<u64> {
+            self.now_ms
         }
     }
 
@@ -1801,6 +2178,52 @@ mod tests {
                 OperationPoll::Complete(info) => return Ok(info),
             }
         }
+    }
+
+    /// When init fails mid-flight after the driver has already negotiated
+    /// past identification mode (e.g. host switched to 4-bit, raised clock
+    /// to Default), the driver must reset the host back to a clean baseline
+    /// (1-bit, identification clock, 3.3 V signaling) so a caller retry from
+    /// `submit_init` starts on solid ground. Without this, a later CMD0
+    /// would be issued over a bus configured for a card that just failed.
+    #[test]
+    fn poll_init_request_resets_host_when_card_init_fails() {
+        // SD init runs through CMD0 → CMD8 → ACMD41 → CMD2 → CMD3 → CMD9 →
+        // CMD7 → CMD55 → ACMD6 (host now at 4-bit + Default clock), then
+        // PrepareSdSpeed issues a 64-byte CMD6 SWITCH_FUNC. We feed it a
+        // valid switch-status payload so the read completes, then poison
+        // the *next* reply with OUT_OF_RANGE so the protocol layer raises
+        // Err on PollSdSetAccessMode's R1 — long after the host left
+        // identification mode.
+        let mut replies = sd_init_replies_with_ocr(ocr_ready_sdhc());
+        // After ACMD6: CMD6 SWITCH_FUNC query (R1 + 64B data) succeeds.
+        replies.push(Ok(ok_r1()));
+        // Then the access-mode switch CMD6 returns a poisoned R1 with
+        // OUT_OF_RANGE; protocol surfaces Err(CardError::OutOfRange).
+        replies.push(Ok(Response::R1(R1Response { raw: 1 << 31 })));
+        let mut host = MockHost::with_results(replies);
+        // SwitchStatus payload advertising HighSpeed (function 1, bit 1
+        // supported in group 1). Used for both CMD6 reads.
+        host.read_payloads = std::vec![
+            switch_status_payload(0, 1 << 1),
+            switch_status_payload(1, 1 << 1),
+        ];
+        let mut driver = SdioSdmmc::new(host);
+
+        let err = poll_init_to_completion(&mut driver)
+            .expect_err("init must propagate the injected failure");
+        // Exact error type isn't load-bearing; what matters is that the
+        // abort_init path ran on the failure.
+        let _ = err;
+
+        // After the abort path runs, the host must be back at 1-bit /
+        // identification clock / 3.3 V signaling. The driver also clears its
+        // cached card state so a retry from submit_init is well-defined.
+        assert_eq!(driver.host.bus_width, Some(BusWidth::Bit1));
+        assert_eq!(driver.host.last_clock, Some(ClockSpeed::Identification));
+        assert_eq!(driver.host.last_voltage, Some(SignalVoltage::V330));
+        assert_eq!(driver.rca(), 0);
+        assert!(!driver.is_high_capacity());
     }
 
     #[test]
@@ -1911,7 +2334,7 @@ mod tests {
         let mut request = SdioInitRequest::new(CardInitPreference::SdFirst, &mut scratch);
         request.state = SdioInitState::PollAcmd41;
         request.sd_v2 = false;
-        request.acmd41_elapsed_ms = SdioInitTiming::TIMEOUT_MS;
+        request.acmd41_polls = SdioInitTiming::MAX_POLLS;
 
         assert!(matches!(
             driver.poll_init_request(&mut request).unwrap(),
@@ -1990,6 +2413,60 @@ mod tests {
             driver.poll_mmc_switch_request(&mut request).unwrap(),
             OperationPoll::Complete(())
         ));
+    }
+
+    #[test]
+    fn mmc_switch_surfaces_wall_clock_timeout_when_host_has_clock() {
+        // Programming-state R1: READY_FOR_DATA (bit 8) + state nibble 7
+        // (bits 9..=12). The mmc_switch loop will keep retrying until either
+        // MAX_POLLS or TIMEOUT_MS trips.
+        let programming = || -> Response {
+            Response::R1(R1Response::from_native_raw((1u32 << 8) | (7u32 << 9)).unwrap())
+        };
+
+        let mut driver = SdioSdmmc::new(MockHost::with_results(std::vec![
+            Ok(ok_r1()),       // CMD6 ack
+            Ok(programming()), // CMD13 #1
+            Ok(programming()), // CMD13 #2
+        ]));
+        driver.rca = 1;
+        // Arm the clock at t=0 so submit_mmc_switch records started_ms=0.
+        driver.host.now_ms = Some(0);
+
+        let mut request = driver
+            .submit_mmc_switch(0b11, crate::cmd::ext_csd::HS_TIMING as u8, 1)
+            .unwrap();
+        // 1st poll: CMD6 ack, schedule CMD13.
+        assert!(matches!(
+            driver.poll_mmc_switch_request(&mut request).unwrap(),
+            OperationPoll::Pending
+        ));
+        // 2nd poll: CMD13 says still programming; well within the wall-clock
+        // budget, so the loop reissues CMD13.
+        assert!(matches!(
+            driver.poll_mmc_switch_request(&mut request).unwrap(),
+            OperationPoll::Pending
+        ));
+        let polls_before_jump = request.polls;
+        assert!(polls_before_jump < MmcSwitchTiming::MAX_POLLS);
+
+        // Jump the wall clock past the 250 ms CMD6 SWITCH budget.
+        driver.host.now_ms = Some(MmcSwitchTiming::TIMEOUT_MS + 1);
+
+        // 3rd poll: CMD13 still reports programming, but the wall-clock
+        // deadline fires before the poll counter would have.
+        let err = driver.poll_mmc_switch_request(&mut request).unwrap_err();
+        assert!(
+            matches!(err, Error::Timeout(ctx) if ctx.cmd == Some(6)),
+            "expected CMD6 timeout, got {:?}",
+            err
+        );
+        assert!(
+            request.polls < MmcSwitchTiming::MAX_POLLS,
+            "wall-clock check should fire before the poll budget ({} < {})",
+            request.polls,
+            MmcSwitchTiming::MAX_POLLS
+        );
     }
 
     #[test]
@@ -2168,6 +2645,57 @@ mod tests {
     }
 
     #[test]
+    fn sd_init_can_limit_speed_selection_to_legacy_high_speed() {
+        let mut replies = sd_init_replies_with_ocr(ocr_ready_sdhc_s18a());
+        replies.extend([
+            Ok(ok_r1()),         // CMD6 query access modes
+            Ok(ok_r1()),         // CMD6 switch HighSpeed
+            Ok(r1_tran_ready()), // CMD13 verify
+        ]);
+        let mut host = MockHost::with_results(replies);
+        host.read_payloads = std::vec![
+            switch_status_payload(0, (1 << 3) | (1 << 1)),
+            switch_status_payload(1, (1 << 3) | (1 << 1)),
+        ];
+
+        let mut driver = SdioSdmmc::new(host);
+        driver.set_sd_uhs_selection_enabled(false);
+        poll_init_to_completion(&mut driver)
+            .expect("SD init selects legacy HighSpeed without trying UHS");
+
+        assert!(
+            !driver
+                .host
+                .events
+                .iter()
+                .any(|e| matches!(e, MockEvent::Voltage(SignalVoltage::V180))),
+            "legacy-HighSpeed init must never ask the host for 1.8 V"
+        );
+        assert_eq!(driver.host.last_clock, Some(ClockSpeed::HighSpeed));
+        assert_eq!(driver.host.last_tuning_cmd, None);
+        assert!(
+            !driver.host.commands.iter().any(|c| c.cmd == 11),
+            "CMD11 voltage switch must not be issued in legacy HighSpeed-only mode"
+        );
+        assert!(
+            driver
+                .host
+                .commands
+                .iter()
+                .any(|c| c.cmd == 6 && c.arg == 0x80FF_FFF1),
+            "CMD6 switched group 1 to HighSpeed"
+        );
+        assert!(
+            !driver
+                .host
+                .commands
+                .iter()
+                .any(|c| c.cmd == 6 && c.arg == 0x80FF_FFF3),
+            "SDR104 must not be selected in legacy HighSpeed-only mode"
+        );
+    }
+
+    #[test]
     fn sd_init_falls_back_to_high_speed_when_uhs_voltage_switch_fails() {
         let mut replies = sd_init_replies_with_ocr(ocr_ready_sdhc_s18a());
         replies.extend([
@@ -2221,7 +2749,14 @@ mod tests {
                 .all(|c| c.arg == 2),
             "only ACMD6 bus-width switch is issued; no CMD6 SWITCH_FUNC"
         );
-        assert_eq!(driver.host.last_voltage, None);
+        assert!(
+            !driver
+                .host
+                .events
+                .iter()
+                .any(|e| matches!(e, MockEvent::Voltage(SignalVoltage::V180))),
+            "speed-selection-disabled init must never ask the host for 1.8 V"
+        );
         assert_eq!(driver.host.last_tuning_cmd, None);
     }
 
@@ -2506,8 +3041,30 @@ mod tests {
         let _info = poll_init_to_completion(&mut driver)
             .expect("init succeeds even when HS200 tuning fails");
 
-        // We *did* attempt HS200 — voltage switched, tuning called.
-        assert_eq!(driver.host.last_voltage, Some(SignalVoltage::V180));
+        // We *did* attempt HS200 — voltage switched to 1.8 V, tuning called,
+        // then the rollback reverted voltage to 3.3 V so the controller's
+        // 1.8 V sampling reference doesn't bleed into the HS@52 retry.
+        let voltage_switches: Vec<SignalVoltage> = driver
+            .host
+            .events
+            .iter()
+            .filter_map(|event| match event {
+                MockEvent::Voltage(v) => Some(*v),
+                _ => None,
+            })
+            .collect();
+        // Voltage events look like: [V330 (init defensive reset), V180
+        // (HS200 attempt), V330 (HS200 rollback)]. The leading V330 is the
+        // abort_init cleanup that `submit_init` runs upfront to guarantee a
+        // known controller state.
+        assert_eq!(
+            voltage_switches,
+            std::vec![
+                SignalVoltage::V330,
+                SignalVoltage::V180,
+                SignalVoltage::V330
+            ]
+        );
         assert_eq!(driver.host.last_tuning_cmd, Some(21));
         // But ended up at HighSpeed, not Hs200.
         assert_eq!(driver.host.last_clock, Some(ClockSpeed::HighSpeed));
@@ -2522,6 +3079,57 @@ mod tests {
             .map(|c| ((c.arg >> 8) & 0xFF) as u8)
             .collect();
         assert_eq!(hs_timing_writes, std::vec![0x02, 0x01]);
+    }
+
+    #[test]
+    fn mmc_init_skips_hs200_when_host_refuses_voltage_switch() {
+        // Card advertises HS200 @ 1.8 V, but the host has no way to drive
+        // the IO rail at 1.8 V and refuses `switch_voltage(V180)` with
+        // `UnsupportedCommand` (the rk3568 SDHCI default until a regulator
+        // hook is wired up). The driver must NOT issue the HS_TIMING=2
+        // SWITCH or call `execute_tuning`; leaving the controller's 1.8 V
+        // signaling bit set while the bus is still on the 3.3 V rail
+        // corrupts subsequent transfers. The driver should fall straight
+        // through to HS @ 52 MHz.
+        let replies = std::vec![
+            Ok(ok_r1()),                // CMD0
+            cmd8_timeout(),             // CMD8
+            Ok(ok_r1()),                // CMD55
+            acmd41_timeout(),           // ACMD41
+            Ok(ocr_ready_mmc_sector()), // CMD1
+            Ok(cid_response()),         // CMD2
+            Ok(ok_r1()),                // CMD3
+            Ok(csd_v2_response()),      // CMD9
+            Ok(ok_r1()),                // CMD7
+            Ok(ok_r1()),                // CMD8 MMC R1
+            Ok(ok_r1()),                // CMD6 BUS_WIDTH=8
+            Ok(r1_tran_ready()),        // CMD13
+            // HS200 skipped — only HS_TIMING=1 + CMD13:
+            Ok(ok_r1()),         // CMD6 HS_TIMING=1
+            Ok(r1_tran_ready()), // CMD13
+        ];
+        let mut host = MockHost::with_results(replies);
+        host.next_read_payload = Some(ext_csd_blob_hs200());
+        host.voltage_switch_result = Some(Error::UnsupportedCommand);
+
+        let mut driver = SdioSdmmc::new(host);
+        let _info = poll_init_to_completion(&mut driver)
+            .expect("init succeeds when host refuses V180 voltage switch");
+
+        // V180 was asked for once (and refused); no V330 rollback is needed
+        // because no HS200 commands were issued, but the protocol may emit
+        // it defensively. Verify HS200 was NOT entered: no HS_TIMING=2,
+        // no tuning, final clock is HighSpeed.
+        assert_eq!(driver.host.last_tuning_cmd, None);
+        assert_eq!(driver.host.last_clock, Some(ClockSpeed::HighSpeed));
+        let hs_timing_writes: Vec<u8> = driver
+            .host
+            .commands
+            .iter()
+            .filter(|c| c.cmd == 6 && ((c.arg >> 16) & 0xFF) as u8 == 185)
+            .map(|c| ((c.arg >> 8) & 0xFF) as u8)
+            .collect();
+        assert_eq!(hs_timing_writes, std::vec![0x01]);
     }
 
     #[test]

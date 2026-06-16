@@ -2,7 +2,7 @@ use alloc::vec::Vec;
 use core::mem::{MaybeUninit, offset_of};
 
 use ax_errno::{AxError, AxResult};
-use ax_hal::time::TimeValue;
+use ax_runtime::hal::time::TimeValue;
 use ax_task::{
     current,
     future::{self, block_on, poll_io},
@@ -157,7 +157,9 @@ pub fn sys_ppoll(
     sigmask: UserConstPtr<SignalSet>,
     sigsetsize: usize,
 ) -> AxResult<isize> {
-    check_sigset_size(sigsetsize)?;
+    if !sigmask.is_null() {
+        check_sigset_size(sigsetsize)?;
+    }
     let nfds = nfds.try_into().map_err(|_| AxError::InvalidInput)?;
     let mut poll_fds = read_poll_fds(fds, nfds)?;
     let timeout = nullable!(timeout.get_as_ref())?

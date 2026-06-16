@@ -10,9 +10,10 @@ use serde::Deserialize;
 
 use crate::{
     context::validate_supported_target,
-    test::case::{TestQemuCase, TestQemuSubcase, TestQemuSubcaseKind},
+    test::case::{HostHttpServerConfig, TestQemuCase, TestQemuSubcase, TestQemuSubcaseKind},
 };
 
+const DYNAMIC_X86_64_QEMU_DEBUG_ENV: &str = "AXBUILD_X86_64_DYN_QEMU_DEBUG";
 const TIMEOUT_SCALE_ENV: &str = "AXBUILD_TEST_TIMEOUT_SCALE";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -20,6 +21,7 @@ pub(crate) struct TestBuildWrapper {
     pub(crate) name: String,
     pub(crate) dir: PathBuf,
     pub(crate) build_config_path: PathBuf,
+    variant: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -102,58 +104,33 @@ struct IndexedQemuCase {
     display_name: String,
     case_dir: PathBuf,
     qemu_configs: BTreeMap<String, PathBuf>,
+    variant: Option<String>,
     build_group: String,
     build_config_path: PathBuf,
 }
 
 #[derive(Debug, Deserialize)]
-struct QemuCaseExtraConfig {
+pub(crate) struct QemuCaseExtraConfig {
     #[serde(default)]
-    test_commands: Vec<String>,
+    pub(crate) test_commands: Vec<String>,
+    #[serde(default)]
+    pub(crate) host_symbolize_success_regex: Vec<String>,
+    #[serde(default)]
+    pub(crate) host_http_server: Option<HostHttpServerConfig>,
 }
 
 pub(crate) fn qemu_config_name(arch: &str) -> String {
     format!("qemu-{arch}.toml")
 }
 
-pub(crate) fn resolve_build_config_path(
-    dir: &Path,
-    target: &str,
-) -> anyhow::Result<Option<PathBuf>> {
-    let path = dir.join(format!("build-{target}.toml"));
-    if path.is_file() {
-        return Ok(Some(path));
-    }
-
-    let legacy_candidates = legacy_build_config_candidates(dir, target);
-    if !legacy_candidates.is_empty() {
-        bail!(
-            "unsupported legacy build config name(s) under {}: {}; expected only \
-             `build-{target}.toml`",
-            dir.display(),
-            legacy_candidates
-                .iter()
-                .map(|path| path.display().to_string())
-                .collect::<Vec<_>>()
-                .join(", ")
-        );
-    }
-
-    Ok(None)
-}
-
 fn legacy_build_config_candidates(dir: &Path, target: &str) -> Vec<PathBuf> {
     let Some(arch) = arch_from_target_name(target) else {
         return Vec::new();
     };
-    [
-        dir.join(format!(".build-{target}.toml")),
-        dir.join(format!("build-{arch}.toml")),
-        dir.join(format!(".build-{arch}.toml")),
-    ]
-    .into_iter()
-    .filter(|path| path.is_file())
-    .collect()
+    [dir.join(format!("build-{arch}.toml"))]
+        .into_iter()
+        .filter(|path| path.is_file())
+        .collect()
 }
 
 fn arch_from_target_name(target: &str) -> Option<&str> {
@@ -219,7 +196,7 @@ fn discover_all_qemu_cases_with_metadata(
         .filter(|case| indexed_case_matches_selected(case, selected_case))
         .map(|case| {
             (
-                case.name,
+                case.display_name,
                 case.qemu_configs.keys().cloned().collect::<Vec<_>>(),
             )
         })
@@ -314,6 +291,7 @@ pub(crate) fn nearest_build_wrapper(
                     name: relative_case_name(test_group_dir, dir)?,
                     dir: dir.to_path_buf(),
                     build_config_path: build_config_path.clone(),
+                    variant: None,
                 });
             }
             [] => {}
@@ -371,6 +349,58 @@ fn build_config_paths(dir: &Path) -> anyhow::Result<Vec<PathBuf>> {
     Ok(paths)
 }
 
+fn resolve_build_config_paths(
+    dir: &Path,
+    target: &str,
+) -> anyhow::Result<Vec<(Option<String>, PathBuf)>> {
+    let mut paths = Vec::new();
+    let canonical = dir.join(format!("build-{target}.toml"));
+    if canonical.is_file() {
+        paths.push((None, canonical));
+    }
+
+    for entry in fs::read_dir(dir).with_context(|| format!("failed to read {}", dir.display()))? {
+        let entry = entry?;
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+        let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+            continue;
+        };
+        let Some(variant) = build_config_variant(name, target) else {
+            continue;
+        };
+        paths.push((Some(variant.to_string()), path));
+    }
+
+    if paths.is_empty() {
+        let legacy_candidates = legacy_build_config_candidates(dir, target);
+        if !legacy_candidates.is_empty() {
+            bail!(
+                "unsupported legacy build config name(s) under {}: {}; expected only \
+                 `build-{target}.toml` or `build-{target}-<variant>.toml`",
+                dir.display(),
+                legacy_candidates
+                    .iter()
+                    .map(|path| path.display().to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            );
+        }
+    }
+
+    paths.sort_by(|left, right| left.1.cmp(&right.1));
+    Ok(paths)
+}
+
+fn build_config_variant<'a>(name: &'a str, target: &str) -> Option<&'a str> {
+    let suffix = name
+        .strip_prefix(&format!("build-{target}-"))?
+        .strip_suffix(".toml")?;
+    (!suffix.is_empty()).then_some(suffix)
+}
+
 pub(crate) fn discover_qemu_cases(
     test_suite_dir: &Path,
     arch: &str,
@@ -379,18 +409,57 @@ pub(crate) fn discover_qemu_cases(
     suite_name: &str,
     group_label: &str,
 ) -> anyhow::Result<Vec<DiscoveredQemuCase>> {
+    discover_qemu_cases_impl(
+        test_suite_dir,
+        arch,
+        target,
+        selected_case,
+        suite_name,
+        group_label,
+        false,
+    )
+}
+
+pub(crate) fn discover_qemu_cases_allow_empty(
+    test_suite_dir: &Path,
+    arch: &str,
+    target: &str,
+    selected_case: Option<&str>,
+    suite_name: &str,
+    group_label: &str,
+) -> anyhow::Result<Vec<DiscoveredQemuCase>> {
+    discover_qemu_cases_impl(
+        test_suite_dir,
+        arch,
+        target,
+        selected_case,
+        suite_name,
+        group_label,
+        true,
+    )
+}
+
+fn discover_qemu_cases_impl(
+    test_suite_dir: &Path,
+    arch: &str,
+    target: &str,
+    selected_case: Option<&str>,
+    suite_name: &str,
+    group_label: &str,
+    allow_empty: bool,
+) -> anyhow::Result<Vec<DiscoveredQemuCase>> {
     if let Some(case_name) = selected_case {
         validate_selected_case_name(case_name, suite_name, group_label)?;
     }
 
-    let config_name = qemu_config_name(arch);
     let mut cases = Vec::new();
     let mut selected_case_dirs_without_config = Vec::new();
     for case in discover_qemu_case_index(test_suite_dir, Some(target), selected_case)? {
         if !indexed_case_matches_selected(&case, selected_case) {
             continue;
         }
-        if let Some(qemu_config_path) = case.qemu_configs.get(arch) {
+        let config_key = qemu_config_key_for_wrapper(arch, case.variant.as_deref());
+        if let Some(qemu_config_path) = case.qemu_configs.get(&config_key) {
             cases.push(DiscoveredQemuCase {
                 name: case.name,
                 display_name: case.display_name,
@@ -400,6 +469,7 @@ pub(crate) fn discover_qemu_cases(
                 build_config_path: case.build_config_path,
             });
         } else if selected_case.is_some() {
+            let config_name = qemu_config_name(&config_key);
             selected_case_dirs_without_config
                 .push((case.build_group, case.case_dir.join(&config_name)));
         }
@@ -408,6 +478,14 @@ pub(crate) fn discover_qemu_cases(
     if cases.is_empty() {
         if let Some(case_name) = selected_case {
             if !selected_case_dirs_without_config.is_empty() {
+                let expected_configs = selected_case_dirs_without_config
+                    .iter()
+                    .filter_map(|(_, path)| path.file_name())
+                    .map(|name| format!("`{}`", name.to_string_lossy()))
+                    .collect::<BTreeSet<_>>()
+                    .into_iter()
+                    .collect::<Vec<_>>()
+                    .join(", ");
                 let searched = selected_case_dirs_without_config
                     .iter()
                     .map(|(build_group, path)| format!("{build_group}: {}", path.display()))
@@ -415,7 +493,7 @@ pub(crate) fn discover_qemu_cases(
                     .join(", ");
                 bail!(
                     "{suite_name} {group_label} test case `{case_name}` exists under matching \
-                     build group(s), but none provide `{config_name}` for arch `{arch}`: \
+                     build group(s), but none provide {expected_configs} for arch `{arch}`: \
                      {searched}"
                 );
             }
@@ -423,9 +501,13 @@ pub(crate) fn discover_qemu_cases(
             bail!(
                 "unknown {suite_name} {group_label} test case `{case_name}` for arch `{arch}` \
                  under {}; cases are discovered from <build_group>/<case> directories with \
-                 matching `{config_name}`",
+                 matching qemu config files",
                 test_suite_dir.display()
             );
+        }
+
+        if allow_empty {
+            return Ok(cases);
         }
 
         bail!(
@@ -455,15 +537,33 @@ fn discover_qemu_case_index(
         }
 
         let build_config_path = match target {
-            Some(target) => resolve_build_config_path(&dir, target)?,
-            None => build_config_paths(&dir)?.into_iter().next(),
+            Some(target) => {
+                let build_config_paths = resolve_build_config_paths(&dir, target)?;
+                if !build_config_paths.is_empty() {
+                    for (variant, build_config_path) in build_config_paths {
+                        build_wrappers.push(TestBuildWrapper {
+                            name: build_wrapper_name(test_group_dir, &dir, variant.as_deref())?,
+                            dir: dir.clone(),
+                            build_config_path,
+                            variant,
+                        });
+                    }
+                    continue;
+                }
+                None
+            }
+            None => build_config_paths(&dir)?
+                .into_iter()
+                .next()
+                .map(|path| (None, path)),
         };
 
-        if let Some(build_config_path) = build_config_path {
+        if let Some((variant, build_config_path)) = build_config_path {
             build_wrappers.push(TestBuildWrapper {
-                name: relative_case_name(test_group_dir, &dir)?,
+                name: build_wrapper_name(test_group_dir, &dir, variant.as_deref())?,
                 dir,
                 build_config_path,
+                variant,
             });
             continue;
         }
@@ -556,11 +656,21 @@ fn qemu_configs_in_dir(dir: &Path) -> anyhow::Result<Option<BTreeMap<String, Pat
     Ok((!configs.is_empty()).then_some(configs))
 }
 
+fn qemu_config_key_for_wrapper(arch: &str, variant: Option<&str>) -> String {
+    match variant {
+        Some(variant) => format!("{arch}-{variant}"),
+        None => arch.to_string(),
+    }
+}
+
 fn indexed_case_matches_selected(case: &IndexedQemuCase, selected_case: Option<&str>) -> bool {
     let Some(selected_case) = selected_case else {
         return true;
     };
-    case.name == selected_case || case.name.starts_with(&format!("{selected_case}/"))
+    case.name == selected_case
+        || case.name.starts_with(&format!("{selected_case}/"))
+        || case.display_name == selected_case
+        || case.display_name.starts_with(&format!("{selected_case}/"))
 }
 
 fn indexed_qemu_case(
@@ -569,11 +679,13 @@ fn indexed_qemu_case(
     case_dir: PathBuf,
     qemu_configs: BTreeMap<String, PathBuf>,
 ) -> IndexedQemuCase {
+    let name = case_name_for_wrapper_variant(name, build_wrapper.variant.as_deref());
     IndexedQemuCase {
         display_name: format!("{}/{}", build_wrapper.name, name),
         name,
         case_dir,
         qemu_configs,
+        variant: build_wrapper.variant.clone(),
         build_group: build_wrapper.name.clone(),
         build_config_path: build_wrapper.build_config_path.clone(),
     }
@@ -588,8 +700,25 @@ fn indexed_qemu_root_case(
         display_name: build_wrapper.name.clone(),
         case_dir: build_wrapper.dir.clone(),
         qemu_configs,
+        variant: build_wrapper.variant.clone(),
         build_group: build_wrapper.name.clone(),
         build_config_path: build_wrapper.build_config_path.clone(),
+    }
+}
+
+fn build_wrapper_name(
+    test_group_dir: &Path,
+    dir: &Path,
+    variant: Option<&str>,
+) -> anyhow::Result<String> {
+    let name = relative_case_name(test_group_dir, dir)?;
+    Ok(case_name_for_wrapper_variant(name, variant))
+}
+
+fn case_name_for_wrapper_variant(name: String, variant: Option<&str>) -> String {
+    match variant {
+        Some(variant) => format!("{name}-{variant}"),
+        None => name,
     }
 }
 
@@ -713,9 +842,15 @@ pub(crate) fn load_test_qemu_case_fields(
     suite_name: &str,
     discover_subcases: bool,
 ) -> anyhow::Result<TestQemuCase> {
-    let test_commands = load_qemu_case_test_commands(&qemu_config_path, suite_name)?;
+    let config = load_qemu_case_extra_config(&qemu_config_path)?;
+    let test_commands =
+        normalize_qemu_test_commands(&qemu_config_path, config.test_commands, suite_name)?;
     let subcases = if discover_subcases && !test_commands.is_empty() {
-        discover_qemu_subcases(&case_dir)?
+        let arch = qemu_config_path
+            .file_stem()
+            .and_then(|stem| stem.to_str())
+            .and_then(|stem| stem.strip_prefix("qemu-"));
+        discover_qemu_subcases(&case_dir, arch)?
     } else {
         Vec::new()
     };
@@ -725,22 +860,32 @@ pub(crate) fn load_test_qemu_case_fields(
         case_dir,
         qemu_config_path,
         test_commands,
+        host_symbolize_success_regex: config.host_symbolize_success_regex,
+        host_http_server: config.host_http_server,
         subcases,
+        grouped_subcase_filter: None,
     })
 }
 
-fn load_qemu_case_test_commands(
+pub(crate) fn load_qemu_case_extra_config(
     qemu_config_path: &Path,
-    suite_name: &str,
-) -> anyhow::Result<Vec<String>> {
+) -> anyhow::Result<QemuCaseExtraConfig> {
     let content = fs::read_to_string(qemu_config_path)
         .with_context(|| format!("failed to read {}", qemu_config_path.display()))?;
-    let config: QemuCaseExtraConfig = toml::from_str(&content)
-        .with_context(|| format!("failed to parse {}", qemu_config_path.display()))?;
-    normalize_qemu_test_commands(qemu_config_path, config.test_commands, suite_name)
+    toml::from_str(&content)
+        .with_context(|| format!("failed to parse {}", qemu_config_path.display()))
 }
 
-fn discover_qemu_subcases(case_dir: &Path) -> anyhow::Result<Vec<TestQemuSubcase>> {
+pub(crate) fn load_qemu_case_host_http_server(
+    qemu_config_path: &Path,
+) -> anyhow::Result<Option<HostHttpServerConfig>> {
+    Ok(load_qemu_case_extra_config(qemu_config_path)?.host_http_server)
+}
+
+fn discover_qemu_subcases(
+    case_dir: &Path,
+    arch: Option<&str>,
+) -> anyhow::Result<Vec<TestQemuSubcase>> {
     let mut subcases = Vec::new();
     for entry in
         fs::read_dir(case_dir).with_context(|| format!("failed to read {}", case_dir.display()))?
@@ -751,10 +896,17 @@ fn discover_qemu_subcases(case_dir: &Path) -> anyhow::Result<Vec<TestQemuSubcase
             continue;
         }
 
+        if let Some(arch) = arch
+            && let Some(configs) = qemu_configs_in_dir(&path)?
+            && !configs.contains_key(arch)
+        {
+            continue;
+        }
+
         let Ok(name) = entry.file_name().into_string() else {
             continue;
         };
-        let kind = if path.join("c").is_dir() {
+        let kind = if path.join("c").is_dir() || path.join("CMakeLists.txt").is_file() {
             Some(TestQemuSubcaseKind::C)
         } else if path.join("rust").is_dir() {
             Some(TestQemuSubcaseKind::Rust)
@@ -837,6 +989,309 @@ pub(crate) fn apply_smp_qemu_arg(qemu: &mut QemuConfig, smp: Option<usize>) {
     };
 
     QemuArgsMut::new(&mut qemu.args).set_option_value("-smp", cpu_num.to_string());
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum DynamicPlatformBootArch {
+    X86_64,
+    LoongArch64,
+}
+
+pub(crate) fn apply_dynamic_platform_qemu_boot(qemu: &mut QemuConfig, cargo: &Cargo) {
+    apply_dynamic_platform_qemu_boot_with_kvm_probe(qemu, cargo, host_kvm_available);
+}
+
+fn apply_dynamic_platform_qemu_boot_with_kvm_probe(
+    qemu: &mut QemuConfig,
+    cargo: &Cargo,
+    kvm_available: impl FnOnce() -> bool,
+) {
+    apply_x86_64_kvm_accel_if_available_with_probe(qemu, cargo, kvm_available);
+
+    let Some(arch) = cargo_dynamic_platform_boot_arch(cargo) else {
+        return;
+    };
+
+    qemu.uefi = true;
+    qemu.to_bin = true;
+    apply_drive_snapshot_without_global_snapshot(qemu);
+
+    if arch != DynamicPlatformBootArch::X86_64 {
+        return;
+    }
+
+    ensure_uefi_drive_bus(qemu);
+    keep_qemu_default_devices_for_uefi(qemu);
+    disable_unneeded_default_x86_64_devices(qemu);
+    disable_dynamic_x86_64_five_level_paging(qemu);
+    enable_dynamic_x86_64_nested_virtualization_features(qemu, cargo);
+    apply_dynamic_x86_64_qemu_debug_args(qemu);
+}
+
+fn apply_x86_64_kvm_accel_if_available_with_probe(
+    qemu: &mut QemuConfig,
+    cargo: &Cargo,
+    kvm_available: impl FnOnce() -> bool,
+) {
+    if !cargo_target_is_x86_64(&cargo.target) {
+        return;
+    }
+    if qemu.args.iter().any(|arg| arg == "-accel") {
+        return;
+    }
+    if !kvm_available() {
+        return;
+    }
+
+    qemu.args.push("-accel".to_string());
+    qemu.args.push("kvm".to_string());
+}
+
+#[cfg(unix)]
+fn host_kvm_available() -> bool {
+    use std::fs::OpenOptions;
+
+    OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open("/dev/kvm")
+        .is_ok()
+}
+
+#[cfg(not(unix))]
+fn host_kvm_available() -> bool {
+    false
+}
+
+fn apply_dynamic_x86_64_qemu_debug_args(qemu: &mut QemuConfig) {
+    let Ok(value) = std::env::var(DYNAMIC_X86_64_QEMU_DEBUG_ENV) else {
+        return;
+    };
+    if !env_flag_enabled(&value) {
+        return;
+    }
+
+    push_unique_arg(&mut qemu.args, "-no-reboot");
+    push_unique_arg(&mut qemu.args, "-S");
+    push_unique_arg(&mut qemu.args, "-s");
+}
+
+fn env_flag_enabled(value: &str) -> bool {
+    !matches!(
+        value.trim().to_ascii_lowercase().as_str(),
+        "" | "0" | "false" | "no" | "off"
+    )
+}
+
+fn push_unique_arg(args: &mut Vec<String>, arg: &str) {
+    if !args.iter().any(|existing| existing == arg) {
+        args.push(arg.to_string());
+    }
+}
+
+fn ensure_uefi_drive_bus(qemu: &mut QemuConfig) {
+    for index in 0..qemu.args.len() {
+        if qemu.args.get(index).is_some_and(|arg| arg == "-machine")
+            && let Some(machine) = qemu.args.get_mut(index + 1)
+        {
+            remove_machine_option(machine, "sata=off");
+            remove_machine_option(machine, "i8042=off");
+        }
+    }
+}
+
+fn remove_machine_option(machine: &mut String, option: &str) {
+    let parts = machine
+        .split(',')
+        .filter(|part| *part != option)
+        .collect::<Vec<_>>();
+    *machine = parts.join(",");
+}
+
+fn keep_qemu_default_devices_for_uefi(qemu: &mut QemuConfig) {
+    qemu.args.retain(|arg| arg != "-nodefaults");
+}
+
+fn disable_unneeded_default_x86_64_devices(qemu: &mut QemuConfig) {
+    let has_network_arg = qemu
+        .args
+        .iter()
+        .any(|arg| matches!(arg.as_str(), "-net" | "-netdev" | "-nic"));
+    if !has_network_arg {
+        qemu.args.push("-net".to_string());
+        qemu.args.push("none".to_string());
+    }
+
+    let has_vga_arg = qemu.args.iter().any(|arg| arg == "-vga");
+    if !has_vga_arg {
+        qemu.args.push("-vga".to_string());
+        qemu.args.push("none".to_string());
+    }
+}
+
+fn disable_dynamic_x86_64_five_level_paging(qemu: &mut QemuConfig) {
+    for index in 0..qemu.args.len() {
+        if qemu.args.get(index).is_some_and(|arg| arg == "-cpu")
+            && let Some(cpu) = qemu.args.get_mut(index + 1)
+        {
+            disable_qemu_cpu_feature(cpu, "la57");
+        }
+    }
+}
+
+fn enable_dynamic_x86_64_nested_virtualization_features(qemu: &mut QemuConfig, cargo: &Cargo) {
+    for index in 0..qemu.args.len() {
+        if qemu.args.get(index).is_some_and(|arg| arg == "-cpu")
+            && let Some(cpu) = qemu.args.get_mut(index + 1)
+        {
+            for feature in dynamic_x86_64_nested_virtualization_features(cargo) {
+                enable_qemu_cpu_feature(cpu, feature);
+            }
+        }
+    }
+}
+
+fn dynamic_x86_64_nested_virtualization_features(cargo: &Cargo) -> &'static [&'static str] {
+    if cargo.features.iter().any(|feature| {
+        matches!(
+            feature.as_str(),
+            "svm" | "axvm/svm" | "x86_vcpu/svm" | "x86-vcpu/svm"
+        )
+    }) {
+        &["svm", "npt", "nrip-save"]
+    } else if cargo.features.iter().any(|feature| {
+        matches!(
+            feature.as_str(),
+            "vmx" | "axvm/vmx" | "x86_vcpu/vmx" | "x86-vcpu/vmx"
+        )
+    }) {
+        &["vmx-ept", "vmx-unrestricted-guest", "vmx-flexpriority"]
+    } else {
+        &[]
+    }
+}
+
+fn enable_qemu_cpu_feature(cpu: &mut String, feature: &str) {
+    let enabled_feature = format!("+{feature}");
+    if cpu.split(',').any(|part| part.trim() == enabled_feature) {
+        return;
+    }
+
+    if !cpu.is_empty() {
+        cpu.push(',');
+    }
+    cpu.push_str(&enabled_feature);
+}
+
+fn disable_qemu_cpu_feature(cpu: &mut String, feature: &str) {
+    let disabled_feature = format!("-{feature}");
+    if cpu.split(',').any(|part| part.trim() == disabled_feature) {
+        return;
+    }
+
+    if !cpu.is_empty() {
+        cpu.push(',');
+    }
+    cpu.push_str(&disabled_feature);
+}
+
+fn apply_drive_snapshot_without_global_snapshot(qemu: &mut QemuConfig) {
+    let mut global_snapshot = false;
+    qemu.args.retain(|arg| {
+        let keep = arg != "-snapshot";
+        if !keep {
+            global_snapshot = true;
+        }
+        keep
+    });
+    if !global_snapshot {
+        return;
+    }
+
+    for index in 0..qemu.args.len() {
+        if qemu.args.get(index).is_some_and(|arg| arg == "-drive")
+            && let Some(drive) = qemu.args.get_mut(index + 1)
+        {
+            ensure_drive_snapshot_on(drive);
+        }
+    }
+}
+
+fn ensure_drive_snapshot_on(drive: &mut String) {
+    let mut replaced = false;
+    let parts = drive
+        .split(',')
+        .map(|part| {
+            if part.starts_with("snapshot=") {
+                replaced = true;
+                "snapshot=on".to_string()
+            } else {
+                part.to_string()
+            }
+        })
+        .collect::<Vec<_>>();
+    if replaced {
+        *drive = parts.join(",");
+    } else {
+        drive.push_str(",snapshot=on");
+    }
+}
+
+fn cargo_dynamic_platform_boot_arch(cargo: &Cargo) -> Option<DynamicPlatformBootArch> {
+    if !cargo_dynamic_platform_features(cargo).any(dynamic_platform_feature) {
+        return None;
+    }
+
+    if cargo_target_is_dynamic_x86_64(&cargo.target) {
+        Some(DynamicPlatformBootArch::X86_64)
+    } else if cargo_target_is_dynamic_loongarch64(&cargo.target) {
+        Some(DynamicPlatformBootArch::LoongArch64)
+    } else {
+        None
+    }
+}
+
+fn cargo_target_is_dynamic_x86_64(target: &str) -> bool {
+    cargo_target_is_x86_64(target)
+}
+
+fn cargo_target_is_x86_64(target: &str) -> bool {
+    let target = target.strip_suffix(".json").unwrap_or(target);
+    target.ends_with("x86_64-unknown-none") || target.ends_with("x86_64-unknown-linux-musl")
+}
+
+fn cargo_target_is_dynamic_loongarch64(target: &str) -> bool {
+    let target = target.strip_suffix(".json").unwrap_or(target);
+    target.ends_with("loongarch64-unknown-none-softfloat")
+        || target.ends_with("loongarch64-unknown-linux-musl")
+}
+
+fn dynamic_platform_feature(feature: &str) -> bool {
+    matches!(
+        feature,
+        "plat-dyn"
+            | "ax-feat/plat-dyn"
+            | "ax-std/plat-dyn"
+            | "ax-hal/plat-dyn"
+            | "ax-libc/plat-dyn"
+            | "dyn-plat"
+            | "starry-kernel/plat-dyn"
+    )
+}
+
+fn cargo_dynamic_platform_features(cargo: &Cargo) -> impl Iterator<Item = &str> {
+    cargo.features.iter().map(String::as_str).chain(
+        cargo
+            .env
+            .get("ARCEOS_RUST_FEATURES")
+            .into_iter()
+            .flat_map(|features| {
+                features
+                    .split(',')
+                    .map(str::trim)
+                    .filter(|feature| !feature.is_empty())
+            }),
+    )
 }
 
 pub(crate) fn smp_from_qemu_arg(qemu: &QemuConfig) -> Option<usize> {
@@ -1137,7 +1592,565 @@ where
 
 #[cfg(test)]
 mod tests {
+    use std::{
+        env,
+        ffi::{OsStr, OsString},
+        sync::{LazyLock, Mutex},
+    };
+
     use super::*;
+
+    static ENV_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
+
+    struct TempEnvVar {
+        key: &'static str,
+        original: Option<OsString>,
+    }
+
+    impl TempEnvVar {
+        fn set(key: &'static str, value: impl AsRef<OsStr>) -> Self {
+            let original = env::var_os(key);
+            unsafe {
+                env::set_var(key, value);
+            }
+            Self { key, original }
+        }
+
+        fn unset(key: &'static str) -> Self {
+            let original = env::var_os(key);
+            unsafe {
+                env::remove_var(key);
+            }
+            Self { key, original }
+        }
+    }
+
+    impl Drop for TempEnvVar {
+        fn drop(&mut self) {
+            match self.original.as_ref() {
+                Some(value) => unsafe {
+                    env::set_var(self.key, value);
+                },
+                None => unsafe {
+                    env::remove_var(self.key);
+                },
+            }
+        }
+    }
+
+    #[test]
+    fn dynamic_x86_64_cargo_uses_uefi_bin_qemu_boot() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let _debug = TempEnvVar::unset(DYNAMIC_X86_64_QEMU_DEBUG_ENV);
+        let cargo = Cargo {
+            target: "scripts/targets/std/pie/x86_64-unknown-linux-musl.json".to_string(),
+            features: vec!["ax-std/plat-dyn".to_string()],
+            to_bin: true,
+            ..Default::default()
+        };
+        let mut qemu = QemuConfig {
+            uefi: false,
+            to_bin: false,
+            ..Default::default()
+        };
+
+        apply_dynamic_platform_qemu_boot_with_kvm_probe(&mut qemu, &cargo, || false);
+
+        assert!(qemu.uefi);
+        assert!(qemu.to_bin);
+    }
+
+    #[test]
+    fn dynamic_x86_64_std_cargo_uses_uefi_bin_qemu_boot() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let _debug = TempEnvVar::unset(DYNAMIC_X86_64_QEMU_DEBUG_ENV);
+        let cargo = Cargo {
+            target: "scripts/targets/std/pie/x86_64-unknown-linux-musl.json".to_string(),
+            features: vec!["plat-dyn".to_string()],
+            to_bin: true,
+            ..Default::default()
+        };
+        let mut qemu = QemuConfig {
+            uefi: false,
+            to_bin: false,
+            ..Default::default()
+        };
+
+        apply_dynamic_platform_qemu_boot_with_kvm_probe(&mut qemu, &cargo, || false);
+
+        assert!(qemu.uefi);
+        assert!(qemu.to_bin);
+    }
+
+    #[test]
+    fn dynamic_x86_64_qemu_boot_converts_global_snapshot_to_drive_snapshots() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let _debug = TempEnvVar::unset(DYNAMIC_X86_64_QEMU_DEBUG_ENV);
+        let cargo = Cargo {
+            target: "scripts/targets/std/pie/x86_64-unknown-linux-musl.json".to_string(),
+            features: vec!["plat-dyn".to_string()],
+            to_bin: true,
+            ..Default::default()
+        };
+        let mut qemu = QemuConfig {
+            args: vec![
+                "-nographic".to_string(),
+                "-snapshot".to_string(),
+                "-drive".to_string(),
+                "id=disk0,format=raw,file=rootfs.img".to_string(),
+                "-smp".to_string(),
+                "1".to_string(),
+            ],
+            ..Default::default()
+        };
+
+        apply_dynamic_platform_qemu_boot_with_kvm_probe(&mut qemu, &cargo, || false);
+
+        assert_eq!(
+            qemu.args,
+            [
+                "-nographic",
+                "-drive",
+                "id=disk0,format=raw,file=rootfs.img,snapshot=on",
+                "-smp",
+                "1",
+                "-net",
+                "none",
+                "-vga",
+                "none"
+            ]
+        );
+    }
+
+    #[test]
+    fn dynamic_loongarch64_cargo_uses_uefi_bin_qemu_boot() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let _debug = TempEnvVar::unset(DYNAMIC_X86_64_QEMU_DEBUG_ENV);
+        let cargo = Cargo {
+            target: "loongarch64-unknown-none-softfloat".to_string(),
+            features: vec!["dyn-plat".to_string()],
+            to_bin: true,
+            ..Default::default()
+        };
+        let mut qemu = QemuConfig {
+            uefi: false,
+            to_bin: false,
+            ..Default::default()
+        };
+
+        apply_dynamic_platform_qemu_boot_with_kvm_probe(&mut qemu, &cargo, || false);
+
+        assert!(qemu.uefi);
+        assert!(qemu.to_bin);
+    }
+
+    #[test]
+    fn dynamic_loongarch64_std_cargo_uses_uefi_bin_qemu_boot() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let _debug = TempEnvVar::unset(DYNAMIC_X86_64_QEMU_DEBUG_ENV);
+        let cargo = Cargo {
+            target: "scripts/targets/std/pie/loongarch64-unknown-linux-musl.json".to_string(),
+            features: vec!["plat-dyn".to_string()],
+            to_bin: true,
+            ..Default::default()
+        };
+        let mut qemu = QemuConfig {
+            uefi: false,
+            to_bin: false,
+            ..Default::default()
+        };
+
+        apply_dynamic_platform_qemu_boot_with_kvm_probe(&mut qemu, &cargo, || false);
+
+        assert!(qemu.uefi);
+        assert!(qemu.to_bin);
+    }
+
+    #[test]
+    fn dynamic_loongarch64_qemu_boot_converts_global_snapshot_to_drive_snapshots() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let _debug = TempEnvVar::unset(DYNAMIC_X86_64_QEMU_DEBUG_ENV);
+        let cargo = Cargo {
+            target: "scripts/targets/std/pie/loongarch64-unknown-linux-musl.json".to_string(),
+            features: vec!["plat-dyn".to_string()],
+            to_bin: true,
+            ..Default::default()
+        };
+        let mut qemu = QemuConfig {
+            args: vec![
+                "-machine".to_string(),
+                "virt".to_string(),
+                "-snapshot".to_string(),
+                "-drive".to_string(),
+                "id=disk0,format=raw,file=rootfs.img".to_string(),
+            ],
+            ..Default::default()
+        };
+
+        apply_dynamic_platform_qemu_boot_with_kvm_probe(&mut qemu, &cargo, || false);
+
+        assert_eq!(
+            qemu.args,
+            [
+                "-machine",
+                "virt",
+                "-drive",
+                "id=disk0,format=raw,file=rootfs.img,snapshot=on"
+            ]
+        );
+    }
+
+    #[test]
+    fn dynamic_x86_64_qemu_boot_keeps_uefi_drive_bus_available() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let _debug = TempEnvVar::unset(DYNAMIC_X86_64_QEMU_DEBUG_ENV);
+        let cargo = Cargo {
+            target: "scripts/targets/std/pie/x86_64-unknown-linux-musl.json".to_string(),
+            features: vec!["dyn-plat".to_string()],
+            to_bin: true,
+            ..Default::default()
+        };
+        let mut qemu = QemuConfig {
+            args: vec![
+                "-machine".to_string(),
+                "q35,sata=off,smbus=off,i8042=off".to_string(),
+            ],
+            ..Default::default()
+        };
+
+        apply_dynamic_platform_qemu_boot_with_kvm_probe(&mut qemu, &cargo, || false);
+
+        assert_eq!(
+            qemu.args,
+            ["-machine", "q35,smbus=off", "-net", "none", "-vga", "none"]
+        );
+    }
+
+    #[test]
+    fn dynamic_x86_64_qemu_boot_keeps_default_uefi_disk_bus_available() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let _debug = TempEnvVar::unset(DYNAMIC_X86_64_QEMU_DEBUG_ENV);
+        let cargo = Cargo {
+            target: "scripts/targets/std/pie/x86_64-unknown-linux-musl.json".to_string(),
+            features: vec!["dyn-plat".to_string()],
+            to_bin: true,
+            ..Default::default()
+        };
+        let mut qemu = QemuConfig {
+            args: vec![
+                "-nodefaults".to_string(),
+                "-machine".to_string(),
+                "q35,sata=off,smbus=off,i8042=off".to_string(),
+            ],
+            ..Default::default()
+        };
+
+        apply_dynamic_platform_qemu_boot_with_kvm_probe(&mut qemu, &cargo, || false);
+
+        assert_eq!(
+            qemu.args,
+            ["-machine", "q35,smbus=off", "-net", "none", "-vga", "none"]
+        );
+    }
+
+    #[test]
+    fn dynamic_x86_64_qemu_boot_disables_five_level_paging_cpu_feature() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let _debug = TempEnvVar::unset(DYNAMIC_X86_64_QEMU_DEBUG_ENV);
+        let cargo = Cargo {
+            target: "scripts/targets/std/pie/x86_64-unknown-linux-musl.json".to_string(),
+            features: vec!["dyn-plat".to_string()],
+            to_bin: true,
+            ..Default::default()
+        };
+        let mut qemu = QemuConfig {
+            args: vec![
+                "-cpu".to_string(),
+                "host,+x2apic".to_string(),
+                "-machine".to_string(),
+                "q35".to_string(),
+            ],
+            ..Default::default()
+        };
+
+        apply_dynamic_platform_qemu_boot_with_kvm_probe(&mut qemu, &cargo, || false);
+        apply_dynamic_platform_qemu_boot_with_kvm_probe(&mut qemu, &cargo, || false);
+
+        assert_eq!(
+            qemu.args,
+            [
+                "-cpu",
+                "host,+x2apic,-la57",
+                "-machine",
+                "q35",
+                "-net",
+                "none",
+                "-vga",
+                "none"
+            ]
+        );
+    }
+
+    #[test]
+    fn dynamic_x86_64_qemu_boot_enables_vmx_nested_features_for_vmx_backend() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let _debug = TempEnvVar::unset(DYNAMIC_X86_64_QEMU_DEBUG_ENV);
+        let cargo = Cargo {
+            target: "scripts/targets/pie/x86_64-unknown-none.json".to_string(),
+            features: vec!["dyn-plat".to_string(), "vmx".to_string()],
+            to_bin: true,
+            ..Default::default()
+        };
+        let mut qemu = QemuConfig {
+            args: vec!["-cpu".to_string(), "host".to_string()],
+            ..Default::default()
+        };
+
+        apply_dynamic_platform_qemu_boot_with_kvm_probe(&mut qemu, &cargo, || false);
+        apply_dynamic_platform_qemu_boot_with_kvm_probe(&mut qemu, &cargo, || false);
+
+        assert_eq!(
+            qemu.args,
+            [
+                "-cpu",
+                "host,-la57,+vmx-ept,+vmx-unrestricted-guest,+vmx-flexpriority",
+                "-net",
+                "none",
+                "-vga",
+                "none"
+            ]
+        );
+    }
+
+    #[test]
+    fn dynamic_x86_64_qemu_boot_enables_svm_nested_features_for_svm_backend() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let _debug = TempEnvVar::unset(DYNAMIC_X86_64_QEMU_DEBUG_ENV);
+        let cargo = Cargo {
+            target: "scripts/targets/pie/x86_64-unknown-none.json".to_string(),
+            features: vec!["dyn-plat".to_string(), "svm".to_string()],
+            to_bin: true,
+            ..Default::default()
+        };
+        let mut qemu = QemuConfig {
+            args: vec!["-cpu".to_string(), "host".to_string()],
+            ..Default::default()
+        };
+
+        apply_dynamic_platform_qemu_boot_with_kvm_probe(&mut qemu, &cargo, || false);
+        apply_dynamic_platform_qemu_boot_with_kvm_probe(&mut qemu, &cargo, || false);
+
+        assert_eq!(
+            qemu.args,
+            [
+                "-cpu",
+                "host,-la57,+svm,+npt,+nrip-save",
+                "-net",
+                "none",
+                "-vga",
+                "none"
+            ]
+        );
+    }
+
+    #[test]
+    fn dynamic_x86_64_qemu_boot_keeps_explicit_network_and_vga_args() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let _debug = TempEnvVar::unset(DYNAMIC_X86_64_QEMU_DEBUG_ENV);
+        let cargo = Cargo {
+            target: "scripts/targets/std/pie/x86_64-unknown-linux-musl.json".to_string(),
+            features: vec!["dyn-plat".to_string()],
+            to_bin: true,
+            ..Default::default()
+        };
+        let mut qemu = QemuConfig {
+            args: vec![
+                "-netdev".to_string(),
+                "user,id=net0".to_string(),
+                "-device".to_string(),
+                "virtio-net-pci,netdev=net0".to_string(),
+                "-vga".to_string(),
+                "std".to_string(),
+            ],
+            ..Default::default()
+        };
+
+        apply_dynamic_platform_qemu_boot_with_kvm_probe(&mut qemu, &cargo, || false);
+
+        assert_eq!(
+            qemu.args,
+            [
+                "-netdev",
+                "user,id=net0",
+                "-device",
+                "virtio-net-pci,netdev=net0",
+                "-vga",
+                "std"
+            ]
+        );
+    }
+
+    #[test]
+    fn dynamic_x86_64_qemu_boot_can_enable_debug_stub() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let _debug = TempEnvVar::set(DYNAMIC_X86_64_QEMU_DEBUG_ENV, "1");
+        let cargo = Cargo {
+            target: "scripts/targets/std/pie/x86_64-unknown-linux-musl.json".to_string(),
+            features: vec!["dyn-plat".to_string()],
+            to_bin: true,
+            ..Default::default()
+        };
+        let mut qemu = QemuConfig {
+            args: vec!["-nographic".to_string()],
+            ..Default::default()
+        };
+
+        apply_dynamic_platform_qemu_boot_with_kvm_probe(&mut qemu, &cargo, || false);
+
+        assert_eq!(
+            qemu.args,
+            [
+                "-nographic",
+                "-net",
+                "none",
+                "-vga",
+                "none",
+                "-no-reboot",
+                "-S",
+                "-s"
+            ]
+        );
+    }
+
+    #[test]
+    fn non_dynamic_x86_64_cargo_keeps_existing_qemu_boot() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let _debug = TempEnvVar::set(DYNAMIC_X86_64_QEMU_DEBUG_ENV, "1");
+        let cargo = Cargo {
+            target: "scripts/targets/std/x86_64-unknown-linux-musl.json".to_string(),
+            features: vec![],
+            to_bin: false,
+            ..Default::default()
+        };
+        let mut qemu = QemuConfig {
+            uefi: false,
+            to_bin: false,
+            ..Default::default()
+        };
+
+        apply_dynamic_platform_qemu_boot_with_kvm_probe(&mut qemu, &cargo, || false);
+
+        assert!(!qemu.uefi);
+        assert!(!qemu.to_bin);
+    }
+
+    #[test]
+    fn non_dynamic_loongarch64_cargo_keeps_existing_qemu_boot() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let _debug = TempEnvVar::set(DYNAMIC_X86_64_QEMU_DEBUG_ENV, "1");
+        let cargo = Cargo {
+            target: "scripts/targets/std/pie/loongarch64-unknown-linux-musl.json".to_string(),
+            features: vec![],
+            to_bin: false,
+            ..Default::default()
+        };
+        let mut qemu = QemuConfig {
+            uefi: false,
+            to_bin: false,
+            args: vec!["-snapshot".to_string()],
+            ..Default::default()
+        };
+
+        apply_dynamic_platform_qemu_boot_with_kvm_probe(&mut qemu, &cargo, || false);
+
+        assert!(!qemu.uefi);
+        assert!(!qemu.to_bin);
+        assert_eq!(qemu.args, ["-snapshot"]);
+    }
+
+    #[test]
+    fn x86_64_qemu_uses_kvm_when_available() {
+        let cargo = Cargo {
+            target: "x86_64-unknown-none".to_string(),
+            ..Default::default()
+        };
+        let mut qemu = QemuConfig {
+            args: vec!["-nographic".to_string()],
+            ..Default::default()
+        };
+
+        apply_x86_64_kvm_accel_if_available_with_probe(&mut qemu, &cargo, || true);
+
+        assert_eq!(qemu.args, ["-nographic", "-accel", "kvm"]);
+    }
+
+    #[test]
+    fn qemu_boot_rewrite_uses_kvm_for_x86_64_when_available() {
+        let cargo = Cargo {
+            target: "scripts/targets/std/x86_64-unknown-linux-musl.json".to_string(),
+            ..Default::default()
+        };
+        let mut qemu = QemuConfig {
+            args: vec!["-nographic".to_string()],
+            ..Default::default()
+        };
+
+        apply_dynamic_platform_qemu_boot_with_kvm_probe(&mut qemu, &cargo, || true);
+
+        assert_eq!(qemu.args, ["-nographic", "-accel", "kvm"]);
+    }
+
+    #[test]
+    fn x86_64_qemu_keeps_explicit_accel() {
+        let cargo = Cargo {
+            target: "x86_64-unknown-none".to_string(),
+            ..Default::default()
+        };
+        let mut qemu = QemuConfig {
+            args: vec![
+                "-nographic".to_string(),
+                "-accel".to_string(),
+                "tcg,thread=single".to_string(),
+            ],
+            ..Default::default()
+        };
+
+        apply_x86_64_kvm_accel_if_available_with_probe(&mut qemu, &cargo, || true);
+
+        assert_eq!(qemu.args, ["-nographic", "-accel", "tcg,thread=single"]);
+    }
+
+    #[test]
+    fn non_x86_64_qemu_does_not_use_kvm() {
+        let cargo = Cargo {
+            target: "riscv64gc-unknown-none-elf".to_string(),
+            ..Default::default()
+        };
+        let mut qemu = QemuConfig {
+            args: vec!["-nographic".to_string()],
+            ..Default::default()
+        };
+
+        apply_x86_64_kvm_accel_if_available_with_probe(&mut qemu, &cargo, || true);
+
+        assert_eq!(qemu.args, ["-nographic"]);
+    }
+
+    #[test]
+    fn x86_64_qemu_does_not_use_kvm_without_permission() {
+        let cargo = Cargo {
+            target: "x86_64-unknown-none".to_string(),
+            ..Default::default()
+        };
+        let mut qemu = QemuConfig {
+            args: vec!["-nographic".to_string()],
+            ..Default::default()
+        };
+
+        apply_x86_64_kvm_accel_if_available_with_probe(&mut qemu, &cargo, || false);
+
+        assert_eq!(qemu.args, ["-nographic"]);
+    }
 
     #[test]
     fn qemu_failure_summary_is_aggregated() {
@@ -1161,14 +2174,9 @@ mod tests {
         assert_eq!(
             render_case_tree(
                 "normal",
-                [
-                    "qemu-smp1/apk-curl",
-                    "qemu-smp1/smoke",
-                    "qemu-smp4/affinity",
-                ],
+                ["qemu-smp1/apk-curl", "qemu-smp1/smoke", "qemu-smp4/system",],
             ),
-            "normal\n├── qemu-smp1\n│   ├── apk-curl\n│   └── smoke\n└── qemu-smp4\n    └── \
-             affinity"
+            "normal\n├── qemu-smp1\n│   ├── apk-curl\n│   └── smoke\n└── qemu-smp4\n    └── system"
         );
     }
 
@@ -1284,14 +2292,64 @@ mod tests {
     }
 
     #[test]
+    fn discover_qemu_cases_matches_target_variant_configs() {
+        let root = tempfile::tempdir().unwrap();
+        let wrapper_dir = root.path().join("suite/qemu");
+        let case_dir = wrapper_dir.join("smoke");
+        fs::create_dir_all(&case_dir).unwrap();
+        let svm_build_config = wrapper_dir.join("build-x86_64-unknown-none-svm.toml");
+        let vmx_build_config = wrapper_dir.join("build-x86_64-unknown-none-vmx.toml");
+        let svm_qemu_config = case_dir.join("qemu-x86_64-svm.toml");
+        let vmx_qemu_config = case_dir.join("qemu-x86_64-vmx.toml");
+        fs::write(&svm_build_config, "").unwrap();
+        fs::write(&vmx_build_config, "").unwrap();
+        fs::write(&svm_qemu_config, "").unwrap();
+        fs::write(&vmx_qemu_config, "").unwrap();
+
+        let cases = discover_qemu_cases(
+            &root.path().join("suite"),
+            "x86_64",
+            "x86_64-unknown-none",
+            None,
+            "test",
+            "qemu",
+        )
+        .unwrap();
+
+        assert_eq!(cases.len(), 2);
+        assert_eq!(cases[0].name, "smoke-svm");
+        assert_eq!(cases[0].display_name, "qemu-svm/smoke-svm");
+        assert_eq!(cases[0].qemu_config_path, svm_qemu_config);
+        assert_eq!(cases[0].build_config_path, svm_build_config);
+        assert_eq!(cases[1].name, "smoke-vmx");
+        assert_eq!(cases[1].display_name, "qemu-vmx/smoke-vmx");
+        assert_eq!(cases[1].qemu_config_path, vmx_qemu_config);
+        assert_eq!(cases[1].build_config_path, vmx_build_config);
+
+        let cases = discover_qemu_cases(
+            &root.path().join("suite"),
+            "x86_64",
+            "x86_64-unknown-none",
+            Some("smoke-svm"),
+            "test",
+            "qemu",
+        )
+        .unwrap();
+
+        assert_eq!(cases.len(), 1);
+        assert_eq!(cases[0].name, "smoke-svm");
+        assert_eq!(cases[0].qemu_config_path, svm_qemu_config);
+    }
+
+    #[test]
     fn resolve_build_config_accepts_target_specific_name_only() {
         let root = tempfile::tempdir().unwrap();
         let path = root.path().join("build-x86_64-unknown-none.toml");
         fs::write(&path, "target = \"x86_64-unknown-none\"\n").unwrap();
 
         assert_eq!(
-            resolve_build_config_path(root.path(), "x86_64-unknown-none").unwrap(),
-            Some(path)
+            resolve_build_config_paths(root.path(), "x86_64-unknown-none").unwrap(),
+            [(None, path)]
         );
     }
 
@@ -1300,12 +2358,28 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         fs::write(root.path().join("build-x86_64.toml"), "").unwrap();
 
-        let err = resolve_build_config_path(root.path(), "x86_64-unknown-none")
+        let err = resolve_build_config_paths(root.path(), "x86_64-unknown-none")
             .unwrap_err()
             .to_string();
 
         assert!(err.contains("unsupported legacy build config name"));
         assert!(err.contains("build-x86_64-unknown-none.toml"));
+    }
+
+    #[test]
+    fn resolve_build_config_ignores_hidden_build_files() {
+        let root = tempfile::tempdir().unwrap();
+        fs::write(
+            root.path().join(".build-x86_64-unknown-none.toml"),
+            "features = []\n",
+        )
+        .unwrap();
+        fs::write(root.path().join(".build-x86_64.toml"), "features = []\n").unwrap();
+
+        assert_eq!(
+            resolve_build_config_paths(root.path(), "x86_64-unknown-none").unwrap(),
+            []
+        );
     }
 
     #[test]
@@ -1412,6 +2486,60 @@ mod tests {
         fs::write(target_dir.join("qemu-riscv64.toml"), "").unwrap();
 
         let err = discover_qemu_cases(
+            root.path().join("suite").as_path(),
+            "x86_64",
+            "x86_64-unknown-none",
+            Some("smoke"),
+            "test",
+            "qemu",
+        )
+        .unwrap_err()
+        .to_string();
+
+        assert!(err.contains("exists under matching build group"));
+        assert!(err.contains("qemu-x86_64.toml"));
+    }
+
+    #[test]
+    fn discover_qemu_cases_allow_empty_returns_empty_without_selected_case() {
+        let root = tempfile::tempdir().unwrap();
+        let case_dir = root.path().join("suite/wrapper/smoke");
+        fs::create_dir_all(&case_dir).unwrap();
+        fs::write(
+            root.path()
+                .join("suite/wrapper/build-x86_64-unknown-none.toml"),
+            "",
+        )
+        .unwrap();
+        fs::write(case_dir.join("qemu-riscv64.toml"), "").unwrap();
+
+        let cases = discover_qemu_cases_allow_empty(
+            root.path().join("suite").as_path(),
+            "x86_64",
+            "x86_64-unknown-none",
+            None,
+            "test",
+            "qemu",
+        )
+        .unwrap();
+
+        assert!(cases.is_empty());
+    }
+
+    #[test]
+    fn discover_qemu_cases_allow_empty_keeps_selected_case_errors() {
+        let root = tempfile::tempdir().unwrap();
+        let case_dir = root.path().join("suite/wrapper/smoke");
+        fs::create_dir_all(&case_dir).unwrap();
+        fs::write(
+            root.path()
+                .join("suite/wrapper/build-x86_64-unknown-none.toml"),
+            "",
+        )
+        .unwrap();
+        fs::write(case_dir.join("qemu-riscv64.toml"), "").unwrap();
+
+        let err = discover_qemu_cases_allow_empty(
             root.path().join("suite").as_path(),
             "x86_64",
             "x86_64-unknown-none",

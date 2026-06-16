@@ -1,5 +1,4 @@
-PROVIDE(PAGE_SIZE = 0x1000);
-PROVIDE(STACK_SIZE = 0x4000);
+${ld_defaults}
 VM_LOAD_ADDRESS = ${kernel_load_vaddr};
 
 OUTPUT_ARCH(riscv)
@@ -12,66 +11,26 @@ SECTIONS
         KEEP(*(.head.text))
         KEEP(*(.text._head))
     }
-    . = ALIGN(PAGE_SIZE);
-    _stext = .;
-    .text : {
-        *(.text .text.*)
-        *(.init.text)
-        *(.fixup)
-        *(.gnu.warning)
+${ld_text}
+${ld_rodata}
+${ld_data}
+${ld_rela_dyn}
+    .dynsym : ALIGN(8) {
+        *(.dynsym)
     }
-    . = ALIGN(PAGE_SIZE);
-    _etext = .;
-    _srodata = .;
-    .rodata : {
-        *(.rodata)
-        *(.rodata.*)
-        *(.srodata .srodata.*)
-        *(.data.rel.ro*)
+    .gnu.hash : ALIGN(8) {
+        *(.gnu.hash)
     }
-    . = ALIGN(PAGE_SIZE);
-    _erodata = .;
-    _sdata = .;
-    .data : ALIGN(16) {
-        *(.data .data.*)
-        *(.init.data)
-        *(.sdata .sdata.*)
-
-        . = ALIGN(PAGE_SIZE);
-        __percpu_start = .;
-        *(.percpu_data .percpu_data.* .percpu .percpu.*)
-        __percpu_end = .;
+    .hash : ALIGN(8) {
+        *(.hash)
     }
-    .rela.dyn : ALIGN(8) {
-        __rela_dyn_begin = .;
-        *(.rela .rela*)
-        __rela_dyn_end = .;
+    .dynstr : ALIGN(1) {
+        *(.dynstr)
     }
-    .sdata : ALIGN(8) {
-        *(.sdata)
-        . = ALIGN(PAGE_SIZE);
+    .eh_frame_hdr : ALIGN(4) {
+        *(.eh_frame_hdr)
     }
-    _edata = .;
-    __kernel_load_end = .;
-    __bss_start = .;
-    .sbss : {
-        *(.dynsbss)
-        *(.sbss .sbss.*)
-        *(.scommon)
-    }
-    .bss : {
-        *(.dynbss)
-        *(.bss .bss.*)
-        *(COMMON)
-
-        __cpu0_stack = .;
-        . += STACK_SIZE;
-        __cpu0_stack_top = .;
-    }
-    . = ALIGN(PAGE_SIZE);
-    __bss_stop = .;
-    _end = .;
-    __kernel_code_end = .;
+${ld_bss}
 
     /DISCARD/ : {
         *(.eh_frame)

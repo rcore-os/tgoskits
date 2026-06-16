@@ -2,17 +2,17 @@ use alloc::boxed::Box;
 
 use ax_errno::{AxError, AxResult, LinuxError};
 use ax_fs::FS_CONTEXT;
-use ax_task::current;
-use axfs_ng_vfs::{MetadataUpdate, NodeType};
 #[cfg(feature = "vsock")]
-use axnet::vsock::{VsockSocket, VsockStreamTransport};
-use axnet::{
+use ax_net::vsock::{VsockSocket, VsockStreamTransport};
+use ax_net::{
     Shutdown, Socket as SocketInner, SocketAddrEx, SocketOps,
     raw::{IpProtocol, IpVersion, RawSocket},
     tcp::TcpSocket,
     udp::UdpSocket,
     unix::{DgramTransport, StreamTransport, UnixSocket, UnixSocketAddr},
 };
+use ax_task::current;
+use axfs_ng_vfs::{MetadataUpdate, NodeType};
 use linux_raw_sys::{
     general::{O_CLOEXEC, O_NONBLOCK},
     net::{
@@ -44,7 +44,7 @@ pub fn sys_socket(domain: u32, raw_ty: u32, proto: u32) -> AxResult<isize> {
         if !current().as_thread().cred().has_cap_net_raw() {
             return Err(AxError::from(LinuxError::EPERM));
         }
-        let socket = PacketSocket::new(proto as u16);
+        let socket = PacketSocket::new(proto as u16)?;
         if raw_ty & O_NONBLOCK != 0 {
             socket.set_nonblocking(true)?;
         }

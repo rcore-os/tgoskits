@@ -4,7 +4,10 @@ use ax_errno::AxResult;
 use ax_task::{TaskInner, TaskState};
 use starry_signal::Signo;
 
-use crate::task::{AsThread, task_cpu_time};
+use crate::{
+    mm::ProcessMemStats,
+    task::{AsThread, task_cpu_time},
+};
 
 /// Represents the `/proc/[pid]/stat` file.
 ///
@@ -93,6 +96,8 @@ impl TaskStat {
         let cutime = (cutime_tv.as_millis() / 10) as u64;
         let cstime = (cstime_tv.as_millis() / 10) as u64;
 
+        let mem = ProcessMemStats::collect(&proc_data.aspace().lock());
+
         Ok(Self {
             pid,
             comm: comm.to_owned(),
@@ -105,7 +110,14 @@ impl TaskStat {
             cutime,
             cstime,
             num_threads: proc.threads().len() as u32,
+            vsize: mem.vsize_bytes(),
+            rss: mem.rss_pages(),
+            start_code: mem.start_code,
+            end_code: mem.end_code,
+            start_stack: mem.start_stack,
+            start_brk: proc_data.get_heap_top() as u64,
             exit_signal: proc_data.exit_signal.unwrap_or(Signo::SIGCHLD) as u8,
+            processor: task.cpu_id(),
             exit_code: proc.exit_code(),
             ..Default::default()
         })

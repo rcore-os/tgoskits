@@ -117,7 +117,13 @@ StarryOS 专用组件（位于 `components/`）：
 | `rknpu` | Rockchip NPU 驱动 |
 | `vsock` | VSOCK 支持 |
 
-内核默认启用：`fp-simd`, `irq`, `uspace`, `page-alloc-4g`, `alloc-slab`, `multitask`, `task-ext`, `sched-rr`, `rtc`, `fs-ng-ext4`, `net-ng`。
+内核默认启用：`fp-simd`, `irq`, `uspace`, `page-alloc-4g`, `alloc-slab`, `multitask`, `task-ext`, `sched-rr`, `rtc`, `fs-ng-ext4`, `net`。
+
+### 3.3 KCOV 暂不引入
+
+StarryOS 目前不暴露 `kcov` feature，也不注册 `/dev/kcov`。此前尝试引入 Linux KCOV 兼容接口时，需要同时改动编译插桩参数、`ax-hal` 架构 trampoline、文件描述符状态、设备 mmap、任务生命周期和测试矩阵，侵入面过大。
+
+另一个阻塞点是多核语义：KCOV 的 per-fd / per-task 状态需要和调度、抢占、线程退出、fork 以及中断上下文保持一致，当前实现还不能稳定覆盖 SMP 场景。因此在形成更小的边界和可靠的多核方案前，暂不把 KCOV 纳入 StarryOS。
 
 ---
 
@@ -226,7 +232,7 @@ cargo xtask starry qemu --arch riscv64
 
 **步骤 6：添加到 test-suit**
 
-将测试程序加入 `test-suit/starryos/normal/` 对应目录，编写配置文件。
+将测试程序加入 `test-suit/starryos/` 对应目录，编写配置文件。
 
 ### 4.3 Syscall 实现注意事项
 
@@ -396,23 +402,27 @@ python3 /root/test.py
 
 ### 8.1 测试套件结构
 
-`test-suit/starryos/` 分为两组：
+`test-suit/starryos/` 直接从根目录发现 QEMU 和 board 用例，不再使用
+`normal/`、`stress/` 等一级测试组。常规系统回归保留在 test-suit，重型
+app/integration、stress、K230、visual/golden 类用例迁到 `apps/starry/`。
 
-**`normal/`** — 标准测试：
+**`test-suit/starryos/`** — 标准测试：
 
 | 目录 | 内容 |
 |------|------|
-| `qemu-smp1/` | 单核 QEMU 测试（smoke, busybox, python-hello, syscall, bugfix, usb 等） |
-| `qemu-smp4/` | 多核 QEMU 测试（affinity, test-shm-deadlock） |
-| `qemu-dhcp/` | DHCP 网络测试 |
+| `qemu-smp1/system` | 单核 QEMU 聚合测试（syscall, bugfix, DRM, evdev, USB 等） |
+| `qemu-smp4/system` | 多核 QEMU 聚合测试（affinity, futex, clone, shm 等） |
 | `board-orangepi-5-plus/` | OrangePi-5-Plus 物理板测试（net-smoke, npu-yolov8, pcie-enumerate） |
+| `board-licheerv-nano-sg2002/` | LicheeRV Nano SG2002 物理板启动测试 |
 
-**`stress/`** — 压力测试：
+**`apps/starry/`** — app/integration 与重型测试：
 
 | 目录 | 内容 |
 |------|------|
-| `postgresql/` | PostgreSQL 工作负载 |
-| `stress-ng-0/` | stress-ng 测试 |
+| `stress/` | stress/git 等压力或长时测试 |
+| `k230-qemu/` | K230 QEMU 相关用例 |
+| `visual/` | visual/golden 场景 |
+| `redis/` | Redis 相关 app 回归 |
 
 ### 8.2 测试配置格式
 
@@ -421,10 +431,14 @@ StarryOS 测试配置与 ArceOS 类似，但增加了 shell 交互：
 ```toml
 # build config
 env = {AX_IP = "10.0.2.15", AX_GW = "10.0.2.2"}
-features = ["qemu"]
+features = [
+  "ax-feat/rtc",
+  "ax-driver/serial",
+  "ax-driver/virtio-blk",
+  "ax-driver/virtio-net",
+]
 log = "Warn"
-plat_dyn = false
-target = "aarch64-unknown-none-softfloat"
+target = "riscv64gc-unknown-none-elf"
 ```
 
 ```toml
@@ -459,11 +473,14 @@ cargo xtask starry test qemu --target aarch64-unknown-none-softfloat
 
 ### 8.4 添加新测试用例
 
-1. 在 `test-suit/starryos/normal/qemu-smp1/`（或对应目录）下创建测试
-2. 准备测试程序（C/Python/Shell），放入 rootfs 或通过 `shell_init_cmd` 直接执行
-3. 编写 `build-<target>.toml` 和 `qemu-<arch>.toml`
-4. 确认 `shell_prefix` 与实际 shell 提示符匹配
-5. 通过 `cargo xtask starry test qemu` 验证
+1. 选择 test-suit 位置：普通系统回归放在 `test-suit/starryos/qemu-smp1/system/`
+   或 `qemu-smp4/system/`；app/integration 或重型测试放到 `apps/starry/`。
+2. 对 `qemu-smp*/system` 子测例，只添加 `c/`、`sh/`、`python/` 等资产目录，
+   不添加子测例级 `qemu-<arch>.toml`。
+3. C 子测例安装到 `usr/bin/starry-test-suit`，由 `system/qemu-*.toml` 的 grouped runner 执行。
+4. 如需新增独立 QEMU case，在 case 或最近的 build wrapper 中提供 `build-<target>.toml`，
+   并只为验证通过的架构添加 `qemu-<arch>.toml`。
+5. 通过 `cargo xtask starry test qemu -l` 和匹配的 `cargo xtask starry test qemu --arch <arch> -c <case>` 验证。
 
 ---
 

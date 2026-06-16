@@ -1,8 +1,12 @@
 use alloc::{boxed::Box, string::String, sync::Arc};
-#[cfg(feature = "preempt")]
+#[cfg(not(feature = "stack-guard-page"))]
+use core::alloc::Layout;
+#[cfg(any(
+    feature = "preempt",
+    all(feature = "stack-guard-page", feature = "smp", feature = "ipi")
+))]
 use core::sync::atomic::AtomicUsize;
 use core::{
-    alloc::Layout,
     cell::{Cell, UnsafeCell},
     fmt,
     mem::ManuallyDrop,
@@ -15,6 +19,8 @@ use ax_hal::context::TaskContext;
 #[cfg(feature = "tls")]
 use ax_hal::tls::TlsArea;
 use ax_kspin::SpinNoIrq;
+#[cfg(feature = "stack-guard-page")]
+use ax_memory_addr::PAGE_SIZE_4K;
 use ax_memory_addr::{VirtAddr, align_up_4k};
 use futures_util::task::AtomicWaker;
 
@@ -75,6 +81,12 @@ pub struct TaskInner {
 
     /// CPU affinity mask.
     cpumask: SpinNoIrq<AxCpuMask>,
+
+    /// Scheduling policy of the task.
+    sched_policy: AtomicI32,
+
+    /// Scheduling priority of the task.
+    sched_priority: AtomicI32,
 
     /// Mark whether the task is in the wait queue.
     in_wait_queue: AtomicBool,
@@ -190,6 +202,7 @@ impl TaskInner {
     /// Wait for the task to exit, and return the exit code.
     ///
     /// It will return immediately if the task has already exited (but not dropped).
+    #[track_caller]
     pub fn join(&self) -> i32 {
         crate::api::might_sleep();
         self.wait_for_exit
@@ -258,6 +271,26 @@ impl TaskInner {
         *self.cpumask.lock() = cpumask
     }
 
+    #[inline]
+    pub fn sched_policy(&self) -> i32 {
+        self.sched_policy.load(Ordering::Acquire)
+    }
+
+    #[inline]
+    pub fn set_sched_policy(&self, policy: i32) {
+        self.sched_policy.store(policy, Ordering::Release)
+    }
+
+    #[inline]
+    pub fn sched_priority(&self) -> i32 {
+        self.sched_priority.load(Ordering::Acquire)
+    }
+
+    #[inline]
+    pub fn set_sched_priority(&self, prio: i32) {
+        self.sched_priority.store(prio, Ordering::Release)
+    }
+
     /// Polls whether the task has been interrupted.
     #[inline]
     pub fn poll_interrupt(&self, cx: &Context) -> Poll<()> {
@@ -277,6 +310,25 @@ impl TaskInner {
     #[inline]
     pub fn clear_interrupt(&self) {
         self.interrupted.store(false, Ordering::Release);
+    }
+
+    /// Atomically checks and clears the interrupt flag.
+    ///
+    /// Returns `true` if the task was interrupted.
+    #[inline]
+    pub fn take_interrupt(&self) -> bool {
+        self.interrupted.swap(false, Ordering::AcqRel)
+    }
+
+    /// Checks whether the task has been interrupted without clearing
+    /// the flag.
+    ///
+    /// This is a non-consuming read, unlike [`take_interrupt`]. Use this
+    /// when the interrupt flag needs to remain set for subsequent
+    /// consumers (e.g., an [`interruptible`] future wrapper).
+    #[inline]
+    pub fn interrupted(&self) -> bool {
+        self.interrupted.load(Ordering::Acquire)
     }
 
     /// Interrupts the task.
@@ -299,6 +351,8 @@ impl TaskInner {
             state: AtomicU8::new(TaskState::Ready as u8),
             // By default, the task is allowed to run on all CPUs.
             cpumask: SpinNoIrq::new(crate::api::cpu_mask_full()),
+            sched_policy: AtomicI32::new(0),
+            sched_priority: AtomicI32::new(0),
             in_wait_queue: AtomicBool::new(false),
             #[cfg(feature = "irq")]
             timer_ticket_id: AtomicU64::new(0),
@@ -550,12 +604,35 @@ impl Drop for TaskInner {
 pub(crate) struct TaskStack {
     ptr: usize,
     size: usize,
+    #[cfg(not(feature = "stack-guard-page"))]
     align: usize,
-    owned: bool,
+    #[cfg(feature = "stack-guard-page")]
+    alloc_pages: usize,
+    kind: TaskStackKind,
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+enum TaskStackKind {
+    #[cfg(not(feature = "stack-guard-page"))]
+    Alloc,
+    #[cfg(feature = "stack-guard-page")]
+    GuardedAlloc,
+    Borrowed,
 }
 
 impl TaskStack {
     pub fn alloc(size: usize) -> Self {
+        cfg_if::cfg_if! {
+            if #[cfg(feature = "stack-guard-page")] {
+                Self::alloc_guarded(size)
+            } else {
+                Self::alloc_plain(size)
+            }
+        }
+    }
+
+    #[cfg(not(feature = "stack-guard-page"))]
+    fn alloc_plain(size: usize) -> Self {
         let align = TASK_STACK_ALIGN;
         let layout = Layout::from_size_align(size, align).unwrap();
         let ptr = unsafe { alloc::alloc::alloc(layout) as usize };
@@ -564,8 +641,33 @@ impl TaskStack {
             ptr,
             size,
             align,
-            owned: true,
+            kind: TaskStackKind::Alloc,
         };
+        #[cfg(feature = "stack-canary")]
+        unsafe {
+            stack.write_canary()
+        };
+        stack
+    }
+
+    #[cfg(feature = "stack-guard-page")]
+    fn alloc_guarded(size: usize) -> Self {
+        let usable_size = align_up_4k(size);
+        let guarded_size = usable_size
+            .checked_add(PAGE_SIZE_4K)
+            .expect("guarded task stack size overflow");
+        let pages = guarded_size / PAGE_SIZE_4K;
+        let base = ax_alloc::global_allocator()
+            .alloc_pages(pages, PAGE_SIZE_4K, ax_alloc::UsageKind::Global)
+            .expect("guarded task stack allocation failed");
+        let usable_bottom = base + PAGE_SIZE_4K;
+        let stack = Self {
+            ptr: usable_bottom,
+            size: usable_size,
+            alloc_pages: pages,
+            kind: TaskStackKind::GuardedAlloc,
+        };
+        stack.unmap_guard_page();
         #[cfg(feature = "stack-canary")]
         unsafe {
             stack.write_canary()
@@ -575,11 +677,16 @@ impl TaskStack {
 
     pub fn borrowed(bottom: VirtAddr, size: usize, align: usize) -> Self {
         assert_ne!(bottom.as_usize(), 0, "static task stack pointer is null");
+        #[cfg(feature = "stack-guard-page")]
+        let _ = align;
         let stack = Self {
             ptr: bottom.as_usize(),
             size,
+            #[cfg(not(feature = "stack-guard-page"))]
             align,
-            owned: false,
+            #[cfg(feature = "stack-guard-page")]
+            alloc_pages: 0,
+            kind: TaskStackKind::Borrowed,
         };
         #[cfg(feature = "stack-canary")]
         unsafe {
@@ -597,6 +704,52 @@ impl TaskStack {
     #[inline]
     pub fn top(&self) -> VirtAddr {
         VirtAddr::from(self.ptr + self.size)
+    }
+
+    #[cfg(feature = "stack-guard-page")]
+    #[inline]
+    fn guard_bottom(&self) -> VirtAddr {
+        debug_assert_eq!(self.kind, TaskStackKind::GuardedAlloc);
+        VirtAddr::from(self.ptr - PAGE_SIZE_4K)
+    }
+
+    #[cfg(feature = "stack-guard-page")]
+    #[inline]
+    fn guard_top(&self) -> VirtAddr {
+        self.guard_bottom() + PAGE_SIZE_4K
+    }
+
+    #[cfg(feature = "stack-guard-page")]
+    #[inline]
+    fn contains_guard_addr(&self, addr: VirtAddr) -> bool {
+        matches!(self.kind, TaskStackKind::GuardedAlloc)
+            && self.guard_bottom() <= addr
+            && addr < self.guard_top()
+    }
+
+    #[cfg(feature = "stack-guard-page")]
+    fn unmap_guard_page(&self) {
+        let guard_bottom = self.guard_bottom();
+        ax_mm::kernel_aspace()
+            .lock()
+            .unmap(guard_bottom, PAGE_SIZE_4K)
+            .expect("failed to unmap task stack guard page");
+        flush_stack_guard_tlb(guard_bottom);
+    }
+
+    #[cfg(feature = "stack-guard-page")]
+    fn remap_guard_page(&self) {
+        let guard_bottom = self.guard_bottom();
+        ax_mm::kernel_aspace()
+            .lock()
+            .map_linear(
+                guard_bottom,
+                ax_hal::mem::virt_to_phys(guard_bottom),
+                PAGE_SIZE_4K,
+                ax_hal::paging::MappingFlags::READ | ax_hal::paging::MappingFlags::WRITE,
+            )
+            .expect("failed to restore task stack guard page mapping");
+        flush_stack_guard_tlb(guard_bottom);
     }
 
     #[inline]
@@ -617,18 +770,101 @@ impl TaskStack {
         unsafe { self.canary_ptr().read() == STACK_END_MAGIC }
     }
 
-    #[cfg(test)]
-    #[cfg(feature = "stack-canary")]
+    #[cfg(all(test, feature = "stack-canary", not(feature = "stack-guard-page")))]
     fn corrupt_canary_for_test(&self) {
         unsafe { self.canary_ptr().write(0) };
     }
 }
 
+#[cfg(all(
+    feature = "stack-guard-page",
+    not(all(feature = "smp", feature = "ipi"))
+))]
+fn flush_stack_guard_tlb(vaddr: VirtAddr) {
+    ax_hal::asm::flush_tlb(Some(vaddr));
+}
+
+#[cfg(all(feature = "stack-guard-page", feature = "smp", feature = "ipi"))]
+fn flush_stack_guard_tlb(vaddr: VirtAddr) {
+    let _guard = ax_kernel_guard::NoPreempt::new();
+    let current_cpu = ax_hal::percpu::this_cpu_id();
+    let ack_count = Arc::new(AtomicUsize::new(0));
+    let mut remote_cpu_count = 0;
+
+    core::sync::atomic::fence(Ordering::SeqCst);
+
+    for cpu_id in 0..ax_hal::cpu_num() {
+        if cpu_id == current_cpu || !ax_ipi::wait_until_cpu_ready(cpu_id) {
+            continue;
+        }
+
+        remote_cpu_count += 1;
+        let ack_count = ack_count.clone();
+        ax_ipi::run_on_cpu(cpu_id, move || {
+            ax_hal::asm::flush_tlb(Some(vaddr));
+            ack_count.fetch_add(1, Ordering::Release);
+        });
+    }
+
+    ax_hal::asm::flush_tlb(Some(vaddr));
+    if remote_cpu_count == 0 {
+        return;
+    }
+
+    const MAX_WAIT_NS: u64 = 5 * ax_hal::time::NANOS_PER_SEC;
+    let start = ax_hal::time::monotonic_time_nanos();
+    while ack_count.load(Ordering::Acquire) != remote_cpu_count {
+        core::hint::spin_loop();
+        if ax_hal::time::monotonic_time_nanos() - start > MAX_WAIT_NS {
+            let acked = ack_count.load(Ordering::Acquire);
+            panic!(
+                "task stack guard page TLB shootdown timeout: CPU {current_cpu} got \
+                 {acked}/{remote_cpu_count} ack(s) for vaddr={vaddr:#x}"
+            );
+        }
+    }
+}
+
+#[cfg(feature = "stack-guard-page")]
+impl TaskInner {
+    /// Reports whether `fault_addr` hits this task's stack guard page.
+    pub fn diagnose_stack_guard_page_fault(&self, fault_addr: VirtAddr) -> bool {
+        if !self.kstack.contains_guard_addr(fault_addr) {
+            return false;
+        }
+
+        error!(
+            "task stack guard page hit for {}: fault_addr={:#x}, stack=[{:#x}..{:#x}), \
+             guard=[{:#x}..{:#x})",
+            self.id_name(),
+            fault_addr.as_usize(),
+            self.kstack.bottom().as_usize(),
+            self.kstack.top().as_usize(),
+            self.kstack.guard_bottom().as_usize(),
+            self.kstack.guard_top().as_usize(),
+        );
+        true
+    }
+}
+
 impl Drop for TaskStack {
     fn drop(&mut self) {
-        if self.owned {
-            let layout = Layout::from_size_align(self.size, self.align).unwrap();
-            unsafe { alloc::alloc::dealloc(self.ptr as *mut u8, layout) }
+        match self.kind {
+            #[cfg(not(feature = "stack-guard-page"))]
+            TaskStackKind::Alloc => {
+                let layout = Layout::from_size_align(self.size, self.align).unwrap();
+                unsafe { alloc::alloc::dealloc(self.ptr as *mut u8, layout) }
+            }
+            #[cfg(feature = "stack-guard-page")]
+            TaskStackKind::GuardedAlloc => {
+                self.remap_guard_page();
+                ax_alloc::global_allocator().dealloc_pages(
+                    self.guard_bottom().as_usize(),
+                    self.alloc_pages,
+                    ax_alloc::UsageKind::Global,
+                );
+            }
+            TaskStackKind::Borrowed => {}
         }
     }
 }
@@ -637,7 +873,7 @@ impl Drop for TaskStack {
 mod stack_tests {
     use super::{TASK_STACK_ALIGN, TaskStack};
 
-    #[cfg(feature = "stack-canary")]
+    #[cfg(all(feature = "stack-canary", not(feature = "stack-guard-page")))]
     #[test]
     fn task_stack_canary_detects_corruption() {
         let stack = TaskStack::alloc(0x1000);
@@ -648,13 +884,20 @@ mod stack_tests {
         assert!(!stack.is_canary_intact());
     }
 
-    #[cfg(feature = "stack-canary")]
+    #[cfg(all(feature = "stack-canary", not(feature = "stack-guard-page")))]
     #[cfg(target_arch = "x86_64")]
     #[test]
     fn task_stack_top_stays_16_byte_aligned() {
         // x86_64 TaskContext::init() builds the initial switch frame from
         // kstack_top and assumes the ABI-required 16-byte stack alignment.
         let stack = TaskStack::alloc(0x1000);
+        assert_eq!(stack.top().as_usize() % TASK_STACK_ALIGN, 0);
+    }
+
+    #[cfg(feature = "stack-guard-page")]
+    #[test]
+    fn borrowed_task_stack_top_stays_16_byte_aligned_with_guard_feature() {
+        let stack = TaskStack::borrowed(0x1000.into(), 0x1000, TASK_STACK_ALIGN);
         assert_eq!(stack.top().as_usize() % TASK_STACK_ALIGN, 0);
     }
 }

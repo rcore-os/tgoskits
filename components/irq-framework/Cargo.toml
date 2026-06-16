@@ -1,0 +1,12 @@
+[package]
+name = "irq-framework"
+version = "0.1.1"
+edition.workspace = true
+authors = ["RCore Team <yuchen@tsinghua.edu.cn>"]
+description = "A no_std dynamic IRQ registration and dispatch framework"
+repository.workspace = true
+license.workspace = true
+keywords = ["irq", "interrupt", "no-std", "kernel"]
+categories = ["no-std", "os"]
+
+[dependencies]

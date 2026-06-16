@@ -56,9 +56,12 @@ la:
 	$(MAKE) ARCH=loongarch64 run
 
 vf2:
-	$(MAKE) ARCH=riscv64 APP_FEATURES=vf2 MYPLAT=axplat-riscv64-visionfive2 BUS=mmio build
+	$(MAKE) ARCH=riscv64 APP_FEATURES=vf2 MYPLAT=ax-plat-riscv64-visionfive2 BUS=mmio build
 
 sg2002:
 	$(MAKE) ARCH=riscv64 APP_FEATURES=sg2002 MYPLAT=ax-plat-riscv64-sg2002 BUS=mmio SMP=1 UIMAGE=y LOG=info build
+
+sg2002-wifi:
+	$(MAKE) ARCH=riscv64 APP_FEATURES=sg2002-wifi MYPLAT=ax-plat-riscv64-sg2002 BUS=mmio SMP=1 UIMAGE=y LOG=info build
 
 .PHONY: build run justrun debug disasm clean

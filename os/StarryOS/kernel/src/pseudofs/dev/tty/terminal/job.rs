@@ -10,9 +10,13 @@ use starry_process::{ProcessGroup, Session};
 use crate::task::AsThread;
 
 pub struct JobControl {
-    foreground: SpinNoIrq<Weak<ProcessGroup>>,
-    session: SpinNoIrq<Weak<Session>>,
+    state: SpinNoIrq<JobControlState>,
     poll_fg: PollSet,
+}
+
+struct JobControlState {
+    foreground: Weak<ProcessGroup>,
+    session: Weak<Session>,
 }
 
 impl Default for JobControl {
@@ -24,31 +28,34 @@ impl Default for JobControl {
 impl JobControl {
     pub fn new() -> Self {
         Self {
-            foreground: SpinNoIrq::new(Weak::new()),
-            session: SpinNoIrq::new(Weak::new()),
+            state: SpinNoIrq::new(JobControlState {
+                foreground: Weak::new(),
+                session: Weak::new(),
+            }),
             poll_fg: PollSet::new(),
         }
     }
 
     pub fn current_in_foreground(&self) -> bool {
-        self.foreground
+        self.state
             .lock()
+            .foreground
             .upgrade()
             .is_none_or(|pg| Arc::ptr_eq(&current().as_thread().proc_data.proc.group(), &pg))
     }
 
     pub fn foreground(&self) -> Option<Arc<ProcessGroup>> {
-        self.foreground.lock().upgrade()
+        self.state.lock().foreground.upgrade()
     }
 
     pub fn set_foreground(&self, pg: &Arc<ProcessGroup>) -> AxResult<()> {
-        let mut guard = self.foreground.lock();
+        let mut state = self.state.lock();
         let weak = Arc::downgrade(pg);
-        if Weak::ptr_eq(&weak, &*guard) {
+        if Weak::ptr_eq(&weak, &state.foreground) {
             return Ok(());
         }
 
-        let Some(session) = self.session.lock().upgrade() else {
+        let Some(session) = state.session.upgrade() else {
             ax_bail!(
                 OperationNotPermitted,
                 "No session associated with job control"
@@ -61,16 +68,49 @@ impl JobControl {
             );
         }
 
-        *guard = weak;
-        drop(guard);
+        state.foreground = weak;
+        drop(state);
         self.poll_fg.wake();
         Ok(())
     }
 
-    pub fn set_session(&self, session: &Arc<Session>) {
-        let mut guard = self.session.lock();
-        assert!(guard.upgrade().is_none());
-        *guard = Arc::downgrade(session);
+    pub fn set_session(&self, session: &Arc<Session>) -> AxResult<()> {
+        let mut state = self.state.lock();
+        if let Some(existing) = state.session.upgrade() {
+            if Arc::ptr_eq(&existing, session) {
+                return Ok(());
+            }
+            ax_bail!(
+                ResourceBusy,
+                "Terminal is already associated with another session"
+            );
+        }
+        state.session = Arc::downgrade(session);
+        Ok(())
+    }
+
+    pub fn clear_session(&self, session: &Arc<Session>) {
+        let mut state = self.state.lock();
+        if state
+            .session
+            .upgrade()
+            .is_some_and(|existing| Arc::ptr_eq(&existing, session))
+        {
+            state.session = Weak::new();
+        }
+
+        let foreground_cleared = state
+            .foreground
+            .upgrade()
+            .is_some_and(|pg| Arc::ptr_eq(&pg.session(), session));
+        if foreground_cleared {
+            state.foreground = Weak::new();
+        }
+        drop(state);
+
+        if foreground_cleared {
+            self.poll_fg.wake();
+        }
     }
 }
 

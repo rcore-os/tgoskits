@@ -1,14 +1,17 @@
 #![allow(dead_code)]
 use alloc::{collections::vec_deque::VecDeque, vec::Vec};
-use core::{any::Any, time::Duration};
+use core::{any::Any, ptr::NonNull, time::Duration};
 
 use ax_errno::{AxError, LinuxError};
-use ax_hal::mem::phys_to_virt;
+use ax_kspin::SpinNoIrq as Mutex;
 use ax_memory_addr::PhysAddr;
+use ax_runtime::hal::mem::phys_to_virt;
 use ax_task::sleep;
 use axfs_ng_vfs::{NodeFlags, VfsResult};
-use sg200x_bsp::pinmux::{FMUX_SD1_D1, FMUX_SD1_D2, Pinmux};
-use spin::Mutex;
+use sg200x_bsp::{
+    pinmux::{FMUX_SD1_D1, FMUX_SD1_D2, Pinmux},
+    soc::{FMUX_BASE, IOBLK_BASE, IOBLK_GRTC_BASE},
+};
 use starry_vm::{VmMutPtr, vm_write_slice};
 use tock_registers::interfaces::Writeable;
 
@@ -28,6 +31,21 @@ const SLIP_END: u8 = 0xC0;
 const SLIP_ESC: u8 = 0xDB;
 const SLIP_ESC_END: u8 = 0xDC;
 const SLIP_ESC_ESC: u8 = 0xDD;
+
+unsafe fn cvi_camera_raw_irq_handler(
+    _ctx: ax_runtime::hal::irq::IrqContext,
+    _data: NonNull<()>,
+) -> ax_runtime::hal::irq::IrqReturn {
+    let mut uart3 = some_serial::ns16550::dw_apb::DwApbUart::new(
+        phys_to_virt(PhysAddr::from(UART3_ADDR)).as_usize(),
+    );
+    let mut buf = CAMERA_UART_BUF.lock();
+    while let Some(c) = uart3.getchar() {
+        buf.push_back(c);
+    }
+    uart3.set_ier(true);
+    ax_runtime::hal::irq::IrqReturn::Handled
+}
 
 #[derive(Debug)]
 pub enum CameraError {
@@ -216,7 +234,7 @@ impl<T: UartTransport> CameraProtocol<T> {
     fn read_slip_frame(&mut self, timeout_ms: u64) -> Result<Vec<u8>, CameraError> {
         use core::time::Duration;
 
-        use ax_hal::time::wall_time;
+        use ax_runtime::hal::time::wall_time;
         let deadline = wall_time() + Duration::from_millis(timeout_ms);
         let mut tmp = [0u8; 0x1200];
         loop {
@@ -310,15 +328,16 @@ struct Uart3;
 
 impl UartTransport for Uart3 {
     fn write_all(&mut self, data: &[u8]) -> Result<(), CameraError> {
-        let mut uart3 =
-            dw_apb_uart::DW8250::new(phys_to_virt(PhysAddr::from(UART3_ADDR)).as_usize());
+        let mut uart3 = some_serial::ns16550::dw_apb::DwApbUart::new(
+            phys_to_virt(PhysAddr::from(UART3_ADDR)).as_usize(),
+        );
         data.iter().for_each(|x| uart3.putchar(*x));
         Ok(())
     }
 
     fn read_bytes(&mut self, buf: &mut [u8], _timeout_ms: u64) -> Result<usize, CameraError> {
         sleep(Duration::from_millis(3));
-        ax_hal::irq::set_enable(47, false);
+        ax_runtime::hal::irq::set_enable(47, false);
         let n = {
             let mut cache_buf = CAMERA_UART_BUF.lock();
             let n = cache_buf.len().min(buf.len());
@@ -333,7 +352,7 @@ impl UartTransport for Uart3 {
         // Always re-enable the IRQ before returning, otherwise the ESP32's
         // reply traffic stops landing in CAMERA_UART_BUF and every subsequent
         // poll sees an empty queue forever.
-        ax_hal::irq::set_enable(47, true);
+        ax_runtime::hal::irq::set_enable(47, true);
         if n == 0 {
             sleep(Duration::from_millis(1));
         }
@@ -356,28 +375,28 @@ enum CviCameraArgs {
 impl CviCamera {
     pub fn new() -> Self {
         use ax_config::plat::PHYS_VIRT_OFFSET;
-        let pinmux = Pinmux::new_with_offset(PHYS_VIRT_OFFSET);
+        let pinmux = unsafe {
+            Pinmux::new(
+                FMUX_BASE + PHYS_VIRT_OFFSET,
+                IOBLK_BASE + PHYS_VIRT_OFFSET,
+                IOBLK_GRTC_BASE + PHYS_VIRT_OFFSET,
+            )
+        };
         pinmux.fmux().sd1_d2.write(FMUX_SD1_D2::FSEL::UART3_TX);
         pinmux.fmux().sd1_d1.write(FMUX_SD1_D1::FSEL::UART3_RX);
 
-        let mut uart3 =
-            dw_apb_uart::DW8250::new(phys_to_virt(PhysAddr::from(UART3_ADDR)).as_usize());
-        uart3.init_with_baud(1500000);
+        let mut uart3 = some_serial::ns16550::dw_apb::DwApbUart::new(
+            phys_to_virt(PhysAddr::from(UART3_ADDR)).as_usize(),
+        );
+        uart3.init_with_baud_clk(1_500_000, some_serial::ns16550::dw_apb::SG2002_UART_CLOCK);
         uart3.set_ier(true);
-        ax_hal::irq::register(47, |_irq| {
-            let mut uart3 =
-                dw_apb_uart::DW8250::new(phys_to_virt(PhysAddr::from(UART3_ADDR)).as_usize());
-            let mut buf = CAMERA_UART_BUF.lock();
-            loop {
-                if let Some(c) = uart3.getchar() {
-                    buf.push_back(c);
-                    continue;
-                }
-                break;
-            }
-            uart3.set_ier(true);
-        });
-        ax_hal::irq::set_enable(47, true);
+        let _ = ax_runtime::hal::irq::request_shared_irq(
+            47,
+            cvi_camera_raw_irq_handler,
+            NonNull::dangling(),
+        )
+        .map_err(|err| warn!("failed to request cvi camera IRQ: {err:?}"));
+        ax_runtime::hal::irq::set_enable(47, true);
         Self {
             inner: Mutex::new(CameraProtocol::new_default(Uart3)),
         }

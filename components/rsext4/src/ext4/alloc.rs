@@ -40,13 +40,13 @@ impl Ext4FileSystem {
                     .bitmap_cache
                     .get_or_load(block_dev, cache_key, bitmap_block)?;
                 let expected = ext4_block_bitmap_csum32(&self.superblock, &bm.data);
-                let stored = desc.block_bitmap_csum();
-                if expected != stored {
+                let stored = desc.block_bitmap_csum(&self.superblock);
+                if !desc.block_bitmap_csum_matches(&self.superblock, expected) {
                     error!(
                         "alloc_blocks: block bitmap checksum mismatch group={group_idx} \
                          expected={expected:#x} stored={stored:#x}"
                     );
-                    return Err(Ext4Error::checksum());
+                    return Err(Ext4Error::checksum().with_operation("alloc_blocks:block_bitmap"));
                 }
             }
 
@@ -181,9 +181,8 @@ impl Ext4FileSystem {
                     .bitmap_cache
                     .get_or_load(block_dev, cache_key, bitmap_block)?;
                 let expected = ext4_inode_bitmap_csum32(&self.superblock, &bm.data);
-                let stored = desc.inode_bitmap_csum();
-                if expected != stored {
-                    return Err(Ext4Error::checksum());
+                if !desc.inode_bitmap_csum_matches(&self.superblock, expected) {
+                    return Err(Ext4Error::checksum().with_operation("alloc_inode:inode_bitmap"));
                 }
             }
 
@@ -328,18 +327,18 @@ impl Ext4FileSystem {
         let mut did_free = true;
 
         if ext4_superblock_has_metadata_csum(&self.superblock) {
-            let (uninit, stored) = {
+            let (uninit, desc) = {
                 let gdesc = self
                     .get_group_desc(group_idx)
                     .ok_or(Ext4Error::corrupted())?;
-                (gdesc.is_block_bitmap_uninit(), gdesc.block_bitmap_csum())
+                (gdesc.is_block_bitmap_uninit(), *gdesc)
             };
             if !uninit {
                 let bm = self
                     .bitmap_cache
                     .get_or_load(block_dev, cache_key, bitmap_block)?;
                 let expected = ext4_block_bitmap_csum32(&self.superblock, &bm.data);
-                if expected != stored {
+                if !desc.block_bitmap_csum_matches(&self.superblock, expected) {
                     return Err(Ext4Error::checksum());
                 }
             }
@@ -410,18 +409,18 @@ impl Ext4FileSystem {
         let mut did_free = true;
 
         if ext4_superblock_has_metadata_csum(&self.superblock) {
-            let (uninit, stored) = {
+            let (uninit, desc) = {
                 let gdesc = self
                     .get_group_desc(group_idx)
                     .ok_or(Ext4Error::corrupted())?;
-                (gdesc.is_inode_bitmap_uninit(), gdesc.inode_bitmap_csum())
+                (gdesc.is_inode_bitmap_uninit(), *gdesc)
             };
             if !uninit {
                 let bm = self
                     .bitmap_cache
                     .get_or_load(block_dev, cache_key, bitmap_block)?;
                 let expected = ext4_inode_bitmap_csum32(&self.superblock, &bm.data);
-                if expected != stored {
+                if !desc.inode_bitmap_csum_matches(&self.superblock, expected) {
                     return Err(Ext4Error::checksum());
                 }
             }
@@ -597,7 +596,7 @@ mod tests {
             block_allocator: BlockAllocator::new(&sb),
             inode_allocator: InodeAllocator::new(&sb),
             bitmap_cache: BitmapCache::create_default(),
-            inodetable_cahce: InodeCache::default(sb.s_inode_size),
+            inodetable_cache: InodeCache::default(sb.s_inode_size),
             datablock_cache: DataBlockCache::create_default(),
             root_inode: InodeNumber::new(2).unwrap(),
             group_count: 1,
@@ -639,7 +638,7 @@ mod tests {
             block_allocator: BlockAllocator::new(&sb),
             inode_allocator: InodeAllocator::new(&sb),
             bitmap_cache: BitmapCache::create_default(),
-            inodetable_cahce: InodeCache::default(sb.s_inode_size),
+            inodetable_cache: InodeCache::default(sb.s_inode_size),
             datablock_cache: DataBlockCache::create_default(),
             root_inode: InodeNumber::new(2).unwrap(),
             group_count: 2,

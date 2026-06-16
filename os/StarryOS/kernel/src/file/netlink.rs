@@ -32,19 +32,20 @@ use core::{
 };
 
 use ax_errno::{AxError, AxResult};
+use ax_kspin::SpinNoIrq as Mutex;
 use ax_task::future::{block_on, poll_io};
 use axpoll::{IoEvents, PollSet, Pollable};
-use lazy_static::lazy_static;
 use linux_raw_sys::{
     general::{O_RDWR, S_IFSOCK},
     net::AF_NETLINK,
     netlink::{NETLINK_GENERIC, NETLINK_KOBJECT_UEVENT, NETLINK_ROUTE, sockaddr_nl},
 };
-use spin::Mutex;
+use spin::LazyLock;
 
-use super::packet::{ETH0_HWADDR, ETH0_IFINDEX};
+use super::net::{ETH0_IFINDEX, ETH0_REAL_MAC};
 use crate::{
     file::{FileLike, IoDst, IoSrc},
+    syscall::in_root_net_ns,
     task::AsThread,
 };
 
@@ -206,7 +207,7 @@ const LINKS: &[LinkInfo] = &[
         qlen: 1000,
         qdisc: "mq",
         operstate: IF_OPER_UP,
-        address: ETH0_HWADDR,
+        address: ETH0_REAL_MAC,
         broadcast: [0xff; 6],
     },
 ];
@@ -245,12 +246,11 @@ pub struct NetlinkSocket {
     queue: Mutex<VecDeque<Vec<u8>>>,
 }
 
-lazy_static! {
-    /// Global registry of bound netlink sockets, used by [`broadcast`]
-    /// to dispatch kernel-side messages.  Holds weak refs so socket close
-    /// drops naturally; dead entries are pruned on each broadcast.
-    static ref NETLINK_SOCKETS: Mutex<Vec<Weak<NetlinkSocket>>> = Mutex::new(Vec::new());
-}
+/// Global registry of bound netlink sockets, used by [`broadcast`] to dispatch
+/// kernel-side messages. Holds weak refs so socket close drops naturally; dead
+/// entries are pruned on each broadcast.
+static NETLINK_SOCKETS: LazyLock<Mutex<Vec<Weak<NetlinkSocket>>>> =
+    LazyLock::new(|| Mutex::new(Vec::new()));
 
 impl NetlinkSocket {
     pub fn new(protocol: u32) -> Arc<Self> {
@@ -395,15 +395,22 @@ impl NetlinkSocket {
 
         let header = unsafe { request.as_ptr().cast::<NlMsgHdr>().read_unaligned() };
         let pid = self.local_pid();
+        let in_root = in_root_net_ns();
         let mut response = Vec::new();
         match header.ty {
             RTM_GETLINK => {
                 for link in LINKS {
+                    if !in_root && link.index != 1 {
+                        continue;
+                    }
                     push_link_message(&mut response, header.seq, pid, link);
                 }
             }
             RTM_GETADDR => {
                 for addr in ADDRS {
+                    if !in_root && addr.index != 1 {
+                        continue;
+                    }
                     push_addr_message(&mut response, header.seq, pid, addr);
                 }
             }
@@ -415,15 +422,40 @@ impl NetlinkSocket {
 
     /// Drain at most one queued message into `dst`.  Returns `WouldBlock`
     /// when the queue is empty.
-    fn read_one(&self, dst: &mut IoDst) -> AxResult<usize> {
-        let mut queue = self.queue.lock();
-        let Some(msg) = queue.front() else {
-            return Err(AxError::WouldBlock);
+    ///
+    /// `peek` (MSG_PEEK): copy the front message into `dst` without removing it
+    /// from the queue, so a following non-peek recv reads the same message.
+    /// glibc/musl `getifaddrs()` and dnsmasq size their buffer with a
+    /// `MSG_PEEK|MSG_TRUNC` recv first, then read for real; popping on peek
+    /// loses the dump and the second recv blocks forever (startup stall).
+    ///
+    /// `truncate` (MSG_TRUNC): netlink datagrams are not coalesced, so a short
+    /// buffer drops the tail. Linux returns the *real* datagram length (not the
+    /// copied length) so the caller can resize and retry.
+    /// Returns `(len, truncated)`: `len` is the full datagram length when
+    /// `truncate` (MSG_TRUNC) is set, else the number of bytes copied;
+    /// `truncated` is true when the datagram did not fit in `dst` (so the
+    /// caller can raise MSG_TRUNC in `msg_flags`).
+    fn read_one(&self, dst: &mut IoDst, peek: bool, truncate: bool) -> AxResult<(usize, bool)> {
+        let msg = {
+            let mut queue = self.queue.lock();
+            if peek {
+                let Some(msg) = queue.front() else {
+                    return Err(AxError::WouldBlock);
+                };
+                msg.clone()
+            } else {
+                let Some(msg) = queue.pop_front() else {
+                    return Err(AxError::WouldBlock);
+                };
+                msg
+            }
         };
         // Cap at the message length; netlink datagrams are not coalesced.
-        let n = dst.write(msg)?;
-        queue.pop_front();
-        Ok(n)
+        let full = msg.len();
+        let copied = dst.write(&msg)?;
+        let truncated = full > copied;
+        Ok((if truncate { full } else { copied }, truncated))
     }
 }
 
@@ -457,11 +489,30 @@ pub fn broadcast(protocol: u32, group_mask: u32, payload: &[u8]) {
     }
 }
 
+impl NetlinkSocket {
+    /// Flag-aware receive used by `recvmsg`/`recvfrom`. Honors MSG_PEEK (do not
+    /// consume), MSG_TRUNC (return full datagram length), and MSG_DONTWAIT
+    /// (per-call non-blocking).
+    pub fn recv(
+        &self,
+        dst: &mut IoDst,
+        peek: bool,
+        truncate: bool,
+        dontwait: bool,
+    ) -> AxResult<(usize, bool)> {
+        let non_blocking = self.nonblocking() || dontwait;
+        block_on(poll_io(self, IoEvents::IN, non_blocking, || {
+            self.read_one(dst, peek, truncate)
+        }))
+    }
+}
+
 impl FileLike for NetlinkSocket {
     fn read(&self, dst: &mut IoDst) -> AxResult<usize> {
         block_on(poll_io(self, IoEvents::IN, self.nonblocking(), || {
-            self.read_one(dst)
+            self.read_one(dst, false, false)
         }))
+        .map(|(len, _)| len)
     }
 
     fn write(&self, src: &mut IoSrc) -> AxResult<usize> {

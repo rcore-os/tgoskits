@@ -2,7 +2,7 @@ use super::{
     __cpu_id_list, PerCpuMeta, align_up_pow2, alloc_percpu_region, cpu_count, meta_align,
     percpu_data_range, percpu_link_range, percpu_region_align, set_percpu_range,
 };
-use crate::mem::{__kimage_va, __percpu, phys_to_virt, stack_size};
+use crate::mem::{__kimage_va, __percpu, phys_to_virt, stack_size, virt_to_phys};
 
 fn meta_offset() -> usize {
     let link_size = percpu_link_range().len();
@@ -53,7 +53,9 @@ pub fn alloc_percpu() {
         percpu_data_range().end
     );
 
-    let entry_virt = __kimage_va(super::super::entry::secondary_entry as *const () as usize);
+    let link_phys_start = virt_to_phys(link_range.start as *const u8);
+    let entry_phys = virt_to_phys(super::super::entry::secondary_entry as *const () as *const u8);
+    let entry_virt = __kimage_va(entry_phys);
 
     for (idx, hard_id) in __cpu_id_list().enumerate() {
         let cpu_percpu_start = percpu_data_range().start + idx * percpu_size;
@@ -62,7 +64,7 @@ pub fn alloc_percpu() {
         );
         unsafe {
             core::ptr::copy_nonoverlapping(
-                phys_to_virt(link_range.start) as *const u8,
+                phys_to_virt(link_phys_start) as *const u8,
                 phys_to_virt(cpu_percpu_start),
                 link_size,
             );
@@ -105,10 +107,10 @@ pub(crate) fn cpu_meta_addr(idx: usize) -> Option<usize> {
     Some(base + meta_offset())
 }
 
-pub(crate) fn percpu_data_ptr(idx: usize) -> Option<*mut u8> {
+pub(crate) fn percpu_data_phys(idx: usize) -> Option<usize> {
     let base = percpu_data_range().start + idx * percpu_data_size();
     if base >= percpu_data_range().end {
         return None;
     }
-    Some(phys_to_virt(base))
+    Some(base)
 }

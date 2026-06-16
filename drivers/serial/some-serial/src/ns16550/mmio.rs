@@ -7,7 +7,7 @@ use core::ptr::NonNull;
 use rdif_serial::{BSerial, InterfaceRaw, SerialDyn};
 
 use super::{Kind, Ns16550};
-use crate::ns16550::{Ns16550IrqHandler, Ns16550Reciever, Ns16550Sender};
+use crate::ns16550::{Ns16550IrqHandler, Ns16550Receiver, Ns16550Sender};
 
 #[derive(Clone)]
 pub struct Mmio {
@@ -49,7 +49,7 @@ impl Ns16550<Mmio> {
             tx: Some(crate::Sender::Ns16550MmioSender(Ns16550Sender {
                 base: base.clone(),
             })),
-            rx: Some(crate::Reciever::Ns16550MmioReciever(Ns16550Reciever {
+            rx: Some(crate::Receiver::Ns16550MmioReceiver(Ns16550Receiver {
                 base,
             })),
         }
@@ -65,7 +65,7 @@ impl Ns16550<Mmio> {
         self.tx.take()
     }
 
-    pub fn take_rx(&mut self) -> Option<crate::Reciever> {
+    pub fn take_rx(&mut self) -> Option<crate::Receiver> {
         self.rx.take()
     }
 }

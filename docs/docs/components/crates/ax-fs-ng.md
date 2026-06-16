@@ -41,7 +41,7 @@ graph LR
     current --> axpoll["axpoll"]
     current --> ax-sync["ax-sync"]
     ax_feat["ax-feat"] --> current
-    ax_net_ng["ax-net-ng"] --> current
+    ax_net["ax-net"] --> current
     ax_runtime["ax-runtime"] --> current
     starry_kernel["starry-kernel"] --> current
 ```
@@ -59,7 +59,6 @@ graph LR
 - `scope-local`
 
 ### 间接依赖
-- `ax-arm-pl011`
 - `ax-arm-pl031`
 - `axaddrspace`
 - `ax-allocator`
@@ -69,13 +68,13 @@ graph LR
 - `ax-config-macros`
 - `ax-cpu`
 - `ax-dma`
-- `ax-driver-base`
-- `axdriver_block`
+- `rdrive`
+- `rdif-block`
 - 另外还有 `37` 个同类项未在此展开
 
 ### 3.3 被依赖情况
 - `ax-feat`
-- `ax-net-ng`
+- `ax-net`
 - `ax-runtime`
 - `starry-kernel`
 

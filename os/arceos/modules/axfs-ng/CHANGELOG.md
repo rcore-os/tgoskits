@@ -7,6 +7,65 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.19](https://github.com/rcore-os/tgoskits/compare/ax-fs-ng-v0.5.18...ax-fs-ng-v0.5.19) - 2026-06-12
+
+### Other
+
+- updated the following local packages: ax-hal, ax-alloc, ax-sync
+
+## [0.5.18](https://github.com/rcore-os/tgoskits/compare/ax-fs-ng-v0.5.17...ax-fs-ng-v0.5.18) - 2026-06-11
+
+### Fixed
+
+- *(starry-mm)* bound file-backed mmap populate at EOF ([#1164](https://github.com/rcore-os/tgoskits/pull/1164))
+- fix typos in code and comments across the codebase ([#1206](https://github.com/rcore-os/tgoskits/pull/1206))
+
+## [0.5.17](https://github.com/rcore-os/tgoskits/compare/ax-fs-ng-v0.5.16...ax-fs-ng-v0.5.17) - 2026-06-09
+
+### Added
+
+- *(rsext4)* fine-grained locking for SMP scalability ([#1057](https://github.com/rcore-os/tgoskits/pull/1057))
+- *(vfs)* pass uid/gid through creation path to filesystem nodes ([#1097](https://github.com/rcore-os/tgoskits/pull/1097))
+
+### Fixed
+
+- *(axfs-ng)* zero the partial last page when truncating a file shorter ([#1124](https://github.com/rcore-os/tgoskits/pull/1124))
+- *(locking)* narrow spinlock scope in VFS and Starry paths ([#1146](https://github.com/rcore-os/tgoskits/pull/1146))
+
+## [0.5.16](https://github.com/rcore-os/tgoskits/compare/ax-fs-ng-v0.5.15...ax-fs-ng-v0.5.16) - 2026-06-03
+
+### Added
+
+- *(mm)* add page reclaim for file-backed memory pressure (rebased) ([#1007](https://github.com/rcore-os/tgoskits/pull/1007))
+- *(Starry)* support MariaDB ([#906](https://github.com/rcore-os/tgoskits/pull/906))
+
+### Fixed
+
+- *(rsext4)* use physical byte offset in readdir to fix rm -rf skipping entries ([#1001](https://github.com/rcore-os/tgoskits/pull/1001))
+- *(ci)* stabilize Starry LoongArch apk-curl test ([#959](https://github.com/rcore-os/tgoskits/pull/959))
+- *(starry)* align mount and umount2 semantics with Linux ([#876](https://github.com/rcore-os/tgoskits/pull/876))
+- *(repo)* migrate spin usage to ax-kspin ([#861](https://github.com/rcore-os/tgoskits/pull/861))
+- *(ax-fs-ng)* complete direct device transfers ([#800](https://github.com/rcore-os/tgoskits/pull/800))
+- *(rsext4)* rmdir returns ENOTEMPTY on non-empty dirs, rename rejects cross-type overwrites ([#854](https://github.com/rcore-os/tgoskits/pull/854))
+
+### Other
+
+- *(rdif-block)* switch block drivers to submit poll ([#976](https://github.com/rcore-os/tgoskits/pull/976))
+- *(ax-alloc)* remove ax-allocator dependency, simplify to TLSF/buddy-slab backends ([#987](https://github.com/rcore-os/tgoskits/pull/987))
+- *(drivers)* split shared driver stack from ArceOS ([#831](https://github.com/rcore-os/tgoskits/pull/831))
+- Refactor workspace structure and update dependencies ([#864](https://github.com/rcore-os/tgoskits/pull/864))
+
+## [0.5.15](https://github.com/rcore-os/tgoskits/compare/ax-fs-ng-v0.5.14...ax-fs-ng-v0.5.15) - 2026-05-22
+
+### Added
+
+- *(starryos)* add Lua/LuaRocks runtime coverage and fix rmdir ENOTEMPTY ([#777](https://github.com/rcore-os/tgoskits/pull/777))
+
+### Fixed
+
+- *(starry-kernel)* open/openat deep — 6 类跨子系统改造 (stacked on #719) ([#720](https://github.com/rcore-os/tgoskits/pull/720))
+- *(starry-kernel)* open/openat 15 类局部修复 ([#719](https://github.com/rcore-os/tgoskits/pull/719))
+
 ## [0.5.14](https://github.com/rcore-os/tgoskits/compare/ax-fs-ng-v0.5.13...ax-fs-ng-v0.5.14) - 2026-05-19
 
 ### Other

@@ -27,7 +27,7 @@ fn handle_page_fault(tf: &mut TrapFrame) {
     ) {
         return;
     }
-    #[cfg(feature = "uspace")]
+    #[cfg(feature = "exception-table")]
     if tf.fixup_exception() {
         return;
     }
@@ -80,7 +80,7 @@ fn x86_trap_handler(tf: &mut TrapFrame) {
             );
         }
         IRQ_VECTOR_START..=IRQ_VECTOR_END => {
-            crate::trap::irq_handler(tf.vector as _);
+            crate::trap::dispatch_irq(tf.vector as _);
         }
         _ => {
             let bt = tf.backtrace();

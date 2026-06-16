@@ -1,6 +1,6 @@
 # `ax-plat-macros`
 
-> 路径：`components/axplat_crates/axplat-macros`
+> 路径：`platforms/ax-plat-macros`
 > 类型：过程宏库
 > 分层：组件层 / 可复用基础组件
 > 版本：`0.1.0`
@@ -87,8 +87,7 @@ graph LR
 
     current --> axplat["ax-plat"]
     axplat --> ax-runtime["ax-runtime"]
-    axplat --> hello["hello-kernel / smp-kernel / irq-kernel"]
-    axplat --> oses["ArceOS / StarryOS / Axvisor 平台入口链"]
+        axplat --> oses["ArceOS / StarryOS / Axvisor 平台入口链"]
 ```
 
 ### 直接依赖
@@ -100,7 +99,6 @@ graph LR
 
 ### 3.3 间接消费者
 - `ax-runtime`：通过 `#[ax_plat::main]` / `#[ax_plat::secondary_main]` 接入平台入口。
-- `components/axplat_crates/examples/*`：最小平台样例。
 - 通过 `axplat` 体系间接复用入口契约的 ArceOS、StarryOS 和 Axvisor 路径。
 
 ## 开发指南
@@ -131,7 +129,7 @@ graph LR
 - 展开后导出符号与 `call_interface` 调用路径是否符合预期。
 
 ### 集成测试
-- 用 `hello-kernel` / `smp-kernel` 验证 `_start -> ax_plat::call_main -> __axplat_main` 链条。
+- 用 `arceos-helloworld-myplat` 和系统级 smoke test 验证 `_start -> ax_plat::call_main -> __axplat_main` 链条。
 - 用 `axplat` 内部 trait 接口验证 `def_plat_interface` 与 `impl_plat_interface` 的配合。
 
 ### 覆盖率
@@ -150,18 +148,18 @@ StarryOS 并不直接面向 `ax-plat-macros` 编程，但只要复用同一套 `
 Axvisor 同样不是直接依赖 `ax-plat-macros` 的业务代码，但在共享 `axplat` / `ax-hal` 体系时，会间接依赖这层宏生成的链接和接口约定。因此它在 Axvisor 中仍然是基础设施层，而不是业务层。
 # `ax-plat-macros` 技术文档
 
-> 路径：`components/axplat_crates/ax-plat-macros`
+> 路径：`platforms/ax-plat-macros`
 > 类型：过程宏库
 > 分层：组件层 / 可复用基础组件
 > 版本：`0.1.0`
-> 文档依据：当前仓库源码、`Cargo.toml` 与 `components/axplat_crates/axplat-macros/README.md`
+> 文档依据：当前仓库源码、`Cargo.toml` 与 `platforms/ax-plat-macros/README.md`
 
 `ax-plat-macros` 的核心定位是：Procedural macros for the `axplat` crate
 
 ## 架构设计
 - 目录角色：可复用基础组件
 - crate 形态：过程宏库
-- 工作区位置：子工作区 `components/axplat_crates`
+- 工作区位置：子工作区 `platforms`
 - feature 视角：该 crate 没有显式声明额外 Cargo feature，功能边界主要由模块本身决定。
 - 关键数据结构：关键“结构”更多体现在编译期语法树节点、宏输入 token 流和展开规则上。
 - 设计重心：该 crate 应从宏入口、语法树解析和展开产物理解，运行时模块树通常不长，但编译期接口契约很关键。
@@ -197,15 +195,15 @@ graph LR
 
 ### 被依赖情况
 - `arceos-affinity`
-- `ax-helloworld`
-- `ax-helloworld-myplat`
-- `ax-httpclient`
-- `ax-httpserver`
+- `arceos-helloworld`
+- `arceos-helloworld-myplat`
+- `arceos-httpclient`
+- `arceos-httpserver`
 - `arceos-irq`
 - `arceos-memtest`
 - `arceos-parallel`
 - `arceos-priority`
-- `ax-shell`
+- `arceos-shell`
 - `arceos-sleep`
 - `arceos-wait-queue`
 - 另外还有 `37` 个同类项未在此展开
@@ -222,7 +220,7 @@ graph LR
 ax-plat-macros = { workspace = true }
 
 # 如果在仓库外独立验证，也可以显式绑定本地路径：
-# ax-plat-macros = { path = "components/axplat_crates/ax-plat-macros" }
+# ax-plat-macros = { path = "platforms/ax-plat-macros" }
 ```
 
 ### 初始化
@@ -249,7 +247,7 @@ ax-plat-macros = { workspace = true }
 
 ## 跨项目定位
 ### ArceOS
-`ax-plat-macros` 主要通过 `arceos-affinity`、`ax-helloworld`、`ax-helloworld-myplat`、`ax-httpclient`、`ax-httpserver`、`arceos-irq` 等（另有 26 项） 等上层 crate 被 ArceOS 间接复用，通常处于更底层的公共依赖层。
+`ax-plat-macros` 主要通过 `arceos-affinity`、`arceos-helloworld`、`arceos-helloworld-myplat`、`arceos-httpclient`、`arceos-httpserver`、`arceos-irq` 等（另有 26 项） 等上层 crate 被 ArceOS 间接复用，通常处于更底层的公共依赖层。
 
 ### StarryOS
 `ax-plat-macros` 主要通过 `starry-kernel`、`starryos`、`starryos-test` 等上层 crate 被 StarryOS 间接复用，通常处于更底层的公共依赖层。

@@ -1,6 +1,6 @@
 use alloc::sync::Arc;
 
-use ax_kspin::SpinNoPreempt;
+use ax_kspin::SpinNoIrq;
 use axpoll::PollSet;
 use ringbuf::{
     Cons, HeapRb, Prod,
@@ -36,11 +36,11 @@ impl TtyRead for PtyReader {
 }
 
 #[derive(Clone)]
-pub struct PtyWriter(Arc<SpinNoPreempt<Prod<Buffer>>>, Arc<PollSet>);
+pub struct PtyWriter(Arc<SpinNoIrq<Prod<Buffer>>>, Arc<PollSet>);
 
 impl PtyWriter {
     pub fn new(buffer: Buffer, poll_rx: Arc<PollSet>) -> Self {
-        Self(Arc::new(SpinNoPreempt::new(Prod::new(buffer))), poll_rx)
+        Self(Arc::new(SpinNoIrq::new(Prod::new(buffer))), poll_rx)
     }
 }
 

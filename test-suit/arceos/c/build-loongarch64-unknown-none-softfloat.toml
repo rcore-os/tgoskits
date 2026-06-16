@@ -1,0 +1,16 @@
+app-c = "c"
+features = [
+    "alloc",
+    "paging",
+    "multitask",
+    "irq",
+    "fd",
+    "pipe",
+    "epoll",
+    "net",
+    "ax-driver/plat-dyn",
+    "ax-driver/virtio-net",
+]
+log = "Info"
+max_cpu_num = 4
+

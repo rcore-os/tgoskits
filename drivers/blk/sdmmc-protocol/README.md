@@ -17,10 +17,10 @@ It provides:
 - A SDIO/native-mode host-controller abstraction and driver skeleton
 - One shared `Error` type with command/phase context for protocol and host errors
 
-The crate is currently early-stage. The SPI path has protocol-level unit tests
-and basic block read/write support. The SDIO path is the integration boundary
-used by host crates such as `sdhci-host` and `dwmmc-host`, and needs
-platform-specific validation before use on hardware.
+The SPI path has protocol-level unit tests and basic block read/write support.
+The SDIO path is the integration boundary used by the host crates in this
+workspace and has been validated end-to-end on the controller / SoC
+combinations listed under [Validated host backends](#validated-host-backends).
 
 ## Features
 
@@ -205,6 +205,16 @@ callers can poll from a blocking loop, an IRQ wakeup path, a worker, or an async
 runtime wrapper. `SdioSdmmc` does not choose the waiting policy; the caller owns
 whether pending work spins, yields, sleeps, waits for an IRQ, or uses a timer.
 
+### Optional wall-clock timeouts
+
+ACMD41 / CMD1 power-up and MMC `CMD6 SWITCH` busy-waits default to a poll
+counter that assumes the caller paces `poll_*` at ~10 ms. Hosts that can
+expose a monotonic clock should override `SdioHost::now_ms() -> Option<u64>`:
+the protocol layer then enforces wall-clock deadlines (1 s for power-up,
+250 ms for CMD6) in addition to the poll budget, so timeouts stay accurate
+no matter how fast or slow the caller polls. Hosts that return `None` (the
+default) keep the pure poll-counter behavior.
+
 ## Command Helpers
 
 The `cmd` module contains helpers for common commands:
@@ -262,6 +272,24 @@ cargo xtask clippy --package sdmmc-protocol
   mode switching is still incomplete.
 - UHS-I and HS200 entry depends on host support for voltage switching and
   tuning. Unsupported host operations return `Error::UnsupportedCommand`.
+
+## Validated host backends
+
+The protocol layer has been exercised on the controller / SoC combinations
+below through dedicated host crates in this workspace. Modes not listed are
+either unimplemented in the host backend or have not yet been signed off on
+real hardware.
+
+| Host crate         | SoC / controller       | Mode                  | Notes                                       |
+|--------------------|------------------------|-----------------------|---------------------------------------------|
+| `sdhci-host`       | RK3568 (dwcmshc)       | eMMC HS@52, FIFO/DMA  | HS200 path exists; not yet signed off       |
+| `sdhci-host`       | RK3588 (dwcmshc)       | eMMC HS@52, FIFO/DMA  | HS200 path exists; not yet signed off       |
+| `dwmmc-host`       | RK3568 SD (dw_mshc)    | SD HS, DMA            |                                             |
+| `phytium-mci-host` | Phytium MCI            | SD HS, DMA            |                                             |
+
+See `drivers/blk/sdmmc-protocol/docs/REVIEW.md` for the remaining 1.0 roadmap
+(non_exhaustive enums, `Display` impls, time-base contract, fuzz coverage,
+SDIO IO-card support, etc.).
 
 ## License
 

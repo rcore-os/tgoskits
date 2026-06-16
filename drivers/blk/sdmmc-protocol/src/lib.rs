@@ -60,8 +60,20 @@
 //! # Maturity
 //!
 //! The SPI path has protocol-level unit tests and basic block read/write
-//! support. The SDIO path is a host abstraction skeleton and needs
-//! platform-specific validation before use on real hardware.
+//! support. The SDIO path has been validated end-to-end against several host
+//! controller / SoC combinations through the dedicated host backends in this
+//! workspace:
+//!
+//! | Host crate         | SoC / controller        | Mode                  | Status |
+//! |--------------------|-------------------------|-----------------------|--------|
+//! | `sdhci-host`       | RK3568 (dwcmshc)        | eMMC HS@52, FIFO/DMA  | OK     |
+//! | `sdhci-host`       | RK3588 (dwcmshc)        | eMMC HS@52, FIFO/DMA  | OK     |
+//! | `dwmmc-host`       | RK3568 SD (dw_mshc)     | SD HS, DMA            | OK     |
+//! | `phytium-mci-host` | Phytium MCI             | SD HS, DMA            | OK     |
+//!
+//! UHS-I / HS200 / HS400 paths exist in the state machine but have not yet
+//! been signed off on a real card + IO regulator combination. See
+//! `drivers/blk/sdmmc-protocol/docs/REVIEW.md` for the remaining roadmap.
 //!
 //! # MSRV
 //!

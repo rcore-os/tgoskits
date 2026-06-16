@@ -79,8 +79,8 @@ impl FileLike for IonBufferFile {
         Cow::Borrowed("/dev/ion_buffer")
     }
 
-    fn device_mmap(&self, _offset: u64) -> AxResult<DeviceMmap> {
-        Ok(DeviceMmap::Physical(self.phys_range()))
+    fn device_mmap(&self, _offset: u64, _length: u64) -> AxResult<DeviceMmap> {
+        Ok(DeviceMmap::Physical(self.phys_range(), None))
     }
 }
 

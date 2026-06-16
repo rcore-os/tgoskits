@@ -1,6 +1,5 @@
 #![no_std]
-#![no_main]
-#![cfg(not(any(windows, unix)))]
+#![cfg_attr(not(test), no_main)]
 #![cfg_attr(target_arch = "x86_64", feature(abi_x86_interrupt))]
 
 #[allow(unused_imports)]
@@ -47,9 +46,10 @@ pub mod power;
 pub mod smp;
 pub mod timer;
 
+pub use acpi::rsdp_addr_phys;
 pub use fdt::{fdt_addr, fdt_addr_phys};
 pub use page_table_generic::*;
-pub use somehal_macros::{entry, irq_handler, someboot_secondary_entry as secondary_entry};
+pub use somehal_macros::{entry, someboot_secondary_entry as secondary_entry};
 
 use crate::{
     irq::IrqId,
@@ -75,6 +75,9 @@ pub trait ArchTrait {
     fn jump_to(entry: usize, sp: usize) -> !;
 
     fn post_allocator();
+
+    fn init_boot_tls() {}
+    fn init_runtime_percpu_reg(_cpu_idx: usize) {}
 
     fn per_cpu_trap_init(is_primary: bool);
     fn trap_addr() -> usize;
@@ -176,9 +179,9 @@ fn prime_entry() -> ! {
     }
 
     let entry = __someboot_main as *const () as usize;
-    let sp = crate::smp::cpu_meta(crate::smp::cpu_idx())
-        .unwrap()
-        .stack_top;
+    let cpu_idx = crate::smp::early_current_cpu_idx();
+    arch::Arch::init_runtime_percpu_reg(cpu_idx);
+    let sp = crate::smp::cpu_meta(cpu_idx).unwrap().stack_top;
     let sp = __percpu(sp);
     println!(
         "Jumping to main entry point at {:#x} with SP {:#p}",

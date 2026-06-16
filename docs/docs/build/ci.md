@@ -5,13 +5,11 @@ sidebar_label: "自动 CI 测试"
 
 # 自动 CI 测试
 
-TGOSKits 将构建与运行依赖收敛到统一的 container 镜像，由 GitHub Actions 和本地开发流程共同消费。CI 系统的目标是**确保每次代码变更都经过格式检查、静态分析和自动化测试的完整验证**，同时通过容器化保证本地开发环境与 CI 环境的一致性。
+本文档说明 `.github/workflows/ci.yml`、`.github/workflows/reusable-command.yml` 和容器镜像在 CI 中的职责，以及当前测试矩阵、缓存策略和 self-hosted runner 的使用方式。
 
-CI 的设计遵循"环境即代码"原则：工具链版本（Rust、QEMU、交叉编译器）全部固定在 Dockerfile 中，避免因环境差异导致"本地通过 CI 不通过"的问题。开发者可以通过 `cargo xtask` 在本地复现完整的 CI 流水线，无需手动安装任何依赖。
+TGOSKits 将大部分构建与运行依赖收敛到统一的 container 镜像，由 GitHub Actions 和本地开发流程共同消费。需要物理设备、虚拟化能力或专用机器环境的任务则运行在 self-hosted runner 上。
 
 ## 三层架构
-
-CI 体系由 Container 镜像、可复用工作流和 CI 编排三层组成，各层职责分明：
 
 ```mermaid
 flowchart TB
@@ -33,159 +31,161 @@ flowchart TB
 | 可复用工作流 | 统一在 host 或 container 中执行命令 | `.github/workflows/reusable-command.yml` |
 | CI 编排 | 选择测试矩阵、决定何时发布镜像 | `.github/workflows/ci.yml`、`.github/workflows/container-publish.yml` |
 
-三层架构将关注点分离：Container 镜像层确保可重现的构建环境，可复用工作流层提供标准化的命令执行接口（支持在 container 或 bare metal 上运行），CI 编排层决定测试矩阵和发布策略。`reusable-command.yml` 是关键的中间层——它接收命令和参数作为输入，在指定的环境中执行，返回结果给上层编排。
+## 触发条件
 
-## 基础镜像
-
-基础镜像定义在 `container/Dockerfile`，以 `ubuntu:24.04` 为底。
-
-| 类别 | 内容 |
+| 事件 | 说明 |
 |------|------|
-| 系统基础 | `build-essential`、`clang`、`cmake`、`make`、`meson`、`ninja-build`、`pkg-config`、`python3` |
-| 文件系统/镜像工具 | `dosfstools`、`e2fsprogs`、`xz-utils` |
-| QEMU | 源码构建 `QEMU_VERSION=10.2.1`，覆盖 `aarch64`、`riscv64`、`x86_64`、`loongarch64` |
-| Rust 环境 | 依据 `rust-toolchain.toml` 安装 toolchain + `cargo-binutils`；配置生成由 `scripts/axbuild` 内部处理 |
-| 交叉编译工具链 | `aarch64`、`riscv64`、`x86_64`、`loongarch64` 的 musl 交叉编译器 |
+| `push` | 排除纯文档变更（`*.md`、`docs/**` 等），其余路径触发 CI |
+| `pull_request` | 同上 |
+| `workflow_dispatch` | 手动触发，仅用于发布容器镜像（`base` / `axvisor-lvz` / `both`），不执行 CI 检查 |
 
-基础镜像从源码编译 QEMU（而非使用发行版包）以确保所有目标架构的支持和版本一致性。Rust 工具链版本通过 `rust-toolchain.toml` 固定，CI 构建时自动读取该文件安装对应版本。交叉编译器使用 musl libc 变体，与 ArceOS 和 StarryOS 的用户态测试环境匹配。
+`dev` 分支的 `push` 和手动触发使用 `concurrency.queue: max` 串行排队运行，避免多个 dev CI 同时占用 runner。其他分支、`main` 分支、PR 以及非 `dev` 手动触发不会进入 dev 队列；新 run 会在最早的 `cancel_stale_runs` 阶段取消同一分支或同一 PR 上仍在 queued/running 的旧 CI run。
 
-## LVZ 扩展镜像
+## 执行流水线
 
-`container/Dockerfile.axvisor-lvz` 基于基础镜像扩展，额外构建 `QEMU-LVZ`，暴露 `AXBUILD_QEMU_SYSTEM_LOONGARCH64` 环境变量。
-
-LVZ 扩展镜像用于 Axvisor 在 loongarch64 架构上的测试。龙芯的硬件虚拟化扩展（LVZ）需要定制版 QEMU，基础镜像中的标准 QEMU 不支持。该镜像从 `QEMU-LVZ` 仓库源码编译并安装到独立路径，通过 `AXBUILD_QEMU_SYSTEM_LOONGARCH64` 环境变量告知 axbuild 使用该版本。
-
-## CI 流水线
-
-### 工作流文件
-
-| 文件 | 职责 |
-|------|------|
-| `ci.yml` | 主 CI 编排：变更检测 → 格式检查 → 测试矩阵 → 镜像发布 |
-| `reusable-command.yml` | 可复用工作流：在 host 或 container 中执行单条命令 |
-| `container-publish.yml` | 可复用工作流：构建并推送容器镜像到 GHCR |
-| `docs.yml` | 文档站点构建与部署（见 [文档部署](/docs/contributing/docs)） |
-| `release-plz.yml` | 自动版本发布 |
-
-### 触发条件
-
-CI 在以下情况触发：
-
-- **push / pull_request**：自动触发，但 `*.md`、`docs/**` 等纯文档变更会跳过
-- **workflow_dispatch**：手动触发，可选择只发布容器镜像（`base` / `axvisor-lvz` / `both`）
-
-并发控制：同一分支连续推送会取消旧的运行（`concurrency` 配置）。
-
-### 变更检测
-
-CI 首先通过 `dorny/paths-filter` 检测变更范围，决定后续执行哪些任务：
-
-| 检测路径 | 触发的任务 |
-|----------|-----------|
-| `components/`, `os/`, `scripts/`, `xtask/` 等 | CI 检查（fmt → clippy → 测试矩阵） |
-| `container/Dockerfile`, `rust-toolchain.toml` | 发布基础容器镜像 |
-| `container/Dockerfile.axvisor-lvz` | 发布 LVZ 扩展镜像 |
-
-```mermaid
-flowchart TD
-    A["push / pull_request"] --> B["变更检测<br/>(dorny/paths-filter)"]
-    B --> C["cargo fmt --check"]
-    C --> D["测试矩阵 (post_fmt_checks)"]
-    D --> E["cargo xtask clippy"]
-    D --> F["cargo xtask test"]
-    D --> G["各 OS QEMU 测试<br/>(container 内)"]
-    D --> H["板级测试<br/>(self-hosted runner)"]
-    B --> I{"Dockerfile 变更?"}
-    I -->|是| J["发布容器镜像<br/>(GHCR)"]
-    I -->|否| K["跳过"]
+```text
+cancel_stale_runs
+  |
+  `-- detect_changes
+  |
+  +-- [ci_checks == true]
+  |     `-- static_checks (fmt || sync-lint)    fail-fast: true
+  |           `-- test_checks (所有测试并发)     fail-fast: true
+  |
+  `-- [push/dispatch 到 main/dev]
+        +-- publish_base_container
+        `-- publish_axvisor_lvz_container       依赖 base 成功后才运行
 ```
 
-### 测试矩阵
+`static_checks` 作为测试矩阵的前置门禁：格式检查或 sync-lint 不通过时，后续测试不会启动。`static_checks` 和 `test_checks` 都启用 `fail-fast: true`，任意矩阵项失败会取消同矩阵内其他任务，减少 runner 占用。
 
-格式检查通过后，CI 并行执行以下测试矩阵（全部在容器内运行）：
+## 变更检测
 
-| 测试项 | 命令 | 使用镜像 |
-|--------|------|---------|
-| Clippy | `cargo xtask clippy` | `ghcr.io/rcore-os/tgoskits-container:latest` |
-| Sync-lint | `cargo xtask sync-lint` | `ghcr.io/rcore-os/tgoskits-container:latest` |
-| Std 测试 | `cargo xtask test` | `ghcr.io/rcore-os/tgoskits-container:latest` |
-| ArceOS aarch64 | `cargo xtask arceos test qemu --arch aarch64` | `ghcr.io/rcore-os/tgoskits-container:latest` |
-| ArceOS riscv64 | `cargo xtask arceos test qemu --arch riscv64` | `ghcr.io/rcore-os/tgoskits-container:latest` |
-| ArceOS x86_64 | `cargo xtask arceos test qemu --arch x86_64` | `ghcr.io/rcore-os/tgoskits-container:latest` |
-| ArceOS loongarch64 | `cargo xtask arceos test qemu --arch loongarch64` | `ghcr.io/rcore-os/tgoskits-container:latest` |
-| StarryOS aarch64 | `cargo xtask starry test qemu --arch aarch64` | `ghcr.io/rcore-os/tgoskits-container:latest` |
-| StarryOS riscv64 | `cargo xtask starry test qemu --arch riscv64` | `ghcr.io/rcore-os/tgoskits-container:latest` |
-| StarryOS x86_64 | `cargo xtask starry test qemu --arch x86_64` | `ghcr.io/rcore-os/tgoskits-container:latest` |
-| StarryOS loongarch64 | `cargo xtask starry test qemu --arch loongarch64` | `ghcr.io/rcore-os/tgoskits-container:latest` |
-| Axvisor aarch64 | `cargo xtask axvisor test qemu --arch aarch64` | `ghcr.io/rcore-os/tgoskits-container:latest` |
-| Axvisor riscv64 | `cargo xtask axvisor test qemu --arch riscv64` | `ghcr.io/rcore-os/tgoskits-container:latest` |
-| Axvisor loongarch64 | `cargo xtask axvisor test qemu --arch loongarch64` | **LVZ 镜像** |
+`detect_changes` 使用 `dorny/paths-filter@v4` 判断后续任务是否需要运行：
 
-### Self-hosted 测试
+| 检测路径 | 触发任务 |
+|----------|----------|
+| `.cargo/`、`Cargo.toml`、`Cargo.lock`、`components/`、`drivers/`、`examples/`、`os/`、`platforms/`、`scripts/`、`test-suit/`、`xtask/` 等 | CI 检查 |
+| `container/Dockerfile`、`rust-toolchain.toml` | 发布基础容器镜像 |
+| `container/Dockerfile.axvisor-lvz`、`rust-toolchain.toml` | 发布 LVZ 扩展镜像 |
 
-以下测试需要物理设备，运行在 self-hosted runner 上（仅 `rcore-os` 组织内执行）：
+push 到 `main` / `dev` 时强制运行 CI 检查。若非 `main` / `dev` 分支的 push 已存在 open PR，则跳过重复的 push CI，由 pull request CI 覆盖同一提交。
 
-| 测试项 | Runner 标签 | 命令 |
-|--------|------------|------|
-| Axvisor x86_64 | `self-hosted`, `linux`, `intel` | `cargo xtask axvisor test qemu --arch x86_64` |
-| Axvisor OrangePi-5-Plus | `self-hosted`, `linux`, `board` | `cargo xtask axvisor test board --board orangepi-5-plus-linux` |
-| StarryOS OrangePi-5-Plus | `self-hosted`, `linux`, `board` | `cargo xtask starry test board --board orangepi-5-plus` |
+`detect_changes` 内部还负责输出跳过原因：
 
-### Stress 测试
+- `Summarize skipped CI checks`：说明 CI 检查为什么被跳过。
+- `Summarize manual container branch restriction`：说明手动容器发布为什么因分支限制被跳过。
 
-StarryOS 的压力测试（Stress starry *）仅在 target 为 `main` 的 PR 中执行，当前命令为 `echo "TODO!"`（占位）。
+## Static Checks
 
-## 容器镜像发布
+`static_checks` 是并行矩阵，全部通过后才进入 `test_checks`。
 
-### 镜像地址
+| Job 名称 | Runner | 使用容器 | Cache Key | 功能说明 |
+|----------|--------|----------|-----------|----------|
+| Check formatting | `ubuntu-latest` | 否 | 无 | `cargo fmt --all -- --check` |
+| Run sync-lint | `ubuntu-latest` | 是（`base`） | `sync-lint` | `cargo xtask sync-lint --since <base>`；需要完整 git 历史 |
 
-| 镜像 | 地址 | 用途 |
-|------|------|------|
-| 基础镜像 | `ghcr.io/rcore-os/tgoskits-container:latest` | CI 测试 + 本地开发 |
-| LVZ 扩展镜像 | `ghcr.io/rcore-os/tgoskits-container-axvisor-lvz:latest` | Axvisor loongarch64 测试 |
+## Test Checks
 
-### 发布触发
+`test_checks` 依赖 `static_checks` 全部通过后并发执行。
 
-容器镜像在以下条件满足时自动发布：
+| Job 名称 | Runner | 使用容器 | Cache Key | 功能说明 |
+|----------|--------|----------|-----------|----------|
+| Run clippy | `self-hosted linux qcs` | 否 | 无 | `cargo xtask clippy --since <base>`；需要完整 git 历史；fork PR 回退到 `ubuntu-latest` + `base` 容器 |
+| Test with std | `self-hosted linux qcs` | 否 | 无 | `cargo xtask test`，运行 `scripts/test/std_crates.csv` 中的 host 测试；fork PR 回退到 `ubuntu-latest` + `base` 容器 |
+| Test axvisor aarch64 qemu | `self-hosted linux qcs` | 否 | 无 | `cargo xtask axvisor test qemu --arch aarch64`；`rcore-os` 仓库使用 self-hosted，fork PR 回退到 `ubuntu-latest` + `base` 容器 |
+| Test axvisor riscv64 qemu | `self-hosted linux qcs` | 否 | 无 | `cargo xtask axvisor test qemu --arch riscv64`；`rcore-os` 仓库使用 self-hosted，fork PR 回退到 `ubuntu-latest` + `base` 容器 |
+| Test axvisor loongarch64 qemu | `ubuntu-latest` | 是（`axvisor-lvz`） | `test-axvisor-loongarch64` | `cargo xtask axvisor test qemu --arch loongarch64`，使用带 LVZ 支持的镜像 |
+| Test starry riscv64 qemu | `ubuntu-latest` | 是（`base`） | `test-starry-riscv64` | `cargo xtask starry test qemu --arch riscv64` |
+| Test starry aarch64 qemu | `ubuntu-latest` | 是（`base`） | `test-starry-aarch64` | `cargo xtask starry test qemu --arch aarch64` |
+| Test starry loongarch64 qemu | `ubuntu-latest` | 是（`base`） | `test-starry-loongarch64` | `cargo xtask starry test qemu --arch loongarch64` |
+| Test starry x86_64 qemu | `ubuntu-latest` | 是（`base`） | `test-starry-x86_64` | `cargo xtask starry test qemu --arch x86_64` |
+| Test arceos x86_64 qemu | `self-hosted linux qcs` | 否 | 无 | `cargo xtask arceos test qemu --arch x86_64`；仅 `rcore-os` 仓库触发 |
+| Test arceos riscv64 qemu | `self-hosted linux qcs` | 否 | 无 | `cargo xtask arceos test qemu --arch riscv64`；仅 `rcore-os` 仓库触发 |
+| Test arceos aarch64 qemu | `self-hosted linux qcs` | 否 | 无 | `cargo xtask arceos test qemu --arch aarch64`；仅 `rcore-os` 仓库触发 |
+| Test arceos loongarch64 qemu | `self-hosted linux qcs` | 否 | 无 | `cargo xtask arceos test qemu --arch loongarch64`；仅 `rcore-os` 仓库触发 |
+| Test axvisor self-hosted x86_64 | `self-hosted linux intel kvm` | 否 | 无 | `cargo xtask axvisor test qemu --arch x86_64`；仅 `rcore-os` 仓库触发 |
+| Test axvisor x86_64 svm hosted | `ubuntu-latest` | 否 | 无 | AMD SVM 虚拟化冒烟测试；Intel CPU 时自动跳过 |
+| Test axvisor self-hosted board orangepi-5-plus-linux | `self-hosted linux board` | 否 | 无 | `cargo xtask axvisor test board --board orangepi-5-plus-linux`；物理板卡；仅 `rcore-os` 仓库触发 |
+| Test starry self-hosted board orangepi-5-plus | `self-hosted linux board` | 否 | 无 | `cargo xtask starry test board --board orangepi-5-plus`；物理板卡；仅 `rcore-os` 仓库触发 |
+| Test starry self-hosted board licheerv-nano-sg2002 | `self-hosted linux board` | 否 | 无 | `cargo xtask starry test board --board licheerv-nano-sg2002`；LicheeRV-Nano-SG2002 物理板卡；仅 `rcore-os` 仓库触发 |
 
-- **触发事件**：push 到 `main` 或 `dev` 分支
-- **路径条件**：
-  - 基础镜像：`container/Dockerfile` 或 `rust-toolchain.toml` 有变更
-  - LVZ 镜像：`container/Dockerfile.axvisor-lvz` 或 `rust-toolchain.toml` 有变更
-- **手动触发**：通过 `workflow_dispatch` 选择发布 `base` / `axvisor-lvz` / `both`
+StarryOS stress 测试条目保留在 workflow 中，但当前处于注释状态。启用后仅用于 target 为 `main` 的 PR。
 
-LVZ 扩展镜像依赖基础镜像，发布时会等待基础镜像构建完成后再构建。
+## Self-Hosted Runner 约定
 
-### 本地使用预构建镜像
+self-hosted runner 任务优先在 `rcore-os` 仓库内运行。带 `self_hosted_owner` 的任务在 fork PR 或非 `rcore-os` 仓库中会回退到 `ubuntu-latest` + 对应容器，避免没有对应 runner 时长时间排队。迁移到 self-hosted 的任务直接在原生 runner 环境中运行，不再套 Docker container。
+
+现有 label 约定：
+
+| Label | 用途 |
+|-------|------|
+| `self-hosted`, `linux`, `qcs` | clippy、std 测试、ArceOS QEMU 测试、Axvisor aarch64/riscv64 QEMU |
+| `self-hosted`, `linux`, `intel`, `kvm` | Axvisor x86_64 KVM 测试 |
+| `self-hosted`, `linux`, `board` | 物理板卡测试 |
+
+## Cache 策略
+
+| Cache Key | 使用 Job | 保存时机 | 说明 |
+|-----------|----------|----------|------|
+| `sync-lint` | Run sync-lint | `push` 事件 | xtask 与 sync-lint 工具链编译产物 |
+| `test-axvisor-loongarch64` | Test axvisor loongarch64 QEMU | `push` 事件 | Axvisor loongarch64 编译产物 |
+| `test-starry-riscv64/aarch64/loongarch64/x86_64` | Test starry riscv64/aarch64/loongarch64/x86_64 QEMU | `push` 事件 | StarryOS QEMU 编译产物 |
+| 无（`cache_key: ""`） | self-hosted runner job，包括 Run clippy 和 Test with std | - | 依赖 self-hosted runner 本地磁盘缓存，不使用 GitHub Actions cache |
+
+self-hosted runner 不设置 `cache_key`，避免 `Swatinem/rust-cache@v2` 的 post-job 清理影响 runner 上跨次运行自然积累的共享缓存。
+
+## 容器镜像
+
+CI 使用两个容器镜像：
+
+| 镜像 | Dockerfile | 用途 |
+|------|------------|------|
+| `base` | `container/Dockerfile` | sync-lint、StarryOS QEMU，以及 clippy、std、self-hosted QEMU 测试在 fork PR 或非 `rcore-os` 仓库中的回退环境 |
+| `axvisor-lvz` | `container/Dockerfile.axvisor-lvz` | Axvisor loongarch64 QEMU，额外包含 LVZ 支持 |
+
+基础镜像以 `ubuntu:24.04` 为底，内置 Rust 工具链、QEMU、musl cross-toolchain、libav、libudev 等依赖。容器内的 musl cross-toolchain 已通过 `PATH` 配置好，`reusable-command.yml` 会在 container job 启动时验证 QEMU user emulators 和 musl compiler 是否存在，不再在运行时动态下载。
+
+## 容器发布
+
+| Job 名称 | Runner | 触发条件 | 功能说明 |
+|----------|--------|----------|----------|
+| Publish base container | `ubuntu-latest` | push 到 `main` / `dev` 且基础镜像相关路径变更，或手动选择发布 `base` / `both` | 构建并推送 `ghcr.io/<repo>-container:latest` |
+| Publish axvisor-lvz container | `ubuntu-latest` | push 到 `main` / `dev` 且 LVZ 镜像相关路径变更，或手动选择发布 `axvisor-lvz` / `both` | 构建并推送 `ghcr.io/<repo>-container-axvisor-lvz:latest` |
+
+`axvisor-lvz` 镜像依赖基础镜像。若同一次运行需要发布基础镜像，LVZ 镜像会等待基础镜像发布成功后再构建。
+
+## 本地使用预构建镜像
 
 开发者可以直接拉取 CI 使用的预构建镜像：
 
 ```bash
-# 拉取基础镜像
 docker pull ghcr.io/rcore-os/tgoskits-container:latest
 
-# 进入开发环境
 docker run -it --rm \
   -v "$(pwd)":/workspace \
   -w /workspace \
   ghcr.io/rcore-os/tgoskits-container:latest
 ```
 
-这确保本地环境与 CI 环境完全一致。
+## `reusable-command.yml`
+
+所有 `static_checks` 和 `test_checks` 中的 job 均通过 `.github/workflows/reusable-command.yml` 执行。该 workflow 根据 `inputs.use_container` 在两个互斥 job 中选择一个：
+
+| Job | 说明 |
+|-----|------|
+| `run_host` | 不使用容器，直接在 runner 原生环境中执行命令 |
+| `run_container` | 使用指定镜像执行命令，并在启动时验证 QEMU user emulator 和 musl cross-toolchain |
+
+`runs_on` 使用 JSON 字符串输入并通过 `fromJson(inputs.runs_on)` 转为 GitHub Actions runner label 数组。Rust 编译缓存仅在 `cache_key != ""` 时启用，`push` 事件保存，PR 事件只读取不保存。
 
 ## 命名规则
-
-### 文件命名
 
 | 文件类型 | 格式 | 示例 |
 |----------|------|------|
 | QEMU 配置 | `qemu-{arch}.toml` | `qemu-aarch64.toml`、`qemu-x86_64.toml` |
 | 板级配置 | `board-{board_name}.toml` | `board-orangepi-5-plus.toml` |
 | 构建配置 | `build-{target}.toml` | `build-x86_64-unknown-none.toml` |
-
-统一的命名规则使得 axbuild 可以通过文件名模式自动发现和匹配配置文件。例如 `discover_qemu_cases()` 通过匹配 `qemu-{arch}.toml` 文件来定位测试用例，`discover_build_wrappers()` 通过匹配 `build-{target}.toml` 来识别构建组。
-
-### 架构命名
 
 | 架构缩写 | 完整 Target |
 |----------|-------------|

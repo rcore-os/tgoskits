@@ -80,7 +80,7 @@ cargo xtask arceos <subcommand> [options]
 
 **QEMU 额外参数**：`--qemu-config`、`--rootfs`
 
-**测试参数**：`--test-group`、`--test-case`、`--package`、`--list`
+**测试参数**：`--test-group`、`--test-case`、`--list`
 
 `--plat-dyn` 控制是否使用动态平台加载（仅 aarch64 支持），`--smp` 设置对称多处理器核数。ArceOS 测试支持 Rust 和 C 两类用例，通过 `--test-group` 选择测试组。
 
@@ -88,7 +88,7 @@ cargo xtask arceos <subcommand> [options]
 
 ## StarryOS
 
-StarryOS 编译整个内核（不需要 `--package`），增加了 rootfs 管理和 example 运行命令，支持 `--stress` 快捷方式选择压力测试组。
+StarryOS 编译整个内核（不需要 `--package`），增加了 rootfs 管理和 app 运行命令。test-suit 用例直接从 `test-suit/starryos/` 根目录发现，压力、K230 和 visual 等重型用例迁到 `apps/starry/` 后通过 app 命令显式运行。
 
 ```text
 cargo xtask starry <subcommand> [options]
@@ -102,9 +102,11 @@ cargo xtask starry <subcommand> [options]
 | `qemu` | 编译并在 QEMU 中运行（含 rootfs 准备） |
 | `uboot` | 编译并通过 U-Boot 运行 |
 | `board` | 编译并在远程板卡运行 |
-| `test qemu` | QEMU 测试（normal / stress） |
+| `test qemu` | QEMU 测试 |
 | `test board` | 板级测试 |
-| `example board` | 在远程板卡上运行示例 |
+| `app list` | 列出 `apps/starry/` 下发现的可运行应用 |
+| `app run` | 构建并运行 `apps/starry/` 下发现的应用 |
+| `app board` | 在远程板卡上运行应用 |
 | `quick-start` | 常见平台便捷入口 |
 | `rootfs` | 下载 rootfs 到 target 目录 |
 | `defconfig` | 生成默认板卡配置 |
@@ -121,7 +123,7 @@ cargo xtask starry <subcommand> [options]
 | `quick-start qemu-x86_64 {build,run}` | x86_64 QEMU 平台的构建/运行 |
 | `quick-start orangepi-5-plus {build,run}` | Orange Pi 5 Plus 板卡的构建/运行，run 支持 `--serial`/`--baud`/`--dtb` 参数覆盖 |
 
-`example board` 从 `examples/starry/<case>/` 目录中按名称发现用例，每个用例目录包含 `init.sh` 启动脚本（定义板卡上执行的命令）以及自动发现的 `board-*.toml` 和 `build-*.toml` 配置文件，无需手动指定所有配置路径。
+`app list` 从 `apps/starry/` 目录发现可运行应用，可通过 `--kind qemu|board` 过滤。`app run` 支持用 `--all` 运行所有匹配应用，或用 `-t/--test-case <case>` 选择单个应用；QEMU 应用可通过 `--arch`、`--qemu-config` 覆盖运行配置，带能力要求的应用可通过 `--cap <CAP>` 声明可用能力。`app board` 从 `apps/starry/<case>/` 目录中按名称发现板端应用，每个应用目录包含 `init.sh` 启动脚本（定义板卡上执行的命令）以及自动发现的 `board-*.toml` 和 `build-*.toml` 配置文件，无需手动指定所有配置路径。
 
 ### 参数
 
@@ -131,13 +133,17 @@ cargo xtask starry <subcommand> [options]
 
 **Board 额外参数**：`--board-config`、`--board-type`、`--server`、`--port`
 
-**测试参数**（`test qemu`）：`--test-group`、`--test-case`、`--stress`、`--list`
+**测试参数**（`test qemu`）：`--test-case`、`--list`
 
-**测试参数**（`test board`）：`--test-group`、`--test-case`、`--board`、`--board-type`、`--server`、`--port`、`--list`
+**测试参数**（`test board`）：`--test-case`、`--board`、`--board-type`、`--server`、`--port`、`--list`
 
-**示例参数**（`example board`）：`--test-case`（必需）、`--board-config`、`--board-type`、`--server`、`--port`、`--debug`
+**App 参数**（`app list`）：`--kind`
 
-板卡运行通过 `ostool-server` 与远程板卡交互，需要指定 `--server` 和 `--port` 参数或通过 `board config` 预先配置。`example board` 用于在远程板卡上快速运行 `examples/starry/` 下的预定义示例，每个示例是一个包含 `init.sh` 启动脚本和构建配置的目录。
+**App 参数**（`app run`）：`--all`、`--test-case`、`--kind`、`--cap`、`--arch`、`--qemu-config`、`--debug`
+
+**App 参数**（`app board`）：`--test-case`（必需）、`--board-config`、`--board-type`、`--server`、`--port`、`--debug`
+
+板卡运行通过 `ostool-server` 与远程板卡交互，需要指定 `--server` 和 `--port` 参数或通过 `board config` 预先配置。`app board` 用于在远程板卡上快速运行 `apps/starry/` 下的预定义板端应用，每个应用是一个包含 `init.sh` 启动脚本和构建配置的目录。
 
 ---
 

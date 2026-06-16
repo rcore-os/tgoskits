@@ -3,8 +3,12 @@ use core::ops::Deref;
 
 pub use fdt::NodeType as Node;
 
-pub use crate::probe::fdt::FdtInfo;
-use crate::probe::{fdt, pci};
+use crate::probe::{acpi, fdt, pci, static_};
+pub use crate::probe::{
+    acpi::{AcpiInfo, ProbeAcpi},
+    fdt::{FdtInfo, ProbeFdt},
+    pci::{PciInfo, ProbePci},
+};
 
 #[repr(transparent)]
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
@@ -52,9 +56,16 @@ unsafe impl Send for DriverRegister {}
 unsafe impl Sync for DriverRegister {}
 
 pub enum ProbeKind {
+    Static {
+        on_probe: static_::FnOnProbe,
+    },
     Fdt {
         compatibles: &'static [&'static str],
         on_probe: fdt::FnOnProbe,
+    },
+    Acpi {
+        ids: &'static [acpi::AcpiId],
+        on_probe: acpi::FnOnProbe,
     },
     Pci {
         on_probe: pci::FnOnProbe,

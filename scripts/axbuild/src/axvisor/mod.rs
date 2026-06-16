@@ -6,19 +6,13 @@ use ostool::{
     build::config::Cargo,
 };
 
-use crate::{
-    axvisor::context::AxvisorContext,
-    context::{
-        AppContext, AxvisorCliArgs, AxvisorRequestPaths, ResolvedAxvisorRequest,
-        SnapshotPersistence,
-    },
+use crate::context::{
+    AppContext, AxvisorCliArgs, AxvisorRequestPaths, ResolvedAxvisorRequest, SnapshotPersistence,
 };
 
 pub mod board;
 pub mod build;
 pub mod config;
-pub mod context;
-pub mod image;
 pub mod rootfs;
 pub mod test;
 
@@ -39,8 +33,6 @@ pub enum Command {
     Defconfig(ArgsDefconfig),
     /// Board config helpers
     Config(ArgsConfig),
-    /// Guest image management
-    Image(image::Args),
 }
 
 #[derive(Args, Clone)]
@@ -227,7 +219,6 @@ pub enum ConfigCommand {
 
 pub struct Axvisor {
     app: AppContext,
-    ctx: AxvisorContext,
 }
 
 impl From<&ArgsBuild> for AxvisorCliArgs {
@@ -247,8 +238,7 @@ impl From<&ArgsBuild> for AxvisorCliArgs {
 impl Axvisor {
     pub fn new() -> anyhow::Result<Self> {
         let app = AppContext::new()?;
-        let ctx = AxvisorContext::new()?;
-        Ok(Self { app, ctx })
+        Ok(Self { app })
     }
 
     pub async fn execute(&mut self, command: Command) -> anyhow::Result<()> {
@@ -259,7 +249,6 @@ impl Axvisor {
             Command::Board(args) => self.board(args).await,
             Command::Defconfig(args) => self.defconfig(args),
             Command::Config(args) => self.config(args),
-            Command::Image(args) => self.image(args).await,
             Command::Test(args) => self.test(args).await,
         }
     }
@@ -330,10 +319,6 @@ impl Axvisor {
         Ok(())
     }
 
-    async fn image(&self, args: image::Args) -> anyhow::Result<()> {
-        image::run(args, &self.ctx).await
-    }
-
     async fn test(&mut self, args: ArgsTest) -> anyhow::Result<()> {
         test::test(self, args).await
     }
@@ -374,7 +359,6 @@ impl Axvisor {
         match request.uboot_config.as_deref() {
             Some(path) => self
                 .app
-                .tool_mut()
                 .read_uboot_config_from_path_for_cargo(cargo, path)
                 .await
                 .map(Some),
@@ -390,14 +374,12 @@ impl Axvisor {
         match board_config_path {
             Some(path) => {
                 self.app
-                    .tool_mut()
                     .read_board_run_config_from_path_for_cargo(cargo, path)
                     .await
             }
             None => {
                 let workspace_root = self.app.workspace_root().to_path_buf();
                 self.app
-                    .tool_mut()
                     .ensure_board_run_config_in_dir_for_cargo(cargo, &workspace_root)
                     .await
             }
@@ -427,22 +409,6 @@ mod tests {
     use clap::Parser;
 
     use super::*;
-    use crate::context::{resolve_workspace_member_dir, workspace_root_path};
-
-    #[test]
-    fn context_resolves_workspace_root() {
-        let ctx = AxvisorContext::new().unwrap();
-        assert_eq!(
-            ctx.workspace_root(),
-            workspace_root_path().unwrap().as_path()
-        );
-        assert_eq!(
-            ctx.axvisor_dir(),
-            resolve_workspace_member_dir(crate::axvisor::build::AXVISOR_PACKAGE)
-                .unwrap()
-                .as_path()
-        );
-    }
 
     #[test]
     fn default_qemu_template_path_uses_axvisor_script_location() {

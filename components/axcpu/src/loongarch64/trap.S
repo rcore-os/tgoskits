@@ -2,13 +2,25 @@
 .balign 4096
 .global exception_entry_base
 exception_entry_base:
-    csrwr   $sp, KSAVE_KSP
-    bnez    $sp, .Ltrap_entry
+    csrwr   $t0, KSAVE_T0
+    csrwr   $t1, KSAVE_T1
 
-    csrrd   $sp, KSAVE_KSP
+    csrrd   $t1, LA_CSR_PRMD
+    andi    $t1, $t1, 0x3
+    move    $t0, $sp
+    bnez    $t1, .Ltrap_from_user
+
+    csrwr   $t0, KSAVE_KSP
     addi.d  $sp, $sp, -{trapframe_size}
+    b       .Ltrap_stack_ready
 
-.Ltrap_entry:
+.Ltrap_from_user:
+    csrrd   $sp, KSAVE_KSP
+    csrwr   $t0, KSAVE_KSP
+
+.Ltrap_stack_ready:
+    csrrd   $t0, KSAVE_T0
+    csrrd   $t1, KSAVE_T1
     PUSH_GENERAL_REGS
 
     csrrd   $t0, KSAVE_KSP
@@ -24,7 +36,7 @@ exception_entry_base:
     andi    $t1, $t1, 0x3
     bnez    $t1, .Lexit_user
 
-    la.abs  $ra, .Ltrap_return
+    la.pcrel $ra, .Ltrap_return
     b       loongarch64_trap_handler
 
 .Lexit_user:

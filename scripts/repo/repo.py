@@ -494,18 +494,6 @@ class GitSubtreeManager:
             url,
             branch,
         ]
-        # axdriver_crates has duplicate subtree join trailers in the shared
-        # history.  `git subtree push` scans those trailers before splitting and
-        # can fail with "cache for <hash> already exists!" unless we bypass join
-        # discovery via --ignore-joins.
-        use_ignore_joins = repo_name == 'axdriver_crates'
-        if use_ignore_joins:
-            print(
-                f"Using --ignore-joins for {repo_name} to avoid duplicate subtree history conflicts.",
-                flush=True,
-            )
-            push_args.insert(1, '--ignore-joins')
-
         cmd = self._git_subtree_cmd('push', push_args)
         try:
             self._run_command(cmd, env=subtree_env)
@@ -974,9 +962,7 @@ Examples:
         description=(
             "Push local subtree changes to the configured remote branch.\n\n"
             "Notes:\n"
-            "  - axdriver_crates is pushed with --ignore-joins by default to avoid\n"
-            "    duplicate subtree history conflicts.\n"
-            "  - Other repositories automatically retry with --ignore-joins if\n"
+            "  - Repositories automatically retry with --ignore-joins if\n"
             "    git-subtree reports the known 'cache for <hash> already exists!'\n"
             "    error while scanning prior subtree joins."
         ),

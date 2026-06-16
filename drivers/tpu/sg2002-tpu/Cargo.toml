@@ -1,6 +1,6 @@
 [package]
 name = "sg2002-tpu"
-version = "0.1.1"
+version = "0.1.6"
 edition.workspace = true
 authors = ["RCore Team <yuchen@tsinghua.edu.cn>"]
 license.workspace = true
@@ -12,6 +12,6 @@ keywords = ["sg2002", "cvitek", "tpu", "ion"]
 [dependencies]
 ax-dma = { workspace = true }
 ax-errno = { workspace = true }
+ax-kspin.workspace = true
 ax-memory-addr = { workspace = true }
 log = "0.4"
-spin = "0.10"

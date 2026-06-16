@@ -86,7 +86,7 @@ fn handle_page_fault(tf: &mut TrapFrame, access_flags: PageFaultFlags) {
     ) {
         return;
     }
-    #[cfg(feature = "uspace")]
+    #[cfg(feature = "exception-table")]
     if tf.fixup_exception() {
         return;
     }
@@ -128,7 +128,7 @@ fn aarch64_trap_handler(tf: &mut TrapFrame, kind: TrapKind, source: TrapSource) 
             );
         }
         TrapKind::Irq => {
-            crate::trap::irq_handler(0);
+            crate::trap::dispatch_irq(0);
         }
         TrapKind::Synchronous => {
             #[cfg(not(feature = "arm-el2"))]

@@ -2,7 +2,7 @@
 
 use alloc::{collections::BTreeMap, sync::Arc};
 
-use spin::Mutex;
+use ax_kspin::SpinNoIrq as Mutex;
 
 use super::{
     error::{IonError, IonResult},

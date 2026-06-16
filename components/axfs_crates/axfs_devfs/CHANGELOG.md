@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.12](https://github.com/rcore-os/tgoskits/compare/ax-fs-devfs-v0.3.11...ax-fs-devfs-v0.3.12) - 2026-06-03
+
+### Fixed
+
+- *(repo)* migrate spin usage to ax-kspin ([#861](https://github.com/rcore-os/tgoskits/pull/861))
+
+## [0.3.11](https://github.com/rcore-os/tgoskits/compare/ax-fs-devfs-v0.3.10...ax-fs-devfs-v0.3.11) - 2026-05-22
+
+### Other
+
+- updated the following local packages: ax-fs-vfs
+
 ## [0.3.10](https://github.com/rcore-os/tgoskits/compare/ax-fs-devfs-v0.3.9...ax-fs-devfs-v0.3.10) - 2026-05-19
 
 ### Other

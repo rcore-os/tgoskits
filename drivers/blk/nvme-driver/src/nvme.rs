@@ -1,7 +1,7 @@
 use alloc::vec::Vec;
 use core::ptr::NonNull;
 
-use dma_api::{DeviceDma, DmaDirection, DmaOp};
+use dma_api::{CoherentArray, DeviceDma, DmaDirection, DmaOp};
 use log::{debug, info};
 use mmio_api::{Mmio, MmioAddr, MmioOp};
 
@@ -20,10 +20,11 @@ pub struct Nvme {
     _mmio: Option<Mmio>,
     dma: DeviceDma,
     admin_queue: NvmeQueue,
-    io_queues: Vec<NvmeQueue>,
+    io_queues: Vec<Option<NvmeQueue>>,
     num_ns: usize,
     sqes: u32,
     cqes: u32,
+    page_size: usize,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -71,6 +72,7 @@ impl Nvme {
             num_ns: 0,
             sqes: 6,
             cqes: 4,
+            page_size: config.page_size,
         };
 
         let version = s.version();
@@ -95,9 +97,7 @@ impl Nvme {
 
     fn reset_and_setup_controller_info(&mut self) -> Result<ControllerInfo> {
         self.reset();
-
         self.nvme_configure_admin_queue();
-
         self.reg().ready_for_read_controller_info();
 
         self.get_identfy(IdentifyController::new())
@@ -110,19 +110,14 @@ impl Nvme {
 
         self.sqes = controller.sqes_min as _;
         self.cqes = controller.cqes_min as _;
-
         self.reset();
-
         self.nvme_configure_admin_queue();
-
         self.reg().setup_cc(self.sqes, self.cqes);
-
         let controller = self.get_identfy(IdentifyController::new())?;
 
         debug!("Controller: {:?}", controller);
 
         self.num_ns = controller.number_of_namespaces as _;
-
         self.config_io_queue(config)?;
 
         debug!("IO queue ok.");
@@ -199,7 +194,7 @@ impl Nvme {
                 io_queue.cq.len() as _,
                 io_queue.cq.bus_addr(),
                 true,
-                false,
+                true,
                 0,
             );
             self.admin_queue.command_sync(data)?;
@@ -216,10 +211,31 @@ impl Nvme {
 
             self.admin_queue.command_sync(data)?;
 
-            self.io_queues.push(io_queue);
+            self.io_queues.push(Some(io_queue));
         }
 
         Ok(())
+    }
+
+    pub fn io_queue_count(&self) -> usize {
+        self.io_queues.len()
+    }
+
+    pub fn page_size(&self) -> usize {
+        self.page_size
+    }
+
+    pub(crate) fn take_io_queue(&mut self, index: usize) -> Option<NvmeQueue> {
+        self.io_queues.get_mut(index)?.take()
+    }
+
+    pub(crate) fn alloc_prp_list(&self) -> Result<CoherentArray<u64>> {
+        self.dma
+            .coherent_array_zero_with_align(
+                self.page_size / core::mem::size_of::<u64>(),
+                self.page_size,
+            )
+            .map_err(Into::into)
     }
 
     pub fn get_identfy<T: Identify>(&mut self, mut want: T) -> Result<T::Output> {
@@ -228,14 +244,16 @@ impl Nvme {
         cmd.cdw0 = CommandSet::cdw0_from_opcode(command::Opcode::IDENTIFY);
         cmd.cdw10 = T::CNS;
 
-        let buff =
-            self.dma
-                .array_zero_with_align::<u8>(0x1000, 0x1000, DmaDirection::FromDevice)?;
+        let buff = self.dma.contiguous_array_zero_with_align::<u8>(
+            0x1000,
+            0x1000,
+            DmaDirection::FromDevice,
+        )?;
         cmd.prp1 = buff.dma_addr().as_u64();
 
         self.admin_queue.command_sync(*cmd)?;
 
-        let data: Vec<u8> = buff.iter().collect();
+        let data = buff.read_from_device(buff.len(), |data| data.to_vec());
         let res = want.parse(&data);
         Ok(res)
     }
@@ -251,12 +269,12 @@ impl Nvme {
             "buffer size must be multiple of lba size"
         );
 
-        let mut dma_buff = self.dma.array_zero_with_align::<u8>(
+        let mut dma_buff = self.dma.contiguous_array_zero_with_align::<u8>(
             buff.len(),
             ns.lba_size,
             DmaDirection::ToDevice,
         )?;
-        dma_buff.copy_from_slice(buff);
+        dma_buff.copy_to_device_from_slice(buff);
 
         let blk_num = dma_buff.len() / ns.lba_size;
 
@@ -267,7 +285,11 @@ impl Nvme {
             blk_num as _,
         );
 
-        self.io_queues[0].command_sync(cmd)?;
+        self.io_queues
+            .get_mut(0)
+            .and_then(Option::as_mut)
+            .ok_or(Error::Unknown("missing IO queue"))?
+            .command_sync(cmd)?;
 
         Ok(())
     }
@@ -283,7 +305,7 @@ impl Nvme {
             "buffer size must be multiple of lba size"
         );
 
-        let dma_buff = self.dma.array_zero_with_align::<u8>(
+        let dma_buff = self.dma.contiguous_array_zero_with_align::<u8>(
             buff.len(),
             ns.lba_size,
             DmaDirection::FromDevice,
@@ -298,11 +320,12 @@ impl Nvme {
             blk_num as _,
         );
 
-        self.io_queues[0].command_sync(cmd)?;
-
-        for (index, value) in dma_buff.iter().enumerate() {
-            buff[index] = value;
-        }
+        self.io_queues
+            .get_mut(0)
+            .and_then(Option::as_mut)
+            .ok_or(Error::Unknown("missing IO queue"))?
+            .command_sync(cmd)?;
+        dma_buff.copy_from_device_to_slice(buff);
         Ok(())
     }
 

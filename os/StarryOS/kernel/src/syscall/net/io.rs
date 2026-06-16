@@ -2,9 +2,9 @@ use alloc::{boxed::Box, vec::Vec};
 use core::{net::Ipv4Addr, time::Duration};
 
 use ax_errno::{AxError, AxResult};
-use ax_hal::time::wall_time;
 use ax_io::prelude::*;
-use axnet::{CMsgData, RecvFlags, RecvOptions, SendFlags, SendOptions, SocketAddrEx, SocketOps};
+use ax_net::{CMsgData, RecvFlags, RecvOptions, SendFlags, SendOptions, SocketAddrEx, SocketOps};
+use ax_runtime::hal::time::wall_time;
 use linux_raw_sys::{
     general::timespec,
     net::{
@@ -162,7 +162,20 @@ fn recv_impl(
 
     let Ok(socket) = Socket::from_fd(fd) else {
         if let Ok(netlink) = NetlinkSocket::from_fd(fd) {
-            let recv = netlink.read(&mut dst)?;
+            // Netlink is a FileLike, not an ax_net Socket, so the flag-aware recv
+            // path below is unreachable for it. Honor the recv flags here:
+            // MSG_PEEK (do not consume the dump — getifaddrs/dnsmasq peek-then-
+            // read to size their buffer), MSG_TRUNC (full datagram length),
+            // MSG_DONTWAIT (non-blocking).
+            let (recv, truncated) = netlink.recv(
+                &mut dst,
+                flags & MSG_PEEK != 0,
+                flags & MSG_TRUNC != 0,
+                flags & MSG_DONTWAIT != 0,
+            )?;
+            // Surface MSG_TRUNC in the returned `msg_flags` when the datagram
+            // did not fit (Linux sets it; getifaddrs sizes its buffer from it).
+            *truncated_out = truncated;
             if !addr.is_null() {
                 super::addr::write_netlink_addr(
                     &netlink.kernel_addr(),

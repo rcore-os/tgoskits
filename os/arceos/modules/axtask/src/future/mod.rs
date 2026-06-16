@@ -12,7 +12,7 @@ use ax_errno::AxError;
 use ax_kernel_guard::NoPreemptIrqSave;
 use ax_kspin::SpinNoIrq;
 
-use crate::{AxTaskRef, WeakAxTaskRef, current, current_run_queue, select_run_queue};
+use crate::{AxTaskRef, WeakAxTaskRef, current, current_run_queue, select_wake_run_queue};
 
 mod poll;
 pub use poll::*;
@@ -41,25 +41,27 @@ impl Wake for AxWaker {
 
     fn wake_by_ref(self: &Arc<Self>) {
         if let Some(task) = self.task.upgrade() {
-            let mut rq = select_run_queue::<NoPreemptIrqSave>(&task);
+            let mut rq = select_wake_run_queue::<NoPreemptIrqSave>(&task);
             *self.woke.lock() = true;
-            rq.unblock_task(task, false);
+            rq.unblock_task(task, true);
         }
     }
 }
 
-/// Blocks the current task until the given future is resolved.
+/// Blocks the current task until the given future is resolved or the task
+/// is interrupted by a signal.
 ///
-/// Note that this doesn't handle interruption and is not recommended for direct
-/// use in most cases.
+/// When the task's `interrupted` flag is set (by `task.interrupt()`, typically
+/// from signal delivery), this function yields the CPU to allow signal
+/// processing on the return-to-userspace path. The future will be re-polled
+/// after the yield.
+#[track_caller]
 pub fn block_on<F: IntoFuture>(f: F) -> F::Output {
     crate::api::might_sleep();
 
     let mut fut = pin!(f.into_future());
 
     let curr = current();
-    // It's necessary to keep a strong reference to the current task
-    // to prevent it from being dropped while blocking.
     let task = curr.clone();
 
     let axwaker = AxWaker::new(&task);
@@ -69,20 +71,22 @@ pub fn block_on<F: IntoFuture>(f: F) -> F::Output {
     loop {
         match fut.as_mut().poll(&mut cx) {
             Poll::Pending => {
+                // Before sleeping, check if a signal has arrived. If so,
+                // yield instead of blocking so that the future's
+                // interruptible wrapper or poll_interrupt can observe
+                // the flag on the next poll. Use a non-consuming read
+                // to avoid stealing the flag from consumers that call
+                // poll_interrupt / take_interrupt themselves.
+                if task.interrupted() {
+                    crate::yield_now();
+                    continue;
+                }
+
                 let mut rq = current_run_queue::<NoPreemptIrqSave>();
                 let mut woke = axwaker.woke.lock();
                 if !*woke {
-                    // blocked_resched() will set *woke = false and drop
-                    // the guard internally before rescheduling. When this
-                    // task is woken, woke will be set to true by the waker
-                    // and we'll re-enter the loop to poll again.
                     rq.future_blocked_resched(woke);
                 } else {
-                    // ③ woke = true: waker fired between poll() returning
-                    // Pending and us acquiring the lock.
-                    // Clear under the current lock hold, then drop.
-                    // If an interrupt sets woke=true after drop(), the next
-                    // loop iteration will see it correctly.
                     *woke = false;
                     drop(woke);
                     drop(rq);

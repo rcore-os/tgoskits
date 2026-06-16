@@ -7,6 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.3](https://github.com/rcore-os/tgoskits/compare/ax-dma-v0.6.2...ax-dma-v0.6.3) - 2026-06-12
+
+### Other
+
+- updated the following local packages: ax-hal, ax-alloc, ax-mm
+
+## [0.6.2](https://github.com/rcore-os/tgoskits/compare/ax-dma-v0.6.1...ax-dma-v0.6.2) - 2026-06-11
+
+### Other
+
+- updated the following local packages: ax-alloc, ax-config, ax-hal, ax-mm
+
+## [0.6.1](https://github.com/rcore-os/tgoskits/compare/ax-dma-v0.6.0...ax-dma-v0.6.1) - 2026-06-09
+
+### Other
+
+- updated the following local packages: ax-kspin, ax-alloc, ax-config, ax-hal, ax-mm
+
+## [0.6.0](https://github.com/rcore-os/tgoskits/compare/ax-dma-v0.5.15...ax-dma-v0.6.0) - 2026-06-03
+
+### Other
+
+- *(ax-alloc)* remove ax-allocator dependency, simplify to TLSF/buddy-slab backends ([#987](https://github.com/rcore-os/tgoskits/pull/987))
+- Refactor workspace structure and update dependencies ([#864](https://github.com/rcore-os/tgoskits/pull/864))
+
+## [0.5.15](https://github.com/rcore-os/tgoskits/compare/ax-dma-v0.5.14...ax-dma-v0.5.15) - 2026-05-22
+
+### Other
+
+- updated the following local packages: ax-hal, ax-allocator, ax-alloc, ax-mm
+
 ## [0.5.14](https://github.com/rcore-os/tgoskits/compare/ax-dma-v0.5.13...ax-dma-v0.5.14) - 2026-05-19
 
 ### Other

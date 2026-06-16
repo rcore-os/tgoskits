@@ -1,0 +1,5 @@
+features = [
+  "k230",
+]
+log = "Info"
+target = "riscv64gc-unknown-none-elf"

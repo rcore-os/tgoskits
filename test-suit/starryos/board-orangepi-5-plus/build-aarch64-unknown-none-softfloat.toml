@@ -1,0 +1,15 @@
+# Build-time config template for StarryOS on Orange Pi 5 Plus.
+target = "aarch64-unknown-none-softfloat"
+# Runtime U-Boot settings live in `orangepi-5-plus-uboot.toml`.
+features = [
+  "ax-driver/list-pci-devices",
+  "ax-driver/rk3588-pcie",
+  "ax-driver/realtek-rtl8125",
+  "ax-driver/rockchip-soc",
+  "ax-driver/rockchip-dwc-xhci",
+  "ax-driver/rockchip-sdhci",
+  "ax-driver/rockchip-dwmmc",
+  "rknpu",
+]
+log = "Info"
+max_cpu_num = 1

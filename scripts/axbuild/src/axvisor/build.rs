@@ -19,6 +19,9 @@ pub type AxvisorBuildInfo = crate::build::BuildInfo;
 pub use crate::build::LogLevel;
 
 pub const AXVISOR_PACKAGE: &str = "axvisor";
+const AXVISOR_PLAT_DYN_FEATURES: &[&str] =
+    &["axvm/plat-dyn", "ax-std/plat-dyn", "ax-driver/plat-dyn"];
+const REMOVED_AXVISOR_PLATFORM_FEATURES: &[&str] = &["x86-qemu-q35"];
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Default)]
 pub struct AxvisorBoardConfig {
@@ -53,8 +56,8 @@ impl AxvisorBoardFile {
     }
 }
 
-pub(crate) fn default_axvisor_build_info_for_target(target: &str) -> AxvisorBuildInfo {
-    let mut build_info = AxvisorBuildInfo::default_for_target(target);
+pub(crate) fn default_axvisor_build_info() -> AxvisorBuildInfo {
+    let mut build_info = AxvisorBuildInfo::default();
     build_info.features.clear();
     build_info
 }
@@ -76,6 +79,8 @@ pub(crate) fn load_board_file(path: &Path) -> anyhow::Result<AxvisorBoardFile> {
             path.display()
         )
     })?;
+    crate::build::reject_removed_std_field(path, &content)?;
+    crate::build::reject_arceos_app_c_field(path, &content)?;
     toml::from_str(&content).map_err(|e| {
         anyhow!(
             "failed to parse Axvisor board config {}: {e}",
@@ -125,10 +130,24 @@ fn to_cargo_config(
     metadata: &cargo_metadata::Metadata,
 ) -> anyhow::Result<Cargo> {
     config.target = request.target.clone();
+    let makefile_features = crate::build::makefile_features_from_env();
+    crate::build::apply_makefile_features_with_metadata(
+        &mut config.build_info,
+        &request.package,
+        &makefile_features,
+        metadata,
+    );
+    let known_platforms = platform_feature_names(metadata);
+    reject_unsupported_nested_platform_features(&config.build_info.features, &known_platforms)?;
     let plat_dyn = config
         .build_info
         .effective_plat_dyn(&config.target, request.plat_dyn);
-    normalize_axvisor_platform_features(&mut config.build_info.features, plat_dyn);
+    normalize_axvisor_feature_surface(
+        &mut config.build_info.features,
+        &config.target,
+        plat_dyn,
+        metadata,
+    )?;
     let mut cargo = config
         .build_info
         .into_prepared_base_cargo_config_with_metadata(
@@ -137,17 +156,20 @@ fn to_cargo_config(
             request.plat_dyn,
             metadata,
         )?;
-    patch_axvisor_cargo_config(&mut cargo, request, &config.vm_configs)?;
+    if plat_dyn {
+        normalize_axvisor_plat_dyn_features(&mut cargo.features);
+    }
+    patch_axvisor_cargo_config(&mut cargo, request, metadata, &config.vm_configs)?;
     Ok(cargo)
 }
 
 fn patch_axvisor_cargo_config(
     cargo: &mut Cargo,
     request: &ResolvedAxvisorRequest,
+    metadata: &cargo_metadata::Metadata,
     config_vmconfigs: &[PathBuf],
 ) -> anyhow::Result<()> {
     cargo.package = request.package.clone();
-    cargo.target = request.target.clone();
     cargo.to_bin = default_axvisor_to_bin(&request.arch);
     ensure_axvisor_bin_arg(&mut cargo.args);
     cargo
@@ -156,6 +178,14 @@ fn patch_axvisor_cargo_config(
     cargo
         .env
         .insert("AX_TARGET".to_string(), request.target.clone());
+    let plat_dyn = cargo
+        .features
+        .iter()
+        .any(|feature| is_axvisor_plat_dyn_feature(feature));
+    normalize_axvisor_feature_surface(&mut cargo.features, &request.target, plat_dyn, metadata)?;
+    if plat_dyn {
+        normalize_axvisor_plat_dyn_features(&mut cargo.features);
+    }
 
     let vmconfigs = if request.vmconfigs.is_empty() {
         config_vmconfigs
@@ -174,14 +204,251 @@ fn patch_axvisor_cargo_config(
         );
     }
 
-    let cargo_uses_plat_dyn = cargo.features.iter().any(|f| f == "ax-std/plat-dyn");
-    normalize_axvisor_platform_features(&mut cargo.features, cargo_uses_plat_dyn);
     if request.arch == "x86_64" {
         x86::normalize_backend_features(&mut cargo.features)?;
     }
     cargo.features.sort();
     cargo.features.dedup();
     Ok(())
+}
+
+fn normalize_axvisor_feature_surface(
+    features: &mut Vec<String>,
+    target: &str,
+    plat_dyn: bool,
+    metadata: &cargo_metadata::Metadata,
+) -> anyhow::Result<()> {
+    let known_platforms = platform_feature_names(metadata);
+    let selected_platform =
+        select_axvisor_platform_feature(features, target, plat_dyn, &known_platforms, metadata)?;
+
+    let Some(platform) = selected_platform else {
+        retain_non_platform_features(features, &known_platforms);
+        return Ok(());
+    };
+
+    features.retain(|feature| {
+        if feature == &platform {
+            return true;
+        }
+
+        if nested_platform_feature_name(feature, &known_platforms).is_some() {
+            return false;
+        }
+
+        if ax_hal_platform_feature_name(feature, &known_platforms).is_some() {
+            return false;
+        }
+
+        if known_platforms.iter().any(|platform| platform == feature) {
+            return false;
+        }
+
+        true
+    });
+    if !features.iter().any(|feature| feature == &platform) {
+        features.push(platform);
+    }
+    Ok(())
+}
+
+fn retain_non_platform_features(features: &mut Vec<String>, known_platforms: &[String]) {
+    features.retain(|feature| {
+        nested_platform_feature_name(feature, known_platforms).is_none()
+            && ax_hal_platform_feature_name(feature, known_platforms).is_none()
+            && !known_platforms.iter().any(|platform| platform == feature)
+    });
+}
+
+fn reject_unsupported_nested_platform_features(
+    features: &[String],
+    known_platforms: &[String],
+) -> anyhow::Result<()> {
+    if let Some(feature) = features
+        .iter()
+        .find(|feature| removed_axvisor_platform_feature_name(feature).is_some())
+    {
+        return Err(anyhow!(
+            "Axvisor platform feature `{feature}` has been removed; use `plat_dyn = true` for \
+             x86_64 dynamic platform builds"
+        ));
+    }
+
+    if let Some(feature) = features
+        .iter()
+        .find(|feature| is_axvisor_plat_dyn_feature(feature))
+    {
+        return Err(anyhow!(
+            "Axvisor build configs enable dynamic platforms by default; remove dynamic platform \
+             features from `features`; found `{feature}`"
+        ));
+    }
+
+    if let Some(feature) = features.iter().find(|feature| {
+        nested_platform_feature_name(feature, known_platforms).is_some()
+            || known_platforms.iter().any(|platform| platform == *feature)
+    }) {
+        return Err(anyhow!(
+            "Axvisor build configs must use ax-hal platform features directly; found `{feature}`"
+        ));
+    }
+    Ok(())
+}
+
+fn normalize_axvisor_plat_dyn_features(features: &mut Vec<String>) {
+    features.retain(|feature| !is_axvisor_plat_dyn_feature(feature));
+    features.extend(
+        AXVISOR_PLAT_DYN_FEATURES
+            .iter()
+            .map(|feature| (*feature).to_string()),
+    );
+}
+
+fn is_axvisor_plat_dyn_feature(feature: &str) -> bool {
+    matches!(
+        feature,
+        "dyn-plat"
+            | "plat-dyn"
+            | "ax-feat/plat-dyn"
+            | "ax-hal/plat-dyn"
+            | "ax-std/plat-dyn"
+            | "axvm/plat-dyn"
+            | "ax-driver/plat-dyn"
+    )
+}
+
+fn removed_axvisor_platform_feature_name(feature: &str) -> Option<&str> {
+    let name = feature
+        .strip_prefix("ax-hal/")
+        .or_else(|| feature.strip_prefix("ax-std/"))
+        .or_else(|| feature.strip_prefix("ax-feat/"))
+        .unwrap_or(feature);
+    REMOVED_AXVISOR_PLATFORM_FEATURES
+        .iter()
+        .find(|platform| **platform == name)
+        .copied()
+}
+
+fn select_axvisor_platform_feature(
+    features: &[String],
+    target: &str,
+    plat_dyn: bool,
+    known_platforms: &[String],
+    metadata: &cargo_metadata::Metadata,
+) -> anyhow::Result<Option<String>> {
+    if plat_dyn {
+        return Ok(None);
+    }
+
+    let explicit = features
+        .iter()
+        .filter(|feature| ax_hal_platform_feature_name(feature, known_platforms).is_some())
+        .cloned()
+        .collect::<Vec<_>>();
+
+    if explicit.len() > 1 {
+        return Err(anyhow!(
+            "Axvisor build configs must select only one platform feature; found {}",
+            explicit.join(", ")
+        ));
+    }
+    if let Some(platform) = explicit.into_iter().next() {
+        return Ok(Some(platform));
+    }
+
+    default_axvisor_platform_feature(target, metadata)
+}
+
+fn default_axvisor_platform_feature(
+    target: &str,
+    metadata: &cargo_metadata::Metadata,
+) -> anyhow::Result<Option<String>> {
+    let arch = arch_for_target_checked(target)?;
+    let candidates = platform_metadata_entries(metadata)
+        .into_iter()
+        .filter(|platform| !platform.dynamic && platform.arch == arch)
+        .collect::<Vec<_>>();
+    let defaults = candidates
+        .iter()
+        .filter(|platform| platform.default_for_arch)
+        .collect::<Vec<_>>();
+    let platform = match defaults.as_slice() {
+        [platform] => Some(*platform),
+        [] => match candidates.as_slice() {
+            [platform] => Some(platform),
+            [] => None,
+            _ => {
+                return Err(anyhow!(
+                    "Axvisor build configs must select an explicit platform feature for arch \
+                     `{arch}`"
+                ));
+            }
+        },
+        _ => {
+            return Err(anyhow!(
+                "multiple Axvisor default platform features are registered for arch `{arch}`"
+            ));
+        }
+    };
+    Ok(platform.map(|platform| format!("ax-hal/{}", platform.platform)))
+}
+
+fn platform_feature_names(metadata: &cargo_metadata::Metadata) -> Vec<String> {
+    let mut platforms = platform_metadata_entries(metadata)
+        .into_iter()
+        .map(|platform| platform.platform)
+        .collect::<Vec<_>>();
+    platforms.sort();
+    platforms.dedup();
+    platforms
+}
+
+fn platform_metadata_entries(metadata: &cargo_metadata::Metadata) -> Vec<AxplatMetadata> {
+    metadata
+        .packages
+        .iter()
+        .filter_map(|package| {
+            package
+                .metadata
+                .get("axplat")
+                .cloned()
+                .and_then(|metadata| serde_json::from_value::<AxplatMetadata>(metadata).ok())
+        })
+        .collect()
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default)]
+#[serde(rename_all = "kebab-case")]
+struct AxplatMetadata {
+    platform: String,
+    arch: String,
+    default_for_arch: bool,
+    dynamic: bool,
+}
+
+fn nested_platform_feature_name<'a>(
+    feature: &'a str,
+    known_platforms: &[String],
+) -> Option<&'a str> {
+    feature
+        .strip_prefix("ax-std/")
+        .or_else(|| feature.strip_prefix("ax-feat/"))
+        .filter(|name| is_platform_control_feature(name, known_platforms))
+}
+
+fn ax_hal_platform_feature_name<'a>(
+    feature: &'a str,
+    known_platforms: &[String],
+) -> Option<&'a str> {
+    feature
+        .strip_prefix("ax-hal/")
+        .filter(|name| known_platforms.iter().any(|platform| platform == name))
+}
+
+fn is_platform_control_feature(name: &str, known_platforms: &[String]) -> bool {
+    matches!(name, "plat-dyn" | "defplat" | "myplat")
+        || known_platforms.iter().any(|platform| platform == name)
 }
 
 fn resolve_build_config_vmconfig_path(request: &ResolvedAxvisorRequest, path: &Path) -> PathBuf {
@@ -209,29 +476,6 @@ fn ensure_axvisor_bin_arg(args: &mut Vec<String>) {
     args.push(AXVISOR_PACKAGE.to_string());
 }
 
-fn normalize_axvisor_platform_features(features: &mut Vec<String>, plat_dyn: bool) {
-    let has_axstd_defplat = features.iter().any(|feature| feature == "ax-std/defplat");
-    let has_axstd_myplat = features.iter().any(|feature| feature == "ax-std/myplat");
-    let has_axstd_plat_dyn = features.iter().any(|feature| feature == "ax-std/plat-dyn");
-
-    if has_axstd_defplat && !has_axstd_myplat {
-        for feature in features.iter_mut() {
-            if feature == "ax-std/defplat" {
-                *feature = "ax-std/myplat".to_string();
-            }
-        }
-    } else {
-        features.retain(|feature| feature != "ax-std/defplat");
-    }
-
-    if !plat_dyn
-        && !has_axstd_plat_dyn
-        && !features.iter().any(|feature| feature == "ax-std/myplat")
-    {
-        features.push("ax-std/myplat".to_string());
-    }
-}
-
 pub(crate) fn load_target_from_build_config(path: &Path) -> anyhow::Result<Option<String>> {
     let content = fs::read_to_string(path).map_err(|e| {
         anyhow!(
@@ -239,6 +483,8 @@ pub(crate) fn load_target_from_build_config(path: &Path) -> anyhow::Result<Optio
             path.display()
         )
     })?;
+    crate::build::reject_removed_std_field(path, &content)?;
+    crate::build::reject_arceos_app_c_field(path, &content)?;
 
     if let Ok(board_file) = toml::from_str::<AxvisorBoardFile>(&content) {
         return Ok(Some(board_file.target));
@@ -276,7 +522,7 @@ fn load_build_config(request: &ResolvedAxvisorRequest) -> anyhow::Result<LoadedA
             return Ok(loaded);
         }
 
-        let default_build_info = default_axvisor_build_info_for_target(&request.target);
+        let default_build_info = default_axvisor_build_info();
         fs::write(
             &request.build_info_path,
             toml::to_string_pretty(&default_build_info)?,
@@ -299,6 +545,8 @@ fn load_build_config(request: &ResolvedAxvisorRequest) -> anyhow::Result<LoadedA
             request.build_info_path.display()
         )
     })?;
+    crate::build::reject_removed_std_field(&request.build_info_path, &content)?;
+    crate::build::reject_arceos_app_c_field(&request.build_info_path, &content)?;
 
     if let Ok(board_config) = toml::from_str::<AxvisorBoardFile>(&content) {
         let mut loaded = board_config.into_loaded();
@@ -330,11 +578,47 @@ fn load_build_config(request: &ResolvedAxvisorRequest) -> anyhow::Result<LoadedA
 
 #[cfg(test)]
 mod tests {
-    use std::{fs, path::Path};
+    use std::{
+        env,
+        ffi::{OsStr, OsString},
+        fs,
+        path::Path,
+        sync::{LazyLock, Mutex},
+    };
 
     use tempfile::tempdir;
 
     use super::*;
+
+    static ENV_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
+
+    struct TempEnvVar {
+        key: &'static str,
+        original: Option<OsString>,
+    }
+
+    impl TempEnvVar {
+        fn set(key: &'static str, value: impl AsRef<OsStr>) -> Self {
+            let original = env::var_os(key);
+            unsafe {
+                env::set_var(key, value);
+            }
+            Self { key, original }
+        }
+    }
+
+    impl Drop for TempEnvVar {
+        fn drop(&mut self) {
+            match self.original.as_ref() {
+                Some(value) => unsafe {
+                    env::set_var(self.key, value);
+                },
+                None => unsafe {
+                    env::remove_var(self.key);
+                },
+            }
+        }
+    }
 
     fn write_board(axvisor_dir: &Path, name: &str, body: &str) -> PathBuf {
         let path = axvisor_dir
@@ -426,11 +710,9 @@ mod tests {
             path.parent().unwrap(),
             "qemu-aarch64",
             r#"
-env = { AX_IP = "10.0.2.15", AX_GW = "10.0.2.2" }
 target = "aarch64-unknown-none-softfloat"
-features = ["ept-level-4", "ax-std/bus-mmio"]
+features = ["ept-level-4"]
 log = "Info"
-plat_dyn = true
 vm_configs = []
 "#,
         );
@@ -443,7 +725,22 @@ vm_configs = []
         .unwrap();
 
         assert!(cargo.features.contains(&"ept-level-4".to_string()));
-        assert!(cargo.features.contains(&"ax-std/bus-mmio".to_string()));
+        assert!(
+            cargo
+                .features
+                .contains(&concat!("ax-driver/", "plat-dyn").to_string())
+        );
+        assert!(
+            cargo
+                .features
+                .contains(&concat!("ax-std/", "plat-dyn").to_string())
+        );
+        assert!(
+            cargo
+                .features
+                .contains(&concat!("axvm/", "plat-dyn").to_string())
+        );
+        assert!(!cargo.features.contains(&"dyn-plat".to_string()));
         assert!(path.exists());
     }
 
@@ -455,10 +752,8 @@ vm_configs = []
         fs::write(
             &config_path,
             r#"
-env = {}
 features = ["fs", "ept-level-4"]
 log = "Info"
-plat_dyn = true
 "#,
         )
         .unwrap();
@@ -479,7 +774,11 @@ plat_dyn = true
         .unwrap();
 
         assert_eq!(cargo.package, AXVISOR_PACKAGE);
-        assert_eq!(cargo.target, "aarch64-unknown-none-softfloat");
+        assert!(
+            cargo
+                .target
+                .ends_with("scripts/targets/std/pie/aarch64-unknown-linux-musl.json")
+        );
         assert_eq!(
             cargo.env.get("AX_ARCH").map(String::as_str),
             Some("aarch64")
@@ -513,7 +812,6 @@ plat_dyn = true
         fs::write(
             &path,
             r#"
-env = { AX_IP = "10.0.2.15", AX_GW = "10.0.2.2" }
 features = []
 log = "Info"
 target = "aarch64-unknown-none-softfloat"
@@ -529,6 +827,52 @@ vm_configs = []
     }
 
     #[test]
+    fn load_target_from_build_config_rejects_removed_std_field() {
+        let root = tempdir().unwrap();
+        let path = root.path().join("qemu-aarch64.toml");
+        fs::write(
+            &path,
+            r#"
+std = true
+features = []
+log = "Info"
+target = "aarch64-unknown-none-softfloat"
+"#,
+        )
+        .unwrap();
+
+        let err = load_target_from_build_config(&path).unwrap_err();
+
+        assert!(
+            err.to_string().contains("uses removed `std` field"),
+            "{err:#}"
+        );
+    }
+
+    #[test]
+    fn load_target_from_build_config_rejects_arceos_app_c_field() {
+        let root = tempdir().unwrap();
+        let path = root.path().join("qemu-aarch64.toml");
+        fs::write(
+            &path,
+            r#"
+app-c = "c"
+features = []
+log = "Info"
+target = "aarch64-unknown-none-softfloat"
+"#,
+        )
+        .unwrap();
+
+        let err = load_target_from_build_config(&path).unwrap_err();
+
+        assert!(
+            err.to_string().contains("uses ArceOS-only `app-c` field"),
+            "{err:#}"
+        );
+    }
+
+    #[test]
     fn load_cargo_config_uses_board_defaults_when_default_file_is_missing() {
         let root = tempdir().unwrap();
         let path = root
@@ -539,7 +883,6 @@ vm_configs = []
             path.parent().unwrap(),
             "qemu-x86_64",
             r#"
-env = { AX_IP = "10.0.2.15", AX_GW = "10.0.2.2" }
 target = "x86_64-unknown-none"
 features = ["ept-level-4", "fs", "vmx"]
 log = "Info"
@@ -570,27 +913,30 @@ vm_configs = []
         assert!(cargo.features.contains(&"ept-level-4".to_string()));
         assert!(cargo.features.contains(&"fs".to_string()));
         assert!(cargo.features.contains(&"vmx".to_string()));
-        assert!(!cargo.features.contains(&"ax-std/plat-dyn".to_string()));
+        assert!(cargo.features.contains(&"ax-std/plat-dyn".to_string()));
+        assert!(cargo.features.contains(&"axvm/plat-dyn".to_string()));
+        assert!(cargo.features.contains(&"ax-driver/plat-dyn".to_string()));
         assert!(!cargo.features.contains(&"ax-std/defplat".to_string()));
-        assert!(cargo.features.contains(&"ax-std/myplat".to_string()));
+        assert!(!cargo.features.contains(&"ax-std/x86-pc".to_string()));
+        assert!(!cargo.features.contains(&"ax-hal/x86-pc".to_string()));
+        assert!(!cargo.features.contains(&"ax-hal/x86-qemu-q35".to_string()));
     }
 
     #[test]
-    fn load_cargo_config_replaces_axstd_defplat_with_myplat() {
+    fn load_cargo_config_rejects_non_dynamic_aarch64_without_custom_platform() {
         let root = tempdir().unwrap();
         let config_path = root.path().join(".build.toml");
         fs::write(
             &config_path,
             r#"
-env = {}
-features = ["ax-std", "ax-std/defplat", "ept-level-4"]
+features = ["ax-std", "ept-level-4"]
 log = "Info"
 plat_dyn = false
 "#,
         )
         .unwrap();
 
-        let cargo = load_cargo_config(&ResolvedAxvisorRequest {
+        let result = load_cargo_config(&ResolvedAxvisorRequest {
             package: AXVISOR_PACKAGE.to_string(),
             axvisor_dir: root.path().join("os/axvisor"),
             arch: "aarch64".to_string(),
@@ -602,12 +948,233 @@ plat_dyn = false
             qemu_config: None,
             uboot_config: None,
             vmconfigs: vec![],
+        });
+
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("no default platform package is registered for arch `aarch64`")
+        );
+    }
+
+    #[test]
+    fn load_cargo_config_rejects_removed_nested_axstd_platform_feature() {
+        let root = tempdir().unwrap();
+        let config_path = root.path().join(".build.toml");
+        fs::write(
+            &config_path,
+            r#"
+features = ["ax-std/x86-qemu-q35", "ept-level-4"]
+log = "Info"
+plat_dyn = false
+"#,
+        )
+        .unwrap();
+
+        let err = load_cargo_config(&ResolvedAxvisorRequest {
+            package: AXVISOR_PACKAGE.to_string(),
+            axvisor_dir: root.path().join("os/axvisor"),
+            arch: "x86_64".to_string(),
+            target: "x86_64-unknown-none".to_string(),
+            plat_dyn: Some(false),
+            smp: None,
+            debug: false,
+            build_info_path: config_path,
+            qemu_config: None,
+            uboot_config: None,
+            vmconfigs: vec![],
+        })
+        .unwrap_err();
+
+        assert!(err.to_string().contains("has been removed"));
+        assert!(err.to_string().contains("plat_dyn = true"));
+    }
+
+    #[test]
+    fn load_cargo_config_rejects_removed_x86_q35_platform_feature() {
+        let root = tempdir().unwrap();
+        let config_path = root.path().join(".build.toml");
+        fs::write(
+            &config_path,
+            r#"
+features = ["ax-hal/x86-qemu-q35", "ept-level-4"]
+log = "Info"
+plat_dyn = false
+"#,
+        )
+        .unwrap();
+
+        let err = load_cargo_config(&ResolvedAxvisorRequest {
+            package: AXVISOR_PACKAGE.to_string(),
+            axvisor_dir: root.path().join("os/axvisor"),
+            arch: "x86_64".to_string(),
+            target: "x86_64-unknown-none".to_string(),
+            plat_dyn: Some(false),
+            smp: None,
+            debug: false,
+            build_info_path: config_path,
+            qemu_config: None,
+            uboot_config: None,
+            vmconfigs: vec![],
+        })
+        .unwrap_err();
+
+        assert!(err.to_string().contains("has been removed"));
+        assert!(err.to_string().contains("plat_dyn = true"));
+    }
+
+    #[test]
+    fn load_cargo_config_drops_static_platform_when_plat_dyn_is_defaulted() {
+        let root = tempdir().unwrap();
+        let config_path = root.path().join(".build.toml");
+        fs::write(
+            &config_path,
+            r#"
+features = ["ax-hal/riscv64-sg2002", "fs"]
+log = "Info"
+"#,
+        )
+        .unwrap();
+
+        let cargo = load_cargo_config(&ResolvedAxvisorRequest {
+            package: AXVISOR_PACKAGE.to_string(),
+            axvisor_dir: root.path().join("os/axvisor"),
+            arch: "riscv64".to_string(),
+            target: "riscv64gc-unknown-none-elf".to_string(),
+            plat_dyn: None,
+            smp: None,
+            debug: false,
+            build_info_path: config_path,
+            qemu_config: None,
+            uboot_config: None,
+            vmconfigs: vec![],
         })
         .unwrap();
 
-        assert!(!cargo.features.contains(&"ax-std/defplat".to_string()));
-        assert!(cargo.features.contains(&"ax-std/myplat".to_string()));
-        assert!(cargo.args.iter().any(|arg| arg.contains("-Tlinker.x")));
+        assert!(
+            !cargo
+                .features
+                .contains(&"ax-hal/riscv64-sg2002".to_string())
+        );
+        assert!(cargo.features.contains(&"ax-std/plat-dyn".to_string()));
+        assert!(cargo.features.contains(&"axvm/plat-dyn".to_string()));
+        assert!(cargo.features.contains(&"ax-driver/plat-dyn".to_string()));
+    }
+
+    #[test]
+    fn load_cargo_config_uses_dynamic_x86_platform_from_board_config() {
+        let root = tempdir().unwrap();
+        let config_path = root.path().join(".build.toml");
+        fs::write(
+            &config_path,
+            r#"
+features = ["ax-driver/virtio-blk", "ept-level-4", "fs", "vmx"]
+log = "Info"
+"#,
+        )
+        .unwrap();
+
+        let cargo = load_cargo_config(&ResolvedAxvisorRequest {
+            package: AXVISOR_PACKAGE.to_string(),
+            axvisor_dir: root.path().join("os/axvisor"),
+            arch: "x86_64".to_string(),
+            target: "x86_64-unknown-none".to_string(),
+            plat_dyn: None,
+            smp: None,
+            debug: false,
+            build_info_path: config_path,
+            qemu_config: None,
+            uboot_config: None,
+            vmconfigs: vec![],
+        })
+        .unwrap();
+
+        assert!(cargo.features.contains(&"ax-std/plat-dyn".to_string()));
+        assert!(cargo.features.contains(&"axvm/plat-dyn".to_string()));
+        assert!(cargo.features.contains(&"ax-driver/plat-dyn".to_string()));
+        assert!(!cargo.features.contains(&"dyn-plat".to_string()));
+        assert!(!cargo.features.contains(&"ax-hal/x86-pc".to_string()));
+        assert!(!cargo.features.contains(&"ax-hal/x86-qemu-q35".to_string()));
+        assert!(
+            !cargo
+                .features
+                .contains(&"ax-driver/plat-static".to_string())
+        );
+    }
+
+    #[test]
+    fn load_cargo_config_defaults_x86_to_dynamic_platform_when_omitted() {
+        let root = tempdir().unwrap();
+        let config_path = root.path().join(".build.toml");
+        fs::write(
+            &config_path,
+            r#"
+features = ["ept-level-4", "fs", "vmx"]
+log = "Info"
+"#,
+        )
+        .unwrap();
+
+        let cargo = load_cargo_config(&ResolvedAxvisorRequest {
+            package: AXVISOR_PACKAGE.to_string(),
+            axvisor_dir: root.path().join("os/axvisor"),
+            arch: "x86_64".to_string(),
+            target: "x86_64-unknown-none".to_string(),
+            plat_dyn: None,
+            smp: None,
+            debug: false,
+            build_info_path: config_path,
+            qemu_config: None,
+            uboot_config: None,
+            vmconfigs: vec![],
+        })
+        .unwrap();
+
+        assert!(cargo.features.contains(&"ax-std/plat-dyn".to_string()));
+        assert!(cargo.features.contains(&"axvm/plat-dyn".to_string()));
+        assert!(cargo.features.contains(&"ax-driver/plat-dyn".to_string()));
+        assert!(!cargo.features.contains(&"ax-hal/x86-qemu-q35".to_string()));
+        assert!(!cargo.features.contains(&"ax-hal/x86-pc".to_string()));
+    }
+
+    #[test]
+    fn load_cargo_config_applies_stack_protector_from_makefile_features() {
+        let _env_lock = ENV_LOCK.lock().unwrap();
+        let _features = TempEnvVar::set("FEATURES", "stack-protector");
+        let root = tempdir().unwrap();
+        let config_path = root.path().join(".build.toml");
+        fs::write(
+            &config_path,
+            r#"
+features = ["ept-level-4", "fs", "vmx"]
+log = "Info"
+"#,
+        )
+        .unwrap();
+
+        let cargo = load_cargo_config(&ResolvedAxvisorRequest {
+            package: AXVISOR_PACKAGE.to_string(),
+            axvisor_dir: root.path().join("os/axvisor"),
+            arch: "x86_64".to_string(),
+            target: "x86_64-unknown-none".to_string(),
+            plat_dyn: None,
+            smp: None,
+            debug: false,
+            build_info_path: config_path,
+            qemu_config: None,
+            uboot_config: None,
+            vmconfigs: vec![],
+        })
+        .unwrap();
+
+        assert!(
+            cargo
+                .features
+                .contains(&"ax-std/stack-protector".to_string())
+        );
+        let config = fs::read_to_string(cargo.extra_config.unwrap()).unwrap();
+        assert!(config.contains(r#""-Zstack-protector=strong""#));
     }
 
     #[test]
@@ -617,9 +1184,9 @@ plat_dyn = false
         fs::write(
             &config_path,
             r#"
-env = {}
-features = ["ept-level-4", "ax-std/bus-mmio"]
+features = ["ept-level-4"]
 log = "Info"
+plat_dyn = false
 "#,
         )
         .unwrap();
@@ -640,6 +1207,10 @@ log = "Info"
         .unwrap();
 
         assert!(!cargo.to_bin);
-        assert!(cargo.args.iter().any(|arg| arg.contains("-Tlinker.x")));
+        assert!(
+            cargo
+                .target
+                .ends_with("scripts/targets/std/loongarch64-unknown-linux-musl.json")
+        );
     }
 }

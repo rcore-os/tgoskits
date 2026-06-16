@@ -14,14 +14,13 @@
 //!   needed before the device reads CPU-written memory and after the
 //!   device writes CPU-read memory.
 //!
-//! That split keeps the SDHCI logic portable across hosted Linux (where
-//! `DeviceDma` typically calls `dma_map_single`), bare-metal coherent
-//! systems (identity mapping, no cache ops), and bare-metal incoherent
-//! systems (identity mapping + dcache flush/invalidate).
+//! That split keeps the SDHCI logic portable across hosted kernels,
+//! bare-metal coherent systems (identity mapping, no cache ops), and
+//! bare-metal incoherent systems (identity mapping + dcache flush/invalidate).
 
 use core::{num::NonZeroUsize, ptr::NonNull};
 
-use dma_api::{DArray, DeviceDma, DmaDirection, SArrayPtr};
+use dma_api::{CoherentArray, DeviceDma, DmaDirection, StreamingMap};
 use sdmmc_protocol::{
     block::{
         BlockPoll, BlockRequestId, BlockTransferDirection, BlockTransferMode, BlockTransferState,
@@ -122,8 +121,8 @@ enum BlockRequestKind {
     },
     Read {
         id: RequestId,
-        map: SArrayPtr<u8>,
-        _desc: DArray<Adma2Desc32>,
+        map: StreamingMap<u8>,
+        _desc: CoherentArray<Adma2Desc32>,
         cmd_index: u8,
         phase: Phase,
         stage: BlockRequestStage,
@@ -132,8 +131,8 @@ enum BlockRequestKind {
     },
     Write {
         id: RequestId,
-        _map: SArrayPtr<u8>,
-        _desc: DArray<Adma2Desc32>,
+        _map: StreamingMap<u8>,
+        _desc: CoherentArray<Adma2Desc32>,
         cmd_index: u8,
         phase: Phase,
         stage: BlockRequestStage,
@@ -297,6 +296,8 @@ impl Sdhci {
                 self.build_dma_read_request(start_block, buffer, size, dma, id)
             }
             BlockTransferMode::Fifo => self.build_fifo_read_request(start_block, buffer, size, id),
+            // Future BlockTransferMode variants are not supported by this controller.
+            _ => Err(Error::UnsupportedCommand),
         };
         match result {
             Ok(request) => Ok(request),
@@ -326,6 +327,8 @@ impl Sdhci {
                 self.build_dma_write_request(start_block, buffer, size, dma, id)
             }
             BlockTransferMode::Fifo => self.build_fifo_write_request(start_block, buffer, size, id),
+            // Future BlockTransferMode variants are not supported by this controller.
+            _ => Err(Error::UnsupportedCommand),
         };
         match result {
             Ok(request) => Ok(request),
@@ -346,6 +349,8 @@ impl Sdhci {
         match self.poll_block_request_response(request, id, slot)? {
             DataCommandPoll::Pending => Ok(BlockPoll::Pending),
             DataCommandPoll::Complete(_) => Ok(BlockPoll::Complete),
+            // Future DataCommandPoll variants are treated as completion.
+            _ => Ok(BlockPoll::Complete),
         }
     }
 
@@ -413,6 +418,8 @@ impl Sdhci {
                     }
                     return Ok(DataCommandPoll::Pending);
                 }
+                // Future CommandPoll variants: best-effort, treat as still pending.
+                Ok(_) => return Ok(DataCommandPoll::Pending),
                 Err(err) => {
                     self.abort_block_request(request, id, slot);
                     return Err(err);
@@ -427,6 +434,8 @@ impl Sdhci {
         match self.poll_data_complete_with_adma(cmd_index, phase) {
             Ok(BlockPoll::Pending) => Ok(DataCommandPoll::Pending),
             Ok(BlockPoll::Complete) => self.finish_dma_data(request, id, slot),
+            // Future BlockPoll variants: best-effort, treat as still pending.
+            Ok(_) => Ok(DataCommandPoll::Pending),
             Err(err) => {
                 self.abort_block_request(request, id, slot);
                 Err(err)
@@ -447,18 +456,14 @@ impl Sdhci {
         }
         let block_count = dma_read_block_count(size)?;
         let map = dma
-            .map_single_array(
-                unsafe { core::slice::from_raw_parts(buffer.as_ptr(), size.get()) },
+            .map_streaming_slice_for_device(
+                unsafe { core::slice::from_raw_parts_mut(buffer.as_ptr(), size.get()) },
                 BLOCK_SIZE,
                 DmaDirection::FromDevice,
             )
             .map_err(map_dma_error)?;
         let mut desc = dma
-            .array_zero_with_align::<Adma2Desc32>(
-                ADMA2_DESC_COUNT,
-                ADMA2_DESC_ALIGN,
-                DmaDirection::ToDevice,
-            )
+            .coherent_array_zero_with_align::<Adma2Desc32>(ADMA2_DESC_COUNT, ADMA2_DESC_ALIGN)
             .map_err(map_dma_error)?;
         let cmd = if block_count == 1 {
             cmd17(start_block)
@@ -500,19 +505,14 @@ impl Sdhci {
         }
         let block_count = dma_write_block_count(size)?;
         let map = dma
-            .map_single_array(
-                unsafe { core::slice::from_raw_parts(buffer.as_ptr(), size.get()) },
+            .map_streaming_slice_for_device(
+                unsafe { core::slice::from_raw_parts_mut(buffer.as_ptr(), size.get()) },
                 BLOCK_SIZE,
                 DmaDirection::ToDevice,
             )
             .map_err(map_dma_error)?;
-        map.confirm_write_all();
         let mut desc = dma
-            .array_zero_with_align::<Adma2Desc32>(
-                ADMA2_DESC_COUNT,
-                ADMA2_DESC_ALIGN,
-                DmaDirection::ToDevice,
-            )
+            .coherent_array_zero_with_align::<Adma2Desc32>(ADMA2_DESC_COUNT, ADMA2_DESC_ALIGN)
             .map_err(map_dma_error)?;
         let cmd = if block_count == 1 {
             cmd24(start_block)
@@ -606,6 +606,8 @@ impl Sdhci {
             DataDirection::Read => BlockTransferDirection::Read,
             DataDirection::Write => BlockTransferDirection::Write,
             DataDirection::None => return Err(Error::InvalidArgument),
+            // Future DataDirection variants are not supported by this engine.
+            _ => return Err(Error::InvalidArgument),
         };
         let id = slot.start(BlockTransferMode::Fifo, transfer_direction)?;
         match self.build_fifo_data_request(
@@ -650,6 +652,8 @@ impl Sdhci {
             DataDirection::Read => Phase::DataRead,
             DataDirection::Write => Phase::DataWrite,
             DataDirection::None => return Err(Error::InvalidArgument),
+            // Future DataDirection variants are not supported by this engine.
+            _ => return Err(Error::InvalidArgument),
         };
         self.pending_data = Some(PendingData {
             direction,
@@ -684,6 +688,8 @@ impl Sdhci {
                 response: None,
             },
             DataDirection::None => return Err(Error::InvalidArgument),
+            // Future DataDirection variants are not supported by this engine.
+            _ => return Err(Error::InvalidArgument),
         };
         Ok(BlockRequest { inner })
     }
@@ -693,7 +699,7 @@ impl Sdhci {
         cmd: &Command,
         block_count: u32,
         buffer_dma: u64,
-        desc: &mut DArray<Adma2Desc32>,
+        desc: &mut CoherentArray<Adma2Desc32>,
         direction: DataDirection,
         phase: Phase,
     ) -> Result<(), Error> {
@@ -762,7 +768,7 @@ impl Sdhci {
                 stage,
                 ..
             } => {
-                map.prepare_read_all();
+                map.complete_for_cpu_all();
                 *stage = BlockRequestStage::Stop;
                 *stop_after_complete
             }
@@ -807,6 +813,8 @@ impl Sdhci {
                 slot.complete(id)?;
                 Ok(DataCommandPoll::Complete(response))
             }
+            // Future CommandPoll variants: best-effort, treat as still pending.
+            Ok(_) => Ok(DataCommandPoll::Pending),
             Err(err) => {
                 self.abort_block_request(request, id, slot);
                 Err(err)
@@ -857,6 +865,8 @@ impl Sdhci {
                     set_fifo_stage(request, BlockRequestStage::Data)?;
                     return Ok(DataCommandPoll::Pending);
                 }
+                // Future CommandPoll variants: best-effort, treat as still pending.
+                Ok(_) => return Ok(DataCommandPoll::Pending),
                 Err(err) => {
                     self.abort_block_request(request, id, slot);
                     return Err(err);
@@ -877,6 +887,8 @@ impl Sdhci {
         match self.poll_fifo_data_step(request, cmd_index, phase) {
             Ok(BlockPoll::Pending) => Ok(DataCommandPoll::Pending),
             Ok(BlockPoll::Complete) => self.finish_fifo_data(request, id, slot),
+            // Future BlockPoll variants: best-effort, treat as still pending.
+            Ok(_) => Ok(DataCommandPoll::Pending),
             Err(err) => {
                 self.abort_block_request(request, id, slot);
                 Err(err)
@@ -1000,7 +1012,7 @@ impl Sdhci {
 }
 
 fn build_descriptors_into_dma(
-    desc: &mut dma_api::DArray<Adma2Desc32>,
+    desc: &mut CoherentArray<Adma2Desc32>,
     base: u64,
     total_len: usize,
     phase: Phase,
@@ -1010,7 +1022,7 @@ fn build_descriptors_into_dma(
     }
     let mut table = [Adma2Desc32::default(); ADMA2_DESC_COUNT];
     let written = build_descriptors(&mut table, base, total_len, phase)?;
-    desc.write_with(ADMA2_DESC_COUNT, |descs| {
+    desc.write_with_cpu(ADMA2_DESC_COUNT, |descs| {
         descs.copy_from_slice(&table);
     });
     Ok(written)
@@ -1145,6 +1157,8 @@ fn map_dma_error(err: dma_api::DmaError) -> Error {
         dma_api::DmaError::LayoutError(_)
         | dma_api::DmaError::DmaMaskNotMatch { .. }
         | dma_api::DmaError::AlignMismatch { .. }
+        | dma_api::DmaError::SegmentTooLarge { .. }
+        | dma_api::DmaError::BoundaryCross { .. }
         | dma_api::DmaError::NullPointer
         | dma_api::DmaError::ZeroSizedBuffer => Error::InvalidArgument,
     }

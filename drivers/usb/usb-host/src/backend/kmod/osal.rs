@@ -1,7 +1,7 @@
 use core::{ops::Deref, time::Duration};
 
 use dma_api::DeviceDma;
-pub use dma_api::{DmaAddr, DmaDirection, DmaError, DmaHandle, DmaMapHandle, DmaOp};
+pub use dma_api::{DmaAddr, DmaDirection, DmaError, DmaMapHandle, DmaOp};
 
 #[derive(Clone)]
 pub(crate) struct Kernel {

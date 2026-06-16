@@ -59,7 +59,6 @@ graph LR
 - 另外还有 `5` 个同类项未在此展开
 
 ### 间接依赖
-- `ax-arm-pl011`
 - `ax-arm-pl031`
 - `axaddrspace`
 - `ax-allocator`
@@ -67,10 +66,10 @@ graph LR
 - `ax-config-gen`
 - `ax-config-macros`
 - `ax-cpu`
-- `ax-driver-base`
-- `axdriver_block`
-- `axdriver_display`
-- `axdriver_input`
+- `rdrive`
+- `rdif-block`
+- `rdif-display`
+- `rdif-input`
 - 另外还有 `48` 个同类项未在此展开
 
 ### 3.3 被依赖情况

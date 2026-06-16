@@ -33,6 +33,14 @@ pub trait CoreOp: Send + 'static {
 
     fn create_event_handler(&mut self) -> Box<dyn EventHandlerOp>;
 
+    fn enable_irq(&mut self) -> Result<(), USBError> {
+        Err(USBError::NotSupported)
+    }
+
+    fn disable_irq(&mut self) -> Result<(), USBError> {
+        Err(USBError::NotSupported)
+    }
+
     fn kernel(&self) -> &Kernel;
 }
 
@@ -190,6 +198,14 @@ impl BackendOp for Core {
 
     fn create_event_handler(&mut self) -> Box<dyn EventHandlerOp> {
         self.backend.create_event_handler()
+    }
+
+    fn enable_irq(&mut self) -> Result<(), USBError> {
+        self.backend.enable_irq()
+    }
+
+    fn disable_irq(&mut self) -> Result<(), USBError> {
+        self.backend.disable_irq()
     }
 }
 

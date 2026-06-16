@@ -7,6 +7,136 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.12](https://github.com/rcore-os/tgoskits/compare/axbuild-v0.4.11...axbuild-v0.4.12) - 2026-06-12
+
+### Added
+
+- *(starry)* add axbuild kmod support ([#1232](https://github.com/rcore-os/tgoskits/pull/1232))
+- *(axbuild)* extend sync-lint relaxed synchronization checks ([#1236](https://github.com/rcore-os/tgoskits/pull/1236))
+- *(axbuild)* enable x86 kvm acceleration ([#1221](https://github.com/rcore-os/tgoskits/pull/1221))
+
+### Fixed
+
+- *(starry)* reprogram timer for short deadlines ([#1250](https://github.com/rcore-os/tgoskits/pull/1250))
+- *(ci)* stabilize x86 Starry QEMU timing ([#1245](https://github.com/rcore-os/tgoskits/pull/1245))
+- *(axruntime)* ensure aarch64 SMP IPI readiness before app init ([#1196](https://github.com/rcore-os/tgoskits/pull/1196))
+
+### Other
+
+- *(someboot)* share linker script fragments ([#1218](https://github.com/rcore-os/tgoskits/pull/1218))
+- *(ax-net)* unify network stack into single net/ax-net crate, r… ([#1203](https://github.com/rcore-os/tgoskits/pull/1203))
+
+## [0.4.11](https://github.com/rcore-os/tgoskits/compare/axbuild-v0.4.10...axbuild-v0.4.11) - 2026-06-11
+
+### Added
+
+- *(axbuild)* default dynamic platform builds
+- *(orangepi-5-plus-uvc-rknn)* add RKNN bench validation ([#1189](https://github.com/rcore-os/tgoskits/pull/1189))
+- *(axbuild)* optimize Starry grouped QEMU subcases ([#1201](https://github.com/rcore-os/tgoskits/pull/1201))
+- *(axplat-dyn)* add LoongArch64 UEFI dynamic platform ([#1190](https://github.com/rcore-os/tgoskits/pull/1190))
+
+### Fixed
+
+- *(starry)* support eBPF ringbuf mmap on LoongArch DMW ([#1208](https://github.com/rcore-os/tgoskits/pull/1208))
+- *(axvisor)* avoid svm guest timer calibration stall ([#1205](https://github.com/rcore-os/tgoskits/pull/1205))
+- *(axbuild)* support symlinks in overlay-to-rootfs injection ([#1191](https://github.com/rcore-os/tgoskits/pull/1191))
+
+### Other
+
+- Revert "feat(axplat-dyn): add LoongArch64 UEFI dynamic platform ([#1190](https://github.com/rcore-os/tgoskits/pull/1190))" ([#1202](https://github.com/rcore-os/tgoskits/pull/1202))
+- *(axvisor)* remove obsolete x86 q35 static platform ([#1186](https://github.com/rcore-os/tgoskits/pull/1186))
+
+## [0.4.10](https://github.com/rcore-os/tgoskits/compare/axbuild-v0.4.9...axbuild-v0.4.10) - 2026-06-09
+
+### Added
+
+- *(axvisor)* support dynamic x86_64 QEMU guest boot ([#1166](https://github.com/rcore-os/tgoskits/pull/1166))
+- *(std)* unify std-aware ArceOS builds ([#1080](https://github.com/rcore-os/tgoskits/pull/1080))
+- *(starry)* wire qperf app runtime into Starry perf ([#1095](https://github.com/rcore-os/tgoskits/pull/1095))
+- *(backtrace)* add showcase workflow ([#1094](https://github.com/rcore-os/tgoskits/pull/1094))
+- *(starry-kernel)* support waitid P_PIDFD ([#1051](https://github.com/rcore-os/tgoskits/pull/1051))
+- *(axbuild)* improve incremental clippy coverage ([#1088](https://github.com/rcore-os/tgoskits/pull/1088))
+
+### Fixed
+
+- *(axbuild)* tighten incremental clippy selection ([#1183](https://github.com/rcore-os/tgoskits/pull/1183))
+- *(axbuild)* infer diff base for zero since ref ([#1143](https://github.com/rcore-os/tgoskits/pull/1143))
+- *(ci)* switch x86_64 defaults to dynamic platform ([#1024](https://github.com/rcore-os/tgoskits/pull/1024))
+
+### Other
+
+- *(starry)* add apk curl equivalence system case
+- *(starry)* flatten test-suit discovery
+- *(starry)* move heavy test workloads to apps
+- *(axbuild)* promote image management to top-level command and unify rootfs storage ([#1182](https://github.com/rcore-os/tgoskits/pull/1182))
+- *(arceos)* reorganize apps ([#1180](https://github.com/rcore-os/tgoskits/pull/1180))
+- *(arceos)* consolidate Rust QEMU test suite ([#1174](https://github.com/rcore-os/tgoskits/pull/1174))
+- *(axbuild)* pin ostool runtime bin fix ([#1158](https://github.com/rcore-os/tgoskits/pull/1158))
+- *(starry)* add grouped step markers ([#1138](https://github.com/rcore-os/tgoskits/pull/1138))
+- Refactor Axvisor to unify ArceOS API and improve modularity ([#1019](https://github.com/rcore-os/tgoskits/pull/1019))
+
+## [0.4.9](https://github.com/rcore-os/tgoskits/compare/axbuild-v0.4.8...axbuild-v0.4.9) - 2026-06-03
+
+### Added
+
+- *(starry-kernel)* port LKM loader + cargo xtask starry kmod build ([#851](https://github.com/rcore-os/tgoskits/pull/851))
+- *(axbuild)* support Starry QEMU apps ([#1078](https://github.com/rcore-os/tgoskits/pull/1078))
+- *(starry-kernel)* support waitid P_PGID ([#1032](https://github.com/rcore-os/tgoskits/pull/1032))
+- *(starryos)* add QEMU K230 boot support ([#1046](https://github.com/rcore-os/tgoskits/pull/1046))
+- *(qperf)* TCG hotspot profiling tool for StarryOS ([#940](https://github.com/rcore-os/tgoskits/pull/940))
+- *(axtask)* replace PREV_TASK Weak<AxTask> with raw pointer ([#996](https://github.com/rcore-os/tgoskits/pull/996))
+- *(riscv64)* support dynamic platform on QEMU and SG2002 ([#961](https://github.com/rcore-os/tgoskits/pull/961))
+- *(starry)* add SG2002 board boot support ([#834](https://github.com/rcore-os/tgoskits/pull/834))
+
+### Fixed
+
+- *(axbacktrace)* harden correctness, optimize allocation, and add per-arch IP adjustment ([#1029](https://github.com/rcore-os/tgoskits/pull/1029))
+- *(starry)* add loongarch64 to_bin support and rename test case ([#1025](https://github.com/rcore-os/tgoskits/pull/1025))
+- *(arceos)* address lockdep test issues ([#1009](https://github.com/rcore-os/tgoskits/pull/1009))
+- *(axbuild)* use target spec stem as rustflags config key ([#1023](https://github.com/rcore-os/tgoskits/pull/1023))
+- *(starry)* abort test run on first failure ([#983](https://github.com/rcore-os/tgoskits/pull/983))
+- *(ci)* stabilize Starry LoongArch apk-curl test ([#959](https://github.com/rcore-os/tgoskits/pull/959))
+- *(axbuild)* skip disabled grouped C subcases ([#942](https://github.com/rcore-os/tgoskits/pull/942))
+- *(ax-task)* preempt on async wake, guard wait queue against double-enqueue ([#912](https://github.com/rcore-os/tgoskits/pull/912))
+- *(starry)* repair SG2002 CI build ([#929](https://github.com/rcore-os/tgoskits/pull/929))
+- *(repo)* migrate spin usage to ax-kspin ([#861](https://github.com/rcore-os/tgoskits/pull/861))
+
+### Other
+
+- *(platform)* migrate riscv64 qemu to dynamic platform ([#1085](https://github.com/rcore-os/tgoskits/pull/1085))
+- *(platform)* remove static aarch64 platforms ([#1074](https://github.com/rcore-os/tgoskits/pull/1074))
+- *(linker)* layer platform runtime and final scripts ([#1075](https://github.com/rcore-os/tgoskits/pull/1075))
+- *(axvisor)* reorganize VM configs into platform-first directory structure ([#1063](https://github.com/rcore-os/tgoskits/pull/1063))
+- *(ci)* bump Rust toolchain to nightly-2026-05-28 and fix clippy ([#1027](https://github.com/rcore-os/tgoskits/pull/1027))
+- [AxVisor] add x86_64 UEFI guest support ([#760](https://github.com/rcore-os/tgoskits/pull/760))
+- *(starry-kernel)* add memtrack alloc backtrace e2e ([#1020](https://github.com/rcore-os/tgoskits/pull/1020))
+- *(rdif-block)* switch block drivers to submit poll ([#976](https://github.com/rcore-os/tgoskits/pull/976))
+- Implement platform-specific IRQ handling and architecture setup ([#979](https://github.com/rcore-os/tgoskits/pull/979))
+- Adds support for kernel symbol dumping via kallsyms ([#837](https://github.com/rcore-os/tgoskits/pull/837))
+- *(starry)* route HAL access through ax-runtime ([#963](https://github.com/rcore-os/tgoskits/pull/963))
+- Revert "fix(ax-task): preempt on async wake, guard wait queue against double-…" ([#939](https://github.com/rcore-os/tgoskits/pull/939))
+- *(axbuild)* remove unused feature toggles ([#933](https://github.com/rcore-os/tgoskits/pull/933))
+- *(drivers)* split shared driver stack from ArceOS ([#831](https://github.com/rcore-os/tgoskits/pull/831))
+- *(axbuild)* use target JSON specs for kernel builds ([#839](https://github.com/rcore-os/tgoskits/pull/839))
+
+## [0.4.8](https://github.com/rcore-os/tgoskits/compare/axbuild-v0.4.7...axbuild-v0.4.8) - 2026-05-22
+
+### Added
+
+- *(starry)* add PicoClaw gateway smoke ([#775](https://github.com/rcore-os/tgoskits/pull/775))
+- *(axplat-aarch64)* GICv3 + CNTV backend for Apple HVF native execution ([#511](https://github.com/rcore-os/tgoskits/pull/511))
+- *(axbuild)* auto symbolize backtrace after ArceOS rust QEMU tests ([#749](https://github.com/rcore-os/tgoskits/pull/749))
+
+### Fixed
+
+- *(repo)* improve rsext4 recovery mount and Axvisor board CI ([#830](https://github.com/rcore-os/tgoskits/pull/830))
+
+### Other
+
+- Revert " fix(repo): improve rsext4 recovery mount and Axvisor board CI ([#830](https://github.com/rcore-os/tgoskits/pull/830))" ([#838](https://github.com/rcore-os/tgoskits/pull/838))
+- Remove RISC-V QEMU Virt platform files and update references ([#833](https://github.com/rcore-os/tgoskits/pull/833))
+- stream host backtrace symbolize when raw block ends ([#793](https://github.com/rcore-os/tgoskits/pull/793))
+
 ## [0.4.7](https://github.com/rcore-os/tgoskits/compare/axbuild-v0.4.6...axbuild-v0.4.7) - 2026-05-19
 
 ### Added
@@ -26,7 +156,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - *(starryos/procfs)* implement /proc/stat, /proc/cpuinfo, /proc/uptime; fix /proc/meminfo and sysinfo() ([#452](https://github.com/rcore-os/tgoskits/pull/452))
 - *(axbuild)* support Starry board examples
 - *(realtek-rtl8125)* complete OrangePi board bringup ([#404](https://github.com/rcore-os/tgoskits/pull/404))
-- *(ax-net-ng)* add ICMP raw socket support ([#368](https://github.com/rcore-os/tgoskits/pull/368))
+- *(ax-net)* add ICMP raw socket support ([#368](https://github.com/rcore-os/tgoskits/pull/368))
 - *(lockdep)* extend lockdep with task-held tracking and qemu regression coverage ([#415](https://github.com/rcore-os/tgoskits/pull/415))
 - *(runtime)* extend IRQ, RTC, and tty event support ([#287](https://github.com/rcore-os/tgoskits/pull/287))
 - *(rockchip-soc)* migrate RK3588 clocks ([#384](https://github.com/rcore-os/tgoskits/pull/384))

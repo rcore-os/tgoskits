@@ -1,0 +1,11 @@
+target = "aarch64-unknown-none-softfloat"
+axconfig_overrides = ["plat.phys-memory-size=0x4000_0000"]
+log = "Warn"
+features = [
+  "qemu",
+  "ax-driver/virtio-blk",
+  "ax-driver/virtio-net",
+  "ax-driver/virtio-gpu",
+  "ax-driver/virtio-input",
+  "ax-driver/virtio-socket",
+]

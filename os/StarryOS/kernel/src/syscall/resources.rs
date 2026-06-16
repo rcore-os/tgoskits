@@ -1,5 +1,5 @@
 use ax_errno::{AxError, AxResult};
-use ax_hal::time::TimeValue;
+use ax_runtime::hal::time::TimeValue;
 use ax_task::current;
 use linux_raw_sys::general::{__kernel_old_timeval, RLIM_NLIMITS, rlimit64, rusage};
 use starry_process::Pid;
@@ -16,11 +16,13 @@ pub fn sys_prlimit64(
     new_limit: *const rlimit64,
     old_limit: *mut rlimit64,
 ) -> AxResult<isize> {
+    // pid lookup first — match Linux error priority (ESRCH before EINVAL)
+    let proc_data = get_process_data(pid)?;
+
     if resource >= RLIM_NLIMITS {
         return Err(AxError::InvalidInput);
     }
 
-    let proc_data = get_process_data(pid)?;
     if let Some(old_limit) = old_limit.nullable() {
         let limit = &proc_data.rlim.read()[resource];
         old_limit.vm_write(rlimit64 {
@@ -37,8 +39,15 @@ pub fn sys_prlimit64(
         }
 
         let limit = &mut proc_data.rlim.write()[resource];
-        // TODO: when a capability system is added, check CAP_SYS_RESOURCE
-        // before allowing new_limit.rlim_max > limit.max (return EPERM).
+        // Raising the hard limit requires CAP_SYS_RESOURCE.
+        // TODO: has_cap_sys_resource() is currently euid==0 until a
+        // fine-grained capability bitmap is implemented (see cred.rs).
+        if new_limit.rlim_max > limit.max {
+            let cred = current().as_thread().cred();
+            if !cred.has_cap_sys_resource() {
+                return Err(AxError::OperationNotPermitted);
+            }
+        }
         limit.max = new_limit.rlim_max;
         limit.current = new_limit.rlim_cur;
     }

@@ -1,7 +1,11 @@
 use crate::error::{CardError, Error, ErrorContext, Phase};
 
 /// SD/MMC response types
+///
+/// Marked `#[non_exhaustive]`: new transport-level response shapes
+/// (e.g. SDIO IO_RW extension, UHS-II) may be added before 1.0.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum ResponseType {
     /// No response
     None,
@@ -24,9 +28,17 @@ pub enum ResponseType {
 }
 
 /// Parsed response from the card
+///
+/// Marked `#[non_exhaustive]`: new response shapes (e.g. SDIO IO_RW
+/// extensions) may be added before 1.0.
 #[derive(Debug, Clone, Copy)]
+#[non_exhaustive]
 pub enum Response {
-    None,
+    /// No response phase — emitted when the command's [`ResponseType`] is
+    /// [`ResponseType::None`] (e.g. CMD0). Renamed from `Response::None` to
+    /// avoid lexical confusion with [`ResponseType::None`]; the two now read
+    /// at a glance as "no response type configured" vs "no response decoded".
+    Empty,
     R1(R1Response),
     R1b(R1Response),
     R2([u8; 16]),
@@ -46,11 +58,37 @@ pub struct R1Response {
 impl R1Response {
     /// Parse a native (SDIO/SDHCI) 32-bit R1 response.
     ///
-    /// Card error bits live in bits 19..=24. If any error bit is set this
-    /// returns `Err(Error::CardError(..))`. Otherwise the raw value is
-    /// preserved.
+    /// SD Physical Layer spec section 4.10.1 (Table 4-42) places the card
+    /// status error flags at bits 19..=31:
+    ///
+    /// | Bit | Name                |
+    /// |-----|---------------------|
+    /// | 31  | `OUT_OF_RANGE`      |
+    /// | 30  | `ADDRESS_ERROR`     |
+    /// | 29  | `BLOCK_LEN_ERROR`   |
+    /// | 28  | `ERASE_SEQ_ERROR`   |
+    /// | 27  | `ERASE_PARAM`       |
+    /// | 26  | `WP_VIOLATION`      |
+    /// | 25  | `CARD_IS_LOCKED`    |
+    /// | 24  | `LOCK_UNLOCK_FAILED`|
+    /// | 23  | `COM_CRC_ERROR`     |
+    /// | 22  | `ILLEGAL_COMMAND`   |
+    /// | 21  | `CARD_ECC_FAILED`   |
+    /// | 20  | `CC_ERROR`          |
+    /// | 19  | `ERROR`             |
+    ///
+    /// If **any** of those 13 bits is set this returns
+    /// `Err(Error::CardError(..))`. Otherwise the raw value is preserved so
+    /// callers can inspect informational state bits (`current_state`,
+    /// `ready_for_data`, ...).
+    ///
+    /// Note: earlier versions only looked at bits 19..=24 and silently
+    /// dropped `OUT_OF_RANGE`, `ADDRESS_ERROR`, `BLOCK_LEN_ERROR`,
+    /// `ERASE_PARAM`, `WP_VIOLATION`, `CARD_IS_LOCKED`, and `COM_CRC_ERROR`.
+    /// Callers that used to see `Ok` for one of those now correctly see
+    /// `Err(CardError::..)`.
     pub fn from_native_raw(raw: u32) -> Result<Self, Error> {
-        let err_bits = ((raw >> 19) & 0x3F) as u8;
+        let err_bits = raw & R1_NATIVE_ERROR_MASK;
         if err_bits != 0 {
             return Err(Error::CardError(decode_native_card_error(err_bits)));
         }
@@ -88,21 +126,6 @@ impl R1Response {
             None
         } else {
             Some(decode_spi_card_error(bits))
-        }
-    }
-
-    /// Backwards-compatible parser. Prefer [`R1Response::from_native_raw`] for
-    /// SDIO/native transports and [`R1Response::from_spi_byte`] for SPI mode.
-    ///
-    /// This is retained because external code may still call it. The behavior
-    /// matches `from_native_raw` for values larger than `0xFF` and treats
-    /// smaller values as raw SPI bytes (decoding their error bits as such).
-    #[deprecated(note = "use from_native_raw or from_spi_byte instead")]
-    pub fn from_raw(raw: u32) -> Result<Self, Error> {
-        if raw > 0xFF {
-            Self::from_native_raw(raw)
-        } else {
-            Self::from_spi_byte(raw as u8)
         }
     }
 
@@ -169,7 +192,11 @@ impl R1Response {
 }
 
 /// Card state machine states
+///
+/// Marked `#[non_exhaustive]`: SD/MMC specs may carve new state values out of
+/// the reserved range, and downstream match sites must keep a `_ => ...` arm.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum CardState {
     Idle,
     Ready,
@@ -508,6 +535,26 @@ impl SdioRwResponse {
     }
 }
 
+/// Bitmask covering every native R1 error flag (bits 19..=31 of the 32-bit
+/// response, per SD spec section 4.10.1). `from_native_raw` ANDs the raw
+/// response against this and routes any non-zero result through
+/// `decode_native_card_error`.
+const R1_NATIVE_ERROR_MASK: u32 = 0xFFF8_0000;
+
+const R1_BIT_OUT_OF_RANGE: u32 = 1 << 31;
+const R1_BIT_ADDRESS_ERROR: u32 = 1 << 30;
+const R1_BIT_BLOCK_LEN_ERROR: u32 = 1 << 29;
+const R1_BIT_ERASE_SEQ_ERROR: u32 = 1 << 28;
+const R1_BIT_ERASE_PARAM: u32 = 1 << 27;
+const R1_BIT_WP_VIOLATION: u32 = 1 << 26;
+const R1_BIT_CARD_IS_LOCKED: u32 = 1 << 25;
+const R1_BIT_LOCK_UNLOCK_FAILED: u32 = 1 << 24;
+const R1_BIT_COM_CRC_ERROR: u32 = 1 << 23;
+const R1_BIT_ILLEGAL_COMMAND: u32 = 1 << 22;
+const R1_BIT_CARD_ECC_FAILED: u32 = 1 << 21;
+const R1_BIT_CC_ERROR: u32 = 1 << 20;
+const R1_BIT_ERROR: u32 = 1 << 19;
+
 /// Decode SPI R1 byte error bits (bits 1..=6 of the byte).
 ///
 /// SPI R1 layout (SD spec, simplified):
@@ -529,43 +576,52 @@ fn decode_spi_card_error(bits: u8) -> CardError {
     } else if bits & 0b0010_0000 != 0 {
         CardError::AddressError
     } else if bits & 0b0100_0000 != 0 {
-        // PARAMETER_ERROR — closest existing variant
-        CardError::AddressError
+        // SPI PARAMETER_ERROR maps to native BLOCK_LEN_ERROR/parameter family.
+        CardError::BlockLenError
     } else if bits & (0b0001_0000 | 0b0000_0010) != 0 {
         // ERASE_SEQ_ERROR or ERASE_RESET — both fall under EraseSequence.
         CardError::EraseSequence
     } else {
-        CardError::Unknown(bits)
+        CardError::Unknown(bits as u32)
     }
 }
 
-/// Decode native R1 error nibble (bits 19..=24 of the 32-bit response,
-/// passed in pre-shifted into the low 6 bits).
+/// Decode the native R1 error bits (bits 19..=31 of the 32-bit response).
 ///
-/// Native R1 layout:
-///   bit 19 = AKE_SEQ_ERROR (0x01 in nibble)
-///   bit 20 = CC_ERROR / controller (0x02)
-///   bit 21 = CARD_ECC_FAILED (0x04)
-///   bit 22 = ILLEGAL_COMMAND (0x08)
-///   bit 23 = COM_CRC_ERROR (0x10)
-///   bit 24 = LOCK_UNLOCK_FAILED (0x20)
-fn decode_native_card_error(bits: u8) -> CardError {
-    if bits & 0b0001_0000 != 0 {
+/// Caller passes `raw & R1_NATIVE_ERROR_MASK` (non-zero). When multiple bits
+/// are set we surface the most-severe-first variant per SD spec convention:
+/// argument/addressing errors first (so a write to an invalid LBA is reported
+/// as `OutOfRange` even if the card also raises lower-priority companions),
+/// then bus-integrity errors, then card-state errors, then catch-all
+/// erase/generic. Unknown patterns preserve the raw 13-bit error nibble
+/// (shifted to bit 0) so callers can log the exact bits.
+fn decode_native_card_error(err_bits: u32) -> CardError {
+    if err_bits & R1_BIT_OUT_OF_RANGE != 0 {
+        CardError::OutOfRange
+    } else if err_bits & R1_BIT_ADDRESS_ERROR != 0 {
+        CardError::AddressError
+    } else if err_bits & R1_BIT_BLOCK_LEN_ERROR != 0 {
+        CardError::BlockLenError
+    } else if err_bits & R1_BIT_WP_VIOLATION != 0 {
+        CardError::WriteProtect
+    } else if err_bits & R1_BIT_COM_CRC_ERROR != 0 {
         CardError::CommandCrcFailed
-    } else if bits & 0b0000_1000 != 0 {
+    } else if err_bits & R1_BIT_ILLEGAL_COMMAND != 0 {
         CardError::IllegalCommand
-    } else if bits & 0b0000_0100 != 0 {
+    } else if err_bits & R1_BIT_CARD_ECC_FAILED != 0 {
         CardError::CardEccFailed
-    } else if bits & 0b0000_0010 != 0 {
+    } else if err_bits & R1_BIT_CC_ERROR != 0 {
         CardError::ControllerError
-    } else if bits & 0b0010_0000 != 0 {
-        // LOCK_UNLOCK_FAILED — closest existing variant
-        CardError::ControllerError
-    } else if bits & 0b0000_0001 != 0 {
-        // AKE_SEQ_ERROR — closest existing variant
+    } else if err_bits & R1_BIT_LOCK_UNLOCK_FAILED != 0 {
+        CardError::LockUnlockFailed
+    } else if err_bits & R1_BIT_CARD_IS_LOCKED != 0 {
+        CardError::CardIsLocked
+    } else if err_bits & (R1_BIT_ERASE_SEQ_ERROR | R1_BIT_ERASE_PARAM) != 0 {
         CardError::EraseSequence
+    } else if err_bits & R1_BIT_ERROR != 0 {
+        CardError::GenericError
     } else {
-        CardError::Unknown(bits)
+        CardError::Unknown(err_bits >> 19)
     }
 }
 
@@ -620,6 +676,59 @@ mod tests {
         // illegal command = bit 22 in native R1
         let err = R1Response::from_native_raw(1 << 22).unwrap_err();
         assert_eq!(err, Error::CardError(CardError::IllegalCommand));
+    }
+
+    /// Regression: bits 25..=31 used to be silently dropped because
+    /// `from_native_raw` only masked bits 19..=24. A write to an LBA past
+    /// the end of the card raises `OUT_OF_RANGE` (bit 31) and used to be
+    /// reported as `Ok`. After the mask widening it must surface as an
+    /// `Err(CardError::OutOfRange)`.
+    #[test]
+    fn native_r1_out_of_range_was_previously_dropped() {
+        let err = R1Response::from_native_raw(1 << 31).unwrap_err();
+        assert_eq!(err, Error::CardError(CardError::OutOfRange));
+    }
+
+    #[test]
+    fn native_r1_decodes_each_priority_class() {
+        let cases = [
+            (1u32 << 31, CardError::OutOfRange),
+            (1 << 30, CardError::AddressError),
+            (1 << 29, CardError::BlockLenError),
+            (1 << 26, CardError::WriteProtect),
+            (1 << 25, CardError::CardIsLocked),
+            (1 << 24, CardError::LockUnlockFailed),
+            (1 << 23, CardError::CommandCrcFailed),
+            (1 << 22, CardError::IllegalCommand),
+            (1 << 21, CardError::CardEccFailed),
+            (1 << 20, CardError::ControllerError),
+            (1 << 19, CardError::GenericError),
+            (1 << 28, CardError::EraseSequence),
+            (1 << 27, CardError::EraseSequence),
+        ];
+        for (raw, expected) in cases {
+            let err = R1Response::from_native_raw(raw).unwrap_err();
+            assert_eq!(err, Error::CardError(expected), "raw={raw:#010x}");
+        }
+    }
+
+    /// OUT_OF_RANGE outranks WP_VIOLATION when the card sets both — exercises
+    /// the priority ordering in `decode_native_card_error`.
+    #[test]
+    fn native_r1_priority_picks_argument_errors_first() {
+        let err = R1Response::from_native_raw((1 << 31) | (1 << 26)).unwrap_err();
+        assert_eq!(err, Error::CardError(CardError::OutOfRange));
+    }
+
+    /// Informational status bits (bit 8 READY_FOR_DATA, current_state nibble)
+    /// must not be treated as errors. Regression guard against accidentally
+    /// extending the mask too far.
+    #[test]
+    fn native_r1_status_only_response_is_ok() {
+        let raw = (1u32 << 8) | (4u32 << 9); // READY_FOR_DATA + Transfer state
+        let r1 = R1Response::from_native_raw(raw).unwrap();
+        assert!(r1.ready_for_data());
+        assert_eq!(r1.current_state(), CardState::Transfer);
     }
 
     #[test]

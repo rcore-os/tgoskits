@@ -44,13 +44,3 @@ impl From<u32> for IrqId {
         IrqId(value as usize)
     }
 }
-
-#[allow(dead_code)]
-pub(crate) fn handle_irq(hwirq: IrqId) {
-    unsafe extern "Rust" {
-        fn _someboot_handle_irq(hwirq: IrqId);
-    }
-    unsafe {
-        _someboot_handle_irq(hwirq);
-    }
-}

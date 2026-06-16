@@ -53,6 +53,35 @@ pub const DRM_IOCTL_SET_CLIENT_CAP: u32 = ioc(
 );
 pub const DRM_IOCTL_SET_MASTER: u32 = io(DRM_TYPE, 0x1e);
 pub const DRM_IOCTL_DROP_MASTER: u32 = io(DRM_TYPE, 0x1f);
+pub const DRM_IOCTL_GET_MAGIC: u32 = iowr::<DrmAuth>(DRM_TYPE, 0x02);
+pub const DRM_IOCTL_AUTH_MAGIC: u32 = iowr::<DrmAuth>(DRM_TYPE, 0x03);
+pub const DRM_IOCTL_MODE_DIRTYFB: u32 = iowr::<DrmModeDirtyFB>(DRM_TYPE, 0xB1);
+pub const DRM_IOCTL_PRIME_HANDLE_TO_FD: u32 = iowr::<DrmPrimeHandle>(DRM_TYPE, 0x2d);
+pub const DRM_IOCTL_PRIME_FD_TO_HANDLE: u32 = iowr::<DrmPrimeHandle>(DRM_TYPE, 0x2e);
+
+#[repr(C)]
+#[derive(Debug, Default, Clone, Copy, AnyBitPattern, NoUninit)]
+pub struct DrmAuth {
+    pub magic: u32,
+}
+
+#[repr(C)]
+#[derive(Debug, Default, Clone, Copy, AnyBitPattern, NoUninit)]
+pub struct DrmModeDirtyFB {
+    pub fb_id: u32,
+    pub flags: u32,
+    pub color: u32,
+    pub num_clips: u32,
+    pub clips_ptr: u64,
+}
+
+#[repr(C)]
+#[derive(Debug, Default, Clone, Copy, AnyBitPattern, NoUninit)]
+pub struct DrmPrimeHandle {
+    pub handle: u32,
+    pub flags: u32,
+    pub fd: i32,
+}
 
 // ---- DRM_IOCTL_VERSION ----
 //

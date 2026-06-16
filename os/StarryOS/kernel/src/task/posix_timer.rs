@@ -7,13 +7,13 @@ use core::{
 };
 
 use ax_errno::{AxError, AxResult};
-use ax_hal::time::{NANOS_PER_SEC, monotonic_time_nanos, wall_time};
+use ax_kspin::SpinNoIrq as Mutex;
+use ax_runtime::hal::time::{NANOS_PER_SEC, monotonic_time_nanos, wall_time};
 use linux_raw_sys::general::{
     CLOCK_BOOTTIME, CLOCK_MONOTONIC, CLOCK_MONOTONIC_COARSE, CLOCK_MONOTONIC_RAW,
     CLOCK_PROCESS_CPUTIME_ID, CLOCK_REALTIME, CLOCK_REALTIME_COARSE, CLOCK_THREAD_CPUTIME_ID,
     SIGEV_NONE, SIGEV_SIGNAL,
 };
-use spin::Mutex;
 use starry_process::Pid;
 use starry_signal::{SignalInfo, Signo};
 

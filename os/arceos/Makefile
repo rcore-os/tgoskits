@@ -15,6 +15,7 @@
 #     - `OUT_CONFIG`: Final config file that takes effect
 #     - `UIMAGE`: To generate U-Boot image
 #     - `LD_SCRIPT`: Use a custom linker script file.
+#     - `LINKER_SCRIPT_DIRS`: Extra linker script search directories for C apps.
 # * App options:
 #     - `A` or `APP`: Path to the application
 #     - `FEATURES`: Features os ArceOS modules to be enabled.
@@ -159,7 +160,16 @@ GDB ?= gdb
 
 # Paths
 OUT_DIR ?= $(APP)
-LD_SCRIPT ?= $(TARGET_DIR)/$(TARGET)/$(MODE)/linker.x
+LD_SCRIPT ?= $(shell find "$(TARGET_DIR)/$(TARGET)/$(MODE)/build" -path '*/ax-runtime-*/out/linker.x' -printf '%T@ %p\n' 2>/dev/null | sort -rn | sed -n '1s/^[^ ]* //p')
+ifeq ($(PLAT_DYN), y)
+  AXPLAT_OWNER_PREFIX := axplat-dyn-
+else ifeq ($(PLAT_NAME), loongarch64-qemu-virt)
+  AXPLAT_OWNER_PREFIX := ax-plat-loongarch64-qemu-virt-
+else
+  AXPLAT_OWNER_PREFIX := ax-hal-
+endif
+AXPLAT_SCRIPT ?= $(shell find "$(TARGET_DIR)/$(TARGET)/$(MODE)/build" -path "*/$(AXPLAT_OWNER_PREFIX)*/out/axplat.x" -printf '%T@ %p\n' 2>/dev/null | sort -rn | sed -n '1s/^[^ ]* //p')
+LINKER_SCRIPT_DIRS ?= $(sort $(dir $(LD_SCRIPT) $(AXPLAT_SCRIPT)))
 
 APP_NAME := $(shell basename $(APP))
 OUT_ELF := $(OUT_DIR)/$(APP_NAME)_$(PLAT_NAME).elf

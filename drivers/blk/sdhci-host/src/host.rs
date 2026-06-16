@@ -42,6 +42,13 @@ pub struct Sdhci {
     /// for 1:1 passthrough) instead of using the internal 10-bit divider.
     /// Used on controllers whose internal divider is unusable.
     pub(crate) ext_clock: Option<&'static dyn HostClock>,
+    /// Whether the platform has wired up the IO-domain regulator needed to
+    /// actually run the bus at 1.8 V. Default `false` — toggling
+    /// `HOST_CONTROL2.1V8_SIGNALING_ENABLE` alone changes the controller
+    /// sampling behaviour without changing the IO rail, which corrupts
+    /// subsequent transfers; refusing the switch lets the protocol layer
+    /// fall back to a 3.3 V-compatible mode.
+    pub(crate) support_1v8: bool,
     /// Command index for the data phase currently being drained by the
     /// submit/poll data-command state machine.
     pub(crate) active_data_cmd: u8,
@@ -65,6 +72,7 @@ impl Sdhci {
             pending_data: None,
             use_dma: false,
             ext_clock: None,
+            support_1v8: false,
             active_data_cmd: 0,
             dma: None,
             dma_mask: u32::MAX as u64,
@@ -114,6 +122,18 @@ impl Sdhci {
         C: HostClock + 'static,
     {
         self.ext_clock = Some(clock);
+    }
+
+    /// Declare that the platform can switch the SD/eMMC IO rail to 1.8 V.
+    ///
+    /// Until this is called, [`SdioHost::switch_voltage`] refuses
+    /// [`SignalVoltage::V180`], which steers the protocol layer away from
+    /// UHS-I / HS200 / HS400. Platforms that wire up the regulator (PMIC
+    /// or per-domain LDO) should call this after construction so that
+    /// `switch_voltage(V180)` is allowed to drive
+    /// `HOST_CONTROL2.1V8_SIGNALING_ENABLE`.
+    pub fn enable_1v8_signaling(&mut self) {
+        self.support_1v8 = true;
     }
 
     /// Install a DMA capability used by the high-level data-transfer hooks.

@@ -162,6 +162,16 @@ impl Path {
         self.inner.as_bytes()
     }
 
+    /// Returns true if pathname has a trailing slash (other than the root
+    /// path "/" itself). POSIX requires that such paths refer to a directory;
+    /// callers should check `!loc.is_dir()` and return ENOTDIR. The trailing
+    /// slash is stripped at the Components iterator layer (parse_forward
+    /// drops empty trailing components), so this method preserves the
+    /// otherwise-lost signal.
+    pub fn has_trailing_slash(&self) -> bool {
+        self.inner.len() > 1 && self.inner.ends_with('/')
+    }
+
     /// Produces an iterator over the [`Components`] of the path.
     pub fn components(&self) -> Components<'_> {
         Components {

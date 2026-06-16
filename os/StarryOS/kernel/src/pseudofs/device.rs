@@ -1,8 +1,8 @@
-use alloc::sync::Arc;
+use alloc::{sync::Arc, vec::Vec};
 use core::{any::Any, task::Context};
 
 use ax_fs::CachedFile;
-use ax_memory_addr::PhysAddrRange;
+use ax_memory_addr::{PhysAddr, PhysAddrRange};
 use axfs_ng_vfs::{
     DeviceId, FileNodeOps, FilesystemOps, Metadata, MetadataUpdate, NodeFlags, NodeOps,
     NodePermission, NodeType, VfsError, VfsResult,
@@ -11,29 +11,31 @@ use axpoll::{IoEvents, Pollable};
 use inherit_methods_macro::inherit_methods;
 
 use super::{SimpleFs, SimpleFsNode};
-#[cfg(feature = "kcov")]
-use crate::mm::SharedPages;
 
 /// Mmap behavior for devices.
 #[derive(Clone)]
 pub enum DeviceMmap {
     /// The device is not mappable (→ ENODEV, matches Linux).
     None,
-
-    /// Maps to a physical address range.
-    Physical(PhysAddrRange),
-
+    /// Maps to a physical address range. The optional retainer keeps
+    /// driver-owned backing pages alive for as long as any VMA built
+    /// from this mapping exists — pinned by the resulting
+    /// [`LinearBackend`] so userspace can't observe freed memory if
+    /// the device drops the buffer before munmap.
+    Physical(PhysAddrRange, Option<Arc<dyn Any + Send + Sync>>),
+    /// Maps to an already offset-resolved physical address range.
+    ///
+    /// This is for file descriptors whose mmap offset is a selector rather than
+    /// a byte offset into a linear device, such as io_uring ring offsets.
+    PhysicalResolved(PhysAddrRange, Option<Arc<dyn Any + Send + Sync>>),
+    /// Maps to an explicit physical page list for this exact mmap request.
+    /// The producer has already applied the requested offset and length, so
+    /// mmap callers must map these pages in order without adding the offset
+    /// again. This covers layouts that are not a single contiguous physical
+    /// range, such as BPF ringbuf maps that expose mirrored data pages.
+    PhysicalPages(Vec<PhysAddr>, Option<Arc<dyn Any + Send + Sync>>),
     /// Maps to a cached file.
     Cache(CachedFile),
-
-    #[cfg(feature = "kcov")]
-    /// The device supports mmap but is not yet configured
-    /// (→ EINVAL, matches Linux kcov semantics).
-    NotConfigured,
-
-    #[cfg(feature = "kcov")]
-    /// Maps to a pre-allocated set of shared physical pages (kernel↔userspace).
-    SharedPages(Arc<SharedPages>),
 }
 
 /// Trait for device operations.

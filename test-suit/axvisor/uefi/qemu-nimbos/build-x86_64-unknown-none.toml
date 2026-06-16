@@ -1,0 +1,9 @@
+features = [
+    "ax-driver/virtio-blk",
+    "ept-level-4",
+    "fs",
+    "vmx",
+]
+log = "Info"
+target = "x86_64-unknown-none"
+vm_configs = ["os/axvisor/tmp/vmconfigs/nimbos-x86_64-qemu-uefi-smp1.generated.toml"]

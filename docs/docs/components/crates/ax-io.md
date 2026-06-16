@@ -52,7 +52,7 @@
 - `IoBuf::remaining()`：当前还剩多少字节可读
 - `IoBufMut::remaining_mut()`：当前还剩多少空间可写
 
-这不是新的 I/O 模型，而是给通用 trait 层补上一点对内核路径很实用的容量语义。`ax-net-ng` 的发送/接收接口、部分文件与缓冲区适配器都会消费这类信息。
+这不是新的 I/O 模型，而是给通用 trait 层补上一点对内核路径很实用的容量语义。`ax-net` 的发送/接收接口、部分文件与缓冲区适配器都会消费这类信息。
 
 ### 1.5 `alloc` feature 的边界
 
@@ -93,7 +93,7 @@
 
 1. `ax_std::io` 直接重导出 `axio` 的 trait 与类型，把它包装成 ArceOS 应用看到的 `std::io` 风格接口。
 2. `ax-fs`、`ax-fs-ng` 的文件对象实现 `Read` / `Write` / `Seek`，复用统一的缓冲器和默认读写逻辑。
-3. `ax-net`、`ax-net-ng` 以及更上层 socket 封装使用 `axio` 作为同步收发 trait 的公共接口。
+3. `ax-net`、`ax-net` 以及更上层 socket 封装使用 `axio` 作为同步收发 trait 的公共接口。
 4. `ax-api`、`ax-posix-api`、StarryOS 的 `FileLike`/用户缓冲访问对象通过 `axio` 收敛系统调用读写路径。
 
 ### 2.3 `PollState` 的实际使用位置
@@ -130,7 +130,7 @@
 - `ax-std`、`ax-libc`
 - `ax-api`、`ax-posix-api`
 - `ax-fs`、`ax-fs-ng`
-- `ax-net`、`ax-net-ng`
+- `ax-net`、`ax-net`
 - StarryOS 的文件、网络、pipe、用户态缓冲访问和系统调用包装层
 
 ### 3.3 跨层关系

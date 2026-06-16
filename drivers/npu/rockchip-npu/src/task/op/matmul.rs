@@ -1,4 +1,4 @@
-use dma_api::{DArray, DeviceDma, DmaDirection};
+use dma_api::{ContiguousArray, DeviceDma, DmaDirection};
 
 use super::super::def::*;
 use crate::{
@@ -11,9 +11,9 @@ pub struct MatMul<T: Sized + Copy, O: Sized + Copy> {
     m: u16,
     k: u16,
     n: u16,
-    input: DArray<T>,
-    weight: DArray<T>,
-    output: DArray<O>,
+    input: ContiguousArray<T>,
+    weight: ContiguousArray<T>,
+    output: ContiguousArray<O>,
 }
 
 impl<T: Sized + Copy, O: Sized + Copy> MatMul<T, O> {
@@ -23,21 +23,21 @@ impl<T: Sized + Copy, O: Sized + Copy> MatMul<T, O> {
             k: k as _,
             n: n as _,
             input: dma
-                .array_zero_with_align::<T>(
+                .contiguous_array_zero_with_align::<T>(
                     m * k * size_of::<T>(),
                     0x1000,
                     DmaDirection::Bidirectional,
                 )
                 .unwrap(),
             weight: dma
-                .array_zero_with_align::<T>(
+                .contiguous_array_zero_with_align::<T>(
                     k * n * size_of::<T>(),
                     0x1000,
                     DmaDirection::Bidirectional,
                 )
                 .unwrap(),
             output: dma
-                .array_zero_with_align::<O>(
+                .contiguous_array_zero_with_align::<O>(
                     m * n * size_of::<O>(),
                     0x1000,
                     DmaDirection::Bidirectional,
@@ -55,9 +55,10 @@ impl<T: Sized + Copy, O: Sized + Copy> MatMul<T, O> {
             for kk in 1..=k {
                 let idx = feature_data(k, m, 1, 16, kk, mm, 1) as usize;
                 let src = ((mm - 1) * k + (kk - 1)) as usize;
-                self.input.set(idx, a[src]);
+                self.input.set_cpu(idx, a[src]);
             }
         }
+        self.input.prepare_for_device_all();
     }
 
     fn gen_matul(
@@ -414,20 +415,21 @@ impl MatMul<i8, i32> {
             for kk in 1..=k {
                 let idx = weight_int8(k, nn, kk) as usize;
                 let src = ((nn - 1) * k + (kk - 1)) as usize;
-                self.weight.set(idx, b[src]);
+                self.weight.set_cpu(idx, b[src]);
             }
         }
+        self.weight.prepare_for_device_all();
     }
 
     pub fn get_output(&self, m: usize, n: usize) -> i32 {
-        self.output
-            .read(feature_data(self.n as _, self.m as _, 1, 4, n as _, m as _, 1) as usize)
-            .unwrap()
+        self.output.read_from_device(self.output.len(), |output| {
+            output[feature_data(self.n as _, self.m as _, 1, 4, n as _, m as _, 1) as usize]
+        })
     }
 
     pub fn output_buffer(&self) -> &[i32] {
-        self.output.prepare_read_all();
-        unsafe { core::slice::from_raw_parts(self.output.as_ptr().as_ptr(), self.output.len()) }
+        self.output.complete_for_cpu_all();
+        self.output.as_slice_cpu()
     }
 }
 

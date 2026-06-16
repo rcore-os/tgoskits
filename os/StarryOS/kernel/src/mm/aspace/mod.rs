@@ -6,15 +6,15 @@ use core::{
 };
 
 use ax_errno::{AxError, AxResult, ax_bail};
-use ax_hal::{
-    mem::phys_to_virt,
-    paging::{MappingFlags, PageSize, PageTable, PageTableCursor},
-    trap::PageFaultFlags,
-};
 use ax_memory_addr::{
     MemoryAddr, PAGE_SIZE_4K, PageIter4K, PhysAddr, VirtAddr, VirtAddrRange, is_aligned_4k,
 };
 use ax_memory_set::{MemoryArea, MemorySet};
+use ax_runtime::hal::{
+    mem::phys_to_virt,
+    paging::{MappingFlags, PageSize, PageTable, PageTableCursor},
+    trap::PageFaultFlags,
+};
 use ax_sync::Mutex;
 
 mod backend;
@@ -188,12 +188,27 @@ impl AddrSpace {
         self.validate_region(start, size)?;
         let end = start + size;
 
-        let mut modify = self.pt.cursor();
-        while let Some(area) = self.areas.find(start) {
-            let range = VirtAddrRange::new(start, area.end().min(end));
-            area.backend()
-                .populate(range, area.flags(), access_flags, &mut modify)?;
-            start = area.end();
+        loop {
+            let (area_end, callback) = {
+                let Some(area) = self.areas.find(start) else {
+                    break;
+                };
+                let range = VirtAddrRange::new(start, area.end().min(end));
+                let flags = area.flags();
+                let (_, callback) =
+                    area.backend()
+                        .populate(range, flags, access_flags, &mut self.pt.cursor())?;
+                (area.end(), callback)
+            };
+            // Run the eviction cleanup the populate deferred (unmap + TLB flush
+            // for page-cache pages evicted during this fill). Dropping it — as
+            // the old code did — frees an evicted frame while its user PTE still
+            // points at it: a use-after-free that surfaces as a wild pointer
+            // under heavy file-backed paging (the JVM jimage on loongarch).
+            if let Some(cb) = callback {
+                cb(self);
+            }
+            start = area_end;
             assert!(start.is_aligned_4k());
             if start >= end {
                 break;
@@ -203,6 +218,60 @@ impl AddrSpace {
         if start < end {
             // If the area is not fully mapped, we return ENOMEM.
             ax_bail!(NoMemory);
+        }
+
+        Ok(())
+    }
+
+    /// Discards the physical pages backing `[start, start+size)` while keeping
+    /// the VMA metadata intact (Linux `MADV_DONTNEED` / `MADV_FREE` semantics).
+    ///
+    /// For every anonymous private (`CowBackend`) area overlapping the range,
+    /// the intersection (clamped *inward* to the backend's page size) is handed
+    /// to the backend's existing `unmap`, which clears the PTEs and decrements
+    /// the `FRAME_TABLE` refcounts so freed frames return to the global
+    /// allocator. The `MemoryArea` is NOT removed, so the next access re-faults
+    /// and `CowBackend::populate` re-allocates a fresh zero page. Without this,
+    /// Go's runtime `madvise(MADV_DONTNEED)` is a no-op and committed frames
+    /// accumulate until OOM (etcd/consul/minio/prometheus/grafana on starry).
+    ///
+    /// Non-anonymous / non-CoW backends (file-backed, MAP_SHARED, linear device
+    /// memory) are skipped: their frames are not owned per-VMA and dropping
+    /// their PTEs has no reclaim benefit while risking an un-repopulatable hole.
+    pub fn discard_range(&mut self, start: VirtAddr, size: usize) -> AxResult {
+        self.validate_region(start, size)?;
+        let end = start + size;
+
+        // Collect (clamped, page-aligned) fragments + backend clones first, so
+        // the immutable `self.areas` borrow is released before we take the
+        // mutable page-table cursor (mirrors `areas_in_range`).
+        let mut frags: alloc::vec::Vec<(VirtAddrRange, Backend)> = alloc::vec::Vec::new();
+        for area in self.areas.iter() {
+            if area.start() >= end {
+                break;
+            }
+            if area.end() <= start {
+                continue;
+            }
+            // Only anonymous private mappings (Go's heap). See doc comment.
+            let backend = match area.backend() {
+                Backend::Cow(cow) if cow.is_anonymous() => area.backend().clone(),
+                _ => continue,
+            };
+            let page = backend.page_size();
+            // Clamp inward to whole backend-sized pages fully inside the range
+            // (`pages_in`/`DynPageIter` require both ends aligned, else EINVAL).
+            let frag_start = area.start().max(start).align_up(page);
+            let frag_end = area.end().min(end).align_down(page);
+            if frag_start >= frag_end {
+                continue;
+            }
+            frags.push((VirtAddrRange::new(frag_start, frag_end), backend));
+        }
+
+        for (range, backend) in frags {
+            let mut cursor = self.pt.cursor();
+            BackendOps::unmap(&backend, range, &mut cursor)?;
         }
 
         Ok(())
@@ -426,8 +495,22 @@ impl AddrSpace {
             let flags = area.flags();
             if flags.contains(access_flags) {
                 let page_size = area.backend().page_size();
+                // Readahead: populate a window FORWARD from the faulting page
+                // (clamped to this area), so a large file-backed mapping loads
+                // via the backend's batched read instead of one fault+read per
+                // page. The backend skips already-mapped pages, so overlapping
+                // windows from successive faults are harmless. Only base 4K pages
+                // get the window; huge pages populate exactly one.
+                let fault_page = vaddr.align_down(page_size);
+                let ps = page_size as usize;
+                const READAHEAD_PAGES: usize = 32;
+                let win_end = if page_size == PageSize::Size4K {
+                    (fault_page + READAHEAD_PAGES * ps).min(area.end())
+                } else {
+                    fault_page + ps
+                };
                 let populate_result = area.backend().populate(
-                    VirtAddrRange::from_start_size(vaddr.align_down(page_size), page_size as _),
+                    VirtAddrRange::new(fault_page, win_end),
                     flags,
                     access_flags,
                     &mut self.pt.cursor(),

@@ -7,6 +7,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.1](https://github.com/rcore-os/tgoskits/compare/some-serial-v0.6.0...some-serial-v0.6.1) - 2026-06-12
+
+### Other
+
+- updated the following local packages: rdif-serial
+
+## [0.6.0](https://github.com/rcore-os/tgoskits/compare/some-serial-v0.5.1...some-serial-v0.6.0) - 2026-06-11
+
+### Fixed
+
+- fix typos in code and comments across the codebase ([#1206](https://github.com/rcore-os/tgoskits/pull/1206))
+
+## [0.5.1](https://github.com/rcore-os/tgoskits/compare/some-serial-v0.5.0...some-serial-v0.5.1) - 2026-06-09
+
+### Other
+
+- updated the following local packages: ax-kspin, rdrive, rdif-intc, rdif-serial
+
+## [0.5.0](https://github.com/rcore-os/tgoskits/compare/some-serial-v0.4.1...some-serial-v0.5.0) - 2026-06-03
+
+### Added
+
+- *(some-serial)* add Rockchip FIQ debugger UART ([#980](https://github.com/rcore-os/tgoskits/pull/980))
+
+### Fixed
+
+- *(repo)* migrate spin usage to ax-kspin ([#861](https://github.com/rcore-os/tgoskits/pull/861))
+
+### Other
+
+- Remove ARM PL011 UART driver and integrate DesignWare APB UART support ([#965](https://github.com/rcore-os/tgoskits/pull/965))
+
 ## [0.4.0](https://github.com/drivercraft/sparreal-os/compare/some-serial-v0.3.1...some-serial-v0.4.0) - 2026-04-15
 
 ### Other

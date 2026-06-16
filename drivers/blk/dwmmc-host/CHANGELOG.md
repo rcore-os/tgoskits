@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.3](https://github.com/rcore-os/tgoskits/compare/dwmmc-host-v0.1.2...dwmmc-host-v0.1.3) - 2026-06-09
+
+### Other
+
+- updated the following local packages: dma-api
+
+## [0.1.2](https://github.com/rcore-os/tgoskits/compare/dwmmc-host-v0.1.1...dwmmc-host-v0.1.2) - 2026-06-03
+
+### Added
+
+- *(dma-api)* add high-level dma sync helpers ([#1028](https://github.com/rcore-os/tgoskits/pull/1028))
+
+### Other
+
+- *(dma-api)* split coherent and streaming DMA APIs ([#932](https://github.com/rcore-os/tgoskits/pull/932))
+
 ## [0.1.0](https://github.com/rcore-os/tgoskits/releases/tag/dwmmc-host-v0.1.0) - 2026-05-16
 
 ### Added

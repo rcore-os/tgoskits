@@ -1,6 +1,6 @@
 use alloc::vec::Vec;
 
-use dma_api::{DArray, DmaDirection};
+use dma_api::{CoherentArray, DmaDirection};
 use mbarrier::mb;
 use xhci::ring::trb::{Link, command, transfer};
 
@@ -16,12 +16,12 @@ pub(crate) const TRB_SIZE: usize = size_of::<TrbData>();
 pub(crate) const TRBS_PER_SEGMENT: usize = 256;
 const DEFAULT_RING_PAGES: usize = 2;
 
-#[derive(Clone)]
+#[derive(Clone, Copy)]
 #[repr(transparent)]
 pub struct TrbData([u32; TRB_LEN]);
 
 impl TrbData {
-    pub fn to_raw(&self) -> [u32; TRB_LEN] {
+    pub fn to_raw(self) -> [u32; TRB_LEN] {
         self.0
     }
 }
@@ -42,7 +42,7 @@ impl From<transfer::Allowed> for TrbData {
 
 pub struct Ring {
     link: bool,
-    pub trbs: DArray<TrbData>,
+    pub trbs: CoherentArray<TrbData>,
     pub i: usize,
     pub cycle: bool,
 }
@@ -57,7 +57,8 @@ impl Ring {
         direction: DmaDirection,
         dma: &Kernel,
     ) -> core::result::Result<Self, HostError> {
-        let trbs = dma.array_zero_with_align(len, dma.page_size(), direction)?;
+        let _ = direction;
+        let trbs = dma.coherent_array_zero_with_align(len, dma.page_size())?;
 
         Ok(Self {
             link,
@@ -134,11 +135,11 @@ impl Ring {
     }
 
     fn set_transfer_trb(&mut self, index: usize, trb: transfer::Allowed) {
-        self.trbs.set(index, trb.into());
+        self.trbs.set_cpu(index, trb.into());
     }
 
     pub fn enque_trb(&mut self, trb: TrbData) -> BusAddr {
-        self.trbs.set(self.i, trb);
+        self.trbs.set_cpu(self.i, trb);
         let addr = self.trb_bus_addr(self.i);
         self.next_index();
         addr
@@ -164,7 +165,7 @@ impl Ring {
             }
             let trb = command::Allowed::Link(link);
 
-            self.trbs.set(len - 1, trb.into());
+            self.trbs.set_cpu(len - 1, trb.into());
 
             self.cycle = !self.cycle;
         } else if self.i >= len {

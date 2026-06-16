@@ -17,7 +17,7 @@ use super::{
 };
 use crate::{
     context::{
-        AxvisorCliArgs, ResolvedAxvisorRequest, SnapshotPersistence,
+        AxvisorCliArgs, ResolvedAxvisorRequest, ResolvedBuildRequest, SnapshotPersistence,
         resolve_axvisor_arch_and_target,
     },
     test::{
@@ -28,6 +28,8 @@ use crate::{
 
 const AXVISOR_TEST_SUITE_OS: &str = "axvisor";
 const AXVISOR_NORMAL_GROUP: &str = "normal";
+const ARCEOS_QEMU_GUEST_PACKAGE: &str = "ax-helloworld";
+const ARCEOS_QEMU_GUEST_KERNEL_PATH: &str = "/guest/arceos/ax-helloworld-x86_64.bin";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct AxvisorQemuCase {
@@ -204,6 +206,15 @@ fn merge_board_test_uboot_config(
     if test_uboot.dtb_file.is_some() {
         uboot.dtb_file = test_uboot.dtb_file;
     }
+    if test_uboot.kernel_load_addr.is_some() {
+        uboot.kernel_load_addr = test_uboot.kernel_load_addr;
+    }
+    if test_uboot.fit_load_addr.is_some() {
+        uboot.fit_load_addr = test_uboot.fit_load_addr;
+    }
+    if test_uboot.bootm_addr.is_some() {
+        uboot.bootm_addr = test_uboot.bootm_addr;
+    }
     uboot.success_regex = test_uboot.success_regex;
     uboot.fail_regex = test_uboot.fail_regex;
     uboot.uboot_cmd = test_uboot.uboot_cmd;
@@ -358,6 +369,16 @@ impl Axvisor {
         for build_group in &build_groups {
             rootfs::ensure_qemu_rootfs_ready(&build_group.request, self.app.workspace_root(), None)
                 .await?;
+            if build_group_needs_arceos_x86_64_guest(&build_group.request) {
+                self.build_arceos_x86_64_guest_image()
+                    .await
+                    .with_context(|| {
+                        format!(
+                            "failed to build ArceOS guest image for Axvisor qemu build group `{}`",
+                            build_group.group.build_group
+                        )
+                    })?;
+            }
             self.app
                 .build(
                     build_group.cargo.clone(),
@@ -443,12 +464,7 @@ impl Axvisor {
         let cargo = build::load_cargo_config(&request)?;
         let base_uboot = match request.uboot_config.as_deref() {
             Some(_) => self.load_uboot_config(&request, &cargo).await?,
-            None => Some(
-                self.app
-                    .tool_mut()
-                    .ensure_uboot_config_for_cargo(&cargo)
-                    .await?,
-            ),
+            None => Some(self.app.ensure_uboot_config_for_cargo(&cargo).await?),
         };
         let board_config = self
             .load_board_config(&cargo, Some(board_test_config.as_path()))
@@ -593,9 +609,8 @@ impl Axvisor {
                 &case.build_config_path,
                 &mut cargo_by_build_config,
             )?;
-            let qemu = self
+            let mut qemu = self
                 .app
-                .tool_mut()
                 .read_qemu_config_from_path_for_cargo(&cargo, &case.case.qemu_config_path)
                 .await
                 .with_context(|| {
@@ -604,6 +619,7 @@ impl Axvisor {
                         case.case.display_name
                     )
                 })?;
+            test_qemu::apply_dynamic_platform_qemu_boot(&mut qemu, &cargo);
             test_qemu::validate_grouped_qemu_commands(&qemu, &case.case, "Axvisor")?;
             prepared.push(PreparedAxvisorQemuCase { case, qemu });
         }
@@ -640,7 +656,9 @@ impl Axvisor {
     }
 
     fn qemu_test_request(mut request: ResolvedAxvisorRequest) -> ResolvedAxvisorRequest {
+        request.plat_dyn = None;
         request.smp = None;
+        request.vmconfigs.clear();
         request
     }
 
@@ -659,7 +677,7 @@ impl Axvisor {
         test_qemu::apply_timeout_scale(&mut qemu);
 
         let rootfs_path = rootfs::qemu_rootfs_path(request, self.app.workspace_root(), None)?;
-        let prepared_assets = test_case::prepare_case_assets(
+        let mut prepared_assets = test_case::prepare_case_assets(
             self.app.workspace_root(),
             &request.arch,
             &request.target,
@@ -668,8 +686,19 @@ impl Axvisor {
             asset_config.clone(),
         )
         .await?;
+        if case_needs_arceos_x86_64_guest(request, case) {
+            self.inject_arceos_x86_64_guest_image(request, case, &mut prepared_assets)
+                .with_context(|| {
+                    format!(
+                        "failed to prepare ArceOS guest image for Axvisor qemu case `{}`",
+                        case.case.case.name
+                    )
+                })?;
+        }
         rootfs::patch_qemu_rootfs_path(&mut qemu, &prepared_assets.rootfs_path);
         qemu.args.extend(prepared_assets.extra_qemu_args.clone());
+        let cargo = build::load_cargo_config(request)?;
+        test_qemu::apply_dynamic_platform_qemu_boot(&mut qemu, &cargo);
         Ok((qemu, prepared_assets))
     }
 
@@ -688,12 +717,146 @@ impl Axvisor {
             &mut self.app,
             cargo,
             qemu,
+            None,
             &case.case.case.qemu_config_path,
             prepared_assets,
-            prepare_started.elapsed(),
+            test_case::RunPreparedQemuCaseOptions {
+                prepare_elapsed: prepare_started.elapsed(),
+                qemu_timing_fields: None,
+            },
         )
         .await
     }
+
+    async fn build_arceos_x86_64_guest_image(&mut self) -> anyhow::Result<PathBuf> {
+        let request = arceos_x86_64_guest_request()?;
+        let cargo = crate::arceos::build::load_cargo_config(&request)?;
+        self.app
+            .build(cargo.clone(), request.build_info_path.clone())
+            .await?;
+
+        let elf_path = arceos_x86_64_guest_elf_path(self.app.workspace_root(), request.debug);
+        self.app
+            .prepare_elf_artifact(elf_path.clone(), true)
+            .await?;
+
+        Ok(elf_path.with_extension("bin"))
+    }
+
+    fn inject_arceos_x86_64_guest_image(
+        &self,
+        request: &ResolvedAxvisorRequest,
+        case: &PreparedAxvisorQemuCase,
+        prepared_assets: &mut test_case::PreparedCaseAssets,
+    ) -> anyhow::Result<()> {
+        let guest_image = arceos_x86_64_guest_bin_path(self.app.workspace_root());
+        ensure_file_exists(&guest_image, "ArceOS guest image")?;
+
+        let mut temporary_overlay_run_dir = None;
+        let overlay_dir = if prepared_assets.rootfs_copy_to_remove.is_none() {
+            let layout = test_case::case_asset_layout(
+                self.app.workspace_root(),
+                &request.target,
+                &case.case.case.display_name,
+            )?;
+            fs::create_dir_all(&layout.run_dir)
+                .with_context(|| format!("failed to create {}", layout.run_dir.display()))?;
+            test_case::copy_shared_rootfs_for_case(&prepared_assets.rootfs_path, &layout)?;
+            prepared_assets.rootfs_path = layout.case_rootfs_copy.clone();
+            prepared_assets.rootfs_copy_to_remove = Some(layout.case_rootfs_copy.clone());
+            prepared_assets.run_dir_to_remove = Some(layout.run_dir.clone());
+            layout.overlay_dir
+        } else {
+            let layout = test_case::case_asset_layout(
+                self.app.workspace_root(),
+                &request.target,
+                &case.case.case.display_name,
+            )?;
+            fs::create_dir_all(&layout.run_dir)
+                .with_context(|| format!("failed to create {}", layout.run_dir.display()))?;
+            temporary_overlay_run_dir = Some(layout.run_dir);
+            layout.overlay_dir
+        };
+        copy_guest_overlay_file(
+            &guest_image,
+            &overlay_dir,
+            ARCEOS_QEMU_GUEST_KERNEL_PATH,
+            "ArceOS guest image",
+        )?;
+        let result =
+            crate::rootfs::inject::inject_overlay(&prepared_assets.rootfs_path, &overlay_dir);
+        test_case::remove_case_run_dir(temporary_overlay_run_dir.as_deref());
+        result
+    }
+}
+
+fn arceos_x86_64_guest_request() -> anyhow::Result<ResolvedBuildRequest> {
+    let target = "x86_64-unknown-none".to_string();
+    Ok(ResolvedBuildRequest {
+        package: ARCEOS_QEMU_GUEST_PACKAGE.to_string(),
+        arch: "x86_64".to_string(),
+        target: target.clone(),
+        plat_dyn: Some(false),
+        smp: None,
+        debug: false,
+        build_info_path: crate::arceos::build::resolve_build_info_path(
+            ARCEOS_QEMU_GUEST_PACKAGE,
+            &target,
+            None,
+        )?,
+        qemu_config: None,
+        uboot_config: None,
+    })
+}
+
+fn arceos_x86_64_guest_elf_path(workspace_root: &Path, debug: bool) -> PathBuf {
+    crate::backtrace::arceos_rust_elf_path(
+        workspace_root,
+        "x86_64-unknown-none",
+        ARCEOS_QEMU_GUEST_PACKAGE,
+        debug,
+    )
+}
+
+fn arceos_x86_64_guest_bin_path(workspace_root: &Path) -> PathBuf {
+    arceos_x86_64_guest_elf_path(workspace_root, false).with_extension("bin")
+}
+
+fn copy_guest_overlay_file(
+    source: &Path,
+    overlay_dir: &Path,
+    guest_path: &str,
+    label: &str,
+) -> anyhow::Result<()> {
+    let overlay_path = overlay_dir.join(guest_path.trim_start_matches('/'));
+    if let Some(parent) = overlay_path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create {}", parent.display()))?;
+    }
+    fs::copy(source, &overlay_path).with_context(|| {
+        format!(
+            "failed to copy {label} {} to {}",
+            source.display(),
+            overlay_path.display()
+        )
+    })?;
+    Ok(())
+}
+
+fn build_group_needs_arceos_x86_64_guest(request: &ResolvedAxvisorRequest) -> bool {
+    request.arch == "x86_64"
+        && request.vmconfigs.iter().any(|path| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.starts_with("arceos"))
+        })
+}
+
+fn case_needs_arceos_x86_64_guest(
+    request: &ResolvedAxvisorRequest,
+    case: &PreparedAxvisorQemuCase,
+) -> bool {
+    build_group_needs_arceos_x86_64_guest(request) || case.case.case.name.contains("arceos")
 }
 
 fn qemu_group_vmconfigs(
@@ -736,6 +899,7 @@ fn axvisor_case_asset_config() -> test_case::CaseAssetConfig {
         grouped_runner: test_case::GroupedCaseRunnerConfig {
             runner_name: "axvisor-run-case-tests".to_string(),
             runner_path: "/usr/bin/axvisor-run-case-tests".to_string(),
+            autorun_profile_script: None,
             begin_marker: "AXVISOR_GROUPED_TEST_BEGIN".to_string(),
             passed_marker: "AXVISOR_GROUPED_TEST_PASSED".to_string(),
             failed_marker: "AXVISOR_GROUPED_TEST_FAILED".to_string(),
@@ -775,6 +939,12 @@ mod tests {
     use tempfile::tempdir;
 
     use super::*;
+
+    #[derive(serde::Deserialize)]
+    struct TestBuildConfigVmConfigs {
+        #[serde(default)]
+        vm_configs: Vec<PathBuf>,
+    }
 
     fn write_qemu_config(root: &Path, case: &str, arch: &str, body: &str) -> PathBuf {
         write_qemu_config_in_group(root, "normal", "default", case, arch, body)
@@ -865,6 +1035,59 @@ mod tests {
     }
 
     #[test]
+    fn checked_in_test_build_vmconfigs_exist() {
+        let workspace_root = std::env::current_dir().unwrap();
+        let axvisor_suite = workspace_root.join("test-suit/axvisor");
+        if !axvisor_suite.is_dir() {
+            return;
+        }
+
+        let mut stack = vec![axvisor_suite];
+        let mut checked = 0;
+        while let Some(dir) = stack.pop() {
+            for entry in fs::read_dir(&dir).unwrap() {
+                let entry = entry.unwrap();
+                let path = entry.path();
+                if path.is_dir() {
+                    stack.push(path);
+                    continue;
+                }
+
+                let Some(file_name) = path.file_name().and_then(|name| name.to_str()) else {
+                    continue;
+                };
+                if !file_name.starts_with("build-")
+                    || path.extension().and_then(|ext| ext.to_str()) != Some("toml")
+                {
+                    continue;
+                }
+
+                let content = fs::read_to_string(&path).unwrap();
+                let config: TestBuildConfigVmConfigs = toml::from_str(&content).unwrap();
+                for vm_config in config.vm_configs {
+                    if vm_config.starts_with("os/axvisor/tmp/vmconfigs") {
+                        continue;
+                    }
+                    checked += 1;
+                    let vm_config_path = if vm_config.is_absolute() {
+                        vm_config
+                    } else {
+                        workspace_root.join(vm_config)
+                    };
+                    assert!(
+                        vm_config_path.is_file(),
+                        "{} references missing vm_config {}",
+                        path.display(),
+                        vm_config_path.display()
+                    );
+                }
+            }
+        }
+
+        assert!(checked > 0);
+    }
+
+    #[test]
     fn parses_supported_arch_aliases() {
         assert_eq!(
             parse_target(&Some("aarch64".to_string()), &None).unwrap(),
@@ -946,6 +1169,36 @@ mod tests {
         let request = Axvisor::qemu_test_request(request);
 
         assert_eq!(request.smp, None);
+    }
+
+    #[test]
+    fn qemu_test_request_ignores_inherited_plat_dyn() {
+        let mut request = axvisor_request(
+            PathBuf::from("/tmp/build-x86_64-unknown-none.toml"),
+            "x86_64",
+            "x86_64-unknown-none",
+        );
+        request.plat_dyn = Some(true);
+
+        let request = Axvisor::qemu_test_request(request);
+
+        assert_eq!(request.plat_dyn, None);
+    }
+
+    #[test]
+    fn qemu_test_request_ignores_inherited_vmconfigs() {
+        let mut request = axvisor_request(
+            PathBuf::from("/tmp/build-x86_64-unknown-none.toml"),
+            "x86_64",
+            "x86_64-unknown-none",
+        );
+        request
+            .vmconfigs
+            .push(PathBuf::from("tmp/old-axvisor-vm.toml"));
+
+        let request = Axvisor::qemu_test_request(request);
+
+        assert!(request.vmconfigs.is_empty());
     }
 
     #[test]
@@ -1117,6 +1370,44 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["load"]
         );
+    }
+
+    #[test]
+    fn discovers_qemu_cases_from_uefi_group_without_polluting_normal_group() {
+        let root = tempdir().unwrap();
+        write_qemu_build_config(root.path(), "normal", "default", "x86_64-unknown-none");
+        write_qemu_config_in_group(
+            root.path(),
+            "normal",
+            "default",
+            "baseline",
+            "x86_64",
+            "shell_prefix = \">>\"\nshell_init_cmd = \"hello_world\"\nsuccess_regex = \
+             []\nfail_regex = []\n",
+        );
+        write_qemu_build_config(root.path(), "uefi", "qemu-nimbos", "x86_64-unknown-none");
+        write_qemu_config_in_group(
+            root.path(),
+            "uefi",
+            "qemu-nimbos",
+            "smoke",
+            "x86_64",
+            "shell_prefix = \">>\"\nshell_init_cmd = \"hello_world\"\nsuccess_regex = \
+             []\nfail_regex = []\n",
+        );
+
+        let normal_cases =
+            discover_qemu_cases(root.path(), "normal", "x86_64", "x86_64-unknown-none", None)
+                .unwrap();
+        assert_eq!(normal_cases.len(), 1);
+        assert_eq!(normal_cases[0].case.name, "baseline");
+
+        let uefi_cases =
+            discover_qemu_cases(root.path(), "uefi", "x86_64", "x86_64-unknown-none", None)
+                .unwrap();
+        assert_eq!(uefi_cases.len(), 1);
+        assert_eq!(uefi_cases[0].case.name, "smoke");
+        assert_eq!(uefi_cases[0].build_group, "qemu-nimbos");
     }
 
     #[test]
@@ -1326,6 +1617,9 @@ mod tests {
                 "run ab_select_cmd".to_string(),
                 "run avb_boot".to_string(),
             ]),
+            kernel_load_addr: Some("0x200000".to_string()),
+            fit_load_addr: Some("0x2000000".to_string()),
+            bootm_addr: Some("0x2000000".to_string()),
             shell_prefix: Some("ubuntu login:".to_string()),
             ..Default::default()
         };
@@ -1343,9 +1637,28 @@ mod tests {
         );
         assert_eq!(merged.shell_prefix.as_deref(), Some("ubuntu login:"));
         assert_eq!(merged.dtb_file.as_deref(), Some("${env:BOARD_DTB}"));
+        assert_eq!(merged.kernel_load_addr.as_deref(), Some("0x200000"));
+        assert_eq!(merged.fit_load_addr.as_deref(), Some("0x2000000"));
+        assert_eq!(merged.bootm_addr.as_deref(), Some("0x2000000"));
         assert_eq!(merged.timeout, Some(300));
         assert_eq!(merged.local.serial.as_deref(), Some("/dev/ttyUSB1"));
         assert_eq!(merged.local.baud_rate.as_deref(), Some("1500000"));
+    }
+
+    #[test]
+    fn x86_linux_direct_boot_configs_keep_timer_calibration_bypass() {
+        let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        for path in [
+            "os/axvisor/configs/vms/qemu/x86_64/linux-vmx-smp1.toml",
+            "os/axvisor/configs/vms/qemu/x86_64/linux-svm-smp1.toml",
+        ] {
+            let content = fs::read_to_string(workspace_root.join(path)).unwrap();
+            assert!(
+                content.contains("no_timer_check"),
+                "{path} should keep no_timer_check to avoid x86 Linux guest timer calibration \
+                 stalls"
+            );
+        }
     }
 
     #[test]

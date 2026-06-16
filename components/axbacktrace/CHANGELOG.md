@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.2](https://github.com/rcore-os/tgoskits/compare/axbacktrace-v0.4.1...axbacktrace-v0.4.2) - 2026-06-09
+
+### Added
+
+- *(backtrace)* add showcase workflow ([#1094](https://github.com/rcore-os/tgoskits/pull/1094))
+
+## [0.4.1](https://github.com/rcore-os/tgoskits/compare/axbacktrace-v0.4.0...axbacktrace-v0.4.1) - 2026-06-03
+
+### Fixed
+
+- *(axbacktrace)* harden correctness, optimize allocation, and add per-arch IP adjustment ([#1029](https://github.com/rcore-os/tgoskits/pull/1029))
+
+### Other
+
+- *(deps)* update spin 0.10→0.12, ostool 0.19→0.21 ([#978](https://github.com/rcore-os/tgoskits/pull/978))
+
+## [0.4.0](https://github.com/rcore-os/tgoskits/compare/axbacktrace-v0.3.9...axbacktrace-v0.4.0) - 2026-05-22
+
+### Other
+
+- *(axbacktrace)* use Backtrace::kind() instead of BacktraceReport ([#748](https://github.com/rcore-os/tgoskits/pull/748))
+
 ## [0.3.9](https://github.com/rcore-os/tgoskits/compare/axbacktrace-v0.3.8...axbacktrace-v0.3.9) - 2026-05-15
 
 ### Added

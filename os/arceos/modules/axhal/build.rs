@@ -4,26 +4,157 @@ use std::{
     path::{Path, PathBuf},
 };
 
-const LINKER_SCRIPT_NAME: &str = "linker.x";
-const LINKER_TEMPLATE_NAME: &str = "linker.lds.S";
+const LINKER_SCRIPT_NAME: &str = "axplat.x";
+const LINKER_TEMPLATE_NAME: &str = "axplat.lds.S";
+const SELECTED_PLATFORM_NAME: &str = "selected_platform.rs";
+
+struct PlatformFeature {
+    feature: &'static str,
+    target_arch: Option<&'static str>,
+    crate_name: &'static str,
+}
+
+const PLATFORM_FEATURES: &[PlatformFeature] = &[
+    PlatformFeature {
+        feature: "plat-dyn",
+        target_arch: None,
+        crate_name: "axplat_dyn",
+    },
+    PlatformFeature {
+        feature: "riscv64-sg2002",
+        target_arch: Some("riscv64"),
+        crate_name: "ax_plat_riscv64_sg2002",
+    },
+    PlatformFeature {
+        feature: "riscv64-visionfive2",
+        target_arch: Some("riscv64"),
+        crate_name: "ax_plat_riscv64_visionfive2",
+    },
+    PlatformFeature {
+        feature: "loongarch64-qemu-virt",
+        target_arch: Some("loongarch64"),
+        crate_name: "ax_plat_loongarch64_qemu_virt",
+    },
+];
+
+const DEFAULT_PLATFORMS: &[(&str, &str)] = &[("loongarch64", "ax_plat_loongarch64_qemu_virt")];
 
 fn main() {
     println!("cargo:rustc-check-cfg=cfg(plat_dyn)");
     println!("cargo:rerun-if-changed={LINKER_TEMPLATE_NAME}");
     println!("cargo:rerun-if-env-changed=AX_CONFIG_PATH");
+    println!("cargo:rerun-if-env-changed={}", feature_env("host-test"));
+    println!("cargo:rerun-if-env-changed={}", feature_env("myplat"));
+    println!("cargo:rerun-if-env-changed={}", feature_env("defplat"));
+    for platform in PLATFORM_FEATURES {
+        println!(
+            "cargo:rerun-if-env-changed={}",
+            feature_env(platform.feature)
+        );
+    }
 
     let arch = std::env::var("CARGO_CFG_TARGET_ARCH").unwrap();
-    let target_os = std::env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
-    let has_plat_dyn = std::env::var_os("CARGO_FEATURE_PLAT_DYN").is_some();
+    let selected_platform = check_platform_features(&arch);
+    gen_selected_platform(&arch, selected_platform).unwrap();
+
     let config = load_linker_config().unwrap();
 
-    if has_plat_dyn && target_os == "none" {
+    let platform_linker_is_external = selected_platform
+        .is_some_and(|platform| matches!(platform.feature, "plat-dyn" | "loongarch64-qemu-virt"));
+
+    if config.platform != "dummy" && !platform_linker_is_external {
+        gen_linker_script(&arch, &config).unwrap();
+    }
+}
+
+fn check_platform_features(arch: &str) -> Option<&'static PlatformFeature> {
+    let has_myplat = feature_enabled("myplat");
+    let enabled_platforms = PLATFORM_FEATURES
+        .iter()
+        .filter(|platform| feature_enabled(platform.feature))
+        .collect::<Vec<_>>();
+
+    if has_myplat && !enabled_platforms.is_empty() {
+        panic!("ax-hal/myplat must not be combined with a built-in ax-hal platform feature");
+    }
+
+    if feature_enabled("plat-dyn") && enabled_platforms.len() > 1 {
+        panic!("ax-hal/plat-dyn must not be combined with a built-in ax-hal platform feature");
+    }
+
+    for platform in &enabled_platforms {
+        if let Some(target_arch) = platform.target_arch {
+            let conflicting_features = enabled_platforms
+                .iter()
+                .filter(|other| other.target_arch == Some(target_arch))
+                .map(|platform| platform.feature)
+                .collect::<Vec<_>>();
+            if conflicting_features.len() > 1 {
+                panic!(
+                    "multiple ax-hal platform features are enabled for target_arch = \"{}\": {}",
+                    target_arch,
+                    conflicting_features.join(", ")
+                );
+            }
+        }
+    }
+
+    for platform in &enabled_platforms {
+        if let Some(target_arch) = platform.target_arch
+            && arch != target_arch
+        {
+            panic!(
+                "ax-hal/{} requires target_arch = \"{}\"",
+                platform.feature, target_arch
+            );
+        }
+    }
+
+    enabled_platforms.into_iter().find(|platform| {
+        platform
+            .target_arch
+            .is_none_or(|target_arch| target_arch == arch)
+    })
+}
+
+fn gen_selected_platform(arch: &str, platform: Option<&PlatformFeature>) -> Result<()> {
+    let crate_name = if let Some(platform) = platform {
+        if platform.feature == "plat-dyn" {
+            Some(platform.crate_name)
+        } else {
+            platform
+                .target_arch
+                .is_some_and(|target_arch| target_arch == arch)
+                .then_some(platform.crate_name)
+        }
+    } else if feature_enabled("defplat") && !feature_enabled("myplat") {
+        DEFAULT_PLATFORMS
+            .iter()
+            .find_map(|(target_arch, crate_name)| (*target_arch == arch).then_some(*crate_name))
+    } else {
+        None
+    };
+
+    if crate_name == Some("axplat_dyn") {
         println!("cargo:rustc-cfg=plat_dyn");
     }
 
-    if config.platform != "dummy" {
-        gen_linker_script(&arch, &config).unwrap();
-    }
+    let content = crate_name
+        .map(|crate_name| format!("extern crate {crate_name} as _;\n"))
+        .unwrap_or_default();
+    let out_dir = PathBuf::from(std::env::var("OUT_DIR").unwrap());
+    fs::write(out_dir.join(SELECTED_PLATFORM_NAME), content)
+}
+
+fn feature_enabled(feature: &str) -> bool {
+    std::env::var_os(feature_env(feature)).is_some()
+}
+
+fn feature_env(feature: &str) -> String {
+    format!(
+        "CARGO_FEATURE_{}",
+        feature.replace('-', "_").to_ascii_uppercase()
+    )
 }
 
 #[derive(Debug)]
@@ -70,6 +201,10 @@ fn get_string(value: &toml::Value, keys: &[&str]) -> Result<String> {
 
 fn get_usize(value: &toml::Value, keys: &[&str]) -> Result<usize> {
     let value = get_value(value, keys)?;
+    parse_value_usize(value, keys)
+}
+
+fn parse_value_usize(value: &toml::Value, keys: &[&str]) -> Result<usize> {
     match value {
         toml::Value::Integer(value) => usize::try_from(*value)
             .map_err(|_| invalid_data(format!("{} is out of range", keys.join(".")))),
@@ -117,42 +252,23 @@ fn gen_linker_script(arch: &str, config: &LinkerConfig) -> Result<()> {
         .replace("%ARCH%", output_arch)
         .replace("%KERNEL_BASE%", &format!("{:#x}", config.kernel_base_vaddr))
         .replace(
+            "%KERNEL_BASE_VADDR%",
+            &format!("{:#x}", config.kernel_base_vaddr),
+        )
+        .replace(
             "%KERNEL_BASE_PADDR%",
             &format!("{:#x}", config.kernel_base_paddr),
         )
-        .replace("%CPU_NUM%", &format!("{}", config.max_cpu_num))
-        .replace(
-            "%DWARF%",
-            if std::env::var("DWARF").is_ok_and(|v| v == "y") {
-                r#"debug_abbrev : { . += SIZEOF(.debug_abbrev); }
-    debug_addr : { . += SIZEOF(.debug_addr); }
-    debug_aranges : { . += SIZEOF(.debug_aranges); }
-    debug_info : { . += SIZEOF(.debug_info); }
-    debug_line : { . += SIZEOF(.debug_line); }
-    debug_line_str : { . += SIZEOF(.debug_line_str); }
-    debug_ranges : { . += SIZEOF(.debug_ranges); }
-    debug_rnglists : { . += SIZEOF(.debug_rnglists); }
-    debug_str : { . += SIZEOF(.debug_str); }
-    debug_str_offsets : { . += SIZEOF(.debug_str_offsets); }"#
-            } else {
-                ""
-            },
-        );
+        .replace("%CPU_NUM%", &format!("{}", config.max_cpu_num));
 
     // target/<target_triple>/<mode>/build/ax-hal-xxxx/out
     let out_dir = PathBuf::from(std::env::var("OUT_DIR").unwrap());
     let linker_path = out_dir.join(LINKER_SCRIPT_NAME);
 
-    // target/<target_triple>/<mode>/build/ax-hal-xxxx/out/linker.x
+    // target/<target_triple>/<mode>/build/ax-hal-xxxx/out/axplat.x
     fs::write(&linker_path, &ld_content)?;
 
     println!("cargo:rustc-link-search={}", out_dir.display());
-    println!("cargo:rustc-link-arg=-T{}", linker_path.display());
-
-    // Keep a stable copy under target/<target_triple>/<mode>/ for callers
-    // that still link outside Cargo build-script search paths.
-    let target_dir = out_dir.join("../../..");
-    fs::write(target_dir.join(LINKER_SCRIPT_NAME), &ld_content)?;
 
     Ok(())
 }

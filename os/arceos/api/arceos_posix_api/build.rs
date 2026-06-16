@@ -29,12 +29,14 @@ fn main() {
         }
     }
 
-    fn gen_pthread_mutex(out_file: &str) -> std::io::Result<()> {
+    fn gen_pthread_mutex(out_file: &std::path::Path) -> std::io::Result<()> {
         println!("cargo:rerun-if-env-changed=CARGO_FEATURE_MULTITASK");
         println!("cargo:rerun-if-env-changed=CARGO_FEATURE_SMP");
         println!("cargo:rerun-if-env-changed=CARGO_FEATURE_LOCKDEP");
+        println!("cargo:rerun-if-env-changed=CARGO_FEATURE_PLAT_DYN");
         let has_multitask = std::env::var_os("CARGO_FEATURE_MULTITASK").is_some();
-        let has_smp = std::env::var_os("CARGO_FEATURE_SMP").is_some();
+        let has_smp = std::env::var_os("CARGO_FEATURE_SMP").is_some()
+            || std::env::var_os("CARGO_FEATURE_PLAT_DYN").is_some();
         let has_lockdep = std::env::var_os("CARGO_FEATURE_LOCKDEP").is_some();
         let (mutex_size, mutex_init) = pthread_mutex_layout(has_multitask, has_smp, has_lockdep);
 
@@ -57,7 +59,11 @@ typedef struct {{
         Ok(())
     }
 
-    fn gen_c_to_rust_bindings(in_file: &str, out_file: &std::path::Path) {
+    fn gen_c_to_rust_bindings(
+        in_file: &str,
+        generated_include_dir: &std::path::Path,
+        out_file: &std::path::Path,
+    ) {
         println!("cargo:rerun-if-changed={in_file}");
 
         let allow_types = [
@@ -116,12 +122,13 @@ typedef struct {{
         let target = std::env::var("TARGET").unwrap();
         let mut builder = bindgen::Builder::default()
             .header(in_file)
+            .clang_arg(format!("-I{}", generated_include_dir.display()))
             .clang_arg("-I./../../ulib/axlibc/include")
             .parse_callbacks(Box::new(MyCallbacks))
             .derive_default(true)
             .size_t_is_usize(false)
             .use_core();
-        for feature in ["MULTITASK", "SMP", "LOCKDEP"] {
+        for feature in ["MULTITASK", "SMP", "LOCKDEP", "PLAT_DYN"] {
             println!("cargo:rerun-if-env-changed=CARGO_FEATURE_{feature}");
             if std::env::var_os(format!("CARGO_FEATURE_{feature}")).is_some() {
                 builder = builder.clang_arg(format!("-DAX_CONFIG_{feature}"));
@@ -152,8 +159,8 @@ typedef struct {{
     let out_dir = std::path::PathBuf::from(std::env::var_os("OUT_DIR").unwrap());
     let out_file = out_dir.join("ctypes_gen.rs");
     if axlibc_include.exists() {
-        gen_pthread_mutex(axlibc_include.join("ax_pthread_mutex.h").to_str().unwrap()).unwrap();
-        gen_c_to_rust_bindings("ctypes.h", &out_file);
+        gen_pthread_mutex(&out_dir.join("ax_pthread_mutex.h")).unwrap();
+        gen_c_to_rust_bindings("ctypes.h", &out_dir, &out_file);
     } else {
         // During `cargo publish` verification, the external headers are not
         // available. Use the pre-generated ctypes_gen.rs shipped in the crate.

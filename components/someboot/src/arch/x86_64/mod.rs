@@ -17,7 +17,11 @@ pub(crate) use entry::_secondary_entry;
 pub use paging::Entry;
 pub use relocate::relocate;
 
-use crate::{ArchTrait, DCacheOp, mem::PageTableInfo, power::CpuOnError};
+use crate::{
+    ArchTrait, DCacheOp,
+    mem::{PageTableInfo, mmu},
+    power::CpuOnError,
+};
 
 pub struct Arch;
 
@@ -26,11 +30,15 @@ impl ArchTrait for Arch {
     type Console = console::Console;
 
     fn _va(paddr: usize) -> *mut u8 {
-        paddr as *mut u8
+        if mmu::is_mmu_enabled() {
+            paddr.wrapping_add(addrspace::PHYS_VIRT_OFFSET) as *mut u8
+        } else {
+            paddr as *mut u8
+        }
     }
 
     fn _io(paddr: usize) -> *mut u8 {
-        paddr as *mut u8
+        Self::_va(paddr)
     }
 
     fn _percpu(paddr: usize) -> *mut u8 {
@@ -45,9 +53,16 @@ impl ArchTrait for Arch {
     }
 
     fn jump_to(entry: usize, sp: usize) -> ! {
+        // `jmp` does not leave a return address for the kernel's top frame.
+        // Reserve one zero word so frame-pointer unwinders stop cleanly.
+        let sp = sp - core::mem::size_of::<usize>();
+        unsafe {
+            (sp as *mut usize).write(0);
+        }
         unsafe {
             core::arch::asm!(
                 "mov rsp, {sp}",
+                "xor rbp, rbp",
                 "jmp {entry}",
                 sp = in(reg) sp,
                 entry = in(reg) entry,
@@ -92,19 +107,11 @@ impl ArchTrait for Arch {
     fn set_user_page_table(_val: PageTableInfo) {}
 
     fn shutdown() -> ! {
-        // unsafe {
-        //     x86::irq::disable();
-        //     // QEMU ACPI poweroff ports (q35/i440fx).
-        //     x86::io::outw(0x604, 0x2000);
-        //     x86::io::outw(0xb004, 0x2000);
-        // }
-
-        if crate::efi_stub::is_uefi_available() {
-            crate::efi_stub::reset(
-                crate::efi_stub::ResetType::SHUTDOWN,
-                crate::efi_stub::Status::SUCCESS,
-                None,
-            );
+        unsafe {
+            x86::irq::disable();
+            // QEMU ACPI poweroff ports (q35/i440fx).
+            x86::io::outw(0x604, 0x2000);
+            x86::io::outw(0xb004, 0x2000);
         }
 
         loop {

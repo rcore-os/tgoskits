@@ -95,22 +95,23 @@ impl UserContext {
         self.fs_base = read_thread_pointer() as _;
         unsafe { write_thread_pointer(kernel_fs_base) };
 
-        let cr2 = Cr2::read().unwrap().as_u64() as usize;
         let vector = self.vector as u8;
 
         const PAGE_FAULT_VECTOR: u8 = ExceptionVector::Page as u8;
 
         let ret = match (vector, err_code_to_flags(self.error_code)) {
-            (PAGE_FAULT_VECTOR, Ok(flags)) => ReturnReason::PageFault(va!(cr2), flags),
+            (PAGE_FAULT_VECTOR, Ok(flags)) => {
+                ReturnReason::PageFault(va!(Cr2::read_raw() as usize), flags)
+            }
             (LEGACY_SYSCALL_VECTOR, _) => ReturnReason::Syscall,
             (IRQ_VECTOR_START..=IRQ_VECTOR_END, _) => {
-                crate::trap::irq_handler(vector as _);
+                crate::trap::dispatch_irq(vector as _);
                 ReturnReason::Interrupt
             }
             _ => ReturnReason::Exception(ExceptionInfo {
                 vector,
                 error_code: self.error_code,
-                cr2,
+                cr2: Cr2::read_raw() as usize,
             }),
         };
 

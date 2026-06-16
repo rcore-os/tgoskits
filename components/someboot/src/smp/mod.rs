@@ -100,22 +100,31 @@ pub(crate) fn cpu_meta_addr(idx: usize) -> Option<usize> {
     layout::cpu_meta_addr(idx)
 }
 
-pub fn percpu_data_ptr(idx: usize) -> Option<*mut u8> {
-    layout::percpu_data_ptr(idx)
+pub(crate) fn percpu_data_phys(idx: usize) -> Option<usize> {
+    layout::percpu_data_phys(idx)
 }
 
-pub fn cpu_hart_id() -> usize {
+pub fn percpu_data_ptr(idx: usize) -> Option<*mut u8> {
+    percpu_data_phys(idx).map(__percpu)
+}
+
+/// Returns the current hardware CPU ID from the early boot register convention.
+///
+/// On RISC-V this reads `tp`, which is only a boot-time hart ID scratch
+/// register before handing control to the runtime. Runtime code must use its
+/// own per-CPU current-CPU reader instead.
+pub fn early_current_hart_id() -> usize {
     Arch::cpu_current_hartid()
 }
 
-pub fn cpu_idx() -> usize {
-    let hart_id = cpu_hart_id();
-    for (idx, id) in __cpu_id_list().enumerate() {
-        if id == hart_id {
-            return idx;
-        }
-    }
-    panic!("Current CPU hart id {hart_id:#x} not found in CPU list");
+pub fn early_current_cpu_idx() -> usize {
+    let hart_id = early_current_hart_id();
+    cpu_id_to_idx(hart_id)
+        .unwrap_or_else(|| panic!("Current CPU hart id {hart_id:#x} not found in CPU list"))
+}
+
+pub fn try_early_cpu_idx() -> Option<usize> {
+    cpu_id_to_idx(early_current_hart_id())
 }
 
 pub fn cpu_id_to_idx(hart_id: usize) -> Option<usize> {
