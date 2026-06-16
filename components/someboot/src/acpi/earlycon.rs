@@ -3,7 +3,10 @@ use core::ptr::NonNull;
 use acpi::{AcpiError, Handler, PhysicalMapping, address::AddressSpace, sdt::spcr::Spcr};
 use some_serial::ns16550::Ns16550;
 
-use crate::mem::_fixmap_io;
+use crate::{
+    console::{EarlySerial, EarlySerialRaw},
+    mem::_fixmap_io,
+};
 
 pub(crate) fn acpi_setup_earlycon() -> Result<(), AcpiError> {
     let tb = crate::acpi::tables()?;
@@ -45,8 +48,8 @@ fn deal_with_spsr(spsr: &PhysicalMapping<impl Handler, Spcr>) -> Option<()> {
                 {
                     let mut uart = Ns16550::new_port(base_address.address as u16, clock);
                     uart.open();
-                    crate::console::set_earlycon_serial(crate::console::EarlySerial::Ns16550Port(
-                        uart,
+                    crate::console::set_earlycon_serial(EarlySerial::new(
+                        EarlySerialRaw::Ns16550Port(uart),
                     ));
                     (None, false)
                 }
@@ -64,7 +67,9 @@ fn deal_with_spsr(spsr: &PhysicalMapping<impl Handler, Spcr>) -> Option<()> {
                     base_address.access_size as _,
                 );
                 uart.open();
-                crate::console::set_earlycon_serial(crate::console::EarlySerial::Ns16550Mmio(uart));
+                crate::console::set_earlycon_serial(EarlySerial::new(EarlySerialRaw::Ns16550Mmio(
+                    uart,
+                )));
                 (Some(mapped), true)
             }
             space => {

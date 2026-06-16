@@ -38,7 +38,6 @@ impl Ns16550<Port> {
             base,
             clock_freq,
             saved_lsr: super::registers::LineStatusFlags::empty(),
-            event: rdif_serial::SerialEvent::empty(),
         }
     }
 

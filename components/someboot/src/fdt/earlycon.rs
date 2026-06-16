@@ -3,7 +3,7 @@ use core::ptr::NonNull;
 use some_serial::{ns16550, pl011};
 
 use crate::{
-    console::{DEBUG_BASE, DEBUG_IS_MMIO},
+    console::{DEBUG_BASE, DEBUG_IS_MMIO, EarlySerial, EarlySerialRaw},
     mem::_fixmap_io,
 };
 
@@ -51,16 +51,18 @@ fn set_by_stdout() -> Option<()> {
             "arm,pl011" | "arm,primecell" => {
                 let mut serial = pl011::Pl011::new(addr, clock);
                 serial.open();
-                crate::console::set_earlycon_serial(crate::console::EarlySerial::Pl011(serial));
+                crate::console::set_earlycon_serial(EarlySerial::new(EarlySerialRaw::Pl011(
+                    serial,
+                )));
                 installed = true;
                 break;
             }
             "snps,dw-apb-uart" | "ns16550a" | "ns16550" => {
                 let mut serial = ns16550::Ns16550::new_mmio(addr, clock, reg_width);
                 serial.open();
-                crate::console::set_earlycon_serial(crate::console::EarlySerial::Ns16550Mmio(
+                crate::console::set_earlycon_serial(EarlySerial::new(EarlySerialRaw::Ns16550Mmio(
                     serial,
-                ));
+                )));
                 installed = true;
                 break;
             }

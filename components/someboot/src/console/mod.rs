@@ -10,6 +10,7 @@ use kernutil::memory::{MemoryDescriptor, MemoryType};
 #[cfg(target_arch = "x86_64")]
 use some_serial::ns16550::Port;
 use some_serial::{
+    InterfaceRaw, SerialEvent, TransferError,
     ns16550::{self, Mmio, Ns16550},
     pl011,
 };
@@ -179,7 +180,13 @@ pub(crate) unsafe fn set_out(v: &'static dyn Con) {
     }
 }
 
-pub enum EarlySerial {
+pub struct EarlySerial {
+    raw: EarlySerialRaw,
+    tx_state: SerialEvent,
+    rx_state: SerialEvent,
+}
+
+pub enum EarlySerialRaw {
     Ns16550Mmio(Ns16550<Mmio>),
     #[cfg(target_arch = "x86_64")]
     Ns16550Port(Ns16550<Port>),
@@ -187,21 +194,79 @@ pub enum EarlySerial {
 }
 
 impl EarlySerial {
-    pub fn try_write(&mut self, bytes: &[u8]) -> usize {
-        match self {
-            Self::Ns16550Mmio(serial) => serial.try_write(bytes),
-            #[cfg(target_arch = "x86_64")]
-            Self::Ns16550Port(serial) => serial.try_write(bytes),
-            Self::Pl011(serial) => serial.try_write(bytes),
+    pub fn new(raw: EarlySerialRaw) -> Self {
+        Self {
+            raw,
+            tx_state: SerialEvent::empty(),
+            rx_state: SerialEvent::empty(),
         }
     }
 
+    pub fn try_write(&mut self, bytes: &[u8]) -> usize {
+        let mut written = 0;
+        while written < bytes.len() {
+            self.refresh_status();
+            if !self.tx_state.tx_ready() {
+                break;
+            }
+            self.with_raw(|serial| serial.write_byte(bytes[written]));
+            self.tx_state
+                .remove(SerialEvent::TX_READY | SerialEvent::TX_ERROR);
+            written += 1;
+        }
+        written
+    }
+
     pub fn try_read(&mut self, bytes: &mut [u8]) -> Result<usize, some_serial::TransBytesError> {
-        match self {
-            Self::Ns16550Mmio(serial) => serial.try_read(bytes),
+        let mut read = 0;
+        let mut first_error = None;
+        for byte in bytes.iter_mut() {
+            self.refresh_status();
+            if !self.rx_state.rx_ready() && !self.rx_state.rx_error() {
+                break;
+            }
+            let status = self.rx_state;
+            self.rx_state
+                .remove(SerialEvent::RX_READY | SerialEvent::RX_ERROR | SerialEvent::OVERRUN);
+            match self.with_raw(|serial| serial.read_byte(status)) {
+                Some(Ok(b)) => {
+                    *byte = b;
+                    read += 1;
+                }
+                Some(Err(TransferError::Overrun(b))) => {
+                    *byte = b;
+                    read += 1;
+                    first_error.get_or_insert(TransferError::Overrun(b));
+                }
+                Some(Err(err)) => {
+                    first_error.get_or_insert(err);
+                }
+                None => break,
+            }
+        }
+        if let Some(kind) = first_error {
+            Err(some_serial::TransBytesError {
+                bytes_transferred: read,
+                kind,
+            })
+        } else {
+            Ok(read)
+        }
+    }
+
+    fn refresh_status(&mut self) {
+        let event = self.with_raw(|serial| serial.poll_status());
+        self.tx_state |= event & (SerialEvent::TX_READY | SerialEvent::TX_ERROR);
+        self.rx_state |=
+            event & (SerialEvent::RX_READY | SerialEvent::RX_ERROR | SerialEvent::OVERRUN);
+    }
+
+    fn with_raw<R>(&mut self, f: impl FnOnce(&mut dyn InterfaceRaw) -> R) -> R {
+        match &mut self.raw {
+            EarlySerialRaw::Ns16550Mmio(serial) => f(serial),
             #[cfg(target_arch = "x86_64")]
-            Self::Ns16550Port(serial) => serial.try_read(bytes),
-            Self::Pl011(serial) => serial.try_read(bytes),
+            EarlySerialRaw::Ns16550Port(serial) => f(serial),
+            EarlySerialRaw::Pl011(serial) => f(serial),
         }
     }
 }
@@ -345,7 +410,7 @@ pub fn set_earlycon_by_cmdline() -> Result<(), &'static str> {
                     let base = config.base_addr.ok_or("missing io base address")? as u16;
                     let mut uart = some_serial::ns16550::Ns16550::new_port(base, 1_843_200);
                     uart.open();
-                    set_earlycon_serial(EarlySerial::Ns16550Port(uart));
+                    set_earlycon_serial(EarlySerial::new(EarlySerialRaw::Ns16550Port(uart)));
                     false
                 }
                 #[cfg(not(target_arch = "x86_64"))]
@@ -382,7 +447,7 @@ fn set_pl011(config: &EarlyconConfig) -> Result<(), &'static str> {
 
     let mut serial = pl011::Pl011::new(base_addr, 0);
     serial.open();
-    set_earlycon_serial(EarlySerial::Pl011(serial));
+    set_earlycon_serial(EarlySerial::new(EarlySerialRaw::Pl011(serial)));
 
     Ok(())
 }
@@ -402,7 +467,7 @@ fn set_16550_mmio(config: &EarlyconConfig) -> Result<(), &'static str> {
 
     let mut serial = ns16550::Ns16550::new_mmio(base_addr, 0, width);
     serial.open();
-    set_earlycon_serial(EarlySerial::Ns16550Mmio(serial));
+    set_earlycon_serial(EarlySerial::new(EarlySerialRaw::Ns16550Mmio(serial)));
 
     Ok(())
 }

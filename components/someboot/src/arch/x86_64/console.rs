@@ -35,7 +35,9 @@ impl crate::console::ArchConsoleOps for Console {
         // driver model.
         let mut uart = some_serial::ns16550::Ns16550::new_port(COM1_PORT, COM1_CLOCK_HZ);
         uart.open();
-        crate::console::set_earlycon_serial(crate::console::EarlySerial::Ns16550Port(uart));
+        crate::console::set_earlycon_serial(crate::console::EarlySerial::new(
+            crate::console::EarlySerialRaw::Ns16550Port(uart),
+        ));
         true
     }
 

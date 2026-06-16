@@ -136,7 +136,6 @@ impl Ns16550<DwApb> {
             base: DwApb::new(base),
             clock_freq,
             saved_lsr: LineStatusFlags::empty(),
-            event: rdif_serial::SerialEvent::empty(),
         }
     }
 

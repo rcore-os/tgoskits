@@ -141,7 +141,6 @@ unsafe impl Sync for Pl011Registers {}
 pub struct Pl011 {
     base: Reg,
     clock_freq: u32,
-    event: SerialEvent,
 }
 
 impl Pl011 {
@@ -158,11 +157,7 @@ impl Pl011 {
     pub fn new(base: NonNull<u8>, clock_freq: u32) -> Self {
         let base = Reg(base.cast());
 
-        Self {
-            base,
-            clock_freq,
-            event: SerialEvent::empty(),
-        }
+        Self { base, clock_freq }
     }
 
     pub fn new_boxed(base: NonNull<u8>, clock_freq: u32) -> BSerial {
@@ -346,7 +341,7 @@ impl Pl011 {
         }
     }
 
-    pub fn poll(&mut self) -> SerialEvent {
+    pub fn poll_status(&mut self) -> SerialEvent {
         let mut event = SerialEvent::empty();
         let fr = self.registers().uartfr.extract();
         if !fr.is_set(UARTFR::RXFE) {
@@ -365,32 +360,30 @@ impl Pl011 {
             event |= SerialEvent::RX_ERROR | SerialEvent::OVERRUN;
         }
 
-        self.push_event(event);
-        event | self.peek_event()
+        event
     }
 
     pub fn try_write(&mut self, bytes: &[u8]) -> usize {
-        let _ = self.take_event(SerialEvent::TX_READY);
         let mut written = 0;
         for &byte in bytes {
-            if !self.pending(SerialDirection::Output) {
+            let status = self.poll_status();
+            if !status.tx_ready() {
                 break;
             }
-            self.registers().uartdr.set(byte as _);
+            self.write_byte(byte);
             written += 1;
         }
         written
     }
 
     pub fn try_read(&mut self, bytes: &mut [u8]) -> Result<usize, TransBytesError> {
-        let _ =
-            self.take_event(SerialEvent::RX_READY | SerialEvent::RX_ERROR | SerialEvent::OVERRUN);
         let mut count = 0;
         for byte in bytes.iter_mut() {
-            if !self.pending(SerialDirection::Input) {
+            let status = self.poll_status();
+            if !status.rx_ready() && !status.rx_error() {
                 break;
             }
-            match self.read_byte() {
+            match self.read_byte(status) {
                 Some(Ok(b)) => {
                     *byte = b;
                 }
@@ -433,26 +426,15 @@ impl Pl011 {
         }
 
         self.registers().uarticr.set(mis.get());
-        self.push_event(event);
         event
     }
 
-    fn push_event(&mut self, event: SerialEvent) {
-        self.event.insert(event);
+    pub fn write_byte(&mut self, byte: u8) {
+        self.registers().uartdr.set(byte as _);
     }
 
-    fn take_event(&mut self, mask: SerialEvent) -> SerialEvent {
-        let event = self.event & mask;
-        self.event.remove(mask);
-        event
-    }
-
-    fn peek_event(&self) -> SerialEvent {
-        self.event
-    }
-
-    fn read_byte(&mut self) -> Option<Result<u8, TransferError>> {
-        if self.registers().uartfr.is_set(UARTFR::RXFE) {
+    pub fn read_byte(&mut self, status: SerialEvent) -> Option<Result<u8, TransferError>> {
+        if !status.rx_ready() && !status.rx_error() {
             return None;
         }
 
@@ -619,16 +601,16 @@ impl InterfaceRaw for Pl011 {
         Pl011::get_irq_mask(self)
     }
 
-    fn poll(&mut self) -> SerialEvent {
-        Pl011::poll(self)
+    fn poll_status(&mut self) -> SerialEvent {
+        Pl011::poll_status(self)
     }
 
-    fn try_write(&mut self, bytes: &[u8]) -> usize {
-        Pl011::try_write(self, bytes)
+    fn write_byte(&mut self, byte: u8) {
+        Pl011::write_byte(self, byte);
     }
 
-    fn try_read(&mut self, bytes: &mut [u8]) -> Result<usize, TransBytesError> {
-        Pl011::try_read(self, bytes)
+    fn read_byte(&mut self, status: SerialEvent) -> Option<Result<u8, TransferError>> {
+        Pl011::read_byte(self, status)
     }
 
     fn handle_irq(&mut self) -> SerialEvent {
@@ -726,9 +708,15 @@ mod tests {
 
     #[test]
     fn split_rx_reports_overrun_instead_of_swallowing_it() {
-        let (_regs, uart) = pl011_with_overrun_data();
+        let (mut regs, uart) = pl011_with_overrun_data();
         let mut serial = SerialDyn::new_boxed(uart);
         let mut rx = serial.take_rx().expect("RX queue should be available");
+        let irq = serial
+            .take_irq_handler()
+            .expect("IRQ handler should be available");
+
+        write_test_reg(&mut regs, 0x040, UARTIS::OE::SET.value);
+        assert!(irq.handle_irq().rx_error());
 
         let mut buf = [0];
         let err = rx
@@ -758,7 +746,7 @@ mod tests {
             "TX queue should observe TX_READY saved by IRQ"
         );
 
-        assert_eq!(tx.try_write(b"x"), 0);
+        assert_eq!(tx.try_write(b"x"), 1);
         assert!(!tx.poll().tx_ready());
     }
 }

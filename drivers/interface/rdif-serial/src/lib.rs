@@ -226,9 +226,17 @@ pub trait InterfaceRaw: Send + Any + 'static {
     /// 获取当前中断使能掩码
     fn get_irq_mask(&self) -> InterruptMask;
 
-    fn poll(&mut self) -> SerialEvent;
-    fn try_write(&mut self, bytes: &[u8]) -> usize;
-    fn try_read(&mut self, bytes: &mut [u8]) -> Result<usize, TransBytesError>;
+    /// Read a raw hardware status snapshot.
+    ///
+    /// This is for polling-mode users that own the raw serial object directly.
+    /// `SerialDyn` split TX/RX queues must not call this method; they only
+    /// consume state recorded by the IRQ handler.
+    fn poll_status(&mut self) -> SerialEvent;
+    /// Write one byte to the data register. The caller must have consumed a
+    /// previously saved TX-ready state before calling this method.
+    fn write_byte(&mut self, byte: u8);
+    /// Read one byte or one saved RX error according to caller-owned RX state.
+    fn read_byte(&mut self, status: SerialEvent) -> Option<Result<u8, TransferError>>;
     fn handle_irq(&mut self) -> SerialEvent;
 }
 
@@ -320,9 +328,10 @@ pub trait TIrqHandler: Send + Sync + 'static {
 
 #[cfg(test)]
 mod tests {
+    use alloc::sync::Arc;
     use core::{
         num::NonZeroU32,
-        sync::atomic::{AtomicU32, AtomicUsize, Ordering},
+        sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering},
     };
 
     use super::*;
@@ -372,37 +381,160 @@ mod tests {
     }
 
     #[test]
-    fn split_queues_forward_try_io_to_shared_raw_device() {
-        let mut serial = SerialDyn::new_boxed(MockSerial::new(0x1000));
+    fn split_queues_consume_only_irq_saved_state() {
+        let (raw, state) = MockSerial::new_shared(0x1000);
+        let mut serial = SerialDyn::new_boxed(raw);
         let mut tx = serial.take_tx().expect("TX handle should be available");
         let mut rx = serial.take_rx().expect("RX handle should be available");
+        let irq = serial
+            .take_irq_handler()
+            .expect("IRQ handler should be available");
 
+        assert_eq!(tx.try_write(b"abc"), 0);
+        let mut empty = [0; 4];
+        assert_eq!(rx.try_read(&mut empty), Ok(0));
+        assert_eq!(state.poll_status_count.load(Ordering::Acquire), 0);
+
+        state.set_irq_event(SerialEvent::TX_READY | SerialEvent::RX_READY);
+        assert_eq!(
+            irq.handle_irq(),
+            SerialEvent::TX_READY | SerialEvent::RX_READY
+        );
         let written = tx.try_write(b"abc");
-        assert_eq!(written, 3);
+        assert_eq!(written, 1);
 
         let mut buf = [0; 4];
         let read = rx.try_read(&mut buf).expect("RX read should succeed");
-        assert_eq!(read, 3);
-        assert_eq!(&buf[..read], b"abc");
+        assert_eq!(read, 1);
+        assert_eq!(&buf[..read], b"a");
+        assert_eq!(state.poll_status_count.load(Ordering::Acquire), 0);
+    }
+
+    #[test]
+    fn irq_sets_tx_and_rx_completion_state_independently() {
+        let (raw, state) = MockSerial::new_shared(0x1000);
+        let mut serial = SerialDyn::new_boxed(raw);
+        serial.set_irq_mask(InterruptMask::RX_AVAILABLE);
+        let mut tx = serial.take_tx().expect("TX handle should be available");
+        let mut rx = serial.take_rx().expect("RX handle should be available");
+        let irq = serial
+            .take_irq_handler()
+            .expect("IRQ handler should be available");
+
+        state.set_irq_event(SerialEvent::TX_READY | SerialEvent::RX_READY);
+        assert_eq!(
+            irq.handle_irq(),
+            SerialEvent::TX_READY | SerialEvent::RX_READY
+        );
+
+        assert_eq!(rx.try_read(&mut [0]), Ok(0));
+        assert!(
+            tx.poll().tx_ready(),
+            "RX read must not consume TX completion owned by TX"
+        );
+
+        state.set_irq_event(SerialEvent::RX_READY);
+        assert!(irq.handle_irq().rx_ready());
+        assert_eq!(tx.try_write(b"x"), 1);
+        assert!(
+            rx.poll().rx_ready(),
+            "TX write must not consume RX completion owned by RX"
+        );
+    }
+
+    #[test]
+    fn irq_pending_while_raw_busy_is_drained_by_next_irq_handler_call() {
+        let (raw, state) = MockSerial::new_shared(0x1000);
+        let mut serial = SerialDyn::new_boxed(raw);
+        serial.set_irq_mask(InterruptMask::RX_AVAILABLE);
+        let mut tx = serial.take_tx().expect("TX handle should be available");
+        let irq = serial
+            .take_irq_handler()
+            .expect("IRQ handler should be available");
+
+        state.set_irq_event(SerialEvent::TX_READY);
+        assert!(irq.handle_irq().tx_ready());
+        assert_eq!(state.irq_count.load(Ordering::Acquire), 1);
+
+        state.set_reenter_irq(&irq);
+        state.set_irq_event(SerialEvent::RX_READY);
+        assert_eq!(tx.try_write(b"x"), 1);
+        assert_eq!(
+            state.irq_count.load(Ordering::Acquire),
+            1,
+            "reentrant IRQ must not borrow raw while TX owns it"
+        );
+
+        assert_eq!(irq.handle_irq(), SerialEvent::RX_READY);
+        assert_eq!(state.irq_count.load(Ordering::Acquire), 2);
+        assert_eq!(state.poll_status_count.load(Ordering::Acquire), 0);
     }
 
     struct MockSerial {
         base: usize,
+        state: Arc<MockState>,
+    }
+
+    struct MockState {
         packed: AtomicU32,
         bytes: AtomicUsize,
         irq_count: AtomicUsize,
+        poll_status_count: AtomicUsize,
+        poll_event: AtomicU32,
+        next_poll_event: AtomicU32,
+        irq_event: AtomicU32,
+        reenter_irq: AtomicUsize,
+        reenter_on_write: AtomicBool,
     }
 
     impl MockSerial {
         fn new(base: usize) -> Self {
-            Self {
-                base,
+            Self::new_shared(base).0
+        }
+
+        fn new_shared(base: usize) -> (Self, Arc<MockState>) {
+            let state = Arc::new(MockState {
                 packed: AtomicU32::new(0),
                 bytes: AtomicUsize::new(0),
                 irq_count: AtomicUsize::new(0),
+                poll_status_count: AtomicUsize::new(0),
+                poll_event: AtomicU32::new(SerialEvent::TX_READY.bits()),
+                next_poll_event: AtomicU32::new(0),
+                irq_event: AtomicU32::new(SerialEvent::TX_READY.bits()),
+                reenter_irq: AtomicUsize::new(0),
+                reenter_on_write: AtomicBool::new(false),
+            });
+            Self {
+                base,
+                state: state.clone(),
             }
+            .pipe(|serial| (serial, state))
         }
     }
+
+    impl MockState {
+        fn set_irq_event(&self, event: SerialEvent) {
+            self.irq_event.store(event.bits(), Ordering::Release);
+        }
+
+        fn set_reenter_irq(&self, irq: &BIrqHandler) {
+            self.reenter_irq
+                .store(irq as *const BIrqHandler as usize, Ordering::Release);
+            self.reenter_on_write.store(true, Ordering::Release);
+        }
+
+        fn take_event(bits: &AtomicU32) -> SerialEvent {
+            SerialEvent::from_bits_retain(bits.load(Ordering::Acquire))
+        }
+    }
+
+    trait Pipe: Sized {
+        fn pipe<R>(self, f: impl FnOnce(Self) -> R) -> R {
+            f(self)
+        }
+    }
+
+    impl<T> Pipe for T {}
 
     impl InterfaceRaw for MockSerial {
         fn name(&self) -> &str {
@@ -455,34 +587,46 @@ mod tests {
             InterruptMask::empty()
         }
 
-        fn poll(&mut self) -> SerialEvent {
-            SerialEvent::TX_READY | SerialEvent::RX_READY
+        fn poll_status(&mut self) -> SerialEvent {
+            self.state.poll_status_count.fetch_add(1, Ordering::AcqRel);
+            let next = self.state.next_poll_event.swap(0, Ordering::AcqRel);
+            if next != 0 {
+                self.state.poll_event.store(next, Ordering::Release);
+            }
+            MockState::take_event(&self.state.poll_event)
         }
 
-        fn try_write(&mut self, bytes: &[u8]) -> usize {
-            let mut packed = 0;
-            let written = bytes.len().min(4);
-            for (index, byte) in bytes.iter().copied().take(written).enumerate() {
-                packed |= (byte as u32) << (index * 8);
+        fn write_byte(&mut self, byte: u8) {
+            if self.state.reenter_on_write.swap(false, Ordering::AcqRel) {
+                let irq = self.state.reenter_irq.load(Ordering::Acquire) as *const BIrqHandler;
+                if !irq.is_null() {
+                    unsafe {
+                        let _ = (&*irq).handle_irq();
+                    }
+                }
             }
-            self.packed.store(packed, Ordering::Release);
-            self.bytes.store(written, Ordering::Release);
-            written
+
+            let index = self.state.bytes.fetch_add(1, Ordering::AcqRel);
+            let mut packed = self.state.packed.load(Ordering::Acquire);
+            packed |= (byte as u32) << (index * 8);
+            self.state.packed.store(packed, Ordering::Release);
         }
 
-        fn try_read(&mut self, bytes: &mut [u8]) -> Result<usize, TransBytesError> {
-            let available = self.bytes.swap(0, Ordering::AcqRel);
-            let read = available.min(bytes.len());
-            let packed = self.packed.load(Ordering::Acquire);
-            for (index, out) in bytes.iter_mut().take(read).enumerate() {
-                *out = ((packed >> (index * 8)) & 0xff) as u8;
+        fn read_byte(&mut self, status: SerialEvent) -> Option<Result<u8, TransferError>> {
+            if !status.rx_ready() && !status.rx_error() {
+                return None;
             }
-            Ok(read)
+            let available = self.state.bytes.swap(0, Ordering::AcqRel);
+            if available == 0 {
+                return None;
+            }
+            let packed = self.state.packed.load(Ordering::Acquire);
+            Some(Ok((packed & 0xff) as u8))
         }
 
         fn handle_irq(&mut self) -> SerialEvent {
-            self.irq_count.fetch_add(1, Ordering::AcqRel);
-            SerialEvent::TX_READY
+            self.state.irq_count.fetch_add(1, Ordering::AcqRel);
+            MockState::take_event(&self.state.irq_event)
         }
     }
 }

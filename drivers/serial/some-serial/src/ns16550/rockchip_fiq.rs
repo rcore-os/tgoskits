@@ -7,7 +7,7 @@ use core::{any::Any, num::NonZeroU32, ptr::NonNull};
 use heapless::{String, Vec};
 use rdif_serial::{
     BSerial, Config, ConfigError, DataBits, DriverGeneric, InterfaceRaw, InterruptMask, Parity,
-    SerialDyn, SerialEvent, StopBits, TransBytesError,
+    SerialDyn, SerialEvent, StopBits, TransferError,
 };
 
 use super::{
@@ -521,7 +521,6 @@ impl Ns16550<RockchipFiqPort> {
             base,
             clock_freq,
             saved_lsr: LineStatusFlags::empty(),
-            event: rdif_serial::SerialEvent::empty(),
         }
     }
 }
@@ -643,16 +642,16 @@ impl InterfaceRaw for RockchipFiqSerial {
         self.serial.get_irq_mask()
     }
 
-    fn poll(&mut self) -> SerialEvent {
-        self.serial.poll()
+    fn poll_status(&mut self) -> SerialEvent {
+        self.serial.poll_status()
     }
 
-    fn try_write(&mut self, bytes: &[u8]) -> usize {
-        self.serial.try_write(bytes)
+    fn write_byte(&mut self, byte: u8) {
+        self.serial.write_byte(byte);
     }
 
-    fn try_read(&mut self, bytes: &mut [u8]) -> Result<usize, TransBytesError> {
-        self.serial.try_read(bytes)
+    fn read_byte(&mut self, status: SerialEvent) -> Option<Result<u8, TransferError>> {
+        self.serial.read_byte(status)
     }
 
     fn handle_irq(&mut self) -> SerialEvent {

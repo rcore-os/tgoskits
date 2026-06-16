@@ -5,7 +5,7 @@ use core::{
 };
 
 use ax_driver::serial::{
-    self as ax_serial, BIrqHandler, BRxQueue, BTxQueue, SerialDevice, SerialEvent,
+    self as ax_serial, BIrqHandler, BRxQueue, BTxQueue, InterruptMask, SerialDevice, SerialEvent,
     SerialRuntimePortControl,
 };
 use ax_errno::AxResult;
@@ -201,6 +201,7 @@ fn new_serial_tty(
     });
     let process_mode = serial_process_mode(&backend, is_boot_console, rx_polling_required)
         .unwrap_or_else(|| {
+            backend.enable_polling_state_sync();
             if is_boot_console {
                 ProcessMode::Manual
             } else {
@@ -311,6 +312,21 @@ fn spawn_serial_irq_drain(backend: Arc<SerialBackend>) {
 }
 
 impl SerialBackend {
+    fn enable_polling_state_sync(&self) {
+        if self.irq_handler.is_some() {
+            self.control
+                .lock()
+                .set_irq_mask(InterruptMask::RX_AVAILABLE | InterruptMask::TX_EMPTY);
+        }
+    }
+
+    fn sync_irq_state(&self) -> SerialEvent {
+        self.irq_handler
+            .as_ref()
+            .map(|handler| handler.handle_irq())
+            .unwrap_or_else(SerialEvent::empty)
+    }
+
     fn notify_rx_drain(&self) {
         self.irq_pending.store(true, Ordering::Release);
         self.irq_wq.notify_one(true);
@@ -371,6 +387,7 @@ impl SerialBackend {
     }
 
     fn read_hardware_rx(&self, buf: &mut [u8], log_errors: bool) -> usize {
+        self.sync_irq_state();
         match self.rx.lock().try_read(buf) {
             Ok(read) => read,
             Err(err) => {
@@ -455,6 +472,7 @@ impl TtyWrite for SerialWriter {
         let mut tx = self.backend.tx.lock();
         let mut written = 0;
         while written < buf.len() {
+            self.backend.sync_irq_state();
             let next = tx.try_write(&buf[written..]);
             written += next;
             if next == 0 {

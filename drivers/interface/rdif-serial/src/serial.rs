@@ -1,21 +1,35 @@
 use alloc::{boxed::Box, string::String, sync::Arc};
 use core::{
+    cell::UnsafeCell,
     num::NonZeroU32,
-    sync::atomic::{AtomicBool, Ordering},
+    sync::atomic::{AtomicBool, AtomicU8, AtomicU32, Ordering},
 };
 
 use rdif_base::DriverGeneric;
-use spin::Mutex;
 
 use super::{
     BIrqHandler, BRxQueue, BSerial, BTxQueue, InterfaceRaw, InterruptMask, SetBackError,
-    TIrqHandler, TRxQueue, TTxQueue, TransBytesError,
+    TIrqHandler, TRxQueue, TTxQueue, TransBytesError, TransferError,
 };
+
+const BORROW_IDLE: u8 = 0;
+const BORROW_TX: u8 = 1;
+const BORROW_RX: u8 = 2;
+const BORROW_IRQ: u8 = 3;
+const BORROW_CONTROL: u8 = 4;
+
+const TX_EVENT_MASK: crate::SerialEvent =
+    crate::SerialEvent::TX_READY.union(crate::SerialEvent::TX_ERROR);
+const RX_EVENT_MASK: crate::SerialEvent = crate::SerialEvent::RX_READY
+    .union(crate::SerialEvent::RX_ERROR)
+    .union(crate::SerialEvent::OVERRUN);
 
 pub struct SerialDyn<T: InterfaceRaw> {
     name: String,
     base_addr: usize,
-    control: Arc<Mutex<T>>,
+    core: Arc<SerialCore<T>>,
+    tx: Arc<TxShared<T>>,
+    rx: Arc<RxShared<T>>,
     tx_taken: Arc<AtomicBool>,
     rx_taken: Arc<AtomicBool>,
     irq_taken: Arc<AtomicBool>,
@@ -25,10 +39,15 @@ impl<T: InterfaceRaw> SerialDyn<T> {
     pub fn new_boxed(control: T) -> BSerial {
         let name = String::from(control.name());
         let base_addr = control.base_addr();
+        let core = Arc::new(SerialCore::new(control));
+        let tx = Arc::new(TxShared::new(core.clone()));
+        let rx = Arc::new(RxShared::new(core.clone()));
         Box::new(Self {
             name,
             base_addr,
-            control: Arc::new(Mutex::new(control)),
+            core,
+            tx,
+            rx,
             tx_taken: Arc::new(AtomicBool::new(false)),
             rx_taken: Arc::new(AtomicBool::new(false)),
             irq_taken: Arc::new(AtomicBool::new(false)),
@@ -42,62 +61,93 @@ impl<T: InterfaceRaw> super::Interface for SerialDyn<T> {
     }
 
     fn set_config(&mut self, config: &crate::Config) -> Result<(), crate::ConfigError> {
-        self.control.lock().set_config(config)
+        self.core
+            .with_raw(BORROW_CONTROL, |control| control.set_config(config))
+            .unwrap_or(Err(crate::ConfigError::Timeout))
     }
 
     fn baudrate(&self) -> u32 {
-        self.control.lock().baudrate()
+        self.core
+            .with_raw(BORROW_CONTROL, |control| control.baudrate())
+            .unwrap_or(0)
     }
 
     fn data_bits(&self) -> crate::DataBits {
-        self.control.lock().data_bits()
+        self.core
+            .with_raw(BORROW_CONTROL, |control| control.data_bits())
+            .unwrap_or(crate::DataBits::Eight)
     }
 
     fn stop_bits(&self) -> crate::StopBits {
-        self.control.lock().stop_bits()
+        self.core
+            .with_raw(BORROW_CONTROL, |control| control.stop_bits())
+            .unwrap_or(crate::StopBits::One)
     }
 
     fn parity(&self) -> crate::Parity {
-        self.control.lock().parity()
+        self.core
+            .with_raw(BORROW_CONTROL, |control| control.parity())
+            .unwrap_or(crate::Parity::None)
     }
 
     fn clock_freq(&self) -> Option<NonZeroU32> {
-        self.control.lock().clock_freq()
+        self.core
+            .with_raw(BORROW_CONTROL, |control| control.clock_freq())
+            .unwrap_or(None)
     }
 
     fn open(&mut self) {
-        self.control.lock().open();
+        let _ = self.core.with_raw(BORROW_CONTROL, |control| control.open());
     }
 
     fn close(&mut self) {
-        self.control.lock().close();
+        let _ = self
+            .core
+            .with_raw(BORROW_CONTROL, |control| control.close());
     }
 
     fn enable_loopback(&mut self) {
-        self.control.lock().enable_loopback()
+        let _ = self
+            .core
+            .with_raw(BORROW_CONTROL, |control| control.enable_loopback());
     }
 
     fn disable_loopback(&mut self) {
-        self.control.lock().disable_loopback()
+        let _ = self
+            .core
+            .with_raw(BORROW_CONTROL, |control| control.disable_loopback());
     }
 
     fn is_loopback_enabled(&self) -> bool {
-        self.control.lock().is_loopback_enabled()
+        self.core
+            .with_raw(BORROW_CONTROL, |control| control.is_loopback_enabled())
+            .unwrap_or(false)
     }
 
     fn set_irq_mask(&mut self, mask: InterruptMask) {
-        self.control.lock().set_irq_mask(mask);
+        if self
+            .core
+            .with_raw(BORROW_CONTROL, |control| control.set_irq_mask(mask))
+            .is_some()
+        {
+            self.core.set_irq_mask(mask);
+        }
     }
 
     fn get_irq_mask(&self) -> InterruptMask {
-        self.control.lock().get_irq_mask()
+        let mask = self
+            .core
+            .with_raw(BORROW_CONTROL, |control| control.get_irq_mask())
+            .unwrap_or_else(|| self.core.irq_mask());
+        self.core.set_irq_mask(mask);
+        mask
     }
 
     fn take_tx(&mut self) -> Option<BTxQueue> {
         take_flag(&self.tx_taken)?;
         Some(Box::new(TxQueue {
             base_addr: self.base_addr,
-            control: self.control.clone(),
+            tx: self.tx.clone(),
             taken: self.tx_taken.clone(),
         }))
     }
@@ -106,7 +156,7 @@ impl<T: InterfaceRaw> super::Interface for SerialDyn<T> {
         take_flag(&self.rx_taken)?;
         Some(Box::new(RxQueue {
             base_addr: self.base_addr,
-            control: self.control.clone(),
+            rx: self.rx.clone(),
             taken: self.rx_taken.clone(),
         }))
     }
@@ -115,7 +165,9 @@ impl<T: InterfaceRaw> super::Interface for SerialDyn<T> {
         take_flag(&self.irq_taken)?;
         Some(Box::new(IrqHandler {
             base_addr: self.base_addr,
-            control: self.control.clone(),
+            core: self.core.clone(),
+            tx: self.tx.clone(),
+            rx: self.rx.clone(),
             taken: self.irq_taken.clone(),
         }))
     }
@@ -145,9 +197,151 @@ impl<T: InterfaceRaw> DriverGeneric for SerialDyn<T> {
     }
 }
 
+struct SerialCore<T: InterfaceRaw> {
+    raw: UnsafeCell<T>,
+    borrow: AtomicU8,
+    irq_mask: AtomicU32,
+    pending_irq: AtomicBool,
+}
+
+// SAFETY: `SerialCore` is the only place that creates `&mut T` from the raw
+// `UnsafeCell`. The atomic borrow gate guarantees at most one mutable access in
+// TX/RX/IRQ/control paths, so raw drivers only need their normal `Send` bound.
+unsafe impl<T: InterfaceRaw> Sync for SerialCore<T> {}
+
+impl<T: InterfaceRaw> SerialCore<T> {
+    fn new(raw: T) -> Self {
+        Self {
+            raw: UnsafeCell::new(raw),
+            borrow: AtomicU8::new(BORROW_IDLE),
+            irq_mask: AtomicU32::new(0),
+            pending_irq: AtomicBool::new(false),
+        }
+    }
+
+    fn with_raw<R>(&self, borrower: u8, f: impl FnOnce(&mut T) -> R) -> Option<R> {
+        if self
+            .borrow
+            .compare_exchange(BORROW_IDLE, borrower, Ordering::Acquire, Ordering::Relaxed)
+            .is_err()
+        {
+            return None;
+        }
+
+        let _guard = BorrowGuard {
+            borrow: &self.borrow,
+        };
+        let result = f(unsafe { &mut *self.raw.get() });
+        Some(result)
+    }
+
+    fn set_irq_mask(&self, mask: InterruptMask) {
+        self.irq_mask.store(mask.bits(), Ordering::Release);
+    }
+
+    fn irq_mask(&self) -> InterruptMask {
+        InterruptMask::from_bits_retain(self.irq_mask.load(Ordering::Acquire))
+    }
+
+    fn set_pending_irq(&self) {
+        self.pending_irq.store(true, Ordering::Release);
+    }
+
+    fn take_pending_irq(&self) -> bool {
+        self.pending_irq.swap(false, Ordering::AcqRel)
+    }
+}
+
+struct BorrowGuard<'a> {
+    borrow: &'a AtomicU8,
+}
+
+impl Drop for BorrowGuard<'_> {
+    fn drop(&mut self) {
+        self.borrow.store(BORROW_IDLE, Ordering::Release);
+    }
+}
+
+struct DirectionState {
+    status: AtomicU32,
+    mask: crate::SerialEvent,
+}
+
+impl DirectionState {
+    const fn new(mask: crate::SerialEvent) -> Self {
+        Self {
+            status: AtomicU32::new(0),
+            mask,
+        }
+    }
+
+    fn record(&self, event: crate::SerialEvent) {
+        let event = event & self.mask;
+        if !event.is_empty() {
+            self.status.fetch_or(event.bits(), Ordering::AcqRel);
+        }
+    }
+
+    fn poll(&self) -> crate::SerialEvent {
+        crate::SerialEvent::from_bits_retain(self.status.load(Ordering::Acquire)) & self.mask
+    }
+
+    fn take(&self) -> crate::SerialEvent {
+        crate::SerialEvent::from_bits_retain(
+            self.status.fetch_and(!self.mask.bits(), Ordering::AcqRel),
+        ) & self.mask
+    }
+}
+
+struct TxShared<T: InterfaceRaw> {
+    core: Arc<SerialCore<T>>,
+    state: DirectionState,
+}
+
+impl<T: InterfaceRaw> TxShared<T> {
+    fn new(core: Arc<SerialCore<T>>) -> Self {
+        Self {
+            core,
+            state: DirectionState::new(TX_EVENT_MASK),
+        }
+    }
+
+    fn record(&self, event: crate::SerialEvent) {
+        self.state.record(event);
+    }
+}
+
+struct RxShared<T: InterfaceRaw> {
+    core: Arc<SerialCore<T>>,
+    state: DirectionState,
+}
+
+impl<T: InterfaceRaw> RxShared<T> {
+    fn new(core: Arc<SerialCore<T>>) -> Self {
+        Self {
+            core,
+            state: DirectionState::new(RX_EVENT_MASK),
+        }
+    }
+
+    fn record(&self, event: crate::SerialEvent) {
+        self.state.record(event);
+    }
+}
+
+fn record_event<T: InterfaceRaw>(
+    tx: &TxShared<T>,
+    rx: &RxShared<T>,
+    event: crate::SerialEvent,
+) -> crate::SerialEvent {
+    tx.record(event);
+    rx.record(event);
+    event
+}
+
 pub struct TxQueue<T: InterfaceRaw> {
     base_addr: usize,
-    control: Arc<Mutex<T>>,
+    tx: Arc<TxShared<T>>,
     taken: Arc<AtomicBool>,
 }
 
@@ -163,17 +357,34 @@ impl<T: InterfaceRaw> TTxQueue for TxQueue<T> {
     }
 
     fn poll(&mut self) -> crate::SerialEvent {
-        self.control.lock().poll() & crate::SerialEvent::TX_READY
+        self.tx.state.poll()
     }
 
     fn try_write(&mut self, bytes: &[u8]) -> usize {
-        self.control.lock().try_write(bytes)
+        let Some(&byte) = bytes.first() else {
+            return 0;
+        };
+        let status = self.tx.state.take();
+        if !status.tx_ready() {
+            self.tx.record(status);
+            return 0;
+        }
+        if self
+            .tx
+            .core
+            .with_raw(BORROW_TX, |control| control.write_byte(byte))
+            .is_none()
+        {
+            self.tx.record(status);
+            return 0;
+        }
+        1
     }
 }
 
 pub struct RxQueue<T: InterfaceRaw> {
     base_addr: usize,
-    control: Arc<Mutex<T>>,
+    rx: Arc<RxShared<T>>,
     taken: Arc<AtomicBool>,
 }
 
@@ -189,20 +400,53 @@ impl<T: InterfaceRaw> TRxQueue for RxQueue<T> {
     }
 
     fn poll(&mut self) -> crate::SerialEvent {
-        self.control.lock().poll()
-            & (crate::SerialEvent::RX_READY
-                | crate::SerialEvent::RX_ERROR
-                | crate::SerialEvent::OVERRUN)
+        self.rx.state.poll()
     }
 
     fn try_read(&mut self, bytes: &mut [u8]) -> Result<usize, TransBytesError> {
-        self.control.lock().try_read(bytes)
+        let Some(byte) = bytes.first_mut() else {
+            return Ok(0);
+        };
+        let status = self.rx.state.take();
+        if !status.rx_ready() && !status.rx_error() {
+            self.rx.record(status);
+            return Ok(0);
+        }
+        let Some(result) = self
+            .rx
+            .core
+            .with_raw(BORROW_RX, |control| control.read_byte(status))
+        else {
+            self.rx.record(status);
+            return Ok(0);
+        };
+
+        match result {
+            Some(Ok(b)) => {
+                *byte = b;
+                Ok(1)
+            }
+            Some(Err(TransferError::Overrun(b))) => {
+                *byte = b;
+                Err(TransBytesError {
+                    bytes_transferred: 1,
+                    kind: TransferError::Overrun(b),
+                })
+            }
+            Some(Err(kind)) => Err(TransBytesError {
+                bytes_transferred: 0,
+                kind,
+            }),
+            None => Ok(0),
+        }
     }
 }
 
 pub struct IrqHandler<T: InterfaceRaw> {
     base_addr: usize,
-    control: Arc<Mutex<T>>,
+    core: Arc<SerialCore<T>>,
+    tx: Arc<TxShared<T>>,
+    rx: Arc<RxShared<T>>,
     taken: Arc<AtomicBool>,
 }
 
@@ -218,10 +462,35 @@ impl<T: InterfaceRaw> TIrqHandler for IrqHandler<T> {
     }
 
     fn handle_irq(&self) -> crate::SerialEvent {
-        if let Some(mut control) = self.control.try_lock() {
-            control.handle_irq()
+        if self.core.take_pending_irq() {
+            return self.handle_pending_irq();
+        }
+        self.handle_current_irq()
+    }
+}
+
+impl<T: InterfaceRaw> IrqHandler<T> {
+    fn handle_current_irq(&self) -> crate::SerialEvent {
+        if let Some(event) = self
+            .core
+            .with_raw(BORROW_IRQ, |control| control.handle_irq())
+        {
+            record_event(&self.tx, &self.rx, event)
         } else {
-            crate::SerialEvent::empty()
+            self.core.set_pending_irq();
+            self.tx.state.poll() | self.rx.state.poll()
+        }
+    }
+
+    fn handle_pending_irq(&self) -> crate::SerialEvent {
+        if let Some(event) = self
+            .core
+            .with_raw(BORROW_IRQ, |control| control.handle_irq())
+        {
+            record_event(&self.tx, &self.rx, event)
+        } else {
+            self.core.set_pending_irq();
+            self.tx.state.poll() | self.rx.state.poll()
         }
     }
 }
@@ -237,5 +506,97 @@ fn ensure_same_base(want: usize, actual: usize) -> Result<(), SetBackError> {
         Ok(())
     } else {
         Err(SetBackError::new(want, actual))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use alloc::sync::Arc;
+    use core::{mem::size_of, num::NonZeroU32, sync::atomic::AtomicBool};
+
+    use super::*;
+
+    struct LayoutRaw;
+
+    impl InterfaceRaw for LayoutRaw {
+        fn name(&self) -> &str {
+            "layout raw"
+        }
+
+        fn base_addr(&self) -> usize {
+            0
+        }
+
+        fn set_config(&mut self, _config: &crate::Config) -> Result<(), crate::ConfigError> {
+            Ok(())
+        }
+
+        fn baudrate(&self) -> u32 {
+            115_200
+        }
+
+        fn data_bits(&self) -> crate::DataBits {
+            crate::DataBits::Eight
+        }
+
+        fn stop_bits(&self) -> crate::StopBits {
+            crate::StopBits::One
+        }
+
+        fn parity(&self) -> crate::Parity {
+            crate::Parity::None
+        }
+
+        fn clock_freq(&self) -> Option<NonZeroU32> {
+            NonZeroU32::new(1)
+        }
+
+        fn open(&mut self) {}
+
+        fn close(&mut self) {}
+
+        fn enable_loopback(&mut self) {}
+
+        fn disable_loopback(&mut self) {}
+
+        fn is_loopback_enabled(&self) -> bool {
+            false
+        }
+
+        fn set_irq_mask(&mut self, _mask: InterruptMask) {}
+
+        fn get_irq_mask(&self) -> InterruptMask {
+            InterruptMask::empty()
+        }
+
+        fn poll_status(&mut self) -> crate::SerialEvent {
+            crate::SerialEvent::empty()
+        }
+
+        fn write_byte(&mut self, _byte: u8) {}
+
+        fn read_byte(&mut self, _status: crate::SerialEvent) -> Option<Result<u8, TransferError>> {
+            None
+        }
+
+        fn handle_irq(&mut self) -> crate::SerialEvent {
+            crate::SerialEvent::empty()
+        }
+    }
+
+    #[test]
+    fn queues_hold_only_their_own_direction_shared_state() {
+        assert_eq!(
+            size_of::<TxQueue<LayoutRaw>>(),
+            size_of::<usize>()
+                + size_of::<Arc<TxShared<LayoutRaw>>>()
+                + size_of::<Arc<AtomicBool>>(),
+        );
+        assert_eq!(
+            size_of::<RxQueue<LayoutRaw>>(),
+            size_of::<usize>()
+                + size_of::<Arc<RxShared<LayoutRaw>>>()
+                + size_of::<Arc<AtomicBool>>(),
+        );
     }
 }
