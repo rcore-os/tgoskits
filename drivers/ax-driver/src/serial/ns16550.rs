@@ -1,0 +1,69 @@
+use alloc::format;
+
+use log::info;
+use rdrive::{probe::OnProbeError, register::ProbeFdt};
+use some_serial::{BSerial, ns16550 as serial_ns16550};
+
+use super::{PlatformSerialDevice, prop_u32, serial_device_info};
+
+model_register!(
+    name: "NS16550 serial",
+    level: ProbeLevel::PreKernel,
+    priority: ProbePriority::DEFAULT,
+    probe_kinds: &[ProbeKind::Fdt {
+        compatibles: &["snps,dw-apb-uart", "ns16550a", "ns16550"],
+        on_probe: probe
+    }],
+);
+
+fn probe(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
+    let (info, plat_dev) = probe.into_parts();
+
+    info!("Probing NS16550 serial device: {}", info.node.name());
+    let base_reg = info
+        .node
+        .regs()
+        .into_iter()
+        .next()
+        .ok_or_else(|| OnProbeError::other(format!("[{}] has no reg", info.node.name())))?;
+
+    let mmio_size = base_reg.size.unwrap_or(0x1000);
+    let mmio_base = crate::mmio::iomap(base_reg.address as usize, mmio_size as usize)?;
+    let node = info.node.as_node();
+    let reg_width = prop_u32(node, "reg-io-width").unwrap_or(1) as usize;
+    let reg_shift = prop_u32(node, "reg-shift").map(|shift| 1usize << shift);
+    let ns16550_width = reg_shift.unwrap_or(reg_width);
+    let mut serial: Option<BSerial> = None;
+
+    for compatible in node.compatibles() {
+        if compatible == "snps,dw-apb-uart" {
+            let clock_freq = prop_u32(node, "clock-frequency")
+                .unwrap_or(serial_ns16550::dw_apb::SG2002_UART_CLOCK);
+            serial = Some(serial_ns16550::DwApbUart::new_boxed(mmio_base, clock_freq));
+            break;
+        }
+
+        if matches!(compatible, "ns16550a" | "ns16550") {
+            let clock_freq = prop_u32(node, "clock-frequency").unwrap_or(24_000_000);
+            serial = Some(serial_ns16550::Ns16550::new_mmio_boxed(
+                mmio_base,
+                clock_freq,
+                ns16550_width,
+            ));
+            break;
+        }
+    }
+
+    let serial = serial.ok_or(OnProbeError::NotMatch)?;
+    let base = serial.base_addr();
+    let baudrate = serial.baudrate();
+    let device_info = serial_device_info(&info, &base_reg, base, baudrate);
+
+    info!("NS16550 serial@{base:#x} registered successfully");
+    plat_dev.register(PlatformSerialDevice::new(
+        serial.name().into(),
+        device_info,
+        serial,
+    ));
+    Ok(())
+}
