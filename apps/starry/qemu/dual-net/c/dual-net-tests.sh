@@ -10,6 +10,10 @@ need_cmd() {
     command -v "$1" >/dev/null 2>&1 || fail "missing command $1"
 }
 
+APK_STRESS_PACKAGE="${APK_STRESS_PACKAGE:-python3}"
+APK_STRESS_MIN_BYTES="${APK_STRESS_MIN_BYTES:-8388608}"
+APK_STRESS_RETRIES="${APK_STRESS_RETRIES:-3}"
+
 now_ms() {
     ns="$(date +%s%N 2>/dev/null || true)"
     case "$ns" in
@@ -29,6 +33,30 @@ iface_addr_contains() {
     ip addr show "$iface" 2>&1 | tee "/tmp/dual-net-$iface.ipaddr"
     grep -qF "$expected" "/tmp/dual-net-$iface.ifconfig" ||
         grep -qF "$expected" "/tmp/dual-net-$iface.ipaddr"
+}
+
+prepare_apk_repositories() {
+    if [ -f /etc/apk/repositories ]; then
+        sed -i 's|https://|http://|g' /etc/apk/repositories
+        echo "DUAL_NET_APK_REPOSITORIES_BEGIN"
+        cat /etc/apk/repositories
+        echo "DUAL_NET_APK_REPOSITORIES_END"
+    fi
+}
+
+retry_cmd() {
+    desc="$1"
+    shift
+    attempt=1
+    while [ "$attempt" -le "$APK_STRESS_RETRIES" ]; do
+        if "$@"; then
+            return 0
+        fi
+        echo "DUAL_NET_RETRY: $desc attempt=$attempt/$APK_STRESS_RETRIES failed"
+        attempt="$((attempt + 1))"
+        sleep 2
+    done
+    return 1
 }
 
 fetch_with_iface() {
@@ -64,10 +92,52 @@ wait_fetch() {
     rm -f "$out" "/tmp/dual-net-$tag.meta"
 }
 
+apk_fetch_verify() {
+    dir="/tmp/dual-net-apk-fetch"
+    sum="/tmp/dual-net-apk-fetch.sha256"
+    rm -rf "$dir" "$sum"
+    mkdir -p "$dir"
+
+    prepare_apk_repositories
+
+    echo "DUAL_NET_APK_UPDATE_BEGIN"
+    retry_cmd "apk update" apk update ||
+        fail "apk update failed"
+    echo "DUAL_NET_APK_UPDATE_DONE"
+
+    start="$(now_ms)"
+    retry_cmd "apk fetch $APK_STRESS_PACKAGE" apk fetch -R -o "$dir" "$APK_STRESS_PACKAGE" ||
+        fail "apk fetch failed for $APK_STRESS_PACKAGE"
+    end="$(now_ms)"
+
+    total=0
+    count=0
+    : > "$sum"
+    for pkg in "$dir"/*.apk; do
+        [ -e "$pkg" ] || fail "apk fetch produced no .apk files"
+        apk verify "$pkg" || fail "apk verify failed for $pkg"
+        sha256sum "$pkg" >> "$sum"
+        bytes="$(wc -c < "$pkg" | tr -d ' ')"
+        total="$((total + bytes))"
+        count="$((count + 1))"
+    done
+
+    [ "$total" -ge "$APK_STRESS_MIN_BYTES" ] ||
+        fail "apk fetch too small: total=$total min=$APK_STRESS_MIN_BYTES"
+
+    sha256sum -c "$sum" ||
+        fail "apk sha256 verification failed"
+
+    echo "DUAL_NET_APK_FETCH_MS=$((end - start)) BYTES=$total PACKAGES=$count PACKAGE=$APK_STRESS_PACKAGE"
+    rm -rf "$dir" "$sum"
+}
+
 echo "DUAL_NET_TEST_BEGIN"
 need_cmd ifconfig
 need_cmd ip
 need_cmd curl
+need_cmd apk
+need_cmd sha256sum
 
 if iface_addr_contains eth0 10.0.2.15; then
     echo "DUAL_NET_ETH0_ADDR_OK"
@@ -102,5 +172,7 @@ wait_fetch "$pid0" ETH0_PARALLEL
 wait_fetch "$pid1" ETH1_PARALLEL
 parallel_end="$(now_ms)"
 echo "DUAL_NET_FETCH_PARALLEL_MS=$((parallel_end - parallel_start))"
+
+apk_fetch_verify
 
 echo "DUAL_NET_TEST_PASSED"

@@ -65,7 +65,7 @@ use spin::RwLock;
 use crate::{
     LISTEN_TABLE,
     config::{DeviceBinding, InterfaceId, RouteInfo},
-    consts::{DEVICE_TX_QUEUE_SIZE, SOCKET_BUFFER_SIZE, STANDARD_MTU},
+    consts::{DEVICE_RX_QUEUE_SIZE, DEVICE_TX_QUEUE_SIZE, SOCKET_BUFFER_SIZE, STANDARD_MTU},
     device::{ArpEntry, Device},
 };
 
@@ -436,7 +436,7 @@ impl Router {
             vec![0u8; STANDARD_MTU * SOCKET_BUFFER_SIZE],
         );
         let queues = Arc::new(RouterQueues {
-            rx: Arc::new(BoundedPacketQueue::new(SOCKET_BUFFER_SIZE)),
+            rx: Arc::new(BoundedPacketQueue::new(DEVICE_RX_QUEUE_SIZE)),
         });
         Self {
             rx_buffer,
@@ -574,9 +574,10 @@ impl Router {
         _timestamp: Instant,
         sockets: &mut SocketSet<'_>,
         mut snoop: impl FnMut(InterfaceId, &[u8]),
-    ) {
+    ) -> bool {
         // Drain worker-produced packets into the smoltcp-facing RX buffer.
         // smoltcp later consumes this buffer through Device::receive().
+        let mut moved_rx = false;
         while !self.rx_buffer.is_full() {
             let Some(packet) = self.queues.rx.pop() else {
                 break;
@@ -589,7 +590,9 @@ impl Router {
                 break;
             };
             dst.copy_from_slice(bytes);
+            moved_rx = true;
         }
+        moved_rx || !self.queues.rx.is_empty()
     }
 
     /// Sends a control-plane packet on a specific device.
@@ -826,6 +829,8 @@ fn device_rx_worker(device: Arc<DeviceHandle>) {
             };
             if device.rx_queue.push(rx).is_err() {
                 warn!("{}: RX queue is full, dropping packet", device.name);
+                crate::request_poll();
+                ax_task::yield_now();
                 break;
             }
             crate::request_poll();

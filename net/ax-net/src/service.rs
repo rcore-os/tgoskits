@@ -656,11 +656,13 @@ impl Service {
         let timestamp = now();
         let mut dhcp_events = Vec::new();
         let mut dhcp_server_replies = Vec::new();
+        let router_rx_pending;
 
         {
             let dhcp = &mut self.dhcp;
             let dhcp_server = &mut self.dhcp_server;
-            self.router
+            router_rx_pending = self
+                .router
                 .poll(timestamp, sockets, |interface_id, packet| {
                     for state in dhcp.iter_mut() {
                         if let Some(event) = state.process_packet(interface_id, packet, timestamp) {
@@ -697,6 +699,7 @@ impl Service {
             || dhcp_poll_next
             || dhcp_server_sent
             || socket_state_changed
+            || router_rx_pending
     }
 
     pub fn next_poll_at(&mut self, sockets: &SocketSet) -> Option<Instant> {

@@ -161,7 +161,7 @@ system 测试使用 StarryOS guest 内的 Linux 用户态程序验证 syscall/AB
 
 ## dual-net 集成测试
 
-`apps/starry/qemu/dual-net` 是双网卡集成测试，用于验证多设备初始化、双 DHCP、route table、接口绑定和并发收发。它是 Starry app 级 QEMU 场景，不属于 `test-suit/starryos` system 分组。
+`apps/starry/qemu/dual-net` 是双网卡集成测试，用于验证多设备初始化、双 DHCP、route table、接口绑定、并发收发和较大 APK 下载校验。它是 Starry app 级 QEMU 场景，不属于 `test-suit/starryos` system 分组。
 
 ### 运行方式
 
@@ -209,6 +209,11 @@ host HTTP server
   -> 127.0.0.1:18382 on host
   -> exposed through each QEMU user net gateway
   -> payload size 1 MiB, byte value 68
+
+Alpine APK repositories
+  -> accessed from guest through QEMU user networking
+  -> apk fetch -R downloads package files and dependencies
+  -> apk verify + sha256sum -c validates downloaded files
 ```
 
 `qemu-*.toml` 会启动 host HTTP server：
@@ -227,7 +232,7 @@ guest 启动后自动执行：
 /usr/bin/dual-net-tests.sh
 ```
 
-脚本来自 [apps/starry/qemu/dual-net/c/dual-net-tests.sh](apps/starry/qemu/dual-net/c/dual-net-tests.sh)。[prebuild.sh](apps/starry/qemu/dual-net/c/prebuild.sh) 会安装 `curl`，[CMakeLists.txt](apps/starry/qemu/dual-net/c/CMakeLists.txt) 会把 `curl` 和 `dual-net-tests.sh` 安装进 guest rootfs。
+脚本来自 [apps/starry/qemu/dual-net/c/dual-net-tests.sh](apps/starry/qemu/dual-net/c/dual-net-tests.sh)。[prebuild.sh](apps/starry/qemu/dual-net/c/prebuild.sh) 会安装 `curl`，[CMakeLists.txt](apps/starry/qemu/dual-net/c/CMakeLists.txt) 会把 `curl` 和 `dual-net-tests.sh` 安装进 guest rootfs。`apk` 和 `sha256sum` 来自 Alpine rootfs 的基础工具集。
 
 ### Guest 检查项
 
@@ -238,6 +243,12 @@ guest 启动后自动执行：
 - `curl --interface eth0 http://10.0.2.2:18382/payload.bin?...` 能下载至少 1 MiB。
 - `curl --interface eth1 http://10.0.3.2:18382/payload.bin?...` 能下载至少 1 MiB。
 - 串行下载完成后，再并发从 eth0/eth1 下载。
+- `apk update` 能从 guest 访问 Alpine APK repository。
+- `apk fetch -R -o /tmp/dual-net-apk-fetch python3` 能下载 `python3` 及依赖包。
+- `apk update` 和 `apk fetch` 默认最多重试 3 次，避免外部 mirror 或 QEMU user networking 的短暂抖动导致误报。
+- 下载到本地的 `.apk` 总大小必须不少于 8 MiB。
+- 每个 `.apk` 必须通过 `apk verify`。
+- 生成下载文件的 sha256 清单后，必须通过 `sha256sum -c` 回读校验。
 
 成功输出包含：
 
@@ -248,6 +259,7 @@ DUAL_NET_FETCH_ETH0_SINGLE_MS=... BYTES=1048576
 DUAL_NET_FETCH_ETH1_SINGLE_MS=... BYTES=1048576
 DUAL_NET_FETCH_ETH0_PARALLEL_MS=... BYTES=1048576
 DUAL_NET_FETCH_ETH1_PARALLEL_MS=... BYTES=1048576
+DUAL_NET_APK_FETCH_MS=... BYTES=... PACKAGES=... PACKAGE=python3
 DUAL_NET_TEST_PASSED
 ```
 
@@ -267,6 +279,8 @@ DUAL_NET_TEST_FAILED: ...
 - route table 同时存在 `10.0.2.0/24` 和 `10.0.3.0/24` connected route。
 - `curl --interface` 通过 Linux ABI 映射到接口绑定，限制 route lookup。
 - 串行和并发下载验证 per-device TX queue、共享 RX queue、device worker 和 net-poll worker 可以持续推进。
+- `apk fetch -R` 下载较大的包集合并写入磁盘，验证较长 TCP 流、DNS、默认路由和文件写入路径的组合稳定性。
+- `apk verify` 验证 APK 内置签名/完整性元数据，`sha256sum -c` 验证落盘文件再次读取后的内容一致性。
 
 ### xtask 结构自检
 
@@ -279,6 +293,8 @@ DUAL_NET_TEST_FAILED: ...
 - net1 必须是 `10.0.3.0/24` 且 DHCP 起始地址为 `10.0.3.15`。
 - `shell_init_cmd` 必须是 `/usr/bin/dual-net-tests.sh`。
 - host HTTP server 必须监听 18382，payload 至少 1 MiB。
+- `dual-net-tests.sh` 必须包含 `apk fetch -R`、APK 重试、`apk verify`、`sha256sum -c` 和 `DUAL_NET_APK_FETCH_MS`。
+- QEMU timeout 必须足够覆盖 APK 下载校验流程。
 
 这个结构测试防止 app 配置被误删、改成单网卡或失去自动 guest probe。
 
@@ -292,6 +308,10 @@ DUAL_NET_TEST_FAILED: ...
 | eth0 成功、eth1 curl 失败 | `SO_BINDTODEVICE` / `curl --interface` 是否映射到 eth1；route table 是否有 `10.0.3.0/24` connected route |
 | 串行成功、并发失败 | RX/TX worker 是否被正确唤醒；队列是否满；net-poll worker 是否持续 poll |
 | 下载字节数小于 1 MiB | TCP receive/send readiness、host HTTP server 暴露、QEMU user net 或 curl 超时 |
+| `apk fetch too small` | APK package 依赖集合是否变化；`APK_STRESS_MIN_BYTES` 是否需要随 Alpine 版本调整 |
+| `apk verify failed` 或 `sha256sum -c` 失败 | 长连接下载、TCP 重组、文件写入或读回路径存在数据损坏 |
+| `apk update` 失败 | guest 默认路由、DNS、外网连通性、Alpine mirror 可达性 |
+| 出现 `DUAL_NET_RETRY` 后最终通过 | 外部 APK 下载路径发生过短暂 I/O error，但最终文件完整性校验通过 |
 | QEMU timeout | 是否缺少 `curl`、`ip`、`ifconfig`；shell init command 是否执行到 `DUAL_NET_TEST_PASSED` |
 
 ### `STARRY_GROUPED_TEST_FAILED`

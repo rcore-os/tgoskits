@@ -2475,6 +2475,14 @@ mod tests {
                     .is_some_and(|size| size >= 1024 * 1024),
                 "dual-net case must fetch a payload large enough to expose obvious regressions"
             );
+            assert!(
+                config
+                    .get("timeout")
+                    .and_then(toml::Value::as_integer)
+                    .is_some_and(|timeout| timeout >= 360),
+                "{} must leave enough time for the apk package download stability probe",
+                config_path.display()
+            );
         }
 
         let script = fs::read_to_string(&script_path).unwrap();
@@ -2486,6 +2494,13 @@ mod tests {
             "fetch_with_iface eth0 10.0.2.2",
             "fetch_with_iface eth1 10.0.3.2",
             "DUAL_NET_FETCH_PARALLEL_MS",
+            "apk fetch -R",
+            "APK_STRESS_MIN_BYTES",
+            "APK_STRESS_RETRIES",
+            "DUAL_NET_RETRY",
+            "apk verify",
+            "sha256sum -c",
+            "DUAL_NET_APK_FETCH_MS",
             "DUAL_NET_TEST_PASSED",
             "DUAL_NET_TEST_FAILED",
         ] {

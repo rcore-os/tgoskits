@@ -25,6 +25,19 @@ pub const LISTEN_QUEUE_SIZE: usize = 512;
 
 pub const SOCKET_BUFFER_SIZE: usize = 64;
 
+/// Shared device-to-router RX queue capacity.
+///
+/// This queue absorbs packets produced by per-device RX workers before the
+/// single smoltcp protocol core can drain them. It is intentionally larger than
+/// the smoltcp-facing packet buffer: internet downloads and APK index fetches
+/// can deliver short RX bursts faster than the net-poll worker gets scheduled,
+/// especially on single-core QEMU targets.
+///
+/// 256 slots × 1500 bytes = 384 KiB total for the shared RX queue. The queue is
+/// still bounded, but large enough to avoid turning ordinary TCP burstiness
+/// into packet loss.
+pub const DEVICE_RX_QUEUE_SIZE: usize = 256;
+
 /// Per-device TX queue capacity.
 ///
 /// Sized to absorb bursty traffic without drops while keeping memory bounded.
