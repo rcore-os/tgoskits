@@ -23,7 +23,7 @@ sidebar_label: "测试与限制"
 - loopback dispatch 直接注入 `Router.rx_buffer`，并在注入前触发 TCP SYN snoop。
 - DHCP bootstrap 和 per-interface 状态。
 - DHCP server Discover/Request 回复。
-- TCP orphan 在 Closed/Expired/overflow 场景下的回收。
+- TCP orphan 在 Closed、TIME_WAIT/FIN teardown 超时和 overflow 场景下的回收。
 - TCP/UDP bind 到具体本地地址后保留接口绑定。
 - 未绑定 TCP/UDP connect 按 route decision 选择接口。
 
@@ -41,17 +41,17 @@ cargo test -p ax-net
 | --- | --- | --- |
 | `RouteTable` | 添加/删除/替换规则、排序验证、默认路由查询、`select_route_if` with mock filter | 高 |
 | `ListenTable` | port 冲突、per-address listen、wildcard 冲突、backlog 上限、`can_listen`/`listen`/`unlisten`、SYN 队列溢出、`can_accept`/`accept` | 高 |
-| `SocketSetWrapper` | UDP bind 冲突仲裁（精确/wildcard/SO_REUSEADDR）、add/remove | 中 |
+| `SocketSetWrapper` | UDP bind 冲突仲裁（精确/wildcard）、add/remove；`SO_REUSEADDR` 跳过 side table 的行为由 `UdpSocket::bind()` 覆盖 | 中 |
 | `StateLock` | Idle→Busy CAS、transit 成功/失败回退、状态读取一致性 | 中 |
 | `GeneralOptions` | nonblock/send_timeout/recv_timeout、device_binding 读写、Atomic 一致性 | 中 |
 | `TcpSocket` | `connect()` 成功/失败、`bind_device()` 无效接口、`poll_connect()` 状态转换、`tcp_info_snapshot()` 字段 | 高 |
 | `UdpSocket` | `send()` with MSG_MORE corking、connected/disconnected send、`recv()` truncation | 高 |
-| `RawSocket` | `send()` ICMP echo→loopback reply、TTL 读写、IP version 校验 | 中 |
+| `RawSocket` | `send()` ICMP echo→loopback reply、TTL 读写、IP version 校验、`MSG_PEEK` 与 `deferred_rx` wire-packet 格式 | 中 |
 | `UnixSocket` | stream pair send/recv、cmsg 传递、datagram pair、abstract namespace bind/connect | 中 |
 | `VsockSocket` | bind/listen/connect/accept 状态转换、send/recv | 低（需 `vsock` feature） |
 | `DhcpState` | Discovering→Offer→Requesting→ACK→Bound 状态机、NAK→reset、`process_packet` 校验 | 中 |
 | `DhcpServer` | Discover→Offer、Request→Ack、错误 xid/mac/interface 过滤、单客户端租约覆盖 | 中 |
-| `orphan` | Closed 立即回收、teardown 超时回收、overflow 只回收 Closed 且保留正在 teardown 的 socket | 高 |
+| `orphan` | Closed 立即回收、teardown 超时回收、overflow 只 warn 且保留仍在 teardown 的 socket | 高 |
 | DNS | `dns_query_timeout` 超时、不可路由 server 过滤、`DnsSocketGuard` drop | 中 |
 
 ## 接口路由测试
@@ -134,7 +134,8 @@ Test: bind_device
   TcpSocket::new().bind_device(valid_id) → Ok
 
 Test: SO_REUSEADDR
-  两个 TcpSocket 都设 SO_REUSEADDR → 都可以 bind 同一端口
+  UDP: 设置 SO_REUSEADDR 后 UdpSocket::bind() 跳过 SocketSetWrapper 的 UDP side table
+  TCP: 当前 TCP_BOUND_PORTS 仍做 wildcard/specific 地址冲突检查，不能简单断言两个 TCP socket 设 SO_REUSEADDR 后一定可 bind 同一端口
 
 Test: per-address listen
   listen(127.0.0.1:8080) 与 listen(10.0.2.15:8080) 可以共存

@@ -12,11 +12,11 @@ sidebar_label: "系统集成"
 `ax-runtime` 是网络栈初始化的主要入口。它负责：
 
 - 在平台设备 probe 完成后收集 Ethernet 设备。
-- 将 `rd-net` 设备包装为 `ax-net` 的 `EthernetDriver`（由 `RdNetDriver` 实现，[driver.rs#L128](net/ax-net/src/device/driver.rs#L128)）。
-- 注册网络 IRQ adapter（`set_ethernet_irq_registrar()`，[ethernet.rs#L80-L82](net/ax-net/src/device/ethernet.rs#L80-L82)）。
+- 将 `rd-net` 设备包装为 `ax-net` 的 `EthernetDriver`（由 `RdNetDriver` 实现，[driver.rs](net/ax-net/src/device/driver.rs)）。
+- 注册网络 IRQ adapter（`set_ethernet_irq_registrar()`，[ethernet.rs](net/ax-net/src/device/ethernet.rs)）。
 - 构造结构化 `NetworkConfig`。
-- 调用 `ax_net::init_network(net_devs, config)`（[lib.rs#L125](net/ax-net/src/lib.rs#L125)）。
-- 在 `vsock` feature 下调用 `ax_net::init_vsock(vsock_devs)`（[lib.rs#L367](net/ax-net/src/lib.rs#L367)）。
+- 调用 `ax_net::init_network(net_devs, config)`（[lib.rs](net/ax-net/src/lib.rs)）。
+- 在 `vsock` feature 下调用 `ax_net::init_vsock(vsock_devs)`（[lib.rs](net/ax-net/src/lib.rs)）。
 
 `ax-runtime` 不负责：
 

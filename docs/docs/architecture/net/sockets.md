@@ -62,7 +62,7 @@ pub trait SocketOps: Configurable {
 }
 ```
 
-TCP/UDP 实现完整接口；Raw socket 不实现 `listen`/`accept`；Unix/vsock 有各自独立的 transport trait。
+TCP 实现完整 stream 接口（含 `listen`/`accept`）；UDP 实现 datagram 的 bind/connect/send/recv/poll，不支持 `listen`/`accept`；Raw socket 不实现 `listen`/`accept`；Unix/vsock 有各自独立的 transport trait。
 
 ## SocketSetWrapper
 
@@ -86,7 +86,7 @@ pub(crate) struct SocketSetWrapper<'a> {
 
 ### UDP 端口仲裁
 
-`udp_bind_available()` 实现 Linux `SO_REUSEADDR` 语义：
+`udp_bind_available()` 实现默认 UDP bind 冲突仲裁。`SO_REUSEADDR` 不在该函数内部处理，而是在 `UdpSocket::bind()` 中通过 `general.reuse_address()` 决定是否跳过 `SOCKET_SET.udp_bind()` 这张 side table：
 
 ```rust
 // wrapper.rs
@@ -105,7 +105,7 @@ fn udp_bind_available(binds: &HashMap<UdpBindKey, SocketHandle>, key: UdpBindKey
 | --- | --- | --- |
 | 精确 bind | `192.168.1.1:53` | 同地址同端口已存在，或 wildcard `0.0.0.0:53` 已存在 |
 | Wildcard bind | `0.0.0.0:53` | 任何地址已占用同一端口 |
-| `SO_REUSEADDR` | — | 跳过所有仲裁 |
+| `SO_REUSEADDR` | — | `UdpSocket::bind()` 跳过 wrapper 的 UDP bind side table；smoltcp 自身仍会执行 socket 状态/地址可用性检查 |
 
 `udp_port_available()` 暴露给 ephemeral port 分配器使用。
 
@@ -321,32 +321,26 @@ pub(crate) struct GeneralOptions {
 
 ### 核心 Poller
 
-`send_poller_with()` 和 `recv_poller_with()` 是通用的 poll 循环：
+`send_poller_with()` 和 `recv_poller_with()` 是通用的阻塞/非阻塞等待入口。当前源码不手写循环，而是把一次 socket 操作闭包交给 `ax_task::future::poll_io()`，再套上 send/recv timeout：
 
 ```rust
 // general.rs
 pub fn send_poller_with<P: Pollable, F: FnMut() -> AxResult<T>, T>(
-    &self, pollable: &P, extra_nb: bool, mut f: F) -> AxResult<T>
+    &self, pollable: &P, extra_nb: bool, f: F) -> AxResult<T>
 {
-    loop {
-        // 尝试执行 f()，如果成功返回结果
-        match f() {
-            Ok(result) => return Ok(result),
-            Err(AxError::WouldBlock) => {
-                // 检查 nonblock 模式 -> 直接返回 WouldBlock
-                if self.nonblock.load(Relaxed) || extra_nb { return Err(AxError::WouldBlock); }
-            }
-            Err(e) => return Err(e),
-        }
-        // 注册 waker 到对应设备
-        self.register_waker(context.waker());
-        // block_on 等待 I/O 事件或超时
-        // ...
-    }
+    block_on(timeout(
+        self.send_timeout(),
+        poll_io(
+            pollable,
+            IoEvents::OUT,
+            self.nonblocking() || extra_nb,
+            f,
+        ),
+    ))?
 }
 ```
 
-流程：`f()` 返回 `WouldBlock` → `register_waker()` 注册到 `Service` → `block_on(poll_io())` 等待 → 超时返回 `TimedOut` → 重新循环。
+流程：`poll_io()` 先调用 `f()`；如果返回 `WouldBlock` 且当前调用不是 nonblocking，则通过 `pollable.register(context, IoEvents::OUT/IN)` 注册 waker，挂起当前任务，等待 readiness 或 timeout 后重试。`GeneralOptions::register_waker()` 只是提供给具体 socket 的 `Pollable::register()` 使用，用于把同一个 waker 注册到符合 `DeviceBinding` 的设备唤醒路径。
 
 `register_waker()` 根据 `DeviceBinding` 选择性注册到匹配的设备：
 

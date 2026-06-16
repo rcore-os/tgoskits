@@ -9,7 +9,7 @@ sidebar_label: "配置参考"
 
 ## Cargo Feature
 
-`ax-net` 的 feature 定义在 [net/ax-net/Cargo.toml#L10-L12](net/ax-net/Cargo.toml#L10-L12)：
+`ax-net` 的 feature 定义在 [net/ax-net/Cargo.toml](net/ax-net/Cargo.toml)：
 
 ```toml
 [features]
@@ -20,9 +20,9 @@ vsock = ["dep:rdif-vsock"]
 | --- | --- |
 | `vsock` | 启用 `rdif-vsock` 依赖和 vsock socket / device 支持 |
 
-启用后，`lib.rs` 中通过 `#[cfg(feature = "vsock")]` 条件编译导出 `init_vsock()`（[lib.rs#L360](net/ax-net/src/lib.rs#L360)）、`vsock` 模块（[lib.rs#L45](net/ax-net/src/lib.rs#L45)）以及 `Socket::Vsock` 变体（[socket.rs#L263-L264](net/ax-net/src/socket.rs#L263-L264)）。基础 TCP、UDP、raw、Unix domain socket、DNS、DHCP 和 Ethernet 能力不需要额外 feature。
+启用后，`lib.rs` 中通过 `#[cfg(feature = "vsock")]` 条件编译导出 `init_vsock()`（[lib.rs](net/ax-net/src/lib.rs)）、`vsock` 模块（[lib.rs](net/ax-net/src/lib.rs)）以及 `Socket::Vsock` 变体（[socket.rs](net/ax-net/src/socket.rs)）。基础 TCP、UDP、raw、Unix domain socket、DNS、DHCP 和 Ethernet 能力不需要额外 feature。
 
-smoltcp 在 [Cargo.toml#L34-L52](net/ax-net/Cargo.toml#L34-L52) 中固定启用以下能力：
+smoltcp 在 [Cargo.toml](net/ax-net/Cargo.toml) 中固定启用以下能力：
 
 - `alloc`
 - `log`
@@ -56,11 +56,11 @@ pub const ETHERNET_MAX_PENDING_PACKETS: usize = 128;
 pub const DEVICE_TX_QUEUE_SIZE: usize = 128;
 ```
 
-`ETHERNET_MAX_PENDING_PACKETS` 取 128 而非 32，是为了容纳应用启动时多个并发 TCP 连接的首个 SYN 突发，以及长连接在 `NEIGHBOR_TTL` 过期后重新进入 ARP-pending 队列的 burst（见源码注释 [consts.rs#L14-L27](net/ax-net/src/consts.rs#L14-L27)）。
+`ETHERNET_MAX_PENDING_PACKETS` 取 128 而非 32，是为了容纳应用启动时多个并发 TCP 连接的首个 SYN 突发，以及长连接在 `NEIGHBOR_TTL` 过期后重新进入 ARP-pending 队列的 burst（见源码注释 [consts.rs](net/ax-net/src/consts.rs)）。
 
 ## NetworkConfig
 
-定义在 [net/ax-net/src/config.rs#L80-L97](net/ax-net/src/config.rs#L80-L97)：
+定义在 [net/ax-net/src/config.rs](net/ax-net/src/config.rs)：
 
 ```rust
 #[derive(Debug, Clone, Default)]
@@ -86,7 +86,7 @@ pub struct InterfaceConfig {
 
 ## InterfaceMatcher
 
-显式接口配置通过 `InterfaceMatcher` 匹配真实设备，定义在 [config.rs#L72-L76](net/ax-net/src/config.rs#L72-L76)：
+显式接口配置通过 `InterfaceMatcher` 匹配真实设备，定义在 [config.rs](net/ax-net/src/config.rs)：
 
 ```rust
 #[derive(Debug, Clone)]
@@ -105,11 +105,11 @@ pub enum InterfaceMatcher {
 - 显式配置必须匹配唯一设备。
 - 未显式配置的 Ethernet 设备默认启用 DHCP。
 
-匹配逻辑在 `find_interface_config()`（[lib.rs#L328-L355](net/ax-net/src/lib.rs#L328-L355)），多配置匹配同一设备会 panic。
+匹配逻辑在 `find_interface_config()`（[lib.rs](net/ax-net/src/lib.rs)），多配置匹配同一设备会 panic。
 
 ## 静态 IPv4
 
-`StaticIpConfig` 定义在 [config.rs#L100-L104](net/ax-net/src/config.rs#L100-L104)：
+`StaticIpConfig` 定义在 [config.rs](net/ax-net/src/config.rs)：
 
 ```rust
 #[derive(Debug, Clone)]
@@ -138,7 +138,7 @@ pub struct StaticIpConfig {
 - 显式配置没有匹配任何设备。
 - 接口名冲突。
 
-这些校验集中在 `init_network()` 开头（[lib.rs#L127-L170](net/ax-net/src/lib.rs#L127-L170)）。
+这些校验集中在 `init_network()` 开头（[lib.rs](net/ax-net/src/lib.rs)）。
 
 ## DHCP
 
@@ -213,7 +213,7 @@ let config = NetworkConfig {
 
 | InterfaceId | 接口 | 说明 |
 | --- | --- | --- |
-| 0 | `TX_INTERFACE_PLACEHOLDER` | 内部占位符（[router.rs](net/ax-net/src/router.rs#L76)），不出现在任何 public API 中 |
+| 0 | `TX_INTERFACE_PLACEHOLDER` | 内部占位符（[router.rs](net/ax-net/src/router.rs)），不出现在任何 public API 中 |
 | 1 | `lo` | Loopback，固定 ID |
 | 2+ | `eth0`, `eth1`, ... | Ethernet 设备，按发现顺序（`net_devs.drain(..)`）递增 |
 
@@ -229,7 +229,7 @@ let config = NetworkConfig {
 
 ## TCP Keep-Alive 默认值
 
-TCP keep-alive 相关常量定义在 [tcp.rs](net/ax-net/src/tcp.rs#L45-L52)：
+TCP keep-alive 相关常量定义在 [tcp.rs](net/ax-net/src/tcp.rs)：
 
 ```rust
 const TCP_KEEPIDLE_DEFAULT_SECS: u32 = 7200;   // 2小时空闲后开始探测
@@ -250,7 +250,7 @@ const TCP_KEEPCNT_MAX: u32 = 127;
 
 ## TCP_INFO 默认值
 
-`TcpInfo` 快照中的默认/估计值（[tcp.rs](net/ax-net/src/tcp.rs#L48-L52)）：
+`TcpInfo` 快照中的默认/估计值（[tcp.rs](net/ax-net/src/tcp.rs)）：
 
 ```rust
 const TCP_INFO_DEFAULT_MSS: u32 = 1460;           // 1500 - 20(IP) - 20(TCP)
@@ -267,23 +267,23 @@ const TCP_INFO_DEFAULT_REORDERING: u32 = 3;
 
 | 常量 | 位置 | 值 | 说明 |
 | --- | --- | --- | --- |
-| `DNS_DEFAULT_TIMEOUT` | [lib.rs#L488](net/ax-net/src/lib.rs#L488) | 5s | DNS 查询超时 |
-| `DHCP_BOOTSTRAP_ATTEMPTS` | [lib.rs#L107](net/ax-net/src/lib.rs#L107) | 200 | DHCP bootstrap 最大重试次数 |
-| `DHCP_BOOTSTRAP_POLL_INTERVAL` | [lib.rs#L108](net/ax-net/src/lib.rs#L108) | 10ms | DHCP bootstrap poll 间隔 |
-| `DHCP_MAX_RETRY_SHIFT` | [service.rs#L283](net/ax-net/src/service.rs#L283) | 4 | DHCP 指数退避最大位移（最大 16s） |
-| `NEIGHBOR_TTL` | [ethernet.rs#L118](net/ax-net/src/device/ethernet.rs#L118) | 300s | ARP neighbor 缓存 TTL |
-| `ARP_REQUEST_RETRY` | [ethernet.rs#L119](net/ax-net/src/device/ethernet.rs#L119) | 1s | ARP 请求重试间隔 |
-| Idle poll interval | [lib.rs#L438](net/ax-net/src/lib.rs#L438) | 100ms | net-poll worker 空闲轮询间隔 |
+| `DNS_DEFAULT_TIMEOUT` | [lib.rs](net/ax-net/src/lib.rs) | 5s | DNS 查询超时 |
+| `DHCP_BOOTSTRAP_ATTEMPTS` | [lib.rs](net/ax-net/src/lib.rs) | 200 | DHCP bootstrap 最大重试次数 |
+| `DHCP_BOOTSTRAP_POLL_INTERVAL` | [lib.rs](net/ax-net/src/lib.rs) | 10ms | DHCP bootstrap poll 间隔 |
+| `DHCP_MAX_RETRY_SHIFT` | [service.rs](net/ax-net/src/service.rs) | 4 | DHCP 指数退避最大位移（最大 16s） |
+| `NEIGHBOR_TTL` | [ethernet.rs](net/ax-net/src/device/ethernet.rs) | 300s | ARP neighbor 缓存 TTL |
+| `ARP_REQUEST_RETRY` | [ethernet.rs](net/ax-net/src/device/ethernet.rs) | 1s | ARP 请求重试间隔 |
+| Idle poll interval | [lib.rs](net/ax-net/src/lib.rs) | 100ms | net-poll worker 空闲轮询间隔 |
 
 ## Router 缓冲区配置
 
 | 名称 | 位置 | 容量 |
 | --- | --- | --- |
-| `Router::rx_buffer` | [router.rs#L326](net/ax-net/src/router.rs#L326) | `SOCKET_BUFFER_SIZE` 个 MTU 槽位 × 1500 字节 |
-| `Router::tx_buffer` | [router.rs#L330](net/ax-net/src/router.rs#L330) | 同上 |
+| `Router::rx_buffer` | [router.rs](net/ax-net/src/router.rs) | `SOCKET_BUFFER_SIZE` 个 MTU 槽位 × 1500 字节 |
+| `Router::tx_buffer` | [router.rs](net/ax-net/src/router.rs) | 同上 |
 | `RouterQueues::rx` | [router.rs](net/ax-net/src/router.rs) | `SOCKET_BUFFER_SIZE` 个 inline `RxPacket`（每包最多 MTU） |
 | `DeviceHandle::tx_queue` | [router.rs](net/ax-net/src/router.rs) | `DEVICE_TX_QUEUE_SIZE` 个 inline `TxPacket`（每包最多 MTU） |
-| `EthernetDevice::pending_packets` | [ethernet.rs#L123](net/ax-net/src/device/ethernet.rs#L123) | `ETHERNET_MAX_PENDING_PACKETS`（128）个 IP 包 |
+| `EthernetDevice::pending_packets` | [ethernet.rs](net/ax-net/src/device/ethernet.rs) | `ETHERNET_MAX_PENDING_PACKETS`（128）个 IP 包 |
 
 `LoopbackDevice` 不维护独立 buffer。普通 smoltcp loopback TX 在 `Router::dispatch()` 中直接注入 `Router::rx_buffer`；`send_on_device()` 的 loopback 特殊发包才进入共享 `RouterQueues::rx`，且同样使用 inline `QueuedPacket`。
 

@@ -4,7 +4,7 @@ sidebar_label: "概览"
 ---
 
 # 网络栈概览
-TGOSKits 的网络能力收敛在 `net/ax-net`。它是 ArceOS、StarryOS 和 Axvisor 共享的统一网络栈，向上提供 TCP、UDP、raw socket、Unix domain socket、可选 vsock、DNS、DHCP、ARP、接口查询和 readiness/poll 能力，向下通过 `rd-net` / `rdif-eth` 消费 Ethernet 设备。
+TGOSKits 的网络能力收敛在 `net/ax-net`。它是 ArceOS、StarryOS 和 Axvisor 共享的统一网络栈，向上提供 TCP、UDP、raw socket、Unix domain socket、可选 vsock、DNS、DHCP、ARP、接口查询和 readiness/poll 能力，向下通过 `EthernetDriver` 能力边界适配真实网卡；当前标准实现是基于 `rd-net` 的 `RdNetDriver`。
 
 ## 源码
 源码位于 [net/ax-net/src/](net/ax-net/src/)，入口 [lib.rs](net/ax-net/src/lib.rs)。Socket backend 包括 IP 类（[tcp.rs](net/ax-net/src/tcp.rs)、[udp.rs](net/ax-net/src/udp.rs)、[raw.rs](net/ax-net/src/raw.rs)，基于 smoltcp）、[unix/](net/ax-net/src/unix/)（自包含 stream/dgram，不经 smoltcp）和可选的 [vsock/](net/ax-net/src/vsock/)（基于 `rdif-vsock` 驱动，含 connection manager 与 ring buffer）。
@@ -64,7 +64,7 @@ TGOSKits 的网络能力收敛在 `net/ax-net`。它是 ArceOS、StarryOS 和 Ax
 
 | 线程 | 职责 | 阻塞点 |
 | --- | --- | --- |
-| `net-poll` worker | 驱动 smoltcp poll、DHCP 状态机、ARP、DNS、TX dispatch | `NET_POLL_WAKE.wait_timeout_until()` |
+| `net-poll` worker | 驱动 smoltcp poll、DHCP 状态机、DNS socket 和 TX dispatch；ARP 解析由发送路径中的 Ethernet 设备完成 | `NET_POLL_WAKE.wait_timeout_until()` |
 | `{ifname}-rx` worker | 每网卡一个，从 driver 收包压入 `RouterQueues::rx` 有界队列 | `device.rx_wake.wait()` |
 | `{ifname}-tx` worker | 每网卡一个，从 `DeviceHandle::tx_queue` 取包调用 driver send | `device.tx_wake.wait_until()` |
 | 调用者线程 | 应用/内核线程调用 socket API | `StateLock::lock()`、`block_on(poll_io())` |
@@ -78,8 +78,8 @@ TGOSKits 的网络能力收敛在 `net/ax-net`。它是 ArceOS、StarryOS 和 Ax
 ```
 SERVICE (Mutex<Service>)
   → SOCKET_SET.inner (Mutex<SocketSet>)
-    → LISTEN_TABLE.tcp[port] (Mutex)
-      → DeviceHandle.inner (Mutex<dyn Device>)
+    → TCP_BOUND_PORTS (Mutex<HashMap<...>>)
+      → LISTEN_TABLE.tcp[port] (Mutex)
   → NET_CONTROL.state (RwLock<ControlState>)
 ```
 
@@ -87,7 +87,7 @@ SERVICE (Mutex<Service>)
 - `SERVICE` mutex 保护 smoltcp `Interface` 和 DHCP 状态机，poll 期间独占。
 - `NET_CONTROL.state` 是独立 RwLock，接口查询（只读）可以在不持有 `SERVICE` 的情况下进行。
 - `ListenTable` 条目锁在 `SOCKET_SET` 锁内获取，保证 accept/snoop 的一致性。
-- 设备锁（`DeviceHandle.inner`）在 poll 路径的最内层获取。
+- 设备锁（`DeviceHandle.inner`）主要由 `{ifname}-rx` / `{ifname}-tx` worker 独立获取。worker 不应在持有设备锁时反向进入 `SERVICE` 或 `SOCKET_SET`，避免设备路径与协议核心互相阻塞。
 
 ## 核心方案
 

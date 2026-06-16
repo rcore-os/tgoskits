@@ -37,7 +37,7 @@ sidebar_label: "总体架构"
 flowchart TB
     subgraph Api["Public API"]
         Init["init_network() / init_vsock()"]
-        Query["interfaces() / routes() / arp_entries()"]
+        Query["interfaces() / default_routes() / arp_entries()"]
         DnsApi["dns_servers() / dns_query()"]
         Sockets["TcpSocket / UdpSocket / RawSocket / UnixSocket / VsockSocket"]
         PollApi["request_poll() / poll_interfaces()"]

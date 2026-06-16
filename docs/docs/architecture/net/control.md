@@ -110,14 +110,25 @@ pub fn interface_by_id(&self, id: InterfaceId) -> Option<InterfaceInfo> {
 
 ### 路由决策
 
-`select_route()` 按目的地址查路由，`is_usable` 闭包跳过未 `UP` 的接口：
+`select_route()` 按目的地址查路由，默认不带接口绑定约束；`select_route_with_binding()` 会额外应用 `DeviceBinding`，用于 `SO_BINDTODEVICE`、显式 `bind_device()` 和由本地地址推导出的接口约束。两者最终都通过 `select_route_if()` 查询路由表，`is_usable` 闭包会跳过未 `UP` 的接口：
 
 ```rust
 // service.rs
 pub fn select_route(&self, dst_addr: &IpAddress) -> AxResult<RouteDecision> {
+    self.select_route_with_binding(dst_addr, DeviceBinding::default())
+}
+
+pub fn select_route_with_binding(
+    &self,
+    dst_addr: &IpAddress,
+    binding: DeviceBinding,
+) -> AxResult<RouteDecision> {
     let state = self.state.read();
     let routes = self.routes.read();
     let route = routes.select_route_if(dst_addr, |interface_id| {
+        if binding.bound_if.is_some_and(|bound_if| bound_if != interface_id) {
+            return false;
+        }
         state.interfaces.iter()
             .find(|i| i.id == interface_id)
             .is_some_and(|i| i.flags.contains(InterfaceFlags::UP))
@@ -299,7 +310,7 @@ pub struct DeviceBinding {
 ```
 
 - `None`：不绑定接口，route decision 选择出接口。
-- `Some(id)`：只允许对应接口参与 route/waker/device 选择。
+- `Some(id)`：只允许对应接口参与 route、waker 注册和设备可用性过滤。
 
 设置/读取通过 `set_device_binding()` / `device_binding()` 操作 `AtomicU32`。
 
