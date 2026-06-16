@@ -4035,6 +4035,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6dbf3de79e51f3d586ab4cb9d5c3e2c14aa28ed23d180cf89b4df0454a69cc87"
 
 [[package]]
+name = "httpboot-protocol"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d964553e2288469f481533e85f9cfceee99a2d73c354c09ac4097e08d890813b"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "httpdate"
 version = "1.0.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5507,9 +5517,9 @@ dependencies = [
 
 [[package]]
 name = "ostool"
-version = "0.22.1"
+version = "0.23.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ada76a46f68ee817f9c32b8374939b7d456eb6165654284e2f28e8db89585ca4"
+checksum = "4d8a92d73cae88dc8b23722af3df1cafa57db301f27556f004689201addc0394"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -5522,6 +5532,7 @@ dependencies = [
  "env_logger",
  "fitimage",
  "futures",
+ "httpboot-protocol",
  "indicatif",
  "jkconfig 0.2.4",
  "log",
