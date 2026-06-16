@@ -1,3 +1,12 @@
+//! Per-thread seccomp state and classic BPF filter evaluation.
+//!
+//! StarryOS supports the Linux `SECCOMP_SET_MODE_STRICT` and
+//! `SECCOMP_SET_MODE_FILTER` paths used by `seccomp(2)` and
+//! `prctl(PR_SET_SECCOMP)`.  Filters are stored on each thread, inherited by
+//! clone/fork, and evaluated before syscall dispatch.  The filter VM here is a
+//! compact classic-BPF interpreter for `struct seccomp_data`; unsupported or
+//! malformed programs fail closed by returning a kill decision.
+
 use alloc::vec::Vec;
 
 use ax_errno::{AxError, AxResult, LinuxError};
@@ -80,6 +89,7 @@ const AUDIT_ARCH: u32 = 0;
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
+/// Linux `struct sock_filter` instruction used by classic BPF seccomp filters.
 pub struct SockFilter {
     pub code: u16,
     pub jt: u8,
@@ -89,18 +99,26 @@ pub struct SockFilter {
 
 #[repr(C)]
 #[derive(Clone, Copy)]
+/// Linux `struct sock_fprog` header passed from userspace to install a filter.
 pub struct SockFprog {
     pub len: u16,
     pub filter: *const SockFilter,
 }
 
 #[derive(Clone, Debug, Default)]
+/// Seccomp configuration attached to a StarryOS thread.
+///
+/// A disabled state allows every syscall.  Strict mode admits only the small
+/// Linux strict-mode syscall set.  Filter mode runs one or more classic-BPF
+/// programs and converts the returned seccomp action into a dispatcher
+/// decision.
 pub struct SeccompState {
     mode: SeccompMode,
     filters: Vec<SeccompFilter>,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+/// Active seccomp operating mode for a thread.
 enum SeccompMode {
     #[default]
     Disabled,
@@ -109,19 +127,26 @@ enum SeccompMode {
 }
 
 #[derive(Clone, Debug)]
+/// A validated classic-BPF seccomp program.
 pub struct SeccompFilter {
     insns: Vec<SockFilter>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// Result of evaluating seccomp for one syscall entry.
 pub enum SeccompDecision {
+    /// Continue normal syscall dispatch.
     Allow,
+    /// Return `-errno` to userspace without invoking the syscall.
     Errno(u16),
+    /// Terminate the current process because the filter requested a kill.
     KillProcess,
+    /// Reject an action StarryOS does not currently emulate, such as TRAP.
     UnsupportedAction,
 }
 
 #[derive(Clone, Copy)]
+/// The seccomp data record visible to classic BPF `BPF_ABS` loads.
 struct SeccompData {
     nr: i32,
     arch: u32,
@@ -130,6 +155,10 @@ struct SeccompData {
 }
 
 impl SeccompState {
+    /// Enable Linux strict seccomp mode for this thread.
+    ///
+    /// Strict mode can only be installed from the disabled state.  Once a
+    /// seccomp mode is active, Linux does not allow returning to disabled mode.
     pub fn install_strict(&mut self) -> AxResult<()> {
         if self.mode != SeccompMode::Disabled {
             return Err(AxError::InvalidInput);
@@ -138,6 +167,11 @@ impl SeccompState {
         Ok(())
     }
 
+    /// Append a classic-BPF filter and switch the thread to filter mode.
+    ///
+    /// Multiple filters are evaluated in installation order.  This is a
+    /// simplified but monotonic model: the first non-ALLOW decision stops
+    /// evaluation.
     pub fn append_filter(&mut self, insns: Vec<SockFilter>) -> AxResult<()> {
         let filter = SeccompFilter::new(insns)?;
         self.mode = SeccompMode::Filter;
@@ -145,6 +179,7 @@ impl SeccompState {
         Ok(())
     }
 
+    /// Evaluate this thread's seccomp state against a syscall user context.
     pub fn evaluate(&self, uctx: &UserContext) -> SeccompDecision {
         match self.mode {
             SeccompMode::Disabled => SeccompDecision::Allow,
@@ -153,6 +188,7 @@ impl SeccompState {
         }
     }
 
+    /// Run all installed filters against a constructed `seccomp_data` record.
     fn evaluate_filters(&self, uctx: &UserContext) -> SeccompDecision {
         let data = SeccompData {
             nr: uctx.sysno() as i32,
@@ -179,6 +215,7 @@ impl SeccompState {
 }
 
 impl SeccompFilter {
+    /// Validate and construct a seccomp filter from userspace BPF instructions.
     pub fn new(insns: Vec<SockFilter>) -> AxResult<Self> {
         if insns.is_empty() || insns.len() > BPF_MAXINSNS {
             return Err(AxError::InvalidInput);
@@ -186,6 +223,11 @@ impl SeccompFilter {
         Ok(Self { insns })
     }
 
+    /// Execute this classic-BPF program and return its raw seccomp action.
+    ///
+    /// The interpreter intentionally rejects unsupported opcodes, out-of-range
+    /// memory access, invalid jumps, and divide/modulo by zero by returning
+    /// `KILL_THREAD`.  That matches seccomp's fail-closed security posture.
     fn execute(&self, data: &SeccompData) -> u32 {
         let mut a = 0u32;
         let mut x = 0u32;
@@ -305,6 +347,7 @@ impl SeccompFilter {
     }
 }
 
+/// Return the strict-mode decision for a syscall number.
 fn strict_decision(sysno: usize) -> SeccompDecision {
     match Sysno::new(sysno) {
         Some(
@@ -314,6 +357,7 @@ fn strict_decision(sysno: usize) -> SeccompDecision {
     }
 }
 
+/// Convert a raw seccomp return value into the syscall dispatch decision.
 fn action_to_decision(ret: u32) -> SeccompDecision {
     match ret & SECCOMP_RET_ACTION_FULL {
         SECCOMP_RET_ALLOW | SECCOMP_RET_LOG => SeccompDecision::Allow,
@@ -324,6 +368,7 @@ fn action_to_decision(ret: u32) -> SeccompDecision {
     }
 }
 
+/// Select the right-hand side operand for a classic-BPF jump instruction.
 fn jump_rhs(insn: SockFilter, x: u32) -> u32 {
     if insn.code & BPF_SRC_MASK == BPF_X {
         x
@@ -332,11 +377,13 @@ fn jump_rhs(insn: SockFilter, x: u32) -> u32 {
     }
 }
 
+/// Compute the next program counter for a conditional classic-BPF jump.
 fn jump_target(pc: usize, insn: SockFilter, condition: bool) -> Option<usize> {
     let offset = if condition { insn.jt } else { insn.jf };
     pc.checked_add(offset as usize)
 }
 
+/// Load a field from the emulated Linux `struct seccomp_data`.
 fn load_seccomp_data(data: &SeccompData, offset: u32, size: u16) -> Option<u32> {
     let value = match offset {
         0 => data.nr as u32,
@@ -362,6 +409,7 @@ fn load_seccomp_data(data: &SeccompData, offset: u32, size: u16) -> Option<u32> 
     }
 }
 
+/// Convert a `SECCOMP_RET_ERRNO` payload into the syscall return value.
 pub fn seccomp_errno(errno: u16) -> usize {
     let errno = if errno == 0 {
         LinuxError::EPERM.code()

@@ -1,3 +1,10 @@
+//! Task-control syscalls: capabilities, `prctl`, personality, and NUMA policy.
+//!
+//! The capability helpers in this file implement the Linux `capget(2)` and
+//! `capset(2)` ABI plus the capability-related `prctl(2)` operations.  They
+//! translate between userspace's split `u32` capability arrays and StarryOS's
+//! internal `Cred` bitmap fields.
+
 use core::ffi::c_char;
 
 use ax_errno::{AxError, AxResult};
@@ -87,6 +94,7 @@ fn cred_for_pid(pid: u32) -> AxResult<alloc::sync::Arc<Cred>> {
         .ok_or(AxError::NoSuchProcess)
 }
 
+/// Validate a capability number and return its bit in the internal bitmap.
 fn cap_bit(cap: u32) -> AxResult<u64> {
     if cap > CAP_LAST_CAP {
         return Err(AxError::InvalidInput);
@@ -94,6 +102,7 @@ fn cap_bit(cap: u32) -> AxResult<u64> {
     Ok(1u64 << cap)
 }
 
+/// Merge the two u32 words from a Linux V3 capability array into one mask.
 fn data_to_mask(
     data: &[__user_cap_data_struct; CAP_U32S_3],
     f: fn(&__user_cap_data_struct) -> u32,
@@ -101,6 +110,7 @@ fn data_to_mask(
     u64::from(f(&data[0])) | (u64::from(f(&data[1])) << 32)
 }
 
+/// Convert StarryOS credentials into Linux V3 userspace capability words.
 fn cap_data_from_cred(cred: &Cred) -> [__user_cap_data_struct; CAP_U32S_3] {
     [
         __user_cap_data_struct {
@@ -116,6 +126,12 @@ fn cap_data_from_cred(cred: &Cred) -> [__user_cap_data_struct; CAP_U32S_3] {
     ]
 }
 
+/// Implement `capget(2)`.
+///
+/// StarryOS supports the Linux V3 capability ABI.  When `data` is null, the
+/// call only validates/fixes the header version as Linux does.  Otherwise, the
+/// selected thread's effective, permitted, and inheritable sets are copied to
+/// userspace.
 pub fn sys_capget(
     header: *mut __user_cap_header_struct,
     data: *mut __user_cap_data_struct,
@@ -135,6 +151,12 @@ pub fn sys_capget(
     Ok(0)
 }
 
+/// Implement `capset(2)` for the current thread.
+///
+/// The caller may only update its own credentials.  Effective capabilities must
+/// remain a subset of permitted capabilities, permitted capabilities cannot be
+/// expanded, and inheritable expansion follows Linux's `CAP_SETPCAP`/bounding
+/// set rules.
 pub fn sys_capset(
     header: *mut __user_cap_header_struct,
     data: *mut __user_cap_data_struct,
@@ -382,6 +404,7 @@ pub fn sys_prctl(
             (arg2 as *mut i32).vm_write(enabled)?;
         }
         PR_CAPBSET_READ => {
+            // Query whether a capability is still present in the bounding set.
             if arg2 > CAP_LAST_CAP as usize {
                 return Err(AxError::InvalidInput);
             }
@@ -390,6 +413,8 @@ pub fn sys_prctl(
             return Ok(((cred.cap_bounding & bit) != 0) as isize);
         }
         PR_CAPBSET_DROP => {
+            // Permanently drop a capability from this thread's bounding set.
+            // Linux requires CAP_SETPCAP for this operation.
             if arg2 > CAP_LAST_CAP as usize || arg3 != 0 || arg4 != 0 || arg5 != 0 {
                 return Err(AxError::InvalidInput);
             }
@@ -407,6 +432,8 @@ pub fn sys_prctl(
             thread.set_cred(new);
         }
         PR_CAP_AMBIENT => {
+            // Manage the ambient capability set.  Ambient capabilities are
+            // constrained to permitted & inheritable by `sanitize_capabilities`.
             let thread_ref = current();
             let thread = thread_ref.as_thread();
             let old = thread.cred();

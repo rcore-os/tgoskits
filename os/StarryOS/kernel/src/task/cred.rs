@@ -1,4 +1,9 @@
-//! Process credentials (uid, gid, supplementary groups, capabilities).
+//! Process credentials and Linux capability state.
+//!
+//! This module keeps the per-thread credential snapshot used by StarryOS
+//! permission checks.  It tracks UID/GID families, supplementary groups, and
+//! the five Linux capability sets exposed through `capget(2)`, `capset(2)`,
+//! `/proc/<pid>/status`, and selected `prctl(2)` operations.
 
 use alloc::sync::Arc;
 
@@ -9,12 +14,16 @@ use linux_raw_sys::general::{
 
 const CAP_MASK: u64 = (1u64 << (CAP_LAST_CAP + 1)) - 1;
 
+/// Return the bit mask for a single Linux capability number.
 fn cap_bit(cap: u32) -> u64 {
     if cap <= CAP_LAST_CAP { 1u64 << cap } else { 0 }
 }
 
-/// Process credentials tracking real, effective, saved, and filesystem
-/// user/group IDs, plus supplementary groups.
+/// Process credentials used for identity and permission checks.
+///
+/// The capability fields mirror Linux's inheritable, permitted, effective,
+/// bounding, and ambient sets.  StarryOS stores the currently known capability
+/// range in a `u64`, which is sufficient for `CAP_LAST_CAP`.
 #[derive(Clone, Debug)]
 pub struct Cred {
     /// Real user ID.
@@ -48,12 +57,12 @@ pub struct Cred {
 }
 
 impl Cred {
-    /// Return the mask of all capabilities known to this kernel.
+    /// Return the mask of all Linux capabilities known to this kernel.
     pub const fn cap_mask() -> u64 {
         CAP_MASK
     }
 
-    /// Create root credentials (all IDs zero, no supplementary groups).
+    /// Create root credentials with all permitted/effective capabilities.
     pub fn root() -> Self {
         Self {
             uid: 0,
@@ -74,6 +83,10 @@ impl Cred {
     }
 
     /// Create credentials for an unprivileged identity.
+    ///
+    /// The bounding set remains full so future privileged transitions can
+    /// still be represented, but the effective/permitted/ambient sets start
+    /// empty.
     pub fn unprivileged(uid: u32, gid: u32) -> Self {
         Self {
             uid,
