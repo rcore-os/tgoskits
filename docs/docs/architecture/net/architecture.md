@@ -281,6 +281,7 @@ sequenceDiagram
 | loopback fast path | 回环包直接写入 `rx_buffer`，不经过设备 worker |
 
 `Router::poll()` 负责把设备 RX 队列推进到 smoltcp RX buffer；`Router::dispatch()` 负责把 smoltcp TX buffer 中的包按路由分发到 loopback 或真实设备。更细的 worker、队列和 ARP 行为见[多设备实现](devices.md)。
+从驱动 buffer 到用户 buffer、从用户 buffer 到驱动 TX buffer 的完整内存链路见[内存与队列](memory.md)。
 
 ## Device layer
 

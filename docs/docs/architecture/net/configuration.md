@@ -1,5 +1,5 @@
 ---
-sidebar_position: 7
+sidebar_position: 8
 sidebar_label: "配置参考"
 ---
 
@@ -271,6 +271,7 @@ pub const RAW_TX_BUF_LEN: usize = 64 * 1024;
 ```rust
 pub const STANDARD_MTU: usize = 1500;
 pub const SOCKET_BUFFER_SIZE: usize = 64;
+pub const DEVICE_RX_QUEUE_SIZE: usize = 256;
 pub const DEVICE_TX_QUEUE_SIZE: usize = 128;
 pub const ETHERNET_MAX_PENDING_PACKETS: usize = 128;
 pub const LISTEN_QUEUE_SIZE: usize = 512;
@@ -280,11 +281,13 @@ pub const LISTEN_QUEUE_SIZE: usize = 512;
 | --- | --- |
 | `STANDARD_MTU` | Router 和 Ethernet 默认 MTU |
 | `SOCKET_BUFFER_SIZE` | Router RX/TX smoltcp-facing packet buffer 槽位数 |
+| `DEVICE_RX_QUEUE_SIZE` | 所有真实设备共享的 device-to-Router RX queue 槽位数 |
 | `DEVICE_TX_QUEUE_SIZE` | 每设备 TX queue 槽位数 |
 | `ETHERNET_MAX_PENDING_PACKETS` | ARP resolution pending packet 上限 |
 | `LISTEN_QUEUE_SIZE` | TCP listen backlog clamp 上限 |
 
 Router queue 中的 packet 使用 inline `[u8; STANDARD_MTU] + len`，不为每个 queued packet 分配 `Box<[u8]>`。
+更完整的拷贝边界、队列满行为和内存预算见[内存与队列](memory.md)。
 
 ### Unix Stream Buffer
 
