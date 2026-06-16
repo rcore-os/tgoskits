@@ -143,6 +143,7 @@ pub fn new_user_task(name: &str, mut uctx: UserContext, set_child_tid: usize) ->
                                 Signo::SIGBUS
                             }
                             ExceptionKind::Breakpoint => Signo::SIGTRAP,
+                            ExceptionKind::Debug => Signo::SIGTRAP,
                             ExceptionKind::IllegalInstruction => Signo::SIGILL,
                             _ => Signo::SIGSEGV,
                         };

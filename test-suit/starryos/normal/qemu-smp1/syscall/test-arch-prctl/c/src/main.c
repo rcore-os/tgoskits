@@ -513,6 +513,59 @@ static void test_gp_delivers_sigsegv(void)
     }
 }
 
+/* 13. Verify that a user-mode #DB (Debug Exception / single-step trap)
+ *     delivers SIGTRAP, not SIGSEGV. The kernel must distinguish #DB
+ *     from protection faults (#GP/#SS/#NP/#TS) which go to SIGSEGV.
+ *     Run in a child that sets TF (Trap Flag) and executes a NOP to
+ *     trigger a single-step debug trap. */
+static void test_debug_delivers_sigtrap(void)
+{
+    printf("--- #DB delivers SIGTRAP (fork) ---\n");
+
+    pid_t pid = fork();
+    if (pid < 0) {
+        printf("  FAIL | fork() failed, errno=%d (%s)\n",
+               errno, strerror(errno));
+        __fail++;
+        return;
+    }
+
+    if (pid == 0) {
+        /* ---- child: set TF, next instruction triggers #DB ---- */
+        unsigned long flags;
+        __asm__ volatile("pushfq\npopq %0" : "=r"(flags));
+        flags |= (1UL << 8); /* X86_EFLAGS_TF */
+        __asm__ volatile("pushq %0\npopfq\nnop" : : "r"(flags) : "flags");
+        /* not reached if #DB fires */
+        _exit(0);
+    }
+
+    /* ---- parent ---- */
+    int status;
+    waitpid(pid, &status, 0);
+
+    if (WIFSIGNALED(status)) {
+        int sig = WTERMSIG(status);
+        if (sig == SIGTRAP) {
+            printf("  PASS | #DB delivered SIGTRAP (signal=%d)\n", sig);
+            __pass++;
+        } else if (sig == SIGSEGV) {
+            printf("  FAIL | #DB delivered SIGSEGV (signal=%d) — debug trap misrouted\n", sig);
+            __fail++;
+        } else {
+            printf("  FAIL | #DB delivered unexpected signal=%d, expected SIGTRAP\n", sig);
+            __fail++;
+        }
+    } else if (WIFEXITED(status)) {
+        printf("  FAIL | single-step did not fault (exit=%d)\n",
+               WEXITSTATUS(status));
+        __fail++;
+    } else {
+        printf("  FAIL | unexpected child status (status=%d)\n", status);
+        __fail++;
+    }
+}
+
 /* ============================================================
  * MAIN
  * ============================================================ */
@@ -538,6 +591,7 @@ int main(void)
     test_eperm_invalid_address_set();
     test_low_address_set_fs_gs();
     test_gp_delivers_sigsegv();
+    test_debug_delivers_sigtrap();
 
     TEST_DONE();
 }
