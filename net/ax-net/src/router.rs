@@ -518,6 +518,11 @@ impl Router {
         ax_task::spawn_with_name(move || device_rx_worker(device), name);
     }
 
+    /// Finds the index of a device by its interface name (e.g. `"wlan0"`).
+    pub fn device_index(&self, name: &str) -> Option<usize> {
+        self.devices.iter().position(|device| device.name == name)
+    }
+
     /// Applies an IPv4 address/gateway update to one device and its routes.
     pub fn set_ipv4_config(
         &mut self,

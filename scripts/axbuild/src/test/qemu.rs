@@ -1028,10 +1028,6 @@ fn apply_dynamic_platform_qemu_boot_with_kvm_probe(
     apply_dynamic_x86_64_qemu_debug_args(qemu);
 }
 
-pub(crate) fn apply_x86_64_kvm_accel_if_available(qemu: &mut QemuConfig, cargo: &Cargo) {
-    apply_x86_64_kvm_accel_if_available_with_probe(qemu, cargo, host_kvm_available);
-}
-
 fn apply_x86_64_kvm_accel_if_available_with_probe(
     qemu: &mut QemuConfig,
     cargo: &Cargo,

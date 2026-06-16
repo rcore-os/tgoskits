@@ -641,6 +641,88 @@ impl Service {
             client_ip,
             subnet_mask,
         ));
+        info!("dev {dev}: DHCP server enabled (lease {client_ip})");
+    }
+
+    /// Finds the router device index for an interface name such as `wlan0`.
+    pub fn device_index(&self, name: &str) -> Option<usize> {
+        self.router.device_index(name)
+    }
+
+    /// Reconfigures one wireless device as SoftAP: static IPv4 plus optional DHCP server.
+    pub fn reconfigure_as_ap(
+        &mut self,
+        dev: usize,
+        server_ip: Ipv4Address,
+        prefix_len: u8,
+        client_ip: Option<Ipv4Address>,
+    ) {
+        let Some(interface) = self.interface_for_dev(dev) else {
+            warn!("dev {dev}: cannot reconfigure AP for unknown device");
+            return;
+        };
+        let old_ipv4 = self
+            .dhcp
+            .iter()
+            .find(|state| state.dev == dev)
+            .and_then(|state| state.address)
+            .or(interface.ipv4);
+        self.dhcp.retain(|state| state.dev != dev);
+
+        let cidr = Ipv4Cidr::new(server_ip, prefix_len);
+        self.commit_network_state(NetworkStateUpdate {
+            interface_id: interface.id,
+            dev,
+            metric: interface.metric,
+            old_ipv4,
+            ipv4: Some(cidr),
+            gateway: None,
+            dns_source: DnsSource::Static,
+            dns_servers: Vec::new(),
+        });
+
+        match client_ip {
+            Some(client_ip) => {
+                let subnet_mask = mask_from_prefix(prefix_len);
+                self.dhcp_server = Some(DhcpServer::new(
+                    dev,
+                    interface.id,
+                    server_ip,
+                    client_ip,
+                    subnet_mask,
+                ));
+                info!("dev {dev}: reconfigured as AP {cidr}, DHCP server lease {client_ip}");
+            }
+            None => {
+                self.dhcp_server = None;
+                info!("dev {dev}: reconfigured as AP {cidr} (no DHCP server)");
+            }
+        }
+    }
+
+    /// Reconfigures one wireless device as STA and restarts DHCP on it.
+    pub fn reconfigure_as_sta(&mut self, dev: usize, mac: EthernetAddress) {
+        let Some(interface) = self.interface_for_dev(dev) else {
+            warn!("dev {dev}: cannot reconfigure STA for unknown device");
+            return;
+        };
+        if self.dhcp_server.as_ref().is_some_and(|s| s.dev == dev) {
+            self.dhcp_server = None;
+        }
+        self.dhcp.retain(|state| state.dev != dev);
+        self.commit_network_state(NetworkStateUpdate {
+            interface_id: interface.id,
+            dev,
+            metric: interface.metric,
+            old_ipv4: interface.ipv4,
+            ipv4: None,
+            gateway: None,
+            dns_source: DnsSource::Static,
+            dns_servers: Vec::new(),
+        });
+
+        self.enable_dhcp(interface.id, dev, interface.name, mac, interface.metric);
+        info!("dev {dev}: reconfigured as STA, DHCP client enabled");
     }
 
     /// Returns true once DHCP has produced at least one usable interface.
@@ -810,6 +892,17 @@ impl Service {
         self.control.commit_interface_update(&update, routes);
     }
 
+    fn interface_for_dev(&self, dev: usize) -> Option<NetInterface> {
+        let interface_id = self.router.interface_id_for_dev(dev)?;
+        self.control
+            .state
+            .read()
+            .interfaces
+            .iter()
+            .find(|interface| interface.id == interface_id)
+            .cloned()
+    }
+
     fn set_interface_ipv4(
         iface: &mut Interface,
         old_address: Option<Ipv4Cidr>,
@@ -896,6 +989,17 @@ fn dhcp_transaction_id(mac: EthernetAddress) -> u32 {
 
 fn is_unicast_ipv4(addr: Ipv4Address) -> bool {
     addr != Ipv4Address::UNSPECIFIED && addr != Ipv4Address::BROADCAST && !addr.is_multicast()
+}
+
+/// 由前缀长度构造 IPv4 子网掩码(与 lib.rs 的 `prefix_to_mask` 等价,
+/// 这里独立提供以免暴露跨模块的私有函数)。
+fn mask_from_prefix(prefix_len: u8) -> Ipv4Address {
+    let bits: u32 = if prefix_len == 0 {
+        0
+    } else {
+        u32::MAX << (32 - prefix_len.min(32) as u32)
+    };
+    Ipv4Address::from_bits(bits)
 }
 
 fn build_dhcp_packet(

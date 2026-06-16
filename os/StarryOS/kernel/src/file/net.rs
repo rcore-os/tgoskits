@@ -345,7 +345,12 @@ impl FileLike for Socket {
                 let idx = read_ifreq_interface(arg)?.id.get() as i32;
                 write_ifreq_data(arg, &idx.to_ne_bytes())?;
             }
-            _ => return Err(AxError::NotATty),
+            _ => {
+                if super::wext::is_wext_ioctl(cmd) {
+                    return super::wext::handle(cmd, arg);
+                }
+                return Err(AxError::NotATty);
+            }
         }
         Ok(0)
     }
