@@ -1,3 +1,22 @@
+//! Vsock stream transport.
+//!
+//! Stream sockets are backed by entries in the vsock connection manager and are
+//! driven by the adaptive vsock device poll task rather than the smoltcp IP
+//! poller.
+//!
+//! # Public State
+//!
+//! The transport uses `StateLock` for POSIX-facing socket transitions while the
+//! connection manager tracks host-visible vsock connection state. Operations
+//! must keep those two views synchronized at bind, listen, connect, accept, and
+//! shutdown boundaries.
+//!
+//! # Readiness
+//!
+//! Poll readiness comes from connection-manager wait queues and poll sets. The
+//! stream transport must not acquire smoltcp service/socket locks because vsock
+//! is independent from the IP protocol core.
+
 use alloc::sync::Arc;
 use core::task::Context;
 
@@ -18,9 +37,13 @@ use crate::{
 
 /// Stream transport for vsock sockets.
 pub struct VsockStreamTransport {
+    /// Connection id registered with the vsock manager.
     conn_id: Mutex<Option<VsockConnId>>,
+    /// Shared connection state once bound, connecting, or connected.
     connection: Mutex<Option<Arc<Mutex<Connection>>>>,
+    /// Public POSIX-facing stream state.
     state: StateLock,
+    /// Shared socket options.
     general: GeneralOptions,
 }
 
@@ -35,6 +58,7 @@ impl VsockStreamTransport {
         }
     }
 
+    /// Returns the manager connection associated with this stream.
     fn get_connection(&self) -> AxResult<Arc<Mutex<Connection>>> {
         self.connection.lock().clone().ok_or(AxError::NotConnected)
     }

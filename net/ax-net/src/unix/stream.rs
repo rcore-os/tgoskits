@@ -1,3 +1,23 @@
+//! Unix stream transport.
+//!
+//! Stream sockets are implemented as paired byte rings with explicit close
+//! flags and a small cmsg side channel. Listening sockets enqueue connection
+//! requests in the Unix namespace, and accepted sockets receive one half of a
+//! connected channel pair.
+//!
+//! # Channel Layout
+//!
+//! A connected pair is two unidirectional byte rings plus shared close flags.
+//! Each endpoint writes into one ring and reads from the other. This mirrors the
+//! full-duplex behavior of Unix stream sockets without involving smoltcp.
+//!
+//! # Ancillary Data
+//!
+//! cmsg data is attached to byte ranges rather than individual bytes. The
+//! receiver delivers a cmsg when it reaches the first byte of the send call that
+//! carried it, and recv may stop at a cmsg boundary so the next recvmsg starts
+//! with the next message's ancillary data.
+
 use alloc::{boxed::Box, collections::VecDeque, sync::Arc, vec::Vec};
 use core::{
     sync::atomic::{AtomicBool, Ordering},
@@ -110,6 +130,7 @@ pub struct Bind {
     /// New connections are sent to this channel.
     conn_tx: async_channel::Sender<ConnRequest>,
     poll_new_conn: Arc<PollSet>,
+    /// PID of the process that created the listening transport.
     pid: u32,
 }
 impl Bind {
@@ -130,19 +151,29 @@ impl Bind {
 }
 
 struct ConnRequest {
+    /// Server-side channel half created for accept().
     channel: Channel,
+    /// Client address reported to accept().
     addr: UnixSocketAddr,
+    /// Client pid used for peer credentials.
     pid: u32,
 }
 
 /// Stream transport for Unix domain sockets.
 pub struct StreamTransport {
+    /// Connected channel, if this endpoint is connected or accepted.
     channel: Mutex<Option<Channel>>,
+    /// Listener receive queue installed by bind/listen.
     conn_rx: Mutex<Option<(async_channel::Receiver<ConnRequest>, Arc<PollSet>)>>,
+    /// Poll set for local stream state.
     poll_state: PollSet,
+    /// Shared socket options.
     general: GeneralOptions,
+    /// Creator pid used for credentials.
     pid: u32,
+    /// Public receive-half shutdown flag.
     rx_closed: AtomicBool,
+    /// Public transmit-half shutdown flag.
     tx_closed: AtomicBool,
 }
 impl StreamTransport {

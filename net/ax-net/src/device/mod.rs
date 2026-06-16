@@ -1,3 +1,23 @@
+//! Logical network device abstraction.
+//!
+//! Device implementations hide physical transport details from the single
+//! protocol core. The router polls devices through this trait, while concrete
+//! adapters such as Ethernet and loopback decide how packets enter or leave the
+//! underlying hardware or virtual link.
+//!
+//! # Contract
+//!
+//! `recv()` moves complete IP packets into the caller-provided packet buffer;
+//! `send()` accepts complete IP packets plus the already selected next hop.
+//! Devices should not perform socket lookup, TCP/UDP processing, or route
+//! selection. Those belong above this trait in `service` and `router`.
+//!
+//! # Readiness
+//!
+//! A device may use platform IRQs, polling, or out-of-band notifications. The
+//! router only requires that `register_waker()` and `wake_rx()` make blocked
+//! device workers observable without exposing driver-specific details.
+
 use alloc::{string::String, vec::Vec};
 use core::task::Waker;
 
@@ -23,16 +43,27 @@ pub use vsock::*;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ArpEntry {
+    /// IPv4 address in network byte order.
     pub ip_addr: [u8; 4],
+    /// ARP hardware type.
     pub hw_type: u16,
+    /// ARP entry flags exposed to userspace.
     pub flags: u16,
+    /// Link-layer address.
     pub hw_addr: [u8; 6],
+    /// Interface name that owns this neighbor entry.
     pub device: String,
 }
 
+/// Packet I/O endpoint behind the multi-device router.
 pub trait Device: Send + Sync {
+    /// Human-readable device name used in logs and userspace queries.
     fn name(&self) -> &str;
 
+    /// Moves packets from the device into the shared IP RX buffer.
+    ///
+    /// Returns `true` when at least one packet was delivered and the protocol
+    /// core should be polled again.
     fn recv(
         &mut self,
         interface_id: InterfaceId,
@@ -47,8 +78,10 @@ pub trait Device: Send + Sync {
     /// up packet processing.
     fn send(&mut self, next_hop: IpAddress, packet: &[u8], timestamp: Instant) -> bool;
 
+    /// Updates the IPv4 address used by device-local protocol helpers.
     fn set_ipv4_addr(&mut self, _addr: Option<Ipv4Cidr>) {}
 
+    /// Returns device-local ARP/neighbor entries for userspace queries.
     fn arp_entries(&self, _timestamp: Instant) -> Vec<ArpEntry> {
         Vec::new()
     }
@@ -60,5 +93,6 @@ pub trait Device: Send + Sync {
     /// the device after `notify_oob_rx`. Default is a no-op.
     fn wake_rx(&self) {}
 
+    /// Registers a waker for RX readiness notifications.
     fn register_waker(&self, waker: &Waker);
 }

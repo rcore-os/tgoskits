@@ -1,3 +1,15 @@
+//! Loopback device marker.
+//!
+//! Loopback traffic is handled by the router fast path rather than by device
+//! workers. This device still exists so the control plane can expose `lo` as a
+//! normal interface and route local packets through the same route table.
+//!
+//! # Fast Path
+//!
+//! `Router::dispatch()` copies loopback packets directly from the smoltcp TX
+//! buffer into the smoltcp-facing RX buffer. That avoids an extra queue hop and
+//! avoids spawning RX/TX workers for a device that has no hardware latency.
+
 use core::task::Waker;
 
 use smoltcp::{time::Instant, wire::IpAddress};
@@ -34,8 +46,7 @@ impl Device for LoopbackDevice {
     }
 
     fn send(&mut self, _next_hop: IpAddress, _packet: &[u8], _timestamp: Instant) -> bool {
-        // Fast path: loopback packets are injected directly in Router::dispatch()
-        // See Router::dispatch_loopback()
+        // Fast path: loopback packets are injected directly in Router::dispatch().
         true
     }
 

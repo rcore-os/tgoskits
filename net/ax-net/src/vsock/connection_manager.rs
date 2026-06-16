@@ -1,3 +1,22 @@
+//! Vsock connection registry.
+//!
+//! The manager tracks listening, connecting, and established vsock stream
+//! connections, owns their byte rings, and provides wakeups used by the vsock
+//! transport and device polling glue.
+//!
+//! # Event Flow
+//!
+//! Device polling turns host events into manager calls such as connection
+//! request, connected, received data, credit update, and disconnect. Socket
+//! transports then observe manager state through connection handles and poll
+//! sets.
+//!
+//! # Buffering
+//!
+//! Each connection owns an RX byte ring. When the ring is full, the device event
+//! path keeps the event pending rather than dropping data, so backpressure is
+//! expressed through poll readiness and later receive calls.
+
 use alloc::{collections::BTreeMap, sync::Arc};
 
 use ax_errno::{AxError, AxResult, ax_bail};
@@ -12,41 +31,54 @@ use crate::device::{start_vsock_poll, stop_vsock_poll};
 pub const VSOCK_RX_BUFFER_SIZE: usize = 64 * 1024; // 64KB receive buffer
 const VSOCK_ACCEPT_QUEUE_SIZE: usize = 128; // accept queue size
 
-/// connection states
+/// Public state of a vsock connection tracked by the manager.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConnectionState {
+    /// Allocated but not listening/connecting.
     Idle,
+    /// Registered as a listener.
     Listening,
+    /// Outgoing connection request in progress.
     Connecting,
+    /// Connected and usable for I/O.
     Connected,
+    /// Disconnected or closed.
     Closed,
 }
 
-/// Connection
+/// Per-connection state shared by vsock device events and stream transports.
 pub struct Connection {
+    /// Manager-level connection state.
     state: ConnectionState,
+    /// Local vsock address.
     local_addr: VsockAddr,
+    /// Peer address, if known.
     peer_addr: Option<VsockAddr>,
 
-    /// recv buffer read from driver
+    /// Producer side filled by device receive events.
     rx_producer: HeapProd<u8>,
+    /// Consumer side drained by socket recv.
     rx_consumer: HeapCons<u8>,
 
-    /// wait queues for tx due to InsufficientBufferSpaceInPeer
+    /// Wait queue for TX blocked by peer credit/buffer pressure.
     tx_wait_queue: WaitQueue,
 
-    /// Waker lists
+    /// RX readiness waiters.
     rx_wakers: PollSet,
+    /// Connect/listen state waiters.
     connect_wakers: PollSet,
 
-    /// closed flags
+    /// Whether the receive half is closed.
     rx_closed: bool,
+    /// Whether the transmit half is closed.
     tx_closed: bool,
 
-    /// statistics
-    rx_bytes: usize, // received bytes count
-    tx_bytes: usize,      // sent bytes count
-    dropped_bytes: usize, // dropped bytes count
+    /// Received byte count.
+    rx_bytes: usize,
+    /// Transmitted byte count.
+    tx_bytes: usize,
+    /// Dropped byte count.
+    dropped_bytes: usize,
 }
 
 impl Connection {

@@ -1,12 +1,26 @@
 //! Orphan socket management for TCP connections.
 //!
-//! When a user closes a TCP socket (via Drop), the socket enters the orphan state:
-//! - Unbound from the user-facing API (handle not accessible to new operations)
-//! - smoltcp socket handle remains active in the protocol stack
-//! - Connection teardown (FIN handshake, TIME_WAIT) continues in background
-//! - Removed after smoltcp reaches Closed, or after TIME_WAIT/max linger expires
+//! When a user closes a TCP socket, the userspace object is dropped immediately,
+//! but the underlying smoltcp socket may still need to finish FIN exchange or
+//! TIME-WAIT. This module keeps those sockets in a small orphan pool so the
+//! dedicated net-poll worker can continue protocol teardown after the file
+//! descriptor is gone.
 //!
-//! This ensures RFC 793 compliance and prevents premature connection termination.
+//! # Lifecycle
+//!
+//! - `TcpSocket::drop()` unregisters public bind/listen state and moves the
+//!   smoltcp handle into the orphan pool.
+//! - `reap_orphans()` runs from the poll path while `SocketSet` is already
+//!   locked.
+//! - Closed sockets are removed immediately; TIME-WAIT and FIN states are kept
+//!   until smoltcp finishes or the maximum linger time expires.
+//!
+//! # Overflow Policy
+//!
+//! The pool has a hard capacity guard, but it does not blindly kill active
+//! TIME-WAIT/FIN sockets just because the pool is full. Closed or expired
+//! entries are reaped first; still-tearing-down entries are preserved so normal
+//! TCP semantics win over aggressive cleanup.
 
 use alloc::vec::Vec;
 
@@ -20,7 +34,9 @@ use spin::LazyLock;
 
 /// Orphaned TCP socket awaiting final cleanup.
 struct OrphanSocket {
+    /// smoltcp socket handle kept alive after the public socket was dropped.
     handle: SocketHandle,
+    /// Timestamp when the socket entered the orphan pool.
     orphaned_at: Instant,
 }
 
@@ -36,7 +52,9 @@ impl OrphanSocket {
 
 #[derive(Clone, Copy)]
 enum ReapReason {
+    /// smoltcp reached the Closed state.
     Closed,
+    /// The orphan exceeded the maximum linger time.
     Expired,
 }
 

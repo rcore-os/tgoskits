@@ -1,3 +1,30 @@
+//! TCP socket implementation.
+//!
+//! TCP sockets wrap smoltcp stream sockets with POSIX-like behavior: bind and
+//! listen bookkeeping, accept queues, nonblocking readiness, keepalive and
+//! TCP_INFO options, orphan cleanup, and route-aware device binding.
+//!
+//! # smoltcp Boundary
+//!
+//! The actual TCP state machine, retransmission timers, and stream buffers live
+//! in smoltcp. This module owns the public socket state around that core:
+//! ephemeral port allocation, wildcard/specific bind registration, listener
+//! setup, accepted child socket construction, shutdown semantics, and
+//! Linux-compatible error reporting.
+//!
+//! # Polling Model
+//!
+//! Socket methods never synchronously drive the full interface poll loop.
+//! Instead they mutate the smoltcp socket, call `request_poll()`, register
+//! wakers through `PollSet`, and let the dedicated net-poll worker advance
+//! timers, handshakes, retransmission, and close states.
+//!
+//! # Related Side Tables
+//!
+//! - `TCP_BOUND_PORTS` records public bind ownership.
+//! - `LISTEN_TABLE` owns passive-open child sockets and accept wakeups.
+//! - `orphan` keeps dropped sockets alive long enough for FIN/TIME-WAIT cleanup.
+
 use alloc::{sync::Arc, vec, vec::Vec};
 use core::{
     net::{Ipv4Addr, SocketAddr},
@@ -31,6 +58,7 @@ use crate::{
     state::*,
 };
 
+/// Allocates a smoltcp TCP socket with ax-net's default buffers.
 pub(crate) fn new_tcp_socket() -> smol::Socket<'static> {
     smol::Socket::new(
         smol::SocketBuffer::new(vec![0; TCP_RX_BUF_LEN]),
@@ -52,21 +80,36 @@ const TCP_INFO_DEFAULT_REORDERING: u32 = 3;
 
 /// A TCP socket that provides POSIX-like APIs.
 pub struct TcpSocket {
+    /// Public high-level socket state gate.
     state: StateLock,
+    /// Handle into the global smoltcp socket set.
     handle: SocketHandle,
+    /// Bound listen endpoint, or an empty endpoint before bind/connect.
     bound_endpoint: Mutex<IpListenEndpoint>,
+    /// Connected peer endpoint once established.
     peer_endpoint: Mutex<Option<IpEndpoint>>,
+    /// Whether `bound_endpoint` is registered in `TCP_BOUND_PORTS`.
     bound_registered: AtomicBool,
 
+    /// Shared socket options and blocking helpers.
     general: GeneralOptions,
+    /// Pending Linux errno-style connection error.
     pending_error: AtomicI32,
+    /// TCP_KEEPIDLE value in seconds.
     keep_idle_secs: AtomicU32,
+    /// TCP_KEEPINTVL value in seconds.
     keep_interval_secs: AtomicU32,
+    /// TCP_KEEPCNT value.
     keep_count: AtomicU32,
+    /// TCP_USER_TIMEOUT value in milliseconds.
     user_timeout_millis: AtomicU32,
+    /// Whether the read half was shut down from the public API.
     rx_closed: AtomicBool,
+    /// Shared RX readiness poll set.
     poll_rx: Arc<PollSet>,
+    /// Shared TX readiness poll set.
     poll_tx: Arc<PollSet>,
+    /// Wakes waiters when the receive side becomes closed.
     poll_rx_closed: PollSet,
 }
 
@@ -95,6 +138,7 @@ impl TcpSocket {
         }
     }
 
+    /// Restricts this socket to one interface for route selection.
     pub fn bind_device(&self, interface_id: InterfaceId) -> AxResult {
         if interface_by_id(interface_id).is_none() {
             return Err(AxError::NoSuchDevice);
@@ -771,6 +815,7 @@ const fn empty_endpoint() -> IpListenEndpoint {
 }
 
 impl TcpSocket {
+    /// Starts an active open and leaves completion to the net-poll worker.
     fn start_connect(&self, remote_addr: SocketAddr) -> AxResult {
         self.state
             .lock(State::Idle)
@@ -857,6 +902,7 @@ impl TcpSocket {
             })
     }
 
+    /// Registers the public TCP bind side table if not already registered.
     fn register_bound_endpoint(&self, endpoint: IpListenEndpoint) -> AxResult {
         if !self.bound_registered.load(Ordering::Acquire) {
             register_tcp_bound(endpoint)?;
@@ -865,6 +911,7 @@ impl TcpSocket {
         Ok(())
     }
 
+    /// Removes the public TCP bind side-table entry, if present.
     fn unregister_bound_endpoint(&self) {
         if self.bound_registered.swap(false, Ordering::AcqRel) {
             unregister_tcp_bound(*self.bound_endpoint.lock());
@@ -875,6 +922,7 @@ impl TcpSocket {
 static TCP_BOUND_PORTS: LazyLock<Mutex<HashMap<u16, Vec<Option<smoltcp::wire::IpAddress>>>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
+/// Registers TCP bind ownership with wildcard/specific address conflicts.
 fn register_tcp_bound(endpoint: IpListenEndpoint) -> AxResult {
     if endpoint.port == 0 {
         return Ok(());
@@ -892,6 +940,7 @@ fn register_tcp_bound(endpoint: IpListenEndpoint) -> AxResult {
     Ok(())
 }
 
+/// Removes one TCP bind registration.
 fn unregister_tcp_bound(endpoint: IpListenEndpoint) {
     if endpoint.port != 0 {
         let mut bound_ports = TCP_BOUND_PORTS.lock();
@@ -906,6 +955,7 @@ fn unregister_tcp_bound(endpoint: IpListenEndpoint) {
     }
 }
 
+/// Returns whether a port is safe for ephemeral TCP allocation.
 fn tcp_port_available(port: u16) -> bool {
     // Ephemeral ports are selected conservatively: avoid any port that has a
     // listener or bound socket on any local address.
@@ -913,6 +963,7 @@ fn tcp_port_available(port: u16) -> bool {
         && !TCP_BOUND_PORTS.lock().contains_key(&port)
 }
 
+/// Returns whether two listen/bind addresses conflict on the same port.
 fn listen_addrs_conflict(
     a: Option<smoltcp::wire::IpAddress>,
     b: Option<smoltcp::wire::IpAddress>,

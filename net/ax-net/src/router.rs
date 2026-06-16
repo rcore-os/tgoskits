@@ -1,3 +1,37 @@
+//! Multi-device router used as the single smoltcp device.
+//!
+//! ax-net exposes one smoltcp `Interface` and one global `SocketSet`, then
+//! places this router underneath as a virtual device that aggregates all
+//! physical and virtual links. From smoltcp's perspective this module is a
+//! single `Device`; internally it performs route lookup, source-address
+//! selection, loopback delivery, and handoff to per-device workers.
+//!
+//! # Why This Exists
+//!
+//! smoltcp sockets are owned by one interface. Creating one interface per NIC
+//! would split socket handle spaces, make wildcard listen sockets hard to keep
+//! coherent, and push routing decisions up into applications. This router keeps
+//! the protocol core single-owner while still allowing multiple interfaces and
+//! route metrics.
+//!
+//! # Data Paths
+//!
+//! - RX workers poll real devices and enqueue `RxPacket`s into a bounded shared
+//!   RX queue. `Router::poll()` drains that queue into the smoltcp-facing packet
+//!   buffer.
+//! - smoltcp TX writes into `tx_buffer`. `Router::dispatch()` parses the IP
+//!   destination, selects a route, and enqueues the packet to the chosen device
+//!   worker.
+//! - Loopback bypasses workers and the shared RX queue: dispatch copies directly
+//!   from TX buffer to RX buffer and asks the protocol core to poll again.
+//!
+//! # Concurrency Rules
+//!
+//! Device workers only touch their `DeviceHandle` queues and concrete device
+//! locks. Route lookup uses the shared route table read lock. Socket and service
+//! locks are owned by the poll path, so worker threads must not call back into
+//! socket operations.
+
 use alloc::{
     boxed::Box,
     collections::VecDeque,
@@ -37,16 +71,24 @@ use crate::{
 
 #[derive(Debug)]
 pub struct Rule {
+    /// Destination prefix matched by this route.
     pub filter: IpCidr,
+    /// Optional gateway. `None` means the destination is directly reachable.
     pub via: Option<IpAddress>,
+    /// Index into `Router::devices`.
     pub dev: usize,
+    /// Stable public interface id.
     pub interface_id: InterfaceId,
+    /// Source address selected when this route is used.
     pub src: IpAddress,
+    /// Route metric; lower values win for equal prefix lengths.
     pub metric: u32,
+    /// Insertion order used as a stable tie-breaker.
     pub order: u64,
 }
 
 impl Rule {
+    /// Creates a route rule before insertion order is assigned.
     pub fn new(
         filter: IpCidr,
         via: Option<IpAddress>,
@@ -82,6 +124,7 @@ type PacketBuffer = smoltcp::storage::PacketBuffer<'static, InterfaceId>;
 // egress interface from the packet destination and route table.
 const TX_INTERFACE_PLACEHOLDER: InterfaceId = InterfaceId::new(0);
 
+/// Bounded FIFO used between the protocol core and per-device workers.
 struct BoundedPacketQueue<T> {
     inner: Mutex<VecDeque<T>>,
     capacity: usize,
@@ -120,12 +163,16 @@ impl<T> BoundedPacketQueue<T> {
 }
 
 struct TxPacket {
+    /// Next-hop IP selected by the route table.
     next_hop: IpAddress,
+    /// Complete IP packet to transmit.
     bytes: QueuedPacket,
 }
 
 struct RxPacket {
+    /// Interface that received the packet.
     interface_id: InterfaceId,
+    /// Complete IP packet received from a device.
     bytes: QueuedPacket,
 }
 
@@ -157,17 +204,27 @@ impl QueuedPacket {
 }
 
 struct RouterQueues {
+    /// Shared RX queue filled by device workers and drained by `Router::poll`.
     rx: Arc<BoundedPacketQueue<RxPacket>>,
 }
 
+/// Runtime handle for one physical or virtual device.
 struct DeviceHandle {
+    /// Stable interface id exposed to the control plane.
     interface_id: InterfaceId,
+    /// Device name used for logs and userspace queries.
     name: String,
+    /// Concrete device implementation.
     inner: Arc<Mutex<Box<dyn Device>>>,
+    /// Shared router RX queue.
     rx_queue: Arc<BoundedPacketQueue<RxPacket>>,
+    /// Per-device TX queue.
     tx_queue: Arc<BoundedPacketQueue<TxPacket>>,
+    /// Wait queue used by the RX worker.
     rx_wake: Arc<WaitQueue>,
+    /// Wait queue used by the TX worker.
     tx_wake: Arc<WaitQueue>,
+    /// Waker registered into the concrete device.
     rx_waker: Waker,
 }
 
@@ -237,18 +294,25 @@ fn now() -> Instant {
 
 #[derive(Debug, Clone, Copy)]
 pub struct RouteDecision {
+    /// Selected router device index.
     pub dev: usize,
+    /// Selected public interface id.
     pub interface_id: InterfaceId,
+    /// Source address that should be used for this route.
     pub source: IpAddress,
+    /// Next hop to pass to the device.
     pub next_hop: IpAddress,
+    /// Metric of the selected route.
     pub metric: u32,
 }
 
+/// Route table sorted by longest prefix, then metric, then insertion order.
 pub struct RouteTable {
     rules: Vec<Rule>,
     next_order: u64,
 }
 impl RouteTable {
+    /// Creates an empty route table.
     pub fn new() -> Self {
         Self {
             rules: Vec::new(),
@@ -256,6 +320,7 @@ impl RouteTable {
         }
     }
 
+    /// Adds one route and re-sorts according to lookup priority.
     pub fn add_rule(&mut self, mut rule: Rule) {
         rule.order = self.next_order;
         self.next_order = self.next_order.saturating_add(1);
@@ -273,6 +338,7 @@ impl RouteTable {
         });
     }
 
+    /// Selects the best route to `dst` whose interface passes `is_usable`.
     pub fn select_route_if(
         &self,
         dst: &IpAddress,
@@ -290,6 +356,7 @@ impl RouteTable {
             })
     }
 
+    /// Selects the best route to `dst` that preserves an already chosen source.
     pub fn select_route_for_source(
         &self,
         dst: &IpAddress,
@@ -307,6 +374,7 @@ impl RouteTable {
             })
     }
 
+    /// Returns public snapshots of IPv4 default routes.
     pub fn default_routes(&self) -> Vec<RouteInfo> {
         self.rules
             .iter()
@@ -320,6 +388,7 @@ impl RouteTable {
             .collect()
     }
 
+    /// Removes IPv4 routes owned by one interface.
     pub fn remove_ipv4_rules_for_interface(&mut self, interface_id: InterfaceId) {
         self.rules.retain(|rule| {
             !matches!(
@@ -329,6 +398,7 @@ impl RouteTable {
         });
     }
 
+    /// Atomically replaces IPv4 routes owned by one interface.
     pub fn replace_ipv4_rules_for_interface(
         &mut self,
         interface_id: InterfaceId,
@@ -346,6 +416,7 @@ impl RouteTable {
 
 pub(crate) type SharedRouteTable = Arc<RwLock<RouteTable>>;
 
+/// Virtual smoltcp device that multiplexes all concrete devices.
 pub struct Router {
     rx_buffer: PacketBuffer,
     tx_buffer: PacketBuffer,
@@ -354,6 +425,7 @@ pub struct Router {
     table: SharedRouteTable,
 }
 impl Router {
+    /// Creates the virtual multi-device endpoint used by smoltcp.
     pub fn new(table: SharedRouteTable) -> Self {
         let rx_buffer = PacketBuffer::new(
             vec![PacketMetadata::EMPTY; SOCKET_BUFFER_SIZE],
@@ -375,20 +447,24 @@ impl Router {
         }
     }
 
+    /// Adds a route to the shared route table.
     pub fn add_rule(&mut self, rule: Rule) {
         self.table.write().add_rule(rule);
     }
 
+    /// Registers a concrete device and returns its router device index.
     pub fn add_device(&mut self, interface_id: InterfaceId, device: Box<dyn Device>) -> usize {
         self.devices
             .push(DeviceHandle::new(interface_id, device, &self.queues));
         self.devices.len() - 1
     }
 
+    /// Returns the public interface id for a router device index.
     pub fn interface_id_for_dev(&self, dev: usize) -> Option<InterfaceId> {
         self.devices.get(dev).map(|device| device.interface_id)
     }
 
+    /// Returns names of all registered devices.
     pub fn device_names(&self) -> Vec<String> {
         self.devices
             .iter()
@@ -396,18 +472,21 @@ impl Router {
             .collect()
     }
 
+    /// Starts TX workers for all non-loopback devices.
     pub fn start_tx_workers(&self) {
         for dev in 0..self.devices.len() {
             self.start_device_tx_worker(dev);
         }
     }
 
+    /// Starts RX workers for all non-loopback devices.
     pub fn start_rx_workers(&self) {
         for dev in 0..self.devices.len() {
             self.start_device_rx_worker(dev);
         }
     }
 
+    /// Starts RX/TX workers for one dynamically registered device.
     pub fn start_device_workers(&self, dev: usize) {
         self.start_device_rx_worker(dev);
         self.start_device_tx_worker(dev);
@@ -439,6 +518,7 @@ impl Router {
         ax_task::spawn_with_name(move || device_rx_worker(device), name);
     }
 
+    /// Applies an IPv4 address/gateway update to one device and its routes.
     pub fn set_ipv4_config(
         &mut self,
         dev: usize,
@@ -453,6 +533,7 @@ impl Router {
             .replace_ipv4_rules_for_interface(interface_id, new_rules);
     }
 
+    /// Builds the connected and default IPv4 route rules for one interface.
     pub(crate) fn ipv4_rules(
         &mut self,
         dev: usize,
@@ -487,12 +568,15 @@ impl Router {
         rules
     }
 
+    /// Moves device-produced packets into the smoltcp RX buffer.
     pub fn poll(
         &mut self,
         _timestamp: Instant,
         sockets: &mut SocketSet<'_>,
         mut snoop: impl FnMut(InterfaceId, &[u8]),
     ) {
+        // Drain worker-produced packets into the smoltcp-facing RX buffer.
+        // smoltcp later consumes this buffer through Device::receive().
         while !self.rx_buffer.is_full() {
             let Some(packet) = self.queues.rx.pop() else {
                 break;
@@ -508,6 +592,7 @@ impl Router {
         }
     }
 
+    /// Sends a control-plane packet on a specific device.
     pub fn send_on_device(
         &mut self,
         dev: usize,
@@ -522,6 +607,7 @@ impl Router {
         device.enqueue_tx(next_hop, packet)
     }
 
+    /// Collects ARP/neighbor entries from all devices.
     pub fn arp_entries(&self, timestamp: Instant) -> Vec<ArpEntry> {
         let mut entries = Vec::new();
         for device in &self.devices {
@@ -530,6 +616,7 @@ impl Router {
         entries
     }
 
+    /// Registers a global device-readiness waker for all devices.
     pub fn register_device_waker(&self, waker: &core::task::Waker) {
         for device in &self.devices {
             device.inner.lock().register_waker(&device.rx_waker);
@@ -537,6 +624,7 @@ impl Router {
         }
     }
 
+    /// Forces all device RX workers to re-check their devices.
     pub fn wake_all_devices(&self) {
         for device in &self.devices {
             device.inner.lock().wake_rx();
@@ -544,6 +632,7 @@ impl Router {
         }
     }
 
+    /// Registers a waker for devices allowed by a socket's binding.
     pub fn register_waker(&self, binding: DeviceBinding, waker: &core::task::Waker) {
         for device in &self.devices {
             if binding.bound_if.is_none_or(|id| id == device.interface_id) {
@@ -553,6 +642,7 @@ impl Router {
         }
     }
 
+    /// Routes smoltcp-emitted TX packets to loopback or device workers.
     pub fn dispatch(&mut self, _timestamp: Instant, sockets: &mut SocketSet<'_>) -> bool {
         let mut poll_next = false;
         while let Ok((_, packet)) = self.tx_buffer.dequeue() {
@@ -583,6 +673,10 @@ impl Router {
 
                         let dev = &self.devices[route.dev];
                         if dev.interface_id == InterfaceId::LOOPBACK {
+                            // Loopback packets are copied directly from the TX
+                            // buffer into the RX buffer. This avoids the
+                            // per-device worker and shared RX queue used by
+                            // real devices.
                             poll_next |= inject_loopback_rx_direct(
                                 &mut self.rx_buffer,
                                 dst_addr,
@@ -637,6 +731,7 @@ impl Router {
     }
 }
 
+/// Injects a loopback packet directly into the smoltcp-facing RX buffer.
 fn inject_loopback_rx_direct(
     rx_buffer: &mut PacketBuffer,
     dst_addr: IpAddress,
@@ -680,6 +775,7 @@ fn inject_loopback_rx(
     true
 }
 
+/// Dedicated worker that drains one device's TX queue.
 fn device_tx_worker(device: Arc<DeviceHandle>) {
     loop {
         if let Some(packet) = device.tx_queue.pop() {
@@ -697,6 +793,7 @@ fn device_tx_worker(device: Arc<DeviceHandle>) {
     }
 }
 
+/// Dedicated worker that polls one device and forwards packets to router RX.
 fn device_rx_worker(device: Arc<DeviceHandle>) {
     let mut rx_buffer = PacketBuffer::new(vec![PacketMetadata::EMPTY; 1], vec![0u8; STANDARD_MTU]);
 
@@ -742,6 +839,7 @@ fn device_rx_worker(device: Arc<DeviceHandle>) {
     }
 }
 
+/// smoltcp TX token backed by the router's temporary TX buffer.
 pub struct TxToken<'a>(&'a mut PacketBuffer);
 
 impl smoltcp::phy::TxToken for TxToken<'_> {
@@ -758,6 +856,7 @@ impl smoltcp::phy::TxToken for TxToken<'_> {
     }
 }
 
+/// Detects passive TCP opens before smoltcp consumes the incoming packet.
 fn snoop_tcp_packet(buf: &[u8], sockets: &mut SocketSet<'_>) {
     let (protocol, src_addr, dst_addr, payload) = match IpVersion::of_packet(buf).unwrap() {
         IpVersion::Ipv4 => {
@@ -790,6 +889,7 @@ fn snoop_tcp_packet(buf: &[u8], sockets: &mut SocketSet<'_>) {
     }
 }
 
+/// smoltcp RX token for one packet queued by the router.
 pub struct RxToken<'a> {
     interface_id: InterfaceId,
     packet: &'a [u8],

@@ -1,3 +1,22 @@
+//! Unix domain socket facade.
+//!
+//! This module provides the shared address namespace and transport dispatch for
+//! Unix stream and datagram sockets. The concrete transports live in
+//! `stream.rs` and `dgram.rs`; this layer handles bind/connect/accept plumbing
+//! and exposes them through the common socket API.
+//!
+//! # Namespace Model
+//!
+//! Abstract names are stored in an in-memory map owned by ax-net. Path names are
+//! delegated to an optional filesystem namespace provider so the socket layer
+//! does not depend on a concrete VFS implementation.
+//!
+//! # Transport Split
+//!
+//! `UnixSocket` owns local/remote address state and a protocol-erased
+//! `Transport`. Stream and datagram transports implement the actual byte-stream
+//! or message semantics, including cmsg handling and poll readiness.
+
 pub(crate) mod dgram;
 pub mod namespace;
 pub(crate) mod stream;
@@ -92,13 +111,16 @@ impl Pollable for Transport {
 /// Holds binding state for stream and datagram transports at a Unix address.
 #[derive(Default)]
 pub struct BindSlot {
+    /// Stream listener bound at this address.
     stream: Mutex<Option<stream::Bind>>,
+    /// Datagram endpoint bound at this address.
     dgram: Mutex<Option<dgram::Bind>>,
 }
 
 static ABSTRACT_BINDS: LazyLock<Mutex<HashMap<Arc<[u8]>, BindSlot>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
+/// Resolves an existing bind slot and runs `f` with it.
 pub(crate) fn with_slot<R>(
     addr: &UnixSocketAddr,
     f: impl FnOnce(&BindSlot) -> AxResult<R>,
@@ -119,6 +141,7 @@ pub(crate) fn with_slot<R>(
         }),
     }
 }
+/// Resolves or creates a bind slot and runs `f` with it.
 fn with_slot_or_insert<R>(
     addr: &UnixSocketAddr,
     f: impl FnOnce(&BindSlot) -> AxResult<R>,
@@ -138,8 +161,11 @@ fn with_slot_or_insert<R>(
 
 /// A Unix domain socket.
 pub struct UnixSocket {
+    /// Concrete stream or datagram transport.
     transport: Transport,
+    /// Public local Unix address.
     local_addr: Mutex<UnixSocketAddr>,
+    /// Public remote Unix address.
     remote_addr: Mutex<UnixSocketAddr>,
 }
 impl UnixSocket {

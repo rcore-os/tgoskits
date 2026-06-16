@@ -1,3 +1,17 @@
+//! Socket option data structures and dispatch traits.
+//!
+//! This module defines Linux-compatible option payloads plus the `Configurable`
+//! trait used by each socket implementation to handle getsockopt/setsockopt.
+//! The goal is to keep the syscall layer protocol-neutral: it builds one option
+//! request enum, then the concrete socket decides which values it supports.
+//!
+//! # Compatibility Boundary
+//!
+//! Option structs model Linux-visible ABI state, but not every field maps to a
+//! smoltcp feature. Unsupported or synthetic fields should be filled
+//! conservatively in the socket implementation, with defaults documented near
+//! the protocol that reports them.
+
 use alloc::boxed::Box;
 use core::time::Duration;
 

@@ -1,8 +1,18 @@
-//! 最简 IPv4 DHCP 服务器(用于 SoftAP 模式给单个客户端分配地址)。
+//! Minimal IPv4 DHCP server for SoftAP-style deployments.
 //!
-//! 不依赖 smoltcp 的 DHCP socket,与现有 DHCP 客户端一样手工解析/封装
-//! `DhcpRepr` → `UdpRepr` → `Ipv4Repr`。处理 Discover→Offer、Request→Ack。
-//! 仅支持单客户端、单地址租约,够 AP 验证 ping/ssh 用。
+//! The server is intentionally small: it supports one interface, one client
+//! lease, and the Discover/Offer plus Request/Ack exchange needed to bring up a
+//! directly attached peer. It does not create a smoltcp UDP socket; instead it
+//! parses and emits `DhcpRepr`, `UdpRepr`, and `Ipv4Repr` directly in the
+//! service data path.
+//!
+//! # Scope
+//!
+//! This is a control-plane helper, not a general-purpose DHCP daemon. It keeps
+//! no lease database, performs no conflict detection, and only replies to DHCP
+//! packets arriving on the configured interface. That makes it suitable for
+//! embedded AP validation such as ping or ssh, while keeping the normal socket
+//! path free of DHCP server-specific state.
 
 use alloc::{vec, vec::Vec};
 
@@ -16,26 +26,27 @@ use smoltcp::{
 
 use crate::config::InterfaceId;
 
-/// 租约时长(秒)
+/// Lease duration advertised in Offer/Ack replies, in seconds.
 const LEASE_SECS: u32 = 86400;
 
-/// DHCP 服务器配置/状态。
+/// Minimal DHCP server configuration and one-client lease state.
 pub struct DhcpServer {
-    /// 服务器自身 IP(同时作为 gateway / server identifier)
+    /// Server address, also advertised as router and server identifier.
     pub server_ip: Ipv4Address,
-    /// 分配给客户端的 IP
+    /// Single IPv4 address offered to the client.
     pub client_ip: Ipv4Address,
-    /// 子网掩码
+    /// Subnet mask advertised to the client.
     pub subnet_mask: Ipv4Address,
-    /// 设备索引(回复从该设备广播出去)
+    /// Router device index used when the service broadcasts replies.
     pub dev: usize,
-    /// DHCP 请求必须来自这个接口。
+    /// Interface that is allowed to feed requests into this server.
     interface_id: InterfaceId,
-    /// 已分配给哪个 MAC(简单单客户端记录)
+    /// MAC address that accepted the single lease, if any.
     leased_to: Option<EthernetAddress>,
 }
 
 impl DhcpServer {
+    /// Creates a DHCP helper bound to one router device and interface.
     pub fn new(
         dev: usize,
         interface_id: InterfaceId,
@@ -53,8 +64,10 @@ impl DhcpServer {
         }
     }
 
-    /// 解析一个入站以太网负载(IPv4 包)。若是发给本服务器的 DHCP
-    /// Discover/Request,返回要广播回去的完整 IPv4 应答包字节。
+    /// Processes one inbound IPv4 packet and returns a broadcast DHCP reply.
+    ///
+    /// Non-DHCP traffic, unsupported DHCP message types, or packets from other
+    /// interfaces are ignored by returning `None`.
     pub fn process_packet(&mut self, interface_id: InterfaceId, packet: &[u8]) -> Option<Vec<u8>> {
         if interface_id != self.interface_id {
             return None;
@@ -74,7 +87,7 @@ impl DhcpServer {
             &ChecksumCapabilities::default(),
         )
         .ok()?;
-        // 客户端 → 服务器:src=68, dst=67
+        // Client -> server uses UDP src=68, dst=67.
         if udp_repr.src_port != DHCP_CLIENT_PORT || udp_repr.dst_port != DHCP_SERVER_PORT {
             return None;
         }
@@ -107,7 +120,7 @@ impl DhcpServer {
         Some(self.build_reply(client_mac, xid, reply_type))
     }
 
-    /// 构造 Offer/Ack 应答(完整 IPv4 包,广播)。
+    /// Builds a complete IPv4 packet containing a DHCP Offer/Ack reply.
     fn build_reply(
         &self,
         client_mac: EthernetAddress,

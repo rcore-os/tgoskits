@@ -1,3 +1,30 @@
+//! TCP listen table and accept backlog management.
+//!
+//! smoltcp sockets are connection endpoints, so ax-net keeps a listener table
+//! that maps bound listen endpoints to pending child sockets. Incoming TCP
+//! packets create per-connection smoltcp sockets, queue them for accept(), and
+//! wake the listener when a child becomes ready.
+//!
+//! # Why Not One smoltcp Listener Socket
+//!
+//! The public TCP listen socket is a stable userspace object, but smoltcp needs
+//! an actual TCP socket to advance each handshake. This table bridges that
+//! mismatch: the listener owns an accept queue, while each pending flow owns a
+//! child smoltcp socket that can move through SYN-RECEIVED to ESTABLISHED.
+//!
+//! # Address Semantics
+//!
+//! Bind conflicts follow Linux-style wildcard behavior. A wildcard listener
+//! conflicts with every specific address on the same port, while two distinct
+//! specific addresses may share a port. Incoming packets are matched by port and
+//! local destination address before a child is created.
+//!
+//! # Lock Ordering
+//!
+//! Callers that inspect child socket state pass a locked `SocketSet` into this
+//! module. The required order is `SOCKET_SET -> listen-table bucket`; this file
+//! must never acquire the outer service lock.
+
 use alloc::{boxed::Box, collections::VecDeque, sync::Arc, vec, vec::Vec};
 use core::task::Waker;
 
@@ -18,16 +45,24 @@ use crate::{
 const PORT_NUM: usize = 65536;
 
 struct ListenTableEntryInner {
+    /// Local endpoint accepted by this listener.
     listen_endpoint: IpListenEndpoint,
+    /// Maximum pending child sockets.
     backlog: usize,
+    /// Pending smoltcp child sockets waiting for accept().
     syn_queue: VecDeque<PendingTcp>,
+    /// Wakes accept/poll waiters when child readiness changes.
     accept_poll: Arc<PollSet>,
 }
 
+/// Child TCP socket returned by accept().
 #[derive(Clone, Copy)]
 pub(crate) struct AcceptedTcp {
+    /// smoltcp child socket handle.
     pub(crate) handle: SocketHandle,
+    /// Local endpoint observed for this connection.
     pub(crate) local_endpoint: IpEndpoint,
+    /// Remote endpoint observed for this connection.
     pub(crate) remote_endpoint: IpEndpoint,
 }
 
@@ -37,6 +72,7 @@ struct PendingTcp {
 }
 
 impl ListenTableEntryInner {
+    /// Creates a listener entry and clamps backlog to the global limit.
     pub fn new(listen_endpoint: IpListenEndpoint, backlog: usize) -> Self {
         let backlog = backlog.clamp(1, LISTEN_QUEUE_SIZE);
         Self {
@@ -47,6 +83,7 @@ impl ListenTableEntryInner {
         }
     }
 
+    /// Returns whether an incoming packet's destination matches this listener.
     fn can_accept_endpoint(&self, dst: IpEndpoint) -> bool {
         if self.listen_endpoint.port != dst.port {
             return false;
@@ -57,6 +94,7 @@ impl ListenTableEntryInner {
         }
     }
 
+    /// Consumes the entry and returns all queued child handles for cleanup.
     fn into_handles(self) -> Vec<SocketHandle> {
         self.syn_queue
             .into_iter()
@@ -64,6 +102,7 @@ impl ListenTableEntryInner {
             .collect()
     }
 
+    /// Returns whether a child socket for this endpoint pair already exists.
     fn has_pending(&self, src: IpEndpoint, dst: IpEndpoint) -> bool {
         self.syn_queue.iter().any(|pending| {
             pending.accepted.local_endpoint == dst && pending.accepted.remote_endpoint == src
@@ -73,11 +112,13 @@ impl ListenTableEntryInner {
 
 type ListenTableEntry = Arc<Mutex<Vec<ListenTableEntryInner>>>;
 
+/// Per-port table of active TCP listeners.
 pub struct ListenTable {
     tcp: Box<[ListenTableEntry]>,
 }
 
 impl ListenTable {
+    /// Creates an empty listen table indexed by TCP port.
     pub fn new() -> Self {
         let tcp = unsafe {
             let mut buf = Box::new_uninit_slice(PORT_NUM);
@@ -89,6 +130,7 @@ impl ListenTable {
         Self { tcp }
     }
 
+    /// Checks whether a listen endpoint can be registered.
     pub fn can_listen(&self, listen_endpoint: IpListenEndpoint) -> bool {
         self.tcp[listen_endpoint.port as usize]
             .lock()
@@ -96,6 +138,7 @@ impl ListenTable {
             .all(|entry| !listen_addrs_conflict(entry.listen_endpoint.addr, listen_endpoint.addr))
     }
 
+    /// Registers a listening endpoint and backlog.
     pub fn listen(&self, listen_endpoint: IpListenEndpoint, backlog: usize) -> AxResult {
         let port = listen_endpoint.port;
         assert_ne!(port, 0);
@@ -111,6 +154,7 @@ impl ListenTable {
         Ok(())
     }
 
+    /// Removes a listener and destroys any unaccepted child sockets.
     pub fn unlisten(&self, listen_endpoint: IpListenEndpoint) {
         debug!("TCP socket unlisten on {}", listen_endpoint);
         let handles = {
@@ -134,6 +178,7 @@ impl ListenTable {
 
     // Callers pass the locked SocketSet to keep the global order:
     // SERVICE -> SOCKET_SET -> listen entry.
+    /// Returns whether accept() can return a ready child socket.
     pub fn can_accept(
         &self,
         listen_endpoint: IpListenEndpoint,
@@ -156,6 +201,7 @@ impl ListenTable {
         }
     }
 
+    /// Removes and returns one acceptable child socket from the listen queue.
     pub fn accept(
         &self,
         listen_endpoint: IpListenEndpoint,
@@ -195,6 +241,7 @@ impl ListenTable {
         Err(AxError::WouldBlock)
     }
 
+    /// Registers a waker for listener readiness and queued child progress.
     pub fn register_accept_waker(
         &self,
         listen_endpoint: IpListenEndpoint,
@@ -217,6 +264,7 @@ impl ListenTable {
         }
     }
 
+    /// Snoop hook called before smoltcp processes a potential passive open.
     pub fn incoming_tcp_packet(
         &self,
         src: IpEndpoint,
@@ -238,6 +286,9 @@ impl ListenTable {
                 return;
             }
 
+            // The listening socket remains a userspace-facing object. Each new
+            // flow gets a child smoltcp socket so the protocol core can advance
+            // the handshake independently before accept() returns it.
             let mut socket = smoltcp::socket::tcp::Socket::new(
                 SocketBuffer::new(vec![0; TCP_RX_BUF_LEN]),
                 SocketBuffer::new(vec![0; TCP_TX_BUF_LEN]),

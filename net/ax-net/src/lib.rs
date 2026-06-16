@@ -1,17 +1,33 @@
 //! Unified network stack for TGOSKits systems.
 //!
-//! It provides TCP, UDP, raw IPv4/ICMP, Unix domain socket, optional vsock,
-//! DNS, DHCP, and readiness primitives on top of [smoltcp] and shared device
-//! interfaces.
+//! ax-net provides the socket-facing API used by kernels and syscall layers,
+//! while delegating TCP/IP protocol mechanics to smoltcp. The crate exposes
+//! TCP, UDP, raw IPv4/IPv6 sockets, Unix domain sockets, optional vsock, DNS,
+//! DHCP helpers, readiness polling, and interface/control-plane queries.
 //!
-//! # Organization
+//! # Architecture
 //!
-//! - [`tcp::TcpSocket`]: TCP socket implementation.
-//! - [`udp::UdpSocket`]: UDP socket implementation.
-//! - [`raw`]: raw socket support.
-//! - [`unix`]: Unix domain socket support.
+//! The stack intentionally uses one smoltcp `Interface` and one global
+//! `SocketSet`. Multiple physical or virtual devices are aggregated below that
+//! protocol core by `router::Router`, which acts as a multi-device smoltcp
+//! `Device`. This keeps socket ownership, port tables, listen queues, and
+//! routing decisions centralized instead of duplicating socket state per NIC.
 //!
-//! [smoltcp]: https://github.com/smoltcp-rs/smoltcp
+//! # Polling Model
+//!
+//! Protocol progress is driven by the dedicated net-poll worker. Socket methods
+//! request progress with `request_poll()` and then rely on poll/waker readiness;
+//! they must not synchronously drive the whole protocol stack from application
+//! hot paths. This preserves the single-owner smoltcp model and avoids lock
+//! re-entry between socket operations and interface polling.
+//!
+//! # Main Modules
+//!
+//! - `service`: owns the smoltcp interface, net-poll flow, and control plane.
+//! - `router`: aggregates devices, route lookup, loopback, and packet queues.
+//! - `socket`, `tcp`, `udp`, `raw`: POSIX-like IP socket surface.
+//! - `listen_table`, `orphan`, `wrapper`: side tables around smoltcp sockets.
+//! - `unix` and `vsock`: local transports outside the smoltcp IP path.
 
 #![no_std]
 
@@ -420,26 +436,32 @@ pub fn request_poll() {
     NET_POLL_WAKE.notify_one(true);
 }
 
+/// Returns ARP/neighbor entries collected from all devices.
 pub fn arp_entries() -> Vec<ArpEntry> {
     get_service().arp_entries()
 }
 
+/// Returns a snapshot of all configured network interfaces.
 pub fn interfaces() -> Vec<InterfaceInfo> {
     get_control().interfaces()
 }
 
+/// Looks up an interface snapshot by name.
 pub fn interface_by_name(name: &str) -> Option<InterfaceInfo> {
     get_control().interface_by_name(name)
 }
 
+/// Looks up an interface snapshot by stable interface id.
 pub fn interface_by_id(id: InterfaceId) -> Option<InterfaceInfo> {
     get_control().interface_by_id(id)
 }
 
+/// Returns the IPv4 configuration for an interface by name.
 pub fn ipv4_config(name: &str) -> Option<Ipv4InterfaceConfig> {
     get_control().ipv4_config(name)
 }
 
+/// Returns public snapshots of configured IPv4 default routes.
 pub fn default_routes() -> Vec<RouteInfo> {
     get_control().default_routes()
 }
@@ -449,10 +471,15 @@ pub fn default_routes() -> Vec<RouteInfo> {
 /// This is used by drivers that appear after the normal device-probe phase,
 /// for example Wi-Fi AP mode devices.
 pub struct NetConfig {
+    /// Name assigned to the dynamically registered interface.
     pub name: String,
+    /// Static IPv4 address.
     pub ip: [u8; 4],
+    /// CIDR prefix length.
     pub prefix_len: u8,
+    /// If set, enables the built-in one-client DHCP server with this client IP.
     pub dhcp_server_client_ip: Option<[u8; 4]>,
+    /// Whether this device is woken through the out-of-band poll task.
     pub dedicated_poll: bool,
 }
 
@@ -495,6 +522,7 @@ pub fn notify_oob_rx() {
     OOB_RX_SIGNAL.wake();
 }
 
+/// Convenience helper for retrieving `eth0` IPv4 configuration.
 pub fn eth0_ipv4_config() -> Option<Ipv4InterfaceConfig> {
     get_service().eth0_ipv4_config()
 }
@@ -577,10 +605,12 @@ pub fn dns_servers() -> Vec<Ipv4Address> {
 
 const DNS_DEFAULT_TIMEOUT: Duration = Duration::from_secs(5);
 
+/// Resolves an A record using the default DNS timeout.
 pub fn dns_query(name: &str) -> AxResult<Vec<IpAddr>> {
     dns_query_timeout(name, DNS_DEFAULT_TIMEOUT)
 }
 
+/// Resolves an A record using the configured DNS servers and timeout.
 pub fn dns_query_timeout(name: &str, timeout: Duration) -> AxResult<Vec<IpAddr>> {
     let servers = dns_servers();
     if servers.is_empty() {

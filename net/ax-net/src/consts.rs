@@ -1,3 +1,18 @@
+//! Shared buffer sizes and queue limits.
+//!
+//! These constants define ax-net's default memory budget for protocol sockets,
+//! smoltcp packet buffers, listen queues, pending ARP packets, and per-device
+//! worker queues. They are intentionally centralized so embedded targets can
+//! audit memory growth without chasing per-protocol magic numbers.
+//!
+//! # Sizing Policy
+//!
+//! The values favor predictable bounded memory over unbounded allocation. Socket
+//! buffers are large enough for common POSIX workloads, while router/device
+//! queues absorb short scheduling bursts without turning every packet path into
+//! a heap allocation site. If a value is raised, consider the total cost across
+//! all sockets or all devices, not only the cost of one queue.
+
 pub const STANDARD_MTU: usize = 1500;
 
 pub const TCP_RX_BUF_LEN: usize = 64 * 1024;

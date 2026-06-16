@@ -1,3 +1,29 @@
+//! UDP socket implementation.
+//!
+//! UDP sockets wrap smoltcp datagram sockets with POSIX-style bind/connect,
+//! per-address port ownership, connected-peer filtering, route-aware source
+//! selection, and MSG_MORE corking for datagram coalescing.
+//!
+//! # Bind And Routing Semantics
+//!
+//! Public binds are checked through `SocketSetWrapper` so wildcard and specific
+//! address conflicts match Linux expectations. When a socket is connected or
+//! sends to a destination, the control plane selects the source address and
+//! device binding from the route table unless the socket was explicitly bound
+//! to a concrete local address/interface.
+//!
+//! # Datagram Semantics
+//!
+//! smoltcp stores UDP payload plus metadata, while the POSIX surface exposes
+//! per-call source addresses, `MSG_TRUNC`, `MSG_PEEK`, `MSG_DONTWAIT`, and
+//! `MSG_MORE`. This module is responsible for preserving message boundaries and
+//! for filtering connected sockets to their expected peer.
+//!
+//! # Polling
+//!
+//! UDP send/recv operations request the shared net-poll worker after socket
+//! state changes. They do not run the interface poll loop directly.
+
 use alloc::{vec, vec::Vec};
 use core::{
     net::{IpAddr, Ipv4Addr, SocketAddr},
@@ -37,6 +63,7 @@ struct CorkState {
     source: IpAddress,
 }
 
+/// Allocates a smoltcp UDP socket with ax-net's default packet buffers.
 pub(crate) fn new_udp_socket() -> smol::Socket<'static> {
     // TODO(mivik): buffer size
     smol::Socket::new(
@@ -47,10 +74,14 @@ pub(crate) fn new_udp_socket() -> smol::Socket<'static> {
 
 /// A UDP socket that provides POSIX-like APIs.
 pub struct UdpSocket {
+    /// Handle into the global smoltcp socket set.
     handle: SocketHandle,
+    /// Bound local endpoint as exposed by POSIX socket calls.
     local_addr: RwLock<Option<IpEndpoint>>,
+    /// Connected remote endpoint plus selected source address.
     peer_addr: RwLock<Option<(IpEndpoint, IpAddress)>>,
 
+    /// Shared socket options and blocking helpers.
     general: GeneralOptions,
     /// MSG_MORE corking state: captures endpoint at first MSG_MORE
     /// so the merged datagram always goes to the correct peer.
@@ -74,6 +105,7 @@ impl UdpSocket {
         }
     }
 
+    /// Restricts this socket to one interface for route selection.
     pub fn bind_device(&self, interface_id: InterfaceId) -> AxResult {
         if interface_by_id(interface_id).is_none() {
             return Err(AxError::NoSuchDevice);
@@ -84,10 +116,12 @@ impl UdpSocket {
         Ok(())
     }
 
+    /// Borrows the underlying smoltcp UDP socket by handle.
     fn with_smol_socket<R>(&self, f: impl FnOnce(&mut smol::Socket) -> R) -> R {
         SOCKET_SET.with_socket_mut::<smol::Socket, _, _>(self.handle, f)
     }
 
+    /// Returns the connected peer and cached source address.
     fn remote_endpoint(&self) -> AxResult<(IpEndpoint, IpAddress)> {
         match self.peer_addr.try_read() {
             Some(addr) => addr.ok_or(AxError::NotConnected),
@@ -95,6 +129,7 @@ impl UdpSocket {
         }
     }
 
+    /// Selects the source address used to reach `remote`.
     fn source_for_remote(&self, remote: &IpAddress) -> AxResult<IpAddress> {
         Ok(get_control()
             .select_route_with_binding(remote, self.general.device_binding())?
@@ -144,6 +179,7 @@ impl Configurable for UdpSocket {
     }
 }
 impl SocketOps for UdpSocket {
+    /// Binds the UDP socket and records public port ownership.
     fn bind(&self, local_addr: SocketAddrEx) -> AxResult {
         let mut local_addr = local_addr.into_ip()?;
         let mut guard = self.local_addr.write();
@@ -184,6 +220,7 @@ impl SocketOps for UdpSocket {
         Ok(())
     }
 
+    /// Stores a default peer and source address for connected UDP semantics.
     fn connect(&self, remote_addr: SocketAddrEx) -> AxResult {
         let remote_addr = remote_addr.into_ip()?;
         let mut guard = self.peer_addr.write();
@@ -225,6 +262,7 @@ impl SocketOps for UdpSocket {
         Ok(())
     }
 
+    /// Sends one datagram, or appends to/flushed a MSG_MORE corked datagram.
     fn send(&self, mut src: impl Read + IoBuf, options: SendOptions) -> AxResult<usize> {
         // MSG_OOB is only valid on stream sockets (SOCK_STREAM), not DGRAM.
         if options.flags.contains(SendFlags::OOB) {
@@ -404,6 +442,7 @@ impl SocketOps for UdpSocket {
         })
     }
 
+    /// Receives one datagram while honoring peer filters and recv flags.
     fn recv(&self, mut dst: impl Write, mut options: RecvOptions) -> AxResult<usize> {
         enum ExpectedRemote<'a> {
             Any(&'a mut SocketAddrEx),

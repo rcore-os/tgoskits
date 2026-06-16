@@ -3,6 +3,25 @@
 // See LICENSES for license details.
 
 //! Raw IP socket implementation for ICMP-style traffic.
+//!
+//! Raw sockets expose packet-oriented access above IP and below TCP/UDP. They
+//! are primarily used by ICMP/ICMPv6 tests and tools, but still share the same
+//! global smoltcp `SocketSet`, route selection, device binding, and readiness
+//! model as UDP/TCP sockets.
+//!
+//! # Packet Format
+//!
+//! smoltcp raw sockets receive complete IP packets. The public raw socket API
+//! returns protocol payloads for normal IPv4/IPv6 raw sockets while preserving
+//! enough packet context for peer filtering and `MSG_PEEK`. Deferred packets
+//! must therefore be stored in a consistent wire-packet form until delivery is
+//! decided.
+//!
+//! # Loopback And Peer Filtering
+//!
+//! Loopback ICMP-style traffic may be delivered through a local fast path. For
+//! connected raw sockets, packets from other peers can be skipped or deferred
+//! without corrupting the smoltcp receive queue format.
 
 use alloc::vec;
 use core::{
@@ -34,6 +53,7 @@ use crate::{
     request_poll,
 };
 
+/// Allocates a smoltcp raw socket for one IP version and protocol.
 pub(crate) fn new_raw_socket(
     ip_version: IpVersion,
     ip_protocol: IpProtocol,
@@ -48,15 +68,25 @@ pub(crate) fn new_raw_socket(
 
 /// A raw IP socket used for ICMP and ICMPv6 traffic.
 pub struct RawSocket {
+    /// Handle into the global smoltcp socket set.
     handle: SocketHandle,
+    /// IP version accepted by this socket.
     ip_version: IpVersion,
+    /// Optional local address filter.
     local_addr: RwLock<Option<IpAddress>>,
+    /// Optional connected peer filter.
     peer_addr: RwLock<Option<IpAddress>>,
+    /// Locally generated loopback packet waiting to be received.
     loopback_rx: Mutex<Option<(IpAddress, vec::Vec<u8>)>>,
+    /// Non-peer packet held after filtering without corrupting wire format.
     deferred_rx: Mutex<Option<(IpAddress, vec::Vec<u8>)>>,
+    /// Optional outgoing TTL/hop-limit override.
     ttl: RwLock<Option<u8>>,
+    /// Public read-half closed state.
     rx_closed: AtomicBool,
+    /// Public write-half closed state.
     tx_closed: AtomicBool,
+    /// Shared socket options and blocking helpers.
     general: GeneralOptions,
 }
 
@@ -80,6 +110,7 @@ impl RawSocket {
         }
     }
 
+    /// Restricts this socket to one interface for route selection.
     pub fn bind_device(&self, interface_id: InterfaceId) -> AxResult {
         if interface_by_id(interface_id).is_none() {
             return Err(AxError::NoSuchDevice);
@@ -90,10 +121,12 @@ impl RawSocket {
         Ok(())
     }
 
+    /// Borrows the underlying smoltcp raw socket by handle.
     fn with_smol_socket<R>(&self, f: impl FnOnce(&mut smol::Socket) -> R) -> R {
         SOCKET_SET.with_socket_mut::<smol::Socket, _, _>(self.handle, f)
     }
 
+    /// Validates that an address belongs to this socket's IP version.
     fn check_ip_version(&self, addr: IpAddress) -> AxResult<IpAddress> {
         match (self.ip_version, addr) {
             (IpVersion::Ipv4, IpAddress::Ipv4(_)) | (IpVersion::Ipv6, IpAddress::Ipv6(_)) => {
@@ -103,6 +136,7 @@ impl RawSocket {
         }
     }
 
+    /// Resolves the per-call or connected remote address.
     fn remote_address(&self, options: &SendOptions) -> AxResult<IpAddress> {
         match &options.to {
             Some(addr) => {
@@ -113,6 +147,7 @@ impl RawSocket {
         }
     }
 
+    /// Selects the local source address used for an outgoing raw packet.
     fn local_address_for(&self, remote: IpAddress) -> AxResult<IpAddress> {
         if let Some(local) = *self.local_addr.read() {
             return Ok(local);
@@ -125,6 +160,7 @@ impl RawSocket {
             .source)
     }
 
+    /// Parses a complete IP packet and returns its source plus deliverable bytes.
     fn parse_ip_packet<'a>(&self, packet: &'a [u8]) -> AxResult<(IpAddress, &'a [u8])> {
         match self.ip_version {
             IpVersion::Ipv4 => {
@@ -140,10 +176,12 @@ impl RawSocket {
         }
     }
 
+    /// Returns whether a received source passes the connected-peer filter.
     fn source_matches_peer(&self, source: IpAddress) -> bool {
         self.peer_addr.read().is_none_or(|peer| source == peer)
     }
 
+    /// Delivers one parsed raw packet to the caller's receive buffer.
     fn deliver_packet(
         &self,
         source: IpAddress,

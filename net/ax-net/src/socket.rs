@@ -1,3 +1,23 @@
+//! Public socket facade.
+//!
+//! This module defines the protocol-independent socket API used by syscall
+//! layers: common send/recv flags, extended address families, shutdown modes,
+//! and the `SocketOps` trait implemented by TCP, UDP, raw, Unix, and vsock
+//! transports.
+//!
+//! # Compatibility Boundary
+//!
+//! The syscall layer should not need to know whether a socket is backed by
+//! smoltcp, an in-kernel Unix transport, or a vsock connection manager. It
+//! passes `SocketAddrEx`, `SendOptions`, and `RecvOptions` into this facade, and
+//! each concrete transport maps them onto its own semantics.
+//!
+//! # Design Rule
+//!
+//! This module contains dispatch and common ABI shapes only. Protocol behavior
+//! such as TCP accept queues, UDP corking, raw packet format, or Unix ancillary
+//! data delivery belongs in the corresponding transport module.
+
 use alloc::{boxed::Box, vec::Vec};
 use core::{
     any::Any,

@@ -1,3 +1,28 @@
+//! Shared smoltcp socket-set wrapper.
+//!
+//! ax-net keeps one global smoltcp `SocketSet` behind this wrapper. The extra
+//! UDP bind table fills the per-address bind semantics that smoltcp itself does
+//! not track for all POSIX cases.
+//!
+//! # Ownership
+//!
+//! All TCP, UDP, and raw smoltcp socket handles live in the same handle space.
+//! This is what allows the service poller, router snooping path, listen table,
+//! and orphan reaper to coordinate without per-interface socket duplication.
+//!
+//! # UDP Side Table
+//!
+//! smoltcp validates whether a UDP socket can bind, but ax-net needs
+//! Linux-style wildcard/specific-address conflict checks across sockets. The
+//! `udp_binds` table records only successful public binds and is cleaned when a
+//! socket is removed.
+//!
+//! # Lock Boundary
+//!
+//! The wrapper lock protects smoltcp socket state. Callers should keep the lock
+//! scoped to direct socket access and avoid waking tasks or acquiring the outer
+//! service lock while it is held.
+
 use alloc::vec;
 
 use ax_errno::{AxError, AxResult};
@@ -11,16 +36,21 @@ use smoltcp::{
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 struct UdpBindKey {
+    /// `None` represents a wildcard bind.
     addr: Option<IpAddress>,
     port: u16,
 }
 
+/// Global socket container plus protocol-specific side tables.
 pub(crate) struct SocketSetWrapper<'a> {
+    /// The shared smoltcp socket set.
     pub inner: Mutex<SocketSet<'a>>,
+    /// UDP bind ownership tracked with Linux-style wildcard conflicts.
     udp_binds: Mutex<HashMap<UdpBindKey, SocketHandle>>,
 }
 
 impl<'a> SocketSetWrapper<'a> {
+    /// Creates an empty wrapper around smoltcp's socket set.
     pub fn new() -> Self {
         Self {
             inner: Mutex::new(SocketSet::new(vec![])),
@@ -28,12 +58,14 @@ impl<'a> SocketSetWrapper<'a> {
         }
     }
 
+    /// Adds a smoltcp socket and returns its global handle.
     pub fn add<T: AnySocket<'a>>(&self, socket: T) -> SocketHandle {
         let handle = self.inner.lock().add(socket);
         debug!("socket {}: created", handle);
         handle
     }
 
+    /// Runs a closure with mutable access to one smoltcp socket.
     pub fn with_socket_mut<T: AnySocket<'a>, R, F>(&self, handle: SocketHandle, f: F) -> R
     where
         F: FnOnce(&mut T) -> R,
@@ -43,6 +75,7 @@ impl<'a> SocketSetWrapper<'a> {
         f(socket)
     }
 
+    /// Records a successful public UDP bind after checking address conflicts.
     pub fn udp_bind(&self, handle: SocketHandle, addr: IpAddress, port: u16) -> AxResult {
         if port == 0 {
             return Ok(());
@@ -60,6 +93,7 @@ impl<'a> SocketSetWrapper<'a> {
         Ok(())
     }
 
+    /// Returns whether a UDP port can be used for an ephemeral bind.
     pub fn udp_port_available(&self, addr: IpAddress, port: u16) -> bool {
         if port == 0 {
             return true;
@@ -71,12 +105,14 @@ impl<'a> SocketSetWrapper<'a> {
         udp_bind_available(&self.udp_binds.lock(), key)
     }
 
+    /// Removes any UDP bind table entries owned by `handle`.
     pub fn udp_unbind(&self, handle: SocketHandle) {
         self.udp_binds
             .lock()
             .retain(|_, bound_handle| *bound_handle != handle);
     }
 
+    /// Removes a socket and all wrapper-maintained side-table state.
     pub fn remove(&self, handle: SocketHandle) {
         self.udp_unbind(handle);
         self.inner.lock().remove(handle);
@@ -84,6 +120,7 @@ impl<'a> SocketSetWrapper<'a> {
     }
 }
 
+/// Implements UDP wildcard/specific-address bind conflict rules.
 fn udp_bind_available(binds: &HashMap<UdpBindKey, SocketHandle>, key: UdpBindKey) -> bool {
     let wildcard = UdpBindKey {
         addr: None,
