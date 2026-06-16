@@ -321,10 +321,15 @@ impl SerialBackend {
     }
 
     fn sync_irq_state(&self) -> SerialEvent {
-        self.irq_handler
+        let status = self
+            .irq_handler
             .as_ref()
             .map(|handler| handler.handle_irq())
-            .unwrap_or_else(SerialEvent::empty)
+            .unwrap_or_else(SerialEvent::empty);
+        if status.intersects(SerialEvent::RX_READY | SerialEvent::RX_ERROR | SerialEvent::OVERRUN) {
+            self.notify_rx_drain();
+        }
+        status
     }
 
     fn notify_rx_drain(&self) {
@@ -469,9 +474,14 @@ impl TtyRead for SerialReader {
 
 impl TtyWrite for SerialWriter {
     fn write(&self, buf: &[u8]) {
+        if buf.is_empty() {
+            return;
+        }
+
         let mut tx = self.backend.tx.lock();
         let mut written = 0;
         while written < buf.len() {
+            self.backend.control.lock().enable_tx_interrupts();
             self.backend.sync_irq_state();
             let next = tx.try_write(&buf[written..]);
             written += next;
@@ -481,6 +491,7 @@ impl TtyWrite for SerialWriter {
                 tx = self.backend.tx.lock();
             }
         }
+        self.backend.control.lock().disable_tx_interrupts();
     }
 
     fn termios_changed(&self, old: &Termios2, new: &Termios2) {

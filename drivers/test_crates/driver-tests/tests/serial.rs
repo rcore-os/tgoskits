@@ -84,9 +84,12 @@ mod tests {
 
         let mut tx = serial.take_tx().expect("missing tx");
         let mut rx = serial.take_rx().expect("missing rx");
-        clean_rx(&mut rx);
+        let irq_handler = serial.take_irq_handler().expect("missing IRQ handler");
+        serial.set_irq_mask(InterruptMask::RX_AVAILABLE | InterruptMask::TX_EMPTY);
+        clean_rx(&mut rx, irq_handler.as_ref());
 
-        test_serial_tx_rx_one(serial, &mut tx, &mut rx, b"Hello\n").expect("loopback failed");
+        test_serial_tx_rx_one(serial, &mut tx, &mut rx, irq_handler.as_ref(), b"Hello\n")
+            .expect("loopback failed");
     }
 
     #[test]
@@ -147,12 +150,14 @@ mod tests {
         let mut rx = serial.take_rx().expect("missing RX queue");
         let irq_handler = serial.take_irq_handler().expect("missing IRQ handler");
 
-        clean_rx(&mut rx);
+        clean_rx(&mut rx, irq_handler.as_ref());
         serial.enable_loopback();
+        serial.set_irq_mask(InterruptMask::RX_AVAILABLE | InterruptMask::TX_EMPTY);
 
         let payload = b"irq-loopback";
         let mut remaining = payload.as_slice();
         while !remaining.is_empty() {
+            irq_handler.handle_irq();
             let written = tx.try_write(remaining);
             if written == 0 {
                 core::hint::spin_loop();
@@ -182,6 +187,7 @@ mod tests {
         );
 
         let mut buffer = [0u8; 32];
+        irq_handler.handle_irq();
         let received = rx.try_read(&mut buffer).expect("failed to read loopback");
         assert_eq!(&buffer[..received], payload);
 
@@ -331,9 +337,10 @@ mod tests {
         false
     }
 
-    fn clean_rx(rx: &mut BRxQueue) {
+    fn clean_rx(rx: &mut BRxQueue, irq_handler: &dyn rdif_serial::TIrqHandler) {
         let mut buffer = [0u8; 64];
         loop {
+            irq_handler.handle_irq();
             match rx.try_read(&mut buffer) {
                 Ok(0) | Err(_) => break,
                 Ok(_) => {}
@@ -345,10 +352,11 @@ mod tests {
         serial: &mut BSerial,
         tx: &mut BTxQueue,
         rx: &mut BRxQueue,
+        irq_handler: &dyn rdif_serial::TIrqHandler,
         expected: &[u8],
     ) -> Result<(), TransferError> {
         serial.enable_loopback();
-        clean_rx(rx);
+        clean_rx(rx, irq_handler);
 
         let mut received = [0u8; 64];
         let mut total = 0usize;
@@ -356,11 +364,13 @@ mod tests {
         for &byte in expected {
             let mut written = 0usize;
             while written == 0 {
+                irq_handler.handle_irq();
                 written = tx.try_write(&[byte]);
                 core::hint::spin_loop();
             }
 
             loop {
+                irq_handler.handle_irq();
                 match rx.try_read(&mut received[total..total + 1]) {
                     Ok(1) => {
                         total += 1;

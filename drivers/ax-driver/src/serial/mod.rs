@@ -127,6 +127,16 @@ impl SerialDevice {
         self.interface.set_irq_mask(mask);
     }
 
+    pub fn enable_tx_interrupts(&mut self) {
+        let mask = self.interface.get_irq_mask() | InterruptMask::TX_EMPTY;
+        self.interface.set_irq_mask(mask);
+    }
+
+    pub fn disable_tx_interrupts(&mut self) {
+        let mask = self.interface.get_irq_mask() & !InterruptMask::TX_EMPTY;
+        self.interface.set_irq_mask(mask);
+    }
+
     pub fn take_tx(&mut self) -> Option<BTxQueue> {
         self.interface.take_tx()
     }
@@ -225,6 +235,16 @@ impl SerialRuntimePortControl {
 
     pub fn disable_rx_interrupts(&mut self) {
         let mask = self.interface.get_irq_mask() & !InterruptMask::RX_AVAILABLE;
+        self.interface.set_irq_mask(mask);
+    }
+
+    pub fn enable_tx_interrupts(&mut self) {
+        let mask = self.interface.get_irq_mask() | InterruptMask::TX_EMPTY;
+        self.interface.set_irq_mask(mask);
+    }
+
+    pub fn disable_tx_interrupts(&mut self) {
+        let mask = self.interface.get_irq_mask() & !InterruptMask::TX_EMPTY;
         self.interface.set_irq_mask(mask);
     }
 }
