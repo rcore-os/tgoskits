@@ -14,6 +14,8 @@ extern crate log;
 
 use alloc::sync::Arc;
 
+use axfs_ng_vfs::Location;
+
 pub mod api;
 pub mod block;
 pub mod block_runtime;
@@ -44,7 +46,11 @@ pub enum FilesystemKind {
 }
 
 /// Initializes the filesystem subsystem from a runtime-selected block region.
-pub(crate) fn init_filesystem(dev: Arc<BlockDeviceHandle>, region: BlockRegion, description: &str) {
+pub(crate) fn init_filesystem(
+    dev: Arc<BlockDeviceHandle>,
+    region: BlockRegion,
+    description: &str,
+) -> Location {
     info!("Initialize filesystem subsystem...");
     info!("  selected root device: {}", description);
 
@@ -54,7 +60,7 @@ pub(crate) fn init_filesystem(dev: Arc<BlockDeviceHandle>, region: BlockRegion, 
             description
         )
     });
-    finish_filesystem_init(fs);
+    finish_filesystem_init(fs)
 }
 
 pub(crate) fn init_detected_filesystem(
@@ -62,7 +68,7 @@ pub(crate) fn init_detected_filesystem(
     region: BlockRegion,
     kind: FilesystemKind,
     description: &str,
-) {
+) -> Location {
     info!("Initialize filesystem subsystem...");
     info!("  selected root device: {}", description);
 
@@ -72,14 +78,16 @@ pub(crate) fn init_detected_filesystem(
             description
         )
     });
-    finish_filesystem_init(fs);
+    finish_filesystem_init(fs)
 }
 
-fn finish_filesystem_init(fs: axfs_ng_vfs::Filesystem) {
+fn finish_filesystem_init(fs: axfs_ng_vfs::Filesystem) -> Location {
     info!("  filesystem type: {:?}", fs.name());
 
     let mp = axfs_ng_vfs::Mountpoint::new_root(&fs);
-    highlevel::ROOT_FS_CONTEXT.call_once(|| highlevel::FsContext::new(mp.root_location()));
+    let root = mp.root_location();
+    highlevel::ROOT_FS_CONTEXT.call_once(|| highlevel::FsContext::new(root.clone()));
+    root
 }
 
 pub fn shutdown_filesystems() -> ax_errno::AxResult {

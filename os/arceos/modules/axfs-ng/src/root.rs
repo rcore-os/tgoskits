@@ -5,13 +5,15 @@ use alloc::{
     vec::Vec,
 };
 
+use axfs_ng_vfs::{Location, NodePermission, NodeType, VfsError};
+
 use crate::{
     BlockDeviceHandle, BlockRegion, FilesystemKind,
     block::{
         FsBlockDevice, boxed_native_handle_block_device,
         runtime::{BlockRuntime, RdifBlockDevice},
     },
-    detect_filesystem, init_detected_filesystem, init_filesystem,
+    detect_filesystem, fs, init_detected_filesystem, init_filesystem,
     volume::{
         BlockReader, BlockVolume, DiskId, Error as VolumeError,
         PartitionTableKind as VolumeTableKind, scan_volumes,
@@ -168,11 +170,12 @@ pub fn init_root(
         |part| part.info.region,
     );
 
-    if let Some(kind) = selected_filesystem_kind(&selected, selected_partition) {
-        init_detected_filesystem(selected.handle, region, kind, &description);
+    let root = if let Some(kind) = selected_filesystem_kind(&selected, selected_partition) {
+        init_detected_filesystem(selected.handle.clone(), region, kind, &description)
     } else {
-        init_filesystem(selected.handle, region, &description);
-    }
+        init_filesystem(selected.handle.clone(), region, &description)
+    };
+    mount_additional_partitions(&root, &selected, selected_partition);
 }
 
 pub fn init_root_from_rdif(
@@ -464,6 +467,92 @@ fn supported_default_root_partition(partition: &DetectedPartition) -> bool {
     partition.filesystem.is_some()
 }
 
+fn mount_additional_partitions(
+    root: &Location,
+    disk: &DiscoveredDisk,
+    root_partition_index: Option<usize>,
+) {
+    if disk.partitions.is_empty() {
+        return;
+    }
+
+    ensure_mountpoint_dir(root, "/boot");
+    for partition in &disk.partitions {
+        if Some(partition.info.index) == root_partition_index {
+            continue;
+        }
+        let Some(kind) = partition.filesystem else {
+            continue;
+        };
+        mount_single_partition(root, disk, partition, kind);
+    }
+}
+
+fn mount_single_partition(
+    root: &Location,
+    disk: &DiscoveredDisk,
+    partition: &DetectedPartition,
+    kind: FilesystemKind,
+) {
+    let mount_path = mount_path_for_partition(&partition.info);
+    let description = describe_partition(disk.disk_index, partition);
+    match fs::new_from_handle_with_kind(disk.handle.clone(), partition.info.region, kind) {
+        Ok(fs) => {
+            info!("  mounting partition {} at {}", description, mount_path);
+            let Some(mountpoint) = ensure_mountpoint_dir(root, &mount_path) else {
+                return;
+            };
+            if let Err(err) = mountpoint.mount(&fs) {
+                warn!(
+                    "  failed to mount partition {} at {}: {err:?}",
+                    description, mount_path
+                );
+            }
+        }
+        Err(err) => {
+            warn!(
+                "  failed to initialize filesystem for partition {}: {err:?}",
+                description
+            );
+        }
+    }
+}
+
+fn ensure_mountpoint_dir(root: &Location, path: &str) -> Option<Location> {
+    match ensure_mountpoint_dir_result(root, path) {
+        Ok(location) => Some(location),
+        Err(err) => {
+            warn!("  failed to create mount point {path}: {err:?}");
+            None
+        }
+    }
+}
+
+fn ensure_mountpoint_dir_result(root: &Location, path: &str) -> axfs_ng_vfs::VfsResult<Location> {
+    let name = path
+        .strip_prefix('/')
+        .filter(|name| !name.is_empty() && !name.contains('/'))
+        .ok_or(VfsError::InvalidInput)?;
+    match root.create(name, NodeType::Directory, NodePermission::default(), 0, 0) {
+        Ok(location) => Ok(location),
+        Err(err) if err.canonicalize() == VfsError::AlreadyExists => root.lookup_no_follow(name),
+        Err(err) => Err(err),
+    }
+}
+
+fn mount_path_for_partition(partition: &PartitionInfo) -> String {
+    let name = partition
+        .name
+        .as_deref()
+        .filter(|name| !name.is_empty())
+        .unwrap_or("partition");
+    if name.to_ascii_lowercase().contains("boot") {
+        String::from("/boot")
+    } else {
+        format!("/{name}")
+    }
+}
+
 fn selected_filesystem_kind(
     disk: &DiscoveredDisk,
     partition_index: Option<usize>,
@@ -643,6 +732,29 @@ mod tests {
             raw_filesystem: filesystem,
             partitions: Vec::new(),
         }
+    }
+
+    fn gpt_partition_info(name: &str) -> PartitionInfo {
+        PartitionInfo {
+            index: 0,
+            table_kind: PartitionTableKind::Gpt,
+            region: BlockRegion::new(0, 100),
+            name: Some(name.to_string()),
+            part_uuid: None,
+            bootable: false,
+        }
+    }
+
+    #[test]
+    fn additional_partition_mount_paths_preserve_userdata_overlay_path() {
+        assert_eq!(
+            mount_path_for_partition(&gpt_partition_info("userdata")),
+            "/userdata"
+        );
+        assert_eq!(
+            mount_path_for_partition(&gpt_partition_info("boot")),
+            "/boot"
+        );
     }
 
     #[test]
