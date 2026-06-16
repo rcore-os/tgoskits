@@ -1,7 +1,11 @@
 use alloc::sync::Arc;
-use core::ptr::NonNull;
+use core::{
+    ptr::NonNull,
+    sync::atomic::{AtomicBool, Ordering},
+};
 
-use axpoll::PollSet;
+use ax_task::IrqNotify;
+use axpoll::{IoEvents, PollSet};
 use spin::LazyLock;
 
 use super::{
@@ -27,6 +31,9 @@ impl TtyWrite for Console {
 /// The default TTY device.
 pub static N_TTY: LazyLock<Arc<NTtyDriver>> = LazyLock::new(new_n_tty);
 static CONSOLE_INPUT_SOURCE: LazyLock<Arc<PollSet>> = LazyLock::new(|| Arc::new(PollSet::new()));
+static CONSOLE_INPUT_NOTIFY: LazyLock<Arc<IrqNotify>> =
+    LazyLock::new(|| Arc::new(IrqNotify::new()));
+static CONSOLE_NOTIFY_WORKER: AtomicBool = AtomicBool::new(false);
 
 fn handle_console_input_irq(_irq_num: usize) {
     let events = ax_runtime::hal::console::handle_irq();
@@ -35,7 +42,7 @@ fn handle_console_input_irq(_irq_num: usize) {
             | ax_runtime::hal::console::ConsoleIrqEvent::RX_ERROR
             | ax_runtime::hal::console::ConsoleIrqEvent::OVERRUN,
     ) {
-        CONSOLE_INPUT_SOURCE.wake();
+        CONSOLE_INPUT_NOTIFY.notify_irq();
     }
 }
 
@@ -75,6 +82,20 @@ fn new_n_tty() -> Arc<NTtyDriver> {
             process_mode: console_irq_mode().unwrap_or(ProcessMode::Manual),
         },
     )
+}
+
+fn start_console_notify_worker() {
+    if CONSOLE_NOTIFY_WORKER.swap(true, Ordering::AcqRel) {
+        return;
+    }
+    ax_task::spawn_with_name(
+        || loop {
+            CONSOLE_INPUT_NOTIFY.wait();
+            // Console RX readiness has been published by the IRQ handler.
+            unsafe { CONSOLE_INPUT_SOURCE.wake(IoEvents::IN) };
+        },
+        "console-notify".into(),
+    );
 }
 
 /// Probe the connected terminal for its current size using the
@@ -151,6 +172,7 @@ fn console_irq_mode() -> Option<ProcessMode> {
     }
 
     ax_runtime::hal::console::set_input_irq_enabled(true);
+    start_console_notify_worker();
     Some(ProcessMode::InterruptDriven(CONSOLE_INPUT_SOURCE.clone()))
 }
 

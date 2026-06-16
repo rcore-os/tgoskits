@@ -1,7 +1,7 @@
 use alloc::sync::Arc;
 
 use ax_kspin::SpinNoIrq;
-use axpoll::PollSet;
+use axpoll::{IoEvents, PollSet};
 use ringbuf::{
     Cons, HeapRb, Prod,
     traits::{Consumer, Producer},
@@ -47,7 +47,8 @@ impl PtyWriter {
 impl TtyWrite for PtyWriter {
     fn write(&self, buf: &[u8]) {
         let read = self.0.lock().push_slice(buf);
-        self.1.wake();
+        // PTY bytes are committed before waking the peer reader.
+        unsafe { self.1.wake(IoEvents::IN) };
         if read < buf.len() {
             warn!("Discarding {} bytes written to pty", buf.len() - read);
         }

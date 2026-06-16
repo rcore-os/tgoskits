@@ -10,12 +10,17 @@
 //! share one buffer.
 
 use alloc::sync::{Arc, Weak};
-use core::{any::Any, fmt::Debug};
+use core::{
+    any::Any,
+    fmt::Debug,
+    sync::atomic::{AtomicBool, Ordering},
+};
 
 use ax_alloc::GlobalPage;
 use ax_errno::{AxError, AxResult};
 use ax_hal::mem::virt_to_phys;
 use ax_memory_addr::{PAGE_SIZE_4K, PhysAddr};
+use ax_task::IrqNotify;
 use axpoll::{IoEvents, PollSet, Pollable};
 use kbpf_basic::{
     linux_bpf::perf_event_sample_format,
@@ -59,7 +64,9 @@ use crate::{
 /// pointer left after the pages free is harmless.
 pub struct BpfPerfEventWrapper {
     inner: BpfPerfEvent,
-    poll_ready: PollSet,
+    poll_ready: Arc<PollSet>,
+    poll_notify: Arc<IrqNotify>,
+    poll_alive: Arc<AtomicBool>,
     /// Weak handle to the contiguous pages backing the ringbuf. The strong
     /// ref(s) live in the user VMA(s); `strong_count() > 0` means a live
     /// mapping still exists. See the type-level docs for the ownership
@@ -70,9 +77,15 @@ pub struct BpfPerfEventWrapper {
 impl BpfPerfEventWrapper {
     /// Construct the wrapper around a freshly-built `BpfPerfEvent`.
     pub fn new(inner: BpfPerfEvent) -> Self {
+        let poll_ready = Arc::new(PollSet::new());
+        let poll_notify = Arc::new(IrqNotify::new());
+        let poll_alive = Arc::new(AtomicBool::new(true));
+        start_bpf_perf_notify_worker(poll_ready.clone(), poll_notify.clone(), poll_alive.clone());
         Self {
             inner,
-            poll_ready: PollSet::new(),
+            poll_ready,
+            poll_notify,
+            poll_alive,
             pages: None,
         }
     }
@@ -96,10 +109,35 @@ impl BpfPerfEventWrapper {
         }
         self.inner.write_event(data).into_ax_result()?;
         if self.inner.enabled() {
-            self.poll_ready.wake();
+            self.poll_notify.notify_irq();
         }
         Ok(())
     }
+}
+
+impl Drop for BpfPerfEventWrapper {
+    fn drop(&mut self) {
+        self.poll_alive.store(false, Ordering::Release);
+        self.poll_notify.notify();
+    }
+}
+
+fn start_bpf_perf_notify_worker(
+    poll_ready: Arc<PollSet>,
+    poll_notify: Arc<IrqNotify>,
+    poll_alive: Arc<AtomicBool>,
+) {
+    ax_task::spawn_with_name(
+        move || loop {
+            poll_notify.wait();
+            if !poll_alive.load(Ordering::Acquire) {
+                break;
+            }
+            // Ring data is written before the deferred poll wake.
+            unsafe { poll_ready.wake(IoEvents::IN) };
+        },
+        "bpf-perf-notify".into(),
+    );
 }
 
 impl Debug for BpfPerfEventWrapper {
@@ -174,7 +212,8 @@ impl Pollable for BpfPerfEventWrapper {
 
     fn register(&self, context: &mut core::task::Context<'_>, events: axpoll::IoEvents) {
         if events.contains(IoEvents::IN) {
-            self.poll_ready.register(context.waker());
+            // Registration happens from file poll task context.
+            unsafe { self.poll_ready.register(context.waker(), IoEvents::IN) };
         }
     }
 }

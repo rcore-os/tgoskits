@@ -46,7 +46,8 @@ pub struct Pipe {
 }
 impl Drop for Pipe {
     fn drop(&mut self) {
-        self.shared.poll_close.wake();
+        // Peer close is visible through Arc strong count before this wake.
+        unsafe { self.shared.poll_close.wake(IoEvents::HUP | IoEvents::ERR) };
     }
 }
 
@@ -135,7 +136,8 @@ impl FileLike for Pipe {
                 count
             };
             if read > 0 {
-                self.shared.poll_tx.wake();
+                // Pipe capacity was freed before waking writers.
+                unsafe { self.shared.poll_tx.wake(IoEvents::OUT) };
                 Ok(read)
             } else if self.closed() {
                 Ok(0)
@@ -173,7 +175,8 @@ impl FileLike for Pipe {
                 count
             };
             if written > 0 {
-                self.shared.poll_rx.wake();
+                // Pipe bytes were committed before waking readers.
+                unsafe { self.shared.poll_rx.wake(IoEvents::IN) };
                 total_written += written;
                 if total_written == size || self.nonblocking() {
                     return Ok(total_written);
@@ -235,11 +238,18 @@ impl Pollable for Pipe {
 
     fn register(&self, context: &mut Context<'_>, events: IoEvents) {
         if events.contains(IoEvents::IN) {
-            self.shared.poll_rx.register(context.waker());
+            // Registration happens from file poll task context.
+            unsafe { self.shared.poll_rx.register(context.waker(), IoEvents::IN) };
         }
         if events.contains(IoEvents::OUT) {
-            self.shared.poll_tx.register(context.waker());
+            // Registration happens from file poll task context.
+            unsafe { self.shared.poll_tx.register(context.waker(), IoEvents::OUT) };
         }
-        self.shared.poll_close.register(context.waker());
+        // Close/error notifications are always observable poll events.
+        unsafe {
+            self.shared
+                .poll_close
+                .register(context.waker(), IoEvents::HUP | IoEvents::ERR)
+        };
     }
 }

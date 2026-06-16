@@ -661,7 +661,8 @@ impl SocketOps for TcpSocket {
         // TODO(mivik): shutdown
         if how.has_read() {
             self.rx_closed.store(true, Ordering::Release);
-            self.poll_rx_closed.wake();
+            // rx_closed is visible before waking RDHUP/EOF waiters.
+            unsafe { self.poll_rx_closed.wake(IoEvents::RDHUP | IoEvents::IN) };
         }
 
         // stream
@@ -740,7 +741,11 @@ impl Pollable for TcpSocket {
             self.general.register_waker(context.waker());
         }
         if events.contains(IoEvents::RDHUP) {
-            self.poll_rx_closed.register(context.waker());
+            // Registration happens from socket poll task context.
+            unsafe {
+                self.poll_rx_closed
+                    .register(context.waker(), IoEvents::RDHUP | IoEvents::IN)
+            };
         }
     }
 }

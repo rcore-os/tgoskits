@@ -438,7 +438,8 @@ pub fn broadcast(protocol: u32, group_mask: u32, payload: &[u8]) {
         if queue.len() < MAX_QUEUED {
             queue.push_back(payload.to_vec());
             drop(queue);
-            sock.poll_rx.wake();
+            // Netlink message is queued before waking readers.
+            unsafe { sock.poll_rx.wake(IoEvents::IN) };
         }
     }
 }
@@ -494,7 +495,8 @@ impl FileLike for NetlinkSocket {
             if queue.len() < MAX_QUEUED {
                 queue.push_back(response);
                 drop(queue);
-                self.poll_rx.wake();
+                // Netlink response is queued before waking readers.
+                unsafe { self.poll_rx.wake(IoEvents::IN) };
             }
         }
         Ok(total)
@@ -540,7 +542,8 @@ impl Pollable for NetlinkSocket {
 
     fn register(&self, context: &mut Context<'_>, events: IoEvents) {
         if events.contains(IoEvents::IN) {
-            self.poll_rx.register(context.waker());
+            // Registration happens from socket poll task context.
+            unsafe { self.poll_rx.register(context.waker(), IoEvents::IN) };
         }
     }
 }

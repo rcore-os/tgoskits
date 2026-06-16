@@ -5,7 +5,11 @@ mod trace;
 mod trace_pipe;
 
 use alloc::{collections::BTreeMap, string::ToString, sync::Arc, vec::Vec};
-use core::{num::NonZero, ops::Deref};
+use core::{
+    num::NonZero,
+    ops::Deref,
+    sync::atomic::{AtomicBool, Ordering},
+};
 
 use ax_errno::{AxError, AxResult};
 use ax_kspin::SpinNoPreempt;
@@ -13,9 +17,9 @@ use ax_lazyinit::LazyInit;
 use ax_memory_addr::VirtAddr;
 use ax_runtime::hal::{percpu::this_cpu_id, time::monotonic_time_nanos};
 use ax_sync::Mutex;
-use ax_task::current;
+use ax_task::{IrqNotify, current};
 use axfs_ng_vfs::NodePermission;
-use axpoll::PollSet;
+use axpoll::{IoEvents, PollSet};
 use ktracepoint::*;
 
 use crate::{
@@ -58,6 +62,7 @@ struct TraceState {
     point_map: LazyInit<TracePointMap<KernelTraceAux>>,
     raw_pipe: Mutex<TracePipeRaw>,
     pipe_event: PollSet,
+    pipe_notify: IrqNotify,
     cmdline_cache: LazyInit<Mutex<TraceCmdLineCache>>,
     ext_tracepoints: LazyInit<BTreeMap<u32, KernelExtTracePoint>>,
 }
@@ -68,6 +73,7 @@ impl TraceState {
             point_map: LazyInit::new(),
             raw_pipe: Mutex::new(TracePipeRaw::new(4096)),
             pipe_event: PollSet::new(),
+            pipe_notify: IrqNotify::new(),
             cmdline_cache: LazyInit::new(),
             ext_tracepoints: LazyInit::new(),
         }
@@ -75,6 +81,7 @@ impl TraceState {
 }
 
 static TRACE_STATE: TraceState = TraceState::new();
+static TRACE_PIPE_NOTIFY_WORKER: AtomicBool = AtomicBool::new(false);
 
 pub struct KernelTraceAux;
 
@@ -92,7 +99,7 @@ impl KernelTraceOps for KernelTraceAux {
             this_cpu_id() as _,
             buf.to_vec(),
         );
-        TRACE_STATE.pipe_event.wake();
+        TRACE_STATE.pipe_notify.notify_irq();
     }
 
     fn trace_cmdline_push(pid: u32) {
@@ -132,6 +139,20 @@ impl KernelTraceOps for KernelTraceAux {
         let mut ext_tp = ext_tp.lock();
         f(&mut ext_tp)
     }
+}
+
+fn start_trace_pipe_notify_worker() {
+    if TRACE_PIPE_NOTIFY_WORKER.swap(true, Ordering::AcqRel) {
+        return;
+    }
+    ax_task::spawn_with_name(
+        || loop {
+            TRACE_STATE.pipe_notify.wait();
+            // Trace records are queued before the deferred poll wake.
+            unsafe { TRACE_STATE.pipe_event.wake(IoEvents::IN) };
+        },
+        "trace-pipe-notify".into(),
+    );
 }
 
 /// Carries the unread suffix of a formatted text record across `read_at` calls.
@@ -258,6 +279,7 @@ pub fn tracepoint_init() -> AxResult<()> {
         .init_once(Mutex::new(TraceCmdLineCache::new(
             NonZero::new(4096).unwrap(),
         )));
+    start_trace_pipe_notify_worker();
     Ok(())
 }
 

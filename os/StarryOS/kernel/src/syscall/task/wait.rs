@@ -344,7 +344,12 @@ pub fn sys_waitpid(pid: i32, exit_code: *mut i32, options: u32) -> AxResult<isiz
         match check_children().transpose() {
             Some(res) => Poll::Ready(res),
             None => {
-                proc_data.child_exit_event.register(cx.waker());
+                // Registration happens from wait task context.
+                unsafe {
+                    proc_data
+                        .child_exit_event
+                        .register(cx.waker(), axpoll::IoEvents::IN)
+                };
                 // A child may exit between the check above and waker
                 // registration. Recheck after registering so that wakeup is
                 // not lost in that race window.
@@ -488,7 +493,12 @@ pub fn sys_waitid(
         match check_children().transpose() {
             Some(res) => Poll::Ready(res),
             None => {
-                proc_data.child_exit_event.register(cx.waker());
+                // Registration happens from wait task context.
+                unsafe {
+                    proc_data
+                        .child_exit_event
+                        .register(cx.waker(), axpoll::IoEvents::IN)
+                };
                 match check_children().transpose() {
                     Some(res) => Poll::Ready(res),
                     None => Poll::Pending,

@@ -5,7 +5,7 @@
 
 extern crate alloc;
 
-use alloc::{boxed::Box, sync::Arc, task::Wake};
+use alloc::boxed::Box;
 use core::{
     mem::MaybeUninit,
     task::{Context, Waker},
@@ -66,8 +66,19 @@ pub trait Pollable {
 
 const POLL_SET_CAPACITY: usize = 64;
 
+struct Entry {
+    waker: Waker,
+    interests: IoEvents,
+}
+
+impl Entry {
+    fn wake(self) {
+        self.waker.wake();
+    }
+}
+
 struct Inner {
-    entries: Box<[MaybeUninit<Waker>]>,
+    entries: Box<[MaybeUninit<Entry>]>,
     cursor: usize,
 }
 
@@ -87,18 +98,43 @@ impl Inner {
         self.cursor == 0
     }
 
-    fn register(&mut self, waker: &Waker) {
+    fn register(&mut self, waker: &Waker, interests: IoEvents) {
         let slot = self.cursor % POLL_SET_CAPACITY;
         if self.cursor >= POLL_SET_CAPACITY {
             let old = unsafe { self.entries[slot].assume_init_read() };
-            if !old.will_wake(waker) {
+            if !old.waker.will_wake(waker) {
                 old.wake();
             }
             self.cursor = ((slot + 1) % POLL_SET_CAPACITY) + POLL_SET_CAPACITY;
         } else {
             self.cursor += 1;
         }
-        self.entries[slot].write(waker.clone());
+        self.entries[slot].write(Entry {
+            waker: waker.clone(),
+            interests,
+        });
+    }
+
+    fn wake(&mut self, ready: IoEvents) -> usize {
+        if self.is_empty() {
+            return 0;
+        }
+
+        let mut old = Self::new();
+        core::mem::swap(&mut old, self);
+
+        let mut woke = 0;
+        for i in 0..old.len() {
+            let entry = unsafe { old.entries[i].assume_init_read() };
+            if entry.interests.intersects(ready) {
+                woke += 1;
+                entry.wake();
+            } else {
+                self.register(&entry.waker, entry.interests);
+            }
+        }
+        old.cursor = 0;
+        woke
     }
 }
 
@@ -125,36 +161,34 @@ impl PollSet {
         Self(LazyLock::new(|| SpinNoIrq::new(Inner::new())))
     }
 
-    /// Registers a waker.
-    pub fn register(&self, waker: &Waker) {
-        self.0.lock().register(waker);
+    /// Registers a waker for the requested I/O events.
+    ///
+    /// # Safety
+    ///
+    /// This method is task/deferred-context only. Callers must not invoke it
+    /// from hard IRQ, NMI, or trap callbacks, and must not hold locks that may
+    /// be re-entered by the registered waker or by poll wakeup paths.
+    pub unsafe fn register(&self, waker: &Waker, interests: IoEvents) {
+        self.0.lock().register(waker, interests);
     }
 
-    /// Wakes up all registered wakers.
-    pub fn wake(&self) -> usize {
-        let mut guard = self.0.lock();
-        if guard.is_empty() {
-            return 0;
-        }
-        let inner = core::mem::replace(&mut *guard, Inner::new());
-        drop(guard);
-        inner.len()
+    /// Wakes up registered wakers whose interests intersect `ready`.
+    ///
+    /// # Safety
+    ///
+    /// This method is task/deferred-context only. Callers must not invoke it
+    /// from hard IRQ, NMI, or trap callbacks. The readiness state represented
+    /// by `ready` must be published before this method is called, and callers
+    /// must not hold locks that may be re-entered by waker execution or poll
+    /// wakeup paths.
+    pub unsafe fn wake(&self, ready: IoEvents) -> usize {
+        self.0.lock().wake(ready)
     }
 }
 
 impl Drop for PollSet {
     fn drop(&mut self) {
         // Ensure all entries are dropped
-        self.wake();
-    }
-}
-
-impl Wake for PollSet {
-    fn wake(self: Arc<Self>) {
-        self.as_ref().wake();
-    }
-
-    fn wake_by_ref(self: &Arc<Self>) {
-        self.as_ref().wake();
+        unsafe { self.wake(IoEvents::all()) };
     }
 }

@@ -1127,7 +1127,11 @@ impl UsbDeviceFile {
                 if self.collect_submitted_urbs(None) || !self.pending_urbs.lock().is_empty() {
                     Poll::Ready(())
                 } else {
-                    self.poll_urbs.register(cx.waker());
+                    // Registration happens from usbfs reap task context.
+                    unsafe {
+                        self.poll_urbs
+                            .register(cx.waker(), IoEvents::IN | IoEvents::OUT)
+                    };
                     if self.collect_submitted_urbs(Some(cx)) || !self.pending_urbs.lock().is_empty()
                     {
                         Poll::Ready(())
@@ -1301,7 +1305,11 @@ impl Pollable for UsbDeviceFile {
 
     fn register(&self, context: &mut Context<'_>, events: IoEvents) {
         if events.intersects(IoEvents::IN | IoEvents::OUT) {
-            self.poll_urbs.register(context.waker());
+            // Registration happens from usbfs poll task context.
+            unsafe {
+                self.poll_urbs
+                    .register(context.waker(), events & (IoEvents::IN | IoEvents::OUT))
+            };
             if self.collect_submitted_urbs(Some(context)) || !self.pending_urbs.lock().is_empty() {
                 context.waker().wake_by_ref();
             }
@@ -1335,8 +1343,11 @@ fn complete_urb(
     poll_urbs: &Arc<PollSet>,
     completed: CompletedUrb,
 ) {
-    pending_urbs.lock().push_back(completed);
-    poll_urbs.wake();
+    {
+        pending_urbs.lock().push_back(completed);
+    }
+    // Completed URB is queued before waking poll/reap waiters.
+    unsafe { poll_urbs.wake(IoEvents::IN | IoEvents::OUT) };
 }
 
 fn completed_urb_from_result(

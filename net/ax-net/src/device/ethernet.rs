@@ -24,7 +24,7 @@ use alloc::{boxed::Box, string::String, sync::Arc, vec, vec::Vec};
 use core::{ptr::NonNull, task::Waker};
 
 use ax_sync::spin::SpinNoIrq;
-use axpoll::PollSet;
+use axpoll::{IoEvents, PollSet};
 use hashbrown::HashMap;
 use smoltcp::{
     storage::{PacketBuffer, PacketMetadata},
@@ -153,7 +153,7 @@ unsafe fn handle_ethernet_irq(data: NonNull<()>) -> EthernetIrqOutcome {
     let state = unsafe { data.cast::<EthernetIrqState>().as_ref() };
     let events = state.handle_irq();
     if events.intersects(NetIrqEvents::RX_READY | NetIrqEvents::RX_ERROR | NetIrqEvents::TX_DONE) {
-        state.poll_ready.wake();
+        crate::wake_net_task_irq();
         return EthernetIrqOutcome::Wake;
     }
     EthernetIrqOutcome::Handled
@@ -620,7 +620,12 @@ impl Device for EthernetDevice {
     }
 
     fn wake_rx(&self) {
-        self.inner.poll_ready.wake();
+        // Device readiness has been published by the net poll task.
+        unsafe {
+            self.inner
+                .poll_ready
+                .wake(IoEvents::IN | IoEvents::OUT | IoEvents::ERR)
+        };
     }
 
     fn register_waker(&self, waker: &Waker) {
@@ -630,7 +635,12 @@ impl Device for EthernetDevice {
         // `wake_rx`. A pure-polling device with neither must not register here,
         // or its waker would sit on a `poll_ready` that is never woken.
         if self.inner.irq_registration.get().is_some() || self.inner.oob_rx {
-            self.inner.poll_ready.register(waker);
+            // The net stack registers from task/deferred polling context.
+            unsafe {
+                self.inner
+                    .poll_ready
+                    .register(waker, IoEvents::IN | IoEvents::OUT | IoEvents::ERR)
+            };
         }
     }
 }
