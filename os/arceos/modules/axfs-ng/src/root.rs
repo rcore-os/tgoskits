@@ -533,11 +533,33 @@ fn ensure_mountpoint_dir_result(root: &Location, path: &str) -> axfs_ng_vfs::Vfs
         .strip_prefix('/')
         .filter(|name| !name.is_empty() && !name.contains('/'))
         .ok_or(VfsError::InvalidInput)?;
+    match root.lookup_no_follow(name) {
+        Ok(location) if location.node_type() == NodeType::Directory => return Ok(location),
+        Ok(_) if !root.is_readonly() => return Err(VfsError::AlreadyExists),
+        Ok(_) => return create_transient_mountpoint_dir(root, path, name),
+        Err(err) if err.canonicalize() == VfsError::NotFound => {}
+        Err(err) => return Err(err),
+    }
+
     match root.create(name, NodeType::Directory, NodePermission::default(), 0, 0) {
         Ok(location) => Ok(location),
+        Err(err) if err.canonicalize() == VfsError::ReadOnlyFilesystem => {
+            create_transient_mountpoint_dir(root, path, name)
+        }
         Err(err) if err.canonicalize() == VfsError::AlreadyExists => root.lookup_no_follow(name),
         Err(err) => Err(err),
     }
+}
+
+fn create_transient_mountpoint_dir(
+    root: &Location,
+    path: &str,
+    name: &str,
+) -> axfs_ng_vfs::VfsResult<Location> {
+    root.create_transient_mount_dir(name, NodePermission::default(), 0, 0)
+        .inspect(|_| {
+            warn!("  using transient in-memory mount point {path} on read-only root filesystem");
+        })
 }
 
 fn mount_path_for_partition(partition: &PartitionInfo) -> String {
@@ -647,8 +669,13 @@ pub(crate) fn split_root_candidates<'a>(root: &'a str, out: &mut Vec<&'a str>) {
 
 #[cfg(test)]
 mod tests {
-    use core::any::Any;
+    use core::{any::Any, time::Duration};
 
+    use axfs_ng_vfs::{
+        DeviceId, DirEntry, DirEntrySink, DirNode, DirNodeOps, FileNode, FileNodeOps, Filesystem,
+        FilesystemOps, FsIoEvents, FsPollable, Metadata, MetadataUpdate, NodeFlags, NodeOps,
+        Reference, StatFs, VfsResult, WeakDirEntry,
+    };
     use rdif_block::{
         BlkError, DeviceInfo, DriverGeneric, IQueue, QueueInfo, QueueLimits, Request, RequestId,
         RequestStatus,
@@ -658,6 +685,251 @@ mod tests {
     use crate::block::runtime::{BlockIrqBridge, BlockRuntimeConfig, NoopDrainWake};
 
     struct TestQueue;
+    struct ReadonlyFs {
+        root: std::sync::OnceLock<DirEntry>,
+        userdata_kind: Option<NodeType>,
+    }
+
+    struct ReadonlyDir {
+        fs: Arc<ReadonlyFs>,
+        this: WeakDirEntry,
+        inode: u64,
+    }
+
+    struct ReadonlyLeaf {
+        fs: Arc<ReadonlyFs>,
+        inode: u64,
+        node_type: NodeType,
+    }
+
+    impl ReadonlyFs {
+        fn new(userdata_kind: Option<NodeType>) -> Arc<Self> {
+            let fs = Arc::new(Self {
+                root: std::sync::OnceLock::new(),
+                userdata_kind,
+            });
+            let _ = fs.root.set(DirEntry::new_dir(
+                |this| {
+                    DirNode::new(Arc::new(ReadonlyDir {
+                        fs: fs.clone(),
+                        this,
+                        inode: 1,
+                    }))
+                },
+                Reference::root(),
+            ));
+            fs
+        }
+    }
+
+    impl FilesystemOps for ReadonlyFs {
+        fn name(&self) -> &str {
+            "readonly-test"
+        }
+
+        fn is_readonly(&self) -> bool {
+            true
+        }
+
+        fn root_dir(&self) -> DirEntry {
+            self.root.get().unwrap().clone()
+        }
+
+        fn stat(&self) -> VfsResult<StatFs> {
+            Ok(StatFs {
+                fs_type: 0,
+                block_size: 512,
+                blocks: 0,
+                blocks_free: 0,
+                blocks_available: 0,
+                file_count: 1,
+                free_file_count: 0,
+                name_length: axfs_ng_vfs::path::MAX_NAME_LEN as u32,
+                fragment_size: 0,
+                mount_flags: 0,
+            })
+        }
+    }
+
+    impl NodeOps for ReadonlyDir {
+        fn inode(&self) -> u64 {
+            self.inode
+        }
+
+        fn metadata(&self) -> VfsResult<Metadata> {
+            Ok(Metadata {
+                device: 0,
+                inode: self.inode,
+                nlink: 2,
+                mode: NodePermission::default(),
+                node_type: NodeType::Directory,
+                uid: 0,
+                gid: 0,
+                size: 0,
+                block_size: 0,
+                blocks: 0,
+                rdev: DeviceId::default(),
+                atime: Duration::ZERO,
+                mtime: Duration::ZERO,
+                ctime: Duration::ZERO,
+            })
+        }
+
+        fn update_metadata(&self, _update: MetadataUpdate) -> VfsResult<()> {
+            Err(VfsError::ReadOnlyFilesystem)
+        }
+
+        fn filesystem(&self) -> &dyn FilesystemOps {
+            &*self.fs
+        }
+
+        fn sync(&self, _data_only: bool) -> VfsResult<()> {
+            Ok(())
+        }
+
+        fn into_any(self: Arc<Self>) -> Arc<dyn Any + Send + Sync> {
+            self
+        }
+
+        fn flags(&self) -> NodeFlags {
+            NodeFlags::empty()
+        }
+    }
+
+    impl DirNodeOps for ReadonlyDir {
+        fn read_dir(&self, _offset: u64, _sink: &mut dyn DirEntrySink) -> VfsResult<usize> {
+            Ok(0)
+        }
+
+        fn lookup(&self, name: &str) -> VfsResult<DirEntry> {
+            match name {
+                "." => self.this.upgrade().ok_or(VfsError::NotFound),
+                ".." => self.this.upgrade().ok_or(VfsError::NotFound),
+                "userdata" => {
+                    let Some(node_type) = self.fs.userdata_kind else {
+                        return Err(VfsError::NotFound);
+                    };
+                    let reference = Reference::new(self.this.upgrade(), name.to_string());
+                    Ok(match node_type {
+                        NodeType::Directory => DirEntry::new_dir(
+                            |this| {
+                                DirNode::new(Arc::new(ReadonlyDir {
+                                    fs: self.fs.clone(),
+                                    this,
+                                    inode: 2,
+                                }))
+                            },
+                            reference,
+                        ),
+                        _ => DirEntry::new_file(
+                            FileNode::new(Arc::new(ReadonlyLeaf {
+                                fs: self.fs.clone(),
+                                inode: 2,
+                                node_type,
+                            })),
+                            node_type,
+                            reference,
+                        ),
+                    })
+                }
+                _ => Err(VfsError::NotFound),
+            }
+        }
+
+        fn create(
+            &self,
+            _name: &str,
+            _node_type: NodeType,
+            _permission: NodePermission,
+            _uid: u32,
+            _gid: u32,
+        ) -> VfsResult<DirEntry> {
+            Err(VfsError::ReadOnlyFilesystem)
+        }
+
+        fn link(&self, _name: &str, _node: &DirEntry) -> VfsResult<DirEntry> {
+            Err(VfsError::ReadOnlyFilesystem)
+        }
+
+        fn unlink(&self, _name: &str, _is_dir: bool) -> VfsResult<()> {
+            Err(VfsError::ReadOnlyFilesystem)
+        }
+
+        fn rename(&self, _src_name: &str, _dst_dir: &DirNode, _dst_name: &str) -> VfsResult<()> {
+            Err(VfsError::ReadOnlyFilesystem)
+        }
+    }
+
+    impl NodeOps for ReadonlyLeaf {
+        fn inode(&self) -> u64 {
+            self.inode
+        }
+
+        fn metadata(&self) -> VfsResult<Metadata> {
+            Ok(Metadata {
+                device: 0,
+                inode: self.inode,
+                nlink: 1,
+                mode: NodePermission::default(),
+                node_type: self.node_type,
+                uid: 0,
+                gid: 0,
+                size: 0,
+                block_size: 0,
+                blocks: 0,
+                rdev: DeviceId::default(),
+                atime: Duration::ZERO,
+                mtime: Duration::ZERO,
+                ctime: Duration::ZERO,
+            })
+        }
+
+        fn update_metadata(&self, _update: MetadataUpdate) -> VfsResult<()> {
+            Err(VfsError::ReadOnlyFilesystem)
+        }
+
+        fn filesystem(&self) -> &dyn FilesystemOps {
+            &*self.fs
+        }
+
+        fn sync(&self, _data_only: bool) -> VfsResult<()> {
+            Ok(())
+        }
+
+        fn into_any(self: Arc<Self>) -> Arc<dyn Any + Send + Sync> {
+            self
+        }
+    }
+
+    impl FsPollable for ReadonlyLeaf {
+        fn poll(&self) -> FsIoEvents {
+            FsIoEvents::IN | FsIoEvents::OUT
+        }
+
+        fn register(&self, _context: &mut core::task::Context<'_>, _events: FsIoEvents) {}
+    }
+
+    impl FileNodeOps for ReadonlyLeaf {
+        fn read_at(&self, _buf: &mut [u8], _offset: u64) -> VfsResult<usize> {
+            Ok(0)
+        }
+
+        fn write_at(&self, _buf: &[u8], _offset: u64) -> VfsResult<usize> {
+            Err(VfsError::ReadOnlyFilesystem)
+        }
+
+        fn append(&self, _buf: &[u8]) -> VfsResult<(usize, u64)> {
+            Err(VfsError::ReadOnlyFilesystem)
+        }
+
+        fn set_len(&self, _len: u64) -> VfsResult<()> {
+            Err(VfsError::ReadOnlyFilesystem)
+        }
+
+        fn set_symlink(&self, _target: &str) -> VfsResult<()> {
+            Err(VfsError::ReadOnlyFilesystem)
+        }
+    }
 
     // SAFETY: This queue is only used to construct a `BlockDeviceHandle` for
     // root selection tests and never stores request segments.
@@ -754,6 +1026,49 @@ mod tests {
         assert_eq!(
             mount_path_for_partition(&gpt_partition_info("boot")),
             "/boot"
+        );
+    }
+
+    #[test]
+    fn readonly_root_uses_transient_mountpoint_for_missing_auto_mount_dir() {
+        let root_fs = Filesystem::new(ReadonlyFs::new(None));
+        let root = axfs_ng_vfs::Mountpoint::new_root(&root_fs).root_location();
+
+        assert_eq!(
+            root.create(
+                "userdata",
+                NodeType::Directory,
+                NodePermission::default(),
+                0,
+                0
+            )
+            .unwrap_err()
+            .canonicalize(),
+            VfsError::ReadOnlyFilesystem
+        );
+
+        let mountpoint = ensure_mountpoint_dir_result(&root, "/userdata").unwrap();
+        assert_eq!(mountpoint.name().as_ref(), "userdata");
+        assert_eq!(mountpoint.node_type(), NodeType::Directory);
+        assert!(root.lookup_no_follow("userdata").is_ok());
+    }
+
+    #[test]
+    fn readonly_root_shadows_bad_mountpoint_type_for_auto_mount_dir() {
+        let root_fs = Filesystem::new(ReadonlyFs::new(Some(NodeType::RegularFile)));
+        let root = axfs_ng_vfs::Mountpoint::new_root(&root_fs).root_location();
+
+        assert_eq!(
+            root.lookup_no_follow("userdata").unwrap().node_type(),
+            NodeType::RegularFile
+        );
+
+        let mountpoint = ensure_mountpoint_dir_result(&root, "/userdata").unwrap();
+        assert_eq!(mountpoint.name().as_ref(), "userdata");
+        assert_eq!(mountpoint.node_type(), NodeType::Directory);
+        assert_eq!(
+            root.lookup_no_follow("userdata").unwrap().node_type(),
+            NodeType::Directory
         );
     }
 
