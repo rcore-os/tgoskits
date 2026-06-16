@@ -927,6 +927,7 @@ impl PhytiumMci {
     ) -> Result<(), Error> {
         self.clear_all_int_status();
         self.regs.idsts().write(u32::MAX);
+        self.irq_state.clear_all();
         self.regs.idinten().write(IDSTS_INT_ENABLE_MASK);
         self.reset_fifo(Phase::Init)?;
         self.reset_dma(Phase::Init)?;
@@ -970,9 +971,9 @@ impl PhytiumMci {
         if raw != 0 {
             self.regs.idsts().write(raw);
         }
-        let status = self.idmac_pending_status | raw;
-        self.idmac_pending_status &= !(IDSTS_RECEIVE | IDSTS_TRANSMIT | IDSTS_ERROR_MASK);
-        status
+        self.irq_state
+            .take_idmac_status(IDSTS_RECEIVE | IDSTS_TRANSMIT | IDSTS_ERROR_MASK)
+            | raw
     }
 
     fn take_data_irq_status(&mut self, cmd_index: u8, phase: Phase) -> Result<RIntSts, Error> {
@@ -985,11 +986,12 @@ impl PhytiumMci {
         if consume != 0 {
             self.regs.rintsts().write(RIntSts::from_bits(consume));
         }
-        let status = self.irq_pending_status | raw_status;
-        self.irq_pending_status &= !(crate::MCI_INT_DATA_TRANSFER_OVER
-            | crate::MCI_INT_RXDR
-            | crate::MCI_INT_TXDR
-            | crate::MCI_INT_ERROR_MASK);
+        let status = self.irq_state.take_status(
+            crate::MCI_INT_DATA_TRANSFER_OVER
+                | crate::MCI_INT_RXDR
+                | crate::MCI_INT_TXDR
+                | crate::MCI_INT_ERROR_MASK,
+        ) | raw_status;
         let ints = RIntSts::from_bits(status);
         if ints.error() {
             return Err(self.translate_int_error(ints, phase, cmd_index));

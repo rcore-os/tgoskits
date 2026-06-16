@@ -165,9 +165,9 @@ impl DwMmc {
                 .rintsts()
                 .write(crate::regs::RIntSts::from_bits(consume));
         }
-        let status = self.irq_pending_status | raw_status;
-        self.irq_pending_status &= !(crate::DWMMC_INT_COMMAND_DONE | crate::DWMMC_INT_ERROR_MASK);
-        status
+        self.irq_state
+            .take(crate::DWMMC_INT_COMMAND_DONE | crate::DWMMC_INT_ERROR_MASK)
+            | raw_status
     }
 
     fn clear_command_int_status(&mut self) {
@@ -178,7 +178,8 @@ impl DwMmc {
                 .rintsts()
                 .write(crate::regs::RIntSts::from_bits(raw_status));
         }
-        self.irq_pending_status &= !(crate::DWMMC_INT_COMMAND_DONE | crate::DWMMC_INT_ERROR_MASK);
+        self.irq_state
+            .clear(crate::DWMMC_INT_COMMAND_DONE | crate::DWMMC_INT_ERROR_MASK);
     }
 }
 

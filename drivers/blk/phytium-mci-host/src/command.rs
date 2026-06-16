@@ -163,9 +163,9 @@ impl PhytiumMci {
         if consume != 0 {
             self.regs.rintsts().write(RIntSts::from_bits(consume));
         }
-        let status = self.irq_pending_status | raw_status;
-        self.irq_pending_status &= !(crate::MCI_INT_COMMAND_DONE | crate::MCI_INT_ERROR_MASK);
-        status
+        self.irq_state
+            .take_status(crate::MCI_INT_COMMAND_DONE | crate::MCI_INT_ERROR_MASK)
+            | raw_status
     }
 
     fn clear_command_int_status(&mut self) {
@@ -174,7 +174,8 @@ impl PhytiumMci {
         if raw_status != 0 {
             self.regs.rintsts().write(RIntSts::from_bits(raw_status));
         }
-        self.irq_pending_status &= !(crate::MCI_INT_COMMAND_DONE | crate::MCI_INT_ERROR_MASK);
+        self.irq_state
+            .clear_status(crate::MCI_INT_COMMAND_DONE | crate::MCI_INT_ERROR_MASK);
     }
 }
 
