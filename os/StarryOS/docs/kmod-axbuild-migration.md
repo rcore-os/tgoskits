@@ -250,11 +250,3 @@ cargo xtask starry qemu --arch riscv64
 insmod /modules/hello.ko
 rmmod hello
 ```
-
-
-## kmod app migration
-
-| kmod        | x86_64             | riscv64            | aarch64            | loongarch64        |
-| ----------- | ------------------ | ------------------ | ------------------ | ------------------ |
-| hello       | :white_check_mark: | :white_check_mark: | :white_check_mark: | :white_check_mark: |
-| linux-hello |                    | :white_check_mark: | :white_check_mark: | :white_check_mark: |
