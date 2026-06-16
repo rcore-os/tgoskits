@@ -77,11 +77,13 @@ impl Mountpoint {
     }
 
     pub fn new(fs: &Filesystem, location_in_parent: Option<Location>) -> Arc<Self> {
-        Self::new_with_root(
+        let result = Self::new_with_root(
             fs.root_dir(),
             location_in_parent,
             DEVICE_COUNTER.fetch_add(1, Ordering::Relaxed),
-        )
+        );
+        result.readonly.store(fs.is_readonly(), Ordering::Release);
+        result
     }
 
     pub fn new_root(fs: &Filesystem) -> Arc<Self> {

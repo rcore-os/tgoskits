@@ -71,6 +71,10 @@ impl<B: BlockDevice> BlockDev<B> {
         }
     }
 
+    pub fn into_inner(self) -> B {
+        self.dev
+    }
+
     /// Creates a cached block device wrapper with a caller-provided buffer.
     pub fn _with_buffer(dev: B, buffer: BlockBuffer) -> Ext4Result<Self> {
         if buffer.len() < 512 {
