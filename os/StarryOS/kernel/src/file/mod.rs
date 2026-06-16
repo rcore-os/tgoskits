@@ -34,7 +34,7 @@ use linux_raw_sys::general::{
 use spin::RwLock;
 
 pub use self::{
-    fs::{Directory, File, resolve_at, with_fs},
+    fs::{Directory, File, ResolveAtResult, resolve_at, with_fs},
     io_uring::IoUring,
     net::Socket,
     nsfd::NsFd,

@@ -86,6 +86,10 @@ impl Memfd {
         &self.inner
     }
 
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
     pub fn get_seals(&self) -> u32 {
         self.seals.load(Ordering::Acquire)
     }
