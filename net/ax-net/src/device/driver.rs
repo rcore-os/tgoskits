@@ -289,19 +289,13 @@ impl EthernetDriver for RdNetDriver {
             return NetIrqEvents::SPURIOUS;
         };
 
-        handler.handle();
-
+        let event = handler.handle_irq();
         let mut events = NetIrqEvents::empty();
-        let mut state = self.state.lock();
-        if let Err(err) = self.prefetch_rx_packets(&mut state, RX_PREFETCH_TARGET) {
-            warn!(
-                "failed to prefetch rx packets for {} during irq: {err:?}",
-                self.name
-            );
-            events |= NetIrqEvents::RX_ERROR;
-        }
-        if !state.pending_rx.is_empty() {
+        if event.rx_queue.iter().next().is_some() {
             events |= NetIrqEvents::RX_READY;
+        }
+        if event.tx_queue.iter().next().is_some() {
+            events |= NetIrqEvents::TX_DONE;
         }
 
         if events.is_empty() {

@@ -66,10 +66,10 @@ pub(crate) fn new_usbfs() -> LinuxResult<Option<Filesystem>> {
     info!("usbfs: spawning refresh task");
     let refresh_manager = manager.clone();
     ax_task::spawn_with_name(
-        move || ax_task::future::block_on(manager::usbfs_refresh_task(refresh_manager.clone())),
+        move || manager::usbfs_refresh_task(refresh_manager.clone()),
         "usbfs-refresh".to_owned(),
     );
-    manager.refresh_event.notify(1);
+    manager.notify_refresh();
 
     Ok(Some(create_filesystem(manager)))
 }

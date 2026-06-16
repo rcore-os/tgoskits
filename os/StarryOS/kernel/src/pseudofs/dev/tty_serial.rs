@@ -1,4 +1,3 @@
-use alloc::collections::vec_deque::VecDeque;
 use core::{
     any::Any,
     ptr::NonNull,
@@ -24,7 +23,7 @@ use sg200x_bsp::{
 use some_serial::ns16550::dw_apb::{DwApbUart, SG2002_UART_CLOCK};
 use starry_vm::{VmMutPtr, VmPtr};
 
-use crate::pseudofs::DeviceOps;
+use crate::pseudofs::{DeviceOps, dev::irq_byte_ring::ByteRing};
 
 const UART1_PADDR: PhysAddr = pa!(0x04150000);
 const UART2_PADDR: PhysAddr = pa!(0x04160000);
@@ -40,8 +39,8 @@ const UART_MMIO_SIZE: usize = 0x1000;
 /// same 4K page; GRTC (0x05027000) is mapped separately.
 const PINMUX_MMIO_SIZE: usize = 0x1000;
 
-static UART1_RX_BUF: SpinNoIrq<VecDeque<u8>> = SpinNoIrq::new(VecDeque::new());
-static UART2_RX_BUF: SpinNoIrq<VecDeque<u8>> = SpinNoIrq::new(VecDeque::new());
+static UART1_RX_BUF: SpinNoIrq<ByteRing<RX_BUF_CAP>> = SpinNoIrq::new(ByteRing::new());
+static UART2_RX_BUF: SpinNoIrq<ByteRing<RX_BUF_CAP>> = SpinNoIrq::new(ByteRing::new());
 static UART1_POLL: PollSet = PollSet::new();
 static UART2_POLL: PollSet = PollSet::new();
 static UART1_NOTIFY: IrqNotify = IrqNotify::new();
@@ -64,14 +63,12 @@ fn iomap_usize(paddr: PhysAddr, size: usize) -> usize {
         .as_usize()
 }
 
-fn uart_irq_handler(vaddr: usize, buf: &SpinNoIrq<VecDeque<u8>>, notify: &IrqNotify) {
+fn uart_irq_handler(vaddr: usize, buf: &SpinNoIrq<ByteRing<RX_BUF_CAP>>, notify: &IrqNotify) {
     let mut uart = DwApbUart::new(vaddr);
     let mut rx = buf.lock();
     let mut got_data = false;
     while let Some(c) = uart.getchar() {
-        if rx.len() < RX_BUF_CAP {
-            rx.push_back(c);
-        }
+        let _ = rx.push_back(c);
         got_data = true;
     }
     uart.set_ier(true);
@@ -174,7 +171,7 @@ struct SerialConfig {
 pub struct TtySerial {
     vaddr: usize,
     irq: usize,
-    rx_buf: &'static SpinNoIrq<VecDeque<u8>>,
+    rx_buf: &'static SpinNoIrq<ByteRing<RX_BUF_CAP>>,
     poll_set: &'static PollSet,
     config: Mutex<SerialConfig>,
 }
@@ -182,7 +179,7 @@ pub struct TtySerial {
 struct UartPort {
     paddr: PhysAddr,
     irq: usize,
-    rx_buf: &'static SpinNoIrq<VecDeque<u8>>,
+    rx_buf: &'static SpinNoIrq<ByteRing<RX_BUF_CAP>>,
     poll_set: &'static PollSet,
     notify: &'static IrqNotify,
     worker_started: &'static AtomicBool,
@@ -263,9 +260,7 @@ impl DeviceOps for TtySerial {
                 return Err(AxError::WouldBlock);
             }
             let n = buf.len().min(rx.len());
-            for slot in buf.iter_mut().take(n) {
-                *slot = rx.pop_front().unwrap();
-            }
+            rx.drain_into(&mut buf[..n]);
             Ok(n)
         }))
     }
