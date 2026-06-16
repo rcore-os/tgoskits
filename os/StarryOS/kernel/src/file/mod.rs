@@ -14,6 +14,7 @@ mod pidfd;
 mod pipe;
 pub mod signalfd;
 pub mod timerfd;
+mod wext;
 
 use alloc::{borrow::Cow, sync::Arc};
 use core::{ffi::c_int, time::Duration};

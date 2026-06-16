@@ -221,6 +221,13 @@ fn adapt_net_device(
         None
     };
 
+    // Capture a standalone control-plane handle *before* the `Net` is consumed
+    // into the data-plane driver, so runtime mode switching can reach this
+    // device's `WifiControl` by name (see `ax_net::reconfigure_wifi`).
+    if let Some(handle) = net.wifi_control_handle() {
+        ax_net::register_wifi_control(name, handle);
+    }
+
     let driver = ax_net::RdNetDriver::new(name, net, irq_num)
         .unwrap_or_else(|err| panic!("failed to adapt net device {name}: {err:?}"));
     let driver = alloc::boxed::Box::new(driver) as alloc::boxed::Box<dyn ax_net::EthernetDriver>;

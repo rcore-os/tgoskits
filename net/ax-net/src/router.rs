@@ -106,6 +106,11 @@ impl Router {
         self.devices.len() - 1
     }
 
+    /// Finds the index of a device by its interface name (e.g. `"wlan0"`).
+    pub fn device_index(&self, name: &str) -> Option<usize> {
+        self.devices.iter().position(|dev| dev.name() == name)
+    }
+
     pub fn set_ipv4_config(
         &mut self,
         dev: usize,
