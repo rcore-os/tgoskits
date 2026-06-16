@@ -1805,7 +1805,7 @@ name = "axloader"
 version = "0.5.11"
 dependencies = [
  "anyhow",
- "httpboot-protocol 0.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "httpboot-protocol",
  "object 0.38.1",
  "uefi",
  "uefi-raw",
@@ -3815,7 +3815,8 @@ checksum = "9844ddc3a6e533d62bba727eb6c28b5d360921d5175e9ff0f1e621a5c590a4d5"
 [[package]]
 name = "fitimage"
 version = "0.1.5"
-source = "git+https://github.com/drivercraft/ostool.git?rev=6c83120729da0404f8100fa9f483e09edf1ec491#6c83120729da0404f8100fa9f483e09edf1ec491"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "504562682d9525f031e80b12fde5df766d141af7ec1ec618f9b442cc71b16db4"
 dependencies = [
  "anyhow",
  "byteorder",
@@ -4302,11 +4303,6 @@ name = "httpboot-protocol"
 version = "0.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f9e48f721c2af981b140072743b055002dd6911a508e747138145bc5d5b9e18b"
-
-[[package]]
-name = "httpboot-protocol"
-version = "0.1.0"
-source = "git+https://github.com/drivercraft/ostool.git?rev=6c83120729da0404f8100fa9f483e09edf1ec491#6c83120729da0404f8100fa9f483e09edf1ec491"
 dependencies = [
  "serde",
  "serde_json",
@@ -4799,7 +4795,8 @@ dependencies = [
 [[package]]
 name = "jkconfig"
 version = "0.2.5"
-source = "git+https://github.com/drivercraft/ostool.git?rev=6c83120729da0404f8100fa9f483e09edf1ec491#6c83120729da0404f8100fa9f483e09edf1ec491"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "59eeb5ea30288afa65e106ebfb412e0742853afaeed94f128e8390161866605b"
 dependencies = [
  "anyhow",
  "cargo_metadata",
@@ -5781,8 +5778,9 @@ dependencies = [
 
 [[package]]
 name = "ostool"
-version = "0.23.0"
-source = "git+https://github.com/drivercraft/ostool.git?rev=6c83120729da0404f8100fa9f483e09edf1ec491#6c83120729da0404f8100fa9f483e09edf1ec491"
+version = "0.23.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "501bb135aae07ff4b1e4144958daa4fda1b1759dc16118f7b1acada4fa8e0c1e"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -5795,7 +5793,7 @@ dependencies = [
  "env_logger",
  "fitimage",
  "futures",
- "httpboot-protocol 0.1.0 (git+https://github.com/drivercraft/ostool.git?rev=6c83120729da0404f8100fa9f483e09edf1ec491)",
+ "httpboot-protocol",
  "indicatif",
  "jkconfig 0.2.5",
  "log",
@@ -9031,7 +9029,8 @@ dependencies = [
 [[package]]
 name = "uboot-shell"
 version = "0.2.5"
-source = "git+https://github.com/drivercraft/ostool.git?rev=6c83120729da0404f8100fa9f483e09edf1ec491#6c83120729da0404f8100fa9f483e09edf1ec491"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5600d26c0e1305dec1c5ee628eaa070cf6476c7527de5a7b5d1946cba9307e5b"
 dependencies = [
  "colored",
  "futures",
