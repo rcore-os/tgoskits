@@ -4,7 +4,7 @@ use alloc::{
 };
 use core::ptr::NonNull;
 
-pub use fdt_edit::{ClockRef, Fdt, InterruptRef, NodeType, Phandle, RegInfo, Status};
+pub use fdt_edit::{ClockRef, Fdt, InterruptRef, NodeId, NodeType, Phandle, RegInfo, Status};
 use spin::{Mutex, Once};
 
 use super::ProbeError;
@@ -108,7 +108,7 @@ pub type FnOnProbe = for<'a> fn(ProbeFdt<'a>) -> Result<(), OnProbeError>;
 pub struct System {
     fdt: Fdt,
     phandle_2_device_id: BTreeMap<Phandle, DeviceId>,
-    probed_names: Mutex<BTreeSet<&'static str>>,
+    populated_nodes: Mutex<BTreeSet<NodeId>>,
 }
 
 unsafe impl Send for System {}
@@ -142,7 +142,7 @@ impl System {
         Ok(Self {
             fdt,
             phandle_2_device_id,
-            probed_names: Mutex::new(BTreeSet::new()),
+            populated_nodes: Mutex::new(BTreeSet::new()),
         })
     }
 
@@ -193,7 +193,8 @@ impl System {
         let node_ls = self.get_fdt_match_nodes(register);
         let mut out = Vec::new();
         for node_info in node_ls {
-            if self.probed_names.lock().contains(node_info.name) {
+            let node_id = node_info.node.id();
+            if self.populated_nodes.lock().contains(&node_id) {
                 continue;
             }
             let node = node_info.node;
@@ -224,7 +225,7 @@ impl System {
             ));
 
             if res.is_ok() {
-                self.probed_names.lock().insert(node_info.name);
+                self.populated_nodes.lock().insert(node_id);
             }
 
             out.push(res);
