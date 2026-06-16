@@ -492,6 +492,9 @@ fn builder(fs: Arc<SimpleFs>) -> DirMaker {
                 ion_device,
             ),
         );
+    }
+    #[cfg(all(feature = "sg2002", not(feature = "plat-dyn")))]
+    {
         root.add(
             "cvi-camera0",
             Device::new(
