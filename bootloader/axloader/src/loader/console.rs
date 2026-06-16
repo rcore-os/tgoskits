@@ -1,8 +1,12 @@
 use core::fmt;
 
-use uefi::boot::{self, OpenProtocolAttributes, OpenProtocolParams};
-use uefi::proto::console::serial::{IoMode, Parity, Serial, StopBits};
-use uefi::proto::console::text::Key;
+use uefi::{
+    boot::{self, OpenProtocolAttributes, OpenProtocolParams},
+    proto::console::{
+        serial::{IoMode, Parity, Serial, StopBits},
+        text::Key,
+    },
+};
 
 #[macro_export]
 macro_rules! log {
@@ -39,11 +43,7 @@ pub fn serial_read_byte() -> Option<u8> {
     uefi::system::with_stdin(|stdin| match stdin.read_key() {
         Ok(Some(Key::Printable(ch))) => {
             let ch = char::from(ch);
-            if ch.is_ascii() {
-                Some(ch as u8)
-            } else {
-                None
-            }
+            if ch.is_ascii() { Some(ch as u8) } else { None }
         }
         Ok(Some(Key::Special(_))) | Ok(None) | Err(_) => None,
     })
