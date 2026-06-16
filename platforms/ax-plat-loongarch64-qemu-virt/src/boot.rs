@@ -89,6 +89,14 @@ unsafe extern "C" fn __boot_start() -> ! {
 
         .globl  _start
     _start:
+        # Save QEMU's boot argument registers ($a0..$a3 at entry) into callee-saved
+        # $s0..$s3 before MMU bring-up clobbers them. QEMU passes the FDT physical
+        # pointer in one of these (which one varies by qemu version/boot path), so
+        # detect_ram() probes all four for the device-tree blob (DTB RAM detection).
+        move        $s0, $a0
+        move        $s1, $a1
+        move        $s2, $a2
+        move        $s3, $a3
         # Setup DMW
         li.d        $t0, {phys_boot_offset} | 0x11
         csrwr       $t0, 0x180      # DMWIN0
@@ -114,8 +122,17 @@ unsafe extern "C" fn __boot_start() -> ! {
         li.d        $t0, {boot_to_virt}
         add.d       $sp, $sp, $t0
 
-        csrrd       $a0, 0x20           # cpuid
-        li.d        $a1, 0              # TODO: parse dtb
+        # Record the saved boot regs ($s0..$s3 = a0..a3) into the plat statics so
+        # detect_ram() can recover the FDT pointer for DTB-based RAM detection.
+        move        $a0, $s0            # arg0 = boot a0
+        move        $a1, $s1            # arg1 = boot a1
+        move        $a2, $s2            # arg2 = boot a2
+        move        $a3, $s3            # arg3 = boot a3
+        la.abs      $t0, {set_fdt}
+        jirl        $ra, $t0, 0         # set_fdt_ptr(a0, a1, a2, a3); returns here
+
+        csrrd       $a0, 0x20           # param1: cpuid
+        li.d        $a1, 0              # param2: unchanged (call_main's second arg)
         la.abs      $t0, {entry}
         li.d        $ra, 0
         jirl        $zero, $t0, 0",
@@ -129,6 +146,7 @@ unsafe extern "C" fn __boot_start() -> ! {
         init_boot_page_table = sym init_boot_page_table,
         init_mmu = sym init_mmu,
         entry = sym ax_plat::call_main,
+        set_fdt = sym crate::mem::set_fdt_ptr,
     )
 }
 
