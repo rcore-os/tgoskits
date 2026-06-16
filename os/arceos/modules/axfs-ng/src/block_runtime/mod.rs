@@ -26,6 +26,7 @@ mod tests {
     static TEST_TASK_OPS: TestTaskOps = TestTaskOps;
     static NEXT_TEST_TASK_ID: AtomicU64 = AtomicU64::new(1_000_000);
     static TEST_TASKS: OnceLock<StdMutex<HashMap<u64, StdArc<TestTaskState>>>> = OnceLock::new();
+    static TEST_TASK_LOCK: StdMutex<()> = StdMutex::new(());
 
     thread_local! {
         static TEST_TASK_ID: Cell<u64> = const { Cell::new(0) };
@@ -114,11 +115,24 @@ mod tests {
         install_test_task_ops();
         TEST_TASK_BLOCKING.with(|blocking| blocking.set(true));
         let task_id = current_test_task_id();
-        let result = f();
-        TEST_TASK_BLOCKING.with(|blocking| blocking.set(false));
-        TEST_TASK_ID.with(|id| id.set(0));
-        test_tasks().lock().unwrap().remove(&task_id);
-        result
+        let _guard = TestTaskGuard { task_id };
+        f()
+    }
+
+    fn test_task_guard() -> std::sync::MutexGuard<'static, ()> {
+        TEST_TASK_LOCK.lock().unwrap()
+    }
+
+    struct TestTaskGuard {
+        task_id: u64,
+    }
+
+    impl Drop for TestTaskGuard {
+        fn drop(&mut self) {
+            TEST_TASK_BLOCKING.with(|blocking| blocking.set(false));
+            TEST_TASK_ID.with(|id| id.set(0));
+            test_tasks().lock().unwrap().remove(&self.task_id);
+        }
     }
 
     fn test_task_is_blocking() -> bool {
@@ -175,6 +189,40 @@ mod tests {
         BlockRuntimeConfig::new(Arc::new(ChannelDrainWake {
             tx: std::sync::Mutex::new(tx),
         }))
+    }
+
+    fn irq_driven_config() -> BlockRuntimeConfig {
+        let mut config = noop_config();
+        config.completion_mode = BlockCompletionMode::IrqDriven;
+        config
+    }
+
+    fn wait_for_pending_count(device: &BlockDeviceHandle, queue_id: usize, expected: usize) {
+        for _ in 0..1000 {
+            if device.pending_count_for_queue(queue_id) == expected {
+                return;
+            }
+            std::thread::yield_now();
+        }
+        assert_eq!(device.pending_count_for_queue(queue_id), expected);
+    }
+
+    fn drain_queue_hint_until_complete(
+        device: &BlockDeviceHandle,
+        bridge: &BlockIrqBridge,
+        queue_id: usize,
+        expected: usize,
+    ) -> usize {
+        let mut completed = 0;
+        for _ in 0..1000 {
+            bridge.record_hint(CompletionHint::Queue { queue_id });
+            completed += device.drain_events();
+            if completed >= expected {
+                return completed;
+            }
+            std::thread::yield_now();
+        }
+        completed
     }
 
     #[derive(Default)]
@@ -1025,12 +1073,13 @@ mod tests {
 
     #[test]
     fn block_device_read_uses_submit_poll_and_wait_token() {
-        let (tx, rx) = mpsc::channel();
+        let _guard = test_task_guard();
+        let bridge = Arc::new(BlockIrqBridge::new());
         let device = BlockDeviceHandle::new(
             "mock",
             [Box::new(MockQueue::with_pending_polls_before_complete(2)) as Box<dyn IQueue>],
-            Arc::new(BlockIrqBridge::new()),
-            channel_config(tx),
+            bridge.clone(),
+            irq_driven_config(),
         )
         .unwrap();
 
@@ -1040,14 +1089,8 @@ mod tests {
             with_blocking_task(|| fs_dev.read_blocks(3, &mut buf)).unwrap();
             buf
         });
-        rx.recv().unwrap();
-        assert_eq!(
-            device.drain_hint(CompletionHint::Request {
-                queue_id: 0,
-                request_id: RequestId::new(1),
-            }),
-            1
-        );
+        wait_for_pending_count(&device, 0, 1);
+        assert_eq!(drain_queue_hint_until_complete(&device, &bridge, 0, 1), 1);
         let buf = handle.join().unwrap();
 
         assert_eq!(buf[0], 3);
@@ -1071,13 +1114,13 @@ mod tests {
 
     #[test]
     fn block_device_queue_hint_drains_pending_request() {
+        let _guard = test_task_guard();
         let bridge = Arc::new(BlockIrqBridge::new());
-        let (tx, rx) = mpsc::channel();
         let device = BlockDeviceHandle::new(
             "mock",
             [Box::new(MockQueue::with_pending_polls_before_complete(2)) as Box<dyn IQueue>],
             bridge.clone(),
-            channel_config(tx),
+            irq_driven_config(),
         )
         .unwrap();
 
@@ -1087,42 +1130,38 @@ mod tests {
             with_blocking_task(|| fs_dev.read_blocks(4, &mut buf)).unwrap();
             buf
         });
-        rx.recv().unwrap();
-        bridge.record_hint(CompletionHint::Queue { queue_id: 0 });
-        assert_eq!(device.drain_events(), 1);
+        wait_for_pending_count(&device, 0, 1);
+        assert_eq!(drain_queue_hint_until_complete(&device, &bridge, 0, 1), 1);
         let buf = handle.join().unwrap();
 
         assert_eq!(buf[0], 4);
     }
 
     #[test]
-    fn block_device_wait_records_queue_ready_before_sleep() {
-        let bridge = Arc::new(BlockIrqBridge::new());
+    fn polling_wait_repolls_without_external_drain_hint() {
+        let _guard = test_task_guard();
         let (tx, rx) = mpsc::channel();
         let device = BlockDeviceHandle::new(
             "mock",
             [Box::new(MockQueue::with_pending_polls_before_complete(2)) as Box<dyn IQueue>],
-            bridge,
+            Arc::new(BlockIrqBridge::new()),
             channel_config(tx),
         )
         .unwrap();
 
-        let fs_dev = device.clone();
-        let handle = std::thread::spawn(move || {
-            let mut buf = alloc::vec![0u8; 512];
-            with_blocking_task(|| fs_dev.read_blocks(4, &mut buf)).unwrap();
-            buf
-        });
-        rx.recv().unwrap();
+        let mut buf = alloc::vec![0u8; 512];
+        device.read_blocks(4, &mut buf).unwrap();
 
-        assert_eq!(device.pending_queue_ready_events(), 1);
-        assert_eq!(device.drain_hint(CompletionHint::Queue { queue_id: 0 }), 1);
-        let buf = handle.join().unwrap();
         assert_eq!(buf[0], 4);
+        assert!(
+            rx.recv_timeout(std::time::Duration::from_millis(100))
+                .is_err()
+        );
     }
 
     #[test]
     fn irq_driven_wait_does_not_self_schedule_drain() {
+        let _guard = test_task_guard();
         let bridge = Arc::new(BlockIrqBridge::new());
         let (tx, rx) = mpsc::channel();
         let mut config = channel_config(tx);
@@ -1156,13 +1195,13 @@ mod tests {
 
     #[test]
     fn block_device_queue_hint_releases_still_pending_batch_request_for_later_hint() {
+        let _guard = test_task_guard();
         let bridge = Arc::new(BlockIrqBridge::new());
-        let (tx, rx) = mpsc::channel();
         let device = BlockDeviceHandle::new(
             "mock",
             [Box::new(MockQueue::with_retry_while_pending()) as Box<dyn IQueue>],
             bridge.clone(),
-            channel_config(tx),
+            irq_driven_config(),
         )
         .unwrap();
 
@@ -1172,11 +1211,12 @@ mod tests {
             with_blocking_task(|| fs_dev.read_blocks(6, &mut buf)).unwrap();
             buf
         });
-        rx.recv().unwrap();
+        wait_for_pending_count(&device, 0, 1);
 
         assert_eq!(device.drain_events(), 0);
         bridge.record_hint(CompletionHint::Queue { queue_id: 0 });
-        assert_eq!(device.drain_events(), 1);
+        assert_eq!(device.drain_events(), 0);
+        assert_eq!(drain_queue_hint_until_complete(&device, &bridge, 0, 1), 1);
         let buf = handle.join().unwrap();
 
         assert_eq!(buf[0], 6);
@@ -1184,9 +1224,9 @@ mod tests {
 
     #[test]
     fn block_device_window_submits_multiple_chunks_before_first_wait() {
+        let _guard = test_task_guard();
         let bridge = Arc::new(BlockIrqBridge::new());
-        let (tx, rx) = mpsc::channel();
-        let mut config = channel_config(tx);
+        let mut config = irq_driven_config();
         config.submit_window = 3;
         config.max_transfer_bytes = 512;
         let device = BlockDeviceHandle::new(
@@ -1203,11 +1243,10 @@ mod tests {
             with_blocking_task(|| fs_dev.read_blocks(1, &mut buf)).unwrap();
             buf
         });
-        rx.recv().unwrap();
+        wait_for_pending_count(&device, 0, 3);
         assert_eq!(device.pending_count_for_queue(0), 3);
 
-        bridge.record_hint(CompletionHint::Queue { queue_id: 0 });
-        assert_eq!(device.drain_events(), 3);
+        assert_eq!(drain_queue_hint_until_complete(&device, &bridge, 0, 3), 3);
         let buf = handle.join().unwrap();
 
         assert_eq!(buf[0], 1);
@@ -1266,6 +1305,7 @@ mod tests {
 
     #[test]
     fn block_device_repoll_during_locked_submit_poll_does_not_deadlock() {
+        let _guard = test_task_guard();
         let (polled_tx, polled_rx) = mpsc::channel();
         let (resume_tx, resume_rx) = mpsc::channel();
         let (done_tx, done_rx) = mpsc::channel();

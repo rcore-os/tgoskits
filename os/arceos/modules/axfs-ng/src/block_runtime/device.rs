@@ -577,30 +577,6 @@ impl BlockDeviceHandle {
         self.pending.lock().matching_driver_keys(queue_id, ids)
     }
 
-    fn record_queue_ready_for_keys(&self, keys: &[RequestKey]) {
-        let queue_bits = {
-            let pending = self.pending.lock();
-            keys.iter().fold(0u64, |bits, &key| {
-                let Some(request) = pending.request(key) else {
-                    return bits;
-                };
-                if request.result().is_some() {
-                    return bits;
-                }
-                let queue_id = request.submitted_request().queue_id;
-                if queue_id < u64::BITS as usize {
-                    bits | (1 << queue_id)
-                } else {
-                    bits
-                }
-            })
-        };
-
-        for queue_id in queue_ids_from_bits(queue_bits) {
-            self.bridge.record_queue_ready(queue_id);
-        }
-    }
-
     fn poll_batch(&self, keys: &[RequestKey]) -> usize {
         let batches = self.claim_poll_batches(keys);
         if batches.is_empty() {
@@ -1216,8 +1192,7 @@ impl BlockDeviceHandle {
             return Ok(());
         }
         if self.completion_mode() == BlockCompletionMode::Polling {
-            self.record_queue_ready_for_keys(&keys);
-            self.drain_wake.wake_drain();
+            return self.polling_wait_for_any_key(&keys);
         }
         if task_id != 0 {
             task_wait_until(|| {
@@ -1245,8 +1220,8 @@ impl BlockDeviceHandle {
             return Ok(true);
         }
         if self.completion_mode() == BlockCompletionMode::Polling {
-            self.bridge.record_queue_ready(queue_id);
-            self.drain_wake.wake_drain();
+            self.remove_queue_progress_waiter(queue_id, task_id);
+            return Ok(self.polling_wait_for_queue_empty(queue_id));
         }
         if task_id != 0 {
             task_wait_until(|| self.pending.lock().keys_for_queue(queue_id).is_empty());
@@ -1268,6 +1243,33 @@ impl BlockDeviceHandle {
         }
     }
 
+    fn polling_wait_for_any_key(&self, keys: &[RequestKey]) -> AxResult {
+        loop {
+            let _ = self.poll_batch(keys);
+            if keys
+                .iter()
+                .any(|&key| self.pending.lock().result(key).is_some())
+            {
+                return Ok(());
+            }
+            core::hint::spin_loop();
+        }
+    }
+
+    fn polling_wait_for_queue_empty(&self, queue_id: usize) -> bool {
+        loop {
+            let keys = self.pending.lock().keys_for_queue(queue_id);
+            if keys.is_empty() {
+                return true;
+            }
+            let _ = self.poll_batch(&keys);
+            if self.pending.lock().keys_for_queue(queue_id).is_empty() {
+                return true;
+            }
+            core::hint::spin_loop();
+        }
+    }
+
     #[cfg(feature = "ext4")]
     fn wait_for_completion(&self, key: RequestKey, dst: Option<&mut [u8]>) -> AxResult {
         let task_id = current_task_id().unwrap_or(0);
@@ -1286,8 +1288,8 @@ impl BlockDeviceHandle {
                         break result;
                     }
                     if self.completion_mode() == BlockCompletionMode::Polling {
-                        self.record_queue_ready_for_keys(&[key]);
-                        self.drain_wake.wake_drain();
+                        self.polling_wait_for_any_key(&[key])?;
+                        continue;
                     }
                     if task_id != 0 {
                         task_wait_until(|| {
