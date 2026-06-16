@@ -334,6 +334,7 @@ const TCP_INFO_DEFAULT_REORDERING: u32 = 3;
 | `DHCP_BOOTSTRAP_ATTEMPTS` | 200 | DHCP bootstrap 最大轮数 |
 | `DHCP_BOOTSTRAP_POLL_INTERVAL` | 10ms | DHCP bootstrap 每轮 sleep |
 | `DHCP_MAX_RETRY_SHIFT` | 4 | DHCP 指数退避上限，最大 16s |
+| `DHCP_SERVER_LEASE_SECS` | 86400s | 内置 SoftAP DHCP server 返回的固定租约时间 |
 | `NEIGHBOR_TTL` | 300s | ARP neighbor cache TTL |
 | `ARP_REQUEST_RETRY` | 1s | ARP request 重试间隔 |
 

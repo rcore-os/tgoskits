@@ -5,324 +5,296 @@ sidebar_label: "测试与限制"
 
 # 测试与限制
 
-`ax-net` 横跨协议栈核心、设备 dataplane、系统调用 ABI 和运行时设备接入。验证时应按改动影响面选择测试层级：纯数据结构改动优先跑 crate 单测；socket、poll、ioctl、AF_PACKET、netlink 或 procfs 改动需要补 StarryOS QEMU 系统测试；涉及 runtime、架构或平台设备路径时再扩展到对应架构。
+本文说明 `ax-net` 现有测试资产、运行方式、覆盖范围和当前限制。测试分三层：`net/ax-net` crate 内单元测试验证协议栈内部数据结构和路由/绑定语义；StarryOS system 测试验证 Linux ABI 观测面；`apps/starry/qemu/dual-net` 验证双网口 DHCP、路由和并发数据面。
 
-## 验证分层
+## 测试资产
 
-| 层级 | 覆盖范围 | 典型触发条件 |
+| 层级 | 位置 | 作用 |
 | --- | --- | --- |
-| `ax-net` 单元测试 | 路由表、接口配置、socket bind 表、TCP listen/orphan、DHCP、DNS、raw deferred RX、队列边界 | 修改 `net/ax-net/src` 内部逻辑 |
-| crate lint / fmt | Rust 风格、clippy 约束、feature 组合基础检查 | 修改 Rust 代码 |
-| StarryOS syscall 测试 | Linux socket ABI、ioctl、AF_PACKET、netlink、procfs、poll/epoll 行为 | 修改 StarryOS 适配层或 `ax-net` public API |
-| 跨架构 QEMU | riscv64、loongarch64、aarch64、x86_64 上的启动、调度、网络 syscall 回归 | 修改同步、原子、poll worker、架构相关接入 |
-| 板级或真实设备验证 | IRQ、DMA、真实 NIC、Wi-Fi/SoftAP、链路状态 | 修改 driver/runtime/设备 worker/OOB RX |
+| crate 单元测试 | [net/ax-net/src](net/ax-net/src) 内各 `#[cfg(test)]` 模块 | 验证 `RouteTable`、`NetControl`/`Service`、TCP/UDP 设备绑定、UDP bind 表、TCP listen 表和通用 socket option |
+| StarryOS system 测试 | [test-suit/starryos/qemu-smp1/system](test-suit/starryos/qemu-smp1/system) | 验证 Linux socket syscall、ioctl、AF_PACKET、netlink、procfs 等 ABI |
+| dual-net 集成测试 | [apps/starry/qemu/dual-net](apps/starry/qemu/dual-net) | 验证两张 virtio-net、双 DHCP、接口绑定下载和并发数据面 |
+| xtask 结构自检 | [scripts/axbuild/src/starry/test.rs](scripts/axbuild/src/starry/test.rs) | 验证 `dual-net` app 配置必须包含双网卡、host HTTP fixture 和 guest probe |
 
-## 推荐命令
+## `ax-net` 单元测试
 
-### 文档改动
-
-仅修改 `docs/docs/architecture/net` 文档时，不需要运行 clippy 或 QEMU。建议至少检查 Markdown 结构、代码块闭合和文档内旧术语：
+### 运行方式
 
 ```bash
-rg -n "^##|^###" docs/docs/architecture/net
-grep -R "^```" -n docs/docs/architecture/net | wc -l
-rg -n "Rounte[r]|ServiceCor[e]|device_mas[k]|#L[0-9]+" docs/docs/architecture/net
-```
-
-### `ax-net` 逻辑改动
-
-修改 `net/ax-net` Rust 逻辑后，优先执行：
-
-```bash
-cargo fmt
-cargo xtask clippy --package ax-net
 cargo test -p ax-net
 ```
 
-`cargo test -p ax-net` 用于 host 单测。若某些 feature 组合依赖内核环境或底层 crate host-test 支持不足，应记录失败原因，并用更贴近目标环境的 `cargo xtask` 验证补足。
+`ax-net` 单元测试是 host-side Rust 测试，主要覆盖不依赖真实 QEMU 设备的内部逻辑。部分测试会使用 [lib.rs](net/ax-net/src/lib.rs) 中的 `test_support` 构造一个 split-route 测试网络：
 
-### StarryOS 系统测试
+```text
+LOCAL_IF = InterfaceId(2), LOCAL_ADDR = 10.0.2.15
+PEER_IF  = InterfaceId(3), PEER_ADDR  = 10.0.3.15
+```
 
-涉及 Linux ABI、socket syscall、poll/epoll、AF_PACKET、netlink 或 `/proc/net/*` 时，使用 `cargo xtask` 跑 StarryOS QEMU：
+`network_test_guard()` 用全局 mutex 串行化会初始化全局网络状态的测试，避免 `SERVICE`、`NET_CONTROL`、`SOCKET_SET` 这类全局单例在并发 host test 中互相污染。
+
+### RouteTable
+
+位置：[router.rs](net/ax-net/src/router.rs)
+
+| 测试 | 覆盖点 |
+| --- | --- |
+| `route_lookup_uses_longest_prefix` | 最长前缀优先，`10.0.1.0/24` 优先于默认路由 |
+| `route_lookup_uses_metric_for_same_prefix` | 同前缀按 metric 小者优先 |
+| `route_lookup_keeps_stable_order_for_equal_metric` | 同前缀、同 metric 时保持插入顺序 |
+| `route_lookup_skips_unusable_interface` | `select_route_if()` 可通过闭包跳过不可用接口 |
+| `default_routes_only_reports_zero_prefix_ipv4_rules` | `default_routes()` 只导出 IPv4 `0.0.0.0/0` 规则 |
+| `bounded_packet_queue_reports_full_and_preserves_order` | 有界队列满时返回错误，并保持 FIFO |
+
+这些测试对应多网口 route decision 的核心排序规则：最长前缀、metric、稳定顺序和接口可用性过滤。
+
+### Service / DHCP 地址状态
+
+位置：[service.rs](net/ax-net/src/service.rs)
+
+| 测试 | 覆盖点 |
+| --- | --- |
+| `dhcp_configured_is_true_once_any_interface_has_address` | 多 DHCP 接口中只要任一接口已获得地址，bootstrap 状态即可视为完成 |
+| `interface_address_table_handles_loopback_and_two_ethernet_addresses` | smoltcp `Interface` address list 能同时保存 loopback、eth0、eth1 IPv4 |
+
+这组测试防止网络初始化重新退化为“只看第一个网卡”或“接口地址表只能容纳单 Ethernet 地址”的模型。
+
+### TCP 设备绑定
+
+位置：[tcp.rs](net/ax-net/src/tcp.rs)
+
+| 测试 | 覆盖点 |
+| --- | --- |
+| `tcp_info_reports_default_socket_metrics` | `TCP_INFO` 在 closed socket 上返回稳定默认字段 |
+| `connect_preserves_bound_interface` | TCP bind 到具体本地地址后，connect 不会被 peer route 改写绑定接口 |
+| `connect_uses_peer_route_when_unbound` | wildcard bind 的 TCP connect 根据目的地址 route decision 选择接口 |
+| `connect_rejects_unroutable_bound_device` | 显式绑定到不可达接口后，connect 返回错误并保留原绑定 |
+
+这组测试覆盖 `SO_BINDTODEVICE` 和本地地址推导出的 `DeviceBinding` 对 TCP connect 的影响。
+
+### UDP 设备绑定
+
+位置：[udp.rs](net/ax-net/src/udp.rs)
+
+| 测试 | 覆盖点 |
+| --- | --- |
+| `connect_preserves_bound_interface` | UDP bind 到具体本地地址后，connect 不会改写绑定接口 |
+| `connect_uses_peer_route_when_unbound` | wildcard bind 的 UDP connect 根据目的地址 route decision 选择接口 |
+| `connect_rejects_unroutable_bound_device` | 显式绑定到不可达接口后，connect 返回错误并保留原绑定 |
+
+UDP 的测试与 TCP 对齐，重点是 datagram socket 的 connected peer 不应破坏本地地址绑定语义。
+
+### UDP Bind Side Table
+
+位置：[wrapper.rs](net/ax-net/src/wrapper.rs)
+
+| 测试 | 覆盖点 |
+| --- | --- |
+| `udp_bind_rules_allow_distinct_specific_addresses` | 相同端口可绑定到不同具体本地地址；相同地址冲突；wildcard 与具体地址冲突 |
+| `udp_bind_rules_reject_specific_after_wildcard` | 已存在 wildcard bind 时拒绝后续具体地址 bind |
+
+这些测试补齐 smoltcp UDP socket 之外的 Linux 风格 wildcard/specific bind 仲裁。
+
+### TCP ListenTable
+
+位置：[listen_table.rs](net/ax-net/src/listen_table.rs)
+
+| 测试 | 覆盖点 |
+| --- | --- |
+| `allows_same_port_on_distinct_specific_addresses` | 同端口可以在不同具体地址上 listen |
+| `wildcard_listener_conflicts_with_specific_addresses` | wildcard listener 与任一具体地址 listener 冲突 |
+
+这组测试覆盖 per-address listen 的冲突规则，是 wildcard listen、`0.0.0.0:port` 和多本地地址共存语义的基础。
+
+### GeneralOptions
+
+位置：[general.rs](net/ax-net/src/general.rs)
+
+| 测试 | 覆盖点 |
+| --- | --- |
+| `device_binding_round_trips_none_and_some_interface` | `DeviceBinding` 在 `GeneralOptions` 中可以从 none 到指定接口再回到 none |
+
+`DeviceBinding` 使用 atomic raw ifindex 保存，这个测试验证 public 语义不会因为内部原子编码而丢失。
+
+## StarryOS system 测试
+
+### 运行方式
+
+完整 QEMU system 组：
+
+```bash
+cargo xtask starry test qemu --arch riscv64 -c qemu-smp1/system
+```
+
+常用跨架构回归：
 
 ```bash
 cargo xtask starry test qemu --arch riscv64
 cargo xtask starry test qemu --arch loongarch64
 ```
 
-跨架构回归可扩展到：
+system 测试使用 StarryOS guest 内的 Linux 用户态程序验证 syscall/ABI 层。网络相关用例主要覆盖以下几类。
 
-```bash
-cargo xtask starry test qemu --arch aarch64
-cargo xtask starry test qemu --arch x86_64
-```
+### Socket Dataplane
 
-需要缩小范围时，优先使用 StarryOS case 选择参数运行 system 组：
+| 测试 | 位置 | 覆盖点 |
+| --- | --- | --- |
+| `syscall-test-socket-dataplane` | [test-suit/starryos/qemu-smp1/system/syscall-test-socket-dataplane](test-suit/starryos/qemu-smp1/system/syscall-test-socket-dataplane) | TCP/UDP/raw socket 数据面基础行为 |
+| `bugfix-bug-tcp-send-no-epoll-notify` | [test-suit/starryos/qemu-smp1/system/bugfix-bug-tcp-send-no-epoll-notify](test-suit/starryos/qemu-smp1/system/bugfix-bug-tcp-send-no-epoll-notify) | TCP send 后 epoll waiter 唤醒 |
 
-```bash
-cargo xtask starry test qemu --arch riscv64 -c qemu-smp1/system
-```
+### ioctl / netlink / procfs
 
-## `ax-net` 单元测试矩阵
-
-### 控制面与路由
-
-| 模块 | 关键测试点 |
-| --- | --- |
-| `InterfaceId` / `DeviceBinding` | Linux ifindex 映射、无绑定/绑定接口读写、无效接口拒绝 |
-| `RouteTable` | 添加、删除、替换规则；最长前缀；低 metric 优先；同 metric 插入顺序稳定 |
-| `select_route_if()` | 接口 `UP` 过滤、`SO_BINDTODEVICE` 过滤、无路由返回错误 |
-| `select_route_for_source()` | 多宿主场景下源地址和出接口一致 |
-| DNS registry | DHCP/static/fallback 排序、去重、不可路由 DNS server 过滤 |
-
-专项路由用例：
-
-```text
-longest prefix:
-  10.0.0.0/8 -> dev0 metric=100
-  10.0.2.0/24 -> dev1 metric=200
-  query 10.0.2.15 => dev1
-
-metric:
-  0.0.0.0/0 -> dev0 metric=100
-  0.0.0.0/0 -> dev1 metric=50
-  query 8.8.8.8 => dev1
-
-source route:
-  eth0 source=10.0.2.15
-  eth1 source=192.168.1.10
-  packet source=192.168.1.10 => eth1
-
-replace interface rules:
-  replace IPv4 rules for interface=2
-  old connected/default routes are removed
-  new connected/default routes are installed
-```
-
-### 设备 dataplane
-
-| 模块 | 关键测试点 |
-| --- | --- |
-| `BoundedPacketQueue` | 容量上限、满队列 drop、长度计数一致、wait/wake 行为 |
-| `QueuedPacket` | 超 MTU 拒绝、inline buffer 无每包堆分配 |
-| `Router::poll()` | 共享 RX queue drain、ingress `InterfaceId` 保留、RX buffer 满时停止 |
-| `Router::dispatch()` | 普通 unicast route lookup、limited broadcast 多接口发送、TX queue 满时 drop/warn |
-| loopback | TX 直接注入 `rx_buffer`，不经过设备队列，并在注入前执行 TCP SYN snoop |
-| waker | 全局设备 waker 与绑定接口 waker 分离 |
-
-需要重点验证 loopback 的两个性质：
-
-```text
-loopback fast path:
-  socket send -> smoltcp tx_buffer
-  Router::dispatch sees LOOPBACK route
-  inject_loopback_rx_direct writes Router.rx_buffer
-  next poll consumes packet in same protocol core
-
-no queue allocation:
-  loopback packet does not enter shared RX queue
-  no Vec/to_vec/Box allocation is required for the loopback hop
-```
-
-### Socket 层
-
-| 模块 | 关键测试点 |
-| --- | --- |
-| `SocketSetWrapper` | socket add/remove、UDP bind side table、wildcard/specific 地址冲突 |
-| `ListenTable` | backlog、per-address listen、wildcard 冲突、SYN queue、accept wake |
-| `GeneralOptions` | nonblocking、send/recv timeout、`SO_REUSEADDR`、`SO_BINDTODEVICE` |
-| `TcpSocket` | bind/connect/listen/accept/send/recv/shutdown、`TCP_INFO`、orphan 转移 |
-| `UdpSocket` | connected/unconnected send、`MSG_MORE` corking、truncation、`SO_REUSEADDR` |
-| `RawSocket` | ICMP echo loopback reply、TTL、IP version 校验、`MSG_PEEK`、deferred RX wire-packet 格式 |
-| Unix socket | pathname/abstract namespace、stream/datagram、cmsg、shutdown |
-| vsock | bind/listen/connect/accept/send/recv、无设备初始化语义 |
-
-TCP listen 建议覆盖：
-
-```text
-per-address listen:
-  listen(127.0.0.1:8080)
-  listen(10.0.2.15:8080)
-  both succeed
-  listen(0.0.0.0:8080) conflicts with either specific listener
-
-accept queue:
-  incoming SYN creates pending socket
-  established pending socket is returned by accept()
-  closed pending socket is skipped and removed
-  queue overflow drops new SYN without corrupting existing entries
-```
-
-UDP bind 建议覆盖：
-
-```text
-wildcard conflict:
-  bind(0.0.0.0:1234)
-  bind(10.0.2.15:1234) => AddressInUse unless reuse policy allows it
-
-device binding:
-  bind(10.0.2.15:1234) derives eth0 binding
-  send uses route allowed by that binding
-  waker registration ignores unrelated interfaces
-```
-
-### DHCP 与动态状态
-
-| 模块 | 关键测试点 |
-| --- | --- |
-| DHCP client | Discovering、Requesting、Bound、NAK reset、xid/mac/interface 过滤 |
-| DHCP commit | smoltcp address list、interface snapshot、DNS、route table 一致更新 |
-| DHCP server | Discover -> Offer、Request -> Ack、客户端 MAC/xid/interface 过滤、租约覆盖 |
-| dynamic device | 分配新 `InterfaceId`、写入 registry、安装路由、启动 worker、唤醒 poll |
-
-DHCP 状态机用例：
-
-```text
-Discovering -> Offer:
-  DhcpState phase=Discovering
-  receive DHCPOFFER with correct xid/mac/interface
-  phase=Requesting
-  no configured event yet
-
-Requesting -> ACK:
-  receive DHCPACK with yiaddr/subnet/router/dns
-  phase=Bound
-  emit Configured event
-  commit updates interface IPv4, DNS and routes
-
-NAK:
-  Bound address exists
-  receive DHCPNAK
-  phase=Discovering
-  emit Deconfigured event
-```
-
-### 生命周期与清理
-
-| 模块 | 关键测试点 |
-| --- | --- |
-| orphan reaper | `Closed` 立即回收、TIME_WAIT/FIN teardown 超时回收、overflow 只回收 Closed |
-| socket drop | TCP orphan 化后仍允许 FIN/TIME_WAIT 推进 |
-| poll worker | socket drop/request_poll 后 net-poll worker 被唤醒 |
-| DNS socket guard | 查询结束后 socket 被释放 |
-
-orphan 测试应避免强制清理仍在 teardown 的 TCP socket。超过 orphan 上限时，优先回收 `Closed`；仍处于 TIME_WAIT、FIN_WAIT、LAST_ACK、CLOSING 的 socket 应保留到超时或自然关闭。
-
-## StarryOS 系统测试矩阵
-
-### Socket dataplane
-
-重点覆盖：
-
-- TCP loopback connect/send/recv/close。
-- UDP send/recv、connected UDP、非阻塞错误。
-- raw ICMP echo 路径。
-- poll/select/epoll readiness。
-- send 后及时唤醒 waiter，避免依赖应用线程同步 poll。
-
-相关测试：
-
-| 测试 | 覆盖点 |
-| --- | --- |
-| `syscall-test-socket-dataplane` | TCP/UDP/raw socket dataplane 基础行为 |
-| `bugfix-bug-tcp-send-no-epoll-notify` | TCP send 后 epoll waiter 唤醒 |
-
-### ioctl、netlink 与 procfs
-
-重点覆盖：
-
-- `SIOCGIFCONF` 返回非零接口列表。
-- `SIOCGIFINDEX` 与 netlink `RTM_GETLINK` 的 ifindex 一致。
-- `SIOCGIFADDR`、`SIOCGIFNETMASK`、`SIOCGIFBRDADDR` 与 `ax-net` 接口快照一致。
-- `RTM_GETADDR` 至少返回 loopback IPv4。
-- `/proc/net/arp` 行格式正确，device 字段来自真实接口名。
-
-相关测试：
-
-| 测试 | 覆盖点 |
-| --- | --- |
-| `bugfix-bug-netlink-getlink` | `RTM_GETLINK`、`SIOCGIFTXQLEN`、link 属性 |
-| `bugfix-bug-netlink-getaddr` | `RTM_GETADDR`、loopback address、link/address dump |
-| `syscall-test-netlink-recvmsg` | netlink recvmsg 基础语义 |
-| `bugfix-bug-proc-net-arp` | `/proc/net/arp` 格式与内容 |
+| 测试 | 位置 | 覆盖点 |
+| --- | --- | --- |
+| `bugfix-bug-netlink-getlink` | [test-suit/starryos/qemu-smp1/system/bugfix-bug-netlink-getlink](test-suit/starryos/qemu-smp1/system/bugfix-bug-netlink-getlink) | `RTM_GETLINK`、`SIOCGIFTXQLEN`、link 属性 |
+| `bugfix-bug-netlink-getaddr` | [test-suit/starryos/qemu-smp1/system/bugfix-bug-netlink-getaddr](test-suit/starryos/qemu-smp1/system/bugfix-bug-netlink-getaddr) | `RTM_GETADDR`、loopback address、link/address dump |
+| `syscall-test-netlink-recvmsg` | [test-suit/starryos/qemu-smp1/system/syscall-test-netlink-recvmsg](test-suit/starryos/qemu-smp1/system/syscall-test-netlink-recvmsg) | netlink recvmsg 基础语义 |
+| `bugfix-bug-proc-net-arp` | [test-suit/starryos/qemu-smp1/system/bugfix-bug-proc-net-arp](test-suit/starryos/qemu-smp1/system/bugfix-bug-proc-net-arp) | `/proc/net/arp` 格式、device 字段和固定 gateway stub 回归 |
 
 ### AF_PACKET
 
-重点覆盖：
+| 测试 | 位置 | 覆盖点 |
+| --- | --- | --- |
+| `bugfix-bug-packet-arping` | [test-suit/starryos/qemu-smp1/system/bugfix-bug-packet-arping](test-suit/starryos/qemu-smp1/system/bugfix-bug-packet-arping) | `AF_PACKET` bind、`SIOCGIFINDEX`、`RTM_GETLINK` 一致性、模拟 gateway ARP reply |
 
-- `socket(AF_PACKET, SOCK_DGRAM, ...)` 创建和权限语义。
-- `bind(sockaddr_ll)` 按 ifindex 绑定接口。
-- `getsockname()` 返回匹配的 `sockaddr_ll`。
-- packet socket ioctl 返回 ifindex、flags 和 MAC。
-- 模拟 gateway ARP reply 工作，loopback 或未知 peer 不产生错误格式响应。
+这些 system 测试验证的是 StarryOS Linux ABI 层是否正确使用 `ax_net::interfaces()`、`InterfaceId`、`arp_entries()` 和 socket facade。它们不替代 `ax-net` crate 单元测试；两者覆盖层级不同。
 
-相关测试：
+## dual-net 集成测试
 
-| 测试 | 覆盖点 |
+`apps/starry/qemu/dual-net` 是双网卡集成测试，用于验证多设备初始化、双 DHCP、route table、接口绑定和并发收发。它是 Starry app 级 QEMU 场景，不属于 `test-suit/starryos` system 分组。
+
+### 运行方式
+
+列出 case：
+
+```bash
+cargo xtask starry app list --kind qemu | rg "qemu/dual-net"
+```
+
+运行 riscv64：
+
+```bash
+cargo xtask starry app qemu -t qemu/dual-net --arch riscv64
+```
+
+运行 x86_64：
+
+```bash
+cargo xtask starry app qemu -t qemu/dual-net --arch x86_64
+```
+
+QEMU 配置：
+
+| 架构 | 配置文件 |
 | --- | --- |
-| `bugfix-bug-packet-arping` | AF_PACKET bind、SIOCGIFINDEX、RTM_GETLINK 一致性、模拟 ARP reply |
+| riscv64 | [apps/starry/qemu/dual-net/qemu-riscv64.toml](apps/starry/qemu/dual-net/qemu-riscv64.toml) |
+| x86_64 | [apps/starry/qemu/dual-net/qemu-x86_64.toml](apps/starry/qemu/dual-net/qemu-x86_64.toml) |
 
-### Namespace 可见性
+### 拓扑
 
-重点覆盖：
+```text
+guest eth0
+  -> virtio-net-pci net0
+  -> QEMU user net 10.0.2.0/24
+  -> DHCP address 10.0.2.15
+  -> host gateway 10.0.2.2
 
-- root network namespace 能看到 loopback 和 Ethernet。
-- 非 root namespace 只暴露 loopback 视图。
-- StarryOS 可见性过滤不改变 `ax-net` 全局 route table。
-- `AF_PACKET` 创建和绑定遵守 root namespace 限制。
+guest eth1
+  -> virtio-net-pci net1
+  -> QEMU user net 10.0.3.0/24
+  -> DHCP address 10.0.3.15
+  -> host gateway 10.0.3.2
 
-## 回归场景
+host HTTP server
+  -> 127.0.0.1:18382 on host
+  -> exposed through each QEMU user net gateway
+  -> payload size 1 MiB, byte value 68
+```
 
-### 多接口路由
+`qemu-*.toml` 会启动 host HTTP server：
 
-验证内容：
+```toml
+[host_http_server]
+bind = "127.0.0.1"
+port = 18382
+body_size = 1048576
+body_byte = 68
+```
 
-- 多个 Ethernet 接口各自有独立 IPv4、metric 和默认路由。
-- 目的地址命中直连路由时优先使用直连接口。
-- 多个默认路由按 metric 选择。
-- `SO_BINDTODEVICE` 或绑定具体本地地址后，只使用匹配接口。
-- smoltcp 已选源地址后，Router dispatch 不从错误接口发送。
+guest 启动后自动执行：
 
-### Loopback
+```text
+/usr/bin/dual-net-tests.sh
+```
 
-验证内容：
+脚本来自 [apps/starry/qemu/dual-net/c/dual-net-tests.sh](apps/starry/qemu/dual-net/c/dual-net-tests.sh)。[prebuild.sh](apps/starry/qemu/dual-net/c/prebuild.sh) 会安装 `curl`，[CMakeLists.txt](apps/starry/qemu/dual-net/c/CMakeLists.txt) 会把 `curl` 和 `dual-net-tests.sh` 安装进 guest rootfs。
 
-- TCP loopback connect 可以在同一协议核心内推进 SYN。
-- UDP loopback send/recv 不经过外部设备 worker。
-- raw ICMP echo loopback reply 使用正确 wire packet 格式。
-- loopback 路径不会因为共享 RX queue 满而丢包；它受 `Router.rx_buffer` 容量约束。
+### Guest 检查项
 
-### Poll 与唤醒
+`dual-net-tests.sh` 执行以下检查：
 
-验证内容：
+- `ifconfig eth0` 或 `ip addr show eth0` 能看到 `10.0.2.15`。
+- `ifconfig eth1` 或 `ip addr show eth1` 能看到 `10.0.3.15`。
+- `curl --interface eth0 http://10.0.2.2:18382/payload.bin?...` 能下载至少 1 MiB。
+- `curl --interface eth1 http://10.0.3.2:18382/payload.bin?...` 能下载至少 1 MiB。
+- 串行下载完成后，再并发从 eth0/eth1 下载。
 
-- socket 热路径只请求 poll，不同步执行 smoltcp poll。
-- RX worker 入队后唤醒 net-poll worker。
-- TX worker 队列 drain 后不阻塞协议核心。
-- accept queue、UDP recv、TCP send/recv 都能唤醒对应 waker。
-- `poll_at()` 定时器可推进 TCP retransmit、TIME_WAIT、DHCP 等事件。
+成功输出包含：
 
-### DNS 与 DHCP
+```text
+DUAL_NET_ETH0_ADDR_OK
+DUAL_NET_ETH1_ADDR_OK
+DUAL_NET_FETCH_ETH0_SINGLE_MS=... BYTES=1048576
+DUAL_NET_FETCH_ETH1_SINGLE_MS=... BYTES=1048576
+DUAL_NET_FETCH_ETH0_PARALLEL_MS=... BYTES=1048576
+DUAL_NET_FETCH_ETH1_PARALLEL_MS=... BYTES=1048576
+DUAL_NET_TEST_PASSED
+```
 
-验证内容：
+失败输出以以下格式开始：
 
-- DHCP ACK 后接口地址、默认路由和 DNS 同步可见。
-- DHCP NAK 后旧地址、旧路由和 DHCP DNS 被清理。
-- 静态 DNS、DHCP DNS、fallback DNS 按 metric 和来源去重排序。
-- 不可路由 DNS server 被跳过，查询尝试下一个 server。
+```text
+DUAL_NET_TEST_FAILED: ...
+```
 
-### ABI 兼容
+### 覆盖范围
 
-验证内容：
+`dual-net` 覆盖：
 
-- `SO_BINDTODEVICE` set/get 往返正确。
-- `SIOCGIFINDEX`、`AF_PACKET sockaddr_ll.sll_ifindex`、netlink ifindex 使用同一 `InterfaceId`。
-- `/proc/net/arp` 不暴露固定 QEMU gateway stub，也不写死 `eth0`。
-- `TCP_INFO`、`SO_TYPE`、`FIONREAD` 从真实 socket 状态返回。
+- runtime 能收集两张 virtio-net 设备。
+- `NetworkConfig` 默认 DHCP 策略能应用到未显式配置的 Ethernet 接口。
+- `eth0` 和 `eth1` 能通过独立 DHCP 获取不同网段地址。
+- route table 同时存在 `10.0.2.0/24` 和 `10.0.3.0/24` connected route。
+- `curl --interface` 通过 Linux ABI 映射到接口绑定，限制 route lookup。
+- 串行和并发下载验证 per-device TX queue、共享 RX queue、device worker 和 net-poll worker 可以持续推进。
 
-## 调试指南
+### xtask 结构自检
 
-### QEMU 只显示 `STARRY_GROUPED_TEST_FAILED`
+[scripts/axbuild/src/starry/test.rs](scripts/axbuild/src/starry/test.rs) 中的 `dual_net_qemu_case_exercises_two_interfaces_and_parallel_fetches` 会静态检查 `dual-net` case 的结构：
+
+- `c/dual-net-tests.sh`、`c/prebuild.sh`、`c/CMakeLists.txt` 必须存在。
+- riscv64 和 x86_64 都必须有 `qemu-*.toml`。
+- QEMU args 必须包含 `net0`、`net1` 两个 virtio-net-pci。
+- net0 必须是 `10.0.2.0/24` 且 DHCP 起始地址为 `10.0.2.15`。
+- net1 必须是 `10.0.3.0/24` 且 DHCP 起始地址为 `10.0.3.15`。
+- `shell_init_cmd` 必须是 `/usr/bin/dual-net-tests.sh`。
+- host HTTP server 必须监听 18382，payload 至少 1 MiB。
+
+这个结构测试防止 app 配置被误删、改成单网卡或失去自动 guest probe。
+
+## 常见失败定位
+
+### `DUAL_NET_TEST_FAILED`
+
+| 现象 | 优先检查 |
+| --- | --- |
+| `eth1 did not get 10.0.3.15` | 第二个 virtio-net 是否被 runtime 收集；默认 DHCP 是否应用到未显式配置接口；DHCP packet ingress `InterfaceId` 是否分发正确 |
+| eth0 成功、eth1 curl 失败 | `SO_BINDTODEVICE` / `curl --interface` 是否映射到 eth1；route table 是否有 `10.0.3.0/24` connected route |
+| 串行成功、并发失败 | RX/TX worker 是否被正确唤醒；队列是否满；net-poll worker 是否持续 poll |
+| 下载字节数小于 1 MiB | TCP receive/send readiness、host HTTP server 暴露、QEMU user net 或 curl 超时 |
+| QEMU timeout | 是否缺少 `curl`、`ip`、`ifconfig`；shell init command 是否执行到 `DUAL_NET_TEST_PASSED` |
+
+### `STARRY_GROUPED_TEST_FAILED`
 
 `cargo xtask starry test qemu` 的汇总输出可能只显示匹配到失败模式。定位时应查更早的 test binary 输出：
 
@@ -365,16 +337,6 @@ info!("dns: {:?}", ax_net::dns_servers());
 - UDP 是否正确设置 `SO_REUSEADDR`，以及该路径是否应跳过 side table。
 - 绑定具体本地地址时，该地址是否属于当前接口 registry。
 
-### DHCP 超时
-
-排查方向：
-
-- DHCP packet 的 ingress `InterfaceId` 是否匹配对应 `DhcpState`。
-- xid、client MAC、message type 是否被过滤。
-- RX worker 是否把 DHCP reply 入队到共享 RX queue。
-- net-poll worker 是否被唤醒。
-- DHCP server 是否在同一二层网络可达。
-
 ### AF_PACKET / netlink 不一致
 
 排查方向：
@@ -384,29 +346,17 @@ info!("dns: {:?}", ax_net::dns_servers());
 - `sockaddr_ll.sll_ifindex` 是否能通过 `InterfaceId::from_linux_ifindex()` 反查接口。
 - namespace 可见性过滤是否导致接口在某条路径可见、另一条路径不可见。
 
-### `/proc/net/arp` 异常
+## 当前限制
 
-排查方向：
+### 测试覆盖限制
 
-- `ax_net::arp_entries()` 是否有对应 entry。
-- ARP entry 的 interface_id 是否能映射回接口名。
-- procfs 输出是否仍残留固定 gateway 或固定 `eth0` 字段。
-- ARP pending queue 是否已满，导致解析请求被丢弃。
+- crate 单元测试主要覆盖纯 Rust 数据结构和 route/bind 语义，不启动真实 smoltcp 端到端 TCP 会话。
+- `dual-net` 使用 QEMU user networking，不覆盖 tap/bridge、真实 NIC IRQ/DMA、RSS 或多队列网卡。
+- `dual-net` 验证双 DHCP 和接口绑定下载，但不验证 link down/up、热插拔和运行期 route 删除。
+- StarryOS system 测试覆盖 Linux ABI 观测面，不直接检查 `Router` 内部队列长度或每包分配情况。
+- vsock、Unix cmsg、DHCP server、OOB RX 仍需要更多专门测试资产。
 
-### net-poll worker 不推进
-
-排查方向：
-
-- `request_poll()` 是否被调用。
-- `NET_POLL_REQUESTED` 是否被置位。
-- `NET_POLL_WAKE` 是否唤醒 worker。
-- `POLLING_INTERFACES` CAS 是否长时间被占用。
-- `next_poll_delay()` 是否返回过长 idle interval。
-- 设备 worker 是否卡在 driver `send()` / `receive()` 持锁路径。
-
-## 已知限制
-
-### 协议与特性范围
+### 协议与功能限制
 
 - IPv6 route、NDP、MLD 和完整 IPv6 socket 语义未作为主路径完善。
 - IGMP/按接口 multicast membership 不完整。
@@ -420,20 +370,4 @@ info!("dns: {:?}", ax_net::dns_servers());
 - 多设备 dataplane 通过 worker 和有界队列解耦，但不是 RSS/NAPI 多队列模型。
 - loopback 已有直接注入快路径，但普通设备 RX/TX 仍存在必要的 packet copy。
 - 尚未实现端到端 zero-copy；这需要 rd-net buffer ownership、packet pool 和 smoltcp token 共同改造。
-
-### 系统集成限制
-
 - StarryOS network namespace 当前主要是可见性过滤，不是完整 per-namespace network stack。
-- 动态 link down/up、接口热插拔、队列重建和 socket 错误传播仍需完善。
-- 真实硬件 IRQ/DMA 行为需要板级验证，QEMU 不能覆盖全部 timing 和 cache 一致性问题。
-
-## 变更验收清单
-
-提交网络相关变更前，按影响面检查：
-
-- 修改 `net/ax-net/src` 逻辑：`cargo fmt`、`cargo xtask clippy --package ax-net`、相关单测。
-- 修改 socket readiness 或 poll：补 StarryOS poll/epoll 或 socket dataplane QEMU 验证。
-- 修改接口、路由、DNS、ARP：补 ioctl、netlink、procfs、multi-interface route 验证。
-- 修改 AF_PACKET：补 `bugfix-bug-packet-arping` 相关路径。
-- 修改 runtime/driver/OOB RX：至少验证 riscv64 QEMU，真实设备改动还应补板级验证记录。
-- 修改文档：检查标题层级、代码块闭合和过期术语。

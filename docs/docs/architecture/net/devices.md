@@ -150,7 +150,24 @@ pub struct EthernetDevice {
 
 ### RdNetDriver
 
-`RdNetDriver` 是 `rd-net` 设备到 `EthernetDriver` trait 的适配层。它持有 `rd_net::TxQueue` 和 `rd_net::RxQueue`，并通过少量 RX 预取降低驱动锁竞争。Router 不直接依赖 `rd-net` 类型，只依赖内部 `Device` trait。
+`RdNetDriver` 是 `rd-net` 设备到 `EthernetDriver` trait 的适配层。它持有 `rd_net::TxQueue`、`rd_net::RxQueue` 和一个很小的 `pending_rx` 预取队列。Router 不直接依赖 `rd-net` 类型，只依赖内部 `Device` trait。
+
+```text
+rd_net::Net
+  -> RdNetDriver
+  -> EthernetDriver trait
+  -> EthernetDevice
+  -> Router DeviceHandle
+```
+
+适配策略：
+
+- RX：`rd_net::RxQueue::receive()` 返回的 packet 被复制到 `VecRxBuffer`，放入 `pending_rx` 或直接交给 `EthernetDevice`。`RX_PREFETCH_TARGET = 1`，只预取一个 packet，避免形成新的缓存层。
+- TX：`alloc_tx_buffer(size)` 返回 `VecTxBuffer`，实际长度为 `max(size, ETH_ZLEN)`，保证 Ethernet 最小帧长 60 字节。
+- IRQ：`handle_irq()` 调用底层 irq handler 后尝试预取 RX packet，并根据结果返回 `NetIrqEvents::RX_READY`、`RX_ERROR` 或 `SPURIOUS`。
+- 错误：`rd_net::NetError::Retry` 映射为 `NetDeviceError::Again`，`NoMemory` / `NotSupported` 保留语义，link down 或其它错误映射为 `Io`。
+
+这个适配层仍然是 copy-based 的。它的目标是隔离 `rd-net` ownership 模型，而不是提供端到端 zero-copy。后续如果要做 zero-copy，需要同时改造 `rd-net` buffer ownership、`EthernetDevice` frame 封装和 smoltcp token 生命周期。
 
 ## Router as MultiDevice
 
@@ -582,6 +599,11 @@ pub fn request_poll() {
 }
 ```
 
+设备 readiness 通过两类 waker 分流：
+
+- `NET_POLL_DEVICE_WAKER`：全局设备 waker，用于告诉 net-poll worker 有协议栈工作需要推进。
+- `register_waker(binding, waker)`：socket readiness waker，只注册到 `DeviceBinding` 允许的接口，避免绑定到 `eth1` 的 socket 被 `eth0` 的 readiness 无意义唤醒。
+
 专用 net-poll worker 独占调用 `poll_until_idle()`：
 
 ```rust
@@ -624,6 +646,53 @@ device RX
 ```
 
 DHCP client ACK 会通过 `NetworkStateUpdate` 更新 smoltcp address list、控制面接口快照、DNS 和 route table。DHCP server 的 Offer/Ack 使用 `Router::send_on_device(dev, next_hop, packet, timestamp)` 从指定接口发出。
+
+#### DHCP Client
+
+DHCP client 属于 `Service` 状态，每个启用 DHCP 的 Ethernet 接口对应一个 `DhcpState`。`Router::poll()` 在把 packet 放入 smoltcp RX buffer 前先做 snoop，DHCP UDP packet 会按 ingress `InterfaceId` 分发给对应 `DhcpState`：
+
+```text
+Ethernet RX frame
+  -> EthernetDevice strips Ethernet/ARP
+  -> Router::poll(packet, ingress_if)
+  -> DhcpState::process_packet(ingress_if, packet)
+  -> optional DhcpEvent
+```
+
+`Configured` 事件提交以下状态：
+
+- smoltcp `Interface` 的 IPv4 address list。
+- `NetControl` 中的接口 IPv4/gateway snapshot。
+- DHCP DNS entries。
+- 该接口的 connected route 和 default route。
+
+`Deconfigured` 事件清理同一接口的 DHCP 地址、DNS 和 IPv4 route。这样某个接口 DHCP NAK 不会影响其它接口的静态地址或 DHCP 状态。
+
+#### DHCP Server
+
+内置 DHCP server 用于 SoftAP 或运行期注册的静态服务接口。它不是通用企业 DHCP server，而是一个轻量的 per-interface server：
+
+```rust
+pub struct DhcpServer {
+    interface_id: InterfaceId,
+    dev: usize,
+    server_ip: Ipv4Address,
+    client_ip: Ipv4Address,
+    mac: EthernetAddress,
+    enabled: bool,
+}
+```
+
+设计语义：
+
+- 只处理进入 `interface_id` 对应接口的 DHCP packet。
+- 主要响应 Discover 和 Request，生成 Offer/Ack。
+- server IP 来自 SoftAP/静态接口地址，client IP 来自 `NetConfig::dhcp_server_client_ip`。
+- 使用固定轻量 lease 时间 `LEASE_SECS = 86400`，不维护复杂租约池。
+- 发送不经过 smoltcp socket，而是直接通过 `Router::send_on_device(dev, next_hop, packet, timestamp)` 从绑定设备发出。
+- 不参与 DHCP client 状态机，也不会更新控制面地址；它服务的是对端客户端。
+
+这个边界避免 DHCP server 和 DHCP client 争抢同一个 UDP socket，也让 SoftAP 设备即使不依赖外部 DHCP 服务也能给对端分配一个简单地址。
 
 ### ARP Entries
 

@@ -71,6 +71,8 @@ TGOSKits 的网络能力收敛在 `net/ax-net`。它是 ArceOS、StarryOS 和 Ax
 | `vsock-poll` worker | vsock 设备轮询，事件分发到 `VSOCK_CONN_MANAGER` | 自适应频率 sleep（100μs→10ms） |
 | `{ifname}-oob-poll` | OOB RX 设备（如 SDIO Wi-Fi）的专用 poll task | `OOB_RX_SIGNAL.wait()` |
 
+`NET_POLL_DEVICE_WAKER` 是全局设备 readiness waker。Router 会把它注册给所有允许触发全局协议栈推进的设备；设备 RX/IRQ/OOB 路径只唤醒 worker 和设置 poll 请求，不直接进入 smoltcp `Interface::poll()`。
+
 ### 全局锁顺序
 
 严格的锁嵌套顺序，防止死锁：

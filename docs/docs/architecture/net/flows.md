@@ -429,6 +429,23 @@ Router::poll()
 
 内置 DHCP server 用于 SoftAP 场景。它在 Router RX snoop 中接收 Discover/Request，生成 Offer/Ack 后通过 `send_on_device()` 从绑定设备发出。它不依赖 smoltcp DHCP socket。
 
+```text
+client DHCP Discover/Request
+  -> device RX
+  -> Router::poll()
+  -> DHCP server classifier checks ingress InterfaceId
+  -> DhcpServer::process_packet()
+  -> build Offer/Ack
+  -> Router::send_on_device(dev, client_ip/broadcast, packet)
+  -> EthernetDevice ARP/Ethernet TX
+```
+
+DHCP server 和 DHCP client 的职责分离：
+
+- client 负责本机作为 DHCP 客户端从外部网络获取地址，并通过 `NetworkStateUpdate` 修改控制面。
+- server 负责本机作为 SoftAP/服务接口给对端分配一个固定客户端地址，不修改本机控制面地址。
+- server 发送路径绕过 smoltcp UDP socket，避免和用户 UDP socket 或 DHCP client socket 竞争端口 67/68。
+
 ### DNS Query
 
 ```text
@@ -468,6 +485,22 @@ UnixSocket
 
 abstract namespace 存在内存 map 中；path namespace 通过 `register_unix_namespace()` 注入。Unix stream accept 使用 transport 自己的 `Pollable` 和 `poll_io()`，不调用 `request_poll()`。
 
+stream 使用双向 ring buffer；datagram 使用 message queue。两者都通过 `PollSet` 唤醒本地 waiters。
+
+```text
+Unix stream sendmsg with cmsg
+  -> write payload to peer RX ring
+  -> enqueue PendingCmsg { start_byte, end_byte, cmsg }
+  -> wake peer poll set
+
+Unix stream recvmsg
+  -> read bytes from RX ring
+  -> deliver cmsg when rx offset reaches start_byte
+  -> stop at cmsg message boundary when needed
+```
+
+datagram 的 cmsg 与 payload 一起封装在单个 packet 中，因此天然保留消息边界；stream 则依靠 byte offset 维护 ancillary data 与发送调用之间的关系。
+
 ### Vsock Stream
 
 vsock 只在 `vsock` feature 下启用：
@@ -480,6 +513,17 @@ VsockSocket
 ```
 
 vsock 不进入 `SocketSet`，也不使用 Router。设备事件由 vsock device/event loop 推进。
+
+```text
+vsock-poll task
+  -> rdif_vsock::Interface::poll()
+  -> event: request / connected / rx / credit / disconnect
+  -> if blocked, keep event in PENDING_EVENTS
+  -> VSOCK_CONN_MANAGER updates Connection
+  -> wake accept/connect/rx/tx waiters
+```
+
+连接管理器维护 listening、connecting、connected 和 closed 状态。listener 通过 `ListenQueue` 和 `AcceptQueue` 接收连接；每条 established connection 拥有 64KiB RX ring，并通过 credit update 唤醒 TX waiters。设备事件处理使用 4KiB 临时 RX buffer；无法立即交付的事件会留在 pending queue，后续 poll 周期继续推进。
 
 ## 并发与锁边界
 

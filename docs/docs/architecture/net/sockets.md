@@ -538,6 +538,64 @@ let (transport, peer_addr) =
     }))?;
 ```
 
+#### Unix Stream
+
+Unix stream 使用两组单向 ring buffer 组成全双工连接：
+
+```text
+endpoint A tx -> endpoint B rx
+endpoint B tx -> endpoint A rx
+```
+
+每个方向还带一条 cmsg side channel。stream 的 ancillary data 不按“单个字节”保存，而是绑定到一次 send 调用产生的字节区间：
+
+```rust
+struct PendingCmsg {
+    start_byte: u64,
+    end_byte: u64,
+    cmsg: Vec<CMsgData>,
+}
+```
+
+接收端在读到 `start_byte` 后交付该 cmsg，并可在 `end_byte` 处截断一次 recv，使下一次 `recvmsg()` 从下一个带 cmsg 的消息边界开始。这避免了 `MSG_PEEK` 或分段读取时把 ancillary data 和 payload 的对应关系打散。
+
+stream listener 的 bind 状态是 `stream::Bind`：
+
+```text
+bind/listen
+  -> install stream::Bind into BindSlot.stream
+connect
+  -> create paired channels
+  -> enqueue server-side ConnRequest
+  -> wake listener poll set
+accept
+  -> receive ConnRequest
+  -> wrap server-side channel as accepted UnixSocket
+```
+
+#### Unix Datagram
+
+Unix datagram 使用 message queue，而不是 byte stream。每个 packet 保存 payload、发送端地址和 cmsg：
+
+```text
+DgramTransport::send
+  -> resolve peer BindSlot.dgram
+  -> enqueue Packet { bytes, addr, cmsg }
+  -> wake receiver poll set
+```
+
+datagram 的消息边界天然保留；`MSG_TRUNC`、接收缓冲区不足和 cmsg 交付都按单个 packet 处理。path namespace 与 abstract namespace 的 ownership 仍通过同一个 `BindSlot` 管理。
+
+#### Credentials
+
+Unix transport 支持 Linux 风格的 credentials 查询：
+
+- `PassCredentials(bool)` 接受 `SO_PASSCRED` 设置，用于兼容 Linux 应用的 option 探测。
+- `PeerCredentials(UnixCredentials)` 返回对端或创建者 PID，uid/gid 当前使用内核默认值。
+- stream channel 在连接建立时保存 peer pid；datagram endpoint 返回绑定 transport 的 pid。
+
+`CMsgData` 是 `Box<dyn Any + Send + Sync>`，由 StarryOS 或上层 ABI 保存具体 ancillary payload。`ax-net` 只负责按 socket 语义运输 cmsg，不解析 Linux `cmsghdr` 二进制布局。
+
 ### Vsock Socket
 
 vsock 是可选 feature，不属于 IP 协议，也不通过 smoltcp poll。facade 只把 `SocketOps` 映射到 `VsockTransport`：
@@ -553,6 +611,68 @@ pub struct VsockSocket {
 ```
 
 核心连接状态位于 `vsock::connection_manager`，设备事件由 vsock 设备层推进。transport enum 提供 stream variant，并为后续 datagram 扩展保留结构。
+
+#### Vsock Connection Manager
+
+`vsock::connection_manager` 是 AF_VSOCK stream 的全局状态表：
+
+```rust
+pub enum ConnectionState {
+    Idle,
+    Listening,
+    Connecting,
+    Connected,
+    Closed,
+}
+
+pub struct VsockConnectionManager {
+    connections: BTreeMap<VsockConnId, Arc<Mutex<Connection>>>,
+    listen_queues: BTreeMap<u32, Arc<Mutex<ListenQueue>>>,
+}
+```
+
+核心对象：
+
+| 对象 | 职责 |
+| --- | --- |
+| `Connection` | 保存 state、local/peer address、RX ring、TX wait queue、RX/connect poll set、半关闭标志和统计 |
+| `AcceptQueue` | listener 的已完成连接队列，容量为 `VSOCK_ACCEPT_QUEUE_SIZE` |
+| `ListenQueue` | 绑定一个 local port，持有 `AcceptQueue` 和 accept poll set |
+| `VSOCK_CONN_MANAGER` | 全局 manager，处理 listen/connect/accept/disconnect 和设备事件 |
+
+每条连接拥有 `VSOCK_RX_BUFFER_SIZE = 64 KiB` 的 RX ring。设备收到数据后写入对应 connection 的 RX ring 并唤醒 `rx_wakers`；socket `recv()` 从 ring 消费。发送路径调用 `device::vsock_send()`，当 peer credit 或设备侧压力不足时通过 `tx_wait_queue` 短暂等待。
+
+vsock 设备层还有一个临时 RX buffer 和 pending event queue：
+
+- `VSOCK_RX_TMPBUF_SIZE = 4 KiB`：poll task 从 `rdif_vsock::Interface` 拉取事件时使用的临时接收缓冲。
+- `PENDING_EVENTS`：当事件暂时无法完整交付给 manager（例如目标连接 RX ring 空间不足）时保存事件，后续 poll 周期继续处理，避免直接丢弃设备事件。
+- `VsockStats` / `get_vsock_stats()`：导出 connection manager 的连接数、监听数和队列状态，用于诊断 vsock 连接泄漏或 accept backlog 问题。
+
+#### Vsock Poll Worker
+
+vsock 设备不进入 smoltcp poll。`start_vsock_poll()` / `stop_vsock_poll()` 使用引用计数控制一个独立 poll task：
+
+```text
+first active vsock socket
+  -> start_vsock_poll()
+  -> spawn vsock-poll task
+
+last active vsock socket dropped
+  -> stop_vsock_poll()
+  -> poll task observes refcount=0 and exits
+```
+
+poll task 从 `rdif_vsock::Interface` 拉取事件，并分发到 `VSOCK_CONN_MANAGER`：
+
+| 事件 | manager 动作 |
+| --- | --- |
+| connection request | 查找 `ListenQueue`，创建 server-side connection，压入 accept queue |
+| connected | 将 outgoing connection 置为 `Connected` 并唤醒 connect waker |
+| received data | 写 RX ring，唤醒 recv waker |
+| credit update | 唤醒 TX wait queue |
+| disconnect | 标记 close，唤醒 RX/connect waiters |
+
+poll 频率自适应：有事件时降低 sleep interval，长时间 idle 时逐步退回较长 interval，避免空轮询占用 CPU。
 
 ## Poll 与唤醒
 
@@ -639,7 +759,7 @@ TCP drop 时，如果 smoltcp socket 已经进入需要继续关闭或 TIME-WAIT
 TcpSocket::drop
   -> unregister_tcp_bound / unlisten if needed
   -> if smoltcp socket still needs protocol cleanup:
-       orphan::register_orphan(handle, timestamp)
+       orphan::add_orphan(handle, timestamp)
      else:
        SOCKET_SET.remove(handle)
 ```

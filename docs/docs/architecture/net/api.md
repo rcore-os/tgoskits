@@ -456,6 +456,42 @@ pub struct TcpInfo {
 }
 ```
 
+### Option 支持矩阵
+
+`GetSocketOption` / `SetSocketOption` 是跨协议的分发格式，并不表示每个 backend 都支持所有 option。backend 返回 `supported = false` 时，统一映射为 `ENOPROTOOPT`；option 值非法时返回具体参数错误。
+
+| Option | 主要实现者 | 语义 |
+| --- | --- | --- |
+| `ReuseAddress` | `GeneralOptions`，UDP/TCP bind 路径读取 | UDP 设置后跳过 wrapper UDP bind side table；TCP 仍受 `TCP_BOUND_PORTS` 和 `ListenTable` 的 wildcard/specific 冲突规则约束 |
+| `Error` | `GeneralOptions` | 返回并清理 socket error 状态；当前主要作为 Linux ABI 兼容字段 |
+| `DontRoute` | `GeneralOptions` | 保存标志位；普通发送路径仍由控制面 route decision 决定接口 |
+| `SendBuffer` / `ReceiveBuffer` | `GeneralOptions`、Unix stream/datagram、vsock | 对 IP socket 主要返回配置值或默认预算；Unix/vsock 按各自 ring/queue 容量返回 |
+| `SendBufferForce` | `GeneralOptions` | 兼容 `SO_SNDBUFFORCE` 风格入口，语义上等价设置发送缓冲区预算 |
+| `KeepAlive` | `GeneralOptions` + TCP | 通用标志由 `GeneralOptions` 保存；TCP backend 同步到 smoltcp keep-alive 配置 |
+| `SendTimeout` / `ReceiveTimeout` | `GeneralOptions` | 被 `send_poller*` / `recv_poller*` 使用，决定阻塞等待超时 |
+| `PassCredentials` | Unix stream/datagram | 保存或接受 Linux `SO_PASSCRED` 语义；credentials 由 Unix transport 生成 |
+| `PeerCredentials` | Unix stream/datagram | 返回 `UnixCredentials { pid, uid, gid }`，uid/gid 当前使用内核默认值 |
+| `SocketType` / `SocketProtocol` / `SocketDomain` | `GeneralOptions` | 由 socket 创建时写入，用于 `getsockopt()` 返回 Linux ABI 可见值 |
+| `BindToDevice` | `GeneralOptions` | 保存 `DeviceBinding`，影响 route lookup 和设备 waker 注册 |
+| `NoDelay` | TCP | 映射 TCP_NODELAY 行为 |
+| `MaxSegment` | TCP | 返回或设置 TCP MSS 相关兼容值，受 smoltcp 能力限制 |
+| `TcpKeepIdle` / `TcpKeepInterval` / `TcpKeepCount` | TCP | 校验 Linux 兼容范围后同步到 TCP keepalive 配置 |
+| `TcpUserTimeout` | TCP | 保存 Linux `TCP_USER_TIMEOUT` 兼容值 |
+| `TcpInfo` | TCP | 从 smoltcp socket 状态和本地默认值合成 `TCP_INFO` snapshot |
+| `Ttl` | raw / IP socket backend | raw socket 使用该值控制发送 TTL |
+| `RecvErr` | `GeneralOptions` | 保存 IP_RECVERR 兼容标志；当前不提供完整 Linux error queue |
+| `NonBlocking` | `GeneralOptions` | 与 `MSG_DONTWAIT` 不同，修改 socket 自身阻塞属性 |
+
+### TCP_INFO
+
+`TcpInfo` 的字段来源分三类：
+
+- 直接来自 smoltcp：连接状态、收发队列长度、窗口估计等。
+- 来自 `tcp.rs` 默认值：MSS、PMTU、初始 RTO、reordering 等 Linux 兼容默认字段。
+- 合成或保守值：smoltcp 未暴露的拥塞控制细节、ECN/SACK/window scale 等字段以保守方式填充。
+
+因此 `TCP_INFO` 适合用于 Linux 兼容探测和调试，不应被上层当作完整 Linux TCP 栈的拥塞控制 ABI。
+
 ## DNS 与名称解析
 
 DNS API 位于 [lib.rs](net/ax-net/src/lib.rs)，使用控制面的 DNS registry 和 route decision。
@@ -516,6 +552,45 @@ pub trait NetTxBuffer: Send {
 ```
 
 `RdNetDriver` 是基于 `rd-net` 的标准适配实现。
+
+### Driver Buffer 与错误语义
+
+`EthernetDriver` 把底层 NIC 的 DMA ring、virtqueue 或 `rd-net` queue 抽象为一次一个 packet 的 buffer ownership：
+
+```text
+RX:
+  driver.receive() -> Box<dyn NetRxBuffer>
+  EthernetDevice reads packet()
+  driver.recycle_rx_buffer(rx_buf)
+
+TX:
+  driver.alloc_tx_buffer(frame_len)
+  EthernetDevice fills packet_mut()
+  driver.transmit(tx_buf)
+  driver.recycle_tx_buffers()
+```
+
+错误类型保持小集合，便于 Router 和设备 worker 做统一策略：
+
+| 错误 | 语义 |
+| --- | --- |
+| `Again` | 暂无 RX packet、TX 暂不可用或需要稍后重试 |
+| `BadState` | 设备未处于可收发状态 |
+| `InvalidParam` | packet size 或参数非法 |
+| `Io` | 底层设备或传输错误 |
+| `NoMemory` | 驱动无法分配 buffer |
+| `Unsupported` | 设备不支持该操作 |
+
+`NetIrqEvents` 是 IRQ summary bitmask。`RX_READY`、`RX_ERROR`、`TX_DONE` 会唤醒相关 worker；`SPURIOUS` 表示没有需要网络栈处理的事件。
+
+### RdNetDriver 适配
+
+`RdNetDriver` 持有 `rd_net::TxQueue`、`rd_net::RxQueue` 和少量 `pending_rx` 预取缓存。它的设计边界是：
+
+- RX 预取目标为 `RX_PREFETCH_TARGET = 1`，只减少一次收包路径上的驱动交互，不形成额外无界缓存。
+- TX 分配会把 frame 长度提升到 Ethernet 最小帧长 `ETH_ZLEN = 60`。
+- `rd_net::NetError::Retry` 映射为 `NetDeviceError::Again`，`NoMemory` / `NotSupported` 保留对应语义，link down 或其它底层错误映射为 `Io`。
+- `ax-net` 上层不依赖 `rd-net` 类型；其它 NIC driver 只要实现 `EthernetDriver` 即可接入。
 
 ### IRQ 注册
 
