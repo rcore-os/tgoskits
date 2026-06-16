@@ -357,11 +357,13 @@ populate_overlay() {
 
     # Sample video — downloaded on the host during build, included in the
     # overlay so the guest can play it without internet access.
-    local video_url="https://media.w3.org/2010/05/sintel/trailer.mp4"
+    # URL can be overridden via STARRY_VIDEO_URL (e.g. a local mirror or
+    # file:// URI when the default endpoint is unreachable from CI/Docker).
+    local video_url="${STARRY_VIDEO_URL:-https://media.w3.org/2010/05/sintel/trailer.mp4}"
     local video_dst="$overlay_dir/usr/share/test.mp4"
     if [[ ! -f "$video_dst" ]]; then
         echo "[ffplay prebuild] downloading sample video..."
-        if wget -q -O "$video_dst" "$video_url" 2>/dev/null; then
+        if wget -4 -q --timeout=15 --dns-timeout=10 -O "$video_dst" "$video_url" 2>/dev/null; then
             echo "[ffplay prebuild] sample video: $(wc -c < "$video_dst") bytes"
         else
             echo "[ffplay prebuild] WARNING: video download failed, generating synthetic..."

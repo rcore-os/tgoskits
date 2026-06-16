@@ -43,7 +43,7 @@ use core::{
 };
 
 use ax_alloc::GlobalPage;
-use ax_errno::AxResult;
+use ax_errno::{AxError, AxResult};
 use ax_memory_addr::{PAGE_SIZE_4K, PhysAddrRange};
 use ax_runtime::hal::{mem::virt_to_phys, time::monotonic_time};
 use ax_sync::Mutex;
@@ -72,12 +72,13 @@ use super::drm::{
     DRM_MODE_OBJECT_CONNECTOR, DRM_MODE_OBJECT_CRTC, DRM_MODE_OBJECT_PLANE,
     DRM_MODE_PAGE_FLIP_EVENT, DRM_MODE_PROP_ATOMIC, DRM_MODE_PROP_BLOB, DRM_MODE_PROP_ENUM,
     DRM_MODE_PROP_IMMUTABLE, DRM_MODE_PROP_OBJECT, DRM_MODE_PROP_RANGE, DRM_PLANE_TYPE_PRIMARY,
-    DRM_PROP_NAME_LEN, DrmAuth, DrmEvent, DrmEventVblank, DrmGetCap, DrmModeAtomic, DrmModeCardRes,
-    DrmModeCreateBlob, DrmModeCreateDumb, DrmModeCrtc, DrmModeCrtcPageFlip, DrmModeDestroyBlob,
-    DrmModeDestroyDumb, DrmModeDirtyFB, DrmModeFbCmd2, DrmModeGetBlob, DrmModeGetConnector,
-    DrmModeGetEncoder, DrmModeGetPlane, DrmModeGetPlaneRes, DrmModeGetProperty, DrmModeMapDumb,
-    DrmModeModeInfo, DrmModeObjGetProperties, DrmModePropertyEnum, DrmPrimeHandle, DrmSetClientCap,
-    DrmSetVersion, DrmUnique, DrmVersion, DrmWaitVblank,
+    DRM_PRIME_CAP_EXPORT, DRM_PRIME_CAP_IMPORT, DRM_PROP_NAME_LEN, DrmAuth, DrmEvent,
+    DrmEventVblank, DrmGetCap, DrmModeAtomic, DrmModeCardRes, DrmModeCreateBlob, DrmModeCreateDumb,
+    DrmModeCrtc, DrmModeCrtcPageFlip, DrmModeDestroyBlob, DrmModeDestroyDumb, DrmModeDirtyFB,
+    DrmModeFbCmd2, DrmModeGetBlob, DrmModeGetConnector, DrmModeGetEncoder, DrmModeGetPlane,
+    DrmModeGetPlaneRes, DrmModeGetProperty, DrmModeMapDumb, DrmModeModeInfo, DrmModeObjGetProperties,
+    DrmModePropertyEnum, DrmPrimeHandle, DrmSetClientCap, DrmSetVersion, DrmUnique, DrmVersion,
+    DrmWaitVblank,
 };
 use crate::{
     file::{FileLike, add_file_like},
@@ -247,16 +248,22 @@ impl FileLike for DmaBufGem {
         "anon_inode:dmabuf".into()
     }
 
-    fn device_mmap(&self, _offset: u64, length: u64) -> AxResult<DeviceMmap> {
-        let len = length.min(self.size) as usize;
-        // Construct a physical address range from the recorded `range.start`
-        // (the physical address of the first byte) and `len` (clamped to
-        // the buffer size).  `PhysAddrRange::from_start_size(start, size)`
-        // is the canonical way to build a `{ start, end = start + size }`
-        // range — it takes a leading address + length rather than two
-        // endpoints, reducing the chance of an off-by-one.
-        let sub = PhysAddrRange::from_start_size(self.range.start, len);
-        Ok(DeviceMmap::Physical(sub, Some(self.pages.clone())))
+    fn device_mmap(&self, offset: u64, length: u64) -> AxResult<DeviceMmap> {
+        // Validate that the requested sub-range fits within the buffer.
+        // `checked_add` guards against a wrapping length that would
+        // bypass the > self.size check.
+        let end = offset.checked_add(length).ok_or(AxError::InvalidInput)?;
+        if end > self.size {
+            return Err(AxError::InvalidInput);
+        }
+        // Return the *full* backing range.  The generic mmap layer
+        // (mmap.rs, Physical arm) adds `offset` to `range.start` and
+        // clamps `length` to `range.size()`, producing the correct
+        // sub-mapping of [base+offset, base+offset+length).  Returning
+        // the full range (rather than a length-clamped subset) avoids
+        // the double-accounting bug where the generic layer would
+        // shrink or invalidate the range after shifting it.
+        Ok(DeviceMmap::Physical(self.range, Some(self.pages.clone())))
     }
 }
 
@@ -833,7 +840,7 @@ fn handle_get_cap(arg: usize) -> VfsResult<usize> {
         DRM_CAP_TIMESTAMP_MONOTONIC => 1,
         DRM_CAP_CRTC_IN_VBLANK_EVENT => 1,
         DRM_CAP_ADDFB2_MODIFIERS => 1,
-        DRM_CAP_PRIME => 1,
+        DRM_CAP_PRIME => DRM_PRIME_CAP_IMPORT | DRM_PRIME_CAP_EXPORT,
         _ => 0,
     };
     ptr.vm_write(cap).map_err(|_| VfsError::BadAddress)?;
