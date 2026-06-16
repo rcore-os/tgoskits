@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.20)
-project(test-fork-execve-wait4 C)
-set(APP_NAME test-fork-execve-wait4)
+project(test-execve C)
+set(APP_NAME test-execve)
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 set(CMAKE_C_EXTENSIONS OFF)
