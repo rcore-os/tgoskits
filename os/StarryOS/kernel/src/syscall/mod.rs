@@ -63,6 +63,10 @@ pub fn handle_syscall(uctx: &mut UserContext) {
             do_exit(Signo::SIGSYS as i32, true);
             return;
         }
+        SeccompDecision::KillThread => {
+            do_exit(Signo::SIGSYS as i32, false);
+            return;
+        }
         SeccompDecision::UnsupportedAction => {
             uctx.set_retval(-LinuxError::ENOSYS.code() as usize);
             return;

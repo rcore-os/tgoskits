@@ -62,6 +62,7 @@ const BPF_X: u16 = 0x08;
 const BPF_TAX: u16 = 0x00;
 const BPF_TXA: u16 = 0x80;
 
+const SECCOMP_RET_KILL_PROCESS: u32 = 0x8000_0000;
 const SECCOMP_RET_KILL_THREAD: u32 = 0x0000_0000;
 const SECCOMP_RET_TRAP: u32 = 0x0003_0000;
 const SECCOMP_RET_ERRNO: u32 = 0x0005_0000;
@@ -139,8 +140,10 @@ pub enum SeccompDecision {
     Allow,
     /// Return `-errno` to userspace without invoking the syscall.
     Errno(u16),
-    /// Terminate the current process because the filter requested a kill.
+    /// Terminate every thread in the current process.
     KillProcess,
+    /// Terminate only the syscalling thread.
+    KillThread,
     /// Reject an action StarryOS does not currently emulate, such as TRAP.
     UnsupportedAction,
 }
@@ -362,7 +365,8 @@ fn action_to_decision(ret: u32) -> SeccompDecision {
     match ret & SECCOMP_RET_ACTION_FULL {
         SECCOMP_RET_ALLOW | SECCOMP_RET_LOG => SeccompDecision::Allow,
         SECCOMP_RET_ERRNO => SeccompDecision::Errno((ret & SECCOMP_RET_DATA) as u16),
-        SECCOMP_RET_KILL_THREAD => SeccompDecision::KillProcess,
+        SECCOMP_RET_KILL_PROCESS => SeccompDecision::KillProcess,
+        SECCOMP_RET_KILL_THREAD => SeccompDecision::KillThread,
         SECCOMP_RET_TRAP | SECCOMP_RET_TRACE => SeccompDecision::UnsupportedAction,
         _ => SeccompDecision::UnsupportedAction,
     }
