@@ -253,7 +253,11 @@ fn ptrace_stop_current_impl(
         }));
     }
 
-    #[cfg(target_arch = "riscv64")]
+    #[cfg(any(
+        target_arch = "riscv64",
+        target_arch = "aarch64",
+        target_arch = "loongarch64"
+    ))]
     {
         thr.proc_data.save_current_fp_for_ptrace(tid);
     }

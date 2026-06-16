@@ -3,7 +3,7 @@ pub mod event;
 mod fs;
 pub mod inotify;
 pub mod io_uring;
-#[cfg(all(feature = "sg2002", not(feature = "plat-dyn")))]
+#[cfg(feature = "sg2002")]
 pub mod ion;
 pub mod memfd;
 mod net;

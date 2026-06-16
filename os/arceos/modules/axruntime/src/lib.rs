@@ -40,6 +40,12 @@ extern crate ax_driver as _;
 
 #[cfg(all(target_os = "none", not(feature = "std-compat"), not(test)))]
 mod lang_items;
+#[cfg(all(
+    feature = "stack-protector",
+    any(target_os = "none", target_env = "musl"),
+    not(test)
+))]
+mod stack_protector;
 
 #[cfg(feature = "smp")]
 mod mp;

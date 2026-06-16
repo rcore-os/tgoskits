@@ -101,6 +101,26 @@ boot/current 栈，也不覆盖未来可能引入的独立 IRQ stack、exception
 或 overflow stack。这个边界与 `plat-dyn` / 非 `plat-dyn` 无直接绑定：
 两种平台模式下，动态任务栈都覆盖，borrowed 栈都暂不覆盖。
 
+Linux 的栈保护包含两层不同机制。`STACK_END_MAGIC` 用于检查任务栈底是否
+被覆盖，作用与当前 `stack-canary` 接近；`CONFIG_STACKPROTECTOR` /
+`CONFIG_STACKPROTECTOR_STRONG` 则依赖编译器在函数栈帧中插入 canary，
+函数返回前比较保存值和运行时 guard，失败时调用 `__stack_chk_fail()`。
+后者可以发现尚未一路覆盖到任务栈底的函数局部栈溢出，是当前机制尚未覆盖
+的方向。
+
+项目后续可参照 Linux 分阶段增强栈帧级保护。第一阶段优先实现跨架构的
+全局 guard 方案：通过 opt-in hardening 开关在构建系统中注入
+`-Z stack-protector=strong`，并在内核运行时提供 `__stack_chk_guard`
+和 `__stack_chk_fail()`。当前 nightly 对项目使用的
+`x86_64-unknown-none`、`riscv64gc-unknown-none-elf`、
+`aarch64-unknown-none-softfloat`、`loongarch64-unknown-none-softfloat`
+四个目标都接受 `-Z stack-protector=strong`，生成对象也统一依赖
+`__stack_chk_guard` / `__stack_chk_fail`，因此全局 guard 方案可以作为
+四架构共同的最小闭环。第二阶段再评估 Linux 风格 per-task 或 per-cpu
+guard：x86_64、riscv64、aarch64 可结合各自 percpu / thread pointer /
+系统寄存器约定逐步设计；loongarch64 在 Linux 6.12 中也主要体现为全局
+`__stack_chk_guard` 路径，建议放在全局方案稳定后再单独评估。
+
 平台栈边界需要按平台类型区分。静态平台可以使用 linker script 中的
 `boot_stack` / `boot_stack_top` 符号作为主 CPU boot stack 的边界；
 `plat-dyn` 下这两个符号只是兼容占位，并不表示真实栈空间。`plat-dyn`
@@ -123,6 +143,9 @@ boot/current 栈，也不覆盖未来可能引入的独立 IRQ stack、exception
 
 - 在更多边界点触发检查，例如任务退出、panic 前诊断或长时间运行的 idle 路径。
 - 持续完善动态任务栈 guard page 的 SMP shootdown、跨架构 QEMU 回归和 fault 诊断。
+- 增加 opt-in 的编译器栈帧级 stack protector，先采用四架构通用的
+  全局 `__stack_chk_guard` / `__stack_chk_fail` 方案，再评估 per-task
+  或 per-cpu guard。
 - 后续在 `axmm` 上补 kernel vmap allocator，把 guard page 从额外物理页演进为仅占虚拟地址空间的空洞。
 - 在 vmap-style 栈和 stack metadata 稳定后，再评估 borrowed boot/current 栈、secondary boot 栈以及专用 IRQ/exception/overflow 栈的 guard page 接入。
 - 完善不同架构和不同平台栈布局的文档，明确 canary 写入位置和误报边界。

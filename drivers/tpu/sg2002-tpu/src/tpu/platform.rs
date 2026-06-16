@@ -9,6 +9,18 @@ use super::{
     types::{CmdIdNode, CpuSyncDesc, DmaHeader, TpuPmuEvent},
 };
 
+/// TIU 中断回调。
+///
+/// 参数分别为当前任务序列号和触发中断时观察到的 BD 命令 ID。
+pub type TiuIrqCallback = fn(seq_no: u32, bd_cmd_id: u32);
+
+/// 轮询等待时的延时函数（由 OS glue 注入）。
+///
+/// 参数为需要等待的微秒数。driver core 自身没有时间源，等待 TDMA 完成
+/// 时需要一个真实计时的延时原语；OS glue 应注入一个按给定微秒数延时的
+/// 实现（如 `busy_wait`）。未注入时 core 退化为 `spin_loop` 自旋。
+pub type DelayFn = fn(usecs: u64);
+
 /// TPU 寄存器备份信息 (用于挂起/恢复)
 #[derive(Debug, Clone, Copy, Default)]
 pub struct TpuRegBackup {
@@ -40,6 +52,10 @@ pub struct TpuRuntimeState {
     pub irq_received: bool,
     /// 备份的寄存器值
     pub reg_backup: TpuRegBackup,
+    /// 当前任务序列号
+    pub current_seq_no: u32,
+    /// TIU 中断回调
+    pub tiu_irq_callback: Option<TiuIrqCallback>,
 }
 
 /// 启用 TPU PMU
@@ -104,7 +120,7 @@ pub fn handle_tdma_irq(tdma: &TdmaRegs, tiu: &TiuRegs, state: &mut TpuRuntimeSta
 pub fn poll_cmdbuf_done(
     tiu: &TiuRegs,
     id_node: &CmdIdNode,
-    state: &TpuRuntimeState,
+    state: &mut TpuRuntimeState,
     timeout_checker: impl Fn() -> bool,
 ) -> Result<(), TpuError> {
     // 检查 TDMA
@@ -123,6 +139,9 @@ pub fn poll_cmdbuf_done(
             let int_flag = (reg_val & (1 << 1)) != 0;
 
             if current_id >= id_node.bd_cmd_id && int_flag {
+                if let Some(callback) = state.tiu_irq_callback {
+                    callback(state.current_seq_no, current_id);
+                }
                 // 清除中断
                 tiu.write_bd_ctrl(0, reg_val | (1 << 1));
                 break;

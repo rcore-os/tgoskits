@@ -329,7 +329,7 @@ impl AxVM {
         #[cfg_attr(not(target_arch = "aarch64"), expect(unused_mut))]
         let mut devices = axdevice::AxVmDevices::new(AxVmDeviceConfig {
             emu_configs: inner_mut.config.emu_devices().to_vec(),
-        });
+        })?;
 
         #[cfg(target_arch = "aarch64")]
         {
@@ -367,7 +367,7 @@ impl AxVM {
                 // FIXME: maybe let `axdevice` handle this automatically?
                 // how to let `axdevice` know whether the VM is in passthrough mode or not?
                 for dev in get_sysreg_device() {
-                    devices.add_sys_reg_dev(dev);
+                    devices.add_sys_reg_dev(dev)?;
                 }
             }
         }

@@ -26,6 +26,7 @@ paging = ["ax-hal/paging", "dep:ax-mm", "dep:axklib"]
 rtc = ["ax-driver/rtc"]
 smp = ["ax-hal/smp", "ax-task?/smp"]
 stack-guard-page = ["multitask", "paging", "ax-task/stack-guard-page"]
+stack-protector = []
 tls = ["ax-hal/tls", "ax-task?/tls"]
 
 plat-dyn = [

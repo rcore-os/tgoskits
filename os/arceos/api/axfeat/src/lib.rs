@@ -17,6 +17,7 @@
 //!     - `sched-fifo`: Use the FIFO cooperative scheduler.
 //!     - `sched-rr`: Use the Round-robin preemptive scheduler.
 //!     - `sched-cfs`: Use the Completely Fair Scheduler (CFS) preemptive scheduler.
+//!     - `stack-protector`: Enable compiler-inserted stack frame canary checks.
 //! - Upperlayer stacks (fs, net, display)
 //!     - `fs`: Enable file system support.
 //!     - `net`: Enable networking support.

@@ -46,6 +46,7 @@ sg2002-wifi = [
     "ax-feat/aic8800-wifi",
 ]
 stack-guard-page = ["ax-feat/stack-guard-page"]
+stack-protector = ["ax-feat/stack-protector"]
 
 [dependencies]
 ax-feat = { workspace = true, features = [

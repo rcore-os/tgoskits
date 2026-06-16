@@ -4030,9 +4030,15 @@ checksum = "6dbf3de79e51f3d586ab4cb9d5c3e2c14aa28ed23d180cf89b4df0454a69cc87"
 
 [[package]]
 name = "httpboot-protocol"
+<<<<<<< httpboot
 version = "0.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f9e48f721c2af981b140072743b055002dd6911a508e747138145bc5d5b9e18b"
+=======
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d964553e2288469f481533e85f9cfceee99a2d73c354c09ac4097e08d890813b"
+>>>>>>> dev
 dependencies = [
  "serde",
  "serde_json",
@@ -5528,9 +5534,15 @@ dependencies = [
 
 [[package]]
 name = "ostool"
+<<<<<<< httpboot
 version = "0.23.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4ec9eacdfb790ef2e905a6e0dd9cf3a870cef92bdebbb3c78fa8bf1657779554"
+=======
+version = "0.23.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4d8a92d73cae88dc8b23722af3df1cafa57db301f27556f004689201addc0394"
+>>>>>>> dev
 dependencies = [
  "anyhow",
  "async-trait",
