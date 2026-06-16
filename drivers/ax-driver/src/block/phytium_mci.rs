@@ -84,7 +84,7 @@ fn probe(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
     let raw = SharedDriver::new(card);
     let dev = SdmmcBlockDevice::new(
         raw,
-        SdmmcBlockConfig::dma("phytium-mci", card_info.capacity_blocks.unwrap_or(0), true),
+        SdmmcBlockConfig::dma("phytium-mci", card_info.capacity_blocks.unwrap_or(0), false),
     );
     let irq = probe.register_block(dev)?;
     info!("phytium-mci block device registered irq={:?}", irq);
