@@ -1,13 +1,11 @@
 struct Board {
     feature: &'static str,
-    arch_feature: &'static str,
     arch_cfg: &'static str,
     uefi_target: &'static str,
 }
 
 const BOARDS: &[Board] = &[Board {
     feature: "CARGO_FEATURE_BOARD_ASUS_NUC15CRH",
-    arch_feature: "CARGO_FEATURE_ARCH_X86_64",
     arch_cfg: "x86_64",
     uefi_target: "x86_64-unknown-uefi",
 }];
@@ -26,9 +24,6 @@ fn main() {
     }
 
     let board = selected_boards[0];
-    if std::env::var_os(board.arch_feature).is_none() {
-        panic!("selected axloader board feature did not enable its arch-* feature");
-    }
     if std::env::var_os("CARGO_CFG_TARGET_OS").as_deref() != Some(std::ffi::OsStr::new("uefi")) {
         return;
     }

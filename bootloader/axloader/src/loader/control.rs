@@ -45,7 +45,9 @@ pub fn fetch_boot_offer() -> Result<BootOffer, ControlError> {
                     offer.kernel_url
                 );
             }
-            Err(err) => return Err(err),
+            Err(err) => {
+                crate::logln!("serial_control_ignored: parse_error={err:?}");
+            }
         }
     }
 }

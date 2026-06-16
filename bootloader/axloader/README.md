@@ -37,9 +37,9 @@ pulling in host-only functionality.
 
 Currently supported board feature:
 
-| Board feature | Architecture feature | UEFI target | EFI boot filename |
+| Board feature | Target architecture | UEFI target | EFI boot filename |
 | --- | --- | --- | --- |
-| `board-asus-nuc15crh` | `arch-x86_64` | `x86_64-unknown-uefi` | `BOOTX64.EFI` |
+| `board-asus-nuc15crh` | `x86_64` | `x86_64-unknown-uefi` | `BOOTX64.EFI` |
 
 The ASUS NUC15CRH target expects an x86_64 ELF image and prefers the
 `httpboot_entry` symbol when the host provides it. If no entry symbol is
@@ -177,15 +177,13 @@ The loader enforces a maximum kernel download size of 256 MiB.
 To add a board, keep the board-specific data small and explicit:
 
 1. Add a `board-*` feature in `Cargo.toml`.
-2. Enable the matching architecture feature from that board feature.
-3. Add a board module under `src/boards/`.
-4. Add a `BootloaderTarget` entry in `src/target.rs`.
-5. Add the matching build-time validation entry in `build.rs`.
-6. Choose the correct UEFI target and default EFI boot filename.
+2. Add a board module under `src/boards/`.
+3. Add a `BootloaderTarget` entry in `src/target.rs`.
+4. Add the matching build-time validation entry in `build.rs`.
+5. Choose the correct UEFI target and default EFI boot filename.
 
-For example, a future LoongArch64 board should use `arch-loongarch64`, a
-LoongArch64 UEFI target, and the firmware-expected EFI boot filename for that
-platform.
+For example, a future LoongArch64 board should use a LoongArch64 UEFI target
+and the firmware-expected EFI boot filename for that platform.
 
 ## Troubleshooting
 
