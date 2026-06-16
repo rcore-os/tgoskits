@@ -83,12 +83,22 @@ fn allocate_boot_info() -> Result<NonNull<OstoolBootInfo>, JumpError> {
 
 #[cfg(target_arch = "x86_64")]
 unsafe fn call_entry_point(entry_point: usize, boot_info: usize) -> ! {
+    // SAFETY: `entry_point` is produced from an ELF image that has already been
+    // validated and loaded by the loader. On x86_64 UEFI, converting a machine
+    // code address represented as `usize` to an `extern "sysv64"` function
+    // pointer is the ABI shape expected by the loaded AxVisor entry. The caller
+    // must ensure the target address points to executable code with this
+    // signature.
     let entry: extern "sysv64" fn(usize) -> ! = unsafe { core::mem::transmute(entry_point) };
     entry(boot_info)
 }
 
 #[cfg(not(target_arch = "x86_64"))]
 unsafe fn call_entry_point(entry_point: usize, boot_info: usize) -> ! {
+    // SAFETY: `entry_point` is produced from an ELF image that has already been
+    // validated and loaded by the loader. The target architecture must define a
+    // C-compatible boot entry ABI for this handoff. The caller must ensure the
+    // target address points to executable code with this signature.
     let entry: extern "C" fn(usize) -> ! = unsafe { core::mem::transmute(entry_point) };
     entry(boot_info)
 }

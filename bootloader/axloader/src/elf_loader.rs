@@ -98,8 +98,8 @@ pub fn download_and_load(
 
 fn load_elf(image: &[u8], entry_symbol: Option<&str>) -> Result<LoadedElf, ElfLoadError> {
     let header = read_struct::<Elf64Header>(image, 0).ok_or(ElfLoadError::TooSmall)?;
-    validate_header(header)?;
-    let segments = load_segments(image, header)?;
+    validate_header(&header)?;
+    let segments = load_segments(image, &header)?;
     if segments.is_empty() {
         return Err(ElfLoadError::LoadSegmentMissing);
     }
@@ -141,7 +141,7 @@ fn load_elf(image: &[u8], entry_symbol: Option<&str>) -> Result<LoadedElf, ElfLo
     }
 
     let entry = match entry_symbol {
-        Some("httpboot_entry") => find_symbol(image, header, "httpboot_entry")
+        Some("httpboot_entry") => find_symbol(image, &header, "httpboot_entry")
             .and_then(|symbol| virtual_to_physical(symbol, &segments))
             .ok_or(ElfLoadError::EntryNotInLoadSegment)?,
         Some(_) => return Err(ElfLoadError::UnsupportedEntrySymbol),
@@ -346,10 +346,10 @@ struct Elf64Symbol {
 }
 
 fn read_section_header(image: &[u8], offset: usize) -> Option<Elf64SectionHeader> {
-    read_struct::<Elf64SectionHeader>(image, offset).copied()
+    read_struct::<Elf64SectionHeader>(image, offset)
 }
 
-fn read_symbol(image: &[u8], offset: usize) -> Option<&Elf64Symbol> {
+fn read_symbol(image: &[u8], offset: usize) -> Option<Elf64Symbol> {
     read_struct::<Elf64Symbol>(image, offset)
 }
 
@@ -365,14 +365,10 @@ fn cstr_at(bytes: &[u8], offset: usize) -> Option<&str> {
     core::str::from_utf8(&tail[..len]).ok()
 }
 
-fn read_struct<T>(image: &[u8], offset: usize) -> Option<&T> {
+fn read_struct<T: Copy>(image: &[u8], offset: usize) -> Option<T> {
     let end = offset.checked_add(mem::size_of::<T>())?;
     let bytes = image.get(offset..end)?;
-    let ptr = bytes.as_ptr();
-    if !(ptr as usize).is_multiple_of(mem::align_of::<T>()) {
-        return None;
-    }
-    Some(unsafe { &*(ptr.cast::<T>()) })
+    Some(unsafe { core::ptr::read_unaligned(bytes.as_ptr().cast::<T>()) })
 }
 
 fn align_down(value: u64, align: u64) -> u64 {
