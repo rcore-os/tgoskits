@@ -2428,7 +2428,7 @@ mod tests {
             case_dir.display()
         );
 
-        for arch in ["x86_64", "riscv64"] {
+        for arch in ["x86_64", "aarch64", "riscv64", "loongarch64"] {
             let config_path = case_dir.join(format!("qemu-{arch}.toml"));
             assert!(
                 config_path.is_file(),

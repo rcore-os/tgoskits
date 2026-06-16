@@ -177,16 +177,30 @@ cargo xtask starry app list --kind qemu | rg "qemu/dual-net"
 cargo xtask starry app qemu -t qemu/dual-net --arch riscv64
 ```
 
+运行 aarch64：
+
+```bash
+cargo xtask starry app qemu -t qemu/dual-net --arch aarch64
+```
+
 运行 x86_64：
 
 ```bash
 cargo xtask starry app qemu -t qemu/dual-net --arch x86_64
 ```
 
+运行 loongarch64：
+
+```bash
+cargo xtask starry app qemu -t qemu/dual-net --arch loongarch64
+```
+
 QEMU 配置：
 
 | 架构 | 配置文件 |
 | --- | --- |
+| aarch64 | [apps/starry/qemu/dual-net/qemu-aarch64.toml](apps/starry/qemu/dual-net/qemu-aarch64.toml) |
+| loongarch64 | [apps/starry/qemu/dual-net/qemu-loongarch64.toml](apps/starry/qemu/dual-net/qemu-loongarch64.toml) |
 | riscv64 | [apps/starry/qemu/dual-net/qemu-riscv64.toml](apps/starry/qemu/dual-net/qemu-riscv64.toml) |
 | x86_64 | [apps/starry/qemu/dual-net/qemu-x86_64.toml](apps/starry/qemu/dual-net/qemu-x86_64.toml) |
 
