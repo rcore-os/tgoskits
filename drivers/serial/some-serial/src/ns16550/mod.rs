@@ -303,6 +303,13 @@ impl<T: Kind> Ns16550<T> {
         let mut event = SerialEvent::empty();
 
         if iir.contains(InterruptIdentificationFlags::NO_INTERRUPT_PENDING) {
+            if self.get_irq_mask().contains(InterruptMask::TX_EMPTY)
+                && self
+                    .read_lsr_preserving()
+                    .contains(LineStatusFlags::TRANSMITTER_HOLDING_EMPTY)
+            {
+                event |= SerialEvent::TX_READY;
+            }
             return event;
         }
 
@@ -751,6 +758,25 @@ mod tests {
         let mut buf = [0];
         assert_eq!(rx.try_read(&mut buf), Ok(1));
         assert_eq!(buf[0], b'z');
+    }
+
+    #[test]
+    fn split_irq_resyncs_tx_ready_when_tx_interrupt_is_enabled() {
+        let (_guard, uart) = serial();
+        let (mut serial, mut tx, _rx, irq) = split_serial(uart);
+
+        serial.set_irq_mask(InterruptMask::TX_EMPTY);
+        REGS[UART_IIR as usize].store(
+            InterruptIdentificationFlags::NO_INTERRUPT_PENDING.bits(),
+            Ordering::SeqCst,
+        );
+        REGS[UART_LSR as usize].store(
+            LineStatusFlags::TRANSMITTER_HOLDING_EMPTY.bits(),
+            Ordering::SeqCst,
+        );
+
+        assert!(irq.handle_irq().tx_ready());
+        assert_eq!(tx.try_write(b"x"), 1);
     }
 
     #[test]

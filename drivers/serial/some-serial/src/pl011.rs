@@ -425,6 +425,12 @@ impl Pl011 {
             event |= SerialEvent::RX_ERROR | SerialEvent::OVERRUN;
         }
 
+        if self.get_irq_mask().contains(InterruptMask::TX_EMPTY)
+            && !self.registers().uartfr.is_set(UARTFR::TXFF)
+        {
+            event |= SerialEvent::TX_READY;
+        }
+
         self.registers().uarticr.set(mis.get());
         event
     }
@@ -748,5 +754,22 @@ mod tests {
 
         assert_eq!(tx.try_write(b"x"), 1);
         assert!(!tx.poll().tx_ready());
+    }
+
+    #[test]
+    fn split_irq_resyncs_tx_ready_when_tx_interrupt_is_enabled() {
+        let (mut regs, uart) = pl011_with_registers();
+        let mut serial = SerialDyn::new_boxed(uart);
+        let mut tx = serial.take_tx().expect("TX queue should be available");
+        let irq = serial
+            .take_irq_handler()
+            .expect("IRQ handler should be available");
+
+        serial.set_irq_mask(InterruptMask::TX_EMPTY);
+        write_test_reg(&mut regs, 0x040, 0);
+        write_test_reg(&mut regs, 0x018, 0);
+
+        assert!(irq.handle_irq().tx_ready());
+        assert_eq!(tx.try_write(b"x"), 1);
     }
 }
