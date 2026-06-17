@@ -23,7 +23,7 @@ use starry_vm::{VmMutPtr, VmPtr, vm_read_slice, vm_write_slice};
 use crate::task::PtraceStopFpData;
 use crate::{
     mm::{AddrSpace, IoVec},
-    task::{AsThread, ProcessData, get_process_data, get_task},
+    task::{AsThread, Cred, ProcessData, get_process_cred, get_process_data, get_task},
 };
 
 const PTRACE_TRACEME: u32 = 0;
@@ -275,8 +275,7 @@ fn ptrace_attach(pid: usize) -> AxResult<isize> {
     if tracee.is_ptrace_traceme() || tracee.is_ptrace_attached() {
         return Err(AxError::from(LinuxError::EPERM));
     }
-    let is_child = tracee.proc.parent().is_some_and(|p| p.pid() == tracer_pid);
-    if !is_child {
+    if !ptrace_may_attach(tracer_pid, tracee_pid, &tracee)? {
         return Err(AxError::from(LinuxError::EPERM));
     }
     tracee.set_ptrace_tracer_pid(tracer_pid);
@@ -474,7 +473,7 @@ fn ptrace_setregs(pid: usize, data: usize) -> AxResult<isize> {
     Err(AxError::Unsupported)
 }
 
-#[cfg(target_arch = "riscv64")]
+#[cfg(any(target_arch = "riscv64", target_arch = "loongarch64"))]
 fn ptrace_getfpregs(pid: usize, data: usize) -> AxResult<isize> {
     if data == 0 {
         return Err(AxError::InvalidInput);
@@ -482,21 +481,21 @@ fn ptrace_getfpregs(pid: usize, data: usize) -> AxResult<isize> {
     let regs = ptrace_read_stopped_fp_regs(pid)?;
     let bytes = unsafe {
         slice::from_raw_parts(
-            (&regs as *const RiscvFpRegs).cast::<u8>(),
-            size_of::<RiscvFpRegs>(),
+            (&regs as *const ArchFpRegs).cast::<u8>(),
+            size_of::<ArchFpRegs>(),
         )
     };
     vm_write_slice(data as *mut u8, bytes)?;
     Ok(0)
 }
 
-#[cfg(not(target_arch = "riscv64"))]
+#[cfg(not(any(target_arch = "riscv64", target_arch = "loongarch64")))]
 fn ptrace_getfpregs(pid: usize, data: usize) -> AxResult<isize> {
     let _ = (pid, data);
     Err(AxError::Unsupported)
 }
 
-#[cfg(target_arch = "riscv64")]
+#[cfg(any(target_arch = "riscv64", target_arch = "loongarch64"))]
 fn ptrace_setfpregs(pid: usize, data: usize) -> AxResult<isize> {
     if data == 0 {
         return Err(AxError::InvalidInput);
@@ -505,7 +504,7 @@ fn ptrace_setfpregs(pid: usize, data: usize) -> AxResult<isize> {
     ptrace_write_stopped_fp_regs(pid, regs)
 }
 
-#[cfg(not(target_arch = "riscv64"))]
+#[cfg(not(any(target_arch = "riscv64", target_arch = "loongarch64")))]
 fn ptrace_setfpregs(pid: usize, data: usize) -> AxResult<isize> {
     let _ = (pid, data);
     Err(AxError::Unsupported)
@@ -521,13 +520,40 @@ fn ptrace_seize(pid: usize, _addr: usize) -> AxResult<isize> {
     if tracee.is_ptrace_traceme() || tracee.is_ptrace_attached() {
         return Err(AxError::from(LinuxError::EPERM));
     }
-    let is_child = tracee.proc.parent().is_some_and(|p| p.pid() == tracer_pid);
-    if !is_child {
+    if !ptrace_may_attach(tracer_pid, tracee_pid, &tracee)? {
         return Err(AxError::from(LinuxError::EPERM));
     }
     tracee.set_ptrace_tracer_pid(tracer_pid);
     tracee.set_ptrace_attached();
     Ok(0)
+}
+
+fn ptrace_may_attach(tracer_pid: Pid, tracee_pid: Pid, tracee: &ProcessData) -> AxResult<bool> {
+    if tracee.proc.parent().is_some_and(|p| p.pid() == tracer_pid) {
+        return Ok(true);
+    }
+
+    let tracer_cred = get_process_cred(tracer_pid)?;
+    if tracer_cred.has_cap_sys_ptrace() {
+        return Ok(true);
+    }
+
+    if tracee.dumpable() != 1 {
+        return Ok(false);
+    }
+
+    let tracee_cred = get_process_cred(tracee_pid)?;
+    Ok(ptrace_creds_match_for_attach(&tracer_cred, &tracee_cred))
+}
+
+fn ptrace_creds_match_for_attach(tracer: &Cred, tracee: &Cred) -> bool {
+    tracer.uid == tracee.uid
+        && tracer.euid == tracee.euid
+        && tracer.suid == tracee.suid
+        && tracer.fsuid == tracee.fsuid
+        && tracer.uid == tracer.euid
+        && tracer.uid == tracer.suid
+        && tracer.uid == tracer.fsuid
 }
 
 fn ptrace_interrupt(pid: usize) -> AxResult<isize> {
@@ -1084,7 +1110,6 @@ pub fn ptrace_setup_singlestep(
     uctx: &mut ax_runtime::hal::cpu::uspace::UserContext,
 ) {
     let pc = uctx.ip();
-    let next_insn_addr = pc.wrapping_add(4);
     let aspace = tracee.aspace();
     let mut aspace = aspace.lock();
 
@@ -1495,6 +1520,17 @@ fn loongarch_next_pc(
     uctx: &ax_runtime::hal::cpu::uspace::UserContext,
 ) -> usize {
     match insn >> 26 {
+        0x10 | 0x11 => {
+            let rj = ((insn >> 5) & 0x1f) as usize;
+            let imm = ((insn & 0x1f) << 16) | ((insn >> 10) & 0xffff);
+            let is_nonzero = insn >> 26 == 0x11;
+            let take = (loongarch_reg(uctx, rj) != 0) == is_nonzero;
+            if take {
+                ptrace_add_offset(pc, ptrace_sign_extend(imm, 21) << 2)
+            } else {
+                pc.wrapping_add(4)
+            }
+        }
         0x13 => {
             let rj = ((insn >> 5) & 0x1f) as usize;
             let offset = ptrace_sign_extend((insn >> 10) & 0xffff, 16) << 2;

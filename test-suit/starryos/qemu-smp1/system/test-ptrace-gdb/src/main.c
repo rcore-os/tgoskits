@@ -8,6 +8,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/prctl.h>
 #include <sys/ptrace.h>
 #include <sys/syscall.h>
 #include <sys/uio.h>
@@ -43,6 +44,9 @@
 #endif
 #ifndef PTRACE_ATTACH
 #define PTRACE_ATTACH 16
+#endif
+#ifndef PTRACE_SEIZE
+#define PTRACE_SEIZE 0x4206
 #endif
 #ifndef PTRACE_KILL
 #define PTRACE_KILL 8
@@ -511,6 +515,28 @@ __attribute__((naked, noinline, aligned(4))) static void ss_blt_target(void)
         "break 0\n");
 }
 
+__attribute__((naked, noinline, aligned(4))) static void ss_beqz_target(void)
+{
+    __asm__ volatile(
+        "beqz $a0, 1f\n"
+        "addi.d $a2, $zero, 111\n"
+        "break 0\n"
+        "1:\n"
+        "addi.d $a2, $zero, 777\n"
+        "break 0\n");
+}
+
+__attribute__((naked, noinline, aligned(4))) static void ss_bnez_target(void)
+{
+    __asm__ volatile(
+        "bnez $a0, 1f\n"
+        "addi.d $a2, $zero, 111\n"
+        "break 0\n"
+        "1:\n"
+        "addi.d $a2, $zero, 888\n"
+        "break 0\n");
+}
+
 __attribute__((naked, noinline, aligned(4))) static void ss_jirl_target(void)
 {
     __asm__ volatile(
@@ -728,6 +754,16 @@ static int test_singlestep(void)
     }
     if (check_singlestep_stops_before_target_side_effect(
             pid, &regs, (unsigned long)ss_blt_target, 3, 9, 0, 0, 555)
+        != 0) {
+        return 1;
+    }
+    if (check_singlestep_stops_before_target_side_effect(
+            pid, &regs, (unsigned long)ss_beqz_target, 0, 0, 0, 0, 777)
+        != 0) {
+        return 1;
+    }
+    if (check_singlestep_stops_before_target_side_effect(
+            pid, &regs, (unsigned long)ss_bnez_target, 5, 0, 0, 0, 888)
         != 0) {
         return 1;
     }
@@ -966,6 +1002,225 @@ static int test_attach(void)
         return 1;
     }
     printf("  ok: detached, child exited 42\n");
+    return 0;
+}
+
+static int test_same_uid_sibling_attach(void)
+{
+    printf("test 4b: same-uid sibling PTRACE_ATTACH\n");
+
+    int ready_pipe[2];
+    int release_pipe[2];
+    if (pipe(ready_pipe) != 0) {
+        return fail("same-uid ready pipe");
+    }
+    if (pipe(release_pipe) != 0) {
+        close(ready_pipe[0]);
+        close(ready_pipe[1]);
+        return fail("same-uid release pipe");
+    }
+
+    pid_t tracee = fork();
+    if (tracee < 0) {
+        return fail("fork same-uid tracee");
+    }
+    if (tracee == 0) {
+        close(ready_pipe[0]);
+        close(release_pipe[1]);
+        if (setresuid(1000, 1000, 1000) != 0) {
+            _exit(100);
+        }
+        if (prctl(PR_SET_DUMPABLE, 1) != 0 || prctl(PR_GET_DUMPABLE) != 1) {
+            _exit(102);
+        }
+        char c = 'T';
+        if (write(ready_pipe[1], &c, 1) != 1) {
+            _exit(101);
+        }
+        close(ready_pipe[1]);
+        wait_for_release_then_exit(release_pipe[0], 43);
+    }
+
+    close(ready_pipe[1]);
+    char c;
+    if (read(ready_pipe[0], &c, 1) != 1) {
+        kill(tracee, SIGKILL);
+        close(ready_pipe[0]);
+        close(release_pipe[0]);
+        close(release_pipe[1]);
+        waitpid(tracee, NULL, 0);
+        return fail("read same-uid tracee ready pipe");
+    }
+    close(ready_pipe[0]);
+
+    pid_t tracer = fork();
+    if (tracer < 0) {
+        kill(tracee, SIGKILL);
+        close(release_pipe[0]);
+        close(release_pipe[1]);
+        waitpid(tracee, NULL, 0);
+        return fail("fork same-uid tracer");
+    }
+    if (tracer == 0) {
+        close(release_pipe[0]);
+        if (setresuid(1000, 1000, 1000) != 0) {
+            _exit(110);
+        }
+        if (ptrace(PTRACE_ATTACH, tracee, NULL, NULL) != 0) {
+            _exit(111);
+        }
+
+        int status = 0;
+        if (waitpid(tracee, &status, 0) != tracee) {
+            ptrace(PTRACE_KILL, tracee, NULL, NULL);
+            _exit(112);
+        }
+        if (!WIFSTOPPED(status) || WSTOPSIG(status) != SIGSTOP) {
+            ptrace(PTRACE_KILL, tracee, NULL, NULL);
+            _exit(113);
+        }
+        if (ptrace(PTRACE_DETACH, tracee, NULL, NULL) != 0) {
+            ptrace(PTRACE_KILL, tracee, NULL, NULL);
+            _exit(114);
+        }
+        char release = 'R';
+        if (write(release_pipe[1], &release, 1) != 1) {
+            _exit(115);
+        }
+        close(release_pipe[1]);
+        _exit(0);
+    }
+
+    close(release_pipe[0]);
+    int tracer_status = 0;
+    if (waitpid(tracer, &tracer_status, 0) != tracer) {
+        kill(tracee, SIGKILL);
+        close(release_pipe[1]);
+        waitpid(tracee, NULL, 0);
+        return fail("wait same-uid tracer");
+    }
+    if (!WIFEXITED(tracer_status) || WEXITSTATUS(tracer_status) != 0) {
+        printf("FAIL: same-uid sibling tracer status=%#x\n", tracer_status);
+        kill(tracee, SIGKILL);
+        close(release_pipe[1]);
+        waitpid(tracee, NULL, 0);
+        return 1;
+    }
+    close(release_pipe[1]);
+
+    int tracee_status = 0;
+    if (waitpid(tracee, &tracee_status, 0) != tracee || !WIFEXITED(tracee_status)
+        || WEXITSTATUS(tracee_status) != 43) {
+        printf("FAIL: same-uid sibling tracee status=%#x\n", tracee_status);
+        return 1;
+    }
+
+    printf("  ok: non-parent same-uid tracer attached and detached\n");
+    return 0;
+}
+
+static int test_same_uid_sibling_attach_rejects_nondumpable(void)
+{
+    printf("test 4c: same-uid sibling attach rejects nondumpable tracee\n");
+
+    int ready_pipe[2];
+    int release_pipe[2];
+    if (pipe(ready_pipe) != 0) {
+        return fail("nondumpable ready pipe");
+    }
+    if (pipe(release_pipe) != 0) {
+        close(ready_pipe[0]);
+        close(ready_pipe[1]);
+        return fail("nondumpable release pipe");
+    }
+
+    pid_t tracee = fork();
+    if (tracee < 0) {
+        return fail("fork nondumpable tracee");
+    }
+    if (tracee == 0) {
+        close(ready_pipe[0]);
+        close(release_pipe[1]);
+        if (setresuid(1000, 1000, 1000) != 0) {
+            _exit(100);
+        }
+        if (prctl(PR_GET_DUMPABLE) != 0) {
+            _exit(101);
+        }
+        char c = 'N';
+        if (write(ready_pipe[1], &c, 1) != 1) {
+            _exit(102);
+        }
+        close(ready_pipe[1]);
+        wait_for_release_then_exit(release_pipe[0], 44);
+    }
+
+    close(ready_pipe[1]);
+    char c;
+    if (read(ready_pipe[0], &c, 1) != 1) {
+        kill(tracee, SIGKILL);
+        close(ready_pipe[0]);
+        close(release_pipe[0]);
+        close(release_pipe[1]);
+        waitpid(tracee, NULL, 0);
+        return fail("read nondumpable tracee ready pipe");
+    }
+    close(ready_pipe[0]);
+
+    pid_t tracer = fork();
+    if (tracer < 0) {
+        kill(tracee, SIGKILL);
+        close(release_pipe[0]);
+        close(release_pipe[1]);
+        waitpid(tracee, NULL, 0);
+        return fail("fork nondumpable tracer");
+    }
+    if (tracer == 0) {
+        close(release_pipe[0]);
+        if (setresuid(1000, 1000, 1000) != 0) {
+            _exit(110);
+        }
+        errno = 0;
+        if (ptrace(PTRACE_ATTACH, tracee, NULL, NULL) == 0 || errno != EPERM) {
+            _exit(111);
+        }
+        errno = 0;
+        if (ptrace(PTRACE_SEIZE, tracee, NULL, NULL) == 0 || errno != EPERM) {
+            _exit(112);
+        }
+        char release = 'R';
+        if (write(release_pipe[1], &release, 1) != 1) {
+            _exit(113);
+        }
+        close(release_pipe[1]);
+        _exit(0);
+    }
+
+    close(release_pipe[0]);
+    int tracer_status = 0;
+    if (waitpid(tracer, &tracer_status, 0) != tracer) {
+        kill(tracee, SIGKILL);
+        close(release_pipe[1]);
+        waitpid(tracee, NULL, 0);
+        return fail("wait nondumpable tracer");
+    }
+    if (!WIFEXITED(tracer_status) || WEXITSTATUS(tracer_status) != 0) {
+        printf("FAIL: nondumpable sibling tracer status=%#x\n", tracer_status);
+        kill(tracee, SIGKILL);
+        close(release_pipe[1]);
+        waitpid(tracee, NULL, 0);
+        return 1;
+    }
+    close(release_pipe[1]);
+
+    int tracee_status = 0;
+    if (waitpid(tracee, &tracee_status, 0) != tracee || !WIFEXITED(tracee_status)
+        || WEXITSTATUS(tracee_status) != 44) {
+        printf("FAIL: nondumpable sibling tracee status=%#x\n", tracee_status);
+        return 1;
+    }
+
+    printf("  ok: non-parent same-uid tracer cannot attach nondumpable target\n");
     return 0;
 }
 
@@ -1440,7 +1695,7 @@ static int test_legacy_regsets(void)
     }
     waitpid(pid, &status, 0);
 
-#if !ARCH_RISCV
+#if !(ARCH_RISCV || ARCH_LOONGARCH)
     printf("  ok: legacy GETREGS/SETREGS work; legacy FPREGS skipped on this arch\n");
     return 0;
 #else
@@ -1455,8 +1710,7 @@ static int test_legacy_regsets(void)
         }
         raise(SIGSTOP);
 
-        unsigned long f0_bits = 0;
-        __asm__ volatile("fmv.x.d %0, f0" : "=r"(f0_bits));
+        unsigned long f0_bits = read_f0_bits();
         _exit(f0_bits == 0x4010000000000000UL ? 42 : 1);
     }
 
@@ -1465,25 +1719,26 @@ static int test_legacy_regsets(void)
         return 1;
     }
 
-    struct riscv_user_fpregs fpregs;
+    arch_user_fpregs fpregs;
     memset(&fpregs, 0, sizeof(fpregs));
     if (ptrace(PTRACE_GETFPREGS, pid, NULL, &fpregs) != 0) {
         return fail("legacy getfpregs");
     }
-    fpregs.f[0] = 0x4010000000000000UL;
-    fpregs.f[2] = 0x12345678UL;
+    fpregs_set_f0(&fpregs, 0x4010000000000000UL);
+    fpregs_set_f1(&fpregs, 0x12345678UL);
     if (ptrace(PTRACE_SETFPREGS, pid, NULL, &fpregs) != 0) {
         return fail("legacy setfpregs");
     }
 
-    struct riscv_user_fpregs fpregs2;
+    arch_user_fpregs fpregs2;
     memset(&fpregs2, 0, sizeof(fpregs2));
     if (ptrace(PTRACE_GETFPREGS, pid, NULL, &fpregs2) != 0) {
         return fail("legacy getfpregs after set");
     }
-    if (fpregs2.f[0] != 0x4010000000000000UL || fpregs2.f[2] != 0x12345678UL) {
-        printf("FAIL: legacy fpregs mismatch f0=%#lx f2=%#lx\n",
-               fpregs2.f[0], fpregs2.f[2]);
+    if (fpregs_get_f0(&fpregs2) != 0x4010000000000000UL
+        || fpregs_get_f1(&fpregs2) != 0x12345678UL) {
+        printf("FAIL: legacy fpregs mismatch f0=%#lx f1=%#lx\n",
+               fpregs_get_f0(&fpregs2), fpregs_get_f1(&fpregs2));
         return 1;
     }
 
@@ -2062,6 +2317,18 @@ int main(void)
     }
 
     if (test_attach() == 0) {
+        pass++;
+    } else {
+        fail_count++;
+    }
+
+    if (test_same_uid_sibling_attach() == 0) {
+        pass++;
+    } else {
+        fail_count++;
+    }
+
+    if (test_same_uid_sibling_attach_rejects_nondumpable() == 0) {
         pass++;
     } else {
         fail_count++;
