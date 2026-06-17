@@ -166,8 +166,7 @@ impl Ns16550<DwApb> {
 
         self.base.write_reg(UART_IER, 0);
         self.base.write_reg(UART_FCR, UART_FCR_ENABLE_FIFO);
-        self.base.write_reg(UART_MCR, 0);
-        self.base.write_reg(UART_MCR, UART_MCR_RTS);
+        self.base.write_reg(UART_MCR, UART_MCR_DTR | UART_MCR_RTS);
 
         self.set_config(
             &Config::new()
@@ -233,6 +232,7 @@ mod tests {
             regs[UART_FCR as usize] as u8,
             UART_FCR_ENABLE_FIFO | UART_FCR_CLEAR_RCVR | UART_FCR_CLEAR_XMIT | UART_FCR_TRIGGER_1
         );
+        assert_eq!(regs[UART_MCR as usize] as u8, UART_MCR_DTR | UART_MCR_RTS);
         assert_eq!(regs[UART_DLF_OFFSET / 4], 0x33);
         drop(serial);
     }

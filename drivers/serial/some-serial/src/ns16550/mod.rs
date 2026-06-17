@@ -303,12 +303,12 @@ impl<T: Kind> Ns16550<T> {
         let mut event = SerialEvent::empty();
 
         if iir.contains(InterruptIdentificationFlags::NO_INTERRUPT_PENDING) {
-            if self.get_irq_mask().contains(InterruptMask::TX_EMPTY)
-                && self
-                    .read_lsr_preserving()
-                    .contains(LineStatusFlags::TRANSMITTER_HOLDING_EMPTY)
-            {
-                event |= SerialEvent::TX_READY;
+            let mask = self.get_irq_mask();
+            let status = serial_event_from_lsr(self.read_lsr_preserving());
+            event |=
+                status & (SerialEvent::RX_READY | SerialEvent::RX_ERROR | SerialEvent::OVERRUN);
+            if mask.contains(InterruptMask::TX_EMPTY) {
+                event |= status & SerialEvent::TX_READY;
             }
             return event;
         }
@@ -777,6 +777,45 @@ mod tests {
 
         assert!(irq.handle_irq().tx_ready());
         assert_eq!(tx.try_write(b"x"), 1);
+    }
+
+    #[test]
+    fn split_irq_resyncs_rx_ready_when_rx_interrupt_is_enabled() {
+        let (_guard, uart) = serial();
+        let (mut serial, _tx, mut rx, irq) = split_serial(uart);
+
+        serial.set_irq_mask(InterruptMask::RX_AVAILABLE);
+        REGS[UART_IIR as usize].store(
+            InterruptIdentificationFlags::NO_INTERRUPT_PENDING.bits(),
+            Ordering::SeqCst,
+        );
+        REGS[UART_LSR as usize].store(LineStatusFlags::DATA_READY.bits(), Ordering::SeqCst);
+        REGS[UART_RBR as usize].store(b'r', Ordering::SeqCst);
+
+        assert!(irq.handle_irq().rx_ready());
+
+        let mut buf = [0];
+        assert_eq!(rx.try_read(&mut buf), Ok(1));
+        assert_eq!(buf[0], b'r');
+    }
+
+    #[test]
+    fn split_irq_resyncs_rx_ready_from_lsr_snapshot_without_rx_mask() {
+        let (_guard, uart) = serial();
+        let (_serial, _tx, mut rx, irq) = split_serial(uart);
+
+        REGS[UART_IIR as usize].store(
+            InterruptIdentificationFlags::NO_INTERRUPT_PENDING.bits(),
+            Ordering::SeqCst,
+        );
+        REGS[UART_LSR as usize].store(LineStatusFlags::DATA_READY.bits(), Ordering::SeqCst);
+        REGS[UART_RBR as usize].store(b'r', Ordering::SeqCst);
+
+        assert!(irq.handle_irq().rx_ready());
+
+        let mut buf = [0];
+        assert_eq!(rx.try_read(&mut buf), Ok(1));
+        assert_eq!(buf[0], b'r');
     }
 
     #[test]
