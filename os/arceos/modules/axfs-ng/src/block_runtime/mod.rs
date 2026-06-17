@@ -104,6 +104,18 @@ mod tests {
                 state.cvar.notify_all();
             }
         }
+
+        fn notify_drain(&self) {
+            self.notify_waiters();
+        }
+
+        fn notify_drain_from_irq(&self) {
+            self.notify_drain();
+        }
+
+        fn wait_for_drain_notification(&self) {
+            self.task_wait();
+        }
     }
 
     fn install_test_task_ops() {

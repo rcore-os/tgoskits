@@ -13,9 +13,10 @@ use super::{
     BlockIrqBridge, DmaBufferGuard, DrainEvents, PendingTable, PollClaim, PollProgress, RequestKey,
 };
 use crate::os::{
-    BlockIrqOutcome, BlockIrqRegistration, current_task_id, dma_op, notify_waiters,
-    register_shared_block_irq, spawn_task, sync::IrqMutex as SpinNoIrq, task_wait_until,
-    task_yield, wake_task,
+    BlockIrqOutcome, BlockIrqRegistration, current_task_id, dma_op, notify_drain,
+    notify_drain_from_irq, notify_waiters, register_shared_block_irq, spawn_task,
+    sync::IrqMutex as SpinNoIrq, task_wait_until, task_yield, wait_for_drain_notification,
+    wake_task,
 };
 
 const DEFAULT_MAX_TRANSFER_BYTES: usize = 1024 * 1024;
@@ -64,11 +65,11 @@ struct RuntimeDrainWake {
 
 impl BlockDrainWake for RuntimeDrainWake {
     fn wake_drain(&self) {
-        mark_block_drain_device_with_resched(self.device_index, false);
+        mark_block_drain_device(self.device_index);
     }
 
     fn wake_drain_from_irq(&self) {
-        mark_block_drain_device_with_resched(self.device_index, true);
+        mark_block_drain_device_from_irq(self.device_index);
     }
 }
 
@@ -322,8 +323,7 @@ impl BlockIrqAction {
         let event = self.handler.handle_irq();
         if self.device.record_driver_event_for_pending(event) {
             self.device.drain_wake.wake_drain_from_irq();
-            notify_waiters();
-            BlockIrqOutcome::Wake
+            BlockIrqOutcome::Handled
         } else {
             BlockIrqOutcome::Handled
         }
@@ -1434,14 +1434,22 @@ fn register_rdif_irq_handlers(
     Ok(registrations)
 }
 
-fn mark_block_drain_device_with_resched(device_index: usize, resched: bool) {
+fn set_block_drain_pending(device_index: usize) {
     if device_index < u64::BITS as usize {
         BLOCK_DRAIN_DEVICE_BITS.fetch_or(1 << device_index, Ordering::AcqRel);
     } else {
         BLOCK_DRAIN_FULL_SCAN.store(true, Ordering::Release);
     }
-    let _ = resched;
-    notify_waiters();
+}
+
+fn mark_block_drain_device(device_index: usize) {
+    set_block_drain_pending(device_index);
+    notify_drain();
+}
+
+fn mark_block_drain_device_from_irq(device_index: usize) {
+    set_block_drain_pending(device_index);
+    notify_drain_from_irq();
 }
 
 fn block_drain_has_pending() -> bool {
@@ -1467,7 +1475,12 @@ fn spawn_block_drain_task(runtime: Arc<BlockRuntime>) {
             String::from("block_drain"),
             Box::new(move || {
                 loop {
-                    task_wait_until(block_drain_has_pending);
+                    if !block_drain_has_pending() {
+                        wait_for_drain_notification();
+                    }
+                    if !block_drain_has_pending() {
+                        continue;
+                    }
                     let selection = take_block_drain_selection();
                     for (device_index, device) in runtime.devices().iter().enumerate() {
                         if drain_selection_contains(selection, device_index) {

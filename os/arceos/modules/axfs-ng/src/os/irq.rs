@@ -9,7 +9,6 @@ use crate::block::runtime::BlockIrqAction;
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum BlockIrqOutcome {
     Handled,
-    Wake,
 }
 
 pub trait BlockIrqRegistration: Send + Sync {}

@@ -16,6 +16,15 @@ pub trait BlockTaskOps: Send + Sync {
     }
     fn wake_task(&self, task_id: u64);
     fn notify_waiters(&self) {}
+    fn notify_drain(&self) {
+        self.notify_waiters();
+    }
+    fn notify_drain_from_irq(&self) {
+        self.notify_drain();
+    }
+    fn wait_for_drain_notification(&self) {
+        self.task_wait();
+    }
     fn spawn(&self, _name: String, _f: Box<dyn FnOnce() + Send + 'static>) {}
 }
 
@@ -65,6 +74,26 @@ pub fn wake_task(task_id: u64) {
 pub fn notify_waiters() {
     if let Some(ops) = TASK_OPS.read().as_ref() {
         ops.notify_waiters();
+    }
+}
+
+pub fn notify_drain() {
+    if let Some(ops) = TASK_OPS.read().as_ref() {
+        ops.notify_drain();
+    }
+}
+
+pub fn notify_drain_from_irq() {
+    if let Some(ops) = TASK_OPS.read().as_ref() {
+        ops.notify_drain_from_irq();
+    }
+}
+
+pub fn wait_for_drain_notification() {
+    if let Some(ops) = TASK_OPS.read().as_ref() {
+        ops.wait_for_drain_notification();
+    } else {
+        core::hint::spin_loop();
     }
 }
 

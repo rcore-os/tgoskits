@@ -14,8 +14,9 @@ pub use memory::{
     FsPage, FsPageProvider, alloc_page, has_page_provider, install_page_provider, virt_to_phys,
 };
 pub use task::{
-    BlockTaskOps, current_task_id, has_task_ops, notify_waiters, set_task_ops, spawn_task,
-    task_wait, task_wait_until, task_yield, wake_task,
+    BlockTaskOps, current_task_id, has_task_ops, notify_drain, notify_drain_from_irq,
+    notify_waiters, set_task_ops, spawn_task, task_wait, task_wait_until, task_yield,
+    wait_for_drain_notification, wake_task,
 };
 pub use time::{BlockTimeProvider, has_time_provider, set_time_provider, wall_time};
 

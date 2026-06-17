@@ -42,6 +42,7 @@ static TIME_PROVIDER: RuntimeTimeProvider = RuntimeTimeProvider;
 static PAGE_PROVIDER: RuntimePageProvider = RuntimePageProvider;
 static TASK_OPS: RuntimeTaskOps = RuntimeTaskOps;
 static BLOCK_IO_WAIT_WQ: ax_task::WaitQueue = ax_task::WaitQueue::new();
+static BLOCK_DRAIN_NOTIFY: ax_task::IrqNotify = ax_task::IrqNotify::new();
 #[cfg(feature = "irq")]
 static IRQ_REGISTRAR: RuntimeBlockIrqRegistrar = RuntimeBlockIrqRegistrar;
 
@@ -70,6 +71,18 @@ impl BlockTaskOps for RuntimeTaskOps {
 
     fn notify_waiters(&self) {
         BLOCK_IO_WAIT_WQ.notify_all(false);
+    }
+
+    fn notify_drain(&self) {
+        BLOCK_DRAIN_NOTIFY.notify();
+    }
+
+    fn notify_drain_from_irq(&self) {
+        BLOCK_DRAIN_NOTIFY.notify_irq();
+    }
+
+    fn wait_for_drain_notification(&self) {
+        BLOCK_DRAIN_NOTIFY.wait();
     }
 
     fn spawn(&self, name: String, f: Box<dyn FnOnce() + Send + 'static>) {
@@ -101,7 +114,6 @@ unsafe fn handle_block_irq(
     let state = unsafe { data.cast::<RuntimeBlockIrqState>().as_ref() };
     match state.action.run() {
         BlockIrqOutcome::Handled => ax_hal::irq::IrqReturn::Handled,
-        BlockIrqOutcome::Wake => ax_hal::irq::IrqReturn::Wake,
     }
 }
 
