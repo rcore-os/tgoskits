@@ -3,6 +3,25 @@
 // See LICENSES for license details.
 
 //! Raw IP socket implementation for ICMP-style traffic.
+//!
+//! Raw sockets expose packet-oriented access above IP and below TCP/UDP. They
+//! are primarily used by ICMP/ICMPv6 tests and tools, but still share the same
+//! global smoltcp `SocketSet`, route selection, device binding, and readiness
+//! model as UDP/TCP sockets.
+//!
+//! # Packet Format
+//!
+//! smoltcp raw sockets receive complete IP packets. The public raw socket API
+//! returns protocol payloads for normal IPv4/IPv6 raw sockets while preserving
+//! enough packet context for peer filtering and `MSG_PEEK`. Deferred packets
+//! must therefore be stored in a consistent wire-packet form until delivery is
+//! decided.
+//!
+//! # Loopback And Peer Filtering
+//!
+//! Loopback ICMP-style traffic may be delivered through a local fast path. For
+//! connected raw sockets, packets from other peers can be skipped or deferred
+//! without corrupting the smoltcp receive queue format.
 
 use alloc::vec;
 use core::{
@@ -26,13 +45,15 @@ use spin::RwLock;
 
 use crate::{
     RecvFlags, RecvOptions, SOCKET_SET, SendFlags, SendOptions, Shutdown, SocketAddrEx, SocketOps,
+    config::{DeviceBinding, InterfaceId},
     consts::{RAW_RX_BUF_LEN, RAW_TX_BUF_LEN},
     general::GeneralOptions,
-    get_service,
+    get_control, interface_by_id,
     options::{Configurable, GetSocketOption, SetSocketOption},
-    poll_interfaces,
+    request_poll,
 };
 
+/// Allocates a smoltcp raw socket for one IP version and protocol.
 pub(crate) fn new_raw_socket(
     ip_version: IpVersion,
     ip_protocol: IpProtocol,
@@ -47,14 +68,25 @@ pub(crate) fn new_raw_socket(
 
 /// A raw IP socket used for ICMP and ICMPv6 traffic.
 pub struct RawSocket {
+    /// Handle into the global smoltcp socket set.
     handle: SocketHandle,
+    /// IP version accepted by this socket.
     ip_version: IpVersion,
+    /// Optional local address filter.
     local_addr: RwLock<Option<IpAddress>>,
+    /// Optional connected peer filter.
     peer_addr: RwLock<Option<IpAddress>>,
+    /// Locally generated loopback packet waiting to be received.
     loopback_rx: Mutex<Option<(IpAddress, vec::Vec<u8>)>>,
+    /// Non-peer packet held after filtering without corrupting wire format.
+    deferred_rx: Mutex<Option<(IpAddress, vec::Vec<u8>)>>,
+    /// Optional outgoing TTL/hop-limit override.
     ttl: RwLock<Option<u8>>,
+    /// Public read-half closed state.
     rx_closed: AtomicBool,
+    /// Public write-half closed state.
     tx_closed: AtomicBool,
+    /// Shared socket options and blocking helpers.
     general: GeneralOptions,
 }
 
@@ -63,13 +95,14 @@ impl RawSocket {
     pub fn new(ip_version: IpVersion, ip_protocol: IpProtocol) -> Self {
         let handle = SOCKET_SET.add(new_raw_socket(ip_version, ip_protocol));
         let general = GeneralOptions::new(3, 2, u8::from(ip_protocol) as i32); // SOCK_RAW
-        general.set_device_mask(u32::MAX);
+        general.set_device_binding(DeviceBinding::default());
         Self {
             handle,
             ip_version,
             local_addr: RwLock::new(None),
             peer_addr: RwLock::new(None),
             loopback_rx: Mutex::new(None),
+            deferred_rx: Mutex::new(None),
             ttl: RwLock::new(None),
             rx_closed: AtomicBool::new(false),
             tx_closed: AtomicBool::new(false),
@@ -77,10 +110,23 @@ impl RawSocket {
         }
     }
 
+    /// Restricts this socket to one interface for route selection.
+    pub fn bind_device(&self, interface_id: InterfaceId) -> AxResult {
+        if interface_by_id(interface_id).is_none() {
+            return Err(AxError::NoSuchDevice);
+        }
+        self.general.set_device_binding(DeviceBinding {
+            bound_if: Some(interface_id),
+        });
+        Ok(())
+    }
+
+    /// Borrows the underlying smoltcp raw socket by handle.
     fn with_smol_socket<R>(&self, f: impl FnOnce(&mut smol::Socket) -> R) -> R {
         SOCKET_SET.with_socket_mut::<smol::Socket, _, _>(self.handle, f)
     }
 
+    /// Validates that an address belongs to this socket's IP version.
     fn check_ip_version(&self, addr: IpAddress) -> AxResult<IpAddress> {
         match (self.ip_version, addr) {
             (IpVersion::Ipv4, IpAddress::Ipv4(_)) | (IpVersion::Ipv6, IpAddress::Ipv6(_)) => {
@@ -90,6 +136,7 @@ impl RawSocket {
         }
     }
 
+    /// Resolves the per-call or connected remote address.
     fn remote_address(&self, options: &SendOptions) -> AxResult<IpAddress> {
         match &options.to {
             Some(addr) => {
@@ -100,16 +147,20 @@ impl RawSocket {
         }
     }
 
-    fn local_address_for(&self, remote: IpAddress) -> IpAddress {
+    /// Selects the local source address used for an outgoing raw packet.
+    fn local_address_for(&self, remote: IpAddress) -> AxResult<IpAddress> {
         if let Some(local) = *self.local_addr.read() {
-            return local;
+            return Ok(local);
         }
         if is_loopback_address(remote) {
-            return remote;
+            return Ok(remote);
         }
-        get_service().get_source_address(&remote)
+        Ok(get_control()
+            .select_route_with_binding(&remote, self.general.device_binding())?
+            .source)
     }
 
+    /// Parses a complete IP packet and returns its source plus deliverable bytes.
     fn parse_ip_packet<'a>(&self, packet: &'a [u8]) -> AxResult<(IpAddress, &'a [u8])> {
         match self.ip_version {
             IpVersion::Ipv4 => {
@@ -123,6 +174,31 @@ impl RawSocket {
                 Ok((IpAddress::Ipv6(packet.src_addr()), packet.payload()))
             }
         }
+    }
+
+    /// Returns whether a received source passes the connected-peer filter.
+    fn source_matches_peer(&self, source: IpAddress) -> bool {
+        self.peer_addr.read().is_none_or(|peer| source == peer)
+    }
+
+    /// Delivers one parsed raw packet to the caller's receive buffer.
+    fn deliver_packet(
+        &self,
+        source: IpAddress,
+        packet: &[u8],
+        dst: &mut (impl Write + IoBufMut),
+        options: &mut RecvOptions<'_>,
+    ) -> AxResult<usize> {
+        if let Some(from) = options.from.as_deref_mut() {
+            *from = SocketAddrEx::Ip(SocketAddr::new(source.into(), 0));
+        }
+
+        let written = dst.write(packet)?;
+        Ok(if options.flags.contains(RecvFlags::TRUNCATE) {
+            packet.len()
+        } else {
+            written
+        })
     }
 }
 
@@ -210,15 +286,15 @@ impl SocketOps for RawSocket {
         let local_addr = local_addr.into_ip()?;
         let local = self.check_ip_version(local_addr.ip().into())?;
         *self.local_addr.write() = Some(local);
-        let device_mask = if local.is_unspecified() {
-            u32::MAX
+        let binding = if local.is_unspecified() {
+            DeviceBinding::default()
         } else {
-            get_service().device_mask_for(&IpListenEndpoint {
+            get_control().local_binding_for(&IpListenEndpoint {
                 addr: Some(local),
                 port: 0,
-            })
+            })?
         };
-        self.general.set_device_mask(device_mask);
+        self.general.set_device_binding(binding);
         Ok(())
     }
 
@@ -226,14 +302,19 @@ impl SocketOps for RawSocket {
         let remote_addr = remote_addr.into_ip()?;
         let remote = self.check_ip_version(remote_addr.ip().into())?;
         if self.local_addr.read().is_none() {
-            *self.local_addr.write() = Some(get_service().get_source_address(&remote));
+            *self.local_addr.write() = Some(
+                get_control()
+                    .select_route_with_binding(&remote, self.general.device_binding())?
+                    .source,
+            );
         }
         *self.peer_addr.write() = Some(remote);
+        let local = (*self.local_addr.read()).expect("raw socket local address");
         self.general
-            .set_device_mask(get_service().device_mask_for(&IpListenEndpoint {
-                addr: Some(remote),
+            .set_device_binding(get_control().local_binding_for(&IpListenEndpoint {
+                addr: Some(local),
                 port: 0,
-            }));
+            })?);
         Ok(())
     }
 
@@ -247,14 +328,14 @@ impl SocketOps for RawSocket {
         }
 
         let remote = self.remote_address(&options)?;
-        let local = self.local_address_for(remote);
+        let local = self.local_address_for(remote)?;
         let payload_len = src.remaining();
         let extra_nb = options.flags.contains(crate::SendFlags::DONTWAIT);
         let loopback_ipv4 = self.ip_version == IpVersion::Ipv4 && is_loopback_address(remote);
 
         self.general.send_poller_with(self, extra_nb, || {
-            poll_interfaces();
-            self.with_smol_socket(|socket| {
+            request_poll();
+            let written = self.with_smol_socket(|socket| {
                 if !socket.can_send() {
                     return Err(AxError::WouldBlock);
                 }
@@ -349,7 +430,9 @@ impl SocketOps for RawSocket {
                     *self.loopback_rx.lock() = Some((local, reply));
                 }
                 Ok(written)
-            })
+            })?;
+            request_poll();
+            Ok(written)
         })
     }
 
@@ -361,62 +444,53 @@ impl SocketOps for RawSocket {
         let mut options = options;
 
         self.general.recv_poller_with(self, extra_nb, || {
-            poll_interfaces();
+            request_poll();
             self.with_smol_socket(|socket| {
-                loop {
-                    if let Some((source, packet)) = if options.flags.contains(RecvFlags::PEEK) {
-                        self.loopback_rx.lock().clone()
-                    } else {
-                        self.loopback_rx.lock().take()
-                    } {
-                        let peer_mismatch =
-                            matches!(*self.peer_addr.read(), Some(peer) if source != peer);
-                        if !peer_mismatch {
-                            if let Some(from) = options.from.as_deref_mut() {
-                                *from = SocketAddrEx::Ip(SocketAddr::new(source.into(), 0));
-                            }
-
-                            let written = dst.write(&packet)?;
-                            return Ok(if options.flags.contains(RecvFlags::TRUNCATE) {
-                                packet.len()
-                            } else {
-                                written
-                            });
-                        }
+                if let Some((source, packet)) = if options.flags.contains(RecvFlags::PEEK) {
+                    self.deferred_rx.lock().clone()
+                } else {
+                    self.deferred_rx.lock().take()
+                } {
+                    if !self.source_matches_peer(source) {
+                        *self.deferred_rx.lock() = Some((source, packet));
+                        return Err(AxError::WouldBlock);
                     }
+                    let (_, payload) = self.parse_ip_packet(&packet)?;
+                    return self.deliver_packet(source, payload, &mut dst, &mut options);
+                }
 
-                    let packet = if options.flags.contains(RecvFlags::PEEK) {
-                        let packet = socket.peek().map_err(|_| AxError::WouldBlock)?;
-                        let (source, _) = self.parse_ip_packet(packet)?;
-                        if let Some(peer) = *self.peer_addr.read()
-                            && source != peer
-                        {
-                            return Err(AxError::WouldBlock);
-                        }
-                        packet
-                    } else {
-                        socket.recv().map_err(|_| AxError::WouldBlock)?
-                    };
-                    let (source, packet) = self.parse_ip_packet(packet)?;
+                if let Some((source, packet)) = if options.flags.contains(RecvFlags::PEEK) {
+                    self.loopback_rx.lock().clone()
+                } else {
+                    self.loopback_rx.lock().take()
+                } {
+                    if !self.source_matches_peer(source) {
+                        *self.loopback_rx.lock() = Some((source, packet));
+                        return Err(AxError::WouldBlock);
+                    }
+                    return self.deliver_packet(source, &packet, &mut dst, &mut options);
+                }
 
+                let wire_packet = if options.flags.contains(RecvFlags::PEEK) {
+                    let packet = socket.peek().map_err(|_| AxError::WouldBlock)?;
+                    let (source, _) = self.parse_ip_packet(packet)?;
                     if let Some(peer) = *self.peer_addr.read()
                         && source != peer
                     {
-                        continue;
+                        return Err(AxError::WouldBlock);
                     }
+                    packet
+                } else {
+                    socket.recv().map_err(|_| AxError::WouldBlock)?
+                };
+                let (source, packet) = self.parse_ip_packet(wire_packet)?;
 
-                    if let Some(from) = options.from.as_deref_mut() {
-                        *from = SocketAddrEx::Ip(SocketAddr::new(source.into(), 0));
-                    }
-
-                    let written = dst.write(packet)?;
-                    // TODO: set options.truncated when user buffer < packet size.
-                    return Ok(if options.flags.contains(RecvFlags::TRUNCATE) {
-                        packet.len()
-                    } else {
-                        written
-                    });
+                if !self.source_matches_peer(source) {
+                    *self.deferred_rx.lock() = Some((source, wire_packet.to_vec()));
+                    return Err(AxError::WouldBlock);
                 }
+
+                self.deliver_packet(source, packet, &mut dst, &mut options)
             })
         })
     }
@@ -447,7 +521,7 @@ impl SocketOps for RawSocket {
 
 impl Pollable for RawSocket {
     fn poll(&self) -> IoEvents {
-        poll_interfaces();
+        request_poll();
         let mut events = IoEvents::empty();
         self.with_smol_socket(|socket| {
             events.set(
@@ -461,12 +535,30 @@ impl Pollable for RawSocket {
         });
         events.set(
             IoEvents::IN,
-            events.contains(IoEvents::IN) || self.loopback_rx.lock().is_some(),
+            events.contains(IoEvents::IN)
+                || self
+                    .loopback_rx
+                    .lock()
+                    .as_ref()
+                    .is_some_and(|(source, _)| self.source_matches_peer(*source))
+                || self
+                    .deferred_rx
+                    .lock()
+                    .as_ref()
+                    .is_some_and(|(source, _)| self.source_matches_peer(*source)),
         );
         events
     }
 
     fn register(&self, context: &mut Context<'_>, events: IoEvents) {
+        self.with_smol_socket(|socket| {
+            if events.contains(IoEvents::IN) {
+                socket.register_recv_waker(context.waker());
+            }
+            if events.contains(IoEvents::OUT) {
+                socket.register_send_waker(context.waker());
+            }
+        });
         if events.intersects(IoEvents::IN | IoEvents::OUT) {
             self.general.register_waker(context.waker());
         }

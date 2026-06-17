@@ -1,3 +1,25 @@
+//! Ethernet device adapter.
+//!
+//! The adapter translates between the generic ax-net device contract and
+//! Ethernet NIC drivers. It owns neighbor discovery state, emits Ethernet/ARP
+//! frames, feeds IP packets into the router RX buffer, and exposes readiness
+//! through IRQ or out-of-band wakeups.
+//!
+//! # Responsibilities
+//!
+//! - Wrap complete IP packets in Ethernet frames for TX.
+//! - Parse inbound Ethernet frames, update ARP state, and deliver IP payloads
+//!   to the router's RX packet buffer.
+//! - Buffer a bounded number of packets while ARP resolution for a next hop is
+//!   pending.
+//! - Bridge platform IRQ registration into device-worker wakeups.
+//!
+//! # Non-Responsibilities
+//!
+//! The adapter does not decide which interface should be used for a destination
+//! and does not inspect TCP/UDP socket state. Route selection is performed by
+//! the router before Ethernet sees the packet.
+
 use alloc::{boxed::Box, string::String, sync::Arc, vec, vec::Vec};
 use core::{ptr::NonNull, task::Waker};
 
@@ -14,6 +36,7 @@ use smoltcp::{
 };
 
 use crate::{
+    config::InterfaceId,
     consts::{ETHERNET_MAX_PENDING_PACKETS, STANDARD_MTU},
     device::{ArpEntry, Device, EthernetDriver, NetDeviceError, NetIrqEvents},
 };
@@ -22,6 +45,7 @@ const EMPTY_MAC: EthernetAddress = EthernetAddress([0; 6]);
 
 pub trait EthernetIrqRegistration: Send + Sync {}
 
+/// Opaque action installed into a platform IRQ registrar.
 #[derive(Clone, Copy)]
 pub struct EthernetIrqAction {
     data: NonNull<()>,
@@ -53,10 +77,13 @@ unsafe impl Sync for EthernetIrqAction {}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum EthernetIrqOutcome {
+    /// IRQ was handled and no network worker wakeup is needed.
     Handled,
+    /// IRQ indicates network progress; wake the poll path.
     Wake,
 }
 
+/// Platform hook used by Ethernet devices that expose a shared IRQ line.
 pub trait EthernetIrqRegistrar: Send + Sync {
     fn register_shared(
         &self,
@@ -68,9 +95,13 @@ pub trait EthernetIrqRegistrar: Send + Sync {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum EthernetIrqRegistrationError {
+    /// The IRQ number is invalid for this platform.
     InvalidIrq,
+    /// The IRQ line cannot be shared or is already occupied.
     Busy,
+    /// IRQ registration is not supported on this platform.
     Unsupported,
+    /// Other platform-specific registration failure.
     Other,
 }
 
@@ -138,6 +169,7 @@ impl EthernetDevice {
     const NEIGHBOR_TTL: Duration = Duration::from_secs(300);
     const ARP_REQUEST_RETRY: Duration = Duration::from_secs(1);
 
+    /// Creates an Ethernet adapter driven by the shared IRQ/poll path.
     pub fn new(name: String, inner: Box<dyn EthernetDriver>, ip: Option<Ipv4Cidr>) -> Self {
         Self::new_inner(name, inner, ip, false)
     }
@@ -255,7 +287,8 @@ impl EthernetDevice {
     fn handle_frame(
         &mut self,
         frame: &[u8],
-        buffer: &mut PacketBuffer<()>,
+        interface_id: InterfaceId,
+        buffer: &mut PacketBuffer<InterfaceId>,
         timestamp: Instant,
         snoop: &mut dyn FnMut(&[u8]),
     ) -> bool {
@@ -276,7 +309,7 @@ impl EthernetDevice {
             EthernetProtocol::Ipv4 => {
                 snoop(frame.payload());
                 buffer
-                    .enqueue(frame.payload().len(), ())
+                    .enqueue(frame.payload().len(), interface_id)
                     .unwrap()
                     .copy_from_slice(frame.payload());
                 return true;
@@ -474,7 +507,8 @@ impl Device for EthernetDevice {
 
     fn recv(
         &mut self,
-        buffer: &mut PacketBuffer<()>,
+        interface_id: InterfaceId,
+        buffer: &mut PacketBuffer<InterfaceId>,
         timestamp: Instant,
         snoop: &mut dyn FnMut(&[u8]),
     ) -> bool {
@@ -497,7 +531,7 @@ impl Device for EthernetDevice {
                 rx_buf.packet()
             );
 
-            let result = self.handle_frame(rx_buf.packet(), buffer, timestamp, snoop);
+            let result = self.handle_frame(rx_buf.packet(), interface_id, buffer, timestamp, snoop);
             if let Err(err) = self.inner.driver.lock().recycle_rx_buffer(&mut *rx_buf) {
                 warn!("recycle_rx_buffer failed: {:?}", err);
             }

@@ -1,3 +1,16 @@
+//! Filesystem-backed Unix socket namespace hook.
+//!
+//! Abstract Unix socket names are managed inside ax-net. Path-based Unix socket
+//! names are delegated to an optional filesystem provider through this trait.
+//!
+//! # Integration Boundary
+//!
+//! The network crate only needs to resolve, create, and remove bind slots for a
+//! path. It does not own dentries, permissions, mount namespaces, or lifecycle
+//! rules beyond unbinding the slot when the Unix socket transport is dropped.
+//! Kernels that do not enable filesystem support can leave this provider
+//! unregistered and still use unnamed or abstract Unix sockets.
+
 use alloc::{boxed::Box, sync::Arc};
 
 use ax_errno::{AxResult, ax_err_type};

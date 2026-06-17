@@ -1,13 +1,72 @@
-use alloc::{boxed::Box, vec, vec::Vec};
+//! Network service and control plane.
+//!
+//! # Lock Ordering Rules
+//!
+//! To prevent deadlocks, locks must be acquired from outermost to innermost.
+//! Never acquire an outer lock while holding an inner lock.
+//!
+//! **Lock hierarchy (outermost → innermost):**
+//!
+//! 1. **SERVICE** (`Mutex<Service>`)
+//!    - Outermost, protects entire protocol stack
+//!    - Held during `Service::poll()` and waker registration
+//!
+//! 2. **SOCKET_SET.inner** (`Mutex<SocketSet>`)
+//!    - smoltcp socket set (all TCP/UDP/raw/DNS sockets)
+//!    - Acquired during poll, socket operations, and state queries
+//!    - ⚠️ Never acquire SERVICE while holding this lock
+//!
+//! 3. **TCP_BOUND_PORTS** (`Mutex<HashMap<u16, Vec<...>>>`)
+//!    - Tracks TCP bind() registrations
+//!    - Hold duration: registration/unregistration only
+//!
+//! 4. **Per-port LISTEN_TABLE buckets** (`Arc<Mutex<Vec<ListenTableEntryInner>>>`)
+//!    - Innermost, most granular (one mutex per TCP port)
+//!
+//! **Acquisition order rule:**
+//! ```text
+//! SERVICE → SOCKET_SET → TCP_BOUND_PORTS → LISTEN_TABLE
+//! (outer)                                         (inner)
+//! ```
+//!
+//! # Correct Patterns
+//!
+//! ```ignore
+//! // ✓ Lightweight trigger: socket paths request the dedicated worker.
+//! fn socket_operation() {
+//!     request_poll()
+//! }
+//!
+//! // ✓ Outer → Inner: SOCKET_SET → LISTEN_TABLE (accept readiness)
+//! fn TcpSocket::poll_listener() {
+//!     let sockets = SOCKET_SET.inner.lock();
+//!     LISTEN_TABLE.can_accept(endpoint, &sockets)
+//! }
+//! ```
+//!
+//! # Forbidden Patterns
+//!
+//! ```ignore
+//! // ✗ Inner → Outer: SOCKET_SET → SERVICE (DEADLOCK!)
+//! let sockets = SOCKET_SET.inner.lock();
+//! get_service().do_something();  // WRONG: reverse order
+//!
+//! // ✗ Holding any lock while calling wake() (may re-enter via async I/O)
+//! let sockets = SOCKET_SET.inner.lock();
+//! waker.wake();  // WRONG: potential self-deadlock
+//! ```
+
+use alloc::{boxed::Box, format, string::String, vec, vec::Vec};
 use core::{
     pin::Pin,
     task::{Context, Waker},
 };
 
+use ax_errno::{AxResult, ax_err_type};
 use ax_hal::time::{NANOS_PER_MICROS, TimeValue, monotonic_time_nanos, wall_time_nanos};
 use ax_task::future::sleep_until;
 use smoltcp::{
-    iface::{Interface, SocketSet},
+    iface::{Interface, PollResult, SocketSet},
     phy::ChecksumCapabilities,
     time::{Duration as SmolDuration, Instant},
     wire::{
@@ -18,26 +77,293 @@ use smoltcp::{
 };
 
 use crate::{
-    SOCKET_SET, config::Ipv4InterfaceConfig, consts::STANDARD_MTU, device::ArpEntry,
-    dhcp_server::DhcpServer, router::Router,
+    SOCKET_SET,
+    config::{
+        DeviceBinding, DnsServerEntry, DnsSource, InterfaceFlags, InterfaceId, InterfaceInfo,
+        InterfaceKind, Ipv4InterfaceConfig, RouteInfo,
+    },
+    consts::STANDARD_MTU,
+    device::{ArpEntry, EthernetDevice},
+    dhcp_server::DhcpServer,
+    router::{RouteDecision, Router, SharedRouteTable},
 };
 
 fn now() -> Instant {
     Instant::from_micros_const((monotonic_time_nanos() / NANOS_PER_MICROS) as i64)
 }
 
+use alloc::sync::Arc;
+
+use spin::RwLock;
+
+struct ControlState {
+    interfaces: Vec<NetInterface>,
+    dns: Vec<DnsServerEntry>,
+}
+
+pub struct NetControl {
+    state: RwLock<ControlState>,
+    pub(crate) routes: SharedRouteTable,
+}
+
+impl NetControl {
+    pub(crate) fn new(
+        interfaces: Vec<NetInterface>,
+        routes: SharedRouteTable,
+        dns: Vec<DnsServerEntry>,
+    ) -> Self {
+        Self {
+            state: RwLock::new(ControlState { interfaces, dns }),
+            routes,
+        }
+    }
+
+    pub fn dns_servers(&self) -> Vec<Ipv4Address> {
+        let state = self.state.read();
+        let mut entries = state.dns.clone();
+        entries.sort_by_key(|entry| {
+            (
+                entry.metric,
+                entry.interface_id.get(),
+                entry.server.octets(),
+            )
+        });
+        let mut servers = Vec::new();
+        for entry in entries {
+            if !servers.contains(&entry.server) {
+                servers.push(entry.server);
+            }
+        }
+        servers
+    }
+
+    pub fn interfaces(&self) -> Vec<InterfaceInfo> {
+        let state = self.state.read();
+        state.interfaces.iter().map(NetInterface::to_info).collect()
+    }
+
+    pub fn interface_by_name(&self, name: &str) -> Option<InterfaceInfo> {
+        let state = self.state.read();
+        state
+            .interfaces
+            .iter()
+            .find(|interface| interface.name == name)
+            .map(NetInterface::to_info)
+    }
+
+    pub fn interface_by_id(&self, id: InterfaceId) -> Option<InterfaceInfo> {
+        let state = self.state.read();
+        state
+            .interfaces
+            .iter()
+            .find(|interface| interface.id == id)
+            .map(NetInterface::to_info)
+    }
+
+    pub fn ipv4_config(&self, name: &str) -> Option<Ipv4InterfaceConfig> {
+        let state = self.state.read();
+        state
+            .interfaces
+            .iter()
+            .find(|interface| interface.name == name)
+            .and_then(|interface| interface.ipv4.map(|address| (interface, address)))
+            .map(|(interface, address)| Ipv4InterfaceConfig {
+                address,
+                gateway: interface.gateway,
+            })
+    }
+
+    pub fn default_routes(&self) -> Vec<RouteInfo> {
+        let _state = self.state.read();
+        self.routes.read().default_routes()
+    }
+
+    pub fn local_binding_for(&self, endpoint: &IpListenEndpoint) -> AxResult<DeviceBinding> {
+        match endpoint.addr {
+            Some(addr) => {
+                let state = self.state.read();
+                let bound_if = state.interfaces.iter().find_map(|interface| {
+                    (interface
+                        .ipv4
+                        .is_some_and(|ipv4| IpAddress::Ipv4(ipv4.address()) == addr))
+                    .then_some(interface.id)
+                });
+                bound_if
+                    .map(|interface_id| DeviceBinding {
+                        bound_if: Some(interface_id),
+                    })
+                    .ok_or_else(|| {
+                        ax_err_type!(
+                            NoSuchDeviceOrAddress,
+                            format!("local address {addr} is not assigned to any interface")
+                        )
+                    })
+            }
+            None => Ok(DeviceBinding::default()),
+        }
+    }
+
+    pub fn select_route(&self, dst_addr: &IpAddress) -> AxResult<RouteDecision> {
+        self.select_route_with_binding(dst_addr, DeviceBinding::default())
+    }
+
+    pub fn select_route_with_binding(
+        &self,
+        dst_addr: &IpAddress,
+        binding: DeviceBinding,
+    ) -> AxResult<RouteDecision> {
+        let state = self.state.read();
+        let routes = self.routes.read();
+        let route = routes
+            .select_route_if(dst_addr, |interface_id| {
+                if binding
+                    .bound_if
+                    .is_some_and(|bound_if| bound_if != interface_id)
+                {
+                    return false;
+                }
+                state
+                    .interfaces
+                    .iter()
+                    .find(|interface| interface.id == interface_id)
+                    .is_some_and(|interface| interface.flags.contains(InterfaceFlags::UP))
+            })
+            .ok_or_else(|| {
+                ax_err_type!(
+                    NoSuchDeviceOrAddress,
+                    format!("no route to destination {dst_addr}")
+                )
+            })?;
+        if let Some(interface) = state
+            .interfaces
+            .iter()
+            .find(|interface| interface.id == route.interface_id)
+        {
+            debug_assert!(interface.flags.contains(InterfaceFlags::UP));
+            debug_assert_eq!(interface.metric, route.metric);
+        }
+        Ok(route)
+    }
+
+    fn commit_interface_update(
+        &self,
+        update: &NetworkStateUpdate,
+        routes: Vec<crate::router::Rule>,
+    ) {
+        let mut state = self.state.write();
+        if let Some(interface) = state
+            .interfaces
+            .iter_mut()
+            .find(|interface| interface.id == update.interface_id)
+        {
+            interface.ipv4 = update.ipv4;
+            interface.gateway = update.gateway;
+        }
+        state.dns.retain(|entry| {
+            entry.interface_id != update.interface_id || entry.source != update.dns_source
+        });
+        state.dns.extend(
+            update
+                .dns_servers
+                .iter()
+                .copied()
+                .map(|server| DnsServerEntry {
+                    server,
+                    interface_id: update.interface_id,
+                    metric: update.metric,
+                    source: update.dns_source,
+                }),
+        );
+        self.routes
+            .write()
+            .replace_ipv4_rules_for_interface(update.interface_id, routes);
+    }
+
+    fn add_interface(&self, interface: NetInterface, routes: Vec<crate::router::Rule>) {
+        self.routes
+            .write()
+            .replace_ipv4_rules_for_interface(interface.id, routes);
+        self.state.write().interfaces.push(interface);
+    }
+
+    fn allocate_interface_id(&self) -> InterfaceId {
+        let state = self.state.read();
+        let next = state
+            .interfaces
+            .iter()
+            .map(|interface| interface.id.get())
+            .max()
+            .unwrap_or(InterfaceId::LOOPBACK.get())
+            .saturating_add(1);
+        InterfaceId::new(next)
+    }
+
+    fn contains_interface_name(&self, name: &str) -> bool {
+        self.state
+            .read()
+            .interfaces
+            .iter()
+            .any(|interface| interface.name == name)
+    }
+}
+
 pub struct Service {
     pub iface: Interface,
     router: Router,
+    control: Arc<NetControl>,
     timeout: Option<Pin<Box<dyn Future<Output = ()> + Send>>>,
-    dhcp: Option<DhcpState>,
+    dhcp: Vec<DhcpState>,
     dhcp_server: Option<DhcpServer>,
-    static_dns: Vec<Ipv4Address>,
+}
+
+#[derive(Clone)]
+pub(crate) struct NetInterface {
+    pub id: InterfaceId,
+    pub name: String,
+    pub kind: InterfaceKind,
+    pub mac: Option<EthernetAddress>,
+    pub ipv4: Option<Ipv4Cidr>,
+    pub gateway: Option<Ipv4Address>,
+    pub mtu: usize,
+    pub metric: u32,
+    pub flags: InterfaceFlags,
+}
+
+impl NetInterface {
+    fn to_info(&self) -> InterfaceInfo {
+        InterfaceInfo {
+            id: self.id,
+            name: self.name.clone(),
+            kind: self.kind,
+            mac: self.mac,
+            ipv4: self.ipv4.map(|address| Ipv4InterfaceConfig {
+                address,
+                gateway: self.gateway,
+            }),
+            mtu: self.mtu,
+            flags: self.flags,
+            metric: self.metric,
+        }
+    }
+}
+
+struct NetworkStateUpdate {
+    interface_id: InterfaceId,
+    dev: usize,
+    metric: u32,
+    old_ipv4: Option<Ipv4Cidr>,
+    ipv4: Option<Ipv4Cidr>,
+    gateway: Option<Ipv4Address>,
+    dns_source: DnsSource,
+    dns_servers: Vec<Ipv4Address>,
 }
 
 struct DhcpState {
+    interface_id: InterfaceId,
     dev: usize,
+    ifname: String,
     mac: EthernetAddress,
+    metric: u32,
     transaction_id: u32,
     phase: DhcpPhase,
     retry_at: Instant,
@@ -57,12 +383,23 @@ enum DhcpPhase {
 
 const DHCP_PARAMETER_REQUEST_LIST: &[u8] = &[1, 3, 6, 42];
 const DHCP_MAX_RETRY_SHIFT: usize = 4;
+const DHCP_MAX_IPV4_HEADER_LEN: usize = 60;
+const DHCP_UDP_HEADER_LEN: usize = 8;
 
 impl DhcpState {
-    fn new(dev: usize, mac: EthernetAddress) -> Self {
+    fn new(
+        interface_id: InterfaceId,
+        dev: usize,
+        ifname: String,
+        mac: EthernetAddress,
+        metric: u32,
+    ) -> Self {
         Self {
+            interface_id,
             dev,
+            ifname,
             mac,
+            metric,
             transaction_id: dhcp_transaction_id(mac),
             phase: DhcpPhase::Discovering,
             retry_at: Instant::from_micros_const(0),
@@ -76,11 +413,11 @@ impl DhcpState {
 
     fn process_packet(
         &mut self,
-        dev: usize,
+        interface_id: InterfaceId,
         packet: &[u8],
         timestamp: Instant,
     ) -> Option<DhcpEvent> {
-        if dev != self.dev {
+        if interface_id != self.interface_id {
             return None;
         }
 
@@ -121,7 +458,8 @@ impl DhcpState {
                 self.retry = 0;
                 self.retry_at = timestamp;
                 info!(
-                    "eth0: DHCP offered address {} from {}",
+                    "{}: DHCP offered address {} from {}",
+                    self.ifname,
                     dhcp_repr.your_ip,
                     self.server_identifier.unwrap_or(ipv4_repr.src_addr)
                 );
@@ -138,6 +476,10 @@ impl DhcpState {
                 self.retry = 0;
                 let address = Ipv4Cidr::new(dhcp_repr.your_ip, prefix_len);
                 Some(DhcpEvent::Configured {
+                    interface_id: self.interface_id,
+                    dev: self.dev,
+                    ifname: self.ifname.clone(),
+                    metric: self.metric,
                     address,
                     router: dhcp_repr.router,
                     dns_servers: dhcp_repr
@@ -150,7 +492,12 @@ impl DhcpState {
             (_, DhcpMessageType::Nak) => {
                 let was_configured = self.address.is_some();
                 self.reset(timestamp);
-                was_configured.then_some(DhcpEvent::Deconfigured)
+                was_configured.then_some(DhcpEvent::Deconfigured {
+                    interface_id: self.interface_id,
+                    dev: self.dev,
+                    ifname: self.ifname.clone(),
+                    metric: self.metric,
+                })
             }
             _ => None,
         }
@@ -174,6 +521,7 @@ impl DhcpState {
         let retry_delay_secs = 1usize << self.retry.min(DHCP_MAX_RETRY_SHIFT);
         self.retry = self.retry.saturating_add(1);
         self.retry_at = timestamp + SmolDuration::from_secs(retry_delay_secs as u64);
+        debug!("{}: DHCP sending {:?}", self.ifname, message_type);
 
         Some((
             self.dev,
@@ -200,40 +548,81 @@ impl DhcpState {
     }
 }
 impl Service {
-    pub fn new(mut router: Router, static_dns: Vec<Ipv4Address>) -> Self {
+    pub fn new(mut router: Router, control: Arc<NetControl>) -> Self {
         let config = smoltcp::iface::Config::new(HardwareAddress::Ip);
         let iface = Interface::new(config, &mut router, now());
 
         Self {
             iface,
             router,
+            control,
             timeout: None,
-            dhcp: None,
+            dhcp: Vec::new(),
             dhcp_server: None,
-            static_dns,
         }
     }
 
-    pub fn enable_dhcp(&mut self, dev: usize, mac: EthernetAddress) {
-        self.dhcp = Some(DhcpState::new(dev, mac));
-        info!("eth0: DHCP enabled");
-    }
-
-    /// 注册一个带静态 IPv4 的设备(如 SoftAP 接口),返回设备索引。
     pub fn register_static_device(
         &mut self,
-        name: alloc::string::String,
-        dev: crate::device::EthernetDevice,
+        name: String,
+        dev: EthernetDevice,
+        mac: EthernetAddress,
         cidr: Ipv4Cidr,
     ) -> usize {
-        let dev_idx = self.router.add_device(Box::new(dev));
-        self.router.set_ipv4_config(dev_idx, Some(cidr), None);
+        if self.control.contains_interface_name(&name) {
+            panic!("interface name conflict: {}", name);
+        }
+
+        let interface_id = self.control.allocate_interface_id();
+        let metric = 100;
+        let dev = self.router.add_device(interface_id, Box::new(dev));
+        let routes = self
+            .router
+            .ipv4_rules(dev, interface_id, metric, Some(cidr), None);
         Self::set_interface_ipv4(&mut self.iface, None, Some(cidr));
-        info!("{name}: static ip {cidr}");
-        dev_idx
+        self.control.add_interface(
+            NetInterface {
+                id: interface_id,
+                name,
+                kind: InterfaceKind::Ethernet,
+                mac: Some(mac),
+                ipv4: Some(cidr),
+                gateway: None,
+                mtu: STANDARD_MTU,
+                metric,
+                flags: InterfaceFlags::UP
+                    | InterfaceFlags::RUNNING
+                    | InterfaceFlags::BROADCAST
+                    | InterfaceFlags::MULTICAST,
+            },
+            routes,
+        );
+        self.router.start_device_workers(dev);
+        dev
     }
 
-    /// 在指定设备上启用内置 DHCP 服务器(SoftAP 给客户端分配地址)。
+    pub fn enable_dhcp(
+        &mut self,
+        interface_id: InterfaceId,
+        dev: usize,
+        ifname: String,
+        mac: EthernetAddress,
+        metric: u32,
+    ) {
+        self.dhcp.push(DhcpState::new(
+            interface_id,
+            dev,
+            ifname.clone(),
+            mac,
+            metric,
+        ));
+        info!("{ifname}: DHCP enabled");
+    }
+
+    pub fn dhcp_enabled(&self) -> bool {
+        !self.dhcp.is_empty()
+    }
+
     pub fn enable_dhcp_server(
         &mut self,
         dev: usize,
@@ -241,20 +630,26 @@ impl Service {
         client_ip: Ipv4Address,
         subnet_mask: Ipv4Address,
     ) {
-        self.dhcp_server = Some(DhcpServer::new(dev, server_ip, client_ip, subnet_mask));
+        let Some(interface_id) = self.router.interface_id_for_dev(dev) else {
+            warn!("[dhcp-srv] invalid device index {dev}");
+            return;
+        };
+        self.dhcp_server = Some(DhcpServer::new(
+            dev,
+            interface_id,
+            server_ip,
+            client_ip,
+            subnet_mask,
+        ));
         info!("dev {dev}: DHCP server enabled (lease {client_ip})");
     }
 
-    /// 按接口名查找设备索引(如 `"wlan0"`)。
+    /// Finds the router device index for an interface name such as `wlan0`.
     pub fn device_index(&self, name: &str) -> Option<usize> {
         self.router.device_index(name)
     }
 
-    /// 运行时把某设备重配为 SoftAP 角色:静态 IP + 内置 DHCP 服务器。
-    ///
-    /// 清掉该设备旧的 DHCP 客户端状态,设置静态地址,并(可选)启动单客户端
-    /// DHCP 服务器。供 Wi-Fi 运行时 STA→AP 切换使用,链路层切换(teardown +
-    /// `start_ap_open`)由调用方在调用本方法前完成。
+    /// Reconfigures one wireless device as SoftAP: static IPv4 plus optional DHCP server.
     pub fn reconfigure_as_ap(
         &mut self,
         dev: usize,
@@ -262,22 +657,40 @@ impl Service {
         prefix_len: u8,
         client_ip: Option<Ipv4Address>,
     ) {
-        // 若该设备此前是 DHCP 客户端,撤掉客户端状态及其获得的接口地址。
-        if self.dhcp.as_ref().is_some_and(|s| s.dev == dev) {
-            if let Some(addr) = self.dhcp.as_ref().and_then(|s| s.address) {
-                Self::set_interface_ipv4(&mut self.iface, Some(addr), None);
-            }
-            self.dhcp = None;
-        }
+        let Some(interface) = self.interface_for_dev(dev) else {
+            warn!("dev {dev}: cannot reconfigure AP for unknown device");
+            return;
+        };
+        let old_ipv4 = self
+            .dhcp
+            .iter()
+            .find(|state| state.dev == dev)
+            .and_then(|state| state.address)
+            .or(interface.ipv4);
+        self.dhcp.retain(|state| state.dev != dev);
 
         let cidr = Ipv4Cidr::new(server_ip, prefix_len);
-        self.router.set_ipv4_config(dev, Some(cidr), None);
-        Self::set_interface_ipv4(&mut self.iface, None, Some(cidr));
+        self.commit_network_state(NetworkStateUpdate {
+            interface_id: interface.id,
+            dev,
+            metric: interface.metric,
+            old_ipv4,
+            ipv4: Some(cidr),
+            gateway: None,
+            dns_source: DnsSource::Static,
+            dns_servers: Vec::new(),
+        });
 
         match client_ip {
             Some(client_ip) => {
                 let subnet_mask = mask_from_prefix(prefix_len);
-                self.dhcp_server = Some(DhcpServer::new(dev, server_ip, client_ip, subnet_mask));
+                self.dhcp_server = Some(DhcpServer::new(
+                    dev,
+                    interface.id,
+                    server_ip,
+                    client_ip,
+                    subnet_mask,
+                ));
                 info!("dev {dev}: reconfigured as AP {cidr}, DHCP server lease {client_ip}");
             }
             None => {
@@ -287,145 +700,207 @@ impl Service {
         }
     }
 
-    /// 运行时把某设备重配为 STA 角色:撤掉 AP 静态 IP / DHCP 服务器,
-    /// 改用 DHCP 客户端获取地址。链路层关联由调用方先行完成。
+    /// Reconfigures one wireless device as STA and restarts DHCP on it.
     pub fn reconfigure_as_sta(&mut self, dev: usize, mac: EthernetAddress) {
-        // 撤掉该设备作为 AP 时的 DHCP 服务器与静态地址。
+        let Some(interface) = self.interface_for_dev(dev) else {
+            warn!("dev {dev}: cannot reconfigure STA for unknown device");
+            return;
+        };
         if self.dhcp_server.as_ref().is_some_and(|s| s.dev == dev) {
             self.dhcp_server = None;
         }
-        if let Some(cfg) = self.router.ipv4_config_for_dev(dev) {
-            Self::set_interface_ipv4(&mut self.iface, Some(cfg.address), None);
-        }
-        self.router.set_ipv4_config(dev, None, None);
+        self.dhcp.retain(|state| state.dev != dev);
+        self.commit_network_state(NetworkStateUpdate {
+            interface_id: interface.id,
+            dev,
+            metric: interface.metric,
+            old_ipv4: interface.ipv4,
+            ipv4: None,
+            gateway: None,
+            dns_source: DnsSource::Static,
+            dns_servers: Vec::new(),
+        });
 
-        // 启用 DHCP 客户端,从新 AP 获取地址。
-        self.dhcp = Some(DhcpState::new(dev, mac));
+        self.enable_dhcp(interface.id, dev, interface.name, mac, interface.metric);
         info!("dev {dev}: reconfigured as STA, DHCP client enabled");
     }
 
-    /// 唤醒所有设备的 RX 就绪(SDIO WiFi 带外收包后由 poll 任务调用)。
-    pub fn wake_all_devices(&self) {
-        self.router.wake_all_devices();
-    }
-
-    pub fn dhcp_enabled(&self) -> bool {
-        self.dhcp.is_some()
-    }
-
+    /// Returns true once DHCP has produced at least one usable interface.
+    ///
+    /// Startup should not block on every DHCP-enabled NIC: one isolated or
+    /// disconnected NIC must not delay unrelated interfaces that are already
+    /// routable.
     pub fn dhcp_configured(&self) -> bool {
-        self.dhcp
-            .as_ref()
-            .is_some_and(|state| state.address.is_some())
-    }
-
-    pub fn dns_servers(&self) -> Vec<Ipv4Address> {
-        let dhcp_dns = self
-            .dhcp
-            .as_ref()
-            .map(|state| state.dns_servers.clone())
-            .unwrap_or_default();
-
-        if !dhcp_dns.is_empty() {
-            dhcp_dns
-        } else {
-            self.static_dns.clone()
-        }
+        self.dhcp.iter().any(|state| state.address.is_some())
     }
 
     pub fn poll(&mut self, sockets: &mut SocketSet) -> bool {
         let timestamp = now();
         let mut dhcp_events = Vec::new();
-        let mut dhcp_server_replies: Vec<(usize, Vec<u8>)> = Vec::new();
+        let mut dhcp_server_replies = Vec::new();
+        let router_rx_pending;
 
         {
             let dhcp = &mut self.dhcp;
             let dhcp_server = &mut self.dhcp_server;
-            self.router.poll(timestamp, sockets, |dev, packet| {
-                if let Some(event) = dhcp
-                    .as_mut()
-                    .and_then(|state| state.process_packet(dev, packet, timestamp))
-                {
-                    dhcp_events.push(event);
-                }
-                if let Some(reply) = dhcp_server
-                    .as_mut()
-                    .and_then(|srv| srv.process_packet(dev, packet))
-                {
-                    dhcp_server_replies.push((dev, reply));
-                }
-            });
+            router_rx_pending = self
+                .router
+                .poll(timestamp, sockets, |interface_id, packet| {
+                    for state in dhcp.iter_mut() {
+                        if let Some(event) = state.process_packet(interface_id, packet, timestamp) {
+                            dhcp_events.push(event);
+                        }
+                    }
+                    if let Some(server) = dhcp_server.as_mut()
+                        && let Some(reply) = server.process_packet(interface_id, packet)
+                    {
+                        dhcp_server_replies.push((server.dev, reply));
+                    }
+                });
         }
         for event in dhcp_events {
             self.handle_dhcp_event(event);
         }
-        let mut server_sent = false;
+        let mut dhcp_server_sent = false;
         for (dev, reply) in dhcp_server_replies {
-            if self.router.send_on_device(
+            dhcp_server_sent |= self.router.send_on_device(
                 dev,
                 IpAddress::Ipv4(Ipv4Address::BROADCAST),
                 &reply,
                 timestamp,
-            ) {
-                server_sent = true;
-            }
+            );
         }
-        self.iface.poll(timestamp, &mut self.router, sockets);
+        let socket_state_changed =
+            self.iface.poll(timestamp, &mut self.router, sockets) == PollResult::SocketStateChanged;
         let dhcp_poll_next = self.poll_dhcp(timestamp);
-        self.router.dispatch(timestamp) || dhcp_poll_next || server_sent
+
+        // Reap orphaned TCP sockets using the SocketSet already held by poll_once().
+        crate::orphan::reap_orphans(timestamp, sockets);
+
+        self.router.dispatch(timestamp, sockets)
+            || dhcp_poll_next
+            || dhcp_server_sent
+            || socket_state_changed
+            || router_rx_pending
+    }
+
+    pub fn next_poll_at(&mut self, sockets: &SocketSet) -> Option<Instant> {
+        self.iface.poll_at(now(), sockets)
     }
 
     fn poll_dhcp(&mut self, timestamp: Instant) -> bool {
-        let Some((dev, next_hop, packet)) = self
-            .dhcp
-            .as_mut()
-            .and_then(|state| state.poll_packet(timestamp))
-        else {
-            return false;
-        };
-
-        self.router
-            .send_on_device(dev, next_hop, &packet, timestamp)
+        let mut poll_next = false;
+        for state in &mut self.dhcp {
+            if let Some((dev, next_hop, packet)) = state.poll_packet(timestamp) {
+                poll_next |= self
+                    .router
+                    .send_on_device(dev, next_hop, &packet, timestamp);
+            }
+        }
+        poll_next
     }
 
     fn handle_dhcp_event(&mut self, event: DhcpEvent) {
-        match event {
+        let update = match event {
             DhcpEvent::Configured {
+                interface_id,
+                dev,
+                ifname,
+                metric,
                 address,
                 router,
                 dns_servers,
             } => {
-                let Some(state) = &mut self.dhcp else {
-                    return;
-                };
-                warn!("eth0: DHCP acquired address {address}");
+                warn!("{ifname}: DHCP acquired address {address}");
                 match router {
-                    Some(router) => warn!("eth0: DHCP router {router}"),
-                    None => warn!("eth0: DHCP router not provided"),
+                    Some(router) => warn!("{ifname}: DHCP router {router}"),
+                    None => warn!("{ifname}: DHCP router not provided"),
                 }
                 for dns in &dns_servers {
-                    info!("eth0: DHCP DNS {dns}");
+                    info!("{ifname}: DHCP DNS {dns}");
                 }
-
-                Self::set_interface_ipv4(&mut self.iface, state.address, Some(address));
-                state.address = Some(address);
-                state.dns_servers = dns_servers;
-                self.router
-                    .set_ipv4_config(state.dev, Some(address), router.map(IpAddress::Ipv4));
-            }
-            DhcpEvent::Deconfigured => {
-                let Some(state) = &mut self.dhcp else {
-                    return;
+                let old_ipv4 = {
+                    let Some(state) = self
+                        .dhcp
+                        .iter_mut()
+                        .find(|state| state.interface_id == interface_id)
+                    else {
+                        return;
+                    };
+                    let old_ipv4 = state.address;
+                    state.address = Some(address);
+                    state.dns_servers = dns_servers.clone();
+                    old_ipv4
                 };
-                if state.address.is_some() {
-                    info!("eth0: DHCP deconfigured");
+                NetworkStateUpdate {
+                    interface_id,
+                    dev,
+                    metric,
+                    old_ipv4,
+                    ipv4: Some(address),
+                    gateway: router,
+                    dns_source: DnsSource::Dhcp,
+                    dns_servers,
                 }
-                Self::set_interface_ipv4(&mut self.iface, state.address, None);
-                state.address = None;
-                state.dns_servers.clear();
-                self.router.set_ipv4_config(state.dev, None, None);
             }
-        }
+            DhcpEvent::Deconfigured {
+                interface_id,
+                dev,
+                ifname,
+                metric,
+            } => {
+                let old_ipv4 = {
+                    let Some(state) = self
+                        .dhcp
+                        .iter_mut()
+                        .find(|state| state.interface_id == interface_id)
+                    else {
+                        return;
+                    };
+                    if state.address.is_some() {
+                        info!("{ifname}: DHCP deconfigured");
+                    }
+                    let old_ipv4 = state.address;
+                    state.address = None;
+                    state.dns_servers.clear();
+                    old_ipv4
+                };
+                NetworkStateUpdate {
+                    interface_id,
+                    dev,
+                    metric,
+                    old_ipv4,
+                    ipv4: None,
+                    gateway: None,
+                    dns_source: DnsSource::Dhcp,
+                    dns_servers: Vec::new(),
+                }
+            }
+        };
+        self.commit_network_state(update);
+    }
+
+    fn commit_network_state(&mut self, update: NetworkStateUpdate) {
+        Self::set_interface_ipv4(&mut self.iface, update.old_ipv4, update.ipv4);
+        let routes = self.router.ipv4_rules(
+            update.dev,
+            update.interface_id,
+            update.metric,
+            update.ipv4,
+            update.gateway.map(IpAddress::Ipv4),
+        );
+        self.control.commit_interface_update(&update, routes);
+    }
+
+    fn interface_for_dev(&self, dev: usize) -> Option<NetInterface> {
+        let interface_id = self.router.interface_id_for_dev(dev)?;
+        self.control
+            .state
+            .read()
+            .interfaces
+            .iter()
+            .find(|interface| interface.id == interface_id)
+            .cloned()
     }
 
     fn set_interface_ipv4(
@@ -446,33 +921,19 @@ impl Service {
         });
     }
 
-    pub fn get_source_address(&self, dst_addr: &IpAddress) -> IpAddress {
-        let Some(rule) = self.router.table.lookup(dst_addr) else {
-            panic!("no route to destination: {dst_addr}");
-        };
-        rule.src
-    }
-
     pub fn arp_entries(&self) -> Vec<ArpEntry> {
         self.router.arp_entries(now())
     }
 
     pub fn eth0_ipv4_config(&self) -> Option<Ipv4InterfaceConfig> {
-        self.router.ipv4_config_for_dev(1)
+        self.control.ipv4_config("eth0")
     }
 
-    pub fn device_mask_for(&self, endpoint: &IpListenEndpoint) -> u32 {
-        match endpoint.addr {
-            Some(addr) => self
-                .router
-                .table
-                .lookup(&addr)
-                .map_or(0, |it| 1u32 << it.dev),
-            None => u32::MAX,
-        }
+    pub fn wake_all_devices(&self) {
+        self.router.wake_all_devices();
     }
 
-    pub fn register_waker(&mut self, mask: u32, waker: &Waker) {
+    pub fn register_waker(&mut self, binding: DeviceBinding, waker: &Waker) {
         let next = self.iface.poll_at(now(), &SOCKET_SET.inner.lock());
 
         if let Some(t) = next {
@@ -492,21 +953,30 @@ impl Service {
             }
         }
 
-        for (i, device) in self.router.devices.iter().enumerate() {
-            if mask & (1 << i) != 0 {
-                device.register_waker(waker);
-            }
-        }
+        self.router.register_waker(binding, waker);
+    }
+
+    pub fn register_device_waker(&mut self, waker: &Waker) {
+        self.router.register_device_waker(waker);
     }
 }
 
 enum DhcpEvent {
     Configured {
+        interface_id: InterfaceId,
+        dev: usize,
+        ifname: String,
+        metric: u32,
         address: Ipv4Cidr,
         router: Option<Ipv4Address>,
         dns_servers: Vec<Ipv4Address>,
     },
-    Deconfigured,
+    Deconfigured {
+        interface_id: InterfaceId,
+        dev: usize,
+        ifname: String,
+        metric: u32,
+    },
 }
 
 fn dhcp_transaction_id(mac: EthernetAddress) -> u32 {
@@ -550,13 +1020,13 @@ fn build_dhcp_packet(
         router: None,
         subnet_mask: None,
         relay_agent_ip: Ipv4Address::UNSPECIFIED,
-        broadcast: true,
+        broadcast: false,
         requested_ip,
         client_identifier: Some(mac),
         server_identifier,
         parameter_request_list: Some(DHCP_PARAMETER_REQUEST_LIST),
         dns_servers: None,
-        max_size: Some(STANDARD_MTU as u16),
+        max_size: Some((STANDARD_MTU - DHCP_MAX_IPV4_HEADER_LEN - DHCP_UDP_HEADER_LEN) as u16),
         lease_duration: None,
         renew_duration: None,
         rebind_duration: None,
@@ -593,4 +1063,65 @@ fn build_dhcp_packet(
     );
 
     buffer
+}
+
+#[cfg(test)]
+mod tests {
+    use alloc::{boxed::Box, sync::Arc, vec::Vec};
+
+    use smoltcp::wire::EthernetAddress;
+
+    use super::*;
+    use crate::{device::LoopbackDevice, router::RouteTable};
+
+    #[test]
+    fn dhcp_configured_is_true_once_any_interface_has_address() {
+        let routes = Arc::new(spin::RwLock::new(RouteTable::new()));
+        let mut router = Router::new(routes.clone());
+        let dev0 = router.add_device(InterfaceId::new(2), Box::new(LoopbackDevice::new()));
+        let dev1 = router.add_device(InterfaceId::new(3), Box::new(LoopbackDevice::new()));
+        let control = Arc::new(NetControl::new(Vec::new(), routes, Vec::new()));
+        let mut service = Service::new(router, control);
+
+        service.enable_dhcp(
+            InterfaceId::new(2),
+            dev0,
+            "eth0".into(),
+            EthernetAddress([0x02, 0, 0, 0, 0, 1]),
+            100,
+        );
+        service.enable_dhcp(
+            InterfaceId::new(3),
+            dev1,
+            "eth1".into(),
+            EthernetAddress([0x02, 0, 0, 0, 0, 2]),
+            100,
+        );
+        assert!(!service.dhcp_configured());
+
+        service.dhcp[1].address = Some(Ipv4Cidr::new(Ipv4Address::new(192, 0, 2, 10), 24));
+        assert!(service.dhcp_configured());
+    }
+
+    #[test]
+    fn interface_address_table_handles_loopback_and_two_ethernet_addresses() {
+        let routes = Arc::new(spin::RwLock::new(RouteTable::new()));
+        let router = Router::new(routes.clone());
+        let control = Arc::new(NetControl::new(Vec::new(), routes, Vec::new()));
+        let mut service = Service::new(router, control);
+
+        let lo = Ipv4Cidr::new(Ipv4Address::new(127, 0, 0, 1), 8);
+        let eth0 = Ipv4Cidr::new(Ipv4Address::new(10, 0, 2, 15), 24);
+        let eth1 = Ipv4Cidr::new(Ipv4Address::new(10, 0, 3, 15), 24);
+
+        service.iface.update_ip_addrs(|ip_addrs| {
+            ip_addrs.push(lo.into()).unwrap();
+        });
+        Service::set_interface_ipv4(&mut service.iface, None, Some(eth0));
+        Service::set_interface_ipv4(&mut service.iface, None, Some(eth1));
+
+        assert!(service.iface.ip_addrs().contains(&IpCidr::Ipv4(lo)));
+        assert!(service.iface.ip_addrs().contains(&IpCidr::Ipv4(eth0)));
+        assert!(service.iface.ip_addrs().contains(&IpCidr::Ipv4(eth1)));
+    }
 }

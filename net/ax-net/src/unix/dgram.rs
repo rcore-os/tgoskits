@@ -1,3 +1,23 @@
+//! Unix datagram transport.
+//!
+//! Datagram sockets use async channels to preserve message boundaries and pass
+//! ancillary data together with each packet. Bound endpoints publish a sender in
+//! the Unix namespace, while connected socket pairs keep direct peer channels
+//! for fast local delivery.
+//!
+//! # Delivery Semantics
+//!
+//! Each send builds one `Packet` containing payload, cmsg data, and sender
+//! address. A receiver consumes exactly one packet per recv call, which keeps
+//! Unix datagram behavior separate from the byte-stream logic in
+//! `stream.rs`.
+//!
+//! # Readiness
+//!
+//! Bound sockets and socketpairs both carry a `PollSet`. Senders wake the
+//! receiver after enqueueing a packet; poll registration never touches the
+//! global smoltcp socket set.
+
 use alloc::{boxed::Box, sync::Arc, vec::Vec};
 use core::task::Context;
 
@@ -17,18 +37,25 @@ use crate::{
 };
 
 struct Packet {
+    /// Datagram payload.
     data: Vec<u8>,
+    /// Ancillary messages carried with this datagram.
     cmsg: Vec<CMsgData>,
+    /// Sender address reported by recvmsg.
     sender: UnixSocketAddr,
 }
 
 struct Channel {
+    /// Sender side of the peer's datagram queue.
     data_tx: async_channel::Sender<Packet>,
+    /// Poll set woken when data is queued.
     poll_update: Arc<PollSet>,
 }
 
 pub struct Bind {
+    /// Sender published in the Unix namespace for this bound address.
     data_tx: async_channel::Sender<Packet>,
+    /// Poll set associated with the receiver bound at this address.
     poll_update: Arc<PollSet>,
 }
 impl Bind {
@@ -43,11 +70,17 @@ impl Bind {
 
 /// Datagram transport for Unix domain sockets.
 pub struct DgramTransport {
+    /// Receiver installed when the socket is bound or paired.
     data_rx: Mutex<Option<(async_channel::Receiver<Packet>, Arc<PollSet>)>>,
+    /// Direct peer channel for connected datagram sockets.
     connected: RwLock<Option<Channel>>,
+    /// Address reported as sender on outgoing datagrams.
     local_addr: RwLock<UnixSocketAddr>,
+    /// Poll set for local state changes.
     poll_state: Arc<PollSet>,
+    /// Shared socket options.
     general: GeneralOptions,
+    /// Creator pid used for SO_PEERCRED-style reporting.
     pid: u32,
 }
 impl DgramTransport {

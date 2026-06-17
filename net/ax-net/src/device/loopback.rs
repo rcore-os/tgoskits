@@ -1,32 +1,30 @@
-use alloc::vec;
+//! Loopback device marker.
+//!
+//! Loopback traffic is handled by the router fast path rather than by device
+//! workers. This device still exists so the control plane can expose `lo` as a
+//! normal interface and route local packets through the same route table.
+//!
+//! # Fast Path
+//!
+//! `Router::dispatch()` copies loopback packets directly from the smoltcp TX
+//! buffer into the smoltcp-facing RX buffer. That avoids an extra queue hop and
+//! avoids spawning RX/TX workers for a device that has no hardware latency.
+
 use core::task::Waker;
 
-use axpoll::PollSet;
-use smoltcp::{
-    storage::{PacketBuffer, PacketMetadata},
-    time::Instant,
-    wire::IpAddress,
-};
+use smoltcp::{time::Instant, wire::IpAddress};
 
-use crate::{
-    consts::{SOCKET_BUFFER_SIZE, STANDARD_MTU},
-    device::Device,
-};
+use crate::{config::InterfaceId, device::Device};
 
-pub struct LoopbackDevice {
-    buffer: PacketBuffer<'static, ()>,
-    poll: PollSet,
-}
+/// Loopback device for local traffic.
+///
+/// Unlike Ethernet devices, loopback uses a fast path that bypasses device
+/// workers: packets are injected directly into the router's RX queue on send.
+pub struct LoopbackDevice;
+
 impl LoopbackDevice {
     pub fn new() -> Self {
-        let buffer = PacketBuffer::new(
-            vec![PacketMetadata::EMPTY; SOCKET_BUFFER_SIZE],
-            vec![0u8; STANDARD_MTU * SOCKET_BUFFER_SIZE],
-        );
-        Self {
-            buffer,
-            poll: PollSet::new(),
-        }
+        Self
     }
 }
 
@@ -37,38 +35,22 @@ impl Device for LoopbackDevice {
 
     fn recv(
         &mut self,
-        buffer: &mut PacketBuffer<()>,
+        _interface_id: InterfaceId,
+        _buffer: &mut smoltcp::storage::PacketBuffer<InterfaceId>,
         _timestamp: Instant,
-        snoop: &mut dyn FnMut(&[u8]),
+        _snoop: &mut dyn FnMut(&[u8]),
     ) -> bool {
-        self.buffer.dequeue().ok().is_some_and(|(_, rx_buf)| {
-            snoop(rx_buf);
-            buffer
-                .enqueue(rx_buf.len(), ())
-                .unwrap()
-                .copy_from_slice(rx_buf);
-            true
-        })
+        // Loopback uses fast path: packets go directly to RouterQueues::rx
+        // This recv() is never called by device workers
+        false
     }
 
-    fn send(&mut self, next_hop: IpAddress, packet: &[u8], _timestamp: Instant) -> bool {
-        match self.buffer.enqueue(packet.len(), ()) {
-            Ok(tx_buf) => {
-                tx_buf.copy_from_slice(packet);
-                self.poll.wake();
-                true
-            }
-            Err(_) => {
-                warn!(
-                    "Loopback device buffer is full, dropping packet to {}",
-                    next_hop
-                );
-                false
-            }
-        }
+    fn send(&mut self, _next_hop: IpAddress, _packet: &[u8], _timestamp: Instant) -> bool {
+        // Fast path: loopback packets are injected directly in Router::dispatch().
+        true
     }
 
-    fn register_waker(&self, waker: &Waker) {
-        self.poll.register(waker);
+    fn register_waker(&self, _waker: &Waker) {
+        // No async operations needed for loopback fast path
     }
 }
