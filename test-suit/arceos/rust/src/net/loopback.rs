@@ -72,9 +72,17 @@ fn test_host_http_client() {
         .expect("failed to send host HTTP request");
 
     let mut buf = [0; 512];
-    let len = stream
-        .read(&mut buf)
-        .expect("failed to read host HTTP response");
+    let mut len = 0;
+    while len < buf.len() {
+        let read_len = stream
+            .read(&mut buf[len..])
+            .expect("failed to read host HTTP response");
+        if read_len == 0 {
+            break;
+        }
+        len += read_len;
+    }
+    assert_ne!(len, 0, "host HTTP response was empty");
     let response = core::str::from_utf8(&buf[..len]).expect("host HTTP response was not utf8");
     assert!(
         response.contains("HTTP/1.1 200 OK"),
