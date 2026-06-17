@@ -383,7 +383,6 @@ mod tests {
     }
 }
 
-#[cfg(target_arch = "loongarch64")]
 pub fn is_uefi_available() -> bool {
     uefi::table::system_table_raw().is_some()
 }

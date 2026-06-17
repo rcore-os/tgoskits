@@ -37,6 +37,22 @@ pub fn try_init_epoch_offset(epoch_time_nanos: u64) -> bool {
         .is_ok()
 }
 
+#[cfg(all(feature = "rtc", target_arch = "loongarch64"))]
+pub(crate) fn try_init_epoch_offset_from_firmware() -> bool {
+    let Some(epoch_time_nanos) = somehal::rtc::epoch_time_nanos() else {
+        debug!("axplat-dyn: firmware RTC is not available");
+        return false;
+    };
+
+    if try_init_epoch_offset(epoch_time_nanos) {
+        info!("axplat-dyn: initialized wall clock from firmware RTC");
+        true
+    } else {
+        debug!("axplat-dyn: firmware RTC skipped because epoch offset is already initialized");
+        false
+    }
+}
+
 struct GenericTimer;
 
 #[impl_plat_interface]
