@@ -1005,10 +1005,7 @@ fn show_vm_basic_details(vm_id: usize, show_config: bool, show_stats: bool) {
         if show_stats {
             println!();
             println!("Device Summary:");
-            println!(
-                "  Total Devices:  {}",
-                vm.router().total_devices()
-            );
+            println!("  Total Devices:  {}", vm.router().total_devices());
         }
 
         println!();

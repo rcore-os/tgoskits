@@ -75,7 +75,7 @@ pub fn hardware_check() {
 
 pub fn inject_interrupt(vector: usize) {
     let vm = crate::vmm::vm_list::get_vm_by_id(axvisor_api::vmm::current_vm_id()).unwrap();
-    if let Err(e) = vm.router().inject(axbus::IrqMessage::Legacy {
+    if let Err(e) = vm.inject_irq(axbus::IrqMessage::Legacy {
         line: axbus::IrqLine(vector as u32),
     }) {
         warn!("inject_interrupt({vector}) failed: {e}");

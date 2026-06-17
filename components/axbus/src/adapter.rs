@@ -30,21 +30,16 @@
 //! After all devices are migrated to native `VirtualDevice` implementations,
 //! these adapters can be removed with no functional change.
 
-use alloc::string::String;
-use alloc::sync::Arc;
-use alloc::vec::Vec;
+use alloc::{format, string::String, sync::Arc, vec::Vec};
 use core::any::Any;
 
 use axaddrspace::{
     GuestPhysAddr, GuestPhysAddrRange,
-    device::AccessWidth as LegacyWidth,
-    device::{Port, PortRange, SysRegAddr, SysRegAddrRange},
+    device::{AccessWidth as LegacyWidth, Port, PortRange, SysRegAddr, SysRegAddrRange},
 };
 use axdevice_base::BaseDeviceOps;
-use alloc::format;
-use crate::send_sync::AssertSendSync;
-use crate::irq::InterruptControllerOps;
-use crate::r#trait::*;
+
+use crate::{send_sync::AssertSendSync, r#trait::*};
 
 // ── helpers ────────────────────────────────────────────────────────────────
 
@@ -70,17 +65,11 @@ fn mmio_resource_from_dev(dev: &dyn BaseDeviceOps<GuestPhysAddrRange>) -> Vec<Re
 /// Extract PIO resources from a legacy Port device.
 fn port_resource_from_dev(dev: &dyn BaseDeviceOps<PortRange>) -> Vec<Resource> {
     let range = dev.address_range();
-    
-    // 【安全修复】：将 u16 类型的端口边界先提升为 u32 再进行加法。
-    // 避免当端口达到最大值 65535 (u16::MAX) 时，直接 +1 触发 panic 或回绕到 0 的问题。
     let start = range.start.0 as u32;
     let end = range.end.0 as u32 + 1; // PortRange is inclusive, convert to exclusive
-    
+
     if end > start {
-        // 【注意】：请根据您的 Resource::Pio 枚举定义，确认其内部 Range 包裹的是 u16 还是 u32/u64。
-        // 如果它必须是 Range<u16>，需要注意 `65536 as u16` 会回绕为 0，这会导致 0..=65535 的满端口范围变成 start..0 的无效区间。
-        // 如果 Resource::Pio 内部已经是 Range<u32> 或 Range<u64>，建议直接使用 start..end 避免强转回 u16。
-        alloc::vec![Resource::Pio(start as u16..end as u16)]
+        alloc::vec![Resource::Pio(start..end)]
     } else {
         alloc::vec![]
     }
@@ -89,11 +78,11 @@ fn port_resource_from_dev(dev: &dyn BaseDeviceOps<PortRange>) -> Vec<Resource> {
 /// Extract SysReg resources from a legacy SysReg device.
 fn sysreg_resource_from_dev(dev: &dyn BaseDeviceOps<SysRegAddrRange>) -> Vec<Resource> {
     let range = dev.address_range();
-    
+
     // 【安全修复】：将系统寄存器地址先转换为 u64 再执行加法，避免转换至开区间时的边界溢出。
     let start = range.start.0 as u64;
     let end = range.end.0 as u64 + 1; // SysRegAddrRange is inclusive, convert to exclusive
-    
+
     if end > start {
         alloc::vec![Resource::SysReg(start..end)]
     } else {
@@ -109,7 +98,6 @@ pub struct LegacyMmioAdapter {
     name: String,
     inner: AssertSendSync<Arc<dyn BaseDeviceOps<GuestPhysAddrRange>>>,
     resources: Vec<Resource>,
-    intc_ops: Option<AssertSendSync<Arc<dyn InterruptControllerOps>>>,
 }
 
 impl LegacyMmioAdapter {
@@ -121,14 +109,12 @@ impl LegacyMmioAdapter {
             name,
             inner: AssertSendSync(inner),
             resources,
-            intc_ops: None,
         }
     }
 
-    /// Attach an interrupt controller implementation to this adapter.
-    pub fn with_interrupt_controller(mut self, intc: Arc<dyn InterruptControllerOps>) -> Self {
-        self.intc_ops = Some(AssertSendSync(intc));
-        self
+    /// Access the inner legacy device for type-specific operations (e.g., downcasting).
+    pub fn inner(&self) -> &Arc<dyn BaseDeviceOps<GuestPhysAddrRange>> {
+        &self.inner.0
     }
 }
 
@@ -155,16 +141,22 @@ impl VirtualDevice for LegacyMmioAdapter {
         };
 
         match access {
-            BusAccess::Read { .. } => {
-                match self.inner.0.handle_read(gpa, width) {
-                    Ok(val) => BusResponse::Success(Some(val as u64)),
-                    Err(_) => BusResponse::DeviceError { bus, addr: access.addr(), msg: "legacy mmio read error" },
-                }
-            }
+            BusAccess::Read { .. } => match self.inner.0.handle_read(gpa, width) {
+                Ok(val) => BusResponse::Success(Some(val as u64)),
+                Err(_) => BusResponse::DeviceError {
+                    bus,
+                    addr: access.addr(),
+                    msg: "legacy mmio read error",
+                },
+            },
             BusAccess::Write { val, .. } => {
                 match self.inner.0.handle_write(gpa, width, *val as usize) {
                     Ok(_) => BusResponse::Success(None),
-                    Err(_) => BusResponse::DeviceError { bus, addr: access.addr(), msg: "legacy mmio write error" },
+                    Err(_) => BusResponse::DeviceError {
+                        bus,
+                        addr: access.addr(),
+                        msg: "legacy mmio write error",
+                    },
                 }
             }
         }
@@ -172,10 +164,6 @@ impl VirtualDevice for LegacyMmioAdapter {
 
     fn as_any(&self) -> &dyn Any {
         self
-    }
-
-    fn as_interrupt_controller(&self) -> Option<&dyn InterruptControllerOps> {
-        self.intc_ops.as_ref().map(|ops| ops.0.as_ref())
     }
 }
 
@@ -220,16 +208,26 @@ impl VirtualDevice for LegacySysRegAdapter {
         // SysReg accesses are always 64-bit (Qword).
         let sysreg = SysRegAddr(access.addr() as usize);
         match access {
-            BusAccess::Read { .. } => {
-                match self.inner.0.handle_read(sysreg, LegacyWidth::Qword) {
-                    Ok(val) => BusResponse::Success(Some(val as u64)),
-                    Err(_) => BusResponse::DeviceError { bus, addr: access.addr(), msg: "legacy sysreg read error" },
-                }
-            }
+            BusAccess::Read { .. } => match self.inner.0.handle_read(sysreg, LegacyWidth::Qword) {
+                Ok(val) => BusResponse::Success(Some(val as u64)),
+                Err(_) => BusResponse::DeviceError {
+                    bus,
+                    addr: access.addr(),
+                    msg: "legacy sysreg read error",
+                },
+            },
             BusAccess::Write { val, .. } => {
-                match self.inner.0.handle_write(sysreg, LegacyWidth::Qword, *val as usize) {
+                match self
+                    .inner
+                    .0
+                    .handle_write(sysreg, LegacyWidth::Qword, *val as usize)
+                {
                     Ok(_) => BusResponse::Success(None),
-                    Err(_) => BusResponse::DeviceError { bus, addr: access.addr(), msg: "legacy sysreg write error" },
+                    Err(_) => BusResponse::DeviceError {
+                        bus,
+                        addr: access.addr(),
+                        msg: "legacy sysreg write error",
+                    },
                 }
             }
         }
@@ -286,16 +284,22 @@ impl VirtualDevice for LegacyPortAdapter {
             AccessWidth::U64 => LegacyWidth::Qword,
         };
         match access {
-            BusAccess::Read { .. } => {
-                match self.inner.0.handle_read(port, width) {
-                    Ok(val) => BusResponse::Success(Some(val as u64)),
-                    Err(_) => BusResponse::DeviceError { bus, addr: access.addr(), msg: "legacy port read error" },
-                }
-            }
+            BusAccess::Read { .. } => match self.inner.0.handle_read(port, width) {
+                Ok(val) => BusResponse::Success(Some(val as u64)),
+                Err(_) => BusResponse::DeviceError {
+                    bus,
+                    addr: access.addr(),
+                    msg: "legacy port read error",
+                },
+            },
             BusAccess::Write { val, .. } => {
                 match self.inner.0.handle_write(port, width, *val as usize) {
                     Ok(_) => BusResponse::Success(None),
-                    Err(_) => BusResponse::DeviceError { bus, addr: access.addr(), msg: "legacy port write error" },
+                    Err(_) => BusResponse::DeviceError {
+                        bus,
+                        addr: access.addr(),
+                        msg: "legacy port write error",
+                    },
                 }
             }
         }

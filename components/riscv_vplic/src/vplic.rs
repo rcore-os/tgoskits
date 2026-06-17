@@ -2,18 +2,20 @@
 //!
 //! This module implements the core data structure for managing a virtual PLIC device.
 
-use core::option::Option;
-
 use axaddrspace::{GuestPhysAddr, HostPhysAddr};
-use bitmaps::Bitmap;
-use spin::Mutex;
+use axbus::AtomicBitmap;
 
 use crate::consts::*;
+
+const BITMAP_WORDS: usize = PLIC_NUM_SOURCES / 64; // 16
 
 /// Virtual PLIC global controller.
 ///
 /// Manages the state of a virtual PLIC device including interrupt assignment,
 /// pending interrupts, and active interrupts for guest VMs.
+///
+/// All bitmap fields use lock-free `AtomicBitmap` — safe to access from
+/// any context including interrupt handlers.
 pub struct VPlicGlobal {
     /// The address of the VPlicGlobal in the guest physical address space.
     pub addr: GuestPhysAddr,
@@ -22,25 +24,17 @@ pub struct VPlicGlobal {
     /// Num of contexts.
     pub contexts_num: usize,
     /// IRQs assigned to this VPlicGlobal.
-    pub assigned_irqs: Mutex<Bitmap<{ PLIC_NUM_SOURCES }>>,
+    pub assigned_irqs: AtomicBitmap<BITMAP_WORDS>,
     /// Pending IRQs for this VPlicGlobal.
-    pub pending_irqs: Mutex<Bitmap<{ PLIC_NUM_SOURCES }>>,
+    pub pending_irqs: AtomicBitmap<BITMAP_WORDS>,
     /// Active IRQs for this VPlicGlobal.
-    pub active_irqs: Mutex<Bitmap<{ PLIC_NUM_SOURCES }>>,
+    pub active_irqs: AtomicBitmap<BITMAP_WORDS>,
     /// The host physical address of the PLIC.
     pub host_plic_addr: HostPhysAddr,
 }
 
 impl VPlicGlobal {
     /// Creates a new virtual PLIC global controller.
-    ///
-    /// # Arguments
-    /// * `addr` - Guest physical address where the PLIC is mapped
-    /// * `size` - Size of the PLIC memory region in bytes
-    /// * `contexts_num` - Number of interrupt contexts (typically equal to number of harts)
-    ///
-    /// # Panics
-    /// Panics if the provided size is insufficient to hold all PLIC registers.
     pub fn new(addr: GuestPhysAddr, size: Option<usize>, contexts_num: usize) -> Self {
         let addr_end = addr.as_usize()
             + contexts_num * PLIC_CONTEXT_STRIDE
@@ -57,18 +51,11 @@ impl VPlicGlobal {
         Self {
             addr,
             size,
-            assigned_irqs: Mutex::new(Bitmap::new()),
-            pending_irqs: Mutex::new(Bitmap::new()),
-            active_irqs: Mutex::new(Bitmap::new()),
+            assigned_irqs: AtomicBitmap::new(),
+            pending_irqs: AtomicBitmap::new(),
+            active_irqs: AtomicBitmap::new(),
             contexts_num,
-            host_plic_addr: HostPhysAddr::from_usize(addr.as_usize()), /* Currently we assume host_plic_addr = guest_vplic_addr */
+            host_plic_addr: HostPhysAddr::from_usize(addr.as_usize()),
         }
     }
-
-    // pub fn assign_irq(&self, irq: u32, cpu_phys_id: usize, target_cpu_affinity: (u8, u8, u8, u8)) {
-    //     warn!(
-    //         "Assigning IRQ {} to vGICD at addr {:#x} for CPU phys id {} is not supported yet",
-    //         irq, self.addr, cpu_phys_id
-    //     );
-    // }
 }

@@ -16,6 +16,37 @@ use std::sync::{Arc, Mutex};
 
 use ax_errno::AxResult;
 use axaddrspace::{GuestPhysAddr, GuestPhysAddrRange, device::AccessWidth};
+
+// Mock implementation of VmmIf for host testing.
+// When x86_vlapic is linked (on x86_64), it requires axvisor_api::VmmIf
+// symbols. This mock provides the minimal implementation needed for
+// device-level tests that never actually call these functions.
+struct VmmIfMock;
+
+#[axvisor_api::api_impl]
+impl axvisor_api::vmm::VmmIf for VmmIfMock {
+    fn current_vm_id() -> usize {
+        panic!("VmmIfMock::current_vm_id called unexpectedly in test")
+    }
+    fn current_vcpu_id() -> usize {
+        panic!("VmmIfMock::current_vcpu_id called unexpectedly in test")
+    }
+    fn vcpu_num(_vm_id: usize) -> Option<usize> {
+        panic!("VmmIfMock::vcpu_num called unexpectedly in test")
+    }
+    fn active_vcpus(_vm_id: usize) -> Option<usize> {
+        panic!("VmmIfMock::active_vcpus called unexpectedly in test")
+    }
+    fn inject_interrupt(_vm_id: usize, _vcpu_id: usize, _vector: u8) {
+        // Intentionally empty — device tests never inject interrupts.
+    }
+    fn inject_interrupt_to_cpus(_vm_id: usize, _vcpu_set: axvisor_api::vmm::VCpuSet, _vector: u8) {
+        // Intentionally empty — device tests never inject interrupts.
+    }
+    fn notify_vcpu_timer_expired(_vm_id: usize, _vcpu_id: usize) {
+        panic!("VmmIfMock::notify_vcpu_timer_expired called unexpectedly in test")
+    }
+}
 use axdevice::{AxVmDeviceConfig, AxVmDevices};
 use axdevice_base::BaseDeviceOps;
 use axvmconfig::EmulatedDeviceType;
@@ -102,7 +133,18 @@ fn test_mmio_dispatch_functionality() {
     assert_eq!(read_result, 0xDEAD_BEEF, "Read value mismatch");
 }
 
+/// This test validates the legacy `AxVmDevices` panic-on-miss behavior.
+///
+/// It is `#[ignore]` because the new architecture (`axbus::BusRouter`)
+/// replaced panic with structured `BusResponse::NoDevice`. The test is
+/// kept for reference rather than deleted, in case the deprecated
+/// `AxVmDevices` code path still needs to be validated during migration.
+///
+/// For the new NoDevice behavior, see:
+/// - `axbus::router::tests::test_router_route_no_device`
+/// - `axbus::registry::tests::test_handle_access_sysreg_fallback`
 #[test]
+#[ignore]
 #[should_panic(expected = "emu_device not found")]
 fn test_mmio_panic_on_missing_device() {
     let config = AxVmDeviceConfig::new(vec![]);

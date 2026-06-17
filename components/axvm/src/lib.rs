@@ -13,7 +13,6 @@
 // limitations under the License.
 
 #![no_std]
-#![feature(trait_upcasting)]
 
 //! This crate provides a minimal VM monitor (VMM) for running guest VMs.
 //!

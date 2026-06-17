@@ -16,7 +16,7 @@ pub fn inject_interrupt(irq_id: usize) {
 
     // Inject through the IRQ router, which dispatches to the vPLIC's
     // InterruptControllerOps::inject_irq (sets pending bit + syncs VSEIP).
-    if let Err(e) = vm.router().inject(axbus::IrqMessage::Legacy {
+    if let Err(e) = vm.inject_irq(axbus::IrqMessage::Legacy {
         line: axbus::IrqLine(irq_id as u32),
     }) {
         warn!("inject_interrupt({irq_id}) failed: {e}");

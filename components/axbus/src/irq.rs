@@ -31,12 +31,8 @@
 //!
 //! # Usage
 
-use alloc::collections::BTreeMap;
-use alloc::string::String;
-use alloc::sync::Arc;
-use alloc::vec::Vec;
-use core::fmt::Display;
-use core::ops::Range;
+use alloc::{collections::BTreeMap, string::String, sync::Arc, vec::Vec};
+use core::{fmt::Display, ops::Range};
 
 use crate::r#trait::*;
 
@@ -139,6 +135,7 @@ pub struct IrqRoutingEntry {
 /// - **MSI**: `address → controller` (via MSI address window)
 ///
 /// Populated once at VM creation, read-only at runtime (no lock needed).
+#[derive(Clone)]
 pub struct IrqRoutingTable {
     /// Legacy line → entry index.
     legacy_map: BTreeMap<IrqLine, usize>,
@@ -164,7 +161,15 @@ impl IrqRoutingTable {
             entries: Vec::new(),
         }
     }
+}
 
+impl Default for IrqRoutingTable {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl IrqRoutingTable {
     /// Add a legacy line → controller mapping.
     pub fn add_legacy(
         &mut self,
@@ -189,11 +194,7 @@ impl IrqRoutingTable {
     }
 
     /// Add an MSI address window → controller mapping.
-    pub fn add_msi_range(
-        &mut self,
-        range: Range<u64>,
-        controller: DeviceId,
-    ) -> &mut Self {
+    pub fn add_msi_range(&mut self, range: Range<u64>, controller: DeviceId) -> &mut Self {
         self.msi_windows.push(MsiWindow { range, controller });
         self
     }
@@ -251,14 +252,23 @@ impl IrqRoutingTable {
 /// - **loongarch64**: `LoongArchPchPIC` + `LoongArchExtIOC` (two controllers)
 pub trait InterruptControllerOps: Send + Sync {
     /// Inject an interrupt on the given controller pin.
-    fn inject_irq(&self, pin: u32, trigger: TriggerMode, target: Option<IrqTarget>) -> Result<()>;
+    ///
+    /// The controller updates its own pending state and returns an
+    /// [`IrqOutcome`] indicating which vCPU(s) need to be kicked.
+    /// Cross-core notification is handled by the caller (IrqRuntime),
+    /// not by the controller.
+    fn inject_irq(
+        &self,
+        pin: u32,
+        trigger: TriggerMode,
+        target: Option<IrqTarget>,
+    ) -> Result<IrqOutcome>;
 
     /// De-assert a level-triggered interrupt.
-    fn deactivate_irq(&self, pin: u32) -> Result<()>;
+    fn deactivate_irq(&self, pin: u32) -> Result<IrqOutcome>;
 
     /// Handle an MSI write (address → controller, controller decodes the message).
-    /// Returns `None` if this controller doesn't handle MSI at the given address.
-    fn handle_msi(&self, addr: u64, data: u32) -> Result<()> {
+    fn handle_msi(&self, addr: u64, data: u32) -> Result<IrqOutcome> {
         let _ = addr;
         let _ = data;
         Err(DeviceError::NotFound)
@@ -275,6 +285,15 @@ pub trait InterruptControllerOps: Send + Sync {
 /// Created by [`BusRouter::create_irq_sink`] after the routing table is
 /// populated. The sink captures the inject/deactivate callbacks as closures,
 /// so the device never needs a reference to the router or the VM.
+///
+/// # Trigger mode awareness
+///
+/// The sink stores the [`TriggerMode`] configured for this line, but
+/// `raise()` / `lower()` / `pulse()` do **not** enforce it at runtime —
+/// the interrupt controller backend translates the semantics correctly.
+/// The accessor [`trigger()`](Self::trigger) is provided for device code
+/// that needs to adapt its behavior (e.g., only calling `lower()` for
+/// level-triggered lines).
 #[derive(Clone)]
 pub struct IrqSink {
     line: IrqLine,
@@ -291,17 +310,44 @@ impl IrqSink {
         injector: Arc<dyn Fn(IrqMessage) -> Result<()> + Send + Sync>,
         deactivator: Arc<dyn Fn(IrqLine) -> Result<()> + Send + Sync>,
     ) -> Self {
-        Self { line, trigger, injector, deactivator }
+        Self {
+            line,
+            trigger,
+            injector,
+            deactivator,
+        }
     }
 
-    /// Assert the interrupt (edge: pulse, level: raise).
+    /// Assert the interrupt.
+    ///
+    /// - **Edge-triggered**: use [`pulse()`](Self::pulse) instead — it
+    ///   sends a single edge by calling `raise()` then `lower()`.
+    /// - **Level-triggered**: `raise()` starts the active level; call
+    ///   [`lower()`](Self::lower) when the device de-asserts.
     pub fn raise(&self) -> Result<()> {
         (self.injector)(IrqMessage::Legacy { line: self.line })
     }
 
     /// De-assert a level-triggered interrupt.
+    ///
+    /// For edge-triggered lines, `lower()` is harmless (the controller
+    /// ignores it), but [`pulse()`](Self::pulse) is preferred for clarity.
     pub fn lower(&self) -> Result<()> {
         (self.deactivator)(self.line)
+    }
+
+    /// Pulse an edge-triggered interrupt: assert then immediately de-assert.
+    ///
+    /// For `TriggerMode::Edge`, this sends a single edge. For
+    /// `TriggerMode::Level`, this asserts and then immediately de-asserts,
+    /// producing a short pulse on the level-sensitive line.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if either `raise()` or `lower()` fails.
+    pub fn pulse(&self) -> Result<()> {
+        self.raise()?;
+        self.lower()
     }
 
     /// The interrupt line this sink is bound to.
@@ -329,8 +375,6 @@ impl core::fmt::Debug for IrqSink {
 // ============================================================
 
 /// Builder for attaching interrupt resources to a device.
-///
-
 pub struct InterruptBuilder {
     name: String,
     lines: Vec<IrqLine>,
@@ -353,16 +397,151 @@ impl InterruptBuilder {
 
     /// Build the resource list (interrupts only). Add alongside MMIO/PIO resources.
     pub fn build(self) -> Vec<Resource> {
-        self.lines
-            .into_iter()
-            .map(|line| Resource::Irq(line))
-            .collect()
+        self.lines.into_iter().map(Resource::Irq).collect()
     }
 
     /// Get the device name.
     pub fn name(&self) -> &str {
         &self.name
     }
+}
+
+// ============================================================
+// IrqOutcome — what the controller tells the runtime after inject
+// ============================================================
+
+/// The result of an interrupt injection, telling the runtime which
+/// vCPUs need to be kicked (forced out of guest mode to process
+/// the pending interrupt).
+///
+/// The interrupt controller updates its own pending state (bitmap,
+/// hardware LR, CSR) and returns this outcome. The controller does
+/// **not** perform cross-core notification itself — that is the
+/// runtime's job.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum IrqOutcome {
+    /// Interrupt state updated; kick the specified vCPU(s) so they
+    /// re-evaluate pending interrupts on guest re-entry.
+    Kick(KickTarget),
+    /// Interrupt was delivered directly (e.g., target vCPU is local
+    /// and hardware state was updated in place). No kick needed.
+    Delivered,
+    /// Interrupt was queued in controller state. The target vCPU will
+    /// pick it up on its next guest entry without an explicit kick.
+    Queued,
+}
+
+/// Which vCPU(s) the runtime should kick after an injection.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum KickTarget {
+    /// A single vCPU by its VM-local ID.
+    One(usize),
+    /// A set of vCPUs (up to 64).
+    Set(CpuSet),
+    /// All vCPUs in the VM.
+    All,
+}
+
+/// A compact vCPU bitmask supporting up to 64 vCPUs.
+///
+/// Sufficient for the vast majority of VM configurations. If more
+/// than 64 vCPUs are needed, `KickTarget::All` can be used as a
+/// fallback (slightly wasteful but correct).
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub struct CpuSet(u64);
+
+impl CpuSet {
+    pub const EMPTY: Self = Self(0);
+
+    pub const fn from_raw(bits: u64) -> Self {
+        Self(bits)
+    }
+
+    pub const fn single(id: usize) -> Self {
+        debug_assert!(id < 64);
+        Self(1u64 << id)
+    }
+
+    pub const fn with(self, id: usize) -> Self {
+        debug_assert!(id < 64);
+        Self(self.0 | (1u64 << id))
+    }
+
+    pub const fn contains(self, id: usize) -> bool {
+        debug_assert!(id < 64);
+        self.0 & (1u64 << id) != 0
+    }
+
+    pub const fn is_empty(self) -> bool {
+        self.0 == 0
+    }
+
+    pub const fn count(self) -> u32 {
+        self.0.count_ones()
+    }
+
+    pub fn iter(self) -> CpuSetIter {
+        CpuSetIter(self.0)
+    }
+}
+
+impl core::fmt::Debug for CpuSet {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "CpuSet({:#018x})", self.0)
+    }
+}
+
+pub struct CpuSetIter(u64);
+
+impl Iterator for CpuSetIter {
+    type Item = usize;
+
+    fn next(&mut self) -> Option<usize> {
+        if self.0 == 0 {
+            return None;
+        }
+        let bit = self.0.trailing_zeros() as usize;
+        self.0 &= !(1u64 << bit);
+        Some(bit)
+    }
+}
+
+// ============================================================
+// VcpuKicker — cross-core vCPU notification interface
+// ============================================================
+
+/// Cross-core vCPU notification interface.
+///
+/// Implemented by the VM management layer (axvm) and injected into
+/// the `IrqRuntime` at freeze time. The interrupt controller backends
+/// do not call this directly — they return `IrqOutcome::Kick(...)` and
+/// the runtime handles the dispatch.
+///
+/// # Semantics of `kick(vcpu_id)`
+///
+/// - If the vCPU is running on the **current** pCPU → no-op (the
+///   ongoing VM exit / re-entry will check pending state).
+/// - If the vCPU is running on a **remote** pCPU → send a host IPI
+///   to force a VM exit on that pCPU.
+/// - If the vCPU is **blocked** (WFI / HLT) → wake its scheduler task.
+///
+/// # Concurrency
+///
+/// All methods must be safe to call from any context, including
+/// interrupt handlers. Implementations must not hold locks.
+pub trait VcpuKicker: Send + Sync {
+    fn kick(&self, vcpu_id: usize);
+
+    fn kick_all(&self) {
+        // Default: suboptimal but correct. Implementors should override
+        // with a broadcast IPI when available.
+        let n = self.vcpu_count();
+        for i in 0..n {
+            self.kick(i);
+        }
+    }
+
+    fn vcpu_count(&self) -> usize;
 }
 
 // ── Tests ──────────────────────────────────────────────────────────────────
@@ -411,7 +590,14 @@ mod tests {
         let mut table = IrqRoutingTable::new();
         table
             .add_legacy(IrqLine(33), d42(), 0, TriggerMode::Edge, None, "dev1")
-            .add_legacy(IrqLine(34), d42(), 1, TriggerMode::Level { high: true }, None, "dev2")
+            .add_legacy(
+                IrqLine(34),
+                d42(),
+                1,
+                TriggerMode::Level { high: true },
+                None,
+                "dev2",
+            )
             .add_legacy(IrqLine(50), d7(), 0, TriggerMode::Edge, None, "dev3");
 
         assert_eq!(table.legacy_count(), 3);
@@ -424,9 +610,7 @@ mod tests {
 
     #[test]
     fn test_interrupt_builder() {
-        let res = InterruptBuilder::new("uart0")
-            .irq(IrqLine(33))
-            .build();
+        let res = InterruptBuilder::new("uart0").irq(IrqLine(33)).build();
         assert_eq!(res.len(), 1);
         if let Resource::Irq(line) = &res[0] {
             assert_eq!(*line, IrqLine(33));
@@ -449,8 +633,14 @@ mod tests {
         let sink = IrqSink::new(
             IrqLine(5),
             TriggerMode::Level { high: true },
-            Arc::new(move |msg| { r.lock().unwrap().push(msg); Ok(()) }),
-            Arc::new(move |line| { l.lock().unwrap().push(line); Ok(()) }),
+            Arc::new(move |msg| {
+                r.lock().unwrap().push(msg);
+                Ok(())
+            }),
+            Arc::new(move |line| {
+                l.lock().unwrap().push(line);
+                Ok(())
+            }),
         );
 
         assert_eq!(sink.line(), IrqLine(5));
@@ -470,6 +660,73 @@ mod tests {
     }
 
     #[test]
+    fn test_irq_sink_pulse() {
+        use alloc::sync::Arc;
+        use std::sync::Mutex;
+
+        let raised = Arc::new(Mutex::new(Vec::<IrqMessage>::new()));
+        let lowered = Arc::new(Mutex::new(Vec::<IrqLine>::new()));
+
+        let r = raised.clone();
+        let l = lowered.clone();
+
+        let sink = IrqSink::new(
+            IrqLine(3),
+            TriggerMode::Edge,
+            Arc::new(move |msg| {
+                r.lock().unwrap().push(msg);
+                Ok(())
+            }),
+            Arc::new(move |line| {
+                l.lock().unwrap().push(line);
+                Ok(())
+            }),
+        );
+
+        // A single pulse should trigger exactly one raise and one lower
+        sink.pulse().unwrap();
+
+        let raised = raised.lock().unwrap();
+        assert_eq!(raised.len(), 1);
+        assert!(matches!(raised[0], IrqMessage::Legacy { line: IrqLine(3) }));
+
+        let lowered = lowered.lock().unwrap();
+        assert_eq!(lowered.len(), 1);
+        assert_eq!(lowered[0], IrqLine(3));
+    }
+
+    #[test]
+    fn test_irq_sink_pulse_twice() {
+        use alloc::sync::Arc;
+        use std::sync::atomic::{AtomicU32, Ordering};
+
+        let count = Arc::new(AtomicU32::new(0));
+        let c = count.clone();
+        let deact_count = Arc::new(AtomicU32::new(0));
+        let d = deact_count.clone();
+
+        let sink = IrqSink::new(
+            IrqLine(8),
+            TriggerMode::Edge,
+            Arc::new(move |_| {
+                c.fetch_add(1, Ordering::Relaxed);
+                Ok(())
+            }),
+            Arc::new(move |_| {
+                d.fetch_add(1, Ordering::Relaxed);
+                Ok(())
+            }),
+        );
+
+        sink.pulse().unwrap();
+        sink.pulse().unwrap();
+
+        // Two pulses → two raises + two lowers
+        assert_eq!(count.load(Ordering::Relaxed), 2);
+        assert_eq!(deact_count.load(Ordering::Relaxed), 2);
+    }
+
+    #[test]
     fn test_irq_sink_clone() {
         use alloc::sync::Arc;
         use std::sync::atomic::{AtomicU32, Ordering};
@@ -480,7 +737,10 @@ mod tests {
         let sink = IrqSink::new(
             IrqLine(10),
             TriggerMode::Edge,
-            Arc::new(move |_| { c.fetch_add(1, Ordering::Relaxed); Ok(()) }),
+            Arc::new(move |_| {
+                c.fetch_add(1, Ordering::Relaxed);
+                Ok(())
+            }),
             Arc::new(|_| Ok(())),
         );
 

@@ -145,43 +145,17 @@ impl axbus::InterruptControllerOps for X86IntcAdapter {
         pin: u32,
         _trigger: axbus::TriggerMode,
         target: Option<axbus::IrqTarget>,
-    ) -> axbus::Result<()> {
+    ) -> axbus::Result<axbus::IrqOutcome> {
         let vcpu_id = match target {
             Some(axbus::IrqTarget::Cpu(id)) => id as VCpuId,
             _ => 0,
         };
         axvisor_api::vmm::inject_interrupt(self.vm_id, vcpu_id, pin as _);
-        Ok(())
+        Ok(axbus::IrqOutcome::Delivered)
     }
 
-    fn deactivate_irq(&self, _pin: u32) -> axbus::Result<()> {
-        Ok(())
-    }
-}
-
-impl axbus::VirtualDevice for X86IntcAdapter {
-    fn id(&self) -> axbus::DeviceId {
-        axbus::DeviceId::from_u64(0)
-    }
-
-    fn name(&self) -> &str {
-        "x86-intc-adapter"
-    }
-
-    fn resources(&self) -> &[axbus::Resource] {
-        &[]
-    }
-
-    fn handle_access(&self, bus: axbus::BusKind, access: &axbus::BusAccess) -> axbus::BusResponse {
-        axbus::BusResponse::NoDevice { bus, addr: access.addr() }
-    }
-
-    fn as_interrupt_controller(&self) -> Option<&dyn axbus::InterruptControllerOps> {
-        Some(self)
-    }
-
-    fn as_any(&self) -> &dyn core::any::Any {
-        self
+    fn deactivate_irq(&self, _pin: u32) -> axbus::Result<axbus::IrqOutcome> {
+        Ok(axbus::IrqOutcome::Delivered)
     }
 }
 

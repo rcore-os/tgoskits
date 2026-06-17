@@ -61,7 +61,7 @@ fn test_vplic_global_bitmaps_initialized_empty() {
     let addr = GuestPhysAddr::from(0x0c000000);
     let vplic = VPlicGlobal::new(addr, Some(0x400000), 2);
 
-    assert!(vplic.assigned_irqs.lock().is_empty());
-    assert!(vplic.pending_irqs.lock().is_empty());
-    assert!(vplic.active_irqs.lock().is_empty());
+    assert!(!vplic.assigned_irqs.any());
+    assert!(!vplic.pending_irqs.any());
+    assert!(!vplic.active_irqs.any());
 }

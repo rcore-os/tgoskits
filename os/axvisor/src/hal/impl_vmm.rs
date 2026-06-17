@@ -20,8 +20,12 @@ impl VmmIf for VmmImpl {
         vmm::with_vm(vm_id, |vm| vm.vcpu_num())
     }
 
-    fn active_vcpus(_vm_id: VMId) -> Option<usize> {
-        todo!("active_vcpus")
+    fn active_vcpus(vm_id: VMId) -> Option<usize> {
+        vmm::with_vm(vm_id, |vm| {
+            (0..vm.vcpu_num())
+                .filter(|&id| vm.vcpu_pcpu(id).is_some())
+                .count()
+        })
     }
 
     fn inject_interrupt(vm_id: VMId, vcpu_id: VCpuId, vector: InterruptVector) {
@@ -30,8 +34,16 @@ impl VmmIf for VmmImpl {
         });
     }
 
-    fn inject_interrupt_to_cpus(_vm_id: VMId, _vcpu_set: VCpuSet, _vector: InterruptVector) {
-        todo!("inject_interrupt_to_cpus")
+    fn inject_interrupt_to_cpus(vm_id: VMId, vcpu_set: VCpuSet, vector: InterruptVector) {
+        if let Some(vcpu_num) = Self::vcpu_num(vm_id) {
+            for vcpu_id in 0..vcpu_num {
+                if vcpu_set.get(vcpu_id) {
+                    let _ = vmm::with_vm_and_vcpu_on_pcpu(vm_id, vcpu_id, move |_, vcpu| {
+                        vcpu.inject_interrupt(vector as usize).unwrap();
+                    });
+                }
+            }
+        }
     }
 
     fn notify_vcpu_timer_expired(_vm_id: VMId, _vcpu_id: VCpuId) {

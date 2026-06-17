@@ -17,15 +17,10 @@
 //!
 //! # Usage
 
-use alloc::boxed::Box;
-use alloc::collections::BTreeMap;
-use alloc::vec;
-use alloc::vec::Vec;
+use alloc::{boxed::Box, collections::BTreeMap, vec::Vec};
 
-use axvmconfig::EmulatedDeviceConfig;
-use axvmconfig::EmulatedDeviceType;
+use axvmconfig::{EmulatedDeviceConfig, EmulatedDeviceType};
 
-use crate::r#trait::*;
 use crate::r#trait::*;
 
 /// A registry of device factories, keyed by `EmulatedDeviceType`.
@@ -57,7 +52,7 @@ impl From<EmulatedDeviceType> for TypeKey {
 
 impl PartialOrd for TypeKey {
     fn partial_cmp(&self, other: &Self) -> Option<core::cmp::Ordering> {
-        Some((self.0 as u8).cmp(&(other.0 as u8)))
+        Some(self.cmp(other))
     }
 }
 
@@ -101,12 +96,9 @@ impl FactoryRegistry {
         emu_type: EmulatedDeviceType,
         config: &EmulatedDeviceConfig,
         id_alloc: &mut dyn FnMut() -> DeviceId,
-    ) -> Result<Box<dyn VirtualDevice>> {
+    ) -> Result<DeviceBundle> {
         let key: TypeKey = emu_type.into();
-        let factory = self
-            .factories
-            .get(&key)
-            .ok_or(DeviceError::NotFound)?;
+        let factory = self.factories.get(&key).ok_or(DeviceError::NotFound)?;
         factory.create(config, id_alloc)
     }
 
@@ -117,7 +109,7 @@ impl FactoryRegistry {
         &self,
         configs: &[EmulatedDeviceConfig],
         id_alloc: &mut dyn FnMut() -> DeviceId,
-    ) -> Vec<Result<Box<dyn VirtualDevice>>> {
+    ) -> Vec<Result<DeviceBundle>> {
         configs
             .iter()
             .map(|cfg| self.create(cfg.emu_type, cfg, id_alloc))
@@ -150,9 +142,11 @@ impl Default for FactoryRegistry {
 #[cfg(test)]
 #[allow(missing_docs, dead_code)]
 mod tests {
-    use super::*;
-    use axvmconfig::{EmulatedDeviceConfig, EmulatedDeviceType};
     use core::any::Any;
+
+    use axvmconfig::{EmulatedDeviceConfig, EmulatedDeviceType};
+
+    use super::*;
 
     struct DummyFactory;
 
@@ -165,14 +159,13 @@ mod tests {
             &self,
             _config: &EmulatedDeviceConfig,
             id_alloc: &mut dyn FnMut() -> DeviceId,
-        ) -> Result<Box<dyn VirtualDevice>> {
+        ) -> Result<DeviceBundle> {
             let id = id_alloc();
-            Ok(Box::new(DummyDevice { id }))
+            Ok(DeviceBundle::single(Box::new(DummyDevice { id })))
         }
     }
 
-
-     #[derive(Debug)]
+    #[derive(Debug)]
     struct DummyDevice {
         id: DeviceId,
     }
@@ -195,7 +188,6 @@ mod tests {
         }
     }
 
-
     #[test]
     fn test_create_unknown_type() {
         // DummyFactory only registers as Dummy; VirtioBlk doesn't exist.
@@ -203,7 +195,11 @@ mod tests {
         let mut reg = FactoryRegistry::new();
         let mut alloc = || DeviceId::from_u64(1);
         reg.register(Box::new(DummyFactory));
-        let result = reg.create(EmulatedDeviceType::VirtioBlk, &EmulatedDeviceConfig::default(), &mut alloc);
+        let result = reg.create(
+            EmulatedDeviceType::VirtioBlk,
+            &EmulatedDeviceConfig::default(),
+            &mut alloc,
+        );
         assert!(matches!(result, Err(DeviceError::NotFound)));
     }
 
@@ -217,14 +213,14 @@ mod tests {
             DeviceId::from_u64(counter)
         };
 
-        let dev = reg
+        let bundle = reg
             .create(
                 EmulatedDeviceType::Dummy,
                 &EmulatedDeviceConfig::default(),
                 &mut alloc,
             )
             .unwrap();
-        assert_eq!(dev.name(), "dummy-factory");
+        assert_eq!(bundle.devices[0].name(), "dummy-factory");
     }
 
     #[test]
@@ -264,16 +260,33 @@ mod tests {
     fn test_overwrite_factory() {
         struct OtherFactory;
         impl DeviceFactory for OtherFactory {
-            fn emu_type(&self) -> EmulatedDeviceType { EmulatedDeviceType::Dummy }
-            fn create(&self, _c: &EmulatedDeviceConfig, _a: &mut dyn FnMut() -> DeviceId) -> Result<Box<dyn VirtualDevice>> {
+            fn emu_type(&self) -> EmulatedDeviceType {
+                EmulatedDeviceType::Dummy
+            }
+            fn create(
+                &self,
+                _c: &EmulatedDeviceConfig,
+                _a: &mut dyn FnMut() -> DeviceId,
+            ) -> Result<DeviceBundle> {
                 Err(DeviceError::BackendError("from Other".into()))
             }
         }
         let mut reg = FactoryRegistry::new();
         reg.register(Box::new(DummyFactory));
-        assert!(reg.create(EmulatedDeviceType::Dummy, &EmulatedDeviceConfig::default(), &mut || DeviceId(1)).is_ok());
+        assert!(
+            reg.create(
+                EmulatedDeviceType::Dummy,
+                &EmulatedDeviceConfig::default(),
+                &mut || DeviceId(1)
+            )
+            .is_ok()
+        );
         reg.register(Box::new(OtherFactory));
-        let r = reg.create(EmulatedDeviceType::Dummy, &EmulatedDeviceConfig::default(), &mut || DeviceId(1));
+        let r = reg.create(
+            EmulatedDeviceType::Dummy,
+            &EmulatedDeviceConfig::default(),
+            &mut || DeviceId(1),
+        );
         assert!(matches!(r, Err(DeviceError::BackendError(_))));
     }
 }

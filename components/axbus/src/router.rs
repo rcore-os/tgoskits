@@ -21,17 +21,25 @@
 //! - **Interrupt injection** via `inject()`: routes through the interrupt table.
 //! - **Device lifecycle** via `register()` / `unregister()`.`
 
-use alloc::sync::Arc;
+use alloc::{boxed::Box, collections::BTreeMap, sync::Arc};
 
-use crate::irq::{IrqMessage, IrqRoutingTable, IrqSink, TriggerMode};
-use crate::r#trait::*;
-use crate::registry::DeviceRegistry;
+use crate::{
+    irq::{
+        InterruptControllerOps, IrqMessage, IrqOutcome, IrqRoutingTable, IrqSink, KickTarget,
+        TriggerMode, VcpuKicker,
+    },
+    registry::DeviceRegistry,
+    r#trait::*,
+};
 
 /// Top-level bus router for a single VM.
 pub struct BusRouter {
     registry: DeviceRegistry,
     irq_table: IrqRoutingTable,
     default_intc: Option<DeviceId>,
+    intc_registry: BTreeMap<u64, Arc<dyn InterruptControllerOps>>,
+    /// Optional vCPU kicker to apply `IrqOutcome::Kick` after injection.
+    kicker: Option<Box<dyn VcpuKicker>>,
 }
 
 impl BusRouter {
@@ -41,9 +49,19 @@ impl BusRouter {
             registry: DeviceRegistry::new(),
             irq_table: IrqRoutingTable::new(),
             default_intc: None,
+            intc_registry: BTreeMap::new(),
+            kicker: None,
         }
     }
+}
 
+impl Default for BusRouter {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl BusRouter {
     /// Access the interrupt routing table for configuration.
     pub fn irq_table_mut(&mut self) -> &mut IrqRoutingTable {
         &mut self.irq_table
@@ -58,6 +76,19 @@ impl BusRouter {
     /// has no entry for a given legacy IRQ line.
     pub fn set_default_intc(&mut self, id: DeviceId) {
         self.default_intc = Some(id);
+    }
+
+    /// Register an interrupt controller, independent of the device registry.
+    /// Interrupt controllers no longer need to implement `VirtualDevice`.
+    pub fn register_intc(&mut self, id: DeviceId, intc: Arc<dyn InterruptControllerOps>) {
+        self.intc_registry.insert(id.0, intc);
+    }
+
+    /// Set the vCPU kicker used to apply `IrqOutcome::Kick` after interrupt
+    /// injection. Required for actual vCPU notification (remote IPI, WFI wake,
+    /// etc.). Typically called once during VM setup.
+    pub fn set_kicker(&mut self, kicker: Box<dyn VcpuKicker>) {
+        self.kicker = Some(kicker);
     }
 
     // ── Device lifecycle ──────────────────────────────────────────────
@@ -110,68 +141,98 @@ impl BusRouter {
     /// controller device + pin. For MSI, the table maps the address to a
     /// controller, which decodes the address+data itself.
     pub fn inject(&self, msg: IrqMessage) -> Result<()> {
-        match msg {
+        let outcome = match msg {
             IrqMessage::Legacy { line } => {
-                // First try the routing table for an explicit mapping.
                 if let Some((_ctrl_id, entry)) = self.irq_table.lookup_legacy(line) {
-                    let ctrl_id = entry.controller;
-                    let pin = entry.controller_pin;
-                    let trigger = entry.trigger;
-                    let target = entry.target;
-
                     let ctrl = self
-                        .find_interrupt_controller(ctrl_id)
+                        .find_intc(entry.controller)
                         .ok_or(DeviceError::NotFound)?;
-                    let ctrl_ops = ctrl.as_interrupt_controller().ok_or(DeviceError::NotFound)?;
-                    return ctrl_ops.inject_irq(pin, trigger, target);
+                    ctrl.inject_irq(entry.controller_pin, entry.trigger, entry.target)?
+                } else if let Some(default_id) = self.default_intc {
+                    let ctrl = self.find_intc(default_id).ok_or(DeviceError::NotFound)?;
+                    ctrl.inject_irq(line.0, TriggerMode::Edge, None)?
+                } else {
+                    return Err(DeviceError::NotFound);
                 }
-
-                // Fallback: use the default interrupt controller with pin = line number.
-                if let Some(default_id) = self.default_intc {
-                    let ctrl = self
-                        .find_interrupt_controller(default_id)
-                        .ok_or(DeviceError::NotFound)?;
-                    let ctrl_ops = ctrl.as_interrupt_controller().ok_or(DeviceError::NotFound)?;
-                    return ctrl_ops.inject_irq(line.0, TriggerMode::Edge, None);
-                }
-
-                Err(DeviceError::NotFound)
             }
             IrqMessage::Msi { addr, data } => {
                 let ctrl_id = self
                     .irq_table
                     .lookup_msi(addr)
                     .ok_or(DeviceError::NotFound)?;
-
-                let ctrl = self
-                    .find_interrupt_controller(ctrl_id)
-                    .ok_or(DeviceError::NotFound)?;
-                let ctrl_ops = ctrl.as_interrupt_controller().ok_or(DeviceError::NotFound)?;
-
-                ctrl_ops.handle_msi(addr, data)
+                let ctrl = self.find_intc(ctrl_id).ok_or(DeviceError::NotFound)?;
+                ctrl.handle_msi(addr, data)?
             }
-        }
+        };
+        self.apply_outcome(outcome);
+        Ok(())
     }
 
     /// Deactivate a level-triggered interrupt.
     pub fn deactivate_irq(&self, line: IrqLine) -> Result<()> {
-        // Single lookup (fixes double-lookup inconsistency).
         let (ctrl_id, entry) = self
             .irq_table
             .lookup_legacy(line)
             .ok_or(DeviceError::NotFound)?;
-
-        let ctrl = self
-            .find_interrupt_controller(ctrl_id)
-            .ok_or(DeviceError::NotFound)?;
-        let ctrl_ops = ctrl.as_interrupt_controller().ok_or(DeviceError::NotFound)?;
-
-        ctrl_ops.deactivate_irq(entry.controller_pin)
+        let ctrl = self.find_intc(ctrl_id).ok_or(DeviceError::NotFound)?;
+        let outcome = ctrl.deactivate_irq(entry.controller_pin)?;
+        self.apply_outcome(outcome);
+        Ok(())
     }
 
-    /// Find a device that implements `InterruptControllerOps` by its DeviceId.
-    fn find_interrupt_controller(&self, id: DeviceId) -> Option<Arc<dyn VirtualDevice>> {
-        self.registry.get(id)
+    /// Apply an `IrqOutcome` by kicking the indicated vCPU(s).
+    ///
+    /// If no kicker is configured (typical during unit tests), this is a no-op.
+    fn apply_outcome(&self, outcome: IrqOutcome) {
+        let Some(ref kicker) = self.kicker else {
+            return;
+        };
+        match outcome {
+            IrqOutcome::Kick(KickTarget::One(id)) => kicker.kick(id),
+            IrqOutcome::Kick(KickTarget::Set(set)) => {
+                for id in set.iter() {
+                    kicker.kick(id);
+                }
+            }
+            IrqOutcome::Kick(KickTarget::All) => kicker.kick_all(),
+            IrqOutcome::Delivered | IrqOutcome::Queued => {}
+        }
+    }
+
+    /// Look up an interrupt controller by DeviceId.
+    pub fn find_intc(&self, id: DeviceId) -> Option<&Arc<dyn InterruptControllerOps>> {
+        self.intc_registry.get(&id.0)
+    }
+
+    /// Returns the default interrupt controller's DeviceId, if set.
+    pub fn default_intc_id(&self) -> Option<DeviceId> {
+        self.default_intc
+    }
+
+    /// Returns the interrupt controller registry for IrqRuntime construction.
+    pub fn intc_map(&self) -> &BTreeMap<u64, Arc<dyn InterruptControllerOps>> {
+        &self.intc_registry
+    }
+
+    /// Extract the components needed to build an [`IrqRuntime`] from the router's
+    /// current state. Called once during VM freeze — after this, the runtime
+    /// provides lock-free interrupt dispatch while the router continues to handle
+    /// device registration and bus routing.
+    ///
+    /// Returns `(routing_table, default_intc_ops, resolved_controllers)`.
+    pub fn build_runtime_parts(
+        &self,
+    ) -> (
+        IrqRoutingTable,
+        Option<Arc<dyn InterruptControllerOps>>,
+        BTreeMap<u64, Arc<dyn InterruptControllerOps>>,
+    ) {
+        let routing = self.irq_table.clone();
+        let default_intc = self
+            .default_intc
+            .and_then(|id| self.intc_registry.get(&id.0).cloned());
+        let controllers = self.intc_registry.clone();
+        (routing, default_intc, controllers)
     }
 
     // ── Iteration ─────────────────────────────────────────────────────
@@ -196,10 +257,13 @@ impl BusRouter {
 #[cfg(test)]
 #[allow(missing_docs, dead_code)]
 mod tests {
-    use super::*;
-    use crate::irq::{IrqMessage, TriggerMode};
-    use crate::InterruptControllerOps;
     use core::any::Any;
+
+    use super::*;
+    use crate::{
+        InterruptControllerOps, IrqOutcome,
+        irq::{IrqMessage, TriggerMode},
+    };
 
     #[derive(Debug)]
     struct TestDevice;
@@ -310,7 +374,10 @@ mod tests {
         router.register(Arc::new(TestDevice)).unwrap();
         let resp = router.route(
             BusKind::Pio,
-            &BusAccess::Read { addr: 0x1500, width: AccessWidth::U32 },
+            &BusAccess::Read {
+                addr: 0x1500,
+                width: AccessWidth::U32,
+            },
         );
         assert!(matches!(resp, BusResponse::NoDevice { .. }));
     }
@@ -323,9 +390,15 @@ mod tests {
     }
 
     impl VirtualDevice for MultiResDevice {
-        fn id(&self) -> DeviceId { DeviceId::from_u64(0) }
-        fn name(&self) -> &str { "multi-res" }
-        fn resources(&self) -> &[Resource] { &self.resources }
+        fn id(&self) -> DeviceId {
+            DeviceId::from_u64(0)
+        }
+        fn name(&self) -> &str {
+            "multi-res"
+        }
+        fn resources(&self) -> &[Resource] {
+            &self.resources
+        }
         fn handle_access(&self, _bus: BusKind, access: &BusAccess) -> BusResponse {
             match access {
                 BusAccess::Read { addr, .. } if *addr == 0x1500 => BusResponse::Success(Some(0xaa)),
@@ -333,31 +406,36 @@ mod tests {
                 BusAccess::Write { .. } => BusResponse::Success(None),
             }
         }
-        fn as_any(&self) -> &dyn Any { self }
+        fn as_any(&self) -> &dyn Any {
+            self
+        }
     }
 
     #[test]
     fn test_multi_resource_device_mmio_and_pio() {
         let mut router = BusRouter::new();
         let dev = Arc::new(MultiResDevice {
-            resources: vec![
-                Resource::Mmio(0x1000..0x2000),
-                Resource::Pio(0x60..0x70),
-            ],
+            resources: vec![Resource::Mmio(0x1000..0x2000), Resource::Pio(0x60..0x70)],
         });
         router.register(dev).unwrap();
 
         // MMIO access
         let resp = router.route(
             BusKind::Mmio,
-            &BusAccess::Read { addr: 0x1500, width: AccessWidth::U32 },
+            &BusAccess::Read {
+                addr: 0x1500,
+                width: AccessWidth::U32,
+            },
         );
         assert!(matches!(resp, BusResponse::Success(Some(0xaa))));
 
         // PIO access
         let resp = router.route(
             BusKind::Pio,
-            &BusAccess::Read { addr: 0x65, width: AccessWidth::U8 },
+            &BusAccess::Read {
+                addr: 0x65,
+                width: AccessWidth::U8,
+            },
         );
         assert!(matches!(resp, BusResponse::Success(Some(0xbb))));
     }
@@ -366,62 +444,54 @@ mod tests {
 
     #[derive(Debug)]
     struct MockIntc {
-        id: DeviceId,
-        resources: Vec<Resource>,
         last_injected: std::sync::Mutex<Option<(u32, TriggerMode, Option<IrqTarget>)>>,
     }
 
     impl MockIntc {
-        fn new(id: DeviceId) -> Self {
+        fn new() -> Self {
             Self {
-                id,
-                resources: vec![Resource::Mmio(0xf000_0000..0xf010_0000)],
                 last_injected: std::sync::Mutex::new(None),
             }
         }
     }
 
-    impl VirtualDevice for MockIntc {
-        fn id(&self) -> DeviceId { self.id }
-        fn name(&self) -> &str { "mock-intc" }
-        fn resources(&self) -> &[Resource] { &self.resources }
-        fn handle_access(&self, _bus: BusKind, _access: &BusAccess) -> BusResponse {
-            BusResponse::Success(None)
-        }
-        fn as_interrupt_controller(&self) -> Option<&dyn InterruptControllerOps> {
-            Some(self)
-        }
-        fn as_any(&self) -> &dyn Any { self }
-    }
-
     impl InterruptControllerOps for MockIntc {
-        fn inject_irq(&self, pin: u32, trigger: TriggerMode, target: Option<IrqTarget>) -> Result<()> {
+        fn inject_irq(
+            &self,
+            pin: u32,
+            trigger: TriggerMode,
+            target: Option<IrqTarget>,
+        ) -> Result<IrqOutcome> {
             *self.last_injected.lock().unwrap() = Some((pin, trigger, target));
-            Ok(())
+            Ok(IrqOutcome::Delivered)
         }
-        fn deactivate_irq(&self, _pin: u32) -> Result<()> {
-            Ok(())
+        fn deactivate_irq(&self, _pin: u32) -> Result<IrqOutcome> {
+            Ok(IrqOutcome::Delivered)
         }
     }
 
     #[test]
     fn test_inject_with_controller() {
         let mut router = BusRouter::new();
-        let intc_id = router.register(Arc::new(MockIntc::new(DeviceId::from_u64(0)))).unwrap();
+        let intc = Arc::new(MockIntc::new());
+        let intc_id = DeviceId(42);
+        router.register_intc(intc_id, intc.clone());
 
         // Build IRQ routing table
         router.irq_table_mut().add_legacy(
-            IrqLine(33), intc_id, 5, TriggerMode::Edge, None, "test-dev",
+            IrqLine(33),
+            intc_id,
+            5,
+            TriggerMode::Edge,
+            None,
+            "test-dev",
         );
 
         let result = router.inject(IrqMessage::leg(IrqLine(33)));
         assert!(result.is_ok());
 
-        // Verify the controller received it by checking the test's side effect
-        // We need to look up the controller to verify
-        let ctrl = router.find_interrupt_controller(intc_id).unwrap();
-        let mock = ctrl.as_any().downcast_ref::<MockIntc>().unwrap();
-        let guard = mock.last_injected.lock().unwrap();
+        // Verify the controller received it via the cloned Arc
+        let guard = intc.last_injected.lock().unwrap();
         let (pin, trigger, target) = guard.expect("expected injected value");
         assert_eq!(pin, 5);
         assert_eq!(trigger, TriggerMode::Edge);
@@ -432,7 +502,8 @@ mod tests {
     fn test_inject_unknown_line() {
         let mut router = BusRouter::new();
         // Register a controller but don't add a routing entry for line 33
-        let _intc_id = router.register(Arc::new(MockIntc::new(DeviceId::from_u64(1)))).unwrap();
+        let intc = Arc::new(MockIntc::new());
+        router.register_intc(DeviceId(42), intc);
 
         let result = router.inject(IrqMessage::leg(IrqLine(33)));
         assert!(matches!(result, Err(DeviceError::NotFound)));
@@ -457,22 +528,36 @@ mod tests {
 
     // ── Adapter translation correctness ────────────────────────────────
 
+    use std::sync::{Arc as StdArc2, Mutex as StdMtx};
+
     /// A mock implementing BaseDeviceOps<GuestPhysAddrRange> to verify adapter translation.
     use axdevice_base::BaseDeviceOps as _;
-    use std::sync::{Arc as StdArc2, Mutex as StdMtx};
     struct MockMmioDev {
         range: axaddrspace::GuestPhysAddrRange,
         last_read: StdMtx<Option<(u64, axaddrspace::device::AccessWidth)>>,
         last_write: StdMtx<Option<(u64, axaddrspace::device::AccessWidth, usize)>>,
     }
     impl axdevice_base::BaseDeviceOps<axaddrspace::GuestPhysAddrRange> for MockMmioDev {
-        fn emu_type(&self) -> axdevice_base::EmuDeviceType { axdevice_base::EmuDeviceType::Dummy }
-        fn address_range(&self) -> axaddrspace::GuestPhysAddrRange { self.range.clone() }
-        fn handle_read(&self, addr: axaddrspace::GuestPhysAddr, width: axaddrspace::device::AccessWidth) -> ax_errno::AxResult<usize> {
+        fn emu_type(&self) -> axdevice_base::EmuDeviceType {
+            axdevice_base::EmuDeviceType::Dummy
+        }
+        fn address_range(&self) -> axaddrspace::GuestPhysAddrRange {
+            self.range.clone()
+        }
+        fn handle_read(
+            &self,
+            addr: axaddrspace::GuestPhysAddr,
+            width: axaddrspace::device::AccessWidth,
+        ) -> ax_errno::AxResult<usize> {
             *self.last_read.lock().unwrap() = Some((addr.as_usize() as u64, width));
             Ok(0xab)
         }
-        fn handle_write(&self, addr: axaddrspace::GuestPhysAddr, width: axaddrspace::device::AccessWidth, val: usize) -> ax_errno::AxResult {
+        fn handle_write(
+            &self,
+            addr: axaddrspace::GuestPhysAddr,
+            width: axaddrspace::device::AccessWidth,
+            val: usize,
+        ) -> ax_errno::AxResult {
             *self.last_write.lock().unwrap() = Some((addr.as_usize() as u64, width, val));
             Ok(())
         }
@@ -485,9 +570,13 @@ mod tests {
             last_read: StdMtx::new(None),
             last_write: StdMtx::new(None),
         });
-        let mmio_dev: Arc<dyn axdevice_base::BaseDeviceOps<axaddrspace::GuestPhysAddrRange>> = mock.clone();
+        let mmio_dev: Arc<dyn axdevice_base::BaseDeviceOps<axaddrspace::GuestPhysAddrRange>> =
+            mock.clone();
         let adapter = crate::LegacyMmioAdapter::new(DeviceId(1), mmio_dev);
-        let bus_access = BusAccess::Read { addr: 0x1500, width: AccessWidth::U32 };
+        let bus_access = BusAccess::Read {
+            addr: 0x1500,
+            width: AccessWidth::U32,
+        };
         let resp = adapter.handle_access(BusKind::Mmio, &bus_access);
         assert!(matches!(resp, BusResponse::Success(Some(0xab))));
         let read = mock.last_read.lock().unwrap().unwrap();
@@ -502,9 +591,14 @@ mod tests {
             last_read: StdMtx::new(None),
             last_write: StdMtx::new(None),
         });
-        let mmio_dev: Arc<dyn axdevice_base::BaseDeviceOps<axaddrspace::GuestPhysAddrRange>> = mock.clone();
+        let mmio_dev: Arc<dyn axdevice_base::BaseDeviceOps<axaddrspace::GuestPhysAddrRange>> =
+            mock.clone();
         let adapter = crate::LegacyMmioAdapter::new(DeviceId(2), mmio_dev);
-        let bus_access = BusAccess::Write { addr: 0x1234, width: AccessWidth::U16, val: 0xabcd };
+        let bus_access = BusAccess::Write {
+            addr: 0x1234,
+            width: AccessWidth::U16,
+            val: 0xabcd,
+        };
         let resp = adapter.handle_access(BusKind::Mmio, &bus_access);
         assert!(matches!(resp, BusResponse::Success(None)));
         let write = mock.last_write.lock().unwrap().unwrap();
@@ -521,13 +615,34 @@ mod tests {
         range: SysRegAddrRange,
     }
     impl axdevice_base::BaseDeviceOps<SysRegAddrRange> for MockSysRegDev {
-        fn emu_type(&self) -> axdevice_base::EmuDeviceType { axdevice_base::EmuDeviceType::Dummy }
-        fn address_range(&self) -> SysRegAddrRange { self.range.clone() }
-        fn handle_read(&self, addr: SysRegAddr, _width: axaddrspace::device::AccessWidth) -> ax_errno::AxResult<usize> {
-            if addr.0 == 0x100 { Ok(0xcc) } else { Err(ax_errno::AxError::NotFound) }
+        fn emu_type(&self) -> axdevice_base::EmuDeviceType {
+            axdevice_base::EmuDeviceType::Dummy
         }
-        fn handle_write(&self, addr: SysRegAddr, _width: axaddrspace::device::AccessWidth, _val: usize) -> ax_errno::AxResult {
-            if addr.0 == 0x100 { Ok(()) } else { Err(ax_errno::AxError::NotFound) }
+        fn address_range(&self) -> SysRegAddrRange {
+            self.range.clone()
+        }
+        fn handle_read(
+            &self,
+            addr: SysRegAddr,
+            _width: axaddrspace::device::AccessWidth,
+        ) -> ax_errno::AxResult<usize> {
+            if addr.0 == 0x100 {
+                Ok(0xcc)
+            } else {
+                Err(ax_errno::AxError::NotFound)
+            }
+        }
+        fn handle_write(
+            &self,
+            addr: SysRegAddr,
+            _width: axaddrspace::device::AccessWidth,
+            _val: usize,
+        ) -> ax_errno::AxResult {
+            if addr.0 == 0x100 {
+                Ok(())
+            } else {
+                Err(ax_errno::AxError::NotFound)
+            }
         }
     }
 
@@ -541,50 +656,61 @@ mod tests {
         let mut router = BusRouter::new();
         router.register(Arc::new(adapter)).unwrap();
 
-        let resp = router.route(BusKind::SysReg, &BusAccess::Read { addr: 0x100, width: AccessWidth::U64 });
+        let resp = router.route(
+            BusKind::SysReg,
+            &BusAccess::Read {
+                addr: 0x100,
+                width: AccessWidth::U64,
+            },
+        );
         assert!(matches!(resp, BusResponse::Success(Some(0xcc))));
 
-        let resp_miss = router.route(BusKind::SysReg, &BusAccess::Read { addr: 0x999, width: AccessWidth::U64 });
-        // The adapter returns DeviceError because the mock device returns
-        // Err for addresses outside its handled range — the adapter can't
-        // distinguish "no device" from "device error" through the AxResult.
-        assert!(matches!(resp_miss, BusResponse::DeviceError { .. }));
+        let resp_miss = router.route(
+            BusKind::SysReg,
+            &BusAccess::Read {
+                addr: 0x999,
+                width: AccessWidth::U64,
+            },
+        );
+        // Address 0x999 is outside the device's SysReg range — tree lookup returns NoDevice.
+        assert!(matches!(resp_miss, BusResponse::NoDevice { .. }));
     }
 
     // ── MSI positive test ──────────────────────────────────────────────
 
     #[derive(Debug)]
     struct MockMsiIntc {
-        id: DeviceId,
         last_msi: std::sync::Mutex<Option<(u64, u32)>>,
     }
-    impl VirtualDevice for MockMsiIntc {
-        fn id(&self) -> DeviceId { self.id }
-        fn name(&self) -> &str { "mock-msi-intc" }
-        fn resources(&self) -> &[Resource] { &[Resource::Mmio(0xf000_0000..0xf010_0000)] }
-        fn handle_access(&self, _bus: BusKind, _access: &BusAccess) -> BusResponse { BusResponse::Success(None) }
-        fn as_interrupt_controller(&self) -> Option<&dyn InterruptControllerOps> {
-            Some(self)
-        }
-        fn as_any(&self) -> &dyn Any { self }
-    }
     impl InterruptControllerOps for MockMsiIntc {
-        fn inject_irq(&self, _pin: u32, _trigger: TriggerMode, _target: Option<IrqTarget>) -> Result<()> { Err(DeviceError::NotFound) }
-        fn deactivate_irq(&self, _pin: u32) -> Result<()> { Err(DeviceError::NotFound) }
-        fn handle_msi(&self, addr: u64, data: u32) -> Result<()> {
+        fn inject_irq(
+            &self,
+            _pin: u32,
+            _trigger: TriggerMode,
+            _target: Option<IrqTarget>,
+        ) -> Result<IrqOutcome> {
+            Err(DeviceError::NotFound)
+        }
+        fn deactivate_irq(&self, _pin: u32) -> Result<IrqOutcome> {
+            Err(DeviceError::NotFound)
+        }
+        fn handle_msi(&self, addr: u64, data: u32) -> Result<IrqOutcome> {
             *self.last_msi.lock().unwrap() = Some((addr, data));
-            Ok(())
+            Ok(IrqOutcome::Delivered)
         }
     }
 
     #[test]
     fn test_msi_inject_with_controller() {
         let mut router = BusRouter::new();
-        let intc_id = router.register(Arc::new(MockMsiIntc {
-            id: DeviceId(100),
+        let intc_id = DeviceId(100);
+        let intc = Arc::new(MockMsiIntc {
             last_msi: std::sync::Mutex::new(None),
-        })).unwrap();
-        router.irq_table_mut().add_msi_range(0xfee0_0000..0xfee1_0000, intc_id);
+        });
+        router.register_intc(intc_id, intc);
+        router
+            .irq_table_mut()
+            .add_msi_range(0xfee0_0000..0xfee1_0000, intc_id);
 
         let result = router.inject(IrqMessage::msi(0xfee0_1234, 0x42));
         assert!(result.is_ok());
@@ -598,38 +724,70 @@ mod tests {
 
         struct E2eFactory;
         impl DeviceFactory for E2eFactory {
-            fn emu_type(&self) -> EmulatedDeviceType { EmulatedDeviceType::Dummy }
-            fn create(&self, _cfg: &EmulatedDeviceConfig, id_gen: &mut dyn FnMut() -> DeviceId) -> Result<Box<dyn VirtualDevice>> {
+            fn emu_type(&self) -> EmulatedDeviceType {
+                EmulatedDeviceType::Dummy
+            }
+            fn create(
+                &self,
+                _cfg: &EmulatedDeviceConfig,
+                id_gen: &mut dyn FnMut() -> DeviceId,
+            ) -> Result<DeviceBundle> {
                 let id = id_gen();
                 #[derive(Debug)]
                 struct E2eDev(DeviceId);
                 impl VirtualDevice for E2eDev {
-                    fn id(&self) -> DeviceId { self.0 }
-                    fn name(&self) -> &str { "e2e" }
-                    fn resources(&self) -> &[Resource] { &[Resource::Mmio(0x5000..0x6000)] }
-                    fn handle_access(&self, _b: BusKind, a: &BusAccess) -> BusResponse {
-                        match a { BusAccess::Read { .. } => BusResponse::Success(Some(0xee)), _ => BusResponse::Success(None) }
+                    fn id(&self) -> DeviceId {
+                        self.0
                     }
-                    fn as_any(&self) -> &dyn Any { self }
+                    fn name(&self) -> &str {
+                        "e2e"
+                    }
+                    fn resources(&self) -> &[Resource] {
+                        &[Resource::Mmio(0x5000..0x6000)]
+                    }
+                    fn handle_access(&self, _b: BusKind, a: &BusAccess) -> BusResponse {
+                        match a {
+                            BusAccess::Read { .. } => BusResponse::Success(Some(0xee)),
+                            _ => BusResponse::Success(None),
+                        }
+                    }
+                    fn as_any(&self) -> &dyn Any {
+                        self
+                    }
                 }
-                Ok(Box::new(E2eDev(id)))
+                Ok(DeviceBundle::single(Box::new(E2eDev(id))))
             }
         }
 
         let mut factories = crate::FactoryRegistry::new();
         factories.register(Box::new(E2eFactory));
 
-        let configs = alloc::vec![EmulatedDeviceConfig { emu_type: EmulatedDeviceType::Dummy, ..Default::default() }];
+        let configs = alloc::vec![EmulatedDeviceConfig {
+            emu_type: EmulatedDeviceType::Dummy,
+            ..Default::default()
+        }];
         let mut counter = 0u64;
-        let mut id_gen = || { counter += 1; DeviceId(counter) };
+        let mut id_gen = || {
+            counter += 1;
+            DeviceId(counter)
+        };
 
         let mut router = BusRouter::new();
         for result in factories.create_all(&configs, &mut id_gen) {
-            router.register(Arc::from(result.unwrap())).unwrap();
+            let bundle = result.unwrap();
+            for dev in bundle.devices {
+                router.register(Arc::from(dev)).unwrap();
+            }
         }
         assert_eq!(router.total_devices(), 1);
 
-        let resp = router.route(BusKind::Mmio, &BusAccess::Read { addr: 0x5500, width: AccessWidth::U32 });
+        let resp = router.route(
+            BusKind::Mmio,
+            &BusAccess::Read {
+                addr: 0x5500,
+                width: AccessWidth::U32,
+            },
+        );
         assert!(matches!(resp, BusResponse::Success(Some(0xee))));
     }
 
@@ -638,16 +796,16 @@ mod tests {
     #[test]
     fn test_inject_default_intc_fallback() {
         let mut router = BusRouter::new();
-        let intc_id = router.register(Arc::new(MockIntc::new(DeviceId::from_u64(0)))).unwrap();
+        let intc = Arc::new(MockIntc::new());
+        let intc_id = DeviceId(42);
+        router.register_intc(intc_id, intc.clone());
         router.set_default_intc(intc_id);
 
         // No explicit routing entry for line 42, but default_intc is set.
         let result = router.inject(IrqMessage::leg(IrqLine(42)));
         assert!(result.is_ok());
 
-        let ctrl = router.find_interrupt_controller(intc_id).unwrap();
-        let mock = ctrl.as_any().downcast_ref::<MockIntc>().unwrap();
-        let guard = mock.last_injected.lock().unwrap();
+        let guard = intc.last_injected.lock().unwrap();
         let (pin, trigger, _) = guard.expect("expected inject via default fallback");
         assert_eq!(pin, 42);
         assert_eq!(trigger, TriggerMode::Edge);
@@ -656,20 +814,25 @@ mod tests {
     #[test]
     fn test_inject_explicit_route_takes_priority_over_default() {
         let mut router = BusRouter::new();
-        let intc_id = router.register(Arc::new(MockIntc::new(DeviceId::from_u64(0)))).unwrap();
+        let intc = Arc::new(MockIntc::new());
+        let intc_id = DeviceId(42);
+        router.register_intc(intc_id, intc.clone());
         router.set_default_intc(intc_id);
 
         // Add an explicit route for line 33 → pin 5
         router.irq_table_mut().add_legacy(
-            IrqLine(33), intc_id, 5, TriggerMode::Level { high: true }, None, "explicit",
+            IrqLine(33),
+            intc_id,
+            5,
+            TriggerMode::Level { high: true },
+            None,
+            "explicit",
         );
 
         let result = router.inject(IrqMessage::leg(IrqLine(33)));
         assert!(result.is_ok());
 
-        let ctrl = router.find_interrupt_controller(intc_id).unwrap();
-        let mock = ctrl.as_any().downcast_ref::<MockIntc>().unwrap();
-        let guard = mock.last_injected.lock().unwrap();
+        let guard = intc.last_injected.lock().unwrap();
         let (pin, trigger, _) = guard.unwrap();
         // Explicit route: pin=5, level-high (not pin=33, edge from fallback)
         assert_eq!(pin, 5);
@@ -690,8 +853,12 @@ mod tests {
     struct ReadOnlyDevice;
 
     impl VirtualDevice for ReadOnlyDevice {
-        fn id(&self) -> DeviceId { DeviceId::from_u64(0) }
-        fn name(&self) -> &str { "read-only-dev" }
+        fn id(&self) -> DeviceId {
+            DeviceId::from_u64(0)
+        }
+        fn name(&self) -> &str {
+            "read-only-dev"
+        }
         fn resources(&self) -> &[Resource] {
             static RES: &[Resource] = &[Resource::Mmio(0x3000..0x4000)];
             RES
@@ -702,7 +869,9 @@ mod tests {
                 BusAccess::Write { addr, .. } => BusResponse::ReadOnly { bus, addr: *addr },
             }
         }
-        fn as_any(&self) -> &dyn Any { self }
+        fn as_any(&self) -> &dyn Any {
+            self
+        }
     }
 
     #[test]
@@ -710,10 +879,23 @@ mod tests {
         let mut router = BusRouter::new();
         router.register(Arc::new(ReadOnlyDevice)).unwrap();
 
-        let read_resp = router.route(BusKind::Mmio, &BusAccess::Read { addr: 0x3000, width: AccessWidth::U32 });
+        let read_resp = router.route(
+            BusKind::Mmio,
+            &BusAccess::Read {
+                addr: 0x3000,
+                width: AccessWidth::U32,
+            },
+        );
         assert!(matches!(read_resp, BusResponse::Success(Some(0xdead))));
 
-        let write_resp = router.route(BusKind::Mmio, &BusAccess::Write { addr: 0x3000, width: AccessWidth::U32, val: 0 });
+        let write_resp = router.route(
+            BusKind::Mmio,
+            &BusAccess::Write {
+                addr: 0x3000,
+                width: AccessWidth::U32,
+                val: 0,
+            },
+        );
         assert!(matches!(write_resp, BusResponse::ReadOnly { .. }));
         assert!(!write_resp.is_success());
     }
@@ -724,22 +906,32 @@ mod tests {
     struct Width32OnlyDevice;
 
     impl VirtualDevice for Width32OnlyDevice {
-        fn id(&self) -> DeviceId { DeviceId::from_u64(0) }
-        fn name(&self) -> &str { "width32-only" }
+        fn id(&self) -> DeviceId {
+            DeviceId::from_u64(0)
+        }
+        fn name(&self) -> &str {
+            "width32-only"
+        }
         fn resources(&self) -> &[Resource] {
             static RES: &[Resource] = &[Resource::Mmio(0x4000..0x5000)];
             RES
         }
         fn handle_access(&self, bus: BusKind, access: &BusAccess) -> BusResponse {
             if access.width() != AccessWidth::U32 {
-                return BusResponse::InvalidWidth { bus, addr: access.addr(), width: access.width() };
+                return BusResponse::InvalidWidth {
+                    bus,
+                    addr: access.addr(),
+                    width: access.width(),
+                };
             }
             match access {
                 BusAccess::Read { .. } => BusResponse::Success(Some(0xbeef)),
                 BusAccess::Write { .. } => BusResponse::Success(None),
             }
         }
-        fn as_any(&self) -> &dyn Any { self }
+        fn as_any(&self) -> &dyn Any {
+            self
+        }
     }
 
     #[test]
@@ -747,14 +939,45 @@ mod tests {
         let mut router = BusRouter::new();
         router.register(Arc::new(Width32OnlyDevice)).unwrap();
 
-        let ok = router.route(BusKind::Mmio, &BusAccess::Read { addr: 0x4000, width: AccessWidth::U32 });
+        let ok = router.route(
+            BusKind::Mmio,
+            &BusAccess::Read {
+                addr: 0x4000,
+                width: AccessWidth::U32,
+            },
+        );
         assert!(matches!(ok, BusResponse::Success(Some(0xbeef))));
 
-        let bad_u8 = router.route(BusKind::Mmio, &BusAccess::Read { addr: 0x4000, width: AccessWidth::U8 });
-        assert!(matches!(bad_u8, BusResponse::InvalidWidth { width: AccessWidth::U8, .. }));
+        let bad_u8 = router.route(
+            BusKind::Mmio,
+            &BusAccess::Read {
+                addr: 0x4000,
+                width: AccessWidth::U8,
+            },
+        );
+        assert!(matches!(
+            bad_u8,
+            BusResponse::InvalidWidth {
+                width: AccessWidth::U8,
+                ..
+            }
+        ));
 
-        let bad_u64 = router.route(BusKind::Mmio, &BusAccess::Write { addr: 0x4000, width: AccessWidth::U64, val: 0 });
-        assert!(matches!(bad_u64, BusResponse::InvalidWidth { width: AccessWidth::U64, .. }));
+        let bad_u64 = router.route(
+            BusKind::Mmio,
+            &BusAccess::Write {
+                addr: 0x4000,
+                width: AccessWidth::U64,
+                val: 0,
+            },
+        );
+        assert!(matches!(
+            bad_u64,
+            BusResponse::InvalidWidth {
+                width: AccessWidth::U64,
+                ..
+            }
+        ));
     }
 
     // ── Bus type isolation for NoDevice ─────────────────────────────────
@@ -762,7 +985,13 @@ mod tests {
     #[test]
     fn test_no_device_carries_bus_and_addr() {
         let router = BusRouter::new();
-        let resp = router.route(BusKind::Mmio, &BusAccess::Read { addr: 0xdead, width: AccessWidth::U32 });
+        let resp = router.route(
+            BusKind::Mmio,
+            &BusAccess::Read {
+                addr: 0xdead,
+                width: AccessWidth::U32,
+            },
+        );
         match resp {
             BusResponse::NoDevice { bus, addr } => {
                 assert_eq!(bus, BusKind::Mmio);
@@ -777,7 +1006,9 @@ mod tests {
     #[test]
     fn test_irq_sink_via_router() {
         let mut router = BusRouter::new();
-        let intc_id = router.register(Arc::new(MockIntc::new(DeviceId::from_u64(0)))).unwrap();
+        let intc = Arc::new(MockIntc::new());
+        let intc_id = DeviceId(42);
+        router.register_intc(intc_id, intc.clone());
         router.set_default_intc(intc_id);
 
         let router = Arc::new(router);
@@ -786,9 +1017,7 @@ mod tests {
         assert_eq!(sink.line(), IrqLine(7));
         sink.raise().unwrap();
 
-        let ctrl = router.find_interrupt_controller(intc_id).unwrap();
-        let mock = ctrl.as_any().downcast_ref::<MockIntc>().unwrap();
-        let guard = mock.last_injected.lock().unwrap();
+        let guard = intc.last_injected.lock().unwrap();
         assert!(guard.is_some());
     }
 
@@ -834,39 +1063,33 @@ mod tests {
 
     #[derive(Debug)]
     struct CountingIntc {
-        resources: Vec<Resource>,
         inject_count: std::sync::atomic::AtomicU32,
     }
 
-    impl VirtualDevice for CountingIntc {
-        fn id(&self) -> DeviceId { DeviceId::from_u64(0) }
-        fn name(&self) -> &str { "counting-intc" }
-        fn resources(&self) -> &[Resource] { &self.resources }
-        fn handle_access(&self, _bus: BusKind, _access: &BusAccess) -> BusResponse {
-            BusResponse::Success(None)
-        }
-        fn as_interrupt_controller(&self) -> Option<&dyn InterruptControllerOps> {
-            Some(self)
-        }
-        fn as_any(&self) -> &dyn Any { self }
-    }
-
     impl InterruptControllerOps for CountingIntc {
-        fn inject_irq(&self, _pin: u32, _trigger: TriggerMode, _target: Option<IrqTarget>) -> Result<()> {
-            self.inject_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            Ok(())
+        fn inject_irq(
+            &self,
+            _pin: u32,
+            _trigger: TriggerMode,
+            _target: Option<IrqTarget>,
+        ) -> Result<IrqOutcome> {
+            self.inject_count
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            Ok(IrqOutcome::Delivered)
         }
-        fn deactivate_irq(&self, _pin: u32) -> Result<()> { Ok(()) }
+        fn deactivate_irq(&self, _pin: u32) -> Result<IrqOutcome> {
+            Ok(IrqOutcome::Delivered)
+        }
     }
 
     #[test]
     fn test_rapid_successive_irq_injection() {
         let mut router = BusRouter::new();
         let intc = Arc::new(CountingIntc {
-            resources: vec![Resource::Mmio(0xf000_0000..0xf010_0000)],
             inject_count: std::sync::atomic::AtomicU32::new(0),
         });
-        let intc_id = router.register(intc.clone()).unwrap();
+        let intc_id = DeviceId(42);
+        router.register_intc(intc_id, intc.clone());
         router.set_default_intc(intc_id);
 
         for i in 0..100u32 {
@@ -874,24 +1097,30 @@ mod tests {
             assert!(result.is_ok(), "injection #{i} failed");
         }
 
-        assert_eq!(intc.inject_count.load(std::sync::atomic::Ordering::Relaxed), 100);
+        assert_eq!(
+            intc.inject_count.load(std::sync::atomic::Ordering::Relaxed),
+            100
+        );
     }
 
     #[test]
     fn test_inject_same_line_repeatedly() {
         let mut router = BusRouter::new();
         let intc = Arc::new(CountingIntc {
-            resources: vec![Resource::Mmio(0xf000_0000..0xf010_0000)],
             inject_count: std::sync::atomic::AtomicU32::new(0),
         });
-        let intc_id = router.register(intc.clone()).unwrap();
+        let intc_id = DeviceId(42);
+        router.register_intc(intc_id, intc.clone());
         router.set_default_intc(intc_id);
 
         for _ in 0..50 {
             assert!(router.inject(IrqMessage::leg(IrqLine(42))).is_ok());
         }
 
-        assert_eq!(intc.inject_count.load(std::sync::atomic::Ordering::Relaxed), 50);
+        assert_eq!(
+            intc.inject_count.load(std::sync::atomic::Ordering::Relaxed),
+            50
+        );
     }
 
     // ── x86-style intc adapter interface compliance ────────────────────
@@ -901,25 +1130,19 @@ mod tests {
         last_injected: std::sync::Mutex<Option<(u32, Option<IrqTarget>)>>,
     }
 
-    impl VirtualDevice for MockX86Intc {
-        fn id(&self) -> DeviceId { DeviceId::from_u64(0) }
-        fn name(&self) -> &str { "mock-x86-intc" }
-        fn resources(&self) -> &[Resource] { &[] }
-        fn handle_access(&self, bus: BusKind, access: &BusAccess) -> BusResponse {
-            BusResponse::NoDevice { bus, addr: access.addr() }
-        }
-        fn as_interrupt_controller(&self) -> Option<&dyn InterruptControllerOps> {
-            Some(self)
-        }
-        fn as_any(&self) -> &dyn Any { self }
-    }
-
     impl InterruptControllerOps for MockX86Intc {
-        fn inject_irq(&self, pin: u32, _trigger: TriggerMode, target: Option<IrqTarget>) -> Result<()> {
+        fn inject_irq(
+            &self,
+            pin: u32,
+            _trigger: TriggerMode,
+            target: Option<IrqTarget>,
+        ) -> Result<IrqOutcome> {
             *self.last_injected.lock().unwrap() = Some((pin, target));
-            Ok(())
+            Ok(IrqOutcome::Delivered)
         }
-        fn deactivate_irq(&self, _pin: u32) -> Result<()> { Ok(()) }
+        fn deactivate_irq(&self, _pin: u32) -> Result<IrqOutcome> {
+            Ok(IrqOutcome::Delivered)
+        }
     }
 
     #[test]
@@ -928,7 +1151,8 @@ mod tests {
         let intc = Arc::new(MockX86Intc {
             last_injected: std::sync::Mutex::new(None),
         });
-        let intc_id = router.register(intc.clone()).unwrap();
+        let intc_id = DeviceId(42);
+        router.register_intc(intc_id, intc.clone());
         router.set_default_intc(intc_id);
 
         assert!(router.inject(IrqMessage::leg(IrqLine(0x20))).is_ok());
@@ -944,10 +1168,16 @@ mod tests {
         let intc = Arc::new(MockX86Intc {
             last_injected: std::sync::Mutex::new(None),
         });
-        let intc_id = router.register(intc.clone()).unwrap();
+        let intc_id = DeviceId(42);
+        router.register_intc(intc_id, intc);
 
         router.irq_table_mut().add_legacy(
-            IrqLine(10), intc_id, 10, TriggerMode::Level { high: true }, None, "test",
+            IrqLine(10),
+            intc_id,
+            10,
+            TriggerMode::Level { high: true },
+            None,
+            "test",
         );
 
         assert!(router.deactivate_irq(IrqLine(10)).is_ok());
@@ -959,11 +1189,20 @@ mod tests {
         let intc = Arc::new(MockX86Intc {
             last_injected: std::sync::Mutex::new(None),
         });
-        let intc_id = router.register(intc.clone()).unwrap();
-        assert_eq!(router.total_devices(), 1);
+        let intc_id = DeviceId(42);
+        router.register_intc(intc_id, intc.clone());
+
+        // Intc is registered separately — not counted as a bus device
+        assert_eq!(router.total_devices(), 0);
 
         // No MMIO resources — bus access returns NoDevice
-        let resp = router.route(BusKind::Mmio, &BusAccess::Read { addr: 0x1000, width: AccessWidth::U32 });
+        let resp = router.route(
+            BusKind::Mmio,
+            &BusAccess::Read {
+                addr: 0x1000,
+                width: AccessWidth::U32,
+            },
+        );
         assert!(matches!(resp, BusResponse::NoDevice { .. }));
 
         // But IRQ injection works via default intc
@@ -976,15 +1215,26 @@ mod tests {
     #[test]
     fn test_ipi_routing_different_targets() {
         let mut router = BusRouter::new();
-        let intc = Arc::new(MockIntc::new(DeviceId::from_u64(0)));
-        let intc_id = router.register(intc.clone()).unwrap();
+        let intc = Arc::new(MockIntc::new());
+        let intc_id = DeviceId(42);
+        router.register_intc(intc_id, intc.clone());
 
         // Route lines with specific CPU targets
         router.irq_table_mut().add_legacy(
-            IrqLine(0), intc_id, 0, TriggerMode::Edge, Some(IrqTarget::Cpu(0)), "ipi-cpu0",
+            IrqLine(0),
+            intc_id,
+            0,
+            TriggerMode::Edge,
+            Some(IrqTarget::Cpu(0)),
+            "ipi-cpu0",
         );
         router.irq_table_mut().add_legacy(
-            IrqLine(1), intc_id, 1, TriggerMode::Edge, Some(IrqTarget::Cpu(1)), "ipi-cpu1",
+            IrqLine(1),
+            intc_id,
+            1,
+            TriggerMode::Edge,
+            Some(IrqTarget::Cpu(1)),
+            "ipi-cpu1",
         );
 
         router.inject(IrqMessage::leg(IrqLine(0))).unwrap();
@@ -1007,18 +1257,22 @@ mod tests {
     #[test]
     fn test_ipi_broadcast_target_global() {
         let mut router = BusRouter::new();
-        let intc = Arc::new(MockIntc::new(DeviceId::from_u64(0)));
-        let intc_id = router.register(intc.clone()).unwrap();
+        let intc = Arc::new(MockIntc::new());
+        let intc_id = DeviceId(42);
+        router.register_intc(intc_id, intc.clone());
 
         router.irq_table_mut().add_legacy(
-            IrqLine(255), intc_id, 255, TriggerMode::Edge, Some(IrqTarget::Global), "broadcast",
+            IrqLine(255),
+            intc_id,
+            255,
+            TriggerMode::Edge,
+            Some(IrqTarget::Global),
+            "broadcast",
         );
 
         router.inject(IrqMessage::leg(IrqLine(255))).unwrap();
 
-        let ctrl = router.find_interrupt_controller(intc_id).unwrap();
-        let mock = ctrl.as_any().downcast_ref::<MockIntc>().unwrap();
-        let guard = mock.last_injected.lock().unwrap();
+        let guard = intc.last_injected.lock().unwrap();
         let (pin, _, target) = guard.unwrap();
         assert_eq!(pin, 255);
         assert_eq!(target, Some(IrqTarget::Global));
@@ -1029,21 +1283,25 @@ mod tests {
     #[test]
     fn test_timer_irq_injection_via_router() {
         let mut router = BusRouter::new();
-        let intc = Arc::new(MockIntc::new(DeviceId::from_u64(0)));
-        let intc_id = router.register(intc.clone()).unwrap();
+        let intc = Arc::new(MockIntc::new());
+        let intc_id = DeviceId(42);
+        router.register_intc(intc_id, intc.clone());
 
         // Simulate a timer IRQ line routed through the controller
         let timer_irq = IrqLine(27);
         router.irq_table_mut().add_legacy(
-            timer_irq, intc_id, 27, TriggerMode::Edge, Some(IrqTarget::Cpu(0)), "vtimer",
+            timer_irq,
+            intc_id,
+            27,
+            TriggerMode::Edge,
+            Some(IrqTarget::Cpu(0)),
+            "vtimer",
         );
 
         // Timer expires → inject via router
         router.inject(IrqMessage::leg(timer_irq)).unwrap();
 
-        let ctrl = router.find_interrupt_controller(intc_id).unwrap();
-        let mock = ctrl.as_any().downcast_ref::<MockIntc>().unwrap();
-        let guard = mock.last_injected.lock().unwrap();
+        let guard = intc.last_injected.lock().unwrap();
         let (pin, trigger, target) = guard.unwrap();
         assert_eq!(pin, 27);
         assert_eq!(trigger, TriggerMode::Edge);

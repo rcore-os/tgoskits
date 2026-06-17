@@ -12,19 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! Unified device & bus abstraction layer for AxVisor.
-//!
-//! Inspired by crosvm's `BusDevice` + `Bus`, Firecracker's `MMIODeviceManager`,
-//! and ACRN's emulation handler tables. Provides a strongly-typed, extensible
-//! framework for device emulation across all bus types.
-
-use alloc::boxed::Box;
-use alloc::string::String;
-//use alloc::sync::Arc;
-//use alloc::vec::Vec;
-use core::any::Any;
-use core::fmt::Display;
-use core::ops::Range;
+use alloc::{boxed::Box, string::String, sync::Arc, vec, vec::Vec};
+use core::{any::Any, fmt::Display, ops::Range};
 
 use crate::irq::InterruptControllerOps;
 
@@ -68,7 +57,7 @@ pub enum Resource {
     /// Memory-mapped I/O region (MMIO).
     Mmio(Range<u64>),
     /// Port I/O region (PIO / x86 I/O space).
-    Pio(Range<u16>),
+    Pio(Range<u32>),
     /// System register range (ARM mrs/msr, x86 MSR, RISC-V CSR).
     SysReg(Range<u64>),
     /// Interrupt line. Routing is configured in `IrqRoutingTable`.
@@ -88,7 +77,7 @@ pub enum BusKind {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AccessWidth {
     /// 8-bit access (byte)
-    U8 = 1,
+    U8  = 1,
     /// 16-bit access (half-word)
     U16 = 2,
     /// 32-bit access (word)
@@ -170,11 +159,19 @@ pub enum BusResponse {
     /// No device claimed the address on the given bus.
     NoDevice { bus: BusKind, addr: u64 },
     /// The access width is not supported by the device at this address.
-    InvalidWidth { bus: BusKind, addr: u64, width: AccessWidth },
+    InvalidWidth {
+        bus: BusKind,
+        addr: u64,
+        width: AccessWidth,
+    },
     /// Attempted write to a read-only register.
     ReadOnly { bus: BusKind, addr: u64 },
     /// Device-specific error (e.g., legacy backend failure).
-    DeviceError { bus: BusKind, addr: u64, msg: &'static str },
+    DeviceError {
+        bus: BusKind,
+        addr: u64,
+        msg: &'static str,
+    },
 }
 
 impl BusResponse {
@@ -254,7 +251,6 @@ pub type Result<T> = core::result::Result<T, DeviceError>;
 /// │  + name() → &str                            │
 /// │  + resources() → &[Resource]                │
 /// │  + handle_access(BusKind, &BusAccess) ─→ BusResponse │
-/// │  + as_interrupt_controller() → Option<…>    │
 /// │  + as_any() → &dyn Any                      │
 /// └─────────────────────────────────────────────┘
 /// ```
@@ -271,47 +267,100 @@ pub trait VirtualDevice: Send + Sync + core::fmt::Debug {
     /// Route a single guest bus access to this device.
     fn handle_access(&self, bus: BusKind, access: &BusAccess) -> BusResponse;
 
-    // ── Optional downcasting ──────────────────────────────────────
-
-    /// If this device is also an interrupt controller, return its ops.
-    fn as_interrupt_controller(&self) -> Option<&dyn InterruptControllerOps> {
-        None
-    }
-
     /// Type-erased downcast — enables device-specific operations without
-    /// modifying the core trait (crosvm uses `BusDeviceObj` for the same purpose).
+    /// modifying the core trait.
     fn as_any(&self) -> &dyn Any;
 }
 
 // ============================================================
-// 6. Device factory trait (registration-time)
+// 6. Device bundle (factory output)
 // ============================================================
 
-/// Creates a `VirtualDevice` from its configuration, without the VMM needing to
-/// know the concrete type. This is the mechanism that eliminates the giant
-/// `match` in the old `AxVmDevices::init()`.
+/// The result of a device factory's `create()` call.
 ///
+/// A single config entry may produce multiple bus devices (e.g., one VGicR
+/// per vCPU) and/or an interrupt controller reference (e.g., Vgic serves as
+/// both an MMIO device and an `InterruptControllerOps` implementor).
+pub struct DeviceBundle {
+    /// Created device(s). Usually exactly one; may be empty (intc-only)
+    /// or many (multi-instance like GICv3 Redistributors).
+    pub devices: Vec<Box<dyn VirtualDevice>>,
+    /// Optional interrupt controller from the same underlying object.
+    /// When `Some`, the caller should register this via
+    /// `BusRouter::register_intc()`.
+    pub intc: Option<Arc<dyn InterruptControllerOps>>,
+}
 
+impl DeviceBundle {
+    /// Wrap a single device with no interrupt controller.
+    pub fn single(dev: Box<dyn VirtualDevice>) -> Self {
+        Self {
+            devices: vec![dev],
+            intc: None,
+        }
+    }
+
+    /// Wrap a single device plus an interrupt controller reference.
+    pub fn with_intc(dev: Box<dyn VirtualDevice>, intc: Arc<dyn InterruptControllerOps>) -> Self {
+        Self {
+            devices: vec![dev],
+            intc: Some(intc),
+        }
+    }
+
+    /// Interrupt-controller-only bundle (no bus device).
+    pub fn intc_only(intc: Arc<dyn InterruptControllerOps>) -> Self {
+        Self {
+            devices: vec![],
+            intc: Some(intc),
+        }
+    }
+
+    /// Multiple devices, no interrupt controller.
+    pub fn multi(devices: Vec<Box<dyn VirtualDevice>>) -> Self {
+        Self {
+            devices,
+            intc: None,
+        }
+    }
+
+    /// Empty bundle (config acknowledged but produces nothing).
+    pub fn empty() -> Self {
+        Self {
+            devices: vec![],
+            intc: None,
+        }
+    }
+}
+
+// ============================================================
+// 7. Device factory trait (registration-time)
+// ============================================================
+
+/// Creates a [`DeviceBundle`] from its configuration, without the VMM needing
+/// to know the concrete type. This is the mechanism that eliminates the giant
+/// `match` in the old `AxVmDevices::init()`.
 pub trait DeviceFactory: Send + Sync {
     /// The device type this factory produces.
     fn emu_type(&self) -> EmulatedDeviceType;
 
-    /// Build a device from its configuration.
+    /// Build device(s) from configuration.
     fn create(
         &self,
         config: &EmulatedDeviceConfig,
         id_alloc: &mut dyn FnMut() -> DeviceId,
-    ) -> Result<Box<dyn VirtualDevice>>;
+    ) -> Result<DeviceBundle>;
 }
 
 // Reduce re-export dependency: just enough for the factory trait
-pub use axvmconfig::EmulatedDeviceConfig;
 pub use axdevice_base::EmuDeviceType as EmulatedDeviceType;
+pub use axvmconfig::EmulatedDeviceConfig;
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use axaddrspace::device::AccessWidth as LegacyWidth;
+
+    use super::*;
 
     #[test]
     fn access_width_from_legacy_roundtrip() {
@@ -331,17 +380,50 @@ mod tests {
     fn bus_response_is_success() {
         assert!(BusResponse::Success(Some(42)).is_success());
         assert!(BusResponse::Success(None).is_success());
-        assert!(!BusResponse::NoDevice { bus: BusKind::Mmio, addr: 0 }.is_success());
-        assert!(!BusResponse::ReadOnly { bus: BusKind::Pio, addr: 0x60 }.is_success());
-        assert!(!BusResponse::InvalidWidth { bus: BusKind::Mmio, addr: 0, width: AccessWidth::U8 }.is_success());
-        assert!(!BusResponse::DeviceError { bus: BusKind::SysReg, addr: 0, msg: "err" }.is_success());
+        assert!(
+            !BusResponse::NoDevice {
+                bus: BusKind::Mmio,
+                addr: 0
+            }
+            .is_success()
+        );
+        assert!(
+            !BusResponse::ReadOnly {
+                bus: BusKind::Pio,
+                addr: 0x60
+            }
+            .is_success()
+        );
+        assert!(
+            !BusResponse::InvalidWidth {
+                bus: BusKind::Mmio,
+                addr: 0,
+                width: AccessWidth::U8
+            }
+            .is_success()
+        );
+        assert!(
+            !BusResponse::DeviceError {
+                bus: BusKind::SysReg,
+                addr: 0,
+                msg: "err"
+            }
+            .is_success()
+        );
     }
 
     #[test]
     fn bus_response_value() {
         assert_eq!(BusResponse::Success(Some(0xff)).value(), Some(0xff));
         assert_eq!(BusResponse::Success(None).value(), None);
-        assert_eq!(BusResponse::NoDevice { bus: BusKind::Mmio, addr: 0 }.value(), None);
+        assert_eq!(
+            BusResponse::NoDevice {
+                bus: BusKind::Mmio,
+                addr: 0
+            }
+            .value(),
+            None
+        );
     }
 
     #[test]
@@ -349,24 +431,50 @@ mod tests {
         let s = format!("{}", BusResponse::Success(Some(0xab)));
         assert!(s.contains("0xab"));
 
-        let s = format!("{}", BusResponse::NoDevice { bus: BusKind::Mmio, addr: 0x1000 });
+        let s = format!(
+            "{}",
+            BusResponse::NoDevice {
+                bus: BusKind::Mmio,
+                addr: 0x1000
+            }
+        );
         assert!(s.contains("Mmio") && s.contains("0x1000"));
 
-        let s = format!("{}", BusResponse::ReadOnly { bus: BusKind::Pio, addr: 0x60 });
+        let s = format!(
+            "{}",
+            BusResponse::ReadOnly {
+                bus: BusKind::Pio,
+                addr: 0x60
+            }
+        );
         assert!(s.contains("read-only"));
 
-        let s = format!("{}", BusResponse::DeviceError { bus: BusKind::SysReg, addr: 0x100, msg: "test" });
+        let s = format!(
+            "{}",
+            BusResponse::DeviceError {
+                bus: BusKind::SysReg,
+                addr: 0x100,
+                msg: "test"
+            }
+        );
         assert!(s.contains("test"));
     }
 
     #[test]
     fn bus_access_helpers() {
-        let read = BusAccess::Read { addr: 0x1000, width: AccessWidth::U32 };
+        let read = BusAccess::Read {
+            addr: 0x1000,
+            width: AccessWidth::U32,
+        };
         assert!(read.is_read());
         assert_eq!(read.addr(), 0x1000);
         assert_eq!(read.width(), AccessWidth::U32);
 
-        let write = BusAccess::Write { addr: 0x2000, width: AccessWidth::U8, val: 0xff };
+        let write = BusAccess::Write {
+            addr: 0x2000,
+            width: AccessWidth::U8,
+            val: 0xff,
+        };
         assert!(!write.is_read());
         assert_eq!(write.addr(), 0x2000);
     }

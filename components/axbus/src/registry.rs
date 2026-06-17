@@ -31,10 +31,8 @@
 //!   the key is `(base, len)`. On lookup, `first_before()` does a `range(..=addr)`
 //!   and then checks overlap.
 //! - Firecracker: `vmm/src/vstate/bus.rs` follows the same pattern.
-//!
 
-use alloc::collections::BTreeMap;
-use alloc::sync::Arc;
+use alloc::{collections::BTreeMap, sync::Arc};
 
 use slotmap::SlotMap;
 
@@ -115,7 +113,6 @@ impl RangeMap {
     }
 
     /// Insert `[start, end)` → `device`.
-    #[allow(dead_code)]
     fn insert(&mut self, start: u64, end: u64, device: DeviceKey) {
         self.intervals.insert(start, (end, device));
     }
@@ -123,11 +120,7 @@ impl RangeMap {
     /// Lookup the device that owns the address `addr`.
     fn lookup(&self, addr: u64) -> Option<DeviceKey> {
         let (_, &(end, dev)) = self.intervals.range(..=addr).next_back()?;
-        if addr < end {
-            Some(dev)
-        } else {
-            None
-        }
+        if addr < end { Some(dev) } else { None }
     }
 
     /// Remove the interval starting at `start`.
@@ -139,12 +132,11 @@ impl RangeMap {
 // ── DeviceRegistry ─────────────────────────────────────────────────────────
 
 /// An indexed, conflict-detecting container for emulated devices.
-///
-
 pub struct DeviceRegistry {
     slotmap: SlotMap<DeviceKey, Arc<dyn VirtualDevice>>,
     mmio_tree: RangeMap,
     pio_tree: RangeMap,
+    sysreg_tree: RangeMap,
     id_map: IdMap,
 }
 
@@ -155,10 +147,19 @@ impl DeviceRegistry {
             slotmap: SlotMap::with_key(),
             mmio_tree: RangeMap::new(),
             pio_tree: RangeMap::new(),
+            sysreg_tree: RangeMap::new(),
             id_map: IdMap::new(),
         }
     }
+}
 
+impl Default for DeviceRegistry {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl DeviceRegistry {
     /// Register a device, detecting address conflicts automatically.
     ///
     /// Returns the assigned `DeviceId` on success.
@@ -168,32 +169,64 @@ impl DeviceRegistry {
         // Check all address resources for conflicts before inserting.
         for res in &resources {
             match res {
-                Resource::Mmio(range) | Resource::SysReg(range) => {
+                Resource::Mmio(range) => {
                     let start = range.start;
                     let end = range.end;
-                    if let Some((&prev_start, &(prev_end, _))) = self.mmio_tree.intervals.range(..start).next_back() {
-                        if prev_end > start {
-                            return Err(DeviceError::AddressConflict(Resource::Mmio(prev_start..prev_end)));
-                        }
+                    if let Some((&prev_start, &(prev_end, _))) =
+                        self.mmio_tree.intervals.range(..start).next_back()
+                        && prev_end > start
+                    {
+                        return Err(DeviceError::AddressConflict(Resource::Mmio(
+                            prev_start..prev_end,
+                        )));
                     }
-                    if let Some((&next_start, &(_, _))) = self.mmio_tree.intervals.range(start..).next() {
-                        if end > next_start {
-                            return Err(DeviceError::AddressConflict(Resource::Mmio(next_start..end)));
-                        }
+                    if let Some((&next_start, &(..))) =
+                        self.mmio_tree.intervals.range(start..).next()
+                        && end > next_start
+                    {
+                        return Err(DeviceError::AddressConflict(Resource::Mmio(
+                            next_start..end,
+                        )));
+                    }
+                }
+                Resource::SysReg(range) => {
+                    let start = range.start;
+                    let end = range.end;
+                    if let Some((&prev_start, &(prev_end, _))) =
+                        self.sysreg_tree.intervals.range(..start).next_back()
+                        && prev_end > start
+                    {
+                        return Err(DeviceError::AddressConflict(Resource::SysReg(
+                            prev_start..prev_end,
+                        )));
+                    }
+                    if let Some((&next_start, &(..))) =
+                        self.sysreg_tree.intervals.range(start..).next()
+                        && end > next_start
+                    {
+                        return Err(DeviceError::AddressConflict(Resource::SysReg(
+                            next_start..end,
+                        )));
                     }
                 }
                 Resource::Pio(range) => {
                     let start = range.start as u64;
                     let end = range.end as u64;
-                    if let Some((&prev_start, &(prev_end, _))) = self.pio_tree.intervals.range(..start).next_back() {
-                        if prev_end > start {
-                            return Err(DeviceError::AddressConflict(Resource::Pio(prev_start as u16..prev_end as u16)));
-                        }
+                    if let Some((&prev_start, &(prev_end, _))) =
+                        self.pio_tree.intervals.range(..start).next_back()
+                        && prev_end > start
+                    {
+                        return Err(DeviceError::AddressConflict(Resource::Pio(
+                            prev_start as u32..prev_end as u32,
+                        )));
                     }
-                    if let Some((&next_start, &(_, _))) = self.pio_tree.intervals.range(start..).next() {
-                        if end > next_start {
-                            return Err(DeviceError::AddressConflict(Resource::Pio(next_start as u16..end as u16)));
-                        }
+                    if let Some((&next_start, &(..))) =
+                        self.pio_tree.intervals.range(start..).next()
+                        && end > next_start
+                    {
+                        return Err(DeviceError::AddressConflict(Resource::Pio(
+                            next_start as u32..end as u32,
+                        )));
                     }
                 }
                 Resource::Irq(_) => {}
@@ -209,11 +242,15 @@ impl DeviceRegistry {
         // Register all address resources in the interval trees.
         for res in &resources {
             match res {
-                Resource::Mmio(range) | Resource::SysReg(range) => {
-                    self.mmio_tree.intervals.insert(range.start, (range.end, key));
+                Resource::Mmio(range) => {
+                    self.mmio_tree.insert(range.start, range.end, key);
+                }
+                Resource::SysReg(range) => {
+                    self.sysreg_tree.insert(range.start, range.end, key);
                 }
                 Resource::Pio(range) => {
-                    self.pio_tree.intervals.insert(range.start as u64, (range.end as u64, key));
+                    self.pio_tree
+                        .insert(range.start as u64, range.end as u64, key);
                 }
                 Resource::Irq(_) => {}
             }
@@ -229,7 +266,8 @@ impl DeviceRegistry {
 
         for res in dev.resources() {
             match res {
-                Resource::Mmio(range) | Resource::SysReg(range) => self.mmio_tree.remove(range.start),
+                Resource::Mmio(range) => self.mmio_tree.remove(range.start),
+                Resource::SysReg(range) => self.sysreg_tree.remove(range.start),
                 Resource::Pio(range) => self.pio_tree.remove(range.start as u64),
                 Resource::Irq(_) => {}
             }
@@ -249,9 +287,7 @@ impl DeviceRegistry {
         let key = match bus {
             BusKind::Mmio => self.mmio_tree.lookup(addr)?,
             BusKind::Pio => self.pio_tree.lookup(addr)?,
-            BusKind::SysReg => {
-                return None;
-            }
+            BusKind::SysReg => self.sysreg_tree.lookup(addr)?,
         };
         self.slotmap.get(key).cloned()
     }
@@ -261,13 +297,11 @@ impl DeviceRegistry {
         // We can only iterate in slotmap order. To get DeviceId, look up the id_map in reverse.
         // For efficiency, we collect and map; this is O(n) which is fine for VM setup.
         let id_map = &self.id_map;
-        self.slotmap
-            .iter()
-            .filter_map(move |(slot_key, v)| {
-                // Find the DeviceId for this slot key by scanning id_map.
-                // In practice, this is fine for VM device counts (< 100).
-                id_map.scan_for_key(slot_key).map(|id| (id, v))
-            })
+        self.slotmap.iter().filter_map(move |(slot_key, v)| {
+            // Find the DeviceId for this slot key by scanning id_map.
+            // In practice, this is fine for VM device counts (< 100).
+            id_map.scan_for_key(slot_key).map(|id| (id, v))
+        })
     }
 
     /// Number of registered devices.
@@ -282,32 +316,26 @@ impl DeviceRegistry {
     /// Check whether the range `[start, end)` overlaps any MMIO interval
     /// already in the registry. Returns the conflicting interval if found.
     pub fn check_mmio_overlap(&self, start: u64, end: u64) -> Option<(u64, u64)> {
-        if let Some((&prev_start, &(prev_end, _))) = self.mmio_tree.intervals.range(..end).next_back() {
-            if prev_end > start && prev_start < end {
-                return Some((prev_start, prev_end));
-            }
+        if let Some((&prev_start, &(prev_end, _))) =
+            self.mmio_tree.intervals.range(..end).next_back()
+            && prev_end > start
+            && prev_start < end
+        {
+            return Some((prev_start, prev_end));
         }
         None
     }
 
     /// Route a bus access to the appropriate device and return the response.
     pub fn handle_access(&self, bus: BusKind, access: &BusAccess) -> BusResponse {
-        let dev = match bus {
-            BusKind::SysReg => {
-                // For SysReg, iterate all devices and try each one
-                // (SysReg ranges are typically sparse)
-                for (_, dev) in self.slotmap.iter() {
-                    let resp = dev.handle_access(bus, access);
-                    if !matches!(resp, BusResponse::NoDevice { .. }) {
-                        return resp;
-                    }
-                }
-                return BusResponse::NoDevice { bus, addr: access.addr() };
+        let dev = match self.lookup(bus, access.addr()) {
+            Some(d) => d,
+            None => {
+                return BusResponse::NoDevice {
+                    bus,
+                    addr: access.addr(),
+                };
             }
-            _ => match self.lookup(bus, access.addr()) {
-                Some(d) => d,
-                None => return BusResponse::NoDevice { bus, addr: access.addr() },
-            },
         };
         dev.handle_access(bus, access)
     }
@@ -318,8 +346,9 @@ impl DeviceRegistry {
 #[cfg(test)]
 #[allow(missing_docs)]
 mod tests {
-    use super::*;
     use core::any::Any;
+
+    use super::*;
 
     #[derive(Debug)]
     struct DummyDevice {
@@ -406,10 +435,7 @@ mod tests {
         let mut reg = DeviceRegistry::new();
         let dev = Arc::new(DummyDevice {
             id: DeviceId::from_u64(0),
-            resources: alloc::vec![
-                Resource::Mmio(0x1000..0x2000),
-                Resource::Pio(0x60..0x64),
-            ],
+            resources: alloc::vec![Resource::Mmio(0x1000..0x2000), Resource::Pio(0x60..0x64),],
         });
         reg.register(dev).unwrap();
 
@@ -428,10 +454,26 @@ mod tests {
     }
 
     #[test]
-    fn test_sysreg_lookup_returns_none() {
-        // SysReg devices do NOT participate in address-based lookup.
-        let reg = DeviceRegistry::new();
-        assert!(reg.lookup(BusKind::SysReg, 0x1234).is_none());
+    fn test_sysreg_lookup_with_registered_device() {
+        // SysReg devices DO participate in address-based lookup through the
+        // sysreg_tree interval tree, just like MMIO and PIO.
+        // Register a device with a SysReg range and verify lookups work.
+        let mut reg = DeviceRegistry::new();
+        let dev = Arc::new(DummyDevice {
+            id: DeviceId::from_u64(0),
+            resources: vec![Resource::SysReg(0x1000..0x2000)],
+        });
+        reg.register(dev).unwrap();
+        // inside the range
+        assert!(reg.lookup(BusKind::SysReg, 0x1000).is_some());
+        assert!(reg.lookup(BusKind::SysReg, 0x1fff).is_some());
+        // at the exclusive end boundary → no match
+        assert!(reg.lookup(BusKind::SysReg, 0x2000).is_none());
+        // unregistered address → no match
+        assert!(reg.lookup(BusKind::SysReg, 0x3000).is_none());
+        // empty registry (no SysReg device registered) → no match
+        let empty = DeviceRegistry::new();
+        assert!(empty.lookup(BusKind::SysReg, 0x1234).is_none());
     }
 
     #[test]
@@ -492,36 +534,52 @@ mod tests {
 
     #[test]
     fn test_handle_access_sysreg_fallback() {
-        // SysReg handle_access iterates all devices and returns NoDevice
-        // when none claims the access.
         let mut reg = DeviceRegistry::new();
         #[derive(Debug)]
         struct SysRegOnly;
         impl VirtualDevice for SysRegOnly {
-            fn id(&self) -> DeviceId { DeviceId(0) }
-            fn name(&self) -> &str { "sysreg-only" }
-            fn resources(&self) -> &[Resource] { &[] }
+            fn id(&self) -> DeviceId {
+                DeviceId(0)
+            }
+            fn name(&self) -> &str {
+                "sysreg-only"
+            }
+            fn resources(&self) -> &[Resource] {
+                static RES: &[Resource] = &[Resource::SysReg(0x1000..0x2000)];
+                RES
+            }
             fn handle_access(&self, bus: BusKind, access: &BusAccess) -> BusResponse {
                 match (bus, access) {
                     (BusKind::SysReg, BusAccess::Read { addr, .. }) if *addr == 0x1000 => {
                         BusResponse::Success(Some(1))
                     }
-                    _ => BusResponse::NoDevice { bus, addr: access.addr() },
+                    _ => BusResponse::NoDevice {
+                        bus,
+                        addr: access.addr(),
+                    },
                 }
             }
-            fn as_any(&self) -> &dyn Any { self }
+            fn as_any(&self) -> &dyn Any {
+                self
+            }
         }
         reg.register(Arc::new(SysRegOnly)).unwrap();
         // mismatch address → NoDevice
         let resp = reg.handle_access(
             BusKind::SysReg,
-            &BusAccess::Read { addr: 0x9999, width: AccessWidth::U32 },
+            &BusAccess::Read {
+                addr: 0x9999,
+                width: AccessWidth::U32,
+            },
         );
         assert!(matches!(resp, BusResponse::NoDevice { .. }));
         // matching address → Success
         let resp = reg.handle_access(
             BusKind::SysReg,
-            &BusAccess::Read { addr: 0x1000, width: AccessWidth::U32 },
+            &BusAccess::Read {
+                addr: 0x1000,
+                width: AccessWidth::U32,
+            },
         );
         assert!(matches!(resp, BusResponse::Success(Some(1))));
     }

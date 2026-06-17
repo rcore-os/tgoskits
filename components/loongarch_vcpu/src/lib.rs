@@ -11,7 +11,7 @@ pub use self::{
     context_frame::{LoongArchContextFrame, LoongArchGuestSystemRegisters},
     exception::{TrapKind, handle_exception_irq, handle_exception_sync},
     pcpu::LoongArchPerCpu,
-    registers::{inject_interrupt, LoongArchCsrIntc},
+    registers::{LoongArchCsrIntc, inject_interrupt},
     vcpu::{LoongArchVCpu, LoongArchVCpuCreateConfig, LoongArchVCpuSetupConfig},
 };
 

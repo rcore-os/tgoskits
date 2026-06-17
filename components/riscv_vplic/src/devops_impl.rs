@@ -6,16 +6,15 @@ use ax_errno::AxResult;
 use axaddrspace::{GuestPhysAddrRange, HostPhysAddr, device::AccessWidth};
 use axbus::InterruptControllerOps;
 use axdevice_base::{BaseDeviceOps, EmuDeviceType};
-use bitmaps::Bitmap;
 
 use crate::{consts::*, utils::*, vplic::VPlicGlobal};
 
 const VCAUSE_INTERRUPT_BIT: usize = 1usize << (usize::BITS - 1);
 const VCAUSE_VS_TIMER: usize = VCAUSE_INTERRUPT_BIT | 5;
 const PLIC_PENDING_WORDS: usize = PLIC_NUM_SOURCES / 32;
+const BITMAP_WORDS: usize = PLIC_NUM_SOURCES / 64;
 
 impl VPlicGlobal {
-    /// Reads the priority of an interrupt source from the host PLIC.
     fn irq_priority(&self, irq_id: usize) -> AxResult<u32> {
         let addr = HostPhysAddr::from_usize(
             self.host_plic_addr.as_usize() + PLIC_PRIORITY_OFFSET + irq_id * 4,
@@ -23,7 +22,6 @@ impl VPlicGlobal {
         Ok(perform_mmio_read(addr, AccessWidth::Dword)? as u32)
     }
 
-    /// Reads the priority threshold configured for a PLIC context.
     fn context_threshold(&self, context_id: usize) -> AxResult<u32> {
         let addr = HostPhysAddr::from_usize(
             self.host_plic_addr.as_usize()
@@ -34,7 +32,6 @@ impl VPlicGlobal {
         Ok(perform_mmio_read(addr, AccessWidth::Dword)? as u32)
     }
 
-    /// Reads one enable register word for a PLIC context.
     fn context_enable_mask(&self, context_id: usize, reg_index: usize) -> AxResult<u32> {
         let addr = HostPhysAddr::from_usize(
             self.host_plic_addr.as_usize()
@@ -45,58 +42,59 @@ impl VPlicGlobal {
         Ok(perform_mmio_read(addr, AccessWidth::Dword)? as u32)
     }
 
-    /// Returns pending interrupts that are not currently in service.
-    fn pending_inactive_irqs(&self) -> Bitmap<{ PLIC_NUM_SOURCES }> {
-        let pending_irqs = self.pending_irqs.lock();
-        let active_irqs = self.active_irqs.lock();
-        let mut candidates = *pending_irqs & !*active_irqs;
-        // IRQ 0 is reserved by the PLIC specification and must never be claimed.
-        candidates.set(0, false);
-        candidates
+    /// Returns a snapshot of pending & !active bits. Lock-free.
+    fn pending_inactive_snapshot(&self) -> [u64; BITMAP_WORDS] {
+        let mut result = self.pending_irqs.and_not(&self.active_irqs);
+        // IRQ 0 is reserved by the PLIC specification.
+        result[0] &= !1u64;
+        result
     }
 
-    /// Selects the highest-priority enabled IRQ from the candidate set.
+    /// Selects the highest-priority enabled IRQ from a candidate snapshot.
     fn best_enabled_pending_irq(
         &self,
         context_id: usize,
-        candidate_irqs: Bitmap<{ PLIC_NUM_SOURCES }>,
+        candidates: &[u64; BITMAP_WORDS],
     ) -> AxResult<Option<(usize, u32)>> {
         let mut best_irq = None;
         let mut best_priority = 0;
         let mut cached_enable_reg_index = usize::MAX;
         let mut cached_enable_mask = 0u32;
 
-        // Select the highest-priority IRQ that is pending, inactive, and
-        // enabled for this context. Threshold filtering is applied separately
-        // for interrupt notification, but not for claim.
-        for irq_id in (&candidate_irqs).into_iter() {
-            let reg_index = irq_id / 32;
-            let bit_index = irq_id % 32;
+        for word_idx in 0..BITMAP_WORDS {
+            let mut word = candidates[word_idx];
+            while word != 0 {
+                let bit = word.trailing_zeros() as usize;
+                word &= !(1u64 << bit);
+                let irq_id = word_idx * 64 + bit;
 
-            if reg_index != cached_enable_reg_index {
-                cached_enable_mask = self.context_enable_mask(context_id, reg_index)?;
-                cached_enable_reg_index = reg_index;
-            }
-            if (cached_enable_mask & (1 << bit_index)) == 0 {
-                continue;
-            }
+                let reg_index = irq_id / 32;
+                let bit_index = irq_id % 32;
 
-            let priority = self.irq_priority(irq_id)?;
-            if priority > best_priority {
-                best_priority = priority;
-                best_irq = Some((irq_id, priority));
+                if reg_index != cached_enable_reg_index {
+                    cached_enable_mask = self.context_enable_mask(context_id, reg_index)?;
+                    cached_enable_reg_index = reg_index;
+                }
+                if (cached_enable_mask & (1 << bit_index)) == 0 {
+                    continue;
+                }
+
+                let priority = self.irq_priority(irq_id)?;
+                if priority > best_priority {
+                    best_priority = priority;
+                    best_irq = Some((irq_id, priority));
+                }
             }
         }
 
         Ok(best_irq)
     }
 
-    /// Returns the next IRQ that should assert VSEIP for this context.
     fn next_deliverable_irq(&self, context_id: usize) -> AxResult<Option<usize>> {
         let threshold = self.context_threshold(context_id)?;
-        let candidate_irqs = self.pending_inactive_irqs();
+        let candidates = self.pending_inactive_snapshot();
         if let Some((irq_id, priority)) =
-            self.best_enabled_pending_irq(context_id, candidate_irqs)?
+            self.best_enabled_pending_irq(context_id, &candidates)?
         {
             if priority > threshold {
                 return Ok(Some(irq_id));
@@ -105,40 +103,31 @@ impl VPlicGlobal {
         Ok(None)
     }
 
-    /// Claims the next enabled pending IRQ and moves it to the active set.
+    /// Claims the next enabled pending IRQ using atomic test-and-clear.
+    /// No locks — concurrent claims on different contexts race safely.
     fn claim_next_irq(&self, context_id: usize) -> AxResult<Option<usize>> {
         loop {
-            let candidate_irqs = self.pending_inactive_irqs();
+            let candidates = self.pending_inactive_snapshot();
             let Some((irq_id, _priority)) =
-                self.best_enabled_pending_irq(context_id, candidate_irqs)?
+                self.best_enabled_pending_irq(context_id, &candidates)?
             else {
                 return Ok(None);
             };
 
-            let mut pending_irqs = self.pending_irqs.lock();
-            let mut active_irqs = self.active_irqs.lock();
-            if !pending_irqs.get(irq_id) || active_irqs.get(irq_id) {
+            // Atomically clear the pending bit. Only one caller wins.
+            if !self.pending_irqs.test_and_clear(irq_id) {
                 continue;
             }
 
-            // Claim moves the IRQ from pending to active until the guest
-            // writes it back to the complete register.
-            pending_irqs.set(irq_id, false);
-            active_irqs.set(irq_id, true);
+            // Set the active bit (no race concern — only the winner reaches here).
+            self.active_irqs.set(irq_id);
             return Ok(Some(irq_id));
         }
     }
 
-    /// Recomputes whether VSEIP should remain asserted for one context.
     fn sync_vseip(&self, context_id: usize) -> AxResult<()> {
-        // VSEIP should track whether this context still has a deliverable
-        // external interrupt, not merely whether some pending bit is set.
         if self.next_deliverable_irq(context_id)?.is_some() {
             unsafe {
-                // If the guest is already executing a VS timer interrupt handler,
-                // the corresponding tick is "in service" from the guest's point of
-                // view. Clearing VSTIP here avoids needlessly keeping a timer
-                // interrupt pending while we queue the external interrupt.
                 if riscv_h::register::vscause::read().bits() == VCAUSE_VS_TIMER {
                     riscv_h::register::hvip::clear_vstip();
                 }
@@ -152,7 +141,6 @@ impl VPlicGlobal {
         Ok(())
     }
 
-    /// Recomputes VSEIP for all guest supervisor contexts.
     fn sync_all_guest_contexts_vseip(&self) -> AxResult<()> {
         for context_id in (1..self.contexts_num).step_by(2) {
             self.sync_vseip(context_id)?;
@@ -161,7 +149,6 @@ impl VPlicGlobal {
     }
 }
 
-/// Implementation of device emulation operations for virtual PLIC.
 impl BaseDeviceOps<GuestPhysAddrRange> for VPlicGlobal {
     fn emu_type(&self) -> axdevice_base::EmuDeviceType {
         EmuDeviceType::PPPTGlobal
@@ -171,11 +158,6 @@ impl BaseDeviceOps<GuestPhysAddrRange> for VPlicGlobal {
         GuestPhysAddrRange::from_start_size(self.addr, self.size)
     }
 
-    /// Handles MMIO read operations from the virtual PLIC.
-    ///
-    /// Only 32-bit (Dword) accesses are supported.
-    /// Read operations are forwarded to the host PLIC for most registers,
-    /// except for pending and claim/complete registers which are emulated.
     fn handle_read(
         &self,
         addr: <GuestPhysAddrRange as axaddrspace::device::DeviceAddrRange>::Addr,
@@ -184,26 +166,24 @@ impl BaseDeviceOps<GuestPhysAddrRange> for VPlicGlobal {
         assert_eq!(width, AccessWidth::Dword);
         let reg = addr - self.addr;
         let host_addr = HostPhysAddr::from_usize(reg + self.host_plic_addr.as_usize());
-        // info!("vPlicGlobal read reg {reg:#x} width {width:?}");
         match reg {
             // priority
             PLIC_PRIORITY_OFFSET..PLIC_PENDING_OFFSET => perform_mmio_read(host_addr, width),
-            // pending
+            // pending — read directly from atomic bitmap
             PLIC_PENDING_OFFSET..PLIC_ENABLE_OFFSET => {
                 let reg_index = (reg - PLIC_PENDING_OFFSET) / 4;
                 if reg_index >= PLIC_PENDING_WORDS {
                     return Ok(0);
                 }
-                let bit_index_start = reg_index * 32;
-                let mut val: u32 = 0;
-                let mut bit_mask: u32 = 1;
-                let pending_irqs = self.pending_irqs.lock();
-                for i in 0..32 {
-                    let irq_id = bit_index_start + i as usize;
-                    if irq_id != 0 && pending_irqs.get(irq_id) {
-                        val |= bit_mask;
-                    }
-                    bit_mask <<= 1;
+                let word_idx = reg_index / 2;
+                let word = self.pending_irqs.load_word(word_idx);
+                let mut val = if reg_index % 2 == 0 {
+                    word as u32
+                } else {
+                    (word >> 32) as u32
+                };
+                if reg_index == 0 {
+                    val &= !1u32; // mask out reserved IRQ 0
                 }
                 Ok(val as usize)
             }
@@ -237,17 +217,12 @@ impl BaseDeviceOps<GuestPhysAddrRange> for VPlicGlobal {
                 Ok(irq_id)
             }
             _ => {
-                unimplemented!("Unsupported vPlicGlobal read for reg {reg:#x}")
+                log::warn!("vPlicGlobal: unsupported read at reg {reg:#x}, returning 0");
+                Ok(0)
             }
         }
     }
 
-    /// Handles MMIO write operations to the virtual PLIC.
-    ///
-    /// Only 32-bit (Dword) accesses are supported.
-    /// Write operations are forwarded to the host PLIC for most registers.
-    /// Writes to the pending register are used for interrupt injection by the hypervisor.
-    /// Writes to the claim/complete register complete interrupt handling.
     fn handle_write(
         &self,
         addr: <GuestPhysAddrRange as axaddrspace::device::DeviceAddrRange>::Addr,
@@ -257,35 +232,29 @@ impl BaseDeviceOps<GuestPhysAddrRange> for VPlicGlobal {
         assert_eq!(width, AccessWidth::Dword);
         let reg = addr - self.addr;
         let host_addr = HostPhysAddr::from_usize(reg + self.host_plic_addr.as_usize());
-        // info!("vPlicGlobal write reg {reg:#x} width {width:?} val {val:#x}");
         match reg {
             // priority
             PLIC_PRIORITY_OFFSET..PLIC_PENDING_OFFSET => {
                 perform_mmio_write(host_addr, width, val)?;
                 self.sync_all_guest_contexts_vseip()
             }
-            // pending (Here is uesd for hyperivosr to inject pending IRQs, later should move it to a separate interface)
+            // pending — atomic OR into bitmap, no lock needed
             PLIC_PENDING_OFFSET..PLIC_ENABLE_OFFSET => {
-                // Note: here append, not overwrite.
                 let reg_index = (reg - PLIC_PENDING_OFFSET) / 4;
                 if reg_index >= PLIC_PENDING_WORDS {
                     return Ok(());
                 }
-                let val = val as u32;
-                let mut bit_mask: u32 = 1;
-                let mut pending_irqs = self.pending_irqs.lock();
-                for i in 0..32 {
-                    if (val & bit_mask) != 0 {
-                        let irq_id = reg_index * 32 + i;
-                        if irq_id != 0 {
-                            // Set the pending bit.
-                            pending_irqs.set(irq_id, true);
-                        }
-                    }
-                    bit_mask <<= 1;
+                let mut val32 = val as u32;
+                if reg_index == 0 {
+                    val32 &= !1u32; // never set reserved IRQ 0
                 }
-
-                drop(pending_irqs);
+                let word_idx = reg_index / 2;
+                let mask = if reg_index % 2 == 0 {
+                    val32 as u64
+                } else {
+                    (val32 as u64) << 32
+                };
+                self.pending_irqs.or_word(word_idx, mask);
                 self.sync_all_guest_contexts_vseip()
             }
             // enable
@@ -296,7 +265,6 @@ impl BaseDeviceOps<GuestPhysAddrRange> for VPlicGlobal {
                     context_id < self.contexts_num,
                     "Invalid context id {context_id}"
                 );
-                // A mask update can instantly expose or hide already-pending IRQs.
                 self.sync_vseip(context_id)
             }
             // threshold
@@ -310,16 +278,14 @@ impl BaseDeviceOps<GuestPhysAddrRange> for VPlicGlobal {
                     "Invalid context id {context_id}"
                 );
                 perform_mmio_write(host_addr, width, val)?;
-                // Threshold changes must be reflected on the hart line immediately.
                 self.sync_vseip(context_id)
             }
-            // claim/complete
+            // claim/complete — atomic clear on active bitmap
             offset
                 if offset >= PLIC_CONTEXT_CTRL_OFFSET
                     && (offset - PLIC_CONTEXT_CTRL_OFFSET - PLIC_CONTEXT_CLAIM_COMPLETE_OFFSET)
                         .is_multiple_of(PLIC_CONTEXT_STRIDE) =>
             {
-                // info!("vPlicGlobal: Writing to CLAIM/COMPLETE reg {reg:#x} val {val:#x}");
                 let context_id =
                     (offset - PLIC_CONTEXT_CTRL_OFFSET - PLIC_CONTEXT_CLAIM_COMPLETE_OFFSET)
                         / PLIC_CONTEXT_STRIDE;
@@ -332,53 +298,51 @@ impl BaseDeviceOps<GuestPhysAddrRange> for VPlicGlobal {
                 if irq_id == 0 || irq_id >= PLIC_NUM_SOURCES {
                     return self.sync_vseip(context_id);
                 }
-                let mut active_irqs = self.active_irqs.lock();
-                if !active_irqs.get(irq_id) {
+                if !self.active_irqs.test(irq_id) {
                     return self.sync_vseip(context_id);
                 }
 
-                // Write host PLIC.
                 perform_mmio_write(host_addr, width, irq_id)?;
-                // Clear the active bit only after the completion is accepted.
-                active_irqs.set(irq_id, false);
-                drop(active_irqs);
+                self.active_irqs.clear(irq_id);
                 self.sync_vseip(context_id)
             }
             _ => {
-                unimplemented!("Unsupported vPlicGlobal read for reg {reg:#x}")
+                log::warn!("vPlicGlobal: unsupported read at reg {reg:#x}, returning 0");
+                Ok(0)
             }
         }
     }
 }
 
-/// InterruptControllerOps implementation for VPlicGlobal.
-///
-/// Allows the bus router to inject/deactivate interrupts through the
-/// standard trait without knowing RISC-V PLIC internals.
 impl InterruptControllerOps for VPlicGlobal {
     fn inject_irq(
         &self,
         pin: u32,
         _trigger: axbus::TriggerMode,
         _target: Option<axbus::IrqTarget>,
-    ) -> axbus::Result<()> {
+    ) -> axbus::Result<axbus::IrqOutcome> {
         let irq_id = pin as usize;
         if irq_id == 0 || irq_id >= PLIC_NUM_SOURCES {
             return Err(axbus::DeviceError::InvalidResource);
         }
-        self.pending_irqs.lock().set(irq_id, true);
-        self.sync_all_guest_contexts_vseip()
-            .map_err(|_| axbus::DeviceError::BackendError(alloc::string::String::from("sync_vseip failed")))
+        // Atomic set — no lock, safe from interrupt context.
+        self.pending_irqs.set(irq_id);
+        self.sync_all_guest_contexts_vseip().map_err(|_| {
+            axbus::DeviceError::BackendError(alloc::string::String::from("sync_vseip failed"))
+        })?;
+        Ok(axbus::IrqOutcome::Delivered)
     }
 
-    fn deactivate_irq(&self, pin: u32) -> axbus::Result<()> {
+    fn deactivate_irq(&self, pin: u32) -> axbus::Result<axbus::IrqOutcome> {
         let irq_id = pin as usize;
         if irq_id == 0 || irq_id >= PLIC_NUM_SOURCES {
             return Err(axbus::DeviceError::InvalidResource);
         }
-        self.pending_irqs.lock().set(irq_id, false);
-        self.sync_all_guest_contexts_vseip()
-            .map_err(|_| axbus::DeviceError::BackendError(alloc::string::String::from("sync_vseip failed")))
+        self.pending_irqs.clear(irq_id);
+        self.sync_all_guest_contexts_vseip().map_err(|_| {
+            axbus::DeviceError::BackendError(alloc::string::String::from("sync_vseip failed"))
+        })?;
+        Ok(axbus::IrqOutcome::Delivered)
     }
 }
 
@@ -388,193 +352,174 @@ mod tests {
 
     use super::*;
 
+    fn make_vplic() -> VPlicGlobal {
+        VPlicGlobal::new(GuestPhysAddr::from(0x0c00_0000), Some(0x400000), 2)
+    }
+
     #[test]
-    fn pending_inactive_irqs_excludes_reserved_irq_zero() {
-        let vplic = VPlicGlobal::new(GuestPhysAddr::from(0x0c00_0000), Some(0x400000), 2);
+    fn pending_inactive_excludes_reserved_irq_zero() {
+        let vplic = make_vplic();
+        vplic.pending_irqs.set(0);
+        vplic.pending_irqs.set(1);
 
-        {
-            let mut pending_irqs = vplic.pending_irqs.lock();
-            pending_irqs.set(0, true);
-            pending_irqs.set(1, true);
-        }
-
-        let candidates = vplic.pending_inactive_irqs();
-
-        assert!(!candidates.get(0));
-        assert!(candidates.get(1));
+        let snap = vplic.pending_inactive_snapshot();
+        assert!(snap[0] & 1 == 0); // IRQ 0 masked
+        assert!(snap[0] & 2 != 0); // IRQ 1 present
     }
 
     #[test]
     fn claim_bitmap_semantics_pending_to_active() {
-        let vplic = VPlicGlobal::new(GuestPhysAddr::from(0x0c00_0000), Some(0x400000), 2);
+        let vplic = make_vplic();
+        vplic.pending_irqs.set(5);
 
-        // Simulate inject: set IRQ 5 pending
-        vplic.pending_irqs.lock().set(5, true);
+        let snap = vplic.pending_inactive_snapshot();
+        assert!(snap[0] & (1 << 5) != 0);
 
-        // Verify it appears in candidates
-        let candidates = vplic.pending_inactive_irqs();
-        assert!(candidates.get(5));
+        // Simulate claim via atomic ops
+        assert!(vplic.pending_irqs.test_and_clear(5));
+        vplic.active_irqs.set(5);
 
-        // Simulate claim: clear pending, set active
-        {
-            let mut pending = vplic.pending_irqs.lock();
-            let mut active = vplic.active_irqs.lock();
-            assert!(pending.get(5));
-            assert!(!active.get(5));
-            pending.set(5, false);
-            active.set(5, true);
-        }
-
-        // After claim: IRQ 5 is no longer a candidate
-        let candidates = vplic.pending_inactive_irqs();
-        assert!(!candidates.get(5));
-
-        // It's active
-        assert!(vplic.active_irqs.lock().get(5));
+        let snap = vplic.pending_inactive_snapshot();
+        assert!(snap[0] & (1 << 5) == 0);
+        assert!(vplic.active_irqs.test(5));
     }
 
     #[test]
-    fn complete_bitmap_semantics_clears_active() {
-        let vplic = VPlicGlobal::new(GuestPhysAddr::from(0x0c00_0000), Some(0x400000), 2);
+    fn complete_clears_active() {
+        let vplic = make_vplic();
+        vplic.active_irqs.set(10);
+        assert!(vplic.active_irqs.test(10));
 
-        // Set IRQ 10 active (as if it was claimed)
-        vplic.active_irqs.lock().set(10, true);
-        assert!(vplic.active_irqs.lock().get(10));
-
-        // Simulate complete: clear active bit
-        vplic.active_irqs.lock().set(10, false);
-        assert!(!vplic.active_irqs.lock().get(10));
-
-        // Not pending, not active — clean state
-        assert!(!vplic.pending_irqs.lock().get(10));
+        vplic.active_irqs.clear(10);
+        assert!(!vplic.active_irqs.test(10));
+        assert!(!vplic.pending_irqs.test(10));
     }
 
     #[test]
     fn inject_sets_pending_bit() {
-        let vplic = VPlicGlobal::new(GuestPhysAddr::from(0x0c00_0000), Some(0x400000), 2);
+        let vplic = make_vplic();
+        assert!(!vplic.pending_irqs.test(7));
 
-        // Before inject: IRQ 7 not pending
-        assert!(!vplic.pending_irqs.lock().get(7));
+        vplic.pending_irqs.set(7);
 
-        // InterruptControllerOps::inject_irq sets the pending bit.
-        // It then calls sync_all_guest_contexts_vseip which will fail on host
-        // (hardware MMIO), but the pending bit should be set first.
-        vplic.pending_irqs.lock().set(7, true);
-
-        assert!(vplic.pending_irqs.lock().get(7));
-        let candidates = vplic.pending_inactive_irqs();
-        assert!(candidates.get(7));
+        assert!(vplic.pending_irqs.test(7));
+        let snap = vplic.pending_inactive_snapshot();
+        assert!(snap[0] & (1 << 7) != 0);
     }
 
     #[test]
     fn deactivate_clears_pending_bit() {
-        let vplic = VPlicGlobal::new(GuestPhysAddr::from(0x0c00_0000), Some(0x400000), 2);
+        let vplic = make_vplic();
+        vplic.pending_irqs.set(3);
+        assert!(vplic.pending_irqs.test(3));
 
-        // Set IRQ 3 pending
-        vplic.pending_irqs.lock().set(3, true);
-        assert!(vplic.pending_irqs.lock().get(3));
-
-        // InterruptControllerOps::deactivate_irq clears the pending bit.
-        vplic.pending_irqs.lock().set(3, false);
-        assert!(!vplic.pending_irqs.lock().get(3));
-
-        let candidates = vplic.pending_inactive_irqs();
-        assert!(!candidates.get(3));
+        vplic.pending_irqs.clear(3);
+        assert!(!vplic.pending_irqs.test(3));
     }
 
     #[test]
     fn active_irqs_excluded_from_candidates() {
-        let vplic = VPlicGlobal::new(GuestPhysAddr::from(0x0c00_0000), Some(0x400000), 2);
+        let vplic = make_vplic();
+        vplic.pending_irqs.set(1);
+        vplic.pending_irqs.set(2);
+        vplic.pending_irqs.set(3);
+        vplic.active_irqs.set(2);
 
-        // Set IRQs 1, 2, 3 pending
-        {
-            let mut pending = vplic.pending_irqs.lock();
-            pending.set(1, true);
-            pending.set(2, true);
-            pending.set(3, true);
-        }
-
-        // Mark IRQ 2 as active (claimed)
-        vplic.active_irqs.lock().set(2, true);
-
-        let candidates = vplic.pending_inactive_irqs();
-        assert!(candidates.get(1));
-        assert!(!candidates.get(2)); // active, excluded
-        assert!(candidates.get(3));
+        let snap = vplic.pending_inactive_snapshot();
+        assert!(snap[0] & (1 << 1) != 0);
+        assert!(snap[0] & (1 << 2) == 0); // active, excluded
+        assert!(snap[0] & (1 << 3) != 0);
     }
 
     #[test]
-    fn inject_irq_zero_boundary_bitmap() {
-        let vplic = VPlicGlobal::new(GuestPhysAddr::from(0x0c00_0000), Some(0x400000), 2);
+    fn irq_zero_always_masked() {
+        let vplic = make_vplic();
+        vplic.pending_irqs.set(0);
 
-        // Even if IRQ 0 is forced pending, pending_inactive_irqs masks it out
-        vplic.pending_irqs.lock().set(0, true);
-        let candidates = vplic.pending_inactive_irqs();
-        assert!(!candidates.get(0));
+        let snap = vplic.pending_inactive_snapshot();
+        assert!(snap[0] & 1 == 0);
     }
 
     #[test]
-    fn full_claim_complete_cycle_bitmap() {
-        let vplic = VPlicGlobal::new(GuestPhysAddr::from(0x0c00_0000), Some(0x400000), 2);
+    fn full_claim_complete_cycle() {
+        let vplic = make_vplic();
 
-        // 1. Inject: IRQ 15 becomes pending
-        vplic.pending_irqs.lock().set(15, true);
-        assert!(vplic.pending_inactive_irqs().get(15));
+        // 1. Inject
+        vplic.pending_irqs.set(15);
+        let snap = vplic.pending_inactive_snapshot();
+        assert!(snap[0] & (1 << 15) != 0);
 
-        // 2. Claim: pending→active
-        {
-            let mut pending = vplic.pending_irqs.lock();
-            let mut active = vplic.active_irqs.lock();
-            pending.set(15, false);
-            active.set(15, true);
-        }
-        assert!(!vplic.pending_inactive_irqs().get(15));
-        assert!(vplic.active_irqs.lock().get(15));
+        // 2. Claim
+        assert!(vplic.pending_irqs.test_and_clear(15));
+        vplic.active_irqs.set(15);
 
-        // 3. Complete: clear active
-        vplic.active_irqs.lock().set(15, false);
-        assert!(!vplic.active_irqs.lock().get(15));
-        assert!(!vplic.pending_irqs.lock().get(15));
+        let snap = vplic.pending_inactive_snapshot();
+        assert!(snap[0] & (1 << 15) == 0);
+        assert!(vplic.active_irqs.test(15));
 
-        // 4. Re-inject same IRQ: should appear as candidate again
-        vplic.pending_irqs.lock().set(15, true);
-        assert!(vplic.pending_inactive_irqs().get(15));
+        // 3. Complete
+        vplic.active_irqs.clear(15);
+        assert!(!vplic.active_irqs.test(15));
+        assert!(!vplic.pending_irqs.test(15));
+
+        // 4. Re-inject
+        vplic.pending_irqs.set(15);
+        let snap = vplic.pending_inactive_snapshot();
+        assert!(snap[0] & (1 << 15) != 0);
     }
 
     #[test]
     fn multiple_irqs_concurrent_state() {
-        let vplic = VPlicGlobal::new(GuestPhysAddr::from(0x0c00_0000), Some(0x400000), 2);
+        let vplic = make_vplic();
 
-        // Inject IRQs 1, 5, 10, 20
-        {
-            let mut pending = vplic.pending_irqs.lock();
-            for &irq in &[1, 5, 10, 20] {
-                pending.set(irq, true);
-            }
+        for &irq in &[1, 5, 10, 20] {
+            vplic.pending_irqs.set(irq);
         }
 
-        // Claim IRQs 1 and 10
-        {
-            let mut pending = vplic.pending_irqs.lock();
-            let mut active = vplic.active_irqs.lock();
-            for &irq in &[1, 10] {
-                pending.set(irq, false);
-                active.set(irq, true);
-            }
+        // Claim 1 and 10
+        for &irq in &[1, 10] {
+            vplic.pending_irqs.test_and_clear(irq);
+            vplic.active_irqs.set(irq);
         }
 
-        let candidates = vplic.pending_inactive_irqs();
-        assert!(!candidates.get(1));  // claimed
-        assert!(candidates.get(5));   // still pending
-        assert!(!candidates.get(10)); // claimed
-        assert!(candidates.get(20));  // still pending
+        let snap = vplic.pending_inactive_snapshot();
+        assert!(snap[0] & (1 << 1) == 0); // claimed
+        assert!(snap[0] & (1 << 5) != 0); // pending
+        assert!(snap[0] & (1 << 10) == 0); // claimed
+        assert!(snap[0] & (1 << 20) != 0); // pending
 
-        // Complete IRQ 1
-        vplic.active_irqs.lock().set(1, false);
+        // Complete IRQ 1, re-inject
+        vplic.active_irqs.clear(1);
+        vplic.pending_irqs.set(1);
+        let snap = vplic.pending_inactive_snapshot();
+        assert!(snap[0] & (1 << 1) != 0);
+    }
 
-        // Re-inject IRQ 1
-        vplic.pending_irqs.lock().set(1, true);
-        let candidates = vplic.pending_inactive_irqs();
-        assert!(candidates.get(1)); // pending again
+    #[test]
+    fn concurrent_test_and_clear_only_one_wins() {
+        use alloc::sync::Arc;
+        use core::sync::atomic::{AtomicUsize, Ordering};
+
+        let vplic = Arc::new(make_vplic());
+        vplic.pending_irqs.set(42);
+
+        let winners = Arc::new(AtomicUsize::new(0));
+        let mut handles = alloc::vec::Vec::new();
+
+        for _ in 0..16 {
+            let vplic = vplic.clone();
+            let winners = winners.clone();
+            handles.push(std::thread::spawn(move || {
+                if vplic.pending_irqs.test_and_clear(42) {
+                    winners.fetch_add(1, Ordering::Relaxed);
+                }
+            }));
+        }
+        for h in handles {
+            h.join().unwrap();
+        }
+
+        assert_eq!(winners.load(Ordering::Relaxed), 1);
+        assert!(!vplic.pending_irqs.test(42));
     }
 }

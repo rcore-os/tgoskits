@@ -12,18 +12,21 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use alloc::{boxed::Box, format, sync::Arc, vec::Vec};
-use core::{alloc::Layout, fmt};
+use alloc::{
+    boxed::Box,
+    format,
+    sync::{Arc, Arc as StdArc},
+    vec::Vec,
+};
+use core::{alloc::Layout, fmt, sync::atomic::AtomicUsize};
 
 use ax_cpumask::CpuMask;
 use ax_errno::{AxError, AxResult, ax_err, ax_err_type};
 use ax_memory_addr::{align_down_4k, align_up_4k};
-use axaddrspace::{
-    AddrSpace, GuestPhysAddr, HostPhysAddr, HostVirtAddr, MappingFlags,
-};
-use alloc::sync::Arc as StdArc;
-use axbus::{BusRouter, LegacyMmioAdapter, LegacySysRegAdapter, DeviceId};
-use axdevice::{AxVmDeviceConfig, AxVmDevices};
+use axaddrspace::{AddrSpace, GuestPhysAddr, HostPhysAddr, HostVirtAddr, MappingFlags};
+use axbus::{BusRouter, DeviceId, IrqRuntime as AxIrqRuntime, VcpuKicker};
+#[cfg(target_arch = "aarch64")]
+use axbus::{LegacyMmioAdapter, LegacySysRegAdapter};
 use axvcpu::{AxVCpu, AxVCpuExitReason};
 use axvisor_api::vmm::InterruptVector;
 use spin::{Mutex, Once};
@@ -54,6 +57,7 @@ struct AxVMInnerConst {
     vcpu_list: Box<[AxVCpuRef]>,
     router: StdArc<BusRouter>,
     ivc_mgr: Option<Mutex<axbus::IVCManager>>,
+    vcpu_pcpu_map: Arc<[AtomicUsize]>,
 }
 
 unsafe impl Send for AxVMInnerConst {}
@@ -156,11 +160,46 @@ struct BusTransaction {
     dest_gpr: Option<usize>,
 }
 
+/// Minimal vCPU kicker for the AxVisor hypervisor.
+///
+/// Calls `axvisor_api::vmm::inject_interrupt(vm_id, vcpu_id, 0)` to force the
+/// target vCPU to exit guest mode so it re-evaluates pending interrupt state.
+///
+/// Vector 0 (division-by-zero on x86, SGI0 on ARM, etc.) is used as a pure
+/// notification mechanism — the real interrupt injection has already been done
+/// by the interrupt controller backend (`InterruptControllerOps::inject_irq`).
+///
+/// This is a best-effort notification: if the vCPU is not currently running
+/// (e.g., blocked on WFI), the hypervisor's `with_vm_and_vcpu_on_pcpu` will
+/// queue the kick for the next scheduling point.
+struct AxVMKicker {
+    vm_id: usize,
+    vcpu_count: usize,
+}
+
+impl VcpuKicker for AxVMKicker {
+    fn kick(&self, vcpu_id: usize) {
+        if vcpu_id < self.vcpu_count {
+            axvisor_api::vmm::inject_interrupt(self.vm_id, vcpu_id, 0);
+        } else {
+            warn!(
+                "AxVMKicker::kick: vcpu_id {} out of range (count={})",
+                vcpu_id, self.vcpu_count
+            );
+        }
+    }
+
+    fn vcpu_count(&self) -> usize {
+        self.vcpu_count
+    }
+}
+
 /// A Virtual Machine.
 pub struct AxVM {
     id: usize,
     inner_const: Once<AxVMInnerConst>,
     inner_mut: Mutex<AxVMInnerMut>,
+    irq_runtime: Once<Arc<axbus::IrqRuntime>>,
 }
 
 impl AxVM {
@@ -183,6 +222,7 @@ impl AxVM {
                 memory_regions: Vec::new(),
                 vm_status: VMStatus::Loading,
             }),
+            irq_runtime: Once::new(),
         });
 
         info!("VM created: id={}", result.id());
@@ -303,11 +343,96 @@ impl AxVM {
             )?;
         }
 
-        #[cfg_attr(not(target_arch = "aarch64"), expect(unused_mut))]
-        let mut devices = axdevice::AxVmDevices::new(AxVmDeviceConfig {
-            emu_configs: inner_mut.config.emu_devices().to_vec(),
-        });
+        // ── Device creation via FactoryRegistry ──────────────────────────
+        //
+        // Replaces the old AxVmDevices path: factories produce DeviceBundles
+        // that register directly into BusRouter.
+        let mut factories = axbus::FactoryRegistry::new();
+        axdevice::factories::register_all_factories(&mut factories);
 
+        let mut router = BusRouter::new();
+        let mut dev_id: u64 = 1;
+        let mut id_alloc = || {
+            let id = DeviceId::from_u64(dev_id);
+            dev_id += 1;
+            id
+        };
+
+        let emu_configs = inner_mut.config.emu_devices().to_vec();
+        let mut intc_device_id: Option<DeviceId> = None;
+
+        for config in &emu_configs {
+            use axvmconfig::EmulatedDeviceType;
+
+            // IVCChannel is a range allocator, not a device — handled below.
+            if config.emu_type == EmulatedDeviceType::IVCChannel {
+                continue;
+            }
+
+            let bundle = match factories.create(config.emu_type, config, &mut id_alloc) {
+                Ok(b) => b,
+                Err(axbus::DeviceError::NotFound) => {
+                    warn!(
+                        "No factory for device '{}' type {:?}, skipping",
+                        config.name, config.emu_type
+                    );
+                    continue;
+                }
+                Err(e) => {
+                    warn!(
+                        "Factory error for device '{}' type {:?}: {}",
+                        config.name, config.emu_type, e
+                    );
+                    continue;
+                }
+            };
+
+            // Register all bus devices from the bundle.
+            let mut first_rid = None;
+            for dev in bundle.devices {
+                if let Ok(rid) = router.register(StdArc::from(dev)) {
+                    if first_rid.is_none() {
+                        first_rid = Some(rid);
+                    }
+                }
+            }
+
+            // Register interrupt controller if the bundle provides one.
+            if let Some(intc) = bundle.intc {
+                let intc_id = first_rid.unwrap_or_else(&mut id_alloc);
+                router.register_intc(intc_id, intc);
+                intc_device_id = Some(intc_id);
+            }
+        }
+
+        // Set default interrupt controller.
+        if let Some(intc_id) = intc_device_id {
+            router.set_default_intc(intc_id);
+        }
+
+        // Architecture-specific fallback interrupt controllers.
+        #[cfg(target_arch = "loongarch64")]
+        if intc_device_id.is_none() {
+            let intc_id = id_alloc();
+            router.register_intc(intc_id, StdArc::new(loongarch_vcpu::LoongArchCsrIntc));
+            router.set_default_intc(intc_id);
+        }
+        #[cfg(target_arch = "x86_64")]
+        {
+            let has_intc_config = emu_configs
+                .iter()
+                .any(|c| c.emu_type == axvmconfig::EmulatedDeviceType::InterruptController);
+            if intc_device_id.is_none() && has_intc_config {
+                let intc_id = id_alloc();
+                router.register_intc(
+                    intc_id,
+                    StdArc::new(x86_vlapic::X86IntcAdapter::new(self.id())),
+                );
+                router.set_default_intc(intc_id);
+            }
+        }
+
+        // aarch64: handle passthrough SPI assignment and non-passthrough sysreg devices.
         #[cfg(target_arch = "aarch64")]
         {
             let passthrough =
@@ -317,22 +442,22 @@ impl AxVM {
                 let cpu_id = self.id() - 1; // FIXME: get the real CPU id.
                 let mut gicd_found = false;
 
-                for device in devices.iter_mmio_dev() {
-                    if let Some(result) = axdevice_base::map_device_of_type(
-                        device,
-                        |gicd: &arm_vgic::v3::vgicd::VGicD| {
-                            debug!("VGicD found, assigning SPIs...");
-
-                            for spi in spis {
-                                gicd.assign_irq(*spi + 32, cpu_id, (0, 0, 0, cpu_id as _))
-                            }
-
-                            AxResult::Ok(())
-                        },
-                    ) {
-                        result?;
-                        gicd_found = true;
-                        break;
+                for (_id, device) in router.iter_all() {
+                    if let Some(adapter) = device.as_any().downcast_ref::<LegacyMmioAdapter>() {
+                        if let Some(result) = axdevice_base::map_device_of_type(
+                            adapter.inner(),
+                            |gicd: &arm_vgic::v3::vgicd::VGicD| {
+                                debug!("VGicD found, assigning SPIs...");
+                                for spi in spis {
+                                    gicd.assign_irq(*spi + 32, cpu_id, (0, 0, 0, cpu_id as _))
+                                }
+                                AxResult::Ok(())
+                            },
+                        ) {
+                            result?;
+                            gicd_found = true;
+                            break;
+                        }
                     }
                 }
 
@@ -340,69 +465,12 @@ impl AxVM {
                     warn!("Failed to assign SPIs: No VGicD found in device list");
                 }
             } else {
-                // non-passthrough mode, we need to set up the virtual timer.
-                //
-                // FIXME: maybe let `axdevice` handle this automatically?
-                // how to let `axdevice` know whether the VM is in passthrough mode or not?
                 for dev in get_sysreg_device() {
-                    devices.add_sys_reg_dev(dev);
+                    let id = id_alloc();
+                    let adapter = LegacySysRegAdapter::new(id, dev);
+                    let _ = router.register(StdArc::new(adapter));
                 }
             }
-        }
-
-        // Build BusRouter from the legacy AxVmDevices (adapter pattern).
-        let mut router = BusRouter::new();
-        let mut dev_id: u64 = 1;
-        let intc_ops = devices.interrupt_controller().cloned();
-        let mut intc_device_id: Option<DeviceId> = None;
-        for dev in devices.iter_mmio_dev() {
-            let id = DeviceId::from_u64(dev_id); dev_id += 1;
-            let adapter = LegacyMmioAdapter::new(id, dev.clone());
-            let is_intc = intc_ops.is_some() && matches!(
-                dev.emu_type(),
-                axdevice_base::EmuDeviceType::InterruptController
-                    | axdevice_base::EmuDeviceType::PPPTGlobal
-            );
-            let adapter = if is_intc {
-                adapter.with_interrupt_controller(intc_ops.clone().unwrap())
-            } else {
-                adapter
-            };
-            let registered_id = router.register(StdArc::new(adapter));
-            if is_intc {
-                if let Ok(rid) = registered_id {
-                    intc_device_id = Some(rid);
-                }
-            }
-        }
-        if let Some(intc_id) = intc_device_id {
-            router.set_default_intc(intc_id);
-        }
-        #[cfg(target_arch = "loongarch64")]
-        if intc_device_id.is_none() {
-            let intc_id = router.register(StdArc::new(
-                loongarch_vcpu::LoongArchCsrIntc,
-            )).expect("failed to register LoongArch CSR intc");
-            router.set_default_intc(intc_id);
-        }
-        #[cfg(target_arch = "x86_64")]
-        if intc_device_id.is_none() {
-            if let Some(ref ops) = intc_ops {
-                let intc_id = router.register(StdArc::new(
-                    x86_vlapic::X86IntcAdapter::new(self.id()),
-                )).expect("failed to register x86 intc adapter");
-                router.set_default_intc(intc_id);
-            }
-        }
-        for dev in devices.iter_sys_reg_dev() {
-            let id = DeviceId::from_u64(dev_id); dev_id += 1;
-            let adapter = LegacySysRegAdapter::new(id, dev.clone());
-            let _ = router.register(StdArc::new(adapter));
-        }
-        for dev in devices.iter_port_dev() {
-            let id = DeviceId::from_u64(dev_id); dev_id += 1;
-            let adapter = axbus::LegacyPortAdapter::new(id, dev.clone());
-            let _ = router.register(StdArc::new(adapter));
         }
 
         // Check passthrough device ranges against emulated device MMIO ranges.
@@ -418,7 +486,7 @@ impl AxVM {
         }
 
         // Build IVCManager from the first IVCChannel emulated device config.
-        let ivc_mgr = inner_mut.config.emu_devices().iter().find_map(|cfg| {
+        let ivc_mgr = emu_configs.iter().find_map(|cfg| {
             use axvmconfig::EmulatedDeviceType;
             if cfg.emu_type == EmulatedDeviceType::IVCChannel {
                 Some(Mutex::new(axbus::IVCManager::new(cfg.base_gpa, cfg.length)))
@@ -427,11 +495,30 @@ impl AxVM {
             }
         });
 
+        let vcpu_count = vcpu_list.len();
+
+        // ── Build IrqRuntime for lock-free interrupt dispatch ─────────────
+        //
+        // The runtime pre-resolves all interrupt controller references and
+        // provides lock-free injection on the hot path. Constructed here
+        // before `router` is frozen into AxVMInnerConst.
+        let kicker = Box::new(AxVMKicker {
+            vm_id: self.id(),
+            vcpu_count,
+        });
+        let (routing, default_intc, controllers) = router.build_runtime_parts();
+        let irq_runtime = AxIrqRuntime::new(routing, default_intc, controllers, kicker);
+        self.set_irq_runtime(irq_runtime);
+
         self.inner_const.call_once(|| AxVMInnerConst {
             phys_cpu_ls: inner_mut.config.phys_cpu_ls.clone(),
             vcpu_list: vcpu_list.into_boxed_slice(),
             router: StdArc::new(router),
             ivc_mgr,
+            vcpu_pcpu_map: (0..vcpu_count)
+                .map(|_| AtomicUsize::new(usize::MAX))
+                .collect::<Vec<_>>()
+                .into(),
         });
 
         // Setup VCpus.
@@ -602,10 +689,60 @@ impl AxVM {
         &self.inner_const().router
     }
 
+    /// Returns the vcpu→pcpu mapping array for sharing with a VcpuKicker.
+    pub fn vcpu_pcpu_map(&self) -> &Arc<[AtomicUsize]> {
+        &self.inner_const().vcpu_pcpu_map
+    }
+
+    /// Update the pcpu binding for a vCPU. Called from the VMM layer on bind/unbind.
+    pub fn set_vcpu_pcpu(&self, vcpu_id: usize, pcpu_id: usize) {
+        self.inner_const().vcpu_pcpu_map[vcpu_id]
+            .store(pcpu_id, core::sync::atomic::Ordering::Release);
+    }
+
+    /// Read the pcpu binding for a vCPU. Returns None if unbound.
+    pub fn vcpu_pcpu(&self, vcpu_id: usize) -> Option<usize> {
+        let val =
+            self.inner_const().vcpu_pcpu_map[vcpu_id].load(core::sync::atomic::Ordering::Acquire);
+        if val == usize::MAX { None } else { Some(val) }
+    }
+
+    /// Set the IrqRuntime for this VM. Called by the VMM layer after init().
+    pub fn set_irq_runtime(&self, runtime: axbus::IrqRuntime) {
+        self.irq_runtime.call_once(|| Arc::new(runtime));
+    }
+
+    /// Inject an interrupt via the IrqRuntime (preferred) or BusRouter (fallback).
+    pub fn inject_irq(&self, msg: axbus::IrqMessage) -> axbus::Result<()> {
+        if let Some(rt) = self.irq_runtime.get() {
+            rt.inject(msg)
+        } else {
+            self.router().inject(msg)
+        }
+    }
+
+    /// Create an [`axbus::IrqSink`] backed by this VM's [`axbus::IrqRuntime`].
+    ///
+    /// Unlike [`BusRouter::create_irq_sink`], the sink produced here routes
+    /// through `IrqRuntime::inject`, which properly dispatches `IrqOutcome`
+    /// kick targets to the `VcpuKicker`. This is the correct path for
+    /// runtime interrupt delivery from device emulators.
+    ///
+    /// Returns `None` if `set_irq_runtime()` has not been called yet.
+    pub fn create_irq_sink(
+        &self,
+        line: axbus::IrqLine,
+        trigger: axbus::TriggerMode,
+    ) -> Option<axbus::IrqSink> {
+        Some(self.irq_runtime.get()?.create_irq_sink(line, trigger))
+    }
+
     /// Convert an I/O VM exit into a bus transaction descriptor.
     fn exit_to_bus_txn(reason: &AxVCpuExitReason) -> Option<BusTransaction> {
         match reason {
-            AxVCpuExitReason::MmioRead { addr, width, reg, .. } => Some(BusTransaction {
+            AxVCpuExitReason::MmioRead {
+                addr, width, reg, ..
+            } => Some(BusTransaction {
                 bus: axbus::BusKind::Mmio,
                 access: axbus::BusAccess::Read {
                     addr: GuestPhysAddr::as_usize(*addr) as u64,
@@ -670,12 +807,6 @@ impl AxVM {
         0
     }
 
-    /// (deprecated) Use `router()` instead.
-    #[deprecated(note = "use router() instead")]
-    pub fn get_devices(&self) -> &AxVmDevices {
-        panic!("get_devices() is deprecated; use router() instead");
-    }
-
     /// Run a vCPU according to the given vcpu_id.
     ///
     /// ## Arguments
@@ -703,7 +834,10 @@ impl AxVM {
                     ref other => {
                         warn!(
                             "VM[{}] bus {:?} @ {:#x}: {}",
-                            self.id(), txn.bus, txn.access.addr(), other
+                            self.id(),
+                            txn.bus,
+                            txn.access.addr(),
+                            other
                         );
                         if let Some(gpr) = txn.dest_gpr {
                             vcpu.set_gpr(gpr, 0);
@@ -869,12 +1003,13 @@ impl AxVM {
     /// ## Returns
     /// * `AxResult<(GuestPhysAddr, usize)>` - A tuple containing the guest physical address of the allocated IVC channel and its actual size.
     pub fn alloc_ivc_channel(&self, expected_size: usize) -> AxResult<(GuestPhysAddr, usize)> {
-        let ivc = self.inner_const().ivc_mgr.as_ref().ok_or_else(|| {
-            ax_err_type!(NotFound, "No IVC channel configured")
-        })?;
+        let ivc = self
+            .inner_const()
+            .ivc_mgr
+            .as_ref()
+            .ok_or_else(|| ax_err_type!(NotFound, "No IVC channel configured"))?;
         let size = align_up_4k(expected_size);
-        ivc.lock().alloc_channel_mut(size)
-            .map(|gpa| (gpa, size))
+        ivc.lock().alloc_channel_mut(size).map(|gpa| (gpa, size))
     }
 
     /// Releases an IVC channel for inter-VM communication region.
@@ -884,9 +1019,11 @@ impl AxVM {
     /// ## Returns
     /// * `AxResult<()>` - An empty result indicating success or failure.
     pub fn release_ivc_channel(&self, gpa: GuestPhysAddr, size: usize) -> AxResult {
-        let ivc = self.inner_const().ivc_mgr.as_ref().ok_or_else(|| {
-            ax_err_type!(NotFound, "No IVC channel configured")
-        })?;
+        let ivc = self
+            .inner_const()
+            .ivc_mgr
+            .as_ref()
+            .ok_or_else(|| ax_err_type!(NotFound, "No IVC channel configured"))?;
         let size = align_up_4k(size);
         ivc.lock().release_channel_mut(gpa, size)
     }

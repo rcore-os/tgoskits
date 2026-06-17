@@ -45,22 +45,23 @@
 
 extern crate alloc;
 
-
 mod adapter;
+pub mod atomic_bitmap;
 mod factory;
 pub mod irq;
 mod ivc;
 mod registry;
 mod router;
-pub mod r#trait;
+mod runtime;
 mod send_sync;
+pub mod r#trait;
 
 pub use adapter::{LegacyMmioAdapter, LegacyPortAdapter, LegacySysRegAdapter};
-// Re-exports from adapter — all types used by axvisor
-
+pub use atomic_bitmap::AtomicBitmap;
 pub use factory::FactoryRegistry;
+pub use irq::*;
 pub use ivc::IVCManager;
 pub use registry::DeviceRegistry;
 pub use router::BusRouter;
-pub use irq::*;
+pub use runtime::IrqRuntime;
 pub use r#trait::*;

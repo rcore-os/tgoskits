@@ -82,6 +82,7 @@ type AxEmuSysRegDevices = AxEmuDevices<SysRegAddrRange>;
 type AxEmuPortDevices = AxEmuDevices<PortRange>;
 
 /// represent A vm own devices
+#[deprecated(note = "Use axbus::FactoryRegistry + BusRouter directly. See axdevice::factories.")]
 pub struct AxVmDevices {
     /// emu devices
     emu_mmio_devices: AxEmuMmioDevices,
@@ -143,16 +144,13 @@ impl AxVmDevices {
                     #[cfg(target_arch = "aarch64")]
                     {
                         let vgic = Arc::new(Vgic::new());
-                        this.intc_ops = Some(vgic.clone() as Arc<dyn axbus::InterruptControllerOps>);
+                        this.intc_ops =
+                            Some(vgic.clone() as Arc<dyn axbus::InterruptControllerOps>);
                         this.add_mmio_dev(vgic);
                     }
                     #[cfg(target_arch = "x86_64")]
                     {
-                        let vm_id = config
-                            .cfg_list
-                            .first()
-                            .copied()
-                            .unwrap_or(0);
+                        let vm_id = config.cfg_list.first().copied().unwrap_or(0);
                         let adapter = Arc::new(x86_vlapic::X86IntcAdapter::new(vm_id));
                         this.intc_ops = Some(adapter as Arc<dyn axbus::InterruptControllerOps>);
                     }
@@ -281,7 +279,8 @@ impl AxVmDevices {
                             Some(config.length),
                             context_num,
                         ));
-                        this.intc_ops = Some(vplic.clone() as Arc<dyn axbus::InterruptControllerOps>);
+                        this.intc_ops =
+                            Some(vplic.clone() as Arc<dyn axbus::InterruptControllerOps>);
                         this.add_mmio_dev(vplic);
                         info!(
                             "Partial PLIC Passthrough Global initialized with base GPA {:#x} and \

@@ -149,42 +149,16 @@ impl axbus::InterruptControllerOps for LoongArchCsrIntc {
         pin: u32,
         _trigger: axbus::TriggerMode,
         _target: Option<axbus::IrqTarget>,
-    ) -> axbus::Result<()> {
+    ) -> axbus::Result<axbus::IrqOutcome> {
         let vector = pin as usize;
         if vector > INT_IPI {
             return Err(axbus::DeviceError::InvalidResource);
         }
         inject_interrupt(vector);
-        Ok(())
+        Ok(axbus::IrqOutcome::Delivered)
     }
 
-    fn deactivate_irq(&self, _pin: u32) -> axbus::Result<()> {
-        Ok(())
-    }
-}
-
-impl axbus::VirtualDevice for LoongArchCsrIntc {
-    fn id(&self) -> axbus::DeviceId {
-        axbus::DeviceId::from_u64(0)
-    }
-
-    fn name(&self) -> &str {
-        "loongarch-csr-intc"
-    }
-
-    fn resources(&self) -> &[axbus::Resource] {
-        &[]
-    }
-
-    fn handle_access(&self, bus: axbus::BusKind, access: &axbus::BusAccess) -> axbus::BusResponse {
-        axbus::BusResponse::NoDevice { bus, addr: access.addr() }
-    }
-
-    fn as_interrupt_controller(&self) -> Option<&dyn axbus::InterruptControllerOps> {
-        Some(self)
-    }
-
-    fn as_any(&self) -> &dyn core::any::Any {
-        self
+    fn deactivate_irq(&self, _pin: u32) -> axbus::Result<axbus::IrqOutcome> {
+        Ok(axbus::IrqOutcome::Delivered)
     }
 }

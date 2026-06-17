@@ -20,9 +20,7 @@ axbus = { workspace = true }
 axdevice_base = { workspace = true }
 axvisor_api = { workspace = true }
 ax-errno = { workspace = true }
-bitmaps = { version = "3.2", default-features = false }
 log = "0.4"
-spin = "0.10"
 
 riscv-h = { workspace = true }
 [package.metadata.docs.rs]

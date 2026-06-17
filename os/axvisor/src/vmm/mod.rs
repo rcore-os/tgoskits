@@ -14,6 +14,7 @@
 
 mod hvc;
 mod ivc;
+mod kicker;
 
 pub mod config;
 pub mod images;
@@ -56,10 +57,13 @@ static RUNNING_VM_COUNT: AtomicUsize = AtomicUsize::new(0);
 /// This function creates the VM structures and sets up the primary VCpu for each VM.
 pub fn init() {
     info!("Initializing VMM...");
-    // Initialize guest VM according to config file.
     config::init_guest_vms();
 
-    // Setup vCPUs, spawn an ax-task for the primary vCPU.
+    info!("Setting up IrqRuntime for each VM...");
+    for vm in vm_list::get_vm_list() {
+        vm.set_irq_runtime(kicker::build_irq_runtime(&vm));
+    }
+
     info!("Setting up vcpus...");
     for vm in vm_list::get_vm_list() {
         vcpus::setup_vm_primary_vcpu(vm);
@@ -122,29 +126,33 @@ pub fn with_vm_and_vcpu_on_pcpu(
     vcpu_id: usize,
     f: impl FnOnce(VMRef, VCpuRef) + 'static,
 ) -> AxResult {
-    // Disables preemption and IRQs to prevent the current task from being preempted or re-scheduled.
     let guard = ax_kernel_guard::NoPreemptIrqSave::new();
 
     let current_vm = ax_task::current().as_vcpu_task().vm().id();
     let current_vcpu = ax_task::current().as_vcpu_task().vcpu.id();
 
-    // The target vCPU is the current task, execute the closure directly.
     if current_vm == vm_id && current_vcpu == vcpu_id {
-        with_vm_and_vcpu(vm_id, vcpu_id, f).unwrap(); // unwrap is safe here
+        with_vm_and_vcpu(vm_id, vcpu_id, f).unwrap();
         return Ok(());
     }
 
-    // The target vCPU is not the current task, send an IPI to the target physical CPU.
     drop(guard);
 
-    let _pcpu_id = vcpus::with_vcpu_task(vm_id, vcpu_id, |task| task.cpu_id())
-        .ok_or_else(|| ax_err_type!(NotFound))?;
+    let vm = vm_list::get_vm_by_id(vm_id).ok_or_else(|| ax_err_type!(NotFound))?;
 
-    unimplemented!();
-    // use std::os::arceos::modules::axipi;
-    // Ok(ax_ipi::send_ipi_event_to_one(pcpu_id as usize, move || {
-    // with_vm_and_vcpu_on_pcpu(vm_id, vcpu_id, f);
-    // }))
+    match vm.vcpu_pcpu(vcpu_id) {
+        Some(target_pcpu) => {
+            ax_ipi::run_on_cpu(target_pcpu, move || {
+                with_vm_and_vcpu(vm_id, vcpu_id, f);
+            });
+            Ok(())
+        }
+        None => {
+            with_vm_and_vcpu(vm_id, vcpu_id, f)
+                .ok_or_else(|| ax_err_type!(NotFound))?;
+            Ok(())
+        }
+    }
 }
 
 pub fn add_running_vm_count(count: usize) {

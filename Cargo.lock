@@ -1626,6 +1626,7 @@ dependencies = [
  "axaddrspace",
  "axbus",
  "axdevice_base",
+ "axvisor_api",
  "axvmconfig",
  "cfg-if",
  "log",
@@ -1894,6 +1895,7 @@ dependencies = [
  "ax-crate-interface",
  "ax-errno",
  "ax-hal",
+ "ax-ipi",
  "ax-kernel-guard",
  "ax-kspin",
  "ax-lazyinit",
@@ -6569,10 +6571,8 @@ dependencies = [
  "axbus",
  "axdevice_base",
  "axvisor_api",
- "bitmaps",
  "log",
  "riscv-h",
- "spin 0.10.0",
 ]
 
 [[package]]

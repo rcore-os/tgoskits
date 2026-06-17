@@ -23,8 +23,8 @@
 use alloc::collections::BTreeMap;
 
 use ax_errno::{AxResult, ax_err, ax_err_type};
-use axaddrspace::GuestPhysAddr;
 use ax_memory_addr::is_aligned_4k;
+use axaddrspace::GuestPhysAddr;
 
 /// Manages IVC channel allocation within a pre-configured GPA range.
 pub struct IVCManager {
@@ -95,21 +95,22 @@ impl IVCManager {
         let mut merged_start = start;
         let mut merged_end = end;
 
-        if let Some((&next_start, &next_size)) = self.free_regions.range(start..).next() {
-            if next_start == end {
-                merged_end = end + next_size;
-                self.free_regions.remove(&next_start);
-            }
+        if let Some((&next_start, &next_size)) = self.free_regions.range(start..).next()
+            && next_start == end
+        {
+            merged_end = end + next_size;
+            self.free_regions.remove(&next_start);
         }
 
-        if let Some((&prev_start, &prev_size)) = self.free_regions.range(..start).next_back() {
-            if prev_start + prev_size == start {
-                merged_start = prev_start;
-                self.free_regions.remove(&prev_start);
-            }
+        if let Some((&prev_start, &prev_size)) = self.free_regions.range(..start).next_back()
+            && prev_start + prev_size == start
+        {
+            merged_start = prev_start;
+            self.free_regions.remove(&prev_start);
         }
 
-        self.free_regions.insert(merged_start, merged_end - merged_start);
+        self.free_regions
+            .insert(merged_start, merged_end - merged_start);
         Ok(())
     }
 
@@ -159,7 +160,7 @@ mod tests {
     }
 
     #[test]
-fn test_merge_on_release() {
+    fn test_merge_on_release() {
         let mut mgr = IVCManager::new(0x1000_0000, 0x10000);
         let a1 = mgr.alloc_channel_mut(0x4000).unwrap();
         let a2 = mgr.alloc_channel_mut(0x4000).unwrap();
@@ -168,9 +169,9 @@ fn test_merge_on_release() {
 
         mgr.release_channel_mut(a2, 0x4000).unwrap();
         mgr.release_channel_mut(a1, 0x4000).unwrap();
-        
+
         // 【修复】：释放两个 16KB 块后，加上剩余未分配的 16KB，总空闲容量应为 48KB (0xC000)
-        assert_eq!(mgr.capacity(), 0xC000); 
+        assert_eq!(mgr.capacity(), 0xC000);
 
         let big = mgr.alloc_channel_mut(0x8000).unwrap();
         assert_eq!(big.as_usize(), 0x1000_0000);

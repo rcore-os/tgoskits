@@ -66,8 +66,9 @@ ax-timer-list = { workspace = true }
 hashbrown = "0.14"
 
 # System dependent modules provided by ArceOS.
-ax-std = { workspace = true, features = ["paging", "irq", "multitask", "task-ext", "smp", "hv"] }
+ax-std = { workspace = true, features = ["paging", "irq", "multitask", "task-ext", "smp", "hv", "ipi"] }
 ax-hal = { workspace = true, features = ["paging", "irq", "smp", "hv", "axvisor-linker"] }
+ax-ipi = { workspace = true }
 # System dependent modules provided by ArceOS-Hypervisor (bare-metal only)
 axaddrspace = { workspace = true }
 axhvc = { workspace = true }

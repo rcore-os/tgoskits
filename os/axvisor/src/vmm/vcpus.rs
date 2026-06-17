@@ -23,7 +23,7 @@ use core::{
 use std::os::arceos::{
     api::task::{AxCpuMask, ax_wait_queue_wake},
     modules::{
-        ax_hal::{self, time::busy_wait},
+        ax_hal::{self, time::busy_wait, percpu::this_cpu_id},
         ax_task::{self, AxTaskExt},
     },
 };
@@ -450,6 +450,8 @@ fn vcpu_run() {
     mark_vcpu_running(vm_id);
 
     loop {
+        vm.set_vcpu_pcpu(vcpu_id, this_cpu_id() as usize);
+
         match vm.run_vcpu(vcpu_id) {
             Ok(exit_reason) => match exit_reason {
                 AxVCpuExitReason::Hypercall { nr, args } => {
@@ -492,11 +494,13 @@ fn vcpu_run() {
                 }
                 AxVCpuExitReason::Halt => {
                     debug!("VM[{vm_id}] run VCpu[{vcpu_id}] Halt");
+                    vm.set_vcpu_pcpu(vcpu_id, usize::MAX);
                     wait(vm_id)
                 }
                 AxVCpuExitReason::Nothing => {}
                 AxVCpuExitReason::CpuDown { _state } => {
                     warn!("VM[{vm_id}] run VCpu[{vcpu_id}] CpuDown state {_state:#x}");
+                    vm.set_vcpu_pcpu(vcpu_id, usize::MAX);
                     wait(vm_id)
                 }
                 AxVCpuExitReason::CpuUp {
@@ -548,10 +552,18 @@ fn vcpu_run() {
                         "VM[{vm_id}] run VCpu[{vcpu_id}] SendIPI, target_cpu={target_cpu:#x}, target_cpu_aux={target_cpu_aux:#x}, vector={vector}",
                     );
                     if send_to_all {
-                        unimplemented!("Send IPI to all CPUs is not implemented yet");
-                    }
-
-                    if target_cpu == vcpu_id as u64 || send_to_self {
+                        for i in 0..vm.vcpu_num() {
+                            if i == vcpu_id {
+                                inject_interrupt(vector as _);
+                            } else {
+                                vm.inject_interrupt_to_vcpu(
+                                    CpuMask::one_shot(i),
+                                    vector as _,
+                                )
+                                .unwrap();
+                            }
+                        }
+                    } else if target_cpu == vcpu_id as u64 || send_to_self {
                         inject_interrupt(vector as _);
                     } else {
                         vm.inject_interrupt_to_vcpu(
@@ -580,6 +592,7 @@ fn vcpu_run() {
                 "VM[{}] VCpu[{}] is suspended, waiting for resume...",
                 vm_id, vcpu_id
             );
+            vm.set_vcpu_pcpu(vcpu_id, usize::MAX);
             wait_for(vm_id, || !vm.suspending());
             info!("VM[{}] VCpu[{}] resumed from suspend", vm_id, vcpu_id);
             continue;
@@ -607,5 +620,6 @@ fn vcpu_run() {
         }
     }
 
+    vm.set_vcpu_pcpu(vcpu_id, usize::MAX);
     info!("VM[{}] VCpu[{}] exiting...", vm_id, vcpu_id);
 }

@@ -119,12 +119,12 @@ impl axbus::InterruptControllerOps for Vgic {
         pin: u32,
         _trigger: axbus::TriggerMode,
         _target: Option<axbus::IrqTarget>,
-    ) -> axbus::Result<()> {
+    ) -> axbus::Result<axbus::IrqOutcome> {
         crate::api_reexp::hardware_inject_virtual_interrupt(pin as _);
-        Ok(())
+        Ok(axbus::IrqOutcome::Delivered)
     }
 
-    fn deactivate_irq(&self, _pin: u32) -> axbus::Result<()> {
-        Ok(())
+    fn deactivate_irq(&self, _pin: u32) -> axbus::Result<axbus::IrqOutcome> {
+        Ok(axbus::IrqOutcome::Delivered)
     }
 }
