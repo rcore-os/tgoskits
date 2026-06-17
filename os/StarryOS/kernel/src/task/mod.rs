@@ -770,7 +770,7 @@ pub struct PtraceStopFpData;
 
 #[cfg(target_arch = "x86_64")]
 #[derive(Clone, Copy)]
-pub struct PtraceStopFpData(pub [u64; 32], pub usize);
+pub struct PtraceStopFpData(pub ax_cpu::FxsaveArea);
 
 impl ProcessData {
     /// Create a new [`ProcessData`].
@@ -1639,15 +1639,9 @@ impl ProcessData {
         unsafe {
             core::arch::x86_64::_fxsave64((&mut area as *mut ax_cpu::FxsaveArea).cast::<u8>());
         }
-        let mut regs = [0u64; 32];
-        let dst =
-            unsafe { core::slice::from_raw_parts_mut((&mut regs as *mut [u64; 32]).cast::<u8>(), 512) };
-        let src =
-            unsafe { core::slice::from_raw_parts((&area as *const ax_cpu::FxsaveArea).cast::<u8>(), 512) };
-        dst.copy_from_slice(src);
         self.ptrace_stop_fp_data
             .lock()
-            .insert(tid, PtraceStopFpData(regs, 0));
+            .insert(tid, PtraceStopFpData(area));
     }
 
     #[cfg(target_arch = "riscv64")]
@@ -1712,19 +1706,9 @@ impl ProcessData {
 
     #[cfg(target_arch = "x86_64")]
     pub fn restore_current_fp_for_ptrace(&self, tid: u32, _uctx: &mut UserContext) {
-        let Some(PtraceStopFpData(regs, _fcsr)) = self.ptrace_stop_fp_data.lock().remove(&tid)
-        else {
+        let Some(PtraceStopFpData(area)) = self.ptrace_stop_fp_data.lock().remove(&tid) else {
             return;
         };
-        let mut area =
-            unsafe { core::mem::MaybeUninit::<ax_cpu::FxsaveArea>::zeroed().assume_init() };
-        let dst =
-            unsafe {
-                core::slice::from_raw_parts_mut((&mut area as *mut ax_cpu::FxsaveArea).cast::<u8>(), 512)
-            };
-        let src =
-            unsafe { core::slice::from_raw_parts((&regs as *const [u64; 32]).cast::<u8>(), 512) };
-        dst.copy_from_slice(src);
         unsafe {
             core::arch::x86_64::_fxrstor64((&area as *const ax_cpu::FxsaveArea).cast::<u8>());
         }
