@@ -174,6 +174,7 @@ impl ProcessMemStats {
     }
 
     /// Render `/proc/[pid]/statm` (size resident shared text lib data dirty).
+    #[cfg(test)]
     pub fn format_statm(&self) -> String {
         format!(
             "{} {} {} {} 0 {} 0\n",
@@ -186,6 +187,7 @@ impl ProcessMemStats {
     }
 
     /// Render Vm* lines for `/proc/[pid]/status` (kB, Linux `task_mem` layout).
+    #[cfg(test)]
     pub fn format_status_vm_lines(&self) -> String {
         let page_kb = PAGE_SIZE_4K as u64 / 1024;
         let vss_kb = self.vss_pages * page_kb;
