@@ -1,0 +1,3 @@
+results/*
+!results/README.md
+!results/baseline-*.txt
