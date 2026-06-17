@@ -12,4 +12,6 @@ Current scripts:
 Rule:
 
 - Debug scripts are free-form and can focus on one syscall or one behavior path.
-- Debug scripts are not connected to tgoskits nginx CI entry.
+- Debug scripts are not auto-discovered by tgoskits nginx CI. Run them manually through
+  `cargo xtask starry app qemu -t nginx --arch <arch> --qemu-config apps/starry/nginx/qemu/debug/<config>.toml`,
+  which enters the guest via `/usr/bin/nginx-runner.sh debug <name>`.
