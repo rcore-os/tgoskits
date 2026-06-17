@@ -1,15 +1,45 @@
 #!/usr/bin/env bash
 # apps/starry/net-bench/run.sh — StarryOS 网络性能测试入口
-# 用法: bash apps/starry/net-bench/run.sh [arch] [scenario]
-#   arch 当前仅支持 aarch64
-#   scenario 默认 slirp，可选：slirp, slirp-smp4, tap, all
+#
+# 用法: bash apps/starry/net-bench/run.sh [arch] [scenario] [--repeat N]
+#   arch      当前仅支持 aarch64
+#   scenario  默认 slirp，可选：slirp, slirp-smp4, tap, all
+#   --repeat  每个场景重启 QEMU 跑 N 次，汇总跨启动方差（默认 1）
+#
+# 每次 QEMU 启动内部，guest 脚本会跑 warmup + 5 次迭代（见 net-bench-common.sh），
+# 因此单次 --repeat 已能给出 within-boot 的 mean/stddev；--repeat>1 额外覆盖
+# cross-boot 方差。运行结束后自动调用 summarize.py 产出 per-test mean/stddev。
 set -euo pipefail
 
-ARCH="${1:-aarch64}"
-SCENARIO="${2:-slirp}"
+ARCH="aarch64"
+SCENARIO="slirp"
+REPEAT=1
+
+# 解析位置参数与 --repeat（保持向后兼容：前两个非选项参数是 arch / scenario）。
+positional=()
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --repeat)
+            REPEAT="${2:-}"; shift 2
+            [[ "$REPEAT" =~ ^[1-9][0-9]*$ ]] || { echo "error: --repeat needs a positive integer" >&2; exit 1; }
+            ;;
+        --repeat=*)
+            REPEAT="${1#*=}"; shift
+            [[ "$REPEAT" =~ ^[1-9][0-9]*$ ]] || { echo "error: --repeat needs a positive integer" >&2; exit 1; }
+            ;;
+        -h|--help|help)
+            positional+=("help"); shift ;;
+        *)
+            positional+=("$1"); shift ;;
+    esac
+done
+[[ ${#positional[@]} -ge 1 ]] && ARCH="${positional[0]}"
+[[ ${#positional[@]} -ge 2 ]] && SCENARIO="${positional[1]}"
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 WORKSPACE="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 RESULTS_DIR="$SCRIPT_DIR/results"
+SUMMARIZER="$SCRIPT_DIR/summarize.py"
 TIMESTAMP="$(date +%Y%m%d-%H%M%S)"
 IPERF3_PORT=5201
 TAP_IFACE="${TAP_IFACE:-tap0}"
@@ -19,13 +49,16 @@ mkdir -p "$RESULTS_DIR"
 
 usage() {
     cat >&2 <<EOF
-usage: bash apps/starry/net-bench/run.sh [arch] [scenario]
+usage: bash apps/starry/net-bench/run.sh [arch] [scenario] [--repeat N]
 
 scenario:
   slirp       QEMU usermode networking, smp=1 (default, smoke only)
   slirp-smp4  QEMU usermode networking, smp=4
   tap         TAP direct networking, requires $TAP_IFACE=$TAP_HOST_IP/24
   all         Run slirp, slirp-smp4, then tap
+
+options:
+  --repeat N  Reboot QEMU N times per scenario and aggregate (default 1)
 EOF
 }
 
@@ -34,6 +67,32 @@ check_arch() {
         echo "error: apps/starry/net-bench currently only provides aarch64 QEMU configs" >&2
         exit 1
     fi
+}
+
+# 记录环境指纹（methodology §3.4 / plan §6.3 要求），写到 results 目录。
+write_fingerprint() {
+    local file="$1"
+    {
+        echo "# net-bench environment fingerprint"
+        echo "timestamp   : $TIMESTAMP"
+        echo "arch        : $ARCH"
+        echo "scenario    : $SCENARIO"
+        echo "repeat      : $REPEAT"
+        echo "host_uname  : $(uname -a)"
+        echo "host_nproc  : $(nproc 2>/dev/null || echo '?')"
+        local qemu_bin; qemu_bin="$(command -v "qemu-system-$ARCH" 2>/dev/null || true)"
+        if [[ -n "$qemu_bin" ]]; then
+            echo "qemu        : $("$qemu_bin" --version 2>/dev/null | head -1)"
+            echo "qemu_accel  : $("$qemu_bin" -accel help 2>/dev/null | tail -n +2 | tr '\n' ' ')"
+        fi
+        echo "iperf3_host : $(iperf3 --version 2>/dev/null | head -1)"
+        echo "kvm         : $([[ -e /dev/kvm ]] && echo present || echo absent)"
+        echo "vhost_net   : $([[ -e /dev/vhost-net ]] && echo present || echo absent)"
+        local commit; commit="$(git -C "$WORKSPACE" rev-parse --short HEAD 2>/dev/null || echo '?')"
+        echo "starry_commit: $commit"
+    } > "$file"
+    echo "=== net-bench: environment fingerprint -> $file ==="
+    cat "$file"
 }
 
 ensure_port_free() {
@@ -88,8 +147,20 @@ EOF
     fi
 }
 
+# 汇总一个场景的全部 run log（跨 --repeat），输出干净的 mean/stddev 报告。
+summarize_scenario() {
+    local scenario="$1"; shift
+    local summary_file="$RESULTS_DIR/summary-$ARCH-$scenario-$TIMESTAMP.txt"
+    if ! command -v python3 >/dev/null 2>&1; then
+        echo "warning: python3 not found, skipping auto-summary" >&2
+        return
+    fi
+    echo "=== net-bench: summary ($scenario) -> $summary_file ==="
+    python3 "$SUMMARIZER" "$@" | tee "$summary_file"
+}
+
 run_one() {
-    local scenario="$1" bind_addr="" test_case="net-bench" qemu_config=() env_vars=() result_file server_log
+    local scenario="$1" bind_addr="" test_case="net-bench" qemu_config=() env_vars=() server_log
     case "$scenario" in
         slirp)
             ;;
@@ -108,19 +179,41 @@ run_one() {
             ;;
     esac
 
-    result_file="$RESULTS_DIR/starry-$ARCH-$scenario-$TIMESTAMP.txt"
-    server_log="$RESULTS_DIR/iperf3-server-$scenario-$TIMESTAMP.log"
-    start_iperf3_server "$bind_addr" "$server_log"
-    trap "kill $iperf3_pid 2>/dev/null || true" RETURN
+    write_fingerprint "$RESULTS_DIR/fingerprint-$ARCH-$scenario-$TIMESTAMP.txt"
 
-    echo "=== net-bench: running StarryOS $test_case ($ARCH, $scenario) ==="
-    (cd "$WORKSPACE" && env "${env_vars[@]}" cargo xtask starry app qemu --test-case "$test_case" --arch "$ARCH" "${qemu_config[@]}") \
-        2>&1 | tee "$result_file"
+    local run_logs=()
+    local rep
+    for ((rep = 1; rep <= REPEAT; rep++)); do
+        local result_file="$RESULTS_DIR/starry-$ARCH-$scenario-$TIMESTAMP-r${rep}.txt"
+        server_log="$RESULTS_DIR/iperf3-server-$scenario-$TIMESTAMP-r${rep}.log"
+        start_iperf3_server "$bind_addr" "$server_log"
+        # shellcheck disable=SC2064
+        trap "kill $iperf3_pid 2>/dev/null || true" RETURN
 
-    echo "=== Results saved to $result_file ==="
+        echo "=== net-bench: running StarryOS $test_case ($ARCH, $scenario, repeat $rep/$REPEAT) ==="
+        # Sample eBPF net_stats before bench (appended to result_file as NET_STATS_BEGIN/END block).
+        if command -v net_stats >/dev/null 2>&1; then
+            echo "=== net-bench: sampling net_stats (before) ===" | tee -a "$result_file"
+            timeout 6 net_stats --once 2>/dev/null | tee -a "$result_file" || true
+        fi
+        (cd "$WORKSPACE" && env "${env_vars[@]}" cargo xtask starry app qemu --test-case "$test_case" --arch "$ARCH" "${qemu_config[@]}") \
+            2>&1 | tee "$result_file"
+        # Sample eBPF net_stats after bench.
+        if command -v net_stats >/dev/null 2>&1; then
+            echo "=== net-bench: sampling net_stats (after) ===" | tee -a "$result_file"
+            timeout 6 net_stats --once 2>/dev/null | tee -a "$result_file" || true
+        fi
+
+        kill "$iperf3_pid" 2>/dev/null || true
+        trap - RETURN
+        run_logs+=("$result_file")
+        echo "=== Results saved to $result_file ==="
+    done
+
+    summarize_scenario "$scenario" "${run_logs[@]}"
 }
 
-if [[ "$ARCH" == "-h" || "$ARCH" == "--help" || "$ARCH" == "help" ]]; then
+if [[ "$ARCH" == "help" ]]; then
     usage
     exit 0
 fi
@@ -137,7 +230,7 @@ case "$SCENARIO" in
     slirp|slirp-smp4|tap)
         run_one "$SCENARIO"
         ;;
-    -h|--help|help)
+    help)
         usage
         ;;
     *)

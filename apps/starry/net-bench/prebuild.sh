@@ -89,5 +89,6 @@ run_guest_apk add iperf3
 
 copy_file_to_overlay /usr/bin/iperf3 0755
 copy_runtime_deps /usr/bin/iperf3
+install -Dm0755 "$app_dir/net-bench-common.sh" "$overlay_dir/usr/bin/net-bench-common.sh"
 install -Dm0755 "$app_dir/net-bench.sh" "$overlay_dir/usr/bin/net-bench.sh"
 install -Dm0755 "$app_dir/net-bench-tap.sh" "$overlay_dir/usr/bin/net-bench-tap.sh"
