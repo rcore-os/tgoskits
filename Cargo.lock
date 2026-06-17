@@ -3958,7 +3958,7 @@ checksum = "2304e00983f87ffb38b55b444b5e3b60a884b5d30c0fca7d82fe33449bbe55ea"
 
 [[package]]
 name = "hello"
-version = "0.1.0"
+version = "0.5.11"
 dependencies = [
  "ax-driver",
  "ax-feat",
@@ -4736,9 +4736,9 @@ dependencies = [
 
 [[package]]
 name = "kmod-loader"
-version = "0.3.0"
+version = "0.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f00753deadc0983c645949e945722c3a8223956d9ed956704847a70a6e6bbddb"
+checksum = "a71b521b03673eb47aa8b7d70ff6709fabdc9243ee9e713cacc08f5b0ffae2c2"
 dependencies = [
  "ax-errno 0.6.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "bitfield-struct 0.13.0",
@@ -4773,6 +4773,21 @@ dependencies = [
  "log",
  "yaxpeax-arch",
  "yaxpeax-x86",
+]
+
+[[package]]
+name = "kprobe_test"
+version = "0.5.11"
+dependencies = [
+ "ax-driver",
+ "ax-feat",
+ "ax-hal",
+ "ax-log",
+ "ax-std",
+ "axplat-dyn",
+ "kmod-tools",
+ "kprobe",
+ "starry-kernel",
 ]
 
 [[package]]

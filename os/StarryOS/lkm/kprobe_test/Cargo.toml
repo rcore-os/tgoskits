@@ -1,5 +1,5 @@
 [package]
-name = "hello"
+name = "kprobe_test"
 edition.workspace = true
 version.workspace = true
 authors.workspace = true
@@ -16,8 +16,10 @@ ax-hal.workspace = true
 axplat-dyn = { workspace = true, optional = true }
 starry-kernel = { workspace = true, features = ["dev-log", "ext4"] }
 ax-std = { workspace = true, features = ["ext-ld", "fs", "multitask", "irq"] }
+ax-log.workspace = true
 
 kmod-tools.workspace = true
+kprobe.workspace = true
 
 [features]
 default = []
@@ -28,7 +30,7 @@ qemu = [
   "ax-feat/rtc",
   "ax-feat/display",
   "starry-kernel/input",
-  "starry-kernel/vsock", # auxilary features
+  "starry-kernel/vsock", # auxiliary features
 ]
 smp = ["ax-feat/smp", "axplat-dyn?/smp", "ax-hal/smp"]
 

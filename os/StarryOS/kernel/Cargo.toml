@@ -16,7 +16,6 @@ license.workspace = true
 [features]
 default = ["dynamic_debug"]
 dev-log = []
-kprobe_test = []
 ext4 = ["ax-fs/ext4"]
 input = ["dep:ax-input", "ax-feat/input"]
 memtrack = ["ax-feat/backtrace", "ax-alloc/tracking"]
@@ -145,9 +144,9 @@ zerocopy = { version = "0.8", features = ["derive"] }
 ax-ipi = { workspace = true }
 static-keys = "0.8"
 ddebug = "0.5"
-kprobe = "0.6"
+kprobe = { workspace = true }
 kmod = { version = "0.3", package = "kmod-tools" }
-kmod-loader = "0.3"
+kmod-loader = "0.3.1"
 lwprintf-rs = "0.3"
 some-serial = { workspace = true, optional = true }
 sg200x-bsp = { workspace = true, optional = true }

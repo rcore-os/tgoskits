@@ -23,7 +23,7 @@ mod config;
 mod ebpf;
 mod file;
 mod kmod;
-mod kprobe;
+pub mod kprobe;
 mod mm;
 mod perf;
 mod pseudofs;
