@@ -162,6 +162,12 @@ impl CviSdhci {
             pres,
             sts
         );
+        // 超时后总线可能仍处于 DAT-busy(PRES bit1 DATA_INHIBIT 置位),若不复位
+        // DAT 线状态机,后续任何数据命令的 wait_data_idle 都会一直超时,整条 SDIO
+        // 总线被焊死(连 WiFi 模式切回 AP 也起不来)。这里对齐错误中断分支:清残留
+        // INT_STATUS 并复位 DAT 线,让总线能从一次读超时中恢复。
+        self.write::<u16>(SDHCI_INT_STATUS_NORM, sts);
+        self.reset_dat_line();
         Err(SdioError::Timeout)
     }
 
@@ -677,7 +683,10 @@ impl SdioHost for CviSdhci {
     }
 
     fn read_fifo(&self, func: u8, addr: u32, buf: &mut [u8]) -> Result<(), SdioError> {
-        self.cmd53_read_fixed(func, addr, buf, 512, true)
+        // 512 对齐的走 block 模式;非对齐(如 V3 byte-mode 收帧的 byte_len*4)且 ≤512
+        // 的走 byte 模式 CMD53。调用方(aic8800 rx)已保证单次 ≤512。
+        let use_blk = buf.len().is_multiple_of(SDIO_DEFAULT_BLOCK_SIZE as usize);
+        self.cmd53_read_fixed(func, addr, buf, 512, use_blk)
     }
 
     fn read_fifo_inc(&self, func: u8, addr: u32, buf: &mut [u8]) -> Result<(), SdioError> {
