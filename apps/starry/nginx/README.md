@@ -22,10 +22,26 @@ cargo xtask starry app qemu -t nginx --arch riscv64
 Unified local CLI script:
 
 ```bash
+# Run smoke test only
 ./apps/starry/nginx/nginx-cli-tests.sh smoke
-./apps/starry/nginx/nginx-cli-tests.sh phase12
-./apps/starry/nginx/nginx-cli-tests.sh phase1
-./apps/starry/nginx/nginx-cli-tests.sh phase2
+
+# Run a single phase
+./apps/starry/nginx/nginx-cli-tests.sh phase00   # env / rlimit
+./apps/starry/nginx/nginx-cli-tests.sh phase12   # lifecycle 1-2
+./apps/starry/nginx/nginx-cli-tests.sh phase13   # lifecycle 1-3
+./apps/starry/nginx/nginx-cli-tests.sh phase20   # HTTP basic
+./apps/starry/nginx/nginx-cli-tests.sh phase31   # short connection
+./apps/starry/nginx/nginx-cli-tests.sh phase32   # keepalive
+./apps/starry/nginx/nginx-cli-tests.sh phase33   # slow header
+./apps/starry/nginx/nginx-cli-tests.sh phase41   # sendfile off
+./apps/starry/nginx/nginx-cli-tests.sh phase42   # sendfile on
+./apps/starry/nginx/nginx-cli-tests.sh phase43   # range
+./apps/starry/nginx/nginx-cli-tests.sh phase50   # request body
+./apps/starry/nginx/nginx-cli-tests.sh phase60   # log / fs
+./apps/starry/nginx/nginx-cli-tests.sh phase70   # signal lifecycle
+./apps/starry/nginx/nginx-cli-tests.sh phase90   # config feature
+
+# Run all (smoke + all phases above; excludes debug/ and stress/)
 ./apps/starry/nginx/nginx-cli-tests.sh all
 ```
 
