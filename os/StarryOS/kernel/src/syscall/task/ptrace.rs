@@ -1093,6 +1093,14 @@ pub fn ptrace_setup_singlestep(
         let _ = ptrace_write_u32_unlocked(&mut aspace, saved_addr, saved_insn as u32);
     }
 
+    let current_insn = match ptrace_read_u32_unlocked(&aspace, pc) {
+        Ok(insn) => insn,
+        Err(_) => {
+            tracee.set_ptrace_ss_saved_insn_for(tid, None);
+            return;
+        }
+    };
+    let next_insn_addr = aarch64_next_pc(current_insn, pc, uctx);
     let orig_insn = match ptrace_read_u32_unlocked(&aspace, next_insn_addr) {
         Ok(insn) => insn,
         Err(_) => {
@@ -1117,7 +1125,7 @@ pub fn ptrace_setup_singlestep(
     tid: Pid,
     uctx: &mut ax_runtime::hal::cpu::uspace::UserContext,
 ) {
-    let next_insn_addr = uctx.ip().wrapping_add(4);
+    let pc = uctx.ip();
     let aspace = tracee.aspace();
     let mut aspace = aspace.lock();
 
@@ -1126,6 +1134,14 @@ pub fn ptrace_setup_singlestep(
         let _ = ptrace_write_u32_unlocked(&mut aspace, saved_addr, saved_insn as u32);
     }
 
+    let current_insn = match ptrace_read_u32_unlocked(&aspace, pc) {
+        Ok(insn) => insn,
+        Err(_) => {
+            tracee.set_ptrace_ss_saved_insn_for(tid, None);
+            return;
+        }
+    };
+    let next_insn_addr = loongarch_next_pc(current_insn, pc, uctx);
     let orig_insn = match ptrace_read_u32_unlocked(&aspace, next_insn_addr) {
         Ok(insn) => insn,
         Err(_) => {
@@ -1356,6 +1372,198 @@ fn riscv_reg(uctx: &ax_runtime::hal::cpu::uspace::UserContext, index: usize) -> 
         29 => uctx.regs.t4,
         30 => uctx.regs.t5,
         31 => uctx.regs.t6,
+        _ => 0,
+    }
+}
+
+#[cfg(any(target_arch = "aarch64", target_arch = "loongarch64"))]
+fn ptrace_sign_extend(value: u32, bits: u32) -> isize {
+    let shift = usize::BITS - bits;
+    ((value as usize) << shift) as isize >> shift
+}
+
+#[cfg(any(target_arch = "aarch64", target_arch = "loongarch64"))]
+fn ptrace_add_offset(base: usize, offset: isize) -> usize {
+    if offset >= 0 {
+        base.wrapping_add(offset as usize)
+    } else {
+        base.wrapping_sub((-offset) as usize)
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+fn aarch64_next_pc(
+    insn: u32,
+    pc: usize,
+    uctx: &ax_runtime::hal::cpu::uspace::UserContext,
+) -> usize {
+    if insn & 0x7c00_0000 == 0x1400_0000 {
+        return ptrace_add_offset(pc, ptrace_sign_extend(insn & 0x03ff_ffff, 26) << 2);
+    }
+
+    if insn & 0xff00_0010 == 0x5400_0000 {
+        let cond = (insn & 0xf) as u8;
+        let offset = ptrace_sign_extend((insn >> 5) & 0x7ffff, 19) << 2;
+        return if aarch64_condition_holds(cond, uctx.spsr) {
+            ptrace_add_offset(pc, offset)
+        } else {
+            pc.wrapping_add(4)
+        };
+    }
+
+    if insn & 0x7e00_0000 == 0x3400_0000 {
+        let rt = (insn & 0x1f) as usize;
+        let value = aarch64_reg(uctx, rt);
+        let is_64bit = insn & (1 << 31) != 0;
+        let is_nonzero = insn & (1 << 24) != 0;
+        let value_is_zero = if is_64bit {
+            value == 0
+        } else {
+            (value as u32) == 0
+        };
+        let take = value_is_zero != is_nonzero;
+        let offset = ptrace_sign_extend((insn >> 5) & 0x7ffff, 19) << 2;
+        return if take {
+            ptrace_add_offset(pc, offset)
+        } else {
+            pc.wrapping_add(4)
+        };
+    }
+
+    if insn & 0x7e00_0000 == 0x3600_0000 {
+        let rt = (insn & 0x1f) as usize;
+        let bit_pos = (((insn >> 31) & 0x1) << 5) | ((insn >> 19) & 0x1f);
+        let bit_is_set = ((aarch64_reg(uctx, rt) >> bit_pos) & 1) != 0;
+        let take_if_set = insn & (1 << 24) != 0;
+        let offset = ptrace_sign_extend((insn >> 5) & 0x3fff, 14) << 2;
+        return if bit_is_set == take_if_set {
+            ptrace_add_offset(pc, offset)
+        } else {
+            pc.wrapping_add(4)
+        };
+    }
+
+    if insn & 0xffff_fc1f == 0xd61f_0000
+        || insn & 0xffff_fc1f == 0xd63f_0000
+        || insn & 0xffff_fc1f == 0xd65f_0000
+    {
+        return aarch64_reg(uctx, ((insn >> 5) & 0x1f) as usize);
+    }
+
+    pc.wrapping_add(4)
+}
+
+#[cfg(target_arch = "aarch64")]
+fn aarch64_condition_holds(cond: u8, pstate: u64) -> bool {
+    let n = pstate & (1 << 31) != 0;
+    let z = pstate & (1 << 30) != 0;
+    let c = pstate & (1 << 29) != 0;
+    let v = pstate & (1 << 28) != 0;
+
+    match cond {
+        0x0 => z,
+        0x1 => !z,
+        0x2 => c,
+        0x3 => !c,
+        0x4 => n,
+        0x5 => !n,
+        0x6 => v,
+        0x7 => !v,
+        0x8 => c && !z,
+        0x9 => !c || z,
+        0xa => n == v,
+        0xb => n != v,
+        0xc => !z && n == v,
+        0xd => z || n != v,
+        _ => true,
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+fn aarch64_reg(uctx: &ax_runtime::hal::cpu::uspace::UserContext, index: usize) -> usize {
+    if index < 31 {
+        uctx.x[index] as usize
+    } else {
+        0
+    }
+}
+
+#[cfg(target_arch = "loongarch64")]
+fn loongarch_next_pc(
+    insn: u32,
+    pc: usize,
+    uctx: &ax_runtime::hal::cpu::uspace::UserContext,
+) -> usize {
+    match insn >> 26 {
+        0x13 => {
+            let rj = ((insn >> 5) & 0x1f) as usize;
+            let offset = ptrace_sign_extend((insn >> 10) & 0xffff, 16) << 2;
+            ptrace_add_offset(loongarch_reg(uctx, rj), offset)
+        }
+        0x14 | 0x15 => {
+            let imm = ((insn & 0x3ff) << 16) | ((insn >> 10) & 0xffff);
+            ptrace_add_offset(pc, ptrace_sign_extend(imm, 26) << 2)
+        }
+        0x16..=0x1b => {
+            let rj = ((insn >> 5) & 0x1f) as usize;
+            let rd = (insn & 0x1f) as usize;
+            let lhs = loongarch_reg(uctx, rj);
+            let rhs = loongarch_reg(uctx, rd);
+            let take = match insn >> 26 {
+                0x16 => lhs == rhs,
+                0x17 => lhs != rhs,
+                0x18 => (lhs as isize) < (rhs as isize),
+                0x19 => (lhs as isize) >= (rhs as isize),
+                0x1a => lhs < rhs,
+                0x1b => lhs >= rhs,
+                _ => false,
+            };
+            let offset = ptrace_sign_extend((insn >> 10) & 0xffff, 16) << 2;
+            if take {
+                ptrace_add_offset(pc, offset)
+            } else {
+                pc.wrapping_add(4)
+            }
+        }
+        _ => pc.wrapping_add(4),
+    }
+}
+
+#[cfg(target_arch = "loongarch64")]
+fn loongarch_reg(uctx: &ax_runtime::hal::cpu::uspace::UserContext, index: usize) -> usize {
+    match index {
+        0 => 0,
+        1 => uctx.regs.ra,
+        2 => uctx.regs.tp,
+        3 => uctx.regs.sp,
+        4 => uctx.regs.a0,
+        5 => uctx.regs.a1,
+        6 => uctx.regs.a2,
+        7 => uctx.regs.a3,
+        8 => uctx.regs.a4,
+        9 => uctx.regs.a5,
+        10 => uctx.regs.a6,
+        11 => uctx.regs.a7,
+        12 => uctx.regs.t0,
+        13 => uctx.regs.t1,
+        14 => uctx.regs.t2,
+        15 => uctx.regs.t3,
+        16 => uctx.regs.t4,
+        17 => uctx.regs.t5,
+        18 => uctx.regs.t6,
+        19 => uctx.regs.t7,
+        20 => uctx.regs.t8,
+        21 => uctx.regs.u0,
+        22 => uctx.regs.fp,
+        23 => uctx.regs.s0,
+        24 => uctx.regs.s1,
+        25 => uctx.regs.s2,
+        26 => uctx.regs.s3,
+        27 => uctx.regs.s4,
+        28 => uctx.regs.s5,
+        29 => uctx.regs.s6,
+        30 => uctx.regs.s7,
+        31 => uctx.regs.s8,
         _ => 0,
     }
 }
