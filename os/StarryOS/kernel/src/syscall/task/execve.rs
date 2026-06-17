@@ -248,7 +248,11 @@ fn do_execve(
             if remaining == 0 {
                 return Poll::Ready(());
             }
-            unsafe { proc_data.thread_exit_event.register(cx.waker(), axpoll::IoEvents::IN) };
+            unsafe {
+                proc_data
+                    .thread_exit_event
+                    .register(cx.waker(), axpoll::IoEvents::IN)
+            };
             // Re-check after registering: a sibling could have exited
             // between the first check and the register, and the wake
             // that fired then would have found an empty waker set.
