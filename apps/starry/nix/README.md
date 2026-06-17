@@ -1,9 +1,9 @@
 # Starry Nix App
 
 This case runs a minimal Nix smoke test inside StarryOS through the app runner.
-A prebuilt Nix is injected into the Alpine rootfs; the guest runs a tiny local
-derivation that writes `NIX_LOCAL_BUILD_OK` to the output, covering the
-install→startup→build→artifact chain.
+A prebuilt Nix is injected into the Alpine rootfs; the guest evaluates a Nix
+expression and verifies a store-path write, covering the
+install→startup→evaluate→artifact chain.
 
 ```bash
 cargo xtask starry app qemu -t nix --arch x86_64
@@ -25,10 +25,12 @@ sandboxed-build behaviour was never exercised.
 
 Per the [discussion](https://github.com/rcore-os/tgoskits/pull/1125#issuecomment-4639168301)
 on PR #1125: the teacher advised small-step iteration and submitting
-no-sandbox first. The current version exercises only `builtins.derivation`
-(a basic test); `stdenv.mkDerivation`, which most Nix packages use, has not
-been tested yet. Sandbox support is deferred until mount namespace isolation
-is ready.
+no-sandbox first. The current version uses `builtins.toFile` for store-path
+creation, which verifies Nix evaluation and store writes without depending on
+the builder communication protocol (socketpair).  Full `builtins.derivation`
+builder workflow is deferred until the builder protocol (Nix socketpair hook)
+is working on StarryOS — currently blocked by a poll notification gap in the
+IRQ-safe deferred notification layer.
 
 For now `test_nix.sh` intentionally skips the sandbox test and only runs
 `nix-nosandbox`, which passes `--option sandbox false` explicitly so the result
@@ -39,9 +41,9 @@ connected once mount namespace isolation is available in StarryOS.
 
 | Script | Mode | Runs? |
 |--------|------|-------|
-| `nix-nosandbox` | `builtins.derivation` (no nixpkgs) | ✅ CI |
+| `nix-nosandbox` | `builtins.toFile` store-path write (no builder) | ✅ CI |
 | `nix-nixpkgs` | `pkgs.stdenv.mkDerivation` (requires nixpkgs) | ❌ deferred (see below) |
-| `nix` | `nix-build --option sandbox true` | ❌ blocked (mount ns) |
+| `nix` | `nix-build --option sandbox true` (full derivation builder) | ❌ blocked (mount ns + socketpair) |
 
 `test_nix.sh` runs only the `nix-nosandbox` phase. The sandbox test (`nix.sh`)
 is blocked until mount namespace isolation is ready.
@@ -60,7 +62,7 @@ These require kernel-level namespace support that is not yet available in
 StarryOS. The `nix-nixpkgs` script source is committed for reference but
 is intentionally excluded from `test_nix.sh`. Re-enable when mount namespace
 isolation lands.
-- Install prebuilt Nix (apk) → `nix --version` gate → tiny local derivation
+- Install prebuilt Nix (apk) → `nix --version` gate → store-path write via `builtins.toFile`
 - Build log `.lock` / `.drv` files exercise the rsext4 open-unlink lifecycle
 - Sandbox detection: `grep` build log for `disabling sandbox` → call `fail()`
 
