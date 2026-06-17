@@ -9,7 +9,7 @@ mod drm;
 #[cfg(feature = "input")]
 pub mod event;
 mod fb;
-#[cfg(feature = "sg2002")]
+#[cfg(all(feature = "sg2002", not(feature = "plat-dyn")))]
 mod irq_byte_ring;
 #[cfg(feature = "k230-kpu")]
 mod kpu;

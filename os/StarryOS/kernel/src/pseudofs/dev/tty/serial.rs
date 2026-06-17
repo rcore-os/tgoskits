@@ -2,6 +2,7 @@ use alloc::{collections::VecDeque, format, string::String, sync::Arc, vec, vec::
 use core::{
     ptr::NonNull,
     sync::atomic::{AtomicBool, AtomicUsize, Ordering},
+    time::Duration,
 };
 
 use ax_driver::serial::{
@@ -31,6 +32,7 @@ pub type SerialTtyDriver = Tty<SerialReader, SerialWriter>;
 
 const SERIAL_RX_BUFFER_CAP: usize = 4096;
 const SERIAL_RX_DRAIN_CHUNK: usize = 64;
+const SERIAL_IRQ_KICK_INTERVAL: Duration = Duration::from_millis(10);
 
 pub struct SerialTtyEntry {
     number: usize,
@@ -65,6 +67,7 @@ struct SerialBackend {
     irq_num: Option<usize>,
     irq_handle: SpinNoIrq<Option<IrqHandle>>,
     irq_armed: AtomicBool,
+    irq_state_kick_required: bool,
     input_source: Arc<PollSet>,
     input_notify: IrqNotify,
     tx_notify: IrqNotify,
@@ -176,6 +179,7 @@ fn new_serial_tty(number: usize, serial: SerialDevice) -> AxResult<SerialTtyEntr
     let name = runtime.name().into();
     let info = runtime.info().clone();
     let irq_num = runtime.irq_num();
+    let irq_state_kick_required = info.rx_polling_required;
     let (control, tx, rx, irq_handler) = runtime.split();
     let backend = Arc::new(SerialBackend {
         name,
@@ -189,6 +193,7 @@ fn new_serial_tty(number: usize, serial: SerialDevice) -> AxResult<SerialTtyEntr
         irq_num,
         irq_handle: SpinNoIrq::new(None),
         irq_armed: AtomicBool::new(false),
+        irq_state_kick_required,
         input_source,
         input_notify: IrqNotify::new(),
         tx_notify: IrqNotify::new(),
@@ -255,6 +260,9 @@ fn serial_process_mode(backend: &Arc<SerialBackend>) -> AxResult<ProcessMode> {
     };
     *backend.irq_handle.lock() = Some(handle);
     spawn_serial_irq_drain(backend.clone());
+    if backend.irq_state_kick_required {
+        spawn_serial_irq_state_kick(backend.clone());
+    }
     Ok(ProcessMode::InterruptDriven(backend.input_source.clone()))
 }
 
@@ -291,9 +299,55 @@ fn spawn_serial_irq_drain(backend: Arc<SerialBackend>) {
     );
 }
 
+fn spawn_serial_irq_state_kick(backend: Arc<SerialBackend>) {
+    let task_name = format!("{}-irq-state-kick", backend.tty_name);
+    ax_task::spawn_with_name(
+        move || loop {
+            if backend.irq_armed.load(Ordering::Acquire) {
+                // Some UARTs expose an IRQ line but do not reliably deliver RX
+                // readiness to the kernel. Keep this below the tty layer: the
+                // kicker only runs the same IRQ endpoint as hard IRQ, then the
+                // normal IrqNotify workers drain queues and wake poll waiters.
+                // TX/RX queues still never poll raw hardware status directly.
+                backend.sync_irq_events();
+            }
+            ax_task::sleep(SERIAL_IRQ_KICK_INTERVAL);
+        },
+        task_name,
+    );
+}
+
 impl SerialBackend {
     fn notify_rx_drain(&self) {
         self.input_notify.notify();
+    }
+
+    fn sync_irq_events(&self) -> SerialEvent {
+        let status = self
+            .irq_handler
+            .as_ref()
+            .map(|handler| handler.handle_irq())
+            .unwrap_or_else(SerialEvent::empty);
+        self.notify_events(status);
+        status
+    }
+
+    fn notify_events(&self, status: SerialEvent) {
+        if status.intersects(SerialEvent::RX_READY | SerialEvent::RX_ERROR | SerialEvent::OVERRUN) {
+            self.input_notify.notify();
+        }
+        if status.intersects(SerialEvent::TX_READY | SerialEvent::TX_ERROR) {
+            self.tx_notify.notify();
+        }
+    }
+
+    fn notify_events_from_irq(&self, status: SerialEvent) {
+        if status.intersects(SerialEvent::RX_READY | SerialEvent::RX_ERROR | SerialEvent::OVERRUN) {
+            self.input_notify.notify_irq();
+        }
+        if status.intersects(SerialEvent::TX_READY | SerialEvent::TX_ERROR) {
+            self.tx_notify.notify_irq();
+        }
     }
 
     fn arm_irq(&self) -> bool {
@@ -408,12 +462,7 @@ unsafe fn serial_raw_irq_handler(
     let backend = unsafe { &*(data.as_ptr() as *const SerialBackend) };
     if let Some(handler) = backend.irq_handler.as_ref() {
         let status = handler.handle_irq();
-        if status.intersects(SerialEvent::RX_READY | SerialEvent::RX_ERROR | SerialEvent::OVERRUN) {
-            backend.input_notify.notify_irq();
-        }
-        if status.intersects(SerialEvent::TX_READY | SerialEvent::TX_ERROR) {
-            backend.tx_notify.notify_irq();
-        }
+        backend.notify_events_from_irq(status);
     }
     ax_runtime::hal::irq::IrqReturn::Handled
 }
