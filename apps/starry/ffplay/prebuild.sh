@@ -377,14 +377,21 @@ populate_overlay() {
         fi
         # Compress to 160p for faster playback
         if command -v ffmpeg >/dev/null 2>&1 && [[ -f "$video_dst" ]]; then
-            local compressed="$overlay_dir/usr/share/test.mp4.tmp"
+            # NOTE: temp file must have a recognizable extension so ffmpeg can
+            # infer the muxer — .tmp alone causes "Invalid argument".  We use
+            # .tmp.mp4 so the extension-based probe picks up MP4, then atomically
+            # rename over the original.
+            local compressed="$overlay_dir/usr/share/test.mp4.tmp.mp4"
             echo "[ffplay prebuild] compressing to 160p..."
-            ffmpeg -y -i "$video_dst" \
+            if ffmpeg -y -i "$video_dst" \
                 -vf "scale=284:160:flags=fast_bilinear" \
                 -r 5 -c:v libx264 -preset ultrafast -b:v 100k -pix_fmt yuv420p \
-                -an "$compressed" 2>/dev/null && \
-            mv "$compressed" "$video_dst" && \
-            echo "[ffplay prebuild] compressed: $(wc -c < "$video_dst") bytes"
+                -an "$compressed" 2>&1; then
+                mv "$compressed" "$video_dst"
+                echo "[ffplay prebuild] compressed: $(wc -c < "$video_dst") bytes"
+            else
+                echo "[ffplay prebuild] ffmpeg compression failed, keeping original"
+            fi
         fi
     fi
 }
