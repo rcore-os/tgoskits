@@ -172,9 +172,8 @@ impl SeccompState {
 
     /// Append a classic-BPF filter and switch the thread to filter mode.
     ///
-    /// Multiple filters are evaluated in installation order.  This is a
-    /// simplified but monotonic model: the first non-ALLOW decision stops
-    /// evaluation.
+    /// Multiple filters are all evaluated, and their raw return actions are
+    /// merged using Linux seccomp action precedence.
     pub fn append_filter(&mut self, insns: Vec<SockFilter>) -> AxResult<()> {
         let filter = SeccompFilter::new(insns)?;
         self.mode = SeccompMode::Filter;
@@ -206,14 +205,17 @@ impl SeccompState {
                 uctx.arg5() as u64,
             ],
         };
-        let mut decision = SeccompDecision::Allow;
-        for filter in &self.filters {
-            decision = action_to_decision(filter.execute(&data));
-            if decision != SeccompDecision::Allow {
-                break;
+        let mut selected = SECCOMP_RET_ALLOW;
+        let mut selected_precedence = action_precedence(selected);
+        for filter in self.filters.iter().rev() {
+            let ret = filter.execute(&data);
+            let precedence = action_precedence(ret);
+            if precedence > selected_precedence {
+                selected = ret;
+                selected_precedence = precedence;
             }
         }
-        decision
+        action_to_decision(selected)
     }
 }
 
@@ -368,7 +370,25 @@ fn action_to_decision(ret: u32) -> SeccompDecision {
         SECCOMP_RET_KILL_PROCESS => SeccompDecision::KillProcess,
         SECCOMP_RET_KILL_THREAD => SeccompDecision::KillThread,
         SECCOMP_RET_TRAP | SECCOMP_RET_TRACE => SeccompDecision::UnsupportedAction,
-        _ => SeccompDecision::UnsupportedAction,
+        _ => SeccompDecision::KillProcess,
+    }
+}
+
+/// Return Linux seccomp precedence for a raw filter action.
+///
+/// Newer filters are evaluated first by `evaluate_filters`; when two filters
+/// return the same precedence, the first selected action is kept so the newer
+/// filter supplies the action data.
+fn action_precedence(ret: u32) -> u8 {
+    match ret & SECCOMP_RET_ACTION_FULL {
+        SECCOMP_RET_KILL_PROCESS => 7,
+        SECCOMP_RET_KILL_THREAD => 6,
+        SECCOMP_RET_TRAP => 5,
+        SECCOMP_RET_ERRNO => 4,
+        SECCOMP_RET_TRACE => 3,
+        SECCOMP_RET_LOG => 2,
+        SECCOMP_RET_ALLOW => 1,
+        _ => 7,
     }
 }
 

@@ -228,6 +228,106 @@ static void setuid_clears_caps_child(void)
                  "permitted caps cleared after root->nonroot setuid");
 }
 
+static void clear_effective_child(void)
+{
+    cap_header_t hdr;
+    cap_data_t data[_LINUX_CAPABILITY_U32S_3];
+
+    memset(&hdr, 0, sizeof(hdr));
+    hdr.version = _LINUX_CAPABILITY_VERSION_3;
+    child_expect(read_caps(data, _LINUX_CAPABILITY_U32S_3),
+                 "read caps for effective-clear test");
+
+    for (int i = 0; i < _LINUX_CAPABILITY_U32S_3; i++) {
+        data[i].effective = 0;
+    }
+
+    errno = 0;
+    long ret = syscall(SYS_capset, &hdr, data);
+    child_expect(ret == 0 || (ret == -1 && errno == EPERM),
+                 "capset(effective=0) returns 0/EPERM");
+}
+
+static void all_zero_caps_child(void)
+{
+    cap_header_t hdr;
+    cap_data_t data[_LINUX_CAPABILITY_U32S_3];
+
+    memset(&hdr, 0, sizeof(hdr));
+    memset(data, 0, sizeof(data));
+    hdr.version = _LINUX_CAPABILITY_VERSION_3;
+
+    errno = 0;
+    long ret = syscall(SYS_capset, &hdr, data);
+    child_expect(ret == 0 || (ret == -1 && errno == EPERM),
+                 "capset(V3, all zeros) returns 0/EPERM");
+}
+
+static void effective_not_permitted_child(void)
+{
+    cap_header_t hdr;
+    cap_data_t data[_LINUX_CAPABILITY_U32S_3];
+
+    memset(&hdr, 0, sizeof(hdr));
+    hdr.version = _LINUX_CAPABILITY_VERSION_3;
+    child_expect(read_caps(data, _LINUX_CAPABILITY_U32S_3),
+                 "read caps for effective-not-permitted test");
+
+    data[0].effective |= 0x2;
+    data[0].permitted &= ~0x2;
+
+    errno = 0;
+    long ret = syscall(SYS_capset, &hdr, data);
+    child_expect(ret == -1 && errno == EPERM,
+                 "capset(effective not subset of permitted) returns EPERM");
+}
+
+static void add_permitted_child(void)
+{
+    cap_header_t hdr;
+    cap_data_t data[_LINUX_CAPABILITY_U32S_3];
+    const __u32 bit = 1U << 22;
+
+    memset(&hdr, 0, sizeof(hdr));
+    hdr.version = _LINUX_CAPABILITY_VERSION_3;
+    child_expect(read_caps(data, _LINUX_CAPABILITY_U32S_3),
+                 "read caps for permitted-add test");
+
+    data[0].permitted &= ~bit;
+    errno = 0;
+    long ret = syscall(SYS_capset, &hdr, data);
+    if (ret == -1 && errno == EPERM) {
+        return;
+    }
+    child_expect(ret == 0, "remove CAP_SYS_BOOT from permitted set");
+
+    data[0].permitted |= bit;
+    errno = 0;
+    ret = syscall(SYS_capset, &hdr, data);
+    child_expect(ret == -1 && errno == EPERM,
+                 "adding a permitted capability returns EPERM");
+}
+
+static void add_inheritable_child(void)
+{
+    cap_header_t hdr;
+    cap_data_t data[_LINUX_CAPABILITY_U32S_3];
+    const __u32 bit = 1U << 23;
+
+    memset(&hdr, 0, sizeof(hdr));
+    hdr.version = _LINUX_CAPABILITY_VERSION_3;
+    child_expect(read_caps(data, _LINUX_CAPABILITY_U32S_3),
+                 "read caps for inheritable-add test");
+
+    data[0].inheritable |= bit;
+    data[0].permitted &= ~bit;
+
+    errno = 0;
+    long ret = syscall(SYS_capset, &hdr, data);
+    child_expect(ret == 0 || (ret == -1 && errno == EPERM),
+                 "capset(inheritable expansion) returns 0/EPERM");
+}
+
 int main(void)
 {
     TEST_START("capset");
@@ -259,30 +359,8 @@ int main(void)
     /* ============================================================== */
     {
         printf("\n--- A2. clear effective set (positive) ---\n");
-        cap_header_t hdr;
-        cap_data_t   data[_LINUX_CAPABILITY_U32S_3];
-        cap_data_t   orig[_LINUX_CAPABILITY_U32S_3];
-        memset(&hdr, 0, sizeof(hdr));
-
-        hdr.version = _LINUX_CAPABILITY_VERSION_3;
-        if (!read_caps(orig, _LINUX_CAPABILITY_U32S_3)) {
-            printf("  SKIP | cannot read current caps for effective test\n");
-        } else {
-            /* Copy orig, clear effective bits */
-            memcpy(data, orig, sizeof(data));
-            for (int i = 0; i < _LINUX_CAPABILITY_U32S_3; i++)
-                data[i].effective = 0;
-
-            errno = 0;
-            int rc = syscall(SYS_capset, &hdr, data);
-            CHECK(rc == 0 || (rc == -1 && errno == EPERM),
-                  "A2: capset(effective=0) -> 0/EPERM");
-            /* Restore original if possible */
-            if (rc == 0) {
-                hdr.version = _LINUX_CAPABILITY_VERSION_3;
-                syscall(SYS_capset, &hdr, orig);
-            }
-        }
+        expect_child_success(clear_effective_child,
+                             "A2: capset(effective=0) -> 0/EPERM");
     }
 
     /* ============================================================== */
@@ -290,17 +368,8 @@ int main(void)
     /* ============================================================== */
     {
         printf("\n--- A3. capset(pid=0, V3) simple set — positive ---\n");
-        cap_header_t hdr;
-        cap_data_t   data[_LINUX_CAPABILITY_U32S_3];
-
-        memset(&hdr, 0, sizeof(hdr));
-        hdr.version = _LINUX_CAPABILITY_VERSION_3;
-        memset(data, 0, sizeof(data));
-
-        errno = 0;
-        int rc = syscall(SYS_capset, &hdr, data);
-        CHECK(rc == 0 || (rc == -1 && errno == EPERM),
-              "A3: capset(V3, all zeros) -> 0/EPERM");
+        expect_child_success(all_zero_caps_child,
+                             "A3: capset(V3, all zeros) -> 0/EPERM");
     }
 
     /* ============================================================== */
@@ -469,43 +538,8 @@ int main(void)
     /* ============================================================== */
     {
         printf("\n--- B6. effective not subset of permitted (negative) ---\n");
-        cap_header_t hdr;
-        cap_data_t   data[_LINUX_CAPABILITY_U32S_3];
-        memset(&hdr, 0, sizeof(hdr));
-
-        hdr.version = _LINUX_CAPABILITY_VERSION_3;
-        if (!read_caps(data, _LINUX_CAPABILITY_U32S_3)) {
-            printf("  SKIP | cannot read current caps for EPERM test\n");
-        } else {
-            /* Set effective to a bit that is NOT in permitted.
-             * Pick CAP_DAC_OVERRIDE (bit 1) for test: or 0x2 into
-             * effective while ensuring it's clear in permitted. */
-            data[0].effective |= 0x2;
-            data[0].permitted &= ~0x2;
-
-            errno = 0;
-            long r = syscall(SYS_capset, &hdr, data);
-            if (r == -1 && errno == EPERM) {
-                printf("  PASS | capset(effective∉permitted) -> EPERM (privilege check)\n");
-                __pass++;
-            } else if (r == 0) {
-                /* Kernel accepted it (privileged); just restore */
-                printf("  PASS | capset(effective∉permitted) accepted (privileged)\n");
-                __pass++;
-                /* Restore from original by re-reading */
-                if (read_caps(data, _LINUX_CAPABILITY_U32S_3)) {
-                    /* Undo: clear the bit we added */
-                    data[0].effective &= ~0x2;
-                    data[0].permitted |= 0x2;
-                    hdr.version = _LINUX_CAPABILITY_VERSION_3;
-                    syscall(SYS_capset, &hdr, data);
-                }
-            } else {
-                printf("  FAIL | capset(effective∉permitted) unexpected ret=%ld errno=%d (%s)\n",
-                       r, errno, strerror(errno));
-                __fail++;
-            }
-        }
+        expect_child_success(effective_not_permitted_child,
+                             "B6: capset(effective not subset of permitted) -> EPERM");
     }
 
     /* ============================================================== */
@@ -513,62 +547,8 @@ int main(void)
     /* ============================================================== */
     {
         printf("\n--- B7. add cap to permitted set (negative) ---\n");
-        cap_header_t hdr;
-        cap_data_t   data[_LINUX_CAPABILITY_U32S_3];
-        memset(&hdr, 0, sizeof(hdr));
-
-        hdr.version = _LINUX_CAPABILITY_VERSION_3;
-        if (!read_caps(data, _LINUX_CAPABILITY_U32S_3)) {
-            printf("  SKIP | cannot read current caps for permitted test\n");
-        } else {
-            /* Try to add a capability (CAP_SYS_BOOT=22, bit group 0, bit 22).
-             * Clear it first, then set it — the kernel should reject adding
-             * new bits to permitted unless we have CAP_SETPCAP. */
-            __u32 bit = 1U << 22; /* CAP_SYS_BOOT */
-            int was_set = (data[0].permitted & bit) != 0;
-            data[0].permitted &= ~bit;
-            /* Set the same caps to commit the removal (if possible) */
-            errno = 0;
-            int rc0 = syscall(SYS_capset, &hdr, data);
-            if (rc0 == 0) {
-                /* Now try to add it back */
-                data[0].permitted |= bit;
-                errno = 0;
-                long r = syscall(SYS_capset, &hdr, data);
-                if (r == -1 && errno == EPERM) {
-                    printf("  PASS | capset(add to permitted) -> EPERM\n");
-                    __pass++;
-                } else if (r == 0) {
-                    printf("  PASS | capset(add to permitted) accepted (privileged)\n");
-                    __pass++;
-                } else {
-                    printf("  FAIL | capset(add to permitted) unexpected ret=%ld errno=%d (%s)\n",
-                           r, errno, strerror(errno));
-                    __fail++;
-                }
-                /* Restore — re-read caps */
-                cap_data_t restore[_LINUX_CAPABILITY_U32S_3];
-                memset(restore, 0, sizeof(restore));
-                cap_header_t rhdr;
-                memset(&rhdr, 0, sizeof(rhdr));
-                rhdr.version = _LINUX_CAPABILITY_VERSION_3;
-                rhdr.pid = 0;
-                if (syscall(SYS_capget, &rhdr, restore) == 0) {
-                    if (was_set)
-                        restore[0].permitted |= bit;
-                    else
-                        restore[0].permitted &= ~bit;
-                    rhdr.version = _LINUX_CAPABILITY_VERSION_3;
-                    syscall(SYS_capset, &rhdr, restore);
-                }
-            } else if (rc0 == -1 && errno == EPERM) {
-                /* Can't even remove caps (no privilege) */
-                printf("  SKIP | capset(remove from permitted) requires privilege\n");
-            } else {
-                printf("  SKIP | capset(remove from permitted) unexpected ret=%d errno=%d\n",
-                       rc0, errno);
-            }
-        }
+        expect_child_success(add_permitted_child,
+                             "B7: capset(add to permitted) -> EPERM");
     }
 
     /* ============================================================== */
@@ -576,49 +556,8 @@ int main(void)
     /* ============================================================== */
     {
         printf("\n--- B8. add to inheritable (negative) ---\n");
-        cap_header_t hdr;
-        cap_data_t   data[_LINUX_CAPABILITY_U32S_3];
-        memset(&hdr, 0, sizeof(hdr));
-
-        hdr.version = _LINUX_CAPABILITY_VERSION_3;
-        if (!read_caps(data, _LINUX_CAPABILITY_U32S_3)) {
-            printf("  SKIP | cannot read current caps for inheritable test\n");
-        } else {
-            /* Add a bit to inheritable that is not currently in permitted
-             * or bounding.  Without CAP_SETPCAP this should fail EPERM. */
-            __u32 bit = 1U << 23; /* CAP_SYS_NICE */
-            int was_in_permitted = (data[0].permitted & bit) != 0;
-            data[0].inheritable |= bit;
-            data[0].permitted &= ~bit;
-
-            errno = 0;
-            long r = syscall(SYS_capset, &hdr, data);
-            if (r == -1 && errno == EPERM) {
-                printf("  PASS | capset(inheritable∉bounding) -> EPERM\n");
-                __pass++;
-            } else if (r == 0) {
-                printf("  PASS | capset(inheritable∉bounding) accepted (privileged)\n");
-                __pass++;
-                /* Restore */
-                cap_data_t restore[_LINUX_CAPABILITY_U32S_3];
-                memset(restore, 0, sizeof(restore));
-                cap_header_t rhdr;
-                memset(&rhdr, 0, sizeof(rhdr));
-                rhdr.version = _LINUX_CAPABILITY_VERSION_3;
-                rhdr.pid = 0;
-                if (syscall(SYS_capget, &rhdr, restore) == 0) {
-                    restore[0].inheritable &= ~bit;
-                    if (was_in_permitted)
-                        restore[0].permitted |= bit;
-                    rhdr.version = _LINUX_CAPABILITY_VERSION_3;
-                    syscall(SYS_capset, &rhdr, restore);
-                }
-            } else {
-                printf("  FAIL | capset(inheritable∉bounding) unexpected ret=%ld errno=%d (%s)\n",
-                       r, errno, strerror(errno));
-                __fail++;
-            }
-        }
+        expect_child_success(add_inheritable_child,
+                             "B8: capset(inheritable expansion) -> 0/EPERM");
     }
 
     /* ============================================================== */

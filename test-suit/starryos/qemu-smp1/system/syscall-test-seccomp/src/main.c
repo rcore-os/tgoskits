@@ -583,6 +583,61 @@ static void check_filter_kill_process_child(void)
                                      "filter KILL_PROCESS kills child process");
 }
 
+static void check_filter_precedence_kill_over_errno(void)
+{
+    int pipefd[2];
+
+    if (pipe(pipefd) != 0) {
+        note_fail("create filter-precedence child pipe", strerror(errno));
+        return;
+    }
+
+    pid_t pid = fork();
+    if (pid == 0) {
+        struct sock_filter errno_filter[] = {
+            BPF_STMT(BPF_LD | BPF_W | BPF_ABS, SECCOMP_DATA_NR_OFF),
+            BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, SYS_getpid, 0, 1),
+            BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ERRNO | EACCES),
+            BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ALLOW),
+        };
+        struct sock_filter kill_filter[] = {
+            BPF_STMT(BPF_LD | BPF_W | BPF_ABS, SECCOMP_DATA_NR_OFF),
+            BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, SYS_getpid, 0, 1),
+            BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_KILL_PROCESS),
+            BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ALLOW),
+        };
+
+        close(pipefd[0]);
+        if (set_no_new_privs() != 0) {
+            _exit(2);
+        }
+        if (install_filter(errno_filter,
+                           sizeof(errno_filter) / sizeof(errno_filter[0]),
+                           0) != 0) {
+            _exit(3);
+        }
+        if (install_filter(kill_filter,
+                           sizeof(kill_filter) / sizeof(kill_filter[0]),
+                           0) != 0) {
+            _exit(4);
+        }
+        if (write(pipefd[1], "R", 1) != 1) {
+            _exit(5);
+        }
+        syscall(SYS_getpid);
+        _exit(0);
+    }
+
+    close(pipefd[1]);
+    if (pid < 0) {
+        close(pipefd[0]);
+        note_fail("fork filter-precedence child", strerror(errno));
+        return;
+    }
+    expect_child_killed_after_marker(pid, pipefd[0],
+                                     "KILL_PROCESS takes precedence over earlier ERRNO filter");
+}
+
 static void run_isolated(void (*fn)(void), const char *name)
 {
     pid_t pid = fork();
@@ -623,6 +678,7 @@ int main(void)
     check_strict_kills_child();
     check_filter_kills_child();
     check_filter_kill_process_child();
+    check_filter_precedence_kill_over_errno();
 
     if (failed == 0) {
         printf("ALL PASSED\n");
