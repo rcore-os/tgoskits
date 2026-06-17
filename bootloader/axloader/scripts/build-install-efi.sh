@@ -5,7 +5,6 @@
 #
 # Default target:
 #   package: axloader
-#   feature: board-asus-nuc15crh
 #   target:  x86_64-unknown-uefi
 #   output:  BOOTX64.EFI
 #   USB fs label: OSTOOLBOOT
@@ -22,7 +21,6 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 
 PACKAGE="axloader"
-FEATURE="board-asus-nuc15crh"
 TARGET="x86_64-unknown-uefi"
 BIN="axloader"
 EFI_OUTPUT="BOOTX64.EFI"
@@ -45,7 +43,6 @@ Options:
   --device PATH       EFI partition to mount, for example /dev/sdb1.
   --label LABEL       Find EFI partition by filesystem label. Default: $USB_LABEL.
   --mount-point DIR   Temporary mount point. Default: $MOUNT_POINT.
-  --feature FEATURE   axloader board feature. Default: $FEATURE.
   --target TARGET     Rust target. Default: $TARGET.
   --output FILE       EFI output filename under EFI/BOOT. Default: $EFI_OUTPUT.
   --cargo PATH        Cargo executable. Default: \$CARGO, cargo, or /root/.cargo/bin/cargo.
@@ -70,11 +67,6 @@ while [[ $# -gt 0 ]]; do
         --mount-point)
             MOUNT_POINT="${2:-}"
             [[ -n "$MOUNT_POINT" ]] || die "--mount-point requires a directory"
-            shift 2
-            ;;
-        --feature)
-            FEATURE="${2:-}"
-            [[ -n "$FEATURE" ]] || die "--feature requires a value"
             shift 2
             ;;
         --target)
@@ -156,11 +148,10 @@ if [[ "$CLEAN" -eq 1 ]]; then
     "$CARGO_BIN" clean -p "$PACKAGE" --target "$TARGET"
 fi
 
-info "Building $PACKAGE for $TARGET with feature $FEATURE"
+info "Building $PACKAGE for $TARGET"
 "$CARGO_BIN" build \
     -p "$PACKAGE" \
     --target "$TARGET" \
-    --features "$FEATURE" \
     --bin "$BIN" \
     --release
 

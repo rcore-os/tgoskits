@@ -10,12 +10,6 @@ version = "0.1.0"
 [[bin]]
 name = "axloader"
 path = "src/main.rs"
-required-features = ["loader-bin"]
-
-[features]
-default = []
-loader-bin = []
-board-asus-nuc15crh = ["loader-bin"]
 
 [dependencies]
 httpboot-protocol = { workspace = true }

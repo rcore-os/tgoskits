@@ -1,12 +1,13 @@
 # axloader
 
 `axloader` is the UEFI loader used by AxVisor board boot flows. It is built for
-one concrete board at a time, waits for a serial boot offer from the host, then
-downloads and starts the AxVisor ELF image through UEFI HTTP services.
+one UEFI target architecture at a time, waits for a serial boot offer from the
+host, then downloads and starts the AxVisor ELF image through UEFI HTTP
+services.
 
 The loader is intentionally small:
 
-- board selection is decided at build time through a `board-*` feature;
+- the loader is built for one UEFI target architecture at a time;
 - runtime boot metadata is sent by the host over the board serial console;
 - the kernel image is fetched from the URL provided in that serial offer;
 - ELF loading and entry selection are handled in the loader.
@@ -33,17 +34,21 @@ depends on the workspace protocol crate with `default-features = false`, so the
 UEFI binary can reuse the same string prefixes and protocol constants without
 pulling in host-only functionality.
 
+Board-specific boot metadata, including the kernel URL, image architecture,
+and entry symbol, is supplied by the host in the `AXLOADER BOOT` offer. The
+`board` field in `AXLOADER READY` is kept only for protocol compatibility.
+
 ## Supported Targets
 
-Currently supported board feature:
+Currently supported UEFI target:
 
-| Board feature | Target architecture | UEFI target | EFI boot filename |
+| Target architecture | UEFI target | EFI boot filename |
 | --- | --- | --- | --- |
-| `board-asus-nuc15crh` | `x86_64` | `x86_64-unknown-uefi` | `BOOTX64.EFI` |
+| `x86_64` | `x86_64-unknown-uefi` | `BOOTX64.EFI` |
 
-The ASUS NUC15CRH target expects an x86_64 ELF image and prefers the
-`httpboot_entry` symbol when the host provides it. If no entry symbol is
-provided, the ELF header entry address is used.
+The x86_64 loader expects an x86_64 ELF image and prefers the `httpboot_entry`
+symbol when the host provides it. If no entry symbol is provided, the ELF
+header entry address is used.
 
 ## Build
 
@@ -53,13 +58,11 @@ Install the UEFI target once:
 rustup target add x86_64-unknown-uefi
 ```
 
-Build the loader by selecting exactly one `board-*` feature and the matching
-UEFI target:
+Build the loader by selecting the matching UEFI target:
 
 ```bash
 cargo build -p axloader \
   --target x86_64-unknown-uefi \
-  --features board-asus-nuc15crh \
   --bin axloader \
   --release
 ```
@@ -76,13 +79,11 @@ Host-side checks can run without a UEFI target:
 cargo clippy -p axloader --all-targets -- -D warnings
 ```
 
-The real loader build path should also be checked with the board feature and
-UEFI target:
+The real loader build path should also be checked with the UEFI target:
 
 ```bash
 cargo clippy -p axloader \
   --target x86_64-unknown-uefi \
-  --features board-asus-nuc15crh \
   --bin axloader \
   -- -D warnings
 ```
@@ -94,7 +95,7 @@ loader under `EFI/BOOT`, verifies the copied file hash, syncs the device, and
 unmounts it.
 
 By default it looks for a filesystem labeled `OSTOOLBOOT` and installs
-`BOOTX64.EFI` for the ASUS NUC15CRH board:
+`BOOTX64.EFI` for the x86_64 UEFI target:
 
 ```bash
 ./bootloader/axloader/scripts/build-install-efi.sh
@@ -109,7 +110,6 @@ Use an explicit partition when needed:
 Useful options:
 
 ```text
---feature FEATURE     Board feature, default: board-asus-nuc15crh
 --target TARGET       Rust target, default: x86_64-unknown-uefi
 --output FILE         EFI filename under EFI/BOOT, default: BOOTX64.EFI
 --no-clean            Skip cargo clean before building
@@ -144,11 +144,10 @@ Typical serial output starts like this:
 ```text
 HTTP bootloader
 round: 1/10
-board: asus-nuc15crh
 arch: x86_64
 output: BOOTX64.EFI
 serial_control_wait: waiting for AXLOADER BOOT
-AXLOADER READY {"protocol_version":1,"board":"asus-nuc15crh","arch":"x86_64","loader_version":"axloader"}
+AXLOADER READY {"protocol_version":1,"board":"axloader","arch":"x86_64","loader_version":"axloader"}
 ```
 
 After the host replies, the loader prints the selected boot metadata and the
@@ -172,30 +171,23 @@ symbols are rejected.
 
 The loader enforces a maximum kernel download size of 256 MiB.
 
-## Adding A New Board
+## Adding A New UEFI Target
 
-To add a board, keep the board-specific data small and explicit:
+To add a target, keep the target-specific data small and explicit:
 
-1. Add a `board-*` feature in `Cargo.toml`.
-2. Add a board module under `src/boards/`.
-3. Add a `BootloaderTarget` entry in `src/target.rs`.
-4. Add the matching build-time validation entry in `build.rs`.
-5. Choose the correct UEFI target and default EFI boot filename.
+1. Add the target architecture name and EFI output filename in `src/loader/mod.rs`.
+2. Add the matching build-time validation entry in `build.rs`.
+3. Choose the correct UEFI target and default EFI boot filename.
 
-For example, a future LoongArch64 board should use a LoongArch64 UEFI target
-and the firmware-expected EFI boot filename for that platform.
+For example, a future LoongArch64 loader should use a LoongArch64 UEFI target
+and the firmware-expected EFI boot filename for that architecture.
 
 ## Troubleshooting
 
-`axloader supports exactly one board-* feature per build`
+`unsupported axloader UEFI target ...`
 
-Only one board feature may be enabled for a loader binary. Build one board
-profile at a time.
-
-`selected axloader board requires target ...`
-
-The selected board feature does not match the Rust target. Rebuild with the
-UEFI target shown by the error.
+The selected UEFI target is unsupported or does not match its Rust target
+architecture. Rebuild with the UEFI target shown by the error.
 
 `control_boot_error: Timeout`
 

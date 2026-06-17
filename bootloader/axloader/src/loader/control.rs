@@ -5,7 +5,10 @@ use core::str;
 
 use httpboot_protocol::{SERIAL_BOOT_PREFIX, SERIAL_PROTOCOL_VERSION, SERIAL_READY_PREFIX};
 
-use crate::{boards, console};
+use crate::console;
+
+#[cfg(target_arch = "x86_64")]
+const TARGET_ARCH_NAME: &str = "x86_64";
 
 const SERIAL_BOOT_LINE_LIMIT: usize = 4096;
 const SERIAL_BOOT_WAIT_POLLS: usize = 60_000;
@@ -45,9 +48,7 @@ pub fn fetch_boot_offer() -> Result<BootOffer, ControlError> {
                     offer.kernel_url
                 );
             }
-            Err(err) => {
-                crate::logln!("serial_control_ignored: parse_error={err:?}");
-            }
+            Err(err) => return Err(err),
         }
     }
 }
@@ -56,13 +57,12 @@ fn announce_ready() {
     crate::logln!(
         concat!(
             "{}{{\"protocol_version\":1,",
-            "\"board\":\"{}\",",
+            "\"board\":\"axloader\",",
             "\"arch\":\"{}\",",
             "\"loader_version\":\"axloader\"}}"
         ),
         SERIAL_READY_PREFIX,
-        boards::active::BOARD_NAME,
-        boards::active::ARCH_NAME,
+        TARGET_ARCH_NAME,
     );
 }
 
@@ -108,7 +108,7 @@ fn parse_boot_offer(input: &str) -> Result<BootOffer, ControlError> {
         return Err(ControlError::InvalidProtocolVersion);
     }
     let arch = json_string_field(input, "arch").ok_or(ControlError::MissingField("arch"))?;
-    if arch != boards::active::ARCH_NAME {
+    if arch != TARGET_ARCH_NAME {
         return Err(ControlError::ServerError);
     }
     let image_format = json_string_field(input, "image_format")

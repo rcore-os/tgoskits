@@ -1,43 +1,31 @@
-struct Board {
-    feature: &'static str,
+struct Target {
     arch_cfg: &'static str,
     uefi_target: &'static str,
 }
 
-const BOARDS: &[Board] = &[Board {
-    feature: "CARGO_FEATURE_BOARD_ASUS_NUC15CRH",
+const UEFI_TARGETS: &[Target] = &[Target {
     arch_cfg: "x86_64",
     uefi_target: "x86_64-unknown-uefi",
 }];
 
 fn main() {
-    let selected_boards = BOARDS
-        .iter()
-        .filter(|board| std::env::var_os(board.feature).is_some())
-        .collect::<Vec<_>>();
-
-    if selected_boards.is_empty() {
-        return;
-    }
-    if selected_boards.len() > 1 {
-        panic!("axloader supports exactly one board-* feature per build");
-    }
-
-    let board = selected_boards[0];
     if std::env::var_os("CARGO_CFG_TARGET_OS").as_deref() != Some(std::ffi::OsStr::new("uefi")) {
         return;
     }
-    if std::env::var("TARGET").as_deref() != Ok(board.uefi_target) {
+
+    let target = std::env::var("TARGET").unwrap_or_else(|_| "unknown".to_string());
+    let Some(target_info) = UEFI_TARGETS
+        .iter()
+        .find(|target_info| target_info.uefi_target == target)
+    else {
+        panic!("unsupported axloader UEFI target `{target}`");
+    };
+
+    if std::env::var("CARGO_CFG_TARGET_ARCH").as_deref() != Ok(target_info.arch_cfg) {
         panic!(
-            "selected axloader board requires target `{}`, got `{}`",
-            board.uefi_target,
-            std::env::var("TARGET").unwrap_or_else(|_| "unknown".to_string())
-        );
-    }
-    if std::env::var("CARGO_CFG_TARGET_ARCH").as_deref() != Ok(board.arch_cfg) {
-        panic!(
-            "selected axloader board requires target_arch `{}`, got `{}`",
-            board.arch_cfg,
+            "axloader target `{}` requires target_arch `{}`, got `{}`",
+            target_info.uefi_target,
+            target_info.arch_cfg,
             std::env::var("CARGO_CFG_TARGET_ARCH").unwrap_or_else(|_| "unknown".to_string())
         );
     }

@@ -11,4 +11,4 @@ fn main() {}
 mod loader;
 
 #[cfg(target_os = "uefi")]
-pub use loader::{boards, console, control, elf_loader, entry, http};
+pub use loader::{console, control, elf_loader, entry, http};

@@ -1,4 +1,3 @@
-pub mod boards;
 pub mod console;
 pub mod control;
 pub mod elf_loader;
@@ -9,6 +8,11 @@ use uefi::{Status, prelude::*};
 
 use crate::logln;
 
+#[cfg(target_arch = "x86_64")]
+const TARGET_ARCH_NAME: &str = "x86_64";
+#[cfg(target_arch = "x86_64")]
+const EFI_OUTPUT_FILE: &str = "BOOTX64.EFI";
+
 const BOOT_ROUND_RETRY_LIMIT: usize = 10;
 const BOOT_ROUND_RETRY_STALL: core::time::Duration = core::time::Duration::from_secs(3);
 
@@ -18,9 +22,8 @@ fn efi_main() -> Status {
     for round in 1..=BOOT_ROUND_RETRY_LIMIT {
         logln!("HTTP bootloader");
         logln!("round: {round}/{BOOT_ROUND_RETRY_LIMIT}");
-        logln!("board: {}", boards::active::BOARD_NAME);
-        logln!("arch: {}", boards::active::ARCH_NAME);
-        logln!("output: {}", boards::active::OUTPUT_FILE);
+        logln!("arch: {TARGET_ARCH_NAME}");
+        logln!("output: {EFI_OUTPUT_FILE}");
         if fetch_control_offer() {
             return Status::SUCCESS;
         }
