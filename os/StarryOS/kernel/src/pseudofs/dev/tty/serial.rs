@@ -33,6 +33,9 @@ pub type SerialTtyDriver = Tty<SerialReader, SerialWriter>;
 const SERIAL_RX_BUFFER_CAP: usize = 4096;
 const SERIAL_RX_DRAIN_CHUNK: usize = 64;
 const SERIAL_IRQ_KICK_INTERVAL: Duration = Duration::from_millis(10);
+const SERIAL_RX_EVENT_MASK: SerialEvent = SerialEvent::RX_READY
+    .union(SerialEvent::RX_ERROR)
+    .union(SerialEvent::OVERRUN);
 
 pub struct SerialTtyEntry {
     number: usize,
@@ -446,8 +449,17 @@ impl SerialBackend {
                 break;
             }
 
-            total += self.push_rx_buffer(&chunk[..read]);
-            if read < limit {
+            let queued = self.push_rx_buffer(&chunk[..read]);
+            total += queued;
+            if queued < read {
+                break;
+            }
+
+            // RX queues are IRQ-state driven and never poll hardware directly.
+            // After consuming one saved RX snapshot, resample through the same
+            // serial IRQ endpoint so a FIFO burst can be drained immediately
+            // instead of waiting for the fallback state kicker.
+            if !self.sync_irq_events().intersects(SERIAL_RX_EVENT_MASK) {
                 break;
             }
         }
