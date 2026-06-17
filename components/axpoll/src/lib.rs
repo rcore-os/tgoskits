@@ -5,7 +5,7 @@
 
 extern crate alloc;
 
-use alloc::boxed::Box;
+use alloc::{boxed::Box, vec::Vec};
 use core::{
     mem::MaybeUninit,
     task::{Context, Waker},
@@ -98,43 +98,48 @@ impl Inner {
         self.cursor == 0
     }
 
-    fn register(&mut self, waker: &Waker, interests: IoEvents) {
+    fn push_entry(&mut self, entry: Entry) {
+        debug_assert!(self.cursor < POLL_SET_CAPACITY);
+        let slot = self.cursor;
+        self.cursor += 1;
+        self.entries[slot].write(entry);
+    }
+
+    fn register(&mut self, waker: &Waker, interests: IoEvents) -> Option<Entry> {
         let slot = self.cursor % POLL_SET_CAPACITY;
-        if self.cursor >= POLL_SET_CAPACITY {
+        let replaced = if self.cursor >= POLL_SET_CAPACITY {
             let old = unsafe { self.entries[slot].assume_init_read() };
-            if !old.waker.will_wake(waker) {
-                old.wake();
-            }
+            let replaced = (!old.waker.will_wake(waker)).then_some(old);
             self.cursor = ((slot + 1) % POLL_SET_CAPACITY) + POLL_SET_CAPACITY;
+            replaced
         } else {
             self.cursor += 1;
-        }
+            None
+        };
         self.entries[slot].write(Entry {
             waker: waker.clone(),
             interests,
         });
+        replaced
     }
 
-    fn wake(&mut self, ready: IoEvents) -> usize {
+    fn drain_ready(&mut self, ready: IoEvents, ready_entries: &mut Vec<Entry>) {
         if self.is_empty() {
-            return 0;
+            return;
         }
 
         let mut old = Self::new();
         core::mem::swap(&mut old, self);
 
-        let mut woke = 0;
         for i in 0..old.len() {
             let entry = unsafe { old.entries[i].assume_init_read() };
             if entry.interests.intersects(ready) {
-                woke += 1;
-                entry.wake();
+                ready_entries.push(entry);
             } else {
-                self.register(&entry.waker, entry.interests);
+                self.push_entry(entry);
             }
         }
         old.cursor = 0;
-        woke
     }
 }
 
@@ -169,7 +174,10 @@ impl PollSet {
     /// from hard IRQ, NMI, or trap callbacks, and must not hold locks that may
     /// be re-entered by the registered waker or by poll wakeup paths.
     pub unsafe fn register(&self, waker: &Waker, interests: IoEvents) {
-        self.0.lock().register(waker, interests);
+        let replaced = { self.0.lock().register(waker, interests) };
+        if let Some(entry) = replaced {
+            entry.wake();
+        }
     }
 
     /// Wakes up registered wakers whose interests intersect `ready`.
@@ -182,7 +190,15 @@ impl PollSet {
     /// must not hold locks that may be re-entered by waker execution or poll
     /// wakeup paths.
     pub unsafe fn wake(&self, ready: IoEvents) -> usize {
-        self.0.lock().wake(ready)
+        let mut ready_entries = Vec::with_capacity(POLL_SET_CAPACITY);
+        {
+            self.0.lock().drain_ready(ready, &mut ready_entries);
+        }
+        let woke = ready_entries.len();
+        for entry in ready_entries {
+            entry.wake();
+        }
+        woke
     }
 }
 

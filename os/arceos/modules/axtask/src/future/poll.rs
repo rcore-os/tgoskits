@@ -134,21 +134,21 @@ pub fn register_irq_waker(irq: usize, waker: &core::task::Waker) {
 
     ensure_drain_spawned();
 
-    let should_install = {
+    let (poll, should_install) = {
         let mut map = IRQ_STATE.lock();
         let state = map.entry(irq).or_insert_with(|| IrqPollState {
             pending: false,
             installed: false,
             poll: Arc::new(PollSet::new()),
         });
-        unsafe { state.poll.register(waker, axpoll::IoEvents::all()) };
         if state.installed {
-            false
+            (state.poll.clone(), false)
         } else {
             state.installed = true;
-            true
+            (state.poll.clone(), true)
         }
     };
+    unsafe { poll.register(waker, axpoll::IoEvents::all()) };
 
     if should_install {
         ax_hal::irq::request_shared_irq(irq, irq_waker_handler, NonNull::dangling())

@@ -2,9 +2,11 @@ use std::{
     sync::{
         Arc, Barrier,
         atomic::{AtomicUsize, Ordering},
+        mpsc,
     },
     task::{Context, Wake, Waker},
     thread,
+    time::Duration,
 };
 
 use axpoll::{IoEvents, PollSet};
@@ -35,6 +37,41 @@ impl Wake for Counter {
     }
 }
 
+struct ReentrantRegister {
+    poll: Arc<PollSet>,
+    interests: IoEvents,
+    started: mpsc::Sender<()>,
+    done: mpsc::Sender<()>,
+}
+
+impl ReentrantRegister {
+    fn run(&self) {
+        let _ = self.started.send(());
+        let counter = Counter::new();
+        let waker = Waker::from(counter);
+        unsafe { self.poll.register(&waker, self.interests) };
+        let _ = self.done.send(());
+    }
+}
+
+impl Wake for ReentrantRegister {
+    fn wake(self: Arc<Self>) {
+        self.run();
+    }
+
+    fn wake_by_ref(self: &Arc<Self>) {
+        self.run();
+    }
+}
+
+fn assert_reentrant_wake_completed(started: mpsc::Receiver<()>, done: mpsc::Receiver<()>) {
+    started
+        .recv_timeout(Duration::from_secs(1))
+        .expect("reentrant waker was not invoked");
+    done.recv_timeout(Duration::from_secs(1))
+        .expect("reentrant waker could not register back into the same PollSet");
+}
+
 #[test]
 fn register_and_wake() {
     let ps = PollSet::new();
@@ -43,6 +80,57 @@ fn register_and_wake() {
     unsafe { ps.register(&w, IoEvents::IN) };
     assert_eq!(unsafe { ps.wake(IoEvents::IN) }, 1);
     assert_eq!(counter.count(), 1);
+}
+
+#[test]
+fn wake_runs_wakers_after_releasing_pollset_lock() {
+    let ps = Arc::new(PollSet::new());
+    let (started_tx, started_rx) = mpsc::channel();
+    let (done_tx, done_rx) = mpsc::channel();
+    let reentrant = Arc::new(ReentrantRegister {
+        poll: ps.clone(),
+        interests: IoEvents::OUT,
+        started: started_tx,
+        done: done_tx,
+    });
+    let waker = Waker::from(reentrant);
+    unsafe { ps.register(&waker, IoEvents::IN) };
+
+    let wake_ps = ps.clone();
+    let wake_thread = thread::spawn(move || unsafe { wake_ps.wake(IoEvents::IN) });
+
+    assert_reentrant_wake_completed(started_rx, done_rx);
+    assert_eq!(wake_thread.join().unwrap(), 1);
+    assert_eq!(unsafe { ps.wake(IoEvents::OUT) }, 1);
+}
+
+#[test]
+fn register_overwrite_wakes_after_releasing_pollset_lock() {
+    let ps = Arc::new(PollSet::new());
+    let (started_tx, started_rx) = mpsc::channel();
+    let (done_tx, done_rx) = mpsc::channel();
+    let reentrant = Arc::new(ReentrantRegister {
+        poll: ps.clone(),
+        interests: IoEvents::OUT,
+        started: started_tx,
+        done: done_tx,
+    });
+    let reentrant_waker = Waker::from(reentrant);
+    unsafe { ps.register(&reentrant_waker, IoEvents::IN) };
+    for _ in 1..64 {
+        let waker = Waker::from(Counter::new());
+        unsafe { ps.register(&waker, IoEvents::IN) };
+    }
+
+    let register_ps = ps.clone();
+    let register_thread = thread::spawn(move || {
+        let waker = Waker::from(Counter::new());
+        unsafe { register_ps.register(&waker, IoEvents::IN) };
+    });
+
+    assert_reentrant_wake_completed(started_rx, done_rx);
+    register_thread.join().unwrap();
+    assert_eq!(unsafe { ps.wake(IoEvents::OUT) }, 1);
 }
 
 #[test]
