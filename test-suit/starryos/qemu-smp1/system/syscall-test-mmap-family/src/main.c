@@ -135,6 +135,28 @@ int main(void)
               "mmap MAP_FIXED 且 addr+length 溢出 → 被拒(EINVAL/ENOMEM), 不环绕");
     }
 
+    /* MAP_FIXED 预留在 256 GiB 之上的高地址 (回归: loongarch64 用户 VA 扩窗)
+     * loongarch64 旧用户 VA 窗口仅 256 GiB(顶 0x40_0000_0000); JVM HotSpot 的
+     * CompressedOops 堆 base 高地址预留会越界 → aspace 的 validate_region 以
+     * NoMemory("address out of range") 拒绝 → 应用侧无限重试 spin。把 loong 窗口
+     * 扩到 128 TiB(对齐 aarch64/x86_64, 其 PT 同为 4 级 48 位 VA)后, 1 TiB 处的
+     * MAP_FIXED 预留必须成功。riscv64 是 Sv39(256 GiB 窗口, 无法扩), 该高地址仍
+     * 应被拒, 故按架构区分断言。*/
+    {
+        void *hi = (void *)0x10000000000UL; /* 1 TiB, 页对齐, 远低于 4 TiB 用户栈顶 */
+        errno = 0;
+        void *r2 = mmap(hi, ps, PROT_READ | PROT_WRITE,
+                        MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED, -1, 0);
+#if defined(__riscv)
+        CHECK(r2 == MAP_FAILED,
+              "riscv64: 1 TiB MAP_FIXED 被拒 (Sv39 256 GiB 用户窗口)");
+#else
+        CHECK(r2 == hi,
+              "1 TiB MAP_FIXED 高地址预留成功 (128 TiB 用户窗口; loong 扩窗回归)");
+        if (r2 != MAP_FAILED) { munmap(r2, ps); }
+#endif
+    }
+
     /* ===================== mprotect ===================== */
 
     /* mprotect happy path: READ|WRITE → 0 */
