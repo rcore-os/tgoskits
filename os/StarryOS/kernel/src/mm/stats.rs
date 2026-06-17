@@ -4,7 +4,9 @@
 //! page-table walk. Real RSS accounting (populate/unmap counters or PTE walk)
 //! is deferred to Plan2; until then see the `FIXME(plan2-rss)` in [`Self::collect`].
 
-use alloc::{format, string::String};
+use alloc::string::String;
+#[cfg(test)]
+use alloc::format;
 
 use ax_memory_addr::{PAGE_SIZE_4K, VirtAddr};
 use ax_runtime::hal::paging::MappingFlags;
