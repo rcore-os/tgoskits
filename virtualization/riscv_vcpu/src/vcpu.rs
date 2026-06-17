@@ -349,15 +349,17 @@ impl RISCVVCpu {
 impl RISCVVCpu {
     #[inline]
     fn program_guest_timer(&mut self, deadline: usize) {
+        #[cfg(not(feature = "sstc"))]
+        let _ = deadline;
         #[cfg(feature = "sstc")]
         {
             self.regs.vs_csrs.vstimecmp = deadline;
         }
-        sbi_rt::set_timer(deadline as u64);
         unsafe {
             // The guest has consumed the current VS timer event and programmed
             // a new deadline, so clear the injected VS timer pending bit and
-            // re-arm HS timer delivery for the next expiration.
+            // update the VS timer comparator. The host runtime owns the
+            // physical timer.
             hvip::clear_vstip();
             #[cfg(feature = "sstc")]
             vstimecmp::write(deadline);
@@ -706,11 +708,10 @@ impl RISCVVCpu {
             }
             Trap::Exception(Exception::VirtualInstruction) => self.handle_virtual_instruction(),
             Trap::Interrupt(Interrupt::SupervisorTimer) => {
-                // Forward the elapsed timer to VS and stop taking the same HS
-                // timer interrupt repeatedly until software programs a new one.
+                // Forward host timer exits to VS without disabling HS timer;
+                // the host runtime owns its timer enable state.
                 unsafe {
                     hvip::set_vstip();
-                    sie::clear_stimer();
                 }
 
                 Ok(AxVCpuExitReason::Nothing)
