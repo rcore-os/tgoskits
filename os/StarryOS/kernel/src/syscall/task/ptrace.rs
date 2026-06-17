@@ -718,24 +718,6 @@ fn ptrace_getregset_prstatus(pid: usize, data: usize) -> AxResult<isize> {
 #[cfg(any(
     target_arch = "riscv64",
     target_arch = "aarch64",
-    target_arch = "loongarch64"
-))]
-fn ptrace_setregset_prstatus(pid: usize, data: usize) -> AxResult<isize> {
-    if data == 0 {
-        return Err(AxError::InvalidInput);
-    }
-    let iov = (data as *const IoVec).vm_read()?;
-    if iov.iov_len < size_of::<ArchUserRegs>() as isize {
-        return Err(AxError::InvalidInput);
-    }
-
-    let regs = ptrace_read_user_regs(iov.iov_base as usize)?;
-    ptrace_write_stopped_user_regs(pid, regs)
-}
-
-#[cfg(any(
-    target_arch = "riscv64",
-    target_arch = "aarch64",
     target_arch = "loongarch64",
     target_arch = "x86_64"
 ))]
