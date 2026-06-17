@@ -25,7 +25,7 @@
 //! - `LISTEN_TABLE` owns passive-open child sockets and accept wakeups.
 //! - `orphan` keeps dropped sockets alive long enough for FIN/TIME-WAIT cleanup.
 
-use alloc::{sync::Arc, vec, vec::Vec};
+use alloc::{sync::Arc, task::Wake, vec, vec::Vec};
 use core::{
     net::{Ipv4Addr, SocketAddr},
     sync::atomic::{AtomicBool, AtomicI32, AtomicU32, Ordering},
@@ -114,6 +114,23 @@ pub struct TcpSocket {
 }
 
 unsafe impl Sync for TcpSocket {}
+
+struct TcpPollWake {
+    poll: Arc<PollSet>,
+    ready: IoEvents,
+}
+
+impl Wake for TcpPollWake {
+    fn wake(self: Arc<Self>) {
+        self.wake_by_ref();
+    }
+
+    fn wake_by_ref(self: &Arc<Self>) {
+        // smoltcp invokes socket wakers from the net poll task context after
+        // updating socket readiness.
+        unsafe { self.poll.wake(self.ready) };
+    }
+}
 
 impl TcpSocket {
     /// Creates a new TCP socket.
@@ -727,13 +744,24 @@ impl Pollable for TcpSocket {
         }
         self.with_smol_socket(|socket| {
             if events.intersects(IoEvents::IN | IoEvents::RDHUP) {
-                self.poll_rx.register(context.waker());
-                let waker = Waker::from(self.poll_rx.clone());
+                // Socket registration runs from task poll context.
+                unsafe {
+                    self.poll_rx
+                        .register(context.waker(), IoEvents::IN | IoEvents::RDHUP)
+                };
+                let waker = Waker::from(Arc::new(TcpPollWake {
+                    poll: self.poll_rx.clone(),
+                    ready: IoEvents::IN | IoEvents::RDHUP,
+                }));
                 socket.register_recv_waker(&waker);
             }
             if events.contains(IoEvents::OUT) {
-                self.poll_tx.register(context.waker());
-                let waker = Waker::from(self.poll_tx.clone());
+                // Socket registration runs from task poll context.
+                unsafe { self.poll_tx.register(context.waker(), IoEvents::OUT) };
+                let waker = Waker::from(Arc::new(TcpPollWake {
+                    poll: self.poll_tx.clone(),
+                    ready: IoEvents::OUT,
+                }));
                 socket.register_send_waker(&waker);
             }
         });

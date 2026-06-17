@@ -684,10 +684,9 @@ impl Wake for NetPollWake {
 fn net_poll_worker() {
     loop {
         let delay = next_poll_delay();
-        let timed_out =
-            NET_POLL_WAKE.wait_timeout_until(delay, || {
-                NET_POLL_REQUESTED.load(Ordering::Acquire) || NET_IRQ_NOTIFY.is_pending()
-            });
+        let timed_out = NET_POLL_WAKE.wait_timeout_until(delay, || {
+            NET_POLL_REQUESTED.load(Ordering::Acquire) || NET_IRQ_NOTIFY.is_pending()
+        });
         if !timed_out && NET_POLL_REQUESTED.load(Ordering::Acquire) {
             NET_POLL_REQUESTED.store(false, Ordering::Release);
         }

@@ -25,12 +25,12 @@
 //! module. The required order is `SOCKET_SET -> listen-table bucket`; this file
 //! must never acquire the outer service lock.
 
-use alloc::{boxed::Box, collections::VecDeque, sync::Arc, vec, vec::Vec};
+use alloc::{boxed::Box, collections::VecDeque, sync::Arc, task::Wake, vec, vec::Vec};
 use core::task::Waker;
 
 use ax_errno::{AxError, AxResult};
 use ax_sync::Mutex;
-use axpoll::PollSet;
+use axpoll::{IoEvents, PollSet};
 use smoltcp::{
     iface::{SocketHandle, SocketSet},
     socket::tcp::{self, SocketBuffer, State},
@@ -69,6 +69,22 @@ pub(crate) struct AcceptedTcp {
 #[derive(Clone, Copy)]
 struct PendingTcp {
     accepted: AcceptedTcp,
+}
+
+struct AcceptWake {
+    poll: Arc<PollSet>,
+}
+
+impl Wake for AcceptWake {
+    fn wake(self: Arc<Self>) {
+        self.wake_by_ref();
+    }
+
+    fn wake_by_ref(self: &Arc<Self>) {
+        // smoltcp invokes this from the net poll task context after publishing
+        // child socket readiness.
+        unsafe { self.poll.wake(IoEvents::IN) };
+    }
 }
 
 impl ListenTableEntryInner {
@@ -254,8 +270,11 @@ impl ListenTable {
             .iter()
             .find(|entry| entry.listen_endpoint == listen_endpoint)
         {
-            entry.accept_poll.register(waker);
-            let accept_waker = Waker::from(entry.accept_poll.clone());
+            // accept registration is performed from socket poll task context.
+            unsafe { entry.accept_poll.register(waker, IoEvents::IN) };
+            let accept_waker = Waker::from(Arc::new(AcceptWake {
+                poll: entry.accept_poll.clone(),
+            }));
             for pending in &entry.syn_queue {
                 let socket: &mut tcp::Socket = sockets.get_mut(pending.accepted.handle);
                 socket.register_recv_waker(&accept_waker);
@@ -312,7 +331,8 @@ impl ListenTable {
                     remote_endpoint: src,
                 },
             });
-            entry.accept_poll.wake();
+            // The child has been queued before waking accept waiters.
+            unsafe { entry.accept_poll.wake(IoEvents::IN) };
         }
     }
 }
