@@ -35,12 +35,6 @@ pub enum ProcessMode {
     /// and serial auto-init commands still work while no user task is blocked
     /// in `read()`.
     Manual,
-    /// Do not automatically drain the input source.
-    ///
-    /// This is useful for discovered hardware TTYs that are exposed as device
-    /// nodes but are not the boot console. It avoids touching unused UART RX
-    /// paths during `/dev` initialization.
-    Inactive,
     /// Spawns task for processing inputs, relying on an external event source
     /// to wake it up.
     InterruptDriven(Arc<PollSet>),
@@ -256,7 +250,6 @@ impl<R: TtyRead> SimpleReader<R> {
 
 enum Processor<R> {
     InterruptDriven,
-    Inactive,
     Passive(SimpleReader<R>, Arc<PollSet>),
 }
 
@@ -386,7 +379,6 @@ impl<R: TtyRead, W: TtyWrite> LineDiscipline<R, W> {
                 Self::spawn_polling_reader(reader, input_ready.clone());
                 Processor::InterruptDriven
             }
-            ProcessMode::Inactive => Processor::Inactive,
             ProcessMode::Passive(poll_rx) => {
                 let InputReader { reader, buf_tx, .. } = reader;
                 Processor::Passive(
@@ -450,7 +442,6 @@ impl<R: TtyRead, W: TtyWrite> LineDiscipline<R, W> {
                 // Registration happens from tty read poll context.
                 unsafe { self.input_ready.register(waker, IoEvents::IN) };
             }
-            Processor::Inactive => {}
             Processor::Passive(_, set) => {
                 // Registration happens from tty read poll context.
                 unsafe { set.register(waker, IoEvents::IN) };
@@ -474,10 +465,7 @@ impl<R: TtyRead, W: TtyWrite> LineDiscipline<R, W> {
             }
             return Ok(read);
         }
-        if matches!(
-            self.processor,
-            Processor::Inactive | Processor::Passive(_, _)
-        ) {
+        if matches!(self.processor, Processor::Passive(_, _)) {
             let read = self.buf_rx.pop_slice(buf);
             return if read == 0 {
                 Err(AxError::WouldBlock)

@@ -52,7 +52,9 @@ unsafe fn cvi_camera_raw_irq_handler(
         if n == 0 {
             break;
         }
-        buf.extend(scratch[..n].iter().copied());
+        for &byte in &scratch[..n] {
+            let _ = buf.push_back(byte);
+        }
     }
     let mask = uart3.get_irq_mask();
     uart3.set_irq_mask(mask | InterruptMask::RX_AVAILABLE);

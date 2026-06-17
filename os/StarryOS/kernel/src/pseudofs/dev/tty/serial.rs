@@ -5,14 +5,14 @@ use core::{
 };
 
 use ax_driver::serial::{
-    self as ax_serial, BIrqHandler, BRxQueue, BTxQueue, InterruptMask, SerialDevice, SerialEvent,
+    self as ax_serial, BIrqHandler, BRxQueue, BTxQueue, SerialDevice, SerialEvent,
     SerialRuntimePortControl,
 };
 use ax_errno::AxResult;
 use ax_kspin::SpinNoIrq;
 use ax_runtime::hal::irq::{AutoEnable, IrqHandle, IrqRequest, ShareMode};
-use ax_task::WaitQueue;
-use axpoll::PollSet;
+use ax_task::IrqNotify;
+use axpoll::{IoEvents, PollSet};
 use spin::LazyLock;
 use starry_process::Process;
 
@@ -66,8 +66,8 @@ struct SerialBackend {
     irq_handle: SpinNoIrq<Option<IrqHandle>>,
     irq_armed: AtomicBool,
     input_source: Arc<PollSet>,
-    irq_pending: AtomicBool,
-    irq_wq: WaitQueue,
+    input_notify: IrqNotify,
+    tx_notify: IrqNotify,
     rx_dropped: AtomicUsize,
 }
 
@@ -141,7 +141,7 @@ impl SerialRegistry {
                 );
                 continue;
             };
-            match new_serial_tty(number, serial, selected == Some(number)) {
+            match new_serial_tty(number, serial) {
                 Ok(entry) => entries.push(entry),
                 Err(err) => warn!("Skipping ttyS{number}: {err:?}"),
             }
@@ -169,18 +169,13 @@ impl SerialRegistry {
     }
 }
 
-fn new_serial_tty(
-    number: usize,
-    serial: SerialDevice,
-    is_boot_console: bool,
-) -> AxResult<SerialTtyEntry> {
+fn new_serial_tty(number: usize, serial: SerialDevice) -> AxResult<SerialTtyEntry> {
     let tty_name = format!("ttyS{number}");
     let input_source = Arc::new(PollSet::new());
     let runtime = serial.into_runtime_port()?;
     let name = runtime.name().into();
     let info = runtime.info().clone();
     let irq_num = runtime.irq_num();
-    let rx_polling_required = info.rx_polling_required;
     let (control, tx, rx, irq_handler) = runtime.split();
     let backend = Arc::new(SerialBackend {
         name,
@@ -195,19 +190,11 @@ fn new_serial_tty(
         irq_handle: SpinNoIrq::new(None),
         irq_armed: AtomicBool::new(false),
         input_source,
-        irq_pending: AtomicBool::new(false),
-        irq_wq: WaitQueue::new(),
+        input_notify: IrqNotify::new(),
+        tx_notify: IrqNotify::new(),
         rx_dropped: AtomicUsize::new(0),
     });
-    let process_mode = serial_process_mode(&backend, is_boot_console, rx_polling_required)
-        .unwrap_or_else(|| {
-            backend.enable_polling_state_sync();
-            if is_boot_console {
-                ProcessMode::Manual
-            } else {
-                ProcessMode::Inactive
-            }
-        });
+    let process_mode = serial_process_mode(&backend)?;
     let mode_name = process_mode_name(&process_mode);
     let terminal = Arc::new(Terminal::default());
     let entry_backend = backend.clone();
@@ -232,28 +219,21 @@ fn new_serial_tty(
     })
 }
 
-fn serial_process_mode(
-    backend: &Arc<SerialBackend>,
-    is_boot_console: bool,
-    rx_polling_required: bool,
-) -> Option<ProcessMode> {
-    let irq_num = backend.irq_num?;
-    if !is_boot_console {
-        return None;
-    }
-    if rx_polling_required {
-        info!(
-            "{} requires polling RX despite irq {irq_num}; using polling mode",
+fn serial_process_mode(backend: &Arc<SerialBackend>) -> AxResult<ProcessMode> {
+    let Some(irq_num) = backend.irq_num else {
+        warn!(
+            "{} has no IRQ; Starry serial tty requires interrupt mode",
             backend.tty_name
         );
-        return None;
-    }
+        return Err(ax_errno::AxError::Unsupported);
+    };
     if backend.irq_handler.is_none() {
         warn!(
-            "{} has irq {irq_num} but no serial IRQ handler; using polling mode",
+            "{} has irq {irq_num} but no serial IRQ handler; Starry serial tty requires interrupt \
+             mode",
             backend.tty_name
         );
-        return None;
+        return Err(ax_errno::AxError::Unsupported);
     }
 
     let data = NonNull::new(Arc::into_raw(backend.clone()) as *mut ()).unwrap();
@@ -264,24 +244,23 @@ fn serial_process_mode(
         Ok(handle) => handle,
         Err(err) => {
             warn!(
-                "Failed to register {} IRQ handler for irq {irq_num}: {err:?}; using polling mode",
+                "Failed to register {} IRQ handler for irq {irq_num}: {err:?}",
                 backend.tty_name,
             );
             unsafe {
                 Arc::decrement_strong_count(data.as_ptr() as *const SerialBackend);
             }
-            return None;
+            return Err(ax_errno::AxError::Unsupported);
         }
     };
     *backend.irq_handle.lock() = Some(handle);
     spawn_serial_irq_drain(backend.clone());
-    Some(ProcessMode::InterruptDriven(backend.input_source.clone()))
+    Ok(ProcessMode::InterruptDriven(backend.input_source.clone()))
 }
 
 fn process_mode_name(mode: &ProcessMode) -> &'static str {
     match mode {
         ProcessMode::Manual => "polling",
-        ProcessMode::Inactive => "inactive",
         ProcessMode::InterruptDriven(_) => "interrupt",
         ProcessMode::Passive(_) => "passive",
     }
@@ -291,9 +270,7 @@ fn spawn_serial_irq_drain(backend: Arc<SerialBackend>) {
     let task_name = format!("{}-irq-drain", backend.tty_name);
     ax_task::spawn_with_name(
         move || loop {
-            backend
-                .irq_wq
-                .wait_until(|| backend.irq_pending.swap(false, Ordering::AcqRel));
+            backend.input_notify.wait();
             let had_data = backend.has_rx_buffered_data();
             let drained = backend.drain_rx_to_buffer(true);
             let dropped = backend.rx_dropped.swap(0, Ordering::AcqRel);
@@ -304,7 +281,10 @@ fn spawn_serial_irq_drain(backend: Arc<SerialBackend>) {
                 );
             }
             if had_data || drained > 0 {
-                backend.input_source.wake();
+                // The serial IRQ worker runs in task context; hard IRQ only
+                // publishes `input_notify`, so this poll wake never runs from
+                // the IRQ callback.
+                unsafe { backend.input_source.wake(IoEvents::IN) };
             }
         },
         task_name,
@@ -312,40 +292,19 @@ fn spawn_serial_irq_drain(backend: Arc<SerialBackend>) {
 }
 
 impl SerialBackend {
-    fn enable_polling_state_sync(&self) {
-        if self.irq_handler.is_some() {
-            self.control
-                .lock()
-                .set_irq_mask(InterruptMask::RX_AVAILABLE | InterruptMask::TX_EMPTY);
-        }
-    }
-
-    fn sync_irq_state(&self) -> SerialEvent {
-        let status = self
-            .irq_handler
-            .as_ref()
-            .map(|handler| handler.handle_irq())
-            .unwrap_or_else(SerialEvent::empty);
-        if status.intersects(SerialEvent::RX_READY | SerialEvent::RX_ERROR | SerialEvent::OVERRUN) {
-            self.notify_rx_drain();
-        }
-        status
-    }
-
     fn notify_rx_drain(&self) {
-        self.irq_pending.store(true, Ordering::Release);
-        self.irq_wq.notify_one(true);
+        self.input_notify.notify();
     }
 
-    fn arm_irq(&self) {
+    fn arm_irq(&self) -> bool {
         let Some(irq_num) = self.irq_num else {
-            return;
+            return false;
         };
         let Some(handle) = *self.irq_handle.lock() else {
-            return;
+            return false;
         };
         if self.irq_armed.swap(true, Ordering::AcqRel) {
-            return;
+            return true;
         }
 
         self.control.lock().enable_rx_interrupts();
@@ -353,11 +312,13 @@ impl SerialBackend {
             self.control.lock().disable_rx_interrupts();
             self.irq_armed.store(false, Ordering::Release);
             warn!(
-                "Failed to arm {} IRQ handler for irq {irq_num}: {err:?}; using polling wakeups",
+                "Failed to arm {} IRQ handler for irq {irq_num}: {err:?}",
                 self.tty_name
             );
+            false
         } else {
             info!("{} IRQ armed on irq {irq_num}", self.tty_name);
+            true
         }
     }
 
@@ -392,7 +353,6 @@ impl SerialBackend {
     }
 
     fn read_hardware_rx(&self, buf: &mut [u8], log_errors: bool) -> usize {
-        self.sync_irq_state();
         match self.rx.lock().try_read(buf) {
             Ok(read) => read,
             Err(err) => {
@@ -449,7 +409,10 @@ unsafe fn serial_raw_irq_handler(
     if let Some(handler) = backend.irq_handler.as_ref() {
         let status = handler.handle_irq();
         if status.intersects(SerialEvent::RX_READY | SerialEvent::RX_ERROR | SerialEvent::OVERRUN) {
-            backend.notify_rx_drain();
+            backend.input_notify.notify_irq();
+        }
+        if status.intersects(SerialEvent::TX_READY | SerialEvent::TX_ERROR) {
+            backend.tx_notify.notify_irq();
         }
     }
     ax_runtime::hal::irq::IrqReturn::Handled
@@ -463,11 +426,9 @@ impl TtyRead for SerialReader {
             return read;
         }
 
-        if !self.backend.irq_armed.load(Ordering::Acquire) {
-            return self.backend.read_hardware_rx(buf, true);
+        if self.backend.arm_irq() {
+            self.backend.notify_rx_drain();
         }
-
-        self.backend.notify_rx_drain();
         0
     }
 }
@@ -477,18 +438,32 @@ impl TtyWrite for SerialWriter {
         if buf.is_empty() {
             return;
         }
+        if !self.backend.arm_irq() {
+            return;
+        }
 
-        let mut tx = self.backend.tx.lock();
+        self.backend.control.lock().enable_tx_interrupts();
         let mut written = 0;
         while written < buf.len() {
-            self.backend.control.lock().enable_tx_interrupts();
-            self.backend.sync_irq_state();
+            let mut tx = self.backend.tx.lock();
             let next = tx.try_write(&buf[written..]);
             written += next;
             if next == 0 {
+                let status = tx.poll();
+                if status.intersects(SerialEvent::TX_ERROR) {
+                    warn!(
+                        "{} TX error from {}",
+                        self.backend.tty_name, self.backend.name
+                    );
+                    break;
+                }
+                if status.intersects(SerialEvent::TX_READY) {
+                    drop(tx);
+                    ax_task::yield_now();
+                    continue;
+                }
                 drop(tx);
-                ax_task::yield_now();
-                tx = self.backend.tx.lock();
+                self.backend.tx_notify.wait();
             }
         }
         self.backend.control.lock().disable_tx_interrupts();
