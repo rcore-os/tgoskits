@@ -228,7 +228,9 @@ impl<R: TtyRead, W: TtyWrite> DeviceOps for Tty<R, W> {
                 count.checked_sub(1)
             })
             .is_ok_and(|old| old == 1)
-        {}
+        {
+            self.writer.close();
+        }
     }
 
     fn as_pollable(&self) -> Option<&dyn Pollable> {

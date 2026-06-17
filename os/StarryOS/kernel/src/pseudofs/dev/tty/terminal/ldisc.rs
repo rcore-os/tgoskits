@@ -53,9 +53,15 @@ pub struct TtyConfig<R, W> {
 
 pub trait TtyRead: Send + Sync + 'static {
     fn read(&mut self, buf: &mut [u8]) -> usize;
+    /// Whether the writer peer has been fully closed. Default: never closed.
+    fn closed(&self) -> bool {
+        false
+    }
 }
 pub trait TtyWrite: Send + Sync + 'static {
     fn write(&self, buf: &[u8]);
+    /// Notify that the writer side has been fully closed (last fd). Default: no-op.
+    fn close(&self) {}
 }
 
 pub fn write_output_bytes<W: TtyWrite + ?Sized>(writer: &W, term: &Termios2, buf: &[u8]) {
@@ -237,12 +243,31 @@ impl<R: TtyRead, W: TtyWrite> InputReader<R, W> {
 struct SimpleReader<R> {
     reader: R,
     read_buf: [u8; BUF_SIZE],
+    read_range: Range<usize>,
     buf_tx: CachingProd<ReadBuf>,
 }
 impl<R: TtyRead> SimpleReader<R> {
     pub fn poll(&mut self) {
-        let read = self.reader.read(&mut self.read_buf);
-        let _ = self.buf_tx.push_slice(&self.read_buf[..read]);
+        while !self.buf_tx.is_full() {
+            if self.read_range.is_empty() {
+                let read = self.reader.read(&mut self.read_buf);
+                if read == 0 {
+                    break;
+                }
+                self.read_range = 0..read;
+            }
+            let written = self
+                .buf_tx
+                .push_slice(&self.read_buf[self.read_range.clone()]);
+            if written == 0 {
+                break;
+            }
+            self.read_range.start += written;
+        }
+    }
+
+    pub fn closed(&self) -> bool {
+        self.reader.closed()
     }
 }
 
@@ -383,6 +408,7 @@ impl<R: TtyRead, W: TtyWrite> LineDiscipline<R, W> {
                     SimpleReader {
                         reader,
                         read_buf: [0; BUF_SIZE],
+                        read_range: 0..0,
                         buf_tx,
                     },
                     poll_rx,
@@ -418,6 +444,9 @@ impl<R: TtyRead, W: TtyWrite> LineDiscipline<R, W> {
     pub fn poll_read(&mut self) -> bool {
         if let Processor::Passive(reader, _) = &mut self.processor {
             reader.poll();
+            if reader.closed() {
+                return true;
+            }
         }
         if !self.injected_input.is_empty() {
             return true;
@@ -464,9 +493,17 @@ impl<R: TtyRead, W: TtyWrite> LineDiscipline<R, W> {
             return Ok(read);
         }
         if matches!(self.processor, Processor::Passive(_, _)) {
+            let closed = match &self.processor {
+                Processor::Passive(reader, _) => reader.closed(),
+                _ => unreachable!(),
+            };
             let read = self.buf_rx.pop_slice(buf);
             return if read == 0 {
-                Err(AxError::WouldBlock)
+                if closed {
+                    Ok(0)
+                } else {
+                    Err(AxError::WouldBlock)
+                }
             } else {
                 Ok(read)
             };
