@@ -15,12 +15,12 @@
 //! # Readiness
 //!
 //! A device may use platform IRQs, polling, or out-of-band notifications. The
-//! router only requires that `register_waker()` and `wake_rx()` make blocked
-//! device workers observable without exposing driver-specific details.
+//! router asks devices for a readiness poll set and performs `PollSet`
+//! register/wake operations after releasing the concrete device lock.
 
-use alloc::{string::String, vec::Vec};
-use core::task::Waker;
+use alloc::{string::String, sync::Arc, vec::Vec};
 
+use axpoll::PollSet;
 use smoltcp::{
     storage::PacketBuffer,
     time::Instant,
@@ -86,13 +86,12 @@ pub trait Device: Send + Sync {
         Vec::new()
     }
 
-    /// Wakes any task blocked on this device's RX readiness.
+    /// Returns the device readiness poll set when the device has a wake source.
     ///
-    /// Used by SDIO WiFi where RX arrives out-of-band (the SDIO CARD_INT
-    /// thread is outside the ethernet IRQ framework), so the poll task pokes
-    /// the device after `notify_oob_rx`. Default is a no-op.
-    fn wake_rx(&self) {}
-
-    /// Registers a waker for RX readiness notifications.
-    fn register_waker(&self, waker: &Waker);
+    /// Interrupt-driven and out-of-band devices return a poll set. Pure-polling
+    /// devices should return `None`, or their wakers would sit on a poll set
+    /// that is never woken.
+    fn readiness_poll(&self) -> Option<Arc<PollSet>> {
+        None
+    }
 }

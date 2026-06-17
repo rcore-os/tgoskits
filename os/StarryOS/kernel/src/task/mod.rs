@@ -20,7 +20,7 @@ use core::{
 use ax_runtime::hal::{cpu::uspace::UserContext, time::TimeValue};
 use ax_sync::{Mutex, spin::SpinNoIrq};
 use ax_task::{TaskExt, TaskInner};
-use axpoll::PollSet;
+use axpoll::{IoEvents, PollSet};
 use extern_trait::extern_trait;
 use kernel_elf_parser::AuxEntry;
 use scope_local::{ActiveScope, Scope};
@@ -1017,7 +1017,8 @@ impl ProcessData {
             drop(jc);
             // Wake only when a thread was actually parked; avoids spurious
             // wakeups on SIGCONT to an already-running process.
-            self.cont_event.wake();
+            // Continue state is published before waking stopped threads.
+            unsafe { self.cont_event.wake(IoEvents::IN) };
         }
         was_stopped
     }
@@ -1027,7 +1028,8 @@ impl ProcessData {
     pub fn clear_job_stop_for_kill(&self) {
         let was_stopped = self.job_control.lock().stopped.take().is_some();
         if was_stopped {
-            self.cont_event.wake();
+            // Stop state is cleared before waking stopped threads.
+            unsafe { self.cont_event.wake(IoEvents::IN) };
         }
     }
 
@@ -1344,7 +1346,8 @@ impl ProcessData {
             stop.event = 0;
             stop.event_msg = 0;
         }
-        self.ptrace_stop_event.wake();
+        // Ptrace stop state is updated before waking waiters.
+        unsafe { self.ptrace_stop_event.wake(IoEvents::IN) };
     }
 
     /// Resume the stopped task without injecting a signal.
@@ -1399,7 +1402,8 @@ impl ProcessData {
         self.ptrace_syscall_trace.lock().clear();
         self.ptrace_ss_saved_insn.lock().clear();
         self.ptrace_stop_fp_data.lock().clear();
-        self.ptrace_stop_event.wake();
+        // Ptrace stop state is cleared before waking waiters.
+        unsafe { self.ptrace_stop_event.wake(IoEvents::IN) };
     }
 
     pub fn set_ptrace_exec_stop_pending(&self) {
@@ -1414,7 +1418,8 @@ impl ProcessData {
 
     /// Register a waiter for changes to this process's ptrace stop state.
     pub fn register_ptrace_stop_waker(&self, waker: &core::task::Waker) {
-        self.ptrace_stop_event.register(waker);
+        // Registration happens from task/wait context.
+        unsafe { self.ptrace_stop_event.register(waker, IoEvents::IN) };
     }
 
     pub fn set_ptrace_attached(&self) {
@@ -1769,7 +1774,8 @@ impl ProcessData {
                 core::future::poll_fn(|cx| {
                     // Register before re-checking so a notify that fires
                     // between our last check and this register isn't lost.
-                    poll.register(cx.waker());
+                    // Registration happens from the vfork parent task context.
+                    unsafe { poll.register(cx.waker(), IoEvents::IN) };
                     let done = self
                         .vfork_done
                         .lock()
@@ -1812,7 +1818,8 @@ impl ProcessData {
             }
             // guard dropped here
         };
-        poll.wake();
+        // vfork completion is published before waking the parent.
+        unsafe { poll.wake(IoEvents::IN) };
     }
 }
 

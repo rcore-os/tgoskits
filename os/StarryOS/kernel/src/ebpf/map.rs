@@ -8,7 +8,7 @@ use core::ops::{Deref, DerefMut};
 
 use ax_errno::{AxError, AxResult};
 use ax_memory_addr::{PAGE_SIZE_4K, PhysAddr};
-use axpoll::{PollSet, Pollable};
+use axpoll::{IoEvents, PollSet, Pollable};
 use kbpf_basic::{
     PollWaker,
     map::{BpfMapMeta, UnifiedMap, bpf_map_create},
@@ -63,8 +63,11 @@ impl Pollable for BpfMap {
         events
     }
 
-    fn register(&self, context: &mut core::task::Context<'_>, _events: axpoll::IoEvents) {
-        self.poll_ready.register(context.waker());
+    fn register(&self, context: &mut core::task::Context<'_>, events: axpoll::IoEvents) {
+        if !events.is_empty() {
+            // Registration happens from file poll task context.
+            unsafe { self.poll_ready.register(context.waker(), events) };
+        }
     }
 }
 
@@ -141,7 +144,8 @@ impl DerefMut for PollSetWrapper {
 
 impl PollWaker for PollSetWrapper {
     fn wake_up(&self) {
-        self.0.wake();
+        // kbpf calls this after publishing map readiness.
+        unsafe { self.0.wake(IoEvents::all()) };
     }
 }
 

@@ -22,7 +22,7 @@ use alloc::{collections::BTreeMap, sync::Arc};
 use ax_errno::{AxError, AxResult, ax_bail};
 use ax_sync::Mutex;
 use ax_task::WaitQueue;
-use axpoll::PollSet;
+use axpoll::{IoEvents, PollSet};
 use ringbuf::{HeapCons, HeapProd, HeapRb, traits::*};
 
 use super::{VsockAddr, VsockConnId};
@@ -115,12 +115,17 @@ impl Connection {
 
     /// Register a waker for receive Events
     pub fn register_rx_poll(&mut self, context: &mut core::task::Context<'_>) {
-        self.rx_wakers.register(context.waker());
+        // Registration happens from vsock poll task context.
+        unsafe { self.rx_wakers.register(context.waker(), IoEvents::IN) };
     }
 
     /// Register a waker for connect Events
     pub fn register_connect_poll(&mut self, _context: &mut core::task::Context<'_>) {
-        self.connect_wakers.register(_context.waker());
+        // Registration happens from vsock poll task context.
+        unsafe {
+            self.connect_wakers
+                .register(_context.waker(), IoEvents::OUT | IoEvents::ERR)
+        };
     }
 
     /// Get the free space in the receive buffer
@@ -195,12 +200,17 @@ impl Connection {
 
     #[inline]
     pub fn wake_rx(&mut self) {
-        self.rx_wakers.wake();
+        // RX buffer and connection state are updated before wake_rx is called.
+        unsafe {
+            self.rx_wakers
+                .wake(IoEvents::IN | IoEvents::RDHUP | IoEvents::HUP)
+        };
     }
 
     #[inline]
     pub fn wake_connect(&mut self) {
-        self.connect_wakers.wake();
+        // Connection state is updated before wake_connect is called.
+        unsafe { self.connect_wakers.wake(IoEvents::OUT | IoEvents::ERR) };
     }
 
     #[inline]
@@ -290,11 +300,13 @@ impl ListenQueue {
     }
 
     pub fn wake(&mut self) {
-        self.wakers.wake();
+        // Accept queue state is published before waking listeners.
+        unsafe { self.wakers.wake(IoEvents::IN) };
     }
 
     pub fn register_poll(&mut self, context: &mut core::task::Context<'_>) {
-        self.wakers.register(context.waker());
+        // Registration happens from vsock poll task context.
+        unsafe { self.wakers.register(context.waker(), IoEvents::IN) };
     }
 }
 

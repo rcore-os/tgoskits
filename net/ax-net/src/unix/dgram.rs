@@ -191,7 +191,10 @@ impl TransportOps for DgramTransport {
         });
         *guard = Some((rx, poll_update));
         self.local_addr.write().clone_from(local_addr);
-        self.poll_state.wake();
+        drop(guard);
+        drop(slot);
+        // Datagram bind state is published before waking pollers.
+        unsafe { self.poll_state.wake(IoEvents::IN | IoEvents::OUT) };
         Ok(())
     }
 
@@ -207,7 +210,9 @@ impl TransportOps for DgramTransport {
                 .ok_or(AxError::NotConnected)?
                 .connect(),
         );
-        self.poll_state.wake();
+        drop(guard);
+        // Connected peer state is published before waking pollers.
+        unsafe { self.poll_state.wake(IoEvents::IN | IoEvents::OUT) };
         Ok(())
     }
 
@@ -232,28 +237,28 @@ impl TransportOps for DgramTransport {
             sender: self.local_addr.read().clone(),
         };
 
-        let connected = self.connected.read();
-        if let Some(addr) = options.to {
+        let wake_poll = if let Some(addr) = options.to {
             let addr = addr.into_unix()?;
             with_slot(&addr, |slot| {
                 if let Some(bind) = slot.dgram.lock().as_ref() {
                     bind.data_tx
                         .try_send(packet)
                         .map_err(|_| AxError::BrokenPipe)?;
-                    bind.poll_update.wake();
-                    Ok(())
+                    Ok(bind.poll_update.clone())
                 } else {
                     Err(AxError::NotConnected)
                 }
-            })?;
-        } else if let Some(chan) = connected.as_ref() {
+            })?
+        } else if let Some(chan) = self.connected.read().as_ref() {
             chan.data_tx
                 .try_send(packet)
                 .map_err(|_| AxError::BrokenPipe)?;
-            chan.poll_update.wake();
+            chan.poll_update.clone()
         } else {
             return Err(AxError::NotConnected);
-        }
+        };
+        // Datagram packet is queued before waking the receiver.
+        unsafe { wake_poll.wake(IoEvents::IN) };
         Ok(len)
     }
 
@@ -305,10 +310,16 @@ impl Pollable for DgramTransport {
     }
 
     fn register(&self, context: &mut Context<'_>, events: IoEvents) {
-        if let Some((_, poll)) = self.data_rx.lock().as_ref()
+        let poll = if let Some((_, poll)) = self.data_rx.lock().as_ref()
             && events.contains(IoEvents::IN)
         {
-            poll.register(context.waker());
+            Some(poll.clone())
+        } else {
+            None
+        };
+        if let Some(poll) = poll {
+            // Registration happens from socket poll task context.
+            unsafe { poll.register(context.waker(), IoEvents::IN) };
         }
     }
 }
@@ -316,7 +327,8 @@ impl Pollable for DgramTransport {
 impl Drop for DgramTransport {
     fn drop(&mut self) {
         if let Some(chan) = self.connected.write().take() {
-            chan.poll_update.wake();
+            // Connection teardown is visible before waking the peer.
+            unsafe { chan.poll_update.wake(IoEvents::IN | IoEvents::OUT) };
         }
     }
 }

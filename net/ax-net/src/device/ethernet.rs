@@ -21,7 +21,7 @@
 //! the router before Ethernet sees the packet.
 
 use alloc::{boxed::Box, string::String, sync::Arc, vec, vec::Vec};
-use core::{ptr::NonNull, task::Waker};
+use core::ptr::NonNull;
 
 use ax_sync::spin::SpinNoIrq;
 use axpoll::PollSet;
@@ -124,13 +124,12 @@ struct EthernetIrqState {
     irq: Option<usize>,
     irq_registration: spin::Once<Box<dyn EthernetIrqRegistration>>,
     /// RX readiness is delivered out-of-band (outside the ethernet IRQ
-    /// framework) via [`Device::wake_rx`] — e.g. an SDIO Wi-Fi chip that owns
-    /// its own card interrupt and pokes the stack through `notify_oob_rx`. Such
-    /// a device has no `irq_registration`, so it still needs `register_waker` to
-    /// arm `poll_ready`.
+    /// framework) via the device readiness poll set, e.g. an SDIO Wi-Fi chip
+    /// that owns its own card interrupt and pokes the stack through
+    /// `notify_oob_rx`.
     oob_rx: bool,
     driver: SpinNoIrq<Box<dyn EthernetDriver>>,
-    poll_ready: PollSet,
+    poll_ready: Arc<PollSet>,
 }
 
 impl EthernetIrqState {
@@ -153,7 +152,7 @@ unsafe fn handle_ethernet_irq(data: NonNull<()>) -> EthernetIrqOutcome {
     let state = unsafe { data.cast::<EthernetIrqState>().as_ref() };
     let events = state.handle_irq();
     if events.intersects(NetIrqEvents::RX_READY | NetIrqEvents::RX_ERROR | NetIrqEvents::TX_DONE) {
-        state.poll_ready.wake();
+        crate::wake_net_task_irq();
         return EthernetIrqOutcome::Wake;
     }
     EthernetIrqOutcome::Handled
@@ -194,7 +193,7 @@ impl EthernetDevice {
             irq_registration: spin::Once::new(),
             oob_rx,
             driver: SpinNoIrq::new(inner),
-            poll_ready: PollSet::new(),
+            poll_ready: Arc::new(PollSet::new()),
         });
         let pending_packets = PacketBuffer::new(
             vec![PacketMetadata::EMPTY; ETHERNET_MAX_PENDING_PACKETS],
@@ -619,18 +618,14 @@ impl Device for EthernetDevice {
             .collect()
     }
 
-    fn wake_rx(&self) {
-        self.inner.poll_ready.wake();
-    }
-
-    fn register_waker(&self, waker: &Waker) {
-        // Arm the poll waker only when there is a wake source: either an IRQ
-        // registration drives `poll_ready` from `handle_ethernet_irq`, or the
-        // device delivers RX out-of-band (e.g. SDIO Wi-Fi) and pokes it via
-        // `wake_rx`. A pure-polling device with neither must not register here,
-        // or its waker would sit on a `poll_ready` that is never woken.
+    fn readiness_poll(&self) -> Option<Arc<PollSet>> {
+        // Only expose the poll set when there is a wake source: either an IRQ
+        // registration or out-of-band RX. A pure-polling device with neither
+        // must not register here, or its waker would never be woken.
         if self.inner.irq_registration.get().is_some() || self.inner.oob_rx {
-            self.inner.poll_ready.register(waker);
+            Some(self.inner.poll_ready.clone())
+        } else {
+            None
         }
     }
 }

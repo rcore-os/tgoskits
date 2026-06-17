@@ -164,8 +164,11 @@ impl PacketSocket {
 
         let bound = self.state.lock().bound;
         if let Some(reply) = build_arp_reply(&data, bound) {
-            self.state.lock().pending = Some(reply);
-            self.poll_rx.wake();
+            {
+                self.state.lock().pending = Some(reply);
+            }
+            // Pending packet is stored before waking readers.
+            unsafe { self.poll_rx.wake(IoEvents::IN) };
         }
         Ok(read)
     }
@@ -322,7 +325,8 @@ impl Pollable for PacketSocket {
 
     fn register(&self, context: &mut Context<'_>, events: IoEvents) {
         if events.contains(IoEvents::IN) {
-            self.poll_rx.register(context.waker());
+            // Registration happens from socket poll task context.
+            unsafe { self.poll_rx.register(context.waker(), IoEvents::IN) };
         }
     }
 }

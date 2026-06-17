@@ -10,8 +10,6 @@
 //! buffer into the smoltcp-facing RX buffer. That avoids an extra queue hop and
 //! avoids spawning RX/TX workers for a device that has no hardware latency.
 
-use core::task::Waker;
-
 use smoltcp::{time::Instant, wire::IpAddress};
 
 use crate::{config::InterfaceId, device::Device};
@@ -48,9 +46,5 @@ impl Device for LoopbackDevice {
     fn send(&mut self, _next_hop: IpAddress, _packet: &[u8], _timestamp: Instant) -> bool {
         // Fast path: loopback packets are injected directly in Router::dispatch().
         true
-    }
-
-    fn register_waker(&self, _waker: &Waker) {
-        // No async operations needed for loopback fast path
     }
 }

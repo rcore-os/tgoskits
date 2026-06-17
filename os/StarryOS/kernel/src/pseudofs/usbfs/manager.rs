@@ -8,6 +8,7 @@ use core::{
 use ax_errno::{AxError, AxResult, LinuxError};
 use ax_kspin::SpinNoIrq as Mutex;
 use ax_sync::Mutex as BlockingMutex;
+use ax_task::IrqNotify;
 use crab_usb::{
     Device, DeviceInfo, Endpoint, ProbedDevice,
     usb_if::{
@@ -17,7 +18,7 @@ use crab_usb::{
         transfer::{Direction, Recipient, Request, RequestType},
     },
 };
-use event_listener::{Event as NotifyEvent, listener};
+use event_listener::Event as NotifyEvent;
 use rdrive::DeviceId as RDriveDeviceId;
 use spin::RwLock;
 use starry_vm::{VmMutPtr, vm_load, vm_write_slice};
@@ -230,8 +231,8 @@ fn wait_control(
 pub(super) struct UsbFsManager {
     state: Mutex<UsbFsState>,
     open_lock: BlockingMutex<()>,
-    pub(super) refresh_event: NotifyEvent,
     usb_activity: UsbActivity,
+    irq_notify: IrqNotify,
 }
 
 struct UsbActivity {
@@ -369,14 +370,22 @@ impl UsbFsManager {
         Self {
             state: Mutex::new(UsbFsState { hosts, devices }),
             open_lock: BlockingMutex::new(()),
-            refresh_event: NotifyEvent::new(),
             usb_activity: UsbActivity::new(),
+            irq_notify: IrqNotify::new(),
         }
     }
 
-    pub(super) fn notify_usb_activity(&self) {
+    pub(super) fn notify_usb_activity_from_irq(&self) {
         self.usb_activity.seq.fetch_add(1, Ordering::AcqRel);
-        self.usb_activity.event.notify(usize::MAX);
+        self.irq_notify.notify_irq();
+    }
+
+    pub(super) fn notify_topology_from_irq(&self) {
+        self.irq_notify.notify_irq();
+    }
+
+    pub(super) fn notify_refresh(&self) {
+        self.irq_notify.notify();
     }
 
     pub(super) fn usb_activity_seq(&self) -> u64 {
@@ -1131,10 +1140,10 @@ fn snapshot_config_blob(snapshot: &UsbDeviceSnapshot, index: usize) -> Option<&[
     None
 }
 
-pub(super) async fn usbfs_refresh_task(manager: Arc<UsbFsManager>) {
+pub(super) fn usbfs_refresh_task(manager: Arc<UsbFsManager>) {
     loop {
-        listener!(manager.refresh_event => refresh_listener);
-        refresh_listener.await;
+        manager.irq_notify.wait();
+        manager.usb_activity.event.notify(usize::MAX);
         manager.refresh_dirty_hosts();
     }
 }

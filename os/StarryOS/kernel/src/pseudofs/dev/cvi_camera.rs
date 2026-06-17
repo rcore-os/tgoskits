@@ -1,5 +1,5 @@
 #![allow(dead_code)]
-use alloc::{collections::vec_deque::VecDeque, vec::Vec};
+use alloc::vec::Vec;
 use core::{any::Any, ptr::NonNull, time::Duration};
 
 use ax_errno::{AxError, LinuxError};
@@ -15,7 +15,7 @@ use sg200x_bsp::{
 use starry_vm::{VmMutPtr, vm_write_slice};
 use tock_registers::interfaces::Writeable;
 
-use crate::pseudofs::DeviceOps;
+use crate::pseudofs::{DeviceOps, dev::irq_byte_ring::ByteRing};
 
 pub const CMD_INIT: u8 = 0x01;
 pub const CMD_GET_CAMERA_INFO: u8 = 0x02;
@@ -26,6 +26,7 @@ pub const RESP_FRAME_CHUNK: u8 = 0x90;
 pub const MAX_FRAME_SIZE: usize = 2 * 1024 * 1024;
 pub const FRAME_CHUNK_TIMEOUT_MS: u64 = 1000;
 pub const DEFAULT_TIMEOUT_MS: u64 = 2000;
+const CAMERA_UART_BUF_CAP: usize = MAX_FRAME_SIZE + 8192;
 
 const SLIP_END: u8 = 0xC0;
 const SLIP_ESC: u8 = 0xDB;
@@ -41,7 +42,7 @@ unsafe fn cvi_camera_raw_irq_handler(
     );
     let mut buf = CAMERA_UART_BUF.lock();
     while let Some(c) = uart3.getchar() {
-        buf.push_back(c);
+        let _ = buf.push_back(c);
     }
     uart3.set_ier(true);
     ax_runtime::hal::irq::IrqReturn::Handled
@@ -322,7 +323,7 @@ impl<T: UartTransport> CameraProtocol<T> {
 }
 
 const UART3_ADDR: usize = 0x04170000;
-static CAMERA_UART_BUF: Mutex<VecDeque<u8>> = Mutex::new(VecDeque::new());
+static CAMERA_UART_BUF: Mutex<ByteRing<CAMERA_UART_BUF_CAP>> = Mutex::new(ByteRing::new());
 
 struct Uart3;
 
@@ -342,10 +343,7 @@ impl UartTransport for Uart3 {
             let mut cache_buf = CAMERA_UART_BUF.lock();
             let n = cache_buf.len().min(buf.len());
             if n > 0 {
-                cache_buf
-                    .drain(..n)
-                    .enumerate()
-                    .for_each(|(i, x)| buf[i] = x);
+                cache_buf.drain_into(&mut buf[..n]);
             }
             n
         };

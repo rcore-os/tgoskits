@@ -67,17 +67,16 @@ use alloc::{
     borrow::ToOwned, boxed::Box, format, string::String, sync::Arc, task::Wake, vec, vec::Vec,
 };
 use core::{
-    future::poll_fn,
     net::IpAddr,
     sync::atomic::{AtomicBool, Ordering},
-    task::{Poll, Waker},
+    task::Waker,
     time::Duration,
 };
 
 use ax_errno::{AxError, AxResult, ax_err_type};
 use ax_sync::Mutex;
-use ax_task::{WaitQueue, future::block_on};
-use axpoll::PollSet;
+use ax_task::{IrqNotify, WaitQueue};
+use axpoll::{IoEvents, PollSet};
 use smoltcp::{
     socket::dns::{self, GetQueryResultError, StartQueryError},
     wire::{DnsQueryType, EthernetAddress, IpAddress, Ipv4Address, Ipv4Cidr},
@@ -121,6 +120,10 @@ static NET_POLL_REQUESTED: AtomicBool = AtomicBool::new(false);
 static NET_POLL_WAKE: WaitQueue = WaitQueue::new();
 static NET_POLL_DEVICE_WAKER: LazyLock<Waker> =
     LazyLock::new(|| Waker::from(Arc::new(NetPollWake)));
+type DeferredPollWake = (Arc<PollSet>, IoEvents);
+static DEFERRED_POLL_WAKE_PENDING: AtomicBool = AtomicBool::new(false);
+static DEFERRED_POLL_WAKES: LazyLock<Mutex<Vec<DeferredPollWake>>> =
+    LazyLock::new(|| Mutex::new(Vec::new()));
 
 /// Registry of wireless control-plane handles, keyed by interface name.
 ///
@@ -131,10 +134,7 @@ static NET_POLL_DEVICE_WAKER: LazyLock<Waker> =
 static WIFI_CONTROLS: LazyLock<Mutex<Vec<(alloc::string::String, rd_net::WifiControlHandle)>>> =
     LazyLock::new(|| Mutex::new(Vec::new()));
 
-/// Signalled by [`notify_oob_rx`] to wake the out-of-band RX poll task, for
-/// devices whose RX arrives outside the ethernet IRQ framework (e.g. SDIO).
-static OOB_RX_SIGNAL: PollSet = PollSet::new();
-static OOB_POLL_TASK_STARTED: AtomicBool = AtomicBool::new(false);
+static NET_IRQ_NOTIFY: IrqNotify = IrqNotify::new();
 
 const DHCP_BOOTSTRAP_ATTEMPTS: usize = 200;
 const DHCP_BOOTSTRAP_POLL_INTERVAL: Duration = Duration::from_millis(10);
@@ -448,6 +448,30 @@ pub fn request_poll() {
     NET_POLL_WAKE.notify_one(true);
 }
 
+pub(crate) fn defer_poll_wake(poll: Arc<PollSet>, ready: IoEvents) {
+    DEFERRED_POLL_WAKES.lock().push((poll, ready));
+    DEFERRED_POLL_WAKE_PENDING.store(true, Ordering::Release);
+    NET_POLL_WAKE.notify_one(true);
+}
+
+fn drain_deferred_poll_wakes() {
+    loop {
+        let wakes = {
+            let mut wakes = DEFERRED_POLL_WAKES.lock();
+            if wakes.is_empty() {
+                DEFERRED_POLL_WAKE_PENDING.store(false, Ordering::Release);
+                return;
+            }
+            core::mem::take(&mut *wakes)
+        };
+        for (poll, ready) in wakes {
+            // Readiness was published before the wake was deferred, and no
+            // service/socket/device locks are held while draining.
+            unsafe { poll.wake(ready) };
+        }
+    }
+}
+
 /// Returns ARP/neighbor entries collected from all devices.
 pub fn arp_entries() -> Vec<ArpEntry> {
     get_service().arp_entries()
@@ -503,6 +527,9 @@ pub fn register_device_with_config(dev: Box<dyn EthernetDriver>, config: NetConf
     let mac = EthernetAddress(dev.mac_address());
     let server_ip = Ipv4Address::new(config.ip[0], config.ip[1], config.ip[2], config.ip[3]);
     let cidr = Ipv4Cidr::new(server_ip, config.prefix_len);
+    // A dedicated-poll device gets RX out-of-band (via `notify_oob_rx` and the
+    // shared net poll task), so its socket wakers must be armed even though it
+    // has no ethernet IRQ registration.
     let eth_dev = if config.dedicated_poll {
         EthernetDevice::new_oob_rx(config.name.clone(), dev, Some(cidr))
     } else {
@@ -519,12 +546,9 @@ pub fn register_device_with_config(dev: Box<dyn EthernetDriver>, config: NetConf
         );
     }
 
-    if config.dedicated_poll
-        && OOB_POLL_TASK_STARTED
-            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-            .is_ok()
-    {
-        start_oob_poll_task(config.name);
+    info!("{}: up, mac {mac}, ip {cidr}", config.name);
+    if config.dedicated_poll {
+        get_service().register_device_waker(&NET_POLL_DEVICE_WAKER);
     }
     request_poll();
 }
@@ -621,6 +645,16 @@ pub fn reconfigure_wifi(name: &str, mode: WifiMode<'_>) -> AxResult<()> {
     Ok(())
 }
 
+/// Wakes the net poll task from a hard IRQ callback.
+///
+/// The IRQ path must only publish small pending state and call this wrapper.
+/// The deferred net task performs `poll_interfaces()` and wakes socket waiters
+/// from ordinary task context.
+pub fn wake_net_task_irq() {
+    NET_IRQ_NOTIFY.notify_irq();
+    NET_POLL_WAKE.notify_one_from_irq();
+}
+
 /// Wakes the out-of-band RX poll task; intended as a device RX-data callback.
 ///
 /// A device whose RX path sits outside the ethernet IRQ framework (e.g. an SDIO
@@ -628,7 +662,7 @@ pub fn reconfigure_wifi(name: &str, mode: WifiMode<'_>) -> AxResult<()> {
 /// only signals here; the dedicated poll task does the actual stack polling, so
 /// the device's RX thread is never blocked on the stack.
 pub fn notify_oob_rx() {
-    OOB_RX_SIGNAL.wake();
+    wake_net_task_irq();
 }
 
 /// Convenience helper for retrieving `eth0` IPv4 configuration.
@@ -637,28 +671,12 @@ pub fn eth0_ipv4_config() -> Option<Ipv4InterfaceConfig> {
 }
 
 fn prefix_to_mask(prefix_len: u8) -> Ipv4Address {
-    let mask = if prefix_len == 0 {
+    let bits = if prefix_len == 0 {
         0
     } else {
-        u32::MAX << (32 - prefix_len)
+        u32::MAX << (32 - prefix_len.min(32) as u32)
     };
-    Ipv4Address::from_bits(mask)
-}
-
-fn start_oob_poll_task(ifname: String) {
-    let task_name = format!("{ifname}-oob-poll");
-    ax_task::spawn_with_name(
-        move || {
-            info!("start OOB network poll task for {ifname}");
-            block_on(poll_fn(|cx| {
-                OOB_RX_SIGNAL.register(cx.waker());
-                poll_interfaces();
-                get_service().wake_all_devices();
-                Poll::<()>::Pending
-            }));
-        },
-        task_name,
-    );
+    Ipv4Address::from_bits(bits)
 }
 
 fn next_poll_delay() -> Duration {
@@ -695,12 +713,20 @@ impl Wake for NetPollWake {
 fn net_poll_worker() {
     loop {
         let delay = next_poll_delay();
-        let timed_out =
-            NET_POLL_WAKE.wait_timeout_until(delay, || NET_POLL_REQUESTED.load(Ordering::Acquire));
-        if !timed_out {
+        let timed_out = NET_POLL_WAKE.wait_timeout_until(delay, || {
+            NET_POLL_REQUESTED.load(Ordering::Acquire)
+                || NET_IRQ_NOTIFY.is_pending()
+                || DEFERRED_POLL_WAKE_PENDING.load(Ordering::Acquire)
+        });
+        if !timed_out && NET_POLL_REQUESTED.load(Ordering::Acquire) {
             NET_POLL_REQUESTED.store(false, Ordering::Release);
         }
+        if NET_IRQ_NOTIFY.drain() {
+            get_service().wake_all_devices();
+        }
+        drain_deferred_poll_wakes();
         poll_until_idle();
+        drain_deferred_poll_wakes();
     }
 }
 

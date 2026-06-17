@@ -50,6 +50,7 @@ use core::{
 use ax_hal::time::{NANOS_PER_MICROS, wall_time_nanos};
 use ax_sync::Mutex;
 use ax_task::WaitQueue;
+use axpoll::IoEvents;
 use smoltcp::{
     iface::SocketSet,
     phy::{DeviceCapabilities, Medium},
@@ -269,6 +270,24 @@ impl DeviceHandle {
         }
         self.tx_wake.notify_one(true);
         true
+    }
+}
+
+fn register_device_poll(device: &DeviceHandle, waker: &core::task::Waker) {
+    let poll = { device.inner.lock().readiness_poll() };
+    if let Some(poll) = poll {
+        // Device poll set is cloned while holding the device lock; registration
+        // runs after releasing it.
+        unsafe { poll.register(waker, IoEvents::IN | IoEvents::OUT | IoEvents::ERR) };
+    }
+}
+
+fn wake_device_poll(device: &DeviceHandle) {
+    let poll = { device.inner.lock().readiness_poll() };
+    if let Some(poll) = poll {
+        // Device readiness has been published by the net poll task, and the
+        // device lock has been released before running wakers.
+        unsafe { poll.wake(IoEvents::IN | IoEvents::OUT | IoEvents::ERR) };
     }
 }
 
@@ -627,15 +646,15 @@ impl Router {
     /// Registers a global device-readiness waker for all devices.
     pub fn register_device_waker(&self, waker: &core::task::Waker) {
         for device in &self.devices {
-            device.inner.lock().register_waker(&device.rx_waker);
-            device.inner.lock().register_waker(waker);
+            register_device_poll(device, &device.rx_waker);
+            register_device_poll(device, waker);
         }
     }
 
     /// Forces all device RX workers to re-check their devices.
     pub fn wake_all_devices(&self) {
         for device in &self.devices {
-            device.inner.lock().wake_rx();
+            wake_device_poll(device);
             device.rx_wake.notify_one(true);
         }
     }
@@ -644,8 +663,8 @@ impl Router {
     pub fn register_waker(&self, binding: DeviceBinding, waker: &core::task::Waker) {
         for device in &self.devices {
             if binding.bound_if.is_none_or(|id| id == device.interface_id) {
-                device.inner.lock().register_waker(&device.rx_waker);
-                device.inner.lock().register_waker(waker);
+                register_device_poll(device, &device.rx_waker);
+                register_device_poll(device, waker);
             }
         }
     }
@@ -843,7 +862,7 @@ fn device_rx_worker(device: Arc<DeviceHandle>) {
         }
 
         if !received {
-            device.inner.lock().register_waker(&device.rx_waker);
+            register_device_poll(&device, &device.rx_waker);
             device.rx_wake.wait();
         }
     }

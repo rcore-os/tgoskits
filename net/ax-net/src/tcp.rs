@@ -25,7 +25,7 @@
 //! - `LISTEN_TABLE` owns passive-open child sockets and accept wakeups.
 //! - `orphan` keeps dropped sockets alive long enough for FIN/TIME-WAIT cleanup.
 
-use alloc::{sync::Arc, vec, vec::Vec};
+use alloc::{sync::Arc, task::Wake, vec, vec::Vec};
 use core::{
     net::{Ipv4Addr, SocketAddr},
     sync::atomic::{AtomicBool, AtomicI32, AtomicU32, Ordering},
@@ -114,6 +114,24 @@ pub struct TcpSocket {
 }
 
 unsafe impl Sync for TcpSocket {}
+
+struct TcpPollWake {
+    poll: Arc<PollSet>,
+    ready: IoEvents,
+}
+
+impl Wake for TcpPollWake {
+    fn wake(self: Arc<Self>) {
+        self.wake_by_ref();
+    }
+
+    fn wake_by_ref(self: &Arc<Self>) {
+        // smoltcp invokes socket wakers from the net poll task context after
+        // updating socket readiness. The socket set may still be locked there,
+        // so defer the actual PollSet wake to the net worker outer loop.
+        crate::defer_poll_wake(self.poll.clone(), self.ready);
+    }
+}
 
 impl TcpSocket {
     /// Creates a new TCP socket.
@@ -661,7 +679,8 @@ impl SocketOps for TcpSocket {
         // TODO(mivik): shutdown
         if how.has_read() {
             self.rx_closed.store(true, Ordering::Release);
-            self.poll_rx_closed.wake();
+            // rx_closed is visible before waking RDHUP/EOF waiters.
+            unsafe { self.poll_rx_closed.wake(IoEvents::RDHUP | IoEvents::IN) };
         }
 
         // stream
@@ -716,31 +735,71 @@ impl Pollable for TcpSocket {
     }
 
     fn register(&self, context: &mut Context<'_>, events: IoEvents) {
+        let mut accept_registration = None;
         if self.is_listening() && events.intersects(IoEvents::IN | IoEvents::RDHUP) {
             let port = self.bound_endpoint.lock().port;
             if port != 0 {
                 let endpoint = *self.bound_endpoint.lock();
-                let mut sockets = SOCKET_SET.inner.lock();
-                LISTEN_TABLE.register_accept_waker(endpoint, &mut sockets, context.waker());
+                if let Some(accept_poll) = LISTEN_TABLE.accept_poll(endpoint) {
+                    // accept registration runs from task poll context after
+                    // releasing the listen-table lock.
+                    unsafe { accept_poll.register(context.waker(), IoEvents::IN) };
+                    let accept_waker = LISTEN_TABLE.accept_waker(accept_poll.clone());
+                    accept_registration = Some((endpoint, accept_poll, accept_waker));
+                }
             }
         }
+        let recv_waker = if events.intersects(IoEvents::IN | IoEvents::RDHUP) {
+            // Socket registration runs from task poll context before taking the
+            // socket-set lock.
+            unsafe {
+                self.poll_rx
+                    .register(context.waker(), IoEvents::IN | IoEvents::RDHUP)
+            };
+            Some(Waker::from(Arc::new(TcpPollWake {
+                poll: self.poll_rx.clone(),
+                ready: IoEvents::IN | IoEvents::RDHUP,
+            })))
+        } else {
+            None
+        };
+        let send_waker = if events.contains(IoEvents::OUT) {
+            // Socket registration runs from task poll context before taking the
+            // socket-set lock.
+            unsafe { self.poll_tx.register(context.waker(), IoEvents::OUT) };
+            Some(Waker::from(Arc::new(TcpPollWake {
+                poll: self.poll_tx.clone(),
+                ready: IoEvents::OUT,
+            })))
+        } else {
+            None
+        };
+        if let Some((endpoint, accept_poll, accept_waker)) = accept_registration.as_ref() {
+            let mut sockets = SOCKET_SET.inner.lock();
+            LISTEN_TABLE.register_pending_accept_wakers(
+                *endpoint,
+                &mut sockets,
+                accept_poll,
+                accept_waker,
+            );
+        }
         self.with_smol_socket(|socket| {
-            if events.intersects(IoEvents::IN | IoEvents::RDHUP) {
-                self.poll_rx.register(context.waker());
-                let waker = Waker::from(self.poll_rx.clone());
-                socket.register_recv_waker(&waker);
+            if let Some(waker) = recv_waker.as_ref() {
+                socket.register_recv_waker(waker);
             }
-            if events.contains(IoEvents::OUT) {
-                self.poll_tx.register(context.waker());
-                let waker = Waker::from(self.poll_tx.clone());
-                socket.register_send_waker(&waker);
+            if let Some(waker) = send_waker.as_ref() {
+                socket.register_send_waker(waker);
             }
         });
         if events.intersects(IoEvents::IN | IoEvents::OUT | IoEvents::RDHUP) {
             self.general.register_waker(context.waker());
         }
         if events.contains(IoEvents::RDHUP) {
-            self.poll_rx_closed.register(context.waker());
+            // Registration happens from socket poll task context.
+            unsafe {
+                self.poll_rx_closed
+                    .register(context.waker(), IoEvents::RDHUP | IoEvents::IN)
+            };
         }
     }
 }

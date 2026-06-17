@@ -25,12 +25,12 @@
 //! module. The required order is `SOCKET_SET -> listen-table bucket`; this file
 //! must never acquire the outer service lock.
 
-use alloc::{boxed::Box, collections::VecDeque, sync::Arc, vec, vec::Vec};
+use alloc::{boxed::Box, collections::VecDeque, sync::Arc, task::Wake, vec, vec::Vec};
 use core::task::Waker;
 
 use ax_errno::{AxError, AxResult};
 use ax_sync::Mutex;
-use axpoll::PollSet;
+use axpoll::{IoEvents, PollSet};
 use smoltcp::{
     iface::{SocketHandle, SocketSet},
     socket::tcp::{self, SocketBuffer, State},
@@ -69,6 +69,23 @@ pub(crate) struct AcceptedTcp {
 #[derive(Clone, Copy)]
 struct PendingTcp {
     accepted: AcceptedTcp,
+}
+
+struct AcceptWake {
+    poll: Arc<PollSet>,
+}
+
+impl Wake for AcceptWake {
+    fn wake(self: Arc<Self>) {
+        self.wake_by_ref();
+    }
+
+    fn wake_by_ref(self: &Arc<Self>) {
+        // smoltcp invokes this from the net poll task context after publishing
+        // child socket readiness. Defer the actual PollSet wake until the net
+        // worker has released service/socket locks.
+        crate::defer_poll_wake(self.poll.clone(), IoEvents::IN);
+    }
 }
 
 impl ListenTableEntryInner {
@@ -241,26 +258,40 @@ impl ListenTable {
         Err(AxError::WouldBlock)
     }
 
-    /// Registers a waker for listener readiness and queued child progress.
-    pub fn register_accept_waker(
+    /// Returns the listener readiness poll set for lock-free registration.
+    pub fn accept_poll(&self, listen_endpoint: IpListenEndpoint) -> Option<Arc<PollSet>> {
+        let entries = self.listen_entry(listen_endpoint.port);
+        let table = entries.lock();
+        table
+            .iter()
+            .find(|entry| entry.listen_endpoint == listen_endpoint)
+            .map(|entry| entry.accept_poll.clone())
+    }
+
+    /// Builds the smoltcp child-progress waker for a listener poll set.
+    pub fn accept_waker(&self, accept_poll: Arc<PollSet>) -> Waker {
+        Waker::from(Arc::new(AcceptWake { poll: accept_poll }))
+    }
+
+    /// Registers a waker for queued child progress.
+    pub fn register_pending_accept_wakers(
         &self,
         listen_endpoint: IpListenEndpoint,
         sockets: &mut SocketSet<'_>,
+        accept_poll: &Arc<PollSet>,
         waker: &Waker,
     ) {
         let entries = self.listen_entry(listen_endpoint.port);
         let table = entries.lock();
-        if let Some(entry) = table
-            .iter()
-            .find(|entry| entry.listen_endpoint == listen_endpoint)
-        {
-            entry.accept_poll.register(waker);
-            let accept_waker = Waker::from(entry.accept_poll.clone());
-            for pending in &entry.syn_queue {
-                let socket: &mut tcp::Socket = sockets.get_mut(pending.accepted.handle);
-                socket.register_recv_waker(&accept_waker);
-                socket.register_send_waker(&accept_waker);
-            }
+        let Some(entry) = table.iter().find(|entry| {
+            entry.listen_endpoint == listen_endpoint && Arc::ptr_eq(&entry.accept_poll, accept_poll)
+        }) else {
+            return;
+        };
+        for pending in &entry.syn_queue {
+            let socket: &mut tcp::Socket = sockets.get_mut(pending.accepted.handle);
+            socket.register_recv_waker(waker);
+            socket.register_send_waker(waker);
         }
     }
 
@@ -272,11 +303,14 @@ impl ListenTable {
         sockets: &mut SocketSet<'_>,
     ) {
         let entries = self.listen_entry(dst.port);
-        let mut table = entries.lock();
-        if let Some(entry) = table
-            .iter_mut()
-            .find(|entry| entry.can_accept_endpoint(dst))
-        {
+        let wake_poll = {
+            let mut table = entries.lock();
+            let Some(entry) = table
+                .iter_mut()
+                .find(|entry| entry.can_accept_endpoint(dst))
+            else {
+                return;
+            };
             if entry.syn_queue.len() >= entry.backlog {
                 // SYN queue is full, drop the packet
                 warn!("SYN queue overflow!");
@@ -312,8 +346,12 @@ impl ListenTable {
                     remote_endpoint: src,
                 },
             });
-            entry.accept_poll.wake();
-        }
+            entry.accept_poll.clone()
+        };
+        // The child has been queued before waking accept waiters. The
+        // socket-set/service locks are still held by the caller, so defer
+        // the actual PollSet wake to the net worker outer loop.
+        crate::defer_poll_wake(wake_poll, IoEvents::IN);
     }
 }
 

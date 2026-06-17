@@ -539,7 +539,8 @@ impl Pollable for Card0 {
 
     fn register(&self, context: &mut Context<'_>, events: IoEvents) {
         if events.contains(IoEvents::IN) {
-            self.poll_rx.register(context.waker());
+            // Registration happens from DRM file poll task context.
+            unsafe { self.poll_rx.register(context.waker(), IoEvents::IN) };
         }
     }
 }
@@ -1262,7 +1263,8 @@ impl Card0 {
             }
         };
         if enqueued {
-            self.poll_rx.wake();
+            // DRM event is queued before waking readers.
+            unsafe { self.poll_rx.wake(IoEvents::IN) };
         }
     }
 

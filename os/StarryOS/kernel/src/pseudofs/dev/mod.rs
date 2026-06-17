@@ -9,6 +9,8 @@ mod drm;
 #[cfg(feature = "input")]
 pub mod event;
 mod fb;
+#[cfg(feature = "sg2002")]
+mod irq_byte_ring;
 #[cfg(feature = "k230-kpu")]
 mod kpu;
 #[cfg(feature = "dev-log")]
