@@ -32,8 +32,8 @@ use crate::{
     file::FD_TABLE,
     mm::BackendFileInfo,
     pseudofs::{
-        DirMaker, DirMapping, NodeOpsMux, RwFile, SeqObject, SimpleDir,
-        SimpleDirOps, SimpleFile, SimpleFileOperation, SimpleFs, SpecialFsFile,
+        DirMaker, DirMapping, NodeOpsMux, RwFile, SeqObject, SimpleDir, SimpleDirOps, SimpleFile,
+        SimpleFileOperation, SimpleFs, SpecialFsFile,
     },
     task::{
         AsThread, ProcessData, TaskStat, get_process_data, get_task, processes, tasks,
