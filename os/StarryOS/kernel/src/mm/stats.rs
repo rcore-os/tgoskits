@@ -4,9 +4,7 @@
 //! page-table walk. Real RSS accounting (populate/unmap counters or PTE walk)
 //! is deferred to Plan2; until then see the `FIXME(plan2-rss)` in [`Self::collect`].
 
-#[cfg(test)]
-use alloc::format;
-use alloc::string::String;
+use alloc::{format, string::String};
 
 use ax_memory_addr::{PAGE_SIZE_4K, VirtAddr};
 use ax_runtime::hal::paging::MappingFlags;
@@ -176,7 +174,6 @@ impl ProcessMemStats {
     }
 
     /// Render `/proc/[pid]/statm` (size resident shared text lib data dirty).
-    #[cfg(test)]
     pub fn format_statm(&self) -> String {
         format!(
             "{} {} {} {} 0 {} 0\n",
@@ -189,7 +186,6 @@ impl ProcessMemStats {
     }
 
     /// Render Vm* lines for `/proc/[pid]/status` (kB, Linux `task_mem` layout).
-    #[cfg(test)]
     pub fn format_status_vm_lines(&self) -> String {
         let page_kb = PAGE_SIZE_4K as u64 / 1024;
         let vss_kb = self.vss_pages * page_kb;
