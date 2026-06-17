@@ -8,7 +8,7 @@ use some_serial::ns16550::rockchip_fiq::{
     RockchipFiqSerial,
 };
 
-use super::{PlatformSerialDevice, SerialDeviceInfo, prop_u32, serial_binding_info};
+use super::{PlatformSerialDevice, SerialDeviceInfo, prop_u32};
 use crate::BindingInfo;
 
 model_register!(
@@ -46,7 +46,7 @@ fn probe(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
         fdt_config.config.serial_id, fdt_config.config.baudrate, fdt_config.config.irq_mode_enabled
     );
     let binding_info = if fdt_config.config.irq_mode_enabled {
-        serial_binding_info(&info, &fdt_config.uart_path)
+        uart_binding_info(&live_fdt, &fdt_config.uart_path)?
     } else {
         BindingInfo::empty()
     };
@@ -59,12 +59,44 @@ fn probe(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
             mapped_base: base,
             baudrate: serial.baudrate(),
             irq_num: binding_info.irq_num(),
-            rx_polling_required: true,
+            rx_polling_required: false,
             binding_info,
         },
         serial,
     ));
     Ok(())
+}
+
+fn uart_binding_info(fdt: &Fdt, uart_path: &str) -> Result<BindingInfo, OnProbeError> {
+    let uart = fdt
+        .get_by_path(uart_path)
+        .ok_or_else(|| OnProbeError::other(format!("{uart_path} node not found")))?;
+    let Some(interrupt) = uart.interrupts().into_iter().next() else {
+        warn!("{uart_path} has no UART IRQ; FIQ serial tty will not be interrupt driven");
+        return Ok(BindingInfo::empty());
+    };
+    let interrupt_parent = rdrive::fdt_phandle_to_device_id(interrupt.interrupt_parent)
+        .ok_or_else(|| {
+            OnProbeError::other(format!(
+                "failed to resolve interrupt parent {:?} for {uart_path}",
+                interrupt.interrupt_parent
+            ))
+        })?;
+    let intc = rdrive::get::<rdif_intc::Intc>(interrupt_parent).map_err(|err| {
+        OnProbeError::other(format!(
+            "failed to get interrupt controller {:?} for {uart_path}: {err:?}",
+            interrupt_parent
+        ))
+    })?;
+    let mut intc = intc.lock().map_err(|err| {
+        OnProbeError::other(format!(
+            "failed to lock interrupt controller {:?} for {uart_path}: {err:?}",
+            interrupt_parent
+        ))
+    })?;
+    Ok(BindingInfo::with_irq(Some(
+        intc.setup_irq_by_fdt(&interrupt.specifier).into(),
+    )))
 }
 
 struct RockchipFiqFdtConfig {

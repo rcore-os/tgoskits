@@ -395,6 +395,7 @@ mod tests {
         assert_eq!(rx.try_read(&mut empty), Ok(0));
         assert_eq!(state.poll_status_count.load(Ordering::Acquire), 0);
 
+        state.set_rx_bytes(b"a");
         state.set_irq_event(SerialEvent::TX_READY | SerialEvent::RX_READY);
         assert_eq!(
             irq.handle_irq(),
@@ -443,6 +444,29 @@ mod tests {
     }
 
     #[test]
+    fn irq_prefetches_rx_burst_into_queue_state() {
+        let (raw, state) = MockSerial::new_shared(0x1000);
+        let mut serial = SerialDyn::new_boxed(raw);
+        let mut rx = serial.take_rx().expect("RX handle should be available");
+        let irq = serial
+            .take_irq_handler()
+            .expect("IRQ handler should be available");
+
+        state.set_rx_bytes(b"abc");
+        state.set_irq_event(SerialEvent::RX_READY);
+        assert!(irq.handle_irq().rx_ready());
+
+        let mut out = [0; 3];
+        for slot in &mut out {
+            assert_eq!(rx.try_read(core::slice::from_mut(slot)), Ok(1));
+        }
+        assert_eq!(&out, b"abc");
+        assert_eq!(rx.try_read(&mut [0]), Ok(0));
+        assert!(!rx.poll().rx_ready());
+        assert_eq!(state.poll_status_count.load(Ordering::Acquire), 0);
+    }
+
+    #[test]
     fn irq_pending_while_raw_busy_is_drained_by_next_irq_handler_call() {
         let (raw, state) = MockSerial::new_shared(0x1000);
         let mut serial = SerialDyn::new_boxed(raw);
@@ -476,8 +500,10 @@ mod tests {
     }
 
     struct MockState {
-        packed: AtomicU32,
-        bytes: AtomicUsize,
+        tx_packed: AtomicU32,
+        tx_bytes: AtomicUsize,
+        rx_packed: AtomicU32,
+        rx_bytes: AtomicUsize,
         irq_count: AtomicUsize,
         poll_status_count: AtomicUsize,
         poll_event: AtomicU32,
@@ -494,8 +520,10 @@ mod tests {
 
         fn new_shared(base: usize) -> (Self, Arc<MockState>) {
             let state = Arc::new(MockState {
-                packed: AtomicU32::new(0),
-                bytes: AtomicUsize::new(0),
+                tx_packed: AtomicU32::new(0),
+                tx_bytes: AtomicUsize::new(0),
+                rx_packed: AtomicU32::new(0),
+                rx_bytes: AtomicUsize::new(0),
                 irq_count: AtomicUsize::new(0),
                 poll_status_count: AtomicUsize::new(0),
                 poll_event: AtomicU32::new(SerialEvent::TX_READY.bits()),
@@ -515,6 +543,19 @@ mod tests {
     impl MockState {
         fn set_irq_event(&self, event: SerialEvent) {
             self.irq_event.store(event.bits(), Ordering::Release);
+        }
+
+        fn set_rx_bytes(&self, bytes: &[u8]) {
+            assert!(
+                bytes.len() <= 4,
+                "mock packs at most four RX bytes into a u32"
+            );
+            let mut packed = 0u32;
+            for (index, byte) in bytes.iter().copied().enumerate() {
+                packed |= (byte as u32) << (index * 8);
+            }
+            self.rx_packed.store(packed, Ordering::Release);
+            self.rx_bytes.store(bytes.len(), Ordering::Release);
         }
 
         fn set_reenter_irq(&self, irq: &BIrqHandler) {
@@ -606,21 +647,23 @@ mod tests {
                 }
             }
 
-            let index = self.state.bytes.fetch_add(1, Ordering::AcqRel);
-            let mut packed = self.state.packed.load(Ordering::Acquire);
+            let index = self.state.tx_bytes.fetch_add(1, Ordering::AcqRel);
+            let mut packed = self.state.tx_packed.load(Ordering::Acquire);
             packed |= (byte as u32) << (index * 8);
-            self.state.packed.store(packed, Ordering::Release);
+            self.state.tx_packed.store(packed, Ordering::Release);
         }
 
         fn read_byte(&mut self, status: SerialEvent) -> Option<Result<u8, TransferError>> {
             if !status.rx_ready() && !status.rx_error() {
                 return None;
             }
-            let available = self.state.bytes.swap(0, Ordering::AcqRel);
+            let available = self.state.rx_bytes.load(Ordering::Acquire);
             if available == 0 {
                 return None;
             }
-            let packed = self.state.packed.load(Ordering::Acquire);
+            let packed = self.state.rx_packed.load(Ordering::Acquire);
+            self.state.rx_packed.store(packed >> 8, Ordering::Release);
+            self.state.rx_bytes.fetch_sub(1, Ordering::AcqRel);
             Some(Ok((packed & 0xff) as u8))
         }
 

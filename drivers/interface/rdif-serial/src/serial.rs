@@ -23,6 +23,7 @@ const TX_EVENT_MASK: crate::SerialEvent =
 const RX_EVENT_MASK: crate::SerialEvent = crate::SerialEvent::RX_READY
     .union(crate::SerialEvent::RX_ERROR)
     .union(crate::SerialEvent::OVERRUN);
+const RX_IRQ_BUFFER_CAP: usize = 4096;
 
 pub struct SerialDyn<T: InterfaceRaw> {
     name: String,
@@ -219,7 +220,7 @@ impl<T: InterfaceRaw> SerialCore<T> {
         }
     }
 
-    fn with_raw<R>(&self, borrower: u8, f: impl FnOnce(&mut T) -> R) -> Option<R> {
+    fn with_borrow<R>(&self, borrower: u8, f: impl FnOnce() -> R) -> Option<R> {
         if self
             .borrow
             .compare_exchange(BORROW_IDLE, borrower, Ordering::Acquire, Ordering::Relaxed)
@@ -231,8 +232,12 @@ impl<T: InterfaceRaw> SerialCore<T> {
         let _guard = BorrowGuard {
             borrow: &self.borrow,
         };
-        let result = f(unsafe { &mut *self.raw.get() });
+        let result = f();
         Some(result)
+    }
+
+    fn with_raw<R>(&self, borrower: u8, f: impl FnOnce(&mut T) -> R) -> Option<R> {
+        self.with_borrow(borrower, || f(unsafe { &mut *self.raw.get() }))
     }
 
     fn set_irq_mask(&self, mask: InterruptMask) {
@@ -291,6 +296,11 @@ impl DirectionState {
             self.status.fetch_and(!self.mask.bits(), Ordering::AcqRel),
         ) & self.mask
     }
+
+    fn set(&self, event: crate::SerialEvent) {
+        self.status
+            .store((event & self.mask).bits(), Ordering::Release);
+    }
 }
 
 struct TxShared<T: InterfaceRaw> {
@@ -314,18 +324,117 @@ impl<T: InterfaceRaw> TxShared<T> {
 struct RxShared<T: InterfaceRaw> {
     core: Arc<SerialCore<T>>,
     state: DirectionState,
+    ring: UnsafeCell<RxRing>,
 }
+
+// SAFETY: `RxShared::ring` is only accessed while holding the matching
+// `SerialCore` borrow gate in the RX or IRQ path. The gate excludes task RX
+// reads from hard-IRQ RX fills without requiring a mutex in the IRQ callback.
+unsafe impl<T: InterfaceRaw> Sync for RxShared<T> {}
 
 impl<T: InterfaceRaw> RxShared<T> {
     fn new(core: Arc<SerialCore<T>>) -> Self {
         Self {
             core,
             state: DirectionState::new(RX_EVENT_MASK),
+            ring: UnsafeCell::new(RxRing::new()),
         }
     }
 
     fn record(&self, event: crate::SerialEvent) {
         self.state.record(event);
+    }
+
+    fn push_irq_item(&self, item: Result<u8, TransferError>) -> bool {
+        let pushed = unsafe { &mut *self.ring.get() }.push_back(item);
+        self.refresh_ring_state();
+        pushed
+    }
+
+    fn pop_item(&self) -> Option<Result<u8, TransferError>> {
+        let item = unsafe { &mut *self.ring.get() }.pop_front();
+        self.refresh_ring_state();
+        item
+    }
+
+    fn refresh_ring_state(&self) {
+        self.state.set(unsafe { &*self.ring.get() }.event());
+    }
+}
+
+#[derive(Clone, Copy)]
+struct RxItem(Option<Result<u8, TransferError>>);
+
+impl RxItem {
+    const EMPTY: Self = Self(None);
+}
+
+struct RxRing {
+    buf: [RxItem; RX_IRQ_BUFFER_CAP],
+    head: usize,
+    len: usize,
+    rx_error_len: usize,
+    overrun_len: usize,
+}
+
+impl RxRing {
+    const fn new() -> Self {
+        Self {
+            buf: [RxItem::EMPTY; RX_IRQ_BUFFER_CAP],
+            head: 0,
+            len: 0,
+            rx_error_len: 0,
+            overrun_len: 0,
+        }
+    }
+
+    fn push_back(&mut self, item: Result<u8, TransferError>) -> bool {
+        if self.len == RX_IRQ_BUFFER_CAP {
+            return false;
+        }
+        if let Err(kind) = item {
+            self.rx_error_len += 1;
+            if matches!(kind, TransferError::Overrun(_)) {
+                self.overrun_len += 1;
+            }
+        }
+        let tail = (self.head + self.len) % RX_IRQ_BUFFER_CAP;
+        self.buf[tail] = RxItem(Some(item));
+        self.len += 1;
+        true
+    }
+
+    fn pop_front(&mut self) -> Option<Result<u8, TransferError>> {
+        if self.len == 0 {
+            return None;
+        }
+        let item = self.buf[self.head]
+            .0
+            .take()
+            .expect("ring slot must contain an item while len is non-zero");
+        if let Err(kind) = item {
+            self.rx_error_len -= 1;
+            if matches!(kind, TransferError::Overrun(_)) {
+                self.overrun_len -= 1;
+            }
+        }
+        self.head = (self.head + 1) % RX_IRQ_BUFFER_CAP;
+        self.len -= 1;
+        Some(item)
+    }
+
+    fn event(&self) -> crate::SerialEvent {
+        let mut event = crate::SerialEvent::empty();
+        if self.len > 0 {
+            event |= crate::SerialEvent::RX_READY;
+        }
+        if self.rx_error_len > 0 {
+            event |= crate::SerialEvent::RX_ERROR;
+        }
+        if self.overrun_len > 0 {
+            event |= crate::SerialEvent::OVERRUN;
+        }
+        event
     }
 }
 
@@ -407,37 +516,29 @@ impl<T: InterfaceRaw> TRxQueue for RxQueue<T> {
         let Some(byte) = bytes.first_mut() else {
             return Ok(0);
         };
-        let status = self.rx.state.take();
-        if !status.rx_ready() && !status.rx_error() {
-            self.rx.record(status);
+        let Some(item) = self.rx.core.with_borrow(BORROW_RX, || self.rx.pop_item()) else {
             return Ok(0);
-        }
-        let Some(result) = self
-            .rx
-            .core
-            .with_raw(BORROW_RX, |control| control.read_byte(status))
-        else {
-            self.rx.record(status);
+        };
+        let Some(result) = item else {
             return Ok(0);
         };
 
         match result {
-            Some(Ok(b)) => {
+            Ok(b) => {
                 *byte = b;
                 Ok(1)
             }
-            Some(Err(TransferError::Overrun(b))) => {
+            Err(TransferError::Overrun(b)) => {
                 *byte = b;
                 Err(TransBytesError {
                     bytes_transferred: 1,
                     kind: TransferError::Overrun(b),
                 })
             }
-            Some(Err(kind)) => Err(TransBytesError {
+            Err(kind) => Err(TransBytesError {
                 bytes_transferred: 0,
                 kind,
             }),
-            None => Ok(0),
         }
     }
 }
@@ -471,10 +572,11 @@ impl<T: InterfaceRaw> TIrqHandler for IrqHandler<T> {
 
 impl<T: InterfaceRaw> IrqHandler<T> {
     fn handle_current_irq(&self) -> crate::SerialEvent {
-        if let Some(event) = self
-            .core
-            .with_raw(BORROW_IRQ, |control| control.handle_irq())
-        {
+        if let Some(event) = self.core.with_borrow(BORROW_IRQ, || {
+            let control = unsafe { &mut *self.core.raw.get() };
+            let event = control.handle_irq();
+            self.handle_raw_irq(control, event)
+        }) {
             record_event(&self.tx, &self.rx, event)
         } else {
             self.core.set_pending_irq();
@@ -483,15 +585,44 @@ impl<T: InterfaceRaw> IrqHandler<T> {
     }
 
     fn handle_pending_irq(&self) -> crate::SerialEvent {
-        if let Some(event) = self
-            .core
-            .with_raw(BORROW_IRQ, |control| control.handle_irq())
-        {
+        if let Some(event) = self.core.with_borrow(BORROW_IRQ, || {
+            let control = unsafe { &mut *self.core.raw.get() };
+            let event = control.handle_irq();
+            self.handle_raw_irq(control, event)
+        }) {
             record_event(&self.tx, &self.rx, event)
         } else {
             self.core.set_pending_irq();
             self.tx.state.poll() | self.rx.state.poll()
         }
+    }
+
+    fn handle_raw_irq(
+        &self,
+        control: &mut T,
+        first_event: crate::SerialEvent,
+    ) -> crate::SerialEvent {
+        let mut event = crate::SerialEvent::empty();
+        let mut current = first_event;
+
+        loop {
+            event |= current;
+            if !current.intersects(RX_EVENT_MASK) {
+                break;
+            }
+
+            let Some(item) = control.read_byte(current) else {
+                break;
+            };
+            if !self.rx.push_irq_item(item) {
+                event |= crate::SerialEvent::RX_ERROR | crate::SerialEvent::OVERRUN;
+                break;
+            }
+
+            current = control.handle_irq();
+        }
+
+        event | self.rx.state.poll()
     }
 }
 
