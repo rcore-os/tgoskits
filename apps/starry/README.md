@@ -145,8 +145,10 @@ app overlay, then runs nginx smoke tests inside StarryOS.
 cargo xtask starry app qemu -t nginx --arch x86_64
 ```
 
-`apps/starry/nginx` maintains four directories: `smoke`, `phase`, `stress`, and
-`debug`. Currently only smoke is connected as nginx test entry in tgoskits workflows.
+`apps/starry/nginx` keeps the CI-discovered smoke QEMU configs at the app root,
+and keeps manual `all`/`phase`/`debug` QEMU configs under `qemu/`. The guest
+entrypoint is `runner/nginx-runner.sh`; currently only smoke is connected as the
+nginx test entry in tgoskits workflows.
 
 ## Orange Pi 5 Plus UVC
 
