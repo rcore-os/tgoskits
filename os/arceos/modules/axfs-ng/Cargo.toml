@@ -1,6 +1,6 @@
 [package]
 name = "ax-fs-ng"
-version = "0.5.14"
+version = "0.5.19"
 repository = "https://github.com/rcore-os/tgoskits"
 edition.workspace = true
 authors = ["Mivik <mivikq@gmail.com>"]
@@ -17,7 +17,6 @@ std = ["lwext4_rust?/std"]
 
 [dependencies]
 ax-alloc = { workspace = true }
-ax-driver = { workspace = true, features = ["block"] }
 ax-errno = { workspace = true }
 axfs-ng-vfs = { workspace = true }
 ax-hal = { workspace = true }

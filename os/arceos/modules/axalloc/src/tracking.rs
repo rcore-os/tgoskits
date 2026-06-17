@@ -12,6 +12,10 @@ pub(crate) static TRACKING_ENABLED: AtomicBool = AtomicBool::new(false);
 
 #[ax_percpu::def_percpu]
 pub(crate) static IN_GLOBAL_ALLOCATOR: bool = false;
+// Re-entrancy note: `Backtrace::capture()` now uses `InlineFrames` (stack-allocated
+// array, no heap) so it does NOT re-enter the allocator. The `IN_GLOBAL_ALLOCATOR`
+// guard remains as a safety net for any future code paths that might allocate
+// during backtrace capture.
 
 /// Metadata for each allocation made by the global allocator.
 #[derive(Debug)]

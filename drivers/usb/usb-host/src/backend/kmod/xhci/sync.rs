@@ -1,12 +1,15 @@
 use alloc::sync::Arc;
 use core::cell::UnsafeCell;
 
-use spin::{Mutex, RwLock};
+use spin::{
+    RwLock,
+    mutex::{SpinMutex, SpinMutexGuard},
+};
 
 use super::reg::{DisableIrqGuard, XhciRegisters};
 
 pub(crate) struct IrqLock<T> {
-    inner: Mutex<()>,
+    inner: SpinMutex<()>,
     reg: Arc<RwLock<XhciRegisters>>,
     data: UnsafeCell<T>,
 }
@@ -17,7 +20,7 @@ unsafe impl<T> Send for IrqLock<T> where T: Send {}
 impl<T> IrqLock<T> {
     pub fn new(data: T, reg: Arc<RwLock<XhciRegisters>>) -> Self {
         Self {
-            inner: Mutex::new(()),
+            inner: SpinMutex::new(()),
             reg,
             data: UnsafeCell::new(data),
         }
@@ -33,6 +36,13 @@ impl<T> IrqLock<T> {
         }
     }
 
+    /// # Safety
+    ///
+    /// The caller must run from the xHCI interrupt/event path while no task
+    /// side `lock()` guard is alive. Task-side mutation uses `lock()`, which
+    /// disables the controller interrupter before taking the mutex. This
+    /// method deliberately avoids taking the mutex so the interrupt hot path
+    /// can only touch state that was pre-registered under that protocol.
     #[allow(clippy::mut_from_ref)]
     pub unsafe fn force_use(&self) -> &mut T {
         unsafe { &mut *self.data.get() }
@@ -40,12 +50,12 @@ impl<T> IrqLock<T> {
 }
 
 pub(crate) struct IrqLockGuard<'a, T> {
-    _guard: spin::MutexGuard<'a, ()>,
+    _guard: SpinMutexGuard<'a, ()>,
     data: &'a mut T,
     _disable_guard: DisableIrqGuard,
 }
 
-impl<'a, T> core::ops::Deref for IrqLockGuard<'a, T> {
+impl<T> core::ops::Deref for IrqLockGuard<'_, T> {
     type Target = T;
 
     fn deref(&self) -> &Self::Target {
@@ -53,7 +63,7 @@ impl<'a, T> core::ops::Deref for IrqLockGuard<'a, T> {
     }
 }
 
-impl<'a, T> core::ops::DerefMut for IrqLockGuard<'a, T> {
+impl<T> core::ops::DerefMut for IrqLockGuard<'_, T> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         self.data
     }

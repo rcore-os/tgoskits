@@ -20,7 +20,21 @@ pub trait ArchConsoleOps {
     fn read_byte() -> Option<u8> {
         None
     }
+
+    fn irq_num() -> Option<usize> {
+        None
+    }
+
+    fn set_input_irq_enabled(_enabled: bool) {}
+
+    fn handle_irq() -> u32 {
+        0
+    }
 }
+
+pub const CONSOLE_IRQ_RX_READY: u32 = 1 << 0;
+pub const CONSOLE_IRQ_RX_ERROR: u32 = 1 << 1;
+pub const CONSOLE_IRQ_OVERRUN: u32 = 1 << 2;
 
 pub(crate) fn debug_to_memory_desc() -> Option<MemoryDescriptor> {
     let debug_base = unsafe { DEBUG_BASE };
@@ -162,9 +176,9 @@ pub fn set_earlycon_sender(sender: Sender) {
     }
 }
 
-pub fn set_earlycon_reciever(reciever: Reciever) {
+pub fn set_earlycon_receiver(receiver: Receiver) {
     unsafe {
-        *EARLYCON_RECIEVER.0.get() = Some(reciever);
+        *EARLYCON_RECEIVER.0.get() = Some(receiver);
     }
 }
 
@@ -174,8 +188,8 @@ pub fn read_byte() -> Option<u8> {
     }
 
     unsafe {
-        if let Some(ref mut reciever) = *EARLYCON_RECIEVER.0.get() {
-            match reciever.read_byte() {
+        if let Some(ref mut receiver) = *EARLYCON_RECEIVER.0.get() {
+            match receiver.read_byte() {
                 Some(Ok(byte)) => Some(byte),
                 _ => None,
             }
@@ -183,6 +197,18 @@ pub fn read_byte() -> Option<u8> {
             None
         }
     }
+}
+
+pub fn irq_num() -> Option<usize> {
+    <crate::arch::Arch as crate::ArchTrait>::Console::irq_num()
+}
+
+pub fn set_input_irq_enabled(enabled: bool) {
+    <crate::arch::Arch as crate::ArchTrait>::Console::set_input_irq_enabled(enabled);
+}
+
+pub fn handle_irq() -> u32 {
+    <crate::arch::Arch as crate::ArchTrait>::Console::handle_irq()
 }
 
 static EARLYCON_SENDER: EarlyconSenderCell = EarlyconSenderCell(UnsafeCell::new(None));
@@ -204,12 +230,12 @@ impl Con for EarlyconSenderCell {
     }
 }
 
-static EARLYCON_RECIEVER: EarlyconRecieverCell = EarlyconRecieverCell(UnsafeCell::new(None));
+static EARLYCON_RECEIVER: EarlyconReceiverCell = EarlyconReceiverCell(UnsafeCell::new(None));
 
 #[allow(dead_code)]
-struct EarlyconRecieverCell(UnsafeCell<Option<Reciever>>);
+struct EarlyconReceiverCell(UnsafeCell<Option<Receiver>>);
 
-unsafe impl Sync for EarlyconRecieverCell {}
+unsafe impl Sync for EarlyconReceiverCell {}
 
 pub fn set_earlycon_by_cmdline() -> Result<(), &'static str> {
     let config = crate::cmdline::earlycon().ok_or("No earlycon parameter found")?;
@@ -223,7 +249,7 @@ pub fn set_earlycon_by_cmdline() -> Result<(), &'static str> {
                     let tx = uart.take_tx().ok_or("failed to take io sender")?;
                     let rx = uart.take_rx().ok_or("failed to take io receiver")?;
                     set_earlycon_sender(tx);
-                    set_earlycon_reciever(rx);
+                    set_earlycon_receiver(rx);
                     false
                 }
                 #[cfg(not(target_arch = "x86_64"))]
@@ -263,7 +289,7 @@ fn set_pl011(config: &EarlyconConfig) -> Result<(), &'static str> {
     let rx = serial.take_rx().ok_or("no rx")?;
 
     set_earlycon_sender(tx);
-    set_earlycon_reciever(rx);
+    set_earlycon_receiver(rx);
 
     Ok(())
 }
@@ -286,7 +312,7 @@ fn set_16550_mmio(config: &EarlyconConfig) -> Result<(), &'static str> {
     let rx = serial.take_rx().ok_or("no rx")?;
 
     set_earlycon_sender(tx);
-    set_earlycon_reciever(rx);
+    set_earlycon_receiver(rx);
 
     Ok(())
 }

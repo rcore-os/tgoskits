@@ -1,6 +1,6 @@
-use alloc::vec::Vec;
+use alloc::{format, vec::Vec};
 use core::{
-    fmt::{Debug, Display},
+    fmt::{self, Debug, Display},
     ops::{Deref, DerefMut, Range},
 };
 
@@ -180,21 +180,80 @@ impl Display for Endpoint {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         let address = self.base.address();
         let class_info = self.base.revision_and_class();
-        let device_type = self.device_type();
-        let class_name = format!("{device_type:?}");
+        EndpointIdentity {
+            segment: address.segment(),
+            bus: address.bus(),
+            device: address.device(),
+            function: address.function(),
+            device_type: self.device_type(),
+            vendor_id: self.base.vendor_id(),
+            device_id: self.base.device_id(),
+            revision_id: class_info.revision_id,
+            interface: class_info.interface,
+        }
+        .fmt(f)
+    }
+}
 
+struct EndpointIdentity {
+    segment: u16,
+    bus: u8,
+    device: u8,
+    function: u8,
+    device_type: DeviceType,
+    vendor_id: u16,
+    device_id: u16,
+    revision_id: u8,
+    interface: u8,
+}
+
+impl Display for EndpointIdentity {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let device_type = format!("{:?}", self.device_type);
         write!(
             f,
-            "{:04x}:{:02x}:{:02x}.{} {:<24} {:04x}:{:04x} (rev {:02x}, prog-if {:02x})",
-            address.segment(),
-            address.bus(),
-            address.device(),
-            address.function(),
-            class_name,
-            self.base.vendor_id(),
-            self.base.device_id(),
-            class_info.revision_id,
-            class_info.interface,
+            "{:04x}:{:02x}:{:02x}.{} {:24} {:04x}:{:04x} (rev {:02x}, prog-if {:02x})",
+            self.segment,
+            self.bus,
+            self.device,
+            self.function,
+            device_type,
+            self.vendor_id,
+            self.device_id,
+            self.revision_id,
+            self.interface,
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use alloc::format;
+
+    use pci_types::device_type::DeviceType;
+
+    use super::EndpointIdentity;
+
+    #[test]
+    fn endpoint_identity_pads_device_type_for_aligned_output() {
+        let rendered = format!(
+            "{}",
+            EndpointIdentity {
+                segment: 0,
+                bus: 0,
+                device: 1,
+                function: 0,
+                device_type: DeviceType::UsbController,
+                vendor_id: 0x1234,
+                device_id: 0x5678,
+                revision_id: 1,
+                interface: 0x30,
+            }
+        );
+
+        assert_eq!(
+            rendered,
+            "0000:00:01.0 UsbController            1234:5678 (rev 01, prog-if 30)"
+        );
     }
 }

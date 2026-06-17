@@ -43,6 +43,10 @@ impl Sdhci {
             Ok(CommandPoll::Complete) => self
                 .take_command_response()
                 .map(CommandResponsePoll::Complete),
+            // Future CommandPoll variants: treat as best-effort harvest, same as Err path.
+            Ok(_) => self
+                .take_command_response()
+                .map(CommandResponsePoll::Complete),
             Err(_) => self
                 .take_command_response()
                 .map(CommandResponsePoll::Complete),
@@ -92,7 +96,17 @@ impl Sdhci {
 
         let (normal, error) = self.take_command_irq_status();
         if normal & NORMAL_INT_CMD_COMPLETE != 0 {
-            let response = decode_response(self, cmd.resp_type)?;
+            let response = match decode_response(self, cmd.resp_type) {
+                Ok(r) => r,
+                Err(err) => {
+                    // Park the FSM in Failed before propagating: bare `?` would
+                    // leave it in Issued while the IRQ status bits are already
+                    // cleared, so the next poll would idle until the caller's
+                    // own timeout fires.
+                    self.command_state = CommandState::Failed { error: err };
+                    return Err(err);
+                }
+            };
             log::debug!("sdhci: CMD{} response {:?}", cmd.cmd, response);
             self.command_state = CommandState::Complete { response };
             Ok(CommandPoll::Complete)
@@ -151,6 +165,11 @@ impl Sdhci {
         }
     }
 
+    pub(crate) fn clear_cached_irq_status(&mut self) {
+        self.irq_pending_normal = 0;
+        self.irq_pending_error = 0;
+    }
+
     pub(crate) fn take_data_irq_status(&mut self) -> (u16, u16) {
         let normal_hw = self.read_u16(REG_NORMAL_INT_STATUS);
         let error_hw = if normal_hw & NORMAL_INT_ERROR != 0 {
@@ -175,14 +194,28 @@ impl Sdhci {
         (normal, error)
     }
 
-    pub(crate) fn take_fifo_irq_status(&mut self, mask: u16) -> u16 {
+    pub(crate) fn take_fifo_irq_status(&mut self, mask: u16) -> (u16, u16) {
         let normal_hw = self.read_u16(REG_NORMAL_INT_STATUS);
+        let consume_error = mask & NORMAL_INT_ERROR != 0;
+        let error_hw = if consume_error && normal_hw & NORMAL_INT_ERROR != 0 {
+            self.read_u16(REG_ERROR_INT_STATUS)
+        } else {
+            0
+        };
         let consume_normal = normal_hw & mask;
         if consume_normal != 0 {
             self.write_u16(REG_NORMAL_INT_STATUS, consume_normal);
         }
+        if error_hw != 0 {
+            self.write_u16(REG_ERROR_INT_STATUS, error_hw);
+        }
 
-        take_cached_irq_status(&mut self.irq_pending_normal, normal_hw, mask)
+        let normal = take_cached_irq_status(&mut self.irq_pending_normal, normal_hw, mask);
+        let error = self.irq_pending_error | error_hw;
+        if consume_error && error != 0 && normal & NORMAL_INT_ERROR != 0 {
+            self.irq_pending_error = 0;
+        }
+        (normal, error)
     }
 
     fn translate_error_bits(&self, err: u16, cmd_index: u8) -> Error {
@@ -273,6 +306,7 @@ impl Sdhci {
 
         self.write_u16(REG_NORMAL_INT_STATUS, NORMAL_INT_CLEAR_ALL);
         self.write_u16(REG_ERROR_INT_STATUS, ERROR_INT_CLEAR_ALL);
+        self.clear_cached_irq_status();
 
         if let Some(d) = data {
             self.configure_data_phase(d.direction, d.block_size, d.block_count, use_dma);
@@ -362,6 +396,8 @@ fn encode_command(cmd: &Command, has_data: bool) -> Result<u16, Error> {
         ResponseType::R1b => CMD_RESP_LEN48_BUSY | CMD_CRC_CHECK | CMD_INDEX_CHECK,
         ResponseType::R2 => CMD_RESP_LEN136 | CMD_CRC_CHECK,
         ResponseType::R3 | ResponseType::R4 => CMD_RESP_LEN48,
+        // Future ResponseType variants are unsupported by this encoder.
+        _ => return Err(Error::UnsupportedCommand),
     };
 
     let data_bit = if has_data { CMD_DATA_PRESENT } else { 0 };
@@ -371,7 +407,7 @@ fn encode_command(cmd: &Command, has_data: bool) -> Result<u16, Error> {
 
 fn decode_response(host: &Sdhci, resp_type: ResponseType) -> Result<Response, Error> {
     Ok(match resp_type {
-        ResponseType::None => Response::None,
+        ResponseType::None => Response::Empty,
         ResponseType::R1 | ResponseType::R1b => Response::R1(R1Response {
             raw: host.response32(0),
         }),
@@ -384,6 +420,8 @@ fn decode_response(host: &Sdhci, resp_type: ResponseType) -> Result<Response, Er
         }
         ResponseType::R6 => Response::R6(RcaResponse::from_raw(host.response32(0))),
         ResponseType::R7 => Response::R7(IfCondResponse::from_raw(host.response32(0))),
+        // Future ResponseType variants are not decoded by this controller.
+        _ => return Err(Error::UnsupportedCommand),
     })
 }
 
@@ -418,9 +456,14 @@ fn read_r2(host: &Sdhci) -> [u8; 16] {
 
 #[cfg(test)]
 mod tests {
-    use sdmmc_protocol::DataDirection;
+    use core::ptr::NonNull;
+
+    use sdmmc_protocol::{DataDirection, cmd::cmd17};
 
     use super::*;
+
+    #[repr(align(4))]
+    struct FakeRegs([u8; 0x100]);
 
     #[test]
     fn multi_block_transfer_mode_leaves_stop_command_to_request_state_machine() {
@@ -451,5 +494,49 @@ mod tests {
             0,
             "transfer completion belongs to the data-complete poll step"
         );
+    }
+
+    #[test]
+    fn fifo_status_consumes_irq_cached_error_bits() {
+        let mut regs = FakeRegs([0; 0x100]);
+        let base = NonNull::new(regs.0.as_mut_ptr()).unwrap();
+        let mut host = unsafe { Sdhci::new(base) };
+        host.irq_pending_normal = NORMAL_INT_ERROR;
+        host.irq_pending_error = ERROR_INT_DATA_TIMEOUT;
+
+        let (status, error) =
+            host.take_fifo_irq_status(NORMAL_INT_BUFFER_READ_READY | NORMAL_INT_ERROR);
+
+        assert_ne!(
+            status & NORMAL_INT_ERROR,
+            0,
+            "FIFO poll must observe error status cached by the IRQ handler"
+        );
+        assert_ne!(
+            error & ERROR_INT_DATA_TIMEOUT,
+            0,
+            "FIFO poll must preserve error bits after the IRQ handler clears hardware status"
+        );
+        assert_eq!(host.irq_pending_normal & NORMAL_INT_ERROR, 0);
+        assert_eq!(host.irq_pending_error, 0);
+    }
+
+    #[test]
+    fn new_command_discards_cached_irq_status_from_previous_request() {
+        let mut regs = FakeRegs([0; 0x100]);
+        let base = NonNull::new(regs.0.as_mut_ptr()).unwrap();
+        let mut host = unsafe { Sdhci::new(base) };
+        host.irq_pending_normal = NORMAL_INT_CMD_COMPLETE | NORMAL_INT_XFER_COMPLETE;
+        host.irq_pending_error = ERROR_INT_DATA_TIMEOUT;
+        host.pending_data = Some(crate::host::PendingData {
+            direction: DataDirection::Read,
+            block_size: 512,
+            block_count: 1,
+        });
+
+        host.submit_command(&cmd17(0)).unwrap();
+
+        assert_eq!(host.irq_pending_normal, 0);
+        assert_eq!(host.irq_pending_error, 0);
     }
 }

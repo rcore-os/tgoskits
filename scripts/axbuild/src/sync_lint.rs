@@ -11,7 +11,7 @@ use proc_macro2::Span;
 use quote::ToTokens;
 use syn::{
     Block, Expr, ExprCall, ExprClosure, ExprForLoop, ExprMethodCall, ExprPath, ExprWhile, File,
-    FnArg, Ident, ImplItemFn, ItemFn, ItemMacro, Local, Member, Pat, Stmt,
+    FnArg, Ident, ImplItemFn, ItemFn, ItemImpl, ItemMacro, Local, Member, Pat, Stmt, Type,
     spanned::Spanned,
     visit::{self, Visit},
 };
@@ -255,7 +255,7 @@ fn file_findings(path: &Path) -> anyhow::Result<Vec<Finding>> {
         fs::read_to_string(path).with_context(|| format!("failed to read {}", path.display()))?;
     let syntax = syn::parse_file(&source)
         .with_context(|| format!("failed to parse Rust file {}", path.display()))?;
-    Ok(analyze_file(path, &source, &syntax))
+    Ok(analyze_file(path, &source, &syntax).findings)
 }
 
 fn files_findings(files: Vec<PathBuf>) -> anyhow::Result<Vec<Finding>> {
@@ -315,11 +315,10 @@ fn files_findings_sequential(files: Vec<PathBuf>) -> anyhow::Result<Vec<Finding>
     Ok(findings)
 }
 
-fn analyze_file(path: &Path, source: &str, syntax: &File) -> Vec<Finding> {
+fn analyze_file(path: &Path, source: &str, syntax: &File) -> AnalysisResult {
     let mut analyzer = Analyzer::new(path, source);
     analyzer.visit_file(syntax);
-    analyzer.finish();
-    analyzer.findings
+    analyzer.finish()
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -367,13 +366,19 @@ struct Finding {
     message: String,
 }
 
-struct Analyzer<'a> {
-    path: &'a Path,
-    lines: Vec<&'a str>,
+#[derive(Debug, Default)]
+struct AnalysisResult {
     accesses: Vec<AtomicAccess>,
     sync_intent_keys: HashSet<String>,
     findings: Vec<Finding>,
+}
+
+struct Analyzer<'a> {
+    path: &'a Path,
+    lines: Vec<&'a str>,
+    result: AnalysisResult,
     bindings: BindingContext,
+    impl_self_types: Vec<String>,
 }
 
 impl<'a> Analyzer<'a> {
@@ -381,16 +386,15 @@ impl<'a> Analyzer<'a> {
         Self {
             path,
             lines: source.lines().collect(),
-            accesses: Vec::new(),
-            sync_intent_keys: HashSet::new(),
-            findings: Vec::new(),
+            result: AnalysisResult::default(),
             bindings: BindingContext::default(),
+            impl_self_types: Vec::new(),
         }
     }
 
-    fn finish(&mut self) {
+    fn finish(mut self) -> AnalysisResult {
         let mut summaries: HashMap<String, AccessSummary> = HashMap::new();
-        for access in &self.accesses {
+        for access in &self.result.accesses {
             let summary = summaries.entry(access.key.clone()).or_default();
             match access.ordering {
                 AccessOrdering::Relaxed => summary.has_relaxed = true,
@@ -399,10 +403,11 @@ impl<'a> Analyzer<'a> {
         }
 
         let spans = self
+            .result
             .accesses
             .iter()
             .filter(|access| access.ordering == AccessOrdering::Relaxed)
-            .filter(|access| self.sync_intent_keys.contains(&access.key))
+            .filter(|access| self.result.sync_intent_keys.contains(&access.key))
             .filter(|access| {
                 summaries
                     .get(&access.key)
@@ -419,6 +424,8 @@ impl<'a> Analyzer<'a> {
                  synchronization variable",
             );
         }
+
+        self.result
     }
 
     fn report(&mut self, span: Span, rule: Rule, message: &'static str) {
@@ -427,7 +434,7 @@ impl<'a> Analyzer<'a> {
             return;
         }
 
-        self.findings.push(Finding {
+        self.result.findings.push(Finding {
             path: self.path.to_path_buf(),
             line: start.line,
             column: start.column + 1,
@@ -455,7 +462,7 @@ impl<'a> Analyzer<'a> {
 
     fn mark_sync_intent_expr(&mut self, expr: &Expr) {
         for access in atomic_accesses_in_expr(expr, &self.bindings) {
-            self.sync_intent_keys.insert(access.key);
+            self.result.sync_intent_keys.insert(access.key);
         }
     }
 
@@ -481,14 +488,15 @@ impl<'a> Analyzer<'a> {
                 continue;
             };
             if let Some(access) = atomic_write_access(first, &self.bindings)
-                && is_notify_expr(second)
+                && is_observer_event_expr(second)
             {
-                self.sync_intent_keys.insert(access.key);
+                self.result.sync_intent_keys.insert(access.key);
                 if access.ordering == AccessOrdering::Relaxed {
                     self.report(
                         access.span,
                         Rule::PublishBeforeNotify,
-                        "Relaxed atomic write is immediately followed by a wake/notify operation",
+                        "Relaxed atomic write is immediately followed by a wake/notify/scheduling \
+                         event",
                     );
                 }
             }
@@ -499,14 +507,22 @@ impl<'a> Analyzer<'a> {
 impl Visit<'_> for Analyzer<'_> {
     fn visit_item_fn(&mut self, node: &ItemFn) {
         self.bindings.push_scope();
-        self.bindings.bind_fn_inputs(&node.sig.inputs);
+        self.bindings.bind_fn_inputs(&node.sig.inputs, None);
         self.visit_block(&node.block);
         self.bindings.pop_scope();
     }
 
+    fn visit_item_impl(&mut self, node: &ItemImpl) {
+        self.impl_self_types.push(type_key(&node.self_ty));
+        visit::visit_item_impl(self, node);
+        self.impl_self_types.pop();
+    }
+
     fn visit_impl_item_fn(&mut self, node: &ImplItemFn) {
+        let receiver_key = self.impl_self_types.last().cloned();
         self.bindings.push_scope();
-        self.bindings.bind_fn_inputs(&node.sig.inputs);
+        self.bindings
+            .bind_fn_inputs(&node.sig.inputs, receiver_key.as_deref());
         self.visit_block(&node.block);
         self.bindings.pop_scope();
     }
@@ -547,7 +563,7 @@ impl Visit<'_> for Analyzer<'_> {
 
     fn visit_expr_method_call(&mut self, node: &ExprMethodCall) {
         if let Some(access) = atomic_access_from_method_call(node, &self.bindings) {
-            self.accesses.push(access);
+            self.result.accesses.push(access);
         }
         if is_wait_method(node.method.clone()) {
             for arg in &node.args {
@@ -603,7 +619,7 @@ impl Visit<'_> for Analyzer<'_> {
 
 #[derive(Debug, Default)]
 struct BindingContext {
-    scopes: Vec<HashMap<String, usize>>,
+    scopes: Vec<HashMap<String, String>>,
     next_binding_id: usize,
 }
 
@@ -616,10 +632,14 @@ impl BindingContext {
         self.scopes.pop();
     }
 
-    fn bind_fn_inputs(&mut self, inputs: &syn::punctuated::Punctuated<FnArg, syn::token::Comma>) {
+    fn bind_fn_inputs(
+        &mut self,
+        inputs: &syn::punctuated::Punctuated<FnArg, syn::token::Comma>,
+        receiver_key: Option<&str>,
+    ) {
         for input in inputs {
             match input {
-                FnArg::Receiver(_) => self.bind_name("self"),
+                FnArg::Receiver(_) => self.bind_receiver(receiver_key),
                 FnArg::Typed(pat_type) => self.bind_pat(&pat_type.pat),
             }
         }
@@ -629,7 +649,20 @@ impl BindingContext {
         if let Some(scope) = self.scopes.last_mut() {
             let id = self.next_binding_id;
             self.next_binding_id += 1;
-            scope.insert(name.to_string(), id);
+            scope.insert(name.to_string(), format!("binding#{id}"));
+        }
+    }
+
+    fn bind_receiver(&mut self, receiver_key: Option<&str>) {
+        if let Some(scope) = self.scopes.last_mut() {
+            let key = receiver_key
+                .map(|receiver_key| format!("receiver:{receiver_key}"))
+                .unwrap_or_else(|| {
+                    let id = self.next_binding_id;
+                    self.next_binding_id += 1;
+                    format!("binding#{id}")
+                });
+            scope.insert("self".to_string(), key);
         }
     }
 
@@ -673,12 +706,12 @@ impl BindingContext {
         }
     }
 
-    fn resolve_ident(&self, ident: &Ident) -> Option<usize> {
+    fn resolve_ident(&self, ident: &Ident) -> Option<&str> {
         let name = ident.to_string();
         self.scopes
             .iter()
             .rev()
-            .find_map(|scope| scope.get(&name).copied())
+            .find_map(|scope| scope.get(&name).map(String::as_str))
     }
 }
 
@@ -714,26 +747,41 @@ fn function_name(expr: &Expr) -> Option<String> {
         .map(|segment| segment.ident.to_string())
 }
 
-fn is_notify_expr(expr: &Expr) -> bool {
+fn is_observer_event_expr(expr: &Expr) -> bool {
     match expr {
-        Expr::MethodCall(method) => matches!(
-            method.method.to_string().as_str(),
-            "notify_one" | "notify_all" | "wake" | "wake_one" | "wake_all" | "unpark"
-        ),
-        Expr::Call(call) => function_name(&call.func).is_some_and(|name| {
-            matches!(
-                name.as_str(),
-                "ax_wait_queue_wake"
-                    | "notify_one"
-                    | "notify_all"
-                    | "wake"
-                    | "wake_one"
-                    | "wake_all"
-                    | "unpark"
-            )
-        }),
+        Expr::MethodCall(method) => is_observer_event_name(&method.method.to_string()),
+        Expr::Call(call) => {
+            function_name(&call.func).is_some_and(|name| is_observer_event_name(&name))
+        }
         _ => false,
     }
+}
+
+fn is_observer_event_name(name: &str) -> bool {
+    matches!(
+        name,
+        "notify_one"
+            | "notify_all"
+            | "notify_one_with"
+            | "ax_wait_queue_wake"
+            | "ax_wait_queue_wake_one_with"
+            | "wake"
+            | "wake_by_ref"
+            | "wake_one"
+            | "wake_all"
+            | "wake_task"
+            | "wake_task_from_timer"
+            | "unblock_task"
+            | "unpark"
+            | "send_ipi"
+            | "send_ipi_to_cpu"
+            | "futex_wake"
+            | "wake_robust_futex"
+            | "send_signal_thread_inner"
+            | "send_signal_to_thread"
+            | "send_signal_to_process"
+            | "send_signal_to_process_group"
+    )
 }
 
 fn atomic_write_access(expr: &Expr, bindings: &BindingContext) -> Option<AtomicAccess> {
@@ -864,12 +912,16 @@ fn path_key(expr: &ExprPath, bindings: &BindingContext) -> String {
         && expr.path.leading_colon.is_none()
         && expr.path.segments.len() == 1
         && let Some(segment) = expr.path.segments.first()
-        && let Some(binding_id) = bindings.resolve_ident(&segment.ident)
+        && let Some(binding_key) = bindings.resolve_ident(&segment.ident)
     {
-        return format!("binding#{binding_id}");
+        return binding_key.to_string();
     }
 
     format!("path:{}", expr.path.to_token_stream())
+}
+
+fn type_key(ty: &Type) -> String {
+    ty.to_token_stream().to_string()
 }
 
 fn member_key(member: &Member) -> String {
@@ -982,7 +1034,7 @@ mod tests {
 
     fn findings(source: &str) -> Vec<Finding> {
         let syntax = syn::parse_file(source).unwrap();
-        analyze_file(Path::new("test.rs"), source, &syntax)
+        analyze_file(Path::new("test.rs"), source, &syntax).findings
     }
 
     #[test]
@@ -1132,6 +1184,86 @@ fn demo(flag: &AtomicBool, wq: WaitQueue) {
     }
 
     #[test]
+    fn reports_relaxed_publish_before_ipi() {
+        let findings = findings(
+            r#"
+use core::sync::atomic::{AtomicBool, Ordering};
+
+fn demo(flag: &AtomicBool, target: IpiTarget) {
+    flag.store(true, Ordering::Relaxed);
+    ax_hal::irq::send_ipi(IPI_IRQ, target);
+}
+"#,
+        );
+
+        assert!(
+            findings
+                .iter()
+                .any(|finding| finding.rule == Rule::PublishBeforeNotify)
+        );
+    }
+
+    #[test]
+    fn reports_relaxed_publish_before_waker() {
+        let findings = findings(
+            r#"
+use core::sync::atomic::{AtomicBool, Ordering};
+
+fn demo(flag: &AtomicBool, waker: &core::task::Waker) {
+    flag.store(true, Ordering::Relaxed);
+    waker.wake_by_ref();
+}
+"#,
+        );
+
+        assert!(
+            findings
+                .iter()
+                .any(|finding| finding.rule == Rule::PublishBeforeNotify)
+        );
+    }
+
+    #[test]
+    fn reports_relaxed_publish_before_task_wake() {
+        let findings = findings(
+            r#"
+use core::sync::atomic::{AtomicBool, Ordering};
+
+fn demo(flag: &AtomicBool, task: &AxTaskRef) {
+    flag.store(true, Ordering::Relaxed);
+    ax_task::wake_task(task);
+}
+"#,
+        );
+
+        assert!(
+            findings
+                .iter()
+                .any(|finding| finding.rule == Rule::PublishBeforeNotify)
+        );
+    }
+
+    #[test]
+    fn reports_relaxed_publish_before_signal_wake_entrypoint() {
+        let findings = findings(
+            r#"
+use core::sync::atomic::{AtomicBool, Ordering};
+
+fn demo(flag: &AtomicBool, tid: Pid, sig: SignalInfo) -> AxResult<()> {
+    flag.store(true, Ordering::Relaxed);
+    send_signal_to_thread(None, tid, Some(sig))
+}
+"#,
+        );
+
+        assert!(
+            findings
+                .iter()
+                .any(|finding| finding.rule == Rule::PublishBeforeNotify)
+        );
+    }
+
+    #[test]
     fn ignores_release_wait_conditions() {
         let findings = findings(
             r#"
@@ -1221,6 +1353,68 @@ fn demo(flag: &AtomicBool, wq: WaitQueue) {
                 .iter()
                 .any(|finding| finding.rule == Rule::MixedOrdering)
         );
+    }
+
+    #[test]
+    fn reports_mixed_ordering_for_receiver_field_across_methods() {
+        let findings = findings(
+            r#"
+use core::sync::atomic::{AtomicBool, Ordering};
+
+struct Runtime {
+    ready: AtomicBool,
+    wq: WaitQueue,
+}
+
+impl Runtime {
+    fn wait(&self) {
+        self.wq.wait_until(|| self.ready.load(Ordering::Acquire));
+    }
+
+    fn check(&self) {
+        let _ = self.ready.load(Ordering::Relaxed);
+    }
+}
+"#,
+        );
+
+        assert!(
+            findings
+                .iter()
+                .any(|finding| finding.rule == Rule::MixedOrdering)
+        );
+    }
+
+    #[test]
+    fn keeps_same_receiver_field_names_separate_across_impl_types() {
+        let findings = findings(
+            r#"
+use core::sync::atomic::{AtomicBool, Ordering};
+
+struct Runtime {
+    ready: AtomicBool,
+    wq: WaitQueue,
+}
+
+struct Stats {
+    ready: AtomicBool,
+}
+
+impl Runtime {
+    fn wait(&self) {
+        self.wq.wait_until(|| self.ready.load(Ordering::Acquire));
+    }
+}
+
+impl Stats {
+    fn check(&self) {
+        let _ = self.ready.load(Ordering::Relaxed);
+    }
+}
+"#,
+        );
+
+        assert!(findings.is_empty());
     }
 
     #[test]

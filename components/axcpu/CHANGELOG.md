@@ -1,5 +1,56 @@
 # Changelog
 
+## [0.6.8](https://github.com/rcore-os/tgoskits/compare/ax-cpu-v0.6.7...ax-cpu-v0.6.8) - 2026-06-12
+
+### Fixed
+
+- *(ci)* stabilize x86 Starry QEMU timing ([#1245](https://github.com/rcore-os/tgoskits/pull/1245))
+
+## [0.6.7](https://github.com/rcore-os/tgoskits/compare/ax-cpu-v0.6.6...ax-cpu-v0.6.7) - 2026-06-11
+
+### Fixed
+
+- *(axcpu)* support LoongArch user trap recovery
+
+## [0.6.6](https://github.com/rcore-os/tgoskits/compare/ax-cpu-v0.6.5...ax-cpu-v0.6.6) - 2026-06-09
+
+### Added
+
+- *(std)* unify std-aware ArceOS builds ([#1080](https://github.com/rcore-os/tgoskits/pull/1080))
+
+### Fixed
+
+- *(axcpu)* preserve loongarch64 LASX state for Git HTTPS ([#1178](https://github.com/rcore-os/tgoskits/pull/1178))
+- *(axcpu-aarch64)* emulate EL0 MRS reads of ID_AA64* feature registers ([#1128](https://github.com/rcore-os/tgoskits/pull/1128))
+- *(ci)* switch x86_64 defaults to dynamic platform ([#1024](https://github.com/rcore-os/tgoskits/pull/1024))
+
+### Other
+
+- *(starryos)* add K230 NNCase runtime demo ([#1058](https://github.com/rcore-os/tgoskits/pull/1058))
+
+## [0.6.5](https://github.com/rcore-os/tgoskits/compare/ax-cpu-v0.6.4...ax-cpu-v0.6.5) - 2026-06-03
+
+### Added
+
+- *(riscv64)* support dynamic platform on QEMU and SG2002 ([#961](https://github.com/rcore-os/tgoskits/pull/961))
+- *(axtask)* add task stack guard page support ([#811](https://github.com/rcore-os/tgoskits/pull/811))
+
+### Fixed
+
+- *(repo)* normalize allocator and RISC-V dependencies ([#1021](https://github.com/rcore-os/tgoskits/pull/1021))
+- *(loongarch64)* make userspace LSX usable (preserve FP/LSX state + fix uc_mcontext offset + advertise AT_HWCAP) ([#917](https://github.com/rcore-os/tgoskits/pull/917))
+- *(axcpu)* save SP in aarch64 TrapFrame for kprobe correctness ([#887](https://github.com/rcore-os/tgoskits/pull/887))
+
+## [0.6.4](https://github.com/rcore-os/tgoskits/compare/ax-cpu-v0.6.3...ax-cpu-v0.6.4) - 2026-05-22
+
+### Fixed
+
+- *(axvisor)* recover riscv guest memory faults ([#788](https://github.com/rcore-os/tgoskits/pull/788))
+
+### Other
+
+- *(axbacktrace)* use Backtrace::kind() instead of BacktraceReport ([#748](https://github.com/rcore-os/tgoskits/pull/748))
+
 ## [0.6.3](https://github.com/rcore-os/tgoskits/compare/ax-cpu-v0.6.2...ax-cpu-v0.6.3) - 2026-05-19
 
 ### Other

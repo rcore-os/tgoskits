@@ -4,6 +4,7 @@
 //! 物理/虚拟地址。
 
 use alloc::sync::Arc;
+use core::ptr::NonNull;
 
 use sg2002_tpu::{
     ion::IonBuffer,
@@ -27,7 +28,46 @@ use crate::{
 /// TPU 字符设备
 pub struct TpuDevice {
     /// 硬件层
-    hw: Sg2002Tpu,
+    hw: Arc<Sg2002Tpu>,
+    /// 是否已注册中断
+    irq_registered: bool,
+}
+
+// From SG2002 TPU DT node:
+// interrupts = <0x4b 0x04 0x4c 0x04>;
+// interrupt-names = "tiu_irq\0tdma_irq";
+// so TDMA uses the second IRQ: 0x4c (76).
+const TPU_TDMA_IRQ: usize = 76;
+
+fn register_tpu_irq(hw: &Arc<Sg2002Tpu>) -> bool {
+    let data = unsafe { NonNull::new_unchecked(Arc::as_ptr(hw) as *mut ()) };
+    if ax_runtime::hal::irq::request_shared_irq(TPU_TDMA_IRQ, tpu_tdma_irq_handler, data).is_err() {
+        warn!("[TPU] failed to register tdma irq {}", TPU_TDMA_IRQ);
+        return false;
+    }
+    ax_runtime::hal::irq::set_enable(TPU_TDMA_IRQ, true);
+    true
+}
+
+unsafe fn tpu_tdma_irq_handler(
+    _ctx: ax_runtime::hal::irq::IrqContext,
+    data: NonNull<()>,
+) -> ax_runtime::hal::irq::IrqReturn {
+    let hw = unsafe { &*(data.as_ptr() as *const Sg2002Tpu) };
+    info!("[TPU] tdma irq {} received", TPU_TDMA_IRQ);
+    if hw.handle_irq() {
+        warn!("[TPU] tdma irq {} reports error status", TPU_TDMA_IRQ);
+    }
+    ax_runtime::hal::irq::IrqReturn::Handled
+}
+
+/// 注入给 driver core 的延时函数：按给定微秒数忙等。
+///
+/// driver core 在等待 TDMA 完成时以此为轮询间隔精确计时（见
+/// `Sg2002Tpu::set_delay_fn`），避免空转自旋。submit 全程持有 core 的
+/// `SpinNoPreempt` 锁，因此这里只能忙等、不能睡眠让出。
+fn tpu_delay(usecs: u64) {
+    ax_runtime::hal::time::busy_wait(core::time::Duration::from_micros(usecs));
 }
 
 impl TpuDevice {
@@ -36,9 +76,13 @@ impl TpuDevice {
     /// # Safety
     /// 调用者必须确保偏移计算后的虚拟地址有效。
     pub unsafe fn new() -> Self {
-        Self {
-            hw: unsafe { Sg2002Tpu::new() },
+        let hw = Arc::new(unsafe { Sg2002Tpu::new() });
+        hw.set_delay_fn(tpu_delay);
+        if let Err(err) = hw.init() {
+            warn!("[TPU] init failed: {:?}", err);
         }
+        let irq_registered = register_tpu_irq(&hw);
+        Self { hw, irq_registered }
     }
 
     /// 使用指定的虚拟地址创建 TPU 设备
@@ -47,9 +91,13 @@ impl TpuDevice {
     /// 调用者必须确保虚拟地址有效。
     #[allow(dead_code)]
     pub unsafe fn from_vaddr(tdma_vaddr: *mut u8, tiu_vaddr: *mut u8) -> Self {
-        Self {
-            hw: unsafe { Sg2002Tpu::from_vaddr(tdma_vaddr, tiu_vaddr) },
+        let hw = Arc::new(unsafe { Sg2002Tpu::from_vaddr(tdma_vaddr, tiu_vaddr) });
+        hw.set_delay_fn(tpu_delay);
+        if let Err(err) = hw.init() {
+            warn!("[TPU] init failed: {:?}", err);
         }
+        let irq_registered = register_tpu_irq(&hw);
+        Self { hw, irq_registered }
     }
 
     /// 提交 DMA buffer 任务
@@ -61,6 +109,12 @@ impl TpuDevice {
             "[TPU] submit dmabuf: fd={}, seq_no={}",
             submit_arg.fd, submit_arg.seq_no
         );
+        if !self.irq_registered {
+            warn!(
+                "[TPU] tdma irq {} not registered, execution may timeout",
+                TPU_TDMA_IRQ
+            );
+        }
 
         // 从文件描述符获取 IonBufferFile
         let fd = submit_arg.fd;
@@ -87,8 +141,19 @@ impl TpuDevice {
         let dmabuf_vaddr = buffer.dma_info.cpu_addr.as_ptr() as usize;
         let dmabuf_paddr = buffer.dma_info.bus_addr.as_u64();
 
+        let (irq_before, poll_before) = self.hw.irq_stats();
+
         self.hw
             .submit_dmabuf(submit_arg.fd, submit_arg.seq_no, dmabuf_vaddr, dmabuf_paddr)?;
+
+        let (irq_hits, poll_hits) = self.hw.irq_stats();
+        let irq_delta = irq_hits.saturating_sub(irq_before);
+        let poll_delta = poll_hits.saturating_sub(poll_before);
+        info!(
+            "[TPU] irq stats after submit: delta_irq={}, delta_poll_fallback={}, total_irq={}, \
+             total_poll_fallback={}",
+            irq_delta, poll_delta, irq_hits, poll_hits
+        );
 
         Ok(0)
     }

@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.2](https://github.com/rcore-os/tgoskits/compare/nvme-driver-v0.5.1...nvme-driver-v0.5.2) - 2026-06-12
+
+### Other
+
+- updated the following local packages: rdif-block
+
+## [0.5.1](https://github.com/rcore-os/tgoskits/compare/nvme-driver-v0.5.0...nvme-driver-v0.5.1) - 2026-06-09
+
+### Other
+
+- updated the following local packages: pcie, dma-api, rdif-block
+
+## [0.5.0](https://github.com/rcore-os/tgoskits/compare/nvme-driver-v0.4.2...nvme-driver-v0.5.0) - 2026-06-03
+
+### Added
+
+- *(axbuild)* support Starry QEMU apps ([#1078](https://github.com/rcore-os/tgoskits/pull/1078))
+- *(dma-api)* add high-level dma sync helpers ([#1028](https://github.com/rcore-os/tgoskits/pull/1028))
+
+### Fixed
+
+- *(repo)* migrate spin usage to ax-kspin ([#861](https://github.com/rcore-os/tgoskits/pull/861))
+
+### Other
+
+- *(rdif-block)* switch block drivers to submit poll ([#976](https://github.com/rcore-os/tgoskits/pull/976))
+- *(dma-api)* split coherent and streaming DMA APIs ([#932](https://github.com/rcore-os/tgoskits/pull/932))
+- *(drivers)* split shared driver stack from ArceOS ([#831](https://github.com/rcore-os/tgoskits/pull/831))
+
 ## [0.4.1](https://github.com/drivercraft/sparreal-os/compare/nvme-driver-v0.4.0...nvme-driver-v0.4.1) - 2026-03-10
 
 ### Other

@@ -1,4 +1,4 @@
-use alloc::{sync::Arc, task::Wake, vec::Vec};
+use alloc::{collections::VecDeque, sync::Arc, task::Wake, vec::Vec};
 use core::{
     future::poll_fn,
     marker::PhantomData,
@@ -9,7 +9,7 @@ use core::{
 
 use ax_errno::{AxError, AxResult};
 use ax_task::future::block_on;
-use axpoll::PollSet;
+use axpoll::{IoEvents, PollSet};
 use linux_raw_sys::general::{
     ECHOCTL, ECHOK, ICRNL, IGNCR, ISIG, ONLCR, OPOST, VEOF, VERASE, VKILL, VMIN, VTIME,
 };
@@ -64,19 +64,25 @@ pub fn write_output_bytes<W: TtyWrite + ?Sized>(writer: &W, term: &Termios2, buf
         return;
     }
 
-    let mut start = 0;
-    for (i, &byte) in buf.iter().enumerate() {
+    // Collect output with \n -> \r\n translation into a single buffer so the
+    // underlying writer sees exactly one call per write_output_bytes() instead
+    // of one call per newline.  A TUI frame typically contains many cursor-
+    // movement newlines; the per-newline approach forced the UART driver to
+    // acquire/release its lock dozens of times for a single frame and made
+    // terminal emulators render the frame line-by-line (visible flicker).
+    let extra = buf.iter().filter(|&&b| b == b'\n').count();
+    if extra == 0 {
+        writer.write(buf);
+        return;
+    }
+    let mut out = alloc::vec::Vec::with_capacity(buf.len() + extra);
+    for &byte in buf {
         if byte == b'\n' {
-            if start < i {
-                writer.write(&buf[start..i]);
-            }
-            writer.write(b"\r\n");
-            start = i + 1;
+            out.push(b'\r');
         }
+        out.push(byte);
     }
-    if start < buf.len() {
-        writer.write(&buf[start..]);
-    }
+    writer.write(&out);
 }
 
 struct InputReader<R, W> {
@@ -248,6 +254,7 @@ enum Processor<R> {
 pub struct LineDiscipline<R, W> {
     terminal: Arc<Terminal>,
     buf_rx: CachingCons<ReadBuf>,
+    injected_input: VecDeque<u8>,
     input_ready: Arc<PollSet>,
     pump_retry: Arc<PollSet>,
     eof_ready: Arc<AtomicBool>,
@@ -277,7 +284,8 @@ impl<R: TtyRead, W: TtyWrite> LineDiscipline<R, W> {
         let mut progressed = false;
         while reader.drain_source_into_line_buffer() {
             progressed = true;
-            input_ready.wake();
+            // New line-discipline input is visible before waking readers.
+            unsafe { input_ready.wake(IoEvents::IN) };
         }
         progressed
     }
@@ -304,8 +312,9 @@ impl<R: TtyRead, W: TtyWrite> LineDiscipline<R, W> {
                         fired: fired.clone(),
                         task: cx.waker().clone(),
                     }));
-                    input_source.register(&waker);
-                    pump_retry.register(&waker);
+                    // The reader task registers from ordinary task context.
+                    unsafe { input_source.register(&waker, IoEvents::IN) };
+                    unsafe { pump_retry.register(&waker, IoEvents::OUT) };
 
                     if Self::drive_input(&mut reader, input_ready.as_ref())
                         || fired.swap(false, Ordering::AcqRel)
@@ -383,6 +392,7 @@ impl<R: TtyRead, W: TtyWrite> LineDiscipline<R, W> {
         Self {
             terminal,
             buf_rx,
+            injected_input: VecDeque::new(),
             input_ready,
             pump_retry,
             eof_ready,
@@ -394,13 +404,23 @@ impl<R: TtyRead, W: TtyWrite> LineDiscipline<R, W> {
 
     pub fn drain_input(&mut self) {
         self.buf_rx.clear();
+        self.injected_input.clear();
         self.eof_ready.store(false, Ordering::Release);
         self.clear_line_buf.store(true, Ordering::Relaxed);
+    }
+
+    pub fn inject_input(&mut self, input: &[u8]) {
+        self.injected_input.extend(input);
+        // Injected bytes are visible before waking readers.
+        unsafe { self.input_ready.wake(IoEvents::IN) };
     }
 
     pub fn poll_read(&mut self) -> bool {
         if let Processor::Passive(reader, _) = &mut self.processor {
             reader.poll();
+        }
+        if !self.injected_input.is_empty() {
+            return true;
         }
         let term = self.terminal.termios.lock().clone();
         if term.canonical() {
@@ -417,10 +437,12 @@ impl<R: TtyRead, W: TtyWrite> LineDiscipline<R, W> {
     pub fn register_rx_waker(&self, waker: &Waker) {
         match &self.processor {
             Processor::InterruptDriven => {
-                self.input_ready.register(waker);
+                // Registration happens from tty read poll context.
+                unsafe { self.input_ready.register(waker, IoEvents::IN) };
             }
             Processor::Passive(_, set) => {
-                set.register(waker);
+                // Registration happens from tty read poll context.
+                unsafe { set.register(waker, IoEvents::IN) };
             }
         }
     }
@@ -428,6 +450,18 @@ impl<R: TtyRead, W: TtyWrite> LineDiscipline<R, W> {
     pub fn read(&mut self, buf: &mut [u8]) -> AxResult<usize> {
         if buf.is_empty() {
             return Ok(0);
+        }
+        if !self.injected_input.is_empty() {
+            let mut read = 0;
+            for slot in buf.iter_mut() {
+                if let Some(byte) = self.injected_input.pop_front() {
+                    *slot = byte;
+                    read += 1;
+                } else {
+                    break;
+                }
+            }
+            return Ok(read);
         }
         if matches!(self.processor, Processor::Passive(_, _)) {
             let read = self.buf_rx.pop_slice(buf);
@@ -468,7 +502,8 @@ impl<R: TtyRead, W: TtyWrite> LineDiscipline<R, W> {
         }
 
         let read = self.buf_rx.pop_slice(buf);
-        self.pump_retry.clone().wake();
+        // Buffer space was freed before waking the input pump.
+        unsafe { self.pump_retry.wake(IoEvents::OUT) };
         Ok(read)
     }
 }
@@ -478,9 +513,12 @@ mod tests {
     use alloc::{sync::Arc, vec::Vec};
     use core::sync::atomic::AtomicBool;
 
+    use axpoll::PollSet;
     use ringbuf::traits::{Observer, Split};
 
-    use super::{BUF_SIZE, InputReader, ReadBuf, TtyRead, TtyWrite};
+    use super::{
+        BUF_SIZE, InputReader, LineDiscipline, ProcessMode, ReadBuf, TtyConfig, TtyRead, TtyWrite,
+    };
     use crate::pseudofs::dev::tty::terminal::Terminal;
 
     struct MockReader {
@@ -563,5 +601,25 @@ mod tests {
             rx.occupied_len() > 0,
             "buf_rx must contain data after the newline is processed"
         );
+    }
+
+    #[test]
+    fn injected_input_is_readable_immediately() {
+        let mut ldisc = LineDiscipline::new(
+            Arc::new(Terminal::default()),
+            TtyConfig {
+                reader: MockReader::new(Vec::new()),
+                writer: MockWriter,
+                process_mode: ProcessMode::Passive(Arc::new(PollSet::new())),
+            },
+        );
+
+        ldisc.inject_input(b"\x1b[1;1R");
+
+        assert!(ldisc.poll_read(), "injected bytes must make tty readable");
+
+        let mut buf = [0; 6];
+        assert_eq!(ldisc.read(&mut buf), Ok(6));
+        assert_eq!(&buf, b"\x1b[1;1R");
     }
 }

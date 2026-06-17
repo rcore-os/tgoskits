@@ -7,6 +7,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.23.0](https://github.com/rcore-os/tgoskits/compare/rdrive-v0.22.0...rdrive-v0.23.0) - 2026-06-12
+
+### Added
+
+- *(ax-driver)* add dynamic platform rtc support ([#1242](https://github.com/rcore-os/tgoskits/pull/1242))
+
+### Fixed
+
+- *(ci)* stabilize x86 Starry QEMU timing ([#1245](https://github.com/rcore-os/tgoskits/pull/1245))
+- *(somehal)* route LoongArch ACPI GSIs through PCH-PIC
+
+### Other
+
+- *(irq)* carry ACPI IRQ routing metadata
+- *(rdrive)* carry probe context and PCI INTx routes
+
+## [0.22.0](https://github.com/rcore-os/tgoskits/compare/rdrive-v0.21.0...rdrive-v0.22.0) - 2026-06-09
+
+### Added
+
+- *(somehal)* register x86 ACPI IOAPIC through rdrive ([#1155](https://github.com/rcore-os/tgoskits/pull/1155))
+
+### Fixed
+
+- *(ci)* switch x86_64 defaults to dynamic platform ([#1024](https://github.com/rcore-os/tgoskits/pull/1024))
+
+## [0.21.0](https://github.com/rcore-os/tgoskits/compare/rdrive-v0.20.1...rdrive-v0.21.0) - 2026-06-03
+
+### Added
+
+- *(riscv64)* support dynamic platform on QEMU and SG2002 ([#961](https://github.com/rcore-os/tgoskits/pull/961))
+
+### Fixed
+
+- *(repo)* migrate spin usage to ax-kspin ([#861](https://github.com/rcore-os/tgoskits/pull/861))
+
+### Other
+
+- *(deps)* update spin 0.10→0.12, ostool 0.19→0.21 ([#978](https://github.com/rcore-os/tgoskits/pull/978))
+- *(driver)* move static probes to platform-owned registration ([#937](https://github.com/rcore-os/tgoskits/pull/937))
+- *(drivers)* split shared driver stack from ArceOS ([#831](https://github.com/rcore-os/tgoskits/pull/831))
+
 ## [0.20.0](https://github.com/drivercraft/sparreal-os/compare/rdrive-v0.19.1...rdrive-v0.20.0) - 2026-03-10
 
 ### Other

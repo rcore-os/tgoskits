@@ -1,0 +1,84 @@
+# Architecture identifier.
+arch = "riscv64"                                # str
+# Platform identifier.
+platform = "riscv64-sg2002"                     # str
+# Platform package.
+package = "ax-plat-riscv64-sg2002"              # str
+
+#
+# Platform configs
+#
+[plat]
+# Number of CPUs.
+max-cpu-num = 1                     # uint
+# Base address of the whole physical memory.
+phys-memory-base = 0x8000_0000      # uint
+# Size of the whole physical memory. (0x8000_0000..0x8fe0_0000)
+phys-memory-size = 0x0fe0_0000      # uint
+# Base physical address of the kernel image.
+kernel-base-paddr = 0x8020_0000     # uint
+# Base virtual address of the kernel image.
+kernel-base-vaddr = "0xffff_ffc0_8020_0000"     # uint
+# Linear mapping offset, for quick conversions between physical and virtual
+# addresses.
+phys-virt-offset = "0xffff_ffc0_0000_0000"      # uint
+# Offset of bus address and phys address. some boards, the bus address is
+# different from the physical address.
+phys-bus-offset = 0                             # uint
+# Kernel address space base.
+kernel-aspace-base = "0xffff_ffc0_0000_0000"    # uint
+# Kernel address space size.
+kernel-aspace-size = "0x0000_003f_ffff_f000"    # uint
+# Stack size on bootstrapping. (256K)
+boot-stack-size = 0x40000                       # uint
+
+#
+# Device specifications
+#
+[devices]
+# MMIO ranges with format (`base_paddr`, `size`).
+mmio-ranges = [
+    [0x0300_0000, 0x8000],          # SYSCON (includes FMUX 0x3001000)
+    [0x0302_0000, 0x2000],          # IOBLK_G1
+    [0x0306_0000, 0x4000],          # PWM0-3 (0x3060000..0x3064000)
+    [0x0414_0000, 0x1000],          # UART0
+    [0x0415_0000, 0x1000],          # UART1
+    [0x0416_0000, 0x1000],          # UART2
+    [0x0417_0000, 0x1000],          # UART3
+    [0x0431_0000, 0x1000],          # cv sdmmc
+    [0x0434_0000, 0x1000],          # USB DWC2
+    [0x0502_6000, 0x2000],          # RTC + IOBLK_GRTC (0x5026000..0x5028000)
+    [0x0c10_0000, 0x2000],          # TPU
+    [0x7000_0000, 0x0400_0000],     # PLIC
+    [0x7400_0000, 0x1_0000],        # CLINT
+]                                   # [(uint, uint)]
+virtio-mmio-ranges = [] # [(uint, uint)]
+
+# Timer interrupt frequency in Hz.
+timer-frequency = 25_000_000        # uint
+# Timer interrupt num.
+timer-irq = "0x8000_0000_0000_0005" # uint
+# IPI interrupt num
+ipi-irq = "0x8000_0000_0000_0001"   # uint
+
+rtc-paddr = 0x0502_6000             # uint
+
+# interrupt-controller@70000000 {
+#     reg = <0x00 0x70000000 0x00 0x4000000>;
+#     compatible = "riscv,plic0";
+# };
+plic-paddr = 0x7000_0000            # uint
+
+# serial@04140000 {
+#     interrupts = <0x2c 0x04>;
+#     interrupt-parent = <0x04>;
+#     reg = <0x00 0x4140000 0x00 0x1000>;
+#     compatible = "snps,dw-apb-uart";
+# };
+uart-paddr = 0x0414_0000            # uint
+uart-irq = 0x2c                     # uint
+
+syscon-paddr = 0x0300_0000          # uint
+cvsd-paddr = 0x0431_0000            # uint
+root-partition-name = "rootfs"      # str
+bootargs = "root=/dev/mmcblk0p2"    # str

@@ -85,6 +85,27 @@ fn builder(fs: Arc<SimpleFs>) -> DirMaker {
         "dev",
         SimpleDir::new_maker(fs.clone(), Arc::new(DevDir { fs: fs.clone() })),
     );
+    root.add("kernel", {
+        let mut kernel = DirMapping::new();
+        kernel.add(
+            "debug",
+            SimpleDir::new_maker(fs.clone(), Arc::new(DirMapping::new())),
+        );
+        SimpleDir::new_maker(fs.clone(), Arc::new(kernel))
+    });
+    // `/sys/fs/cgroup` is the mount point systemd lays its cgroup hierarchy on
+    // (it mounts tmpfs then cgroup2 here). On Linux the kernel provides this
+    // empty directory inside sysfs; once sysfs is mounted over /sys it shadows
+    // the rootfs's own /sys/fs/cgroup, so the mount point must exist here or
+    // `mount("/sys/fs/cgroup")` fails with ENOENT.
+    root.add("fs", {
+        let mut fs_dir = DirMapping::new();
+        fs_dir.add(
+            "cgroup",
+            SimpleDir::new_maker(fs.clone(), Arc::new(DirMapping::new())),
+        );
+        SimpleDir::new_maker(fs.clone(), Arc::new(fs_dir))
+    });
     SimpleDir::new_maker(fs.clone(), Arc::new(root))
 }
 
@@ -178,9 +199,9 @@ struct ClassDir {
 
 impl SimpleDirOps for ClassDir {
     fn child_names<'a>(&'a self) -> Box<dyn Iterator<Item = Cow<'a, str>> + 'a> {
-        #[cfg(feature = "sg2002")]
+        #[cfg(all(feature = "sg2002", not(feature = "plat-dyn")))]
         let names: &'static [&'static str] = &["drm", "graphics", "input", "pwm"];
-        #[cfg(not(feature = "sg2002"))]
+        #[cfg(any(not(feature = "sg2002"), feature = "plat-dyn"))]
         let names: &'static [&'static str] = &["drm", "graphics", "input"];
         Box::new(names.iter().copied().map(Cow::Borrowed))
     }
@@ -197,7 +218,7 @@ impl SimpleDirOps for ClassDir {
                 Arc::new(ClassSubsystemDir::new(fs, "graphics", &["fb0"])),
             ),
             "input" => SimpleDir::new_maker(fs.clone(), Arc::new(InputClassDir { fs })),
-            #[cfg(feature = "sg2002")]
+            #[cfg(all(feature = "sg2002", not(feature = "plat-dyn")))]
             "pwm" => crate::pseudofs::dev::pwm::pwm_class_dir_maker(fs),
             _ => return Err(VfsError::NotFound),
         }))
@@ -295,13 +316,24 @@ struct BusDir {
 
 impl SimpleDirOps for BusDir {
     fn child_names<'a>(&'a self) -> Box<dyn Iterator<Item = Cow<'a, str>> + 'a> {
-        Box::new(["platform"].into_iter().map(Cow::Borrowed))
+        let names: &'static [&'static str] = if crate::pseudofs::usbfs::has_manager() {
+            &["platform", "usb", "event_source"]
+        } else {
+            &["platform", "event_source"]
+        };
+        Box::new(names.iter().copied().map(Cow::Borrowed))
     }
 
     fn lookup_child(&self, name: &str) -> VfsResult<NodeOpsMux> {
         let fs = self.fs.clone();
         Ok(NodeOpsMux::Dir(match name {
             "platform" => SimpleDir::new_maker(fs.clone(), Arc::new(PlatformBusClassDir)),
+            "event_source" => {
+                SimpleDir::new_maker(fs.clone(), Arc::new(EventSourceBusDir { fs: fs.clone() }))
+            }
+            "usb" if crate::pseudofs::usbfs::has_manager() => {
+                SimpleDir::new_maker(fs.clone(), Arc::new(DirMapping::new()))
+            }
             _ => return Err(VfsError::NotFound),
         }))
     }
@@ -319,6 +351,123 @@ impl SimpleDirOps for PlatformBusClassDir {
     }
 }
 
+// /sys/bus/event_source/devices/<source>/type — aya reads this to learn the
+// dynamic perf_event_type for each event source (kprobe / uprobe / tracepoint).
+// Values match `kbpf_basic::perf::PerfTypeId` so the user-supplied number
+// dispatches cleanly in `perf_event_open`.
+const PERF_EVENT_SOURCES: &[(&str, u32)] = &[
+    ("kprobe", 6),     // PerfTypeId::PERF_TYPE_KPROBE
+    ("uprobe", 7),     // PerfTypeId::PERF_TYPE_UPROBE
+    ("tracepoint", 2), // PERF_TYPE_TRACEPOINT
+];
+
+struct EventSourceBusDir {
+    fs: Arc<SimpleFs>,
+}
+
+impl SimpleDirOps for EventSourceBusDir {
+    fn child_names<'a>(&'a self) -> Box<dyn Iterator<Item = Cow<'a, str>> + 'a> {
+        Box::new(["devices"].into_iter().map(Cow::Borrowed))
+    }
+
+    fn lookup_child(&self, name: &str) -> VfsResult<NodeOpsMux> {
+        let fs = self.fs.clone();
+        Ok(NodeOpsMux::Dir(match name {
+            "devices" => SimpleDir::new_maker(
+                fs.clone(),
+                Arc::new(EventSourceDevicesDir { fs: fs.clone() }),
+            ),
+            _ => return Err(VfsError::NotFound),
+        }))
+    }
+}
+
+struct EventSourceDevicesDir {
+    fs: Arc<SimpleFs>,
+}
+
+impl SimpleDirOps for EventSourceDevicesDir {
+    fn child_names<'a>(&'a self) -> Box<dyn Iterator<Item = Cow<'a, str>> + 'a> {
+        Box::new(PERF_EVENT_SOURCES.iter().map(|(n, _)| Cow::Borrowed(*n)))
+    }
+
+    fn lookup_child(&self, name: &str) -> VfsResult<NodeOpsMux> {
+        let fs = self.fs.clone();
+        let ty = PERF_EVENT_SOURCES
+            .iter()
+            .find(|(n, _)| *n == name)
+            .map(|(_, t)| *t)
+            .ok_or(VfsError::NotFound)?;
+        Ok(NodeOpsMux::Dir(SimpleDir::new_maker(
+            fs.clone(),
+            Arc::new(EventSourceDeviceDir { fs: fs.clone(), ty }),
+        )))
+    }
+}
+
+struct EventSourceDeviceDir {
+    fs: Arc<SimpleFs>,
+    ty: u32,
+}
+
+impl EventSourceDeviceDir {
+    /// kprobe (6) / uprobe (7) PMUs support a return-probe variant selected via
+    /// the `retprobe` config bit; tracepoint (2) does not.
+    fn supports_retprobe(&self) -> bool {
+        self.ty == 6 || self.ty == 7
+    }
+}
+
+impl SimpleDirOps for EventSourceDeviceDir {
+    fn child_names<'a>(&'a self) -> Box<dyn Iterator<Item = Cow<'a, str>> + 'a> {
+        if self.supports_retprobe() {
+            Box::new(["type", "format"].into_iter().map(Cow::Borrowed))
+        } else {
+            Box::new(["type"].into_iter().map(Cow::Borrowed))
+        }
+    }
+
+    fn lookup_child(&self, name: &str) -> VfsResult<NodeOpsMux> {
+        let fs = self.fs.clone();
+        match name {
+            "type" => {
+                let body = format!("{}\n", self.ty);
+                Ok(SimpleFile::new_regular(fs, move || Ok(body.clone())).into())
+            }
+            // `/sys/bus/event_source/devices/<k|u>probe/format/` — aya reads
+            // `format/retprobe` to learn which `config` bit selects the
+            // return-probe variant before `perf_event_open` for a kretprobe /
+            // uretprobe.
+            "format" if self.supports_retprobe() => Ok(NodeOpsMux::Dir(SimpleDir::new_maker(
+                fs.clone(),
+                Arc::new(EventSourceFormatDir { fs }),
+            ))),
+            _ => Err(VfsError::NotFound),
+        }
+    }
+}
+
+struct EventSourceFormatDir {
+    fs: Arc<SimpleFs>,
+}
+
+impl SimpleDirOps for EventSourceFormatDir {
+    fn child_names<'a>(&'a self) -> Box<dyn Iterator<Item = Cow<'a, str>> + 'a> {
+        Box::new(["retprobe"].into_iter().map(Cow::Borrowed))
+    }
+
+    fn lookup_child(&self, name: &str) -> VfsResult<NodeOpsMux> {
+        let fs = self.fs.clone();
+        match name {
+            // `config:0` = the retprobe flag lives in bit 0 of `config`, which
+            // is exactly what `perf_event_open_kprobe` decodes (config 1 =
+            // kretprobe). Matches the format string the real kernel exposes.
+            "retprobe" => Ok(SimpleFile::new_regular(fs, || Ok("config:0\n".to_owned())).into()),
+            _ => Err(VfsError::NotFound),
+        }
+    }
+}
+
 // ========================================================================
 // /sys/devices
 // ========================================================================
@@ -329,16 +478,117 @@ struct DevicesDir {
 
 impl SimpleDirOps for DevicesDir {
     fn child_names<'a>(&'a self) -> Box<dyn Iterator<Item = Cow<'a, str>> + 'a> {
-        Box::new(["platform", "virtual"].into_iter().map(Cow::Borrowed))
+        Box::new(
+            ["platform", "system", "virtual"]
+                .into_iter()
+                .map(Cow::Borrowed),
+        )
     }
 
     fn lookup_child(&self, name: &str) -> VfsResult<NodeOpsMux> {
         let fs = self.fs.clone();
         Ok(NodeOpsMux::Dir(match name {
             "platform" => SimpleDir::new_maker(fs.clone(), Arc::new(PlatformBusDir { fs })),
+            "system" => SimpleDir::new_maker(fs.clone(), Arc::new(SystemDir { fs })),
             "virtual" => SimpleDir::new_maker(fs.clone(), Arc::new(VirtualDir { fs })),
             _ => return Err(VfsError::NotFound),
         }))
+    }
+}
+
+/// `/sys/devices/system/` — kernel topology subsystems.
+struct SystemDir {
+    fs: Arc<SimpleFs>,
+}
+
+impl SimpleDirOps for SystemDir {
+    fn child_names<'a>(&'a self) -> Box<dyn Iterator<Item = Cow<'a, str>> + 'a> {
+        Box::new(["cpu"].into_iter().map(Cow::Borrowed))
+    }
+
+    fn lookup_child(&self, name: &str) -> VfsResult<NodeOpsMux> {
+        match name {
+            "cpu" => Ok(NodeOpsMux::Dir(SimpleDir::new_maker(
+                self.fs.clone(),
+                Arc::new(SystemCpuDir {
+                    fs: self.fs.clone(),
+                }),
+            ))),
+            _ => Err(VfsError::NotFound),
+        }
+    }
+}
+
+/// `/sys/devices/system/cpu/` — enough CPU topology for userspace to size pools.
+struct SystemCpuDir {
+    fs: Arc<SimpleFs>,
+}
+
+impl SimpleDirOps for SystemCpuDir {
+    fn child_names<'a>(&'a self) -> Box<dyn Iterator<Item = Cow<'a, str>> + 'a> {
+        let mut names: Vec<Cow<'a, str>> = alloc::vec![
+            Cow::Borrowed("online"),
+            Cow::Borrowed("possible"),
+            Cow::Borrowed("present"),
+        ];
+        names.extend((0..ax_runtime::hal::cpu_num()).map(|cpu| Cow::Owned(format!("cpu{cpu}"))));
+        Box::new(names.into_iter())
+    }
+
+    fn lookup_child(&self, name: &str) -> VfsResult<NodeOpsMux> {
+        let fs = self.fs.clone();
+        Ok(match name {
+            "online" | "possible" | "present" => {
+                SimpleFile::new_regular(fs, || Ok(format!("{}\n", cpu_range_string()))).into()
+            }
+            _ => {
+                let cpu = name
+                    .strip_prefix("cpu")
+                    .and_then(|s| s.parse::<usize>().ok())
+                    .ok_or(VfsError::NotFound)?;
+                if cpu >= ax_runtime::hal::cpu_num() {
+                    return Err(VfsError::NotFound);
+                }
+                NodeOpsMux::Dir(SimpleDir::new_maker(
+                    fs.clone(),
+                    Arc::new(SystemCpuEntryDir { fs, cpu }),
+                ))
+            }
+        })
+    }
+}
+
+struct SystemCpuEntryDir {
+    fs: Arc<SimpleFs>,
+    cpu: usize,
+}
+
+impl SimpleDirOps for SystemCpuEntryDir {
+    fn child_names<'a>(&'a self) -> Box<dyn Iterator<Item = Cow<'a, str>> + 'a> {
+        Box::new(["online"].into_iter().map(Cow::Borrowed))
+    }
+
+    fn lookup_child(&self, name: &str) -> VfsResult<NodeOpsMux> {
+        match name {
+            "online" => {
+                let online = if self.cpu < ax_runtime::hal::cpu_num() {
+                    "1\n"
+                } else {
+                    "0\n"
+                };
+                Ok(SimpleFile::new_regular(self.fs.clone(), move || Ok(online.to_owned())).into())
+            }
+            _ => Err(VfsError::NotFound),
+        }
+    }
+}
+
+fn cpu_range_string() -> String {
+    let cpu_num = ax_runtime::hal::cpu_num();
+    if cpu_num <= 1 {
+        "0\n".to_owned()
+    } else {
+        format!("0-{}\n", cpu_num - 1)
     }
 }
 

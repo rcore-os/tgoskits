@@ -10,7 +10,7 @@ use crate::{
     crc32c::ext4_superblock_has_metadata_csum,
     dir::{
         create_lost_found_directory, get_inode_with_num, insert_dir_entry,
-        split_paren_child_and_tranlatevalid,
+        split_paren_child_and_translatevalid,
     },
     disknode::*,
     endian::DiskFormat,
@@ -33,9 +33,11 @@ fn mkdir_internal<B: BlockDevice>(
     fs: &mut Ext4FileSystem,
     path: &str,
     existing_ok: bool,
+    uid: u32,
+    gid: u32,
 ) -> Ext4Result<Ext4Inode> {
     let has_checksum = ext4_superblock_has_metadata_csum(&fs.superblock);
-    let norm_path = split_paren_child_and_tranlatevalid(path);
+    let norm_path = split_paren_child_and_translatevalid(path);
     // Resolve trivial and already-existing paths before allocating anything.
     if norm_path.is_empty() {
         return Err(Ext4Error::invalid_input());
@@ -67,7 +69,7 @@ fn mkdir_internal<B: BlockDevice>(
     for part in parts.iter().take(parts.len().saturating_sub(1)) {
         cur_path.push('/');
         cur_path.push_str(part);
-        ensure_directory(device, fs, &cur_path)?;
+        ensure_directory(device, fs, &cur_path, uid, gid)?;
     }
 
     let child = parts.last().unwrap().to_string();
@@ -98,11 +100,9 @@ fn mkdir_internal<B: BlockDevice>(
     let data_block = fs.alloc_block(device)?;
     let new_dir_gen = fs.get_inode_by_num(device, new_dir_ino)?.i_generation;
 
-    {
-        // Initialize `.` and `..`, leaving room for the checksum tail when enabled.
-        let cached = fs.datablock_cache.create_new(device, data_block)?;
-        let data = &mut cached.data;
-
+    // Initialize `.` and `..` through modify_new so mutations are persisted
+    // in the cache entry rather than on a detached clone.
+    fs.datablock_cache.modify_new(device, data_block, |data| {
         let dot_name = b".";
         let dot_rec_len = Ext4DirEntry2::entry_len(dot_name.len() as u8);
         let dot = Ext4DirEntry2::new(
@@ -144,12 +144,13 @@ fn mkdir_internal<B: BlockDevice>(
             );
             update_ext4_dirblock_csum32(&fs.superblock, new_dir_ino.raw(), new_dir_gen, data);
         }
-    }
+    })?;
 
     // Persist the child directory inode through the unified metadata path.
     let (group_idx, _idx) = fs.inode_allocator.global_to_group(new_dir_ino)?;
     let dir_mode = Ext4Inode::S_IFDIR | 0o755;
     let mut new_inode = Ext4Inode::empty_for_reuse(fs.default_inode_extra_isize());
+    new_inode.i_generation = new_dir_gen;
     new_inode.i_links_count = 2;
     new_inode.i_size_lo = BLOCK_SIZE as u32;
     new_inode.i_size_high = 0;
@@ -161,6 +162,8 @@ fn mkdir_internal<B: BlockDevice>(
     );
     build_file_block_mapping_with_inode_num(fs, &mut new_inode, new_dir_ino, &[data_block], device);
     let mut create_update = Ext4InodeMetadataUpdate::create(dir_mode);
+    create_update.uid = Some(uid);
+    create_update.gid = Some(gid);
     if fs
         .superblock
         .has_feature_ro_compat(Ext4Superblock::EXT4_FEATURE_RO_COMPAT_PROJECT)
@@ -197,15 +200,28 @@ pub(crate) fn ensure_directory<B: BlockDevice>(
     device: &mut Jbd2Dev<B>,
     fs: &mut Ext4FileSystem,
     path: &str,
+    uid: u32,
+    gid: u32,
 ) -> Ext4Result<Ext4Inode> {
-    mkdir_internal(device, fs, path, true)
+    mkdir_internal(device, fs, path, true, uid, gid)
 }
 
-/// Creates a directory and any missing parent directories.
+/// Creates a directory and any missing parent directories (root-owned).
 pub fn mkdir<B: BlockDevice>(
     device: &mut Jbd2Dev<B>,
     fs: &mut Ext4FileSystem,
     path: &str,
 ) -> Ext4Result<Ext4Inode> {
-    mkdir_internal(device, fs, path, false)
+    mkdir_internal(device, fs, path, false, 0, 0)
+}
+
+/// Creates a directory with explicit uid/gid ownership.
+pub fn mkdir_with_owner<B: BlockDevice>(
+    device: &mut Jbd2Dev<B>,
+    fs: &mut Ext4FileSystem,
+    path: &str,
+    uid: u32,
+    gid: u32,
+) -> Ext4Result<Ext4Inode> {
+    mkdir_internal(device, fs, path, false, uid, gid)
 }

@@ -11,13 +11,9 @@ sudo ./target/release/bwbench_client [sender|receiver] [interface]
 
 By reading the source code, you can control the behavior of the benchmark by modifying constants such as `MAX_BYTES`.
 
-In arceos:
-
-```shell
-make A=apps/net/bwbench LOG=info NET=y run
-```
-
-By default, arceos `bebench` uses `bench_transmit`. You can uncomment the line and add `bench_receive`, but please note that currently only one of either `bench_transmit` or `bench_receive` is allowed to be enabled.
+The matching ArceOS-side benchmark entry is no longer part of the core `ax-net`
+public API. If a guest-side raw-frame benchmark is needed, keep it as a
+separate app or test-suit case instead of wiring it back into the network stack.
 
 
 ## Example: benchmark bandwidth of QEMU tap netdev
@@ -30,8 +26,5 @@ sudo ./scripts/net/qemu-tap-ifup.sh enp8s0
 sudo ./target/release/bwbench_client [sender|receiver] tap0
 ```
 
-In arceos:
-
-```shell
-make A=apps/net/bwbench LOG=info NET=y NET_DEV=tap run
-```
+On the guest side, run a dedicated raw-frame benchmark app or test case that
+matches the selected sender/receiver mode.

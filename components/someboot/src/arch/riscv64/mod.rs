@@ -13,7 +13,7 @@ mod trap;
 use core::sync::atomic::{AtomicUsize, Ordering};
 
 pub(crate) use entry::_secondary_entry;
-use page_table_generic::{PageTableEntry, PhysAddr, PteConfig, TableMeta, VirtAddr};
+use page_table_generic::{MemAttributes, PageTableEntry, PhysAddr, PteConfig, TableMeta, VirtAddr};
 pub use relocate::apply as relocate;
 
 use crate::{
@@ -21,10 +21,9 @@ use crate::{
     mem::{PageTableInfo, mmu},
     power::CpuOnError,
 };
-#[cfg(uspace)]
+#[cfg(any(uspace, hv))]
 use crate::{mem::__kimage_va_to_pa, smp::percpu_va_range};
 
-const KERNEL_LOAD_ADDRESS: usize = 0x8020_0000;
 const SATP_MODE_SV39: usize = 8usize << 60;
 const SSTATUS_SIE: usize = 1 << 1;
 const SIE_STIE: usize = 1 << 5;
@@ -37,9 +36,58 @@ const PTE_U: usize = 1 << 4;
 const PTE_G: usize = 1 << 5;
 const PTE_A: usize = 1 << 6;
 const PTE_D: usize = 1 << 7;
+const PTE_PPN_MASK: usize = (1 << 44) - 1;
+
+#[cfg(feature = "thead-mae")]
+const PTE_THEAD_SEC: usize = 1 << 59;
+#[cfg(feature = "thead-mae")]
+const PTE_THEAD_SH: usize = 1 << 60;
+#[cfg(feature = "thead-mae")]
+const PTE_THEAD_B: usize = 1 << 61;
+#[cfg(feature = "thead-mae")]
+const PTE_THEAD_C: usize = 1 << 62;
+#[cfg(feature = "thead-mae")]
+const PTE_THEAD_SO: usize = 1 << 63;
+#[cfg(feature = "thead-mae")]
+const PTE_THEAD_PMA: usize = PTE_THEAD_C | PTE_THEAD_B | PTE_THEAD_SH;
+#[cfg(feature = "thead-mae")]
+const PTE_THEAD_NOCACHE: usize = PTE_THEAD_B | PTE_THEAD_SH;
+#[cfg(feature = "thead-mae")]
+const PTE_THEAD_IO: usize = PTE_THEAD_SO | PTE_THEAD_SH;
+#[cfg(feature = "thead-mae")]
+const PTE_THEAD_MT_MASK: usize =
+    PTE_THEAD_SEC | PTE_THEAD_SH | PTE_THEAD_B | PTE_THEAD_C | PTE_THEAD_SO;
 
 static KERNEL_PAGE_TABLE_ADDR: AtomicUsize = AtomicUsize::new(0);
 static TIMEBASE_FREQ: AtomicUsize = AtomicUsize::new(0);
+
+#[cfg(feature = "thead-mae")]
+fn thead_mae_pte_bits(mem_attr: MemAttributes) -> usize {
+    match mem_attr {
+        MemAttributes::Device => PTE_THEAD_IO,
+        MemAttributes::Uncached => PTE_THEAD_NOCACHE,
+        MemAttributes::Normal | MemAttributes::PerCpu => PTE_THEAD_PMA,
+    }
+}
+
+#[cfg(not(feature = "thead-mae"))]
+fn thead_mae_pte_bits(_mem_attr: MemAttributes) -> usize {
+    0
+}
+
+#[cfg(feature = "thead-mae")]
+fn thead_mae_mem_attr(bits: usize) -> MemAttributes {
+    match bits & PTE_THEAD_MT_MASK {
+        PTE_THEAD_IO => MemAttributes::Device,
+        PTE_THEAD_NOCACHE => MemAttributes::Uncached,
+        _ => MemAttributes::Normal,
+    }
+}
+
+#[cfg(not(feature = "thead-mae"))]
+fn thead_mae_mem_attr(_bits: usize) -> MemAttributes {
+    MemAttributes::Normal
+}
 
 #[derive(Clone, Copy, Debug, Default)]
 #[repr(transparent)]
@@ -75,9 +123,10 @@ impl PageTableEntry for Entry {
             if config.writable || config.dirty {
                 bits |= PTE_D;
             }
+            bits |= thead_mae_pte_bits(config.mem_attr);
         }
 
-        bits |= (config.paddr.raw() >> 12) << SV39_PPN_SHIFT;
+        bits |= ((config.paddr.raw() >> 12) & PTE_PPN_MASK) << SV39_PPN_SHIFT;
         Self(bits)
     }
 
@@ -91,7 +140,7 @@ impl PageTableEntry for Entry {
         let global = (bits & PTE_G) != 0;
         let dirty = (bits & PTE_D) != 0;
         let huge = is_dir && (read || writable || executable);
-        let paddr = PhysAddr::new((bits >> SV39_PPN_SHIFT) << 12);
+        let paddr = PhysAddr::new(((bits >> SV39_PPN_SHIFT) & PTE_PPN_MASK) << 12);
 
         PteConfig {
             paddr,
@@ -104,7 +153,7 @@ impl PageTableEntry for Entry {
             global,
             is_dir,
             huge,
-            mem_attr: Default::default(),
+            mem_attr: thead_mae_mem_attr(bits),
         }
     }
 
@@ -176,7 +225,7 @@ impl ArchTrait for Arch {
 
     fn virt_to_phys(vaddr: *const u8) -> usize {
         let vaddr = vaddr as usize;
-        #[cfg(uspace)]
+        #[cfg(any(uspace, hv))]
         {
             if mmu::is_mmu_enabled() {
                 if percpu_va_range().contains(&vaddr) {
@@ -237,10 +286,6 @@ impl ArchTrait for Arch {
     }
 
     fn cpu_on(hartid: usize, entry: usize, arg: usize) -> Result<(), CpuOnError> {
-        if hartid == Self::cpu_current_hartid() {
-            return Err(CpuOnError::AlreadyOn);
-        }
-
         match sbi::hart_start(hartid, entry, arg) {
             Ok(()) => Ok(()),
             Err(sbi::HartStartError::AlreadyAvailable | sbi::HartStartError::AlreadyStarted) => {
@@ -376,8 +421,14 @@ impl ArchTrait for Arch {
     }
 }
 
-pub(crate) fn kernel_load_address() -> usize {
-    KERNEL_LOAD_ADDRESS
+pub(crate) fn disable_local_irqs() {
+    unsafe {
+        core::arch::asm!(
+            "csrc sstatus, {mask}",
+            mask = in(reg) SSTATUS_SIE,
+            options(nostack, preserves_flags)
+        );
+    }
 }
 
 pub(crate) fn current_page_table() -> PageTableInfo {

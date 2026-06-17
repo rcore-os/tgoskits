@@ -55,18 +55,18 @@ fn set_by_stdout() -> Option<()> {
                 let rx = serial.take_rx()?;
 
                 crate::console::set_earlycon_sender(tx);
-                crate::console::set_earlycon_reciever(rx);
+                crate::console::set_earlycon_receiver(rx);
                 installed = true;
                 break;
             }
-            "snps,dw-apb-uart" => {
+            "snps,dw-apb-uart" | "ns16550a" | "ns16550" => {
                 let mut serial = ns16550::Ns16550::new_mmio(addr, clock, reg_width);
                 serial.open();
                 let tx = serial.take_tx()?;
                 let rx = serial.take_rx()?;
 
                 crate::console::set_earlycon_sender(tx);
-                crate::console::set_earlycon_reciever(rx);
+                crate::console::set_earlycon_receiver(rx);
                 installed = true;
                 break;
             }

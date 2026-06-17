@@ -7,7 +7,7 @@ autotests = false
 keywords = ["rk3588", "npu", "rknn"]
 license = "Apache-2.0"
 name = "rockchip-npu"
-version = "0.2.0"
+version = "0.2.5"
 repository.workspace = true
 
 [dependencies]
@@ -18,14 +18,14 @@ log = "0.4"
 mbarrier = "0.1"
 num-align = "0.1"
 rdif-base.workspace = true
-spin = "0.10"
+spin = { workspace = true }
 thiserror = {version = "2.0", default-features = false}
 tock-registers = "0.10"
 
 [dev-dependencies]
-fdt-edit = "0.2.3"
-rockchip-pm = { workspace = true }
-rockchip-soc = { workspace = true }
+# fdt-edit = "0.2.3"
+# rockchip-pm = { workspace = true }
+# rockchip-soc = { workspace = true }
 
 # bare-test integration test is temporarily disabled.
 # [[test]]

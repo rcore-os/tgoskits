@@ -1,7 +1,7 @@
-#[cfg(feature = "smp")]
-use alloc::sync::Weak;
 use alloc::{collections::VecDeque, sync::Arc};
 use core::mem::MaybeUninit;
+#[cfg(feature = "smp")]
+use core::ptr::NonNull;
 
 use ax_hal::percpu::this_cpu_id;
 use ax_kernel_guard::BaseGuard;
@@ -34,9 +34,12 @@ percpu_static! {
     EXITED_TASKS: VecDeque<AxTaskRef> = VecDeque::new(),
     WAIT_FOR_EXIT: WaitQueue = WaitQueue::new(),
     IDLE_TASK: LazyInit<AxTaskRef> = LazyInit::new(),
-    /// Stores the weak reference to the previous task that is running on this CPU.
+    /// Stores a raw pointer to the previous task running on this CPU.
+    /// The pointer is valid only within the window between `switch_to` storing it
+    /// and `clear_prev_task_on_cpu` consuming it — both in the same non-preemptible
+    /// call chain, so the task cannot be freed while the pointer is held.
     #[cfg(feature = "smp")]
-    PREV_TASK: Weak<crate::AxTask> = Weak::new(),
+    PREV_TASK: Option<NonNull<crate::AxTask>> = None,
 }
 
 /// An array of references to run queues, one for each CPU, indexed by cpu_id.
@@ -53,13 +56,13 @@ static mut RUN_QUEUES: [MaybeUninit<&'static mut AxRunQueue>; ax_config::plat::M
 #[allow(clippy::declare_interior_mutable_const)] // It's ok because it's used only for initialization `RUN_QUEUES`.
 const ARRAY_REPEAT_VALUE: MaybeUninit<&'static mut AxRunQueue> = MaybeUninit::uninit();
 
-#[cfg(target_os = "none")]
+#[cfg(not(feature = "host-test"))]
 fn main_task_stack() -> TaskStack {
     let (stack_ptr, stack_size) = ax_hal::mem::boot_stack_bounds(this_cpu_id());
     TaskStack::borrowed(stack_ptr, stack_size, TASK_STACK_ALIGN)
 }
 
-#[cfg(not(target_os = "none"))]
+#[cfg(feature = "host-test")]
 fn main_task_stack() -> TaskStack {
     TaskStack::alloc(ax_config::TASK_STACK_SIZE)
 }
@@ -144,6 +147,16 @@ fn get_run_queue(index: usize) -> &'static mut AxRunQueue {
     unsafe { RUN_QUEUES[index].assume_init_mut() }
 }
 
+#[cfg(all(feature = "smp", feature = "ipi"))]
+fn kick_remote_cpu(cpu_id: usize) {
+    if cpu_id != this_cpu_id() {
+        ax_hal::irq::send_ipi(
+            ax_hal::irq::IPI_IRQ,
+            ax_hal::irq::IpiTarget::Other { cpu_id },
+        );
+    }
+}
+
 /// Selects the appropriate run queue for the provided task.
 ///
 /// * In a single-core system, this function always returns a reference to the global run queue.
@@ -176,8 +189,52 @@ pub(crate) fn select_run_queue<G: BaseGuard>(task: &AxTaskRef) -> AxRunQueueRef<
     }
     #[cfg(feature = "smp")]
     {
-        // When SMP is enabled, select the run queue based on the task's CPU affinity and load balance.
-        let index = select_run_queue_index(task.cpumask());
+        // When SMP is enabled, prefer the current CPU to keep the task's
+        // cache warm. Fall back to round-robin only when affinity forbids it.
+        let current_cpu = this_cpu_id();
+        let index = if task.cpumask().get(current_cpu) {
+            current_cpu
+        } else {
+            select_run_queue_index(task.cpumask())
+        };
+        AxRunQueueRef {
+            inner: get_run_queue(index),
+            state: irq_state,
+            _phantom: core::marker::PhantomData,
+        }
+    }
+}
+
+/// Selects a run queue for waking a blocked task.
+///
+/// Unlike new task placement, wakeups prefer the CPU that performs the wakeup
+/// when the task affinity allows it. This keeps most wakeups local while still
+/// falling back to the task's previous CPU or the normal selector if affinity
+/// requires it.
+#[inline]
+pub(crate) fn select_wake_run_queue<G: BaseGuard>(task: &AxTaskRef) -> AxRunQueueRef<'static, G> {
+    let irq_state = G::acquire();
+    #[cfg(not(feature = "smp"))]
+    {
+        let _ = task;
+        AxRunQueueRef {
+            inner: unsafe { RUN_QUEUE.current_ref_mut_raw() },
+            state: irq_state,
+            _phantom: core::marker::PhantomData,
+        }
+    }
+    #[cfg(feature = "smp")]
+    {
+        let current_cpu = this_cpu_id();
+        let last_cpu = task.cpu_id() as usize;
+        let cpumask = task.cpumask();
+        let index = if cpumask.get(current_cpu) {
+            current_cpu
+        } else if last_cpu < ax_config::plat::MAX_CPU_NUM && cpumask.get(last_cpu) {
+            last_cpu
+        } else {
+            select_run_queue_index(cpumask)
+        };
         AxRunQueueRef {
             inner: get_run_queue(index),
             state: irq_state,
@@ -239,13 +296,14 @@ impl<G: BaseGuard> AxRunQueueRef<'_, G> {
     ///
     /// This function is used to add a new task to the scheduler.
     pub fn add_task(&mut self, task: AxTaskRef) {
-        debug!(
-            "task add: {} on run_queue {}",
-            task.id_name(),
-            self.inner.cpu_id
-        );
+        let cpu_id = self.inner.cpu_id;
+        debug!("task add: {} on run_queue {}", task.id_name(), cpu_id);
         assert!(task.is_ready());
+        #[cfg(feature = "smp")]
+        task.set_cpu_id(cpu_id as _);
         self.inner.scheduler.lock().add_task(task);
+        #[cfg(all(feature = "smp", feature = "ipi"))]
+        kick_remote_cpu(cpu_id);
     }
 
     /// Unblock one task by inserting it into the run queue.
@@ -272,12 +330,33 @@ impl<G: BaseGuard> AxRunQueueRef<'_, G> {
                 #[cfg(feature = "preempt")]
                 crate::current().set_preempt_pending(true);
             }
+            #[cfg(all(feature = "smp", feature = "ipi"))]
+            kick_remote_cpu(cpu_id);
         }
     }
 }
 
 /// Core functions of run queue.
 impl<G: BaseGuard> CurrentRunQueueRef<'_, G> {
+    /// Unblock one task by inserting it into the current CPU's run queue.
+    ///
+    /// See [`AxRunQueueRef::unblock_task`] for the state-transition details.
+    #[cfg(feature = "irq")]
+    pub(crate) fn unblock_task(&mut self, task: AxTaskRef, resched: bool) {
+        let task_id_name = task.id_name();
+        if self
+            .inner
+            .put_task_with_state(task, TaskState::Blocked, resched)
+        {
+            let cpu_id = self.inner.cpu_id;
+            debug!("task unblock: {task_id_name} on run_queue {cpu_id}");
+            if resched {
+                #[cfg(feature = "preempt")]
+                crate::current().set_preempt_pending(true);
+            }
+        }
+    }
+
     #[cfg(feature = "irq")]
     pub fn scheduler_timer_tick(&mut self) {
         let curr = &self.current_task;
@@ -294,6 +373,12 @@ impl<G: BaseGuard> CurrentRunQueueRef<'_, G> {
         let curr = &self.current_task;
         trace!("task yield: {}", curr.id_name());
         assert!(curr.is_running());
+
+        #[cfg(feature = "smp")]
+        if !curr.cpumask().get(self.inner.cpu_id) {
+            self.migrate_current_to_affinity();
+            return;
+        }
 
         self.inner
             .put_task_with_state(curr.clone(), TaskState::Running, false);
@@ -350,6 +435,12 @@ impl<G: BaseGuard> CurrentRunQueueRef<'_, G> {
             can_preempt
         );
         if can_preempt {
+            #[cfg(feature = "smp")]
+            if !curr.cpumask().get(self.inner.cpu_id) {
+                self.migrate_current_to_affinity();
+                return;
+            }
+
             self.inner
                 .put_task_with_state(curr.clone(), TaskState::Running, true);
             self.inner.resched();
@@ -413,10 +504,15 @@ impl<G: BaseGuard> CurrentRunQueueRef<'_, G> {
         // Mark the task as blocked, this has to be done before adding it to the wait queue
         // while holding the lock of the wait queue.
         curr.set_state(TaskState::Blocked);
-        curr.set_in_wait_queue(true);
 
-        wq_guard.push_back(curr.clone());
-        // Drop the lock of wait queue explictly.
+        // A preemptive future wake can re-enter a wait path before a previous
+        // wait-queue entry has been consumed. Avoid leaving a stale duplicate
+        // waiter that may receive mutex ownership after the task is running.
+        if !curr.in_wait_queue() {
+            curr.set_in_wait_queue(true);
+            wq_guard.push_back(curr.clone());
+        }
+        // Drop the lock of wait queue explicitly.
         drop(wq_guard);
 
         // Current task's state has been changed to `Blocked` and added to the wait queue.
@@ -459,8 +555,7 @@ impl<G: BaseGuard> CurrentRunQueueRef<'_, G> {
         assert!(curr.is_running());
         assert!(!curr.is_idle());
 
-        let now = ax_hal::time::wall_time();
-        if now < deadline {
+        while ax_hal::time::monotonic_time() < deadline {
             crate::timers::set_alarm_wakeup(deadline, curr.clone());
             curr.set_state(TaskState::Blocked);
             self.inner.resched();
@@ -472,6 +567,20 @@ impl<G: BaseGuard> CurrentRunQueueRef<'_, G> {
             .scheduler
             .lock()
             .set_priority(&self.current_task, prio)
+    }
+
+    #[cfg(feature = "smp")]
+    fn migrate_current_to_affinity(&mut self) {
+        const MIGRATION_TASK_STACK_SIZE: usize = ax_config::TASK_STACK_SIZE;
+        let curr = self.current_task.clone();
+        let migration_task = TaskInner::new(
+            move || crate::run_queue::migrate_entry(curr),
+            "migration-task".into(),
+            MIGRATION_TASK_STACK_SIZE,
+        )
+        .into_arc();
+
+        self.migrate_current(migration_task);
     }
 }
 
@@ -558,7 +667,7 @@ impl AxRunQueue {
 
     fn switch_to(&mut self, prev_task: CurrentTask, next_task: AxTaskRef) {
         // Make sure that IRQs are disabled by kernel guard or other means.
-        #[cfg(all(target_os = "none", feature = "irq"))] // Note: irq is faked under unit tests.
+        #[cfg(all(feature = "irq", not(feature = "host-test")))]
         assert!(
             !ax_hal::asm::irqs_enabled(),
             "IRQs must be disabled during scheduling"
@@ -594,14 +703,29 @@ impl AxRunQueue {
             }
         }
 
+        // `prev_task.state()` must be sampled before the architectural switch:
+        // callers like `exit_current` already set it to `Exited`/`Blocked`,
+        // and that pre-switch state is what `sched:sched_switch` reports.
+        #[cfg(feature = "tracepoint-hooks")]
+        ax_crate_interface::call_interface!(
+            crate::sched_tracepoint::SchedTracepoint::on_sched_switch(
+                prev_task.id().as_u64(),
+                next_task.id().as_u64(),
+                prev_task.state() as u32,
+            )
+        );
+
         unsafe {
             let prev_ctx_ptr = prev_task.ctx_mut_ptr();
             let next_ctx_ptr = next_task.ctx_mut_ptr();
 
-            // Store the weak pointer of **prev_task** in ax-percpu variable `PREV_TASK`.
+            // Store a raw pointer to prev_task in PREV_TASK.
+            // Safety: prev_task is alive (Arc held on caller's stack) and will
+            // remain so through clear_prev_task_on_cpu() below.
             #[cfg(feature = "smp")]
             {
-                *PREV_TASK.current_ref_mut_raw() = Arc::downgrade(&prev_task);
+                *PREV_TASK.current_ref_mut_raw() =
+                    Some(NonNull::new(Arc::as_ptr(&prev_task) as *mut _).unwrap());
             }
 
             // The strong reference count of `prev_task` will be decremented by 1,
@@ -665,23 +789,26 @@ fn gc_entry() {
 /// then puts the task to the scheduler of target run queue.
 #[cfg(feature = "smp")]
 pub(crate) fn migrate_entry(migrated_task: AxTaskRef) {
-    select_run_queue::<ax_kernel_guard::NoPreemptIrqSave>(&migrated_task)
-        .inner
+    let rq = select_run_queue::<ax_kernel_guard::NoPreemptIrqSave>(&migrated_task);
+    let cpu_id = rq.inner.cpu_id;
+    migrated_task.set_cpu_id(cpu_id as _);
+    rq.inner
         .scheduler
         .lock()
-        .put_prev_task(migrated_task, false)
+        .put_prev_task(migrated_task, false);
+    #[cfg(all(feature = "smp", feature = "ipi"))]
+    kick_remote_cpu(cpu_id);
 }
 
 /// Clear the `on_cpu` field of previous task running on this CPU.
 #[cfg(feature = "smp")]
 pub(crate) unsafe fn clear_prev_task_on_cpu() {
-    unsafe {
-        PREV_TASK
-            .current_ref_raw()
-            .upgrade()
-            .expect("Invalid prev_task pointer or prev_task has been dropped")
-            .set_on_cpu(false);
-    }
+    let prev = unsafe { PREV_TASK.current_ref_mut_raw() }
+        .take()
+        .expect("PREV_TASK should have been set by switch_to");
+    // Safety: prev_task's Arc is still alive on the caller's stack at this point
+    // (switch_to has not yet returned), so the pointer is valid.
+    unsafe { prev.as_ref() }.set_on_cpu(false);
 }
 pub(crate) fn init() {
     let cpu_id = this_cpu_id();

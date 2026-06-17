@@ -1,13 +1,14 @@
 use alloc::{borrow::Cow, format, sync::Arc, vec, vec::Vec};
 use core::{
     ffi::c_int,
-    mem::{MaybeUninit, size_of},
+    mem::size_of,
     sync::atomic::{AtomicBool, Ordering},
     task::Context,
 };
 
 use ax_errno::{AxError, AxResult, LinuxError};
 use ax_io::prelude::*;
+use ax_net::{InterfaceFlags, InterfaceId, InterfaceInfo, InterfaceKind};
 use ax_sync::Mutex;
 use ax_task::future::{block_on, poll_io};
 use axpoll::{IoEvents, PollSet, Pollable};
@@ -18,25 +19,26 @@ use linux_raw_sys::{
 };
 use starry_vm::{vm_read_slice, vm_write_slice};
 
-use super::{FileLike, Kstat};
-use crate::file::{IoDst, IoSrc, get_file_like};
+use super::{
+    FileLike, Kstat,
+    net::{ARPHRD_ETHER, first_visible_ethernet, visible_interface_by_id},
+};
+use crate::{
+    file::{IoDst, IoSrc, get_file_like},
+    syscall::in_root_net_ns,
+};
 
-pub(super) const ETH0_IFINDEX: i32 = 2;
-const ETH0_NAME: &[u8] = b"eth0";
-pub(super) const ETH0_HWADDR: [u8; 6] = [0x02, 0x00, 0x00, 0x00, 0x00, 0x01];
+const PACKET_HOST: u8 = 0;
 const SYNTHETIC_PEER_HWADDR: [u8; 6] = [0x02, 0x00, 0x00, 0x00, 0x00, 0x02];
-const UNSPEC_IPV4: [u8; 4] = [0, 0, 0, 0];
-
-const ARPHRD_ETHER: u16 = 1;
 const ETH_P_IP: u16 = 0x0800;
 const ETH_P_ARP: u16 = 0x0806;
-const IFF_UP: i16 = 0x0001;
-const IFF_BROADCAST: i16 = 0x0002;
-const IFF_RUNNING: i16 = 0x0040;
-const IFF_MULTICAST: i16 = 0x1000;
 const ARPOP_REQUEST: u16 = 1;
 const ARPOP_REPLY: u16 = 2;
-const PACKET_HOST: u8 = 0;
+const IFF_UP: i16 = 0x0001;
+const IFF_BROADCAST: i16 = 0x0002;
+const IFF_LOOPBACK: i16 = 0x0008;
+const IFF_RUNNING: i16 = 0x0040;
+const IFF_MULTICAST: i16 = 0x1000;
 const IFREQ_NAME_LEN: usize = 16;
 const IFREQ_DATA_OFFSET: usize = 16;
 
@@ -53,18 +55,22 @@ pub struct SockAddrLl {
 }
 
 impl SockAddrLl {
-    fn eth0(protocol: u16) -> Self {
+    fn from_interface(info: &InterfaceInfo, protocol: u16) -> AxResult<Self> {
+        if info.kind != InterfaceKind::Ethernet {
+            return Err(AxError::NoSuchDevice);
+        }
+        let mac = info.mac.ok_or(AxError::NoSuchDevice)?;
         let mut sll_addr = [0; 8];
-        sll_addr[..ETH0_HWADDR.len()].copy_from_slice(&ETH0_HWADDR);
-        Self {
+        sll_addr[..mac.0.len()].copy_from_slice(&mac.0);
+        Ok(Self {
             sll_family: AF_PACKET as u16,
             sll_protocol: protocol,
-            sll_ifindex: ETH0_IFINDEX,
+            sll_ifindex: info.id.to_linux_ifindex(),
             sll_hatype: ARPHRD_ETHER,
             sll_pkttype: PACKET_HOST,
-            sll_halen: ETH0_HWADDR.len() as u8,
+            sll_halen: mac.0.len() as u8,
             sll_addr,
-        }
+        })
     }
 
     pub fn read_from_user(addr: *const sockaddr, addrlen: u32) -> AxResult<Self> {
@@ -96,14 +102,9 @@ impl SockAddrLl {
     }
 }
 
-struct PacketFrame {
-    data: Vec<u8>,
-    from: SockAddrLl,
-}
-
 struct PacketSocketState {
     bound: SockAddrLl,
-    pending: Option<PacketFrame>,
+    pending: Option<(Vec<u8>, SockAddrLl)>,
 }
 
 pub struct PacketSocket {
@@ -113,28 +114,35 @@ pub struct PacketSocket {
 }
 
 impl PacketSocket {
-    pub fn new(protocol: u16) -> Self {
-        Self {
+    pub fn new(protocol: u16) -> AxResult<Self> {
+        if !in_root_net_ns() {
+            return Err(AxError::PermissionDenied);
+        }
+        let info = first_visible_ethernet()?;
+        Ok(Self {
             state: Mutex::new(PacketSocketState {
-                bound: SockAddrLl::eth0(protocol),
+                bound: SockAddrLl::from_interface(&info, protocol)?,
                 pending: None,
             }),
             non_blocking: AtomicBool::new(false),
             poll_rx: PollSet::new(),
-        }
+        })
     }
 
     pub fn bind_ll(&self, addr: SockAddrLl) -> AxResult<()> {
-        if addr.sll_ifindex != 0 && addr.sll_ifindex != ETH0_IFINDEX {
+        if !in_root_net_ns() {
             return Err(AxError::NoSuchDevice);
         }
+        let info = if addr.sll_ifindex == 0 {
+            first_visible_ethernet()?
+        } else {
+            let id =
+                InterfaceId::from_linux_ifindex(addr.sll_ifindex).ok_or(AxError::InvalidInput)?;
+            visible_interface_by_id(id)?
+        };
+        // from_interface checks kind, no need to check again
         let mut state = self.state.lock();
-        state.bound.sll_family = AF_PACKET as u16;
-        state.bound.sll_protocol = addr.sll_protocol;
-        state.bound.sll_ifindex = ETH0_IFINDEX;
-        if state.bound.sll_halen == 0 {
-            state.bound = SockAddrLl::eth0(addr.sll_protocol);
-        }
+        state.bound = SockAddrLl::from_interface(&info, addr.sll_protocol)?;
         Ok(())
     }
 
@@ -143,6 +151,9 @@ impl PacketSocket {
     }
 
     pub fn send_packet(&self, src: &mut IoSrc) -> AxResult<usize> {
+        if !in_root_net_ns() {
+            return Err(AxError::NoSuchDevice);
+        }
         let len = src.remaining();
         if len == 0 {
             return Ok(0);
@@ -151,20 +162,25 @@ impl PacketSocket {
         let read = src.read(&mut data)?;
         data.truncate(read);
 
-        if let Some(reply) = build_arp_reply(&data) {
-            self.state.lock().pending = Some(reply);
-            self.poll_rx.wake();
+        let bound = self.state.lock().bound;
+        if let Some(reply) = build_arp_reply(&data, bound) {
+            {
+                self.state.lock().pending = Some(reply);
+            }
+            // Pending packet is stored before waking readers.
+            unsafe { self.poll_rx.wake(IoEvents::IN) };
         }
         Ok(read)
     }
 
     pub fn recv_packet(&self, dst: &mut IoDst) -> AxResult<(usize, SockAddrLl)> {
         block_on(poll_io(self, IoEvents::IN, self.nonblocking(), || {
-            let Some(frame) = self.state.lock().pending.take() else {
-                return Err(AxError::WouldBlock);
+            let (data, from) = {
+                let mut state = self.state.lock();
+                state.pending.take().ok_or(AxError::WouldBlock)?
             };
-            let written = dst.write(&frame.data)?;
-            Ok((written, frame.from))
+            let written = dst.write(&data)?;
+            Ok((written, from))
         }))
     }
 
@@ -175,11 +191,14 @@ impl PacketSocket {
     }
 }
 
-fn build_arp_reply(request: &[u8]) -> Option<PacketFrame> {
+fn build_arp_reply(request: &[u8], bound: SockAddrLl) -> Option<(Vec<u8>, SockAddrLl)> {
+    let id = InterfaceId::from_linux_ifindex(bound.sll_ifindex)?;
+    let info = visible_interface_by_id(id).ok()?;
+    let mac = info.mac?;
     if request.len() < 28
         || u16::from_be_bytes([request[0], request[1]]) != ARPHRD_ETHER
         || u16::from_be_bytes([request[2], request[3]]) != ETH_P_IP
-        || request[4] != ETH0_HWADDR.len() as u8
+        || request[4] != mac.0.len() as u8
         || request[5] != 4
         || u16::from_be_bytes([request[6], request[7]]) != ARPOP_REQUEST
     {
@@ -188,68 +207,64 @@ fn build_arp_reply(request: &[u8]) -> Option<PacketFrame> {
 
     let request_sender_protocol: [u8; 4] = request[14..18].try_into().ok()?;
     let request_target_protocol: [u8; 4] = request[24..28].try_into().ok()?;
-    let modeled_peer_protocol = configured_peer_ipv4()?;
-    if request_target_protocol != modeled_peer_protocol {
-        return None;
-    }
-    if let Some(local_protocol) = configured_eth0_ipv4()
-        && request_sender_protocol != local_protocol
-        && request_sender_protocol != UNSPEC_IPV4
-    {
+    if !is_modeled_peer_ipv4(&info, request_target_protocol) {
         return None;
     }
 
     let mut reply = request.to_vec();
     reply[6..8].copy_from_slice(&ARPOP_REPLY.to_be_bytes());
     reply[8..14].copy_from_slice(&SYNTHETIC_PEER_HWADDR);
-    reply[14..18].copy_from_slice(&modeled_peer_protocol);
+    reply[14..18].copy_from_slice(&request_target_protocol);
     reply[18..24].copy_from_slice(&request[8..14]);
     reply[24..28].copy_from_slice(&request_sender_protocol);
 
-    let mut from = SockAddrLl::eth0(ETH_P_ARP.to_be());
+    let mut from = SockAddrLl::from_interface(&info, ETH_P_ARP.to_be()).ok()?;
     from.sll_addr[..SYNTHETIC_PEER_HWADDR.len()].copy_from_slice(&SYNTHETIC_PEER_HWADDR);
 
-    Some(PacketFrame { data: reply, from })
+    Some((reply, from))
 }
 
-fn configured_eth0_ipv4() -> Option<[u8; 4]> {
-    parse_ipv4_addr(option_env!("AX_IP")?)
-}
-
-fn configured_peer_ipv4() -> Option<[u8; 4]> {
-    parse_ipv4_addr(option_env!("AX_GW")?)
-}
-
-fn parse_ipv4_addr(value: &str) -> Option<[u8; 4]> {
-    let mut addr = [0; 4];
-    let mut parts = value.split('.');
-    for octet in &mut addr {
-        let part = parts.next()?;
-        if part.is_empty() {
-            return None;
-        }
-        *octet = part.parse().ok()?;
-    }
-    if parts.next().is_some() {
-        return None;
-    }
-    Some(addr)
+fn is_modeled_peer_ipv4(info: &InterfaceInfo, ip: [u8; 4]) -> bool {
+    info.ipv4
+        .and_then(|config| config.gateway)
+        .is_some_and(|gateway| gateway.octets() == ip)
 }
 
 fn read_user_bytes<const N: usize>(ptr: *const u8) -> AxResult<[u8; N]> {
-    let mut buf = [MaybeUninit::<u8>::uninit(); N];
+    let mut buf = [core::mem::MaybeUninit::<u8>::uninit(); N];
     vm_read_slice(ptr, &mut buf)?;
-    Ok(buf.map(|v| unsafe { v.assume_init() }))
+    Ok(buf.map(|b| unsafe { b.assume_init() }))
 }
 
-fn ifreq_name_is_eth0(arg: usize) -> AxResult<bool> {
+fn ifreq_interface(arg: usize) -> AxResult<InterfaceInfo> {
     let name = read_user_bytes::<IFREQ_NAME_LEN>(arg as *const u8)?;
     let end = name.iter().position(|&b| b == 0).unwrap_or(name.len());
-    Ok(&name[..end] == ETH0_NAME)
+    let name = core::str::from_utf8(&name[..end]).map_err(|_| AxError::InvalidInput)?;
+    ax_net::interface_by_name(name).ok_or(AxError::NoSuchDevice)
 }
 
 fn write_ifreq_data(arg: usize, data: &[u8]) -> AxResult<()> {
     Ok(vm_write_slice((arg + IFREQ_DATA_OFFSET) as *mut u8, data)?)
+}
+
+fn linux_flags(info: &InterfaceInfo) -> i16 {
+    let mut flags = 0;
+    if info.flags.contains(InterfaceFlags::UP) {
+        flags |= IFF_UP;
+    }
+    if info.flags.contains(InterfaceFlags::BROADCAST) {
+        flags |= IFF_BROADCAST;
+    }
+    if info.flags.contains(InterfaceFlags::LOOPBACK) {
+        flags |= IFF_LOOPBACK;
+    }
+    if info.flags.contains(InterfaceFlags::RUNNING) {
+        flags |= IFF_RUNNING;
+    }
+    if info.flags.contains(InterfaceFlags::MULTICAST) {
+        flags |= IFF_MULTICAST;
+    }
+    flags
 }
 
 impl FileLike for PacketSocket {
@@ -279,20 +294,19 @@ impl FileLike for PacketSocket {
     }
 
     fn ioctl(&self, cmd: u32, arg: usize) -> AxResult<usize> {
-        if !ifreq_name_is_eth0(arg)? {
+        if !in_root_net_ns() {
             return Err(AxError::NoSuchDevice);
         }
+        let info = ifreq_interface(arg)?;
 
         match cmd {
-            SIOCGIFINDEX => write_ifreq_data(arg, &ETH0_IFINDEX.to_ne_bytes())?,
-            SIOCGIFFLAGS => write_ifreq_data(
-                arg,
-                &(IFF_UP | IFF_BROADCAST | IFF_RUNNING | IFF_MULTICAST).to_ne_bytes(),
-            )?,
+            SIOCGIFINDEX => write_ifreq_data(arg, &info.id.to_linux_ifindex().to_ne_bytes())?,
+            SIOCGIFFLAGS => write_ifreq_data(arg, &linux_flags(&info).to_ne_bytes())?,
             SIOCGIFHWADDR => {
+                let mac = info.mac.ok_or(AxError::NoSuchDevice)?;
                 let mut hwaddr = [0; 16];
                 hwaddr[..2].copy_from_slice(&ARPHRD_ETHER.to_ne_bytes());
-                hwaddr[2..2 + ETH0_HWADDR.len()].copy_from_slice(&ETH0_HWADDR);
+                hwaddr[2..2 + mac.0.len()].copy_from_slice(&mac.0);
                 write_ifreq_data(arg, &hwaddr)?;
             }
             _ => return Err(AxError::NotATty),
@@ -311,7 +325,8 @@ impl Pollable for PacketSocket {
 
     fn register(&self, context: &mut Context<'_>, events: IoEvents) {
         if events.contains(IoEvents::IN) {
-            self.poll_rx.register(context.waker());
+            // Registration happens from socket poll task context.
+            unsafe { self.poll_rx.register(context.waker(), IoEvents::IN) };
         }
     }
 }

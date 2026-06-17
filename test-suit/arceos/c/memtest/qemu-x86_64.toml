@@ -1,6 +1,0 @@
-args = ["-nographic"]
-uefi = false
-to_bin = false
-success_regex = ["Memory tests run OK!"]
-fail_regex = ['(?i)\bpanic(?:ked)?\b']
-timeout = 120

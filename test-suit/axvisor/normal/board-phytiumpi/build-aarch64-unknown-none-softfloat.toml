@@ -1,0 +1,7 @@
+features = [
+    "fs",
+    "phytium-mci",
+]
+log = "Info"
+target = "aarch64-unknown-none-softfloat"
+vm_configs = ["os/axvisor/configs/vms/phytiumpi/linux-smp1.toml"]

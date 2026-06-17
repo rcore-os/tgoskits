@@ -15,8 +15,10 @@ pub unsafe extern "C" fn _head() -> ! {
     naked_asm!(
         ".option push",
         ".option norvc",
-        // code0/code1
-        "j {kernel_entry}",
+        // code0/code1: use lla+jr instead of j to avoid R_RISCV_JAL
+        // range limit (±1MB); lla expands to auipc+addi with ±2GB reach
+        "lla t0, {kernel_entry}",
+        "jr t0",
         "nop",
         ".option pop",
         // text_offset
@@ -50,7 +52,8 @@ pub unsafe extern "C" fn kernel_entry(_hart_id: usize, _fdt_addr: usize) -> ! {
         "mv t0, a1",
         "lla sp, __cpu0_stack_top",
         "mv a0, t0",
-        "j {primary_head_entry}",
+        "lla t1, {primary_head_entry}",
+        "jr t1",
         primary_head_entry = sym primary_head_entry,
     )
 }
@@ -62,6 +65,7 @@ fn primary_head_entry(fdt_addr: usize) -> ! {
 
 fn primary_entry(fdt_addr: usize) -> ! {
     clear_bss();
+    early_trap_init();
     unsafe {
         crate::fdt::FDT_ADDR = fdt_addr;
     }
@@ -69,11 +73,12 @@ fn primary_entry(fdt_addr: usize) -> ! {
     <<super::Arch as crate::ArchTrait>::Console as crate::console::ArchConsoleOps>::init();
     println!("RISC-V64 SBI kernel entry.");
 
-    let kernel_start = super::kernel_load_address();
+    let kernel_code_start_lma = ext_sym_addr!(_head);
+    let kernel_code_end_lma = ext_sym_addr!(__kernel_code_end);
 
     crate::entry::primary_init_early(PrimaryCpuInitInfo {
-        kernel_start: kernel_start.into(),
-        kernel_end: (__kernel_code_end as *const () as usize).into(),
+        kernel_start: kernel_code_start_lma.into(),
+        kernel_end: kernel_code_end_lma.into(),
         kernel_start_link: crate::consts::VM_LOAD_ADDRESS.into(),
     });
     super::paging::enable_mmu()
@@ -89,6 +94,8 @@ unsafe extern "C" {
     fn __kernel_code_end();
     fn __bss_start();
     fn __bss_stop();
+    fn __cpu0_stack();
+    fn __cpu0_stack_top();
 }
 
 #[unsafe(naked)]
@@ -98,7 +105,8 @@ pub(crate) unsafe extern "C" fn _secondary_entry(_hartid: usize, _cpu_meta_paddr
         "mv t0, a1",
         "ld sp, {stack_top_offset}(t0)",
         "mv a0, t0",
-        "j {secondary_start}",
+        "lla t1, {secondary_start}",
+        "jr t1",
         secondary_start = sym secondary_start,
         stack_top_offset = const offset_of!(PerCpuMeta, stack_top),
     )
@@ -111,10 +119,28 @@ fn secondary_start(cpu_meta_paddr: usize) -> ! {
 fn clear_bss() {
     let start = __bss_start as *const () as usize;
     let end = __bss_stop as *const () as usize;
-    let len = end.saturating_sub(start);
-    if len != 0 {
-        unsafe {
-            core::ptr::write_bytes(start as *mut u8, 0, len);
-        }
+    let stack_start = __cpu0_stack as *const () as usize;
+    let stack_end = __cpu0_stack_top as *const () as usize;
+
+    clear_bss_range(start, stack_start.min(end));
+    clear_bss_range(stack_end.max(start), end);
+}
+
+fn clear_bss_range(start: usize, end: usize) {
+    if end <= start {
+        return;
+    }
+
+    unsafe {
+        core::ptr::write_bytes(start as *mut u8, 0, end - start);
+    }
+}
+
+fn early_trap_init() {
+    super::disable_local_irqs();
+    let _ = super::sbi::set_timer(u64::MAX);
+
+    if crate::consts::VM_LOAD_ADDRESS == crate::consts::KERNEL_LOAD_ADDRESS {
+        super::trap::setup();
     }
 }

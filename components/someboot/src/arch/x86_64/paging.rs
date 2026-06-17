@@ -9,7 +9,7 @@ use x86::{
 };
 
 use crate::{
-    arch::addrspace::{KERNEL_BASE, PERCPU_BASE},
+    arch::addrspace::{KERNEL_BASE, PERCPU_BASE, PHYS_VIRT_OFFSET},
     console::print_mapping,
     mem::{__kimage_va, __percpu, PageTableInfo, page_size},
 };
@@ -44,24 +44,28 @@ impl page_table_generic::PageTableEntry for Entry {
         if config.lower {
             bits |= PTE_USER;
         }
-        if config.dirty {
+        // Non-leaf page table pointers must not inherit leaf mapping flags
+        // from the template used by the generic mapper.
+        let is_leaf = !config.is_dir || config.huge;
+        if is_leaf && config.dirty {
             bits |= PTE_DIRTY;
         }
-        if config.global {
+        if is_leaf && config.global {
             bits |= PTE_GLOBAL;
         }
         if config.is_dir && config.huge {
             bits |= PTE_HUGE;
         }
-        match config.mem_attr {
-            MemAttributes::Device | MemAttributes::Uncached => {
-                bits |= PTE_CACHE_DISABLE | PTE_WRITE_THROUGH;
+        if is_leaf {
+            match config.mem_attr {
+                MemAttributes::Device | MemAttributes::Uncached => {
+                    bits |= PTE_CACHE_DISABLE | PTE_WRITE_THROUGH;
+                }
+                _ => {}
             }
-            _ => {}
         }
         // For x86_64, NX on non-leaf entries blocks execution for the whole
         // covered range. Only apply NX on leaf mappings (PTE or huge page).
-        let is_leaf = !config.is_dir || config.huge;
         if is_leaf && !config.executable {
             bits |= PTE_NO_EXECUTE;
         }
@@ -124,11 +128,13 @@ pub fn enable_mmu() -> ! {
         panic!("failed to setup x86_64 page table: {err:?}");
     }
 
-    let meta = crate::smp::cpu_meta(crate::smp::cpu_idx()).unwrap();
+    let meta = crate::smp::cpu_meta(crate::smp::early_current_cpu_idx()).unwrap();
     let v_sp = meta.stack_top_virt;
     let v_entry = __kimage_va(super::entry::mmu_entry as *const () as usize) as usize;
+    println!("x86_64 switching CR3 and resetting relocations before high-half jump");
 
     crate::mem::mmu::set_mmu_enabled();
+    super::relocate::reset();
 
     unsafe {
         asm!(
@@ -181,6 +187,17 @@ fn setup_page_table() -> anyhow::Result<()> {
             allow_huge: true,
             flush: false,
         })?;
+
+        let direct_vaddr = region.physical_start.wrapping_add(PHYS_VIRT_OFFSET);
+        print_mapping(name, direct_vaddr, region.physical_start, size);
+        table.map(&MapConfig {
+            vaddr: direct_vaddr.into(),
+            paddr: region.physical_start.into(),
+            size,
+            pte,
+            allow_huge: true,
+            flush: false,
+        })?;
     }
 
     let lapic_base = (unsafe { rdmsr(x86::msr::IA32_APIC_BASE) } as usize) & !(page_size() - 1);
@@ -190,9 +207,28 @@ fn setup_page_table() -> anyhow::Result<()> {
         (start..end).contains(&lapic_base)
     });
     if !lapic_mapped {
+        let lapic_vaddr = lapic_base.wrapping_add(PHYS_VIRT_OFFSET);
         print_mapping("LAPIC", lapic_base, lapic_base, page_size());
         table.map(&MapConfig {
             vaddr: lapic_base.into(),
+            paddr: lapic_base.into(),
+            size: page_size(),
+            pte: PteConfig {
+                valid: true,
+                read: true,
+                writable: true,
+                executable: false,
+                global: true,
+                mem_attr: MemAttributes::Device,
+                ..Default::default()
+            },
+            allow_huge: false,
+            flush: false,
+        })?;
+
+        print_mapping("LAPIC", lapic_vaddr, lapic_base, page_size());
+        table.map(&MapConfig {
+            vaddr: lapic_vaddr.into(),
             paddr: lapic_base.into(),
             size: page_size(),
             pte: PteConfig {
@@ -282,9 +318,19 @@ fn setup_page_table() -> anyhow::Result<()> {
 
     let root = table.root_paddr();
     crate::mem::mmu::set_boot_table(table);
-    enable_page_features();
+    // The boot page tables contain NX leaf mappings. Enable NXE before
+    // loading them, otherwise x86_64 treats the NX bit as reserved.
+    enable_no_execute();
     super::trap::set_cr3(root);
+    enable_page_features();
     Ok(())
+}
+
+fn enable_no_execute() {
+    unsafe {
+        let efer = rdmsr(IA32_EFER) | IA32_EFER_NXE;
+        wrmsr(IA32_EFER, efer);
+    }
 }
 
 fn enable_page_features() {
@@ -294,9 +340,6 @@ fn enable_page_features() {
 
         let cr4 = controlregs::cr4() | Cr4::CR4_ENABLE_GLOBAL_PAGES;
         controlregs::cr4_write(cr4);
-
-        let efer = rdmsr(IA32_EFER) | IA32_EFER_NXE;
-        wrmsr(IA32_EFER, efer);
     }
 }
 
@@ -317,6 +360,8 @@ pub fn virt_to_phys(vaddr: *const u8) -> usize {
         vaddr - PERCPU_BASE
     } else if vaddr >= KERNEL_BASE {
         crate::mem::__kimage_va_to_pa(vaddr as *const u8)
+    } else if vaddr >= PHYS_VIRT_OFFSET {
+        vaddr - PHYS_VIRT_OFFSET
     } else {
         vaddr
     }

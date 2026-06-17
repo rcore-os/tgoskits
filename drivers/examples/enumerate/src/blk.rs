@@ -3,9 +3,8 @@ extern crate alloc;
 use log::debug;
 use rdif_intc::Intc;
 use rdrive::{
-    PlatformDevice,
     probe::OnProbeError,
-    register::{DriverRegister, FdtInfo, ProbeKind, ProbeLevel, ProbePriority},
+    register::{DriverRegister, ProbeFdt, ProbeKind, ProbeLevel, ProbePriority},
 };
 
 pub fn register() -> DriverRegister {
@@ -20,14 +19,15 @@ pub fn register() -> DriverRegister {
     }
 }
 
-fn probe(info: FdtInfo<'_>, _dev: PlatformDevice) -> Result<(), OnProbeError> {
+fn probe(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
+    let (info, dev) = probe.into_parts();
     let mut reg = info.node.regs().into_iter();
     let base_reg = reg.next().ok_or(OnProbeError::other(format!(
         "[{}] has no reg",
         info.node.name()
     )))?;
 
-    if let Some(irq) = _dev.descriptor.irq_parent {
+    if let Some(irq) = dev.descriptor.irq_parent {
         let intc = rdrive::get::<Intc>(irq).unwrap();
 
         for interrupt in info.interrupts() {

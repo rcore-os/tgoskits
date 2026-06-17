@@ -13,7 +13,7 @@ pub struct Instant(AxTimeValue);
 impl Instant {
     /// Returns an instant corresponding to "now".
     pub fn now() -> Instant {
-        Instant(ax_api::time::ax_wall_time())
+        Instant(ax_api::time::ax_monotonic_time())
     }
 
     /// Returns the amount of time elapsed from another instant to this one,

@@ -8,7 +8,7 @@ use std::{
     task::{Context, Poll},
 };
 
-use axpoll::PollSet;
+use axpoll::{IoEvents, PollSet};
 use futures::future;
 use tokio::sync::Barrier;
 
@@ -24,7 +24,7 @@ impl Future for WaitFuture {
         if self.ready.load(Ordering::SeqCst) {
             Poll::Ready(())
         } else {
-            self.ps.register(cx.waker());
+            unsafe { self.ps.register(cx.waker(), IoEvents::IN) };
             Poll::Pending
         }
     }
@@ -45,7 +45,7 @@ async fn async_wake_single() {
 
     let handle = tokio::spawn(async move {
         ready.store(true, Ordering::SeqCst);
-        ps.wake();
+        unsafe { ps.wake(IoEvents::IN) };
     });
 
     f.await;
@@ -81,7 +81,7 @@ async fn async_wake_many() {
             pending.push(h);
         }
     }
-    ps.wake();
+    unsafe { ps.wake(IoEvents::IN) };
     future::try_join_all(ready).await.unwrap();
 
     for (i, f) in flags.iter().enumerate() {
@@ -89,6 +89,6 @@ async fn async_wake_many() {
             f.store(true, Ordering::SeqCst);
         }
     }
-    ps.wake();
+    unsafe { ps.wake(IoEvents::IN) };
     future::try_join_all(pending).await.unwrap();
 }

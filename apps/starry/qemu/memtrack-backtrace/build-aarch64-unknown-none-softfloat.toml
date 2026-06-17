@@ -1,0 +1,15 @@
+env = { BACKTRACE = "y" }
+features = [
+  "ax-feat/display",
+  "ax-feat/rtc",
+  "ax-driver/virtio-blk",
+  "ax-driver/virtio-net",
+  "ax-driver/virtio-gpu",
+  "ax-driver/virtio-input",
+  "ax-driver/virtio-socket",
+  "starry-kernel/input",
+  "starry-kernel/vsock",
+  "starry-kernel/memtrack",
+]
+log = "Warn"
+target = "aarch64-unknown-none-softfloat"

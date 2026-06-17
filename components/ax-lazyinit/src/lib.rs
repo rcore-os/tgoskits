@@ -89,6 +89,25 @@ impl<T> LazyInit<T> {
         }
     }
 
+    /// Gets a reference to the value, initializing it with `f` if needed.
+    ///
+    /// If another CPU or thread is initializing the value concurrently, this
+    /// method waits until that initialization completes and then returns the
+    /// initialized value. The initializer is executed at most once.
+    pub fn get_or_init<F>(&self, f: F) -> &T
+    where
+        F: FnOnce() -> T,
+    {
+        if let Some(value) = self.call_once(f) {
+            value
+        } else {
+            debug_assert!(self.is_inited());
+            // SAFETY: call_once either initialized the value in this call or
+            // observed another completed initialization.
+            unsafe { self.force_get() }
+        }
+    }
+
     /// Checks whether the value is initialized.
     #[inline]
     pub fn is_inited(&self) -> bool {
@@ -261,6 +280,14 @@ mod tests {
         }
         assert_eq!(ok, 1);
     }
+
+    #[test]
+    fn lazyinit_get_or_init() {
+        static VALUE: LazyInit<u32> = LazyInit::new();
+        assert_eq!(*VALUE.get_or_init(|| 123), 123);
+        assert_eq!(*VALUE.get_or_init(|| 456), 123);
+    }
+
     #[test]
     fn lazyinit_get_unchecked() {
         static VALUE: LazyInit<u32> = LazyInit::new();

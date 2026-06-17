@@ -13,6 +13,8 @@ mod build;
 mod clippy;
 mod config;
 pub mod context;
+mod firmware;
+pub mod image;
 mod rootfs;
 pub mod starry;
 mod support;
@@ -68,6 +70,8 @@ enum Commands {
         #[command(subcommand)]
         command: backtrace::Command,
     },
+    /// TGOS image management
+    Image(image::ImageArgs),
     /// Axvisor host-side commands
     Axvisor {
         #[command(subcommand)]
@@ -93,13 +97,27 @@ pub async fn run() -> anyhow::Result<()> {
 async fn run_root_cli(cli: Cli) -> anyhow::Result<()> {
     match cli.command {
         Commands::Test => test::std::run_std_test_command(),
-        Commands::Clippy(args) => clippy::run_workspace_clippy_command(&args),
+        Commands::Clippy(args) => {
+            ensure_aic8800_firmware().await?;
+            clippy::run_workspace_clippy_command(&args)
+        }
         Commands::SyncLint(args) => sync_lint::run_sync_lint_command(&args),
         Commands::Board { command } => board::execute(command).await,
         Commands::Config { command } => config::execute(command),
         Commands::Backtrace { command } => backtrace::execute(command),
+        Commands::Image(args) => image::run(args).await,
         Commands::Axvisor { command } => Axvisor::new()?.execute(command).await,
         Commands::Arceos { command } => ArceOS::new()?.execute(command).await,
-        Commands::Starry { command } => Starry::new()?.execute(command).await,
+        Commands::Starry { command } => {
+            ensure_aic8800_firmware().await?;
+            Starry::new()?.execute(command).await
+        }
     }
+}
+
+/// Provisions the AIC8800 Wi-Fi firmware blobs (fetched + integrity-checked,
+/// never committed) before any command that may compile the `aic8800` crate.
+async fn ensure_aic8800_firmware() -> anyhow::Result<()> {
+    let workspace_root = context::workspace_root_path()?;
+    firmware::ensure_aic8800_firmware(&workspace_root).await
 }

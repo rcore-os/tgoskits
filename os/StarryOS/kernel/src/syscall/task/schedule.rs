@@ -1,14 +1,15 @@
 use alloc::{sync::Arc, vec::Vec};
 
 use ax_errno::{AxError, AxResult};
-use ax_hal::time::TimeValue;
+use ax_runtime::hal::{self, time::TimeValue};
 use ax_task::{
     AxCpuMask, current,
     future::{block_on, interruptible, sleep},
 };
+use bytemuck::{Pod, Zeroable};
 use linux_raw_sys::general::{
     __kernel_clockid_t, CLOCK_MONOTONIC, CLOCK_REALTIME, PRIO_PGRP, PRIO_PROCESS, PRIO_USER,
-    SCHED_RR, TIMER_ABSTIME, timespec,
+    SCHED_BATCH, SCHED_FIFO, SCHED_IDLE, SCHED_NORMAL, SCHED_RR, TIMER_ABSTIME, timespec,
 };
 use starry_vm::{VmMutPtr, VmPtr, vm_load, vm_write_slice};
 
@@ -19,6 +20,12 @@ use crate::{
     },
     time::TimeValueLike,
 };
+
+#[repr(C)]
+#[derive(Copy, Clone, Pod, Zeroable)]
+struct SchedParam {
+    sched_priority: i32,
+}
 
 pub fn sys_sched_yield() -> AxResult<isize> {
     ax_task::yield_now();
@@ -43,7 +50,7 @@ pub fn sys_nanosleep(req: *const timespec, rem: *mut timespec) -> AxResult<isize
     let req = unsafe { req.vm_read_uninit()?.assume_init() }.try_into_time_value()?;
     debug!("sys_nanosleep <= req: {req:?}");
 
-    let actual = sleep_impl(ax_hal::time::monotonic_time, req);
+    let actual = sleep_impl(hal::time::monotonic_time, req);
 
     if let Some(diff) = req.checked_sub(actual) {
         debug!("sys_nanosleep => rem: {diff:?}");
@@ -63,8 +70,8 @@ pub fn sys_clock_nanosleep(
     rem: *mut timespec,
 ) -> AxResult<isize> {
     let clock = match clock_id as u32 {
-        CLOCK_REALTIME => ax_hal::time::wall_time,
-        CLOCK_MONOTONIC => ax_hal::time::monotonic_time,
+        CLOCK_REALTIME => hal::time::wall_time,
+        CLOCK_MONOTONIC => hal::time::monotonic_time,
         _ => {
             warn!("Unsupported clock_id: {clock_id}");
             return Err(AxError::InvalidInput);
@@ -94,7 +101,7 @@ pub fn sys_clock_nanosleep(
 }
 
 pub fn sys_sched_getaffinity(pid: i32, cpusetsize: usize, user_mask: *mut u8) -> AxResult<isize> {
-    if cpusetsize * 8 < ax_hal::cpu_num() {
+    if cpusetsize * 8 < hal::cpu_num() {
         return Err(AxError::InvalidInput);
     }
 
@@ -107,12 +114,32 @@ pub fn sys_sched_getaffinity(pid: i32, cpusetsize: usize, user_mask: *mut u8) ->
     Ok(mask_bytes.len() as _)
 }
 
+pub fn check_sched_permission(pid: i32) -> AxResult<()> {
+    let caller = current().as_thread().cred();
+    let task = get_task_by_sched_pid(pid)?;
+    if task.id() == current().id() {
+        return Ok(());
+    }
+    let target_proc = get_process_data(pid as u32)?;
+    let target_cred = process_cred(&target_proc)?;
+    if caller.has_cap_sys_nice()
+        || caller.euid == target_cred.uid
+        || caller.euid == target_cred.euid
+    {
+        Ok(())
+    } else {
+        Err(AxError::OperationNotPermitted)
+    }
+}
+
 pub fn sys_sched_setaffinity(pid: i32, cpusetsize: usize, user_mask: *const u8) -> AxResult<isize> {
-    let size = cpusetsize.min(ax_hal::cpu_num().div_ceil(8));
+    check_sched_permission(pid)?;
+    let task = get_task_by_sched_pid(pid)?;
+    let size = cpusetsize.min(hal::cpu_num().div_ceil(8));
     let user_mask = vm_load(user_mask, size)?;
     let mut cpu_mask = AxCpuMask::new();
 
-    for i in 0..(size * 8).min(ax_hal::cpu_num()) {
+    for i in 0..(size * 8).min(hal::cpu_num()) {
         if user_mask[i / 8] & (1 << (i % 8)) != 0 {
             cpu_mask.set(i, true);
         }
@@ -121,8 +148,6 @@ pub fn sys_sched_setaffinity(pid: i32, cpusetsize: usize, user_mask: *const u8) 
     if cpu_mask.is_empty() {
         return Err(AxError::InvalidInput);
     }
-
-    let task = get_task_by_sched_pid(pid)?;
     if task.id() == current().id() {
         ax_task::set_current_affinity(cpu_mask);
     } else {
@@ -141,14 +166,65 @@ fn get_task_by_sched_pid(pid: i32) -> AxResult<ax_task::AxTaskRef> {
 }
 
 pub fn sys_sched_getscheduler(_pid: i32) -> AxResult<isize> {
-    Ok(SCHED_RR as _)
+    let task = get_task_by_sched_pid(_pid)?;
+    Ok(task.sched_policy() as isize)
 }
 
 pub fn sys_sched_setscheduler(_pid: i32, _policy: i32, _param: *const ()) -> AxResult<isize> {
+    check_sched_permission(_pid)?;
+    let task = get_task_by_sched_pid(_pid)?;
+    let caller = current().as_thread().cred();
+    if _param.is_null() {
+        return Err(AxError::InvalidInput);
+    }
+    let user_param = vm_load::<SchedParam>(_param.cast(), 1)?;
+    let user_param = user_param[0];
+    let mut policy = _policy as u32;
+    const SCHED_RESET_ON_FORK: u32 = 0x40000000;
+    let _reset_on_fork = (policy & SCHED_RESET_ON_FORK) != 0;
+    policy &= !SCHED_RESET_ON_FORK;
+    let prio = user_param.sched_priority;
+    match policy {
+        SCHED_NORMAL | SCHED_FIFO | SCHED_RR | SCHED_BATCH | SCHED_IDLE => {}
+        _ => return Err(AxError::InvalidInput),
+    }
+    match policy {
+        SCHED_NORMAL | SCHED_BATCH | SCHED_IDLE => {
+            if prio != 0 {
+                return Err(AxError::InvalidInput);
+            }
+        }
+        SCHED_FIFO | SCHED_RR => {
+            if !(1..=99).contains(&prio) {
+                return Err(AxError::InvalidInput);
+            }
+            if !caller.has_cap_sys_nice() {
+                return Err(AxError::OperationNotPermitted);
+            }
+        }
+        _ => unreachable!(),
+    }
+    task.set_sched_policy(policy as i32);
+    task.set_sched_priority(prio);
     Ok(0)
 }
 
 pub fn sys_sched_getparam(_pid: i32, _param: *mut ()) -> AxResult<isize> {
+    let task = get_task_by_sched_pid(_pid)?;
+    if _param.is_null() {
+        return Err(AxError::InvalidInput);
+    }
+    let param = SchedParam {
+        sched_priority: task.sched_priority(),
+    };
+    let ptr = _param as *mut SchedParam;
+    unsafe {
+        let bytes = core::slice::from_raw_parts(
+            &param as *const SchedParam as *const u8,
+            core::mem::size_of::<SchedParam>(),
+        );
+        vm_write_slice(ptr as *mut u8, bytes)?;
+    }
     Ok(0)
 }
 

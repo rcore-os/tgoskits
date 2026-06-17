@@ -8,8 +8,8 @@ use core::sync::atomic::{AtomicUsize, Ordering};
 
 use ax_errno::{AxError, AxResult};
 use ax_fs::{CachedFile, FileFlags};
-use ax_hal::paging::{MappingFlags, PageSize, PageTableCursor, PagingError};
 use ax_memory_addr::{PAGE_SIZE_4K, VirtAddr, VirtAddrRange};
+use ax_runtime::hal::paging::{MappingFlags, PageSize, PageTableCursor, PagingError};
 use ax_sync::Mutex;
 use axfs_ng_vfs::Location;
 use weak_map::StrongRef;
@@ -50,21 +50,24 @@ impl FileBackendInner {
         let aspace = Arc::downgrade(aspace);
         let handle = self.cache.add_evict_listener({
             let this = Arc::downgrade(self);
-            move |pn, _page| {
+            move |pn, _page| -> bool {
                 let Some(this) = this.upgrade() else {
-                    return;
+                    // Backend dropped — no mappings remain, safe to free.
+                    return true;
                 };
                 let Some(aspace) = aspace.upgrade() else {
                     // The address space has been dropped, nothing to do.
-                    return;
+                    return true;
                 };
                 let Some(mut aspace) = aspace.try_lock() else {
-                    // This can happen during the populate process, when new pages
-                    // are being populated and old pages are being evicted. In this
-                    // case, we delegate the unmapping to the populate process.
-                    return;
+                    // Cannot acquire AddrSpace lock (contention with populate
+                    // or another thread).  Return false so the reclaim path
+                    // puts the page back into the cache instead of freeing it
+                    // — dropping the page here would leave a dangling PTE.
+                    return false;
                 };
                 this.on_evict(pn, &mut aspace);
+                true
             }
         });
         self.handle.store(handle, Ordering::Release);
@@ -252,8 +255,30 @@ impl BackendOps for FileBackend {
         let file_data = self.0.file_data.lock();
         let start_page =
             ((range.start - file_data.start) / PAGE_SIZE_4K) as u32 + file_data.offset_page;
+        // Pages whose file offset is at or beyond EOF must not be eagerly backed
+        // by a physical frame: a shared file mapping reads as SIGBUS past the last
+        // file page (Linux semantics). Without this bound an eager populate over a
+        // sparse mapping far larger than the file (e.g. bbolt's multi-GB
+        // `InitialMmapSize` over a tiny etcd db) allocates a frame for every page
+        // in the mapping and exhausts RAM. `div_ceil` keeps the final partial page;
+        // its tail beyond EOF is zeroed by `page_or_insert` (which now clears the
+        // short-read remainder of the page rather than leaving stale frame contents).
+        let eof_page = self
+            .0
+            .cache
+            .file_len()
+            .unwrap_or(u64::MAX)
+            .div_ceil(PAGE_SIZE_4K as u64);
         for (i, addr) in pages_in(range, PageSize::Size4K)?.enumerate() {
             let pn = start_page + i as u32;
+            if (pn as u64) >= eof_page {
+                // Beyond EOF: leave unmapped so a real access faults instead of
+                // reading an eagerly-preallocated zero page. Linux delivers SIGBUS
+                // for such an access; StarryOS currently raises SIGSEGV for any
+                // unbacked fault (a dedicated Bus path is a separate fault-handler
+                // gap). Either way the page is not pre-backed — that is the OOM fix.
+                continue;
+            }
             match pt.query(addr) {
                 Ok((paddr, page_flags, _)) => {
                     if access_flags.contains(MappingFlags::WRITE)
@@ -283,8 +308,17 @@ impl BackendOps for FileBackend {
                         flags - MappingFlags::WRITE
                     };
                     self.0.cache.with_page_or_insert(pn, |page, evicted| {
-                        if let Some((pn, _)) = evicted {
-                            to_be_evicted.push(pn);
+                        if let Some(evicted) = evicted {
+                            // Keep the evicted page (and thus its physical frame)
+                            // alive until `on_evict` below has torn down its mapping
+                            // and flushed the TLB. The eviction listener cannot unmap
+                            // here because the address space is already locked by this
+                            // populate, so the unmap is deferred; freeing the frame now
+                            // (by dropping the page) would leave the evicted VA mapped
+                            // to a frame that can be reallocated, so a sibling thread
+                            // preempted into userspace could read another page's data
+                            // through the stale mapping.
+                            to_be_evicted.push(evicted);
                         }
                         pt.map(addr, page.paddr(), PageSize::Size4K, map_flags)?;
                         pages += 1;
@@ -301,8 +335,34 @@ impl BackendOps for FileBackend {
             } else {
                 let inner = self.0.clone();
                 Some(Box::new(move |aspace: &mut AddrSpace| {
-                    for pn in to_be_evicted {
-                        inner.on_evict(pn, aspace);
+                    for (pn, page) in to_be_evicted {
+                        // Unmap (and TLB-flush via the cursor) the evicted VA first,
+                        // then drop the page to free its frame — never the reverse.
+                        //
+                        // The page cache is shared across all areas backed by the same
+                        // file. After mprotect splits a file mapping, `split` creates a
+                        // sibling FileBackendInner (same CachedFile, different
+                        // start/offset_page). A populate on one sub-area can evict a page
+                        // owned by another sub-area; `inner.on_evict` only covers
+                        // `inner`'s own page range (its `checked_sub` returns None
+                        // otherwise), so route the evicted page to every area sharing this
+                        // cache. `on_evict` self-validates (range + area ptr_eq), so only
+                        // the true owner unmaps. Without this, the sibling's PTE keeps
+                        // pointing at the just-freed frame — a use-after-free that
+                        // surfaces as a wild pointer (the JVM jimage on loongarch).
+                        let owners: Vec<_> = aspace
+                            .areas()
+                            .filter_map(|area| match area.backend() {
+                                Backend::File(fb) if fb.0.cache.ptr_eq(&inner.cache) => {
+                                    Some(fb.0.clone())
+                                }
+                                _ => None,
+                            })
+                            .collect();
+                        for owner in owners {
+                            owner.on_evict(pn, aspace);
+                        }
+                        drop(page);
                     }
                 }))
             },

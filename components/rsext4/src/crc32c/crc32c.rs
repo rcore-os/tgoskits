@@ -58,7 +58,7 @@ pub fn crc32c_append(crc: u32, data: &[u8]) -> u32 {
     // Use hardware acceleration on aarch64 when the CPU advertises CRC support.
     #[cfg(target_arch = "aarch64")]
     {
-        if *HARDWARE_SUPPORT_CRC32 {
+        if is_hardware_crc32_supported() {
             return unsafe { crc32c_hardware(crc, data) };
         }
     }

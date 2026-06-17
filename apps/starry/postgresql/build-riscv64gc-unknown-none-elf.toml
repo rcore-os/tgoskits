@@ -1,0 +1,12 @@
+axconfig_overrides = ["plat.phys-memory-size=0x4000_0000"]
+features = [
+  "ax-feat/rtc",
+  "ax-driver/serial",
+  "ax-driver/virtio-blk",
+  "ax-driver/virtio-net",
+  "ax-driver/virtio-gpu",
+  "ax-driver/virtio-input",
+  "ax-driver/virtio-socket",
+]
+log = "Warn"
+target = "riscv64gc-unknown-none-elf"

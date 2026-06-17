@@ -1,6 +1,6 @@
 # `riscv_vcpu`
 
-> 路径：`components/riscv_vcpu`
+> 路径：`virtualization/riscv_vcpu`
 > 类型：库 crate
 > 分层：组件层 / RISC-V 虚拟 CPU 实现
 > 版本：`0.2.2`
@@ -238,7 +238,7 @@ flowchart TD
 
 ### 主要消费者
 
-- `components/axvm`：把它作为 RISC-V 架构后端重导出为 `AxArchVCpuImpl` 与 `AxVMArchPerCpuImpl`。
+- `virtualization/axvm`：把它作为 RISC-V 架构后端重导出为 `AxArchVCpuImpl` 与 `AxVMArchPerCpuImpl`。
 - `os/axvisor`：通过 `axvm` 间接使用，是当前仓库中的实际落地对象。
 
 ### 3.3 关系示意

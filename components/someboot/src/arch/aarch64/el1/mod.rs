@@ -193,7 +193,15 @@ pub fn is_mmu_enabled() -> bool {
 
 #[inline(always)]
 pub fn setup_sctlr() {
-    SCTLR_EL1.modify(SCTLR_EL1::M::Enable + SCTLR_EL1::C::Cacheable + SCTLR_EL1::I::Cacheable);
+    SCTLR_EL1.modify(
+        SCTLR_EL1::M::Enable
+            + SCTLR_EL1::C::Cacheable
+            + SCTLR_EL1::I::Cacheable
+            + SCTLR_EL1::UCT::DontTrap
+            + SCTLR_EL1::DZE::DontTrap
+            + SCTLR_EL1::UCI::DontTrap,
+    );
+    SCTLR_EL1.set(SCTLR_EL1.get() | (1 << 23));
     flush_tlb(None);
     barrier::dsb(barrier::SY);
     barrier::isb(barrier::SY);

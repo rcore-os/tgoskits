@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.4](https://github.com/rcore-os/tgoskits/compare/pcie-v0.6.3...pcie-v0.6.4) - 2026-06-12
+
+### Other
+
+- *(rdrive)* carry probe context and PCI INTx routes
+
+## [0.6.3](https://github.com/rcore-os/tgoskits/compare/pcie-v0.6.2...pcie-v0.6.3) - 2026-06-09
+
+### Other
+
+- updated the following local packages: rdif-pcie
+
+## [0.6.2](https://github.com/rcore-os/tgoskits/compare/pcie-v0.6.1...pcie-v0.6.2) - 2026-06-03
+
+### Fixed
+
+- *(arceos)* address lockdep test issues ([#1009](https://github.com/rcore-os/tgoskits/pull/1009))
+
 ## [0.6.0](https://github.com/drivercraft/sparreal-os/compare/pcie-v0.5.0...pcie-v0.6.0) - 2026-03-10
 
 ### Other

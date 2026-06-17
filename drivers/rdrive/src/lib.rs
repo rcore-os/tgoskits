@@ -7,7 +7,7 @@ extern crate log;
 
 use core::ptr::NonNull;
 
-pub use fdt_edit::Phandle;
+pub use fdt_edit::{Fdt, Phandle};
 use register::{DriverRegister, ProbeLevel};
 use spin::{Mutex, Once};
 
@@ -37,19 +37,53 @@ static CONTAINER: Once<Mutex<Manager>> = Once::new();
 
 #[derive(Debug, Clone)]
 pub enum Platform {
+    Static,
     Fdt { addr: NonNull<u8> },
+    Acpi(probe::acpi::AcpiRoot),
 }
 
 unsafe impl Send for Platform {}
+
+#[derive(Debug, Clone, Copy)]
+pub enum PlatformSource {
+    Static,
+    Fdt(NonNull<u8>),
+    Acpi(probe::acpi::AcpiRoot),
+}
+
+unsafe impl Send for PlatformSource {}
 
 pub(crate) fn container() -> &'static Mutex<Manager> {
     CONTAINER.get().expect("rdrive not init")
 }
 
+pub fn is_initialized() -> bool {
+    CONTAINER.get().is_some()
+}
+
 pub fn init(platform: Platform) -> Result<(), DriverError> {
     match platform {
-        Platform::Fdt { addr } => {
-            probe::fdt::init(addr)?;
+        Platform::Static => init_sources(&[PlatformSource::Static])?,
+        Platform::Fdt { addr } => init_sources(&[PlatformSource::Fdt(addr)])?,
+        Platform::Acpi(root) => init_sources(&[PlatformSource::Acpi(root)])?,
+    }
+    Ok(())
+}
+
+pub fn init_sources(sources: &[PlatformSource]) -> Result<(), DriverError> {
+    for source in sources {
+        match source {
+            PlatformSource::Static => {}
+            PlatformSource::Fdt(addr) => probe::fdt::check_addr(*addr)?,
+            PlatformSource::Acpi(root) => probe::acpi::check_root(*root)?,
+        }
+    }
+
+    for source in sources {
+        match source {
+            PlatformSource::Static => probe::static_::init()?,
+            PlatformSource::Fdt(addr) => probe::fdt::init(*addr)?,
+            PlatformSource::Acpi(root) => probe::acpi::init(*root)?,
         }
     }
 
@@ -99,24 +133,32 @@ fn probe_system<'a>(
     stop_if_fail: bool,
 ) -> Result<(), ProbeError> {
     for one in registers {
-        // let system = edit(|manager| manager.enum_system.clone());
+        probe_backend(one, probe::static_::try_probe_register(one), stop_if_fail)?;
+        probe_backend(one, probe::fdt::try_probe_register(one), stop_if_fail)?;
+        probe_backend(one, probe::acpi::try_probe_register(one), stop_if_fail)?;
+    }
 
-        // let res = system.probe_register(one)?;
+    Ok(())
+}
 
-        let res = probe::fdt::probe_register(one)?;
+fn probe_backend(
+    register: &DriverRegister,
+    results: Option<Result<Vec<Result<(), OnProbeError>>, ProbeError>>,
+    stop_if_fail: bool,
+) -> Result<(), ProbeError> {
+    let Some(results) = results else {
+        return Ok(());
+    };
 
-        for r in res {
-            match r {
-                Ok(_) => {}
-                Err(OnProbeError::NotMatch) => {
-                    // Not a match, skip to the next probe
-                }
-                Err(e) => {
-                    if stop_if_fail {
-                        return Err(e.into());
-                    } else {
-                        warn!("Probe failed for [{}]: {}", one.name, e);
-                    }
+    for r in results? {
+        match r {
+            Ok(_) => {}
+            Err(OnProbeError::NotMatch) => {}
+            Err(e) => {
+                if stop_if_fail {
+                    return Err(e.into());
+                } else {
+                    warn!("Probe failed for [{}]: {}", register.name, e);
                 }
             }
         }
@@ -148,7 +190,11 @@ pub fn get_one<T: DriverGeneric>() -> Option<Device<T>> {
 }
 
 pub fn fdt_phandle_to_device_id(phandle: Phandle) -> Option<DeviceId> {
-    probe::fdt::system().phandle_to_device_id(phandle)
+    probe::fdt::try_system().and_then(|system| system.phandle_to_device_id(phandle))
+}
+
+pub fn with_fdt<T>(f: impl FnOnce(&Fdt) -> T) -> Option<T> {
+    probe::fdt::try_system().map(|system| f(system.fdt()))
 }
 
 /// Macro for generating a driver module.
@@ -172,35 +218,24 @@ pub fn fdt_phandle_to_device_id(phandle: Phandle) -> Option<DeviceId> {
 ///
 /// # Example
 ///
-/// ```rust
+/// ```rust,no_run
 /// #![feature(used_with_arg)]
 ///
-/// use rdrive::{
-///     PlatformDevice, driver::*, module_driver, probe::OnProbeError, register::FdtInfo,
-/// };
+/// use rdrive::{driver::*, module_driver, probe::OnProbeError, register::ProbeFdt};
 ///
-/// struct ClkDriver {}
+/// struct DemoDriver {}
 ///
-/// impl DriverGeneric for ClkDriver {
+/// impl DriverGeneric for DemoDriver {
 ///     fn name(&self) -> &str {
-///         "ClkDriver"
-///     }
-/// }
-///
-/// impl rdif_clk::Interface for ClkDriver {
-///     fn perper_enable(&mut self) {}
-///     fn get_rate(&self, _id: rdif_clk::ClockId) -> Result<u64, rdrive::KError> {
-///         Ok(1000000)
-///     }
-///     fn set_rate(&mut self, _id: rdif_clk::ClockId, _rate: u64) -> Result<(), rdrive::KError> {
-///         Ok(())
+///         "DemoDriver"
 ///     }
 /// }
 ///
 /// // Define probe function
-/// fn probe_clk(fdt: FdtInfo<'_>, dev: PlatformDevice) -> Result<(), OnProbeError> {
+/// fn probe_clk(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
 ///     // Implement specific device probing logic
-///     dev.register(rdif_clk::Clk::new(ClkDriver {}));
+///     let dev = probe.into_platform_device();
+///     dev.register(DemoDriver {});
 ///     Ok(())
 /// }
 ///
@@ -212,7 +247,7 @@ pub fn fdt_phandle_to_device_id(phandle: Phandle) -> Option<DeviceId> {
 ///     probe_kinds: &[ProbeKind::Fdt {
 ///         compatibles: &["fixed-clock"],
 ///         // Use `probe_clk` above; this usage is because doctests cannot find the parent module.
-///         on_probe: |fdt, dev|{
+///         on_probe: |_probe|{
 ///             Ok(())
 ///         },
 ///     }],

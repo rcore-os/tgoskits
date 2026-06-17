@@ -53,7 +53,8 @@ impl FileLike for EventFd {
                 Ok(count) => {
                     let value = if self.semaphore { 1 } else { count };
                     dst.write(&value.to_ne_bytes())?;
-                    self.poll_tx.wake();
+                    // Counter space is visible before waking writers.
+                    unsafe { self.poll_tx.wake(IoEvents::OUT) };
                     Ok(size_of::<u64>())
                 }
                 Err(_) => Err(AxError::WouldBlock),
@@ -85,7 +86,8 @@ impl FileLike for EventFd {
                 });
             match result {
                 Ok(_) => {
-                    self.poll_rx.wake();
+                    // Counter increment is visible before waking readers.
+                    unsafe { self.poll_rx.wake(IoEvents::IN) };
                     Ok(size_of::<u64>())
                 }
                 Err(_) => Err(AxError::WouldBlock),
@@ -118,10 +120,12 @@ impl Pollable for EventFd {
 
     fn register(&self, context: &mut Context<'_>, events: IoEvents) {
         if events.contains(IoEvents::IN) {
-            self.poll_rx.register(context.waker());
+            // Registration happens from file poll task context.
+            unsafe { self.poll_rx.register(context.waker(), IoEvents::IN) };
         }
         if events.contains(IoEvents::OUT) {
-            self.poll_tx.register(context.waker());
+            // Registration happens from file poll task context.
+            unsafe { self.poll_tx.register(context.waker(), IoEvents::OUT) };
         }
     }
 }

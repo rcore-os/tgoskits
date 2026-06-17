@@ -9,18 +9,14 @@
 //! background task (via `ax_task::spawn_raw`) that owns a weak reference to
 //! the Timerfd. The task loops, reading the current deadline under the state
 //! lock, then parks on whichever fires first: the deadline (via
-//! `sleep_until`) or an "arm event" poked by `settime` / `Drop`. One task
+//! `timeout_at_wall`) or an "arm event" poked by `settime` / `Drop`. One task
 //! per timerfd over its whole lifetime — no per-settime stack leak.
 //!
 //! Missed-tick coalescing: if the scheduler delays the task by N intervals,
 //! `read` returns the full count (Linux semantics).
 //!
 //! Caveats vs. Linux:
-//!   - This kernel has no true wall clock; `wall_time()` is monotonic. An
-//!     absolute `CLOCK_REALTIME` deadline is interpreted against the same
-//!     timebase as `CLOCK_MONOTONIC` (so a Unix-epoch absolute time will
-//!     fire immediately, matching the "deadline in the past" rule). Clock
-//!     stepping doesn't exist, so `TFD_TIMER_CANCEL_ON_SET` is a no-op.
+//!   - Clock stepping doesn't exist, so `TFD_TIMER_CANCEL_ON_SET` is a no-op.
 
 use alloc::{
     borrow::{Cow, ToOwned},
@@ -33,9 +29,9 @@ use core::{
 };
 
 use ax_errno::{AxError, AxResult};
-use ax_hal::time::{TimeValue, monotonic_time, wall_time};
+use ax_runtime::hal::time::{TimeValue, monotonic_time, wall_time};
 use ax_sync::Mutex;
-use ax_task::future::{block_on, poll_io, timeout_at};
+use ax_task::future::{block_on, poll_io, timeout_at_wall};
 use axpoll::{IoEvents, PollSet, Pollable};
 use event_listener::{Event, listener};
 
@@ -71,7 +67,7 @@ pub struct Timerfd {
     /// The clock domain the user passed to `timerfd_create`. Used by
     /// `settime(TFD_TIMER_ABSTIME)` to translate a user-supplied
     /// absolute deadline (which is always in this domain) into the
-    /// internal `wall_time` domain that the timer wheel runs against.
+    /// internal wall-time domain before arming the monotonic timer wheel.
     clockid: u32,
     state: Mutex<State>,
     expire_count: AtomicU64,
@@ -239,10 +235,10 @@ async fn run_timer(weak: alloc::sync::Weak<Timerfd>) {
                 listener.await;
             }
             Some(dl) => {
-                // Race the deadline against an arm_event (new settime or
-                // shutdown). `timeout_at` returns Err(Elapsed) on deadline,
-                // Ok(()) if the listener fires first.
-                let fired_timer = timeout_at(Some(dl), listener).await.is_err();
+                // Race the wall-clock deadline against an arm_event (new
+                // settime or shutdown). `timeout_at_wall` returns
+                // Err(Elapsed) on deadline, Ok(()) if the listener fires first.
+                let fired_timer = timeout_at_wall(Some(dl), listener).await.is_err();
                 if !fired_timer {
                     // State changed; loop to re-read.
                     continue;
@@ -297,7 +293,8 @@ async fn run_timer(weak: alloc::sync::Weak<Timerfd>) {
                         state.next_deadline = Some(next_deadline);
                     }
                     drop(state);
-                    tfd.poll_rx.wake();
+                    // expire_count is published before waking readers.
+                    unsafe { tfd.poll_rx.wake(IoEvents::IN) };
                 }
             }
         }
@@ -338,7 +335,8 @@ impl FileLike for Timerfd {
             // notices the fd is readable again.
             if let Err(e) = dst.write(&n.to_ne_bytes()) {
                 self.expire_count.fetch_add(n, Ordering::AcqRel);
-                self.poll_rx.wake();
+                // Restored expire_count is visible before re-waking readers.
+                unsafe { self.poll_rx.wake(IoEvents::IN) };
                 return Err(e);
             }
             Ok(core::mem::size_of::<u64>())
@@ -372,7 +370,8 @@ impl Pollable for Timerfd {
 
     fn register(&self, context: &mut Context<'_>, events: IoEvents) {
         if events.contains(IoEvents::IN) {
-            self.poll_rx.register(context.waker());
+            // Registration happens from file poll task context.
+            unsafe { self.poll_rx.register(context.waker(), IoEvents::IN) };
         }
     }
 }

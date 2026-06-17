@@ -7,8 +7,11 @@ use std::cell::Cell;
 
 use rsext4::{
     bmalloc::AbsoluteBN,
+    checksum::verify_ext4_dirblock_checksum,
+    dir::get_inode_with_num,
     disknode::Ext4Inode,
     error::{Ext4Error, Ext4Result},
+    loopfile::resolve_inode_block,
     *,
 };
 
@@ -114,6 +117,43 @@ mod directory_functional_tests {
         test_mkdir(&mut jbd2_dev, &mut fs, "/siblings/sibling1").expect("mkdir failed");
         test_mkdir(&mut jbd2_dev, &mut fs, "/siblings/sibling2").expect("mkdir failed");
         test_mkdir(&mut jbd2_dev, &mut fs, "/siblings/sibling3").expect("mkdir failed");
+
+        umount(fs, &mut jbd2_dev).expect("umount failed");
+    }
+
+    #[test]
+    fn created_directory_block_checksum_matches_persisted_inode_generation() {
+        let device = MockBlockDevice::new(100 * 1024 * 1024);
+        let mut jbd2_dev = Jbd2Dev::initial_jbd2dev(0, device, true);
+
+        mkfs(&mut jbd2_dev).expect("mkfs failed");
+        let mut fs = mount(&mut jbd2_dev).expect("mount failed");
+
+        let (dir_ino, mut dir_inode) = get_inode_with_num(&mut fs, &mut jbd2_dev, "/checksum-dir")
+            .expect("lookup should succeed")
+            .unwrap_or_else(|| {
+                mkdir(&mut jbd2_dev, &mut fs, "/checksum-dir").expect("mkdir failed");
+                get_inode_with_num(&mut fs, &mut jbd2_dev, "/checksum-dir")
+                    .expect("lookup after mkdir should succeed")
+                    .expect("created directory should exist")
+            });
+        let dir_block = resolve_inode_block(&mut jbd2_dev, &mut dir_inode, 0)
+            .expect("resolve directory block failed")
+            .expect("directory should have a first block");
+        let cached = fs
+            .datablock_cache
+            .get_or_load(&mut jbd2_dev, dir_block)
+            .expect("load directory block failed");
+
+        assert!(
+            verify_ext4_dirblock_checksum(
+                &fs.superblock,
+                dir_ino.raw(),
+                dir_inode.i_generation,
+                &cached.data
+            ),
+            "new directory checksum must use the inode generation persisted on disk"
+        );
 
         umount(fs, &mut jbd2_dev).expect("umount failed");
     }

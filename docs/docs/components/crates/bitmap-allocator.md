@@ -1,10 +1,10 @@
 # `bitmap-allocator`
 
-> 路径：`components/bitmap-allocator`
+> 路径：`memory/bitmap-allocator`
 > 类型：库 crate
 > 分层：组件层 / 位图分配算法组件
 > 版本：`0.2.1`
-> 文档依据：当前仓库源码、`Cargo.toml`、`README.md`、`src/lib.rs`、`components/axallocator/src/bitmap.rs`、`components/axallocator/Cargo.toml`
+> 文档依据：当前仓库源码、`Cargo.toml`、`README.md`、`src/lib.rs`、`memory/axallocator/src/bitmap.rs`、`memory/axallocator/Cargo.toml`
 
 `bitmap-allocator` 的真实定位是一个**按位管理资源索引的分配算法组件**。它管理的是“哪些 bit 目前可用”，而不是直接管理页表、物理页或虚拟地址空间。当前仓库里，它被 `ax-allocator` 拿来实现页粒度分配器，但“页分配语义”是上层赋予它的，而不是这个 crate 自己具备的。
 
@@ -119,7 +119,7 @@
 
 ### 1.7 与 `ax-allocator` 的真实关系
 
-当前仓库中的真实消费者是 `components/axallocator/src/bitmap.rs`。上层 `BitmapPageAllocator` 会：
+当前仓库中的真实消费者是 `memory/axallocator/src/bitmap.rs`。上层 `BitmapPageAllocator` 会：
 
 - 把“页号”映射成 bit 索引
 - 处理地址到 bit 索引的转换

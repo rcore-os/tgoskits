@@ -32,19 +32,20 @@ use core::{
 };
 
 use ax_errno::{AxError, AxResult};
+use ax_kspin::SpinNoIrq as Mutex;
+use ax_net::{InterfaceFlags, InterfaceInfo, InterfaceKind};
 use ax_task::future::{block_on, poll_io};
 use axpoll::{IoEvents, PollSet, Pollable};
-use lazy_static::lazy_static;
 use linux_raw_sys::{
     general::{O_RDWR, S_IFSOCK},
     net::AF_NETLINK,
     netlink::{NETLINK_GENERIC, NETLINK_KOBJECT_UEVENT, NETLINK_ROUTE, sockaddr_nl},
 };
-use spin::Mutex;
+use spin::LazyLock;
 
-use super::packet::{ETH0_HWADDR, ETH0_IFINDEX};
 use crate::{
     file::{FileLike, IoDst, IoSrc},
+    syscall::in_root_net_ns,
     task::AsThread,
 };
 
@@ -164,7 +165,7 @@ struct IfAddrMsg {
 
 struct LinkInfo {
     index: i32,
-    name: &'static str,
+    name: String,
     ty: u16,
     flags: u32,
     mtu: u32,
@@ -177,58 +178,12 @@ struct LinkInfo {
 
 struct AddrInfo {
     index: u32,
-    label: &'static str,
+    label: String,
     prefix_len: u8,
     scope: u8,
     local: [u8; 4],
     broadcast: Option<[u8; 4]>,
 }
-
-const LINKS: &[LinkInfo] = &[
-    LinkInfo {
-        index: 1,
-        name: "lo",
-        ty: ARPHRD_LOOPBACK,
-        flags: IFF_UP | IFF_LOOPBACK | IFF_RUNNING | IFF_LOWER_UP,
-        mtu: 65536,
-        qlen: 1000,
-        qdisc: "noqueue",
-        operstate: IF_OPER_UNKNOWN,
-        address: [0; 6],
-        broadcast: [0; 6],
-    },
-    LinkInfo {
-        index: ETH0_IFINDEX,
-        name: "eth0",
-        ty: ARPHRD_ETHER,
-        flags: IFF_UP | IFF_BROADCAST | IFF_RUNNING | IFF_MULTICAST | IFF_LOWER_UP,
-        mtu: 1500,
-        qlen: 1000,
-        qdisc: "mq",
-        operstate: IF_OPER_UP,
-        address: ETH0_HWADDR,
-        broadcast: [0xff; 6],
-    },
-];
-
-const ADDRS: &[AddrInfo] = &[
-    AddrInfo {
-        index: 1,
-        label: "lo",
-        prefix_len: 8,
-        scope: RT_SCOPE_HOST,
-        local: [127, 0, 0, 1],
-        broadcast: None,
-    },
-    AddrInfo {
-        index: ETH0_IFINDEX as u32,
-        label: "eth0",
-        prefix_len: 24,
-        scope: RT_SCOPE_UNIVERSE,
-        local: [10, 0, 2, 15],
-        broadcast: Some([10, 0, 2, 255]),
-    },
-];
 
 #[derive(Clone, Copy, Default)]
 struct NetlinkState {
@@ -245,12 +200,11 @@ pub struct NetlinkSocket {
     queue: Mutex<VecDeque<Vec<u8>>>,
 }
 
-lazy_static! {
-    /// Global registry of bound netlink sockets, used by [`broadcast`]
-    /// to dispatch kernel-side messages.  Holds weak refs so socket close
-    /// drops naturally; dead entries are pruned on each broadcast.
-    static ref NETLINK_SOCKETS: Mutex<Vec<Weak<NetlinkSocket>>> = Mutex::new(Vec::new());
-}
+/// Global registry of bound netlink sockets, used by [`broadcast`] to dispatch
+/// kernel-side messages. Holds weak refs so socket close drops naturally; dead
+/// entries are pruned on each broadcast.
+static NETLINK_SOCKETS: LazyLock<Mutex<Vec<Weak<NetlinkSocket>>>> =
+    LazyLock::new(|| Mutex::new(Vec::new()));
 
 impl NetlinkSocket {
     pub fn new(protocol: u32) -> Arc<Self> {
@@ -395,16 +349,23 @@ impl NetlinkSocket {
 
         let header = unsafe { request.as_ptr().cast::<NlMsgHdr>().read_unaligned() };
         let pid = self.local_pid();
+        let in_root = in_root_net_ns();
         let mut response = Vec::new();
         match header.ty {
             RTM_GETLINK => {
-                for link in LINKS {
-                    push_link_message(&mut response, header.seq, pid, link);
+                for link in link_infos() {
+                    if !in_root && link.index != 1 {
+                        continue;
+                    }
+                    push_link_message(&mut response, header.seq, pid, &link);
                 }
             }
             RTM_GETADDR => {
-                for addr in ADDRS {
-                    push_addr_message(&mut response, header.seq, pid, addr);
+                for addr in addr_infos() {
+                    if !in_root && addr.index != 1 {
+                        continue;
+                    }
+                    push_addr_message(&mut response, header.seq, pid, &addr);
                 }
             }
             _ => {}
@@ -415,15 +376,40 @@ impl NetlinkSocket {
 
     /// Drain at most one queued message into `dst`.  Returns `WouldBlock`
     /// when the queue is empty.
-    fn read_one(&self, dst: &mut IoDst) -> AxResult<usize> {
-        let mut queue = self.queue.lock();
-        let Some(msg) = queue.front() else {
-            return Err(AxError::WouldBlock);
+    ///
+    /// `peek` (MSG_PEEK): copy the front message into `dst` without removing it
+    /// from the queue, so a following non-peek recv reads the same message.
+    /// glibc/musl `getifaddrs()` and dnsmasq size their buffer with a
+    /// `MSG_PEEK|MSG_TRUNC` recv first, then read for real; popping on peek
+    /// loses the dump and the second recv blocks forever (startup stall).
+    ///
+    /// `truncate` (MSG_TRUNC): netlink datagrams are not coalesced, so a short
+    /// buffer drops the tail. Linux returns the *real* datagram length (not the
+    /// copied length) so the caller can resize and retry.
+    /// Returns `(len, truncated)`: `len` is the full datagram length when
+    /// `truncate` (MSG_TRUNC) is set, else the number of bytes copied;
+    /// `truncated` is true when the datagram did not fit in `dst` (so the
+    /// caller can raise MSG_TRUNC in `msg_flags`).
+    fn read_one(&self, dst: &mut IoDst, peek: bool, truncate: bool) -> AxResult<(usize, bool)> {
+        let msg = {
+            let mut queue = self.queue.lock();
+            if peek {
+                let Some(msg) = queue.front() else {
+                    return Err(AxError::WouldBlock);
+                };
+                msg.clone()
+            } else {
+                let Some(msg) = queue.pop_front() else {
+                    return Err(AxError::WouldBlock);
+                };
+                msg
+            }
         };
         // Cap at the message length; netlink datagrams are not coalesced.
-        let n = dst.write(msg)?;
-        queue.pop_front();
-        Ok(n)
+        let full = msg.len();
+        let copied = dst.write(&msg)?;
+        let truncated = full > copied;
+        Ok((if truncate { full } else { copied }, truncated))
     }
 }
 
@@ -452,16 +438,36 @@ pub fn broadcast(protocol: u32, group_mask: u32, payload: &[u8]) {
         if queue.len() < MAX_QUEUED {
             queue.push_back(payload.to_vec());
             drop(queue);
-            sock.poll_rx.wake();
+            // Netlink message is queued before waking readers.
+            unsafe { sock.poll_rx.wake(IoEvents::IN) };
         }
+    }
+}
+
+impl NetlinkSocket {
+    /// Flag-aware receive used by `recvmsg`/`recvfrom`. Honors MSG_PEEK (do not
+    /// consume), MSG_TRUNC (return full datagram length), and MSG_DONTWAIT
+    /// (per-call non-blocking).
+    pub fn recv(
+        &self,
+        dst: &mut IoDst,
+        peek: bool,
+        truncate: bool,
+        dontwait: bool,
+    ) -> AxResult<(usize, bool)> {
+        let non_blocking = self.nonblocking() || dontwait;
+        block_on(poll_io(self, IoEvents::IN, non_blocking, || {
+            self.read_one(dst, peek, truncate)
+        }))
     }
 }
 
 impl FileLike for NetlinkSocket {
     fn read(&self, dst: &mut IoDst) -> AxResult<usize> {
         block_on(poll_io(self, IoEvents::IN, self.nonblocking(), || {
-            self.read_one(dst)
+            self.read_one(dst, false, false)
         }))
+        .map(|(len, _)| len)
     }
 
     fn write(&self, src: &mut IoSrc) -> AxResult<usize> {
@@ -489,7 +495,8 @@ impl FileLike for NetlinkSocket {
             if queue.len() < MAX_QUEUED {
                 queue.push_back(response);
                 drop(queue);
-                self.poll_rx.wake();
+                // Netlink response is queued before waking readers.
+                unsafe { self.poll_rx.wake(IoEvents::IN) };
             }
         }
         Ok(total)
@@ -535,9 +542,99 @@ impl Pollable for NetlinkSocket {
 
     fn register(&self, context: &mut Context<'_>, events: IoEvents) {
         if events.contains(IoEvents::IN) {
-            self.poll_rx.register(context.waker());
+            // Registration happens from socket poll task context.
+            unsafe { self.poll_rx.register(context.waker(), IoEvents::IN) };
         }
     }
+}
+
+fn link_infos() -> Vec<LinkInfo> {
+    ax_net::interfaces()
+        .into_iter()
+        .map(|info| {
+            let flags = linux_link_flags(&info);
+            let mut address = [0; 6];
+            if let Some(mac) = info.mac {
+                address = mac.0;
+            }
+            LinkInfo {
+                index: info.id.get() as i32,
+                name: info.name,
+                ty: match info.kind {
+                    InterfaceKind::Loopback => ARPHRD_LOOPBACK,
+                    InterfaceKind::Ethernet => ARPHRD_ETHER,
+                },
+                flags,
+                mtu: info.mtu as u32,
+                qlen: 1000,
+                qdisc: match info.kind {
+                    InterfaceKind::Loopback => "noqueue",
+                    InterfaceKind::Ethernet => "mq",
+                },
+                operstate: if info.flags.contains(InterfaceFlags::RUNNING) {
+                    IF_OPER_UP
+                } else {
+                    IF_OPER_UNKNOWN
+                },
+                address,
+                broadcast: if info.kind == InterfaceKind::Ethernet {
+                    [0xff; 6]
+                } else {
+                    [0; 6]
+                },
+            }
+        })
+        .collect()
+}
+
+fn addr_infos() -> Vec<AddrInfo> {
+    ax_net::interfaces()
+        .into_iter()
+        .filter_map(|info| {
+            let ipv4 = info.ipv4?;
+            let local = ipv4.address.address().octets();
+            let broadcast = (info.kind == InterfaceKind::Ethernet).then(|| {
+                let ip = u32::from_be_bytes(local);
+                let mask = if ipv4.address.prefix_len() == 0 {
+                    0
+                } else {
+                    !0u32 << (32 - ipv4.address.prefix_len())
+                };
+                (ip | !mask).to_be_bytes()
+            });
+            Some(AddrInfo {
+                index: info.id.get(),
+                label: info.name,
+                prefix_len: ipv4.address.prefix_len(),
+                scope: match info.kind {
+                    InterfaceKind::Loopback => RT_SCOPE_HOST,
+                    InterfaceKind::Ethernet => RT_SCOPE_UNIVERSE,
+                },
+                local,
+                broadcast,
+            })
+        })
+        .collect()
+}
+
+fn linux_link_flags(info: &InterfaceInfo) -> u32 {
+    let mut flags = 0;
+    if info.flags.contains(InterfaceFlags::UP) {
+        flags |= IFF_UP;
+    }
+    if info.flags.contains(InterfaceFlags::BROADCAST) {
+        flags |= IFF_BROADCAST;
+    }
+    if info.flags.contains(InterfaceFlags::LOOPBACK) {
+        flags |= IFF_LOOPBACK;
+    }
+    if info.flags.contains(InterfaceFlags::RUNNING) {
+        flags |= IFF_RUNNING | IFF_LOWER_UP;
+    }
+    if info.flags.contains(InterfaceFlags::MULTICAST) {
+        flags |= IFF_MULTICAST;
+    }
+    flags
 }
 
 fn push_link_message(out: &mut Vec<u8>, seq: u32, pid: u32, link: &LinkInfo) {
@@ -553,7 +650,7 @@ fn push_link_message(out: &mut Vec<u8>, seq: u32, pid: u32, link: &LinkInfo) {
             change: 0,
         },
     );
-    push_attr_string(&mut body, IFLA_IFNAME, link.name);
+    push_attr_string(&mut body, IFLA_IFNAME, &link.name);
     push_attr(&mut body, IFLA_ADDRESS, &link.address);
     push_attr(&mut body, IFLA_BROADCAST, &link.broadcast);
     push_attr(&mut body, IFLA_MTU, &link.mtu.to_ne_bytes());
@@ -579,7 +676,7 @@ fn push_addr_message(out: &mut Vec<u8>, seq: u32, pid: u32, addr: &AddrInfo) {
     );
     push_attr(&mut body, IFA_ADDRESS, &addr.local);
     push_attr(&mut body, IFA_LOCAL, &addr.local);
-    push_attr_string(&mut body, IFA_LABEL, addr.label);
+    push_attr_string(&mut body, IFA_LABEL, &addr.label);
     if let Some(broadcast) = addr.broadcast {
         push_attr(&mut body, IFA_BROADCAST, &broadcast);
     }

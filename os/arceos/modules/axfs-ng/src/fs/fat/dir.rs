@@ -152,6 +152,8 @@ impl DirNodeOps for FatDirNode {
         name: &str,
         node_type: NodeType,
         _permission: NodePermission,
+        _uid: u32,
+        _gid: u32,
     ) -> VfsResult<DirEntry> {
         let mut fs = self.fs.lock();
         let dir = self.inner.borrow(&fs);
@@ -186,9 +188,23 @@ impl DirNodeOps for FatDirNode {
         Err(VfsError::PermissionDenied)
     }
 
-    fn unlink(&self, name: &str) -> VfsResult<()> {
+    fn unlink(&self, name: &str, is_dir: bool) -> VfsResult<()> {
         let fs = self.fs.lock();
         let dir = self.inner.borrow(&fs);
+        let target_is_dir = dir
+            .iter()
+            .find_map(|entry| {
+                entry
+                    .ok()
+                    .filter(|entry| entry.eq_name(name))
+                    .map(|entry| !entry.is_file())
+            })
+            .ok_or(VfsError::NotFound)?;
+        match (target_is_dir, is_dir) {
+            (true, false) => return Err(VfsError::IsADirectory),
+            (false, true) => return Err(VfsError::NotADirectory),
+            _ => {}
+        }
         dir.remove(name).map_err(into_vfs_err)
     }
 

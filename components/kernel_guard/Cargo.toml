@@ -1,6 +1,6 @@
 [package]
 name = "ax-kernel-guard"
-version = "0.3.10"
+version = "0.3.11"
 repository = "https://github.com/rcore-os/tgoskits"
 edition.workspace = true
 authors = ["Yuekai Jia <equation618@gmail.com>"]
@@ -11,6 +11,7 @@ license = "Apache-2.0"
 
 [features]
 preempt = []
+host-test = []
 default = []
 
 [dependencies]

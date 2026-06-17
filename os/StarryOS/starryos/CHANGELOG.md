@@ -7,6 +7,60 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.16](https://github.com/rcore-os/tgoskits/compare/starryos-v0.5.15...starryos-v0.5.16) - 2026-06-12
+
+### Added
+
+- *(starry)* add axbuild kmod support ([#1232](https://github.com/rcore-os/tgoskits/pull/1232))
+
+## [0.5.15](https://github.com/rcore-os/tgoskits/compare/starryos-v0.5.14...starryos-v0.5.15) - 2026-06-11
+
+### Fixed
+
+- fix typos in code and comments across the codebase ([#1206](https://github.com/rcore-os/tgoskits/pull/1206))
+
+## [0.5.14](https://github.com/rcore-os/tgoskits/compare/starryos-v0.5.13...starryos-v0.5.14) - 2026-06-09
+
+### Added
+
+- *(std)* unify std-aware ArceOS builds ([#1080](https://github.com/rcore-os/tgoskits/pull/1080))
+- *(starry)* enable self-compilation on riscv64 with 12GB RAM ([#881](https://github.com/rcore-os/tgoskits/pull/881))
+
+## [0.5.13](https://github.com/rcore-os/tgoskits/compare/starryos-v0.5.12...starryos-v0.5.13) - 2026-06-03
+
+### Added
+
+- *(starryos)* expose K230 KPU device ([#1054](https://github.com/rcore-os/tgoskits/pull/1054))
+- *(starry)* add x86_64 self-compilation scripts and documentation ([#973](https://github.com/rcore-os/tgoskits/pull/973))
+- *(starryos)* add QEMU K230 boot support ([#1046](https://github.com/rcore-os/tgoskits/pull/1046))
+- *(riscv64)* support dynamic platform on QEMU and SG2002 ([#961](https://github.com/rcore-os/tgoskits/pull/961))
+
+### Fixed
+
+- *(axbuild)* skip disabled grouped C subcases ([#942](https://github.com/rcore-os/tgoskits/pull/942))
+
+### Other
+
+- *(platform)* remove static aarch64 platforms ([#1074](https://github.com/rcore-os/tgoskits/pull/1074))
+- *(linker)* layer platform runtime and final scripts ([#1075](https://github.com/rcore-os/tgoskits/pull/1075))
+- *(visual)* add visual-regression test pipeline + Xwayland scenario ([#516](https://github.com/rcore-os/tgoskits/pull/516))
+- *(ax-alloc)* remove ax-allocator dependency, simplify to TLSF/buddy-slab backends ([#987](https://github.com/rcore-os/tgoskits/pull/987))
+- Refactor code structure for improved readability and maintainability ([#982](https://github.com/rcore-os/tgoskits/pull/982))
+- Implement platform-specific IRQ handling and architecture setup ([#979](https://github.com/rcore-os/tgoskits/pull/979))
+- Adds support for kernel symbol dumping via kallsyms ([#837](https://github.com/rcore-os/tgoskits/pull/837))
+- *(starry)* route HAL access through ax-runtime ([#963](https://github.com/rcore-os/tgoskits/pull/963))
+- *(drivers)* split shared driver stack from ArceOS ([#831](https://github.com/rcore-os/tgoskits/pull/831))
+
+## [0.5.12](https://github.com/rcore-os/tgoskits/compare/starryos-v0.5.11...starryos-v0.5.12) - 2026-05-22
+
+### Added
+
+- *(axplat-aarch64)* GICv3 + CNTV backend for Apple HVF native execution ([#511](https://github.com/rcore-os/tgoskits/pull/511))
+
+### Other
+
+- Add kernel tracepoint infrastructure and debugfs integration ([#673](https://github.com/rcore-os/tgoskits/pull/673))
+
 ## [0.5.11](https://github.com/rcore-os/tgoskits/compare/starryos-v0.5.10...starryos-v0.5.11) - 2026-05-19
 
 ### Other

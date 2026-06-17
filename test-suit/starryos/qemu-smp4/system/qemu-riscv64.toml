@@ -1,0 +1,81 @@
+args = [
+    "-nographic",
+    "-cpu",
+    "rv64",
+    "-m",
+    "512M",
+    "-smp",
+    "4",
+    "-accel",
+    "tcg,thread=single",
+    "-device",
+    "virtio-blk-pci,drive=disk0",
+    "-drive",
+    "id=disk0,if=none,format=raw,file=${workspace}/tmp/axbuild/rootfs/rootfs-riscv64-alpine.img",
+    "-device",
+    "virtio-net-pci,netdev=net0",
+    "-netdev",
+    "user,id=net0",
+]
+uefi = false
+to_bin = true
+shell_prefix = "root@starry:"
+test_commands = [
+    '''
+found=0
+failed=0
+system_fail_marker=STARRY_SYSTEM_TEST_FAILED
+group_fail_marker=STARRY_GROUPED_TEST_FAILED
+timing_file=/tmp/starry-system-test-timing.$$
+: > "$timing_file"
+for bin in /usr/bin/starry-test-suit/*; do
+    [ -f "$bin" ] && [ -x "$bin" ] || continue
+    found=1
+    start=$(date +%s 2>/dev/null || printf 0)
+    echo "STARRY_SYSTEM_TEST_BEGIN: $bin"
+    if "$bin"; then
+        status=passed
+        exit_status=0
+    else
+        exit_status=$?
+        status=failed
+        failed=1
+    fi
+    end=$(date +%s 2>/dev/null || printf 0)
+    elapsed_s=$((end - start))
+    if [ "$elapsed_s" -lt 0 ]; then
+        elapsed_s=0
+    fi
+    printf '%s %s %s\n' "$elapsed_s" "$status" "$bin" >> "$timing_file"
+    if [ "$status" = passed ]; then
+        echo "STARRY_SYSTEM_TEST_PASSED: $bin elapsed_s=$elapsed_s"
+    else
+        echo "$system_fail_marker: $bin status=$exit_status elapsed_s=$elapsed_s"
+    fi
+done
+echo "STARRY_SYSTEM_TEST_TIMING_BEGIN"
+if [ -s "$timing_file" ]; then
+    sort -nr "$timing_file" | head -n 20 | while read -r elapsed_s status bin; do
+        if [ "$status" = passed ]; then
+            printf 'STARRY_SYSTEM_TEST_TIMING: elapsed_s=%s status=passed bin=%s\n' "$elapsed_s" "$bin"
+        else
+            printf 'STARRY_SYSTEM_TEST_TIMING: elapsed_s=%s status=failed bin=%s\n' "$elapsed_s" "$bin"
+        fi
+    done
+fi
+echo "STARRY_SYSTEM_TEST_TIMING_END"
+rm -f "$timing_file"
+if [ "$found" -ne 1 ]; then
+    echo "$group_fail_marker: no SMP system tests found"
+    exit 1
+fi
+if [ "$failed" -ne 0 ]; then
+    echo "$group_fail_marker: one or more SMP system tests failed"
+    exit 1
+fi
+echo "STARRY_GROUPED_TESTS_PASSED"
+''',
+]
+success_regex = ["(?m)^STARRY_GROUPED_TESTS_PASSED\\s*$"]
+fail_regex = ['(?i)\bpanic(?:ked)?\b', "(?m)^lockdep fatal violation\\s*$", '(?m)^STARRY_GROUPED_TEST_FAILED:']
+timeout = 1800

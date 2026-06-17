@@ -24,6 +24,8 @@ macro_rules! include_asm_macros {
         .equ LA_CSR_DMW1,          0x181
 
         .equ KSAVE_KSP,            0x30
+        .equ KSAVE_T0,             0x31
+        .equ KSAVE_T1,             0x32
 
         .macro STD rd, rj, off
             st.d   \rd, \rj, \off*8
@@ -74,9 +76,9 @@ macro_rules! include_asm_macros {
 
         .macro _asm_extable, from, to
             .pushsection __ex_table, "a"
-            .balign 8
-            .quad   \from
-            .quad   \to
+            .balign 4
+            .word   \from - .
+            .word   \to - .
             .popsection
         .endm
 
@@ -88,6 +90,12 @@ macro_rules! include_asm_macros {
 macro_rules! include_fp_asm_macros {
     () => {
         r#"
+        // NOTE: The LSX/LASX vector instructions used below are accepted by the
+        // LLVM integrated assembler for this target without an explicit
+        // `.option arch, +lsx/+lasx` (that GNU-as directive is rejected by
+        // LLVM). LSX/LASX are enabled in EUEN.SXE/ASXE at boot, so these
+        // execute correctly.
+
         .ifndef FP_MACROS_FLAG
         .equ FP_MACROS_FLAG, 1
 
@@ -183,6 +191,246 @@ macro_rules! include_fp_asm_macros {
 
         .macro RESTORE_FP, base_reg
             PUSH_POP_FLOAT_REGS fld.d, \base_reg
+        .endm
+
+        // LSX 128-bit vector registers vr0-vr31 alias the scalar FP registers
+        // f0-f31 in their low 64 bits. The macros below save/restore the HIGH
+        // 64 bits (vr[127:64], element index 1 of the doubleword view) that the
+        // scalar fst.d/fld.d above do not touch. LSX must be enabled in EUEN.SXE
+        // (done at boot) for these to execute.
+        //
+        // `vstelm.d vd, rj, si8, idx` stores doubleword element `idx` of `vd`.
+        // `vld`/`vinsgr2vr.d` are used on restore: vinsgr2vr.d inserts a GPR into
+        // a vector element, leaving the other (low) element untouched, so it must
+        // run AFTER the scalar fld.d that loads the low half.
+        .macro SAVE_VR_HIGH vd, base_reg, off
+            vstelm.d \vd, \base_reg, \off, 1
+        .endm
+        .macro RESTORE_VR_HIGH vd, base_reg, off
+            ld.d        $t0, \base_reg, \off
+            vinsgr2vr.d \vd, $t0, 1
+        .endm
+
+        .macro SAVE_FP_HIGH, base_reg
+            SAVE_VR_HIGH $vr0,  \base_reg, 0*8
+            SAVE_VR_HIGH $vr1,  \base_reg, 1*8
+            SAVE_VR_HIGH $vr2,  \base_reg, 2*8
+            SAVE_VR_HIGH $vr3,  \base_reg, 3*8
+            SAVE_VR_HIGH $vr4,  \base_reg, 4*8
+            SAVE_VR_HIGH $vr5,  \base_reg, 5*8
+            SAVE_VR_HIGH $vr6,  \base_reg, 6*8
+            SAVE_VR_HIGH $vr7,  \base_reg, 7*8
+            SAVE_VR_HIGH $vr8,  \base_reg, 8*8
+            SAVE_VR_HIGH $vr9,  \base_reg, 9*8
+            SAVE_VR_HIGH $vr10, \base_reg, 10*8
+            SAVE_VR_HIGH $vr11, \base_reg, 11*8
+            SAVE_VR_HIGH $vr12, \base_reg, 12*8
+            SAVE_VR_HIGH $vr13, \base_reg, 13*8
+            SAVE_VR_HIGH $vr14, \base_reg, 14*8
+            SAVE_VR_HIGH $vr15, \base_reg, 15*8
+            SAVE_VR_HIGH $vr16, \base_reg, 16*8
+            SAVE_VR_HIGH $vr17, \base_reg, 17*8
+            SAVE_VR_HIGH $vr18, \base_reg, 18*8
+            SAVE_VR_HIGH $vr19, \base_reg, 19*8
+            SAVE_VR_HIGH $vr20, \base_reg, 20*8
+            SAVE_VR_HIGH $vr21, \base_reg, 21*8
+            SAVE_VR_HIGH $vr22, \base_reg, 22*8
+            SAVE_VR_HIGH $vr23, \base_reg, 23*8
+            SAVE_VR_HIGH $vr24, \base_reg, 24*8
+            SAVE_VR_HIGH $vr25, \base_reg, 25*8
+            SAVE_VR_HIGH $vr26, \base_reg, 26*8
+            SAVE_VR_HIGH $vr27, \base_reg, 27*8
+            SAVE_VR_HIGH $vr28, \base_reg, 28*8
+            SAVE_VR_HIGH $vr29, \base_reg, 29*8
+            SAVE_VR_HIGH $vr30, \base_reg, 30*8
+            SAVE_VR_HIGH $vr31, \base_reg, 31*8
+        .endm
+
+        .macro RESTORE_FP_HIGH, base_reg
+            RESTORE_VR_HIGH $vr0,  \base_reg, 0*8
+            RESTORE_VR_HIGH $vr1,  \base_reg, 1*8
+            RESTORE_VR_HIGH $vr2,  \base_reg, 2*8
+            RESTORE_VR_HIGH $vr3,  \base_reg, 3*8
+            RESTORE_VR_HIGH $vr4,  \base_reg, 4*8
+            RESTORE_VR_HIGH $vr5,  \base_reg, 5*8
+            RESTORE_VR_HIGH $vr6,  \base_reg, 6*8
+            RESTORE_VR_HIGH $vr7,  \base_reg, 7*8
+            RESTORE_VR_HIGH $vr8,  \base_reg, 8*8
+            RESTORE_VR_HIGH $vr9,  \base_reg, 9*8
+            RESTORE_VR_HIGH $vr10, \base_reg, 10*8
+            RESTORE_VR_HIGH $vr11, \base_reg, 11*8
+            RESTORE_VR_HIGH $vr12, \base_reg, 12*8
+            RESTORE_VR_HIGH $vr13, \base_reg, 13*8
+            RESTORE_VR_HIGH $vr14, \base_reg, 14*8
+            RESTORE_VR_HIGH $vr15, \base_reg, 15*8
+            RESTORE_VR_HIGH $vr16, \base_reg, 16*8
+            RESTORE_VR_HIGH $vr17, \base_reg, 17*8
+            RESTORE_VR_HIGH $vr18, \base_reg, 18*8
+            RESTORE_VR_HIGH $vr19, \base_reg, 19*8
+            RESTORE_VR_HIGH $vr20, \base_reg, 20*8
+            RESTORE_VR_HIGH $vr21, \base_reg, 21*8
+            RESTORE_VR_HIGH $vr22, \base_reg, 22*8
+            RESTORE_VR_HIGH $vr23, \base_reg, 23*8
+            RESTORE_VR_HIGH $vr24, \base_reg, 24*8
+            RESTORE_VR_HIGH $vr25, \base_reg, 25*8
+            RESTORE_VR_HIGH $vr26, \base_reg, 26*8
+            RESTORE_VR_HIGH $vr27, \base_reg, 27*8
+            RESTORE_VR_HIGH $vr28, \base_reg, 28*8
+            RESTORE_VR_HIGH $vr29, \base_reg, 29*8
+            RESTORE_VR_HIGH $vr30, \base_reg, 30*8
+            RESTORE_VR_HIGH $vr31, \base_reg, 31*8
+        .endm
+
+        // LASX 256-bit vector registers xr0-xr31 extend LSX vr0-vr31 with two
+        // additional doubleword elements. The low elements are restored first by
+        // RESTORE_FP/RESTORE_FP_HIGH; the LASX restore macros only insert
+        // elements 2 and 3 and leave the low 128 bits untouched.
+        .macro SAVE_XR_ELEM xd, base_reg, off, idx
+            xvstelm.d \xd, \base_reg, \off, \idx
+        .endm
+        .macro RESTORE_XR_ELEM xd, base_reg, off, idx
+            ld.d          $t0, \base_reg, \off
+            xvinsgr2vr.d  \xd, $t0, \idx
+        .endm
+
+        .macro SAVE_FP_LASX_HI0, base_reg
+            SAVE_XR_ELEM $xr0,  \base_reg, 0*8,  2
+            SAVE_XR_ELEM $xr1,  \base_reg, 1*8,  2
+            SAVE_XR_ELEM $xr2,  \base_reg, 2*8,  2
+            SAVE_XR_ELEM $xr3,  \base_reg, 3*8,  2
+            SAVE_XR_ELEM $xr4,  \base_reg, 4*8,  2
+            SAVE_XR_ELEM $xr5,  \base_reg, 5*8,  2
+            SAVE_XR_ELEM $xr6,  \base_reg, 6*8,  2
+            SAVE_XR_ELEM $xr7,  \base_reg, 7*8,  2
+            SAVE_XR_ELEM $xr8,  \base_reg, 8*8,  2
+            SAVE_XR_ELEM $xr9,  \base_reg, 9*8,  2
+            SAVE_XR_ELEM $xr10, \base_reg, 10*8, 2
+            SAVE_XR_ELEM $xr11, \base_reg, 11*8, 2
+            SAVE_XR_ELEM $xr12, \base_reg, 12*8, 2
+            SAVE_XR_ELEM $xr13, \base_reg, 13*8, 2
+            SAVE_XR_ELEM $xr14, \base_reg, 14*8, 2
+            SAVE_XR_ELEM $xr15, \base_reg, 15*8, 2
+            SAVE_XR_ELEM $xr16, \base_reg, 16*8, 2
+            SAVE_XR_ELEM $xr17, \base_reg, 17*8, 2
+            SAVE_XR_ELEM $xr18, \base_reg, 18*8, 2
+            SAVE_XR_ELEM $xr19, \base_reg, 19*8, 2
+            SAVE_XR_ELEM $xr20, \base_reg, 20*8, 2
+            SAVE_XR_ELEM $xr21, \base_reg, 21*8, 2
+            SAVE_XR_ELEM $xr22, \base_reg, 22*8, 2
+            SAVE_XR_ELEM $xr23, \base_reg, 23*8, 2
+            SAVE_XR_ELEM $xr24, \base_reg, 24*8, 2
+            SAVE_XR_ELEM $xr25, \base_reg, 25*8, 2
+            SAVE_XR_ELEM $xr26, \base_reg, 26*8, 2
+            SAVE_XR_ELEM $xr27, \base_reg, 27*8, 2
+            SAVE_XR_ELEM $xr28, \base_reg, 28*8, 2
+            SAVE_XR_ELEM $xr29, \base_reg, 29*8, 2
+            SAVE_XR_ELEM $xr30, \base_reg, 30*8, 2
+            SAVE_XR_ELEM $xr31, \base_reg, 31*8, 2
+        .endm
+
+        .macro SAVE_FP_LASX_HI1, base_reg
+            SAVE_XR_ELEM $xr0,  \base_reg, 0*8,  3
+            SAVE_XR_ELEM $xr1,  \base_reg, 1*8,  3
+            SAVE_XR_ELEM $xr2,  \base_reg, 2*8,  3
+            SAVE_XR_ELEM $xr3,  \base_reg, 3*8,  3
+            SAVE_XR_ELEM $xr4,  \base_reg, 4*8,  3
+            SAVE_XR_ELEM $xr5,  \base_reg, 5*8,  3
+            SAVE_XR_ELEM $xr6,  \base_reg, 6*8,  3
+            SAVE_XR_ELEM $xr7,  \base_reg, 7*8,  3
+            SAVE_XR_ELEM $xr8,  \base_reg, 8*8,  3
+            SAVE_XR_ELEM $xr9,  \base_reg, 9*8,  3
+            SAVE_XR_ELEM $xr10, \base_reg, 10*8, 3
+            SAVE_XR_ELEM $xr11, \base_reg, 11*8, 3
+            SAVE_XR_ELEM $xr12, \base_reg, 12*8, 3
+            SAVE_XR_ELEM $xr13, \base_reg, 13*8, 3
+            SAVE_XR_ELEM $xr14, \base_reg, 14*8, 3
+            SAVE_XR_ELEM $xr15, \base_reg, 15*8, 3
+            SAVE_XR_ELEM $xr16, \base_reg, 16*8, 3
+            SAVE_XR_ELEM $xr17, \base_reg, 17*8, 3
+            SAVE_XR_ELEM $xr18, \base_reg, 18*8, 3
+            SAVE_XR_ELEM $xr19, \base_reg, 19*8, 3
+            SAVE_XR_ELEM $xr20, \base_reg, 20*8, 3
+            SAVE_XR_ELEM $xr21, \base_reg, 21*8, 3
+            SAVE_XR_ELEM $xr22, \base_reg, 22*8, 3
+            SAVE_XR_ELEM $xr23, \base_reg, 23*8, 3
+            SAVE_XR_ELEM $xr24, \base_reg, 24*8, 3
+            SAVE_XR_ELEM $xr25, \base_reg, 25*8, 3
+            SAVE_XR_ELEM $xr26, \base_reg, 26*8, 3
+            SAVE_XR_ELEM $xr27, \base_reg, 27*8, 3
+            SAVE_XR_ELEM $xr28, \base_reg, 28*8, 3
+            SAVE_XR_ELEM $xr29, \base_reg, 29*8, 3
+            SAVE_XR_ELEM $xr30, \base_reg, 30*8, 3
+            SAVE_XR_ELEM $xr31, \base_reg, 31*8, 3
+        .endm
+
+        .macro RESTORE_FP_LASX_HI0, base_reg
+            RESTORE_XR_ELEM $xr0,  \base_reg, 0*8,  2
+            RESTORE_XR_ELEM $xr1,  \base_reg, 1*8,  2
+            RESTORE_XR_ELEM $xr2,  \base_reg, 2*8,  2
+            RESTORE_XR_ELEM $xr3,  \base_reg, 3*8,  2
+            RESTORE_XR_ELEM $xr4,  \base_reg, 4*8,  2
+            RESTORE_XR_ELEM $xr5,  \base_reg, 5*8,  2
+            RESTORE_XR_ELEM $xr6,  \base_reg, 6*8,  2
+            RESTORE_XR_ELEM $xr7,  \base_reg, 7*8,  2
+            RESTORE_XR_ELEM $xr8,  \base_reg, 8*8,  2
+            RESTORE_XR_ELEM $xr9,  \base_reg, 9*8,  2
+            RESTORE_XR_ELEM $xr10, \base_reg, 10*8, 2
+            RESTORE_XR_ELEM $xr11, \base_reg, 11*8, 2
+            RESTORE_XR_ELEM $xr12, \base_reg, 12*8, 2
+            RESTORE_XR_ELEM $xr13, \base_reg, 13*8, 2
+            RESTORE_XR_ELEM $xr14, \base_reg, 14*8, 2
+            RESTORE_XR_ELEM $xr15, \base_reg, 15*8, 2
+            RESTORE_XR_ELEM $xr16, \base_reg, 16*8, 2
+            RESTORE_XR_ELEM $xr17, \base_reg, 17*8, 2
+            RESTORE_XR_ELEM $xr18, \base_reg, 18*8, 2
+            RESTORE_XR_ELEM $xr19, \base_reg, 19*8, 2
+            RESTORE_XR_ELEM $xr20, \base_reg, 20*8, 2
+            RESTORE_XR_ELEM $xr21, \base_reg, 21*8, 2
+            RESTORE_XR_ELEM $xr22, \base_reg, 22*8, 2
+            RESTORE_XR_ELEM $xr23, \base_reg, 23*8, 2
+            RESTORE_XR_ELEM $xr24, \base_reg, 24*8, 2
+            RESTORE_XR_ELEM $xr25, \base_reg, 25*8, 2
+            RESTORE_XR_ELEM $xr26, \base_reg, 26*8, 2
+            RESTORE_XR_ELEM $xr27, \base_reg, 27*8, 2
+            RESTORE_XR_ELEM $xr28, \base_reg, 28*8, 2
+            RESTORE_XR_ELEM $xr29, \base_reg, 29*8, 2
+            RESTORE_XR_ELEM $xr30, \base_reg, 30*8, 2
+            RESTORE_XR_ELEM $xr31, \base_reg, 31*8, 2
+        .endm
+
+        .macro RESTORE_FP_LASX_HI1, base_reg
+            RESTORE_XR_ELEM $xr0,  \base_reg, 0*8,  3
+            RESTORE_XR_ELEM $xr1,  \base_reg, 1*8,  3
+            RESTORE_XR_ELEM $xr2,  \base_reg, 2*8,  3
+            RESTORE_XR_ELEM $xr3,  \base_reg, 3*8,  3
+            RESTORE_XR_ELEM $xr4,  \base_reg, 4*8,  3
+            RESTORE_XR_ELEM $xr5,  \base_reg, 5*8,  3
+            RESTORE_XR_ELEM $xr6,  \base_reg, 6*8,  3
+            RESTORE_XR_ELEM $xr7,  \base_reg, 7*8,  3
+            RESTORE_XR_ELEM $xr8,  \base_reg, 8*8,  3
+            RESTORE_XR_ELEM $xr9,  \base_reg, 9*8,  3
+            RESTORE_XR_ELEM $xr10, \base_reg, 10*8, 3
+            RESTORE_XR_ELEM $xr11, \base_reg, 11*8, 3
+            RESTORE_XR_ELEM $xr12, \base_reg, 12*8, 3
+            RESTORE_XR_ELEM $xr13, \base_reg, 13*8, 3
+            RESTORE_XR_ELEM $xr14, \base_reg, 14*8, 3
+            RESTORE_XR_ELEM $xr15, \base_reg, 15*8, 3
+            RESTORE_XR_ELEM $xr16, \base_reg, 16*8, 3
+            RESTORE_XR_ELEM $xr17, \base_reg, 17*8, 3
+            RESTORE_XR_ELEM $xr18, \base_reg, 18*8, 3
+            RESTORE_XR_ELEM $xr19, \base_reg, 19*8, 3
+            RESTORE_XR_ELEM $xr20, \base_reg, 20*8, 3
+            RESTORE_XR_ELEM $xr21, \base_reg, 21*8, 3
+            RESTORE_XR_ELEM $xr22, \base_reg, 22*8, 3
+            RESTORE_XR_ELEM $xr23, \base_reg, 23*8, 3
+            RESTORE_XR_ELEM $xr24, \base_reg, 24*8, 3
+            RESTORE_XR_ELEM $xr25, \base_reg, 25*8, 3
+            RESTORE_XR_ELEM $xr26, \base_reg, 26*8, 3
+            RESTORE_XR_ELEM $xr27, \base_reg, 27*8, 3
+            RESTORE_XR_ELEM $xr28, \base_reg, 28*8, 3
+            RESTORE_XR_ELEM $xr29, \base_reg, 29*8, 3
+            RESTORE_XR_ELEM $xr30, \base_reg, 30*8, 3
+            RESTORE_XR_ELEM $xr31, \base_reg, 31*8, 3
         .endm
 
         .endif"#

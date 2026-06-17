@@ -20,6 +20,7 @@ struct SignalFrame {
     ucontext: UContext,
     siginfo: SignalInfo,
     uctx: UserContext,
+    used_sigaltstack: bool,
 }
 
 enum PreparedSignal {
@@ -49,6 +50,8 @@ pub struct ThreadSignalManager {
     blocked: SpinNoIrq<SignalSet>,
     /// The stack used by signal handlers
     stack: SpinNoIrq<SignalStack>,
+    /// Number of active signal handlers currently executing on the alternate stack.
+    stack_active_depth: SpinNoIrq<usize>,
 
     possibly_has_signal: AtomicBool,
 
@@ -64,12 +67,21 @@ pub struct ThreadSignalManager {
 
 impl ThreadSignalManager {
     pub fn new(tid: u32, proc: Arc<ProcessSignalManager>) -> Arc<Self> {
+        Self::new_with_blocked(tid, proc, SignalSet::default())
+    }
+
+    pub fn new_with_blocked(
+        tid: u32,
+        proc: Arc<ProcessSignalManager>,
+        blocked: SignalSet,
+    ) -> Arc<Self> {
         let this = Arc::new(Self {
             proc: proc.clone(),
 
             pending: SpinNoIrq::new(PendingSignals::default()),
-            blocked: SpinNoIrq::new(SignalSet::default()),
+            blocked: SpinNoIrq::new(blocked),
             stack: SpinNoIrq::new(SignalStack::default()),
+            stack_active_depth: SpinNoIrq::new(0),
 
             possibly_has_signal: AtomicBool::new(false),
             sigwait_set: SpinNoIrq::new(None),
@@ -99,7 +111,8 @@ impl ThreadSignalManager {
         let signo = sig.signo();
         debug!("Handle signal: {signo:?}");
         let action = {
-            let mut actions = self.proc.actions.lock();
+            let actions_arc = self.proc.actions();
+            let mut actions = actions_arc.lock();
             let action = actions[signo].clone();
             if action.flags.contains(SignalActionFlags::RESETHAND) {
                 actions[signo] = SignalAction::default();
@@ -157,11 +170,16 @@ impl ThreadSignalManager {
         prepared: PreparedSignalHandler,
     ) -> SignalOSAction {
         let layout = Layout::new::<SignalFrame>();
+        let mut uses_sigaltstack = false;
         let sp = if prepared.use_sigaltstack {
             let stack = self.stack.lock();
             if stack.disabled() {
                 uctx.sp()
+            } else if self.stack_active() {
+                uses_sigaltstack = true;
+                uctx.sp()
             } else {
+                uses_sigaltstack = true;
                 stack.sp + stack.size
             }
         } else {
@@ -174,6 +192,7 @@ impl ThreadSignalManager {
                 ucontext: UContext::new(uctx, prepared.restore_blocked),
                 siginfo: prepared.siginfo,
                 uctx: *uctx,
+                used_sigaltstack: uses_sigaltstack,
             })
             .is_err()
         {
@@ -198,6 +217,9 @@ impl ThreadSignalManager {
         uctx.set_ra(prepared.restorer);
 
         *self.blocked.lock() |= prepared.add_blocked;
+        if uses_sigaltstack {
+            self.enter_stack();
+        }
         SignalOSAction::NoFurtherAction
     }
 
@@ -284,6 +306,9 @@ impl ThreadSignalManager {
         frame.ucontext.mcontext.restore(uctx);
 
         *self.blocked.lock() = frame.ucontext.sigmask;
+        if frame.used_sigaltstack {
+            self.leave_stack();
+        }
         self.possibly_has_signal.store(true, Ordering::Release);
         Ok(0)
     }
@@ -299,7 +324,8 @@ impl ThreadSignalManager {
         let signo = sig.signo();
 
         // Lock by `actions`
-        let actions = self.proc.actions.lock();
+        let actions_arc = self.proc.actions();
+        let actions = actions_arc.lock();
         debug!("signal: {signo:?}");
 
         // Skip is_ignore() when the signal is blocked in this thread OR when
@@ -329,7 +355,8 @@ impl ThreadSignalManager {
     /// Sets the blocked signals. Return the old value.
     pub fn set_blocked(&self, mut set: SignalSet) -> SignalSet {
         // Lock by `actions`
-        let _actions = self.proc.actions.lock();
+        let actions_arc = self.proc.actions();
+        let _actions = actions_arc.lock();
 
         set.remove(Signo::SIGKILL);
         set.remove(Signo::SIGSTOP);
@@ -347,16 +374,41 @@ impl ThreadSignalManager {
 
     /// Gets the signal stack.
     pub fn stack(&self) -> SignalStack {
-        self.stack.lock().clone()
+        let stack = self.stack.lock().clone();
+        if self.stack_active() {
+            stack.on_stack()
+        } else {
+            stack
+        }
     }
 
     /// Sets the signal stack.
     pub fn set_stack(&self, stack: SignalStack) {
-        *self.stack.lock() = stack;
+        *self.stack.lock() = stack.without_runtime_flags();
+    }
+
+    pub fn stack_active(&self) -> bool {
+        *self.stack_active_depth.lock() > 0
+    }
+
+    fn enter_stack(&self) {
+        *self.stack_active_depth.lock() += 1;
+    }
+
+    fn leave_stack(&self) {
+        let mut depth = self.stack_active_depth.lock();
+        *depth = depth.saturating_sub(1);
     }
 
     /// Gets current pending signals.
     pub fn pending(&self) -> SignalSet {
         self.pending.lock().set | self.proc.pending()
+    }
+
+    /// Resets the alternate signal stack to the default (disabled, addr=0)
+    /// across `execve`. The pre-exec stack address pointed into user
+    /// memory that no longer exists once the new aspace replaces the old.
+    pub fn reset_stack(&self) {
+        *self.stack.lock() = SignalStack::default();
     }
 }

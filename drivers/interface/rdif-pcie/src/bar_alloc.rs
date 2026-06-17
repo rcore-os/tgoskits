@@ -45,34 +45,93 @@ impl SimpleBarAllocator {
     }
 
     pub fn alloc_memory32(&mut self, size: u32, prefetchable: bool) -> Option<u32> {
-        if prefetchable
-            && let Some(set) = self.mem32_pref.as_mut()
-            && let Ok(addr) = set.allocate(size as _, size as _, AllocPolicy::FirstMatch)
-        {
-            return Some(addr.start() as _);
-        }
-
-        let res = self
-            .mem32
-            .as_mut()?
-            .allocate(size as _, size as _, AllocPolicy::FirstMatch)
-            .ok()?;
-        Some(res.start() as _)
+        self.alloc_from_32(size, prefetchable)
     }
 
     pub fn alloc_memory64(&mut self, size: u64, prefetchable: bool) -> Option<u64> {
-        if prefetchable
-            && let Some(set) = self.mem64_pref.as_mut()
-            && let Ok(addr) = set.allocate(size as _, size as _, AllocPolicy::FirstMatch)
-        {
-            return Some(addr.start() as _);
+        if let Some(addr) = self.alloc_from_64(size, prefetchable) {
+            return Some(addr);
         }
 
-        let res = self
-            .mem64
-            .as_mut()?
-            .allocate(size as _, size as _, AllocPolicy::FirstMatch)
-            .ok()?;
-        Some(res.start() as _)
+        // A 64-bit BAR can legally be programmed with an address below 4 GiB.
+        // Keep the fallback on the same 32-bit allocator so 32-bit and 64-bit
+        // BARs do not receive overlapping low MMIO ranges.
+        if let Ok(size) = u32::try_from(size) {
+            return self.alloc_from_32(size, prefetchable).map(u64::from);
+        }
+
+        None
+    }
+
+    fn alloc_from_32(&mut self, size: u32, prefetchable: bool) -> Option<u32> {
+        if prefetchable && let Some(addr) = alloc_from(&mut self.mem32_pref, size as u64) {
+            return Some(addr as u32);
+        }
+
+        alloc_from(&mut self.mem32, size as u64).map(|addr| addr as u32)
+    }
+
+    fn alloc_from_64(&mut self, size: u64, prefetchable: bool) -> Option<u64> {
+        if prefetchable && let Some(addr) = alloc_from(&mut self.mem64_pref, size) {
+            return Some(addr);
+        }
+
+        alloc_from(&mut self.mem64, size)
+    }
+}
+
+fn alloc_from(allocator: &mut Option<AddressAllocator>, size: u64) -> Option<u64> {
+    allocator
+        .as_mut()?
+        .allocate(size, size, AllocPolicy::FirstMatch)
+        .ok()
+        .map(|range| range.start())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn memory64_falls_back_to_shared_memory32_window() {
+        let mut allocator = SimpleBarAllocator::default();
+        allocator
+            .set_mem32(
+                PciMem32 {
+                    address: 0x1000_0000,
+                    size: 0x2000,
+                },
+                false,
+            )
+            .unwrap();
+
+        assert_eq!(allocator.alloc_memory64(0x1000, false), Some(0x1000_0000));
+        assert_eq!(allocator.alloc_memory32(0x1000, false), Some(0x1000_1000));
+    }
+
+    #[test]
+    fn memory64_prefers_native_memory64_window() {
+        let mut allocator = SimpleBarAllocator::default();
+        allocator
+            .set_mem32(
+                PciMem32 {
+                    address: 0x1000_0000,
+                    size: 0x2000,
+                },
+                false,
+            )
+            .unwrap();
+        allocator
+            .set_mem64(
+                PciMem64 {
+                    address: 0x8_0000_0000,
+                    size: 0x2000,
+                },
+                false,
+            )
+            .unwrap();
+
+        assert_eq!(allocator.alloc_memory64(0x1000, false), Some(0x8_0000_0000));
+        assert_eq!(allocator.alloc_memory32(0x1000, false), Some(0x1000_0000));
     }
 }

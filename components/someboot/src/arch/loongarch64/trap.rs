@@ -6,8 +6,9 @@ use loongArch64::register::{
 };
 
 use crate::{
-    arch::{addrspace::to_phys, context::TrapFrame, register::csr},
+    arch::{context::TrapFrame, register::csr},
     irq::IrqId,
+    mem::virt_to_phys,
 };
 
 /// LoongArch Exception Codes
@@ -141,17 +142,22 @@ unsafe extern "C" {
 }
 
 fn eentry_addr() -> usize {
-    __exception_vectors as *const () as usize
+    sym_running_addr!(__exception_vectors)
 }
 
 fn tlbrentry_addr() -> usize {
-    let addr = eentry_addr() + 80 * VECSIZE;
-    to_phys(addr)
+    virt_to_phys((eentry_addr() + 80 * VECSIZE) as *const u8)
 }
 
-pub fn per_cpu_trap_init(_is_primary: bool) {
+pub fn per_cpu_trap_init(is_primary: bool) {
     setup_vint_size();
-    configure_exception_vector();
+    configure_exception_vector(is_primary);
+}
+
+pub(crate) fn init_entries_for_secondary() {
+    setup_vint_size();
+    eentry::set_eentry(eentry_addr());
+    tlbrentry::set_tlbrentry(tlbrentry_addr());
 }
 
 fn setup_vint_size() {
@@ -160,32 +166,30 @@ fn setup_vint_size() {
 }
 
 /// 配置异常向量
-fn configure_exception_vector() {
+fn configure_exception_vector(verbose: bool) {
     let eentry_addr = eentry_addr();
-    println!("Setting EENTRY to {:#x}", eentry_addr);
+    if verbose {
+        println!("Setting EENTRY to {:#x}", eentry_addr);
+    }
     eentry::set_eentry(eentry_addr);
     let val = eentry::read().eentry();
-    println!("EENTRY set to {:#x}", val);
+    if verbose {
+        println!("EENTRY set to {:#x}", val);
+    }
 
     let tlbrentry_addr = tlbrentry_addr();
-    println!("Setting TLBRENTRY to {:#x}", tlbrentry_addr);
+    if verbose {
+        println!("Setting TLBRENTRY to {:#x}", tlbrentry_addr);
+    }
     tlbrentry::set_tlbrentry(tlbrentry_addr);
 }
 
 /// 处理向量中断
 fn do_vint(_tf: &mut TrapFrame) {
-    let mut estat = estat::read().is();
-
-    while estat != 0 {
-        let hwirq = estat.trailing_zeros() + 1;
-        estat &= !(1 << (hwirq - 1));
-
-        unsafe extern "Rust" {
-            fn _someboot_handle_irq(hwirq: usize);
-        }
-
-        unsafe { _someboot_handle_irq((hwirq - 1) as _) };
-    }
+    panic!(
+        "unexpected LoongArch interrupt in someboot before runtime trap setup: pending={:#x}",
+        estat::read().is()
+    );
 }
 
 /// Page Fault 处理函数 (普通 TLB 异常: TLBL, TLBS, TLBI, TLBM, TLBNR, TLBNX, TLBPE)
@@ -598,8 +602,7 @@ global_asm!(
     "handle_exc_79:", "b handle_reserved_exception",
 
     ".balign VECSIZE",
-    ".global handle_tlb_refill",
-    "handle_tlb_refill:",
+    ".Lsomeboot_handle_tlb_refill:",
     "
     csrwr   $t0, 0x8B  // LOONGARCH_CSR_TLBRSAV - 保存 $t0
     csrrd   $t0, 0x1b  // LA_CSR_PGD - 读取页表基址

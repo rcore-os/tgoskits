@@ -21,8 +21,8 @@ use ax_fs_vfs::{
     VfsDirEntry, VfsError, VfsNodeAttr, VfsNodeOps, VfsNodePerm, VfsNodeRef, VfsNodeType, VfsOps,
     VfsResult,
 };
+use ax_kspin::SpinNoIrq as Mutex;
 use axfatfs::{Dir, File, LossyOemCpConverter, NullTimeProvider, Read, Seek, SeekFrom, Write};
-use spin::Mutex;
 
 use crate::dev::{Disk, Partition};
 

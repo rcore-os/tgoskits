@@ -2,7 +2,7 @@
 name = "axvisor"
 authors = ["Keyang Hu <keyang.hu@qq.com>", "周睿 <zrufo747@outlook.com>"]
 edition.workspace = true
-version = "0.5.7"
+version = "0.5.12"
 description = "A lightweight type-1 hypervisor based on ArceOS"
 repository = "https://github.com/arceos-hypervisor/axvisor"
 homepage = "https://github.com/arceos-hypervisor/axvisor"
@@ -34,82 +34,58 @@ path = "xtask/src/main.rs"
 
 [features]
 default = []
-ept-level-4 = []
-fs = ["ax-std/fs"]
+ept-level-4 = ["axvm/4-level-ept"]
+fs = ["ax-std/fs", "axvm/host-fs"]
 vmx = ["axvm/vmx"]
 svm = ["axvm/svm"]
-sstc = ["riscv_vcpu/sstc"]
-dyn-plat = ["ax-std/plat-dyn", "dep:axplat-dyn"]
-rockchip-soc = ["dep:axplat-dyn", "axplat-dyn/rockchip-soc"]
-sdmmc = ["dep:axplat-dyn", "axplat-dyn/rockchip-sdhci"]
-rockchip-pm = ["dep:axplat-dyn", "axplat-dyn/rockchip-pm"]
-serial = ["dep:axplat-dyn", "axplat-dyn/serial"]
+sstc = ["axvm/sstc"]
+rockchip-soc = ["ax-driver/rockchip-soc"]
+rockchip-sdhci = ["ax-driver/rockchip-sdhci", "ax-driver/rockchip-soc"]
+rockchip-dwmmc = ["ax-driver/rockchip-dwmmc", "ax-driver/rockchip-soc"]
+phytium-mci = ["ax-driver/phytium-mci"]
+sdmmc = [
+    "ax-driver/rockchip-sdhci",
+    "ax-driver/rockchip-soc",
+    "ax-driver/phytium-mci",
+]
+rockchip-pm = ["ax-driver/rockchip-pm"]
+serial = []
+stack-protector = ["ax-std/stack-protector"]
 
-[target.'cfg(not(any(windows, unix)))'.dependencies]
-bitflags = "2.2"
-cfg-if = "1.0"
-ax-cpumask = { workspace = true }
-ax-kernel-guard = { workspace = true }
+[dependencies]
+spin = { workspace = true }
+
+[target.'cfg(any(not(any(windows, unix)), target_env = "musl"))'.dependencies]
 ax-kspin = { workspace = true }
-lazy_static = {version = "1.5", default-features = false, features = ["spin_no_std"]}
 ax-lazyinit = { workspace = true }
 log = "0.4"
-spin = "0.10"
-ax-timer-list = { workspace = true }
+byte-unit = { version = "5", default-features = false, features = ["byte"] }
+fdt-parser = "0.4"
 hashbrown = "0.14"
 
 # System dependent modules provided by ArceOS.
-ax-std = { workspace = true, features = ["paging", "irq", "multitask", "task-ext", "smp", "hv"] }
+ax-std = { workspace = true, features = ["ext-ld", "paging", "irq", "multitask", "task-ext", "smp", "hv"] }
 ax-hal = { workspace = true, features = ["paging", "irq", "smp", "hv", "axvisor-linker"] }
 # System dependent modules provided by ArceOS-Hypervisor (bare-metal only)
-axaddrspace = { workspace = true }
-axhvc = { workspace = true }
 # ax-runtime = { version = "=0.3.0-preview.1", features = ["alloc", "irq", "paging", "smp", "multitask"] }
-axvcpu = { workspace = true }
-axvm = { workspace = true }
-axdevice = { workspace = true }
-axdevice_base = { workspace = true }
-axvisor_api = { workspace = true }
+axvm = { workspace = true, default-features = false }
+axvmconfig = { workspace = true, default-features = false }
 # System independent crates provided by ArceOS
 ax-errno = { workspace = true }
-axklib = { workspace = true }
-# ax-cpu = { version = "0.3.0-preview.8", features = ["arm-el2"] }
-byte-unit = {version = "5", default-features = false, features = ["byte"]}
-ax-crate-interface = { workspace = true }
-extern-trait = "0.4"
-fdt-parser = "0.4"
 ax-memory-addr = { workspace = true }
-ax-page-table-entry = { workspace = true, features = ["arm-el2"] }
-ax-page-table-multiarch = { workspace = true }
-ax-percpu = { workspace = true, features = ["arm-el2", "non-zero-vma"] }
-rdif-intc.workspace = true
-rdrive.workspace = true
-axplat-dyn = { workspace = true, optional = true, default-features = false }
+ax-driver.workspace = true
 
-[target.'cfg(target_arch = "x86_64")'.dependencies]
-axplat-x86-qemu-q35 = { version = "0.4.7", path = "../../platform/x86-qemu-q35", default-features = false, features = ["reboot-on-system-off", "irq", "smp"] }
-ax-config = { workspace = true, features = ["plat-dyn"] }
-[target.'cfg(target_arch = "aarch64")'.dependencies]
-aarch64-cpu-ext = "0.1"
-arm-gic-driver = { workspace = true, features = ["rdif"] }
-
-[target.'cfg(target_arch = "loongarch64")'.dependencies]
-ax-plat-loongarch64-qemu-virt = { version = "0.5.9", path = "../../components/axplat_crates/platforms/axplat-loongarch64-qemu-virt", default-features = false, features = ["irq", "smp"] }
-[target.'cfg(target_arch = "riscv64")'.dependencies]
-axplat-riscv64-qemu-virt-hv = { workspace = true }
-riscv_vcpu = { workspace = true }
-riscv_vplic = { workspace = true }
 # xtask dependencies (only used on host platforms)
-[target.'cfg(any(windows, unix))'.dependencies]
+[target.'cfg(any(windows, all(unix, not(target_env = "musl"))))'.dependencies]
 anyhow.workspace = true
 axbuild = { workspace = true }
 clap = { version = "4.6", features = ["derive"] }
 tokio = { version = "1", features = ["full"] }
 
 [build-dependencies]
-ax-config = { workspace = true, features = ["plat-dyn"] }
+anyhow = "1.0"
 prettyplease = "0.2"
+proc-macro2 = "1.0"
 quote = "1.0"
 syn = "2.0"
 toml = "0.9"
-anyhow = "1.0"

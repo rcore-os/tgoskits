@@ -1,7 +1,11 @@
 use crate::response::ResponseType;
 
 /// Direction of the data phase that follows a command, if any.
+///
+/// Marked `#[non_exhaustive]`: bidirectional / control-stream variants may be
+/// added before 1.0.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum DataDirection {
     /// No data phase follows this command.
     None,

@@ -43,6 +43,8 @@ pub fn sys_setpgid(pid: Pid, pgid: Pid) -> AxResult<isize> {
     if pgid == 0 || pgid == proc.pid() {
         if let Some(pg) = proc.create_group() {
             register_process_group(&pg);
+        } else {
+            register_process_group(&proc.group());
         }
     } else {
         // POSIX: looking up a non-existent target pgid yields EPERM,

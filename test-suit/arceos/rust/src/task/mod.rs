@@ -1,0 +1,25 @@
+#[cfg(feature = "task-affinity")]
+pub mod affinity;
+#[cfg(feature = "task-ipi")]
+pub mod ipi;
+#[cfg(feature = "task-irq")]
+pub mod irq;
+#[cfg(feature = "task-parallel")]
+pub mod parallel;
+#[cfg(any(feature = "task-priority", feature = "sched-cfs", feature = "sched-rr"))]
+pub mod priority;
+#[cfg(feature = "task-sleep")]
+pub mod sleep;
+#[cfg(feature = "task-smp-online")]
+pub mod smp_online;
+#[cfg(feature = "task-stack-guard-page")]
+pub mod stack_guard_page;
+#[cfg(feature = "task-tls")]
+pub mod tls;
+#[cfg(feature = "task-wait-queue")]
+pub mod wait_queue;
+#[cfg(feature = "task-wait-queue-remote-wake")]
+pub mod wait_queue_remote_wake;
+#[cfg(feature = "task-yield")]
+#[path = "yield.rs"]
+pub mod yield_now;

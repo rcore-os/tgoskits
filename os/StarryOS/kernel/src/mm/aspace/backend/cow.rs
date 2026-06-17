@@ -7,12 +7,12 @@ use core::slice;
 
 use ax_errno::{AxError, AxResult};
 use ax_fs::FileBackend;
-use ax_hal::{
+use ax_kspin::SpinNoIrq;
+use ax_memory_addr::{MemoryAddr, PAGE_SIZE_4K, PhysAddr, VirtAddr, VirtAddrRange, align_down_4k};
+use ax_runtime::hal::{
     mem::phys_to_virt,
     paging::{MappingFlags, PageSize, PageTableCursor, PagingError},
 };
-use ax_kspin::SpinNoIrq;
-use ax_memory_addr::{MemoryAddr, PAGE_SIZE_4K, PhysAddr, VirtAddr, VirtAddrRange, align_down_4k};
 use ax_sync::Mutex;
 
 use super::{
@@ -144,6 +144,58 @@ impl CowBackend {
         Ok(())
     }
 
+    /// Fill a run of consecutive not-mapped FILE-backed pages with a SINGLE
+    /// `read_at` (readahead), then allocate + map each page. Returns the count.
+    ///
+    /// Equivalent to calling [`Self::alloc_new_at`] per page, but it collapses
+    /// the N per-page `read_at` calls (each a full FS-path traversal) into one
+    /// read of `N * page_size` bytes — the dominant cost when demand-paging a
+    /// large file mapping. Pages are page-aligned and consecutive in VA, hence
+    /// consecutive in file offset, so one linear read covers the whole run.
+    fn alloc_file_run(
+        &self,
+        run: &[VirtAddr],
+        flags: MappingFlags,
+        pt: &mut PageTableCursor,
+    ) -> AxResult<usize> {
+        let Some((file, file_vaddr_base, file_start, file_end)) = &self.file else {
+            // Caller guarantees file-backed; be defensive anyway.
+            for &addr in run {
+                self.alloc_new_at(addr, flags, pt)?;
+            }
+            return Ok(run.len());
+        };
+        let ps = self.size as usize;
+        let v0 = run[0];
+        // Non-page-aligned mapping head (vaddr < file_vaddr_base): the per-page
+        // path handles the intra-page write offset; fall back for correctness.
+        if v0.as_usize() < file_vaddr_base.as_usize() {
+            for &addr in run {
+                self.alloc_new_at(addr, flags, pt)?;
+            }
+            return Ok(run.len());
+        }
+        let n = run.len();
+        let total = n * ps;
+        let file_read_offset = file_start + (v0.as_usize() - file_vaddr_base.as_usize()) as u64;
+        let max_read = file_end
+            .map_or(u64::MAX, |end| end.saturating_sub(file_read_offset))
+            .min(total as u64) as usize;
+        // Zero-initialized: any bytes past EOF (a partial last page) stay zero,
+        // matching demand-zero semantics of `alloc_new_at` (alloc_new_frame(true)).
+        let mut buf = alloc::vec![0u8; total];
+        if max_read > 0 {
+            file.read_at(&mut &mut buf[..max_read], file_read_offset)?;
+        }
+        for (k, &addr) in run.iter().enumerate() {
+            let frame = self.alloc_new_frame(false)?;
+            let dst = unsafe { slice::from_raw_parts_mut(phys_to_virt(frame).as_mut_ptr(), ps) };
+            dst.copy_from_slice(&buf[k * ps..(k + 1) * ps]);
+            pt.map(addr, frame, self.size, flags)?;
+        }
+        Ok(n)
+    }
+
     fn handle_cow_fault(
         &self,
         vaddr: VirtAddr,
@@ -261,7 +313,17 @@ impl BackendOps for CowBackend {
         pt: &mut PageTableCursor,
     ) -> AxResult<(usize, Option<PopulateCallback>)> {
         let mut pages = 0;
-        for addr in pages_in(range, self.size)? {
+        // Walk the target pages, batching runs of consecutive not-yet-mapped
+        // FILE-backed pages into a single large `read_at` (Linux-style readahead).
+        // This is what makes loading a large `.so` (e.g. a 186 MB libLLVM ≈ 46K
+        // pages) take seconds instead of tens of minutes on StarryOS: without it,
+        // each 4 KiB page faulted one separate `read_at` through the whole
+        // axfs-ng → virtio-blk path. Anonymous and COW-fault pages keep the
+        // correct per-page path below.
+        let addrs: alloc::vec::Vec<VirtAddr> = pages_in(range, self.size)?.collect();
+        let mut i = 0;
+        while i < addrs.len() {
+            let addr = addrs[i];
             match pt.query(addr) {
                 Ok((paddr, page_flags, page_size)) => {
                     assert_eq!(self.size, page_size);
@@ -273,11 +335,25 @@ impl BackendOps for CowBackend {
                     } else if page_flags.contains(access_flags) {
                         pages += 1;
                     }
+                    i += 1;
                 }
                 // If the page is not mapped, try map it.
                 Err(PagingError::NotMapped) => {
-                    self.alloc_new_at(addr, flags, pt)?;
-                    pages += 1;
+                    if self.file.is_some() {
+                        // Extend the run over consecutive not-mapped pages, then
+                        // fill them with one batched read.
+                        let run_start = i;
+                        while i < addrs.len()
+                            && matches!(pt.query(addrs[i]), Err(PagingError::NotMapped))
+                        {
+                            i += 1;
+                        }
+                        pages += self.alloc_file_run(&addrs[run_start..i], flags, pt)?;
+                    } else {
+                        self.alloc_new_at(addr, flags, pt)?;
+                        pages += 1;
+                        i += 1;
+                    }
                 }
                 Err(_) => return Err(AxError::BadAddress),
             }

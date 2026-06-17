@@ -1,6 +1,6 @@
 # `ax-plat-loongarch64-qemu-virt`
 
-> 路径：`components/axplat_crates/platforms/axplat-loongarch64-qemu-virt`
+> 路径：`platforms/ax-plat-loongarch64-qemu-virt`
 > 类型：库 crate
 > 分层：组件层 / LoongArch64 板级平台包
 > 版本：`0.3.1-pre.6`
@@ -25,7 +25,7 @@
 
 - 向下依赖 `ax-cpu`、`loongArch64`、`uart_16550` 等架构/设备库。
 - 向上直接把 LoongArch QEMU virt 的全部最小平台能力暴露给 `axplat`。
-- 在仓库里既是 `ax-hal` 的 LoongArch 默认平台之一，也是 `hello-kernel`、`irq-kernel`、`smp-kernel` 的示例平台。
+- 在仓库里既是 `ax-hal` 的 LoongArch 默认平台之一。
 
 这意味着它不是“仅供样例演示”的平台包，而是当前 LoongArch 路径里的主力参考实现。
 
@@ -179,10 +179,7 @@ LoongArch QEMU virt 的中断模型在这个 crate 里被明确分层了：
 ### 主要消费者
 
 - `os/arceos/modules/axhal`：当前 LoongArch 默认平台路径之一。
-- `components/axplat_crates/examples/hello-kernel`
-- `components/axplat_crates/examples/irq-kernel`
-- `components/axplat_crates/examples/smp-kernel`
-- `os/arceos/examples/helloworld-myplat`
+- `apps/arceos/helloworld-myplat`
 
 ### 3.3 依赖关系示意
 
@@ -191,8 +188,8 @@ graph TD
     A[ax-cpu / loongArch64 / ax-page-table-entry / uart_16550] --> B[ax-plat-loongarch64-qemu-virt]
     C[axplat / ax-config-macros / ax-lazyinit / ax-kspin] --> B
     B --> D[ax-hal]
-    B --> E[hello-kernel / irq-kernel / smp-kernel]
-    B --> F[ax-helloworld-myplat]
+    B --> E[arceos-helloworld-myplat/系统级 smoke test]
+    B --> F[arceos-helloworld-myplat]
     D --> G[ArceOS]
 ```
 
@@ -231,8 +228,8 @@ ax-plat-loongarch64-qemu-virt = { workspace = true, features = ["irq", "smp", "r
 ### 测试覆盖
 
 - `ax-hal` 默认平台链路会持续编译和运行它。
-- `hello-kernel`、`irq-kernel`、`smp-kernel` 分别覆盖最小启动、中断和多核路径。
-- `ax-helloworld-myplat` 提供额外的直接平台验证入口。
+- `arceos-helloworld-myplat` 和系统级 smoke test 覆盖最小启动、中断和多核路径。
+- `arceos-helloworld-myplat` 提供额外的直接平台验证入口。
 
 ### 5.2 推荐测试矩阵
 

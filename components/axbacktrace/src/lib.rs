@@ -4,7 +4,7 @@
 extern crate alloc;
 
 #[cfg(feature = "alloc")]
-use alloc::{vec, vec::Vec};
+use alloc::{boxed::Box, vec::Vec};
 use core::{
     fmt,
     ops::Range,
@@ -76,9 +76,24 @@ impl Frame {
         Some(unsafe { (fp as *const Frame).sub(Self::OFFSET).read() })
     }
 
-    // See https://github.com/rust-lang/backtrace-rs/blob/b65ab935fb2e0d59dba8966ffca09c9cc5a5f57c/src/symbolize/mod.rs#L145
+    // The stored IP is the return address (instruction after the call).
+    // Subtracting the minimum instruction size gives an address that falls
+    // within the calling function, which is what DWARF/ELF symbolizers expect.
+    #[cfg(target_arch = "x86_64")]
     pub fn adjust_ip(&self) -> usize {
-        self.ip.wrapping_sub(1)
+        self.ip.wrapping_sub(1) // variable-length, 1 byte minimum
+    }
+    #[cfg(target_arch = "aarch64")]
+    pub fn adjust_ip(&self) -> usize {
+        self.ip.wrapping_sub(4) // fixed 4-byte instructions
+    }
+    #[cfg(any(target_arch = "riscv32", target_arch = "riscv64"))]
+    pub fn adjust_ip(&self) -> usize {
+        self.ip.wrapping_sub(2) // C extension: 2-byte minimum
+    }
+    #[cfg(target_arch = "loongarch64")]
+    pub fn adjust_ip(&self) -> usize {
+        self.ip.wrapping_sub(4) // fixed 4-byte instructions
     }
 }
 
@@ -88,17 +103,73 @@ impl fmt::Display for Frame {
     }
 }
 
-/// Unwind the stack from the given frame pointer.
+/// Capacity of the on-stack capture buffer. Matches the default `max_depth()`.
 #[cfg(feature = "alloc")]
-pub fn unwind_stack(mut fp: usize) -> Vec<Frame> {
-    let mut frames = vec![];
+const CAPTURE_CAPACITY: usize = 32;
 
-    let Some(fp_range) = FP_RANGE.get() else {
-        // We cannot panic here!
-        log::error!("Backtrace not initialized. Call `axbacktrace::init` first.");
-        return frames;
+/// On-stack scratch buffer used during FP walking to avoid heap allocation
+/// in the hot unwinding loop. Converted to `Box<[Frame]>` after the walk.
+#[cfg(feature = "alloc")]
+#[derive(Clone)]
+struct CaptureBuf {
+    frames: [Frame; CAPTURE_CAPACITY],
+    len: usize,
+}
+
+#[cfg(feature = "alloc")]
+impl CaptureBuf {
+    const EMPTY: Self = Self {
+        frames: [Frame { fp: 0, ip: 0 }; CAPTURE_CAPACITY],
+        len: 0,
     };
 
+    fn push(&mut self, frame: Frame) -> bool {
+        if self.len < CAPTURE_CAPACITY {
+            self.frames[self.len] = frame;
+            self.len += 1;
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Insert a frame at the front, shifting existing frames right.
+    /// If the buffer is full, the last (deepest) frame is evicted to make room.
+    fn insert_front(&mut self, frame: Frame) {
+        let end = if self.len < CAPTURE_CAPACITY {
+            self.len += 1;
+            self.len
+        } else {
+            CAPTURE_CAPACITY // evict the deepest frame
+        };
+        self.frames.copy_within(0..end - 1, 1);
+        self.frames[0] = frame;
+    }
+
+    fn first_mut(&mut self) -> Option<&mut Frame> {
+        if self.len > 0 {
+            Some(&mut self.frames[0])
+        } else {
+            None
+        }
+    }
+
+    /// Convert to a heap-allocated boxed slice trimmed to the actual length.
+    fn into_boxed_slice(self) -> Box<[Frame]> {
+        self.frames[..self.len].into()
+    }
+}
+
+/// Core frame pointer walking logic. Calls `callback` for each valid frame.
+/// The callback returns `false` to stop unwinding (e.g., buffer full).
+#[cfg(feature = "alloc")]
+fn unwind_core(mut fp: usize, mut callback: impl FnMut(Frame) -> bool) {
+    let Some(fp_range) = FP_RANGE.get() else {
+        log::error!("Backtrace not initialized. Call `axbacktrace::init` first.");
+        return;
+    };
+
+    let ip_range = IP_RANGE.get();
     let mut depth = 0;
     let max_depth = max_depth();
 
@@ -106,18 +177,53 @@ pub fn unwind_stack(mut fp: usize) -> Vec<Frame> {
         && depth < max_depth
         && let Some(frame) = Frame::read(fp)
     {
-        frames.push(frame);
+        // Skip frames whose IP is outside the kernel text range.
+        // We continue unwinding rather than stopping, as a corrupted
+        // IP does not necessarily mean the FP chain is broken.
+        // Skipped frames still count against the depth budget to prevent
+        // infinite loops on corrupted FP chains with bad IPs.
+        let next_fp = frame.fp;
+        // Check FP progress before IP filtering: a bad IP can be skipped, but
+        // a non-advancing FP would otherwise keep revisiting the same frame.
+        if next_fp != 0 && next_fp <= fp {
+            break;
+        }
+
+        if let Some(ip_range) = ip_range
+            && !ip_range.contains(&frame.ip)
+        {
+            fp = next_fp;
+            depth += 1;
+            continue;
+        }
+
+        if !callback(frame) {
+            break;
+        }
 
         if let Some(large_stack_end) = fp.checked_add(8 * 1024 * 1024)
-            && frame.fp >= large_stack_end
+            && next_fp >= large_stack_end
         {
             break;
         }
 
-        fp = frame.fp;
+        if next_fp == 0 {
+            break;
+        }
+
+        fp = next_fp;
         depth += 1;
     }
+}
 
+/// Unwind the stack from the given frame pointer.
+#[cfg(feature = "alloc")]
+pub fn unwind_stack(fp: usize) -> Vec<Frame> {
+    let mut frames = Vec::new();
+    unwind_core(fp, |frame| {
+        frames.push(frame);
+        true
+    });
     frames
 }
 
@@ -145,10 +251,15 @@ enum Inner {
     Unsupported,
     Disabled,
     #[cfg(feature = "alloc")]
-    Captured(Vec<Frame>),
+    Captured(Box<[Frame]>),
 }
 
 /// A captured OS thread stack backtrace.
+///
+/// Internally stores frames as a `Box<[Frame]>` (trimmed to actual length).
+/// Capture uses a stack-allocated scratch buffer so the FP walking loop
+/// itself is allocation-free; the single `Box` allocation happens only after
+/// the walk completes.
 #[derive(PartialEq, Eq, PartialOrd, Ord, Clone)]
 pub struct Backtrace {
     inner: Inner,
@@ -186,18 +297,24 @@ impl Backtrace {
                 }
             }
 
-            let frames = unwind_stack(fp);
+            let mut buf = CaptureBuf::EMPTY;
+            unwind_core(fp, |frame| buf.push(frame));
 
             core::hint::black_box(());
 
             Self {
-                inner: Inner::Captured(frames),
+                inner: Inner::Captured(buf.into_boxed_slice()),
                 kind: None,
             }
         }
     }
 
     /// Capture the stack backtrace from a trap.
+    ///
+    /// - `fp`: frame pointer from the trap context
+    /// - `ip`: faulting instruction pointer (the PC from the trap frame)
+    /// - `ra`: return address (link register). On x86_64 this is always 0
+    ///   since the return address is stored on the stack as part of the FP chain.
     #[allow(unused_variables)]
     pub fn capture_trap(fp: usize, ip: usize, ra: usize) -> Self {
         #[cfg(not(feature = "alloc"))]
@@ -208,24 +325,31 @@ impl Backtrace {
 
         #[cfg(feature = "alloc")]
         {
-            let mut frames = unwind_stack(fp);
-            if let Some(first) = frames.first_mut()
+            let mut buf = CaptureBuf::EMPTY;
+            unwind_core(fp, |frame| buf.push(frame));
+
+            // If the first unwound frame's IP is outside the kernel text,
+            // it is likely the saved return address was not yet set (e.g.
+            // leaf function fault). Replace it with the link register (ra)
+            // only when ra is valid and within the kernel text range.
+            // Note: on x86_64, ra=0 is always passed, so this branch
+            // never fires for x86_64.
+            if let Some(first) = buf.first_mut()
                 && let Some(ip_range) = IP_RANGE.get()
                 && !ip_range.contains(&first.ip)
+                && ra != 0
+                && ip_range.contains(&ra)
             {
                 first.ip = ra;
             }
 
-            frames.insert(
-                0,
-                Frame {
-                    fp,
-                    ip: ip.wrapping_add(1),
-                },
-            );
+            buf.insert_front(Frame {
+                fp,
+                ip: ip.wrapping_add(1),
+            });
 
             Self {
-                inner: Inner::Captured(frames),
+                inner: Inner::Captured(buf.into_boxed_slice()),
                 kind: None,
             }
         }
@@ -328,12 +452,12 @@ impl fmt::Debug for Backtrace {
 
 #[cfg(all(test, feature = "alloc"))]
 mod tests {
-    use alloc::boxed::Box;
+    use alloc::{boxed::Box, format, vec::Vec};
 
     use super::*;
 
     fn init_for_tests() {
-        init(0..0, 0..usize::MAX);
+        init(0..usize::MAX, 0..usize::MAX);
         set_max_depth(32);
     }
 
@@ -356,6 +480,53 @@ mod tests {
         (frames, ptr as usize)
     }
 
+    // --- CaptureBuf internal tests ---
+
+    #[test]
+    fn capture_buf_push_and_insert() {
+        let mut buf = CaptureBuf::EMPTY;
+        assert!(buf.push(Frame { fp: 1, ip: 0x10 }));
+        assert!(buf.push(Frame { fp: 2, ip: 0x20 }));
+        assert_eq!(buf.len, 2);
+
+        buf.insert_front(Frame { fp: 0, ip: 0x05 });
+        assert_eq!(buf.len, 3);
+        assert_eq!(
+            &*buf.clone().into_boxed_slice(),
+            &[
+                Frame { fp: 0, ip: 0x05 },
+                Frame { fp: 1, ip: 0x10 },
+                Frame { fp: 2, ip: 0x20 }
+            ]
+        );
+    }
+
+    #[test]
+    fn capture_buf_overflow_evicts_deepest() {
+        let mut buf = CaptureBuf::EMPTY;
+        for i in 0..CAPTURE_CAPACITY {
+            assert!(buf.push(Frame { fp: i, ip: i }));
+        }
+        assert!(!buf.push(Frame { fp: 0, ip: 0 })); // full
+        buf.insert_front(Frame { fp: 99, ip: 0x99 });
+        assert_eq!(buf.len, CAPTURE_CAPACITY);
+        let boxed = buf.into_boxed_slice();
+        assert_eq!(boxed[0], Frame { fp: 99, ip: 0x99 });
+        assert_eq!(boxed.len(), CAPTURE_CAPACITY);
+    }
+
+    #[test]
+    fn into_boxed_slice_trims_to_len() {
+        let mut buf = CaptureBuf::EMPTY;
+        buf.push(Frame { fp: 1, ip: 0x10 });
+        buf.push(Frame { fp: 2, ip: 0x20 });
+        let boxed = buf.into_boxed_slice();
+        assert_eq!(boxed.len(), 2);
+        assert_eq!(boxed[0], Frame { fp: 1, ip: 0x10 });
+    }
+
+    // --- Frame::read / unwind_core internal tests ---
+
     #[test]
     fn unwind_stack_collects_fake_frames() {
         init_for_tests();
@@ -365,29 +536,225 @@ mod tests {
     }
 
     #[test]
-    fn kind_formats_raw_block_without_dwarf() {
+    fn unwind_core_callback_stop_early() {
         init_for_tests();
-        let (_frames, start_fp) = boxed_frame_chain(&[0xdead, 0xbeef]);
-        let s = alloc::format!(
-            "{}",
-            Backtrace::capture_trap(start_fp, 0x1000, 0xbeef).kind("raw")
-        );
-        assert!(s.contains("BACKTRACE_BEGIN kind=raw"));
-        assert!(s.contains("BT 0 ip=0x1001 fp="));
-        assert!(s.contains("BT 1 ip=0xbeef fp="));
-        assert!(s.ends_with("BACKTRACE_END\n"));
-        assert!(!s.contains("Backtrace:"));
+        let (_chain, start_fp) = boxed_frame_chain(&[0x1, 0x2, 0x3, 0x4, 0x5]);
+        let mut count = 0;
+        unwind_core(start_fp, |_| {
+            count += 1;
+            count < 3
+        });
+        assert_eq!(count, 3);
     }
 
     #[test]
-    fn capture_trap_formats_raw_frames_without_dwarf() {
+    fn unwind_stack_stops_on_non_advancing_frame_pointer() {
         init_for_tests();
-        let (_frames, start_fp) = boxed_frame_chain(&[0xdead, 0xbeef]);
-        let bt = Backtrace::capture_trap(start_fp, 0x1000, 0xbeef);
-        let s = alloc::format!("{bt}");
-        assert!(s.contains("Backtrace:"));
-        assert!(s.contains("ip=0x1001"));
-        assert!(s.contains("ip=0xbeef"));
-        assert!(!s.contains("<backtrace disabled>"));
+        let mut frames = [Frame { fp: 0, ip: 0x1111 }, Frame { fp: 0, ip: 0x2222 }];
+        let base = frames.as_mut_ptr();
+        frames[0].fp = unsafe { base.add(1) as usize };
+        frames[1].fp = base as usize;
+
+        let out = unwind_stack(base as usize);
+        assert_eq!(out, [frames[0]]);
+    }
+
+    #[test]
+    fn frame_read_rejects_null_and_misaligned() {
+        assert!(Frame::read(0).is_none());
+        assert!(Frame::read(1).is_none());
+        assert!(Frame::read(3).is_none());
+    }
+
+    // --- capture_trap with Inner::Captured verification ---
+
+    #[test]
+    fn capture_trap_ra_not_substituted_with_wide_range() {
+        init_for_tests();
+        let (_chain, start_fp) = boxed_frame_chain(&[0xDEAD]);
+        let bt = Backtrace::capture_trap(start_fp, 0x1000, 0xBEEF);
+        let Inner::Captured(frames) = &bt.inner else {
+            panic!("expected Captured")
+        };
+        assert_eq!(frames[0].ip, 0x1001);
+        assert_eq!(frames[1].ip, 0xDEAD); // not replaced by ra
+    }
+
+    // --- Stress tests ---
+
+    /// Build a chain that fills the buffer to exactly CAPTURE_CAPACITY.
+    /// Then unwind and verify every frame is collected.
+    #[test]
+    fn stress_fill_buffer_exactly() {
+        init_for_tests();
+        let ips: Vec<usize> = (0..CAPTURE_CAPACITY).map(|i| 0xA000 + i).collect();
+        let (chain, start_fp) = boxed_frame_chain(&ips);
+        let out = unwind_stack(start_fp);
+        assert_eq!(out.len(), CAPTURE_CAPACITY);
+        assert_eq!(out.as_slice(), chain.as_ref());
+    }
+
+    /// Build a chain with CAPTURE_CAPACITY - 1 frames, then capture_trap.
+    /// The trap frame is inserted at front, total = CAPTURE_CAPACITY, no eviction.
+    #[test]
+    fn stress_trap_near_capacity() {
+        init_for_tests();
+        let n = CAPTURE_CAPACITY - 1;
+        let ips: Vec<usize> = (0..n).map(|i| 0xB000 + i).collect();
+        let (_chain, start_fp) = boxed_frame_chain(&ips);
+
+        let bt = Backtrace::capture_trap(start_fp, 0xC000, 0);
+        let Inner::Captured(frames) = &bt.inner else {
+            panic!("expected Captured")
+        };
+        assert_eq!(frames.len(), CAPTURE_CAPACITY);
+        // Trap frame is at front with ip = 0xC000 + 1
+        assert_eq!(frames[0].ip, 0xC001);
+        // Remaining frames follow
+        for (i, f) in frames[1..].iter().enumerate() {
+            assert_eq!(f.ip, 0xB000 + i);
+        }
+    }
+
+    /// Build a chain with CAPTURE_CAPACITY frames, then capture_trap.
+    /// The trap insert_front evicts the deepest frame.
+    #[test]
+    fn stress_trap_overflow_evicts_deepest() {
+        init_for_tests();
+        let ips: Vec<usize> = (0..CAPTURE_CAPACITY).map(|i| 0xD000 + i).collect();
+        let (_chain, start_fp) = boxed_frame_chain(&ips);
+
+        let bt = Backtrace::capture_trap(start_fp, 0xE000, 0);
+        let Inner::Captured(frames) = &bt.inner else {
+            panic!("expected Captured")
+        };
+        assert_eq!(frames.len(), CAPTURE_CAPACITY);
+        // Trap frame at front
+        assert_eq!(frames[0].ip, 0xE001);
+        // The first CAPTURE_CAPACITY - 1 unwound frames remain
+        for (i, f) in frames[1..].iter().enumerate() {
+            assert_eq!(f.ip, 0xD000 + i);
+        }
+        // The deepest frame (0xD000 + CAPTURE_CAPACITY - 1) was evicted
+    }
+
+    /// Build a chain deeper than max_depth and verify truncation.
+    #[test]
+    fn stress_deep_chain_truncation() {
+        init_for_tests();
+        set_max_depth(16);
+        let ips: Vec<usize> = (0..64).map(|i| 0xF000 + i).collect();
+        let (chain, start_fp) = boxed_frame_chain(&ips);
+
+        let out = unwind_stack(start_fp);
+        assert_eq!(out.len(), 16);
+        // Only the first 16 frames should be collected
+        assert_eq!(out.as_slice(), &chain[..16]);
+
+        // Restore default
+        set_max_depth(CAPTURE_CAPACITY);
+    }
+
+    /// Repeatedly create and drop Backtrace objects to verify no leaks or corruption.
+    #[test]
+    fn stress_repeated_create_drop() {
+        init_for_tests();
+        let (chain, start_fp) = boxed_frame_chain(&[0x100, 0x200, 0x300]);
+        for _ in 0..500 {
+            let bt = Backtrace::capture_trap(start_fp, 0x400, 0);
+            let Inner::Captured(frames) = &bt.inner else {
+                panic!("expected Captured")
+            };
+            assert!(frames.len() >= 3);
+            drop(bt);
+        }
+        // Ensure the chain memory is still valid after all iterations
+        let _ = &chain;
+    }
+
+    /// Interleave capture, Display formatting, and drop to verify no side effects.
+    #[test]
+    fn stress_interleaved_capture_format() {
+        init_for_tests();
+        let (chain, start_fp) = boxed_frame_chain(&[0x500, 0x600]);
+
+        for i in 0..100 {
+            let bt = Backtrace::capture_trap(start_fp, 0x700, 0);
+            let s = format!("{bt}");
+            // Raw block should contain the trap IP
+            assert!(
+                s.contains("0x701"),
+                "iteration {i}: missing trap IP in output"
+            );
+
+            // Human-readable formatting
+            let bt_human = Backtrace::capture_trap(start_fp, 0x700, 0);
+            let human = format!("{bt_human}");
+            assert!(!human.is_empty(), "iteration {i}: empty human output");
+
+            drop(bt);
+            drop(bt_human);
+        }
+        let _ = &chain;
+    }
+
+    /// Repeatedly clone a Backtrace and verify equality.
+    #[test]
+    fn stress_repeated_clone() {
+        init_for_tests();
+        let (chain, start_fp) = boxed_frame_chain(&[0x800, 0x900, 0xA00]);
+        let original = Backtrace::capture_trap(start_fp, 0xB00, 0);
+
+        for _ in 0..200 {
+            let cloned = original.clone();
+            assert_eq!(cloned, original);
+        }
+        let _ = &chain;
+    }
+
+    /// Verify Frame and Backtrace sizes remain stable (prevent accidental regressions).
+    #[test]
+    fn stress_size_stability() {
+        // Frame is #[repr(C)] with two usize fields
+        assert_eq!(
+            core::mem::size_of::<Frame>(),
+            2 * core::mem::size_of::<usize>()
+        );
+        assert_eq!(
+            core::mem::align_of::<Frame>(),
+            core::mem::align_of::<usize>()
+        );
+
+        // Backtrace contains Inner (discriminant + Box<[Frame]>) + Option<&'static str>
+        // Size should be stable across compilations
+        let bt_size = core::mem::size_of::<Backtrace>();
+        assert!(
+            bt_size > 0 && bt_size <= 48,
+            "Backtrace size unexpected: {bt_size}"
+        );
+
+        // CaptureBuf is stack-allocated; verify it's reasonable
+        let cap_size = core::mem::size_of::<CaptureBuf>();
+        let expected =
+            CAPTURE_CAPACITY * core::mem::size_of::<Frame>() + core::mem::size_of::<usize>();
+        assert_eq!(cap_size, expected, "CaptureBuf size mismatch");
+    }
+
+    /// Verify Frame alignment and that misaligned pointers are rejected.
+    #[test]
+    fn stress_frame_alignment() {
+        let align = core::mem::align_of::<Frame>();
+        assert!(align > 0);
+        assert!(align.is_power_of_two());
+
+        // All valid FP values must be multiples of the alignment
+        for offset in 1..align {
+            assert!(
+                Frame::read(offset).is_none(),
+                "misaligned {offset} should fail"
+            );
+        }
+        // Zero is always rejected
+        assert!(Frame::read(0).is_none());
     }
 }

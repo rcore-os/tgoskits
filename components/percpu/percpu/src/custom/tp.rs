@@ -6,17 +6,13 @@ pub fn read_percpu_reg() -> usize {
     unsafe {
         cfg_if::cfg_if! {
             if #[cfg(target_arch = "x86_64")] {
-                #[cfg(target_os = "linux")]
+                #[cfg(feature = "host-test")]
                 {
                     tp = GS;
                 }
-                #[cfg(target_os = "none")]
+                #[cfg(not(feature = "host-test"))]
                 {
                     tp = x86::msr::rdmsr(x86::msr::IA32_GS_BASE) as usize
-                }
-                #[cfg(all(not(target_os = "linux"), not(target_os = "none")))]
-                {
-                    unimplemented!()
                 }
             } else if #[cfg(any(target_arch = "riscv32", target_arch = "riscv64"))] {
                 core::arch::asm!("mv {}, gp", out(reg) tp)
@@ -45,17 +41,13 @@ pub unsafe fn write_percpu_reg(tp: usize) {
     unsafe {
         cfg_if::cfg_if! {
             if #[cfg(target_arch = "x86_64")] {
-                #[cfg(target_os = "linux")]
+                #[cfg(feature = "host-test")]
                 {
                     GS = tp;
                 }
-                #[cfg(target_os = "none")]
+                #[cfg(not(feature = "host-test"))]
                 {
                     x86::msr::wrmsr(x86::msr::IA32_GS_BASE, tp as u64);
-                }
-                #[cfg(all(not(target_os = "linux"), not(target_os = "none")))]
-                {
-                    unimplemented!()
                 }
                 SELF_PTR.write_current_raw(tp);
             } else if #[cfg(any(target_arch = "riscv32", target_arch = "riscv64"))] {
@@ -81,12 +73,12 @@ use crate as ax_percpu;
 #[ax_percpu_macros::def_percpu]
 static SELF_PTR: usize = 0;
 
-#[cfg(target_os = "linux")]
+#[cfg(feature = "host-test")]
 static mut GS: usize = 0;
 
 /// .
 /// # Safety
-#[cfg(target_os = "linux")]
+#[cfg(feature = "host-test")]
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn __get_gs() -> usize {
     unsafe { GS }

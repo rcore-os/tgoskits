@@ -5,24 +5,9 @@ use ax_hal::time::wall_time;
 
 use crate::{ctypes, imp::fd_ops::get_file_like};
 
-#[cfg(feature = "use-hermit-types")]
-const POLLIN_EVENT: i16 = ctypes::POLLIN;
-#[cfg(not(feature = "use-hermit-types"))]
 const POLLIN_EVENT: i16 = ctypes::POLLIN as i16;
-
-#[cfg(feature = "use-hermit-types")]
-const POLLOUT_EVENT: i16 = ctypes::POLLOUT;
-#[cfg(not(feature = "use-hermit-types"))]
 const POLLOUT_EVENT: i16 = ctypes::POLLOUT as i16;
-
-#[cfg(feature = "use-hermit-types")]
-const POLLERR_EVENT: i16 = ctypes::POLLERR;
-#[cfg(not(feature = "use-hermit-types"))]
 const POLLERR_EVENT: i16 = ctypes::POLLERR as i16;
-
-#[cfg(feature = "use-hermit-types")]
-const POLLNVAL_EVENT: i16 = ctypes::POLLNVAL;
-#[cfg(not(feature = "use-hermit-types"))]
 const POLLNVAL_EVENT: i16 = ctypes::POLLNVAL as i16;
 
 /// Poll file descriptors for I/O readiness (POSIX `poll` semantics).

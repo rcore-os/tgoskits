@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.5](https://github.com/rcore-os/tgoskits/compare/rockchip-pm-v0.4.4...rockchip-pm-v0.4.5) - 2026-06-12
+
+### Other
+
+- updated the following local packages: rdif-base
+
+## [0.4.4](https://github.com/rcore-os/tgoskits/compare/rockchip-pm-v0.4.3...rockchip-pm-v0.4.4) - 2026-06-09
+
+### Other
+
+- updated the following local packages: rdif-base
+
 ## [0.4.3](https://github.com/rcore-os/tgoskits/compare/rockchip-pm-v0.4.2...rockchip-pm-v0.4.3) - 2026-05-15
 
 ### Added

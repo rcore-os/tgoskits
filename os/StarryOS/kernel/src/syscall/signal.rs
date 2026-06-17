@@ -1,14 +1,14 @@
 use core::{future::poll_fn, task::Poll};
 
 use ax_errno::{AxError, AxResult, LinuxError};
-use ax_hal::uspace::UserContext;
+use ax_runtime::hal::cpu::uspace::UserContext;
 use ax_task::{
     current,
     future::{self, block_on},
 };
 use linux_raw_sys::general::{
-    MINSIGSTKSZ, SI_TKILL, SI_USER, SIG_BLOCK, SIG_SETMASK, SIG_UNBLOCK, SS_DISABLE,
-    kernel_sigaction, siginfo, timespec,
+    MINSIGSTKSZ, SI_TKILL, SI_USER, SIG_BLOCK, SIG_SETMASK, SIG_UNBLOCK, SS_DISABLE, SS_FLAG_BITS,
+    SS_ONSTACK, kernel_sigaction, siginfo, timespec,
 };
 use starry_process::Pid;
 use starry_signal::{SignalInfo, SignalSet, SignalStack, Signo};
@@ -23,11 +23,9 @@ use crate::{
 };
 
 pub(crate) fn check_sigset_size(size: usize) -> AxResult<()> {
-    // Accept the kernel sigset size and any larger libc/ABI sigset size,
-    // since the kernel only uses the low `size_of::<SignalSet>()` bytes
-    // (glibc uses 8, musl uses 16). Keep accepting 0 for callers that use
-    // it to mean "no mask".
-    if size != 0 && size < size_of::<SignalSet>() {
+    // Align with Linux raw syscall semantics (for ABI param 'sigmask'): when sigsetsize is checked,
+    // it must exactly match the kernel SignalSet size (8 bytes).
+    if size != size_of::<SignalSet>() {
         return Err(AxError::InvalidInput);
     }
     Ok(())
@@ -168,7 +166,24 @@ pub fn sys_kill(pid: i32, signo: u32) -> AxResult<isize> {
     match pid {
         1.. => {
             check_kill_permission(pid as _)?;
-            send_signal_to_process(pid as _, sig)?;
+            if let Some(sig) = sig {
+                let curr = current();
+                let thread = curr.as_thread();
+                let signo = sig.signo();
+                if pid as Pid == thread.proc_data.proc.pid() && !thread.signal.signal_blocked(signo)
+                {
+                    // A process-directed signal may be delivered to any
+                    // unblocked thread. Prefer the current thread for
+                    // self-signals so `kill(getpid(), SIGSTOP)` cannot return
+                    // to userspace and race into the next syscall before this
+                    // thread observes the stop.
+                    send_signal_to_thread(None, curr.id().as_u64() as Pid, Some(sig))?;
+                } else {
+                    send_signal_to_process(pid as _, Some(sig))?;
+                }
+            } else {
+                send_signal_to_process(pid as _, None)?;
+            }
         }
         0 => {
             let pgid = current().as_thread().proc_data.proc.group().pgid();
@@ -366,7 +381,13 @@ pub fn sys_sigaltstack(ss: *const SignalStack, old_ss: *mut SignalStack) -> AxRe
 
     if let Some(ss) = ss.nullable() {
         let ss = unsafe { ss.vm_read_uninit()?.assume_init() };
-        if ss.flags != SS_DISABLE && ss.size < MINSIGSTKSZ as usize {
+        if sig.stack_active() {
+            return Err(AxError::OperationNotPermitted);
+        }
+        if ss.flags & !(SS_DISABLE | SS_ONSTACK | SS_FLAG_BITS) != 0 {
+            return Err(AxError::InvalidInput);
+        }
+        if ss.flags & SS_DISABLE == 0 && ss.size < MINSIGSTKSZ as usize {
             return Err(AxError::NoMemory);
         }
         sig.set_stack(ss);

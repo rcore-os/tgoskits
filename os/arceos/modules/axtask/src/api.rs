@@ -12,7 +12,7 @@ use ax_memory_addr::VirtAddr;
 
 #[cfg(feature = "lockdep")]
 pub use crate::lockdep::{HeldLock, HeldLockStack};
-pub(crate) use crate::run_queue::{current_run_queue, select_run_queue};
+pub(crate) use crate::run_queue::{current_run_queue, select_run_queue, select_wake_run_queue};
 #[cfg_attr(doc, doc(cfg(all(feature = "multitask", feature = "task-ext"))))]
 #[cfg(feature = "task-ext")]
 pub use crate::task::{AxTaskExt, TaskExt};
@@ -110,6 +110,12 @@ pub fn current_may_uninit() -> Option<CurrentTask> {
     CurrentTask::try_get()
 }
 
+/// Reports whether the given fault address hits the current task's stack guard page.
+#[cfg(feature = "stack-guard-page")]
+pub fn diagnose_current_stack_guard_page_fault(fault_addr: VirtAddr) -> bool {
+    current_may_uninit().is_some_and(|curr| curr.diagnose_stack_guard_page_fault(fault_addr))
+}
+
 /// Gets the current task.
 ///
 /// # Panics
@@ -135,9 +141,9 @@ pub fn init_scheduler() {
 }
 
 pub(crate) fn cpu_mask_full() -> AxCpuMask {
-    use spin::Lazy;
+    use spin::LazyLock;
 
-    static CPU_MASK_FULL: Lazy<AxCpuMask> = Lazy::new(|| {
+    static CPU_MASK_FULL: LazyLock<AxCpuMask> = LazyLock::new(|| {
         let cpu_num = ax_hal::cpu_num();
         let mut cpumask = AxCpuMask::new();
         for cpu_id in 0..cpu_num {
@@ -160,11 +166,32 @@ pub fn init_scheduler_secondary(stack_ptr: VirtAddr, stack_size: usize) {
 #[cfg(feature = "irq")]
 #[cfg_attr(doc, doc(cfg(feature = "irq")))]
 pub fn on_timer_tick() {
+    on_timer_irq(true);
+}
+
+/// Handles a hardware timer interrupt.
+#[cfg(feature = "irq")]
+#[cfg_attr(doc, doc(cfg(feature = "irq")))]
+pub fn on_timer_irq(scheduler_tick: bool) {
     use ax_kernel_guard::NoOp;
-    crate::timers::check_events();
-    // Since irq and preemption are both disabled here,
-    // we can get current run queue with the default `ax_kernel_guard::NoOp`.
-    current_run_queue::<NoOp>().scheduler_timer_tick();
+    crate::timers::check_events(scheduler_tick);
+    if scheduler_tick {
+        // Since irq and preemption are both disabled here,
+        // we can get current run queue with the default `ax_kernel_guard::NoOp`.
+        current_run_queue::<NoOp>().scheduler_timer_tick();
+    }
+}
+
+#[cfg(feature = "irq")]
+#[doc(hidden)]
+pub fn next_timer_deadline_nanos() -> Option<u64> {
+    crate::timers::next_deadline_nanos()
+}
+
+#[cfg(feature = "irq")]
+#[doc(hidden)]
+pub fn note_programmed_timer_deadline_nanos(deadline_nanos: u64) {
+    crate::timers::note_programmed_deadline_nanos(deadline_nanos);
 }
 
 /// Adds the given task to the run queue, returns the task reference.
@@ -225,6 +252,7 @@ pub fn set_priority(prio: isize) -> bool {
 /// Returns `true` if the affinity is set successfully.
 ///
 /// TODO: support set the affinity for other tasks.
+#[track_caller]
 pub fn set_current_affinity(cpumask: AxCpuMask) -> bool {
     might_sleep();
 
@@ -249,11 +277,6 @@ pub fn set_current_affinity(cpumask: AxCpuMask) -> bool {
 
             // Migrate the current task to the correct CPU using the migration task.
             current_run_queue::<NoPreemptIrqSave>().migrate_current(migration_task);
-
-            assert!(
-                cpumask.get(ax_hal::percpu::this_cpu_id()),
-                "Migration failed"
-            );
         }
         true
     }
@@ -281,13 +304,16 @@ pub(crate) fn yield_now_unchecked() {
 /// Current task is going to sleep for the given duration.
 ///
 /// If the feature `irq` is not enabled, it uses busy-wait instead.
+#[track_caller]
 pub fn sleep(dur: core::time::Duration) {
-    sleep_until(ax_hal::time::wall_time() + dur);
+    sleep_until(ax_hal::time::monotonic_time() + dur);
 }
 
 /// Current task is going to sleep, it will be woken up at the given deadline.
+/// The deadline is measured against the monotonic clock.
 ///
 /// If the feature `irq` is not enabled, it uses busy-wait instead.
+#[track_caller]
 pub fn sleep_until(deadline: ax_hal::time::TimeValue) {
     #[cfg(feature = "irq")]
     might_sleep();
@@ -298,6 +324,7 @@ pub fn sleep_until(deadline: ax_hal::time::TimeValue) {
 }
 
 /// Exits the current task.
+#[track_caller]
 pub fn exit(exit_code: i32) -> ! {
     might_sleep();
 
@@ -313,6 +340,10 @@ fn current_preempt_count() -> usize {
     {
         0
     }
+}
+
+fn current_task_id() -> Option<u64> {
+    current_may_uninit().map(|curr| curr.id().as_u64())
 }
 
 /// Returns whether the current context is atomic, meaning sleeping or
@@ -342,10 +373,45 @@ pub fn might_sleep() {
     if in_atomic_context() {
         panic!(
             "sleeping or rescheduling is not allowed in atomic context: irq_enabled={}, \
-             preempt_count={}",
+             preempt_count={}, cpu_id={}, task_id={:?}",
             ax_hal::asm::irqs_enabled(),
-            current_preempt_count()
+            current_preempt_count(),
+            ax_hal::percpu::this_cpu_id(),
+            current_task_id()
         );
+    }
+}
+
+/// Wakes a task that may be sleeping, ensuring it can observe a newly-
+/// delivered signal.
+///
+/// `TaskInner::interrupt()` sets the task's interrupt flag and fires the
+/// interrupt waker, which unblocks the task via `AxWaker::wake_by_ref`. This
+/// covers the common case where the task is blocked in `block_on` with
+/// `interruptible` wrapping. For tasks blocked on raw `WaitQueue` objects
+/// (which do not register an interrupt waker), this function provides an
+/// escape hatch by additionally force-unblocking when the task appears to
+/// be parked on a wait queue.
+pub fn wake_task(task: &AxTaskRef) {
+    // Fire the interrupt: sets the flag and wakes the interrupt_waker.
+    // For tasks in block_on (the common case), AxWaker::wake_by_ref already
+    // unblocks the task via the registered waker callback.
+    task.interrupt();
+
+    // For tasks blocked on a raw WaitQueue, interrupt_waker.wake() is a
+    // no-op (no waker registered). Force-unblock by transitioning the task
+    // from Blocked to Ready and placing it on the run queue of its
+    // affinity CPU.
+    //
+    // SAFETY: unblock_task uses a CAS on the task state (Blocked → Ready),
+    // so if the task is concurrently being woken by its WaitQueue, the CAS
+    // fails and this is a harmless no-op. The stale entry in the WaitQueue
+    // is benign: when WaitQueue::notify_one eventually pops it, the
+    // subsequent unblock_task call will again CAS-fail (task already Ready
+    // or Running).
+    if task.state() == TaskState::Blocked {
+        let mut rq = select_run_queue::<NoPreemptIrqSave>(task);
+        rq.unblock_task(task.clone(), false);
     }
 }
 
@@ -357,7 +423,7 @@ pub fn run_idle() -> ! {
     loop {
         yield_now_unchecked();
         trace!("idle task: waiting for IRQs...");
-        #[cfg(feature = "irq")]
+        #[cfg(all(feature = "irq", not(feature = "host-test")))]
         ax_hal::asm::wait_for_irqs();
     }
 }

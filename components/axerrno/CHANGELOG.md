@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0](https://github.com/rcore-os/tgoskits/compare/ax-errno-v0.5.0...ax-errno-v0.6.0) - 2026-05-22
+
+### Fixed
+
+- *(starry-kernel)* open/openat deep — 6 类跨子系统改造 (stacked on #719) ([#720](https://github.com/rcore-os/tgoskits/pull/720))
+
 ## [0.5.0](https://github.com/rcore-os/tgoskits/compare/ax-errno-v0.4.8...ax-errno-v0.5.0) - 2026-05-19
 
 ### Fixed

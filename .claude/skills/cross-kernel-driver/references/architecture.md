@@ -46,14 +46,15 @@ Runtime/platform integration belongs elsewhere:
 - `platform/axplat-dyn/src/drivers/soc/<vendor>/...` for SoC platform glue.
 - `components/axdriver_crates/axdriver_<type>` for common ArceOS-facing driver traits/adapters.
 
-For block devices in `axplat-dyn`, the existing integration path is:
+For block devices in `axplat-dyn`, the integration path is:
 
 - probe/FDT/MMIO setup in `platform/axplat-dyn/src/drivers/blk/<driver>.rs`
-- wrap the portable driver in an `rd_block::Interface`
-- expose a queue as `rd_block::IQueue`
-- register through `PlatformDeviceBlock::register_block`, which creates `rd_block::Block::new(dev, &DmaImpl)` and registers it with `rdrive`
+- expose the portable driver as `rdif_block::Interface`
+- expose queues as `rdif_block::IQueue` with `submit_request()` / `poll_request()`
+- register boxed `rdif_block::Interface` devices through the ArceOS driver glue and `rdrive`
+- keep ArceOS sync block reads/writes, DMA bounce buffers, and IRQ registration policy above the portable interface
 
-Keep `rd-block`/`rdrive` coupling in this adapter layer or behind an explicit adapter feature. Portable driver core should not need to know how `rdrive` probes or registers devices.
+Keep `rdrive` coupling in this adapter layer or behind an explicit adapter feature. Portable driver core should not need to know how `rdrive` probes or registers devices.
 
 ## Dependency Boundaries
 
@@ -151,6 +152,32 @@ The IRQ fast path should:
 
 OS Glue converts events into wakeups, future wakers, worker scheduling, or pending polling flags.
 
+### IRQ/Task Exclusion Pattern
+
+Some drivers need IRQ completion code to consult state that is registered or
+removed by task context, such as xHCI transfer rings or queue completion slots.
+The safe shape is an explicit two-sided protocol:
+
+- Task context masks or disables the exact device interrupt source that can run
+  the IRQ path, then takes the mutation lock and updates the registry.
+- IRQ context does not take that mutation lock. It only uses a narrowly scoped
+  fast-path accessor over entries whose lifetime was established before the
+  interrupt was enabled.
+- The fast-path accessor is unsafe or otherwise documented with the required
+  exclusion/lifetime contract.
+- The shared state contains stable descriptors, queue slots, atomics, or ready
+  bits; it must not require allocation, blocking, broad OS locks, or callbacks
+  into file/device managers while in IRQ context.
+- Re-enable the interrupt source only after task-side mutation has fully
+  published the new state.
+
+This protocol prevents the classic deadlock where task context holds a spinlock,
+gets interrupted by the same device, and the IRQ handler tries to acquire the
+same lock. It is narrower than "IRQ-safe" in general: it does not make arbitrary
+wakers, heap allocation, sleeping locks, or unrelated subsystem locks safe in a
+hard IRQ. If the driver cannot prove this protocol, use atomics/pending bits and
+an OS Glue deferred worker instead.
+
 ## Queue/Runtime Pattern
 
 Model queues as independent running units. This matches network TX/RX queues, NVMe admin/IO queues, block request queues, and many accelerator command queues.
@@ -172,11 +199,11 @@ Runtime wrappers can then choose:
 
 Avoid a single global `Driver::poll` if the hardware naturally exposes multiple queues or engines. Avoid a "big object + big lock + callbacks" shape unless the device is truly that simple.
 
-For a block queue adapter, align portable queue state with `rd_block::IQueue`:
+For a block queue adapter, align portable queue state with `rdif_block::IQueue`:
 
-- `buff_config()` should expose block-size, alignment, and DMA mask constraints.
-- `submit_request()` should allocate/map DMA buffers, program descriptors, and return a request id.
-- `poll_request()` should check completion and translate device status into `rd_block::BlkError` in the adapter.
+- `buffer_config()` should expose block-size, alignment, and DMA mask constraints.
+- `submit_request()` should program descriptors and return a request id without installing OS wakeups.
+- `poll_request()` should check completion and return `RequestStatus::Pending` or `RequestStatus::Complete`.
 - Keep descriptor ownership and DMA map/unmap pairing explicit for each request id.
 
 ## Concurrency Rules
@@ -184,6 +211,10 @@ For a block queue adapter, align portable queue state with `rd_block::IQueue`:
 - Prefer `&mut self` for externally visible operations that require exclusive access.
 - Do not make OS locks part of the portable Driver Trait.
 - Use internal locks only for short critical sections such as pending flags or small status updates.
+- If task and IRQ contexts share a lock-protected registry, require the IRQ/task
+  exclusion protocol above: mask the same interrupt source before task-side
+  mutation, keep IRQ lock-free for that registry, and document why the fast path
+  cannot race lifetime or structure changes.
 - Keep `unsafe` in callback bridges, MMIO construction, and DMA glue boundaries where possible.
 - Do slow work in task/worker/executor/polling context, not in IRQ context.
 

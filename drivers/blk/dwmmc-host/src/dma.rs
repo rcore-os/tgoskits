@@ -1,6 +1,6 @@
 use core::{num::NonZeroUsize, ptr::NonNull};
 
-use dma_api::{DArray, DeviceDma, DmaDirection, SArrayPtr};
+use dma_api::{CoherentArray, DeviceDma, DmaDirection, StreamingMap};
 use log::warn;
 use sdmmc_protocol::{
     block::{
@@ -109,8 +109,8 @@ enum BlockRequestKind {
     },
     Read {
         id: RequestId,
-        map: SArrayPtr<u8>,
-        _desc: DArray<IdmacDesc>,
+        map: StreamingMap<u8>,
+        _desc: CoherentArray<IdmacDesc>,
         cmd_index: u8,
         phase: Phase,
         stage: BlockRequestStage,
@@ -119,8 +119,8 @@ enum BlockRequestKind {
     },
     Write {
         id: RequestId,
-        _map: SArrayPtr<u8>,
-        _desc: DArray<IdmacDesc>,
+        _map: StreamingMap<u8>,
+        _desc: CoherentArray<IdmacDesc>,
         cmd_index: u8,
         phase: Phase,
         stage: BlockRequestStage,
@@ -230,6 +230,8 @@ impl DwMmc {
                 self.build_dma_read_request(start_block, buffer, size, dma, id)
             }
             BlockTransferMode::Fifo => self.build_fifo_read_request(start_block, buffer, size, id),
+            // Future BlockTransferMode variants are not supported by this controller.
+            _ => Err(Error::UnsupportedCommand),
         };
         match result {
             Ok(request) => Ok(request),
@@ -259,6 +261,8 @@ impl DwMmc {
                 self.build_dma_write_request(start_block, buffer, size, dma, id)
             }
             BlockTransferMode::Fifo => self.build_fifo_write_request(start_block, buffer, size, id),
+            // Future BlockTransferMode variants are not supported by this controller.
+            _ => Err(Error::UnsupportedCommand),
         };
         match result {
             Ok(request) => Ok(request),
@@ -279,6 +283,8 @@ impl DwMmc {
         match self.poll_block_request_response(request, id, slot)? {
             DataCommandPoll::Pending => Ok(BlockPoll::Pending),
             DataCommandPoll::Complete(_) => Ok(BlockPoll::Complete),
+            // Future DataCommandPoll variants are treated as completion.
+            _ => Ok(BlockPoll::Complete),
         }
     }
 
@@ -346,6 +352,8 @@ impl DwMmc {
                     }
                     return Ok(DataCommandPoll::Pending);
                 }
+                // Future CommandPoll variants: best-effort, treat as still pending.
+                Ok(_) => return Ok(DataCommandPoll::Pending),
                 Err(err) => {
                     self.abort_block_request(request, id, slot, phase);
                     return Err(err);
@@ -360,6 +368,8 @@ impl DwMmc {
         match self.poll_dma_complete(cmd_index, phase) {
             Ok(BlockPoll::Pending) => Ok(DataCommandPoll::Pending),
             Ok(BlockPoll::Complete) => self.finish_dma_data(request, id, slot),
+            // Future BlockPoll variants: best-effort, treat as still pending.
+            Ok(_) => Ok(DataCommandPoll::Pending),
             Err(err) => {
                 self.abort_block_request(request, id, slot, phase);
                 Err(err)
@@ -377,18 +387,14 @@ impl DwMmc {
     ) -> Result<BlockRequest, Error> {
         let block_count = dma_read_block_count(size)?;
         let map = dma
-            .map_single_array(
-                unsafe { core::slice::from_raw_parts(buffer.as_ptr(), size.get()) },
+            .map_streaming_slice_for_device(
+                unsafe { core::slice::from_raw_parts_mut(buffer.as_ptr(), size.get()) },
                 BLOCK_SIZE,
                 DmaDirection::FromDevice,
             )
             .map_err(|err| map_dma_error(err, Phase::DataRead))?;
         let mut desc = dma
-            .array_zero_with_align::<IdmacDesc>(
-                block_count as usize,
-                IDMAC_DESC_ALIGN,
-                DmaDirection::ToDevice,
-            )
+            .coherent_array_zero_with_align::<IdmacDesc>(block_count as usize, IDMAC_DESC_ALIGN)
             .map_err(|err| map_dma_error(err, Phase::DataRead))?;
         let cmd = if block_count == 1 {
             cmd17(start_block)
@@ -420,19 +426,14 @@ impl DwMmc {
     ) -> Result<BlockRequest, Error> {
         let block_count = dma_write_block_count(size)?;
         let map = dma
-            .map_single_array(
-                unsafe { core::slice::from_raw_parts(buffer.as_ptr(), size.get()) },
+            .map_streaming_slice_for_device(
+                unsafe { core::slice::from_raw_parts_mut(buffer.as_ptr(), size.get()) },
                 BLOCK_SIZE,
                 DmaDirection::ToDevice,
             )
             .map_err(|err| map_dma_error(err, Phase::DataWrite))?;
-        map.confirm_write_all();
         let mut desc = dma
-            .array_zero_with_align::<IdmacDesc>(
-                block_count as usize,
-                IDMAC_DESC_ALIGN,
-                DmaDirection::ToDevice,
-            )
+            .coherent_array_zero_with_align::<IdmacDesc>(block_count as usize, IDMAC_DESC_ALIGN)
             .map_err(|err| map_dma_error(err, Phase::DataWrite))?;
         let cmd = if block_count == 1 {
             cmd24(start_block)
@@ -519,6 +520,8 @@ impl DwMmc {
             DataDirection::Read => BlockTransferDirection::Read,
             DataDirection::Write => BlockTransferDirection::Write,
             DataDirection::None => return Err(Error::InvalidArgument),
+            // Future DataDirection variants are not supported by this engine.
+            _ => return Err(Error::InvalidArgument),
         };
         let id = slot.start(BlockTransferMode::Fifo, transfer_direction)?;
         match self.build_fifo_data_request(
@@ -563,6 +566,8 @@ impl DwMmc {
             DataDirection::Read => Phase::DataRead,
             DataDirection::Write => Phase::DataWrite,
             DataDirection::None => return Err(Error::InvalidArgument),
+            // Future DataDirection variants are not supported by this engine.
+            _ => return Err(Error::InvalidArgument),
         };
         self.pending_data = Some(PendingData {
             direction,
@@ -597,6 +602,8 @@ impl DwMmc {
                 response: None,
             },
             DataDirection::None => return Err(Error::InvalidArgument),
+            // Future DataDirection variants are not supported by this engine.
+            _ => return Err(Error::InvalidArgument),
         };
         Ok(BlockRequest { inner })
     }
@@ -606,7 +613,7 @@ impl DwMmc {
         cmd: &Command,
         block_count: u32,
         buffer_dma: u64,
-        desc: &mut DArray<IdmacDesc>,
+        desc: &mut CoherentArray<IdmacDesc>,
     ) -> Result<(), Error> {
         if block_count == 0 {
             return Err(Error::InvalidArgument);
@@ -616,6 +623,8 @@ impl DwMmc {
             DataDirection::Read => Phase::DataRead,
             DataDirection::Write => Phase::DataWrite,
             DataDirection::None => return Err(Error::InvalidArgument),
+            // Future DataDirection variants are not supported by this engine.
+            _ => return Err(Error::InvalidArgument),
         };
         let byte_count = block_count
             .checked_mul(BLOCK_SIZE as u32)
@@ -637,7 +646,7 @@ impl DwMmc {
             return Err(Error::InvalidArgument);
         }
 
-        desc.write_with(block_count as usize, |descs| {
+        desc.write_with_cpu(block_count as usize, |descs| {
             for (index, desc) in descs.iter_mut().enumerate() {
                 let last = index + 1 == block_count as usize;
                 let next = if last {
@@ -733,7 +742,7 @@ impl DwMmc {
                 stop_after_complete,
                 ..
             } => {
-                map.prepare_read_all();
+                map.complete_for_cpu_all();
                 *stage = BlockRequestStage::Stop;
                 *stop_after_complete
             }
@@ -779,6 +788,8 @@ impl DwMmc {
                 slot.complete(id)?;
                 Ok(DataCommandPoll::Complete(response))
             }
+            // Future CommandPoll variants: best-effort, treat as still pending.
+            Ok(_) => Ok(DataCommandPoll::Pending),
             Err(err) => {
                 self.abort_block_request(request, id, slot, phase);
                 Err(err)
@@ -829,6 +840,8 @@ impl DwMmc {
                     set_fifo_stage(request, BlockRequestStage::Data)?;
                     return Ok(DataCommandPoll::Pending);
                 }
+                // Future CommandPoll variants: best-effort, treat as still pending.
+                Ok(_) => return Ok(DataCommandPoll::Pending),
                 Err(err) => {
                     self.abort_block_request(request, id, slot, phase);
                     return Err(err);
@@ -848,6 +861,8 @@ impl DwMmc {
         match self.poll_fifo_data_step(request, cmd_index, phase) {
             Ok(BlockPoll::Pending) => Ok(DataCommandPoll::Pending),
             Ok(BlockPoll::Complete) => self.finish_fifo_data(request, id, slot),
+            // Future BlockPoll variants: best-effort, treat as still pending.
+            Ok(_) => Ok(DataCommandPoll::Pending),
             Err(err) => {
                 self.abort_block_request(request, id, slot, phase);
                 Err(err)
@@ -1125,6 +1140,8 @@ fn map_dma_error(err: dma_api::DmaError, phase: Phase) -> Error {
         dma_api::DmaError::LayoutError(_)
         | dma_api::DmaError::DmaMaskNotMatch { .. }
         | dma_api::DmaError::AlignMismatch { .. }
+        | dma_api::DmaError::SegmentTooLarge { .. }
+        | dma_api::DmaError::BoundaryCross { .. }
         | dma_api::DmaError::NullPointer
         | dma_api::DmaError::ZeroSizedBuffer => Error::InvalidArgument,
     }

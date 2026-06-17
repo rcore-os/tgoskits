@@ -395,6 +395,8 @@ impl DwMmc {
             BlockTransferMode::Dma => {
                 BlockBufferConfig::new(NonZeroUsize::new(512).unwrap(), 512, Some(self.dma_mask))
             }
+            // Future BlockTransferMode variants fall back to the conservative Fifo config.
+            _ => BlockBufferConfig::new(NonZeroUsize::new(512).unwrap(), 1, None),
         }
     }
 
@@ -420,6 +422,8 @@ fn clock_hz_for_speed(speed: ClockSpeed) -> u32 {
         ClockSpeed::Sdr50 | ClockSpeed::Ddr50 => 50_000_000,
         ClockSpeed::Sdr104 => 104_000_000,
         ClockSpeed::Hs200 => 200_000_000,
+        // Future ClockSpeed variants: unknown frequency, signal 0.
+        _ => 0,
     }
 }
 
@@ -435,6 +439,8 @@ pub(crate) fn volt_mask_for_signal(voltage: SignalVoltage) -> Result<u16, Error>
         SignalVoltage::V330 => Ok(0),
         SignalVoltage::V180 => Ok(1),
         SignalVoltage::V120 => Err(Error::UnsupportedCommand),
+        // Future SignalVoltage variants are not supported by this controller.
+        _ => Err(Error::UnsupportedCommand),
     }
 }
 

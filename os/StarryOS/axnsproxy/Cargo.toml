@@ -1,0 +1,21 @@
+[package]
+name = "axnsproxy"
+version = "0.2.1"
+edition.workspace = true
+description = "Namespace proxy for Starry OS"
+keywords = ["starry-os"]
+repository.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+ax-config = { workspace = true }
+ax-errno = { workspace = true }
+ax-kspin = { workspace = true }
+linux-raw-sys = { version = "0.12", default-features = false, features = [
+    "general",
+    "no_std",
+    "system",
+] }
+log = "0.4"
+spin = { workspace = true }

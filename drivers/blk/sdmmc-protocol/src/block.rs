@@ -1,6 +1,6 @@
 //! Block request state shared by SD/MMC host controller backends.
 //!
-//! The protocol crate intentionally does not know about `rd-block` or any
+//! The protocol crate intentionally does not know about a block runtime or any
 //! executor. These types describe the portable queue contract that host
 //! drivers expose upward: submit one block transfer, advance it by polling or
 //! IRQ wakeups, and keep the concrete FIFO/DMA engine visible.
@@ -24,7 +24,11 @@ impl From<BlockRequestId> for usize {
 }
 
 /// Data engine used by an in-flight block request.
+///
+/// Marked `#[non_exhaustive]`: new engines (e.g. SDMA, ADMA3) may be added
+/// before 1.0.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum BlockTransferMode {
     /// Controller FIFO/data-port engine.
     Fifo,
@@ -54,14 +58,23 @@ impl BlockBufferConfig {
 }
 
 /// Direction of a block request.
+///
+/// Marked `#[non_exhaustive]` for forward compatibility (future variants like
+/// `Erase` may join the queue contract).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum BlockTransferDirection {
     Read,
     Write,
 }
 
 /// Observable state of one host block-transfer state machine.
+///
+/// Marked `#[non_exhaustive]`: queue-level intermediate states (e.g. tuning,
+/// drain) may be added before 1.0; downstream match sites must keep a
+/// `_ => ...` arm.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum BlockTransferState {
     #[default]
     Idle,
@@ -112,21 +125,31 @@ impl BlockTransferState {
 }
 
 /// Result of advancing a submitted transfer without blocking.
+///
+/// Marked `#[non_exhaustive]`: intermediate states such as `Aborted` or
+/// per-block progress may be added before 1.0.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum BlockPoll {
     Pending,
     Complete,
 }
 
 /// Direction of a generic SD/MMC data command.
+///
+/// Marked `#[non_exhaustive]` for forward compatibility.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum DataCommandDirection {
     Read,
     Write,
 }
 
 /// Observable state of one protocol data command.
+///
+/// Marked `#[non_exhaustive]` for forward compatibility.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum DataCommandState {
     #[default]
     Idle,
@@ -139,14 +162,20 @@ pub enum DataCommandState {
 }
 
 /// Result of advancing a generic data command without blocking.
+///
+/// Marked `#[non_exhaustive]` for forward compatibility.
 #[derive(Clone, Copy, Debug)]
+#[non_exhaustive]
 pub enum DataCommandPoll {
     Pending,
     Complete(crate::response::Response),
 }
 
 /// Result of advancing a submitted command without blocking.
+///
+/// Marked `#[non_exhaustive]` for forward compatibility.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum CommandPoll {
     Pending,
     Complete,
@@ -154,14 +183,20 @@ pub enum CommandPoll {
 
 /// Result of advancing a submitted command and harvesting its response when
 /// available.
+///
+/// Marked `#[non_exhaustive]` for forward compatibility.
 #[derive(Clone, Copy, Debug)]
+#[non_exhaustive]
 pub enum CommandResponsePoll {
     Pending,
     Complete(crate::response::Response),
 }
 
 /// Generic result of advancing an operation without blocking.
+///
+/// Marked `#[non_exhaustive]` for forward compatibility.
 #[derive(Clone, Copy, Debug)]
+#[non_exhaustive]
 pub enum OperationPoll<T> {
     Pending,
     Complete(T),

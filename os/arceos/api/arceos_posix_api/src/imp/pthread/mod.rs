@@ -2,18 +2,19 @@ use alloc::{boxed::Box, collections::BTreeMap, sync::Arc};
 use core::{
     cell::UnsafeCell,
     ffi::{c_int, c_void},
+    sync::atomic::{AtomicBool, Ordering},
 };
 
 use ax_errno::{LinuxError, LinuxResult};
 use ax_task::AxTaskRef;
-use spin::RwLock;
+use spin::{LazyLock, RwLock};
 
 use crate::ctypes;
 
 pub mod mutex;
 
-lazy_static::lazy_static! {
-    static ref TID_TO_PTHREAD: RwLock<BTreeMap<u64, ForceSendSync<ctypes::pthread_t>>> = {
+static TID_TO_PTHREAD: LazyLock<RwLock<BTreeMap<u64, ForceSendSync<ctypes::pthread_t>>>> =
+    LazyLock::new(|| {
         let mut map = BTreeMap::new();
         let main_task = ax_task::current();
         let main_tid = main_task.id().as_u64();
@@ -26,8 +27,7 @@ lazy_static::lazy_static! {
         let ptr = Box::into_raw(Box::new(main_thread)) as *mut c_void;
         map.insert(main_tid, ForceSendSync(ptr));
         RwLock::new(map)
-    };
-}
+    });
 
 struct Packet<T> {
     result: UnsafeCell<T>,
@@ -53,8 +53,13 @@ impl Pthread {
             result: UnsafeCell::new(core::ptr::null_mut()),
         });
         let their_packet = my_packet.clone();
+        let registered = Arc::new(AtomicBool::new(false));
+        let child_registered = registered.clone();
 
         let main = move || {
+            while !child_registered.load(Ordering::Acquire) {
+                ax_task::yield_now();
+            }
             let arg = arg_wrapper;
             let ret = start_routine(arg.0);
             unsafe { *their_packet.result.get() = ret };
@@ -69,6 +74,7 @@ impl Pthread {
         };
         let ptr = Box::into_raw(Box::new(thread)) as *mut c_void;
         TID_TO_PTHREAD.write().insert(tid, ForceSendSync(ptr));
+        registered.store(true, Ordering::Release);
         Ok(ptr)
     }
 
@@ -84,12 +90,14 @@ impl Pthread {
         unsafe { core::ptr::NonNull::new(Self::current_ptr()).map(|ptr| ptr.as_ref()) }
     }
 
+    #[track_caller]
     fn exit_current(retval: *mut c_void) -> ! {
         let thread = Self::current().expect("fail to get current thread");
         unsafe { *thread.retval.result.get() = retval };
         ax_task::exit(0);
     }
 
+    #[track_caller]
     fn join(ptr: ctypes::pthread_t) -> LinuxResult<*mut c_void> {
         if core::ptr::eq(ptr, Self::current_ptr() as _) {
             return Err(LinuxError::EDEADLK);
@@ -132,12 +140,14 @@ pub unsafe fn sys_pthread_create(
 }
 
 /// Exits the current thread. The value `retval` will be returned to the joiner.
+#[track_caller]
 pub fn sys_pthread_exit(retval: *mut c_void) -> ! {
     debug!("sys_pthread_exit <= {:#x}", retval as usize);
     Pthread::exit_current(retval);
 }
 
 /// Waits for the given thread to exit, and stores the return value in `retval`.
+#[track_caller]
 pub unsafe fn sys_pthread_join(thread: ctypes::pthread_t, retval: *mut *mut c_void) -> c_int {
     debug!("sys_pthread_join <= {:#x}", retval as usize);
     syscall_body!(sys_pthread_join, {

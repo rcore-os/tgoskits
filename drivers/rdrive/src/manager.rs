@@ -70,8 +70,7 @@ impl DeviceContainer {
 
 #[cfg(test)]
 mod tests {
-
-    use rdif_intc::*;
+    use alloc::boxed::Box;
 
     use super::*;
     use crate::driver::{DriverGeneric, Empty};
@@ -128,15 +127,45 @@ mod tests {
     #[test]
     fn test_not_found() {
         let container = DeviceContainer::default();
-        let dev = container.get_one::<Intc>();
+        let dev = container.get_one::<TestDevice>();
         assert!(dev.is_none(), "Expected no devices found");
+    }
+
+    trait TestInterface: DriverGeneric {
+        fn is_ok(&mut self) -> bool;
+    }
+
+    struct TestDevice(Box<dyn TestInterface>);
+
+    impl TestDevice {
+        fn new<T: TestInterface>(driver: T) -> Self {
+            Self(Box::new(driver))
+        }
+
+        fn typed_ref<T: TestInterface>(&self) -> Option<&T> {
+            self.raw_any()?.downcast_ref()
+        }
+    }
+
+    impl DriverGeneric for TestDevice {
+        fn name(&self) -> &str {
+            self.0.name()
+        }
+
+        fn raw_any(&self) -> Option<&dyn core::any::Any> {
+            Some(self.0.as_ref() as &dyn core::any::Any)
+        }
+
+        fn raw_any_mut(&mut self) -> Option<&mut dyn core::any::Any> {
+            Some(self.0.as_mut() as &mut dyn core::any::Any)
+        }
     }
 
     struct IrqTest;
 
-    impl IrqTest {
+    impl TestInterface for IrqTest {
         fn is_ok(&mut self) -> bool {
-            true // Placeholder for actual logic
+            true
         }
     }
 
@@ -146,15 +175,13 @@ mod tests {
         }
     }
 
-    impl Interface for IrqTest {}
-
     #[test]
     fn test_inner_type() {
         let mut container = DeviceContainer::default();
         let desc = Descriptor::new();
-        container.insert(desc, Intc::new(IrqTest));
+        container.insert(desc, TestDevice::new(IrqTest));
 
-        let weak = container.get_one::<Intc>().unwrap();
+        let weak = container.get_one::<TestDevice>().unwrap();
         {
             let device = weak.lock().unwrap();
             let intc = device.typed_ref::<IrqTest>();
@@ -166,9 +193,9 @@ mod tests {
     fn test_device_downcast() {
         let mut container = DeviceContainer::default();
         let desc = Descriptor::new();
-        container.insert(desc, Intc::new(IrqTest));
+        container.insert(desc, TestDevice::new(IrqTest));
 
-        let weak = container.get_one::<Intc>().unwrap();
+        let weak = container.get_one::<TestDevice>().unwrap();
         let intc_typed = weak.downcast::<IrqTest>().unwrap();
         let mut device = intc_typed.lock().unwrap();
         assert!(device.is_ok(), "Expected device to be ok");

@@ -1,6 +1,6 @@
 # `ax-memory-set`
 
-> 路径：`components/axmm_crates/memory_set`
+> 路径：`memory/memory_set`
 > 类型：库 crate
 > 分层：组件层 / 地址区间集合与映射元数据层
 > 版本：`0.4.1`
@@ -183,7 +183,7 @@
 
 - `os/arceos/modules/axmm`
 - `os/StarryOS/kernel`
-- `components/axaddrspace`
+- `virtualization/axaddrspace`
 
 ### 3.3 关系示意
 

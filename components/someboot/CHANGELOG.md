@@ -7,6 +7,65 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.1](https://github.com/rcore-os/tgoskits/compare/someboot-v0.2.0...someboot-v0.2.1) - 2026-06-12
+
+### Added
+
+- *(ax-driver)* add dynamic platform rtc support ([#1242](https://github.com/rcore-os/tgoskits/pull/1242))
+
+### Fixed
+
+- *(ci)* stabilize x86 Starry QEMU timing ([#1245](https://github.com/rcore-os/tgoskits/pull/1245))
+
+### Other
+
+- *(someboot)* share linker script fragments ([#1218](https://github.com/rcore-os/tgoskits/pull/1218))
+
+## [0.2.0](https://github.com/rcore-os/tgoskits/compare/someboot-v0.1.17...someboot-v0.2.0) - 2026-06-11
+
+### Added
+
+- *(someboot)* boot LoongArch dynamic UEFI with SMP
+
+### Fixed
+
+- *(ax-plat-x86-pc)* enable XCR0 AVX/SSE state for userspace AVX ([#1112](https://github.com/rcore-os/tgoskits/pull/1112))
+- fix typos in code and comments across the codebase ([#1206](https://github.com/rcore-os/tgoskits/pull/1206))
+
+## [0.1.17](https://github.com/rcore-os/tgoskits/compare/someboot-v0.1.16...someboot-v0.1.17) - 2026-06-09
+
+### Added
+
+- *(axvisor)* support dynamic x86_64 QEMU guest boot ([#1166](https://github.com/rcore-os/tgoskits/pull/1166))
+- *(std)* unify std-aware ArceOS builds ([#1080](https://github.com/rcore-os/tgoskits/pull/1080))
+
+### Fixed
+
+- *(ci)* switch x86_64 defaults to dynamic platform ([#1024](https://github.com/rcore-os/tgoskits/pull/1024))
+
+### Other
+
+- Replace jump instruction with lla and jr for kernel entry ([#1170](https://github.com/rcore-os/tgoskits/pull/1170))
+
+## [0.1.16](https://github.com/rcore-os/tgoskits/compare/someboot-v0.1.15...someboot-v0.1.16) - 2026-06-03
+
+### Added
+
+- *(riscv64)* update kernel entry point handling and remove unused kernel load address ([#1071](https://github.com/rcore-os/tgoskits/pull/1071))
+- *(starryos)* add QEMU K230 boot support ([#1046](https://github.com/rcore-os/tgoskits/pull/1046))
+- *(riscv64)* support dynamic platform on QEMU and SG2002 ([#961](https://github.com/rcore-os/tgoskits/pull/961))
+
+### Fixed
+
+- *(repo)* normalize allocator and RISC-V dependencies ([#1021](https://github.com/rcore-os/tgoskits/pull/1021))
+- *(axbuild)* skip disabled grouped C subcases ([#942](https://github.com/rcore-os/tgoskits/pull/942))
+
+### Other
+
+- *(platform)* migrate riscv64 qemu to dynamic platform ([#1085](https://github.com/rcore-os/tgoskits/pull/1085))
+- *(platform)* remove static aarch64 platforms ([#1074](https://github.com/rcore-os/tgoskits/pull/1074))
+- *(deps)* update spin 0.10→0.12, ostool 0.19→0.21 ([#978](https://github.com/rcore-os/tgoskits/pull/978))
+
 ## [0.1.15](https://github.com/rcore-os/tgoskits/compare/someboot-v0.1.14...someboot-v0.1.15) - 2026-05-15
 
 ### Fixed

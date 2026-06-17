@@ -1,0 +1,69 @@
+timeout = 600
+shell_prefix = "root@starry:"
+uefi = false
+to_bin = false
+success_regex = ["(?m)^STARRY_PICOCLAW_GATEWAY_PASSED\\s*$"]
+fail_regex = [
+  "(?i)\\bpanic(?:ked)?\\b",
+  "(?i)page fault",
+  "(?i)segmentation fault",
+  "exec format error",
+  "Permission denied",
+  "unsupported syscall",
+]
+
+args = [
+  "-machine", "q35",
+  "-nographic",
+  "-m", "2G",
+  "-device", "virtio-blk-pci,drive=disk0",
+  "-drive", "id=disk0,if=none,format=raw,file=${workspace}/tmp/axbuild/rootfs/rootfs-x86_64-alpine.img",
+  "-device", "virtio-net-pci,netdev=net0",
+  "-netdev", "user,id=net0,hostfwd=tcp::18790-:18790",
+  "-snapshot",
+]
+
+shell_init_cmd = """
+export HOME=/root
+export USER=root
+export SHELL=/bin/sh
+export TERM=dumb
+export NO_COLOR=1
+export PATH=/usr/local/bin:/usr/bin:/bin:/sbin
+export PICOCLAW_HOME=/root/.picoclaw
+export PICOCLAW_CONFIG=/root/.picoclaw/config.json
+export SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
+set -e
+mkdir -p "$PICOCLAW_HOME" "$PICOCLAW_HOME/workspace" /tmp/picoclaw-smoke
+if [ -f "$PICOCLAW_HOME/starry-online-env" ]; then
+    . "$PICOCLAW_HOME/starry-online-env"
+fi
+if [ ! -f "$PICOCLAW_CONFIG" ]; then
+    picoclaw onboard
+fi
+picoclaw gateway --allow-empty --host 127.0.0.1 > /tmp/picoclaw-smoke/gateway.log 2>&1 &
+gateway_pid=$!
+trap 'kill "$gateway_pid" 2>/dev/null || true' EXIT
+for i in $(seq 1 60); do
+    if command -v curl >/dev/null 2>&1; then
+        if curl -fsS http://127.0.0.1:18790/health > /tmp/picoclaw-smoke/health.txt; then
+            break
+        fi
+    else
+        if wget -q -O /tmp/picoclaw-smoke/health.txt http://127.0.0.1:18790/health; then
+            break
+        fi
+    fi
+    if ! kill -0 "$gateway_pid" 2>/dev/null; then
+        cat /tmp/picoclaw-smoke/gateway.log
+        echo STARRY_PICOCLAW_GATEWAY_FAILED
+        exit 1
+    fi
+    sleep 1
+done
+cat /tmp/picoclaw-smoke/health.txt
+grep -F '"status":"ok"' /tmp/picoclaw-smoke/health.txt || grep -F '"status": "ok"' /tmp/picoclaw-smoke/health.txt
+kill "$gateway_pid" 2>/dev/null || true
+wait "$gateway_pid" 2>/dev/null || true
+printf 'STARRY_%s\n' PICOCLAW_GATEWAY_PASSED
+"""

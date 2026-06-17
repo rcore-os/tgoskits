@@ -22,9 +22,7 @@ pub struct UserContext {
 }
 
 impl UserContext {
-    const PAD_MAGIC: u64 = 0x1234_5678_9abc_def0;
-    /// Creates a new context with the given entry point, user stack pointer,
-    /// and the argument.
+    /// Creates a new user context with the given entry point, stack top, and argument.
     pub fn new(entry: usize, ustack_top: VirtAddr, arg0: usize) -> Self {
         use aarch64_cpu::registers::SPSR_EL1;
         let mut regs = [0; 31];
@@ -39,11 +37,83 @@ impl UserContext {
                     + SPSR_EL1::I::Unmasked
                     + SPSR_EL1::F::Masked)
                     .value,
-                __pad: Self::PAD_MAGIC,
+                sp: 0,
             },
             sp: ustack_top.as_usize() as _,
             tpidr: 0,
         }
+    }
+
+    /// Emulates an EL0 `MRS Xt, ID_AA64*_EL1` that trapped as an "unknown"
+    /// exception (EC=0), mirroring Linux's `emulate_mrs`. AArch64 CPU-feature
+    /// detection — e.g. the Go runtime's cpu probing — reads these ID feature
+    /// registers from EL0; reading an EL1 register from EL0 is UNDEFINED and
+    /// traps, which would otherwise be delivered as SIGILL and crash every such
+    /// program. Reads the real register (the kernel runs at EL1) into `Xt`,
+    /// advances the PC, and returns `true`; returns `false` if the faulting
+    /// instruction is not one of the emulated ID-register reads so the caller can
+    /// fall back to SIGILL.
+    ///
+    /// # Safety
+    /// Reads the 4-byte instruction at the trapped PC (`elr`) from the active
+    /// user address space. The caller invokes this only while that aspace is
+    /// installed and the PC was just executing, so the page is mapped.
+    pub unsafe fn emulate_mrs_id_reg(&mut self) -> bool {
+        let insn = unsafe { core::ptr::read(self.tf.elr as *const u32) };
+        // MRS (register, read direction): bits[31:20] == 0xD53 and L (bit 21) set.
+        if (insn & 0xFFF0_0000) != 0xD530_0000 || (insn & (1 << 21)) == 0 {
+            return false;
+        }
+        let op0 = (insn >> 19) & 0x3;
+        let op1 = (insn >> 16) & 0x7;
+        let crn = (insn >> 12) & 0xf;
+        let crm = (insn >> 8) & 0xf;
+        let op2 = (insn >> 5) & 0x7;
+        let rt = (insn & 0x1f) as usize;
+        // The AArch64 ID feature register space is op0=3, op1=0, CRn=0, CRm=4..7.
+        // We must NOT leak the raw EL1 register to EL0 (as Linux's `emulate_mrs`
+        // also avoids): the host/QEMU CPU may advertise SVE/SME/MTE/BTI/PAuth/RAS
+        // etc. that need kernel context-save/enable flows StarryOS does not have.
+        // A program reading those bits would then execute the corresponding
+        // instructions and crash or corrupt state. So we expose a sanitized
+        // user-safe view: keep only the feature bits whose instructions are plain
+        // and stateless (so they Just Work, including under TCG), and report
+        // everything else as not-implemented (RAZ).
+        macro_rules! rd {
+            ($reg:literal) => {{
+                let v: u64;
+                unsafe { core::arch::asm!(concat!("mrs {}, ", $reg), out(reg) v) };
+                v
+            }};
+        }
+        // Field masks (each ID field is 4 bits):
+        //   PFR0 low 24 bits = EL0/EL1/EL2/EL3/FP/AdvSIMD — baseline, always safe.
+        //     Bits >=24 (GIC/RAS/SVE/SEL2/MPAM/AMU) are hidden.
+        const PFR0_SAFE: u64 = 0x0000_0000_00FF_FFFF;
+        //   ISAR1 PAuth fields APA[7:4] API[11:8] GPA[27:24] GPI[31:28] need kernel
+        //   key management; clear them, keep DPB/JSCVT/FCMA/LRCPC/SB/BF16/I8MM/...
+        const ISAR1_PAUTH: u64 = 0x0000_0000_FF00_0FF0;
+        let val: u64 = match (op0, op1, crn, crm, op2) {
+            (3, 0, 0, 4, 0) => rd!("ID_AA64PFR0_EL1") & PFR0_SAFE,
+            (3, 0, 0, 6, 0) => rd!("ID_AA64ISAR0_EL1"),
+            (3, 0, 0, 6, 1) => rd!("ID_AA64ISAR1_EL1") & !ISAR1_PAUTH,
+            (3, 0, 0, 7, 0) => rd!("ID_AA64MMFR0_EL1"),
+            (3, 0, 0, 7, 1) => rd!("ID_AA64MMFR1_EL1"),
+            (3, 0, 0, 7, 2) => rd!("ID_AA64MMFR2_EL1"),
+            // Every other ID register in the architectural space — PFR1/PFR2,
+            // DFR0/1/2, ZFR0 (SVE), SMFR0 (SME), ISAR2/3 (PAuth/MOPS), MMFR3/4,
+            // reserved — describes state-bearing or kernel-only features StarryOS
+            // does not implement. Report not-implemented (RAZ) rather than SIGILL,
+            // so feature probing degrades to the baseline path instead of crashing.
+            (3, 0, 0, 4..=7, _) => 0,
+            _ => return false,
+        };
+        // Rt == 31 encodes XZR; the result is discarded.
+        if rt < 31 {
+            self.tf.x[rt] = val;
+        }
+        self.tf.elr += 4;
+        true
     }
 
     /// Normalizes a cloned user context so it can safely return to EL0.
@@ -100,7 +170,7 @@ impl UserContext {
 
         let ret = match kind {
             TrapKind::Irq => {
-                crate::trap::irq_handler(0);
+                crate::trap::dispatch_irq(0);
                 ReturnReason::Interrupt
             }
             TrapKind::Fiq | TrapKind::SError => ReturnReason::Unknown,

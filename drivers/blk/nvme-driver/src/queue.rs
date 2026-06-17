@@ -5,8 +5,9 @@ use core::{
     sync::atomic::{AtomicU32, Ordering},
 };
 
-use dma_api::{DArray, DeviceDma, DmaDirection};
+use dma_api::{CoherentArray, DeviceDma};
 use log::debug;
+use mbarrier::{rmb, wmb};
 use tock_registers::register_bitfields;
 
 use crate::{
@@ -49,6 +50,7 @@ register_bitfields! [
 ];
 
 #[repr(transparent)]
+#[derive(Clone, Copy)]
 pub struct NvmeSubmission([u8; 64]);
 
 pub trait Submission {
@@ -75,7 +77,12 @@ pub struct CommandSet {
 
 impl CommandSet {
     pub fn cdw0_from_opcode(opcode: command::Opcode) -> u32 {
-        (CommandDword0::Opcode.val(opcode.as_u32()) + CommandDword0::CommandId.val(next_id())).value
+        Self::cdw0_from_opcode_with_cid(opcode, next_id() as u16)
+    }
+
+    pub fn cdw0_from_opcode_with_cid(opcode: command::Opcode, cid: u16) -> u32 {
+        (CommandDword0::Opcode.val(opcode.as_u32()) + CommandDword0::CommandId.val(cid as u32))
+            .value
     }
 
     pub fn set_features(feature: Feature) -> Self {
@@ -145,16 +152,28 @@ impl CommandSet {
         }
     }
 
-    pub fn nvm_cmd_read(nsid: u32, paddr: u64, starting_lba: u64, blk_num: u16) -> Self {
-        let cdw0 = Self::cdw0_from_opcode(command::Opcode::NVM_READ);
+    pub fn nvm_cmd_read(nsid: u32, paddr: u64, starting_lba: u64, blk_num: u32) -> Self {
+        Self::nvm_cmd_read_with_cid(nsid, paddr, 0, starting_lba, blk_num, next_id() as u16)
+    }
+
+    pub fn nvm_cmd_read_with_cid(
+        nsid: u32,
+        prp1: u64,
+        prp2: u64,
+        starting_lba: u64,
+        block_count: u32,
+        cid: u16,
+    ) -> Self {
+        let cdw0 = Self::cdw0_from_opcode_with_cid(command::Opcode::NVM_READ, cid);
         let low = (starting_lba & 0xFFFFFFFF) as u32;
         let high = (starting_lba >> 32) as u32;
-        let cdw12 = blk_num as u32;
+        let cdw12 = block_count.saturating_sub(1);
 
         CommandSet {
             nsid,
             cdw0,
-            prp1: paddr,
+            prp1,
+            prp2,
             cdw10: low,
             cdw11: high,
             cdw12,
@@ -162,19 +181,41 @@ impl CommandSet {
         }
     }
 
-    pub fn nvm_cmd_write(nsid: u32, paddr: u64, starting_lba: u64, blk_num: u16) -> Self {
-        let cdw0 = Self::cdw0_from_opcode(command::Opcode::NVM_WRITE);
+    pub fn nvm_cmd_write(nsid: u32, paddr: u64, starting_lba: u64, blk_num: u32) -> Self {
+        Self::nvm_cmd_write_with_cid(nsid, paddr, 0, starting_lba, blk_num, next_id() as u16)
+    }
+
+    pub fn nvm_cmd_write_with_cid(
+        nsid: u32,
+        prp1: u64,
+        prp2: u64,
+        starting_lba: u64,
+        block_count: u32,
+        cid: u16,
+    ) -> Self {
+        let cdw0 = Self::cdw0_from_opcode_with_cid(command::Opcode::NVM_WRITE, cid);
         let low = (starting_lba & 0xFFFFFFFF) as u32;
         let high = (starting_lba >> 32) as u32;
-        let cdw12 = blk_num as u32;
+        let cdw12 = block_count.saturating_sub(1);
 
         CommandSet {
             nsid,
             cdw0,
-            prp1: paddr,
+            prp1,
+            prp2,
             cdw10: low,
             cdw11: high,
             cdw12,
+            ..Default::default()
+        }
+    }
+
+    pub fn nvm_cmd_flush_with_cid(nsid: u32, cid: u16) -> Self {
+        let cdw0 = Self::cdw0_from_opcode_with_cid(command::Opcode::NVM_FLUSH, cid);
+
+        CommandSet {
+            nsid,
+            cdw0,
             ..Default::default()
         }
     }
@@ -188,7 +229,7 @@ impl Submission for CommandSet {
 
 #[repr(C)]
 #[derive(Debug, Copy, Clone, Default)]
-struct NvmeCompletion {
+pub(crate) struct NvmeCompletion {
     pub result: u64,
     pub sq_head: u16,
     pub sq_id: u16,
@@ -198,14 +239,14 @@ struct NvmeCompletion {
 
 #[repr(transparent)]
 #[derive(Debug, Copy, Clone, Default)]
-struct CompletionStatus(pub u16);
+pub(crate) struct CompletionStatus(pub u16);
 
 impl CompletionStatus {
     pub fn phase(&self) -> bool {
         self.0 & 1 > 0
     }
 
-    fn is_success(&self) -> bool {
+    pub(crate) fn is_success(&self) -> bool {
         self.0 & (1 << 1) == 0
     }
 
@@ -220,6 +261,11 @@ pub struct NvmeQueue {
     pub cq: CompleteQueue,
     pub reg: NonNull<NvmeReg>,
 }
+
+// SAFETY: An `NvmeQueue` is owned by exactly one RDIF queue after creation.
+// Moving that owner between threads does not create aliasing; register access
+// still happens through `&mut self` queue methods.
+unsafe impl Send for NvmeQueue {}
 
 impl NvmeQueue {
     pub fn new(
@@ -247,13 +293,30 @@ impl NvmeQueue {
 
     fn submit_admin_data(&mut self, data: CommandSet) {
         let tail = self.sq.submit(data);
+        wmb();
         self.reg().write_sq_y_tail_doolbell(self.qid as _, tail);
+    }
+
+    pub(crate) fn submit_io_data(&mut self, data: CommandSet) {
+        self.submit_admin_data(data);
+    }
+
+    pub(crate) fn poll_completion(&mut self) -> Option<NvmeCompletion> {
+        let complete = self.cq.take_complete()?;
+        wmb();
+        self.reg()
+            .write_cq_y_head_doolbell(self.qid as _, self.cq.head);
+        Some(complete)
+    }
+
+    pub(crate) fn depth(&self) -> usize {
+        self.sq.len().min(self.cq.len())
     }
 
     pub fn command_sync(&mut self, data: CommandSet) -> Result<()> {
         self.submit_admin_data(data);
         let complete = self.cq.spin_for_complete();
-
+        wmb();
         self.reg()
             .write_cq_y_head_doolbell(self.qid as _, self.cq.head);
 
@@ -270,19 +333,19 @@ impl NvmeQueue {
 }
 
 pub struct SubmitQueue {
-    queue: DArray<NvmeSubmission>,
+    queue: CoherentArray<NvmeSubmission>,
     tail: u32,
 }
 
 impl SubmitQueue {
     fn new(dma: &DeviceDma, queue_size: usize, page_size: usize) -> Result<Self> {
-        let queue = dma.array_zero_with_align(queue_size, page_size, DmaDirection::ToDevice)?;
+        let queue = dma.coherent_array_zero_with_align(queue_size, page_size)?;
         Ok(SubmitQueue { queue, tail: 0 })
     }
 
     // returns the submission queue tail
     pub fn submit(&mut self, data: impl Submission) -> u32 {
-        self.queue.set(self.tail as usize, data.to_submission());
+        self.queue.set_cpu(self.tail as usize, data.to_submission());
 
         self.tail += 1;
         if self.tail >= self.len() as u32 {
@@ -301,14 +364,14 @@ impl SubmitQueue {
 }
 
 pub struct CompleteQueue {
-    queue: DArray<NvmeCompletion>,
+    queue: CoherentArray<NvmeCompletion>,
     head: u32,
     phase: bool,
 }
 
 impl CompleteQueue {
     fn new(dma: &DeviceDma, queue_size: usize, page_size: usize) -> Result<Self> {
-        let queue = dma.array_zero_with_align(queue_size, page_size, DmaDirection::FromDevice)?;
+        let queue = dma.coherent_array_zero_with_align(queue_size, page_size)?;
         Ok(CompleteQueue {
             queue,
             head: 0,
@@ -318,7 +381,8 @@ impl CompleteQueue {
 
     // check if there is completed command in completion queue
     fn complete(&self) -> Option<NvmeCompletion> {
-        let cqe = self.queue.read(self.head as _)?;
+        rmb();
+        let cqe = self.queue.read_cpu(self.head as _)?;
 
         let complete = cqe.status.phase() != self.phase;
 
@@ -327,19 +391,24 @@ impl CompleteQueue {
 
     fn spin_for_complete(&mut self) -> NvmeCompletion {
         loop {
-            if let Some(e) = self.complete() {
-                let next_head = self.head + 1;
-                if next_head >= self.queue.len() as u32 {
-                    self.head = 0;
-                    self.phase = !self.phase;
-                } else {
-                    self.head = next_head;
-                }
-
+            if let Some(e) = self.take_complete() {
                 return e;
             }
             spin_loop();
         }
+    }
+
+    fn take_complete(&mut self) -> Option<NvmeCompletion> {
+        let complete = self.complete()?;
+        let next_head = self.head + 1;
+        if next_head >= self.queue.len() as u32 {
+            self.head = 0;
+            self.phase = !self.phase;
+        } else {
+            self.head = next_head;
+        }
+
+        Some(complete)
     }
 
     pub fn len(&self) -> usize {

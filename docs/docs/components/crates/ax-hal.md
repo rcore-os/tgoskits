@@ -137,7 +137,7 @@ graph LR
 - `ax-alloc`：在页表/虚拟化路径下承担帧或内存块来源。
 
 ### 间接依赖
-- 各类驱动基础组件，如 `ax-driver-base`、`ax-driver-virtio` 等，会通过 `axplat` 与上层模块间接参与平台 bring-up。
+- 各类驱动能力接口，如 `rdrive`、`rdif-block` 和其它 `rdif-*`，会通过平台与上层模块间接参与 bring-up。
 - `ax-percpu`、`kernel_guard`、`memory_addr` 等基础组件通过 `ax-cpu`、`axplat` 或 `paging` 路径提供底层支持。
 
 ### 3.3 关键直接消费者
@@ -191,7 +191,7 @@ ax-hal = { workspace = true }
 ### 集成测试
 更关键的是系统级验证：
 
-- ArceOS 最小启动路径，例如 `ax-helloworld`。
+- ArceOS 最小启动路径，例如 `arceos-helloworld`。
 - 依赖 `paging`、`irq`、`smp` 的场景，如 `ax-mm`、`ax-task` 相关测试。
 - StarryOS 与 Axvisor 的最小 bring-up 路径，验证 HAL 改动没有破坏上层复用。
 

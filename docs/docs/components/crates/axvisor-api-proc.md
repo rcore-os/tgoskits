@@ -1,10 +1,10 @@
 # `axvisor_api_proc`
 
-> 路径：`components/axvisor_api/axvisor_api_proc`
+> 路径：`virtualization/axvisor_api_proc`
 > 类型：过程宏库
 > 分层：组件层 / 编译期 API 生成辅助
 > 版本：`0.1.0`
-> 文档依据：当前仓库源码、`Cargo.toml`、`README.md`、`src/lib.rs`、`src/items.rs`、`components/axvisor_api/src/lib.rs`、`components/axvisor_api/src/test.rs`
+> 文档依据：当前仓库源码、`Cargo.toml`、`README.md`、`src/lib.rs`、`src/items.rs`、`virtualization/axvisor_api/src/lib.rs`、`virtualization/axvisor_api/src/test.rs`
 
 `axvisor_api_proc` 不是运行时 API 库，而是 `axvisor_api` 背后的**过程宏辅助 crate**。它的职责是把一组带 `extern fn` 语法标记的模块，展开成可调用的 API 包装函数和对应的 `crate_interface` trait/impl 胶水代码。因此它属于“编译期 glue”，而不是 Hypervisor 子系统本体。
 
@@ -90,7 +90,7 @@
 
 ### 1.6 与 `axvisor_api` 的真实关系
 
-`components/axvisor_api/src/lib.rs` 直接：
+`virtualization/axvisor_api/src/lib.rs` 直接：
 
 - `pub use axvisor_api_proc::{api_mod, api_mod_impl};`
 
@@ -217,7 +217,7 @@
 该 crate 自身没有单独的 `tests/`。当前主要依赖：
 
 - `axvisor_api/src/test.rs`
-- `components/axvisor_api/examples/example.rs`
+- `virtualization/axvisor_api/examples/example.rs`
 
 来间接验证宏的可用性。
 

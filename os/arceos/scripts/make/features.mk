@@ -40,6 +40,7 @@ override FEATURES := $(strip $(FEATURES))
 
 ax_feat :=
 lib_feat :=
+direct_feat :=
 
 ifeq ($(PLAT_DYN),y)
   ax_feat += plat-dyn
@@ -55,10 +56,6 @@ ifeq ($(filter $(LOG),off error warn info debug trace),)
   $(error "LOG" must be one of "off", "error", "warn", "info", "debug", "trace")
 endif
 
-ifeq ($(BUS),mmio)
-  ax_feat += bus-mmio
-endif
-
 ifeq ($(DWARF),y)
   ax_feat += dwarf
 endif
@@ -67,9 +64,12 @@ ifeq ($(shell test $(SMP) -gt 1; echo $$?),0)
   lib_feat += smp
 endif
 
-ax_feat += $(filter-out $(lib_features),$(FEATURES))
-lib_feat += $(filter $(lib_features),$(FEATURES))
+direct_feat += $(filter %/%,$(FEATURES))
+legacy_feat := $(filter-out %/%,$(FEATURES))
 
-AX_FEAT := $(strip $(addprefix $(ax_feat_prefix),$(ax_feat)))
+ax_feat += $(filter-out $(lib_features),$(legacy_feat))
+lib_feat += $(filter $(lib_features),$(legacy_feat))
+
+AX_FEAT := $(strip $(addprefix $(ax_feat_prefix),$(ax_feat)) $(direct_feat))
 LIB_FEAT := $(strip $(addprefix $(lib_feat_prefix),$(lib_feat)))
 APP_FEAT := $(strip $(shell echo $(APP_FEATURES) | tr ',' ' '))

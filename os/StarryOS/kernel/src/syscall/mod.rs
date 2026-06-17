@@ -1,8 +1,10 @@
 mod fs;
 mod io_mpx;
 mod ipc;
+mod kmod;
 mod mm;
 mod net;
+mod ns;
 mod resources;
 mod signal;
 mod sync;
@@ -11,26 +13,45 @@ mod task;
 mod time;
 
 use ax_errno::{AxError, LinuxError};
-use ax_hal::uspace::UserContext;
+use ax_runtime::hal::cpu::uspace::UserContext;
 use syscalls::Sysno;
 
 pub use self::{
-    fs::*, io_mpx::*, ipc::*, mm::*, net::*, resources::*, signal::*, sync::*, sys::*, task::*,
-    time::*,
+    fs::*, io_mpx::*, ipc::*, mm::*, net::*, ns::*, resources::*, signal::*, sync::*, sys::*,
+    task::*, time::*,
 };
 
 pub fn syscall_allows_signal_restart(sysno: usize) -> bool {
     !matches!(Sysno::new(sysno), Some(Sysno::msgsnd | Sysno::msgrcv))
 }
 
+// `#[inline(never)]` keeps `sysno` reachable as a real call target so a kprobe
+// planted at its symbol actually fires; its first-argument register also holds
+// the raw syscall id, letting a `profile`-style eBPF demo read the syscall
+// number directly off the probed register. In release builds LLVM would
+// otherwise inline it into `handle_syscall` and the planted `int3` would land
+// on a copy that never executes, so the probe would never trigger.
+#[inline(never)]
+pub fn sysno(id: usize) -> Option<Sysno> {
+    let Some(sysno) = Sysno::new(id) else {
+        warn!("Invalid syscall number: {}", id);
+        return None;
+    };
+    Some(sysno)
+}
+
 pub fn handle_syscall(uctx: &mut UserContext) {
-    let Some(sysno) = Sysno::new(uctx.sysno()) else {
-        warn!("Invalid syscall number: {}", uctx.sysno());
+    let Some(sysno) = sysno(uctx.sysno()) else {
         uctx.set_retval(-LinuxError::ENOSYS.code() as _);
         return;
     };
 
     trace!("Syscall {sysno:?}");
+    // Snapshot sepc before dispatching: if a signal handler is installed
+    // during the syscall, the handler redirects uctx.ip() elsewhere.
+    // We must not overwrite retval when that happens, because on
+    // non-x86_64 arches retval and arg0 (signo) share a register.
+    let prev_ip = uctx.ip();
 
     let result = match sysno {
         // fs ctl
@@ -86,6 +107,53 @@ pub fn handle_syscall(uctx: &mut UserContext) {
         ),
         Sysno::sync => sys_sync(),
         Sysno::syncfs => sys_syncfs(uctx.arg0() as _),
+
+        // xattr stubs — rsext4 has no extended attributes, return empty/ENODATA/EOPNOTSUPP
+        Sysno::listxattr => sys_listxattr(uctx.arg0() as _, uctx.arg1() as _, uctx.arg2() as _),
+        Sysno::llistxattr => sys_llistxattr(uctx.arg0() as _, uctx.arg1() as _, uctx.arg2() as _),
+        Sysno::flistxattr => sys_flistxattr(uctx.arg0() as _, uctx.arg1() as _, uctx.arg2() as _),
+        Sysno::getxattr => sys_getxattr(
+            uctx.arg0() as _,
+            uctx.arg1() as _,
+            uctx.arg2() as _,
+            uctx.arg3() as _,
+        ),
+        Sysno::lgetxattr => sys_lgetxattr(
+            uctx.arg0() as _,
+            uctx.arg1() as _,
+            uctx.arg2() as _,
+            uctx.arg3() as _,
+        ),
+        Sysno::fgetxattr => sys_fgetxattr(
+            uctx.arg0() as _,
+            uctx.arg1() as _,
+            uctx.arg2() as _,
+            uctx.arg3() as _,
+        ),
+        Sysno::setxattr => sys_setxattr(
+            uctx.arg0() as _,
+            uctx.arg1() as _,
+            uctx.arg2() as _,
+            uctx.arg3() as _,
+            uctx.arg4() as _,
+        ),
+        Sysno::lsetxattr => sys_lsetxattr(
+            uctx.arg0() as _,
+            uctx.arg1() as _,
+            uctx.arg2() as _,
+            uctx.arg3() as _,
+            uctx.arg4() as _,
+        ),
+        Sysno::fsetxattr => sys_fsetxattr(
+            uctx.arg0() as _,
+            uctx.arg1() as _,
+            uctx.arg2() as _,
+            uctx.arg3() as _,
+            uctx.arg4() as _,
+        ),
+        Sysno::removexattr => sys_removexattr(uctx.arg0() as _, uctx.arg1() as _),
+        Sysno::lremovexattr => sys_lremovexattr(uctx.arg0() as _, uctx.arg1() as _),
+        Sysno::fremovexattr => sys_fremovexattr(uctx.arg0() as _, uctx.arg1() as _),
 
         // file ops
         #[cfg(target_arch = "x86_64")]
@@ -219,6 +287,56 @@ pub fn handle_syscall(uctx: &mut UserContext) {
             uctx.arg4() as _,
             uctx.arg5() as _,
         ),
+        Sysno::process_vm_readv => sys_process_vm_readv(
+            uctx.arg0() as _,
+            uctx.arg1() as _,
+            uctx.arg2() as _,
+            uctx.arg3() as _,
+            uctx.arg4() as _,
+            uctx.arg5() as _,
+        ),
+        Sysno::process_vm_writev => sys_process_vm_writev(
+            uctx.arg0() as _,
+            uctx.arg1() as _,
+            uctx.arg2() as _,
+            uctx.arg3() as _,
+            uctx.arg4() as _,
+            uctx.arg5() as _,
+        ),
+        Sysno::io_setup => sys_io_setup(uctx.arg0() as _, uctx.arg1() as _),
+        Sysno::io_destroy => sys_io_destroy(uctx.arg0() as _),
+        Sysno::io_submit => sys_io_submit(uctx.arg0() as _, uctx.arg1() as _, uctx.arg2() as _),
+        Sysno::io_getevents => sys_io_getevents(
+            uctx.arg0() as _,
+            uctx.arg1() as _,
+            uctx.arg2() as _,
+            uctx.arg3() as _,
+            uctx.arg4() as _,
+        ),
+        Sysno::io_pgetevents => sys_io_pgetevents(
+            uctx.arg0() as _,
+            uctx.arg1() as _,
+            uctx.arg2() as _,
+            uctx.arg3() as _,
+            uctx.arg4() as _,
+            uctx.arg5(),
+        ),
+        Sysno::io_cancel => sys_io_cancel(uctx.arg0() as _, uctx.arg1() as _, uctx.arg2() as _),
+        Sysno::io_uring_setup => sys_io_uring_setup(uctx.arg0() as _, uctx.arg1() as _),
+        Sysno::io_uring_enter => sys_io_uring_enter(
+            uctx.arg0() as _,
+            uctx.arg1() as _,
+            uctx.arg2() as _,
+            uctx.arg3() as _,
+            uctx.arg4(),
+            uctx.arg5(),
+        ),
+        Sysno::io_uring_register => sys_io_uring_register(
+            uctx.arg0() as _,
+            uctx.arg1() as _,
+            uctx.arg2(),
+            uctx.arg3() as _,
+        ),
         Sysno::sendfile => sys_sendfile(
             uctx.arg0() as _,
             uctx.arg1() as _,
@@ -270,12 +388,21 @@ pub fn handle_syscall(uctx: &mut UserContext) {
             uctx.arg4().into(),
             uctx.arg5().into(),
         ),
+        #[cfg(target_arch = "x86_64")]
+        Sysno::epoll_create => sys_epoll_create(uctx.arg0() as _),
         Sysno::epoll_create1 => sys_epoll_create1(uctx.arg0() as _),
         Sysno::epoll_ctl => sys_epoll_ctl(
             uctx.arg0() as _,
             uctx.arg1() as _,
             uctx.arg2() as _,
             uctx.arg3().into(),
+        ),
+        #[cfg(target_arch = "x86_64")]
+        Sysno::epoll_wait => sys_epoll_wait(
+            uctx.arg0() as _,
+            uctx.arg1().into(),
+            uctx.arg2() as _,
+            uctx.arg3() as _,
         ),
         Sysno::epoll_pwait => sys_epoll_pwait(
             uctx.arg0() as _,
@@ -312,6 +439,13 @@ pub fn handle_syscall(uctx: &mut UserContext) {
 
         // event
         Sysno::eventfd2 => sys_eventfd2(uctx.arg0() as _, uctx.arg1() as _),
+        #[cfg(target_arch = "x86_64")]
+        Sysno::inotify_init => sys_inotify_init1(0),
+        Sysno::inotify_init1 => sys_inotify_init1(uctx.arg0() as _),
+        Sysno::inotify_add_watch => {
+            sys_inotify_add_watch(uctx.arg0() as _, uctx.arg1() as _, uctx.arg2() as _)
+        }
+        Sysno::inotify_rm_watch => sys_inotify_rm_watch(uctx.arg0() as _, uctx.arg1() as _),
         Sysno::timerfd_create => sys_timerfd_create(uctx.arg0() as _, uctx.arg1() as _),
         Sysno::timerfd_settime => sys_timerfd_settime(
             uctx.arg0() as _,
@@ -437,7 +571,16 @@ pub fn handle_syscall(uctx: &mut UserContext) {
 
         // task ops
         Sysno::execve => sys_execve(uctx, uctx.arg0() as _, uctx.arg1() as _, uctx.arg2() as _),
+        Sysno::execveat => sys_execveat(
+            uctx,
+            uctx.arg0() as _,
+            uctx.arg1() as _,
+            uctx.arg2() as _,
+            uctx.arg3() as _,
+            uctx.arg4() as _,
+        ),
         Sysno::set_tid_address => sys_set_tid_address(uctx.arg0()),
+        Sysno::getcpu => sys_getcpu(uctx.arg0() as _, uctx.arg1() as _, uctx.arg2()),
         #[cfg(target_arch = "x86_64")]
         Sysno::arch_prctl => sys_arch_prctl(uctx, uctx.arg0() as _, uctx.arg1() as _),
         Sysno::prctl => sys_prctl(
@@ -453,9 +596,24 @@ pub fn handle_syscall(uctx: &mut UserContext) {
             uctx.arg2() as _,
             uctx.arg3() as _,
         ),
+        // Legacy getrlimit/setrlimit -> prlimit64. The syscalls crate defines these
+        // numbers on all four arches (x86_64 #97/#160; riscv64/aarch64/loongarch64
+        // #163/#164). They are load-bearing on riscv64/x86_64 (which keep
+        // __ARCH_WANT_SET_GET_RLIMIT, so glibc/Go issue the legacy call); on
+        // aarch64/loongarch64 stock Linux is asm-generic and returns ENOSYS there
+        // (libc uses prlimit64 only), so this arm is a harmless, more-permissive
+        // superset. `struct rlimit` is two `unsigned long` == two u64 on every
+        // 64-bit arch, layout-identical to `rlimit64`, so route through prlimit64
+        // with pid=0 (== current process). Go's syscall package invokes the legacy
+        // getrlimit directly (consul on riscv64 aborts with ENOSYS otherwise).
+        Sysno::getrlimit => sys_prlimit64(0, uctx.arg0() as _, core::ptr::null(), uctx.arg1() as _),
+        Sysno::setrlimit => {
+            sys_prlimit64(0, uctx.arg0() as _, uctx.arg1() as _, core::ptr::null_mut())
+        }
         Sysno::capget => sys_capget(uctx.arg0() as _, uctx.arg1() as _),
         Sysno::capset => sys_capset(uctx.arg0() as _, uctx.arg1() as _),
         Sysno::umask => sys_umask(uctx.arg0() as _),
+        Sysno::personality => sys_personality(uctx.arg0()),
         Sysno::setreuid => sys_setreuid(uctx.arg0() as _, uctx.arg1() as _),
         Sysno::setregid => sys_setregid(uctx.arg0() as _, uctx.arg1() as _),
         Sysno::setresuid => sys_setresuid(uctx.arg0() as _, uctx.arg1() as _, uctx.arg2() as _),
@@ -466,6 +624,17 @@ pub fn handle_syscall(uctx: &mut UserContext) {
             uctx.arg2() as _,
             uctx.arg3() as _,
             uctx.arg4() as _,
+        ),
+        Sysno::set_mempolicy => {
+            sys_set_mempolicy(uctx.arg0() as _, uctx.arg1() as _, uctx.arg2() as _)
+        }
+        Sysno::mbind => sys_mbind(
+            uctx.arg0() as _,
+            uctx.arg1() as _,
+            uctx.arg2() as _,
+            uctx.arg3() as _,
+            uctx.arg4() as _,
+            uctx.arg5() as _,
         ),
 
         // task management
@@ -486,9 +655,18 @@ pub fn handle_syscall(uctx: &mut UserContext) {
         Sysno::fork => sys_fork(uctx),
         #[cfg(target_arch = "x86_64")]
         Sysno::vfork => sys_vfork(uctx),
+        Sysno::unshare => sys_unshare(uctx.arg0() as _),
+        Sysno::setns => sys_setns(uctx.arg0() as _, uctx.arg1() as _),
         Sysno::exit => sys_exit(uctx.arg0() as _),
         Sysno::exit_group => sys_exit_group(uctx.arg0() as _),
         Sysno::wait4 => sys_waitpid(uctx.arg0() as _, uctx.arg1() as _, uctx.arg2() as _),
+        Sysno::waitid => sys_waitid(
+            uctx.arg0() as _,
+            uctx.arg1() as _,
+            uctx.arg2() as _,
+            uctx.arg3() as _,
+        ),
+        Sysno::ptrace => sys_ptrace(uctx.arg0() as _, uctx.arg1(), uctx.arg2(), uctx.arg3()),
         Sysno::getsid => sys_getsid(uctx.arg0() as _),
         Sysno::setsid => sys_setsid(),
         Sysno::getpgid => sys_getpgid(uctx.arg0() as _),
@@ -563,12 +741,22 @@ pub fn handle_syscall(uctx: &mut UserContext) {
         Sysno::setfsuid => sys_setfsuid(uctx.arg0() as _),
         Sysno::setfsgid => sys_setfsgid(uctx.arg0() as _),
         Sysno::uname => sys_uname(uctx.arg0() as _),
+        Sysno::sethostname => sys_sethostname(uctx.arg0() as _, uctx.arg1() as _),
+        Sysno::setdomainname => sys_setdomainname(uctx.arg0() as _, uctx.arg1() as _),
         Sysno::sysinfo => sys_sysinfo(uctx.arg0() as _),
         Sysno::syslog => sys_syslog(uctx.arg0() as _, uctx.arg1() as _, uctx.arg2() as _),
         Sysno::getrandom => sys_getrandom(uctx.arg0() as _, uctx.arg1() as _, uctx.arg2() as _),
         Sysno::seccomp => sys_seccomp(uctx.arg0() as _, uctx.arg1() as _, uctx.arg2() as _),
         #[cfg(target_arch = "riscv64")]
         Sysno::riscv_flush_icache => sys_riscv_flush_icache(),
+        #[cfg(target_arch = "riscv64")]
+        Sysno::riscv_hwprobe => sys_riscv_hwprobe(
+            uctx.arg0() as _,
+            uctx.arg1() as _,
+            uctx.arg2() as _,
+            uctx.arg3() as _,
+            uctx.arg4() as _,
+        ),
 
         // sync
         Sysno::membarrier => sys_membarrier(uctx.arg0() as _, uctx.arg1() as _, uctx.arg2() as _),
@@ -691,17 +879,34 @@ pub fn handle_syscall(uctx: &mut UserContext) {
             uctx.arg3() as _,
         ),
 
-        // dummy fds
-        Sysno::userfaultfd
-        | Sysno::perf_event_open
-        | Sysno::io_uring_setup
-        | Sysno::bpf
-        | Sysno::fsopen
-        | Sysno::fspick
-        | Sysno::open_tree
-        | Sysno::memfd_secret => sys_dummy_fd(sysno),
+        // The new mount API (fsopen/fsconfig/fsmount/move_mount, plus
+        // fspick/open_tree) is not implemented. Report ENOSYS instead of
+        // handing back a dummy fd: systemd probes this API and only falls back
+        // to the classic mount(2) — which we do support — when the entry point
+        // reports "not supported". A fake fd traps it into the new path, where
+        // the follow-up fsconfig then hard-fails and aborts the mount.
+        Sysno::fsopen | Sysno::fspick | Sysno::open_tree => Err(AxError::Unsupported),
 
-        Sysno::fanotify_init | Sysno::inotify_init1 => Err(AxError::Unsupported),
+        // dummy fds
+        Sysno::userfaultfd | Sysno::memfd_secret => sys_dummy_fd(sysno),
+
+        Sysno::bpf => crate::ebpf::sys_bpf(uctx.arg0() as _, uctx.arg1(), uctx.arg2() as _),
+        Sysno::perf_event_open => crate::perf::sys_perf_event_open(
+            uctx.arg0(),
+            uctx.arg1() as _,
+            uctx.arg2() as _,
+            uctx.arg3() as _,
+            uctx.arg4() as _,
+        ),
+        Sysno::init_module => {
+            kmod::sys_init_module(uctx.arg0() as _, uctx.arg1() as _, uctx.arg2() as _)
+        }
+        Sysno::finit_module => {
+            kmod::sys_finit_module(uctx.arg0() as _, uctx.arg1() as _, uctx.arg2() as _)
+        }
+        Sysno::delete_module => kmod::sys_delete_module(uctx.arg0() as _, uctx.arg1() as _),
+
+        Sysno::fanotify_init => Err(AxError::Unsupported),
 
         Sysno::timer_create => {
             sys_timer_create(uctx.arg0() as _, uctx.arg1() as _, uctx.arg2() as _)
@@ -767,6 +972,9 @@ pub fn handle_syscall(uctx: &mut UserContext) {
         }
     };
     debug!("Syscall {sysno} return {result:?}");
+    let new_retval = result.unwrap_or_else(|err| -LinuxError::from(err).code() as _) as _;
 
-    uctx.set_retval(result.unwrap_or_else(|err| -LinuxError::from(err).code() as _) as _);
+    if uctx.ip() == prev_ip {
+        uctx.set_retval(new_retval);
+    }
 }

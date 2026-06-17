@@ -3,7 +3,7 @@
 #![no_main]
 #![feature(used_with_arg)]
 
-use rdrive::{Phandle, PlatformDevice, probe::OnProbeError, register::FdtInfo};
+use rdrive::{Phandle, probe::OnProbeError, register::ProbeFdt};
 
 extern crate alloc;
 
@@ -655,7 +655,8 @@ rdrive::module_driver! {
     }],
 }
 
-fn on_probe_cru(node: FdtInfo<'_>, dev: PlatformDevice) -> Result<(), OnProbeError> {
+fn on_probe_cru(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
+    let (node, dev) = probe.into_parts();
     // Initialization code for CRU can be added here if needed.
     // 获取 CRU 寄存器基址
     let Some(reg) = node.node.reg().and_then(|mut r| r.next()) else {

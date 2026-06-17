@@ -1,0 +1,115 @@
+name: Starry Apps
+
+on:
+  schedule:
+    # GitHub cron uses UTC. This runs at 02:00 Beijing time (UTC+8).
+    - cron: "0 18 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+concurrency:
+  group: starry-apps-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  scheduled_clippy_all:
+    name: Scheduled clippy all
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/rcore-os/tgoskits-container:latest
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Restore Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: starry-apps-clippy-all
+          save-if: ${{ github.event_name == 'schedule' }}
+
+      - name: Show Rust version
+        run: rustc --version
+
+      - name: Run clippy all
+        shell: bash
+        run: |
+          set -euxo pipefail
+          cargo xtask clippy --all
+
+  starry_apps:
+    name: ${{ matrix.name }}
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/rcore-os/tgoskits-container:latest
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Starry app smoke x86_64
+            cache_key: starry-apps-x86_64
+            arch: x86_64
+          - name: Starry app smoke aarch64
+            cache_key: starry-apps-aarch64
+            arch: aarch64
+          - name: Starry app smoke riscv64
+            cache_key: starry-apps-riscv64
+            arch: riscv64
+          - name: Starry app smoke loongarch64
+            cache_key: starry-apps-loongarch64
+            arch: loongarch64
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Show checkout state
+        shell: bash
+        run: |
+          set -eux
+          command -v git
+          git -c safe.directory="${GITHUB_WORKSPACE}" rev-parse --show-toplevel
+          git -c safe.directory="${GITHUB_WORKSPACE}" rev-parse --is-inside-work-tree
+
+      - name: Ensure qemu user emulators
+        shell: bash
+        run: |
+          set -eux
+          for emulator in \
+            qemu-aarch64-static \
+            qemu-riscv64-static \
+            qemu-loongarch64-static \
+            qemu-x86_64-static
+          do
+            if ! command -v "${emulator}" >/dev/null 2>&1; then
+              echo "::error::${emulator} not found; rebuild the CI container image to include qemu-user-static"
+              exit 1
+            fi
+          done
+
+      - name: Restore Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ${{ matrix.cache_key }}
+          save-if: ${{ github.event_name == 'schedule' }}
+
+      - name: Show Rust version
+        run: rustc --version
+
+      - name: Run Starry app smoke
+        env:
+          STARRY_APK_REGION: us
+        shell: bash
+        run: |
+          set -euxo pipefail
+          cargo xtask starry app qemu --all --arch "${{ matrix.arch }}"

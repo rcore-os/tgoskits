@@ -47,6 +47,10 @@ impl DwMmc {
             Ok(CommandPoll::Complete) => self
                 .take_command_response()
                 .map(CommandResponsePoll::Complete),
+            // Future CommandPoll variants: treat as best-effort harvest, same as Err path.
+            Ok(_) => self
+                .take_command_response()
+                .map(CommandResponsePoll::Complete),
             Err(_) => self
                 .take_command_response()
                 .map(CommandResponsePoll::Complete),
@@ -99,7 +103,17 @@ impl DwMmc {
             return Err(err);
         }
         if status.command_done() {
-            let response = decode_response(self, cmd.resp_type)?;
+            let response = match decode_response(self, cmd.resp_type) {
+                Ok(r) => r,
+                Err(err) => {
+                    // Park the FSM in Failed before propagating: bare `?` would
+                    // leave it in Issued while the IRQ status bits are already
+                    // cleared, so the next poll would idle until the caller's
+                    // own timeout fires.
+                    self.command_state = CommandState::Failed { error: err };
+                    return Err(err);
+                }
+            };
             self.command_state = CommandState::Complete { response };
             return Ok(CommandPoll::Complete);
         }
@@ -211,6 +225,8 @@ fn encode_command(cmd: &ProtoCmd, data_dir: Option<DataDirection>) -> Cmd {
             // CRC error.
             c = c.with_response_expect(true);
         }
+        // Future ResponseType variants land here as bare command; controller default is no response_expect.
+        _ => {}
     }
 
     if cmd.cmd == 0 {
@@ -236,7 +252,7 @@ fn encode_command(cmd: &ProtoCmd, data_dir: Option<DataDirection>) -> Cmd {
 fn decode_response(host: &DwMmc, resp_type: ResponseType) -> Result<Response, Error> {
     let resp = host.regs.resp().read();
     Ok(match resp_type {
-        ResponseType::None => Response::None,
+        ResponseType::None => Response::Empty,
         ResponseType::R1 => Response::R1(R1Response { raw: resp[0] }),
         ResponseType::R1b => Response::R1b(R1Response { raw: resp[0] }),
         ResponseType::R2 => Response::R2(read_r2(resp)),
@@ -245,6 +261,8 @@ fn decode_response(host: &DwMmc, resp_type: ResponseType) -> Result<Response, Er
         ResponseType::R5 => Response::R5(SdioRwResponse::from_raw(resp[0])),
         ResponseType::R6 => Response::R6(RcaResponse::from_raw(resp[0])),
         ResponseType::R7 => Response::R7(IfCondResponse::from_raw(resp[0])),
+        // Future ResponseType variants are not decoded by this controller.
+        _ => return Err(Error::UnsupportedCommand),
     })
 }
 

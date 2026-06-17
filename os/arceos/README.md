@@ -189,28 +189,14 @@ Examples are given below and in the [app-helloworld](https://github.com/arceos-o
 
 ## How to build ArceOS for specific platforms and devices
 
-You need to manually link your application with the appropriate platform packages:
+AArch64 defaults to the dynamic platform path. For board-specific AArch64
+support, provide an external custom platform package or a platform config
+explicitly instead of relying on the removed in-tree static AArch64 platform
+crates.
 
-```rs
-// Add this line to your application (for raspi4 platform)
-extern crate axplat_aarch64_raspi;
-```
-
-Then set the `MYPLAT` variable when run `make`:
-
-```bash
-# Build helloworld for raspi4
-make MYPLAT=axplat-aarch64-raspi SMP=4 A=examples/helloworld
-```
-
-You may also need to select the corrsponding device drivers by setting the `FEATURES` variable:
-
-```bash
-# Build the shell app for raspi4, and use the SD card driver
-make MYPLAT=axplat-aarch64-raspi SMP=4 A=examples/shell FEATURES=page-alloc-4g,driver-bcm2835-sdhci BUS=mmio
-# Build httpserver for the bare-metal x86_64 platform, and use the ixgbe and ramdisk driver
-make PLAT_CONFIG=$(pwd)/configs/custom/x86_64-pc-oslab.toml A=examples/httpserver FEATURES=page-alloc-4g,driver-ixgbe,driver-ramdisk SMP=4
-```
+You may need to select the corresponding device drivers by setting the
+`FEATURES` variable. For x86_64 QEMU builds, prefer the `cargo xtask` dynamic
+platform flow instead of the removed in-tree static PC platform.
 
 ## How to reuse ArceOS modules in your own project
 

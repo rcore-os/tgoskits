@@ -3,9 +3,9 @@ extern crate alloc;
 use alloc::boxed::Box;
 use core::mem::size_of;
 
-use dma_api::{DArray, DeviceDma, DmaDirection, DmaOp};
+use dma_api::{CoherentArray, DeviceDma, DmaOp};
 use mmio_api::{Mmio, MmioAddr, MmioOp};
-use rdif_eth::{Event, IRxQueue, ITxQueue, Interface, NetError, QueueConfig};
+use rdif_eth::{DmaBuffer, Event, IRxQueue, ITxQueue, Interface, NetError, QueueConfig};
 
 use crate::err::{Error, Result};
 
@@ -84,7 +84,7 @@ impl Interface for E1000 {
 
         let desc = self
             .dma
-            .array_zero_with_align::<TxDesc>(QUEUE_SIZE, 16, DmaDirection::Bidirectional)
+            .coherent_array_zero_with_align::<TxDesc>(QUEUE_SIZE, 16)
             .ok()?;
 
         let desc_base = desc.dma_addr().as_u64();
@@ -121,7 +121,7 @@ impl Interface for E1000 {
 
         let desc = self
             .dma
-            .array_zero_with_align::<RxDesc>(QUEUE_SIZE, 16, DmaDirection::Bidirectional)
+            .coherent_array_zero_with_align::<RxDesc>(QUEUE_SIZE, 16)
             .ok()?;
 
         let desc_base = desc.dma_addr().as_u64();
@@ -180,7 +180,7 @@ impl Interface for E1000 {
 
 struct E1000TxQueue {
     regs: Regs,
-    desc: DArray<TxDesc>,
+    desc: CoherentArray<TxDesc>,
     dma_mask: u64,
     bus_addrs: [Option<u64>; QUEUE_SIZE],
     next_submit: usize,
@@ -201,8 +201,8 @@ impl ITxQueue for E1000TxQueue {
         }
     }
 
-    fn submit(&mut self, bus_addr: u64, len: usize) -> core::result::Result<(), NetError> {
-        if len > MAX_PACKET {
+    fn submit(&mut self, buffer: DmaBuffer) -> core::result::Result<(), NetError> {
+        if buffer.len > MAX_PACKET {
             return Err(NetError::Other(Box::new(Error::InvalidArgument(
                 "tx packet too large",
             ))));
@@ -216,8 +216,9 @@ impl ITxQueue for E1000TxQueue {
             return Err(NetError::Retry);
         }
 
-        self.desc.set(idx, TxDesc::new(bus_addr, len as u16));
-        self.bus_addrs[idx] = Some(bus_addr);
+        self.desc
+            .set_cpu(idx, TxDesc::new(buffer.bus_addr, buffer.len as u16));
+        self.bus_addrs[idx] = Some(buffer.bus_addr);
         self.next_submit = next;
         self.regs.write(TDT, next as u32);
 
@@ -226,7 +227,7 @@ impl ITxQueue for E1000TxQueue {
 
     fn reclaim(&mut self) -> Option<u64> {
         let idx = self.next_reclaim;
-        let desc = self.desc.read(idx)?;
+        let desc = self.desc.read_cpu(idx)?;
         if !desc.is_done() {
             return None;
         }
@@ -238,7 +239,7 @@ impl ITxQueue for E1000TxQueue {
 
 struct E1000RxQueue {
     regs: Regs,
-    desc: DArray<RxDesc>,
+    desc: CoherentArray<RxDesc>,
     dma_mask: u64,
     bus_addrs: [Option<u64>; QUEUE_SIZE],
     next_submit: usize,
@@ -259,8 +260,8 @@ impl IRxQueue for E1000RxQueue {
         }
     }
 
-    fn submit(&mut self, bus_addr: u64, len: usize) -> core::result::Result<(), NetError> {
-        if len > MAX_PACKET {
+    fn submit(&mut self, buffer: DmaBuffer) -> core::result::Result<(), NetError> {
+        if buffer.len > MAX_PACKET {
             return Err(NetError::Other(Box::new(Error::InvalidArgument(
                 "rx buffer too large",
             ))));
@@ -274,8 +275,8 @@ impl IRxQueue for E1000RxQueue {
             return Err(NetError::Retry);
         }
 
-        self.desc.set(idx, RxDesc::new(bus_addr));
-        self.bus_addrs[idx] = Some(bus_addr);
+        self.desc.set_cpu(idx, RxDesc::new(buffer.bus_addr));
+        self.bus_addrs[idx] = Some(buffer.bus_addr);
         self.next_submit = next;
         self.regs.write(RDT, next as u32);
 
@@ -284,7 +285,7 @@ impl IRxQueue for E1000RxQueue {
 
     fn reclaim(&mut self) -> Option<(u64, usize)> {
         let idx = self.next_reclaim;
-        let desc = self.desc.read(idx)?;
+        let desc = self.desc.read_cpu(idx)?;
         if !desc.is_done() {
             return None;
         }

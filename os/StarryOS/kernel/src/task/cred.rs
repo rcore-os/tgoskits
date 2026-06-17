@@ -1,4 +1,10 @@
 //! Process credentials (uid, gid, supplementary groups).
+//!
+//! Capability checks (`has_cap_*`): StarryOS does not yet track
+//! fine-grained Linux capability bitmaps.  All capability checks are
+//! currently approximated as `euid == 0` (or `fsuid == 0` for
+//! filesystem capabilities).  Once a `cap_effective` / `cap_permitted`
+//! mask is added to `Cred`, only these methods need updating.
 
 use alloc::sync::Arc;
 
@@ -63,6 +69,18 @@ impl Cred {
     /// Check whether this credential may raise scheduling priority
     /// (equivalent to `CAP_SYS_NICE` — approximated as euid == 0).
     pub fn has_cap_sys_nice(&self) -> bool {
+        self.euid == 0
+    }
+
+    /// Check whether this credential may change process resource limits
+    /// (equivalent to `CAP_SYS_RESOURCE` — approximated as euid == 0).
+    pub fn has_cap_sys_resource(&self) -> bool {
+        self.euid == 0
+    }
+
+    /// Check whether this credential may inspect another process
+    /// (equivalent to `CAP_SYS_PTRACE` — approximated as euid == 0).
+    pub fn has_cap_sys_ptrace(&self) -> bool {
         self.euid == 0
     }
 

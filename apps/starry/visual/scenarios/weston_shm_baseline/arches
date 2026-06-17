@@ -1,0 +1,4 @@
+# No arches enabled yet. weston's drm-backend needs /dev/dri/card0,
+# which lands with the DRM PR (#506). Once that merges and we have a
+# verified on-arch baseline, list the supported arches here (one per
+# line) to re-enable the scenario.

@@ -1,6 +1,7 @@
 [package]
 name = "dwmmc-host"
-version = "0.1.0"
+version = "0.1.3"
+repository.workspace = true
 edition = "2024"
 license = "Apache-2.0"
 description = "Synopsys DesignWare Mobile Storage Host Controller backend for sdmmc-protocol (no_std, FIFO/IDMAC)"

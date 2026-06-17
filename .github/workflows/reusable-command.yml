@@ -32,8 +32,8 @@ on:
         required: false
         type: string
         default: china
-      required_repository_owner:
-        description: Only run when the repository owner matches this value. Leave empty to run everywhere.
+      limit_to_owner:
+        description: Only run for this repository owner. Leave empty to run everywhere.
         required: false
         type: string
         default: ""
@@ -47,16 +47,39 @@ on:
         required: false
         type: string
         default: "1"
-
+      timeout_minutes:
+        description: Maximum minutes to allow the command job to run.
+        required: false
+        type: number
+        default: 360
+      upload_xtask_bin_artifact:
+        description: Upload the tg-xtask binary as a workflow artifact after the command succeeds.
+        required: false
+        type: boolean
+        default: false
+      download_xtask_bin_artifact:
+        description: Download and restore the tg-xtask binary artifact before running the command.
+        required: false
+        type: boolean
+        default: false
+      xtask_bin_artifact_name:
+        description: Artifact name used for the tarred tg-xtask binary.
+        required: false
+        type: string
+        default: tg-xtask-bin
+    secrets:
+      CLAW_API_KEY:
+        required: false
 jobs:
   run_host:
     if: >-
       ${{
         !inputs.use_container
-        && (inputs.required_repository_owner == '' || github.repository_owner == inputs.required_repository_owner)
+        && (inputs.limit_to_owner == '' || github.repository_owner == inputs.limit_to_owner)
         && (!inputs.main_pr_only || (github.event_name == 'pull_request' && github.base_ref == 'main'))
       }}
     runs-on: ${{ fromJson(inputs.runs_on) }}
+    timeout-minutes: ${{ inputs.timeout_minutes }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v6
@@ -76,16 +99,18 @@ jobs:
       - name: Run command
         env:
           STARRY_APK_REGION: ${{ inputs.apk_region }}
+          CLAW_API_KEY: ${{ secrets.CLAW_API_KEY }}
         run: ${{ inputs.command }}
 
   run_container:
     if: >-
       ${{
         inputs.use_container
-        && (inputs.required_repository_owner == '' || github.repository_owner == inputs.required_repository_owner)
+        && (inputs.limit_to_owner == '' || github.repository_owner == inputs.limit_to_owner)
         && (!inputs.main_pr_only || (github.event_name == 'pull_request' && github.base_ref == 'main'))
       }}
     runs-on: ${{ fromJson(inputs.runs_on) }}
+    timeout-minutes: ${{ inputs.timeout_minutes }}
     container:
       image: ${{ inputs.container_image }}
       credentials:
@@ -125,30 +150,12 @@ jobs:
         shell: bash
         run: |
           set -eux
-
           for arch in aarch64 riscv64 x86_64 loongarch64; do
             compiler="${arch}-linux-musl-cc"
-            if command -v "${compiler}" >/dev/null 2>&1; then
-              continue
+            if ! command -v "${compiler}" >/dev/null 2>&1; then
+              echo "::error::${compiler} not found; rebuild the CI container image to include musl cross toolchains"
+              exit 1
             fi
-
-            file="${arch}-linux-musl-cross.tgz"
-            tmpdir="$(mktemp -d)"
-            trap 'rm -rf "${tmpdir}"' EXIT
-
-            if ! wget -q "https://github.com/arceos-org/setup-musl/releases/download/prebuilt/${file}" -O "${tmpdir}/${file}"; then
-              if [ "${arch}" = "loongarch64" ]; then
-                wget -q "https://github.com/LoongsonLab/oscomp-toolchains-for-oskernel/releases/download/loongarch64-linux-musl-cross-gcc-13.2.0/${file}" -O "${tmpdir}/${file}"
-              else
-                wget -q "https://musl.cc/${file}" -O "${tmpdir}/${file}"
-              fi
-            fi
-
-            tar -xzf "${tmpdir}/${file}" -C /opt
-            install_dir="/opt/${arch}-linux-musl-cross/bin"
-            echo "${install_dir}" >> "${GITHUB_PATH}"
-            rm -rf "${tmpdir}"
-            trap - EXIT
           done
 
       - name: Restore Rust cache
@@ -158,10 +165,61 @@ jobs:
           shared-key: ${{ inputs.cache_key }}
           save-if: ${{ github.event_name == 'push' }}
 
+      - name: Download tg-xtask binary artifact
+        if: inputs.download_xtask_bin_artifact
+        uses: actions/download-artifact@v8
+        with:
+          name: ${{ inputs.xtask_bin_artifact_name }}
+          path: ${{ runner.temp }}/xtask-bin
+
+      - name: Restore tg-xtask binary artifact
+        if: inputs.download_xtask_bin_artifact
+        shell: bash
+        run: |
+          set -eux
+          tar -xf "${RUNNER_TEMP}/xtask-bin/tg-xtask-bin.tar" -C "${GITHUB_WORKSPACE}"
+          chmod +x "${GITHUB_WORKSPACE}/target/debug/tg-xtask"
+          test -x "${GITHUB_WORKSPACE}/target/debug/tg-xtask"
+
       - name: Show Rust version
         run: rustc --version
 
       - name: Run command
+        shell: bash
         env:
           STARRY_APK_REGION: ${{ inputs.apk_region }}
-        run: ${{ inputs.command }}
+          CLAW_API_KEY: ${{ secrets.CLAW_API_KEY }}
+          REUSABLE_COMMAND: ${{ inputs.command }}
+          USE_XTASK_BIN: ${{ inputs.download_xtask_bin_artifact }}
+        run: |
+          set -eo pipefail
+
+          command_text="${REUSABLE_COMMAND}"
+          if [ "${USE_XTASK_BIN}" = "true" ] && [[ "${command_text}" != *$'\n'* ]]; then
+            if [[ "${command_text}" == "cargo xtask" || "${command_text}" == cargo\ xtask\ * ]]; then
+              command_text="target/debug/tg-xtask${command_text#cargo xtask}"
+            fi
+          fi
+
+          command_file="${RUNNER_TEMP}/reusable-command.sh"
+          printf '%s\n' "${command_text}" > "${command_file}"
+          echo "Resolved command:"
+          sed 's/^/+ /' "${command_file}"
+          bash -e -o pipefail "${command_file}"
+
+      - name: Package tg-xtask binary artifact
+        if: success() && inputs.upload_xtask_bin_artifact
+        shell: bash
+        run: |
+          set -eux
+          test -x target/debug/tg-xtask
+          tar -cf "${RUNNER_TEMP}/tg-xtask-bin.tar" target/debug/tg-xtask
+
+      - name: Upload tg-xtask binary artifact
+        if: success() && inputs.upload_xtask_bin_artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ inputs.xtask_bin_artifact_name }}
+          path: ${{ runner.temp }}/tg-xtask-bin.tar
+          if-no-files-found: error
+          retention-days: 1

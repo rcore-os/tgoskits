@@ -1,20 +1,29 @@
-use alloc::collections::vec_deque::VecDeque;
-use core::{any::Any, task::Context};
+use core::{
+    any::Any,
+    ptr::NonNull,
+    sync::atomic::{AtomicBool, AtomicUsize, Ordering},
+    task::Context,
+};
 
 use ax_errno::{AxError, LinuxError};
-use ax_hal::mem::phys_to_virt;
 use ax_kspin::SpinNoIrq;
 use ax_memory_addr::{PhysAddr, pa};
 use ax_sync::Mutex;
-use ax_task::future::{block_on, poll_io};
+use ax_task::{
+    IrqNotify,
+    future::{block_on, poll_io},
+};
 use axfs_ng_vfs::{NodeFlags, VfsResult};
 use axpoll::{IoEvents, PollSet, Pollable};
 use bytemuck::AnyBitPattern;
-use dw_apb_uart::DW8250;
-use sg200x_bsp::pinmux::Pinmux;
+use sg200x_bsp::{
+    pinmux::Pinmux,
+    soc::{FMUX_BASE, IOBLK_BASE, IOBLK_GRTC_BASE},
+};
+use some_serial::ns16550::dw_apb::{DwApbUart, SG2002_UART_CLOCK};
 use starry_vm::{VmMutPtr, VmPtr};
 
-use crate::pseudofs::DeviceOps;
+use crate::pseudofs::{DeviceOps, dev::irq_byte_ring::ByteRing};
 
 const UART1_PADDR: PhysAddr = pa!(0x04150000);
 const UART2_PADDR: PhysAddr = pa!(0x04160000);
@@ -22,33 +31,82 @@ const UART1_IRQ: usize = 45;
 const UART2_IRQ: usize = 46;
 const RX_BUF_CAP: usize = 4096;
 
-static UART1_RX_BUF: SpinNoIrq<VecDeque<u8>> = SpinNoIrq::new(VecDeque::new());
-static UART2_RX_BUF: SpinNoIrq<VecDeque<u8>> = SpinNoIrq::new(VecDeque::new());
+/// MMIO span of a single UART block. Covers the DW APB shadow registers (USR at
+/// 0x7c etc.) — one page is more than enough and keeps the mapping page-aligned.
+const UART_MMIO_SIZE: usize = 0x1000;
+/// MMIO span covering the pinmux register groups. FMUX (0x03001000) and the
+/// Active-Domain IOBLK groups (0x03001800 + G1/G7/G10/G12 offsets) live in the
+/// same 4K page; GRTC (0x05027000) is mapped separately.
+const PINMUX_MMIO_SIZE: usize = 0x1000;
+
+static UART1_RX_BUF: SpinNoIrq<ByteRing<RX_BUF_CAP>> = SpinNoIrq::new(ByteRing::new());
+static UART2_RX_BUF: SpinNoIrq<ByteRing<RX_BUF_CAP>> = SpinNoIrq::new(ByteRing::new());
 static UART1_POLL: PollSet = PollSet::new();
 static UART2_POLL: PollSet = PollSet::new();
+static UART1_NOTIFY: IrqNotify = IrqNotify::new();
+static UART2_NOTIFY: IrqNotify = IrqNotify::new();
+static UART1_NOTIFY_WORKER: AtomicBool = AtomicBool::new(false);
+static UART2_NOTIFY_WORKER: AtomicBool = AtomicBool::new(false);
+/// Mapped virtual base of each UART, published by `TtySerial::new` so the raw
+/// IRQ handlers can reach the registers without recomputing a (now invalid on
+/// dynamic platforms) `phys_to_virt` address.
+static UART1_VADDR: AtomicUsize = AtomicUsize::new(0);
+static UART2_VADDR: AtomicUsize = AtomicUsize::new(0);
 
-fn uart_irq_handler(paddr: PhysAddr, buf: &SpinNoIrq<VecDeque<u8>>, poll: &PollSet) {
-    let mut uart = DW8250::new(phys_to_virt(paddr).as_usize());
+/// Map a physical MMIO region into the kernel address space and return its
+/// virtual base. Unlike `phys_to_virt`, this works on dynamic platforms where
+/// `PHYS_VIRT_OFFSET == 0` and there is no static linear MMIO window — `iomap`
+/// installs a real device mapping and is idempotent for already-mapped pages.
+fn iomap_usize(paddr: PhysAddr, size: usize) -> usize {
+    ax_mm::iomap(paddr, size)
+        .unwrap_or_else(|err| panic!("failed to iomap MMIO at {paddr:#x}+{size:#x}: {err:?}"))
+        .as_usize()
+}
+
+fn uart_irq_handler(vaddr: usize, buf: &SpinNoIrq<ByteRing<RX_BUF_CAP>>, notify: &IrqNotify) {
+    let mut uart = DwApbUart::new(vaddr);
     let mut rx = buf.lock();
     let mut got_data = false;
     while let Some(c) = uart.getchar() {
-        if rx.len() < RX_BUF_CAP {
-            rx.push_back(c);
-        }
+        let _ = rx.push_back(c);
         got_data = true;
     }
     uart.set_ier(true);
     drop(rx);
     if got_data {
-        poll.wake();
+        notify.notify_irq();
     }
 }
 
 fn uart1_irq_handler(_irq: usize) {
-    uart_irq_handler(UART1_PADDR, &UART1_RX_BUF, &UART1_POLL);
+    uart_irq_handler(
+        UART1_VADDR.load(Ordering::Relaxed),
+        &UART1_RX_BUF,
+        &UART1_NOTIFY,
+    );
 }
 fn uart2_irq_handler(_irq: usize) {
-    uart_irq_handler(UART2_PADDR, &UART2_RX_BUF, &UART2_POLL);
+    uart_irq_handler(
+        UART2_VADDR.load(Ordering::Relaxed),
+        &UART2_RX_BUF,
+        &UART2_NOTIFY,
+    );
+}
+
+unsafe fn uart1_raw_irq_handler(
+    ctx: ax_runtime::hal::irq::IrqContext,
+    _data: NonNull<()>,
+) -> ax_runtime::hal::irq::IrqReturn {
+    uart1_irq_handler(ctx.irq.0);
+    ax_runtime::hal::irq::IrqReturn::Handled
+}
+
+unsafe fn uart2_raw_irq_handler(
+    ctx: ax_runtime::hal::irq::IrqContext,
+    _data: NonNull<()>,
+) -> ax_runtime::hal::irq::IrqReturn {
+    uart2_irq_handler(ctx.irq.0);
+    ax_runtime::hal::irq::IrqReturn::Handled
 }
 
 #[repr(C)]
@@ -111,33 +169,71 @@ struct SerialConfig {
 }
 
 pub struct TtySerial {
-    paddr: PhysAddr,
+    vaddr: usize,
     irq: usize,
-    rx_buf: &'static SpinNoIrq<VecDeque<u8>>,
+    rx_buf: &'static SpinNoIrq<ByteRing<RX_BUF_CAP>>,
     poll_set: &'static PollSet,
     config: Mutex<SerialConfig>,
 }
 
+struct UartPort {
+    paddr: PhysAddr,
+    irq: usize,
+    rx_buf: &'static SpinNoIrq<ByteRing<RX_BUF_CAP>>,
+    poll_set: &'static PollSet,
+    notify: &'static IrqNotify,
+    worker_started: &'static AtomicBool,
+    vaddr_slot: &'static AtomicUsize,
+    irq_handler: ax_runtime::hal::irq::RawIrqHandler,
+    worker_name: &'static str,
+}
+
+fn start_uart_notify_worker(
+    poll_set: &'static PollSet,
+    notify: &'static IrqNotify,
+    started: &'static AtomicBool,
+    name: &'static str,
+) {
+    if started.swap(true, Ordering::AcqRel) {
+        return;
+    }
+    ax_task::spawn_with_name(
+        move || loop {
+            notify.wait();
+            // UART bytes are already in the RX buffer before the deferred wake.
+            unsafe { poll_set.wake(IoEvents::IN) };
+        },
+        name.into(),
+    );
+}
+
 impl TtySerial {
-    fn new(
-        paddr: PhysAddr,
-        irq: usize,
-        baud: u32,
-        rx_buf: &'static SpinNoIrq<VecDeque<u8>>,
-        poll_set: &'static PollSet,
-        irq_handler: fn(usize),
-    ) -> Self {
-        let vaddr = phys_to_virt(paddr).as_usize();
-        let mut uart = DW8250::new(vaddr);
-        uart.init_with_baud(baud);
+    fn new(port: &'static UartPort, baud: u32) -> Self {
+        let vaddr = iomap_usize(port.paddr, UART_MMIO_SIZE);
+        // Publish the mapped base before enabling the IRQ so the handler never
+        // observes a zero (unmapped) address.
+        port.vaddr_slot.store(vaddr, Ordering::Relaxed);
+        let mut uart = DwApbUart::new(vaddr);
+        uart.init_with_baud_clk(baud, SG2002_UART_CLOCK);
         uart.set_ier(true);
-        ax_hal::irq::register(irq, irq_handler);
-        ax_hal::irq::set_enable(irq, true);
+        let _ = ax_runtime::hal::irq::request_shared_irq(
+            port.irq,
+            port.irq_handler,
+            NonNull::dangling(),
+        )
+        .map_err(|err| warn!("failed to request serial IRQ {}: {err:?}", port.irq));
+        ax_runtime::hal::irq::set_enable(port.irq, true);
+        start_uart_notify_worker(
+            port.poll_set,
+            port.notify,
+            port.worker_started,
+            port.worker_name,
+        );
         Self {
-            paddr,
-            irq,
-            rx_buf,
-            poll_set,
+            vaddr,
+            irq: port.irq,
+            rx_buf: port.rx_buf,
+            poll_set: port.poll_set,
             config: Mutex::new(SerialConfig {
                 termios2: RawTermios2::new(RawTermios::raw(0), baud),
                 winsize: WinSize::default(),
@@ -146,11 +242,10 @@ impl TtySerial {
     }
 
     fn set_baud(&self, baud: u32) {
-        let vaddr = phys_to_virt(self.paddr).as_usize();
-        let mut uart = DW8250::new(vaddr);
-        uart.init_with_baud(baud);
+        let mut uart = DwApbUart::new(self.vaddr);
+        uart.init_with_baud_clk(baud, SG2002_UART_CLOCK);
         uart.set_ier(true);
-        ax_hal::irq::set_enable(self.irq, true);
+        ax_runtime::hal::irq::set_enable(self.irq, true);
     }
 }
 
@@ -165,16 +260,13 @@ impl DeviceOps for TtySerial {
                 return Err(AxError::WouldBlock);
             }
             let n = buf.len().min(rx.len());
-            for slot in buf.iter_mut().take(n) {
-                *slot = rx.pop_front().unwrap();
-            }
+            rx.drain_into(&mut buf[..n]);
             Ok(n)
         }))
     }
 
     fn write_at(&self, buf: &[u8], _offset: u64) -> VfsResult<usize> {
-        let vaddr = phys_to_virt(self.paddr).as_usize();
-        let mut uart = DW8250::new(vaddr);
+        let mut uart = DwApbUart::new(self.vaddr);
         for &b in buf {
             uart.putchar(b);
         }
@@ -258,39 +350,59 @@ impl Pollable for TtySerial {
 
     fn register(&self, cx: &mut Context<'_>, events: IoEvents) {
         if events.intersects(IoEvents::IN) {
-            self.poll_set.register(cx.waker());
+            // Serial poll registration happens from task context.
+            unsafe { self.poll_set.register(cx.waker(), IoEvents::IN) };
         }
     }
 }
 
+/// Map the pinmux register groups and build a `Pinmux` over the mapped virtual
+/// bases. FMUX and the Active-Domain IOBLK groups share a page, so the two
+/// `iomap` calls resolve to the same mapping (idempotent); GRTC is its own page.
+fn map_pinmux() -> Pinmux {
+    let fmux_vaddr = iomap_usize(pa!(FMUX_BASE), PINMUX_MMIO_SIZE);
+    let ioblk_vaddr = iomap_usize(pa!(IOBLK_BASE), PINMUX_MMIO_SIZE);
+    let ioblk_grtc_vaddr = iomap_usize(pa!(IOBLK_GRTC_BASE), PINMUX_MMIO_SIZE);
+    unsafe { Pinmux::new(fmux_vaddr, ioblk_vaddr, ioblk_grtc_vaddr) }
+}
+
+static UART1_PORT: UartPort = UartPort {
+    paddr: UART1_PADDR,
+    irq: UART1_IRQ,
+    rx_buf: &UART1_RX_BUF,
+    poll_set: &UART1_POLL,
+    notify: &UART1_NOTIFY,
+    worker_started: &UART1_NOTIFY_WORKER,
+    vaddr_slot: &UART1_VADDR,
+    irq_handler: uart1_raw_irq_handler,
+    worker_name: "uart1-notify",
+};
+
+static UART2_PORT: UartPort = UartPort {
+    paddr: UART2_PADDR,
+    irq: UART2_IRQ,
+    rx_buf: &UART2_RX_BUF,
+    poll_set: &UART2_POLL,
+    notify: &UART2_NOTIFY,
+    worker_started: &UART2_NOTIFY_WORKER,
+    vaddr_slot: &UART2_VADDR,
+    irq_handler: uart2_raw_irq_handler,
+    worker_name: "uart2-notify",
+};
+
 pub fn new_tty_s1(baud: u32) -> TtySerial {
-    let pinmux = Pinmux::new_with_offset(ax_config::plat::PHYS_VIRT_OFFSET);
-    pinmux.set_uart1();
-    TtySerial::new(
-        UART1_PADDR,
-        UART1_IRQ,
-        baud,
-        &UART1_RX_BUF,
-        &UART1_POLL,
-        uart1_irq_handler,
-    )
+    map_pinmux().set_uart1();
+    TtySerial::new(&UART1_PORT, baud)
 }
 
 pub fn new_tty_s2(baud: u32) -> TtySerial {
     use sg200x_bsp::pinmux::{FMUX_IIC0_SCL, FMUX_IIC0_SDA};
-    let pinmux = Pinmux::new_with_offset(ax_config::plat::PHYS_VIRT_OFFSET);
+    let pinmux = map_pinmux();
     // Wire UART2 to IIC0_SCL/SDA (0x03001070/74), matching the
     // original StarryOS sg2002 board layout: SCL → UART2_TX,
     // SDA → UART2_RX. Wrong pinmux (e.g. pwr_gpio0/1) sends bytes
     // to floating pads and the connected device never sees them.
     pinmux.set_iic0_scl_func(FMUX_IIC0_SCL::FSEL::Value::UART2_TX);
     pinmux.set_iic0_sda_func(FMUX_IIC0_SDA::FSEL::Value::UART2_RX);
-    TtySerial::new(
-        UART2_PADDR,
-        UART2_IRQ,
-        baud,
-        &UART2_RX_BUF,
-        &UART2_POLL,
-        uart2_irq_handler,
-    )
+    TtySerial::new(&UART2_PORT, baud)
 }
