@@ -557,7 +557,11 @@ fn ptrace_setregs(pid: usize, data: usize) -> AxResult<isize> {
     Err(AxError::Unsupported)
 }
 
-#[cfg(any(target_arch = "riscv64", target_arch = "loongarch64"))]
+#[cfg(any(
+    target_arch = "riscv64",
+    target_arch = "aarch64",
+    target_arch = "loongarch64"
+))]
 fn ptrace_getfpregs(pid: usize, data: usize) -> AxResult<isize> {
     if data == 0 {
         return Err(AxError::InvalidInput);
@@ -585,13 +589,22 @@ fn ptrace_getfpregs(pid: usize, data: usize) -> AxResult<isize> {
     Ok(0)
 }
 
-#[cfg(not(any(target_arch = "riscv64", target_arch = "x86_64")))]
+#[cfg(not(any(
+    target_arch = "riscv64",
+    target_arch = "aarch64",
+    target_arch = "loongarch64",
+    target_arch = "x86_64"
+)))]
 fn ptrace_getfpregs(pid: usize, data: usize) -> AxResult<isize> {
     let _ = (pid, data);
     Err(AxError::Unsupported)
 }
 
-#[cfg(any(target_arch = "riscv64", target_arch = "loongarch64"))]
+#[cfg(any(
+    target_arch = "riscv64",
+    target_arch = "aarch64",
+    target_arch = "loongarch64"
+))]
 fn ptrace_setfpregs(pid: usize, data: usize) -> AxResult<isize> {
     if data == 0 {
         return Err(AxError::InvalidInput);
@@ -612,7 +625,12 @@ fn ptrace_setfpregs(pid: usize, data: usize) -> AxResult<isize> {
     ptrace_write_stopped_fp_x86_64(pid, unsafe { fp_data.assume_init() })
 }
 
-#[cfg(not(any(target_arch = "riscv64", target_arch = "x86_64")))]
+#[cfg(not(any(
+    target_arch = "riscv64",
+    target_arch = "aarch64",
+    target_arch = "loongarch64",
+    target_arch = "x86_64"
+)))]
 fn ptrace_setfpregs(pid: usize, data: usize) -> AxResult<isize> {
     let _ = (pid, data);
     Err(AxError::Unsupported)
