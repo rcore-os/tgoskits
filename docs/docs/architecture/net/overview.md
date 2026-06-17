@@ -72,6 +72,7 @@ TGOSKits 的网络能力收敛在 `net/ax-net`。它是 ArceOS、StarryOS 和 Ax
 | `{ifname}-oob-poll` | OOB RX 设备（如 SDIO Wi-Fi）的专用 poll task | `OOB_RX_SIGNAL.wait()` |
 
 `NET_POLL_DEVICE_WAKER` 是全局设备 readiness waker。Router 会把它注册给所有允许触发全局协议栈推进的设备；设备 RX/IRQ/OOB 路径只唤醒 worker 和设置 poll 请求，不直接进入 smoltcp `Interface::poll()`。
+完整锁类型、锁顺序和禁止模式见[锁与并发](locks.md)。
 
 ### 全局锁顺序
 
@@ -90,6 +91,7 @@ SERVICE (Mutex<Service>)
 - `NET_CONTROL.state` 是独立 RwLock，接口查询（只读）可以在不持有 `SERVICE` 的情况下进行。
 - `ListenTable` 条目锁在 `SOCKET_SET` 锁内获取，保证 accept/snoop 的一致性。
 - 设备锁（`DeviceHandle.inner`）主要由 `{ifname}-rx` / `{ifname}-tx` worker 独立获取。worker 不应在持有设备锁时反向进入 `SERVICE` 或 `SOCKET_SET`，避免设备路径与协议核心互相阻塞。
+更细的控制面、Router、socket、Unix 和 vsock 锁划分见[锁与并发](locks.md)。
 
 ## 核心方案
 
