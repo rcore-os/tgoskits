@@ -76,6 +76,7 @@ use core::{
 use ax_errno::{AxError, AxResult, ax_err_type};
 use ax_sync::Mutex;
 use ax_task::{IrqNotify, WaitQueue};
+use axpoll::{IoEvents, PollSet};
 use smoltcp::{
     socket::dns::{self, GetQueryResultError, StartQueryError},
     wire::{DnsQueryType, EthernetAddress, IpAddress, Ipv4Address, Ipv4Cidr},
@@ -119,6 +120,10 @@ static NET_POLL_REQUESTED: AtomicBool = AtomicBool::new(false);
 static NET_POLL_WAKE: WaitQueue = WaitQueue::new();
 static NET_POLL_DEVICE_WAKER: LazyLock<Waker> =
     LazyLock::new(|| Waker::from(Arc::new(NetPollWake)));
+type DeferredPollWake = (Arc<PollSet>, IoEvents);
+static DEFERRED_POLL_WAKE_PENDING: AtomicBool = AtomicBool::new(false);
+static DEFERRED_POLL_WAKES: LazyLock<Mutex<Vec<DeferredPollWake>>> =
+    LazyLock::new(|| Mutex::new(Vec::new()));
 
 /// Registry of wireless control-plane handles, keyed by interface name.
 ///
@@ -443,6 +448,30 @@ pub fn request_poll() {
     NET_POLL_WAKE.notify_one(true);
 }
 
+pub(crate) fn defer_poll_wake(poll: Arc<PollSet>, ready: IoEvents) {
+    DEFERRED_POLL_WAKES.lock().push((poll, ready));
+    DEFERRED_POLL_WAKE_PENDING.store(true, Ordering::Release);
+    NET_POLL_WAKE.notify_one(true);
+}
+
+fn drain_deferred_poll_wakes() {
+    loop {
+        let wakes = {
+            let mut wakes = DEFERRED_POLL_WAKES.lock();
+            if wakes.is_empty() {
+                DEFERRED_POLL_WAKE_PENDING.store(false, Ordering::Release);
+                return;
+            }
+            core::mem::take(&mut *wakes)
+        };
+        for (poll, ready) in wakes {
+            // Readiness was published before the wake was deferred, and no
+            // service/socket/device locks are held while draining.
+            unsafe { poll.wake(ready) };
+        }
+    }
+}
+
 /// Returns ARP/neighbor entries collected from all devices.
 pub fn arp_entries() -> Vec<ArpEntry> {
     get_service().arp_entries()
@@ -685,7 +714,9 @@ fn net_poll_worker() {
     loop {
         let delay = next_poll_delay();
         let timed_out = NET_POLL_WAKE.wait_timeout_until(delay, || {
-            NET_POLL_REQUESTED.load(Ordering::Acquire) || NET_IRQ_NOTIFY.is_pending()
+            NET_POLL_REQUESTED.load(Ordering::Acquire)
+                || NET_IRQ_NOTIFY.is_pending()
+                || DEFERRED_POLL_WAKE_PENDING.load(Ordering::Acquire)
         });
         if !timed_out && NET_POLL_REQUESTED.load(Ordering::Acquire) {
             NET_POLL_REQUESTED.store(false, Ordering::Release);
@@ -693,7 +724,9 @@ fn net_poll_worker() {
         if NET_IRQ_NOTIFY.drain() {
             get_service().wake_all_devices();
         }
+        drain_deferred_poll_wakes();
         poll_until_idle();
+        drain_deferred_poll_wakes();
     }
 }
 
