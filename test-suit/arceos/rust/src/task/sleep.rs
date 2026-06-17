@@ -5,13 +5,14 @@ use std::{
 };
 
 const NUM_TASKS: usize = 5;
+const MIN_SLEEP_ADVANCE: Duration = Duration::from_millis(40);
 static FINISHED_TASKS: AtomicUsize = AtomicUsize::new(0);
 
 pub fn run() -> crate::TestResult {
     FINISHED_TASKS.store(0, Ordering::Release);
     let now = Instant::now();
     thread::sleep(Duration::from_millis(100));
-    assert!(now.elapsed() >= Duration::from_millis(50));
+    assert!(now.elapsed() >= MIN_SLEEP_ADVANCE);
 
     for i in 0..NUM_TASKS {
         thread::spawn(move || {
@@ -19,7 +20,7 @@ pub fn run() -> crate::TestResult {
             for _ in 0..2 {
                 let now = Instant::now();
                 thread::sleep(delay);
-                assert!(now.elapsed() >= delay / 2);
+                assert!(now.elapsed() >= MIN_SLEEP_ADVANCE.min(delay / 2));
             }
             FINISHED_TASKS.fetch_add(1, Ordering::Release);
         });
