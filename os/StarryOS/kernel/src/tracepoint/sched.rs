@@ -40,7 +40,13 @@ struct SchedTracepointImpl;
 
 #[ax_crate_interface::impl_interface]
 impl SchedTracepoint for SchedTracepointImpl {
-    fn on_sched_switch(prev_tid: u64, next_tid: u64, prev_state: u32) {
+    fn on_sched_switch(prev_tid: u64, next_tid: u64, prev_state: u32, next_name: &str) {
         trace_sched_switch(prev_tid, next_tid, prev_state);
+        // TPU 流水线可观测性：按任务累计 CPU 占用，只做原子加 / 定长拷贝，在 IRQ-off / 抢占禁的切换点安全。
+        // 仅 sg2002（TPU 所在平台）编译，其它平台零开销。
+        #[cfg(feature = "sg2002")]
+        crate::pseudofs::dev::tpu::sched_probe::on_switch(prev_tid, next_tid, next_name);
+        #[cfg(not(feature = "sg2002"))]
+        let _ = next_name;
     }
 }

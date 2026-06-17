@@ -4,5 +4,6 @@
 //! `Sg2002Tpu` API。
 
 mod device;
+pub mod sched_probe;
 
 pub use device::TpuDevice;

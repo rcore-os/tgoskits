@@ -9,5 +9,9 @@
 pub trait SchedTracepoint {
     /// Fired from `switch_to` after the `prev == next` short-circuit and
     /// before the architectural context switch. IRQs are disabled.
-    fn on_sched_switch(prev_tid: u64, next_tid: u64, prev_state: u32);
+    ///
+    /// `next_name` is a borrowed view of the incoming task's name, valid only
+    /// for the duration of the call — implementors must copy it if they need
+    /// to retain it (the borrow avoids a `String` clone on the hot path).
+    fn on_sched_switch(prev_tid: u64, next_tid: u64, prev_state: u32, next_name: &str);
 }
