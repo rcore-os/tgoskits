@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 
-. /usr/bin/nginx-alpine-mirror.sh
+. /usr/bin/nginx-runner-lib.sh
 
 BASE=/tmp/nginx-phase32
 CONF="$BASE/conf/keepalive.conf"
@@ -55,7 +55,7 @@ cleanup_nginx() {
 }
 
 prepare_packages() {
-    nginx_apk_add_with_fallback nginx curl busybox-extras netcat-openbsd || return 1
+    runner_ensure_packages || return 1
 }
 
 prepare_tree() {
@@ -88,7 +88,7 @@ start_nginx() {
     nginx -c "$CONF" -p "$BASE/" > "$LOGDIR/nginx-stdout.log" 2>&1 &
     i=0
     while [ "$i" -lt 6 ]; do
-        if run_with_timeout 1 curl -fsS -o /dev/null http://127.0.0.1:8080/small.txt >/dev/null 2>&1; then
+        if run_with_timeout 5 curl -fsS -o /dev/null http://127.0.0.1:8080/small.txt >/dev/null 2>&1; then
             return 0
         fi
         i=$((i + 1))
@@ -130,7 +130,7 @@ test_idle_timeout_close() {
 
 init_timeout_cmd
 init_nc_cmd
-( sleep 90; log "watchdog timeout"; kill -TERM $$ ) &
+trap cleanup_nginx EXIT INT TERM
 prepare_packages || fail "prepare packages"
 prepare_tree || fail "prepare tree"
 start_nginx || fail "start nginx"

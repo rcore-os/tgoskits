@@ -11,7 +11,7 @@ NGINX_PID=
 MASTER_PID=
 FAILURES=0
 
-. /usr/bin/nginx-alpine-mirror.sh
+. /usr/bin/nginx-runner-lib.sh
 
 log() { printf 'NGINX_APP_LOG: %s\n' "$*"; }
 pass() { printf 'NGINX_APP_STEP_PASS: %s\n' "$*"; }
@@ -86,7 +86,7 @@ finish() {
 trap finish EXIT
 
 prepare_packages() {
-    nginx_apk_add_with_fallback nginx curl busybox-extras || {
+    runner_ensure_packages || {
         printf 'NGINX_APP_PREPARE_FAILED: all mirrors failed\n'
         return 1
     }

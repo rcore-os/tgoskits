@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 
-. /usr/bin/nginx-alpine-mirror.sh
+. /usr/bin/nginx-runner-lib.sh
 
 BASE=/tmp/nginx-phase2
 CONF="$BASE/conf/http-basic.conf"
@@ -24,7 +24,7 @@ run_with_timeout() { sec=$1; shift; $TIMEOUT_CMD "$sec" "$@"; }
 cleanup_nginx() { killall -q nginx 2>/dev/null || true; sleep 1; killall -q -9 nginx 2>/dev/null || true; }
 
 prepare_packages() {
-    nginx_apk_add_with_fallback nginx curl busybox-extras || return 1
+    runner_ensure_packages || return 1
 }
 
 prepare_tree() {
@@ -49,7 +49,7 @@ start_nginx() {
     nginx -c "$CONF" -p "$BASE/" > "$LOGDIR/nginx-stdout.log" 2>&1 &
     i=0
     while [ "$i" -lt 6 ]; do
-        run_with_timeout 1 curl -fsS -o /dev/null http://127.0.0.1:8080/small.txt >/dev/null 2>&1 && return 0
+        run_with_timeout 5 curl -fsS -o /dev/null http://127.0.0.1:8080/small.txt >/dev/null 2>&1 && return 0
         i=$((i + 1))
         sleep 1
     done
@@ -61,14 +61,14 @@ start_nginx() {
 }
 
 init_timeout_cmd
-( sleep 90; log "watchdog timeout"; kill -TERM $$ ) &
+trap cleanup_nginx EXIT INT TERM
 prepare_packages || fail "prepare packages"
 prepare_tree || fail "prepare tree"
 start_nginx || fail "start nginx"
-code=$(run_with_timeout 1 curl -sS -o /dev/null -w '%{http_code}' http://127.0.0.1:8080/small.txt || true); [ "$code" = "200" ] || fail "GET /small.txt"
-code=$(run_with_timeout 1 curl -sS -o /dev/null -w '%{http_code}' http://127.0.0.1:8080/empty.txt || true); [ "$code" = "200" ] || fail "GET /empty.txt"
-code=$(run_with_timeout 1 curl -sS -o "$OUT/dir.body" -w '%{http_code}' http://127.0.0.1:8080/dir/ || true); [ "$code" = "200" ] && grep -qx 'HTTP_BASIC_DIR_INDEX_OK' "$OUT/dir.body" || fail "GET /dir/"
-code=$(run_with_timeout 1 curl -sS -o /dev/null -w '%{http_code}' http://127.0.0.1:8080/dir || true); [ "$code" = "301" ] || [ "$code" = "302" ] || fail "GET /dir"
+code=$(run_with_timeout 5 curl -sS -o /dev/null -w '%{http_code}' http://127.0.0.1:8080/small.txt || true); [ "$code" = "200" ] || fail "GET /small.txt"
+code=$(run_with_timeout 5 curl -sS -o /dev/null -w '%{http_code}' http://127.0.0.1:8080/empty.txt || true); [ "$code" = "200" ] || fail "GET /empty.txt"
+code=$(run_with_timeout 5 curl -sS -o "$OUT/dir.body" -w '%{http_code}' http://127.0.0.1:8080/dir/ || true); [ "$code" = "200" ] && grep -qx 'HTTP_BASIC_DIR_INDEX_OK' "$OUT/dir.body" || fail "GET /dir/"
+code=$(run_with_timeout 5 curl -sS -o /dev/null -w '%{http_code}' http://127.0.0.1:8080/dir || true); [ "$code" = "301" ] || [ "$code" = "302" ] || fail "GET /dir"
 if command -v nc >/dev/null 2>&1 || busybox nc 2>&1 | grep -qi 'usage'; then
     NC='nc'; command -v nc >/dev/null 2>&1 || NC='busybox nc'
     { printf 'BAD / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n'; } | run_with_timeout 1 sh -c "$NC 127.0.0.1 8080" > "$OUT/bad.raw" || true

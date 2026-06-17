@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 
-. /usr/bin/nginx-alpine-mirror.sh
+. /usr/bin/nginx-runner-lib.sh
 
 BASE=/tmp/nginx-phase12
 CONF_DIR="$BASE/conf"
@@ -28,7 +28,7 @@ cleanup_nginx() {
 }
 
 prepare_packages() {
-    nginx_apk_add_with_fallback nginx curl busybox-extras procps || return 1
+    runner_ensure_packages || return 1
 }
 
 prepare_files() {
@@ -50,7 +50,7 @@ wait_http_ok() {
     url=$1
     i=0
     while [ "$i" -lt 6 ]; do
-        if run_with_timeout 1 curl -fsS "$url" -o "$OUT/http.body" >/dev/null 2>&1; then return 0; fi
+        if run_with_timeout 5 curl -fsS "$url" -o "$OUT/http.body" >/dev/null 2>&1; then return 0; fi
         i=$((i + 1))
         sleep 1
     done
@@ -105,7 +105,7 @@ test_master1_lifecycle() {
 }
 
 init_timeout_cmd
-( sleep 90; log "watchdog timeout"; kill -TERM $$ ) &
+trap cleanup_nginx EXIT INT TERM
 prepare_packages || fail "prepare packages"
 prepare_files || fail "prepare files"
 test_master1_lifecycle || fail "phase1.2"

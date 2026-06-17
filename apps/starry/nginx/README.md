@@ -1,92 +1,35 @@
 # Starry Nginx App
 
-This app organizes nginx tests into four directories:
+Starry 下 nginx 应用的构建与测试入口。
 
-- `smoke/`: CI entry smoke test (the only connected nginx test in tgoskits)
-- `phase/`: stage-unit tests named by `x-x`, such as `nginx-1-3-lifecycle-tests.sh`
-- `stress/`: pressure test planning and future scripts
-- `debug/`: flexible issue-focused scripts
+## 测试模式
 
-## CI-Connected Entry
+guest 内统一入口 `/usr/bin/nginx-runner.sh <mode>`：
 
-Only smoke is connected:
+| mode | 用途 | CI |
+|------|------|----|
+| `smoke` | 仅 smoke | ✅ 唯一接入上层 CI |
+| `phase <id>` | 单阶段复测 | ❌ 手工 |
+| `all` | smoke + 全部 phase（阶段强隔离） | ❌ 手工 |
+| `stress` | 压测（当前 skip） | ❌ 手工 |
+| `debug <name>` | 单问题调试 | ❌ 手工 |
 
-```bash
-cargo xtask starry app qemu -t nginx --arch riscv64
-```
+QEMU 入口按用途分目录：根 `qemu-<arch>.toml`（CI）、`qemu/all/`（手工全量）、
+`qemu/phase/`（手工单阶段）、`qemu/debug/`（手工调试）。
 
-`qemu-*.toml` starts `/usr/bin/nginx-smoke-tests.sh` only.
-
-## Local Development CLI
-
-Unified local CLI script:
+## 用法
 
 ```bash
-# Run smoke test only
-./apps/starry/nginx/nginx-cli-tests.sh smoke
+# CI smoke（四架构）
+cargo xtask starry app qemu -t nginx --arch x86_64 \
+  --qemu-config apps/starry/nginx/qemu/smoke/qemu-x86_64.toml
 
-# Run a single phase
-./apps/starry/nginx/nginx-cli-tests.sh phase00   # env / rlimit
-./apps/starry/nginx/nginx-cli-tests.sh phase12   # lifecycle 1-2
-./apps/starry/nginx/nginx-cli-tests.sh phase13   # lifecycle 1-3
-./apps/starry/nginx/nginx-cli-tests.sh phase20   # HTTP basic
-./apps/starry/nginx/nginx-cli-tests.sh phase31   # short connection
-./apps/starry/nginx/nginx-cli-tests.sh phase32   # keepalive
-./apps/starry/nginx/nginx-cli-tests.sh phase33   # slow header
-./apps/starry/nginx/nginx-cli-tests.sh phase41   # sendfile off
-./apps/starry/nginx/nginx-cli-tests.sh phase42   # sendfile on
-./apps/starry/nginx/nginx-cli-tests.sh phase43   # range
-./apps/starry/nginx/nginx-cli-tests.sh phase50   # request body
-./apps/starry/nginx/nginx-cli-tests.sh phase60   # log / fs
-./apps/starry/nginx/nginx-cli-tests.sh phase70   # signal lifecycle
-./apps/starry/nginx/nginx-cli-tests.sh phase90   # config feature
-
-# Run all (smoke + all phases above; excludes debug/ and stress/)
-./apps/starry/nginx/nginx-cli-tests.sh all
+# 手工单阶段
+cargo xtask starry app qemu -t nginx --arch x86_64 \
+  --qemu-config apps/starry/nginx/qemu/phase/qemu-x86_64-phase31.toml
 ```
 
-## Phase QEMU Retest Entries
+## 详细设计
 
-The app provides dedicated phase retest QEMU configs:
-
-These entries are for local verification and are not wired into CI.
-
-```bash
-cargo xtask starry app qemu -t nginx --arch x86_64 --qemu-config apps/starry/nginx/qemu-x86_64-phase1.toml
-cargo xtask starry app qemu -t nginx --arch riscv64 --qemu-config apps/starry/nginx/qemu-riscv64-phase1.toml
-cargo xtask starry app qemu -t nginx --arch x86_64 --qemu-config apps/starry/nginx/qemu-x86_64-phase2.toml
-cargo xtask starry app qemu -t nginx --arch riscv64 --qemu-config apps/starry/nginx/qemu-riscv64-phase2.toml
-```
-
-For lifecycle retest on 4 arches:
-
-```bash
-cargo xtask starry app qemu -t nginx --arch x86_64 --qemu-config apps/starry/nginx/qemu-x86_64-phase1-2.toml
-cargo xtask starry app qemu -t nginx --arch riscv64 --qemu-config apps/starry/nginx/qemu-riscv64-phase1-2.toml
-cargo xtask starry app qemu -t nginx --arch aarch64 --qemu-config apps/starry/nginx/qemu-aarch64-phase1-2.toml
-cargo xtask starry app qemu -t nginx --arch loongarch64 --qemu-config apps/starry/nginx/qemu-loongarch64-phase1-2.toml
-cargo xtask starry app qemu -t nginx --arch x86_64 --qemu-config apps/starry/nginx/qemu-x86_64-phase1-3.toml
-cargo xtask starry app qemu -t nginx --arch riscv64 --qemu-config apps/starry/nginx/qemu-riscv64-phase1-3.toml
-cargo xtask starry app qemu -t nginx --arch aarch64 --qemu-config apps/starry/nginx/qemu-aarch64-phase1-3.toml
-cargo xtask starry app qemu -t nginx --arch loongarch64 --qemu-config apps/starry/nginx/qemu-loongarch64-phase1-3.toml
-```
-
-## Build/Prepare Logic
-
-`prebuild.sh` injects smoke/phase entries and shared mirror helper into guest overlay:
-
-- `/usr/bin/nginx-smoke-tests.sh`
-- `/usr/bin/nginx-phase12-tests.sh`
-- `/usr/bin/nginx-phase1-tests.sh`
-- `/usr/bin/nginx-phase2-tests.sh`
-- `/usr/bin/nginx-alpine-mirror.sh`
-
-Mirror helper: `apps/starry/nginx/nginx-alpine-mirror.sh`.
-
-The mirror helper pins `apk` to the Alpine release branch of the running rootfs
-(read from `/etc/alpine-release`, e.g. `v3.23`) instead of the moving
-`latest-stable` alias. This keeps installed packages on the same musl/ABI as the
-rootfs base; `latest-stable` can advance to a newer Alpine release whose binaries
-need a newer musl (for example the `renameat2` symbol) and then fail to relocate
-or crash on the current rootfs. Override the branch with `NGINX_APK_BRANCH` when
-needed.
+完整设计（目录结构、统一入口 marker 规则、all 模式阶段隔离契约、TOML 整合规则、
+迁移步骤）见 [`www/nginx-ci-refactor-proposal.md`](../../../www/nginx-ci-refactor-proposal.md)。

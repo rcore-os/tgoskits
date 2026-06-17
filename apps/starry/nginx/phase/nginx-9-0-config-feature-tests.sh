@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 
-. /usr/bin/nginx-alpine-mirror.sh
+. /usr/bin/nginx-runner-lib.sh
 
 BASE=/tmp/nginx-phase90
 CONF="$BASE/conf/config-feature.conf"
@@ -30,7 +30,7 @@ cleanup_nginx() {
 }
 
 prepare_packages() {
-    nginx_apk_add_with_fallback nginx curl busybox-extras || return 1
+    runner_ensure_packages || return 1
 }
 
 prepare_tree() {
@@ -133,7 +133,7 @@ start_nginx() {
     nginx -c "$CONF" -p "$BASE/" > "$LOGDIR/nginx-stdout.log" 2>&1 &
     i=0
     while [ "$i" -lt 8 ]; do
-        run_with_timeout 1 curl -fsS -o /dev/null http://127.0.0.1:8080/ >/dev/null 2>&1 && return 0
+        run_with_timeout 5 curl -fsS -o /dev/null http://127.0.0.1:8080/ >/dev/null 2>&1 && return 0
         i=$((i + 1))
         sleep 1
     done
@@ -203,7 +203,7 @@ test_unix_socket_listen() {
 }
 
 init_timeout_cmd
-( sleep 120; log "watchdog timeout"; kill -TERM $$ ) &
+trap cleanup_nginx EXIT INT TERM
 prepare_packages || fail "prepare packages"
 prepare_tree || fail "prepare tree"
 start_nginx || fail "start nginx"

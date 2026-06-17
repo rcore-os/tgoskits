@@ -30,15 +30,14 @@
 ## Repro Commands
 
 ```bash
-cargo xtask starry app qemu -t nginx --arch x86_64 --qemu-config apps/starry/nginx/qemu-x86_64-bad-method-debug.toml
-cargo xtask starry app qemu -t nginx --arch x86_64 --qemu-config apps/starry/nginx/qemu-x86_64-bad-method-matrix.toml
+cargo xtask starry app qemu -t nginx --arch x86_64 --qemu-config apps/starry/nginx/qemu/debug/qemu-x86_64-bad-method-debug.toml
+cargo xtask starry app qemu -t nginx --arch x86_64 --qemu-config apps/starry/nginx/qemu/debug/qemu-x86_64-bad-method-matrix.toml
 ```
 
-Optional phase2 retest:
+Optional phase20 (HTTP basic) retest:
 
 ```bash
-cargo xtask starry app qemu -t nginx --arch riscv64 --qemu-config apps/starry/nginx/qemu-riscv64-phase2.toml
-cargo xtask starry app qemu -t nginx --arch x86_64 --qemu-config apps/starry/nginx/qemu-x86_64-phase2.toml
+cargo xtask starry app qemu -t nginx --arch x86_64 --qemu-config apps/starry/nginx/qemu/phase/qemu-x86_64-phase20.toml
 ```
 
 ## Next Follow-up

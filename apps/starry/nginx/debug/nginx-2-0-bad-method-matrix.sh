@@ -65,7 +65,7 @@ start_nginx() {
     nginx -c "$CONF" -p "$BASE/" > "$LOGDIR/nginx.stdout" 2>&1 &
     i=0
     while [ "$i" -lt 8 ]; do
-        run_with_timeout 1 curl -fsS -o /dev/null http://127.0.0.1:8080/index.html >/dev/null 2>&1 && return 0
+        run_with_timeout 5 curl -fsS -o /dev/null http://127.0.0.1:8080/index.html >/dev/null 2>&1 && return 0
         i=$((i + 1))
         sleep 1
     done
@@ -119,7 +119,7 @@ run_matrix() {
 }
 
 init_timeout_cmd
-( sleep 120; log "watchdog timeout"; kill -TERM $$ ) &
+trap cleanup_nginx EXIT INT TERM
 prepare_packages || fail "prepare packages"
 prepare_tree || fail "prepare tree"
 start_nginx || fail "start nginx"

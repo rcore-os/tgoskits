@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 
-. /usr/bin/nginx-alpine-mirror.sh
+. /usr/bin/nginx-runner-lib.sh
 
 BASE=/tmp/nginx-phase1
 WWW="$BASE/www"
@@ -38,7 +38,7 @@ cleanup_nginx() {
 }
 
 prepare_packages() {
-    nginx_apk_add_with_fallback nginx curl busybox-extras procps || return 1
+    runner_ensure_packages || return 1
 }
 
 prepare_files() {
@@ -78,7 +78,7 @@ wait_http_ok() {
     url=$1
     i=0
     while [ "$i" -lt 6 ]; do
-        if run_with_timeout 1 curl -fsS "$url" -o "$OUT/tmp.body" >/dev/null 2>&1; then
+        if run_with_timeout 5 curl -fsS "$url" -o "$OUT/tmp.body" >/dev/null 2>&1; then
             return 0
         fi
         sleep 1
@@ -100,7 +100,7 @@ test_master2() {
     [ "$workers" -ge 3 ] || return 1
     i=1
     while [ "$i" -le 3 ]; do
-        run_with_timeout 1 curl -fsS http://127.0.0.1:8082/ -o "$OUT/m2-$i.body" >/dev/null 2>&1 || return 1
+        run_with_timeout 5 curl -fsS http://127.0.0.1:8082/ -o "$OUT/m2-$i.body" >/dev/null 2>&1 || return 1
         i=$((i + 1))
     done
     run_with_timeout 2 nginx -s quit -c "$CONF_DIR/master2.conf" -p "$BASE/" >/dev/null 2>&1 || return 1
@@ -108,7 +108,7 @@ test_master2() {
 }
 
 init_timeout_cmd
-( sleep 90; log "watchdog timeout"; kill -TERM $$ ) &
+trap cleanup_nginx EXIT INT TERM
 prepare_packages || fail "prepare packages"
 prepare_files || fail "prepare files"
 nginx -t -c "$CONF_DIR/single.conf" -p "$BASE/" || fail "single config"

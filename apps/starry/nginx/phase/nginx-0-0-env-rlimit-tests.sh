@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 
-. /usr/bin/nginx-alpine-mirror.sh
+. /usr/bin/nginx-runner-lib.sh
 
 BASE=/tmp/nginx-phase00
 CONF="$BASE/conf/rlimit.conf"
@@ -21,7 +21,7 @@ init_timeout_cmd() {
 run_with_timeout() { sec=$1; shift; $TIMEOUT_CMD "$sec" "$@"; }
 
 prepare_packages() {
-    nginx_apk_add_with_fallback nginx curl busybox-extras || return 1
+    runner_ensure_packages || return 1
 }
 
 prepare_tree() {
@@ -55,7 +55,10 @@ test_rlimit_probe() {
 }
 
 init_timeout_cmd
-( sleep 60; log "watchdog timeout"; kill -TERM $$ ) &
+# Defensive cleanup: this phase only runs `nginx -t` (no daemon), but reap any
+# stray nginx on exit so a failure mid-run cannot leak a process. Timeout is
+# owned by the runner, so no in-script watchdog here.
+trap 'killall -q nginx 2>/dev/null || true' EXIT INT TERM
 prepare_packages || fail "prepare packages"
 prepare_tree || fail "prepare tree"
 test_rlimit_probe || fail "getrlimit/setrlimit probe"

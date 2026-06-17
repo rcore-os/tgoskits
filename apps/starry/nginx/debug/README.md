@@ -6,6 +6,8 @@ Current scripts:
 
 - `nginx-http-basic-tests.sh`: early HTTP basic script kept for issue-level debugging.
 - `nginx-2-0-bad-method-debug.sh`: focused probe for stage 2.0 BAD method (`BAD / HTTP/1.1`) instability.
+- `nginx-3-1-short-connection-debug.sh`: focused reproduction for phase31 short-connection timeout behavior.
+- `nginx-3-1-x86-timing-debug.sh`: x86_64 timing microbench for process, timeout, and curl loops.
 
 Rule:
 
