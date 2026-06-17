@@ -8,7 +8,7 @@ use core::{
 use ax_errno::{AxError, AxResult};
 use ax_runtime::hal::time::TimeValue;
 use ax_task::{
-    current, future,
+    WaitChannel, WaitChannelGuard, current, future,
     future::{block_on, interruptible},
 };
 use axpoll::{IoEvents, Pollable};
@@ -130,6 +130,7 @@ fn do_poll(
     let fds = FdPollSet(fds);
 
     with_blocked_signals(sigmask, || {
+        let mut wchan_guard = None;
         let wait = poll_fn(|cx| {
             let mut res = collect_ready_poll_events(&fds, &revent_indices, poll_fds);
             if res > 0 {
@@ -142,6 +143,7 @@ fn do_poll(
             if res > 0 {
                 return Poll::Ready(Ok(res as _));
             }
+            wchan_guard.get_or_insert_with(|| WaitChannelGuard::set(WaitChannel::PollWait));
             Poll::Pending
         });
 
