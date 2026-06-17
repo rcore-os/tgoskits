@@ -191,6 +191,13 @@ impl TaskInner {
         self.name.lock().clone()
     }
 
+    /// Runs `f` with a borrowed view of the task name, avoiding a `String`
+    /// clone. Used by the scheduler tracepoint hot path where allocating per
+    /// context switch would be unacceptable.
+    pub fn with_name<R>(&self, f: impl FnOnce(&str) -> R) -> R {
+        f(self.name.lock().as_str())
+    }
+
     /// Set the name of the task.
     pub fn set_name(&self, name: &str) {
         *self.name.lock() = String::from(name);

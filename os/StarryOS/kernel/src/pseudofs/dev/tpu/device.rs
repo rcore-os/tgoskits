@@ -28,11 +28,12 @@
 use alloc::{collections::VecDeque, string::String, sync::Arc};
 use core::{
     ptr::NonNull,
-    sync::atomic::{AtomicBool, AtomicPtr, Ordering},
+    sync::atomic::{AtomicBool, AtomicPtr, AtomicU64, Ordering},
     time::Duration,
 };
 
 use ax_kspin::SpinNoIrq;
+use ax_runtime::hal::time::monotonic_time_nanos;
 use ax_task::WaitQueue;
 use sg2002_tpu::{
     ion::IonBuffer,
@@ -69,6 +70,8 @@ struct TpuTask {
     _buffer: Arc<IonBuffer>,
     /// 执行结果（0 成功，-1 失败），由 worker 回填。
     ret: i32,
+    /// submit 入队时刻（ns），用于度量 submit→完成 的端到端延迟。
+    submit_ns: u64,
 }
 
 /// 待执行任务队列（对应 Linux `task_list`）。
@@ -92,6 +95,12 @@ static WORKER_SPAWNED: AtomicBool = AtomicBool::new(false);
 /// SG2002 只有一个 TPU；`Sg2002Tpu` 由 worker 持有的 `Arc` 保活，实际生命
 /// 周期与内核同长，这里的裸指针始终有效。
 static HW_PTR: AtomicPtr<Sg2002Tpu> = AtomicPtr::new(core::ptr::null_mut());
+
+// ---- 一帧期间「等硬件」的计量（单 worker 串行，无并发竞争）----
+/// 本帧 `run_one` 内 `tpu_wait_irq` 累计睡眠让出的纳秒数。
+static WAIT_SLEEP_NS: AtomicU64 = AtomicU64::new(0);
+/// 本帧 `run_one` 内 `tpu_wait_irq` 被调用的次数（= fire→等中断 的段数）。
+static WAIT_CALLS: AtomicU64 = AtomicU64::new(0);
 
 /// TPU 字符设备
 pub struct TpuDevice {
@@ -146,17 +155,35 @@ fn tpu_wait_irq(timeout_us: u64) -> bool {
     }
     // SAFETY: HW_PTR 指向 worker 持有的 Arc 内的实例，生命周期与内核同长。
     let hw = unsafe { &*hw };
+
+    // 度量这一轮真正睡眠让出的时长：进入前后各取一次 monotonic 时钟。
+    // 这段 delta 就是 worker 把 CPU 让出去的窗口，sched_probe 会记录这期间
+    // CPU 跑了谁（idle 还是其他任务）。
+    let enter = monotonic_time_nanos();
     // wait_timeout_until 在睡前于队列锁内复检谓词，等价 Linux wait_event，
     // 无唤醒先于等待的丢失风险。返回 true 表示超时。
-    !IRQ_WQ.wait_timeout_until(Duration::from_micros(timeout_us), || hw.irq_pending())
+    let timed_out =
+        IRQ_WQ.wait_timeout_until(Duration::from_micros(timeout_us), || hw.irq_pending());
+    let slept = monotonic_time_nanos().saturating_sub(enter);
+
+    WAIT_SLEEP_NS.fetch_add(slept, Ordering::Relaxed);
+    WAIT_CALLS.fetch_add(1, Ordering::Relaxed);
+
+    !timed_out
 }
 
 /// 常驻 worker 线程主循环（对应 Linux `work_thread_main`）。
 ///
 /// 串行取任务、调用 `run_one` 跑硬件、回填结果到 `DONE_LIST` 并唤醒等待者。
 /// 单 worker 保证硬件串行访问，无需额外 run 锁。
+///
+/// 每跑完一帧打印量化指标（见 [`log_frame_metrics`]）。
 fn tpu_worker(hw: Arc<Sg2002Tpu>) {
     info!("[TPU] worker thread started");
+    // 登记 worker 自身 tid 与 idle tid，供 sched_probe 区分「让给 idle(空转)」
+    // 与「让给其他任务(有效重叠)」。SG2002 单核，idle 任务即本 CPU 的 idle。
+    super::sched_probe::set_worker_tid(ax_task::current().id().as_u64());
+    super::sched_probe::set_idle_tid(ax_task::current_idle_task_id().as_u64());
     loop {
         // 取一个任务；队列空则睡在 TASK_WQ 上让出 CPU。
         // 注意：拿到 guard 后立即在表达式内释放，绝不持锁调用 wait*。
@@ -167,10 +194,37 @@ fn tpu_worker(hw: Arc<Sg2002Tpu>) {
             TASK_WQ.wait_until(|| !TASK_LIST.lock().is_empty());
         };
 
+        // ---- 帧级量化：清零本帧等硬件计量，取调度快照基线 ----
+        WAIT_SLEEP_NS.store(0, Ordering::Relaxed);
+        WAIT_CALLS.store(0, Ordering::Relaxed);
+        super::sched_probe::reset_targets();
+        let sched_base = super::sched_probe::snapshot();
+        let (irq_before, poll_before) = hw.irq_stats();
+        let run_start = monotonic_time_nanos();
+
         // 跑硬件：内部等待 TDMA 完成时经注入的 tpu_wait_irq 睡眠让出 CPU。
         task.ret = hw
             .run_one(task.seq_no, task.vaddr, task.paddr)
             .map_or(-1, |_| 0);
+
+        // ---- 帧级量化：结算并打印 ----
+        let run_ns = monotonic_time_nanos().saturating_sub(run_start);
+        let sleep_ns = WAIT_SLEEP_NS.load(Ordering::Relaxed);
+        let wait_calls = WAIT_CALLS.load(Ordering::Relaxed);
+        let (irq_after, poll_after) = hw.irq_stats();
+        let sched = super::sched_probe::snapshot().delta_since(&sched_base);
+        log_frame_metrics(
+            task.seq_no,
+            task.submit_ns,
+            run_start,
+            run_ns,
+            sleep_ns,
+            wait_calls,
+            irq_after.saturating_sub(irq_before),
+            poll_after.saturating_sub(poll_before),
+            &sched,
+        );
+        log_yield_targets(task.seq_no);
 
         // 入队完成结果并唤醒等待者。若提交线程从不 wait（或 wait 前退出），其
         // 完成项会滞留并攥住 `Arc<IonBuffer>` 永不释放——故对 DONE_LIST 设上限，
@@ -191,6 +245,83 @@ fn tpu_worker(hw: Arc<Sg2002Tpu>) {
         }
         DONE_WQ.notify_all(false);
     }
+}
+
+/// 打印一帧的量化指标，回答用户三个问题：
+/// 1. 这一帧 CPU 真正在算 vs 空转/让出了多少；
+/// 2. worker 等硬件期间让出的 CPU 去跑了什么（idle=空转 / other=有效重叠）；
+/// 3. 走的是真 IRQ 还是 MMIO 轮询兜底。
+#[allow(clippy::too_many_arguments)]
+fn log_frame_metrics(
+    seq_no: u32,
+    submit_ns: u64,
+    run_start_ns: u64,
+    run_ns: u64,
+    sleep_ns: u64,
+    wait_calls: u64,
+    irq_delta: u64,
+    poll_delta: u64,
+    sched: &super::sched_probe::SchedSnapshot,
+) {
+    // run_ns = busy_ns(真正占 CPU 跑硬件编程/poll) + sleep_ns(让出等中断)
+    let busy_ns = run_ns.saturating_sub(sleep_ns);
+    // 入队到 worker 开跑的排队延迟（submit→run_one 起点）。
+    let queue_ns = run_start_ns.saturating_sub(submit_ns);
+    // 端到端：submit 到这一帧硬件跑完。
+    let e2e_ns = run_start_ns
+        .saturating_add(run_ns)
+        .saturating_sub(submit_ns);
+
+    let pct =
+        |part: u64, whole: u64| -> u64 { part.saturating_mul(100).checked_div(whole).unwrap_or(0) };
+
+    info!(
+        "[TPU][metrics] seq={seq} | e2e={e2e}us queue={queue}us run={run}us | \
+         busy={busy}us({busy_pct}%) sleep={sleep}us({sleep_pct}%) wait_calls={wc} | yield→ \
+         idle={idle}us other={other}us sys_switches={sw} worker_switches={wsw} | irq={irq} \
+         poll_fallback={poll}",
+        seq = seq_no,
+        e2e = e2e_ns / 1000,
+        queue = queue_ns / 1000,
+        run = run_ns / 1000,
+        busy = busy_ns / 1000,
+        busy_pct = pct(busy_ns, run_ns),
+        sleep = sleep_ns / 1000,
+        sleep_pct = pct(sleep_ns, run_ns),
+        wc = wait_calls,
+        idle = sched.idle_ns / 1000,
+        other = sched.other_ns / 1000,
+        sw = sched.switch_count,
+        wsw = sched.worker_switch_count,
+        irq = irq_delta,
+        poll = poll_delta,
+    );
+}
+
+/// 打印这一帧 worker 让出 CPU 时切到了哪些任务、各多少次（按次数降序）。
+/// 任务名由调度切换点直接捎带缓存（含内核线程，如 idle/gc）；哨兵 `tid==0`
+/// 表示槽溢出。
+fn log_yield_targets(seq_no: u32) {
+    let targets = super::sched_probe::targets_summary();
+    if targets.is_empty() {
+        return;
+    }
+
+    let mut line = String::new();
+    for t in targets {
+        if !line.is_empty() {
+            line.push_str(", ");
+        }
+        if t.tid == 0 {
+            // 溢出哨兵。
+            let _ = core::fmt::write(&mut line, format_args!("<overflow>x{}", t.count));
+            continue;
+        }
+        let name = if t.name.is_empty() { "?" } else { &t.name };
+        let _ = core::fmt::write(&mut line, format_args!("{name}(tid{})x{}", t.tid, t.count));
+    }
+
+    info!("[TPU][metrics] seq={seq_no} | yield_targets: {line}");
 }
 
 impl TpuDevice {
@@ -280,6 +411,7 @@ impl TpuDevice {
             paddr: buffer.dma_info.bus_addr.as_u64(),
             _buffer: buffer,
             ret: 0,
+            submit_ns: monotonic_time_nanos(),
         };
 
         // 入队并唤醒 worker，随后立即返回（submit 不等推理）。

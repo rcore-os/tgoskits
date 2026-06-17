@@ -92,6 +92,15 @@ pub(crate) fn current_run_queue<G: BaseGuard>() -> CurrentRunQueueRef<'static, G
     }
 }
 
+/// Returns the task id of the current CPU's idle task.
+///
+/// Exposed for observability tooling that needs to distinguish "CPU yielded to
+/// the idle task" (pure spin/no work) from "CPU yielded to another runnable
+/// task" (useful overlap) when accounting `sched_switch` events by tid.
+pub fn current_idle_task_id() -> crate::task::TaskId {
+    IDLE_TASK.with_current(|i| i.id())
+}
+
 /// Selects the run queue index based on a CPU set bitmap and load balancing.
 ///
 /// This function filters the available run queues based on the provided `cpumask` and
@@ -854,13 +863,16 @@ impl AxRunQueue {
         // callers like `exit_current` already set it to `Exited`/`Blocked`,
         // and that pre-switch state is what `sched:sched_switch` reports.
         #[cfg(feature = "tracepoint-hooks")]
-        ax_crate_interface::call_interface!(
-            crate::sched_tracepoint::SchedTracepoint::on_sched_switch(
-                prev_task.id().as_u64(),
-                next_task.id().as_u64(),
-                prev_task.state() as u32,
-            )
-        );
+        next_task.with_name(|next_name| {
+            ax_crate_interface::call_interface!(
+                crate::sched_tracepoint::SchedTracepoint::on_sched_switch(
+                    prev_task.id().as_u64(),
+                    next_task.id().as_u64(),
+                    prev_task.state() as u32,
+                    next_name,
+                )
+            );
+        });
 
         unsafe {
             let prev_ctx_ptr = prev_task.ctx_mut_ptr();
