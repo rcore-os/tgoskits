@@ -24,11 +24,7 @@ pub fn init(args: &[String], envs: &[String]) {
 
     crate::ebpf::init_ebpf();
     crate::perf::perf_event_init();
-
     crate::kmod::init_kmod();
-
-    #[cfg(feature = "kprobe_test")]
-    crate::kprobe::kprobe_test();
 
     pseudofs::mount_all().expect("Failed to mount pseudofs");
     spawn_alarm_task();

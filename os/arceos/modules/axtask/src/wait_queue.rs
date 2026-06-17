@@ -193,6 +193,15 @@ impl WaitQueue {
         }
     }
 
+    /// Wakes up one task from IRQ context.
+    ///
+    /// This method is intended for low-level deferred notification paths. It
+    /// does not request an immediate reschedule and it must not be used as a
+    /// substitute for publishing the condition that the waiter will observe.
+    pub fn notify_one_from_irq(&self) -> bool {
+        self.notify_one(false)
+    }
+
     /// Wakes up one task in the wait queue and runs a callback on it.
     ///
     /// The callback `func` is invoked while holding the wait-queue lock and
@@ -268,6 +277,17 @@ impl WaitQueue {
     {
         let _guard = WaitChannelGuard::set(channel);
         self.wait_timeout_until(dur, condition)
+    }
+
+    /// Wakes all tasks from IRQ context.
+    ///
+    /// This method is intended for low-level deferred notification paths. It
+    /// does not request an immediate reschedule and it must not be used as a
+    /// substitute for publishing the condition that waiters will observe.
+    pub fn notify_all_from_irq(&self) {
+        while self.notify_one_from_irq() {
+            // loop until the wait queue is empty
+        }
     }
 }
 

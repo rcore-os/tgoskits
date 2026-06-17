@@ -25,19 +25,23 @@ use alloc::{
     string::{String, ToString},
 };
 
+#[cfg(target_arch = "loongarch64")]
+use ax_alloc::{UsageKind, global_allocator};
 use ax_errno::{AxError, AxResult, LinuxError};
 use ax_kspin::SpinNoPreempt;
-use ax_memory_addr::{MemoryAddr, PAGE_SIZE_4K, VirtAddr, VirtAddrRange};
-use ax_runtime::hal::{
-    cpu::asm::{flush_icache_all, flush_tlb},
-    paging::{MappingFlags, PageSize},
-};
+#[cfg(not(target_arch = "loongarch64"))]
+use ax_memory_addr::{MemoryAddr, VirtAddrRange};
+use ax_memory_addr::{PAGE_SIZE_4K, VirtAddr};
+use ax_runtime::hal::cpu::asm::{flush_icache_all, flush_tlb};
+#[cfg(not(target_arch = "loongarch64"))]
+use ax_runtime::hal::paging::MappingFlags;
 use kmod_loader::{KernelModuleHelper, ModuleLoader, ModuleOwner, SectionMemOps};
 
 /// Marker type that satisfies `kmod_loader::KernelModuleHelper`. Stateless —
 /// every operation reaches into the tgoskits subsystems directly.
 pub struct KmodHelper;
 
+#[cfg(not(target_arch = "loongarch64"))]
 fn section_perms_to_mapping_flags(perms: kmod_loader::SectionPerm) -> MappingFlags {
     let mut flags = MappingFlags::empty();
     if perms.contains(kmod_loader::SectionPerm::READ) {
@@ -58,6 +62,14 @@ fn section_perms_to_mapping_flags(perms: kmod_loader::SectionPerm) -> MappingFla
 struct KmodMemSection {
     vaddr: VirtAddr,
     num_pages: usize,
+    backend: KmodMemBackend,
+}
+
+enum KmodMemBackend {
+    #[cfg(not(target_arch = "loongarch64"))]
+    KernelAspace,
+    #[cfg(target_arch = "loongarch64")]
+    DirectMap,
 }
 
 impl SectionMemOps for KmodMemSection {
@@ -70,39 +82,70 @@ impl SectionMemOps for KmodMemSection {
     }
 
     fn change_perms(&mut self, perms: kmod_loader::SectionPerm) -> bool {
-        let mapping_flags = section_perms_to_mapping_flags(perms);
-        let kspace = ax_mm::kernel_aspace();
-        let mut guard = kspace.lock();
-        guard
-            .protect(self.vaddr, PAGE_SIZE_4K * self.num_pages, mapping_flags)
-            .is_ok()
+        match self.backend {
+            #[cfg(not(target_arch = "loongarch64"))]
+            KmodMemBackend::KernelAspace => {
+                let mapping_flags = section_perms_to_mapping_flags(perms);
+                let kspace = ax_mm::kernel_aspace();
+                let mut guard = kspace.lock();
+                guard
+                    .protect(self.vaddr, PAGE_SIZE_4K * self.num_pages, mapping_flags)
+                    .is_ok()
+            }
+            #[cfg(target_arch = "loongarch64")]
+            KmodMemBackend::DirectMap => {
+                // LoongArch module text is allocated from the DMW direct-map
+                // window so PCALA relocations can reach DMW-linked kernel
+                // symbols. DMW translations do not consult the page table, so
+                // there are no PTE permissions to update here.
+                if perms.contains(kmod_loader::SectionPerm::EXECUTE) {
+                    flush_icache_all();
+                }
+                true
+            }
+        }
     }
 }
 
 impl Drop for KmodMemSection {
     fn drop(&mut self) {
-        let total = PAGE_SIZE_4K * self.num_pages;
-        ax_mm::kernel_aspace()
-            .lock()
-            .unmap(self.vaddr, total)
-            .unwrap_or_else(|_| {
-                error!(
-                    "kmod: failed to unmap module section at {:#x} ({} pages)",
+        match self.backend {
+            #[cfg(not(target_arch = "loongarch64"))]
+            KmodMemBackend::KernelAspace => {
+                let total = PAGE_SIZE_4K * self.num_pages;
+                ax_mm::kernel_aspace()
+                    .lock()
+                    .unmap(self.vaddr, total)
+                    .unwrap_or_else(|_| {
+                        error!(
+                            "kmod: failed to unmap module section at {:#x} ({} pages)",
+                            self.vaddr.as_usize(),
+                            self.num_pages
+                        );
+                    });
+                crate::mm::flush_tlb_range(self.vaddr, total);
+            }
+            #[cfg(target_arch = "loongarch64")]
+            KmodMemBackend::DirectMap => {
+                global_allocator().dealloc_pages(
                     self.vaddr.as_usize(),
-                    self.num_pages
+                    self.num_pages,
+                    UsageKind::VirtMem,
                 );
-            });
-        crate::mm::flush_tlb_range(self.vaddr, total);
+                flush_icache_all();
+            }
+        }
     }
 }
 
+#[cfg(not(target_arch = "loongarch64"))]
 unsafe extern "C" {
     fn _ekernel();
 }
 
+#[cfg(not(target_arch = "loongarch64"))]
 fn alloc_kmod_frames(num_pages: usize) -> AxResult<VirtAddr> {
-    let page_size = PageSize::Size4K as usize;
-    let total = page_size * num_pages;
+    let total = PAGE_SIZE_4K * num_pages;
     let kernel_end = (_ekernel as *const () as usize).align_up_4k();
     // The kernel virtual address space is laid out like this:
     // ┌──────────────────────────────┐
@@ -128,6 +171,23 @@ fn alloc_kmod_frames(num_pages: usize) -> AxResult<VirtAddr> {
     Ok(vaddr)
 }
 
+#[cfg(target_arch = "loongarch64")]
+fn alloc_kmod_dmw_frames(num_pages: usize) -> AxResult<VirtAddr> {
+    // LoongArch kernel symbols are exported from the DMW address window
+    // (0x9000...). If module sections live in the page-table-backed
+    // 0xffff8... kernel space, PCALA relocations against kernel symbols can
+    // reconstruct a wrong high-half alias. Allocate physical pages through the
+    // global allocator and use the returned direct-map VA so module code and
+    // DMW-linked kernel code share the same PC-relative address class.
+    let vaddr = VirtAddr::from_usize(
+        global_allocator()
+            .alloc_pages(num_pages, PAGE_SIZE_4K, UsageKind::VirtMem)
+            .map_err(|_| AxError::NoMemory)?,
+    );
+    unsafe { core::ptr::write_bytes(vaddr.as_mut_ptr(), 0, PAGE_SIZE_4K * num_pages) };
+    Ok(vaddr)
+}
+
 fn linux_code_to_ax_error(code: i32) -> AxError {
     LinuxError::try_from(code)
         .map(AxError::from)
@@ -141,8 +201,21 @@ impl KernelModuleHelper for KmodHelper {
             "kmod vmalloc size must be page-aligned"
         );
         let num_pages = size / PAGE_SIZE_4K;
-        let vaddr = alloc_kmod_frames(num_pages).expect("kmod vmalloc: out of memory");
-        Box::new(KmodMemSection { vaddr, num_pages })
+        #[cfg(target_arch = "loongarch64")]
+        let (vaddr, backend) = (
+            alloc_kmod_dmw_frames(num_pages).expect("kmod vmalloc: out of memory"),
+            KmodMemBackend::DirectMap,
+        );
+        #[cfg(not(target_arch = "loongarch64"))]
+        let (vaddr, backend) = (
+            alloc_kmod_frames(num_pages).expect("kmod vmalloc: out of memory"),
+            KmodMemBackend::KernelAspace,
+        );
+        Box::new(KmodMemSection {
+            vaddr,
+            num_pages,
+            backend,
+        })
     }
 
     fn resolve_symbol(name: &str) -> Option<usize> {

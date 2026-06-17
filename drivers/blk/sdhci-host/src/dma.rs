@@ -1057,9 +1057,10 @@ fn poll_fifo_read_step(
         return host.poll_data_complete_with_adma(cmd_index, phase);
     }
 
-    let status = host.take_fifo_irq_status(NORMAL_INT_BUFFER_READ_READY | NORMAL_INT_ERROR);
+    let (status, error) =
+        host.take_fifo_irq_status(NORMAL_INT_BUFFER_READ_READY | NORMAL_INT_ERROR);
     if status & NORMAL_INT_BUFFER_READ_READY == 0 {
-        return poll_fifo_status(host, status, cmd_index, phase, true);
+        return poll_fifo_status(host, status, error, cmd_index, phase, true);
     }
 
     let end = (*offset + block_size).min(len);
@@ -1089,9 +1090,10 @@ fn poll_fifo_write_step(
         return host.poll_data_complete_with_adma(cmd_index, phase);
     }
 
-    let status = host.take_fifo_irq_status(NORMAL_INT_BUFFER_WRITE_READY | NORMAL_INT_ERROR);
+    let (status, error) =
+        host.take_fifo_irq_status(NORMAL_INT_BUFFER_WRITE_READY | NORMAL_INT_ERROR);
     if status & NORMAL_INT_BUFFER_WRITE_READY == 0 {
-        return poll_fifo_status(host, status, cmd_index, phase, false);
+        return poll_fifo_status(host, status, error, cmd_index, phase, false);
     }
 
     let end = (*offset + block_size).min(len);
@@ -1110,6 +1112,7 @@ fn poll_fifo_write_step(
 fn poll_fifo_status(
     host: &mut Sdhci,
     status: u16,
+    error: u16,
     cmd_index: u8,
     phase: Phase,
     read: bool,
@@ -1118,17 +1121,22 @@ fn poll_fifo_status(
         return Ok(BlockPoll::Pending);
     }
 
+    log::info!(
+        "sdhci: data buffer cached status CMD{} normal={:#06x} error={:#06x}",
+        cmd_index,
+        status,
+        error
+    );
     host.log_status("data buffer error", cmd_index);
-    let err = host.read_u16(REG_ERROR_INT_STATUS);
     host.write_u16(REG_NORMAL_INT_STATUS, NORMAL_INT_CLEAR_ALL);
     host.write_u16(REG_ERROR_INT_STATUS, ERROR_INT_CLEAR_ALL);
     let _ = host.reset_cmd();
     let _ = host.reset_dat();
     let ctx = ErrorContext::for_cmd(phase, cmd_index);
     Err(
-        if err & (ERROR_INT_DATA_TIMEOUT | ERROR_INT_CMD_TIMEOUT) != 0 {
+        if error & (ERROR_INT_DATA_TIMEOUT | ERROR_INT_CMD_TIMEOUT) != 0 {
             Error::Timeout(ctx)
-        } else if err & (ERROR_INT_DATA_CRC | ERROR_INT_CMD_CRC) != 0 {
+        } else if error & (ERROR_INT_DATA_CRC | ERROR_INT_CMD_CRC) != 0 {
             Error::Crc(ctx)
         } else if read {
             Error::ReadError(ctx)

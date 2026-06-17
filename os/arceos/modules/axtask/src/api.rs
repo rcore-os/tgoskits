@@ -423,7 +423,7 @@ pub fn run_idle() -> ! {
     loop {
         yield_now_unchecked();
         trace!("idle task: waiting for IRQs...");
-        #[cfg(feature = "irq")]
+        #[cfg(all(feature = "irq", not(feature = "host-test")))]
         ax_hal::asm::wait_for_irqs();
     }
 }

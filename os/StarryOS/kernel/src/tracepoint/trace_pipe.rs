@@ -49,7 +49,12 @@ impl DirectRwFsFileOps for TracePipeFile {
             let _result = block_on(interruptible(poll_fn(|cx| match self.readable() {
                 true => Poll::Ready(true),
                 false => {
-                    super::TRACE_STATE.pipe_event.register(cx.waker());
+                    // Registration happens from trace_pipe read task context.
+                    unsafe {
+                        super::TRACE_STATE
+                            .pipe_event
+                            .register(cx.waker(), axpoll::IoEvents::IN)
+                    };
                     if self.readable() {
                         Poll::Ready(true)
                     } else {

@@ -1,13 +1,17 @@
 use alloc::vec::Vec;
-use core::mem::{MaybeUninit, offset_of};
+use core::{
+    future::poll_fn,
+    mem::{MaybeUninit, offset_of},
+    task::Poll,
+};
 
 use ax_errno::{AxError, AxResult};
 use ax_runtime::hal::time::TimeValue;
 use ax_task::{
-    current,
-    future::{self, block_on, poll_io},
+    current, future,
+    future::{block_on, interruptible},
 };
-use axpoll::IoEvents;
+use axpoll::{IoEvents, Pollable};
 use linux_raw_sys::general::{POLLNVAL, RLIMIT_NOFILE, pollfd, timespec};
 use starry_signal::SignalSet;
 use starry_vm::{vm_read_slice, vm_write_slice};
@@ -58,6 +62,36 @@ fn write_poll_revents(fds: UserPtr<pollfd>, poll_fds: &[pollfd]) -> AxResult<()>
     Ok(())
 }
 
+fn collect_ready_poll_events(
+    fds: &FdPollSet,
+    revent_indices: &[usize],
+    poll_fds: &mut [pollfd],
+) -> usize {
+    let mut res = 0usize;
+    for ((fd, events), revent_index) in fds.0.iter().zip(revent_indices.iter()) {
+        let mut result = fd.poll();
+        if result.contains(IoEvents::IN) {
+            result |= IoEvents::RDNORM;
+        }
+        if result.contains(IoEvents::OUT) {
+            result |= IoEvents::WRNORM;
+        }
+        // POSIX: POLLHUP and POLLERR are always reported in revents,
+        // even if not requested in events. They must NOT be masked out.
+        let always_report =
+            result & (IoEvents::HUP | IoEvents::ERR | IoEvents::RDHUP | IoEvents::NVAL);
+        result &= *events;
+        result |= always_report;
+
+        let revents = &mut poll_fds[*revent_index].revents;
+        *revents = result.bits() as _;
+        if *revents != 0 {
+            res += 1;
+        }
+    }
+    res
+}
+
 fn do_poll(
     poll_fds: &mut [pollfd],
     timeout: Option<TimeValue>,
@@ -96,40 +130,25 @@ fn do_poll(
     let fds = FdPollSet(fds);
 
     with_blocked_signals(sigmask, || {
-        match block_on(future::timeout(
-            timeout,
-            poll_io(&fds, IoEvents::empty(), false, || {
-                let mut res = 0usize;
-                for ((fd, events), revent_index) in fds.0.iter().zip(revent_indices.iter()) {
-                    let mut result = fd.poll();
-                    if result.contains(IoEvents::IN) {
-                        result |= IoEvents::RDNORM;
-                    }
-                    if result.contains(IoEvents::OUT) {
-                        result |= IoEvents::WRNORM;
-                    }
-                    // POSIX: POLLHUP and POLLERR are always reported in revents,
-                    // even if not requested in events. They must NOT be masked out.
-                    let always_report =
-                        result & (IoEvents::HUP | IoEvents::ERR | IoEvents::RDHUP | IoEvents::NVAL);
-                    result &= *events;
-                    result |= always_report;
+        let wait = poll_fn(|cx| {
+            let mut res = collect_ready_poll_events(&fds, &revent_indices, poll_fds);
+            if res > 0 {
+                return Poll::Ready(Ok(res as _));
+            }
 
-                    let revents = &mut poll_fds[*revent_index].revents;
-                    *revents = result.bits() as _;
-                    if *revents != 0 {
-                        res += 1;
-                    }
-                }
-                if res > 0 {
-                    Ok(res as _)
-                } else {
-                    Err(AxError::WouldBlock)
-                }
-            }),
-        )) {
-            Ok(r) => r,
-            Err(_) => Ok(0),
+            fds.register(cx, IoEvents::empty());
+
+            res = collect_ready_poll_events(&fds, &revent_indices, poll_fds);
+            if res > 0 {
+                return Poll::Ready(Ok(res as _));
+            }
+            Poll::Pending
+        });
+
+        match block_on(interruptible(future::timeout(timeout, wait))) {
+            Ok(Ok(r)) => r,
+            Ok(Err(_)) => Ok(0),
+            Err(err) => Err(err.into()),
         }
     })
 }
@@ -165,7 +184,6 @@ pub fn sys_ppoll(
     let timeout = nullable!(timeout.get_as_ref())?
         .map(|ts| ts.try_into_time_value())
         .transpose()?;
-    // TODO: handle signal
     let res = do_poll(
         &mut poll_fds,
         timeout,

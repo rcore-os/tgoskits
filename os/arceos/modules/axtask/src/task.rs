@@ -1084,7 +1084,7 @@ extern "C" fn task_entry() -> ! {
         crate::run_queue::clear_prev_task_on_cpu();
     }
     // Enable irq (if feature "irq" is enabled) before running the task entry function.
-    #[cfg(feature = "irq")]
+    #[cfg(all(feature = "irq", not(feature = "host-test")))]
     ax_hal::asm::enable_irqs();
     let task = crate::current();
     if let Some(entry) = task.entry.take() {

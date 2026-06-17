@@ -1,3 +1,23 @@
+//! Unix datagram transport.
+//!
+//! Datagram sockets use async channels to preserve message boundaries and pass
+//! ancillary data together with each packet. Bound endpoints publish a sender in
+//! the Unix namespace, while connected socket pairs keep direct peer channels
+//! for fast local delivery.
+//!
+//! # Delivery Semantics
+//!
+//! Each send builds one `Packet` containing payload, cmsg data, and sender
+//! address. A receiver consumes exactly one packet per recv call, which keeps
+//! Unix datagram behavior separate from the byte-stream logic in
+//! `stream.rs`.
+//!
+//! # Readiness
+//!
+//! Bound sockets and socketpairs both carry a `PollSet`. Senders wake the
+//! receiver after enqueueing a packet; poll registration never touches the
+//! global smoltcp socket set.
+
 use alloc::{boxed::Box, sync::Arc, vec::Vec};
 use core::task::Context;
 
@@ -17,18 +37,25 @@ use crate::{
 };
 
 struct Packet {
+    /// Datagram payload.
     data: Vec<u8>,
+    /// Ancillary messages carried with this datagram.
     cmsg: Vec<CMsgData>,
+    /// Sender address reported by recvmsg.
     sender: UnixSocketAddr,
 }
 
 struct Channel {
+    /// Sender side of the peer's datagram queue.
     data_tx: async_channel::Sender<Packet>,
+    /// Poll set woken when data is queued.
     poll_update: Arc<PollSet>,
 }
 
 pub struct Bind {
+    /// Sender published in the Unix namespace for this bound address.
     data_tx: async_channel::Sender<Packet>,
+    /// Poll set associated with the receiver bound at this address.
     poll_update: Arc<PollSet>,
 }
 impl Bind {
@@ -43,11 +70,17 @@ impl Bind {
 
 /// Datagram transport for Unix domain sockets.
 pub struct DgramTransport {
+    /// Receiver installed when the socket is bound or paired.
     data_rx: Mutex<Option<(async_channel::Receiver<Packet>, Arc<PollSet>)>>,
+    /// Direct peer channel for connected datagram sockets.
     connected: RwLock<Option<Channel>>,
+    /// Address reported as sender on outgoing datagrams.
     local_addr: RwLock<UnixSocketAddr>,
+    /// Poll set for local state changes.
     poll_state: Arc<PollSet>,
+    /// Shared socket options.
     general: GeneralOptions,
+    /// Creator pid used for SO_PEERCRED-style reporting.
     pid: u32,
 }
 impl DgramTransport {
@@ -158,7 +191,10 @@ impl TransportOps for DgramTransport {
         });
         *guard = Some((rx, poll_update));
         self.local_addr.write().clone_from(local_addr);
-        self.poll_state.wake();
+        drop(guard);
+        drop(slot);
+        // Datagram bind state is published before waking pollers.
+        unsafe { self.poll_state.wake(IoEvents::IN | IoEvents::OUT) };
         Ok(())
     }
 
@@ -174,7 +210,9 @@ impl TransportOps for DgramTransport {
                 .ok_or(AxError::NotConnected)?
                 .connect(),
         );
-        self.poll_state.wake();
+        drop(guard);
+        // Connected peer state is published before waking pollers.
+        unsafe { self.poll_state.wake(IoEvents::IN | IoEvents::OUT) };
         Ok(())
     }
 
@@ -199,28 +237,28 @@ impl TransportOps for DgramTransport {
             sender: self.local_addr.read().clone(),
         };
 
-        let connected = self.connected.read();
-        if let Some(addr) = options.to {
+        let wake_poll = if let Some(addr) = options.to {
             let addr = addr.into_unix()?;
             with_slot(&addr, |slot| {
                 if let Some(bind) = slot.dgram.lock().as_ref() {
                     bind.data_tx
                         .try_send(packet)
                         .map_err(|_| AxError::BrokenPipe)?;
-                    bind.poll_update.wake();
-                    Ok(())
+                    Ok(bind.poll_update.clone())
                 } else {
                     Err(AxError::NotConnected)
                 }
-            })?;
-        } else if let Some(chan) = connected.as_ref() {
+            })?
+        } else if let Some(chan) = self.connected.read().as_ref() {
             chan.data_tx
                 .try_send(packet)
                 .map_err(|_| AxError::BrokenPipe)?;
-            chan.poll_update.wake();
+            chan.poll_update.clone()
         } else {
             return Err(AxError::NotConnected);
-        }
+        };
+        // Datagram packet is queued before waking the receiver.
+        unsafe { wake_poll.wake(IoEvents::IN) };
         Ok(len)
     }
 
@@ -272,10 +310,16 @@ impl Pollable for DgramTransport {
     }
 
     fn register(&self, context: &mut Context<'_>, events: IoEvents) {
-        if let Some((_, poll)) = self.data_rx.lock().as_ref()
+        let poll = if let Some((_, poll)) = self.data_rx.lock().as_ref()
             && events.contains(IoEvents::IN)
         {
-            poll.register(context.waker());
+            Some(poll.clone())
+        } else {
+            None
+        };
+        if let Some(poll) = poll {
+            // Registration happens from socket poll task context.
+            unsafe { poll.register(context.waker(), IoEvents::IN) };
         }
     }
 }
@@ -283,7 +327,8 @@ impl Pollable for DgramTransport {
 impl Drop for DgramTransport {
     fn drop(&mut self) {
         if let Some(chan) = self.connected.write().take() {
-            chan.poll_update.wake();
+            // Connection teardown is visible before waking the peer.
+            unsafe { chan.poll_update.wake(IoEvents::IN | IoEvents::OUT) };
         }
     }
 }

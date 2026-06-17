@@ -1,3 +1,21 @@
+//! Vsock device polling glue.
+//!
+//! Vsock is driven outside the smoltcp IP path. This module owns the single
+//! registered vsock interface, adapts its event stream into the connection
+//! manager, and starts an adaptive poll task while vsock connections exist.
+//!
+//! # Polling Model
+//!
+//! The vsock device exposes connection and credit events rather than IP
+//! packets. A reference-counted poll task runs only while stream transports are
+//! active, backs off when no events are observed, and pushes data into the
+//! vsock connection manager's byte rings.
+//!
+//! # Isolation From IP Stack
+//!
+//! This code must not acquire smoltcp service/socket locks. Vsock readiness is
+//! handled through its own connection manager and socket transport layer.
+
 use alloc::{collections::VecDeque, string::ToString};
 use core::{
     sync::atomic::{AtomicBool, AtomicU64, Ordering},
@@ -20,7 +38,7 @@ static PENDING_EVENTS: Mutex<VecDeque<VsockEvent>> = Mutex::new(VecDeque::new())
 
 const VSOCK_RX_TMPBUF_SIZE: usize = 0x1000; // 4KiB buffer for vsock receive
 
-/// Registers a vsock device. Only one vsock device can be registered.
+/// Registers the single vsock device used by the system.
 pub fn register_vsock_device(dev: VsockDevice) -> AxResult {
     let mut guard = VSOCK_DEVICE.lock();
     if guard.is_some() {
@@ -88,6 +106,7 @@ pub fn start_vsock_poll() {
     }
 }
 
+/// Drops one active-user reference to the adaptive vsock poll task.
 pub fn stop_vsock_poll() {
     let mut count = POLL_REF_COUNT.lock();
     if *count == 0 {

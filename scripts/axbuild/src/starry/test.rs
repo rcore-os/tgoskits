@@ -2410,6 +2410,116 @@ mod tests {
     }
 
     #[test]
+    fn dual_net_qemu_case_exercises_two_interfaces_and_parallel_fetches() {
+        let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let case_dir = workspace_root.join("apps/starry/qemu/dual-net");
+        let script_path = case_dir.join("c/dual-net-tests.sh");
+        let prebuild_path = case_dir.join("c/prebuild.sh");
+        let cmake_path = case_dir.join("c/CMakeLists.txt");
+
+        assert!(
+            script_path.is_file(),
+            "{} must contain the guest dual-net probe",
+            script_path.display()
+        );
+        assert!(
+            prebuild_path.is_file() && cmake_path.is_file(),
+            "{} must use the C pipeline so curl is installed before boot",
+            case_dir.display()
+        );
+
+        for arch in ["x86_64", "aarch64", "riscv64", "loongarch64"] {
+            let config_path = case_dir.join(format!("qemu-{arch}.toml"));
+            assert!(
+                config_path.is_file(),
+                "{} must provide a QEMU runtime config",
+                config_path.display()
+            );
+
+            let config: toml::Value =
+                toml::from_str(&fs::read_to_string(&config_path).unwrap()).unwrap();
+            let args = config
+                .get("args")
+                .and_then(toml::Value::as_array)
+                .unwrap()
+                .iter()
+                .filter_map(toml::Value::as_str)
+                .collect::<Vec<_>>();
+            for expected in [
+                "virtio-net-pci,netdev=net0",
+                "virtio-net-pci,netdev=net1",
+                "user,id=net0,net=10.0.2.0/24,dhcpstart=10.0.2.15",
+                "user,id=net1,net=10.0.3.0/24,dhcpstart=10.0.3.15",
+            ] {
+                assert!(
+                    args.iter().any(|arg| arg.contains(expected)),
+                    "{} must include `{expected}`",
+                    config_path.display()
+                );
+            }
+            assert_eq!(
+                config.get("shell_init_cmd").and_then(toml::Value::as_str),
+                Some("/usr/bin/dual-net-tests.sh")
+            );
+            let http = config
+                .get("host_http_server")
+                .and_then(toml::Value::as_table)
+                .expect("dual-net case must start a host HTTP fixture");
+            assert_eq!(
+                http.get("port").and_then(toml::Value::as_integer),
+                Some(18382)
+            );
+            assert!(
+                http.get("body_size")
+                    .and_then(toml::Value::as_integer)
+                    .is_some_and(|size| size >= 1024 * 1024),
+                "dual-net case must fetch a payload large enough to expose obvious regressions"
+            );
+            assert!(
+                config
+                    .get("timeout")
+                    .and_then(toml::Value::as_integer)
+                    .is_some_and(|timeout| timeout >= 360),
+                "{} must leave enough time for the apk package download stability probe",
+                config_path.display()
+            );
+        }
+
+        let script = fs::read_to_string(&script_path).unwrap();
+        for expected in [
+            "now_ms()",
+            "iface_addr_contains eth0 10.0.2.15",
+            "iface_addr_contains eth1 10.0.3.15",
+            "curl --interface \"$iface\"",
+            "fetch_with_iface eth0 10.0.2.2",
+            "fetch_with_iface eth1 10.0.3.2",
+            "DUAL_NET_FETCH_PARALLEL_MS",
+            "apk fetch -R",
+            "APK_STRESS_MIN_BYTES",
+            "APK_STRESS_RETRIES",
+            "DUAL_NET_RETRY",
+            "apk verify",
+            "sha256sum -c",
+            "DUAL_NET_APK_FETCH_MS",
+            "DUAL_NET_TEST_PASSED",
+            "DUAL_NET_TEST_FAILED",
+        ] {
+            assert!(
+                script.contains(expected),
+                "{} must contain `{expected}`",
+                script_path.display()
+            );
+        }
+
+        let prebuild = fs::read_to_string(&prebuild_path).unwrap();
+        assert!(
+            prebuild.contains("apk add curl"),
+            "{} must install curl during asset preparation, not at guest runtime",
+            prebuild_path.display()
+        );
+    }
+
+    #[test]
     fn lua_qemu_case_installs_lua_before_boot() {
         let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
         let case_dir = workspace_root.join("apps/starry/qemu/lua");

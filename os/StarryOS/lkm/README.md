@@ -158,3 +158,12 @@ rust-nm -n target/<target>/release/starryos
 
 The unresolved module symbol must exist in the kernel ELF with the exact same
 name.
+
+
+## kmod app migration
+
+| kmod        | x86_64             | riscv64            | aarch64            | loongarch64        |
+| ----------- | ------------------ | ------------------ | ------------------ | ------------------ |
+| hello       | :white_check_mark: | :white_check_mark: | :white_check_mark: | :white_check_mark: |
+| kprobe_test | :white_check_mark: | :white_check_mark: | :white_check_mark: | :white_check_mark: |
+| linux-hello |                    | :white_check_mark: | :white_check_mark: | :white_check_mark: |

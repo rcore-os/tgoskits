@@ -198,11 +198,11 @@ fn usbfs_irq_handler(irq_num: usize) {
 
     if let Some(manager) = USBFS_MANAGER.get() {
         if has_usb_activity {
-            manager.notify_usb_activity();
+            manager.notify_usb_activity_from_irq();
         }
         if has_topology_event {
             slot.dirty.store(true, Ordering::Release);
-            manager.refresh_event.notify(1);
+            manager.notify_topology_from_irq();
         }
     }
 }

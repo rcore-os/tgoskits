@@ -8,6 +8,7 @@ use ax_task::{
     TaskInner, current,
     future::{block_on, interruptible},
 };
+use axpoll::IoEvents;
 use linux_raw_sys::general::{CLD_CONTINUED, CLD_STOPPED, CLD_TRAPPED};
 use starry_process::Pid;
 use starry_signal::{SignalInfo, SignalOSAction, SignalSet, Signo};
@@ -287,7 +288,8 @@ fn notify_ptrace_waiter(thr: &Thread, signo: Signo) {
             signo as i32,
         );
         let _ = send_signal_to_process(waiter_pid, Some(sigchld));
-        parent_data.child_exit_event.wake();
+        // Ptrace stop report is published before waking waiters.
+        unsafe { parent_data.child_exit_event.wake(axpoll::IoEvents::IN) };
     }
 }
 
@@ -416,7 +418,8 @@ fn notify_parent_job_change(proc_data: &ProcessData, code: i32, status: i32) {
     let sig = SignalInfo::new_sigchld(proc.pid(), child_uid, code, status);
     let _ = send_signal_to_process(parent.pid(), Some(sig));
     if let Ok(data) = get_process_data(parent.pid()) {
-        data.child_exit_event.wake();
+        // Job-control report is published before waking waiters.
+        unsafe { data.child_exit_event.wake(axpoll::IoEvents::IN) };
     }
 }
 
@@ -455,7 +458,8 @@ fn do_job_stop(thr: &Thread, signo: Signo) {
         if !proc_data.is_job_stopped() {
             return Poll::Ready(());
         }
-        cont_event.register(cx.waker());
+        // Registration happens from the stopped task context.
+        unsafe { cont_event.register(cx.waker(), axpoll::IoEvents::IN) };
         // Re-check after registering to avoid a lost wakeup if the continue
         // landed between the check above and registration.
         if proc_data.is_job_stopped() {
@@ -495,7 +499,7 @@ pub(super) fn send_signal_thread_inner(task: &TaskInner, thr: &Thread, sig: Sign
     // (even a blocked one) can become readable in epoll/poll.  Without this,
     // a process using signalfd + SA_RESTART or signalfd + blocked signals
     // would never observe newly-pending signals from the event loop.
-    thr.signalfd_waker.wake();
+    unsafe { thr.signalfd_waker.wake(IoEvents::IN) };
     if accepted {
         task.interrupt();
     }
@@ -520,7 +524,7 @@ pub fn send_signal_to_thread(tgid: Option<Pid>, tid: Pid, sig: Option<SignalInfo
         }
         // Always wake signalfd waiters — even blocked signals should be
         // visible via signalfd in an epoll event loop.
-        thread.signalfd_waker.wake();
+        unsafe { thread.signalfd_waker.wake(IoEvents::IN) };
     }
 
     Ok(())
@@ -600,7 +604,7 @@ pub fn send_signal_to_process(pid: Pid, sig: Option<SignalInfo>) -> AxResult<()>
             if let Ok(task) = get_task(tid)
                 && let Some(thr) = task.try_as_thread()
             {
-                thr.signalfd_waker.wake();
+                unsafe { thr.signalfd_waker.wake(IoEvents::IN) };
             }
         }
     }

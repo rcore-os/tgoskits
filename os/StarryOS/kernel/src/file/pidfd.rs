@@ -112,7 +112,8 @@ impl Pollable for PidFd {
 
     fn register(&self, context: &mut Context<'_>, events: IoEvents) {
         if events.contains(IoEvents::IN) {
-            self.exit_event.register(context.waker());
+            // Registration happens from pidfd poll task context.
+            unsafe { self.exit_event.register(context.waker(), IoEvents::IN) };
         }
     }
 }

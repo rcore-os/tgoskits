@@ -1,3 +1,29 @@
+//! UDP socket implementation.
+//!
+//! UDP sockets wrap smoltcp datagram sockets with POSIX-style bind/connect,
+//! per-address port ownership, connected-peer filtering, route-aware source
+//! selection, and MSG_MORE corking for datagram coalescing.
+//!
+//! # Bind And Routing Semantics
+//!
+//! Public binds are checked through `SocketSetWrapper` so wildcard and specific
+//! address conflicts match Linux expectations. When a socket is connected or
+//! sends to a destination, the control plane selects the source address and
+//! device binding from the route table unless the socket was explicitly bound
+//! to a concrete local address/interface.
+//!
+//! # Datagram Semantics
+//!
+//! smoltcp stores UDP payload plus metadata, while the POSIX surface exposes
+//! per-call source addresses, `MSG_TRUNC`, `MSG_PEEK`, `MSG_DONTWAIT`, and
+//! `MSG_MORE`. This module is responsible for preserving message boundaries and
+//! for filtering connected sockets to their expected peer.
+//!
+//! # Polling
+//!
+//! UDP send/recv operations request the shared net-poll worker after socket
+//! state changes. They do not run the interface poll loop directly.
+
 use alloc::{vec, vec::Vec};
 use core::{
     net::{IpAddr, Ipv4Addr, SocketAddr},
@@ -19,11 +45,12 @@ use spin::RwLock;
 
 use crate::{
     RecvFlags, RecvOptions, SOCKET_SET, SendFlags, SendOptions, Shutdown, SocketAddrEx, SocketOps,
+    config::{DeviceBinding, InterfaceId},
     consts::{UDP_RX_BUF_LEN, UDP_TX_BUF_LEN},
     general::GeneralOptions,
-    get_service,
+    get_control, interface_by_id,
     options::{Configurable, GetSocketOption, SetSocketOption},
-    poll_interfaces,
+    request_poll,
 };
 
 /// Buffered state for MSG_MORE corking: captures the target endpoint
@@ -36,6 +63,7 @@ struct CorkState {
     source: IpAddress,
 }
 
+/// Allocates a smoltcp UDP socket with ax-net's default packet buffers.
 pub(crate) fn new_udp_socket() -> smol::Socket<'static> {
     // TODO(mivik): buffer size
     smol::Socket::new(
@@ -46,10 +74,14 @@ pub(crate) fn new_udp_socket() -> smol::Socket<'static> {
 
 /// A UDP socket that provides POSIX-like APIs.
 pub struct UdpSocket {
+    /// Handle into the global smoltcp socket set.
     handle: SocketHandle,
+    /// Bound local endpoint as exposed by POSIX socket calls.
     local_addr: RwLock<Option<IpEndpoint>>,
+    /// Connected remote endpoint plus selected source address.
     peer_addr: RwLock<Option<(IpEndpoint, IpAddress)>>,
 
+    /// Shared socket options and blocking helpers.
     general: GeneralOptions,
     /// MSG_MORE corking state: captures endpoint at first MSG_MORE
     /// so the merged datagram always goes to the correct peer.
@@ -73,15 +105,35 @@ impl UdpSocket {
         }
     }
 
+    /// Restricts this socket to one interface for route selection.
+    pub fn bind_device(&self, interface_id: InterfaceId) -> AxResult {
+        if interface_by_id(interface_id).is_none() {
+            return Err(AxError::NoSuchDevice);
+        }
+        self.general.set_device_binding(DeviceBinding {
+            bound_if: Some(interface_id),
+        });
+        Ok(())
+    }
+
+    /// Borrows the underlying smoltcp UDP socket by handle.
     fn with_smol_socket<R>(&self, f: impl FnOnce(&mut smol::Socket) -> R) -> R {
         SOCKET_SET.with_socket_mut::<smol::Socket, _, _>(self.handle, f)
     }
 
+    /// Returns the connected peer and cached source address.
     fn remote_endpoint(&self) -> AxResult<(IpEndpoint, IpAddress)> {
         match self.peer_addr.try_read() {
             Some(addr) => addr.ok_or(AxError::NotConnected),
             None => Err(AxError::NotConnected),
         }
+    }
+
+    /// Selects the source address used to reach `remote`.
+    fn source_for_remote(&self, remote: &IpAddress) -> AxResult<IpAddress> {
+        Ok(get_control()
+            .select_route_with_binding(remote, self.general.device_binding())?
+            .source)
     }
 }
 
@@ -127,6 +179,7 @@ impl Configurable for UdpSocket {
     }
 }
 impl SocketOps for UdpSocket {
+    /// Binds the UDP socket and records public port ownership.
     fn bind(&self, local_addr: SocketAddrEx) -> AxResult {
         let mut local_addr = local_addr.into_ip()?;
         let mut guard = self.local_addr.write();
@@ -143,11 +196,7 @@ impl SocketOps for UdpSocket {
             addr: (!local_endpoint.addr.is_unspecified()).then_some(local_endpoint.addr),
             port: local_endpoint.port,
         };
-
-        if !self.general.reuse_address() {
-            // Check if the address is already in use
-            SOCKET_SET.udp_bind_check(local_endpoint.addr, local_endpoint.port)?;
-        }
+        let binding = get_control().local_binding_for(&endpoint)?;
 
         self.with_smol_socket(|socket| {
             socket.bind(endpoint).map_err(|e| match e {
@@ -155,17 +204,27 @@ impl SocketOps for UdpSocket {
                 smol::BindError::Unaddressable => ax_err_type!(ConnectionRefused, "unaddressable"),
             })
         })?;
-        self.general
-            .set_device_mask(get_service().device_mask_for(&endpoint));
+        if !self.general.reuse_address()
+            && let Err(err) =
+                SOCKET_SET.udp_bind(self.handle, local_endpoint.addr, local_endpoint.port)
+        {
+            self.with_smol_socket(|socket| socket.close());
+            return Err(err);
+        }
+        if binding.bound_if.is_some() {
+            self.general.set_device_binding(binding);
+        }
 
         *guard = Some(local_endpoint);
         info!("UDP socket {}: bound on {}", self.handle, endpoint);
         Ok(())
     }
 
+    /// Stores a default peer and source address for connected UDP semantics.
     fn connect(&self, remote_addr: SocketAddrEx) -> AxResult {
         let remote_addr = remote_addr.into_ip()?;
         let mut guard = self.peer_addr.write();
+
         if self.local_addr.read().is_none() {
             self.bind(SocketAddrEx::Ip(SocketAddr::new(
                 IpAddr::V4(Ipv4Addr::UNSPECIFIED),
@@ -174,15 +233,36 @@ impl SocketOps for UdpSocket {
         }
 
         let remote_addr = IpEndpoint::from(remote_addr);
-        let src = get_service().get_source_address(&remote_addr.addr);
+        let local = self.local_addr.read();
+
+        // Determine source address and device binding based on bind state
+        let (src, should_update_binding) = if let Some(local_ep) = *local {
+            if local_ep.addr.is_unspecified() {
+                // Bound to 0.0.0.0, use route decision
+                (self.source_for_remote(&remote_addr.addr)?, true)
+            } else {
+                // Bound to specific IP, use that address and keep interface
+                (local_ep.addr, false)
+            }
+        } else {
+            (self.source_for_remote(&remote_addr.addr)?, true)
+        };
+
         *guard = Some((remote_addr, src));
-        self.general.set_device_mask(
-            get_service().device_mask_for(&endpoint_from_ip_endpoint(remote_addr)),
-        );
+
+        if should_update_binding {
+            self.general
+                .set_device_binding(get_control().local_binding_for(&IpListenEndpoint {
+                    addr: Some(src),
+                    port: (*local).map_or(0, |endpoint| endpoint.port),
+                })?);
+        }
+
         debug!("UDP socket {}: connected to {}", self.handle, remote_addr);
         Ok(())
     }
 
+    /// Sends one datagram, or appends to/flushed a MSG_MORE corked datagram.
     fn send(&self, mut src: impl Read + IoBuf, options: SendOptions) -> AxResult<usize> {
         // MSG_OOB is only valid on stream sockets (SOCK_STREAM), not DGRAM.
         if options.flags.contains(SendFlags::OOB) {
@@ -205,7 +285,16 @@ impl SocketOps for UdpSocket {
             let (remote_addr, source_addr) = match options.to {
                 Some(addr) => {
                     let addr = IpEndpoint::from(addr.into_ip()?);
-                    let src = get_service().get_source_address(&addr.addr);
+                    // Use bound address if bound to specific IP
+                    let src = if let Some(local_ep) = *self.local_addr.read() {
+                        if local_ep.addr.is_unspecified() {
+                            self.source_for_remote(&addr.addr)?
+                        } else {
+                            local_ep.addr
+                        }
+                    } else {
+                        self.source_for_remote(&addr.addr)?
+                    };
                     (addr, src)
                 }
                 None => match self.remote_endpoint() {
@@ -246,7 +335,16 @@ impl SocketOps for UdpSocket {
         let resolved = match options.to {
             Some(addr) => {
                 let addr = IpEndpoint::from(addr.into_ip()?);
-                let src = get_service().get_source_address(&addr.addr);
+                // Use bound address if bound to specific IP, otherwise route decision
+                let src = if let Some(local_ep) = *self.local_addr.read() {
+                    if local_ep.addr.is_unspecified() {
+                        self.source_for_remote(&addr.addr)?
+                    } else {
+                        local_ep.addr
+                    }
+                } else {
+                    self.source_for_remote(&addr.addr)?
+                };
                 Some((addr, src))
             }
             None => self.remote_endpoint().ok(),
@@ -254,7 +352,7 @@ impl SocketOps for UdpSocket {
 
         let extra_nb = options.flags.contains(SendFlags::DONTWAIT);
         self.general.send_poller_with(self, extra_nb, || {
-            poll_interfaces();
+            request_poll();
             let mut cork_guard = self.cork.lock();
             // When flushing corked data, always use the endpoint captured
             // at the first MSG_MORE call (matching Linux semantics).
@@ -339,12 +437,12 @@ impl SocketOps for UdpSocket {
                     Ok(cur_read)
                 }
             })?;
-            // Flush TX so loopback packets reach the receiver immediately.
-            poll_interfaces();
+            request_poll();
             Ok(result)
         })
     }
 
+    /// Receives one datagram while honoring peer filters and recv flags.
     fn recv(&self, mut dst: impl Write, mut options: RecvOptions) -> AxResult<usize> {
         enum ExpectedRemote<'a> {
             Any(&'a mut SocketAddrEx),
@@ -361,7 +459,7 @@ impl SocketOps for UdpSocket {
 
         let extra_nb = options.flags.contains(RecvFlags::DONTWAIT);
         self.general.recv_poller_with(self, extra_nb, || {
-            poll_interfaces();
+            request_poll();
             self.with_smol_socket(|socket| {
                 if !socket.can_recv() {
                     Err(AxError::WouldBlock)
@@ -433,7 +531,7 @@ impl SocketOps for UdpSocket {
 
     fn shutdown(&self, _how: Shutdown) -> AxResult {
         // TODO(mivik): shutdown
-        poll_interfaces();
+        request_poll();
 
         self.with_smol_socket(|socket| {
             debug!("UDP socket {}: shutting down", self.handle);
@@ -445,7 +543,7 @@ impl SocketOps for UdpSocket {
 
 impl Pollable for UdpSocket {
     fn poll(&self) -> IoEvents {
-        poll_interfaces();
+        request_poll();
         if self.local_addr.read().is_none() {
             return IoEvents::empty();
         }
@@ -459,6 +557,14 @@ impl Pollable for UdpSocket {
     }
 
     fn register(&self, context: &mut Context<'_>, events: IoEvents) {
+        self.with_smol_socket(|socket| {
+            if events.contains(IoEvents::IN) {
+                socket.register_recv_waker(context.waker());
+            }
+            if events.contains(IoEvents::OUT) {
+                socket.register_send_waker(context.waker());
+            }
+        });
         if events.intersects(IoEvents::IN | IoEvents::OUT) {
             self.general.register_waker(context.waker());
         }
@@ -472,26 +578,26 @@ impl Drop for UdpSocket {
     }
 }
 
-fn endpoint_from_ip_endpoint(endpoint: IpEndpoint) -> IpListenEndpoint {
-    IpListenEndpoint {
-        addr: Some(endpoint.addr),
-        port: endpoint.port,
-    }
-}
-
 fn get_ephemeral_port() -> AxResult<u16> {
     const PORT_START: u16 = 0xc000;
     const PORT_END: u16 = 0xffff;
     static CURR: Mutex<u16> = Mutex::new(PORT_START);
     let mut curr = CURR.lock();
 
-    let port = *curr;
-    if *curr == PORT_END {
-        *curr = PORT_START;
-    } else {
-        *curr += 1;
+    let mut tries = 0;
+    while tries <= PORT_END - PORT_START {
+        let port = *curr;
+        if *curr == PORT_END {
+            *curr = PORT_START;
+        } else {
+            *curr += 1;
+        }
+        if SOCKET_SET.udp_port_available(IpAddress::Ipv4(Ipv4Addr::UNSPECIFIED), port) {
+            return Ok(port);
+        }
+        tries += 1;
     }
-    Ok(port)
+    ax_bail!(AddrInUse, "no available ports")
 }
 
 #[cfg(test)]
@@ -500,11 +606,11 @@ mod tests {
 
     use super::*;
     use crate::test_support::{
-        LOCAL_ADDR, LOCAL_MASK, PEER_ADDR, PEER_MASK, init_split_route_network, network_test_guard,
+        LOCAL_ADDR, LOCAL_IF, PEER_ADDR, PEER_IF, init_split_route_network, network_test_guard,
     };
 
     #[test]
-    fn connect_uses_peer_route_for_device_mask() {
+    fn connect_preserves_bound_interface() {
         let _guard = network_test_guard();
         init_split_route_network();
 
@@ -512,12 +618,80 @@ mod tests {
         socket
             .bind(SocketAddrEx::Ip(SocketAddr::new(IpAddr::V4(LOCAL_ADDR), 0)))
             .unwrap();
-        assert_eq!(socket.general.device_mask(), LOCAL_MASK);
+        assert_eq!(
+            socket.general.device_binding(),
+            DeviceBinding {
+                bound_if: Some(LOCAL_IF)
+            }
+        );
+
+        // Connect to different network - should NOT change interface binding
+        // because we're bound to a specific local address
+        socket
+            .connect(SocketAddrEx::Ip(SocketAddr::new(IpAddr::V4(PEER_ADDR), 53)))
+            .unwrap();
+
+        // Interface binding should remain LOCAL_IF (not changed to PEER_IF)
+        assert_eq!(
+            socket.general.device_binding(),
+            DeviceBinding {
+                bound_if: Some(LOCAL_IF)
+            }
+        );
+    }
+
+    #[test]
+    fn connect_uses_peer_route_when_unbound() {
+        let _guard = network_test_guard();
+        init_split_route_network();
+
+        let socket = UdpSocket::new();
+
+        // Bind to 0.0.0.0 (unspecified) - interface should be determined by route
+        socket
+            .bind(SocketAddrEx::Ip(SocketAddr::new(
+                IpAddr::V4(Ipv4Addr::UNSPECIFIED),
+                0,
+            )))
+            .unwrap();
 
         socket
             .connect(SocketAddrEx::Ip(SocketAddr::new(IpAddr::V4(PEER_ADDR), 53)))
             .unwrap();
 
-        assert_eq!(socket.general.device_mask(), PEER_MASK);
+        // Interface binding should use route decision (PEER_IF)
+        assert_eq!(
+            socket.general.device_binding(),
+            DeviceBinding {
+                bound_if: Some(PEER_IF)
+            }
+        );
+    }
+
+    #[test]
+    fn connect_rejects_unroutable_bound_device() {
+        let _guard = network_test_guard();
+        init_split_route_network();
+
+        let socket = UdpSocket::new();
+        socket.bind_device(LOCAL_IF).unwrap();
+        socket
+            .bind(SocketAddrEx::Ip(SocketAddr::new(
+                IpAddr::V4(Ipv4Addr::UNSPECIFIED),
+                0,
+            )))
+            .unwrap();
+
+        assert!(
+            socket
+                .connect(SocketAddrEx::Ip(SocketAddr::new(IpAddr::V4(PEER_ADDR), 53)))
+                .is_err()
+        );
+        assert_eq!(
+            socket.general.device_binding(),
+            DeviceBinding {
+                bound_if: Some(LOCAL_IF)
+            }
+        );
     }
 }

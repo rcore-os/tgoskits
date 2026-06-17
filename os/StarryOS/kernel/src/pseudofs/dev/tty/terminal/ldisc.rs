@@ -9,7 +9,7 @@ use core::{
 
 use ax_errno::{AxError, AxResult};
 use ax_task::future::block_on;
-use axpoll::PollSet;
+use axpoll::{IoEvents, PollSet};
 use linux_raw_sys::general::{
     ECHOCTL, ECHOK, ICRNL, IGNCR, ISIG, ONLCR, OPOST, VEOF, VERASE, VKILL, VMIN, VTIME,
 };
@@ -53,13 +53,9 @@ pub struct TtyConfig<R, W> {
 
 pub trait TtyRead: Send + Sync + 'static {
     fn read(&mut self, buf: &mut [u8]) -> usize;
-    fn closed(&self) -> bool {
-        false
-    }
 }
 pub trait TtyWrite: Send + Sync + 'static {
     fn write(&self, buf: &[u8]);
-    fn close(&self) {}
 }
 
 pub fn write_output_bytes<W: TtyWrite + ?Sized>(writer: &W, term: &Termios2, buf: &[u8]) {
@@ -241,36 +237,12 @@ impl<R: TtyRead, W: TtyWrite> InputReader<R, W> {
 struct SimpleReader<R> {
     reader: R,
     read_buf: [u8; BUF_SIZE],
-    read_range: Range<usize>,
     buf_tx: CachingProd<ReadBuf>,
 }
 impl<R: TtyRead> SimpleReader<R> {
     pub fn poll(&mut self) {
-        while !self.buf_tx.is_full() {
-            if self.read_range.is_empty() {
-                let read = self.reader.read(&mut self.read_buf);
-                if read == 0 {
-                    break;
-                }
-                self.read_range = 0..read;
-            }
-
-            // Preserve bytes that do not fit in the line-discipline buffer.
-            // PTY masters are often read one byte at a time by line parsers
-            // such as Nix's build setup protocol; dropping the excess here
-            // corrupts later setup log lines and can make the reader hit EOF.
-            let written = self
-                .buf_tx
-                .push_slice(&self.read_buf[self.read_range.clone()]);
-            if written == 0 {
-                break;
-            }
-            self.read_range.start += written;
-        }
-    }
-
-    pub fn closed(&self) -> bool {
-        self.reader.closed()
+        let read = self.reader.read(&mut self.read_buf);
+        let _ = self.buf_tx.push_slice(&self.read_buf[..read]);
     }
 }
 
@@ -312,7 +284,8 @@ impl<R: TtyRead, W: TtyWrite> LineDiscipline<R, W> {
         let mut progressed = false;
         while reader.drain_source_into_line_buffer() {
             progressed = true;
-            input_ready.wake();
+            // New line-discipline input is visible before waking readers.
+            unsafe { input_ready.wake(IoEvents::IN) };
         }
         progressed
     }
@@ -339,8 +312,9 @@ impl<R: TtyRead, W: TtyWrite> LineDiscipline<R, W> {
                         fired: fired.clone(),
                         task: cx.waker().clone(),
                     }));
-                    input_source.register(&waker);
-                    pump_retry.register(&waker);
+                    // The reader task registers from ordinary task context.
+                    unsafe { input_source.register(&waker, IoEvents::IN) };
+                    unsafe { pump_retry.register(&waker, IoEvents::OUT) };
 
                     if Self::drive_input(&mut reader, input_ready.as_ref())
                         || fired.swap(false, Ordering::AcqRel)
@@ -409,7 +383,6 @@ impl<R: TtyRead, W: TtyWrite> LineDiscipline<R, W> {
                     SimpleReader {
                         reader,
                         read_buf: [0; BUF_SIZE],
-                        read_range: 0..0,
                         buf_tx,
                     },
                     poll_rx,
@@ -438,15 +411,13 @@ impl<R: TtyRead, W: TtyWrite> LineDiscipline<R, W> {
 
     pub fn inject_input(&mut self, input: &[u8]) {
         self.injected_input.extend(input);
-        self.input_ready.clone().wake();
+        // Injected bytes are visible before waking readers.
+        unsafe { self.input_ready.wake(IoEvents::IN) };
     }
 
     pub fn poll_read(&mut self) -> bool {
         if let Processor::Passive(reader, _) = &mut self.processor {
             reader.poll();
-            if reader.closed() {
-                return true;
-            }
         }
         if !self.injected_input.is_empty() {
             return true;
@@ -466,10 +437,12 @@ impl<R: TtyRead, W: TtyWrite> LineDiscipline<R, W> {
     pub fn register_rx_waker(&self, waker: &Waker) {
         match &self.processor {
             Processor::InterruptDriven => {
-                self.input_ready.register(waker);
+                // Registration happens from tty read poll context.
+                unsafe { self.input_ready.register(waker, IoEvents::IN) };
             }
             Processor::Passive(_, set) => {
-                set.register(waker);
+                // Registration happens from tty read poll context.
+                unsafe { set.register(waker, IoEvents::IN) };
             }
         }
     }
@@ -490,20 +463,10 @@ impl<R: TtyRead, W: TtyWrite> LineDiscipline<R, W> {
             }
             return Ok(read);
         }
-        if let Processor::Passive(reader, _) = &mut self.processor {
-            // A pty slave can write its final bytes and close before the master
-            // task gets scheduled to read. Drain the ring once before honoring
-            // the close state so callers see the pending data first, then EOF.
-            // Nix depends on this for the build-environment setup sentinel.
-            reader.poll();
-            let closed = reader.closed();
+        if matches!(self.processor, Processor::Passive(_, _)) {
             let read = self.buf_rx.pop_slice(buf);
             return if read == 0 {
-                if closed {
-                    Ok(0)
-                } else {
-                    Err(AxError::WouldBlock)
-                }
+                Err(AxError::WouldBlock)
             } else {
                 Ok(read)
             };
@@ -539,7 +502,8 @@ impl<R: TtyRead, W: TtyWrite> LineDiscipline<R, W> {
         }
 
         let read = self.buf_rx.pop_slice(buf);
-        self.pump_retry.clone().wake();
+        // Buffer space was freed before waking the input pump.
+        unsafe { self.pump_retry.wake(IoEvents::OUT) };
         Ok(read)
     }
 }

@@ -448,7 +448,7 @@ unsafe fn kpu_irq_handler(
     _data: NonNull<()>,
 ) -> ax_runtime::hal::irq::IrqReturn {
     KPU_IRQ_COUNT.fetch_add(1, Ordering::AcqRel);
-    KPU_DONE_WQ.notify_all(false);
+    KPU_DONE_WQ.notify_all_from_irq();
     ax_runtime::hal::irq::IrqReturn::Handled
 }
 

@@ -123,65 +123,7 @@ fn register_unix_namespace() {
 
 #[cfg(feature = "net")]
 fn parse_network_config() -> ax_net::NetworkConfig {
-    macro_rules! env_or_default {
-        ($key:literal) => {
-            match option_env!($key) {
-                Some(val) => val,
-                None => "",
-            }
-        };
-    }
-
-    const IP: &str = env_or_default!("AX_IP");
-    const GATEWAY: &str = env_or_default!("AX_GW");
-    const PREFIX_LEN: &str = env_or_default!("AX_PREFIX_LEN");
-    const DNS: &str = env_or_default!("AX_DNS");
-
-    let ip = IP.trim();
-    let gateway = GATEWAY.trim();
-    let prefix_len = PREFIX_LEN.trim();
-
-    let static_ip = match (!ip.is_empty(), !gateway.is_empty()) {
-        (false, false) => {
-            if !prefix_len.is_empty() {
-                panic!("AX_PREFIX_LEN requires AX_IP and AX_GW");
-            }
-            None
-        }
-        (true, true) => {
-            let prefix_len = if prefix_len.is_empty() {
-                24
-            } else {
-                prefix_len.parse().expect("Invalid AX_PREFIX_LEN")
-            };
-            if prefix_len > 32 {
-                panic!("Invalid AX_PREFIX_LEN: prefix length > 32");
-            }
-            Some(ax_net::StaticIpConfig {
-                ip: ip.parse().expect("Invalid AX_IP"),
-                prefix_len,
-                gateway: gateway.parse().expect("Invalid AX_GW"),
-            })
-        }
-        _ => {
-            panic!("AX_IP and AX_GW must be configured together");
-        }
-    };
-
-    let dns_servers = DNS
-        .split(',')
-        .filter(|s| !s.trim().is_empty())
-        .map(|s| {
-            let s = s.trim();
-            s.parse()
-                .unwrap_or_else(|_| panic!("Invalid DNS server address: {}", s))
-        })
-        .collect();
-
-    ax_net::NetworkConfig {
-        static_ip,
-        dns_servers,
-    }
+    ax_net::NetworkConfig::default()
 }
 
 /// A wireless device that registers *after* `init_network`: its already-wrapped

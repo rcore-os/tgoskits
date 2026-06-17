@@ -600,7 +600,8 @@ pub fn do_exit(exit_code: i32, group_exit: bool) {
                 let _ = send_signal_to_process(parent.pid(), Some(sig));
             }
             if let Ok(data) = get_process_data(parent.pid()) {
-                data.child_exit_event.wake();
+                // Child exit state is published before waking waiters.
+                unsafe { data.child_exit_event.wake(axpoll::IoEvents::IN) };
             }
         }
         if let Some(tracer_pid) = ptrace_tracer_pid
@@ -609,7 +610,8 @@ pub fn do_exit(exit_code: i32, group_exit: bool) {
                 .is_none_or(|parent| parent.pid() != tracer_pid)
             && let Ok(data) = get_process_data(tracer_pid)
         {
-            data.child_exit_event.wake();
+            // Child exit state is published before waking waiters.
+            unsafe { data.child_exit_event.wake(axpoll::IoEvents::IN) };
         }
         // Send pdeathsig to child processes
         for child in children_snapshot {
@@ -656,7 +658,8 @@ pub fn do_exit(exit_code: i32, group_exit: bool) {
             }
         }
 
-        thr.proc_data.exit_event.wake();
+        // Process exit state is published before waking pidfd/wait waiters.
+        unsafe { thr.proc_data.exit_event.wake(axpoll::IoEvents::IN) };
 
         // Unblock a vfork parent waiting for this child to exit.
         thr.proc_data.notify_vfork_done();
@@ -667,8 +670,9 @@ pub fn do_exit(exit_code: i32, group_exit: bool) {
         // process_slots refcounting — not vm_aspace_shared + clear().
         thr.proc_data.release_aspace_slot_if_needed();
     }
-    thr.exit_event.wake();
-    thr.proc_data.thread_exit_event.wake();
+    // Thread exit state is published before waking waiters.
+    unsafe { thr.exit_event.wake(axpoll::IoEvents::IN) };
+    unsafe { thr.proc_data.thread_exit_event.wake(axpoll::IoEvents::IN) };
 
     if group_exit && !process.is_group_exited() {
         process.group_exit();

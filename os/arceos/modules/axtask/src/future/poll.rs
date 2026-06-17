@@ -88,44 +88,29 @@ pub fn register_irq_waker(irq: usize, waker: &core::task::Waker) {
     use ax_kspin::SpinNoIrq;
     use axpoll::PollSet;
 
-    use crate::WaitQueue;
+    use crate::IrqNotify;
 
-    /// Maximum IRQ number we track in the pending-bit array. The drain
-    /// task scans IRQ_PENDING by index, so IRQs outside this range have
-    /// no observable pending bit and the waker would never fire. We
-    /// reject those at registration rather than silently dropping them.
-    const MAX_TRACKED_IRQ: usize = 256;
-
-    static IRQ_PENDING: [AtomicBool; MAX_TRACKED_IRQ] =
-        [const { AtomicBool::new(false) }; MAX_TRACKED_IRQ];
-    static IRQ_ACTION_INSTALLED: [AtomicBool; MAX_TRACKED_IRQ] =
-        [const { AtomicBool::new(false) }; MAX_TRACKED_IRQ];
-    static ANY_PENDING: AtomicBool = AtomicBool::new(false);
-    static DRAIN_WQ: WaitQueue = WaitQueue::new();
+    static IRQ_NOTIFY: IrqNotify = IrqNotify::new();
     static DRAIN_SPAWNED: AtomicBool = AtomicBool::new(false);
-    static POLL_IRQ: SpinNoIrq<BTreeMap<usize, Arc<PollSet>>> = SpinNoIrq::new(BTreeMap::new());
+    static IRQ_STATE: SpinNoIrq<BTreeMap<usize, IrqPollState>> = SpinNoIrq::new(BTreeMap::new());
+
+    struct IrqPollState {
+        pending: bool,
+        installed: bool,
+        poll: Arc<PollSet>,
+    }
 
     unsafe fn irq_waker_handler(
         ctx: ax_hal::irq::IrqContext,
         _data: NonNull<()>,
     ) -> ax_hal::irq::IrqReturn {
-        // Runs in IRQ context with interrupts off. Only atomics and a
-        // `WaitQueue::notify_one` — no allocation, no PollSet/Inner
-        // replacement.
-        let irq = ctx.irq.0;
-        if irq < MAX_TRACKED_IRQ {
-            IRQ_PENDING[irq].store(true, Ordering::Release);
-            ANY_PENDING.store(true, Ordering::Release);
-            // `resched = false` because we cannot preempt from an IRQ
-            // hook — let the scheduler run the drain task when the
-            // current task next yields or reschedules.
-            DRAIN_WQ.notify_one(false);
+        // Runs in IRQ context with interrupts off. Only mark an already
+        // registered slot and notify the drain task. The map entry is created
+        // during task-context registration, so this path does not allocate.
+        if let Some(state) = IRQ_STATE.lock().get_mut(&ctx.irq.0) {
+            state.pending = true;
+            IRQ_NOTIFY.notify_irq();
         }
-        // IRQs >= MAX_TRACKED_IRQ are intentionally not tracked here.
-        // register_irq_waker rejects those at registration, so reaching
-        // this path means some other subsystem installed a handler on a
-        // high IRQ — leave it alone instead of setting ANY_PENDING and
-        // making the drain task spin.
         ax_hal::irq::IrqReturn::Handled
     }
 
@@ -139,11 +124,7 @@ pub fn register_irq_waker(irq: usize, waker: &core::task::Waker) {
         crate::spawn_raw(
             || {
                 loop {
-                    // Block until at least one IRQ pending bit has
-                    // been set. `wait_until` re-checks the condition
-                    // under the wait-queue lock, so spurious wakeups
-                    // do not slip through.
-                    DRAIN_WQ.wait_until(|| ANY_PENDING.swap(false, Ordering::AcqRel));
+                    IRQ_NOTIFY.wait();
 
                     // Snapshot the entries that need waking under the
                     // map lock, then drop the lock before invoking
@@ -151,17 +132,16 @@ pub fn register_irq_waker(irq: usize, waker: &core::task::Waker) {
                     // scheduler).
                     let mut to_wake: alloc::vec::Vec<Arc<PollSet>> = alloc::vec::Vec::new();
                     {
-                        let map = POLL_IRQ.lock();
-                        for (irq, slot) in IRQ_PENDING.iter().enumerate() {
-                            if slot.swap(false, Ordering::AcqRel)
-                                && let Some(set) = map.get(&irq)
-                            {
-                                to_wake.push(set.clone());
+                        let mut map = IRQ_STATE.lock();
+                        for state in map.values_mut() {
+                            if state.pending {
+                                state.pending = false;
+                                to_wake.push(state.poll.clone());
                             }
                         }
                     }
                     for set in to_wake {
-                        set.wake();
+                        unsafe { set.wake(axpoll::IoEvents::all()) };
                     }
                 }
             },
@@ -170,29 +150,28 @@ pub fn register_irq_waker(irq: usize, waker: &core::task::Waker) {
         );
     }
 
-    if irq >= MAX_TRACKED_IRQ {
-        warn!(
-            "register_irq_waker: IRQ {irq} exceeds MAX_TRACKED_IRQ={MAX_TRACKED_IRQ}; ignoring \
-             registration to avoid silently dropping wakeups"
-        );
-        return;
-    }
-
     ensure_drain_spawned();
 
-    if IRQ_ACTION_INSTALLED[irq]
-        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-        .is_ok()
-    {
+    let (poll, should_install) = {
+        let mut map = IRQ_STATE.lock();
+        let state = map.entry(irq).or_insert_with(|| IrqPollState {
+            pending: false,
+            installed: false,
+            poll: Arc::new(PollSet::new()),
+        });
+        if state.installed {
+            (state.poll.clone(), false)
+        } else {
+            state.installed = true;
+            (state.poll.clone(), true)
+        }
+    };
+    unsafe { poll.register(waker, axpoll::IoEvents::all()) };
+
+    if should_install {
         ax_hal::irq::request_shared_irq(irq, irq_waker_handler, NonNull::dangling())
             .expect("axtask IRQ-waker bridge could not install shared IRQ action");
     }
-
-    POLL_IRQ
-        .lock()
-        .entry(irq)
-        .or_insert_with(|| Arc::new(PollSet::new()))
-        .register(waker);
 
     ax_hal::irq::set_enable(irq, true);
 }
