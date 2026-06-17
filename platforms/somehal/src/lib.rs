@@ -13,6 +13,7 @@ pub(crate) mod common;
 pub mod cpu;
 mod driver;
 pub mod irq;
+pub mod rtc;
 pub mod setup;
 
 pub use page_table_generic::{PagingError, PagingResult};
