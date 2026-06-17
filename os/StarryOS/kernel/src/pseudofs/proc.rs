@@ -16,7 +16,7 @@ use core::{
 };
 
 use ax_lazyinit::LazyInit;
-use ax_memory_addr::{PAGE_SIZE_4K, VirtAddr};
+use ax_memory_addr::PAGE_SIZE_4K;
 use ax_runtime::hal::{
     paging::MappingFlags,
     time::{monotonic_time, wall_time},
@@ -32,7 +32,7 @@ use crate::{
     file::FD_TABLE,
     mm::BackendFileInfo,
     pseudofs::{
-        DirMaker, DirMapping, DirectRwFsFileOps, NodeOpsMux, RwFile, SeqObject, SimpleDir,
+        DirMaker, DirMapping, NodeOpsMux, RwFile, SeqObject, SimpleDir,
         SimpleDirOps, SimpleFile, SimpleFileOperation, SimpleFs, SpecialFsFile,
     },
     task::{
