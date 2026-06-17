@@ -315,8 +315,7 @@ impl<T: Kind> Ns16550<T> {
 
         let interrupt_id = iir & InterruptIdentificationFlags::INTERRUPT_ID_MASK;
         if interrupt_id == InterruptIdentificationFlags::RECEIVER_LINE_STATUS {
-            event |= serial_event_from_lsr(self.read_lsr_preserving())
-                & (SerialEvent::RX_READY | SerialEvent::RX_ERROR | SerialEvent::OVERRUN);
+            event |= serial_event_from_lsr(self.read_lsr_preserving());
             if event.is_empty() {
                 event |= SerialEvent::RX_ERROR;
             }
@@ -324,8 +323,7 @@ impl<T: Kind> Ns16550<T> {
             || interrupt_id == InterruptIdentificationFlags::CHARACTER_TIMEOUT
         {
             event |= SerialEvent::RX_READY;
-            event |= serial_event_from_lsr(self.read_lsr_preserving())
-                & (SerialEvent::RX_ERROR | SerialEvent::OVERRUN);
+            event |= serial_event_from_lsr(self.read_lsr_preserving());
         } else if interrupt_id == InterruptIdentificationFlags::TRANSMITTER_HOLDING_EMPTY {
             event |= SerialEvent::TX_READY;
         }
@@ -797,6 +795,33 @@ mod tests {
         let mut buf = [0];
         assert_eq!(rx.try_read(&mut buf), Ok(1));
         assert_eq!(buf[0], b'r');
+    }
+
+    #[test]
+    fn split_rx_irq_snapshot_also_resyncs_tx_ready() {
+        let (_guard, uart) = serial();
+        let (_serial, mut tx, mut rx, irq) = split_serial(uart);
+
+        REGS[UART_IIR as usize].store(
+            InterruptIdentificationFlags::RECEIVED_DATA_AVAILABLE.bits(),
+            Ordering::SeqCst,
+        );
+        REGS[UART_LSR as usize].store(
+            (LineStatusFlags::DATA_READY | LineStatusFlags::TRANSMITTER_HOLDING_EMPTY).bits(),
+            Ordering::SeqCst,
+        );
+        REGS[UART_RBR as usize].store(b'r', Ordering::SeqCst);
+
+        let event = irq.handle_irq();
+        assert!(event.rx_ready());
+        assert!(event.tx_ready());
+        assert!(tx.poll().tx_ready());
+
+        let mut buf = [0];
+        assert_eq!(rx.try_read(&mut buf), Ok(1));
+        assert_eq!(buf[0], b'r');
+        assert_eq!(tx.try_write(b"x"), 1);
+        assert_eq!(REGS[UART_THR as usize].load(Ordering::SeqCst), b'x');
     }
 
     #[test]
