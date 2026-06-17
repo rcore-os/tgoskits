@@ -671,28 +671,20 @@ impl AxRunQueue {
             }
             let task = {
                 let mut sched = get_run_queue(target).scheduler.lock();
+                // A task must be Ready AND have finished its scheduling
+                // process on the original CPU (on_cpu == false) before it
+                // can be stolen.  Otherwise the original CPU's
+                // clear_prev_task_on_cpu() will race with switch_to() on
+                // this CPU and incorrectly clear on_cpu after we set it.
+                // Filtering these conditions inside the predicate avoids a
+                // "pick then put-back" window where the task is momentarily
+                // absent from any run queue.
                 sched
-                    .pick_next_task_matching(|t| t.cpumask().get(current_cpu))
-                    .and_then(|task| {
-                        // A task must be Ready AND have finished its scheduling
-                        // process on the original CPU (on_cpu == false) before it
-                        // can be stolen.  Otherwise the original CPU's
-                        // clear_prev_task_on_cpu() will race with switch_to() on
-                        // this CPU and incorrectly clear on_cpu after we set it.
-                        if task.is_ready() && !task.on_cpu() {
-                            task.set_cpu_id(current_cpu as _);
-                            Some(task)
-                        } else {
-                            warn!(
-                                "work-steal: task {} (state={:?}, on_cpu={}) not stealable, \
-                                 skipping",
-                                task.id_name(),
-                                task.state(),
-                                task.on_cpu()
-                            );
-                            sched.put_prev_task(task, false);
-                            None
-                        }
+                    .pick_next_task_matching(|t| {
+                        t.cpumask().get(current_cpu) && t.is_ready() && !t.on_cpu()
+                    })
+                    .inspect(|task| {
+                        task.set_cpu_id(current_cpu as _);
                     })
             };
             if let Some(task) = task {
