@@ -272,7 +272,7 @@ static void check_errno_filter(void)
     expect_true(ret > 0 && errno == 0, "filter allows unrelated syscall");
 }
 
-static void check_errno_zero_maps_to_eperm(void)
+static void check_errno_zero_returns_zero(void)
 {
     struct sock_filter filter[] = {
         BPF_STMT(BPF_LD | BPF_W | BPF_ABS, SECCOMP_DATA_NR_OFF),
@@ -291,8 +291,8 @@ static void check_errno_zero_maps_to_eperm(void)
                        0, 0, "install ERRNO zero filter");
 
     errno = 0;
-    expect_syscall_ret(syscall(SYS_getuid), -1, EPERM,
-                       "SECCOMP_RET_ERRNO data 0 maps to EPERM");
+    expect_syscall_ret(syscall(SYS_getuid), 0, 0,
+                       "SECCOMP_RET_ERRNO data 0 returns 0");
 }
 
 static void check_arch_and_arg_filter(void)
@@ -671,7 +671,7 @@ int main(void)
     check_action_availability();
     check_invalid_seccomp_args();
     run_isolated(check_errno_filter, "ERRNO filter isolated test");
-    run_isolated(check_errno_zero_maps_to_eperm, "ERRNO zero isolated test");
+    run_isolated(check_errno_zero_returns_zero, "ERRNO zero isolated test");
     run_isolated(check_arch_and_arg_filter, "arch and arg filter isolated test");
     run_isolated(check_fork_inherits_filter, "fork inheritance isolated test");
     run_isolated(check_tsync_filter, "TSYNC isolated test");

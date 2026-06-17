@@ -9,7 +9,7 @@
 
 use alloc::vec::Vec;
 
-use ax_errno::{AxError, AxResult, LinuxError};
+use ax_errno::{AxError, AxResult};
 use ax_runtime::hal::cpu::uspace::UserContext;
 use syscalls::Sysno;
 
@@ -435,10 +435,9 @@ fn load_seccomp_data(data: &SeccompData, offset: u32, size: u16) -> Option<u32> 
 
 /// Convert a `SECCOMP_RET_ERRNO` payload into the syscall return value.
 pub fn seccomp_errno(errno: u16) -> usize {
-    let errno = if errno == 0 {
-        LinuxError::EPERM.code()
+    if errno == 0 {
+        0
     } else {
-        errno as i32
-    };
-    -errno as usize
+        -(errno as i32) as usize
+    }
 }
