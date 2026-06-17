@@ -1,22 +1,30 @@
 use alloc::{
+    format,
     string::{String, ToString},
     sync::Arc,
     vec::Vec,
 };
-use core::{ffi::c_char, future::poll_fn, iter, task::Poll};
+use core::{
+    ffi::{c_char, c_int},
+    future::poll_fn,
+    iter,
+    task::Poll,
+};
 
 use ax_errno::{AxError, AxResult};
 use ax_fs::FS_CONTEXT;
 use ax_runtime::hal::cpu::uspace::UserContext;
 use ax_sync::Mutex;
 use ax_task::{current, future::block_on, yield_now};
+use axfs_ng_vfs::Location;
 use kernel_elf_parser::AuxType;
+use linux_raw_sys::general::{AT_EMPTY_PATH, AT_SYMLINK_NOFOLLOW};
 use starry_process::Pid;
 use starry_vm::vm_load_until_nul;
 
 use crate::{
     config::USER_HEAP_BASE,
-    file::FD_TABLE,
+    file::{FD_TABLE, ResolveAtResult, memfd::Memfd, resolve_at},
     mm::{copy_from_kernel, load_user_app, new_user_aspace_empty, vm_load_string},
     task::{AsThread, rebind_task_tid, zap_thread},
 };
@@ -27,42 +35,93 @@ pub fn sys_execve(
     argv: *const *const c_char,
     envp: *const *const c_char,
 ) -> AxResult<isize> {
+    let path = vm_load_string(path)?;
+    let loc = FS_CONTEXT.lock().resolve(&path)?;
+    do_execve(uctx, loc, path, argv, envp)
+}
+
+/// execveat(2) — like execve, but the program is identified by `dirfd` plus
+/// `path` (resolved relative to `dirfd`), or by `dirfd` alone when
+/// `AT_EMPTY_PATH` is set and `path` is empty.
+pub fn sys_execveat(
+    uctx: &mut UserContext,
+    dirfd: c_int,
+    path: *const c_char,
+    argv: *const *const c_char,
+    envp: *const *const c_char,
+    flags: u32,
+) -> AxResult<isize> {
+    if flags & !(AT_EMPTY_PATH | AT_SYMLINK_NOFOLLOW) != 0 {
+        return Err(AxError::InvalidInput);
+    }
+
+    let path = vm_load_string(path)?;
+
+    // Resolve dirfd + path to the `Location` the loader reads from. A regular
+    // file yields its filesystem path as the display name; an anonymous memfd
+    // has no path but wraps a tmpfs-backed `Location` we can still load — this
+    // is systemd's `execveat(memfd, "", AT_EMPTY_PATH)` path. Other anonymous
+    // fds (sockets, eventfd, …) are not executable.
+    let (loc, disp_path) = match resolve_at(dirfd, Some(path.as_str()), flags)? {
+        ResolveAtResult::File(loc) => {
+            let disp = loc.absolute_path().map(|p| p.to_string()).unwrap_or(path);
+            (loc, disp)
+        }
+        ResolveAtResult::Other(f) => {
+            let memfd = f.downcast_ref::<Memfd>().ok_or_else(|| {
+                warn!("sys_execveat: exec from non-memfd anonymous fd is not supported");
+                AxError::PermissionDenied
+            })?;
+            let loc = memfd.inner().inner().location().clone();
+            let disp = format!("/memfd:{} (deleted)", memfd.name());
+            (loc, disp)
+        }
+    };
+
+    do_execve(uctx, loc, disp_path, argv, envp)
+}
+
+/// Shared execve core (Linux's `do_execveat_common` equivalent): both
+/// `sys_execve` and `sys_execveat` resolve the program to a `Location`, then
+/// funnel it plus the raw `argv` / `envp` user pointers here to be loaded once.
+/// `path` is the display name (used for argv0-independent `comm`/`exe_path` and
+/// the loader's `.sh`/shebang handling), not re-resolved against the FS.
+fn do_execve(
+    uctx: &mut UserContext,
+    loc: Location,
+    path: String,
+    argv: *const *const c_char,
+    envp: *const *const c_char,
+) -> AxResult<isize> {
     // ----------------------------------------------------------------
     // Phase 1: all fallible work — nothing is committed yet.
     // If any of these fail we return an error and the process is intact.
     // ----------------------------------------------------------------
-    let path = vm_load_string(path)?;
 
-    // Linux's `count_strings_kernel` (fs/exec.c) checks
-    // `argv.ptr.native` for NULL and short-circuits to `i=0` rather
-    // than returning EFAULT. glibc's `execl(path, NULL)` and
-    // `execve(path, NULL, NULL)` rely on this: userspace passes NULL
-    // to mean "empty argv/envp" and we must accept it for ABI
-    // compatibility. Linux still supplies an empty string as argv[0]
-    // to the new image, so normalize both NULL and empty argv here.
-    // (Same NULL handling for `envp`, but without the argv[0] synthesis.)
-    let mut args = if argv.is_null() {
-        Vec::new()
-    } else {
-        vm_load_until_nul(argv)?
-            .into_iter()
-            .map(vm_load_string)
-            .collect::<Result<Vec<_>, _>>()?
+    // A NULL vector pointer is accepted as an empty list: glibc's
+    // `execl(path, NULL)` passes NULL to mean "no arguments", and Linux's
+    // `count_strings_kernel` short-circuits NULL to an empty list rather
+    // than returning EFAULT.
+    let load_vec = |ptr: *const *const c_char| -> AxResult<Vec<String>> {
+        if ptr.is_null() {
+            Ok(Vec::new())
+        } else {
+            vm_load_until_nul(ptr)?
+                .into_iter()
+                .map(vm_load_string)
+                .collect::<Result<Vec<_>, _>>()
+        }
     };
+    let mut args = load_vec(argv)?;
+    let envs = load_vec(envp)?;
+
+    // Linux still supplies an empty string as argv[0] to the new image, so
+    // normalize an empty argv here.
     if args.is_empty() {
         args.push(String::new());
     }
 
-    let envs = if envp.is_null() {
-        Vec::new()
-    } else {
-        vm_load_until_nul(envp)?
-            .into_iter()
-            .map(vm_load_string)
-            .collect::<Result<Vec<_>, _>>()?
-    };
-
-    debug!("sys_execve <= path: {path:?}, args: {args:?}, envs: {envs:?}");
+    debug!("do_execve <= path: {path:?}, args: {args:?}, envs: {envs:?}");
 
     let curr = current();
     let thr = curr.as_thread();
@@ -104,10 +163,14 @@ pub fn sys_execve(
         yield_now();
     };
 
-    // Resolve the path and collect metadata before touching anything.
-    let loc = FS_CONTEXT.lock().resolve(&path)?;
+    // Collect metadata from the already-resolved location before touching
+    // anything. An anonymous memfd has no filesystem path, so fall back to the
+    // caller-supplied display name (e.g. `/memfd:<name> (deleted)`).
     let mut new_name = loc.name().to_string();
-    let mut new_exe_path = loc.absolute_path()?.to_string();
+    let mut new_exe_path = loc
+        .absolute_path()
+        .map(|p| p.to_string())
+        .unwrap_or_else(|_| path.clone());
 
     // Build the new address space entirely before committing.
     // Loading into a fresh aspace (rather than clearing the existing one)
@@ -120,7 +183,7 @@ pub fn sys_execve(
     let mut new_aspace = new_user_aspace_empty()?;
     copy_from_kernel(&mut new_aspace)?;
     let (entry_point, user_stack_base, auxv) =
-        match load_user_app(&mut new_aspace, Some(path.as_str()), &args, &envs) {
+        match load_user_app(&mut new_aspace, loc, &path, &args, &envs) {
             Ok(result) => result,
             Err(AxError::InvalidExecutable) => {
                 // ENOEXEC fallback: retry via /bin/sh.
@@ -134,7 +197,7 @@ pub fn sys_execve(
                 args = iter::once(String::from(shell_path))
                     .chain(args.iter().cloned())
                     .collect();
-                load_user_app(&mut new_aspace, None, &args, &envs)?
+                load_user_app(&mut new_aspace, shell_loc, shell_path, &args, &envs)?
             }
             Err(e) => return Err(e),
         };
@@ -330,7 +393,7 @@ pub fn sys_execve(
     // explicitly preserved above.
     *uctx = UserContext::new(entry_point.as_usize(), user_stack_base, 0);
 
-    info!(
+    debug!(
         "execve: path={} entry={:#x} sp={:#x} tp={} auxv_count={} auxv_has_ldso={}",
         new_name,
         entry_point.as_usize(),

@@ -108,6 +108,9 @@ fn map_elf<'a>(
     let cache = entry.borrow_cache();
 
     // PT_TLS init image may extend beyond the last PT_LOAD's file range.
+    // This assumes the PT_TLS file data is contiguous with and immediately
+    // follows the last PT_LOAD segment's file extent, which is the standard
+    // layout produced by GNU ld and LLVM lld.
     // Compute the maximum file offset needed so the COW backend can serve
     // TLS init-image page faults for the dynamic linker.
     let tls_max_offset: u64 = elf_parser
@@ -604,7 +607,7 @@ impl ElfLoader {
         auxv.push(AuxEntry::new(AuxType::HWCAP, hwcap_value()));
         auxv.push(AuxEntry::new(AuxType::NULL, 0));
 
-        info!(
+        debug!(
             "loader: entry={:#x} auxv_len={} has_ldso={} auxv_last_type={}",
             entry.as_usize(),
             auxv.len(),

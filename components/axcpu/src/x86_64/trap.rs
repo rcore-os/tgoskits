@@ -50,10 +50,24 @@ fn handle_breakpoint(tf: &mut TrapFrame) {
 
 fn handle_debug(tf: &mut TrapFrame) {
     debug!("#DB @ {:#x} ", tf.rip);
-    // If a kprobe/uprobe debug handler claims the #DB it fixes up `tf` and we
-    // resume directly. Otherwise fall through to the user-space exception loop,
-    // which delivers it as a ptrace single-step stop or a fatal SIGTRAP.
-    let _ = crate::trap::debug_handler(tf);
+    if crate::trap::debug_handler(tf) {
+        return;
+    }
+    // Kernel-mode #DB was not claimed by any handler.
+    // Unclaimed user-mode #DB is routed through the user-space exception loop
+    // (.Ltrap_user → .Lexit_user in trap.S), so `x86_trap_handler` is only
+    // reached for kernel-mode traps. An unhandled kernel #DB is a fatal
+    // condition: if resumed the CPU re-executes the faulting instruction,
+    // likely looping into a triple fault.
+    warn!("Unhandled kernel #DB @ {:#x}", tf.rip);
+    let bt = tf.backtrace();
+    panic!(
+        "Unhandled #DB @ {:#x}, error_code={:#x}:\n{:#x?}\n{}",
+        tf.rip,
+        tf.error_code,
+        tf,
+        bt.kind("trap")
+    );
 }
 
 #[unsafe(no_mangle)]
