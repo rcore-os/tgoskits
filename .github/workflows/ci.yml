@@ -373,29 +373,29 @@ jobs:
             container_image: base
             limit_to_owner: ""
             main_pr_only: false
-          - name: Test axvisor aarch64 qemu
+          - name: Test axloader aarch64 qemu
             use_container: false
             runs_on: '["self-hosted","linux","qcs"]'
             self_hosted_owner: rcore-os
-            command: cargo xtask axvisor test qemu --arch aarch64
+            command: cargo xtask axloader test qemu --arch aarch64
             cache_key: ""
             container_image: base
             limit_to_owner: ""
             main_pr_only: false
-          - name: Test axvisor riscv64 qemu
+          - name: Test axloader riscv64 qemu
             use_container: false
             runs_on: '["self-hosted","linux","qcs"]'
             self_hosted_owner: rcore-os
-            command: cargo xtask axvisor test qemu --arch riscv64
+            command: cargo xtask axloader test qemu --arch riscv64
             cache_key: ""
             container_image: base
             limit_to_owner: ""
             main_pr_only: false
-          - name: Test axvisor loongarch64 qemu
+          - name: Test axloader loongarch64 qemu
             use_container: true
             runs_on: '["ubuntu-latest"]'
-            command: target/debug/tg-xtask axvisor test qemu --arch loongarch64
-            cache_key: test-axvisor-loongarch64
+            command: target/debug/tg-xtask axloader test qemu --arch loongarch64
+            cache_key: test-axloader-loongarch64
             container_image: axvisor-lvz
             limit_to_owner: ""
             main_pr_only: false
@@ -560,15 +560,15 @@ jobs:
           #   apk_region: us
           #   limit_to_owner: ""
           #   main_pr_only: true
-          - name: Test axvisor self-hosted x86_64
+          - name: Test axloader self-hosted x86_64
             use_container: false
             runs_on: '["self-hosted","linux","intel","kvm"]'
-            command: cargo xtask axvisor test qemu --arch x86_64 --test-case smoke-vmx
+            command: cargo xtask axloader test qemu --arch x86_64 --test-case smoke-vmx
             cache_key: ""
             container_image: ""
             limit_to_owner: rcore-os
             main_pr_only: false
-          - name: Test axvisor self-hosted x86_64 UEFI
+          - name: Test axloader self-hosted x86_64 UEFI
             use_container: false
             runs_on: '["self-hosted","linux","intel","kvm"]'
             timeout_minutes: 20
@@ -596,20 +596,20 @@ jobs:
               grep -q 'boot_protocol = "uefi"' tmp/vmconfigs/nimbos-x86_64-qemu-uefi-smp1.generated.toml
               grep -q 'uefi_firmware_path = "' tmp/vmconfigs/nimbos-x86_64-qemu-uefi-smp1.generated.toml
               cd ../..
-              cargo xtask axvisor test qemu --arch x86_64 --test-group uefi --test-case qemu-nimbos
+              cargo xtask axloader test qemu --arch x86_64 --test-group uefi --test-case qemu-nimbos
             cache_key: ""
             container_image: ""
             limit_to_owner: rcore-os
             main_pr_only: false
-          - name: Test axvisor x86_64 svm hosted
+          - name: Test axloader x86_64 svm hosted
             use_container: false
             runs_on: '["ubuntu-latest"]'
             command: |
               cpu_vendor="$(awk -F ': *' '/^vendor_id/ { print $2; exit }' /proc/cpuinfo)"
               if [ "$cpu_vendor" = "GenuineIntel" ]; then
-                echo "::notice::Skipping axvisor x86_64 SVM hosted test on Intel CPU; SVM requires an AMD CPU."
+                echo "::notice::Skipping axloader x86_64 SVM hosted test on Intel CPU; SVM requires an AMD CPU."
                 {
-                  echo "## Axvisor SVM hosted test skipped"
+                  echo "## Axloader SVM hosted test skipped"
                   echo ""
                   echo "Runner CPU vendor is \`GenuineIntel\`; AMD SVM tests require an AMD CPU."
                 } >> "$GITHUB_STEP_SUMMARY"
@@ -626,7 +626,7 @@ jobs:
                 llvm_tools_dir="$(rustc --print sysroot)/lib/rustlib/${rust_host}/bin"
                 export PATH="${llvm_tools_dir}:${PATH}"
                 command -v rust-objcopy
-                cargo xtask axvisor test qemu --arch x86_64 --test-case smoke-svm
+                cargo xtask axloader test qemu --arch x86_64 --test-case smoke-svm
               '
             cache_key: ""
             container_image: ""

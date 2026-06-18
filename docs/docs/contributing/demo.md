@@ -429,7 +429,7 @@ cargo arceos test qemu --target aarch64-unknown-none-softfloat
 cargo starry test qemu --target riscv64
 
 # Axvisor 测试
-cargo axvisor test qemu --target aarch64
+cargo axloader test qemu --target aarch64
 ```
 
 ---

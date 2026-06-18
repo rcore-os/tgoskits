@@ -112,6 +112,23 @@ fn prepare_axvisor_request(
     )
 }
 
+fn prepare_axloader_request(
+    app: &AppContext,
+    cli: AxvisorCliArgs,
+    qemu_config: Option<PathBuf>,
+) -> anyhow::Result<(ResolvedAxvisorRequest, AxloaderCommandSnapshot)> {
+    app.prepare_axloader_request(
+        cli,
+        AxvisorRequestPaths {
+            package: crate::axvisor::build::AXVISOR_PACKAGE.to_string(),
+            axvisor_dir: app.root.join("os/axvisor"),
+            load_config_target: crate::axvisor::build::load_target_from_build_config,
+            resolve_build_info_path: crate::axvisor::build::resolve_build_info_path,
+        },
+        qemu_config,
+    )
+}
+
 static ENV_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 
 struct TempEnvVar {
@@ -215,6 +232,13 @@ fn axvisor_snapshot_load_returns_default_when_missing() {
 }
 
 #[test]
+fn axloader_snapshot_load_returns_default_when_missing() {
+    let root = tempdir().unwrap();
+    let snapshot = AxloaderCommandSnapshot::load(root.path()).unwrap();
+    assert_eq!(snapshot, AxloaderCommandSnapshot::default());
+}
+
+#[test]
 fn snapshot_store_round_trips() {
     let root = tempdir().unwrap();
     let snapshot = ArceosCommandSnapshot {
@@ -262,6 +286,30 @@ fn axvisor_snapshot_store_round_trips() {
     let loaded = AxvisorCommandSnapshot::load(root.path()).unwrap();
 
     assert_eq!(path, snapshot_path(root.path(), AXVISOR_SNAPSHOT_FILE));
+    assert_eq!(loaded, snapshot);
+}
+
+#[test]
+fn axloader_snapshot_store_round_trips() {
+    let root = tempdir().unwrap();
+    let snapshot = AxloaderCommandSnapshot {
+        arch: Some("aarch64".into()),
+        target: Some(DEFAULT_AXLOADER_TARGET.into()),
+        plat_dyn: Some(false),
+        smp: None,
+        config: Some(PathBuf::from(
+            "tmp/axbuild/config/axvisor/build-aarch64-unknown-none-softfloat.toml",
+        )),
+        vmconfigs: vec![PathBuf::from("tmp/vm1.toml"), PathBuf::from("tmp/vm2.toml")],
+        qemu: AxloaderQemuSnapshot {
+            qemu_config: Some(PathBuf::from("configs/qemu.toml")),
+        },
+    };
+
+    let path = snapshot.store(root.path()).unwrap();
+    let loaded = AxloaderCommandSnapshot::load(root.path()).unwrap();
+
+    assert_eq!(path, snapshot_path(root.path(), AXLOADER_SNAPSHOT_FILE));
     assert_eq!(loaded, snapshot);
 }
 
@@ -879,7 +927,7 @@ fn prepare_axvisor_request_explicit_config_drops_snapshot_vmconfigs() {
     let root = tempdir().unwrap();
     let explicit = root
         .path()
-        .join("test-suit/axvisor/normal/qemu/build-x86_64-unknown-none.toml");
+        .join("test-suit/axvisor/normal/board-qemu/build-x86_64-unknown-none.toml");
     fs::create_dir_all(explicit.parent().unwrap()).unwrap();
     fs::write(
         &explicit,
@@ -922,6 +970,104 @@ vmconfigs = ["os/axvisor/configs/vms/qemu/x86_64/linux-vmx-smp1.toml"]
 
     assert_eq!(request.build_info_path, explicit);
     assert!(request.vmconfigs.is_empty());
+    assert!(snapshot.vmconfigs.is_empty());
+}
+
+#[test]
+fn prepare_axloader_request_uses_axloader_snapshot_not_axvisor_snapshot() {
+    let root = tempdir().unwrap();
+    write_snapshot_text(
+        root.path(),
+        AXVISOR_SNAPSHOT_FILE,
+        r#"
+arch = "x86_64"
+target = "x86_64-unknown-none"
+vmconfigs = ["tmp/axvisor-vm.toml"]
+
+[qemu]
+qemu_config = "configs/axvisor-qemu.toml"
+"#,
+    )
+    .unwrap();
+    write_snapshot_text(
+        root.path(),
+        AXLOADER_SNAPSHOT_FILE,
+        r#"
+arch = "riscv64"
+target = "riscv64gc-unknown-none-elf"
+vmconfigs = ["tmp/axloader-vm.toml"]
+
+[qemu]
+qemu_config = "configs/axloader-qemu.toml"
+"#,
+    )
+    .unwrap();
+
+    let app = test_app_context(root.path());
+
+    let (request, snapshot) =
+        prepare_axloader_request(&app, AxvisorCliArgs::default(), None).unwrap();
+
+    assert_eq!(request.arch, "riscv64");
+    assert_eq!(request.target, "riscv64gc-unknown-none-elf");
+    assert_eq!(
+        request.qemu_config,
+        Some(root.path().join("configs/axloader-qemu.toml"))
+    );
+    assert_eq!(request.uboot_config, None);
+    assert_eq!(
+        request.vmconfigs,
+        vec![root.path().join("tmp/axloader-vm.toml")]
+    );
+    assert_eq!(snapshot.arch.as_deref(), Some("riscv64"));
+    assert_eq!(
+        snapshot.qemu.qemu_config,
+        Some(PathBuf::from("configs/axloader-qemu.toml"))
+    );
+}
+
+#[test]
+fn prepare_axloader_request_cli_values_drop_stale_runtime_paths() {
+    let root = tempdir().unwrap();
+    write_snapshot_text(
+        root.path(),
+        AXLOADER_SNAPSHOT_FILE,
+        r#"
+arch = "aarch64"
+target = "aarch64-unknown-none-softfloat"
+vmconfigs = ["tmp/snapshot-vm.toml"]
+
+[qemu]
+qemu_config = "configs/snapshot-qemu.toml"
+"#,
+    )
+    .unwrap();
+
+    let app = test_app_context(root.path());
+
+    let (request, snapshot) = prepare_axloader_request(
+        &app,
+        AxvisorCliArgs {
+            config: None,
+            arch: Some("x86_64".into()),
+            target: None,
+            plat_dyn: Some(false),
+            smp: Some(2),
+            debug: true,
+            vmconfigs: vec![],
+        },
+        None,
+    )
+    .unwrap();
+
+    assert_eq!(request.arch, "x86_64");
+    assert_eq!(request.target, "x86_64-unknown-none");
+    assert_eq!(request.plat_dyn, Some(false));
+    assert_eq!(request.smp, Some(2));
+    assert!(request.debug);
+    assert_eq!(request.qemu_config, None);
+    assert!(request.vmconfigs.is_empty());
+    assert_eq!(snapshot.qemu.qemu_config, None);
     assert!(snapshot.vmconfigs.is_empty());
 }
 

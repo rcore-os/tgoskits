@@ -374,15 +374,16 @@ cargo xtask axvisor qemu \
 
 ### 9.1 测试套件结构
 
-`test-suit/axvisor/normal/`：
+QEMU loader 测试位于 `test-suit/axloader/`，板级测试仍位于 `test-suit/axvisor/`：
 
 | 目录 | 内容 |
 |------|------|
-| `qemu/` | QEMU 冒烟测试（4 个架构） |
-| `board-orangepi-5-plus/` | OrangePi-5-Plus 物理板测试 |
-| `board-phytiumpi/` | 飞腾 Pi 物理板测试 |
-| `board-rdk-s100/` | RDK-S100 物理板测试 |
-| `board-roc-rk3568-pc/` | ROC-RK3568-PC 物理板测试 |
+| `test-suit/axloader/normal/qemu/` | QEMU 冒烟测试（4 个架构） |
+| `test-suit/axloader/uefi/qemu-nimbos/` | UEFI QEMU loader 测试 |
+| `test-suit/axvisor/normal/board-orangepi-5-plus/` | OrangePi-5-Plus 物理板测试 |
+| `test-suit/axvisor/normal/board-phytiumpi/` | 飞腾 Pi 物理板测试 |
+| `test-suit/axvisor/normal/board-rdk-s100/` | RDK-S100 物理板测试 |
+| `test-suit/axvisor/normal/board-roc-rk3568-pc/` | ROC-RK3568-PC 物理板测试 |
 
 ### 9.2 测试配置格式
 
@@ -407,17 +408,17 @@ success_regex = ["(?m)^guest test pass!\\s*$"]
 
 ```bash
 # QEMU 测试
-cargo xtask axvisor test qemu --target aarch64
+cargo xtask axloader test qemu --target aarch64
 
 # 指定架构
-cargo xtask axvisor test qemu --target riscv64
+cargo xtask axloader test qemu --target riscv64
 ```
 
 ### 9.4 添加新测试用例
 
 1. 准备 Guest 镜像（或使用已有的）
 2. 创建 VM 配置（如需要）
-3. 在 `test-suit/axvisor/normal/` 对应目录下创建测试
+3. 在 `test-suit/axloader/normal/qemu/` 或对应 Axloader 分组目录下创建 QEMU 测试
 4. 编写 build config（包含 `vm_configs`）和 runtime config
 5. 确认 `shell_prefix` 与 Guest shell 提示符匹配
 6. 验证

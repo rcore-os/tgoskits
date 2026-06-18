@@ -11,6 +11,9 @@ pub const DEFAULT_ARCEOS_TARGET: &str = "aarch64-unknown-none-softfloat";
 pub const AXVISOR_SNAPSHOT_FILE: &str = ".axvisor.toml";
 pub const DEFAULT_AXVISOR_ARCH: &str = "aarch64";
 pub const DEFAULT_AXVISOR_TARGET: &str = "aarch64-unknown-none-softfloat";
+pub const AXLOADER_SNAPSHOT_FILE: &str = ".axloader.toml";
+pub const DEFAULT_AXLOADER_ARCH: &str = DEFAULT_AXVISOR_ARCH;
+pub const DEFAULT_AXLOADER_TARGET: &str = DEFAULT_AXVISOR_TARGET;
 pub const STARRY_SNAPSHOT_FILE: &str = ".starry.toml";
 pub const DEFAULT_STARRY_ARCH: &str = "riscv64";
 pub const DEFAULT_STARRY_TARGET: &str = "riscv64gc-unknown-none-elf";
@@ -122,6 +125,30 @@ pub struct AxvisorCommandSnapshot {
     pub uboot: AxvisorUbootSnapshot,
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AxloaderQemuSnapshot {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub qemu_config: Option<PathBuf>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AxloaderCommandSnapshot {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub arch: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plat_dyn: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub smp: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub config: Option<PathBuf>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub vmconfigs: Vec<PathBuf>,
+    #[serde(default, skip_serializing_if = "AxloaderQemuSnapshot::is_empty")]
+    pub qemu: AxloaderQemuSnapshot,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResolvedAxvisorRequest {
     pub package: String,
@@ -203,6 +230,12 @@ impl AxvisorUbootSnapshot {
     }
 }
 
+impl AxloaderQemuSnapshot {
+    pub(crate) fn is_empty(&self) -> bool {
+        self.qemu_config.is_none()
+    }
+}
+
 impl StarryQemuSnapshot {
     pub(crate) fn is_empty(&self) -> bool {
         self.qemu_config.is_none()
@@ -235,4 +268,5 @@ macro_rules! impl_snapshot_file {
 
 impl_snapshot_file!(ArceosCommandSnapshot, ARCEOS_SNAPSHOT_FILE);
 impl_snapshot_file!(AxvisorCommandSnapshot, AXVISOR_SNAPSHOT_FILE);
+impl_snapshot_file!(AxloaderCommandSnapshot, AXLOADER_SNAPSHOT_FILE);
 impl_snapshot_file!(StarryCommandSnapshot, STARRY_SNAPSHOT_FILE);

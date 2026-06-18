@@ -6,12 +6,12 @@ title: "Axvisor 快速上手"
 
 # Axvisor 快速上手
 
-Axvisor 的最短验证路径建议直接使用测试入口。当前 QEMU 测试覆盖 AArch64、RISC-V64、x86_64 和 LoongArch64；板测则依赖 self-hosted 环境。
+Axvisor 的最短本地验证路径是独立的 Axloader QEMU loader 测试；Axvisor 命令本身继续负责 build、run、U-Boot 和 Board 流程。当前 Axloader QEMU 测试覆盖 AArch64、RISC-V64、x86_64 和 LoongArch64；板测则依赖 self-hosted 环境。
 
 ```mermaid
 flowchart TD
-  A[cargo xtask axvisor test] --> B{验证层级}
-  B --> C[QEMU]
+  A[cargo xtask axloader test qemu] --> C[QEMU loader]
+  V[cargo xtask axvisor test] --> B{板级验证}
   B --> D[U-Boot]
   B --> E[Board]
   C --> C1[aarch64]
@@ -25,26 +25,26 @@ flowchart TD
 
 ## 1. QEMU
 
-Axvisor 的快速验证建议优先从 `test qemu` 开始，而不是直接进入更复杂的板级或 U-Boot 路径。这样可以先确认 hypervisor、Guest 资产和基础运行链路是否已经正常。
+Axvisor loader 的快速验证建议优先从 `axloader test qemu` 开始，而不是直接进入更复杂的板级或 U-Boot 路径。这样可以先确认 hypervisor、Guest 资产和基础运行链路是否已经正常。
 
 ### 1.1 AArch64
 
 `aarch64` 是当前 Axvisor 最主流的快速验证路径。无论是本地理解整体链路，还是和 CI 中的自动测试对应，这一条都最值得先跑通。
 
 ```bash
-cargo xtask axvisor test qemu --target aarch64-unknown-none-softfloat
+cargo xtask axloader test qemu --target aarch64-unknown-none-softfloat
 ```
 
 ### 1.2 x86_64
 
-`x86_64` 适合作为第二条验证路径，用于确认不同平台上的 hypervisor 启动和 Guest 运行行为。它也是当前 `test qemu` 明确支持的目标之一。
+`x86_64` 适合作为第二条验证路径，用于确认不同平台上的 hypervisor 启动和 Guest 运行行为。它也是当前 `axloader test qemu` 明确支持的目标之一。
 
 ```bash
-cargo xtask axvisor test qemu --target x86_64-unknown-none
+cargo xtask axloader test qemu --target x86_64-unknown-none
 ```
 
-> `axvisor test qemu` 当前支持 `aarch64`、`riscv64`、`x86_64` 和 `loongarch64`。
-> `--guest` 不是 `test qemu` 的参数；如果需要板级 U-Boot 测试中的 guest 选择，应使用 `cargo xtask axvisor test uboot ...`。
+> `axloader test qemu` 当前支持 `aarch64`、`riscv64`、`x86_64` 和 `loongarch64`。
+> `--guest` 不是 `axloader test qemu` 的参数；如果需要板级 U-Boot 测试中的 guest 选择，应使用 `cargo xtask axvisor test uboot ...`。
 
 ## 2. U-Boot 测试
 

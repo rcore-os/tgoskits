@@ -132,7 +132,7 @@ flowchart TD
 cargo xtask test
 cargo arceos test qemu --target riscv64gc-unknown-none-elf
 cargo starry test qemu --target riscv64
-cargo axvisor test qemu --target aarch64
+cargo axloader test qemu --target aarch64
 ```
 
 若修改的是跨系统基础组件，至少应执行以下测试：

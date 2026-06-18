@@ -118,7 +118,8 @@ cargo xtask --help
 |------|------|----------|
 | ArceOS | [ArceOS 快速上手](./arceos) | `cargo xtask arceos qemu ...` |
 | StarryOS | [StarryOS 快速上手](./starryos) | `cargo xtask starry qemu ...` |
-| Axvisor | [Axvisor 快速上手](./axvisor) | `cargo xtask axvisor test qemu ...` |
+| Axloader | [Axvisor 快速上手](./axvisor) | `cargo xtask axloader test qemu ...` |
+| Axvisor | [Axvisor 快速上手](./axvisor) | `cargo xtask axvisor test board ...` |
 
 环境确认无误后，可以直接进入具体系统的快速上手页面。每一页都会给出当前项目中可用的最短命令路径，而不是抽象的概念说明。
 

@@ -37,12 +37,13 @@ pub(crate) use arch::{
 };
 pub(crate) use resolve::{AxvisorRequestPaths, snapshot_path_value};
 pub use types::{
-    ARCEOS_SNAPSHOT_FILE, AXVISOR_SNAPSHOT_FILE, ArceosCommandSnapshot, ArceosQemuSnapshot,
-    ArceosUbootSnapshot, AxvisorCliArgs, AxvisorCommandSnapshot, AxvisorQemuSnapshot,
-    AxvisorUbootSnapshot, BuildCliArgs, DEFAULT_ARCEOS_ARCH, DEFAULT_ARCEOS_TARGET,
-    DEFAULT_AXVISOR_ARCH, DEFAULT_AXVISOR_TARGET, DEFAULT_STARRY_ARCH, DEFAULT_STARRY_TARGET,
-    ResolvedAxvisorRequest, ResolvedBuildRequest, ResolvedStarryRequest, STARRY_PACKAGE,
-    STARRY_SNAPSHOT_FILE, StarryCliArgs, StarryCommandSnapshot, StarryQemuSnapshot,
+    ARCEOS_SNAPSHOT_FILE, AXLOADER_SNAPSHOT_FILE, AXVISOR_SNAPSHOT_FILE, ArceosCommandSnapshot,
+    ArceosQemuSnapshot, ArceosUbootSnapshot, AxloaderCommandSnapshot, AxloaderQemuSnapshot,
+    AxvisorCliArgs, AxvisorCommandSnapshot, AxvisorQemuSnapshot, AxvisorUbootSnapshot,
+    BuildCliArgs, DEFAULT_ARCEOS_ARCH, DEFAULT_ARCEOS_TARGET, DEFAULT_AXLOADER_ARCH,
+    DEFAULT_AXLOADER_TARGET, DEFAULT_AXVISOR_ARCH, DEFAULT_AXVISOR_TARGET, DEFAULT_STARRY_ARCH,
+    DEFAULT_STARRY_TARGET, ResolvedAxvisorRequest, ResolvedBuildRequest, ResolvedStarryRequest,
+    STARRY_PACKAGE, STARRY_SNAPSHOT_FILE, StarryCliArgs, StarryCommandSnapshot, StarryQemuSnapshot,
     StarryUbootSnapshot,
 };
 pub(crate) use workspace::{

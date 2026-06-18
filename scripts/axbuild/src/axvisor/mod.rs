@@ -118,7 +118,7 @@ pub struct ArgsTest {
 
 #[derive(Subcommand)]
 pub enum TestCommand {
-    /// Run Axvisor QEMU test suite
+    /// Deprecated: use `axloader test qemu`
     Qemu(ArgsTestQemu),
     /// Run Axvisor U-Boot board test suite
     Uboot(ArgsTestUboot),
@@ -131,33 +131,35 @@ pub struct ArgsTestQemu {
     #[arg(
         long,
         value_name = "ARCH",
-        required_unless_present_any = ["target", "list"],
-        help = "Axvisor architecture to test"
+        help = "Deprecated Axvisor QEMU test architecture; use `axloader test qemu`"
     )]
     pub arch: Option<String>,
     #[arg(
         short = 't',
         long,
         value_name = "TARGET",
-        required_unless_present_any = ["arch", "list"],
-        help = "Axvisor target triple to test"
+        help = "Deprecated Axvisor QEMU test target triple; use `axloader test qemu`"
     )]
     pub target: Option<String>,
     #[arg(
         short = 'g',
         long = "test-group",
         value_name = "GROUP",
-        help = "Run Axvisor QEMU test cases from one test group"
+        help = "Deprecated Axvisor QEMU test group; use `axloader test qemu`"
     )]
     pub test_group: Option<String>,
     #[arg(
         short = 'c',
         long = "test-case",
         value_name = "CASE",
-        help = "Run only one Axvisor QEMU test case"
+        help = "Deprecated Axvisor QEMU test case; use `axloader test qemu`"
     )]
     pub test_case: Option<String>,
-    #[arg(short = 'l', long, help = "List discovered Axvisor QEMU test cases")]
+    #[arg(
+        short = 'l',
+        long,
+        help = "Deprecated Axvisor QEMU test listing; use `axloader test qemu --list`"
+    )]
     pub list: bool,
 }
 
@@ -486,6 +488,29 @@ mod tests {
                 assert_eq!(args.build.vmconfigs, vec![PathBuf::from("tmp/vm1.toml")]);
             }
             _ => panic!("expected board command"),
+        }
+    }
+
+    #[test]
+    fn command_parses_legacy_test_qemu_without_arch() {
+        #[derive(Parser)]
+        struct Cli {
+            #[command(subcommand)]
+            command: Command,
+        }
+
+        let cli = Cli::try_parse_from(["axvisor", "test", "qemu"]).unwrap();
+
+        match cli.command {
+            Command::Test(args) => match args.command {
+                TestCommand::Qemu(args) => {
+                    assert!(args.arch.is_none());
+                    assert!(args.target.is_none());
+                    assert!(!args.list);
+                }
+                _ => panic!("expected qemu test command"),
+            },
+            _ => panic!("expected test command"),
         }
     }
 

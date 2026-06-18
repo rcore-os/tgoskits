@@ -474,7 +474,7 @@ function ArchitectureSection() {
 
   const sideRails = [
     { title: '构建与配置', items: ['cargo xtask', 'scripts/axbuild', 'platform configs', 'VM configs'] },
-    { title: '验证闭环', items: ['clippy / fmt checks', 'ArceOS tests', 'StarryOS test-suit', 'Axvisor QEMU / board tests'] },
+    { title: '验证闭环', items: ['clippy / fmt checks', 'ArceOS tests', 'StarryOS test-suit', 'Axloader QEMU / Axvisor board tests'] },
   ];
 
   const notes = [

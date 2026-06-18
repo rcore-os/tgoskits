@@ -277,7 +277,8 @@ flowchart LR
 | `cargo xtask clippy` | Clippy 静态检查（支持全量、指定包和增量模式） | `cargo xtask clippy --since origin/main` |
 | `cargo xtask arceos <sub>` | ArceOS 构建/运行/QEMU 测试 | `cargo xtask arceos qemu --arch riscv64` |
 | `cargo xtask starry <sub>` | StarryOS 构建/运行/QEMU 测试/板级测试 | `cargo xtask starry qemu --target aarch64` |
-| `cargo xtask axvisor <sub>` | Axvisor 构建/运行/QEMU/U-Boot/板级测试 | `cargo xtask axvisor test qemu --target aarch64` |
+| `cargo xtask axloader <sub>` | Axloader 构建/QEMU loader 测试 | `cargo xtask axloader test qemu --target aarch64` |
+| `cargo xtask axvisor <sub>` | Axvisor 构建/运行/U-Boot/板级测试 | `cargo xtask axvisor test board --list` |
 | `cargo xtask board <sub>` | 远程开发板管理 | `cargo xtask board list` |
 
 → 命令体系详解：[构建流程](/docs/build) | [命令总览](/docs/build/commands)

@@ -93,9 +93,9 @@ push 到 `main` / `dev` 时强制运行 CI 检查。若非 `main` / `dev` 分支
 |----------|--------|----------|-----------|----------|
 | Run clippy | `self-hosted linux qcs` | 否 | 无 | `cargo xtask clippy --since <base>`；需要完整 git 历史；fork PR 回退到 `ubuntu-latest` + `base` 容器 |
 | Test with std | `self-hosted linux qcs` | 否 | 无 | `cargo xtask test`，运行 `scripts/test/std_crates.csv` 中的 host 测试；fork PR 回退到 `ubuntu-latest` + `base` 容器 |
-| Test axvisor aarch64 qemu | `self-hosted linux qcs` | 否 | 无 | `cargo xtask axvisor test qemu --arch aarch64`；`rcore-os` 仓库使用 self-hosted，fork PR 回退到 `ubuntu-latest` + `base` 容器 |
-| Test axvisor riscv64 qemu | `self-hosted linux qcs` | 否 | 无 | `cargo xtask axvisor test qemu --arch riscv64`；`rcore-os` 仓库使用 self-hosted，fork PR 回退到 `ubuntu-latest` + `base` 容器 |
-| Test axvisor loongarch64 qemu | `ubuntu-latest` | 是（`axvisor-lvz`） | `test-axvisor-loongarch64` | `cargo xtask axvisor test qemu --arch loongarch64`，使用带 LVZ 支持的镜像 |
+| Test axloader aarch64 qemu | `self-hosted linux qcs` | 否 | 无 | `cargo xtask axloader test qemu --arch aarch64`；`rcore-os` 仓库使用 self-hosted，fork PR 回退到 `ubuntu-latest` + `base` 容器 |
+| Test axloader riscv64 qemu | `self-hosted linux qcs` | 否 | 无 | `cargo xtask axloader test qemu --arch riscv64`；`rcore-os` 仓库使用 self-hosted，fork PR 回退到 `ubuntu-latest` + `base` 容器 |
+| Test axloader loongarch64 qemu | `ubuntu-latest` | 是（`axvisor-lvz`） | `test-axloader-loongarch64` | `cargo xtask axloader test qemu --arch loongarch64`，使用带 LVZ 支持的镜像 |
 | Test starry riscv64 qemu | `ubuntu-latest` | 是（`base`） | `test-starry-riscv64` | `cargo xtask starry test qemu --arch riscv64` |
 | Test starry aarch64 qemu | `ubuntu-latest` | 是（`base`） | `test-starry-aarch64` | `cargo xtask starry test qemu --arch aarch64` |
 | Test starry loongarch64 qemu | `ubuntu-latest` | 是（`base`） | `test-starry-loongarch64` | `cargo xtask starry test qemu --arch loongarch64` |
@@ -104,8 +104,8 @@ push 到 `main` / `dev` 时强制运行 CI 检查。若非 `main` / `dev` 分支
 | Test arceos riscv64 qemu | `self-hosted linux qcs` | 否 | 无 | `cargo xtask arceos test qemu --arch riscv64`；仅 `rcore-os` 仓库触发 |
 | Test arceos aarch64 qemu | `self-hosted linux qcs` | 否 | 无 | `cargo xtask arceos test qemu --arch aarch64`；仅 `rcore-os` 仓库触发 |
 | Test arceos loongarch64 qemu | `self-hosted linux qcs` | 否 | 无 | `cargo xtask arceos test qemu --arch loongarch64`；仅 `rcore-os` 仓库触发 |
-| Test axvisor self-hosted x86_64 | `self-hosted linux intel kvm` | 否 | 无 | `cargo xtask axvisor test qemu --arch x86_64`；仅 `rcore-os` 仓库触发 |
-| Test axvisor x86_64 svm hosted | `ubuntu-latest` | 否 | 无 | AMD SVM 虚拟化冒烟测试；Intel CPU 时自动跳过 |
+| Test axloader self-hosted x86_64 | `self-hosted linux intel kvm` | 否 | 无 | `cargo xtask axloader test qemu --arch x86_64`；仅 `rcore-os` 仓库触发 |
+| Test axloader x86_64 svm hosted | `ubuntu-latest` | 否 | 无 | AMD SVM 虚拟化冒烟测试；Intel CPU 时自动跳过 |
 | Test axvisor self-hosted board orangepi-5-plus-linux | `self-hosted linux board` | 否 | 无 | `cargo xtask axvisor test board --board orangepi-5-plus-linux`；物理板卡；仅 `rcore-os` 仓库触发 |
 | Test starry self-hosted board orangepi-5-plus | `self-hosted linux board` | 否 | 无 | `cargo xtask starry test board --board orangepi-5-plus`；物理板卡；仅 `rcore-os` 仓库触发 |
 | Test starry self-hosted board licheerv-nano-sg2002 | `self-hosted linux board` | 否 | 无 | `cargo xtask starry test board --board licheerv-nano-sg2002`；LicheeRV-Nano-SG2002 物理板卡；仅 `rcore-os` 仓库触发 |
@@ -120,8 +120,8 @@ self-hosted runner 任务优先在 `rcore-os` 仓库内运行。带 `self_hosted
 
 | Label | 用途 |
 |-------|------|
-| `self-hosted`, `linux`, `qcs` | clippy、std 测试、ArceOS QEMU 测试、Axvisor aarch64/riscv64 QEMU |
-| `self-hosted`, `linux`, `intel`, `kvm` | Axvisor x86_64 KVM 测试 |
+| `self-hosted`, `linux`, `qcs` | clippy、std 测试、ArceOS QEMU 测试、Axloader aarch64/riscv64 QEMU |
+| `self-hosted`, `linux`, `intel`, `kvm` | Axloader x86_64 KVM 测试 |
 | `self-hosted`, `linux`, `board` | 物理板卡测试 |
 
 ## Cache 策略
@@ -129,7 +129,7 @@ self-hosted runner 任务优先在 `rcore-os` 仓库内运行。带 `self_hosted
 | Cache Key | 使用 Job | 保存时机 | 说明 |
 |-----------|----------|----------|------|
 | `sync-lint` | Run sync-lint | `push` 事件 | xtask 与 sync-lint 工具链编译产物 |
-| `test-axvisor-loongarch64` | Test axvisor loongarch64 QEMU | `push` 事件 | Axvisor loongarch64 编译产物 |
+| `test-axloader-loongarch64` | Test axloader loongarch64 QEMU | `push` 事件 | Axloader loongarch64 编译产物 |
 | `test-starry-riscv64/aarch64/loongarch64/x86_64` | Test starry riscv64/aarch64/loongarch64/x86_64 QEMU | `push` 事件 | StarryOS QEMU 编译产物 |
 | 无（`cache_key: ""`） | self-hosted runner job，包括 Run clippy 和 Test with std | - | 依赖 self-hosted runner 本地磁盘缓存，不使用 GitHub Actions cache |
 

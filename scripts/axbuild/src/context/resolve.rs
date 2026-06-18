@@ -4,11 +4,12 @@ use anyhow::{Context as _, anyhow};
 
 use super::{
     ARCEOS_SNAPSHOT_FILE, AppContext, ArceosCommandSnapshot, ArceosQemuSnapshot,
-    ArceosUbootSnapshot, AxvisorCliArgs, AxvisorCommandSnapshot, AxvisorQemuSnapshot,
-    AxvisorUbootSnapshot, BuildCliArgs, ResolvedAxvisorRequest, ResolvedBuildRequest,
-    ResolvedStarryRequest, STARRY_PACKAGE, StarryCliArgs, StarryCommandSnapshot,
-    StarryQemuSnapshot, StarryUbootSnapshot, resolve_arceos_arch_and_target,
-    resolve_axvisor_arch_and_target, resolve_starry_arch_and_target,
+    ArceosUbootSnapshot, AxloaderCommandSnapshot, AxloaderQemuSnapshot, AxvisorCliArgs,
+    AxvisorCommandSnapshot, AxvisorQemuSnapshot, AxvisorUbootSnapshot, BuildCliArgs,
+    ResolvedAxvisorRequest, ResolvedBuildRequest, ResolvedStarryRequest, STARRY_PACKAGE,
+    StarryCliArgs, StarryCommandSnapshot, StarryQemuSnapshot, StarryUbootSnapshot,
+    resolve_arceos_arch_and_target, resolve_axvisor_arch_and_target,
+    resolve_starry_arch_and_target,
 };
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -363,6 +364,120 @@ impl AppContext {
     pub(crate) fn store_axvisor_snapshot(
         &self,
         snapshot: &AxvisorCommandSnapshot,
+    ) -> anyhow::Result<PathBuf> {
+        snapshot.store(&self.root)
+    }
+
+    pub(crate) fn prepare_axloader_request(
+        &self,
+        cli: AxvisorCliArgs,
+        paths: AxvisorRequestPaths<
+            impl FnOnce(&Path) -> anyhow::Result<Option<String>>,
+            impl FnOnce(&Path, &str, Option<PathBuf>) -> anyhow::Result<PathBuf>,
+        >,
+        qemu_config: Option<PathBuf>,
+    ) -> anyhow::Result<(ResolvedAxvisorRequest, AxloaderCommandSnapshot)> {
+        let AxvisorRequestPaths {
+            package,
+            axvisor_dir,
+            load_config_target,
+            resolve_build_info_path,
+        } = paths;
+        let snapshot = AxloaderCommandSnapshot::load(&self.root)?;
+        let inherit_snapshot_config =
+            cli.config.is_none() && cli.arch.is_none() && cli.target.is_none();
+        let resolved_config = self.resolve_command_path(
+            cli.config.clone(),
+            inherit_snapshot_config
+                .then_some(snapshot.config.as_ref())
+                .flatten(),
+        );
+        let config_target = resolved_config
+            .as_ref()
+            .filter(|path| path.exists())
+            .map(|path| load_config_target(path))
+            .transpose()?
+            .flatten();
+        let explicit_config = if cli.config.is_some() {
+            resolved_config
+        } else {
+            resolved_config.filter(|path| path.exists())
+        };
+        let effective_arch = cli.arch.clone().or_else(|| {
+            if cli.target.is_some() || config_target.is_some() {
+                None
+            } else {
+                snapshot.arch.clone()
+            }
+        });
+        let effective_target = cli.target.clone().or(config_target.clone()).or_else(|| {
+            if cli.arch.is_some() {
+                None
+            } else {
+                snapshot.target.clone()
+            }
+        });
+        let (arch, target) = resolve_axvisor_arch_and_target(effective_arch, effective_target)?;
+        let plat_dyn = cli.plat_dyn.or(snapshot.plat_dyn);
+        let smp = cli.smp.or(snapshot.smp);
+        let build_info_path = resolve_build_info_path(&axvisor_dir, &target, explicit_config)?;
+        let inherit_snapshot_runtime = cli.arch.is_none()
+            && cli.target.is_none()
+            && cli.config.is_none()
+            && cli.vmconfigs.is_empty();
+        let qemu_config = self.resolve_command_path(
+            qemu_config,
+            if inherit_snapshot_runtime {
+                snapshot.qemu.qemu_config.as_ref()
+            } else {
+                None
+            },
+        );
+        let vmconfigs = if !cli.vmconfigs.is_empty() {
+            self.resolve_workspace_paths(cli.vmconfigs.iter())
+        } else if inherit_snapshot_runtime {
+            self.resolve_workspace_paths(snapshot.vmconfigs.iter())
+        } else {
+            Vec::new()
+        };
+
+        let request = ResolvedAxvisorRequest {
+            package,
+            axvisor_dir,
+            arch: arch.clone(),
+            target: target.clone(),
+            plat_dyn,
+            smp,
+            debug: cli.debug,
+            build_info_path: build_info_path.clone(),
+            qemu_config: qemu_config.clone(),
+            uboot_config: None,
+            vmconfigs: vmconfigs.clone(),
+        };
+
+        let snapshot = AxloaderCommandSnapshot {
+            arch: Some(arch),
+            target: Some(target),
+            plat_dyn,
+            smp,
+            config: Some(snapshot_path_value(&self.root, &build_info_path)),
+            vmconfigs: vmconfigs
+                .iter()
+                .map(|path| snapshot_path_value(&self.root, path))
+                .collect(),
+            qemu: AxloaderQemuSnapshot {
+                qemu_config: qemu_config
+                    .as_ref()
+                    .map(|path| snapshot_path_value(&self.root, path)),
+            },
+        };
+
+        Ok((request, snapshot))
+    }
+
+    pub(crate) fn store_axloader_snapshot(
+        &self,
+        snapshot: &AxloaderCommandSnapshot,
     ) -> anyhow::Result<PathBuf> {
         snapshot.store(&self.root)
     }
