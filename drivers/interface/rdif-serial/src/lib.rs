@@ -310,3 +310,83 @@ pub trait TReceiver: Send + 'static {
         Ok(read_count)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use alloc::vec::Vec;
+
+    use super::*;
+
+    struct LimitedSender {
+        capacity: usize,
+        bytes: Vec<u8>,
+    }
+
+    impl TSender for LimitedSender {
+        fn write_byte(&mut self, byte: u8) -> bool {
+            if self.bytes.len() == self.capacity {
+                return false;
+            }
+            self.bytes.push(byte);
+            true
+        }
+    }
+
+    struct ScriptedReceiver {
+        next: Vec<Option<Result<u8, TransferError>>>,
+    }
+
+    impl TReceiver for ScriptedReceiver {
+        fn read_byte(&mut self) -> Option<Result<u8, TransferError>> {
+            if self.next.is_empty() {
+                None
+            } else {
+                self.next.remove(0)
+            }
+        }
+    }
+
+    #[test]
+    fn write_bytes_stops_on_full() {
+        let mut sender = LimitedSender {
+            capacity: 2,
+            bytes: Vec::new(),
+        };
+
+        let written = sender.write_bytes(&[0x11, 0x22, 0x33]);
+
+        assert_eq!(written, 2);
+        assert_eq!(sender.bytes, [0x11, 0x22]);
+    }
+
+    #[test]
+    fn read_bytes_stops_on_empty() {
+        let mut receiver = ScriptedReceiver {
+            next: Vec::from([Some(Ok(0x11)), Some(Ok(0x22)), None]),
+        };
+        let mut buffer = [0; 4];
+
+        let read = receiver.read_bytes(&mut buffer).unwrap();
+
+        assert_eq!(read, 2);
+        assert_eq!(&buffer[..read], [0x11, 0x22]);
+    }
+
+    #[test]
+    fn read_bytes_reports_partial_error() {
+        let mut receiver = ScriptedReceiver {
+            next: Vec::from([
+                Some(Ok(0x11)),
+                Some(Ok(0x22)),
+                Some(Err(TransferError::Parity)),
+            ]),
+        };
+        let mut buffer = [0; 4];
+
+        let err = receiver.read_bytes(&mut buffer).unwrap_err();
+
+        assert_eq!(err.bytes_transferred, 2);
+        assert_eq!(err.kind, TransferError::Parity);
+        assert_eq!(&buffer[..err.bytes_transferred], [0x11, 0x22]);
+    }
+}
