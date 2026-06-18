@@ -24,6 +24,25 @@ const DEFAULT_UEFI_TARGET: &str = "x86_64-unknown-uefi";
 const HTTP_SMOKE_TIMEOUT: Duration = Duration::from_secs(120);
 const QEMU_HOST_GATEWAY: &str = "10.0.2.2";
 
+#[derive(Clone, Copy)]
+struct LoaderSmokeTarget {
+    cargo_target: &'static str,
+    arch: &'static str,
+    efi_output_file: &'static str,
+    firmware_env: &'static str,
+    firmware_candidates: &'static [&'static str],
+    qemu_program: &'static str,
+    qemu_args: fn(&Path, &Path) -> Vec<String>,
+    kernel_elf: fn() -> Vec<u8>,
+}
+
+const X86_64_UEFI_FIRMWARE_CANDIDATES: &[&str] = &[
+    "/usr/share/OVMF/OVMF_CODE_4M.fd",
+    "/usr/share/OVMF/OVMF_CODE.fd",
+    "/usr/share/ovmf/OVMF.fd",
+    "/usr/share/qemu/OVMF.fd",
+];
+
 #[derive(Args, Debug, Clone, PartialEq, Eq)]
 pub struct ArgsBuild {
     #[arg(long, default_value = DEFAULT_UEFI_TARGET)]
@@ -102,25 +121,23 @@ fn run_cargo<'a>(
 }
 
 fn run_http_smoke_test(workspace_root: &Path, target: &str) -> anyhow::Result<()> {
-    if target != DEFAULT_UEFI_TARGET {
-        bail!("axloader HTTP smoke currently supports only {DEFAULT_UEFI_TARGET}");
-    }
+    let smoke_target = smoke_target(target)?;
 
     println!("axloader http smoke: building UEFI loader ...");
     run_loader_build(workspace_root, target, true)?;
 
-    let firmware = find_ovmf_firmware()?;
+    let firmware = find_uefi_firmware(smoke_target)?;
     let temp = tempfile::tempdir().context("failed to create axloader HTTP smoke temp dir")?;
     let efi_boot_dir = temp.path().join("esp/EFI/BOOT");
     fs::create_dir_all(&efi_boot_dir)
         .with_context(|| format!("failed to create {}", efi_boot_dir.display()))?;
     fs::copy(
         axloader_efi_path(workspace_root, target),
-        efi_boot_dir.join("BOOTX64.EFI"),
+        efi_boot_dir.join(smoke_target.efi_output_file),
     )
     .context("failed to stage axloader EFI binary")?;
 
-    let kernel = minimal_x86_64_kernel_elf();
+    let kernel = (smoke_target.kernel_elf)();
     let http_server = SmokeHttpServer::start(kernel.clone())?;
     let kernel_url = format!(
         "http://{QEMU_HOST_GATEWAY}:{}/kernel.elf",
@@ -134,16 +151,17 @@ fn run_http_smoke_test(workspace_root: &Path, target: &str) -> anyhow::Result<()
             "\"kernel_url\":\"{}\",",
             "\"kernel_size\":{},",
             "\"image_format\":\"elf64\",",
-            "\"arch\":\"x86_64\",",
+            "\"arch\":\"{}\",",
             "\"entry_symbol\":null",
             "}}\n"
         ),
         kernel_url,
         kernel.len(),
+        smoke_target.arch,
     );
 
     println!("axloader http smoke: running QEMU ...");
-    let mut child = spawn_axloader_qemu(&firmware, &temp.path().join("esp"))?;
+    let mut child = spawn_axloader_qemu(smoke_target, &firmware, &temp.path().join("esp"))?;
     let mut stdin = child
         .stdin
         .take()
@@ -211,61 +229,90 @@ fn axloader_efi_path(workspace_root: &Path, target: &str) -> PathBuf {
         .join("axloader.efi")
 }
 
-fn find_ovmf_firmware() -> anyhow::Result<PathBuf> {
-    if let Some(path) = std::env::var_os("AXVISOR_X86_64_UEFI_FIRMWARE") {
+fn smoke_target(target: &str) -> anyhow::Result<LoaderSmokeTarget> {
+    match target {
+        "x86_64-unknown-uefi" => Ok(LoaderSmokeTarget {
+            cargo_target: "x86_64-unknown-uefi",
+            arch: "x86_64",
+            efi_output_file: "BOOTX64.EFI",
+            firmware_env: "AXVISOR_X86_64_UEFI_FIRMWARE",
+            firmware_candidates: X86_64_UEFI_FIRMWARE_CANDIDATES,
+            qemu_program: "qemu-system-x86_64",
+            qemu_args: x86_64_qemu_args,
+            kernel_elf: minimal_x86_64_kernel_elf,
+        }),
+        _ => bail!("axloader HTTP smoke does not support target `{target}`"),
+    }
+}
+
+fn find_uefi_firmware(target: LoaderSmokeTarget) -> anyhow::Result<PathBuf> {
+    if let Some(path) = std::env::var_os(target.firmware_env) {
         let path = PathBuf::from(path);
         if path.is_file() {
             return Ok(path);
         }
     }
 
-    for candidate in [
-        "/usr/share/OVMF/OVMF_CODE_4M.fd",
-        "/usr/share/OVMF/OVMF_CODE.fd",
-        "/usr/share/ovmf/OVMF.fd",
-        "/usr/share/qemu/OVMF.fd",
-    ] {
+    for candidate in target.firmware_candidates {
         let path = PathBuf::from(candidate);
         if path.is_file() {
             return Ok(path);
         }
     }
 
-    bail!("OVMF firmware not found; set AXVISOR_X86_64_UEFI_FIRMWARE or install ovmf")
+    bail!(
+        "UEFI firmware not found for {}; set {} or install ovmf",
+        target.cargo_target,
+        target.firmware_env
+    )
 }
 
-fn spawn_axloader_qemu(firmware: &Path, esp_dir: &Path) -> anyhow::Result<Child> {
-    Command::new("qemu-system-x86_64")
-        .args([
-            "-m",
-            "256M",
-            "-smp",
-            "1",
-            "-machine",
-            "q35",
-            "-display",
-            "none",
-            "-monitor",
-            "none",
-            "-serial",
-            "stdio",
-            "-netdev",
-            "user,id=net0",
-            "-device",
-            "e1000,netdev=net0",
-            "-drive",
-            &format!(
-                "if=pflash,format=raw,readonly=on,file={}",
-                firmware.display()
-            ),
-            "-drive",
-            &format!("format=raw,if=ide,file=fat:rw:{}", esp_dir.display()),
-        ])
+fn spawn_axloader_qemu(
+    target: LoaderSmokeTarget,
+    firmware: &Path,
+    esp_dir: &Path,
+) -> anyhow::Result<Child> {
+    Command::new(target.qemu_program)
+        .args((target.qemu_args)(firmware, esp_dir))
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .context("failed to start qemu-system-x86_64 for axloader HTTP smoke")
+        .with_context(|| {
+            format!(
+                "failed to start {} for axloader HTTP smoke",
+                target.qemu_program
+            )
+        })
+}
+
+fn x86_64_qemu_args(firmware: &Path, esp_dir: &Path) -> Vec<String> {
+    [
+        "-m".into(),
+        "256M".into(),
+        "-smp".into(),
+        "1".into(),
+        "-machine".into(),
+        "q35".into(),
+        "-display".into(),
+        "none".into(),
+        "-monitor".into(),
+        "none".into(),
+        "-serial".into(),
+        "stdio".into(),
+        "-netdev".into(),
+        "user,id=net0".into(),
+        "-device".into(),
+        "e1000,netdev=net0".into(),
+        "-drive".into(),
+        format!(
+            "if=pflash,format=raw,readonly=on,file={}",
+            firmware.display()
+        ),
+        "-drive".into(),
+        format!("format=raw,if=ide,file=fat:rw:{}", esp_dir.display()),
+    ]
+    .into()
 }
 
 fn spawn_output_reader(mut output: impl Read + Send + 'static, tx: mpsc::Sender<String>) {
