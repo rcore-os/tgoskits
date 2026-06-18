@@ -1,5 +1,6 @@
 use alloc::{
     collections::{BTreeMap, btree_set::BTreeSet},
+    string::String,
     vec::Vec,
 };
 use core::ptr::NonNull;
@@ -108,6 +109,7 @@ pub type FnOnProbe = for<'a> fn(ProbeFdt<'a>) -> Result<(), OnProbeError>;
 pub struct System {
     fdt: Fdt,
     phandle_2_device_id: BTreeMap<Phandle, DeviceId>,
+    populated_paths: Mutex<BTreeMap<String, DeviceId>>,
     populated_nodes: Mutex<BTreeSet<NodeId>>,
 }
 
@@ -120,6 +122,10 @@ impl System {
 
     pub fn phandle_to_device_id(&self, phandle: Phandle) -> Option<DeviceId> {
         self.phandle_2_device_id.get(&phandle).copied()
+    }
+
+    pub fn path_to_device_id(&self, path: &str) -> Option<DeviceId> {
+        self.populated_paths.lock().get(path).copied()
     }
 
     pub fn get_by_phandle(&self, phandle: Phandle) -> Option<NodeType<'_>> {
@@ -142,6 +148,7 @@ impl System {
         Ok(Self {
             fdt,
             phandle_2_device_id,
+            populated_paths: Mutex::new(BTreeMap::new()),
             populated_nodes: Mutex::new(BTreeSet::new()),
         })
     }
@@ -225,6 +232,7 @@ impl System {
             ));
 
             if res.is_ok() {
+                self.populated_paths.lock().insert(node.path(), id);
                 self.populated_nodes.lock().insert(node_id);
             }
 

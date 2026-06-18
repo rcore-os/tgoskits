@@ -35,6 +35,10 @@ impl ConsoleIf for ConsoleIfImpl {
         read_len
     }
 
+    fn device_id() -> Option<rdrive::DeviceId> {
+        somehal::console_device_id()
+    }
+
     /// Returns the IRQ number for the console input interrupt.
     ///
     /// Returns `None` if input interrupt is not supported.

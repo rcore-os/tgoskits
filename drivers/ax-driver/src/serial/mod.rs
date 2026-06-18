@@ -3,7 +3,7 @@ use alloc::{string::String, vec::Vec};
 use ax_errno::AxError;
 use fdt_edit::{Fdt, RegFixed};
 use log::warn;
-use rdrive::{Device, DriverGeneric, register::FdtInfo};
+use rdrive::{Device, DeviceId, DriverGeneric, register::FdtInfo};
 use some_serial::BSerial;
 pub use some_serial::{
     BIrqHandler, BRxQueue, BTxQueue, Config, ConfigError, InterruptMask, SerialEvent, SetBackError,
@@ -35,12 +35,14 @@ pub struct SerialDeviceInfo {
 
 pub struct SerialDevice {
     name: String,
+    rdrive_device_id: DeviceId,
     info: SerialDeviceInfo,
     interface: BSerial,
 }
 
 pub struct SerialRuntimePort {
     name: String,
+    rdrive_device_id: DeviceId,
     info: SerialDeviceInfo,
     pub control: SerialRuntimePortControl,
     pub tx: BTxQueue,
@@ -75,6 +77,10 @@ impl SerialDevice {
 
     pub fn info(&self) -> &SerialDeviceInfo {
         &self.info
+    }
+
+    pub fn rdrive_device_id(&self) -> DeviceId {
+        self.rdrive_device_id
     }
 
     pub fn fdt_path(&self) -> &str {
@@ -167,6 +173,7 @@ impl SerialDevice {
         let irq_handler = self.interface.take_irq_handler();
         Ok(SerialRuntimePort {
             name: self.name,
+            rdrive_device_id: self.rdrive_device_id,
             info: self.info,
             control: SerialRuntimePortControl {
                 interface: self.interface,
@@ -185,6 +192,10 @@ impl SerialRuntimePort {
 
     pub fn info(&self) -> &SerialDeviceInfo {
         &self.info
+    }
+
+    pub fn rdrive_device_id(&self) -> DeviceId {
+        self.rdrive_device_id
     }
 
     pub fn fdt_path(&self) -> &str {
@@ -253,12 +264,14 @@ impl TryFrom<Device<PlatformSerialDevice>> for SerialDevice {
     type Error = AxError;
 
     fn try_from(base: Device<PlatformSerialDevice>) -> Result<Self, Self::Error> {
+        let rdrive_device_id = base.descriptor().device_id();
         let mut dev = base.lock().map_err(|_| AxError::BadState)?;
         let name = dev.name.clone();
         let info = dev.info.clone();
         let interface = dev.interface.take().ok_or(AxError::BadState)?;
         Ok(Self {
             name,
+            rdrive_device_id,
             info,
             interface,
         })

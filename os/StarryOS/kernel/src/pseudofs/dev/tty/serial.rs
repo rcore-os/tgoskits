@@ -14,6 +14,7 @@ use ax_kspin::SpinNoIrq;
 use ax_runtime::hal::irq::{AutoEnable, IrqHandle, IrqRequest, ShareMode};
 use ax_task::IrqNotify;
 use axpoll::{IoEvents, PollSet};
+use rdrive::DeviceId as RDriveDeviceId;
 use spin::LazyLock;
 use starry_process::Process;
 
@@ -61,6 +62,7 @@ struct SerialRegistry {
 struct SerialBackend {
     name: String,
     tty_name: String,
+    rdrive_device_id: RDriveDeviceId,
     number: usize,
     control: SpinNoIrq<SerialRuntimePortControl>,
     tx: SpinNoIrq<BTxQueue>,
@@ -135,8 +137,6 @@ impl SerialRegistry {
                 .as_slice(),
         );
 
-        let selected = selected_console_tty(ax_runtime::hal::dtb::get_chosen_bootargs());
-
         let mut entries = Vec::new();
         for (serial, number) in serials.into_iter().zip(numbers) {
             let Some(number) = number else {
@@ -154,18 +154,24 @@ impl SerialRegistry {
         }
         entries.sort_by_key(|entry| entry.number);
 
-        let console_index = selected.and_then(|number| {
+        let selected = ax_runtime::hal::console::device_id();
+        let console_index = selected.and_then(|device_id| {
             entries
                 .iter()
-                .position(|entry| entry.number == number)
+                .position(|entry| entry.backend.rdrive_device_id == device_id)
                 .or_else(|| {
-                    warn!("bootargs console=ttyS{number} did not match a discovered serial TTY");
+                    warn!(
+                        "selected console device {device_id:?} did not match a discovered serial \
+                         TTY; falling back to tty1"
+                    );
                     None
                 })
         });
-        if let (Some(_), Some(index)) = (selected, console_index) {
+        if let Some(index) = console_index {
             let number = entries[index].number;
             info!("/dev/console bound to ttyS{number}");
+        } else {
+            info!("/dev/console bound to tty1");
         }
 
         Self {
@@ -181,12 +187,14 @@ fn new_serial_tty(number: usize, serial: SerialDevice) -> AxResult<SerialTtyEntr
     let runtime = serial.into_runtime_port()?;
     let name = runtime.name().into();
     let info = runtime.info().clone();
+    let rdrive_device_id = runtime.rdrive_device_id();
     let irq_num = runtime.irq_num();
     let irq_state_kick_required = info.rx_polling_required;
     let (control, tx, rx, irq_handler) = runtime.split();
     let backend = Arc::new(SerialBackend {
         name,
         tty_name: tty_name.clone(),
+        rdrive_device_id,
         number,
         control: SpinNoIrq::new(control),
         tx: SpinNoIrq::new(tx),
@@ -548,18 +556,6 @@ impl TtyWrite for SerialWriter {
     }
 }
 
-fn selected_console_tty(bootargs: Option<&str>) -> Option<usize> {
-    bootargs?
-        .split_ascii_whitespace()
-        .filter_map(|arg| arg.strip_prefix("console="))
-        .find_map(parse_serial_console)
-}
-
-fn parse_serial_console(spec: &str) -> Option<usize> {
-    let name = spec.split(',').next().unwrap_or(spec);
-    name.strip_prefix("ttyS")?.parse::<usize>().ok()
-}
-
 fn assign_tty_numbers(alias_indices: &[Option<usize>]) -> Vec<Option<usize>> {
     let mut assigned = vec![None; alias_indices.len()];
     let mut used = Vec::new();
@@ -593,7 +589,7 @@ fn assign_tty_numbers(alias_indices: &[Option<usize>]) -> Vec<Option<usize>> {
 
 #[cfg(test)]
 mod tests {
-    use super::{assign_tty_numbers, selected_console_tty};
+    use super::assign_tty_numbers;
 
     #[test]
     fn aliases_keep_linux_ttys_numbering() {
@@ -614,27 +610,5 @@ mod tests {
             assign_tty_numbers(&[Some(1), Some(1), None]),
             [Some(1), Some(0), Some(2)]
         );
-    }
-
-    #[test]
-    fn bootargs_select_first_serial_console_even_when_later_console_is_non_serial() {
-        assert_eq!(
-            selected_console_tty(Some("console=ttyS2,1500000 console=tty1")),
-            Some(2)
-        );
-    }
-
-    #[test]
-    fn bootargs_missing_or_non_serial_console_falls_back() {
-        assert_eq!(selected_console_tty(None), None);
-        assert_eq!(
-            selected_console_tty(Some("root=/dev/vda console=tty1")),
-            None
-        );
-    }
-
-    #[test]
-    fn malformed_serial_console_does_not_panic() {
-        assert_eq!(selected_console_tty(Some("console=ttySx")), None);
     }
 }

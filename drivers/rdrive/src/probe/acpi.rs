@@ -9,6 +9,7 @@ use core::{ptr::NonNull, str::FromStr};
 
 use acpi::{
     AcpiError, AcpiTables, Handler, PhysicalMapping,
+    address::{AddressSpace, GenericAddress},
     aml::{
         AmlError, Interpreter,
         namespace::{AmlName, NamespaceLevelKind},
@@ -25,6 +26,7 @@ use acpi::{
         interrupt::{InterruptModel, Polarity, TriggerMode},
         pci::PciConfigRegions,
     },
+    sdt::spcr::{Spcr, SpcrInterfaceType},
 };
 pub use rdif_base::irq::{AcpiGsiController, AcpiGsiRoute, AcpiIrqPolarity, AcpiIrqTrigger};
 use spin::{Mutex, Once};
@@ -725,6 +727,42 @@ struct AcpiDeviceInfo {
     irq_routes: Vec<AcpiGsiRoute>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum AcpiResourceAddressSpace {
+    Memory,
+    Io,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct AcpiResourceAddress {
+    pub space: AcpiResourceAddressSpace,
+    pub base: u64,
+}
+
+impl AcpiResourceAddress {
+    pub const fn memory(base: u64) -> Self {
+        Self {
+            space: AcpiResourceAddressSpace::Memory,
+            base,
+        }
+    }
+
+    pub const fn io(base: u64) -> Self {
+        Self {
+            space: AcpiResourceAddressSpace::Io,
+            base,
+        }
+    }
+
+    pub fn from_generic_address(address: GenericAddress) -> Option<Self> {
+        match address.address_space {
+            AddressSpace::SystemMemory => Some(Self::memory(address.address)),
+            AddressSpace::SystemIo => Some(Self::io(address.address)),
+            _ => None,
+        }
+    }
+}
+
 pub struct AcpiInfo<'a> {
     pub root: &'a System,
     pub path: &'a str,
@@ -829,6 +867,10 @@ pub(crate) fn try_system() -> Option<&'static System> {
 
 pub fn with_acpi<T>(f: impl FnOnce(&System) -> T) -> Option<T> {
     try_system().map(f)
+}
+
+pub fn spcr_console_device_id() -> Option<DeviceId> {
+    try_system().and_then(System::spcr_console_device_id)
 }
 
 fn acpi_error(err: AcpiError) -> DriverError {
@@ -1050,6 +1092,8 @@ pub struct System {
     handler: AcpiHandler,
     pci: Option<AcpiPciNamespace>,
     probed_names: Mutex<BTreeSet<&'static str>>,
+    populated_paths: Mutex<BTreeMap<String, DeviceId>>,
+    populated_resources: Mutex<BTreeMap<AcpiResourceAddress, DeviceId>>,
 }
 
 unsafe impl Send for System {}
@@ -1094,6 +1138,8 @@ impl System {
             handler: namespace_handler,
             pci,
             probed_names: Mutex::new(BTreeSet::new()),
+            populated_paths: Mutex::new(BTreeMap::new()),
+            populated_resources: Mutex::new(BTreeMap::new()),
         })
     }
 
@@ -1103,6 +1149,27 @@ impl System {
 
     pub fn routing(&self) -> &AcpiRouting {
         &self.routing
+    }
+
+    pub fn path_to_device_id(&self, path: &str) -> Option<DeviceId> {
+        self.populated_paths.lock().get(path).copied()
+    }
+
+    pub fn resource_address_to_device_id(&self, address: AcpiResourceAddress) -> Option<DeviceId> {
+        self.populated_resources.lock().get(&address).copied()
+    }
+
+    pub fn spcr_console_device_id(&self) -> Option<DeviceId> {
+        let tables = unsafe { AcpiTables::from_rsdp(self.handler.clone(), self.handler.root.rsdp) }
+            .map_err(acpi_error)
+            .ok()?;
+        tables
+            .find_tables::<Spcr>()
+            .filter(|spcr| is_supported_spcr_interface(spcr.interface_type()))
+            .find_map(|spcr| {
+                spcr_namespace_device_id(self, &spcr)
+                    .or_else(|| spcr_resource_device_id(self, &spcr))
+            })
     }
 
     pub fn pci_irq_for_endpoint(
@@ -1270,6 +1337,7 @@ impl System {
                         device_id: DeviceId::new(),
                         irq_parent: None,
                     };
+                    let device_id = desc.device_id();
                     let info = AcpiInfo {
                         root: self,
                         path: &device.path,
@@ -1279,6 +1347,7 @@ impl System {
                     let res = on_probe(ProbeAcpi::new(info, PlatformDevice::new(desc)));
                     if res.is_ok() {
                         self.probed_names.lock().insert(register.name);
+                        self.note_populated_device(device_id, &device);
                     }
                     out.push(res);
                 }
@@ -1304,6 +1373,46 @@ impl System {
         }
         Ok(out)
     }
+
+    fn note_populated_device(&self, device_id: DeviceId, device: &AcpiDeviceInfo) {
+        self.populated_paths
+            .lock()
+            .insert(device.path.clone(), device_id);
+
+        let mut resources = self.populated_resources.lock();
+        for range in &device.memory_ranges {
+            resources.insert(AcpiResourceAddress::memory(range.base), device_id);
+        }
+        for range in &device.io_ranges {
+            resources.insert(AcpiResourceAddress::io(range.base), device_id);
+        }
+    }
+}
+
+fn is_supported_spcr_interface(interface: SpcrInterfaceType) -> bool {
+    matches!(
+        interface,
+        SpcrInterfaceType::Full16550
+            | SpcrInterfaceType::Full16450
+            | SpcrInterfaceType::Generic16550
+            | SpcrInterfaceType::ArmPL011
+            | SpcrInterfaceType::ArmSBSAGeneric32bit
+            | SpcrInterfaceType::ArmSBSAGeneric
+    )
+}
+
+fn spcr_namespace_device_id(system: &System, spcr: &Spcr) -> Option<DeviceId> {
+    let namespace = spcr.namespace_string().ok()?.trim_end_matches('\0');
+    if namespace.is_empty() || namespace == "." {
+        return None;
+    }
+    system.path_to_device_id(namespace)
+}
+
+fn spcr_resource_device_id(system: &System, spcr: &Spcr) -> Option<DeviceId> {
+    let address = spcr.base_address()?.ok()?;
+    let address = AcpiResourceAddress::from_generic_address(address)?;
+    system.resource_address_to_device_id(address)
 }
 
 fn read_pci_ecam_regions(

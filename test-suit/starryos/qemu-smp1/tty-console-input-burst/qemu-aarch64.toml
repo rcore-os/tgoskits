@@ -1,0 +1,85 @@
+args = [
+    "-nographic",
+    "-m",
+    "512M",
+    "-cpu",
+    "cortex-a53",
+    "-device",
+    "nvme,serial=deadbeef,drive=nvm",
+    "-drive",
+    "id=nvm,if=none,format=raw,file=${workspace}/tmp/axbuild/rootfs/rootfs-aarch64-alpine.img",
+    "-device",
+    "virtio-net-pci,netdev=net0",
+    "-netdev",
+    "user,id=net0",
+    "-device",
+    "virtio-gpu-pci",
+    "-device",
+    "virtio-keyboard-pci",
+    "-device",
+    "virtio-tablet-pci",
+    "-device",
+    "qemu-xhci,id=xhci,msi=off,msix=off",
+    "-audiodev",
+    "none,id=audio0",
+    "-device",
+    "usb-audio,bus=xhci.0,audiodev=audio0",
+    "-drive",
+    "id=usbdisk,if=none,format=raw,snapshot=on,file=${workspace}/tmp/axbuild/rootfs/rootfs-aarch64-busybox.img",
+    "-device",
+    "usb-storage,bus=xhci.0,drive=usbdisk,serial=starry-usb-storage",
+]
+uefi = false
+to_bin = true
+shell_prefix = "root@starry:"
+shell_init_cmd = '''
+cat > /tmp/tty-input-burst.sh <<'EOF'
+#!/bin/sh
+fail=0
+checked=0
+fail_marker=STARRY_TTY_INPUT_BURST_""FAILED
+check() {
+    name="$1"
+    got="$2"
+    want="$3"
+    checked=$((checked + 1))
+    if [ "$got" = "$want" ]; then
+        echo "STARRY_TTY_INPUT_BURST_OK:$name:${#got}"
+    else
+        echo "$fail_marker:$name:got=${#got}:want=${#want}:$got"
+        fail=1
+    fi
+}
+check short "abcdefghijklmnopqrstuvwxyz" "abcdefghijklmnopqrstuvwxyz"
+check digits "012345678901234567890123456789012345678901234567890123456789" "012345678901234567890123456789012345678901234567890123456789"
+check cmd01 "qwertyuiopasdfghjklzxcvbnm" "qwertyuiopasdfghjklzxcvbnm"
+check cmd02 "ABCDEFGHIJKLMNOPQRSTUVWXYZABCDEFGHIJKLMNOPQRSTUVWXYZ" "ABCDEFGHIJKLMNOPQRSTUVWXYZABCDEFGHIJKLMNOPQRSTUVWXYZ"
+check long01 "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+check long02 "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+check long03 "CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC" "CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC"
+check mix01 "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ-_.:/0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ-END" "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ-_.:/0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ-END"
+i=0
+while [ "$i" -lt 120 ]; do
+    i=$((i + 1))
+    got="line-${i}-abcdefghijklmnopqrstuvwxyz-0123456789-ABCDEFGHIJKLMNOPQRSTUVWXYZ-tty-input-stress-END"
+    check "loop${i}" "$got" "$got"
+done
+if [ "$checked" -ne 128 ]; then
+    echo "$fail_marker:checked-count:$checked"
+    fail=1
+fi
+if [ "$fail" -eq 0 ]; then
+    echo STARRY_TTY_INPUT_BURST_PASSED
+else
+    echo "$fail_marker"
+fi
+EOF
+sh /tmp/tty-input-burst.sh
+'''
+success_regex = ["(?m)^STARRY_TTY_INPUT_BURST_PASSED\\s*$"]
+fail_regex = [
+    "(?i)panic",
+    "(?m)^lockdep fatal violation\\s*$",
+    "(?m)^STARRY_TTY_INPUT_BURST_FAILED",
+]
+timeout = 300

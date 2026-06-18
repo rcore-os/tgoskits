@@ -42,6 +42,10 @@ impl ConsoleIf for DummyConsole {
         unimplemented!()
     }
 
+    fn device_id() -> Option<rdrive::DeviceId> {
+        None
+    }
+
     #[cfg(feature = "irq")]
     fn irq_num() -> Option<usize> {
         None

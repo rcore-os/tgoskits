@@ -69,6 +69,14 @@ static FDT_SERIAL_REGISTER: DriverRegister = DriverRegister {
 fn fdt_probe_populates_each_enabled_matching_node_once() {
     let mut fdt = Fdt::new();
     let root = fdt.root_id();
+    let aliases = fdt.add_node(root, Node::new("aliases"));
+    fdt.node_mut(aliases)
+        .unwrap()
+        .set_property(string_property("serial0", "/serial@1000"));
+    let chosen = fdt.add_node(root, Node::new("chosen"));
+    fdt.node_mut(chosen)
+        .unwrap()
+        .set_property(string_property("stdout-path", "serial0:115200n8"));
     fdt.add_node(root, serial_node("serial@1000", true));
     fdt.add_node(root, serial_node("serial@2000", true));
     fdt.add_node(root, serial_node("serial@3000", false));
@@ -85,4 +93,31 @@ fn fdt_probe_populates_each_enabled_matching_node_once() {
 
     assert_eq!(PROBE_COUNT.load(Ordering::SeqCst), 2);
     assert_eq!(get_list::<FdtSerialDevice>().len(), 2);
+    assert!(rdrive::fdt_path_to_device_id("/serial@1000").is_some());
+    assert!(rdrive::fdt_path_to_device_id("/serial@2000").is_some());
+    assert!(rdrive::fdt_path_to_device_id("/serial@3000").is_none());
+
+    let stdout_path = rdrive::with_fdt(|fdt| {
+        fdt.get_by_path("/chosen")
+            .and_then(|chosen| {
+                chosen
+                    .as_node()
+                    .get_property("stdout-path")
+                    .and_then(|prop| prop.as_str())
+            })
+            .and_then(|stdout| stdout.split(':').next())
+            .and_then(|alias| {
+                fdt.get_by_path("/aliases").and_then(|aliases| {
+                    aliases
+                        .as_node()
+                        .get_property(alias)
+                        .and_then(|prop| prop.as_str())
+                })
+            })
+            .map(str::to_owned)
+    })
+    .flatten()
+    .expect("stdout-path should resolve through aliases");
+
+    assert!(rdrive::fdt_path_to_device_id(&stdout_path).is_some());
 }

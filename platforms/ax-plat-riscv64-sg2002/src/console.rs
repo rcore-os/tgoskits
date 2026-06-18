@@ -44,6 +44,10 @@ impl ConsoleIf for ConsoleIfImpl {
             .unwrap_or_else(|err| err.bytes_transferred)
     }
 
+    fn device_id() -> Option<rdrive::DeviceId> {
+        None
+    }
+
     /// Returns the IRQ number for the console, if applicable.
     #[cfg(feature = "irq")]
     fn irq_num() -> Option<usize> {
