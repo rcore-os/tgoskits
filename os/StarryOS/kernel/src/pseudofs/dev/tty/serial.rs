@@ -9,7 +9,7 @@ use ax_driver::serial::{
     self as ax_serial, BIrqHandler, BRxQueue, BTxQueue, SerialDevice, SerialEvent,
     SerialRuntimePortControl,
 };
-use ax_errno::AxResult;
+use ax_errno::{AxError, AxResult};
 use ax_kspin::SpinNoIrq;
 use ax_runtime::hal::irq::{AutoEnable, IrqHandle, IrqRequest, ShareMode};
 use ax_task::IrqNotify;
@@ -20,7 +20,6 @@ use starry_process::Process;
 
 use super::{
     Tty,
-    ntty::N_TTY,
     terminal::{
         Terminal,
         ldisc::{ProcessMode, TtyConfig, TtyRead, TtyWrite},
@@ -79,6 +78,50 @@ struct SerialBackend {
     rx_dropped: AtomicUsize,
 }
 
+struct NoConsole;
+
+impl DeviceOps for NoConsole {
+    fn read_at(&self, _buf: &mut [u8], _offset: u64) -> AxResult<usize> {
+        Err(AxError::NoSuchDevice)
+    }
+
+    fn write_at(&self, _buf: &[u8], _offset: u64) -> AxResult<usize> {
+        Err(AxError::NoSuchDevice)
+    }
+
+    fn ioctl(&self, _cmd: u32, _arg: usize) -> AxResult<usize> {
+        Err(AxError::NoSuchDevice)
+    }
+
+    fn open(&self, _exclusive: bool) -> AxResult<()> {
+        Err(AxError::NoSuchDevice)
+    }
+
+    fn as_any(&self) -> &dyn core::any::Any {
+        self
+    }
+}
+
+#[derive(Clone, Copy)]
+struct ConsoleCandidate {
+    number: usize,
+    device_id: RDriveDeviceId,
+}
+
+#[cfg_attr(test, derive(Debug, PartialEq, Eq))]
+enum ConsoleSelection {
+    SelectedDevice(usize),
+    TtyS0Fallback(usize),
+}
+
+impl ConsoleSelection {
+    fn index(&self) -> usize {
+        match self {
+            Self::SelectedDevice(index) | Self::TtyS0Fallback(index) => *index,
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct SerialReader {
     backend: Arc<SerialBackend>,
@@ -106,7 +149,7 @@ pub fn console_device() -> Arc<dyn DeviceOps> {
         .console_index
         .and_then(|index| SERIAL_REGISTRY.entries.get(index))
         .map(|entry| entry.tty() as Arc<dyn DeviceOps>)
-        .unwrap_or_else(|| N_TTY.clone() as Arc<dyn DeviceOps>)
+        .unwrap_or_else(|| Arc::new(NoConsole))
 }
 
 pub fn bind_console_to(proc: &Process) -> AxResult<()> {
@@ -115,7 +158,7 @@ pub fn bind_console_to(proc: &Process) -> AxResult<()> {
     {
         return entry.tty.bind_to(proc);
     }
-    N_TTY.bind_to(proc)
+    Err(AxError::NoSuchDevice)
 }
 
 pub fn arm_console_irq() {
@@ -154,24 +197,29 @@ impl SerialRegistry {
         }
         entries.sort_by_key(|entry| entry.number);
 
-        let selected = ax_runtime::hal::console::device_id();
-        let console_index = selected.and_then(|device_id| {
-            entries
-                .iter()
-                .position(|entry| entry.backend.rdrive_device_id == device_id)
-                .or_else(|| {
-                    warn!(
-                        "selected console device {device_id:?} did not match a discovered serial \
-                         TTY; falling back to tty1"
-                    );
-                    None
-                })
-        });
+        let candidates = entries
+            .iter()
+            .map(|entry| ConsoleCandidate {
+                number: entry.number,
+                device_id: entry.backend.rdrive_device_id,
+            })
+            .collect::<Vec<_>>();
+        let console_selection =
+            select_console_candidate(&candidates, ax_runtime::hal::console::device_id());
+        let console_index = console_selection.as_ref().map(ConsoleSelection::index);
         if let Some(index) = console_index {
             let number = entries[index].number;
-            info!("/dev/console bound to ttyS{number}");
+            match console_selection {
+                Some(ConsoleSelection::SelectedDevice(_)) => {
+                    info!("/dev/console bound to ttyS{number}");
+                }
+                Some(ConsoleSelection::TtyS0Fallback(_)) => {
+                    info!("/dev/console bound to ttyS0");
+                }
+                None => {}
+            }
         } else {
-            info!("/dev/console bound to tty1");
+            warn!("/dev/console has no serial TTY binding");
         }
 
         Self {
@@ -279,7 +327,6 @@ fn serial_process_mode(backend: &Arc<SerialBackend>) -> AxResult<ProcessMode> {
 
 fn process_mode_name(mode: &ProcessMode) -> &'static str {
     match mode {
-        ProcessMode::Manual => "polling",
         ProcessMode::InterruptDriven(_) => "interrupt",
         ProcessMode::Passive(_) => "passive",
     }
@@ -587,9 +634,34 @@ fn assign_tty_numbers(alias_indices: &[Option<usize>]) -> Vec<Option<usize>> {
     assigned
 }
 
+fn select_console_candidate(
+    candidates: &[ConsoleCandidate],
+    selected_device_id: Option<RDriveDeviceId>,
+) -> Option<ConsoleSelection> {
+    if let Some(device_id) = selected_device_id {
+        if let Some(index) = candidates
+            .iter()
+            .position(|candidate| candidate.device_id == device_id)
+        {
+            return Some(ConsoleSelection::SelectedDevice(index));
+        }
+        warn!(
+            "selected console device {device_id:?} did not match a discovered serial TTY; trying \
+             ttyS0"
+        );
+    }
+
+    candidates
+        .iter()
+        .position(|candidate| candidate.number == 0)
+        .map(ConsoleSelection::TtyS0Fallback)
+}
+
 #[cfg(test)]
 mod tests {
-    use super::assign_tty_numbers;
+    use rdrive::DeviceId as RDriveDeviceId;
+
+    use super::{ConsoleCandidate, ConsoleSelection, assign_tty_numbers, select_console_candidate};
 
     #[test]
     fn aliases_keep_linux_ttys_numbering() {
@@ -610,5 +682,66 @@ mod tests {
             assign_tty_numbers(&[Some(1), Some(1), None]),
             [Some(1), Some(0), Some(2)]
         );
+    }
+
+    #[test]
+    fn matching_device_id_wins_over_ttys0_fallback() {
+        let tty_s0 = RDriveDeviceId::from(10);
+        let tty_s1 = RDriveDeviceId::from(11);
+        let candidates = [
+            ConsoleCandidate {
+                number: 0,
+                device_id: tty_s0,
+            },
+            ConsoleCandidate {
+                number: 1,
+                device_id: tty_s1,
+            },
+        ];
+
+        assert_eq!(
+            select_console_candidate(&candidates, Some(tty_s1)),
+            Some(ConsoleSelection::SelectedDevice(1))
+        );
+    }
+
+    #[test]
+    fn unmatched_device_id_falls_back_to_ttys0() {
+        let tty_s0 = RDriveDeviceId::from(10);
+        let missing = RDriveDeviceId::from(99);
+        let candidates = [ConsoleCandidate {
+            number: 0,
+            device_id: tty_s0,
+        }];
+
+        assert_eq!(
+            select_console_candidate(&candidates, Some(missing)),
+            Some(ConsoleSelection::TtyS0Fallback(0))
+        );
+    }
+
+    #[test]
+    fn missing_device_id_falls_back_to_ttys0() {
+        let tty_s0 = RDriveDeviceId::from(10);
+        let candidates = [ConsoleCandidate {
+            number: 0,
+            device_id: tty_s0,
+        }];
+
+        assert_eq!(
+            select_console_candidate(&candidates, None),
+            Some(ConsoleSelection::TtyS0Fallback(0))
+        );
+    }
+
+    #[test]
+    fn no_ttys0_keeps_dev_console_unbound() {
+        let tty_s1 = RDriveDeviceId::from(11);
+        let candidates = [ConsoleCandidate {
+            number: 1,
+            device_id: tty_s1,
+        }];
+
+        assert_eq!(select_console_candidate(&candidates, None), None);
     }
 }

@@ -3,7 +3,7 @@ use alloc::{string::String, vec::Vec};
 use ax_errno::AxError;
 use fdt_edit::{Fdt, RegFixed};
 use log::warn;
-use rdrive::{Device, DeviceId, DriverGeneric, register::FdtInfo};
+use rdrive::{Device, DeviceId, DriverGeneric, probe::acpi::AcpiInfo, register::FdtInfo};
 use some_serial::BSerial;
 pub use some_serial::{
     BIrqHandler, BRxQueue, BTxQueue, Config, ConfigError, InterruptMask, SerialEvent, SetBackError,
@@ -13,7 +13,7 @@ mod ns16550;
 mod pl011;
 mod rockchip_fiq;
 
-use crate::{BindingInfo, binding_info_from_fdt};
+use crate::{BindingInfo, binding_info_from_acpi, binding_info_from_fdt};
 
 struct PlatformSerialDevice {
     name: String,
@@ -317,6 +317,25 @@ fn serial_device_info(
     }
 }
 
+fn acpi_serial_device_info(
+    info: &AcpiInfo<'_>,
+    paddr: usize,
+    mapped_base: usize,
+    baudrate: u32,
+) -> SerialDeviceInfo {
+    let binding_info = acpi_serial_binding_info(info);
+    SerialDeviceInfo {
+        fdt_path: info.path.into(),
+        alias_index: None,
+        paddr,
+        mapped_base,
+        baudrate,
+        irq_num: binding_info.irq_num(),
+        rx_polling_required: false,
+        binding_info,
+    }
+}
+
 fn serial_rx_polling_required(node: &fdt_edit::Node) -> bool {
     node.compatibles().any(|compatible| {
         compatible == "snps,dw-apb-uart" && rdrive::with_fdt(is_cvitek_cv181x).unwrap_or(false)
@@ -333,6 +352,16 @@ fn is_cvitek_cv181x(fdt: &Fdt) -> bool {
 fn serial_binding_info(info: &FdtInfo<'_>, fdt_path: &str) -> BindingInfo {
     binding_info_from_fdt(info).unwrap_or_else(|err| {
         warn!("failed to resolve serial IRQ for {fdt_path}: {err:?}");
+        BindingInfo::empty()
+    })
+}
+
+fn acpi_serial_binding_info(info: &AcpiInfo<'_>) -> BindingInfo {
+    binding_info_from_acpi(info).unwrap_or_else(|err| {
+        warn!(
+            "failed to resolve ACPI serial IRQ for {}: {err:?}",
+            info.path
+        );
         BindingInfo::empty()
     })
 }

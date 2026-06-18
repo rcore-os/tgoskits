@@ -69,7 +69,9 @@ pub fn init(args: &[String], envs: &[String]) {
     let proc = Process::new_init(pid);
     proc.add_thread(pid);
 
-    tty::bind_console_to(&proc).expect("Failed to bind console tty");
+    if let Err(err) = tty::bind_console_to(&proc) {
+        warn!("Failed to bind console tty: {err:?}");
+    }
 
     let proc = ProcessData::new(
         proc,

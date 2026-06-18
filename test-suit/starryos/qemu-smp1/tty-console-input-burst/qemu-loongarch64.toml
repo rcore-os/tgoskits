@@ -73,6 +73,8 @@ success_regex = ["(?m)^STARRY_TTY_INPUT_BURST_PASSED\\s*$"]
 fail_regex = [
     "(?i)panic",
     "(?m)^lockdep fatal violation\\s*$",
+    "/dev/console has no serial TTY binding",
+    "Failed to bind console tty",
     "(?m)^STARRY_TTY_INPUT_BURST_FAILED",
 ]
 timeout = 300

@@ -1,4 +1,3 @@
-mod ntty;
 mod ptm;
 mod pts;
 mod pty;
@@ -7,7 +6,7 @@ mod terminal;
 
 use alloc::{
     format,
-    string::{String, ToString},
+    string::String,
     sync::{Arc, Weak},
 };
 use core::{any::Any, ops::Deref, sync::atomic::Ordering, task::Context};
@@ -27,7 +26,6 @@ use self::terminal::{
     termios::{Termios, Termios2},
 };
 pub use self::{
-    ntty::NTtyDriver,
     ptm::Ptmx,
     pts::PtsDir,
     pty::PtyDriver,
@@ -44,9 +42,7 @@ const ANSI_CURSOR_POSITION_REQUEST: &[u8] = b"\x1b[6n";
 const ANSI_CURSOR_POSITION_RESPONSE: &[u8] = b"\x1b[1;1R";
 
 pub fn terminal_device_path(term: &(dyn Any + Send + Sync)) -> Option<String> {
-    if term.is::<NTtyDriver>() {
-        Some("/dev/console".to_string())
-    } else if let Some(pts) = term.downcast_ref::<PtyDriver>() {
+    if let Some(pts) = term.downcast_ref::<PtyDriver>() {
         Some(format!("/dev/pts/{}", pts.pty_number()))
     } else {
         term.downcast_ref::<SerialTtyDriver>()

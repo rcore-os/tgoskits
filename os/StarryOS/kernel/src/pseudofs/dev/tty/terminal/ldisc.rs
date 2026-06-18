@@ -28,13 +28,6 @@ type ReadBuf = Arc<ringbuf::StaticRb<u8, BUF_SIZE>>;
 
 /// How should we process inputs?
 pub enum ProcessMode {
-    /// Process inputs without an external event source.
-    ///
-    /// This is used as the fallback for consoles without an RX interrupt. A
-    /// background task drains input directly and yields when idle, so signals
-    /// and serial auto-init commands still work while no user task is blocked
-    /// in `read()`.
-    Manual,
     /// Spawns task for processing inputs, relying on an external event source
     /// to wake it up.
     InterruptDriven(Arc<PollSet>),
@@ -331,17 +324,6 @@ impl<R: TtyRead, W: TtyWrite> LineDiscipline<R, W> {
         );
     }
 
-    fn spawn_polling_reader(mut reader: InputReader<R, W>, input_ready: Arc<PollSet>) {
-        ax_task::spawn_with_name(
-            move || loop {
-                if !Self::drive_input(&mut reader, input_ready.as_ref()) {
-                    ax_task::yield_now();
-                }
-            },
-            "tty-poll-reader".into(),
-        );
-    }
-
     pub fn new(terminal: Arc<Terminal>, config: TtyConfig<R, W>) -> Self {
         let (buf_tx, buf_rx) = ReadBuf::default().split();
 
@@ -373,10 +355,6 @@ impl<R: TtyRead, W: TtyWrite> LineDiscipline<R, W> {
                     input_ready.clone(),
                     pump_retry.clone(),
                 );
-                Processor::InterruptDriven
-            }
-            ProcessMode::Manual => {
-                Self::spawn_polling_reader(reader, input_ready.clone());
                 Processor::InterruptDriven
             }
             ProcessMode::Passive(poll_rx) => {
