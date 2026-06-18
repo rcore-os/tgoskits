@@ -4,7 +4,7 @@ use alloc::{borrow::ToOwned, string::String, vec, vec::Vec};
 use core::{ffi::CStr, iter};
 
 use ax_errno::{AxError, AxResult};
-use ax_fs::{CachedFile, FS_CONTEXT, FileBackend};
+use ax_fs_ng::vfs::{CachedFile, FS_CONTEXT, FileBackend};
 use ax_memory_addr::{MemoryAddr, PAGE_SIZE_4K, VirtAddr};
 use ax_runtime::hal::{
     mem::virt_to_phys,
@@ -456,7 +456,7 @@ struct ElfCacheEntry {
 
 impl ElfCacheEntry {
     fn load(loc: Location) -> AxResult<Result<Self, Vec<u8>>> {
-        let cache = CachedFile::get_or_create(loc);
+        let cache = CachedFile::get_or_create(loc)?;
 
         let mut data = vec![0; 4096];
         let read = cache.read_at(&mut data[..], 0)?;

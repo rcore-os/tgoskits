@@ -222,6 +222,7 @@ impl Interface for CvsdBlock {
         QueueLimits {
             dma_mask: u64::MAX,
             dma_alignment: 0x1000,
+            max_inflight: 1,
             max_blocks_per_request: 1,
             max_segments: 1,
             max_segment_size: BLOCK_SIZE,
@@ -269,6 +270,7 @@ unsafe impl IQueue for CvsdQueue {
             limits: QueueLimits {
                 dma_mask: u64::MAX,
                 dma_alignment: 0x1000,
+                max_inflight: 1,
                 max_blocks_per_request: 1,
                 max_segments: 1,
                 max_segment_size: BLOCK_SIZE,

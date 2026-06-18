@@ -12,7 +12,7 @@ use core::{
 };
 
 use ax_errno::{AxError, AxResult};
-use ax_fs::FS_CONTEXT;
+use ax_fs_ng::vfs::FS_CONTEXT;
 use ax_runtime::hal::cpu::uspace::UserContext;
 use ax_sync::Mutex;
 use ax_task::{current, future::block_on, yield_now};

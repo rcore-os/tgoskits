@@ -24,7 +24,8 @@ crate::model_register!(
 
 #[cfg(all(feature = "pci", any(plat_static, plat_dyn)))]
 fn probe_pci(mut probe: rdrive::probe::pci::ProbePci<'_>) -> Result<(), OnProbeError> {
-    let transport = crate::pci::take_virtio_transport(probe.endpoint_mut(), DeviceType::GPU)?;
+    let transport =
+        crate::pci::take_virtio_transport_masked(probe.endpoint_mut(), DeviceType::GPU)?;
     let info = binding_info_from_pci(probe.info(), PciIrqRequirement::Optional)?;
     register_transport_with_info(probe.into_platform_device(), transport, info)
 }

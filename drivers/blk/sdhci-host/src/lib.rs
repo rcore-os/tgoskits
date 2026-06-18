@@ -89,7 +89,8 @@ use sdmmc_protocol::{
     cmd::{Command, DataDirection},
     error::{Error, ErrorContext, Phase},
     sdio::{
-        BusWidth, ClockSpeed, HostEvent, HostEventKind, HostEventSource, SdioHost, SignalVoltage,
+        BusWidth, ClockSpeed, HostEvent, HostEventKind, HostEventSource, SdioHost, SdioIrqHandle,
+        SdioIrqHost, SignalVoltage,
     },
 };
 
@@ -117,6 +118,19 @@ pub struct DataRequest<'a> {
     slot: BlockRequestSlot,
     _buffer: PhantomData<&'a [u8]>,
 }
+
+/// Cloneable, sync-safe SDHCI IRQ top-half handle.
+#[derive(Clone)]
+pub struct SdhciIrqHandle {
+    base_addr: usize,
+    irq_state: *const host::IrqState,
+}
+
+// SAFETY: The handle only performs volatile MMIO accesses and atomic cache
+// updates. The owning `Sdhci` outlives handles created by OS glue.
+unsafe impl Send for SdhciIrqHandle {}
+// SAFETY: See the `Send` impl.
+unsafe impl Sync for SdhciIrqHandle {}
 
 impl SdioHost for Sdhci {
     type Event = Event;
@@ -386,7 +400,19 @@ impl SdioHost for Sdhci {
     }
 
     fn handle_irq(&mut self) -> Self::Event {
-        Sdhci::handle_irq(self)
+        self.irq_handle().handle_irq()
+    }
+}
+
+impl SdioIrqHost for Sdhci {
+    type IrqHandle = SdhciIrqHandle;
+
+    fn irq_handle(&self) -> Self::IrqHandle {
+        Sdhci::irq_handle(self)
+    }
+
+    fn completion_irq_enabled(&self) -> bool {
+        Sdhci::completion_irq_enabled(self)
     }
 }
 
@@ -543,27 +569,49 @@ impl Sdhci {
         }
     }
 
+    pub fn irq_handle(&self) -> SdhciIrqHandle {
+        SdhciIrqHandle {
+            base_addr: self.base_addr,
+            irq_state: &self.irq_state,
+        }
+    }
+
     /// Read and acknowledge pending controller status, returning a stable
     /// event for OS glue to translate into wakeups or worker scheduling.
-    pub fn handle_irq(&mut self) -> Event {
-        let normal = self.read_u16(REG_NORMAL_INT_STATUS);
+    pub fn handle_irq(&self) -> Event {
+        self.irq_handle().handle_irq()
+    }
+}
+
+impl SdioIrqHandle for SdhciIrqHandle {
+    type Event = Event;
+
+    fn handle_irq(&self) -> Self::Event {
+        let normal = read_u16(self.base_addr, REG_NORMAL_INT_STATUS);
         let error = if normal & NORMAL_INT_ERROR != 0 {
-            self.read_u16(REG_ERROR_INT_STATUS)
+            read_u16(self.base_addr, REG_ERROR_INT_STATUS)
         } else {
             0
         };
 
         if normal != 0 {
-            self.write_u16(REG_NORMAL_INT_STATUS, normal);
+            write_u16(self.base_addr, REG_NORMAL_INT_STATUS, normal);
         }
         if error != 0 {
-            self.write_u16(REG_ERROR_INT_STATUS, error);
+            write_u16(self.base_addr, REG_ERROR_INT_STATUS, error);
         }
-        self.irq_pending_normal |= normal;
-        self.irq_pending_error |= error;
+        unsafe { &*self.irq_state }.cache(normal, error);
 
         event_from_status(normal, error)
     }
+}
+
+fn read_u16(base_addr: usize, off: usize) -> u16 {
+    unsafe { core::ptr::read_volatile((base_addr + off) as *const u16) }
+}
+
+fn write_u16(base_addr: usize, off: usize, val: u16) {
+    unsafe { core::ptr::write_volatile((base_addr + off) as *mut u16, val) }
 }
 
 #[cfg(test)]
@@ -616,5 +664,32 @@ mod tests {
         assert_eq!(dma.block_size.get(), 512);
         assert_eq!(dma.align, 512);
         assert_eq!(dma.dma_mask, Some(u32::MAX as u64));
+    }
+
+    #[test]
+    fn irq_handle_acks_and_caches_status_without_mutable_host() {
+        #[repr(align(4))]
+        struct FakeRegs([u8; 0x100]);
+
+        let mut regs = FakeRegs([0; 0x100]);
+        let base = NonNull::new(regs.0.as_mut_ptr()).unwrap();
+        let host = unsafe { Sdhci::new(base) };
+        host.write_u16(REG_NORMAL_INT_STATUS, NORMAL_INT_ERROR);
+        host.write_u16(REG_ERROR_INT_STATUS, ERROR_INT_DATA_TIMEOUT);
+
+        let handle = host.irq_handle().clone();
+
+        assert_eq!(
+            handle.handle_irq(),
+            Event::Error {
+                normal: NORMAL_INT_ERROR,
+                error: ERROR_INT_DATA_TIMEOUT,
+            }
+        );
+        assert_eq!(host.irq_state.pending_normal(), NORMAL_INT_ERROR);
+        assert_eq!(host.irq_state.pending_error(), ERROR_INT_DATA_TIMEOUT);
+        host.write_u16(REG_NORMAL_INT_STATUS, 0);
+        host.write_u16(REG_ERROR_INT_STATUS, 0);
+        assert_eq!(host.handle_irq(), Event::None);
     }
 }

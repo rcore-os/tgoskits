@@ -1,6 +1,8 @@
 #!/bin/sh
 set -eu
 
+. /usr/bin/nginx-runner-lib.sh
+
 BASE=/tmp/nginx-phase1
 WWW="$BASE/www"
 CONF_DIR="$BASE/conf"
@@ -36,16 +38,7 @@ cleanup_nginx() {
 }
 
 prepare_packages() {
-    repo_file=/etc/apk/repositories
-    original_repos="$(cat "$repo_file")"
-    for mirror in https://mirrors.cernet.edu.cn/alpine https://dl-cdn.alpinelinux.org/alpine; do
-        printf '%s\n' "$original_repos" | sed "s#http://[^/]*/alpine/#$mirror/#g;s#https://[^/]*/alpine/#$mirror/#g" > "$repo_file"
-        rm -f /lib/apk/db/lock
-        if run_with_timeout 40 apk --timeout 40 update && run_with_timeout 40 apk --timeout 40 add nginx curl busybox-extras procps; then
-            return 0
-        fi
-    done
-    return 1
+    runner_ensure_packages || return 1
 }
 
 prepare_files() {
@@ -85,7 +78,7 @@ wait_http_ok() {
     url=$1
     i=0
     while [ "$i" -lt 6 ]; do
-        if run_with_timeout 1 curl -fsS "$url" -o "$OUT/tmp.body" >/dev/null 2>&1; then
+        if run_with_timeout 5 curl -fsS "$url" -o "$OUT/tmp.body" >/dev/null 2>&1; then
             return 0
         fi
         sleep 1
@@ -94,31 +87,28 @@ wait_http_ok() {
     return 1
 }
 
-test_master2_known_issue() {
+test_master2() {
     nginx -t -c "$CONF_DIR/master2.conf" -p "$BASE/" || return 1
     nginx -c "$CONF_DIR/master2.conf" -p "$BASE/" > "$LOG_DIR/master2.stdout" 2>&1 &
-    wait_http_ok http://127.0.0.1:8082/ || { log "KNOWN_ISSUE: phase1.3 startup block"; cleanup_nginx; return 0; }
-    workers=$(ps -ef | grep 'nginx: worker process' | grep -v grep | wc -l)
-    log "phase1.3 worker_count=$workers"
+    wait_http_ok http://127.0.0.1:8082/ || return 1
+    if command -v pgrep >/dev/null 2>&1; then
+        workers=$(pgrep -xc nginx)
+    else
+        workers=$(ps | grep '/usr/sbin/nginx\| nginx$' | grep -v grep | wc -l)
+    fi
+    log "phase1.3 nginx_proc_count=$workers"
+    [ "$workers" -ge 3 ] || return 1
     i=1
     while [ "$i" -le 3 ]; do
-        run_with_timeout 1 curl -fsS http://127.0.0.1:8082/ -o "$OUT/m2-$i.body" >/dev/null 2>&1 || {
-            log "KNOWN_ISSUE: phase1.3 request block at $i"
-            cleanup_nginx
-            return 0
-        }
+        run_with_timeout 5 curl -fsS http://127.0.0.1:8082/ -o "$OUT/m2-$i.body" >/dev/null 2>&1 || return 1
         i=$((i + 1))
     done
-    run_with_timeout 2 nginx -s quit -c "$CONF_DIR/master2.conf" -p "$BASE/" >/dev/null 2>&1 || {
-        log "KNOWN_ISSUE: phase1.3 quit block"
-        cleanup_nginx
-        return 0
-    }
+    run_with_timeout 2 nginx -s quit -c "$CONF_DIR/master2.conf" -p "$BASE/" >/dev/null 2>&1 || return 1
     return 0
 }
 
 init_timeout_cmd
-( sleep 90; log "watchdog timeout"; kill -TERM $$ ) &
+trap cleanup_nginx EXIT INT TERM
 prepare_packages || fail "prepare packages"
 prepare_files || fail "prepare files"
 nginx -t -c "$CONF_DIR/single.conf" -p "$BASE/" || fail "single config"
@@ -129,6 +119,6 @@ nginx -t -c "$CONF_DIR/master1.conf" -p "$BASE/" || fail "master1 config"
 nginx -c "$CONF_DIR/master1.conf" -p "$BASE/" > "$LOG_DIR/master1.stdout" 2>&1 &
 wait_http_ok http://127.0.0.1:8081/ || fail "phase1.2"
 run_with_timeout 2 nginx -s quit -c "$CONF_DIR/master1.conf" -p "$BASE/" >/dev/null 2>&1 || fail "master1 quit"
-test_master2_known_issue || fail "phase1.3"
+test_master2 || fail "phase1.3"
 cleanup_nginx
 printf 'NGINX_PHASE1_TEST_PASSED\n'

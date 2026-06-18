@@ -69,9 +69,13 @@ impl SeekableDisk {
 
     /// Set the position of the cursor.
     pub fn set_position(&mut self, pos: u64) -> FsBlockResult<()> {
-        self.flush()?;
-        self.block_id = pos >> self.block_size_log2;
-        self.offset = pos as usize & (self.block_size() - 1);
+        let block_id = pos >> self.block_size_log2;
+        let offset = pos as usize & (self.block_size() - 1);
+        if self.write_buffer_dirty && block_id != self.block_id {
+            self.flush()?;
+        }
+        self.block_id = block_id;
+        self.offset = offset;
         Ok(())
     }
 
@@ -85,8 +89,11 @@ impl SeekableDisk {
     }
 
     fn read_partial(&mut self, buf: &mut &mut [u8]) -> FsBlockResult<usize> {
-        self.flush()?;
-        self.dev.read_block(self.block_id, &mut self.read_buffer)?;
+        if self.write_buffer_dirty {
+            self.read_buffer.copy_from_slice(&self.write_buffer);
+        } else {
+            self.dev.read_block(self.block_id, &mut self.read_buffer)?;
+        }
 
         let data = &self.read_buffer[self.offset..];
         let length = buf.len().min(data.len());
@@ -108,6 +115,7 @@ impl SeekableDisk {
             read += self.read_partial(&mut buf)?;
         }
         if buf.len() >= self.block_size() {
+            self.flush()?;
             let blocks = buf.len() >> self.block_size_log2;
             let length = blocks << self.block_size_log2;
             self.dev
@@ -153,6 +161,9 @@ impl SeekableDisk {
             written += self.write_partial(&mut buf)?;
         }
         if buf.len() >= self.block_size() {
+            if self.write_buffer_dirty {
+                self.flush()?;
+            }
             let blocks = buf.len() >> self.block_size_log2;
             let length = blocks << self.block_size_log2;
             self.dev

@@ -412,14 +412,33 @@ impl InodeCache {
         block_dev: &mut Jbd2Dev<B>,
         inode_num: InodeNumber,
     ) -> Ext4Result<()> {
-        let mut inner = self.inner.lock();
-        inner.do_evict(block_dev, inode_num)
+        let dirty_inode = self.inner.lock().inode_for_evict(inode_num);
+        if let Some((generation, block_num, offset, data)) = dirty_inode {
+            Self::write_inode_bytes_static(block_dev, block_num, offset, &data)?;
+            self.inner
+                .lock()
+                .remove_if_generation(inode_num, generation);
+        } else {
+            self.inner.lock().remove_clean(inode_num);
+        }
+        Ok(())
     }
 
     /// Flushes all dirty inodes to disk.
     pub fn flush_all<B: BlockDevice>(&self, block_dev: &mut Jbd2Dev<B>) -> Ext4Result<()> {
-        let mut inner = self.inner.lock();
-        inner.do_flush_all(block_dev)
+        let dirty_inodes = self.inner.lock().dirty_inodes_for_flush();
+        if dirty_inodes.is_empty() {
+            return Ok(());
+        }
+
+        Self::write_dirty_inode_blocks(block_dev, &dirty_inodes)?;
+
+        let flushed_inodes = dirty_inodes
+            .into_iter()
+            .map(|(inode_num, generation, ..)| (inode_num, generation))
+            .collect::<Vec<_>>();
+        self.inner.lock().mark_flushed(&flushed_inodes);
+        Ok(())
     }
 
     /// Flushes one inode to disk.
@@ -428,8 +447,12 @@ impl InodeCache {
         block_dev: &mut Jbd2Dev<B>,
         inode_num: InodeNumber,
     ) -> Ext4Result<()> {
-        let mut inner = self.inner.lock();
-        inner.do_flush(block_dev, inode_num)
+        let dirty_inode = self.inner.lock().inode_for_flush(inode_num);
+        if let Some((generation, block_num, offset, data)) = dirty_inode {
+            Self::write_inode_bytes_static(block_dev, block_num, offset, &data)?;
+            self.inner.lock().mark_flushed(&[(inode_num, generation)]);
+        }
+        Ok(())
     }
 
     /// Clears the cache without flushing.
@@ -466,6 +489,32 @@ impl InodeCache {
         }
         buf[offset..end].copy_from_slice(data);
         block_dev.write_blocks(&buf, block_num, 1, true)?; // is_metadata: inode table blocks are filesystem metadata
+        Ok(())
+    }
+
+    fn write_dirty_inode_blocks<B: BlockDevice>(
+        block_dev: &mut Jbd2Dev<B>,
+        dirty_inodes: &[(InodeNumber, u64, AbsoluteBN, usize, Vec<u8>)],
+    ) -> Ext4Result<()> {
+        let mut idx = 0usize;
+        while idx < dirty_inodes.len() {
+            let (_, _, block_num, ..) = dirty_inodes[idx];
+
+            let mut buf = alloc::vec![0u8; crate::config::BLOCK_SIZE];
+            block_dev.read_blocks(&mut buf, block_num, 1)?;
+
+            while idx < dirty_inodes.len() && dirty_inodes[idx].2 == block_num {
+                let (_, _, _b, offset, ref data) = dirty_inodes[idx];
+                let end = offset + data.len();
+                if end > buf.len() {
+                    return Err(Ext4Error::corrupted());
+                }
+                buf[offset..end].copy_from_slice(data);
+                idx += 1;
+            }
+
+            block_dev.write_blocks(&buf, block_num, 1, true)?; // is_metadata: inode table blocks are filesystem metadata
+        }
         Ok(())
     }
 }
@@ -509,91 +558,85 @@ impl InodeCacheInner {
         Some((lru_key, lru_gen, dirty_info))
     }
 
-    fn do_evict<B: BlockDevice>(
-        &mut self,
-        block_dev: &mut Jbd2Dev<B>,
-        inode_num: InodeNumber,
-    ) -> Ext4Result<()> {
-        if let Some(cached) = self.cache.remove(&inode_num)
-            && cached.dirty
-        {
-            let mut buf = alloc::vec![0u8; self.inode_size];
-            cached.inode.to_disk_bytes(&mut buf);
-            InodeCache::write_inode_bytes_static(
-                block_dev,
-                cached.block_num,
-                cached.offset_in_block,
-                &buf,
-            )?;
-        }
-        Ok(())
-    }
-
-    fn do_flush<B: BlockDevice>(
-        &mut self,
-        block_dev: &mut Jbd2Dev<B>,
-        inode_num: InodeNumber,
-    ) -> Ext4Result<()> {
-        if let Some(cached) = self.cache.get(&inode_num)
-            && cached.dirty
-        {
-            let block_num = cached.block_num;
-            let offset = cached.offset_in_block;
-            let mut buf = alloc::vec![0u8; self.inode_size];
-            cached.inode.to_disk_bytes(&mut buf);
-            InodeCache::write_inode_bytes_static(block_dev, block_num, offset, &buf)?;
-
-            if let Some(cached) = self.cache.get_mut(&inode_num) {
-                cached.dirty = false;
-            }
-        }
-        Ok(())
-    }
-
-    fn do_flush_all<B: BlockDevice>(&mut self, block_dev: &mut Jbd2Dev<B>) -> Ext4Result<()> {
-        let mut dirty_inodes: Vec<(AbsoluteBN, usize, Vec<u8>)> = self
-            .cache
-            .values()
-            .filter(|cached| cached.dirty)
-            .map(|cached| {
+    fn inode_for_evict(&self, inode_num: InodeNumber) -> Option<(u64, AbsoluteBN, usize, Vec<u8>)> {
+        self.cache.get(&inode_num).and_then(|cached| {
+            if cached.dirty {
+                let generation = cached.generation;
                 let mut buf = alloc::vec![0u8; self.inode_size];
                 cached.inode.to_disk_bytes(&mut buf);
-                (cached.block_num, cached.offset_in_block, buf)
+                Some((generation, cached.block_num, cached.offset_in_block, buf))
+            } else {
+                None
+            }
+        })
+    }
+
+    fn remove_if_generation(&mut self, inode_num: InodeNumber, generation: u64) {
+        if self
+            .cache
+            .get(&inode_num)
+            .is_some_and(|cached| cached.generation == generation)
+        {
+            self.cache.remove(&inode_num);
+        }
+    }
+
+    fn remove_clean(&mut self, inode_num: InodeNumber) {
+        if self
+            .cache
+            .get(&inode_num)
+            .is_some_and(|cached| !cached.dirty)
+        {
+            self.cache.remove(&inode_num);
+        }
+    }
+
+    fn inode_for_flush(&self, inode_num: InodeNumber) -> Option<(u64, AbsoluteBN, usize, Vec<u8>)> {
+        self.cache.get(&inode_num).and_then(|cached| {
+            if cached.dirty {
+                let generation = cached.generation;
+                let block_num = cached.block_num;
+                let offset = cached.offset_in_block;
+                let mut buf = alloc::vec![0u8; self.inode_size];
+                cached.inode.to_disk_bytes(&mut buf);
+                Some((generation, block_num, offset, buf))
+            } else {
+                None
+            }
+        })
+    }
+
+    fn dirty_inodes_for_flush(&self) -> Vec<(InodeNumber, u64, AbsoluteBN, usize, Vec<u8>)> {
+        let mut dirty_inodes: Vec<(InodeNumber, u64, AbsoluteBN, usize, Vec<u8>)> = self
+            .cache
+            .iter()
+            .filter(|(_, cached)| cached.dirty)
+            .map(|(inode_num, cached)| {
+                let mut buf = alloc::vec![0u8; self.inode_size];
+                cached.inode.to_disk_bytes(&mut buf);
+                (
+                    *inode_num,
+                    cached.generation,
+                    cached.block_num,
+                    cached.offset_in_block,
+                    buf,
+                )
             })
             .collect();
 
-        if dirty_inodes.is_empty() {
-            return Ok(());
-        }
+        dirty_inodes.sort_by_key(|(_, _, block_num, offset, _)| (*block_num, *offset));
+        dirty_inodes
+    }
 
-        dirty_inodes.sort_by_key(|(block_num, offset, _)| (*block_num, *offset));
-
-        let mut idx = 0usize;
-        while idx < dirty_inodes.len() {
-            let (block_num, ..) = dirty_inodes[idx];
-
-            let mut buf = alloc::vec![0u8; crate::config::BLOCK_SIZE];
-            block_dev.read_blocks(&mut buf, block_num, 1)?;
-
-            while idx < dirty_inodes.len() && dirty_inodes[idx].0 == block_num {
-                let (_b, offset, ref data) = dirty_inodes[idx];
-                let end = offset + data.len();
-                if end > buf.len() {
-                    return Err(Ext4Error::corrupted());
-                }
-                buf[offset..end].copy_from_slice(data);
-                idx += 1;
+    fn mark_flushed(&mut self, inodes: &[(InodeNumber, u64)]) {
+        for (inode_num, generation) in inodes {
+            if let Some(cached) = self.cache.get_mut(inode_num)
+                && cached.generation == *generation
+            {
+                cached.dirty = false;
+                cached.generation += 1;
             }
-
-            block_dev.write_blocks(&buf, block_num, 1, true)?; // is_metadata: inode table blocks are filesystem metadata
         }
-
-        // All flushed entries are now clean.
-        for cached in self.cache.values_mut() {
-            cached.dirty = false;
-        }
-
-        Ok(())
     }
 }
 

@@ -1,6 +1,9 @@
 //! `Sdhci` core: MMIO accessors, reset, clock and bus-width setup.
 
-use core::ptr::NonNull;
+use core::{
+    ptr::NonNull,
+    sync::atomic::{AtomicU32, Ordering},
+};
 
 use dma_api::DeviceDma;
 use mmio_api::MmioRaw;
@@ -29,8 +32,74 @@ pub(crate) struct PendingData {
 /// `new` is `unsafe` because the caller must provide a valid, exclusive
 /// MMIO base address for an SDHCI v3.x compatible controller. Concurrent
 /// use of the same controller from multiple `Sdhci` instances is undefined.
+pub(crate) struct IrqState {
+    pending_normal: AtomicU32,
+    pending_error: AtomicU32,
+}
+
+impl IrqState {
+    const fn new() -> Self {
+        Self {
+            pending_normal: AtomicU32::new(0),
+            pending_error: AtomicU32::new(0),
+        }
+    }
+
+    pub(crate) fn cache(&self, normal: u16, error: u16) {
+        if normal != 0 {
+            self.pending_normal
+                .fetch_or(normal as u32, Ordering::AcqRel);
+        }
+        if error != 0 {
+            self.pending_error.fetch_or(error as u32, Ordering::AcqRel);
+        }
+    }
+
+    pub(crate) fn take_normal(&self, mask: u16) -> u16 {
+        take_cached_bits(&self.pending_normal, mask as u32) as u16
+    }
+
+    pub(crate) fn take_error_all(&self) -> u16 {
+        self.pending_error.swap(0, Ordering::AcqRel) as u16
+    }
+
+    pub(crate) fn clear_normal(&self, mask: u16) {
+        self.pending_normal
+            .fetch_and(!(mask as u32), Ordering::AcqRel);
+    }
+
+    pub(crate) fn clear_all(&self) {
+        self.pending_normal.store(0, Ordering::Release);
+        self.pending_error.store(0, Ordering::Release);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn pending_normal(&self) -> u16 {
+        self.pending_normal.load(Ordering::Acquire) as u16
+    }
+
+    #[cfg(test)]
+    pub(crate) fn pending_error(&self) -> u16 {
+        self.pending_error.load(Ordering::Acquire) as u16
+    }
+}
+
+fn take_cached_bits(cache: &AtomicU32, mask: u32) -> u32 {
+    let mut cur = cache.load(Ordering::Acquire);
+    loop {
+        let taken = cur & mask;
+        if taken == 0 {
+            return 0;
+        }
+        match cache.compare_exchange_weak(cur, cur & !mask, Ordering::AcqRel, Ordering::Acquire) {
+            Ok(_) => return taken,
+            Err(next) => cur = next,
+        }
+    }
+}
+
 pub struct Sdhci {
-    base_addr: usize,
+    pub(crate) base_addr: usize,
     pub(crate) command_state: CommandState,
     pub(crate) pending_data: Option<PendingData>,
     /// When set, command submission programs the controller's transfer mode
@@ -54,8 +123,7 @@ pub struct Sdhci {
     pub(crate) active_data_cmd: u8,
     pub(crate) dma: Option<DeviceDma>,
     pub(crate) dma_mask: u64,
-    pub(crate) irq_pending_normal: u16,
-    pub(crate) irq_pending_error: u16,
+    pub(crate) irq_state: IrqState,
 }
 
 impl Sdhci {
@@ -76,8 +144,7 @@ impl Sdhci {
             active_data_cmd: 0,
             dma: None,
             dma_mask: u32::MAX as u64,
-            irq_pending_normal: 0,
-            irq_pending_error: 0,
+            irq_state: IrqState::new(),
         }
     }
 

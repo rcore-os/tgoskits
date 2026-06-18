@@ -15,6 +15,12 @@ echo
 
 # Do your initialization here!
 
+if [ -f /usr/bin/starry-run-case-tests ]; then
+    echo "STARRY_GROUPED_AUTORUN_INIT"
+    export AXBUILD_GROUPED_AUTORUN_DONE=1
+    sh /usr/bin/starry-run-case-tests
+fi
+
 # Pre-populate /run/udev/data/ so libudev considers our devices
 # "initialized" (otherwise libinput silently skips every input device
 # with "skip unconfigured input device").  Linux populates this at udevd
@@ -47,6 +53,7 @@ if [ -x /test_runner.sh ]; then
 fi
 
 cd "$HOME" || cd /
+
 cat > /tmp/starry-shrc <<'EOF'
 export PS1='${USER}@${HOSTNAME}:${PWD} # '
 EOF

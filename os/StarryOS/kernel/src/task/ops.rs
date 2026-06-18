@@ -88,12 +88,17 @@ pub fn cleanup_task_tables() {
 /// Add the task, the thread and possibly its process, process group and session
 /// to the corresponding tables.
 pub fn add_task_to_table(task: &AxTaskRef) {
-    let tid = task.id().as_u64() as Pid;
+    // Key by the user-visible thread tid, not the scheduler `task.id()`. The two
+    // are equal for every task except the init process, whose pid/tid is pinned
+    // to 1 while its scheduler id stays at whatever the allocator handed out
+    // (see `entry::init`). All tid lookups (signals, get_task, ptrace) go
+    // through this table, so they must agree with `Thread::tid`.
+    let proc_data = &task.as_thread().proc_data;
+    let tid = task.as_thread().tid() as Pid;
 
     let mut task_table = TASK_TABLE.write();
     task_table.insert(tid, task);
 
-    let proc_data = &task.as_thread().proc_data;
     let proc = &proc_data.proc;
     let pid = proc.pid();
     let mut proc_table = PROCESS_TABLE.write();

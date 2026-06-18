@@ -8,35 +8,6 @@ pub(crate) fn probe_all_devices() {
         .unwrap_or_else(|err| panic!("failed to probe platform devices: {err:?}"));
 }
 
-#[cfg(all(feature = "fs", not(feature = "fs-ng"), feature = "plat-dyn"))]
-pub(crate) fn take_dyn_fs_block_devices()
--> alloc::vec::Vec<alloc::boxed::Box<dyn ax_fs::FsBlockDevice>> {
-    if !rdrive::is_initialized() {
-        return alloc::vec::Vec::new();
-    }
-    let devices = ax_driver::block::take_block_devices();
-    devices
-        .into_iter()
-        .map(|dev| {
-            alloc::boxed::Box::new(FsBlockDevice::new(dev))
-                as alloc::boxed::Box<dyn ax_fs::FsBlockDevice>
-        })
-        .collect()
-}
-
-#[cfg(all(feature = "fs", not(feature = "fs-ng"), not(feature = "plat-dyn")))]
-pub(crate) fn take_static_fs_block_devices()
--> alloc::vec::Vec<alloc::boxed::Box<dyn ax_fs::FsBlockDevice>> {
-    let devices = ax_driver::block::take_block_devices();
-    devices
-        .into_iter()
-        .map(|dev| {
-            alloc::boxed::Box::new(FsBlockDevice::new(dev))
-                as alloc::boxed::Box<dyn ax_fs::FsBlockDevice>
-        })
-        .collect()
-}
-
 #[cfg(all(feature = "display", feature = "plat-dyn"))]
 pub(crate) fn init_dyn_display() {
     if !rdrive::is_initialized() {
@@ -111,14 +82,14 @@ pub(crate) fn init_static_net() {
     register_wireless_devices(wireless);
 }
 
-#[cfg(all(feature = "net", feature = "fs-ng"))]
+#[cfg(all(feature = "net", feature = "fs"))]
 fn register_unix_namespace() {
     ax_net::unix::register_unix_namespace(crate::unix_ns::AxFsUnixNamespace);
 }
 
-#[cfg(all(feature = "net", not(feature = "fs-ng")))]
+#[cfg(all(feature = "net", not(feature = "fs")))]
 fn register_unix_namespace() {
-    // Path-based Unix sockets require fs-ng namespace support
+    // Path-based Unix sockets require filesystem namespace support.
 }
 
 #[cfg(feature = "net")]
@@ -248,45 +219,4 @@ fn collect_dyn_net_devices() -> (
         adapt_net_device(net, name, irq_num, &mut nics, &mut wireless);
     }
     (nics, wireless)
-}
-
-#[cfg(all(feature = "fs", not(feature = "fs-ng")))]
-struct FsBlockDevice {
-    _irq: Option<crate::block::BlockIrqRegistration>,
-    block: ax_driver::block::Block,
-}
-
-#[cfg(all(feature = "fs", not(feature = "fs-ng")))]
-impl FsBlockDevice {
-    fn new(mut block: ax_driver::block::Block) -> Self {
-        let irq = crate::block::register_irq_handler(&mut block);
-        Self { _irq: irq, block }
-    }
-}
-
-#[cfg(all(feature = "fs", not(feature = "fs-ng")))]
-impl ax_fs::FsBlockDevice for FsBlockDevice {
-    fn name(&self) -> &str {
-        self.block.name()
-    }
-
-    fn num_blocks(&self) -> u64 {
-        self.block.num_blocks()
-    }
-
-    fn block_size(&self) -> usize {
-        self.block.block_size()
-    }
-
-    fn read_block(&mut self, block_id: u64, buf: &mut [u8]) -> ax_errno::AxResult {
-        self.block.read_block(block_id, buf)
-    }
-
-    fn write_block(&mut self, block_id: u64, buf: &[u8]) -> ax_errno::AxResult {
-        self.block.write_block(block_id, buf)
-    }
-
-    fn flush(&mut self) -> ax_errno::AxResult {
-        self.block.flush()
-    }
 }

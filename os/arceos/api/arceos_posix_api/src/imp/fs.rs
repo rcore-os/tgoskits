@@ -5,7 +5,7 @@ use core::{
 };
 
 use ax_errno::{LinuxError, LinuxResult};
-use ax_fs::fops::OpenOptions;
+use ax_fs_ng::fops::{FileAttrExt, OpenOptions};
 use ax_io::{PollState, SeekFrom};
 use ax_sync::Mutex;
 
@@ -13,11 +13,11 @@ use super::fd_ops::{FileLike, get_file_like};
 use crate::{ctypes, utils::char_ptr_to_str};
 
 pub struct File {
-    inner: Mutex<ax_fs::fops::File>,
+    inner: Mutex<ax_fs_ng::fops::File>,
 }
 
 pub struct Directory {
-    inner: Mutex<ax_fs::fops::Directory>,
+    inner: Mutex<ax_fs_ng::fops::Directory>,
 }
 
 #[repr(C, packed)]
@@ -76,17 +76,17 @@ impl<'a> DirBuffer<'a> {
     }
 }
 
-fn file_type_to_d_type(ty: ax_fs::fops::FileType) -> u8 {
+fn file_type_to_d_type(ty: ax_fs_ng::fops::FileType) -> u8 {
     match ty {
-        ax_fs::fops::FileType::Dir => 4,      // DT_DIR
-        ax_fs::fops::FileType::File => 8,     // DT_REG
-        ax_fs::fops::FileType::SymLink => 10, // DT_LNK
-        _ => 0,                               // DT_UNKNOWN
+        ax_fs_ng::fops::FileType::Directory => 4,   // DT_DIR
+        ax_fs_ng::fops::FileType::RegularFile => 8, // DT_REG
+        ax_fs_ng::fops::FileType::Symlink => 10,    // DT_LNK
+        _ => 0,                                     // DT_UNKNOWN
     }
 }
 
 impl File {
-    fn new(inner: ax_fs::fops::File) -> Self {
+    fn new(inner: ax_fs_ng::fops::File) -> Self {
         Self {
             inner: Mutex::new(inner),
         }
@@ -105,7 +105,7 @@ impl File {
 }
 
 impl Directory {
-    fn new(inner: ax_fs::fops::Directory) -> Self {
+    fn new(inner: ax_fs_ng::fops::Directory) -> Self {
         Self {
             inner: Mutex::new(inner),
         }
@@ -246,10 +246,10 @@ pub fn sys_open(filename: *const c_char, flags: c_int, mode: ctypes::mode_t) -> 
         let options = flags_to_options(flags, mode);
         let filename = filename?;
         if (flags as u32) & ctypes::O_DIRECTORY != 0 {
-            let dir = ax_fs::fops::Directory::open_dir(filename, &options)?;
+            let dir = ax_fs_ng::fops::Directory::open_dir(filename, &options)?;
             Directory::new(dir).add_to_fd_table()
         } else {
-            let file = ax_fs::fops::File::open(filename, &options)?;
+            let file = ax_fs_ng::fops::File::open(filename, &options)?;
             File::new(file).add_to_fd_table()
         }
     })
@@ -272,8 +272,8 @@ pub unsafe fn sys_getdents64(fd: c_int, buf: *mut u8, len: usize) -> ctypes::ssi
         let out = unsafe { core::slice::from_raw_parts_mut(buf, len) };
         let mut dir_buf = DirBuffer::new(out);
 
-        let mut entries: [ax_fs::fops::DirEntry; 16] =
-            core::array::from_fn(|_| ax_fs::fops::DirEntry::default());
+        let mut entries: [ax_fs_ng::fops::DirEntry; 16] =
+            core::array::from_fn(|_| ax_fs_ng::fops::DirEntry::default());
         loop {
             let nr = dir.read_dir(&mut entries)?;
             if nr == 0 {
@@ -322,7 +322,7 @@ pub unsafe fn sys_stat(path: *const c_char, buf: *mut ctypes::stat) -> c_int {
         }
         let mut options = OpenOptions::new();
         options.read(true);
-        let file = ax_fs::fops::File::open(path?, &options)?;
+        let file = ax_fs_ng::fops::File::open(path?, &options)?;
         let st = File::new(file).stat()?;
         unsafe { *buf = st };
         Ok(0)
@@ -357,7 +357,7 @@ pub unsafe fn sys_lstat(path: *const c_char, buf: *mut ctypes::stat) -> ctypes::
         // ArceOS currently doesn't support symbolic links, so lstat behaves the same as stat
         let mut options = OpenOptions::new();
         options.read(true);
-        let file = ax_fs::fops::File::open(path?, &options)?;
+        let file = ax_fs_ng::fops::File::open(path?, &options)?;
         let st = File::new(file).stat()?;
         unsafe { *buf = st };
         Ok(0)
@@ -373,7 +373,7 @@ pub fn sys_getcwd(buf: *mut c_char, size: usize) -> *mut c_char {
             return Ok(core::ptr::null::<c_char>() as _);
         }
         let dst = unsafe { core::slice::from_raw_parts_mut(buf as *mut u8, size as _) };
-        let cwd = ax_fs::api::current_dir()?;
+        let cwd = ax_fs_ng::api::current_dir()?;
         let cwd = cwd.as_bytes();
         if cwd.len() < size {
             dst[..cwd.len()].copy_from_slice(cwd);
@@ -394,7 +394,7 @@ pub fn sys_rename(old: *const c_char, new: *const c_char) -> c_int {
         let old_path = char_ptr_to_str(old)?;
         let new_path = char_ptr_to_str(new)?;
         debug!("sys_rename <= old: {old_path:?}, new: {new_path:?}");
-        ax_fs::api::rename(old_path, new_path)?;
+        ax_fs_ng::api::rename(old_path, new_path)?;
         Ok(0)
     })
 }

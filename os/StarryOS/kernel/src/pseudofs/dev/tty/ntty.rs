@@ -1,4 +1,4 @@
-use alloc::sync::Arc;
+use alloc::{sync::Arc, vec::Vec};
 use core::{
     ptr::NonNull,
     sync::atomic::{AtomicBool, Ordering},
@@ -13,19 +13,243 @@ use super::{
     terminal::ldisc::{ProcessMode, TtyConfig, TtyRead, TtyWrite},
 };
 
-pub type NTtyDriver = Tty<Console, Console>;
+pub type NTtyDriver = Tty<ConsoleReader, Console>;
 
 #[derive(Clone, Copy)]
 pub struct Console;
-impl TtyRead for Console {
+
+#[derive(Default)]
+pub struct ConsoleReader {
+    mouse_filter: MouseEscapeFilter,
+}
+
+impl TtyRead for ConsoleReader {
     fn read(&mut self, buf: &mut [u8]) -> usize {
-        ax_runtime::hal::console::read_bytes(buf)
+        let mut written = 0;
+        let mut raw = [0; 64];
+        while written < buf.len() {
+            let free = buf.len() - written;
+            let pending = self.mouse_filter.pending_len();
+            let read_cap = if pending < free {
+                (free - pending).min(raw.len())
+            } else {
+                0
+            };
+
+            if read_cap == 0 {
+                written += self.mouse_filter.flush_pending(&mut buf[written..]);
+                break;
+            }
+
+            let read = ax_runtime::hal::console::read_bytes(&mut raw[..read_cap]);
+            if read == 0 {
+                written += self.mouse_filter.flush_pending(&mut buf[written..]);
+                break;
+            }
+
+            written += self.mouse_filter.feed(&raw[..read], &mut buf[written..]);
+            if written > 0 {
+                break;
+            }
+        }
+        written
     }
 }
+
 impl TtyWrite for Console {
     fn write(&self, buf: &[u8]) {
         ax_runtime::hal::console::write_bytes(buf);
     }
+}
+
+#[derive(Default)]
+struct MouseEscapeFilter {
+    pending: Vec<u8>,
+}
+
+enum MouseParse {
+    Mouse(usize),
+    NonMouse(usize),
+    NeedMore,
+}
+
+enum NumberParse {
+    Complete(u32),
+    Invalid(usize),
+    NeedMore,
+}
+
+impl MouseEscapeFilter {
+    fn pending_len(&self) -> usize {
+        self.pending.len()
+    }
+
+    fn feed(&mut self, input: &[u8], out: &mut [u8]) -> usize {
+        self.filter(input, out, false)
+    }
+
+    #[cfg(test)]
+    fn filter_chunk(&mut self, input: &[u8], out: &mut [u8]) -> usize {
+        self.filter(input, out, true)
+    }
+
+    fn filter(&mut self, input: &[u8], out: &mut [u8], flush_incomplete: bool) -> usize {
+        self.pending.extend_from_slice(input);
+
+        let mut read = 0;
+        let mut written = 0;
+        while read < self.pending.len() {
+            match parse_mouse_escape(&self.pending[read..]) {
+                MouseParse::Mouse(len) => {
+                    read += len;
+                }
+                MouseParse::NonMouse(len) => {
+                    let end = read + len;
+                    out[written..written + len].copy_from_slice(&self.pending[read..end]);
+                    read = end;
+                    written += len;
+                }
+                MouseParse::NeedMore => break,
+            }
+        }
+
+        if read > 0 {
+            self.pending.drain(..read);
+        }
+
+        if flush_incomplete {
+            written += self.flush_pending(&mut out[written..]);
+        }
+        written
+    }
+
+    fn flush_pending(&mut self, out: &mut [u8]) -> usize {
+        let len = self.pending.len().min(out.len());
+        out[..len].copy_from_slice(&self.pending[..len]);
+        self.pending.drain(..len);
+        len
+    }
+}
+
+fn parse_mouse_escape(input: &[u8]) -> MouseParse {
+    if input[0] != b'\x1b' {
+        return MouseParse::NonMouse(1);
+    }
+    if input.len() == 1 {
+        return MouseParse::NeedMore;
+    }
+    if input[1] != b'[' {
+        return MouseParse::NonMouse(2);
+    }
+    if input.len() == 2 {
+        return MouseParse::NeedMore;
+    }
+
+    match input[2] {
+        b'M' => {
+            if input.len() < 6 {
+                MouseParse::NeedMore
+            } else {
+                MouseParse::Mouse(6)
+            }
+        }
+        b'<' => parse_sgr_mouse(input),
+        b'0'..=b'9' => parse_urxvt_mouse(input),
+        _ => MouseParse::NonMouse(3),
+    }
+}
+
+fn parse_sgr_mouse(input: &[u8]) -> MouseParse {
+    let mut pos = 3;
+    for _ in 0..2 {
+        match parse_number(input, pos) {
+            NumberParse::Complete(_) => {}
+            NumberParse::Invalid(len) => return MouseParse::NonMouse(len),
+            NumberParse::NeedMore => return MouseParse::NeedMore,
+        }
+        while pos < input.len() && input[pos].is_ascii_digit() {
+            pos += 1;
+        }
+        if pos == input.len() {
+            return MouseParse::NeedMore;
+        }
+        if input[pos] != b';' {
+            return MouseParse::NonMouse(pos + 1);
+        }
+        pos += 1;
+    }
+
+    match parse_number(input, pos) {
+        NumberParse::Complete(_) => {}
+        NumberParse::Invalid(len) => return MouseParse::NonMouse(len),
+        NumberParse::NeedMore => return MouseParse::NeedMore,
+    }
+    while pos < input.len() && input[pos].is_ascii_digit() {
+        pos += 1;
+    }
+    if pos == input.len() {
+        return MouseParse::NeedMore;
+    }
+    match input[pos] {
+        b'M' | b'm' => MouseParse::Mouse(pos + 1),
+        _ => MouseParse::NonMouse(pos + 1),
+    }
+}
+
+fn parse_urxvt_mouse(input: &[u8]) -> MouseParse {
+    let mut pos = 2;
+    let button = match parse_number(input, pos) {
+        NumberParse::Complete(value) => value,
+        NumberParse::Invalid(len) => return MouseParse::NonMouse(len),
+        NumberParse::NeedMore => return MouseParse::NeedMore,
+    };
+    for _ in 0..2 {
+        while pos < input.len() && input[pos].is_ascii_digit() {
+            pos += 1;
+        }
+        if pos == input.len() {
+            return MouseParse::NeedMore;
+        }
+        if input[pos] != b';' {
+            return MouseParse::NonMouse(pos + 1);
+        }
+        pos += 1;
+        match parse_number(input, pos) {
+            NumberParse::Complete(_) => {}
+            NumberParse::Invalid(len) => return MouseParse::NonMouse(len),
+            NumberParse::NeedMore => return MouseParse::NeedMore,
+        }
+    }
+    while pos < input.len() && input[pos].is_ascii_digit() {
+        pos += 1;
+    }
+    if pos == input.len() {
+        return MouseParse::NeedMore;
+    }
+    if input[pos] == b'M' && button >= 32 {
+        MouseParse::Mouse(pos + 1)
+    } else {
+        MouseParse::NonMouse(pos + 1)
+    }
+}
+
+fn parse_number(input: &[u8], start: usize) -> NumberParse {
+    if start == input.len() {
+        return NumberParse::NeedMore;
+    }
+    if !input[start].is_ascii_digit() {
+        return NumberParse::Invalid(start + 1);
+    }
+
+    let mut value = 0u32;
+    let mut pos = start;
+    while pos < input.len() && input[pos].is_ascii_digit() {
+        value = value
+            .saturating_mul(10)
+            .saturating_add((input[pos] - b'0') as u32);
+        pos += 1;
+    }
+    NumberParse::Complete(value)
 }
 
 /// The default TTY device.
@@ -77,7 +301,7 @@ fn new_n_tty() -> Arc<NTtyDriver> {
     Tty::new(
         terminal,
         TtyConfig {
-            reader: Console,
+            reader: ConsoleReader::default(),
             writer: Console,
             process_mode: console_irq_mode().unwrap_or(ProcessMode::Manual),
         },
@@ -178,7 +402,7 @@ fn console_irq_mode() -> Option<ProcessMode> {
 
 #[cfg(test)]
 mod tests {
-    use super::parse_console_size_response;
+    use super::{MouseEscapeFilter, parse_console_size_response};
 
     #[test]
     fn parses_cursor_position_response() {
@@ -186,5 +410,53 @@ mod tests {
             parse_console_size_response(b"\x1b7\x1b[24;80R\x1b8"),
             Some((24, 80))
         );
+    }
+
+    fn filter(input: &[u8]) -> alloc::vec::Vec<u8> {
+        let mut filter = MouseEscapeFilter::default();
+        let mut out = alloc::vec![0; input.len()];
+        let len = filter.filter_chunk(input, &mut out);
+        out.truncate(len);
+        out
+    }
+
+    #[test]
+    fn mouse_filter_drops_sgr_click_wheel_and_side_button_reports() {
+        assert_eq!(filter(b"\x1b[<0;10;20M"), b"");
+        assert_eq!(filter(b"\x1b[<0;10;20m"), b"");
+        assert_eq!(filter(b"\x1b[<64;10;20M"), b"");
+        assert_eq!(filter(b"\x1b[<128;10;20M"), b"");
+    }
+
+    #[test]
+    fn mouse_filter_drops_x10_report() {
+        assert_eq!(filter(b"\x1b[M !!"), b"");
+    }
+
+    #[test]
+    fn mouse_filter_drops_urxvt_style_report() {
+        assert_eq!(filter(b"\x1b[35;10;20M"), b"");
+        assert_eq!(filter(b"\x1b[96;10;20M"), b"");
+    }
+
+    #[test]
+    fn mouse_filter_preserves_keyboard_and_terminal_control_sequences() {
+        assert_eq!(filter(b"\x1b[A"), b"\x1b[A");
+        assert_eq!(filter(b"\x1b[6n"), b"\x1b[6n");
+        assert_eq!(filter(b"\x1b[1;1R"), b"\x1b[1;1R");
+        assert_eq!(filter(b"\x1ba"), b"\x1ba");
+    }
+
+    #[test]
+    fn mouse_filter_preserves_incomplete_or_non_mouse_sequences() {
+        assert_eq!(filter(b"\x1b["), b"\x1b[");
+        assert_eq!(filter(b"\x1b[M!"), b"\x1b[M!");
+        assert_eq!(filter(b"\x1b[1;2;3R"), b"\x1b[1;2;3R");
+        assert_eq!(filter(b"\x1b[1;2;3M"), b"\x1b[1;2;3M");
+    }
+
+    #[test]
+    fn mouse_filter_removes_mouse_reports_from_mixed_stream() {
+        assert_eq!(filter(b"abc \x1b[<64;10;20Mdef\n"), b"abc def\n");
     }
 }

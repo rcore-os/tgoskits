@@ -1,7 +1,7 @@
 use alloc::boxed::Box;
 
 use ax_errno::{AxError, AxResult, LinuxError};
-use ax_fs::FS_CONTEXT;
+use ax_fs_ng::vfs::FS_CONTEXT;
 #[cfg(feature = "vsock")]
 use ax_net::vsock::{VsockSocket, VsockStreamTransport};
 use ax_net::{

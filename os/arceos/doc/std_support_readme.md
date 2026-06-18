@@ -7,8 +7,8 @@ the application enables its `arceos` feature to depend on `ax-std` directly, so
 `libc.a` only satisfies the fixed library name requested by the compiler; the
 real libc/syscall compatibility symbols come from `ax-std`.
 
-This path does not require changes to `rust-lang/rust`, and it does not use a
-Hermit target.
+This path does not require changes to `rust-lang/rust`; it uses built-in
+linux-musl targets directly.
 
 ## Run the std examples
 

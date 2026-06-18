@@ -19,7 +19,7 @@ pub fn new_user_task(name: &str, mut uctx: UserContext, set_child_tid: usize) ->
             let curr = ax_task::current();
 
             if let Some(tid) = (set_child_tid as *mut Pid).nullable() {
-                tid.vm_write(curr.id().as_u64() as Pid).ok();
+                tid.vm_write(curr.as_thread().tid() as Pid).ok();
             }
 
             info!("Enter user space: ip={:#x}, sp={:#x}", uctx.ip(), uctx.sp());

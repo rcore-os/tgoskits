@@ -1,28 +1,143 @@
 use alloc::{
-    borrow::Cow,
+    borrow::{Cow, ToOwned},
     string::String,
     sync::{Arc, Weak},
     vec,
     vec::Vec,
 };
 use core::{
+    any::Any,
     iter, mem,
     sync::atomic::{AtomicBool, AtomicU64, Ordering},
     task::Context,
+    time::Duration,
 };
 
-use axpoll::{IoEvents, Pollable};
 use hashbrown::HashMap;
 use inherit_methods_macro::inherit_methods;
 use log::warn;
 
 use crate::{
-    DirEntry, DirEntrySink, Filesystem, FilesystemOps, Metadata, MetadataUpdate, Mutex, MutexGuard,
-    NodeFlags, NodePermission, NodeType, OpenOptions, ReferenceKey, TypeMap, VfsError, VfsResult,
-    path::{DOT, DOTDOT, PathBuf},
+    DeviceId, DirEntry, DirEntrySink, DirNode, DirNodeOps, Filesystem, FilesystemOps, FsIoEvents,
+    FsPollable, Metadata, MetadataUpdate, Mutex, MutexGuard, NodeFlags, NodeOps, NodePermission,
+    NodeType, OpenOptions, Reference, ReferenceKey, TypeMap, VfsError, VfsResult, WeakDirEntry,
+    path::{DOT, DOTDOT, PathBuf, verify_entry_name},
 };
 
 static DEVICE_COUNTER: AtomicU64 = AtomicU64::new(1);
+static SYNTHETIC_MOUNT_INODE_COUNTER: AtomicU64 = AtomicU64::new(1_u64 << 63);
+
+struct SyntheticMountDir {
+    parent: DirEntry,
+    this: WeakDirEntry,
+    inode: u64,
+    mode: NodePermission,
+    uid: u32,
+    gid: u32,
+}
+
+impl SyntheticMountDir {
+    fn new(parent: DirEntry, this: WeakDirEntry, mode: NodePermission, uid: u32, gid: u32) -> Self {
+        Self {
+            parent,
+            this,
+            inode: SYNTHETIC_MOUNT_INODE_COUNTER.fetch_add(1, Ordering::Relaxed),
+            mode,
+            uid,
+            gid,
+        }
+    }
+}
+
+impl NodeOps for SyntheticMountDir {
+    fn inode(&self) -> u64 {
+        self.inode
+    }
+
+    fn metadata(&self) -> VfsResult<Metadata> {
+        Ok(Metadata {
+            device: 0,
+            inode: self.inode,
+            nlink: 2,
+            mode: self.mode,
+            node_type: NodeType::Directory,
+            uid: self.uid,
+            gid: self.gid,
+            size: 0,
+            block_size: 0,
+            blocks: 0,
+            rdev: DeviceId::default(),
+            atime: Duration::ZERO,
+            mtime: Duration::ZERO,
+            ctime: Duration::ZERO,
+        })
+    }
+
+    fn update_metadata(&self, _update: MetadataUpdate) -> VfsResult<()> {
+        Err(VfsError::ReadOnlyFilesystem)
+    }
+
+    fn filesystem(&self) -> &dyn FilesystemOps {
+        self.parent.filesystem()
+    }
+
+    fn sync(&self, _data_only: bool) -> VfsResult<()> {
+        Ok(())
+    }
+
+    fn into_any(self: Arc<Self>) -> Arc<dyn Any + Send + Sync> {
+        self
+    }
+}
+
+impl DirNodeOps for SyntheticMountDir {
+    fn read_dir(&self, offset: u64, sink: &mut dyn DirEntrySink) -> VfsResult<usize> {
+        let entries = [
+            (DOT, self.inode, NodeType::Directory),
+            (DOTDOT, self.parent.inode(), NodeType::Directory),
+        ];
+        let start = usize::try_from(offset).unwrap_or(usize::MAX);
+        let mut count = 0;
+        for (index, (name, ino, node_type)) in entries.iter().enumerate().skip(start) {
+            if !sink.accept(name, *ino, *node_type, (index + 1) as u64) {
+                break;
+            }
+            count += 1;
+        }
+        Ok(count)
+    }
+
+    fn lookup(&self, name: &str) -> VfsResult<DirEntry> {
+        match name {
+            DOT => self.this.upgrade().ok_or(VfsError::NotFound),
+            DOTDOT => Ok(self.parent.clone()),
+            _ => Err(VfsError::NotFound),
+        }
+    }
+
+    fn create(
+        &self,
+        _name: &str,
+        _node_type: NodeType,
+        _permission: NodePermission,
+        _uid: u32,
+        _gid: u32,
+    ) -> VfsResult<DirEntry> {
+        Err(VfsError::ReadOnlyFilesystem)
+    }
+
+    fn link(&self, _name: &str, _node: &DirEntry) -> VfsResult<DirEntry> {
+        Err(VfsError::ReadOnlyFilesystem)
+    }
+
+    fn unlink(&self, _name: &str, _is_dir: bool) -> VfsResult<()> {
+        Err(VfsError::ReadOnlyFilesystem)
+    }
+
+    fn rename(&self, _src_name: &str, _dst_dir: &DirNode, _dst_name: &str) -> VfsResult<()> {
+        Err(VfsError::ReadOnlyFilesystem)
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PropagationType {
@@ -77,11 +192,13 @@ impl Mountpoint {
     }
 
     pub fn new(fs: &Filesystem, location_in_parent: Option<Location>) -> Arc<Self> {
-        Self::new_with_root(
+        let result = Self::new_with_root(
             fs.root_dir(),
             location_in_parent,
             DEVICE_COUNTER.fetch_add(1, Ordering::Relaxed),
-        )
+        );
+        result.readonly.store(fs.is_readonly(), Ordering::Release);
+        result
     }
 
     pub fn new_root(fs: &Filesystem) -> Arc<Self> {
@@ -585,6 +702,55 @@ impl Location {
             .map(|entry| self.wrap(entry))
     }
 
+    /// Creates an in-memory directory entry that exists only as a mount target.
+    ///
+    /// This is intended for early boot auto-mount recovery: if the root
+    /// filesystem is forced read-only because its on-disk state is dirty or
+    /// inconsistent, other partitions still need stable mount targets such as
+    /// `/boot` or `/userdata`. The placeholder is inserted only into the parent
+    /// dentry cache and does not mutate the backing filesystem. If the backing
+    /// filesystem has a non-directory entry with the same name, this helper
+    /// deliberately shadows it so the mount can cover the bad root entry.
+    pub fn create_transient_mount_dir(
+        &self,
+        name: &str,
+        permission: NodePermission,
+        uid: u32,
+        gid: u32,
+    ) -> VfsResult<Self> {
+        verify_entry_name(name)?;
+        if !self.is_readonly() {
+            return Err(VfsError::InvalidInput);
+        }
+        let dir = self.entry.as_dir()?;
+        if let Some(entry) = dir.lookup_cache(name)
+            && entry.node_type() == NodeType::Directory
+        {
+            return Ok(self.wrap(entry).resolve_mountpoint());
+        }
+        match dir.lookup(name) {
+            Ok(entry) if entry.node_type() == NodeType::Directory => {
+                return Ok(self.wrap(entry).resolve_mountpoint());
+            }
+            Ok(_) => {}
+            Err(err) if err.canonicalize() == VfsError::NotFound => {}
+            Err(err) => return Err(err),
+        }
+
+        let parent = self.entry.clone();
+        let reference = Reference::new(Some(parent.clone()), name.to_owned());
+        let entry = DirEntry::new_dir(
+            |this| {
+                DirNode::new(Arc::new(SyntheticMountDir::new(
+                    parent, this, permission, uid, gid,
+                )))
+            },
+            reference,
+        );
+        dir.insert_cache(name.to_owned(), entry.clone());
+        Ok(self.wrap(entry))
+    }
+
     pub fn link(&self, name: &str, node: &Self) -> VfsResult<Self> {
         if self.is_readonly() {
             return Err(VfsError::ReadOnlyFilesystem);
@@ -747,8 +913,8 @@ impl Location {
 }
 
 #[inherit_methods(from = "self.entry")]
-impl Pollable for Location {
-    fn poll(&self) -> IoEvents;
+impl FsPollable for Location {
+    fn poll(&self) -> FsIoEvents;
 
-    fn register(&self, context: &mut Context<'_>, events: IoEvents);
+    fn register(&self, context: &mut Context<'_>, events: FsIoEvents);
 }

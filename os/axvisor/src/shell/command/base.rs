@@ -15,9 +15,11 @@
 use std::collections::BTreeMap;
 #[cfg(feature = "fs")]
 use std::fs::{self, File, FileType};
+#[cfg(all(feature = "fs", target_os = "none"))]
+use std::fs::{FileTypeExt, PermissionsExt};
 #[cfg(feature = "fs")]
 use std::io::{self, Read, Write};
-#[cfg(feature = "fs")]
+#[cfg(all(feature = "fs", unix))]
 use std::os::unix::fs::{FileTypeExt, PermissionsExt};
 use std::println;
 use std::string::{String, ToString};

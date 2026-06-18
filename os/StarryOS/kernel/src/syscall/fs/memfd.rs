@@ -2,7 +2,7 @@ use alloc::{string::String, sync::Arc};
 use core::ffi::c_char;
 
 use ax_errno::{AxError, AxResult};
-use ax_fs::{FS_CONTEXT, OpenOptions};
+use ax_fs_ng::vfs::{FS_CONTEXT, OpenOptions};
 use ax_task::current;
 use linux_raw_sys::general::{MFD_CLOEXEC, O_RDWR};
 

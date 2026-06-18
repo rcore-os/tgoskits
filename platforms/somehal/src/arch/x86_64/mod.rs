@@ -15,6 +15,7 @@ use crate::common::PlatOp;
 pub struct Plat;
 
 const APIC_TIMER_VECTOR: usize = 0x20;
+const APIC_IPI_VECTOR: usize = 0xf3;
 const LAPIC_REG_EOI: u32 = 0x0b0;
 const LAPIC_REG_ICR_LOW: u32 = 0x300;
 const LAPIC_REG_ICR_HIGH: u32 = 0x310;
@@ -264,7 +265,7 @@ impl PlatOp for Plat {
 
     fn send_ipi_to_cpu(cpu_id: usize) {
         Self::send_ipi(
-            APIC_TIMER_VECTOR.into(),
+            APIC_IPI_VECTOR.into(),
             crate::irq::IpiTarget::Other { cpu_id },
         );
     }
