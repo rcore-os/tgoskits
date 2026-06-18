@@ -1,4 +1,5 @@
 #!/bin/sh
+set -eu
 
 BASE=/tmp/apache-phase80
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname "$0")" && pwd)
@@ -10,13 +11,18 @@ LOGDIR="$BASE/logs"
 RUNDIR="$BASE/run"
 OUT="$BASE/out"
 HTTPD_PID=
-WATCHDOG_PID=
 TIMEOUT_CMD=
 
 if [ -f /usr/bin/apache-alpine-mirror.sh ]; then
     . /usr/bin/apache-alpine-mirror.sh
 elif [ -f "$APP_DIR/apache-alpine-mirror.sh" ]; then
     . "$APP_DIR/apache-alpine-mirror.sh"
+fi
+
+if [ -f /usr/bin/apache-runner-lib.sh ]; then
+    . /usr/bin/apache-runner-lib.sh
+elif [ -f "$APP_DIR/runner/apache-runner-lib.sh" ]; then
+    . "$APP_DIR/runner/apache-runner-lib.sh"
 fi
 
 log() { printf 'APACHE_PHASE80_LOG: %s\n' "$*"; }
@@ -48,9 +54,6 @@ dump_diag() {
 }
 
 cleanup() {
-    if [ -n "$WATCHDOG_PID" ]; then
-        kill "$WATCHDOG_PID" 2>/dev/null || true
-    fi
     if [ -n "$HTTPD_PID" ] && kill -0 "$HTTPD_PID" 2>/dev/null; then
         kill -TERM "$HTTPD_PID" 2>/dev/null || true
         i=0
@@ -87,14 +90,7 @@ run_with_timeout() {
 }
 
 prepare_packages() {
-    if command -v httpd >/dev/null 2>&1 && command -v curl >/dev/null 2>&1; then
-        return 0
-    fi
-    if command -v apache_apk_add_with_fallback >/dev/null 2>&1; then
-        apache_apk_add_with_fallback apache2 apache2-utils curl busybox-extras coreutils
-        return $?
-    fi
-    return 1
+    apache_runner_ensure_packages
 }
 
 prepare_tree() {
@@ -218,8 +214,6 @@ run_step() {
 }
 
 init_timeout_cmd
-( sleep 180; log "watchdog timeout"; kill -TERM $$ ) &
-WATCHDOG_PID=$!
 run_step "prepare packages" prepare_packages
 run_step "prepare apache files" prepare_tree
 run_step "start apache" start_httpd

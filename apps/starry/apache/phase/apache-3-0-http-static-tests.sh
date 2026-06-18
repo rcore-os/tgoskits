@@ -1,4 +1,6 @@
 #!/bin/sh
+set -eu
+set -eu
 
 BASE=/tmp/apache-phase30
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname "$0")" && pwd)
@@ -9,13 +11,17 @@ LOGDIR="$BASE/logs"
 RUNDIR="$BASE/run"
 OUT="$BASE/out"
 HTTPD_PID=
-WATCHDOG_PID=
-TIMEOUT_CMD=
 
 if [ -f /usr/bin/apache-alpine-mirror.sh ]; then
     . /usr/bin/apache-alpine-mirror.sh
 elif [ -f "$APP_DIR/apache-alpine-mirror.sh" ]; then
     . "$APP_DIR/apache-alpine-mirror.sh"
+fi
+
+if [ -f /usr/bin/apache-runner-lib.sh ]; then
+    . /usr/bin/apache-runner-lib.sh
+elif [ -f "$APP_DIR/runner/apache-runner-lib.sh" ]; then
+    . "$APP_DIR/runner/apache-runner-lib.sh"
 fi
 
 log() { printf 'APACHE_PHASE30_LOG: %s\n' "$*"; }
@@ -47,9 +53,6 @@ dump_diag() {
 }
 
 cleanup() {
-    if [ -n "$WATCHDOG_PID" ]; then
-        kill "$WATCHDOG_PID" 2>/dev/null || true
-    fi
     if [ -n "$HTTPD_PID" ] && kill -0 "$HTTPD_PID" 2>/dev/null; then
         kill -TERM "$HTTPD_PID" 2>/dev/null || true
         i=0
@@ -73,27 +76,8 @@ finish() {
 
 trap finish EXIT
 
-init_timeout_cmd() {
-    if command -v timeout >/dev/null 2>&1; then TIMEOUT_CMD='timeout'; return 0; fi
-    if busybox timeout 2>&1 | grep -qi 'usage'; then TIMEOUT_CMD='busybox timeout'; return 0; fi
-    fail "timeout command not available"
-}
-
-run_with_timeout() {
-    sec=$1
-    shift
-    $TIMEOUT_CMD "$sec" "$@"
-}
-
 prepare_packages() {
-    if command -v httpd >/dev/null 2>&1 && command -v curl >/dev/null 2>&1; then
-        return 0
-    fi
-    if command -v apache_apk_add_with_fallback >/dev/null 2>&1; then
-        apache_apk_add_with_fallback apache2 apache2-utils curl busybox-extras coreutils
-        return $?
-    fi
-    return 1
+    apache_runner_ensure_packages
 }
 
 prepare_tree() {
@@ -135,7 +119,7 @@ start_httpd() {
     i=0
     while [ "$i" -lt 30 ]; do
         if ! kill -0 "$HTTPD_PID" 2>/dev/null; then return 1; fi
-        if run_with_timeout 2 curl -fsS -o "$OUT/startup.body" http://127.0.0.1:8080/ >/dev/null 2>&1; then return 0; fi
+        if apache_runner_run_with_timeout 2 curl -fsS -o "$OUT/startup.body" http://127.0.0.1:8080/ >/dev/null 2>&1; then return 0; fi
         sleep 1
         i=$((i + 1))
     done
@@ -143,35 +127,35 @@ start_httpd() {
 }
 
 test_get_small() {
-    run_with_timeout 5 curl -fsS -D "$OUT/small.headers" -o "$OUT/small.body" http://127.0.0.1:8080/small.txt
+    apache_runner_run_with_timeout 5 curl -fsS -D "$OUT/small.headers" -o "$OUT/small.body" http://127.0.0.1:8080/small.txt
     grep -qx 'phase30 small' "$OUT/small.body"
     grep -qi '^Content-Length: 14' "$OUT/small.headers"
 }
 
 test_get_empty() {
-    run_with_timeout 5 curl -fsS -D "$OUT/empty.headers" -o "$OUT/empty.body" http://127.0.0.1:8080/empty.txt
+    apache_runner_run_with_timeout 5 curl -fsS -D "$OUT/empty.headers" -o "$OUT/empty.body" http://127.0.0.1:8080/empty.txt
     [ "$(wc -c < "$OUT/empty.body")" -eq 0 ]
     grep -qi '^Content-Length: 0' "$OUT/empty.headers"
 }
 
 test_get_dir_slash() {
-    run_with_timeout 5 curl -fsS -D "$OUT/dir-slash.headers" -o "$OUT/dir-slash.body" http://127.0.0.1:8080/dir/
+    apache_runner_run_with_timeout 5 curl -fsS -D "$OUT/dir-slash.headers" -o "$OUT/dir-slash.body" http://127.0.0.1:8080/dir/
     grep -qx 'phase30 dir index' "$OUT/dir-slash.body"
 }
 
 test_get_dir_redirect() {
-    code=$(run_with_timeout 5 curl -sS -o "$OUT/dir.body" -D "$OUT/dir.headers" -w '%{http_code}' http://127.0.0.1:8080/dir || printf 'curl_failed')
+    code=$(apache_runner_run_with_timeout 5 curl -sS -o "$OUT/dir.body" -D "$OUT/dir.headers" -w '%{http_code}' http://127.0.0.1:8080/dir || printf 'curl_failed')
     [ "$code" = "301" ]
     grep -qi '^Location: .*/dir/' "$OUT/dir.headers"
 }
 
 test_unknown_method() {
-    code=$(run_with_timeout 5 curl -sS -X BAD -o "$OUT/bad.body" -D "$OUT/bad.headers" -w '%{http_code}' http://127.0.0.1:8080/ || printf 'curl_failed')
+    code=$(apache_runner_run_with_timeout 5 curl -sS -X BAD -o "$OUT/bad.body" -D "$OUT/bad.headers" -w '%{http_code}' http://127.0.0.1:8080/ || printf 'curl_failed')
     [ "$code" = "501" ]
 }
 
 test_connection_close() {
-    run_with_timeout 5 curl -fsS -H 'Connection: close' -D "$OUT/close.headers" -o "$OUT/close.body" http://127.0.0.1:8080/small.txt
+    apache_runner_run_with_timeout 5 curl -fsS -H 'Connection: close' -D "$OUT/close.headers" -o "$OUT/close.body" http://127.0.0.1:8080/small.txt
     grep -qx 'phase30 small' "$OUT/close.body"
 }
 
@@ -193,9 +177,7 @@ run_step() {
     pass_step "$name"
 }
 
-init_timeout_cmd
-( sleep 180; log "watchdog timeout"; kill -TERM $$ ) &
-WATCHDOG_PID=$!
+apache_runner_init_timeout_cmd || fail "timeout command not available"
 run_step "prepare packages" prepare_packages
 run_step "prepare apache files" prepare_tree
 run_step "start apache" start_httpd

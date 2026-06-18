@@ -1,4 +1,6 @@
 #!/bin/sh
+set -eu
+set -eu
 
 BASE=/tmp/apache-phase50
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname "$0")" && pwd)
@@ -9,13 +11,17 @@ LOGDIR="$BASE/logs"
 RUNDIR="$BASE/run"
 OUT="$BASE/out"
 HTTPD_PID=
-WATCHDOG_PID=
-TIMEOUT_CMD=
 
 if [ -f /usr/bin/apache-alpine-mirror.sh ]; then
     . /usr/bin/apache-alpine-mirror.sh
 elif [ -f "$APP_DIR/apache-alpine-mirror.sh" ]; then
     . "$APP_DIR/apache-alpine-mirror.sh"
+fi
+
+if [ -f /usr/bin/apache-runner-lib.sh ]; then
+    . /usr/bin/apache-runner-lib.sh
+elif [ -f "$APP_DIR/runner/apache-runner-lib.sh" ]; then
+    . "$APP_DIR/runner/apache-runner-lib.sh"
 fi
 
 log() { printf 'APACHE_PHASE50_LOG: %s\n' "$*"; }
@@ -48,9 +54,6 @@ dump_diag() {
 }
 
 cleanup() {
-    if [ -n "$WATCHDOG_PID" ]; then
-        kill "$WATCHDOG_PID" 2>/dev/null || true
-    fi
     if [ -n "$HTTPD_PID" ] && kill -0 "$HTTPD_PID" 2>/dev/null; then
         kill -TERM "$HTTPD_PID" 2>/dev/null || true
         i=0
@@ -74,27 +77,8 @@ finish() {
 
 trap finish EXIT
 
-init_timeout_cmd() {
-    if command -v timeout >/dev/null 2>&1; then TIMEOUT_CMD='timeout'; return 0; fi
-    if busybox timeout 2>&1 | grep -qi 'usage'; then TIMEOUT_CMD='busybox timeout'; return 0; fi
-    fail "timeout command not available"
-}
-
-run_with_timeout() {
-    sec=$1
-    shift
-    $TIMEOUT_CMD "$sec" "$@"
-}
-
 prepare_packages() {
-    if command -v httpd >/dev/null 2>&1 && command -v curl >/dev/null 2>&1; then
-        return 0
-    fi
-    if command -v apache_apk_add_with_fallback >/dev/null 2>&1; then
-        apache_apk_add_with_fallback apache2 apache2-utils curl busybox-extras coreutils
-        return $?
-    fi
-    return 1
+    apache_runner_ensure_packages
 }
 
 prepare_tree() {
@@ -136,7 +120,7 @@ start_httpd() {
         if [ -f "$RUNDIR/httpd.pid" ]; then
             HTTPD_PID=$(cat "$RUNDIR/httpd.pid")
             if kill -0 "$HTTPD_PID" 2>/dev/null; then
-                if run_with_timeout 2 curl -fsS -o "$OUT/startup.body" http://127.0.0.1:8080/ >/dev/null 2>&1; then return 0; fi
+                if apache_runner_run_with_timeout 2 curl -fsS -o "$OUT/startup.body" http://127.0.0.1:8080/ >/dev/null 2>&1; then return 0; fi
             fi
         fi
         sleep 1
@@ -155,9 +139,9 @@ count_access_lines() {
 
 test_access_log_growth() {
     before=$(count_access_lines)
-    run_with_timeout 5 curl -fsS -o "$OUT/growth-1.body" http://127.0.0.1:8080/small.txt
+    apache_runner_run_with_timeout 5 curl -fsS -o "$OUT/growth-1.body" http://127.0.0.1:8080/small.txt
     mid=$(count_access_lines)
-    run_with_timeout 5 curl -fsS -o "$OUT/growth-2.body" http://127.0.0.1:8080/empty.txt
+    apache_runner_run_with_timeout 5 curl -fsS -o "$OUT/growth-2.body" http://127.0.0.1:8080/empty.txt
     after=$(count_access_lines)
     [ "$mid" -gt "$before" ]
     [ "$after" -gt "$mid" ]
@@ -181,7 +165,7 @@ test_graceful_reopen() {
         i=$((i + 1))
     done
     [ -f "$LOGDIR/access.log" ]
-    run_with_timeout 5 curl -fsS -o "$OUT/reopen.body" http://127.0.0.1:8080/small.txt
+    apache_runner_run_with_timeout 5 curl -fsS -o "$OUT/reopen.body" http://127.0.0.1:8080/small.txt
     new_lines=$(wc -l < "$LOGDIR/access.log")
     old_lines=$(wc -l < "$LOGDIR/access.log.old")
     [ "$new_lines" -ge 1 ]
@@ -192,7 +176,7 @@ test_restart_works() {
     kill -HUP "$HTTPD_PID"
     i=0
     while [ "$i" -lt 15 ]; do
-        if kill -0 "$HTTPD_PID" 2>/dev/null && run_with_timeout 2 curl -fsS -o "$OUT/restart.body" http://127.0.0.1:8080/ >/dev/null 2>&1; then
+        if kill -0 "$HTTPD_PID" 2>/dev/null && apache_runner_run_with_timeout 2 curl -fsS -o "$OUT/restart.body" http://127.0.0.1:8080/ >/dev/null 2>&1; then
             return 0
         fi
         sleep 1
@@ -219,9 +203,7 @@ run_step() {
     pass_step "$name"
 }
 
-init_timeout_cmd
-( sleep 180; log "watchdog timeout"; kill -TERM $$ ) &
-WATCHDOG_PID=$!
+apache_runner_init_timeout_cmd || fail "timeout command not available"
 run_step "prepare packages" prepare_packages
 run_step "prepare apache files" prepare_tree
 run_step "start apache" start_httpd

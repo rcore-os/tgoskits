@@ -1,0 +1,3 @@
+#!/bin/sh
+
+printf 'APACHE_DEBUG_THREAD_FUTEX_RESERVED\n'

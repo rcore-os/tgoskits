@@ -1,8 +1,7 @@
 #!/bin/sh
 set -eu
-set -eu
 
-BASE=/tmp/apache-phase20
+BASE=/tmp/apache-phase20-debug
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname "$0")" && pwd)
 APP_DIR=$(dirname "$SCRIPT_DIR")
 CONF="$BASE/conf/mpm-prefork.conf"
@@ -24,32 +23,33 @@ elif [ -f "$APP_DIR/runner/apache-runner-lib.sh" ]; then
     . "$APP_DIR/runner/apache-runner-lib.sh"
 fi
 
-log() { printf 'APACHE_PHASE20_LOG: %s\n' "$*"; }
-fail() { printf 'APACHE_PHASE20_TEST_FAILED\n'; log "$*"; exit 1; }
-pass_step() { printf 'APACHE_PHASE20_STEP_PASS: %s\n' "$*"; }
+log() { printf 'APACHE_PHASE20_RESTART_DEBUG_LOG: %s\n' "$*"; }
+fail() { printf 'APACHE_PHASE20_RESTART_DEBUG_FAILED\n'; log "$*"; exit 1; }
 
 dump_file() {
-    dump_name=$1
-    dump_path=$2
-    printf -- '--- %s: %s ---\n' "$dump_name" "$dump_path"
-    if [ -f "$dump_path" ]; then
-        sed -n '1,220p' "$dump_path" 2>&1
+    name=$1
+    path=$2
+    printf -- '--- %s: %s ---\n' "$name" "$path"
+    if [ -f "$path" ]; then
+        sed -n '1,220p' "$path" 2>&1
     else
         printf 'missing\n'
     fi
 }
 
-dump_diag() {
-    printf '=== APACHE_PHASE20_DIAG_BEGIN ===\n'
+dump_state() {
+    printf '=== APACHE_PHASE20_RESTART_DEBUG_STATE_BEGIN ===\n'
     date 2>&1 || true
-    uname -a 2>&1 || true
     ps 2>&1 || true
-    ls -la "$BASE" "$DOCROOT" "$LOGDIR" "$RUNDIR" "$OUT" 2>&1 || true
-    dump_file "apache config" "$CONF"
+    if command -v pgrep >/dev/null 2>&1; then
+        pgrep -af httpd 2>/dev/null || true
+    fi
     dump_file "apache stdout" "$LOGDIR/httpd-stdout.log"
     dump_file "apache error log" "$LOGDIR/error.log"
     dump_file "apache access log" "$LOGDIR/access.log"
-    printf '=== APACHE_PHASE20_DIAG_END ===\n'
+    dump_file "server-status before" "$OUT/server-status.before"
+    dump_file "server-status after" "$OUT/server-status.after"
+    printf '=== APACHE_PHASE20_RESTART_DEBUG_STATE_END ===\n'
 }
 
 cleanup() {
@@ -68,7 +68,7 @@ cleanup() {
 finish() {
     status=$?
     if [ "$status" -ne 0 ]; then
-        dump_diag
+        dump_state
     fi
     cleanup
     exit "$status"
@@ -83,8 +83,8 @@ prepare_packages() {
 prepare_tree() {
     rm -rf "$BASE"
     mkdir -p "$BASE/conf" "$DOCROOT" "$LOGDIR" "$RUNDIR" "$OUT"
-    printf 'phase20 index\n' > "$DOCROOT/index.html"
-    printf 'phase20 small\n' > "$DOCROOT/small.txt"
+    printf 'phase20 debug index\n' > "$DOCROOT/index.html"
+    printf 'phase20 debug small\n' > "$DOCROOT/small.txt"
 
     cat > "$CONF" <<EOF
 Include /etc/apache2/httpd.conf
@@ -128,7 +128,9 @@ start_httpd() {
         if [ -f "$RUNDIR/httpd.pid" ]; then
             HTTPD_PID=$(cat "$RUNDIR/httpd.pid")
             if kill -0 "$HTTPD_PID" 2>/dev/null; then
-                if apache_runner_run_with_timeout 2 curl -fsS -o "$OUT/startup.body" http://127.0.0.1:8080/ >/dev/null 2>&1; then return 0; fi
+                if apache_runner_run_with_timeout 2 curl -fsS -o "$OUT/startup.body" http://127.0.0.1:8080/ >/dev/null 2>&1; then
+                    return 0
+                fi
             fi
         fi
         sleep 1
@@ -137,50 +139,31 @@ start_httpd() {
     return 1
 }
 
-test_worker_pool_ready() {
+restart_probe() {
+    apache_runner_run_with_timeout 5 curl -fsS -o "$OUT/server-status.before" "http://127.0.0.1:8080/server-status?auto" || return 1
+    grep -qi '^ServerMPM: prefork' "$OUT/server-status.before" || return 1
+    log "before_restart_pid=$HTTPD_PID"
+    kill -HUP "$HTTPD_PID" || return 1
+
     i=0
     while [ "$i" -lt 15 ]; do
-        if apache_runner_run_with_timeout 5 curl -fsS -o "$OUT/server-status.auto" "http://127.0.0.1:8080/server-status?auto" >/dev/null 2>&1; then
-            if grep -qi '^ServerMPM: prefork' "$OUT/server-status.auto"; then
-                return 0
-            fi
+        if kill -0 "$HTTPD_PID" 2>/dev/null && apache_runner_run_with_timeout 5 curl -fsS -o "$OUT/server-status.after" "http://127.0.0.1:8080/server-status?auto" >/dev/null 2>&1; then
+            break
         fi
         sleep 1
         i=$((i + 1))
     done
-    return 1
-}
-
-test_request_handling() {
-    apache_runner_run_with_timeout 5 curl -fsS -o "$OUT/index.body" http://127.0.0.1:8080/
-    grep -qx 'phase20 index' "$OUT/index.body"
-    apache_runner_run_with_timeout 5 curl -fsS -o "$OUT/small.body" http://127.0.0.1:8080/small.txt
-    grep -qx 'phase20 small' "$OUT/small.body"
-}
-
-test_stop_cleanup() {
-    httpd -k stop -f "$CONF" >/dev/null 2>&1 || kill -TERM "$HTTPD_PID"
-    i=0
-    while kill -0 "$HTTPD_PID" 2>/dev/null && [ "$i" -lt 10 ]; do
-        sleep 1
-        i=$((i + 1))
-    done
-    ! kill -0 "$HTTPD_PID" 2>/dev/null
-}
-
-run_step() {
-    name=$1
-    shift
-    log "BEGIN $name"
-    "$@" || fail "$name"
-    pass_step "$name"
+    [ -f "$OUT/server-status.after" ] || return 1
+    grep -qi '^ServerMPM: prefork' "$OUT/server-status.after" || return 1
+    apache_runner_run_with_timeout 5 curl -fsS -o "$OUT/after-restart.body" http://127.0.0.1:8080/small.txt || return 1
+    grep -qx 'phase20 debug small' "$OUT/after-restart.body" || return 1
+    log "after_restart_pid=$HTTPD_PID"
+    return 0
 }
 
 apache_runner_init_timeout_cmd || fail "timeout command not available"
-run_step "prepare packages" prepare_packages
-run_step "prepare apache files" prepare_tree
-run_step "start apache daemon" start_httpd
-run_step "worker pool ready" test_worker_pool_ready
-run_step "request handling" test_request_handling
-run_step "stop cleanup" test_stop_cleanup
-printf 'APACHE_PHASE20_TEST_PASSED\n'
+prepare_packages || fail "prepare packages"
+prepare_tree || fail "prepare tree"
+start_httpd || fail "start apache"
+restart_probe || fail "restart probe"
+printf 'APACHE_PHASE20_RESTART_DEBUG_PASSED\n'

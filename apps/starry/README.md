@@ -86,13 +86,18 @@ Stress configs are available through explicit QEMU config variants; see
 
 ## Apache
 
-The `apache` case is a QEMU app workflow that runs Apache httpd smoke checks.
-Each Apache test should first be run in Linux Alpine as the behavior oracle, then
-compared with StarryOS before tracker items are marked passed.
+The `apache` case is a QEMU app workflow that runs Apache httpd smoke checks
+and manual phase reruns. Before marking any StarryOS tracker item passed, run
+the same script or equivalent commands in Linux Alpine as the behavior oracle.
 
 ```bash
-cargo xtask starry app run -t apache --arch riscv64
+cargo xtask starry app qemu -t apache --arch riscv64
 ```
+
+`apps/starry/apache` is organized into `runner/`, `smoke/`, `phase/`,
+`qemu/phase/`, `qemu/all/`, and `qemu/debug/`. The default app entry is
+smoke-only. Manual phase reruns live under `qemu/phase/`; issue-focused probes
+live under `qemu/debug/`.
 
 ## GDB Smoke
 
