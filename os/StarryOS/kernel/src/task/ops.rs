@@ -241,8 +241,6 @@ pub fn detach_live_tracees_of(tracer_pid: Pid) {
         tracee.clear_ptrace_traceme();
         tracee.clear_ptrace_attached();
         tracee.clear_ptrace_tracer_pid();
-        tracee.set_ptrace_singlestep(false);
-        tracee.set_ptrace_syscall_trace(false);
         tracee.set_ptrace_options(0);
     }
 }

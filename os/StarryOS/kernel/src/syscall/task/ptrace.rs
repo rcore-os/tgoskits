@@ -97,6 +97,8 @@ type ArchUserRegs = RiscvUserRegs;
 type ArchUserRegs = Aarch64UserRegs;
 #[cfg(target_arch = "loongarch64")]
 type ArchUserRegs = LoongarchUserRegs;
+#[cfg(target_arch = "x86_64")]
+type ArchUserRegs = X8664UserRegs;
 #[cfg(target_arch = "riscv64")]
 type ArchFpRegs = RiscvFpRegs;
 #[cfg(target_arch = "aarch64")]
@@ -480,7 +482,8 @@ fn ptrace_setregset(pid: usize, addr: usize, data: usize) -> AxResult<isize> {
 #[cfg(any(
     target_arch = "riscv64",
     target_arch = "aarch64",
-    target_arch = "loongarch64"
+    target_arch = "loongarch64",
+    target_arch = "x86_64"
 ))]
 fn ptrace_getregs(pid: usize, data: usize) -> AxResult<isize> {
     if data == 0 {
@@ -491,22 +494,6 @@ fn ptrace_getregs(pid: usize, data: usize) -> AxResult<isize> {
         slice::from_raw_parts(
             (&regs as *const ArchUserRegs).cast::<u8>(),
             size_of::<ArchUserRegs>(),
-        )
-    };
-    vm_write_slice(data as *mut u8, bytes)?;
-    Ok(0)
-}
-
-#[cfg(target_arch = "x86_64")]
-fn ptrace_getregs(pid: usize, data: usize) -> AxResult<isize> {
-    if data == 0 {
-        return Err(AxError::InvalidInput);
-    }
-    let regs = ptrace_read_stopped_user_regs_x86_64(pid)?;
-    let bytes = unsafe {
-        slice::from_raw_parts(
-            (&regs as *const X8664UserRegs).cast::<u8>(),
-            size_of::<X8664UserRegs>(),
         )
     };
     vm_write_slice(data as *mut u8, bytes)?;
@@ -527,7 +514,8 @@ fn ptrace_getregs(pid: usize, data: usize) -> AxResult<isize> {
 #[cfg(any(
     target_arch = "riscv64",
     target_arch = "aarch64",
-    target_arch = "loongarch64"
+    target_arch = "loongarch64",
+    target_arch = "x86_64"
 ))]
 fn ptrace_setregs(pid: usize, data: usize) -> AxResult<isize> {
     if data == 0 {
@@ -535,15 +523,6 @@ fn ptrace_setregs(pid: usize, data: usize) -> AxResult<isize> {
     }
     let regs = ptrace_read_user_regs(data)?;
     ptrace_write_stopped_user_regs(pid, regs)
-}
-
-#[cfg(target_arch = "x86_64")]
-fn ptrace_setregs(pid: usize, data: usize) -> AxResult<isize> {
-    if data == 0 {
-        return Err(AxError::InvalidInput);
-    }
-    let regs = ptrace_read_user_regs_x86_64_from_user(data)?;
-    ptrace_write_stopped_user_regs_x86_64(pid, regs)
 }
 
 #[cfg(not(any(
@@ -709,30 +688,11 @@ fn ptrace_getregset_prstatus(pid: usize, data: usize) -> AxResult<isize> {
     if data == 0 {
         return Err(AxError::InvalidInput);
     }
-    #[cfg(any(
-        target_arch = "riscv64",
-        target_arch = "aarch64",
-        target_arch = "loongarch64"
-    ))]
     let regs = ptrace_read_stopped_user_regs(pid)?;
-    #[cfg(any(
-        target_arch = "riscv64",
-        target_arch = "aarch64",
-        target_arch = "loongarch64"
-    ))]
     let reg_bytes = unsafe {
         slice::from_raw_parts(
             (&regs as *const ArchUserRegs).cast::<u8>(),
             size_of::<ArchUserRegs>(),
-        )
-    };
-    #[cfg(target_arch = "x86_64")]
-    let regs = ptrace_read_stopped_user_regs_x86_64(pid)?;
-    #[cfg(target_arch = "x86_64")]
-    let reg_bytes = unsafe {
-        slice::from_raw_parts(
-            (&regs as *const X8664UserRegs).cast::<u8>(),
-            size_of::<X8664UserRegs>(),
         )
     };
 
@@ -770,34 +730,15 @@ fn ptrace_setregset_prstatus(pid: usize, data: usize) -> AxResult<isize> {
         return Err(AxError::InvalidInput);
     }
 
-    #[cfg(any(
-        target_arch = "riscv64",
-        target_arch = "aarch64",
-        target_arch = "loongarch64"
-    ))]
     let reg_size = size_of::<ArchUserRegs>() as isize;
-    #[cfg(target_arch = "x86_64")]
-    let reg_size = size_of::<X8664UserRegs>() as isize;
 
     let iov = (data as *const IoVec).vm_read()?;
     if iov.iov_len < reg_size {
         return Err(AxError::InvalidInput);
     }
 
-    #[cfg(any(
-        target_arch = "riscv64",
-        target_arch = "aarch64",
-        target_arch = "loongarch64"
-    ))]
-    {
-        let regs = ptrace_read_user_regs(iov.iov_base as usize)?;
-        ptrace_write_stopped_user_regs(pid, regs)
-    }
-    #[cfg(target_arch = "x86_64")]
-    {
-        let regs = ptrace_read_user_regs_x86_64_from_user(iov.iov_base as usize)?;
-        ptrace_write_stopped_user_regs_x86_64(pid, regs)
-    }
+    let regs = ptrace_read_user_regs(iov.iov_base as usize)?;
+    ptrace_write_stopped_user_regs(pid, regs)
 }
 
 #[cfg(not(any(
@@ -814,7 +755,8 @@ fn ptrace_setregset_prstatus(pid: usize, data: usize) -> AxResult<isize> {
 #[cfg(any(
     target_arch = "riscv64",
     target_arch = "aarch64",
-    target_arch = "loongarch64"
+    target_arch = "loongarch64",
+    target_arch = "x86_64"
 ))]
 fn ptrace_read_stopped_user_regs(pid: usize) -> AxResult<ArchUserRegs> {
     let (tracee, tid) = ptrace_stopped_tracee_with_tid(pid)?;
@@ -827,7 +769,8 @@ fn ptrace_read_stopped_user_regs(pid: usize) -> AxResult<ArchUserRegs> {
 #[cfg(any(
     target_arch = "riscv64",
     target_arch = "aarch64",
-    target_arch = "loongarch64"
+    target_arch = "loongarch64",
+    target_arch = "x86_64"
 ))]
 fn ptrace_read_user_regs(data: usize) -> AxResult<ArchUserRegs> {
     let mut regs = MaybeUninit::<ArchUserRegs>::uninit();
@@ -844,50 +787,16 @@ fn ptrace_read_user_regs(data: usize) -> AxResult<ArchUserRegs> {
 #[cfg(any(
     target_arch = "riscv64",
     target_arch = "aarch64",
-    target_arch = "loongarch64"
+    target_arch = "loongarch64",
+    target_arch = "x86_64"
 ))]
 fn ptrace_write_stopped_user_regs(pid: usize, regs: ArchUserRegs) -> AxResult<isize> {
     let (tracee, tid) = ptrace_stopped_tracee_with_tid(pid)?;
     let mut uctx = tracee
         .ptrace_stop_user_context_for(tid)
         .ok_or_else(|| AxError::from(LinuxError::ESRCH))?;
-    regs.write_to(&mut uctx);
-    if !tracee.set_ptrace_stop_user_context_for(tid, uctx) {
-        return Err(AxError::from(LinuxError::ESRCH));
-    }
-    Ok(0)
-}
-
-#[cfg(target_arch = "x86_64")]
-fn ptrace_read_stopped_user_regs_x86_64(pid: usize) -> AxResult<X8664UserRegs> {
-    let tracee = ptrace_stopped_tracee(pid)?;
-    let uctx = tracee
-        .ptrace_stop_user_context()
-        .ok_or_else(|| AxError::from(LinuxError::ESRCH))?;
-    Ok(X8664UserRegs::from(&uctx))
-}
-
-#[cfg(target_arch = "x86_64")]
-fn ptrace_read_user_regs_x86_64_from_user(data: usize) -> AxResult<X8664UserRegs> {
-    let mut regs = MaybeUninit::<X8664UserRegs>::uninit();
-    let bytes = unsafe {
-        slice::from_raw_parts_mut(
-            regs.as_mut_ptr().cast::<MaybeUninit<u8>>(),
-            size_of::<X8664UserRegs>(),
-        )
-    };
-    starry_vm::vm_read_slice(data as *const u8, bytes)?;
-    Ok(unsafe { regs.assume_init() })
-}
-
-#[cfg(target_arch = "x86_64")]
-fn ptrace_write_stopped_user_regs_x86_64(pid: usize, regs: X8664UserRegs) -> AxResult<isize> {
-    let tracee = ptrace_stopped_tracee(pid)?;
-    let mut uctx = tracee
-        .ptrace_stop_user_context()
-        .ok_or_else(|| AxError::from(LinuxError::ESRCH))?;
     regs.write_to(&mut uctx)?;
-    if !tracee.set_ptrace_stop_user_context(uctx) {
+    if !tracee.set_ptrace_stop_user_context_for(tid, uctx) {
         return Err(AxError::from(LinuxError::ESRCH));
     }
     Ok(0)
@@ -2014,7 +1923,7 @@ impl From<&ax_runtime::hal::cpu::uspace::UserContext> for RiscvUserRegs {
 
 #[cfg(target_arch = "riscv64")]
 impl RiscvUserRegs {
-    fn write_to(&self, uctx: &mut ax_runtime::hal::cpu::uspace::UserContext) {
+    fn write_to(&self, uctx: &mut ax_runtime::hal::cpu::uspace::UserContext) -> AxResult<()> {
         uctx.sepc = self.pc;
         let r = &mut uctx.regs;
         r.ra = self.ra;
@@ -2048,6 +1957,7 @@ impl RiscvUserRegs {
         r.t4 = self.t4;
         r.t5 = self.t5;
         r.t6 = self.t6;
+        Ok(())
     }
 }
 
@@ -2085,11 +1995,12 @@ impl From<&ax_runtime::hal::cpu::uspace::UserContext> for Aarch64UserRegs {
 
 #[cfg(target_arch = "aarch64")]
 impl Aarch64UserRegs {
-    fn write_to(&self, uctx: &mut ax_runtime::hal::cpu::uspace::UserContext) {
+    fn write_to(&self, uctx: &mut ax_runtime::hal::cpu::uspace::UserContext) -> AxResult<()> {
         uctx.x = self.regs;
         uctx.sp = self.sp;
         uctx.elr = self.pc;
         uctx.spsr = self.pstate;
+        Ok(())
     }
 }
 
@@ -2165,7 +2076,7 @@ impl From<&ax_runtime::hal::cpu::uspace::UserContext> for LoongarchUserRegs {
 
 #[cfg(target_arch = "loongarch64")]
 impl LoongarchUserRegs {
-    fn write_to(&self, uctx: &mut ax_runtime::hal::cpu::uspace::UserContext) {
+    fn write_to(&self, uctx: &mut ax_runtime::hal::cpu::uspace::UserContext) -> AxResult<()> {
         let r = &mut uctx.regs;
         r.zero = 0;
         r.ra = self.regs[1] as usize;
@@ -2200,6 +2111,7 @@ impl LoongarchUserRegs {
         r.s7 = self.regs[30] as usize;
         r.s8 = self.regs[31] as usize;
         uctx.era = self.csr_era as usize;
+        Ok(())
     }
 }
 
@@ -2324,29 +2236,29 @@ fn ptrace_pokeuser(pid: usize, addr: usize, data: usize) -> AxResult<isize> {
     if range.end > size_of::<X8664UserRegs>() {
         return Err(AxError::from(LinuxError::EIO));
     }
-    let mut regs = ptrace_read_stopped_user_regs_x86_64(pid)?;
+    let mut regs = ptrace_read_stopped_user_regs(pid)?;
     let bytes = unsafe {
         slice::from_raw_parts_mut(
-            (&mut regs as *mut X8664UserRegs).cast::<u8>(),
-            size_of::<X8664UserRegs>(),
+            (&mut regs as *mut ArchUserRegs).cast::<u8>(),
+            size_of::<ArchUserRegs>(),
         )
     };
     bytes[range].copy_from_slice(&(data as u64).to_ne_bytes());
-    ptrace_write_stopped_user_regs_x86_64(pid, regs)
+    ptrace_write_stopped_user_regs(pid, regs)
 }
 
 #[cfg(target_arch = "x86_64")]
 fn ptrace_read_stopped_user_area_x86_64(pid: usize) -> AxResult<[u8; X86_64_USER_AREA_SIZE]> {
-    let regs = ptrace_read_stopped_user_regs_x86_64(pid)?;
-    let tracee = ptrace_stopped_tracee(pid)?;
+    let regs = ptrace_read_stopped_user_regs(pid)?;
+    let (tracee, _tid) = ptrace_stopped_tracee_with_tid(pid)?;
     let mut user = [0u8; X86_64_USER_AREA_SIZE];
     let regs_bytes = unsafe {
         slice::from_raw_parts(
-            (&regs as *const X8664UserRegs).cast::<u8>(),
-            size_of::<X8664UserRegs>(),
+            (&regs as *const ArchUserRegs).cast::<u8>(),
+            size_of::<ArchUserRegs>(),
         )
     };
-    user[..size_of::<X8664UserRegs>()].copy_from_slice(regs_bytes);
+    user[..size_of::<ArchUserRegs>()].copy_from_slice(regs_bytes);
 
     user[X86_64_USER_FPVALID_OFFSET..X86_64_USER_FPVALID_OFFSET + size_of::<u32>()]
         .copy_from_slice(&1u32.to_ne_bytes());
