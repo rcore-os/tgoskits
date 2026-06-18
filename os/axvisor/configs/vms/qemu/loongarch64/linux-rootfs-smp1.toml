@@ -49,19 +49,12 @@ interrupt_mode = "passthrough"
 
 # Pass-through devices.
 passthrough_devices = [
+  ["/"],
 ]
 
 # Passthrough addresses.
 # Base-GPA  Length.
 passthrough_addresses = [
-  [0x100d_0100, 0x100],
-  [0x100e_0000, 0x1_0000],
-  [0x1d00_0000, 0x0100_0000],
-  [0x1fe0_01e0, 0x100],
-  [0x1800_4000, 0xc000],
-  [0x2000_0000, 0x0800_0000],
-  [0x2ff0_0000, 0x8],
-  [0x4000_0000, 0x4000_0000],
 ]
 
 # Devices that are not desired to be passed through to the guest

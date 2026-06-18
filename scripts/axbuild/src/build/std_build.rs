@@ -55,6 +55,7 @@ pub(super) fn std_c_toolchain_env(target_name: &str, tool_prefix: &str) -> HashM
             format!("--target={tool_prefix}"),
             format!("--sysroot={sysroot}"),
         ];
+        bindgen_args.extend(musl_toolchain_bindgen_args(&cc, &sysroot, tool_prefix));
         bindgen_args.extend(
             std_c_target_flags(target_name)
                 .into_iter()
@@ -105,6 +106,62 @@ pub(super) fn musl_toolchain_sysroot(cc: &str) -> Option<String> {
     let sysroot = String::from_utf8(output.stdout).ok()?;
     let sysroot = sysroot.trim();
     (!sysroot.is_empty()).then(|| sysroot.to_string())
+}
+
+fn musl_toolchain_bindgen_args(cc: &str, sysroot: &str, tool_prefix: &str) -> Vec<String> {
+    let Some(toolchain_root) = musl_toolchain_root(cc, sysroot) else {
+        return Vec::new();
+    };
+
+    let mut args = vec![format!("--gcc-toolchain={}", toolchain_root.display())];
+
+    let include = Path::new(sysroot).join("include");
+    if include.is_dir() {
+        args.push("-isystem".to_string());
+        args.push(include.display().to_string());
+    }
+
+    if let Some(gcc_include) = musl_gcc_include_dir(&toolchain_root, tool_prefix) {
+        args.push("-isystem".to_string());
+        args.push(gcc_include.display().to_string());
+    }
+
+    args
+}
+
+fn musl_toolchain_root(cc: &str, sysroot: &str) -> Option<PathBuf> {
+    let cc_path = command_path(cc)?;
+    let bin_dir = cc_path.parent()?;
+    let root = bin_dir.parent()?;
+    let sysroot_path = fs::canonicalize(sysroot).ok()?;
+    let root_path = fs::canonicalize(root).ok()?;
+
+    sysroot_path
+        .starts_with(&root_path)
+        .then(|| root.to_path_buf())
+}
+
+fn command_path(command: &str) -> Option<PathBuf> {
+    let path = Path::new(command);
+    if path.components().count() > 1 {
+        return path.exists().then(|| path.to_path_buf());
+    }
+
+    std::env::var_os("PATH")?
+        .to_string_lossy()
+        .split(':')
+        .map(Path::new)
+        .map(|dir| dir.join(command))
+        .find(|path| path.exists())
+}
+
+fn musl_gcc_include_dir(toolchain_root: &Path, tool_prefix: &str) -> Option<PathBuf> {
+    let gcc_dir = toolchain_root.join("lib/gcc").join(tool_prefix);
+    fs::read_dir(gcc_dir)
+        .ok()?
+        .filter_map(Result::ok)
+        .map(|entry| entry.path().join("include"))
+        .find(|path| path.is_dir())
 }
 
 pub(super) fn std_target_json_path(target: &str, plat_dyn: bool) -> PathBuf {

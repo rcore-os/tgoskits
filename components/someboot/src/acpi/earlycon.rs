@@ -8,17 +8,21 @@ use crate::{
     mem::_fixmap_io,
 };
 
-pub(crate) fn acpi_setup_earlycon() -> Result<(), AcpiError> {
+pub(crate) fn acpi_setup_earlycon() -> Result<bool, AcpiError> {
+    setup_earlycon_from_spcr()
+}
+
+pub(crate) fn setup_earlycon_from_spcr() -> Result<bool, AcpiError> {
     let tb = crate::acpi::tables()?;
 
     for spsr in tb.find_tables::<Spcr>() {
         if deal_with_spsr(&spsr).is_some() {
             println!("Early console setup complete.");
-            break;
+            return Ok(true);
         }
     }
 
-    Ok(())
+    Ok(false)
 }
 
 fn deal_with_spsr(spsr: &PhysicalMapping<impl Handler, Spcr>) -> Option<()> {
@@ -42,6 +46,8 @@ fn deal_with_spsr(spsr: &PhysicalMapping<impl Handler, Spcr>) -> Option<()> {
 
     let (vaddr, is_mmio) = match spsr.interface_type() {
         acpi::sdt::spcr::SpcrInterfaceType::Full16550
+        | acpi::sdt::spcr::SpcrInterfaceType::Full16450
+        | acpi::sdt::spcr::SpcrInterfaceType::Nvidia16550
         | acpi::sdt::spcr::SpcrInterfaceType::Generic16550 => match base_address.address_space {
             AddressSpace::SystemIo => {
                 #[cfg(target_arch = "x86_64")]

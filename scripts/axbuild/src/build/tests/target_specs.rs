@@ -43,6 +43,32 @@ fn std_c_toolchain_env_exports_loongarch_softfloat_abi_flags() {
 }
 
 #[test]
+fn musl_toolchain_bindgen_args_pin_clang_to_musl_toolchain() -> anyhow::Result<()> {
+    let dir = tempdir()?;
+    let root = dir.path();
+    let cc = root.join("bin/loongarch64-linux-musl-cc");
+    let sysroot = root.join("loongarch64-linux-musl");
+    let libc_include = sysroot.join("include");
+    let gcc_include = root.join("lib/gcc/loongarch64-linux-musl/13.2.0/include");
+    fs::create_dir_all(cc.parent().unwrap())?;
+    fs::create_dir_all(&libc_include)?;
+    fs::create_dir_all(&gcc_include)?;
+    fs::write(&cc, "")?;
+
+    let args = musl_toolchain_bindgen_args(
+        cc.to_str().unwrap(),
+        sysroot.to_str().unwrap(),
+        "loongarch64-linux-musl",
+    );
+    let joined = args.join(" ");
+
+    assert!(joined.contains(&format!("--gcc-toolchain={}", root.display())));
+    assert!(joined.contains(&libc_include.display().to_string()));
+    assert!(joined.contains(&gcc_include.display().to_string()));
+    Ok(())
+}
+
+#[test]
 fn std_target_specs_keep_kernel_fields_with_std_identity() {
     for (std_target, plat_dyn, llvm_target, arch, pointer_width) in [
         (
