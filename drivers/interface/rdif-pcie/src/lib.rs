@@ -9,7 +9,7 @@ use pci_types::ConfigRegionAccess;
 pub use pci_types::PciAddress;
 pub use rdif_base::{DriverGeneric, KError};
 
-mod addr_alloc;
+pub mod addr_alloc;
 mod bar_alloc;
 
 pub use bar_alloc::SimpleBarAllocator;
