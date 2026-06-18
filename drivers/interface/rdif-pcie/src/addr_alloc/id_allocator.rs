@@ -102,7 +102,7 @@ impl IdAllocator {
 
 #[cfg(test)]
 mod tests {
-    use crate::{Error, id_allocator::IdAllocator};
+    use super::{Error, IdAllocator};
 
     #[test]
     fn test_slot_id_allocation() {
