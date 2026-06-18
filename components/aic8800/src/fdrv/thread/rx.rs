@@ -267,10 +267,13 @@ fn process_rx_frames(bus: &WifiBus) {
     // ISR 只设 flag 不 mask，这里先 mask CARD_INT 防止重入
     bus.transport.mask_card_irq();
 
-    // 排空 func2(命令 CFM/indication 邮箱)和 func1(数据帧 FIFO)。
-    // DC 实测 CFM 在 func2;但 vendor 把数据帧放 func1。两个 func 的 block_cnt
-    // 独立,EAPOL M1 等入站数据帧很可能在 func1——这里两个都排空,按帧头分流。
-    drain_func(bus, 2);
+    // 排空 RX FIFO。DC/DW 是双管道:func2 是命令 CFM/indication 邮箱,func1 是数据
+    // 平面;两个 func 的 block_cnt 独立,需各自排空(EAPOL M1 等入站数据帧在 func1)。
+    // 8801/D80 命令与数据同在 func1,func2 不是独立邮箱——只排空 func1,避免对 func2
+    // 发无谓的 CMD52(cmd_func() 对 DC/DW=2,其余=1)。
+    if bus.transport.cmd_func() == 2 {
+        drain_func(bus, 2);
+    }
     drain_func(bus, 1);
 }
 
