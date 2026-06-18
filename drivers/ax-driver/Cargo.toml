@@ -66,7 +66,7 @@ rockchip-sdhci = [
     "dep:rdif-clk",
     "dep:sdhci-host",
     "dep:sdmmc-protocol",
-    "sdmmc-protocol/sdio",
+    "sdmmc-protocol/rdif",
 ]
 phytium-mci = [
     "block",
@@ -74,14 +74,14 @@ phytium-mci = [
     "dep:ax-kspin",
     "dep:phytium-mci-host",
     "dep:sdmmc-protocol",
-    "sdmmc-protocol/sdio",
+    "sdmmc-protocol/rdif",
 ]
 k230-sdhci = [
     "block",
     "plat-dyn",
     "dep:sdhci-host",
     "dep:sdmmc-protocol",
-    "sdmmc-protocol/sdio",
+    "sdmmc-protocol/rdif",
 ]
 rockchip-dwmmc = [
     "block",
@@ -92,7 +92,7 @@ rockchip-dwmmc = [
     "dep:dwmmc-host",
     "dep:rdif-clk",
     "dep:sdmmc-protocol",
-    "sdmmc-protocol/sdio",
+    "sdmmc-protocol/rdif",
 ]
 rk3588-pcie = [
     "pci",

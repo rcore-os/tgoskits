@@ -22,7 +22,7 @@ use rdrive::{
     probe::OnProbeError,
     register::{FdtInfo, ProbeFdt},
 };
-use sdhci_host::{HostClock, Sdhci};
+use sdhci_host::{HostClock, Sdhci, rdif as sdhci_rdif};
 use sdmmc_protocol::{
     Error, OperationPoll,
     error::{ErrorContext, Phase},
@@ -30,13 +30,7 @@ use sdmmc_protocol::{
 };
 use spin::Once;
 
-use crate::{
-    block::{
-        ProbeFdtBlock, SharedDriver,
-        sdmmc::{SdmmcBlockConfig, SdmmcBlockDevice},
-    },
-    mmio::iomap,
-};
+use crate::{block::ProbeFdtBlock, mmio::iomap};
 
 const SDHCI_POWER_330: u8 = 0x0e;
 
@@ -146,7 +140,8 @@ fn probe(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
     init_dwcmshc_after_reset(mmio_base);
     host.set_power(SDHCI_POWER_330);
     host.enable_interrupts();
-    host.set_dma(axklib::dma::device_with_mask(u32::MAX as u64));
+    let dma = axklib::dma::device_with_mask(u32::MAX as u64);
+    host.set_dma(dma.clone());
 
     info!("rockchip-rk3568-sdhci: initialize card");
     let mut card = SdioSdmmc::new(host);
@@ -164,13 +159,13 @@ fn probe(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
         card_info.ext_csd.is_some()
     );
 
-    let raw = SharedDriver::new(card);
-    let dev = SdmmcBlockDevice::new(
-        raw,
-        SdmmcBlockConfig::fifo(
+    let dev = sdhci_rdif::device(
+        card,
+        sdhci_rdif::dma_config(
             "rockchip-rk3568-sdhci",
             card_info.capacity_blocks.unwrap_or(0),
             true,
+            dma,
         ),
     );
     let irq = probe.register_block(dev)?;
@@ -383,19 +378,30 @@ mod tests {
     use super::*;
 
     #[test]
-    fn rk3568_block_io_uses_fifo_config() {
-        let config = SdmmcBlockConfig::fifo("rockchip-rk3568-sdhci", 8, true);
+    fn rk3568_block_io_uses_dma_config() {
+        let config = sdhci_rdif::dma_config(
+            "rockchip-rk3568-sdhci",
+            8,
+            true,
+            axklib::dma::device_with_mask(u32::MAX as u64),
+        );
 
-        assert!(!config.use_dma);
+        assert!(config.uses_dma());
+        assert!(config.irq_driven);
     }
 
     #[test]
-    fn rk3568_fifo_queue_limits_single_block_requests() {
-        let config = SdmmcBlockConfig::fifo("rockchip-rk3568-sdhci", 8, true);
-        let limits = crate::block::sdmmc::queue_limits(&config, u32::MAX as u64);
+    fn rk3568_dma_queue_limits_multi_block_requests() {
+        let config = sdhci_rdif::dma_config(
+            "rockchip-rk3568-sdhci",
+            8,
+            true,
+            axklib::dma::device_with_mask(u32::MAX as u64),
+        );
+        let limits = sdmmc_protocol::rdif::queue_limits(&config, u32::MAX as u64);
 
-        assert_eq!(limits.max_blocks_per_request, 1);
-        assert_eq!(limits.max_segment_size, crate::block::sdmmc::BLOCK_SIZE);
+        assert!(limits.max_blocks_per_request > 1);
+        assert!(limits.max_segment_size > sdmmc_protocol::rdif::BLOCK_SIZE);
         assert_eq!(limits.max_segments, 1);
     }
 }

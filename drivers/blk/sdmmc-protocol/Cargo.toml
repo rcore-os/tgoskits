@@ -13,8 +13,10 @@ categories = ["embedded", "no-std", "hardware-support"]
 bitflags = "2"
 embedded-hal = "1"
 log.workspace = true
+rdif-block = { workspace = true, optional = true }
 
 [features]
 default = ["spi"]
 spi = []
 sdio = []
+rdif = ["sdio", "dep:rdif-block"]

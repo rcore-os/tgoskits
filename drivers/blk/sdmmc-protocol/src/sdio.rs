@@ -1530,6 +1530,11 @@ impl<H: SdioHost> SdioSdmmc<H> {
                         request.mmc_switch_request = None;
                         if let Err(_e) = self.host.set_clock(ClockSpeed::HighSpeed) {
                             debug!("sdio: host refused HighSpeed clock ({:?})", _e);
+                        } else {
+                            info!(
+                                "sdio: MMC speed selected HighSpeed bus_width={:?}",
+                                self.bus_width
+                            );
                         }
                         request.state = SdioInitState::Complete;
                         Ok(OperationPoll::Pending)
@@ -1689,9 +1694,19 @@ impl<H: SdioHost> SdioSdmmc<H> {
             SdioInitState::Complete => {
                 let kind = request.kind.ok_or(Error::InvalidArgument)?;
                 let ocr = request.ocr.ok_or(Error::InvalidArgument)?;
+                let ext_csd_timing = request.parsed_ext_csd.as_ref().map(|csd| csd.timing());
+                let ext_csd_bus_width = request.parsed_ext_csd.as_ref().map(|csd| csd.bus_width());
                 info!(
-                    "sdio: init done kind={:?} sd_v2={} high_capacity={} rca={:#x} ocr={:#x}",
-                    kind, request.sd_v2, self.high_capacity, self.rca, ocr.raw
+                    "sdio: init done kind={:?} sd_v2={} high_capacity={} rca={:#x} ocr={:#x} \
+                     host_bus_width={:?} ext_csd_bus_width={:?} ext_csd_timing={:?}",
+                    kind,
+                    request.sd_v2,
+                    self.high_capacity,
+                    self.rca,
+                    ocr.raw,
+                    self.bus_width,
+                    ext_csd_bus_width,
+                    ext_csd_timing
                 );
                 Ok(OperationPoll::Complete(CardInfo {
                     kind,

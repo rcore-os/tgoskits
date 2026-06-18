@@ -7,11 +7,11 @@
 //! # Scope
 //!
 //! - **Implemented**: PIO transfers, **ADMA2 (32-bit) transfers**, 1-bit /
-//!   4-bit bus, default-speed and high-speed clocking, 32-bit response
+//!   4-bit / 8-bit bus, default-speed and high-speed clocking, 32-bit response
 //!   slots, 136-bit R2 reconstruction, software reset / clock setup.
-//! - **Out of scope (for now)**: 64-bit ADMA2, 8-bit eMMC bus, HS200 /
-//!   SDR50 / SDR104 clocking, tuning (CMD19 / CMD21), eMMC-specific
-//!   commands. 1.8 V signaling is wired up at the register level but is
+//! - **Out of scope (for now)**: 64-bit ADMA2, HS200 / SDR50 / SDR104
+//!   clocking, tuning (CMD19 / CMD21), eMMC-specific commands beyond normal
+//!   block I/O. 1.8 V signaling is wired up at the register level but is
 //!   gated behind [`Sdhci::enable_1v8_signaling`] — platforms that haven't
 //!   plumbed the IO-rail regulator MUST leave it off so the protocol
 //!   layer falls back instead of corrupting transfers.
@@ -76,9 +76,13 @@ use core::{marker::PhantomData, num::NonZeroUsize, ptr::NonNull};
 mod command;
 mod dma;
 mod host;
+pub mod rdif;
 mod regs;
 
-pub use dma::{ADMA2_DESC_ALIGN, ADMA2_DESC_COUNT, BlockRequest, BlockRequestSlot, RequestId};
+pub use dma::{
+    ADMA2_DESC_ALIGN, ADMA2_DESC_COUNT, ADMA2_MAX_BLOCKS, ADMA2_MAX_TRANSFER_SIZE, BlockRequest,
+    BlockRequestSlot, RequestId,
+};
 pub use host::{HostClock, Sdhci};
 pub use sdmmc_protocol::block::{
     BlockBufferConfig, BlockPoll, BlockRequestId, BlockTransferDirection, BlockTransferMode,
@@ -106,6 +110,10 @@ pub enum Event {
     CommandComplete,
     /// A data transfer has completed.
     TransferComplete,
+    /// Receive-side FIFO data is ready.
+    ReceiveReady,
+    /// Transmit-side FIFO space is ready.
+    TransmitReady,
     /// One or more error bits are pending.
     Error { normal: u16, error: u16 },
     /// Status bits are pending but do not map to a high-level event yet.
@@ -211,11 +219,7 @@ impl SdioHost for Sdhci {
         match width {
             BusWidth::Bit1 => {}
             BusWidth::Bit4 => ctrl |= HOST_CTRL1_4BIT,
-            // 8-bit is eMMC territory and is intentionally not part of the
-            // MVP — surface it as Unsupported so the protocol layer can
-            // refuse cleanly instead of silently writing the bit and
-            // misconfiguring the bus.
-            BusWidth::Bit8 => return Err(Error::UnsupportedCommand),
+            BusWidth::Bit8 => ctrl |= HOST_CTRL1_8BIT,
             // Future BusWidth variants are not supported by this controller.
             _ => return Err(Error::UnsupportedCommand),
         }
@@ -224,16 +228,24 @@ impl SdioHost for Sdhci {
     }
 
     fn set_clock(&mut self, speed: ClockSpeed) -> Result<(), Error> {
-        let target_hz = match speed {
-            ClockSpeed::Identification => 400_000,
-            ClockSpeed::Default | ClockSpeed::Sdr12 => 25_000_000,
-            ClockSpeed::HighSpeed | ClockSpeed::Sdr25 => 50_000_000,
-            ClockSpeed::Sdr50 | ClockSpeed::Ddr50 => 50_000_000,
-            ClockSpeed::Sdr104 => 104_000_000,
-            ClockSpeed::Hs200 => 200_000_000,
+        let (target_hz, uhs_mode) = match speed {
+            ClockSpeed::Identification => (400_000, HOST_CTRL2_UHS_SDR12),
+            ClockSpeed::Default | ClockSpeed::Sdr12 => (25_000_000, HOST_CTRL2_UHS_SDR12),
+            ClockSpeed::HighSpeed | ClockSpeed::Sdr25 => (50_000_000, HOST_CTRL2_UHS_SDR25),
+            ClockSpeed::Sdr50 => (50_000_000, HOST_CTRL2_UHS_SDR50),
+            ClockSpeed::Ddr50 => (50_000_000, HOST_CTRL2_UHS_DDR50),
+            ClockSpeed::Sdr104 => (104_000_000, HOST_CTRL2_UHS_SDR104),
+            ClockSpeed::Hs200 => (200_000_000, HOST_CTRL2_UHS_SDR104),
             // Future ClockSpeed variants are not supported by this controller.
             _ => return Err(Error::UnsupportedCommand),
         };
+
+        // Match Linux's SDHCI/DWCMSHC UHS signaling selection: even legacy
+        // MMC HighSpeed maps to the SDR25 bus-speed mode on controllers that
+        // interpret HOST_CONTROL2.UHS_MODE_SELECT.
+        let mut ctrl2 = self.read_u16(REG_HOST_CONTROL2);
+        ctrl2 = (ctrl2 & !HOST_CTRL2_UHS_MODE_MASK) | uhs_mode;
+        self.write_u16(REG_HOST_CONTROL2, ctrl2);
 
         // Toggle the High-Speed Enable bit in HOST_CONTROL1 alongside the
         // divider change so the controller pipelines reflect the new
@@ -519,6 +531,10 @@ pub(crate) fn event_from_status(normal: u16, error: u16) -> Event {
         Event::CommandComplete
     } else if normal & NORMAL_INT_XFER_COMPLETE != 0 {
         Event::TransferComplete
+    } else if normal & NORMAL_INT_BUFFER_READ_READY != 0 {
+        Event::ReceiveReady
+    } else if normal & NORMAL_INT_BUFFER_WRITE_READY != 0 {
+        Event::TransmitReady
     } else if normal != 0 || error != 0 {
         Event::Other { normal, error }
     } else {
@@ -532,6 +548,8 @@ impl HostEvent for Event {
             Event::None => HostEventKind::None,
             Event::CommandComplete => HostEventKind::CommandComplete,
             Event::TransferComplete => HostEventKind::TransferComplete,
+            Event::ReceiveReady => HostEventKind::ReceiveReady,
+            Event::TransmitReady => HostEventKind::TransmitReady,
             Event::Error { .. } => HostEventKind::Error,
             Event::Other { .. } => HostEventKind::Other,
         }
@@ -540,14 +558,18 @@ impl HostEvent for Event {
     fn source(&self) -> HostEventSource {
         match self {
             Event::CommandComplete => HostEventSource::Command,
-            Event::TransferComplete => HostEventSource::Data,
+            Event::TransferComplete | Event::ReceiveReady | Event::TransmitReady => {
+                HostEventSource::Data
+            }
             Event::None | Event::Error { .. } | Event::Other { .. } => HostEventSource::Controller,
         }
     }
 
     fn queue_id(&self) -> Option<BlockRequestId> {
         match self {
-            Event::TransferComplete => Some(BlockRequestId::new(0)),
+            Event::TransferComplete | Event::ReceiveReady | Event::TransmitReady => {
+                Some(BlockRequestId::new(0))
+            }
             Event::None | Event::CommandComplete | Event::Error { .. } | Event::Other { .. } => {
                 None
             }

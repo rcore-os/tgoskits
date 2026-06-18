@@ -75,6 +75,10 @@ const ADMA2_MAX_PER_DESC: usize = 65_528; // 64 KiB - 8B, multiple of 8
 pub const ADMA2_DESC_COUNT: usize = 16;
 pub const ADMA2_DESC_ALIGN: usize = 64;
 const BLOCK_SIZE: usize = 512;
+pub const ADMA2_MAX_TRANSFER_SIZE: usize =
+    (ADMA2_DESC_COUNT * ADMA2_MAX_PER_DESC / BLOCK_SIZE) * BLOCK_SIZE;
+pub const ADMA2_MAX_BLOCKS: u32 = (ADMA2_MAX_TRANSFER_SIZE / BLOCK_SIZE) as u32;
+const DWC_MSHC_ADMA_BOUNDARY: u64 = 128 * 1024 * 1024;
 
 pub type RequestId = BlockRequestId;
 
@@ -255,7 +259,10 @@ pub(crate) fn build_descriptors(
         if written >= ADMA2_DESC_COUNT {
             return Err(Error::Misaligned);
         }
-        let chunk = remaining.min(ADMA2_MAX_PER_DESC);
+        let boundary_room = DWC_MSHC_ADMA_BOUNDARY - ((base + offset) % DWC_MSHC_ADMA_BOUNDARY);
+        let chunk = remaining
+            .min(ADMA2_MAX_PER_DESC)
+            .min(boundary_room as usize);
         let is_last = chunk == remaining;
         let mut attr = ADMA2_ATTR_VALID | ADMA2_ATTR_ACT_TRAN;
         if is_last {
@@ -1211,6 +1218,21 @@ mod tests {
         assert_eq!(table[1].length, 4096);
         assert!(table[1].attr & ADMA2_ATTR_END != 0);
         assert_eq!(table[1].address, 0x2000_0000 + ADMA2_MAX_PER_DESC as u32);
+    }
+
+    #[test]
+    fn splits_at_dwcmshc_128m_boundary() {
+        let mut table = empty_table();
+        let base = DWC_MSHC_ADMA_BOUNDARY - 1024;
+        let n = build_descriptors(&mut table, base, 4096, Phase::DataRead).unwrap();
+
+        assert_eq!(n, 2);
+        assert_eq!(table[0].length, 1024);
+        assert_eq!(table[0].address, base as u32);
+        assert!(table[0].attr & ADMA2_ATTR_END == 0);
+        assert_eq!(table[1].length, 3072);
+        assert_eq!(table[1].address, DWC_MSHC_ADMA_BOUNDARY as u32);
+        assert!(table[1].attr & ADMA2_ATTR_END != 0);
     }
 
     #[test]

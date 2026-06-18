@@ -2,7 +2,7 @@ use alloc::format;
 use core::time::Duration;
 
 use log::{info, warn};
-use phytium_mci_host::PhytiumMci;
+use phytium_mci_host::{PhytiumMci, rdif as phytium_rdif};
 use rdrive::{
     probe::OnProbeError,
     register::{FdtInfo, ProbeFdt},
@@ -13,13 +13,7 @@ use sdmmc_protocol::{
     sdio::{CardInfo, CardInitPreference, SdioInitScratch, SdioSdmmc},
 };
 
-use crate::{
-    block::{
-        ProbeFdtBlock, SharedDriver,
-        sdmmc::{SdmmcBlockConfig, SdmmcBlockDevice},
-    },
-    mmio::iomap,
-};
+use crate::{block::ProbeFdtBlock, mmio::iomap};
 
 type PhytiumSdMmc = SdioSdmmc<PhytiumMci>;
 
@@ -81,10 +75,14 @@ fn probe(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
         card_info.ext_csd.is_some()
     );
 
-    let raw = SharedDriver::new(card);
-    let dev = SdmmcBlockDevice::new(
-        raw,
-        SdmmcBlockConfig::fifo("phytium-mci", card_info.capacity_blocks.unwrap_or(0), false),
+    let dev = phytium_rdif::device(
+        card,
+        phytium_rdif::dma_config(
+            "phytium-mci",
+            card_info.capacity_blocks.unwrap_or(0),
+            false,
+            axklib::dma::device_with_mask(u32::MAX as u64),
+        ),
     );
     let irq = probe.register_block(dev)?;
     info!("phytium-mci block device registered irq={:?}", irq);

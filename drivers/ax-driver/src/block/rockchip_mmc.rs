@@ -22,7 +22,7 @@ use rdrive::{
     probe::OnProbeError,
     register::{FdtInfo, ProbeFdt},
 };
-use sdhci_host::{HostClock, Sdhci};
+use sdhci_host::{HostClock, Sdhci, rdif as sdhci_rdif};
 use sdmmc_protocol::{
     Error, OperationPoll,
     error::{ErrorContext, Phase},
@@ -30,13 +30,7 @@ use sdmmc_protocol::{
 };
 use spin::Once;
 
-use crate::{
-    block::{
-        ProbeFdtBlock, SharedDriver,
-        sdmmc::{SdmmcBlockConfig, SdmmcBlockDevice},
-    },
-    mmio::iomap,
-};
+use crate::{block::ProbeFdtBlock, mmio::iomap};
 
 const SDHCI_POWER_330: u8 = 0x0e;
 static SDHCI_CLOCK: RockchipSdhciClock = RockchipSdhciClock;
@@ -98,7 +92,8 @@ fn probe(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
         .map_err(|e| init_error(base_reg.address, mmio_size, e))?;
     host.set_power(SDHCI_POWER_330);
     host.enable_interrupts();
-    host.set_dma(axklib::dma::device_with_mask(u32::MAX as u64));
+    let dma = axklib::dma::device_with_mask(u32::MAX as u64);
+    host.set_dma(dma.clone());
 
     info!("rockchip-sdhci: initialize card");
     let mut card = SdioSdmmc::new(host);
@@ -116,13 +111,13 @@ fn probe(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
         card_info.ext_csd.is_some()
     );
 
-    let raw = SharedDriver::new(card);
-    let dev = SdmmcBlockDevice::new(
-        raw,
-        SdmmcBlockConfig::dma(
+    let dev = sdhci_rdif::device(
+        card,
+        sdhci_rdif::dma_config(
             "rockchip-sdhci",
             card_info.capacity_blocks.unwrap_or(0),
             true,
+            dma,
         ),
     );
     let irq = probe.register_block(dev)?;

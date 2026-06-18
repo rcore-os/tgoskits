@@ -3071,6 +3071,7 @@ dependencies = [
  "embedded-hal",
  "log",
  "mmio-api",
+ "rdif-block",
  "sdmmc-protocol",
  "volatile 0.6.1",
 ]
@@ -5748,6 +5749,7 @@ dependencies = [
  "dma-api",
  "log",
  "mmio-api",
+ "rdif-block",
  "sdmmc-protocol",
  "volatile 0.6.1",
 ]
@@ -7166,6 +7168,7 @@ dependencies = [
  "embedded-hal",
  "log",
  "mmio-api",
+ "rdif-block",
  "sdmmc-protocol",
 ]
 
@@ -7180,6 +7183,7 @@ dependencies = [
  "bitflags 2.13.0",
  "embedded-hal",
  "log",
+ "rdif-block",
 ]
 
 [[package]]

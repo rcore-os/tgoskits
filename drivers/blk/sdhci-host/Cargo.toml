@@ -10,11 +10,12 @@ keywords = ["sd", "sdhci", "embedded", "no_std"]
 categories = ["embedded", "no-std", "hardware-support"]
 
 [dependencies]
-sdmmc-protocol = { workspace = true, default-features = false, features = ["sdio"] }
+sdmmc-protocol = { workspace = true, default-features = false, features = ["sdio", "rdif"] }
 embedded-hal = "1"
 log.workspace = true
 dma-api.workspace = true
 mmio-api.workspace = true
+rdif-block.workspace = true
 
 [features]
 default = []
