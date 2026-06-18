@@ -728,11 +728,7 @@ impl Starry {
                 ],
             );
             let build_result = self
-                .app
-                .build(
-                    build_group.cargo.clone(),
-                    build_group.request.build_info_path.clone(),
-                )
+                .build_artifact(&build_group.request, build_group.cargo.clone())
                 .await;
             timing_stage.finish();
             build_result.with_context(|| {
@@ -853,27 +849,26 @@ impl Starry {
                 let board_config = self
                     .load_board_config(&cargo, Some(board_test_config.as_path()))
                     .await?;
-                self.app
-                    .board(
-                        cargo,
-                        request.build_info_path,
-                        board_config,
-                        RunBoardOptions {
-                            board_type: args.board_type.clone(),
-                            server: args.server.clone(),
-                            port: args.port,
-                        },
+                self.run_board_artifact(
+                    &request,
+                    cargo,
+                    board_config,
+                    RunBoardOptions {
+                        board_type: args.board_type.clone(),
+                        server: args.server.clone(),
+                        port: args.port,
+                    },
+                )
+                .await
+                .with_context(|| {
+                    format!(
+                        "starry board test failed for group `{}` (build_config={}, \
+                         board_test_config={})",
+                        group_label,
+                        group.build_config_path.display(),
+                        board_test_config_summary
                     )
-                    .await
-                    .with_context(|| {
-                        format!(
-                            "starry board test failed for group `{}` (build_config={}, \
-                             board_test_config={})",
-                            group_label,
-                            group.build_config_path.display(),
-                            board_test_config_summary
-                        )
-                    })
+                })
             }
             .await;
 
