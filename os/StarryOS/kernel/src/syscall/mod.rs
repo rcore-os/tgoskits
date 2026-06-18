@@ -947,7 +947,7 @@ pub fn handle_syscall(uctx: &mut UserContext) {
         Sysno::timer_delete => sys_timer_delete(uctx.arg0() as _),
 
         _ => {
-            let tid = ax_task::current().id().as_u64() as u32;
+            let tid = ax_task::current().as_thread().tid();
             warn!("Unimplemented syscall: {sysno} (tid={tid})");
             Err(AxError::Unsupported)
         }

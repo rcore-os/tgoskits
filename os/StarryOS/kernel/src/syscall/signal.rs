@@ -177,7 +177,7 @@ pub fn sys_kill(pid: i32, signo: u32) -> AxResult<isize> {
                     // self-signals so `kill(getpid(), SIGSTOP)` cannot return
                     // to userspace and race into the next syscall before this
                     // thread observes the stop.
-                    send_signal_to_thread(None, curr.id().as_u64() as Pid, Some(sig))?;
+                    send_signal_to_thread(None, thread.tid() as Pid, Some(sig))?;
                 } else {
                     send_signal_to_process(pid as _, Some(sig))?;
                 }
