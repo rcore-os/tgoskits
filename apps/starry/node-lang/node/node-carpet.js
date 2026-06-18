@@ -84,6 +84,13 @@ function section_language() {
   ok('lang/symbol-unique', Symbol('a') !== Symbol('a'));                        // distinct uninterned symbols
   eq('lang/symbol-description', Symbol('desc').description, 'desc');
   eq('lang/map-set', (() => { const m = new Map([['a', 1]]); const s = new Set([1, 1, 2]); return `${m.get('a')}-${s.size}`; })(), '1-2');
+  // WeakMap: keys must be objects, basic get/set/has/delete
+  eq('lang/weakmap', (() => { const wm = new WeakMap(); const k = {}; const k2 = {}; wm.set(k, 42); return `${wm.get(k)}-${wm.has(k)}-${wm.has(k2)}`; })(), '42-true-false');
+  // WeakSet: values must be objects, basic add/has/delete
+  eq('lang/weakset', (() => { const ws = new WeakSet(); const o = {}; ws.add(o); return `${ws.has(o)}`; })(), 'true');
+  // WeakRef + FinalizationRegistry (ES2021+)
+  truthy('lang/weakref', typeof WeakRef === 'function');
+  truthy('lang/finalization-registry', typeof FinalizationRegistry === 'function');
   eq('lang/computed-prop', (() => { const k = 'z'; return { [k]: 9 }.z; })(), 9);
 
   // --- ES2017 async/await ---
@@ -161,6 +168,14 @@ function section_language() {
     const obj = { *[Symbol.iterator]() { yield 'x'; yield 'y'; } };
     return [...obj].join('');
   })(), 'xy');
+
+  // Iterator Helpers (v22: .map/.filter/.take/.drop/.reduce/.toArray on iterators)
+  if (typeof Iterator !== 'undefined' && Iterator.prototype && Iterator.prototype.map) {
+    eq('lang/iterator-map', [...[1, 2, 3].values().map((x) => x * 2)].join(','), '2,4,6');
+    eq('lang/iterator-filter', [...[1, 2, 3, 4].values().filter((x) => x % 2 === 0)].join(','), '2,4');
+    eq('lang/iterator-take', [...[1, 2, 3, 4].values().take(2)].join(','), '1,2');
+    eq('lang/iterator-toArray', Array.isArray([1, 2].values().toArray()), true);
+  } else { skip('lang/iterator-helpers', `Iterator Helpers absent in Node ${NODE_MAJOR}`); }
 
   // Intl (ICU is linked in)
   eq('lang/intl-numberformat', new Intl.NumberFormat('en-US').format(1234.5), '1,234.5');
