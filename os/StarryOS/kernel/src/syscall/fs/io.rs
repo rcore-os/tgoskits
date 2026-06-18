@@ -5,7 +5,7 @@ use core::{
 };
 
 use ax_errno::{AxError, AxResult, LinuxError};
-use ax_fs::{FS_CONTEXT, FileFlags, OpenOptions};
+use ax_fs_ng::vfs::{FS_CONTEXT, FileBackend, FileFlags, OpenOptions};
 use ax_io::{IoBuf, Read, Seek, SeekFrom};
 use ax_task::current;
 use axfs_ng_vfs::{NodePermission, NodeType};
@@ -71,7 +71,7 @@ fn offset_from_hilo(pos_l: __kernel_off_t, _pos_h: usize) -> __kernel_off_t {
 }
 
 // Writes zero-filled chunks into the file over the requested byte range.
-fn write_zero_range(file: &ax_fs::FileBackend, mut offset: u64, len: u64) -> AxResult<()> {
+fn write_zero_range(file: &FileBackend, mut offset: u64, len: u64) -> AxResult<()> {
     const ZERO_CHUNK_SIZE: usize = 64 * 1024;
 
     let zeroes = vec![0; ZERO_CHUNK_SIZE];

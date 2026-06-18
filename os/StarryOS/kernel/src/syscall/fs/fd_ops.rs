@@ -1,13 +1,13 @@
-use alloc::{format, string::ToString, sync::Arc, vec::Vec};
+use alloc::{format, string::ToString, sync::Arc};
 use core::{
     ffi::{c_char, c_int},
     ops::DerefMut,
 };
 
 use ax_errno::{AxError, AxResult};
-use ax_fs::{FS_CONTEXT, FileBackend, OpenOptions, OpenResult};
+use ax_fs_ng::vfs::{FS_CONTEXT, FileBackend, OpenOptions, OpenResult};
 use ax_task::current;
-use axfs_ng_vfs::{DirEntry, FileNode, Location, NodeType, Reference};
+use axfs_ng_vfs::{DirEntry, FileNode, Location, NodeOps, NodeType, Reference};
 use bitflags::bitflags;
 use linux_raw_sys::general::*;
 use starry_vm::{VmMutPtr, VmPtr};
@@ -116,6 +116,13 @@ fn add_to_fd(result: OpenResult, flags: u32) -> AxResult<i32> {
         OpenResult::File(mut file) => {
             // /dev/xx handling
             if let Ok(device) = file.location().entry().downcast::<Device>() {
+                // Block device exclusive open (O_EXCL without O_CREAT).
+                if let Ok(meta) = device.metadata()
+                    && meta.node_type == NodeType::BlockDevice
+                    && flags & O_EXCL != 0
+                {
+                    device.inner().open(true)?;
+                }
                 let inner = device.inner().as_any();
                 if crate::pseudofs::usbfs::is_usbfs_device(inner) {
                     let wrapped = crate::pseudofs::usbfs::open_usbfs_file(inner, file, flags)?;
@@ -135,7 +142,7 @@ fn add_to_fd(result: OpenResult, flags: u32) -> AxResult<i32> {
                         Reference::new(Some(pts.entry().clone()), pty_number.to_string()),
                     );
                     let loc = Location::new(file.location().mountpoint().clone(), entry);
-                    file = ax_fs::File::new(FileBackend::new_direct(loc)?, file.flags());
+                    file = ax_fs_ng::vfs::File::new(FileBackend::Direct(loc), file.flags());
                 } else if inner.is::<tty::CurrentTty>() {
                     let term = current()
                         .as_thread()
@@ -153,15 +160,8 @@ fn add_to_fd(result: OpenResult, flags: u32) -> AxResult<i32> {
                         panic!("unknown terminal type")
                     };
                     let loc = FS_CONTEXT.lock().resolve(&path)?;
-                    file = ax_fs::File::new(FileBackend::new_direct(loc)?, file.flags());
+                    file = ax_fs_ng::vfs::File::new(FileBackend::Direct(loc), file.flags());
                 }
-            }
-            if let Ok(device) = file.location().entry().downcast::<Device>() {
-                // Call open() on the final device after /dev/ptmx and /dev/tty
-                // rewrites. Character devices such as ptys need this to pair
-                // close notification with the last open file, while block
-                // devices still use the same hook for O_EXCL exclusion.
-                device.inner().open(flags & O_EXCL != 0)?;
             }
             Arc::new(File::new(file, flags))
         }
@@ -205,24 +205,19 @@ fn try_open_nsfd(path: &str, flags: u32) -> Option<AxResult<i32>> {
         Err(_) => return Some(Err(AxError::NotFound)),
     };
 
+    let nsproxy = proc_data.nsproxy.lock();
+
     let nsfd: NsFd = match ns_type_str {
-        "uts" => NsFd::Uts(proc_data.nsproxy.lock().uts_ns.clone()),
-        "ipc" => NsFd::Ipc(proc_data.nsproxy.lock().ipc_ns.clone()),
-        "mnt" => {
-            let ns = proc_data.nsproxy.lock().mnt_ns.clone();
-            let fs_ns = {
-                let scope = proc_data.scope.read();
-                let fs_context = FS_CONTEXT.scope(&scope).clone();
-                drop(scope);
-                fs_context.lock().mount_namespace().clone()
-            };
-            NsFd::Mnt { ns, fs_ns }
-        }
-        "pid" => NsFd::Pid(proc_data.nsproxy.lock().pid_ns.clone()),
-        "net" => NsFd::Net(proc_data.nsproxy.lock().net_ns.clone()),
-        "user" => NsFd::User(proc_data.nsproxy.lock().user_ns.clone()),
+        "uts" => NsFd::Uts(nsproxy.uts_ns.clone()),
+        "ipc" => NsFd::Ipc(nsproxy.ipc_ns.clone()),
+        "mnt" => NsFd::Mnt(nsproxy.mnt_ns.clone()),
+        "pid" => NsFd::Pid(nsproxy.pid_ns.clone()),
+        "net" => NsFd::Net(nsproxy.net_ns.clone()),
+        "user" => NsFd::User(nsproxy.user_ns.clone()),
         _ => return Some(Err(AxError::NotFound)),
     };
+
+    drop(nsproxy);
 
     let fd = nsfd.add_to_fd_table(flags & O_CLOEXEC != 0);
     Some(fd)
@@ -390,7 +385,6 @@ pub fn sys_close_range(first: i32, last: i32, flags: u32) -> AxResult<isize> {
 
     let cloexec = flags.contains(CloseRangeFlags::CLOEXEC);
     let mut fd_table = FD_TABLE.write();
-    let mut closing = Vec::new();
     if let Some(max_index) = fd_table.ids().next_back() {
         for fd in first..=last.min(max_index as i32) {
             if cloexec {
@@ -398,13 +392,9 @@ pub fn sys_close_range(first: i32, last: i32, flags: u32) -> AxResult<isize> {
                     f.cloexec = true;
                 }
             } else if let Some(f) = fd_table.remove(fd as _) {
-                closing.push(f);
+                crate::file::release_locks_on_close(f);
             }
         }
-    }
-    drop(fd_table);
-    for f in closing {
-        crate::file::release_locks_on_close(f);
     }
 
     Ok(0)
@@ -471,14 +461,12 @@ pub fn sys_dup3(old_fd: c_int, new_fd: c_int, flags: c_int) -> AxResult<isize> {
         .ok_or(AxError::BadFileDescriptor)?;
     f.cloexec = flags.contains(Dup3Flags::O_CLOEXEC);
 
-    let prev = fd_table.remove(new_fd as _);
+    if let Some(prev) = fd_table.remove(new_fd as _) {
+        crate::file::release_locks_on_close(prev);
+    }
     fd_table
         .add_at(new_fd as _, f)
         .map_err(|_| AxError::BadFileDescriptor)?;
-    drop(fd_table);
-    if let Some(prev) = prev {
-        crate::file::release_locks_on_close(prev);
-    }
 
     Ok(new_fd as _)
 }

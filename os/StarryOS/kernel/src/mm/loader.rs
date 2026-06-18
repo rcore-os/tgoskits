@@ -4,7 +4,7 @@ use alloc::{borrow::ToOwned, string::String, vec, vec::Vec};
 use core::{ffi::CStr, iter};
 
 use ax_errno::{AxError, AxResult};
-use ax_fs::{CachedFile, FS_CONTEXT, FileBackend};
+use ax_fs_ng::vfs::{CachedFile, FS_CONTEXT, FileBackend};
 use ax_memory_addr::{MemoryAddr, PAGE_SIZE_4K, VirtAddr};
 use ax_runtime::hal::{
     mem::virt_to_phys,

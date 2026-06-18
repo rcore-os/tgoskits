@@ -12,17 +12,32 @@ extern crate alloc;
 #[macro_use]
 extern crate log;
 
-use alloc::boxed::Box;
+use alloc::sync::Arc;
 
-mod block;
+use axfs_ng_vfs::Location;
+
+pub mod api;
+pub mod block;
+pub mod block_runtime;
+pub mod file;
+pub mod fops;
 mod fs;
+mod fs_core;
 mod highlevel;
+pub mod os;
+pub mod root;
+pub mod volume;
 
-pub use block::{BlockRegion, FsBlockDevice};
-/// Create a filesystem from a dynamic (boxed) block device.
-#[cfg(feature = "ext4")]
-pub use fs::new_from_dyn as new_filesystem_from_dyn;
+pub use block::{BlockRegion, runtime::BlockDeviceHandle};
+#[cfg(feature = "vfs")]
 pub use highlevel::*;
+#[cfg(feature = "vfs")]
+pub mod vfs {
+    /// Create a filesystem from a native block runtime handle.
+    #[cfg(any(feature = "ext4", feature = "fat"))]
+    pub use crate::fs::new_from_handle as new_filesystem_from_handle;
+    pub use crate::highlevel::*;
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum FilesystemKind {
@@ -31,24 +46,61 @@ pub enum FilesystemKind {
 }
 
 /// Initializes the filesystem subsystem from a runtime-selected block region.
-pub fn init_filesystem(dev: Box<dyn FsBlockDevice>, region: BlockRegion, description: &str) {
+pub(crate) fn init_filesystem(
+    dev: Arc<BlockDeviceHandle>,
+    region: BlockRegion,
+    description: &str,
+) -> Location {
     info!("Initialize filesystem subsystem...");
     info!("  selected root device: {}", description);
 
-    let fs = fs::new_default(dev, region).unwrap_or_else(|err| {
+    let fs = fs::new_from_handle(dev, region).unwrap_or_else(|err| {
         panic!(
             "failed to initialize filesystem on {}: {err:?}",
             description
         )
     });
+    finish_filesystem_init(fs)
+}
+
+pub(crate) fn init_detected_filesystem(
+    dev: Arc<BlockDeviceHandle>,
+    region: BlockRegion,
+    kind: FilesystemKind,
+    description: &str,
+) -> Location {
+    info!("Initialize filesystem subsystem...");
+    info!("  selected root device: {}", description);
+
+    let fs = fs::new_from_handle_with_kind(dev, region, kind).unwrap_or_else(|err| {
+        panic!(
+            "failed to initialize filesystem on {}: {err:?}",
+            description
+        )
+    });
+    finish_filesystem_init(fs)
+}
+
+fn finish_filesystem_init(fs: axfs_ng_vfs::Filesystem) -> Location {
     info!("  filesystem type: {:?}", fs.name());
 
     let mp = axfs_ng_vfs::Mountpoint::new_root(&fs);
-    ROOT_FS_CONTEXT.call_once(|| FsContext::new(mp.root_location()));
+    let root = mp.root_location();
+    highlevel::ROOT_FS_CONTEXT.call_once(|| highlevel::FsContext::new(root.clone()));
+    root
 }
 
-pub fn detect_filesystem(
-    dev: &mut dyn FsBlockDevice,
+pub fn shutdown_filesystems() -> ax_errno::AxResult {
+    #[cfg(feature = "vfs")]
+    highlevel::sync_all_cached_files(false)?;
+    if let Some(ctx) = highlevel::ROOT_FS_CONTEXT.get() {
+        ctx.root_dir().sync(false)?;
+    }
+    Ok(())
+}
+
+pub(crate) fn detect_filesystem(
+    dev: &mut dyn crate::block::FsBlockDevice,
     region: BlockRegion,
 ) -> Option<FilesystemKind> {
     #[cfg(not(any(feature = "ext4", feature = "fat")))]
@@ -68,7 +120,7 @@ pub fn detect_filesystem(
 }
 
 #[cfg(feature = "ext4")]
-fn region_has_ext4(dev: &mut dyn FsBlockDevice, region: BlockRegion) -> bool {
+fn region_has_ext4(dev: &mut dyn crate::block::FsBlockDevice, region: BlockRegion) -> bool {
     const EXT4_SUPERBLOCK_OFFSET: usize = 1024;
     const EXT4_MAGIC_OFFSET: usize = 0x38;
     const EXT4_MAGIC: u16 = 0xEF53;
@@ -81,7 +133,7 @@ fn region_has_ext4(dev: &mut dyn FsBlockDevice, region: BlockRegion) -> bool {
 }
 
 #[cfg(feature = "fat")]
-fn region_has_fat(dev: &mut dyn FsBlockDevice, region: BlockRegion) -> bool {
+fn region_has_fat(dev: &mut dyn crate::block::FsBlockDevice, region: BlockRegion) -> bool {
     const FAT16_MAGIC: &[u8; 5] = b"FAT16";
     const FAT32_MAGIC: &[u8; 5] = b"FAT32";
     let start_lba = region.start_lba;
@@ -107,7 +159,7 @@ fn region_has_fat(dev: &mut dyn FsBlockDevice, region: BlockRegion) -> bool {
 
 #[cfg(feature = "ext4")]
 fn region_has_magic_u16(
-    dev: &mut dyn FsBlockDevice,
+    dev: &mut dyn crate::block::FsBlockDevice,
     region: BlockRegion,
     byte_offset: usize,
     magic: u16,

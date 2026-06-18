@@ -6,6 +6,8 @@ mod file;
 #[cfg(feature = "alloc")]
 use alloc::{string::String, vec::Vec};
 
+pub use ax_api::fs::{AxFilePermExt as PermissionsExt, AxFileTypeExt as FileTypeExt};
+
 pub use self::{
     dir::{DirBuilder, DirEntry, ReadDir},
     file::{File, FileType, Metadata, OpenOptions, Permissions},

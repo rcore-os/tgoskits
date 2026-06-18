@@ -38,6 +38,7 @@ extern crate ax_memory_addr;
 mod platform_select;
 pub use platform_select::selected as platform;
 
+pub mod boot;
 pub mod dtb;
 pub mod mem;
 pub mod percpu;

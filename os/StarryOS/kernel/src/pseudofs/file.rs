@@ -3,13 +3,21 @@ use core::{any::Any, cmp::Ordering, task::Context};
 
 use ax_sync::Mutex;
 use axfs_ng_vfs::{
-    FileNodeOps, FilesystemOps, Metadata, MetadataUpdate, NodeFlags, NodeOps, NodePermission,
-    NodeType, VfsError, VfsResult,
+    FileNodeOps, FilesystemOps, FsIoEvents, FsPollable, Metadata, MetadataUpdate, NodeFlags,
+    NodeOps, NodePermission, NodeType, VfsError, VfsResult,
 };
 use axpoll::{IoEvents, Pollable};
 use inherit_methods_macro::inherit_methods;
 
 use super::fs::{SimpleFs, SimpleFsNode};
+
+fn fs_events_to_io(events: FsIoEvents) -> IoEvents {
+    IoEvents::from_bits_truncate(events.bits())
+}
+
+fn io_events_to_fs(events: IoEvents) -> FsIoEvents {
+    FsIoEvents::from_bits_truncate(events.bits())
+}
 
 /// Operations for a simple file.
 pub trait SimpleFileOps: Send + Sync + 'static {
@@ -197,12 +205,22 @@ impl FileNodeOps for SimpleFile {
     }
 }
 
-impl Pollable for SimpleFile {
-    fn poll(&self) -> IoEvents {
-        IoEvents::IN | IoEvents::OUT
+impl FsPollable for SimpleFile {
+    fn poll(&self) -> FsIoEvents {
+        FsIoEvents::IN | FsIoEvents::OUT
     }
 
-    fn register(&self, _context: &mut Context<'_>, _events: IoEvents) {}
+    fn register(&self, _context: &mut Context<'_>, _events: FsIoEvents) {}
+}
+
+impl Pollable for SimpleFile {
+    fn poll(&self) -> IoEvents {
+        fs_events_to_io(FsPollable::poll(self))
+    }
+
+    fn register(&self, context: &mut Context<'_>, events: IoEvents) {
+        FsPollable::register(self, context, io_events_to_fs(events));
+    }
 }
 
 /// A special file that directly implements file operations without caching content in the kernel.
@@ -267,18 +285,28 @@ impl<T: DirectRwFsFileOps> NodeOps for SpecialFsFile<T> {
     }
 }
 
-impl<T: DirectRwFsFileOps> Pollable for SpecialFsFile<T> {
-    fn poll(&self) -> IoEvents {
+impl<T: DirectRwFsFileOps> FsPollable for SpecialFsFile<T> {
+    fn poll(&self) -> FsIoEvents {
         // TODO: support poll for special files when needed
-        IoEvents::IN | IoEvents::OUT
+        FsIoEvents::IN | FsIoEvents::OUT
     }
 
-    fn register(&self, _context: &mut Context<'_>, _events: IoEvents) {
+    fn register(&self, _context: &mut Context<'_>, _events: FsIoEvents) {
         // SpecialFsFile reports itself as always-ready via `poll()` (IN|OUT),
         // so registration is a no-op. Matches `SimpleFile::register` above —
         // turning this into `unimplemented!()` was a regression that panicked
         // the kernel on any `epoll_ctl` against debugfs/procfs special files
         // (tracepoint trace_pipe, saved_cmdlines, dyn_debug controls, …).
+    }
+}
+
+impl<T: DirectRwFsFileOps> Pollable for SpecialFsFile<T> {
+    fn poll(&self) -> IoEvents {
+        fs_events_to_io(FsPollable::poll(self))
+    }
+
+    fn register(&self, context: &mut Context<'_>, events: IoEvents) {
+        FsPollable::register(self, context, io_events_to_fs(events));
     }
 }
 

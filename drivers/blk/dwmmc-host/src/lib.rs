@@ -71,7 +71,8 @@ use sdmmc_protocol::{
     cmd::{Command, DataDirection},
     error::Error,
     sdio::{
-        BusWidth, ClockSpeed, HostEvent, HostEventKind, HostEventSource, SdioHost, SignalVoltage,
+        BusWidth, ClockSpeed, HostEvent, HostEventKind, HostEventSource, SdioHost, SdioIrqHandle,
+        SdioIrqHost, SignalVoltage,
     },
 };
 
@@ -107,6 +108,19 @@ pub struct DataRequest<'a> {
     slot: BlockRequestSlot,
     _buffer: PhantomData<&'a [u8]>,
 }
+
+/// Cloneable, sync-safe DWMMC IRQ top-half handle.
+#[derive(Clone)]
+pub struct DwMmcIrqHandle {
+    regs: volatile::VolatilePtr<'static, crate::regs::RegisterBlock>,
+    irq_state: *const host::IrqState,
+}
+
+// SAFETY: The handle only performs volatile MMIO accesses and atomic cache
+// updates. The owning `DwMmc` outlives handles created by OS glue.
+unsafe impl Send for DwMmcIrqHandle {}
+// SAFETY: See the `Send` impl.
+unsafe impl Sync for DwMmcIrqHandle {}
 
 pub(crate) const DWMMC_INT_RESPONSE_ERROR: u32 = 1 << 1;
 pub(crate) const DWMMC_INT_COMMAND_DONE: u32 = 1 << 2;
@@ -232,7 +246,19 @@ impl SdioHost for DwMmc {
     }
 
     fn handle_irq(&mut self) -> Self::Event {
-        DwMmc::handle_irq(self)
+        self.irq_handle().handle_irq()
+    }
+}
+
+impl SdioIrqHost for DwMmc {
+    type IrqHandle = DwMmcIrqHandle;
+
+    fn irq_handle(&self) -> Self::IrqHandle {
+        DwMmc::irq_handle(self)
+    }
+
+    fn completion_irq_enabled(&self) -> bool {
+        DwMmc::completion_irq_enabled(self)
     }
 }
 
@@ -400,16 +426,31 @@ impl DwMmc {
         }
     }
 
+    pub fn irq_handle(&self) -> DwMmcIrqHandle {
+        DwMmcIrqHandle {
+            regs: self.regs,
+            irq_state: &self.irq_state,
+        }
+    }
+
     /// Read and acknowledge pending controller status, returning a stable
     /// event for OS glue to translate into wakeups or worker scheduling.
-    pub fn handle_irq(&mut self) -> Event {
+    pub fn handle_irq(&self) -> Event {
+        self.irq_handle().handle_irq()
+    }
+}
+
+impl SdioIrqHandle for DwMmcIrqHandle {
+    type Event = Event;
+
+    fn handle_irq(&self) -> Self::Event {
         let raw_status = self.regs.mintsts().read();
         if raw_status != 0 {
             self.regs
                 .rintsts()
                 .write(crate::regs::RIntSts::from_bits(raw_status));
         }
-        self.irq_pending_status |= raw_status;
+        unsafe { &*self.irq_state }.cache(raw_status);
         event_from_raw_status(raw_status)
     }
 }
@@ -520,6 +561,29 @@ mod tests {
         assert_eq!(dma.block_size.get(), 512);
         assert_eq!(dma.align, 512);
         assert_eq!(dma.dma_mask, Some(u32::MAX as u64));
+    }
+
+    #[test]
+    fn irq_handle_acks_and_caches_status_without_mutable_host() {
+        let mut mmio = [0u32; 256];
+        let base = NonNull::new(mmio.as_mut_ptr().cast()).unwrap();
+        let host = unsafe { DwMmc::new(base) };
+        let raw = crate::regs::RIntSts::new()
+            .with_data_transfer_over(true)
+            .into_bits();
+        const MINTSTS_WORD: usize = 16;
+        unsafe {
+            mmio.as_mut_ptr().add(MINTSTS_WORD).write_volatile(raw);
+        }
+
+        let handle = host.irq_handle().clone();
+
+        assert_eq!(handle.handle_irq(), Event::TransferComplete);
+        assert_eq!(host.irq_state.pending(), raw);
+        unsafe {
+            mmio.as_mut_ptr().add(MINTSTS_WORD).write_volatile(0);
+        }
+        assert_eq!(host.handle_irq(), Event::None);
     }
 
     #[test]

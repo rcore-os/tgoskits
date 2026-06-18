@@ -229,6 +229,57 @@ mod file_functional_tests {
         umount(fs, &mut jbd2_dev).expect("umount failed");
     }
 
+    /// Verifies that a full-block overwrite inside an existing large extent
+    /// updates only the requested range and keeps surrounding data intact.
+    #[test]
+    fn test_large_file_existing_extent_full_block_overwrite() {
+        let device = MockBlockDevice::new(128 * 1024 * 1024);
+        let mut jbd2_dev = Jbd2Dev::initial_jbd2dev(0, device, true);
+
+        mkfs(&mut jbd2_dev).expect("mkfs failed");
+        let mut fs = mount(&mut jbd2_dev).expect("mount failed");
+
+        let original_len = 20 * 1024 * 1024;
+        let overwrite_offset = 8 * 1024 * 1024;
+        let overwrite_len = 4 * 1024 * 1024;
+        let original = vec![0x31; original_len];
+        let replacement = vec![0x7a; overwrite_len];
+
+        mkfile(
+            &mut jbd2_dev,
+            &mut fs,
+            "/large-overwrite.bin",
+            Some(&original),
+            None,
+        )
+        .expect("mkfile failed");
+        write_file(
+            &mut jbd2_dev,
+            &mut fs,
+            "/large-overwrite.bin",
+            overwrite_offset as u64,
+            &replacement,
+        )
+        .expect("write_file failed");
+
+        let data =
+            read_file(&mut jbd2_dev, &mut fs, "/large-overwrite.bin").expect("read_file failed");
+        assert_eq!(data.len(), original_len);
+        assert!(data[..overwrite_offset].iter().all(|&byte| byte == 0x31));
+        assert!(
+            data[overwrite_offset..overwrite_offset + overwrite_len]
+                .iter()
+                .all(|&byte| byte == 0x7a)
+        );
+        assert!(
+            data[overwrite_offset + overwrite_len..]
+                .iter()
+                .all(|&byte| byte == 0x31)
+        );
+
+        umount(fs, &mut jbd2_dev).expect("umount failed");
+    }
+
     /// Verifies POSIX rename-over-existing-file (sed -i / Redis AOF pattern).
     #[test]
     fn test_file_rename_replace_existing() {
