@@ -53,19 +53,6 @@ use crate::{
     request_poll,
 };
 
-/// Allocates a smoltcp raw socket for one IP version and protocol.
-pub(crate) fn new_raw_socket(
-    ip_version: IpVersion,
-    ip_protocol: IpProtocol,
-) -> smol::Socket<'static> {
-    smol::Socket::new(
-        Some(ip_version),
-        Some(ip_protocol),
-        smol::PacketBuffer::new(vec![PacketMetadata::EMPTY; 256], vec![0; RAW_RX_BUF_LEN]),
-        smol::PacketBuffer::new(vec![PacketMetadata::EMPTY; 256], vec![0; RAW_TX_BUF_LEN]),
-    )
-}
-
 /// A raw IP socket used for ICMP and ICMPv6 traffic.
 pub struct RawSocket {
     /// Handle into the global smoltcp socket set.
@@ -93,11 +80,15 @@ pub struct RawSocket {
 impl RawSocket {
     /// Creates a raw socket for the given IP version and protocol.
     pub fn new(ip_version: IpVersion, ip_protocol: IpProtocol) -> Self {
-        let handle = SOCKET_SET.add(new_raw_socket(ip_version, ip_protocol));
         let general = GeneralOptions::new(3, 2, u8::from(ip_protocol) as i32); // SOCK_RAW
         general.set_device_binding(DeviceBinding::default());
         Self {
-            handle,
+            handle: SOCKET_SET.add(smol::Socket::new(
+                Some(ip_version),
+                Some(ip_protocol),
+                smol::PacketBuffer::new(vec![PacketMetadata::EMPTY; 256], vec![0; RAW_RX_BUF_LEN]),
+                smol::PacketBuffer::new(vec![PacketMetadata::EMPTY; 256], vec![0; RAW_TX_BUF_LEN]),
+            )),
             ip_version,
             local_addr: RwLock::new(None),
             peer_addr: RwLock::new(None),

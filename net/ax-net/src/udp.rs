@@ -63,15 +63,6 @@ struct CorkState {
     source: IpAddress,
 }
 
-/// Allocates a smoltcp UDP socket with ax-net's default packet buffers.
-pub(crate) fn new_udp_socket() -> smol::Socket<'static> {
-    // TODO(mivik): buffer size
-    smol::Socket::new(
-        smol::PacketBuffer::new(vec![PacketMetadata::EMPTY; 256], vec![0; UDP_RX_BUF_LEN]),
-        smol::PacketBuffer::new(vec![PacketMetadata::EMPTY; 256], vec![0; UDP_TX_BUF_LEN]),
-    )
-}
-
 /// A UDP socket that provides POSIX-like APIs.
 pub struct UdpSocket {
     /// Handle into the global smoltcp socket set.
@@ -92,11 +83,11 @@ impl UdpSocket {
     /// Creates a new UDP socket.
     #[allow(clippy::new_without_default)]
     pub fn new() -> Self {
-        let socket = new_udp_socket();
-        let handle = SOCKET_SET.add(socket);
-
         Self {
-            handle,
+            handle: SOCKET_SET.add(smol::Socket::new(
+                smol::PacketBuffer::new(vec![PacketMetadata::EMPTY; 256], vec![0; UDP_RX_BUF_LEN]),
+                smol::PacketBuffer::new(vec![PacketMetadata::EMPTY; 256], vec![0; UDP_TX_BUF_LEN]),
+            )),
             local_addr: RwLock::new(None),
             peer_addr: RwLock::new(None),
 

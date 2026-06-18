@@ -925,10 +925,6 @@ impl Service {
         self.router.arp_entries(now())
     }
 
-    pub fn eth0_ipv4_config(&self) -> Option<Ipv4InterfaceConfig> {
-        self.control.ipv4_config("eth0")
-    }
-
     pub fn wake_all_devices(&self) {
         self.router.wake_all_devices();
     }
@@ -991,8 +987,7 @@ fn is_unicast_ipv4(addr: Ipv4Address) -> bool {
     addr != Ipv4Address::UNSPECIFIED && addr != Ipv4Address::BROADCAST && !addr.is_multicast()
 }
 
-/// 由前缀长度构造 IPv4 子网掩码(与 lib.rs 的 `prefix_to_mask` 等价,
-/// 这里独立提供以免暴露跨模块的私有函数)。
+/// 由前缀长度构造 IPv4 子网掩码。
 fn mask_from_prefix(prefix_len: u8) -> Ipv4Address {
     let bits: u32 = if prefix_len == 0 {
         0

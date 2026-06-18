@@ -40,7 +40,7 @@ flowchart TB
         Query["interfaces() / default_routes() / arp_entries()"]
         DnsApi["dns_servers() / dns_query()"]
         Sockets["TcpSocket / UdpSocket / RawSocket / UnixSocket / VsockSocket"]
-        PollApi["request_poll() / poll_interfaces()"]
+        PollApi["request_poll()"]
     end
 
     subgraph Control["Control plane"]
@@ -133,7 +133,7 @@ Public API 是上层 OS 模块进入 `ax-net` 的边界，主要定义在 [lib.r
 | 接口查询 | `interfaces()`、`interface_by_name()`、`ipv4_config()`、`default_routes()`、`arp_entries()` | 从控制面或设备层返回只读快照 |
 | DNS | `dns_servers()`、`dns_query()`、`dns_query_timeout()` | 读取 DNS registry，并通过临时 smoltcp DNS socket 查询 |
 | Socket facade | `TcpSocket`、`UdpSocket`、`RawSocket`、`UnixSocket`、`VsockSocket` | 为 syscall/POSIX 层提供统一 socket backend |
-| Poll 触发 | `request_poll()`、`poll_interfaces()` | 唤醒专用 net-poll worker，避免应用线程同步驱动协议栈 |
+| Poll 触发 | `request_poll()` | 唤醒专用 net-poll worker，避免应用线程同步驱动协议栈 |
 | Socket options | `GetSocketOption`、`SetSocketOption`、`Configurable` | 覆盖通用 `SO_*`、`TCP_*`、`IP_*` 选项 |
 
 Public API 的职责是做边界收敛：上层不需要知道某个 socket 是否由 smoltcp、Unix transport 或 vsock transport 实现，也不需要直接操作 `Service`、`Router` 或 `SocketSet`。具体 API 列表见 [API 参考](api.md)。

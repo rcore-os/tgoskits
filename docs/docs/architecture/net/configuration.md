@@ -414,5 +414,5 @@ let config = NetworkConfig {
 - 多网口默认路由通过 metric 控制，主出口使用较小 metric。
 - `gateway = 0.0.0.0` 用于只有直连路由的静态接口。
 - 需要稳定接口名时优先使用 `ByMac` 或 `ByDriverName`，避免依赖探测顺序。
-- 新代码通过 `ipv4_config(name)` 查询地址，不依赖 `eth0_ipv4_config()`。
+- 通过 `ipv4_config(name)` 查询指定接口地址，避免固定 `eth0` 假设。
 - 提高队列常量时应按“每 socket”或“每设备”的乘数估算内存，而不是只看单个 buffer。

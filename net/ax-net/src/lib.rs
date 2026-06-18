@@ -408,10 +408,6 @@ pub fn init_vsock(mut vsock_devs: device::VsockDeviceList) {
     }
 }
 
-fn poll_once() -> bool {
-    get_service().poll(&mut SOCKET_SET.inner.lock())
-}
-
 fn poll_until_idle() {
     POLL_AGAIN.store(true, Ordering::Release);
     loop {
@@ -423,21 +419,13 @@ fn poll_until_idle() {
         }
 
         while POLL_AGAIN.swap(false, Ordering::AcqRel) {
-            while poll_once() {}
+            while get_service().poll(&mut SOCKET_SET.inner.lock()) {}
         }
         POLLING_INTERFACES.store(false, Ordering::Release);
         if !POLL_AGAIN.load(Ordering::Acquire) {
             return;
         }
     }
-}
-
-/// Request network polling from the dedicated net-poll worker.
-///
-/// This function is retained as a public trigger/debug entry. It no longer
-/// synchronously drives the whole protocol stack from the caller's context.
-pub fn poll_interfaces() {
-    request_poll();
 }
 
 /// Request network polling.
@@ -538,12 +526,12 @@ pub fn register_device_with_config(dev: Box<dyn EthernetDriver>, config: NetConf
     let dev_idx = get_service().register_static_device(config.name.clone(), eth_dev, mac, cidr);
     if let Some(client_ip) = config.dhcp_server_client_ip {
         let client_ip = Ipv4Address::new(client_ip[0], client_ip[1], client_ip[2], client_ip[3]);
-        get_service().enable_dhcp_server(
-            dev_idx,
-            server_ip,
-            client_ip,
-            prefix_to_mask(config.prefix_len),
-        );
+        let subnet_mask = if config.prefix_len == 0 {
+            Ipv4Address::from_bits(0)
+        } else {
+            Ipv4Address::from_bits(u32::MAX << (32 - config.prefix_len.min(32) as u32))
+        };
+        get_service().enable_dhcp_server(dev_idx, server_ip, client_ip, subnet_mask);
     }
 
     info!("{}: up, mac {mac}, ip {cidr}", config.name);
@@ -640,7 +628,7 @@ pub fn reconfigure_wifi(name: &str, mode: WifiMode<'_>) -> AxResult<()> {
     }
 
     // Kick a poll so the new addressing takes effect immediately.
-    poll_interfaces();
+    request_poll();
     info!("{name}: wifi mode switch complete");
     Ok(())
 }
@@ -648,8 +636,8 @@ pub fn reconfigure_wifi(name: &str, mode: WifiMode<'_>) -> AxResult<()> {
 /// Wakes the net poll task from a hard IRQ callback.
 ///
 /// The IRQ path must only publish small pending state and call this wrapper.
-/// The deferred net task performs `poll_interfaces()` and wakes socket waiters
-/// from ordinary task context.
+/// The deferred net task requests polling and wakes socket waiters from ordinary
+/// task context.
 pub fn wake_net_task_irq() {
     NET_IRQ_NOTIFY.notify_irq();
     NET_POLL_WAKE.notify_one_from_irq();
@@ -663,20 +651,6 @@ pub fn wake_net_task_irq() {
 /// the device's RX thread is never blocked on the stack.
 pub fn notify_oob_rx() {
     wake_net_task_irq();
-}
-
-/// Convenience helper for retrieving `eth0` IPv4 configuration.
-pub fn eth0_ipv4_config() -> Option<Ipv4InterfaceConfig> {
-    get_service().eth0_ipv4_config()
-}
-
-fn prefix_to_mask(prefix_len: u8) -> Ipv4Address {
-    let bits = if prefix_len == 0 {
-        0
-    } else {
-        u32::MAX << (32 - prefix_len.min(32) as u32)
-    };
-    Ipv4Address::from_bits(bits)
 }
 
 fn next_poll_delay() -> Duration {
@@ -847,15 +821,6 @@ fn wait_for_dhcp_bootstrap() {
         ax_task::sleep(DHCP_BOOTSTRAP_POLL_INTERVAL);
     }
     warn!("DHCP bootstrap timed out");
-}
-
-pub(crate) fn endpoint_from_ip_endpoint(
-    endpoint: smoltcp::wire::IpEndpoint,
-) -> smoltcp::wire::IpListenEndpoint {
-    smoltcp::wire::IpListenEndpoint {
-        addr: Some(endpoint.addr),
-        port: endpoint.port,
-    }
 }
 
 #[cfg(test)]
