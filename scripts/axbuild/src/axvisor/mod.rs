@@ -735,6 +735,29 @@ mod tests {
             Command::Loader(args) => match args.command {
                 Some(LoaderCommand::Test(test)) => {
                     assert_eq!(test.target, "x86_64-unknown-uefi");
+                    assert!(!test.http_smoke);
+                }
+                _ => panic!("expected loader test command"),
+            },
+            _ => panic!("expected loader command"),
+        }
+    }
+
+    #[test]
+    fn command_parses_loader_test_http_smoke() {
+        #[derive(Parser)]
+        struct Cli {
+            #[command(subcommand)]
+            command: Command,
+        }
+
+        let cli = Cli::try_parse_from(["axvisor", "loader", "test", "--http-smoke"]).unwrap();
+
+        match cli.command {
+            Command::Loader(args) => match args.command {
+                Some(LoaderCommand::Test(test)) => {
+                    assert_eq!(test.target, "x86_64-unknown-uefi");
+                    assert!(test.http_smoke);
                 }
                 _ => panic!("expected loader test command"),
             },

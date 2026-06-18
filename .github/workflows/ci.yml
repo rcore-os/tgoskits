@@ -596,6 +596,7 @@ jobs:
               grep -q 'boot_protocol = "uefi"' tmp/vmconfigs/nimbos-x86_64-qemu-uefi-smp1.generated.toml
               grep -q 'uefi_firmware_path = "' tmp/vmconfigs/nimbos-x86_64-qemu-uefi-smp1.generated.toml
               cd ../..
+              cargo axvisor loader test --http-smoke
               cargo xtask axvisor test qemu --arch x86_64 --test-group uefi --test-case qemu-nimbos
             cache_key: ""
             container_image: ""
