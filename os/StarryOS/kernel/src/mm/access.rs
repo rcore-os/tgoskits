@@ -594,6 +594,46 @@ pub fn flush_tlb_range(start: VirtAddr, size: usize) {
     }
 }
 
+pub fn flush_tlb_range_sync(start: VirtAddr, size: usize) {
+    #[cfg(feature = "ipi")]
+    {
+        flush_tlb_range_remote(start, size);
+    }
+    #[cfg(not(feature = "ipi"))]
+    {
+        flush_tlb_range(start, size);
+    }
+}
+
+#[cfg(feature = "ipi")]
+fn flush_tlb_range_remote(start: VirtAddr, size: usize) {
+    let _guard = ax_kernel_guard::NoPreempt::new();
+    let current_cpu = ax_runtime::hal::percpu::this_cpu_id();
+    let start = start.as_usize();
+    let arg = FlushRangeArg { start, size };
+    let arg_ptr = &arg as *const FlushRangeArg as *mut ();
+
+    for cpu_id in 0..ax_runtime::hal::cpu_num() {
+        if cpu_id == current_cpu || !ax_ipi::wait_until_cpu_ready(cpu_id) {
+            continue;
+        }
+        let _ = unsafe { ax_ipi::run_on_cpu_sync_raw(cpu_id, flush_tlb_range_thunk, arg_ptr) };
+    }
+    flush_tlb_range(VirtAddr::from(start), size);
+}
+
+#[cfg(feature = "ipi")]
+struct FlushRangeArg {
+    start: usize,
+    size: usize,
+}
+
+#[cfg(feature = "ipi")]
+unsafe fn flush_tlb_range_thunk(arg: *mut ()) {
+    let arg = unsafe { &*(arg as *const FlushRangeArg) };
+    flush_tlb_range(VirtAddr::from(arg.start), arg.size);
+}
+
 fn sync_modified_kernel_text(start: VirtAddr, size: usize) {
     flush_tlb_range(start, size);
 

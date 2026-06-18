@@ -70,7 +70,8 @@ impl JobControl {
 
         state.foreground = weak;
         drop(state);
-        self.poll_fg.wake();
+        // Foreground process-group state is published before waking waiters.
+        unsafe { self.poll_fg.wake(IoEvents::IN) };
         Ok(())
     }
 
@@ -109,7 +110,8 @@ impl JobControl {
         drop(state);
 
         if foreground_cleared {
-            self.poll_fg.wake();
+            // Foreground process-group state is published before waking waiters.
+            unsafe { self.poll_fg.wake(IoEvents::IN) };
         }
     }
 }
@@ -123,7 +125,8 @@ impl Pollable for JobControl {
 
     fn register(&self, context: &mut Context<'_>, events: IoEvents) {
         if events.contains(IoEvents::IN) {
-            self.poll_fg.register(context.waker());
+            // Registration happens from tty job-control poll task context.
+            unsafe { self.poll_fg.register(context.waker(), IoEvents::IN) };
         }
     }
 }

@@ -1,5 +1,12 @@
 mod binding;
 
+#[cfg(any(
+    feature = "k230-sdhci",
+    feature = "phytium-mci",
+    feature = "rockchip-dwmmc",
+    feature = "rockchip-sdhci"
+))]
+pub(crate) mod sdmmc;
 #[allow(unused)]
 mod shared;
 

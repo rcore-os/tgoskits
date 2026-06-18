@@ -5,14 +5,22 @@ use ax_kspin::SpinNoIrq;
 use ax_sync::Mutex;
 use axfs_ng_vfs::{
     DeviceId, DirEntry, DirEntrySink, DirNode, DirNodeOps, FileNode, FileNodeOps, Filesystem,
-    FilesystemOps, Metadata, MetadataUpdate, NodeFlags, NodeOps, NodePermission, NodeType,
-    Reference, StatFs, VfsError, VfsResult, WeakDirEntry,
+    FilesystemOps, FsIoEvents, FsPollable, Metadata, MetadataUpdate, NodeFlags, NodeOps,
+    NodePermission, NodeType, Reference, StatFs, VfsError, VfsResult, WeakDirEntry,
 };
 use axpoll::{IoEvents, Pollable};
 use hashbrown::HashMap;
 use slab::Slab;
 
 const TMPFS_NESTED_DIR_ENTRIES_SUBCLASS: u32 = 1;
+
+fn fs_events_to_io(events: FsIoEvents) -> IoEvents {
+    IoEvents::from_bits_truncate(events.bits())
+}
+
+fn io_events_to_fs(events: IoEvents) -> FsIoEvents {
+    FsIoEvents::from_bits_truncate(events.bits())
+}
 
 #[derive(PartialEq, Eq, Hash, Clone)]
 struct FileName(Arc<str>);
@@ -423,12 +431,22 @@ impl FileNodeOps for MemoryNode {
         Ok(())
     }
 }
-impl Pollable for MemoryNode {
-    fn poll(&self) -> IoEvents {
-        IoEvents::IN | IoEvents::OUT
+impl FsPollable for MemoryNode {
+    fn poll(&self) -> FsIoEvents {
+        FsIoEvents::IN | FsIoEvents::OUT
     }
 
-    fn register(&self, _context: &mut Context<'_>, _events: IoEvents) {}
+    fn register(&self, _context: &mut Context<'_>, _events: FsIoEvents) {}
+}
+
+impl Pollable for MemoryNode {
+    fn poll(&self) -> IoEvents {
+        fs_events_to_io(FsPollable::poll(self))
+    }
+
+    fn register(&self, context: &mut Context<'_>, events: IoEvents) {
+        FsPollable::register(self, context, io_events_to_fs(events));
+    }
 }
 
 impl DirNodeOps for MemoryNode {

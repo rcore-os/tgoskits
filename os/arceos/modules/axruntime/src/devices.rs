@@ -8,35 +8,6 @@ pub(crate) fn probe_all_devices() {
         .unwrap_or_else(|err| panic!("failed to probe platform devices: {err:?}"));
 }
 
-#[cfg(all(feature = "fs", not(feature = "fs-ng"), feature = "plat-dyn"))]
-pub(crate) fn take_dyn_fs_block_devices()
--> alloc::vec::Vec<alloc::boxed::Box<dyn ax_fs::FsBlockDevice>> {
-    if !rdrive::is_initialized() {
-        return alloc::vec::Vec::new();
-    }
-    let devices = ax_driver::block::take_block_devices();
-    devices
-        .into_iter()
-        .map(|dev| {
-            alloc::boxed::Box::new(FsBlockDevice::new(dev))
-                as alloc::boxed::Box<dyn ax_fs::FsBlockDevice>
-        })
-        .collect()
-}
-
-#[cfg(all(feature = "fs", not(feature = "fs-ng"), not(feature = "plat-dyn")))]
-pub(crate) fn take_static_fs_block_devices()
--> alloc::vec::Vec<alloc::boxed::Box<dyn ax_fs::FsBlockDevice>> {
-    let devices = ax_driver::block::take_block_devices();
-    devices
-        .into_iter()
-        .map(|dev| {
-            alloc::boxed::Box::new(FsBlockDevice::new(dev))
-                as alloc::boxed::Box<dyn ax_fs::FsBlockDevice>
-        })
-        .collect()
-}
-
 #[cfg(all(feature = "display", feature = "plat-dyn"))]
 pub(crate) fn init_dyn_display() {
     if !rdrive::is_initialized() {
@@ -111,77 +82,19 @@ pub(crate) fn init_static_net() {
     register_wireless_devices(wireless);
 }
 
-#[cfg(all(feature = "net", feature = "fs-ng"))]
+#[cfg(all(feature = "net", feature = "fs"))]
 fn register_unix_namespace() {
     ax_net::unix::register_unix_namespace(crate::unix_ns::AxFsUnixNamespace);
 }
 
-#[cfg(all(feature = "net", not(feature = "fs-ng")))]
+#[cfg(all(feature = "net", not(feature = "fs")))]
 fn register_unix_namespace() {
-    // Path-based Unix sockets require fs-ng namespace support
+    // Path-based Unix sockets require filesystem namespace support.
 }
 
 #[cfg(feature = "net")]
 fn parse_network_config() -> ax_net::NetworkConfig {
-    macro_rules! env_or_default {
-        ($key:literal) => {
-            match option_env!($key) {
-                Some(val) => val,
-                None => "",
-            }
-        };
-    }
-
-    const IP: &str = env_or_default!("AX_IP");
-    const GATEWAY: &str = env_or_default!("AX_GW");
-    const PREFIX_LEN: &str = env_or_default!("AX_PREFIX_LEN");
-    const DNS: &str = env_or_default!("AX_DNS");
-
-    let ip = IP.trim();
-    let gateway = GATEWAY.trim();
-    let prefix_len = PREFIX_LEN.trim();
-
-    let static_ip = match (!ip.is_empty(), !gateway.is_empty()) {
-        (false, false) => {
-            if !prefix_len.is_empty() {
-                panic!("AX_PREFIX_LEN requires AX_IP and AX_GW");
-            }
-            None
-        }
-        (true, true) => {
-            let prefix_len = if prefix_len.is_empty() {
-                24
-            } else {
-                prefix_len.parse().expect("Invalid AX_PREFIX_LEN")
-            };
-            if prefix_len > 32 {
-                panic!("Invalid AX_PREFIX_LEN: prefix length > 32");
-            }
-            Some(ax_net::StaticIpConfig {
-                ip: ip.parse().expect("Invalid AX_IP"),
-                prefix_len,
-                gateway: gateway.parse().expect("Invalid AX_GW"),
-            })
-        }
-        _ => {
-            panic!("AX_IP and AX_GW must be configured together");
-        }
-    };
-
-    let dns_servers = DNS
-        .split(',')
-        .filter(|s| !s.trim().is_empty())
-        .map(|s| {
-            let s = s.trim();
-            s.parse()
-                .unwrap_or_else(|_| panic!("Invalid DNS server address: {}", s))
-        })
-        .collect();
-
-    ax_net::NetworkConfig {
-        static_ip,
-        dns_servers,
-    }
+    ax_net::NetworkConfig::default()
 }
 
 /// A wireless device that registers *after* `init_network`: its already-wrapped
@@ -306,45 +219,4 @@ fn collect_dyn_net_devices() -> (
         adapt_net_device(net, name, irq_num, &mut nics, &mut wireless);
     }
     (nics, wireless)
-}
-
-#[cfg(all(feature = "fs", not(feature = "fs-ng")))]
-struct FsBlockDevice {
-    _irq: Option<crate::block::BlockIrqRegistration>,
-    block: ax_driver::block::Block,
-}
-
-#[cfg(all(feature = "fs", not(feature = "fs-ng")))]
-impl FsBlockDevice {
-    fn new(mut block: ax_driver::block::Block) -> Self {
-        let irq = crate::block::register_irq_handler(&mut block);
-        Self { _irq: irq, block }
-    }
-}
-
-#[cfg(all(feature = "fs", not(feature = "fs-ng")))]
-impl ax_fs::FsBlockDevice for FsBlockDevice {
-    fn name(&self) -> &str {
-        self.block.name()
-    }
-
-    fn num_blocks(&self) -> u64 {
-        self.block.num_blocks()
-    }
-
-    fn block_size(&self) -> usize {
-        self.block.block_size()
-    }
-
-    fn read_block(&mut self, block_id: u64, buf: &mut [u8]) -> ax_errno::AxResult {
-        self.block.read_block(block_id, buf)
-    }
-
-    fn write_block(&mut self, block_id: u64, buf: &[u8]) -> ax_errno::AxResult {
-        self.block.write_block(block_id, buf)
-    }
-
-    fn flush(&mut self) -> ax_errno::AxResult {
-        self.block.flush()
-    }
 }

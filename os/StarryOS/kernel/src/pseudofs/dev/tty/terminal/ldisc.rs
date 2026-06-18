@@ -9,7 +9,7 @@ use core::{
 
 use ax_errno::{AxError, AxResult};
 use ax_task::future::block_on;
-use axpoll::PollSet;
+use axpoll::{IoEvents, PollSet};
 use linux_raw_sys::general::{
     ECHOCTL, ECHOK, ICRNL, IGNCR, ISIG, ONLCR, OPOST, VEOF, VERASE, VKILL, VMIN, VTIME,
 };
@@ -284,7 +284,8 @@ impl<R: TtyRead, W: TtyWrite> LineDiscipline<R, W> {
         let mut progressed = false;
         while reader.drain_source_into_line_buffer() {
             progressed = true;
-            input_ready.wake();
+            // New line-discipline input is visible before waking readers.
+            unsafe { input_ready.wake(IoEvents::IN) };
         }
         progressed
     }
@@ -311,8 +312,9 @@ impl<R: TtyRead, W: TtyWrite> LineDiscipline<R, W> {
                         fired: fired.clone(),
                         task: cx.waker().clone(),
                     }));
-                    input_source.register(&waker);
-                    pump_retry.register(&waker);
+                    // The reader task registers from ordinary task context.
+                    unsafe { input_source.register(&waker, IoEvents::IN) };
+                    unsafe { pump_retry.register(&waker, IoEvents::OUT) };
 
                     if Self::drive_input(&mut reader, input_ready.as_ref())
                         || fired.swap(false, Ordering::AcqRel)
@@ -409,7 +411,8 @@ impl<R: TtyRead, W: TtyWrite> LineDiscipline<R, W> {
 
     pub fn inject_input(&mut self, input: &[u8]) {
         self.injected_input.extend(input);
-        self.input_ready.clone().wake();
+        // Injected bytes are visible before waking readers.
+        unsafe { self.input_ready.wake(IoEvents::IN) };
     }
 
     pub fn poll_read(&mut self) -> bool {
@@ -434,10 +437,12 @@ impl<R: TtyRead, W: TtyWrite> LineDiscipline<R, W> {
     pub fn register_rx_waker(&self, waker: &Waker) {
         match &self.processor {
             Processor::InterruptDriven => {
-                self.input_ready.register(waker);
+                // Registration happens from tty read poll context.
+                unsafe { self.input_ready.register(waker, IoEvents::IN) };
             }
             Processor::Passive(_, set) => {
-                set.register(waker);
+                // Registration happens from tty read poll context.
+                unsafe { set.register(waker, IoEvents::IN) };
             }
         }
     }
@@ -497,7 +502,8 @@ impl<R: TtyRead, W: TtyWrite> LineDiscipline<R, W> {
         }
 
         let read = self.buf_rx.pop_slice(buf);
-        self.pump_retry.clone().wake();
+        // Buffer space was freed before waking the input pump.
+        unsafe { self.pump_retry.wake(IoEvents::OUT) };
         Ok(read)
     }
 }
@@ -575,7 +581,7 @@ mod tests {
         let mut data: Vec<u8> = (0..BUF_SIZE).map(|_| b'a').collect();
         data.push(b'\n');
 
-        let (mut reader, mut rx) = make_reader(data);
+        let (mut reader, rx) = make_reader(data);
 
         // First drain: reads the BUF_SIZE 'a' bytes into line_buf; no newline yet,
         // so nothing reaches buf_rx.  Must still return true (progress was made).

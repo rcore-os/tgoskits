@@ -10,8 +10,8 @@ use crate::{
     common::{SDIO_TYPE_CFG, SDIO_TYPE_CFG_CMD_RSP, SDIO_TYPE_CFG_DATA_CFM, SDIO_TYPE_CFG_PRINT},
     fdrv::{
         consts::{
-            ETH_P_PAE, MAX_PKT_LEN, RX_ALIGNMENT, RX_HWHRD_LEN, SDIO_OTHER_INTERRUPT,
-            SDIOWIFI_FUNC_BLOCKSIZE,
+            BLOCK_COUNT_MASK, ETH_P_PAE, MAX_PKT_LEN, RX_ALIGNMENT, RX_HWHRD_LEN,
+            SDIO_OTHER_INTERRUPT, SDIOWIFI_FUNC_BLOCKSIZE,
         },
         core::bus::{BusState, WifiBus},
     },
@@ -19,12 +19,8 @@ use crate::{
 
 pub static RX_WAKE_COUNT: AtomicU64 = AtomicU64::new(0);
 
-/// DIAG: kicker 唤醒次数、RX 轮询次数、最近一次 func2 block_cnt、非零读次数。
-/// 用于一次烧卡确诊:kicker 是否真在跑 + func2 到底有没有数据。
+/// DIAG: kicker 唤醒次数,用于确诊 kicker 是否真在跑。
 static RX_KICK_COUNT: AtomicU64 = AtomicU64::new(0);
-static RX_POLL_COUNT: AtomicU64 = AtomicU64::new(0);
-static RX_LAST_BLOCKCNT: AtomicU64 = AtomicU64::new(0xFFFF);
-static RX_NONZERO_READS: AtomicU64 = AtomicU64::new(0);
 
 /// 上层(StarryOS)注册的"收到数据帧"回调,存为 `fn()` 裸指针。
 ///
@@ -123,13 +119,7 @@ fn start_rx_poll_kicker(bus: Arc<WifiBus>) {
             // 每 ~1s 打一次心跳:证明 kicker 活着 + 汇报 RX 看到的 func2 状态
             let kicks = RX_KICK_COUNT.fetch_add(1, Ordering::Relaxed) + 1;
             if kicks.is_multiple_of(100) {
-                log::trace!(
-                    "[RXKICK] alive kicks={} rx_polls={} last_block_cnt=0x{:x} nonzero_reads={}",
-                    kicks,
-                    RX_POLL_COUNT.load(Ordering::Relaxed),
-                    RX_LAST_BLOCKCNT.load(Ordering::Relaxed),
-                    RX_NONZERO_READS.load(Ordering::Relaxed),
-                );
+                log::trace!("[RXKICK] alive kicks={}", kicks);
             }
             // 阻塞 sleep:本任务独占一个 ax_task 线程,只拖慢自己
             crate::runtime::runtime().sleep_ms(10);
@@ -147,7 +137,7 @@ fn start_rx_poll_kicker(bus: Arc<WifiBus>) {
 /// # 返回
 /// (block_cnt, should_continue) - 读取的块计数和是否应该继续处理
 fn read_block_count_with_retry(bus: &WifiBus, func: u8, other_int_retries: &mut u32) -> (u8, bool) {
-    let block_cnt = {
+    let intstatus = {
         match bus.transport.read_byte(func, bus.transport.block_cnt_reg()) {
             Ok(v) => v,
             Err(e) => {
@@ -157,7 +147,7 @@ fn read_block_count_with_retry(bus: &WifiBus, func: u8, other_int_retries: &mut 
         }
     };
 
-    if block_cnt & SDIO_OTHER_INTERRUPT != 0 {
+    if intstatus & SDIO_OTHER_INTERRUPT != 0 {
         *other_int_retries += 1;
         if *other_int_retries > 3 {
             log::trace!(
@@ -168,38 +158,86 @@ fn read_block_count_with_retry(bus: &WifiBus, func: u8, other_int_retries: &mut 
         }
         log::trace!(
             "[wifi-rx] SDIO_OTHER_INTERRUPT (0x{:02x}), re-read",
-            block_cnt
+            intstatus
         );
         return (0, true); // 继续重试
     }
 
-    // DIAG: 记录每次读到的 block_cnt(确诊 M1 在哪个 func 的 FIFO)
-    RX_POLL_COUNT.fetch_add(1, Ordering::Relaxed);
-    RX_LAST_BLOCKCNT.store(block_cnt as u64, Ordering::Relaxed);
-    if block_cnt != 0 {
-        RX_NONZERO_READS.fetch_add(1, Ordering::Relaxed);
-        log::trace!("[RXDIAG] func{} block_cnt=0x{:02x}", func, block_cnt);
+    // V3(D80)下 0x04 是多功能 MISC_INT_STATUS 寄存器:bit7=SDIO_OTHER_INTERRUPT
+    // (上面已处理),其余位的语义不是简单的"块数",而是 func1/func2 队列 + byte/block
+    // 模式的复合编码(详见 resolve_rx_data_len)。这里只剥掉中断位,把原始 intstatus
+    // 交给 resolve_rx_data_len 按厂商逻辑解析,不能在此直接 `& 0x7F` 当块数——例如
+    // intstatus==120(0x78)是 func1 的 byte-mode 哨兵,而非 120 个块。
+    (intstatus, true)
+}
+
+/// 按厂商 V3 驱动逻辑(radxa aicwf_sdio.c hal_irqhandler 的 D80 分支)解析一帧的
+/// 真实字节长度。返回 0 表示无数据。
+///
+/// V3(D80)逻辑:
+///   intmaskf2 = intstatus | (1<<3)
+///   if intmaskf2 > 120:        // func2 队列
+///       if intmaskf2 == 127:   byte mode -> data_len = reg[0x05] * 4
+///       else:                  block mode -> data_len = (intstatus & 0x07) * 512
+///   else:                      // func1 队列
+///       if intstatus == 120:   byte mode -> data_len = reg[0x05] * 4
+///       else:                  block mode -> data_len = (intstatus & 0x7F) * 512
+///
+/// V2(8801)逻辑:data_len = (intstatus & 0x7F) * 512(intstatus<64 直接块模式,
+/// 这里统一按块数 ×512,与现有行为一致)。
+fn resolve_rx_data_len(bus: &WifiBus, intstatus: u8) -> usize {
+    if !bus.transport.is_v3() {
+        return (intstatus & BLOCK_COUNT_MASK) as usize * SDIOWIFI_FUNC_BLOCKSIZE;
     }
 
-    (block_cnt, true)
+    let read_bytemode_len = || -> usize {
+        match bus.transport.read_byte(1, bus.transport.bytemode_len_reg()) {
+            // 厂商 aicwf_sdio_intr_get_len_bytemode:data_len = byte_len * 4
+            // (byte_len <= 128 → 最大 512 字节);只读 0x05,不读 0x06(MSB)。
+            Ok(byte_len) => byte_len as usize * 4,
+            Err(e) => {
+                log::error!("[wifi-rx] read bytemode_len failed: {:?}", e);
+                0
+            }
+        }
+    };
+
+    // 厂商 aicwf_sdio.c D80 分支(LYU4662/aic8800-sdio-linux-1.0)逐字对应。
+    // 注意:block 模式下读完 0x04 必须立刻读 FIFO,中间不能插 CMD52;
+    // 只有 byte 模式(120/127 哨兵)才允许读一次 0x05。
+    let intmaskf2 = intstatus | (1 << 3);
+    if intmaskf2 > 120 {
+        // func2 队列
+        if intmaskf2 == 127 {
+            read_bytemode_len()
+        } else {
+            (intstatus & 0x07) as usize * SDIOWIFI_FUNC_BLOCKSIZE
+        }
+    } else {
+        // func1 队列
+        if intstatus == 120 {
+            read_bytemode_len()
+        } else {
+            (intstatus & 0x7F) as usize * SDIOWIFI_FUNC_BLOCKSIZE
+        }
+    }
 }
 
 /// 读取 FIFO 数据
 ///
-/// 将大的 CMD53 多块传输拆分为较小的段，避免 1-bit SDIO 模式下
-/// 单次传输 block 数量过多导致 SDHCI 控制器超时。
-const MAX_BLOCKS_PER_CMD53: usize = 1;
-
-fn read_fifo_data(bus: &WifiBus, func: u8, block_cnt: u8) -> Option<Vec<u8>> {
-    let total = block_cnt as usize;
-    let data_len = total * SDIOWIFI_FUNC_BLOCKSIZE;
+/// `data_len` 是 resolve_rx_data_len 解析出的真实字节长度(block 模式为 512 的整数倍,
+/// byte 模式可为任意 ≤512 的字节数)。按 512 字节分段读,避免 1-bit SDIO 模式下单次
+/// CMD53 传输 block 数量过多导致 SDHCI 控制器超时;最后不足 512 的尾段以 byte 模式读
+/// (底层 read_fifo 对非 512 对齐长度自动走 byte-mode CMD53)。
+///
+/// `func`:DC 的 CFM/indication 邮箱在 func2,数据帧在 func1,需按队列读对应 func 的
+/// FIFO;8801/D80 命令与数据同在 func1。
+fn read_fifo_data(bus: &WifiBus, func: u8, data_len: usize) -> Option<Vec<u8>> {
     let mut buf = vec![0u8; data_len];
     let mut offset = 0;
-    let mut remaining = total;
 
-    while remaining > 0 {
-        let chunk = core::cmp::min(remaining, MAX_BLOCKS_PER_CMD53);
-        let chunk_len = chunk * SDIOWIFI_FUNC_BLOCKSIZE;
+    while offset < data_len {
+        let chunk_len = core::cmp::min(data_len - offset, SDIOWIFI_FUNC_BLOCKSIZE);
 
         if let Err(e) = bus.transport.read_fifo(
             func,
@@ -207,16 +245,15 @@ fn read_fifo_data(bus: &WifiBus, func: u8, block_cnt: u8) -> Option<Vec<u8>> {
             &mut buf[offset..offset + chunk_len],
         ) {
             log::error!(
-                "[wifi-rx] read_fifo failed at block {}/{}: {:?}",
-                total - remaining,
-                total,
+                "[wifi-rx] read_fifo failed at offset {}/{}: {:?}",
+                offset,
+                data_len,
                 e
             );
             return None;
         }
 
         offset += chunk_len;
-        remaining -= chunk;
     }
 
     Some(buf)
@@ -247,26 +284,32 @@ fn drain_func(bus: &WifiBus, func: u8) {
             // ISR 触发了，继续读取（不 break）
         }
 
-        let (block_cnt, should_continue) =
+        let (intstatus, should_continue) =
             read_block_count_with_retry(bus, func, &mut other_int_retries);
         if !should_continue {
             break;
         }
 
-        if block_cnt == 0 {
+        if intstatus == 0 {
+            break;
+        }
+
+        other_int_retries = 0;
+
+        // 按厂商 V3 逻辑解析真实字节长度(区分 func1/func2 + byte/block 模式)
+        let data_len = resolve_rx_data_len(bus, intstatus);
+        if data_len == 0 {
             break;
         }
 
         log::trace!(
-            "[wifi-rx] func{} block_cnt=0x{:02x}, reading FIFO",
-            func,
-            block_cnt
+            "[wifi-rx] intstatus=0x{:02x}, data_len={} bytes, reading FIFO",
+            intstatus,
+            data_len
         );
 
-        other_int_retries = 0;
-
         // 读取 FIFO 数据
-        let Some(buf) = read_fifo_data(bus, func, block_cnt) else {
+        let Some(buf) = read_fifo_data(bus, func, data_len) else {
             break;
         };
 
@@ -579,6 +622,17 @@ fn process_data_frame(bus: &WifiBus, data_payload: &[u8], pkt_len: usize, _mpdu_
     let fc0 = mpdu[0];
     let fc1 = mpdu[1];
 
+    // 802.11 帧控制字段(data/mgmt/子类型)。trace 级:AP 模式下每个周围
+    // beacon 都会进来,info 刷屏会拖死 RX 线程、错过 Auth/Assoc 握手。
+    log::trace!(
+        "[wifi-rx] 80211 fc0=0x{:02x} fc1=0x{:02x} data={} mgmt={} pkt_len={}",
+        fc0,
+        fc1,
+        is_80211_data_frame(fc0),
+        is_80211_mgmt_frame(fc0),
+        pkt_len
+    );
+
     if !is_80211_data_frame(fc0) {
         // AP 模式：管理帧(Auth/Assoc 等)由固件转发上来，处理握手。
         if is_80211_mgmt_frame(fc0) {
@@ -613,16 +667,12 @@ fn process_data_frame(bus: &WifiBus, data_payload: &[u8], pkt_len: usize, _mpdu_
     let payload_start = llc_offset + 8;
 
     log::trace!(
-        "[RXDIAG] data80211: fc0=0x{:02x} fc1=0x{:02x} hdr_len={} decr={} crypto_hdr={} et_off={} \
-         ethertype=0x{:04x} sa={:02x?}",
-        fc0,
-        fc1,
-        hdr_len,
-        hw_info.decr_status,
-        crypto_hdr_len,
-        ether_type_offset,
+        "[wifi-rx] DATA ethertype=0x{:04x} (EAPOL={}) hdr_len={} crypto={} pkt_len={}",
         ethertype,
-        addr_info.sa
+        ethertype == ETH_P_PAE,
+        hdr_len,
+        crypto_hdr_len,
+        pkt_len
     );
 
     if ethertype == ETH_P_PAE {
@@ -717,6 +767,18 @@ fn dispatch_frames(bus: &WifiBus, buf: &[u8]) {
 
         let pkt_type = buf[offset + 2] & 0x7F;
         let is_cfg = (pkt_type & SDIO_TYPE_CFG) == SDIO_TYPE_CFG;
+
+        // 跳过 PRINT(idle 刷屏的固件 debug 帧)。trace 级:AP 模式每个周围
+        // beacon 都会进来,info 刷屏会拖死 RX 线程。
+        if !(is_cfg && pkt_type == SDIO_TYPE_CFG_PRINT) {
+            log::trace!(
+                "[wifi-rx] frame off={} pkt_len={} type=0x{:02x} is_cfg={}",
+                offset,
+                pkt_len,
+                pkt_type,
+                is_cfg
+            );
+        }
 
         if !is_cfg {
             // ========== DATA 帧 ==========

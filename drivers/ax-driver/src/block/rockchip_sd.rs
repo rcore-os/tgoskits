@@ -29,12 +29,14 @@ use sdmmc_protocol::{
 };
 
 use crate::{
-    block::{ProbeFdtBlock, SharedDriver},
+    block::{
+        ProbeFdtBlock, SharedDriver,
+        sdmmc::{SdmmcBlockConfig, SdmmcBlockDevice},
+    },
     mmio::iomap,
     soc::scmi,
 };
 
-const BLOCK_SIZE: usize = 512;
 const DWMMC_STABLE_REFERENCE_CLOCK: u32 = 50_000_000;
 const ENABLE_SD_SPEED_SELECTION: bool = true;
 const RK3588_CRU_BASE: usize = 0xfd7c_0000;
@@ -48,10 +50,8 @@ const RK3588_SDMMC_SAMPLE_PHASE_CANDIDATES: [u32; 8] = [0, 45, 90, 135, 180, 225
 
 type RockchipDwMmc = SdioSdmmc<DwMmc>;
 
-mod block;
 mod phase;
 
-use block::SdBlockDevice;
 use phase::{init_rk3588_sdmmc_phase, tune_rk3588_sdmmc_sample_phase};
 
 crate::model_register!(
@@ -135,13 +135,10 @@ fn probe(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
     }
 
     let raw = SharedDriver::new(sd);
-    let dev = SdBlockDevice {
-        raw: Some(raw.clone()),
-        capacity_blocks: card_info.capacity_blocks.unwrap_or(0),
-        irq_enabled: core::sync::atomic::AtomicBool::new(false),
-        queue_created: false,
-        irq_handler_taken: false,
-    };
+    let dev = SdmmcBlockDevice::new(
+        raw,
+        SdmmcBlockConfig::dma("rockchip-sd", card_info.capacity_blocks.unwrap_or(0), true),
+    );
     let irq = probe.register_block(dev)?;
     info!("rockchip-sd block device registered irq={:?}", irq);
     Ok(())

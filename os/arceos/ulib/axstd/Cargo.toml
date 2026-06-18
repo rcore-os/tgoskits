@@ -73,8 +73,8 @@ fs = [
     "ax-driver/virtio-blk",
     "fd",
 ]
-ext4fs = ["fs"]
-fatfs = ["fs"]
+ext4fs = ["fs", "ax-feat/ext4fs"]
+fatfs = ["fs", "ax-feat/fatfs"]
 
 # Networking
 net = [

@@ -619,10 +619,32 @@ impl WifiClient {
             let eapol =
                 wait_for_eapol(&self.bus, timeout_ms).map_err(|_| WifiError::ConnectionTimeout)?;
 
+            log::debug!(
+                "[wpa2] wait_for_eapol got {} bytes, vif={} sta_idx={}",
+                eapol.len(),
+                self.vif_idx,
+                sta_idx
+            );
             match handshake.process_eapol(&eapol) {
                 Ok(HandshakeAction::SendM2(m2)) => {
-                    send_eapol_data_frame(&self.bus, bssid, &own_mac, &m2, self.vif_idx, sta_idx)
-                        .map_err(|e| WifiError::OperationFailed(format!("Send M2 failed: {:?}", e)))?;
+                    log::debug!("[wpa2] sending M2 ({} bytes) -> {:02x?}", m2.len(), bssid);
+                    match send_eapol_data_frame(
+                        &self.bus,
+                        bssid,
+                        &own_mac,
+                        &m2,
+                        self.vif_idx,
+                        sta_idx,
+                    ) {
+                        Ok(()) => log::debug!("[wpa2] M2 send_eapol_data_frame returned Ok"),
+                        Err(e) => {
+                            log::error!("[wpa2] M2 send failed: {:?}", e);
+                            return Err(WifiError::OperationFailed(format!(
+                                "Send M2 failed: {:?}",
+                                e
+                            )));
+                        }
+                    }
                 }
                 Ok(HandshakeAction::Completed(result)) => {
                     // 安装 PTK

@@ -55,6 +55,7 @@ aarch64-cpu = "11"
 aarch64-cpu-ext = "0.1"
 kasm-aarch64 = { workspace = true }
 smccc = "0.2"
+uefi.workspace = true
 
 [target.'cfg(target_arch = "x86_64")'.dependencies]
 uefi.workspace = true

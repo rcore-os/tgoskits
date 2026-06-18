@@ -290,7 +290,8 @@ impl IoUring {
         self.rings
             .cq_ring
             .write_u32(CQ_TAIL_OFFSET, tail.wrapping_add(1));
-        self.poll_cq.wake();
+        // CQ tail is published before waking completion waiters.
+        unsafe { self.poll_cq.wake(IoEvents::IN) };
     }
 }
 
@@ -313,7 +314,8 @@ impl Pollable for IoUring {
 
     fn register(&self, context: &mut Context<'_>, events: IoEvents) {
         if events.contains(IoEvents::IN) {
-            self.poll_cq.register(context.waker());
+            // Registration happens from file poll task context.
+            unsafe { self.poll_cq.register(context.waker(), IoEvents::IN) };
         }
     }
 }

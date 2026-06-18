@@ -322,7 +322,8 @@ impl EpollInner {
             interest.mark_not_in_queue();
             self.overflow_ready.store(true, Ordering::Release);
         }
-        self.poll_ready.wake();
+        // Ready queue or overflow state is published before waking epoll waiters.
+        unsafe { self.poll_ready.wake(IoEvents::IN) };
     }
 
     fn remove_ready_entries_for(&self, target: &Weak<EpollInterest>) {
@@ -391,7 +392,8 @@ impl EpollInner {
         })();
         if result.is_err() {
             self.overflow_ready.store(true, Ordering::Release);
-            self.poll_ready.wake();
+            // Overflow state is published before waking epoll waiters.
+            unsafe { self.poll_ready.wake(IoEvents::IN) };
         }
         result
     }
@@ -692,7 +694,12 @@ impl Pollable for Epoll {
 
     fn register(&self, context: &mut Context<'_>, events: IoEvents) {
         if events.contains(IoEvents::IN) {
-            self.inner.poll_ready.register(context.waker());
+            // Registration happens from epoll wait task context.
+            unsafe {
+                self.inner
+                    .poll_ready
+                    .register(context.waker(), IoEvents::IN)
+            };
         }
     }
 }

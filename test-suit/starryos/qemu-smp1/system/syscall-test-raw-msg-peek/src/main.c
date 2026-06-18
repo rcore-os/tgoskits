@@ -7,6 +7,7 @@
 #include <fcntl.h>
 #include <netinet/ip.h>
 #include <netinet/ip_icmp.h>
+#include <sys/select.h>
 #include <sys/socket.h>
 #include <sys/syscall.h>
 #include <sys/wait.h>
@@ -41,6 +42,23 @@ static int make_raw_socket(void) {
     int fd = socket(AF_INET, SOCK_RAW | SOCK_NONBLOCK, IPPROTO_ICMP);
     CHECK(fd >= 0, "create nonblocking raw ICMP socket");
     return fd;
+}
+
+static int wait_readable(int fd, int timeout_ms) {
+    fd_set rfds;
+    FD_ZERO(&rfds);
+    FD_SET(fd, &rfds);
+
+    struct timeval tv = {
+        .tv_sec = timeout_ms / 1000,
+        .tv_usec = (timeout_ms % 1000) * 1000,
+    };
+
+    int ret;
+    do {
+        ret = select(fd + 1, &rfds, NULL, NULL, &tv);
+    } while (ret < 0 && errno == EINTR);
+    return ret;
 }
 
 static int run_in_child(void (*func)(void)) {
@@ -136,6 +154,8 @@ int main(void) {
 
     send_echo_request(send_fd, actual_peer, ident);
 
+    CHECK_RET(wait_readable(recv_fd, 1000), 1,
+              "receiver becomes readable before MSG_PEEK");
     CHECK_ERR(recv(recv_fd, &(unsigned char){0}, 1, MSG_PEEK), EAGAIN,
               "MSG_PEEK rejects non-peer packet without consuming it");
 

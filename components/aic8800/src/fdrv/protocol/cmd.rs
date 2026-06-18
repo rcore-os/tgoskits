@@ -12,7 +12,7 @@ use alloc::{sync::Arc, vec, vec::Vec};
 use core::{sync::atomic::Ordering, task::Poll};
 
 use crate::{
-    common::{SDIO_TYPE_CFG_CMD_RSP, SDIOWIFI_WR_FIFO_ADDR},
+    common::SDIO_TYPE_CFG_CMD_RSP,
     fdrv::{
         consts::*,
         core::bus::{BusState, WifiBus},
@@ -351,11 +351,18 @@ fn calculate_eapol_frame_layout(eapol_len: usize) -> EapolFrameLayout {
     }
 }
 
-fn fill_sdio_header_for_eapol(buf: &mut [u8], layout: &EapolFrameLayout) {
+fn fill_sdio_header_for_eapol(buf: &mut [u8], layout: &EapolFrameLayout, is_v3: bool) {
     buf[0] = (layout.sdio_hdr_len & 0xFF) as u8;
     buf[1] = ((layout.sdio_hdr_len >> 8) & 0x0F) as u8;
     buf[2] = 0x01; // SDIO_TYPE_DATA
-    buf[3] = 0x00;
+    // V3(D80)固件校验 SDIO header 第 4 字节的 CRC8;V2(8801)恒为 0。
+    // 与 build_data_frame/build_cmd_frame 的逻辑保持一致——之前这里漏了 V3
+    // 分支,EAPOL 帧在 D80 上因 CRC 校验失败被固件静默丢弃,导致 M2 发不出去。
+    buf[3] = if is_v3 {
+        crate::common::crc8_ponl_107(&buf[0..3])
+    } else {
+        0x00
+    };
 }
 
 fn fill_hostdesc_for_eapol(
@@ -381,6 +388,7 @@ fn build_eapol_frame_buffer(
     eapol: &[u8],
     vif_idx: u8,
     sta_idx: u8,
+    is_v3: bool,
 ) -> Vec<u8> {
     const SDIO_HEADER_LEN: usize = 4;
     const HOSTDESC_SIZE: usize = 28;
@@ -388,7 +396,7 @@ fn build_eapol_frame_buffer(
     let layout = calculate_eapol_frame_layout(eapol.len());
     let mut buf = vec![0u8; layout.final_len];
 
-    fill_sdio_header_for_eapol(&mut buf, &layout);
+    fill_sdio_header_for_eapol(&mut buf, &layout, is_v3);
     fill_hostdesc_for_eapol(
         &mut buf[SDIO_HEADER_LEN..SDIO_HEADER_LEN + HOSTDESC_SIZE],
         layout.payload_len,
@@ -425,7 +433,10 @@ fn send_eapol_frame_to_sdio(bus: &Arc<WifiBus>, buf: &[u8]) -> Result<(), CmdErr
         return Err(e);
     }
 
-    if let Err(e) = transport.write_fifo(transport.cmd_func(), SDIOWIFI_WR_FIFO_ADDR, buf) {
+    // V3(D80)的写 FIFO 地址是 0x10,V2(8801)是 0x07。必须用 transport 的
+    // V3 感知方法,与 CMD/DATA/MGMT 帧路径一致——之前这里写死了 V2 常量,
+    // 导致 D80 上 M2 被写到错误 SDIO 地址,固件收不到,4 次握手卡死。
+    if let Err(e) = transport.write_fifo(1, transport.wr_fifo_addr(), buf) {
         log::error!("[cmd_mgr] EAPOL TX write_fifo failed: {:?}", e);
         transport.unmask_card_irq();
         return Err(CmdError::SdioError);
@@ -446,6 +457,13 @@ pub fn send_eapol_data_frame(
     vif_idx: u8,
     sta_idx: u8,
 ) -> Result<(), CmdError> {
-    let buf = build_eapol_frame_buffer(dst_mac, src_mac, eapol, vif_idx, sta_idx);
+    let buf = build_eapol_frame_buffer(
+        dst_mac,
+        src_mac,
+        eapol,
+        vif_idx,
+        sta_idx,
+        bus.transport.is_v3(),
+    );
     send_eapol_frame_to_sdio(bus, &buf)
 }

@@ -15,7 +15,7 @@ use ax_runtime::hal::{
     paging::{MappingFlags, PageSize, PageTable, PageTableCursor},
     trap::PageFaultFlags,
 };
-use ax_sync::Mutex;
+use ax_sync::{LockdepMutexExt, Mutex};
 
 mod backend;
 
@@ -550,7 +550,7 @@ impl AddrSpace {
         let new_aspace = Arc::new(Mutex::new(Self::new_empty(self.base(), self.size())?));
         let new_aspace_clone = new_aspace.clone();
 
-        let mut guard = new_aspace.lock();
+        let mut guard = new_aspace.lock_nested(1);
 
         let mut self_modify = self.pt.cursor();
         for area in self.areas.iter() {

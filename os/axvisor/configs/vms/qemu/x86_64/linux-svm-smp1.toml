@@ -71,6 +71,10 @@ passthrough_devices = [
 # Passthrough addresses.
 # Base-GPA  Length.
 passthrough_addresses = [
+  # QEMU q35 may place PCI BARs around 0x8000_0000 or 0x8_0000_0000 on
+  # different hosts; both must be identity-mapped for guest PCI probing.
+  [0x8000_0000, 0x10_0000],
+  [0x8_0000_0000, 0x10_0000],
   # QEMU q35 low MMIO window needed by PCI/virtio-blk probing.
   [0xfe00_0000, 0x00c0_0000],
   # Linux probes a q35/ICH system MMIO page at 0xfed8_03c0 after the PIT/HLT path is fixed.

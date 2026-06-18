@@ -82,6 +82,10 @@ impl<B: BlockDevice> Jbd2Dev<B> {
         }
     }
 
+    pub fn into_inner(self) -> B {
+        self.inner.into_inner()
+    }
+
     /// Returns whether journal support is enabled.
     pub fn is_use_journal(&self) -> bool {
         self.journal_use

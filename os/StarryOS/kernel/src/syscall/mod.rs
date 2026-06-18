@@ -14,12 +14,14 @@ mod time;
 
 use ax_errno::{AxError, LinuxError};
 use ax_runtime::hal::cpu::uspace::UserContext;
+use starry_signal::Signo;
 use syscalls::Sysno;
 
 pub use self::{
     fs::*, io_mpx::*, ipc::*, mm::*, net::*, ns::*, resources::*, signal::*, sync::*, sys::*,
     task::*, time::*,
 };
+use crate::task::{AsThread, SeccompDecision, do_exit, seccomp_errno};
 
 pub fn syscall_allows_signal_restart(sysno: usize) -> bool {
     !matches!(Sysno::new(sysno), Some(Sysno::msgsnd | Sysno::msgrcv))
@@ -47,6 +49,30 @@ pub fn handle_syscall(uctx: &mut UserContext) {
     };
 
     trace!("Syscall {sysno:?}");
+    match ax_task::current()
+        .as_thread()
+        .seccomp_state()
+        .evaluate(uctx)
+    {
+        SeccompDecision::Allow => {}
+        SeccompDecision::Errno(errno) => {
+            uctx.set_retval(seccomp_errno(errno));
+            return;
+        }
+        SeccompDecision::KillProcess => {
+            do_exit(Signo::SIGSYS as i32, true);
+            return;
+        }
+        SeccompDecision::KillThread => {
+            do_exit(Signo::SIGSYS as i32, false);
+            return;
+        }
+        SeccompDecision::UnsupportedAction => {
+            uctx.set_retval(-LinuxError::ENOSYS.code() as usize);
+            return;
+        }
+    }
+
     // Snapshot sepc before dispatching: if a signal handler is installed
     // during the syscall, the handler redirects uctx.ip() elsewhere.
     // We must not overwrite retval when that happens, because on
@@ -879,12 +905,16 @@ pub fn handle_syscall(uctx: &mut UserContext) {
             uctx.arg3() as _,
         ),
 
+        // The new mount API (fsopen/fsconfig/fsmount/move_mount, plus
+        // fspick/open_tree) is not implemented. Report ENOSYS instead of
+        // handing back a dummy fd: systemd probes this API and only falls back
+        // to the classic mount(2) — which we do support — when the entry point
+        // reports "not supported". A fake fd traps it into the new path, where
+        // the follow-up fsconfig then hard-fails and aborts the mount.
+        Sysno::fsopen | Sysno::fspick | Sysno::open_tree => Err(AxError::Unsupported),
+
         // dummy fds
-        Sysno::userfaultfd
-        | Sysno::fsopen
-        | Sysno::fspick
-        | Sysno::open_tree
-        | Sysno::memfd_secret => sys_dummy_fd(sysno),
+        Sysno::userfaultfd | Sysno::memfd_secret => sys_dummy_fd(sysno),
 
         Sysno::bpf => crate::ebpf::sys_bpf(uctx.arg0() as _, uctx.arg1(), uctx.arg2() as _),
         Sysno::perf_event_open => crate::perf::sys_perf_event_open(
@@ -917,7 +947,7 @@ pub fn handle_syscall(uctx: &mut UserContext) {
         Sysno::timer_delete => sys_timer_delete(uctx.arg0() as _),
 
         _ => {
-            let tid = ax_task::current().id().as_u64() as u32;
+            let tid = ax_task::current().as_thread().tid();
             warn!("Unimplemented syscall: {sysno} (tid={tid})");
             Err(AxError::Unsupported)
         }

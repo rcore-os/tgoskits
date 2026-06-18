@@ -17,7 +17,7 @@ paging = ["dep:ax-mm", "ax-feat/paging"]
 dma = ["dep:ax-dma", "ax-feat/dma"]
 multitask = ["ax-task/multitask", "ax-sync/multitask", "ax-feat/multitask"]
 stack-guard-page = ["multitask", "paging", "ax-feat/stack-guard-page"]
-fs = ["dep:ax-fs", "ax-feat/fs"]
+fs = ["dep:ax-fs-ng", "ax-feat/fs"]
 net = ["dep:ax-net", "ax-feat/net"]
 display = ["dep:ax-display", "ax-feat/display"]
 
@@ -32,7 +32,7 @@ ax-display = { workspace = true, optional = true }
 ax-dma = { workspace = true, optional = true }
 ax-errno.workspace = true
 ax-feat.workspace = true
-ax-fs = { workspace = true, optional = true }
+ax-fs-ng = { workspace = true, optional = true }
 ax-hal.workspace = true
 ax-io.workspace = true
 ax-ipi = { workspace = true, optional = true }

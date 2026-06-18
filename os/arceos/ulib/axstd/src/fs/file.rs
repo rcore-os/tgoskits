@@ -80,42 +80,42 @@ impl Default for OpenOptions {
 impl Metadata {
     /// Returns the file type for this metadata.
     pub const fn file_type(&self) -> FileType {
-        self.0.file_type()
+        self.0.node_type
     }
 
     /// Returns `true` if this metadata is for a directory. The
     /// result is mutually exclusive to the result of
     /// [`Metadata::is_file`].
     pub const fn is_dir(&self) -> bool {
-        self.0.is_dir()
+        matches!(self.file_type(), FileType::Directory)
     }
 
     /// Returns `true` if this metadata is for a regular file. The
     /// result is mutually exclusive to the result of
     /// [`Metadata::is_dir`].
     pub const fn is_file(&self) -> bool {
-        self.0.is_file()
+        matches!(self.file_type(), FileType::RegularFile)
     }
 
     /// Returns the size of the file, in bytes, this metadata is for.
     #[allow(clippy::len_without_is_empty)]
     pub const fn len(&self) -> u64 {
-        self.0.size()
+        self.0.size
     }
 
     /// Returns the permissions of the file this metadata is for.
     pub const fn permissions(&self) -> Permissions {
-        self.0.perm()
+        self.0.mode
     }
 
     /// Returns the total size of this file in bytes.
     pub const fn size(&self) -> u64 {
-        self.0.size()
+        self.0.size
     }
 
     /// Returns the number of blocks allocated to the file, in 512-byte units.
     pub const fn blocks(&self) -> u64 {
-        self.0.blocks()
+        self.0.blocks
     }
 }
 

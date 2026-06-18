@@ -3,7 +3,7 @@ use alloc::{
     sync::Arc,
 };
 
-use ax_fs::FS_CONTEXT;
+use ax_fs_ng::vfs::FS_CONTEXT;
 use ax_runtime::hal::cpu::uspace::UserContext;
 use ax_sync::Mutex;
 use ax_task::{AxTaskExt, spawn_task};
@@ -24,16 +24,13 @@ pub fn init(args: &[String], envs: &[String]) {
 
     crate::ebpf::init_ebpf();
     crate::perf::perf_event_init();
-
     crate::kmod::init_kmod();
-
-    #[cfg(feature = "kprobe_test")]
-    crate::kprobe::kprobe_test();
 
     pseudofs::mount_all().expect("Failed to mount pseudofs");
     spawn_alarm_task();
+    pseudofs::usbfs::start_event_pump();
 
-    ax_alloc::register_page_reclaim_fn(ax_fs::page_cache_reclaim);
+    ax_alloc::register_page_reclaim_fn(ax_fs_ng::vfs::page_cache_reclaim);
 
     let loc = FS_CONTEXT
         .lock()
@@ -58,7 +55,16 @@ pub fn init(args: &[String], envs: &[String]) {
     let mut task = new_user_task(&name, uctx, 0);
     task.ctx_mut().set_page_table_root(uspace.page_table_root());
 
-    let pid = task.id().as_u64() as Pid;
+    // PID 1 must really be 1: the init process is the root of the process
+    // hierarchy and userspace (e.g. systemd's `getpid() == 1` system-manager
+    // check) relies on it. The scheduler task id is an internal counter that is
+    // already past 1 by the time we spawn the user init (kernel helper tasks
+    // took the low ids), so we pin the user-visible pid/tid to 1 and leave the
+    // scheduler id untouched. `Thread::tid` is already decoupled from the
+    // scheduler id (see its field doc), so this only requires the table keys to
+    // follow the thread tid rather than `task.id()`.
+    const INIT_PID: Pid = 1;
+    let pid = INIT_PID;
     let proc = Process::new_init(pid);
     proc.add_thread(pid);
 

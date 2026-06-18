@@ -1,3 +1,16 @@
+//! Vsock socket facade.
+//!
+//! This module exposes vsock transports through the common socket API. Stream
+//! transport is implemented today; the transport enum leaves room for future
+//! datagram support without changing the public socket wrapper.
+//!
+//! # Stack Boundary
+//!
+//! Vsock is not an IP protocol and is not driven through smoltcp. The facade
+//! shares the same `SocketOps`, `Pollable`, and socket option plumbing as IP
+//! sockets, but actual connection state lives in `connection_manager` and the
+//! device event loop in `device::vsock`.
+
 // pub(crate) mod dgram; todo
 
 pub(crate) mod connection_manager;
@@ -66,6 +79,7 @@ impl Pollable for VsockTransport {
 
 /// A network socket using the vsock protocol.
 pub struct VsockSocket {
+    /// Concrete vsock transport.
     transport: VsockTransport,
 }
 

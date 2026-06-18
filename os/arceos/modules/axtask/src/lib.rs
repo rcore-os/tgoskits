@@ -71,6 +71,8 @@ cfg_if::cfg_if! {
         mod lockdep;
         #[cfg(feature = "tracepoint-hooks")]
         mod sched_tracepoint;
+        #[cfg(feature = "irq")]
+        mod irq_notify;
         mod wait_queue;
 
         #[cfg(feature = "irq")]
@@ -81,6 +83,8 @@ cfg_if::cfg_if! {
 
         #[cfg_attr(doc, doc(cfg(feature = "multitask")))]
         pub use self::api::*;
+        #[cfg(feature = "irq")]
+        pub use self::irq_notify::IrqNotify;
         pub use self::api::{sleep, sleep_until, yield_now};
         #[cfg(feature = "tracepoint-hooks")]
         pub use self::sched_tracepoint::SchedTracepoint;

@@ -1,7 +1,7 @@
 use alloc::sync::Arc;
 
 use ax_kspin::SpinNoIrq;
-use axpoll::PollSet;
+use axpoll::{IoEvents, PollSet};
 use ringbuf::{
     Cons, HeapRb, Prod,
     traits::{Consumer, Producer},
@@ -47,7 +47,8 @@ impl PtyWriter {
 impl TtyWrite for PtyWriter {
     fn write(&self, buf: &[u8]) {
         let read = self.0.lock().push_slice(buf);
-        self.1.wake();
+        // PTY bytes are committed before waking the peer reader.
+        unsafe { self.1.wake(IoEvents::IN) };
         if read < buf.len() {
             warn!("Discarding {} bytes written to pty", buf.len() - read);
         }
@@ -81,4 +82,24 @@ pub(crate) fn create_pty_pair() -> (Arc<PtyDriver>, Arc<PtyDriver>) {
     );
 
     (master, slave)
+}
+
+#[cfg(test)]
+mod tests {
+    use axpoll::{IoEvents, Pollable};
+
+    use crate::pseudofs::DeviceOps;
+
+    #[test]
+    fn pty_preserves_mouse_escape_reports() {
+        let (master, slave) = super::create_pty_pair();
+        let report = b"\x1b[<0;1;1M";
+
+        assert_eq!(slave.write_at(report, 0), Ok(report.len()));
+        assert!(master.poll().contains(IoEvents::IN));
+
+        let mut buf = [0; 16];
+        let read = master.read_at(&mut buf, 0).unwrap();
+        assert_eq!(&buf[..read], report);
+    }
 }

@@ -88,12 +88,17 @@ pub fn cleanup_task_tables() {
 /// Add the task, the thread and possibly its process, process group and session
 /// to the corresponding tables.
 pub fn add_task_to_table(task: &AxTaskRef) {
-    let tid = task.id().as_u64() as Pid;
+    // Key by the user-visible thread tid, not the scheduler `task.id()`. The two
+    // are equal for every task except the init process, whose pid/tid is pinned
+    // to 1 while its scheduler id stays at whatever the allocator handed out
+    // (see `entry::init`). All tid lookups (signals, get_task, ptrace) go
+    // through this table, so they must agree with `Thread::tid`.
+    let proc_data = &task.as_thread().proc_data;
+    let tid = task.as_thread().tid() as Pid;
 
     let mut task_table = TASK_TABLE.write();
     task_table.insert(tid, task);
 
-    let proc_data = &task.as_thread().proc_data;
     let proc = &proc_data.proc;
     let pid = proc.pid();
     let mut proc_table = PROCESS_TABLE.write();
@@ -222,6 +227,27 @@ pub fn traced_zombies_for(tracer_pid: Pid) -> Vec<Arc<Process>> {
         .filter(|entry| entry.ptrace_tracer_pid == Some(tracer_pid))
         .map(|entry| entry.proc.clone())
         .collect()
+}
+
+/// Detach every live tracee that still points at `tracer_pid`.
+///
+/// A ptrace relationship must not outlive the tracer. Otherwise a tracee can
+/// remain stuck in ptrace-stop with a dead tracer PID, or resume later with
+/// stale ptrace state still armed. Either outcome is unsafe during task-exit
+/// cleanup paths. Clearing the stop state wakes any tracee blocked in
+/// `ptrace_stop_current()` so it can continue without consulting the dead
+/// tracer again.
+pub fn detach_live_tracees_of(tracer_pid: Pid) {
+    for tracee in processes() {
+        if tracee.ptrace_tracer_pid() != Some(tracer_pid) {
+            continue;
+        }
+        tracee.clear_ptrace_stop();
+        tracee.clear_ptrace_traceme();
+        tracee.clear_ptrace_attached();
+        tracee.clear_ptrace_tracer_pid();
+        tracee.set_ptrace_options(0);
+    }
 }
 
 /// Finds the process with the given PID.
@@ -543,6 +569,11 @@ pub fn do_exit(exit_code: i32, group_exit: bool) {
         // process address-space slot.
         crate::syscall::cleanup_aio_contexts_for_pid(process.pid());
 
+        // Drop ptrace relationships owned by this process before publishing the
+        // final zombie state. Tracees blocked in ptrace-stop must not retain a
+        // dead tracer PID or stale stop context once the tracer is gone.
+        detach_live_tracees_of(process.pid());
+
         // Close all file descriptors before marking the process as exited.
         // This ensures pipe write ends and other resources are properly released,
         // so parent processes blocking on pipe reads will receive EOF.
@@ -599,7 +630,8 @@ pub fn do_exit(exit_code: i32, group_exit: bool) {
                 let _ = send_signal_to_process(parent.pid(), Some(sig));
             }
             if let Ok(data) = get_process_data(parent.pid()) {
-                data.child_exit_event.wake();
+                // Child exit state is published before waking waiters.
+                unsafe { data.child_exit_event.wake(axpoll::IoEvents::IN) };
             }
         }
         if let Some(tracer_pid) = ptrace_tracer_pid
@@ -608,7 +640,8 @@ pub fn do_exit(exit_code: i32, group_exit: bool) {
                 .is_none_or(|parent| parent.pid() != tracer_pid)
             && let Ok(data) = get_process_data(tracer_pid)
         {
-            data.child_exit_event.wake();
+            // Child exit state is published before waking waiters.
+            unsafe { data.child_exit_event.wake(axpoll::IoEvents::IN) };
         }
         // Send pdeathsig to child processes
         for child in children_snapshot {
@@ -625,7 +658,8 @@ pub fn do_exit(exit_code: i32, group_exit: bool) {
             }
         }
 
-        thr.proc_data.exit_event.wake();
+        // Process exit state is published before waking pidfd/wait waiters.
+        unsafe { thr.proc_data.exit_event.wake(axpoll::IoEvents::IN) };
 
         // Unblock a vfork parent waiting for this child to exit.
         thr.proc_data.notify_vfork_done();
@@ -636,8 +670,9 @@ pub fn do_exit(exit_code: i32, group_exit: bool) {
         // process_slots refcounting — not vm_aspace_shared + clear().
         thr.proc_data.release_aspace_slot_if_needed();
     }
-    thr.exit_event.wake();
-    thr.proc_data.thread_exit_event.wake();
+    // Thread exit state is published before waking waiters.
+    unsafe { thr.exit_event.wake(axpoll::IoEvents::IN) };
+    unsafe { thr.proc_data.thread_exit_event.wake(axpoll::IoEvents::IN) };
 
     if group_exit && !process.is_group_exited() {
         process.group_exit();

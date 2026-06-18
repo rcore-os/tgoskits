@@ -216,7 +216,7 @@ pub(crate) fn phys_to_virt(paddr: ax_memory_addr::PhysAddr) -> ax_memory_addr::V
 
 #[cfg(all(any(feature = "fs", feature = "host-fs"), target_arch = "x86_64"))]
 pub(crate) fn shutdown_host_filesystems() -> AxResult {
-    modules::ax_fs::shutdown_filesystems()
+    modules::ax_fs_ng::shutdown_filesystems()
 }
 
 #[cfg(target_arch = "x86_64")]

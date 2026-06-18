@@ -39,7 +39,8 @@ use sdmmc_protocol::{
     cmd::{Command, DataDirection},
     error::Error,
     sdio::{
-        BusWidth, ClockSpeed, HostEvent, HostEventKind, HostEventSource, SdioHost, SignalVoltage,
+        BusWidth, ClockSpeed, HostEvent, HostEventKind, HostEventSource, SdioHost, SdioIrqHandle,
+        SdioIrqHost, SignalVoltage,
     },
 };
 
@@ -126,6 +127,19 @@ pub struct DataRequest<'a> {
     slot: BlockRequestSlot,
     _buffer: PhantomData<&'a [u8]>,
 }
+
+/// Cloneable, sync-safe Phytium MCI IRQ top-half handle.
+#[derive(Clone)]
+pub struct PhytiumMciIrqHandle {
+    pub(crate) regs: volatile::VolatilePtr<'static, crate::regs::RegisterBlock>,
+    pub(crate) irq_state: *const host::IrqState,
+}
+
+// SAFETY: The handle only performs volatile MMIO accesses and atomic cache
+// updates. The owning `PhytiumMci` outlives handles created by OS glue.
+unsafe impl Send for PhytiumMciIrqHandle {}
+// SAFETY: See the `Send` impl.
+unsafe impl Sync for PhytiumMciIrqHandle {}
 
 impl SdioHost for PhytiumMci {
     type Event = Event;
@@ -224,7 +238,19 @@ impl SdioHost for PhytiumMci {
     }
 
     fn handle_irq(&mut self) -> Self::Event {
-        PhytiumMci::handle_irq(self)
+        self.irq_handle().handle_irq()
+    }
+}
+
+impl SdioIrqHost for PhytiumMci {
+    type IrqHandle = PhytiumMciIrqHandle;
+
+    fn irq_handle(&self) -> Self::IrqHandle {
+        PhytiumMci::irq_handle(self)
+    }
+
+    fn completion_irq_enabled(&self) -> bool {
+        PhytiumMci::completion_irq_enabled(self)
     }
 }
 

@@ -5,21 +5,26 @@ use chrono::{DateTime, Datelike, NaiveDate, TimeZone, Timelike, Utc};
 
 use super::{ff, fs::FatFilesystemInner};
 
-pub fn dos_to_unix(date: fatfs::DateTime) -> Duration {
+const FAT_MIN_YEAR: i32 = 1980;
+const FAT_MAX_YEAR: i32 = 2107;
+
+pub fn dos_to_unix(datetime: fatfs::DateTime) -> Duration {
     // let date: NaiveDateTime = date.into();
-    let date = NaiveDate::from_ymd_opt(
-        date.date.year as _,
-        date.date.month as _,
-        date.date.day as _,
-    )
-    .unwrap()
-    .and_hms_milli_opt(
-        date.time.hour as _,
-        date.time.min as _,
-        date.time.sec as _,
-        date.time.millis as _,
-    )
-    .unwrap();
+    let Some(date) = NaiveDate::from_ymd_opt(
+        datetime.date.year as _,
+        datetime.date.month as _,
+        datetime.date.day as _,
+    ) else {
+        return Duration::default();
+    };
+    let Some(date) = date.and_hms_milli_opt(
+        datetime.time.hour as _,
+        datetime.time.min as _,
+        datetime.time.sec as _,
+        datetime.time.millis as _,
+    ) else {
+        return Duration::default();
+    };
     let Some(datetime) = Utc.from_local_datetime(&date).single() else {
         return Duration::default();
     };
@@ -32,9 +37,10 @@ pub fn dos_to_unix(date: fatfs::DateTime) -> Duration {
 pub fn unix_to_dos(datetime: Duration) -> fatfs::DateTime {
     let dt = DateTime::UNIX_EPOCH + datetime;
     let dt = dt.naive_local();
+    let year = dt.year().clamp(FAT_MIN_YEAR, FAT_MAX_YEAR) as u16;
 
     fatfs::DateTime::new(
-        fatfs::Date::new(dt.year() as _, dt.month() as _, dt.day() as _),
+        fatfs::Date::new(year, dt.month() as _, dt.day() as _),
         fatfs::Time::new(
             dt.hour() as _,
             dt.minute() as _,

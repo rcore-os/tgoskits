@@ -1,11 +1,16 @@
 [package]
 name = "hello"
-version = "0.1.0"
-edition = "2024"
+edition.workspace = true
+version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+keywords.workspace = true
+categories.workspace = true
 publish = false
 
 [dependencies]
-ax-feat = { workspace = true, features = ["ext-ld", "fs-ng-times", "irq"] }
+ax-feat = { workspace = true, features = ["ext-ld", "fs-times", "irq"] }
 ax-driver.workspace = true
 ax-hal.workspace = true
 axplat-dyn = { workspace = true, optional = true }

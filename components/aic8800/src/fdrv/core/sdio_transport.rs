@@ -10,7 +10,8 @@ use spin::Mutex;
 
 use crate::{
     common::{
-        ChipVariant, SDIOWIFI_BLOCK_CNT_REG, SDIOWIFI_FLOW_CTRL_Q1_REG_V3, SDIOWIFI_FLOW_CTRL_REG,
+        ChipVariant, SDIOWIFI_BLOCK_CNT_REG, SDIOWIFI_BYTEMODE_LEN_REG,
+        SDIOWIFI_BYTEMODE_LEN_REG_V3, SDIOWIFI_FLOW_CTRL_Q1_REG_V3, SDIOWIFI_FLOW_CTRL_REG,
         SDIOWIFI_FLOWCTRL_MASK, SDIOWIFI_INTR_CONFIG_REG, SDIOWIFI_INTR_ENABLE_REG_V3,
         SDIOWIFI_MISC_INT_STATUS_REG_V3, SDIOWIFI_RD_FIFO_ADDR, SDIOWIFI_RD_FIFO_ADDR_V3,
         SDIOWIFI_SLEEP_REG_V3, SDIOWIFI_V3_SLEEP_READY_BIT, SDIOWIFI_V3_WAKEUP_VALUE,
@@ -88,6 +89,15 @@ impl SdioTransport {
             SDIOWIFI_RD_FIFO_ADDR_V3
         } else {
             SDIOWIFI_RD_FIFO_ADDR
+        }
+    }
+
+    /// byte-mode 长度寄存器:V3 收帧走 byte 模式时,此寄存器值 ×4 即为字节长度。
+    pub fn bytemode_len_reg(&self) -> u32 {
+        if self.is_v3 {
+            SDIOWIFI_BYTEMODE_LEN_REG_V3
+        } else {
+            SDIOWIFI_BYTEMODE_LEN_REG
         }
     }
 

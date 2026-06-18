@@ -673,6 +673,23 @@ pub fn take_virtio_transport(
     endpoint: &mut EndpointRc,
     expected: DeviceType,
 ) -> Result<impl Transport + 'static, OnProbeError> {
+    take_virtio_transport_with_intx_policy(endpoint, expected, false)
+}
+
+#[cfg(virtio_dev)]
+pub fn take_virtio_transport_masked(
+    endpoint: &mut EndpointRc,
+    expected: DeviceType,
+) -> Result<impl Transport + 'static, OnProbeError> {
+    take_virtio_transport_with_intx_policy(endpoint, expected, true)
+}
+
+#[cfg(virtio_dev)]
+fn take_virtio_transport_with_intx_policy(
+    endpoint: &mut EndpointRc,
+    expected: DeviceType,
+    mask_intx_after_match: bool,
+) -> Result<impl Transport + 'static, OnProbeError> {
     match (endpoint.vendor_id(), endpoint.device_id()) {
         (0x1af4, 0x1000..=0x107f) => {}
         _ => return Err(OnProbeError::NotMatch),
@@ -685,6 +702,9 @@ pub fn take_virtio_transport(
         return Err(OnProbeError::NotMatch);
     }
 
+    if mask_intx_after_match {
+        mask_intx(endpoint);
+    }
     enable_virtio_pci_command(endpoint);
 
     let mut root = PciRoot::new(EndpointConfigAccess::new(bdf, endpoint.take()));
@@ -693,6 +713,14 @@ pub fn take_virtio_transport(
             "failed to create VirtIO PCI transport at {bdf}: {err:?}"
         ))
     })
+}
+
+#[cfg(virtio_dev)]
+fn mask_intx(endpoint: &mut EndpointRc) {
+    endpoint.update_command(|mut command| {
+        command.insert(CommandRegister::INTERRUPT_DISABLE);
+        command
+    });
 }
 
 #[cfg(virtio_dev)]

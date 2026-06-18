@@ -4,6 +4,9 @@ shell_init_cmd = "sleep 5; echo STARRY_LSUSB_BEGIN; lsusb > /tmp/starry-lsusb.ou
 success_regex = ["(?m)^STARRY_LSUSB_HUB_OK\\s*$"]
 fail_regex = [
   '(?i)\bpanic(?:ked)?\b',
+  '(?i)segmentation fault',
+  '(?i)SIGSEGV',
+  'exit with code: 139',
   "(?m)^unable to initialize libusb: .*$",
   "(?i)(lsusb|tee|grep|sh): .*not found",
   "(?m)^lsusb: .*",

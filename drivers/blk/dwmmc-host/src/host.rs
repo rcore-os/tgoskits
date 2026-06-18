@@ -9,7 +9,10 @@
 //!
 //! [`SdioHost`]: sdmmc_protocol::sdio::SdioHost
 
-use core::ptr::NonNull;
+use core::{
+    ptr::NonNull,
+    sync::atomic::{AtomicBool, AtomicU32, Ordering},
+};
 
 use dma_api::DeviceDma;
 use mmio_api::MmioRaw;
@@ -53,6 +56,51 @@ pub(crate) struct PendingData {
 /// valid, exclusively-owned MMIO base for a DW_mshc-compatible
 /// register block. Concurrent access to the same controller from
 /// multiple `DwMmc` instances is undefined.
+pub(crate) struct IrqState {
+    pending_status: AtomicU32,
+}
+
+impl IrqState {
+    const fn new() -> Self {
+        Self {
+            pending_status: AtomicU32::new(0),
+        }
+    }
+
+    pub(crate) fn cache(&self, status: u32) {
+        if status != 0 {
+            self.pending_status.fetch_or(status, Ordering::AcqRel);
+        }
+    }
+
+    pub(crate) fn take(&self, mask: u32) -> u32 {
+        take_cached_bits(&self.pending_status, mask)
+    }
+
+    pub(crate) fn clear(&self, mask: u32) {
+        self.pending_status.fetch_and(!mask, Ordering::AcqRel);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn pending(&self) -> u32 {
+        self.pending_status.load(Ordering::Acquire)
+    }
+}
+
+fn take_cached_bits(cache: &AtomicU32, mask: u32) -> u32 {
+    let mut cur = cache.load(Ordering::Acquire);
+    loop {
+        let taken = cur & mask;
+        if taken == 0 {
+            return 0;
+        }
+        match cache.compare_exchange_weak(cur, cur & !mask, Ordering::AcqRel, Ordering::Acquire) {
+            Ok(_) => return taken,
+            Err(next) => cur = next,
+        }
+    }
+}
+
 pub struct DwMmc {
     pub(crate) regs: VolatilePtr<'static, RegisterBlock>,
     pub(crate) base_addr: usize,
@@ -64,8 +112,8 @@ pub struct DwMmc {
     pub(crate) data_cmd_index: u8,
     pub(crate) dma: Option<DeviceDma>,
     pub(crate) dma_mask: u64,
-    pub(crate) irq_pending_status: u32,
-    pub(crate) completion_irq_enabled: bool,
+    pub(crate) irq_state: IrqState,
+    pub(crate) completion_irq_enabled: AtomicBool,
 }
 
 impl DwMmc {
@@ -103,8 +151,8 @@ impl DwMmc {
             data_cmd_index: 0,
             dma: None,
             dma_mask: u32::MAX as u64,
-            irq_pending_status: 0,
-            completion_irq_enabled: false,
+            irq_state: IrqState::new(),
+            completion_irq_enabled: AtomicBool::new(false),
         }
     }
 
@@ -215,8 +263,8 @@ impl DwMmc {
         // Mask every interrupt; clear any leftover raw status.
         self.regs.intmask().write(0);
         self.clear_all_int_status();
-        self.irq_pending_status = 0;
-        self.completion_irq_enabled = false;
+        self.irq_state.clear(u32::MAX);
+        self.completion_irq_enabled.store(false, Ordering::Release);
 
         // Default to 1-bit bus until the protocol layer asks for wider.
         self.regs.ctype().write(CType::new());
@@ -310,7 +358,7 @@ impl DwMmc {
     }
 
     pub fn enable_completion_irq(&mut self) {
-        self.completion_irq_enabled = true;
+        self.completion_irq_enabled.store(true, Ordering::Release);
         self.regs.intmask().write(
             crate::DWMMC_INT_DATA_TRANSFER_OVER
                 | crate::DWMMC_INT_COMMAND_DONE
@@ -322,13 +370,13 @@ impl DwMmc {
     }
 
     pub fn disable_completion_irq(&mut self) {
-        self.completion_irq_enabled = false;
+        self.completion_irq_enabled.store(false, Ordering::Release);
         self.regs.intmask().write(0);
         self.regs.ctrl().update(|r| r.with_int_enable(false));
     }
 
     pub fn completion_irq_enabled(&self) -> bool {
-        self.completion_irq_enabled
+        self.completion_irq_enabled.load(Ordering::Acquire)
     }
 
     /// Set bus width. DW_mshc encodes width in CTYPE: bit 0 of `width4`

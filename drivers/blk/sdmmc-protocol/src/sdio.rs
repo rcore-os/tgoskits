@@ -78,6 +78,50 @@ impl HostEvent for () {
     }
 }
 
+/// IRQ fast-path handle for a host controller.
+///
+/// Implementations are intended to be cloned into OS IRQ registration code.
+/// `handle_irq()` must acknowledge or clear the hardware interrupt source and
+/// cache any status that task-side `poll_*` paths need to observe later.
+/// It must not complete block requests, copy DMA buffers, or call OS wake/task
+/// APIs.
+pub trait SdioIrqHandle: Clone + Send + Sync + 'static {
+    type Event: HostEvent + Default;
+
+    fn handle_irq(&self) -> Self::Event;
+}
+
+/// Optional IRQ-capable extension of [`SdioHost`].
+///
+/// The normal data path remains the submit/poll methods on [`SdioHost`].
+/// IRQ support only gives OS glue a sync-safe top-half handle that clears the
+/// device-side source and records status for later task-context polling.
+pub trait SdioIrqHost: SdioHost {
+    type IrqHandle: SdioIrqHandle<Event = Self::Event>;
+
+    fn irq_handle(&self) -> Self::IrqHandle;
+
+    fn completion_irq_enabled(&self) -> bool {
+        false
+    }
+}
+
+/// Queue identifier used by SD/MMC block adapters.
+pub const SDMMC_BLOCK_QUEUE_ID: usize = 0;
+
+/// Convert a host IRQ event into the fixed SD/MMC block queue hint.
+///
+/// SD/MMC adapters expose one rdif block queue per controller in this
+/// workspace, so any non-empty host event is a stable "queue 0 may progress"
+/// signal. Request completion still happens only when task context calls
+/// `poll_request()`.
+pub fn block_queue_ready_from_host_event(event: &impl HostEvent) -> Option<usize> {
+    match event.kind() {
+        HostEventKind::None => None,
+        _ => Some(SDMMC_BLOCK_QUEUE_ID),
+    }
+}
+
 /// SDIO bus width
 ///
 /// Marked `#[non_exhaustive]`: UHS-II / SD Express widths may be added before
@@ -694,6 +738,11 @@ impl<H: SdioHost> SdioSdmmc<H> {
     /// Returns mutable access to the underlying SDIO host controller.
     pub fn host_mut(&mut self) -> &mut H {
         &mut self.host
+    }
+
+    /// Returns shared access to the underlying SDIO host controller.
+    pub fn host(&self) -> &H {
+        &self.host
     }
 
     /// Returns whether the initialized card uses sector addressing.
@@ -3216,5 +3265,58 @@ mod tests {
             Err(Error::Misaligned)
         );
         assert!(driver.host.commands.is_empty());
+    }
+
+    #[derive(Clone)]
+    struct MockIrqHandle {
+        event: IrqTestEvent,
+    }
+
+    impl SdioIrqHandle for MockIrqHandle {
+        type Event = IrqTestEvent;
+
+        fn handle_irq(&self) -> Self::Event {
+            self.event
+        }
+    }
+
+    #[derive(Clone, Copy, Default)]
+    struct IrqTestEvent(HostEventKind);
+
+    impl HostEvent for IrqTestEvent {
+        fn kind(&self) -> HostEventKind {
+            self.0
+        }
+    }
+
+    #[test]
+    fn host_irq_events_map_to_single_sdmmc_block_queue() {
+        assert_eq!(
+            block_queue_ready_from_host_event(&IrqTestEvent(HostEventKind::None)),
+            None
+        );
+        for kind in [
+            HostEventKind::CommandComplete,
+            HostEventKind::TransferComplete,
+            HostEventKind::ReceiveReady,
+            HostEventKind::TransmitReady,
+            HostEventKind::Error,
+            HostEventKind::Other,
+        ] {
+            assert_eq!(
+                block_queue_ready_from_host_event(&IrqTestEvent(kind)),
+                Some(SDMMC_BLOCK_QUEUE_ID)
+            );
+        }
+    }
+
+    #[test]
+    fn irq_handle_is_cloneable_and_handles_with_shared_reference() {
+        let handle = MockIrqHandle {
+            event: IrqTestEvent(HostEventKind::TransferComplete),
+        };
+        let cloned = handle.clone();
+
+        assert_eq!(cloned.handle_irq().kind(), HostEventKind::TransferComplete);
     }
 }

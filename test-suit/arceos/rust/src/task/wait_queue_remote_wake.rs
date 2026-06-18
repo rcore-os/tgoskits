@@ -19,7 +19,7 @@ static DONE: AtomicBool = AtomicBool::new(false);
 static SLEEPER_CPU: AtomicUsize = AtomicUsize::new(usize::MAX);
 
 const WAITER_ENQUEUE_RETRIES: usize = 1024;
-const REMOTE_WAKE_PROGRESS_TIMEOUT: Duration = Duration::from_millis(100);
+const REMOTE_WAKE_PROGRESS_TIMEOUT: Duration = Duration::from_secs(1);
 
 fn pin_current_to_cpu(cpu_id: usize) {
     assert!(

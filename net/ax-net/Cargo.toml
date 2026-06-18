@@ -47,6 +47,7 @@ features = [
   "socket-tcp",
   "socket-dhcpv4",
   "socket-dns",
+  "iface-max-addr-count-8",
   # "fragmentation-buffer-size-65536", "proto-ipv4-fragmentation",
   # "reassembly-buffer-size-65536", "reassembly-buffer-count-32",
   # "assembler-max-segment-count-32",
@@ -55,3 +56,4 @@ features = [
 [dev-dependencies]
 ax-hal = { workspace = true, features = ["host-test"] }
 ax-kspin = { workspace = true, features = ["host-test"] }
+ax-task = { workspace = true, features = ["host-test"] }

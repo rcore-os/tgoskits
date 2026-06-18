@@ -409,6 +409,7 @@ mod tests {
         let info = queue_info_with(QueueLimits {
             dma_mask: u64::MAX,
             dma_alignment: 512,
+            max_inflight: 1,
             max_blocks_per_request: 2,
             max_segments: 1,
             max_segment_size: 4096,
