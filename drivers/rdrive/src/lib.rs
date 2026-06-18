@@ -197,6 +197,10 @@ pub fn fdt_path_to_device_id(path: &str) -> Option<DeviceId> {
     probe::fdt::try_system().and_then(|system| system.path_to_device_id(path))
 }
 
+pub fn note_fdt_device_path(path: &str, device_id: DeviceId) -> bool {
+    probe::fdt::try_system().is_some_and(|system| system.note_device_path(path, device_id))
+}
+
 pub fn acpi_path_to_device_id(path: &str) -> Option<DeviceId> {
     probe::acpi::try_system().and_then(|system| system.path_to_device_id(path))
 }

@@ -96,6 +96,14 @@ fn fdt_probe_populates_each_enabled_matching_node_once() {
     assert!(rdrive::fdt_path_to_device_id("/serial@1000").is_some());
     assert!(rdrive::fdt_path_to_device_id("/serial@2000").is_some());
     assert!(rdrive::fdt_path_to_device_id("/serial@3000").is_none());
+    let serial0_device =
+        rdrive::fdt_path_to_device_id("/serial@1000").expect("enabled serial probed");
+    assert!(rdrive::note_fdt_device_path("/serial@3000", serial0_device));
+    assert_eq!(
+        rdrive::fdt_path_to_device_id("/serial@3000"),
+        Some(serial0_device)
+    );
+    assert!(!rdrive::note_fdt_device_path("/missing@0", serial0_device));
 
     let stdout_path = rdrive::with_fdt(|fdt| {
         fdt.get_by_path("/chosen")

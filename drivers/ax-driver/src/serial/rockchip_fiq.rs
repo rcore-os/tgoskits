@@ -50,6 +50,13 @@ fn probe(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
     } else {
         BindingInfo::empty()
     };
+    let device_id = plat_dev.descriptor().device_id();
+    if !rdrive::note_fdt_device_path(&fdt_config.uart_path, device_id) {
+        warn!(
+            "failed to map Rockchip FIQ target UART path {} to serial device id {:?}",
+            fdt_config.uart_path, device_id
+        );
+    }
     plat_dev.register(PlatformSerialDevice::new(
         serial.name().into(),
         SerialDeviceInfo {

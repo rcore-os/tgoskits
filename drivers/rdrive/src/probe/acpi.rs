@@ -388,6 +388,8 @@ mod tests {
             handler,
             pci: None,
             probed_names: spin::Mutex::new(alloc::collections::BTreeSet::new()),
+            populated_paths: spin::Mutex::new(alloc::collections::BTreeMap::new()),
+            populated_resources: spin::Mutex::new(alloc::collections::BTreeMap::new()),
         }
     }
 

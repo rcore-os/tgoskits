@@ -1,5 +1,5 @@
 use alloc::{
-    collections::{BTreeMap, btree_set::BTreeSet},
+    collections::{BTreeMap, btree_map::Entry, btree_set::BTreeSet},
     string::String,
     vec::Vec,
 };
@@ -126,6 +126,19 @@ impl System {
 
     pub fn path_to_device_id(&self, path: &str) -> Option<DeviceId> {
         self.populated_paths.lock().get(path).copied()
+    }
+
+    pub fn note_device_path(&self, path: &str, device_id: DeviceId) -> bool {
+        if self.fdt.get_by_path(path).is_none() {
+            return false;
+        }
+        match self.populated_paths.lock().entry(String::from(path)) {
+            Entry::Vacant(entry) => {
+                entry.insert(device_id);
+                true
+            }
+            Entry::Occupied(entry) => *entry.get() == device_id,
+        }
     }
 
     pub fn get_by_phandle(&self, phandle: Phandle) -> Option<NodeType<'_>> {
