@@ -12,20 +12,17 @@ The loader is intentionally small:
 - the kernel image is fetched from the URL provided in that serial offer;
 - ELF loading and entry selection are handled in the loader.
 
-## Boot Flow
+## Loader Protocol
 
-The normal flow is:
+At runtime, `axloader` participates in the HTTP boot protocol like this:
 
-1. `cargo axvisor board` builds the AxVisor ELF for a board.
-2. The ostool board server allocates a board session and exposes the ELF as an
-   HTTP-accessible session artifact.
-3. The user powers on or resets the board with `axloader.efi` installed on the
+1. The user powers on or resets the board with `axloader.efi` installed on the
    EFI system partition.
-4. `axloader` starts under UEFI and prints an `AXLOADER READY ...` line on the
+2. `axloader` starts under UEFI and prints an `AXLOADER READY ...` line on the
    serial console.
-5. The host sends an `AXLOADER BOOT ...` line containing the kernel URL, image
+3. The host sends an `AXLOADER BOOT ...` line containing the kernel URL, image
    size, architecture, image format, and optional entry symbol.
-6. `axloader` downloads the ELF image, loads its `PT_LOAD` segments at their
+4. `axloader` downloads the ELF image, loads its `PT_LOAD` segments at their
    physical addresses, resolves the requested entry point, exits UEFI boot
    services, and jumps to the kernel.
 
@@ -122,22 +119,22 @@ For removable media, make sure the board firmware can find the loader at:
 EFI/BOOT/BOOTX64.EFI
 ```
 
-## Run With AxVisor Board Boot
+## Current Scope
 
-After the loader is installed on the board boot media, run AxVisor through the
-board flow:
+This PR provides the loader crate, its build/test commands, and the EFI install
+helper. It does not add a complete board-flow configuration. In particular,
+board-specific files such as AxVisor board configs, remote board configs, and
+VM configs are expected to come from the board-flow work that lands separately.
 
 ```bash
-cargo axvisor board \
-  --config os/axvisor/configs/board/asus-nuc15crh-x86_64.toml \
-  --board-config tmp/asus-nuc15crh-httpboot.board.toml \
-  --vmconfigs os/axvisor/configs/vms/asus-nuc15crh/arceos-smp1.toml
+cargo axvisor loader build
+cargo axvisor loader test
 ```
 
-The board config selects the remote board server and the board type. The server
-allocates a concrete board session, publishes the freshly built AxVisor ELF,
-and opens the configured serial console. Once `axloader` prints `AXLOADER
-READY`, the host sends the boot offer over that same serial console.
+Once a board-flow configuration is available, the host side is responsible for
+building or publishing the AxVisor ELF, opening the serial console, waiting for
+`AXLOADER READY`, and sending the `AXLOADER BOOT` offer over that same serial
+console.
 
 Typical serial output starts like this:
 
@@ -192,8 +189,8 @@ architecture. Rebuild with the UEFI target shown by the error.
 `control_boot_error: Timeout`
 
 The loader did not receive an `AXLOADER BOOT` line before the serial-control
-timeout. Check that `cargo axvisor board` is still waiting on the correct
-serial device and that the board config selects the expected board.
+timeout. Check that the host-side board-flow runner is connected to the correct
+serial device and is sending a boot offer for this loader.
 
 `elf_load_error: Download(SizeMismatch)`
 
