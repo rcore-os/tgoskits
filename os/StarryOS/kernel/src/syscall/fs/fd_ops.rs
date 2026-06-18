@@ -205,12 +205,24 @@ fn try_open_nsfd(path: &str, flags: u32) -> Option<AxResult<i32>> {
         Err(_) => return Some(Err(AxError::NotFound)),
     };
 
+    let mnt_fs_ns = if ns_type_str == "mnt" {
+        let scope = proc_data.scope.read();
+        let fs_context = FS_CONTEXT.scope(&scope).clone();
+        drop(scope);
+        Some(fs_context.lock().mount_namespace().clone())
+    } else {
+        None
+    };
+
     let nsproxy = proc_data.nsproxy.lock();
 
     let nsfd: NsFd = match ns_type_str {
         "uts" => NsFd::Uts(nsproxy.uts_ns.clone()),
         "ipc" => NsFd::Ipc(nsproxy.ipc_ns.clone()),
-        "mnt" => NsFd::Mnt(nsproxy.mnt_ns.clone()),
+        "mnt" => NsFd::Mnt {
+            ns: nsproxy.mnt_ns.clone(),
+            fs_ns: mnt_fs_ns.unwrap(),
+        },
         "pid" => NsFd::Pid(nsproxy.pid_ns.clone()),
         "net" => NsFd::Net(nsproxy.net_ns.clone()),
         "user" => NsFd::User(nsproxy.user_ns.clone()),
