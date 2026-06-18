@@ -13,9 +13,9 @@ use alloc::{boxed::Box, sync::Arc, vec::Vec};
 use core::{sync::atomic::Ordering, task::Poll};
 
 use crate::fdrv::{
-    consts::MAX_REGISTERED_STAS,
+    consts::{CONTROL_PORT_MAX_RETRY, CONTROL_PORT_RECONCILE_MS, MAX_REGISTERED_STAS},
     core::bus::{BusState, WifiBus},
-    protocol::{send_me_sta_add_req, send_set_control_port_req},
+    protocol::{send_me_sta_add_req, send_mm_sta_del_req, send_set_control_port_req},
     thread::tx::enqueue_mgmt_frame,
 };
 
@@ -29,6 +29,21 @@ pub fn start(bus: Arc<WifiBus>) {
                 return Poll::Ready(());
             }
 
+            // 先处理 STA 删除(deauth/disassoc 后释放固件 STA 槽位),再处理新关联,
+            // 这样新 STA 能复用刚释放的低位 sta_idx(下行单一 sta_idx 路由只对低位
+            // 槽位可靠)。
+            loop {
+                let del_idx = bus.ap.sta_del_queue.lock().pop_front();
+                match del_idx {
+                    Some(idx) => {
+                        if let Err(e) = send_mm_sta_del_req(&bus, idx, 0) {
+                            log::warn!("[wifi-ap] MM_STA_DEL sta_idx={} failed: {:?}", idx, e);
+                        }
+                    }
+                    None => break,
+                }
+            }
+
             // 取出所有待处理的关联请求
             loop {
                 let assoc_req = bus.ap.assoc_queue.lock().pop_front();
@@ -38,9 +53,18 @@ pub fn start(bus: Arc<WifiBus>) {
                 }
             }
 
+            // 控制端口对账:对所有尚未授权的 STA 主动重试打开控制端口。不依赖手机
+            // 重传 AssocReq——手机关联成功后通常不再发 AssocReq,若首次 authorize
+            // 命令超时,数据面会永久不通(ping/SSH 不通)。这里兜底直到成功或到上限。
+            let has_pending = reconcile_control_ports(&bus);
+
             bus.ap.assoc_pollset.register(cx.waker());
             // 注册后再检查一次，避免错过唤醒
             if !bus.ap.assoc_queue.lock().is_empty() {
+                cx.waker().wake_by_ref();
+            } else if has_pending {
+                // 仍有未授权 STA:周期性自唤醒重试,直到全部授权或到重试上限。
+                crate::runtime::runtime().sleep_ms(CONTROL_PORT_RECONCILE_MS);
                 cx.waker().wake_by_ref();
             }
             Poll::Pending
@@ -74,7 +98,7 @@ fn handle_assoc_req(bus: &Arc<WifiBus>, mpdu: &[u8]) {
         .lock()
         .iter()
         .find(|(mac, ..)| *mac == sta_mac)
-        .map(|(_, idx, ctrl)| (*idx, *ctrl));
+        .map(|(_, idx, ctrl, _)| (*idx, *ctrl));
 
     let (sta_idx, ctrl_open) = if let Some((idx, ctrl)) = existing {
         log::info!(
@@ -109,7 +133,7 @@ fn handle_assoc_req(bus: &Arc<WifiBus>, mpdu: &[u8]) {
             }
         };
         bus.conn.sta_idx.store(idx, Ordering::Release);
-        bus.ap.registered_stas.lock().push((sta_mac, idx, false));
+        bus.ap.registered_stas.lock().push((sta_mac, idx, false, 0));
         log::info!(
             "[wifi-ap] STA {:02x?} registered: sta_idx={}, aid={}",
             sta_mac,
@@ -136,25 +160,69 @@ fn handle_assoc_req(bus: &Arc<WifiBus>, mpdu: &[u8]) {
     // 3. 打开控制端口(authorize)。开放网络无 EAPOL，关联后必须显式授权，
     // 否则固件只放行 EAPOL、丢弃该 STA 的所有普通数据帧(DHCP/ARP/IP)。
     // 对应 vendor change_station(AUTHORIZED) → rwnx_send_me_set_control_port_req。
-    // 自愈:仅当控制端口尚未成功打开时才发(首次/上次超时都会重试),成功后置标志,
-    // 之后重传 AssocReq 不再重复发,省命令、避免阻塞。
+    // 这里做首次尝试(低延迟);若超时,AP worker 的周期对账会继续重试直到成功。
     if !ctrl_open {
-        match send_set_control_port_req(bus, sta_idx, true, 0) {
-            Ok(_) => {
-                log::info!("[wifi-ap] control port OPENED for sta_idx={}", sta_idx);
-                if let Some(e) = bus
-                    .ap
-                    .registered_stas
-                    .lock()
-                    .iter_mut()
-                    .find(|(mac, ..)| *mac == sta_mac)
-                {
-                    e.2 = true;
-                }
+        try_open_control_port(bus, &sta_mac, sta_idx);
+    }
+}
+
+/// 尝试为指定 STA 打开控制端口(authorize),成功则在注册表置标志。
+/// 返回是否成功。失败(超时)不在此处重试——由调用方/周期对账驱动重试。
+fn try_open_control_port(bus: &Arc<WifiBus>, sta_mac: &[u8; 6], sta_idx: u8) -> bool {
+    match send_set_control_port_req(bus, sta_idx, true, 0) {
+        Ok(_) => {
+            log::info!("[wifi-ap] control port OPENED for sta_idx={}", sta_idx);
+            if let Some(e) = bus
+                .ap
+                .registered_stas
+                .lock()
+                .iter_mut()
+                .find(|(mac, ..)| mac == sta_mac)
+            {
+                e.2 = true;
             }
-            Err(e) => log::warn!("[wifi-ap] open control port failed: {:?}", e),
+            true
+        }
+        Err(e) => {
+            log::warn!(
+                "[wifi-ap] open control port failed (sta_idx={}): {:?}",
+                sta_idx,
+                e
+            );
+            false
         }
     }
+}
+
+/// 周期对账:对注册表中所有"未授权且未到重试上限"的 STA 重试打开控制端口。
+/// 返回是否仍有待授权的 STA(用于决定 AP worker 是否需要继续周期自唤醒)。
+fn reconcile_control_ports(bus: &Arc<WifiBus>) -> bool {
+    // 先快照出待重试的 (mac, idx),避免持锁期间发命令(send_cmd 会让出/阻塞)。
+    let pending: alloc::vec::Vec<([u8; 6], u8)> = {
+        let tbl = bus.ap.registered_stas.lock();
+        tbl.iter()
+            .filter(|(.., open, retries)| !*open && *retries < CONTROL_PORT_MAX_RETRY)
+            .map(|(mac, idx, ..)| (*mac, *idx))
+            .collect()
+    };
+    if pending.is_empty() {
+        return false;
+    }
+
+    let mut still_pending = false;
+    for (mac, idx) in pending {
+        // 先自增重试计数(即便本次又超时,也能朝上限收敛,防止已离线 STA 永久空转)。
+        {
+            let mut tbl = bus.ap.registered_stas.lock();
+            if let Some(e) = tbl.iter_mut().find(|(m, ..)| *m == mac) {
+                e.3 = e.3.saturating_add(1);
+            }
+        }
+        if !try_open_control_port(bus, &mac, idx) {
+            still_pending = true;
+        }
+    }
+    still_pending
 }
 
 /// 从关联请求的 IE 区解析 SupportedRates (EID=1)，返回原始速率字节。

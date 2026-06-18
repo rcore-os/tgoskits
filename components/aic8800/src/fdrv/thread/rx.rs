@@ -428,22 +428,28 @@ fn handle_mgmt_frame(bus: &WifiBus, mpdu: &[u8], pkt_len: usize) {
                 .push_back(mpdu[..pkt_len].to_vec());
             bus.ap.assoc_pollset.wake();
         }
-        // Deauth(0xC)/Disassoc(0xA):STA 断开,从注册表移除,使重连能完整重新
-        // 注册(否则去重会跳过 ME_STA_ADD/控制端口,导致重连连不上)。
+        // Deauth(0xC)/Disassoc(0xA):STA 断开。从驱动注册表移除(使重连能完整重新
+        // 注册),并把该 STA 的 sta_idx 入队,交 AP worker 发 MM_STA_DEL_REQ 释放固件
+        // 槽位。否则固件继续占用旧 idx,下一个 STA 被分到更大 idx,而下行数据帧用全局
+        // 单一 sta_idx 路由,非 0 槽位送不达 → 重连后 ping/SSH 不通。
         0xC | 0xA => {
             let mut mac = [0u8; 6];
             mac.copy_from_slice(sa);
-            let removed = {
+            let removed_idx = {
                 let mut tbl = bus.ap.registered_stas.lock();
-                let before = tbl.len();
+                let idx = tbl.iter().find(|(m, ..)| *m == mac).map(|(_, i, ..)| *i);
                 tbl.retain(|(m, ..)| *m != mac);
-                before != tbl.len()
+                idx
             };
+            if let Some(idx) = removed_idx {
+                bus.ap.sta_del_queue.lock().push_back(idx);
+                bus.ap.assoc_pollset.wake();
+            }
             log::info!(
                 "[ap-rx] {} from {:02x?} (removed_from_table={})",
                 subtype,
                 sa,
-                removed
+                removed_idx.is_some()
             );
         }
         _ => {

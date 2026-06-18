@@ -163,6 +163,9 @@ impl TxState {
     }
 }
 
+/// 已注册 STA 的表项:(MAC, sta_idx, 控制端口是否已成功打开, 控制端口重试次数)。
+pub type RegisteredSta = ([u8; 6], u8, bool, u8);
+
 /// AP 模式状态：待处理的关联请求队列。
 ///
 /// RX 线程收到 AssocReq 时把整帧 mpdu 入队(非阻塞)，由独立的 AP worker
@@ -172,13 +175,18 @@ impl TxState {
 pub struct ApState {
     pub assoc_queue: Mutex<VecDeque<Vec<u8>>>,
     pub assoc_pollset: PollSet,
-    /// 已注册 STA 的 (MAC, sta_idx, 控制端口是否已成功打开)。
+    /// 待从固件 STA 表删除的 sta_idx 队列。deauth/disassoc 在 RX 线程触发,但
+    /// MM_STA_DEL_REQ 走 send_cmd 阻塞等 CFM(CFM 由 RX 线程处理)——在 RX 线程里
+    /// 直接发会死锁,故入队交给 AP worker 线程执行(与 assoc_queue 同理)。
+    pub sta_del_queue: Mutex<VecDeque<u8>>,
+    /// 已注册 STA 的 (MAC, sta_idx, 控制端口是否已成功打开, 控制端口重试次数)。
     /// - 手机重传 AssocReq 时据此去重:同一 MAC 已注册就不再发 ME_STA_ADD
     ///   (固件对重复注册不回 CFM,会让 AP worker 阻塞 5 秒超时、连接抖动)。
-    /// - 控制端口标志为 false 时(首次开失败/超时),重传 AssocReq 会重试打开,
-    ///   实现自愈,避免数据帧被固件丢弃导致 ping 不通。
+    /// - 控制端口标志为 false 时(首次开失败/超时),AP worker 周期对账会主动重试
+    ///   打开(不依赖手机重传 AssocReq),实现自愈,避免数据帧被固件丢弃导致
+    ///   ping 不通;重试次数到上限后放弃,防止已离线 STA 空转。
     /// - 收到 deauth/disassoc 时移除该 MAC,使重连能完整重新注册。
-    pub registered_stas: Mutex<Vec<([u8; 6], u8, bool)>>,
+    pub registered_stas: Mutex<Vec<RegisteredSta>>,
 }
 
 impl Default for ApState {
@@ -192,6 +200,7 @@ impl ApState {
         Self {
             assoc_queue: Mutex::new(VecDeque::new()),
             assoc_pollset: PollSet::new(),
+            sta_del_queue: Mutex::new(VecDeque::new()),
             registered_stas: Mutex::new(Vec::new()),
         }
     }
