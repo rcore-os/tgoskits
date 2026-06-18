@@ -227,6 +227,25 @@ fn test_interrupt_fabric_preserves_event_order() {
 }
 
 #[test]
+fn test_interrupt_fabric_can_signal_backend_directly() {
+    let sink = Arc::new(RecordingIrqSink::default());
+    let fabric = InterruptFabric::with_sink(VMInterruptMode::Emulated, sink.clone()).unwrap();
+
+    fabric.set_level(21, true).unwrap();
+    fabric.set_level(21, false).unwrap();
+    fabric.pulse(22).unwrap();
+
+    assert_eq!(
+        sink.events(),
+        vec![
+            IrqEvent::SetLevel(IrqLineId(21), true),
+            IrqEvent::SetLevel(IrqLineId(21), false),
+            IrqEvent::Pulse(IrqLineId(22)),
+        ]
+    );
+}
+
+#[test]
 fn test_factory_device_emits_irq_through_interrupt_fabric() {
     let (fabric, sink) = recording_fabric(VMInterruptMode::Emulated);
     let devices = {

@@ -21,6 +21,9 @@ use axdevice::IrqResolver;
 use axdevice_base::{InterruptTriggerMode, IrqLine, IrqLineId, IrqSink};
 use axvm_types::VMInterruptMode;
 
+#[cfg(target_arch = "riscv64")]
+pub(crate) mod riscv;
+
 /// Resolves device interrupt lines against one VM's interrupt backend.
 ///
 /// The fabric owns only the backend capability. It never owns or references the
@@ -61,6 +64,33 @@ impl InterruptFabric {
         self.sink.is_some()
     }
 
+    fn sink_for_line(&self, line: usize) -> AxResult<&Arc<dyn IrqSink>> {
+        let Some(sink) = &self.sink else {
+            if self.mode == VMInterruptMode::NoIrq {
+                return ax_err!(
+                    InvalidInput,
+                    format_args!("cannot signal IRQ line {line}: the VM interrupt mode is NoIrq")
+                );
+            }
+            return ax_err!(
+                Unsupported,
+                format_args!("cannot signal IRQ line {line}: no VM interrupt backend is installed")
+            );
+        };
+        Ok(sink)
+    }
+
+    /// Sets the asserted state of a VM-local interrupt line.
+    pub fn set_level(&self, line: usize, asserted: bool) -> AxResult {
+        self.sink_for_line(line)?
+            .set_level(IrqLineId(line), asserted)
+    }
+
+    /// Delivers one pulse on a VM-local interrupt line.
+    pub fn pulse(&self, line: usize) -> AxResult {
+        self.sink_for_line(line)?.pulse(IrqLineId(line))
+    }
+
     pub(crate) fn validate_mode(&self, mode: VMInterruptMode) -> AxResult {
         if self.mode != mode {
             return ax_err!(
@@ -83,20 +113,10 @@ impl Default for InterruptFabric {
 
 impl IrqResolver for InterruptFabric {
     fn resolve_irq(&self, line: usize, trigger: InterruptTriggerMode) -> AxResult<IrqLine> {
-        let Some(sink) = &self.sink else {
-            if self.mode == VMInterruptMode::NoIrq {
-                return ax_err!(
-                    InvalidInput,
-                    format_args!("cannot resolve IRQ line {line}: the VM interrupt mode is NoIrq")
-                );
-            }
-            return ax_err!(
-                Unsupported,
-                format_args!(
-                    "cannot resolve IRQ line {line}: no VM interrupt backend is installed"
-                )
-            );
-        };
-        Ok(IrqLine::new(IrqLineId(line), trigger, sink.clone()))
+        Ok(IrqLine::new(
+            IrqLineId(line),
+            trigger,
+            self.sink_for_line(line)?.clone(),
+        ))
     }
 }
