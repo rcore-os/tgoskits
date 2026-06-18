@@ -402,6 +402,7 @@ fn set_mp_state(session: api_control::SessionId, arg: usize) -> AxResult<isize> 
     Ok(0)
 }
 
+#[cfg(target_arch = "riscv64")]
 fn set_vcpu_mp_state_by_id(
     session: api_control::SessionId,
     vcpu_id: usize,

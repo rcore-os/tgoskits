@@ -393,7 +393,7 @@ fn sanitize_bootargs(bootargs: &str) -> String {
     sanitized.join(" ")
 }
 
-#[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
+#[cfg(target_arch = "riscv64")]
 fn effective_bootargs(crate_config: &AxVMCrateConfig, fallback: &str) -> String {
     let bootargs = crate_config.kernel.cmdline.as_deref().unwrap_or(fallback);
     sanitize_bootargs(bootargs)
