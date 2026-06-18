@@ -1177,7 +1177,7 @@ mod tests {
     }
 
     #[test]
-    fn irq_driven_wait_does_not_self_schedule_drain() {
+    fn irq_driven_wait_repolls_without_external_drain_hint() {
         let _guard = test_task_guard();
         let bridge = Arc::new(BlockIrqBridge::new());
         let (tx, rx) = mpsc::channel();
@@ -1191,23 +1191,15 @@ mod tests {
         )
         .unwrap();
 
-        let fs_dev = device.clone();
-        let handle = std::thread::spawn(move || {
-            let mut buf = alloc::vec![0u8; 512];
-            with_blocking_task(|| fs_dev.read_blocks(5, &mut buf)).unwrap();
-            buf
-        });
+        let mut buf = alloc::vec![0u8; 512];
+        device.read_blocks(5, &mut buf).unwrap();
 
+        assert_eq!(buf[0], 5);
+        assert_eq!(device.pending_queue_ready_events(), 0);
         assert!(
             rx.recv_timeout(std::time::Duration::from_millis(100))
                 .is_err()
         );
-        assert_eq!(device.pending_queue_ready_events(), 0);
-        bridge.record_hint(CompletionHint::Queue { queue_id: 0 });
-        assert_eq!(device.drain_events(), 1);
-
-        let buf = handle.join().unwrap();
-        assert_eq!(buf[0], 5);
     }
 
     #[test]

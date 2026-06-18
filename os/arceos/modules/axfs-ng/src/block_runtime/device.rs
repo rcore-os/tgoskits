@@ -15,8 +15,7 @@ use super::{
 use crate::os::{
     BlockIrqOutcome, BlockIrqRegistration, current_task_id, dma_op, notify_drain,
     notify_drain_from_irq, notify_waiters, register_shared_block_irq, spawn_task,
-    sync::IrqMutex as SpinNoIrq, task_wait_until, task_yield, wait_for_drain_notification,
-    wake_task,
+    sync::IrqMutex as SpinNoIrq, task_yield, wait_for_drain_notification, wake_task,
 };
 
 const DEFAULT_MAX_TRANSFER_BYTES: usize = 1024 * 1024;
@@ -1203,16 +1202,9 @@ impl BlockDeviceHandle {
         {
             return Ok(());
         }
-        if self.completion_mode() == BlockCompletionMode::Polling {
-            return self.polling_wait_for_any_key(&keys);
-        }
-        if task_id != 0 {
-            task_wait_until(|| {
-                keys.iter()
-                    .any(|&key| self.pending.lock().result(key).is_some())
-            });
-        } else {
-            core::hint::spin_loop();
+        match self.completion_mode() {
+            BlockCompletionMode::Polling => self.polling_wait_for_any_key(&keys)?,
+            BlockCompletionMode::IrqDriven => self.wait_with_repoll_for_any_key(&keys, task_id),
         }
         Ok(())
     }
@@ -1231,14 +1223,15 @@ impl BlockDeviceHandle {
             self.remove_queue_progress_waiter(queue_id, task_id);
             return Ok(true);
         }
-        if self.completion_mode() == BlockCompletionMode::Polling {
-            self.remove_queue_progress_waiter(queue_id, task_id);
-            return Ok(self.polling_wait_for_queue_empty(queue_id));
-        }
-        if task_id != 0 {
-            task_wait_until(|| self.pending.lock().keys_for_queue(queue_id).is_empty());
-        } else {
-            core::hint::spin_loop();
+        match self.completion_mode() {
+            BlockCompletionMode::Polling => {
+                self.remove_queue_progress_waiter(queue_id, task_id);
+                return Ok(self.polling_wait_for_queue_empty(queue_id));
+            }
+            BlockCompletionMode::IrqDriven => {
+                self.wait_with_repoll_for_queue_empty(queue_id, task_id);
+                self.remove_queue_progress_waiter(queue_id, task_id);
+            }
         }
         Ok(true)
     }
@@ -1282,6 +1275,41 @@ impl BlockDeviceHandle {
         }
     }
 
+    fn wait_with_repoll_for_any_key(&self, keys: &[RequestKey], task_id: u64) {
+        loop {
+            let _ = self.poll_batch(keys);
+            if keys
+                .iter()
+                .any(|&key| self.pending.lock().result(key).is_some())
+            {
+                return;
+            }
+            if task_id != 0 {
+                task_yield();
+            } else {
+                core::hint::spin_loop();
+            }
+        }
+    }
+
+    fn wait_with_repoll_for_queue_empty(&self, queue_id: usize, task_id: u64) {
+        loop {
+            let keys = self.pending.lock().keys_for_queue(queue_id);
+            if keys.is_empty() {
+                return;
+            }
+            let _ = self.poll_batch(&keys);
+            if self.pending.lock().keys_for_queue(queue_id).is_empty() {
+                return;
+            }
+            if task_id != 0 {
+                task_yield();
+            } else {
+                core::hint::spin_loop();
+            }
+        }
+    }
+
     #[cfg(feature = "ext4")]
     fn wait_for_completion(&self, key: RequestKey, dst: Option<&mut [u8]>) -> AxResult {
         let task_id = current_task_id().unwrap_or(0);
@@ -1303,17 +1331,7 @@ impl BlockDeviceHandle {
                         self.polling_wait_for_any_key(&[key])?;
                         continue;
                     }
-                    if task_id != 0 {
-                        task_wait_until(|| {
-                            self.pending
-                                .lock()
-                                .request(key)
-                                .and_then(|request| request.result())
-                                .is_some()
-                        });
-                    } else {
-                        core::hint::spin_loop();
-                    }
+                    self.wait_with_repoll_for_any_key(&[key], task_id);
                 }
             }
         };
