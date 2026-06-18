@@ -1,7 +1,8 @@
 use alloc::{sync::Arc, vec::Vec};
 use core::{
+    cell::UnsafeCell,
     ptr::NonNull,
-    sync::atomic::{AtomicBool, Ordering},
+    sync::atomic::{AtomicBool, AtomicU8, Ordering},
 };
 
 use ax_task::IrqNotify;
@@ -14,6 +15,156 @@ use super::{
 };
 
 pub type NTtyDriver = Tty<ConsoleReader, Console>;
+
+const CONSOLE_RX_BUFFER_CAP: usize = 4096;
+const CONSOLE_RX_DRAIN_CHUNK: usize = 64;
+const CONSOLE_RX_IDLE: u8 = 0;
+const CONSOLE_RX_IRQ_BORROW: u8 = 1;
+const CONSOLE_RX_TASK_BORROW: u8 = 2;
+
+struct ConsoleRxRing {
+    buf: [u8; CONSOLE_RX_BUFFER_CAP],
+    head: usize,
+    len: usize,
+}
+
+impl ConsoleRxRing {
+    const fn new() -> Self {
+        Self {
+            buf: [0; CONSOLE_RX_BUFFER_CAP],
+            head: 0,
+            len: 0,
+        }
+    }
+
+    fn is_full(&self) -> bool {
+        self.len == CONSOLE_RX_BUFFER_CAP
+    }
+
+    fn free_len(&self) -> usize {
+        CONSOLE_RX_BUFFER_CAP - self.len
+    }
+
+    fn push_slice(&mut self, bytes: &[u8]) -> usize {
+        let mut written = 0;
+        for &byte in bytes.iter().take(self.free_len()) {
+            let tail = (self.head + self.len) % CONSOLE_RX_BUFFER_CAP;
+            self.buf[tail] = byte;
+            self.len += 1;
+            written += 1;
+        }
+        written
+    }
+
+    fn pop_slice(&mut self, out: &mut [u8]) -> usize {
+        let mut read = 0;
+        for slot in out.iter_mut().take(self.len) {
+            *slot = self.buf[self.head];
+            self.head = (self.head + 1) % CONSOLE_RX_BUFFER_CAP;
+            self.len -= 1;
+            read += 1;
+        }
+        read
+    }
+}
+
+struct ConsoleRxBuffer {
+    borrow: AtomicU8,
+    ring: UnsafeCell<ConsoleRxRing>,
+}
+
+// SAFETY: both IRQ and task contexts access the ring and the console RX register
+// only after acquiring the non-blocking `borrow` gate. The IRQ path gives up
+// immediately when task context owns the gate, so it cannot deadlock on input.
+unsafe impl Sync for ConsoleRxBuffer {}
+
+struct ConsoleRxBorrow<'a> {
+    borrow: &'a AtomicU8,
+}
+
+impl Drop for ConsoleRxBorrow<'_> {
+    fn drop(&mut self) {
+        self.borrow.store(CONSOLE_RX_IDLE, Ordering::Release);
+    }
+}
+
+impl ConsoleRxBuffer {
+    const fn new() -> Self {
+        Self {
+            borrow: AtomicU8::new(CONSOLE_RX_IDLE),
+            ring: UnsafeCell::new(ConsoleRxRing::new()),
+        }
+    }
+
+    fn try_borrow(&self, owner: u8) -> Option<ConsoleRxBorrow<'_>> {
+        self.borrow
+            .compare_exchange(CONSOLE_RX_IDLE, owner, Ordering::Acquire, Ordering::Relaxed)
+            .ok()
+            .map(|_| ConsoleRxBorrow {
+                borrow: &self.borrow,
+            })
+    }
+
+    fn prefetch_from_irq(&self) -> usize {
+        self.with_borrowed_ring(CONSOLE_RX_IRQ_BORROW, drain_console_hardware_into_ring)
+            .unwrap_or(0)
+    }
+
+    fn prefetch_from_task(&self) -> usize {
+        self.with_borrowed_ring(CONSOLE_RX_TASK_BORROW, drain_console_hardware_into_ring)
+            .unwrap_or(0)
+    }
+
+    fn read_from_task(&self, buf: &mut [u8]) -> usize {
+        if buf.is_empty() {
+            return 0;
+        }
+
+        self.with_borrowed_ring(CONSOLE_RX_TASK_BORROW, |ring| {
+            let mut read = 0;
+            loop {
+                read += ring.pop_slice(&mut buf[read..]);
+                if read == buf.len() {
+                    drain_console_hardware_into_ring(ring);
+                    break;
+                }
+                if drain_console_hardware_into_ring(ring) == 0 {
+                    break;
+                }
+            }
+            read
+        })
+        .unwrap_or(0)
+    }
+
+    fn with_borrowed_ring<R>(
+        &self,
+        owner: u8,
+        f: impl FnOnce(&mut ConsoleRxRing) -> R,
+    ) -> Option<R> {
+        let _guard = self.try_borrow(owner)?;
+        // SAFETY: `try_borrow()` must be held by the caller, which serializes
+        // mutable ring access across IRQ and task contexts.
+        Some(f(unsafe { &mut *self.ring.get() }))
+    }
+}
+
+fn drain_console_hardware_into_ring(ring: &mut ConsoleRxRing) -> usize {
+    let mut total = 0;
+    let mut chunk = [0; CONSOLE_RX_DRAIN_CHUNK];
+    while !ring.is_full() {
+        let limit = ring.free_len().min(chunk.len());
+        let read = ax_runtime::hal::console::read_bytes(&mut chunk[..limit]);
+        if read == 0 {
+            break;
+        }
+        total += ring.push_slice(&chunk[..read]);
+        if read < limit {
+            break;
+        }
+    }
+    total
+}
 
 #[derive(Clone, Copy)]
 pub struct Console;
@@ -41,7 +192,7 @@ impl TtyRead for ConsoleReader {
                 break;
             }
 
-            let read = ax_runtime::hal::console::read_bytes(&mut raw[..read_cap]);
+            let read = read_console_input(&mut raw[..read_cap]);
             if read == 0 {
                 written += self.mouse_filter.flush_pending(&mut buf[written..]);
                 break;
@@ -53,6 +204,14 @@ impl TtyRead for ConsoleReader {
             }
         }
         written
+    }
+}
+
+fn read_console_input(buf: &mut [u8]) -> usize {
+    if CONSOLE_INPUT_IRQ_MODE.load(Ordering::Acquire) {
+        CONSOLE_RX_BUFFER.read_from_task(buf)
+    } else {
+        ax_runtime::hal::console::read_bytes(buf)
     }
 }
 
@@ -257,6 +416,8 @@ pub static N_TTY: LazyLock<Arc<NTtyDriver>> = LazyLock::new(new_n_tty);
 static CONSOLE_INPUT_SOURCE: LazyLock<Arc<PollSet>> = LazyLock::new(|| Arc::new(PollSet::new()));
 static CONSOLE_INPUT_NOTIFY: LazyLock<Arc<IrqNotify>> =
     LazyLock::new(|| Arc::new(IrqNotify::new()));
+static CONSOLE_RX_BUFFER: ConsoleRxBuffer = ConsoleRxBuffer::new();
+static CONSOLE_INPUT_IRQ_MODE: AtomicBool = AtomicBool::new(false);
 static CONSOLE_NOTIFY_WORKER: AtomicBool = AtomicBool::new(false);
 
 fn handle_console_input_irq(_irq_num: usize) {
@@ -266,6 +427,7 @@ fn handle_console_input_irq(_irq_num: usize) {
             | ax_runtime::hal::console::ConsoleIrqEvent::RX_ERROR
             | ax_runtime::hal::console::ConsoleIrqEvent::OVERRUN,
     ) {
+        CONSOLE_RX_BUFFER.prefetch_from_irq();
         CONSOLE_INPUT_NOTIFY.notify_irq();
     }
 }
@@ -395,14 +557,20 @@ fn console_irq_mode() -> Option<ProcessMode> {
         return None;
     }
 
-    ax_runtime::hal::console::set_input_irq_enabled(true);
+    CONSOLE_INPUT_IRQ_MODE.store(true, Ordering::Release);
     start_console_notify_worker();
+    ax_runtime::hal::console::set_input_irq_enabled(true);
+    if CONSOLE_RX_BUFFER.prefetch_from_task() > 0 {
+        CONSOLE_INPUT_NOTIFY.notify();
+    }
     Some(ProcessMode::InterruptDriven(CONSOLE_INPUT_SOURCE.clone()))
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{MouseEscapeFilter, parse_console_size_response};
+    use super::{
+        CONSOLE_RX_BUFFER_CAP, ConsoleRxRing, MouseEscapeFilter, parse_console_size_response,
+    };
 
     #[test]
     fn parses_cursor_position_response() {
@@ -458,5 +626,36 @@ mod tests {
     #[test]
     fn mouse_filter_removes_mouse_reports_from_mixed_stream() {
         assert_eq!(filter(b"abc \x1b[<64;10;20Mdef\n"), b"abc def\n");
+    }
+
+    #[test]
+    fn console_rx_ring_preserves_prefetched_burst_order() {
+        let mut ring = ConsoleRxRing::new();
+        let input = b"abcdefghijklmnopqrstuvwxyz0123456789";
+        assert_eq!(ring.push_slice(input), input.len());
+
+        let mut out = [0; 64];
+        let read = ring.pop_slice(&mut out);
+        assert_eq!(read, input.len());
+        assert_eq!(&out[..read], input);
+    }
+
+    #[test]
+    fn console_rx_ring_wraps_without_reordering() {
+        let mut ring = ConsoleRxRing::new();
+        let first = [b'a'; CONSOLE_RX_BUFFER_CAP];
+        assert_eq!(ring.push_slice(&first), first.len());
+
+        let mut out = [0; CONSOLE_RX_BUFFER_CAP - 5];
+        assert_eq!(ring.pop_slice(&mut out), out.len());
+
+        let second = b"0123456789";
+        assert_eq!(ring.push_slice(second), second.len());
+
+        let mut rest = [0; 15];
+        let read = ring.pop_slice(&mut rest);
+        assert_eq!(read, rest.len());
+        assert_eq!(&rest[..5], &[b'a'; 5]);
+        assert_eq!(&rest[5..], second);
     }
 }
