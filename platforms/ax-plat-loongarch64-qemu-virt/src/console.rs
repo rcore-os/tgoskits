@@ -1,8 +1,8 @@
 use ax_kspin::SpinNoIrq;
 use ax_lazyinit::LazyInit;
-use ax_plat::console::ConsoleIf;
 #[cfg(feature = "irq")]
 use ax_plat::console::ConsoleIrqEvent;
+use ax_plat::console::{ConsoleDeviceId, ConsoleIf};
 #[cfg(feature = "irq")]
 use uart_16550::spec::registers::InterruptType;
 use uart_16550::{Config, Uart16550, backend::MmioBackend, spec::registers::IER};
@@ -63,7 +63,7 @@ impl ConsoleIf for ConsoleIfImpl {
         uart.try_receive_bytes(bytes)
     }
 
-    fn device_id() -> Option<rdrive::DeviceId> {
+    fn device_id() -> Option<ConsoleDeviceId> {
         None
     }
 

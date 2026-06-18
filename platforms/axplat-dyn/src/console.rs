@@ -1,6 +1,6 @@
-use ax_plat::console::ConsoleIf;
 #[cfg(feature = "irq")]
 use ax_plat::console::ConsoleIrqEvent;
+use ax_plat::console::{ConsoleDeviceId, ConsoleIf};
 
 struct ConsoleIfImpl;
 
@@ -35,7 +35,7 @@ impl ConsoleIf for ConsoleIfImpl {
         read_len
     }
 
-    fn device_id() -> Option<rdrive::DeviceId> {
+    fn device_id() -> Option<ConsoleDeviceId> {
         somehal::console_device_id()
     }
 

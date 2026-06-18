@@ -3,7 +3,7 @@ use ax_lazyinit::LazyInit;
 #[cfg(feature = "irq")]
 use ax_plat::console::ConsoleIrqEvent;
 use ax_plat::{
-    console::ConsoleIf,
+    console::{ConsoleDeviceId, ConsoleIf},
     mem::{pa, phys_to_virt},
 };
 use uart_16550::MmioSerialPort;
@@ -52,7 +52,7 @@ impl ConsoleIf for ConsoleIfImpl {
         bytes.len()
     }
 
-    fn device_id() -> Option<rdrive::DeviceId> {
+    fn device_id() -> Option<ConsoleDeviceId> {
         None
     }
 

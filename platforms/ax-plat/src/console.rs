@@ -3,6 +3,7 @@
 use core::fmt::{Arguments, Result, Write};
 
 use bitflags::bitflags;
+pub use rdrive::DeviceId as ConsoleDeviceId;
 
 bitflags! {
     /// Console input IRQ events returned by the platform.
@@ -32,7 +33,7 @@ pub trait ConsoleIf {
     ///
     /// Static platforms that do not have a runtime device manager should return
     /// `None`.
-    fn device_id() -> Option<rdrive::DeviceId>;
+    fn device_id() -> Option<ConsoleDeviceId>;
 
     /// Returns the IRQ number for the console input interrupt.
     ///

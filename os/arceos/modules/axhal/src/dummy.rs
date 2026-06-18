@@ -3,7 +3,7 @@
 #[cfg(feature = "irq")]
 use ax_plat::irq::{IpiTarget, IrqIf};
 use ax_plat::{
-    console::ConsoleIf,
+    console::{ConsoleDeviceId, ConsoleIf},
     impl_plat_interface,
     init::InitIf,
     mem::{MemIf, RawRange},
@@ -42,7 +42,7 @@ impl ConsoleIf for DummyConsole {
         unimplemented!()
     }
 
-    fn device_id() -> Option<rdrive::DeviceId> {
+    fn device_id() -> Option<ConsoleDeviceId> {
         None
     }
 
