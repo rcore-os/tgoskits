@@ -927,6 +927,7 @@ impl PhytiumMci {
     ) -> Result<(), Error> {
         self.clear_all_int_status();
         self.regs.idsts().write(u32::MAX);
+        self.irq_state.clear_all();
         self.regs.idinten().write(IDSTS_INT_ENABLE_MASK);
         self.reset_fifo(Phase::Init)?;
         self.reset_dma(Phase::Init)?;
@@ -947,9 +948,11 @@ impl PhytiumMci {
     }
 
     fn program_idmac_registers(&self, desc_dma: u64) {
-        self.regs
-            .ctrl()
-            .update(|r| r.with_use_internal_dmac(true).with_int_enable(true));
+        self.regs.ctrl().update(|r| {
+            r.with_dma_enable(true)
+                .with_use_internal_dmac(true)
+                .with_int_enable(true)
+        });
         self.regs
             .bmod()
             .write(self.regs.bmod().read() | BMOD_FIXED_BURST | BMOD_IDMAC_ENABLE);
@@ -970,9 +973,9 @@ impl PhytiumMci {
         if raw != 0 {
             self.regs.idsts().write(raw);
         }
-        let status = self.idmac_pending_status | raw;
-        self.idmac_pending_status &= !(IDSTS_RECEIVE | IDSTS_TRANSMIT | IDSTS_ERROR_MASK);
-        status
+        self.irq_state
+            .take_idmac_status(IDSTS_RECEIVE | IDSTS_TRANSMIT | IDSTS_ERROR_MASK)
+            | raw
     }
 
     fn take_data_irq_status(&mut self, cmd_index: u8, phase: Phase) -> Result<RIntSts, Error> {
@@ -985,11 +988,12 @@ impl PhytiumMci {
         if consume != 0 {
             self.regs.rintsts().write(RIntSts::from_bits(consume));
         }
-        let status = self.irq_pending_status | raw_status;
-        self.irq_pending_status &= !(crate::MCI_INT_DATA_TRANSFER_OVER
-            | crate::MCI_INT_RXDR
-            | crate::MCI_INT_TXDR
-            | crate::MCI_INT_ERROR_MASK);
+        let status = self.irq_state.take_status(
+            crate::MCI_INT_DATA_TRANSFER_OVER
+                | crate::MCI_INT_RXDR
+                | crate::MCI_INT_TXDR
+                | crate::MCI_INT_ERROR_MASK,
+        ) | raw_status;
         let ints = RIntSts::from_bits(status);
         if ints.error() {
             return Err(self.translate_int_error(ints, phase, cmd_index));
@@ -1307,6 +1311,7 @@ mod tests {
 
     const RINTSTS_WORD: usize = 17;
     const STATUS_WORD: usize = 18;
+    const CTRL_WORD: usize = 0;
     const BMOD_WORD: usize = 32;
     const PLDMND_WORD: usize = 33;
     const DBADDRL_WORD: usize = 34;
@@ -1330,6 +1335,10 @@ mod tests {
             mmio[BMOD_WORD],
             0x200 | BMOD_FIXED_BURST | BMOD_IDMAC_ENABLE
         );
+        let ctrl = crate::regs::Ctrl::from_bits(mmio[CTRL_WORD]);
+        assert!(ctrl.dma_enable());
+        assert!(ctrl.use_internal_dmac());
+        assert!(ctrl.int_enable());
         assert_eq!(mmio[PLDMND_WORD], 0);
         assert_eq!(mmio[DBADDRL_WORD], 0x8000_0000);
         assert_eq!(mmio[DBADDRL_WORD + 1], 1);

@@ -25,19 +25,20 @@ multitask = ["alloc", "ax-task/multitask", "ax-feat/multitask", "ax-sync/multita
 lockdep = ["multitask", "ax-feat/lockdep", "ax-sync/lockdep"]
 plat-dyn = ["ax-feat/plat-dyn", "smp"]
 fd = ["alloc", "dep:scope-local"]
-fs = ["dep:ax-fs", "ax-feat/fs", "fd"]
+fs = ["dep:ax-fs-ng", "ax-feat/fs", "fd"]
 net = ["dep:ax-net", "ax-feat/net", "fd"]
 pipe = ["fd"]
 select = ["fd"]
 poll = ["fd"]
 epoll = ["fd"]
+use-hermit-types = []
 
 [dependencies]
 # ArceOS modules
 ax-alloc = { workspace = true, optional = true }
 ax-config.workspace = true
 ax-feat.workspace = true
-ax-fs = { workspace = true, optional = true }
+ax-fs-ng = { workspace = true, optional = true }
 ax-hal.workspace = true
 ax-log.workspace = true
 ax-net = { workspace = true, optional = true }

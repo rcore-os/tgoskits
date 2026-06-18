@@ -14,7 +14,7 @@ use core::{
 };
 
 use ax_errno::{AxError, AxResult, LinuxError};
-use ax_fs::FileFlags;
+use ax_fs_ng::vfs::FileFlags;
 use ax_memory_addr::{MemoryAddr, VirtAddr, VirtAddrRange, align_up_4k};
 use ax_runtime::hal::{
     paging::{MappingFlags, PageSize},

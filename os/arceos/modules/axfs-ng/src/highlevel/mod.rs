@@ -1,5 +1,1 @@
-mod file;
-mod fs;
-
-pub use file::*;
-pub use fs::*;
+pub use crate::fs_core::*;

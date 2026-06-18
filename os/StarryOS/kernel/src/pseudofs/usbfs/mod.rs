@@ -57,6 +57,7 @@ pub(crate) fn new_usbfs() -> LinuxResult<Option<Filesystem>> {
 
     let manager = Arc::new(UsbFsManager::new(hosts));
     irq::init_globals(manager.clone(), irq_slots);
+    irq::start_event_pump();
     let initialized_hosts = manager::initialize_hosts(&manager) > 0;
     if !initialized_hosts {
         info!("usbfs: no USB host initialized, skip mounting usbfs");
@@ -78,6 +79,10 @@ pub(crate) fn has_manager() -> bool {
     manager().is_some_and(|manager| manager.has_hosts())
 }
 
+pub(crate) fn start_event_pump() {
+    irq::start_event_pump();
+}
+
 pub(crate) fn new_bus_usb_sysfs() -> Filesystem {
     sysfs::new_bus_usb_sysfs()
 }
@@ -88,7 +93,7 @@ pub(crate) fn is_usbfs_device(inner: &dyn Any) -> bool {
 
 pub(crate) fn open_usbfs_file(
     inner: &dyn Any,
-    file: ax_fs::File,
+    file: ax_fs_ng::File,
     open_flags: u32,
 ) -> AxResult<Arc<dyn FileLike>> {
     let ops = inner
@@ -1198,7 +1203,7 @@ impl FileLike for UsbDeviceFile {
         self.base.path()
     }
 
-    fn file_mmap(&self) -> AxResult<(ax_fs::FileBackend, ax_fs::FileFlags)> {
+    fn file_mmap(&self) -> AxResult<(ax_fs_ng::vfs::FileBackend, ax_fs_ng::vfs::FileFlags)> {
         self.base.file_mmap()
     }
 

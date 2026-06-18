@@ -183,10 +183,7 @@ mod tests {
                     u64::MAX,
                     kernel_dma_op(),
                     kernel_mmio_op(),
-                    Config {
-                        page_size,
-                        io_queue_pair_count: 1,
-                    },
+                    Config::new(page_size, 1),
                 )
                 .unwrap();
             }

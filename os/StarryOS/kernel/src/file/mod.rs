@@ -20,7 +20,7 @@ use alloc::{borrow::Cow, sync::Arc};
 use core::{ffi::c_int, time::Duration};
 
 use ax_errno::{AxError, AxResult};
-use ax_fs::{FS_CONTEXT, FileBackend, FileFlags, OpenOptions};
+use ax_fs_ng::vfs::{FS_CONTEXT, FileBackend, FileFlags, OpenOptions};
 use ax_io::prelude::*;
 use ax_task::current;
 use axfs_ng_vfs::DeviceId;

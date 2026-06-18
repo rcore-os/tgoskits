@@ -27,9 +27,9 @@ Flush maps to NVMe NVM Flush. Discard and write-zeroes are reported as unsupport
 
 ## IRQ Sources
 
-`rdif-block` supports multiple IRQ sources via `Interface::irq_sources()` and `take_irq_handler(source_id)`. The NVMe driver exposes legacy source `0`; its event mask covers all created IO queues. This keeps today's INTx/legacy flow working while leaving room for future MSI-X source-per-vector wiring.
+`rdif-block` supports multiple IRQ sources via `Interface::irq_sources()` and `take_irq_handler(source_id)`. The current NVMe block adapter intentionally exposes no IRQ source: IO completion queues are created with interrupts disabled and runtime/OS glue advances requests through submit/poll. This avoids pretending that a controller MSI-X completion path is a legacy INTx source.
 
-The IRQ handler only returns queue events. It does not complete requests, wake tasks, or take OS locks. Runtime/OS glue polls the indicated queues after receiving an event.
+Future MSI-X support can expose one RDIF IRQ source per completion vector. The IRQ handler should only return queue events; it should not complete requests, wake tasks, or take OS locks. Runtime/OS glue polls the indicated queues after receiving an event.
 
 ## QEMU Smoke Test
 

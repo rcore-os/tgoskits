@@ -1,14 +1,16 @@
 use alloc::{boxed::Box, sync::Arc};
 use core::marker::PhantomPinned;
 
-use ax_kspin::{SpinNoIrq as Mutex, SpinNoIrqGuard as MutexGuard};
 use axfs_ng_vfs::{
     DirEntry, Filesystem, FilesystemOps, Reference, StatFs, VfsResult, path::MAX_NAME_LEN,
 };
 use slab::Slab;
 
 use super::{dir::FatDirNode, disk::SeekableDisk, ff, util::into_vfs_err};
-use crate::block::{BlockRegion, FsBlockDevice};
+use crate::{
+    block::{BlockRegion, FsBlockDevice},
+    os::sync::{IrqMutex as Mutex, IrqMutexGuard as MutexGuard},
+};
 
 pub struct FatFilesystemInner {
     pub inner: ff::FileSystem,
@@ -67,8 +69,8 @@ impl FatFilesystem {
     ///
     /// FAT operations may perform block I/O while this guard is held. The
     /// current rootfs setup can also run in early atomic contexts where a
-    /// blocking mutex trips `might_sleep()`, so use `SpinNoIrq` instead of the
-    /// older `SpinNoPreempt` to close same-CPU IRQ reentry without changing the
+    /// blocking mutex trips `might_sleep()`, so use an IRQ-safe mutex instead
+    /// of a sleepable lock to close same-CPU IRQ reentry without changing the
     /// boot-time calling contract.
     pub(crate) fn lock(&self) -> MutexGuard<'_, FatFilesystemInner> {
         self.inner.lock()

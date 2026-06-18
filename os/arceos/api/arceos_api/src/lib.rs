@@ -204,7 +204,9 @@ pub mod fs {
         pub type AxOpenOptions;
         pub type AxFileAttr;
         pub type AxFileType;
+        pub type AxFileTypeExt;
         pub type AxFilePerm;
+        pub type AxFilePermExt;
         pub type AxDirEntry;
         pub type AxSeekFrom;
     }
@@ -406,7 +408,7 @@ pub mod modules {
     #[cfg(feature = "dma")]
     pub use ax_dma;
     #[cfg(feature = "fs")]
-    pub use ax_fs;
+    pub use ax_fs_ng;
     pub use ax_hal;
     #[cfg(feature = "ipi")]
     pub use ax_ipi;
