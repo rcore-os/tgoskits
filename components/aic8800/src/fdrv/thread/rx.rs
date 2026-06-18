@@ -359,7 +359,7 @@ fn handle_mgmt_frame(bus: &WifiBus, mpdu: &[u8], pkt_len: usize) {
         0xB if pkt_len >= 30 => {
             let alg = u16::from_le_bytes([mpdu[24], mpdu[25]]);
             let seq = u16::from_le_bytes([mpdu[26], mpdu[27]]);
-            log::info!("[ap-rx] Auth from {:02x?}: alg={} seq={}", sa, alg, seq);
+            log::debug!("[ap-rx] Auth from {:02x?}: alg={} seq={}", sa, alg, seq);
 
             // 开放认证(alg=0)、Auth Request(seq=1) → 回 Auth Response
             if alg == 0 && seq == 1 {
@@ -369,13 +369,31 @@ fn handle_mgmt_frame(bus: &WifiBus, mpdu: &[u8], pkt_len: usize) {
         // Assoc/Reassoc Req → 交给 AP worker 线程处理(ME_STA_ADD + Assoc Resp)
         0x0 | 0x2 if pkt_len >= 28 => {
             let cap = u16::from_le_bytes([mpdu[24], mpdu[25]]);
-            log::info!("[ap-rx] {} from {:02x?}: cap=0x{:04x}", subtype, sa, cap);
+            log::debug!("[ap-rx] {} from {:02x?}: cap=0x{:04x}", subtype, sa, cap);
             // 不能在 RX 线程做 ME_STA_ADD(send_cmd 会死锁)，整帧入队转给 AP worker
             bus.ap
                 .assoc_queue
                 .lock()
                 .push_back(mpdu[..pkt_len].to_vec());
             bus.ap.assoc_pollset.wake();
+        }
+        // Deauth(0xC)/Disassoc(0xA):STA 断开,从注册表移除,使重连能完整重新
+        // 注册(否则去重会跳过 ME_STA_ADD/控制端口,导致重连连不上)。
+        0xC | 0xA => {
+            let mut mac = [0u8; 6];
+            mac.copy_from_slice(sa);
+            let removed = {
+                let mut tbl = bus.ap.registered_stas.lock();
+                let before = tbl.len();
+                tbl.retain(|(m, _, _)| *m != mac);
+                before != tbl.len()
+            };
+            log::info!(
+                "[ap-rx] {} from {:02x?} (removed_from_table={})",
+                subtype,
+                sa,
+                removed
+            );
         }
         _ => {
             // Beacon / ProbeReq 等：周围 AP 和扫描设备的帧，与连接无关。
@@ -408,7 +426,7 @@ fn send_auth_response(bus: &WifiBus, dst: &[u8]) {
     frame.extend_from_slice(&0u16.to_le_bytes()); // status = success(0)
 
     match crate::fdrv::thread::tx::enqueue_mgmt_frame(bus, frame) {
-        Ok(()) => log::info!("[ap-tx] Auth Response queued -> {:02x?}", dst),
+        Ok(()) => log::debug!("[ap-tx] Auth Response queued -> {:02x?}", dst),
         Err(e) => log::warn!("[ap-tx] Auth Response enqueue failed: {:?}", e),
     }
 }

@@ -44,6 +44,7 @@ fn pad_cmd_frame(cmd: &mut Vec<u8>) -> usize {
 /// 启动 wifi-tx 线程
 pub fn start(bus: Arc<WifiBus>) {
     log::debug!("[wifi-tx] thread starting");
+    start_tx_poll_kicker(bus.clone());
     crate::runtime::runtime().spawn_poll_task(
         "wifi-tx",
         alloc::boxed::Box::new(move |cx| {
@@ -70,6 +71,37 @@ pub fn start(bus: Arc<WifiBus>) {
                 bus.cmd.rsp_pollset.wake();
             }
 
+            Poll::Pending
+        }),
+    );
+}
+
+/// 周期性唤醒 wifi-tx 线程的兜底任务。
+///
+/// 背景:wifi-tx 是边沿触发的 poll 任务,且先 tx_process 再 register waker
+/// (tx.rs:57/60)。PollSet 无 sticky 位(pollset.rs),若 `wake_pollset.wake()`
+/// 触发时 TX 的 waker 恰不在 set 里(例如 TX 正在 tx_process 内的 yield 点),
+/// 这次唤醒会永久丢失;叠加 `pending_flag` 队头阻塞(process_data_tx 见 pending
+/// CMD 即 break),一次丢失的 CMD 唤醒会冻结整条 TX 数秒,直到下一次偶然命中
+/// 注册窗口的 wake——这正是控制端口命令时好时坏超时的根因。
+///
+/// RX 线程早有对称的 10ms kicker(start_rx_poll_kicker)解决同类问题;此处为
+/// TX 补上,确保任何丢失的唤醒最多被延迟 ~10ms 即被救醒。
+fn start_tx_poll_kicker(bus: Arc<WifiBus>) {
+    crate::runtime::runtime().spawn_poll_task(
+        "wifi-tx-kick",
+        alloc::boxed::Box::new(move |cx| {
+            if *bus.state.lock() == BusState::Down {
+                return Poll::Ready(());
+            }
+            // 仅在确有待发工作时才唤醒 TX,避免空转。
+            if has_pending_work(&bus) {
+                bus.tx.wake_pollset.wake();
+            }
+            // 阻塞 sleep:本任务独占一个 ax_task 线程,只拖慢自己。
+            crate::runtime::runtime().sleep_ms(10);
+            // 自唤醒,形成 10ms 周期循环。
+            cx.waker().wake_by_ref();
             Poll::Pending
         }),
     );
@@ -121,7 +153,7 @@ fn process_cmd_tx(bus: &WifiBus) -> bool {
     let (fc_ok, did_work) = perform_cmd_flow_control_and_send(transport, &cmd, send_len);
 
     if fc_ok && did_work {
-        log::info!("[wifi-tx] process_cmd_tx: CMD sent OK, len={}", send_len);
+        log::debug!("[wifi-tx] process_cmd_tx: CMD sent OK, len={}", send_len);
         bus.rx.irq_waker.wake();
         transport.unmask_card_irq();
     } else if !fc_ok {
@@ -257,7 +289,7 @@ fn send_single_data_frame(
             log::error!("[wifi-tx] MGMT write_fifo failed: {:?}", e);
             return false;
         }
-        log::info!(
+        log::debug!(
             "[wifi-tx] MGMT frame sent OK ({} bytes 802.11, vif={})",
             frame.data.len(),
             vif_idx

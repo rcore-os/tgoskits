@@ -62,21 +62,48 @@ fn handle_assoc_req(bus: &Arc<WifiBus>, mpdu: &[u8]) {
     // AssocReq body: mgmt hdr(24) + cap(2) + listen_int(2) + IEs
     let rates = parse_supported_rates(&mpdu[28..]);
 
-    // 1. 注册 STA
-    let sta_idx = match send_me_sta_add_req(bus, &sta_mac, &rates, aid, vif_idx, 0) {
-        Ok(idx) => idx,
-        Err(e) => {
-            log::warn!("[wifi-ap] ME_STA_ADD failed: {:?}", e);
-            return;
-        }
+    // 已注册的 STA(手机重传 AssocReq)：跳过 ME_STA_ADD,只补发 Assoc Response。
+    // 固件对同一 MAC 的重复 ME_STA_ADD 不回 CFM,会让本 worker 阻塞 5 秒超时,
+    // 期间连接抖动(实测 DHCP 退回 Discover)。重传多因手机没收到上一个 Assoc
+    // Response,故补发即可。
+    // 查注册表:返回 (sta_idx, 控制端口是否已开)。
+    let existing = bus
+        .ap
+        .registered_stas
+        .lock()
+        .iter()
+        .find(|(mac, _, _)| *mac == sta_mac)
+        .map(|(_, idx, ctrl)| (*idx, *ctrl));
+
+    let (sta_idx, ctrl_open) = if let Some((idx, ctrl)) = existing {
+        log::info!(
+            "[wifi-ap] STA {:02x?} already registered (sta_idx={}, ctrl_open={}), \
+             resend Assoc Response{}",
+            sta_mac,
+            idx,
+            ctrl,
+            if ctrl { " only" } else { " + retry control port" }
+        );
+        (idx, ctrl)
+    } else {
+        // 新 MAC:注册 STA。固件对重复注册不回 CFM,故仅新 MAC 才发 ME_STA_ADD。
+        let idx = match send_me_sta_add_req(bus, &sta_mac, &rates, aid, vif_idx, 0) {
+            Ok(idx) => idx,
+            Err(e) => {
+                log::warn!("[wifi-ap] ME_STA_ADD failed: {:?}", e);
+                return;
+            }
+        };
+        bus.conn.sta_idx.store(idx, Ordering::Release);
+        bus.ap.registered_stas.lock().push((sta_mac, idx, false));
+        log::info!(
+            "[wifi-ap] STA {:02x?} registered: sta_idx={}, aid={}",
+            sta_mac,
+            idx,
+            aid
+        );
+        (idx, false)
     };
-    bus.conn.sta_idx.store(sta_idx, Ordering::Release);
-    log::info!(
-        "[wifi-ap] STA {:02x?} registered: sta_idx={}, aid={}",
-        sta_mac,
-        sta_idx,
-        aid
-    );
 
     // 2. 回 Assoc Response
     let ap_mac = match *bus.conn.sta_mac.lock() {
@@ -95,9 +122,24 @@ fn handle_assoc_req(bus: &Arc<WifiBus>, mpdu: &[u8]) {
     // 3. 打开控制端口(authorize)。开放网络无 EAPOL，关联后必须显式授权，
     // 否则固件只放行 EAPOL、丢弃该 STA 的所有普通数据帧(DHCP/ARP/IP)。
     // 对应 vendor change_station(AUTHORIZED) → rwnx_send_me_set_control_port_req。
-    match send_set_control_port_req(bus, sta_idx, true, 0) {
-        Ok(_) => log::info!("[wifi-ap] control port OPENED for sta_idx={}", sta_idx),
-        Err(e) => log::warn!("[wifi-ap] open control port failed: {:?}", e),
+    // 自愈:仅当控制端口尚未成功打开时才发(首次/上次超时都会重试),成功后置标志,
+    // 之后重传 AssocReq 不再重复发,省命令、避免阻塞。
+    if !ctrl_open {
+        match send_set_control_port_req(bus, sta_idx, true, 0) {
+            Ok(_) => {
+                log::info!("[wifi-ap] control port OPENED for sta_idx={}", sta_idx);
+                if let Some(e) = bus
+                    .ap
+                    .registered_stas
+                    .lock()
+                    .iter_mut()
+                    .find(|(mac, _, _)| *mac == sta_mac)
+                {
+                    e.2 = true;
+                }
+            }
+            Err(e) => log::warn!("[wifi-ap] open control port failed: {:?}", e),
+        }
     }
 }
 
