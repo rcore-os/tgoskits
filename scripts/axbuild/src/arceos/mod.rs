@@ -1,5 +1,6 @@
 use std::{
     collections::BTreeSet,
+    fs::File,
     path::{Path, PathBuf},
     process::Command as StdCommand,
 };
@@ -22,7 +23,7 @@ pub(super) fn ensure_qemu_runtime_assets(
     qemu: &QemuConfig,
 ) -> anyhow::Result<()> {
     let mut seen = BTreeSet::new();
-    for image in qemu_runtime_disk_images(qemu) {
+    for image in qemu_runtime_disk_images(workspace_root, qemu) {
         if !seen.insert(image.clone()) {
             continue;
         }
@@ -57,20 +58,92 @@ fn ensure_fat32_image(image: &Path, size: &str, recreate: bool) -> anyhow::Resul
             .then_some(())
             .ok_or_else(|| anyhow::anyhow!("`{name}` exited with non-zero status"))
     };
-    ran(StdCommand::new("truncate").args(["-s", size]).arg(image))?;
-    ran(StdCommand::new("mkfs.fat")
-        .args(["-F", "32"])
-        .arg(image)
-        .stdout(std::process::Stdio::null()))?;
+
+    if command_exists("truncate") {
+        ran(StdCommand::new("truncate").args(["-s", size]).arg(image))?;
+    } else {
+        let bytes = parse_size_to_bytes(size)?;
+        let file = File::create(image)
+            .with_context(|| format!("failed to create runtime image {}", image.display()))?;
+        file.set_len(bytes)
+            .with_context(|| format!("failed to resize runtime image {}", image.display()))?;
+    }
+
+    if command_exists("mkfs.fat") {
+        ran(StdCommand::new("mkfs.fat")
+            .args(["-F", "32"])
+            .arg(image)
+            .stdout(std::process::Stdio::null()))?;
+    } else {
+        warn!(
+            "`mkfs.fat` not found in PATH; runtime disk image {} will be an unformatted raw file",
+            image.display()
+        );
+    }
+
     println!("{msg} ... done");
     Ok(())
 }
 
-fn qemu_runtime_disk_images(qemu: &QemuConfig) -> Vec<PathBuf> {
+fn parse_size_to_bytes(size: &str) -> anyhow::Result<u64> {
+    let trimmed = size.trim();
+    let number = trimmed
+        .trim_end_matches(|c: char| c.is_ascii_alphabetic())
+        .trim();
+    let value: u64 = number
+        .parse()
+        .with_context(|| format!("invalid disk image size `{size}`"))?;
+
+    let suffix = trimmed[number.len()..].trim().to_ascii_lowercase();
+    let unit = match suffix.as_str() {
+        "" | "b" => 1,
+        "k" | "kb" => 1024,
+        "m" | "mb" => 1024 * 1024,
+        "g" | "gb" => 1024 * 1024 * 1024,
+        _ => {
+            anyhow::bail!("unsupported disk image size suffix `{suffix}` in `{size}`");
+        }
+    };
+
+    value
+        .checked_mul(unit)
+        .with_context(|| format!("disk image size `{size}` is too large"))
+}
+
+fn command_exists(command: &str) -> bool {
+    let command_name = format!("{command}{}", std::env::consts::EXE_SUFFIX);
+    std::env::var_os("PATH")
+        .map(|path| {
+            std::env::split_paths(&path).any(|dir| {
+                let candidate = dir.join(&command_name);
+                candidate.is_file()
+            })
+        })
+        .unwrap_or(false)
+}
+
+fn qemu_runtime_disk_images(workspace_root: &Path, qemu: &QemuConfig) -> Vec<PathBuf> {
     crate::rootfs::qemu::drive_file_paths(qemu)
         .into_iter()
+        .map(|path| expand_workspace_path(workspace_root, &path))
         .filter(|path| path.file_name().and_then(|name| name.to_str()) == Some("disk.img"))
         .collect()
+}
+
+fn expand_workspace_path(workspace_root: &Path, path: &Path) -> PathBuf {
+    let Some(raw) = path.to_str() else {
+        return path.to_path_buf();
+    };
+
+    if raw == "${workspace}" {
+        return workspace_root.to_path_buf();
+    }
+
+    if let Some(relative) = raw.strip_prefix("${workspace}/") {
+        return workspace_root.join(relative);
+    }
+
+    path.to_path_buf()
 }
 
 fn should_recreate_runtime_image(workspace_root: &Path, image: &Path) -> bool {
@@ -82,12 +155,19 @@ pub mod cbuild;
 pub mod rootfs;
 pub mod test;
 
+pub(super) struct LoadedQemuConfig {
+    config: Option<QemuConfig>,
+    config_path: Option<PathBuf>,
+}
+
 fn start_qemu_host_http_server(
     request: &ResolvedBuildRequest,
+    qemu_config_path: Option<&Path>,
 ) -> anyhow::Result<Option<HostHttpServerGuard>> {
     request
         .qemu_config
         .as_deref()
+        .or(qemu_config_path)
         .map(crate::test::qemu::load_qemu_case_host_http_server)
         .transpose()?
         .flatten()
@@ -252,19 +332,41 @@ impl ArceOS {
         &mut self,
         request: &ResolvedBuildRequest,
         cargo: &Cargo,
-    ) -> anyhow::Result<Option<ostool::run::qemu::QemuConfig>> {
-        let mut qemu = match request.qemu_config.as_deref() {
-            Some(path) => self
-                .app
-                .read_qemu_config_from_path_for_cargo(cargo, path)
-                .await
-                .map(Some)?,
-            None => None,
+    ) -> anyhow::Result<LoadedQemuConfig> {
+        let (mut qemu, config_path) = match request.qemu_config.as_deref() {
+            Some(path) => (
+                self.app
+                    .read_qemu_config_from_path_for_cargo(cargo, path)
+                    .await
+                    .map(Some)?,
+                Some(path.to_path_buf()),
+            ),
+            None => {
+                let default_path = self
+                    .app
+                    .workspace_member_dir(&request.package)?
+                    .join(format!("qemu-{}.toml", request.arch));
+                if default_path.exists() {
+                    (
+                        self.app
+                            .read_qemu_config_from_path_for_cargo(cargo, &default_path)
+                            .await
+                            .map(Some)?,
+                        Some(default_path),
+                    )
+                } else {
+                    (None, None)
+                }
+            }
         };
         if let Some(qemu) = qemu.as_mut() {
             crate::test::qemu::apply_dynamic_platform_qemu_boot(qemu, cargo);
         }
-        Ok(qemu)
+
+        Ok(LoadedQemuConfig {
+            config: qemu,
+            config_path,
+        })
     }
 
     async fn load_uboot_config(
@@ -301,12 +403,15 @@ impl ArceOS {
         cargo: Cargo,
     ) -> anyhow::Result<()> {
         self.app.set_debug_mode(request.debug)?;
-        let qemu = self.load_qemu_config(&request, &cargo).await?;
-        if let Some(qemu) = qemu.as_ref() {
+        let loaded_qemu = self.load_qemu_config(&request, &cargo).await?;
+        if let Some(qemu) = loaded_qemu.config.as_ref() {
             ensure_qemu_runtime_assets(self.app.workspace_root(), qemu)?;
         }
-        let _host_http_server = start_qemu_host_http_server(&request)?;
-        self.app.qemu(cargo, request.build_info_path, qemu).await
+        let _host_http_server =
+            start_qemu_host_http_server(&request, loaded_qemu.config_path.as_deref())?;
+        self.app
+            .qemu(cargo, request.build_info_path, loaded_qemu.config)
+            .await
     }
 
     async fn run_build_request(&mut self, request: ResolvedBuildRequest) -> anyhow::Result<()> {
@@ -369,22 +474,21 @@ impl ArceOS {
         self.app.set_debug_mode(request.debug)?;
         let request = c_app_internal_request(&request);
         let cargo = build::load_c_app_cargo_config(&request)?;
-        let mut qemu = self
-            .load_qemu_config(&request, &cargo)
-            .await?
-            .with_context(|| {
-                format!(
-                    "ArceOS C app config {} requires an explicit qemu config",
-                    request.build_info_path.display()
-                )
-            })?;
+        let loaded_qemu = self.load_qemu_config(&request, &cargo).await?;
+        let mut qemu = loaded_qemu.config.with_context(|| {
+            format!(
+                "ArceOS C app config {} requires an explicit qemu config",
+                request.build_info_path.display()
+            )
+        })?;
         let output = self.build_c_app_request(&request, app_dir, app_name)?;
         crate::test::qemu::apply_dynamic_platform_qemu_boot(&mut qemu, &cargo);
         ensure_qemu_runtime_assets(self.app.workspace_root(), &qemu)?;
         self.app
             .prepare_elf_artifact(output.elf_path, qemu.to_bin)
             .await?;
-        let _host_http_server = start_qemu_host_http_server(&request)?;
+        let _host_http_server =
+            start_qemu_host_http_server(&request, loaded_qemu.config_path.as_deref())?;
         self.app.run_prepared_qemu(qemu, None).await
     }
 
@@ -436,6 +540,7 @@ mod tests {
 
     #[test]
     fn qemu_runtime_disk_images_finds_disk_img_drive_paths() {
+        let workspace = Path::new("/workspace");
         let qemu = QemuConfig {
             args: vec![
                 "-drive".to_string(),
@@ -447,8 +552,29 @@ mod tests {
         };
 
         assert_eq!(
-            qemu_runtime_disk_images(&qemu),
+            qemu_runtime_disk_images(workspace, &qemu),
             vec![PathBuf::from("/tmp/case/disk.img")]
+        );
+    }
+
+    #[test]
+    fn qemu_runtime_disk_images_expands_workspace_placeholder() {
+        let workspace = Path::new("/workspace");
+        let qemu = QemuConfig {
+            args: vec![
+                "-drive".to_string(),
+                "id=disk0,if=none,format=raw,file=${workspace}/tmp/axbuild/runtime-assets/apps/\
+                 arceos/helloworld/disk.img"
+                    .to_string(),
+            ],
+            ..Default::default()
+        };
+
+        assert_eq!(
+            qemu_runtime_disk_images(workspace, &qemu),
+            vec![PathBuf::from(
+                "/workspace/tmp/axbuild/runtime-assets/apps/arceos/helloworld/disk.img"
+            )]
         );
     }
 
@@ -493,7 +619,39 @@ body = "fixture"
             uboot_config: None,
         };
 
-        let guard = start_qemu_host_http_server(&request).unwrap();
+        let guard = start_qemu_host_http_server(&request, None).unwrap();
+
+        assert!(guard.is_some());
+    }
+
+    #[test]
+    fn qemu_request_starts_host_http_server_from_fallback_qemu_config_path() {
+        let root = tempdir().unwrap();
+        let qemu_config = root.path().join("qemu-x86_64.toml");
+        std::fs::write(
+            &qemu_config,
+            r#"
+args = []
+
+[host_http_server]
+port = 0
+body = "fixture"
+"#,
+        )
+        .unwrap();
+        let request = ResolvedBuildRequest {
+            package: "arceos-httpclient".to_string(),
+            arch: "x86_64".to_string(),
+            target: "x86_64-unknown-none".to_string(),
+            plat_dyn: Some(true),
+            smp: Some(1),
+            debug: false,
+            build_info_path: root.path().join("build.toml"),
+            qemu_config: None,
+            uboot_config: None,
+        };
+
+        let guard = start_qemu_host_http_server(&request, Some(&qemu_config)).unwrap();
 
         assert!(guard.is_some());
     }

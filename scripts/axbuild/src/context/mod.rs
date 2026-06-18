@@ -3,6 +3,7 @@ use std::{
     env,
     ffi::{OsStr, OsString},
     path::{Path, PathBuf},
+    process::Command as StdCommand,
 };
 
 use anyhow::Context;
@@ -323,6 +324,7 @@ impl AppContext {
     fn scoped_qemu_path(&self, cargo: &Cargo) -> anyhow::Result<PathRestoreGuard> {
         let guard = PathRestoreGuard::new(self.original_path.clone());
         guard.restore();
+        configure_rust_objcopy_path()?;
         if should_use_loongarch_lvz_for(&cargo.package, &cargo.target) {
             configure_loongarch_qemu_path(&self.root)?;
         }
@@ -391,6 +393,67 @@ impl Drop for PathRestoreGuard {
 
 fn should_use_loongarch_lvz_for(package: &str, target: &str) -> bool {
     package == "axvisor" && target.contains("loongarch64")
+}
+
+fn configure_rust_objcopy_path() -> anyhow::Result<()> {
+    if is_command_in_path("rust-objcopy") {
+        return Ok(());
+    }
+
+    let Some(bin_dir) = rust_toolchain_bin_dir() else {
+        return Ok(());
+    };
+
+    let objcopy = bin_dir.join(format!("rust-objcopy{}", env::consts::EXE_SUFFIX));
+    if !objcopy.is_file() {
+        return Ok(());
+    }
+
+    prepend_dir_to_path(&bin_dir)?;
+    info!(
+        "PATH-prepended Rust toolchain bin for rust-objcopy: {}",
+        bin_dir.display()
+    );
+    Ok(())
+}
+
+fn rust_toolchain_bin_dir() -> Option<PathBuf> {
+    let sysroot = command_stdout("rustc", &["--print", "sysroot"])?;
+    let version_verbose = command_stdout("rustc", &["-vV"])?;
+    let host = version_verbose
+        .lines()
+        .find_map(|line| line.strip_prefix("host: "))?;
+
+    Some(
+        PathBuf::from(sysroot)
+            .join("lib")
+            .join("rustlib")
+            .join(host)
+            .join("bin"),
+    )
+}
+
+fn command_stdout(program: &str, args: &[&str]) -> Option<String> {
+    let output = StdCommand::new(program).args(args).output().ok()?;
+    if !output.status.success() {
+        return None;
+    }
+
+    let value = String::from_utf8(output.stdout).ok()?;
+    let trimmed = value.trim();
+    (!trimmed.is_empty()).then(|| trimmed.to_string())
+}
+
+fn is_command_in_path(command: &str) -> bool {
+    let command_name = format!("{command}{}", env::consts::EXE_SUFFIX);
+    env::var_os("PATH")
+        .map(|path| {
+            env::split_paths(&path).any(|dir| {
+                let candidate = dir.join(&command_name);
+                candidate.is_file()
+            })
+        })
+        .unwrap_or(false)
 }
 
 fn configure_loongarch_qemu_path(workspace_root: &Path) -> anyhow::Result<()> {
