@@ -20,6 +20,7 @@ use crate::{
 pub static RX_WAKE_COUNT: AtomicU64 = AtomicU64::new(0);
 
 /// DIAG: kicker 唤醒次数,用于确诊 kicker 是否真在跑。
+#[cfg(debug_assertions)]
 static RX_KICK_COUNT: AtomicU64 = AtomicU64::new(0);
 
 /// 上层(StarryOS)注册的"收到数据帧"回调,存为 `fn()` 裸指针。
@@ -116,10 +117,13 @@ fn start_rx_poll_kicker(bus: Arc<WifiBus>) {
             }
             // 唤醒 RX 线程去 poll func2(不自己做 SDIO,避免与 RX 线程争锁)
             bus.rx.irq_waker.wake();
-            // 每 ~1s 打一次心跳:证明 kicker 活着 + 汇报 RX 看到的 func2 状态
-            let kicks = RX_KICK_COUNT.fetch_add(1, Ordering::Relaxed) + 1;
-            if kicks.is_multiple_of(100) {
-                log::trace!("[RXKICK] alive kicks={}", kicks);
+            // 每 ~1s 打一次心跳(仅 trace):证明 kicker 活着
+            #[cfg(debug_assertions)]
+            {
+                let kicks = RX_KICK_COUNT.fetch_add(1, Ordering::Relaxed) + 1;
+                if kicks.is_multiple_of(100) {
+                    log::trace!("[RXKICK] alive kicks={}", kicks);
+                }
             }
             // 阻塞 sleep:本任务独占一个 ax_task 线程,只拖慢自己
             crate::runtime::runtime().sleep_ms(10);

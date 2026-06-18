@@ -179,14 +179,15 @@ fn poll_for_response<H: SdioHost>(
             .read_byte(func, block_cnt_reg(is_v3))
             .map_err(|_| "read block_cnt error")?;
 
-        // DIAG: 每 500 次扫一遍关键寄存器, 定位 CFM 到底回没回/回在哪个 func
-        if retry % 500 == 0 {
+        // DIAG: 每 500 次扫一遍关键寄存器, 定位 CFM 到底回没回/回在哪个 func。
+        // 仅在 trace 开启时执行,避免生产路径上多发 4 笔 CMD52。
+        if retry % 500 == 0 && log::log_enabled!(log::Level::Trace) {
             let f1_bc = sdio.read_byte(1, SDIOWIFI_BLOCK_CNT_REG).unwrap_or(0xEE);
             let f2_bc = sdio.read_byte(2, SDIOWIFI_BLOCK_CNT_REG).unwrap_or(0xEE);
             let f1_fc = sdio.read_byte(1, SDIOWIFI_FLOW_CTRL_REG).unwrap_or(0xEE);
             let f0_ip = sdio.read_byte(0, 0x05).unwrap_or(0xEE);
             let irqc = IRQ_COUNT.load(Ordering::Relaxed);
-            log::info!(
+            log::trace!(
                 "[DIAG] retry={} f1_bc=0x{:02x} f2_bc=0x{:02x} f1_fc(0x0a)=0x{:02x} \
                  f0_intpend(0x05)=0x{:02x} irq#38={}",
                 retry,
@@ -282,7 +283,7 @@ pub fn polling_send_cmd<H: SdioHost>(
 ) -> Result<usize, &'static str> {
     let buf = build_polling_cmd_frame(msg_id, dest_id, param, is_v3);
     check_flow_control_polling(sdio, is_v3, func)?;
-    log::info!(
+    log::debug!(
         "[fdrv] sending cmd 0x{:04x} via func{} fifo reg 0x{:02x}, len={}",
         msg_id,
         func,
@@ -290,13 +291,15 @@ pub fn polling_send_cmd<H: SdioHost>(
         buf.len()
     );
 
-    let pre_f1 = sdio.read_byte(1, SDIOWIFI_BLOCK_CNT_REG).unwrap_or(0xEE);
-    let pre_f2 = sdio.read_byte(2, SDIOWIFI_BLOCK_CNT_REG).unwrap_or(0xEE);
-    log::info!(
-        "[fdrv] pre-send block_cnt f1=0x{:02x} f2=0x{:02x}",
-        pre_f1,
-        pre_f2
-    );
+    if log::log_enabled!(log::Level::Trace) {
+        let pre_f1 = sdio.read_byte(1, SDIOWIFI_BLOCK_CNT_REG).unwrap_or(0xEE);
+        let pre_f2 = sdio.read_byte(2, SDIOWIFI_BLOCK_CNT_REG).unwrap_or(0xEE);
+        log::trace!(
+            "[fdrv] pre-send block_cnt f1=0x{:02x} f2=0x{:02x}",
+            pre_f1,
+            pre_f2
+        );
+    }
 
     sdio.write_fifo(func, wr_fifo_reg(is_v3), &buf)
         .map_err(|_| "write_fifo error")?;

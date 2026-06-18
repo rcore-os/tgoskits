@@ -50,6 +50,11 @@ pub const INTR_CONFIG_VALUE: u8 = 0x07;
 /// 堆栈起始参数
 pub const STACK_START_PARAM: [u8; 4] = [0x01, 0x00, 0x00, 0x00];
 
+/// AP 模式下注册表(registered_stas)的容量上限。防止异常情况下(如持续收到
+/// 不同 MAC 的 AssocReq 而无对应 deauth)注册表无界增长。当前固件 SoftAP 实际
+/// 关联数远低于此值。
+pub const MAX_REGISTERED_STAS: usize = 16;
+
 // ============================================================
 // 协议头部常量
 // ============================================================

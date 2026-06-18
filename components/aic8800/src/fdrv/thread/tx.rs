@@ -4,7 +4,7 @@ use core::{sync::atomic::Ordering, task::Poll};
 use log;
 
 use crate::{
-    common::crc8_ponl_107,
+    common::{SDIO_TYPE_DATA, crc8_ponl_107},
     fdrv::{
         consts::{
             DATA_FLOW_CTRL_THRESH, MAX_TX_QUEUE_LEN, SDIOWIFI_FUNC_BLOCKSIZE, TAIL_LEN,
@@ -279,7 +279,12 @@ fn send_single_data_frame(
 
     // 管理帧(raw 802.11)走独立构造路径
     if frame.is_mgmt {
-        let buf = match build_mgmt_frame(&frame.data, vif_idx, transport.is_v3()) {
+        let buf = match build_mgmt_frame(
+            &frame.data,
+            vif_idx,
+            transport.is_v3(),
+            transport.cmd_func() == 2,
+        ) {
             Ok(b) => b,
             Err(_) => return false,
         };
@@ -373,9 +378,9 @@ fn build_data_frame(
     // 填充 SDIO header
     buf[0] = (sdio_hdr_len & 0xFF) as u8;
     buf[1] = ((sdio_hdr_len >> 8) & 0x0F) as u8;
-    // TX 数据路径 byte[2] 恒为 0x01(vendor aicwf_sdio.c TX 永远写 0x01;
-    // SDIO_TYPE_DATA=0x00 只是 RX 侧分类值)。写 0x00 会被固件 ingress 误判丢弃。
-    buf[2] = 0x01;
+    // TX 数据路径 byte[2] = SDIO_TYPE_DATA(0x01):vendor aicwf_sdio.c TX 永远写 0x01,
+    // 与 upstream/dev 一致。写 0x00 会被固件 ingress 误判丢弃。
+    buf[2] = SDIO_TYPE_DATA;
     buf[3] = if is_v3 {
         crc8_ponl_107(&buf[0..3])
     } else {
@@ -442,6 +447,7 @@ fn build_mgmt_frame(
     mgmt_frame: &[u8],
     vif_idx: u8,
     is_v3: bool,
+    dual_pipe: bool,
 ) -> Result<Vec<u8>, DataFrameBuildError> {
     const SDIO_HEADER_LEN: usize = 4;
     const HOSTDESC_SIZE: usize = 28;
@@ -468,8 +474,8 @@ fn build_mgmt_frame(
     // SDIO header
     buf[0] = (sdio_hdr_len & 0xFF) as u8;
     buf[1] = ((sdio_hdr_len >> 8) & 0x0F) as u8;
-    // 同数据路径:TX byte[2] 恒为 0x01,写 0x00 会被固件丢弃。
-    buf[2] = 0x01;
+    // 同数据路径:TX byte[2] = SDIO_TYPE_DATA(0x01),与 upstream/dev 一致。
+    buf[2] = SDIO_TYPE_DATA;
     buf[3] = if is_v3 {
         crc8_ponl_107(&buf[0..3])
     } else {
@@ -485,9 +491,10 @@ fn build_mgmt_frame(
         hd[4..8].copy_from_slice(&0u32.to_le_bytes());
         // eth_dest/eth_src/ethertype 对管理帧无意义，置 0
         hd[20..22].copy_from_slice(&0u16.to_le_bytes()); // ethertype = 0
-        // ac = 3 (RWNX_HWQ_VO):vendor 把 host 注入的管理帧路由到 VO 硬件队列。
-        // ac=0 会落到 BK 队列,AP 注入的管理帧不会被发出。
-        hd[22] = 3; // ac = VO
+        // ac:DC/DW 实测需把 host 注入的管理帧路由到 VO 硬件队列(=3),ac=0 会落到
+        // BK 队列导致 AP 注入的管理帧不被发出。8801/D80 沿用 vendor 的 ac=0(BK),
+        // 与 upstream/dev 一致,避免回归。
+        hd[22] = if dual_pipe { 3 } else { 0 }; // ac: VO(DC) / BK(其余)
         hd[23] = 0xFF; // tid = 0xFF (非 QoS)
         hd[24] = vif_idx;
         hd[25] = 0xFF; // staid = 0xFF (未关联 STA)

@@ -13,6 +13,7 @@ use alloc::{boxed::Box, sync::Arc, vec::Vec};
 use core::{sync::atomic::Ordering, task::Poll};
 
 use crate::fdrv::{
+    consts::MAX_REGISTERED_STAS,
     core::bus::{BusState, WifiBus},
     protocol::{send_me_sta_add_req, send_set_control_port_req},
     thread::tx::enqueue_mgmt_frame,
@@ -90,7 +91,16 @@ fn handle_assoc_req(bus: &Arc<WifiBus>, mpdu: &[u8]) {
         );
         (idx, ctrl)
     } else {
-        // 新 MAC:注册 STA。固件对重复注册不回 CFM,故仅新 MAC 才发 ME_STA_ADD。
+        // 新 MAC:先检查注册表容量,避免异常情况下无界增长。
+        if bus.ap.registered_stas.lock().len() >= MAX_REGISTERED_STAS {
+            log::warn!(
+                "[wifi-ap] registered_stas full ({}), reject new STA {:02x?}",
+                MAX_REGISTERED_STAS,
+                sta_mac
+            );
+            return;
+        }
+        // 注册 STA。固件对重复注册不回 CFM,故仅新 MAC 才发 ME_STA_ADD。
         let idx = match send_me_sta_add_req(bus, &sta_mac, &rates, aid, vif_idx, 0) {
             Ok(idx) => idx,
             Err(e) => {
