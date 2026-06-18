@@ -1,0 +1,27 @@
+args = [
+    "-machine",
+    "q35",
+    "-nographic",
+    "-m",
+    "512M",
+    "-drive",
+    "id=nvm,if=none,format=raw,file=${workspace}/tmp/axbuild/rootfs/rootfs-x86_64-alpine.img",
+    "-device",
+    "nvme,serial=starry-block-io-bench,drive=nvm",
+    "-snapshot",
+]
+uefi = false
+to_bin = false
+shell_prefix = "root@starry:"
+shell_init_cmd = "BLOCK_BENCH_FSYNC=0 /usr/bin/block-io-bench.sh"
+success_regex = [
+    "(?m)^BLOCK_BENCH_APP_PASSED\\s*$",
+]
+fail_regex = [
+    "(?i)\\bpanic(?:ked)?\\b",
+    "(?i)segmentation fault",
+    "(?i)kernel panic",
+    "(?i)panicked at",
+    "(?m)^BLOCK_BENCH_APP_FAILED\\s*$",
+]
+timeout = 300
