@@ -167,7 +167,7 @@ fn test_mutex_shared_data() {
 #[cfg(all(feature = "arceos", target_arch = "riscv64"))]
 fn test_atomic_operations() {
     println!("5. 原子操作测试:");
-    println!("riscv64 Hermit 环境跳过高并发原子操作测试。\n");
+    println!("riscv64 ArceOS 环境跳过高并发原子操作测试。\n");
 }
 
 #[cfg(not(all(feature = "arceos", target_arch = "riscv64")))]

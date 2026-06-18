@@ -2941,7 +2941,7 @@ log = "Info"
     }
 
     #[test]
-    fn std_cargo_config_uses_linux_musl_wrapper_without_custom_cfg() {
+    fn std_cargo_config_uses_linux_musl_wrapper_with_plain_std_build() {
         let fake_dir = std_fake_lib_dir("x86_64-unknown-linux-musl").unwrap();
         let wrapper =
             std_linker_wrapper_path("x86_64-unknown-linux-musl", &fake_dir, false).unwrap();
@@ -2957,7 +2957,8 @@ log = "Info"
         assert!(config.contains(&wrapper.display().to_string()));
         assert!(!config.contains("relocation-model"));
         assert!(!config.contains("code-model"));
-        assert!(!config.contains("target_os = \"hermit\""));
+        assert!(!config.contains("--cfg"));
+        assert!(!config.contains("--check-cfg"));
     }
 
     #[test]
