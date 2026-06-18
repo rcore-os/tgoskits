@@ -314,7 +314,10 @@ impl ArceOS {
         match build::load_arceos_build_mode(&request.build_info_path)? {
             build::ArceosBuildMode::RustStd => {
                 let cargo = build::load_cargo_config(&request)?;
-                self.app.build(cargo, request.build_info_path).await
+                self.app
+                    .build(cargo, request.build_info_path)
+                    .await
+                    .map(|_| ())
             }
             build::ArceosBuildMode::AppC { app_dir, app_name } => {
                 let request = c_app_internal_request(&request);
