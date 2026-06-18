@@ -14,12 +14,14 @@ mod time;
 
 use ax_errno::{AxError, LinuxError};
 use ax_runtime::hal::cpu::uspace::UserContext;
+use starry_signal::Signo;
 use syscalls::Sysno;
 
 pub use self::{
     fs::*, io_mpx::*, ipc::*, mm::*, net::*, ns::*, resources::*, signal::*, sync::*, sys::*,
     task::*, time::*,
 };
+use crate::task::{AsThread, SeccompDecision, do_exit, seccomp_errno};
 
 pub fn syscall_allows_signal_restart(sysno: usize) -> bool {
     !matches!(Sysno::new(sysno), Some(Sysno::msgsnd | Sysno::msgrcv))
@@ -47,6 +49,30 @@ pub fn handle_syscall(uctx: &mut UserContext) {
     };
 
     trace!("Syscall {sysno:?}");
+    match ax_task::current()
+        .as_thread()
+        .seccomp_state()
+        .evaluate(uctx)
+    {
+        SeccompDecision::Allow => {}
+        SeccompDecision::Errno(errno) => {
+            uctx.set_retval(seccomp_errno(errno));
+            return;
+        }
+        SeccompDecision::KillProcess => {
+            do_exit(Signo::SIGSYS as i32, true);
+            return;
+        }
+        SeccompDecision::KillThread => {
+            do_exit(Signo::SIGSYS as i32, false);
+            return;
+        }
+        SeccompDecision::UnsupportedAction => {
+            uctx.set_retval(-LinuxError::ENOSYS.code() as usize);
+            return;
+        }
+    }
+
     // Snapshot sepc before dispatching: if a signal handler is installed
     // during the syscall, the handler redirects uctx.ip() elsewhere.
     // We must not overwrite retval when that happens, because on

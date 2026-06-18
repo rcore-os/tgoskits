@@ -5,6 +5,7 @@ pub mod futex;
 mod ops;
 pub mod posix_timer;
 mod resources;
+mod seccomp;
 mod signal;
 mod stat;
 mod timer;
@@ -19,6 +20,7 @@ use core::{
     task::Poll,
 };
 
+use ax_errno::AxResult;
 use ax_runtime::hal::{cpu::uspace::UserContext, time::TimeValue};
 use ax_sync::{Mutex, spin::SpinNoIrq};
 use ax_task::{TaskExt, TaskInner, WaitChannel, WaitChannelGuard};
@@ -34,8 +36,8 @@ use starry_signal::{
 };
 
 pub use self::{
-    cred::*, futex::*, ops::*, posix_timer::PosixTimerTable, resources::*, signal::*, stat::*,
-    timer::*, user::*,
+    cred::*, futex::*, ops::*, posix_timer::PosixTimerTable, resources::*, seccomp::*, signal::*,
+    stat::*, timer::*, user::*,
 };
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -176,6 +178,9 @@ pub struct Thread {
     /// PR_SET_NO_NEW_PRIVS: once set, cannot be unset.
     no_new_privs: AtomicBool,
 
+    /// seccomp syscall filtering state.
+    seccomp: SpinNoIrq<SeccompState>,
+
     /// Process credentials (uid, gid, etc.).
     cred: SpinNoIrq<Arc<Cred>>,
 
@@ -235,6 +240,7 @@ impl Thread {
             rseq_signature: AtomicU32::new(0),
             pdeathsig: AtomicU32::new(0),
             no_new_privs: AtomicBool::new(false),
+            seccomp: SpinNoIrq::new(SeccompState::default()),
             cred: SpinNoIrq::new(cred),
 
             signalfd_waker: PollSet::new(),
@@ -353,6 +359,26 @@ impl Thread {
     /// Set the no_new_privs flag (one-way: once set, cannot be unset).
     pub fn set_no_new_privs(&self) {
         self.no_new_privs.store(true, Ordering::Relaxed);
+    }
+
+    /// Get a snapshot of the current seccomp state.
+    pub fn seccomp_state(&self) -> SeccompState {
+        self.seccomp.lock().clone()
+    }
+
+    /// Replace seccomp state. Used by clone inheritance.
+    pub fn set_seccomp_state(&self, state: SeccompState) {
+        *self.seccomp.lock() = state;
+    }
+
+    /// Enable strict seccomp mode.
+    pub fn install_seccomp_strict(&self) -> AxResult<()> {
+        self.seccomp.lock().install_strict()
+    }
+
+    /// Append a seccomp filter. Filters are inherited and evaluated in order.
+    pub fn append_seccomp_filter(&self, insns: Vec<SockFilter>) -> AxResult<()> {
+        self.seccomp.lock().append_filter(insns)
     }
 
     /// Get a snapshot of the current credentials (clones the `Arc`).
