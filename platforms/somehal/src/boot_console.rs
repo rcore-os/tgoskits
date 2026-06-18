@@ -63,6 +63,18 @@ fn parse_number_suffix(name: &str, prefix: &str) -> Option<usize> {
 }
 
 fn device_id_from_serial_index(index: usize) -> Option<DeviceId> {
+    device_id_from_serial_index_with(index, fdt_serial_alias_device_id, device_id_from_acpi_spcr)
+}
+
+fn device_id_from_serial_index_with(
+    index: usize,
+    fdt_device_id: impl FnOnce(usize) -> Option<DeviceId>,
+    spcr_device_id: impl FnOnce() -> Option<DeviceId>,
+) -> Option<DeviceId> {
+    fdt_device_id(index).or_else(|| if index == 0 { spcr_device_id() } else { None })
+}
+
+fn fdt_serial_alias_device_id(index: usize) -> Option<DeviceId> {
     rdrive::with_fdt(|fdt| {
         let alias = alloc::format!("serial{index}");
         let path = alias_path(fdt, &alias)?;
@@ -151,6 +163,26 @@ mod tests {
         assert_eq!(
             device_id_from_bootargs(Some("console=ttyS2 console=tty1")),
             Err(BootargsConsoleError::NoHardwareDevice)
+        );
+    }
+
+    #[test]
+    fn serial_index_zero_can_use_acpi_spcr_when_fdt_alias_is_absent() {
+        let spcr_device = DeviceId::from(42);
+
+        assert_eq!(
+            device_id_from_serial_index_with(0, |_| None, || Some(spcr_device)),
+            Some(spcr_device)
+        );
+    }
+
+    #[test]
+    fn non_zero_serial_index_does_not_fallback_to_acpi_spcr() {
+        let spcr_device = DeviceId::from(42);
+
+        assert_eq!(
+            device_id_from_serial_index_with(2, |_| None, || Some(spcr_device)),
+            None
         );
     }
 

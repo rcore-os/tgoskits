@@ -62,7 +62,8 @@ i=0
 while [ "$i" -lt 120 ]; do
     i=$((i + 1))
     got="line-${i}-abcdefghijklmnopqrstuvwxyz-0123456789-ABCDEFGHIJKLMNOPQRSTUVWXYZ-tty-input-stress-END"
-    check "loop${i}" "$got" "$got"
+    want=$(printf 'line-%s-%s-%s-%s-%s' "$i" "abcdefghijklmnopqrstuvwxyz" "0123456789" "ABCDEFGHIJKLMNOPQRSTUVWXYZ" "tty-input-stress-END")
+    check "loop${i}" "$got" "$want"
 done
 if [ "$checked" -ne 128 ]; then
     echo "$fail_marker:checked-count:$checked"
