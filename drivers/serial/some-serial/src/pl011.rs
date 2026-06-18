@@ -311,10 +311,15 @@ impl Pl011 {
     pub fn set_irq_mask(&mut self, mask: InterruptMask) {
         let mut imsc = 0;
         if mask.contains(InterruptMask::RX_AVAILABLE) {
-            imsc += UARTIS::RX::SET.value;
+            imsc |= UARTIS::RX::SET.value
+                | UARTIS::RT::SET.value
+                | UARTIS::FE::SET.value
+                | UARTIS::PE::SET.value
+                | UARTIS::BE::SET.value
+                | UARTIS::OE::SET.value;
         }
         if mask.contains(InterruptMask::TX_EMPTY) {
-            imsc += UARTIS::TX::SET.value;
+            imsc |= UARTIS::TX::SET.value;
         }
 
         self.registers().uartimsc.set(imsc);
@@ -324,7 +329,13 @@ impl Pl011 {
         let imsc = self.registers().uartimsc.extract();
         let mut mask = InterruptMask::empty();
 
-        if imsc.is_set(UARTIS::RX) {
+        if imsc.is_set(UARTIS::RX)
+            || imsc.is_set(UARTIS::RT)
+            || imsc.is_set(UARTIS::FE)
+            || imsc.is_set(UARTIS::PE)
+            || imsc.is_set(UARTIS::BE)
+            || imsc.is_set(UARTIS::OE)
+        {
             mask |= InterruptMask::RX_AVAILABLE;
         }
         if imsc.is_set(UARTIS::TX) {
@@ -754,6 +765,22 @@ mod tests {
 
         assert_eq!(tx.try_write(b"x"), 1);
         assert!(!tx.poll().tx_ready());
+    }
+
+    #[test]
+    fn rx_available_mask_enables_timeout_and_error_interrupts() {
+        let (regs, mut uart) = pl011_with_registers();
+
+        uart.set_irq_mask(InterruptMask::RX_AVAILABLE);
+
+        let imsc = regs.uartimsc.extract();
+        assert!(imsc.is_set(UARTIS::RX));
+        assert!(imsc.is_set(UARTIS::RT));
+        assert!(imsc.is_set(UARTIS::FE));
+        assert!(imsc.is_set(UARTIS::PE));
+        assert!(imsc.is_set(UARTIS::BE));
+        assert!(imsc.is_set(UARTIS::OE));
+        assert_eq!(uart.get_irq_mask(), InterruptMask::RX_AVAILABLE);
     }
 
     #[test]

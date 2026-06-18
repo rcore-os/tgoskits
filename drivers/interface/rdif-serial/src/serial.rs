@@ -126,13 +126,8 @@ impl<T: InterfaceRaw> super::Interface for SerialDyn<T> {
     }
 
     fn set_irq_mask(&mut self, mask: InterruptMask) {
-        if self
-            .core
-            .with_raw(BORROW_CONTROL, |control| control.set_irq_mask(mask))
-            .is_some()
-        {
-            self.core.set_irq_mask(mask);
-        }
+        self.core.set_pending_irq_mask(mask);
+        let _ = self.core.with_raw(BORROW_CONTROL, |_| ());
     }
 
     fn get_irq_mask(&self) -> InterruptMask {
@@ -202,6 +197,7 @@ struct SerialCore<T: InterfaceRaw> {
     raw: UnsafeCell<T>,
     borrow: AtomicU8,
     irq_mask: AtomicU32,
+    irq_mask_dirty: AtomicBool,
     pending_irq: AtomicBool,
 }
 
@@ -216,6 +212,7 @@ impl<T: InterfaceRaw> SerialCore<T> {
             raw: UnsafeCell::new(raw),
             borrow: AtomicU8::new(BORROW_IDLE),
             irq_mask: AtomicU32::new(0),
+            irq_mask_dirty: AtomicBool::new(false),
             pending_irq: AtomicBool::new(false),
         }
     }
@@ -237,11 +234,26 @@ impl<T: InterfaceRaw> SerialCore<T> {
     }
 
     fn with_raw<R>(&self, borrower: u8, f: impl FnOnce(&mut T) -> R) -> Option<R> {
-        self.with_borrow(borrower, || f(unsafe { &mut *self.raw.get() }))
+        self.with_borrow(borrower, || {
+            let raw = unsafe { &mut *self.raw.get() };
+            self.apply_pending_irq_mask(raw);
+            f(raw)
+        })
     }
 
     fn set_irq_mask(&self, mask: InterruptMask) {
         self.irq_mask.store(mask.bits(), Ordering::Release);
+    }
+
+    fn set_pending_irq_mask(&self, mask: InterruptMask) {
+        self.set_irq_mask(mask);
+        self.irq_mask_dirty.store(true, Ordering::Release);
+    }
+
+    fn apply_pending_irq_mask(&self, raw: &mut T) {
+        if self.irq_mask_dirty.swap(false, Ordering::AcqRel) {
+            raw.set_irq_mask(self.irq_mask());
+        }
     }
 
     fn irq_mask(&self) -> InterruptMask {
@@ -574,6 +586,7 @@ impl<T: InterfaceRaw> IrqHandler<T> {
     fn handle_current_irq(&self) -> crate::SerialEvent {
         if let Some(event) = self.core.with_borrow(BORROW_IRQ, || {
             let control = unsafe { &mut *self.core.raw.get() };
+            self.core.apply_pending_irq_mask(control);
             let event = control.handle_irq();
             self.handle_raw_irq(control, event)
         }) {
@@ -587,6 +600,7 @@ impl<T: InterfaceRaw> IrqHandler<T> {
     fn handle_pending_irq(&self) -> crate::SerialEvent {
         if let Some(event) = self.core.with_borrow(BORROW_IRQ, || {
             let control = unsafe { &mut *self.core.raw.get() };
+            self.core.apply_pending_irq_mask(control);
             let event = control.handle_irq();
             self.handle_raw_irq(control, event)
         }) {
@@ -643,9 +657,14 @@ fn ensure_same_base(want: usize, actual: usize) -> Result<(), SetBackError> {
 #[cfg(test)]
 mod tests {
     use alloc::sync::Arc;
-    use core::{mem::size_of, num::NonZeroU32, sync::atomic::AtomicBool};
+    use core::{
+        mem::size_of,
+        num::NonZeroU32,
+        sync::atomic::{AtomicBool, AtomicU32},
+    };
 
     use super::*;
+    use crate::Interface;
 
     struct LayoutRaw;
 
@@ -728,6 +747,120 @@ mod tests {
             size_of::<usize>()
                 + size_of::<Arc<RxShared<LayoutRaw>>>()
                 + size_of::<Arc<AtomicBool>>(),
+        );
+    }
+
+    struct MaskRaw {
+        applied_mask: Arc<AtomicU32>,
+    }
+
+    impl InterfaceRaw for MaskRaw {
+        fn name(&self) -> &str {
+            "mask raw"
+        }
+
+        fn base_addr(&self) -> usize {
+            0
+        }
+
+        fn set_config(&mut self, _config: &crate::Config) -> Result<(), crate::ConfigError> {
+            Ok(())
+        }
+
+        fn baudrate(&self) -> u32 {
+            115_200
+        }
+
+        fn data_bits(&self) -> crate::DataBits {
+            crate::DataBits::Eight
+        }
+
+        fn stop_bits(&self) -> crate::StopBits {
+            crate::StopBits::One
+        }
+
+        fn parity(&self) -> crate::Parity {
+            crate::Parity::None
+        }
+
+        fn clock_freq(&self) -> Option<NonZeroU32> {
+            NonZeroU32::new(1)
+        }
+
+        fn open(&mut self) {}
+
+        fn close(&mut self) {}
+
+        fn enable_loopback(&mut self) {}
+
+        fn disable_loopback(&mut self) {}
+
+        fn is_loopback_enabled(&self) -> bool {
+            false
+        }
+
+        fn set_irq_mask(&mut self, mask: InterruptMask) {
+            self.applied_mask.store(mask.bits(), Ordering::Release);
+        }
+
+        fn get_irq_mask(&self) -> InterruptMask {
+            InterruptMask::from_bits_retain(self.applied_mask.load(Ordering::Acquire))
+        }
+
+        fn poll_status(&mut self) -> crate::SerialEvent {
+            crate::SerialEvent::empty()
+        }
+
+        fn write_byte(&mut self, _byte: u8) {}
+
+        fn read_byte(&mut self, _status: crate::SerialEvent) -> Option<Result<u8, TransferError>> {
+            None
+        }
+
+        fn handle_irq(&mut self) -> crate::SerialEvent {
+            crate::SerialEvent::empty()
+        }
+    }
+
+    #[test]
+    fn set_irq_mask_while_raw_busy_is_applied_on_next_raw_access() {
+        let applied_mask = Arc::new(AtomicU32::new(0));
+        let core = Arc::new(SerialCore::new(MaskRaw {
+            applied_mask: applied_mask.clone(),
+        }));
+        let mut serial = SerialDyn {
+            name: String::from("mask raw"),
+            base_addr: 0,
+            core: core.clone(),
+            tx: Arc::new(TxShared::new(core.clone())),
+            rx: Arc::new(RxShared::new(core.clone())),
+            tx_taken: Arc::new(AtomicBool::new(false)),
+            rx_taken: Arc::new(AtomicBool::new(false)),
+            irq_taken: Arc::new(AtomicBool::new(false)),
+        };
+
+        assert!(
+            serial
+                .core
+                .borrow
+                .compare_exchange(BORROW_IDLE, BORROW_TX, Ordering::Acquire, Ordering::Relaxed)
+                .is_ok(),
+            "test should own the raw borrow gate"
+        );
+
+        serial.set_irq_mask(InterruptMask::TX_EMPTY);
+        assert_eq!(
+            applied_mask.load(Ordering::Acquire),
+            0,
+            "busy raw access cannot apply the hardware mask immediately"
+        );
+
+        serial.core.borrow.store(BORROW_IDLE, Ordering::Release);
+
+        assert_eq!(serial.get_irq_mask(), InterruptMask::TX_EMPTY);
+        assert_eq!(
+            applied_mask.load(Ordering::Acquire),
+            InterruptMask::TX_EMPTY.bits()
         );
     }
 }
