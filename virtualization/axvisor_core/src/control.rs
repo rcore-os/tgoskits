@@ -57,6 +57,8 @@ pub const KVM_SET_SREGS: u32 = iow(KVMIO, 0x84, KVM_X86_SREGS_SIZE);
 pub const KVM_INTERRUPT: u32 = iow(KVMIO, 0x86, KVM_INTERRUPT_SIZE);
 /// Returns the vCPU MP state.
 pub const KVM_GET_MP_STATE: u32 = ior(KVMIO, 0x98, KVM_MP_STATE_SIZE);
+/// Sets the vCPU MP state.
+pub const KVM_SET_MP_STATE: u32 = iow(KVMIO, 0x99, KVM_MP_STATE_SIZE);
 /// Gets one architecture-specific vCPU register.
 pub const KVM_GET_ONE_REG: u32 = iow(KVMIO, 0xab, KVM_ONE_REG_SIZE);
 /// Sets one architecture-specific vCPU register.
@@ -72,6 +74,9 @@ pub const KVM_CAP_MAX_VCPUS: usize = 66;
 pub const KVM_CAP_ONE_REG: usize = 70;
 pub const KVM_CAP_IMMEDIATE_EXIT: usize = 136;
 
+#[cfg(target_arch = "riscv64")]
+const KVM_MAX_VCPUS: usize = 8;
+#[cfg(not(target_arch = "riscv64"))]
 const KVM_MAX_VCPUS: usize = 1;
 const KVM_MAX_MEMORY_SLOTS: usize = 32;
 const KVM_VCPU_MMAP_SIZE: usize = 0x1000;
@@ -84,6 +89,7 @@ const KVM_REG_LIST_SIZE: u32 = 8;
 const KVM_X86_REGS_SIZE: u32 = 18 * 8;
 const KVM_X86_SREGS_SIZE: u32 = 312;
 const KVM_MP_STATE_RUNNABLE: u32 = 0;
+const KVM_MP_STATE_STOPPED: u32 = 5;
 const KVM_MEM_ALLOWED_FLAGS: u32 = 0;
 const KVM_IOEVENTFD_FLAG_DATAMATCH: u32 = 1 << 0;
 const KVM_IOEVENTFD_FLAG_PIO: u32 = 1 << 1;
@@ -106,6 +112,8 @@ const KVM_EXIT_INTR: u32 = 10;
 const KVM_EXIT_INTERNAL_ERROR: u32 = 17;
 const KVM_EXIT_MEMORY_FAULT: u32 = 39;
 const KVM_RUN_MAX_INTERNAL_EXITS: usize = 1024;
+#[cfg(target_arch = "riscv64")]
+const RISCV_S_EXT_VECTOR: usize = (1usize << (usize::BITS - 1)) + 9;
 const PAGE_SIZE: u64 = 4096;
 const PAGE_SIZE_USIZE: usize = PAGE_SIZE as usize;
 
@@ -133,6 +141,7 @@ struct VmSession {
 struct VcpuSession {
     vm_session: api_control::SessionId,
     vcpu_id: u32,
+    mp_state: u32,
     pending_mmio_read: Option<PendingMmioRead>,
 }
 
@@ -364,12 +373,63 @@ fn vcpu_ioctl(session: api_control::SessionId, cmd: u32, arg: usize) -> AxResult
         KVM_SET_ONE_REG => set_one_reg(session, arg),
         KVM_GET_REG_LIST => get_reg_list(session, arg),
         KVM_INTERRUPT => kvm_interrupt(session, arg),
-        KVM_GET_MP_STATE => {
-            write_u32_user(arg, KVM_MP_STATE_RUNNABLE)?;
-            Ok(0)
-        }
+        KVM_GET_MP_STATE => get_mp_state(session, arg),
+        KVM_SET_MP_STATE => set_mp_state(session, arg),
         _ => Err(AxError::Unsupported),
     }
+}
+
+fn get_mp_state(session: api_control::SessionId, arg: usize) -> AxResult<isize> {
+    let sessions = SESSIONS.lock();
+    let Some(Session::Vcpu(vcpu)) = sessions.get(&session) else {
+        return ax_err!(NotFound);
+    };
+    write_u32_user(arg, vcpu.mp_state)?;
+    Ok(0)
+}
+
+fn set_mp_state(session: api_control::SessionId, arg: usize) -> AxResult<isize> {
+    let mp_state = read_u32_user(arg)?;
+    if mp_state != KVM_MP_STATE_RUNNABLE && mp_state != KVM_MP_STATE_STOPPED {
+        return ax_err!(Unsupported);
+    }
+
+    let mut sessions = SESSIONS.lock();
+    let Some(Session::Vcpu(vcpu)) = sessions.get_mut(&session) else {
+        return ax_err!(NotFound);
+    };
+    vcpu.mp_state = mp_state;
+    Ok(0)
+}
+
+fn set_vcpu_mp_state_by_id(
+    session: api_control::SessionId,
+    vcpu_id: usize,
+    mp_state: u32,
+) -> AxResult {
+    let vm_session = {
+        let sessions = SESSIONS.lock();
+        let Some(Session::Vcpu(vcpu)) = sessions.get(&session) else {
+            return ax_err!(NotFound);
+        };
+        vcpu.vm_session
+    };
+
+    let mut sessions = SESSIONS.lock();
+    let target_session = {
+        let Some(Session::Vm(vm)) = sessions.get(&vm_session) else {
+            return ax_err!(NotFound);
+        };
+        vm.vcpu_ids
+            .get(&(vcpu_id as u32))
+            .copied()
+            .ok_or(AxError::InvalidInput)?
+    };
+    let Some(Session::Vcpu(vcpu)) = sessions.get_mut(&target_session) else {
+        return ax_err!(NotFound);
+    };
+    vcpu.mp_state = mp_state;
+    Ok(())
 }
 
 fn get_vcpu(session: api_control::SessionId) -> AxResult<axvm::AxVCpuRef> {
@@ -388,7 +448,7 @@ fn get_vcpu(session: api_control::SessionId) -> AxResult<axvm::AxVCpuRef> {
 }
 
 fn run_vcpu(session: api_control::SessionId) -> AxResult<isize> {
-    let (vm, vcpu_id, vcpu, pending_mmio_read) = {
+    let (vm, vcpu_id, vcpu, mp_state, pending_mmio_read) = {
         let mut sessions = SESSIONS.lock();
         let Some(Session::Vcpu(vcpu)) = sessions.get(&session) else {
             return ax_err!(NotFound);
@@ -398,6 +458,7 @@ fn run_vcpu(session: api_control::SessionId) -> AxResult<isize> {
         };
         let vm = vm.vm.clone();
         let vcpu_id = vcpu.vcpu_id as usize;
+        let mp_state = vcpu.mp_state;
         let pending_mmio_read = vcpu.pending_mmio_read;
         let Some(Session::Vcpu(vcpu_session)) = sessions.get_mut(&session) else {
             return ax_err!(NotFound);
@@ -406,8 +467,14 @@ fn run_vcpu(session: api_control::SessionId) -> AxResult<isize> {
         let Some(vcpu) = vm.vcpu(vcpu_id) else {
             return ax_err!(NotFound);
         };
-        (vm, vcpu_id, vcpu, pending_mmio_read)
+        (vm, vcpu_id, vcpu, mp_state, pending_mmio_read)
     };
+
+    if mp_state == KVM_MP_STATE_STOPPED {
+        write_vcpu_run_u32(session, KVM_RUN_EXIT_REASON_OFFSET, KVM_EXIT_INTR)?;
+        axvisor_api::task::yield_now();
+        return Ok(0);
+    }
 
     if !vm.running() {
         vm.boot()?;
@@ -444,6 +511,42 @@ fn run_vcpu(session: api_control::SessionId) -> AxResult<isize> {
             {
                 internal_exits = 0;
             }
+            #[cfg(target_arch = "riscv64")]
+            AxVCpuExitReason::CpuUp {
+                target_cpu,
+                entry_point,
+                arg,
+            } => {
+                handle_cpu_up(session, &vm, &vcpu, target_cpu as usize, entry_point, arg)?;
+                axvisor_api::task::yield_now();
+                internal_exits += 1;
+                if internal_exits >= KVM_RUN_MAX_INTERNAL_EXITS {
+                    break KVM_EXIT_INTR;
+                }
+            }
+            #[cfg(target_arch = "riscv64")]
+            AxVCpuExitReason::SendIPI {
+                target_cpu,
+                target_cpu_aux,
+                send_to_all,
+                send_to_self,
+                vector,
+            } => {
+                handle_send_ipi(
+                    &vm,
+                    vcpu_id,
+                    target_cpu as usize,
+                    target_cpu_aux as usize,
+                    send_to_all,
+                    send_to_self,
+                    vector as usize,
+                )?;
+                axvisor_api::task::yield_now();
+                internal_exits += 1;
+                if internal_exits >= KVM_RUN_MAX_INTERNAL_EXITS {
+                    break KVM_EXIT_INTR;
+                }
+            }
             exit_reason => {
                 prepare_userspace_exit(session, &exit_reason)?;
                 let kvm_reason = kvm_exit_reason(&exit_reason);
@@ -453,6 +556,91 @@ fn run_vcpu(session: api_control::SessionId) -> AxResult<isize> {
     };
     write_vcpu_run_u32(session, KVM_RUN_EXIT_REASON_OFFSET, exit_reason)?;
     Ok(0)
+}
+
+#[cfg(target_arch = "riscv64")]
+fn handle_cpu_up(
+    session: api_control::SessionId,
+    vm: &AxVMRef,
+    vcpu: &axvm::AxVCpuRef,
+    target_cpu: usize,
+    entry_point: GuestPhysAddr,
+    arg: u64,
+) -> AxResult {
+    let target_vcpu = vm.vcpu(target_cpu).ok_or(AxError::InvalidInput)?;
+
+    target_vcpu.set_entry(entry_point)?;
+    target_vcpu.set_gpr(riscv_vcpu::GprIndex::A0 as usize, target_cpu);
+    target_vcpu.set_gpr(riscv_vcpu::GprIndex::A1 as usize, arg as usize);
+
+    set_vcpu_mp_state_by_id(session, target_cpu, KVM_MP_STATE_RUNNABLE)?;
+
+    vcpu.set_return_value(0);
+    vcpu.set_gpr(riscv_vcpu::GprIndex::A1 as usize, 0);
+
+    Ok(())
+}
+
+#[cfg(target_arch = "riscv64")]
+fn handle_send_ipi(
+    vm: &AxVMRef,
+    current_vcpu_id: usize,
+    target_cpu: usize,
+    target_cpu_aux: usize,
+    send_to_all: bool,
+    send_to_self: bool,
+    vector: usize,
+) -> AxResult {
+    if !send_to_all && !send_to_self {
+        return inject_riscv_ipi_mask(vm, target_cpu, target_cpu_aux, vector);
+    }
+
+    if send_to_all {
+        for target_vcpu_id in 0..vm.vcpu_num() {
+            if target_vcpu_id != current_vcpu_id || send_to_self {
+                vm.vcpu(target_vcpu_id)
+                    .ok_or(AxError::InvalidInput)?
+                    .inject_interrupt(vector)?;
+            }
+        }
+        return Ok(());
+    }
+
+    let target_vcpu_id = if send_to_self {
+        current_vcpu_id
+    } else {
+        target_cpu
+    };
+    vm.vcpu(target_vcpu_id)
+        .ok_or(AxError::InvalidInput)?
+        .inject_interrupt(vector)
+}
+
+#[cfg(target_arch = "riscv64")]
+fn inject_riscv_ipi_mask(
+    vm: &AxVMRef,
+    hart_mask: usize,
+    hart_mask_base: usize,
+    vector: usize,
+) -> AxResult {
+    for target_vcpu_id in 0..vm.vcpu_num() {
+        let selected = if hart_mask_base == usize::MAX {
+            true
+        } else {
+            target_vcpu_id
+                .checked_sub(hart_mask_base)
+                .filter(|bit| *bit < usize::BITS as usize)
+                .is_some_and(|bit| (hart_mask & (1usize << bit)) != 0)
+        };
+
+        if selected {
+            vm.vcpu(target_vcpu_id)
+                .ok_or(AxError::InvalidInput)?
+                .inject_interrupt(vector)?;
+        }
+    }
+
+    Ok(())
 }
 
 fn get_one_reg(session: api_control::SessionId, arg: usize) -> AxResult<isize> {
@@ -500,6 +688,9 @@ fn set_one_reg(session: api_control::SessionId, arg: usize) -> AxResult<isize> {
 fn kvm_interrupt(session: api_control::SessionId, arg: usize) -> AxResult<isize> {
     let irq = read_u32_user(arg)?;
     let vector = match irq {
+        #[cfg(target_arch = "riscv64")]
+        KVM_INTERRUPT_SET => RISCV_S_EXT_VECTOR,
+        #[cfg(not(target_arch = "riscv64"))]
         KVM_INTERRUPT_SET => 1,
         KVM_INTERRUPT_UNSET => 0,
         _ => return ax_err!(Unsupported),
@@ -686,6 +877,11 @@ fn create_vcpu(session: api_control::SessionId, vcpu_id: usize) -> AxResult<isiz
             Session::Vcpu(VcpuSession {
                 vm_session: session,
                 vcpu_id,
+                mp_state: if vcpu_id == 0 {
+                    KVM_MP_STATE_RUNNABLE
+                } else {
+                    KVM_MP_STATE_STOPPED
+                },
                 pending_mmio_read: None,
             }),
         );

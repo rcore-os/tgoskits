@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use ax_page_table_multiarch::riscv::SvVirtAddr;
 use axaddrspace::{GuestPhysAddr, device::AccessWidth};
 
 use crate::vmm::vm_list::get_vm_by_id;
@@ -21,6 +22,10 @@ const GUEST_PLIC_PADDR: usize = 0x0c00_0000;
 pub fn hardware_check() {
     // TODO: implement hardware checks for RISC-V64
     // check page table level like aarch64
+}
+
+pub fn hfence_vvma_all() {
+    GuestPhysAddr::flush_tlb(None);
 }
 
 pub fn inject_current_interrupt(irq_id: usize) -> bool {

@@ -615,13 +615,15 @@ pub(crate) fn handle_internal_exit(
             super::devices::x86::inject_pending_serial_irq(vm, vcpu);
             true
         }
+        #[cfg(target_arch = "x86_64")]
         AxVCpuExitReason::InterruptEnd { vector } => {
-            #[cfg(target_arch = "x86_64")]
             if let Some(vector) = vector {
                 super::devices::x86::inject_pending_ioapic_irq_after_eoi(vm, vcpu, vector);
             }
             true
         }
+        #[cfg(not(target_arch = "x86_64"))]
+        AxVCpuExitReason::InterruptEnd { .. } => true,
         AxVCpuExitReason::Nothing => true,
         _ => false,
     }

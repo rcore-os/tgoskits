@@ -11,6 +11,11 @@
 .word        \from - _ex_table_start
 .word        \to - _ex_table_start
 .popsection
+.pushsection .ex_table, "a", @progbits
+.balign      8
+.quad        \from
+.quad        \to
+.popsection
 .endm
 .option push
 .option arch, +h

@@ -34,11 +34,16 @@ use riscv_h::register::{
     vstvec::{self, Vstvec},
 };
 use rustsbi::{Forward, RustSBI};
-use sbi_spec::{hsm, legacy, pmu, rfnc, srst};
+use sbi_spec::{base, hsm, legacy, pmu, rfnc, spi, srst};
 
 use crate::{
-    EID_HVC, RISCVVCpuCreateConfig, consts::traps::irq::S_EXT, guest_mem, regs::*, sbi_console::*,
-    trap::Exception, vpmu::VirtualPmu,
+    EID_HVC, RISCVVCpuCreateConfig,
+    consts::traps::irq::{S_EXT, S_SOFT},
+    guest_mem,
+    regs::*,
+    sbi_console::*,
+    trap::Exception,
+    vpmu::VirtualPmu,
 };
 
 unsafe extern "C" {
@@ -234,6 +239,7 @@ impl axvcpu::AxArchVCpu for RISCVVCpu {
                 hgatp = in(reg) self.regs.virtual_hs_csrs.hgatp,
             );
             core::arch::riscv64::hfence_gvma_all();
+            core::arch::riscv64::hfence_vvma_all();
         }
         self.sbi.pmu.backend_bind();
         Ok(())
@@ -319,7 +325,16 @@ impl axvcpu::AxArchVCpu for RISCVVCpu {
                 }
                 Ok(())
             }
-            1 => {
+            S_SOFT => {
+                let mut hvip = hvip::Hvip::from_bits(self.regs.virtual_hs_csrs.hvip);
+                hvip.set_vssip(true);
+                self.regs.virtual_hs_csrs.hvip = hvip.bits();
+                unsafe {
+                    hvip::set_vssip();
+                }
+                Ok(())
+            }
+            S_EXT => {
                 let mut hvip = hvip::Hvip::from_bits(self.regs.virtual_hs_csrs.hvip);
                 hvip.set_vseip(true);
                 self.regs.virtual_hs_csrs.hvip = hvip.bits();
@@ -525,12 +540,40 @@ impl RISCVVCpu {
                             );
                         }
                     },
+                    base::EID_BASE if function_id == base::PROBE_EXTENSION => {
+                        let supported = match param[0] {
+                            spi::EID_SPI => 1,
+                            _ => {
+                                self.sbi
+                                    .handle_ecall(extension_id, function_id, param)
+                                    .value
+                            }
+                        };
+                        self.sbi_return(RET_SUCCESS, supported);
+                        return Ok(AxVCpuExitReason::Nothing);
+                    }
                     EID_TIME => match function_id {
                         FID_SET_TIMER => {
                             self.sbi.pmu.record_set_timer();
                             self.program_guest_timer(param[0]);
                             self.sbi_return(RET_SUCCESS, 0);
                             return Ok(AxVCpuExitReason::Nothing);
+                        }
+                        _ => {
+                            self.sbi_return(RET_ERR_NOT_SUPPORTED, 0);
+                            return Ok(AxVCpuExitReason::Nothing);
+                        }
+                    },
+                    spi::EID_SPI => match function_id {
+                        spi::SEND_IPI => {
+                            self.sbi_return(RET_SUCCESS, 0);
+                            return Ok(AxVCpuExitReason::SendIPI {
+                                target_cpu: param[0] as _,
+                                target_cpu_aux: param[1] as _,
+                                send_to_all: false,
+                                send_to_self: false,
+                                vector: S_SOFT as _,
+                            });
                         }
                         _ => {
                             self.sbi_return(RET_ERR_NOT_SUPPORTED, 0);
@@ -554,11 +597,8 @@ impl RISCVVCpu {
                             return Ok(AxVCpuExitReason::CpuDown { _state: 0 });
                         }
                         hsm::HART_SUSPEND => {
-                            // Todo: support these parameters.
-                            let _suspend_type = a[0];
-                            let _resume_addr = a[1];
-                            let _opaque = a[2];
-                            return Ok(AxVCpuExitReason::Halt);
+                            self.sbi_return(RET_ERR_NOT_SUPPORTED, 0);
+                            return Ok(AxVCpuExitReason::Nothing);
                         }
                         _ => todo!(),
                     },
@@ -681,11 +721,14 @@ impl RISCVVCpu {
                             rfnc::REMOTE_HFENCE_VVMA_ASID => {
                                 self.sbi.pmu.record_hfence_vvma_asid_sent();
                             }
-                            _ => {}
+                            _ => {
+                                self.sbi_return(RET_ERR_NOT_SUPPORTED, 0);
+                                return Ok(AxVCpuExitReason::Nothing);
+                            }
                         }
-                        let ret = self.sbi.handle_ecall(extension_id, function_id, param);
-                        self.set_gpr_from_gpr_index(GprIndex::A0, ret.error);
-                        self.set_gpr_from_gpr_index(GprIndex::A1, ret.value);
+                        axvisor_api::host::remote_hfence_vvma_all();
+                        self.sbi_return(RET_SUCCESS, 0);
+                        return Ok(AxVCpuExitReason::Nothing);
                     }
                     // By default, forward the SBI call to the RustSBI implementation.
                     // See [`RISCVVCpuSbi`].
@@ -716,6 +759,9 @@ impl RISCVVCpu {
 
                 Ok(AxVCpuExitReason::Nothing)
             }
+            Trap::Interrupt(Interrupt::SupervisorSoft) => Ok(AxVCpuExitReason::ExternalInterrupt {
+                vector: S_SOFT as _,
+            }),
             Trap::Interrupt(Interrupt::SupervisorExternal) => {
                 // 9 == Interrupt::SupervisorExternal
                 //
@@ -870,8 +916,14 @@ impl RISCVVCpu {
             return Ok(VirtualInstructionRead::Instruction(instr));
         }
 
+        let instr = self.regs.trap_csrs.htinst as u32;
+        if instr & 0x7f == SYSTEM_OPCODE {
+            return Ok(VirtualInstructionRead::Instruction(instr));
+        }
+
         let guest_pc = GuestVirtAddr::from(self.regs.guest_regs.sepc);
-        match guest_mem::fetch_guest_instruction(guest_pc) {
+        let hstatus = hstatus::Hstatus::from_bits(self.regs.guest_regs.hstatus);
+        match guest_mem::fetch_guest_instruction(guest_pc, hstatus.spvp()) {
             Ok(instr) => Ok(VirtualInstructionRead::Instruction(instr)),
             Err(fault) => self
                 .handle_guest_instruction_fetch_fault(fault)
@@ -902,7 +954,8 @@ impl RISCVVCpu {
         let instr_len;
         if instr == 0 {
             // Read the instruction from guest memory.
-            instr = match guest_mem::fetch_guest_instruction(vaddr) {
+            let hstatus = hstatus::Hstatus::from_bits(self.regs.guest_regs.hstatus);
+            instr = match guest_mem::fetch_guest_instruction(vaddr, hstatus.spvp()) {
                 Ok(instr) => instr as _,
                 Err(fault) => {
                     return self

@@ -15,7 +15,7 @@
 use core::arch::riscv64::hfence_vvma_all;
 
 use axaddrspace::{GuestPhysAddr, GuestVirtAddr};
-use riscv_h::register::vsatp::Vsatp;
+use riscv_h::register::{hstatus, vsatp::Vsatp};
 
 use crate::trap::Exception;
 
@@ -170,18 +170,35 @@ pub(crate) fn copy_to_guest(src: &[u8], gpa: GuestPhysAddr) -> usize {
 /// The assembly helper uses HLVX so execute permission is checked as a guest
 /// instruction fetch, while this wrapper converts the load-class trap CSRs back
 /// into guest instruction-fetch categories.
+/// `virtual_supervisor` controls the virtual privilege used for the HLVX access.
 #[inline(always)]
 pub(crate) fn fetch_guest_instruction(
     gva: GuestVirtAddr,
+    virtual_supervisor: bool,
 ) -> Result<u32, GuestInstructionFetchFault> {
     let mut inst = 0u32;
     let mut fault = GuestInstructionFetchFaultRaw::default();
+    let old_hstatus = hstatus::read();
+    let mut guest_hstatus = old_hstatus;
+    guest_hstatus.set_spvp(virtual_supervisor);
     let ret = unsafe {
-        _fetch_guest_instruction(
+        guest_hstatus.write();
+        let mut ret = _fetch_guest_instruction(
             gva.as_usize(),
             &mut inst as *mut u32,
             &mut fault as *mut GuestInstructionFetchFaultRaw,
-        )
+        );
+        if ret != 0 {
+            hfence_vvma_all();
+            fault = GuestInstructionFetchFaultRaw::default();
+            ret = _fetch_guest_instruction(
+                gva.as_usize(),
+                &mut inst as *mut u32,
+                &mut fault as *mut GuestInstructionFetchFaultRaw,
+            );
+        }
+        old_hstatus.write();
+        ret
     };
     if ret == 0 {
         Ok(inst)
