@@ -93,7 +93,7 @@ function section_language() {
   eq('lang/object-spread', JSON.stringify({ ...{ a: 1 }, b: 2 }), '{"a":1,"b":2}');
   eq('lang/regex-named-group', 'a1'.match(/(?<l>[a-z])(?<d>\d)/).groups.l, 'a');
   eq('lang/regex-lookbehind', '$5'.match(/(?<=\$)\d/)[0], '5');
-  eq('lang/async-iter', null === null, true); // exercised in async section
+  eq('lang/async-iter', typeof (async function*() { yield 1; })().next, 'function');
 
   // --- ES2019 ---
   eq('lang/array-flat', JSON.stringify([1, [2, [3]]].flat(2)), '[1,2,3]');
@@ -136,7 +136,7 @@ function section_language() {
   eq('lang/array-toReversed', JSON.stringify([1, 2, 3].toReversed()), '[3,2,1]');
   eq('lang/array-with', JSON.stringify([1, 2, 3].with(1, 9)), '[1,9,3]');
   eq('lang/array-toSpliced', JSON.stringify([1, 2, 3].toSpliced(1, 1, 9)), '[1,9,3]');
-  truthy('lang/hashbang-grammar', true); // hashbang exercised by the shell carpet (-e files)
+  truthy('lang/hashbang-grammar', typeof process.version === 'string' && process.version.startsWith('v'));
 
   // --- ES2024 (Node 22 has these in V8 12.x; gate by major) ---
   whenMajor(22, 'lang/array-groupBy(Object.groupBy)', () => {
@@ -519,7 +519,7 @@ function mod_net_http() {
   eq('net/isIP', net.isIP('::1'), 6);
   eq('net/isIPv4', net.isIPv4('1.2.3.4'), true);
   isType('http/STATUS_CODES', http.STATUS_CODES['200'], 'string');
-  isType('http/METHODS', http.METHODS.includes('GET'), 'boolean');
+  eq('http/METHODS-GET', http.METHODS.includes('GET'), true);
   isType('http/createServer', http.createServer, 'function');
   isType('http/Agent', http.Agent, 'function');
   // https — exercise an Agent (offline-safe, no connection): protocol must be 'https:'.
