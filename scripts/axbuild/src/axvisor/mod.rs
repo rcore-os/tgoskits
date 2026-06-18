@@ -13,7 +13,6 @@ use crate::context::{
 pub mod board;
 pub mod build;
 pub mod config;
-pub mod loader;
 pub mod rootfs;
 pub mod test;
 
@@ -26,8 +25,6 @@ pub enum Command {
     Qemu(ArgsQemu),
     /// Build and run Axvisor on a remote board
     Board(ArgsBoard),
-    /// Build and test the Axvisor UEFI HTTP loader
-    Loader(ArgsLoader),
     /// Run Axvisor test suites
     Test(ArgsTest),
     /// Build and run Axvisor with U-Boot
@@ -100,24 +97,6 @@ pub struct ArgsBoard {
 
     #[arg(long)]
     pub port: Option<u16>,
-}
-
-#[derive(Args)]
-#[command(args_conflicts_with_subcommands = true)]
-pub struct ArgsLoader {
-    #[command(subcommand)]
-    pub command: Option<LoaderCommand>,
-
-    #[command(flatten)]
-    pub build: loader::ArgsBuild,
-}
-
-#[derive(Subcommand)]
-pub enum LoaderCommand {
-    /// Build axloader
-    Build(loader::ArgsBuild),
-    /// Run axloader host tests and UEFI target checks
-    Test(loader::ArgsTest),
 }
 
 #[derive(Args)]
@@ -268,7 +247,6 @@ impl Axvisor {
             Command::Qemu(args) => self.qemu(args).await,
             Command::Uboot(args) => self.uboot(args).await,
             Command::Board(args) => self.board(args).await,
-            Command::Loader(args) => self.loader(args),
             Command::Defconfig(args) => self.defconfig(args),
             Command::Config(args) => self.config(args),
             Command::Test(args) => self.test(args).await,
@@ -315,14 +293,6 @@ impl Axvisor {
                 },
             )
             .await
-    }
-
-    fn loader(&mut self, args: ArgsLoader) -> anyhow::Result<()> {
-        match args.command {
-            Some(LoaderCommand::Build(args)) => loader::build(self.app.workspace_root(), args),
-            Some(LoaderCommand::Test(args)) => loader::test(self.app.workspace_root(), args),
-            None => loader::build(self.app.workspace_root(), args.build),
-        }
     }
 
     fn defconfig(&mut self, args: ArgsDefconfig) -> anyhow::Result<()> {
@@ -668,100 +638,6 @@ mod tests {
                 _ => panic!("expected board test command"),
             },
             _ => panic!("expected test command"),
-        }
-    }
-
-    #[test]
-    fn command_parses_loader_default_build() {
-        #[derive(Parser)]
-        struct Cli {
-            #[command(subcommand)]
-            command: Command,
-        }
-
-        let cli =
-            Cli::try_parse_from(["axvisor", "loader", "--target", "x86_64-unknown-uefi"]).unwrap();
-
-        match cli.command {
-            Command::Loader(args) => {
-                assert!(args.command.is_none());
-                assert_eq!(args.build.target, "x86_64-unknown-uefi");
-                assert!(!args.build.debug);
-            }
-            _ => panic!("expected loader command"),
-        }
-    }
-
-    #[test]
-    fn command_parses_loader_build() {
-        #[derive(Parser)]
-        struct Cli {
-            #[command(subcommand)]
-            command: Command,
-        }
-
-        let cli = Cli::try_parse_from(["axvisor", "loader", "build", "--debug"]).unwrap();
-
-        match cli.command {
-            Command::Loader(args) => match args.command {
-                Some(LoaderCommand::Build(build)) => {
-                    assert_eq!(build.target, "x86_64-unknown-uefi");
-                    assert!(build.debug);
-                }
-                _ => panic!("expected loader build command"),
-            },
-            _ => panic!("expected loader command"),
-        }
-    }
-
-    #[test]
-    fn command_parses_loader_test() {
-        #[derive(Parser)]
-        struct Cli {
-            #[command(subcommand)]
-            command: Command,
-        }
-
-        let cli = Cli::try_parse_from([
-            "axvisor",
-            "loader",
-            "test",
-            "--target",
-            "x86_64-unknown-uefi",
-        ])
-        .unwrap();
-
-        match cli.command {
-            Command::Loader(args) => match args.command {
-                Some(LoaderCommand::Test(test)) => {
-                    assert_eq!(test.target, "x86_64-unknown-uefi");
-                    assert!(!test.http_smoke);
-                }
-                _ => panic!("expected loader test command"),
-            },
-            _ => panic!("expected loader command"),
-        }
-    }
-
-    #[test]
-    fn command_parses_loader_test_http_smoke() {
-        #[derive(Parser)]
-        struct Cli {
-            #[command(subcommand)]
-            command: Command,
-        }
-
-        let cli = Cli::try_parse_from(["axvisor", "loader", "test", "--http-smoke"]).unwrap();
-
-        match cli.command {
-            Command::Loader(args) => match args.command {
-                Some(LoaderCommand::Test(test)) => {
-                    assert_eq!(test.target, "x86_64-unknown-uefi");
-                    assert!(test.http_smoke);
-                }
-                _ => panic!("expected loader test command"),
-            },
-            _ => panic!("expected loader command"),
         }
     }
 

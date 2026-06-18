@@ -3,7 +3,7 @@ use std::{
     io::{Read, Write},
     net::TcpListener,
     path::{Path, PathBuf},
-    process::{Child, Command, Stdio},
+    process::{Child, Command as StdCommand, Stdio},
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
@@ -14,7 +14,7 @@ use std::{
 };
 
 use anyhow::{Context, bail};
-use clap::Args;
+use clap::{Args, Subcommand};
 
 use crate::support::process::ProcessExt;
 
@@ -23,6 +23,7 @@ const AXLOADER_BIN: &str = "axloader";
 const DEFAULT_UEFI_TARGET: &str = "x86_64-unknown-uefi";
 const HTTP_SMOKE_TIMEOUT: Duration = Duration::from_secs(120);
 const QEMU_HOST_GATEWAY: &str = "10.0.2.2";
+const LEGACY_X86_64_UEFI_FIRMWARE_ENV: &str = "AXVISOR_X86_64_UEFI_FIRMWARE";
 
 #[derive(Clone, Copy)]
 struct LoaderSmokeTarget {
@@ -57,12 +58,48 @@ pub struct ArgsBuild {
 
 #[derive(Args, Debug, Clone, PartialEq, Eq)]
 pub struct ArgsTest {
+    #[command(subcommand)]
+    pub command: TestCommand,
+}
+
+#[derive(Subcommand, Debug, Clone, PartialEq, Eq)]
+pub enum TestCommand {
+    /// Run axloader host checks and QEMU HTTP smoke test
+    Qemu(ArgsTestQemu),
+}
+
+#[derive(Args, Debug, Clone, PartialEq, Eq)]
+pub struct ArgsTestQemu {
     #[arg(long, default_value = DEFAULT_UEFI_TARGET)]
     pub target: String,
+}
 
-    /// Run axloader in QEMU and verify HTTP kernel transfer.
-    #[arg(long)]
-    pub http_smoke: bool,
+/// Axloader host-side commands
+#[derive(Subcommand)]
+pub enum Command {
+    /// Build axloader
+    Build(ArgsBuild),
+    /// Run axloader test suites
+    Test(ArgsTest),
+}
+
+pub struct Axloader {
+    workspace_root: PathBuf,
+}
+
+impl Axloader {
+    pub fn new() -> anyhow::Result<Self> {
+        Ok(Self {
+            workspace_root: crate::context::workspace_root_path()?,
+        })
+    }
+
+    pub async fn execute(&mut self, command: Command) -> anyhow::Result<()> {
+        match command {
+            Command::Build(args) => build(&self.workspace_root, args),
+            Command::Test(args) => test(&self.workspace_root, args),
+        }
+    }
 }
 
 pub fn build(workspace_root: &Path, args: ArgsBuild) -> anyhow::Result<()> {
@@ -70,6 +107,12 @@ pub fn build(workspace_root: &Path, args: ArgsBuild) -> anyhow::Result<()> {
 }
 
 pub fn test(workspace_root: &Path, args: ArgsTest) -> anyhow::Result<()> {
+    match args.command {
+        TestCommand::Qemu(args) => test_qemu(workspace_root, args),
+    }
+}
+
+fn test_qemu(workspace_root: &Path, args: ArgsTestQemu) -> anyhow::Result<()> {
     run_cargo(
         workspace_root,
         ["test", "-p", AXLOADER_PACKAGE, "--all-targets"],
@@ -88,11 +131,7 @@ pub fn test(workspace_root: &Path, args: ArgsTest) -> anyhow::Result<()> {
     );
     result?;
 
-    if args.http_smoke {
-        run_http_smoke_test(workspace_root, &args.target)?;
-    }
-
-    Ok(())
+    run_http_smoke_test(workspace_root, &args.target)
 }
 
 fn run_loader_build(workspace_root: &Path, target: &str, release: bool) -> anyhow::Result<()> {
@@ -115,7 +154,7 @@ fn run_cargo<'a>(
     workspace_root: &Path,
     args: impl IntoIterator<Item = &'a str>,
 ) -> anyhow::Result<()> {
-    let mut command = Command::new("cargo");
+    let mut command = StdCommand::new("cargo");
     command.current_dir(workspace_root).args(args);
     command.exec()
 }
@@ -235,7 +274,7 @@ fn smoke_target(target: &str) -> anyhow::Result<LoaderSmokeTarget> {
             cargo_target: "x86_64-unknown-uefi",
             arch: "x86_64",
             efi_output_file: "BOOTX64.EFI",
-            firmware_env: "AXVISOR_X86_64_UEFI_FIRMWARE",
+            firmware_env: "AXLOADER_X86_64_UEFI_FIRMWARE",
             firmware_candidates: X86_64_UEFI_FIRMWARE_CANDIDATES,
             qemu_program: "qemu-system-x86_64",
             qemu_args: x86_64_qemu_args,
@@ -247,6 +286,14 @@ fn smoke_target(target: &str) -> anyhow::Result<LoaderSmokeTarget> {
 
 fn find_uefi_firmware(target: LoaderSmokeTarget) -> anyhow::Result<PathBuf> {
     if let Some(path) = std::env::var_os(target.firmware_env) {
+        let path = PathBuf::from(path);
+        if path.is_file() {
+            return Ok(path);
+        }
+    }
+    if target.firmware_env == "AXLOADER_X86_64_UEFI_FIRMWARE"
+        && let Some(path) = std::env::var_os(LEGACY_X86_64_UEFI_FIRMWARE_ENV)
+    {
         let path = PathBuf::from(path);
         if path.is_file() {
             return Ok(path);
@@ -272,7 +319,7 @@ fn spawn_axloader_qemu(
     firmware: &Path,
     esp_dir: &Path,
 ) -> anyhow::Result<Child> {
-    Command::new(target.qemu_program)
+    StdCommand::new(target.qemu_program)
         .args((target.qemu_args)(firmware, esp_dir))
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -460,4 +507,71 @@ fn put_u32(image: &mut [u8], offset: usize, value: u32) {
 
 fn put_u64(image: &mut [u8], offset: usize, value: u64) {
     image[offset..offset + 8].copy_from_slice(&value.to_le_bytes());
+}
+
+#[cfg(test)]
+mod tests {
+    use clap::Parser;
+
+    use super::*;
+
+    #[derive(Parser)]
+    struct Cli {
+        #[command(subcommand)]
+        command: Command,
+    }
+
+    #[test]
+    fn command_parses_build_default_target() {
+        let cli = Cli::try_parse_from(["axloader", "build"]).unwrap();
+
+        match cli.command {
+            Command::Build(args) => {
+                assert_eq!(args.target, "x86_64-unknown-uefi");
+                assert!(!args.release);
+                assert!(!args.debug);
+            }
+            _ => panic!("expected build command"),
+        }
+    }
+
+    #[test]
+    fn command_parses_build_debug() {
+        let cli = Cli::try_parse_from(["axloader", "build", "--debug"]).unwrap();
+
+        match cli.command {
+            Command::Build(args) => {
+                assert_eq!(args.target, "x86_64-unknown-uefi");
+                assert!(!args.release);
+                assert!(args.debug);
+            }
+            _ => panic!("expected build command"),
+        }
+    }
+
+    #[test]
+    fn command_parses_test_qemu() {
+        let cli = Cli::try_parse_from([
+            "axloader",
+            "test",
+            "qemu",
+            "--target",
+            "x86_64-unknown-uefi",
+        ])
+        .unwrap();
+
+        match cli.command {
+            Command::Test(args) => match args.command {
+                TestCommand::Qemu(args) => {
+                    assert_eq!(args.target, "x86_64-unknown-uefi");
+                }
+            },
+            _ => panic!("expected test command"),
+        }
+    }
+
+    #[test]
+    fn command_rejects_legacy_http_smoke_flag() {
+        assert!(Cli::try_parse_from(["axloader", "test", "qemu", "--http-smoke"]).is_err());
+    }
 }
