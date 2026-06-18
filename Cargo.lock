@@ -572,13 +572,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "ax-cap-access"
-version = "0.3.5"
-dependencies = [
- "bitflags 2.13.0",
-]
-
-[[package]]
 name = "ax-config"
 version = "0.5.13"
 dependencies = [
@@ -639,10 +632,6 @@ dependencies = [
  "quote",
  "syn 2.0.117",
 ]
-
-[[package]]
-name = "ax-crate-interface-lite"
-version = "0.3.5"
 
 [[package]]
 name = "ax-ctor-bare"
@@ -832,10 +821,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "ax-handler-table"
-version = "0.3.7"
-
-[[package]]
 name = "ax-input"
 version = "0.5.18"
 dependencies = [
@@ -844,10 +829,6 @@ dependencies = [
  "log",
  "rdif-input",
 ]
-
-[[package]]
-name = "ax-int-ratio"
-version = "0.3.7"
 
 [[package]]
 name = "ax-io"
