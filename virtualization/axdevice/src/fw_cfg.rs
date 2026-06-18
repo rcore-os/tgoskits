@@ -69,6 +69,9 @@ pub struct FwCfgRamRegion {
 pub struct FwCfgPlatformConfig {
     pub ram_regions: &'static [FwCfgRamRegion],
     pub srat_regions: &'static [FwCfgRamRegion],
+    pub serial: FwCfgSerialConfig,
+    pub pci: FwCfgPciConfig,
+    pub interrupt: FwCfgInterruptConfig,
 }
 
 impl Default for FwCfgPlatformConfig {
@@ -87,6 +90,80 @@ impl Default for FwCfgPlatformConfig {
         Self {
             ram_regions: &DEFAULT_RAM_REGIONS,
             srat_regions: &DEFAULT_RAM_REGIONS,
+            serial: FwCfgSerialConfig::default(),
+            pci: FwCfgPciConfig::default(),
+            interrupt: FwCfgInterruptConfig::default(),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct FwCfgSerialConfig {
+    pub base: u64,
+    pub size: u64,
+    pub irq: u8,
+    pub clock_hz: u32,
+    pub baud: u32,
+}
+
+impl Default for FwCfgSerialConfig {
+    fn default() -> Self {
+        Self {
+            base: 0x1fe0_01e0,
+            size: 0x100,
+            irq: 66,
+            clock_hz: 100_000_000,
+            baud: 115_200,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct FwCfgPciConfig {
+    pub ecam_base: u64,
+    pub ecam_size: u64,
+    pub mmio_base: u64,
+    pub mmio_size: u64,
+    pub io_base: u64,
+    pub io_size: u32,
+    pub intx_base: u8,
+}
+
+impl Default for FwCfgPciConfig {
+    fn default() -> Self {
+        Self {
+            ecam_base: VIRT_PCI_CFG_BASE,
+            ecam_size: VIRT_PCI_CFG_SIZE,
+            mmio_base: 0x4000_0000,
+            mmio_size: 0x4000_0000,
+            io_base: 0x1800_0000,
+            io_size: 0x0001_0000,
+            intx_base: 80,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct FwCfgInterruptConfig {
+    pub eiointc_irq: u8,
+    pub pch_msi_base: u64,
+    pub pch_msi_start: u32,
+    pub pch_msi_count: u32,
+    pub pch_pic_base: u64,
+    pub pch_pic_size: u16,
+    pub pch_pic_gsi_base: u16,
+}
+
+impl Default for FwCfgInterruptConfig {
+    fn default() -> Self {
+        Self {
+            eiointc_irq: 3,
+            pch_msi_base: 0x2ff0_0000,
+            pch_msi_start: 0x40,
+            pch_msi_count: 0xc0,
+            pch_pic_base: 0x1000_0000,
+            pch_pic_size: 0x1000,
+            pch_pic_gsi_base: 0x40,
         }
     }
 }
@@ -139,7 +216,7 @@ impl FwCfg {
         let memmap = build_memmap(platform.ram_regions);
         let smbios_tables = build_smbios_tables();
         let smbios_anchor = build_smbios_anchor();
-        let acpi = build_acpi(cpu_num, platform.srat_regions);
+        let acpi = build_acpi(cpu_num, &platform);
         let file_dir = build_file_dir(&[
             FwCfgFile {
                 name: "etc/memmap",
@@ -513,7 +590,7 @@ struct AcpiBlobs {
     loader: Vec<u8>,
 }
 
-fn build_acpi(cpu_num: u16, ram_regions: &[FwCfgRamRegion]) -> AcpiBlobs {
+fn build_acpi(cpu_num: u16, platform: &FwCfgPlatformConfig) -> AcpiBlobs {
     let mut tables = Vec::new();
     let mut loader = Vec::new();
 
@@ -523,7 +600,7 @@ fn build_acpi(cpu_num: u16, ram_regions: &[FwCfgRamRegion]) -> AcpiBlobs {
     build_facs(&mut tables);
 
     let dsdt = tables.len() as u32;
-    build_dsdt(&mut tables);
+    build_dsdt(&mut tables, platform);
     push_loader_add_checksum(
         &mut loader,
         ACPI_TABLE_FILE,
@@ -568,7 +645,7 @@ fn build_acpi(cpu_num: u16, ram_regions: &[FwCfgRamRegion]) -> AcpiBlobs {
     );
 
     let madt = tables.len() as u32;
-    build_madt(&mut tables, cpu_num);
+    build_madt(&mut tables, cpu_num, &platform.interrupt);
     push_loader_add_checksum(
         &mut loader,
         ACPI_TABLE_FILE,
@@ -577,7 +654,7 @@ fn build_acpi(cpu_num: u16, ram_regions: &[FwCfgRamRegion]) -> AcpiBlobs {
     );
 
     let srat = tables.len() as u32;
-    build_srat(&mut tables, cpu_num, ram_regions);
+    build_srat(&mut tables, cpu_num, platform.srat_regions);
     push_loader_add_checksum(
         &mut loader,
         ACPI_TABLE_FILE,
@@ -586,7 +663,7 @@ fn build_acpi(cpu_num: u16, ram_regions: &[FwCfgRamRegion]) -> AcpiBlobs {
     );
 
     let spcr = tables.len() as u32;
-    build_spcr(&mut tables);
+    build_spcr(&mut tables, &platform.serial);
     push_loader_add_checksum(
         &mut loader,
         ACPI_TABLE_FILE,
@@ -595,7 +672,7 @@ fn build_acpi(cpu_num: u16, ram_regions: &[FwCfgRamRegion]) -> AcpiBlobs {
     );
 
     let mcfg = tables.len() as u32;
-    build_mcfg(&mut tables);
+    build_mcfg(&mut tables, &platform.pci);
     push_loader_add_checksum(
         &mut loader,
         ACPI_TABLE_FILE,
@@ -663,9 +740,9 @@ fn build_facs(tables: &mut Vec<u8>) {
     tables.resize(tables.len() + 40, 0);
 }
 
-fn build_dsdt(tables: &mut Vec<u8>) {
+fn build_dsdt(tables: &mut Vec<u8>, platform: &FwCfgPlatformConfig) {
     let start = begin_acpi_table(tables, b"DSDT", 1);
-    tables.extend_from_slice(&build_loongarch_dsdt_aml());
+    tables.extend_from_slice(&build_loongarch_dsdt_aml(platform));
     end_acpi_table(tables, start);
 }
 
@@ -710,7 +787,7 @@ fn build_fadt(tables: &mut Vec<u8>, _facs: u32, _dsdt: u32) {
     end_acpi_table(tables, start);
 }
 
-fn build_madt(tables: &mut Vec<u8>, cpu_num: u16) {
+fn build_madt(tables: &mut Vec<u8>, cpu_num: u16, interrupt: &FwCfgInterruptConfig) {
     let start = begin_acpi_table(tables, b"APIC", 1);
     push_le(tables, 0, 4);
     push_le(tables, 1, 4);
@@ -727,24 +804,24 @@ fn build_madt(tables: &mut Vec<u8>, cpu_num: u16) {
     push_le(tables, 20, 1);
     push_le(tables, 13, 1);
     push_le(tables, 1, 1);
-    push_le(tables, 3, 1);
+    push_le(tables, interrupt.eiointc_irq as u64, 1);
     push_le(tables, 0, 1);
     push_le(tables, 0xffff, 8);
 
     push_le(tables, 21, 1);
     push_le(tables, 19, 1);
     push_le(tables, 1, 1);
-    push_le(tables, 0x2ff0_0000, 8);
-    push_le(tables, 0x40, 4);
-    push_le(tables, 0xc0, 4);
+    push_le(tables, interrupt.pch_msi_base, 8);
+    push_le(tables, interrupt.pch_msi_start as u64, 4);
+    push_le(tables, interrupt.pch_msi_count as u64, 4);
 
     push_le(tables, 22, 1);
     push_le(tables, 17, 1);
     push_le(tables, 1, 1);
-    push_le(tables, 0x1000_0000, 8);
-    push_le(tables, 0x1000, 2);
+    push_le(tables, interrupt.pch_pic_base, 8);
+    push_le(tables, interrupt.pch_pic_size as u64, 2);
     push_le(tables, 0, 2);
-    push_le(tables, 0x40, 2);
+    push_le(tables, interrupt.pch_pic_gsi_base as u64, 2);
 
     end_acpi_table(tables, start);
 }
@@ -788,14 +865,14 @@ fn push_srat_memory(tables: &mut Vec<u8>, base: u64, length: u64) {
     push_le(tables, 0, 8);
 }
 
-fn build_spcr(tables: &mut Vec<u8>) {
+fn build_spcr(tables: &mut Vec<u8>, serial: &FwCfgSerialConfig) {
     let start = begin_acpi_table(tables, b"SPCR", 2);
     push_le(tables, 0, 1);
     push_le(tables, 0, 3);
-    push_gas(tables, 0, 8, 0, 1, 0x1fe0_01e0);
+    push_gas(tables, 0, 8, 0, 1, serial.base);
     push_le(tables, 0, 1);
     push_le(tables, 0, 1);
-    push_le(tables, 66, 4);
+    push_le(tables, serial.irq as u64, 4);
     push_le(tables, 7, 1);
     push_le(tables, 0, 1);
     push_le(tables, 1, 1);
@@ -810,20 +887,20 @@ fn build_spcr(tables: &mut Vec<u8>) {
     push_le(tables, 0, 4);
     push_le(tables, 0, 1);
     push_le(tables, 0, 4);
-    push_le(tables, 100_000_000, 4);
-    push_le(tables, 115_200, 4);
+    push_le(tables, serial.clock_hz as u64, 4);
+    push_le(tables, serial.baud as u64, 4);
     push_le(tables, 0, 2);
     push_le(tables, 0, 2);
     end_acpi_table(tables, start);
 }
 
-fn build_mcfg(tables: &mut Vec<u8>) {
+fn build_mcfg(tables: &mut Vec<u8>, pci: &FwCfgPciConfig) {
     let start = begin_acpi_table(tables, b"MCFG", 1);
     push_le(tables, 0, 8);
-    push_le(tables, VIRT_PCI_CFG_BASE, 8);
+    push_le(tables, pci.ecam_base, 8);
     push_le(tables, 0, 2);
     push_le(tables, 0, 1);
-    push_le(tables, (VIRT_PCI_CFG_SIZE - 1) >> 20, 1);
+    push_le(tables, (pci.ecam_size - 1) >> 20, 1);
     push_le(tables, 0, 4);
     end_acpi_table(tables, start);
 }
@@ -863,10 +940,10 @@ fn end_acpi_table(tables: &mut [u8], start: usize) {
     tables[start + 4..start + 8].copy_from_slice(&length.to_le_bytes());
 }
 
-fn build_loongarch_dsdt_aml() -> Vec<u8> {
+fn build_loongarch_dsdt_aml(platform: &FwCfgPlatformConfig) -> Vec<u8> {
     let mut scope_body = Vec::new();
-    scope_body.extend(aml_device("COMA", build_coma_aml()));
-    scope_body.extend(aml_device("PCI0", build_pci0_aml()));
+    scope_body.extend(aml_device("COMA", build_coma_aml(&platform.serial)));
+    scope_body.extend(aml_device("PCI0", build_pci0_aml(&platform.pci)));
 
     let mut aml = Vec::new();
     aml.extend(aml_scope("_SB_", scope_body));
@@ -880,12 +957,12 @@ fn build_loongarch_dsdt_aml() -> Vec<u8> {
     aml
 }
 
-fn build_coma_aml() -> Vec<u8> {
+fn build_coma_aml(serial: &FwCfgSerialConfig) -> Vec<u8> {
     let mut body = Vec::new();
     body.extend(aml_name_decl("_HID", aml_string("PNP0501")));
     body.extend(aml_name_decl("_UID", aml_int(0)));
     body.extend(aml_name_decl("_CCA", aml_int(1)));
-    body.extend(aml_name_decl("_CRS", serial_crs_aml()));
+    body.extend(aml_name_decl("_CRS", serial_crs_aml(serial)));
     body.extend_from_slice(&[
         0x08, 0x5f, 0x44, 0x53, 0x44, 0x12, 0x32, 0x02, 0x11, 0x13, 0x0a, 0x10, 0x14, 0xd8, 0xff,
         0xda, 0xba, 0x6e, 0x8c, 0x4d, 0x8a, 0x91, 0xbc, 0x9b, 0xbf, 0x4a, 0xa3, 0x01, 0x12, 0x1b,
@@ -895,7 +972,7 @@ fn build_coma_aml() -> Vec<u8> {
     body
 }
 
-fn build_pci0_aml() -> Vec<u8> {
+fn build_pci0_aml(pci: &FwCfgPciConfig) -> Vec<u8> {
     let mut body = Vec::new();
     body.extend(aml_name_decl("_HID", aml_string("PNP0A08")));
     body.extend(aml_name_decl("_CID", aml_string("PNP0A03")));
@@ -906,16 +983,15 @@ fn build_pci0_aml() -> Vec<u8> {
     body.extend(aml_name_decl("_PRT", pci_route_package_aml()));
 
     for gsi in 0..4 {
-        body.extend(aml_device(&format!("GSI{gsi}"), build_gsi_link_aml(gsi)));
+        body.extend(aml_device(
+            &format!("GSI{gsi}"),
+            build_gsi_link_aml(pci, gsi),
+        ));
     }
 
-    body.extend(aml_method(
-        "_CBA",
-        0,
-        aml_return(aml_int(VIRT_PCI_CFG_BASE)),
-    ));
-    body.extend(aml_name_decl("_CRS", pci_crs_aml()));
-    body.extend(aml_device("RES0", build_pci_res0_aml()));
+    body.extend(aml_method("_CBA", 0, aml_return(aml_int(pci.ecam_base))));
+    body.extend(aml_name_decl("_CRS", pci_crs_aml(pci)));
+    body.extend(aml_device("RES0", build_pci_res0_aml(pci)));
     body
 }
 
@@ -939,8 +1015,8 @@ fn pci_route_package_aml() -> Vec<u8> {
     aml_package_with_count(entries, (PCI_SLOT_MAX * PCI_NUM_PINS) as u8)
 }
 
-fn build_gsi_link_aml(gsi: usize) -> Vec<u8> {
-    let irq = 80 + gsi as u8;
+fn build_gsi_link_aml(pci: &FwCfgPciConfig, gsi: usize) -> Vec<u8> {
+    let irq = pci.intx_base + gsi as u8;
     let mut body = Vec::new();
     body.extend(aml_name_decl("_HID", aml_string("PNP0C0F")));
     body.extend(aml_name_decl("_UID", aml_int(gsi as u64)));
@@ -950,10 +1026,10 @@ fn build_gsi_link_aml(gsi: usize) -> Vec<u8> {
     body
 }
 
-fn build_pci_res0_aml() -> Vec<u8> {
+fn build_pci_res0_aml(pci: &FwCfgPciConfig) -> Vec<u8> {
     let mut body = Vec::new();
     body.extend(aml_name_decl("_HID", aml_string("PNP0C02")));
-    body.extend(aml_name_decl("_CRS", pci_res0_crs_aml()));
+    body.extend(aml_name_decl("_CRS", pci_res0_crs_aml(pci)));
     body
 }
 
@@ -1071,14 +1147,78 @@ fn aml_return(value: Vec<u8>) -> Vec<u8> {
     out
 }
 
-fn serial_crs_aml() -> Vec<u8> {
-    vec![
-        0x11, 0x3c, 0x0a, 0x39, 0x8a, 0x2b, 0x00, 0x00, 0x0d, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00,
-        0x00, 0x00, 0x00, 0xe0, 0x01, 0xe0, 0x1f, 0x00, 0x00, 0x00, 0x00, 0xdf, 0x02, 0xe0, 0x1f,
-        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00,
-        0x00, 0x00, 0x00, 0x00, 0x00, 0x89, 0x06, 0x00, 0x09, 0x01, 0x42, 0x00, 0x00, 0x00, 0x79,
+fn aml_buffer(bytes: &[u8]) -> Vec<u8> {
+    let mut content = Vec::with_capacity(1 + bytes.len());
+    content.extend(aml_int(bytes.len() as u64));
+    content.extend_from_slice(bytes);
+    aml_pkg_op(&[0x11], content)
+}
+
+fn aml_resource_template(resources: &[Vec<u8>]) -> Vec<u8> {
+    let mut bytes = Vec::new();
+    for resource in resources {
+        bytes.extend_from_slice(resource);
+    }
+    bytes.extend_from_slice(&[0x79, 0x00]);
+    aml_buffer(&bytes)
+}
+
+fn word_bus_number_resource(min: u16, max: u16) -> Vec<u8> {
+    let length = max.saturating_sub(min).saturating_add(1);
+    let mut out = vec![0x88, 0x0d, 0x00, 0x02, 0x0c, 0x00, 0x00, 0x00];
+    out.extend_from_slice(&min.to_le_bytes());
+    out.extend_from_slice(&max.to_le_bytes());
+    out.extend_from_slice(&0u16.to_le_bytes());
+    out.extend_from_slice(&length.to_le_bytes());
+    out
+}
+
+fn dword_io_resource(base: u64, size: u32) -> Vec<u8> {
+    let max = size.saturating_sub(1);
+    let mut out = vec![0x87, 0x17, 0x00, 0x01, 0x0c, 0x03];
+    out.extend_from_slice(&0u32.to_le_bytes());
+    out.extend_from_slice(&0u32.to_le_bytes());
+    out.extend_from_slice(&max.to_le_bytes());
+    out.extend_from_slice(&(base as u32).to_le_bytes());
+    out.extend_from_slice(&size.to_le_bytes());
+    out
+}
+
+fn qword_memory_resource(base: u64, size: u64, prefetchable: bool, fixed: bool) -> Vec<u8> {
+    let max = base.saturating_add(size).saturating_sub(1);
+    let mut out = vec![
+        0x8a,
+        0x2b,
         0x00,
-    ]
+        0x00,
+        if fixed { 0x0d } else { 0x0c },
+        if prefetchable { 0x03 } else { 0x01 },
+    ];
+    out.extend_from_slice(&0u64.to_le_bytes());
+    out.extend_from_slice(&base.to_le_bytes());
+    out.extend_from_slice(&max.to_le_bytes());
+    out.extend_from_slice(&0u64.to_le_bytes());
+    out.extend_from_slice(&size.to_le_bytes());
+    out
+}
+
+fn extended_interrupt_resource(irqs: &[u32], consumer: bool) -> Vec<u8> {
+    let payload_len = 2 + core::mem::size_of_val(irqs);
+    let mut out = vec![0x89];
+    out.extend_from_slice(&(payload_len as u16).to_le_bytes());
+    out.push(if consumer { 0x09 } else { 0x01 });
+    out.push(irqs.len() as u8);
+    for irq in irqs {
+        out.extend_from_slice(&irq.to_le_bytes());
+    }
+    out
+}
+
+fn serial_crs_aml(serial: &FwCfgSerialConfig) -> Vec<u8> {
+    aml_resource_template(&[
+        qword_memory_resource(serial.base, serial.size, false, true),
+        extended_interrupt_resource(&[serial.irq as u32], true),
+    ])
 }
 
 fn interrupt_crs_aml(irq: u8, shared: bool) -> Vec<u8> {
@@ -1101,25 +1241,21 @@ fn interrupt_crs_aml(irq: u8, shared: bool) -> Vec<u8> {
     ]
 }
 
-fn pci_crs_aml() -> Vec<u8> {
-    vec![
-        0x11, 0x4e, 0x05, 0x0a, 0x5a, 0x88, 0x0d, 0x00, 0x02, 0x0c, 0x00, 0x00, 0x00, 0x00, 0x00,
-        0x7f, 0x00, 0x00, 0x00, 0x80, 0x00, 0x87, 0x17, 0x00, 0x01, 0x0c, 0x03, 0x00, 0x00, 0x00,
-        0x00, 0x00, 0x00, 0x00, 0x00, 0xff, 0xff, 0x00, 0x00, 0x00, 0x00, 0x00, 0x18, 0x00, 0x00,
-        0x01, 0x00, 0x8a, 0x2b, 0x00, 0x00, 0x0c, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-        0x00, 0x00, 0x00, 0x00, 0x40, 0x00, 0x00, 0x00, 0x00, 0xff, 0xff, 0xff, 0x7f, 0x00, 0x00,
-        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x40, 0x00,
-        0x00, 0x00, 0x00, 0x79, 0x00,
-    ]
+fn pci_crs_aml(pci: &FwCfgPciConfig) -> Vec<u8> {
+    aml_resource_template(&[
+        word_bus_number_resource(0, ((pci.ecam_size - 1) >> 20) as u16),
+        dword_io_resource(pci.io_base, pci.io_size),
+        qword_memory_resource(pci.mmio_base, pci.mmio_size, false, false),
+    ])
 }
 
-fn pci_res0_crs_aml() -> Vec<u8> {
-    vec![
-        0x11, 0x33, 0x0a, 0x30, 0x8a, 0x2b, 0x00, 0x00, 0x0d, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00,
-        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x20, 0x00, 0x00, 0x00, 0x00, 0xff, 0xff, 0xff, 0x27,
-        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-        0x08, 0x00, 0x00, 0x00, 0x00, 0x79, 0x00,
-    ]
+fn pci_res0_crs_aml(pci: &FwCfgPciConfig) -> Vec<u8> {
+    aml_resource_template(&[qword_memory_resource(
+        pci.ecam_base,
+        pci.ecam_size,
+        false,
+        true,
+    )])
 }
 
 fn push_gas(out: &mut Vec<u8>, space: u8, bit_width: u8, bit_offset: u8, access: u8, addr: u64) {

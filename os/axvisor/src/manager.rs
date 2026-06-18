@@ -241,7 +241,7 @@ fn inject_loongarch_platform_irq(vm_id: usize, vcpu_id: usize, vector: usize, ph
 fn init_loongarch_passthrough_irq_routes() {
     let mut matched = 0usize;
     for vm in axvm::get_vm_list() {
-        let routes = crate::fdt::get_loongarch_guest_irq_routes(vm.id());
+        let routes = crate::guest_platform::loongarch64::get_guest_irq_routes(vm.id());
         if !routes.is_empty() {
             matched += 1;
             let vcpu_id = 0usize;

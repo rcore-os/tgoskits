@@ -54,7 +54,7 @@ pub use manager::{
 #[cfg(target_arch = "loongarch64")]
 pub use manager::{inject_vm_vcpu_external_interrupt, inject_vm_vcpu_interrupt};
 pub use task::{AsVCpuTask, VCpuTask};
-pub use vm::{AxVCpuRef, AxVM, AxVMRef, VMMemoryRegion, VMStatus};
+pub use vm::{AxVCpuRef, AxVM, AxVMRef, FwCfgDeviceConfig, VMMemoryRegion, VMStatus};
 
 /// The architecture-independent per-CPU type.
 pub type AxVMPerCpu = axvcpu::AxPerCpu<vcpu::AxVMArchPerCpuImpl>;

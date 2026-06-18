@@ -26,7 +26,9 @@ use fdt_parser::{Node, Status};
 #[cfg(target_arch = "aarch64")]
 use crate::fdt::create::update_cpu_node;
 #[cfg(target_arch = "loongarch64")]
-use crate::fdt::{LoongArchGuestIrqRoute, store_loongarch_guest_irq_routes};
+use crate::guest_platform::loongarch64::{
+    LoongArchGuestIrqRoute, store_guest_irq_routes as store_loongarch_guest_irq_routes,
+};
 use axvm::{MappingFlags, config::AxVMConfig};
 use axvmconfig::{AxVMCrateConfig, PassThroughDeviceConfig, VmMemConfig, VmMemMappingType};
 

@@ -49,7 +49,10 @@ pub use factory::{
     DeviceBuildContext, DeviceFactory, DeviceFactoryRegistry, IrqResolver,
     register_builtin_factories,
 };
-pub use fw_cfg::{FwCfg, FwCfgPlatformConfig, FwCfgRamRegion};
+pub use fw_cfg::{
+    FwCfg, FwCfgInterruptConfig, FwCfgPciConfig, FwCfgPlatformConfig, FwCfgRamRegion,
+    FwCfgSerialConfig,
+};
 #[cfg(target_arch = "loongarch64")]
 pub use loongarch_pch_pic::LoongArchPchPic;
 pub use registration::{DeviceBundle, DeviceRegistration, PollableDeviceOps};

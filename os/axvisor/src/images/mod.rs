@@ -12,10 +12,12 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use alloc::{boxed::Box, format, vec::Vec};
+use alloc::format;
+#[cfg(target_arch = "x86_64")]
+use alloc::vec::Vec;
 
 use ax_errno::{AxResult, ax_err, ax_err_type};
-#[cfg(any(target_arch = "x86_64", target_arch = "loongarch64"))]
+#[cfg(target_arch = "x86_64")]
 use axvmconfig::EmulatedDeviceType;
 #[cfg(target_arch = "x86_64")]
 use axvmconfig::VmMemMappingType;
@@ -25,13 +27,6 @@ use byte_unit::Byte;
 use axvm::{AxVMRef, GuestPhysAddr, VMMemoryRegion};
 
 use crate::config::{get_vm_dtb_arc, vmcfg};
-
-#[cfg(target_arch = "loongarch64")]
-#[derive(Clone, Copy, Debug)]
-struct LoongArchUefiRamRegion {
-    base: u64,
-    size: u64,
-}
 
 mod linux;
 #[cfg(target_arch = "x86_64")]
@@ -346,24 +341,20 @@ impl ImageLoader {
         kernel: &'static [u8],
         ramdisk: Option<&'static [u8]>,
     ) -> AxResult {
-        let fw_cfg = self
-            .config
-            .devices
-            .emu_devices
-            .iter()
-            .find(|device| device.emu_type == EmulatedDeviceType::FwCfg)
-            .ok_or_else(|| {
-                ax_errno::ax_err_type!(NotFound, "LoongArch UEFI boot requires a fw_cfg device")
-            })?;
+        let fw_cfg = crate::guest_platform::loongarch64::emulated_fw_cfg(&self.config)?;
 
-        self.vm.add_fw_cfg_device(
-            GuestPhysAddr::from(fw_cfg.base_gpa),
-            fw_cfg.length,
+        self.vm.add_fw_cfg_device(axvm::FwCfgDeviceConfig {
+            base: GuestPhysAddr::from(fw_cfg.base_gpa),
+            size: fw_cfg.length,
             kernel,
-            ramdisk,
-            self.config.kernel.cmdline.as_deref(),
-            self.config.base.cpu_num as u16,
-        )
+            initrd: ramdisk,
+            cmdline: self.config.kernel.cmdline.clone(),
+            cpu_num: self.config.base.cpu_num as u16,
+            platform: Some(crate::guest_platform::loongarch64::fw_cfg_platform_config(
+                &self.vm,
+                &self.config,
+            )),
+        })
     }
 
     #[cfg(target_arch = "loongarch64")]
@@ -384,56 +375,8 @@ impl ImageLoader {
 
     #[cfg(target_arch = "loongarch64")]
     fn load_loongarch_uefi_firmware_dtb(&self) -> AxResult {
-        const LOONGARCH_UEFI_FDT_BASE: usize = 0x0010_0000;
-
-        let ram_regions = self.loongarch_uefi_ram_regions();
-        let dtb = build_loongarch_uefi_firmware_dtb(&ram_regions)?;
-        debug!(
-            "VM[{}] loading internally generated LoongArch UEFI firmware DTB: {} bytes at \
-             {:#x}",
-            self.config.base.id,
-            dtb.len(),
-            LOONGARCH_UEFI_FDT_BASE
-        );
-        self.vm.with_config(|config| {
-            config.set_dtb_load_gpa(GuestPhysAddr::from(LOONGARCH_UEFI_FDT_BASE));
-        });
-        load_vm_image_from_memory(
-            &dtb,
-            GuestPhysAddr::from(LOONGARCH_UEFI_FDT_BASE),
-            self.vm.clone(),
-        )
-    }
-
-    #[cfg(target_arch = "loongarch64")]
-    fn loongarch_uefi_ram_regions(&self) -> Vec<LoongArchUefiRamRegion> {
-        let mut ram_regions = self
-            .vm
-            .memory_regions()
-            .into_iter()
-            .inspect(|region| {
-                trace!(
-                    "VM[{}] LoongArch UEFI firmware candidate RAM: gpa={:#x}, hpa={:#x}, size={:#x}",
-                    self.config.base.id,
-                    region.gpa.as_usize(),
-                    region.host_paddr().as_usize(),
-                    region.size()
-                );
-            })
-            .filter(|region| region.gpa.as_usize() < 0x1000_0000 || region.gpa.as_usize() >= 0x8000_0000)
-            .map(|region| LoongArchUefiRamRegion {
-                base: region.gpa.as_usize() as u64,
-                size: region.size() as u64,
-            })
-            .filter(|region| region.size != 0)
-            .collect::<Vec<_>>();
-        ram_regions.sort_by_key(|region| region.base);
-
-        debug!(
-            "VM[{}] LoongArch UEFI firmware RAM regions: {:?}",
-            self.config.base.id, ram_regions
-        );
-        ram_regions
+        crate::guest_platform::loongarch64::prepare_uefi_runtime_config(&self.vm, &self.config);
+        crate::guest_platform::loongarch64::load_firmware_fdt(&self.vm, &self.config)
     }
 
     fn load_kernel_from_memory(&self, kernel: &[u8]) -> AxResult {
@@ -773,242 +716,6 @@ fn fill_vm_region(load_addr: GuestPhysAddr, size: usize, byte: u8, vm: AxVMRef) 
             format!("VM memory was only partially filled: {filled_size}/{size} bytes")
         )
     }
-}
-
-#[cfg(target_arch = "loongarch64")]
-fn build_loongarch_uefi_firmware_dtb(ram_regions: &[LoongArchUefiRamRegion]) -> AxResult<Vec<u8>> {
-    use crate::fdt::vm_fdt::FdtWriter;
-
-    const FALLBACK_RAM_REGIONS: [LoongArchUefiRamRegion; 2] = [
-        LoongArchUefiRamRegion {
-            base: 0,
-            size: 0x1000_0000,
-        },
-        LoongArchUefiRamRegion {
-            base: 0x8000_0000,
-            size: 0x2400_0000,
-        },
-    ];
-
-    fn fdt_err(err: impl core::fmt::Debug) -> ax_errno::AxError {
-        ax_errno::ax_err_type!(
-            InvalidData,
-            format!("failed to build LoongArch UEFI firmware DTB: {err:?}")
-        )
-    }
-
-    let mut fdt = FdtWriter::new().map_err(fdt_err)?;
-    let root = fdt.begin_node("").map_err(fdt_err)?;
-    fdt.property_u32("#address-cells", 2).map_err(fdt_err)?;
-    fdt.property_u32("#size-cells", 2).map_err(fdt_err)?;
-    fdt.property_string("compatible", "linux,dummy-loongson3")
-        .map_err(fdt_err)?;
-
-    let platform_bus = fdt.begin_node("platform-bus@16000000").map_err(fdt_err)?;
-    fdt.property_string_list(
-        "compatible",
-        vec!["qemu,platform".into(), "simple-bus".into()],
-    )
-    .map_err(fdt_err)?;
-    fdt.property_u32("#address-cells", 1).map_err(fdt_err)?;
-    fdt.property_u32("#size-cells", 1).map_err(fdt_err)?;
-    fdt.property_array_u32("ranges", &[0, 0, 0x1600_0000, 0x0200_0000])
-        .map_err(fdt_err)?;
-    fdt.property_u32("interrupt-parent", 0x8003)
-        .map_err(fdt_err)?;
-    fdt.end_node(platform_bus).map_err(fdt_err)?;
-
-    let chosen = fdt.begin_node("chosen").map_err(fdt_err)?;
-    fdt.property_string("stdout-path", "/serial@1fe001e0")
-        .map_err(fdt_err)?;
-    fdt.end_node(chosen).map_err(fdt_err)?;
-
-    let cpus = fdt.begin_node("cpus").map_err(fdt_err)?;
-    fdt.property_u32("#address-cells", 1).map_err(fdt_err)?;
-    fdt.property_u32("#size-cells", 0).map_err(fdt_err)?;
-    let cpu_map = fdt.begin_node("cpu-map").map_err(fdt_err)?;
-    let socket0 = fdt.begin_node("socket0").map_err(fdt_err)?;
-    let core0 = fdt.begin_node("core0").map_err(fdt_err)?;
-    fdt.property_u32("cpu", 0x8000).map_err(fdt_err)?;
-    fdt.end_node(core0).map_err(fdt_err)?;
-    fdt.end_node(socket0).map_err(fdt_err)?;
-    fdt.end_node(cpu_map).map_err(fdt_err)?;
-    let cpu = fdt.begin_node("cpu@0").map_err(fdt_err)?;
-    fdt.property_string("device_type", "cpu").map_err(fdt_err)?;
-    fdt.property_string("compatible", "loongarch,Loongson-3A5000")
-        .map_err(fdt_err)?;
-    fdt.property_u32("reg", 0).map_err(fdt_err)?;
-    fdt.property_phandle(0x8000).map_err(fdt_err)?;
-    fdt.end_node(cpu).map_err(fdt_err)?;
-    fdt.end_node(cpus).map_err(fdt_err)?;
-
-    let ram_regions = if ram_regions.is_empty() {
-        &FALLBACK_RAM_REGIONS
-    } else {
-        ram_regions
-    };
-    for region in ram_regions {
-        let memory = fdt
-            .begin_node(&format!("memory@{:x}", region.base))
-            .map_err(fdt_err)?;
-        fdt.property_string("device_type", "memory")
-            .map_err(fdt_err)?;
-        fdt.property_array_u32(
-            "reg",
-            &[
-                (region.base >> 32) as u32,
-                region.base as u32,
-                (region.size >> 32) as u32,
-                region.size as u32,
-            ],
-        )
-        .map_err(fdt_err)?;
-        fdt.end_node(memory).map_err(fdt_err)?;
-    }
-
-    let cpuic = fdt.begin_node("cpuic").map_err(fdt_err)?;
-    fdt.property_null("interrupt-controller").map_err(fdt_err)?;
-    fdt.property_u32("#interrupt-cells", 1).map_err(fdt_err)?;
-    fdt.property_string("compatible", "loongson,cpu-interrupt-controller")
-        .map_err(fdt_err)?;
-    fdt.property_phandle(0x8001).map_err(fdt_err)?;
-    fdt.end_node(cpuic).map_err(fdt_err)?;
-
-    let eiointc = fdt.begin_node("eiointc@1400").map_err(fdt_err)?;
-    fdt.property_string("compatible", "loongson,ls2k2000-eiointc")
-        .map_err(fdt_err)?;
-    fdt.property_null("interrupt-controller").map_err(fdt_err)?;
-    fdt.property_u32("#interrupt-cells", 1).map_err(fdt_err)?;
-    fdt.property_u32("interrupt-parent", 0x8001)
-        .map_err(fdt_err)?;
-    fdt.property_array_u32("interrupts", &[3])
-        .map_err(fdt_err)?;
-    fdt.property_array_u32("reg", &[0, 0x0000_1400, 0, 0x800])
-        .map_err(fdt_err)?;
-    fdt.property_phandle(0x8002).map_err(fdt_err)?;
-    fdt.end_node(eiointc).map_err(fdt_err)?;
-
-    let pch_pic = fdt.begin_node("platic@10000000").map_err(fdt_err)?;
-    fdt.property_string("compatible", "loongson,pch-pic-1.0")
-        .map_err(fdt_err)?;
-    fdt.property_null("interrupt-controller").map_err(fdt_err)?;
-    fdt.property_u32("#interrupt-cells", 2).map_err(fdt_err)?;
-    fdt.property_u32("interrupt-parent", 0x8002)
-        .map_err(fdt_err)?;
-    fdt.property_array_u32("reg", &[0, 0x1000_0000, 0, 0x400])
-        .map_err(fdt_err)?;
-    fdt.property_array_u32("loongson,pic-base-vec", &[0])
-        .map_err(fdt_err)?;
-    fdt.property_phandle(0x8003).map_err(fdt_err)?;
-    fdt.end_node(pch_pic).map_err(fdt_err)?;
-
-    let msi = fdt.begin_node("msi@2ff00000").map_err(fdt_err)?;
-    fdt.property_string("compatible", "loongson,pch-msi-1.0")
-        .map_err(fdt_err)?;
-    fdt.property_null("interrupt-controller").map_err(fdt_err)?;
-    fdt.property_u32("interrupt-parent", 0x8002)
-        .map_err(fdt_err)?;
-    fdt.property_array_u32("reg", &[0, 0x2ff0_0000, 0, 0x8])
-        .map_err(fdt_err)?;
-    fdt.property_u32("loongson,msi-base-vec", 0x20)
-        .map_err(fdt_err)?;
-    fdt.property_u32("loongson,msi-num-vecs", 0xe0)
-        .map_err(fdt_err)?;
-    fdt.property_phandle(0x8004).map_err(fdt_err)?;
-    fdt.end_node(msi).map_err(fdt_err)?;
-
-    let ged = fdt.begin_node("ged@100e001c").map_err(fdt_err)?;
-    fdt.property_string("compatible", "syscon")
-        .map_err(fdt_err)?;
-    fdt.property_array_u32("reg", &[0, 0x100e_001c, 0, 3])
-        .map_err(fdt_err)?;
-    fdt.property_u32("reg-shift", 0).map_err(fdt_err)?;
-    fdt.property_u32("reg-io-width", 1).map_err(fdt_err)?;
-    fdt.property_phandle(0x8005).map_err(fdt_err)?;
-    fdt.end_node(ged).map_err(fdt_err)?;
-
-    let poweroff = fdt.begin_node("poweroff").map_err(fdt_err)?;
-    fdt.property_string("compatible", "syscon-poweroff")
-        .map_err(fdt_err)?;
-    fdt.property_u32("regmap", 0x8005).map_err(fdt_err)?;
-    fdt.property_u32("offset", 0).map_err(fdt_err)?;
-    fdt.property_u32("value", 0x34).map_err(fdt_err)?;
-    fdt.end_node(poweroff).map_err(fdt_err)?;
-
-    let reboot = fdt.begin_node("reboot").map_err(fdt_err)?;
-    fdt.property_string("compatible", "syscon-reboot")
-        .map_err(fdt_err)?;
-    fdt.property_u32("regmap", 0x8005).map_err(fdt_err)?;
-    fdt.property_u32("offset", 2).map_err(fdt_err)?;
-    fdt.property_u32("value", 0x42).map_err(fdt_err)?;
-    fdt.end_node(reboot).map_err(fdt_err)?;
-
-    let rtc = fdt.begin_node("rtc@100d0100").map_err(fdt_err)?;
-    fdt.property_string("compatible", "loongson,ls7a-rtc")
-        .map_err(fdt_err)?;
-    fdt.property_array_u32("reg", &[0, 0x100d_0100, 0, 0x100])
-        .map_err(fdt_err)?;
-    fdt.property_u32("interrupt-parent", 0x8003)
-        .map_err(fdt_err)?;
-    fdt.property_array_u32("interrupts", &[6, 4])
-        .map_err(fdt_err)?;
-    fdt.end_node(rtc).map_err(fdt_err)?;
-
-    for (index, addr) in [
-        0x1fe0_01e0u32,
-        0x1fe0_02e0u32,
-        0x1fe0_03e0u32,
-        0x1fe0_04e0u32,
-    ]
-    .into_iter()
-    .enumerate()
-    {
-        let serial = fdt
-            .begin_node(&format!("serial@{addr:x}"))
-            .map_err(fdt_err)?;
-        fdt.property_string("compatible", "ns16550a")
-            .map_err(fdt_err)?;
-        fdt.property_array_u32("reg", &[0, addr, 0, 0x100])
-            .map_err(fdt_err)?;
-        fdt.property_u32("clock-frequency", 100_000_000)
-            .map_err(fdt_err)?;
-        fdt.property_u32("interrupt-parent", 0x8003)
-            .map_err(fdt_err)?;
-        fdt.property_array_u32("interrupts", &[(index as u32) + 2, 4])
-            .map_err(fdt_err)?;
-        fdt.end_node(serial).map_err(fdt_err)?;
-    }
-
-    let flash = fdt.begin_node("flash@1c000000").map_err(fdt_err)?;
-    fdt.property_string("compatible", "cfi-flash")
-        .map_err(fdt_err)?;
-    fdt.property_u32("bank-width", 4).map_err(fdt_err)?;
-    fdt.property_array_u32(
-        "reg",
-        &[
-            0,
-            0x1c00_0000,
-            0,
-            0x0100_0000,
-            0,
-            0x1d00_0000,
-            0,
-            0x0100_0000,
-        ],
-    )
-    .map_err(fdt_err)?;
-    fdt.end_node(flash).map_err(fdt_err)?;
-
-    let fw_cfg = fdt.begin_node("fw_cfg@1e020000").map_err(fdt_err)?;
-    fdt.property_string("compatible", "qemu,fw-cfg-mmio")
-        .map_err(fdt_err)?;
-    fdt.property_array_u32("reg", &[0, 0x1e02_0000, 0, 0x18])
-        .map_err(fdt_err)?;
-    fdt.property_null("dma-coherent").map_err(fdt_err)?;
-    fdt.end_node(fw_cfg).map_err(fdt_err)?;
-
-    fdt.end_node(root).map_err(fdt_err)?;
-    fdt.finish().map_err(fdt_err)
 }
 
 #[cfg(feature = "fs")]
