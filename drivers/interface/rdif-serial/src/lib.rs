@@ -467,6 +467,31 @@ mod tests {
     }
 
     #[test]
+    fn rx_try_read_drains_prefetched_irq_burst_in_one_call() {
+        let (raw, state) = MockSerial::new_shared(0x1000);
+        let mut serial = SerialDyn::new_boxed(raw);
+        let mut rx = serial.take_rx().expect("RX handle should be available");
+        let irq = serial
+            .take_irq_handler()
+            .expect("IRQ handler should be available");
+
+        state.set_rx_bytes(b"abc");
+        state.set_irq_event(SerialEvent::RX_READY);
+        assert!(irq.handle_irq().rx_ready());
+
+        let mut out = [0; 3];
+        let read = rx.try_read(&mut out).expect("RX read should succeed");
+        assert_eq!(
+            read, 3,
+            "a queued IRQ burst should be drained as a burst by one try_read"
+        );
+        assert_eq!(&out, b"abc");
+        assert_eq!(rx.try_read(&mut [0]), Ok(0));
+        assert!(!rx.poll().rx_ready());
+        assert_eq!(state.poll_status_count.load(Ordering::Acquire), 0);
+    }
+
+    #[test]
     fn irq_pending_while_raw_busy_is_drained_by_next_irq_handler_call() {
         let (raw, state) = MockSerial::new_shared(0x1000);
         let mut serial = SerialDyn::new_boxed(raw);

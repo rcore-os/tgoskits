@@ -525,33 +525,45 @@ impl<T: InterfaceRaw> TRxQueue for RxQueue<T> {
     }
 
     fn try_read(&mut self, bytes: &mut [u8]) -> Result<usize, TransBytesError> {
-        let Some(byte) = bytes.first_mut() else {
+        if bytes.is_empty() {
             return Ok(0);
         };
-        let Some(item) = self.rx.core.with_borrow(BORROW_RX, || self.rx.pop_item()) else {
-            return Ok(0);
-        };
-        let Some(result) = item else {
-            return Ok(0);
-        };
+        self.rx
+            .core
+            .with_borrow(BORROW_RX, || {
+                let mut read = 0;
+                let mut first_error = None;
 
-        match result {
-            Ok(b) => {
-                *byte = b;
-                Ok(1)
-            }
-            Err(TransferError::Overrun(b)) => {
-                *byte = b;
-                Err(TransBytesError {
-                    bytes_transferred: 1,
-                    kind: TransferError::Overrun(b),
-                })
-            }
-            Err(kind) => Err(TransBytesError {
-                bytes_transferred: 0,
-                kind,
-            }),
-        }
+                for byte in bytes {
+                    let Some(result) = self.rx.pop_item() else {
+                        break;
+                    };
+                    match result {
+                        Ok(b) => {
+                            *byte = b;
+                            read += 1;
+                        }
+                        Err(TransferError::Overrun(b)) => {
+                            *byte = b;
+                            read += 1;
+                            first_error.get_or_insert(TransferError::Overrun(b));
+                        }
+                        Err(kind) => {
+                            first_error.get_or_insert(kind);
+                        }
+                    }
+                }
+
+                if let Some(kind) = first_error {
+                    Err(TransBytesError {
+                        bytes_transferred: read,
+                        kind,
+                    })
+                } else {
+                    Ok(read)
+                }
+            })
+            .unwrap_or(Ok(0))
     }
 }
 

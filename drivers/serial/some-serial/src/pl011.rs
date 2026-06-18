@@ -441,6 +441,11 @@ impl Pl011 {
         {
             event |= SerialEvent::TX_READY;
         }
+        if self.get_irq_mask().contains(InterruptMask::RX_AVAILABLE)
+            && !self.registers().uartfr.is_set(UARTFR::RXFE)
+        {
+            event |= SerialEvent::RX_READY;
+        }
 
         self.registers().uarticr.set(mis.get());
         event
@@ -781,6 +786,20 @@ mod tests {
         assert!(imsc.is_set(UARTIS::BE));
         assert!(imsc.is_set(UARTIS::OE));
         assert_eq!(uart.get_irq_mask(), InterruptMask::RX_AVAILABLE);
+    }
+
+    #[test]
+    fn irq_resyncs_rx_ready_when_rx_interrupt_is_enabled() {
+        let (mut regs, mut uart) = pl011_with_registers();
+
+        uart.set_irq_mask(InterruptMask::RX_AVAILABLE);
+        write_test_reg(&mut regs, 0x040, 0);
+        write_test_reg(&mut regs, 0x018, 0);
+
+        assert!(
+            uart.handle_irq().rx_ready(),
+            "PL011 IRQ handling should keep draining a non-empty RX FIFO even after MIS is clear"
+        );
     }
 
     #[test]
