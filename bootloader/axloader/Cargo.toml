@@ -1,0 +1,23 @@
+[package]
+authors.workspace = true
+edition.workspace = true
+license.workspace = true
+name = "axloader"
+publish = false
+repository.workspace = true
+version = "0.1.0"
+
+[[bin]]
+name = "axloader"
+path = "src/main.rs"
+
+[dependencies]
+httpboot-protocol = { workspace = true }
+
+[target.'cfg(any(windows, unix))'.dependencies]
+anyhow = { workspace = true }
+object = "0.38"
+
+[target.'cfg(target_os = "uefi")'.dependencies]
+uefi = { workspace = true, features = ["alloc", "global_allocator"] }
+uefi-raw = "0.14.0"
