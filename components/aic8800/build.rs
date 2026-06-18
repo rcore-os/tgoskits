@@ -142,6 +142,14 @@ fn read_if_matches(path: &Path, expected_sha256: &str) -> Option<Vec<u8>> {
 
 /// Download a blob from the pinned upstream commit and verify its digest.
 fn download(file: &FirmwareFile) -> Vec<u8> {
+    assert!(
+        !file.remote_path.is_empty(),
+        "firmware {} has no upstream mirror (remote_path is empty) and was not found in the \
+         in-tree firmware dir or $AIC8800_FIRMWARE_DIR. This blob is vendored in \
+         components/aic8800/firmware/ — ensure it is checked out (it is allow-listed in that \
+         dir's .gitignore).",
+        file.name
+    );
     let url = format!(
         "https://raw.githubusercontent.com/{}/{}/{}",
         FIRMWARE_REPO, FIRMWARE_COMMIT, file.remote_path

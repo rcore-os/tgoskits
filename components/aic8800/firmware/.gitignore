@@ -1,5 +1,17 @@
 # AIC8800 firmware blobs are fetched on demand by the xtask build tooling
 # (see scripts/axbuild/src/firmware.rs) and integrity-checked against pinned
-# SHA-256 digests. They are intentionally not vendored into version control.
+# SHA-256 digests. Files available on the pinned upstream mirror are NOT
+# vendored into version control.
 *.bin
 *.ini
+
+# Exception: AIC8800DC-H firmware + RF config blobs have NO upstream mirror
+# (remote_path "" in build.rs — extracted from the vendor BSP/rootfs). They
+# must be vendored so the build (and CI clippy) can include_bytes! them.
+!fmacfw_patch_8800dc_h_u02.bin
+!fmacfw_patch_tbl_8800dc_h_u02.bin
+!fmacfw_calib_8800dc_h_u02.bin
+!dc_ldpc_cfg_ram.bin
+!dc_agc_cfg_ram.bin
+!dc_txgain_map.bin
+!dc_txgain_map_h.bin
