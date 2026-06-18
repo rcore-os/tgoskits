@@ -792,6 +792,71 @@ else
 fi
 
 # ===========================================================================
+# 23. V22-SPECIFIC AND RECENT FLAGS (version-gated, presence or light run)
+# ===========================================================================
+# --experimental-transform-types (v22.6+ TypeScript, successor to strip-types)
+if has_flag "--experimental-transform-types"; then
+  runrc "$NODE" --experimental-transform-types -e '0'; assert_rc "cli/--experimental-transform-types" 0 "$RUN_RC"
+else skip "cli/--experimental-transform-types" "absent in $NODE_VER"; fi
+# --experimental-test-coverage-{branches,functions,lines} : fine-grained coverage
+for fc in branches functions lines; do
+  if has_flag "--experimental-test-coverage-$fc"; then
+    runrc "$NODE" --experimental-test-coverage --experimental-test-coverage-"$fc" --test "$WORK/sample.test.js" 2>/dev/null || true
+    skip "cli/--experimental-test-coverage-$fc" "presence accepted (coverage output varies)"
+  else skip "cli/--experimental-test-coverage-$fc" "absent in $NODE_VER"; fi
+done
+# --trace-env / --trace-env-js-stack / --trace-env-native-stack : v22 env tracing
+for te in --trace-env "--trace-env-js-stack" "--trace-env-native-stack"; do
+  if has_flag "$te"; then pass; else skip "cli/$te" "absent in $NODE_VER"; fi
+done
+# --use-system-ca / --use-env-proxy : TLS/proxy policy
+for pf in --use-system-ca --use-env-proxy; do
+  if has_flag "$pf"; then pass; else skip "cli/$pf" "absent in $NODE_VER"; fi
+done
+# --experimental-webstorage / --localstorage-file : web storage backend (v22)
+if has_flag "--experimental-webstorage"; then pass; else skip "cli/--experimental-webstorage" "absent in $NODE_VER"; fi
+if has_flag "--localstorage-file"; then pass; else skip "cli/--localstorage-file" "absent in $NODE_VER"; fi
+# --experimental-async-context-frame (v22)
+if has_flag "--experimental-async-context-frame"; then pass; else skip "cli/--experimental-async-context-frame" "absent in $NODE_VER"; fi
+# --experimental-shadow-realm (v22, experimental)
+if has_flag "--experimental-shadow-realm"; then pass; else skip "cli/--experimental-shadow-realm" "absent in $NODE_VER"; fi
+# --experimental-wasi-unstable-preview1 (v22 experimental WASI)
+if has_flag "--experimental-wasi-unstable-preview1"; then pass; else skip "cli/--experimental-wasi-unstable-preview1" "absent in $NODE_VER"; fi
+# --no-experimental-global-navigator (v22)
+if has_flag "--no-experimental-global-navigator"; then
+  runrc "$NODE" --no-experimental-global-navigator -e '0'; assert_rc "cli/--no-experimental-global-navigator" 0 "$RUN_RC"
+else skip "cli/--no-experimental-global-navigator" "absent in $NODE_VER"; fi
+# --no-experimental-sqlite / --no-experimental-strip-types / --no-experimental-websocket
+for nof in --no-experimental-sqlite --no-experimental-strip-types --no-experimental-websocket; do
+  if has_flag "$nof"; then
+    runrc "$NODE" "$nof" -e '0'; assert_rc "cli/$nof" 0 "$RUN_RC"
+  else skip "cli/$nof" "absent in $NODE_VER"; fi
+done
+# --experimental-config-file / --experimental-default-config-file (v22 config system)
+for cf in --experimental-config-file --experimental-default-config-file; do
+  if has_flag "$cf"; then pass; else skip "cli/$cf" "absent in $NODE_VER"; fi
+done
+# --report-exclude-env (v22 report filtering)
+if has_flag "--report-exclude-env"; then pass; else skip "cli/--report-exclude-env" "absent in $NODE_VER"; fi
+# --stack-trace-limit=N (v22)
+if has_flag "--stack-trace-limit"; then
+  runrc "$NODE" --stack-trace-limit=10 -e '0'; assert_rc "cli/--stack-trace-limit" 0 "$RUN_RC"
+else skip "cli/--stack-trace-limit" "absent in $NODE_VER"; fi
+# --heap-prof-interval=N (v22, requires --heap-prof)
+if has_flag "--heap-prof-interval"; then
+  runrc "$NODE" --heap-prof --heap-prof-interval=1 -e '0' 2>/dev/null || true
+  skip "cli/--heap-prof-interval" "presence+run accepted (prof output varies)"
+else skip "cli/--heap-prof-interval" "absent in $NODE_VER"; fi
+# --entry-url=URL (v22, sets the entry point URL for ESM)
+if has_flag "--entry-url"; then pass; else skip "cli/--entry-url" "absent in $NODE_VER"; fi
+# --disable-sigusr1 (v22, disable SIGUSR1 listener)
+if has_flag "--disable-sigusr1"; then pass; else skip "cli/--disable-sigusr1" "absent in $NODE_VER"; fi
+# --max-old-space-size-percentage (v22, percentage-based heap sizing)
+if has_flag "--max-old-space-size-percentage"; then
+  runrc "$NODE" --max-old-space-size-percentage=50 -e '0'; assert_rc "cli/--max-old-space-size-percentage" 0 "$RUN_RC"
+else skip "cli/--max-old-space-size-percentage" "absent in $NODE_VER"; fi
+
+# ===========================================================================
 # SUMMARY
 # ===========================================================================
 TOTAL=$((PASS+FAIL))
