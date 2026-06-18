@@ -1,6 +1,5 @@
 #!/bin/sh
 set -eu
-set -eu
 
 BASE=/tmp/apache-phase40
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname "$0")" && pwd)
