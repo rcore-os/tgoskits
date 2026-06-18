@@ -4,7 +4,7 @@ use core::{sync::atomic::Ordering, task::Poll};
 use log;
 
 use crate::{
-    common::{SDIO_TYPE_DATA, crc8_ponl_107},
+    common::crc8_ponl_107,
     fdrv::{
         consts::{
             DATA_FLOW_CTRL_THRESH, MAX_TX_QUEUE_LEN, SDIOWIFI_FUNC_BLOCKSIZE, TAIL_LEN,
@@ -83,7 +83,7 @@ fn process_cmd_tx(bus: &WifiBus) -> bool {
         return false;
     }
 
-    log::warn!("[wifi-tx] process_cmd_tx: found pending CMD");
+    log::trace!("[wifi-tx] process_cmd_tx: found pending CMD");
 
     let cmd_buf = bus.cmd.pending.lock().take();
     let Some(mut cmd) = cmd_buf else {
@@ -92,7 +92,7 @@ fn process_cmd_tx(bus: &WifiBus) -> bool {
 
     bus.cmd.pending_flag.store(false, Ordering::Release);
 
-    log::warn!(
+    log::trace!(
         "[wifi-tx] CMD frame header: [{:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} \
          {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x}]",
         cmd.first().unwrap_or(&0),
@@ -121,7 +121,7 @@ fn process_cmd_tx(bus: &WifiBus) -> bool {
     let (fc_ok, did_work) = perform_cmd_flow_control_and_send(transport, &cmd, send_len);
 
     if fc_ok && did_work {
-        log::debug!("[wifi-tx] process_cmd_tx: CMD sent OK, len={}", send_len);
+        log::info!("[wifi-tx] process_cmd_tx: CMD sent OK, len={}", send_len);
         bus.rx.irq_waker.wake();
         transport.unmask_card_irq();
     } else if !fc_ok {
@@ -150,7 +150,7 @@ fn perform_cmd_flow_control_and_send(
     let fc_ok = transport.wait_flow_ctrl_for_size(send_len, 10);
 
     let did_work = if fc_ok {
-        match transport.write_fifo(1, transport.wr_fifo_addr(), cmd) {
+        match transport.write_fifo(transport.cmd_func(), transport.wr_fifo_addr(), cmd) {
             Ok(()) => true,
             Err(e) => {
                 log::error!("[wifi-tx] CMD write_fifo failed: {:?}", e);
@@ -173,7 +173,7 @@ fn process_data_tx(bus: &WifiBus) -> bool {
 
     // 未连接则清空队列
     if vif_idx == 0xFF {
-        log::warn!("[wifi-tx] process_data_tx: vif=0xFF, draining queue");
+        log::trace!("[wifi-tx] process_data_tx: vif=0xFF, draining queue");
         while let Some(_) = bus.tx.queue.lock().pop_front() {
             bus.tx.pktcnt.fetch_sub(1, Ordering::AcqRel);
         }
@@ -251,13 +251,16 @@ fn send_single_data_frame(
             Ok(b) => b,
             Err(_) => return false,
         };
-        if let Err(e) = transport.write_fifo(1, transport.wr_fifo_addr(), &buf) {
+        if let Err(e) =
+            transport.write_fifo(transport.data_func(), transport.wr_fifo_addr(), &buf)
+        {
             log::error!("[wifi-tx] MGMT write_fifo failed: {:?}", e);
             return false;
         }
         log::info!(
-            "[wifi-tx] MGMT frame sent ({} bytes 802.11)",
-            frame.data.len()
+            "[wifi-tx] MGMT frame sent OK ({} bytes 802.11, vif={})",
+            frame.data.len(),
+            vif_idx
         );
         return true;
     }
@@ -277,7 +280,7 @@ fn send_single_data_frame(
         Err(_) => return false,
     };
 
-    log::warn!(
+    log::trace!(
         "[wifi-tx] DATA TX: dst={:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x} etype=0x{:04x} len={}",
         eth_frame[0],
         eth_frame[1],
@@ -289,7 +292,7 @@ fn send_single_data_frame(
         eth_frame.len()
     );
 
-    if let Err(e) = transport.write_fifo(1, transport.wr_fifo_addr(), &buf) {
+    if let Err(e) = transport.write_fifo(transport.data_func(), transport.wr_fifo_addr(), &buf) {
         log::error!("[wifi-tx] DATA write_fifo failed: {:?}", e);
         return false;
     }
@@ -339,7 +342,9 @@ fn build_data_frame(
     // 填充 SDIO header
     buf[0] = (sdio_hdr_len & 0xFF) as u8;
     buf[1] = ((sdio_hdr_len >> 8) & 0x0F) as u8;
-    buf[2] = SDIO_TYPE_DATA;
+    // TX 数据路径 byte[2] 恒为 0x01(vendor aicwf_sdio.c TX 永远写 0x01;
+    // SDIO_TYPE_DATA=0x00 只是 RX 侧分类值)。写 0x00 会被固件 ingress 误判丢弃。
+    buf[2] = 0x01;
     buf[3] = if is_v3 {
         crc8_ponl_107(&buf[0..3])
     } else {
@@ -432,7 +437,8 @@ fn build_mgmt_frame(
     // SDIO header
     buf[0] = (sdio_hdr_len & 0xFF) as u8;
     buf[1] = ((sdio_hdr_len >> 8) & 0x0F) as u8;
-    buf[2] = SDIO_TYPE_DATA;
+    // 同数据路径:TX byte[2] 恒为 0x01,写 0x00 会被固件丢弃。
+    buf[2] = 0x01;
     buf[3] = if is_v3 {
         crc8_ponl_107(&buf[0..3])
     } else {
@@ -444,11 +450,13 @@ fn build_mgmt_frame(
         let hd = &mut buf[SDIO_HEADER_LEN..SDIO_HEADER_LEN + HOSTDESC_SIZE];
         hd[0..2].copy_from_slice(&(payload_len as u16).to_le_bytes());
         // flags_ext [2..4] = 0
-        // hostid [4..8]: bit31 请求 TX CFM
-        hd[4..8].copy_from_slice(&0x8000_0001u32.to_le_bytes());
+        // hostid [4..8]: Auth(FC=0xb0) 不在需要 CFM 的列表,vendor 填 0
+        hd[4..8].copy_from_slice(&0u32.to_le_bytes());
         // eth_dest/eth_src/ethertype 对管理帧无意义，置 0
         hd[20..22].copy_from_slice(&0u16.to_le_bytes()); // ethertype = 0
-        hd[22] = 0; // ac
+        // ac = 3 (RWNX_HWQ_VO):vendor 把 host 注入的管理帧路由到 VO 硬件队列。
+        // ac=0 会落到 BK 队列,AP 注入的管理帧不会被发出。
+        hd[22] = 3; // ac = VO
         hd[23] = 0xFF; // tid = 0xFF (非 QoS)
         hd[24] = vif_idx;
         hd[25] = 0xFF; // staid = 0xFF (未关联 STA)
@@ -473,7 +481,7 @@ fn tx_process(bus: &WifiBus) -> bool {
     let pending_cmd = bus.cmd.pending_flag.load(Ordering::Acquire);
     let pending_data = bus.tx.pktcnt.load(Ordering::Acquire);
     if pending_cmd || pending_data > 0 {
-        log::warn!(
+        log::trace!(
             "[wifi-tx] tx_process: pending_cmd={} pending_data={}",
             pending_cmd,
             pending_data
@@ -531,7 +539,7 @@ pub fn enqueue_mgmt_frame(bus: &WifiBus, mgmt_frame: Vec<u8>) -> Result<(), TxEr
     drop(queue);
 
     let cnt = bus.tx.pktcnt.fetch_add(1, Ordering::AcqRel) + 1;
-    log::warn!("[wifi-tx] enqueue: pktcnt={}", cnt);
+    log::trace!("[wifi-tx] enqueue: pktcnt={}", cnt);
     bus.tx.wake_pollset.wake();
     Ok(())
 }

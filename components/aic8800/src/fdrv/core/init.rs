@@ -11,11 +11,12 @@ use sdio_host::SdioHost;
 use crate::{
     common::{
         ChipVariant, SDIO_TYPE_CFG_CMD_RSP, SDIOWIFI_BLOCK_CNT_REG,
-        SDIOWIFI_BYTEMODE_ENABLE_REG_V3, SDIOWIFI_FLOW_CTRL_Q1_REG_V3, SDIOWIFI_FLOW_CTRL_REG,
-        SDIOWIFI_FLOWCTRL_MASK, SDIOWIFI_INTR_CONFIG_REG, SDIOWIFI_INTR_ENABLE_REG_V3,
-        SDIOWIFI_MISC_INT_STATUS_REG_V3, SDIOWIFI_RD_FIFO_ADDR, SDIOWIFI_RD_FIFO_ADDR_V3,
-        SDIOWIFI_SLEEP_REG_V3, SDIOWIFI_V3_SLEEP_READY_BIT, SDIOWIFI_V3_WAKEUP_VALUE,
-        SDIOWIFI_WAKEUP_REG_V3, SDIOWIFI_WR_FIFO_ADDR, SDIOWIFI_WR_FIFO_ADDR_V3,
+        SDIOWIFI_BYTEMODE_ENABLE_REG, SDIOWIFI_BYTEMODE_ENABLE_REG_V3, SDIOWIFI_FLOW_CTRL_Q1_REG_V3,
+        SDIOWIFI_FLOW_CTRL_REG, SDIOWIFI_FLOWCTRL_MASK, SDIOWIFI_INTR_CONFIG_REG,
+        SDIOWIFI_INTR_ENABLE_REG_V3, SDIOWIFI_MISC_INT_STATUS_REG_V3, SDIOWIFI_RD_FIFO_ADDR,
+        SDIOWIFI_RD_FIFO_ADDR_V3, SDIOWIFI_REGISTER_BLOCK, SDIOWIFI_SLEEP_REG_V3,
+        SDIOWIFI_V3_SLEEP_READY_BIT, SDIOWIFI_V3_WAKEUP_VALUE, SDIOWIFI_WAKEUP_REG_V3,
+        SDIOWIFI_WR_FIFO_ADDR, SDIOWIFI_WR_FIFO_ADDR_V3,
     },
     fdrv::{
         consts::*,
@@ -70,6 +71,16 @@ fn intr_config_reg(is_v3: bool) -> u32 {
     }
 }
 
+/// DC/DW 的命令邮箱在 SDIO function 2(与 bootrom 阶段一致, 真机实测 CFM 的
+/// block_cnt 在 func2 递增, func1 恒 0)。其余芯片走 func1。
+fn cmd_func(chip: ChipVariant) -> u8 {
+    if matches!(chip, ChipVariant::Aic8800DC | ChipVariant::Aic8800DW) {
+        2
+    } else {
+        1
+    }
+}
+
 // ===== polling_send_cmd 辅助函数 =====
 
 /// 计算轮询命令帧的长度和对齐
@@ -120,13 +131,23 @@ fn build_polling_cmd_frame(msg_id: u16, dest_id: u16, param: &[u8], is_v3: bool)
 }
 
 /// 轮询模式流控检查（初始化阶段直接操作 sdio）
-fn check_flow_control_polling<H: SdioHost>(sdio: &H, is_v3: bool) -> Result<(), &'static str> {
+///
+/// DC/DW(func==2): bootrom 已验证 DC 命令路径不轮询流控寄存器, 直接跳过。
+fn check_flow_control_polling<H: SdioHost>(
+    sdio: &H,
+    is_v3: bool,
+    func: u8,
+) -> Result<(), &'static str> {
+    if func == 2 {
+        log::info!("[fdrv] DC: skip flow_ctrl check (cmd on func2)");
+        return Ok(());
+    }
     for retry in 0..FLOW_CONTROL_MAX_RETRY {
         match sdio.read_byte(1, flow_ctrl_reg(is_v3)) {
             Ok(fc) => {
                 let fc_val = fc & SDIOWIFI_FLOWCTRL_MASK;
                 if fc_val != 0 {
-                    log::debug!(
+                    log::info!(
                         "[fdrv] flow_ctrl OK, reg=0x{:02x}, val={} (raw=0x{:02x})",
                         flow_ctrl_reg(is_v3),
                         fc_val,
@@ -149,20 +170,26 @@ fn check_flow_control_polling<H: SdioHost>(sdio: &H, is_v3: bool) -> Result<(), 
 fn poll_for_response<H: SdioHost>(
     sdio: &H,
     is_v3: bool,
+    func: u8,
     expected_cfm: u16,
     cfm_buf: &mut [u8],
 ) -> Result<usize, &'static str> {
     for retry in 0..RESPONSE_MAX_RETRY {
         let raw = sdio
-            .read_byte(1, block_cnt_reg(is_v3))
+            .read_byte(func, block_cnt_reg(is_v3))
             .map_err(|_| "read block_cnt error")?;
 
-        if retry > 0 && retry % 1000 == 0 {
-            log::debug!(
-                "[fdrv] poll retry {}: reg=0x{:02x}, raw=0x{:02x}",
-                retry,
-                block_cnt_reg(is_v3),
-                raw
+        // DIAG: 每 500 次扫一遍关键寄存器, 定位 CFM 到底回没回/回在哪个 func
+        if retry % 500 == 0 {
+            let f1_bc = sdio.read_byte(1, SDIOWIFI_BLOCK_CNT_REG).unwrap_or(0xEE);
+            let f2_bc = sdio.read_byte(2, SDIOWIFI_BLOCK_CNT_REG).unwrap_or(0xEE);
+            let f1_fc = sdio.read_byte(1, SDIOWIFI_FLOW_CTRL_REG).unwrap_or(0xEE);
+            let f0_ip = sdio.read_byte(0, 0x05).unwrap_or(0xEE);
+            let irqc = IRQ_COUNT.load(Ordering::Relaxed);
+            log::info!(
+                "[DIAG] retry={} f1_bc=0x{:02x} f2_bc=0x{:02x} f1_fc(0x0a)=0x{:02x} \
+                 f0_intpend(0x05)=0x{:02x} irq#38={}",
+                retry, f1_bc, f2_bc, f1_fc, f0_ip, irqc
             );
         }
 
@@ -180,7 +207,7 @@ fn poll_for_response<H: SdioHost>(
             continue;
         }
 
-        match read_and_parse_response(sdio, is_v3, block_cnt, expected_cfm, cfm_buf) {
+        match read_and_parse_response(sdio, is_v3, func, block_cnt, expected_cfm, cfm_buf) {
             Ok(len) => return Ok(len),
             Err(e) => {
                 log::warn!("[polling] {}", e);
@@ -196,6 +223,7 @@ fn poll_for_response<H: SdioHost>(
 fn read_and_parse_response<H: SdioHost>(
     sdio: &H,
     is_v3: bool,
+    func: u8,
     block_cnt: u8,
     expected_cfm: u16,
     cfm_buf: &mut [u8],
@@ -203,7 +231,7 @@ fn read_and_parse_response<H: SdioHost>(
     let read_len = (block_cnt as usize) * SDIOWIFI_FUNC_BLOCKSIZE;
     let mut rx_buf: Vec<u8> = vec![0u8; read_len];
 
-    if sdio.read_fifo(1, rd_fifo_reg(is_v3), &mut rx_buf).is_err() {
+    if sdio.read_fifo(func, rd_fifo_reg(is_v3), &mut rx_buf).is_err() {
         crate::runtime::runtime().sleep_ms(2);
         return Err("CRC error, retrying");
     }
@@ -237,6 +265,7 @@ fn read_and_parse_response<H: SdioHost>(
 pub fn polling_send_cmd<H: SdioHost>(
     sdio: &H,
     is_v3: bool,
+    func: u8,
     msg_id: u16,
     dest_id: u16,
     param: &[u8],
@@ -244,18 +273,23 @@ pub fn polling_send_cmd<H: SdioHost>(
     cfm_buf: &mut [u8],
 ) -> Result<usize, &'static str> {
     let buf = build_polling_cmd_frame(msg_id, dest_id, param, is_v3);
-    check_flow_control_polling(sdio, is_v3)?;
-    log::debug!(
-        "[fdrv] sending cmd 0x{:04x} via fifo reg 0x{:02x}, len={}",
+    check_flow_control_polling(sdio, is_v3, func)?;
+    log::info!(
+        "[fdrv] sending cmd 0x{:04x} via func{} fifo reg 0x{:02x}, len={}",
         msg_id,
+        func,
         wr_fifo_reg(is_v3),
         buf.len()
     );
 
-    let pre_reg = sdio.read_byte(1, block_cnt_reg(is_v3)).unwrap_or(0xFF);
-    log::debug!("[fdrv] pre-send block_cnt_reg=0x{:02x}", pre_reg);
+    let pre_f1 = sdio.read_byte(1, SDIOWIFI_BLOCK_CNT_REG).unwrap_or(0xEE);
+    let pre_f2 = sdio.read_byte(2, SDIOWIFI_BLOCK_CNT_REG).unwrap_or(0xEE);
+    log::info!(
+        "[fdrv] pre-send block_cnt f1=0x{:02x} f2=0x{:02x}",
+        pre_f1, pre_f2
+    );
 
-    sdio.write_fifo(1, wr_fifo_reg(is_v3), &buf)
+    sdio.write_fifo(func, wr_fifo_reg(is_v3), &buf)
         .map_err(|_| "write_fifo error")?;
 
     if !wait_cfm {
@@ -263,7 +297,7 @@ pub fn polling_send_cmd<H: SdioHost>(
     }
 
     let expected_cfm = msg_id + 1;
-    poll_for_response(sdio, is_v3, expected_cfm, cfm_buf)
+    poll_for_response(sdio, is_v3, func, expected_cfm, cfm_buf)
 }
 
 /// 排空残留数据
@@ -313,9 +347,9 @@ fn wait_for_firmware_stabilization() {
 }
 
 /// 排空初始化前的残留数据
-fn drain_initial_stale_data<H: SdioHost>(sdio: &H, is_v3: bool) {
+fn drain_initial_stale_data<H: SdioHost>(sdio: &H, is_v3: bool, func: u8) {
     for i in 0..5u32 {
-        match sdio.read_byte(1, block_cnt_reg(is_v3)) {
+        match sdio.read_byte(func, block_cnt_reg(is_v3)) {
             Ok(raw) => {
                 let cnt = raw & BLOCK_COUNT_MASK;
                 if cnt == 0 {
@@ -324,7 +358,7 @@ fn drain_initial_stale_data<H: SdioHost>(sdio: &H, is_v3: bool) {
                 }
                 let len = (cnt as usize) * SDIOWIFI_FUNC_BLOCKSIZE;
                 let mut discard: Vec<u8> = vec![0u8; len];
-                let _ = sdio.read_fifo(1, rd_fifo_reg(is_v3), &mut discard);
+                let _ = sdio.read_fifo(func, rd_fifo_reg(is_v3), &mut discard);
                 log::debug!("[fdrv] drain: discarded {} bytes (block_cnt={})", len, cnt);
             }
             Err(e) => {
@@ -354,10 +388,12 @@ fn send_stack_start_command<H: SdioHost>(
     };
     let param: [u8; 4] = [0x01, 0x00, set_vendor_info, 0x00];
 
+    let func = cmd_func(chip);
     let mut cfm = [0u8; 2];
     match polling_send_cmd(
         sdio,
         is_v3,
+        func,
         MM_SET_STACK_START_REQ,
         TASK_MM,
         &param,
@@ -393,11 +429,11 @@ fn send_lmac_init_commands<H: SdioHost>(
 }
 
 /// 排空 LMAC 初始化后的残留数据
-fn drain_post_init_data<H: SdioHost>(sdio: &H, is_v3: bool) {
+fn drain_post_init_data<H: SdioHost>(sdio: &H, is_v3: bool, func: u8) {
     crate::runtime::runtime().sleep_ms(50);
 
     for _ in 0..10u32 {
-        match sdio.read_byte(1, block_cnt_reg(is_v3)) {
+        match sdio.read_byte(func, block_cnt_reg(is_v3)) {
             Ok(raw) => {
                 let cnt = raw & BLOCK_COUNT_MASK;
                 if cnt == 0 {
@@ -405,7 +441,7 @@ fn drain_post_init_data<H: SdioHost>(sdio: &H, is_v3: bool) {
                 }
                 let len = (cnt as usize) * SDIOWIFI_FUNC_BLOCKSIZE;
                 let mut discard: Vec<u8> = vec![0u8; len];
-                let _ = sdio.read_fifo(1, rd_fifo_reg(is_v3), &mut discard);
+                let _ = sdio.read_fifo(func, rd_fifo_reg(is_v3), &mut discard);
                 log::debug!("[fdrv] post-init drain: discarded {} bytes", len);
             }
             Err(_) => break,
@@ -460,7 +496,9 @@ fn start_driver_threads(bus: &alloc::sync::Arc<WifiBus>) {
 ///
 /// 参考 radxa FDRV probe 后的 aicwf_sdiov3_func_init:
 /// V3: func0 0xF2=0x7F, 禁用 byte mode, wakeup=0x11, 检查 sleep_reg
-fn reinit_sdio_func<H: SdioHost>(sdio: &mut H, is_v3: bool) -> Result<(), &'static str> {
+fn reinit_sdio_func<H: SdioHost>(sdio: &mut H, chip: ChipVariant) -> Result<(), &'static str> {
+    let is_v3 = chip.is_v3();
+    let is_dc = matches!(chip, ChipVariant::Aic8800DC | ChipVariant::Aic8800DW);
     if is_v3 {
         sdio.write_byte(0, 0xF2, 0x7F)
             .map_err(|_| "func0 0xF2 write failed")?;
@@ -486,6 +524,34 @@ fn reinit_sdio_func<H: SdioHost>(sdio: &mut H, is_v3: bool) -> Result<(), &'stat
         sdio.write_byte(0, 0x04, 0x07)
             .map_err(|_| "func0 0x04 write failed")?;
         log::debug!("[fdrv] V3 FN0 reg 0x04 = 0x07 (interrupt enable)");
+    } else if is_dc {
+        // AIC8800DC/DW: 固件启动后, fdrv 阶段必须重做 SDIO func 初始化
+        // (对齐 vendor aicwf_sdio_func_init)。固件 start 会重置 SDIO 状态机,
+        // bootrom 阶段写的 block-mode 失效, 不重写则固件不按 block 模式回包,
+        // block_cnt(0x12) 不递增 → 命令轮询永远超时。
+        // 命令走 func1, 但 func2 也必须 enable + 设块大小 + 写 block/byte 模式。
+        sdio.enable_func(2).map_err(|_| "func2 enable failed")?;
+        sdio.set_block_size(2, SDIOWIFI_FUNC_BLOCKSIZE as u16)
+            .map_err(|_| "func2 block size failed")?;
+        sdio.write_byte(2, SDIOWIFI_REGISTER_BLOCK, 0x01)
+            .map_err(|_| "func2 0x0B write failed")?;
+        sdio.write_byte(2, SDIOWIFI_BYTEMODE_ENABLE_REG, 0x01)
+            .map_err(|_| "func2 0x11 write failed")?;
+        // func1: 块模式使能 + 禁字节模式
+        sdio.write_byte(1, SDIOWIFI_REGISTER_BLOCK, 0x01)
+            .map_err(|_| "func1 0x0B write failed")?;
+        sdio.write_byte(1, SDIOWIFI_BYTEMODE_ENABLE_REG, 0x01)
+            .map_err(|_| "func1 0x11 write failed")?;
+        crate::runtime::runtime().sleep_ms(10);
+        // 关键: 武装 func1 RX 中断路径 (对齐 vendor aicwf_sdio_bus_start)。
+        // DC 固件的命令 CFM 经 SDIO 中断路径回包: 不写 INTR_CONFIG(0x04)=0x07,
+        // 芯片永不驱动 RX, block_cnt(0x12) 恒 0 → 轮询永远超时。
+        // 必须在发第一笔 MM 命令之前写, 否则第一笔命令拿不到响应。
+        sdio.write_byte(1, intr_config_reg(is_v3), 0x07)
+            .map_err(|_| "func1 0x04 intr_config write failed")?;
+        log::info!(
+            "[fdrv] DC SDIO func re-init done (func1+func2 block mode, func1 intr armed)"
+        );
     }
     Ok(())
 }
@@ -495,21 +561,22 @@ pub fn init<H: SdioHost + 'static>(
     chip: ChipVariant,
 ) -> Result<alloc::sync::Arc<WifiBus>, &'static str> {
     let is_v3 = chip.is_v3();
+    let func = cmd_func(chip);
 
     // ---- Step 0: 等待固件 SDIO 接口稳定 ----
     wait_for_firmware_stabilization();
 
     // ---- Step 0.5: 固件启动后重新初始化 SDIO 功能寄存器 ----
-    reinit_sdio_func(&mut sdio, is_v3)?;
+    reinit_sdio_func(&mut sdio, chip)?;
 
     // ---- Step 1: 排空残留数据 ----
-    drain_initial_stale_data(&sdio, is_v3);
+    drain_initial_stale_data(&sdio, is_v3, func);
 
     // ---- Step 2: 轮询模式发送 MM_SET_STACK_START_REQ ----
     send_lmac_init_commands(&sdio, is_v3, chip)?;
 
     // ---- Step 3: 排空 LMAC 初始化产生的残留数据 ----
-    drain_post_init_data(&sdio, is_v3);
+    drain_post_init_data(&sdio, is_v3, func);
 
     // ---- Step 4: 创建 SdioTransport + WifiBus ----
     let transport = SdioTransport::new(sdio, chip);

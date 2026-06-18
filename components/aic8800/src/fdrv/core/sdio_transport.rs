@@ -27,21 +27,44 @@ pub struct SdioTransport {
     sdio: Arc<Mutex<dyn SdioHost>>,
     card_irq: Option<Arc<dyn SdioCardIrq>>,
     is_v3: bool,
+    /// 命令/数据邮箱所在的 SDIO function。DC/DW = 2(真机实测 CFM 在 func2),
+    /// 其余 = 1。RX 线程读 block_cnt/RD_FIFO、TX 线程写 WR_FIFO 都用它。
+    cmd_func: u8,
 }
 
 impl SdioTransport {
     /// 从任意 SdioHost 实现创建 SdioTransport
     pub fn new<H: SdioHost + 'static>(sdio: H, chip: ChipVariant) -> Arc<Self> {
         let card_irq = sdio.card_irq_ctrl();
+        let cmd_func = if matches!(chip, ChipVariant::Aic8800DC | ChipVariant::Aic8800DW) {
+            2
+        } else {
+            1
+        };
         Arc::new(Self {
             sdio: Arc::new(Mutex::new(sdio)),
             card_irq,
             is_v3: chip.is_v3(),
+            cmd_func,
         })
     }
 
     pub fn is_v3(&self) -> bool {
         self.is_v3
+    }
+
+    /// 命令/数据邮箱所在的 SDIO function(DC/DW=2, 其余=1)
+    pub fn cmd_func(&self) -> u8 {
+        self.cmd_func
+    }
+
+    /// 数据/管理帧平面所在的 SDIO function。
+    ///
+    /// DC/DW 的 SDIO 是双管道:func2 是命令邮箱(命令 TX→CFM RX),
+    /// func1 是数据平面(数据/管理帧 TX/RX + 流控,真机实测数据帧 RX 在 func1)。
+    /// 命令走 cmd_func()=2,数据/管理帧走本方法=1。非 DC 芯片两者都是 func1。
+    pub fn data_func(&self) -> u8 {
+        1
     }
 
     pub fn block_cnt_reg(&self) -> u32 {

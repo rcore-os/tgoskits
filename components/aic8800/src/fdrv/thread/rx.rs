@@ -19,6 +19,13 @@ use crate::{
 
 pub static RX_WAKE_COUNT: AtomicU64 = AtomicU64::new(0);
 
+/// DIAG: kicker 唤醒次数、RX 轮询次数、最近一次 func2 block_cnt、非零读次数。
+/// 用于一次烧卡确诊:kicker 是否真在跑 + func2 到底有没有数据。
+static RX_KICK_COUNT: AtomicU64 = AtomicU64::new(0);
+static RX_POLL_COUNT: AtomicU64 = AtomicU64::new(0);
+static RX_LAST_BLOCKCNT: AtomicU64 = AtomicU64::new(0xFFFF);
+static RX_NONZERO_READS: AtomicU64 = AtomicU64::new(0);
+
 /// 上层(StarryOS)注册的"收到数据帧"回调,存为 `fn()` 裸指针。
 ///
 /// AIC8800 是 SDIO WiFi,RX 走自己的线程并独占 SDIO CARD_INT (IRQ#38),
@@ -56,6 +63,7 @@ fn align_up(val: usize, align: usize) -> usize {
 /// 启动 wifi-rx 线程
 pub fn start(bus: Arc<WifiBus>) {
     log::debug!("[wifi-rx] thread starting");
+    start_rx_poll_kicker(bus.clone());
     crate::runtime::runtime().spawn_poll_task(
         "wifi-rx",
         alloc::boxed::Box::new(move |cx| {
@@ -97,18 +105,56 @@ pub fn start(bus: Arc<WifiBus>) {
     );
 }
 
+/// 周期性唤醒 RX 线程去轮询 func2 的兜底任务。
+///
+/// 背景:RX 线程纯靠 waker 驱动,唤醒源只有 ISR(IRQ#38)和每次 TX。命令 CFM
+/// 因发命令时顺带 wake 而能收到;但异步到来的帧(如 STA WPA2 握手的 EAPOL M1)
+/// 没有 TX 触发,若 IRQ#38 不可靠,RX 线程会一直睡、帧烂在 func2 FIFO 没人读。
+/// 这里每 10ms 唤醒一次 RX,确保异步入站帧能被及时捞出。
+fn start_rx_poll_kicker(bus: Arc<WifiBus>) {
+    crate::runtime::runtime().spawn_poll_task(
+        "wifi-rx-kick",
+        alloc::boxed::Box::new(move |cx| {
+            if *bus.state.lock() == BusState::Down {
+                return Poll::Ready(());
+            }
+            // 唤醒 RX 线程去 poll func2(不自己做 SDIO,避免与 RX 线程争锁)
+            bus.rx.irq_waker.wake();
+            // 每 ~1s 打一次心跳:证明 kicker 活着 + 汇报 RX 看到的 func2 状态
+            let kicks = RX_KICK_COUNT.fetch_add(1, Ordering::Relaxed) + 1;
+            if kicks % 100 == 0 {
+                log::trace!(
+                    "[RXKICK] alive kicks={} rx_polls={} last_block_cnt=0x{:x} nonzero_reads={}",
+                    kicks,
+                    RX_POLL_COUNT.load(Ordering::Relaxed),
+                    RX_LAST_BLOCKCNT.load(Ordering::Relaxed),
+                    RX_NONZERO_READS.load(Ordering::Relaxed),
+                );
+            }
+            // 阻塞 sleep:本任务独占一个 ax_task 线程,只拖慢自己
+            crate::runtime::runtime().sleep_ms(10);
+            // 自唤醒,让 block_on 立即重新 poll,形成 10ms 周期循环
+            cx.waker().wake_by_ref();
+            Poll::Pending
+        }),
+    );
+}
+
 // ===== RX 帧读取处理 =====
 
 /// 读取 block_cnt 并处理 SDIO_OTHER_INTERRUPT 重试
 ///
 /// # 返回
 /// (block_cnt, should_continue) - 读取的块计数和是否应该继续处理
-fn read_block_count_with_retry(bus: &WifiBus, other_int_retries: &mut u32) -> (u8, bool) {
+fn read_block_count_with_retry(bus: &WifiBus, func: u8, other_int_retries: &mut u32) -> (u8, bool) {
     let block_cnt = {
-        match bus.transport.read_byte(1, bus.transport.block_cnt_reg()) {
+        match bus
+            .transport
+            .read_byte(func, bus.transport.block_cnt_reg())
+        {
             Ok(v) => v,
             Err(e) => {
-                log::error!("[wifi-rx] read block_cnt failed: {:?}", e);
+                log::error!("[wifi-rx] read block_cnt(func{}) failed: {:?}", func, e);
                 return (0, false);
             }
         }
@@ -130,6 +176,14 @@ fn read_block_count_with_retry(bus: &WifiBus, other_int_retries: &mut u32) -> (u
         return (0, true); // 继续重试
     }
 
+    // DIAG: 记录每次读到的 block_cnt(确诊 M1 在哪个 func 的 FIFO)
+    RX_POLL_COUNT.fetch_add(1, Ordering::Relaxed);
+    RX_LAST_BLOCKCNT.store(block_cnt as u64, Ordering::Relaxed);
+    if block_cnt != 0 {
+        RX_NONZERO_READS.fetch_add(1, Ordering::Relaxed);
+        log::trace!("[RXDIAG] func{} block_cnt=0x{:02x}", func, block_cnt);
+    }
+
     (block_cnt, true)
 }
 
@@ -139,7 +193,7 @@ fn read_block_count_with_retry(bus: &WifiBus, other_int_retries: &mut u32) -> (u
 /// 单次传输 block 数量过多导致 SDHCI 控制器超时。
 const MAX_BLOCKS_PER_CMD53: usize = 1;
 
-fn read_fifo_data(bus: &WifiBus, block_cnt: u8) -> Option<Vec<u8>> {
+fn read_fifo_data(bus: &WifiBus, func: u8, block_cnt: u8) -> Option<Vec<u8>> {
     let total = block_cnt as usize;
     let data_len = total * SDIOWIFI_FUNC_BLOCKSIZE;
     let mut buf = vec![0u8; data_len];
@@ -151,7 +205,7 @@ fn read_fifo_data(bus: &WifiBus, block_cnt: u8) -> Option<Vec<u8>> {
         let chunk_len = chunk * SDIOWIFI_FUNC_BLOCKSIZE;
 
         if let Err(e) = bus.transport.read_fifo(
-            1,
+            func,
             bus.transport.rd_fifo_addr(),
             &mut buf[offset..offset + chunk_len],
         ) {
@@ -179,6 +233,15 @@ fn process_rx_frames(bus: &WifiBus) {
     // ISR 只设 flag 不 mask，这里先 mask CARD_INT 防止重入
     bus.transport.mask_card_irq();
 
+    // 排空 func2(命令 CFM/indication 邮箱)和 func1(数据帧 FIFO)。
+    // DC 实测 CFM 在 func2;但 vendor 把数据帧放 func1。两个 func 的 block_cnt
+    // 独立,EAPOL M1 等入站数据帧很可能在 func1——这里两个都排空,按帧头分流。
+    drain_func(bus, 2);
+    drain_func(bus, 1);
+}
+
+/// 排空指定 func 的 RX FIFO,读出所有待处理帧并分发。
+fn drain_func(bus: &WifiBus, func: u8) {
     let mut other_int_retries = 0u32;
 
     loop {
@@ -187,7 +250,8 @@ fn process_rx_frames(bus: &WifiBus) {
             // ISR 触发了，继续读取（不 break）
         }
 
-        let (block_cnt, should_continue) = read_block_count_with_retry(bus, &mut other_int_retries);
+        let (block_cnt, should_continue) =
+            read_block_count_with_retry(bus, func, &mut other_int_retries);
         if !should_continue {
             break;
         }
@@ -196,12 +260,12 @@ fn process_rx_frames(bus: &WifiBus) {
             break;
         }
 
-        log::trace!("[wifi-rx] block_cnt=0x{:02x}, reading FIFO", block_cnt);
+        log::trace!("[wifi-rx] func{} block_cnt=0x{:02x}, reading FIFO", func, block_cnt);
 
         other_int_retries = 0;
 
         // 读取 FIFO 数据
-        let Some(buf) = read_fifo_data(bus, block_cnt) else {
+        let Some(buf) = read_fifo_data(bus, func, block_cnt) else {
             break;
         };
 
@@ -529,6 +593,13 @@ fn process_data_frame(bus: &WifiBus, data_payload: &[u8], pkt_len: usize, _mpdu_
 
     let payload_start = llc_offset + 8;
 
+    log::trace!(
+        "[RXDIAG] data80211: fc0=0x{:02x} fc1=0x{:02x} hdr_len={} decr={} crypto_hdr={} \
+         et_off={} ethertype=0x{:04x} sa={:02x?}",
+        fc0, fc1, hdr_len, hw_info.decr_status, crypto_hdr_len,
+        ether_type_offset, ethertype, addr_info.sa
+    );
+
     if ethertype == ETH_P_PAE {
         process_eapol_frame(bus, mpdu, payload_start, pkt_len);
     } else {
@@ -624,6 +695,10 @@ fn dispatch_frames(bus: &WifiBus, buf: &[u8]) {
 
         if !is_cfg {
             // ========== DATA 帧 ==========
+            log::trace!(
+                "[RXDIAG] DATA frame: pkt_type=0x{:02x} pkt_len={} offset={}",
+                pkt_type, pkt_len, offset
+            );
             let aggr_len = pkt_len + RX_HWHRD_LEN;
             let advance = align_up(aggr_len, RX_ALIGNMENT);
 

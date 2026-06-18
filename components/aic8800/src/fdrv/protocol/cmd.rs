@@ -107,7 +107,7 @@ fn validate_and_extract_cfm_param(rsp: &[u8], _expected_cfm_id: u16) -> Result<V
     }
 
     let msg = LmacMsg::from_le_bytes(rsp);
-    log::debug!(
+    log::info!(
         "[cmd_mgr] CFM received: msg_id=0x{:04x}, param_len={}",
         msg.id,
         msg.param_len
@@ -425,7 +425,7 @@ fn send_eapol_frame_to_sdio(bus: &Arc<WifiBus>, buf: &[u8]) -> Result<(), CmdErr
         return Err(e);
     }
 
-    if let Err(e) = transport.write_fifo(1, SDIOWIFI_WR_FIFO_ADDR, buf) {
+    if let Err(e) = transport.write_fifo(transport.cmd_func(), SDIOWIFI_WR_FIFO_ADDR, buf) {
         log::error!("[cmd_mgr] EAPOL TX write_fifo failed: {:?}", e);
         transport.unmask_card_irq();
         return Err(CmdError::SdioError);
