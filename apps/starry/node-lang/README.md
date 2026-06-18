@@ -1,9 +1,10 @@
 # Starry node-lang App — Node.js 22 language + stdlib carpet suite
 
 This app runs an industrial, carpet-coverage **Node.js 22 (V8)** language + core
-API + CLI test suite inside StarryOS QEMU, across `x86_64 / aarch64 / riscv64 /
+API test suite inside StarryOS QEMU, across `x86_64 / aarch64 / riscv64 /
 loongarch64`. It validates the *language/runtime layer* (V8, the ES2023+ language
-surface, the `node:*` core modules, and the `node` CLI option surface) — not
+surface and the `node:*` core modules). The `node` CLI option surface is
+separately validated as host-side auxiliary evidence. This app does NOT cover
 third-party npm packages or native addons (vite/astro/npm/… are separate cases).
 
 ## Node.js 22
@@ -78,7 +79,8 @@ Success criterion: `run_node_carpet.sh` prints `TEST PASSED` on its final line i
 > and the carpet is green under qemu-user; whether V8 initializes under the
 > StarryOS kernel mmap path is verified by the on-target run.
 
-> x86_64 boots only via OVMF/UEFI, which the StarryOS app-qemu path validates in
-> CI; the local app-qemu path (`-kernel`, no PVH note) cannot boot it, so x86_64
-> is validated through CI like the other prebuild apps. aarch64/riscv64/loongarch64
-> boot locally.
+> x86_64 requires OVMF/UEFI for StarryOS boot; the local app-qemu path
+> (`-kernel`, no PVH note) cannot boot it. The current CI matrix skips
+> `apps/starry/*` QEMU jobs by path filter (same as merged python-lang #1257),
+> so x86_64 on-target evidence is not covered by CI. aarch64/riscv64/loongarch64
+> boot locally via qemu-system-<arch>.
