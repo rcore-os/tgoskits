@@ -17,6 +17,7 @@ use ax_runtime::hal::cpu::uspace::UserContext;
 use ax_sync::Mutex;
 use ax_task::{current, future::block_on, yield_now};
 use axfs_ng_vfs::Location;
+use kernel_elf_parser::AuxType;
 use linux_raw_sys::general::{AT_EMPTY_PATH, AT_SYMLINK_NOFOLLOW};
 use starry_process::Pid;
 use starry_vm::vm_load_until_nul;
@@ -228,7 +229,7 @@ fn do_execve(
             break;
         }
 
-        info!(
+        debug!(
             "sys_execve: zapping {} sibling thread(s) before exec",
             siblings.len()
         );
@@ -247,7 +248,6 @@ fn do_execve(
             if remaining == 0 {
                 return Poll::Ready(());
             }
-            // Registration happens from execve task context.
             unsafe {
                 proc_data
                     .thread_exit_event
@@ -302,6 +302,8 @@ fn do_execve(
     curr.set_name(&new_name);
     *proc_data.exe_path.write() = new_exe_path;
     *proc_data.cmdline.write() = Arc::new(args);
+    let auxv_len = auxv.len();
+    let has_ldso = auxv.iter().any(|e| e.get_type() == AuxType::BASE);
     *proc_data.auxv.write() = auxv;
 
     proc_data.set_heap_top(USER_HEAP_BASE);
@@ -395,7 +397,21 @@ fn do_execve(
     // explicitly preserved above.
     *uctx = UserContext::new(entry_point.as_usize(), user_stack_base, 0);
 
-    if proc_data.is_ptrace_traceme() {
+    debug!(
+        "execve: path={} entry={:#x} sp={:#x} tp={} auxv_count={} auxv_has_ldso={}",
+        new_name,
+        entry_point.as_usize(),
+        user_stack_base,
+        uctx.tls(),
+        auxv_len,
+        has_ldso,
+    );
+
+    // All ptrace tracees (both TRACEME and ATTACH) unconditionally
+    // stop with SIGTRAP on execve (Linux ptrace(2)). PTRACE_O_TRACEEXEC
+    // only controls whether the stop carries PTRACE_EVENT_EXEC data,
+    // not whether the stop itself occurs.
+    if proc_data.is_ptrace_traceme() || proc_data.is_ptrace_attached() {
         proc_data.set_ptrace_exec_stop_pending();
     }
 

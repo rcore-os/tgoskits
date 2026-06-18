@@ -256,7 +256,8 @@ fn ptrace_stop_current_impl(
     #[cfg(any(
         target_arch = "riscv64",
         target_arch = "aarch64",
-        target_arch = "loongarch64"
+        target_arch = "loongarch64",
+        target_arch = "x86_64"
     ))]
     {
         thr.proc_data.save_current_fp_for_ptrace(tid);

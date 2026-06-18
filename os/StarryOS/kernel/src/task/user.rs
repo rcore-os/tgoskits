@@ -42,6 +42,8 @@ pub fn new_user_task(name: &str, mut uctx: UserContext, set_child_tid: usize) ->
                         target_arch = "loongarch64"
                     ))]
                     crate::syscall::ptrace_setup_singlestep(&thr.proc_data, thr.tid(), &mut uctx);
+                    #[cfg(target_arch = "x86_64")]
+                    crate::syscall::ptrace_setup_singlestep(&thr.proc_data, &mut uctx);
                 }
 
                 let reason = uctx.run();
@@ -175,6 +177,27 @@ pub fn new_user_task(name: &str, mut uctx: UserContext, set_child_tid: usize) ->
                                     );
                                 }
                             }
+                            if let Some(_resume_sig) =
+                                ptrace_stop_current(thr, Signo::SIGTRAP, &mut uctx)
+                            {
+                                break 'exc;
+                            }
+                        }
+                        // On x86_64, PTRACE_SINGLESTEP sets TF in RFLAGS;
+                        // the resulting #DB exception arrives here.
+                        // ExceptionKind::Debug and uctx.rflags only exist on
+                        // x86_64, so this whole block is arch-gated.
+                        #[cfg(target_arch = "x86_64")]
+                        if matches!(kind, ExceptionKind::Debug)
+                            && (thr.proc_data.is_ptrace_traceme()
+                                || thr.proc_data.is_ptrace_attached())
+                        {
+                            // Clear TF (bit 8) in the saved RFLAGS.  The Intel
+                            // SDM (Vol 3A §17.3.2) states the CPU clears TF
+                            // when delivering a TF-induced #DB, but QEMU may
+                            // not always honour this.  Clearing explicitly
+                            // prevents an unwanted extra single-step on resume.
+                            uctx.rflags &= !(1u64 << 8);
                             if let Some(_resume_sig) =
                                 ptrace_stop_current(thr, Signo::SIGTRAP, &mut uctx)
                             {
