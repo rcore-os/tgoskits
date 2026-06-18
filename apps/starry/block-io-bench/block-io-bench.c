@@ -20,6 +20,7 @@ struct bench_config {
     uint64_t bytes;
     size_t block_bytes;
     unsigned rounds;
+    int fsync_enabled;
 };
 
 struct bench_sample {
@@ -28,7 +29,8 @@ struct bench_sample {
 
 static void usage(const char *program) {
     fprintf(stderr,
-            "usage: %s [--path BASE] [--bytes BYTES] [--block-bytes BYTES] [--rounds N]\n",
+            "usage: %s [--path BASE] [--bytes BYTES] [--block-bytes BYTES] [--rounds N] "
+            "[--no-fsync]\n",
             program);
 }
 
@@ -49,6 +51,7 @@ static struct bench_config parse_args(int argc, char **argv) {
         .bytes = DEFAULT_BYTES,
         .block_bytes = DEFAULT_BLOCK_BYTES,
         .rounds = DEFAULT_ROUNDS,
+        .fsync_enabled = 1,
     };
 
     for (int i = 1; i < argc; i++) {
@@ -64,6 +67,8 @@ static struct bench_config parse_args(int argc, char **argv) {
                 fprintf(stderr, "rounds must be <= %u\n", MAX_ROUNDS);
                 exit(2);
             }
+        } else if (strcmp(argv[i], "--no-fsync") == 0) {
+            config.fsync_enabled = 0;
         } else if (strcmp(argv[i], "--help") == 0) {
             usage(argv[0]);
             exit(0);
@@ -189,11 +194,13 @@ static uint64_t run_write_round(const struct bench_config *config, uint8_t *buf,
         fill_buffer(buf, config->block_bytes, round, done);
         checked_write_all(fd, buf, config->block_bytes);
     }
-    printf("BLOCK_BENCH_PROGRESS phase=fsync round=%u path=%s\n", round, path);
-    fflush(stdout);
-    if (fsync(fd) != 0) {
-        perror("fsync");
-        exit(1);
+    if (config->fsync_enabled) {
+        printf("BLOCK_BENCH_PROGRESS phase=fsync round=%u path=%s\n", round, path);
+        fflush(stdout);
+        if (fsync(fd) != 0) {
+            perror("fsync");
+            exit(1);
+        }
     }
     uint64_t end = now_us();
 
@@ -237,8 +244,9 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-    printf("BLOCK_BENCH_CONFIG path=%s rounds=%u bytes=%llu block_bytes=%zu\n",
-           config.base_path, config.rounds, (unsigned long long)config.bytes, config.block_bytes);
+    printf("BLOCK_BENCH_CONFIG path=%s rounds=%u bytes=%llu block_bytes=%zu fsync=%d\n",
+           config.base_path, config.rounds, (unsigned long long)config.bytes, config.block_bytes,
+           config.fsync_enabled);
     fflush(stdout);
 
     struct bench_sample write_samples[MAX_ROUNDS];

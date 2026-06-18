@@ -9,12 +9,21 @@ Run it with:
 cargo xtask starry app qemu -t block-io-bench --arch x86_64
 ```
 
+To compare the same workload through the NVMe QEMU device model, run:
+
+```bash
+cargo xtask starry app qemu \
+  -t block-io-bench \
+  --arch x86_64 \
+  --qemu-config qemu-x86_64-nvme.toml
+```
+
 The app injects a static `/usr/bin/block-io-bench` binary and a small shell
 wrapper into a managed Alpine rootfs. The wrapper runs several benchmark rounds
 and prints machine-readable log lines:
 
 ```text
-BLOCK_BENCH_CONFIG path=/root/block-io-bench-app rounds=5 bytes=4194304 block_bytes=4096
+BLOCK_BENCH_CONFIG path=/root/block-io-bench-app rounds=5 bytes=4194304 block_bytes=4096 fsync=1
 BLOCK_BENCH_ROUND op=write round=0 bytes=4194304 elapsed_us=... mib_s=... checksum=...
 BLOCK_BENCH_ROUND op=read round=0 bytes=4194304 elapsed_us=... mib_s=... checksum=...
 BLOCK_BENCH_RESULT op=write round=5 bytes=4194304 elapsed_us=... mib_s=... checksum=...
@@ -30,6 +39,13 @@ blocks. Override these from the QEMU shell environment when needed:
 BLOCK_BENCH_ROUNDS=7 \
 BLOCK_BENCH_BYTES=8388608 \
 BLOCK_BENCH_BLOCK_BYTES=4096 \
+BLOCK_BENCH_FSYNC=1 \
 BLOCK_BENCH_PATH=/root/custom-block-io-bench \
 /usr/bin/block-io-bench.sh
 ```
+
+The default `qemu-x86_64.toml` uses `virtio-blk-pci`; the
+`qemu-x86_64-nvme.toml` variant uses `nvme,serial=starry-block-io-bench` and
+sets `BLOCK_BENCH_FSYNC=0`, because the current QEMU NVMe path reports an I/O
+error for the app's per-round `fsync` flush. The `BLOCK_BENCH_CONFIG` line
+includes `fsync=...` so comparison logs keep this difference explicit.
