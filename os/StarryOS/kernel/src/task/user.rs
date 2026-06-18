@@ -36,14 +36,7 @@ pub fn new_user_task(name: &str, mut uctx: UserContext, set_child_tid: usize) ->
                 if thr.proc_data.is_ptrace_singlestep_for(thr.tid())
                     && (thr.proc_data.is_ptrace_traceme() || thr.proc_data.is_ptrace_attached())
                 {
-                    #[cfg(any(
-                        target_arch = "riscv64",
-                        target_arch = "aarch64",
-                        target_arch = "loongarch64"
-                    ))]
                     crate::syscall::ptrace_setup_singlestep(&thr.proc_data, thr.tid(), &mut uctx);
-                    #[cfg(target_arch = "x86_64")]
-                    crate::syscall::ptrace_setup_singlestep(&thr.proc_data, &mut uctx);
                 }
 
                 let reason = uctx.run();
@@ -198,6 +191,7 @@ pub fn new_user_task(name: &str, mut uctx: UserContext, set_child_tid: usize) ->
                             // not always honour this.  Clearing explicitly
                             // prevents an unwanted extra single-step on resume.
                             uctx.rflags &= !(1u64 << 8);
+                            thr.proc_data.set_ptrace_singlestep_for(thr.tid(), false);
                             if let Some(_resume_sig) =
                                 ptrace_stop_current(thr, Signo::SIGTRAP, &mut uctx)
                             {
