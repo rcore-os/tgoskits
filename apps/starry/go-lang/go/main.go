@@ -129,6 +129,7 @@ func main() {
 	runStdTemplates()
 	runStdReflect()
 	runStdMisc() // os/path/filepath/netip/slog/iter/binary/gzip/utf16/structs/...
+	runStdMore() // archive(tar/zip) · compress(gzip/zlib/flate) · crypto(aes-gcm/ed25519/sha1) · hash(crc64/adler32) · encoding(base32/pem/ascii85/gob) · net/url · flag · log · io/fs · text(scanner/tabwriter) · regexp/syntax
 
 	// Go 1.26 specifics (release-notes-grounded).
 	runGo126Features()
