@@ -1,13 +1,15 @@
 args = [
+    "-machine",
+    "virt",
+    "-cpu",
+    "la464",
     "-nographic",
     "-m",
-    "512M",
-    "-cpu",
-    "rv64",
+    "2G",
     "-device",
     "virtio-blk-pci,drive=disk0",
     "-drive",
-    "id=disk0,if=none,format=raw,file=${workspace}/tmp/axbuild/rootfs/rootfs-riscv64-alpine.img",
+    "id=disk0,if=none,format=raw,file=${workspace}/tmp/axbuild/rootfs/rootfs-loongarch64-alpine.img",
     "-device",
     "virtio-net-pci,netdev=net0",
     "-netdev",
@@ -16,7 +18,7 @@ args = [
 uefi = false
 to_bin = true
 shell_prefix = "root@starry:"
-shell_init_cmd = "/usr/bin/nginx-runner.sh smoke"
+shell_init_cmd = "/usr/bin/nginx-runner.sh all"
 success_regex = ["(?m)^NGINX_RUNNER_PASSED\\b"]
 fail_regex = ["(?i)\\bpanic(?:ked)?\\b", "(?m)^NGINX_RUNNER_FAILED\\b"]
-timeout = 3600
+timeout = 7200
