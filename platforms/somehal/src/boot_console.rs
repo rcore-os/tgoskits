@@ -7,39 +7,60 @@ enum ConsoleSpec {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum BootargsConsoleError {
+pub enum ConsoleDeviceIdError {
     NotSpecified,
     NoHardwareDevice,
+    DeviceNotFound,
 }
 
-pub fn device_id() -> Option<DeviceId> {
+pub fn device_id() -> Result<DeviceId, ConsoleDeviceIdError> {
     match device_id_from_bootargs(someboot::cmdline()) {
-        Ok(device_id) => Some(device_id),
-        Err(BootargsConsoleError::NotSpecified) => {
-            device_id_from_acpi_spcr().or_else(device_id_from_fdt_stdout)
-        }
-        Err(BootargsConsoleError::NoHardwareDevice) => None,
+        Ok(device_id) => Ok(device_id),
+        Err(ConsoleDeviceIdError::NotSpecified) => device_id_from_acpi_spcr()
+            .or_else(device_id_from_fdt_stdout)
+            .ok_or(ConsoleDeviceIdError::NotSpecified),
+        Err(
+            err @ (ConsoleDeviceIdError::NoHardwareDevice | ConsoleDeviceIdError::DeviceNotFound),
+        ) => Err(err),
     }
 }
 
-fn device_id_from_bootargs(cmdline: Option<&str>) -> Result<DeviceId, BootargsConsoleError> {
-    let spec = last_console_spec(cmdline.ok_or(BootargsConsoleError::NotSpecified)?)
-        .ok_or(BootargsConsoleError::NotSpecified)?;
+fn device_id_from_bootargs(cmdline: Option<&str>) -> Result<DeviceId, ConsoleDeviceIdError> {
+    device_id_from_bootargs_with(cmdline, device_id_from_serial_index)
+}
 
-    match spec {
-        ConsoleSpec::HardwareSerial(index) => {
-            device_id_from_serial_index(index).ok_or(BootargsConsoleError::NoHardwareDevice)
+fn device_id_from_bootargs_with(
+    cmdline: Option<&str>,
+    serial_device_id: impl Fn(usize) -> Option<DeviceId>,
+) -> Result<DeviceId, ConsoleDeviceIdError> {
+    let cmdline = cmdline.ok_or(ConsoleDeviceIdError::NotSpecified)?;
+    let mut saw_supported_console = false;
+    let mut saw_hardware_console = false;
+    let mut last_hardware_device_id = None;
+
+    for spec in console_specs(cmdline) {
+        saw_supported_console = true;
+        if let ConsoleSpec::HardwareSerial(index) = spec {
+            saw_hardware_console = true;
+            if let Some(device_id) = serial_device_id(index) {
+                last_hardware_device_id = Some(device_id);
+            }
         }
-        ConsoleSpec::VirtualTty => Err(BootargsConsoleError::NoHardwareDevice),
+    }
+
+    match last_hardware_device_id {
+        Some(device_id) => Ok(device_id),
+        None if saw_hardware_console => Err(ConsoleDeviceIdError::DeviceNotFound),
+        None if saw_supported_console => Err(ConsoleDeviceIdError::NoHardwareDevice),
+        None => Err(ConsoleDeviceIdError::NotSpecified),
     }
 }
 
-fn last_console_spec(cmdline: &str) -> Option<ConsoleSpec> {
+fn console_specs(cmdline: &str) -> impl Iterator<Item = ConsoleSpec> + '_ {
     cmdline
         .split_ascii_whitespace()
         .filter_map(|arg| arg.strip_prefix("console="))
         .filter_map(parse_console_spec)
-        .next_back()
 }
 
 fn parse_console_spec(spec: &str) -> Option<ConsoleSpec> {
@@ -124,14 +145,17 @@ mod tests {
     use super::*;
 
     #[test]
-    fn last_console_spec_wins() {
+    fn console_specs_keep_command_line_order() {
+        let specs: alloc::vec::Vec<_> =
+            console_specs("console=ttyS2,1500000 console=tty1 console=ttyAMA3,115200").collect();
+
         assert_eq!(
-            last_console_spec("console=ttyS2,1500000 console=tty1"),
-            Some(ConsoleSpec::VirtualTty)
-        );
-        assert_eq!(
-            last_console_spec("console=tty1 console=ttyAMA3,115200"),
-            Some(ConsoleSpec::HardwareSerial(3))
+            specs,
+            alloc::vec![
+                ConsoleSpec::HardwareSerial(2),
+                ConsoleSpec::VirtualTty,
+                ConsoleSpec::HardwareSerial(3),
+            ]
         );
     }
 
@@ -154,15 +178,53 @@ mod tests {
     fn bootargs_console_spec_suppresses_firmware_fallback() {
         assert_eq!(
             device_id_from_bootargs(Some("root=/dev/vda")),
-            Err(BootargsConsoleError::NotSpecified)
+            Err(ConsoleDeviceIdError::NotSpecified)
         );
         assert_eq!(
             device_id_from_bootargs(Some("console=tty1")),
-            Err(BootargsConsoleError::NoHardwareDevice)
+            Err(ConsoleDeviceIdError::NoHardwareDevice)
         );
         assert_eq!(
             device_id_from_bootargs(Some("console=ttyS2 console=tty1")),
-            Err(BootargsConsoleError::NoHardwareDevice)
+            Err(ConsoleDeviceIdError::DeviceNotFound)
+        );
+    }
+
+    #[test]
+    fn virtual_console_does_not_clear_earlier_serial_console() {
+        let serial2_device = DeviceId::from(42);
+
+        assert_eq!(
+            device_id_from_bootargs_with(Some("console=ttyS2,1500000 console=tty1"), |index| {
+                (index == 2).then_some(serial2_device)
+            }),
+            Ok(serial2_device)
+        );
+    }
+
+    #[test]
+    fn last_available_hardware_console_wins_over_earlier_serial_console() {
+        let serial3_device = DeviceId::from(43);
+
+        assert_eq!(
+            device_id_from_bootargs_with(
+                Some("console=ttyS2,1500000 console=tty1 console=ttyAMA3,115200"),
+                |index| (index == 3).then_some(serial3_device),
+            ),
+            Ok(serial3_device)
+        );
+    }
+
+    #[test]
+    fn later_missing_hardware_console_does_not_clear_earlier_available_serial_console() {
+        let serial2_device = DeviceId::from(42);
+
+        assert_eq!(
+            device_id_from_bootargs_with(
+                Some("console=ttyS2,1500000 console=ttyS3,115200 console=tty1"),
+                |index| (index == 2).then_some(serial2_device),
+            ),
+            Ok(serial2_device)
         );
     }
 

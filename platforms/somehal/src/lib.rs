@@ -17,7 +17,7 @@ pub mod irq;
 pub mod rtc;
 pub mod setup;
 
-pub use boot_console::device_id as console_device_id;
+pub use boot_console::{ConsoleDeviceIdError, device_id as console_device_id};
 pub use page_table_generic::{PagingError, PagingResult};
 pub use setup::KernelOp;
 pub use someboot::{

@@ -11,7 +11,10 @@ use ax_driver::serial::{
 };
 use ax_errno::{AxError, AxResult};
 use ax_kspin::SpinNoIrq;
-use ax_runtime::hal::irq::{AutoEnable, IrqHandle, IrqRequest, ShareMode};
+use ax_runtime::hal::{
+    console::{ConsoleDeviceIdError, ConsoleDeviceIdResult},
+    irq::{AutoEnable, IrqHandle, IrqRequest, ShareMode},
+};
 use ax_task::IrqNotify;
 use axpoll::{IoEvents, PollSet};
 use rdrive::DeviceId as RDriveDeviceId;
@@ -636,32 +639,40 @@ fn assign_tty_numbers(alias_indices: &[Option<usize>]) -> Vec<Option<usize>> {
 
 fn select_console_candidate(
     candidates: &[ConsoleCandidate],
-    selected_device_id: Option<RDriveDeviceId>,
+    selected_device_id: ConsoleDeviceIdResult,
 ) -> Option<ConsoleSelection> {
-    if let Some(device_id) = selected_device_id {
-        if let Some(index) = candidates
-            .iter()
-            .position(|candidate| candidate.device_id == device_id)
-        {
-            return Some(ConsoleSelection::SelectedDevice(index));
+    match selected_device_id {
+        Ok(device_id) => {
+            if let Some(index) = candidates
+                .iter()
+                .position(|candidate| candidate.device_id == device_id)
+            {
+                return Some(ConsoleSelection::SelectedDevice(index));
+            }
+            warn!("selected console device {device_id:?} did not match a discovered serial TTY");
+            None
         }
-        warn!(
-            "selected console device {device_id:?} did not match a discovered serial TTY; trying \
-             ttyS0"
-        );
+        Err(ConsoleDeviceIdError::NotSpecified) => candidates
+            .iter()
+            .position(|candidate| candidate.number == 0)
+            .map(ConsoleSelection::TtyS0Fallback),
+        Err(
+            err @ (ConsoleDeviceIdError::NoHardwareDevice | ConsoleDeviceIdError::DeviceNotFound),
+        ) => {
+            debug!("No hardware console TTY selected: {err:?}");
+            None
+        }
     }
-
-    candidates
-        .iter()
-        .position(|candidate| candidate.number == 0)
-        .map(ConsoleSelection::TtyS0Fallback)
 }
 
 #[cfg(test)]
 mod tests {
     use rdrive::DeviceId as RDriveDeviceId;
 
-    use super::{ConsoleCandidate, ConsoleSelection, assign_tty_numbers, select_console_candidate};
+    use super::{
+        ConsoleCandidate, ConsoleDeviceIdError, ConsoleSelection, assign_tty_numbers,
+        select_console_candidate,
+    };
 
     #[test]
     fn aliases_keep_linux_ttys_numbering() {
@@ -700,13 +711,13 @@ mod tests {
         ];
 
         assert_eq!(
-            select_console_candidate(&candidates, Some(tty_s1)),
+            select_console_candidate(&candidates, Ok(tty_s1)),
             Some(ConsoleSelection::SelectedDevice(1))
         );
     }
 
     #[test]
-    fn unmatched_device_id_falls_back_to_ttys0() {
+    fn unmatched_device_id_keeps_dev_console_unbound() {
         let tty_s0 = RDriveDeviceId::from(10);
         let missing = RDriveDeviceId::from(99);
         let candidates = [ConsoleCandidate {
@@ -714,10 +725,7 @@ mod tests {
             device_id: tty_s0,
         }];
 
-        assert_eq!(
-            select_console_candidate(&candidates, Some(missing)),
-            Some(ConsoleSelection::TtyS0Fallback(0))
-        );
+        assert_eq!(select_console_candidate(&candidates, Ok(missing)), None);
     }
 
     #[test]
@@ -729,7 +737,7 @@ mod tests {
         }];
 
         assert_eq!(
-            select_console_candidate(&candidates, None),
+            select_console_candidate(&candidates, Err(ConsoleDeviceIdError::NotSpecified)),
             Some(ConsoleSelection::TtyS0Fallback(0))
         );
     }
@@ -742,6 +750,23 @@ mod tests {
             device_id: tty_s1,
         }];
 
-        assert_eq!(select_console_candidate(&candidates, None), None);
+        assert_eq!(
+            select_console_candidate(&candidates, Err(ConsoleDeviceIdError::NotSpecified)),
+            None
+        );
+    }
+
+    #[test]
+    fn non_hardware_console_keeps_dev_console_unbound() {
+        let tty_s0 = RDriveDeviceId::from(10);
+        let candidates = [ConsoleCandidate {
+            number: 0,
+            device_id: tty_s0,
+        }];
+
+        assert_eq!(
+            select_console_candidate(&candidates, Err(ConsoleDeviceIdError::NoHardwareDevice)),
+            None
+        );
     }
 }

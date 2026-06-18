@@ -2,7 +2,7 @@ use ax_kspin::SpinNoIrq;
 use ax_lazyinit::LazyInit;
 #[cfg(feature = "irq")]
 use ax_plat::console::ConsoleIrqEvent;
-use ax_plat::console::{ConsoleDeviceId, ConsoleIf};
+use ax_plat::console::{ConsoleDeviceIdError, ConsoleDeviceIdResult, ConsoleIf};
 use some_serial::ns16550::dw_apb::{DwApbUart, SG2002_UART_CLOCK};
 
 use crate::config::{devices::UART_PADDR, plat::PHYS_VIRT_OFFSET};
@@ -44,8 +44,8 @@ impl ConsoleIf for ConsoleIfImpl {
             .unwrap_or_else(|err| err.bytes_transferred)
     }
 
-    fn device_id() -> Option<ConsoleDeviceId> {
-        None
+    fn device_id() -> ConsoleDeviceIdResult {
+        Err(ConsoleDeviceIdError::NotSpecified)
     }
 
     /// Returns the IRQ number for the console, if applicable.

@@ -1,6 +1,6 @@
 #[cfg(feature = "irq")]
 use ax_plat::console::ConsoleIrqEvent;
-use ax_plat::console::{ConsoleDeviceId, ConsoleIf};
+use ax_plat::console::{ConsoleDeviceIdError, ConsoleDeviceIdResult, ConsoleIf};
 
 struct ConsoleIfImpl;
 
@@ -35,8 +35,14 @@ impl ConsoleIf for ConsoleIfImpl {
         read_len
     }
 
-    fn device_id() -> Option<ConsoleDeviceId> {
-        somehal::console_device_id()
+    fn device_id() -> ConsoleDeviceIdResult {
+        somehal::console_device_id().map_err(|err| match err {
+            somehal::ConsoleDeviceIdError::NotSpecified => ConsoleDeviceIdError::NotSpecified,
+            somehal::ConsoleDeviceIdError::NoHardwareDevice => {
+                ConsoleDeviceIdError::NoHardwareDevice
+            }
+            somehal::ConsoleDeviceIdError::DeviceNotFound => ConsoleDeviceIdError::DeviceNotFound,
+        })
     }
 
     /// Returns the IRQ number for the console input interrupt.

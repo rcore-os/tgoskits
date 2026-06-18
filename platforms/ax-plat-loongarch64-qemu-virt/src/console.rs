@@ -2,7 +2,7 @@ use ax_kspin::SpinNoIrq;
 use ax_lazyinit::LazyInit;
 #[cfg(feature = "irq")]
 use ax_plat::console::ConsoleIrqEvent;
-use ax_plat::console::{ConsoleDeviceId, ConsoleIf};
+use ax_plat::console::{ConsoleDeviceIdError, ConsoleDeviceIdResult, ConsoleIf};
 #[cfg(feature = "irq")]
 use uart_16550::spec::registers::InterruptType;
 use uart_16550::{Config, Uart16550, backend::MmioBackend, spec::registers::IER};
@@ -63,8 +63,8 @@ impl ConsoleIf for ConsoleIfImpl {
         uart.try_receive_bytes(bytes)
     }
 
-    fn device_id() -> Option<ConsoleDeviceId> {
-        None
+    fn device_id() -> ConsoleDeviceIdResult {
+        Err(ConsoleDeviceIdError::NotSpecified)
     }
 
     /// Returns the IRQ number for the console, if applicable.
