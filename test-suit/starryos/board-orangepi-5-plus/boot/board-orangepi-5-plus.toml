@@ -2,5 +2,5 @@ board_type = "OrangePi-5-Plus"
 shell_prefix = "root@starry:/root #"
 shell_init_cmd = "echo 'STARRY_ORANGEPI_BOOT_OK'"
 success_regex = ["(?m)^STARRY_ORANGEPI_BOOT_OK\\s*$"]
-fail_regex = ['(?i)\bpanic(?:ked)?\b']
+fail_regex = ['(?i)\bpanic(?:ked)?\b', '(?i)segmentation fault', '(?i)SIGSEGV', 'exit with code: 139']
 timeout = 300

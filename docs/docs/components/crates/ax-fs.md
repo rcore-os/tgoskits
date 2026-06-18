@@ -27,7 +27,7 @@
 - `src/fs/ext4fs.rs`：把 `rsext4` 适配为 `ax_fs_vfs::VfsOps`/`VfsNodeOps`。
 - `src/fs/mod.rs`：暴露旧栈下的具体文件系统实现，并直接复用 `axfs_devfs`、`axfs_ramfs`。
 - `src/mounts.rs`：创建基于 `ramfs` 的 `/proc`、`/sys` 伪目录树。
-- `src/fops.rs`：定义 `File`、`Directory`、`OpenOptions`，并使用 `ax_cap_access::WithCap` 在打开后绑定读写执行能力。
+- `src/fops.rs`：定义 `File`、`Directory`、`OpenOptions`，并在打开后绑定读写执行能力。
 - `src/api/*`：向上提供更接近用户态或通用库风格的辅助函数。
 
 ### 1.3 启动与挂载主线
@@ -105,8 +105,6 @@ graph LR
     axfs_devfs["ax-fs-devfs"] --> current
     axfatfs["axfatfs"] --> current
     rsext4["rsext4"] --> current
-    ax_cap_access["ax-cap-access"] --> current
-
     current --> ax-runtime["ax-runtime(fs)"]
     current --> ax-api["ax-api"]
     current --> ax-posix-api["ax-posix-api"]
@@ -117,7 +115,6 @@ graph LR
 - `axfs_vfs`：旧栈统一 trait 契约。
 - `axfs_ramfs`、`axfs_devfs`：旧栈中的内存文件系统与设备文件系统。
 - `axfatfs`、`rsext4`：分别承担 FAT 与 ext4 的实际格式实现。
-- `ax-cap-access`：为 `fops` 提供打开后能力控制。
 
 ### 主要消费者
 - `ax-runtime`：在 `fs` feature 下初始化整个旧文件系统子系统。

@@ -788,10 +788,15 @@ pub struct PtraceStopFpData {
 #[cfg(not(any(
     target_arch = "riscv64",
     target_arch = "aarch64",
-    target_arch = "loongarch64"
+    target_arch = "loongarch64",
+    target_arch = "x86_64"
 )))]
 #[derive(Clone, Copy)]
 pub struct PtraceStopFpData;
+
+#[cfg(target_arch = "x86_64")]
+#[derive(Clone, Copy)]
+pub struct PtraceStopFpData(pub ax_cpu::FxsaveArea);
 
 impl ProcessData {
     /// Create a new [`ProcessData`].
@@ -1648,9 +1653,22 @@ impl ProcessData {
     #[cfg(not(any(
         target_arch = "riscv64",
         target_arch = "aarch64",
-        target_arch = "loongarch64"
+        target_arch = "loongarch64",
+        target_arch = "x86_64"
     )))]
     pub fn save_current_fp_for_ptrace(&self, _tid: u32) {}
+
+    #[cfg(target_arch = "x86_64")]
+    pub fn save_current_fp_for_ptrace(&self, tid: u32) {
+        let mut area =
+            unsafe { core::mem::MaybeUninit::<ax_cpu::FxsaveArea>::zeroed().assume_init() };
+        unsafe {
+            core::arch::x86_64::_fxsave64((&mut area as *mut ax_cpu::FxsaveArea).cast::<u8>());
+        }
+        self.ptrace_stop_fp_data
+            .lock()
+            .insert(tid, PtraceStopFpData(area));
+    }
 
     #[cfg(target_arch = "riscv64")]
     pub fn restore_current_fp_for_ptrace(&self, tid: u32, uctx: &mut UserContext) {
@@ -1707,9 +1725,20 @@ impl ProcessData {
     #[cfg(not(any(
         target_arch = "riscv64",
         target_arch = "aarch64",
-        target_arch = "loongarch64"
+        target_arch = "loongarch64",
+        target_arch = "x86_64"
     )))]
     pub fn restore_current_fp_for_ptrace(&self, _tid: u32, _uctx: &mut UserContext) {}
+
+    #[cfg(target_arch = "x86_64")]
+    pub fn restore_current_fp_for_ptrace(&self, tid: u32, _uctx: &mut UserContext) {
+        let Some(PtraceStopFpData(area)) = self.ptrace_stop_fp_data.lock().remove(&tid) else {
+            return;
+        };
+        unsafe {
+            core::arch::x86_64::_fxrstor64((&area as *const ax_cpu::FxsaveArea).cast::<u8>());
+        }
+    }
 
     pub fn ptrace_stop_fp_data_for(&self, tid: u32) -> Option<PtraceStopFpData> {
         self.ptrace_stop_fp_data.lock().get(&tid).copied()
