@@ -1,4 +1,4 @@
-# ffplay Wayland 集成测试
+# ffplay Wayland 集成测试！
 
 在 StarryOS 上运行 Weston (DRM backend + GL/llvmpipe 渲染器) 作为 Wayland
 compositor，然后通过 ffplay (SDL2 Wayland 输出) 播放测试视频，验证从内核
