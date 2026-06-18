@@ -10,6 +10,7 @@ aarch64, loongarch64, and x86_64.
 Use this command for the automated native GDB batch smoke:
 
 ```bash
+cargo xtask starry app qemu -t gdb-smoke --arch x86_64
 cargo xtask starry app qemu -t gdb-smoke --arch riscv64
 ```
 
@@ -55,6 +56,8 @@ Success requires all `GDB_NATIVE_*` markers from
 Use this entry when you want an interactive StarryOS shell:
 
 ```bash
+cargo xtask starry app qemu -t gdb-smoke --arch x86_64 \
+  --qemu-config qemu-x86_64-manual.toml
 cargo xtask starry app qemu -t gdb-smoke --arch riscv64 \
   --qemu-config qemu-riscv64-manual.toml
 ```

@@ -86,10 +86,12 @@ Stress configs are available through explicit QEMU config variants; see
 
 ## GDB Smoke
 
-The `gdb-smoke` case is a RISC-V QEMU app workflow that prepares a temporary
-rootfs overlay with GDB, GDBServer, and tiny debugger smoke targets.
+The `gdb-smoke` case is a QEMU app workflow that prepares a temporary rootfs
+overlay with GDB, GDBServer, and tiny debugger smoke targets. Native GDB smoke
+and gdbserver smoke are available on x86_64, riscv64, aarch64, and loongarch64.
 
 ```bash
+cargo xtask starry app qemu -t gdb-smoke --arch x86_64
 cargo xtask starry app qemu -t gdb-smoke --arch riscv64
 cargo xtask starry app qemu -t gdb-smoke --arch riscv64 \
   --qemu-config qemu-riscv64-gdbserver.toml
