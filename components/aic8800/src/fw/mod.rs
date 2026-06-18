@@ -30,10 +30,7 @@ use crate::common::{SDIOWIFI_V3_WAKEUP_VALUE, SDIOWIFI_WAKEUP_REG_V3};
 /// 使能 func2、设块大小 512、写 func2 的 register_block/bytemode/中断使能。
 /// 否则 bootrom 命令邮箱不响应,第一笔 DBG_MEM_READ 会一直超时。
 pub fn sdio_func_setup<H: SdioHost>(host: &mut H, chip: ChipVariant) -> Result<(), SdioError> {
-    let is_v3 = matches!(
-        chip,
-        ChipVariant::Aic8800D80 | ChipVariant::Aic8800D80X2
-    );
+    let is_v3 = matches!(chip, ChipVariant::Aic8800D80 | ChipVariant::Aic8800D80X2);
     let is_dc = matches!(chip, ChipVariant::Aic8800DC | ChipVariant::Aic8800DW);
 
     if !is_v3 {

@@ -72,17 +72,21 @@ fn handle_assoc_req(bus: &Arc<WifiBus>, mpdu: &[u8]) {
         .registered_stas
         .lock()
         .iter()
-        .find(|(mac, _, _)| *mac == sta_mac)
+        .find(|(mac, ..)| *mac == sta_mac)
         .map(|(_, idx, ctrl)| (*idx, *ctrl));
 
     let (sta_idx, ctrl_open) = if let Some((idx, ctrl)) = existing {
         log::info!(
-            "[wifi-ap] STA {:02x?} already registered (sta_idx={}, ctrl_open={}), \
-             resend Assoc Response{}",
+            "[wifi-ap] STA {:02x?} already registered (sta_idx={}, ctrl_open={}), resend Assoc \
+             Response{}",
             sta_mac,
             idx,
             ctrl,
-            if ctrl { " only" } else { " + retry control port" }
+            if ctrl {
+                " only"
+            } else {
+                " + retry control port"
+            }
         );
         (idx, ctrl)
     } else {
@@ -133,7 +137,7 @@ fn handle_assoc_req(bus: &Arc<WifiBus>, mpdu: &[u8]) {
                     .registered_stas
                     .lock()
                     .iter_mut()
-                    .find(|(mac, _, _)| *mac == sta_mac)
+                    .find(|(mac, ..)| *mac == sta_mac)
                 {
                     e.2 = true;
                 }

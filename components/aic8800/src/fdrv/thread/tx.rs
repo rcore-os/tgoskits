@@ -283,8 +283,7 @@ fn send_single_data_frame(
             Ok(b) => b,
             Err(_) => return false,
         };
-        if let Err(e) =
-            transport.write_fifo(transport.data_func(), transport.wr_fifo_addr(), &buf)
+        if let Err(e) = transport.write_fifo(transport.data_func(), transport.wr_fifo_addr(), &buf)
         {
             log::error!("[wifi-tx] MGMT write_fifo failed: {:?}", e);
             return false;

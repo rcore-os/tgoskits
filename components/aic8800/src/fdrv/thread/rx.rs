@@ -122,7 +122,7 @@ fn start_rx_poll_kicker(bus: Arc<WifiBus>) {
             bus.rx.irq_waker.wake();
             // 每 ~1s 打一次心跳:证明 kicker 活着 + 汇报 RX 看到的 func2 状态
             let kicks = RX_KICK_COUNT.fetch_add(1, Ordering::Relaxed) + 1;
-            if kicks % 100 == 0 {
+            if kicks.is_multiple_of(100) {
                 log::trace!(
                     "[RXKICK] alive kicks={} rx_polls={} last_block_cnt=0x{:x} nonzero_reads={}",
                     kicks,
@@ -148,10 +148,7 @@ fn start_rx_poll_kicker(bus: Arc<WifiBus>) {
 /// (block_cnt, should_continue) - 读取的块计数和是否应该继续处理
 fn read_block_count_with_retry(bus: &WifiBus, func: u8, other_int_retries: &mut u32) -> (u8, bool) {
     let block_cnt = {
-        match bus
-            .transport
-            .read_byte(func, bus.transport.block_cnt_reg())
-        {
+        match bus.transport.read_byte(func, bus.transport.block_cnt_reg()) {
             Ok(v) => v,
             Err(e) => {
                 log::error!("[wifi-rx] read block_cnt(func{}) failed: {:?}", func, e);
@@ -260,7 +257,11 @@ fn drain_func(bus: &WifiBus, func: u8) {
             break;
         }
 
-        log::trace!("[wifi-rx] func{} block_cnt=0x{:02x}, reading FIFO", func, block_cnt);
+        log::trace!(
+            "[wifi-rx] func{} block_cnt=0x{:02x}, reading FIFO",
+            func,
+            block_cnt
+        );
 
         other_int_retries = 0;
 
@@ -385,7 +386,7 @@ fn handle_mgmt_frame(bus: &WifiBus, mpdu: &[u8], pkt_len: usize) {
             let removed = {
                 let mut tbl = bus.ap.registered_stas.lock();
                 let before = tbl.len();
-                tbl.retain(|(m, _, _)| *m != mac);
+                tbl.retain(|(m, ..)| *m != mac);
                 before != tbl.len()
             };
             log::info!(
@@ -612,10 +613,16 @@ fn process_data_frame(bus: &WifiBus, data_payload: &[u8], pkt_len: usize, _mpdu_
     let payload_start = llc_offset + 8;
 
     log::trace!(
-        "[RXDIAG] data80211: fc0=0x{:02x} fc1=0x{:02x} hdr_len={} decr={} crypto_hdr={} \
-         et_off={} ethertype=0x{:04x} sa={:02x?}",
-        fc0, fc1, hdr_len, hw_info.decr_status, crypto_hdr_len,
-        ether_type_offset, ethertype, addr_info.sa
+        "[RXDIAG] data80211: fc0=0x{:02x} fc1=0x{:02x} hdr_len={} decr={} crypto_hdr={} et_off={} \
+         ethertype=0x{:04x} sa={:02x?}",
+        fc0,
+        fc1,
+        hdr_len,
+        hw_info.decr_status,
+        crypto_hdr_len,
+        ether_type_offset,
+        ethertype,
+        addr_info.sa
     );
 
     if ethertype == ETH_P_PAE {
@@ -715,7 +722,9 @@ fn dispatch_frames(bus: &WifiBus, buf: &[u8]) {
             // ========== DATA 帧 ==========
             log::trace!(
                 "[RXDIAG] DATA frame: pkt_type=0x{:02x} pkt_len={} offset={}",
-                pkt_type, pkt_len, offset
+                pkt_type,
+                pkt_len,
+                offset
             );
             let aggr_len = pkt_len + RX_HWHRD_LEN;
             let advance = align_up(aggr_len, RX_ALIGNMENT);

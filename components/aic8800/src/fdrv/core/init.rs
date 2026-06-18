@@ -10,13 +10,13 @@ use sdio_host::SdioHost;
 
 use crate::{
     common::{
-        ChipVariant, SDIO_TYPE_CFG_CMD_RSP, SDIOWIFI_BLOCK_CNT_REG,
-        SDIOWIFI_BYTEMODE_ENABLE_REG, SDIOWIFI_BYTEMODE_ENABLE_REG_V3, SDIOWIFI_FLOW_CTRL_Q1_REG_V3,
-        SDIOWIFI_FLOW_CTRL_REG, SDIOWIFI_FLOWCTRL_MASK, SDIOWIFI_INTR_CONFIG_REG,
-        SDIOWIFI_INTR_ENABLE_REG_V3, SDIOWIFI_MISC_INT_STATUS_REG_V3, SDIOWIFI_RD_FIFO_ADDR,
-        SDIOWIFI_RD_FIFO_ADDR_V3, SDIOWIFI_REGISTER_BLOCK, SDIOWIFI_SLEEP_REG_V3,
-        SDIOWIFI_V3_SLEEP_READY_BIT, SDIOWIFI_V3_WAKEUP_VALUE, SDIOWIFI_WAKEUP_REG_V3,
-        SDIOWIFI_WR_FIFO_ADDR, SDIOWIFI_WR_FIFO_ADDR_V3,
+        ChipVariant, SDIO_TYPE_CFG_CMD_RSP, SDIOWIFI_BLOCK_CNT_REG, SDIOWIFI_BYTEMODE_ENABLE_REG,
+        SDIOWIFI_BYTEMODE_ENABLE_REG_V3, SDIOWIFI_FLOW_CTRL_Q1_REG_V3, SDIOWIFI_FLOW_CTRL_REG,
+        SDIOWIFI_FLOWCTRL_MASK, SDIOWIFI_INTR_CONFIG_REG, SDIOWIFI_INTR_ENABLE_REG_V3,
+        SDIOWIFI_MISC_INT_STATUS_REG_V3, SDIOWIFI_RD_FIFO_ADDR, SDIOWIFI_RD_FIFO_ADDR_V3,
+        SDIOWIFI_REGISTER_BLOCK, SDIOWIFI_SLEEP_REG_V3, SDIOWIFI_V3_SLEEP_READY_BIT,
+        SDIOWIFI_V3_WAKEUP_VALUE, SDIOWIFI_WAKEUP_REG_V3, SDIOWIFI_WR_FIFO_ADDR,
+        SDIOWIFI_WR_FIFO_ADDR_V3,
     },
     fdrv::{
         consts::*,
@@ -189,7 +189,12 @@ fn poll_for_response<H: SdioHost>(
             log::info!(
                 "[DIAG] retry={} f1_bc=0x{:02x} f2_bc=0x{:02x} f1_fc(0x0a)=0x{:02x} \
                  f0_intpend(0x05)=0x{:02x} irq#38={}",
-                retry, f1_bc, f2_bc, f1_fc, f0_ip, irqc
+                retry,
+                f1_bc,
+                f2_bc,
+                f1_fc,
+                f0_ip,
+                irqc
             );
         }
 
@@ -231,7 +236,10 @@ fn read_and_parse_response<H: SdioHost>(
     let read_len = (block_cnt as usize) * SDIOWIFI_FUNC_BLOCKSIZE;
     let mut rx_buf: Vec<u8> = vec![0u8; read_len];
 
-    if sdio.read_fifo(func, rd_fifo_reg(is_v3), &mut rx_buf).is_err() {
+    if sdio
+        .read_fifo(func, rd_fifo_reg(is_v3), &mut rx_buf)
+        .is_err()
+    {
         crate::runtime::runtime().sleep_ms(2);
         return Err("CRC error, retrying");
     }
@@ -286,7 +294,8 @@ pub fn polling_send_cmd<H: SdioHost>(
     let pre_f2 = sdio.read_byte(2, SDIOWIFI_BLOCK_CNT_REG).unwrap_or(0xEE);
     log::info!(
         "[fdrv] pre-send block_cnt f1=0x{:02x} f2=0x{:02x}",
-        pre_f1, pre_f2
+        pre_f1,
+        pre_f2
     );
 
     sdio.write_fifo(func, wr_fifo_reg(is_v3), &buf)
@@ -549,9 +558,7 @@ fn reinit_sdio_func<H: SdioHost>(sdio: &mut H, chip: ChipVariant) -> Result<(), 
         // 必须在发第一笔 MM 命令之前写, 否则第一笔命令拿不到响应。
         sdio.write_byte(1, intr_config_reg(is_v3), 0x07)
             .map_err(|_| "func1 0x04 intr_config write failed")?;
-        log::info!(
-            "[fdrv] DC SDIO func re-init done (func1+func2 block mode, func1 intr armed)"
-        );
+        log::info!("[fdrv] DC SDIO func re-init done (func1+func2 block mode, func1 intr armed)");
     }
     Ok(())
 }

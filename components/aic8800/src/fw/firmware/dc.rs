@@ -52,7 +52,11 @@ const SYSCFG_TBL_DC_SDIO_U02: &[(u32, u32)] = &[
 const SYSCFG_TBL_MASKED_DC: &[(u32, u32, u32)] = &[
     (0x7000_216C, 0x3 << 2, 0x1 << 2),
     (0x7000_21BC, 0x3 << 2, 0x1 << 2),
-    (0x7000_2118, (0x7 << 4) | (0x1 << 7), (0x2 << 4) | (0x1 << 7)),
+    (
+        0x7000_2118,
+        (0x7 << 4) | (0x1 << 7),
+        (0x2 << 4) | (0x1 << 7),
+    ),
     (0x7000_2104, 0x3F | (0x1 << 6), 0x2 | (0x1 << 6)),
     (0x7000_210C, 0x3F | (0x1 << 6), 0x2 | (0x1 << 6)),
     (0x7000_2170, 0xF, 0x1),
@@ -62,7 +66,11 @@ const SYSCFG_TBL_MASKED_DC: &[(u32, u32, u32)] = &[
     (0x7000_1034, (0x1 << 20) | (0x7 << 26), 0x2 << 26),
     (0x7000_1038, 0x1 << 8, 0x1 << 8),
     (0x7000_1094, 0x3 << 2, 0x0),
-    (0x7000_21D0, (0x1 << 5) | (0x1 << 6), (0x1 << 5) | (0x1 << 6)),
+    (
+        0x7000_21D0,
+        (0x1 << 5) | (0x1 << 6),
+        (0x1 << 5) | (0x1 << 6),
+    ),
     (
         0x7000_1000,
         (0x1 << 0) | (0x1 << 20) | (0x1 << 22),
@@ -82,12 +90,20 @@ const SYSCFG_TBL_MASKED_DC_U01: &[(u32, u32, u32)] = &[
 /// 与非 H 表差异: 0x7000216C 值不同、多 0x70002138/213C/2144、无 0x70001034。
 /// 0x70001000 为 CONFIG_VRF_DCDC_MODE=y 分支。
 const SYSCFG_TBL_MASKED_DC_H: &[(u32, u32, u32)] = &[
-    (0x7000_216C, (0x3 << 2) | (0x3 << 4), (0x2 << 2) | (0x2 << 4)),
+    (
+        0x7000_216C,
+        (0x3 << 2) | (0x3 << 4),
+        (0x2 << 2) | (0x2 << 4),
+    ),
     (0x7000_2138, 0xFF, 0xFF),
     (0x7000_213C, 0xFF, 0xFF),
     (0x7000_2144, 0xFF, 0xFF),
     (0x7000_21BC, 0x3 << 2, 0x1 << 2),
-    (0x7000_2118, (0x7 << 4) | (0x1 << 7), (0x2 << 4) | (0x1 << 7)),
+    (
+        0x7000_2118,
+        (0x7 << 4) | (0x1 << 7),
+        (0x2 << 4) | (0x1 << 7),
+    ),
     (0x7000_2104, 0x3F | (0x1 << 6), 0x2 | (0x1 << 6)),
     (0x7000_210C, 0x3F | (0x1 << 6), 0x2 | (0x1 << 6)),
     (0x7000_2170, 0xF, 0x1),
@@ -97,7 +113,11 @@ const SYSCFG_TBL_MASKED_DC_H: &[(u32, u32, u32)] = &[
     // 注意: 0x70001034 在 H 表里是注释掉的, 不写
     (0x7000_1038, 0x1 << 8, 0x1 << 8),
     (0x7000_1094, 0x3 << 2, 0x0),
-    (0x7000_21D0, (0x1 << 5) | (0x1 << 6), (0x1 << 5) | (0x1 << 6)),
+    (
+        0x7000_21D0,
+        (0x1 << 5) | (0x1 << 6),
+        (0x1 << 5) | (0x1 << 6),
+    ),
     (
         0x7000_1000,
         (0x1 << 0) | (0x1 << 20) | (0x1 << 22),
@@ -274,7 +294,10 @@ fn patch_table_load<H: SdioHost>(
         return Err(SdioError::Unsupported);
     }
     let describe_base = u32::from_le_bytes([blob[0], blob[1], blob[2], blob[3]]);
-    log::debug!("[aic8800] DC patch_tbl describe_base=0x{:08x}", describe_base);
+    log::debug!(
+        "[aic8800] DC patch_tbl describe_base=0x{:08x}",
+        describe_base
+    );
     // 描述块: describe_base 处写 124+4 字节 (含头部 base 字)
     ipc_mem_block_write(transport, describe_base, &blob[..PATCH_TBL_DESC_BYTES])?;
 
@@ -282,12 +305,7 @@ fn patch_table_load<H: SdioHost>(
     let mut off = 128;
     while off + 8 <= blob.len() {
         let a = u32::from_le_bytes([blob[off], blob[off + 1], blob[off + 2], blob[off + 3]]);
-        let d = u32::from_le_bytes([
-            blob[off + 4],
-            blob[off + 5],
-            blob[off + 6],
-            blob[off + 7],
-        ]);
+        let d = u32::from_le_bytes([blob[off + 4], blob[off + 5], blob[off + 6], blob[off + 7]]);
         ipc_mem_write(transport, a, d)?;
         off += 8;
     }
@@ -387,7 +405,11 @@ pub fn init<H: SdioHost>(
 
     // 4. 从 bootrom 启动: 读 0x120000 后 start_app(0x120000, DUMMY)
     let rd = ipc_mem_read(transport, RAM_FMAC_FW_ADDR)?;
-    log::debug!("[aic8800] DC fw mem [0x{:08x}]=0x{:08x}", RAM_FMAC_FW_ADDR, rd);
+    log::debug!(
+        "[aic8800] DC fw mem [0x{:08x}]=0x{:08x}",
+        RAM_FMAC_FW_ADDR,
+        rd
+    );
     let status = ipc_start_app(transport, RAM_FMAC_FW_ADDR, HOST_START_APP_DUMMY)?;
     log::info!("[aic8800] DC start_app status=0x{:08x}", status);
     Ok(())
