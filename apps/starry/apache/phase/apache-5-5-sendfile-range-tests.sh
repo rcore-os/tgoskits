@@ -11,7 +11,6 @@ LOGDIR="$BASE/logs"
 RUNDIR="$BASE/run"
 OUT="$BASE/out"
 HTTPD_PID=
-TIMEOUT_CMD=
 
 if [ -f /usr/bin/apache-alpine-mirror.sh ]; then
     . /usr/bin/apache-alpine-mirror.sh
@@ -77,18 +76,6 @@ finish() {
 }
 
 trap finish EXIT
-
-init_timeout_cmd() {
-    if command -v timeout >/dev/null 2>&1; then TIMEOUT_CMD='timeout'; return 0; fi
-    if busybox timeout 2>&1 | grep -qi 'usage'; then TIMEOUT_CMD='busybox timeout'; return 0; fi
-    fail "timeout command not available"
-}
-
-run_with_timeout() {
-    sec=$1
-    shift
-    $TIMEOUT_CMD "$sec" "$@"
-}
 
 prepare_packages() {
     apache_runner_ensure_packages
@@ -163,7 +150,7 @@ start_httpd() {
         if [ -f "$pidfile" ]; then
             HTTPD_PID=$(cat "$pidfile")
             if kill -0 "$HTTPD_PID" 2>/dev/null; then
-                if run_with_timeout 2 curl -fsS -o "$OUT/startup.body" http://127.0.0.1:8080/ >/dev/null 2>&1; then return 0; fi
+                if apache_runner_run_with_timeout 2 curl -fsS -o "$OUT/startup.body" http://127.0.0.1:8080/ >/dev/null 2>&1; then return 0; fi
             fi
         fi
         sleep 1
@@ -183,39 +170,39 @@ stop_httpd() {
 }
 
 test_sendfile_off_large() {
-    run_with_timeout 10 curl -fsS -D "$OUT/off.headers" -o "$OUT/off.bin" http://127.0.0.1:8080/large.bin
+    apache_runner_run_with_timeout 10 curl -fsS -D "$OUT/off.headers" -o "$OUT/off.bin" http://127.0.0.1:8080/large.bin
     [ "$(wc -c < "$OUT/off.bin")" -eq 1048576 ]
     cmp "$DOCROOT/large.bin" "$OUT/off.bin"
 }
 
 test_sendfile_on_large() {
-    run_with_timeout 10 curl -fsS -D "$OUT/on.headers" -o "$OUT/on.bin" http://127.0.0.1:8080/large.bin
+    apache_runner_run_with_timeout 10 curl -fsS -D "$OUT/on.headers" -o "$OUT/on.bin" http://127.0.0.1:8080/large.bin
     [ "$(wc -c < "$OUT/on.bin")" -eq 1048576 ]
     cmp "$DOCROOT/large.bin" "$OUT/on.bin"
 }
 
 test_range_requests() {
-    code=$(run_with_timeout 10 curl -sS -D "$OUT/range-0-15.headers" -o "$OUT/range-0-15.bin" -w '%{http_code}' -H 'Range: bytes=0-15' http://127.0.0.1:8080/large.bin || printf 'curl_failed')
+    code=$(apache_runner_run_with_timeout 10 curl -sS -D "$OUT/range-0-15.headers" -o "$OUT/range-0-15.bin" -w '%{http_code}' -H 'Range: bytes=0-15' http://127.0.0.1:8080/large.bin || printf 'curl_failed')
     [ "$code" = "206" ]
     [ "$(wc -c < "$OUT/range-0-15.bin")" -eq 16 ]
     grep -qi '^Content-Range: bytes 0-15/1048576' "$OUT/range-0-15.headers"
 
-    code=$(run_with_timeout 10 curl -sS -D "$OUT/range-100-199.headers" -o "$OUT/range-100-199.bin" -w '%{http_code}' -H 'Range: bytes=100-199' http://127.0.0.1:8080/large.bin || printf 'curl_failed')
+    code=$(apache_runner_run_with_timeout 10 curl -sS -D "$OUT/range-100-199.headers" -o "$OUT/range-100-199.bin" -w '%{http_code}' -H 'Range: bytes=100-199' http://127.0.0.1:8080/large.bin || printf 'curl_failed')
     [ "$code" = "206" ]
     [ "$(wc -c < "$OUT/range-100-199.bin")" -eq 100 ]
     grep -qi '^Content-Range: bytes 100-199/1048576' "$OUT/range-100-199.headers"
 
-    code=$(run_with_timeout 10 curl -sS -D "$OUT/range-suffix.headers" -o "$OUT/range-suffix.bin" -w '%{http_code}' -H 'Range: bytes=-64' http://127.0.0.1:8080/large.bin || printf 'curl_failed')
+    code=$(apache_runner_run_with_timeout 10 curl -sS -D "$OUT/range-suffix.headers" -o "$OUT/range-suffix.bin" -w '%{http_code}' -H 'Range: bytes=-64' http://127.0.0.1:8080/large.bin || printf 'curl_failed')
     [ "$code" = "206" ]
     [ "$(wc -c < "$OUT/range-suffix.bin")" -eq 64 ]
     grep -qi '^Content-Range: bytes 1048512-1048575/1048576' "$OUT/range-suffix.headers"
 }
 
 test_conditional_get() {
-    run_with_timeout 10 curl -fsS -I -o "$OUT/head.headers" http://127.0.0.1:8080/large.bin
+    apache_runner_run_with_timeout 10 curl -fsS -I -o "$OUT/head.headers" http://127.0.0.1:8080/large.bin
     grep -qi '^Last-Modified:' "$OUT/head.headers"
     grep -qi '^ETag:' "$OUT/head.headers"
-    code=$(run_with_timeout 10 curl -sS -D "$OUT/conditional.headers" -o "$OUT/conditional.body" -w '%{http_code}' -z "$DOCROOT/large.bin" http://127.0.0.1:8080/large.bin || printf 'curl_failed')
+    code=$(apache_runner_run_with_timeout 10 curl -sS -D "$OUT/conditional.headers" -o "$OUT/conditional.body" -w '%{http_code}' -z "$DOCROOT/large.bin" http://127.0.0.1:8080/large.bin || printf 'curl_failed')
     [ "$code" = "304" ]
 }
 
@@ -227,7 +214,7 @@ run_step() {
     pass_step "$name"
 }
 
-init_timeout_cmd
+apache_runner_init_timeout_cmd || fail "timeout command not available"
 run_step "prepare packages" prepare_packages
 run_step "prepare apache files" prepare_tree
 

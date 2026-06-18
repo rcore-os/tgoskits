@@ -12,7 +12,6 @@ LOGDIR="$BASE/logs"
 RUNDIR="$BASE/run"
 OUT="$BASE/out"
 HTTPD_PID=
-TIMEOUT_CMD=
 
 if [ -f /usr/bin/apache-alpine-mirror.sh ]; then
     . /usr/bin/apache-alpine-mirror.sh
@@ -77,18 +76,6 @@ finish() {
 }
 
 trap finish EXIT
-
-init_timeout_cmd() {
-    if command -v timeout >/dev/null 2>&1; then TIMEOUT_CMD='timeout'; return 0; fi
-    if busybox timeout 2>&1 | grep -qi 'usage'; then TIMEOUT_CMD='busybox timeout'; return 0; fi
-    fail "timeout command not available"
-}
-
-run_with_timeout() {
-    sec=$1
-    shift
-    $TIMEOUT_CMD "$sec" "$@"
-}
 
 prepare_packages() {
     apache_runner_ensure_packages
@@ -163,7 +150,7 @@ start_httpd() {
         if [ -f "$RUNDIR/httpd.pid" ]; then
             HTTPD_PID=$(cat "$RUNDIR/httpd.pid")
             if kill -0 "$HTTPD_PID" 2>/dev/null; then
-                if run_with_timeout 2 curl -fsS -o "$OUT/startup.body" http://127.0.0.1:8080/ >/dev/null 2>&1; then return 0; fi
+                if apache_runner_run_with_timeout 2 curl -fsS -o "$OUT/startup.body" http://127.0.0.1:8080/ >/dev/null 2>&1; then return 0; fi
             fi
         fi
         sleep 1
@@ -173,7 +160,7 @@ start_httpd() {
 }
 
 test_cgi_env_and_body() {
-    run_with_timeout 5 curl -fsS -D "$OUT/cgi-post.headers" -o "$OUT/cgi-post.body" -X POST --data 'abc123' http://127.0.0.1:8080${CGIURL}echo.cgi
+    apache_runner_run_with_timeout 5 curl -fsS -D "$OUT/cgi-post.headers" -o "$OUT/cgi-post.body" -X POST --data 'abc123' http://127.0.0.1:8080${CGIURL}echo.cgi
     grep -qi '^Content-Type: text/plain' "$OUT/cgi-post.headers"
     grep -qx 'REQUEST_METHOD=POST' "$OUT/cgi-post.body"
     grep -qx 'CONTENT_LENGTH=6' "$OUT/cgi-post.body"
@@ -182,24 +169,24 @@ test_cgi_env_and_body() {
 }
 
 test_cgi_get_env() {
-    run_with_timeout 5 curl -fsS -D "$OUT/cgi-get.headers" -o "$OUT/cgi-get.body" http://127.0.0.1:8080${CGIURL}echo.cgi
+    apache_runner_run_with_timeout 5 curl -fsS -D "$OUT/cgi-get.headers" -o "$OUT/cgi-get.body" http://127.0.0.1:8080${CGIURL}echo.cgi
     grep -qx 'REQUEST_METHOD=GET' "$OUT/cgi-get.body"
     grep -qx 'CONTENT_LENGTH=' "$OUT/cgi-get.body"
     grep -qx 'BODY_BYTES=0' "$OUT/cgi-get.body"
 }
 
 test_cgi_large_body() {
-    run_with_timeout 8 curl -fsS -D "$OUT/cgi-large.headers" -o "$OUT/cgi-large.body" -X POST --data-binary "@$OUT/post-large.bin" http://127.0.0.1:8080${CGIURL}echo.cgi
+    apache_runner_run_with_timeout 8 curl -fsS -D "$OUT/cgi-large.headers" -o "$OUT/cgi-large.body" -X POST --data-binary "@$OUT/post-large.bin" http://127.0.0.1:8080${CGIURL}echo.cgi
     grep -qx 'BODY_BYTES=4096' "$OUT/cgi-large.body"
 }
 
 test_limit_request_body_413() {
-    code=$(run_with_timeout 8 curl -sS -D "$OUT/cgi-over.headers" -o "$OUT/cgi-over.body" -w '%{http_code}' -X POST --data-binary "@$OUT/post-over.bin" http://127.0.0.1:8080${CGIURL}echo.cgi || printf 'curl_failed')
+    code=$(apache_runner_run_with_timeout 8 curl -sS -D "$OUT/cgi-over.headers" -o "$OUT/cgi-over.body" -w '%{http_code}' -X POST --data-binary "@$OUT/post-over.bin" http://127.0.0.1:8080${CGIURL}echo.cgi || printf 'curl_failed')
     [ "$code" = "413" ]
 }
 
 test_cgi_fail_500() {
-    code=$(run_with_timeout 5 curl -sS -D "$OUT/cgi-fail.headers" -o "$OUT/cgi-fail.body" -w '%{http_code}' http://127.0.0.1:8080${CGIURL}fail.cgi || printf 'curl_failed')
+    code=$(apache_runner_run_with_timeout 5 curl -sS -D "$OUT/cgi-fail.headers" -o "$OUT/cgi-fail.body" -w '%{http_code}' http://127.0.0.1:8080${CGIURL}fail.cgi || printf 'curl_failed')
     [ "$code" = "500" ]
 }
 
@@ -221,7 +208,7 @@ run_step() {
     pass_step "$name"
 }
 
-init_timeout_cmd
+apache_runner_init_timeout_cmd || fail "timeout command not available"
 run_step "prepare packages" prepare_packages
 run_step "prepare apache files" prepare_tree
 run_step "start apache" start_httpd

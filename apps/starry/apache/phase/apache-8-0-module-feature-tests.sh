@@ -11,7 +11,6 @@ LOGDIR="$BASE/logs"
 RUNDIR="$BASE/run"
 OUT="$BASE/out"
 HTTPD_PID=
-TIMEOUT_CMD=
 
 if [ -f /usr/bin/apache-alpine-mirror.sh ]; then
     . /usr/bin/apache-alpine-mirror.sh
@@ -76,18 +75,6 @@ finish() {
 }
 
 trap finish EXIT
-
-init_timeout_cmd() {
-    if command -v timeout >/dev/null 2>&1; then TIMEOUT_CMD='timeout'; return 0; fi
-    if busybox timeout 2>&1 | grep -qi 'usage'; then TIMEOUT_CMD='busybox timeout'; return 0; fi
-    fail "timeout command not available"
-}
-
-run_with_timeout() {
-    sec=$1
-    shift
-    $TIMEOUT_CMD "$sec" "$@"
-}
 
 prepare_packages() {
     apache_runner_ensure_packages
@@ -159,7 +146,7 @@ start_httpd() {
         if [ -f "$RUNDIR/httpd.pid" ]; then
             HTTPD_PID=$(cat "$RUNDIR/httpd.pid")
             if kill -0 "$HTTPD_PID" 2>/dev/null; then
-                if run_with_timeout 2 curl -fsS -H 'Host: first.local' -o "$OUT/startup.body" http://127.0.0.1:8080/ >/dev/null 2>&1; then return 0; fi
+                if apache_runner_run_with_timeout 2 curl -fsS -H 'Host: first.local' -o "$OUT/startup.body" http://127.0.0.1:8080/ >/dev/null 2>&1; then return 0; fi
             fi
         fi
         sleep 1
@@ -169,29 +156,29 @@ start_httpd() {
 }
 
 test_mime_type() {
-    run_with_timeout 5 curl -fsS -D "$OUT/mime.headers" -o "$OUT/mime.body" -H 'Host: first.local' http://127.0.0.1:8080/mime.txt
+    apache_runner_run_with_timeout 5 curl -fsS -D "$OUT/mime.headers" -o "$OUT/mime.body" -H 'Host: first.local' http://127.0.0.1:8080/mime.txt
     grep -qi '^Content-Type: text/plain' "$OUT/mime.headers"
     grep -qx 'phase80 mime text' "$OUT/mime.body"
 }
 
 test_rewrite() {
-    run_with_timeout 5 curl -fsS -D "$OUT/rewrite.headers" -o "$OUT/rewrite.body" -H 'Host: first.local' http://127.0.0.1:8080/rewrite-me
+    apache_runner_run_with_timeout 5 curl -fsS -D "$OUT/rewrite.headers" -o "$OUT/rewrite.body" -H 'Host: first.local' http://127.0.0.1:8080/rewrite-me
     grep -qx 'phase80 rewritten' "$OUT/rewrite.body"
 }
 
 test_deflate() {
-    run_with_timeout 5 curl -fsS -D "$OUT/deflate.headers" -o "$OUT/deflate.body" -H 'Host: first.local' -H 'Accept-Encoding: gzip' http://127.0.0.1:8080/gzip.txt
+    apache_runner_run_with_timeout 5 curl -fsS -D "$OUT/deflate.headers" -o "$OUT/deflate.body" -H 'Host: first.local' -H 'Accept-Encoding: gzip' http://127.0.0.1:8080/gzip.txt
     grep -qi '^Content-Encoding: gzip' "$OUT/deflate.headers"
 }
 
 test_status_auto() {
-    run_with_timeout 5 curl -fsS -D "$OUT/status.headers" -o "$OUT/status.body" -H 'Host: first.local' http://127.0.0.1:8080/server-status?auto
+    apache_runner_run_with_timeout 5 curl -fsS -D "$OUT/status.headers" -o "$OUT/status.body" -H 'Host: first.local' http://127.0.0.1:8080/server-status?auto
     grep -qi '^ServerMPM: prefork' "$OUT/status.body"
     grep -qi '^Total Accesses:' "$OUT/status.body"
 }
 
 test_name_based_vhost() {
-    run_with_timeout 5 curl -fsS -D "$OUT/vhost2.headers" -o "$OUT/vhost2.body" -H 'Host: second.local' http://127.0.0.1:8080/
+    apache_runner_run_with_timeout 5 curl -fsS -D "$OUT/vhost2.headers" -o "$OUT/vhost2.body" -H 'Host: second.local' http://127.0.0.1:8080/
     grep -qx 'phase80 vhost2' "$OUT/vhost2.body"
 }
 
@@ -213,7 +200,7 @@ run_step() {
     pass_step "$name"
 }
 
-init_timeout_cmd
+apache_runner_init_timeout_cmd || fail "timeout command not available"
 run_step "prepare packages" prepare_packages
 run_step "prepare apache files" prepare_tree
 run_step "start apache" start_httpd
