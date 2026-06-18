@@ -581,7 +581,7 @@ mod tests {
         let mut data: Vec<u8> = (0..BUF_SIZE).map(|_| b'a').collect();
         data.push(b'\n');
 
-        let (mut reader, mut rx) = make_reader(data);
+        let (mut reader, rx) = make_reader(data);
 
         // First drain: reads the BUF_SIZE 'a' bytes into line_buf; no newline yet,
         // so nothing reaches buf_rx.  Must still return true (progress was made).
