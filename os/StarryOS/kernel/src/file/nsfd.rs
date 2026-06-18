@@ -2,7 +2,7 @@ use alloc::{borrow::Cow, sync::Arc};
 use core::task::Context;
 
 use ax_errno::AxResult;
-use ax_fs::MountNamespace as FsMountNamespace;
+use ax_fs_ng::MountNamespace as FsMountNamespace;
 use ax_kspin::SpinNoIrq;
 use axnsproxy::{
     IpcNamespace, MntNamespace as ProxyMntNamespace, NetNamespace, PidNamespace, UserNamespace,

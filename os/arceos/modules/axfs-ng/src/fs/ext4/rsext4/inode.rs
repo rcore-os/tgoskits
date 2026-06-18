@@ -533,7 +533,7 @@ impl DirNodeOps for Inode {
     fn unlink(&self, name: &str, is_dir: bool) -> VfsResult<()> {
         let dir_path = self.dir_path()?;
         let path = join_child_path(&dir_path, name);
-        let mut forget_file_ino = None;
+        let mut forget_file_ino: Option<InodeNumber> = None;
         {
             let mut state = self.fs.lock();
             let (fs, dev) = state.split();

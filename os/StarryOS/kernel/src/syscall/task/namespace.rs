@@ -2,7 +2,7 @@ use alloc::sync::Arc;
 use core::mem;
 
 use ax_errno::{AxError, AxResult};
-use ax_fs::FS_CONTEXT;
+use ax_fs_ng::FS_CONTEXT;
 use ax_sync::Mutex;
 use ax_task::current;
 use linux_raw_sys::general::{
