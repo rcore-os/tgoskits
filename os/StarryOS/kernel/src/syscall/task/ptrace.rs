@@ -1,11 +1,8 @@
 use alloc::{sync::Arc, vec, vec::Vec};
-use core::mem::{MaybeUninit, size_of};
-#[cfg(any(
-    target_arch = "riscv64",
-    target_arch = "aarch64",
-    target_arch = "loongarch64"
-))]
-use core::slice;
+use core::{
+    mem::{MaybeUninit, size_of},
+    slice,
+};
 
 use ax_errno::{AxError, AxResult, LinuxError};
 use ax_memory_addr::{MemoryAddr, VirtAddr};
@@ -15,15 +12,11 @@ use starry_process::Pid;
 use starry_signal::Signo;
 use starry_vm::{VmMutPtr, VmPtr, vm_read_slice, vm_write_slice};
 
-#[cfg(any(
-    target_arch = "riscv64",
-    target_arch = "aarch64",
-    target_arch = "loongarch64"
-))]
-use crate::task::PtraceStopFpData;
 use crate::{
     mm::{AddrSpace, IoVec},
-    task::{AsThread, Cred, ProcessData, get_process_cred, get_process_data, get_task},
+    task::{
+        AsThread, Cred, ProcessData, PtraceStopFpData, get_process_cred, get_process_data, get_task,
+    },
 };
 
 const PTRACE_TRACEME: u32 = 0;
@@ -51,11 +44,6 @@ const PTRACE_SEIZE: u32 = 0x4206;
 const PTRACE_INTERRUPT: u32 = 0x4207;
 
 const NT_PRSTATUS: usize = 1;
-#[cfg(any(
-    target_arch = "riscv64",
-    target_arch = "aarch64",
-    target_arch = "loongarch64"
-))]
 const NT_FPREGSET: usize = 2;
 
 const PTRACE_O_TRACESYSGOOD: usize = 1;
@@ -86,12 +74,16 @@ type ArchUserRegs = RiscvUserRegs;
 type ArchUserRegs = Aarch64UserRegs;
 #[cfg(target_arch = "loongarch64")]
 type ArchUserRegs = LoongarchUserRegs;
+#[cfg(target_arch = "x86_64")]
+type ArchUserRegs = X8664UserRegs;
 #[cfg(target_arch = "riscv64")]
 type ArchFpRegs = RiscvFpRegs;
 #[cfg(target_arch = "aarch64")]
 type ArchFpRegs = Aarch64FpRegs;
 #[cfg(target_arch = "loongarch64")]
 type ArchFpRegs = LoongarchFpRegs;
+#[cfg(target_arch = "x86_64")]
+type ArchFpRegs = X8664FpRegs;
 
 #[cfg(target_arch = "riscv64")]
 #[repr(C)]
@@ -178,6 +170,44 @@ struct LoongarchFpRegs {
     fcc: u64,
     fcsr: u32,
 }
+
+#[cfg(target_arch = "x86_64")]
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct X8664UserRegs {
+    r15: u64,
+    r14: u64,
+    r13: u64,
+    r12: u64,
+    rbp: u64,
+    rbx: u64,
+    r11: u64,
+    r10: u64,
+    r9: u64,
+    r8: u64,
+    rax: u64,
+    rcx: u64,
+    rdx: u64,
+    rsi: u64,
+    rdi: u64,
+    orig_rax: u64,
+    rip: u64,
+    cs: u64,
+    eflags: u64,
+    rsp: u64,
+    ss: u64,
+    fs_base: u64,
+    gs_base: u64,
+    ds: u64,
+    es: u64,
+    fs: u64,
+    gs: u64,
+}
+
+#[cfg(target_arch = "x86_64")]
+#[repr(transparent)]
+#[derive(Clone, Copy)]
+struct X8664FpRegs(ax_cpu::FxsaveArea);
 
 pub fn sys_ptrace(request: u32, pid: usize, addr: usize, data: usize) -> AxResult<isize> {
     info!("sys_ptrace <= request: {request}, pid: {pid}, addr: {addr:#x}, data: {data:#x}");
@@ -339,38 +369,16 @@ fn ptrace_getsiginfo(pid: usize, data: usize) -> AxResult<isize> {
         .ptrace_stop_siginfo_for(tid)
         .ok_or_else(|| AxError::from(LinuxError::ESRCH))?;
 
-    #[cfg(any(
-        target_arch = "riscv64",
-        target_arch = "aarch64",
-        target_arch = "loongarch64"
-    ))]
-    {
-        let bytes = unsafe {
-            slice::from_raw_parts(
-                (&siginfo.0 as *const linux_raw_sys::general::siginfo_t).cast::<u8>(),
-                size_of::<starry_signal::SignalInfo>(),
-            )
-        };
-        vm_write_slice(data as *mut u8, bytes)?;
-        Ok(0)
-    }
-
-    #[cfg(not(any(
-        target_arch = "riscv64",
-        target_arch = "aarch64",
-        target_arch = "loongarch64"
-    )))]
-    {
-        let _ = (data, siginfo);
-        Err(AxError::Unsupported)
-    }
+    let bytes = unsafe {
+        slice::from_raw_parts(
+            (&siginfo.0 as *const linux_raw_sys::general::siginfo_t).cast::<u8>(),
+            size_of::<starry_signal::SignalInfo>(),
+        )
+    };
+    vm_write_slice(data as *mut u8, bytes)?;
+    Ok(0)
 }
 
-#[cfg(any(
-    target_arch = "riscv64",
-    target_arch = "aarch64",
-    target_arch = "loongarch64"
-))]
 fn ptrace_setsiginfo(pid: usize, data: usize) -> AxResult<isize> {
     if data == 0 {
         return Err(AxError::InvalidInput);
@@ -384,24 +392,9 @@ fn ptrace_setsiginfo(pid: usize, data: usize) -> AxResult<isize> {
     Ok(0)
 }
 
-#[cfg(not(any(
-    target_arch = "riscv64",
-    target_arch = "aarch64",
-    target_arch = "loongarch64"
-)))]
-fn ptrace_setsiginfo(pid: usize, data: usize) -> AxResult<isize> {
-    let _ = (pid, data);
-    Err(AxError::Unsupported)
-}
-
 fn ptrace_getregset(pid: usize, addr: usize, data: usize) -> AxResult<isize> {
     match addr {
         NT_PRSTATUS => ptrace_getregset_prstatus(pid, data),
-        #[cfg(any(
-            target_arch = "riscv64",
-            target_arch = "aarch64",
-            target_arch = "loongarch64"
-        ))]
         NT_FPREGSET => ptrace_getregset_fpregset(pid, data),
         _ => Err(AxError::Unsupported),
     }
@@ -410,11 +403,6 @@ fn ptrace_getregset(pid: usize, addr: usize, data: usize) -> AxResult<isize> {
 fn ptrace_setregset(pid: usize, addr: usize, data: usize) -> AxResult<isize> {
     match addr {
         NT_PRSTATUS => ptrace_setregset_prstatus(pid, data),
-        #[cfg(any(
-            target_arch = "riscv64",
-            target_arch = "aarch64",
-            target_arch = "loongarch64"
-        ))]
         NT_FPREGSET => ptrace_setregset_fpregset(pid, data),
         _ => Err(AxError::Unsupported),
     }
@@ -423,7 +411,8 @@ fn ptrace_setregset(pid: usize, addr: usize, data: usize) -> AxResult<isize> {
 #[cfg(any(
     target_arch = "riscv64",
     target_arch = "aarch64",
-    target_arch = "loongarch64"
+    target_arch = "loongarch64",
+    target_arch = "x86_64"
 ))]
 fn ptrace_getregs(pid: usize, data: usize) -> AxResult<isize> {
     if data == 0 {
@@ -443,7 +432,8 @@ fn ptrace_getregs(pid: usize, data: usize) -> AxResult<isize> {
 #[cfg(not(any(
     target_arch = "riscv64",
     target_arch = "aarch64",
-    target_arch = "loongarch64"
+    target_arch = "loongarch64",
+    target_arch = "x86_64"
 )))]
 fn ptrace_getregs(pid: usize, data: usize) -> AxResult<isize> {
     let _ = (pid, data);
@@ -453,7 +443,8 @@ fn ptrace_getregs(pid: usize, data: usize) -> AxResult<isize> {
 #[cfg(any(
     target_arch = "riscv64",
     target_arch = "aarch64",
-    target_arch = "loongarch64"
+    target_arch = "loongarch64",
+    target_arch = "x86_64"
 ))]
 fn ptrace_setregs(pid: usize, data: usize) -> AxResult<isize> {
     if data == 0 {
@@ -466,14 +457,19 @@ fn ptrace_setregs(pid: usize, data: usize) -> AxResult<isize> {
 #[cfg(not(any(
     target_arch = "riscv64",
     target_arch = "aarch64",
-    target_arch = "loongarch64"
+    target_arch = "loongarch64",
+    target_arch = "x86_64"
 )))]
 fn ptrace_setregs(pid: usize, data: usize) -> AxResult<isize> {
     let _ = (pid, data);
     Err(AxError::Unsupported)
 }
 
-#[cfg(any(target_arch = "riscv64", target_arch = "loongarch64"))]
+#[cfg(any(
+    target_arch = "riscv64",
+    target_arch = "loongarch64",
+    target_arch = "x86_64"
+))]
 fn ptrace_getfpregs(pid: usize, data: usize) -> AxResult<isize> {
     if data == 0 {
         return Err(AxError::InvalidInput);
@@ -489,13 +485,21 @@ fn ptrace_getfpregs(pid: usize, data: usize) -> AxResult<isize> {
     Ok(0)
 }
 
-#[cfg(not(any(target_arch = "riscv64", target_arch = "loongarch64")))]
+#[cfg(not(any(
+    target_arch = "riscv64",
+    target_arch = "loongarch64",
+    target_arch = "x86_64"
+)))]
 fn ptrace_getfpregs(pid: usize, data: usize) -> AxResult<isize> {
     let _ = (pid, data);
     Err(AxError::Unsupported)
 }
 
-#[cfg(any(target_arch = "riscv64", target_arch = "loongarch64"))]
+#[cfg(any(
+    target_arch = "riscv64",
+    target_arch = "loongarch64",
+    target_arch = "x86_64"
+))]
 fn ptrace_setfpregs(pid: usize, data: usize) -> AxResult<isize> {
     if data == 0 {
         return Err(AxError::InvalidInput);
@@ -504,7 +508,11 @@ fn ptrace_setfpregs(pid: usize, data: usize) -> AxResult<isize> {
     ptrace_write_stopped_fp_regs(pid, regs)
 }
 
-#[cfg(not(any(target_arch = "riscv64", target_arch = "loongarch64")))]
+#[cfg(not(any(
+    target_arch = "riscv64",
+    target_arch = "loongarch64",
+    target_arch = "x86_64"
+)))]
 fn ptrace_setfpregs(pid: usize, data: usize) -> AxResult<isize> {
     let _ = (pid, data);
     Err(AxError::Unsupported)
@@ -576,7 +584,8 @@ fn ptrace_interrupt(pid: usize) -> AxResult<isize> {
 #[cfg(any(
     target_arch = "riscv64",
     target_arch = "aarch64",
-    target_arch = "loongarch64"
+    target_arch = "loongarch64",
+    target_arch = "x86_64"
 ))]
 fn ptrace_getregset_prstatus(pid: usize, data: usize) -> AxResult<isize> {
     if data == 0 {
@@ -604,7 +613,8 @@ fn ptrace_getregset_prstatus(pid: usize, data: usize) -> AxResult<isize> {
 #[cfg(not(any(
     target_arch = "riscv64",
     target_arch = "aarch64",
-    target_arch = "loongarch64"
+    target_arch = "loongarch64",
+    target_arch = "x86_64"
 )))]
 fn ptrace_getregset_prstatus(pid: usize, data: usize) -> AxResult<isize> {
     let _ = (pid, data);
@@ -614,7 +624,8 @@ fn ptrace_getregset_prstatus(pid: usize, data: usize) -> AxResult<isize> {
 #[cfg(any(
     target_arch = "riscv64",
     target_arch = "aarch64",
-    target_arch = "loongarch64"
+    target_arch = "loongarch64",
+    target_arch = "x86_64"
 ))]
 fn ptrace_setregset_prstatus(pid: usize, data: usize) -> AxResult<isize> {
     if data == 0 {
@@ -632,7 +643,8 @@ fn ptrace_setregset_prstatus(pid: usize, data: usize) -> AxResult<isize> {
 #[cfg(any(
     target_arch = "riscv64",
     target_arch = "aarch64",
-    target_arch = "loongarch64"
+    target_arch = "loongarch64",
+    target_arch = "x86_64"
 ))]
 fn ptrace_read_stopped_user_regs(pid: usize) -> AxResult<ArchUserRegs> {
     let (tracee, tid) = ptrace_stopped_tracee_with_tid(pid)?;
@@ -645,7 +657,8 @@ fn ptrace_read_stopped_user_regs(pid: usize) -> AxResult<ArchUserRegs> {
 #[cfg(any(
     target_arch = "riscv64",
     target_arch = "aarch64",
-    target_arch = "loongarch64"
+    target_arch = "loongarch64",
+    target_arch = "x86_64"
 ))]
 fn ptrace_read_user_regs(data: usize) -> AxResult<ArchUserRegs> {
     let mut regs = MaybeUninit::<ArchUserRegs>::uninit();
@@ -662,14 +675,15 @@ fn ptrace_read_user_regs(data: usize) -> AxResult<ArchUserRegs> {
 #[cfg(any(
     target_arch = "riscv64",
     target_arch = "aarch64",
-    target_arch = "loongarch64"
+    target_arch = "loongarch64",
+    target_arch = "x86_64"
 ))]
 fn ptrace_write_stopped_user_regs(pid: usize, regs: ArchUserRegs) -> AxResult<isize> {
     let (tracee, tid) = ptrace_stopped_tracee_with_tid(pid)?;
     let mut uctx = tracee
         .ptrace_stop_user_context_for(tid)
         .ok_or_else(|| AxError::from(LinuxError::ESRCH))?;
-    regs.write_to(&mut uctx);
+    regs.write_to(&mut uctx)?;
     if !tracee.set_ptrace_stop_user_context_for(tid, uctx) {
         return Err(AxError::from(LinuxError::ESRCH));
     }
@@ -679,7 +693,8 @@ fn ptrace_write_stopped_user_regs(pid: usize, regs: ArchUserRegs) -> AxResult<is
 #[cfg(not(any(
     target_arch = "riscv64",
     target_arch = "aarch64",
-    target_arch = "loongarch64"
+    target_arch = "loongarch64",
+    target_arch = "x86_64"
 )))]
 fn ptrace_setregset_prstatus(pid: usize, data: usize) -> AxResult<isize> {
     let _ = (pid, data);
@@ -689,7 +704,8 @@ fn ptrace_setregset_prstatus(pid: usize, data: usize) -> AxResult<isize> {
 #[cfg(any(
     target_arch = "riscv64",
     target_arch = "aarch64",
-    target_arch = "loongarch64"
+    target_arch = "loongarch64",
+    target_arch = "x86_64"
 ))]
 fn ptrace_getregset_fpregset(pid: usize, data: usize) -> AxResult<isize> {
     if data == 0 {
@@ -712,10 +728,22 @@ fn ptrace_getregset_fpregset(pid: usize, data: usize) -> AxResult<isize> {
     Ok(0)
 }
 
+#[cfg(not(any(
+    target_arch = "riscv64",
+    target_arch = "aarch64",
+    target_arch = "loongarch64",
+    target_arch = "x86_64"
+)))]
+fn ptrace_getregset_fpregset(pid: usize, data: usize) -> AxResult<isize> {
+    let _ = (pid, data);
+    Err(AxError::Unsupported)
+}
+
 #[cfg(any(
     target_arch = "riscv64",
     target_arch = "aarch64",
-    target_arch = "loongarch64"
+    target_arch = "loongarch64",
+    target_arch = "x86_64"
 ))]
 fn ptrace_setregset_fpregset(pid: usize, data: usize) -> AxResult<isize> {
     if data == 0 {
@@ -729,10 +757,22 @@ fn ptrace_setregset_fpregset(pid: usize, data: usize) -> AxResult<isize> {
     ptrace_write_stopped_fp_regs(pid, regs)
 }
 
+#[cfg(not(any(
+    target_arch = "riscv64",
+    target_arch = "aarch64",
+    target_arch = "loongarch64",
+    target_arch = "x86_64"
+)))]
+fn ptrace_setregset_fpregset(pid: usize, data: usize) -> AxResult<isize> {
+    let _ = (pid, data);
+    Err(AxError::Unsupported)
+}
+
 #[cfg(any(
     target_arch = "riscv64",
     target_arch = "aarch64",
-    target_arch = "loongarch64"
+    target_arch = "loongarch64",
+    target_arch = "x86_64"
 ))]
 fn ptrace_read_stopped_fp_regs(pid: usize) -> AxResult<ArchFpRegs> {
     let (tracee, tid) = ptrace_stopped_tracee_with_tid(pid)?;
@@ -745,7 +785,8 @@ fn ptrace_read_stopped_fp_regs(pid: usize) -> AxResult<ArchFpRegs> {
 #[cfg(any(
     target_arch = "riscv64",
     target_arch = "aarch64",
-    target_arch = "loongarch64"
+    target_arch = "loongarch64",
+    target_arch = "x86_64"
 ))]
 fn ptrace_read_user_fpregs(data: usize) -> AxResult<ArchFpRegs> {
     let mut regs = MaybeUninit::<ArchFpRegs>::uninit();
@@ -759,11 +800,6 @@ fn ptrace_read_user_fpregs(data: usize) -> AxResult<ArchFpRegs> {
     Ok(unsafe { regs.assume_init() })
 }
 
-#[cfg(any(
-    target_arch = "riscv64",
-    target_arch = "aarch64",
-    target_arch = "loongarch64"
-))]
 fn ptrace_read_user_siginfo(data: usize) -> AxResult<linux_raw_sys::general::siginfo_t> {
     let mut siginfo = MaybeUninit::<linux_raw_sys::general::siginfo_t>::uninit();
     let bytes = unsafe {
@@ -776,11 +812,6 @@ fn ptrace_read_user_siginfo(data: usize) -> AxResult<linux_raw_sys::general::sig
     Ok(unsafe { siginfo.assume_init() })
 }
 
-#[cfg(any(
-    target_arch = "riscv64",
-    target_arch = "aarch64",
-    target_arch = "loongarch64"
-))]
 fn ptrace_siginfo_signo(siginfo: &linux_raw_sys::general::siginfo_t) -> AxResult<Signo> {
     let signo = unsafe { siginfo.__bindgen_anon_1.__bindgen_anon_1.si_signo };
     Signo::from_repr(signo as u8).ok_or(AxError::InvalidInput)
@@ -789,7 +820,8 @@ fn ptrace_siginfo_signo(siginfo: &linux_raw_sys::general::siginfo_t) -> AxResult
 #[cfg(any(
     target_arch = "riscv64",
     target_arch = "aarch64",
-    target_arch = "loongarch64"
+    target_arch = "loongarch64",
+    target_arch = "x86_64"
 ))]
 fn ptrace_write_stopped_fp_regs(pid: usize, regs: ArchFpRegs) -> AxResult<isize> {
     let (tracee, tid) = ptrace_stopped_tracee_with_tid(pid)?;
@@ -803,8 +835,10 @@ fn ptrace_write_stopped_fp_regs(pid: usize, regs: ArchFpRegs) -> AxResult<isize>
         fp_data.fcsr = regs.fcsr;
         fp_data
     };
-    #[cfg(not(target_arch = "loongarch64"))]
+    #[cfg(not(any(target_arch = "loongarch64", target_arch = "x86_64")))]
     let fp_data = PtraceStopFpData::from(regs);
+    #[cfg(target_arch = "x86_64")]
+    let fp_data = PtraceStopFpData(regs.0);
 
     if !tracee.set_ptrace_stop_fp_data_for(tid, fp_data) {
         return Err(AxError::from(LinuxError::ESRCH));
@@ -1044,6 +1078,16 @@ fn ptrace_stopped_tracee_with_tid(pid: usize) -> AxResult<(Arc<ProcessData>, u32
         .selected_ptrace_stop_tid()
         .ok_or_else(|| AxError::from(LinuxError::ESRCH))?;
     Ok((tracee, tid))
+}
+
+#[cfg(target_arch = "x86_64")]
+pub fn ptrace_setup_singlestep(
+    _tracee: &ProcessData,
+    _tid: Pid,
+    uctx: &mut ax_runtime::hal::cpu::uspace::UserContext,
+) {
+    const X86_EFLAGS_TF: u64 = 1 << 8;
+    uctx.rflags |= X86_EFLAGS_TF;
 }
 
 #[cfg(target_arch = "riscv64")]
@@ -1697,6 +1741,105 @@ pub fn ptrace_notify_vfork_done(parent_pid: Pid, parent_tid: Pid, child_pid: Pid
     true
 }
 
+#[cfg(target_arch = "x86_64")]
+fn sanitize_ptrace_x86_64_eflags(new_eflags: u64, current_eflags: u64) -> u64 {
+    const CF: u64 = 1 << 0;
+    const PF: u64 = 1 << 2;
+    const AF: u64 = 1 << 4;
+    const ZF: u64 = 1 << 6;
+    const SF: u64 = 1 << 7;
+    const TF: u64 = 1 << 8;
+    const DF: u64 = 1 << 10;
+    const OF: u64 = 1 << 11;
+    const RF: u64 = 1 << 16;
+    const AC: u64 = 1 << 18;
+    const ID: u64 = 1 << 21;
+    const USER_WRITABLE_MASK: u64 = CF | PF | AF | ZF | SF | TF | DF | OF | RF | AC | ID;
+    const RESERVED_BIT1: u64 = 1 << 1;
+
+    (current_eflags & !USER_WRITABLE_MASK) | (new_eflags & USER_WRITABLE_MASK) | RESERVED_BIT1
+}
+
+#[cfg(target_arch = "x86_64")]
+impl From<&ax_runtime::hal::cpu::uspace::UserContext> for X8664UserRegs {
+    fn from(uctx: &ax_runtime::hal::cpu::uspace::UserContext) -> Self {
+        Self {
+            r15: uctx.r15,
+            r14: uctx.r14,
+            r13: uctx.r13,
+            r12: uctx.r12,
+            rbp: uctx.rbp,
+            rbx: uctx.rbx,
+            r11: uctx.r11,
+            r10: uctx.r10,
+            r9: uctx.r9,
+            r8: uctx.r8,
+            rax: uctx.rax,
+            rcx: uctx.rcx,
+            rdx: uctx.rdx,
+            rsi: uctx.rsi,
+            rdi: uctx.rdi,
+            orig_rax: uctx.rax,
+            rip: uctx.rip,
+            cs: uctx.cs,
+            eflags: uctx.rflags,
+            rsp: uctx.rsp,
+            ss: uctx.ss,
+            fs_base: uctx.fs_base,
+            gs_base: uctx.gs_base,
+            ds: 0,
+            es: 0,
+            fs: 0,
+            gs: 0,
+        }
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+impl X8664UserRegs {
+    fn write_to(&self, uctx: &mut ax_runtime::hal::cpu::uspace::UserContext) -> AxResult<()> {
+        if self.cs != uctx.cs || self.ss != uctx.ss {
+            return Err(AxError::from(LinuxError::EINVAL));
+        }
+
+        uctx.r15 = self.r15;
+        uctx.r14 = self.r14;
+        uctx.r13 = self.r13;
+        uctx.r12 = self.r12;
+        uctx.rbp = self.rbp;
+        uctx.rbx = self.rbx;
+        uctx.r11 = self.r11;
+        uctx.r10 = self.r10;
+        uctx.r9 = self.r9;
+        uctx.r8 = self.r8;
+        uctx.rax = self.rax;
+        uctx.rcx = self.rcx;
+        uctx.rdx = self.rdx;
+        uctx.rsi = self.rsi;
+        uctx.rdi = self.rdi;
+        uctx.rip = self.rip;
+        uctx.rflags = sanitize_ptrace_x86_64_eflags(self.eflags, uctx.rflags);
+        uctx.rsp = self.rsp;
+        uctx.fs_base = self.fs_base;
+        uctx.gs_base = self.gs_base;
+        Ok(())
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+impl From<PtraceStopFpData> for X8664FpRegs {
+    fn from(data: PtraceStopFpData) -> Self {
+        Self(data.0)
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+impl From<X8664FpRegs> for PtraceStopFpData {
+    fn from(regs: X8664FpRegs) -> Self {
+        Self(regs.0)
+    }
+}
+
 #[cfg(target_arch = "riscv64")]
 impl From<&ax_runtime::hal::cpu::uspace::UserContext> for RiscvUserRegs {
     fn from(uctx: &ax_runtime::hal::cpu::uspace::UserContext) -> Self {
@@ -1740,7 +1883,7 @@ impl From<&ax_runtime::hal::cpu::uspace::UserContext> for RiscvUserRegs {
 
 #[cfg(target_arch = "riscv64")]
 impl RiscvUserRegs {
-    fn write_to(&self, uctx: &mut ax_runtime::hal::cpu::uspace::UserContext) {
+    fn write_to(&self, uctx: &mut ax_runtime::hal::cpu::uspace::UserContext) -> AxResult<()> {
         uctx.sepc = self.pc;
         let r = &mut uctx.regs;
         r.ra = self.ra;
@@ -1774,6 +1917,7 @@ impl RiscvUserRegs {
         r.t4 = self.t4;
         r.t5 = self.t5;
         r.t6 = self.t6;
+        Ok(())
     }
 }
 
@@ -1811,11 +1955,12 @@ impl From<&ax_runtime::hal::cpu::uspace::UserContext> for Aarch64UserRegs {
 
 #[cfg(target_arch = "aarch64")]
 impl Aarch64UserRegs {
-    fn write_to(&self, uctx: &mut ax_runtime::hal::cpu::uspace::UserContext) {
+    fn write_to(&self, uctx: &mut ax_runtime::hal::cpu::uspace::UserContext) -> AxResult<()> {
         uctx.x = self.regs;
         uctx.sp = self.sp;
         uctx.elr = self.pc;
         uctx.spsr = self.pstate;
+        Ok(())
     }
 }
 
@@ -1891,7 +2036,7 @@ impl From<&ax_runtime::hal::cpu::uspace::UserContext> for LoongarchUserRegs {
 
 #[cfg(target_arch = "loongarch64")]
 impl LoongarchUserRegs {
-    fn write_to(&self, uctx: &mut ax_runtime::hal::cpu::uspace::UserContext) {
+    fn write_to(&self, uctx: &mut ax_runtime::hal::cpu::uspace::UserContext) -> AxResult<()> {
         let r = &mut uctx.regs;
         r.zero = 0;
         r.ra = self.regs[1] as usize;
@@ -1926,6 +2071,7 @@ impl LoongarchUserRegs {
         r.s7 = self.regs[30] as usize;
         r.s8 = self.regs[31] as usize;
         uctx.era = self.csr_era as usize;
+        Ok(())
     }
 }
 

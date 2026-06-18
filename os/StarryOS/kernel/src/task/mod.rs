@@ -785,10 +785,15 @@ pub struct PtraceStopFpData {
     pub fcsr: u32,
 }
 
+#[cfg(target_arch = "x86_64")]
+#[derive(Clone, Copy)]
+pub struct PtraceStopFpData(pub ax_cpu::FxsaveArea);
+
 #[cfg(not(any(
     target_arch = "riscv64",
     target_arch = "aarch64",
-    target_arch = "loongarch64"
+    target_arch = "loongarch64",
+    target_arch = "x86_64"
 )))]
 #[derive(Clone, Copy)]
 pub struct PtraceStopFpData;
@@ -1645,10 +1650,20 @@ impl ProcessData {
         );
     }
 
+    #[cfg(target_arch = "x86_64")]
+    pub fn save_current_fp_for_ptrace(&self, tid: u32) {
+        let mut state = ax_cpu::ExtendedState::default();
+        state.save();
+        self.ptrace_stop_fp_data
+            .lock()
+            .insert(tid, PtraceStopFpData(state.fxsave_area));
+    }
+
     #[cfg(not(any(
         target_arch = "riscv64",
         target_arch = "aarch64",
-        target_arch = "loongarch64"
+        target_arch = "loongarch64",
+        target_arch = "x86_64"
     )))]
     pub fn save_current_fp_for_ptrace(&self, _tid: u32) {}
 
@@ -1704,10 +1719,21 @@ impl ProcessData {
         fp_state.restore();
     }
 
+    #[cfg(target_arch = "x86_64")]
+    pub fn restore_current_fp_for_ptrace(&self, tid: u32, _uctx: &mut UserContext) {
+        let Some(fp) = self.ptrace_stop_fp_data.lock().remove(&tid) else {
+            return;
+        };
+
+        let state = ax_cpu::ExtendedState { fxsave_area: fp.0 };
+        state.restore();
+    }
+
     #[cfg(not(any(
         target_arch = "riscv64",
         target_arch = "aarch64",
-        target_arch = "loongarch64"
+        target_arch = "loongarch64",
+        target_arch = "x86_64"
     )))]
     pub fn restore_current_fp_for_ptrace(&self, _tid: u32, _uctx: &mut UserContext) {}
 

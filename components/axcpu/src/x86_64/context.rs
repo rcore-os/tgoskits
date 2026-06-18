@@ -160,7 +160,7 @@ struct ContextSwitchFrame {
 /// See <https://www.felixcloutier.com/x86/fxsave> for more details.
 #[allow(missing_docs)]
 #[repr(C, align(16))]
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 pub struct FxsaveArea {
     pub fcw: u16,
     pub fsw: u16,
