@@ -9052,8 +9052,10 @@ dependencies = [
  "ax-crate-interface",
  "ax-errno 0.6.0",
  "ax-memory-addr",
+ "ax-plat",
  "axdevice",
  "axdevice_base",
+ "axvm",
  "axvm-types",
  "x86_vlapic",
 ]
