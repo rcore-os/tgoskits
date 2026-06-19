@@ -176,6 +176,7 @@ define_options! {
     SocketProtocol(i32),
     SocketDomain(i32),
     BindToDevice(Option<InterfaceId>),
+    Priority(i32),
 
     // --- TCP level options (TCP_*) ----
     NoDelay(bool),

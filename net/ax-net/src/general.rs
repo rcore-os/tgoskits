@@ -30,6 +30,9 @@ use crate::{
     options::{Configurable, GetSocketOption, SetSocketOption},
 };
 
+const SO_PRIORITY_UNPRIVILEGED_MAX: i32 = 6;
+const IP_TOS_ECN_MASK: u8 = 0x03;
+
 /// General options for all sockets.
 pub(crate) struct GeneralOptions {
     /// Whether the socket is non-blocking.
@@ -47,6 +50,9 @@ pub(crate) struct GeneralOptions {
 
     /// IP_TOS value used by protocol sockets when marking outgoing packets.
     ip_tos: AtomicU8,
+    /// SO_PRIORITY value. ax-net stores it for Linux compatibility; packet
+    /// queue scheduling is not modeled yet.
+    priority: AtomicI32,
 
     /// Socket type: SOCK_STREAM (1), SOCK_DGRAM (2), SOCK_RAW (3).
     socket_type: AtomicI32,
@@ -71,6 +77,7 @@ impl GeneralOptions {
             bound_if: AtomicU32::new(0),
 
             ip_tos: AtomicU8::new(0),
+            priority: AtomicI32::new(0),
 
             socket_type: AtomicI32::new(socket_type),
             domain,
@@ -123,7 +130,21 @@ impl GeneralOptions {
 
     /// Updates the IPv4 TOS / IPv6 traffic-class byte configured on this socket.
     pub fn set_ip_tos(&self, tos: u8) {
-        self.ip_tos.store(tos, Ordering::Relaxed);
+        self.ip_tos.store(tos & !IP_TOS_ECN_MASK, Ordering::Relaxed);
+    }
+
+    /// Returns the Linux SO_PRIORITY value configured on this socket.
+    pub fn priority(&self) -> i32 {
+        self.priority.load(Ordering::Relaxed)
+    }
+
+    /// Updates SO_PRIORITY using Linux's ordinary unprivileged range.
+    pub fn set_priority(&self, priority: i32) -> AxResult<()> {
+        if !(0..=SO_PRIORITY_UNPRIVILEGED_MAX).contains(&priority) {
+            return Err(AxError::from(LinuxError::EPERM));
+        }
+        self.priority.store(priority, Ordering::Relaxed);
+        Ok(())
     }
 
     /// Registers a waker with the service/device path for the bound interface.
@@ -215,6 +236,9 @@ impl Configurable for GeneralOptions {
             O::IpTos(tos) => {
                 **tos = self.ip_tos.load(Ordering::Relaxed);
             }
+            O::Priority(priority) => {
+                **priority = self.priority();
+            }
             O::SocketType(t) => {
                 **t = self.socket_type.load(Ordering::Relaxed);
             }
@@ -269,6 +293,9 @@ impl Configurable for GeneralOptions {
             O::IpTos(tos) => {
                 self.set_ip_tos(*tos);
             }
+            O::Priority(priority) => {
+                self.set_priority(*priority)?;
+            }
             O::SocketType(_) | O::SocketProtocol(_) | O::SocketDomain(_) => {
                 // Read-only options
                 return Err(AxError::from(LinuxError::ENOPROTOOPT));
@@ -301,5 +328,35 @@ mod tests {
 
         options.set_device_binding(DeviceBinding { bound_if: None });
         assert_eq!(options.device_binding(), DeviceBinding { bound_if: None });
+    }
+
+    #[test]
+    fn socket_priority_matches_unprivileged_linux_range() {
+        let options = GeneralOptions::new(1, 2, 6);
+
+        assert_eq!(options.priority(), 0);
+        options.set_priority(6).unwrap();
+        assert_eq!(options.priority(), 6);
+
+        assert_eq!(
+            options.set_priority(7).unwrap_err(),
+            AxError::from(LinuxError::EPERM)
+        );
+        assert_eq!(
+            options.set_priority(-1).unwrap_err(),
+            AxError::from(LinuxError::EPERM)
+        );
+        assert_eq!(options.priority(), 6);
+    }
+
+    #[test]
+    fn ip_tos_storage_masks_user_controlled_ecn_bits() {
+        let options = GeneralOptions::new(1, 2, 6);
+
+        options.set_ip_tos(0x2e);
+        assert_eq!(options.ip_tos(), 0x2c);
+
+        options.set_ip_tos(0xff);
+        assert_eq!(options.ip_tos(), 0xfc);
     }
 }

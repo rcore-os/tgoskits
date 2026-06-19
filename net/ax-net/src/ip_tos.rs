@@ -200,7 +200,7 @@ fn egress_ip_tos(protocol: IpProtocol, local: IpEndpoint, remote: IpEndpoint) ->
 
 #[cfg(test)]
 mod tests {
-    use smoltcp::wire::Ipv4Address;
+    use smoltcp::wire::{Ipv4Address, Ipv6Address};
 
     use super::*;
 
@@ -254,5 +254,24 @@ mod tests {
         assert_eq!(packet.dscp(), 0x0b);
         assert_eq!(packet.ecn(), 0x02);
         assert!(packet.verify_checksum());
+    }
+
+    #[test]
+    fn apply_ip_tos_updates_ipv6_traffic_class() {
+        let mut packet = [0u8; 40];
+        {
+            let mut packet = Ipv6Packet::new_unchecked(&mut packet[..]);
+            packet.set_version(6);
+            packet.set_payload_len(0);
+            packet.set_hop_limit(64);
+            packet.set_next_header(IpProtocol::Tcp);
+            packet.set_src_addr(Ipv6Address::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 1));
+            packet.set_dst_addr(Ipv6Address::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 2));
+        }
+
+        apply_ip_tos(&mut packet, 0xb8);
+
+        let packet = Ipv6Packet::new_checked(&packet[..]).unwrap();
+        assert_eq!(packet.traffic_class(), 0xb8);
     }
 }

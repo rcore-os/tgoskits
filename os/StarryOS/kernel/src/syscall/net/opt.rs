@@ -6,8 +6,9 @@ use ax_net::{
     options::{Configurable, GetSocketOption, SetSocketOption, TcpInfo, TcpInfoOptions, TcpState},
 };
 use linux_raw_sys::net::{
-    IPPROTO_IPV6, IPV6_V6ONLY, TCP_INFO, TCPI_OPT_ECN, TCPI_OPT_ECN_SEEN, TCPI_OPT_SACK,
-    TCPI_OPT_SYN_DATA, TCPI_OPT_TIMESTAMPS, TCPI_OPT_WSCALE, socklen_t, tcp_info,
+    AF_INET6, IP_TOS, IPPROTO_IPV6, IPV6_TCLASS, IPV6_V6ONLY, TCP_INFO, TCPI_OPT_ECN,
+    TCPI_OPT_ECN_SEEN, TCPI_OPT_SACK, TCPI_OPT_SYN_DATA, TCPI_OPT_TIMESTAMPS, TCPI_OPT_WSCALE,
+    socklen_t, tcp_info,
 };
 use starry_vm::vm_write_slice;
 
@@ -20,11 +21,27 @@ const PROTO_TCP: u32 = linux_raw_sys::net::IPPROTO_TCP as u32;
 
 const PROTO_IP: u32 = linux_raw_sys::net::IPPROTO_IP as u32;
 
+const IP_TOS_ECN_MASK: u8 = 0x03;
+
 fn read_int_sockopt(optval: UserConstPtr<u8>, optlen: socklen_t) -> AxResult<i32> {
     if (optlen as usize) < size_of::<i32>() {
         return Err(AxError::InvalidInput);
     }
     Ok(*optval.cast::<i32>().get_as_ref()?)
+}
+
+fn normalize_ip_tos(value: i32) -> u8 {
+    (value as u8) & !IP_TOS_ECN_MASK
+}
+
+fn normalize_ipv6_tclass(value: i32) -> AxResult<u8> {
+    if value == -1 {
+        return Ok(0);
+    }
+    if !(0..=u8::MAX as i32).contains(&value) {
+        return Err(AxError::InvalidInput);
+    }
+    Ok(normalize_ip_tos(value))
 }
 
 fn read_bind_to_device(
@@ -155,6 +172,14 @@ fn write_tcp_info(socket: &Socket, optval: UserPtr<u8>, optlen: &mut socklen_t) 
     Ok(vm_write_slice(optval.as_ptr(), &raw_bytes[..write_len])?)
 }
 
+fn ensure_ipv6_socket(socket: &Socket) -> AxResult<()> {
+    if socket.ip_domain() == AF_INET6 {
+        Ok(())
+    } else {
+        Err(AxError::from(LinuxError::ENOPROTOOPT))
+    }
+}
+
 mod conv {
     use ax_errno::{AxError, AxResult};
     use ax_net::options::UnixCredentials;
@@ -240,6 +265,7 @@ macro_rules! call_dispatch {
             (SOL_SOCKET, SO_TYPE) => SocketType as Int<i32>,       // read-only
             (SOL_SOCKET, SO_PROTOCOL) => SocketProtocol as Int<i32>,// read-only
             (SOL_SOCKET, SO_DOMAIN) => SocketDomain as Int<i32>,   // read-only
+            (SOL_SOCKET, SO_PRIORITY) => Priority as Int<i32>,      // stored; qdisc/device priority is not modeled
 
             (PROTO_TCP, TCP_NODELAY) => NoDelay as IntBool,
             (PROTO_TCP, TCP_MAXSEG) => MaxSegment as Int<usize>,  // TODO: hardcoded 1460, get actual MSS
@@ -249,12 +275,10 @@ macro_rules! call_dispatch {
             (PROTO_TCP, TCP_USER_TIMEOUT) => TcpUserTimeout as Int<u32>,
 
             (PROTO_IP, IP_TTL) => Ttl as Int<u8>,
-            (PROTO_IP, IP_TOS) => IpTos as Int<u8>,
             (PROTO_IP, IP_RECVERR) => RecvErr as IntBool,  // TODO: hardcoded false, no errqueue support
             // ---- Not yet implemented (add as needed) ----
             // (SOL_SOCKET, SO_LINGER) => ...,         // TODO: needs close() linger semantics
             // (SOL_SOCKET, SO_REUSEPORT) => ...,     // TODO: needs kernel support
-            // (SOL_SOCKET, SO_PRIORITY) => ...,       // TODO: needs kernel support
             // (SOL_SOCKET, SO_RCVLOWAT) => ...,       // TODO: needs kernel support
             // (SOL_SOCKET, SO_SNDLOWAT) => ...,       // TODO: needs kernel support
             // (PROTO_TCP, TCP_CORK) => ...,           // TODO: needs smoltcp support
@@ -337,6 +361,21 @@ pub fn sys_getsockopt(
     if level == IPPROTO_IPV6 as u32 && optname == IPV6_V6ONLY {
         // TODO: Store and enforce IPV6_V6ONLY once native IPv6 sockets exist.
         *get::<i32>(optval, optlen)? = 0;
+        return Ok(0);
+    }
+
+    if level == PROTO_IP && optname == IP_TOS {
+        let mut tos = 0;
+        socket.get_option(GetSocketOption::IpTos(&mut tos))?;
+        *get::<i32>(optval, optlen)? = i32::from(tos);
+        return Ok(0);
+    }
+
+    if level == IPPROTO_IPV6 as u32 && optname == IPV6_TCLASS {
+        ensure_ipv6_socket(&socket)?;
+        let mut tclass = 0;
+        socket.get_option(GetSocketOption::IpTos(&mut tclass))?;
+        *get::<i32>(optval, optlen)? = i32::from(tclass);
         return Ok(0);
     }
 
@@ -428,6 +467,19 @@ pub fn sys_setsockopt(
     if level == IPPROTO_IPV6 as u32 && optname == IPV6_V6ONLY {
         // TODO: Store and enforce IPV6_V6ONLY once native IPv6 sockets exist.
         let _ = *get::<i32>(optval, optlen)?;
+        return Ok(0);
+    }
+
+    if level == PROTO_IP && optname == IP_TOS {
+        let tos = normalize_ip_tos(*get::<i32>(optval, optlen)?);
+        socket.set_option(SetSocketOption::IpTos(&tos))?;
+        return Ok(0);
+    }
+
+    if level == IPPROTO_IPV6 as u32 && optname == IPV6_TCLASS {
+        ensure_ipv6_socket(&socket)?;
+        let tclass = normalize_ipv6_tclass(*get::<i32>(optval, optlen)?)?;
+        socket.set_option(SetSocketOption::IpTos(&tclass))?;
         return Ok(0);
     }
 
