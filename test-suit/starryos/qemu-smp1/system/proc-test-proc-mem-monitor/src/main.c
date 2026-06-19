@@ -12,7 +12,7 @@
  *   - MAP_PRIVATE file   RssFile on read fault; single-process write → Anon
  *   - MAP_PRIVATE RW     write-first fault counts as RssAnon
  *   - MAP_PRIVATE RW     read-then-write without mprotect → File then Anon
- *   - fork RW file       parent read, child write; parent RSS stable
+ *   - fork RW file       parent read, child write; layered fault/fork/COW checks
  *   - fork dirty file    child COW on already-Anon private file page
  *   - memfd MAP_SHARED   RssShmem on shared fault
  *   - /proc/<child>      parent reads child memory stats after fork()
@@ -97,6 +97,31 @@ static long read_status_kb_from(const char *path, const char *key)
 static long read_self_status_kb(const char *key)
 {
     return read_status_kb_from("/proc/self/status", key);
+}
+
+typedef struct {
+    pid_t pid;
+    long rss_file_kb;
+    long rss_anon_kb;
+} fork_rw_rss_sync_t;
+
+static long rss_kb_delta(long after, long before)
+{
+    return after - before;
+}
+
+static int rss_kb_within_tolerance(long before, long after, long page_kb)
+{
+    long delta = rss_kb_delta(after, before);
+    if (delta < 0) {
+        delta = -delta;
+    }
+    return delta <= page_kb * RSS_TOUCH_TOLERANCE;
+}
+
+static int rss_kb_not_dropped_by_page(long before, long after, long page_kb)
+{
+    return after + page_kb > before;
 }
 
 static long read_status_pid_from(const char *path, const char *key)
@@ -521,19 +546,24 @@ static void test_fork_rw_file_read_child_write(long page_size)
     char path[] = "/tmp/proc-mem-monitor-frw-XXXXXX";
     int fd = mkstemp(path);
     long page_kb = page_size / 1024;
+    long parent_file_before_read = 0;
+    long parent_anon_before_read = 0;
     long parent_file_after_read = 0;
     long parent_anon_after_read = 0;
+    long parent_file_after_fork = 0;
+    long parent_anon_after_fork = 0;
     long parent_file_after_child = 0;
     long parent_anon_after_child = 0;
     long child_rss_file = 0;
     long child_rss_anon = 0;
+    fork_rw_rss_sync_t child_before_write = {0};
+    fork_rw_rss_sync_t child_after_write = {0};
     int notify[2];
     int release[2];
     unsigned char buf[4096];
     void *map = MAP_FAILED;
     volatile char *page = NULL;
     pid_t child = 0;
-    pid_t reported_pid = -1;
     char child_status[64];
     char byte = 0;
     int status = 0;
@@ -546,9 +576,18 @@ static void test_fork_rw_file_read_child_write(long page_size)
     map = mmap(NULL, (size_t)page_size, PROT_READ | PROT_WRITE, MAP_PRIVATE, fd, 0);
     expect(map != MAP_FAILED, "mmap MAP_PRIVATE file read-write before fork");
     page = (volatile char *)map;
+
+    parent_file_before_read = read_self_status_kb("RssFile");
+    parent_anon_before_read = read_self_status_kb("RssAnon");
     expect(page[0] == (char)0x5a, "parent read fault on RW MAP_PRIVATE file");
     parent_file_after_read = read_self_status_kb("RssFile");
     parent_anon_after_read = read_self_status_kb("RssAnon");
+
+    expect(parent_file_after_read >= parent_file_before_read + page_kb,
+           "layer A: read fault increases RssFile by one page");
+    expect(parent_anon_after_read <=
+               parent_anon_before_read + page_kb * RSS_TOUCH_TOLERANCE,
+           "layer A: read fault does not significantly increase RssAnon");
 
     expect(pipe(notify) == 0, "notify pipe for fork RW file sync");
     expect(pipe(release) == 0, "release pipe for fork RW file sync");
@@ -559,52 +598,101 @@ static void test_fork_rw_file_read_child_write(long page_size)
     if (child == 0) {
         close(notify[0]);
         close(release[1]);
-        page[0] = 0x43;
-        reported_pid = getpid();
-        if (write(notify[1], &reported_pid, sizeof(reported_pid)) !=
-            (ssize_t)sizeof(reported_pid)) {
+        child_before_write.pid = getpid();
+        child_before_write.rss_file_kb = read_self_status_kb("RssFile");
+        child_before_write.rss_anon_kb = read_self_status_kb("RssAnon");
+        if (write(notify[1], &child_before_write, sizeof(child_before_write)) !=
+            (ssize_t)sizeof(child_before_write)) {
             _exit(1);
         }
-        close(notify[1]);
         if (read(release[0], &byte, 1) != 1) {
             _exit(1);
         }
+        page[0] = 0x43;
+        child_after_write.pid = getpid();
+        child_after_write.rss_file_kb = read_self_status_kb("RssFile");
+        child_after_write.rss_anon_kb = read_self_status_kb("RssAnon");
+        if (write(notify[1], &child_after_write, sizeof(child_after_write)) !=
+            (ssize_t)sizeof(child_after_write)) {
+            _exit(1);
+        }
+        close(notify[1]);
         close(release[0]);
         close(fd);
         _exit(0);
     }
 
+    parent_file_after_fork = read_self_status_kb("RssFile");
+    parent_anon_after_fork = read_self_status_kb("RssAnon");
     close(notify[1]);
     close(release[0]);
-    expect(read(notify[0], &reported_pid, sizeof(reported_pid)) ==
-               (ssize_t)sizeof(reported_pid),
-           "read child pid after RW file COW write");
+
+    expect(rss_kb_not_dropped_by_page(parent_file_after_read, parent_file_after_fork,
+                                      page_kb),
+           "layer B: fork must not drop parent RssFile by a page");
+    expect(parent_file_after_fork <=
+               parent_file_after_read + page_kb * RSS_TOUCH_TOLERANCE,
+           "layer B: fork keeps parent RssFile stable within tolerance");
+    expect(rss_kb_not_dropped_by_page(parent_anon_after_read, parent_anon_after_fork,
+                                      page_kb),
+           "layer B: fork must not drop parent RssAnon by a page");
+    expect(parent_anon_after_fork <=
+               parent_anon_after_read + page_kb * RSS_TOUCH_TOLERANCE,
+           "layer B: fork keeps parent RssAnon stable within tolerance");
+
+    expect(read(notify[0], &child_before_write, sizeof(child_before_write)) ==
+               (ssize_t)sizeof(child_before_write),
+           "read child RSS before RW file COW write");
+    expect(child_before_write.pid == child, "child pid matches fork return");
+
+    expect(rss_kb_not_dropped_by_page(parent_file_after_read,
+                                      child_before_write.rss_file_kb, page_kb),
+           "layer C: child at fork must not underflow parent RssFile baseline");
+    expect(child_before_write.rss_file_kb <=
+               parent_file_after_read + page_kb * RSS_TOUCH_TOLERANCE,
+           "layer C: child RssFile at fork matches parent within tolerance");
+    expect(rss_kb_within_tolerance(parent_anon_after_read,
+                                   child_before_write.rss_anon_kb, page_kb),
+           "layer C: child RssAnon at fork matches parent within tolerance");
+
+    expect(write(release[1], "D", 1) == 1, "release fork RW file child for COW write");
+    expect(read(notify[0], &child_after_write, sizeof(child_after_write)) ==
+               (ssize_t)sizeof(child_after_write),
+           "read child RSS after RW file COW write");
     close(notify[0]);
-    expect(reported_pid == child, "child pid matches fork return");
+    close(release[1]);
+    expect(child_after_write.pid == child, "child pid matches after COW write");
 
     snprintf(child_status, sizeof(child_status), "/proc/%d/status", child);
     child_rss_file = read_status_kb_from(child_status, "RssFile");
     child_rss_anon = read_status_kb_from(child_status, "RssAnon");
-    expect(child_rss_anon >= parent_anon_after_read + page_kb,
-           "child RW file COW write increases RssAnon");
-    expect(child_rss_file + page_kb <= parent_file_after_read,
-           "child RW file COW write transfers RssFile to RssAnon");
+    expect(child_rss_file == child_after_write.rss_file_kb,
+           "child self and /proc RssFile agree after COW write");
+    expect(child_rss_anon == child_after_write.rss_anon_kb,
+           "child self and /proc RssAnon agree after COW write");
+
+    expect(child_after_write.rss_anon_kb >=
+               child_before_write.rss_anon_kb + page_kb,
+           "layer D: child COW write increases RssAnon by one page");
+    expect(child_after_write.rss_file_kb + page_kb <=
+               child_before_write.rss_file_kb,
+           "layer D: child COW write transfers RssFile to RssAnon");
 
     parent_file_after_child = read_self_status_kb("RssFile");
     parent_anon_after_child = read_self_status_kb("RssAnon");
-    expect(parent_file_after_child + page_kb > parent_file_after_read,
+    expect(rss_kb_not_dropped_by_page(parent_file_after_fork, parent_file_after_child,
+                                      page_kb),
            "parent RssFile must not drop by a page after child COW write");
     expect(parent_file_after_child <=
-               parent_file_after_read + page_kb * RSS_TOUCH_TOLERANCE,
+               parent_file_after_fork + page_kb * RSS_TOUCH_TOLERANCE,
            "parent RssFile stable within tolerance after child COW write");
-    expect(parent_anon_after_child + page_kb > parent_anon_after_read,
+    expect(rss_kb_not_dropped_by_page(parent_anon_after_fork, parent_anon_after_child,
+                                      page_kb),
            "parent RssAnon must not drop by a page after child COW write");
     expect(parent_anon_after_child <=
-               parent_anon_after_read + page_kb * RSS_TOUCH_TOLERANCE,
+               parent_anon_after_fork + page_kb * RSS_TOUCH_TOLERANCE,
            "parent RssAnon stable within tolerance after child COW write");
 
-    expect(write(release[1], "D", 1) == 1, "release fork RW file child");
-    close(release[1]);
     expect(waitpid(child, &status, 0) == child, "waitpid fork RW file child");
     expect(WIFEXITED(status) && WEXITSTATUS(status) == 0,
            "fork RW file child exits cleanly");
