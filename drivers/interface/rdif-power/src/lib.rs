@@ -9,4 +9,4 @@ pub trait Interface: DriverGeneric {
     fn shutdown(&mut self);
 }
 
-def_driver!(power, Power, Interface);
+def_driver!(Power, Interface);

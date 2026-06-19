@@ -13,7 +13,10 @@ version = "0.8.3"
 
 [dependencies]
 as-any = "0.3.2"
+async-trait = "0.1"
 rdif-def = { workspace = true}
+thiserror = {version = "2", default-features = false}
+paste = "1"
 
 [dev-dependencies]
 tokio = {version = "1", features = ["full"]}

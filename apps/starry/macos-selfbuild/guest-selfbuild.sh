@@ -19,17 +19,21 @@ build_target="${BUILD_TARGET:-aarch64-unknown-none-softfloat}"
 build_package="${BUILD_PACKAGE:-starryos}"
 build_bin="${BUILD_BIN:-starryos}"
 build_std="${BUILD_STD:-core,alloc}"
-features="${FEATURES:-plat-dyn,ax-driver/virtio-blk,ax-driver/virtio-net,ax-driver/virtio-gpu,ax-driver/virtio-input,ax-driver/virtio-socket,starry-kernel/input,starry-kernel/vsock}"
-no_default_features="${NO_DEFAULT_FEATURES:-0}"
+build_std_features="${BUILD_STD_FEATURES:-compiler-builtins-mem}"
+features="${FEATURES:-plat-dyn,axplat-dyn/cntv-timer,ax-driver/virtio-blk,axplat-dyn/qemu-hvf-gic,smp}"
+no_default_features="${NO_DEFAULT_FEATURES:-1}"
 allow_slow_selfbuild="${ALLOW_SLOW_SELFBUILD:-0}"
 guest_monitor_interval="${GUEST_MONITOR_INTERVAL_SEC:-60}"
 target_heartbeat_sec="${TARGET_HEARTBEAT_SEC:-0}"
 trace_rustc="${TRACE_RUSTC:-0}"
 cargo_verbose="${CARGO_VERBOSE:-0}"
-target_spec_mode="${TARGET_SPEC_MODE:-pie}"
+target_spec_mode="${TARGET_SPEC_MODE:-bare-pie}"
 target_spec_path="${TARGET_SPEC_PATH:-}"
 artifact_to_bin="${ARTIFACT_TO_BIN:-1}"
-kallsyms_reserved="${STARRY_KALLSYMS_RESERVED:-64M}"
+kallsyms_reserved="${STARRY_KALLSYMS_RESERVED:-16M}"
+artifact_upload_url="${ARTIFACT_UPLOAD_URL:-}"
+artifact_upload_token="${ARTIFACT_UPLOAD_TOKEN:-}"
+artifact_upload_required="${ARTIFACT_UPLOAD_REQUIRED:-1}"
 
 assert_fast_profile() {
     if [ "$allow_slow_selfbuild" = "1" ]; then
@@ -46,16 +50,39 @@ assert_fast_profile() {
     echo "===${marker}-QEMU-AARCH64-PROFILE expected_crates~420==="
 }
 
+std_target_name() {
+    case "$1" in
+        x86_64-*)
+            printf '%s\n' x86_64-unknown-linux-musl
+            ;;
+        aarch64-*)
+            printf '%s\n' aarch64-unknown-linux-musl
+            ;;
+        riscv64*)
+            printf '%s\n' riscv64gc-unknown-linux-musl
+            ;;
+        loongarch64-*)
+            printf '%s\n' loongarch64-unknown-linux-musl
+            ;;
+        *)
+            printf '%s\n' "$1"
+            ;;
+    esac
+}
+
 resolve_target_spec() {
     case "$target_spec_mode" in
+        bare-pie)
+            printf 'apps/starry/macos-selfbuild/target-aarch64-unknown-none-softfloat-pie.json\n'
+            ;;
         none | "")
             printf '%s\n' "$build_target"
             ;;
         pie)
-            printf 'scripts/targets/pie/%s.json\n' "$build_target"
+            printf 'scripts/targets/std/pie/%s.json\n' "$(std_target_name "$build_target")"
             ;;
         no-pie)
-            printf 'scripts/targets/no-pie/%s.json\n' "$build_target"
+            printf 'scripts/targets/std/%s.json\n' "$(std_target_name "$build_target")"
             ;;
         path)
             if [ -z "$target_spec_path" ]; then
@@ -65,7 +92,7 @@ resolve_target_spec() {
             printf '%s\n' "$target_spec_path"
             ;;
         *)
-            echo "===${marker}-TARGET-SPEC-ERROR mode=${target_spec_mode} expected=pie|no-pie|path|none==="
+            echo "===${marker}-TARGET-SPEC-ERROR mode=${target_spec_mode} expected=bare-pie|pie|no-pie|path|none==="
             finish_guest 2
             ;;
     esac
@@ -146,7 +173,7 @@ ensure_gen_ksym() {
     fi
 
     echo "===${marker}-KALLSYMS-GEN-KSYM-BUILD manifest=${ksym_manifest}==="
-    "$cargo_bin" install \
+    RUSTFLAGS= CARGO_ENCODED_RUSTFLAGS= "$cargo_bin" install \
         --offline \
         --locked \
         --path "$(dirname "$ksym_manifest")" \
@@ -175,7 +202,8 @@ run_starry_kallsyms() {
     if [ "$build_package" != "starryos" ] || [ "$build_bin" != "starryos" ]; then
         return
     fi
-    if [ ! -f "scripts/axbuild/scripts/starry-kallsyms.sh" ]; then
+    kallsyms_script="apps/starry/macos-selfbuild/starry-kallsyms.sh"
+    if [ ! -f "$kallsyms_script" ]; then
         echo "===${marker}-KALLSYMS-SCRIPT-MISSING==="
         finish_guest 2
     fi
@@ -184,7 +212,7 @@ run_starry_kallsyms() {
     echo "===${marker}-KALLSYMS-BEGIN elf=${artifact}==="
     set +e
     KERNEL_ELF="$artifact" AXBUILD_STARRY_KALLSYMS_AUTO_INSTALL=0 \
-        sh scripts/axbuild/scripts/starry-kallsyms.sh
+        sh "$kallsyms_script"
     kallsyms_rc="$?"
     set -e
     if [ "$kallsyms_rc" != "0" ]; then
@@ -192,6 +220,38 @@ run_starry_kallsyms() {
         finish_guest "$kallsyms_rc"
     fi
     echo "===${marker}-KALLSYMS-END elf=${artifact}==="
+}
+
+upload_artifact() {
+    path="$1"
+    label="$2"
+
+    [ -n "$artifact_upload_url" ] || return 0
+    if [ ! -s "$path" ]; then
+        echo "===${marker}-ARTIFACT-UPLOAD-SKIP label=${label} reason=missing path=${path}==="
+        return 0
+    fi
+    if ! command -v curl >/dev/null 2>&1; then
+        echo "===${marker}-ARTIFACT-UPLOAD-FAIL label=${label} reason=curl-missing==="
+        [ "$artifact_upload_required" = "1" ] && finish_guest 2
+        return 0
+    fi
+
+    name="${path##*/}"
+    url="${artifact_upload_url%/}/${name}"
+    if [ -n "$artifact_upload_token" ]; then
+        url="${url}?token=${artifact_upload_token}"
+    fi
+
+    echo "===${marker}-ARTIFACT-UPLOAD-BEGIN label=${label} name=${name}==="
+    if curl -fsS --retry 3 --connect-timeout 10 --max-time 900 \
+        -X PUT --data-binary "@${path}" "$url" >/dev/null; then
+        echo "===${marker}-ARTIFACT-UPLOAD-END label=${label} name=${name}==="
+    else
+        upload_rc="$?"
+        echo "===${marker}-ARTIFACT-UPLOAD-FAIL label=${label} name=${name} rc=${upload_rc}==="
+        [ "$artifact_upload_required" = "1" ] && finish_guest 2
+    fi
 }
 
 echo "===${marker}-BEGIN jobs=${jobs} source_tmpfs=${source_tmpfs}==="
@@ -336,7 +396,7 @@ if [ "$source_tmpfs" = "1" ]; then
     echo "===${marker}-SOURCE-COPY-BEGIN from=${source_dir} to=${work_dir}==="
     rm -rf "$work_dir"
     mkdir -p "$work_dir"
-    for path in Cargo.toml Cargo.lock rust-toolchain.toml .tgoskits-source-meta .cargo apps components drivers memory os platforms scripts test-suit tools vendor virtualization xtask; do
+    for path in Cargo.toml Cargo.lock rust-toolchain.toml .tgoskits-source-meta .cargo apps bootloader components drivers memory net os platforms scripts test-suit tools vendor virtualization xtask; do
         if [ -e "${source_dir}/${path}" ]; then
             cp -a "${source_dir}/${path}" "${work_dir}/"
         fi
@@ -349,6 +409,150 @@ else
     cd "$source_dir"
 fi
 
+if [ "${USE_PREGENERATED_CTYPES:-1}" = "1" ] \
+    && [ -f os/arceos/api/arceos_posix_api/src/ctypes_gen.rs ] \
+    && [ -d os/arceos/ulib/axlibc/include ]; then
+    mv os/arceos/ulib/axlibc/include os/arceos/ulib/axlibc/include.selfbuild-disabled
+    echo "===${marker}-PREGENERATED-CTYPES enabled=1==="
+fi
+
+patch_lwprintf_rs() {
+    binding="/opt/starry-macos-lwprintf.rs"
+    [ "${USE_PREGENERATED_LWPRINTF:-1}" = "1" ] || return
+    [ -f "$binding" ] || return
+
+    for crate_dir in /root/.cargo/registry/src/*/lwprintf-rs-0.3.3; do
+        [ -d "$crate_dir" ] || continue
+        cp "$binding" "$crate_dir/src/lwprintf.rs"
+        if [ ! -f "$crate_dir/build.rs.selfbuild-orig" ]; then
+            cp "$crate_dir/build.rs" "$crate_dir/build.rs.selfbuild-orig"
+        fi
+        cat >"$crate_dir/build.rs" <<'EOF'
+use std::{env, fs, path::PathBuf, process::Command};
+
+use cc::Build;
+
+fn main() {
+    build_lib();
+    copy_pregenerated_bindings();
+}
+
+fn set_arch_flags(builder: &mut Build) {
+    let arch = env::var("CARGO_CFG_TARGET_ARCH").unwrap();
+
+    match arch.as_str() {
+        "aarch64" => {
+            builder.flag("-mgeneral-regs-only");
+        }
+        "riscv64" => {
+            builder.flag_if_supported("-march=rv64gc");
+            builder.flag_if_supported("-mabi=lp64d");
+            builder.flag_if_supported("-mcmodel=medany");
+        }
+        "x86_64" => {
+            builder.flag_if_supported("-mno-sse");
+        }
+        "loongarch64" => {
+            builder.flag_if_supported("-msoft-float");
+        }
+        _ => panic!("Unsupported architecture: {}", arch),
+    }
+}
+
+fn build_lib() {
+    let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
+    let c_src = manifest_dir.join("./lwprintf/lwprintf/src/lwprintf/lwprintf.c");
+    let include_dir = manifest_dir.join("./lwprintf/lwprintf/src/include");
+    let opts_file = manifest_dir.join("lwprintf_opts.h");
+
+    println!("cargo:rerun-if-changed={}", c_src.display());
+    println!("cargo:rerun-if-changed={}", opts_file.display());
+    println!(
+        "cargo:rerun-if-changed={}",
+        include_dir.join("lwprintf/lwprintf.h").display()
+    );
+
+    let os = env::var("CARGO_CFG_TARGET_OS").unwrap();
+    let libc_env = env::var("CARGO_CFG_TARGET_ENV").unwrap();
+    let arch = env::var("CARGO_CFG_TARGET_ARCH").unwrap();
+
+    let mut builder = cc::Build::new();
+    builder
+        .file(&c_src)
+        .include(&include_dir)
+        .include(&manifest_dir)
+        .flags([
+            "-std=gnu99",
+            "-fdata-sections",
+            "-ffunction-sections",
+            "-fPIC",
+            "-fno-builtin",
+            "-ffreestanding",
+            "-fno-omit-frame-pointer",
+        ])
+        .warnings(true);
+
+    if os == "none" {
+        let musl_gcc = format!("{}-linux-musl-gcc", arch);
+        set_arch_flags(&mut builder);
+        builder.compiler(&musl_gcc);
+        add_sysroot_include(&mut builder, &musl_gcc);
+    } else if arch == "loongarch64" && libc_env == "musl" {
+        let musl_gcc = format!("{}-linux-musl-gcc", arch);
+        add_sysroot_include(&mut builder, &musl_gcc);
+    }
+
+    builder.compile("lwprintf");
+}
+
+fn add_sysroot_include(builder: &mut Build, cc: &str) {
+    let output = Command::new(cc)
+        .args(["-print-sysroot"])
+        .output()
+        .expect("failed to execute process: gcc -print-sysroot");
+    let sysroot = core::str::from_utf8(&output.stdout).unwrap().trim_end();
+    if !sysroot.is_empty() {
+        builder.include(format!("{sysroot}/include"));
+    }
+}
+
+fn copy_pregenerated_bindings() {
+    let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
+    let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
+    let src = manifest_dir.join("src/lwprintf.rs");
+    let dst = out_dir.join("lwprintf.rs");
+    println!("cargo:rerun-if-changed={}", src.display());
+    fs::copy(&src, &dst).expect("failed to copy pregenerated lwprintf.rs");
+}
+EOF
+        echo "===${marker}-PREGENERATED-LWPRINTF crate=${crate_dir}==="
+    done
+}
+
+patch_lwprintf_rs
+
+patch_starry_kallsyms_reserve() {
+    linker="os/StarryOS/starryos/linker.ld"
+
+    [ "$build_package" = "starryos" ] || return
+    [ "$build_bin" = "starryos" ] || return
+    [ -f "$linker" ] || return
+
+    case "$kallsyms_reserved" in
+        *[!0-9KkMmGg]*)
+            echo "===${marker}-KALLSYMS-RESERVE-ERROR value=${kallsyms_reserved}==="
+            finish_guest 2
+            ;;
+    esac
+
+    if grep -q '\. += 8M; /\* reserve space for kallsyms' "$linker"; then
+        sed -i "s/\\. += 8M; \\/\\* reserve space for kallsyms, can be recycled \\*\\//. += ${kallsyms_reserved}; \\/\\* reserve space for kallsyms, patched by macOS self-build \\*\\//" "$linker"
+        echo "===${marker}-KALLSYMS-RESERVE-PATCH value=${kallsyms_reserved} file=${linker}==="
+    fi
+}
+
+patch_starry_kallsyms_reserve
+
 if [ -n "${AX_CONFIG_PATH:-}" ]; then
     export AX_CONFIG_PATH
 elif [ -f "$(pwd)/os/StarryOS/.axconfig.toml" ]; then
@@ -357,14 +561,25 @@ else
     unset AX_CONFIG_PATH
 fi
 
-rustflags="${EXTRA_RUSTFLAGS:-}"
+case "$target_spec_mode" in
+    none | "")
+        default_link_rustflags="-Clink-arg=-Tlinker.x -Clink-arg=-no-pie -Clink-arg=-znostart-stop-gc"
+        ;;
+    *)
+        default_link_rustflags=""
+        ;;
+esac
+rustflags="${LINK_RUSTFLAGS:-$default_link_rustflags}"
+if [ -n "${EXTRA_RUSTFLAGS:-}" ]; then
+    rustflags="${rustflags} ${EXTRA_RUSTFLAGS}"
+fi
 if [ -n "$rustc_threads" ] && [ "$rustc_threads" != "auto" ]; then
     rustflags="${rustflags} -Zthreads=${rustc_threads}"
 fi
 export RUSTFLAGS="$rustflags"
 build_target_arg="$(resolve_target_spec)"
 case "$target_spec_mode" in
-    pie | no-pie | path)
+    bare-pie | pie | no-pie | path)
         export CARGO_UNSTABLE_JSON_TARGET_SPEC="${CARGO_UNSTABLE_JSON_TARGET_SPEC:-true}"
         if [ ! -f "$build_target_arg" ]; then
             echo "===${marker}-TARGET-SPEC-MISSING path=${build_target_arg}==="
@@ -385,6 +600,7 @@ echo "build_target=${build_target}"
 echo "build_target_arg=${build_target_arg}"
 echo "target_spec_mode=${target_spec_mode}"
 echo "build_std=${build_std}"
+echo "build_std_features=${build_std_features}"
 echo "features=${features}"
 echo "artifact_to_bin=${artifact_to_bin}"
 echo "starry_kallsyms_reserved=${STARRY_KALLSYMS_RESERVED}"
@@ -395,6 +611,7 @@ echo "cargo_verbose=${cargo_verbose}"
 echo "source_dir=${source_dir}"
 echo "target_dir=${target_dir}"
 echo "artifact_dir=${artifact_dir}"
+echo "artifact_upload_url=${artifact_upload_url:-}"
 echo "target_heartbeat_sec=${target_heartbeat_sec}"
 echo "work_dir=$(pwd)"
 echo "cargo_home=${CARGO_HOME}"
@@ -430,7 +647,7 @@ set -- "$cargo_bin" "$cargo_subcommand" \
     --target "$build_target_arg"
 
 case "$target_spec_mode" in
-    pie | no-pie | path)
+    bare-pie | pie | no-pie | path)
         set -- "$@" -Z json-target-spec
         ;;
 esac
@@ -456,6 +673,10 @@ fi
 
 if [ -n "$build_std" ] && [ "$build_std" != "none" ]; then
     set -- "$@" -Z "build-std=${build_std}"
+fi
+
+if [ -n "$build_std_features" ] && [ "$build_std_features" != "none" ]; then
+    set -- "$@" -Z "build-std-features=${build_std_features}"
 fi
 
 set -- "$@" --target-dir "$target_dir"
@@ -577,6 +798,7 @@ if [ "$rc" = "0" ]; then
             sync "$artifact_copy" 2>/dev/null || sync 2>/dev/null || true
             copy_bytes="$(wc -c <"$artifact_copy" 2>/dev/null || echo unknown)"
             echo "===${marker}-ARTIFACT-COPY path=${artifact_copy} bytes=${copy_bytes}==="
+            upload_artifact "$artifact_copy" "elf"
             if [ "$artifact_to_bin" = "1" ]; then
                 artifact_bin="${artifact}.bin"
                 if command -v rust-objcopy >/dev/null 2>&1; then
@@ -595,6 +817,7 @@ if [ "$rc" = "0" ]; then
                     sync "$artifact_bin_copy" 2>/dev/null || sync 2>/dev/null || true
                     bin_copy_bytes="$(wc -c <"$artifact_bin_copy" 2>/dev/null || echo unknown)"
                     echo "===${marker}-ARTIFACT-BIN-COPY path=${artifact_bin_copy} bytes=${bin_copy_bytes}==="
+                    upload_artifact "$artifact_bin_copy" "bin"
                 fi
             fi
         fi

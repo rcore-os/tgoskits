@@ -78,15 +78,21 @@ AArch64 StarryOS SMP kernel with QEMU/HVF, enters the StarryOS guest userland,
 and runs guest `cargo build` to build StarryOS again.
 
 ```bash
-KERNEL=target/aarch64-unknown-none-softfloat/release/starryos.bin \
-ROOTFS=tmp/axbuild/rootfs/rootfs-aarch64-hvf-selfbuild.img \
-SMP=8 JOBS=8 RAYON_NUM_THREADS=1 RUSTC_THREADS=2 SOURCE_TMPFS=1 \
-apps/starry/macos-selfbuild/run_selfbuild.sh
+apps/starry/macos-selfbuild/reproduce.sh
+BOOT_ONLY=1 \
+  KERNEL=target/starry-macos-selfbuild/uploaded/starryos-aarch64-unknown-none-softfloat.bin \
+  ROOTFS=target/starry-macos-selfbuild/tgos-images/rootfs-aarch64-alpine.img/rootfs-aarch64-alpine.img \
+  SMP=4 JOBS=4 MEM=3072M QEMU_NET=0 QEMU_TIMEOUT_SEC=300 \
+  apps/starry/macos-selfbuild/run_selfbuild.sh
 ```
 
-See `macos-selfbuild/README.md` for the no-Docker reviewer path, native rootfs
-build/check flow, QEMU/HVF details, PASS markers, and representative self-build
-timings.
+`reproduce.sh` pulls/resizes the managed AArch64 Alpine rootfs with xtask,
+prepares the app-local guest toolchain overlay, launches
+`cargo xtask starry app qemu`, and extracts the guest-built kernel from the
+persistent rootfs under
+`target/starry-macos-selfbuild/uploaded/`. See `macos-selfbuild/README.md` for
+the rootfs path, xtask overlay injection path, QEMU/HVF details, PASS markers,
+and boot-only verification of the self-built kernel.
 
 ## Redis
 

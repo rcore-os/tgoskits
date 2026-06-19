@@ -10,3 +10,4 @@ keywords = ["os", "driver"]
 categories = ["embedded", "no-std"]
 
 [dependencies]
+thiserror = { version = "2", default-features = false }

@@ -86,7 +86,7 @@ pad_kallsyms_to_section() {
 
     if [ "$kallsyms_size" -gt "$section_size" ]; then
         echo "generated kallsyms (${kallsyms_size} bytes) exceed .kallsyms section (${section_size} bytes)" >&2
-        echo "remove the stale kernel ELF or rebuild it so the linker script reserve is restored" >&2
+        echo "increase STARRY_KALLSYMS_RESERVED for the macOS self-build guest profile" >&2
         exit 1
     fi
 
@@ -124,13 +124,6 @@ generate_kallsyms() {
     rust-objcopy --update-section .kallsyms="$kallsyms" "$KERNEL_ELF"
 }
 
-refresh_bin_if_present() {
-    bin="${KERNEL_ELF%.elf}.bin"
-    if [ -f "$bin" ]; then
-        rust-objcopy --strip-all -O binary "$KERNEL_ELF" "$bin"
-    fi
-}
-
 if [ -z "${KERNEL_ELF:-}" ]; then
     echo "KERNEL_ELF is required for Starry kallsyms generation" >&2
     exit 1
@@ -138,4 +131,3 @@ fi
 
 ensure_tools
 generate_kallsyms
-refresh_bin_if_present

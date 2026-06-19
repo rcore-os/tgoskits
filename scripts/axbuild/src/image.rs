@@ -1,4 +1,7 @@
-use std::path::{Path, PathBuf};
+use std::{
+    fs,
+    path::{Path, PathBuf},
+};
 
 use clap::{Args as ClapArgs, Subcommand};
 
@@ -60,6 +63,8 @@ pub enum Command {
     Ls(ArgsLs),
     /// Pull an image and verify its sha256 checksum.
     Pull(ArgsPull),
+    /// Resize an ext rootfs image, optionally copying it first.
+    Resize(ArgsResize),
     /// Print and optionally verify the sha256 of a local image.
     Check(ArgsCheck),
 }
@@ -100,6 +105,20 @@ pub struct ArgsCheck {
     pub sha256: Option<String>,
 }
 
+#[derive(ClapArgs)]
+pub struct ArgsResize {
+    /// Rootfs image to resize.
+    pub image: PathBuf,
+
+    /// Output image path. When omitted, resize IMAGE in place.
+    #[arg(short, long)]
+    pub output: Option<PathBuf>,
+
+    /// Final image size in MiB. Shrinking is rejected.
+    #[arg(long = "size-mib", value_name = "MIB")]
+    pub size_mib: u64,
+}
+
 pub(crate) async fn run(args: ImageArgs) -> anyhow::Result<()> {
     execute(args).await
 }
@@ -109,6 +128,7 @@ async fn execute(args: ImageArgs) -> anyhow::Result<()> {
     match args.command {
         Command::Ls(ls) => list_images(app.workspace_root(), &args.overrides, ls).await,
         Command::Pull(pull) => pull_image(app.workspace_root(), &args.overrides, pull).await,
+        Command::Resize(resize) => resize_image(resize),
         Command::Check(check) => {
             let path = to_absolute_path(&check.image)?;
             let ok = check_image(&path, check.sha256.as_deref())?;
@@ -220,6 +240,121 @@ async fn pull_image(
     Ok(())
 }
 
+fn resize_image(args: ArgsResize) -> anyhow::Result<()> {
+    let input = to_absolute_path(&args.image)?;
+    let image = match args.output.as_deref() {
+        Some(output) => {
+            let output = to_absolute_path(output)?;
+            if let Some(parent) = output.parent() {
+                fs::create_dir_all(parent).map_err(|err| {
+                    anyhow::anyhow!("failed to create {}: {err}", parent.display())
+                })?;
+            }
+            fs::copy(&input, &output).map_err(|err| {
+                anyhow::anyhow!(
+                    "failed to copy {} to {}: {err}",
+                    input.display(),
+                    output.display()
+                )
+            })?;
+            output
+        }
+        None => input,
+    };
+
+    let target_size = args
+        .size_mib
+        .checked_mul(1024 * 1024)
+        .ok_or_else(|| anyhow::anyhow!("image size is too large: {} MiB", args.size_mib))?;
+    let current_size = fs::metadata(&image)
+        .map_err(|err| anyhow::anyhow!("failed to stat {}: {err}", image.display()))?
+        .len();
+    if target_size < current_size {
+        anyhow::bail!(
+            "refusing to shrink {} from {} bytes to {} bytes",
+            image.display(),
+            current_size,
+            target_size
+        );
+    }
+
+    fs::OpenOptions::new()
+        .write(true)
+        .open(&image)
+        .and_then(|file| file.set_len(target_size))
+        .map_err(|err| anyhow::anyhow!("failed to resize {}: {err}", image.display()))?;
+
+    let e2fsck = find_host_tool(
+        "E2FSCK",
+        "e2fsck",
+        &[
+            "/opt/homebrew/opt/e2fsprogs/sbin/e2fsck",
+            "/usr/local/opt/e2fsprogs/sbin/e2fsck",
+        ],
+    )?;
+    let resize2fs = find_host_tool(
+        "RESIZE2FS",
+        "resize2fs",
+        &[
+            "/opt/homebrew/opt/e2fsprogs/sbin/resize2fs",
+            "/usr/local/opt/e2fsprogs/sbin/resize2fs",
+        ],
+    )?;
+
+    let fsck_status = std::process::Command::new(&e2fsck)
+        .arg("-fy")
+        .arg(&image)
+        .status()
+        .map_err(|err| anyhow::anyhow!("failed to run {}: {err}", e2fsck.display()))?;
+    if !matches!(fsck_status.code(), Some(0 | 1)) {
+        anyhow::bail!("{} -fy failed with {fsck_status}", e2fsck.display());
+    }
+
+    let resize_status = std::process::Command::new(&resize2fs)
+        .arg(&image)
+        .status()
+        .map_err(|err| anyhow::anyhow!("failed to run {}: {err}", resize2fs.display()))?;
+    if !resize_status.success() {
+        anyhow::bail!("{} failed with {resize_status}", resize2fs.display());
+    }
+
+    println!("image resized at {}", image.display());
+    Ok(())
+}
+
+fn find_host_tool(env_name: &str, tool_name: &str, fallbacks: &[&str]) -> anyhow::Result<PathBuf> {
+    if let Some(configured) = std::env::var_os(env_name).filter(|value| !value.is_empty()) {
+        return Ok(PathBuf::from(configured));
+    }
+    if let Some(tool) = find_in_path(tool_name) {
+        return Ok(tool);
+    }
+    for fallback in fallbacks {
+        let path = PathBuf::from(fallback);
+        if path.is_file() {
+            return Ok(path);
+        }
+    }
+    anyhow::bail!(
+        "{} not found; install it or set {}=/path/to/{}",
+        tool_name,
+        env_name,
+        tool_name
+    )
+}
+
+fn find_in_path(tool_name: &str) -> Option<PathBuf> {
+    let path = Path::new(tool_name);
+    if path.components().count() > 1 && path.is_file() {
+        return Some(path.to_path_buf());
+    }
+    std::env::var_os("PATH").and_then(|paths| {
+        std::env::split_paths(&paths)
+            .map(|dir| dir.join(tool_name))
+            .find(|candidate| candidate.is_file())
+    })
+}
+
 fn to_absolute_path(path: &Path) -> anyhow::Result<PathBuf> {
     Ok(if path.is_absolute() {
         path.to_path_buf()
@@ -312,6 +447,29 @@ mod tests {
                 assert_eq!(args.sha256.as_deref(), Some("abc"));
             }
             _ => panic!("expected check command"),
+        }
+    }
+
+    #[test]
+    fn parses_resize_with_output() {
+        let cli = Cli::try_parse_from([
+            "image",
+            "resize",
+            "rootfs.img",
+            "--size-mib",
+            "16384",
+            "--output",
+            "selfbuild.img",
+        ])
+        .unwrap();
+
+        match cli.command {
+            Command::Resize(args) => {
+                assert_eq!(args.image, PathBuf::from("rootfs.img"));
+                assert_eq!(args.output, Some(PathBuf::from("selfbuild.img")));
+                assert_eq!(args.size_mib, 16384);
+            }
+            _ => panic!("expected resize command"),
         }
     }
 }

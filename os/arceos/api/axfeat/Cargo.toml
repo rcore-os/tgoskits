@@ -103,10 +103,6 @@ usb = ["irq", "ax-driver?/usb"]
 # Real Time Clock (RTC) Driver.
 rtc = ["ax-hal/rtc", "ax-runtime/rtc"]
 
-# AArch64 virtual timer backend, useful for Apple HVF guests where EL1
-# physical timer registers trap under QEMU/HVF.
-cntv-timer = ["ax-hal/cntv-timer"]
-
 # Backtrace
 backtrace = ["axbacktrace/alloc"]
 dwarf = ["axbacktrace/dwarf"]

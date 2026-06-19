@@ -22,15 +22,9 @@ pub fn init(args: &[String], envs: &[String]) {
     static_keys::global_init();
     tracepoint_init().expect("Failed to initialize tracepoints");
 
-    #[cfg(feature = "ebpf-kmod")]
-    {
-        // perf kprobe-by-name resolves through the real in-kernel `.kallsyms`
-        // blob (`pseudofs::proc::KALLSYMS`, built from the `ksym` crate), the
-        // same table `/proc/kallsyms` exposes — no separate symbol table.
-        crate::ebpf::init_ebpf();
-        crate::perf::perf_event_init();
-        crate::kmod::init_kmod();
-    }
+    crate::ebpf::init_ebpf();
+    crate::perf::perf_event_init();
+    crate::kmod::init_kmod();
 
     pseudofs::mount_all().expect("Failed to mount pseudofs");
     spawn_alarm_task();

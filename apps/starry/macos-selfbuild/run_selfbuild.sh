@@ -11,14 +11,15 @@ Usage:
 
 or run the final QEMU step directly:
 
-  KERNEL=target/aarch64-unknown-none-softfloat/release/starryos.bin \
-  ROOTFS=tmp/axbuild/rootfs/rootfs-aarch64-hvf-selfbuild.img \
+  KERNEL=target/aarch64-unknown-linux-musl/release/starryos.bin \
+  ROOTFS=target/starry-macos-selfbuild/rootfs/rootfs-aarch64-hvf-selfbuild.img \
   apps/starry/macos-selfbuild/run_selfbuild.sh
 
 Common knobs:
-  SMP=8 JOBS=8 SOURCE_TMPFS=1 QEMU_TIMEOUT_SEC=7200
+  SMP=4 JOBS=4 MEM=8192M SOURCE_TMPFS=1 QEMU_TIMEOUT_SEC=7200
   EXPECTED_MAX_CRATES=420
   QEMU_ACCEL=hvf QEMU_MACHINE=virt,gic-version=3 QEMU_CPU=host
+  QEMU_NET=0
   QEMU_SNAPSHOT=0
   BOOT_ONLY=1
   EXTRA_RUSTFLAGS='<extra guest rustflags>'
@@ -101,14 +102,15 @@ git_value() {
     git -C "$repo_root" "$@" 2>/dev/null || printf '%s\n' "$fallback"
 }
 
-kernel="${KERNEL:-$repo_root/target/aarch64-unknown-none-softfloat/release/starryos.bin}"
-rootfs="${ROOTFS:-$repo_root/tmp/axbuild/rootfs/rootfs-aarch64-hvf-selfbuild.img}"
-smp="${SMP:-8}"
+kernel="${KERNEL:-$repo_root/target/aarch64-unknown-linux-musl/release/starryos.bin}"
+rootfs="${ROOTFS:-$repo_root/target/starry-macos-selfbuild/rootfs/rootfs-aarch64-hvf-selfbuild.img}"
+smp="${SMP:-4}"
 jobs="${JOBS:-$smp}"
-mem="${MEM:-4096M}"
+mem="${MEM:-8192M}"
 qemu_accel="${QEMU_ACCEL:-hvf}"
 qemu_machine="${QEMU_MACHINE:-virt,gic-version=3}"
 qemu_cpu="${QEMU_CPU:-host}"
+qemu_net="${QEMU_NET:-0}"
 boot_only="${BOOT_ONLY:-0}"
 qemu_snapshot="${QEMU_SNAPSHOT:-0}"
 source_tmpfs="${SOURCE_TMPFS:-1}"
@@ -152,11 +154,7 @@ if [[ "$require_fresh_rootfs" = "1" ]]; then
 rootfs source metadata is missing in $rootfs.
 Rebuild or refresh the self-build rootfs from the current checkout:
 
-  apps/starry/macos-selfbuild/build_rootfs.sh
-
-or, if the toolchain rootfs is already current:
-
-  apps/starry/macos-selfbuild/prepare_rootfs.sh
+  cargo xtask starry app rootfs -t macos-selfbuild --arch aarch64 --qemu-config apps/starry/macos-selfbuild/qemu-aarch64-hvf.toml --rootfs target/starry-macos-selfbuild/rootfs/rootfs-aarch64-hvf-selfbuild.img
 EOF
         exit 1
     fi
@@ -168,11 +166,7 @@ rootfs source commit does not match this checkout.
 
 This usually means an old rootfs is being reused. Refresh it before running:
 
-  apps/starry/macos-selfbuild/prepare_rootfs.sh
-
-or rebuild the full rootfs:
-
-  apps/starry/macos-selfbuild/build_rootfs.sh
+  cargo xtask starry app rootfs -t macos-selfbuild --arch aarch64 --qemu-config apps/starry/macos-selfbuild/qemu-aarch64-hvf.toml --rootfs target/starry-macos-selfbuild/rootfs/rootfs-aarch64-hvf-selfbuild.img
 
 Set REQUIRE_FRESH_ROOTFS=0 only for deliberate stale-rootfs experiments.
 EOF
@@ -194,12 +188,13 @@ guest_runner="$work_dir/starry-macos-run.sh"
     emit_export "BUILD_PACKAGE" "${BUILD_PACKAGE:-starryos}"
     emit_export "BUILD_BIN" "${BUILD_BIN:-starryos}"
     emit_export "BUILD_STD" "${BUILD_STD:-core,alloc}"
-    emit_export "FEATURES" "${FEATURES:-plat-dyn,ax-driver/virtio-blk,ax-driver/virtio-net,ax-driver/virtio-gpu,ax-driver/virtio-input,ax-driver/virtio-socket,starry-kernel/input,starry-kernel/vsock}"
-    emit_export "NO_DEFAULT_FEATURES" "${NO_DEFAULT_FEATURES:-0}"
-    emit_export "TARGET_SPEC_MODE" "${TARGET_SPEC_MODE:-pie}"
+    emit_export "BUILD_STD_FEATURES" "${BUILD_STD_FEATURES:-compiler-builtins-mem}"
+    emit_export "FEATURES" "${FEATURES:-plat-dyn,axplat-dyn/cntv-timer,ax-driver/virtio-blk,axplat-dyn/qemu-hvf-gic,smp}"
+    emit_export "NO_DEFAULT_FEATURES" "${NO_DEFAULT_FEATURES:-1}"
+    emit_export "TARGET_SPEC_MODE" "${TARGET_SPEC_MODE:-bare-pie}"
     emit_export "TARGET_SPEC_PATH" "${TARGET_SPEC_PATH:-}"
     emit_export "ARTIFACT_TO_BIN" "${ARTIFACT_TO_BIN:-1}"
-    emit_export "STARRY_KALLSYMS_RESERVED" "${STARRY_KALLSYMS_RESERVED:-64M}"
+    emit_export "STARRY_KALLSYMS_RESERVED" "${STARRY_KALLSYMS_RESERVED:-16M}"
     emit_export "CARGO_SUBCOMMAND" "${CARGO_SUBCOMMAND:-build}"
     emit_export "CARGO_BIN" "${CARGO_BIN:-/opt/cargo-nightly-sysroot}"
     emit_export "SOURCE_DIR" "${SOURCE_DIR:-/opt/tgoskits}"
@@ -217,6 +212,9 @@ guest_runner="$work_dir/starry-macos-run.sh"
     emit_export "GUEST_MONITOR_INTERVAL_SEC" "${GUEST_MONITOR_INTERVAL_SEC:-60}"
     emit_export "TGOSKITS_COMMIT" "$source_commit"
     emit_export "TGOSKITS_REF" "$source_ref"
+    if [[ -n "${LINK_RUSTFLAGS+x}" ]]; then
+        emit_export "LINK_RUSTFLAGS" "$LINK_RUSTFLAGS"
+    fi
     if [[ -n "${EXTRA_RUSTFLAGS:-}" ]]; then
         emit_export "EXTRA_RUSTFLAGS" "$EXTRA_RUSTFLAGS"
     fi
@@ -243,7 +241,7 @@ echo "log=$log"
 echo "kernel=$kernel"
 echo "rootfs_copy=$work_rootfs"
 echo "qemu=$qemu"
-echo "qemu_accel=$qemu_accel qemu_machine=$qemu_machine qemu_cpu=$qemu_cpu"
+echo "qemu_accel=$qemu_accel qemu_machine=$qemu_machine qemu_cpu=$qemu_cpu qemu_net=$qemu_net"
 echo "smp=$smp jobs=$jobs mem=$mem source_tmpfs=$source_tmpfs boot_only=$boot_only qemu_snapshot=$qemu_snapshot qemu_timeout_sec=$qemu_timeout_sec"
 echo "source_commit=$source_commit source_ref=$source_ref"
 : >"$log"
@@ -261,12 +259,19 @@ qemu_args+=(
     -smp "$smp"
     -device virtio-blk-pci,drive=disk0
     -drive "id=disk0,if=none,format=raw,file=$work_rootfs,file.locking=off"
-    -device virtio-net-pci,netdev=net0
-    -netdev user,id=net0
     -kernel "$kernel"
     -monitor none
     -serial mon:stdio
 )
+
+if [[ "$qemu_net" != "0" ]]; then
+    qemu_args+=(
+        -device virtio-net-pci,netdev=net0
+        -netdev user,id=net0
+    )
+else
+    qemu_args+=(-net none)
+fi
 
 "$qemu" \
     "${qemu_args[@]}" \
@@ -305,7 +310,7 @@ check_crate_count_guard() {
 ===HOST-QEMU-STOP reason=unexpected-crate-count total=$total expected_max=$expected_max_crates===
 This run is not using the fast macOS self-build profile. An unexpected Cargo total
 usually means a stale rootfs or slow feature set is being used. Refresh the rootfs with:
-  apps/starry/macos-selfbuild/prepare_rootfs.sh
+  cargo xtask starry app rootfs -t macos-selfbuild --arch aarch64 --qemu-config apps/starry/macos-selfbuild/qemu-aarch64-hvf.toml --rootfs target/starry-macos-selfbuild/rootfs/rootfs-aarch64-hvf-selfbuild.img
 or set ALLOW_SLOW_SELFBUILD=1 only for deliberate slow-profile experiments.
 EOF
         kill "$qemu_pid" 2>/dev/null || true
@@ -382,13 +387,24 @@ done
 if ! kill -0 "$qemu_pid" 2>/dev/null && ! LC_ALL=C grep -a -q "===HOST-QEMU-STOP" "$log"; then
     wait "$qemu_pid" 2>/dev/null
     qemu_rc="$?"
-    if [[ "$boot_only" != "1" && "$sent_cmd" = "1" ]] \
+    if [[ "$boot_only" = "1" ]] && LC_ALL=C grep -a -q "root@starry:" "$log"; then
+        echo "===HOST-QEMU-STOP reason=boot-only-shell pid=$qemu_pid rc=$qemu_rc===" >>"$log"
+        host_rc=0
+    elif [[ "$boot_only" = "1" ]]; then
+        echo "===HOST-QEMU-STOP reason=qemu-exit-without-shell pid=$qemu_pid rc=$qemu_rc===" >>"$log"
+        if [[ "$qemu_rc" = "0" ]]; then
+            host_rc=1
+        else
+            host_rc="$qemu_rc"
+        fi
+    elif [[ "$sent_cmd" = "1" ]] \
         && ! LC_ALL=C grep -a -q "===STARRY-MACOS-SELFBUILD-RUN-END rc=" "$log"; then
         echo "===HOST-QEMU-STOP reason=qemu-exit-without-run-end pid=$qemu_pid rc=$qemu_rc===" >>"$log"
+        host_rc="$qemu_rc"
     else
         echo "===HOST-QEMU-STOP reason=qemu-exit pid=$qemu_pid rc=$qemu_rc===" >>"$log"
+        host_rc="$qemu_rc"
     fi
-    host_rc="$qemu_rc"
 fi
 
 if LC_ALL=C grep -a -E -i -q "$failure_pattern" "$log"; then

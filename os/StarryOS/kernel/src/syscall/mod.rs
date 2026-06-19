@@ -1,7 +1,6 @@
 mod fs;
 mod io_mpx;
 mod ipc;
-#[cfg(feature = "ebpf-kmod")]
 mod kmod;
 mod mm;
 mod net;
@@ -917,11 +916,7 @@ pub fn handle_syscall(uctx: &mut UserContext) {
         // dummy fds
         Sysno::userfaultfd | Sysno::memfd_secret => sys_dummy_fd(sysno),
 
-        #[cfg(feature = "ebpf-kmod")]
         Sysno::bpf => crate::ebpf::sys_bpf(uctx.arg0() as _, uctx.arg1(), uctx.arg2() as _),
-        #[cfg(not(feature = "ebpf-kmod"))]
-        Sysno::bpf => Err(AxError::Unsupported),
-        #[cfg(feature = "ebpf-kmod")]
         Sysno::perf_event_open => crate::perf::sys_perf_event_open(
             uctx.arg0(),
             uctx.arg1() as _,
@@ -929,24 +924,13 @@ pub fn handle_syscall(uctx: &mut UserContext) {
             uctx.arg3() as _,
             uctx.arg4() as _,
         ),
-        #[cfg(not(feature = "ebpf-kmod"))]
-        Sysno::perf_event_open => Err(AxError::Unsupported),
-        #[cfg(feature = "ebpf-kmod")]
         Sysno::init_module => {
             kmod::sys_init_module(uctx.arg0() as _, uctx.arg1() as _, uctx.arg2() as _)
         }
-        #[cfg(not(feature = "ebpf-kmod"))]
-        Sysno::init_module => Err(AxError::Unsupported),
-        #[cfg(feature = "ebpf-kmod")]
         Sysno::finit_module => {
             kmod::sys_finit_module(uctx.arg0() as _, uctx.arg1() as _, uctx.arg2() as _)
         }
-        #[cfg(not(feature = "ebpf-kmod"))]
-        Sysno::finit_module => Err(AxError::Unsupported),
-        #[cfg(feature = "ebpf-kmod")]
         Sysno::delete_module => kmod::sys_delete_module(uctx.arg0() as _, uctx.arg1() as _),
-        #[cfg(not(feature = "ebpf-kmod"))]
-        Sysno::delete_module => Err(AxError::Unsupported),
 
         Sysno::fanotify_init => Err(AxError::Unsupported),
 

@@ -26,4 +26,4 @@ pub mod local {
     }
 }
 
-def_driver!(systick, Systick, Interface);
+def_driver!(Systick, Interface);

@@ -2,24 +2,15 @@
 
 use core::{fmt::Display, ops::Deref, ptr::NonNull, sync::atomic::Ordering};
 
-#[derive(Debug)]
+#[derive(thiserror::Error, Debug)]
 pub enum MapError {
+    #[error("Invalid MMIO address or size")]
     Invalid,
+    #[error("Failed to allocate memory for MMIO mapping")]
     NoMemory,
+    #[error("MMIO address is already in use")]
     Busy,
 }
-
-impl Display for MapError {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        match self {
-            Self::Invalid => write!(f, "Invalid MMIO address or size"),
-            Self::NoMemory => write!(f, "Failed to allocate memory for MMIO mapping"),
-            Self::Busy => write!(f, "MMIO address is already in use"),
-        }
-    }
-}
-
-impl core::error::Error for MapError {}
 
 pub trait MmioOp: Sync + Send + 'static {
     fn ioremap(&self, addr: MmioAddr, size: usize) -> Result<MmioRaw, MapError>;
@@ -64,8 +55,23 @@ pub fn ioremap(addr: MmioAddr, size: usize) -> Result<Mmio, MapError> {
 }
 
 /// Physical MMIO Address
-#[derive(Default, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(
+    Default,
+    derive_more::From,
+    derive_more::Into,
+    Clone,
+    Copy,
+    derive_more::Debug,
+    derive_more::Display,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Hash,
+)]
 #[repr(transparent)]
+#[debug("PhysAddr({_0:#x})")]
+#[display("{_0:#x}")]
 pub struct MmioAddr(usize);
 
 impl MmioAddr {
@@ -74,33 +80,9 @@ impl MmioAddr {
     }
 }
 
-impl From<usize> for MmioAddr {
-    fn from(value: usize) -> Self {
-        MmioAddr(value)
-    }
-}
-
 impl From<u64> for MmioAddr {
     fn from(value: u64) -> Self {
         MmioAddr(value as usize)
-    }
-}
-
-impl From<MmioAddr> for usize {
-    fn from(value: MmioAddr) -> Self {
-        value.0
-    }
-}
-
-impl core::fmt::Debug for MmioAddr {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        write!(f, "PhysAddr({:#x})", self.0)
-    }
-}
-
-impl Display for MmioAddr {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        write!(f, "{:#x}", self.0)
     }
 }
 

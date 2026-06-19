@@ -65,6 +65,8 @@ for guest_path in \
     "/opt/rust-nightly/bin/rustc" \
     "/opt/rust-nightly/lib/rustlib/src/rust/library/Cargo.lock" \
     "/usr/bin/aarch64-linux-musl-gcc" \
+    "/usr/bin/aarch64-linux-musl-cc" \
+    "/usr/bin/aarch64-linux-musl-ar" \
     "/opt/cargo-nightly-sysroot" \
     "/opt/rustc-nightly-sysroot" \
     "/opt/rustdoc-nightly-sysroot"; do

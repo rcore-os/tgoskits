@@ -1440,7 +1440,6 @@ fn builder(fs: Arc<SimpleFs>) -> DirMaker {
         SimpleDir::new_maker(fs.clone(), Arc::new(net))
     });
 
-    #[cfg(feature = "dynamic_debug")]
     root.add("dynamic_debug", {
         let mut dynamic_debug = DirMapping::new();
 

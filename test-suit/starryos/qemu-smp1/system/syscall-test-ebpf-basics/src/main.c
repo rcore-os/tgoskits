@@ -117,27 +117,6 @@ struct bpf_insn {
 #define BPF_LD      0x00
 #define BPF_IMM     0x00
 
-static int ebpf_available(void) {
-    struct bpf_map_create_attr attr = {
-        .map_type = BPF_MAP_TYPE_ARRAY,
-        .key_size = 4,
-        .value_size = 8,
-        .max_entries = 1,
-        .map_flags = 0,
-    };
-    errno = 0;
-    long fd = raw_bpf(BPF_MAP_CREATE, &attr, sizeof(attr));
-    if (fd >= 0) {
-        close(fd);
-        return 1;
-    }
-    if (errno == ENOSYS) {
-        printf("eBPF unavailable: bpf(2) returned ENOSYS; skipping positive eBPF tests\n");
-        return 0;
-    }
-    return 1;
-}
-
 static struct bpf_insn make_insn(uint8_t code, uint8_t dst, uint8_t src, int16_t off, int32_t imm) {
     struct bpf_insn i;
     i.code = code;
@@ -411,10 +390,6 @@ static void test_map_operations_invalid(void) {
 
 int main(void) {
     printf("=== eBPF Basics Test Suite ===\n");
-
-    if (!ebpf_available()) {
-        return 0;
-    }
 
     test_map_create_array();
     test_map_create_hash();

@@ -204,12 +204,7 @@ pub fn sys_futex(
                 return Err(AxError::WouldBlock);
             }
 
-            let requested_timeout = futex_wait_timeout(&op, timeout)?;
-
-            ax_task::yield_now();
-            if uaddr.vm_read()? != value {
-                return Err(AxError::WouldBlock);
-            }
+            let timeout = futex_wait_timeout(&op, timeout)?;
 
             let futex = futex_table.get_or_insert(&key);
             let cleanup = futex_table.cleanup_for(&key);
@@ -220,20 +215,12 @@ pub fn sys_futex(
                 u32::MAX
             };
 
-            let wait_timeout = requested_timeout.or(Some(TimeValue::from_millis(1)));
-            let wait_result =
-                futex
-                    .wq
-                    .wait_if_with_cleanup(bitset, wait_timeout, Some(cleanup), || {
-                        uaddr.vm_read() == Ok(value)
-                    });
-            let waited = match wait_result {
-                Ok(waited) => waited,
-                Err(AxError::TimedOut) if requested_timeout.is_none() => true,
-                Err(err) => return Err(err),
-            };
-
-            if !waited {
+            if !futex
+                .wq
+                .wait_if_with_cleanup(bitset, timeout, Some(cleanup), || {
+                    uaddr.vm_read() == Ok(value)
+                })?
+            {
                 return Err(AxError::WouldBlock);
             }
 

@@ -19,6 +19,7 @@ all-features = true
 
 [features]
 rdif = ["rdif-intc"]
+gicv3-no-spi-init = []
 
 [dependencies]
 tock-registers = { version = "0.10" }

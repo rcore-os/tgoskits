@@ -6,6 +6,7 @@ pub use core::any::Any;
 
 #[macro_use]
 mod _macros;
+pub use paste::paste;
 pub use rdif_def::{CpuId, KError, custom_type, irq};
 pub mod io;
 

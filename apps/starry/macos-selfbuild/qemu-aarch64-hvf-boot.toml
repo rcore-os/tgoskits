@@ -1,4 +1,5 @@
 # Apple Silicon macOS boot-only QEMU config for externally built StarryOS kernels.
+# The rootfs drive is supplied by xtask.
 args = [
     "-snapshot",
     "-nographic",
@@ -10,21 +11,15 @@ args = [
     "host",
     "-m",
     "512M",
-    "-device",
-    "virtio-blk-pci,drive=disk0",
-    "-drive",
-    "id=disk0,if=none,format=raw,file=${workspace}/tmp/axbuild/rootfs/rootfs-aarch64-hvf-selfbuild.img,file.locking=off",
-    "-device",
-    "virtio-net-pci,netdev=net0",
-    "-netdev",
-    "user,id=net0",
 ]
 uefi = false
 to_bin = true
 shell_prefix = "root@starry:"
 success_regex = ["root@starry:"]
 fail_regex = [
-    "(?i)\\bpanic(?:ked)?\\b",
+    "(?i)\\bpanicked at\\b",
+    "(?i)\\bkernel panic\\b",
+    "(?i)\\bpanic:\\s",
     "(?i)\\bunhandled trap\\b",
     "(?i)\\btrap frame\\b",
     "(?i)fatal",

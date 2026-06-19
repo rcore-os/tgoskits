@@ -27,7 +27,7 @@ int __observe = 0;
 #define MEMBARRIER_CMD_REGISTER_PRIVATE_EXPEDITED_RSEQ 256
 
 /*
- * Expected SUPPORTED_COMMANDS bitmask from the StarryOS implementation:
+ * Expected SUPPORTED_COMMANDS bitmask from Linux UAPI command values:
  * GLOBAL | GLOBAL_EXPEDITED | REGISTER_GLOBAL_EXPEDITED |
  * PRIVATE_EXPEDITED | REGISTER_PRIVATE_EXPEDITED = 0b11111 = 31
  */

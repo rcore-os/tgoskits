@@ -5,7 +5,6 @@ pub mod debug;
 pub mod dev;
 mod device;
 mod dir;
-#[cfg(feature = "dynamic_debug")]
 mod dyn_debug;
 mod file;
 mod fs;

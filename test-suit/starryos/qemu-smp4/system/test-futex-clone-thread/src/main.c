@@ -86,7 +86,7 @@ static long futex_wake_bitset(_Atomic uint32_t *uaddr, int count, uint32_t bitse
 
 static int wait_until_ready(_Atomic int *ready, int expected, const char *label)
 {
-    for (int i = 0; i < 10000; i++) {
+    for (int i = 0; i < 1000; i++) {
         if (atomic_load(ready) >= expected)
             return 1;
         usleep(1000);
@@ -157,6 +157,7 @@ static void test_basic_wait_wake(void)
     long pass = (long)ret;
 
     CHECK(pass == T1_ROUNDS, "T1 waiter completed all 50 rounds");
+    CHECK(total_woken > 0, "T1 at least one FUTEX_WAKE actually woke a waiter");
     printf("  T1 result: waiter %ld/%d rounds, %d successful wakes\n",
            pass, T1_ROUNDS, total_woken);
 }
@@ -505,6 +506,7 @@ static void test_private_flag(void)
     long pass = (long)ret;
 
     CHECK(pass == T6_ROUNDS, "T6 waiter completed all 50 rounds (PRIVATE)");
+    CHECK(total_woken > 0, "T6 at least one WAKE_PRIVATE actually woke a waiter");
     printf("  T6 result: waiter %ld/%d rounds, %d successful private wakes\n",
            pass, T6_ROUNDS, total_woken);
 }
@@ -574,36 +576,21 @@ static void test_bitset_selective(void)
         }
         usleep(5000);
 
-        /* Step a: disjoint mask 0x8 should wake nobody. */
-        int disjoint_woke = 0;
-        for (int attempt = 0; attempt < 10; attempt++) {
-            long dw = futex_wake_bitset(&t7_futex, T7_N, 0x8);
-            if (dw > 0)
-                disjoint_woke = 1;
-            usleep(1000);
-        }
-        CHECK(!disjoint_woke, "T7 disjoint mask woke no waiters");
+        /* Step a: disjoint mask 0x8 should wake nobody */
+        long dw = futex_wake_bitset(&t7_futex, T7_N, 0x8);
+        (void)dw; /* may return 0 or -1; we check waiter state below */
+        int anyone_woken = 0;
+        for (int w = 0; w < T7_N; w++)
+            anyone_woken |= atomic_load(&t7_woken_flags[w]);
+        CHECK(!anyone_woken, "T7 disjoint mask woke no waiters");
 
-        /*
-         * Step b: selective mask 0x2 should be able to wake the 0x2 waiter.
-         *
-         * Starry currently implements untimed futex waits as short timed waits
-         * plus retry, so a single wake can race with a waiter between retries.
-         * Keep the futex value at 0 while probing; the woken waiter will loop
-         * back into WAIT_BITSET until the cleanup wake below releases everyone.
-         */
-        long sw = 0;
-        for (int attempt = 0; attempt < 50; attempt++) {
-            sw = futex_wake_bitset(&t7_futex, T7_N, 0x2);
-            if (sw > 0)
-                break;
-            usleep(1000);
-        }
+        /* Step b: selective mask 0x2 should wake the 0x2 waiter */
+        atomic_store(&t7_futex, 1);
+        long sw = futex_wake_bitset(&t7_futex, T7_N, 0x2);
         if (sw == 1)
             selective_ok++;
 
         /* Step c: wake remaining waiters */
-        atomic_store(&t7_futex, 1);
         usleep(2000);
         futex_wake(&t7_futex, T7_N);
 

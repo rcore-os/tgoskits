@@ -15,6 +15,7 @@ efi = ["someboot/efi"]
 hv = ["mmu", "someboot/hv"]
 mmu = ["someboot/mmu"]
 percpu-prealloc = ["someboot/percpu-prealloc"]
+qemu-hvf-gic = ["arm-gic-driver/gicv3-no-spi-init"]
 thead-mae = ["someboot/thead-mae"]
 uspace = ["mmu", "someboot/uspace"]
 
