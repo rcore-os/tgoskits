@@ -82,7 +82,6 @@ impl<'a> DirBuffer<'a> {
     }
 }
 
-
 fn file_type_to_d_type(ty: ax_fs_ng::fops::FileType) -> u8 {
     match ty {
         ax_fs_ng::fops::FileType::Directory => 4,   // DT_DIR

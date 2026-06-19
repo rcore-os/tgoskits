@@ -1,12 +1,16 @@
+#[cfg(feature = "vfs")]
+use alloc::vec;
 use alloc::{
     borrow::{Cow, ToOwned},
     collections::vec_deque::VecDeque,
     string::String,
     sync::{Arc, Weak},
-    vec,
     vec::Vec,
 };
-use core::sync::atomic::{AtomicU64, Ordering};
+#[cfg(feature = "vfs")]
+use core::sync::atomic::AtomicU64;
+#[cfg(feature = "vfs")]
+use core::sync::atomic::Ordering;
 
 use ax_io::{Read, Write};
 #[cfg(feature = "vfs")]
@@ -36,6 +40,7 @@ pub static ROOT_FS_CONTEXT: Once<FsContext> = Once::new();
 /// filesystem context and apply the same root / cwd fixup that Linux
 /// performs in `chroot_fs_refs()` after `pivot_root(2)`.
 static FS_REGISTRY: IrqMutex<Vec<Weak<Mutex<FsContext>>>> = IrqMutex::new(Vec::new());
+#[cfg(feature = "vfs")]
 static MOUNT_NAMESPACE_ID: AtomicU64 = AtomicU64::new(1);
 
 /// Register an `FsContext` in the global [`FS_REGISTRY`].
@@ -71,12 +76,14 @@ pub fn is_mount_busy(mp: &Arc<Mountpoint>) -> bool {
 }
 
 /// Namespace-local mount tree visible to an [`FsContext`].
+#[cfg(feature = "vfs")]
 #[derive(Debug, Clone)]
 pub struct MountNamespace {
     id: u64,
     root_mount: Arc<Mountpoint>,
 }
 
+#[cfg(feature = "vfs")]
 impl MountNamespace {
     fn new(root_mount: Arc<Mountpoint>) -> Self {
         Self {
@@ -140,6 +147,7 @@ pub struct ReadDirEntry {
 /// Provides `std::fs`-like interface.
 #[derive(Debug, Clone)]
 pub struct FsContext {
+    #[cfg(feature = "vfs")]
     mnt_ns: Arc<MountNamespace>,
     root_dir: Location,
     current_dir: Location,
@@ -148,10 +156,21 @@ pub struct FsContext {
 impl FsContext {
     /// Creates a new context with `root_dir` as both root and current directory.
     pub fn new(root_dir: Location) -> Self {
-        let mnt_ns = Arc::new(MountNamespace::new(root_dir.mountpoint().clone()));
-        Self::new_in_namespace(mnt_ns, root_dir)
+        #[cfg(feature = "vfs")]
+        {
+            let mnt_ns = Arc::new(MountNamespace::new(root_dir.mountpoint().clone()));
+            Self::new_in_namespace(mnt_ns, root_dir)
+        }
+        #[cfg(not(feature = "vfs"))]
+        {
+            Self {
+                root_dir: root_dir.clone(),
+                current_dir: root_dir,
+            }
+        }
     }
 
+    #[cfg(feature = "vfs")]
     fn new_in_namespace(mnt_ns: Arc<MountNamespace>, root_dir: Location) -> Self {
         Self {
             root_dir: root_dir.clone(),
@@ -161,10 +180,12 @@ impl FsContext {
     }
 
     /// Returns the mount namespace backing this filesystem context.
+    #[cfg(feature = "vfs")]
     pub fn mount_namespace(&self) -> &Arc<MountNamespace> {
         &self.mnt_ns
     }
 
+    #[cfg(feature = "vfs")]
     fn mount_namespace_contains(&self, mountpoint: &Arc<Mountpoint>) -> bool {
         self.mnt_ns.contains_mountpoint(mountpoint)
     }
@@ -193,17 +214,20 @@ impl FsContext {
         Ok(Self {
             root_dir: self.root_dir.clone(),
             current_dir,
+            #[cfg(feature = "vfs")]
             mnt_ns: self.mnt_ns.clone(),
         })
     }
 
     /// Rebind this context to a freshly cloned mount namespace.
+    #[cfg(feature = "vfs")]
     pub fn unshare_mount_namespace(&mut self) -> VfsResult<()> {
         let new_ns = self.mnt_ns.clone_namespace();
         self.set_mount_namespace(new_ns)
     }
 
     /// Rebind this context to an existing mount namespace.
+    #[cfg(feature = "vfs")]
     pub fn set_mount_namespace(&mut self, new_ns: Arc<MountNamespace>) -> VfsResult<()> {
         let root_path = self.root_dir.absolute_path()?;
         let current_path = self.current_dir.absolute_path()?;
