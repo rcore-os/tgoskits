@@ -15,6 +15,8 @@ resolver = "3"
 members = [
     "apps/starry/orangepi-5-plus-uvc/uvc-fps",
 
+    "bootloader/axloader",
+
     "components/aic8800",
     "components/ax-lazyinit",
     "components/axbacktrace",
@@ -26,11 +28,8 @@ members = [
     "components/axpanic",
     "components/axpoll",
     "components/axsched",
-    "components/cap_access",
     "components/cpumask",
     "components/crate_interface",
-    "components/handler_table",
-    "components/int_ratio",
     "components/irq-framework",
     "components/kasm-aarch64",
     "components/kernel_guard",
@@ -51,7 +50,6 @@ members = [
     "components/axconfig-gen/axconfig-gen",
     "components/axconfig-gen/axconfig-macros",
     "platforms/*",
-    "components/crate_interface/crate_interface_lite",
     "components/crate_interface/test_crates/*",
     "components/ctor_bare/ctor_bare",
     "components/ctor_bare/ctor_bare_macros",
@@ -132,14 +130,12 @@ ax-alloc = { version = "0.8.3", path = "os/arceos/modules/axalloc", default-feat
 ax-allocator = { version = "0.5.3", path = "memory/axallocator" }
 ax-api = { version = "0.6.0", path = "os/arceos/api/arceos_api" }
 ax-arm-pl031 = { version = "0.4.7", path = "drivers/rtc/arm_pl031" }
-ax-cap-access = { version = "0.3.5", path = "components/cap_access" }
 ax-config = { version = "0.5.13", path = "os/arceos/modules/axconfig" }
 ax-config-gen = { version = "0.4.10", path = "components/axconfig-gen/axconfig-gen" }
 ax-config-macros = { version = "0.4.10", path = "components/axconfig-gen/axconfig-macros" }
 ax-cpu = { version = "0.6.8", path = "components/axcpu" }
 ax-cpumask = { version = "0.3.5", path = "components/cpumask" }
 ax-crate-interface = { version = "0.5.7", path = "components/crate_interface" }
-ax-crate-interface-lite = { version = "0.3.5", path = "components/crate_interface/crate_interface_lite" }
 ax-ctor-bare = { version = "0.4.8", path = "components/ctor_bare/ctor_bare" }
 ax-ctor-bare-macros = { version = "0.4.8", path = "components/ctor_bare/ctor_bare_macros" }
 ax-display = { version = "0.5.18", path = "os/arceos/modules/axdisplay" }
@@ -150,10 +146,8 @@ ax-errno = { version = "0.6.0", path = "components/axerrno" }
 ax-feat = { version = "0.5.20", path = "os/arceos/api/axfeat" }
 ax-fs-ng = { version = "0.5.19", path = "os/arceos/modules/axfs-ng" }
 ax-hal = { version = "0.5.19", path = "os/arceos/modules/axhal" }
-ax-handler-table = { version = "0.3.7", path = "components/handler_table" }
 irq-framework = { version = "0.1.1", path = "components/irq-framework" }
 ax-input = { version = "0.5.18", path = "os/arceos/modules/axinput" }
-ax-int-ratio = { version = "0.3.7", path = "components/int_ratio" }
 ax-io = { version = "0.6.0", path = "components/axio" }
 ax-ipi = { version = "0.5.18", path = "os/arceos/modules/axipi" }
 ax-kernel-guard = { version = "0.3.11", path = "components/kernel_guard" }
@@ -270,6 +264,8 @@ test-simple = { version = "0.3.4", path = "components/crate_interface/test_crate
 test-weak = { version = "0.3.4", path = "components/crate_interface/test_crates/test-weak" }
 test-weak-partial = { version = "0.3.4", path = "components/crate_interface/test_crates/test-weak-partial" }
 tg-xtask = { version = "0.5.11", path = "xtask" }
+axloader = { version = "0.5.11", path = "bootloader/axloader" }
+httpboot-protocol = { version = "0.1.0", default-features = false }
 x86_vcpu = { version = "0.5.12", path = "virtualization/x86_vcpu", default-features = false }
 x86_vlapic = { version = "0.4.13", path = "virtualization/x86_vlapic" }
 page-table-generic = { version = "0.7.3", path = "memory/page-table-generic" }
@@ -304,7 +300,7 @@ lock_api = { version = "0.4", default-features = false }
 log = "0.4"
 spin = "0.12"
 atomic-waker = { version = "1.1", default-features = false }
-ostool = { version = "0.23.2" }
+ostool = { version = "0.23.4" }
 riscv = { version = "0.16.1", default-features = false }
 sbi-rt = { version = "0.0.4", default-features = false }
 uefi = "0.37.0"

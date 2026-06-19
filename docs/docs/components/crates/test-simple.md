@@ -4,7 +4,7 @@
 > 类型：二进制 crate（独立测试工作区成员，`publish = false`）
 > 分层：组件层 / `crate_interface` 多 crate 测试矩阵 / 最终链接验证端
 > Rust 要求：stable
-> 文档依据：`components/crate_interface/test_crates/test-simple/Cargo.toml`、`components/crate_interface/test_crates/test-simple/src/main.rs`、`components/crate_interface/test_crates/Cargo.toml`、`components/crate_interface/test_crates/run_tests.sh`、`components/crate_interface/README.md`、`components/crate_interface/tests/test_crate_interface.rs`、`components/crate_interface/crate_interface_lite/tests/test_crate_interface.rs`、`components/crate_interface/Cargo.toml`、`Cargo.toml`
+> 文档依据：`components/crate_interface/test_crates/test-simple/Cargo.toml`、`components/crate_interface/test_crates/test-simple/src/main.rs`、`components/crate_interface/test_crates/Cargo.toml`、`components/crate_interface/test_crates/run_tests.sh`、`components/crate_interface/README.md`、`components/crate_interface/tests/test_crate_interface.rs`、`components/crate_interface/Cargo.toml`、`Cargo.toml`
 
 `test-simple` 是 `crate_interface` stable 路径里的“最终链接/验证端”测试资产。它自己既不定义接口，也不承载正式实现，而是把 `define-simple-traits` 的定义侧、`impl-simple-traits` 的实现侧和调用侧验证逻辑真正收束到同一个可执行文件中，再用 `assert_eq!` 把结果钉死。与 `components/crate_interface/tests/test_crate_interface.rs` 这类同 crate 测试相比，它验证的是更接近真实使用方式的三 crate 闭环：接口定义、符号导出、最终调用必须在真正完成链接之后仍然成立。
 
@@ -55,7 +55,6 @@
 `crate_interface` 仓库里已经有同 crate 的测试用例，例如：
 
 - `components/crate_interface/tests/test_crate_interface.rs`
-- `components/crate_interface/crate_interface_lite/tests/test_crate_interface.rs`
 
 这些测试更偏向“宏展开后的基本调用语义是否成立”。`test-simple` 则再向前迈一步，专门证明当定义侧、实现侧、调用侧分别位于不同 crate 时，最终二进制仍然能正确完成符号绑定。
 
@@ -148,7 +147,6 @@ components/crate_interface/test_crates/run_tests.sh simple
 以下场景更适合放到别处：
 
 - 同 crate 级别的宏行为回归：放到 `components/crate_interface/tests/test_crate_interface.rs`
-- `ax-crate-interface-lite` 的轻量语法覆盖：放到 `components/crate_interface/crate_interface_lite/tests/test_crate_interface.rs`
 - `weak_default`、弱符号优先级、默认回退：放到 `test-weak` 与 `test-weak-partial`
 
 ## 测试

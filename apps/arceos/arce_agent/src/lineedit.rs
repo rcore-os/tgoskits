@@ -8,7 +8,7 @@
 //   - Insert in the middle of the line with redraw
 //   - Command history (Up / Down arrows)
 //
-// No external crate dependencies — works on ArceOS Hermit target.
+// No external crate dependencies; works with ArceOS std console builds.
 
 use std::io::{self, Read, Write};
 

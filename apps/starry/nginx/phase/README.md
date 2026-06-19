@@ -10,4 +10,6 @@ Current scripts:
 Rule:
 
 - Each phase script must include all checks of that phase, including checks already covered by smoke.
-- Phase scripts are managed for development iteration and are not connected as tgoskits nginx CI entry.
+- Phase scripts are not auto-discovered by tgoskits nginx CI. Run them manually through
+  `cargo xtask starry app qemu -t nginx --arch <arch> --qemu-config apps/starry/nginx/qemu/phase/qemu-<arch>-phaseXX.toml`,
+  which enters the guest via `/usr/bin/nginx-runner.sh phase phaseXX`.

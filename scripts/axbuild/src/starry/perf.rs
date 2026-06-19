@@ -193,15 +193,12 @@ pub(super) async fn run(starry: &mut Starry, args: ArgsPerf) -> anyhow::Result<(
     let mut cargo = build::load_cargo_config(&request)?;
     apply_perf_cargo_features(&mut cargo, &args);
     starry.app.set_debug_mode(args.debug)?;
-    starry
-        .app
-        .build(cargo, request.build_info_path.clone())
-        .await?;
+    let build_output = starry.build_artifact(&request, cargo).await?;
     rootfs::ensure_qemu_rootfs_ready(&request, starry.app.workspace_root(), None).await?;
     let mut cargo = build::load_cargo_config(&request)?;
     apply_perf_cargo_features(&mut cargo, &args);
     let qemu = rootfs::load_patched_qemu_config(starry, &request, &cargo, None, true).await?;
-    let elf = kernel_elf_path(starry.app.workspace_root(), &target, args.debug);
+    let elf = build_output.elf_path().to_path_buf();
     let axconfig_path = cargo.env.get("AX_CONFIG_PATH").map(PathBuf::from);
     let text_range = detect_kernel_text_range(&elf, axconfig_path.as_deref())?;
     write_qemu_config(&outputs, &tools, &args, &arch, qemu.args, text_range)?;
@@ -2471,13 +2468,6 @@ fn print_report(outputs: &PerfOutputs, args: &ArgsPerf, report_harness: &Path) {
         report_harness.display(),
         outputs.report_json.display()
     );
-}
-
-fn kernel_elf_path(root: &Path, target: &str, debug: bool) -> PathBuf {
-    root.join("target")
-        .join(target)
-        .join(if debug { "debug" } else { "release" })
-        .join("starryos")
 }
 
 fn kernel_bin_path(root: &Path, target: &str, debug: bool) -> PathBuf {

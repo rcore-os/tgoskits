@@ -383,7 +383,10 @@ impl CloneArgs {
         }
 
         let parent_pid = curr.as_thread().proc_data.proc.pid();
-        let parent_tid = curr.id().as_u64() as Pid;
+        // The user-visible tid, not the scheduler id: they diverge for the init
+        // process (pid/tid pinned to 1, scheduler id higher). Signal delivery
+        // and ptrace below look this up in the tid-keyed task table.
+        let parent_tid = curr.as_thread().tid() as Pid;
         let ptrace_event = if flags.contains(CloneFlags::THREAD) {
             super::ptrace::PTRACE_EVENT_CLONE
         } else if flags.contains(CloneFlags::VFORK) {

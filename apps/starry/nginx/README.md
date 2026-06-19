@@ -1,38 +1,35 @@
 # Starry Nginx App
 
-This app organizes nginx tests into four directories:
+Starry 下 nginx 应用的构建与测试入口。
 
-- `smoke/`: CI entry smoke test (the only connected nginx test in tgoskits)
-- `phase/`: stage-unit tests named by `x-x`, such as `nginx-1-3-lifecycle-tests.sh`
-- `stress/`: pressure test planning and future scripts
-- `debug/`: flexible issue-focused scripts
+## 测试模式
 
-## CI-Connected Entry
+guest 内统一入口 `/usr/bin/nginx-runner.sh <mode>`：
 
-Only smoke is connected:
+| mode | 用途 | CI |
+|------|------|----|
+| `smoke` | 仅 smoke | ✅ 唯一接入上层 CI |
+| `phase <id>` | 单阶段复测 | ❌ 手工 |
+| `all` | smoke + 全部 phase（阶段强隔离） | ❌ 手工 |
+| `stress` | 压测（当前 skip） | ❌ 手工 |
+| `debug <name>` | 单问题调试 | ❌ 手工 |
 
-```bash
-cargo xtask starry app run -t nginx --arch riscv64
-```
+QEMU 入口按用途分目录：根 `qemu-<arch>.toml`（CI）、`qemu/all/`（手工全量）、
+`qemu/phase/`（手工单阶段）、`qemu/debug/`（手工调试）。
 
-`qemu-*.toml` starts `/usr/bin/nginx-smoke-tests.sh` only.
-
-## Local Development CLI
-
-Unified local CLI script:
+## 用法
 
 ```bash
-./apps/starry/nginx/nginx-cli-tests.sh smoke
-./apps/starry/nginx/nginx-cli-tests.sh phase1
-./apps/starry/nginx/nginx-cli-tests.sh phase2
-./apps/starry/nginx/nginx-cli-tests.sh all
+# CI smoke（四架构）
+cargo xtask starry app qemu -t nginx --arch x86_64 \
+  --qemu-config apps/starry/nginx/qemu-x86_64.toml
+
+# 手工单阶段
+cargo xtask starry app qemu -t nginx --arch x86_64 \
+  --qemu-config apps/starry/nginx/qemu/phase/qemu-x86_64-phase31.toml
 ```
 
-## Build/Prepare Logic
+## 详细设计
 
-`prebuild.sh` injects only smoke entry and shared mirror helper into guest overlay:
-
-- `/usr/bin/nginx-smoke-tests.sh`
-- `/usr/bin/nginx-alpine-mirror.sh`
-
-Mirror helper: `apps/starry/nginx/nginx-alpine-mirror.sh`.
+完整设计（目录结构、统一入口 marker 规则、all 模式阶段隔离契约、TOML 整合规则、
+迁移步骤）见 [`www/nginx-ci-refactor-proposal.md`](../../../www/nginx-ci-refactor-proposal.md)。

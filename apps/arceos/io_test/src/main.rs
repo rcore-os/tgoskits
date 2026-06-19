@@ -349,7 +349,7 @@ fn read_directory() -> io::Result<()> {
         println!("    已删除 test_dir 目录");
     }
     #[cfg(feature = "arceos")]
-    println!("    Hermit 下跳过递归删除目录");
+    println!("    ArceOS 下跳过递归删除目录");
 
     Ok(())
 }

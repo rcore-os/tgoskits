@@ -5,8 +5,8 @@
 //!
 //! # Example
 //!
-//! Depending on the use case of the VMM, both the `IDAllocator` and the `AddressAllocator`
-//! can be used. In the example below we assume that the `IDAllocator` is used for allocating
+//! Depending on the use case of the VMM, both the `IdAllocator` and the `AddressAllocator`
+//! can be used. In the example below we assume that the `IdAllocator` is used for allocating
 //! unique identifiers for VM devices. We use the address allocator for allocating MMIO ranges
 //! for virtio devices.
 //!
@@ -14,9 +14,11 @@
 //! impact on the code actually working on aarch64.
 //!
 //! ```rust
-//! use std::{collections::HashMap, process::id};
+//! use std::collections::HashMap;
 //!
-//! use vm_allocator::{AddressAllocator, AllocPolicy, Error, IdAllocator, RangeInclusive, Result};
+//! use rdif_pcie::addr_alloc::{
+//!     AddressAllocator, AllocPolicy, Error, IdAllocator, RangeInclusive, Result,
+//! };
 //!
 //! const FIRST_ADDR_PAST_32BITS: u64 = 1 << 32;
 //! const MEM_32BIT_GAP_SIZE: u64 = 768 << 20;
@@ -90,6 +92,7 @@ use std::{
 
 pub use address_allocator::AddressAllocator;
 use allocation_engine::NodeState;
+pub use id_allocator::IdAllocator;
 use thiserror::Error;
 
 /// Default alignment that can be used for creating a `Constraint`.
@@ -148,7 +151,7 @@ pub type Result<T> = result::Result<T, Error>;
 /// # Example
 ///
 /// ```rust
-/// use vm_allocator::RangeInclusive;
+/// use rdif_pcie::addr_alloc::RangeInclusive;
 ///
 /// let r = RangeInclusive::new(0x0, 0x100).unwrap();
 /// assert_eq!(r.len(), 0x101);
@@ -217,7 +220,7 @@ impl RangeInclusive {
 /// # Example
 ///
 /// ```rust
-/// use vm_allocator::{AllocPolicy, Constraint, DEFAULT_CONSTRAINT_ALIGN, Error, IdAllocator};
+/// use rdif_pcie::addr_alloc::{AllocPolicy, Constraint, DEFAULT_CONSTRAINT_ALIGN, Error};
 ///
 /// let constraint =
 ///     Constraint::new(0x4, DEFAULT_CONSTRAINT_ALIGN, AllocPolicy::FirstMatch).unwrap();
