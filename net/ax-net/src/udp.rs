@@ -24,7 +24,7 @@
 //! UDP send/recv operations request the shared net-poll worker after socket
 //! state changes. They do not run the interface poll loop directly.
 
-use alloc::{vec, vec::Vec};
+use alloc::{boxed::Box, vec, vec::Vec};
 use core::{
     net::{IpAddr, Ipv4Addr, SocketAddr},
     task::Context,
@@ -44,7 +44,8 @@ use smoltcp::{
 use spin::RwLock;
 
 use crate::{
-    RecvFlags, RecvOptions, SOCKET_SET, SendFlags, SendOptions, Shutdown, SocketAddrEx, SocketOps,
+    IpCmsg, RecvFlags, RecvOptions, SOCKET_SET, SendFlags, SendOptions, Shutdown, SocketAddrEx,
+    SocketOps,
     addr::allocate_ephemeral_port,
     config::{DeviceBinding, InterfaceId},
     consts::{UDP_RX_BUF_LEN, UDP_TX_BUF_LEN},
@@ -53,6 +54,7 @@ use crate::{
     ip_tos::{EgressIpTosKey, clear_egress_ip_tos, set_egress_ip_tos},
     options::{Configurable, GetSocketOption, SetSocketOption},
     request_poll,
+    rx_meta::{ReceivedTrafficClass, received_traffic_class},
 };
 
 /// Buffered state for MSG_MORE corking: captures the target endpoint
@@ -528,6 +530,27 @@ impl SocketOps for UdpSocket {
                                 warn!("UDP message truncated: {} -> {} bytes", src.len(), read);
                                 if let Some(ref mut truncated) = options.truncated {
                                     **truncated = true;
+                                }
+                            }
+
+                            if let Some(cmsg) = options.cmsg.as_deref_mut()
+                                && let Some(traffic_class) = received_traffic_class(meta.meta)
+                            {
+                                match traffic_class {
+                                    ReceivedTrafficClass::Ipv4(tos)
+                                        if self.general.recv_traffic_class() =>
+                                    {
+                                        cmsg.push(Box::new(IpCmsg::Ipv6TrafficClass(tos)));
+                                    }
+                                    ReceivedTrafficClass::Ipv4(tos) if self.general.recv_tos() => {
+                                        cmsg.push(Box::new(IpCmsg::Ipv4Tos(tos)));
+                                    }
+                                    ReceivedTrafficClass::Ipv6(tclass)
+                                        if self.general.recv_traffic_class() =>
+                                    {
+                                        cmsg.push(Box::new(IpCmsg::Ipv6TrafficClass(tclass)));
+                                    }
+                                    _ => {}
                                 }
                             }
 

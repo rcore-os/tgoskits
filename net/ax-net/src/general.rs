@@ -50,6 +50,10 @@ pub(crate) struct GeneralOptions {
 
     /// IP_TOS value used by protocol sockets when marking outgoing packets.
     ip_tos: AtomicU8,
+    /// Whether recvmsg should report IPv4 TOS as IP_TOS ancillary data.
+    recv_tos: AtomicBool,
+    /// Whether recvmsg should report IPv6 traffic class as IPV6_TCLASS ancillary data.
+    recv_traffic_class: AtomicBool,
     /// SO_PRIORITY value. ax-net stores it for Linux compatibility; packet
     /// queue scheduling is not modeled yet.
     priority: AtomicI32,
@@ -77,6 +81,8 @@ impl GeneralOptions {
             bound_if: AtomicU32::new(0),
 
             ip_tos: AtomicU8::new(0),
+            recv_tos: AtomicBool::new(false),
+            recv_traffic_class: AtomicBool::new(false),
             priority: AtomicI32::new(0),
 
             socket_type: AtomicI32::new(socket_type),
@@ -131,6 +137,26 @@ impl GeneralOptions {
     /// Updates the IPv4 TOS / IPv6 traffic-class byte configured on this socket.
     pub fn set_ip_tos(&self, tos: u8) {
         self.ip_tos.store(tos & !IP_TOS_ECN_MASK, Ordering::Relaxed);
+    }
+
+    /// Returns whether IPv4 TOS ancillary data is enabled for receive calls.
+    pub fn recv_tos(&self) -> bool {
+        self.recv_tos.load(Ordering::Relaxed)
+    }
+
+    /// Updates whether IPv4 TOS ancillary data is enabled for receive calls.
+    pub fn set_recv_tos(&self, enabled: bool) {
+        self.recv_tos.store(enabled, Ordering::Relaxed);
+    }
+
+    /// Returns whether IPv6 traffic-class ancillary data is enabled for receive calls.
+    pub fn recv_traffic_class(&self) -> bool {
+        self.recv_traffic_class.load(Ordering::Relaxed)
+    }
+
+    /// Updates whether IPv6 traffic-class ancillary data is enabled for receive calls.
+    pub fn set_recv_traffic_class(&self, enabled: bool) {
+        self.recv_traffic_class.store(enabled, Ordering::Relaxed);
     }
 
     /// Returns the Linux SO_PRIORITY value configured on this socket.
@@ -236,6 +262,12 @@ impl Configurable for GeneralOptions {
             O::IpTos(tos) => {
                 **tos = self.ip_tos.load(Ordering::Relaxed);
             }
+            O::RecvTos(enabled) => {
+                **enabled = self.recv_tos();
+            }
+            O::RecvTrafficClass(enabled) => {
+                **enabled = self.recv_traffic_class();
+            }
             O::Priority(priority) => {
                 **priority = self.priority();
             }
@@ -292,6 +324,12 @@ impl Configurable for GeneralOptions {
             }
             O::IpTos(tos) => {
                 self.set_ip_tos(*tos);
+            }
+            O::RecvTos(enabled) => {
+                self.set_recv_tos(*enabled);
+            }
+            O::RecvTrafficClass(enabled) => {
+                self.set_recv_traffic_class(*enabled);
             }
             O::Priority(priority) => {
                 self.set_priority(*priority)?;
@@ -358,5 +396,25 @@ mod tests {
 
         options.set_ip_tos(0xff);
         assert_eq!(options.ip_tos(), 0xfc);
+    }
+
+    #[test]
+    fn receive_qos_metadata_toggles_are_independent() {
+        let options = GeneralOptions::new(2, 2, 17);
+
+        assert!(!options.recv_tos());
+        assert!(!options.recv_traffic_class());
+
+        options.set_recv_tos(true);
+        assert!(options.recv_tos());
+        assert!(!options.recv_traffic_class());
+
+        options.set_recv_traffic_class(true);
+        assert!(options.recv_tos());
+        assert!(options.recv_traffic_class());
+
+        options.set_recv_tos(false);
+        assert!(!options.recv_tos());
+        assert!(options.recv_traffic_class());
     }
 }

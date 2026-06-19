@@ -51,6 +51,7 @@ mod orphan;
 /// Raw socket implementation.
 pub mod raw;
 mod router;
+mod rx_meta;
 mod service;
 mod socket;
 pub(crate) mod state;
@@ -107,8 +108,8 @@ pub use self::{
         set_ethernet_irq_registrar,
     },
     socket::{
-        CMsgData, RecvFlags, RecvOptions, SendFlags, SendOptions, Shutdown, Socket, SocketAddrEx,
-        SocketOps,
+        CMsgData, IpCmsg, RecvFlags, RecvOptions, SendFlags, SendOptions, Shutdown, Socket,
+        SocketAddrEx, SocketOps,
     },
 };
 

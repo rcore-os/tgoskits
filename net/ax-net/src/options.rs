@@ -190,6 +190,8 @@ define_options! {
     // ---- IP level options (IP_*) ----
     Ttl(u8),
     IpTos(u8),
+    RecvTos(bool),
+    RecvTrafficClass(bool),
     RecvErr(bool),
 
     // ---- Extra options ----

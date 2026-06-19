@@ -61,47 +61,58 @@ pub struct CMsgBuilder<'a> {
     hdr: UserPtr<cmsghdr>,
     len: &'a mut usize,
     capacity: usize,
+    written: usize,
 }
 impl<'a> CMsgBuilder<'a> {
     pub fn new(msg: UserPtr<cmsghdr>, len: &'a mut usize) -> Self {
         let capacity = *len;
-        *len = 0;
         Self {
             hdr: msg,
             len,
             capacity,
+            written: 0,
         }
     }
 
-    pub fn push(
+    pub fn finish(self) {
+        *self.len = self.written;
+    }
+
+    pub fn push_sized(
         &mut self,
         level: u32,
         ty: u32,
+        body_len: usize,
         body: impl FnOnce(&mut [u8]) -> AxResult<usize>,
     ) -> AxResult<bool> {
         let Some(body_capacity) = self
             .capacity
-            .checked_sub(*self.len)
+            .checked_sub(self.written)
             .and_then(|remaining| cmsg_align_down(remaining).checked_sub(size_of::<cmsghdr>()))
         else {
             return Ok(false);
         };
+        if body_capacity < body_len {
+            return Ok(false);
+        }
 
+        let hdr_addr = self.hdr.address().as_usize();
         let hdr = self.hdr.get_as_mut()?;
         hdr.cmsg_level = level as _;
         hdr.cmsg_type = ty as _;
 
-        let data = UserPtr::<u8>::from(self.hdr.address().as_usize() + size_of::<cmsghdr>())
-            .get_as_mut_slice(body_capacity)?;
-        let body_len = body(data)?;
+        let data =
+            UserPtr::<u8>::from(hdr_addr + size_of::<cmsghdr>()).get_as_mut_slice(body_len)?;
+        let written = body(data)?;
+        debug_assert_eq!(written, body_len);
 
         let Some(cmsg_len) = size_of::<cmsghdr>().checked_add(body_len) else {
             return Err(AxError::InvalidInput);
         };
         hdr.cmsg_len = cmsg_len;
         let cmsg_space = cmsg_align(cmsg_len);
-        self.hdr = UserPtr::from(hdr as *const _ as usize + cmsg_space);
-        *self.len += cmsg_space;
+        self.hdr = UserPtr::from(hdr_addr + cmsg_space);
+        self.written += cmsg_space;
         Ok(true)
     }
 }

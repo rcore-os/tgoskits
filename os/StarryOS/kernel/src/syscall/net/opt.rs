@@ -6,9 +6,9 @@ use ax_net::{
     options::{Configurable, GetSocketOption, SetSocketOption, TcpInfo, TcpInfoOptions, TcpState},
 };
 use linux_raw_sys::net::{
-    AF_INET6, IP_TOS, IPPROTO_IPV6, IPV6_TCLASS, IPV6_V6ONLY, TCP_INFO, TCPI_OPT_ECN,
-    TCPI_OPT_ECN_SEEN, TCPI_OPT_SACK, TCPI_OPT_SYN_DATA, TCPI_OPT_TIMESTAMPS, TCPI_OPT_WSCALE,
-    socklen_t, tcp_info,
+    AF_INET6, IP_TOS, IPPROTO_IPV6, IPV6_RECVTCLASS, IPV6_TCLASS, IPV6_V6ONLY, TCP_INFO,
+    TCPI_OPT_ECN, TCPI_OPT_ECN_SEEN, TCPI_OPT_SACK, TCPI_OPT_SYN_DATA, TCPI_OPT_TIMESTAMPS,
+    TCPI_OPT_WSCALE, socklen_t, tcp_info,
 };
 use starry_vm::vm_write_slice;
 
@@ -275,6 +275,7 @@ macro_rules! call_dispatch {
             (PROTO_TCP, TCP_USER_TIMEOUT) => TcpUserTimeout as Int<u32>,
 
             (PROTO_IP, IP_TTL) => Ttl as Int<u8>,
+            (PROTO_IP, linux_raw_sys::net::IP_RECVTOS) => RecvTos as IntBool,
             (PROTO_IP, IP_RECVERR) => RecvErr as IntBool,  // TODO: hardcoded false, no errqueue support
             // ---- Not yet implemented (add as needed) ----
             // (SOL_SOCKET, SO_LINGER) => ...,         // TODO: needs close() linger semantics
@@ -379,6 +380,14 @@ pub fn sys_getsockopt(
         return Ok(0);
     }
 
+    if level == IPPROTO_IPV6 as u32 && optname == IPV6_RECVTCLASS {
+        ensure_ipv6_socket(&socket)?;
+        let mut enabled = false;
+        socket.get_option(GetSocketOption::RecvTrafficClass(&mut enabled))?;
+        *get::<i32>(optval, optlen)? = enabled as i32;
+        return Ok(0);
+    }
+
     if level == PROTO_TCP && optname == TCP_INFO {
         write_tcp_info(&socket, optval, optlen)?;
         return Ok(0);
@@ -480,6 +489,13 @@ pub fn sys_setsockopt(
         ensure_ipv6_socket(&socket)?;
         let tclass = normalize_ipv6_tclass(*get::<i32>(optval, optlen)?)?;
         socket.set_option(SetSocketOption::IpTos(&tclass))?;
+        return Ok(0);
+    }
+
+    if level == IPPROTO_IPV6 as u32 && optname == IPV6_RECVTCLASS {
+        ensure_ipv6_socket(&socket)?;
+        let enabled = *get::<i32>(optval, optlen)? != 0;
+        socket.set_option(SetSocketOption::RecvTrafficClass(&enabled))?;
         return Ok(0);
     }
 
