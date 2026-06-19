@@ -39,7 +39,7 @@ use smoltcp::{
     phy::PacketMeta,
     socket::udp::{self as smol, UdpMetadata},
     storage::PacketMetadata,
-    wire::{IpAddress, IpEndpoint, IpListenEndpoint},
+    wire::{IpAddress, IpEndpoint, IpListenEndpoint, IpProtocol},
 };
 use spin::RwLock;
 
@@ -50,6 +50,7 @@ use crate::{
     consts::{UDP_RX_BUF_LEN, UDP_TX_BUF_LEN},
     general::GeneralOptions,
     get_control, interface_by_id,
+    ip_tos::{EgressIpTosKey, clear_egress_ip_tos, set_egress_ip_tos},
     options::{Configurable, GetSocketOption, SetSocketOption},
     request_poll,
 };
@@ -75,6 +76,8 @@ pub struct UdpSocket {
 
     /// Shared socket options and blocking helpers.
     general: GeneralOptions,
+    /// Egress IP_TOS policies registered for recently used UDP destinations.
+    tos_keys: Mutex<Vec<EgressIpTosKey>>,
     /// MSG_MORE corking state: captures endpoint at first MSG_MORE
     /// so the merged datagram always goes to the correct peer.
     cork: Mutex<Option<CorkState>>,
@@ -92,6 +95,7 @@ impl UdpSocket {
             peer_addr: RwLock::new(None),
 
             general: GeneralOptions::new(2, 2, 17), // SOCK_DGRAM
+            tos_keys: Mutex::new(Vec::new()),
             cork: Mutex::new(None),
         }
     }
@@ -149,6 +153,44 @@ impl UdpSocket {
             Ok((self.source_for_remote(remote)?, true))
         }
     }
+
+    fn track_egress_ip_tos(&self, local_addr: Option<IpAddress>, remote: IpEndpoint) {
+        let tos = self.general.ip_tos();
+        if tos == 0 {
+            return;
+        }
+        let Some(local_addr) = local_addr else {
+            return;
+        };
+        let Some(local) = self.local_addr.read().map(|endpoint| IpEndpoint {
+            addr: local_addr,
+            port: endpoint.port,
+        }) else {
+            return;
+        };
+        let Some(key) = EgressIpTosKey::exact(IpProtocol::Udp, local, remote) else {
+            return;
+        };
+
+        let mut keys = self.tos_keys.lock();
+        if !keys.contains(&key) {
+            keys.push(key);
+        }
+        set_egress_ip_tos(key, tos);
+    }
+
+    fn sync_tracked_egress_ip_tos(&self) {
+        let tos = self.general.ip_tos();
+        for key in self.tos_keys.lock().iter().copied() {
+            set_egress_ip_tos(key, tos);
+        }
+    }
+
+    fn clear_tracked_egress_ip_tos(&self) {
+        for key in self.tos_keys.lock().drain(..) {
+            clear_egress_ip_tos(key);
+        }
+    }
 }
 
 impl Configurable for UdpSocket {
@@ -177,6 +219,12 @@ impl Configurable for UdpSocket {
 
     fn set_option_inner(&self, option: SetSocketOption) -> AxResult<bool> {
         use SetSocketOption as O;
+
+        if let O::IpTos(tos) = option {
+            self.general.set_ip_tos(*tos);
+            self.sync_tracked_egress_ip_tos();
+            return Ok(true);
+        }
 
         if self.general.set_option_inner(option)? {
             return Ok(true);
@@ -369,6 +417,7 @@ impl SocketOps for UdpSocket {
                 } else if !socket.can_send() {
                     Err(AxError::WouldBlock)
                 } else {
+                    self.track_egress_ip_tos(local_addr, endpoint);
                     // UDP allows zero-length payloads (IP header + UDP header only).
                     if payload_len == 0 {
                         socket
@@ -565,6 +614,7 @@ impl Default for UdpSocket {
 impl Drop for UdpSocket {
     fn drop(&mut self) {
         self.shutdown(Shutdown::Both).ok();
+        self.clear_tracked_egress_ip_tos();
         SOCKET_SET.remove(self.handle);
     }
 }

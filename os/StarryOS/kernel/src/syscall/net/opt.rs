@@ -249,6 +249,7 @@ macro_rules! call_dispatch {
             (PROTO_TCP, TCP_USER_TIMEOUT) => TcpUserTimeout as Int<u32>,
 
             (PROTO_IP, IP_TTL) => Ttl as Int<u8>,
+            (PROTO_IP, IP_TOS) => IpTos as Int<u8>,
             (PROTO_IP, IP_RECVERR) => RecvErr as IntBool,  // TODO: hardcoded false, no errqueue support
             // ---- Not yet implemented (add as needed) ----
             // (SOL_SOCKET, SO_LINGER) => ...,         // TODO: needs close() linger semantics
@@ -261,7 +262,6 @@ macro_rules! call_dispatch {
             // (PROTO_TCP, TCP_QUICKACK) => ...,       // TODO: needs kernel support
             // (PROTO_TCP, TCP_SYNCNT) => ...,         // TODO: needs kernel support
             // (PROTO_TCP, TCP_WINDOW_CLAMP) => ...,   // TODO: needs kernel support
-            // (PROTO_IP, IP_TOS) => ...,              // TODO: needs kernel support
             // (PROTO_IP, IP_OPTIONS) => ...,          // TODO: needs kernel support
             // (IPPROTO_IPV6, IPV6_V6ONLY) => ...,     // TODO: currently hardcoded inline
         }

@@ -68,6 +68,7 @@ use crate::{
     config::{DeviceBinding, InterfaceId, RouteInfo},
     consts::{DEVICE_RX_QUEUE_SIZE, DEVICE_TX_QUEUE_SIZE, SOCKET_BUFFER_SIZE, STANDARD_MTU},
     device::{ArpEntry, Device},
+    ip_tos::apply_egress_ip_tos,
 };
 
 const DEVICE_RX_WORKER_BATCH: usize = 16;
@@ -682,6 +683,7 @@ impl Router {
             ..
         } = self;
         while let Ok((_, packet)) = tx_buffer.dequeue() {
+            apply_egress_ip_tos(packet);
             match IpVersion::of_packet(packet).expect("got invalid IP packet") {
                 IpVersion::Ipv4 => {
                     let packet = smoltcp::wire::Ipv4Packet::new_checked(packet)

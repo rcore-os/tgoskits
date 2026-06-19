@@ -15,7 +15,7 @@
 //! stack owners.
 
 use core::{
-    sync::atomic::{AtomicBool, AtomicI32, AtomicU32, AtomicU64, Ordering},
+    sync::atomic::{AtomicBool, AtomicI32, AtomicU8, AtomicU32, AtomicU64, Ordering},
     task::Waker,
     time::Duration,
 };
@@ -45,6 +45,9 @@ pub(crate) struct GeneralOptions {
     /// Bound interface id encoded as zero for "not bound".
     bound_if: AtomicU32,
 
+    /// IP_TOS value used by protocol sockets when marking outgoing packets.
+    ip_tos: AtomicU8,
+
     /// Socket type: SOCK_STREAM (1), SOCK_DGRAM (2), SOCK_RAW (3).
     socket_type: AtomicI32,
     /// Socket domain: AF_INET (2), AF_UNIX (1), AF_VSOCK (40).
@@ -66,6 +69,8 @@ impl GeneralOptions {
             recv_timeout_nanos: AtomicU64::new(0),
 
             bound_if: AtomicU32::new(0),
+
+            ip_tos: AtomicU8::new(0),
 
             socket_type: AtomicI32::new(socket_type),
             domain,
@@ -109,6 +114,16 @@ impl GeneralOptions {
         DeviceBinding {
             bound_if: (raw != 0).then_some(InterfaceId::new(raw)),
         }
+    }
+
+    /// Returns the IPv4 TOS / IPv6 traffic-class byte configured on this socket.
+    pub fn ip_tos(&self) -> u8 {
+        self.ip_tos.load(Ordering::Relaxed)
+    }
+
+    /// Updates the IPv4 TOS / IPv6 traffic-class byte configured on this socket.
+    pub fn set_ip_tos(&self, tos: u8) {
+        self.ip_tos.store(tos, Ordering::Relaxed);
     }
 
     /// Registers a waker with the service/device path for the bound interface.
@@ -197,6 +212,9 @@ impl Configurable for GeneralOptions {
             O::RecvErr(val) => {
                 **val = false;
             }
+            O::IpTos(tos) => {
+                **tos = self.ip_tos.load(Ordering::Relaxed);
+            }
             O::SocketType(t) => {
                 **t = self.socket_type.load(Ordering::Relaxed);
             }
@@ -247,6 +265,9 @@ impl Configurable for GeneralOptions {
             }
             O::RecvErr(_) => {
                 // TODO: Retrieve ICMP errors via errqueue
+            }
+            O::IpTos(tos) => {
+                self.set_ip_tos(*tos);
             }
             O::SocketType(_) | O::SocketProtocol(_) | O::SocketDomain(_) => {
                 // Read-only options

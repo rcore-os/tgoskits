@@ -43,6 +43,7 @@ mod consts;
 mod device;
 mod dhcp_server;
 mod general;
+mod ip_tos;
 mod listen_table;
 /// Socket option types and the [`Configurable`](options::Configurable) trait.
 pub mod options;
