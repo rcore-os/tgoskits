@@ -14,7 +14,7 @@ usage() {
 Usage:
   apps/starry/macos-selfbuild/build_rootfs.sh [--size-mib MIB] [--force-toolchain]
 
-Prepares the rootfs inputs for the macOS HVF self-build app without doing any
+Prepares the rootfs inputs for the macOS AArch64 self-build app without doing any
 manual rootfs injection:
 
   1. pulls the managed AArch64 Alpine rootfs through xtask image storage;

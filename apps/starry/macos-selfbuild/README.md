@@ -1,8 +1,10 @@
-# StarryOS macOS HVF Self-Build
+# StarryOS macOS AArch64 Self-Build
 
 This app is the Apple Silicon macOS self-build workflow for StarryOS. The host
-builds a seed AArch64 StarryOS kernel, boots it with QEMU/HVF, and the StarryOS
-guest then runs Cargo to build `starryos` again.
+builds a seed AArch64 StarryOS kernel, boots it with QEMU AArch64 TCG, and the
+StarryOS guest then runs Cargo to build `starryos` again. The default path does
+not use HVF and does not enable the `cntv-timer` or `qemu-hvf-gic` feature
+plumbing.
 
 The rootfs image is managed by xtask image storage. The default path is:
 
@@ -45,7 +47,6 @@ apps/starry/macos-selfbuild/reproduce.sh
 From a fresh checkout on Apple Silicon macOS:
 
 ```bash
-git checkout app/starry-macos-selfbuild
 apps/starry/macos-selfbuild/reproduce.sh
 ```
 
@@ -170,7 +171,7 @@ Knobs:
 The default guest build profile is intentionally narrow:
 
 ```text
-features=plat-dyn,axplat-dyn/cntv-timer,ax-driver/virtio-blk,axplat-dyn/qemu-hvf-gic,smp
+features=plat-dyn,ax-driver/virtio-blk,smp
 rustc_threads=2
 expected_crates~420
 ```

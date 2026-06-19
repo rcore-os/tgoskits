@@ -136,15 +136,8 @@ pub fn begin_irq() -> Option<ActiveIrq> {
 }
 
 pub fn irq_set_enable(raw: usize, enable: bool) {
-    let intid = unsafe { IntId::raw(raw as _) };
-    #[cfg(feature = "qemu-hvf-gic")]
-    if !intid.is_private() {
-        let _ = enable;
-        return;
-    }
-
     with_gic(|gic| {
-        gic.set_irq_enable(intid, enable);
+        gic.set_irq_enable(unsafe { IntId::raw(raw as _) }, enable);
     });
 }
 

@@ -1,14 +1,14 @@
-# Apple Silicon macOS only. The rootfs is selected and patched by
-# `cargo xtask starry app qemu`; this config only carries the HVF machine shape
+# AArch64 self-build QEMU config. The rootfs is selected and patched by
+# `cargo xtask starry app qemu`; this config only carries the TCG machine shape
 # and the guest command.
 args = [
     "-nographic",
     "-accel",
-    "hvf",
+    "tcg,thread=multi",
     "-machine",
     "virt,gic-version=3",
     "-cpu",
-    "host",
+    "cortex-a72",
     "-m",
     "8192M",
     "-smp",
@@ -30,4 +30,4 @@ fail_regex = [
     "(?i)segmentation fault",
     "(?m)^===STARRY-MACOS-SELFBUILD-FAIL",
 ]
-timeout = 7200
+timeout = 28800

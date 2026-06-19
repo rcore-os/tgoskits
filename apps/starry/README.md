@@ -71,11 +71,12 @@ PATH="$PWD/target/qemu-k230-docker-build:$PATH" \
 See `k230-kpu-nncase/README.md` and `docs/k230-kpu-nncase-runtime.md` for the
 asset preparation flow.
 
-## macOS HVF Self-Build
+## macOS AArch64 Self-Build
 
 The `macos-selfbuild` case is an Apple Silicon macOS workflow that boots an
-AArch64 StarryOS SMP kernel with QEMU/HVF, enters the StarryOS guest userland,
-and runs guest `cargo build` to build StarryOS again.
+AArch64 StarryOS SMP kernel with QEMU TCG, enters the StarryOS guest userland,
+and runs guest `cargo build` to build StarryOS again. The default profile avoids
+HVF-specific CNTV/GIC feature plumbing.
 
 ```bash
 apps/starry/macos-selfbuild/reproduce.sh
@@ -91,7 +92,7 @@ prepares the app-local guest toolchain overlay, launches
 `cargo xtask starry app qemu`, and extracts the guest-built kernel from the
 persistent rootfs under
 `target/starry-macos-selfbuild/uploaded/`. See `macos-selfbuild/README.md` for
-the rootfs path, xtask overlay injection path, QEMU/HVF details, PASS markers,
+the rootfs path, xtask overlay injection path, QEMU details, PASS markers,
 and boot-only verification of the self-built kernel.
 
 ## Redis

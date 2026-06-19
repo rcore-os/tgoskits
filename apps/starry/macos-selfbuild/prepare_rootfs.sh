@@ -12,7 +12,7 @@ overlay injection path is used:
 
   apps/starry/macos-selfbuild/build_rootfs.sh
   cargo xtask starry app qemu -t macos-selfbuild --arch aarch64 \
-    --qemu-config apps/starry/macos-selfbuild/qemu-aarch64-hvf.toml
+    --qemu-config apps/starry/macos-selfbuild/qemu-aarch64.toml
 EOF
 
 exec "$script_dir/build_rootfs.sh" "$@"

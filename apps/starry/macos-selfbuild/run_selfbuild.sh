@@ -12,13 +12,13 @@ Usage:
 or run the final QEMU step directly:
 
   KERNEL=target/aarch64-unknown-linux-musl/release/starryos.bin \
-  ROOTFS=target/starry-macos-selfbuild/rootfs/rootfs-aarch64-hvf-selfbuild.img \
+  ROOTFS=target/starry-macos-selfbuild/tgos-images/rootfs-aarch64-alpine.img/rootfs-aarch64-alpine.img \
   apps/starry/macos-selfbuild/run_selfbuild.sh
 
 Common knobs:
-  SMP=4 JOBS=4 MEM=8192M SOURCE_TMPFS=1 QEMU_TIMEOUT_SEC=7200
+  SMP=4 JOBS=4 MEM=8192M SOURCE_TMPFS=1 QEMU_TIMEOUT_SEC=28800
   EXPECTED_MAX_CRATES=420
-  QEMU_ACCEL=hvf QEMU_MACHINE=virt,gic-version=3 QEMU_CPU=host
+  QEMU_ACCEL=tcg,thread=multi QEMU_MACHINE=virt,gic-version=3 QEMU_CPU=cortex-a72
   QEMU_NET=0
   QEMU_SNAPSHOT=0
   BOOT_ONLY=1
@@ -32,7 +32,7 @@ if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
 fi
 
 if [[ "$(uname -s)" != "Darwin" || "$(uname -m)" != "arm64" ]]; then
-    echo "warning: this workflow is intended for Apple Silicon macOS with QEMU HVF" >&2
+    echo "warning: this workflow is intended for Apple Silicon macOS with QEMU AArch64 TCG" >&2
 fi
 
 find_tool() {
@@ -103,18 +103,18 @@ git_value() {
 }
 
 kernel="${KERNEL:-$repo_root/target/aarch64-unknown-linux-musl/release/starryos.bin}"
-rootfs="${ROOTFS:-$repo_root/target/starry-macos-selfbuild/rootfs/rootfs-aarch64-hvf-selfbuild.img}"
+rootfs="${ROOTFS:-$repo_root/target/starry-macos-selfbuild/tgos-images/rootfs-aarch64-alpine.img/rootfs-aarch64-alpine.img}"
 smp="${SMP:-4}"
 jobs="${JOBS:-$smp}"
 mem="${MEM:-8192M}"
-qemu_accel="${QEMU_ACCEL:-hvf}"
+qemu_accel="${QEMU_ACCEL:-tcg,thread=multi}"
 qemu_machine="${QEMU_MACHINE:-virt,gic-version=3}"
-qemu_cpu="${QEMU_CPU:-host}"
+qemu_cpu="${QEMU_CPU:-cortex-a72}"
 qemu_net="${QEMU_NET:-0}"
 boot_only="${BOOT_ONLY:-0}"
 qemu_snapshot="${QEMU_SNAPSHOT:-0}"
 source_tmpfs="${SOURCE_TMPFS:-1}"
-qemu_timeout_sec="${QEMU_TIMEOUT_SEC:-7200}"
+qemu_timeout_sec="${QEMU_TIMEOUT_SEC:-28800}"
 stamp="${STAMP:-$(date +%Y%m%dT%H%M%S)}"
 case_name="${CASE_NAME:-smp${smp}-j${jobs}}"
 out_root="${OUT_ROOT:-$repo_root/target/starry-macos-selfbuild}"
@@ -154,7 +154,7 @@ if [[ "$require_fresh_rootfs" = "1" ]]; then
 rootfs source metadata is missing in $rootfs.
 Rebuild or refresh the self-build rootfs from the current checkout:
 
-  cargo xtask starry app rootfs -t macos-selfbuild --arch aarch64 --qemu-config apps/starry/macos-selfbuild/qemu-aarch64-hvf.toml --rootfs target/starry-macos-selfbuild/rootfs/rootfs-aarch64-hvf-selfbuild.img
+  apps/starry/macos-selfbuild/reproduce.sh
 EOF
         exit 1
     fi
@@ -166,7 +166,7 @@ rootfs source commit does not match this checkout.
 
 This usually means an old rootfs is being reused. Refresh it before running:
 
-  cargo xtask starry app rootfs -t macos-selfbuild --arch aarch64 --qemu-config apps/starry/macos-selfbuild/qemu-aarch64-hvf.toml --rootfs target/starry-macos-selfbuild/rootfs/rootfs-aarch64-hvf-selfbuild.img
+  apps/starry/macos-selfbuild/reproduce.sh
 
 Set REQUIRE_FRESH_ROOTFS=0 only for deliberate stale-rootfs experiments.
 EOF
@@ -189,7 +189,7 @@ guest_runner="$work_dir/starry-macos-run.sh"
     emit_export "BUILD_BIN" "${BUILD_BIN:-starryos}"
     emit_export "BUILD_STD" "${BUILD_STD:-core,alloc}"
     emit_export "BUILD_STD_FEATURES" "${BUILD_STD_FEATURES:-compiler-builtins-mem}"
-    emit_export "FEATURES" "${FEATURES:-plat-dyn,axplat-dyn/cntv-timer,ax-driver/virtio-blk,axplat-dyn/qemu-hvf-gic,smp}"
+    emit_export "FEATURES" "${FEATURES:-plat-dyn,ax-driver/virtio-blk,smp}"
     emit_export "NO_DEFAULT_FEATURES" "${NO_DEFAULT_FEATURES:-1}"
     emit_export "TARGET_SPEC_MODE" "${TARGET_SPEC_MODE:-bare-pie}"
     emit_export "TARGET_SPEC_PATH" "${TARGET_SPEC_PATH:-}"
@@ -310,7 +310,7 @@ check_crate_count_guard() {
 ===HOST-QEMU-STOP reason=unexpected-crate-count total=$total expected_max=$expected_max_crates===
 This run is not using the fast macOS self-build profile. An unexpected Cargo total
 usually means a stale rootfs or slow feature set is being used. Refresh the rootfs with:
-  cargo xtask starry app rootfs -t macos-selfbuild --arch aarch64 --qemu-config apps/starry/macos-selfbuild/qemu-aarch64-hvf.toml --rootfs target/starry-macos-selfbuild/rootfs/rootfs-aarch64-hvf-selfbuild.img
+  apps/starry/macos-selfbuild/reproduce.sh
 or set ALLOW_SLOW_SELFBUILD=1 only for deliberate slow-profile experiments.
 EOF
         kill "$qemu_pid" 2>/dev/null || true

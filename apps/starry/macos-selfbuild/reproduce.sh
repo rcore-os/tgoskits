@@ -9,7 +9,7 @@ usage() {
 Usage:
   apps/starry/macos-selfbuild/reproduce.sh [extra cargo xtask starry app qemu args]
 
-Runs the complete Apple Silicon macOS HVF self-build reproduction through xtask:
+Runs the complete Apple Silicon macOS AArch64 self-build reproduction through xtask:
 
   1. build the seed StarryOS kernel and host-generated bindings;
   2. pull and resize the managed AArch64 Alpine rootfs through xtask image;
@@ -33,7 +33,7 @@ if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
 fi
 
 if [[ "$(uname -s)" != "Darwin" || "$(uname -m)" != "arm64" ]]; then
-    echo "warning: this workflow is intended for Apple Silicon macOS with QEMU HVF" >&2
+    echo "warning: this workflow is intended for Apple Silicon macOS with QEMU AArch64 TCG" >&2
 fi
 
 rootfs_mode="${ROOTFS_MODE:-build-rootfs}"
@@ -212,7 +212,7 @@ set +e
 cargo xtask starry app qemu \
     -t macos-selfbuild \
     --arch aarch64 \
-    --qemu-config "$script_dir/qemu-aarch64-hvf.toml" \
+    --qemu-config "$script_dir/qemu-aarch64.toml" \
     "$@"
 qemu_rc="$?"
 set -e
