@@ -31,16 +31,18 @@ pub fn start(bus: Arc<WifiBus>) {
 
             // 先处理 STA 删除(deauth/disassoc 后释放固件 STA 槽位),再处理新关联,
             // 这样新 STA 能复用刚释放的低位 sta_idx(下行单一 sta_idx 路由只对低位
-            // 槽位可靠)。
-            loop {
-                let del_idx = bus.ap.sta_del_queue.lock().pop_front();
-                match del_idx {
-                    Some(idx) => {
-                        if let Err(e) = send_mm_sta_del_req(&bus, idx, 0) {
-                            log::warn!("[wifi-ap] MM_STA_DEL sta_idx={} failed: {:?}", idx, e);
+            // 槽位可靠)。仅 DC/DW:D80/8801 不做槽位回收(固件自管理),队列恒空。
+            if bus.transport.is_dual_pipe() {
+                loop {
+                    let del_idx = bus.ap.sta_del_queue.lock().pop_front();
+                    match del_idx {
+                        Some(idx) => {
+                            if let Err(e) = send_mm_sta_del_req(&bus, idx, 0) {
+                                log::warn!("[wifi-ap] MM_STA_DEL sta_idx={} failed: {:?}", idx, e);
+                            }
                         }
+                        None => break,
                     }
-                    None => break,
                 }
             }
 
@@ -56,7 +58,12 @@ pub fn start(bus: Arc<WifiBus>) {
             // 控制端口对账:对所有尚未授权的 STA 主动重试打开控制端口。不依赖手机
             // 重传 AssocReq——手机关联成功后通常不再发 AssocReq,若首次 authorize
             // 命令超时,数据面会永久不通(ping/SSH 不通)。这里兜底直到成功或到上限。
-            let has_pending = reconcile_control_ports(&bus);
+            // 仅 DC/DW:D80/8801 走原有路径(关联时一次性 authorize,无周期对账)。
+            let has_pending = if bus.transport.is_dual_pipe() {
+                reconcile_control_ports(&bus)
+            } else {
+                false
+            };
 
             bus.ap.assoc_pollset.register(cx.waker());
             // 注册后再检查一次，避免错过唤醒
@@ -87,18 +94,26 @@ fn handle_assoc_req(bus: &Arc<WifiBus>, mpdu: &[u8]) {
     // AssocReq body: mgmt hdr(24) + cap(2) + listen_int(2) + IEs
     let rates = parse_supported_rates(&mpdu[28..]);
 
+    // DC/DW 专属:STA 注册去重 + 注册表维护(配合控制端口对账/槽位回收)。
+    // D80/8801 走 upstream/dev 原有路径——不查重、不维护注册表,每个 AssocReq 都
+    // 走一次 ME_STA_ADD(固件自管理重复注册)。
+    let dual = bus.transport.is_dual_pipe();
+
     // 已注册的 STA(手机重传 AssocReq)：跳过 ME_STA_ADD,只补发 Assoc Response。
     // 固件对同一 MAC 的重复 ME_STA_ADD 不回 CFM,会让本 worker 阻塞 5 秒超时,
     // 期间连接抖动(实测 DHCP 退回 Discover)。重传多因手机没收到上一个 Assoc
     // Response,故补发即可。
-    // 查注册表:返回 (sta_idx, 控制端口是否已开)。
-    let existing = bus
-        .ap
-        .registered_stas
-        .lock()
-        .iter()
-        .find(|(mac, ..)| *mac == sta_mac)
-        .map(|(_, idx, ctrl, _)| (*idx, *ctrl));
+    // 查注册表:返回 (sta_idx, 控制端口是否已开)。仅 DC/DW 查重。
+    let existing = if dual {
+        bus.ap
+            .registered_stas
+            .lock()
+            .iter()
+            .find(|(mac, ..)| *mac == sta_mac)
+            .map(|(_, idx, ctrl, _)| (*idx, *ctrl))
+    } else {
+        None
+    };
 
     let (sta_idx, ctrl_open) = if let Some((idx, ctrl)) = existing {
         log::info!(
@@ -115,8 +130,8 @@ fn handle_assoc_req(bus: &Arc<WifiBus>, mpdu: &[u8]) {
         );
         (idx, ctrl)
     } else {
-        // 新 MAC:先检查注册表容量,避免异常情况下无界增长。
-        if bus.ap.registered_stas.lock().len() >= MAX_REGISTERED_STAS {
+        // 新 MAC:先检查注册表容量,避免异常情况下无界增长(仅 DC/DW 维护注册表)。
+        if dual && bus.ap.registered_stas.lock().len() >= MAX_REGISTERED_STAS {
             log::warn!(
                 "[wifi-ap] registered_stas full ({}), reject new STA {:02x?}",
                 MAX_REGISTERED_STAS,
@@ -133,7 +148,10 @@ fn handle_assoc_req(bus: &Arc<WifiBus>, mpdu: &[u8]) {
             }
         };
         bus.conn.sta_idx.store(idx, Ordering::Release);
-        bus.ap.registered_stas.lock().push((sta_mac, idx, false, 0));
+        // 注册表仅 DC/DW 维护(用于去重/槽位回收);D80/8801 不入表。
+        if dual {
+            bus.ap.registered_stas.lock().push((sta_mac, idx, false, 0));
+        }
         log::info!(
             "[wifi-ap] STA {:02x?} registered: sta_idx={}, aid={}",
             sta_mac,

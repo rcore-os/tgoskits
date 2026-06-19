@@ -60,7 +60,11 @@ fn align_up(val: usize, align: usize) -> usize {
 /// 启动 wifi-rx 线程
 pub fn start(bus: Arc<WifiBus>) {
     log::debug!("[wifi-rx] thread starting");
-    start_rx_poll_kicker(bus.clone());
+    // RX poll kicker 仅 DC/DW 启用(与 TX kicker 对称)。D80/8801 走 upstream/dev
+    // 的纯事件(ISR)驱动路径,不启动周期 kicker。
+    if bus.transport.is_dual_pipe() {
+        start_rx_poll_kicker(bus.clone());
+    }
     crate::runtime::runtime().spawn_poll_task(
         "wifi-rx",
         alloc::boxed::Box::new(move |cx| {
@@ -433,6 +437,13 @@ fn handle_mgmt_frame(bus: &WifiBus, mpdu: &[u8], pkt_len: usize) {
         // 槽位。否则固件继续占用旧 idx,下一个 STA 被分到更大 idx,而下行数据帧用全局
         // 单一 sta_idx 路由,非 0 槽位送不达 → 重连后 ping/SSH 不通。
         0xC | 0xA => {
+            // DC/DW 专属:断开时清注册表 + 入队 MM_STA_DEL 释放固件槽位,使重连能
+            // 复用低位 sta_idx(DC 下行单一 sta_idx 路由只对低位槽位可靠)。
+            // D80/8801 走 upstream/dev 原有路径:不做注册表/槽位维护(固件自管理)。
+            if !bus.transport.is_dual_pipe() {
+                log::info!("[ap-rx] {} from {:02x?}", subtype, sa);
+                return;
+            }
             let mut mac = [0u8; 6];
             mac.copy_from_slice(sa);
             let removed_idx = {

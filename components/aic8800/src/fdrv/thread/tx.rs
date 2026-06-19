@@ -44,7 +44,12 @@ fn pad_cmd_frame(cmd: &mut Vec<u8>) -> usize {
 /// 启动 wifi-tx 线程
 pub fn start(bus: Arc<WifiBus>) {
     log::debug!("[wifi-tx] thread starting");
-    start_tx_poll_kicker(bus.clone());
+    // TX poll kicker 仅 DC/DW 启用:它兜底 PollSet 无 sticky 导致的唤醒丢失,是
+    // DC 双管道 + 控制端口对账场景下的需要。D80/8801 走 upstream/dev 的纯事件
+    // 驱动路径,不启动 kicker,避免额外周期任务干扰已验证的调度。
+    if bus.transport.is_dual_pipe() {
+        start_tx_poll_kicker(bus.clone());
+    }
     crate::runtime::runtime().spawn_poll_task(
         "wifi-tx",
         alloc::boxed::Box::new(move |cx| {
