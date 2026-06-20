@@ -13,6 +13,7 @@ qemu_runner=""
 linux_target=""
 lld_linker=""
 lld_linker_dir=""
+gcc_install_dir=""
 
 require_env() {
     local name="$1"
@@ -76,6 +77,10 @@ find_qemu_runner() {
             qemu_name=qemu-loongarch64
             linux_target=loongarch64-linux-musl
             ;;
+        x86_64)
+            qemu_name=qemu-x86_64
+            linux_target=x86_64-linux-musl
+            ;;
         *)
             echo "error: unsupported gdb-smoke arch: $arch" >&2
             exit 1
@@ -110,6 +115,14 @@ run_guest_apk_with_retry() {
         echo "apk command failed, retrying ($attempt/$max_attempts)..." >&2
         sleep $((attempt * 3))
     done
+}
+
+find_gcc_install_dir() {
+    gcc_install_dir="$(find "$staging_root/usr/lib/gcc" -name 'crtbeginT.o' -exec dirname {} \; 2>/dev/null | head -1)"
+    if [[ -z "$gcc_install_dir" ]]; then
+        echo "error: could not locate GCC crt objects in staging root" >&2
+        exit 1
+    fi
 }
 
 install_guest_packages() {
@@ -149,6 +162,8 @@ compile_target() {
         --target="$linux_target" \
         --sysroot="$staging_root" \
         --gcc-toolchain="$staging_root/usr" \
+        -B"$gcc_install_dir" \
+        -L"$gcc_install_dir" \
         --ld-path="$lld_linker" \
         -static \
         "$@" \
@@ -272,4 +287,5 @@ ensure_host_packages
 extract_base_rootfs
 find_qemu_runner
 install_guest_packages
+find_gcc_install_dir
 populate_overlay
