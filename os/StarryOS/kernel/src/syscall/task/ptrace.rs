@@ -602,7 +602,7 @@ fn ptrace_seize(pid: usize, _addr: usize) -> AxResult<isize> {
     let tracer_pid = current().as_thread().proc_data.proc.pid();
     let tracee_pid = Pid::try_from(pid).map_err(|_| AxError::from(LinuxError::ESRCH))?;
     if tracee_pid == tracer_pid {
-        return Err(AxError::from(LinuxError::EPERM));
+        return Err(AxError::from(LinuxError::EIO));
     }
     let tracee = get_process_data(tracee_pid).map_err(|_| AxError::from(LinuxError::ESRCH))?;
     if tracee.is_ptrace_traceme() || tracee.is_ptrace_attached() {
