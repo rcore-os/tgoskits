@@ -2163,7 +2163,7 @@ fn loongarch_unpack_fcc(packed: u64) -> [u8; 8] {
 // ---------------------------------------------------------------------------
 
 #[cfg(target_arch = "x86_64")]
-const X86_64_USER_DEBUGREG_OFFSET: usize = 912;
+const X86_64_USER_DEBUGREG_OFFSET: usize = 848;
 #[cfg(target_arch = "x86_64")]
 const X86_64_USER_DEBUGREG_COUNT: usize = 8;
 #[cfg(target_arch = "x86_64")]
