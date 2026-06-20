@@ -58,6 +58,7 @@ const PTRACE_GETREGSET: u32 = 0x4204;
 const PTRACE_SETREGSET: u32 = 0x4205;
 const PTRACE_SEIZE: u32 = 0x4206;
 const PTRACE_INTERRUPT: u32 = 0x4207;
+const PTRACE_LISTEN: u32 = 0x4208;
 
 const NT_PRSTATUS: usize = 1;
 #[cfg(any(
@@ -76,6 +77,8 @@ const PTRACE_O_TRACECLONE: usize = 1 << 3;
 const PTRACE_O_TRACEEXEC: usize = 1 << 4;
 const PTRACE_O_TRACEVFORKDONE: usize = 1 << 5;
 const PTRACE_O_TRACEEXIT: usize = 1 << 6;
+const PTRACE_O_TRACESECCOMP: usize = 1 << 7;
+const PTRACE_O_EXITKILL: usize = 1 << 20;
 
 pub const PTRACE_EVENT_FORK: u32 = 1;
 pub const PTRACE_EVENT_VFORK: u32 = 2;
@@ -83,6 +86,7 @@ pub const PTRACE_EVENT_CLONE: u32 = 3;
 const PTRACE_EVENT_EXEC: u32 = 4;
 pub const PTRACE_EVENT_VFORK_DONE: u32 = 5;
 const PTRACE_EVENT_EXIT: u32 = 6;
+const PTRACE_EVENT_STOP: u32 = 128;
 
 #[cfg(target_arch = "riscv64")]
 const EBREAK_INSN: u16 = 0x9002;
@@ -260,8 +264,9 @@ pub fn sys_ptrace(request: u32, pid: usize, addr: usize, data: usize) -> AxResul
         PTRACE_SETSIGINFO => ptrace_setsiginfo(pid, data),
         PTRACE_GETREGSET => ptrace_getregset(pid, addr, data),
         PTRACE_SETREGSET => ptrace_setregset(pid, addr, data),
-        PTRACE_SEIZE => ptrace_seize(pid, addr),
+        PTRACE_SEIZE => ptrace_seize(pid, addr, data),
         PTRACE_INTERRUPT => ptrace_interrupt(pid),
+        PTRACE_LISTEN => ptrace_listen(pid),
         _ => Err(AxError::Unsupported),
     }
 }
@@ -376,7 +381,9 @@ fn ptrace_setoptions(pid: usize, options: usize) -> AxResult<isize> {
         | PTRACE_O_TRACECLONE
         | PTRACE_O_TRACEEXEC
         | PTRACE_O_TRACEVFORKDONE
-        | PTRACE_O_TRACEEXIT;
+        | PTRACE_O_TRACEEXIT
+        | PTRACE_O_TRACESECCOMP
+        | PTRACE_O_EXITKILL;
     if options & !valid_mask != 0 {
         return Err(AxError::InvalidInput);
     }
@@ -598,11 +605,11 @@ fn ptrace_setfpregs(pid: usize, data: usize) -> AxResult<isize> {
     Err(AxError::Unsupported)
 }
 
-fn ptrace_seize(pid: usize, _addr: usize) -> AxResult<isize> {
+fn ptrace_seize(pid: usize, _addr: usize, data: usize) -> AxResult<isize> {
     let tracer_pid = current().as_thread().proc_data.proc.pid();
     let tracee_pid = Pid::try_from(pid).map_err(|_| AxError::from(LinuxError::ESRCH))?;
     if tracee_pid == tracer_pid {
-        return Err(AxError::from(LinuxError::EIO));
+        return Err(AxError::from(LinuxError::EPERM));
     }
     let tracee = get_process_data(tracee_pid).map_err(|_| AxError::from(LinuxError::ESRCH))?;
     if tracee.is_ptrace_traceme() || tracee.is_ptrace_attached() {
@@ -613,6 +620,22 @@ fn ptrace_seize(pid: usize, _addr: usize) -> AxResult<isize> {
     }
     tracee.set_ptrace_tracer_pid(tracer_pid);
     tracee.set_ptrace_attached();
+    // PTRACE_SEIZE accepts ptrace options in the data argument;
+    // store them immediately (strace passes ptrace_setoptions here).
+    if data != 0 {
+        let valid_mask = PTRACE_O_TRACESYSGOOD
+            | PTRACE_O_TRACEFORK
+            | PTRACE_O_TRACEVFORK
+            | PTRACE_O_TRACECLONE
+            | PTRACE_O_TRACEEXEC
+            | PTRACE_O_TRACEVFORKDONE
+            | PTRACE_O_TRACEEXIT
+            | PTRACE_O_TRACESECCOMP
+            | PTRACE_O_EXITKILL;
+        if data & !valid_mask == 0 {
+            tracee.set_ptrace_options(data);
+        }
+    }
     Ok(0)
 }
 
@@ -653,6 +676,10 @@ fn ptrace_interrupt(pid: usize) -> AxResult<isize> {
     if tracee.ptrace_stop_signo().is_some() {
         return Ok(0);
     }
+    // Tag the upcoming stop with PTRACE_EVENT_STOP so the tracer sees
+    // EVENT_STOP(128) in the upper 16 bits of the wait status and
+    // handles it as a group-stop (TE_GROUP_STOP / TE_RESTART).
+    tracee.set_ptrace_pending_event(tracee_pid, PTRACE_EVENT_STOP, 0);
     use starry_signal::SignalInfo;
     let _ = crate::task::send_signal_to_process(
         tracee_pid,
@@ -667,6 +694,19 @@ fn ptrace_interrupt(pid: usize) -> AxResult<isize> {
     target_arch = "loongarch64",
     target_arch = "x86_64"
 ))]
+fn ptrace_listen(pid: usize) -> AxResult<isize> {
+    let (tracee, tid) = ptrace_stopped_tracee_with_tid(pid)?;
+    let signo = tracee
+        .ptrace_stop_signo_for(tid)
+        .ok_or_else(|| AxError::from(LinuxError::ESRCH))?;
+    tracee.set_ptrace_singlestep_for(tid, false);
+    tracee.set_ptrace_syscall_trace_for(tid, false);
+    tracee.resume_ptrace_stop_with_signal_for(tid, signo as u32);
+    ax_task::yield_now();
+    Ok(0)
+}
+
+#[cfg(target_arch = "riscv64")]
 fn ptrace_getregset_prstatus(pid: usize, data: usize) -> AxResult<isize> {
     if data == 0 {
         return Err(AxError::InvalidInput);
