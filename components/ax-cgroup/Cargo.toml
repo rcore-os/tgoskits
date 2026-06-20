@@ -16,3 +16,7 @@ ax-kspin = { workspace = true }
 ax-lazyinit = { workspace = true }
 axfs-ng-vfs = { workspace = true }
 log = "0.4"
+
+[dev-dependencies]
+# Host unit tests: avoid privileged IRQ instructions in spinlocks.
+ax-kspin = { workspace = true, features = ["host-test"] }

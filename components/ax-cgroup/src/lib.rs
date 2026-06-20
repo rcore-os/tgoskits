@@ -8,6 +8,8 @@
 #![no_std]
 
 extern crate alloc;
+#[cfg(test)]
+extern crate std;
 
 pub mod controller;
 mod core;
@@ -17,6 +19,9 @@ pub mod io;
 pub mod memory;
 pub mod pids;
 pub mod provider;
+
+#[cfg(test)]
+mod tests;
 
 use alloc::{
     collections::{BTreeMap, BTreeSet},
