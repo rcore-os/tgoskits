@@ -1,0 +1,40 @@
+# Apple Silicon macOS only. When launched through `cargo xtask starry app qemu`,
+# prebuild.sh injects the guest scripts and source tarball into the configured
+# rootfs overlay before boot. For long operator runs, run_selfbuild.sh remains
+# useful because it works on a temporary rootfs copy and stops QEMU on markers.
+args = [
+    "-snapshot",
+    "-nographic",
+    "-accel",
+    "hvf",
+    "-machine",
+    "virt,gic-version=3",
+    "-cpu",
+    "host",
+    "-m",
+    "4096M",
+    "-smp",
+    "8",
+    "-device",
+    "virtio-blk-pci,drive=disk0",
+    "-drive",
+    "id=disk0,if=none,format=raw,file=${workspace}/tmp/axbuild/rootfs/rootfs-aarch64-hvf-selfbuild.img,file.locking=off",
+    "-device",
+    "virtio-net-pci,netdev=net0",
+    "-netdev",
+    "user,id=net0",
+]
+uefi = false
+to_bin = true
+shell_prefix = "root@starry:"
+shell_init_cmd = "/bin/sh /opt/starry-macos-run.sh"
+success_regex = ["(?m)^===STARRY-MACOS-SELFBUILD-PASS jobs=[0-9]+ elapsed=[0-9]+===$"]
+fail_regex = [
+    "(?i)\\bpanic(?:ked)?\\b",
+    "(?i)\\bunhandled trap\\b",
+    "(?i)\\btrap frame\\b",
+    "(?i)fatal",
+    "(?i)segmentation fault",
+    "(?m)^===STARRY-MACOS-SELFBUILD-FAIL",
+]
+timeout = 3600
