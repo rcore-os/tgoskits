@@ -1,2 +1,10 @@
-arch = "loongarch64"
-platform = "loongarch64-qemu-virt"
+target = "loongarch64-unknown-none-softfloat"
+log = "Warn"
+features = [
+  "ax-driver/nvme",
+  "ax-driver/virtio-net",
+  "ax-driver/virtio-gpu",
+  "ax-driver/virtio-input",
+  "ax-driver/virtio-socket",
+  "starry-kernel/input",
+]
