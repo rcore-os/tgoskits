@@ -1,2 +1,14 @@
-arch = "aarch64"
-platform = "aarch64-qemu-virt"
+features = [
+  "ax-feat/display",
+  "ax-feat/rtc",
+  "ax-driver/nvme",
+  "ax-driver/virtio-net",
+  "ax-driver/virtio-gpu",
+  "ax-driver/virtio-input",
+  "ax-driver/virtio-socket",
+  "ax-driver/xhci-pci",
+  "starry-kernel/input",
+  "starry-kernel/vsock",
+]
+log = "Warn"
+target = "aarch64-unknown-none-softfloat"
