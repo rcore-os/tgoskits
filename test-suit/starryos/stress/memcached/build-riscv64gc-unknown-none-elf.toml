@@ -1,0 +1,2 @@
+arch = "riscv64"
+platform = "riscv64-qemu-virt"

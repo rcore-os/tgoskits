@@ -1,0 +1,2 @@
+arch = "aarch64"
+platform = "aarch64-qemu-virt"
