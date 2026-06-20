@@ -92,10 +92,10 @@ impl CgroupNode {
             }
         }
         // pids always present (needed for fork charge)
-        if !controllers.contains_key("pids") {
-            if let Some(factory) = controller::get_factory("pids") {
-                controllers.insert("pids".to_string(), factory.new_instance());
-            }
+        if !controllers.contains_key("pids")
+            && let Some(factory) = controller::get_factory("pids")
+        {
+            controllers.insert("pids".to_string(), factory.new_instance());
         }
 
         let pids = controllers
