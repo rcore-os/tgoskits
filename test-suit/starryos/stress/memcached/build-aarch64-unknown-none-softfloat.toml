@@ -6,7 +6,6 @@ features = [
   "ax-driver/virtio-gpu",
   "ax-driver/virtio-input",
   "ax-driver/virtio-socket",
-  "ax-driver/xhci-pci",
   "starry-kernel/input",
   "starry-kernel/vsock",
 ]
