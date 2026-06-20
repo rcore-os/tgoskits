@@ -202,7 +202,7 @@ if ! check_required_tools; then
     exit 1
 fi
 
-if run_cmake_test "rootfs"; then
+if run_cmake_test "prebuilt"; then
     echo "APK_CMAKE_STABLE_TEST_PASSED"
     exit 0
 fi
