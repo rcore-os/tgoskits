@@ -9,8 +9,12 @@
 
 extern crate alloc;
 
+pub mod controller;
 mod core;
 pub mod cpu;
+pub mod cpuset;
+pub mod io;
+pub mod memory;
 pub mod pids;
 pub mod provider;
 
@@ -23,7 +27,7 @@ use alloc::{
 };
 pub use core::{CgroupNode, GLOBAL_CGROUP_ROOT};
 
-use ::core::{fmt::Write, str, sync::atomic::Ordering};
+use ::core::{fmt::Write, str};
 use ax_kspin::SpinNoIrq;
 use ax_lazyinit::LazyInit;
 use axfs_ng_vfs::{VfsError, VfsResult};
@@ -41,52 +45,33 @@ const BUILTIN_FILES: &[&str] = &[
     "cgroup.type",
 ];
 
-struct AttrInfo {
-    name: &'static str,
-    read_only: bool,
-}
-
-const CONTROLLER_ATTRS: &[AttrInfo] = &[
-    AttrInfo {
-        name: "pids.max",
-        read_only: false,
-    },
-    AttrInfo {
-        name: "pids.current",
-        read_only: true,
-    },
-    AttrInfo {
-        name: "cpu.weight",
-        read_only: false,
-    },
-    AttrInfo {
-        name: "cpu.max",
-        read_only: false,
-    },
-    AttrInfo {
-        name: "cpu.stat",
-        read_only: true,
-    },
-];
-
 struct MembershipState {
     detached_pids: BTreeSet<u32>,
     pending_pids: BTreeMap<u32, CgroupId>,
 }
 
 static MEMBERSHIP: LazyInit<SpinNoIrq<MembershipState>> = LazyInit::new();
-
 static PROVIDER: LazyInit<provider::ProviderCell> = LazyInit::new();
 
 /// Initialize the cgroup subsystem. Called once during boot.
 pub fn init() {
+    controller::init_registry();
+
     MEMBERSHIP.init_once(SpinNoIrq::new(MembershipState {
         detached_pids: BTreeSet::new(),
         pending_pids: BTreeMap::new(),
     }));
-    core::init();
     PROVIDER.init_once(provider::ProviderCell::new());
-    info!("cgroup: initialized");
+
+    // Register all controller factories
+    controller::register_factory(Arc::new(pids::PidsControllerFactory));
+    controller::register_factory(Arc::new(cpu::CpuControllerFactory));
+    controller::register_factory(Arc::new(cpuset::CpusetControllerFactory));
+    controller::register_factory(Arc::new(memory::MemoryControllerFactory));
+    controller::register_factory(Arc::new(io::IoControllerFactory));
+
+    core::init();
+    info!("cgroup: initialized with 5 controllers");
 }
 
 /// Register the kernel provider. Must be called after [`init`].
@@ -179,23 +164,19 @@ pub fn write_subtree_control(id: CgroupId, data: &[u8]) -> VfsResult<()> {
             {
                 return Err(VfsError::ResourceBusy);
             }
-            if !next.iter().any(|controller| controller == name) {
+            if !next.iter().any(|c| c == name) {
                 next.push(name.to_string());
             }
         } else if let Some(name) = part.strip_prefix('-') {
             if !controller_available(&node, name) {
                 return Err(VfsError::InvalidInput);
             }
-            next.retain(|controller| controller != name);
+            next.retain(|c| c != name);
         } else {
             return Err(VfsError::InvalidInput);
         }
     }
-    next.sort_by_key(|controller| match controller.as_str() {
-        "pids" => 0,
-        "cpu" => 1,
-        _ => 2,
-    });
+    next.sort();
     *node.subtree_control.lock() = next;
     Ok(())
 }
@@ -208,12 +189,98 @@ pub fn write_procs(id: CgroupId, data: &[u8]) -> VfsResult<()> {
     migrate_process(pid, id)
 }
 
+// ── Attribute dispatch (unified via controller trait) ─────────────────
+
+pub fn all_attr_names(id: CgroupId) -> VfsResult<Vec<String>> {
+    let node = core::get_node(id)?;
+    let mut names = Vec::new();
+    for (ctrl_name, ctrl) in node.controllers.iter() {
+        if controller_available(&node, ctrl_name) {
+            for attr in ctrl.attr_names() {
+                names.push(format!("{}.{}", ctrl_name, attr.name));
+            }
+        }
+    }
+    Ok(names)
+}
+
+pub fn is_controller_attr(id: CgroupId, name: &str) -> VfsResult<bool> {
+    let node = core::get_node(id)?;
+    let (ctrl_name, attr_name) = match controller::parse_attr_name(name) {
+        Some(pair) => pair,
+        None => return Ok(false),
+    };
+    if !controller_available(&node, ctrl_name) {
+        return Ok(false);
+    }
+    if let Some(ctrl) = node.controllers.get(ctrl_name) {
+        Ok(ctrl.attr_names().iter().any(|a| a.name == attr_name))
+    } else {
+        Ok(false)
+    }
+}
+
+pub fn attr_is_read_only(id: CgroupId, name: &str) -> VfsResult<Option<bool>> {
+    let node = core::get_node(id)?;
+    let (ctrl_name, attr_name) = match controller::parse_attr_name(name) {
+        Some(pair) => pair,
+        None => return Ok(None),
+    };
+    if let Some(ctrl) = node.controllers.get(ctrl_name) {
+        Ok(ctrl
+            .attr_names()
+            .iter()
+            .find(|a| a.name == attr_name)
+            .map(|a| a.read_only))
+    } else {
+        Ok(None)
+    }
+}
+
+pub fn is_interface_file_name(name: &str) -> bool {
+    if BUILTIN_FILES.contains(&name) {
+        return true;
+    }
+    // Any "controller.attr" pattern is reserved
+    controller::parse_attr_name(name).is_some()
+}
+
+pub fn read_attr_at(id: CgroupId, name: &str, offset: usize, buf: &mut [u8]) -> VfsResult<usize> {
+    let node = core::get_node(id)?;
+    let (ctrl_name, attr_name) = controller::parse_attr_name(name).ok_or(VfsError::NotFound)?;
+    if !controller_available(&node, ctrl_name) {
+        return Err(VfsError::NotFound);
+    }
+    let ctrl = node.controllers.get(ctrl_name).ok_or(VfsError::NotFound)?;
+    ctrl.read_attr(attr_name, offset, buf)
+}
+
+pub fn write_attr(id: CgroupId, name: &str, data: &[u8]) -> VfsResult<usize> {
+    let node = core::get_node(id)?;
+    let (ctrl_name, attr_name) = controller::parse_attr_name(name).ok_or(VfsError::NotFound)?;
+    if !controller_available(&node, ctrl_name) {
+        return Err(VfsError::NotFound);
+    }
+    let ctrl = node.controllers.get(ctrl_name).ok_or(VfsError::NotFound)?;
+    // Check read-only
+    if ctrl
+        .attr_names()
+        .iter()
+        .any(|a| a.name == attr_name && a.read_only)
+    {
+        return Err(VfsError::OperationNotPermitted);
+    }
+    ctrl.write_attr(attr_name, data)
+}
+
+// ── Process membership ───────────────────────────────────────────────
+
 fn path_to_root(node: Arc<CgroupNode>) -> Vec<Arc<CgroupNode>> {
     let mut path = Vec::new();
     let mut current = Some(node);
-    while let Some(node) = current {
-        current = node.parent.as_ref().and_then(|parent| parent.upgrade());
-        path.push(node);
+    while let Some(n) = current {
+        current = n.parent.as_ref().and_then(|p| p.upgrade());
+        path.push(n);
     }
     path
 }
@@ -221,8 +288,8 @@ fn path_to_root(node: Arc<CgroupNode>) -> Vec<Arc<CgroupNode>> {
 fn charge_path(path: &[Arc<CgroupNode>]) -> VfsResult<()> {
     for (charged, node) in path.iter().enumerate() {
         if let Err(err) = node.pids.try_charge_local() {
-            for charged_node in &path[..charged] {
-                charged_node.pids.uncharge_local();
+            for n in &path[..charged] {
+                n.pids.uncharge_local();
             }
             return Err(err);
         }
@@ -237,14 +304,14 @@ fn uncharge_path(path: &[Arc<CgroupNode>]) {
 }
 
 fn is_domain_controller(name: &str) -> bool {
-    name == "cpu"
+    controller::get_factory(name).is_some_and(|f| f.is_domain())
 }
 
 fn has_domain_subtree_control(node: &CgroupNode) -> bool {
     node.subtree_control
         .lock()
         .iter()
-        .any(|controller| is_domain_controller(controller))
+        .any(|c| is_domain_controller(c))
 }
 
 fn can_host_process(node: &CgroupNode) -> bool {
@@ -255,7 +322,7 @@ fn pending_count_in_node(membership: &MembershipState, id: CgroupId) -> usize {
     membership
         .pending_pids
         .values()
-        .filter(|&&pending_id| pending_id == id)
+        .filter(|&&pid_id| pid_id == id)
         .count()
 }
 
@@ -273,15 +340,27 @@ fn add_process_to_node(node: &CgroupNode, pid: u32) {
 fn remove_process_from_node(node: &CgroupNode, pid: u32) -> bool {
     let mut procs = node.procs.lock();
     let old_len = procs.len();
-    procs.retain(|&member| member != pid);
+    procs.retain(|&m| m != pid);
     procs.len() != old_len
+}
+
+fn controller_available(node: &CgroupNode, name: &str) -> bool {
+    if node.id == root_id() {
+        return node.controllers.contains_key(name);
+    }
+    node.parent
+        .as_ref()
+        .and_then(|p| p.upgrade())
+        .is_some_and(|parent| parent.subtree_control.lock().iter().any(|c| c == name))
 }
 
 pub fn attach_initial_process(pid: u32) -> VfsResult<()> {
     let mut membership = MEMBERSHIP.get().ok_or(VfsError::BadState)?.lock();
     let root = core::get_node(root_id())?;
-    charge_path(&path_to_root(root.clone()))?;
-    add_process_to_node(&root, pid);
+    if !root.procs.lock().contains(&pid) {
+        charge_path(&path_to_root(root.clone()))?;
+        add_process_to_node(&root, pid);
+    }
     membership.detached_pids.remove(&pid);
     Ok(())
 }
@@ -310,12 +389,9 @@ impl Drop for CgroupForkGuard {
     fn drop(&mut self) {
         if !self.committed {
             if let Some(membership) = MEMBERSHIP.get() {
-                let mut membership = membership.lock();
-                membership.pending_pids.remove(&self.pid);
-                uncharge_path(&self.charged_path);
-            } else {
-                uncharge_path(&self.charged_path);
+                membership.lock().pending_pids.remove(&self.pid);
             }
+            uncharge_path(&self.charged_path);
         }
     }
 }
@@ -399,184 +475,4 @@ pub fn exit_process(pid: u32) -> VfsResult<()> {
         membership.detached_pids.insert(pid);
         Ok(())
     })
-}
-
-pub fn all_attr_names(id: CgroupId) -> VfsResult<Vec<String>> {
-    let node = core::get_node(id)?;
-    Ok(CONTROLLER_ATTRS
-        .iter()
-        .filter(|attr| attr_available(&node, attr.name))
-        .map(|attr| attr.name.to_string())
-        .collect())
-}
-
-pub fn is_controller_attr(id: CgroupId, name: &str) -> VfsResult<bool> {
-    let node = core::get_node(id)?;
-    Ok(CONTROLLER_ATTRS
-        .iter()
-        .any(|attr| attr.name == name && attr_available(&node, name)))
-}
-
-pub fn attr_is_read_only(id: CgroupId, name: &str) -> VfsResult<Option<bool>> {
-    ensure_node_exists(id)?;
-    Ok(CONTROLLER_ATTRS
-        .iter()
-        .find(|attr| attr.name == name)
-        .map(|attr| attr.read_only))
-}
-
-pub fn is_interface_file_name(name: &str) -> bool {
-    BUILTIN_FILES.contains(&name) || CONTROLLER_ATTRS.iter().any(|attr| attr.name == name)
-}
-
-fn attr_owner(name: &str) -> Option<&str> {
-    name.split_once('.').map(|(owner, _)| owner)
-}
-
-fn controller_available(node: &CgroupNode, name: &str) -> bool {
-    if node.id == root_id() {
-        return node.controllers.iter().any(|controller| controller == name);
-    }
-    node.parent
-        .as_ref()
-        .and_then(|parent| parent.upgrade())
-        .is_some_and(|parent| {
-            parent
-                .subtree_control
-                .lock()
-                .iter()
-                .any(|controller| controller == name)
-        })
-}
-
-fn attr_available(node: &CgroupNode, name: &str) -> bool {
-    let Some(owner) = attr_owner(name) else {
-        return false;
-    };
-    controller_available(node, owner)
-}
-
-pub fn read_attr_at(id: CgroupId, name: &str, offset: usize, buf: &mut [u8]) -> VfsResult<usize> {
-    if !is_controller_attr(id, name)? {
-        return Err(VfsError::NotFound);
-    }
-    let value = match name {
-        "pids.max" => {
-            let max = core::get_node(id)?.pids.max.load(Ordering::Acquire);
-            if max < 0 {
-                "max\n".to_string()
-            } else {
-                format!("{}\n", max)
-            }
-        }
-        "pids.current" => format!(
-            "{}\n",
-            core::get_node(id)?.pids.current.load(Ordering::Acquire)
-        ),
-        "cpu.weight" => format!(
-            "{}\n",
-            core::get_node(id)?.cpu.weight.load(Ordering::Acquire)
-        ),
-        "cpu.max" => {
-            let node = core::get_node(id)?;
-            let quota = node.cpu.cfs_quota.load(Ordering::Acquire);
-            let period = node.cpu.cfs_period.load(Ordering::Acquire);
-            if quota < 0 {
-                format!("max {}\n", period)
-            } else {
-                format!("{} {}\n", quota, period)
-            }
-        }
-        "cpu.stat" => {
-            let node = core::get_node(id)?;
-            let bw = &node.cpu.bandwidth;
-            format!(
-                "nr_periods {}\nnr_throttled {}\nthrottled_usec {}\n",
-                bw.nr_periods.load(Ordering::Acquire),
-                bw.nr_throttled.load(Ordering::Acquire),
-                bw.throttled_usec.load(Ordering::Acquire),
-            )
-        }
-        _ => return Err(VfsError::NotFound),
-    };
-
-    let bytes = value.as_bytes();
-    if offset >= bytes.len() {
-        return Ok(0);
-    }
-    let remaining = &bytes[offset..];
-    let n = remaining.len().min(buf.len());
-    buf[..n].copy_from_slice(&remaining[..n]);
-    Ok(n)
-}
-
-pub fn write_attr(id: CgroupId, name: &str, data: &[u8]) -> VfsResult<usize> {
-    let node = core::get_node(id)?;
-    if !is_controller_attr(id, name)? {
-        return Err(VfsError::NotFound);
-    }
-    let text = str::from_utf8(data)
-        .map_err(|_| VfsError::InvalidInput)?
-        .trim();
-    match name {
-        "pids.max" => {
-            let value = if text == "max" {
-                -1
-            } else {
-                text.parse::<i64>().map_err(|_| VfsError::InvalidInput)?
-            };
-            if text != "max" && value < 0 {
-                return Err(VfsError::InvalidInput);
-            }
-            node.pids.max.store(value, Ordering::Release);
-        }
-        "pids.current" | "cpu.stat" => return Err(VfsError::OperationNotPermitted),
-        "cpu.weight" => {
-            let value = text.parse::<i64>().map_err(|_| VfsError::InvalidInput)?;
-            if !(1..=10_000).contains(&value) {
-                return Err(VfsError::InvalidInput);
-            }
-            node.cpu.weight.store(value, Ordering::Release);
-        }
-        "cpu.max" => write_cpu_max(&node, text)?,
-        _ => return Err(VfsError::NotFound),
-    }
-    Ok(data.len())
-}
-
-fn write_cpu_max(node: &CgroupNode, text: &str) -> VfsResult<()> {
-    let parts = text.split_whitespace().collect::<Vec<_>>();
-    if parts.is_empty() || parts.len() > 2 {
-        return Err(VfsError::InvalidInput);
-    }
-    let quota = if parts[0] == "max" {
-        -1
-    } else {
-        let quota = parts[0]
-            .parse::<i64>()
-            .map_err(|_| VfsError::InvalidInput)?;
-        if quota <= 0 {
-            return Err(VfsError::InvalidInput);
-        }
-        quota
-    };
-    let period = if parts.len() == 2 {
-        let period = parts[1]
-            .parse::<i64>()
-            .map_err(|_| VfsError::InvalidInput)?;
-        if !(1_000..=1_000_000).contains(&period) {
-            return Err(VfsError::InvalidInput);
-        }
-        period
-    } else {
-        node.cpu.cfs_period.load(Ordering::Acquire)
-    };
-
-    node.cpu.cfs_quota.store(quota, Ordering::Release);
-    node.cpu.cfs_period.store(period, Ordering::Release);
-    node.cpu.bandwidth.quota.store(quota, Ordering::Release);
-    node.cpu.bandwidth.period.store(period, Ordering::Release);
-    node.cpu.bandwidth.consumed.store(0, Ordering::Release);
-    node.cpu.bandwidth.period_start.store(0, Ordering::Release);
-    Ok(())
 }

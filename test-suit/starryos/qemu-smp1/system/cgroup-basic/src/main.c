@@ -253,7 +253,7 @@ int main(void)
     nread = read_text_file(CGROUP2_PATH "/cgroup.controllers", buf, sizeof(buf));
     CHECK(nread >= 0, "read root cgroup.controllers");
     if (nread >= 0) {
-        CHECK(nread == 0, "root cgroup.controllers is empty before controllers exist");
+        CHECK(nread > 0, "root cgroup.controllers lists available controllers");
     }
 
     nread = read_text_file(CGROUP2_PATH "/cgroup.subtree_control", buf, sizeof(buf));
@@ -262,15 +262,12 @@ int main(void)
         CHECK(nread == 0, "root cgroup.subtree_control is initially empty");
     }
 
-    expect_write_errno(CGROUP2_PATH "/cgroup.subtree_control", "+pids",
-                       EINVAL, "writing +pids to subtree_control fails with EINVAL");
-
     expect_mkdir_ok(CGROUP2_PATH "/a", "mkdir child cgroup a succeeds");
     expect_path_exists(CGROUP2_PATH "/a", "child cgroup a exists");
     expect_empty_file(CGROUP2_PATH "/a/cgroup.procs",
                       "child cgroup.procs is empty before migration exists");
     expect_empty_file(CGROUP2_PATH "/a/cgroup.controllers",
-                      "child cgroup.controllers is empty before controllers exist");
+                      "child cgroup.controllers is empty when parent subtree_control empty");
     expect_empty_file(CGROUP2_PATH "/a/cgroup.subtree_control",
                       "child cgroup.subtree_control is initially empty");
     expect_mkdir_errno(CGROUP2_PATH "/a", EEXIST,

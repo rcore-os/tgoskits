@@ -39,24 +39,28 @@ Concrete differences from Asterinas:
 | Aspect            | Asterinas                               | ax-cgroup                                      |
 | ----------------- | --------------------------------------- | ---------------------------------------------- |
 | Hierarchy         | `SysTree` (`SysBranchNode` / `SysObj`)  | self-managed `BTreeMap<String, Arc<CgroupNode>>` |
-| Controller access | `Controller` + `SubControl` trait       | fixed `pids` / `cpu` fields on the node        |
-| Attribute I/O     | trait-method dispatch                    | `match name { ... }` in `read_attr_at`/`write_attr` |
+| Controller access | `Controller` + `SubControl` trait       | `CgroupController` trait + factory registry    |
+| Attribute I/O     | trait-method dispatch                    | unified `read_attr`/`write_attr` via trait     |
 | Membership lock   | `CgroupMembership` global `Mutex`        | `SpinNoIrq<MembershipState>` (`LazyInit`)      |
 | Filesystem        | custom cgroupfs over `SysTree`           | `axfs-ng-vfs` adapter in the kernel            |
 
 ### Module layout
 
-| Module        | Responsibility                                                       |
-| ------------- | -------------------------------------------------------------------- |
-| `core`        | `CgroupNode`, the global root, and the id-to-node registry.          |
-| `pids`        | `PidsState` — process-count accounting with a CAS-based charge path. |
-| `cpu`         | `CpuState` / `BandwidthState` — `cpu.weight` and `cpu.max` state.    |
-| `provider`    | `CgroupProvider` trait and the registration cell.                    |
-| crate root    | membership, fork/migrate/exit transactions, and attribute parsing.   |
+| Module        | Responsibility                                                                |
+| ------------- | ----------------------------------------------------------------------------- |
+| `controller`  | `CgroupController` / `CgroupControllerFactory` traits, global factory registry. |
+| `core`        | `CgroupNode`, the global root, and the id-to-node registry.                    |
+| `pids`        | PID limit controller — `pids.max` / `pids.current`.                            |
+| `cpu`         | CPU bandwidth/weight — `cpu.weight`, `cpu.max`, `cpu.stat`.                    |
+| `memory`      | Memory limits — `memory.max/high/low/min/current/events`.                      |
+| `cpuset`      | CPU/memory affinity — `cpuset.cpus/mems` and effective masks.                  |
+| `io`          | Block I/O weight and limits — `io.weight/max/stat`.                            |
+| `provider`    | `CgroupProvider` trait and the registration cell.                              |
+| crate root    | membership, fork/migrate/exit transactions, attribute dispatch.                |
 
 ### Controllers
 
-Two controllers are implemented:
+Five controllers are implemented, all registered through the unified factory:
 
 - **pids** — `pids.max` / `pids.current`. Charging walks the path to the root
   and rolls back partial charges on failure; the per-node counter uses a CAS
@@ -64,6 +68,43 @@ Two controllers are implemented:
 - **cpu** — `cpu.weight`, `cpu.max` (quota/period), and `cpu.stat`. The
   bandwidth quota/period state is maintained here; the timer-tick enforcement
   hook lives on the kernel side because it needs `ax_task` / `ax_hal` access.
+- **memory** — `memory.current/max/high/low/min/events`. Provides charge/uncharge
+  API for integration with the page allocator. Supports size suffixes (K/M/G/T).
+- **cpuset** — `cpuset.cpus/mems` and `cpuset.cpus.effective/mems.effective`.
+  Parses CPU list format (`"0-3,5,7"`) and inherits parent masks on child creation.
+- **io** — `io.weight/max/stat`. Per-device limit parsing (`"8:0 rbps=1048576"`)
+  with validation; enforcement deferred to block layer integration.
+
+### Unified Controller Framework
+
+All controllers register via `CgroupControllerFactory` at boot:
+
+```rust,ignore
+controller::register_factory(Arc::new(pids::PidsControllerFactory));
+controller::register_factory(Arc::new(cpu::CpuControllerFactory));
+// ... etc.
+```
+
+Each `CgroupNode` holds a `BTreeMap<String, Arc<dyn CgroupController>>` —
+attribute reads and writes dispatch through the trait uniformly. Child cgroups
+only instantiate controllers enabled in the parent's `subtree_control`.
+
+### systemd / Docker Compatibility
+
+| Feature | Status |
+|---------|--------|
+| cgroup v2 mount | ✅ Works |
+| mkdir/rmdir cgroups | ✅ Works |
+| Process migration | ✅ Works |
+| subtree_control | ✅ Works |
+| PID limits (--pids-limit) | ✅ Enforced |
+| CPU weight (--cpu-shares) | ✅ Stored (scheduler integration pending) |
+| CPU quota (--cpus) | ✅ Stored (tick hook pending) |
+| Memory limits | ⚠️ Parsed (allocator integration pending) |
+| I/O limits | ⚠️ Parsed (block layer integration pending) |
+| cgroup.events | ❌ Not implemented |
+| Freezer | ❌ Not implemented |
+| PSI (pressure stall) | ❌ Not implemented |
 
 ## Quick Start
 

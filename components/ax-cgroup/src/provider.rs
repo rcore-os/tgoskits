@@ -4,7 +4,7 @@
 //! cgroup core logic calls these methods instead of reaching into
 //! `crate::task::*` directly.
 
-use alloc::{boxed::Box, sync::Arc};
+use alloc::sync::Arc;
 
 use crate::CgroupNode;
 
@@ -17,7 +17,6 @@ pub trait CgroupProvider: Send + Sync {
     fn is_zombie(&self, pid: u32) -> bool;
 
     /// Get the current cgroup assignment of a process.
-    /// Returns `None` if the process is not found.
     fn get_cgroup(&self, pid: u32) -> Option<Arc<CgroupNode>>;
 
     /// Set the cgroup assignment of a process.
@@ -52,7 +51,7 @@ impl ProviderCell {
     }
 
     pub fn set(&self, provider: &'static dyn CgroupProvider) {
-        let slot = Box::into_raw(Box::new(ProviderSlot { provider }));
+        let slot = alloc::boxed::Box::into_raw(alloc::boxed::Box::new(ProviderSlot { provider }));
         self.inner
             .store(slot, core::sync::atomic::Ordering::Release);
     }
