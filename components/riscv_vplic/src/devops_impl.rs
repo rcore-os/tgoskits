@@ -93,9 +93,7 @@ impl VPlicGlobal {
     fn next_deliverable_irq(&self, context_id: usize) -> AxResult<Option<usize>> {
         let threshold = self.context_threshold(context_id)?;
         let candidates = self.pending_inactive_snapshot();
-        if let Some((irq_id, priority)) =
-            self.best_enabled_pending_irq(context_id, &candidates)?
-        {
+        if let Some((irq_id, priority)) = self.best_enabled_pending_irq(context_id, &candidates)? {
             if priority > threshold {
                 return Ok(Some(irq_id));
             }
@@ -339,6 +337,28 @@ impl InterruptControllerOps for VPlicGlobal {
             return Err(axbus::DeviceError::InvalidResource);
         }
         self.pending_irqs.clear(irq_id);
+        self.sync_all_guest_contexts_vseip().map_err(|_| {
+            axbus::DeviceError::BackendError(alloc::string::String::from("sync_vseip failed"))
+        })?;
+        Ok(axbus::IrqOutcome::Delivered)
+    }
+
+    /// Handle an MSI write by translating it to a PLIC source pending bit.
+    ///
+    /// The PLIC does not natively support MSI — MSI semantics are provided
+    /// by the RISC-V AIA (IMSIC) on newer platforms. For backward
+    /// compatibility, this implementation treats the MSI data field as the
+    /// PLIC source ID and sets the corresponding pending bit.
+    ///
+    /// The MSI address is validated but not decoded further — the
+    /// `IrqRoutingTable` maps an address window to this controller, so any
+    /// write within the window is considered valid.
+    fn handle_msi(&self, _addr: u64, data: u32) -> axbus::Result<axbus::IrqOutcome> {
+        let irq_id = data as usize;
+        if irq_id == 0 || irq_id >= PLIC_NUM_SOURCES {
+            return Err(axbus::DeviceError::InvalidResource);
+        }
+        self.pending_irqs.set(irq_id);
         self.sync_all_guest_contexts_vseip().map_err(|_| {
             axbus::DeviceError::BackendError(alloc::string::String::from("sync_vseip failed"))
         })?;

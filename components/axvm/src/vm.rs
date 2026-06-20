@@ -712,6 +712,15 @@ impl AxVM {
         self.irq_runtime.call_once(|| Arc::new(runtime));
     }
 
+    /// Returns a reference to the VM's `IrqRuntime`, if it has been set up.
+    ///
+    /// The runtime is initialized once during VM init, after all devices and
+    /// interrupt controllers have been registered. It provides lock-free
+    /// interrupt dispatch on the hot path.
+    pub fn irq_runtime(&self) -> Option<Arc<axbus::IrqRuntime>> {
+        self.irq_runtime.get().cloned()
+    }
+
     /// Inject an interrupt via the IrqRuntime (preferred) or BusRouter (fallback).
     pub fn inject_irq(&self, msg: axbus::IrqMessage) -> axbus::Result<()> {
         if let Some(rt) = self.irq_runtime.get() {
@@ -864,25 +873,27 @@ impl AxVM {
         Ok(exit_reason)
     }
 
-    /// Injects an interrupt to the vCPU.
+    /// Injects an interrupt to one or more vCPUs.
+    ///
+    /// This is a legacy API — prefer [`inject_irq`](Self::inject_irq) for
+    /// line-based interrupts (which routes through `IrqRuntime`), or use
+    /// `axvisor_api::vmm::inject_interrupt` directly for IPI-style vector
+    /// injection when only targeting a single vCPU.
+    #[deprecated(
+        since = "0.2.0",
+        note = "Use inject_irq (via IrqRuntime) for device IRQs, or \
+                axvisor_api::vmm::inject_interrupt directly for per-vCPU vector injection"
+    )]
     pub fn inject_interrupt_to_vcpu(
         &self,
         targets: CpuMask<TEMP_MAX_VCPU_NUM>,
         irq: usize,
     ) -> AxResult {
-        let vm_id = self.id();
-        // Check if the current running vm is self.
-        //
-        // It is not supported to inject interrupt to a vcpu in another VM yet.
-        //
-        // It may be supported in the future, as a essential feature for cross-VM communication.
-        let current_running_vm = axvisor_api::vmm::current_vm_id();
-        if current_running_vm != vm_id {
-            panic!("Injecting interrupt to a vcpu in another VM is not supported");
+        for vcpu_id in 0..TEMP_MAX_VCPU_NUM {
+            if targets.get(vcpu_id) {
+                axvisor_api::vmm::inject_interrupt(self.id(), vcpu_id, irq as InterruptVector);
+            }
         }
-
-        axvisor_api::vmm::inject_interrupt_to_cpus(vm_id, targets, irq as InterruptVector);
-
         Ok(())
     }
 
@@ -1073,26 +1084,31 @@ impl AxVM {
     }
 
     /// Maps a reserved memory region for the VM.
+    ///
+    /// Unlike [`alloc_memory_region`](Self::alloc_memory_region), this method
+    /// maps an already-existing physical memory range into the guest's address
+    /// space without allocating new memory. The `gpa` must be provided.
+    ///
+    /// Returns a slice view of the mapped region.
     pub fn map_reserved_memory_region(
         &self,
         layout: Layout,
-        gpa: Option<GuestPhysAddr>,
+        gpa: GuestPhysAddr,
     ) -> AxResult<&[u8]> {
-        assert!(
-            layout.size() > 0,
-            "Cannot allocate zero-sized memory region"
-        );
+        if layout.size() == 0 {
+            return ax_err!(InvalidInput, "Cannot map zero-sized reserved memory region");
+        }
         let mut g = self.inner_mut.lock();
+        let hpa = gpa.as_usize();
         g.address_space.map_linear(
-            gpa.unwrap(),
-            gpa.unwrap().as_usize().into(),
+            gpa,
+            HostPhysAddr::from(hpa),
             layout.size(),
             MappingFlags::READ | MappingFlags::WRITE | MappingFlags::EXECUTE | MappingFlags::USER,
         )?;
-        let hva = gpa.unwrap().as_usize().into();
-        let tem_hva = gpa.unwrap().as_usize() as *mut u8;
+        let hva = HostVirtAddr::from_usize(hpa);
+        let tem_hva = hpa as *mut u8;
         let s = unsafe { core::slice::from_raw_parts_mut(tem_hva, layout.size()) };
-        let gpa = gpa.unwrap();
         g.memory_regions.push(VMMemoryRegion {
             gpa,
             hva,

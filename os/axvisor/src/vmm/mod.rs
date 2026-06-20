@@ -148,8 +148,7 @@ pub fn with_vm_and_vcpu_on_pcpu(
             Ok(())
         }
         None => {
-            with_vm_and_vcpu(vm_id, vcpu_id, f)
-                .ok_or_else(|| ax_err_type!(NotFound))?;
+            with_vm_and_vcpu(vm_id, vcpu_id, f).ok_or_else(|| ax_err_type!(NotFound))?;
             Ok(())
         }
     }

@@ -127,4 +127,22 @@ impl axbus::InterruptControllerOps for Vgic {
     fn deactivate_irq(&self, _pin: u32) -> axbus::Result<axbus::IrqOutcome> {
         Ok(axbus::IrqOutcome::Delivered)
     }
+
+    /// Handle an MSI write by injecting it as a GIC SPI interrupt.
+    ///
+    /// On ARM GICv2, MSIs are typically delivered as SPIs (Shared Peripheral
+    /// Interrupts, IDs 32+). The MSI data field carries the SPI number minus
+    /// the GIC offset. We inject the resulting IRQ via the hardware interface.
+    ///
+    /// The MSI address is not decoded here — the `IrqRoutingTable` maps
+    /// a pre-configured address window to this controller, and the GIC ITS
+    /// (when present) handles the address-side translation.
+    fn handle_msi(&self, _addr: u64, data: u32) -> axbus::Result<axbus::IrqOutcome> {
+        // For GICv2 without ITS, treat the data field as the interrupt ID.
+        // SPI base is typically 32 on GIC; the caller's MSI configuration
+        // (provided by the guest's PCI/device tree) determines the final ID.
+        let irq_id = data as usize;
+        crate::api_reexp::hardware_inject_virtual_interrupt(irq_id);
+        Ok(axbus::IrqOutcome::Delivered)
+    }
 }

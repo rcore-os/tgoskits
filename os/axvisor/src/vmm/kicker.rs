@@ -85,16 +85,7 @@ pub fn build_irq_runtime(vm: &super::VMRef) -> axbus::IrqRuntime {
     }
 
     let pcpu_map = vm.vcpu_pcpu_map().clone();
-    let kicker = Box::new(AxVmKicker::new(
-        vm.id(),
-        vm.vcpu_num(),
-        pcpu_map,
-    ));
+    let kicker = Box::new(AxVmKicker::new(vm.id(), vm.vcpu_num(), pcpu_map));
 
-    axbus::IrqRuntime::new(
-        routing,
-        default_intc,
-        resolved_controllers,
-        kicker,
-    )
+    axbus::IrqRuntime::new(routing, default_intc, resolved_controllers, kicker)
 }

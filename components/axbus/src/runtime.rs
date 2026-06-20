@@ -103,6 +103,24 @@ impl IrqRuntime {
         }
     }
 
+    /// Inject an IPI (inter-processor interrupt) to a specific vCPU.
+    ///
+    /// This is a convenience wrapper around the default interrupt controller:
+    /// it calls `inject_irq(vector, Edge, Cpu(target))` on `self.default_intc`,
+    /// then applies the resulting `IrqOutcome` (vCPU kick).
+    ///
+    /// Returns an error if no default interrupt controller is configured.
+    pub fn inject_ipi(&self, target_vcpu: usize, vector: u8) -> Result<()> {
+        let intc = self.default_intc.as_ref().ok_or(DeviceError::NotFound)?;
+        let outcome = intc.inject_irq(
+            vector as u32,
+            TriggerMode::Edge,
+            Some(IrqTarget::Cpu(target_vcpu)),
+        )?;
+        self.apply_outcome(outcome);
+        Ok(())
+    }
+
     pub fn kicker(&self) -> &dyn VcpuKicker {
         self.kicker.as_ref()
     }

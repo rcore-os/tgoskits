@@ -52,6 +52,8 @@ slotmap::new_key_type! {
 // This avoids unsafe key reconstruction when the caller passes a DeviceId.
 struct IdMap {
     keys: BTreeMap<u64, DeviceKey>,
+    /// Reverse mapping: DeviceKey → DeviceId for O(log n) reverse lookup.
+    reverse_keys: BTreeMap<DeviceKey, u64>,
     next_id: u64,
 }
 
@@ -60,6 +62,7 @@ impl IdMap {
     fn new() -> Self {
         Self {
             keys: BTreeMap::new(),
+            reverse_keys: BTreeMap::new(),
             next_id: 1,
         }
     }
@@ -69,6 +72,7 @@ impl IdMap {
         let id = self.next_id;
         self.next_id += 1;
         self.keys.insert(id, key);
+        self.reverse_keys.insert(key, id);
         DeviceId::from_u64(id)
     }
 
@@ -79,17 +83,16 @@ impl IdMap {
 
     /// Remove a DeviceId mapping, returning the slotmap key.
     fn remove(&mut self, id: DeviceId) -> Option<DeviceKey> {
-        self.keys.remove(&id.0)
+        let key = self.keys.remove(&id.0)?;
+        self.reverse_keys.remove(&key);
+        Some(key)
     }
 
-    /// Reverse lookup: find the DeviceId for a given DeviceKey (O(n), fine for <100 devices).
+    /// Reverse lookup: find the DeviceId for a given DeviceKey (O(log n)).
     fn scan_for_key(&self, target: DeviceKey) -> Option<DeviceId> {
-        for (&id, &key) in &self.keys {
-            if key == target {
-                return Some(DeviceId::from_u64(id));
-            }
-        }
-        None
+        self.reverse_keys
+            .get(&target)
+            .map(|&id| DeviceId::from_u64(id))
     }
 }
 
@@ -137,6 +140,7 @@ pub struct DeviceRegistry {
     mmio_tree: RangeMap,
     pio_tree: RangeMap,
     sysreg_tree: RangeMap,
+    msi_tree: RangeMap,
     id_map: IdMap,
 }
 
@@ -148,6 +152,7 @@ impl DeviceRegistry {
             mmio_tree: RangeMap::new(),
             pio_tree: RangeMap::new(),
             sysreg_tree: RangeMap::new(),
+            msi_tree: RangeMap::new(),
             id_map: IdMap::new(),
         }
     }
@@ -229,6 +234,48 @@ impl DeviceRegistry {
                         )));
                     }
                 }
+                Resource::MsiAddressWindow(range) => {
+                    let start = range.start;
+                    let end = range.end;
+                    if let Some((&prev_start, &(prev_end, _))) =
+                        self.msi_tree.intervals.range(..start).next_back()
+                        && prev_end > start
+                    {
+                        return Err(DeviceError::AddressConflict(Resource::MsiAddressWindow(
+                            prev_start..prev_end,
+                        )));
+                    }
+                    if let Some((&next_start, &(..))) =
+                        self.msi_tree.intervals.range(start..).next()
+                        && end > next_start
+                    {
+                        return Err(DeviceError::AddressConflict(Resource::MsiAddressWindow(
+                            next_start..end,
+                        )));
+                    }
+                }
+                Resource::PciBar { range, .. } => {
+                    let start = range.start;
+                    let end = range.end;
+                    if let Some((&prev_start, &(prev_end, _))) =
+                        self.mmio_tree.intervals.range(..start).next_back()
+                        && prev_end > start
+                    {
+                        return Err(DeviceError::AddressConflict(Resource::PciBar {
+                            bar: 0,
+                            range: prev_start..prev_end,
+                        }));
+                    }
+                    if let Some((&next_start, &(..))) =
+                        self.mmio_tree.intervals.range(start..).next()
+                        && end > next_start
+                    {
+                        return Err(DeviceError::AddressConflict(Resource::PciBar {
+                            bar: 0,
+                            range: next_start..end,
+                        }));
+                    }
+                }
                 Resource::Irq(_) => {}
             }
         }
@@ -252,6 +299,12 @@ impl DeviceRegistry {
                     self.pio_tree
                         .insert(range.start as u64, range.end as u64, key);
                 }
+                Resource::MsiAddressWindow(range) => {
+                    self.msi_tree.insert(range.start, range.end, key);
+                }
+                Resource::PciBar { range, .. } => {
+                    self.mmio_tree.insert(range.start, range.end, key);
+                }
                 Resource::Irq(_) => {}
             }
         }
@@ -269,6 +322,8 @@ impl DeviceRegistry {
                 Resource::Mmio(range) => self.mmio_tree.remove(range.start),
                 Resource::SysReg(range) => self.sysreg_tree.remove(range.start),
                 Resource::Pio(range) => self.pio_tree.remove(range.start as u64),
+                Resource::MsiAddressWindow(range) => self.msi_tree.remove(range.start),
+                Resource::PciBar { range, .. } => self.mmio_tree.remove(range.start),
                 Resource::Irq(_) => {}
             }
         }

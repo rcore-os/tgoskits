@@ -161,4 +161,19 @@ impl axbus::InterruptControllerOps for LoongArchCsrIntc {
     fn deactivate_irq(&self, _pin: u32) -> axbus::Result<axbus::IrqOutcome> {
         Ok(axbus::IrqOutcome::Delivered)
     }
+
+    /// Handle an MSI write by injecting it as a CSR-based interrupt.
+    ///
+    /// LoongArch delivers interrupts through the CSR system (GINTC / GCSR_ESTAT).
+    /// This implementation treats the MSI data field as the vector number and
+    /// writes it to the appropriate CSR. The address field is not decoded —
+    /// the `IrqRoutingTable` maps an address window to this controller.
+    fn handle_msi(&self, _addr: u64, data: u32) -> axbus::Result<axbus::IrqOutcome> {
+        let vector = data as usize;
+        if vector > INT_IPI {
+            return Err(axbus::DeviceError::InvalidResource);
+        }
+        inject_interrupt(vector);
+        Ok(axbus::IrqOutcome::Delivered)
+    }
 }

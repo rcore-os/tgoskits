@@ -13,7 +13,6 @@
 // limitations under the License.
 
 use alloc::{collections::BTreeMap, vec::Vec};
-use ax_cpumask::CpuMask;
 
 use core::{
     cell::UnsafeCell,
@@ -23,7 +22,7 @@ use core::{
 use std::os::arceos::{
     api::task::{AxCpuMask, ax_wait_queue_wake},
     modules::{
-        ax_hal::{self, time::busy_wait, percpu::this_cpu_id},
+        ax_hal::{self, percpu::this_cpu_id, time::busy_wait},
         ax_task::{self, AxTaskExt},
     },
 };
@@ -32,7 +31,7 @@ use ax_task::{AxTaskRef, TaskInner, WaitQueue};
 use axaddrspace::GuestPhysAddr;
 use axvcpu::{AxVCpuExitReason, VCpuState};
 
-use crate::{hal::arch::inject_interrupt, task::VCpuTask};
+use crate::task::VCpuTask;
 use crate::{
     task::AsVCpuTask,
     vmm::{VCpuRef, VMRef, sub_running_vm_count},
@@ -548,29 +547,30 @@ fn vcpu_run() {
                     send_to_self,
                     vector,
                 } => {
+                    let vm_id = vm_id;
+                    let vcpu_id = vcpu_id;
                     debug!(
                         "VM[{vm_id}] run VCpu[{vcpu_id}] SendIPI, target_cpu={target_cpu:#x}, target_cpu_aux={target_cpu_aux:#x}, vector={vector}",
                     );
+                    // Route IPI through the IrqRuntime (preferred), which
+                    // dispatches to the architecture-specific interrupt
+                    // controller. Fall back to direct vector injection when
+                    // the runtime hasn't been built yet (early boot).
+                    let inject = |vcpu: usize, vec: u8| {
+                        if let Some(runtime) = vm.irq_runtime() {
+                            let _ = runtime.inject_ipi(vcpu, vec);
+                        } else {
+                            axvisor_api::vmm::inject_interrupt(vm.id(), vcpu, vec as _);
+                        }
+                    };
                     if send_to_all {
                         for i in 0..vm.vcpu_num() {
-                            if i == vcpu_id {
-                                inject_interrupt(vector as _);
-                            } else {
-                                vm.inject_interrupt_to_vcpu(
-                                    CpuMask::one_shot(i),
-                                    vector as _,
-                                )
-                                .unwrap();
-                            }
+                            inject(i, vector as u8);
                         }
                     } else if target_cpu == vcpu_id as u64 || send_to_self {
-                        inject_interrupt(vector as _);
+                        inject(vcpu_id, vector as u8);
                     } else {
-                        vm.inject_interrupt_to_vcpu(
-                            CpuMask::one_shot(target_cpu as _),
-                            vector as _,
-                        )
-                        .unwrap();
+                        inject(target_cpu as _, vector as u8);
                     }
                 }
                 e => {

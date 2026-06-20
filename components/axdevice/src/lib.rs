@@ -20,16 +20,11 @@
 //!
 //! The `log` crate is included for logging purposes, with macros being imported globally.
 //!
-//! The module is structured into two main parts: `config` and `device`, which manage the configuration and handling of AxVm devices respectively.
+//! The module is structured into two main parts: the public device factory registry and
+//! the now-removed legacy device container.
 
 extern crate alloc;
 #[macro_use]
 extern crate log;
 
-mod config;
-mod device;
 pub mod factories;
-
-pub use config::AxVmDeviceConfig;
-pub use device::AxVmDevices;
-// pub use virtio_dev::*;

@@ -1,17 +1,3 @@
-// Copyright 2025 The Axvisor Team
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
-
 use alloc::{boxed::Box, string::String, sync::Arc, vec, vec::Vec};
 use core::{any::Any, fmt::Display, ops::Range};
 
@@ -62,6 +48,21 @@ pub enum Resource {
     SysReg(Range<u64>),
     /// Interrupt line. Routing is configured in `IrqRoutingTable`.
     Irq(IrqLine),
+    /// MSI address window claimed by this device.
+    ///
+    /// The range specifies which MSI target addresses this device responds to.
+    /// Typically a single-page range (e.g., 0xFEEx_xxxx on x86).
+    MsiAddressWindow(Range<u64>),
+    /// PCI BAR region claimed by this device.
+    ///
+    /// `bar`: BAR index (0–5 for standard PCI).
+    /// `range`: the MMIO or PIO address range.
+    PciBar {
+        /// BAR index (0–5).
+        bar: u8,
+        /// Address range (MMIO or PIO).
+        range: Range<u64>,
+    },
 }
 
 /// Supported bus types. Extensible: new variants (e.g., `PciConfig`, `Imsic`)
@@ -266,6 +267,33 @@ pub trait VirtualDevice: Send + Sync + core::fmt::Debug {
 
     /// Route a single guest bus access to this device.
     fn handle_access(&self, bus: BusKind, access: &BusAccess) -> BusResponse;
+
+    /// Reset the device to its initial state.
+    ///
+    /// Called when the VM is reset (e.g., soft reboot). The device should
+    /// clear all internal state and return to post-init configuration.
+    /// The default implementation is a no-op — override if the device
+    /// maintains mutable state that must be reset.
+    fn reset(&self) -> Result<()> {
+        Ok(())
+    }
+
+    /// Suspend the device (VM is paused/frozen).
+    ///
+    /// The device should flush any pending operations and save minimal
+    /// state so that [`resume()`](Self::resume) can restore operation.
+    /// Called when transitioning to `VMStatus::Suspended`.
+    fn suspend(&self) -> Result<()> {
+        Ok(())
+    }
+
+    /// Resume the device from a suspended state.
+    ///
+    /// Called when transitioning back to `VMStatus::Running` from
+    /// `VMStatus::Suspended`. The default implementation is a no-op.
+    fn resume(&self) -> Result<()> {
+        Ok(())
+    }
 
     /// Type-erased downcast — enables device-specific operations without
     /// modifying the core trait.

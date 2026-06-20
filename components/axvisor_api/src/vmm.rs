@@ -153,6 +153,15 @@ pub trait VmmIf {
     fn inject_interrupt(vm_id: VMId, vcpu_id: VCpuId, vector: InterruptVector);
 
     /// Inject an interrupt to a set of virtual CPUs.
+    ///
+    /// This is a legacy API — prefer per-vCPU [`inject_interrupt`] or the
+    /// [`axbus::IrqRuntime`] path for new code. The `IrqRuntime` provides
+    /// proper IRQ routing through `IrqRoutingTable` + `InterruptControllerOps`,
+    /// eliminating architecture-specific dispatch in callers.
+    #[deprecated(
+        since = "0.2.0",
+        note = "Use inject_interrupt (per-vCPU) or axbus::IrqRuntime routing instead"
+    )]
     fn inject_interrupt_to_cpus(vm_id: VMId, vcpu_set: VCpuSet, vector: InterruptVector);
 
     /// Notify that a virtual CPU's timer has expired.

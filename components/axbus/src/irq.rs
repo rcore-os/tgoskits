@@ -34,6 +34,8 @@
 use alloc::{collections::BTreeMap, string::String, sync::Arc, vec::Vec};
 use core::{fmt::Display, ops::Range};
 
+use log::warn;
+
 use crate::r#trait::*;
 
 // ============================================================
@@ -171,6 +173,39 @@ impl Default for IrqRoutingTable {
 
 impl IrqRoutingTable {
     /// Add a legacy line → controller mapping.
+    ///
+    /// Returns an error if the same `IrqLine` has already been registered
+    /// (IRQ line conflict detection).
+    pub fn try_add_legacy(
+        &mut self,
+        line: IrqLine,
+        controller: DeviceId,
+        controller_pin: u32,
+        trigger: TriggerMode,
+        target: Option<IrqTarget>,
+        name: impl Into<String>,
+    ) -> Result<&mut Self> {
+        if self.legacy_map.contains_key(&line) {
+            return Err(DeviceError::AlreadyExists);
+        }
+        let entry = IrqRoutingEntry {
+            name: name.into(),
+            controller,
+            controller_pin,
+            trigger,
+            target,
+        };
+        let idx = self.entries.len();
+        self.entries.push(entry);
+        self.legacy_map.insert(line, idx);
+        Ok(self)
+    }
+
+    /// Add a legacy line → controller mapping (infallible variant).
+    ///
+    /// On conflict (same `IrqLine` already registered), a warning is logged
+    /// and the old mapping is silently overwritten. Prefer [`try_add_legacy`]
+    /// for new code that can propagate the error.
     pub fn add_legacy(
         &mut self,
         line: IrqLine,
@@ -180,6 +215,12 @@ impl IrqRoutingTable {
         target: Option<IrqTarget>,
         name: impl Into<String>,
     ) -> &mut Self {
+        if self.legacy_map.contains_key(&line) {
+            warn!(
+                "IrqRoutingTable: line {} already routed to another controller, overwriting",
+                line.0,
+            );
+        }
         let entry = IrqRoutingEntry {
             name: name.into(),
             controller,
@@ -763,5 +804,58 @@ mod tests {
         let dbg = format!("{sink:?}");
         assert!(dbg.contains("IrqSink"));
         assert!(dbg.contains("7"));
+    }
+
+    // ── try_add_legacy tests ─────────────────────────────────────────
+
+    #[test]
+    fn test_try_add_legacy_success() {
+        let mut table = IrqRoutingTable::new();
+        table
+            .try_add_legacy(IrqLine(10), d42(), 0, TriggerMode::Edge, None, "dev")
+            .unwrap();
+        let (ctrl, _entry) = table.lookup_legacy(IrqLine(10)).unwrap();
+        assert_eq!(ctrl, d42());
+    }
+
+    #[test]
+    fn test_try_add_legacy_duplicate_returns_error() {
+        let mut table = IrqRoutingTable::new();
+        table
+            .try_add_legacy(IrqLine(10), d42(), 0, TriggerMode::Edge, None, "dev1")
+            .unwrap();
+        let err = table
+            .try_add_legacy(
+                IrqLine(10),
+                d7(),
+                1,
+                TriggerMode::Level { high: true },
+                None,
+                "dev2",
+            )
+            .unwrap_err();
+        assert!(matches!(err, DeviceError::AlreadyExists));
+        // Original entry should still be intact
+        let (ctrl, _entry) = table.lookup_legacy(IrqLine(10)).unwrap();
+        assert_eq!(ctrl, d42());
+    }
+
+    // ── IrqSink drop / lifecycle tests ───────────────────────────────
+
+    #[test]
+    fn test_irq_sink_drop_does_not_panic() {
+        // An IrqSink that captures cloned Arcs. Dropping the sink should
+        // not affect the original injector / deactivator arcs.
+        use alloc::sync::Arc as AllocArc;
+
+        let injector: AllocArc<dyn Fn(IrqMessage) -> Result<()> + Send + Sync> =
+            AllocArc::new(|_msg| Ok(()));
+        let deactivator: AllocArc<dyn Fn(IrqLine) -> Result<()> + Send + Sync> =
+            AllocArc::new(|_line| Ok(()));
+
+        let sink = IrqSink::new(IrqLine(1), TriggerMode::Edge, injector, deactivator);
+        // Raise before drop — should succeed
+        sink.raise().unwrap();
+        drop(sink);
     }
 }

@@ -23,6 +23,8 @@
 
 use alloc::{boxed::Box, collections::BTreeMap, sync::Arc};
 
+use log::warn;
+
 use crate::{
     irq::{
         InterruptControllerOps, IrqMessage, IrqOutcome, IrqRoutingTable, IrqSink, KickTarget,
@@ -251,6 +253,44 @@ impl BusRouter {
     /// emulated device MMIO region. Returns the conflicting interval if found.
     pub fn check_passthrough_overlap(&self, start: u64, end: u64) -> Option<(u64, u64)> {
         self.registry.check_mmio_overlap(start, end)
+    }
+
+    // ── Device lifecycle ──────────────────────────────────────────────
+
+    /// Reset all registered devices to their initial state.
+    ///
+    /// Calls [`VirtualDevice::reset()`] on every device. Errors from individual
+    /// devices are logged but do not abort the reset of remaining devices.
+    pub fn reset_all(&self) {
+        for (_id, dev) in self.iter_all() {
+            if let Err(e) = dev.reset() {
+                warn!("reset_all: {} reset failed: {:?}", dev.name(), e);
+            }
+        }
+    }
+
+    /// Suspend all registered devices.
+    ///
+    /// Calls [`VirtualDevice::suspend()`] on every device. Errors from individual
+    /// devices are logged but do not abort the suspend of remaining devices.
+    pub fn suspend_all(&self) {
+        for (_id, dev) in self.iter_all() {
+            if let Err(e) = dev.suspend() {
+                warn!("suspend_all: {} suspend failed: {:?}", dev.name(), e);
+            }
+        }
+    }
+
+    /// Resume all registered devices from a suspended state.
+    ///
+    /// Calls [`VirtualDevice::resume()`] on every device. Errors from individual
+    /// devices are logged but do not abort the resume of remaining devices.
+    pub fn resume_all(&self) {
+        for (_id, dev) in self.iter_all() {
+            if let Err(e) = dev.resume() {
+                warn!("resume_all: {} resume failed: {:?}", dev.name(), e);
+            }
+        }
     }
 }
 
@@ -1306,5 +1346,284 @@ mod tests {
         assert_eq!(pin, 27);
         assert_eq!(trigger, TriggerMode::Edge);
         assert_eq!(target, Some(IrqTarget::Cpu(0)));
+    }
+
+    // ── Device lifecycle tests ────────────────────────────────────────
+
+    /// A device that records lifecycle calls.
+    struct LifecycleDevice {
+        name: &'static str,
+        resources: Vec<Resource>,
+        reset_called: std::sync::atomic::AtomicBool,
+        suspend_called: std::sync::atomic::AtomicBool,
+        resume_called: std::sync::atomic::AtomicBool,
+    }
+
+    impl core::fmt::Debug for LifecycleDevice {
+        fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+            f.debug_struct("LifecycleDevice")
+                .field("name", &self.name)
+                .field("resources", &self.resources)
+                .finish()
+        }
+    }
+
+    impl LifecycleDevice {
+        fn new(name: &'static str) -> Arc<Self> {
+            Arc::new(Self {
+                name,
+                resources: vec![Resource::Mmio(0x5000..0x6000)],
+                reset_called: std::sync::atomic::AtomicBool::new(false),
+                suspend_called: std::sync::atomic::AtomicBool::new(false),
+                resume_called: std::sync::atomic::AtomicBool::new(false),
+            })
+        }
+    }
+
+    impl VirtualDevice for LifecycleDevice {
+        fn id(&self) -> DeviceId {
+            DeviceId::from_u64(0)
+        }
+        fn name(&self) -> &str {
+            self.name
+        }
+        fn resources(&self) -> &[Resource] {
+            &self.resources
+        }
+        fn handle_access(&self, _bus: BusKind, _access: &BusAccess) -> BusResponse {
+            BusResponse::Success(None)
+        }
+        fn as_any(&self) -> &dyn Any {
+            self
+        }
+        fn reset(&self) -> Result<()> {
+            self.reset_called
+                .store(true, std::sync::atomic::Ordering::Relaxed);
+            Ok(())
+        }
+        fn suspend(&self) -> Result<()> {
+            self.suspend_called
+                .store(true, std::sync::atomic::Ordering::Relaxed);
+            Ok(())
+        }
+        fn resume(&self) -> Result<()> {
+            self.resume_called
+                .store(true, std::sync::atomic::Ordering::Relaxed);
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn test_reset_all_devices() {
+        let mut router = BusRouter::new();
+        let dev = LifecycleDevice::new("dev0");
+        router.register(dev.clone()).unwrap();
+
+        router.reset_all();
+        assert!(dev.reset_called.load(std::sync::atomic::Ordering::Relaxed));
+    }
+
+    #[test]
+    fn test_suspend_all_devices() {
+        let mut router = BusRouter::new();
+        let dev = LifecycleDevice::new("dev1");
+        router.register(dev.clone()).unwrap();
+
+        router.suspend_all();
+        assert!(
+            dev.suspend_called
+                .load(std::sync::atomic::Ordering::Relaxed)
+        );
+    }
+
+    #[test]
+    fn test_resume_all_devices() {
+        let mut router = BusRouter::new();
+        let dev = LifecycleDevice::new("dev2");
+        router.register(dev.clone()).unwrap();
+
+        router.resume_all();
+        assert!(dev.resume_called.load(std::sync::atomic::Ordering::Relaxed));
+    }
+
+    #[test]
+    fn test_lifecycle_idempotent_when_empty() {
+        // Calling lifecycle methods on an empty router should not panic.
+        let router = BusRouter::new();
+        router.reset_all();
+        router.suspend_all();
+        router.resume_all();
+    }
+
+    // ── MSI miss (no matching window) ──────────────────────────────────
+
+    #[test]
+    fn test_msi_miss_returns_error() {
+        let mut router = BusRouter::new();
+        let intc = Arc::new(MockMsiIntc {
+            last_msi: std::sync::Mutex::new(None),
+        });
+        let intc_id = DeviceId(200);
+        router.register_intc(intc_id, intc);
+
+        // Register an MSI window for 0xfee0_0000..0xfee1_0000
+        router
+            .irq_table_mut()
+            .add_msi_range(0xfee0_0000..0xfee1_0000, intc_id);
+
+        // Address outside the window → NotFound
+        let result = router.inject(IrqMessage::msi(0x1000_0000, 0));
+        assert!(matches!(result, Err(DeviceError::NotFound)));
+    }
+
+    // ── handle_msi with different address/data patterns ────────────────
+
+    #[test]
+    fn test_msi_inject_different_data_patterns() {
+        let intc = Arc::new(MockMsiIntc {
+            last_msi: std::sync::Mutex::new(None),
+        });
+        let intc_id = DeviceId(300);
+        let mut router = BusRouter::new();
+        router.register_intc(intc_id, intc.clone());
+        router
+            .irq_table_mut()
+            .add_msi_range(0xfee0_0000..0xfee1_0000, intc_id);
+
+        // MSI with address 0xfee0_0c00 (dest CPU 0x0c) and data 0x20 (vector 32)
+        router.inject(IrqMessage::msi(0xfee0_0c00, 0x20)).unwrap();
+        {
+            let guard = intc.last_msi.lock().unwrap();
+            let (addr, data) = guard.unwrap();
+            assert_eq!(addr, 0xfee0_0c00);
+            assert_eq!(data, 0x20);
+        }
+
+        // MSI with address 0xfee1_0000 (top of window — exclusive, should miss)
+        let result = router.inject(IrqMessage::msi(0xfee1_0000, 0));
+        assert!(matches!(result, Err(DeviceError::NotFound)));
+    }
+
+    // ── Address conflict during register ──────────────────────────────
+
+    #[test]
+    fn test_register_conflict_mmio() {
+        let mut router = BusRouter::new();
+        let dev1 = Arc::new(MultiResDevice {
+            resources: vec![Resource::Mmio(0x2000..0x3000)],
+        });
+        let dev2 = Arc::new(MultiResDevice {
+            resources: vec![Resource::Mmio(0x2500..0x3500)],
+        });
+
+        router.register(dev1).unwrap();
+        let err = router.register(dev2).unwrap_err();
+        assert!(matches!(err, DeviceError::AddressConflict(_)));
+    }
+
+    #[test]
+    fn test_register_conflict_sysreg() {
+        let mut router = BusRouter::new();
+        let dev1 = Arc::new(MultiResDevice {
+            resources: vec![Resource::SysReg(0x100..0x200)],
+        });
+        let dev2 = Arc::new(MultiResDevice {
+            resources: vec![Resource::SysReg(0x150..0x250)],
+        });
+
+        router.register(dev1).unwrap();
+        let err = router.register(dev2).unwrap_err();
+        assert!(matches!(err, DeviceError::AddressConflict(_)));
+    }
+
+    #[test]
+    fn test_register_no_conflict_adjacent_pio() {
+        let mut router = BusRouter::new();
+        // Adjacent PIO ranges should NOT conflict: [0x60..0x70) and [0x70..0x80)
+        let dev1 = Arc::new(MultiResDevice {
+            resources: vec![Resource::Pio(0x60..0x70)],
+        });
+        let dev2 = Arc::new(MultiResDevice {
+            resources: vec![Resource::Pio(0x70..0x80)],
+        });
+
+        router.register(dev1).unwrap();
+        router.register(dev2).unwrap();
+        assert_eq!(router.total_devices(), 2);
+    }
+
+    // ── Bus response error paths ──────────────────────────────────────
+
+    #[derive(Debug)]
+    struct ErrorDevice;
+
+    impl VirtualDevice for ErrorDevice {
+        fn id(&self) -> DeviceId {
+            DeviceId::from_u64(0)
+        }
+        fn name(&self) -> &str {
+            "error-dev"
+        }
+        fn resources(&self) -> &[Resource] {
+            static RES: &[Resource] = &[Resource::Mmio(0x6000..0x7000)];
+            RES
+        }
+        fn handle_access(&self, bus: BusKind, access: &BusAccess) -> BusResponse {
+            match access {
+                BusAccess::Read { .. } => BusResponse::Success(Some(0xff)),
+                BusAccess::Write { addr, .. } if *addr == 0x6000 => {
+                    BusResponse::ReadOnly { bus, addr: *addr }
+                }
+                BusAccess::Write { addr, width, .. } if *addr == 0x6004 => {
+                    BusResponse::InvalidWidth {
+                        bus,
+                        addr: *addr,
+                        width: *width,
+                    }
+                }
+                BusAccess::Write { addr, .. } => BusResponse::DeviceError {
+                    bus,
+                    addr: *addr,
+                    msg: "internal error",
+                },
+            }
+        }
+        fn as_any(&self) -> &dyn Any {
+            self
+        }
+    }
+
+    #[test]
+    fn test_error_device_read_only_then_device_error() {
+        let mut router = BusRouter::new();
+        router.register(Arc::new(ErrorDevice)).unwrap();
+
+        // Write to read-only register
+        let resp = router.route(
+            BusKind::Mmio,
+            &BusAccess::Write {
+                addr: 0x6000,
+                width: AccessWidth::U32,
+                val: 1,
+            },
+        );
+        assert!(matches!(resp, BusResponse::ReadOnly { addr: 0x6000, .. }));
+
+        // Write to device-error register
+        let resp = router.route(
+            BusKind::Mmio,
+            &BusAccess::Write {
+                addr: 0x6008,
+                width: AccessWidth::U32,
+                val: 2,
+            },
+        );
+        match resp {
+            BusResponse::DeviceError { addr, msg, .. } => {
+                assert_eq!(addr, 0x6008);
+                assert_eq!(msg, "internal error");
+            }
+            _ => panic!("expected DeviceError, got {resp}"),
+        }
     }
 }

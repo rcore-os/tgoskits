@@ -21,15 +21,14 @@
 
 #![allow(unused_variables, unused_imports)]
 
-use alloc::{boxed::Box, sync::Arc, vec::Vec};
-use core::ops::Range;
+use alloc::{boxed::Box, sync::Arc, vec, vec::Vec};
+use core::{any::Any, ops::Range};
 
-use ax_errno::AxResult;
 use ax_memory_addr::PhysAddr;
 use axaddrspace::GuestPhysAddr;
 use axbus::{
-    DeviceBundle, DeviceFactory, DeviceId, EmulatedDeviceConfig, InterruptControllerOps,
-    LegacyMmioAdapter, VirtualDevice,
+    BusAccess, BusKind, BusResponse, DeviceBundle, DeviceFactory, DeviceId, EmulatedDeviceConfig,
+    InterruptControllerOps, IrqLine, LegacyMmioAdapter, Resource, VirtualDevice,
 };
 use axdevice_base::{BaseDeviceOps, BaseMmioDeviceOps};
 use axvmconfig::EmulatedDeviceType;
@@ -104,15 +103,17 @@ impl DeviceFactory for VGicRFactory {
                 let addr = config.base_gpa + i * stride;
                 let size = config.length;
                 #[allow(clippy::arc_with_non_send_sync)]
-                let dev: Arc<dyn BaseMmioDeviceOps> = Arc::new(
-                    arm_vgic::v3::vgicr::VGicR::new(addr.into(), Some(size), pcpu_id + i),
-                );
+                let dev: Arc<dyn BaseMmioDeviceOps> = Arc::new(arm_vgic::v3::vgicr::VGicR::new(
+                    addr.into(),
+                    Some(size),
+                    pcpu_id + i,
+                ));
                 let id = id_alloc();
                 devices.push(Box::new(LegacyMmioAdapter::new(id, dev)));
 
                 info!(
-                    "GPPT Redistributor initialized for vCPU {i} with base GPA \
-                     {addr:#x} and length {size:#x}"
+                    "GPPT Redistributor initialized for vCPU {i} with base GPA {addr:#x} and \
+                     length {size:#x}"
                 );
             }
             Ok(DeviceBundle::multi(devices))
@@ -151,8 +152,7 @@ impl DeviceFactory for VGicDFactory {
             let id = id_alloc();
 
             info!(
-                "GPPT Distributor initialized with base GPA {base_gpa:#x} and length \
-                 {length:#x}",
+                "GPPT Distributor initialized with base GPA {base_gpa:#x} and length {length:#x}",
                 base_gpa = config.base_gpa,
                 length = config.length
             );
@@ -204,8 +204,8 @@ impl DeviceFactory for GitsFactory {
             let id = id_alloc();
 
             info!(
-                "GPPT ITS initialized with base GPA {base_gpa:#x} and length \
-                 {length:#x}, host GITS base {host_gits_base:#x}",
+                "GPPT ITS initialized with base GPA {base_gpa:#x} and length {length:#x}, host \
+                 GITS base {host_gits_base:#x}",
                 base_gpa = config.base_gpa,
                 length = config.length,
                 host_gits_base = host_gits_base
@@ -260,8 +260,7 @@ impl DeviceFactory for VPlicGlobalFactory {
             let id = id_alloc();
 
             info!(
-                "Partial PLIC Passthrough Global initialized with base GPA {:#x} and \
-                 length {:#x}",
+                "Partial PLIC Passthrough Global initialized with base GPA {:#x} and length {:#x}",
                 config.base_gpa, config.length
             );
 
@@ -276,6 +275,202 @@ impl DeviceFactory for VPlicGlobalFactory {
                 "PLIC not supported on this arch".into(),
             ))
         }
+    }
+}
+
+// ── Virtio MMIO stub device (native VirtualDevice) ─────────
+
+/// A minimal Virtio MMIO device that reserves the MMIO region and reports
+/// standard identification values (Magic, Version, Device ID, Vendor ID).
+///
+/// This is a **stub** — it allows the guest to detect the device in the
+/// device tree but does not implement a functional Virtio backend. The
+/// stub prevents address-space conflicts in the `DeviceRegistry` and
+/// provides the correct identification layout so that FDT generation and
+/// Linux driver enumeration work correctly.
+///
+/// This is the **first device migrated from `LegacyMmioAdapter` to native
+/// `VirtualDevice`** — it demonstrates the migration path for other devices.
+///
+/// # Resources
+///
+/// - `Resource::Mmio`: the MMIO region `[base, base + length)`
+/// - `Resource::Irq`: the declared IRQ line (if `irq > 0`)
+///
+/// # Future work
+///
+/// Replace with a full Virtio backend (transport over MMIO or PCI) that
+/// implements queue processing, descriptor rings, and interrupt signaling
+/// via `IrqSink`.
+#[derive(Debug)]
+struct VirtioMmioStub {
+    /// Device ID assigned at registration time.
+    id: DeviceId,
+    /// Guest physical base address.
+    base: usize,
+    /// Length of the MMIO region in bytes.
+    length: usize,
+    /// Device type (0x1001 = block, 0x1000 = net, 0x1003 = console, etc.).
+    device_id: u32,
+    /// Pre-computed resource list (MMIO region + optional IRQ).
+    resources: Vec<Resource>,
+}
+
+impl VirtioMmioStub {
+    const VIRTIO_MMIO_MAGIC: u32 = 0x74726976; // "virt" little-endian
+
+    fn new(id: DeviceId, base: usize, length: usize, device_id: u32, irq: u32) -> Self {
+        let mut resources = Vec::with_capacity(2);
+        resources.push(Resource::Mmio(base as u64..(base + length) as u64));
+        if irq > 0 {
+            resources.push(Resource::Irq(IrqLine(irq)));
+        }
+        Self {
+            id,
+            base,
+            length,
+            device_id,
+            resources,
+        }
+    }
+
+    /// Map a guest offset (relative to base) to a read value.
+    fn read_register(&self, offset: usize) -> u64 {
+        match offset {
+            0x000 => Self::VIRTIO_MMIO_MAGIC as u64, // MagicValue
+            0x004 => 2,                              // Version (modern MMIO)
+            0x008 => self.device_id as u64,          // DeviceID
+            0x00C => 0x1AF4,                         // VendorID (Red Hat)
+            _ => 0,
+        }
+    }
+}
+
+impl VirtualDevice for VirtioMmioStub {
+    fn id(&self) -> DeviceId {
+        self.id
+    }
+
+    fn name(&self) -> &str {
+        "virtio-mmio-stub"
+    }
+
+    fn resources(&self) -> &[Resource] {
+        &self.resources
+    }
+
+    fn handle_access(&self, bus: BusKind, access: &BusAccess) -> BusResponse {
+        if bus != BusKind::Mmio {
+            return BusResponse::NoDevice {
+                bus,
+                addr: access.addr(),
+            };
+        }
+        match access {
+            BusAccess::Read { addr, .. } => {
+                let offset = (*addr as usize).wrapping_sub(self.base);
+                if offset < self.length {
+                    BusResponse::Success(Some(self.read_register(offset)))
+                } else {
+                    BusResponse::NoDevice { bus, addr: *addr }
+                }
+            }
+            BusAccess::Write { .. } => {
+                // Stub accepts writes silently — no functional backend.
+                BusResponse::Success(None)
+            }
+        }
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+}
+
+// ── Virtio block factory ──────────────────────────────────
+
+/// Factory for Virtio Block device (stub, native VirtualDevice).
+pub struct VirtioBlkFactory;
+
+impl DeviceFactory for VirtioBlkFactory {
+    fn emu_type(&self) -> EmulatedDeviceType {
+        EmulatedDeviceType::VirtioBlk
+    }
+
+    fn create(
+        &self,
+        config: &EmulatedDeviceConfig,
+        id_alloc: &mut dyn FnMut() -> DeviceId,
+    ) -> axbus::Result<DeviceBundle> {
+        let id = id_alloc();
+        Ok(DeviceBundle {
+            devices: vec![Box::new(VirtioMmioStub::new(
+                id,
+                config.base_gpa,
+                config.length,
+                0x1001, // Virtio ID = block
+                config.irq_id as u32,
+            )) as Box<dyn VirtualDevice>],
+            intc: None,
+        })
+    }
+}
+
+// ── Virtio net factory ────────────────────────────────────
+
+/// Factory for Virtio Network device (stub, native VirtualDevice).
+pub struct VirtioNetFactory;
+
+impl DeviceFactory for VirtioNetFactory {
+    fn emu_type(&self) -> EmulatedDeviceType {
+        EmulatedDeviceType::VirtioNet
+    }
+
+    fn create(
+        &self,
+        config: &EmulatedDeviceConfig,
+        id_alloc: &mut dyn FnMut() -> DeviceId,
+    ) -> axbus::Result<DeviceBundle> {
+        let id = id_alloc();
+        Ok(DeviceBundle {
+            devices: vec![Box::new(VirtioMmioStub::new(
+                id,
+                config.base_gpa,
+                config.length,
+                0x1000, // Virtio ID = net
+                config.irq_id as u32,
+            )) as Box<dyn VirtualDevice>],
+            intc: None,
+        })
+    }
+}
+
+// ── Virtio console factory ────────────────────────────────
+
+/// Factory for Virtio Console device (stub, native VirtualDevice).
+pub struct VirtioConsoleFactory;
+
+impl DeviceFactory for VirtioConsoleFactory {
+    fn emu_type(&self) -> EmulatedDeviceType {
+        EmulatedDeviceType::VirtioConsole
+    }
+
+    fn create(
+        &self,
+        config: &EmulatedDeviceConfig,
+        id_alloc: &mut dyn FnMut() -> DeviceId,
+    ) -> axbus::Result<DeviceBundle> {
+        let id = id_alloc();
+        Ok(DeviceBundle {
+            devices: vec![Box::new(VirtioMmioStub::new(
+                id,
+                config.base_gpa,
+                config.length,
+                0x1003, // Virtio ID = console
+                config.irq_id as u32,
+            )) as Box<dyn VirtualDevice>],
+            intc: None,
+        })
     }
 }
 
@@ -332,4 +527,9 @@ pub fn register_all_factories(registry: &mut axbus::FactoryRegistry) {
 
     // x86_64 stub (acknowledges InterruptController config, intc created in vm.rs)
     register_if!(target_arch = "x86_64", VLapicFactory);
+
+    // — Virtio stubs (all architectures) —
+    register_if!(all(), VirtioBlkFactory);
+    register_if!(all(), VirtioNetFactory);
+    register_if!(all(), VirtioConsoleFactory);
 }

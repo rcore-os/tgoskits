@@ -157,6 +157,40 @@ impl axbus::InterruptControllerOps for X86IntcAdapter {
     fn deactivate_irq(&self, _pin: u32) -> axbus::Result<axbus::IrqOutcome> {
         Ok(axbus::IrqOutcome::Delivered)
     }
+
+    /// Handle an MSI write by decoding the standard x86 MSI address and data.
+    ///
+    /// MSI address format (x86):
+    /// - Bits [31:20] = 0xFEE (fixed)
+    /// - Bits [19:12] = Destination ID (target CPU for physical mode)
+    /// - Bit  [3]    = Redirection Hint (0 = route to specified CPU)
+    /// - Bit  [0]    = Destination Mode (0 = physical)
+    ///
+    /// MSI data format:
+    /// - Bits [7:0]  = Vector
+    /// - Bits [10:8] = Delivery Mode
+    fn handle_msi(&self, addr: u64, data: u32) -> axbus::Result<axbus::IrqOutcome> {
+        // Validate MSI address base (0xFEEX_XXXX)
+        if addr >> 20 != 0xFEE {
+            return Err(axbus::DeviceError::InvalidResource);
+        }
+
+        // Destination mode: 0 = physical, 1 = logical
+        let _dest_mode = (addr & 0x1) != 0;
+        // Redirection hint: 0 = route to specified CPU
+        let _redirection_hint = (addr & (1 << 3)) != 0;
+
+        // Physical mode: Destination ID encodes the target CPU
+        let dest_id = ((addr >> 12) & 0xFF) as VCpuId;
+
+        // Decode data: vector
+        let vector = (data & 0xFF) as u8;
+
+        debug!("X86 MSI: addr={addr:#x} data={data:#x} → dest_cpu={dest_id} vector={vector:#x}");
+
+        axvisor_api::vmm::inject_interrupt(self.vm_id, dest_id, vector);
+        Ok(axbus::IrqOutcome::Delivered)
+    }
 }
 
 impl BaseDeviceOps<SysRegAddrRange> for EmulatedLocalApic {
