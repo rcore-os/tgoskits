@@ -1,0 +1,2 @@
+arch = "loongarch64"
+platform = "loongarch64-qemu-virt"
