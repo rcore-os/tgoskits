@@ -21,12 +21,14 @@ use ax_errno::AxResult;
 use ax_memory_addr::{PhysAddr, VirtAddr};
 use axdevice::{
     AxVmDeviceConfig, AxVmDevices, BusAccess, BusAddress, BusKind, BusOp, BusResponse,
-    DeviceCapabilities, DeviceError, DeviceId, DeviceOps, DeviceRegistry, IrqLine, IrqSink,
-    IrqTarget, LegacyDeviceAdapter, MsiMessage, PciBarKind, Resource,
+    DeviceBuildContext, DeviceCapabilities, DeviceError, DeviceFactory, DeviceFactoryCatalog,
+    DeviceId, DeviceOps, DeviceRegistry, DeviceResult, IrqLine, IrqSink, IrqTarget,
+    LegacyDeviceAdapter, MsiMessage, PciBarKind, Resource,
 };
 use axdevice_base::{AccessWidth, BaseDeviceOps, Port, PortRange, SysRegAddr, SysRegAddrRange};
 use axvm_types::{
-    EmulatedDeviceType, GuestPhysAddr, GuestPhysAddrRange, InterruptVector, VCpuId, VMId,
+    EmulatedDeviceConfig, EmulatedDeviceType, GuestPhysAddr, GuestPhysAddrRange, InterruptVector,
+    VCpuId, VMId,
 };
 use x86_vlapic::host::X86VlapicHostIf;
 
@@ -113,15 +115,14 @@ fn test_mmio_dispatch_functionality() {
 }
 
 #[test]
-#[should_panic(expected = "emu_device not found")]
-fn test_mmio_panic_on_missing_device() {
+fn test_mmio_missing_device_returns_error() {
     let config = AxVmDeviceConfig::new(vec![]);
     let devices = AxVmDevices::new(config);
 
     let invalid_addr = GuestPhysAddr::from(0x9999_9999);
     let width = AccessWidth::try_from(4).unwrap();
 
-    let _ = devices.handle_mmio_read(invalid_addr, width);
+    assert!(devices.handle_mmio_read(invalid_addr, width).is_err());
 }
 
 // Mock implementation for x86_vlapic host callbacks when running
@@ -218,6 +219,124 @@ impl DeviceOps for AbstractMockDevice {
         match access.op {
             BusOp::Read => Ok(BusResponse::Read { value: 0x55aa }),
             BusOp::Write { .. } => Ok(BusResponse::Write),
+        }
+    }
+}
+
+#[derive(Debug)]
+struct NativeMmioCounter {
+    id: DeviceId,
+    name: &'static str,
+    range: GuestPhysAddrRange,
+    resources: Vec<Resource>,
+    value: Mutex<usize>,
+}
+
+impl NativeMmioCounter {
+    fn new(id: usize, base: usize, len: usize, initial: usize) -> Self {
+        let range =
+            GuestPhysAddrRange::new(GuestPhysAddr::from(base), GuestPhysAddr::from(base + len));
+
+        Self {
+            id: DeviceId::new(id),
+            name: "native-mmio-counter",
+            range,
+            resources: vec![Resource::Mmio(range)],
+            value: Mutex::new(initial),
+        }
+    }
+
+    fn value(&self) -> usize {
+        *self.value.lock().unwrap()
+    }
+}
+
+struct TestBuildContext {
+    next_id: usize,
+}
+
+impl DeviceBuildContext for TestBuildContext {
+    fn alloc_device_id(&mut self) -> DeviceId {
+        let id = DeviceId::new(self.next_id);
+        self.next_id += 1;
+        id
+    }
+}
+
+struct MultiCounterFactory;
+
+impl DeviceFactory for MultiCounterFactory {
+    fn ty(&self) -> EmulatedDeviceType {
+        EmulatedDeviceType::GPPTRedistributor
+    }
+
+    fn build(
+        &self,
+        ctx: &mut dyn DeviceBuildContext,
+        config: &EmulatedDeviceConfig,
+    ) -> DeviceResult<Vec<Rc<dyn DeviceOps>>> {
+        let count = config.cfg_list.first().copied().unwrap_or(1);
+        let stride = config.cfg_list.get(1).copied().unwrap_or(config.length);
+        let mut devices: Vec<Rc<dyn DeviceOps>> = Vec::new();
+
+        for index in 0..count {
+            let id = ctx.alloc_device_id();
+            let base = config.base_gpa + index * stride;
+            devices.push(Rc::new(NativeMmioCounter::new(
+                id.raw(),
+                base,
+                config.length,
+                index,
+            )));
+        }
+
+        Ok(devices)
+    }
+}
+
+impl DeviceOps for NativeMmioCounter {
+    fn id(&self) -> DeviceId {
+        self.id
+    }
+
+    fn name(&self) -> &str {
+        self.name
+    }
+
+    fn resources(&self) -> &[Resource] {
+        &self.resources
+    }
+
+    fn capabilities(&self) -> DeviceCapabilities {
+        DeviceCapabilities::none()
+    }
+
+    fn access(&self, access: BusAccess) -> Result<BusResponse, DeviceError> {
+        let addr = match access.addr {
+            BusAddress::Mmio(addr) if access.kind == BusKind::Mmio => addr,
+            _ => {
+                return Err(DeviceError::BusAddressMismatch {
+                    kind: BusKind::Mmio,
+                    address: access.addr,
+                });
+            }
+        };
+
+        if !self.range.contains(addr) {
+            return Err(DeviceError::AddressOutOfRange {
+                kind: BusKind::Mmio,
+                address: access.addr,
+            });
+        }
+
+        match access.op {
+            BusOp::Read => Ok(BusResponse::Read {
+                value: self.value(),
+            }),
+            BusOp::Write { value } => {
+                *self.value.lock().unwrap() = value;
+                Ok(BusResponse::Write)
+            }
         }
     }
 }
@@ -511,6 +630,63 @@ fn mock_device(id: usize, resources: Vec<Resource>) -> Rc<AbstractMockDevice> {
 }
 
 #[test]
+fn device_factory_catalog_builds_multiple_native_devices() {
+    let factory = MultiCounterFactory;
+    let factories: [&dyn DeviceFactory; 1] = [&factory];
+    let catalog = DeviceFactoryCatalog::new(&factories);
+
+    assert!(
+        catalog
+            .find(EmulatedDeviceType::GPPTRedistributor)
+            .is_some()
+    );
+    assert!(catalog.find(EmulatedDeviceType::GPPTITS).is_none());
+
+    let config = EmulatedDeviceConfig {
+        name: "counter".into(),
+        base_gpa: 0xb000_0000,
+        length: 0x1000,
+        irq_id: 0,
+        emu_type: EmulatedDeviceType::GPPTRedistributor,
+        cfg_list: vec![2, 0x1000],
+    };
+    let mut ctx = TestBuildContext { next_id: 200 };
+    let devices = catalog
+        .find(config.emu_type)
+        .unwrap()
+        .build(&mut ctx, &config)
+        .unwrap();
+
+    assert_eq!(devices.len(), 2);
+
+    let mut registry = DeviceRegistry::new();
+    for device in devices {
+        registry.register_device(device).unwrap();
+    }
+    assert_eq!(registry.device_count(), 2);
+    assert_eq!(registry.mmio_route_count(), 2);
+
+    assert_eq!(
+        registry
+            .dispatch(BusAccess::mmio_read(
+                GuestPhysAddr::from(0xb000_0000),
+                AccessWidth::Dword,
+            ))
+            .unwrap(),
+        BusResponse::Read { value: 0 }
+    );
+    assert_eq!(
+        registry
+            .dispatch(BusAccess::mmio_read(
+                GuestPhysAddr::from(0xb000_1000),
+                AccessWidth::Dword,
+            ))
+            .unwrap(),
+        BusResponse::Read { value: 1 }
+    );
+}
+
+#[test]
 fn registry_registers_routes_and_dispatches_mock_devices() {
     let mut registry = DeviceRegistry::new();
     registry
@@ -574,6 +750,83 @@ fn registry_registers_routes_and_dispatches_mock_devices() {
         ))
         .unwrap();
     assert_eq!(sysreg, BusResponse::Read { value: 0x55aa });
+}
+
+#[test]
+fn registry_dispatches_native_mmio_counter_without_legacy_adapter() {
+    let mut registry = DeviceRegistry::new();
+    let counter = Rc::new(NativeMmioCounter::new(50, 0x4100_0000, 0x1000, 0x11));
+
+    assert_eq!(
+        registry.register_device(counter.clone()).unwrap(),
+        DeviceId::new(50)
+    );
+    assert_eq!(registry.device_count(), 1);
+    assert_eq!(registry.mmio_route_count(), 1);
+    assert_eq!(registry.pio_route_count(), 0);
+    assert_eq!(registry.sysreg_route_count(), 0);
+
+    assert_eq!(
+        registry
+            .dispatch(BusAccess::mmio_read(
+                GuestPhysAddr::from(0x4100_0008),
+                AccessWidth::Dword,
+            ))
+            .unwrap(),
+        BusResponse::Read { value: 0x11 }
+    );
+
+    assert_eq!(
+        registry
+            .dispatch(BusAccess::mmio_write(
+                GuestPhysAddr::from(0x4100_0008),
+                AccessWidth::Dword,
+                0x22,
+            ))
+            .unwrap(),
+        BusResponse::Write
+    );
+    assert_eq!(counter.value(), 0x22);
+
+    assert_eq!(
+        registry
+            .dispatch(BusAccess::mmio_read(
+                GuestPhysAddr::from(0x4100_0008),
+                AccessWidth::Dword,
+            ))
+            .unwrap(),
+        BusResponse::Read { value: 0x22 }
+    );
+
+    let out_of_range = counter
+        .access(BusAccess::mmio_read(
+            GuestPhysAddr::from(0x4100_2000),
+            AccessWidth::Dword,
+        ))
+        .unwrap_err();
+    assert!(matches!(
+        out_of_range,
+        DeviceError::AddressOutOfRange { .. }
+    ));
+
+    let mismatch = counter
+        .access(BusAccess::pio_read(Port::new(0x80), AccessWidth::Byte))
+        .unwrap_err();
+    assert!(matches!(mismatch, DeviceError::BusAddressMismatch { .. }));
+
+    let duplicate = Rc::new(NativeMmioCounter::new(50, 0x4100_2000, 0x1000, 0));
+    let err = registry.register_device(duplicate).unwrap_err();
+    assert!(matches!(err, DeviceError::DuplicateDeviceId { id } if id == DeviceId::new(50)));
+
+    let overlapping = Rc::new(NativeMmioCounter::new(51, 0x4100_0800, 0x1000, 0));
+    let err = registry.register_device(overlapping).unwrap_err();
+    assert!(matches!(err, DeviceError::ResourceConflict { .. }));
+
+    let adjacent = Rc::new(NativeMmioCounter::new(52, 0x4100_1000, 0x1000, 0));
+    assert_eq!(
+        registry.register_device(adjacent).unwrap(),
+        DeviceId::new(52)
+    );
 }
 
 #[test]
@@ -819,4 +1072,71 @@ fn ax_vm_devices_dispatch_bus_access_uses_new_registry_without_breaking_old_path
         ))
         .unwrap();
     assert_eq!(sysreg.get_last_write(), Some((0x501, 0x66)));
+}
+
+#[test]
+fn ax_vm_devices_registers_native_device_without_old_vec_membership() {
+    let config = AxVmDeviceConfig::new(vec![]);
+    let mut devices = AxVmDevices::new(config);
+    let counter = Rc::new(NativeMmioCounter::new(100, 0xa000_0000, 0x1000, 0x5));
+
+    assert_eq!(devices.iter_mmio_dev().count(), 0);
+    assert_eq!(
+        devices.register_device(counter.clone()).unwrap(),
+        DeviceId::new(100)
+    );
+    assert_eq!(devices.iter_mmio_dev().count(), 0);
+
+    assert_eq!(
+        devices
+            .dispatch_bus_access(BusAccess::mmio_read(
+                GuestPhysAddr::from(0xa000_0000),
+                AccessWidth::Dword,
+            ))
+            .unwrap(),
+        BusResponse::Read { value: 0x5 }
+    );
+
+    devices
+        .dispatch_bus_access(BusAccess::mmio_write(
+            GuestPhysAddr::from(0xa000_0004),
+            AccessWidth::Dword,
+            0x6,
+        ))
+        .unwrap();
+    assert_eq!(counter.value(), 0x6);
+
+    let duplicate = Rc::new(NativeMmioCounter::new(100, 0xa000_2000, 0x1000, 0));
+    let err = devices.register_device(duplicate).unwrap_err();
+    assert!(matches!(err, DeviceError::DuplicateDeviceId { id } if id == DeviceId::new(100)));
+
+    let overlapping = Rc::new(NativeMmioCounter::new(101, 0xa000_0800, 0x1000, 0));
+    let err = devices.register_device(overlapping).unwrap_err();
+    assert!(matches!(err, DeviceError::ResourceConflict { .. }));
+
+    let legacy = Arc::new(MockMmioDevice::new(
+        "legacy-after-native",
+        0xa000_2000,
+        0x1000,
+    ));
+    devices.add_mmio_dev(legacy);
+    assert_eq!(devices.iter_mmio_dev().count(), 1);
+    assert_eq!(
+        devices
+            .dispatch_bus_access(BusAccess::mmio_read(
+                GuestPhysAddr::from(0xa000_2000),
+                AccessWidth::Dword,
+            ))
+            .unwrap(),
+        BusResponse::Read { value: 0xDEAD_BEEF }
+    );
+    assert_eq!(
+        devices
+            .dispatch_bus_access(BusAccess::mmio_read(
+                GuestPhysAddr::from(0xa000_0000),
+                AccessWidth::Dword,
+            ))
+            .unwrap(),
+        BusResponse::Read { value: 0x6 }
+    );
 }

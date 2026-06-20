@@ -16,14 +16,11 @@
 
 use alloc::{rc::Rc, vec::Vec};
 
-use axdevice_base::{DeviceAddrRange, PortRange, SysRegAddrRange};
-use axvm_types::GuestPhysAddrRange;
-
-use crate::{
-    bus::{BusAccess, BusAddress, BusResponse},
-    model::{DeviceError, DeviceId, DeviceOps, DeviceResult},
-    resource::Resource,
+use axdevice_base::{
+    BusAccess, BusAddress, BusResponse, DeviceAddrRange, DeviceError, DeviceId, DeviceOps,
+    DeviceResult, PortRange, Resource, SysRegAddrRange,
 };
+use axvm_types::GuestPhysAddrRange;
 
 /// A route entry for MMIO accesses.
 type MmioRoute = (GuestPhysAddrRange, DeviceId);

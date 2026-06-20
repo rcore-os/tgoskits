@@ -12,13 +12,18 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use alloc::{format, rc::Rc, vec, vec::Vec};
 use core::{cell::UnsafeCell, ptr};
 
+use ax_errno::ax_err_type;
 use ax_kspin::SpinNoIrq as Mutex;
 use ax_memory_addr::PhysAddr;
-use axdevice_base::{AccessWidth, BaseDeviceOps};
-use axvm_types::{GuestPhysAddr, GuestPhysAddrRange, HostPhysAddr};
-use log::{debug, trace};
+use axdevice_base::{
+    AccessWidth, BusAddress, BusKind, BusOp, BusResponse, DeviceBuildContext, DeviceCapabilities,
+    DeviceError, DeviceFactory, DeviceMeta, DeviceOps, DeviceResult, EmuDeviceType, Resource,
+};
+use axvm_types::{EmulatedDeviceConfig, GuestPhysAddr, GuestPhysAddrRange, HostPhysAddr};
+use log::{debug, info, trace};
 use spin::Once;
 
 use super::{
@@ -30,6 +35,12 @@ use crate::host;
 /// Default size per GICR region.
 pub const DEFAULT_SIZE_PER_GICR: usize = 0x20000; // 128K: 64K for SGI/PPI, then 64K for LPI
 
+fn mmio_resources(addr: GuestPhysAddr, size: usize) -> Vec<Resource> {
+    vec![Resource::Mmio(GuestPhysAddrRange::from_start_size(
+        addr, size,
+    ))]
+}
+
 /// Virtual GICR registers.
 pub struct VGicRRegs {
     /// LPI configuration table base address.
@@ -38,6 +49,8 @@ pub struct VGicRRegs {
 
 /// Virtual GICv3 Redistributor.
 pub struct VGicR {
+    meta: DeviceMeta,
+
     /// The address of the VGicR in the guest physical address space.
     pub addr: GuestPhysAddr,
     /// The size of the VGicR in bytes.
@@ -64,12 +77,13 @@ impl VGicR {
         unsafe { &mut *self.regs.get() }
     }
 
-    /// Creates a new VGicR instance.
-    pub fn new(addr: GuestPhysAddr, size: Option<usize>, cpu_id: usize) -> Self {
+    /// Creates a new VGicR instance with native device metadata.
+    pub fn new(meta: DeviceMeta, addr: GuestPhysAddr, size: Option<usize>, cpu_id: usize) -> Self {
         let size = size.unwrap_or(DEFAULT_SIZE_PER_GICR);
         let host_gicr_base_this_cpu = crate::api_reexp::get_host_gicr_base() + cpu_id * size;
 
         Self {
+            meta,
             addr,
             size,
             cpu_id,
@@ -77,22 +91,12 @@ impl VGicR {
             regs: UnsafeCell::new(VGicRRegs { propbaser: 0 }),
         }
     }
-}
-
-impl BaseDeviceOps<GuestPhysAddrRange> for VGicR {
-    fn emu_type(&self) -> axdevice_base::EmuDeviceType {
-        axdevice_base::EmuDeviceType::GPPTRedistributor
-    }
 
     fn address_range(&self) -> GuestPhysAddrRange {
         GuestPhysAddrRange::from_start_size(self.addr, self.size)
     }
 
-    fn handle_read(
-        &self,
-        addr: <GuestPhysAddrRange as axdevice_base::DeviceAddrRange>::Addr,
-        width: AccessWidth,
-    ) -> ax_errno::AxResult<usize> {
+    fn handle_read(&self, addr: GuestPhysAddr, width: AccessWidth) -> ax_errno::AxResult<usize> {
         let gicr_base = self.host_gicr_base_this_cpu;
         let reg = addr - self.addr;
 
@@ -158,7 +162,7 @@ impl BaseDeviceOps<GuestPhysAddrRange> for VGicR {
 
     fn handle_write(
         &self,
-        addr: <GuestPhysAddrRange as axdevice_base::DeviceAddrRange>::Addr,
+        addr: GuestPhysAddr,
         width: AccessWidth,
         value: usize,
     ) -> ax_errno::AxResult<()> {
@@ -218,6 +222,120 @@ impl BaseDeviceOps<GuestPhysAddrRange> for VGicR {
                 todo!("vgicr write unimplemented for reg {:#x}", reg);
             }
         }
+    }
+}
+
+impl DeviceOps for VGicR {
+    fn id(&self) -> axdevice_base::DeviceId {
+        self.meta.id()
+    }
+
+    fn name(&self) -> &str {
+        self.meta.name()
+    }
+
+    fn resources(&self) -> &[Resource] {
+        self.meta.resources()
+    }
+
+    fn capabilities(&self) -> DeviceCapabilities {
+        self.meta.capabilities()
+    }
+
+    fn access(&self, access: axdevice_base::BusAccess) -> DeviceResult<BusResponse> {
+        if access.kind != BusKind::Mmio {
+            return Err(DeviceError::BusAddressMismatch {
+                kind: BusKind::Mmio,
+                address: access.addr,
+            });
+        }
+
+        let BusAddress::Mmio(addr) = access.addr else {
+            return Err(DeviceError::BusAddressMismatch {
+                kind: BusKind::Mmio,
+                address: access.addr,
+            });
+        };
+
+        if !self.address_range().contains(addr) {
+            return Err(DeviceError::AddressOutOfRange {
+                kind: BusKind::Mmio,
+                address: access.addr,
+            });
+        }
+
+        match access.op {
+            BusOp::Read => self
+                .handle_read(addr, access.width)
+                .map(|value| BusResponse::Read { value })
+                .map_err(DeviceError::from),
+            BusOp::Write { value } => self
+                .handle_write(addr, access.width, value)
+                .map(|()| BusResponse::Write)
+                .map_err(DeviceError::from),
+        }
+    }
+}
+
+/// Factory for ARM GIC partial passthrough redistributors.
+pub struct GpptRedistributorFactory;
+
+impl DeviceFactory for GpptRedistributorFactory {
+    fn ty(&self) -> EmuDeviceType {
+        EmuDeviceType::GPPTRedistributor
+    }
+
+    fn build(
+        &self,
+        ctx: &mut dyn DeviceBuildContext,
+        config: &EmulatedDeviceConfig,
+    ) -> DeviceResult<Vec<Rc<dyn DeviceOps>>> {
+        const ARG_ERR_MSG: &str = "expect 3 args for gppt redistributor (cpu_num, stride, pcpu_id)";
+
+        let cpu_num = config
+            .cfg_list
+            .first()
+            .copied()
+            .ok_or_else(|| DeviceError::from(ax_err_type!(InvalidInput, ARG_ERR_MSG)))?;
+        let stride = config
+            .cfg_list
+            .get(1)
+            .copied()
+            .ok_or_else(|| DeviceError::from(ax_err_type!(InvalidInput, ARG_ERR_MSG)))?;
+        let pcpu_id = config
+            .cfg_list
+            .get(2)
+            .copied()
+            .ok_or_else(|| DeviceError::from(ax_err_type!(InvalidInput, ARG_ERR_MSG)))?;
+
+        let mut devices: Vec<Rc<dyn DeviceOps>> = Vec::new();
+        for i in 0..cpu_num {
+            let addr = GuestPhysAddr::from(config.base_gpa + i * stride);
+            let size = config.length;
+            let name = if config.name.is_empty() {
+                format!("gppt-redistributor-{i}")
+            } else {
+                format!("{}-{i}", config.name)
+            };
+            let meta = DeviceMeta::new(
+                ctx.alloc_device_id(),
+                name,
+                mmio_resources(addr, size),
+                DeviceCapabilities::none(),
+            );
+            let device: Rc<dyn DeviceOps> =
+                Rc::new(VGicR::new(meta, addr, Some(size), pcpu_id + i));
+            devices.push(device);
+
+            info!(
+                "GPPT Redistributor factory built native VGicR for vCPU {i} with base GPA {:#x} \
+                 and length {:#x}",
+                addr.as_usize(),
+                size
+            );
+        }
+
+        Ok(devices)
     }
 }
 

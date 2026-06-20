@@ -17,7 +17,7 @@ use core::ops::Range;
 
 #[cfg(target_arch = "aarch64")]
 use arm_vgic::Vgic;
-use ax_errno::{AxResult, ax_err};
+use ax_errno::{AxError, AxResult, ax_err, ax_err_type};
 use ax_kspin::SpinNoIrq as Mutex;
 #[cfg(target_arch = "aarch64")]
 use ax_memory_addr::PhysAddr;
@@ -33,8 +33,9 @@ use riscv_vplic::VPlicGlobal;
 use x86_vlapic::{EmulatedIoApic, EmulatedPit, EmulatedSerialPort, IoApicInterrupt};
 
 use crate::{
-    AxVmDeviceConfig, BusAccess, BusResponse, DeviceCapabilities, DeviceId, DeviceRegistry,
-    DeviceResult, LegacyDeviceAdapter, Resource, range_alloc::RangeAllocator,
+    AxVmDeviceConfig, BusAccess, BusResponse, DeviceBuildContext, DeviceCapabilities, DeviceError,
+    DeviceId, DeviceOps, DeviceRegistry, DeviceResult, LegacyDeviceAdapter, Resource,
+    range_alloc::RangeAllocator,
 };
 
 /// A set of emulated device types that can be accessed by a specific address range type.
@@ -108,30 +109,101 @@ pub struct AxVmDevices {
     ivc_channel: Option<Mutex<RangeAllocator>>,
 }
 
-#[inline]
-fn log_device_io(
-    addr_type: &'static str,
-    addr: impl core::fmt::LowerHex,
-    addr_range: impl core::fmt::LowerHex,
-    read: bool,
-    width: AccessWidth,
-) {
-    let rw = if read { "read" } else { "write" };
-    trace!("emu_device {rw}: {addr_type} {addr:#x} in range {addr_range:#x} with width {width:?}")
+fn device_error_to_ax_error(error: DeviceError) -> AxError {
+    match error {
+        DeviceError::Backend(error) => error,
+        DeviceError::DeviceNotFound { .. } => {
+            ax_err_type!(NotFound, format!("device dispatch failed: {error}"))
+        }
+        DeviceError::InvalidAccessWidth { .. }
+        | DeviceError::BusAddressMismatch { .. }
+        | DeviceError::AddressOutOfRange { .. } => {
+            ax_err_type!(InvalidInput, format!("device dispatch failed: {error}"))
+        }
+        DeviceError::UnsupportedOperation => {
+            ax_err_type!(Unsupported, format!("device dispatch failed: {error}"))
+        }
+        DeviceError::ReadOnly { .. } | DeviceError::WriteOnly { .. } => {
+            ax_err_type!(PermissionDenied, format!("device dispatch failed: {error}"))
+        }
+        DeviceError::DuplicateDeviceId { .. } | DeviceError::ResourceConflict { .. } => {
+            ax_err_type!(BadState, format!("device dispatch failed: {error}"))
+        }
+    }
 }
 
-#[inline]
-fn panic_device_not_found(
-    addr_type: &'static str,
-    addr: impl core::fmt::LowerHex,
-    read: bool,
-    width: AccessWidth,
-) -> ! {
-    let rw = if read { "read" } else { "write" };
-    error!(
-        "emu_device {rw} failed: device not found for {addr_type} {addr:#x} with width {width:?}"
+fn unexpected_device_response(access: BusAccess, response: BusResponse) -> AxError {
+    ax_err_type!(
+        BadState,
+        format!("unexpected device response {response:?} for access {access:?}")
+    )
+}
+
+fn dispatch_device_read(devices: &AxVmDevices, access: BusAccess) -> AxResult<usize> {
+    trace!("emu_device read: {access:?}");
+
+    match devices
+        .dispatch_bus_access(access)
+        .map_err(device_error_to_ax_error)?
+    {
+        BusResponse::Read { value } => Ok(value),
+        response => Err(unexpected_device_response(access, response)),
+    }
+}
+
+fn dispatch_device_write(devices: &AxVmDevices, access: BusAccess) -> AxResult {
+    trace!("emu_device write: {access:?}");
+
+    match devices
+        .dispatch_bus_access(access)
+        .map_err(device_error_to_ax_error)?
+    {
+        BusResponse::Write => Ok(()),
+        response => Err(unexpected_device_response(access, response)),
+    }
+}
+
+impl DeviceBuildContext for AxVmDevices {
+    fn alloc_device_id(&mut self) -> DeviceId {
+        Self::alloc_device_id(self)
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+fn init_from_aarch64_catalog(
+    devices: &mut AxVmDevices,
+    config: &EmulatedDeviceConfig,
+) -> DeviceResult<bool> {
+    let gppt_redistributor_factory = arm_vgic::v3::vgicr::GpptRedistributorFactory;
+    let factories: [&dyn crate::DeviceFactory; 1] = [&gppt_redistributor_factory];
+    let catalog = crate::DeviceFactoryCatalog::new(&factories);
+
+    let Some(factory) = catalog.find(config.emu_type) else {
+        return Ok(false);
+    };
+
+    info!(
+        "aarch64 device factory matched: type={:?}, name={}, base_gpa={:#x}, length={:#x}",
+        config.emu_type, config.name, config.base_gpa, config.length
     );
-    panic!("emu_device not found");
+
+    let built_devices = factory.build(devices, config)?;
+    let built_count = built_devices.len();
+    for device in &built_devices {
+        info!(
+            "aarch64 device factory built native device: id={:?}, name={}, resources={:?}",
+            device.id(),
+            device.name(),
+            device.resources()
+        );
+    }
+
+    devices.register_factory_devices(built_devices)?;
+    info!(
+        "aarch64 device factory registered {built_count} native device(s) for type {:?}",
+        config.emu_type
+    );
+    Ok(true)
 }
 
 /// The implemention for AxVmDevices
@@ -160,6 +232,18 @@ impl AxVmDevices {
     /// According the emu_configs to init every  specific device
     fn init(this: &mut Self, emu_configs: &Vec<EmulatedDeviceConfig>) {
         for config in emu_configs {
+            #[cfg(target_arch = "aarch64")]
+            match init_from_aarch64_catalog(this, config) {
+                Ok(true) => continue,
+                Ok(false) => {}
+                Err(err) => {
+                    panic!(
+                        "failed to initialize emulated device {} ({:?}): {err}",
+                        config.name, config.emu_type
+                    );
+                }
+            }
+
             match config.emu_type {
                 EmulatedDeviceType::InterruptController => {
                     #[cfg(target_arch = "aarch64")]
@@ -175,50 +259,10 @@ impl AxVmDevices {
                     }
                 }
                 EmulatedDeviceType::GPPTRedistributor => {
-                    #[cfg(target_arch = "aarch64")]
-                    {
-                        const GPPT_GICR_ARG_ERR_MSG: &str =
-                            "expect 3 args for gppt redistributor (cpu_num, stride, pcpu_id)";
-
-                        let cpu_num = config
-                            .cfg_list
-                            .first()
-                            .copied()
-                            .expect(GPPT_GICR_ARG_ERR_MSG);
-                        let stride = config
-                            .cfg_list
-                            .get(1)
-                            .copied()
-                            .expect(GPPT_GICR_ARG_ERR_MSG);
-                        let pcpu_id = config
-                            .cfg_list
-                            .get(2)
-                            .copied()
-                            .expect(GPPT_GICR_ARG_ERR_MSG);
-
-                        for i in 0..cpu_num {
-                            let addr = config.base_gpa + i * stride;
-                            let size = config.length;
-                            #[allow(clippy::arc_with_non_send_sync)]
-                            this.add_mmio_dev(Arc::new(arm_vgic::v3::vgicr::VGicR::new(
-                                addr.into(),
-                                Some(size),
-                                pcpu_id + i,
-                            )));
-
-                            info!(
-                                "GPPT Redistributor initialized for vCPU {i} with base GPA \
-                                 {addr:#x} and length {size:#x}"
-                            );
-                        }
-                    }
-                    #[cfg(not(target_arch = "aarch64"))]
-                    {
-                        warn!(
-                            "emu type: {} is not supported on this platform",
-                            config.emu_type
-                        );
-                    }
+                    warn!(
+                        "emu type: {} is not supported by the active device factory catalog",
+                        config.emu_type
+                    );
                 }
                 EmulatedDeviceType::GPPTDistributor => {
                     #[cfg(target_arch = "aarch64")]
@@ -447,6 +491,23 @@ impl AxVmDevices {
         }
     }
 
+    /// Registers a native device directly in the device registry.
+    ///
+    /// Unlike the legacy `add_*_dev` helpers, this does not add the device to
+    /// the old MMIO/PIO/SysReg lists. The device must declare its own bus
+    /// resources through [`DeviceOps::resources`].
+    pub fn register_device(&mut self, device: Rc<dyn DeviceOps>) -> DeviceResult<DeviceId> {
+        self.registry.register_device(device)
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    fn register_factory_devices(&mut self, devices: Vec<Rc<dyn DeviceOps>>) -> DeviceResult {
+        for device in devices {
+            self.register_device(device)?;
+        }
+        Ok(())
+    }
+
     /// Add a MMIO device to the device list.
     pub fn add_mmio_dev(&mut self, dev: Arc<dyn BaseMmioDeviceOps>) {
         let id = self.alloc_device_id();
@@ -589,12 +650,7 @@ impl AxVmDevices {
 
     /// Handle the MMIO read by GuestPhysAddr and data width, return the value of the guest want to read
     pub fn handle_mmio_read(&self, addr: GuestPhysAddr, width: AccessWidth) -> AxResult<usize> {
-        if let Some(emu_dev) = self.find_mmio_dev(addr) {
-            log_device_io("mmio", addr, emu_dev.address_range(), true, width);
-
-            return emu_dev.handle_read(addr, width);
-        }
-        panic_device_not_found("mmio", addr, true, width);
+        dispatch_device_read(self, BusAccess::mmio_read(addr, width))
     }
 
     /// Handle the MMIO write by GuestPhysAddr, data width and the value need to write, call specific device to write the value
@@ -604,22 +660,12 @@ impl AxVmDevices {
         width: AccessWidth,
         val: usize,
     ) -> AxResult {
-        if let Some(emu_dev) = self.find_mmio_dev(addr) {
-            log_device_io("mmio", addr, emu_dev.address_range(), false, width);
-
-            return emu_dev.handle_write(addr, width, val);
-        }
-        panic_device_not_found("mmio", addr, false, width);
+        dispatch_device_write(self, BusAccess::mmio_write(addr, width, val))
     }
 
     /// Handle the system register read by SysRegAddr and data width, return the value of the guest want to read
     pub fn handle_sys_reg_read(&self, addr: SysRegAddr, width: AccessWidth) -> AxResult<usize> {
-        if let Some(emu_dev) = self.find_sys_reg_dev(addr) {
-            log_device_io("sys_reg", addr.0, emu_dev.address_range(), true, width);
-
-            return emu_dev.handle_read(addr, width);
-        }
-        panic_device_not_found("sys_reg", addr, true, width);
+        dispatch_device_read(self, BusAccess::sysreg_read(addr, width))
     }
 
     /// Handle the system register write by SysRegAddr, data width and the value need to write, call specific device to write the value
@@ -629,31 +675,16 @@ impl AxVmDevices {
         width: AccessWidth,
         val: usize,
     ) -> AxResult {
-        if let Some(emu_dev) = self.find_sys_reg_dev(addr) {
-            log_device_io("sys_reg", addr.0, emu_dev.address_range(), false, width);
-
-            return emu_dev.handle_write(addr, width, val);
-        }
-        panic_device_not_found("sys_reg", addr, false, width);
+        dispatch_device_write(self, BusAccess::sysreg_write(addr, width, val))
     }
 
     /// Handle the port read by port number and data width, return the value of the guest want to read
     pub fn handle_port_read(&self, port: Port, width: AccessWidth) -> AxResult<usize> {
-        if let Some(emu_dev) = self.find_port_dev(port) {
-            log_device_io("port", port.0, emu_dev.address_range(), true, width);
-
-            return emu_dev.handle_read(port, width);
-        }
-        panic_device_not_found("port", port, true, width);
+        dispatch_device_read(self, BusAccess::pio_read(port, width))
     }
 
     /// Handle the port write by port number, data width and the value need to write, call specific device to write the value
     pub fn handle_port_write(&self, port: Port, width: AccessWidth, val: usize) -> AxResult {
-        if let Some(emu_dev) = self.find_port_dev(port) {
-            log_device_io("port", port.0, emu_dev.address_range(), false, width);
-
-            return emu_dev.handle_write(port, width, val);
-        }
-        panic_device_not_found("port", port, false, width);
+        dispatch_device_write(self, BusAccess::pio_write(port, width, val))
     }
 }

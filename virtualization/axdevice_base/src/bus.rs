@@ -14,8 +14,9 @@
 
 //! Unified bus transaction types for emulated device access.
 
-use axdevice_base::{AccessWidth, Port, SysRegAddr};
 use axvm_types::GuestPhysAddr;
+
+use crate::{AccessWidth, Port, SysRegAddr};
 
 /// The kind of guest-visible bus or register namespace used for a device access.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]

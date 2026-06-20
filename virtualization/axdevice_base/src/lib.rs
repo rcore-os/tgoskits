@@ -84,16 +84,26 @@
 
 extern crate alloc;
 
+mod bus;
 mod device;
+mod irq;
+mod model;
+mod resource;
 
 use alloc::{string::String, sync::Arc, vec::Vec};
 use core::any::Any;
 
 pub use ax_errno::AxResult;
 pub use axvm_types::{EmulatedDeviceType as EmuDeviceType, GuestPhysAddr, GuestPhysAddrRange};
+pub use bus::{BusAccess, BusAddress, BusKind, BusOp, BusResponse};
 pub use device::{
     AccessWidth, DeviceAddr, DeviceAddrRange, Port, PortRange, SysRegAddr, SysRegAddrRange,
 };
+pub use irq::{IrqLine, IrqSink, IrqTarget, MsiMessage};
+pub use model::{
+    DeviceBuildContext, DeviceError, DeviceFactory, DeviceId, DeviceMeta, DeviceOps, DeviceResult,
+};
+pub use resource::{DeviceCapabilities, PciBarKind, Resource};
 
 /// Represents the configuration of an emulated device for a virtual machine.
 ///

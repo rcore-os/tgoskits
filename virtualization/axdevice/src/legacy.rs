@@ -16,12 +16,10 @@
 
 use alloc::{string::String, sync::Arc, vec::Vec};
 
-use axdevice_base::{BaseMmioDeviceOps, BasePortDeviceOps, BaseSysRegDeviceOps};
-
-use crate::{
-    bus::{BusAccess, BusAddress, BusKind, BusOp, BusResponse},
-    model::{DeviceError, DeviceId, DeviceOps, DeviceResult},
-    resource::{DeviceCapabilities, Resource},
+use axdevice_base::{
+    BaseMmioDeviceOps, BasePortDeviceOps, BaseSysRegDeviceOps, BusAccess, BusAddress, BusKind,
+    BusOp, BusResponse, DeviceCapabilities, DeviceError, DeviceId, DeviceOps, DeviceResult,
+    Resource,
 };
 
 /// The old single-bus device object carried by a legacy adapter.

@@ -14,7 +14,7 @@
 
 //! Architecture-neutral interrupt signaling traits for emulated devices.
 
-use crate::model::DeviceError;
+use crate::DeviceError;
 
 /// A guest-visible interrupt line used by an emulated device.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]

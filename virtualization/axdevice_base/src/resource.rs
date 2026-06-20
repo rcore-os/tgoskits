@@ -14,10 +14,9 @@
 
 //! Resource and capability declarations for emulated devices.
 
-use axdevice_base::{PortRange, SysRegAddrRange};
 use axvm_types::GuestPhysAddrRange;
 
-use crate::irq::IrqLine;
+use crate::{IrqLine, PortRange, SysRegAddrRange};
 
 /// The kind of PCI BAR exposed by a device.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

@@ -14,14 +14,14 @@
 
 //! Core emulated device model traits and errors.
 
+use alloc::{rc::Rc, string::String, vec::Vec};
 use core::{any::Any, fmt};
 
 use ax_errno::AxError;
-use axdevice_base::AccessWidth;
+use axvm_types::{EmulatedDeviceConfig, EmulatedDeviceType};
 
 use crate::{
-    bus::{BusAccess, BusAddress, BusKind, BusResponse},
-    resource::{DeviceCapabilities, Resource},
+    AccessWidth, BusAccess, BusAddress, BusKind, BusResponse, DeviceCapabilities, Resource,
 };
 
 /// Unique identifier for a device instance inside one registry.
@@ -37,6 +37,52 @@ impl DeviceId {
     /// Returns the raw numeric identifier.
     pub const fn raw(self) -> usize {
         self.0
+    }
+}
+
+/// Common registry-facing metadata stored by native device implementations.
+#[derive(Debug, Clone)]
+pub struct DeviceMeta {
+    id: DeviceId,
+    name: String,
+    resources: Vec<Resource>,
+    capabilities: DeviceCapabilities,
+}
+
+impl DeviceMeta {
+    /// Creates device metadata from raw parts.
+    pub fn new(
+        id: DeviceId,
+        name: String,
+        resources: Vec<Resource>,
+        capabilities: DeviceCapabilities,
+    ) -> Self {
+        Self {
+            id,
+            name,
+            resources,
+            capabilities,
+        }
+    }
+
+    /// Returns the registry-local device identifier.
+    pub const fn id(&self) -> DeviceId {
+        self.id
+    }
+
+    /// Returns the human-readable device instance name.
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// Returns resources declared by this device.
+    pub fn resources(&self) -> &[Resource] {
+        &self.resources
+    }
+
+    /// Returns device capability flags.
+    pub const fn capabilities(&self) -> DeviceCapabilities {
+        self.capabilities
     }
 }
 
@@ -181,4 +227,23 @@ pub trait DeviceOps: Any {
     fn resume(&self) -> DeviceResult {
         Ok(())
     }
+}
+
+/// Build-time context provided to device factories.
+pub trait DeviceBuildContext {
+    /// Allocates a registry-local device identifier.
+    fn alloc_device_id(&mut self) -> DeviceId;
+}
+
+/// Factory that constructs native device model instances from VM configuration.
+pub trait DeviceFactory: Sync {
+    /// Returns the emulated device type handled by this factory.
+    fn ty(&self) -> EmulatedDeviceType;
+
+    /// Builds one or more native device instances from a VM device config.
+    fn build(
+        &self,
+        ctx: &mut dyn DeviceBuildContext,
+        config: &EmulatedDeviceConfig,
+    ) -> DeviceResult<Vec<Rc<dyn DeviceOps>>>;
 }
