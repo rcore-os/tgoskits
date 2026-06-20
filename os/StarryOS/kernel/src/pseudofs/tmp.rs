@@ -1,5 +1,12 @@
 use alloc::{borrow::ToOwned, string::String, sync::Arc, vec::Vec};
-use core::{any::Any, borrow::Borrow, cmp::Ordering, task::Context, time::Duration};
+use core::{
+    any::Any,
+    borrow::Borrow,
+    cmp::Ordering,
+    sync::atomic::{AtomicU64, Ordering as AtomicOrdering},
+    task::Context,
+    time::Duration,
+};
 
 use ax_kspin::SpinNoIrq;
 use ax_sync::Mutex;
@@ -183,12 +190,14 @@ struct DirContent {
     // SpinNoIrq guards, so this per-directory map must not use a blocking
     // mutex.
     entries: SpinNoIrq<HashMap<FileName, InodeRef>>,
+    next_cookie: AtomicU64,
 }
 
 impl Default for DirContent {
     fn default() -> Self {
         Self {
             entries: SpinNoIrq::new(HashMap::new()),
+            next_cookie: AtomicU64::new(3),
         }
     }
 }
@@ -250,11 +259,11 @@ impl Inode {
             let mut entries = dir.entries.lock_nested(dir_entries_subclass);
             entries.insert(
                 ".".into(),
-                InodeRef::new(fs.clone(), ino, NodeType::Directory),
+                InodeRef::new(fs.clone(), ino, NodeType::Directory, 1),
             );
             entries.insert(
                 "..".into(),
-                InodeRef::new(fs.clone(), parent.unwrap_or(ino), NodeType::Directory),
+                InodeRef::new(fs.clone(), parent.unwrap_or(ino), NodeType::Directory, 2),
             );
         }
         result
@@ -279,12 +288,18 @@ struct InodeRef {
     fs: Arc<MemoryFs>,
     ino: u64,
     node_type: NodeType,
+    cookie: u64,
 }
 
 impl InodeRef {
-    pub fn new(fs: Arc<MemoryFs>, ino: u64, node_type: NodeType) -> Self {
+    pub fn new(fs: Arc<MemoryFs>, ino: u64, node_type: NodeType, cookie: u64) -> Self {
         fs.get(ino).metadata.lock().nlink += 1;
-        Self { fs, ino, node_type }
+        Self {
+            fs,
+            ino,
+            node_type,
+            cookie,
+        }
     }
 
     fn get(&self) -> Arc<Inode> {
@@ -452,10 +467,12 @@ impl Pollable for MemoryNode {
 impl DirNodeOps for MemoryNode {
     fn read_dir(&self, offset: u64, sink: &mut dyn DirEntrySink) -> VfsResult<usize> {
         let dir = self.inode.as_dir()?;
-        let offset = usize::try_from(offset).unwrap_or(usize::MAX);
         let entries = loop {
             let entries = dir.entries.lock();
-            let count = entries.len().saturating_sub(offset);
+            let count = entries
+                .values()
+                .filter(|entry| offset == 0 || entry.cookie >= offset)
+                .count();
             drop(entries);
 
             let mut snapshot = Vec::new();
@@ -464,19 +481,27 @@ impl DirNodeOps for MemoryNode {
                 .map_err(|_| VfsError::NoMemory)?;
 
             let entries = dir.entries.lock();
-            if entries.len().saturating_sub(offset) > snapshot.capacity() {
+            let live_count = entries
+                .values()
+                .filter(|entry| offset == 0 || entry.cookie >= offset)
+                .count();
+            if live_count > snapshot.capacity() {
                 continue;
             }
-            for (i, (name, entry)) in entries.iter().enumerate().skip(offset) {
+            for (name, entry) in entries.iter() {
+                if offset != 0 && entry.cookie < offset {
+                    continue;
+                }
                 let (ino, node_type) = entry.metadata_for_readdir();
-                snapshot.push((name.0.clone(), ino, node_type, i as u64 + 1));
+                snapshot.push((entry.cookie, name.0.clone(), ino, node_type));
             }
+            snapshot.sort_by_key(|(cookie, ..)| *cookie);
             break snapshot;
         };
 
         let mut count = 0;
-        for (name, ino, node_type, next_offset) in entries {
-            if !sink.accept(name.as_ref(), ino, node_type, next_offset) {
+        for (cookie, name, ino, node_type) in entries {
+            if !sink.accept(name.as_ref(), ino, node_type, cookie + 1) {
                 return Ok(count);
             }
             count += 1;
@@ -517,9 +542,10 @@ impl DirNodeOps for MemoryNode {
             gid,
             TMPFS_NESTED_DIR_ENTRIES_SUBCLASS,
         );
+        let cookie = dir.next_cookie.fetch_add(1, AtomicOrdering::Relaxed);
         entries.insert(
             name.into(),
-            InodeRef::new(self.fs.clone(), inode.ino, node_type),
+            InodeRef::new(self.fs.clone(), inode.ino, node_type, cookie),
         );
         self.new_entry(name, node_type, inode)
     }
@@ -535,9 +561,10 @@ impl DirNodeOps for MemoryNode {
         }
         let inode = target.inode.clone();
         let node_type = inode.metadata.lock().node_type;
+        let cookie = dir.next_cookie.fetch_add(1, AtomicOrdering::Relaxed);
         entries.insert(
             name.into(),
-            InodeRef::new(self.fs.clone(), inode.ino, node_type),
+            InodeRef::new(self.fs.clone(), inode.ino, node_type, cookie),
         );
         self.new_entry(name, node_type, inode)
     }
@@ -553,7 +580,7 @@ impl DirNodeOps for MemoryNode {
             let inode = entry.get();
             match (&inode.content, is_dir) {
                 (NodeContent::Dir(_), false) => return Err(VfsError::IsADirectory),
-                (NodeContent::Dir(DirContent { entries }), true)
+                (NodeContent::Dir(DirContent { entries, .. }), true)
                     if entries.lock_nested(TMPFS_NESTED_DIR_ENTRIES_SUBCLASS).len() > 2 =>
                 {
                     return Err(VfsError::DirectoryNotEmpty);
@@ -585,10 +612,19 @@ impl DirNodeOps for MemoryNode {
             let mut entries = self.inode.as_dir()?.entries.lock();
             entries.remove(src_name).ok_or(VfsError::NotFound)?
         };
+        let dst_dir = dst_node.inode.as_dir()?;
+        let cookie = dst_dir.next_cookie.fetch_add(1, AtomicOrdering::Relaxed);
+        let moved_entry = InodeRef::new(
+            src_entry.fs.clone(),
+            src_entry.ino,
+            src_entry.node_type,
+            cookie,
+        );
         let overwritten = {
-            let mut entries = dst_node.inode.as_dir()?.entries.lock();
-            entries.insert(dst_name.into(), src_entry)
+            let mut entries = dst_dir.entries.lock();
+            entries.insert(dst_name.into(), moved_entry)
         };
+        drop(src_entry);
         if let Some(entry) = overwritten {
             Self::clear_dir_entries(&entry.get());
             drop(entry);
