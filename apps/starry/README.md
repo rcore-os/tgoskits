@@ -159,11 +159,13 @@ packages in a staging root during prebuild, injects runtime artifacts to the
 app overlay, then runs nginx smoke tests inside StarryOS.
 
 ```bash
-cargo xtask starry app run -t nginx --arch x86_64
+cargo xtask starry app qemu -t nginx --arch x86_64
 ```
 
-`apps/starry/nginx` maintains four directories: `smoke`, `phase`, `stress`, and
-`debug`. Currently only smoke is connected as nginx test entry in tgoskits workflows.
+`apps/starry/nginx` keeps the CI-discovered smoke QEMU configs at the app root,
+and keeps manual `all`/`phase`/`debug` QEMU configs under `qemu/`. The guest
+entrypoint is `runner/nginx-runner.sh`; currently only smoke is connected as the
+nginx test entry in tgoskits workflows.
 
 ## Orange Pi 5 Plus UVC
 

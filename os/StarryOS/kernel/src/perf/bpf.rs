@@ -10,12 +10,17 @@
 //! share one buffer.
 
 use alloc::sync::{Arc, Weak};
-use core::{any::Any, fmt::Debug};
+use core::{
+    any::Any,
+    fmt::Debug,
+    sync::atomic::{AtomicBool, Ordering},
+};
 
 use ax_alloc::GlobalPage;
 use ax_errno::{AxError, AxResult};
 use ax_hal::mem::virt_to_phys;
 use ax_memory_addr::{PAGE_SIZE_4K, PhysAddr};
+use ax_task::IrqNotify;
 use axpoll::{IoEvents, PollSet, Pollable};
 use kbpf_basic::{
     linux_bpf::perf_event_sample_format,
@@ -25,6 +30,8 @@ use kprobe::PtRegs;
 use rbpf::EbpfVmRaw;
 
 use super::PerfEventOps;
+#[cfg(target_arch = "x86_64")]
+use crate::perf::BPFJitMemory;
 use crate::{
     ebpf::{BPF_HELPER_FUN_SET, error::BpfResultExt, prog::BpfProg},
     file::FileLike,
@@ -57,7 +64,9 @@ use crate::{
 /// pointer left after the pages free is harmless.
 pub struct BpfPerfEventWrapper {
     inner: BpfPerfEvent,
-    poll_ready: PollSet,
+    poll_ready: Arc<PollSet>,
+    poll_notify: Arc<IrqNotify>,
+    poll_alive: Arc<AtomicBool>,
     /// Weak handle to the contiguous pages backing the ringbuf. The strong
     /// ref(s) live in the user VMA(s); `strong_count() > 0` means a live
     /// mapping still exists. See the type-level docs for the ownership
@@ -68,9 +77,15 @@ pub struct BpfPerfEventWrapper {
 impl BpfPerfEventWrapper {
     /// Construct the wrapper around a freshly-built `BpfPerfEvent`.
     pub fn new(inner: BpfPerfEvent) -> Self {
+        let poll_ready = Arc::new(PollSet::new());
+        let poll_notify = Arc::new(IrqNotify::new());
+        let poll_alive = Arc::new(AtomicBool::new(true));
+        start_bpf_perf_notify_worker(poll_ready.clone(), poll_notify.clone(), poll_alive.clone());
         Self {
             inner,
-            poll_ready: PollSet::new(),
+            poll_ready,
+            poll_notify,
+            poll_alive,
             pages: None,
         }
     }
@@ -94,10 +109,35 @@ impl BpfPerfEventWrapper {
         }
         self.inner.write_event(data).into_ax_result()?;
         if self.inner.enabled() {
-            self.poll_ready.wake();
+            self.poll_notify.notify_irq();
         }
         Ok(())
     }
+}
+
+impl Drop for BpfPerfEventWrapper {
+    fn drop(&mut self) {
+        self.poll_alive.store(false, Ordering::Release);
+        self.poll_notify.notify();
+    }
+}
+
+fn start_bpf_perf_notify_worker(
+    poll_ready: Arc<PollSet>,
+    poll_notify: Arc<IrqNotify>,
+    poll_alive: Arc<AtomicBool>,
+) {
+    ax_task::spawn_with_name(
+        move || loop {
+            poll_notify.wait();
+            if !poll_alive.load(Ordering::Acquire) {
+                break;
+            }
+            // Ring data is written before the deferred poll wake.
+            unsafe { poll_ready.wake(IoEvents::IN) };
+        },
+        "bpf-perf-notify".into(),
+    );
 }
 
 impl Debug for BpfPerfEventWrapper {
@@ -172,7 +212,8 @@ impl Pollable for BpfPerfEventWrapper {
 
     fn register(&self, context: &mut core::task::Context<'_>, events: axpoll::IoEvents) {
         if events.contains(IoEvents::IN) {
-            self.poll_ready.register(context.waker());
+            // Registration happens from file poll task context.
+            unsafe { self.poll_ready.register(context.waker(), IoEvents::IN) };
         }
     }
 }
@@ -191,15 +232,16 @@ pub fn perf_event_open_bpf(args: PerfProbeArgs) -> BpfPerfEventWrapper {
 /// A loaded BPF program bundled with an `rbpf` interpreter that borrows
 /// into the program's instruction buffer.
 ///
-/// Soundness: the interpreter holds a `'static`-typed slice into the
-/// instruction bytes owned by `_prog`; the only thing keeping those bytes
-/// alive is the [`Arc<BpfProg>`] in `_prog`. Field order in this struct is
-/// therefore load-bearing — `vm` is declared first, `_prog` last, so the
-/// struct's drop glue runs `vm`'s destructor before `_prog`'s, and the
-/// instruction buffer is freed strictly after the borrower is gone. Do not
-/// reorder the fields.
+/// Soundness: the interpreter holds `'static`-typed borrows into resources
+/// owned by this struct. Field order is therefore load-bearing: `vm` must be
+/// declared first so its destructor runs before the JIT memory and program
+/// instruction buffer are released. Do not reorder the fields.
 pub struct OwnedEbpfVm {
     vm: EbpfVmRaw<'static>,
+    #[cfg(target_arch = "x86_64")]
+    /// MUST be declared after `vm` (drop order). Keeps the JIT executable
+    /// memory alive for the entire lifetime of `vm`.
+    _jit_exec_memory: BPFJitMemory,
     /// MUST be declared after `vm` (drop order). Keeps the instruction
     /// buffer alive for the entire lifetime of `vm`.
     _prog: Arc<BpfProg>,
@@ -238,7 +280,35 @@ impl OwnedEbpfVm {
         // map / stack ranges once kbpf-basic exposes the per-program bounds.
         vm.register_allowed_memory(0..u64::MAX);
 
-        Ok(Self { vm, _prog: prog })
+        #[cfg(target_arch = "x86_64")]
+        {
+            // TODO: calculate a more precise size.
+            let mut jit_exec_memory = BPFJitMemory::new(4)?;
+            // SAFETY: `jit_exec_memory` is moved into the returned
+            // `OwnedEbpfVm` after `vm`; field drop order guarantees `vm` is
+            // destroyed before the executable mapping is unmapped.
+            let jit_slice = unsafe { jit_exec_memory.as_static_mut_slice() };
+            vm.set_jit_exec_memory(jit_slice).map_err(|e| {
+                error!("rbpf::EbpfVmRaw::set_jit_exec_memory failed: {e:?}");
+                AxError::InvalidInput
+            })?;
+
+            vm.jit_compile().map_err(|e| {
+                error!("rbpf::EbpfVmRaw::jit_compile failed: {e:?}");
+                AxError::InvalidInput
+            })?;
+
+            Ok(Self {
+                vm,
+                _jit_exec_memory: jit_exec_memory,
+                _prog: prog,
+            })
+        }
+
+        #[cfg(not(target_arch = "x86_64"))]
+        {
+            Ok(Self { vm, _prog: prog })
+        }
     }
 
     /// Execute the wrapped BPF program with the supplied context bytes.
@@ -248,7 +318,14 @@ impl OwnedEbpfVm {
     /// exterior mutability — and therefore no lock — is required around an
     /// `OwnedEbpfVm`.
     pub fn execute_program(&self, ctx: &mut [u8]) -> Result<u64, rbpf::lib::Error> {
-        self.vm.execute_program(ctx)
+        #[cfg(not(target_arch = "x86_64"))]
+        {
+            self.vm.execute_program(ctx)
+        }
+        #[cfg(target_arch = "x86_64")]
+        {
+            unsafe { self.vm.execute_program_jit(ctx) }
+        }
     }
 
     /// Execute the wrapped BPF program with a `PtRegs` as the single-pointer
@@ -263,7 +340,7 @@ impl OwnedEbpfVm {
                 core::mem::size_of::<PtRegs>(),
             )
         };
-        self.vm.execute_program(probe_context)
+        self.execute_program(probe_context)
     }
 }
 

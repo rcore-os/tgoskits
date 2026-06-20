@@ -14,7 +14,7 @@ use core::{
 };
 
 use ax_errno::{AxError, AxResult, LinuxError};
-use ax_fs::FileFlags;
+use ax_fs_ng::vfs::FileFlags;
 use ax_memory_addr::{MemoryAddr, VirtAddr, VirtAddrRange, align_up_4k};
 use ax_runtime::hal::{
     paging::{MappingFlags, PageSize},
@@ -806,7 +806,12 @@ fn poll_result(
             return core::task::Poll::Ready(Ok(ready));
         }
         file.register(cx, interested);
-        context.completion_wakers.register(cx.waker());
+        // Registration happens from AIO worker/wait task context.
+        unsafe {
+            context
+                .completion_wakers
+                .register(cx.waker(), IoEvents::IN | IoEvents::ERR | IoEvents::HUP)
+        };
         // Re-check after registration to avoid losing a destroy or readiness wake.
         if context.destroying.load(Ordering::Acquire) {
             return core::task::Poll::Ready(Err(AxError::Interrupted));
@@ -930,7 +935,12 @@ fn enqueue_completion(context: &AioContext, event: IoEvent) -> AxResult<()> {
         ring_ready_count(context.ring_events, head, next_tail),
         Ordering::Release,
     );
-    context.completion_wakers.wake();
+    // Completion ring tail is published before waking completion waiters.
+    unsafe {
+        context
+            .completion_wakers
+            .wake(IoEvents::IN | IoEvents::ERR | IoEvents::HUP)
+    };
     Ok(())
 }
 
@@ -962,7 +972,12 @@ fn finish_request(context: &AioContext, request: &AioRequest, event: IoEvent) {
         );
     }
     context.inflight_wq.notify_all(true);
-    context.completion_wakers.wake();
+    // Request accounting/completion state is published before waking waiters.
+    unsafe {
+        context
+            .completion_wakers
+            .wake(IoEvents::IN | IoEvents::ERR | IoEvents::HUP)
+    };
 }
 
 // Pop the next queued request and mark it as running.
@@ -1071,7 +1086,12 @@ fn wait_for_completion(
         {
             core::task::Poll::Ready(())
         } else {
-            context.completion_wakers.register(cx.waker());
+            // Registration happens from AIO wait task context.
+            unsafe {
+                context
+                    .completion_wakers
+                    .register(cx.waker(), IoEvents::IN | IoEvents::ERR | IoEvents::HUP)
+            };
             if context.ready_count.load(Ordering::Acquire) != 0
                 || context.destroying.load(Ordering::Acquire)
             {
@@ -1098,7 +1118,12 @@ fn wait_for_inflight_drain(context: &AioContext) {
         }
 
         debug!("sys_io_destroy: still waiting, inflight={}", inflight);
-        context.completion_wakers.register(cx.waker());
+        // Registration happens from io_destroy task context.
+        unsafe {
+            context
+                .completion_wakers
+                .register(cx.waker(), IoEvents::IN | IoEvents::ERR | IoEvents::HUP)
+        };
         // Re-check after registration so the final completion cannot be missed.
         if context.inner.lock().inflight == 0 {
             core::task::Poll::Ready(())
@@ -1275,7 +1300,12 @@ fn destroy_context(context: Arc<AioContext>) {
         );
     }
     context.work_wq.notify_all(true);
-    context.completion_wakers.wake();
+    // Destroying state is published before waking waiters.
+    unsafe {
+        context
+            .completion_wakers
+            .wake(IoEvents::IN | IoEvents::ERR | IoEvents::HUP)
+    };
 
     // Wait outside the inner lock so workers can finish_request.
     warn!("sys_io_destroy: waiting for inflight to drain");
@@ -1459,6 +1489,11 @@ pub fn sys_io_cancel(
     result.vm_write(event)?;
     context.inflight_wq.notify_all(true);
     context.work_wq.notify_one(true);
-    context.completion_wakers.wake();
+    // Cancellation/accounting state is published before waking waiters.
+    unsafe {
+        context
+            .completion_wakers
+            .wake(IoEvents::IN | IoEvents::ERR | IoEvents::HUP)
+    };
     Ok(0)
 }

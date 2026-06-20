@@ -293,7 +293,8 @@ async fn run_timer(weak: alloc::sync::Weak<Timerfd>) {
                         state.next_deadline = Some(next_deadline);
                     }
                     drop(state);
-                    tfd.poll_rx.wake();
+                    // expire_count is published before waking readers.
+                    unsafe { tfd.poll_rx.wake(IoEvents::IN) };
                 }
             }
         }
@@ -334,7 +335,8 @@ impl FileLike for Timerfd {
             // notices the fd is readable again.
             if let Err(e) = dst.write(&n.to_ne_bytes()) {
                 self.expire_count.fetch_add(n, Ordering::AcqRel);
-                self.poll_rx.wake();
+                // Restored expire_count is visible before re-waking readers.
+                unsafe { self.poll_rx.wake(IoEvents::IN) };
                 return Err(e);
             }
             Ok(core::mem::size_of::<u64>())
@@ -368,7 +370,8 @@ impl Pollable for Timerfd {
 
     fn register(&self, context: &mut Context<'_>, events: IoEvents) {
         if events.contains(IoEvents::IN) {
-            self.poll_rx.register(context.waker());
+            // Registration happens from file poll task context.
+            unsafe { self.poll_rx.register(context.waker(), IoEvents::IN) };
         }
     }
 }

@@ -2,7 +2,7 @@
 name = "axvisor"
 authors = ["Keyang Hu <keyang.hu@qq.com>", "周睿 <zrufo747@outlook.com>"]
 edition.workspace = true
-version = "0.5.11"
+version = "0.5.12"
 description = "A lightweight type-1 hypervisor based on ArceOS"
 repository = "https://github.com/arceos-hypervisor/axvisor"
 homepage = "https://github.com/arceos-hypervisor/axvisor"
@@ -35,7 +35,7 @@ path = "xtask/src/main.rs"
 [features]
 default = []
 ept-level-4 = ["axvm/4-level-ept"]
-fs = ["ax-std/fs", "axvm/host-fs"]
+fs = ["ax-std/ext4fs", "ax-std/fatfs", "axvm/host-fs"]
 vmx = ["axvm/vmx"]
 svm = ["axvm/svm"]
 sstc = ["axvm/sstc"]
@@ -50,6 +50,7 @@ sdmmc = [
 ]
 rockchip-pm = ["ax-driver/rockchip-pm"]
 serial = []
+stack-protector = ["ax-std/stack-protector"]
 
 [dependencies]
 spin = { workspace = true }

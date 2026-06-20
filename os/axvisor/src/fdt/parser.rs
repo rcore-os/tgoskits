@@ -381,7 +381,7 @@ pub fn set_phys_cpu_sets(
 ) -> AxResult {
     // Find and parse CPU information from host DTB
     let host_cpus: Vec<_> = fdt.find_nodes("/cpus/cpu").collect();
-    info!("Found {} host CPU nodes", &host_cpus.len());
+    info!("Found {} host CPU nodes", host_cpus.len());
 
     let phys_cpu_ids = crate_config
         .base

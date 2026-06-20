@@ -152,6 +152,32 @@ The IRQ fast path should:
 
 OS Glue converts events into wakeups, future wakers, worker scheduling, or pending polling flags.
 
+### IRQ/Task Exclusion Pattern
+
+Some drivers need IRQ completion code to consult state that is registered or
+removed by task context, such as xHCI transfer rings or queue completion slots.
+The safe shape is an explicit two-sided protocol:
+
+- Task context masks or disables the exact device interrupt source that can run
+  the IRQ path, then takes the mutation lock and updates the registry.
+- IRQ context does not take that mutation lock. It only uses a narrowly scoped
+  fast-path accessor over entries whose lifetime was established before the
+  interrupt was enabled.
+- The fast-path accessor is unsafe or otherwise documented with the required
+  exclusion/lifetime contract.
+- The shared state contains stable descriptors, queue slots, atomics, or ready
+  bits; it must not require allocation, blocking, broad OS locks, or callbacks
+  into file/device managers while in IRQ context.
+- Re-enable the interrupt source only after task-side mutation has fully
+  published the new state.
+
+This protocol prevents the classic deadlock where task context holds a spinlock,
+gets interrupted by the same device, and the IRQ handler tries to acquire the
+same lock. It is narrower than "IRQ-safe" in general: it does not make arbitrary
+wakers, heap allocation, sleeping locks, or unrelated subsystem locks safe in a
+hard IRQ. If the driver cannot prove this protocol, use atomics/pending bits and
+an OS Glue deferred worker instead.
+
 ## Queue/Runtime Pattern
 
 Model queues as independent running units. This matches network TX/RX queues, NVMe admin/IO queues, block request queues, and many accelerator command queues.
@@ -185,6 +211,10 @@ For a block queue adapter, align portable queue state with `rdif_block::IQueue`:
 - Prefer `&mut self` for externally visible operations that require exclusive access.
 - Do not make OS locks part of the portable Driver Trait.
 - Use internal locks only for short critical sections such as pending flags or small status updates.
+- If task and IRQ contexts share a lock-protected registry, require the IRQ/task
+  exclusion protocol above: mask the same interrupt source before task-side
+  mutation, keep IRQ lock-free for that registry, and document why the fast path
+  cannot race lifetime or structure changes.
 - Keep `unsafe` in callback bridges, MMIO construction, and DMA glue boundaries where possible.
 - Do slow work in task/worker/executor/polling context, not in IRQ context.
 

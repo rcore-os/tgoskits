@@ -11,7 +11,7 @@ use ostool::{
 
 use crate::{
     context::{AppContext, ResolvedStarryRequest, SnapshotPersistence, StarryCliArgs},
-    test::{case as qemu_case, qemu},
+    test::{case as qemu_case, host_http::HostHttpServerGuard, qemu},
 };
 
 pub(crate) mod apk;
@@ -352,6 +352,7 @@ impl Starry {
     async fn build(&mut self, args: ArgsBuild) -> anyhow::Result<()> {
         let request =
             self.prepare_request((&args).into(), None, None, SnapshotPersistence::Store)?;
+        self.ensure_default_build_config_for_request(&request, "build")?;
         self.run_build_request(request).await
     }
 
@@ -362,17 +363,7 @@ impl Starry {
             None,
             SnapshotPersistence::Store,
         )?;
-        if let Some(board) = config::ensure_default_build_config_for_target(
-            self.app.workspace_root(),
-            &request.target,
-            &request.build_info_path,
-        )? {
-            println!(
-                "generated missing Starry qemu build config {} from board {}",
-                request.build_info_path.display(),
-                board.name
-            );
-        }
+        self.ensure_default_build_config_for_request(&request, "qemu")?;
         if let Some(rootfs) = args.rootfs {
             rootfs::qemu_with_explicit_rootfs(self, request, rootfs).await
         } else {
@@ -423,18 +414,17 @@ impl Starry {
         let board_config = self
             .load_board_config(&cargo, args.board_config.as_deref())
             .await?;
-        self.app
-            .board(
-                cargo,
-                request.build_info_path,
-                board_config,
-                RunBoardOptions {
-                    board_type: args.board_type,
-                    server: args.server,
-                    port: args.port,
-                },
-            )
-            .await
+        self.run_board_artifact(
+            &request,
+            cargo,
+            board_config,
+            RunBoardOptions {
+                board_type: args.board_type,
+                server: args.server,
+                port: args.port,
+            },
+        )
+        .await
     }
 
     async fn quick_start(&mut self, args: quick_start::ArgsQuickStart) -> anyhow::Result<()> {
@@ -571,6 +561,7 @@ impl Starry {
             if !qemu.args.iter().any(|arg| arg == "-snapshot") {
                 qemu.args.push("-snapshot".to_string());
             }
+            qemu::apply_dynamic_platform_qemu_boot(&mut qemu, &cargo);
             println!("  prepare assets: 0ns (pipeline=plain, cache=miss)");
             println!(
                 "  qemu config: {} (timeout={})",
@@ -578,10 +569,7 @@ impl Starry {
                 qemu::qemu_timeout_summary(&qemu)
             );
             println!("  rootfs: {}", rootfs_path.display());
-            return self
-                .app
-                .qemu(cargo, request.build_info_path, Some(qemu))
-                .await;
+            return self.run_qemu_artifact(&request, cargo, qemu).await;
         }
         let rootfs_path = crate::image::storage::resolve_explicit_rootfs(
             self.app.workspace_root(),
@@ -614,6 +602,7 @@ impl Starry {
             rootfs::RootfsPatchMode::EnsureDiskBootNet,
         );
         qemu.args.extend(prepared_assets.extra_qemu_args.clone());
+        qemu::apply_dynamic_platform_qemu_boot(&mut qemu, &cargo);
         println!(
             "  prepare assets: {:.2?} (pipeline={}, cache={})",
             prepare_started.elapsed(),
@@ -631,10 +620,13 @@ impl Starry {
         );
         println!("  rootfs: {}", prepared_assets.rootfs_path.display());
 
-        let result = self
-            .app
-            .qemu(cargo, request.build_info_path, Some(qemu))
-            .await;
+        let _host_http_server = test_case
+            .host_http_server
+            .as_ref()
+            .map(|config| HostHttpServerGuard::start(config, &test_case.name))
+            .transpose()?;
+
+        let result = self.run_qemu_artifact(&request, cargo, qemu).await;
         qemu_case::remove_case_rootfs_copy(prepared_assets.rootfs_copy_to_remove.as_deref());
         qemu_case::remove_case_run_dir(prepared_assets.run_dir_to_remove.as_deref());
         result
@@ -666,18 +658,17 @@ impl Starry {
         if board_config.shell_init_cmd.is_none() {
             board_config.shell_init_cmd = Some(case.init_cmd);
         }
-        self.app
-            .board(
-                cargo,
-                request.build_info_path,
-                board_config,
-                RunBoardOptions {
-                    board_type: args.board_type,
-                    server: args.server,
-                    port: args.port,
-                },
-            )
-            .await
+        self.run_board_artifact(
+            &request,
+            cargo,
+            board_config,
+            RunBoardOptions {
+                board_type: args.board_type,
+                server: args.server,
+                port: args.port,
+            },
+        )
+        .await
     }
 
     pub(super) fn prepare_request(
@@ -697,6 +688,25 @@ impl Starry {
             self.app.store_starry_snapshot(&snapshot)?;
         }
         Ok(request)
+    }
+
+    pub(super) fn ensure_default_build_config_for_request(
+        &self,
+        request: &ResolvedStarryRequest,
+        command: &str,
+    ) -> anyhow::Result<()> {
+        if let Some(board) = config::ensure_default_build_config_for_target(
+            self.app.workspace_root(),
+            &request.target,
+            &request.build_info_path,
+        )? {
+            println!(
+                "generated missing Starry {command} build config {} from board {}",
+                request.build_info_path.display(),
+                board.name
+            );
+        }
+        Ok(())
     }
 
     fn quick_start_build_args(arch: &str, config: PathBuf) -> StarryCliArgs {
@@ -744,6 +754,57 @@ impl Starry {
         }
     }
 
+    pub(super) async fn build_artifact(
+        &mut self,
+        request: &ResolvedStarryRequest,
+        cargo: Cargo,
+    ) -> anyhow::Result<ostool::build::CargoBuildOutput> {
+        build::build_starry_artifact(self, request, cargo).await
+    }
+
+    pub(super) async fn run_qemu_artifact(
+        &mut self,
+        request: &ResolvedStarryRequest,
+        cargo: Cargo,
+        qemu: ostool::run::qemu::QemuConfig,
+    ) -> anyhow::Result<()> {
+        self.build_artifact(request, cargo.clone()).await?;
+        self.app.run_qemu(&cargo, qemu, None).await
+    }
+
+    pub(super) async fn run_uboot_artifact(
+        &mut self,
+        request: &ResolvedStarryRequest,
+        cargo: Cargo,
+        uboot: Option<ostool::run::uboot::UbootConfig>,
+    ) -> anyhow::Result<()> {
+        let uboot = match uboot {
+            Some(uboot) => uboot,
+            None => self.app.ensure_uboot_config_for_cargo(&cargo).await?,
+        };
+        self.build_artifact(request, cargo).await?;
+        self.app.run_prepared_uboot(uboot).await
+    }
+
+    pub(super) async fn run_board_artifact(
+        &mut self,
+        request: &ResolvedStarryRequest,
+        cargo: Cargo,
+        board_config: BoardRunConfig,
+        options: RunBoardOptions,
+    ) -> anyhow::Result<()> {
+        let output = self.build_artifact(request, cargo.clone()).await?;
+        self.app
+            .board_prepared_elf(
+                output.elf_path().to_path_buf(),
+                cargo.to_bin,
+                request.build_info_path.clone(),
+                board_config,
+                options,
+            )
+            .await
+    }
+
     async fn run_qemu_request(&mut self, request: ResolvedStarryRequest) -> anyhow::Result<()> {
         rootfs::qemu(self, request).await
     }
@@ -751,14 +812,14 @@ impl Starry {
     async fn run_build_request(&mut self, request: ResolvedStarryRequest) -> anyhow::Result<()> {
         self.app.set_debug_mode(request.debug)?;
         let cargo = build::load_cargo_config(&request)?;
-        self.app.build(cargo, request.build_info_path).await
+        self.build_artifact(&request, cargo).await.map(|_| ())
     }
 
     async fn run_uboot_request(&mut self, request: ResolvedStarryRequest) -> anyhow::Result<()> {
         self.app.set_debug_mode(request.debug)?;
         let cargo = build::load_cargo_config(&request)?;
         let uboot = self.load_uboot_config(&request, &cargo).await?;
-        self.app.uboot(cargo, request.build_info_path, uboot).await
+        self.run_uboot_artifact(&request, cargo, uboot).await
     }
 
     async fn quick_start_qemu(

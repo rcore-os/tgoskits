@@ -1,6 +1,6 @@
 [package]
 name = "ax-plat-loongarch64-qemu-virt"
-version = "0.5.13"
+version = "0.5.14"
 repository = "https://github.com/rcore-os/tgoskits"
 description = "Implementation of `axplat` hardware abstraction layer for QEMU LoongArch virtual machine."
 keywords = ["arceos", "os", "hal", "embedded", "loongarch"]
@@ -20,6 +20,7 @@ smp = ["ax-plat/smp", "ax-kspin/smp", "irq"]
 chrono = { version = "0.4", default-features = false, optional = true }
 ax-kspin = { workspace = true }
 ax-lazyinit = { workspace = true }
+fdt-raw = { workspace = true }
 log = "0.4"
 loongArch64 = "0.2.4"
 ax-page-table-entry = { workspace = true }

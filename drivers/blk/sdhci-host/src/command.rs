@@ -141,11 +141,13 @@ impl Sdhci {
             self.write_u16(REG_ERROR_INT_STATUS, error_hw);
         }
 
-        let normal = self.irq_pending_normal | normal_hw;
-        let error = self.irq_pending_error | error_hw;
-        self.irq_pending_normal &= !(NORMAL_INT_CMD_COMPLETE | NORMAL_INT_ERROR);
+        let normal = self
+            .irq_state
+            .take_normal(NORMAL_INT_CMD_COMPLETE | NORMAL_INT_ERROR)
+            | normal_hw;
+        let error = self.irq_state.take_error_all() | error_hw;
         if error != 0 {
-            self.irq_pending_error = 0;
+            self.irq_state.clear_normal(NORMAL_INT_ERROR);
         }
         (normal, error)
     }
@@ -166,8 +168,7 @@ impl Sdhci {
     }
 
     pub(crate) fn clear_cached_irq_status(&mut self) {
-        self.irq_pending_normal = 0;
-        self.irq_pending_error = 0;
+        self.irq_state.clear_all();
     }
 
     pub(crate) fn take_data_irq_status(&mut self) -> (u16, u16) {
@@ -185,23 +186,39 @@ impl Sdhci {
             self.write_u16(REG_ERROR_INT_STATUS, error_hw);
         }
 
-        let normal = self.irq_pending_normal | normal_hw;
-        let error = self.irq_pending_error | error_hw;
-        self.irq_pending_normal &= !(NORMAL_INT_XFER_COMPLETE | NORMAL_INT_ERROR);
+        let normal = self
+            .irq_state
+            .take_normal(NORMAL_INT_XFER_COMPLETE | NORMAL_INT_ERROR)
+            | normal_hw;
+        let error = self.irq_state.take_error_all() | error_hw;
         if error != 0 {
-            self.irq_pending_error = 0;
+            self.irq_state.clear_normal(NORMAL_INT_ERROR);
         }
         (normal, error)
     }
 
-    pub(crate) fn take_fifo_irq_status(&mut self, mask: u16) -> u16 {
+    pub(crate) fn take_fifo_irq_status(&mut self, mask: u16) -> (u16, u16) {
         let normal_hw = self.read_u16(REG_NORMAL_INT_STATUS);
+        let consume_error = mask & NORMAL_INT_ERROR != 0;
+        let error_hw = if consume_error && normal_hw & NORMAL_INT_ERROR != 0 {
+            self.read_u16(REG_ERROR_INT_STATUS)
+        } else {
+            0
+        };
         let consume_normal = normal_hw & mask;
         if consume_normal != 0 {
             self.write_u16(REG_NORMAL_INT_STATUS, consume_normal);
         }
+        if error_hw != 0 {
+            self.write_u16(REG_ERROR_INT_STATUS, error_hw);
+        }
 
-        take_cached_irq_status(&mut self.irq_pending_normal, normal_hw, mask)
+        let normal = self.irq_state.take_normal(mask) | normal_hw;
+        let error = self.irq_state.take_error_all() | error_hw;
+        if consume_error && error != 0 && normal & NORMAL_INT_ERROR != 0 {
+            self.irq_state.clear_normal(NORMAL_INT_ERROR);
+        }
+        (normal, error)
     }
 
     fn translate_error_bits(&self, err: u16, cmd_index: u8) -> Error {
@@ -313,12 +330,6 @@ impl Sdhci {
         };
         Ok(())
     }
-}
-
-fn take_cached_irq_status(pending: &mut u16, hw: u16, mask: u16) -> u16 {
-    let normal = *pending | hw;
-    *pending &= !mask;
-    normal
 }
 
 fn transfer_mode(direction: DataDirection, block_count: u32, use_dma: bool) -> u16 {
@@ -461,25 +472,51 @@ mod tests {
 
     #[test]
     fn fifo_status_consumes_irq_cached_buffer_ready() {
-        let mut pending = NORMAL_INT_BUFFER_WRITE_READY | NORMAL_INT_XFER_COMPLETE;
+        let mut regs = FakeRegs([0; 0x100]);
+        let base = NonNull::new(regs.0.as_mut_ptr()).unwrap();
+        let mut host = unsafe { Sdhci::new(base) };
+        host.irq_state
+            .cache(NORMAL_INT_BUFFER_WRITE_READY | NORMAL_INT_XFER_COMPLETE, 0);
 
-        let status = take_cached_irq_status(
-            &mut pending,
-            0,
-            NORMAL_INT_BUFFER_WRITE_READY | NORMAL_INT_ERROR,
-        );
+        let (status, _) =
+            host.take_fifo_irq_status(NORMAL_INT_BUFFER_WRITE_READY | NORMAL_INT_ERROR);
 
         assert_ne!(status & NORMAL_INT_BUFFER_WRITE_READY, 0);
         assert_eq!(
-            pending & NORMAL_INT_BUFFER_WRITE_READY,
+            host.irq_state.pending_normal() & NORMAL_INT_BUFFER_WRITE_READY,
             0,
             "FIFO ready must be consumed after the data step handles it"
         );
         assert_ne!(
-            pending & NORMAL_INT_XFER_COMPLETE,
+            host.irq_state.pending_normal() & NORMAL_INT_XFER_COMPLETE,
             0,
             "transfer completion belongs to the data-complete poll step"
         );
+    }
+
+    #[test]
+    fn fifo_status_consumes_irq_cached_error_bits() {
+        let mut regs = FakeRegs([0; 0x100]);
+        let base = NonNull::new(regs.0.as_mut_ptr()).unwrap();
+        let mut host = unsafe { Sdhci::new(base) };
+        host.irq_state
+            .cache(NORMAL_INT_ERROR, ERROR_INT_DATA_TIMEOUT);
+
+        let (status, error) =
+            host.take_fifo_irq_status(NORMAL_INT_BUFFER_READ_READY | NORMAL_INT_ERROR);
+
+        assert_ne!(
+            status & NORMAL_INT_ERROR,
+            0,
+            "FIFO poll must observe error status cached by the IRQ handler"
+        );
+        assert_ne!(
+            error & ERROR_INT_DATA_TIMEOUT,
+            0,
+            "FIFO poll must preserve error bits after the IRQ handler clears hardware status"
+        );
+        assert_eq!(host.irq_state.pending_normal() & NORMAL_INT_ERROR, 0);
+        assert_eq!(host.irq_state.pending_error(), 0);
     }
 
     #[test]
@@ -487,8 +524,10 @@ mod tests {
         let mut regs = FakeRegs([0; 0x100]);
         let base = NonNull::new(regs.0.as_mut_ptr()).unwrap();
         let mut host = unsafe { Sdhci::new(base) };
-        host.irq_pending_normal = NORMAL_INT_CMD_COMPLETE | NORMAL_INT_XFER_COMPLETE;
-        host.irq_pending_error = ERROR_INT_DATA_TIMEOUT;
+        host.irq_state.cache(
+            NORMAL_INT_CMD_COMPLETE | NORMAL_INT_XFER_COMPLETE,
+            ERROR_INT_DATA_TIMEOUT,
+        );
         host.pending_data = Some(crate::host::PendingData {
             direction: DataDirection::Read,
             block_size: 512,
@@ -497,7 +536,7 @@ mod tests {
 
         host.submit_command(&cmd17(0)).unwrap();
 
-        assert_eq!(host.irq_pending_normal, 0);
-        assert_eq!(host.irq_pending_error, 0);
+        assert_eq!(host.irq_state.pending_normal(), 0);
+        assert_eq!(host.irq_state.pending_error(), 0);
     }
 }

@@ -134,12 +134,21 @@ impl Debug for SysRegAddr {
 pub trait DeviceAddr: Copy + Eq + Ord + core::fmt::Debug {}
 
 /// A range of device addresses. It may be contiguous or not.
-pub trait DeviceAddrRange {
+pub trait DeviceAddrRange: Copy + Eq + LowerHex {
     /// The address type of the range.
     type Addr: DeviceAddr;
 
+    /// The name of the device bus that uses this range type.
+    const BUS_NAME: &'static str;
+
     /// Returns whether the address range contains the given address.
     fn contains(&self, addr: Self::Addr) -> bool;
+
+    /// Returns whether the address range is empty or invalid.
+    fn is_empty(&self) -> bool;
+
+    /// Returns whether this address range overlaps another range.
+    fn overlaps(&self, other: &Self) -> bool;
 }
 
 impl DeviceAddr for GuestPhysAddr {}
@@ -147,8 +156,18 @@ impl DeviceAddr for GuestPhysAddr {}
 impl DeviceAddrRange for AddrRange<GuestPhysAddr> {
     type Addr = GuestPhysAddr;
 
+    const BUS_NAME: &'static str = "mmio";
+
     fn contains(&self, addr: Self::Addr) -> bool {
         Self::contains(*self, addr)
+    }
+
+    fn is_empty(&self) -> bool {
+        Self::is_empty(*self)
+    }
+
+    fn overlaps(&self, other: &Self) -> bool {
+        Self::overlaps(*self, *other)
     }
 }
 
@@ -175,8 +194,18 @@ impl SysRegAddrRange {
 impl DeviceAddrRange for SysRegAddrRange {
     type Addr = SysRegAddr;
 
+    const BUS_NAME: &'static str = "sys_reg";
+
     fn contains(&self, addr: Self::Addr) -> bool {
         addr.0 >= self.start.0 && addr.0 <= self.end.0
+    }
+
+    fn is_empty(&self) -> bool {
+        self.start > self.end
+    }
+
+    fn overlaps(&self, other: &Self) -> bool {
+        !self.is_empty() && !other.is_empty() && self.start <= other.end && other.start <= self.end
     }
 }
 
@@ -209,8 +238,18 @@ impl PortRange {
 impl DeviceAddrRange for PortRange {
     type Addr = Port;
 
+    const BUS_NAME: &'static str = "port";
+
     fn contains(&self, addr: Self::Addr) -> bool {
         addr.0 >= self.start.0 && addr.0 <= self.end.0
+    }
+
+    fn is_empty(&self) -> bool {
+        self.start > self.end
+    }
+
+    fn overlaps(&self, other: &Self) -> bool {
+        !self.is_empty() && !other.is_empty() && self.start <= other.end && other.start <= self.end
     }
 }
 

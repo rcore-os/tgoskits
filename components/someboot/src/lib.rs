@@ -43,6 +43,7 @@ pub(crate) mod fdt;
 pub mod irq;
 pub mod mem;
 pub mod power;
+pub mod rtc;
 pub mod smp;
 pub mod timer;
 

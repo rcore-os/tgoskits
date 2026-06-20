@@ -526,6 +526,56 @@ fn invalid_revoke_record_fails_recovery() {
 }
 
 #[test]
+fn readonly_no_replay_mount_can_inspect_unrecoverable_journal() {
+    // Test idea: callers that only need to inspect or read files may explicitly
+    // choose a read-only mount without journal replay. The default writable
+    // mount must still reject the same image because home metadata may be stale.
+    let device = SharedCrcDevice::new(100 * 1024 * 1024);
+    let mut jbd2_dev = new_jbd2_dev(device.clone());
+    mkfs(&mut jbd2_dev).expect("mkfs failed");
+
+    let mut first_mount_dev = new_jbd2_dev(device.clone());
+    let fs = mount(&mut first_mount_dev).expect("mount failed");
+    let journal_block = fs
+        .journal_sb_block_start
+        .expect("journal superblock should be mapped")
+        .raw();
+    umount(fs, &mut first_mount_dev).expect("umount failed");
+
+    let mut sb = read_superblock(&device);
+    sb.s_feature_incompat |= Ext4Superblock::EXT4_FEATURE_INCOMPAT_RECOVER;
+    sb.update_checksum();
+    write_superblock(&device, &sb);
+    write_journal_start(&device, journal_block, 1);
+    write_invalid_journal_revoke(&device, journal_block);
+
+    let mut writable_dev = new_jbd2_dev(device.clone());
+    let err = match mount(&mut writable_dev) {
+        Ok(_) => panic!("default mount should fail unrecoverable journal replay"),
+        Err(err) => err,
+    };
+    assert_eq!(err.code, Errno::EUCLEAN);
+
+    let mut readonly_dev = Jbd2Dev::initial_jbd2dev(0, device.clone(), false);
+    let fs = mount_with_options(
+        &mut readonly_dev,
+        MountOptions::read_only_no_journal_replay(),
+    )
+    .expect("read-only no-replay mount should allow inspection");
+    assert_ne!(
+        fs.superblock.s_feature_incompat & Ext4Superblock::EXT4_FEATURE_INCOMPAT_RECOVER,
+        0
+    );
+    assert!(!readonly_dev.is_use_journal());
+
+    let on_disk_sb = read_superblock(&device);
+    assert_ne!(
+        on_disk_sb.s_feature_incompat & Ext4Superblock::EXT4_FEATURE_INCOMPAT_RECOVER,
+        0
+    );
+}
+
+#[test]
 fn empty_descriptor_header_is_discarded_during_recovery() {
     // Test idea: a crash can leave only the descriptor header without any tags.
     // With no commit block, this is an uncommitted tail rather than durable work.

@@ -5,6 +5,7 @@ pub mod futex;
 mod ops;
 pub mod posix_timer;
 mod resources;
+mod seccomp;
 mod signal;
 mod stat;
 mod timer;
@@ -17,10 +18,11 @@ use core::{
     sync::atomic::{AtomicBool, AtomicI32, AtomicU8, AtomicU32, AtomicUsize, Ordering},
 };
 
+use ax_errno::AxResult;
 use ax_runtime::hal::{cpu::uspace::UserContext, time::TimeValue};
 use ax_sync::{Mutex, spin::SpinNoIrq};
 use ax_task::{TaskExt, TaskInner};
-use axpoll::PollSet;
+use axpoll::{IoEvents, PollSet};
 use extern_trait::extern_trait;
 use kernel_elf_parser::AuxEntry;
 use scope_local::{ActiveScope, Scope};
@@ -32,8 +34,8 @@ use starry_signal::{
 };
 
 pub use self::{
-    cred::*, futex::*, ops::*, posix_timer::PosixTimerTable, resources::*, signal::*, stat::*,
-    timer::*, user::*,
+    cred::*, futex::*, ops::*, posix_timer::PosixTimerTable, resources::*, seccomp::*, signal::*,
+    stat::*, timer::*, user::*,
 };
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -170,6 +172,9 @@ pub struct Thread {
     /// PR_SET_NO_NEW_PRIVS: once set, cannot be unset.
     no_new_privs: AtomicBool,
 
+    /// seccomp syscall filtering state.
+    seccomp: SpinNoIrq<SeccompState>,
+
     /// Process credentials (uid, gid, etc.).
     cred: SpinNoIrq<Arc<Cred>>,
 
@@ -229,6 +234,7 @@ impl Thread {
             rseq_signature: AtomicU32::new(0),
             pdeathsig: AtomicU32::new(0),
             no_new_privs: AtomicBool::new(false),
+            seccomp: SpinNoIrq::new(SeccompState::default()),
             cred: SpinNoIrq::new(cred),
 
             fault_dump_signo: AtomicU8::new(0),
@@ -346,6 +352,26 @@ impl Thread {
     /// Set the no_new_privs flag (one-way: once set, cannot be unset).
     pub fn set_no_new_privs(&self) {
         self.no_new_privs.store(true, Ordering::Relaxed);
+    }
+
+    /// Get a snapshot of the current seccomp state.
+    pub fn seccomp_state(&self) -> SeccompState {
+        self.seccomp.lock().clone()
+    }
+
+    /// Replace seccomp state. Used by clone inheritance.
+    pub fn set_seccomp_state(&self, state: SeccompState) {
+        *self.seccomp.lock() = state;
+    }
+
+    /// Enable strict seccomp mode.
+    pub fn install_seccomp_strict(&self) -> AxResult<()> {
+        self.seccomp.lock().install_strict()
+    }
+
+    /// Append a seccomp filter. Filters are inherited and evaluated in order.
+    pub fn append_seccomp_filter(&self, insns: Vec<SockFilter>) -> AxResult<()> {
+        self.seccomp.lock().append_filter(insns)
     }
 
     /// Get a snapshot of the current credentials (clones the `Arc`).
@@ -703,8 +729,7 @@ pub struct ProcessData {
     ptrace_ss_saved_insn: SpinNoIrq<BTreeMap<u32, (usize, usize)>>,
 
     /// FP register snapshot captured when entering ptrace stop, keyed by TID.
-    /// Stored as raw bytes to avoid arch-specific crate dependency.
-    ptrace_stop_fp_data: SpinNoIrq<BTreeMap<u32, ([u64; 32], usize)>>,
+    ptrace_stop_fp_data: SpinNoIrq<BTreeMap<u32, PtraceStopFpData>>,
 
     /// Linux process personality flags. Starry does not randomize userspace
     /// mappings yet, but debuggers still probe and set ADDR_NO_RANDOMIZE.
@@ -733,6 +758,45 @@ pub struct ProcessData {
     /// `SIGCONT` (continue) and `SIGKILL` (force-resume so the kill proceeds).
     cont_event: Arc<PollSet>,
 }
+
+#[cfg(target_arch = "riscv64")]
+#[derive(Clone, Copy)]
+pub struct PtraceStopFpData {
+    pub regs: [u64; 32],
+    pub fcsr: usize,
+}
+
+#[cfg(target_arch = "aarch64")]
+#[derive(Clone, Copy)]
+pub struct PtraceStopFpData {
+    pub regs: [u128; 32],
+    pub fpcr: u32,
+    pub fpsr: u32,
+}
+
+#[cfg(target_arch = "loongarch64")]
+#[derive(Clone, Copy)]
+pub struct PtraceStopFpData {
+    pub regs: [u64; 32],
+    pub fp_high: [u64; 32],
+    pub fp_lasx_hi0: [u64; 32],
+    pub fp_lasx_hi1: [u64; 32],
+    pub fcc: [u8; 8],
+    pub fcsr: u32,
+}
+
+#[cfg(not(any(
+    target_arch = "riscv64",
+    target_arch = "aarch64",
+    target_arch = "loongarch64",
+    target_arch = "x86_64"
+)))]
+#[derive(Clone, Copy)]
+pub struct PtraceStopFpData;
+
+#[cfg(target_arch = "x86_64")]
+#[derive(Clone, Copy)]
+pub struct PtraceStopFpData(pub ax_cpu::FxsaveArea);
 
 impl ProcessData {
     /// Create a new [`ProcessData`].
@@ -984,7 +1048,8 @@ impl ProcessData {
             drop(jc);
             // Wake only when a thread was actually parked; avoids spurious
             // wakeups on SIGCONT to an already-running process.
-            self.cont_event.wake();
+            // Continue state is published before waking stopped threads.
+            unsafe { self.cont_event.wake(IoEvents::IN) };
         }
         was_stopped
     }
@@ -994,7 +1059,8 @@ impl ProcessData {
     pub fn clear_job_stop_for_kill(&self) {
         let was_stopped = self.job_control.lock().stopped.take().is_some();
         if was_stopped {
-            self.cont_event.wake();
+            // Stop state is cleared before waking stopped threads.
+            unsafe { self.cont_event.wake(IoEvents::IN) };
         }
     }
 
@@ -1311,7 +1377,8 @@ impl ProcessData {
             stop.event = 0;
             stop.event_msg = 0;
         }
-        self.ptrace_stop_event.wake();
+        // Ptrace stop state is updated before waking waiters.
+        unsafe { self.ptrace_stop_event.wake(IoEvents::IN) };
     }
 
     /// Resume the stopped task without injecting a signal.
@@ -1366,7 +1433,8 @@ impl ProcessData {
         self.ptrace_syscall_trace.lock().clear();
         self.ptrace_ss_saved_insn.lock().clear();
         self.ptrace_stop_fp_data.lock().clear();
-        self.ptrace_stop_event.wake();
+        // Ptrace stop state is cleared before waking waiters.
+        unsafe { self.ptrace_stop_event.wake(IoEvents::IN) };
     }
 
     pub fn set_ptrace_exec_stop_pending(&self) {
@@ -1381,7 +1449,8 @@ impl ProcessData {
 
     /// Register a waiter for changes to this process's ptrace stop state.
     pub fn register_ptrace_stop_waker(&self, waker: &core::task::Waker) {
-        self.ptrace_stop_event.register(waker);
+        // Registration happens from task/wait context.
+        unsafe { self.ptrace_stop_event.register(waker, IoEvents::IN) };
     }
 
     pub fn set_ptrace_attached(&self) {
@@ -1541,23 +1610,75 @@ impl ProcessData {
         let mut fp = ax_cpu::FpState::default();
         fp.save();
         fp.fs = riscv::register::sstatus::read().fs();
-        self.ptrace_stop_fp_data
-            .lock()
-            .insert(tid, (fp.fp, fp.fcsr));
+        self.ptrace_stop_fp_data.lock().insert(
+            tid,
+            PtraceStopFpData {
+                regs: fp.fp,
+                fcsr: fp.fcsr,
+            },
+        );
     }
 
-    #[cfg(not(target_arch = "riscv64"))]
+    #[cfg(target_arch = "aarch64")]
+    pub fn save_current_fp_for_ptrace(&self, tid: u32) {
+        let mut fp = ax_cpu::FpState::default();
+        fp.save();
+        self.ptrace_stop_fp_data.lock().insert(
+            tid,
+            PtraceStopFpData {
+                regs: fp.regs,
+                fpcr: fp.fpcr,
+                fpsr: fp.fpsr,
+            },
+        );
+    }
+
+    #[cfg(target_arch = "loongarch64")]
+    pub fn save_current_fp_for_ptrace(&self, tid: u32) {
+        let mut fp = ax_cpu::FpuState::default();
+        fp.save();
+        self.ptrace_stop_fp_data.lock().insert(
+            tid,
+            PtraceStopFpData {
+                regs: fp.fp,
+                fp_high: fp.fp_high,
+                fp_lasx_hi0: fp.fp_lasx_hi0,
+                fp_lasx_hi1: fp.fp_lasx_hi1,
+                fcc: fp.fcc,
+                fcsr: fp.fcsr,
+            },
+        );
+    }
+
+    #[cfg(not(any(
+        target_arch = "riscv64",
+        target_arch = "aarch64",
+        target_arch = "loongarch64",
+        target_arch = "x86_64"
+    )))]
     pub fn save_current_fp_for_ptrace(&self, _tid: u32) {}
+
+    #[cfg(target_arch = "x86_64")]
+    pub fn save_current_fp_for_ptrace(&self, tid: u32) {
+        let mut area =
+            unsafe { core::mem::MaybeUninit::<ax_cpu::FxsaveArea>::zeroed().assume_init() };
+        unsafe {
+            core::arch::x86_64::_fxsave64((&mut area as *mut ax_cpu::FxsaveArea).cast::<u8>());
+        }
+        self.ptrace_stop_fp_data
+            .lock()
+            .insert(tid, PtraceStopFpData(area));
+    }
 
     #[cfg(target_arch = "riscv64")]
     pub fn restore_current_fp_for_ptrace(&self, tid: u32, uctx: &mut UserContext) {
-        let Some((fp, fcsr)) = self.ptrace_stop_fp_data.lock().remove(&tid) else {
+        let Some(fp) = self.ptrace_stop_fp_data.lock().remove(&tid) else {
             return;
         };
 
         let fp_state = ax_cpu::FpState {
-            fp,
-            fcsr,
+            fp: fp.regs,
+            fcsr: fp.fcsr,
             fs: riscv::register::sstatus::FS::Dirty,
         };
 
@@ -1568,14 +1689,62 @@ impl ProcessData {
         uctx.sstatus.set_fs(riscv::register::sstatus::FS::Dirty);
     }
 
-    #[cfg(not(target_arch = "riscv64"))]
+    #[cfg(target_arch = "aarch64")]
+    pub fn restore_current_fp_for_ptrace(&self, tid: u32, _uctx: &mut UserContext) {
+        let Some(fp) = self.ptrace_stop_fp_data.lock().remove(&tid) else {
+            return;
+        };
+
+        let fp_state = ax_cpu::FpState {
+            regs: fp.regs,
+            fpcr: fp.fpcr,
+            fpsr: fp.fpsr,
+        };
+
+        fp_state.restore();
+    }
+
+    #[cfg(target_arch = "loongarch64")]
+    pub fn restore_current_fp_for_ptrace(&self, tid: u32, _uctx: &mut UserContext) {
+        let Some(fp) = self.ptrace_stop_fp_data.lock().remove(&tid) else {
+            return;
+        };
+
+        let fp_state = ax_cpu::FpuState {
+            fp: fp.regs,
+            fp_high: fp.fp_high,
+            fp_lasx_hi0: fp.fp_lasx_hi0,
+            fp_lasx_hi1: fp.fp_lasx_hi1,
+            fcc: fp.fcc,
+            fcsr: fp.fcsr,
+        };
+
+        fp_state.restore();
+    }
+
+    #[cfg(not(any(
+        target_arch = "riscv64",
+        target_arch = "aarch64",
+        target_arch = "loongarch64",
+        target_arch = "x86_64"
+    )))]
     pub fn restore_current_fp_for_ptrace(&self, _tid: u32, _uctx: &mut UserContext) {}
 
-    pub fn ptrace_stop_fp_data_for(&self, tid: u32) -> Option<([u64; 32], usize)> {
+    #[cfg(target_arch = "x86_64")]
+    pub fn restore_current_fp_for_ptrace(&self, tid: u32, _uctx: &mut UserContext) {
+        let Some(PtraceStopFpData(area)) = self.ptrace_stop_fp_data.lock().remove(&tid) else {
+            return;
+        };
+        unsafe {
+            core::arch::x86_64::_fxrstor64((&area as *const ax_cpu::FxsaveArea).cast::<u8>());
+        }
+    }
+
+    pub fn ptrace_stop_fp_data_for(&self, tid: u32) -> Option<PtraceStopFpData> {
         self.ptrace_stop_fp_data.lock().get(&tid).copied()
     }
 
-    pub fn set_ptrace_stop_fp_data_for(&self, tid: u32, data: ([u64; 32], usize)) -> bool {
+    pub fn set_ptrace_stop_fp_data_for(&self, tid: u32, data: PtraceStopFpData) -> bool {
         self.ptrace_stop_fp_data.lock().insert(tid, data).is_some()
     }
 
@@ -1660,7 +1829,8 @@ impl ProcessData {
                 core::future::poll_fn(|cx| {
                     // Register before re-checking so a notify that fires
                     // between our last check and this register isn't lost.
-                    poll.register(cx.waker());
+                    // Registration happens from the vfork parent task context.
+                    unsafe { poll.register(cx.waker(), IoEvents::IN) };
                     let done = self
                         .vfork_done
                         .lock()
@@ -1703,7 +1873,8 @@ impl ProcessData {
             }
             // guard dropped here
         };
-        poll.wake();
+        // vfork completion is published before waking the parent.
+        unsafe { poll.wake(IoEvents::IN) };
     }
 }
 

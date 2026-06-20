@@ -1,6 +1,6 @@
 [package]
 name = "ax-libc"
-version = "0.5.18"
+version = "0.5.19"
 repository = "https://github.com/rcore-os/tgoskits"
 edition.workspace = true
 authors = [
@@ -42,6 +42,7 @@ tls = ["alloc", "ax-feat/tls"]
 # Multi-task
 multitask = ["ax-feat/multitask", "ax-posix-api/multitask"]
 lockdep = ["ax-posix-api/lockdep", "ax-feat/lockdep"]
+stack-protector = ["ax-feat/stack-protector"]
 
 # File system
 fs = ["ax-posix-api/fs", "fd"]

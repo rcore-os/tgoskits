@@ -175,17 +175,51 @@ run_starry_kallsyms() {
     if [ "$build_package" != "starryos" ] || [ "$build_bin" != "starryos" ]; then
         return
     fi
-    if [ ! -f "scripts/axbuild/scripts/starry-kallsyms.sh" ]; then
-        echo "===${marker}-KALLSYMS-SCRIPT-MISSING==="
-        finish_guest 2
-    fi
 
     ensure_kallsyms_tools
     echo "===${marker}-KALLSYMS-BEGIN elf=${artifact}==="
+
+    symbols="$(mktemp "${artifact}.symbols.XXXXXX")"
+    kallsyms="$(mktemp "${artifact}.kallsyms.XXXXXX")"
+    rm -f "$symbols" "$kallsyms"
     set +e
-    KERNEL_ELF="$artifact" AXBUILD_STARRY_KALLSYMS_AUTO_INSTALL=0 \
-        sh scripts/axbuild/scripts/starry-kallsyms.sh
+    (
+        set -eu
+        rust-nm -n "$artifact" >"$symbols"
+        grep ' [TtDBR] ' "$symbols" \
+            | awk '$3 !~ /^\.L/' \
+            | awk '$3 != "$x"' \
+            | gen_ksym >"$kallsyms"
+
+        section_hex="$(rust-objdump -h "$artifact" | awk '$2 == ".kallsyms" { print $3; found = 1 } END { if (!found) exit 1 }')"
+        section_size="$(printf "%d\n" "0x${section_hex}")"
+        kallsyms_size="$(wc -c <"$kallsyms" | tr -d ' ')"
+        padding_size="$((section_size - kallsyms_size))"
+
+        if [ "$kallsyms_size" -gt "$section_size" ]; then
+            echo "generated kallsyms (${kallsyms_size} bytes) exceed .kallsyms section (${section_size} bytes)" >&2
+            exit 1
+        fi
+
+        if [ "$padding_size" -gt 0 ]; then
+            if command -v truncate >/dev/null 2>&1; then
+                truncate -s "$section_size" "$kallsyms"
+            else
+                full_blocks="$((padding_size / 1048576))"
+                tail_bytes="$((padding_size % 1048576))"
+                if [ "$full_blocks" -gt 0 ]; then
+                    dd if=/dev/zero bs=1048576 count="$full_blocks" >>"$kallsyms" 2>/dev/null
+                fi
+                if [ "$tail_bytes" -gt 0 ]; then
+                    dd if=/dev/zero bs="$tail_bytes" count=1 >>"$kallsyms" 2>/dev/null
+                fi
+            fi
+        fi
+
+        rust-objcopy --update-section ".kallsyms=${kallsyms}" "$artifact"
+    )
     kallsyms_rc="$?"
+    rm -f "$symbols" "$kallsyms"
     set -e
     if [ "$kallsyms_rc" != "0" ]; then
         echo "===${marker}-KALLSYMS-FAIL rc=${kallsyms_rc}==="

@@ -26,7 +26,7 @@ mod file;
 #[cfg_attr(not(feature = "ebpf-kmod"), allow(dead_code))]
 mod kmod;
 #[cfg_attr(not(feature = "ebpf-kmod"), allow(dead_code))]
-mod kprobe;
+pub mod kprobe;
 mod mm;
 #[cfg_attr(not(feature = "ebpf-kmod"), allow(dead_code))]
 mod perf;

@@ -5,7 +5,7 @@ edition.workspace = true
 license.workspace = true
 name = "ax-runtime"
 repository = "https://github.com/rcore-os/tgoskits"
-version = "0.6.2"
+version = "0.7.0"
 
 [features]
 default = []
@@ -23,9 +23,10 @@ irq = [
 ]
 multitask = ["ax-task/multitask"]
 paging = ["ax-hal/paging", "dep:ax-mm", "dep:axklib"]
-rtc = ["ax-driver/rtc"]
+rtc = ["ax-hal/rtc", "ax-driver/rtc"]
 smp = ["ax-hal/smp", "ax-task?/smp"]
 stack-guard-page = ["multitask", "paging", "ax-task/stack-guard-page"]
+stack-protector = []
 tls = ["ax-hal/tls", "ax-task?/tls"]
 
 plat-dyn = [
@@ -41,27 +42,38 @@ plat-dyn = [
 
 display = ["dep:ax-display", "ax-driver/display"]
 fs = [
-  "dep:ax-errno",
-  "dep:ax-fs",
-  "dep:spin",
-  "dep:axklib",
-  "ax-driver/block",
-]
-fs-ng = [
+  "irq",
+  "multitask",
+  "dma",
   "dep:ax-errno",
   "dep:ax-fs-ng",
+  "ax-fs-ng/vfs",
   "dep:axfs-ng-vfs",
   "dep:spin",
   "dep:axklib",
+  "dep:dma-api",
+  "dep:rdif-block",
   "ax-driver/block",
 ]
-fs-ng-ext4 = ["fs-ng", "ax-fs-ng/ext4"]
-fs-ng-fat = ["fs-ng", "ax-fs-ng/fat"]
+fs-ext4 = ["fs", "ax-fs-ng/ext4"]
+fs-fat = ["fs", "ax-fs-ng/fat"]
 input = ["dep:ax-input", "ax-driver/input"]
 net = ["dep:ax-net", "dep:rd-net", "dep:spin", "dep:axklib", "ax-driver/net"]
+# SG2002 AIC8800 SoftAP Wi-Fi. Pulls the FDT probe into ax-driver and installs
+# the ArceOS runtime glue (the driver cores are OS-independent) before probing.
+aic8800-wifi = [
+  "net",
+  "plat-dyn",
+  "multitask",
+  "ax-driver/aic8800-wifi",
+  "dep:aic8800",
+  "dep:sdhci-cv1800",
+]
 vsock = ["net", "ax-net/vsock", "ax-driver/vsock"]
 
 [dependencies]
+aic8800 = {workspace = true, optional = true}
+sdhci-cv1800 = {workspace = true, optional = true}
 ax-alloc = {workspace = true}
 ax-config = {workspace = true}
 ax-crate-interface = {workspace = true}
@@ -69,7 +81,6 @@ ax-ctor-bare = {workspace = true}
 ax-display = {workspace = true, optional = true}
 ax-driver = {workspace = true}
 ax-errno = {workspace = true, optional = true}
-ax-fs = {workspace = true, optional = true}
 ax-fs-ng = {workspace = true, optional = true}
 axfs-ng-vfs = {workspace = true, optional = true}
 ax-hal = {workspace = true}
@@ -88,7 +99,9 @@ axklib = {workspace = true, optional = true}
 axpanic = {workspace = true}
 cfg-if = {workspace = true}
 chrono = {version = "0.4", default-features = false}
+dma-api = { workspace = true, optional = true }
 indoc = "2"
+rdif-block = { workspace = true, optional = true }
 rd-net = { workspace = true, optional = true }
 rdrive.workspace = true
 spin = {workspace = true, optional = true}

@@ -5,9 +5,12 @@ app_dir="${STARRY_APP_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"
 base_rootfs="${STARRY_ROOTFS:-}"
 staging_root="${STARRY_STAGING_ROOT:-}"
 overlay_dir="${STARRY_OVERLAY_DIR:-}"
-apk_cache="${STARRY_WORKSPACE:-$(cd "$app_dir/../../.." && pwd)}/target/gdb-smoke-apk-cache"
-host_artifact_dir="${STARRY_WORKSPACE:-$(cd "$app_dir/../../.." && pwd)}/target/gdb-smoke-host"
+arch="${STARRY_ARCH:-}"
+workspace="${STARRY_WORKSPACE:-$(cd "$app_dir/../../.." && pwd)}"
+apk_cache="$workspace/target/gdb-smoke-apk-cache/${arch:-unknown}"
+host_artifact_dir="$workspace/target/gdb-smoke-host"
 qemu_runner=""
+linux_target=""
 lld_linker=""
 lld_linker_dir=""
 
@@ -58,12 +61,33 @@ extract_base_rootfs() {
 }
 
 find_qemu_runner() {
-    if command -v qemu-riscv64-static >/dev/null 2>&1; then
-        qemu_runner="$(command -v qemu-riscv64-static)"
-    elif command -v qemu-riscv64 >/dev/null 2>&1; then
-        qemu_runner="$(command -v qemu-riscv64)"
+    local qemu_name
+
+    case "$arch" in
+        riscv64)
+            qemu_name=qemu-riscv64
+            linux_target=riscv64-linux-musl
+            ;;
+        aarch64)
+            qemu_name=qemu-aarch64
+            linux_target=aarch64-linux-musl
+            ;;
+        loongarch64)
+            qemu_name=qemu-loongarch64
+            linux_target=loongarch64-linux-musl
+            ;;
+        *)
+            echo "error: unsupported gdb-smoke arch: $arch" >&2
+            exit 1
+            ;;
+    esac
+
+    if command -v "${qemu_name}-static" >/dev/null 2>&1; then
+        qemu_runner="$(command -v "${qemu_name}-static")"
+    elif command -v "$qemu_name" >/dev/null 2>&1; then
+        qemu_runner="$(command -v "$qemu_name")"
     else
-        echo "error: qemu-riscv64-static or qemu-riscv64 is required" >&2
+        echo "error: ${qemu_name}-static or ${qemu_name} is required" >&2
         exit 1
     fi
 }
@@ -122,7 +146,7 @@ compile_target() {
 
     install -d "$(dirname "$overlay_dir$output")"
     clang \
-        --target=riscv64-linux-musl \
+        --target="$linux_target" \
         --sysroot="$staging_root" \
         --gcc-toolchain="$staging_root/usr" \
         --ld-path="$lld_linker" \
@@ -211,6 +235,8 @@ populate_overlay() {
         -Wall -Wextra -Werror -O0 -g -pthread
     install -Dm0755 "$overlay_dir/usr/bin/gdbserver-smoke-target" \
         "$host_artifact_dir/gdbserver-smoke-target"
+    install -Dm0755 "$overlay_dir/usr/bin/gdbserver-smoke-target" \
+        "$host_artifact_dir/$arch/gdbserver-smoke-target"
 
     copy_file_to_overlay /usr/bin/gdb 0755
     copy_file_to_overlay /usr/bin/gdbserver 0755
@@ -240,6 +266,7 @@ populate_overlay() {
 require_env STARRY_ROOTFS "$base_rootfs"
 require_env STARRY_STAGING_ROOT "$staging_root"
 require_env STARRY_OVERLAY_DIR "$overlay_dir"
+require_env STARRY_ARCH "$arch"
 
 ensure_host_packages
 extract_base_rootfs

@@ -12,8 +12,11 @@ mod request;
 pub use dma_api;
 pub use error::BlkError;
 pub use info::{DeviceInfo, QueueInfo, QueueLimits};
-pub use interface::{IQueue, Interface};
-pub use irq::{Event, IdList, IrqHandler, IrqSourceInfo, IrqSourceList};
+pub use interface::{CompletionSink, IQueue, Interface};
+pub use irq::{
+    CompletionHint, CompletionIds, CompletionList, Event, IdList, IrqHandler, IrqSourceInfo,
+    IrqSourceList, MAX_BATCH_COMPLETION_IDS, MAX_COMPLETION_HINTS,
+};
 pub use planner::{
     TransferChunk, TransferPlan, TransferPlanner, TransferRuntimeCaps, TransferSegment,
     TransferSegments,

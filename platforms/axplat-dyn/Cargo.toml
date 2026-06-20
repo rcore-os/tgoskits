@@ -1,6 +1,6 @@
 [package]
 name = "axplat-dyn"
-version = "0.7.2"
+version = "0.7.3"
 authors = ["周睿 <zrufo747@outlook.com>"]
 categories.workspace = true
 description = "A dynamic platform module for ArceOS, providing runtime platform detection and configuration"

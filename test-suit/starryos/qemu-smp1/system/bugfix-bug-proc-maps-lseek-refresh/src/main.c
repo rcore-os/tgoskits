@@ -63,13 +63,14 @@ static int has_vma_prefix(
     const char *perms
 )
 {
-    char needle[64];
+    const int addr_width = (int)sizeof(void *) * 2;
+    char needle[80];
     const int needle_len = snprintf(
         needle,
         sizeof(needle),
-        "%08lx-%08lx %s",
-        (unsigned long)start,
-        (unsigned long)end,
+        "%0*lx-%0*lx %s",
+        addr_width, (unsigned long)start,
+        addr_width, (unsigned long)end,
         perms
     );
     const char *line = maps;

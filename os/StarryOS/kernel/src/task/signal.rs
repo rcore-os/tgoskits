@@ -253,7 +253,12 @@ fn ptrace_stop_current_impl(
         }));
     }
 
-    #[cfg(target_arch = "riscv64")]
+    #[cfg(any(
+        target_arch = "riscv64",
+        target_arch = "aarch64",
+        target_arch = "loongarch64",
+        target_arch = "x86_64"
+    ))]
     {
         thr.proc_data.save_current_fp_for_ptrace(tid);
     }
@@ -283,7 +288,8 @@ fn notify_ptrace_waiter(thr: &Thread, signo: Signo) {
             signo as i32,
         );
         let _ = send_signal_to_process(waiter_pid, Some(sigchld));
-        parent_data.child_exit_event.wake();
+        // Ptrace stop report is published before waking waiters.
+        unsafe { parent_data.child_exit_event.wake(axpoll::IoEvents::IN) };
     }
 }
 
@@ -412,7 +418,8 @@ fn notify_parent_job_change(proc_data: &ProcessData, code: i32, status: i32) {
     let sig = SignalInfo::new_sigchld(proc.pid(), child_uid, code, status);
     let _ = send_signal_to_process(parent.pid(), Some(sig));
     if let Ok(data) = get_process_data(parent.pid()) {
-        data.child_exit_event.wake();
+        // Job-control report is published before waking waiters.
+        unsafe { data.child_exit_event.wake(axpoll::IoEvents::IN) };
     }
 }
 
@@ -451,7 +458,8 @@ fn do_job_stop(thr: &Thread, signo: Signo) {
         if !proc_data.is_job_stopped() {
             return Poll::Ready(());
         }
-        cont_event.register(cx.waker());
+        // Registration happens from the stopped task context.
+        unsafe { cont_event.register(cx.waker(), axpoll::IoEvents::IN) };
         // Re-check after registering to avoid a lost wakeup if the continue
         // landed between the check above and registration.
         if proc_data.is_job_stopped() {

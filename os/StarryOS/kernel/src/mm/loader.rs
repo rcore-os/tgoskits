@@ -4,7 +4,7 @@ use alloc::{borrow::ToOwned, string::String, vec, vec::Vec};
 use core::{ffi::CStr, iter};
 
 use ax_errno::{AxError, AxResult};
-use ax_fs::{CachedFile, FS_CONTEXT, FileBackend};
+use ax_fs_ng::vfs::{CachedFile, FS_CONTEXT, FileBackend};
 use ax_memory_addr::{MemoryAddr, PAGE_SIZE_4K, VirtAddr};
 use ax_runtime::hal::{
     mem::virt_to_phys,
@@ -107,12 +107,36 @@ fn map_elf<'a>(
     let elf_parser = ELFParser::new(entry.borrow_elf(), base).map_err(|_| AxError::InvalidData)?;
     let cache = entry.borrow_cache();
 
-    for ph in elf_parser
+    // PT_TLS init image may extend beyond the last PT_LOAD's file range.
+    // This assumes the PT_TLS file data is contiguous with and immediately
+    // follows the last PT_LOAD segment's file extent, which is the standard
+    // layout produced by GNU ld and LLVM lld.
+    // Compute the maximum file offset needed so the COW backend can serve
+    // TLS init-image page faults for the dynamic linker.
+    let tls_max_offset: u64 = elf_parser
+        .headers()
+        .ph
+        .iter()
+        .filter(|ph| ph.get_type() == Ok(xmas_elf::program::Type::Tls))
+        .map(|ph| {
+            debug!(
+                "PT_TLS: vaddr={:#x} memsz={:#x} filesz={:#x} offset={:#x}",
+                ph.virtual_addr, ph.mem_size, ph.file_size, ph.offset
+            );
+            ph.offset + ph.file_size
+        })
+        .max()
+        .unwrap_or(0);
+
+    let load_segments: Vec<_> = elf_parser
         .headers()
         .ph
         .iter()
         .filter(|ph| ph.get_type() == Ok(xmas_elf::program::Type::Load))
-    {
+        .collect();
+    let last_load_idx = load_segments.len().wrapping_sub(1);
+
+    for (i, ph) in load_segments.iter().enumerate() {
         let vaddr = ph.virtual_addr as usize + elf_parser.base();
         debug!(
             "Mapping ELF segment: [{:#x?}, {:#x?}) flags: {}",
@@ -129,12 +153,17 @@ fn map_elf<'a>(
 
         // Note that `offset` might not be aligned to 4K here, and it's
         // backend's responsibility to properly handle it.
+        let file_end = if i == last_load_idx && tls_max_offset > ph.offset + ph.file_size {
+            tls_max_offset
+        } else {
+            ph.offset + ph.file_size
+        };
         let backend = Backend::new_cow(
             seg_start,
             PageSize::Size4K,
             FileBackend::Cached(cache.clone()),
             ph.offset,
-            Some(ph.offset + ph.file_size),
+            Some(file_end),
             false,
         );
         uspace.map(
@@ -144,8 +173,6 @@ fn map_elf<'a>(
             false,
             backend,
         )?;
-
-        // TDOO: flush the I-cache
     }
 
     // Apply relocations for static-pie binaries
@@ -429,7 +456,7 @@ struct ElfCacheEntry {
 
 impl ElfCacheEntry {
     fn load(loc: Location) -> AxResult<Result<Self, Vec<u8>>> {
-        let cache = CachedFile::get_or_create(loc);
+        let cache = CachedFile::get_or_create(loc)?;
 
         let mut data = vec![0; 4096];
         let read = cache.read_at(&mut data[..], 0)?;
@@ -573,14 +600,22 @@ impl ElfLoader {
             ldso.as_ref()
                 .map_or_else(|| elf.entry(), |ldso| ldso.entry()),
         );
+        let has_ldso = ldso.is_some();
         let mut auxv = elf
             .aux_vector(PAGE_SIZE_4K, ldso.map(|elf| elf.base()))
             .collect::<Vec<_>>();
-        // `aux_vector()` only emits PHDR/PHENT/PHNUM/PAGESZ/ENTRY (+BASE). Add
-        // AT_HWCAP so `getauxval(AT_HWCAP)` returns the CPU capability bits the
-        // kernel actually provides (notably LSX on loongarch64, which numpy
-        // requires to import). See `hwcap_value()` for the per-arch policy.
         auxv.push(AuxEntry::new(AuxType::HWCAP, hwcap_value()));
+        auxv.push(AuxEntry::new(AuxType::NULL, 0));
+
+        debug!(
+            "loader: entry={:#x} auxv_len={} has_ldso={} auxv_last_type={}",
+            entry.as_usize(),
+            auxv.len(),
+            has_ldso,
+            auxv.last()
+                .map(|e| e.get_type() as usize)
+                .unwrap_or(usize::MAX),
+        );
 
         Ok(Ok((entry, auxv)))
     }

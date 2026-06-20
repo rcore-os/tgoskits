@@ -70,6 +70,8 @@ pub mod vsock;
 
 #[cfg(feature = "pci")]
 pub mod pci;
+#[cfg(feature = "rga")]
+pub mod rga;
 #[cfg(feature = "rknpu")]
 pub mod rknpu;
 #[cfg(feature = "serial")]

@@ -29,7 +29,7 @@ use core::{
 };
 
 use ax_errno::{AxError, AxResult};
-use ax_fs::FileFlags;
+use ax_fs_ng::vfs::FileFlags;
 use ax_io::{IoBuf, SeekFrom, prelude::*};
 use ax_memory_addr::VirtAddr;
 use ax_memory_set::MemoryArea;
@@ -84,6 +84,10 @@ impl Memfd {
 
     pub fn inner(&self) -> &Arc<File> {
         &self.inner
+    }
+
+    pub fn name(&self) -> &str {
+        &self.name
     }
 
     pub fn get_seals(&self) -> u32 {
@@ -460,7 +464,7 @@ impl FileLike for Memfd {
         format!("/memfd:{}", self.name).into()
     }
 
-    fn file_mmap(&self) -> AxResult<(ax_fs::FileBackend, ax_fs::FileFlags)> {
+    fn file_mmap(&self) -> AxResult<(ax_fs_ng::vfs::FileBackend, ax_fs_ng::vfs::FileFlags)> {
         // Reuse the inner File's mmap path so file-backed shared/private
         // mappings on memfd fds work the same as on regular files. Seal
         // enforcement for `MAP_SHARED|PROT_WRITE` runs in `sys_mmap`

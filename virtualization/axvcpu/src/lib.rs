@@ -40,10 +40,10 @@ mod test; // Unit tests for VCpu functionality
 mod vcpu; // Main VCpu implementation and state management
 
 // Public API exports
-pub use arch_vcpu::{AxArchVCpu, InterruptTriggerMode}; // Architecture-specific VCpu trait
+pub use arch_vcpu::AxArchVCpu; // Architecture-specific VCpu trait
 pub use ax_page_table_entry::MappingFlags;
 pub use axdevice_base::{AccessWidth, Port, SysRegAddr};
-pub use axvm_types::{GuestPhysAddr, HostPhysAddr, VCpuId, VMId};
+pub use axvm_types::{GuestPhysAddr, HostPhysAddr, InterruptTriggerMode, VCpuId, VMId};
 pub use exit::{AxVCpuExitReason, NestedPageFaultInfo};
 pub use percpu::{AxArchPerCpu, AxPerCpu}; // Per-CPU state management types
 pub use vcpu::{

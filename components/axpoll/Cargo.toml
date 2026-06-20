@@ -25,7 +25,7 @@ spin = { version = "0.12", default-features = false, features = [
 ] }
 
 [dev-dependencies]
-ax-kspin = { workspace = true, features = ["host-test"] }
+ax-kspin = { workspace = true, features = ["host-test", "smp"] }
 tokio = { version = "1.37", features = [
     "rt-multi-thread",
     "macros",

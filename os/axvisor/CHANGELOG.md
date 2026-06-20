@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.12](https://github.com/rcore-os/tgoskits/compare/axvisor-v0.5.11...axvisor-v0.5.12) - 2026-06-12
+
+### Other
+
+- *(ax-net)* unify network stack into single net/ax-net crate, r… ([#1203](https://github.com/rcore-os/tgoskits/pull/1203))
+
 ## [0.5.11](https://github.com/rcore-os/tgoskits/compare/axvisor-v0.5.10...axvisor-v0.5.11) - 2026-06-11
 
 ### Added

@@ -300,7 +300,7 @@ kernel_bin=...
 
 排查依据：
 
-- Cargo build 成功后还要运行 `starry-kallsyms.sh`；
+- Cargo build 成功后还要生成并写入 `.kallsyms`；
 - guest rootfs 内不一定存在 `rust-nm`、`rust-objdump`、`rust-objcopy`、`gen_ksym`；
 - 这些工具缺失会导致最终 kernel artifact 不能完成后处理。
 
@@ -310,7 +310,7 @@ kernel_bin=...
 - 如果 guest 没有 `rust-objdump`，用 `llvm-objdump` 包装；
 - 如果 guest 没有 `rust-objcopy`，用 `llvm-objcopy` 包装；
 - 从离线 Cargo cache 中安装 `ksym` crate 的 `gen_ksym`；
-- Cargo build 成功后自动运行 `starry-kallsyms.sh`，再复制最终 ELF 和 `.bin`。
+- Cargo build 成功后自动执行 guest 内联 kallsyms 后处理，再复制最终 ELF 和 `.bin`。
 
 涉及文件：
 
@@ -326,14 +326,14 @@ kernel_bin=...
 
 修复：
 
-- `starry-kallsyms.sh` 优先使用 `truncate -s` 补齐 `.kallsyms`；
+- guest kallsyms 后处理优先使用 `truncate -s` 补齐 `.kallsyms`；
 - 无 `truncate` 时使用 MiB 级大块 `dd`，避免 `dd bs=1`；
 - linker script 支持 `STARRY_KALLSYMS_RESERVED`；
 - guest self-build 默认使用 `STARRY_KALLSYMS_RESERVED=64M`。
 
 涉及文件：
 
-- `scripts/axbuild/scripts/starry-kallsyms.sh`
+- `apps/starry/macos-selfbuild/guest-selfbuild.sh`
 - `os/StarryOS/starryos/build.rs`
 - `os/StarryOS/starryos/linker.ld`
 
@@ -494,7 +494,7 @@ apps/starry/macos-selfbuild/reproduce.sh
 ```bash
 cargo fmt
 git diff --check
-bash -n apps/starry/macos-selfbuild/*.sh scripts/axbuild/scripts/starry-kallsyms.sh
+bash -n apps/starry/macos-selfbuild/*.sh
 cargo clippy --no-deps -p rsext4 -- -D warnings
 docker run --rm --privileged --platform linux/amd64 \
   -v "$PWD":/workspace -w /workspace \

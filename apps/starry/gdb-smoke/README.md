@@ -1,7 +1,9 @@
 # StarryOS GDB Smoke
 
-This app prepares a RISC-V Alpine rootfs overlay with guest `gdb`, `gdbserver`,
-and tiny target programs for StarryOS user-space debugger smoke testing.
+This app prepares an Alpine rootfs overlay with guest `gdb`, `gdbserver`, and
+tiny target programs for StarryOS user-space debugger smoke testing. The native
+GDB smoke and the single-process gdbserver smoke are available on riscv64,
+aarch64, and loongarch64.
 
 ## Batch Native GDB Smoke
 
@@ -9,6 +11,18 @@ Use this command for the automated native GDB batch smoke:
 
 ```bash
 cargo xtask starry app qemu -t gdb-smoke --arch riscv64
+```
+
+For the current aarch64 native GDB baseline:
+
+```bash
+cargo xtask starry app qemu -t gdb-smoke --arch aarch64
+```
+
+For the current LoongArch native GDB baseline:
+
+```bash
+cargo xtask starry app qemu -t gdb-smoke --arch loongarch64
 ```
 
 The batch script runs:
@@ -101,9 +115,27 @@ cargo xtask starry app qemu -t gdb-smoke --arch riscv64 \
   --qemu-config qemu-riscv64-gdbserver.toml
 ```
 
+For aarch64:
+
+```bash
+cargo xtask starry app qemu -t gdb-smoke --arch aarch64 \
+  --qemu-config qemu-aarch64-gdbserver.toml
+```
+
+For LoongArch:
+
+```bash
+cargo xtask starry app qemu -t gdb-smoke --arch loongarch64 \
+  --qemu-config qemu-loongarch64-gdbserver.toml
+```
+
 The default gdbserver script connects to `127.0.0.1:1234`, breaks on
 `compute_value`, prints a backtrace, deletes the breakpoint, and continues the
 remote target.
+
+On LoongArch, gdbserver can print legacy regset warnings while probing
+unsupported optional register paths. The single-process smoke still passes when
+breakpoint, backtrace, continue, and target exit markers complete.
 
 Remote pthread gdbserver coverage is opt-in because it is slower and exercises
 the heavier clone/thread event path:
@@ -140,6 +172,20 @@ cargo xtask starry app qemu -t gdb-smoke --arch riscv64 \
   --qemu-config qemu-riscv64-gdbserver-manual.toml
 ```
 
+For aarch64:
+
+```bash
+cargo xtask starry app qemu -t gdb-smoke --arch aarch64 \
+  --qemu-config qemu-aarch64-gdbserver-manual.toml
+```
+
+For LoongArch:
+
+```bash
+cargo xtask starry app qemu -t gdb-smoke --arch loongarch64 \
+  --qemu-config qemu-loongarch64-gdbserver-manual.toml
+```
+
 When running through the long-lived Docker container, keep stdin and a TTY
 attached:
 
@@ -168,8 +214,24 @@ gdb-multiarch -q -x apps/starry/gdb-smoke/gdbserver/host-manual.gdb \
   target/gdb-smoke-host/gdbserver-smoke-target
 ```
 
+For aarch64, use the architecture-specific script and symbol copy:
+
+```bash
+gdb-multiarch -q -x apps/starry/gdb-smoke/gdbserver/host-manual-aarch64.gdb \
+  target/gdb-smoke-host/aarch64/gdbserver-smoke-target
+```
+
+For LoongArch:
+
+```bash
+gdb-multiarch -q -x apps/starry/gdb-smoke/gdbserver/host-manual-loongarch64.gdb \
+  target/gdb-smoke-host/loongarch64/gdbserver-smoke-target
+```
+
 `host-manual.gdb` sets the riscv64 remote debugging defaults and connects to
-`:1234`, but leaves you at the GDB prompt for manual commands.
+`:1234`; `host-manual-aarch64.gdb` and `host-manual-loongarch64.gdb` do the
+same for aarch64 and LoongArch. All scripts leave you at the GDB prompt for
+manual commands.
 
 Inside host GDB:
 
@@ -194,6 +256,20 @@ cargo xtask starry app qemu -t gdb-smoke --arch riscv64 \
   --qemu-config qemu-riscv64-gdbserver-host.toml
 ```
 
+For aarch64:
+
+```bash
+cargo xtask starry app qemu -t gdb-smoke --arch aarch64 \
+  --qemu-config qemu-aarch64-gdbserver-host.toml
+```
+
+For LoongArch:
+
+```bash
+cargo xtask starry app qemu -t gdb-smoke --arch loongarch64 \
+  --qemu-config qemu-loongarch64-gdbserver-host.toml
+```
+
 This automatic config starts guest `gdbserver` for you and is intended for
 repeatable logs rather than manual interaction.
 
@@ -202,6 +278,20 @@ Then run the batch host script:
 ```bash
 gdb-multiarch -q -batch -x apps/starry/gdb-smoke/gdbserver/host-remote.gdb \
   target/gdb-smoke-host/gdbserver-smoke-target
+```
+
+For aarch64:
+
+```bash
+gdb-multiarch -q -batch -x apps/starry/gdb-smoke/gdbserver/host-remote-aarch64.gdb \
+  target/gdb-smoke-host/aarch64/gdbserver-smoke-target
+```
+
+For LoongArch:
+
+```bash
+gdb-multiarch -q -batch -x apps/starry/gdb-smoke/gdbserver/host-remote-loongarch64.gdb \
+  target/gdb-smoke-host/loongarch64/gdbserver-smoke-target
 ```
 
 `-batch` runs the scripted host GDB flow and exits after the marker output.

@@ -3,7 +3,7 @@ pub mod event;
 mod fs;
 pub mod inotify;
 pub mod io_uring;
-#[cfg(all(feature = "sg2002", not(feature = "plat-dyn")))]
+#[cfg(feature = "sg2002")]
 pub mod ion;
 pub mod memfd;
 mod net;
@@ -14,6 +14,7 @@ mod pidfd;
 mod pipe;
 pub mod signalfd;
 pub mod timerfd;
+mod wext;
 
 use alloc::{
     alloc::{alloc_zeroed, handle_alloc_error},
@@ -24,7 +25,7 @@ use alloc::{
 use core::{alloc::Layout, ffi::c_int, ptr::NonNull, time::Duration};
 
 use ax_errno::{AxError, AxResult};
-use ax_fs::{FS_CONTEXT, FileBackend, FileFlags, OpenOptions};
+use ax_fs_ng::vfs::{FS_CONTEXT, FileBackend, FileFlags, OpenOptions};
 use ax_io::prelude::*;
 use ax_task::current;
 use axfs_ng_vfs::DeviceId;
@@ -38,7 +39,7 @@ use linux_raw_sys::general::{
 use spin::RwLock;
 
 pub use self::{
-    fs::{Directory, File, resolve_at, with_fs},
+    fs::{Directory, File, ResolveAtResult, resolve_at, with_fs},
     io_uring::IoUring,
     net::Socket,
     nsfd::NsFd,

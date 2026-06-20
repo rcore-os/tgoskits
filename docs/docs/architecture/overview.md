@@ -102,6 +102,12 @@ Axvisor 是基于 ArceOS 的统一组件化 Type-I Hypervisor，建立在 ArceOS
 
 → 详细设计见 [rdrive + rdif 驱动框架](./rdrive-rdif)
 
+## 网络栈架构
+
+网络栈能力收敛在 `net/ax-net`，对上提供 TCP、UDP、raw socket、DNS、DHCP、ARP、poll/waker 等统一 API，对下通过 `rd-net` 设备适配真实网卡。多网口方案保持单 `smoltcp::iface::Interface + SocketSet` 协议栈模型，通过接口 registry、路由表、设备队列和 net-poll worker 管理多个接口。
+
+→ 详细设计见 [网络栈架构](./net/overview)
+
 ## 核心层次
 
 TGOSKits 按职责将 crate 组织为六个核心层次和一个辅助层，每一层都面向明确的职责边界。上层依赖下层，但下层不感知上层——这一原则使得同一套组件可以同时服务于多个系统。

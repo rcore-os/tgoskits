@@ -8,6 +8,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/prctl.h>
 #include <sys/ptrace.h>
 #include <sys/syscall.h>
 #include <sys/uio.h>
@@ -43,6 +44,9 @@
 #endif
 #ifndef PTRACE_ATTACH
 #define PTRACE_ATTACH 16
+#endif
+#ifndef PTRACE_SEIZE
+#define PTRACE_SEIZE 0x4206
 #endif
 #ifndef PTRACE_KILL
 #define PTRACE_KILL 8
@@ -87,6 +91,13 @@
 #define PTRACE_EVENT_VFORK_DONE 5
 #define PTRACE_EVENT_EXIT 6
 
+#define ARCH_RISCV 0
+#define ARCH_AARCH64 0
+#define ARCH_LOONGARCH 0
+
+#if defined(__riscv)
+#undef ARCH_RISCV
+#define ARCH_RISCV 1
 struct riscv_user_regs {
     unsigned long pc;
     unsigned long ra;
@@ -121,11 +132,141 @@ struct riscv_user_regs {
     unsigned long t5;
     unsigned long t6;
 };
+typedef struct riscv_user_regs arch_user_regs;
 
 struct riscv_user_fpregs {
     unsigned long f[32];
     unsigned long fcsr;
 };
+typedef struct riscv_user_fpregs arch_user_fpregs;
+
+#define PTRACE_GDB_REG_PC(r) ((r)->pc)
+#define PTRACE_GDB_REG_SP(r) ((r)->sp)
+#define PTRACE_GDB_REG_A0(r) ((r)->a0)
+#define PTRACE_GDB_REG_A1(r) ((r)->a1)
+#define PTRACE_GDB_REG_A2(r) ((r)->a2)
+#define PTRACE_GDB_REG_A3(r) ((r)->a3)
+#define PTRACE_GDB_REG_A7(r) ((r)->a7)
+#define PTRACE_GDB_REG_S0(r) ((r)->s0)
+
+#elif defined(__aarch64__)
+#undef ARCH_AARCH64
+#define ARCH_AARCH64 1
+struct aarch64_user_regs {
+    unsigned long regs[31];
+    unsigned long sp;
+    unsigned long pc;
+    unsigned long pstate;
+};
+typedef struct aarch64_user_regs arch_user_regs;
+
+struct aarch64_user_fpregs {
+    __uint128_t vregs[32];
+    uint32_t fpsr;
+    uint32_t fpcr;
+    uint32_t reserved[2];
+};
+typedef struct aarch64_user_fpregs arch_user_fpregs;
+
+#define PTRACE_GDB_REG_PC(r) ((r)->pc)
+#define PTRACE_GDB_REG_SP(r) ((r)->sp)
+#define PTRACE_GDB_REG_A0(r) ((r)->regs[0])
+#define PTRACE_GDB_REG_A1(r) ((r)->regs[1])
+#define PTRACE_GDB_REG_A2(r) ((r)->regs[2])
+#define PTRACE_GDB_REG_A3(r) ((r)->regs[3])
+#define PTRACE_GDB_REG_A7(r) ((r)->regs[8])
+#define PTRACE_GDB_REG_S0(r) ((r)->regs[19])
+
+#elif defined(__loongarch__) || defined(__loongarch64)
+#undef ARCH_LOONGARCH
+#define ARCH_LOONGARCH 1
+struct loongarch_user_regs {
+    unsigned long regs[32];
+    unsigned long orig_a0;
+    unsigned long csr_era;
+    unsigned long csr_badv;
+    unsigned long reserved[10];
+};
+_Static_assert(sizeof(struct loongarch_user_regs) == 45 * sizeof(unsigned long),
+               "loongarch NT_PRSTATUS must match Linux user_pt_regs");
+typedef struct loongarch_user_regs arch_user_regs;
+
+struct loongarch_user_fpregs {
+    unsigned long fpr[32];
+    unsigned long fcc;
+    uint32_t fcsr;
+};
+typedef struct loongarch_user_fpregs arch_user_fpregs;
+
+#define PTRACE_GDB_REG_PC(r) ((r)->csr_era)
+#define PTRACE_GDB_REG_SP(r) ((r)->regs[3])
+#define PTRACE_GDB_REG_A0(r) ((r)->regs[4])
+#define PTRACE_GDB_REG_A1(r) ((r)->regs[5])
+#define PTRACE_GDB_REG_A2(r) ((r)->regs[6])
+#define PTRACE_GDB_REG_A3(r) ((r)->regs[7])
+#define PTRACE_GDB_REG_A7(r) ((r)->regs[11])
+#define PTRACE_GDB_REG_S0(r) ((r)->regs[23])
+
+#else
+#error "test-ptrace-gdb needs an architecture register layout"
+#endif
+
+static void fpregs_set_f0(arch_user_fpregs *regs, unsigned long value)
+{
+#if ARCH_RISCV
+    regs->f[0] = value;
+#elif ARCH_AARCH64
+    regs->vregs[0] = (__uint128_t)value;
+#elif ARCH_LOONGARCH
+    regs->fpr[0] = value;
+#endif
+}
+
+static void fpregs_set_f1(arch_user_fpregs *regs, unsigned long value)
+{
+#if ARCH_RISCV
+    regs->f[1] = value;
+#elif ARCH_AARCH64
+    regs->vregs[1] = (__uint128_t)value;
+#elif ARCH_LOONGARCH
+    regs->fpr[1] = value;
+#endif
+}
+
+static unsigned long fpregs_get_f0(const arch_user_fpregs *regs)
+{
+#if ARCH_RISCV
+    return regs->f[0];
+#elif ARCH_AARCH64
+    return (unsigned long)regs->vregs[0];
+#elif ARCH_LOONGARCH
+    return regs->fpr[0];
+#endif
+}
+
+static unsigned long fpregs_get_f1(const arch_user_fpregs *regs)
+{
+#if ARCH_RISCV
+    return regs->f[1];
+#elif ARCH_AARCH64
+    return (unsigned long)regs->vregs[1];
+#elif ARCH_LOONGARCH
+    return regs->fpr[1];
+#endif
+}
+
+static unsigned long read_f0_bits(void)
+{
+    unsigned long f0_bits = 0;
+#if ARCH_RISCV
+    __asm__ volatile("fmv.x.d %0, f0" : "=r"(f0_bits));
+#elif ARCH_AARCH64
+    __asm__ volatile("fmov %0, d0" : "=r"(f0_bits));
+#elif ARCH_LOONGARCH
+    __asm__ volatile("movfr2gr.d %0, $f0" : "=r"(f0_bits));
+#endif
+    return f0_bits;
+}
 
 static int fail(const char *msg)
 {
@@ -133,16 +274,20 @@ static int fail(const char *msg)
     return 1;
 }
 
-static int get_regs(pid_t pid, struct riscv_user_regs *regs)
+static int get_regs(pid_t pid, arch_user_regs *regs)
 {
     struct iovec iov = {.iov_base = regs, .iov_len = sizeof(*regs)};
     if (ptrace(PTRACE_GETREGSET, pid, (void *)NT_PRSTATUS, &iov) != 0) {
         return -1;
     }
+    if (iov.iov_len != sizeof(*regs)) {
+        errno = EINVAL;
+        return -1;
+    }
     return 0;
 }
 
-static int set_regs(pid_t pid, struct riscv_user_regs *regs)
+static int set_regs(pid_t pid, arch_user_regs *regs)
 {
     struct iovec iov = {.iov_base = regs, .iov_len = sizeof(*regs)};
     if (ptrace(PTRACE_SETREGSET, pid, (void *)NT_PRSTATUS, &iov) != 0) {
@@ -184,6 +329,7 @@ static int wait_stop(pid_t pid, int expected_sig)
     return 0;
 }
 
+#if ARCH_RISCV
 __attribute__((naked, noinline, aligned(4))) static void ss_step_target(void)
 {
     __asm__ volatile(
@@ -273,6 +419,139 @@ __attribute__((naked, noinline, aligned(4))) static void ss_c_jr_landing(void)
         "addi a2, zero, 777\n"
         "ebreak\n");
 }
+#elif ARCH_AARCH64
+__attribute__((naked, noinline, aligned(4))) static void ss_step_target(void)
+{
+    __asm__ volatile(
+        "mov x0, #123\n"
+        "brk #0\n");
+}
+
+__attribute__((naked, noinline, aligned(4))) static void ss_b_target(void)
+{
+    __asm__ volatile(
+        "b 1f\n"
+        "mov x2, #111\n"
+        "brk #0\n"
+        "1:\n"
+        "mov x2, #222\n"
+        "brk #0\n");
+}
+
+__attribute__((naked, noinline, aligned(4))) static void ss_cbz_target(void)
+{
+    __asm__ volatile(
+        "cbz x0, 1f\n"
+        "mov x2, #111\n"
+        "brk #0\n"
+        "1:\n"
+        "mov x2, #333\n"
+        "brk #0\n");
+}
+
+__attribute__((naked, noinline, aligned(4))) static void ss_tbnz_target(void)
+{
+    __asm__ volatile(
+        "tbnz x0, #0, 1f\n"
+        "mov x2, #111\n"
+        "brk #0\n"
+        "1:\n"
+        "mov x2, #444\n"
+        "brk #0\n");
+}
+
+__attribute__((naked, noinline, aligned(4))) static void ss_br_target(void)
+{
+    __asm__ volatile(
+        "br x3\n"
+        "mov x2, #111\n"
+        "brk #0\n");
+}
+
+__attribute__((naked, noinline, aligned(4))) static void ss_br_landing(void)
+{
+    __asm__ volatile(
+        "mov x2, #555\n"
+        "brk #0\n");
+}
+#elif ARCH_LOONGARCH
+__attribute__((naked, noinline, aligned(4))) static void ss_step_target(void)
+{
+    __asm__ volatile(
+        "addi.d $a0, $zero, 123\n"
+        "break 0\n");
+}
+
+__attribute__((naked, noinline, aligned(4))) static void ss_b_target(void)
+{
+    __asm__ volatile(
+        "b 1f\n"
+        "addi.d $a2, $zero, 222\n"
+        "break 0\n"
+        "1:\n"
+        "addi.d $a2, $zero, 333\n"
+        "break 0\n");
+}
+
+__attribute__((naked, noinline, aligned(4))) static void ss_beq_target(void)
+{
+    __asm__ volatile(
+        "beq $a0, $a1, 1f\n"
+        "addi.d $a2, $zero, 111\n"
+        "break 0\n"
+        "1:\n"
+        "addi.d $a2, $zero, 444\n"
+        "break 0\n");
+}
+
+__attribute__((naked, noinline, aligned(4))) static void ss_blt_target(void)
+{
+    __asm__ volatile(
+        "blt $a0, $a1, 1f\n"
+        "addi.d $a2, $zero, 111\n"
+        "break 0\n"
+        "1:\n"
+        "addi.d $a2, $zero, 555\n"
+        "break 0\n");
+}
+
+__attribute__((naked, noinline, aligned(4))) static void ss_beqz_target(void)
+{
+    __asm__ volatile(
+        "beqz $a0, 1f\n"
+        "addi.d $a2, $zero, 111\n"
+        "break 0\n"
+        "1:\n"
+        "addi.d $a2, $zero, 777\n"
+        "break 0\n");
+}
+
+__attribute__((naked, noinline, aligned(4))) static void ss_bnez_target(void)
+{
+    __asm__ volatile(
+        "bnez $a0, 1f\n"
+        "addi.d $a2, $zero, 111\n"
+        "break 0\n"
+        "1:\n"
+        "addi.d $a2, $zero, 888\n"
+        "break 0\n");
+}
+
+__attribute__((naked, noinline, aligned(4))) static void ss_jirl_target(void)
+{
+    __asm__ volatile(
+        "jirl $zero, $a3, 0\n"
+        "addi.d $a2, $zero, 111\n"
+        "break 0\n");
+}
+
+__attribute__((naked, noinline, aligned(4))) static void ss_jirl_landing(void)
+{
+    __asm__ volatile(
+        "addi.d $a2, $zero, 666\n"
+        "break 0\n");
+}
+#endif
 
 static int wait_sigtrap(pid_t pid)
 {
@@ -285,8 +564,9 @@ static int wait_sigtrap(pid_t pid)
     return 0;
 }
 
+#if ARCH_RISCV || ARCH_AARCH64 || ARCH_LOONGARCH
 static int check_singlestep_stops_before_target_side_effect(pid_t pid,
-                                                           struct riscv_user_regs *regs,
+                                                           arch_user_regs *regs,
                                                            unsigned long pc,
                                                            unsigned long a0,
                                                            unsigned long a1,
@@ -298,12 +578,12 @@ static int check_singlestep_stops_before_target_side_effect(pid_t pid,
     if (get_regs(pid, regs) != 0) {
         return fail("getregset before control-flow singlestep");
     }
-    regs->pc = pc;
-    regs->a0 = a0;
-    regs->a1 = a1;
-    regs->a2 = 0;
-    regs->a3 = a3;
-    regs->s0 = s0;
+    PTRACE_GDB_REG_PC(regs) = pc;
+    PTRACE_GDB_REG_A0(regs) = a0;
+    PTRACE_GDB_REG_A1(regs) = a1;
+    PTRACE_GDB_REG_A2(regs) = 0;
+    PTRACE_GDB_REG_A3(regs) = a3;
+    PTRACE_GDB_REG_S0(regs) = s0;
     if (set_regs(pid, regs) != 0) {
         return fail("setregset control-flow singlestep target");
     }
@@ -311,11 +591,11 @@ static int check_singlestep_stops_before_target_side_effect(pid_t pid,
     if (get_regs(pid, regs) != 0) {
         return fail("getregset after setting control-flow singlestep target");
     }
-    if (regs->pc != pc || regs->a0 != a0 || regs->a1 != a1 || regs->a2 != 0
-        || regs->a3 != a3 || regs->s0 != s0) {
+    if (PTRACE_GDB_REG_PC(regs) != pc || PTRACE_GDB_REG_A0(regs) != a0 || PTRACE_GDB_REG_A1(regs) != a1 || PTRACE_GDB_REG_A2(regs) != 0
+        || PTRACE_GDB_REG_A3(regs) != a3 || PTRACE_GDB_REG_S0(regs) != s0) {
         printf("FAIL: setregset control-flow readback pc=%#lx a0=%#lx a1=%#lx a2=%#lx "
                "a3=%#lx s0=%#lx\n",
-               regs->pc, regs->a0, regs->a1, regs->a2, regs->a3, regs->s0);
+               PTRACE_GDB_REG_PC(regs), PTRACE_GDB_REG_A0(regs), PTRACE_GDB_REG_A1(regs), PTRACE_GDB_REG_A2(regs), PTRACE_GDB_REG_A3(regs), PTRACE_GDB_REG_S0(regs));
         return 1;
     }
 
@@ -329,9 +609,9 @@ static int check_singlestep_stops_before_target_side_effect(pid_t pid,
     if (get_regs(pid, regs) != 0) {
         return fail("getregset after control-flow singlestep");
     }
-    if (regs->a2 != 0) {
+    if (PTRACE_GDB_REG_A2(regs) != 0) {
         printf("FAIL: singlestep ran target side effect early, pc=%#lx s0=%#lx a2=%#lx\n",
-               regs->pc, regs->s0, regs->a2);
+               PTRACE_GDB_REG_PC(regs), PTRACE_GDB_REG_S0(regs), PTRACE_GDB_REG_A2(regs));
         return 1;
     }
 
@@ -345,13 +625,14 @@ static int check_singlestep_stops_before_target_side_effect(pid_t pid,
     if (get_regs(pid, regs) != 0) {
         return fail("getregset after control-flow landing");
     }
-    if (regs->a2 != expected_a2) {
+    if (PTRACE_GDB_REG_A2(regs) != expected_a2) {
         printf("FAIL: control-flow landing a2=%#lx expected %#lx\n",
-               regs->a2, expected_a2);
+               PTRACE_GDB_REG_A2(regs), expected_a2);
         return 1;
     }
     return 0;
 }
+#endif
 
 static int test_singlestep(void)
 {
@@ -376,14 +657,14 @@ static int test_singlestep(void)
         return 1;
     }
 
-    struct riscv_user_regs regs;
+    arch_user_regs regs;
     memset(&regs, 0, sizeof(regs));
     if (get_regs(pid, &regs) != 0) {
         return fail("getregset initial");
     }
 
-    regs.pc = (unsigned long)ss_step_target;
-    regs.a0 = 0;
+    PTRACE_GDB_REG_PC(&regs) = (unsigned long)ss_step_target;
+    PTRACE_GDB_REG_A0(&regs) = 0;
     if (set_regs(pid, &regs) != 0) {
         return fail("setregset singlestep target");
     }
@@ -400,11 +681,12 @@ static int test_singlestep(void)
     if (get_regs(pid, &regs) != 0) {
         return fail("getregset after known single-step");
     }
-    if (regs.a0 != 123) {
-        printf("FAIL: singlestep skipped instruction, a0=%#lx expected 123\n", regs.a0);
+    if (PTRACE_GDB_REG_A0(&regs) != 123) {
+        printf("FAIL: singlestep skipped instruction, a0=%#lx expected 123\n", PTRACE_GDB_REG_A0(&regs));
         return 1;
     }
 
+    #if ARCH_RISCV
     if (check_singlestep_stops_before_target_side_effect(
             pid, &regs, (unsigned long)ss_branch_target, 7, 7, 0, 0, 222)
         != 0) {
@@ -437,12 +719,75 @@ static int test_singlestep(void)
         != 0) {
         return 1;
     }
+    #elif ARCH_AARCH64
+    if (check_singlestep_stops_before_target_side_effect(
+            pid, &regs, (unsigned long)ss_b_target, 0, 0, 0, 0, 222)
+        != 0) {
+        return 1;
+    }
+    if (check_singlestep_stops_before_target_side_effect(
+            pid, &regs, (unsigned long)ss_cbz_target, 0, 0, 0, 0, 333)
+        != 0) {
+        return 1;
+    }
+    if (check_singlestep_stops_before_target_side_effect(
+            pid, &regs, (unsigned long)ss_tbnz_target, 1, 0, 0, 0, 444)
+        != 0) {
+        return 1;
+    }
+    if (check_singlestep_stops_before_target_side_effect(
+            pid, &regs, (unsigned long)ss_br_target, 0, 0, 0,
+            (unsigned long)ss_br_landing, 555)
+        != 0) {
+        return 1;
+    }
+    #elif ARCH_LOONGARCH
+    if (check_singlestep_stops_before_target_side_effect(
+            pid, &regs, (unsigned long)ss_b_target, 0, 0, 0, 0, 333)
+        != 0) {
+        return 1;
+    }
+    if (check_singlestep_stops_before_target_side_effect(
+            pid, &regs, (unsigned long)ss_beq_target, 7, 7, 0, 0, 444)
+        != 0) {
+        return 1;
+    }
+    if (check_singlestep_stops_before_target_side_effect(
+            pid, &regs, (unsigned long)ss_blt_target, 3, 9, 0, 0, 555)
+        != 0) {
+        return 1;
+    }
+    if (check_singlestep_stops_before_target_side_effect(
+            pid, &regs, (unsigned long)ss_beqz_target, 0, 0, 0, 0, 777)
+        != 0) {
+        return 1;
+    }
+    if (check_singlestep_stops_before_target_side_effect(
+            pid, &regs, (unsigned long)ss_bnez_target, 5, 0, 0, 0, 888)
+        != 0) {
+        return 1;
+    }
+    if (check_singlestep_stops_before_target_side_effect(
+            pid, &regs, (unsigned long)ss_jirl_target, 0, 0, 0,
+            (unsigned long)ss_jirl_landing, 666)
+        != 0) {
+        return 1;
+    }
+    #endif
 
     if (ptrace(PTRACE_KILL, pid, NULL, NULL) != 0) {
         return fail("kill after known single-step");
     }
     waitpid(pid, &status, 0);
+    #if ARCH_RISCV
     printf("  ok: singlestep handled 32-bit and compressed control-flow instructions\n");
+    #elif ARCH_AARCH64
+    printf("  ok: singlestep handled aarch64 branch and register-branch instructions\n");
+    #elif ARCH_LOONGARCH
+    printf("  ok: singlestep handled loongarch64 branch and jirl instructions\n");
+    #else
+    printf("  ok: singlestep handled a known sequential instruction\n");
+    #endif
     return 0;
 }
 
@@ -506,8 +851,7 @@ static int test_fpregs(void)
         }
         raise(SIGSTOP);
 
-        unsigned long f0_bits = 0;
-        __asm__ volatile("fmv.x.d %0, f0" : "=r"(f0_bits));
+        unsigned long f0_bits = read_f0_bits();
         _exit(f0_bits == 0x4008000000000000UL ? 42 : 1);
     }
 
@@ -517,7 +861,7 @@ static int test_fpregs(void)
         return 1;
     }
 
-    struct riscv_user_fpregs fpregs;
+    arch_user_fpregs fpregs;
     struct iovec iov = {.iov_base = &fpregs, .iov_len = sizeof(fpregs)};
     if (ptrace(PTRACE_GETREGSET, pid, (void *)NT_FPREGSET, &iov) != 0) {
         printf("  SKIP: NT_FPREGSET not supported (errno=%d)\n", errno);
@@ -527,32 +871,29 @@ static int test_fpregs(void)
     }
 
     int all_zero = 1;
-    for (int i = 0; i < 32; i++) {
-        if (fpregs.f[i] != 0) {
-            all_zero = 0;
-            break;
-        }
+    if (fpregs_get_f0(&fpregs) != 0 || fpregs_get_f1(&fpregs) != 0) {
+        all_zero = 0;
     }
-    printf("  ok: NT_FPREGSET read, %s, fcsr=%#lx, iov_len=%zu\n",
+    printf("  ok: NT_FPREGSET read, %s, iov_len=%zu\n",
            all_zero ? "all-zero (FP unused)" : "has non-zero values",
-           fpregs.fcsr, (size_t)iov.iov_len);
+           (size_t)iov.iov_len);
 
-    fpregs.f[0] = 0x4008000000000000UL;
-    fpregs.f[1] = 0xCAFEBABEu;
+    fpregs_set_f0(&fpregs, 0x4008000000000000UL);
+    fpregs_set_f1(&fpregs, 0xCAFEBABEu);
     iov.iov_len = sizeof(fpregs);
     if (ptrace(PTRACE_SETREGSET, pid, (void *)NT_FPREGSET, &iov) != 0) {
         return fail("setregset fpregs");
     }
 
-    struct riscv_user_fpregs fpregs2;
+    arch_user_fpregs fpregs2;
     iov.iov_base = &fpregs2;
     iov.iov_len = sizeof(fpregs2);
     if (ptrace(PTRACE_GETREGSET, pid, (void *)NT_FPREGSET, &iov) != 0) {
         return fail("getregset fpregs after set");
     }
-    if (fpregs2.f[0] != 0x4008000000000000UL || fpregs2.f[1] != 0xCAFEBABEu) {
+    if (fpregs_get_f0(&fpregs2) != 0x4008000000000000UL || fpregs_get_f1(&fpregs2) != 0xCAFEBABEu) {
         printf("FAIL: fpregs write-back mismatch: f[0]=%#lx f[1]=%#lx\n",
-               fpregs2.f[0], fpregs2.f[1]);
+               fpregs_get_f0(&fpregs2), fpregs_get_f1(&fpregs2));
         return 1;
     }
     printf("  ok: NT_FPREGSET write and read-back match\n");
@@ -640,13 +981,13 @@ static int test_attach(void)
         return 1;
     }
 
-    struct riscv_user_regs regs;
+    arch_user_regs regs;
     memset(&regs, 0, sizeof(regs));
     if (get_regs(pid, &regs) != 0) {
         return fail("getregset after attach");
     }
     printf("  ok: attached, child stopped, pc=%#lx sp=%#lx\n",
-           regs.pc, regs.sp);
+           PTRACE_GDB_REG_PC(&regs), PTRACE_GDB_REG_SP(&regs));
 
     if (ptrace(PTRACE_DETACH, pid, NULL, NULL) != 0) {
         return fail("detach");
@@ -661,6 +1002,225 @@ static int test_attach(void)
         return 1;
     }
     printf("  ok: detached, child exited 42\n");
+    return 0;
+}
+
+static int test_same_uid_sibling_attach(void)
+{
+    printf("test 4b: same-uid sibling PTRACE_ATTACH\n");
+
+    int ready_pipe[2];
+    int release_pipe[2];
+    if (pipe(ready_pipe) != 0) {
+        return fail("same-uid ready pipe");
+    }
+    if (pipe(release_pipe) != 0) {
+        close(ready_pipe[0]);
+        close(ready_pipe[1]);
+        return fail("same-uid release pipe");
+    }
+
+    pid_t tracee = fork();
+    if (tracee < 0) {
+        return fail("fork same-uid tracee");
+    }
+    if (tracee == 0) {
+        close(ready_pipe[0]);
+        close(release_pipe[1]);
+        if (setresuid(1000, 1000, 1000) != 0) {
+            _exit(100);
+        }
+        if (prctl(PR_SET_DUMPABLE, 1) != 0 || prctl(PR_GET_DUMPABLE) != 1) {
+            _exit(102);
+        }
+        char c = 'T';
+        if (write(ready_pipe[1], &c, 1) != 1) {
+            _exit(101);
+        }
+        close(ready_pipe[1]);
+        wait_for_release_then_exit(release_pipe[0], 43);
+    }
+
+    close(ready_pipe[1]);
+    char c;
+    if (read(ready_pipe[0], &c, 1) != 1) {
+        kill(tracee, SIGKILL);
+        close(ready_pipe[0]);
+        close(release_pipe[0]);
+        close(release_pipe[1]);
+        waitpid(tracee, NULL, 0);
+        return fail("read same-uid tracee ready pipe");
+    }
+    close(ready_pipe[0]);
+
+    pid_t tracer = fork();
+    if (tracer < 0) {
+        kill(tracee, SIGKILL);
+        close(release_pipe[0]);
+        close(release_pipe[1]);
+        waitpid(tracee, NULL, 0);
+        return fail("fork same-uid tracer");
+    }
+    if (tracer == 0) {
+        close(release_pipe[0]);
+        if (setresuid(1000, 1000, 1000) != 0) {
+            _exit(110);
+        }
+        if (ptrace(PTRACE_ATTACH, tracee, NULL, NULL) != 0) {
+            _exit(111);
+        }
+
+        int status = 0;
+        if (waitpid(tracee, &status, 0) != tracee) {
+            ptrace(PTRACE_KILL, tracee, NULL, NULL);
+            _exit(112);
+        }
+        if (!WIFSTOPPED(status) || WSTOPSIG(status) != SIGSTOP) {
+            ptrace(PTRACE_KILL, tracee, NULL, NULL);
+            _exit(113);
+        }
+        if (ptrace(PTRACE_DETACH, tracee, NULL, NULL) != 0) {
+            ptrace(PTRACE_KILL, tracee, NULL, NULL);
+            _exit(114);
+        }
+        char release = 'R';
+        if (write(release_pipe[1], &release, 1) != 1) {
+            _exit(115);
+        }
+        close(release_pipe[1]);
+        _exit(0);
+    }
+
+    close(release_pipe[0]);
+    int tracer_status = 0;
+    if (waitpid(tracer, &tracer_status, 0) != tracer) {
+        kill(tracee, SIGKILL);
+        close(release_pipe[1]);
+        waitpid(tracee, NULL, 0);
+        return fail("wait same-uid tracer");
+    }
+    if (!WIFEXITED(tracer_status) || WEXITSTATUS(tracer_status) != 0) {
+        printf("FAIL: same-uid sibling tracer status=%#x\n", tracer_status);
+        kill(tracee, SIGKILL);
+        close(release_pipe[1]);
+        waitpid(tracee, NULL, 0);
+        return 1;
+    }
+    close(release_pipe[1]);
+
+    int tracee_status = 0;
+    if (waitpid(tracee, &tracee_status, 0) != tracee || !WIFEXITED(tracee_status)
+        || WEXITSTATUS(tracee_status) != 43) {
+        printf("FAIL: same-uid sibling tracee status=%#x\n", tracee_status);
+        return 1;
+    }
+
+    printf("  ok: non-parent same-uid tracer attached and detached\n");
+    return 0;
+}
+
+static int test_same_uid_sibling_attach_rejects_nondumpable(void)
+{
+    printf("test 4c: same-uid sibling attach rejects nondumpable tracee\n");
+
+    int ready_pipe[2];
+    int release_pipe[2];
+    if (pipe(ready_pipe) != 0) {
+        return fail("nondumpable ready pipe");
+    }
+    if (pipe(release_pipe) != 0) {
+        close(ready_pipe[0]);
+        close(ready_pipe[1]);
+        return fail("nondumpable release pipe");
+    }
+
+    pid_t tracee = fork();
+    if (tracee < 0) {
+        return fail("fork nondumpable tracee");
+    }
+    if (tracee == 0) {
+        close(ready_pipe[0]);
+        close(release_pipe[1]);
+        if (setresuid(1000, 1000, 1000) != 0) {
+            _exit(100);
+        }
+        if (prctl(PR_GET_DUMPABLE) != 0) {
+            _exit(101);
+        }
+        char c = 'N';
+        if (write(ready_pipe[1], &c, 1) != 1) {
+            _exit(102);
+        }
+        close(ready_pipe[1]);
+        wait_for_release_then_exit(release_pipe[0], 44);
+    }
+
+    close(ready_pipe[1]);
+    char c;
+    if (read(ready_pipe[0], &c, 1) != 1) {
+        kill(tracee, SIGKILL);
+        close(ready_pipe[0]);
+        close(release_pipe[0]);
+        close(release_pipe[1]);
+        waitpid(tracee, NULL, 0);
+        return fail("read nondumpable tracee ready pipe");
+    }
+    close(ready_pipe[0]);
+
+    pid_t tracer = fork();
+    if (tracer < 0) {
+        kill(tracee, SIGKILL);
+        close(release_pipe[0]);
+        close(release_pipe[1]);
+        waitpid(tracee, NULL, 0);
+        return fail("fork nondumpable tracer");
+    }
+    if (tracer == 0) {
+        close(release_pipe[0]);
+        if (setresuid(1000, 1000, 1000) != 0) {
+            _exit(110);
+        }
+        errno = 0;
+        if (ptrace(PTRACE_ATTACH, tracee, NULL, NULL) == 0 || errno != EPERM) {
+            _exit(111);
+        }
+        errno = 0;
+        if (ptrace(PTRACE_SEIZE, tracee, NULL, NULL) == 0 || errno != EPERM) {
+            _exit(112);
+        }
+        char release = 'R';
+        if (write(release_pipe[1], &release, 1) != 1) {
+            _exit(113);
+        }
+        close(release_pipe[1]);
+        _exit(0);
+    }
+
+    close(release_pipe[0]);
+    int tracer_status = 0;
+    if (waitpid(tracer, &tracer_status, 0) != tracer) {
+        kill(tracee, SIGKILL);
+        close(release_pipe[1]);
+        waitpid(tracee, NULL, 0);
+        return fail("wait nondumpable tracer");
+    }
+    if (!WIFEXITED(tracer_status) || WEXITSTATUS(tracer_status) != 0) {
+        printf("FAIL: nondumpable sibling tracer status=%#x\n", tracer_status);
+        kill(tracee, SIGKILL);
+        close(release_pipe[1]);
+        waitpid(tracee, NULL, 0);
+        return 1;
+    }
+    close(release_pipe[1]);
+
+    int tracee_status = 0;
+    if (waitpid(tracee, &tracee_status, 0) != tracee || !WIFEXITED(tracee_status)
+        || WEXITSTATUS(tracee_status) != 44) {
+        printf("FAIL: nondumpable sibling tracee status=%#x\n", tracee_status);
+        return 1;
+    }
+
+    printf("  ok: non-parent same-uid tracer cannot attach nondumpable target\n");
     return 0;
 }
 
@@ -757,8 +1317,17 @@ static int test_setoptions(void)
 __attribute__((naked, noinline, aligned(4))) static void setregs_pc_landing(void)
 {
     __asm__ volatile(
+#if ARCH_RISCV
         "addi a2, zero, 77\n"
-        "ebreak\n");
+        "ebreak\n"
+#elif ARCH_LOONGARCH
+        "addi.d $a2, $zero, 77\n"
+        "break 0\n"
+#else
+        "mov x2, #77\n"
+        "brk #0\n"
+#endif
+    );
 }
 
 static int test_setregs(void)
@@ -784,10 +1353,13 @@ static int test_setregs(void)
         return 1;
     }
 
-    struct riscv_user_regs regs;
+    arch_user_regs regs;
     memset(&regs, 0, sizeof(regs));
-    regs.pc = (unsigned long)setregs_pc_landing;
-    regs.a2 = 0;
+    if (get_regs(pid, &regs) != 0) {
+        return fail("getregset before setregset pc landing");
+    }
+    PTRACE_GDB_REG_PC(&regs) = (unsigned long)setregs_pc_landing;
+    PTRACE_GDB_REG_A2(&regs) = 0;
     if (set_regs(pid, &regs) != 0) {
         return fail("setregset pc landing");
     }
@@ -802,8 +1374,8 @@ static int test_setregs(void)
     if (get_regs(pid, &regs) != 0) {
         return fail("getregset after setregset pc landing");
     }
-    if (regs.a2 != 77) {
-        printf("FAIL: SETREGSET PC landing a2=%#lx expected 77\n", regs.a2);
+    if (PTRACE_GDB_REG_A2(&regs) != 77) {
+        printf("FAIL: SETREGSET PC landing a2=%#lx expected 77\n", PTRACE_GDB_REG_A2(&regs));
         return 1;
     }
     if (ptrace(PTRACE_KILL, pid, NULL, NULL) != 0) {
@@ -906,7 +1478,7 @@ static int test_syscall_trace(void)
         return fail("setoptions TRACESYSGOOD");
     }
 
-    struct riscv_user_regs regs;
+    arch_user_regs regs;
     int expect_entry = 1;
     int saw_getpid = 0;
     for (int stops = 0; stops < 80 && !saw_getpid; stops++) {
@@ -923,7 +1495,7 @@ static int test_syscall_trace(void)
             return fail("getregset syscall stop");
         }
 
-        if (expect_entry && regs.a7 == SYS_getpid) {
+        if (expect_entry && PTRACE_GDB_REG_A7(&regs) == SYS_getpid) {
             if (ptrace(PTRACE_SYSCALL, pid, NULL, NULL) != 0) {
                 return fail("ptrace getpid exit");
             }
@@ -935,8 +1507,8 @@ static int test_syscall_trace(void)
             if (get_regs(pid, &regs) != 0) {
                 return fail("getregset getpid exit");
             }
-            if (regs.a0 != (unsigned long)pid) {
-                printf("FAIL: getpid exit a0=%lu, expected pid=%d\n", regs.a0, pid);
+            if (PTRACE_GDB_REG_A0(&regs) != (unsigned long)pid) {
+                printf("FAIL: getpid exit a0=%lu, expected pid=%d\n", PTRACE_GDB_REG_A0(&regs), pid);
                 return 1;
             }
             saw_getpid = 1;
@@ -1053,8 +1625,17 @@ static int test_signal_resume(void)
 __attribute__((naked, noinline, aligned(4))) static void legacy_setregs_landing(void)
 {
     __asm__ volatile(
+#if ARCH_RISCV
         "addi a2, zero, 88\n"
-        "ebreak\n");
+        "ebreak\n"
+#elif ARCH_LOONGARCH
+        "addi.d $a2, $zero, 88\n"
+        "break 0\n"
+#else
+        "mov x2, #88\n"
+        "brk #0\n"
+#endif
+    );
 }
 
 static int test_legacy_regsets(void)
@@ -1080,18 +1661,18 @@ static int test_legacy_regsets(void)
         return 1;
     }
 
-    struct riscv_user_regs regs;
+    arch_user_regs regs;
     memset(&regs, 0, sizeof(regs));
     if (ptrace(PTRACE_GETREGS, pid, NULL, &regs) != 0) {
         return fail("legacy getregs");
     }
-    if (regs.pc == 0 || regs.sp == 0) {
-        printf("FAIL: legacy GETREGS returned pc=%#lx sp=%#lx\n", regs.pc, regs.sp);
+    if (PTRACE_GDB_REG_PC(&regs) == 0 || PTRACE_GDB_REG_SP(&regs) == 0) {
+        printf("FAIL: legacy GETREGS returned pc=%#lx sp=%#lx\n", PTRACE_GDB_REG_PC(&regs), PTRACE_GDB_REG_SP(&regs));
         return 1;
     }
 
-    regs.pc = (unsigned long)legacy_setregs_landing;
-    regs.a2 = 0;
+    PTRACE_GDB_REG_PC(&regs) = (unsigned long)legacy_setregs_landing;
+    PTRACE_GDB_REG_A2(&regs) = 0;
     if (ptrace(PTRACE_SETREGS, pid, NULL, &regs) != 0) {
         return fail("legacy setregs");
     }
@@ -1105,8 +1686,8 @@ static int test_legacy_regsets(void)
     if (ptrace(PTRACE_GETREGS, pid, NULL, &regs) != 0) {
         return fail("legacy getregs after landing");
     }
-    if (regs.a2 != 88) {
-        printf("FAIL: legacy SETREGS landing a2=%#lx expected 88\n", regs.a2);
+    if (PTRACE_GDB_REG_A2(&regs) != 88) {
+        printf("FAIL: legacy SETREGS landing a2=%#lx expected 88\n", PTRACE_GDB_REG_A2(&regs));
         return 1;
     }
     if (ptrace(PTRACE_KILL, pid, NULL, NULL) != 0) {
@@ -1114,6 +1695,10 @@ static int test_legacy_regsets(void)
     }
     waitpid(pid, &status, 0);
 
+#if !(ARCH_RISCV || ARCH_LOONGARCH)
+    printf("  ok: legacy GETREGS/SETREGS work; legacy FPREGS skipped on this arch\n");
+    return 0;
+#else
     pid = fork();
     if (pid < 0) {
         return fail("fork legacy fpregs");
@@ -1125,8 +1710,7 @@ static int test_legacy_regsets(void)
         }
         raise(SIGSTOP);
 
-        unsigned long f0_bits = 0;
-        __asm__ volatile("fmv.x.d %0, f0" : "=r"(f0_bits));
+        unsigned long f0_bits = read_f0_bits();
         _exit(f0_bits == 0x4010000000000000UL ? 42 : 1);
     }
 
@@ -1135,25 +1719,26 @@ static int test_legacy_regsets(void)
         return 1;
     }
 
-    struct riscv_user_fpregs fpregs;
+    arch_user_fpregs fpregs;
     memset(&fpregs, 0, sizeof(fpregs));
     if (ptrace(PTRACE_GETFPREGS, pid, NULL, &fpregs) != 0) {
         return fail("legacy getfpregs");
     }
-    fpregs.f[0] = 0x4010000000000000UL;
-    fpregs.f[2] = 0x12345678UL;
+    fpregs_set_f0(&fpregs, 0x4010000000000000UL);
+    fpregs_set_f1(&fpregs, 0x12345678UL);
     if (ptrace(PTRACE_SETFPREGS, pid, NULL, &fpregs) != 0) {
         return fail("legacy setfpregs");
     }
 
-    struct riscv_user_fpregs fpregs2;
+    arch_user_fpregs fpregs2;
     memset(&fpregs2, 0, sizeof(fpregs2));
     if (ptrace(PTRACE_GETFPREGS, pid, NULL, &fpregs2) != 0) {
         return fail("legacy getfpregs after set");
     }
-    if (fpregs2.f[0] != 0x4010000000000000UL || fpregs2.f[2] != 0x12345678UL) {
-        printf("FAIL: legacy fpregs mismatch f0=%#lx f2=%#lx\n",
-               fpregs2.f[0], fpregs2.f[2]);
+    if (fpregs_get_f0(&fpregs2) != 0x4010000000000000UL
+        || fpregs_get_f1(&fpregs2) != 0x12345678UL) {
+        printf("FAIL: legacy fpregs mismatch f0=%#lx f1=%#lx\n",
+               fpregs_get_f0(&fpregs2), fpregs_get_f1(&fpregs2));
         return 1;
     }
 
@@ -1168,6 +1753,7 @@ static int test_legacy_regsets(void)
 
     printf("  ok: legacy register requests share regset semantics\n");
     return 0;
+#endif
 }
 
 static int test_siginfo_roundtrip(void)
@@ -1311,6 +1897,7 @@ static char clone_thread_stack[16384] __attribute__((aligned(16)));
 
 static long raw_clone_thread(void *stack_top)
 {
+#if ARCH_RISCV
     register long a0 __asm__("a0") =
         CLONE_VM | CLONE_FS | CLONE_FILES | CLONE_SIGHAND | CLONE_THREAD;
     register long a1 __asm__("a1") = (long)stack_top;
@@ -1330,6 +1917,57 @@ static long raw_clone_thread(void *stack_top)
         : "r"(a1), "r"(a2), "r"(a3), "r"(a4), "r"(a7)
         : "memory");
     return a0;
+#elif ARCH_AARCH64
+    register long x0 __asm__("x0") =
+        CLONE_VM | CLONE_FS | CLONE_FILES | CLONE_SIGHAND | CLONE_THREAD;
+    register long x1 __asm__("x1") = (long)stack_top;
+    register long x2 __asm__("x2") = 0;
+    register long x3 __asm__("x3") = 0;
+    register long x4 __asm__("x4") = 0;
+    register long x8 __asm__("x8") = SYS_clone;
+
+    __asm__ volatile(
+        "svc #0\n"
+        "cbnz x0, 1f\n"
+        "mov x8, #93\n"
+        "mov x0, #0\n"
+        "svc #0\n"
+        "1:\n"
+        : "+r"(x0)
+        : "r"(x1), "r"(x2), "r"(x3), "r"(x4), "r"(x8)
+        : "memory");
+    return x0;
+#elif ARCH_LOONGARCH
+    register long a0 __asm__("$a0") =
+        CLONE_VM | CLONE_FS | CLONE_FILES | CLONE_SIGHAND | CLONE_THREAD;
+    register long a1 __asm__("$a1") = (long)stack_top;
+    register long a2 __asm__("$a2") = 0;
+    register long a3 __asm__("$a3") = 0;
+    register long a4 __asm__("$a4") = 0;
+    register long a7 __asm__("$a7") = SYS_clone;
+    __asm__ volatile(
+        "syscall 0\n"
+        "bnez $a0, 1f\n"
+        "li.w $a7, 93\n"
+        "li.w $a0, 0\n"
+        "syscall 0\n"
+        "1:\n"
+        : "+r"(a0)
+        : "r"(a1), "r"(a2), "r"(a3), "r"(a4), "r"(a7)
+        : "memory");
+    return a0;
+#else
+#error "raw_clone_thread needs an architecture syscall sequence"
+#endif
+}
+
+static pid_t raw_clone_vfork_child_exit(void)
+{
+    long ret = syscall(SYS_clone, CLONE_VM | CLONE_VFORK | SIGCHLD, 0, 0, 0, 0);
+    if (ret == 0) {
+        _exit(0);
+    }
+    return (pid_t)ret;
 }
 
 static int test_traceclone_thread_event(void)
@@ -1427,10 +2065,7 @@ static int test_tracevforkdone_event(void)
         }
         raise(SIGSTOP);
 
-        pid_t child = vfork();
-        if (child == 0) {
-            _exit(0);
-        }
+        pid_t child = raw_clone_vfork_child_exit();
         if (child < 0) {
             _exit(2);
         }
@@ -1682,6 +2317,18 @@ int main(void)
     }
 
     if (test_attach() == 0) {
+        pass++;
+    } else {
+        fail_count++;
+    }
+
+    if (test_same_uid_sibling_attach() == 0) {
+        pass++;
+    } else {
+        fail_count++;
+    }
+
+    if (test_same_uid_sibling_attach_rejects_nondumpable() == 0) {
         pass++;
     } else {
         fail_count++;

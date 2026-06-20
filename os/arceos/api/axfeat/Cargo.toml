@@ -1,6 +1,6 @@
 [package]
 name = "ax-feat"
-version = "0.5.19"
+version = "0.5.20"
 repository = "https://github.com/rcore-os/tgoskits"
 edition.workspace = true
 authors = ["Yuekai Jia <equation618@gmail.com>"]
@@ -60,17 +60,17 @@ stack-guard-page = [
     "ax-task/stack-guard-page",
     "ax-runtime/stack-guard-page",
 ]
+stack-protector = ["ax-runtime/stack-protector"]
 
 # File system
 fs = [
     "paging",
-    "dep:ax-fs",
+    "dep:ax-fs-ng",
     "ax-runtime/fs",
 ] # TODO: try to remove "paging"
-fs-ng = ["paging", "dep:ax-fs-ng", "ax-runtime/fs-ng"]
-fs-ng-ext4 = ["fs-ng", "ax-fs-ng/ext4", "ax-runtime/fs-ng-ext4"]
-fs-ng-fat = ["fs-ng", "ax-fs-ng/fat", "ax-runtime/fs-ng-fat"]
-fs-ng-times = ["fs-ng", "ax-fs-ng/times"]
+ext4fs = ["fs", "ax-fs-ng/ext4", "ax-runtime/fs-ext4"]
+fatfs = ["fs", "ax-fs-ng/fat", "ax-runtime/fs-fat"]
+fs-times = ["fs", "ax-fs-ng/times"]
 
 # Networking
 net = [
@@ -80,6 +80,7 @@ net = [
     "dep:ax-net",
     "ax-runtime/net",
 ]
+aic8800-wifi = ["net", "ax-runtime/aic8800-wifi"]
 vsock = ["ax-runtime/vsock"]
 
 # Display
@@ -116,7 +117,6 @@ axbacktrace.workspace = true
 ax-config = { workspace = true, optional = true }
 ax-driver = { workspace = true, optional = true }
 ax-display = { workspace = true, optional = true }
-ax-fs = { workspace = true, optional = true }
 ax-fs-ng = { workspace = true, optional = true }
 ax-hal.workspace = true
 ax-input = { workspace = true, optional = true }

@@ -5,7 +5,7 @@ edition.workspace = true
 license.workspace = true
 name = "ax-task"
 repository = "https://github.com/rcore-os/tgoskits"
-version = "0.5.19"
+version = "0.5.20"
 
 [features]
 default = []
@@ -51,7 +51,12 @@ sched-cfs = ["multitask", "preempt"]
 sched-fifo = ["multitask"]
 sched-rr = ["multitask", "preempt"]
 
-host-test = ["ax-kspin?/host-test", "ax-percpu?/sp-naive"]
+host-test = [
+  "ax-hal/host-test",
+  "ax-kspin?/host-test",
+  "ax-kspin?/smp",
+  "ax-percpu?/sp-naive",
+]
 test = ["host-test"]
 
 [dependencies]

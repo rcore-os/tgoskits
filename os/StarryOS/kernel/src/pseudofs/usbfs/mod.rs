@@ -57,6 +57,7 @@ pub(crate) fn new_usbfs() -> LinuxResult<Option<Filesystem>> {
 
     let manager = Arc::new(UsbFsManager::new(hosts));
     irq::init_globals(manager.clone(), irq_slots);
+    irq::start_event_pump();
     let initialized_hosts = manager::initialize_hosts(&manager) > 0;
     if !initialized_hosts {
         info!("usbfs: no USB host initialized, skip mounting usbfs");
@@ -66,16 +67,20 @@ pub(crate) fn new_usbfs() -> LinuxResult<Option<Filesystem>> {
     info!("usbfs: spawning refresh task");
     let refresh_manager = manager.clone();
     ax_task::spawn_with_name(
-        move || ax_task::future::block_on(manager::usbfs_refresh_task(refresh_manager.clone())),
+        move || manager::usbfs_refresh_task(refresh_manager.clone()),
         "usbfs-refresh".to_owned(),
     );
-    manager.refresh_event.notify(1);
+    manager.notify_refresh();
 
     Ok(Some(create_filesystem(manager)))
 }
 
 pub(crate) fn has_manager() -> bool {
     manager().is_some_and(|manager| manager.has_hosts())
+}
+
+pub(crate) fn start_event_pump() {
+    irq::start_event_pump();
 }
 
 pub(crate) fn new_bus_usb_sysfs() -> Filesystem {
@@ -88,7 +93,7 @@ pub(crate) fn is_usbfs_device(inner: &dyn Any) -> bool {
 
 pub(crate) fn open_usbfs_file(
     inner: &dyn Any,
-    file: ax_fs::File,
+    file: ax_fs_ng::File,
     open_flags: u32,
 ) -> AxResult<Arc<dyn FileLike>> {
     let ops = inner
@@ -1127,7 +1132,11 @@ impl UsbDeviceFile {
                 if self.collect_submitted_urbs(None) || !self.pending_urbs.lock().is_empty() {
                     Poll::Ready(())
                 } else {
-                    self.poll_urbs.register(cx.waker());
+                    // Registration happens from usbfs reap task context.
+                    unsafe {
+                        self.poll_urbs
+                            .register(cx.waker(), IoEvents::IN | IoEvents::OUT)
+                    };
                     if self.collect_submitted_urbs(Some(cx)) || !self.pending_urbs.lock().is_empty()
                     {
                         Poll::Ready(())
@@ -1194,7 +1203,7 @@ impl FileLike for UsbDeviceFile {
         self.base.path()
     }
 
-    fn file_mmap(&self) -> AxResult<(ax_fs::FileBackend, ax_fs::FileFlags)> {
+    fn file_mmap(&self) -> AxResult<(ax_fs_ng::vfs::FileBackend, ax_fs_ng::vfs::FileFlags)> {
         self.base.file_mmap()
     }
 
@@ -1301,7 +1310,11 @@ impl Pollable for UsbDeviceFile {
 
     fn register(&self, context: &mut Context<'_>, events: IoEvents) {
         if events.intersects(IoEvents::IN | IoEvents::OUT) {
-            self.poll_urbs.register(context.waker());
+            // Registration happens from usbfs poll task context.
+            unsafe {
+                self.poll_urbs
+                    .register(context.waker(), events & (IoEvents::IN | IoEvents::OUT))
+            };
             if self.collect_submitted_urbs(Some(context)) || !self.pending_urbs.lock().is_empty() {
                 context.waker().wake_by_ref();
             }
@@ -1335,8 +1348,11 @@ fn complete_urb(
     poll_urbs: &Arc<PollSet>,
     completed: CompletedUrb,
 ) {
-    pending_urbs.lock().push_back(completed);
-    poll_urbs.wake();
+    {
+        pending_urbs.lock().push_back(completed);
+    }
+    // Completed URB is queued before waking poll/reap waiters.
+    unsafe { poll_urbs.wake(IoEvents::IN | IoEvents::OUT) };
 }
 
 fn completed_urb_from_result(

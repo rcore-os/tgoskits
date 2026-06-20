@@ -1,8 +1,9 @@
-use alloc::{boxed::Box, sync::Arc, vec::Vec};
+use alloc::{borrow::ToOwned, boxed::Box, string::ToString, sync::Arc, vec::Vec};
 use core::{
     cell::UnsafeCell,
     ptr::NonNull,
     sync::atomic::{AtomicBool, Ordering},
+    time::Duration,
 };
 
 use ax_kspin::SpinNoIrq;
@@ -11,17 +12,21 @@ use rdrive::DeviceId as RDriveDeviceId;
 
 use super::manager::UsbFsManager;
 
+const USBFS_EVENT_POLL_INTERVAL: Duration = Duration::from_millis(1);
+
 static USBFS_MANAGER: LazyInit<Arc<UsbFsManager>> = LazyInit::new();
 static USBFS_IRQ_REGISTRY: LazyInit<UsbIrqRegistry> = LazyInit::new();
+static USBFS_EVENT_PUMP_STARTED: AtomicBool = AtomicBool::new(false);
 
 pub(super) struct PendingUsbIrqSlot {
-    pub(super) irq_num: usize,
+    pub(super) irq_num: Option<usize>,
     pub(super) device_id: RDriveDeviceId,
     pub(super) bus_num: u8,
     pub(super) handler: ax_driver::usb::UsbHostIrqHandler,
 }
 
 pub(super) struct UsbIrqSlot {
+    irq_num: Option<usize>,
     device_id: RDriveDeviceId,
     bus_num: u8,
     handler: ax_driver::usb::UsbHostIrqHandler,
@@ -37,22 +42,11 @@ unsafe impl Sync for UsbIrqRegistry {}
 
 impl UsbIrqRegistry {
     fn new(pending_slots: Vec<PendingUsbIrqSlot>) -> Self {
-        let slot_count = pending_slots
-            .iter()
-            .map(|slot| slot.irq_num)
-            .max()
-            .map(|irq| irq + 1)
-            .unwrap_or(0);
+        let slot_count = pending_slots.len();
         let mut slots = (0..slot_count).map(|_| None).collect::<Vec<_>>();
-        for slot in pending_slots {
-            if slots[slot.irq_num].is_some() {
-                warn!(
-                    "usbfs: duplicate IRQ {} for USB host {:?}, skipping",
-                    slot.irq_num, slot.device_id
-                );
-                continue;
-            }
-            slots[slot.irq_num] = Some(UsbIrqSlot {
+        for (slot_index, slot) in pending_slots.into_iter().enumerate() {
+            slots[slot_index] = Some(UsbIrqSlot {
+                irq_num: slot.irq_num,
                 device_id: slot.device_id,
                 bus_num: slot.bus_num,
                 handler: slot.handler,
@@ -65,17 +59,22 @@ impl UsbIrqRegistry {
         }
     }
 
-    fn slot(&self, irq_num: usize) -> Option<&UsbIrqSlot> {
+    fn slot(&self, slot_index: usize) -> Option<&UsbIrqSlot> {
         let slots = unsafe { &*self.slots.get() };
-        slots.get(irq_num).and_then(Option::as_ref)
+        slots.get(slot_index).and_then(Option::as_ref)
     }
 
-    fn iter_irqs(&self) -> impl Iterator<Item = usize> + '_ {
+    fn iter_slots(&self) -> impl Iterator<Item = (usize, &UsbIrqSlot)> + '_ {
         let slots = unsafe { &*self.slots.get() };
         slots
             .iter()
             .enumerate()
-            .filter_map(|(irq_num, slot)| slot.as_ref().map(|_| irq_num))
+            .filter_map(|(slot_index, slot)| slot.as_ref().map(|slot| (slot_index, slot)))
+    }
+
+    fn slot_by_irq(&self, irq_num: usize) -> Option<&UsbIrqSlot> {
+        self.iter_slots()
+            .find_map(|(_, slot)| (slot.irq_num == Some(irq_num)).then_some(slot))
     }
 }
 
@@ -88,36 +87,67 @@ pub(super) fn init_globals(manager: Arc<UsbFsManager>, pending_slots: Vec<Pendin
     USBFS_IRQ_REGISTRY.init_once(UsbIrqRegistry::new(pending_slots));
 
     if let Some(registry) = USBFS_IRQ_REGISTRY.get() {
-        for irq_num in registry.iter_irqs() {
-            if let Some(slot) = registry.slot(irq_num) {
+        for (_, slot) in registry.iter_slots() {
+            if let Some(irq_num) = slot.irq_num {
                 info!(
                     "usbfs: registering IRQ callback for IRQ {} (bus {}, host {:?})",
                     irq_num, slot.bus_num, slot.device_id
                 );
-            }
-            match ax_runtime::hal::irq::request_shared_irq(
-                irq_num,
-                usbfs_raw_irq_handler,
-                NonNull::dangling(),
-            ) {
-                Ok(handle) => {
-                    if let Some(slot) = registry.slot(irq_num) {
+                match ax_runtime::hal::irq::request_shared_irq(
+                    irq_num,
+                    usbfs_raw_irq_handler,
+                    NonNull::dangling(),
+                ) {
+                    Ok(handle) => {
                         *slot.handle.lock() = Some(handle);
                     }
+                    Err(err) => {
+                        warn!("usbfs: failed to register IRQ callback for IRQ {irq_num}: {err:?}");
+                    }
                 }
-                Err(err) => {
-                    warn!("usbfs: failed to register IRQ callback for IRQ {irq_num}: {err:?}");
-                }
+            } else {
+                info!(
+                    "usbfs: polling event handler for bus {} host {:?}",
+                    slot.bus_num, slot.device_id
+                );
             }
         }
     }
+}
+
+pub(super) fn start_event_pump() {
+    let Some(registry) = USBFS_IRQ_REGISTRY.get() else {
+        return;
+    };
+    if !registry
+        .iter_slots()
+        .any(|(_, slot)| slot.irq_num.is_none())
+    {
+        return;
+    }
+    if USBFS_EVENT_PUMP_STARTED
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .is_err()
+    {
+        return;
+    }
+
+    ax_task::spawn_with_name(
+        move || {
+            loop {
+                usbfs_poll_events();
+                ax_task::sleep(USBFS_EVENT_POLL_INTERVAL);
+            }
+        },
+        "usbfs-event-pump".to_owned(),
+    );
 }
 
 pub(super) fn free_irq(irq_num: usize) {
     let Some(registry) = USBFS_IRQ_REGISTRY.get() else {
         return;
     };
-    let Some(slot) = registry.slot(irq_num) else {
+    let Some(slot) = registry.slot_by_irq(irq_num) else {
         return;
     };
     let Some(handle) = slot.handle.lock().take() else {
@@ -131,23 +161,52 @@ pub(super) fn free_irq(irq_num: usize) {
 pub(super) fn take_dirty(irq_num: usize) -> bool {
     USBFS_IRQ_REGISTRY
         .get()
-        .and_then(|registry| registry.slot(irq_num))
+        .and_then(|registry| registry.slot_by_irq(irq_num))
         .map(|slot| slot.dirty.swap(false, Ordering::AcqRel))
         .unwrap_or(false)
 }
 
 pub(super) fn bootstrap_irq(irq_num: usize) {
-    usbfs_irq_handler(irq_num);
+    usbfs_irq_handler_by_irq(irq_num);
 }
 
-fn usbfs_irq_handler(irq_num: usize) {
+fn usbfs_poll_events() {
     let Some(registry) = USBFS_IRQ_REGISTRY.get() else {
         return;
     };
-    let Some(slot) = registry.slot(irq_num) else {
+    for (slot_index, slot) in registry.iter_slots() {
+        if slot.irq_num.is_some() {
+            continue;
+        }
+        usbfs_event_handler(slot_index);
+    }
+}
+
+fn usbfs_irq_handler_by_irq(irq_num: usize) {
+    let Some(registry) = USBFS_IRQ_REGISTRY.get() else {
+        return;
+    };
+    let Some((slot_index, _)) = registry
+        .iter_slots()
+        .find(|(_, slot)| slot.irq_num == Some(irq_num))
+    else {
         warn!("usbfs: no IRQ slot registered for IRQ {}", irq_num);
         return;
     };
+    usbfs_event_handler(slot_index);
+}
+
+fn usbfs_event_handler(slot_index: usize) {
+    let Some(registry) = USBFS_IRQ_REGISTRY.get() else {
+        return;
+    };
+    let Some(slot) = registry.slot(slot_index) else {
+        return;
+    };
+    let irq_name = slot
+        .irq_num
+        .map(|irq_num| irq_num.to_string())
+        .unwrap_or_else(|| "poll".to_owned());
 
     let mut handler_calls = 0usize;
     let mut port_events = 0usize;
@@ -160,21 +219,21 @@ fn usbfs_irq_handler(irq_num: usize) {
                 port_events += 1;
                 trace!(
                     "usbfs: IRQ {} bus {} host {:?}: port change on port {}",
-                    irq_num, slot.bus_num, slot.device_id, port
+                    irq_name, slot.bus_num, slot.device_id, port
                 );
             }
             crab_usb::Event::TransferActivity { count } => {
                 transfer_events += count;
                 trace!(
                     "usbfs: IRQ {} bus {} host {:?}: {} transfer event(s)",
-                    irq_num, slot.bus_num, slot.device_id, count
+                    irq_name, slot.bus_num, slot.device_id, count
                 );
             }
             crab_usb::Event::Stopped => {
                 stopped_events += 1;
                 trace!(
                     "usbfs: IRQ {} bus {} host {:?}: event handler stopped",
-                    irq_num, slot.bus_num, slot.device_id
+                    irq_name, slot.bus_num, slot.device_id
                 );
             }
             crab_usb::Event::Nothing => break,
@@ -184,7 +243,7 @@ fn usbfs_irq_handler(irq_num: usize) {
     trace!(
         "usbfs: IRQ {} bus {} host {:?}: handled calls={} port_events={} transfer_events={} \
          stopped_events={}",
-        irq_num,
+        irq_name,
         slot.bus_num,
         slot.device_id,
         handler_calls,
@@ -198,11 +257,11 @@ fn usbfs_irq_handler(irq_num: usize) {
 
     if let Some(manager) = USBFS_MANAGER.get() {
         if has_usb_activity {
-            manager.notify_usb_activity();
+            manager.notify_usb_activity_from_irq();
         }
         if has_topology_event {
             slot.dirty.store(true, Ordering::Release);
-            manager.refresh_event.notify(1);
+            manager.notify_topology_from_irq();
         }
     }
 }
@@ -211,6 +270,6 @@ unsafe fn usbfs_raw_irq_handler(
     ctx: ax_runtime::hal::irq::IrqContext,
     _data: NonNull<()>,
 ) -> ax_runtime::hal::irq::IrqReturn {
-    usbfs_irq_handler(ctx.irq.0);
+    usbfs_irq_handler_by_irq(ctx.irq.0);
     ax_runtime::hal::irq::IrqReturn::Handled
 }

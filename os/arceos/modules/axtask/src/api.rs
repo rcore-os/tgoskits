@@ -1,6 +1,7 @@
 //! Task APIs for multi-task configuration.
 
 use alloc::{
+    collections::BTreeMap,
     string::String,
     sync::{Arc, Weak},
 };
@@ -30,6 +31,10 @@ pub type AxTaskRef = Arc<AxTask>;
 
 /// The weak reference type of a task.
 pub type WeakAxTaskRef = Weak<AxTask>;
+
+#[cfg(feature = "multitask")]
+static TASK_REGISTRY: spin::LazyLock<spin::RwLock<BTreeMap<u64, WeakAxTaskRef>>> =
+    spin::LazyLock::new(|| spin::RwLock::new(BTreeMap::new()));
 
 /// The wrapper type for [`ax_cpumask::CpuMask`] with SMP configuration.
 pub type AxCpuMask = ax_cpumask::CpuMask<{ ax_config::plat::MAX_CPU_NUM }>;
@@ -166,16 +171,38 @@ pub fn init_scheduler_secondary(stack_ptr: VirtAddr, stack_size: usize) {
 #[cfg(feature = "irq")]
 #[cfg_attr(doc, doc(cfg(feature = "irq")))]
 pub fn on_timer_tick() {
+    on_timer_irq(true);
+}
+
+/// Handles a hardware timer interrupt.
+#[cfg(feature = "irq")]
+#[cfg_attr(doc, doc(cfg(feature = "irq")))]
+pub fn on_timer_irq(scheduler_tick: bool) {
     use ax_kernel_guard::NoOp;
-    crate::timers::check_events();
-    // Since irq and preemption are both disabled here,
-    // we can get current run queue with the default `ax_kernel_guard::NoOp`.
-    current_run_queue::<NoOp>().scheduler_timer_tick();
+    crate::timers::check_events(scheduler_tick);
+    if scheduler_tick {
+        // Since irq and preemption are both disabled here,
+        // we can get current run queue with the default `ax_kernel_guard::NoOp`.
+        current_run_queue::<NoOp>().scheduler_timer_tick();
+    }
+}
+
+#[cfg(feature = "irq")]
+#[doc(hidden)]
+pub fn next_timer_deadline_nanos() -> Option<u64> {
+    crate::timers::next_deadline_nanos()
+}
+
+#[cfg(feature = "irq")]
+#[doc(hidden)]
+pub fn note_programmed_timer_deadline_nanos(deadline_nanos: u64) {
+    crate::timers::note_programmed_deadline_nanos(deadline_nanos);
 }
 
 /// Adds the given task to the run queue, returns the task reference.
 pub fn spawn_task(task: TaskInner) -> AxTaskRef {
     let task_ref = task.into_arc();
+    register_task(&task_ref);
     select_run_queue::<NoPreemptIrqSave>(&task_ref).add_task(task_ref.clone());
     task_ref
 }
@@ -394,6 +421,52 @@ pub fn wake_task(task: &AxTaskRef) {
     }
 }
 
+/// Registers a task for lookup by its scheduler task id.
+///
+/// This keeps a weak reference only; expired entries are ignored by lookup.
+#[cfg(feature = "multitask")]
+pub fn register_task(task: &AxTaskRef) {
+    TASK_REGISTRY
+        .write()
+        .insert(task.id().as_u64(), Arc::downgrade(task));
+}
+
+/// Finds a task by its scheduler task id.
+#[cfg(feature = "multitask")]
+pub fn task_by_id(task_id: u64) -> Option<AxTaskRef> {
+    if task_id == 0 {
+        return current_may_uninit().map(|curr| curr.clone());
+    }
+
+    TASK_REGISTRY
+        .read()
+        .get(&task_id)
+        .and_then(|task| task.upgrade())
+}
+
+/// Wakes a task by its scheduler task id.
+#[cfg(feature = "multitask")]
+pub fn wake_task_by_id(task_id: u64) -> bool {
+    let Some(task) = task_by_id(task_id) else {
+        return false;
+    };
+    wake_task(&task);
+    true
+}
+
+#[cfg(not(feature = "multitask"))]
+pub fn register_task(_task: &AxTaskRef) {}
+
+#[cfg(not(feature = "multitask"))]
+pub fn task_by_id(_task_id: u64) -> Option<AxTaskRef> {
+    None
+}
+
+#[cfg(not(feature = "multitask"))]
+pub fn wake_task_by_id(_task_id: u64) -> bool {
+    false
+}
+
 /// The idle task routine.
 ///
 /// It runs an infinite loop that keeps trying to hand over the CPU before
@@ -402,7 +475,7 @@ pub fn run_idle() -> ! {
     loop {
         yield_now_unchecked();
         trace!("idle task: waiting for IRQs...");
-        #[cfg(feature = "irq")]
+        #[cfg(all(feature = "irq", not(feature = "host-test")))]
         ax_hal::asm::wait_for_irqs();
     }
 }

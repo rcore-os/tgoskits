@@ -1,13 +1,23 @@
-use std::path::{Path, PathBuf};
+use std::{
+    env, fs,
+    io::Write as _,
+    path::{Path, PathBuf},
+    process::{Command, Stdio},
+    time::Instant,
+};
 
-use anyhow::{Context as _, anyhow};
+use anyhow::{Context as _, anyhow, bail};
 use cargo_metadata::Metadata;
+use object::{Object as _, ObjectSection as _};
 use ostool::build::config::Cargo;
 
-use super::board;
+use super::{Starry, board};
 pub type StarryBuildInfo = crate::build::BuildInfo;
 pub use crate::build::LogLevel;
-use crate::context::{ResolvedStarryRequest, STARRY_PACKAGE, starry_arch_for_target_checked};
+use crate::{
+    context::{ResolvedStarryRequest, STARRY_PACKAGE, starry_arch_for_target_checked},
+    support::process::ProcessExt,
+};
 
 pub(crate) fn default_starry_build_info_for_target(target: &str) -> StarryBuildInfo {
     let mut build_info = StarryBuildInfo::default();
@@ -176,46 +186,11 @@ fn patch_starry_cargo_config(
             .or_insert_with(|| platform.to_string());
     }
 
-    inject_kallsyms_pre_build_cmd(cargo, &request.target)?;
-    inject_kallsyms_post_build_cmd(cargo)?;
-
     if cargo.env.get("UIMAGE").map(|v| v.as_str()) == Some("y") {
-        inject_uimage_post_build_cmd(cargo, &request.arch)?;
+        validate_uimage_generation(cargo, &request.arch)?;
     }
 
     Ok(())
-}
-
-fn inject_kallsyms_pre_build_cmd(cargo: &mut Cargo, target: &str) -> anyhow::Result<()> {
-    let target_dir = crate::context::workspace_root_path()?
-        .join("target")
-        .join(target)
-        .join("release");
-    let kernel = target_dir.join(STARRY_PACKAGE);
-    let bin = target_dir.join(format!("{}.bin", STARRY_PACKAGE));
-    let cmd = format!(
-        "rm -f {} {}",
-        shell_quote(&kernel.display().to_string()),
-        shell_quote(&bin.display().to_string())
-    );
-    cargo.pre_build_cmds.push(cmd);
-    Ok(())
-}
-
-fn inject_kallsyms_post_build_cmd(cargo: &mut Cargo) -> anyhow::Result<()> {
-    let script = crate::context::workspace_root_path()?
-        .join("scripts")
-        .join("axbuild")
-        .join("scripts")
-        .join("starry-kallsyms.sh");
-    cargo
-        .post_build_cmds
-        .push(format!("sh {}", shell_quote(&script.display().to_string())));
-    Ok(())
-}
-
-fn shell_quote(value: &str) -> String {
-    format!("'{}'", value.replace('\'', "'\\''"))
 }
 
 fn uimg_arch_for(arch: &str) -> String {
@@ -226,23 +201,356 @@ fn uimg_arch_for(arch: &str) -> String {
     }
 }
 
-fn inject_uimage_post_build_cmd(cargo: &mut Cargo, arch: &str) -> anyhow::Result<()> {
-    let uimg_arch = uimg_arch_for(arch);
-    let paddr = uimage_load_paddr_expr(cargo, arch)?;
+fn validate_uimage_generation(cargo: &Cargo, arch: &str) -> anyhow::Result<()> {
+    if cargo.env.contains_key("AX_CONFIG_PATH") {
+        return Ok(());
+    }
 
-    let cmd = format!(
-        "paddr={paddr} && bin=${{KERNEL_ELF%.elf}}.bin && mkimage -A {uimg_arch} -O linux -T \
-         kernel -C none -a \"$paddr\" -d \"$bin\" \"${{bin%.bin}}.uimg\""
-    );
-    cargo.post_build_cmds.push(cmd);
+    if !uses_dynamic_platform(&cargo.features) {
+        return Err(anyhow::anyhow!(
+            "AX_CONFIG_PATH is required for UIMAGE generation"
+        ));
+    }
+
+    match arch {
+        "aarch64" | "riscv64" => Ok(()),
+        other => Err(anyhow::anyhow!(
+            "AX_CONFIG_PATH is required for UIMAGE generation on {other}"
+        )),
+    }
+}
+
+pub(crate) async fn build_starry_artifact(
+    starry: &mut Starry,
+    request: &ResolvedStarryRequest,
+    cargo: Cargo,
+) -> anyhow::Result<ostool::build::CargoBuildOutput> {
+    let stage = StageLog::start(format!(
+        "starry build package={} target={} arch={}",
+        cargo.package, request.target, request.arch
+    ));
+    let output = starry
+        .app
+        .build(cargo.clone(), request.build_info_path.clone())
+        .await?;
+    stage.done();
+    postprocess_starry_artifact(starry.app.workspace_root(), request, &cargo, &output)?;
+    Ok(output)
+}
+
+pub(crate) fn postprocess_starry_artifact(
+    workspace_root: &Path,
+    request: &ResolvedStarryRequest,
+    cargo: &Cargo,
+    build_output: &ostool::build::CargoBuildOutput,
+) -> anyhow::Result<()> {
+    let elf = build_output.elf_path();
+    println!("[axbuild] starry artifact elf={}", elf.display());
+    generate_kallsyms(elf)?;
+    refresh_bin_if_present(elf)?;
+
+    if cargo.env.get("UIMAGE").map(|v| v.as_str()) == Some("y") {
+        generate_uimage(workspace_root, cargo, &request.arch, elf)?;
+    }
+
     Ok(())
 }
 
-fn uimage_load_paddr_expr(cargo: &Cargo, arch: &str) -> anyhow::Result<String> {
+fn generate_kallsyms(kernel_elf: &Path) -> anyhow::Result<()> {
+    let stage = StageLog::start(format!("starry kallsyms elf={}", kernel_elf.display()));
+    ensure_kallsyms_tools()?;
+    let symbols = rust_nm_symbols(kernel_elf)?;
+    println!("[axbuild] starry kallsyms symbols={}", symbols.len());
+    let mut child = Command::new("gen_ksym")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .context("failed to spawn gen_ksym")?;
+    {
+        let mut stdin = child
+            .stdin
+            .take()
+            .context("failed to open gen_ksym stdin")?;
+        for symbol in symbols {
+            writeln!(stdin, "{symbol}").context("failed to write symbols to gen_ksym")?;
+        }
+    }
+    let output = child
+        .wait_with_output()
+        .context("failed to wait for gen_ksym")?;
+    if !output.status.success() {
+        bail!("gen_ksym exited with status {}", output.status);
+    }
+
+    let section_size = kallsyms_section_size(kernel_elf)?;
+    let mut kallsyms = output.stdout;
+    if kallsyms.len() > section_size {
+        bail!(
+            "generated kallsyms ({} bytes) exceed .kallsyms section ({section_size} bytes); \
+             remove the stale kernel ELF or rebuild it so the linker script reserve is restored",
+            kallsyms.len()
+        );
+    }
+    kallsyms.resize(section_size, 0);
+
+    let temp = temp_file_path(kernel_elf, "kallsyms")?;
+    fs::write(&temp, &kallsyms).with_context(|| format!("failed to write {}", temp.display()))?;
+    let result = update_kallsyms_section(kernel_elf, &temp);
+    let cleanup =
+        fs::remove_file(&temp).with_context(|| format!("failed to remove {}", temp.display()));
+    result?;
+    cleanup?;
+    stage.done();
+    Ok(())
+}
+
+fn rust_nm_symbols(kernel_elf: &Path) -> anyhow::Result<Vec<String>> {
+    let output = Command::new("rust-nm")
+        .arg("-n")
+        .arg(kernel_elf)
+        .output()
+        .with_context(|| format!("failed to run rust-nm on {}", kernel_elf.display()))?;
+    if !output.status.success() {
+        bail!("rust-nm exited with status {}", output.status);
+    }
+
+    let mut symbols = Vec::new();
+    for line in String::from_utf8_lossy(&output.stdout).lines() {
+        let mut fields = line.split_whitespace();
+        let Some(address) = fields.next() else {
+            continue;
+        };
+        let Some(kind) = fields.next() else {
+            continue;
+        };
+        let Some(name) = fields.next() else {
+            continue;
+        };
+        if matches!(kind, "T" | "t" | "D" | "B" | "R") && !name.starts_with(".L") && name != "$x" {
+            symbols.push(format!("{address} {kind} {name}"));
+        }
+    }
+    Ok(symbols)
+}
+
+fn kallsyms_section_size(kernel_elf: &Path) -> anyhow::Result<usize> {
+    let data =
+        fs::read(kernel_elf).with_context(|| format!("failed to read {}", kernel_elf.display()))?;
+    let file = object::File::parse(&*data)
+        .with_context(|| format!("failed to parse {}", kernel_elf.display()))?;
+    let section = file.section_by_name(".kallsyms").ok_or_else(|| {
+        anyhow!(
+            "failed to find .kallsyms section in {}",
+            kernel_elf.display()
+        )
+    })?;
+    usize::try_from(section.size()).with_context(|| {
+        format!(
+            ".kallsyms section in {} is too large for this host",
+            kernel_elf.display()
+        )
+    })
+}
+
+fn update_kallsyms_section(kernel_elf: &Path, kallsyms: &Path) -> anyhow::Result<()> {
+    Command::new("rust-objcopy")
+        .arg("--update-section")
+        .arg(format!(".kallsyms={}", kallsyms.display()))
+        .arg(kernel_elf)
+        .exec()
+        .with_context(|| format!("failed to update .kallsyms in {}", kernel_elf.display()))
+}
+
+fn refresh_bin_if_present(kernel_elf: &Path) -> anyhow::Result<()> {
+    let bin = kernel_elf.with_extension("bin");
+    if !bin.exists() {
+        println!(
+            "[axbuild] starry bin refresh skipped: {} does not exist",
+            bin.display()
+        );
+        return Ok(());
+    }
+    let stage = StageLog::start(format!("starry bin refresh {}", bin.display()));
+    Command::new("rust-objcopy")
+        .arg("--strip-all")
+        .arg("-O")
+        .arg("binary")
+        .arg(kernel_elf)
+        .arg(&bin)
+        .exec()
+        .with_context(|| format!("failed to refresh {}", bin.display()))?;
+    stage.done();
+    Ok(())
+}
+
+fn generate_uimage(
+    workspace_root: &Path,
+    cargo: &Cargo,
+    arch: &str,
+    kernel_elf: &Path,
+) -> anyhow::Result<()> {
+    let bin = kernel_elf.with_extension("bin");
+    if !bin.exists() {
+        refresh_bin_if_present(kernel_elf)?;
+    }
+    if !bin.exists() {
+        bail!(
+            "kernel BIN is required for UIMAGE generation: {}",
+            bin.display()
+        );
+    }
+    let uimg = bin.with_extension("uimg");
+    let paddr = uimage_load_paddr(cargo, arch)?;
+    let stage = StageLog::start(format!(
+        "starry uImage arch={} load={} bin={} out={}",
+        arch,
+        paddr,
+        bin.display(),
+        uimg.display()
+    ));
+    Command::new("mkimage")
+        .current_dir(workspace_root)
+        .arg("-A")
+        .arg(uimg_arch_for(arch))
+        .arg("-O")
+        .arg("linux")
+        .arg("-T")
+        .arg("kernel")
+        .arg("-C")
+        .arg("none")
+        .arg("-a")
+        .arg(&paddr)
+        .arg("-d")
+        .arg(&bin)
+        .arg(&uimg)
+        .exec()
+        .with_context(|| format!("failed to generate {}", uimg.display()))?;
+    stage.done();
+    Ok(())
+}
+
+fn ensure_kallsyms_tools() -> anyhow::Result<()> {
+    ensure_llvm_tools()?;
+    if !command_available("rust-nm") || !command_available("rust-objcopy") {
+        install_rust_binutils()?;
+    }
+    if !command_available("gen_ksym") {
+        install_ksym()?;
+    }
+    require_command("rust-nm")?;
+    require_command("rust-objcopy")?;
+    require_command("gen_ksym")
+}
+
+fn ensure_llvm_tools() -> anyhow::Result<()> {
+    if command_available("rust-nm") && command_available("rust-objcopy") {
+        return Ok(());
+    }
+    if !command_available("rustup") {
+        return Ok(());
+    }
+    let output = Command::new("rustup")
+        .args(["component", "list", "--installed"])
+        .output()
+        .context("failed to list installed rustup components")?;
+    if String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .any(|line| line.starts_with("llvm-tools"))
+    {
+        return Ok(());
+    }
+    if !kallsyms_auto_install_enabled() {
+        bail!(
+            "llvm-tools-preview is required; install it with: rustup component add \
+             llvm-tools-preview"
+        );
+    }
+    Command::new("rustup")
+        .args(["component", "add", "llvm-tools-preview"])
+        .exec()
+        .context("failed to install llvm-tools-preview")
+}
+
+fn install_rust_binutils() -> anyhow::Result<()> {
+    if !kallsyms_auto_install_enabled() {
+        bail!(
+            "rust-nm and rust-objcopy are required; install them with: rustup component add \
+             llvm-tools-preview && cargo install cargo-binutils"
+        );
+    }
+    if command_available("rustup") {
+        Command::new("rustup")
+            .args(["component", "add", "llvm-tools-preview"])
+            .exec()
+            .context("failed to install llvm-tools-preview")?;
+    }
+    Command::new("cargo")
+        .args(["install", "cargo-binutils"])
+        .exec()
+        .context("failed to install cargo-binutils")
+}
+
+fn install_ksym() -> anyhow::Result<()> {
+    if !kallsyms_auto_install_enabled() {
+        bail!("gen_ksym is required; install it with: cargo install ksym");
+    }
+    Command::new("cargo")
+        .args(["install", "ksym"])
+        .exec()
+        .context("failed to install ksym")
+}
+
+fn kallsyms_auto_install_enabled() -> bool {
+    !matches!(
+        env::var("AXBUILD_STARRY_KALLSYMS_AUTO_INSTALL")
+            .unwrap_or_else(|_| "1".to_string())
+            .as_str(),
+        "0" | "n" | "no" | "false" | "off"
+    )
+}
+
+fn command_available(name: &str) -> bool {
+    let path = Path::new(name);
+    if path.components().count() > 1 {
+        return path.is_file();
+    }
+
+    env::var_os("PATH").is_some_and(|paths| {
+        env::split_paths(&paths).any(|dir| {
+            let candidate = dir.join(name);
+            candidate.is_file()
+                || cfg!(windows)
+                    && env::var_os("PATHEXT").is_some_and(|exts| {
+                        exts.to_string_lossy()
+                            .split(';')
+                            .any(|ext| dir.join(format!("{name}{ext}")).is_file())
+                    })
+        })
+    })
+}
+
+fn require_command(name: &str) -> anyhow::Result<()> {
+    if command_available(name) {
+        Ok(())
+    } else {
+        bail!("required command `{name}` is not available")
+    }
+}
+
+fn temp_file_path(path: &Path, suffix: &str) -> anyhow::Result<PathBuf> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| anyhow!("invalid path without parent: {}", path.display()))?;
+    let name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| anyhow!("invalid path filename: {}", path.display()))?;
+    Ok(parent.join(format!(".{name}.{suffix}.{}.tmp", std::process::id())))
+}
+
+fn uimage_load_paddr(cargo: &Cargo, arch: &str) -> anyhow::Result<String> {
     if let Some(config_path) = cargo.env.get("AX_CONFIG_PATH") {
-        return Ok(format!(
-            "$(ax-config-gen {config_path} -r plat.kernel-base-paddr | tr -d _)"
-        ));
+        return axconfig_kernel_base_paddr(Path::new(config_path));
     }
 
     if !uses_dynamic_platform(&cargo.features) {
@@ -258,6 +566,28 @@ fn uimage_load_paddr_expr(cargo: &Cargo, arch: &str) -> anyhow::Result<String> {
             "AX_CONFIG_PATH is required for UIMAGE generation on {other}"
         )),
     }
+}
+
+fn axconfig_kernel_base_paddr(path: &Path) -> anyhow::Result<String> {
+    let output = Command::new("ax-config-gen")
+        .arg(path)
+        .arg("-r")
+        .arg("plat.kernel-base-paddr")
+        .output()
+        .with_context(|| format!("failed to read kernel base paddr from {}", path.display()))?;
+    if !output.status.success() {
+        bail!("ax-config-gen exited with status {}", output.status);
+    }
+    let paddr = String::from_utf8_lossy(&output.stdout)
+        .trim()
+        .replace('_', "");
+    if paddr.is_empty() {
+        bail!(
+            "ax-config-gen returned empty plat.kernel-base-paddr for {}",
+            path.display()
+        );
+    }
+    Ok(paddr)
 }
 
 fn remove_qemu_feature_for_dynamic_platform(cargo: &mut Cargo) {
@@ -339,6 +669,30 @@ fn package_has_bin_named(
                 .iter()
                 .any(|kind| matches!(kind, cargo_metadata::TargetKind::Bin))
     }))
+}
+
+struct StageLog {
+    name: String,
+    started: Instant,
+}
+
+impl StageLog {
+    fn start(name: impl Into<String>) -> Self {
+        let name = name.into();
+        println!("[axbuild] {name} ...");
+        Self {
+            name,
+            started: Instant::now(),
+        }
+    }
+
+    fn done(self) {
+        println!(
+            "[axbuild] {} ... done ({:.2?})",
+            self.name,
+            self.started.elapsed()
+        );
+    }
 }
 
 #[cfg(test)]
@@ -613,8 +967,7 @@ log = "Info"
         assert_eq!(cargo.env.get("AX_LOG").map(String::as_str), Some("info"));
         assert_eq!(cargo.env.get("CUSTOM").map(String::as_str), Some("1"));
         assert!(cargo.to_bin);
-        assert_eq!(cargo.post_build_cmds.len(), 1);
-        assert!(cargo.post_build_cmds[0].contains("scripts/axbuild/scripts/starry-kallsyms.sh"));
+        assert!(cargo.post_build_cmds.is_empty());
     }
 
     #[test]
@@ -765,15 +1118,12 @@ log = "Info"
             to_bin: true,
         };
 
-        assert_eq!(
-            uimage_load_paddr_expr(&cargo, "riscv64").unwrap(),
-            "0x80200000"
-        );
+        assert_eq!(uimage_load_paddr(&cargo, "riscv64").unwrap(), "0x80200000");
     }
 
     #[test]
-    fn uimage_load_paddr_prefers_axconfig_when_available() {
-        let mut cargo = Cargo {
+    fn uimage_load_paddr_uses_axconfig_when_available() {
+        let cargo = Cargo {
             env: HashMap::from([(
                 "AX_CONFIG_PATH".to_string(),
                 "/tmp/generated.axconfig.toml".to_string(),
@@ -792,15 +1142,8 @@ log = "Info"
             to_bin: true,
         };
 
-        assert_eq!(
-            uimage_load_paddr_expr(&cargo, "riscv64").unwrap(),
-            "$(ax-config-gen /tmp/generated.axconfig.toml -r plat.kernel-base-paddr | tr -d _)"
-        );
-
-        inject_uimage_post_build_cmd(&mut cargo, "riscv64").unwrap();
-        assert!(
-            cargo.post_build_cmds[0].contains("paddr=$(ax-config-gen /tmp/generated.axconfig.toml")
-        );
+        let err = uimage_load_paddr(&cargo, "riscv64").unwrap_err();
+        assert!(err.to_string().contains("ax-config-gen"));
     }
 
     #[test]
@@ -834,6 +1177,30 @@ log = "Info"
         assert_eq!(
             cargo.env.get("AX_PLATFORM").map(String::as_str),
             Some("riscv64-sg2002")
+        );
+    }
+
+    #[test]
+    fn load_cargo_config_keeps_pie_target_for_non_kmod_plat_dyn_request() {
+        let mut request = request(
+            PathBuf::from("/tmp/.build.toml"),
+            "aarch64",
+            "aarch64-unknown-none-softfloat",
+        );
+        request.build_info_override = Some(StarryBuildInfo {
+            plat_dyn: true,
+            features: vec!["ax-driver/virtio-blk".to_string()],
+            ..default_starry_build_info_for_target("aarch64-unknown-none-softfloat")
+        });
+
+        let cargo = load_cargo_config(&request).unwrap();
+
+        assert!(
+            cargo
+                .target
+                .ends_with("scripts/targets/std/pie/aarch64-unknown-linux-musl.json"),
+            "expected pie target, got {}",
+            cargo.target
         );
     }
 
@@ -913,41 +1280,24 @@ log = "Info"
     }
 
     #[test]
-    fn patch_starry_cargo_config_runs_kallsyms_before_uimage_generation() {
+    fn patch_starry_cargo_config_validates_uimage_without_shell_post_build() {
         let request = request(
             PathBuf::from("/tmp/.build.toml"),
-            "aarch64",
-            "aarch64-unknown-none-softfloat",
+            "riscv64",
+            "riscv64gc-unknown-none-elf",
         );
         let mut build_info = default_starry_build_info_for_target(&request.target);
         build_info.env.insert("UIMAGE".to_string(), "y".to_string());
-        build_info.env.insert(
-            "AX_CONFIG_PATH".to_string(),
-            "/tmp/.axconfig.toml".to_string(),
-        );
         let mut cargo = build_info.into_base_cargo_config_with_log(
             request.package.clone(),
             request.target.clone(),
             StarryBuildInfo::build_cargo_args(&request.target, &[]),
         );
+        cargo.features.push("plat-dyn".to_string());
 
         let metadata = crate::build::workspace_metadata().unwrap();
         patch_starry_cargo_config(&mut cargo, &request, &metadata).unwrap();
 
-        assert_eq!(cargo.post_build_cmds.len(), 2);
-        assert!(cargo.post_build_cmds[0].contains("scripts/axbuild/scripts/starry-kallsyms.sh"));
-        assert!(cargo.post_build_cmds[1].contains("mkimage"));
-    }
-    #[test]
-    fn starry_kallsyms_script_does_not_require_gawk_extensions() {
-        let script = crate::context::workspace_root_path()
-            .unwrap()
-            .join("scripts/axbuild/scripts/starry-kallsyms.sh");
-        let content = fs::read_to_string(script).unwrap();
-
-        assert!(
-            !content.contains("strtonum("),
-            "starry-kallsyms.sh must run with non-gawk awk implementations used by CI"
-        );
+        assert!(cargo.post_build_cmds.is_empty());
     }
 }

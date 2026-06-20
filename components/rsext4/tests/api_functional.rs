@@ -297,7 +297,7 @@ mod api_functional_tests {
 
             // Each file should expose the same stable prefix when read from offset 0.
             let data = read_at(&mut jbd2_dev, &mut fs, &mut file, 10).expect("read_at failed");
-            assert_eq!(data, format!("Content of").as_bytes());
+            assert_eq!(data, "Content of".as_bytes());
 
             drop(file);
         }

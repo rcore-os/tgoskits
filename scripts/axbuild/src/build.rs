@@ -46,6 +46,29 @@ pub(crate) fn toolchain_rustflags(env: &HashMap<String, String>) -> Vec<String> 
     flags
 }
 
+fn features_enable_stack_protector(features: &[String]) -> bool {
+    features.iter().any(|feature| {
+        matches!(
+            feature.as_str(),
+            "stack-protector"
+                | "ax-std/stack-protector"
+                | "ax-feat/stack-protector"
+                | "starry-kernel/stack-protector"
+        )
+    })
+}
+
+pub(crate) fn toolchain_rustflags_for_features(
+    env: &HashMap<String, String>,
+    features: &[String],
+) -> Vec<String> {
+    let mut flags = toolchain_rustflags(env);
+    if features_enable_stack_protector(features) {
+        flags.push("-Zstack-protector=strong".to_string());
+    }
+    flags
+}
+
 /// Whether the build config enables target backtrace support (frame pointers / unwind).
 ///
 /// Matches [`toolchain_rustflags`]: `BACKTRACE=y` or `DWARF=y` in `[env]`.
@@ -225,7 +248,7 @@ impl BuildInfo {
                 .display()
                 .to_string(),
         );
-        let rustflags = toolchain_rustflags(&cargo.env);
+        let rustflags = toolchain_rustflags_for_features(&cargo.env, &cargo.features);
         cargo.extra_config = Some(
             std_cargo_config_path(&std_target.target_name, &wrapper, plat_dyn, &rustflags)?
                 .display()
@@ -1295,6 +1318,7 @@ fn is_known_axstd_feature(feature: &str) -> bool {
             | "sched-rr"
             | "sched-cfs"
             | "stack-guard-page"
+            | "stack-protector"
             | "fs"
             | "ext4fs"
             | "fatfs"
@@ -2099,6 +2123,36 @@ log = "Info"
     }
 
     #[test]
+    fn toolchain_rustflags_enable_stack_protector_from_features() {
+        let env = HashMap::from([("BACKTRACE".to_string(), "y".to_string())]);
+        let features = vec!["ax-std/stack-protector".to_string()];
+
+        assert_eq!(
+            toolchain_rustflags_for_features(&env, &features),
+            vec![
+                "-Cforce-frame-pointers=yes".to_string(),
+                "-Zstack-protector=strong".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn stack_protector_feature_detection_accepts_supported_surfaces() {
+        for feature in [
+            "stack-protector",
+            "ax-std/stack-protector",
+            "ax-feat/stack-protector",
+            "starry-kernel/stack-protector",
+        ] {
+            assert!(features_enable_stack_protector(&[feature.to_string()]));
+        }
+
+        assert!(!features_enable_stack_protector(&[
+            "stack-guard-page".to_string()
+        ]));
+    }
+
+    #[test]
     fn std_build_nested_features_are_passed_through_not_enabled_on_app() {
         let mut envs = HashMap::new();
         let mut features = vec![
@@ -2553,6 +2607,32 @@ log = "Info"
     }
 
     #[test]
+    fn std_build_config_enables_stack_protector_from_feature() {
+        let metadata = repo_metadata();
+        let info = BuildInfo {
+            features: vec!["stack-protector".to_string()],
+            ..BuildInfo::default()
+        };
+
+        let cargo = info
+            .into_prepared_base_cargo_config_with_metadata(
+                "arceos-helloworld",
+                "x86_64-unknown-none",
+                None,
+                &metadata,
+            )
+            .unwrap();
+
+        assert!(
+            cargo
+                .features
+                .contains(&"ax-std/stack-protector".to_string())
+        );
+        let config = std::fs::read_to_string(cargo.extra_config.unwrap()).unwrap();
+        assert!(config.contains(r#""-Zstack-protector=strong""#));
+    }
+
+    #[test]
     fn std_build_target_maps_arceos_targets_to_linux_musl_by_link_mode() {
         let cases = [
             (
@@ -2861,7 +2941,7 @@ log = "Info"
     }
 
     #[test]
-    fn std_cargo_config_uses_linux_musl_wrapper_without_custom_cfg() {
+    fn std_cargo_config_uses_linux_musl_wrapper_with_plain_std_build() {
         let fake_dir = std_fake_lib_dir("x86_64-unknown-linux-musl").unwrap();
         let wrapper =
             std_linker_wrapper_path("x86_64-unknown-linux-musl", &fake_dir, false).unwrap();
@@ -2877,7 +2957,8 @@ log = "Info"
         assert!(config.contains(&wrapper.display().to_string()));
         assert!(!config.contains("relocation-model"));
         assert!(!config.contains("code-model"));
-        assert!(!config.contains("target_os = \"hermit\""));
+        assert!(!config.contains("--cfg"));
+        assert!(!config.contains("--check-cfg"));
     }
 
     #[test]

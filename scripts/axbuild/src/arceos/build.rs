@@ -194,7 +194,7 @@ pub(crate) fn load_c_app_cargo_config(request: &ResolvedBuildRequest) -> anyhow:
         plat_dyn,
         metadata,
     );
-    let rustflags = build::toolchain_rustflags(&build_info.env);
+    let rustflags = build::toolchain_rustflags_for_features(&build_info.env, &build_info.features);
     let args = ArceosBuildInfo::build_cargo_args(&request.target, &rustflags);
 
     build_info.prepare_log_env();

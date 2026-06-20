@@ -7,7 +7,7 @@ keywords.workspace = true
 license.workspace = true
 name = "somehal"
 repository.workspace = true
-version = "0.6.10"
+version = "0.7.0"
 
 [features]
 cntv-timer = ["someboot/cntv-timer"]

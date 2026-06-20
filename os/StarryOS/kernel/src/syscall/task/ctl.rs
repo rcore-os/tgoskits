@@ -1,3 +1,10 @@
+//! Task-control syscalls: capabilities, `prctl`, personality, and NUMA policy.
+//!
+//! The capability helpers in this file implement the Linux `capget(2)` and
+//! `capset(2)` ABI plus the capability-related `prctl(2)` operations.  They
+//! translate between userspace's split `u32` capability arrays and StarryOS's
+//! internal `Cred` bitmap fields.
+
 use core::ffi::c_char;
 
 use ax_errno::{AxError, AxResult};
@@ -11,6 +18,7 @@ use crate::{
 };
 
 const CAPABILITY_VERSION_3: u32 = 0x20080522;
+const CAP_U32S_3: usize = 2;
 const PERSONALITY_GET: u32 = 0xffff_ffff;
 const PR_THP_DISABLE_EXCEPT_ADVISED: usize = 1 << 1;
 const MPOL_DEFAULT: i32 = 0;
@@ -86,6 +94,44 @@ fn cred_for_pid(pid: u32) -> AxResult<alloc::sync::Arc<Cred>> {
         .ok_or(AxError::NoSuchProcess)
 }
 
+/// Validate a capability number and return its bit in the internal bitmap.
+fn cap_bit(cap: u32) -> AxResult<u64> {
+    if cap > CAP_LAST_CAP {
+        return Err(AxError::InvalidInput);
+    }
+    Ok(1u64 << cap)
+}
+
+/// Merge the two u32 words from a Linux V3 capability array into one mask.
+fn data_to_mask(
+    data: &[__user_cap_data_struct; CAP_U32S_3],
+    f: fn(&__user_cap_data_struct) -> u32,
+) -> u64 {
+    u64::from(f(&data[0])) | (u64::from(f(&data[1])) << 32)
+}
+
+/// Convert StarryOS credentials into Linux V3 userspace capability words.
+fn cap_data_from_cred(cred: &Cred) -> [__user_cap_data_struct; CAP_U32S_3] {
+    [
+        __user_cap_data_struct {
+            effective: cred.cap_effective as u32,
+            permitted: cred.cap_permitted as u32,
+            inheritable: cred.cap_inheritable as u32,
+        },
+        __user_cap_data_struct {
+            effective: (cred.cap_effective >> 32) as u32,
+            permitted: (cred.cap_permitted >> 32) as u32,
+            inheritable: (cred.cap_inheritable >> 32) as u32,
+        },
+    ]
+}
+
+/// Implement `capget(2)`.
+///
+/// StarryOS supports the Linux V3 capability ABI.  When `data` is null, the
+/// call only validates/fixes the header version as Linux does.  Otherwise, the
+/// selected thread's effective, permitted, and inheritable sets are copied to
+/// userspace.
 pub fn sys_capget(
     header: *mut __user_cap_header_struct,
     data: *mut __user_cap_data_struct,
@@ -97,32 +143,71 @@ pub fn sys_capget(
     }
 
     let cred = cred_for_pid(pid)?;
-    let caps = if cred.euid == 0 { u32::MAX } else { 0 };
-    let data_struct = __user_cap_data_struct {
-        effective: caps,
-        permitted: caps,
-        inheritable: caps,
-    };
-    // Capability version 3 uses an array of TWO __user_cap_data_struct
-    // entries (low 32 bits and high 32 bits). Write both.
+    let cap_data = cap_data_from_cred(&cred);
     unsafe {
-        data.vm_write(data_struct)?;
-        data.add(1).vm_write(data_struct)?;
+        data.vm_write(cap_data[0])?;
+        data.add(1).vm_write(cap_data[1])?;
     }
     Ok(0)
 }
 
+/// Implement `capset(2)` for the current thread.
+///
+/// The caller may only update its own credentials.  Effective capabilities must
+/// remain a subset of permitted capabilities, permitted capabilities cannot be
+/// expanded, and inheritable expansion follows Linux's `CAP_SETPCAP`/bounding
+/// set rules.
 pub fn sys_capset(
     header: *mut __user_cap_header_struct,
-    _data: *mut __user_cap_data_struct,
+    data: *mut __user_cap_data_struct,
 ) -> AxResult<isize> {
-    let _ = validate_cap_header(header)?;
+    let pid = validate_cap_header(header)?;
+    if data.is_null() {
+        return Err(AxError::BadAddress);
+    }
 
-    let cred = current().as_thread().cred();
-    if cred.euid != 0 {
+    let thread_ref = current();
+    let thread = thread_ref.as_thread();
+    if pid != 0 && pid != thread.tid() {
         return Err(AxError::OperationNotPermitted);
     }
-    // For now, accept and ignore the values (no real capability tracking).
+
+    let requested = unsafe {
+        [
+            data.vm_read_uninit()?.assume_init(),
+            data.add(1).vm_read_uninit()?.assume_init(),
+        ]
+    };
+    let old = thread.cred();
+    let cap_mask = Cred::cap_mask();
+    let effective = data_to_mask(&requested, |d| d.effective) & cap_mask;
+    let permitted = data_to_mask(&requested, |d| d.permitted) & cap_mask;
+    let inheritable = data_to_mask(&requested, |d| d.inheritable) & cap_mask;
+
+    if effective & !permitted != 0 {
+        return Err(AxError::OperationNotPermitted);
+    }
+
+    let adds_permitted = permitted & !old.cap_permitted;
+    let adds_inheritable = inheritable & !old.cap_inheritable;
+    let may_expand = old.has_cap_setpcap();
+    if adds_permitted != 0 {
+        return Err(AxError::OperationNotPermitted);
+    }
+    if may_expand {
+        if adds_inheritable & !old.cap_bounding != 0 {
+            return Err(AxError::OperationNotPermitted);
+        }
+    } else if adds_inheritable & !(old.cap_inheritable | old.cap_permitted) != 0 {
+        return Err(AxError::OperationNotPermitted);
+    }
+
+    let mut new = (*old).clone();
+    new.cap_effective = effective;
+    new.cap_permitted = permitted;
+    new.cap_inheritable = inheritable;
+    new.sanitize_capabilities();
+    thread.set_cred(new);
     Ok(0)
 }
 
@@ -319,10 +404,79 @@ pub fn sys_prctl(
             (arg2 as *mut i32).vm_write(enabled)?;
         }
         PR_CAPBSET_READ => {
+            // Query whether a capability is still present in the bounding set.
             if arg2 > CAP_LAST_CAP as usize {
                 return Err(AxError::InvalidInput);
             }
-            return Ok(1);
+            let bit = cap_bit(arg2 as u32)?;
+            let cred = current().as_thread().cred();
+            return Ok(((cred.cap_bounding & bit) != 0) as isize);
+        }
+        PR_CAPBSET_DROP => {
+            // Permanently drop a capability from this thread's bounding set.
+            // Linux requires CAP_SETPCAP for this operation.
+            if arg2 > CAP_LAST_CAP as usize || arg3 != 0 || arg4 != 0 || arg5 != 0 {
+                return Err(AxError::InvalidInput);
+            }
+            let thread_ref = current();
+            let thread = thread_ref.as_thread();
+            let old = thread.cred();
+            if !old.has_cap_setpcap() {
+                return Err(AxError::OperationNotPermitted);
+            }
+            let bit = cap_bit(arg2 as u32)?;
+            let mut new = (*old).clone();
+            new.cap_bounding &= !bit;
+            new.cap_ambient &= !bit;
+            new.sanitize_capabilities();
+            thread.set_cred(new);
+        }
+        PR_CAP_AMBIENT => {
+            // Manage the ambient capability set.  Ambient capabilities are
+            // constrained to permitted & inheritable by `sanitize_capabilities`.
+            let thread_ref = current();
+            let thread = thread_ref.as_thread();
+            let old = thread.cred();
+            match arg2 as u32 {
+                PR_CAP_AMBIENT_IS_SET => {
+                    if arg3 > CAP_LAST_CAP as usize || arg4 != 0 || arg5 != 0 {
+                        return Err(AxError::InvalidInput);
+                    }
+                    let bit = cap_bit(arg3 as u32)?;
+                    return Ok(((old.cap_ambient & bit) != 0) as isize);
+                }
+                PR_CAP_AMBIENT_RAISE => {
+                    if arg3 > CAP_LAST_CAP as usize || arg4 != 0 || arg5 != 0 {
+                        return Err(AxError::InvalidInput);
+                    }
+                    let bit = cap_bit(arg3 as u32)?;
+                    if old.cap_permitted & bit == 0 || old.cap_inheritable & bit == 0 {
+                        return Err(AxError::OperationNotPermitted);
+                    }
+                    let mut new = (*old).clone();
+                    new.cap_ambient |= bit;
+                    new.sanitize_capabilities();
+                    thread.set_cred(new);
+                }
+                PR_CAP_AMBIENT_LOWER => {
+                    if arg3 > CAP_LAST_CAP as usize || arg4 != 0 || arg5 != 0 {
+                        return Err(AxError::InvalidInput);
+                    }
+                    let bit = cap_bit(arg3 as u32)?;
+                    let mut new = (*old).clone();
+                    new.cap_ambient &= !bit;
+                    thread.set_cred(new);
+                }
+                PR_CAP_AMBIENT_CLEAR_ALL => {
+                    if arg3 != 0 || arg4 != 0 || arg5 != 0 {
+                        return Err(AxError::InvalidInput);
+                    }
+                    let mut new = (*old).clone();
+                    new.cap_ambient = 0;
+                    thread.set_cred(new);
+                }
+                _ => return Err(AxError::InvalidInput),
+            }
         }
         PR_GET_DUMPABLE => {
             // man 2 prctl PR_GET_DUMPABLE: returns current dumpable value
@@ -342,7 +496,12 @@ pub fn sys_prctl(
             }
             current().as_thread().proc_data.set_dumpable(arg2 as i32);
         }
-        PR_SET_SECCOMP => {}
+        PR_SET_SECCOMP => {
+            if arg4 != 0 || arg5 != 0 {
+                return Err(AxError::InvalidInput);
+            }
+            crate::syscall::sys_seccomp(arg2 as u32, 0, arg3 as *const ())?;
+        }
         PR_MCE_KILL => {}
         PR_SET_NO_NEW_PRIVS => {
             if arg2 != 1 || arg3 != 0 || arg4 != 0 || arg5 != 0 {

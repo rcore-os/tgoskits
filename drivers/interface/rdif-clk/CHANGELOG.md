@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.3](https://github.com/rcore-os/tgoskits/compare/rdif-clk-v0.5.2...rdif-clk-v0.5.3) - 2026-06-12
+
+### Other
+
+- updated the following local packages: rdif-base
+
 ## [0.5.2](https://github.com/rcore-os/tgoskits/compare/rdif-clk-v0.5.1...rdif-clk-v0.5.2) - 2026-06-09
 
 ### Other

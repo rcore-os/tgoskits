@@ -106,6 +106,17 @@ impl Net {
         self.interface().mac_address()
     }
 
+    /// Access the device's optional wireless control plane.
+    ///
+    /// Returns `None` for a plain wired NIC. Forwards to
+    /// [`Interface::wifi_control`] so the upper layers can drive a wireless
+    /// device (STA/SoftAP control, link policy, RX wake) through the same net
+    /// device handle as any other NIC.
+    #[allow(clippy::mut_from_ref)]
+    pub fn wifi_control(&self) -> Option<&mut dyn WifiControl> {
+        self.interface().wifi_control()
+    }
+
     pub fn enable_irq(&mut self) {
         self.interface().enable_irq();
     }
@@ -165,6 +176,55 @@ impl Net {
             inner: self.inner.clone(),
         }
     }
+
+    /// Detaches a standalone control-plane handle for this device.
+    ///
+    /// Returns `None` for a plain wired NIC. The handle clones the same
+    /// `Arc<NetInner>` the data plane uses (like [`Net::irq_handler`]), so the
+    /// control plane (STA/SoftAP switch, link policy) stays reachable *after*
+    /// `Net` is consumed into a driver. Used to drive runtime Wi-Fi mode
+    /// switching from a separate task/syscall context.
+    pub fn wifi_control_handle(&self) -> Option<WifiControlHandle> {
+        self.wifi_control().is_some().then(|| WifiControlHandle {
+            inner: self.inner.clone(),
+        })
+    }
+}
+
+/// Standalone handle to a device's wireless control plane.
+///
+/// Holds a clone of the device's `Arc<NetInner>`, so it keeps working after the
+/// originating [`Net`] has been consumed into a data-plane driver. See
+/// [`Net::wifi_control_handle`].
+pub struct WifiControlHandle {
+    inner: Arc<NetInner>,
+}
+
+unsafe impl Send for WifiControlHandle {}
+unsafe impl Sync for WifiControlHandle {}
+
+impl WifiControlHandle {
+    /// Access the wireless control plane.
+    ///
+    /// # Safety / concurrency
+    ///
+    /// This aliases the same `Interface` the data plane drives. The caller must
+    /// not invoke control operations concurrently with the device's RX/TX or
+    /// poll path on the same interface. In practice mode switching is issued
+    /// from a syscall/task context that is serialized against the stack's poll
+    /// task, never from inside an RX callback.
+    #[allow(clippy::mut_from_ref)]
+    pub fn wifi_control(&self) -> Option<&mut dyn WifiControl> {
+        let iface = unsafe { &mut **self.inner.interface.get() };
+        iface.wifi_control()
+    }
+
+    /// The device's current MAC address (may change across a mode switch as the
+    /// firmware re-creates its VIF).
+    pub fn mac_address(&self) -> [u8; 6] {
+        let iface = unsafe { &mut **self.inner.interface.get() };
+        iface.mac_address()
+    }
 }
 
 fn make_pool(
@@ -195,9 +255,24 @@ impl IrqHandler {
         iface.disable_irq();
     }
 
-    pub fn handle(&self) {
+    /// Handles a device interrupt and returns queue events without waking task
+    /// wakers.
+    ///
+    /// This is the IRQ top-half entry: it only asks the portable driver to
+    /// identify/acknowledge the interrupt source and publish queue event bits.
+    /// Runtime queue wakers must be invoked later from task/deferred context
+    /// through [`handle`](Self::handle).
+    pub fn handle_irq(&self) -> rdif_eth::Event {
         let iface = unsafe { &mut **self.inner.interface.get() };
-        let event = iface.handle_irq();
+        iface.handle_irq()
+    }
+
+    /// Handles a device interrupt and wakes registered queue waiters.
+    ///
+    /// Use this only from task/deferred context. Hard IRQ callbacks should call
+    /// [`handle_irq`](Self::handle_irq) and defer waker execution.
+    pub fn handle(&self) {
+        let event = self.handle_irq();
         for id in event.tx_queue.iter() {
             self.inner.tx_wakers.wake(id);
         }
@@ -416,5 +491,181 @@ impl Drop for RxPacket<'_> {
         if let Some(buff) = self.buff.take() {
             let _ = self.queue.submit_buffer(buff);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use alloc::{boxed::Box, sync::Arc};
+    use core::{
+        any::Any,
+        num::NonZeroUsize,
+        ptr::NonNull,
+        sync::atomic::{AtomicUsize, Ordering},
+        task::{RawWaker, RawWakerVTable, Waker},
+    };
+
+    use dma_api::{DmaAllocHandle, DmaConstraints, DmaDirection, DmaError, DmaMapHandle};
+    use rdif_eth::{DriverGeneric, Event, IRxQueue, ITxQueue, IdList, Interface};
+
+    use super::*;
+
+    struct TestDma;
+
+    impl dma_api::DmaOp for TestDma {
+        fn page_size(&self) -> usize {
+            4096
+        }
+
+        unsafe fn alloc_contiguous(
+            &self,
+            _constraints: DmaConstraints,
+            _layout: core::alloc::Layout,
+        ) -> Option<DmaAllocHandle> {
+            panic!("test should not allocate contiguous DMA")
+        }
+
+        unsafe fn dealloc_contiguous(&self, _handle: DmaAllocHandle) {
+            panic!("test should not deallocate contiguous DMA")
+        }
+
+        unsafe fn alloc_coherent(
+            &self,
+            _constraints: DmaConstraints,
+            _layout: core::alloc::Layout,
+        ) -> Option<DmaAllocHandle> {
+            panic!("test should not allocate coherent DMA")
+        }
+
+        unsafe fn dealloc_coherent(&self, _handle: DmaAllocHandle) {
+            panic!("test should not deallocate coherent DMA")
+        }
+
+        unsafe fn map_streaming(
+            &self,
+            _constraints: DmaConstraints,
+            _addr: NonNull<u8>,
+            _size: NonZeroUsize,
+            _direction: DmaDirection,
+        ) -> Result<DmaMapHandle, DmaError> {
+            panic!("test should not map streaming DMA")
+        }
+
+        unsafe fn unmap_streaming(&self, _handle: DmaMapHandle) {
+            panic!("test should not unmap streaming DMA")
+        }
+    }
+
+    struct TestInterface {
+        irq_events: Event,
+        handle_calls: Arc<AtomicUsize>,
+    }
+
+    impl DriverGeneric for TestInterface {
+        fn name(&self) -> &str {
+            "test-net"
+        }
+
+        fn raw_any(&self) -> Option<&dyn Any> {
+            Some(self)
+        }
+
+        fn raw_any_mut(&mut self) -> Option<&mut dyn Any> {
+            Some(self)
+        }
+    }
+
+    impl Interface for TestInterface {
+        fn mac_address(&self) -> [u8; 6] {
+            [0x02, 0, 0, 0, 0, 1]
+        }
+
+        fn create_tx_queue(&mut self) -> Option<Box<dyn ITxQueue>> {
+            panic!("test should not create TX queue")
+        }
+
+        fn create_rx_queue(&mut self) -> Option<Box<dyn IRxQueue>> {
+            panic!("test should not create RX queue")
+        }
+
+        fn enable_irq(&mut self) {}
+
+        fn disable_irq(&mut self) {}
+
+        fn is_irq_enabled(&self) -> bool {
+            false
+        }
+
+        fn handle_irq(&mut self) -> Event {
+            self.handle_calls.fetch_add(1, Ordering::AcqRel);
+            self.irq_events
+        }
+    }
+
+    fn count_waker(counter: Arc<AtomicUsize>) -> Waker {
+        unsafe fn clone(data: *const ()) -> RawWaker {
+            let counter = unsafe { Arc::<AtomicUsize>::from_raw(data.cast()) };
+            let cloned = Arc::clone(&counter);
+            let _ = Arc::into_raw(counter);
+            RawWaker::new(Arc::into_raw(cloned).cast(), &VTABLE)
+        }
+
+        unsafe fn wake(data: *const ()) {
+            let counter = unsafe { Arc::<AtomicUsize>::from_raw(data.cast()) };
+            counter.fetch_add(1, Ordering::AcqRel);
+        }
+
+        unsafe fn wake_by_ref(data: *const ()) {
+            let counter = unsafe { Arc::<AtomicUsize>::from_raw(data.cast()) };
+            counter.fetch_add(1, Ordering::AcqRel);
+            let _ = Arc::into_raw(counter);
+        }
+
+        unsafe fn drop(data: *const ()) {
+            let _ = unsafe { Arc::<AtomicUsize>::from_raw(data.cast()) };
+        }
+
+        static VTABLE: RawWakerVTable = RawWakerVTable::new(clone, wake, wake_by_ref, drop);
+        let raw = RawWaker::new(Arc::into_raw(counter).cast(), &VTABLE);
+        unsafe { Waker::from_raw(raw) }
+    }
+
+    #[test]
+    fn irq_handler_fast_path_returns_events_without_waking_registered_wakers() {
+        static DMA: TestDma = TestDma;
+        let mut rx = IdList::none();
+        rx.insert(3);
+        let mut tx = IdList::none();
+        tx.insert(5);
+        let handle_calls = Arc::new(AtomicUsize::new(0));
+        let net = Net::new(
+            TestInterface {
+                irq_events: Event {
+                    tx_queue: tx,
+                    rx_queue: rx,
+                },
+                handle_calls: Arc::clone(&handle_calls),
+            },
+            &DMA,
+        );
+        let rx_wake_count = Arc::new(AtomicUsize::new(0));
+        let tx_wake_count = Arc::new(AtomicUsize::new(0));
+        net.inner
+            .rx_wakers
+            .register(3)
+            .register(&count_waker(Arc::clone(&rx_wake_count)));
+        net.inner
+            .tx_wakers
+            .register(5)
+            .register(&count_waker(Arc::clone(&tx_wake_count)));
+
+        let irq = net.irq_handler();
+        let events = irq.handle_irq();
+
+        assert!(events.rx_queue.contains(3));
+        assert!(events.tx_queue.contains(5));
+        assert_eq!(handle_calls.load(Ordering::Acquire), 1);
+        assert_eq!(rx_wake_count.load(Ordering::Acquire), 0);
+        assert_eq!(tx_wake_count.load(Ordering::Acquire), 0);
     }
 }

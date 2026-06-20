@@ -22,6 +22,12 @@ SECTIONS {
         __stop_tracepoint = .;
     }
 
+    .kmod_export : {
+        __start_kmod_export = .;
+        KEEP(*(.kmod_export .kmod_export.*))
+        __stop_kmod_export = .;
+    }
+
     .kallsyms : ALIGN(4K) {
         __kallsyms_start = .;
         . += __STARRY_KALLSYMS_RESERVED__; /* reserve space for kallsyms, can be recycled */

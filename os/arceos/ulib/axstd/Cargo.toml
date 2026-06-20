@@ -1,6 +1,6 @@
 [package]
 name = "ax-std"
-version = "0.5.18"
+version = "0.5.19"
 repository = "https://github.com/rcore-os/tgoskits"
 edition.workspace = true
 authors = [
@@ -62,6 +62,7 @@ sched-fifo = ["ax-feat/sched-fifo"]
 sched-rr = ["ax-feat/sched-rr"]
 sched-cfs = ["ax-feat/sched-cfs"]
 stack-guard-page = ["multitask", "paging", "ax-feat/stack-guard-page"]
+stack-protector = ["ax-feat/stack-protector"]
 
 # File system
 fs = [
@@ -72,8 +73,8 @@ fs = [
     "ax-driver/virtio-blk",
     "fd",
 ]
-ext4fs = ["fs"]
-fatfs = ["fs"]
+ext4fs = ["fs", "ax-feat/ext4fs"]
+fatfs = ["fs", "ax-feat/fatfs"]
 
 # Networking
 net = [

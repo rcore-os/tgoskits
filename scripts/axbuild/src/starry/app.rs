@@ -14,7 +14,10 @@ use crate::{
     context::starry_target_for_arch_checked,
     rootfs::inject,
     support::process::ProcessExt,
-    test::{case::TestQemuCase, qemu as qemu_test},
+    test::{
+        case::{HostHttpServerConfig, TestQemuCase},
+        qemu as qemu_test,
+    },
 };
 
 #[derive(Args, Debug, Clone)]
@@ -121,6 +124,7 @@ pub(crate) struct StarryAppQemuCase {
     pub(crate) rootfs_path: PathBuf,
     pub(crate) test_commands: Vec<String>,
     pub(crate) host_symbolize_success_regex: Vec<String>,
+    pub(crate) host_http_server: Option<HostHttpServerConfig>,
     pub(crate) subcases: Vec<crate::test::case::TestQemuSubcase>,
 }
 
@@ -381,6 +385,9 @@ pub(crate) async fn prepare_qemu_app_case(
             .as_ref()
             .map(|fields| fields.test_case.host_symbolize_success_regex.clone())
             .unwrap_or_default(),
+        host_http_server: fields
+            .as_ref()
+            .and_then(|fields| fields.test_case.host_http_server.clone()),
         subcases: fields
             .map(|fields| fields.test_case.subcases)
             .unwrap_or_default(),
@@ -399,7 +406,7 @@ pub(crate) fn app_qemu_test_case(
         qemu_config_path,
         test_commands: case.test_commands.clone(),
         host_symbolize_success_regex: case.host_symbolize_success_regex.clone(),
-        host_http_server: None,
+        host_http_server: case.host_http_server.clone(),
         subcases: case.subcases.clone(),
         grouped_subcase_filter: None,
     })
@@ -1547,6 +1554,13 @@ fail_regex = []
             rootfs_path: PathBuf::from("/tmp/rootfs.img"),
             test_commands: Vec::new(),
             host_symbolize_success_regex: vec!["symbolized".to_string()],
+            host_http_server: Some(HostHttpServerConfig {
+                bind: "127.0.0.1".to_string(),
+                port: 18382,
+                body: "fixture".to_string(),
+                body_size: None,
+                body_byte: b'X',
+            }),
             subcases: Vec::new(),
         };
 
@@ -1555,6 +1569,13 @@ fail_regex = []
         assert_eq!(test_case.case_dir, case_dir);
         assert_eq!(test_case.qemu_config_path, qemu_config_path);
         assert_eq!(test_case.host_symbolize_success_regex, vec!["symbolized"]);
+        assert_eq!(
+            test_case
+                .host_http_server
+                .as_ref()
+                .map(|config| (config.bind.as_str(), config.port)),
+            Some(("127.0.0.1", 18382))
+        );
     }
 
     #[test]

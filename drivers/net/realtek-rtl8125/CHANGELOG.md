@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.3](https://github.com/rcore-os/tgoskits/compare/realtek-rtl8125-v0.2.2...realtek-rtl8125-v0.2.3) - 2026-06-12
+
+### Other
+
+- updated the following local packages: rdif-eth
+
 ## [0.2.2](https://github.com/rcore-os/tgoskits/compare/realtek-rtl8125-v0.2.1...realtek-rtl8125-v0.2.2) - 2026-06-09
 
 ### Other

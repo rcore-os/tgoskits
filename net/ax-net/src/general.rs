@@ -1,3 +1,19 @@
+//! Shared socket options and blocking helpers.
+//!
+//! Protocol-specific sockets embed `GeneralOptions` for common POSIX socket
+//! state such as nonblocking mode, reuse-address, timeouts, socket identity, and
+//! device binding. Keeping these fields here avoids duplicating subtly
+//! different getsockopt/setsockopt behavior in TCP, UDP, raw, Unix, and vsock
+//! transports.
+//!
+//! # Blocking Semantics
+//!
+//! The helpers in this module bridge poll-based readiness with synchronous
+//! socket operations. They should only wait on protocol-specific pollers and
+//! must not drive the smoltcp interface directly. Progress is requested through
+//! the net-poll worker so application threads do not become temporary protocol
+//! stack owners.
+
 use core::{
     sync::atomic::{AtomicBool, AtomicI32, AtomicU32, AtomicU64, Ordering},
     task::Waker,
@@ -9,7 +25,8 @@ use ax_task::future::{block_on, poll_io, timeout};
 use axpoll::{IoEvents, Pollable};
 
 use crate::{
-    get_service,
+    config::{DeviceBinding, InterfaceId},
+    get_service, interface_by_id,
     options::{Configurable, GetSocketOption, SetSocketOption},
 };
 
@@ -20,10 +37,13 @@ pub(crate) struct GeneralOptions {
     /// Whether the socket should reuse the address.
     reuse_address: AtomicBool,
 
+    /// Per-socket send timeout in nanoseconds; zero means no timeout.
     send_timeout_nanos: AtomicU64,
+    /// Per-socket receive timeout in nanoseconds; zero means no timeout.
     recv_timeout_nanos: AtomicU64,
 
-    device_mask: AtomicU32,
+    /// Bound interface id encoded as zero for "not bound".
+    bound_if: AtomicU32,
 
     /// Socket type: SOCK_STREAM (1), SOCK_DGRAM (2), SOCK_RAW (3).
     socket_type: AtomicI32,
@@ -45,7 +65,7 @@ impl GeneralOptions {
             send_timeout_nanos: AtomicU64::new(0),
             recv_timeout_nanos: AtomicU64::new(0),
 
-            device_mask: AtomicU32::new(0),
+            bound_if: AtomicU32::new(0),
 
             socket_type: AtomicI32::new(socket_type),
             domain,
@@ -53,36 +73,50 @@ impl GeneralOptions {
         }
     }
 
+    /// Returns whether this socket is in non-blocking mode.
     pub fn nonblocking(&self) -> bool {
         self.nonblock.load(Ordering::Relaxed)
     }
 
+    /// Returns whether SO_REUSEADDR-style bind reuse is enabled.
     pub fn reuse_address(&self) -> bool {
         self.reuse_address.load(Ordering::Relaxed)
     }
 
+    /// Returns the configured send timeout, or `None` for blocking forever.
     pub fn send_timeout(&self) -> Option<Duration> {
         let nanos = self.send_timeout_nanos.load(Ordering::Relaxed);
         (nanos > 0).then(|| Duration::from_nanos(nanos))
     }
 
+    /// Returns the configured receive timeout, or `None` for blocking forever.
     pub fn recv_timeout(&self) -> Option<Duration> {
         let nanos = self.recv_timeout_nanos.load(Ordering::Relaxed);
         (nanos > 0).then(|| Duration::from_nanos(nanos))
     }
 
-    pub fn set_device_mask(&self, mask: u32) {
-        self.device_mask.store(mask, Ordering::Release);
+    /// Updates the interface binding used by route selection.
+    pub fn set_device_binding(&self, binding: DeviceBinding) {
+        self.bound_if.store(
+            binding.bound_if.map_or(0, InterfaceId::get),
+            Ordering::Release,
+        );
     }
 
-    pub fn device_mask(&self) -> u32 {
-        self.device_mask.load(Ordering::Acquire)
+    /// Returns the current interface binding.
+    pub fn device_binding(&self) -> DeviceBinding {
+        let raw = self.bound_if.load(Ordering::Acquire);
+        DeviceBinding {
+            bound_if: (raw != 0).then_some(InterfaceId::new(raw)),
+        }
     }
 
+    /// Registers a waker with the service/device path for the bound interface.
     pub fn register_waker(&self, waker: &Waker) {
-        get_service().register_waker(self.device_mask(), waker);
+        get_service().register_waker(self.device_binding(), waker);
     }
 
+    /// Runs a send operation through the standard blocking/nonblocking poller.
     pub fn send_poller<P: Pollable, F: FnMut() -> AxResult<T>, T>(
         &self,
         pollable: &P,
@@ -91,6 +125,7 @@ impl GeneralOptions {
         self.send_poller_with(pollable, false, f)
     }
 
+    /// Runs a receive operation through the standard blocking/nonblocking poller.
     pub fn recv_poller<P: Pollable, F: FnMut() -> AxResult<T>, T>(
         &self,
         pollable: &P,
@@ -171,6 +206,9 @@ impl Configurable for GeneralOptions {
             O::SocketDomain(domain) => {
                 **domain = self.domain;
             }
+            O::BindToDevice(binding) => {
+                **binding = self.device_binding().bound_if;
+            }
             _ => return Ok(false),
         }
         Ok(true)
@@ -197,6 +235,16 @@ impl Configurable for GeneralOptions {
             O::SendBuffer(_) | O::ReceiveBuffer(_) => {
                 // TODO(mivik): implement buffer size options
             }
+            O::BindToDevice(interface_id) => {
+                if let Some(id) = *interface_id
+                    && interface_by_id(id).is_none()
+                {
+                    return Err(AxError::NoSuchDevice);
+                }
+                self.set_device_binding(DeviceBinding {
+                    bound_if: *interface_id,
+                });
+            }
             O::RecvErr(_) => {
                 // TODO: Retrieve ICMP errors via errqueue
             }
@@ -207,5 +255,30 @@ impl Configurable for GeneralOptions {
             _ => return Ok(false),
         }
         Ok(true)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn device_binding_round_trips_none_and_some_interface() {
+        let options = GeneralOptions::new(1, 2, 6);
+        assert_eq!(options.device_binding(), DeviceBinding { bound_if: None });
+
+        let interface_id = InterfaceId::new(7);
+        options.set_device_binding(DeviceBinding {
+            bound_if: Some(interface_id),
+        });
+        assert_eq!(
+            options.device_binding(),
+            DeviceBinding {
+                bound_if: Some(interface_id)
+            }
+        );
+
+        options.set_device_binding(DeviceBinding { bound_if: None });
+        assert_eq!(options.device_binding(), DeviceBinding { bound_if: None });
     }
 }

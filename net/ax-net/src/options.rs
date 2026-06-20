@@ -1,8 +1,24 @@
+//! Socket option data structures and dispatch traits.
+//!
+//! This module defines Linux-compatible option payloads plus the `Configurable`
+//! trait used by each socket implementation to handle getsockopt/setsockopt.
+//! The goal is to keep the syscall layer protocol-neutral: it builds one option
+//! request enum, then the concrete socket decides which values it supports.
+//!
+//! # Compatibility Boundary
+//!
+//! Option structs model Linux-visible ABI state, but not every field maps to a
+//! smoltcp feature. Unsupported or synthetic fields should be filled
+//! conservatively in the socket implementation, with defaults documented near
+//! the protocol that reports them.
+
 use alloc::boxed::Box;
 use core::time::Duration;
 
 use ax_errno::{AxError, AxResult, LinuxError};
 use enum_dispatch::enum_dispatch;
+
+use crate::InterfaceId;
 
 /// Linux-like TCP connection state reported by TCP_INFO.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -159,6 +175,7 @@ define_options! {
     SocketType(i32),
     SocketProtocol(i32),
     SocketDomain(i32),
+    BindToDevice(Option<InterfaceId>),
 
     // --- TCP level options (TCP_*) ----
     NoDelay(bool),

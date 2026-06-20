@@ -38,7 +38,7 @@ const CASE_CMAKE_TOOLCHAIN_FILE_NAME: &str = "cmake-toolchain.cmake";
 const CASE_APK_CACHE_DIR_NAME: &str = "apk-cache";
 const CASE_SH_DIR_NAME: &str = "sh";
 const CASE_ROOTFS_COPY_NAME: &str = "case-rootfs.img";
-const GROUPED_RUNNER_SCRIPT_FORMAT_VERSION: &str = "grouped-runner-step-markers-v1";
+const GROUPED_RUNNER_SCRIPT_FORMAT_VERSION: &str = "grouped-runner-starry-init-autoload-v1";
 const PYTHON_PIPELINE_CACHE_VERSION: &str = "python-apk-v1";
 const RUST_PIPELINE_CACHE_VERSION: &str = "rust-cross-v1";
 /// QEMU global snapshot flag — all disk writes go to a temporary file and are
@@ -856,7 +856,9 @@ pub(crate) fn apply_grouped_qemu_config(
         return;
     }
 
-    qemu.shell_init_cmd = Some(grouped_runner_shell_init_cmd(config));
+    if config.autorun_profile_script.is_none() {
+        qemu.shell_init_cmd = Some(grouped_runner_shell_init_cmd(config));
+    }
     qemu.success_regex = vec![config.success_regex.clone()];
     if !qemu
         .fail_regex
@@ -868,12 +870,7 @@ pub(crate) fn apply_grouped_qemu_config(
 }
 
 fn grouped_runner_shell_init_cmd(config: &GroupedCaseRunnerConfig) -> String {
-    let runner = shell_single_quote(&config.runner_path);
-    if config.autorun_profile_script.is_some() {
-        format!(r#"[ "${{AXBUILD_GROUPED_AUTORUN_DONE:-0}}" = "1" ] || {runner}"#)
-    } else {
-        config.runner_path.clone()
-    }
+    format!("exec {}", config.runner_path)
 }
 
 pub(crate) async fn run_qemu_with_prepared_case_assets(
@@ -983,9 +980,8 @@ fn write_grouped_case_autorun_profile_script(
     let script_path = dest_dir.join(script_name);
     let runner = shell_single_quote(runner_path);
     let body = format!(
-        "case \"$-\" in\n\t*i*) ;;\n\t*) return 0 2>/dev/null || exit 0 ;;\nesac\n\nif [ \
-         \"${{AXBUILD_GROUPED_AUTORUN_DONE:-0}}\" = \"1\" ]; then\n\treturn 0 2>/dev/null || exit \
-         0\nfi\nexport AXBUILD_GROUPED_AUTORUN_DONE=1\n\nif [ -x {runner} ]; \
+        "if [ \"${{AXBUILD_GROUPED_AUTORUN_DONE:-0}}\" = \"1\" ]; then\n\treturn 0 2>/dev/null || \
+         exit 0\nfi\nexport AXBUILD_GROUPED_AUTORUN_DONE=1\n\nif [ -x {runner} ]; \
          then\n\t{runner}\nfi\n"
     );
     fs::write(&script_path, body)
@@ -1228,7 +1224,7 @@ mod tests {
     }
 
     #[test]
-    fn grouped_runner_can_install_interactive_profile_autorun() {
+    fn grouped_runner_can_install_profile_autorun_without_interactive_guard() {
         let root = tempdir().unwrap();
         let overlay = root.path().join("overlay");
         let commands = vec!["/usr/bin/alpha".to_string()];
@@ -1239,14 +1235,14 @@ mod tests {
 
         let profile = overlay.join("etc/profile.d/99-suite-run-case-tests.sh");
         let content = fs::read_to_string(&profile).unwrap();
-        assert!(content.contains("case \"$-\" in"));
         assert!(content.contains("AXBUILD_GROUPED_AUTORUN_DONE"));
         assert!(content.contains("/usr/bin/suite-run-case-tests"));
+        assert!(!content.contains("case \"$-\" in"));
         assert!(!content.contains("set -u"));
     }
 
     #[test]
-    fn grouped_runner_shell_init_skips_when_profile_autorun_already_ran() {
+    fn grouped_runner_profile_autorun_skips_shell_init() {
         let mut config = fake_config();
         config.grouped_runner.autorun_profile_script = Some("99-suite-run-case-tests.sh".into());
         let mut qemu = QemuConfig::default();
@@ -1255,9 +1251,24 @@ mod tests {
 
         apply_grouped_qemu_config(&mut qemu, &case, &config.grouped_runner);
 
+        assert!(qemu.shell_init_cmd.is_none());
+    }
+
+    #[test]
+    fn grouped_runner_shell_init_uses_short_exec_command_without_autorun() {
+        let config = fake_config();
+        let mut qemu = QemuConfig::default();
+        let mut case = fake_case(tempdir().unwrap().path(), "grouped");
+        case.test_commands = vec!["/usr/bin/alpha".to_string()];
+
+        apply_grouped_qemu_config(&mut qemu, &case, &config.grouped_runner);
+
         let command = qemu.shell_init_cmd.as_deref().unwrap();
-        assert!(command.contains("AXBUILD_GROUPED_AUTORUN_DONE"));
-        assert!(command.contains("/usr/bin/suite-run-case-tests"));
+        assert_eq!(command, "exec /usr/bin/suite-run-case-tests");
+        assert!(
+            command.len() < 80,
+            "Starry canonical TTY input buffer is 80 bytes"
+        );
     }
 
     #[test]

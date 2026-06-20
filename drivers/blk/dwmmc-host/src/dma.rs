@@ -665,7 +665,7 @@ impl DwMmc {
         });
 
         self.clear_all_int_status();
-        self.irq_pending_status = 0;
+        self.irq_state.clear(u32::MAX);
         self.program_data_phase(BLOCK_SIZE as u32, block_count);
         self.reset_dma_for_phase(phase)?;
 
@@ -673,7 +673,7 @@ impl DwMmc {
         self.regs.ctrl().update(|r| {
             r.with_use_internal_dmac(true)
                 .with_dma_enable(true)
-                .with_int_enable(self.completion_irq_enabled)
+                .with_int_enable(self.completion_irq_enabled())
         });
         self.regs.bmod().write(BMOD_FB | BMOD_DE);
         self.regs.pldmnd().write(1);
@@ -1028,11 +1028,12 @@ impl DwMmc {
                 .rintsts()
                 .write(crate::regs::RIntSts::from_bits(consume));
         }
-        let status = self.irq_pending_status | raw_status;
-        self.irq_pending_status &= !(crate::DWMMC_INT_DATA_TRANSFER_OVER
+        let consume = crate::DWMMC_INT_DATA_TRANSFER_OVER
             | crate::DWMMC_INT_COMMAND_DONE
-            | crate::DWMMC_INT_ERROR_MASK);
-        status
+            | crate::DWMMC_INT_RXDR
+            | crate::DWMMC_INT_TXDR
+            | crate::DWMMC_INT_ERROR_MASK;
+        self.irq_state.take(consume) | raw_status
     }
 }
 

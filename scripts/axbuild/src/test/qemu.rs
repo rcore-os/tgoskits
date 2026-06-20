@@ -1028,10 +1028,6 @@ fn apply_dynamic_platform_qemu_boot_with_kvm_probe(
     apply_dynamic_x86_64_qemu_debug_args(qemu);
 }
 
-pub(crate) fn apply_x86_64_kvm_accel_if_available(qemu: &mut QemuConfig, cargo: &Cargo) {
-    apply_x86_64_kvm_accel_if_available_with_probe(qemu, cargo, host_kvm_available);
-}
-
 fn apply_x86_64_kvm_accel_if_available_with_probe(
     qemu: &mut QemuConfig,
     cargo: &Cargo,
@@ -1163,8 +1159,15 @@ fn dynamic_x86_64_nested_virtualization_features(cargo: &Cargo) -> &'static [&'s
         )
     }) {
         &["svm", "npt", "nrip-save"]
-    } else {
+    } else if cargo.features.iter().any(|feature| {
+        matches!(
+            feature.as_str(),
+            "vmx" | "axvm/vmx" | "x86_vcpu/vmx" | "x86-vcpu/vmx"
+        )
+    }) {
         &["vmx-ept", "vmx-unrestricted-guest", "vmx-flexpriority"]
+    } else {
+        &[]
     }
 }
 
@@ -1877,9 +1880,40 @@ mod tests {
             qemu.args,
             [
                 "-cpu",
-                "host,+x2apic,-la57,+vmx-ept,+vmx-unrestricted-guest,+vmx-flexpriority",
+                "host,+x2apic,-la57",
                 "-machine",
                 "q35",
+                "-net",
+                "none",
+                "-vga",
+                "none"
+            ]
+        );
+    }
+
+    #[test]
+    fn dynamic_x86_64_qemu_boot_enables_vmx_nested_features_for_vmx_backend() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let _debug = TempEnvVar::unset(DYNAMIC_X86_64_QEMU_DEBUG_ENV);
+        let cargo = Cargo {
+            target: "scripts/targets/pie/x86_64-unknown-none.json".to_string(),
+            features: vec!["dyn-plat".to_string(), "vmx".to_string()],
+            to_bin: true,
+            ..Default::default()
+        };
+        let mut qemu = QemuConfig {
+            args: vec!["-cpu".to_string(), "host".to_string()],
+            ..Default::default()
+        };
+
+        apply_dynamic_platform_qemu_boot_with_kvm_probe(&mut qemu, &cargo, || false);
+        apply_dynamic_platform_qemu_boot_with_kvm_probe(&mut qemu, &cargo, || false);
+
+        assert_eq!(
+            qemu.args,
+            [
+                "-cpu",
+                "host,-la57,+vmx-ept,+vmx-unrestricted-guest,+vmx-flexpriority",
                 "-net",
                 "none",
                 "-vga",

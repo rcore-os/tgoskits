@@ -206,6 +206,20 @@ static int make_tcp_sock(void)
     return fd;
 }
 
+static int wait_readable(int fd, int timeout_ms)
+{
+    fd_set rfds;
+    FD_ZERO(&rfds);
+    FD_SET(fd, &rfds);
+
+    struct timeval tv = {
+        .tv_sec = timeout_ms / 1000,
+        .tv_usec = (timeout_ms % 1000) * 1000,
+    };
+
+    return select(fd + 1, &rfds, NULL, NULL, &tv);
+}
+
 /*
  * 创建 UDP socket 并 bind 到 loopback 随机端口。
  * 返回 fd, 通过 addr 返回实际绑定地址。
@@ -588,6 +602,9 @@ static void test_s11_sendto_msg_more_endpoint(void)
 
     /* A 应收到完整合并数据报 */
     {
+        int ready = wait_readable(server_a, 1000);
+        CHECK(ready == 1, "A 在超时内变为可读");
+
         int flags_a = fcntl(server_a, F_GETFL, 0);
         fcntl(server_a, F_SETFL, flags_a | O_NONBLOCK);
         char buf[64] = {0};
