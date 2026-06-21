@@ -272,6 +272,27 @@ $pipuv_wheels_dir" >&2
     extract_uv_binary "$uv_tmp"
     install -Dm0755 "$uv_tmp" "$overlay_dir/usr/local/bin/uv"
     rm -f "$uv_tmp"
+
+    # 3b) loongarch64 uv is the Alpine-edge *dynamically-linked* build (astral-sh
+    # ships no loong static binary), so it NEEDs libbz2.so.1 at runtime. libc.musl
+    # and libgcc_s.so.1 are already in the base Alpine loong rootfs, but libbz2 is
+    # not — without it `uv --version` fails with "Error loading shared library
+    # libbz2.so.1". Stage libbz2 from the pinned Alpine loong apk so uv runs
+    # on-target. x86_64 / aarch64 / riscv64 use the astral static-musl uv and need
+    # nothing extra here.
+    if [[ "$arch" == "loongarch64" ]]; then
+        local bz2_apk; bz2_apk="$(first_glob "$pipuv_download_dir/libbz2-loongarch64-*.apk")"
+        [[ -n "$bz2_apk" ]] || { echo "error: missing loongarch64 libbz2 apk (dynamic uv NEEDs libbz2.so.1) in $pipuv_download_dir" >&2; exit 1; }
+        local bz2_tmp; bz2_tmp="$(mktemp -d)"
+        tar -xzf "$bz2_apk" -C "$bz2_tmp" 2>/dev/null || true
+        mkdir -p "$overlay_dir/usr/lib"
+        local bz2_staged=0
+        while IFS= read -r so; do cp -a "$so" "$overlay_dir/usr/lib/"; bz2_staged=1; done \
+            < <(find "$bz2_tmp" -name 'libbz2.so*')
+        [[ "$bz2_staged" == 1 ]] || { echo "error: libbz2.so* not found inside $bz2_apk" >&2; rm -rf "$bz2_tmp"; exit 1; }
+        rm -rf "$bz2_tmp"
+        echo "[pip-uv prebuild] staged libbz2.so* into overlay for loongarch64 dynamic uv"
+    fi
 }
 
 populate_overlay() {

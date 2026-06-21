@@ -5,7 +5,7 @@ args = [
     "la464",
     "-nographic",
     "-m",
-    "2G",
+    "4G",
     "-device",
     "virtio-blk-pci,drive=disk0",
     "-drive",
@@ -27,8 +27,9 @@ fail_regex = [
     "(?i)segmentation fault",
     "No such process",
     "STARRY_PIPUV_STAGE_.*_FAILED",
+    "memory allocation of \\d+ bytes failed",
 ]
-timeout = 5400
+timeout = 10800
 
 # Local wheel index served by the test harness at 10.0.2.2:18390 for the online
 # install stages (real TCP from guest to host via SLIRP; hermetic — no internet

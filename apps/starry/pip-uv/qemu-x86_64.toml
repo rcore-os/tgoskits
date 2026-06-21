@@ -3,7 +3,7 @@ args = [
     "q35",
     "-nographic",
     "-m",
-    "2G",
+    "4G",
     "-device",
     "virtio-blk-pci,drive=disk0",
     "-drive",
@@ -25,6 +25,7 @@ fail_regex = [
     "(?i)segmentation fault",
     "No such process",
     "STARRY_PIPUV_STAGE_.*_FAILED",
+    "memory allocation of \\d+ bytes failed",
 ]
 timeout = 1800
 
