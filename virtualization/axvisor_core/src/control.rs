@@ -142,6 +142,7 @@ struct VcpuSession {
     vm_session: api_control::SessionId,
     vcpu_id: u32,
     mp_state: u32,
+    run_mapping: Option<api_control::UserMappingHandle>,
     pending_mmio_read: Option<PendingMmioRead>,
 }
 
@@ -173,7 +174,7 @@ struct IoEventFd {
     addr: u64,
     len: u32,
     datamatch: u64,
-    fd: api_control::HostFd,
+    notifier: api_control::UserNotifierHandle,
     flags: u32,
 }
 
@@ -216,7 +217,6 @@ pub fn init() -> AxResult {
             read: None,
             write: None,
             poll: None,
-            mmap: None,
         },
     })?;
 
@@ -253,14 +253,30 @@ fn release(session: api_control::SessionId) -> AxResult {
         removed
     };
 
-    if let Session::Vm(vm) = removed {
-        let _ = vm.vm.shutdown();
-        for memory_slot in vm.memory_slots.into_values() {
-            unmap_memory_slot(&vm.vm, memory_slot);
+    match removed {
+        Session::Vm(vm) => {
+            let _ = vm.vm.shutdown();
+            for ioeventfd in vm.ioeventfds.into_values() {
+                let _ = api_control::release_user_notifier(ioeventfd.notifier);
+            }
+            for memory_slot in vm.memory_slots.into_values() {
+                unmap_memory_slot(&vm.vm, memory_slot);
+            }
+            for vcpu_session in vm.vcpu_ids.into_values() {
+                let removed_vcpu = SESSIONS.lock().remove(&vcpu_session);
+                if let Some(Session::Vcpu(vcpu)) = removed_vcpu
+                    && let Some(run_mapping) = vcpu.run_mapping
+                {
+                    let _ = api_control::release_user_mapping(run_mapping);
+                }
+            }
         }
-        for vcpu_session in vm.vcpu_ids.into_values() {
-            let _ = SESSIONS.lock().remove(&vcpu_session);
+        Session::Vcpu(vcpu) => {
+            if let Some(run_mapping) = vcpu.run_mapping {
+                let _ = api_control::release_user_mapping(run_mapping);
+            }
         }
+        Session::System => {}
     }
     Ok(())
 }
@@ -305,8 +321,8 @@ fn system_ioctl(cmd: u32, arg: usize) -> AxResult<isize> {
                 return ax_err!(NotFound);
             }
             let vm_session = create_vm_session()?;
-            match api_control::create_vm_fd(endpoint, vm_session) {
-                Ok(fd) => Ok(fd as isize),
+            match api_control::create_user_handle(endpoint, vm_session, 0) {
+                Ok(handle) => Ok(handle.fd as isize),
                 Err(err) => {
                     let _ = release(vm_session);
                     Err(err)
@@ -449,7 +465,7 @@ fn get_vcpu(session: api_control::SessionId) -> AxResult<axvm::AxVCpuRef> {
 }
 
 fn run_vcpu(session: api_control::SessionId) -> AxResult<isize> {
-    let (vm, vcpu_id, vcpu, mp_state, pending_mmio_read) = {
+    let (vm, vcpu_id, vcpu, mp_state, run_mapping, pending_mmio_read) = {
         let mut sessions = SESSIONS.lock();
         let Some(Session::Vcpu(vcpu)) = sessions.get(&session) else {
             return ax_err!(NotFound);
@@ -460,6 +476,7 @@ fn run_vcpu(session: api_control::SessionId) -> AxResult<isize> {
         let vm = vm.vm.clone();
         let vcpu_id = vcpu.vcpu_id as usize;
         let mp_state = vcpu.mp_state;
+        let run_mapping = vcpu.run_mapping.ok_or(AxError::NotFound)?;
         let pending_mmio_read = vcpu.pending_mmio_read;
         let Some(Session::Vcpu(vcpu_session)) = sessions.get_mut(&session) else {
             return ax_err!(NotFound);
@@ -468,11 +485,11 @@ fn run_vcpu(session: api_control::SessionId) -> AxResult<isize> {
         let Some(vcpu) = vm.vcpu(vcpu_id) else {
             return ax_err!(NotFound);
         };
-        (vm, vcpu_id, vcpu, mp_state, pending_mmio_read)
+        (vm, vcpu_id, vcpu, mp_state, run_mapping, pending_mmio_read)
     };
 
     if mp_state == KVM_MP_STATE_STOPPED {
-        write_vcpu_run_u32(session, KVM_RUN_EXIT_REASON_OFFSET, KVM_EXIT_INTR)?;
+        write_vcpu_run_u32(run_mapping, KVM_RUN_EXIT_REASON_OFFSET, KVM_EXIT_INTR)?;
         axvisor_api::task::yield_now();
         return Ok(0);
     }
@@ -482,7 +499,7 @@ fn run_vcpu(session: api_control::SessionId) -> AxResult<isize> {
     }
 
     if let Some(pending) = pending_mmio_read {
-        complete_mmio_read(session, &vcpu, pending)?;
+        complete_mmio_read(run_mapping, &vcpu, pending)?;
     }
 
     let mut internal_exits = 0;
@@ -549,13 +566,13 @@ fn run_vcpu(session: api_control::SessionId) -> AxResult<isize> {
                 }
             }
             exit_reason => {
-                prepare_userspace_exit(session, &exit_reason)?;
+                prepare_userspace_exit(session, run_mapping, &exit_reason)?;
                 let kvm_reason = kvm_exit_reason(&exit_reason);
                 break kvm_reason;
             }
         }
     };
-    write_vcpu_run_u32(session, KVM_RUN_EXIT_REASON_OFFSET, exit_reason)?;
+    write_vcpu_run_u32(run_mapping, KVM_RUN_EXIT_REASON_OFFSET, exit_reason)?;
     Ok(0)
 }
 
@@ -733,6 +750,7 @@ fn kvm_exit_reason(exit_reason: &AxVCpuExitReason) -> u32 {
 
 fn prepare_userspace_exit(
     session: api_control::SessionId,
+    run_mapping: api_control::UserMappingHandle,
     exit_reason: &AxVCpuExitReason,
 ) -> AxResult {
     match exit_reason {
@@ -744,12 +762,12 @@ fn prepare_userspace_exit(
             signed_ext,
         } => {
             write_vcpu_run_u64(
-                session,
+                run_mapping,
                 KVM_RUN_MMIO_PHYS_ADDR_OFFSET,
                 addr.as_usize() as u64,
             )?;
-            write_vcpu_run_u32(session, KVM_RUN_MMIO_LEN_OFFSET, access_width_bytes(*width))?;
-            write_vcpu_run_u8(session, KVM_RUN_MMIO_IS_WRITE_OFFSET, 0)?;
+            write_vcpu_run_u32(run_mapping, KVM_RUN_MMIO_LEN_OFFSET, access_width_bytes(*width))?;
+            write_vcpu_run_u8(run_mapping, KVM_RUN_MMIO_IS_WRITE_OFFSET, 0)?;
 
             let mut sessions = SESSIONS.lock();
             let Some(Session::Vcpu(vcpu)) = sessions.get_mut(&session) else {
@@ -764,17 +782,17 @@ fn prepare_userspace_exit(
         }
         AxVCpuExitReason::MmioWrite { addr, width, data } => {
             write_vcpu_run_u64(
-                session,
+                run_mapping,
                 KVM_RUN_MMIO_PHYS_ADDR_OFFSET,
                 addr.as_usize() as u64,
             )?;
-            api_control::write_vcpu_run_page(
-                session,
+            api_control::write_user_mapping(
+                run_mapping,
                 KVM_RUN_MMIO_DATA_OFFSET,
                 &data.to_ne_bytes(),
             )?;
-            write_vcpu_run_u32(session, KVM_RUN_MMIO_LEN_OFFSET, access_width_bytes(*width))?;
-            write_vcpu_run_u8(session, KVM_RUN_MMIO_IS_WRITE_OFFSET, 1)?;
+            write_vcpu_run_u32(run_mapping, KVM_RUN_MMIO_LEN_OFFSET, access_width_bytes(*width))?;
+            write_vcpu_run_u8(run_mapping, KVM_RUN_MMIO_IS_WRITE_OFFSET, 1)?;
         }
         _ => {}
     }
@@ -782,12 +800,12 @@ fn prepare_userspace_exit(
 }
 
 fn complete_mmio_read(
-    session: api_control::SessionId,
+    run_mapping: api_control::UserMappingHandle,
     vcpu: &axvm::AxVCpuRef,
     pending: PendingMmioRead,
 ) -> AxResult {
     let mut bytes = [0u8; 8];
-    api_control::read_vcpu_run_page(session, KVM_RUN_MMIO_DATA_OFFSET, &mut bytes)?;
+    api_control::read_user_mapping(run_mapping, KVM_RUN_MMIO_DATA_OFFSET, &mut bytes)?;
     let raw = u64::from_ne_bytes(bytes) as usize;
     let masked = raw & access_width_mask(pending.width);
     let val = if pending.signed_ext {
@@ -826,16 +844,28 @@ fn sign_extend_value(value: usize, width: AccessWidth) -> usize {
     }
 }
 
-fn write_vcpu_run_u32(session: api_control::SessionId, offset: usize, value: u32) -> AxResult {
-    api_control::write_vcpu_run_page(session, offset, &value.to_ne_bytes())
+fn write_vcpu_run_u32(
+    run_mapping: api_control::UserMappingHandle,
+    offset: usize,
+    value: u32,
+) -> AxResult {
+    api_control::write_user_mapping(run_mapping, offset, &value.to_ne_bytes())
 }
 
-fn write_vcpu_run_u64(session: api_control::SessionId, offset: usize, value: u64) -> AxResult {
-    api_control::write_vcpu_run_page(session, offset, &value.to_ne_bytes())
+fn write_vcpu_run_u64(
+    run_mapping: api_control::UserMappingHandle,
+    offset: usize,
+    value: u64,
+) -> AxResult {
+    api_control::write_user_mapping(run_mapping, offset, &value.to_ne_bytes())
 }
 
-fn write_vcpu_run_u8(session: api_control::SessionId, offset: usize, value: u8) -> AxResult {
-    api_control::write_vcpu_run_page(session, offset, &[value])
+fn write_vcpu_run_u8(
+    run_mapping: api_control::UserMappingHandle,
+    offset: usize,
+    value: u8,
+) -> AxResult {
+    api_control::write_user_mapping(run_mapping, offset, &[value])
 }
 
 fn check_extension(capability: usize) -> usize {
@@ -883,14 +913,29 @@ fn create_vcpu(session: api_control::SessionId, vcpu_id: usize) -> AxResult<isiz
                 } else {
                     KVM_MP_STATE_STOPPED
                 },
+                run_mapping: None,
                 pending_mmio_read: None,
             }),
         );
         vcpu_session
     };
 
-    match api_control::create_vcpu_fd(endpoint, vcpu_session, KVM_VCPU_MMAP_SIZE) {
-        Ok(fd) => Ok(fd as isize),
+    match api_control::create_user_handle(
+        endpoint,
+        vcpu_session,
+        KVM_VCPU_MMAP_SIZE,
+    ) {
+        Ok(handle) => {
+            let mut sessions = SESSIONS.lock();
+            let Some(Session::Vcpu(vcpu)) = sessions.get_mut(&vcpu_session) else {
+                if let Some(run_mapping) = handle.mapping {
+                    let _ = api_control::release_user_mapping(run_mapping);
+                }
+                return ax_err!(NotFound);
+            };
+            vcpu.run_mapping = handle.mapping;
+            Ok(handle.fd as isize)
+        }
         Err(err) => {
             let _ = remove_vcpu_session(vcpu_session);
             Err(err)
@@ -899,12 +944,18 @@ fn create_vcpu(session: api_control::SessionId, vcpu_id: usize) -> AxResult<isiz
 }
 
 fn remove_vcpu_session(vcpu_session: api_control::SessionId) -> AxResult {
-    let mut sessions = SESSIONS.lock();
-    let Some(Session::Vcpu(vcpu)) = sessions.remove(&vcpu_session) else {
-        return ax_err!(NotFound);
+    let run_mapping = {
+        let mut sessions = SESSIONS.lock();
+        let Some(Session::Vcpu(vcpu)) = sessions.remove(&vcpu_session) else {
+            return ax_err!(NotFound);
+        };
+        if let Some(Session::Vm(vm)) = sessions.get_mut(&vcpu.vm_session) {
+            vm.vcpu_ids.remove(&vcpu.vcpu_id);
+        }
+        vcpu.run_mapping
     };
-    if let Some(Session::Vm(vm)) = sessions.get_mut(&vcpu.vm_session) {
-        vm.vcpu_ids.remove(&vcpu.vcpu_id);
+    if let Some(run_mapping) = run_mapping {
+        let _ = api_control::release_user_mapping(run_mapping);
     }
     Ok(())
 }
@@ -942,21 +993,33 @@ fn update_ioeventfd(session: api_control::SessionId, ioeventfd: KvmIoEventFd) ->
         addr: ioeventfd.addr,
         datamatch: ioeventfd.datamatch,
     };
+    let notifier = if ioeventfd.flags & KVM_IOEVENTFD_FLAG_DEASSIGN == 0 {
+        Some(api_control::acquire_user_notifier(ioeventfd.fd)?)
+    } else {
+        None
+    };
     let mut sessions = SESSIONS.lock();
     let Some(Session::Vm(vm)) = sessions.get_mut(&session) else {
+        if let Some(notifier) = notifier {
+            let _ = api_control::release_user_notifier(notifier);
+        }
         return ax_err!(NotFound);
     };
 
     if ioeventfd.flags & KVM_IOEVENTFD_FLAG_DEASSIGN != 0 {
-        vm.ioeventfds.remove(&key).ok_or(AxError::NotFound)?;
+        let existing = vm.ioeventfds.remove(&key).ok_or(AxError::NotFound)?;
+        let _ = api_control::release_user_notifier(existing.notifier);
     } else {
+        if let Some(existing) = vm.ioeventfds.remove(&key) {
+            let _ = api_control::release_user_notifier(existing.notifier);
+        }
         vm.ioeventfds.insert(
             key,
             IoEventFd {
                 addr: ioeventfd.addr,
                 len: ioeventfd.len,
                 datamatch: ioeventfd.datamatch,
-                fd: ioeventfd.fd,
+                notifier: notifier.unwrap(),
                 flags: ioeventfd.flags,
             },
         );
@@ -1001,7 +1064,7 @@ fn signal_matching_ioeventfd(
     };
 
     if let Some(ioeventfd) = ioeventfd {
-        api_control::signal_eventfd(ioeventfd.fd)?;
+        api_control::signal_user_notifier(ioeventfd.notifier)?;
         Ok(true)
     } else {
         Ok(false)

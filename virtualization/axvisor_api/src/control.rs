@@ -30,11 +30,28 @@ pub type EndpointId = u64;
 /// A core-provided session identifier for one open control connection.
 pub type SessionId = u64;
 
-/// A host file descriptor returned to userspace.
+/// A host-visible userspace handle returned to the current userspace task.
+///
+/// On Unix-like hosts this is typically a file descriptor.
 pub type HostFd = i32;
 
 /// A host-provided acquired userspace memory handle.
 pub type UserMemoryHandle = u64;
+
+/// A host-provided shared userspace mapping handle.
+pub type UserMappingHandle = u64;
+
+/// A host-provided userspace notification object handle.
+pub type UserNotifierHandle = u64;
+
+/// A host-visible userspace handle plus optional shared mapping capability.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct CreatedUserHandle {
+    /// A host-visible userspace handle owned by the current userspace task.
+    pub fd: HostFd,
+    /// An optional shared mapping capability associated with the handle.
+    pub mapping: Option<UserMappingHandle>,
+}
 
 /// Host physical pages backing an acquired userspace memory range.
 pub struct AcquiredUserMemory {
@@ -53,28 +70,6 @@ pub struct ControlEvents {
     pub writable: bool,
     /// The endpoint has a pending error or hangup event.
     pub error: bool,
-}
-
-/// A host memory mapping request for a control endpoint.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct MmapRequest {
-    /// User-visible offset requested by the caller.
-    pub offset: usize,
-    /// Requested mapping size in bytes.
-    pub len: usize,
-    /// Host-specific protection flags.
-    pub prot: usize,
-    /// Host-specific mapping flags.
-    pub flags: usize,
-}
-
-/// Result of a host memory mapping request.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct MmapResult {
-    /// Host virtual address selected for the mapping, if the host exposes one.
-    pub addr: usize,
-    /// Mapping size in bytes.
-    pub len: usize,
 }
 
 /// Optional stream read callback for a control endpoint.
@@ -103,8 +98,6 @@ pub struct ControlOps {
     pub write: Option<ControlWriteFn>,
     /// Optional readiness query.
     pub poll: Option<fn(SessionId) -> AxResult<ControlEvents>>,
-    /// Optional memory mapping operation.
-    pub mmap: Option<fn(SessionId, MmapRequest) -> AxResult<MmapResult>>,
 }
 
 /// Specification for a host-visible control endpoint.
@@ -125,27 +118,24 @@ pub trait ControlIf {
     /// Unregisters a host-visible control endpoint.
     fn unregister_endpoint(id: EndpointId) -> AxResult;
 
-    /// Creates a VM object fd owned by the current userspace process.
+    /// Creates a host userspace handle owned by the current userspace process.
     ///
-    /// On success, the host fd owns `session` and must release it when the fd
-    /// is closed. On failure, ownership remains with `axvisor-core`.
-    fn create_vm_fd(endpoint: EndpointId, session: SessionId) -> AxResult<HostFd>;
-
-    /// Creates a vCPU object fd owned by the current userspace process.
-    ///
-    /// On success, the host fd owns `session` and must release it when the fd
-    /// is closed. On failure, ownership remains with `axvisor-core`.
-    fn create_vcpu_fd(
+    /// On success, the host handle owns `session` and must release it when the
+    /// handle is closed. On failure, ownership remains with `axvisor-core`.
+    fn create_user_handle(
         endpoint: EndpointId,
         session: SessionId,
-        mmap_size: usize,
-    ) -> AxResult<HostFd>;
+        shared_mapping_size: usize,
+    ) -> AxResult<CreatedUserHandle>;
 
-    /// Writes bytes into a vCPU run page owned by the host fd for `session`.
-    fn write_vcpu_run_page(session: SessionId, offset: usize, buf: &[u8]) -> AxResult;
+    /// Writes bytes into a previously created shared userspace mapping.
+    fn write_user_mapping(handle: UserMappingHandle, offset: usize, buf: &[u8]) -> AxResult;
 
-    /// Reads bytes from a vCPU run page owned by the host fd for `session`.
-    fn read_vcpu_run_page(session: SessionId, offset: usize, buf: &mut [u8]) -> AxResult;
+    /// Reads bytes from a previously created shared userspace mapping.
+    fn read_user_mapping(handle: UserMappingHandle, offset: usize, buf: &mut [u8]) -> AxResult;
+
+    /// Releases a previously created shared userspace mapping handle.
+    fn release_user_mapping(handle: UserMappingHandle) -> AxResult;
 
     /// Reads bytes from the current userspace task.
     ///
@@ -163,11 +153,18 @@ pub trait ControlIf {
     /// and command semantics.
     fn write_user(addr: usize, buf: &[u8]) -> AxResult;
 
-    /// Signals an eventfd owned by the current userspace task.
+    /// Acquires a signalable userspace notification object from the current
+    /// userspace task.
     ///
-    /// KVM ioeventfd uses this to notify userspace device-model workers when a
-    /// guest MMIO/PIO write hits a registered address.
-    fn signal_eventfd(fd: HostFd) -> AxResult;
+    /// The host may implement this using eventfd, doorbells, or any other
+    /// userspace-visible signaling primitive with equivalent semantics.
+    fn acquire_user_notifier(fd: HostFd) -> AxResult<UserNotifierHandle>;
+
+    /// Signals a previously acquired userspace notification object.
+    fn signal_user_notifier(handle: UserNotifierHandle) -> AxResult;
+
+    /// Releases a previously acquired userspace notification object.
+    fn release_user_notifier(handle: UserNotifierHandle) -> AxResult;
 
     /// Acquires pages from the current userspace task and returns their physical backing pages.
     ///
