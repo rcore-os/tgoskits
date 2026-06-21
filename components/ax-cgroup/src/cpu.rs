@@ -101,6 +101,47 @@ impl CpuState {
 /// Placeholder — the real tick hook lives in the kernel's cgroup module.
 pub fn bandwidth_tick() {}
 
+/// Linux `sched_prio_to_weight` table for nice levels -20..=19.
+///
+/// `nice 0` corresponds to load weight 1024. Used to translate a cgroup
+/// `cpu.weight` (1..=10000, default 100) into a CFS nice value.
+const SCHED_PRIO_TO_WEIGHT: [u64; 40] = [
+    // -20
+    88761, 71755, 56483, 46273, 36291, // -15
+    29154, 23254, 18705, 14949, 11916, // -10
+    9548, 7620, 6100, 4904, 3906, // -5
+    3121, 2501, 1991, 1586, 1277, // 0
+    1024, 820, 655, 526, 423, // 5
+    335, 272, 215, 172, 137, // 10
+    110, 87, 70, 56, 45, // 15
+    36, 29, 23, 18, 15,
+];
+
+/// Map a cgroup `cpu.weight` (1..=10000) to a CFS `nice` value (-20..=19).
+///
+/// Mirrors the kernel mapping: a cgroup weight of 100 is scheduler load
+/// weight 1024 (`nice 0`); we scale `weight` to a load weight and pick the
+/// `nice` whose tabulated weight is closest in ratio. Higher weight ⇒ lower
+/// (more favourable) nice. Out-of-range inputs are clamped.
+pub fn weight_to_nice(weight: i64) -> isize {
+    let weight = weight.clamp(1, 10_000) as u64;
+    // Scale cgroup weight to a scheduler load weight: weight 100 -> 1024.
+    let load = weight.saturating_mul(1024) / 100;
+    // Pick the nice index whose tabulated weight is closest to `load`.
+    // The table is monotonically decreasing, so compare absolute distance.
+    let mut best_idx = 0usize;
+    let mut best_dist = u64::MAX;
+    for (idx, &w) in SCHED_PRIO_TO_WEIGHT.iter().enumerate() {
+        let dist = w.abs_diff(load);
+        if dist < best_dist {
+            best_dist = dist;
+            best_idx = idx;
+        }
+    }
+    // Index 0 == nice -20.
+    best_idx as isize - 20
+}
+
 // ── Controller instance ──────────────────────────────────────────────
 
 const CPU_ATTRS: &[AttrInfo] = &[
