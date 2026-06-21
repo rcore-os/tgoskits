@@ -17,6 +17,8 @@ use ax_runtime::hal::{
 };
 use ax_sync::{LockdepMutexExt, Mutex};
 
+use crate::mm::ProcessVmStat;
+
 mod backend;
 
 pub use self::backend::*;
@@ -47,6 +49,9 @@ pub struct AddrSpace {
     /// transient clones from `ProcessData::aspace()` and is not reliable for
     /// SMP teardown decisions.
     pub(crate) process_slots: AtomicUsize,
+    /// All VmX counters for this address space.  Maintained automatically by
+    /// `map`, `unmap`, `clear`, and `try_clone`; never touch from outside mm/.
+    pub vm_stat: ProcessVmStat,
 }
 
 impl AddrSpace {
@@ -92,6 +97,7 @@ impl AddrSpace {
             areas: MemorySet::new(),
             pt: PageTable::try_new().map_err(|_| AxError::NoMemory)?,
             process_slots: AtomicUsize::new(0),
+            vm_stat: ProcessVmStat::new(),
         })
     }
 
@@ -155,6 +161,7 @@ impl AddrSpace {
             Backend::new_linear(start_vaddr, offset, false),
         );
         self.areas.map(area, &mut self.pt, false)?;
+        self.vm_stat.on_map((size / PAGE_SIZE_4K) as u64);
         Ok(())
     }
 
@@ -170,6 +177,7 @@ impl AddrSpace {
 
         let area = MemoryArea::new(start, size, flags, backend);
         self.areas.map(area, &mut self.pt, false)?;
+        self.vm_stat.on_map((size / PAGE_SIZE_4K) as u64);
         if populate {
             self.populate_area(start, size, flags)?;
         }
@@ -284,8 +292,22 @@ impl AddrSpace {
     pub fn unmap(&mut self, start: VirtAddr, size: usize) -> AxResult {
         self.validate_region(start, size)?;
 
+        // Compute the actual mapped bytes being removed (unmap is already O(n)).
+        let end = start + size;
+        let removed_pages: u64 = self
+            .areas
+            .iter()
+            .filter(|a| a.start() < end && a.end() > start)
+            .map(|a| {
+                let lo = a.start().max(start);
+                let hi = a.end().min(end);
+                ((hi - lo) / PAGE_SIZE_4K) as u64
+            })
+            .sum();
+
         crate::syscall::memfd_on_aspace_unmap_range(self, start, size);
         self.areas.unmap(start, size, &mut self.pt)?;
+        self.vm_stat.on_unmap(removed_pages);
         Ok(())
     }
 
@@ -293,8 +315,21 @@ impl AddrSpace {
     pub fn unmap_metadata(&mut self, start: VirtAddr, size: usize) -> AxResult {
         self.validate_region(start, size)?;
 
+        let end = start + size;
+        let removed_pages: u64 = self
+            .areas
+            .iter()
+            .filter(|a| a.start() < end && a.end() > start)
+            .map(|a| {
+                let lo = a.start().max(start);
+                let hi = a.end().min(end);
+                ((hi - lo) / PAGE_SIZE_4K) as u64
+            })
+            .sum();
+
         crate::syscall::memfd_on_aspace_unmap_range(self, start, size);
         self.areas.unmap_metadata(start, size)?;
+        self.vm_stat.on_unmap(removed_pages);
         Ok(())
     }
 
@@ -369,6 +404,7 @@ impl AddrSpace {
         }
         self.areas
             .extend_area(addr, additional_size, &mut self.pt)?;
+        self.vm_stat.on_map((additional_size / PAGE_SIZE_4K) as u64);
         Ok(())
     }
 
@@ -444,6 +480,7 @@ impl AddrSpace {
     pub fn clear(&mut self) {
         crate::syscall::memfd_release_all_shared_writable_counts_for_aspace(self);
         self.areas.clear(&mut self.pt).unwrap();
+        self.vm_stat.on_clear();
     }
 
     /// Checks whether an access to the specified memory region is valid.
@@ -570,6 +607,11 @@ impl AddrSpace {
             }
             crate::syscall::memfd_on_after_map(&guard, start);
         }
+        // Seed the child's vm_stat from the parent: the child's address space
+        // is a copy of the parent's, so its current VSS equals the parent's,
+        // and its starting watermarks inherit the parent's peaks (Linux fork
+        // semantics: child mm->hiwater_vm = parent mm->total_vm at fork time).
+        guard.vm_stat.seed_from(&self.vm_stat);
         drop(guard);
 
         Ok(new_aspace)
