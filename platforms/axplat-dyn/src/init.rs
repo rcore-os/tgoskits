@@ -30,14 +30,11 @@ impl InitIf for InitIfImpl {
         somehal::post_paging();
         #[cfg(all(feature = "rtc", target_arch = "loongarch64"))]
         crate::generic_timer::try_init_epoch_offset_from_firmware();
-        somehal::timer::irq_enable();
     }
 
     /// Initializes the platform at the later stage for secondary cores.
     #[cfg(feature = "smp")]
-    fn init_later_secondary(_cpu_id: usize) {
-        somehal::timer::irq_enable();
-    }
+    fn init_later_secondary(_cpu_id: usize) {}
 }
 
 #[cfg(all(

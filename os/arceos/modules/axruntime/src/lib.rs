@@ -462,6 +462,7 @@ static NEXT_PERIODIC_DEADLINE_NANOS: u64 = 0;
 
 #[cfg(feature = "irq")]
 fn init_timer() {
+    ax_hal::time::enable_timer_irq();
     let now_ns = ax_hal::time::monotonic_time_nanos();
     unsafe {
         NEXT_PERIODIC_DEADLINE_NANOS
