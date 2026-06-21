@@ -117,9 +117,9 @@ impl Ext4Filesystem {
         let (fs, dev, readonly) = match rsext4::Ext4FileSystem::device_has_error_state(&mut dev) {
             Ok(true) => {
                 warn!(
-                    "ext4 filesystem is in error state; mounting read-only without journal replay"
+                    "ext4 filesystem is in error state; replaying journal then mounting read-only"
                 );
-                Self::mount_readonly_no_replay(dev)?
+                Self::mount_readonly_fallback(dev, true)?
             }
             Ok(false) => match rsext4::mount(&mut dev) {
                 Ok(fs) => (fs, dev, false),
@@ -128,7 +128,7 @@ impl Ext4Filesystem {
                         "ext4 journal replay failed with EUCLEAN; retrying read-only without \
                          journal replay"
                     );
-                    Self::mount_readonly_no_replay(dev)?
+                    Self::mount_readonly_fallback(dev, false)?
                 }
                 Err(err) => return Err(into_vfs_err(err)),
             },
@@ -137,7 +137,7 @@ impl Ext4Filesystem {
                     "ext4 superblock check failed with EUCLEAN; retrying read-only without \
                      journal replay"
                 );
-                Self::mount_readonly_no_replay(dev)?
+                Self::mount_readonly_fallback(dev, false)?
             }
             Err(err) => return Err(into_vfs_err(err)),
         };
@@ -168,12 +168,30 @@ impl Ext4Filesystem {
         Ok(Filesystem::new(fs))
     }
 
-    fn mount_readonly_no_replay(
-        dev: Jbd2Dev<Ext4Disk>,
+    /// Mount read-only as a fallback when journal replay fails or the
+    /// filesystem is in error state.
+    ///
+    /// Linux always replays the journal before mounting read-only when the
+    /// filesystem is in error state, because unreplayed journal transactions
+    /// leave metadata inconsistent.  We mirror that behaviour.
+    ///
+    /// Crucially, we never call `into_inner()` on the `Jbd2Dev` — the block
+    /// cache must be preserved so that reads after mount (e.g. loading a
+    /// guest kernel image) can hit the cache rather than issuing fresh
+    /// hardware I/O that may hang on a controller left in a bad state by the
+    /// failed mount attempt.
+    fn mount_readonly_fallback(
+        mut dev: Jbd2Dev<Ext4Disk>,
+        replay_journal: bool,
     ) -> VfsResult<(rsext4::Ext4FileSystem, Jbd2Dev<Ext4Disk>, bool)> {
-        let mut dev = Jbd2Dev::initial_jbd2dev(0, dev.into_inner(), false);
-        let fs = rsext4::mount_with_options(&mut dev, MountOptions::read_only_no_journal_replay())
-            .map_err(into_vfs_err)?;
+        let fs = rsext4::mount_with_options(
+            &mut dev,
+            MountOptions {
+                readonly: true,
+                replay_journal,
+            },
+        )
+        .map_err(into_vfs_err)?;
         Ok((fs, dev, true))
     }
 
