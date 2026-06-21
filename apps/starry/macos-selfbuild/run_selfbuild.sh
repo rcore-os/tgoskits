@@ -407,6 +407,21 @@ if [[ "$boot_only" != "1" && "$sent_cmd" = "1" ]] \
     host_rc=1
 fi
 
+if [[ "$boot_only" = "1" ]] && LC_ALL=C grep -a -q "root@starry:" "$log"; then
+    if ! LC_ALL=C grep -a -q "===HOST-QEMU-STOP reason=boot-only-shell" "$log"; then
+        echo "===HOST-QEMU-STOP reason=boot-only-shell-observed pid=$qemu_pid===" >>"$log"
+    fi
+    host_rc=0
+fi
+
+if [[ "$boot_only" = "1" ]] \
+    && ! LC_ALL=C grep -a -q "===HOST-QEMU-STOP reason=boot-only-shell" "$log"; then
+    if ! LC_ALL=C grep -a -q "===HOST-QEMU-STOP reason=boot-only-no-shell" "$log"; then
+        echo "===HOST-QEMU-STOP reason=boot-only-no-shell pid=$qemu_pid rc=$host_rc===" >>"$log"
+    fi
+    host_rc=1
+fi
+
 if kill -0 "$qemu_pid" 2>/dev/null; then
     if ! LC_ALL=C grep -a -q "===HOST-QEMU-STOP" "$log"; then
         echo "===HOST-QEMU-STOP reason=host-cleanup pid=$qemu_pid rc=$host_rc===" >>"$log"
