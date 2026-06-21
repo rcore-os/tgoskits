@@ -24,10 +24,8 @@
 //!
 //! - [`BaseDeviceOps`]: The core trait that all emulated devices must implement.
 //! - [`EmuDeviceType`]: Enumeration representing the type of emulator devices
-//!   (re-exported from `axvm-types` crate).
+//!   (re-exported from `axvmconfig` crate).
 //! - [`EmulatedDeviceConfig`]: Configuration structure for device initialization.
-//! - [`IrqLine`] and [`IrqSink`]: Architecture-independent interrupt line
-//!   signaling.
 //! - Trait aliases for specific device types:
 //!   - [`BaseMmioDeviceOps`]: For MMIO (Memory-Mapped I/O) devices.
 //!   - [`BaseSysRegDeviceOps`]: For system register devices.
@@ -39,8 +37,8 @@
 //! trait with the appropriate address range type:
 //!
 //! ```rust,ignore
-//! use axdevice_base::{AccessWidth, BaseDeviceOps, EmuDeviceType};
-//! use axvm_types::{GuestPhysAddr, GuestPhysAddrRange};
+//! use axdevice_base::{BaseDeviceOps, EmuDeviceType};
+//! use axaddrspace::{GuestPhysAddrRange, device::AccessWidth};
 //! use ax_errno::AxResult;
 //!
 //! struct MyDevice {
@@ -87,7 +85,6 @@
 extern crate alloc;
 
 mod device;
-mod irq;
 
 use alloc::{string::String, sync::Arc, vec::Vec};
 use core::any::Any;
@@ -97,10 +94,11 @@ pub use axvm_types::{
     EmulatedDeviceType as EmuDeviceType, GuestPhysAddr, GuestPhysAddrRange, InterruptTriggerMode,
     IrqLineId,
 };
-pub use device::{
-    AccessWidth, DeviceAddr, DeviceAddrRange, Port, PortRange, SysRegAddr, SysRegAddrRange,
+
+pub use crate::device::{
+    AccessWidth, BusAccess, BusKind, BusResponse, DeviceAddr, DeviceAddrRange, DeviceError, Port,
+    PortRange, SysRegAddr, SysRegAddrRange,
 };
-pub use irq::{IrqLine, IrqSink};
 
 /// Represents the configuration of an emulated device for a virtual machine.
 ///
@@ -297,6 +295,10 @@ pub trait BaseDeviceOps<R: DeviceAddrRange>: Any {
 ///     }
 /// }
 /// ```
+#[deprecated(
+    since = "0.5.0",
+    note = "Use Device::as_any().downcast_ref() via MmioDeviceAdapter instead"
+)]
 pub fn map_device_of_type<T: BaseDeviceOps<R>, R: DeviceAddrRange, U, F: FnOnce(&T) -> U>(
     device: &Arc<dyn BaseDeviceOps<R>>,
     f: F,
@@ -340,3 +342,300 @@ pub trait BaseSysRegDeviceOps = BaseDeviceOps<SysRegAddrRange>;
 ///
 /// Port I/O devices are only used on x86/x86_64 architectures.
 pub trait BasePortDeviceOps = BaseDeviceOps<PortRange>;
+
+// ---------------------------------------------------------------------------
+// New unified device-registration types (device / interrupt framework refactoring)
+// ---------------------------------------------------------------------------
+
+/// Opaque identifier assigned to a device when it is registered into a
+/// [`AxVmDevices`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct DeviceId(u32);
+
+impl DeviceId {
+    /// Creates a new `DeviceId` from a raw `u32`.
+    pub const fn new(id: u32) -> Self {
+        Self(id)
+    }
+
+    /// Returns the raw `u32` value.
+    pub const fn as_u32(self) -> u32 {
+        self.0
+    }
+}
+
+/// Target instruction-set architecture.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Arch {
+    /// 64-bit ARM (AArch64).
+    AArch64,
+    /// 64-bit RISC-V.
+    Riscv64,
+    /// 64-bit x86 (AMD64 / Intel 64).
+    X86_64,
+    /// 64-bit LoongArch.
+    LoongArch64,
+}
+
+/// Which vCPU(s) an interrupt should be delivered to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IrqTarget {
+    /// A specific vCPU by its index.
+    VCpu(usize),
+    /// Broadcast to every vCPU in the VM.
+    AllVCpus,
+    /// Deliver to the vCPU currently running at the lowest priority
+    /// (architecture-dependent).
+    LowestPriority,
+}
+
+/// Trigger configuration for an interrupt line.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IrqConfig {
+    /// Edge-triggered interrupt.
+    Edge,
+    /// Level-triggered interrupt.
+    Level,
+}
+
+/// The reason an IRQ resource registration was rejected.
+#[derive(Debug, Clone)]
+pub enum IrqConflictReason {
+    /// The IRQ number exceeds the maximum supported value.
+    OutOfRange {
+        /// The requested IRQ line.
+        irq: u32,
+        /// The maximum valid IRQ line for this architecture.
+        max: u32,
+    },
+    /// The IRQ line is already exclusively owned by another device.
+    AlreadyExclusive {
+        /// The conflicting IRQ line.
+        irq: u32,
+        /// The device that already owns this line.
+        owner: DeviceId,
+    },
+    /// The trigger mode does not match the existing configuration on this
+    /// line.
+    TriggerMismatch {
+        /// The IRQ line.
+        irq: u32,
+        /// The trigger mode the new device expects.
+        expected: IrqConfig,
+        /// The trigger mode already configured on this line.
+        actual: IrqConfig,
+    },
+}
+
+/// The kind of a resource a device requests.
+///
+/// Used in [`RegistryError::MissingRequiredResource`] to report which
+/// required resource category was not declared.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ResourceKind {
+    /// MMIO address range.
+    Mmio,
+    /// Port I/O range.
+    Port,
+    /// System register.
+    SysReg,
+    /// Interrupt line.
+    Irq,
+    /// MSI / MSI-X vector block.
+    Msi,
+}
+
+/// A resource that a device declares it needs during registration.
+///
+/// The device manager uses this information for address-range conflict
+/// detection, IRQ routing setup, and architecture-suitability checks.
+#[derive(Debug, Clone)]
+pub enum Resource {
+    /// An MMIO address window.
+    MmioRange {
+        /// Start of the window (guest-physical address).
+        base: u64,
+        /// Size of the window in bytes.
+        size: u64,
+    },
+    /// A Port I/O range (x86 only).
+    PortRange {
+        /// Start of the range.
+        base: u16,
+        /// Size of the range in bytes.
+        size: u16,
+    },
+    /// A single system register.
+    SysReg {
+        /// Register encoding (architecture-specific).
+        addr: u32,
+    },
+    /// An interrupt line.
+    Irq {
+        /// IRQ number.
+        line: u32,
+        /// Which vCPU(s) the interrupt targets.
+        target: IrqTarget,
+    },
+    /// A dynamic PCI BAR that will be programmed at runtime.
+    PciBar {
+        /// BAR index (0–5).
+        bar_index: u8,
+        /// Requested size in bytes.
+        size: u64,
+        /// `true` if this BAR requests PIO space; `false` for MMIO.
+        is_pio: bool,
+    },
+    /// MSI / MSI-X capability with a requested number of vectors.
+    MSI {
+        /// Number of interrupt vectors requested.
+        count: u32,
+    },
+    /// Marker indicating the device is capable of DMA (used for IOMMU /
+    /// security checks). This does not consume an address range.
+    DmaCapable,
+}
+
+/// Errors that can be returned when registering or unregistering a device.
+#[derive(Debug, Clone)]
+pub enum RegistryError {
+    /// The given [`DeviceId`] does not refer to a currently-registered device.
+    DeviceNotFound(DeviceId),
+    /// Two devices claim overlapping address ranges.
+    AddressConflict {
+        /// The resource the new device is attempting to register.
+        resource: Resource,
+        /// The resource already held by an existing device.
+        existing: Resource,
+        /// The device that already owns the conflicting resource.
+        existing_device: DeviceId,
+    },
+    /// The device requested a bus type that the current architecture does
+    /// not support (e.g. Port I/O on AArch64).
+    BusKindNotSupported {
+        /// The unsupported bus kind.
+        kind: BusKind,
+        /// The current target architecture.
+        arch: Arch,
+    },
+    /// An IRQ resource could not be allocated.
+    IrqConflict {
+        /// The IRQ line that caused the conflict.
+        irq: u32,
+        /// The reason for the conflict.
+        reason: IrqConflictReason,
+    },
+    /// The device is not compatible with the current target architecture.
+    ArchNotSupported {
+        /// Human-readable device name (for diagnostics).
+        device_name: String,
+        /// The architecture(s) the device requires.
+        required_arch: Arch,
+        /// The architecture the hypervisor is currently built for.
+        current_arch: Arch,
+    },
+    /// The device did not declare a resource that is mandatory for its
+    /// device class.
+    MissingRequiredResource {
+        /// The device that is missing a resource.
+        device: DeviceId,
+        /// The kind of resource that is missing.
+        missing: ResourceKind,
+    },
+}
+
+/// The unified device trait.
+///
+/// Every emulated device (interrupt controller, UART, virtio-blk, …)
+/// implements this trait.  The device manager calls [`resources`](Device::resources)
+/// at registration time for conflict detection and [`handle`](Device::handle)
+/// on the hot path whenever a vCPU exit is dispatched to this device.
+///
+/// # Downcasting
+///
+/// `Device` extends [`Any`](core::any::Any) so callers can downcast to a
+/// concrete device type via [`as_any`](Device::as_any):
+///
+/// ```ignore
+/// if let Some(vgic) = device.as_any().downcast_ref::<VGicD>() {
+///     vgic.assign_irq(32, cpu_id, (0, 0, 0, cpu_id));
+/// }
+/// ```
+pub trait Device: Send + Sync + Any {
+    /// Returns a human-readable name for this device (used in logging and
+    /// diagnostics).
+    fn name(&self) -> &str;
+
+    /// Returns the set of resources (MMIO windows, port ranges, IRQ lines,
+    /// …) this device requires.
+    fn resources(&self) -> Vec<Resource>;
+
+    /// Handles a single bus access.
+    ///
+    /// This is the hot-path entry point called from [`BusRouter::dispatch`].
+    fn handle(&self, access: &BusAccess) -> Result<BusResponse, DeviceError>;
+
+    /// Returns a reference to `self` as `&dyn Any` for downcasting.
+    fn as_any(&self) -> &dyn Any;
+
+    /// Resets the device to its power-on state.
+    #[allow(unused_variables)]
+    fn reset(&mut self) -> Result<(), DeviceError> {
+        Ok(())
+    }
+
+    /// Puts the device into a low-power or suspended state.
+    #[allow(unused_variables)]
+    fn suspend(&mut self) -> Result<(), DeviceError> {
+        Ok(())
+    }
+
+    /// Restores the device from a suspended state.
+    #[allow(unused_variables)]
+    fn resume(&mut self) -> Result<(), DeviceError> {
+        Ok(())
+    }
+}
+
+/// Device registration interface — the build-time / management-path half of a
+/// [`AxVmDevices`].
+///
+/// Used when constructing or reconfiguring a VM; not on the vCPU hot path.
+pub trait DeviceRegistry {
+    /// Registers a device, performing resource conflict detection and
+    /// architecture-suitability checks.
+    ///
+    /// On success the device is assigned a unique [`DeviceId`] and inserted
+    /// into the manager's lookup structures.
+    fn register(&mut self, device: Arc<dyn Device>) -> Result<DeviceId, RegistryError>;
+
+    /// Unregisters a previously registered device, removing its resources
+    /// from all lookup structures and freeing its slot.
+    fn unregister(&mut self, id: DeviceId) -> Result<(), RegistryError>;
+}
+
+/// Bus dispatch interface — the runtime hot-path half of a
+/// [`AxVmDevices`].
+///
+/// Called on every vCPU exit that targets an emulated device (MMIO / Port /
+/// SysReg).
+pub trait BusRouter {
+    /// Looks up the device responsible for `access` and forwards the access
+    /// to it, returning the result.
+    fn dispatch(&self, access: &BusAccess) -> Result<BusResponse, DeviceError>;
+
+    /// Looks up the device responsible for `access` without handling the
+    /// access.  The caller can then inspect the device or call
+    /// [`Device::handle`] manually.
+    fn lookup(&self, access: &BusAccess) -> Result<Arc<dyn Device>, DeviceError>;
+}
+
+// ---------------------------------------------------------------------------
+// Sub-modules
+// ---------------------------------------------------------------------------
+
+mod adapter;
+mod irq;
+
+pub use adapter::{MmioDeviceAdapter, PortDeviceAdapter, SysRegDeviceAdapter};
+pub use irq::{IrqLine, IrqSink};

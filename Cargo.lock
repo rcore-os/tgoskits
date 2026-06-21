@@ -1330,7 +1330,9 @@ dependencies = [
  "ax-errno 0.6.0",
  "ax-memory-addr",
  "axvm-types",
+ "log",
  "serde",
+ "spin 0.10.0",
 ]
 
 [[package]]
@@ -7635,6 +7637,9 @@ name = "spin"
 version = "0.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d5fe4ccb98d9c292d56fec89a5e07da7fc4cf0dc11e156b41793132775d3e591"
+dependencies = [
+ "lock_api",
+]
 
 [[package]]
 name = "spin"
