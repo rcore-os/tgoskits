@@ -1,0 +1,20 @@
+# java-lang loongarch64 — multi-JDK (17/21/25) language carpet on StarryOS.
+# JDK23 is N/A on loongarch64: no upstream musl build, and glibc+gcompat SEGFAULTS the JVM
+# (verified on REAL Linux 6.18 too — NOT a starry bug). JDK17 is the Loongson apk; JDK21/25
+# are Alpine-edge NATIVE musl (the 25 cell is the C2 JIT port; 21 is the Zero VM at
+# lib/zero/libjvm.so). The loader path lists lib + lib/server + lib/zero so whichever VM
+# dir ships resolves. -machine virt -cpu la464 -m 8192M (== openjdk-multi loong). The rootfs
+# is the per-app rootfs-loongarch64-alpine.img which prebuild.sh grows to 6G so the JDKs fit.
+args = [
+    "-machine", "virt", "-cpu", "la464", "-nographic", "-m", "8192M", "-smp", "1",
+    "-device", "virtio-blk-pci,drive=disk0",
+    "-drive", "id=disk0,if=none,format=raw,file=${workspace}/tmp/axbuild/rootfs/rootfs-loongarch64-alpine.img",
+    "-device", "virtio-net-pci,netdev=net0", "-netdev", "user,id=net0",
+]
+uefi = false
+to_bin = true
+shell_prefix = "root@starry:/root #"
+shell_init_cmd = "sh /usr/bin/run-java.sh"
+success_regex = ['(?m)^TEST PASSED\s*$']
+fail_regex = ['(?i)\bpanic(?:ked)?\b', '(?m)^TEST FAILED\s*$']
+timeout = 25200
