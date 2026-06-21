@@ -5,6 +5,7 @@
 //! gated behind `#[cfg(test)]` so it never affects the `no_std` build.
 
 mod cpu_logic;
+mod cpuset_logic;
 mod delegation;
 mod memory_charge;
 mod mock;

@@ -37,6 +37,13 @@ impl CpusetState {
         }
     }
 
+    /// Hierarchical effective mask: a child's effective CPUs are its own
+    /// requested set intersected with the parent's effective set. An empty
+    /// intersection means the child inherits nothing usable.
+    pub fn effective_intersect(parent_effective: u64, own: u64) -> u64 {
+        parent_effective & own
+    }
+
     /// Parse CPU list format: "0-3,5,7" → bitmap.
     fn parse_cpu_list(text: &str) -> Result<u64, ()> {
         let mut mask = 0u64;

@@ -280,7 +280,58 @@ pub fn write_attr(id: CgroupId, name: &str, data: &[u8]) -> VfsResult<usize> {
     {
         return Err(VfsError::OperationNotPermitted);
     }
-    ctrl.write_attr(attr_name, data)
+    let written = ctrl.write_attr(attr_name, data)?;
+    // cpuset cpus/mems changes ripple into effective masks of this node and
+    // all descendants (effective = parent.effective ∩ own).
+    if ctrl_name == "cpuset" && (attr_name == "cpus" || attr_name == "mems") {
+        recompute_cpuset_effective(&node);
+    }
+    Ok(written)
+}
+
+/// Fetch a node's cpuset state, if the controller is present.
+fn cpuset_state(node: &CgroupNode) -> Option<Arc<cpuset::CpusetState>> {
+    node.controllers
+        .get("cpuset")
+        .and_then(|c| c.as_any().downcast_ref::<cpuset::CpusetController>())
+        .map(|c| c.state().clone())
+}
+
+/// Recompute effective cpu/mem masks for `node` and its whole subtree:
+/// `effective = parent.effective ∩ own`. The root (no cpuset parent) uses an
+/// all-ones parent mask, so its effective equals its own request.
+fn recompute_cpuset_effective(node: &Arc<CgroupNode>) {
+    use ::core::sync::atomic::Ordering;
+    let (parent_cpus, parent_mems) = node
+        .parent
+        .as_ref()
+        .and_then(|p| p.upgrade())
+        .and_then(|p| cpuset_state(&p))
+        .map(|s| {
+            (
+                s.cpus_effective.load(Ordering::Acquire),
+                s.mems_effective.load(Ordering::Acquire),
+            )
+        })
+        .unwrap_or((u64::MAX, u64::MAX));
+
+    if let Some(s) = cpuset_state(node) {
+        let own_cpus = s.cpus.load(Ordering::Acquire);
+        let own_mems = s.mems.load(Ordering::Acquire);
+        s.cpus_effective.store(
+            cpuset::CpusetState::effective_intersect(parent_cpus, own_cpus),
+            Ordering::Release,
+        );
+        s.mems_effective.store(
+            cpuset::CpusetState::effective_intersect(parent_mems, own_mems),
+            Ordering::Release,
+        );
+    }
+
+    let children: Vec<Arc<CgroupNode>> = node.children.lock().values().cloned().collect();
+    for child in children {
+        recompute_cpuset_effective(&child);
+    }
 }
 
 // ── Process membership ───────────────────────────────────────────────
