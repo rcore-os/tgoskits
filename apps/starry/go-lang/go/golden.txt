@@ -802,6 +802,44 @@ ok: utf16/DecodeRune = 119070
 ok: unique/Make-equal = true
 ok: unique/Value = interned
 ok: unique/Make-distinct = 0
+== stdlib-more ==
+ok: tar/write-header = true
+ok: tar/write-body = true
+ok: tar/header = true
+ok: zip/roundtrip = true
+ok: gzip/roundtrip = true
+ok: zlib/roundtrip = true
+ok: flate/roundtrip = true
+ok: aes/gcm-decrypt = aes-gcm-test-msg
+ok: ed25519/verify = true
+ok: ed25519/verify-wrong-msg = true
+ok: sha1/sum = cebb8a6019488e80ca1e1c92322cfdfbff5c04a4
+ok: crc64/checksum = true
+ok: adler32/checksum = true
+ok: base32/roundtrip = base32
+ok: pem/roundtrip-type = TEST
+ok: pem/roundtrip-data = pemdata
+ok: ascii85/roundtrip = a85
+ok: gob/roundtrip-X = true
+ok: gob/roundtrip-Y = true
+ok: url/scheme = https
+ok: url/hostname = example.com
+ok: url/port = 8443
+ok: url/path = /a
+ok: url/query-encoded = k=v
+ok: url/fragment = f
+ok: url/query-get = v
+ok: url/values-encode = a=1&a=2
+ok: flag/parse = go
+ok: log/print = true
+ok: fstest/mapfs-read = world
+ok: scanner/scan-int = true
+ok: scanner/token-text = 123
+ok: scanner/scan-ident = true
+ok: scanner/token-ident = xyz
+ok: tabwriter/output = true
+ok: regexp-syntax/parse = true
+ok: regexp-syntax/op = true
 == go1.26-features ==
 ok: go126/new-expr = 26
 ok: go126/new-expr-literal = 42
@@ -2070,5 +2108,5 @@ ok: Generics Exec = nil
 ok: Generics Exec incremented age = 6
 ok: Generics CreateInBatches = nil
 ok: Generics CreateInBatches count = 3
-GOLANG count=2018
+GOLANG count=2055
 GO_LANG_OK

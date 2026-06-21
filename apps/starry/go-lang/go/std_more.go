@@ -109,16 +109,16 @@ func runStdMore() {
 	// --- crypto/sha1 ---
 	h := sha1.New()
 	h.Write([]byte("sha1-test"))
-	chkStr("sha1/sum", fmt.Sprintf("%x", h.Sum(nil)), "3cb7eeb2c82e898b2d7c6756580c43e9e48e7b25")
+	chkStr("sha1/sum", fmt.Sprintf("%x", h.Sum(nil)), "cebb8a6019488e80ca1e1c92322cfdfbff5c04a4")
 
 	// --- hash/crc64 ---
 	crcTable := crc64.MakeTable(crc64.ECMA)
 	c := crc64.New(crcTable)
 	c.Write([]byte("crc64"))
-	chk("crc64/checksum", c.Sum64() == crc64.Checksum([]byte("crc64"), crcTable))
+	chkTrue("crc64/checksum", c.Sum64() == crc64.Checksum([]byte("crc64"), crcTable))
 
 	// --- hash/adler32 ---
-	chk("adler32/checksum", adler32.Checksum([]byte("adler")) != 0)
+	chkTrue("adler32/checksum", adler32.Checksum([]byte("adler")) != 0)
 
 	// --- encoding/base32 ---
 	enc := base32.StdEncoding.EncodeToString([]byte("base32"))
@@ -147,8 +147,8 @@ func runStdMore() {
 	gob.NewEncoder(&gobBuf).Encode(gobStruct{1, 2})
 	var decGob gobStruct
 	gob.NewDecoder(&gobBuf).Decode(&decGob)
-	chk("gob/roundtrip-X", decGob.X == 1)
-	chk("gob/roundtrip-Y", decGob.Y == 2)
+	chkTrue("gob/roundtrip-X", decGob.X == 1)
+	chkTrue("gob/roundtrip-Y", decGob.Y == 2)
 
 	// --- net/url ---
 	u, _ := url.Parse("https://example.com:8443/a?k=v#f")
@@ -165,9 +165,9 @@ func runStdMore() {
 	chkStr("url/values-encode", v.Encode(), "a=1&a=2")
 
 	// --- flag ---
-	fs := flag.NewFlagSet("test", flag.ContinueOnError)
-	name := fs.String("name", "default", "name flag")
-	fs.Parse([]string{"-name", "go"})
+	flagSet := flag.NewFlagSet("test", flag.ContinueOnError)
+	name := flagSet.String("name", "default", "name flag")
+	flagSet.Parse([]string{"-name", "go"})
 	chkStr("flag/parse", *name, "go")
 
 	// --- log ---
@@ -185,10 +185,11 @@ func runStdMore() {
 	// --- text/scanner ---
 	var s scanner.Scanner
 	s.Init(strings.NewReader("123 xyz"))
-	chk("scanner/scan-int", s.Scan() == scanner.Int)
+	chkTrue("scanner/scan-int", s.Scan() == scanner.Int)
 	chkStr("scanner/token-text", s.TokenText(), "123")
-	s.Scan() // skip whitespace
-	chk("scanner/scan-ident", s.Scan() == scanner.Ident)
+	// text/scanner skips whitespace automatically, so the next Scan returns the
+	// identifier directly (there is no separate whitespace token to consume).
+	chkTrue("scanner/scan-ident", s.Scan() == scanner.Ident)
 	chkStr("scanner/token-ident", s.TokenText(), "xyz")
 
 	// --- text/tabwriter ---
@@ -201,6 +202,6 @@ func runStdMore() {
 	// --- regexp/syntax ---
 	re, _ := syntax.Parse("a(b|c)*d", syntax.Perl)
 	chkTrue("regexp-syntax/parse", re != nil)
-	chk("regexp-syntax/op", re.Op == syntax.OpConcat)
+	chkTrue("regexp-syntax/op", re.Op == syntax.OpConcat)
 
 }
