@@ -688,7 +688,7 @@ impl AxRunQueue {
                     })
             };
             if let Some(task) = task {
-                info!(
+                debug!(
                     "work-steal: CPU {} stole {} from CPU {}",
                     current_cpu,
                     task.id_name(),
