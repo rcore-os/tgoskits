@@ -49,7 +49,7 @@ Clone and enter the branch under test:
 ```bash
 git clone https://github.com/yks23/tgoskits.git
 cd tgoskits
-git checkout app/starry-macos-selfbuild
+git checkout app/starry-macos-selfbuild-only
 ```
 
 Run the complete reproduction on macOS:

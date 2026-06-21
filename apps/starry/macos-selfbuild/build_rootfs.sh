@@ -148,6 +148,21 @@ copy_image() {
     cp "$src" "$dst"
 }
 
+resolve_image_path() {
+    local path="$1"
+    local nested="$path/$(basename "$path")"
+
+    if [[ -f "$path" ]]; then
+        printf '%s\n' "$path"
+        return
+    fi
+    if [[ -f "$nested" ]]; then
+        printf '%s\n' "$nested"
+        return
+    fi
+    printf '%s\n' "$path"
+}
+
 debugfs="$(find_tool DEBUGFS debugfs /opt/homebrew/opt/e2fsprogs/sbin/debugfs)"
 e2fsck="$(find_tool E2FSCK e2fsck /opt/homebrew/opt/e2fsprogs/sbin/e2fsck)"
 resize2fs="$(find_tool RESIZE2FS resize2fs /opt/homebrew/opt/e2fsprogs/sbin/resize2fs)"
@@ -172,6 +187,7 @@ if [[ ! -f "$base_rootfs" ]]; then
     echo "running: cargo xtask starry rootfs --arch aarch64"
     (cd "$repo_root" && cargo xtask starry rootfs --arch aarch64)
 fi
+base_rootfs="$(resolve_image_path "$base_rootfs")"
 
 if [[ ! -f "$base_rootfs" ]]; then
     echo "base rootfs still missing after xtask: $base_rootfs" >&2
@@ -595,7 +611,7 @@ CARGO_CFG
 
     rm -rf "$prefetch_source_dir"
     mkdir -p "$prefetch_source_dir"
-    for path in Cargo.toml Cargo.lock rust-toolchain.toml .cargo apps components drivers memory os platforms scripts test-suit tools vendor virtualization xtask; do
+    for path in Cargo.toml Cargo.lock rust-toolchain.toml .cargo apps bootloader components drivers memory net os platforms scripts test-suit tools vendor virtualization xtask; do
         if [[ -e "$source_dir/$path" ]]; then
             cp -a "$source_dir/$path" "$prefetch_source_dir/"
         fi
