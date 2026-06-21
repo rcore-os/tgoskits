@@ -6,10 +6,7 @@ repo_root="$(cd "$script_dir/../../.." && pwd)"
 
 output_dir="${STARRY_TOOLCHAIN_OVERLAY_DIR:-$repo_root/target/starry-macos-selfbuild/rootfs-build/toolchain-overlay}"
 source_dir="$repo_root"
-rust_nightly_dir="${RUST_NIGHTLY_DIR:-}"
 rust_toolchain="${RUST_TOOLCHAIN:-nightly-2026-05-28}"
-rootfs_payload="${ROOTFS_PAYLOAD:-}"
-rootfs_payload_url="${ROOTFS_PAYLOAD_URL:-}"
 alpine_branch="${ALPINE_BRANCH:-v3.23}"
 alpine_arch="${ALPINE_ARCH:-aarch64}"
 alpine_mirror="${ALPINE_MIRROR:-https://dl-cdn.alpinelinux.org/alpine}"
@@ -25,18 +22,10 @@ Usage:
 
 Downloads and prepares the AArch64 guest toolchain overlay used by the macOS
 StarryOS self-build app. The output is a filesystem tree, not a rootfs image.
-`cargo xtask starry app qemu` injects this tree through the existing Starry app
-overlay path.
-
-Optional inputs:
-  --payload PATH      Extract an existing toolchain overlay tarball instead of
-                      downloading Alpine APKs and Rust dist components.
-  --payload-url URL   Download and extract a toolchain overlay tarball.
-  --rust-nightly-dir DIR
-                      Overlay a local Rust nightly sysroot into /opt/rust-nightly.
+The caller injects this tree into a copied work rootfs before booting QEMU.
 
 Environment:
-  ALPINE_BRANCH        Alpine branch for APK payloads (default: v3.23)
+  ALPINE_BRANCH        Alpine branch for APK packages (default: v3.23)
   ALPINE_MIRROR        Alpine mirror URL
   RUST_DIST_SERVER     Rust dist server URL (default: https://static.rust-lang.org)
   STARRY_CARGO_REGISTRY_INDEX
@@ -54,18 +43,6 @@ while [[ "$#" -gt 0 ]]; do
             ;;
         --source)
             source_dir="$2"
-            shift 2
-            ;;
-        --payload)
-            rootfs_payload="$2"
-            shift 2
-            ;;
-        --payload-url)
-            rootfs_payload_url="$2"
-            shift 2
-            ;;
-        --rust-nightly-dir)
-            rust_nightly_dir="$2"
             shift 2
             ;;
         --force)
@@ -97,11 +74,6 @@ if [[ ! -f "$source_dir/Cargo.toml" ]]; then
 fi
 source_dir="$(cd "$source_dir" && pwd)"
 
-if [[ -n "$rust_nightly_dir" && ! -d "$rust_nightly_dir" ]]; then
-    echo "rust nightly sysroot dir not found: $rust_nightly_dir" >&2
-    exit 1
-fi
-
 work_dir="$repo_root/target/starry-macos-selfbuild/rootfs-build"
 cache_alpine_branch="${alpine_branch//\//_}"
 cache_rust_toolchain="${rust_toolchain//\//_}"
@@ -110,7 +82,6 @@ rust_dist_dir="$work_dir/rust-dist-${cache_rust_toolchain}"
 cargo_home_dir="$work_dir/cargo-home"
 prefetch_source_dir="$work_dir/prefetch-source"
 extra_fetch_dir="$work_dir/extra-fetch"
-extra_fetch_aws_dir="$work_dir/extra-fetch-aws"
 extra_fetch_workspace_dir="$work_dir/extra-fetch-workspace"
 marker_file="$output_dir/.starry-macos-toolchain-overlay"
 
@@ -125,35 +96,9 @@ sha256_file() {
     fi
 }
 
-sha256_stream() {
-    if command -v shasum >/dev/null 2>&1; then
-        shasum -a 256 | awk '{ print $1 }'
-    elif command -v sha256sum >/dev/null 2>&1; then
-        sha256sum | awk '{ print $1 }'
-    else
-        cksum | awk '{ print $1 }'
-    fi
-}
-
 overlay_signature() {
-    local cargo_lock_sha payload_sha rust_dir_stamp
+    local cargo_lock_sha
     cargo_lock_sha="$(sha256_file "$source_dir/Cargo.lock")"
-    payload_sha=""
-    rust_dir_stamp=""
-    if [[ -n "$rootfs_payload" && -f "$rootfs_payload" ]]; then
-        payload_sha="$(sha256_file "$rootfs_payload")"
-    fi
-    if [[ -n "$rust_nightly_dir" ]]; then
-        rust_dir_stamp="$(
-            find "$rust_nightly_dir" -type f -print 2>/dev/null \
-                | sort \
-                | head -100 \
-                | while IFS= read -r path; do
-                    stat -f '%N:%z:%m' "$path" 2>/dev/null || stat -c '%n:%s:%Y' "$path" 2>/dev/null || true
-                done \
-                | sha256_stream
-        )"
-    fi
     cat <<EOF
 rust_toolchain=$rust_toolchain
 alpine_branch=$alpine_branch
@@ -161,8 +106,6 @@ alpine_arch=$alpine_arch
 guest_target=$guest_target
 cargo_lock_sha256=$cargo_lock_sha
 cargo_registry_index=$cargo_registry_index
-payload_sha256=$payload_sha
-rust_nightly_stamp=$rust_dir_stamp
 EOF
 }
 
@@ -187,52 +130,23 @@ overlay_is_fresh() {
 download_file() {
     local url="$1"
     local out="$2"
+    local tmp="${out}.part"
 
-    if curl -fL --retry 5 --retry-delay 3 --retry-all-errors -o "$out" "$url"; then
-        return
+    rm -f "$tmp"
+    if curl -fL \
+        --connect-timeout 20 \
+        --speed-limit 1024 \
+        --speed-time 60 \
+        --retry 5 \
+        --retry-delay 3 \
+        --retry-all-errors \
+        -o "$tmp" \
+        "$url"; then
+        mv "$tmp" "$out"
+        return 0
     fi
-    if command -v set_proxy >/dev/null 2>&1; then
-        echo "direct download failed; retrying through set_proxy: $url" >&2
-        set_proxy curl -fL --retry 5 --retry-delay 3 --retry-all-errors -o "$out" "$url"
-        return
-    fi
+    rm -f "$tmp"
     return 1
-}
-
-extract_payload() {
-    local archive="$1"
-
-    if [[ ! -f "$archive" ]]; then
-        echo "payload not found: $archive" >&2
-        exit 1
-    fi
-
-    case "$archive" in
-        *.tar.zst|*.tzst)
-            tar --zstd -xf "$archive" -C "$output_dir"
-            ;;
-        *.tar.xz|*.txz)
-            tar -xJf "$archive" -C "$output_dir"
-            ;;
-        *.tar.gz|*.tgz)
-            tar -xzf "$archive" -C "$output_dir"
-            ;;
-        *.tar)
-            tar -xf "$archive" -C "$output_dir"
-            ;;
-        *)
-            echo "unsupported payload extension: $archive" >&2
-            echo "expected .tar, .tar.gz, .tgz, .tar.xz, .txz, .tar.zst, or .tzst" >&2
-            exit 1
-            ;;
-    esac
-
-    if [[ -d "$output_dir/payload" ]]; then
-        shopt -s dotglob nullglob
-        mv "$output_dir"/payload/* "$output_dir"/
-        rmdir "$output_dir/payload"
-        shopt -u dotglob nullglob
-    fi
 }
 
 download_apk_index() {
@@ -367,19 +281,11 @@ install_rust_src_component() {
     (cd "$rust_dist_dir/$archive_dir" && ./install.sh --prefix="$output_dir/opt/rust-nightly" --disable-ldconfig)
 }
 
-cargo_fetch_with_fallback() {
-    if env -u CARGO_REGISTRY_INDEX "$@"; then
-        return
-    fi
-    if command -v set_proxy >/dev/null 2>&1; then
-        echo "cargo fetch failed; retrying through set_proxy" >&2
-        set_proxy env -u CARGO_REGISTRY_INDEX "$@"
-        return
-    fi
-    return 1
+cargo_fetch() {
+    env -u CARGO_REGISTRY_INDEX "$@"
 }
 
-finish_payload_overlay() {
+finish_toolchain_overlay() {
     local libclang_path cargo_env path prefetch_manifest
 
     mkdir -p "$cargo_home_dir" "$output_dir/root/.cargo" "$output_dir/opt" "$output_dir/usr/bin"
@@ -483,7 +389,7 @@ CARGO_CFG
     fi
     prefetch_manifest="$prefetch_source_dir/Cargo.toml"
 
-    cargo_fetch_with_fallback "${cargo_env[@]}" \
+    cargo_fetch "${cargo_env[@]}" \
         cargo fetch --target "$guest_target" --manifest-path "$prefetch_manifest"
 
     rm -rf "$extra_fetch_workspace_dir"
@@ -518,11 +424,11 @@ EXTRA_CARGO
 [workspace]
 EXTRA_CARGO
     : >"$extra_fetch_workspace_dir/src/lib.rs"
-    cargo_fetch_with_fallback "${cargo_env[@]}" \
+    cargo_fetch "${cargo_env[@]}" \
         cargo fetch --manifest-path "$extra_fetch_workspace_dir/Cargo.toml"
 
     if [[ -f "$output_dir/opt/rust-nightly/lib/rustlib/src/rust/library/sysroot/Cargo.toml" ]]; then
-        cargo_fetch_with_fallback "${cargo_env[@]}" \
+        cargo_fetch "${cargo_env[@]}" \
             cargo fetch --locked --manifest-path "$output_dir/opt/rust-nightly/lib/rustlib/src/rust/library/sysroot/Cargo.toml"
     fi
 
@@ -536,7 +442,6 @@ edition = "2021"
 publish = false
 
 [dependencies]
-extra_atomic_waker = { package = "atomic-waker", version = "=1.1.2" }
 EXTRA_CARGO
     awk '
         function emit() {
@@ -559,26 +464,8 @@ EXTRA_CARGO
 [workspace]
 EXTRA_CARGO
     : >"$extra_fetch_dir/src/lib.rs"
-    cargo_fetch_with_fallback "${cargo_env[@]}" \
+    cargo_fetch "${cargo_env[@]}" \
         cargo fetch --manifest-path "$extra_fetch_dir/Cargo.toml"
-
-    rm -rf "$extra_fetch_aws_dir"
-    mkdir -p "$extra_fetch_aws_dir/src"
-    cat >"$extra_fetch_aws_dir/Cargo.toml" <<'EXTRA_CARGO'
-[package]
-name = "starry-selfbuild-extra-fetch-aws"
-version = "0.0.0"
-edition = "2021"
-publish = false
-
-[dependencies]
-aws-lc-rs = "=1.17.0"
-
-[workspace]
-EXTRA_CARGO
-    : >"$extra_fetch_aws_dir/src/lib.rs"
-    cargo_fetch_with_fallback "${cargo_env[@]}" \
-        cargo fetch --manifest-path "$extra_fetch_aws_dir/Cargo.toml"
 
     rm -rf "$output_dir/root/.cargo"
     mkdir -p "$output_dir/root/.cargo"
@@ -608,7 +495,7 @@ alpine_mirror=$alpine_mirror
 TOOLCHAIN
 }
 
-build_native_payload() {
+build_toolchain_overlay() {
     local package queue seen_file pkg dep dep_pkg version repo apk_name apk_url apk_file
 
     echo "building AArch64 guest toolchain overlay natively on macOS..."
@@ -691,6 +578,7 @@ build_native_payload() {
 
         tar -xzf "$apk_file" -C "$output_dir" --exclude='.SIGN.*' --exclude='.PKGINFO' --exclude='.INSTALL' || {
             echo "failed to extract APK: $apk_file" >&2
+            rm -f "$apk_file"
             exit 1
         }
 
@@ -706,7 +594,7 @@ build_native_payload() {
     install_rust_dist_component rust-std "$rust_toolchain" aarch64-unknown-linux-musl
     install_rust_src_component "$rust_toolchain"
 
-    finish_payload_overlay
+    finish_toolchain_overlay
 }
 
 if overlay_is_fresh; then
@@ -716,30 +604,9 @@ fi
 
 mkdir -p "$work_dir"
 
-if [[ -n "$rootfs_payload" && -n "$rootfs_payload_url" ]]; then
-    echo "use either --payload/ROOTFS_PAYLOAD or --payload-url/ROOTFS_PAYLOAD_URL, not both" >&2
-    exit 2
-fi
-
 rm -rf "$output_dir"
 mkdir -p "$output_dir"
-
-if [[ -n "$rootfs_payload_url" ]]; then
-    payload_path="$work_dir/$(basename "${rootfs_payload_url%%\?*}")"
-    download_file "$rootfs_payload_url" "$payload_path"
-    extract_payload "$payload_path"
-elif [[ -n "$rootfs_payload" ]]; then
-    extract_payload "$rootfs_payload"
-else
-    build_native_payload
-fi
-
-if [[ -n "$rust_nightly_dir" ]]; then
-    echo "overlaying explicit Rust nightly sysroot: $rust_nightly_dir"
-    rm -rf "$output_dir/opt/rust-nightly"
-    mkdir -p "$output_dir/opt/rust-nightly"
-    (cd "$rust_nightly_dir" && tar cf - .) | (cd "$output_dir/opt/rust-nightly" && tar xf -)
-fi
+build_toolchain_overlay
 
 overlay_signature >"$marker_file"
 if ! overlay_has_required_files; then

@@ -2,7 +2,7 @@ target = "aarch64-unknown-none-softfloat"
 log = "Warn"
 features = [
   "ax-driver/virtio-blk",
+  "ax-driver/virtio-net",
   "smp",
 ]
 max_cpu_num = 8
-plat_dyn = true

@@ -56,47 +56,6 @@ git_value() {
     git -C "$workspace" "$@" 2>/dev/null || printf '%s\n' "$fallback"
 }
 
-generated_ctypes_path() {
-    local root path newest newest_mtime mtime
-    newest=""
-    newest_mtime=0
-    for root in \
-        "$workspace/target/aarch64-unknown-linux-musl/release/build" \
-        "$workspace/target/debug/build"; do
-        [[ -d "$root" ]] || continue
-        while IFS= read -r path; do
-            if mtime="$(stat -f '%m' "$path" 2>/dev/null || stat -c '%Y' "$path" 2>/dev/null)"; then
-                if (( mtime > newest_mtime )); then
-                    newest_mtime="$mtime"
-                    newest="$path"
-                fi
-            fi
-        done < <(find "$root" -path '*/ax-posix-api-*/out/ctypes_gen.rs' -type f -print)
-    done
-    printf '%s\n' "$newest"
-}
-
-generated_lwprintf_path() {
-    local root path newest newest_mtime mtime
-    newest=""
-    newest_mtime=0
-    for root in \
-        "$workspace/target/aarch64-unknown-linux-musl/release/build" \
-        "$workspace/target/aarch64-unknown-none-softfloat/release/build" \
-        "$workspace/target/debug/build"; do
-        [[ -d "$root" ]] || continue
-        while IFS= read -r path; do
-            if mtime="$(stat -f '%m' "$path" 2>/dev/null || stat -c '%Y' "$path" 2>/dev/null)"; then
-                if (( mtime > newest_mtime )); then
-                    newest_mtime="$mtime"
-                    newest="$path"
-                fi
-            fi
-        done < <(find "$root" -path '*/lwprintf-rs-*/out/lwprintf.rs' -type f -print)
-    done
-    printf '%s\n' "$newest"
-}
-
 detect_tar_create_flags
 
 cargo_lock_registry_crates() {
@@ -225,10 +184,6 @@ copy_overlay_tree() {
 }
 
 prepare_toolchain_overlay() {
-    if [[ "${STARRY_TOOLCHAIN_OVERLAY:-1}" = "0" ]]; then
-        return
-    fi
-
     local toolchain_overlay_dir
     toolchain_overlay_dir="${STARRY_TOOLCHAIN_OVERLAY_DIR:-$out_dir/rootfs-build/toolchain-overlay}"
     "$app_dir/prepare_toolchain_overlay.sh" --output "$toolchain_overlay_dir"
@@ -278,28 +233,6 @@ tar_create -C "$workspace" \
     --exclude .vscode \
     -cf "$src_tar" .
 
-generated_ctypes="$(generated_ctypes_path)"
-if [[ -z "$generated_ctypes" ]]; then
-    cat >&2 <<EOF
-error: generated ax-posix-api ctypes bindings were not found under target/.
-Run apps/starry/macos-selfbuild/build_kernel.sh before refreshing the rootfs.
-EOF
-    exit 1
-fi
-generated_lwprintf="$(generated_lwprintf_path)"
-if [[ -z "$generated_lwprintf" ]]; then
-    cat >&2 <<EOF
-error: generated lwprintf-rs bindings were not found under target/.
-Run apps/starry/macos-selfbuild/build_kernel.sh before refreshing the rootfs.
-EOF
-    exit 1
-fi
-source_overlay="$out_dir/source-overlay"
-rm -rf "$source_overlay"
-mkdir -p "$source_overlay/os/arceos/api/arceos_posix_api/src"
-cp "$generated_ctypes" "$source_overlay/os/arceos/api/arceos_posix_api/src/ctypes_gen.rs"
-tar_create -C "$source_overlay" -rf "$src_tar" os/arceos/api/arceos_posix_api/src/ctypes_gen.rs
-
 tar_create -C "$out_dir" -rf "$src_tar" .tgoskits-source-meta
 
 cargo_registry_cache_count=0
@@ -314,42 +247,18 @@ export JOBS="${JOBS:-4}"
 export SMP="${SMP:-4}"
 export RAYON_NUM_THREADS="${RAYON_NUM_THREADS:-1}"
 export SOURCE_TMPFS="${SOURCE_TMPFS:-1}"
-export PROFILE="${PROFILE:-release}"
-export BUILD_TARGET="${BUILD_TARGET:-aarch64-unknown-none-softfloat}"
-export BUILD_PACKAGE="${BUILD_PACKAGE:-starryos}"
-export BUILD_BIN="${BUILD_BIN:-starryos}"
-export BUILD_STD="${BUILD_STD:-core,alloc}"
-export FEATURES="${FEATURES:-plat-dyn,ax-driver/virtio-blk,smp}"
-export NO_DEFAULT_FEATURES="${NO_DEFAULT_FEATURES:-1}"
-export TARGET_SPEC_MODE="${TARGET_SPEC_MODE:-bare-pie}"
-export TARGET_SPEC_PATH="${TARGET_SPEC_PATH:-}"
 export ARTIFACT_TO_BIN="${ARTIFACT_TO_BIN:-1}"
 export STARRY_KALLSYMS_RESERVED="${STARRY_KALLSYMS_RESERVED:-16M}"
-export CARGO_SUBCOMMAND="${CARGO_SUBCOMMAND:-build}"
 export RUSTC_THREADS="${RUSTC_THREADS:-2}"
 export SOURCE_DIR="${SOURCE_DIR:-/opt/tgoskits}"
 export WORK_DIR="${WORK_DIR:-/tmp/starryos-selfbuild-src}"
 export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-/tmp/starryos-selfbuild-target}"
 export ARTIFACT_DIR="${ARTIFACT_DIR:-/opt/starryos-selfbuild-artifacts}"
-export TARGET_HEARTBEAT_SEC="${TARGET_HEARTBEAT_SEC:-0}"
-export TRACE_RUSTC="${TRACE_RUSTC:-0}"
 export CARGO_VERBOSE="${CARGO_VERBOSE:-0}"
-export CARGO_PROFILE_RELEASE_LTO="${CARGO_PROFILE_RELEASE_LTO:-false}"
-export CARGO_PROFILE_RELEASE_OPT_LEVEL="${CARGO_PROFILE_RELEASE_OPT_LEVEL:-0}"
-export CARGO_PROFILE_RELEASE_CODEGEN_UNITS="${CARGO_PROFILE_RELEASE_CODEGEN_UNITS:-256}"
-export CARGO_PROFILE_RELEASE_DEBUG="${CARGO_PROFILE_RELEASE_DEBUG:-0}"
+export FEATURES="${FEATURES:-plat-dyn,ax-driver/virtio-blk,ax-driver/virtio-net,smp}"
 EOF
 printf 'if [ -z "${TGOSKITS_COMMIT:-}" ]; then export TGOSKITS_COMMIT=%s; fi\n' "$(shell_quote "$source_commit")"
 printf 'if [ -z "${TGOSKITS_REF:-}" ]; then export TGOSKITS_REF=%s; fi\n' "$(shell_quote "$source_ref")"
-if [[ -n "${ARTIFACT_UPLOAD_URL:-}" ]]; then
-    printf 'export ARTIFACT_UPLOAD_URL=%s\n' "$(shell_quote "$ARTIFACT_UPLOAD_URL")"
-fi
-if [[ -n "${ARTIFACT_UPLOAD_TOKEN:-}" ]]; then
-    printf 'export ARTIFACT_UPLOAD_TOKEN=%s\n' "$(shell_quote "$ARTIFACT_UPLOAD_TOKEN")"
-fi
-if [[ -n "${ARTIFACT_UPLOAD_REQUIRED:-}" ]]; then
-    printf 'export ARTIFACT_UPLOAD_REQUIRED=%s\n' "$(shell_quote "$ARTIFACT_UPLOAD_REQUIRED")"
-fi
 cat <<'EOF'
 exec /bin/sh /opt/starry-macos-selfbuild.sh
 EOF
@@ -358,7 +267,6 @@ chmod 0755 "$guest_runner"
 
 install -m 0755 "$app_dir/guest-selfbuild.sh" "$overlay_dir/opt/starry-macos-selfbuild.sh"
 install -m 0755 "$guest_runner" "$overlay_dir/opt/starry-macos-run.sh"
-install -m 0644 "$generated_lwprintf" "$overlay_dir/opt/starry-macos-lwprintf.rs"
 install -m 0644 "$src_tar" "$overlay_dir/opt/tgoskits-src.tar"
 install -m 0644 "$meta_file" "$overlay_dir/opt/tgoskits-src.meta"
 
@@ -366,6 +274,4 @@ echo "macos-selfbuild overlay ready in $overlay_dir"
 echo "source_commit=$source_commit"
 echo "source_ref=$source_ref"
 echo "source_dirty=$dirty"
-echo "generated_ctypes=$generated_ctypes"
-echo "generated_lwprintf=$generated_lwprintf"
 echo "cargo_registry_cache_archives=$cargo_registry_cache_count"

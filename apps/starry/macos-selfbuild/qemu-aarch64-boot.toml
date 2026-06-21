@@ -1,16 +1,14 @@
-# AArch64 boot-only QEMU config for externally built StarryOS kernels. The
-# rootfs drive is supplied by xtask.
+# Apple Silicon macOS HVF boot-only QEMU config for externally built StarryOS
+# kernels. The rootfs drive is supplied by xtask.
 args = [
     "-snapshot",
     "-nographic",
     "-accel",
-    "tcg,thread=multi",
+    "hvf",
     "-machine",
-    "virt,gic-version=3",
-    "-cpu",
-    "cortex-a72",
-    "-m",
-    "512M",
+    "virt,    "512M",
+    "-append",
+    "someboot.aarch64_timer=virtual someboot.aarch64_gicd_spi=off",
 ]
 uefi = false
 to_bin = true

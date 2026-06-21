@@ -14,16 +14,15 @@ usage() {
 Usage:
   apps/starry/macos-selfbuild/build_rootfs.sh [--size-mib MIB] [--force-toolchain]
 
-Prepares the rootfs inputs for the macOS AArch64 self-build app without doing any
-manual rootfs injection:
+Prepares the rootfs inputs for the macOS AArch64 self-build app:
 
   1. pulls the managed AArch64 Alpine rootfs through xtask image storage;
   2. grows that managed image with `cargo xtask image resize`;
   3. prepares the app-local guest toolchain overlay cache under target/.
 
-The actual overlay injection is still done by `cargo xtask starry app qemu`,
-which runs this app's prebuild.sh and then calls the existing xtask
-inject_overlay path.
+This script does not inject files into the managed image. `run_selfbuild.sh`
+copies the managed image to a per-run work rootfs and injects this app's overlay
+into that copy.
 
 Environment:
   TGOS_IMAGE_LOCAL_STORAGE  Image storage directory
@@ -34,10 +33,18 @@ USAGE
 while [[ "$#" -gt 0 ]]; do
     case "$1" in
         --size-mib)
+            if [[ "$#" -lt 2 ]]; then
+                echo "--size-mib requires a value" >&2
+                exit 2
+            fi
             rootfs_size_mib="$2"
             shift 2
             ;;
         --storage)
+            if [[ "$#" -lt 2 ]]; then
+                echo "--storage requires a value" >&2
+                exit 2
+            fi
             storage_dir="$2"
             shift 2
             ;;
@@ -80,5 +87,5 @@ fi
 cat <<EOF
 rootfs=$rootfs
 toolchain_overlay=$repo_root/target/starry-macos-selfbuild/rootfs-build/toolchain-overlay
-overlay_injection=cargo xtask starry app qemu -t macos-selfbuild --arch aarch64
+overlay_injection=apps/starry/macos-selfbuild/run_selfbuild.sh
 EOF

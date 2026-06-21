@@ -16,9 +16,10 @@ or run the final QEMU step directly:
   apps/starry/macos-selfbuild/run_selfbuild.sh
 
 Common knobs:
-  SMP=4 JOBS=4 MEM=8192M SOURCE_TMPFS=1 QEMU_TIMEOUT_SEC=28800
-  EXPECTED_MAX_CRATES=420
-  QEMU_ACCEL=tcg,thread=multi QEMU_MACHINE=virt,gic-version=3 QEMU_CPU=cortex-a72
+  SMP=4 JOBS=4 MEM=8192M SOURCE_TMPFS=1 QEMU_TIMEOUT_SEC=7200
+  PREPARE_OVERLAY=1 ARTIFACT_EXTRACT=1
+  QEMU_ACCEL=hvf QEMU_MACHINE=virt,gic-version=3 QEMU_CPU=host
+  QEMU_APPEND='someboot.aarch64_timer=virtual someboot.aarch64_gicd_spi=off'
   QEMU_NET=0
   QEMU_SNAPSHOT=0
   BOOT_ONLY=1
@@ -32,7 +33,7 @@ if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
 fi
 
 if [[ "$(uname -s)" != "Darwin" || "$(uname -m)" != "arm64" ]]; then
-    echo "warning: this workflow is intended for Apple Silicon macOS with QEMU AArch64 TCG" >&2
+    echo "warning: this workflow is intended for Apple Silicon macOS with QEMU AArch64 HVF" >&2
 fi
 
 find_tool() {
@@ -41,8 +42,16 @@ find_tool() {
     local fallback="$3"
 
     if [[ -n "$env_value" ]]; then
-        printf '%s\n' "$env_value"
-        return
+        if command -v "$env_value" >/dev/null 2>&1; then
+            command -v "$env_value"
+            return
+        fi
+        if [[ -x "$env_value" ]]; then
+            printf '%s\n' "$env_value"
+            return
+        fi
+        echo "tool override is not executable or on PATH: $env_value" >&2
+        exit 1
     fi
     if command -v "$name" >/dev/null 2>&1; then
         command -v "$name"
@@ -95,6 +104,7 @@ copy_image() {
 
 qemu="$(find_tool "${QEMU:-}" qemu-system-aarch64 /opt/homebrew/bin/qemu-system-aarch64)"
 debugfs="$(find_tool "${DEBUGFS:-}" debugfs /opt/homebrew/opt/e2fsprogs/sbin/debugfs)"
+e2fsck="$(find_tool "${E2FSCK:-}" e2fsck /opt/homebrew/opt/e2fsprogs/sbin/e2fsck)"
 
 git_value() {
     local fallback="$1"
@@ -107,14 +117,17 @@ rootfs="${ROOTFS:-$repo_root/target/starry-macos-selfbuild/tgos-images/rootfs-aa
 smp="${SMP:-4}"
 jobs="${JOBS:-$smp}"
 mem="${MEM:-8192M}"
-qemu_accel="${QEMU_ACCEL:-tcg,thread=multi}"
+qemu_accel="${QEMU_ACCEL:-hvf}"
 qemu_machine="${QEMU_MACHINE:-virt,gic-version=3}"
-qemu_cpu="${QEMU_CPU:-cortex-a72}"
+qemu_cpu="${QEMU_CPU:-host}"
+qemu_append="${QEMU_APPEND-someboot.aarch64_timer=virtual someboot.aarch64_gicd_spi=off}"
 qemu_net="${QEMU_NET:-0}"
 boot_only="${BOOT_ONLY:-0}"
 qemu_snapshot="${QEMU_SNAPSHOT:-0}"
+prepare_overlay="${PREPARE_OVERLAY:-1}"
+artifact_extract="${ARTIFACT_EXTRACT:-1}"
 source_tmpfs="${SOURCE_TMPFS:-1}"
-qemu_timeout_sec="${QEMU_TIMEOUT_SEC:-28800}"
+qemu_timeout_sec="${QEMU_TIMEOUT_SEC:-7200}"
 stamp="${STAMP:-$(date +%Y%m%dT%H%M%S)}"
 case_name="${CASE_NAME:-smp${smp}-j${jobs}}"
 out_root="${OUT_ROOT:-$repo_root/target/starry-macos-selfbuild}"
@@ -122,8 +135,116 @@ work_rootfs="${WORK_ROOTFS:-$out_root/rootfs/rootfs-${case_name}-${stamp}.img}"
 log="${LOG:-$out_root/logs/${case_name}-${stamp}.log}"
 guest_script="$script_dir/guest-selfbuild.sh"
 work_dir="$out_root/work/${case_name}-${stamp}"
+overlay_dir="${STARRY_OVERLAY_DIR:-$work_dir/overlay}"
+artifact_out_dir="${ARTIFACT_OUT_DIR:-$out_root/uploaded}"
+guest_artifact_dir="${ARTIFACT_DIR:-/opt/starryos-selfbuild-artifacts}"
+artifact_target="aarch64-unknown-none-softfloat"
+artifact_bin_name="starryos"
 failure_pattern='(panicked at|kernel panic|panic:|unhandled trap|trap frame|fatal exception|segmentation fault)'
 require_fresh_rootfs="${REQUIRE_FRESH_ROOTFS:-1}"
+
+rootfs_fsck() {
+    local label="$1"
+    local fsck_log="$work_dir/e2fsck-${label}.log"
+    local fsck_rc
+
+    set +e
+    "$e2fsck" -fy "$work_rootfs" >"$fsck_log" 2>&1
+    fsck_rc="$?"
+    set -e
+
+    if (( (fsck_rc & ~3) != 0 )); then
+        cat "$fsck_log" >&2 || true
+        echo "e2fsck failed for $work_rootfs (label=$label rc=$fsck_rc)" >&2
+        return "$fsck_rc"
+    fi
+}
+
+file_mode_octal() {
+    local path="$1"
+    local mode
+
+    if mode="$(stat -f %Lp "$path" 2>/dev/null)"; then
+        printf '%s\n' "$mode"
+        return
+    fi
+    stat -c %a "$path"
+}
+
+guest_symlink_target() {
+    local rel="$1"
+    local target="$2"
+    local dir
+
+    if [[ "$target" = /* ]]; then
+        printf '%s\n' "$target"
+        return
+    fi
+
+    dir="$(dirname "$rel")"
+    if [[ "$dir" = "." ]]; then
+        printf '/%s\n' "$target"
+    else
+        printf '/%s/%s\n' "$dir" "$target"
+    fi
+}
+
+inject_overlay_tree() {
+    local src="$1"
+    local cmd="$work_dir/debugfs-overlay.cmd"
+    local inject_log="$work_dir/debugfs-overlay.log"
+    local rel guest_path mode target
+
+    if [[ ! -d "$src" ]]; then
+        echo "overlay directory not found: $src" >&2
+        return 1
+    fi
+
+    : >"$cmd"
+    while IFS= read -r rel; do
+        [[ "$rel" = "." ]] && continue
+        guest_path="/${rel#./}"
+        printf 'mkdir %s\n' "$guest_path" >>"$cmd"
+    done < <(cd "$src" && LC_ALL=C find . -type d | sort)
+
+    while IFS= read -r rel; do
+        guest_path="/${rel#./}"
+        mode="$(file_mode_octal "$src/$rel")"
+        {
+            printf 'rm %s\n' "$guest_path"
+            printf 'write %s %s\n' "$src/$rel" "$guest_path"
+            printf 'sif %s mode 0100%s\n' "$guest_path" "$mode"
+        } >>"$cmd"
+    done < <(cd "$src" && LC_ALL=C find . -type f | sort)
+
+    while IFS= read -r rel; do
+        guest_path="/${rel#./}"
+        target="$(readlink "$src/$rel")"
+        {
+            printf 'rm %s\n' "$guest_path"
+            printf 'symlink %s %s\n' "$guest_path" "$(guest_symlink_target "${rel#./}" "$target")"
+        } >>"$cmd"
+    done < <(cd "$src" && LC_ALL=C find . -type l | sort)
+
+    echo "inject_overlay=$src"
+    if ! "$debugfs" -w -f "$cmd" "$work_rootfs" >"$inject_log" 2>&1; then
+        cat "$inject_log" >&2 || true
+        echo "failed to inject overlay into $work_rootfs" >&2
+        return 1
+    fi
+}
+
+prepare_and_inject_overlay() {
+    [[ "$prepare_overlay" = "1" ]] || return 0
+
+    rm -rf "$overlay_dir"
+    mkdir -p "$overlay_dir"
+    STARRY_APP_DIR="$script_dir" \
+        STARRY_WORKSPACE="$repo_root" \
+        STARRY_OVERLAY_DIR="$overlay_dir" \
+        "$script_dir/prebuild.sh"
+    inject_overlay_tree "$overlay_dir"
+}
 
 if [[ ! -f "$kernel" ]]; then
     echo "kernel not found: $kernel" >&2
@@ -145,6 +266,7 @@ source_ref="${TGOSKITS_REF:-$(git_value detached symbolic-ref --quiet --short HE
 
 mkdir -p "$(dirname "$work_rootfs")" "$(dirname "$log")" "$work_dir"
 copy_image "$rootfs" "$work_rootfs"
+prepare_and_inject_overlay
 
 if [[ "$require_fresh_rootfs" = "1" ]]; then
     rootfs_meta="$("$debugfs" -R "cat /opt/tgoskits-src.meta" "$work_rootfs" 2>/dev/null || true)"
@@ -183,33 +305,27 @@ guest_runner="$work_dir/starry-macos-run.sh"
     emit_export "RAYON_NUM_THREADS" "${RAYON_NUM_THREADS:-1}"
     emit_export "RUSTC_THREADS" "${RUSTC_THREADS:-2}"
     emit_export "SOURCE_TMPFS" "$source_tmpfs"
-    emit_export "PROFILE" "${PROFILE:-release}"
-    emit_export "BUILD_TARGET" "${BUILD_TARGET:-aarch64-unknown-none-softfloat}"
-    emit_export "BUILD_PACKAGE" "${BUILD_PACKAGE:-starryos}"
-    emit_export "BUILD_BIN" "${BUILD_BIN:-starryos}"
-    emit_export "BUILD_STD" "${BUILD_STD:-core,alloc}"
-    emit_export "BUILD_STD_FEATURES" "${BUILD_STD_FEATURES:-compiler-builtins-mem}"
-    emit_export "FEATURES" "${FEATURES:-plat-dyn,ax-driver/virtio-blk,smp}"
-    emit_export "NO_DEFAULT_FEATURES" "${NO_DEFAULT_FEATURES:-1}"
-    emit_export "TARGET_SPEC_MODE" "${TARGET_SPEC_MODE:-bare-pie}"
-    emit_export "TARGET_SPEC_PATH" "${TARGET_SPEC_PATH:-}"
     emit_export "ARTIFACT_TO_BIN" "${ARTIFACT_TO_BIN:-1}"
     emit_export "STARRY_KALLSYMS_RESERVED" "${STARRY_KALLSYMS_RESERVED:-16M}"
-    emit_export "CARGO_SUBCOMMAND" "${CARGO_SUBCOMMAND:-build}"
+    emit_export "FEATURES" "${FEATURES:-plat-dyn,ax-driver/virtio-blk,ax-driver/virtio-net,smp}"
     emit_export "CARGO_BIN" "${CARGO_BIN:-/opt/cargo-nightly-sysroot}"
     emit_export "SOURCE_DIR" "${SOURCE_DIR:-/opt/tgoskits}"
     emit_export "WORK_DIR" "${WORK_DIR:-/tmp/starryos-selfbuild-src}"
     emit_export "CARGO_TARGET_DIR" "${CARGO_TARGET_DIR:-/tmp/starryos-selfbuild-target}"
-    emit_export "ARTIFACT_DIR" "${ARTIFACT_DIR:-/opt/starryos-selfbuild-artifacts}"
-    emit_export "TARGET_HEARTBEAT_SEC" "${TARGET_HEARTBEAT_SEC:-0}"
-    emit_export "TRACE_RUSTC" "${TRACE_RUSTC:-0}"
+    emit_export "ARTIFACT_DIR" "$guest_artifact_dir"
     emit_export "CARGO_VERBOSE" "${CARGO_VERBOSE:-0}"
-    emit_export "CARGO_PROFILE_RELEASE_LTO" "${CARGO_PROFILE_RELEASE_LTO:-false}"
-    emit_export "CARGO_PROFILE_RELEASE_OPT_LEVEL" "${CARGO_PROFILE_RELEASE_OPT_LEVEL:-0}"
-    emit_export "CARGO_PROFILE_RELEASE_CODEGEN_UNITS" "${CARGO_PROFILE_RELEASE_CODEGEN_UNITS:-256}"
-    emit_export "CARGO_PROFILE_RELEASE_DEBUG" "${CARGO_PROFILE_RELEASE_DEBUG:-0}"
-    emit_export "ALLOW_SLOW_SELFBUILD" "${ALLOW_SLOW_SELFBUILD:-0}"
-    emit_export "GUEST_MONITOR_INTERVAL_SEC" "${GUEST_MONITOR_INTERVAL_SEC:-60}"
+    if [[ -n "${CARGO_PROFILE_RELEASE_LTO+x}" ]]; then
+        emit_export "CARGO_PROFILE_RELEASE_LTO" "$CARGO_PROFILE_RELEASE_LTO"
+    fi
+    if [[ -n "${CARGO_PROFILE_RELEASE_OPT_LEVEL+x}" ]]; then
+        emit_export "CARGO_PROFILE_RELEASE_OPT_LEVEL" "$CARGO_PROFILE_RELEASE_OPT_LEVEL"
+    fi
+    if [[ -n "${CARGO_PROFILE_RELEASE_CODEGEN_UNITS+x}" ]]; then
+        emit_export "CARGO_PROFILE_RELEASE_CODEGEN_UNITS" "$CARGO_PROFILE_RELEASE_CODEGEN_UNITS"
+    fi
+    if [[ -n "${CARGO_PROFILE_RELEASE_DEBUG+x}" ]]; then
+        emit_export "CARGO_PROFILE_RELEASE_DEBUG" "$CARGO_PROFILE_RELEASE_DEBUG"
+    fi
     emit_export "TGOSKITS_COMMIT" "$source_commit"
     emit_export "TGOSKITS_REF" "$source_ref"
     if [[ -n "${LINK_RUSTFLAGS+x}" ]]; then
@@ -233,6 +349,7 @@ sif /opt/starry-macos-run.sh mode 0100755
 EOF
 
 "$debugfs" -w -f "$debugfs_cmd" "$work_rootfs" >/dev/null
+rootfs_fsck pre-qemu
 
 input_fifo="$work_dir/qemu-stdin.fifo"
 mkfifo "$input_fifo"
@@ -240,9 +357,10 @@ mkfifo "$input_fifo"
 echo "log=$log"
 echo "kernel=$kernel"
 echo "rootfs_copy=$work_rootfs"
+echo "artifact_out_dir=$artifact_out_dir"
 echo "qemu=$qemu"
-echo "qemu_accel=$qemu_accel qemu_machine=$qemu_machine qemu_cpu=$qemu_cpu qemu_net=$qemu_net"
-echo "smp=$smp jobs=$jobs mem=$mem source_tmpfs=$source_tmpfs boot_only=$boot_only qemu_snapshot=$qemu_snapshot qemu_timeout_sec=$qemu_timeout_sec"
+echo "qemu_accel=$qemu_accel qemu_machine=$qemu_machine qemu_cpu=$qemu_cpu qemu_net=$qemu_net qemu_append=$qemu_append"
+echo "smp=$smp jobs=$jobs mem=$mem source_tmpfs=$source_tmpfs boot_only=$boot_only qemu_snapshot=$qemu_snapshot prepare_overlay=$prepare_overlay artifact_extract=$artifact_extract qemu_timeout_sec=$qemu_timeout_sec"
 echo "source_commit=$source_commit source_ref=$source_ref"
 : >"$log"
 
@@ -263,6 +381,9 @@ qemu_args+=(
     -monitor none
     -serial mon:stdio
 )
+if [[ -n "$qemu_append" ]]; then
+    qemu_args+=(-append "$qemu_append")
+fi
 
 if [[ "$qemu_net" != "0" ]]; then
     qemu_args+=(
@@ -284,42 +405,6 @@ host_rc=124
 start_seconds="$SECONDS"
 heartbeat_sec="${HOST_HEARTBEAT_SEC:-30}"
 next_heartbeat="$heartbeat_sec"
-expected_max_crates="${EXPECTED_MAX_CRATES:-420}"
-crate_count_guarded=0
-
-check_crate_count_guard() {
-    local line total
-
-    if [[ "${ALLOW_SLOW_SELFBUILD:-0}" = "1" || "$expected_max_crates" = "0" || "$crate_count_guarded" = "1" ]]; then
-        return 0
-    fi
-
-    line="$(
-        LC_ALL=C tr '\r' '\n' <"$log" \
-            | grep -a -E 'Building \[[^]]*\][[:space:]]+[0-9]+/[0-9]+' \
-            | tail -1
-    )"
-    [[ -n "$line" ]] || return 0
-
-    total="$(printf '%s\n' "$line" | sed -n 's/.*Building \[[^]]*\][[:space:]]*[0-9][0-9]*\/\([0-9][0-9]*\).*/\1/p' | tail -1)"
-    [[ -n "$total" ]] || return 0
-
-    crate_count_guarded=1
-    if (( total > expected_max_crates )); then
-        cat >>"$log" <<EOF
-===HOST-QEMU-STOP reason=unexpected-crate-count total=$total expected_max=$expected_max_crates===
-This run is not using the fast macOS self-build profile. An unexpected Cargo total
-usually means a stale rootfs or slow feature set is being used. Refresh the rootfs with:
-  apps/starry/macos-selfbuild/reproduce.sh
-or set ALLOW_SLOW_SELFBUILD=1 only for deliberate slow-profile experiments.
-EOF
-        kill "$qemu_pid" 2>/dev/null || true
-        wait "$qemu_pid" 2>/dev/null
-        host_rc=2
-        return 2
-    fi
-}
-
 set +e
 while kill -0 "$qemu_pid" 2>/dev/null; do
     elapsed=$((SECONDS - start_seconds))
@@ -353,10 +438,6 @@ while kill -0 "$qemu_pid" 2>/dev/null; do
         kill "$qemu_pid" 2>/dev/null || true
         wait "$qemu_pid" 2>/dev/null
         host_rc=1
-        break
-    fi
-
-    if ! check_crate_count_guard; then
         break
     fi
 
@@ -433,6 +514,50 @@ fi
 set -e
 
 exec 3>&-
+
+dump_guest_artifact() {
+    local guest_path="$1"
+    local host_path="$2"
+    local dump_log="$work_dir/debugfs-dump.log"
+
+    rm -f "$host_path"
+    if ! "$debugfs" -R "dump -p $guest_path $host_path" "$work_rootfs" >"$dump_log" 2>&1; then
+        cat "$dump_log" >&2 || true
+        echo "failed to extract $guest_path from $work_rootfs" >&2
+        return 1
+    fi
+    if [[ ! -s "$host_path" ]]; then
+        echo "extracted artifact is empty or missing: $host_path" >&2
+        return 1
+    fi
+}
+
+extract_rootfs_artifacts() {
+    local stem="$artifact_bin_name-$artifact_target"
+    local guest_elf="${guest_artifact_dir%/}/$stem"
+    local host_elf="$artifact_out_dir/$stem"
+    local guest_bin="$guest_elf.bin"
+    local host_bin="$host_elf.bin"
+
+    [[ "$boot_only" != "1" ]] || return 0
+    [[ "$artifact_extract" = "1" ]] || return 0
+
+    mkdir -p "$artifact_out_dir"
+    rootfs_fsck post-qemu
+    dump_guest_artifact "$guest_elf" "$host_elf"
+    echo "extracted_kernel_elf=$host_elf"
+
+    if [[ "${ARTIFACT_TO_BIN:-1}" = "1" ]]; then
+        dump_guest_artifact "$guest_bin" "$host_bin"
+        echo "extracted_kernel_bin=$host_bin"
+    fi
+}
+
+if [[ "$host_rc" = "0" ]]; then
+    if ! extract_rootfs_artifacts; then
+        host_rc=1
+    fi
+fi
 
 if LC_ALL=C grep -a -q "===STARRY-MACOS-SELFBUILD-PASS" "$log"; then
     LC_ALL=C grep -a "===STARRY-MACOS-SELFBUILD-PASS" "$log" | tail -1

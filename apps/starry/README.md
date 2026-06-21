@@ -74,9 +74,10 @@ asset preparation flow.
 ## macOS AArch64 Self-Build
 
 The `macos-selfbuild` case is an Apple Silicon macOS workflow that boots an
-AArch64 StarryOS SMP kernel with QEMU TCG, enters the StarryOS guest userland,
-and runs guest `cargo build` to build StarryOS again. The default profile avoids
-HVF-specific CNTV/GIC feature plumbing.
+AArch64 StarryOS SMP kernel with QEMU HVF, enters the StarryOS guest userland,
+and runs guest `cargo build` to build StarryOS again. The macOS/HVF behavior is
+selected with generic AArch64 boot arguments instead of app-private CNTV/GIC
+Cargo features.
 
 ```bash
 apps/starry/macos-selfbuild/reproduce.sh
@@ -88,12 +89,11 @@ BOOT_ONLY=1 \
 ```
 
 `reproduce.sh` pulls/resizes the managed AArch64 Alpine rootfs with xtask,
-prepares the app-local guest toolchain overlay, launches
-`cargo xtask starry app qemu`, and extracts the guest-built kernel from the
-persistent rootfs under
-`target/starry-macos-selfbuild/uploaded/`. See `macos-selfbuild/README.md` for
-the rootfs path, xtask overlay injection path, QEMU details, PASS markers,
-and boot-only verification of the self-built kernel.
+prepares the app-local guest toolchain overlay, runs guest Cargo from QEMU/HVF,
+and extracts the guest-built kernel from the copied work rootfs into
+`target/starry-macos-selfbuild/uploaded/`. See `macos-selfbuild/README.md` and
+`macos-selfbuild/README_CN.md` for the rootfs path, direct runner details, PASS
+markers, and boot-only verification of the self-built kernel.
 
 ## Redis
 

@@ -77,8 +77,9 @@ fn run_e2fsck(image: &Path) -> anyhow::Result<()> {
         .arg(image)
         .status()
         .with_context(|| format!("failed to run {}", e2fsck.display()))?;
-    if !matches!(status.code(), Some(0 | 1)) {
-        anyhow::bail!("{} -fy failed with {status}", e2fsck.display());
+    match status.code() {
+        Some(code) if code & !3 == 0 => {}
+        _ => anyhow::bail!("{} -fy failed with {status}", e2fsck.display()),
     }
     Ok(())
 }
