@@ -241,10 +241,45 @@ fn io_weight_bounds() {
 #[test]
 fn io_max_accepts_valid_lines() {
     let ctrl = IoControllerFactory.new_instance();
-    // Well-formed device limit line parses.
+    // Empty until a limit is written (Linux prints nothing).
+    assert_eq!(read_str(&*ctrl, "max"), "");
+
+    // Well-formed device limit line parses and persists; unset fields show max.
     write(&*ctrl, "max", "8:0 rbps=1048576 wbps=max").unwrap();
-    // "default" and blank lines are tolerated.
+    assert_eq!(
+        read_str(&*ctrl, "max"),
+        "8:0 rbps=1048576 wbps=max riops=max wiops=max\n"
+    );
+
+    // "default" and blank lines are tolerated and change nothing.
     write(&*ctrl, "max", "default").unwrap();
+    assert_eq!(
+        read_str(&*ctrl, "max"),
+        "8:0 rbps=1048576 wbps=max riops=max wiops=max\n"
+    );
+}
+
+#[test]
+fn io_max_upsert_same_device() {
+    let ctrl = IoControllerFactory.new_instance();
+    write(&*ctrl, "max", "8:0 rbps=1000").unwrap();
+    // Second write to the same device updates only the named field.
+    write(&*ctrl, "max", "8:0 wbps=2000").unwrap();
+    assert_eq!(
+        read_str(&*ctrl, "max"),
+        "8:0 rbps=1000 wbps=2000 riops=max wiops=max\n"
+    );
+}
+
+#[test]
+fn io_max_multiple_devices() {
+    let ctrl = IoControllerFactory.new_instance();
+    write(&*ctrl, "max", "8:0 rbps=1000").unwrap();
+    write(&*ctrl, "max", "8:16 wbps=2000").unwrap();
+    assert_eq!(
+        read_str(&*ctrl, "max"),
+        "8:0 rbps=1000 wbps=max riops=max wiops=max\n8:16 rbps=max wbps=2000 riops=max wiops=max\n"
+    );
 }
 
 #[test]
@@ -257,4 +292,6 @@ fn io_max_rejects_bad_lines() {
     );
     // Missing device.
     assert_eq!(write(&*ctrl, "max", "rbps=1"), Err(VfsError::InvalidInput));
+    // A malformed line rejects the whole write: nothing persisted.
+    assert_eq!(read_str(&*ctrl, "max"), "");
 }
