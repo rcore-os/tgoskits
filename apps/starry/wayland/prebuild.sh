@@ -74,17 +74,21 @@ import urllib.request
 
 apk_arch, branch, cache_dir, guest_cache_dir = sys.argv[1:]
 mirrors = [
-    "http://dl-cdn.alpinelinux.org/alpine",
     "http://mirrors.huaweicloud.com/alpine",
     "http://mirrors.aliyun.com/alpine",
     "http://mirrors.tuna.tsinghua.edu.cn/alpine",
     "http://mirrors.cernet.edu.cn/alpine",
+    "http://dl-cdn.alpinelinux.org/alpine",
 ]
 repos = ["main", "community"]
 extra_roots = os.environ.get("STARRY_WAYLAND_EXTRA_APKS", "").split()
 roots = ["weston", "weston-backend-drm", "weston-shell-desktop", *extra_roots]
 installed_names = set(os.environ.get("STARRY_WAYLAND_INSTALLED_PACKAGES", "").split())
 write_install_list = os.environ.get("STARRY_WAYLAND_WRITE_INSTALL_LIST") == "1"
+
+
+def log(message, stream=sys.stdout):
+    print(message, file=stream, flush=True)
 
 
 def dep_key(value):
@@ -94,7 +98,7 @@ def dep_key(value):
     return re.split(r"[<>=]", value, maxsplit=1)[0]
 
 
-def fetch_url(path):
+def fetch_bytes(path):
     last_error = None
     for mirror in mirrors:
         url = f"{mirror}/{branch}/{path}"
@@ -103,14 +107,58 @@ def fetch_url(path):
                 return resp.read(), mirror
         except Exception as exc:
             last_error = exc
-            print(f"warning: failed to fetch {url}: {exc}", file=sys.stderr)
+            log(f"warning: failed to fetch {url}: {exc}", sys.stderr)
+    raise RuntimeError(f"all mirrors failed for {path}: {last_error}")
+
+
+def fetch_file(path, target_path):
+    last_error = None
+    filename = os.path.basename(target_path)
+    for mirror in mirrors:
+        url = f"{mirror}/{branch}/{path}"
+        tmp = target_path + ".tmp"
+        try:
+            with urllib.request.urlopen(url, timeout=120) as resp, open(tmp, "wb") as out:
+                total_header = resp.headers.get("Content-Length")
+                total = int(total_header) if total_header and total_header.isdigit() else 0
+                downloaded = 0
+                next_report = 2 * 1024 * 1024
+                log(f"WAYLAND_PREFETCH downloading {filename} from {mirror}")
+                while True:
+                    chunk = resp.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    out.write(chunk)
+                    downloaded += len(chunk)
+                    if downloaded >= next_report:
+                        if total:
+                            log(
+                                f"WAYLAND_PREFETCH downloading {filename} "
+                                f"{downloaded // (1024 * 1024)}MiB/{total // (1024 * 1024)}MiB"
+                            )
+                        else:
+                            log(
+                                f"WAYLAND_PREFETCH downloading {filename} "
+                                f"{downloaded // (1024 * 1024)}MiB"
+                            )
+                        next_report += 2 * 1024 * 1024
+            os.replace(tmp, target_path)
+            return mirror
+        except Exception as exc:
+            last_error = exc
+            try:
+                os.unlink(tmp)
+            except FileNotFoundError:
+                pass
+            log(f"warning: failed to fetch {url}: {exc}", sys.stderr)
     raise RuntimeError(f"all mirrors failed for {path}: {last_error}")
 
 
 packages = {}
 providers = {}
 for repo in repos:
-    data, _ = fetch_url(f"{repo}/{apk_arch}/APKINDEX.tar.gz")
+    log(f"WAYLAND_PREFETCH fetching index {repo}/{apk_arch}")
+    data, _ = fetch_bytes(f"{repo}/{apk_arch}/APKINDEX.tar.gz")
     with tarfile.open(fileobj=io.BytesIO(data), mode="r:gz") as archive:
         index = archive.extractfile("APKINDEX").read().decode()
     for block in index.strip().split("\n\n"):
@@ -155,17 +203,16 @@ while queue:
 
 os.makedirs(cache_dir, exist_ok=True)
 os.makedirs(guest_cache_dir, exist_ok=True)
+log(f"WAYLAND_PREFETCH resolved {len(resolved)} apk(s) for {apk_arch}")
 for pkg in resolved:
     filename = f"{pkg['name']}-{pkg['version']}.apk"
     rel = f"{pkg['repo']}/{apk_arch}/{filename}"
     cached = os.path.join(cache_dir, filename)
     if not os.path.exists(cached) or os.path.getsize(cached) == 0:
-        data, mirror = fetch_url(rel)
-        tmp = cached + ".tmp"
-        with open(tmp, "wb") as out:
-            out.write(data)
-        os.replace(tmp, cached)
-        print(f"WAYLAND_PREFETCH downloaded {filename} from {mirror}")
+        mirror = fetch_file(rel, cached)
+        log(f"WAYLAND_PREFETCH downloaded {filename} from {mirror}")
+    else:
+        log(f"WAYLAND_PREFETCH cached {filename}")
     shutil.copy2(cached, os.path.join(guest_cache_dir, filename))
 
 if write_install_list:
@@ -176,7 +223,7 @@ if write_install_list:
                 filename = f"{pkg['name']}-{pkg['version']}.apk"
                 out.write(f"/usr/local/wayland-apks/{filename}\n")
 
-print(f"WAYLAND_PREFETCH prepared {len(resolved)} apk(s) for {apk_arch}")
+log(f"WAYLAND_PREFETCH prepared {len(resolved)} apk(s) for {apk_arch}")
 PY
 }
 

@@ -287,8 +287,8 @@ mod tests {
         AcpiGsiController, AcpiHandler, AcpiId, AcpiIoApic, AcpiIrqPolarity, AcpiIrqTrigger,
         AcpiIsaIrqOverride, AcpiPchPic, AcpiResourceRange, AcpiRoot, AcpiRouting, LinkIrqResource,
         LinkIrqResourceKind, PciLinkAllocator, System, irq_descriptor_gsi,
-        is_buffer_field_to_field_unit_store_gap, pci_link_irq_field_candidates,
-        pci_irq_descriptor_gsi, route_with_irq_descriptor_flags, select_pci_link_irq,
+        is_buffer_field_to_field_unit_store_gap, pci_irq_descriptor_gsi,
+        pci_link_irq_field_candidates, route_with_irq_descriptor_flags, select_pci_link_irq,
     };
     use crate::register::{DriverRegister, ProbeKind, ProbeLevel, ProbePriority};
 
