@@ -50,7 +50,7 @@ pass "L1: Weston process alive (pid=$WESTON_PID)"
 
 # Wait for Wayland socket (GL init can take 25+ seconds locally,
 # 60-100+ seconds under QEMU TCG without KVM)
-WAYLAND_TIMEOUT="${WAYLAND_TIMEOUT:-240}"
+WAYLAND_TIMEOUT="${WAYLAND_TIMEOUT:-300}"
 READY=0
 for i in $(seq 1 "$WAYLAND_TIMEOUT"); do
     sleep 1
@@ -92,7 +92,7 @@ if [ -f /usr/share/test.mp4 ]; then
     SDL_VIDEODRIVER=wayland SDL_AUDIODRIVER=dummy \
     LIBGL_ALWAYS_SOFTWARE=1 \
     LD_BIND_NOW=1 \
-    timeout 180 ffplay -threads 4 -an -loop 0 \
+    timeout 300 ffplay -threads 4 -an -loop 0 \
         -x 284 -y 160 /usr/share/test.mp4 \
         >/tmp/ffplay_stdout.log 2>/tmp/ffplay_stderr.log &
     FPID=$!
