@@ -18,6 +18,20 @@ use super::{CgroupId, ROOT_ID, controller, pids::PidsState};
 static NEXT_CGROUP_ID: AtomicU64 = AtomicU64::new(ROOT_ID + 1);
 static CGROUP_REGISTRY: LazyInit<SpinNoIrq<BTreeMap<CgroupId, Weak<CgroupNode>>>> = LazyInit::new();
 
+/// Pull the `MemoryState` out of a node's controller map, if the `memory`
+/// controller is active. Used to populate the [`CgroupNode::memory`] fast path.
+fn extract_memory_state(
+    controllers: &BTreeMap<String, Arc<dyn controller::CgroupController>>,
+) -> Option<Arc<super::memory::MemoryState>> {
+    controllers
+        .get("memory")
+        .and_then(|ctrl| {
+            ctrl.as_any()
+                .downcast_ref::<super::memory::MemoryController>()
+        })
+        .map(|ctrl| ctrl.state().clone())
+}
+
 /// A cgroup node in the hierarchy.
 pub struct CgroupNode {
     /// Stable cgroup id used by cgroupfs VFS entries.
@@ -38,6 +52,10 @@ pub struct CgroupNode {
     pub parent: Option<Weak<CgroupNode>>,
     /// Pids controller state — fast path for fork charge/uncharge.
     pub pids: Arc<PidsState>,
+    /// Memory controller state when the `memory` controller is active on this
+    /// node — fast path for allocation charge/uncharge. `None` if the node has
+    /// no memory controller (charging skips such nodes).
+    pub memory: Option<Arc<super::memory::MemoryState>>,
 }
 
 impl CgroupNode {
@@ -57,6 +75,8 @@ impl CgroupNode {
             .map(|ctrl| ctrl.state().clone())
             .unwrap_or_else(|| Arc::new(PidsState::new()));
 
+        let memory = extract_memory_state(&controllers);
+
         Arc::new(Self {
             id: ROOT_ID,
             name: String::new(),
@@ -67,6 +87,7 @@ impl CgroupNode {
             subtree_control: SpinNoIrq::new(Vec::new()),
             parent: None,
             pids,
+            memory,
         })
     }
 
@@ -104,6 +125,8 @@ impl CgroupNode {
             .map(|ctrl| ctrl.state().clone())
             .unwrap_or_else(|| Arc::new(PidsState::new()));
 
+        let memory = extract_memory_state(&controllers);
+
         let child = Arc::new(CgroupNode {
             id,
             name: name.to_string(),
@@ -114,6 +137,7 @@ impl CgroupNode {
             subtree_control: SpinNoIrq::new(Vec::new()),
             parent: Some(Arc::downgrade(self)),
             pids,
+            memory,
         });
 
         // Inherit cpuset masks from parent

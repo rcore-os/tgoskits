@@ -53,6 +53,9 @@ const BUILTIN_FILES: &[&str] = &[
 struct MembershipState {
     detached_pids: BTreeSet<u32>,
     pending_pids: BTreeMap<u32, CgroupId>,
+    /// Total memory bytes charged on behalf of each pid, so migration can move
+    /// the whole charge between cgroups and exit can release it exactly.
+    charged_mem: BTreeMap<u32, u64>,
 }
 
 static MEMBERSHIP: LazyInit<SpinNoIrq<MembershipState>> = LazyInit::new();
@@ -65,6 +68,7 @@ pub fn init() {
     MEMBERSHIP.init_once(SpinNoIrq::new(MembershipState {
         detached_pids: BTreeSet::new(),
         pending_pids: BTreeMap::new(),
+        charged_mem: BTreeMap::new(),
     }));
     PROVIDER.init_once(provider::ProviderCell::new());
 
@@ -308,6 +312,79 @@ fn uncharge_path(path: &[Arc<CgroupNode>]) {
     }
 }
 
+// ── Memory charge (hierarchical, by allocation bytes) ─────────────────
+
+/// Charge `bytes` against every memory-controlled node along `path` (leaf to
+/// root). If any node would exceed its limit, roll back the nodes already
+/// charged, bump that node's `events_max`, and fail with `StorageFull`
+/// (mapped to `ENOMEM` by the kernel).
+fn try_charge_mem_path(path: &[Arc<CgroupNode>], bytes: u64) -> VfsResult<()> {
+    let mut charged: Vec<&Arc<CgroupNode>> = Vec::new();
+    for node in path {
+        let Some(mem) = node.memory.as_ref() else {
+            continue;
+        };
+        if mem.try_charge(bytes) {
+            charged.push(node);
+        } else {
+            mem.note_max_event();
+            for done in &charged {
+                if let Some(m) = done.memory.as_ref() {
+                    m.uncharge(bytes);
+                }
+            }
+            return Err(VfsError::StorageFull);
+        }
+    }
+    Ok(())
+}
+
+/// Release `bytes` from every memory-controlled node along `path`.
+fn uncharge_mem_path(path: &[Arc<CgroupNode>], bytes: u64) {
+    for node in path {
+        if let Some(mem) = node.memory.as_ref() {
+            mem.uncharge(bytes);
+        }
+    }
+}
+
+/// Charge `bytes` of memory to the cgroup that owns `pid`.
+///
+/// Tracks the running total per pid so [`migrate_process`] can move the whole
+/// charge and [`exit_process`] can release it exactly. On limit overflow the
+/// charge is rolled back and `StorageFull` is returned.
+pub fn try_charge_memory(pid: u32, bytes: u64) -> VfsResult<()> {
+    let mut membership = MEMBERSHIP.get().ok_or(VfsError::BadState)?.lock();
+    with_provider(|provider| {
+        let cgroup = provider.get_cgroup(pid).ok_or(VfsError::NotFound)?;
+        let path = path_to_root(cgroup);
+        try_charge_mem_path(&path, bytes)?;
+        *membership.charged_mem.entry(pid).or_insert(0) += bytes;
+        Ok(())
+    })
+}
+
+/// Release up to `bytes` of memory charged to `pid` (saturating at the
+/// recorded total). No-op for an unknown pid.
+pub fn uncharge_memory(pid: u32, bytes: u64) -> VfsResult<()> {
+    let mut membership = MEMBERSHIP.get().ok_or(VfsError::BadState)?.lock();
+    with_provider(|provider| {
+        let cgroup = provider.get_cgroup(pid).ok_or(VfsError::NotFound)?;
+        let path = path_to_root(cgroup);
+        let entry = membership.charged_mem.entry(pid).or_insert(0);
+        let actual = bytes.min(*entry);
+        if actual == 0 {
+            return Ok(());
+        }
+        uncharge_mem_path(&path, actual);
+        *entry -= actual;
+        if *entry == 0 {
+            membership.charged_mem.remove(&pid);
+        }
+        Ok(())
+    })
+}
+
 fn is_domain_controller(name: &str) -> bool {
     controller::get_factory(name).is_some_and(|f| f.is_domain())
 }
@@ -457,7 +534,21 @@ pub fn migrate_process(pid: u32, target_id: CgroupId) -> VfsResult<()> {
 
         charge_path(&target_path[..target_unique_len])?;
 
+        // Move the process's whole memory charge from its old path to the new
+        // one (Linux moves the full footprint on migration). Roll back the
+        // pids charge if the memory charge cannot fit under the new limits.
+        let mem_total = membership.charged_mem.get(&pid).copied().unwrap_or(0);
+        if mem_total > 0
+            && let Err(err) = try_charge_mem_path(&target_path[..target_unique_len], mem_total)
+        {
+            uncharge_path(&target_path[..target_unique_len]);
+            return Err(err);
+        }
+
         if !remove_process_from_node(&old, pid) {
+            if mem_total > 0 {
+                uncharge_mem_path(&target_path[..target_unique_len], mem_total);
+            }
             uncharge_path(&target_path[..target_unique_len]);
             return Err(VfsError::NoSuchProcess);
         }
@@ -465,6 +556,9 @@ pub fn migrate_process(pid: u32, target_id: CgroupId) -> VfsResult<()> {
         provider.set_cgroup(pid, target);
         membership.detached_pids.remove(&pid);
         uncharge_path(&old_path[..old_unique_len]);
+        if mem_total > 0 {
+            uncharge_mem_path(&old_path[..old_unique_len], mem_total);
+        }
         Ok(())
     })
 }
@@ -474,8 +568,15 @@ pub fn exit_process(pid: u32) -> VfsResult<()> {
 
     with_provider(|provider| {
         let cgroup = provider.get_cgroup(pid).ok_or(VfsError::NotFound)?;
-        if remove_process_from_node(&cgroup, pid) {
-            uncharge_path(&path_to_root(cgroup));
+        let path = path_to_root(cgroup);
+        // Release the process's memory charge across the whole path first.
+        if let Some(mem_total) = membership.charged_mem.remove(&pid)
+            && mem_total > 0
+        {
+            uncharge_mem_path(&path, mem_total);
+        }
+        if remove_process_from_node(&path[0], pid) {
+            uncharge_path(&path);
         }
         membership.detached_pids.insert(pid);
         Ok(())

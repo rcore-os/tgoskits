@@ -96,6 +96,39 @@ impl MemoryState {
         self.current.load(Ordering::Acquire).saturating_add(bytes) <= max as u64
     }
 
+    /// Atomically charge `bytes` if it stays within `max`.
+    ///
+    /// Returns `true` on success. On failure the counter is left unchanged
+    /// (the caller is responsible for bumping `events_max`). Unlimited
+    /// (`max < 0`) always succeeds.
+    pub fn try_charge(&self, bytes: u64) -> bool {
+        let max = self.max.load(Ordering::Acquire);
+        if max < 0 {
+            self.current.fetch_add(bytes, Ordering::AcqRel);
+            return true;
+        }
+        let max = max as u64;
+        loop {
+            let cur = self.current.load(Ordering::Acquire);
+            let new = cur.saturating_add(bytes);
+            if new > max {
+                return false;
+            }
+            if self
+                .current
+                .compare_exchange(cur, new, Ordering::AcqRel, Ordering::Acquire)
+                .is_ok()
+            {
+                return true;
+            }
+        }
+    }
+
+    /// Record that a charge against this node's limit was refused.
+    pub fn note_max_event(&self) {
+        self.events_max.fetch_add(1, Ordering::AcqRel);
+    }
+
     /// Charge memory usage.
     pub fn charge(&self, bytes: u64) {
         self.current.fetch_add(bytes, Ordering::AcqRel);

@@ -68,6 +68,19 @@ impl CgroupProvider for MockProvider {
 
 static MOCK: OnceLock<&'static MockProvider> = OnceLock::new();
 
+/// Serializes tests that mutate the process-global cgroup tree (root,
+/// registry, membership). The hierarchy is a singleton, so concurrent
+/// structural mutation from parallel test threads is logically invalid;
+/// every global-touching test holds this for its duration.
+static TEST_LOCK: Mutex<()> = Mutex::new(());
+
+/// Acquire the global-state serialization guard. Hold it for the whole test.
+pub fn test_guard() -> std::sync::MutexGuard<'static, ()> {
+    // Recover from a poisoned lock: a panicking test still leaves the tree
+    // usable for the next, and we only guard structural serialization.
+    TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+}
+
 /// Initialize the cgroup subsystem with the mock provider exactly once,
 /// and return the leaked `&'static` mock for per-test manipulation.
 ///
