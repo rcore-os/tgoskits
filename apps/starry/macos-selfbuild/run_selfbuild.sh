@@ -24,7 +24,7 @@ Common knobs:
   SMP=4 JOBS=4 MEM=8192M SOURCE_TMPFS=1 QEMU_TIMEOUT_SEC=7200
   PREPARE_OVERLAY=1 ARTIFACT_EXTRACT=1
   QEMU_ACCEL=hvf QEMU_MACHINE=virt,gic-version=3 QEMU_CPU=host
-  QEMU_APPEND='someboot.aarch64_timer=virtual someboot.aarch64_gicd_spi=off'
+  QEMU_APPEND='someboot.aarch64_gicd_spi=off'
   QEMU_NET=0
   QEMU_SNAPSHOT=0
   BOOT_ONLY=1
@@ -125,7 +125,7 @@ mem="${MEM:-8192M}"
 qemu_accel="${QEMU_ACCEL:-hvf}"
 qemu_machine="${QEMU_MACHINE:-virt,gic-version=3}"
 qemu_cpu="${QEMU_CPU:-host}"
-qemu_append="${QEMU_APPEND-someboot.aarch64_timer=virtual someboot.aarch64_gicd_spi=off}"
+qemu_append="${QEMU_APPEND-someboot.aarch64_gicd_spi=off}"
 qemu_net="${QEMU_NET:-0}"
 boot_only="${BOOT_ONLY:-0}"
 qemu_snapshot="${QEMU_SNAPSHOT:-0}"
