@@ -174,16 +174,14 @@ fn init_from_aarch64_catalog(
     devices: &mut AxVmDevices,
     config: &EmulatedDeviceConfig,
 ) -> DeviceResult<bool> {
-    let gppt_redistributor_factory = arm_vgic::v3::vgicr::GpptRedistributorFactory;
-    let factories: [&dyn crate::DeviceFactory; 1] = [&gppt_redistributor_factory];
-    let catalog = crate::DeviceFactoryCatalog::new(&factories);
+    let catalog = crate::DeviceFactoryCatalog::from_linker()?;
 
-    let Some(factory) = catalog.find(config.emu_type) else {
+    let Some(factory) = catalog.find_unique(config.emu_type)? else {
         return Ok(false);
     };
 
     info!(
-        "aarch64 device factory matched: type={:?}, name={}, base_gpa={:#x}, length={:#x}",
+        "aarch64 linker device factory matched: type={:?}, name={}, base_gpa={:#x}, length={:#x}",
         config.emu_type, config.name, config.base_gpa, config.length
     );
 

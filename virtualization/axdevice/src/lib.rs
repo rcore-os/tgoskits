@@ -36,8 +36,8 @@ mod registry;
 pub use axdevice_base::{
     AccessWidth, BaseDeviceOps, BaseMmioDeviceOps, BasePortDeviceOps, BaseSysRegDeviceOps,
     BusAccess, BusAddress, BusKind, BusOp, BusResponse, DeviceBuildContext, DeviceCapabilities,
-    DeviceError, DeviceFactory, DeviceId, DeviceMeta, DeviceOps, DeviceResult, IrqLine, IrqSink,
-    IrqTarget, MsiMessage, PciBarKind, Port, Resource, SysRegAddr,
+    DeviceError, DeviceFactory, DeviceFactoryRegister, DeviceId, DeviceMeta, DeviceOps,
+    DeviceResult, IrqLine, IrqSink, IrqTarget, MsiMessage, PciBarKind, Port, Resource, SysRegAddr,
 };
 pub use axvm_types::GuestPhysAddr;
 pub use config::AxVmDeviceConfig;

@@ -247,3 +247,49 @@ pub trait DeviceFactory: Sync {
         config: &EmulatedDeviceConfig,
     ) -> DeviceResult<Vec<Rc<dyn DeviceOps>>>;
 }
+
+/// Static factory registration entry collected from the final image.
+///
+/// Entries of this type may be placed in the `.axdevice.factory` linker
+/// section by concrete device crates. `axdevice` consumes the collected slice
+/// to build a runtime factory catalog without knowing concrete device types.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct DeviceFactoryRegister {
+    name: &'static str,
+    factory: &'static dyn DeviceFactory,
+}
+
+impl DeviceFactoryRegister {
+    /// Creates a static factory registration entry.
+    pub const fn new(name: &'static str, factory: &'static dyn DeviceFactory) -> Self {
+        Self { name, factory }
+    }
+
+    /// Returns the human-readable factory name used for diagnostics.
+    pub const fn name(&self) -> &'static str {
+        self.name
+    }
+
+    /// Returns the factory referenced by this registration entry.
+    pub const fn factory(&self) -> &'static dyn DeviceFactory {
+        self.factory
+    }
+}
+
+/// Registers a native device factory in the `.axdevice.factory` linker section.
+///
+/// The concrete device crate remains responsible for ensuring that the crate is
+/// linked into the final image. The final linker script must keep
+/// `.axdevice.factory*` and export the start/end symbols consumed by `axdevice`.
+#[macro_export]
+macro_rules! register_device_factory {
+    ($name:expr, $factory:expr $(,)?) => {
+        const _: () = {
+            #[unsafe(link_section = ".axdevice.factory")]
+            #[used]
+            static FACTORY_REGISTER: $crate::DeviceFactoryRegister =
+                $crate::DeviceFactoryRegister::new($name, &$factory);
+        };
+    };
+}

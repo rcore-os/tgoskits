@@ -280,6 +280,10 @@ impl DeviceOps for VGicR {
 /// Factory for ARM GIC partial passthrough redistributors.
 pub struct GpptRedistributorFactory;
 
+static GPPT_REDISTRIBUTOR_FACTORY: GpptRedistributorFactory = GpptRedistributorFactory;
+
+axdevice_base::register_device_factory!("gppt-redistributor", GPPT_REDISTRIBUTOR_FACTORY);
+
 impl DeviceFactory for GpptRedistributorFactory {
     fn ty(&self) -> EmuDeviceType {
         EmuDeviceType::GPPTRedistributor

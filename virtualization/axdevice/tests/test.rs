@@ -22,8 +22,8 @@ use ax_memory_addr::{PhysAddr, VirtAddr};
 use axdevice::{
     AxVmDeviceConfig, AxVmDevices, BusAccess, BusAddress, BusKind, BusOp, BusResponse,
     DeviceBuildContext, DeviceCapabilities, DeviceError, DeviceFactory, DeviceFactoryCatalog,
-    DeviceId, DeviceOps, DeviceRegistry, DeviceResult, IrqLine, IrqSink, IrqTarget,
-    LegacyDeviceAdapter, MsiMessage, PciBarKind, Resource,
+    DeviceFactoryRegister, DeviceId, DeviceOps, DeviceRegistry, DeviceResult, IrqLine, IrqSink,
+    IrqTarget, LegacyDeviceAdapter, MsiMessage, PciBarKind, Resource,
 };
 use axdevice_base::{AccessWidth, BaseDeviceOps, Port, PortRange, SysRegAddr, SysRegAddrRange};
 use axvm_types::{
@@ -264,6 +264,9 @@ impl DeviceBuildContext for TestBuildContext {
 }
 
 struct MultiCounterFactory;
+
+static MULTI_COUNTER_FACTORY: MultiCounterFactory = MultiCounterFactory;
+static DUPLICATE_MULTI_COUNTER_FACTORY: MultiCounterFactory = MultiCounterFactory;
 
 impl DeviceFactory for MultiCounterFactory {
     fn ty(&self) -> EmulatedDeviceType {
@@ -684,6 +687,43 @@ fn device_factory_catalog_builds_multiple_native_devices() {
             .unwrap(),
         BusResponse::Read { value: 1 }
     );
+}
+
+#[test]
+fn device_factory_catalog_finds_registered_factories() {
+    let registers = [DeviceFactoryRegister::new(
+        "multi-counter",
+        &MULTI_COUNTER_FACTORY,
+    )];
+    let catalog = DeviceFactoryCatalog::from_registers(&registers);
+
+    assert!(
+        catalog
+            .find(EmulatedDeviceType::GPPTRedistributor)
+            .is_some()
+    );
+    assert!(
+        catalog
+            .find_unique(EmulatedDeviceType::GPPTRedistributor)
+            .unwrap()
+            .is_some()
+    );
+    assert!(catalog.find(EmulatedDeviceType::GPPTITS).is_none());
+}
+
+#[test]
+fn device_factory_catalog_rejects_duplicate_registered_factories() {
+    let registers = [
+        DeviceFactoryRegister::new("multi-counter", &MULTI_COUNTER_FACTORY),
+        DeviceFactoryRegister::new("duplicate-counter", &DUPLICATE_MULTI_COUNTER_FACTORY),
+    ];
+    let catalog = DeviceFactoryCatalog::from_registers(&registers);
+
+    let error = match catalog.find_unique(EmulatedDeviceType::GPPTRedistributor) {
+        Ok(_) => panic!("duplicate factories should be rejected"),
+        Err(error) => error,
+    };
+    assert!(matches!(error, DeviceError::Backend(_)));
 }
 
 #[test]

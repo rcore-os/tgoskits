@@ -101,7 +101,8 @@ pub use device::{
 };
 pub use irq::{IrqLine, IrqSink, IrqTarget, MsiMessage};
 pub use model::{
-    DeviceBuildContext, DeviceError, DeviceFactory, DeviceId, DeviceMeta, DeviceOps, DeviceResult,
+    DeviceBuildContext, DeviceError, DeviceFactory, DeviceFactoryRegister, DeviceId, DeviceMeta,
+    DeviceOps, DeviceResult,
 };
 pub use resource::{DeviceCapabilities, PciBarKind, Resource};
 
