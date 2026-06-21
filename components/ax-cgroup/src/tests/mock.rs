@@ -20,6 +20,9 @@ use crate::{CgroupNode, CgroupProvider};
 struct MockState {
     cgroups: BTreeMap<u32, Arc<CgroupNode>>,
     zombies: BTreeSet<u32>,
+    /// UID returned by `current_uid`; defaults to 0 (root) so existing tests
+    /// retain full write rights unless they opt into an unprivileged caller.
+    current_uid: u32,
 }
 
 /// Host mock of the kernel [`CgroupProvider`].
@@ -44,11 +47,17 @@ impl MockProvider {
         }
     }
 
+    /// Set the UID that `current_uid` will report (delegation tests).
+    pub fn set_current_uid(&self, uid: u32) {
+        self.state.lock().unwrap().current_uid = uid;
+    }
+
     /// Forget all per-pid assignments and zombies (per-test reset).
     pub fn reset(&self) {
         let mut state = self.state.lock().unwrap();
         state.cgroups.clear();
         state.zombies.clear();
+        state.current_uid = 0;
     }
 }
 
@@ -63,6 +72,10 @@ impl CgroupProvider for MockProvider {
 
     fn set_cgroup(&self, pid: u32, cgroup: Arc<CgroupNode>) {
         self.state.lock().unwrap().cgroups.insert(pid, cgroup);
+    }
+
+    fn current_uid(&self) -> u32 {
+        self.state.lock().unwrap().current_uid
     }
 }
 

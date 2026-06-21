@@ -158,6 +158,7 @@ pub fn subtree_control_text(id: CgroupId) -> VfsResult<String> {
 pub fn write_subtree_control(id: CgroupId, data: &[u8]) -> VfsResult<()> {
     let membership = MEMBERSHIP.get().ok_or(VfsError::BadState)?.lock();
     let node = core::get_node(id)?;
+    check_delegation(&node)?;
     let text = str::from_utf8(data)
         .map_err(|_| VfsError::InvalidInput)?
         .trim();
@@ -398,6 +399,38 @@ fn has_domain_subtree_control(node: &CgroupNode) -> bool {
 
 fn can_host_process(node: &CgroupNode) -> bool {
     node.id == root_id() || !has_domain_subtree_control(node)
+}
+
+/// Pure delegation check: may `caller_uid` write control files in a cgroup
+/// whose subtree is delegated to `delegated_to`?
+///
+/// Root (UID 0) may always write. An unprivileged caller may write only if
+/// the subtree was explicitly delegated to exactly that UID.
+fn can_delegate_write(caller_uid: u32, delegated_to: Option<u32>) -> bool {
+    caller_uid == 0 || delegated_to == Some(caller_uid)
+}
+
+/// Test-only re-export of the pure delegation predicate.
+#[cfg(test)]
+pub fn can_delegate_write_for_test(caller_uid: u32, delegated_to: Option<u32>) -> bool {
+    can_delegate_write(caller_uid, delegated_to)
+}
+
+/// Gate a structural write on the caller's delegation rights for `node`.
+fn check_delegation(node: &CgroupNode) -> VfsResult<()> {
+    let caller = with_provider(|p| Ok(p.current_uid()))?;
+    if can_delegate_write(caller, *node.delegated_to.lock()) {
+        Ok(())
+    } else {
+        Err(VfsError::OperationNotPermitted)
+    }
+}
+
+/// Delegate `node`'s subtree to `uid` (as an admin chowning the cgroup dir).
+pub fn set_delegated_to(id: CgroupId, uid: Option<u32>) -> VfsResult<()> {
+    let node = core::get_node(id)?;
+    *node.delegated_to.lock() = uid;
+    Ok(())
 }
 
 fn pending_count_in_node(membership: &MembershipState, id: CgroupId) -> usize {

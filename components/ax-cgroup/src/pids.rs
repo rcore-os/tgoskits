@@ -4,7 +4,7 @@
 //! charge/uncharge along the path to root.
 
 use alloc::{format, string::ToString, sync::Arc};
-use core::sync::atomic::{AtomicI64, Ordering};
+use core::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 
 use ax_errno::{AxError, AxResult};
 use axfs_ng_vfs::{VfsError, VfsResult};
@@ -17,6 +17,9 @@ pub struct PidsState {
     pub current: AtomicI64,
     /// Maximum allowed (-1 = unlimited).
     pub max: AtomicI64,
+    /// Number of fork attempts denied by this node's `pids.max`
+    /// (the `pids.events` `max` counter).
+    pub events_max: AtomicU64,
 }
 
 impl Default for PidsState {
@@ -30,6 +33,7 @@ impl PidsState {
         Self {
             current: AtomicI64::new(0),
             max: AtomicI64::new(-1),
+            events_max: AtomicU64::new(0),
         }
     }
 
@@ -48,6 +52,7 @@ impl PidsState {
         loop {
             let current = self.current.load(Ordering::Acquire);
             if current >= max {
+                self.events_max.fetch_add(1, Ordering::AcqRel);
                 return Err(AxError::WouldBlock);
             }
             if self
@@ -99,6 +104,10 @@ const PIDS_ATTRS: &[AttrInfo] = &[
         name: "current",
         read_only: true,
     },
+    AttrInfo {
+        name: "events",
+        read_only: true,
+    },
 ];
 
 /// Pids controller instance (one per cgroup node).
@@ -133,6 +142,7 @@ impl CgroupController for PidsController {
                 }
             }
             "current" => format!("{}\n", self.state.current.load(Ordering::Acquire)),
+            "events" => format!("max {}\n", self.state.events_max.load(Ordering::Acquire)),
             _ => return Err(VfsError::NotFound),
         };
         write_to_buf(&value, offset, buf)
@@ -156,6 +166,7 @@ impl CgroupController for PidsController {
                 Ok(data.len())
             }
             "current" => Err(VfsError::OperationNotPermitted),
+            "events" => Err(VfsError::OperationNotPermitted),
             _ => Err(VfsError::NotFound),
         }
     }

@@ -21,6 +21,10 @@ pub trait CgroupProvider: Send + Sync {
 
     /// Set the cgroup assignment of a process.
     fn set_cgroup(&self, pid: u32, cgroup: Arc<CgroupNode>);
+
+    /// UID of the currently-acting process (the caller of a cgroupfs write).
+    /// Used for delegation permission checks. Root is UID 0.
+    fn current_uid(&self) -> u32;
 }
 
 /// Internal cell for the provider singleton.

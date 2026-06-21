@@ -56,6 +56,9 @@ pub struct CgroupNode {
     /// node — fast path for allocation charge/uncharge. `None` if the node has
     /// no memory controller (charging skips such nodes).
     pub memory: Option<Arc<super::memory::MemoryState>>,
+    /// UID this subtree is delegated to (set when an admin chowns the cgroup
+    /// directory to an unprivileged user). `None` means only root may write.
+    pub delegated_to: SpinNoIrq<Option<u32>>,
 }
 
 impl CgroupNode {
@@ -88,6 +91,7 @@ impl CgroupNode {
             parent: None,
             pids,
             memory,
+            delegated_to: SpinNoIrq::new(None),
         })
     }
 
@@ -138,6 +142,7 @@ impl CgroupNode {
             parent: Some(Arc::downgrade(self)),
             pids,
             memory,
+            delegated_to: SpinNoIrq::new(None),
         });
 
         // Inherit cpuset masks from parent
