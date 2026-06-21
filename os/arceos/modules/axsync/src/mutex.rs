@@ -120,16 +120,36 @@ unsafe impl lock_api::RawMutex for RawMutex {
     }
 
     #[inline(always)]
+    #[allow(unexpected_cfgs)]
     unsafe fn unlock(&self) {
         let owner_id = self.owner_id.load(Ordering::Acquire);
         let current_id = current().id().as_u64();
-        assert_eq!(
-            owner_id,
-            current_id,
-            "Thread({current_id}) tried to release mutex it doesn't own (owner={owner_id}), \
-             mutex={self:p}, curr={}",
-            current().id_name(),
-        );
+        // Kernel tasks (gc, migration-task) have no task_ext and may drop
+        // MutexGuards during cleanup of exited user tasks.  Skip the owner
+        // check in that case — the real owner is dead and we must release
+        // the lock to wake waiters.
+        #[cfg(feature = "task-ext")]
+        {
+            if current().task_ext().is_some() {
+                assert_eq!(
+                    owner_id,
+                    current_id,
+                    "Thread({current_id}) tried to release mutex it doesn't own \
+                     (owner={owner_id}), mutex={self:p}, curr={}",
+                    current().id_name(),
+                );
+            }
+        }
+        #[cfg(not(feature = "task-ext"))]
+        {
+            assert_eq!(
+                owner_id,
+                current_id,
+                "Thread({current_id}) tried to release mutex it doesn't own (owner={owner_id}), \
+                 mutex={self:p}, curr={}",
+                current().id_name(),
+            );
+        }
         #[cfg(feature = "lockdep")]
         crate::lockdep::release(self);
         self.owner_id.store(0, Ordering::Release);

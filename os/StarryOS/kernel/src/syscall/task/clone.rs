@@ -311,10 +311,11 @@ impl CloneArgs {
                 let mut scope = proc_data.scope.write();
                 if flags.contains(CloneFlags::FILES) {
                     // Synchronize with close_all_fds: holding a read lock
-                    // ensures close_all_fds either observes our strong_count
+                    // ensures close_all_fds either observes our task_count
                     // increment or blocks on write lock until we release.
                     let _guard = FD_TABLE.read();
                     FD_TABLE.scope_mut(&mut scope).clone_from(&FD_TABLE);
+                    FD_TABLE.inc_task_count();
                 } else {
                     FD_TABLE
                         .scope_mut(&mut scope)

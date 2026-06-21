@@ -471,11 +471,16 @@ fn do_job_stop(thr: &Thread, signo: Signo) {
 }
 
 pub fn block_next_signal() {
-    current().as_thread().block_next_signal_check();
+    if let Some(thr) = current().try_as_thread() {
+        thr.block_next_signal_check();
+    }
 }
 
 pub fn unblock_next_signal() -> bool {
-    current().as_thread().unblock_next_signal_check()
+    current()
+        .try_as_thread()
+        .map(|thr| thr.unblock_next_signal_check())
+        .unwrap_or(false)
 }
 
 pub fn with_blocked_signals<R>(
