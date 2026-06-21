@@ -127,8 +127,8 @@ board-specific files such as AxVisor board configs, remote board configs, and
 VM configs are expected to come from the board-flow work that lands separately.
 
 ```bash
-cargo axvisor loader build
-cargo axvisor loader test
+cargo axloader build
+cargo axloader test qemu
 ```
 
 Once a board-flow configuration is available, the host side is responsible for
