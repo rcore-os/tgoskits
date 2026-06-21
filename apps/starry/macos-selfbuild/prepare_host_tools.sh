@@ -15,9 +15,10 @@ Usage:
 
   apps/starry/macos-selfbuild/prepare_host_tools.sh
 
-Prepares host-side tools needed to build the AArch64 StarryOS seed kernel on
-Apple Silicon macOS. If aarch64-linux-musl-{cc,gcc,ar} are missing and zig is
-available, local wrappers are generated under target/starry-macos-selfbuild.
+Helper stage: prepares host-side tools needed to build the AArch64 StarryOS
+seed kernel on Apple Silicon macOS. If aarch64-linux-musl-{cc,gcc,ar} are
+missing and zig is available, local wrappers are generated under
+target/starry-macos-selfbuild.
 
 Environment:
   HOST_TOOLS_DIR  Directory for generated host tool wrappers

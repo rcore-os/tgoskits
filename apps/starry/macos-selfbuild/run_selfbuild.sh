@@ -7,13 +7,17 @@ repo_root="$(cd "$script_dir/../../.." && pwd)"
 usage() {
     cat <<'USAGE'
 Usage:
-  apps/starry/macos-selfbuild/reproduce.sh
+  apps/starry/macos-selfbuild/full_self_build.sh
 
-or run the final QEMU step directly:
+or run stage 3 directly after the seed kernel and rootfs inputs already exist:
 
   KERNEL=target/aarch64-unknown-linux-musl/release/starryos.bin \
   ROOTFS=target/starry-macos-selfbuild/tgos-images/rootfs-aarch64-alpine.img/rootfs-aarch64-alpine.img \
   apps/starry/macos-selfbuild/run_selfbuild.sh
+
+Stage 3 copies the managed rootfs to a per-run work image, prepares and injects
+the app overlay, launches QEMU/HVF, starts the guest self-build command, and
+extracts the guest-built kernel from the work image after QEMU exits.
 
 Common knobs:
   SMP=4 JOBS=4 MEM=8192M SOURCE_TMPFS=1 QEMU_TIMEOUT_SEC=7200
@@ -276,7 +280,7 @@ if [[ "$require_fresh_rootfs" = "1" ]]; then
 rootfs source metadata is missing in $rootfs.
 Rebuild or refresh the self-build rootfs from the current checkout:
 
-  apps/starry/macos-selfbuild/reproduce.sh
+  apps/starry/macos-selfbuild/full_self_build.sh
 EOF
         exit 1
     fi
@@ -288,7 +292,7 @@ rootfs source commit does not match this checkout.
 
 This usually means an old rootfs is being reused. Refresh it before running:
 
-  apps/starry/macos-selfbuild/reproduce.sh
+  apps/starry/macos-selfbuild/full_self_build.sh
 
 Set REQUIRE_FRESH_ROOTFS=0 only for deliberate stale-rootfs experiments.
 EOF

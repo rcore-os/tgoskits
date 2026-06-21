@@ -1,9 +1,9 @@
 # StarryOS macOS AArch64 自举编译
 
-这个 app 用来在 Apple Silicon macOS 上复现 StarryOS 自举编译。host 先构建
-一个 AArch64 StarryOS 种子内核，用 QEMU HVF 启动它，然后在 StarryOS guest
-里面直接运行 Cargo，再把 guest 编译出的内核从工作 rootfs 中取回，并再次用
-QEMU 启动验证。
+这个 app 用来在 Apple Silicon macOS 上复现 StarryOS 自举编译，最终验证环境是
+Apple M3。host 先构建一个 AArch64 StarryOS 种子内核，用 QEMU HVF 启动它，
+然后在 StarryOS guest 里面直接运行 Cargo，再把 guest 编译出的内核从工作
+rootfs 中取回，并再次用 QEMU 启动验证。
 
 macOS/HVF 相关的特殊流程保留在 `apps/starry/macos-selfbuild` 内。apps 外只
 暴露通用 AArch64 bootarg 语义：
@@ -17,7 +17,7 @@ distributor 初始化。
 
 ## 流程做了什么
 
-`reproduce.sh` 会执行完整默认流程：
+`full_self_build.sh` 是完整默认入口，会执行：
 
 1. 使用 `cargo xtask starry build` 构建 StarryOS AArch64 种子内核；
 2. 使用 `cargo xtask image pull` 拉取托管的 AArch64 Alpine rootfs；
@@ -29,6 +29,19 @@ distributor 初始化。
 8. 在 StarryOS guest 内直接运行 Cargo；
 9. 刷新 kallsyms，并把 guest 编译出的内核写入工作 rootfs；
 10. host 侧用 `debugfs` 从工作 rootfs 提取 ELF 和 `.bin`。
+
+## 脚本职责
+
+| 脚本 | 角色 | 做什么 |
+| --- | --- | --- |
+| `full_self_build.sh` | 完整入口 | 串起 seed kernel、rootfs 输入准备、QEMU guest 自举编译和产物提取。 |
+| `build_kernel.sh` | 阶段 1 | 在 host 上调用 `cargo xtask starry build` 构建用于首次启动 guest 的 AArch64 StarryOS 种子内核。它不准备 rootfs，也不启动 QEMU。 |
+| `build_rootfs.sh` | 阶段 2 | 通过 `cargo xtask image pull/resize` 准备托管 AArch64 Alpine rootfs，并刷新 guest 工具链 overlay cache。它不 patch 托管镜像，也不启动 QEMU。 |
+| `run_selfbuild.sh` | 阶段 3 | 复制托管 rootfs 为一次性工作镜像，调用 `prebuild.sh` 生成并注入 overlay，启动 QEMU/HVF，触发 guest 内 Cargo 构建，并从工作镜像提取产物。boot-only 验证也复用它。 |
+| `prebuild.sh` | 内部脚本 | 为单次运行组装待注入 overlay：复制工具链 overlay、打包当前源码、复制离线 Cargo registry cache、写入 guest runner 和源码 metadata。 |
+| `prepare_toolchain_overlay.sh` | 内部/调试脚本 | 下载并准备 guest 里的 Rust/Cargo、Rust 源码、LLVM/libclang、musl C 工具链和 Cargo cache。输出是目录树，不是 rootfs 镜像。 |
+| `prepare_host_tools.sh` | 内部/调试脚本 | 准备 macOS host 上构建种子内核所需的 AArch64 musl 编译器 wrapper、`rust-nm`、`rust-objdump` 等工具。 |
+| `guest-selfbuild.sh` | guest 内脚本 | 在 StarryOS guest 中解包源码、写 Cargo 配置、执行 Cargo 构建、刷新 kallsyms，并复制 guest-built 内核产物。 |
 
 托管 rootfs 的默认位置是：
 
@@ -56,7 +69,7 @@ guest 里的 Cargo 构建会离线运行。
 在仓库根目录执行：
 
 ```bash
-apps/starry/macos-selfbuild/reproduce.sh
+apps/starry/macos-selfbuild/full_self_build.sh
 ```
 
 自举成功时会看到：
@@ -70,6 +83,49 @@ apps/starry/macos-selfbuild/reproduce.sh
 ```text
 target/starry-macos-selfbuild/uploaded/starryos-aarch64-unknown-none-softfloat
 target/starry-macos-selfbuild/uploaded/starryos-aarch64-unknown-none-softfloat.bin
+```
+
+## M3 验证环境和耗时
+
+最终验证运行的 host 环境是：
+
+```text
+CPU: Apple M3
+内存: 16 GiB
+系统: macOS 15.6 (24G84), Darwin 24.6.0
+QEMU: qemu-system-aarch64 with HVF
+```
+
+命令：
+
+```bash
+CASE_NAME=refactor-clean-full HOST_HEARTBEAT_SEC=60 \
+  apps/starry/macos-selfbuild/full_self_build.sh
+```
+
+这次运行的分阶段耗时如下：
+
+| 阶段 | 耗时 |
+| --- | --- |
+| StarryOS AArch64 种子内核 Cargo 构建 | `23.42s` |
+| guest Cargo 构建计时 | Cargo 输出 `28m 29s`；PASS marker 的 `elapsed=1711`，即 `28m 31s` |
+| guest-built kernel 的 boot-only 验证 | 约 `3s` |
+
+PASS marker 的 `elapsed` 从 guest 即将执行 `cargo build` 前开始，到 Cargo 命令返回后结束；它包括 guest 内 Cargo 构建、build script、build-std 和链接时间，不包括 host 侧 rootfs 准备、QEMU 启动、kallsyms 刷新后的产物复制和 host 侧提取。
+
+guest 构建是当前配置下的完整 StarryOS Cargo 图：
+
+```text
+Building ... 420/420
+Finished `release` profile [optimized] target(s) in 28m 29s
+===STARRY-MACOS-SELFBUILD-PASS jobs=4 elapsed=1711===
+```
+
+自举产物的 boot-only 验证到达：
+
+```text
+root@starry:/root #
+===HOST-QEMU-STOP reason=boot-only-shell pid=11391 rc=0===
 ```
 
 ## 启动 guest 编译出的内核
@@ -98,19 +154,13 @@ root@starry:
 复用当前 rootfs 和工具链 overlay，只重新跑 QEMU：
 
 ```bash
-ROOTFS_MODE=skip apps/starry/macos-selfbuild/reproduce.sh
+ROOTFS_MODE=skip apps/starry/macos-selfbuild/full_self_build.sh
 ```
 
 只准备或刷新 rootfs 输入：
 
 ```bash
 apps/starry/macos-selfbuild/build_rootfs.sh
-```
-
-强制重新构建 guest 工具链 overlay：
-
-```bash
-apps/starry/macos-selfbuild/build_rootfs.sh --force-toolchain
 ```
 
 ## 工具链 Overlay
@@ -140,27 +190,8 @@ cargo build -p starryos \
   --release
 ```
 
-流程不会传 `--no-default-features`，也不会限制 Cargo crate 数量。2026-06-21
-验证过的一次无预生成 binding 自举构建了 `420/420` 个 Cargo 单元。当前
-StarryOS 依赖图保留 `membarrier`、kallsyms 和 `kprobe`。
+验证过的自举构建了 `420/420` 个 Cargo 单元。
 
-## Bindgen 和 libclang
-
-这个 app 不注入预生成的 Rust binding 文件。guest 内的 build script 会正常运行，
-包括 `ax-posix-api` 和 `lwprintf-rs` 这类 crate 的原始 `bindgen`。
-
-之前的 `libclang.so ... Dynamic loading not supported` 不是缺少 libclang 包，
-而是 host build-script 产物被构建成了 static musl binary。guest wrapper 会在
-Cargo home 写入：
-
-```toml
-[host]
-rustflags = ["-C", "target-feature=-crt-static"]
-```
-
-随后 Cargo 使用 `-Z host-config -Z target-applies-to-host` 调用。这样 host
-build script 可以动态加载 libclang，而 StarryOS target 仍然是自定义 AArch64 PIE
-target。
 
 ## 重要参数
 
@@ -187,18 +218,3 @@ target。
 target/starry-macos-selfbuild/logs/
 target/starry-macos-selfbuild/work/
 ```
-
-这个分支的开发报告维护在：
-
-```text
-tmp/macos-selfbuild-report.md
-```
-
-## 维护说明
-
-- app 专用的 rootfs 准备、QEMU wrapper 和产物提取逻辑保留在
-  `apps/starry/macos-selfbuild` 内。
-- apps 外的修改保持通用：rootfs resize 是 xtask image 操作，timer 选择是通用
-  AArch64 bootarg，GICD SPI 访问是通用 GIC 能力开关。
-- 不为 timer 或 GIC 行为增加 app-private Cargo feature。
-- 不注入预生成 binding 源码；应修复 guest 构建环境。

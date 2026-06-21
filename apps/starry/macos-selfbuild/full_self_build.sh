@@ -7,15 +7,17 @@ repo_root="$(cd "$script_dir/../../.." && pwd)"
 usage() {
     cat <<'USAGE'
 Usage:
-  apps/starry/macos-selfbuild/reproduce.sh
+  apps/starry/macos-selfbuild/full_self_build.sh
 
-Runs the complete Apple Silicon macOS AArch64 self-build reproduction:
+Runs the complete Apple Silicon macOS AArch64 self-build flow. This is the
+user-facing entrypoint for the default end-to-end run.
 
-  1. build the seed StarryOS kernel;
-  2. pull and resize the managed AArch64 Alpine rootfs through xtask image;
-  3. prepare the app-local guest toolchain overlay cache;
-  4. copy the rootfs, inject this app's overlay, self-build in QEMU, and extract
-     the guest-built kernel from the copied rootfs.
+Stages:
+  1. build_kernel.sh builds the host-side seed StarryOS kernel;
+  2. build_rootfs.sh prepares reusable rootfs inputs through xtask image and
+     refreshes the app-local guest toolchain overlay cache;
+  3. run_selfbuild.sh copies the rootfs, injects this app's overlay, runs the
+     guest Cargo build in QEMU/HVF, and extracts the guest-built kernel.
 
 Environment:
   ROOTFS_MODE               build-rootfs|skip (default: build-rootfs)

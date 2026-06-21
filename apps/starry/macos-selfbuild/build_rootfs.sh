@@ -14,7 +14,7 @@ usage() {
 Usage:
   apps/starry/macos-selfbuild/build_rootfs.sh [--size-mib MIB] [--force-toolchain]
 
-Prepares the rootfs inputs for the macOS AArch64 self-build app:
+Stage 2: prepares reusable rootfs inputs for the macOS AArch64 self-build app:
 
   1. pulls the managed AArch64 Alpine rootfs through xtask image storage;
   2. grows that managed image with `cargo xtask image resize`;
@@ -23,6 +23,9 @@ Prepares the rootfs inputs for the macOS AArch64 self-build app:
 This script does not inject files into the managed image. `run_selfbuild.sh`
 copies the managed image to a per-run work rootfs and injects this app's overlay
 into that copy.
+
+It also does not build the seed kernel and does not run QEMU. The default full
+flow calls it from full_self_build.sh after build_kernel.sh.
 
 Environment:
   TGOS_IMAGE_LOCAL_STORAGE  Image storage directory

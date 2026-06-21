@@ -1,47 +1,62 @@
 # StarryOS macOS AArch64 Self-Build
 
-This app reproduces a StarryOS self-build on Apple Silicon macOS. The host
-builds a seed AArch64 StarryOS kernel, boots it with QEMU HVF, and the StarryOS
-guest runs Cargo to build `starryos` again. The guest-built kernel is copied
-back out of the work rootfs and can be booted again with QEMU.
+This app reproduces the StarryOS self-build flow on Apple Silicon macOS. The
+final validation environment is Apple M3. The host first builds an AArch64
+StarryOS seed kernel, boots it with QEMU HVF, runs Cargo directly inside the
+StarryOS guest, extracts the guest-built kernel from the work rootfs, and boots
+that kernel again with QEMU.
 
-The app keeps the special macOS/HVF pieces local to `apps/starry/macos-selfbuild`.
-The only platform-facing requirements are generic AArch64 boot arguments:
+The macOS/HVF-specific flow stays under `apps/starry/macos-selfbuild`. Outside
+this app, the only platform-facing interface is the generic AArch64 boot
+argument pair:
 
 ```text
 someboot.aarch64_timer=virtual someboot.aarch64_gicd_spi=off
 ```
 
-Without those arguments, AArch64 keeps the normal EL1 CNTP/physical timer path
-and the normal GICv3 distributor initialization.
+Without these arguments, AArch64 keeps the default EL1 CNTP/physical timer path
+and normal GICv3 distributor initialization.
 
-## What This Flow Does
+## What The Flow Does
 
-`reproduce.sh` runs the full default workflow:
+`full_self_build.sh` is the default full-flow entrypoint. It:
 
-1. builds the seed StarryOS AArch64 kernel with `cargo xtask starry build`;
+1. builds the StarryOS AArch64 seed kernel with `cargo xtask starry build`;
 2. pulls the managed AArch64 Alpine rootfs with `cargo xtask image pull`;
-3. expands that managed rootfs with `cargo xtask image resize`;
-4. prepares an app-local toolchain overlay for the guest;
+3. resizes that managed rootfs with `cargo xtask image resize`;
+4. prepares the app-local guest toolchain overlay;
 5. copies the managed rootfs to a per-run work image;
-6. injects the app overlay into that copied work image;
+6. injects the app overlay into that work image;
 7. boots QEMU/HVF without `-snapshot`;
-8. runs guest Cargo directly inside StarryOS;
+8. runs Cargo directly inside the StarryOS guest;
 9. refreshes kallsyms and writes the guest-built kernel into the work rootfs;
 10. extracts the ELF and `.bin` from the work rootfs with `debugfs`.
 
-The managed rootfs lives under:
+## Script Roles
+
+| Script | Role | What it does |
+| --- | --- | --- |
+| `full_self_build.sh` | Full entrypoint | Wires together seed kernel build, rootfs input preparation, QEMU guest self-build, and artifact extraction. |
+| `build_kernel.sh` | Stage 1 | Calls `cargo xtask starry build` on the host to build the AArch64 StarryOS seed kernel used for the first guest boot. It does not prepare the rootfs or launch QEMU. |
+| `build_rootfs.sh` | Stage 2 | Prepares the managed AArch64 Alpine rootfs with `cargo xtask image pull/resize` and refreshes the guest toolchain overlay cache. It does not patch the managed image or launch QEMU. |
+| `run_selfbuild.sh` | Stage 3 | Copies the managed rootfs to a per-run work image, calls `prebuild.sh` to assemble and inject the overlay, launches QEMU/HVF, starts the guest Cargo build, and extracts artifacts from the work image. Boot-only verification also reuses this script. |
+| `prebuild.sh` | Internal script | Assembles the per-run overlay: copies the toolchain overlay, archives the current checkout, copies offline Cargo registry cache, and writes the guest runner plus source metadata. |
+| `prepare_toolchain_overlay.sh` | Internal/debug script | Downloads and prepares guest Rust/Cargo, Rust source, LLVM/libclang, musl C tools, and Cargo cache. Its output is a filesystem tree, not a rootfs image. |
+| `prepare_host_tools.sh` | Internal/debug script | Prepares AArch64 musl compiler wrappers plus tools such as `rust-nm` and `rust-objdump` for the macOS host seed-kernel build. |
+| `guest-selfbuild.sh` | Guest-side script | Runs inside the StarryOS guest to unpack source, write Cargo config, run Cargo, refresh kallsyms, and copy guest-built kernel artifacts. |
+
+The managed rootfs default path is:
 
 ```text
 target/starry-macos-selfbuild/tgos-images/rootfs-aarch64-alpine.img/rootfs-aarch64-alpine.img
 ```
 
-It is not under `tmp/axbuild/rootfs`. The managed image is kept clean; only the
-per-run copy under `target/starry-macos-selfbuild/rootfs/` is patched.
+It is not under `tmp/axbuild/rootfs`. The managed image stays clean; only the
+per-run work copy under `target/starry-macos-selfbuild/rootfs/` is patched.
 
 ## Prerequisites
 
-Install the host tools on Apple Silicon macOS:
+Install host tools on Apple Silicon macOS:
 
 ```bash
 brew install qemu e2fsprogs zig llvm
@@ -49,17 +64,17 @@ brew install qemu e2fsprogs zig llvm
 
 The first run also needs network access for the managed rootfs, Alpine APKs,
 Rust dist components, and Cargo registry archives required by `Cargo.lock`.
-After the overlay cache is prepared, guest Cargo runs offline.
+After the toolchain overlay is ready, guest Cargo runs offline.
 
 ## Full Reproduction
 
-From the repository root:
+Run this from the repository root:
 
 ```bash
-apps/starry/macos-selfbuild/reproduce.sh
+apps/starry/macos-selfbuild/full_self_build.sh
 ```
 
-Successful self-build output contains:
+A successful self-build prints:
 
 ```text
 ===STARRY-MACOS-SELFBUILD-PASS jobs=4 elapsed=<seconds>===
@@ -72,9 +87,56 @@ target/starry-macos-selfbuild/uploaded/starryos-aarch64-unknown-none-softfloat
 target/starry-macos-selfbuild/uploaded/starryos-aarch64-unknown-none-softfloat.bin
 ```
 
+## M3 Validation Environment And Timing
+
+The final validation run used this host:
+
+```text
+CPU: Apple M3
+Memory: 16 GiB
+System: macOS 15.6 (24G84), Darwin 24.6.0
+QEMU: qemu-system-aarch64 with HVF
+```
+
+Command:
+
+```bash
+CASE_NAME=refactor-clean-full HOST_HEARTBEAT_SEC=60 \
+  apps/starry/macos-selfbuild/full_self_build.sh
+```
+
+Observed stage timing:
+
+| Stage | Time |
+| --- | --- |
+| StarryOS AArch64 seed-kernel Cargo build | `23.42s` |
+| Guest Cargo build timing | Cargo printed `28m 29s`; the PASS marker printed `elapsed=1711`, or `28m 31s` |
+| Boot-only verification of the guest-built kernel | about `3s` |
+
+The PASS marker `elapsed` starts immediately before the guest runs
+`cargo build` and ends after that Cargo command returns. It includes guest Cargo
+build time, build scripts, build-std, and linking. It does not include host
+rootfs preparation, QEMU boot time, post-Cargo kallsyms/artifact copying, or
+host-side extraction.
+
+The guest build used the full StarryOS Cargo graph for this configuration:
+
+```text
+Building ... 420/420
+Finished `release` profile [optimized] target(s) in 28m 29s
+===STARRY-MACOS-SELFBUILD-PASS jobs=4 elapsed=1711===
+```
+
+Boot-only verification of the self-built kernel reached:
+
+```text
+root@starry:/root #
+===HOST-QEMU-STOP reason=boot-only-shell pid=11391 rc=0===
+```
+
 ## Boot The Guest-Built Kernel
 
-After the full reproduction succeeds:
+After the full self-build succeeds:
 
 ```bash
 BOOT_ONLY=1 \
@@ -95,22 +157,16 @@ root@starry:
 
 ## Reusing Prepared Inputs
 
-Reuse the current rootfs and toolchain overlay, but rerun QEMU:
+Reuse the current rootfs and toolchain overlay, and only rerun QEMU:
 
 ```bash
-ROOTFS_MODE=skip apps/starry/macos-selfbuild/reproduce.sh
+ROOTFS_MODE=skip apps/starry/macos-selfbuild/full_self_build.sh
 ```
 
 Prepare or refresh only the rootfs inputs:
 
 ```bash
 apps/starry/macos-selfbuild/build_rootfs.sh
-```
-
-Force rebuilding the guest toolchain overlay:
-
-```bash
-apps/starry/macos-selfbuild/build_rootfs.sh --force-toolchain
 ```
 
 ## Toolchain Overlay
@@ -123,12 +179,12 @@ target/starry-macos-selfbuild/rootfs-build/toolchain-overlay
 
 It is prepared from Alpine AArch64 APKs and official Rust dist components. It
 contains the guest Rust/Cargo tools, Rust source, LLVM/libclang, musl C tools,
-and an offline Cargo registry cache. The app injects this tree into the copied
-work rootfs before QEMU starts.
+and offline Cargo registry cache. The app injects this tree into the copied work
+rootfs before QEMU starts.
 
 ## Guest Cargo Build
 
-The guest build is a direct Cargo build of StarryOS:
+The guest runs a direct Cargo build of StarryOS:
 
 ```text
 cargo build -p starryos \
@@ -141,29 +197,7 @@ cargo build -p starryos \
   --release
 ```
 
-The flow does not pass `--no-default-features` and does not enforce a crate-count
-limit. A validated no-pregenerated-bindings run on 2026-06-21 built `420/420`
-Cargo units. The current StarryOS dependency graph keeps `membarrier`, kallsyms,
-and `kprobe` available.
-
-## Bindgen And libclang
-
-The app does not inject pregenerated Rust binding files. Guest build scripts run
-normally, including raw `bindgen` for crates such as `ax-posix-api` and
-`lwprintf-rs`.
-
-The previous `libclang.so ... Dynamic loading not supported` failure came from
-host build-script artifacts being built as static musl binaries. The guest
-wrapper writes this Cargo home configuration:
-
-```toml
-[host]
-rustflags = ["-C", "target-feature=-crt-static"]
-```
-
-Cargo is then invoked with `-Z host-config -Z target-applies-to-host`, so host
-build scripts can dynamically load libclang while the StarryOS target remains
-the custom AArch64 PIE target.
+The validated self-build built `420/420` Cargo units.
 
 ## Important Knobs
 
@@ -176,34 +210,17 @@ the custom AArch64 PIE target.
 | `JOBS` | `$SMP` | Guest Cargo jobs. |
 | `MEM` | `8192M` | QEMU memory size. |
 | `QEMU_APPEND` | `someboot.aarch64_timer=virtual someboot.aarch64_gicd_spi=off` | Generic AArch64 platform boot arguments for macOS/HVF. |
-| `QEMU_SNAPSHOT` | `0` | Must stay `0` for self-build artifact extraction. |
+| `QEMU_SNAPSHOT` | `0` | Self-build artifact extraction requires this to stay `0`. |
 | `PREPARE_OVERLAY` | `1` | Build and inject the app overlay into the copied work rootfs. |
-| `ARTIFACT_EXTRACT` | `1` | Extract guest-built artifacts from the work rootfs after QEMU exits. |
-| `ARTIFACT_OUT_DIR` | `target/starry-macos-selfbuild/uploaded` | Host output directory for extracted kernels. |
-| `STARRY_KALLSYMS_RESERVED` | `16M` | Temporary linker reserve used before guest kallsyms refresh. |
+| `ARTIFACT_EXTRACT` | `1` | Extract the guest-built kernel from the work rootfs after QEMU exits. |
+| `ARTIFACT_OUT_DIR` | `target/starry-macos-selfbuild/uploaded` | Host-side kernel artifact output directory. |
+| `STARRY_KALLSYMS_RESERVED` | `16M` | Temporary linker reserve used before the guest kallsyms refresh. |
 
-## Logs And Report
+## Logs And Reports
 
-Per-run logs are written under:
+Each run writes logs under:
 
 ```text
 target/starry-macos-selfbuild/logs/
 target/starry-macos-selfbuild/work/
 ```
-
-The development report for this branch is maintained at:
-
-```text
-tmp/macos-selfbuild-report.md
-```
-
-## Maintenance Notes
-
-- Keep app-specific rootfs preparation, QEMU wrapping, and artifact extraction
-  inside `apps/starry/macos-selfbuild`.
-- Keep apps outside changes generic: rootfs resize is an xtask image operation,
-  timer selection is a generic AArch64 boot argument, and GICD SPI access is a
-  generic GIC capability switch.
-- Do not add app-private Cargo features for timer or GIC behavior.
-- Do not inject pregenerated binding sources; fix the guest build environment
-  instead.

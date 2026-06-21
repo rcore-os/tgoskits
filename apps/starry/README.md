@@ -80,7 +80,7 @@ selected with generic AArch64 boot arguments instead of app-private CNTV/GIC
 Cargo features.
 
 ```bash
-apps/starry/macos-selfbuild/reproduce.sh
+apps/starry/macos-selfbuild/full_self_build.sh
 BOOT_ONLY=1 \
   KERNEL=target/starry-macos-selfbuild/uploaded/starryos-aarch64-unknown-none-softfloat.bin \
   ROOTFS=target/starry-macos-selfbuild/tgos-images/rootfs-aarch64-alpine.img/rootfs-aarch64-alpine.img \
@@ -88,12 +88,13 @@ BOOT_ONLY=1 \
   apps/starry/macos-selfbuild/run_selfbuild.sh
 ```
 
-`reproduce.sh` pulls/resizes the managed AArch64 Alpine rootfs with xtask,
-prepares the app-local guest toolchain overlay, runs guest Cargo from QEMU/HVF,
-and extracts the guest-built kernel from the copied work rootfs into
-`target/starry-macos-selfbuild/uploaded/`. See `macos-selfbuild/README.md` and
-`macos-selfbuild/README_CN.md` for the rootfs path, direct runner details, PASS
-markers, and boot-only verification of the self-built kernel.
+`full_self_build.sh` is the default full entrypoint. It builds the seed kernel,
+prepares the managed rootfs inputs with xtask, prepares the app-local guest
+toolchain overlay, runs guest Cargo from QEMU/HVF, and extracts the guest-built
+kernel from the copied work rootfs into `target/starry-macos-selfbuild/uploaded/`.
+See `macos-selfbuild/README.md` and `macos-selfbuild/README_CN.md` for the script
+roles, M3 validation environment, per-stage timing, rootfs path, direct runner
+details, PASS markers, and boot-only verification of the self-built kernel.
 
 ## Redis
 

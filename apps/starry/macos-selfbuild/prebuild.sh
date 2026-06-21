@@ -7,6 +7,35 @@ overlay_dir="${STARRY_OVERLAY_DIR:-}"
 out_dir="$workspace/target/starry-macos-selfbuild"
 export COPYFILE_DISABLE=1
 
+usage() {
+    cat <<'USAGE'
+Usage:
+  STARRY_OVERLAY_DIR=/path/to/overlay apps/starry/macos-selfbuild/prebuild.sh
+
+Internal stage used by run_selfbuild.sh. It assembles the per-run overlay that
+will be injected into the copied work rootfs:
+
+  1. copies the prepared guest toolchain overlay cache;
+  2. archives the current checkout as /opt/tgoskits-src.tar;
+  3. copies Cargo registry cache archives needed for offline guest Cargo;
+  4. writes source metadata and the guest runner under /opt.
+
+This script does not pull or resize the managed rootfs and does not launch QEMU.
+Run full_self_build.sh for the default end-to-end flow.
+USAGE
+}
+
+if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
+    usage
+    exit 0
+fi
+
+if [[ "$#" -gt 0 ]]; then
+    echo "unknown argument: $1" >&2
+    usage >&2
+    exit 2
+fi
+
 if [[ -z "$overlay_dir" ]]; then
     echo "error: STARRY_OVERLAY_DIR is required" >&2
     exit 1

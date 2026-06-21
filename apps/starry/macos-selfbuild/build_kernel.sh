@@ -12,7 +12,16 @@ usage() {
 Usage:
   apps/starry/macos-selfbuild/build_kernel.sh [extra cargo xtask starry build args]
 
-Builds the AArch64 StarryOS seed kernel used by the macOS self-build run.
+Stage 1: builds the host-side AArch64 StarryOS seed kernel used to boot the
+macOS self-build guest for the first time.
+
+This script wraps:
+
+  cargo xtask starry build -c apps/starry/macos-selfbuild/build-aarch64-unknown-none-softfloat.toml
+
+It does not prepare the rootfs and does not run QEMU. The default full flow
+calls it from full_self_build.sh before preparing rootfs inputs.
+
 On macOS, build scripts may expect aarch64-linux-musl-{cc,gcc,ar} while
 compiling bare-metal C helpers. If those tools are missing and zig is available,
 this script creates local wrappers under target/starry-macos-selfbuild/host-tools.
