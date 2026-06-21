@@ -128,9 +128,18 @@ impl<T: FsBlockDevice + ?Sized> BlockReader for VolumeReader<'_, T> {
     }
 
     fn read_block(&mut self, block: u64, buf: &mut [u8]) -> crate::volume::Result<()> {
-        self.inner
-            .read_block(block, buf)
-            .map_err(|_| VolumeError::Reader)
+        match self.inner.read_block(block, buf) {
+            Ok(()) => Ok(()),
+            Err(_) => {
+                // Single retry: the SD card may have been left in a
+                // transient bad state (e.g. after a failed HighSpeed
+                // switch during init).  One re-read is often enough to
+                // recover without a full controller reset.
+                self.inner
+                    .read_block(block, buf)
+                    .map_err(|_| VolumeError::Reader)
+            }
+        }
     }
 }
 
