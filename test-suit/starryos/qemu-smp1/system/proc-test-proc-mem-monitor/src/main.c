@@ -65,6 +65,50 @@ static void expect(int condition, const char *message)
     }
 }
 
+static ssize_t io_read_all(int fd, void *buf, size_t len)
+{
+    unsigned char *cursor = buf;
+    size_t left = len;
+
+    while (left > 0) {
+        ssize_t n = read(fd, cursor, left);
+        if (n < 0) {
+            if (errno == EINTR) {
+                continue;
+            }
+            return n;
+        }
+        if (n == 0) {
+            return (ssize_t)(len - left);
+        }
+        cursor += (size_t)n;
+        left -= (size_t)n;
+    }
+    return (ssize_t)len;
+}
+
+static ssize_t io_write_all(int fd, const void *buf, size_t len)
+{
+    const unsigned char *cursor = buf;
+    size_t left = len;
+
+    while (left > 0) {
+        ssize_t n = write(fd, cursor, left);
+        if (n < 0) {
+            if (errno == EINTR) {
+                continue;
+            }
+            return n;
+        }
+        if (n == 0) {
+            return (ssize_t)(len - left);
+        }
+        cursor += (size_t)n;
+        left -= (size_t)n;
+    }
+    return (ssize_t)len;
+}
+
 static long read_status_kb_from(const char *path, const char *key)
 {
     int fd = open(path, O_RDONLY);
@@ -601,18 +645,18 @@ static void test_fork_rw_file_read_child_write(long page_size)
         child_before_write.pid = getpid();
         child_before_write.rss_file_kb = read_self_status_kb("RssFile");
         child_before_write.rss_anon_kb = read_self_status_kb("RssAnon");
-        if (write(notify[1], &child_before_write, sizeof(child_before_write)) !=
+        if (io_write_all(notify[1], &child_before_write, sizeof(child_before_write)) !=
             (ssize_t)sizeof(child_before_write)) {
             _exit(1);
         }
-        if (read(release[0], &byte, 1) != 1) {
+        if (io_read_all(release[0], &byte, 1) != 1) {
             _exit(1);
         }
         page[0] = 0x43;
         child_after_write.pid = getpid();
         child_after_write.rss_file_kb = read_self_status_kb("RssFile");
         child_after_write.rss_anon_kb = read_self_status_kb("RssAnon");
-        if (write(notify[1], &child_after_write, sizeof(child_after_write)) !=
+        if (io_write_all(notify[1], &child_after_write, sizeof(child_after_write)) !=
             (ssize_t)sizeof(child_after_write)) {
             _exit(1);
         }
@@ -640,7 +684,7 @@ static void test_fork_rw_file_read_child_write(long page_size)
                parent_anon_after_read + page_kb * RSS_TOUCH_TOLERANCE,
            "layer B: fork keeps parent RssAnon stable within tolerance");
 
-    expect(read(notify[0], &child_before_write, sizeof(child_before_write)) ==
+    expect(io_read_all(notify[0], &child_before_write, sizeof(child_before_write)) ==
                (ssize_t)sizeof(child_before_write),
            "read child RSS before RW file COW write");
     expect(child_before_write.pid == child, "child pid matches fork return");
@@ -655,8 +699,8 @@ static void test_fork_rw_file_read_child_write(long page_size)
                                    child_before_write.rss_anon_kb, page_kb),
            "layer C: child RssAnon at fork matches parent within tolerance");
 
-    expect(write(release[1], "D", 1) == 1, "release fork RW file child for COW write");
-    expect(read(notify[0], &child_after_write, sizeof(child_after_write)) ==
+    expect(io_write_all(release[1], "D", 1) == 1, "release fork RW file child for COW write");
+    expect(io_read_all(notify[0], &child_after_write, sizeof(child_after_write)) ==
                (ssize_t)sizeof(child_after_write),
            "read child RSS after RW file COW write");
     close(notify[0]);
@@ -748,12 +792,12 @@ static void test_fork_dirty_private_file_cow(long page_size)
         close(release[1]);
         page[0] = 0x43;
         reported_pid = getpid();
-        if (write(notify[1], &reported_pid, sizeof(reported_pid)) !=
+        if (io_write_all(notify[1], &reported_pid, sizeof(reported_pid)) !=
             (ssize_t)sizeof(reported_pid)) {
             _exit(1);
         }
         close(notify[1]);
-        if (read(release[0], &byte, 1) != 1) {
+        if (io_read_all(release[0], &byte, 1) != 1) {
             _exit(1);
         }
         close(release[0]);
@@ -765,7 +809,7 @@ static void test_fork_dirty_private_file_cow(long page_size)
 
     close(notify[1]);
     close(release[0]);
-    expect(read(notify[0], &reported_pid, sizeof(reported_pid)) ==
+    expect(io_read_all(notify[0], &reported_pid, sizeof(reported_pid)) ==
                (ssize_t)sizeof(reported_pid),
            "read child pid after dirty file COW write");
     close(notify[0]);
@@ -781,7 +825,7 @@ static void test_fork_dirty_private_file_cow(long page_size)
     expect(child_rss_anon > 0, "child RssAnon positive after dirty file COW");
     expect(child_vm_rss > 0, "child VmRSS positive after dirty file COW");
 
-    expect(write(release[1], "D", 1) == 1, "release fork dirty file child");
+    expect(io_write_all(release[1], "D", 1) == 1, "release fork dirty file child");
     close(release[1]);
     expect(waitpid(child, &status, 0) == child, "waitpid fork dirty file child");
     expect(WIFEXITED(status) && WEXITSTATUS(status) == 0,
@@ -844,12 +888,12 @@ static void test_fork_mprotect_only_sibling_unmap(long page_size)
                    child_rss_file_at_fork + page_kb * RSS_TOUCH_TOLERANCE,
                "child mprotect-only must not reclassify to RssAnon");
         reported_pid = getpid();
-        if (write(notify[1], &reported_pid, sizeof(reported_pid)) !=
+        if (io_write_all(notify[1], &reported_pid, sizeof(reported_pid)) !=
             (ssize_t)sizeof(reported_pid)) {
             _exit(1);
         }
         close(notify[1]);
-        if (read(release[0], &byte, 1) != 1) {
+        if (io_read_all(release[0], &byte, 1) != 1) {
             _exit(1);
         }
         close(release[0]);
@@ -861,7 +905,7 @@ static void test_fork_mprotect_only_sibling_unmap(long page_size)
 
     close(notify[1]);
     close(release[0]);
-    expect(read(notify[0], &reported_pid, sizeof(reported_pid)) ==
+    expect(io_read_all(notify[0], &reported_pid, sizeof(reported_pid)) ==
                (ssize_t)sizeof(reported_pid),
            "read child pid after mprotect-only");
     close(notify[0]);
@@ -873,7 +917,7 @@ static void test_fork_mprotect_only_sibling_unmap(long page_size)
                parent_rss_file_after_fault + page_kb * RSS_TOUCH_TOLERANCE,
            "parent unmap decreases RssFile after mprotect-only sibling");
 
-    expect(write(release[1], "D", 1) == 1, "release mprotect-only child");
+    expect(io_write_all(release[1], "D", 1) == 1, "release mprotect-only child");
     close(release[1]);
     expect(waitpid(child, &status, 0) == child, "waitpid mprotect-only child");
     expect(WIFEXITED(status) && WEXITSTATUS(status) == 0,
@@ -928,12 +972,12 @@ static void test_fork_reclassify_writer_sibling_unmap(long page_size)
                "child mprotect writable");
         page[0] = 0x43;
         reported_pid = getpid();
-        if (write(notify[1], &reported_pid, sizeof(reported_pid)) !=
+        if (io_write_all(notify[1], &reported_pid, sizeof(reported_pid)) !=
             (ssize_t)sizeof(reported_pid)) {
             _exit(1);
         }
         close(notify[1]);
-        if (read(release[0], &byte, 1) != 1) {
+        if (io_read_all(release[0], &byte, 1) != 1) {
             _exit(1);
         }
         close(release[0]);
@@ -943,7 +987,7 @@ static void test_fork_reclassify_writer_sibling_unmap(long page_size)
 
     close(notify[1]);
     close(release[0]);
-    expect(read(notify[0], &reported_pid, sizeof(reported_pid)) ==
+    expect(io_read_all(notify[0], &reported_pid, sizeof(reported_pid)) ==
                (ssize_t)sizeof(reported_pid),
            "read child pid after reclassify write");
     close(notify[0]);
@@ -964,7 +1008,7 @@ static void test_fork_reclassify_writer_sibling_unmap(long page_size)
                parent_rss_file_after_fault + page_kb * RSS_TOUCH_TOLERANCE,
            "parent unmap still decrements RssFile (page stayed File in parent)");
 
-    expect(write(release[1], "D", 1) == 1, "release reclassify writer child");
+    expect(io_write_all(release[1], "D", 1) == 1, "release reclassify writer child");
     close(release[1]);
     expect(waitpid(child, &status, 0) == child, "waitpid reclassify writer child");
     expect(WIFEXITED(status) && WEXITSTATUS(status) == 0,
@@ -1154,23 +1198,23 @@ static void test_fork_cow_rss(long page_size)
         close(notify[0]);
         close(release[1]);
 
-        if (write(fork_ready[1], "R", 1) != 1) {
+        if (io_write_all(fork_ready[1], "R", 1) != 1) {
             _exit(1);
         }
         close(fork_ready[1]);
-        if (read(resume[0], &byte, 1) != 1) {
+        if (io_read_all(resume[0], &byte, 1) != 1) {
             _exit(1);
         }
         close(resume[0]);
 
         page[0] = 0x22;
         reported_pid = getpid();
-        if (write(notify[1], &reported_pid, sizeof(reported_pid)) !=
+        if (io_write_all(notify[1], &reported_pid, sizeof(reported_pid)) !=
             (ssize_t)sizeof(reported_pid)) {
             _exit(1);
         }
         close(notify[1]);
-        if (read(release[0], &byte, 1) != 1) {
+        if (io_read_all(release[0], &byte, 1) != 1) {
             _exit(1);
         }
         close(release[0]);
@@ -1183,7 +1227,7 @@ static void test_fork_cow_rss(long page_size)
     close(notify[1]);
     close(release[0]);
 
-    expect(read(fork_ready[0], &byte, 1) == 1, "child ready at fork boundary");
+    expect(io_read_all(fork_ready[0], &byte, 1) == 1, "child ready at fork boundary");
     close(fork_ready[0]);
 
     snprintf(child_statm, sizeof(child_statm), "/proc/%d/statm", child);
@@ -1199,10 +1243,10 @@ static void test_fork_cow_rss(long page_size)
            "child RSS after fork includes cloned shared page");
     expect(child_r_at_fork <= statm_size, "child resident <= size at fork");
 
-    expect(write(resume[1], "G", 1) == 1, "resume child for COW write");
+    expect(io_write_all(resume[1], "G", 1) == 1, "resume child for COW write");
     close(resume[1]);
 
-    expect(read(notify[0], &reported_pid, sizeof(reported_pid)) ==
+    expect(io_read_all(notify[0], &reported_pid, sizeof(reported_pid)) ==
                (ssize_t)sizeof(reported_pid),
            "read child pid after COW write");
     close(notify[0]);
@@ -1232,7 +1276,7 @@ static void test_fork_cow_rss(long page_size)
            "anon COW write does not increase child RSS total");
 
     byte = 1;
-    expect(write(release[1], &byte, 1) == 1, "release child");
+    expect(io_write_all(release[1], &byte, 1) == 1, "release child");
     close(release[1]);
     expect(waitpid(child, &status, 0) == child, "waitpid child");
     expect(WIFEXITED(status) && WEXITSTATUS(status) == 0, "child exits cleanly");
@@ -1337,13 +1381,13 @@ static void test_child_proc_memory(long page_size, unsigned long parent_statm_si
         close(release[1]);
 
         pid_t self = getpid();
-        if (write(notify[1], &self, sizeof(self)) != (ssize_t)sizeof(self)) {
+        if (io_write_all(notify[1], &self, sizeof(self)) != (ssize_t)sizeof(self)) {
             _exit(1);
         }
         close(notify[1]);
 
         char byte = 0;
-        if (read(release[0], &byte, 1) != 1) {
+        if (io_read_all(release[0], &byte, 1) != 1) {
             _exit(1);
         }
         close(release[0]);
@@ -1355,7 +1399,7 @@ static void test_child_proc_memory(long page_size, unsigned long parent_statm_si
     close(release[0]);
 
     pid_t reported_pid = -1;
-    expect(read(notify[0], &reported_pid, sizeof(reported_pid)) == (ssize_t)sizeof(reported_pid),
+    expect(io_read_all(notify[0], &reported_pid, sizeof(reported_pid)) == (ssize_t)sizeof(reported_pid),
            "read child pid from pipe");
     close(notify[0]);
     expect(reported_pid == child, "child reports its own pid");
@@ -1395,7 +1439,7 @@ static void test_child_proc_memory(long page_size, unsigned long parent_statm_si
            "child statm size matches VmSize");
 
     char byte = 1;
-    expect(write(release[1], &byte, 1) == 1, "release child from pipe sync");
+    expect(io_write_all(release[1], &byte, 1) == 1, "release child from pipe sync");
     close(release[1]);
 
     int status = 0;
