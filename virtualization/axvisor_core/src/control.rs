@@ -255,11 +255,9 @@ fn close(control_file: api_control::ControlFileId) -> AxResult {
                 unmap_memory_slot(&vm.vm, memory_slot);
             }
             for vcpu_file in vm.vcpu_files.into_values() {
-                match CONTROL_FILES.lock().remove(&vcpu_file) {
-                    Some(ControlFileState::Vcpu(vcpu)) => {
-                        let _ = api_control::release_mmap_area(vcpu.mmap_area);
-                    }
-                    Some(_) | None => {}
+                if let Some(ControlFileState::Vcpu(vcpu)) = CONTROL_FILES.lock().remove(&vcpu_file)
+                {
+                    let _ = api_control::release_mmap_area(vcpu.mmap_area);
                 }
             }
         }
