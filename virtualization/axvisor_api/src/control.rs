@@ -12,11 +12,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! Host control endpoint registration APIs for AxVisor.
+//! Host control endpoint APIs for AxVisor.
 //!
 //! This module lets `axvisor-core` register a host-visible KVM endpoint such
 //! as `/dev/kvm`. The host adapter owns the OS file/device plumbing, while
-//! `axvisor-core` owns KVM command semantics and object handles.
+//! `axvisor-core` owns KVM command semantics and per-file state.
 
 use alloc::vec::Vec;
 
@@ -24,157 +24,128 @@ use ax_errno::AxResult;
 
 use crate::memory::PhysAddr;
 
-/// A host-provided control endpoint identifier.
-pub type EndpointId = u64;
+/// A core-provided identifier for one open control file.
+pub type ControlFileId = u64;
 
-/// A core-provided session identifier for one open control connection.
-pub type SessionId = u64;
-
-/// A host-visible userspace handle returned to the current userspace task.
+/// A userspace file descriptor returned to the current userspace task.
 ///
 /// On Unix-like hosts this is typically a file descriptor.
-pub type HostFd = i32;
+pub type Fd = i32;
 
-/// A host-provided acquired userspace memory handle.
-pub type UserMemoryHandle = u64;
+/// A host-provided identifier for one userspace-mappable memory area.
+pub type MmapAreaId = u64;
 
-/// A host-provided shared userspace mapping handle.
-pub type UserMappingHandle = u64;
+/// A host-provided identifier for one retained userspace file descriptor reference.
+pub type UserFdRefId = u64;
 
-/// A host-provided userspace notification object handle.
-pub type UserNotifierHandle = u64;
+/// A host-provided identifier for one pinned userspace page range.
+pub type PinnedUserPagesId = u64;
 
-/// A host-visible userspace handle plus optional shared mapping capability.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct CreatedUserHandle {
-    /// A host-visible userspace handle owned by the current userspace task.
-    pub fd: HostFd,
-    /// An optional shared mapping capability associated with the handle.
-    pub mapping: Option<UserMappingHandle>,
-}
-
-/// Host physical pages backing an acquired userspace memory range.
-pub struct AcquiredUserMemory {
-    /// Host-owned handle used to release the acquired pages.
-    pub handle: UserMemoryHandle,
+/// Host physical pages backing pinned userspace memory.
+pub struct PinnedUserPages {
+    /// Host-owned identifier used to release the pinned pages.
+    pub id: PinnedUserPagesId,
     /// Page-sized host physical addresses, in userspace virtual-address order.
     pub pages: Vec<PhysAddr>,
 }
 
-/// Events reported by a host control endpoint.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub struct ControlEvents {
-    /// The endpoint can be read without blocking.
-    pub readable: bool,
-    /// The endpoint can be written without blocking.
-    pub writable: bool,
-    /// The endpoint has a pending error or hangup event.
-    pub error: bool,
-}
-
-/// Optional stream read callback for a control endpoint.
-pub type ControlReadFn = fn(SessionId, &mut [u8]) -> AxResult<usize>;
-
-/// Optional stream write callback for a control endpoint.
-pub type ControlWriteFn = fn(SessionId, &[u8]) -> AxResult<usize>;
-
-/// Operations implemented by `axvisor-core` for a registered control endpoint.
+/// Operations implemented by `axvisor-core` for one control file.
 #[derive(Clone, Copy)]
 pub struct ControlOps {
-    /// Opens a new control session.
-    pub open: fn() -> AxResult<SessionId>,
-    /// Releases a previously opened control session.
-    pub release: fn(SessionId) -> AxResult,
+    /// Opens a new control file.
+    pub open: fn() -> AxResult<ControlFileId>,
+    /// Closes a previously opened control file.
+    pub close: fn(ControlFileId) -> AxResult,
     /// Dispatches a KVM ioctl command.
     ///
     /// The `cmd` and `arg` values are the raw ioctl request and third argument
     /// supplied by userspace. The callback return value is the ioctl syscall
     /// return value. KVM commands decide whether `arg` is unused, an immediate
     /// value, or a userspace pointer.
-    pub ioctl: fn(SessionId, u32, usize) -> AxResult<isize>,
-    /// Optional stream read operation.
-    pub read: Option<ControlReadFn>,
-    /// Optional stream write operation.
-    pub write: Option<ControlWriteFn>,
-    /// Optional readiness query.
-    pub poll: Option<fn(SessionId) -> AxResult<ControlEvents>>,
-}
-
-/// Specification for a host-visible control endpoint.
-#[derive(Clone, Copy)]
-pub struct EndpointSpec {
-    /// Stable endpoint name, for example `kvm`.
-    pub name: &'static str,
-    /// Core callbacks for endpoint operations.
-    pub ops: ControlOps,
+    pub ioctl: fn(ControlFileId, u32, usize) -> AxResult<isize>,
 }
 
 /// The host control endpoint API required by AxVisor.
 #[crate::api_def]
 pub trait ControlIf {
+    // Endpoint publication.
+
     /// Registers a host-visible control endpoint.
-    fn register_endpoint(spec: EndpointSpec) -> AxResult<EndpointId>;
-
-    /// Unregisters a host-visible control endpoint.
-    fn unregister_endpoint(id: EndpointId) -> AxResult;
-
-    /// Creates a host userspace handle owned by the current userspace process.
     ///
-    /// On success, the host handle owns `session` and must release it when the
-    /// handle is closed. On failure, ownership remains with `axvisor-core`.
-    fn create_user_handle(
-        endpoint: EndpointId,
-        session: SessionId,
-        shared_mapping_size: usize,
-    ) -> AxResult<CreatedUserHandle>;
+    /// The endpoint remains published for the host lifetime.
+    fn register_endpoint(ops: ControlOps) -> AxResult;
 
-    /// Writes bytes into a previously created shared userspace mapping.
-    fn write_user_mapping(handle: UserMappingHandle, offset: usize, buf: &[u8]) -> AxResult;
+    // Userspace file descriptors.
 
-    /// Reads bytes from a previously created shared userspace mapping.
-    fn read_user_mapping(handle: UserMappingHandle, offset: usize, buf: &mut [u8]) -> AxResult;
+    /// Creates a userspace file descriptor owned by the current userspace process.
+    ///
+    /// On success, the new fd owns `control_file` and must close it when the fd
+    /// is closed. If `mmap_area` is present, userspace may also `mmap` that
+    /// area through the returned fd. On failure, ownership remains with
+    /// `axvisor-core`.
+    fn create_user_fd(
+        control_file: ControlFileId,
+        ops: ControlOps,
+        mmap_area: Option<MmapAreaId>,
+    ) -> AxResult<Fd>;
 
-    /// Releases a previously created shared userspace mapping handle.
-    fn release_user_mapping(handle: UserMappingHandle) -> AxResult;
+    /// Retains a userspace file descriptor from the current userspace task.
+    ///
+    /// The host may implement this by capturing the kernel object referenced by
+    /// `fd`, such as a file, doorbell, or other userspace-visible handle.
+    fn get_user_fd_ref(fd: Fd) -> AxResult<UserFdRefId>;
 
-    /// Reads bytes from the current userspace task.
+    /// Writes raw bytes to a previously retained userspace fd.
+    ///
+    /// The host performs the underlying object I/O. `axvisor-core` owns any
+    /// higher-level protocol semantics imposed on those bytes.
+    fn write_user_fd_ref(user_fd_ref: UserFdRefId, buf: &[u8]) -> AxResult<usize>;
+
+    /// Releases a previously retained userspace fd.
+    fn release_user_fd_ref(user_fd_ref: UserFdRefId) -> AxResult;
+
+    // Userspace-mappable memory areas.
+
+    /// Creates a userspace-mappable memory area.
+    fn create_mmap_area(len: usize) -> AxResult<MmapAreaId>;
+
+    /// Reads bytes from a userspace-mappable memory area.
+    fn read_mmap_area(area: MmapAreaId, offset: usize, buf: &mut [u8]) -> AxResult;
+
+    /// Writes bytes into a userspace-mappable memory area.
+    fn write_mmap_area(area: MmapAreaId, offset: usize, buf: &[u8]) -> AxResult;
+
+    /// Releases a previously created mmap area.
+    fn release_mmap_area(area: MmapAreaId) -> AxResult;
+
+    // Current userspace address space access.
+
+    /// Copies bytes from the current userspace task.
     ///
     /// This is the host-neutral copy-from-user primitive used by KVM ioctls
     /// whose third argument is a userspace pointer. The host validates and
     /// copies from its current user address space; `axvisor-core` owns the ABI
     /// layout and command semantics.
-    fn read_user(addr: usize, buf: &mut [u8]) -> AxResult;
+    fn copy_from_user(addr: usize, buf: &mut [u8]) -> AxResult;
 
-    /// Writes bytes into the current userspace task.
+    /// Copies bytes into the current userspace task.
     ///
     /// This is the host-neutral copy-to-user primitive used by KVM ioctls whose
     /// third argument is a userspace pointer. The host validates and copies
     /// into its current user address space; `axvisor-core` owns the ABI layout
     /// and command semantics.
-    fn write_user(addr: usize, buf: &[u8]) -> AxResult;
+    fn copy_to_user(addr: usize, buf: &[u8]) -> AxResult;
 
-    /// Acquires a signalable userspace notification object from the current
-    /// userspace task.
+    // Pinned userspace pages.
+
+    /// Pins userspace memory from the current userspace task and returns its backing pages.
     ///
-    /// The host may implement this using eventfd, doorbells, or any other
-    /// userspace-visible signaling primitive with equivalent semantics.
-    fn acquire_user_notifier(fd: HostFd) -> AxResult<UserNotifierHandle>;
-
-    /// Signals a previously acquired userspace notification object.
-    fn signal_user_notifier(handle: UserNotifierHandle) -> AxResult;
-
-    /// Releases a previously acquired userspace notification object.
-    fn release_user_notifier(handle: UserNotifierHandle) -> AxResult;
-
-    /// Acquires pages from the current userspace task and returns their physical backing pages.
-    ///
-    /// The host must keep the returned pages stable until [`release_user_memory`]
+    /// The host must keep the returned pages stable until [`release_pinned_user_pages`]
     /// is called with the returned handle. The host may implement this by pinning
     /// frames, holding VM object references, or any other mechanism with the same
     /// lifetime semantics.
-    fn acquire_user_memory(addr: usize, len: usize, writable: bool)
-    -> AxResult<AcquiredUserMemory>;
+    fn pin_user_pages(addr: usize, len: usize, writable: bool) -> AxResult<PinnedUserPages>;
 
-    /// Releases a userspace memory range returned by [`acquire_user_memory`].
-    fn release_user_memory(handle: UserMemoryHandle) -> AxResult;
+    /// Releases a previously pinned userspace page range.
+    fn release_pinned_user_pages(id: PinnedUserPagesId) -> AxResult;
 }

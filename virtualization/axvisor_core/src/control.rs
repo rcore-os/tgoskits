@@ -21,7 +21,7 @@ use ax_errno::{AxError, AxResult, ax_err};
 use ax_kspin::SpinNoIrq as Mutex;
 use axaddrspace::{GuestPhysAddr, HostPhysAddr, MappingFlags, device::AccessWidth};
 use axvcpu::AxVCpuExitReason;
-use axvisor_api::control::{self as api_control, ControlOps, EndpointSpec};
+use axvisor_api::control::{self as api_control, ControlOps};
 use axvm::{AxVM, AxVMRef, VMStatus, config::AxVMConfig};
 
 const KVMIO: u32 = 0xae;
@@ -118,31 +118,32 @@ const PAGE_SIZE: u64 = 4096;
 const PAGE_SIZE_USIZE: usize = PAGE_SIZE as usize;
 
 static REGISTERED: AtomicBool = AtomicBool::new(false);
-static ENDPOINT_ID: AtomicU64 = AtomicU64::new(0);
-static NEXT_SESSION_ID: AtomicU64 = AtomicU64::new(1);
-static SESSIONS: Mutex<BTreeMap<api_control::SessionId, Session>> = Mutex::new(BTreeMap::new());
+static NEXT_CONTROL_FILE_ID: AtomicU64 = AtomicU64::new(1);
+static CONTROL_FILES: Mutex<BTreeMap<api_control::ControlFileId, ControlFileState>> =
+    Mutex::new(BTreeMap::new());
+const KVM_CONTROL_OPS: ControlOps = ControlOps { open, close, ioctl };
 
 #[derive(Clone)]
-enum Session {
+enum ControlFileState {
     System,
-    Vm(VmSession),
-    Vcpu(VcpuSession),
+    Vm(VmFileState),
+    Vcpu(VcpuFileState),
 }
 
 #[derive(Clone)]
-struct VmSession {
+struct VmFileState {
     vm: AxVMRef,
     memory_slots: BTreeMap<u32, MemorySlot>,
     ioeventfds: BTreeMap<IoEventFdKey, IoEventFd>,
-    vcpu_ids: BTreeMap<u32, api_control::SessionId>,
+    vcpu_files: BTreeMap<u32, api_control::ControlFileId>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct VcpuSession {
-    vm_session: api_control::SessionId,
+struct VcpuFileState {
+    vm_file: api_control::ControlFileId,
     vcpu_id: u32,
+    mmap_area: api_control::MmapAreaId,
     mp_state: u32,
-    run_mapping: Option<api_control::UserMappingHandle>,
     pending_mmio_read: Option<PendingMmioRead>,
 }
 
@@ -160,7 +161,7 @@ struct MemorySlot {
     guest_phys_addr: u64,
     memory_size: u64,
     userspace_addr: u64,
-    acquired_memory: api_control::UserMemoryHandle,
+    pinned_pages: api_control::PinnedUserPagesId,
 }
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -174,7 +175,7 @@ struct IoEventFd {
     addr: u64,
     len: u32,
     datamatch: u64,
-    notifier: api_control::UserNotifierHandle,
+    user_fd_ref: api_control::UserFdRefId,
     flags: u32,
 }
 
@@ -204,109 +205,102 @@ struct KvmIoEventFd {
 
 /// Registers the host-visible KVM-compatible control endpoint.
 pub fn init() -> AxResult {
-    if REGISTERED.swap(true, Ordering::AcqRel) {
+    if REGISTERED
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .is_err()
+    {
         return Ok(());
     }
 
-    let endpoint = api_control::register_endpoint(EndpointSpec {
-        name: "kvm",
-        ops: ControlOps {
-            open,
-            release,
-            ioctl,
-            read: None,
-            write: None,
-            poll: None,
-        },
-    })?;
+    if let Err(err) = api_control::register_endpoint(KVM_CONTROL_OPS) {
+        REGISTERED.store(false, Ordering::Release);
+        return Err(err);
+    }
 
-    ENDPOINT_ID.store(endpoint, Ordering::Release);
-    info!("AxVisor KVM control endpoint registered: {}", endpoint);
+    info!("AxVisor KVM control endpoint registered: kvm");
     Ok(())
 }
 
-/// Unregisters the host-visible KVM-compatible control endpoint.
+/// Shuts down host control endpoint state.
 pub fn shutdown() -> AxResult {
-    if !REGISTERED.swap(false, Ordering::AcqRel) {
-        return Ok(());
-    }
-
-    let endpoint = ENDPOINT_ID.swap(0, Ordering::AcqRel);
-    api_control::unregister_endpoint(endpoint)
+    // Current host adapters publish the control endpoint for the host lifetime.
+    Ok(())
 }
 
-fn open() -> AxResult<api_control::SessionId> {
-    create_session(Session::System)
+fn open() -> AxResult<api_control::ControlFileId> {
+    create_control_file(ControlFileState::System)
 }
 
-fn release(session: api_control::SessionId) -> AxResult {
+fn close(control_file: api_control::ControlFileId) -> AxResult {
     let removed = {
-        let mut sessions = SESSIONS.lock();
-        let Some(removed) = sessions.remove(&session) else {
+        let mut control_files = CONTROL_FILES.lock();
+        let Some(removed) = control_files.remove(&control_file) else {
             return ax_err!(NotFound);
         };
-        if let Session::Vcpu(vcpu) = &removed
-            && let Some(Session::Vm(vm)) = sessions.get_mut(&vcpu.vm_session)
+        if let ControlFileState::Vcpu(vcpu) = &removed
+            && let Some(ControlFileState::Vm(vm)) = control_files.get_mut(&vcpu.vm_file)
         {
-            vm.vcpu_ids.remove(&vcpu.vcpu_id);
+            vm.vcpu_files.remove(&vcpu.vcpu_id);
         }
         removed
     };
 
     match removed {
-        Session::Vm(vm) => {
+        ControlFileState::Vm(vm) => {
             let _ = vm.vm.shutdown();
             for ioeventfd in vm.ioeventfds.into_values() {
-                let _ = api_control::release_user_notifier(ioeventfd.notifier);
+                let _ = api_control::release_user_fd_ref(ioeventfd.user_fd_ref);
             }
             for memory_slot in vm.memory_slots.into_values() {
                 unmap_memory_slot(&vm.vm, memory_slot);
             }
-            for vcpu_session in vm.vcpu_ids.into_values() {
-                let removed_vcpu = SESSIONS.lock().remove(&vcpu_session);
-                if let Some(Session::Vcpu(vcpu)) = removed_vcpu
-                    && let Some(run_mapping) = vcpu.run_mapping
-                {
-                    let _ = api_control::release_user_mapping(run_mapping);
+            for vcpu_file in vm.vcpu_files.into_values() {
+                match CONTROL_FILES.lock().remove(&vcpu_file) {
+                    Some(ControlFileState::Vcpu(vcpu)) => {
+                        let _ = api_control::release_mmap_area(vcpu.mmap_area);
+                    }
+                    Some(_) | None => {}
                 }
             }
         }
-        Session::Vcpu(vcpu) => {
-            if let Some(run_mapping) = vcpu.run_mapping {
-                let _ = api_control::release_user_mapping(run_mapping);
-            }
+        ControlFileState::Vcpu(vcpu) => {
+            let _ = api_control::release_mmap_area(vcpu.mmap_area);
         }
-        Session::System => {}
+        ControlFileState::System => {}
     }
     Ok(())
 }
 
-fn create_session(session_data: Session) -> AxResult<api_control::SessionId> {
-    let session = next_session_id()?;
-    SESSIONS.lock().insert(session, session_data);
-    Ok(session)
+fn create_control_file(
+    control_file_state: ControlFileState,
+) -> AxResult<api_control::ControlFileId> {
+    let control_file = next_control_file_id()?;
+    CONTROL_FILES
+        .lock()
+        .insert(control_file, control_file_state);
+    Ok(control_file)
 }
 
-fn next_session_id() -> AxResult<api_control::SessionId> {
-    let session = NEXT_SESSION_ID.fetch_add(1, Ordering::Relaxed);
-    if session == 0 {
+fn next_control_file_id() -> AxResult<api_control::ControlFileId> {
+    let control_file = NEXT_CONTROL_FILE_ID.fetch_add(1, Ordering::Relaxed);
+    if control_file == 0 {
         return ax_err!(OutOfRange);
     }
-    Ok(session)
+    Ok(control_file)
 }
 
-fn session_data(session: api_control::SessionId) -> AxResult<Session> {
-    match SESSIONS.lock().get(&session).cloned() {
-        Some(session_data) => Ok(session_data),
+fn control_file_state(control_file: api_control::ControlFileId) -> AxResult<ControlFileState> {
+    match CONTROL_FILES.lock().get(&control_file).cloned() {
+        Some(control_file_state) => Ok(control_file_state),
         None => ax_err!(NotFound),
     }
 }
 
-fn ioctl(session: api_control::SessionId, cmd: u32, arg: usize) -> AxResult<isize> {
-    match session_data(session)? {
-        Session::System => system_ioctl(cmd, arg),
-        Session::Vm(_) => vm_ioctl(session, cmd, arg),
-        Session::Vcpu(_) => vcpu_ioctl(session, cmd, arg),
+fn ioctl(control_file: api_control::ControlFileId, cmd: u32, arg: usize) -> AxResult<isize> {
+    match control_file_state(control_file)? {
+        ControlFileState::System => system_ioctl(cmd, arg),
+        ControlFileState::Vm(_) => vm_ioctl(control_file, cmd, arg),
+        ControlFileState::Vcpu(_) => vcpu_ioctl(control_file, cmd, arg),
     }
 }
 
@@ -316,15 +310,11 @@ fn system_ioctl(cmd: u32, arg: usize) -> AxResult<isize> {
         KVM_CHECK_EXTENSION => Ok(check_extension(arg) as isize),
         KVM_GET_VCPU_MMAP_SIZE => Ok(KVM_VCPU_MMAP_SIZE as isize),
         KVM_CREATE_VM => {
-            let endpoint = ENDPOINT_ID.load(Ordering::Acquire);
-            if endpoint == 0 {
-                return ax_err!(NotFound);
-            }
-            let vm_session = create_vm_session()?;
-            match api_control::create_user_handle(endpoint, vm_session, 0) {
-                Ok(handle) => Ok(handle.fd as isize),
+            let vm_file = create_vm_file()?;
+            match api_control::create_user_fd(vm_file, KVM_CONTROL_OPS, None) {
+                Ok(fd) => Ok(fd as isize),
                 Err(err) => {
-                    let _ = release(vm_session);
+                    let _ = close(vm_file);
                     Err(err)
                 }
             }
@@ -333,85 +323,85 @@ fn system_ioctl(cmd: u32, arg: usize) -> AxResult<isize> {
     }
 }
 
-fn create_vm_session() -> AxResult<api_control::SessionId> {
-    let session = next_session_id()?;
-    let vm_id = session_id_to_usize(session)?;
+fn create_vm_file() -> AxResult<api_control::ControlFileId> {
+    let control_file = next_control_file_id()?;
+    let vm_id = control_file_id_to_usize(control_file)?;
     let config = AxVMConfig::new_host_controlled(vm_id, format!("kvm-vm-{vm_id}"), KVM_MAX_VCPUS);
     let vm = AxVM::new(config)?;
     vm.init()?;
     vm.set_vm_status(VMStatus::Loaded);
 
-    SESSIONS.lock().insert(
-        session,
-        Session::Vm(VmSession {
+    CONTROL_FILES.lock().insert(
+        control_file,
+        ControlFileState::Vm(VmFileState {
             vm,
             memory_slots: BTreeMap::new(),
             ioeventfds: BTreeMap::new(),
-            vcpu_ids: BTreeMap::new(),
+            vcpu_files: BTreeMap::new(),
         }),
     );
-    Ok(session)
+    Ok(control_file)
 }
 
-fn session_id_to_usize(session: api_control::SessionId) -> AxResult<usize> {
-    let value = session as usize;
-    if value as api_control::SessionId != session {
+fn control_file_id_to_usize(control_file: api_control::ControlFileId) -> AxResult<usize> {
+    let value = control_file as usize;
+    if value as api_control::ControlFileId != control_file {
         return ax_err!(OutOfRange);
     }
     Ok(value)
 }
 
-fn vm_ioctl(session: api_control::SessionId, cmd: u32, arg: usize) -> AxResult<isize> {
+fn vm_ioctl(control_file: api_control::ControlFileId, cmd: u32, arg: usize) -> AxResult<isize> {
     match cmd {
-        KVM_CREATE_VCPU => create_vcpu(session, arg),
+        KVM_CREATE_VCPU => create_vcpu_file(control_file, arg),
         KVM_SET_USER_MEMORY_REGION => {
             let region = read_userspace_memory_region(arg)?;
-            set_user_memory_region(session, region)?;
+            set_user_memory_region(control_file, region)?;
             Ok(0)
         }
         KVM_IOEVENTFD => {
             let ioeventfd = read_ioeventfd(arg)?;
-            update_ioeventfd(session, ioeventfd)?;
+            update_ioeventfd(control_file, ioeventfd)?;
             Ok(0)
         }
         _ => Err(AxError::Unsupported),
     }
 }
 
-fn vcpu_ioctl(session: api_control::SessionId, cmd: u32, arg: usize) -> AxResult<isize> {
+fn vcpu_ioctl(control_file: api_control::ControlFileId, cmd: u32, arg: usize) -> AxResult<isize> {
     match cmd {
-        KVM_RUN => run_vcpu(session),
-        KVM_GET_REGS => get_kvm_regs(session, arg),
-        KVM_SET_REGS => set_kvm_regs(session, arg),
-        KVM_GET_SREGS => get_kvm_sregs(session, arg),
-        KVM_SET_SREGS => set_kvm_sregs(session, arg),
-        KVM_GET_ONE_REG => get_one_reg(session, arg),
-        KVM_SET_ONE_REG => set_one_reg(session, arg),
-        KVM_GET_REG_LIST => get_reg_list(session, arg),
-        KVM_INTERRUPT => kvm_interrupt(session, arg),
-        KVM_GET_MP_STATE => get_mp_state(session, arg),
-        KVM_SET_MP_STATE => set_mp_state(session, arg),
+        KVM_RUN => run_vcpu_file(control_file),
+        KVM_GET_REGS => get_kvm_regs(control_file, arg),
+        KVM_SET_REGS => set_kvm_regs(control_file, arg),
+        KVM_GET_SREGS => get_kvm_sregs(control_file, arg),
+        KVM_SET_SREGS => set_kvm_sregs(control_file, arg),
+        KVM_GET_ONE_REG => get_one_reg(control_file, arg),
+        KVM_SET_ONE_REG => set_one_reg(control_file, arg),
+        KVM_GET_REG_LIST => get_reg_list(control_file, arg),
+        KVM_INTERRUPT => kvm_interrupt(control_file, arg),
+        KVM_GET_MP_STATE => get_mp_state(control_file, arg),
+        KVM_SET_MP_STATE => set_mp_state(control_file, arg),
         _ => Err(AxError::Unsupported),
     }
 }
 
-fn get_mp_state(session: api_control::SessionId, arg: usize) -> AxResult<isize> {
-    let sessions = SESSIONS.lock();
-    let Some(Session::Vcpu(vcpu)) = sessions.get(&session) else {
+fn get_mp_state(control_file: api_control::ControlFileId, arg: usize) -> AxResult<isize> {
+    let control_files = CONTROL_FILES.lock();
+    let Some(ControlFileState::Vcpu(vcpu)) = control_files.get(&control_file) else {
         return ax_err!(NotFound);
     };
     write_u32_user(arg, vcpu.mp_state)?;
     Ok(0)
 }
 
-fn set_mp_state(session: api_control::SessionId, arg: usize) -> AxResult<isize> {
+fn set_mp_state(control_file: api_control::ControlFileId, arg: usize) -> AxResult<isize> {
     let mp_state = read_u32_user(arg)?;
     if mp_state != KVM_MP_STATE_RUNNABLE && mp_state != KVM_MP_STATE_STOPPED {
         return ax_err!(Unsupported);
     }
 
-    let mut sessions = SESSIONS.lock();
-    let Some(Session::Vcpu(vcpu)) = sessions.get_mut(&session) else {
+    let mut control_files = CONTROL_FILES.lock();
+    let Some(ControlFileState::Vcpu(vcpu)) = control_files.get_mut(&control_file) else {
         return ax_err!(NotFound);
     };
     vcpu.mp_state = mp_state;
@@ -419,43 +409,43 @@ fn set_mp_state(session: api_control::SessionId, arg: usize) -> AxResult<isize> 
 }
 
 #[cfg(target_arch = "riscv64")]
-fn set_vcpu_mp_state_by_id(
-    session: api_control::SessionId,
+fn set_vcpu_file_mp_state_by_id(
+    control_file: api_control::ControlFileId,
     vcpu_id: usize,
     mp_state: u32,
 ) -> AxResult {
-    let vm_session = {
-        let sessions = SESSIONS.lock();
-        let Some(Session::Vcpu(vcpu)) = sessions.get(&session) else {
+    let vm_file = {
+        let control_files = CONTROL_FILES.lock();
+        let Some(ControlFileState::Vcpu(vcpu)) = control_files.get(&control_file) else {
             return ax_err!(NotFound);
         };
-        vcpu.vm_session
+        vcpu.vm_file
     };
 
-    let mut sessions = SESSIONS.lock();
-    let target_session = {
-        let Some(Session::Vm(vm)) = sessions.get(&vm_session) else {
+    let mut control_files = CONTROL_FILES.lock();
+    let target_file = {
+        let Some(ControlFileState::Vm(vm)) = control_files.get(&vm_file) else {
             return ax_err!(NotFound);
         };
-        vm.vcpu_ids
+        vm.vcpu_files
             .get(&(vcpu_id as u32))
             .copied()
             .ok_or(AxError::InvalidInput)?
     };
-    let Some(Session::Vcpu(vcpu)) = sessions.get_mut(&target_session) else {
+    let Some(ControlFileState::Vcpu(vcpu)) = control_files.get_mut(&target_file) else {
         return ax_err!(NotFound);
     };
     vcpu.mp_state = mp_state;
     Ok(())
 }
 
-fn get_vcpu(session: api_control::SessionId) -> AxResult<axvm::AxVCpuRef> {
+fn get_vcpu(control_file: api_control::ControlFileId) -> AxResult<axvm::AxVCpuRef> {
     let (vm, vcpu_id) = {
-        let sessions = SESSIONS.lock();
-        let Some(Session::Vcpu(vcpu)) = sessions.get(&session) else {
+        let control_files = CONTROL_FILES.lock();
+        let Some(ControlFileState::Vcpu(vcpu)) = control_files.get(&control_file) else {
             return ax_err!(NotFound);
         };
-        let Some(Session::Vm(vm)) = sessions.get(&vcpu.vm_session) else {
+        let Some(ControlFileState::Vm(vm)) = control_files.get(&vcpu.vm_file) else {
             return ax_err!(NotFound);
         };
         (vm.vm.clone(), vcpu.vcpu_id as usize)
@@ -464,32 +454,32 @@ fn get_vcpu(session: api_control::SessionId) -> AxResult<axvm::AxVCpuRef> {
     vm.vcpu(vcpu_id).ok_or(AxError::InvalidInput)
 }
 
-fn run_vcpu(session: api_control::SessionId) -> AxResult<isize> {
-    let (vm, vcpu_id, vcpu, mp_state, run_mapping, pending_mmio_read) = {
-        let mut sessions = SESSIONS.lock();
-        let Some(Session::Vcpu(vcpu)) = sessions.get(&session) else {
+fn run_vcpu_file(control_file: api_control::ControlFileId) -> AxResult<isize> {
+    let (vm, vcpu_id, vcpu, mp_state, pending_mmio_read) = {
+        let mut control_files = CONTROL_FILES.lock();
+        let Some(ControlFileState::Vcpu(vcpu)) = control_files.get(&control_file) else {
             return ax_err!(NotFound);
         };
-        let Some(Session::Vm(vm)) = sessions.get(&vcpu.vm_session) else {
+        let Some(ControlFileState::Vm(vm)) = control_files.get(&vcpu.vm_file) else {
             return ax_err!(NotFound);
         };
         let vm = vm.vm.clone();
         let vcpu_id = vcpu.vcpu_id as usize;
         let mp_state = vcpu.mp_state;
-        let run_mapping = vcpu.run_mapping.ok_or(AxError::NotFound)?;
         let pending_mmio_read = vcpu.pending_mmio_read;
-        let Some(Session::Vcpu(vcpu_session)) = sessions.get_mut(&session) else {
+        let Some(ControlFileState::Vcpu(vcpu_file_state)) = control_files.get_mut(&control_file)
+        else {
             return ax_err!(NotFound);
         };
-        vcpu_session.pending_mmio_read = None;
+        vcpu_file_state.pending_mmio_read = None;
         let Some(vcpu) = vm.vcpu(vcpu_id) else {
             return ax_err!(NotFound);
         };
-        (vm, vcpu_id, vcpu, mp_state, run_mapping, pending_mmio_read)
+        (vm, vcpu_id, vcpu, mp_state, pending_mmio_read)
     };
 
     if mp_state == KVM_MP_STATE_STOPPED {
-        write_vcpu_run_u32(run_mapping, KVM_RUN_EXIT_REASON_OFFSET, KVM_EXIT_INTR)?;
+        write_vcpu_run_u32(control_file, KVM_RUN_EXIT_REASON_OFFSET, KVM_EXIT_INTR)?;
         axvisor_api::task::yield_now();
         return Ok(0);
     }
@@ -499,7 +489,7 @@ fn run_vcpu(session: api_control::SessionId) -> AxResult<isize> {
     }
 
     if let Some(pending) = pending_mmio_read {
-        complete_mmio_read(run_mapping, &vcpu, pending)?;
+        complete_mmio_read(control_file, &vcpu, pending)?;
     }
 
     let mut internal_exits = 0;
@@ -525,7 +515,12 @@ fn run_vcpu(session: api_control::SessionId) -> AxResult<isize> {
                 }
             }
             AxVCpuExitReason::MmioWrite { addr, width, data }
-                if signal_matching_ioeventfd(session, addr.as_usize() as u64, width, data)? =>
+                if signal_matching_ioeventfd(
+                    control_file,
+                    addr.as_usize() as u64,
+                    width,
+                    data,
+                )? =>
             {
                 internal_exits = 0;
             }
@@ -535,7 +530,14 @@ fn run_vcpu(session: api_control::SessionId) -> AxResult<isize> {
                 entry_point,
                 arg,
             } => {
-                handle_cpu_up(session, &vm, &vcpu, target_cpu as usize, entry_point, arg)?;
+                handle_cpu_up(
+                    control_file,
+                    &vm,
+                    &vcpu,
+                    target_cpu as usize,
+                    entry_point,
+                    arg,
+                )?;
                 axvisor_api::task::yield_now();
                 internal_exits += 1;
                 if internal_exits >= KVM_RUN_MAX_INTERNAL_EXITS {
@@ -566,19 +568,19 @@ fn run_vcpu(session: api_control::SessionId) -> AxResult<isize> {
                 }
             }
             exit_reason => {
-                prepare_userspace_exit(session, run_mapping, &exit_reason)?;
+                prepare_userspace_exit(control_file, &exit_reason)?;
                 let kvm_reason = kvm_exit_reason(&exit_reason);
                 break kvm_reason;
             }
         }
     };
-    write_vcpu_run_u32(run_mapping, KVM_RUN_EXIT_REASON_OFFSET, exit_reason)?;
+    write_vcpu_run_u32(control_file, KVM_RUN_EXIT_REASON_OFFSET, exit_reason)?;
     Ok(0)
 }
 
 #[cfg(target_arch = "riscv64")]
 fn handle_cpu_up(
-    session: api_control::SessionId,
+    control_file: api_control::ControlFileId,
     vm: &AxVMRef,
     vcpu: &axvm::AxVCpuRef,
     target_cpu: usize,
@@ -591,7 +593,7 @@ fn handle_cpu_up(
     target_vcpu.set_gpr(riscv_vcpu::GprIndex::A0 as usize, target_cpu);
     target_vcpu.set_gpr(riscv_vcpu::GprIndex::A1 as usize, arg as usize);
 
-    set_vcpu_mp_state_by_id(session, target_cpu, KVM_MP_STATE_RUNNABLE)?;
+    set_vcpu_file_mp_state_by_id(control_file, target_cpu, KVM_MP_STATE_RUNNABLE)?;
 
     vcpu.set_return_value(0);
     vcpu.set_gpr(riscv_vcpu::GprIndex::A1 as usize, 0);
@@ -661,49 +663,49 @@ fn inject_riscv_ipi_mask(
     Ok(())
 }
 
-fn get_one_reg(session: api_control::SessionId, arg: usize) -> AxResult<isize> {
+fn get_one_reg(control_file: api_control::ControlFileId, arg: usize) -> AxResult<isize> {
     let one_reg = read_one_reg(arg)?;
-    let value = get_vcpu(session)?.get_arch_reg(one_reg.id)?;
+    let value = get_vcpu(control_file)?.get_arch_reg(one_reg.id)?;
     write_u64_user(one_reg.addr as usize, value)?;
     Ok(0)
 }
 
-fn get_kvm_regs(session: api_control::SessionId, arg: usize) -> AxResult<isize> {
+fn get_kvm_regs(control_file: api_control::ControlFileId, arg: usize) -> AxResult<isize> {
     let mut bytes = [0u8; KVM_X86_REGS_SIZE as usize];
-    get_vcpu(session)?.get_kvm_regs(&mut bytes)?;
-    api_control::write_user(arg, &bytes)?;
+    get_vcpu(control_file)?.get_kvm_regs(&mut bytes)?;
+    api_control::copy_to_user(arg, &bytes)?;
     Ok(0)
 }
 
-fn set_kvm_regs(session: api_control::SessionId, arg: usize) -> AxResult<isize> {
+fn set_kvm_regs(control_file: api_control::ControlFileId, arg: usize) -> AxResult<isize> {
     let mut bytes = [0u8; KVM_X86_REGS_SIZE as usize];
-    api_control::read_user(arg, &mut bytes)?;
-    get_vcpu(session)?.set_kvm_regs(&bytes)?;
+    api_control::copy_from_user(arg, &mut bytes)?;
+    get_vcpu(control_file)?.set_kvm_regs(&bytes)?;
     Ok(0)
 }
 
-fn get_kvm_sregs(session: api_control::SessionId, arg: usize) -> AxResult<isize> {
+fn get_kvm_sregs(control_file: api_control::ControlFileId, arg: usize) -> AxResult<isize> {
     let mut bytes = [0u8; KVM_X86_SREGS_SIZE as usize];
-    get_vcpu(session)?.get_kvm_sregs(&mut bytes)?;
-    api_control::write_user(arg, &bytes)?;
+    get_vcpu(control_file)?.get_kvm_sregs(&mut bytes)?;
+    api_control::copy_to_user(arg, &bytes)?;
     Ok(0)
 }
 
-fn set_kvm_sregs(session: api_control::SessionId, arg: usize) -> AxResult<isize> {
+fn set_kvm_sregs(control_file: api_control::ControlFileId, arg: usize) -> AxResult<isize> {
     let mut bytes = [0u8; KVM_X86_SREGS_SIZE as usize];
-    api_control::read_user(arg, &mut bytes)?;
-    get_vcpu(session)?.set_kvm_sregs(&bytes)?;
+    api_control::copy_from_user(arg, &mut bytes)?;
+    get_vcpu(control_file)?.set_kvm_sregs(&bytes)?;
     Ok(0)
 }
 
-fn set_one_reg(session: api_control::SessionId, arg: usize) -> AxResult<isize> {
+fn set_one_reg(control_file: api_control::ControlFileId, arg: usize) -> AxResult<isize> {
     let one_reg = read_one_reg(arg)?;
     let value = read_u64_user(one_reg.addr as usize)?;
-    get_vcpu(session)?.set_arch_reg(one_reg.id, value)?;
+    get_vcpu(control_file)?.set_arch_reg(one_reg.id, value)?;
     Ok(0)
 }
 
-fn kvm_interrupt(session: api_control::SessionId, arg: usize) -> AxResult<isize> {
+fn kvm_interrupt(control_file: api_control::ControlFileId, arg: usize) -> AxResult<isize> {
     let irq = read_u32_user(arg)?;
     let vector = match irq {
         #[cfg(target_arch = "riscv64")]
@@ -713,12 +715,12 @@ fn kvm_interrupt(session: api_control::SessionId, arg: usize) -> AxResult<isize>
         KVM_INTERRUPT_UNSET => 0,
         _ => return ax_err!(Unsupported),
     };
-    get_vcpu(session)?.inject_interrupt(vector)?;
+    get_vcpu(control_file)?.inject_interrupt(vector)?;
     Ok(0)
 }
 
-fn get_reg_list(session: api_control::SessionId, arg: usize) -> AxResult<isize> {
-    let vcpu = get_vcpu(session)?;
+fn get_reg_list(control_file: api_control::ControlFileId, arg: usize) -> AxResult<isize> {
+    let vcpu = get_vcpu(control_file)?;
     let reg_ids = vcpu.arch_reg_ids();
     let requested = read_u64_user(arg)? as usize;
     write_u64_user(arg, reg_ids.len() as u64)?;
@@ -749,8 +751,7 @@ fn kvm_exit_reason(exit_reason: &AxVCpuExitReason) -> u32 {
 }
 
 fn prepare_userspace_exit(
-    session: api_control::SessionId,
-    run_mapping: api_control::UserMappingHandle,
+    control_file: api_control::ControlFileId,
     exit_reason: &AxVCpuExitReason,
 ) -> AxResult {
     match exit_reason {
@@ -762,15 +763,19 @@ fn prepare_userspace_exit(
             signed_ext,
         } => {
             write_vcpu_run_u64(
-                run_mapping,
+                control_file,
                 KVM_RUN_MMIO_PHYS_ADDR_OFFSET,
                 addr.as_usize() as u64,
             )?;
-            write_vcpu_run_u32(run_mapping, KVM_RUN_MMIO_LEN_OFFSET, access_width_bytes(*width))?;
-            write_vcpu_run_u8(run_mapping, KVM_RUN_MMIO_IS_WRITE_OFFSET, 0)?;
+            write_vcpu_run_u32(
+                control_file,
+                KVM_RUN_MMIO_LEN_OFFSET,
+                access_width_bytes(*width),
+            )?;
+            write_vcpu_run_u8(control_file, KVM_RUN_MMIO_IS_WRITE_OFFSET, 0)?;
 
-            let mut sessions = SESSIONS.lock();
-            let Some(Session::Vcpu(vcpu)) = sessions.get_mut(&session) else {
+            let mut control_files = CONTROL_FILES.lock();
+            let Some(ControlFileState::Vcpu(vcpu)) = control_files.get_mut(&control_file) else {
                 return ax_err!(NotFound);
             };
             vcpu.pending_mmio_read = Some(PendingMmioRead {
@@ -781,18 +786,19 @@ fn prepare_userspace_exit(
             });
         }
         AxVCpuExitReason::MmioWrite { addr, width, data } => {
+            let mmap_area = control_file_mmap_area(control_file)?;
             write_vcpu_run_u64(
-                run_mapping,
+                control_file,
                 KVM_RUN_MMIO_PHYS_ADDR_OFFSET,
                 addr.as_usize() as u64,
             )?;
-            api_control::write_user_mapping(
-                run_mapping,
-                KVM_RUN_MMIO_DATA_OFFSET,
-                &data.to_ne_bytes(),
+            api_control::write_mmap_area(mmap_area, KVM_RUN_MMIO_DATA_OFFSET, &data.to_ne_bytes())?;
+            write_vcpu_run_u32(
+                control_file,
+                KVM_RUN_MMIO_LEN_OFFSET,
+                access_width_bytes(*width),
             )?;
-            write_vcpu_run_u32(run_mapping, KVM_RUN_MMIO_LEN_OFFSET, access_width_bytes(*width))?;
-            write_vcpu_run_u8(run_mapping, KVM_RUN_MMIO_IS_WRITE_OFFSET, 1)?;
+            write_vcpu_run_u8(control_file, KVM_RUN_MMIO_IS_WRITE_OFFSET, 1)?;
         }
         _ => {}
     }
@@ -800,12 +806,13 @@ fn prepare_userspace_exit(
 }
 
 fn complete_mmio_read(
-    run_mapping: api_control::UserMappingHandle,
+    control_file: api_control::ControlFileId,
     vcpu: &axvm::AxVCpuRef,
     pending: PendingMmioRead,
 ) -> AxResult {
+    let mmap_area = control_file_mmap_area(control_file)?;
     let mut bytes = [0u8; 8];
-    api_control::read_user_mapping(run_mapping, KVM_RUN_MMIO_DATA_OFFSET, &mut bytes)?;
+    api_control::read_mmap_area(mmap_area, KVM_RUN_MMIO_DATA_OFFSET, &mut bytes)?;
     let raw = u64::from_ne_bytes(bytes) as usize;
     let masked = raw & access_width_mask(pending.width);
     let val = if pending.signed_ext {
@@ -845,27 +852,30 @@ fn sign_extend_value(value: usize, width: AccessWidth) -> usize {
 }
 
 fn write_vcpu_run_u32(
-    run_mapping: api_control::UserMappingHandle,
+    control_file: api_control::ControlFileId,
     offset: usize,
     value: u32,
 ) -> AxResult {
-    api_control::write_user_mapping(run_mapping, offset, &value.to_ne_bytes())
+    let mmap_area = control_file_mmap_area(control_file)?;
+    api_control::write_mmap_area(mmap_area, offset, &value.to_ne_bytes())
 }
 
 fn write_vcpu_run_u64(
-    run_mapping: api_control::UserMappingHandle,
+    control_file: api_control::ControlFileId,
     offset: usize,
     value: u64,
 ) -> AxResult {
-    api_control::write_user_mapping(run_mapping, offset, &value.to_ne_bytes())
+    let mmap_area = control_file_mmap_area(control_file)?;
+    api_control::write_mmap_area(mmap_area, offset, &value.to_ne_bytes())
 }
 
 fn write_vcpu_run_u8(
-    run_mapping: api_control::UserMappingHandle,
+    control_file: api_control::ControlFileId,
     offset: usize,
     value: u8,
 ) -> AxResult {
-    api_control::write_user_mapping(run_mapping, offset, &[value])
+    let mmap_area = control_file_mmap_area(control_file)?;
+    api_control::write_mmap_area(mmap_area, offset, &[value])
 }
 
 fn check_extension(capability: usize) -> usize {
@@ -881,88 +891,75 @@ fn check_extension(capability: usize) -> usize {
     }
 }
 
-fn create_vcpu(session: api_control::SessionId, vcpu_id: usize) -> AxResult<isize> {
+fn create_vcpu_file(control_file: api_control::ControlFileId, vcpu_id: usize) -> AxResult<isize> {
     let vcpu_id = vcpu_id as u32;
+    let mmap_area = api_control::create_mmap_area(KVM_VCPU_MMAP_SIZE)?;
 
-    let endpoint = ENDPOINT_ID.load(Ordering::Acquire);
-    if endpoint == 0 {
-        return ax_err!(NotFound);
-    }
-
-    let vcpu_session = {
-        let mut sessions = SESSIONS.lock();
-        let Some(Session::Vm(vm)) = sessions.get_mut(&session) else {
+    let vcpu_file = {
+        let mut control_files = CONTROL_FILES.lock();
+        let Some(ControlFileState::Vm(vm)) = control_files.get_mut(&control_file) else {
             return ax_err!(NotFound);
         };
         if vcpu_id as usize >= vm.vm.vcpu_num() {
             return ax_err!(InvalidInput);
         }
-        if vm.vcpu_ids.contains_key(&vcpu_id) {
+        if vm.vcpu_files.contains_key(&vcpu_id) {
             return ax_err!(AlreadyExists);
         }
 
-        let vcpu_session = next_session_id()?;
-        vm.vcpu_ids.insert(vcpu_id, vcpu_session);
-        sessions.insert(
-            vcpu_session,
-            Session::Vcpu(VcpuSession {
-                vm_session: session,
+        let vcpu_file = next_control_file_id()?;
+        vm.vcpu_files.insert(vcpu_id, vcpu_file);
+        control_files.insert(
+            vcpu_file,
+            ControlFileState::Vcpu(VcpuFileState {
+                vm_file: control_file,
                 vcpu_id,
+                mmap_area,
                 mp_state: if vcpu_id == 0 {
                     KVM_MP_STATE_RUNNABLE
                 } else {
                     KVM_MP_STATE_STOPPED
                 },
-                run_mapping: None,
                 pending_mmio_read: None,
             }),
         );
-        vcpu_session
+        vcpu_file
     };
 
-    match api_control::create_user_handle(
-        endpoint,
-        vcpu_session,
-        KVM_VCPU_MMAP_SIZE,
-    ) {
-        Ok(handle) => {
-            let mut sessions = SESSIONS.lock();
-            let Some(Session::Vcpu(vcpu)) = sessions.get_mut(&vcpu_session) else {
-                if let Some(run_mapping) = handle.mapping {
-                    let _ = api_control::release_user_mapping(run_mapping);
-                }
-                return ax_err!(NotFound);
-            };
-            vcpu.run_mapping = handle.mapping;
-            Ok(handle.fd as isize)
-        }
+    match api_control::create_user_fd(vcpu_file, KVM_CONTROL_OPS, Some(mmap_area)) {
+        Ok(fd) => Ok(fd as isize),
         Err(err) => {
-            let _ = remove_vcpu_session(vcpu_session);
+            let _ = remove_vcpu_file(vcpu_file);
             Err(err)
         }
     }
 }
 
-fn remove_vcpu_session(vcpu_session: api_control::SessionId) -> AxResult {
-    let run_mapping = {
-        let mut sessions = SESSIONS.lock();
-        let Some(Session::Vcpu(vcpu)) = sessions.remove(&vcpu_session) else {
-            return ax_err!(NotFound);
-        };
-        if let Some(Session::Vm(vm)) = sessions.get_mut(&vcpu.vm_session) {
-            vm.vcpu_ids.remove(&vcpu.vcpu_id);
-        }
-        vcpu.run_mapping
+fn remove_vcpu_file(vcpu_file: api_control::ControlFileId) -> AxResult {
+    let mut control_files = CONTROL_FILES.lock();
+    let Some(ControlFileState::Vcpu(vcpu)) = control_files.remove(&vcpu_file) else {
+        return ax_err!(NotFound);
     };
-    if let Some(run_mapping) = run_mapping {
-        let _ = api_control::release_user_mapping(run_mapping);
+    if let Some(ControlFileState::Vm(vm)) = control_files.get_mut(&vcpu.vm_file) {
+        vm.vcpu_files.remove(&vcpu.vcpu_id);
     }
+    let _ = api_control::release_mmap_area(vcpu.mmap_area);
     Ok(())
+}
+
+fn control_file_mmap_area(
+    control_file: api_control::ControlFileId,
+) -> AxResult<api_control::MmapAreaId> {
+    let control_files = CONTROL_FILES.lock();
+    let Some(ControlFileState::Vcpu(vcpu)) = control_files.get(&control_file) else {
+        return ax_err!(NotFound);
+    };
+    Ok(vcpu.mmap_area)
 }
 
 fn read_userspace_memory_region(arg: usize) -> AxResult<UserspaceMemoryRegion> {
     let mut bytes = [0u8; KVM_USERSPACE_MEMORY_REGION_SIZE as usize];
-    api_control::read_user(arg, &mut bytes)?;
+    api_control::copy_from_user(arg, &mut bytes)?;
 
     Ok(UserspaceMemoryRegion {
         slot: u32::from_ne_bytes(bytes[0..4].try_into().unwrap()),
@@ -975,7 +972,7 @@ fn read_userspace_memory_region(arg: usize) -> AxResult<UserspaceMemoryRegion> {
 
 fn read_ioeventfd(arg: usize) -> AxResult<KvmIoEventFd> {
     let mut bytes = [0u8; KVM_IOEVENTFD_SIZE as usize];
-    api_control::read_user(arg, &mut bytes)?;
+    api_control::copy_from_user(arg, &mut bytes)?;
 
     Ok(KvmIoEventFd {
         datamatch: u64::from_ne_bytes(bytes[0..8].try_into().unwrap()),
@@ -986,32 +983,32 @@ fn read_ioeventfd(arg: usize) -> AxResult<KvmIoEventFd> {
     })
 }
 
-fn update_ioeventfd(session: api_control::SessionId, ioeventfd: KvmIoEventFd) -> AxResult {
+fn update_ioeventfd(control_file: api_control::ControlFileId, ioeventfd: KvmIoEventFd) -> AxResult {
     validate_ioeventfd(ioeventfd)?;
 
     let key = IoEventFdKey {
         addr: ioeventfd.addr,
         datamatch: ioeventfd.datamatch,
     };
-    let notifier = if ioeventfd.flags & KVM_IOEVENTFD_FLAG_DEASSIGN == 0 {
-        Some(api_control::acquire_user_notifier(ioeventfd.fd)?)
+    let user_fd_ref = if ioeventfd.flags & KVM_IOEVENTFD_FLAG_DEASSIGN == 0 {
+        Some(api_control::get_user_fd_ref(ioeventfd.fd)?)
     } else {
         None
     };
-    let mut sessions = SESSIONS.lock();
-    let Some(Session::Vm(vm)) = sessions.get_mut(&session) else {
-        if let Some(notifier) = notifier {
-            let _ = api_control::release_user_notifier(notifier);
+    let mut control_files = CONTROL_FILES.lock();
+    let Some(ControlFileState::Vm(vm)) = control_files.get_mut(&control_file) else {
+        if let Some(user_fd_ref) = user_fd_ref {
+            let _ = api_control::release_user_fd_ref(user_fd_ref);
         }
         return ax_err!(NotFound);
     };
 
     if ioeventfd.flags & KVM_IOEVENTFD_FLAG_DEASSIGN != 0 {
         let existing = vm.ioeventfds.remove(&key).ok_or(AxError::NotFound)?;
-        let _ = api_control::release_user_notifier(existing.notifier);
+        let _ = api_control::release_user_fd_ref(existing.user_fd_ref);
     } else {
         if let Some(existing) = vm.ioeventfds.remove(&key) {
-            let _ = api_control::release_user_notifier(existing.notifier);
+            let _ = api_control::release_user_fd_ref(existing.user_fd_ref);
         }
         vm.ioeventfds.insert(
             key,
@@ -1019,7 +1016,7 @@ fn update_ioeventfd(session: api_control::SessionId, ioeventfd: KvmIoEventFd) ->
                 addr: ioeventfd.addr,
                 len: ioeventfd.len,
                 datamatch: ioeventfd.datamatch,
-                notifier: notifier.unwrap(),
+                user_fd_ref: user_fd_ref.unwrap(),
                 flags: ioeventfd.flags,
             },
         );
@@ -1044,17 +1041,17 @@ fn validate_ioeventfd(ioeventfd: KvmIoEventFd) -> AxResult {
 }
 
 fn signal_matching_ioeventfd(
-    session: api_control::SessionId,
+    control_file: api_control::ControlFileId,
     addr: u64,
     width: AccessWidth,
     data: u64,
 ) -> AxResult<bool> {
     let ioeventfd = {
-        let sessions = SESSIONS.lock();
-        let Some(Session::Vcpu(vcpu)) = sessions.get(&session) else {
+        let control_files = CONTROL_FILES.lock();
+        let Some(ControlFileState::Vcpu(vcpu)) = control_files.get(&control_file) else {
             return ax_err!(NotFound);
         };
-        let Some(Session::Vm(vm)) = sessions.get(&vcpu.vm_session) else {
+        let Some(ControlFileState::Vm(vm)) = control_files.get(&vcpu.vm_file) else {
             return ax_err!(NotFound);
         };
         vm.ioeventfds
@@ -1064,7 +1061,10 @@ fn signal_matching_ioeventfd(
     };
 
     if let Some(ioeventfd) = ioeventfd {
-        api_control::signal_user_notifier(ioeventfd.notifier)?;
+        let written = api_control::write_user_fd_ref(ioeventfd.user_fd_ref, &1u64.to_ne_bytes())?;
+        if written != core::mem::size_of::<u64>() {
+            return Err(AxError::Io);
+        }
         Ok(true)
     } else {
         Ok(false)
@@ -1083,28 +1083,28 @@ fn ioeventfd_matches(ioeventfd: &IoEventFd, addr: u64, width: AccessWidth, data:
 }
 
 fn write_u32_user(arg: usize, value: u32) -> AxResult {
-    api_control::write_user(arg, &value.to_ne_bytes())
+    api_control::copy_to_user(arg, &value.to_ne_bytes())
 }
 
 fn read_u32_user(arg: usize) -> AxResult<u32> {
     let mut bytes = [0u8; 4];
-    api_control::read_user(arg, &mut bytes)?;
+    api_control::copy_from_user(arg, &mut bytes)?;
     Ok(u32::from_ne_bytes(bytes))
 }
 
 fn read_u64_user(arg: usize) -> AxResult<u64> {
     let mut bytes = [0u8; 8];
-    api_control::read_user(arg, &mut bytes)?;
+    api_control::copy_from_user(arg, &mut bytes)?;
     Ok(u64::from_ne_bytes(bytes))
 }
 
 fn write_u64_user(arg: usize, value: u64) -> AxResult {
-    api_control::write_user(arg, &value.to_ne_bytes())
+    api_control::copy_to_user(arg, &value.to_ne_bytes())
 }
 
 fn read_one_reg(arg: usize) -> AxResult<OneReg> {
     let mut bytes = [0u8; KVM_ONE_REG_SIZE as usize];
-    api_control::read_user(arg, &mut bytes)?;
+    api_control::copy_from_user(arg, &mut bytes)?;
 
     Ok(OneReg {
         id: u64::from_ne_bytes(bytes[0..8].try_into().unwrap()),
@@ -1113,13 +1113,13 @@ fn read_one_reg(arg: usize) -> AxResult<OneReg> {
 }
 
 fn set_user_memory_region(
-    session: api_control::SessionId,
+    control_file: api_control::ControlFileId,
     region: UserspaceMemoryRegion,
 ) -> AxResult {
     validate_memory_region(region)?;
 
-    let mut sessions = SESSIONS.lock();
-    let Some(Session::Vm(vm)) = sessions.get_mut(&session) else {
+    let mut control_files = CONTROL_FILES.lock();
+    let Some(ControlFileState::Vm(vm)) = control_files.get_mut(&control_file) else {
         return ax_err!(NotFound);
     };
 
@@ -1132,27 +1132,27 @@ fn set_user_memory_region(
 
     let vm_ref = vm.vm.clone();
     ensure_no_memory_overlap(vm, region.slot, region.into())?;
-    drop(sessions);
+    drop(control_files);
 
-    let acquired = api_control::acquire_user_memory(
+    let pinned = api_control::pin_user_pages(
         region.userspace_addr as usize,
         region.memory_size as usize,
         true,
     )?;
-    let acquired_handle = acquired.handle;
+    let pinned_pages = pinned.id;
 
-    if let Err(err) = map_acquired_user_memory(&vm_ref, region, &acquired) {
-        let _ = api_control::release_user_memory(acquired_handle);
+    if let Err(err) = map_pinned_user_memory(&vm_ref, region, &pinned) {
+        let _ = api_control::release_pinned_user_pages(pinned_pages);
         return Err(err);
     }
 
     let new_slot = MemorySlot {
-        acquired_memory: acquired_handle,
+        pinned_pages,
         ..region.into()
     };
 
-    let mut sessions = SESSIONS.lock();
-    let Some(Session::Vm(vm)) = sessions.get_mut(&session) else {
+    let mut control_files = CONTROL_FILES.lock();
+    let Some(ControlFileState::Vm(vm)) = control_files.get_mut(&control_file) else {
         unmap_memory_slot(&vm_ref, new_slot);
         return ax_err!(NotFound);
     };
@@ -1194,24 +1194,24 @@ impl From<UserspaceMemoryRegion> for MemorySlot {
             guest_phys_addr: region.guest_phys_addr,
             memory_size: region.memory_size,
             userspace_addr: region.userspace_addr,
-            acquired_memory: 0,
+            pinned_pages: 0,
         }
     }
 }
 
-fn map_acquired_user_memory(
+fn map_pinned_user_memory(
     vm: &AxVMRef,
     region: UserspaceMemoryRegion,
-    acquired: &api_control::AcquiredUserMemory,
+    pinned: &api_control::PinnedUserPages,
 ) -> AxResult {
     let page_count = region.memory_size as usize / PAGE_SIZE_USIZE;
-    if acquired.pages.len() != page_count {
+    if pinned.pages.len() != page_count {
         return ax_err!(InvalidInput);
     }
 
     let flags =
         MappingFlags::READ | MappingFlags::WRITE | MappingFlags::EXECUTE | MappingFlags::USER;
-    for (mapped_pages, (page_index, page_hpa)) in acquired.pages.iter().enumerate().enumerate() {
+    for (mapped_pages, (page_index, page_hpa)) in pinned.pages.iter().enumerate().enumerate() {
         let page_gpa = region.guest_phys_addr as usize + page_index * PAGE_SIZE_USIZE;
         if let Err(err) = vm.map_region(
             GuestPhysAddr::from(page_gpa),
@@ -1237,12 +1237,12 @@ fn unmap_memory_slot(vm: &AxVMRef, slot: MemorySlot) {
         let page_gpa = slot.guest_phys_addr as usize + page_index * PAGE_SIZE_USIZE;
         let _ = vm.unmap_region(GuestPhysAddr::from(page_gpa), PAGE_SIZE_USIZE);
     }
-    if slot.acquired_memory != 0 {
-        let _ = api_control::release_user_memory(slot.acquired_memory);
+    if slot.pinned_pages != 0 {
+        let _ = api_control::release_pinned_user_pages(slot.pinned_pages);
     }
 }
 
-fn ensure_no_memory_overlap(vm: &VmSession, slot_id: u32, new_slot: MemorySlot) -> AxResult {
+fn ensure_no_memory_overlap(vm: &VmFileState, slot_id: u32, new_slot: MemorySlot) -> AxResult {
     let new_end = new_slot
         .guest_phys_addr
         .checked_add(new_slot.memory_size)
