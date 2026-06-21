@@ -23,7 +23,13 @@ hdr "L1: Weston compositor (GL renderer / llvmpipe)"
 [ ! -e /dev/dri/card0 ] && { fail "L1: no DRM device"; exit 1; }
 
 rm -f /tmp/weston.log /tmp/weston-stderr.log
-/usr/bin/weston \
+# LIBGL_DEBUG=verbose — Mesa prints EGL/GL initialization progress to stderr,
+# captured in /tmp/weston-stderr.log.  Essential for diagnosing slow llvmpipe
+# init (LLVM JIT) that can take 60-120s under QEMU TCG.
+# LIBGL_ALWAYS_SOFTWARE=1 — skip hardware GPU detection, force llvmpipe
+# directly.  Avoids Mesa probing /dev/dri/renderD128 (which we don't have)
+# and saves several seconds on slow CPUs.
+LIBGL_DEBUG=verbose LIBGL_ALWAYS_SOFTWARE=1 /usr/bin/weston \
     --backend=drm-backend.so \
     --renderer=gl \
     --shell=kiosk-shell.so \
@@ -44,18 +50,28 @@ pass "L1: Weston process alive (pid=$WESTON_PID)"
 
 # Wait for Wayland socket (GL init can take 25+ seconds locally,
 # 60-100+ seconds under QEMU TCG without KVM)
+WAYLAND_TIMEOUT="${WAYLAND_TIMEOUT:-240}"
 READY=0
-for i in $(seq 1 120); do
+for i in $(seq 1 "$WAYLAND_TIMEOUT"); do
     sleep 1
     DISP=$(ls /tmp/ 2>/dev/null | grep '^wayland-[0-9]*$' | head -1)
     if [ -n "$DISP" ]; then READY=1; break; fi
+    # If Weston died, fail early instead of waiting the full timeout
+    if ! kill -0 "$WESTON_PID" 2>/dev/null; then
+        fail "L1: Weston exited during init (after ${i}s)"
+        echo "=== Weston log (last 30 lines) ==="
+        tail -30 /tmp/weston.log 2>&1 || echo "(no log)"
+        echo "=== Weston stderr ==="
+        cat /tmp/weston-stderr.log 2>&1 || echo "(no stderr)"
+        echo "FFPLAY_TEST_FAILED"; exit 1
+    fi
     # 每 10 秒打印一次进度，方便调试
     [ $((i % 10)) -eq 0 ] && info "L1: waiting for Wayland socket... ${i}s"
 done
 if [ "$READY" -eq 1 ]; then
     pass "L1: Wayland socket /tmp/$DISP"
 else
-    fail "L1: no Wayland socket after 120s"
+    fail "L1: no Wayland socket after ${WAYLAND_TIMEOUT}s"
     echo "=== Weston log (last 30 lines) ==="
     tail -30 /tmp/weston.log 2>&1 || echo "(no log)"
     echo "=== Weston stderr ==="
