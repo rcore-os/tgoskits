@@ -37,6 +37,15 @@ impl ax_cgroup::CgroupProvider for KernelCgroupProvider {
             *pd.cgroup.write() = cgroup;
         }
     }
+
+    fn current_uid(&self) -> u32 {
+        // Effective UID of the task performing the cgroupfs write, for
+        // delegation checks. Kernel tasks (no thread) act as root (0).
+        use crate::task::AsThread;
+        ax_task::current()
+            .try_as_thread()
+            .map_or(0, |thr| thr.cred().euid)
+    }
 }
 
 /// Initialize the cgroup subsystem. Called once during boot.
