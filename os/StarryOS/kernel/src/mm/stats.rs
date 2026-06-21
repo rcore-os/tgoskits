@@ -41,6 +41,12 @@ pub struct ProcessMemStats {
     /// incremental counters or a PTE walk; Plan1 temporarily mirrors VSS (see
     /// `collect()` FIXME).
     pub resident_pages: u64,
+    /// Peak virtual address space in pages (VmPeak). Sourced from the
+    /// per-process atomic watermark updated on every successful map.
+    pub peak_pages: u64,
+    /// Peak resident set size in pages (VmHWM). Sourced from the
+    /// per-process atomic watermark updated on every successful map.
+    pub hwm_pages: u64,
     /// Lowest executable mapping start (stat `start_code`).
     pub start_code: u64,
     /// Highest executable mapping end (stat `end_code`).
@@ -131,6 +137,9 @@ fn accumulate_vma(
 
 impl ProcessMemStats {
     /// Collect memory statistics by iterating the address-space VMA list.
+    ///
+    /// Current VSS / VMA breakdown comes from a VMA walk; watermarks are
+    /// read directly from [`AddrSpace::vm_stat`] in O(1).
     pub fn collect(aspace: &AddrSpace) -> Self {
         let mut stats = Self::default();
         for area in aspace.areas() {
@@ -157,9 +166,12 @@ impl ProcessMemStats {
             );
         }
         // FIXME(plan2-rss): replace with real RSS from mm counters or PTE walk.
-        // Plan1 intentionally sets resident = VSS as an honest upper bound for
-        // lazily populated file-backed mappings; do not treat equality as API contract.
         stats.resident_pages = stats.vss_pages;
+        // Watermarks come from the O(1) atomic counters in vm_stat; the
+        // .max(current) floor handles the first collect after a fresh fork
+        // before any new mapping has updated the child's watermarks.
+        stats.peak_pages = aspace.vm_stat.peak_vss_pages().max(stats.vss_pages);
+        stats.hwm_pages = aspace.vm_stat.peak_rss_pages().max(stats.resident_pages);
         stats
     }
 
@@ -188,14 +200,16 @@ impl ProcessMemStats {
     /// Render Vm* lines for `/proc/[pid]/status` (kB, Linux `task_mem` layout).
     pub fn format_status_vm_lines(&self) -> String {
         let page_kb = PAGE_SIZE_4K as u64 / 1024;
+        let peak_kb = self.peak_pages * page_kb;
         let vss_kb = self.vss_pages * page_kb;
+        let hwm_kb = self.hwm_pages * page_kb;
         let resident_kb = self.resident_pages * page_kb;
         let data_kb = self.data_pages * page_kb;
         let stack_kb = self.stack_pages * page_kb;
         let exe_kb = self.exe_pages * page_kb;
         format!(
-            "VmPeak:\t{vss_kb} kB\nVmSize:\t{vss_kb} kB\nVmLck:\t0 kB\nVmPin:\t0 \
-             kB\nVmHWM:\t{resident_kb} kB\nVmRSS:\t{resident_kb} kB\nRssAnon:\t0 kB\nRssFile:\t0 \
+            "VmPeak:\t{peak_kb} kB\nVmSize:\t{vss_kb} kB\nVmLck:\t0 kB\nVmPin:\t0 \
+             kB\nVmHWM:\t{hwm_kb} kB\nVmRSS:\t{resident_kb} kB\nRssAnon:\t0 kB\nRssFile:\t0 \
              kB\nRssShmem:\t0 kB\nVmData:\t{data_kb} kB\nVmStk:\t{stack_kb} kB\nVmExe:\t{exe_kb} \
              kB\nVmLib:\t0 kB\nVmPTE:\t0 kB\nVmSwap:\t0 kB\n"
         )
@@ -314,10 +328,14 @@ mod tests {
             stack_pages: 32,
             exe_pages: 16,
             resident_pages: 256,
+            peak_pages: 512,
+            hwm_pages: 256,
             ..Default::default()
         };
         let lines = stats.format_status_vm_lines();
+        assert!(lines.contains("VmPeak:\t2048 kB\n"));
         assert!(lines.contains("VmSize:\t1024 kB\n"));
+        assert!(lines.contains("VmHWM:\t1024 kB\n"));
         assert!(lines.contains("VmRSS:\t1024 kB\n"));
         assert!(lines.contains("VmData:\t256 kB\n"));
         assert!(lines.contains("VmStk:\t128 kB\n"));

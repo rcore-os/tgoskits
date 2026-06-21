@@ -220,7 +220,20 @@ impl AxVM {
     pub fn init(&self) -> AxResult {
         let mut factories = DeviceFactoryRegistry::new();
         register_builtin_factories(&mut factories)?;
-        self.init_with_factories(&factories, InterruptFabric::new(self.interrupt_mode()))
+        let interrupt_mode = self.interrupt_mode();
+        #[cfg(target_arch = "riscv64")]
+        let interrupt_fabric = {
+            let inner_mut = self.inner_mut.lock();
+            crate::irq::riscv::configure(
+                &mut factories,
+                interrupt_mode,
+                inner_mut.config.emu_devices(),
+            )?
+        };
+        #[cfg(not(target_arch = "riscv64"))]
+        let interrupt_fabric = InterruptFabric::new(interrupt_mode);
+
+        self.init_with_factories(&factories, interrupt_fabric)
     }
 
     /// Sets up the VM with explicit device factories and an interrupt fabric.
