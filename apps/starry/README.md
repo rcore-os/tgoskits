@@ -81,11 +81,21 @@ Cargo features.
 
 ```bash
 apps/starry/macos-selfbuild/full_self_build.sh
-BOOT_ONLY=1 \
-  KERNEL=target/starry-macos-selfbuild/uploaded/starryos-aarch64-unknown-none-softfloat.bin \
-  ROOTFS=target/starry-macos-selfbuild/tgos-images/rootfs-aarch64-alpine.img/rootfs-aarch64-alpine.img \
-  SMP=4 JOBS=4 MEM=3072M QEMU_NET=0 QEMU_TIMEOUT_SEC=300 \
-  apps/starry/macos-selfbuild/run_selfbuild.sh
+qemu-system-aarch64 \
+  -snapshot \
+  -nographic \
+  -accel hvf \
+  -machine virt,gic-version=3 \
+  -cpu host \
+  -m 512M \
+  -smp 4 \
+  -device virtio-blk-pci,drive=disk0 \
+  -drive id=disk0,if=none,format=raw,file=target/starry-macos-selfbuild/tgos-images/rootfs-aarch64-alpine.img/rootfs-aarch64-alpine.img,file.locking=off \
+  -kernel target/starry-macos-selfbuild/uploaded/starryos-aarch64-unknown-none-softfloat.bin \
+  -append "someboot.aarch64_timer=virtual someboot.aarch64_gicd_spi=off" \
+  -monitor none \
+  -serial mon:stdio \
+  -net none
 ```
 
 `full_self_build.sh` is the default full entrypoint. It builds the seed kernel,
@@ -94,7 +104,8 @@ toolchain overlay, runs guest Cargo from QEMU/HVF, and extracts the guest-built
 kernel from the copied work rootfs into `target/starry-macos-selfbuild/uploaded/`.
 See `macos-selfbuild/README.md` and `macos-selfbuild/README_CN.md` for the script
 roles, M3 validation environment, per-stage timing, rootfs path, direct runner
-details, PASS markers, and boot-only verification of the self-built kernel.
+details, PASS markers, and direct QEMU boot verification of the self-built
+kernel.
 
 ## Redis
 

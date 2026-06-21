@@ -4,7 +4,10 @@ use clap::{Args as ClapArgs, Subcommand};
 
 use crate::{
     context::AppContext,
-    rootfs::resize::{ResizeOptions, resize_ext_rootfs_image},
+    rootfs::{
+        inject,
+        resize::{ResizeOptions, resize_ext_rootfs_image},
+    },
     support::download::file_sha256,
 };
 
@@ -66,6 +69,8 @@ pub enum Command {
     Pull(ArgsPull),
     /// Resize an ext rootfs image, optionally copying it first.
     Resize(ArgsResize),
+    /// Inject an overlay directory tree into an ext rootfs image.
+    Inject(ArgsInject),
     /// Print and optionally verify the sha256 of a local image.
     Check(ArgsCheck),
 }
@@ -120,6 +125,16 @@ pub struct ArgsResize {
     pub size_mib: u64,
 }
 
+#[derive(ClapArgs)]
+pub struct ArgsInject {
+    /// Rootfs image to patch in place.
+    pub image: PathBuf,
+
+    /// Overlay directory whose relative paths become guest absolute paths.
+    #[arg(short, long)]
+    pub overlay: PathBuf,
+}
+
 pub(crate) async fn run(args: ImageArgs) -> anyhow::Result<()> {
     execute(args).await
 }
@@ -130,6 +145,7 @@ async fn execute(args: ImageArgs) -> anyhow::Result<()> {
         Command::Ls(ls) => list_images(app.workspace_root(), &args.overrides, ls).await,
         Command::Pull(pull) => pull_image(app.workspace_root(), &args.overrides, pull).await,
         Command::Resize(resize) => resize_image(resize),
+        Command::Inject(inject) => inject_image(inject),
         Command::Check(check) => {
             let path = to_absolute_path(&check.image)?;
             let ok = check_image(&path, check.sha256.as_deref())?;
@@ -254,6 +270,18 @@ fn resize_image(args: ArgsResize) -> anyhow::Result<()> {
     Ok(())
 }
 
+fn inject_image(args: ArgsInject) -> anyhow::Result<()> {
+    let image = to_absolute_path(&args.image)?;
+    let overlay = to_absolute_path(&args.overlay)?;
+    inject::inject_overlay(&image, &overlay)?;
+    println!(
+        "overlay {} injected into {}",
+        overlay.display(),
+        image.display()
+    );
+    Ok(())
+}
+
 fn to_absolute_path(path: &Path) -> anyhow::Result<PathBuf> {
     Ok(if path.is_absolute() {
         path.to_path_buf()
@@ -369,6 +397,20 @@ mod tests {
                 assert_eq!(args.size_mib, 16384);
             }
             _ => panic!("expected resize command"),
+        }
+    }
+
+    #[test]
+    fn parses_inject_with_overlay() {
+        let cli =
+            Cli::try_parse_from(["image", "inject", "rootfs.img", "--overlay", "overlay"]).unwrap();
+
+        match cli.command {
+            Command::Inject(args) => {
+                assert_eq!(args.image, PathBuf::from("rootfs.img"));
+                assert_eq!(args.overlay, PathBuf::from("overlay"));
+            }
+            _ => panic!("expected inject command"),
         }
     }
 }

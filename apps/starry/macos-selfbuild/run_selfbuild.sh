@@ -15,9 +15,10 @@ or run stage 3 directly after the seed kernel and rootfs inputs already exist:
   ROOTFS=target/starry-macos-selfbuild/tgos-images/rootfs-aarch64-alpine.img/rootfs-aarch64-alpine.img \
   apps/starry/macos-selfbuild/run_selfbuild.sh
 
-Stage 3 copies the managed rootfs to a per-run work image, prepares and injects
-the app overlay, launches QEMU/HVF, starts the guest self-build command, and
-extracts the guest-built kernel from the work image after QEMU exits.
+Stage 3 copies the managed rootfs to a per-run work image, prepares the app
+overlay, injects it with `cargo xtask image inject`, launches QEMU/HVF, starts
+the guest self-build command, and extracts the guest-built kernel from the work
+image after QEMU exits.
 
 Common knobs:
   SMP=4 JOBS=4 MEM=8192M SOURCE_TMPFS=1 QEMU_TIMEOUT_SEC=7200
@@ -164,78 +165,63 @@ rootfs_fsck() {
     fi
 }
 
-file_mode_octal() {
-    local path="$1"
-    local mode
+write_guest_runner() {
+    local guest_runner="$1"
 
-    if mode="$(stat -f %Lp "$path" 2>/dev/null)"; then
-        printf '%s\n' "$mode"
-        return
-    fi
-    stat -c %a "$path"
+    mkdir -p "$(dirname "$guest_runner")"
+    {
+        printf '#!/bin/sh\n'
+        printf 'set -eu\n'
+        emit_export "JOBS" "$jobs"
+        emit_export "SMP" "$smp"
+        emit_export "RAYON_NUM_THREADS" "${RAYON_NUM_THREADS:-1}"
+        emit_export "RUSTC_THREADS" "${RUSTC_THREADS:-2}"
+        emit_export "SOURCE_TMPFS" "$source_tmpfs"
+        emit_export "ARTIFACT_TO_BIN" "${ARTIFACT_TO_BIN:-1}"
+        emit_export "STARRY_KALLSYMS_RESERVED" "${STARRY_KALLSYMS_RESERVED:-16M}"
+        emit_export "FEATURES" "${FEATURES:-plat-dyn,ax-driver/virtio-blk,ax-driver/virtio-net,smp}"
+        emit_export "CARGO_BIN" "${CARGO_BIN:-/opt/cargo-nightly-sysroot}"
+        emit_export "SOURCE_DIR" "${SOURCE_DIR:-/opt/tgoskits}"
+        emit_export "WORK_DIR" "${WORK_DIR:-/tmp/starryos-selfbuild-src}"
+        emit_export "CARGO_TARGET_DIR" "${CARGO_TARGET_DIR:-/tmp/starryos-selfbuild-target}"
+        emit_export "ARTIFACT_DIR" "$guest_artifact_dir"
+        emit_export "CARGO_VERBOSE" "${CARGO_VERBOSE:-0}"
+        if [[ -n "${CARGO_PROFILE_RELEASE_LTO+x}" ]]; then
+            emit_export "CARGO_PROFILE_RELEASE_LTO" "$CARGO_PROFILE_RELEASE_LTO"
+        fi
+        if [[ -n "${CARGO_PROFILE_RELEASE_OPT_LEVEL+x}" ]]; then
+            emit_export "CARGO_PROFILE_RELEASE_OPT_LEVEL" "$CARGO_PROFILE_RELEASE_OPT_LEVEL"
+        fi
+        if [[ -n "${CARGO_PROFILE_RELEASE_CODEGEN_UNITS+x}" ]]; then
+            emit_export "CARGO_PROFILE_RELEASE_CODEGEN_UNITS" "$CARGO_PROFILE_RELEASE_CODEGEN_UNITS"
+        fi
+        if [[ -n "${CARGO_PROFILE_RELEASE_DEBUG+x}" ]]; then
+            emit_export "CARGO_PROFILE_RELEASE_DEBUG" "$CARGO_PROFILE_RELEASE_DEBUG"
+        fi
+        emit_export "TGOSKITS_COMMIT" "$source_commit"
+        emit_export "TGOSKITS_REF" "$source_ref"
+        if [[ -n "${LINK_RUSTFLAGS+x}" ]]; then
+            emit_export "LINK_RUSTFLAGS" "$LINK_RUSTFLAGS"
+        fi
+        if [[ -n "${EXTRA_RUSTFLAGS:-}" ]]; then
+            emit_export "EXTRA_RUSTFLAGS" "$EXTRA_RUSTFLAGS"
+        fi
+        printf 'exec /bin/sh /opt/starry-macos-selfbuild.sh\n'
+    } >"$guest_runner"
+    chmod 0755 "$guest_runner"
 }
 
-guest_symlink_target() {
-    local rel="$1"
-    local target="$2"
-    local dir
+inject_overlay_with_xtask() {
+    local inject_log="$work_dir/xtask-image-inject.log"
 
-    if [[ "$target" = /* ]]; then
-        printf '%s\n' "$target"
-        return
-    fi
-
-    dir="$(dirname "$rel")"
-    if [[ "$dir" = "." ]]; then
-        printf '/%s\n' "$target"
-    else
-        printf '/%s/%s\n' "$dir" "$target"
-    fi
-}
-
-inject_overlay_tree() {
-    local src="$1"
-    local cmd="$work_dir/debugfs-overlay.cmd"
-    local inject_log="$work_dir/debugfs-overlay.log"
-    local rel guest_path mode target
-
-    if [[ ! -d "$src" ]]; then
-        echo "overlay directory not found: $src" >&2
-        return 1
-    fi
-
-    : >"$cmd"
-    while IFS= read -r rel; do
-        [[ "$rel" = "." ]] && continue
-        guest_path="/${rel#./}"
-        printf 'mkdir %s\n' "$guest_path" >>"$cmd"
-    done < <(cd "$src" && LC_ALL=C find . -type d | sort)
-
-    while IFS= read -r rel; do
-        guest_path="/${rel#./}"
-        mode="$(file_mode_octal "$src/$rel")"
-        {
-            printf 'rm %s\n' "$guest_path"
-            printf 'write %s %s\n' "$src/$rel" "$guest_path"
-            printf 'sif %s mode 0100%s\n' "$guest_path" "$mode"
-        } >>"$cmd"
-    done < <(cd "$src" && LC_ALL=C find . -type f | sort)
-
-    while IFS= read -r rel; do
-        guest_path="/${rel#./}"
-        target="$(readlink "$src/$rel")"
-        {
-            printf 'rm %s\n' "$guest_path"
-            printf 'symlink %s %s\n' "$guest_path" "$(guest_symlink_target "${rel#./}" "$target")"
-        } >>"$cmd"
-    done < <(cd "$src" && LC_ALL=C find . -type l | sort)
-
-    echo "inject_overlay=$src"
-    if ! "$debugfs" -w -f "$cmd" "$work_rootfs" >"$inject_log" 2>&1; then
+    echo "inject_overlay=$overlay_dir"
+    if ! (cd "$repo_root" && cargo xtask image inject "$work_rootfs" --overlay "$overlay_dir") >"$inject_log" 2>&1; then
         cat "$inject_log" >&2 || true
         echo "failed to inject overlay into $work_rootfs" >&2
         return 1
     fi
+    LC_ALL=C grep -a " injected into " "$inject_log" | tail -1 \
+        || echo "overlay injected into $work_rootfs"
 }
 
 prepare_and_inject_overlay() {
@@ -247,7 +233,9 @@ prepare_and_inject_overlay() {
         STARRY_WORKSPACE="$repo_root" \
         STARRY_OVERLAY_DIR="$overlay_dir" \
         "$script_dir/prebuild.sh"
-    inject_overlay_tree "$overlay_dir"
+    install -m 0755 "$guest_script" "$overlay_dir/opt/starry-macos-selfbuild.sh"
+    write_guest_runner "$overlay_dir/opt/starry-macos-run.sh"
+    inject_overlay_with_xtask
 }
 
 if [[ ! -f "$kernel" ]]; then
@@ -300,59 +288,6 @@ EOF
     fi
 fi
 
-guest_runner="$work_dir/starry-macos-run.sh"
-{
-    printf '#!/bin/sh\n'
-    printf 'set -eu\n'
-    emit_export "JOBS" "$jobs"
-    emit_export "SMP" "$smp"
-    emit_export "RAYON_NUM_THREADS" "${RAYON_NUM_THREADS:-1}"
-    emit_export "RUSTC_THREADS" "${RUSTC_THREADS:-2}"
-    emit_export "SOURCE_TMPFS" "$source_tmpfs"
-    emit_export "ARTIFACT_TO_BIN" "${ARTIFACT_TO_BIN:-1}"
-    emit_export "STARRY_KALLSYMS_RESERVED" "${STARRY_KALLSYMS_RESERVED:-16M}"
-    emit_export "FEATURES" "${FEATURES:-plat-dyn,ax-driver/virtio-blk,ax-driver/virtio-net,smp}"
-    emit_export "CARGO_BIN" "${CARGO_BIN:-/opt/cargo-nightly-sysroot}"
-    emit_export "SOURCE_DIR" "${SOURCE_DIR:-/opt/tgoskits}"
-    emit_export "WORK_DIR" "${WORK_DIR:-/tmp/starryos-selfbuild-src}"
-    emit_export "CARGO_TARGET_DIR" "${CARGO_TARGET_DIR:-/tmp/starryos-selfbuild-target}"
-    emit_export "ARTIFACT_DIR" "$guest_artifact_dir"
-    emit_export "CARGO_VERBOSE" "${CARGO_VERBOSE:-0}"
-    if [[ -n "${CARGO_PROFILE_RELEASE_LTO+x}" ]]; then
-        emit_export "CARGO_PROFILE_RELEASE_LTO" "$CARGO_PROFILE_RELEASE_LTO"
-    fi
-    if [[ -n "${CARGO_PROFILE_RELEASE_OPT_LEVEL+x}" ]]; then
-        emit_export "CARGO_PROFILE_RELEASE_OPT_LEVEL" "$CARGO_PROFILE_RELEASE_OPT_LEVEL"
-    fi
-    if [[ -n "${CARGO_PROFILE_RELEASE_CODEGEN_UNITS+x}" ]]; then
-        emit_export "CARGO_PROFILE_RELEASE_CODEGEN_UNITS" "$CARGO_PROFILE_RELEASE_CODEGEN_UNITS"
-    fi
-    if [[ -n "${CARGO_PROFILE_RELEASE_DEBUG+x}" ]]; then
-        emit_export "CARGO_PROFILE_RELEASE_DEBUG" "$CARGO_PROFILE_RELEASE_DEBUG"
-    fi
-    emit_export "TGOSKITS_COMMIT" "$source_commit"
-    emit_export "TGOSKITS_REF" "$source_ref"
-    if [[ -n "${LINK_RUSTFLAGS+x}" ]]; then
-        emit_export "LINK_RUSTFLAGS" "$LINK_RUSTFLAGS"
-    fi
-    if [[ -n "${EXTRA_RUSTFLAGS:-}" ]]; then
-        emit_export "EXTRA_RUSTFLAGS" "$EXTRA_RUSTFLAGS"
-    fi
-    printf 'exec /bin/sh /opt/starry-macos-selfbuild.sh\n'
-} >"$guest_runner"
-chmod +x "$guest_runner"
-
-debugfs_cmd="$work_dir/debugfs-inject.cmd"
-cat >"$debugfs_cmd" <<EOF
-rm /opt/starry-macos-selfbuild.sh
-rm /opt/starry-macos-run.sh
-write $guest_script /opt/starry-macos-selfbuild.sh
-write $guest_runner /opt/starry-macos-run.sh
-sif /opt/starry-macos-selfbuild.sh mode 0100755
-sif /opt/starry-macos-run.sh mode 0100755
-EOF
-
-"$debugfs" -w -f "$debugfs_cmd" "$work_rootfs" >/dev/null
 rootfs_fsck pre-qemu
 
 input_fifo="$work_dir/qemu-stdin.fifo"

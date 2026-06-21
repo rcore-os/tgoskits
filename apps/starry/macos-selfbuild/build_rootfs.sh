@@ -85,10 +85,4 @@ toolchain_args=(--output "$repo_root/target/starry-macos-selfbuild/rootfs-build/
 if [[ "$force_toolchain" = "1" ]]; then
     toolchain_args+=(--force)
 fi
-"$script_dir/prepare_toolchain_overlay.sh" "${toolchain_args[@]}"
-
-cat <<EOF
-rootfs=$rootfs
-toolchain_overlay=$repo_root/target/starry-macos-selfbuild/rootfs-build/toolchain-overlay
-overlay_injection=apps/starry/macos-selfbuild/run_selfbuild.sh
-EOF
+"$script_dir/prepare_toolchain_ov
