@@ -149,7 +149,7 @@ install_guest_packages() {
         --no-interactive \
         --force-no-chroot \
         --scripts=no \
-        add gdb gcc musl-dev
+        add gdb gcc musl-dev ncurses-terminfo-base
 }
 
 compile_target() {
@@ -236,6 +236,8 @@ populate_overlay() {
         "$app_dir/native/src/main.c" \
         /usr/bin/gdb-native-smoke-target \
         -Wall -Wextra -Werror -O0 -g
+    install -Dm0644 "$app_dir/native/src/main.c" \
+        "$overlay_dir/workspace/apps/starry/gdb-smoke/native/src/main.c"
     compile_target \
         "$app_dir/native-thread/src/main.c" \
         /usr/bin/gdb-native-thread-target \
@@ -261,6 +263,10 @@ populate_overlay() {
         mkdir -p "$overlay_dir/usr/share"
         cp -a "$staging_root/usr/share/gdb" "$overlay_dir/usr/share/"
     fi
+    if [[ -d "$staging_root/usr/share/terminfo" ]]; then
+        mkdir -p "$overlay_dir/usr/share"
+        cp -a "$staging_root/usr/share/terminfo" "$overlay_dir/usr/share/"
+    fi
     if [[ -d "$staging_root/usr/lib/python3.12" ]]; then
         mkdir -p "$overlay_dir/usr/lib"
         cp -a "$staging_root/usr/lib/python3.12" "$overlay_dir/usr/lib/"
@@ -268,6 +274,10 @@ populate_overlay() {
 
     install -Dm0755 "$app_dir/native/gdb-native-smoke.gdb" \
         "$overlay_dir/usr/bin/gdb-native-smoke.gdb"
+    install -Dm0755 "$app_dir/native/gdb-native-tui.sh" \
+        "$overlay_dir/usr/bin/gdb-native-tui.sh"
+    install -Dm0644 "$app_dir/native/gdb-native-tui.gdb" \
+        "$overlay_dir/usr/bin/gdb-native-tui.gdb"
     install -Dm0755 "$app_dir/native-thread/gdb-native-threads.gdb" \
         "$overlay_dir/usr/bin/gdb-native-threads.gdb"
     install -Dm0644 "$app_dir/gdbserver/gdbserver-smoke.gdb" \

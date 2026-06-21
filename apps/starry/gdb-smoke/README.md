@@ -10,6 +10,7 @@ aarch64, loongarch64, and x86_64.
 Use this command for the automated native GDB batch smoke:
 
 ```bash
+cargo xtask starry app qemu -t gdb-smoke --arch x86_64
 cargo xtask starry app qemu -t gdb-smoke --arch riscv64
 ```
 
@@ -55,6 +56,8 @@ Success requires all `GDB_NATIVE_*` markers from
 Use this entry when you want an interactive StarryOS shell:
 
 ```bash
+cargo xtask starry app qemu -t gdb-smoke --arch x86_64 \
+  --qemu-config qemu-x86_64-manual.toml
 cargo xtask starry app qemu -t gdb-smoke --arch riscv64 \
   --qemu-config qemu-riscv64-manual.toml
 ```
@@ -98,6 +101,96 @@ The native target uses a clear call chain:
 ```text
 main -> demo_entry -> demo_worker -> native_marker
 ```
+
+## Manual Native GDB TUI Demo
+
+Use the same interactive QEMU entry as the manual native GDB demo:
+
+```bash
+docker exec -it tgoskits-dev cargo xtask starry app qemu -t gdb-smoke --arch riscv64 \
+  --qemu-config qemu-riscv64-manual.toml
+```
+
+Inside StarryOS:
+
+```bash
+gdb-native-tui.sh
+```
+
+The helper sets a usable `TERM` when needed and starts `gdb -tui` on
+`/usr/bin/gdb-native-smoke-target`. To debug a different program, pass it as the
+first argument:
+
+```bash
+gdb-native-tui.sh /path/to/program
+```
+
+For the scripted layout demo, run:
+
+```bash
+gdb-native-tui.sh --demo
+```
+
+The demo breaks at `native_marker`, runs to the breakpoint, and opens
+`layout src`. The target source is copied into the guest under the same
+`/workspace/...` path used by the debug info so `layout src` can show the smoke
+target source. It stops at the GDB prompt after printing
+`GDB_NATIVE_TUI_READY`.
+
+Inside GDB:
+
+```gdb
+layout asm
+layout regs
+refresh
+tui disable
+bt
+continue
+quit
+```
+
+For the current StarryOS TTY implementation, prefer disabling TUI before
+continuing the target to process exit. `layout regs` is useful while the process
+is stopped, but after the inferior exits GDB may still try to refresh the
+register window and leave stale full-screen drawing on the serial console.
+`refresh` or `Ctrl-L` can repaint the current TUI screen; `tui disable` returns
+to the normal CLI view.
+
+This path is intentionally manual. GDB TUI is a full-screen terminal UI, so it
+is not part of the default batch smoke or CI path.
+
+### PTY Console Variant
+
+The default manual config uses QEMU `-nographic`, which routes the guest serial
+console through the same stdio stream as the QEMU process. For comparing GDB
+TUI responsiveness, use the PTY variant:
+
+```bash
+docker exec -it tgoskits-dev cargo xtask starry app qemu -t gdb-smoke --arch riscv64 \
+  --qemu-config qemu-riscv64-tui-pty.toml
+```
+
+QEMU prints a line like:
+
+```text
+char device redirected to /dev/pts/N
+```
+
+Open a second terminal and attach to that PTY inside the same Docker container.
+Use a bidirectional PTY tool such as `socat`:
+
+```bash
+docker exec -it tgoskits-dev sh -lc 'command -v socat >/dev/null || (apt-get update && apt-get install -y --no-install-recommends socat); socat -,raw,echo=0 /dev/pts/N,raw,echo=0'
+```
+
+If `screen` is already available, this is also fine:
+
+```bash
+docker exec -it tgoskits-dev screen /dev/pts/N
+```
+
+Then run the same guest-side GDB TUI commands. This path is for manual
+comparison only; it is not suitable for default CI.
 
 ## Native Thread GDB Smoke
 
