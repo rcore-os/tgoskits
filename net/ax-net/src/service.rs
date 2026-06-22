@@ -308,9 +308,16 @@ pub struct Service {
     pub iface: Interface,
     router: Router,
     control: Arc<NetControl>,
-    timeout: Option<Pin<Box<dyn Future<Output = ()> + Send>>>,
+    timeouts: Vec<TimeoutRegistration>,
     dhcp: Vec<DhcpState>,
     dhcp_server: Option<DhcpServer>,
+    dhcp_events: Vec<DhcpEvent>,
+    dhcp_server_replies: Vec<(usize, Vec<u8>)>,
+}
+
+struct TimeoutRegistration {
+    deadline: Instant,
+    _future: Pin<Box<dyn Future<Output = ()> + Send>>,
 }
 
 #[derive(Clone)]
@@ -534,9 +541,11 @@ impl Service {
             iface,
             router,
             control,
-            timeout: None,
+            timeouts: Vec::new(),
             dhcp: Vec::new(),
             dhcp_server: None,
+            dhcp_events: Vec::new(),
+            dhcp_server_replies: Vec::new(),
         }
     }
 
@@ -714,8 +723,10 @@ impl Service {
 
     pub fn poll(&mut self, sockets: &mut SocketSet) -> bool {
         let timestamp = now();
-        let mut dhcp_events = Vec::new();
-        let mut dhcp_server_replies = Vec::new();
+        let mut dhcp_events = core::mem::take(&mut self.dhcp_events);
+        let mut dhcp_server_replies = core::mem::take(&mut self.dhcp_server_replies);
+        dhcp_events.clear();
+        dhcp_server_replies.clear();
         let router_rx_pending;
 
         {
@@ -736,18 +747,21 @@ impl Service {
                     }
                 });
         }
-        for event in dhcp_events {
+        for event in dhcp_events.drain(..) {
             self.handle_dhcp_event(event);
         }
         let mut dhcp_server_sent = false;
-        for (dev, reply) in dhcp_server_replies {
+        for (dev, reply) in &dhcp_server_replies {
             dhcp_server_sent |= self.router.send_on_device(
-                dev,
+                *dev,
                 IpAddress::Ipv4(Ipv4Address::BROADCAST),
-                &reply,
+                reply,
                 timestamp,
             );
         }
+        dhcp_server_replies.clear();
+        self.dhcp_events = dhcp_events;
+        self.dhcp_server_replies = dhcp_server_replies;
         let socket_state_changed =
             self.iface.poll(timestamp, &mut self.router, sockets) == PollResult::SocketStateChanged;
         let dhcp_poll_next = self.poll_dhcp(timestamp);
@@ -913,9 +927,6 @@ impl Service {
         if let Some(t) = next {
             let next = TimeValue::from_micros(t.total_micros() as _);
 
-            // drop old timeout future
-            self.timeout = None;
-
             let mut fut = Box::pin(sleep_until(next));
             let mut cx = Context::from_waker(waker);
 
@@ -923,7 +934,12 @@ impl Service {
                 waker.wake_by_ref();
                 return;
             } else {
-                self.timeout = Some(fut);
+                let now = now();
+                self.timeouts.retain(|timeout| timeout.deadline > now);
+                self.timeouts.push(TimeoutRegistration {
+                    deadline: t,
+                    _future: fut,
+                });
             }
         }
 

@@ -25,12 +25,13 @@
 //! module. The required order is `SOCKET_SET -> listen-table bucket`; this file
 //! must never acquire the outer service lock.
 
-use alloc::{boxed::Box, collections::VecDeque, sync::Arc, vec, vec::Vec};
+use alloc::{collections::VecDeque, sync::Arc, vec, vec::Vec};
 use core::task::Waker;
 
 use ax_errno::{AxError, AxResult};
 use ax_sync::Mutex;
 use axpoll::{IoEvents, PollSet};
+use hashbrown::HashMap;
 use smoltcp::{
     iface::{SocketHandle, SocketSet},
     socket::tcp::{self, SocketBuffer, State},
@@ -42,8 +43,6 @@ use crate::{
     addr::listen_addrs_conflict,
     consts::{LISTEN_QUEUE_SIZE, TCP_RX_BUF_LEN, TCP_TX_BUF_LEN},
 };
-
-const PORT_NUM: usize = 65536;
 
 struct ListenTableEntryInner {
     /// Local endpoint accepted by this listener.
@@ -110,25 +109,23 @@ type ListenTableEntry = Arc<Mutex<Vec<ListenTableEntryInner>>>;
 
 /// Per-port table of active TCP listeners.
 pub struct ListenTable {
-    tcp: Box<[ListenTableEntry]>,
+    tcp: Mutex<HashMap<u16, ListenTableEntry>>,
 }
 
 impl ListenTable {
     /// Creates an empty listen table indexed by TCP port.
     pub fn new() -> Self {
-        let tcp = unsafe {
-            let mut buf = Box::new_uninit_slice(PORT_NUM);
-            for i in 0..PORT_NUM {
-                buf[i].write(Arc::default());
-            }
-            buf.assume_init()
-        };
-        Self { tcp }
+        Self {
+            tcp: Mutex::new(HashMap::new()),
+        }
     }
 
     /// Checks whether a listen endpoint can be registered.
     pub fn can_listen(&self, listen_endpoint: IpListenEndpoint) -> bool {
-        self.tcp[listen_endpoint.port as usize]
+        let Some(entries) = self.listen_entry(listen_endpoint.port) else {
+            return true;
+        };
+        entries
             .lock()
             .iter()
             .all(|entry| !listen_addrs_conflict(entry.listen_endpoint.addr, listen_endpoint.addr))
@@ -138,7 +135,8 @@ impl ListenTable {
     pub fn listen(&self, listen_endpoint: IpListenEndpoint, backlog: usize) -> AxResult {
         let port = listen_endpoint.port;
         assert_ne!(port, 0);
-        let mut entries = self.tcp[port as usize].lock();
+        let entries = self.listen_entry_or_create(port);
+        let mut entries = entries.lock();
         if entries
             .iter()
             .any(|entry| listen_addrs_conflict(entry.listen_endpoint.addr, listen_endpoint.addr))
@@ -153,23 +151,34 @@ impl ListenTable {
     /// Removes a listener and destroys any unaccepted child sockets.
     pub fn unlisten(&self, listen_endpoint: IpListenEndpoint) {
         debug!("TCP socket unlisten on {}", listen_endpoint);
-        let handles = {
-            let mut entries = self.tcp[listen_endpoint.port as usize].lock();
+        let (handles, remove_port) = {
+            let Some(entries) = self.listen_entry(listen_endpoint.port) else {
+                return;
+            };
+            let mut entries = entries.lock();
             let Some(idx) = entries
                 .iter()
                 .position(|entry| entry.listen_endpoint == listen_endpoint)
             else {
                 return;
             };
-            entries.swap_remove(idx).into_handles()
+            let handles = entries.swap_remove(idx).into_handles();
+            (handles, entries.is_empty())
         };
+        if remove_port {
+            self.tcp.lock().remove(&listen_endpoint.port);
+        }
         for handle in handles {
             SOCKET_SET.remove(handle);
         }
     }
 
-    fn listen_entry(&self, port: u16) -> Arc<Mutex<Vec<ListenTableEntryInner>>> {
-        self.tcp[port as usize].clone()
+    fn listen_entry(&self, port: u16) -> Option<ListenTableEntry> {
+        self.tcp.lock().get(&port).cloned()
+    }
+
+    fn listen_entry_or_create(&self, port: u16) -> ListenTableEntry {
+        self.tcp.lock().entry(port).or_default().clone()
     }
 
     // Callers pass the locked SocketSet to keep the global order:
@@ -180,7 +189,10 @@ impl ListenTable {
         listen_endpoint: IpListenEndpoint,
         sockets: &SocketSet<'_>,
     ) -> AxResult<bool> {
-        let entries = self.listen_entry(listen_endpoint.port);
+        let Some(entries) = self.listen_entry(listen_endpoint.port) else {
+            warn!("accept before listen");
+            return Err(AxError::InvalidInput);
+        };
         let table = entries.lock();
         if let Some(entry) = table
             .iter()
@@ -202,7 +214,10 @@ impl ListenTable {
         listen_endpoint: IpListenEndpoint,
         sockets: &mut SocketSet<'_>,
     ) -> AxResult<AcceptedTcp> {
-        let entries = self.listen_entry(listen_endpoint.port);
+        let Some(entries) = self.listen_entry(listen_endpoint.port) else {
+            warn!("accept before listen");
+            return Err(AxError::InvalidInput);
+        };
         let mut table = entries.lock();
         let Some(entry) = table
             .iter_mut()
@@ -238,7 +253,7 @@ impl ListenTable {
 
     /// Returns the listener readiness poll set for lock-free registration.
     pub fn accept_poll(&self, listen_endpoint: IpListenEndpoint) -> Option<Arc<PollSet>> {
-        let entries = self.listen_entry(listen_endpoint.port);
+        let entries = self.listen_entry(listen_endpoint.port)?;
         let table = entries.lock();
         table
             .iter()
@@ -262,7 +277,9 @@ impl ListenTable {
         accept_poll: &Arc<PollSet>,
         waker: &Waker,
     ) {
-        let entries = self.listen_entry(listen_endpoint.port);
+        let Some(entries) = self.listen_entry(listen_endpoint.port) else {
+            return;
+        };
         let table = entries.lock();
         let Some(entry) = table.iter().find(|entry| {
             entry.listen_endpoint == listen_endpoint && Arc::ptr_eq(&entry.accept_poll, accept_poll)
@@ -283,7 +300,9 @@ impl ListenTable {
         dst: IpEndpoint,
         sockets: &mut SocketSet<'_>,
     ) {
-        let entries = self.listen_entry(dst.port);
+        let Some(entries) = self.listen_entry(dst.port) else {
+            return;
+        };
         let wake_poll = {
             let mut table = entries.lock();
             let Some(entry) = table

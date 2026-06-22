@@ -47,7 +47,7 @@ use core::{
     task::Waker,
 };
 
-use ax_hal::time::{NANOS_PER_MICROS, wall_time_nanos};
+use ax_hal::time::{NANOS_PER_MICROS, monotonic_time_nanos};
 use ax_sync::Mutex;
 use ax_task::WaitQueue;
 use axpoll::IoEvents;
@@ -69,6 +69,8 @@ use crate::{
     consts::{DEVICE_RX_QUEUE_SIZE, DEVICE_TX_QUEUE_SIZE, SOCKET_BUFFER_SIZE, STANDARD_MTU},
     device::{ArpEntry, Device},
 };
+
+const DEVICE_RX_WORKER_BATCH: usize = 16;
 
 #[derive(Debug)]
 pub struct Rule {
@@ -308,7 +310,7 @@ impl Wake for DeviceRxWake {
 }
 
 fn now() -> Instant {
-    Instant::from_micros_const((wall_time_nanos() / NANOS_PER_MICROS) as i64)
+    Instant::from_micros_const((monotonic_time_nanos() / NANOS_PER_MICROS) as i64)
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -833,14 +835,17 @@ fn device_tx_worker(device: Arc<DeviceHandle>) {
 
 /// Dedicated worker that polls one device and forwards packets to router RX.
 fn device_rx_worker(device: Arc<DeviceHandle>) {
-    let mut rx_buffer = PacketBuffer::new(vec![PacketMetadata::EMPTY; 1], vec![0u8; STANDARD_MTU]);
+    let mut rx_buffer = PacketBuffer::new(
+        vec![PacketMetadata::EMPTY; DEVICE_RX_WORKER_BATCH],
+        vec![0u8; STANDARD_MTU * DEVICE_RX_WORKER_BATCH],
+    );
 
     loop {
         let mut received = false;
         {
             let mut device_inner = device.inner.lock();
             let mut snoop = |_packet: &[u8]| {};
-            while rx_buffer.is_empty()
+            while !rx_buffer.is_full()
                 && device_inner.recv(device.interface_id, &mut rx_buffer, now(), &mut snoop)
             {
                 received = true;
@@ -898,11 +903,13 @@ impl smoltcp::phy::TxToken for TxToken<'_> {
 
 /// Detects passive TCP opens before smoltcp consumes the incoming packet.
 fn snoop_tcp_packet(buf: &[u8], sockets: &mut SocketSet<'_>) {
-    let (protocol, src_addr, dst_addr, payload) = match IpVersion::of_packet(buf).unwrap() {
+    let (src_addr, dst_addr, payload) = match IpVersion::of_packet(buf).unwrap() {
         IpVersion::Ipv4 => {
             let packet = Ipv4Packet::new_unchecked(buf);
+            if packet.next_header() != IpProtocol::Tcp {
+                return;
+            }
             (
-                packet.next_header(),
                 IpAddress::Ipv4(packet.src_addr()),
                 IpAddress::Ipv4(packet.dst_addr()),
                 packet.payload(),
@@ -910,22 +917,22 @@ fn snoop_tcp_packet(buf: &[u8], sockets: &mut SocketSet<'_>) {
         }
         IpVersion::Ipv6 => {
             let packet = Ipv6Packet::new_unchecked(buf);
+            if packet.next_header() != IpProtocol::Tcp {
+                return;
+            }
             (
-                packet.next_header(),
                 IpAddress::Ipv6(packet.src_addr()),
                 IpAddress::Ipv6(packet.dst_addr()),
                 packet.payload(),
             )
         }
     };
-    if protocol == IpProtocol::Tcp {
-        let tcp_packet = TcpPacket::new_unchecked(payload);
-        let src_addr = (src_addr, tcp_packet.src_port()).into();
-        let dst_addr = (dst_addr, tcp_packet.dst_port()).into();
-        let is_first = tcp_packet.syn() && !tcp_packet.ack();
-        if is_first {
-            LISTEN_TABLE.incoming_tcp_packet(src_addr, dst_addr, sockets);
-        }
+    let tcp_packet = TcpPacket::new_unchecked(payload);
+    let src_addr = (src_addr, tcp_packet.src_port()).into();
+    let dst_addr = (dst_addr, tcp_packet.dst_port()).into();
+    let is_first = tcp_packet.syn() && !tcp_packet.ack();
+    if is_first {
+        LISTEN_TABLE.incoming_tcp_packet(src_addr, dst_addr, sockets);
     }
 }
 

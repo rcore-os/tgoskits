@@ -469,14 +469,16 @@ fn poll_until_idle() {
 ///
 /// This is the lightweight entry used by socket and device paths.
 pub fn request_poll() {
-    NET_POLL_REQUESTED.store(true, Ordering::Release);
-    NET_POLL_WAKE.notify_one(true);
+    if !NET_POLL_REQUESTED.swap(true, Ordering::AcqRel) {
+        NET_POLL_WAKE.notify_one(true);
+    }
 }
 
 pub(crate) fn defer_poll_wake(poll: Arc<PollSet>, ready: IoEvents) {
     DEFERRED_POLL_WAKES.lock().push((poll, ready));
-    DEFERRED_POLL_WAKE_PENDING.store(true, Ordering::Release);
-    NET_POLL_WAKE.notify_one(true);
+    if !DEFERRED_POLL_WAKE_PENDING.swap(true, Ordering::AcqRel) {
+        NET_POLL_WAKE.notify_one(true);
+    }
 }
 
 fn drain_deferred_poll_wakes() {
@@ -624,11 +626,14 @@ pub fn reconfigure_wifi(name: &str, mode: WifiMode<'_>) -> AxResult<()> {
     //    (possibly new) MAC. The registry lock is released before touching the
     //    stack service to avoid holding two locks across the blocking path.
     let mac = {
-        let controls = WIFI_CONTROLS.lock();
-        let (_, handle) = controls
-            .iter()
-            .find(|(n, _)| n == name)
-            .ok_or(AxError::NoSuchDevice)?;
+        let handle = {
+            let controls = WIFI_CONTROLS.lock();
+            controls
+                .iter()
+                .find(|(n, _)| n == name)
+                .map(|(_, handle)| handle.clone())
+                .ok_or(AxError::NoSuchDevice)?
+        };
         let ctrl = handle.wifi_control().ok_or(AxError::NoSuchDevice)?;
         match &mode {
             WifiMode::Station { ssid, password } => ctrl

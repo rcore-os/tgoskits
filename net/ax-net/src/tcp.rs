@@ -25,7 +25,7 @@
 //! - `LISTEN_TABLE` owns passive-open child sockets and accept wakeups.
 //! - `orphan` keeps dropped sockets alive long enough for FIN/TIME-WAIT cleanup.
 
-use alloc::{sync::Arc, vec, vec::Vec};
+use alloc::{sync::Arc, vec};
 use core::{
     net::{Ipv4Addr, SocketAddr},
     sync::atomic::{AtomicBool, AtomicI32, AtomicU32, Ordering},
@@ -36,7 +36,7 @@ use ax_errno::{AxError, AxResult, LinuxError, ax_bail, ax_err_type};
 use ax_io::prelude::*;
 use ax_sync::Mutex;
 use axpoll::{IoEvents, PollSet, Pollable};
-use hashbrown::HashMap;
+use hashbrown::{HashMap, HashSet};
 use smoltcp::{
     iface::SocketHandle,
     socket::tcp as smol,
@@ -950,7 +950,7 @@ impl TcpSocket {
     }
 }
 
-static TCP_BOUND_PORTS: LazyLock<Mutex<HashMap<u16, Vec<Option<smoltcp::wire::IpAddress>>>>> =
+static TCP_BOUND_PORTS: LazyLock<Mutex<HashMap<u16, HashSet<Option<smoltcp::wire::IpAddress>>>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
 /// Registers TCP bind ownership with wildcard/specific address conflicts.
@@ -967,7 +967,7 @@ fn register_tcp_bound(endpoint: IpListenEndpoint) -> AxResult {
     {
         return Err(AxError::AddrInUse);
     }
-    bound_addrs.push(endpoint.addr);
+    bound_addrs.insert(endpoint.addr);
     Ok(())
 }
 
@@ -976,9 +976,7 @@ fn unregister_tcp_bound(endpoint: IpListenEndpoint) {
     if endpoint.port != 0 {
         let mut bound_ports = TCP_BOUND_PORTS.lock();
         if let Some(bound_addrs) = bound_ports.get_mut(&endpoint.port) {
-            if let Some(idx) = bound_addrs.iter().position(|&addr| addr == endpoint.addr) {
-                bound_addrs.swap_remove(idx);
-            }
+            bound_addrs.remove(&endpoint.addr);
             if bound_addrs.is_empty() {
                 bound_ports.remove(&endpoint.port);
             }
