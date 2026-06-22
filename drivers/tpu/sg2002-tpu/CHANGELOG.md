@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0](https://github.com/rcore-os/tgoskits/compare/sg2002-tpu-v0.1.6...sg2002-tpu-v0.2.0) - 2026-06-22
+
+### Added
+
+- tpu add tdma irq. ([#1269](https://github.com/rcore-os/tgoskits/pull/1269))
+
 ## [0.1.6](https://github.com/rcore-os/tgoskits/compare/sg2002-tpu-v0.1.5...sg2002-tpu-v0.1.6) - 2026-06-12
 
 ### Other

@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.0](https://github.com/rcore-os/tgoskits/compare/rdif-block-v0.8.2...rdif-block-v0.9.0) - 2026-06-22
+
+### Other
+
+- *(ax-runtime)* adapt submit-poll fs block irq registration ([#1228](https://github.com/rcore-os/tgoskits/pull/1228))
+
 ## [0.8.2](https://github.com/rcore-os/tgoskits/compare/rdif-block-v0.8.1...rdif-block-v0.8.2) - 2026-06-12
 
 ### Other

@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.7.0](https://github.com/rcore-os/tgoskits/compare/ax-cpu-v0.6.8...ax-cpu-v0.7.0) - 2026-06-22
+
+### Fixed
+
+- *(axcpu)* preserve AVX state across x86_64 context switch (XSAVE) ([#1329](https://github.com/rcore-os/tgoskits/pull/1329))
+
+### Other
+
+- Feat/x86 64 ptrace clean ([#1062](https://github.com/rcore-os/tgoskits/pull/1062))
+
 ## [0.6.8](https://github.com/rcore-os/tgoskits/compare/ax-cpu-v0.6.7...ax-cpu-v0.6.8) - 2026-06-12
 
 ### Fixed

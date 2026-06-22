@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.19](https://github.com/rcore-os/tgoskits/compare/ax-input-v0.5.18...ax-input-v0.5.19) - 2026-06-22
+
+### Added
+
+- *(starry)* add Wayland app case ([#1160](https://github.com/rcore-os/tgoskits/pull/1160))
+
 ## [0.5.18](https://github.com/rcore-os/tgoskits/compare/ax-input-v0.5.17...ax-input-v0.5.18) - 2026-06-12
 
 ### Other

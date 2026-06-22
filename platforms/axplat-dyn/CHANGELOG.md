@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.4](https://github.com/rcore-os/tgoskits/compare/axplat-dyn-v0.7.3...axplat-dyn-v0.7.4) - 2026-06-22
+
+### Added
+
+- *(ax-runtime)* prefer UEFI RTC on dynamic platform ([#1294](https://github.com/rcore-os/tgoskits/pull/1294))
+
 ## [0.7.3](https://github.com/rcore-os/tgoskits/compare/axplat-dyn-v0.7.2...axplat-dyn-v0.7.3) - 2026-06-12
 
 ### Fixed
