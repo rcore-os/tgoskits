@@ -76,9 +76,9 @@ use super::drm::{
     DrmEventVblank, DrmGetCap, DrmModeAtomic, DrmModeCardRes, DrmModeCreateBlob, DrmModeCreateDumb,
     DrmModeCrtc, DrmModeCrtcPageFlip, DrmModeDestroyBlob, DrmModeDestroyDumb, DrmModeDirtyFB,
     DrmModeFbCmd2, DrmModeGetBlob, DrmModeGetConnector, DrmModeGetEncoder, DrmModeGetPlane,
-    DrmModeGetPlaneRes, DrmModeGetProperty, DrmModeMapDumb, DrmModeModeInfo, DrmModeObjGetProperties,
-    DrmModePropertyEnum, DrmPrimeHandle, DrmSetClientCap, DrmSetVersion, DrmUnique, DrmVersion,
-    DrmWaitVblank,
+    DrmModeGetPlaneRes, DrmModeGetProperty, DrmModeMapDumb, DrmModeModeInfo,
+    DrmModeObjGetProperties, DrmModePropertyEnum, DrmPrimeHandle, DrmSetClientCap, DrmSetVersion,
+    DrmUnique, DrmVersion, DrmWaitVblank,
 };
 use crate::{
     file::{FileLike, add_file_like},
