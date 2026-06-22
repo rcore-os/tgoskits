@@ -34,6 +34,7 @@ CARGO_BUILD_JOBS=""
 SELF_COMPILE_COMMIT=""
 SELF_COMPILE_REF=""
 LOG_LEVEL="info"
+BOOTSTRAP="false"
 
 _numeric_level() {
     case "${1:-info}" in
@@ -53,6 +54,7 @@ while [[ $# -gt 0 ]]; do
         --commit) SELF_COMPILE_COMMIT="$2"; shift 2 ;;
         --ref)    SELF_COMPILE_REF="$2"; shift 2 ;;
         --log)    LOG_LEVEL="${2:-info}"; shift 2 ;;
+        --bootstrap)  BOOTSTRAP="true"; shift ;;
         --help|-h)
             echo "Usage: $0 [--arch riscv64|x86_64|aarch64] [--smp N] [--jobs N] [--commit SHA] [--ref REF] [--log none|error|warn|info]"
             echo ""
@@ -103,9 +105,43 @@ if [ "$ARCH" = "x86_64" ]; then
     mkdir -p tmp/debian-selfhost
     DEBIAN_SRC="tmp/axbuild/rootfs/rootfs-x86_64-debian-selfhost.img"
 
+    if [ ! -f "$DEBIAN_SRC" ] && [ "$BOOTSTRAP" = "true" ]; then
+        info "=== Bootstrapping selfhost rootfs via QEMU (no host sudo) ==="
+        ALPINE_ROOTFS="tmp/axbuild/rootfs/rootfs-x86_64-alpine.img"
+        [ -f "$ALPINE_ROOTFS" ] || error \
+            "Alpine rootfs not found: $ALPINE_ROOTFS
+Run: cargo xtask starry rootfs --arch x86_64"
+
+        info "Alpine base: $ALPINE_ROOTFS ($(stat -c%s "$ALPINE_ROOTFS") bytes)"
+        info "Cloning Alpine -> bootstrap blueprint ($DEBIAN_SRC) ..."
+        mkdir -p "$(dirname "$DEBIAN_SRC")"
+        cp "$ALPINE_ROOTFS" "$DEBIAN_SRC" || error "Failed to clone Alpine rootfs"
+        qemu-img resize -f raw "$DEBIAN_SRC" 12G >/dev/null 2>&1 || true
+        if [ "$(stat -c%s "$DEBIAN_SRC")" -lt 3000000000 ]; then
+            truncate -s 12G "$DEBIAN_SRC"
+        fi
+        info "Blueprint: $DEBIAN_SRC ($(stat -c%s "$DEBIAN_SRC") bytes)"
+
+        info "=== Starting QEMU bootstrap (~15-20 min) ==="
+        info "The guest will install build tools + Rust, then power off."
+
+        set +e
+        cargo xtask starry app qemu -t selfhost/selfhost-bootstrap --arch "$ARCH"
+        BOOTSTRAP_EXIT=$?
+        set -e
+
+        if [ "$BOOTSTRAP_EXIT" -ne 0 ]; then
+            error "Bootstrap failed (exit=$BOOTSTRAP_EXIT). Retry or use: sudo ./scripts/prepare-selfhost-rootfs.sh --arch x86_64 --force"
+        fi
+        info "Bootstrap complete: $DEBIAN_SRC ($(stat -c%s "$DEBIAN_SRC") bytes)"
+    fi
+
     [ -f "$DEBIAN_SRC" ] || error "Debian rootfs not found: $DEBIAN_SRC
-Run: sudo ./scripts/prepare-selfhost-rootfs.sh --arch x86_64 --force
-Once created, the rootfs is reused across runs (clone to working copy)."
+
+Options:
+  1. Bootstrap via QEMU (no sudo): ./scripts/self-compile.sh --arch x86_64 --bootstrap
+  2. Build via debootstrap (needs sudo): sudo ./scripts/prepare-selfhost-rootfs.sh --arch x86_64 --force
+Once created, the rootfs is reused across runs."
 
     if [ ! -f "$ROOTFS_IMG" ]; then
         info "Cloning rootfs: $DEBIAN_SRC → $ROOTFS_IMG (this may take a moment)..."
