@@ -2,7 +2,7 @@
 
 use alloc::{collections::BTreeMap, vec::Vec};
 
-use log::{debug, error};
+use log::{debug, error, warn};
 
 use crate::{
     blockdev::*,
@@ -234,7 +234,46 @@ pub fn get_file_inode<B: BlockDevice>(
 
         let inode_num = match found_inode_num {
             Some(n) => n,
-            None => return Ok(None),
+            None => {
+                // Last-resort fallback: scan parent's data blocks directly
+                // via DataBlockCache, bypassing the hash tree and extent
+                // tree walk used by the normal lookup.  Cache coherence
+                // issues can cause the normal lookup to miss entries that
+                // are present in the cache.
+                let mut direct_found: Option<InodeNumber> = None;
+                let total_size = current_inode.size() as usize;
+                let total_blocks = if total_size == 0 {
+                    0
+                } else {
+                    total_size.div_ceil(BLOCK_SIZE)
+                };
+                let mut inode_copy = current_inode;
+                if let Ok(blocks_map) =
+                    resolve_inode_block_allextend(fs, block_dev, &mut inode_copy)
+                {
+                    for lbn in 0..total_blocks {
+                        if let Some(phys) = blocks_map.get(&(lbn as u32))
+                            && let Some(cached) = fs.datablock_cache.get(*phys)
+                            && let Some(entry) = classic_dir::find_entry(&cached.data, target)
+                            && entry.file_type != Ext4DirEntryTail::RESERVED_FT
+                        {
+                            direct_found = InodeNumber::new(entry.inode).ok();
+                            break;
+                        }
+                    }
+                }
+                match direct_found {
+                    Some(n) => {
+                        warn!(
+                            "get_file_inode: found '{}' via direct block scan (normal lookup \
+                             missed it) ino={} path={}",
+                            name, n, path
+                        );
+                        n
+                    }
+                    None => return Ok(None),
+                }
+            }
         };
 
         // Refresh the current inode after each successful component resolution.

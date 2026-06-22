@@ -178,7 +178,10 @@ impl<B: BlockDevice> Jbd2Dev<B> {
 
     /// Replays the journal if the proxy is configured to use it.
     pub fn journal_replay(&mut self) {
-        let _ = self.journal_replay_checked();
+        let status = self.journal_replay_checked();
+        if matches!(status, ReplayStatus::Incomplete) {
+            warn!("journal replay incomplete — filesystem may be inconsistent");
+        }
     }
 
     /// Replays the journal if JBD2 state is available.
@@ -246,11 +249,10 @@ impl<B: BlockDevice> Jbd2Dev<B> {
             let committed = system
                 .commit_transaction_with_mapping(self.inner.device_mut(), &self.journal_blocks)
                 .expect("journal transaction commit failed");
-            if committed {
-                self.inner
-                    .invalidate_cache()
-                    .expect("invalidate_cache failed during umount commit");
-            }
+            // The commit checkpoint writes blocks directly to the raw
+            // device, bypassing the 4-entry LRU.  Invalidate the LRU so
+            // subsequent reads go to disk instead of serving stale data.
+            self.inner.invalidate_cache();
         } else {
             trace!("Journal enabled but system uninitialized, skip commit");
         }
@@ -276,9 +278,13 @@ impl<B: BlockDevice> Jbd2Dev<B> {
         };
         let raw_dev = self.inner.device_mut();
 
-        let committed = Self::enqueue_journal_update(system, raw_dev, updates)?;
-        if committed {
-            let _ = self.inner.invalidate_cache();
+        let old_len = system.commit_queue.len();
+        Self::enqueue_journal_update(system, raw_dev, updates)?;
+        // If the journal committed (queue shrank), the commit checkpoint
+        // wrote blocks directly to the raw device, bypassing the 4-entry
+        // LRU. Invalidate the LRU so subsequent reads see fresh data.
+        if system.commit_queue.len() < old_len {
+            self.inner.invalidate_cache();
         }
         trace!("[JBD2 buffer] queued metadata block {block_id}");
         Ok(())
@@ -300,6 +306,26 @@ impl<B: BlockDevice> Jbd2Dev<B> {
         self.inner.read_block(block_id)
     }
 
+    /// Reads one block directly into `buffer`, bypassing the cached LRU.
+    /// Still checks the journal commit queue for pending metadata updates.
+    pub fn read_block_direct(&mut self, buffer: &mut [u8], block_id: AbsoluteBN) -> Ext4Result<()> {
+        if self.journal_use
+            && let Some(system) = self.system.as_ref()
+            && let Some(update) = system
+                .commit_queue
+                .iter()
+                .find(|queued| queued.0 == block_id)
+        {
+            if buffer.len() < BLOCK_SIZE {
+                return Err(Ext4Error::buffer_too_small(buffer.len(), BLOCK_SIZE));
+            }
+            buffer[..BLOCK_SIZE].copy_from_slice(&update.1[..BLOCK_SIZE]);
+            return Ok(());
+        }
+
+        self.inner.read_block_direct(buffer, block_id)
+    }
+
     /// Returns the cached block buffer.
     pub fn buffer(&self) -> &[u8] {
         self.inner.buffer()
@@ -311,13 +337,42 @@ impl<B: BlockDevice> Jbd2Dev<B> {
     }
 
     /// Reads multiple blocks directly.
+    ///
+    /// Checks the journal commit queue for each block in the range, matching
+    /// the behaviour of [`read_block_direct`].  Without this check a read that
+    /// falls between a metadata `write_blocks(is_metadata: true)` and the
+    /// journal commit sees stale on-disk data, which causes the read-modify-
+    /// write in the inode/bitmap cache write helpers to build a buffer that
+    /// silently drops prior modifications to the same block.
     pub fn read_blocks(
         &mut self,
         buf: &mut [u8],
         block_id: AbsoluteBN,
         count: u32,
     ) -> Ext4Result<()> {
-        self.inner.read_blocks(buf, block_id, count)
+        if !self.journal_use || self.system.is_none() || count == 0 {
+            return self.inner.read_blocks(buf, block_id, count);
+        }
+
+        let system = self.system.as_ref().unwrap();
+        let block_size = self.inner.block_size() as usize;
+        let required = block_size * count as usize;
+        if buf.len() < required {
+            return Err(Ext4Error::buffer_too_small(buf.len(), required));
+        }
+
+        for i in 0..count {
+            let bid = block_id.checked_add(i)?;
+            let off = (i as usize) * block_size;
+
+            if let Some(update) = system.commit_queue.iter().find(|queued| queued.0 == bid) {
+                buf[off..off + block_size].copy_from_slice(&update.1[..block_size]);
+            } else {
+                self.inner
+                    .read_blocks(&mut buf[off..off + block_size], bid, 1)?;
+            }
+        }
+        Ok(())
     }
 
     /// Writes multiple blocks, optionally journaling metadata buffers.
@@ -345,17 +400,26 @@ impl<B: BlockDevice> Jbd2Dev<B> {
             return Err(Ext4Error::buffer_too_small(buf.len(), required));
         }
 
-        let mut committed_any = false;
+        // Track whether a journal commit happened during the loop.
+        // `enqueue_journal_update` commits when the queue fills up,
+        // writing blocks directly to the raw device and bypassing the
+        // 4-entry LRU. We must invalidate the LRU whenever this occurs,
+        // not just when the final queue is shorter than the initial queue.
+        let mut commit_occurred = false;
         for i in 0..count {
             let off = (i as usize) * BLOCK_SIZE;
             let mut boxbuf = Box::new([0; BLOCK_SIZE]);
             boxbuf[..].copy_from_slice(&buf[off..off + BLOCK_SIZE]);
             let updates = Jbd2Update(block_id.checked_add(i)?, boxbuf);
 
-            committed_any |= Self::enqueue_journal_update(system, raw_dev, updates)?;
+            let before = system.commit_queue.len();
+            Self::enqueue_journal_update(system, raw_dev, updates)?;
+            if system.commit_queue.len() < before {
+                commit_occurred = true;
+            }
         }
-        if committed_any {
-            let _ = self.inner.invalidate_cache();
+        if commit_occurred {
+            self.inner.invalidate_cache();
         }
 
         Ok(())

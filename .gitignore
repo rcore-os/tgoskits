@@ -67,8 +67,13 @@ loongarch64-axvisor-guest-tests.md
 
 # GitHub page snapshots accidentally saved into the repo
 *rcore-os_tgoskits*.html
+<<<<<<< HEAD
 
 # Resource monitor local artifacts
 /logs/offline-monitor/
 /images/linux-qemu/
 offline-monitor-analysis*.html
+=======
+# Build artifacts
+*.cflags
+>>>>>>> 2ced67f29 (feat(self-compile): enable StarryOS x86_64 self-compilation)

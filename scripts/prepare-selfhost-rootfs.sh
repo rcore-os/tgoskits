@@ -41,6 +41,7 @@ die()   { printf "[%s] ERROR: %s\n" "$SCRIPT_NAME" "$*" >&2; exit 1; }
 
 ARCH=""
 FORCE=0
+ORIGINAL_ARGS="$*"
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --arch) ARCH="$2"; shift 2 ;;
@@ -103,9 +104,24 @@ info "Arch: $ARCH | Target: $TARGET | Dest: $DEST_PATH"
 
 # ─── Prerequisite checks ────────────────────────────────────────────────────────
 
+# When invoked under sudo, the user's PATH (including ~/.cargo/bin) is
+# stripped by sudo's secure_path.  Restore it from the invoking user's
+# home so that `cargo` and other Rust toolchain binaries are findable.
+if [ -n "${SUDO_USER:-}" ] && [ "$(id -u)" -eq 0 ]; then
+    USER_HOME="$(eval echo ~$SUDO_USER)"
+    export PATH="$USER_HOME/.cargo/bin:$PATH"
+fi
+
 info "Checking prerequisites..."
 for cmd in debugfs resize2fs dd git cargo systemd-nspawn; do
-    command -v "$cmd" &>/dev/null || die "$cmd not found"
+    if ! command -v "$cmd" &>/dev/null; then
+        if [ "$cmd" = "cargo" ] && [ -n "${SUDO_USER:-}" ]; then
+            die "cargo not found in sudo PATH. Install rustup as the invoking user,"\
+                " then retry with: sudo env PATH=\"\$PATH\" $0"\
+                " ${ORIGINAL_ARGS:-}"
+        fi
+        die "$cmd not found"
+    fi
 done
 
 if [ "$NEED_QEMU" -eq 1 ]; then
@@ -261,7 +277,8 @@ nspawn_run "$OUTPUT_IMG" "
     export DEBIAN_FRONTEND=noninteractive && \
     apt-get update -qq && \
     apt-get install -y -qq --no-install-recommends \
-        rustc cargo libstd-rust-dev build-essential ca-certificates curl && \
+        rustc cargo libstd-rust-dev build-essential ca-certificates curl \
+        libclang-dev clang && \
     apt-get clean
 "
 info "Toolchain ready."
@@ -269,8 +286,15 @@ info "Toolchain ready."
 # ─── Install nightly rustc via rustup ─────────────────────────────────────────
 
 RUSTUP_HOST="riscv64gc-unknown-linux-gnu"
-[ "$NEED_QEMU" -eq 0 ] && RUSTUP_HOST="x86_64-unknown-linux-gnu"
-RUSTUP_TOOLCHAIN="nightly-2026-04-27"
+if [ "$NEED_QEMU" -eq 0 ]; then
+    RUSTUP_HOST="x86_64-unknown-linux-gnu"
+elif [ "$ARCH" = "arm" ]; then
+    RUSTUP_HOST="aarch64-unknown-linux-gnu"
+fi
+# Derive the toolchain version from rust-toolchain.toml so it stays in sync
+# with the host build.  Fall back to a known-good nightly if the file cannot
+# be parsed.
+RUSTUP_TOOLCHAIN="$(grep -oP 'channel\s*=\s*"\K[^"]+' "$REPO_ROOT/rust-toolchain.toml" 2>/dev/null || echo 'nightly-2026-05-28')"
 
 info "Installing rustup + $RUSTUP_TOOLCHAIN (host: $RUSTUP_HOST)..."
 nspawn_run "$OUTPUT_IMG" "
@@ -309,6 +333,12 @@ trap cleanup_temp EXIT
 
 git archive HEAD | tar -x -C "$TEMP_SRC/"
 [ -f "$TEMP_SRC/Cargo.toml" ] || die "Cargo.toml missing from git archive"
+
+# git archive has no .git directory, so git rev-parse won't work in the
+# guest.  Embed the current HEAD SHA so the guest can verify source identity
+# without requiring a git repository.
+git rev-parse HEAD > "$TEMP_SRC/.source-commit" 2>/dev/null || \
+    die "failed to resolve HEAD — ensure you are in the repo root"
 [ -f "$TEMP_SRC/os/StarryOS/kernel/Cargo.toml" ] || die "Kernel Cargo.toml missing"
 chmod -R a+rX "$TEMP_SRC"
 
@@ -328,6 +358,7 @@ fi
 systemd-nspawn "${nspawn_args[@]}" /usr/bin/bash -c "
     mkdir -p $DEST_PATH && \
     cp -r $STABLE/* $DEST_PATH/ && \
+    cp $STABLE/.source-commit $DEST_PATH/.source-commit && \
     chown -R root:root $DEST_PATH && \
     chmod -R a+rX $DEST_PATH
 "

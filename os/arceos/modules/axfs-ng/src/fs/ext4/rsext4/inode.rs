@@ -268,7 +268,9 @@ impl FileNodeOps for Inode {
             if let Ok(blocks) = rsext4::loopfile::resolve_inode_block_allextend(fs, dev, &mut inode)
             {
                 for blk in blocks.values() {
-                    let _ = fs.free_block(dev, *blk);
+                    if let Err(e) = fs.free_block(dev, *blk) {
+                        warn!("set_symlink: failed to free old symlink block {blk}: {e:?}");
+                    }
                 }
             }
 
@@ -477,6 +479,10 @@ impl DirNodeOps for Inode {
             ino
         };
 
+        // Flush all caches after creating a file/directory. The ext4
+        // cache stack (DataBlockCache → BlockDev 4-entry LRU) has
+        // coherence gaps — flushing guarantees the new entry is on disk
+        // before any subsequent lookup.
         self.fs.sync_to_disk()?;
 
         let reference = Reference::new(
@@ -522,7 +528,6 @@ impl DirNodeOps for Inode {
             let target_ino = InodeNumber::new(node.inode() as u32).map_err(into_vfs_err)?;
             Self::update_ctime_with(fs, dev, target_ino)?;
         }
-        self.fs.sync_to_disk()?;
         self.lookup_locked(name)
     }
 

@@ -1,11 +1,21 @@
 //! Directory entry insertion helpers.
 
-use log::{error, warn};
+use log::error;
 
 use crate::{
-    blockdev::*, bmalloc::InodeNumber, checksum::update_ext4_dirblock_csum32, config::*,
-    crc32c::ext4_superblock_has_metadata_csum, disknode::*, endian::DiskFormat, entries::*,
-    error::*, ext4::*, extents_tree::*, loopfile::*, metadata::Ext4InodeMetadataUpdate,
+    blockdev::*,
+    bmalloc::{AbsoluteBN, InodeNumber},
+    checksum::update_ext4_dirblock_csum32,
+    config::*,
+    crc32c::ext4_superblock_has_metadata_csum,
+    disknode::*,
+    endian::DiskFormat,
+    entries::*,
+    error::*,
+    ext4::*,
+    extents_tree::*,
+    loopfile::*,
+    metadata::Ext4InodeMetadataUpdate,
 };
 
 /// Inserts a child entry into a parent directory, extending the directory if needed.
@@ -41,12 +51,13 @@ pub fn insert_dir_entry<B: BlockDevice>(
     };
 
     let mut inserted = false;
+    let mut modified_phys: Option<AbsoluteBN> = None;
 
     // Try to satisfy the insertion inside already mapped directory blocks first.
     let blocks = resolve_inode_block_allextend(fs, device, parent_inode)?;
 
     for lbn in 0..total_blocks {
-        if inserted {
+        if modified_phys.is_some() {
             break;
         }
 
@@ -100,6 +111,7 @@ pub fn insert_dir_entry<B: BlockDevice>(
                         data[offset + 8..offset + 8 + nlen]
                             .copy_from_slice(&full_entry.name[..nlen]);
                         inserted = true;
+                        modified_phys = Some(phys);
                         update_ext4_dirblock_csum32(
                             &fs.superblock,
                             parent_ino_num.raw(),
@@ -128,6 +140,7 @@ pub fn insert_dir_entry<B: BlockDevice>(
                         data[new_off + 8..new_off + 8 + nlen]
                             .copy_from_slice(&full_entry.name[..nlen]);
                         inserted = true;
+                        modified_phys = Some(phys);
                         update_ext4_dirblock_csum32(
                             &fs.superblock,
                             parent_ino_num.raw(),
@@ -144,14 +157,26 @@ pub fn insert_dir_entry<B: BlockDevice>(
                 offset = entry_end;
             }
         }) {
-            warn!(
-                "insert_dir_entry: modify block {phys} for parent_ino={parent_ino_num} \
-                 name={child_name:?} failed: {e:?}, trying next block"
-            );
+            return Err(e.with_context(crate::error::ErrorContext::Operation {
+                op: "insert_dir_entry: modify block",
+            }));
         }
     }
 
-    if inserted {
+    if let Some(modified_block) = modified_phys {
+        // Write the modified directory block through immediately so that
+        // subsequent lookups see the newly-inserted entry, even under
+        // SMP pressure on the DataBlockCache.
+        fs.datablock_cache.flush(device, modified_block)?;
+        // Clear the hash-tree index flag: after inserting an entry the
+        // hash tree is stale, and updating it is complex.  Forcing a
+        // linear scan guarantees correct lookups.
+        if parent_inode.i_flags & Ext4Inode::EXT4_INDEX_FL != 0 {
+            parent_inode.i_flags &= !Ext4Inode::EXT4_INDEX_FL;
+            fs.modify_inode(device, parent_ino_num, |ino| {
+                ino.i_flags &= !Ext4Inode::EXT4_INDEX_FL;
+            })?;
+        }
         fs.touch_parent_dir_for_entry_change(device, parent_ino_num)?;
         return Ok(());
     }
@@ -215,6 +240,17 @@ pub fn insert_dir_entry<B: BlockDevice>(
             );
         }
     })?;
+
+    // Immediately write the new directory block to disk so it is visible
+    // to subsequent lookups.
+    fs.datablock_cache.flush(device, new_block)?;
+
+    // Clear the hash-tree index flag: the hash tree is stale after
+    // adding a directory entry, and forcing linear scan guarantees
+    // correct lookups.
+    if parent_inode.i_flags & Ext4Inode::EXT4_INDEX_FL != 0 {
+        parent_inode.i_flags &= !Ext4Inode::EXT4_INDEX_FL;
+    }
 
     fs.finalize_inode_update(
         device,

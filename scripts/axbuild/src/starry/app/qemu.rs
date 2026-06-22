@@ -138,8 +138,24 @@ fn qemu_app_config_rootfs_path(
     qemu_config_path: &Path,
 ) -> anyhow::Result<Option<PathBuf>> {
     let qemu = read_qemu_app_config(qemu_config_path)?;
-    Ok(qemu_app_managed_rootfs_paths(workspace_root, &qemu)?
+    let managed = qemu_app_managed_rootfs_paths(workspace_root, &qemu)?;
+    if let Some(path) = managed.into_iter().next() {
+        return Ok(Some(path));
+    }
+    // No managed rootfs matched — fall back to the raw drive path from
+    // the QEMU config (e.g. a custom selfhost rootfs outside the managed
+    // registry).  Do NOT filter by .exists(): the caller handles missing
+    // files by copying from the default rootfs.
+    Ok(crate::rootfs::qemu::drive_file_paths(&qemu)
         .into_iter()
+        .map(|p| {
+            let text = p.to_string_lossy();
+            if let Some(rest) = text.strip_prefix("${workspace}/") {
+                workspace_root.join(rest)
+            } else {
+                p
+            }
+        })
         .next())
 }
 
