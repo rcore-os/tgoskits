@@ -39,6 +39,44 @@ const fn io(ty: u8, nr: u8) -> u32 {
     ioc(0, ty, nr, 0)
 }
 
+// ---- ioctl-number decoding ----
+//
+// The inverse of the encode helpers above: pull the command number and
+// struct size back out of a packed ioctl request. card1 (the RKNPU
+// companion DRM node) dispatches on these because its driver-specific
+// commands aren't known at compile time the way card0's fixed set is.
+
+/// Lowest driver-specific DRM command number (`DRM_COMMAND_BASE`). Core
+/// DRM commands live below this; modeset commands at or above 0xA0.
+#[cfg(feature = "rknpu")]
+pub const DRM_COMMAND_BASE: u32 = 0x40;
+/// One past the highest driver-specific DRM command number
+/// (`DRM_COMMAND_END`).
+#[cfg(feature = "rknpu")]
+pub const DRM_COMMAND_END: u32 = 0xA0;
+
+/// Extracts the command number (bits 7..0) from a packed ioctl request.
+#[cfg(feature = "rknpu")]
+#[inline]
+pub const fn ioctl_nr(cmd: u32) -> u32 {
+    cmd & 0xff
+}
+
+/// Extracts the struct size (bits 29..16) from a packed ioctl request.
+#[cfg(feature = "rknpu")]
+#[inline]
+pub const fn io_size(cmd: u32) -> u32 {
+    (cmd >> 16) & ((1 << 14) - 1)
+}
+
+/// Returns `true` if `nr` falls in the driver-specific command range
+/// (`DRM_COMMAND_BASE..DRM_COMMAND_END`).
+#[cfg(feature = "rknpu")]
+#[inline]
+pub fn is_driver_ioctl(nr: u32) -> bool {
+    (DRM_COMMAND_BASE..DRM_COMMAND_END).contains(&nr)
+}
+
 pub const DRM_TYPE: u8 = b'd';
 
 pub const DRM_IOCTL_VERSION: u32 = iowr::<DrmVersion>(DRM_TYPE, 0x00);
@@ -549,4 +587,57 @@ pub struct DrmModeGetBlob {
     pub length: u32,
     /// user ptr the kernel writes the blob bytes to (truncated to `length`)
     pub data: u64,
+}
+
+#[cfg(all(test, feature = "rknpu"))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ioctl_nr_recovers_command_number() {
+        // The decode helpers are the inverse of the encode helpers: the
+        // command number packed by `iowr`/`io` must round-trip back out.
+        assert_eq!(ioctl_nr(DRM_IOCTL_VERSION), 0x00);
+        assert_eq!(ioctl_nr(DRM_IOCTL_GET_UNIQUE), 0x01);
+        assert_eq!(ioctl_nr(DRM_IOCTL_PRIME_HANDLE_TO_FD), 0x2d);
+        assert_eq!(ioctl_nr(DRM_IOCTL_MODE_GETRESOURCES), 0xA0);
+    }
+
+    #[test]
+    fn ioctl_nr_masks_to_low_byte() {
+        // Direction and size occupy the high bits; nr is only bits 7..0.
+        assert_eq!(ioctl_nr(0xc010_6402), 0x02);
+    }
+
+    #[test]
+    fn io_size_recovers_struct_size() {
+        // `iowr::<T>` encodes `size_of::<T>()` into bits 29..16.
+        assert_eq!(
+            io_size(DRM_IOCTL_VERSION),
+            core::mem::size_of::<DrmVersion>() as u32
+        );
+        assert_eq!(
+            io_size(DRM_IOCTL_GET_UNIQUE),
+            core::mem::size_of::<DrmUnique>() as u32
+        );
+        // `io(..)` (no payload) encodes a zero size.
+        assert_eq!(io_size(DRM_IOCTL_SET_MASTER), 0);
+    }
+
+    #[test]
+    fn is_driver_ioctl_covers_command_range() {
+        // Driver-specific commands live in DRM_COMMAND_BASE..DRM_COMMAND_END.
+        assert!(!is_driver_ioctl(DRM_COMMAND_BASE - 1));
+        assert!(is_driver_ioctl(DRM_COMMAND_BASE));
+        assert!(is_driver_ioctl(DRM_COMMAND_END - 1));
+        assert!(!is_driver_ioctl(DRM_COMMAND_END));
+
+        // Core DRM (VERSION, nr 0) and modeset (GETRESOURCES, nr 0xA0) are
+        // both outside the driver range; the RKNPU submit/mem commands
+        // (nr 0x40..0x46) are inside it.
+        assert!(!is_driver_ioctl(ioctl_nr(DRM_IOCTL_VERSION)));
+        assert!(!is_driver_ioctl(ioctl_nr(DRM_IOCTL_MODE_GETRESOURCES)));
+        assert!(is_driver_ioctl(0x40));
+        assert!(is_driver_ioctl(0x45));
+    }
 }
