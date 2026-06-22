@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.0](https://github.com/rcore-os/tgoskits/compare/axvcpu-v0.6.1...axvcpu-v0.7.0) - 2026-06-22
+
+### Other
+
+- Issue 595 device foundation ([#1258](https://github.com/rcore-os/tgoskits/pull/1258))
+
 ## [0.6.1](https://github.com/rcore-os/tgoskits/compare/axvcpu-v0.6.0...axvcpu-v0.6.1) - 2026-06-09
 
 ### Added

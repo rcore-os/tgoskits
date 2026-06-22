@@ -8,6 +8,7 @@ use crate::{
     consts::VM_LOAD_ADDRESS,
     entry::PrimaryCpuInitInfo,
     smp::PerCpuMeta,
+    timer::{self, ArchTimerMode},
 };
 
 #[unsafe(naked)]
@@ -40,8 +41,9 @@ pub unsafe extern "C" fn kernel_entry(_fdt_addr: usize) {
     )
 }
 
-pub fn el_entry() -> ! {
+pub extern "C" fn el_entry(timer_mode_raw: usize) -> ! {
     super::relocate::apply();
+    timer::set_aarch64_timer_mode(ArchTimerMode::from_raw(timer_mode_raw as u8));
     super::trap::setup();
 
     let kernel_code_start_lma = ext_sym_addr!(_head);
@@ -56,6 +58,21 @@ pub fn el_entry() -> ! {
     println!("EL: {}", CurrentEL.read(CurrentEL::EL));
 
     crate::arch::paging::enable_mmu()
+}
+
+#[inline(always)]
+pub(crate) fn eret_with_timer_mode_arg(timer_mode: ArchTimerMode) -> ! {
+    let timer_mode = timer_mode as usize;
+
+    unsafe {
+        core::arch::asm!(
+            "mov x0, {timer_mode}",
+            "isb",
+            "eret",
+            timer_mode = in(reg) timer_mode,
+            options(noreturn, nostack),
+        );
+    }
 }
 
 pub(crate) fn mmu_entry() -> ! {

@@ -562,6 +562,9 @@ impl Starry {
                 qemu.args.push("-snapshot".to_string());
             }
             qemu::apply_dynamic_platform_qemu_boot(&mut qemu, &cargo);
+            if qemu.uefi {
+                qemu::apply_drive_snapshot_without_global_snapshot(&mut qemu);
+            }
             println!("  prepare assets: 0ns (pipeline=plain, cache=miss)");
             println!(
                 "  qemu config: {} (timeout={})",

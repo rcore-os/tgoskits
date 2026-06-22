@@ -303,6 +303,7 @@ pub fn sys_mmap(
             );
             let populate = map_flags.contains(MmapFlags::POPULATE);
             aspace.map(start, map_length, ion_mapping_flags, populate, backend)?;
+            drop(aspace);
             info!(
                 "Ion buffer mmap success: vaddr=0x{:x}, length={}",
                 start.as_usize(),
@@ -483,6 +484,7 @@ pub fn sys_mmap(
 
     let populate = map_flags.contains(MmapFlags::POPULATE);
     aspace.map(start, length, mapping_flags, populate, backend)?;
+    drop(aspace);
 
     Ok(start.as_usize() as _)
 }

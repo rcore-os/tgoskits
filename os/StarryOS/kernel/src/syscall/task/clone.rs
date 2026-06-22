@@ -192,6 +192,13 @@ impl CloneArgs {
             new_uctx.set_tls(tls);
         }
         new_uctx.set_retval(0);
+        #[cfg(target_arch = "riscv64")]
+        let child_fp_fs = match uctx.sstatus.fs() {
+            riscv::register::sstatus::FS::Dirty => riscv::register::sstatus::FS::Clean,
+            fs => fs,
+        };
+        #[cfg(target_arch = "riscv64")]
+        new_uctx.sstatus.set_fs(child_fp_fs);
 
         let set_child_tid = if flags.contains(CloneFlags::CHILD_SETTID) {
             child_tid
@@ -204,6 +211,13 @@ impl CloneArgs {
         let old_proc_data = &curr_thread.proc_data;
 
         let mut new_task = new_user_task(&curr.name(), new_uctx, set_child_tid);
+        #[cfg(target_arch = "riscv64")]
+        {
+            let mut fp_state = ax_cpu::FpState::default();
+            fp_state.save();
+            fp_state.fs = child_fp_fs;
+            new_task.ctx_mut().fp_state = fp_state;
+        }
 
         let tid = new_task.id().as_u64() as Pid;
         if flags.contains(CloneFlags::PARENT_SETTID) && parent_tid != 0 {

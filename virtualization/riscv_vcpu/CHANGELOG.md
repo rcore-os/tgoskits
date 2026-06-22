@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.13](https://github.com/rcore-os/tgoskits/compare/riscv_vcpu-v0.5.12...riscv_vcpu-v0.5.13) - 2026-06-22
+
+### Other
+
+- updated the following local packages: axvm-types, axvcpu
+
 ## [0.5.12](https://github.com/rcore-os/tgoskits/compare/riscv_vcpu-v0.5.11...riscv_vcpu-v0.5.12) - 2026-06-11
 
 ### Fixed

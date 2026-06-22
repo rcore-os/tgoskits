@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.4](https://github.com/rcore-os/tgoskits/compare/ax-plat-riscv64-sg2002-v0.4.3...ax-plat-riscv64-sg2002-v0.4.4) - 2026-06-22
+
+### Other
+
+- *(ax-runtime)* adapt submit-poll fs block irq registration ([#1228](https://github.com/rcore-os/tgoskits/pull/1228))
+
 ## [0.4.3](https://github.com/rcore-os/tgoskits/compare/ax-plat-riscv64-sg2002-v0.4.2...ax-plat-riscv64-sg2002-v0.4.3) - 2026-06-12
 
 ### Fixed

@@ -3,6 +3,8 @@ use core::{future::poll_fn, task::Poll};
 use ax_errno::{AxError, AxResult};
 use axpoll::{IoEvents, Pollable};
 
+use crate::current;
+
 /// A helper to wrap a synchronous non-blocking I/O function into an
 /// asynchronous function.
 ///
@@ -20,28 +22,34 @@ pub async fn poll_io<P: Pollable, F: FnMut() -> AxResult<T>, T>(
     non_blocking: bool,
     mut f: F,
 ) -> AxResult<T> {
-    super::interruptible(poll_fn(move |cx| match f() {
-        Ok(value) => Poll::Ready(Ok(value)),
-        Err(AxError::WouldBlock) => {
-            // Register the waker unconditionally before returning WouldBlock.
-            // A non-blocking connect(2) returns EINPROGRESS; the caller then
-            // uses epoll to wait for EPOLLOUT (connection complete).  If we
-            // skip registration for non-blocking callers, the TCP stack has
-            // no waker to call when the handshake finishes, so epoll never
-            // receives the EPOLLOUT notification and the connection stalls.
-            pollable.register(cx, events);
-            if non_blocking {
-                return Poll::Ready(Err(AxError::WouldBlock));
-            }
-            match f() {
-                Ok(value) => Poll::Ready(Ok(value)),
-                Err(AxError::WouldBlock) => Poll::Pending,
-                Err(e) => Poll::Ready(Err(e)),
-            }
+    let curr = current();
+    poll_fn(move |cx| {
+        match f() {
+            Ok(value) => return Poll::Ready(Ok(value)),
+            Err(AxError::WouldBlock) => {}
+            Err(e) => return Poll::Ready(Err(e)),
         }
-        Err(e) => Poll::Ready(Err(e)),
-    }))
-    .await?
+
+        // Register before the post-registration retry. A non-blocking
+        // connect(2) returns EINPROGRESS; the caller then uses epoll to wait
+        // for EPOLLOUT. If we skip registration for non-blocking callers, the
+        // TCP stack has no waker to call when the handshake finishes.
+        pollable.register(cx, events);
+
+        match f() {
+            Ok(value) => Poll::Ready(Ok(value)),
+            Err(AxError::WouldBlock) if non_blocking => Poll::Ready(Err(AxError::WouldBlock)),
+            Err(AxError::WouldBlock) => {
+                if curr.poll_interrupt(cx).is_ready() {
+                    Poll::Ready(Err(AxError::Interrupted))
+                } else {
+                    Poll::Pending
+                }
+            }
+            Err(e) => Poll::Ready(Err(e)),
+        }
+    })
+    .await
 }
 
 /// Registers a waker for the given IRQ number.

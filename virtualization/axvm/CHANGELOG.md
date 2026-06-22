@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.15](https://github.com/rcore-os/tgoskits/compare/axvm-v0.5.14...axvm-v0.5.15) - 2026-06-22
+
+### Other
+
+- *(axvm)* route RISC-V IRQs through vPLIC backend ([#1317](https://github.com/rcore-os/tgoskits/pull/1317))
+- *(axvm)* add VM interrupt fabric ([#1273](https://github.com/rcore-os/tgoskits/pull/1273))
+- *(ax-runtime)* adapt submit-poll fs block irq registration ([#1228](https://github.com/rcore-os/tgoskits/pull/1228))
+- Issue 595 device foundation ([#1258](https://github.com/rcore-os/tgoskits/pull/1258))
+
 ## [0.5.14](https://github.com/rcore-os/tgoskits/compare/axvm-v0.5.13...axvm-v0.5.14) - 2026-06-12
 
 ### Fixed
