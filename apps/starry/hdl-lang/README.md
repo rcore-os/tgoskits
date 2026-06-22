@@ -29,7 +29,7 @@
 - `vendor/make/make-<arch>` —— 静态 musl 交叉编译的 GNU Make 4.4.1。
 - `golden/*.txt` —— 各腿确定性黄金参考（committed；prebuild 在宿主重新捕获装入 overlay 比对）。
 - `prebuild.sh` —— 宿主编译全部六条腿、交叉编译/构建静态产物、捕获黄金、装入 overlay。交叉二进制经 `qemu-<arch>-static` 在宿主跑出黄金并自检，故任意宿主上对任意 STARRY_ARCH 都可复现。
-- `qemu-<arch>.toml` ×4 —— 跑全部六条腿、各自 `cmp` 黄金，全过才 `TEST PASSED`（`success_regex = ^TEST PASSED$`，`fail_regex` 含 panic 与 `^TEST FAILED$`）。
+- `qemu-<arch>.toml` ×3（aarch64 / riscv64 / loongarch64）—— 跑全部六条腿、各自 `cmp` 黄金，全过才 `TEST PASSED`（`success_regex = ^TEST PASSED$`，`fail_regex` 含 panic 与 `^TEST FAILED$`）。x86_64 受 PVH `-kernel` 限制、未 on-target 独立复核，故**不提供 `qemu-x86_64.toml`**（不作为 runnable 目标暴露给 `starry app qemu --arch x86_64`）。
 - `build-<target>.toml` ×4。
 - `host-carpets/{verilator-cli,iverilog-cli,bsc-cli,gnumake-cli,yosys-cli,yosys-sta}-carpet.sh` —— verilator / iverilog(+vvp) / bsc(Bluespec) / GNU make / yosys 命令树 + yosys-sta PPA 流程的宿主 CLI 全选项地毯（host-validated 辅助，不参与 on-target 门控，见下文）。
 
