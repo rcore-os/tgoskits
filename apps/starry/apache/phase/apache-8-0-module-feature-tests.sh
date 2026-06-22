@@ -57,7 +57,7 @@ cleanup() {
         kill -TERM "$HTTPD_PID" 2>/dev/null || true
         i=0
         while kill -0 "$HTTPD_PID" 2>/dev/null && [ "$i" -lt 10 ]; do
-            sleep 1
+            apache_runner_sleep 1
             i=$((i + 1))
         done
         kill -KILL "$HTTPD_PID" 2>/dev/null || true
@@ -149,7 +149,7 @@ start_httpd() {
                 if apache_runner_run_with_timeout 2 curl -fsS -H 'Host: first.local' -o "$OUT/startup.body" http://127.0.0.1:8080/ >/dev/null 2>&1; then return 0; fi
             fi
         fi
-        sleep 1
+        apache_runner_sleep 1
         i=$((i + 1))
     done
     return 1
@@ -186,7 +186,7 @@ stop_httpd() {
     httpd -k stop -f "$CONF" >/dev/null 2>&1 || kill -TERM "$HTTPD_PID"
     i=0
     while kill -0 "$HTTPD_PID" 2>/dev/null && [ "$i" -lt 10 ]; do
-        sleep 1
+        apache_runner_sleep 1
         i=$((i + 1))
     done
     ! kill -0 "$HTTPD_PID" 2>/dev/null

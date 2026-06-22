@@ -1,6 +1,7 @@
 #!/bin/sh
 
 APACHE_RUNNER_TIMEOUT_CMD=
+APACHE_RUNNER_SLEEP_CMD=
 APACHE_RUNNER_PORTS="8080"
 APACHE_RUNNER_PKGS_SENTINEL="/tmp/apache-pkgs-installed"
 APACHE_RUNNER_PKGS="apache2 apache2-utils curl busybox-extras procps netcat-openbsd coreutils"
@@ -28,6 +29,29 @@ apache_runner_run_with_timeout() {
     shift
     # shellcheck disable=SC2086
     $APACHE_RUNNER_TIMEOUT_CMD "$sec" "$@"
+}
+
+apache_runner_init_sleep_cmd() {
+    if [ -n "$APACHE_RUNNER_SLEEP_CMD" ]; then
+        return 0
+    fi
+    if busybox sleep 0 >/dev/null 2>&1; then
+        APACHE_RUNNER_SLEEP_CMD='busybox sleep'
+        return 0
+    fi
+    if sleep 0 >/dev/null 2>&1; then
+        APACHE_RUNNER_SLEEP_CMD='sleep'
+        return 0
+    fi
+    apache_runner_log "sleep command not available"
+    return 1
+}
+
+apache_runner_sleep() {
+    sec=$1
+    apache_runner_init_sleep_cmd || return 1
+    # shellcheck disable=SC2086
+    $APACHE_RUNNER_SLEEP_CMD "$sec"
 }
 
 apache_runner_resolve_script() {
@@ -162,7 +186,7 @@ apache_runner_wait_ports_free() {
             fi
         done
         [ "$busy" -eq 0 ] && return 0
-        sleep 1
+        apache_runner_sleep 1
         i=$((i + 1))
     done
     apache_runner_log "ports still busy after ${max}s: $APACHE_RUNNER_PORTS"
@@ -171,7 +195,7 @@ apache_runner_wait_ports_free() {
 
 apache_runner_isolate_after_stage() {
     killall -q httpd 2>/dev/null || true
-    sleep 1
+    apache_runner_sleep 1
     killall -q -9 httpd 2>/dev/null || true
     apache_runner_wait_ports_free 10 || true
     rm -rf /tmp/apache-tests /tmp/apache-phase* /tmp/apache-debug* 2>/dev/null || true
