@@ -34,8 +34,6 @@ CARGO_BUILD_JOBS=""
 SELF_COMPILE_COMMIT=""
 SELF_COMPILE_REF=""
 LOG_LEVEL="info"
-BOOTSTRAP="false"
-FORCE_BOOTSTRAP="false"
 
 _numeric_level() {
     case "${1:-info}" in
@@ -55,12 +53,8 @@ while [[ $# -gt 0 ]]; do
         --commit) SELF_COMPILE_COMMIT="$2"; shift 2 ;;
         --ref)    SELF_COMPILE_REF="$2"; shift 2 ;;
         --log)    LOG_LEVEL="${2:-info}"; shift 2 ;;
-        --bootstrap)        BOOTSTRAP="true"; shift ;;
-        --force-bootstrap)  BOOTSTRAP="true"; FORCE_BOOTSTRAP="true"; shift ;;
         --help|-h)
-            echo "Usage: $0 [--arch riscv64|x86_64|aarch64] [--smp N] [--jobs N] [--commit SHA] [--ref REF] [--log none|error|warn|info] [--bootstrap] [--force-bootstrap]"
-            echo "  --bootstrap        If the rootfs is missing, bootstrap it via QEMU (no host sudo)"
-            echo "  --force-bootstrap  Force bootstrap even if the rootfs already exists"
+            echo "Usage: $0 [--arch riscv64|x86_64|aarch64] [--smp N] [--jobs N] [--commit SHA] [--ref REF] [--log none|error|warn|info]"
             exit 0
             ;;
         *) error "Unknown argument: $1";;
@@ -93,71 +87,6 @@ esac
 
 command -v debugfs &>/dev/null || error "debugfs not found (install e2fsprogs)"
 
-# ─── Bootstrap: build selfhost rootfs via QEMU (no host sudo) ─────────────────
-# Uses the Alpine rootfs (auto-managed by axbuild) as a base.  Boots it in
-# QEMU via a dedicated bootstrap app template (selfhost-bootstrap) that
-# installs build tools + Rust via apk inside the guest.
-#
-# After bootstrap the rootfs is saved as the blueprint; subsequent
-# self-compile runs clone it to a working copy.
-
-_bootstrap_rootfs() {
-    local alpine_rootfs blueprint
-    blueprint="tmp/axbuild/rootfs/rootfs-x86_64-debian-selfhost.img"
-
-    case "$ARCH" in
-        riscv64) alpine_rootfs="tmp/axbuild/rootfs/rootfs-riscv64-alpine.img" ;;
-        x86_64)  alpine_rootfs="tmp/axbuild/rootfs/rootfs-x86_64-alpine.img" ;;
-        aarch64) alpine_rootfs="tmp/axbuild/rootfs/rootfs-aarch64-alpine.img" ;;
-    esac
-
-    info "=== Bootstrapping selfhost rootfs via QEMU (no host sudo) ==="
-
-    [ -f "$alpine_rootfs" ] || error         "Alpine rootfs not found: $alpine_rootfs
-Run: cargo xtask starry rootfs --arch $ARCH"
-
-    if [ -f "$blueprint" ] && [ "$FORCE_BOOTSTRAP" != "true" ]; then
-        info "Blueprint exists: $blueprint ($(stat -c%s "$blueprint") bytes)"
-        info "Use --force-bootstrap to rebuild."
-        return 0
-    fi
-
-    info "Alpine base: $alpine_rootfs ($(stat -c%s "$alpine_rootfs") bytes)"
-    info "Cloning Alpine → bootstrap blueprint ($blueprint) ..."
-    mkdir -p "$(dirname "$blueprint")"
-    cp "$alpine_rootfs" "$blueprint" || error "Failed to clone Alpine rootfs"
-
-    # Expand to 12G for packages + rust + cargo cache
-    qemu-img resize -f raw "$blueprint" 12G >/dev/null 2>&1 || true
-    if [ "$(stat -c%s "$blueprint")" -lt 3000000000 ]; then
-        truncate -s 12G "$blueprint"
-    fi
-    info "Blueprint size: $(stat -c%s "$blueprint") bytes"
-
-    info "=== Starting QEMU bootstrap (~15-20 minutes) ==="
-    info "The guest will install build tools + Rust, then power off."
-
-    export SELF_COMPILE_TARGET
-    export SELF_COMPILE_ARCH="$ARCH"
-    export SELF_COMPILE_SMP="1"
-    export SELF_COMPILE_COMMIT=""
-    export SELF_COMPILE_REF=""
-    export CARGO_BUILD_JOBS="1"
-    export REPO_ROOT="$REPO_ROOT"
-
-    set +e
-    cargo xtask starry app qemu -t selfhost/selfhost-bootstrap --arch "$ARCH"
-    local qemu_exit=$?
-    set -e
-
-    if [ "$qemu_exit" -ne 0 ]; then
-        error "Bootstrap QEMU failed (exit=$qemu_exit).  The rootfs at $blueprint may be incomplete."
-    fi
-
-    info "Bootstrap complete: $blueprint ($(stat -c%s "$blueprint") bytes)"
-    info "Run: ./scripts/self-compile.sh --arch $ARCH"
-}
-
 # The xtask app runner modifies the rootfs in-place (injects overlay,
 # boots QEMU, guest writes /opt/starryos-selfbuilt).  Clone the
 # selfhost rootfs blueprint to a working copy so the blueprint stays
@@ -166,20 +95,9 @@ if [ "$ARCH" = "x86_64" ]; then
     mkdir -p tmp/debian-selfhost
     DEBIAN_SRC="tmp/axbuild/rootfs/rootfs-x86_64-debian-selfhost.img"
 
-    if [ ! -f "$DEBIAN_SRC" ]; then
-        if [ "$BOOTSTRAP" = "true" ]; then
-            _bootstrap_rootfs
-        else
-            error "Debian rootfs not found: $DEBIAN_SRC
-
-Options to prepare it:
-  1. Bootstrap via QEMU (no sudo): ./scripts/self-compile.sh --arch x86_64 --bootstrap
-  2. Build via debootstrap (needs sudo): sudo ./scripts/prepare-selfhost-rootfs.sh --arch x86_64 --force
-
-The rootfs can be reused across self-compilation runs.
-See docs/starryos-self-compilation.md for details."
-        fi
-    fi
+    [ -f "$DEBIAN_SRC" ] || error "Debian rootfs not found: $DEBIAN_SRC
+Run: sudo ./scripts/prepare-selfhost-rootfs.sh --arch x86_64 --force
+Once created, the rootfs is reused across runs (clone to working copy)."
 
     if [ ! -f "$ROOTFS_IMG" ]; then
         info "Cloning rootfs: $DEBIAN_SRC → $ROOTFS_IMG (this may take a moment)..."
