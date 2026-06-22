@@ -13,6 +13,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - AIC8800 Wi-Fi SoftAP for SG2002 (LicheeRV Nano) ([#1185](https://github.com/rcore-os/tgoskits/pull/1185))
 
+### Other
+
+- release ([#1263](https://github.com/rcore-os/tgoskits/pull/1263))
+
+## [0.3.3](https://github.com/rcore-os/tgoskits/compare/rdif-eth-v0.3.2...rdif-eth-v0.3.3) - 2026-06-22
+
+### Added
+
+- AIC8800 Wi-Fi SoftAP for SG2002 (LicheeRV Nano) ([#1185](https://github.com/rcore-os/tgoskits/pull/1185))
+
 ## [0.3.2](https://github.com/rcore-os/tgoskits/compare/rdif-eth-v0.3.1...rdif-eth-v0.3.2) - 2026-06-12
 
 ### Other
