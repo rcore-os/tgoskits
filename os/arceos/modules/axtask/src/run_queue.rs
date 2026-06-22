@@ -713,7 +713,13 @@ impl AxRunQueue {
             .or_else(|| {
                 #[cfg(feature = "smp")]
                 {
-                    self.try_steal()
+                    // Only steal when the CPU is truly idle, mirroring Linux's
+                    // idle_balance() which is only called from the idle task path.
+                    if crate::current().is_idle() {
+                        self.try_steal()
+                    } else {
+                        None
+                    }
                 }
                 #[cfg(not(feature = "smp"))]
                 {
