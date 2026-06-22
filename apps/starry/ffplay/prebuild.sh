@@ -23,6 +23,9 @@ ensure_host_packages() {
     command -v debugfs >/dev/null 2>&1 || missing+=(e2fsprogs)
     command -v install >/dev/null 2>&1 || missing+=(coreutils)
     command -v readelf >/dev/null 2>&1 || missing+=(binutils)
+    command -v wget >/dev/null 2>&1 || missing+=(wget)
+    command -v ffmpeg >/dev/null 2>&1 || missing+=(ffmpeg)
+    command -v ffprobe >/dev/null 2>&1 || missing+=(ffmpeg)
 
     case "$arch" in
         aarch64)     command -v qemu-aarch64-static >/dev/null 2>&1 || missing+=(qemu-user-static) ;;
@@ -356,48 +359,27 @@ populate_overlay() {
     # Test script
     install -Dm0755 "$app_dir/test_ffplay.sh" "$overlay_dir/usr/bin/test_ffplay.sh"
 
-    # Sample video — generated on the host during build, included in the
+    # Sample video — downloaded on the host during build, included in the
     # overlay so the guest can play it without internet access.
-    # Strategy: always generate a synthetic video first (guaranteed to work),
-    # then optionally download a real one if STARRY_VIDEO_URL is reachable.
     local video_url="${STARRY_VIDEO_URL:-https://media.w3.org/2010/05/sintel/trailer.mp4}"
     local video_dst="$overlay_dir/usr/share/test.mp4"
     mkdir -p "$overlay_dir/usr/share"
     if [[ ! -f "$video_dst" ]] || [[ ! -s "$video_dst" ]]; then
-        # Step 1: Always generate a synthetic mandelbrot video (reliable fallback).
-        echo "[ffplay prebuild] generating synthetic mandelbrot video..."
-        if command -v ffmpeg >/dev/null 2>&1; then
-            if ffmpeg -y -f lavfi \
-                -i "mandelbrot=size=320x180:rate=5:maxiter=50:start_scale=3:end_scale=0.01" \
-                -t 60 -c:v libx264 -preset ultrafast -b:v 100k -pix_fmt yuv420p \
-                "$video_dst" >/dev/null 2>&1 && \
-               [[ -s "$video_dst" ]] && \
-               ffprobe "$video_dst" >/dev/null 2>&1; then
-                echo "[ffplay prebuild] synthetic video: $(wc -c < "$video_dst") bytes"
-            else
-                echo "[ffplay prebuild] ERROR: synthetic video generation failed" >&2
-                rm -f "$video_dst"
-            fi
-        else
-            echo "[ffplay prebuild] ERROR: ffmpeg not found on host" >&2
-        fi
-
-        # Step 2: Try to download a real video (optional — overwrite synthetic).
+        echo "[ffplay prebuild] downloading sample video..."
         if command -v wget >/dev/null 2>&1; then
-            echo "[ffplay prebuild] trying to download sample video..."
-            local tmp_dl="$video_dst.dl.mp4"
-            if wget -4 -q --dns-timeout=10 --timeout=30 -O "$tmp_dl" "$video_url" 2>/dev/null && \
-               [[ -s "$tmp_dl" ]] && \
-               ffprobe "$tmp_dl" >/dev/null 2>&1; then
-                mv "$tmp_dl" "$video_dst"
+            # Try HTTPS first, fallback to HTTP if SSL fails
+            if wget -4 -v --dns-timeout=10 --timeout=120 --no-check-certificate -O "$video_dst" "$video_url" 2>&1 && \
+               [[ -s "$video_dst" ]]; then
                 echo "[ffplay prebuild] downloaded video: $(wc -c < "$video_dst") bytes"
             else
-                rm -f "$tmp_dl"
-                echo "[ffplay prebuild] download failed or invalid, keeping synthetic"
+                rm -f "$video_dst"
+                echo "[ffplay prebuild] ERROR: video download failed" >&2
             fi
+        else
+            echo "[ffplay prebuild] ERROR: wget not found on host" >&2
         fi
 
-        # Step 3: Compress to 160p for faster playback (skip if already small)
+        # Compress to 160p for faster playback (skip if already small or no ffmpeg)
         if command -v ffmpeg >/dev/null 2>&1 && [[ -s "$video_dst" ]]; then
             local dst_size
             dst_size=$(wc -c < "$video_dst")
@@ -408,8 +390,7 @@ populate_overlay() {
                     -vf "scale=284:160:flags=fast_bilinear" \
                     -r 5 -c:v libx264 -preset ultrafast -b:v 100k -pix_fmt yuv420p \
                     -an "$compressed" >/dev/null 2>&1 && \
-                    [[ -s "$compressed" ]] && \
-                    ffprobe "$compressed" >/dev/null 2>&1; then
+                    [[ -s "$compressed" ]]; then
                     mv "$compressed" "$video_dst"
                     echo "[ffplay prebuild] compressed: $(wc -c < "$video_dst") bytes"
                 else
@@ -422,10 +403,9 @@ populate_overlay() {
         fi
     fi
 
-    # Final validation — ensure we have a usable video file
-    if [[ ! -s "$video_dst" ]] || ! ffprobe "$video_dst" >/dev/null 2>&1; then
+    # Final validation
+    if [[ ! -s "$video_dst" ]]; then
         echo "[ffplay prebuild] FATAL: no valid video file at $video_dst" >&2
-        rm -f "$video_dst"
         exit 1
     fi
     echo "[ffplay prebuild] final video: $(wc -c < "$video_dst") bytes"
