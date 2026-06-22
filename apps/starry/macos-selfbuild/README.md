@@ -23,7 +23,7 @@ This app reproduces the StarryOS self-build flow on Apple Silicon macOS, with fi
 | --- | --- | --- |
 | `full_self_build.sh` | Full entrypoint | Wires together seed kernel build, rootfs input preparation, QEMU guest self-build, and artifact extraction. |
 | `build_kernel.sh` | Stage 1 | Calls `cargo xtask starry build` on the host to build the AArch64 StarryOS seed kernel used for the first guest boot. Does not prepare the rootfs or launch QEMU. |
-| `build_rootfs.sh` | Stage 2 | Prepares the managed AArch64 Alpine rootfs with `cargo xtask image pull/resize` and refreshes the guest toolchain overlay cache. Does not modify the managed image or launch QEMU. |
+| `build_rootfs.sh` | Stage 2 | Prepares the managed AArch64 Alpine rootfs with `cargo xtask image pull/resize` and refreshes the guest toolchain overlay cache. It only pulls/resizes the managed image; it does not inject app files or launch QEMU. |
 | `run_selfbuild.sh` | Stage 3 | Copies the managed rootfs to a per-run work image, calls `prebuild.sh` to assemble the overlay, injects it with `cargo xtask image inject`, launches QEMU/HVF, starts the guest Cargo build, and extracts artifacts from the work image. |
 | `prebuild.sh` | Internal script | Assembles the per-run overlay: copies the toolchain overlay, archives the current checkout, copies offline Cargo registry cache, and writes the guest runner plus source metadata. |
 | `prepare_toolchain_overlay.sh` | Internal/debug script | Downloads and prepares guest Rust/Cargo, Rust source, LLVM/libclang, musl C tools, and Cargo cache. Its output is a filesystem tree, not a rootfs image. |
@@ -36,7 +36,7 @@ The managed rootfs default path:
 target/starry-macos-selfbuild/tgos-images/rootfs-aarch64-alpine.img/rootfs-aarch64-alpine.img
 ```
 
-It is not under `tmp/axbuild/rootfs`. The managed image stays clean; only the per-run work copy under `target/starry-macos-selfbuild/rootfs/` is modified.
+It is not under `tmp/axbuild/rootfs`. The managed image is only pulled/resized and is not injected with the self-build overlay; only the per-run work copy under `target/starry-macos-selfbuild/rootfs/` receives the overlay and guest-built artifacts.
 
 ## Prerequisites
 
@@ -75,6 +75,7 @@ qemu-system-aarch64 \
   -device virtio-blk-pci,drive=disk0 \
   -drive id=disk0,if=none,format=raw,file=target/starry-macos-selfbuild/tgos-images/rootfs-aarch64-alpine.img/rootfs-aarch64-alpine.img,file.locking=off \
   -kernel target/starry-macos-selfbuild/uploaded/starryos-aarch64-unknown-none-softfloat.bin \
+  -append "someboot.aarch64_gicd_spi=off" \
   -netdev user,id=net0
 ```
 
@@ -122,6 +123,7 @@ qemu-system-aarch64 \
   -device virtio-blk-pci,drive=disk0 \
   -drive id=disk0,if=none,format=raw,file=target/starry-macos-selfbuild/tgos-images/rootfs-aarch64-alpine.img/rootfs-aarch64-alpine.img,file.locking=off \
   -kernel target/starry-macos-selfbuild/uploaded/starryos-aarch64-unknown-none-softfloat.bin \
+  -append "someboot.aarch64_gicd_spi=off" \
   -netdev user,id=net0
 ```
 

@@ -27,7 +27,7 @@ rootfs 中取回，并再次用 QEMU 启动验证。
 | --- | --- | --- |
 | `full_self_build.sh` | 完整入口 | 串起 seed kernel、rootfs 输入准备、QEMU guest 自举编译和产物提取。 |
 | `build_kernel.sh` | 阶段 1 | 在 host 上调用 `cargo xtask starry build` 构建用于首次启动 guest 的 AArch64 StarryOS 种子内核。它不准备 rootfs，也不启动 QEMU。 |
-| `build_rootfs.sh` | 阶段 2 | 通过 `cargo xtask image pull/resize` 准备托管 AArch64 Alpine rootfs，并刷新 guest 工具链 overlay cache。它不 patch 托管镜像，也不启动 QEMU。 |
+| `build_rootfs.sh` | 阶段 2 | 通过 `cargo xtask image pull/resize` 准备托管 AArch64 Alpine rootfs，并刷新 guest 工具链 overlay cache。它只 pull/resize 托管镜像，不向托管镜像注入 app 文件，也不启动 QEMU。 |
 | `run_selfbuild.sh` | 阶段 3 | 复制托管 rootfs 为一次性工作镜像，调用 `prebuild.sh` 生成 overlay，再通过 `cargo xtask image inject` 注入 overlay，启动 QEMU/HVF，触发 guest 内 Cargo 构建，并从工作镜像提取产物。 |
 | `prebuild.sh` | 内部脚本 | 为单次运行组装待注入 overlay：复制工具链 overlay、打包当前源码、复制离线 Cargo registry cache、写入 guest runner 和源码 metadata。 |
 | `prepare_toolchain_overlay.sh` | 内部/调试脚本 | 下载并准备 guest 里的 Rust/Cargo、Rust 源码、LLVM/libclang、musl C 工具链和 Cargo cache。输出是目录树，不是 rootfs 镜像。 |
@@ -40,8 +40,9 @@ rootfs 中取回，并再次用 QEMU 启动验证。
 target/starry-macos-selfbuild/tgos-images/rootfs-aarch64-alpine.img/rootfs-aarch64-alpine.img
 ```
 
-它不在 `tmp/axbuild/rootfs` 下。托管镜像保持干净，只有
-`target/starry-macos-selfbuild/rootfs/` 下的一次性工作副本会被修改。
+它不在 `tmp/axbuild/rootfs` 下。托管镜像只会被 pull/resize，不会注入自举
+overlay；只有 `target/starry-macos-selfbuild/rootfs/` 下的一次性工作副本会被
+注入 overlay 并写入 guest-built 产物。
 
 ## 前置依赖
 
@@ -73,12 +74,13 @@ qemu-system-aarch64 \
   -snapshot \
   -machine virt,gic-version=3 \
   -nographic \
-  -cpu cortex-a53\
+  -cpu cortex-a53 \
   -m 512M \
   -smp 1 \
   -device virtio-blk-pci,drive=disk0 \
   -drive id=disk0,if=none,format=raw,file=target/starry-macos-selfbuild/tgos-images/rootfs-aarch64-alpine.img/rootfs-aarch64-alpine.img,file.locking=off \
   -kernel target/starry-macos-selfbuild/uploaded/starryos-aarch64-unknown-none-softfloat.bin \
+  -append "someboot.aarch64_gicd_spi=off" \
   -netdev user,id=net0
 ```
 
@@ -120,12 +122,13 @@ qemu-system-aarch64 \
   -snapshot \
   -machine virt,gic-version=3 \
   -nographic \
-  -cpu cortex-a53\
+  -cpu cortex-a53 \
   -m 512M \
   -smp 1 \
   -device virtio-blk-pci,drive=disk0 \
   -drive id=disk0,if=none,format=raw,file=target/starry-macos-selfbuild/tgos-images/rootfs-aarch64-alpine.img/rootfs-aarch64-alpine.img,file.locking=off \
   -kernel target/starry-macos-selfbuild/uploaded/starryos-aarch64-unknown-none-softfloat.bin \
+  -append "someboot.aarch64_gicd_spi=off" \
   -netdev user,id=net0
 ```
 
