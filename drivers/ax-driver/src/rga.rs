@@ -1,11 +1,12 @@
 use alloc::vec::Vec;
 
-use log::info;
+use log::{info, warn};
 use rdrive::{
     probe::OnProbeError,
     register::{FdtInfo, ProbeFdt},
 };
-use rockchip_rga::{RgaCoreConfig, RgaCoreResource, RockchipRga};
+use rockchip_pm::{PowerDomain, RockchipPM};
+use rockchip_rga::{RgaCoreConfig, RgaCoreResource, RgaVersion, RockchipRga};
 
 use crate::mmio::iomap;
 
@@ -30,17 +31,21 @@ fn probe(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
     let config = detect_core_config(&info)
         .ok_or_else(|| OnProbeError::other("unsupported Rockchip RGA compatible string"))?;
 
+    // Power on the core's domain BEFORE any RGA MMIO (RgaCore::new reads the version register).
+    enable_power(config);
+
+    let irq = crate::binding_info_from_fdt(&info)?.irq_num();
+
     let mut resources = Vec::new();
     for reg in info.node.regs() {
         let start_raw = reg.address as usize;
         let size_raw = reg.size.unwrap_or(0x1000) as usize;
         let (start, size, offset) = page_aligned_region(start_raw, size_raw);
         let base = unsafe { iomap(start, size)?.add(offset) };
-
         resources.push(RgaCoreResource {
             base,
             size: size_raw,
-            irq: decode_fdt_irq(&info.interrupts()),
+            irq,
             config,
         });
     }
@@ -48,10 +53,37 @@ fn probe(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
     let dma = axklib::dma::device_with_mask(u32::MAX as u64);
     let rga = RockchipRga::new(&resources, dma);
     let core_count = rga.core_count();
+    let version = rga.cores().first().map(|c| c.version());
     plat_dev.register(rga);
-
-    info!("RGA registered successfully, cores={core_count}");
+    info!("RGA registered: cores={core_count} version={version:?}");
     Ok(())
+}
+
+fn enable_power(config: RgaCoreConfig) {
+    // RK3588 power-domain IDs (from rockchip-pm rk3588 variant): RGA30=22, RGA31=30, RGA2/VDPU=21.
+    let domain = match config.version {
+        RgaVersion::Rga3 => {
+            if config.core_index == 0 {
+                PowerDomain(22) // RGA30
+            } else {
+                PowerDomain(30) // RGA31
+            }
+        }
+        RgaVersion::Rga2 => PowerDomain(21), // RGA2/VDPU
+    };
+    match rdrive::get_one::<RockchipPM>() {
+        Some(pm) => match pm.lock() {
+            Ok(mut pm) => {
+                if let Err(e) = pm.power_domain_on(domain) {
+                    warn!("RGA power_domain_on({domain:?}) failed: {e:?}");
+                }
+            }
+            Err(e) => warn!("RGA: RockchipPM lock failed: {e:?}"),
+        },
+        None => warn!("RGA: RockchipPM not found; assuming domain already powered"),
+    }
+    // Clocks/resets are intentionally NOT enabled here yet — confirm on board whether PM-only suffices
+    // (the NPU probe gets away with PM-only). Add rockchip-soc Cru/Reset calls only if the board needs them.
 }
 
 fn detect_core_config(info: &FdtInfo<'_>) -> Option<RgaCoreConfig> {
@@ -72,17 +104,4 @@ fn page_aligned_region(start_raw: usize, size_raw: usize) -> (usize, usize, usiz
     let offset = start_raw - start;
     let end = (start_raw + size_raw + page_size - 1) & !(page_size - 1);
     (start, end - start, offset)
-}
-
-fn decode_fdt_irq(interrupts: &[rdrive::probe::fdt::InterruptRef]) -> Option<usize> {
-    let interrupt = interrupts.first()?;
-    match interrupt.specifier.as_slice() {
-        [irq] => Some(*irq as usize),
-        [kind, irq, ..] => match *kind {
-            0 => Some(*irq as usize + 32),
-            1 => Some(*irq as usize + 16),
-            _ => Some(*irq as usize),
-        },
-        _ => None,
-    }
 }
