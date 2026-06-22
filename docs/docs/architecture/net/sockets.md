@@ -303,11 +303,24 @@ fn udp_bind_available(binds: &HashMap<UdpBindKey, SocketHandle>, key: UdpBindKey
 TCP 除了 listen table，还需要记录“已经 bind 但还没有 listen/connect 完成”的端口所有权：
 
 ```rust
-static TCP_BOUND_PORTS: LazyLock<Mutex<HashMap<u16, Vec<Option<IpAddress>>>>> =
+static TCP_BOUND_PORTS: LazyLock<Mutex<HashMap<u16, HashSet<Option<IpAddress>>>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
 fn listen_addrs_conflict(a: Option<IpAddress>, b: Option<IpAddress>) -> bool {
     a.is_none() || b.is_none() || a == b
+}
+
+fn register_tcp_bound(endpoint: IpListenEndpoint) -> AxResult {
+    let mut bound_ports = TCP_BOUND_PORTS.lock();
+    let bound_addrs = bound_ports.entry(endpoint.port).or_default();
+    if bound_addrs
+        .iter()
+        .any(|&addr| listen_addrs_conflict(addr, endpoint.addr))
+    {
+        return Err(AxError::AddrInUse);
+    }
+    bound_addrs.insert(endpoint.addr);
+    Ok(())
 }
 ```
 
@@ -335,16 +348,17 @@ struct ListenTableEntryInner {
 }
 
 pub struct ListenTable {
-    tcp: Box<[ListenTableEntry]>,
+    tcp: Mutex<HashMap<u16, ListenTableEntry>>,
 }
 ```
 
-`tcp` 是 65536 个端口 bucket，每个 bucket 存放该端口下的多个具体地址 listener。`listen()` 检查 wildcard/specific 冲突后插入 entry：
+`tcp` 按端口懒创建 listen bucket，每个 bucket 存放该端口下的多个具体地址 listener。`listen()` 检查 wildcard/specific 冲突后插入 entry：
 
 ```rust
 pub fn listen(&self, listen_endpoint: IpListenEndpoint, backlog: usize) -> AxResult {
     let port = listen_endpoint.port;
-    let mut entries = self.tcp[port as usize].lock();
+    let entries = self.listen_entry_or_create(port);
+    let mut entries = entries.lock();
     if entries
         .iter()
         .any(|entry| listen_addrs_conflict(entry.listen_endpoint.addr, listen_endpoint.addr))
@@ -368,7 +382,9 @@ pub fn accept(
     listen_endpoint: IpListenEndpoint,
     sockets: &mut SocketSet<'_>,
 ) -> AxResult<AcceptedTcp> {
-    let entries = self.listen_entry(listen_endpoint.port);
+    let Some(entries) = self.listen_entry(listen_endpoint.port) else {
+        return Err(AxError::InvalidInput);
+    };
     let mut table = entries.lock();
     let Some(entry) = table
         .iter_mut()

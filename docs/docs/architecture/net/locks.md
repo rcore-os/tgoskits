@@ -298,11 +298,11 @@ impl StateLock {
 }
 ```
 
-TCP 端口占用表在 [tcp.rs](net/ax-net/src/tcp.rs#L922)：
+TCP 端口占用表在 [tcp.rs](net/ax-net/src/tcp.rs#L953)：
 
 ```rust
-// tcp.rs:922-939
-static TCP_BOUND_PORTS: LazyLock<Mutex<HashMap<u16, Vec<Option<smoltcp::wire::IpAddress>>>>> =
+// tcp.rs:953-970
+static TCP_BOUND_PORTS: LazyLock<Mutex<HashMap<u16, HashSet<Option<smoltcp::wire::IpAddress>>>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
 fn register_tcp_bound(endpoint: IpListenEndpoint) -> AxResult {
@@ -314,19 +314,19 @@ fn register_tcp_bound(endpoint: IpListenEndpoint) -> AxResult {
     {
         return Err(AxError::AddrInUse);
     }
-    bound_addrs.push(endpoint.addr);
+    bound_addrs.insert(endpoint.addr);
     Ok(())
 }
 ```
 
-它只记录 public bind ownership，避免每次 ephemeral port 或 bind 冲突检查都扫描整个 `SocketSet`。listen bucket 是 per-port 锁，定义在 [listen_table.rs](net/ax-net/src/listen_table.rs#L113)：
+它只记录 public bind ownership，避免每次 ephemeral port 或 bind 冲突检查都扫描整个 `SocketSet`。listen table 按端口懒创建 bucket，每个 bucket 仍是独立短锁，定义在 [listen_table.rs](net/ax-net/src/listen_table.rs#L111)：
 
 ```rust
-// listen_table.rs:113-117
+// listen_table.rs:108-112
 type ListenTableEntry = Arc<Mutex<Vec<ListenTableEntryInner>>>;
 
 pub struct ListenTable {
-    tcp: Box<[ListenTableEntry]>,
+    tcp: Mutex<HashMap<u16, ListenTableEntry>>,
 }
 ```
 
@@ -334,7 +334,9 @@ SYN snoop 在 Router RX 阶段进入对应 bucket，并在已经持有 `SOCKET_S
 
 ```rust
 // listen_table.rs:274-315, 摘要
-let entries = self.listen_entry(dst.port);
+let Some(entries) = self.listen_entry(dst.port) else {
+    return;
+};
 let mut table = entries.lock();
 if let Some(entry) = table
     .iter_mut()
@@ -513,9 +515,14 @@ RX worker 在 [router.rs](net/ax-net/src/router.rs#L805) 先短暂持有 `Device
 
 ```rust
 // router.rs:810-847, 摘要
+let mut rx_buffer = PacketBuffer::new(
+    vec![PacketMetadata::EMPTY; DEVICE_RX_WORKER_BATCH],
+    vec![0u8; STANDARD_MTU * DEVICE_RX_WORKER_BATCH],
+);
+
 {
     let mut device_inner = device.inner.lock();
-    while rx_buffer.is_empty()
+    while !rx_buffer.is_full()
         && device_inner.recv(device.interface_id, &mut rx_buffer, now(), &mut snoop)
     {
         received = true;
