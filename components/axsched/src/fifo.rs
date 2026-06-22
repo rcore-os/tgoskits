@@ -82,6 +82,10 @@ impl<T> BaseScheduler for FifoScheduler<T> {
         self.ready_queue.push_back(prev);
     }
 
+    fn is_empty(&self) -> bool {
+        self.ready_queue.is_empty()
+    }
+
     fn task_tick(&mut self, _current: &Self::SchedItem) -> bool {
         false // no reschedule
     }

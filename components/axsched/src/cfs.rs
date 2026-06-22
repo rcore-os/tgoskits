@@ -192,6 +192,10 @@ impl<T> BaseScheduler for CFScheduler<T> {
             .insert((prev.clone().get_vruntime(), taskid), prev);
     }
 
+    fn is_empty(&self) -> bool {
+        self.ready_queue.is_empty()
+    }
+
     fn task_tick(&mut self, current: &Self::SchedItem) -> bool {
         current.task_tick();
         if self.ready_queue.is_empty() {

@@ -69,4 +69,11 @@ pub trait BaseScheduler {
 
     /// set priority for a task
     fn set_priority(&mut self, task: &Self::SchedItem, prio: isize) -> bool;
+
+    /// Returns `true` if the ready queue has no runnable tasks.
+    ///
+    /// Used as a fast, racy heuristic (without holding the lock) to skip
+    /// empty queues before attempting work-stealing — mirrors Linux's
+    /// `src_rq->nr_running > 1` check in `idle_balance()`.
+    fn is_empty(&self) -> bool;
 }

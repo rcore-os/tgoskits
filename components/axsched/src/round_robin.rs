@@ -135,6 +135,10 @@ impl<T, const S: usize> BaseScheduler for RRScheduler<T, S> {
         }
     }
 
+    fn is_empty(&self) -> bool {
+        self.ready_queue.is_empty()
+    }
+
     fn task_tick(&mut self, current: &Self::SchedItem) -> bool {
         let old_slice = current.time_slice.fetch_sub(1, Ordering::Release);
         old_slice <= 1

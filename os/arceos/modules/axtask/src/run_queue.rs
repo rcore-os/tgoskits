@@ -690,6 +690,15 @@ impl AxRunQueue {
             if !RUN_QUEUE_INITIALIZED[target].load(Ordering::Acquire) {
                 continue;
             }
+            // Fast racy heuristic: skip CPUs whose ready queue looks empty.
+            // Mirrors Linux's idle_balance() which checks src_rq->nr_running
+            // before attempting to pull tasks.  Saves a CAS on the remote
+            // scheduler lock for every empty-queue probe — on 8-core
+            // boards this significantly reduces cache-line contention on
+            // the scheduler lock word.
+            if get_run_queue(target).scheduler.is_empty() {
+                continue;
+            }
             let task = {
                 let Some(mut sched) = get_run_queue(target).scheduler.try_lock() else {
                     continue;
