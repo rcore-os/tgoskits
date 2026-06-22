@@ -146,7 +146,7 @@ fn poll_until_idle() {
         }
 
         while POLL_AGAIN.swap(false, Ordering::AcqRel) {
-            while poll_once() {}
+            while get_service().poll(&mut SOCKET_SET.inner.lock()) {}
         }
         POLLING_INTERFACES.store(false, Ordering::Release);
         if !POLL_AGAIN.load(Ordering::Acquire) {
@@ -156,7 +156,7 @@ fn poll_until_idle() {
 }
 ```
 
-`poll_once()` 的锁顺序是：
+`poll_until_idle()` 内联 poll 调用的锁顺序是：
 
 ```text
 SERVICE -> SOCKET_SET.inner -> Service::poll()

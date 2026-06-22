@@ -137,6 +137,19 @@ impl UdpSocket {
             self.source_for_remote(remote)
         }
     }
+
+    fn source_and_binding_update_for_remote(
+        &self,
+        remote: &IpAddress,
+    ) -> AxResult<(IpAddress, bool)> {
+        if let Some(local_ep) = *self.local_addr.read()
+            && !local_ep.addr.is_unspecified()
+        {
+            Ok((local_ep.addr, false))
+        } else {
+            Ok((self.source_for_remote(remote)?, true))
+        }
+    }
 }
 
 impl Configurable for UdpSocket {
@@ -235,20 +248,9 @@ impl SocketOps for UdpSocket {
         }
 
         let remote_addr = IpEndpoint::from(remote_addr);
-        let local = self.local_addr.read();
-
-        // Determine source address and device binding based on bind state
-        let (src, should_update_binding) = if let Some(local_ep) = *local {
-            if local_ep.addr.is_unspecified() {
-                // Bound to 0.0.0.0, use route decision
-                (self.source_for_remote(&remote_addr.addr)?, true)
-            } else {
-                // Bound to specific IP, use that address and keep interface
-                (local_ep.addr, false)
-            }
-        } else {
-            (self.source_for_remote(&remote_addr.addr)?, true)
-        };
+        let local_port = self.local_addr.read().map_or(0, |endpoint| endpoint.port);
+        let (src, should_update_binding) =
+            self.source_and_binding_update_for_remote(&remote_addr.addr)?;
 
         *guard = Some((remote_addr, src));
 
@@ -256,7 +258,7 @@ impl SocketOps for UdpSocket {
             self.general
                 .set_device_binding(get_control().local_binding_for(&IpListenEndpoint {
                     addr: Some(src),
-                    port: (*local).map_or(0, |endpoint| endpoint.port),
+                    port: local_port,
                 })?);
         }
 

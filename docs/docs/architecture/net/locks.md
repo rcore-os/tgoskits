@@ -80,12 +80,12 @@ static NET_POLL_WAKE: WaitQueue = WaitQueue::new();
 
 ### `SERVICE`
 
-`SERVICE: Mutex<Service>` 是协议核心最外层锁，保护 [Service](net/ax-net/src/service.rs#L310) 内的 smoltcp `Interface`、`Router`、DHCP client/server 和 orphan reaper 状态。完整 poll 只通过 [poll_once()](net/ax-net/src/lib.rs#L411) 进入：
+`SERVICE: Mutex<Service>` 是协议核心最外层锁，保护 [Service](net/ax-net/src/service.rs#L310) 内的 smoltcp `Interface`、`Router`、DHCP client/server 和 orphan reaper 状态。完整 poll 只通过 [poll_until_idle()](net/ax-net/src/lib.rs#L429) 进入：
 
 ```rust
-// lib.rs:411-413
-fn poll_once() -> bool {
-    get_service().poll(&mut SOCKET_SET.inner.lock())
+// lib.rs:439-440
+while POLL_AGAIN.swap(false, Ordering::AcqRel) {
+    while get_service().poll(&mut SOCKET_SET.inner.lock()) {}
 }
 ```
 
@@ -163,7 +163,7 @@ fn poll_until_idle() {
         }
 
         while POLL_AGAIN.swap(false, Ordering::AcqRel) {
-            while poll_once() {}
+            while get_service().poll(&mut SOCKET_SET.inner.lock()) {}
         }
         POLLING_INTERFACES.store(false, Ordering::Release);
 ```
@@ -734,7 +734,7 @@ accept():
   -> LISTEN_TABLE.tcp[port].lock()
 
 SYN snoop during Router RX:
-  SOCKET_SET.inner is already held by poll_once()
+  SOCKET_SET.inner is already held by poll_until_idle()'s inline poll call
   -> LISTEN_TABLE.tcp[port].lock()
   -> SocketSet::add(child socket)
 ```

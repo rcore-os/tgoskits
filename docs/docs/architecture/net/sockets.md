@@ -642,7 +642,6 @@ vsock 设备层还有一个临时 RX buffer 和 pending event queue：
 
 - `VSOCK_RX_TMPBUF_SIZE = 4 KiB`：poll task 从 `rdif_vsock::Interface` 拉取事件时使用的临时接收缓冲。
 - `PENDING_EVENTS`：当事件暂时无法完整交付给 manager（例如目标连接 RX ring 空间不足）时保存事件，后续 poll 周期继续处理，避免直接丢弃设备事件。
-- `VsockStats` / `get_vsock_stats()`：导出 connection manager 的连接数、监听数和队列状态，用于诊断 vsock 连接泄漏或 accept backlog 问题。
 
 #### Vsock Poll Worker
 

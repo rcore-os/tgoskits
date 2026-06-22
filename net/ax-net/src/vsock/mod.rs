@@ -25,28 +25,6 @@ use crate::{
     options::{Configurable, GetSocketOption, SetSocketOption},
 };
 
-/// Operations implemented by the stream vsock transport.
-pub trait VsockTransportOps: Configurable + Pollable + Send + Sync {
-    /// Bind the transport to a local address.
-    fn bind(&self, local_addr: VsockAddr) -> AxResult;
-    /// Start listening for incoming connections.
-    fn listen(&self) -> AxResult;
-    /// Connect to a remote peer address.
-    fn connect(&self, peer_addr: VsockAddr) -> AxResult;
-    /// Accept an incoming connection.
-    fn accept(&self) -> AxResult<(VsockStreamTransport, VsockAddr)>;
-    /// Send data through the transport.
-    fn send(&self, src: impl Read + IoBuf, options: SendOptions) -> AxResult<usize>;
-    /// Receive data from the transport.
-    fn recv(&self, dst: impl Write, options: RecvOptions<'_>) -> AxResult<usize>;
-    /// Shutdown the transport.
-    fn shutdown(&self, _how: Shutdown) -> AxResult;
-    /// Get the local address, if bound.
-    fn local_addr(&self) -> AxResult<Option<VsockAddr>>;
-    /// Get the peer address, if connected.
-    fn peer_addr(&self) -> AxResult<Option<VsockAddr>>;
-}
-
 /// A network socket using the vsock protocol.
 pub struct VsockSocket {
     /// Stream-oriented vsock transport.

@@ -159,8 +159,12 @@ impl RawSocket {
             .source)
     }
 
-    /// Parses a complete IP packet and returns its source plus deliverable bytes.
-    fn parse_ip_packet<'a>(&self, packet: &'a [u8]) -> AxResult<(IpAddress, &'a [u8])> {
+    /// Splits a complete IP packet into source and bytes returned to userspace.
+    ///
+    /// Linux raw IPv4 receive returns the IP header plus payload, while raw IPv6
+    /// receive returns only the transport payload. The returned slice preserves
+    /// that ABI difference.
+    fn split_packet_for_delivery<'a>(&self, packet: &'a [u8]) -> AxResult<(IpAddress, &'a [u8])> {
         match self.ip_version {
             IpVersion::Ipv4 => {
                 let packet = Ipv4Packet::new_checked(packet)
@@ -454,7 +458,7 @@ impl SocketOps for RawSocket {
                         *self.deferred_rx.lock() = Some((source, packet));
                         return Err(AxError::WouldBlock);
                     }
-                    let (_, payload) = self.parse_ip_packet(&packet)?;
+                    let (_, payload) = self.split_packet_for_delivery(&packet)?;
                     return self.deliver_packet(source, payload, &mut dst, &mut options);
                 }
 
@@ -472,7 +476,7 @@ impl SocketOps for RawSocket {
 
                 let wire_packet = if options.flags.contains(RecvFlags::PEEK) {
                     let packet = socket.peek().map_err(|_| AxError::WouldBlock)?;
-                    let (source, _) = self.parse_ip_packet(packet)?;
+                    let (source, _) = self.split_packet_for_delivery(packet)?;
                     if let Some(peer) = *self.peer_addr.read()
                         && source != peer
                     {
@@ -482,7 +486,7 @@ impl SocketOps for RawSocket {
                 } else {
                     socket.recv().map_err(|_| AxError::WouldBlock)?
                 };
-                let (source, packet) = self.parse_ip_packet(wire_packet)?;
+                let (source, packet) = self.split_packet_for_delivery(wire_packet)?;
 
                 if !self.source_matches_peer(source) {
                     *self.deferred_rx.lock() = Some((source, wire_packet.to_vec()));

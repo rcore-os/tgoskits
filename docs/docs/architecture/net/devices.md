@@ -622,7 +622,7 @@ fn poll_until_idle() {
         }
 
         while POLL_AGAIN.swap(false, Ordering::AcqRel) {
-            while poll_once() {}
+            while get_service().poll(&mut SOCKET_SET.inner.lock()) {}
         }
         POLLING_INTERFACES.store(false, Ordering::Release);
         if !POLL_AGAIN.load(Ordering::Acquire) {

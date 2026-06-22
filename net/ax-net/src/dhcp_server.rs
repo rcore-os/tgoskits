@@ -29,6 +29,41 @@ use crate::config::InterfaceId;
 /// Lease duration advertised in Offer/Ack replies, in seconds.
 const LEASE_SECS: u32 = 86400;
 
+/// Parsed DHCP-over-IPv4/UDP packet.
+pub(crate) struct ParsedDhcp<'a> {
+    pub(crate) src_addr: Ipv4Address,
+    pub(crate) udp: UdpRepr,
+    pub(crate) dhcp: DhcpRepr<'a>,
+}
+
+/// Parses an IPv4 UDP DHCP packet, leaving direction checks to the caller.
+pub(crate) fn parse_dhcp_packet<R>(
+    packet: &[u8],
+    f: impl FnOnce(ParsedDhcp<'_>) -> Option<R>,
+) -> Option<R> {
+    let ipv4_packet = Ipv4Packet::new_checked(packet).ok()?;
+    let ipv4_repr = Ipv4Repr::parse(&ipv4_packet, &ChecksumCapabilities::default()).ok()?;
+    if ipv4_repr.next_header != IpProtocol::Udp {
+        return None;
+    }
+
+    let udp_packet = UdpPacket::new_checked(ipv4_packet.payload()).ok()?;
+    let udp = UdpRepr::parse(
+        &udp_packet,
+        &IpAddress::Ipv4(ipv4_repr.src_addr),
+        &IpAddress::Ipv4(ipv4_repr.dst_addr),
+        &ChecksumCapabilities::default(),
+    )
+    .ok()?;
+    let dhcp_packet = DhcpPacket::new_checked(udp_packet.payload()).ok()?;
+    let dhcp = DhcpRepr::parse(&dhcp_packet).ok()?;
+    f(ParsedDhcp {
+        src_addr: ipv4_repr.src_addr,
+        udp,
+        dhcp,
+    })
+}
+
 /// Minimal DHCP server configuration and one-client lease state.
 pub struct DhcpServer {
     /// Server address, also advertised as router and server identifier.
@@ -73,51 +108,36 @@ impl DhcpServer {
             return None;
         }
 
-        let ipv4_packet = Ipv4Packet::new_checked(packet).ok()?;
-        let ipv4_repr = Ipv4Repr::parse(&ipv4_packet, &ChecksumCapabilities::default()).ok()?;
-        if ipv4_repr.next_header != IpProtocol::Udp {
-            return None;
-        }
-
-        let udp_packet = UdpPacket::new_checked(ipv4_packet.payload()).ok()?;
-        let udp_repr = UdpRepr::parse(
-            &udp_packet,
-            &IpAddress::Ipv4(ipv4_repr.src_addr),
-            &IpAddress::Ipv4(ipv4_repr.dst_addr),
-            &ChecksumCapabilities::default(),
-        )
-        .ok()?;
-        // Client -> server uses UDP src=68, dst=67.
-        if udp_repr.src_port != DHCP_CLIENT_PORT || udp_repr.dst_port != DHCP_SERVER_PORT {
-            return None;
-        }
-
-        let dhcp_packet = DhcpPacket::new_checked(udp_packet.payload()).ok()?;
-        let dhcp_repr = DhcpRepr::parse(&dhcp_packet).ok()?;
-
-        let client_mac = dhcp_repr.client_hardware_address;
-        let xid = dhcp_repr.transaction_id;
-
-        let reply_type = match dhcp_repr.message_type {
-            DhcpMessageType::Discover => {
-                info!(
-                    "[dhcp-srv] Discover from {client_mac} -> Offer {}",
-                    self.client_ip
-                );
-                DhcpMessageType::Offer
+        parse_dhcp_packet(packet, |parsed| {
+            // Client -> server uses UDP src=68, dst=67.
+            if parsed.udp.src_port != DHCP_CLIENT_PORT || parsed.udp.dst_port != DHCP_SERVER_PORT {
+                return None;
             }
-            DhcpMessageType::Request => {
-                self.leased_to = Some(client_mac);
-                info!(
-                    "[dhcp-srv] Request from {client_mac} -> Ack {}",
-                    self.client_ip
-                );
-                DhcpMessageType::Ack
-            }
-            _ => return None,
-        };
 
-        Some(self.build_reply(client_mac, xid, reply_type))
+            let client_mac = parsed.dhcp.client_hardware_address;
+            let xid = parsed.dhcp.transaction_id;
+
+            let reply_type = match parsed.dhcp.message_type {
+                DhcpMessageType::Discover => {
+                    info!(
+                        "[dhcp-srv] Discover from {client_mac} -> Offer {}",
+                        self.client_ip
+                    );
+                    DhcpMessageType::Offer
+                }
+                DhcpMessageType::Request => {
+                    self.leased_to = Some(client_mac);
+                    info!(
+                        "[dhcp-srv] Request from {client_mac} -> Ack {}",
+                        self.client_ip
+                    );
+                    DhcpMessageType::Ack
+                }
+                _ => return None,
+            };
+
+            Some(self.build_reply(client_mac, xid, reply_type))
+        })
     }
 
     /// Builds a complete IPv4 packet containing a DHCP Offer/Ack reply.

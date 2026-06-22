@@ -672,7 +672,14 @@ impl Router {
     /// Routes smoltcp-emitted TX packets to loopback or device workers.
     pub fn dispatch(&mut self, _timestamp: Instant, sockets: &mut SocketSet<'_>) -> bool {
         let mut poll_next = false;
-        while let Ok((_, packet)) = self.tx_buffer.dequeue() {
+        let Router {
+            rx_buffer,
+            tx_buffer,
+            devices,
+            table,
+            ..
+        } = self;
+        while let Ok((_, packet)) = tx_buffer.dequeue() {
             match IpVersion::of_packet(packet).expect("got invalid IP packet") {
                 IpVersion::Ipv4 => {
                     let packet = smoltcp::wire::Ipv4Packet::new_checked(packet)
@@ -680,39 +687,18 @@ impl Router {
                     let src_addr = IpAddress::Ipv4(packet.src_addr());
                     let dst_addr = IpAddress::Ipv4(packet.dst_addr());
                     if packet.dst_addr().is_broadcast() {
-                        let buf = packet.into_inner();
-                        // Broadcast only to Ethernet devices (not loopback)
-                        for dev in &self.devices {
-                            if dev.interface_id != InterfaceId::LOOPBACK {
-                                poll_next |= dev.enqueue_tx(dst_addr, buf);
-                            }
-                        }
+                        poll_next |=
+                            dispatch_link_local_fanout(devices, dst_addr, packet.into_inner());
                     } else {
-                        let routes = self.table.read();
-                        let Some(route) = routes.select_route_for_source(&dst_addr, &src_addr)
-                        else {
-                            warn!(
-                                "No route found for source {} destination {}",
-                                src_addr, dst_addr
-                            );
-                            continue;
-                        };
-
-                        let dev = &self.devices[route.dev];
-                        if dev.interface_id == InterfaceId::LOOPBACK {
-                            // Loopback packets are copied directly from the TX
-                            // buffer into the RX buffer. This avoids the
-                            // per-device worker and shared RX queue used by
-                            // real devices.
-                            poll_next |= inject_loopback_rx_direct(
-                                &mut self.rx_buffer,
-                                dst_addr,
-                                packet.into_inner(),
-                                sockets,
-                            );
-                        } else {
-                            poll_next |= dev.enqueue_tx(route.next_hop, packet.into_inner());
-                        }
+                        poll_next |= dispatch_unicast_packet(
+                            rx_buffer,
+                            devices,
+                            table,
+                            src_addr,
+                            dst_addr,
+                            packet.into_inner(),
+                            sockets,
+                        );
                     }
                 }
                 IpVersion::Ipv6 => {
@@ -721,40 +707,65 @@ impl Router {
                     let src_addr = IpAddress::Ipv6(packet.src_addr());
                     let dst_addr = IpAddress::Ipv6(packet.dst_addr());
                     if packet.dst_addr().is_multicast() {
-                        let buf = packet.into_inner();
-                        // Multicast only to Ethernet devices (not loopback)
-                        for dev in &self.devices {
-                            if dev.interface_id != InterfaceId::LOOPBACK {
-                                poll_next |= dev.enqueue_tx(dst_addr, buf);
-                            }
-                        }
+                        poll_next |=
+                            dispatch_link_local_fanout(devices, dst_addr, packet.into_inner());
                     } else {
-                        let routes = self.table.read();
-                        let Some(route) = routes.select_route_for_source(&dst_addr, &src_addr)
-                        else {
-                            warn!(
-                                "No route found for source {} destination {}",
-                                src_addr, dst_addr
-                            );
-                            continue;
-                        };
-
-                        let dev = &self.devices[route.dev];
-                        if dev.interface_id == InterfaceId::LOOPBACK {
-                            poll_next |= inject_loopback_rx_direct(
-                                &mut self.rx_buffer,
-                                dst_addr,
-                                packet.into_inner(),
-                                sockets,
-                            );
-                        } else {
-                            poll_next |= dev.enqueue_tx(route.next_hop, packet.into_inner());
-                        }
+                        poll_next |= dispatch_unicast_packet(
+                            rx_buffer,
+                            devices,
+                            table,
+                            src_addr,
+                            dst_addr,
+                            packet.into_inner(),
+                            sockets,
+                        );
                     }
                 }
             }
         }
         poll_next
+    }
+}
+
+fn dispatch_link_local_fanout(
+    devices: &[Arc<DeviceHandle>],
+    dst_addr: IpAddress,
+    packet: &[u8],
+) -> bool {
+    let mut poll_next = false;
+    for dev in devices {
+        if dev.interface_id != InterfaceId::LOOPBACK {
+            poll_next |= dev.enqueue_tx(dst_addr, packet);
+        }
+    }
+    poll_next
+}
+
+fn dispatch_unicast_packet(
+    rx_buffer: &mut PacketBuffer,
+    devices: &[Arc<DeviceHandle>],
+    table: &SharedRouteTable,
+    src_addr: IpAddress,
+    dst_addr: IpAddress,
+    packet: &[u8],
+    sockets: &mut SocketSet<'_>,
+) -> bool {
+    let routes = table.read();
+    let Some(route) = routes.select_route_for_source(&dst_addr, &src_addr) else {
+        warn!(
+            "No route found for source {} destination {}",
+            src_addr, dst_addr
+        );
+        return false;
+    };
+
+    let dev = &devices[route.dev];
+    if dev.interface_id == InterfaceId::LOOPBACK {
+        // Loopback packets are copied directly from the TX buffer into the RX
+        // buffer, bypassing per-device workers and the shared RX queue.
+        inject_loopback_rx_direct(rx_buffer, dst_addr, packet, sockets)
+    } else {
+        dev.enqueue_tx(route.next_hop, packet)
     }
 }
 

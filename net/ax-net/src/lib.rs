@@ -166,67 +166,14 @@ pub fn init_network(mut net_devs: EthernetDeviceList, config: NetworkConfig) {
 
     info!("Initialize network subsystem...");
 
-    for cfg in &config.interfaces {
-        if cfg.name == "lo" {
-            panic!("interface name 'lo' is reserved");
-        }
-        if cfg.dhcp && cfg.static_ip.is_some() {
-            panic!(
-                "interface {} has both DHCP and static IP configured",
-                cfg.name
-            );
-        }
-        if let Some(static_cfg) = &cfg.static_ip {
-            if static_cfg.ip.is_unspecified() {
-                panic!("Invalid static IP for {}: unspecified address", cfg.name);
-            }
-            if static_cfg.prefix_len > 32 {
-                panic!("Invalid static IP for {}: prefix length > 32", cfg.name);
-            }
-        }
-        for (i, dns) in cfg.dns_servers.iter().enumerate() {
-            if dns.is_unspecified() {
-                panic!(
-                    "Invalid DNS server for {} at index {}: unspecified address",
-                    cfg.name, i
-                );
-            }
-        }
-    }
-    for (i, dns) in config.default_dns_servers.iter().enumerate() {
-        if dns.is_unspecified() {
-            panic!("Invalid DNS server at index {}: unspecified address", i);
-        }
-    }
+    validate_config(&config);
 
     let routes: SharedRouteTable = Arc::new(spin::RwLock::new(RouteTable::new()));
     let mut router = Router::new(routes.clone());
     let mut interfaces = Vec::new();
     let mut dns = Vec::new();
 
-    let lo_id = InterfaceId::LOOPBACK;
-    let lo_dev = router.add_device(lo_id, Box::new(LoopbackDevice::new()));
-
-    let lo_ip = Ipv4Cidr::new(Ipv4Address::new(127, 0, 0, 1), 8);
-    router.add_rule(Rule::new(
-        lo_ip.into(),
-        None,
-        lo_dev,
-        lo_id,
-        lo_ip.address().into(),
-        0,
-    ));
-    interfaces.push(NetInterface {
-        id: lo_id,
-        name: "lo".to_owned(),
-        kind: InterfaceKind::Loopback,
-        mac: None,
-        ipv4: Some(lo_ip),
-        gateway: None,
-        mtu: consts::STANDARD_MTU,
-        metric: 0,
-        flags: InterfaceFlags::UP | InterfaceFlags::RUNNING | InterfaceFlags::LOOPBACK,
-    });
+    let lo_ip = register_loopback(&mut router, &mut interfaces);
 
     if net_devs.is_empty() {
         warn!("  No network device found!");
@@ -315,27 +262,9 @@ pub fn init_network(mut net_devs: EthernetDeviceList, config: NetworkConfig) {
         });
     }
 
-    for (i, used) in used_configs.iter().enumerate() {
-        if !used {
-            panic!(
-                "interface config {} did not match any device",
-                config.interfaces[i].name
-            );
-        }
-    }
+    ensure_all_interface_configs_used(&config, &used_configs);
 
-    dns.extend(
-        config
-            .default_dns_servers
-            .iter()
-            .copied()
-            .map(|server| config::DnsServerEntry {
-                server: Ipv4Address::from(server.octets()),
-                interface_id: lo_id,
-                metric: u32::MAX,
-                source: config::DnsSource::Fallback,
-            }),
-    );
+    add_default_dns_servers(&config, &mut dns);
 
     for name in router.device_names() {
         info!("Device: {}", name);
@@ -362,6 +291,94 @@ pub fn init_network(mut net_devs: EthernetDeviceList, config: NetworkConfig) {
     if dhcp_enabled {
         wait_for_dhcp_bootstrap();
     }
+}
+
+fn validate_config(config: &NetworkConfig) {
+    for cfg in &config.interfaces {
+        if cfg.name == "lo" {
+            panic!("interface name 'lo' is reserved");
+        }
+        if cfg.dhcp && cfg.static_ip.is_some() {
+            panic!(
+                "interface {} has both DHCP and static IP configured",
+                cfg.name
+            );
+        }
+        if let Some(static_cfg) = &cfg.static_ip {
+            if static_cfg.ip.is_unspecified() {
+                panic!("Invalid static IP for {}: unspecified address", cfg.name);
+            }
+            if static_cfg.prefix_len > 32 {
+                panic!("Invalid static IP for {}: prefix length > 32", cfg.name);
+            }
+        }
+        for (i, dns) in cfg.dns_servers.iter().enumerate() {
+            if dns.is_unspecified() {
+                panic!(
+                    "Invalid DNS server for {} at index {}: unspecified address",
+                    cfg.name, i
+                );
+            }
+        }
+    }
+    for (i, dns) in config.default_dns_servers.iter().enumerate() {
+        if dns.is_unspecified() {
+            panic!("Invalid DNS server at index {}: unspecified address", i);
+        }
+    }
+}
+
+fn register_loopback(router: &mut Router, interfaces: &mut Vec<NetInterface>) -> Ipv4Cidr {
+    let lo_id = InterfaceId::LOOPBACK;
+    let lo_dev = router.add_device(lo_id, Box::new(LoopbackDevice::new()));
+
+    let lo_ip = Ipv4Cidr::new(Ipv4Address::new(127, 0, 0, 1), 8);
+    router.add_rule(Rule::new(
+        lo_ip.into(),
+        None,
+        lo_dev,
+        lo_id,
+        lo_ip.address().into(),
+        0,
+    ));
+    interfaces.push(NetInterface {
+        id: lo_id,
+        name: "lo".to_owned(),
+        kind: InterfaceKind::Loopback,
+        mac: None,
+        ipv4: Some(lo_ip),
+        gateway: None,
+        mtu: consts::STANDARD_MTU,
+        metric: 0,
+        flags: InterfaceFlags::UP | InterfaceFlags::RUNNING | InterfaceFlags::LOOPBACK,
+    });
+    lo_ip
+}
+
+fn ensure_all_interface_configs_used(config: &NetworkConfig, used_configs: &[bool]) {
+    for (i, used) in used_configs.iter().enumerate() {
+        if !used {
+            panic!(
+                "interface config {} did not match any device",
+                config.interfaces[i].name
+            );
+        }
+    }
+}
+
+fn add_default_dns_servers(config: &NetworkConfig, dns: &mut Vec<config::DnsServerEntry>) {
+    dns.extend(
+        config
+            .default_dns_servers
+            .iter()
+            .copied()
+            .map(|server| config::DnsServerEntry {
+                server: Ipv4Address::from(server.octets()),
+                interface_id: InterfaceId::LOOPBACK,
+                metric: u32::MAX,
+                source: config::DnsSource::Fallback,
+            }),
+    );
 }
 
 fn find_interface_config(

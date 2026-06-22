@@ -203,12 +203,11 @@ impl ListenTable {
             .iter()
             .find(|entry| entry.listen_endpoint == listen_endpoint)
         {
-            return Ok(entry
+            Ok(entry
                 .syn_queue
                 .iter()
-                .any(|pending| is_acceptable(sockets, pending.handle)));
-        }
-        {
+                .any(|pending| is_acceptable(sockets, pending.handle)))
+        } else {
             warn!("accept before listen");
             Err(AxError::InvalidInput)
         }

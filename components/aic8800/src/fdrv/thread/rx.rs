@@ -24,7 +24,7 @@ pub static RX_WAKE_COUNT: AtomicU64 = AtomicU64::new(0);
 /// AIC8800 是 SDIO WiFi,RX 走自己的线程并独占 SDIO CARD_INT (IRQ#38),
 /// 不经过 ax_net 的以太网 IRQ 框架。因此数据帧入队后,需主动通知网络栈
 /// 来驱动一轮 poll(否则进来的 ARP/ICMP/数据包无人处理)。上层把此回调
-/// 设为 `ax_net::poll_interfaces`,反转依赖,避免本 crate 直接依赖网络栈。
+/// 设为 `ax_net::wake_net_task_irq`,反转依赖,避免本 crate 直接依赖网络栈。
 static RX_DATA_CALLBACK: AtomicUsize = AtomicUsize::new(0);
 
 /// 本批 RX 是否有数据帧入队(由 `build_and_enqueue_eth_frame` 置位,
