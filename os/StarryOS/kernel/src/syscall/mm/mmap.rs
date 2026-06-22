@@ -1,7 +1,7 @@
-use alloc::sync::Arc;
+use alloc::{sync::Arc, vec::Vec};
 
 use ax_errno::{AxError, AxResult};
-use ax_fs::{FileBackend, FileFlags};
+use ax_fs_ng::vfs::{FileBackend, FileFlags};
 use ax_memory_addr::{MemoryAddr, PAGE_SIZE_4K, VirtAddr, VirtAddrRange, align_up_4k};
 use ax_runtime::hal::paging::{MappingFlags, PageSize};
 use ax_task::current;
@@ -303,6 +303,7 @@ pub fn sys_mmap(
             );
             let populate = map_flags.contains(MmapFlags::POPULATE);
             aspace.map(start, map_length, ion_mapping_flags, populate, backend)?;
+            drop(aspace);
             info!(
                 "Ion buffer mmap success: vaddr=0x{:x}, length={}",
                 start.as_usize(),
@@ -483,6 +484,7 @@ pub fn sys_mmap(
 
     let populate = map_flags.contains(MmapFlags::POPULATE);
     aspace.map(start, length, mapping_flags, populate, backend)?;
+    drop(aspace);
 
     Ok(start.as_usize() as _)
 }
@@ -914,30 +916,29 @@ pub fn sys_msync(addr: usize, length: usize, flags: u32) -> AxResult<isize> {
 
     let curr = current();
     let aspace_arc = curr.as_thread().proc_data.aspace();
-    let mut aspace = aspace_arc.lock();
-
-    let mut cursor = start;
-    while cursor < end {
-        let (area_end, fb_info) = {
+    let writebacks: Vec<_> = {
+        let aspace = aspace_arc.lock();
+        let mut writebacks = Vec::new();
+        let mut cursor = start;
+        while cursor < end {
             let area = match aspace.find_area(cursor) {
                 Some(a) => a,
                 None => return Err(AxError::NoMemory),
             };
-            let fb_info = if let Backend::File(file_backend) = area.backend()
+            let range_start = area.start().max(start);
+            let range_end = area.end().min(end);
+            if let Backend::File(file_backend) = area.backend()
                 && file_backend.is_shared()
             {
-                Some((file_backend.clone(), area.flags()))
-            } else {
-                None
-            };
-            (area.end(), fb_info)
-        };
-
-        if let Some((file_backend, area_flags)) = fb_info {
-            file_backend.writeback_and_protect(&mut aspace, start, end, area_flags)?;
+                writebacks.push((file_backend.clone(), range_start, range_end));
+            }
+            cursor = area.end();
         }
+        writebacks
+    };
 
-        cursor = area_end;
+    for (file_backend, range_start, range_end) in writebacks {
+        file_backend.writeback_range(range_start, range_end)?;
     }
 
     Ok(0)

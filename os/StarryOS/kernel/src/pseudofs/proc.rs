@@ -36,8 +36,8 @@ use crate::{
         SimpleDirOps, SimpleFile, SimpleFileOperation, SimpleFs, SpecialFsFile,
     },
     task::{
-        AsThread, ProcessData, TaskStat, Thread, get_process_data, get_task, processes, tasks,
-        tick_cpu_time,
+        AsThread, Cred, ProcessData, TaskStat, Thread, get_process_data, get_task, processes,
+        tasks, tick_cpu_time,
     },
 };
 
@@ -204,7 +204,10 @@ fn render_cpu_entry(buf: &mut String, idx: usize) {
     let _ = writeln!(buf, "Virtual Machine\t\t: no");
     let _ = writeln!(buf, "Model Name\t\t: QEMU Virtual Machine");
     let _ = writeln!(buf, "ISA\t\t\t: loongarch32 loongarch64");
-    let _ = writeln!(buf, "Feat\t\t\t: cpucfg lam ual fpu lsx lasx");
+    let _ = writeln!(
+        buf,
+        "Feat\t\t\t: cpucfg lam ual fpu lsx lasx crc32 complex crypto lvz"
+    );
     let _ = writeln!(buf);
 }
 
@@ -464,6 +467,11 @@ fn render_task_status_fields(status: &TaskStatusFields<'_>) -> String {
         TracerPid:\t{}\n\
         Uid:\t{}\t{}\t{}\t{}\n\
         Gid:\t{}\t{}\t{}\t{}\n\
+        CapInh:\t{:016x}\n\
+        CapPrm:\t{:016x}\n\
+        CapEff:\t{:016x}\n\
+        CapBnd:\t{:016x}\n\
+        CapAmb:\t{:016x}\n\
         Threads:\t{}\n\
         {}\
         Cpus_allowed:\t{}\n\
@@ -480,6 +488,11 @@ fn render_task_status_fields(status: &TaskStatusFields<'_>) -> String {
         base.tracer_pid,
         base.cred.uid, base.cred.euid, base.cred.suid, base.cred.fsuid,
         base.cred.gid, base.cred.egid, base.cred.sgid, base.cred.fsgid,
+        base.cred.cap_inheritable,
+        base.cred.cap_permitted,
+        base.cred.cap_effective,
+        base.cred.cap_bounding,
+        base.cred.cap_ambient,
         base.num_threads,
         status.mem.format_status_vm_lines(),
         status.cpus_allowed,
@@ -693,13 +706,20 @@ fn render_thread_maps(task: &WeakAxTaskRef) -> VfsResult<String> {
         let start = area.start();
         let end = area.end();
         let backend = area.backend();
+        let bi = backend.file_info().unwrap_or_else(|_| BackendFileInfo {
+            path: String::new(),
+            offset: None,
+            inode: None,
+            dev: None,
+            shared: false,
+        });
         let BackendFileInfo {
             path,
             offset: file_offset,
             inode,
             dev,
             shared: is_shared,
-        } = backend.file_info()?;
+        } = bi;
 
         let flag_end = if is_shared { 's' } else { 'p' };
         let flags = area.flags();
@@ -721,6 +741,7 @@ fn render_thread_maps(task: &WeakAxTaskRef) -> VfsResult<String> {
             };
             format!("{}{}{}{}", r, w, x, flag_end)
         };
+        const ADDR_HEX_WIDTH: usize = core::mem::size_of::<usize>() * 2;
         const MAPS_COL_WIDTH: usize = 25 + core::mem::size_of::<usize>() * 6 - 1;
         let mut writer = SeqWriter::new(&mut output);
 
@@ -728,7 +749,7 @@ fn render_thread_maps(task: &WeakAxTaskRef) -> VfsResult<String> {
 
         write!(
             &mut writer,
-            "{:08x}-{:08x} {} {:08x} {:02x}:{:02x} {}",
+            "{:0width$x}-{:0width$x} {} {:08x} {:02x}:{:02x} {}",
             start.as_usize(),
             end.as_usize(),
             perms,
@@ -736,6 +757,7 @@ fn render_thread_maps(task: &WeakAxTaskRef) -> VfsResult<String> {
             dev.map(|(major, _)| major).unwrap_or(0),
             dev.map(|(_, minor)| minor).unwrap_or(0),
             inode.unwrap_or(0),
+            width = ADDR_HEX_WIDTH,
         )
         .map_err(|_| VfsError::InvalidInput)?;
         writer.pad_to(MAPS_COL_WIDTH)?;
@@ -1073,6 +1095,17 @@ impl SimpleDirOps for ThreadDir {
                             cred.euid = orig;
                             cred.suid = orig;
                             cred.fsuid = orig;
+                            if orig == 0 {
+                                let mask = Cred::cap_mask();
+                                cred.cap_permitted = mask;
+                                cred.cap_effective = mask;
+                                cred.cap_bounding = mask;
+                            } else {
+                                cred.cap_permitted = 0;
+                                cred.cap_effective = 0;
+                                cred.cap_ambient = 0;
+                            }
+                            cred.sanitize_capabilities();
                             Thread::set_cred(thr, cred);
                             thr.set_uid_map_written(true);
                             // Mark the user namespace as UID-mapped so
@@ -1121,6 +1154,7 @@ impl SimpleDirOps for ThreadDir {
                             cred.egid = orig;
                             cred.sgid = orig;
                             cred.fsgid = orig;
+                            cred.sanitize_capabilities();
                             Thread::set_cred(thr, cred);
                             thr.set_gid_map_written(true);
                             let proc_data = &thr.proc_data;

@@ -1,6 +1,37 @@
 use super::{mkfs::read_superblock, *};
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct MountOptions {
+    pub readonly: bool,
+    pub replay_journal: bool,
+}
+
+impl MountOptions {
+    pub const fn read_write() -> Self {
+        Self {
+            readonly: false,
+            replay_journal: true,
+        }
+    }
+
+    pub const fn read_only_no_journal_replay() -> Self {
+        Self {
+            readonly: true,
+            replay_journal: false,
+        }
+    }
+}
+
 impl Ext4FileSystem {
+    pub fn device_has_error_state<B: BlockDevice>(block_dev: &mut Jbd2Dev<B>) -> Ext4Result<bool> {
+        let superblock = read_superblock(block_dev).map_err(|_| Ext4Error::io())?;
+        if superblock.s_magic != EXT4_SUPER_MAGIC {
+            return Err(Ext4Error::invalid_magic());
+        }
+        superblock.verify_superblock()?;
+        Ok(superblock.s_state & Ext4Superblock::EXT4_ERROR_FS != 0)
+    }
+
     /// Creates the root directory tree during bootstrap.
     fn create_root_dir<B: BlockDevice>(&mut self, block_dev: &mut Jbd2Dev<B>) -> Ext4Result<()> {
         // The actual on-disk initialization lives in the dedicated directory
@@ -88,6 +119,13 @@ impl Ext4FileSystem {
 
     /// Mounts an ext4 filesystem from the given block device.
     pub fn mount<B: BlockDevice>(block_dev: &mut Jbd2Dev<B>) -> Result<Self, Ext4Error> {
+        Self::mount_with_options(block_dev, MountOptions::read_write())
+    }
+
+    pub fn mount_with_options<B: BlockDevice>(
+        block_dev: &mut Jbd2Dev<B>,
+        options: MountOptions,
+    ) -> Result<Self, Ext4Error> {
         debug!("Start mounting Ext4 filesystem...");
 
         // Mount flow:
@@ -113,8 +151,10 @@ impl Ext4FileSystem {
             warn!("Filesystem is in error state");
         }
 
-        // Mark the filesystem as "not cleanly unmounted" before any writes.
-        Self::dirty_for_mount(&mut superblock);
+        if !options.readonly {
+            // Mark the filesystem as "not cleanly unmounted" before any writes.
+            Self::dirty_for_mount(&mut superblock);
+        }
 
         let group_count = superblock.block_groups_count();
         debug!("Block group count: {group_count}");
@@ -183,11 +223,13 @@ impl Ext4FileSystem {
                     create_journal_entry(&mut fs, block_dev).expect("create journal entry failed");
                 }
             }
-            if needs_recovery && !fs.superblock.has_journal() {
+            if needs_recovery && options.replay_journal && !fs.superblock.has_journal() {
                 error!("Filesystem needs journal recovery, but no journal is present");
                 return Err(Ext4Error::corrupted());
             }
-            if (block_dev.is_use_journal() || needs_recovery) && fs.superblock.has_journal() {
+            if (block_dev.is_use_journal() || (needs_recovery && options.replay_journal))
+                && fs.superblock.has_journal()
+            {
                 // By this point the journal inode must exist, so resolve its
                 // first data block and hand the loaded journal superblock to
                 // `Jbd2Dev`.
@@ -217,7 +259,7 @@ impl Ext4FileSystem {
 
                 block_dev.set_journal_superblock_with_mapping(j_sb, journal_blocks)?;
 
-                if needs_recovery {
+                if needs_recovery && options.replay_journal {
                     // Replay before touching ordinary filesystem metadata.
                     // Until this completes, home blocks may be stale. A clean
                     // filesystem with journaling enabled still needs JBD2
@@ -241,7 +283,7 @@ impl Ext4FileSystem {
                     // mounting from the recovered on-disk state.
                     fs.reload_after_journal_replay(block_dev)?;
                     fs.clear_recovery_state();
-                } else if block_dev.is_use_journal() {
+                } else if !options.readonly && block_dev.is_use_journal() {
                     fs.set_recovery_state();
                 }
             }
@@ -261,6 +303,13 @@ impl Ext4FileSystem {
                 Ext4Error::io()
             })?;
             if root_inode.i_mode == 0 || !root_inode.is_dir() {
+                if options.readonly {
+                    error!(
+                        "Root inode is uninitialized or not a directory, and read-only mount \
+                         cannot repair it"
+                    );
+                    return Err(Ext4Error::corrupted());
+                }
                 warn!(
                     "Root inode is uninitialized or not a directory, creating root and \
                      lost+found... i_mode: {}, is_dir: {}",
@@ -285,7 +334,9 @@ impl Ext4FileSystem {
                 match get_file_inode(&mut fs, block_dev, "/lost+found") {
                     Ok(Some((ino, inode))) if inode.is_dir() => {
                         fs.superblock.s_lpf_ino = ino.raw();
-                        fs.sync_superblock(block_dev)?;
+                        if !options.readonly {
+                            fs.sync_superblock(block_dev)?;
+                        }
                         info!("/lost+found exists (path resolution, repaired hint inode={ino})");
                     }
                     Ok(Some((_ino, _inode))) => {
@@ -293,9 +344,13 @@ impl Ext4FileSystem {
                         return Err(Ext4Error::corrupted());
                     }
                     Ok(None) => {
-                        info!("/lost+found not found by path scan;will create!");
-                        if create_lost_found_directory(&mut fs, block_dev).is_err() {
-                            warn!("/lost+found missing and create failed");
+                        if options.readonly {
+                            warn!("/lost+found missing and read-only mount cannot create it");
+                        } else {
+                            info!("/lost+found not found by path scan;will create!");
+                            if create_lost_found_directory(&mut fs, block_dev).is_err() {
+                                warn!("/lost+found missing and create failed");
+                            }
                         }
                     }
                     Err(err) => {
@@ -414,8 +469,10 @@ impl Ext4FileSystem {
         // or bootstrap repairs are persisted before normal operation begins.
         // The superblock is written with EXT4_VALID_FS cleared so a later mount
         // can distinguish an unclean shutdown from a real EXT4_ERROR_FS state.
-        fs.sync_filesystem(block_dev)?;
-        block_dev.umount_commit();
+        if !options.readonly {
+            fs.sync_filesystem(block_dev)?;
+            block_dev.umount_commit();
+        }
 
         Ok(fs)
     }
@@ -477,7 +534,14 @@ impl Ext4FileSystem {
 
 /// Thin compatibility wrapper around [`Ext4FileSystem::mount`].
 pub fn mount<B: BlockDevice>(block_dev: &mut Jbd2Dev<B>) -> Ext4Result<Ext4FileSystem> {
-    match Ext4FileSystem::mount(block_dev) {
+    mount_with_options(block_dev, MountOptions::read_write())
+}
+
+pub fn mount_with_options<B: BlockDevice>(
+    block_dev: &mut Jbd2Dev<B>,
+    options: MountOptions,
+) -> Ext4Result<Ext4FileSystem> {
+    match Ext4FileSystem::mount_with_options(block_dev, options) {
         Ok(_fs) => {
             info!("Ext4 filesystem mounted");
             Ok(_fs)

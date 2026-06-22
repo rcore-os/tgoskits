@@ -176,13 +176,18 @@ impl PlatformUsbHost {
 
     pub fn take_irq_handler(&mut self) -> Option<(usize, UsbHostIrqHandler)> {
         let irq = self.info.irq_num()?;
+        let handler = self.take_event_handler()?;
+        Some((irq, handler))
+    }
+
+    pub fn take_event_handler(&mut self) -> Option<UsbHostIrqHandler> {
         if self.irq_handler_taken {
             return None;
         }
 
         self.irq_handler_taken = true;
         let handler = UsbHostIrqHandler::new(self.host.create_event_handler());
-        Some((irq, handler))
+        Some(handler)
     }
 }
 

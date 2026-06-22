@@ -11,7 +11,7 @@ use core::{
 };
 
 use ax_errno::{AxError, AxResult};
-use ax_fs::{FS_CONTEXT, FsContext};
+use ax_fs_ng::vfs::{FS_CONTEXT, FsContext, sync_all_cached_files};
 use ax_runtime::hal::time::wall_time;
 use ax_task::current;
 use axfs_ng_vfs::{DeviceId, MetadataUpdate, NodePermission, NodeType, path::Path};
@@ -809,10 +809,9 @@ pub fn sys_renameat2(
 }
 
 pub fn sys_sync() -> AxResult<isize> {
-    debug!("sys_sync");
     // Only syncs root filesystem; does not iterate all mount points like Linux sync(2).
-    // ext4 NodeOps::sync is a no-op (Ok(())); FAT NodeOps::sync calls file.flush()
-    // to write dirty data to disk.
+    // Write back ax-fs-ng page cache first, then flush filesystem metadata.
+    sync_all_cached_files(false)?;
     FS_CONTEXT.lock().root_dir().sync(false)?;
     Ok(0)
 }
@@ -820,6 +819,7 @@ pub fn sys_sync() -> AxResult<isize> {
 pub fn sys_syncfs(fd: c_int) -> AxResult<isize> {
     debug!("sys_syncfs <= fd: {fd}");
     let any = get_file_like(fd)?;
+    sync_all_cached_files(false)?;
     if let Some(f) = any.downcast_ref::<crate::file::File>() {
         f.inner().location().filesystem().flush()?;
     } else if let Some(d) = any.downcast_ref::<Directory>() {

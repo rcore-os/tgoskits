@@ -28,6 +28,8 @@ impl InitIf for InitIfImpl {
     /// platform configuration and initialization.
     fn init_later(_cpu_id: usize, _dtb: usize) {
         somehal::post_paging();
+        #[cfg(all(feature = "rtc", target_arch = "loongarch64"))]
+        crate::generic_timer::try_init_epoch_offset_from_firmware();
         somehal::timer::irq_enable();
     }
 

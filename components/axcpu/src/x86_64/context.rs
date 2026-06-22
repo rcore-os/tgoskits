@@ -157,10 +157,13 @@ struct ContextSwitchFrame {
 /// A 512-byte memory region for the FXSAVE/FXRSTOR instruction to save and
 /// restore the x87 FPU, MMX, XMM, and MXCSR registers.
 ///
+/// This is also the legacy region (offset 0..512) at the head of the
+/// XSAVE/XRSTOR area, so it doubles as the start of [`XsaveArea`].
+///
 /// See <https://www.felixcloutier.com/x86/fxsave> for more details.
 #[allow(missing_docs)]
 #[repr(C, align(16))]
-#[derive(Debug)]
+#[derive(Clone, Copy, Debug)]
 pub struct FxsaveArea {
     pub fcw: u16,
     pub fsw: u16,
@@ -177,40 +180,121 @@ pub struct FxsaveArea {
 
 const _: () = assert!(core::mem::size_of::<FxsaveArea>() == 512);
 
+/// Size of the per-task XSAVE/XRSTOR area, in bytes.
+///
+/// The boot path ([`enable_xsave_features`]) only ever enables the x87, SSE,
+/// and AVX components in `XCR0` (it never enables AVX-512, MPX, or PKRU), so the
+/// largest XSAVE layout we must hold is the 512-byte legacy region, the 64-byte
+/// XSAVE header, and the 256-byte AVX (`YMM_Hi128`) component. 1024 bytes covers
+/// that with headroom and is a multiple of the required 64-byte alignment.
+///
+/// [`enable_xsave_features`]: ../../../someboot/src/arch/x86_64/trap.rs
+const XSAVE_AREA_SIZE: usize = 1024;
+
+/// A 64-byte-aligned memory region for the XSAVE/XRSTOR instructions, which save
+/// and restore the full `XCR0`-enabled extended state (x87, SSE/XMM, and the
+/// upper 128 bits of the AVX `YMM` registers that FXSAVE/FXRSTOR drop).
+///
+/// The first 512 bytes share the legacy [`FxsaveArea`] layout, so the FXSAVE
+/// fallback path (CPUs/VMs without XSAVE, e.g. the default `qemu64` model) reads
+/// and writes the same region.
+///
+/// See <https://www.felixcloutier.com/x86/xsave> for more details.
+#[repr(C, align(64))]
+struct XsaveArea {
+    /// Legacy region, identical in layout to the FXSAVE/FXRSTOR area.
+    legacy: FxsaveArea,
+    /// XSAVE header (`XSTATE_BV`, `XCOMP_BV`, reserved) plus the extended
+    /// component area. A zeroed header marks every component as being in its
+    /// initial state, which is the correct starting point for a fresh task.
+    rest: [u8; XSAVE_AREA_SIZE - 512],
+}
+
+const _: () = assert!(core::mem::size_of::<XsaveArea>() == XSAVE_AREA_SIZE);
+
 /// Extended state of a task, such as FP/SIMD states.
+///
+/// On context switch the state is saved/restored with XSAVE/XRSTOR when the boot
+/// path enabled `CR4.OSXSAVE` (so that the AVX `YMM` upper halves are preserved),
+/// and falls back to FXSAVE/FXRSTOR otherwise.
 pub struct ExtendedState {
-    /// Memory region for the FXSAVE/FXRSTOR instruction.
-    pub fxsave_area: FxsaveArea,
+    area: XsaveArea,
 }
 
 #[cfg(feature = "fp-simd")]
 impl ExtendedState {
+    /// Provides access to the legacy FXSAVE region for compatibility with code
+    /// that inspects the x87/SSE state directly.
+    #[inline]
+    pub fn fxsave_area(&self) -> &FxsaveArea {
+        &self.area.legacy
+    }
+
+    /// Returns `true` when the boot path enabled XSAVE state management
+    /// (`CR4.OSXSAVE`), which is the single source of truth for whether
+    /// XSAVE/XRSTOR (and reading `XCR0` via `XGETBV`) are safe to use.
+    #[inline]
+    fn xsave_enabled() -> bool {
+        // SAFETY: reading CR4 from ring 0 is always well-defined.
+        let cr4 = unsafe { x86::controlregs::cr4() };
+        cr4.contains(x86::controlregs::Cr4::CR4_ENABLE_OS_XSAVE)
+    }
+
+    /// The set of state components to save/restore, i.e. the `XCR0` mask the
+    /// boot path programmed. Only valid to call when [`Self::xsave_enabled`].
+    #[inline]
+    fn xsave_mask() -> u64 {
+        // SAFETY: `CR4.OSXSAVE` is set (checked by the caller), so XGETBV is
+        // well-defined and will not #UD.
+        unsafe { x86::controlregs::xcr0().bits() }
+    }
+
     /// Saves the current extended states from CPU to this structure.
     #[inline]
     pub fn save(&mut self) {
-        unsafe { core::arch::x86_64::_fxsave64(&mut self.fxsave_area as *mut _ as *mut u8) }
+        let ptr = &mut self.area as *mut _ as *mut u8;
+        if Self::xsave_enabled() {
+            // SAFETY: `area` is 64-byte aligned and large enough for the
+            // XCR0-enabled state (x87/SSE/AVX); the mask matches XCR0.
+            unsafe { core::arch::x86_64::_xsave64(ptr, Self::xsave_mask()) }
+        } else {
+            // SAFETY: `area` starts with the 16-byte-aligned legacy FXSAVE region.
+            unsafe { core::arch::x86_64::_fxsave64(ptr) }
+        }
     }
 
     /// Restores the extended states from this structure to CPU.
     #[inline]
     pub fn restore(&self) {
-        unsafe { core::arch::x86_64::_fxrstor64(&self.fxsave_area as *const _ as *const u8) }
+        let ptr = &self.area as *const _ as *const u8;
+        if Self::xsave_enabled() {
+            // SAFETY: `area` was populated by `_xsave64` (or zero-initialized,
+            // which XRSTOR reads as the components' initial state) with a header
+            // consistent with the XCR0 mask used here.
+            unsafe { core::arch::x86_64::_xrstor64(ptr, Self::xsave_mask()) }
+        } else {
+            // SAFETY: `area` starts with the 16-byte-aligned legacy FXSAVE region.
+            unsafe { core::arch::x86_64::_fxrstor64(ptr) }
+        }
     }
 
     /// Returns the extended state with initialized values.
     pub const fn default() -> Self {
-        let mut area: FxsaveArea = unsafe { core::mem::MaybeUninit::zeroed().assume_init() };
-        area.fcw = 0x37f;
-        area.ftw = 0xffff;
-        area.mxcsr = 0x1f80;
-        Self { fxsave_area: area }
+        // Zeroing the whole area gives XRSTOR an all-initial XSAVE header
+        // (XSTATE_BV = 0) so the first restore loads each component's default
+        // state; the legacy fields below seed the FXSAVE fallback path too.
+        let mut area: XsaveArea = unsafe { core::mem::MaybeUninit::zeroed().assume_init() };
+        area.legacy.fcw = 0x37f;
+        area.legacy.ftw = 0xffff;
+        area.legacy.mxcsr = 0x1f80;
+        Self { area }
     }
 }
 
 impl fmt::Debug for ExtendedState {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         f.debug_struct("ExtendedState")
-            .field("fxsave_area", &self.fxsave_area)
+            .field("fxsave_area", &self.area.legacy)
             .finish()
     }
 }

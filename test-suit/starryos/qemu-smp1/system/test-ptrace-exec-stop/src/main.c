@@ -41,7 +41,7 @@ static int test_exec_stop(void)
         if (ptrace(PTRACE_TRACEME, 0, NULL, NULL) != 0) {
             _exit(100);
         }
-        execl("/usr/bin/test-ptrace-exec-stop", "test-ptrace-exec-stop", "--after-exec", NULL);
+        execl("/proc/self/exe", "test-ptrace-exec-stop", "--after-exec", NULL);
         _exit(101);
     }
 

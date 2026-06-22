@@ -3,9 +3,10 @@
 
 use clap::{Args, Parser, Subcommand};
 
-use crate::{arceos::ArceOS, axvisor::Axvisor, starry::Starry};
+use crate::{arceos::ArceOS, axloader::Axloader, axvisor::Axvisor, starry::Starry};
 
 pub mod arceos;
+pub mod axloader;
 pub mod axvisor;
 mod backtrace;
 mod board;
@@ -77,6 +78,11 @@ enum Commands {
         #[command(subcommand)]
         command: axvisor::Command,
     },
+    /// Axloader host-side commands
+    Axloader {
+        #[command(subcommand)]
+        command: axloader::Command,
+    },
     /// ArceOS build commands
     Arceos {
         #[command(subcommand)]
@@ -107,6 +113,7 @@ async fn run_root_cli(cli: Cli) -> anyhow::Result<()> {
         Commands::Backtrace { command } => backtrace::execute(command),
         Commands::Image(args) => image::run(args).await,
         Commands::Axvisor { command } => Axvisor::new()?.execute(command).await,
+        Commands::Axloader { command } => Axloader::new()?.execute(command).await,
         Commands::Arceos { command } => ArceOS::new()?.execute(command).await,
         Commands::Starry { command } => {
             ensure_aic8800_firmware().await?;

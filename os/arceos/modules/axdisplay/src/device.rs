@@ -19,6 +19,22 @@ pub trait DisplayDevice: Send {
     fn info(&self) -> DisplayInfo;
 
     fn flush(&mut self) -> DisplayResult;
+
+    fn irq_num(&self) -> Option<usize> {
+        None
+    }
+
+    fn enable_irq(&mut self) {}
+
+    fn disable_irq(&mut self) {}
+
+    fn is_irq_enabled(&self) -> bool {
+        false
+    }
+
+    fn handle_irq(&mut self) -> bool {
+        false
+    }
 }
 
 pub struct ErasedDisplayDevice {
@@ -51,5 +67,25 @@ impl DisplayDevice for ErasedDisplayDevice {
 
     fn flush(&mut self) -> DisplayResult {
         self.inner.flush()
+    }
+
+    fn irq_num(&self) -> Option<usize> {
+        self.inner.irq_num()
+    }
+
+    fn enable_irq(&mut self) {
+        self.inner.enable_irq();
+    }
+
+    fn disable_irq(&mut self) {
+        self.inner.disable_irq();
+    }
+
+    fn is_irq_enabled(&self) -> bool {
+        self.inner.is_irq_enabled()
+    }
+
+    fn handle_irq(&mut self) -> bool {
+        self.inner.handle_irq()
     }
 }

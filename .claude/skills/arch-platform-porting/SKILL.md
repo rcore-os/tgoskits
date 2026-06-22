@@ -40,7 +40,7 @@ Current Axvisor LoongArch QEMU tests intentionally use the static `ax-hal/loonga
 - Capture the memory map and kernel image physical range before address translation helpers depend on them.
 - Treat relocated symbols carefully. After relocation or high-half switch, use runtime-safe symbol address helpers instead of raw compile-time addresses.
 - Clear BSS exactly once and after preserving any entry data that lives there.
-- On LoongArch OVMF, capture the EFI FDT configuration table as well as ACPI RSDP. QEMU exposes LS7A RTC through the preserved FDT node `loongson,ls7a-rtc`; its ACPI DSDT may not contain a `LOON0001` RTC device.
+- On LoongArch OVMF, capture the EFI FDT configuration table as well as ACPI RSDP for firmware-described devices, but do not rediscover RTC in someboot/somehal through those tables. The dynamic UEFI RTC path should first use the UEFI Runtime Service `GetTime`; LS7A RTC nodes such as `loongson,ls7a-rtc` and ACPI `LOON0001` belong to the `ax-driver` fallback path when firmware RTC is unavailable.
 - Allocate and align boot stack, per-CPU areas, secondary stacks, boot arguments, and page tables before enabling SMP.
 - Install trap vectors before enabling interrupts, timer interrupts, MMU faults, or secondary CPU execution.
 - On x86 QEMU, do not trust CPUID timing leaves unless the reported TSC frequency is plausible; some virtual CPU combinations expose invalid zero or tiny values. Prefer a trusted hypervisor timing leaf, then CPUID timing data, then PIT-based TSC calibration before falling back to processor base frequency.

@@ -16,6 +16,14 @@ const VEC_REG_COUNT: usize = 4;
 const VEC_COUNT_PER_REG: usize = 64;
 const VEC_COUNT: usize = VEC_REG_COUNT * VEC_COUNT_PER_REG;
 
+const fn init_word_count() -> usize {
+    VEC_COUNT / 32
+}
+
+const fn init_word_offset(index: usize) -> usize {
+    index * 4
+}
+
 pub fn init() {
     // TODO: support smp
     let misc = iocsr_read_d(LOONGARCH_IOCSR_MISC_FUNC);
@@ -23,9 +31,9 @@ pub fn init() {
 
     let index = 0;
 
-    for i in 0..(VEC_COUNT / 32) {
+    for i in 0..init_word_count() {
         let data = ((1 << (i * 2 + 1)) << 16) | (1 << (i * 2));
-        iocsr_write_w(EIOINTC_REG_NODEMAP + i * 4, data);
+        iocsr_write_w(EIOINTC_REG_NODEMAP + init_word_offset(i), data);
     }
     for i in 0..(VEC_COUNT / 32 / 4) {
         let bit = 1 << (1 + index);
@@ -37,8 +45,10 @@ pub fn init() {
         let data = bit | (bit << 8) | (bit << 16) | (bit << 24);
         iocsr_write_w(EIOINTC_REG_ROUTE + i * 4, data);
     }
-    for i in 0..(VEC_COUNT / 32) {
-        iocsr_write_w(EIOINTC_REG_BOUNCE + i * 4, u32::MAX);
+    for i in 0..init_word_count() {
+        let offset = init_word_offset(i);
+        iocsr_write_w(EIOINTC_REG_BOUNCE + offset, u32::MAX);
+        iocsr_write_w(EIOINTC_REG_ENABLE + offset, 0);
     }
 }
 
@@ -71,4 +81,24 @@ pub fn claim_irq() -> Option<usize> {
 pub fn complete_irq(irq: usize) {
     let (offset, bit) = split_bit(irq);
     iocsr_write_d(EIOINTC_REG_ISR + offset, bit);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn eiointc_init_covers_all_32_bit_enable_words() {
+        assert_eq!(init_word_count(), 8);
+        assert_eq!(init_word_offset(0), 0);
+        assert_eq!(init_word_offset(init_word_count() - 1), 28);
+    }
+
+    #[test]
+    fn eiointc_irq_bits_split_on_64_bit_registers() {
+        assert_eq!(split_bit(0), (0, 1));
+        assert_eq!(split_bit(63), (0, 1u64 << 63));
+        assert_eq!(split_bit(64), (8, 1));
+        assert_eq!(split_bit(255), (24, 1u64 << 63));
+    }
 }

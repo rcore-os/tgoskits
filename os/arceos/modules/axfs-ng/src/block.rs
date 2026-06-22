@@ -1,8 +1,12 @@
-use alloc::boxed::Box;
+use alloc::{boxed::Box, sync::Arc};
 
 #[cfg(any(feature = "ext4", feature = "fat"))]
 use ax_errno::AxError;
 use ax_errno::AxResult;
+
+pub mod runtime;
+
+use runtime::BlockDeviceHandle;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct BlockRegion {
@@ -30,12 +34,14 @@ impl BlockRegion {
     }
 }
 
-pub trait FsBlockDevice: Send {
+pub(crate) trait FsBlockDevice: Send {
     fn name(&self) -> &str;
     fn num_blocks(&self) -> u64;
     fn block_size(&self) -> usize;
     fn read_block(&mut self, block_id: u64, buf: &mut [u8]) -> AxResult;
+    #[cfg(any(feature = "ext4", feature = "fat"))]
     fn write_block(&mut self, block_id: u64, buf: &[u8]) -> AxResult;
+    #[cfg(feature = "ext4")]
     fn flush(&mut self) -> AxResult;
 }
 
@@ -56,19 +62,31 @@ impl<T: FsBlockDevice + ?Sized> FsBlockDevice for Box<T> {
         (**self).read_block(block_id, buf)
     }
 
+    #[cfg(any(feature = "ext4", feature = "fat"))]
     fn write_block(&mut self, block_id: u64, buf: &[u8]) -> AxResult {
         (**self).write_block(block_id, buf)
     }
 
+    #[cfg(feature = "ext4")]
     fn flush(&mut self) -> AxResult {
         (**self).flush()
     }
 }
 
 #[cfg(any(feature = "ext4", feature = "fat"))]
-pub struct RegionBlockDevice<T> {
+pub(crate) struct RegionBlockDevice<T> {
     inner: T,
     region: BlockRegion,
+}
+
+pub(crate) struct NativeHandleBlockDevice {
+    handle: Arc<BlockDeviceHandle>,
+}
+
+impl NativeHandleBlockDevice {
+    pub(crate) fn new(handle: Arc<BlockDeviceHandle>) -> Self {
+        Self { handle }
+    }
 }
 
 #[cfg(any(feature = "ext4", feature = "fat"))]
@@ -117,6 +135,7 @@ impl<T: FsBlockDevice> FsBlockDevice for RegionBlockDevice<T> {
         self.inner.read_block(physical, buf)
     }
 
+    #[cfg(any(feature = "ext4", feature = "fat"))]
     fn write_block(&mut self, block_id: u64, buf: &[u8]) -> AxResult {
         self.check_io_bounds(block_id, buf.len())?;
         let physical = self
@@ -127,7 +146,42 @@ impl<T: FsBlockDevice> FsBlockDevice for RegionBlockDevice<T> {
         self.inner.write_block(physical, buf)
     }
 
+    #[cfg(feature = "ext4")]
     fn flush(&mut self) -> AxResult {
         self.inner.flush()
     }
+}
+
+impl FsBlockDevice for NativeHandleBlockDevice {
+    fn name(&self) -> &str {
+        self.handle.name()
+    }
+
+    fn num_blocks(&self) -> u64 {
+        self.handle.device_info().num_blocks
+    }
+
+    fn block_size(&self) -> usize {
+        self.handle.device_info().logical_block_size
+    }
+
+    fn read_block(&mut self, block_id: u64, buf: &mut [u8]) -> AxResult {
+        self.handle.read_blocks(block_id, buf)
+    }
+
+    #[cfg(any(feature = "ext4", feature = "fat"))]
+    fn write_block(&mut self, block_id: u64, buf: &[u8]) -> AxResult {
+        self.handle.write_blocks(block_id, buf)
+    }
+
+    #[cfg(feature = "ext4")]
+    fn flush(&mut self) -> AxResult {
+        self.handle.flush_blocks()
+    }
+}
+
+pub(crate) fn boxed_native_handle_block_device(
+    handle: Arc<BlockDeviceHandle>,
+) -> Box<dyn FsBlockDevice> {
+    Box::new(NativeHandleBlockDevice::new(handle))
 }

@@ -1,0 +1,27 @@
+args = [
+    "-nographic",
+    "-m",
+    "512M",
+    "-device",
+    "virtio-blk-pci,drive=disk0",
+    "-device",
+    "virtio-net-pci,netdev=net0",
+    "-netdev",
+    "user,id=net0",
+    "-snapshot",
+]
+uefi = false
+to_bin = false
+shell_prefix = "root@starry:"
+shell_init_cmd = "/usr/bin/block-io-bench.sh"
+success_regex = [
+    "(?m)^BLOCK_BENCH_APP_PASSED\\s*$",
+]
+fail_regex = [
+    "(?i)\\bpanic(?:ked)?\\b",
+    "(?i)segmentation fault",
+    "(?i)kernel panic",
+    "(?i)panicked at",
+    "(?m)^BLOCK_BENCH_APP_FAILED\\s*$",
+]
+timeout = 300

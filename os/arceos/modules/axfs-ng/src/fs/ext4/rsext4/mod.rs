@@ -81,7 +81,7 @@ impl BlockDevice for Ext4Disk {
 
     fn current_time(&self) -> Ext4Result<Ext4Timestamp> {
         if cfg!(feature = "times") {
-            let dur = ax_hal::time::wall_time();
+            let dur = crate::os::wall_time();
             Ok(Ext4Timestamp::new(dur.as_secs() as i64, dur.subsec_nanos()))
         } else {
             Ok(Ext4Timestamp::new(0, 0))

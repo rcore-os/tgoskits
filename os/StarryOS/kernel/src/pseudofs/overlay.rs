@@ -18,14 +18,13 @@ use alloc::{
 };
 use core::{any::Any, task::Context};
 
-use ax_fs::OpenOptions;
+use ax_fs_ng::vfs::OpenOptions;
 use ax_sync::Mutex;
 use axfs_ng_vfs::{
     DeviceId, DirEntry, DirEntrySink, DirNode, DirNodeOps, FileNode, FileNodeOps, Filesystem,
-    FilesystemOps, Location, Metadata, MetadataUpdate, NodeFlags, NodeOps, NodePermission,
-    NodeType, Reference, StatFs, VfsError, VfsResult, WeakDirEntry,
+    FilesystemOps, FsIoEvents, FsPollable, Location, Metadata, MetadataUpdate, NodeFlags, NodeOps,
+    NodePermission, NodeType, Reference, StatFs, VfsError, VfsResult, WeakDirEntry,
 };
-use axpoll::{IoEvents, Pollable};
 
 use crate::pseudofs::dummy_stat_fs;
 
@@ -256,14 +255,8 @@ fn read_names(dir: &Location, names: &mut BTreeMap<String, DirentInfo>) -> VfsRe
 
 /// Copy regular file contents from lower to a newly-created upper file.
 fn copy_file_contents(src: &Location, dst: &Location) -> VfsResult<()> {
-    let src_file = OpenOptions::new()
-        .read(true)
-        .open_loc(src.clone())?
-        .into_file()?;
-    let dst_file = OpenOptions::new()
-        .write(true)
-        .open_loc(dst.clone())?
-        .into_file()?;
+    let src_file = open_read(src.clone())?;
+    let dst_file = open_write(dst.clone())?;
 
     let mut offset = 0;
     let mut buf = [0u8; COPY_BUF_SIZE];
@@ -286,11 +279,11 @@ fn copy_file_contents(src: &Location, dst: &Location) -> VfsResult<()> {
     Ok(())
 }
 
-fn open_read(loc: Location) -> VfsResult<ax_fs::File> {
+fn open_read(loc: Location) -> VfsResult<ax_fs_ng::File> {
     OpenOptions::new().read(true).open_loc(loc)?.into_file()
 }
 
-fn open_write(loc: Location) -> VfsResult<ax_fs::File> {
+fn open_write(loc: Location) -> VfsResult<ax_fs_ng::File> {
     OpenOptions::new().write(true).open_loc(loc)?.into_file()
 }
 
@@ -809,7 +802,7 @@ impl NodeOps for OverlayFile {
 
     fn flags(&self) -> NodeFlags {
         self.current().map_or(NodeFlags::NON_CACHEABLE, |loc| {
-            loc.flags() | NodeFlags::NON_CACHEABLE
+            (loc.flags() & !NodeFlags::ALWAYS_CACHE) | NodeFlags::NON_CACHEABLE
         })
     }
 }
@@ -844,13 +837,13 @@ impl FileNodeOps for OverlayFile {
     }
 }
 
-impl Pollable for OverlayFile {
-    fn poll(&self) -> IoEvents {
+impl FsPollable for OverlayFile {
+    fn poll(&self) -> FsIoEvents {
         self.current()
-            .map_or(IoEvents::ERR, |loc| loc.entry().poll())
+            .map_or(FsIoEvents::ERR, |loc| loc.entry().poll())
     }
 
-    fn register(&self, context: &mut Context<'_>, events: IoEvents) {
+    fn register(&self, context: &mut Context<'_>, events: FsIoEvents) {
         if let Ok(loc) = self.current() {
             loc.entry().register(context, events);
         }

@@ -18,11 +18,8 @@ axvcpu
 axvm
 axvmconfig
 bitmap-allocator
-ax-cap-access
 ax-cpumask
-ax-handler-table
 irq-framework
-ax-int-ratio
 ax-kernel-guard
 ax-kspin
 ax-lazyinit

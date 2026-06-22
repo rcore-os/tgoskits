@@ -5,11 +5,11 @@ use rdrive::{probe::OnProbeError, register::FdtInfo};
 use sdmmc_protocol::{DataCommandPoll, Error};
 
 use super::{
-    BLOCK_SIZE, RK3588_CRU_BASE, RK3588_CRU_SIZE, RK3588_SDMMC_CON0, RK3588_SDMMC_CON1,
+    RK3588_CRU_BASE, RK3588_CRU_SIZE, RK3588_SDMMC_CON0, RK3588_SDMMC_CON1,
     RK3588_SDMMC_DRV_PHASE_DEG, RK3588_SDMMC_PHASE_SHIFT, RK3588_SDMMC_SAMPLE_PHASE_CANDIDATES,
     RK3588_SDMMC_SAMPLE_PHASE_DEG, RockchipDwMmc,
 };
-use crate::mmio::iomap;
+use crate::{block::sdmmc::BLOCK_SIZE, mmio::iomap};
 
 pub(super) fn init_rk3588_sdmmc_phase(
     info: &FdtInfo<'_>,

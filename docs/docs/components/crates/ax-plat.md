@@ -190,7 +190,6 @@ impl ax_plat::init::InitIf for InitIfImpl {
 | `ax-crate-interface` | 生成接口定义与实现绑定代码，是平台抽象的核心连接层 |
 | `memory_addr` | 提供 `PhysAddr`、`VirtAddr`、地址转换辅助类型 |
 | `bitflags` | 定义 `MemRegionFlags` |
-| `ax-handler-table` | 在 `irq` feature 下提供 IRQ 处理函数表 |
 | `ax-kspin` | 控制台锁与 SMP 自旋场景 |
 | `ax-percpu` | CPU 本地变量定义与寄存器初始化 |
 

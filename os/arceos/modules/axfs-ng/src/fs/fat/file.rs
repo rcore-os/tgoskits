@@ -2,10 +2,9 @@ use alloc::{sync::Arc, vec};
 use core::{any::Any, mem, ops::Deref, task::Context};
 
 use axfs_ng_vfs::{
-    FileNode, FileNodeOps, FilesystemOps, Metadata, MetadataUpdate, NodeFlags, NodeOps, NodeType,
-    VfsError, VfsResult,
+    FileNode, FileNodeOps, FilesystemOps, FsIoEvents, FsPollable, Metadata, MetadataUpdate,
+    NodeFlags, NodeOps, NodeType, VfsError, VfsResult,
 };
-use axpoll::{IoEvents, Pollable};
 use fatfs::{Read, Seek, SeekFrom, Write};
 
 use super::{
@@ -156,12 +155,12 @@ impl FileNodeOps for FatFileNode {
     }
 }
 
-impl Pollable for FatFileNode {
-    fn poll(&self) -> IoEvents {
-        IoEvents::IN | IoEvents::OUT
+impl FsPollable for FatFileNode {
+    fn poll(&self) -> FsIoEvents {
+        FsIoEvents::IN | FsIoEvents::OUT
     }
 
-    fn register(&self, _context: &mut Context<'_>, _events: IoEvents) {}
+    fn register(&self, _context: &mut Context<'_>, _events: FsIoEvents) {}
 }
 
 impl Drop for FatFileNode {

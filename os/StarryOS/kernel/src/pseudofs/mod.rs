@@ -17,7 +17,7 @@ pub(crate) mod usbfs;
 use alloc::{boxed::Box, sync::Arc};
 
 use ax_errno::LinuxResult;
-use ax_fs::{FS_CONTEXT, FsContext};
+use ax_fs_ng::vfs::{FS_CONTEXT, FsContext};
 use ax_lazyinit::LazyInit;
 use axfs_ng_vfs::{DirNodeOps, FileNodeOps, Filesystem, NodePermission, WeakDirEntry};
 pub use tmp::MemoryFs;
@@ -69,10 +69,12 @@ pub fn tmp_tmpfs() -> Option<Arc<tmp::MemoryFs>> {
 }
 
 fn mount_at(fs: &FsContext, path: &str, mount_fs: Filesystem) -> LinuxResult<()> {
-    if fs.resolve(path).is_err() {
+    let initial_resolve = fs.resolve(path);
+    if initial_resolve.is_err() {
         fs.create_dir(path, DIR_PERMISSION, 0, 0)?;
     }
-    fs.resolve(path)?.mount(&mount_fs)?;
+    let loc = fs.resolve(path)?;
+    loc.mount(&mount_fs)?;
     info!("Mounted {} at {}", mount_fs.name(), path);
     Ok(())
 }

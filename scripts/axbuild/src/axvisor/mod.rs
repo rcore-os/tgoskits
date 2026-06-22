@@ -389,7 +389,10 @@ impl Axvisor {
     async fn run_build_request(&mut self, request: ResolvedAxvisorRequest) -> anyhow::Result<()> {
         self.app.set_debug_mode(request.debug)?;
         let cargo = build::load_cargo_config(&request)?;
-        self.app.build(cargo, request.build_info_path).await
+        self.app
+            .build(cargo, request.build_info_path)
+            .await
+            .map(|_| ())
     }
 
     async fn run_uboot_request(&mut self, request: ResolvedAxvisorRequest) -> anyhow::Result<()> {

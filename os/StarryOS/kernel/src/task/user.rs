@@ -19,7 +19,7 @@ pub fn new_user_task(name: &str, mut uctx: UserContext, set_child_tid: usize) ->
             let curr = ax_task::current();
 
             if let Some(tid) = (set_child_tid as *mut Pid).nullable() {
-                tid.vm_write(curr.id().as_u64() as Pid).ok();
+                tid.vm_write(curr.as_thread().tid() as Pid).ok();
             }
 
             info!("Enter user space: ip={:#x}, sp={:#x}", uctx.ip(), uctx.sp());
@@ -36,11 +36,6 @@ pub fn new_user_task(name: &str, mut uctx: UserContext, set_child_tid: usize) ->
                 if thr.proc_data.is_ptrace_singlestep_for(thr.tid())
                     && (thr.proc_data.is_ptrace_traceme() || thr.proc_data.is_ptrace_attached())
                 {
-                    #[cfg(any(
-                        target_arch = "riscv64",
-                        target_arch = "aarch64",
-                        target_arch = "loongarch64"
-                    ))]
                     crate::syscall::ptrace_setup_singlestep(&thr.proc_data, thr.tid(), &mut uctx);
                 }
 
@@ -175,6 +170,28 @@ pub fn new_user_task(name: &str, mut uctx: UserContext, set_child_tid: usize) ->
                                     );
                                 }
                             }
+                            if let Some(_resume_sig) =
+                                ptrace_stop_current(thr, Signo::SIGTRAP, &mut uctx)
+                            {
+                                break 'exc;
+                            }
+                        }
+                        // On x86_64, PTRACE_SINGLESTEP sets TF in RFLAGS;
+                        // the resulting #DB exception arrives here.
+                        // ExceptionKind::Debug and uctx.rflags only exist on
+                        // x86_64, so this whole block is arch-gated.
+                        #[cfg(target_arch = "x86_64")]
+                        if matches!(kind, ExceptionKind::Debug)
+                            && (thr.proc_data.is_ptrace_traceme()
+                                || thr.proc_data.is_ptrace_attached())
+                        {
+                            // Clear TF (bit 8) in the saved RFLAGS.  The Intel
+                            // SDM (Vol 3A §17.3.2) states the CPU clears TF
+                            // when delivering a TF-induced #DB, but QEMU may
+                            // not always honour this.  Clearing explicitly
+                            // prevents an unwanted extra single-step on resume.
+                            uctx.rflags &= !(1u64 << 8);
+                            thr.proc_data.set_ptrace_singlestep_for(thr.tid(), false);
                             if let Some(_resume_sig) =
                                 ptrace_stop_current(thr, Signo::SIGTRAP, &mut uctx)
                             {

@@ -20,7 +20,10 @@ use ax_errno::{AxError, AxResult, ax_err, ax_err_type};
 use ax_kspin::SpinNoIrq as Mutex;
 use ax_memory_addr::{align_down_4k, align_up_4k};
 use axaddrspace::{AddrSpace, MappingFlags};
-use axdevice::{AxVmDeviceConfig, AxVmDevices};
+use axdevice::{
+    AxVmDeviceConfig, AxVmDevices, DeviceBuildContext, DeviceFactoryRegistry,
+    register_builtin_factories,
+};
 use axdevice_base::AccessWidth;
 use axvcpu::{AxVCpu, AxVCpuExitReason};
 #[cfg(target_arch = "x86_64")]
@@ -37,6 +40,7 @@ use crate::vcpu::get_sysreg_device;
 use crate::{
     config::{AxVMConfig, PhysCpuList, VMInterruptMode},
     host::paging::{HostPagingHandler, virt_to_phys},
+    irq::InterruptFabric,
     vcpu::AxArchVCpuImpl,
 };
 
@@ -72,6 +76,7 @@ struct AxVMInnerConst {
     phys_cpu_ls: PhysCpuList,
     vcpu_list: Box<[AxVCpuRef]>,
     devices: AxVmDevices,
+    interrupt_fabric: InterruptFabric,
 }
 
 unsafe impl Send for AxVMInnerConst {}
@@ -213,7 +218,32 @@ impl AxVM {
 
     /// Sets up the VM before booting.
     pub fn init(&self) -> AxResult {
+        let mut factories = DeviceFactoryRegistry::new();
+        register_builtin_factories(&mut factories)?;
+        let interrupt_mode = self.interrupt_mode();
+        #[cfg(target_arch = "riscv64")]
+        let interrupt_fabric = {
+            let inner_mut = self.inner_mut.lock();
+            crate::irq::riscv::configure(
+                &mut factories,
+                interrupt_mode,
+                inner_mut.config.emu_devices(),
+            )?
+        };
+        #[cfg(not(target_arch = "riscv64"))]
+        let interrupt_fabric = InterruptFabric::new(interrupt_mode);
+
+        self.init_with_factories(&factories, interrupt_fabric)
+    }
+
+    /// Sets up the VM with explicit device factories and an interrupt fabric.
+    pub fn init_with_factories(
+        &self,
+        factories: &DeviceFactoryRegistry,
+        interrupt_fabric: InterruptFabric,
+    ) -> AxResult {
         let mut inner_mut = self.inner_mut.lock();
+        interrupt_fabric.validate_mode(inner_mut.config.interrupt_mode())?;
 
         let dtb_addr = inner_mut.config.image_config().dtb_load_gpa;
         let vcpu_id_pcpu_sets = inner_mut.config.phys_cpu_ls.get_vcpu_affinities_pcpu_ids();
@@ -327,9 +357,16 @@ impl AxVM {
         )?;
 
         #[cfg_attr(not(target_arch = "aarch64"), expect(unused_mut))]
-        let mut devices = axdevice::AxVmDevices::new(AxVmDeviceConfig {
-            emu_configs: inner_mut.config.emu_devices().to_vec(),
-        })?;
+        let mut devices = {
+            let build_context = DeviceBuildContext::new(&interrupt_fabric);
+            axdevice::AxVmDevices::build_with_factories(
+                AxVmDeviceConfig {
+                    emu_configs: inner_mut.config.emu_devices().to_vec(),
+                },
+                factories,
+                &build_context,
+            )?
+        };
 
         #[cfg(target_arch = "aarch64")]
         {
@@ -372,14 +409,8 @@ impl AxVM {
             }
         }
 
-        self.inner_const.call_once(|| AxVMInnerConst {
-            phys_cpu_ls: inner_mut.config.phys_cpu_ls.clone(),
-            vcpu_list: vcpu_list.into_boxed_slice(),
-            devices,
-        });
-
         // Setup VCpus.
-        for vcpu in self.vcpu_list() {
+        for vcpu in &vcpu_list {
             #[cfg(target_arch = "aarch64")]
             let setup_config = {
                 let passthrough = inner_mut.config.interrupt_mode() == VMInterruptMode::Passthrough;
@@ -426,6 +457,14 @@ impl AxVM {
                 setup_config,
             )?;
         }
+
+        self.inner_const.call_once(|| AxVMInnerConst {
+            phys_cpu_ls: inner_mut.config.phys_cpu_ls.clone(),
+            vcpu_list: vcpu_list.into_boxed_slice(),
+            devices,
+            interrupt_fabric,
+        });
+
         info!("VM setup: id={}", self.id());
         Ok(())
     }
@@ -556,6 +595,11 @@ impl AxVM {
     /// Returns this VM's emulated devices.
     pub fn get_devices(&self) -> &AxVmDevices {
         &self.inner_const().devices
+    }
+
+    /// Returns this VM's interrupt fabric.
+    pub fn interrupt_fabric(&self) -> &InterruptFabric {
+        &self.inner_const().interrupt_fabric
     }
 
     /// Run a vCPU according to the given vcpu_id.

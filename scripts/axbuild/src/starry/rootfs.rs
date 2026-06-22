@@ -59,10 +59,7 @@ pub(super) async fn qemu_with_explicit_rootfs(
     starry.app.set_debug_mode(request.debug)?;
     let cargo = build::load_cargo_config(&request)?;
     let qemu = load_patched_qemu_config(starry, &request, &cargo, Some(&rootfs), false).await?;
-    starry
-        .app
-        .qemu(cargo, request.build_info_path, Some(qemu))
-        .await
+    starry.run_qemu_artifact(&request, cargo, qemu).await
 }
 
 pub(super) async fn qemu(
@@ -73,10 +70,7 @@ pub(super) async fn qemu(
     let cargo = build::load_cargo_config(&request)?;
     ensure_qemu_rootfs_ready(&request, starry.app.workspace_root(), None).await?;
     let qemu = load_patched_qemu_config(starry, &request, &cargo, None, true).await?;
-    starry
-        .app
-        .qemu(cargo, request.build_info_path, Some(qemu))
-        .await
+    starry.run_qemu_artifact(&request, cargo, qemu).await
 }
 
 pub(super) async fn load_patched_qemu_config(

@@ -16,6 +16,21 @@ pub enum InputError {
     Unsupported,
 }
 
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub struct InputIrqEvent {
+    pub handled: bool,
+    pub input_ready: bool,
+}
+
+impl InputIrqEvent {
+    pub const fn none() -> Self {
+        Self {
+            handled: false,
+            input_ready: false,
+        }
+    }
+}
+
 /// Domain boundary consumed by evdev and upper input services.
 pub trait InputDevice: Send {
     fn name(&self) -> &str;
@@ -40,6 +55,18 @@ pub trait InputDevice: Send {
 
     fn get_abs_info(&mut self, _axis: u8) -> InputResult<AbsInfo> {
         Err(InputError::Unsupported)
+    }
+
+    fn enable_irq(&mut self) {}
+
+    fn disable_irq(&mut self) {}
+
+    fn is_irq_enabled(&self) -> bool {
+        false
+    }
+
+    fn handle_irq(&mut self) -> InputIrqEvent {
+        InputIrqEvent::none()
     }
 }
 
@@ -97,5 +124,21 @@ impl InputDevice for ErasedInputDevice {
 
     fn get_abs_info(&mut self, axis: u8) -> InputResult<AbsInfo> {
         self.inner.get_abs_info(axis)
+    }
+
+    fn enable_irq(&mut self) {
+        self.inner.enable_irq();
+    }
+
+    fn disable_irq(&mut self) {
+        self.inner.disable_irq();
+    }
+
+    fn is_irq_enabled(&self) -> bool {
+        self.inner.is_irq_enabled()
+    }
+
+    fn handle_irq(&mut self) -> InputIrqEvent {
+        self.inner.handle_irq()
     }
 }

@@ -8,6 +8,7 @@ use std::cell::Cell;
 use rsext4::{
     bmalloc::AbsoluteBN,
     error::{Ext4Error, Ext4Result},
+    extents_tree::{ExtentNode, ExtentTree},
     *,
 };
 
@@ -152,6 +153,48 @@ fn test_file_operations() {
 
     let bytes_read = read_at(&mut jbd2_dev, &mut fs, &mut file, 8).expect("read_at failed");
     assert_eq!(bytes_read, b"API test");
+
+    umount(fs, &mut jbd2_dev).expect("umount failed");
+}
+
+#[test]
+fn large_sequential_write_uses_one_contiguous_extent() {
+    let device = TestBlockDevice::new(128 * 1024 * 1024);
+    let mut jbd2_dev = Jbd2Dev::initial_jbd2dev(0, device, true);
+
+    mkfs(&mut jbd2_dev).expect("mkfs failed");
+    let mut fs = mount(&mut jbd2_dev).expect("mount failed");
+
+    mkdir(&mut jbd2_dev, &mut fs, "/large").expect("mkdir failed");
+    mkfile(&mut jbd2_dev, &mut fs, "/large/run.bin", None, None).expect("mkfile failed");
+
+    let blocks = 20 * 1024 * 1024 / BLOCK_SIZE;
+    let mut data = vec![0u8; blocks * BLOCK_SIZE];
+    for (idx, byte) in data.iter_mut().enumerate() {
+        *byte = (idx as u8).wrapping_mul(31).wrapping_add(7);
+    }
+
+    write_file(&mut jbd2_dev, &mut fs, "/large/run.bin", 0, &data).expect("large write failed");
+
+    let read_back = read_file(&mut jbd2_dev, &mut fs, "/large/run.bin").expect("read failed");
+    assert_eq!(read_back.len(), data.len());
+    assert_eq!(&read_back[..BLOCK_SIZE], &data[..BLOCK_SIZE]);
+    assert_eq!(
+        &read_back[data.len() - BLOCK_SIZE..],
+        &data[data.len() - BLOCK_SIZE..]
+    );
+
+    let mut inode = find_file(&mut fs, &mut jbd2_dev, "/large/run.bin").expect("find failed");
+    let tree = ExtentTree::new(&mut inode);
+    match tree.load_root_from_inode().expect("extent root") {
+        ExtentNode::Leaf { entries, .. } => {
+            assert_eq!(entries.len(), 1);
+            assert_eq!(entries[0].ee_block, 0);
+            assert_eq!(entries[0].len() as usize, blocks);
+            assert!(entries[0].is_initialized());
+        }
+        ExtentNode::Index { .. } => panic!("large sequential write should stay one leaf extent"),
+    }
 
     umount(fs, &mut jbd2_dev).expect("umount failed");
 }
