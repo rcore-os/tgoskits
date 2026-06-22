@@ -36,13 +36,8 @@ fn probe(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
     let mut intc = rdrive::get::<Intc>(intc_id).unwrap().lock().unwrap();
     let interrupts = fdt.interrupts();
 
-    let irq = {
-        #[cfg(not(feature = "hv"))]
-        let irq_idx = if cfg!(feature = "cntv-timer") { 2 } else { 1 };
-        #[cfg(feature = "hv")]
-        let irq_idx = 3;
-        &interrupts[irq_idx].specifier
-    };
+    let irq_idx = someboot::timer::aarch64_timer_irq_index(someboot::timer::aarch64_timer_mode());
+    let irq = &interrupts[irq_idx].specifier;
     TIMER_IRQ_VEC.call_once(|| irq.to_vec());
     let irq = intc.setup_irq_by_fdt(irq);
     debug!("Armv8 timer irq: {:?}", irq);

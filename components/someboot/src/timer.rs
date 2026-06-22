@@ -4,6 +4,54 @@ use crate::ArchTrait;
 
 const NANOS_PER_SEC: u64 = 1_000_000_000;
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(u8)]
+pub enum ArchTimerMode {
+    El1Phys    = 0,
+    El1Virt    = 1,
+    El2HypPhys = 2,
+}
+
+impl ArchTimerMode {
+    const fn from_raw(raw: u8) -> Self {
+        match raw {
+            1 => Self::El1Virt,
+            2 => Self::El2HypPhys,
+            _ => Self::El1Phys,
+        }
+    }
+}
+
+static mut ARCH_TIMER_MODE: u8 = ArchTimerMode::El1Phys as u8;
+
+pub const fn select_aarch64_timer_mode(kernel_in_el2: bool, el2_available: bool) -> ArchTimerMode {
+    if kernel_in_el2 {
+        ArchTimerMode::El2HypPhys
+    } else if el2_available {
+        ArchTimerMode::El1Phys
+    } else {
+        ArchTimerMode::El1Virt
+    }
+}
+
+pub const fn aarch64_timer_irq_index(mode: ArchTimerMode) -> usize {
+    match mode {
+        ArchTimerMode::El1Phys => 1,
+        ArchTimerMode::El1Virt => 2,
+        ArchTimerMode::El2HypPhys => 3,
+    }
+}
+
+pub fn set_aarch64_timer_mode(mode: ArchTimerMode) {
+    // Written once by the primary CPU during early boot before secondary CPUs run.
+    unsafe { ARCH_TIMER_MODE = mode as u8 };
+}
+
+pub fn aarch64_timer_mode() -> ArchTimerMode {
+    // After early boot this mode is read-only platform state.
+    unsafe { ArchTimerMode::from_raw(ARCH_TIMER_MODE) }
+}
+
 /// Enable the platform system timer so that timer IRQs can fire.
 pub fn enable() {
     crate::arch::Arch::systimer_enable();
@@ -84,4 +132,44 @@ pub fn duration_to_ticks(duration: Duration) -> usize {
 #[inline]
 pub fn elapsed() -> Duration {
     ticks_to_duration(ticks())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn el2_kernel_uses_hyp_physical_timer() {
+        assert_eq!(
+            select_aarch64_timer_mode(true, true),
+            ArchTimerMode::El2HypPhys
+        );
+        assert_eq!(
+            select_aarch64_timer_mode(true, false),
+            ArchTimerMode::El2HypPhys
+        );
+    }
+
+    #[test]
+    fn el1_kernel_uses_physical_timer_when_el2_is_available() {
+        assert_eq!(
+            select_aarch64_timer_mode(false, true),
+            ArchTimerMode::El1Phys
+        );
+    }
+
+    #[test]
+    fn el1_kernel_uses_virtual_timer_when_el2_is_unavailable() {
+        assert_eq!(
+            select_aarch64_timer_mode(false, false),
+            ArchTimerMode::El1Virt
+        );
+    }
+
+    #[test]
+    fn timer_mode_maps_to_fdt_interrupt_index() {
+        assert_eq!(aarch64_timer_irq_index(ArchTimerMode::El1Phys), 1);
+        assert_eq!(aarch64_timer_irq_index(ArchTimerMode::El1Virt), 2);
+        assert_eq!(aarch64_timer_irq_index(ArchTimerMode::El2HypPhys), 3);
+    }
 }

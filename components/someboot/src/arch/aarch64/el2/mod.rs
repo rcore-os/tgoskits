@@ -5,7 +5,11 @@ use aarch64_cpu::{
 use aarch64_cpu_ext::asm::tlb::*;
 use page_table_generic::VirtAddr;
 
-use crate::{arch::entry::el_entry, mem::PageTableInfo};
+use crate::{
+    arch::entry::el_entry,
+    mem::PageTableInfo,
+    timer::{self, ArchTimerMode},
+};
 
 pub fn switch_to_elx() {
     unsafe extern "C" {
@@ -15,6 +19,7 @@ pub fn switch_to_elx() {
     SPSel.write(SPSel::SP::ELx);
     SP_EL0.set(0);
     let current_el = CurrentEL.read(CurrentEL::EL);
+    timer::set_aarch64_timer_mode(ArchTimerMode::El2HypPhys);
 
     if current_el >= 3 {
         let el_entry = sym_addr!(el_entry);

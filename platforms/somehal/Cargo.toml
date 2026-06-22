@@ -10,7 +10,6 @@ repository.workspace = true
 version = "0.7.0"
 
 [features]
-cntv-timer = ["someboot/cntv-timer"]
 efi = ["someboot/efi"]
 hv = ["mmu", "someboot/hv"]
 mmu = ["someboot/mmu"]

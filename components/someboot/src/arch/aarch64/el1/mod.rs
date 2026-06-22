@@ -5,7 +5,11 @@ use aarch64_cpu::{
 use aarch64_cpu_ext::asm::tlb::*;
 use page_table_generic::VirtAddr;
 
-use crate::{arch::entry::el_entry, mem::PageTableInfo};
+use crate::{
+    arch::entry::el_entry,
+    mem::PageTableInfo,
+    timer::{self, ArchTimerMode},
+};
 
 pub fn switch_to_elx() {
     unsafe extern "C" {
@@ -15,6 +19,7 @@ pub fn switch_to_elx() {
     SPSel.write(SPSel::SP::ELx);
     SP_EL0.set(0);
     let current_el = CurrentEL.read(CurrentEL::EL);
+    timer::set_aarch64_timer_mode(timer::select_aarch64_timer_mode(false, current_el >= 2));
     if current_el >= 2 {
         let el_entry = sym_addr!(el_entry);
         let sp = sym_addr!(__cpu0_stack_top);
@@ -208,41 +213,44 @@ pub fn setup_sctlr() {
 }
 
 pub fn systick_enable() {
-    if cfg!(feature = "cntv-timer") {
-        CNTV_CTL_EL0.write(CNTV_CTL_EL0::ENABLE::SET);
-    } else {
-        CNTP_CTL_EL0.write(CNTP_CTL_EL0::ENABLE::SET);
+    match timer::aarch64_timer_mode() {
+        ArchTimerMode::El1Virt => CNTV_CTL_EL0.write(CNTV_CTL_EL0::ENABLE::SET),
+        ArchTimerMode::El1Phys | ArchTimerMode::El2HypPhys => {
+            CNTP_CTL_EL0.write(CNTP_CTL_EL0::ENABLE::SET);
+        }
     }
 }
 
 pub fn systick_irq_disable() {
-    if cfg!(feature = "cntv-timer") {
-        CNTV_CTL_EL0.modify(CNTV_CTL_EL0::IMASK::SET);
-    } else {
-        CNTP_CTL_EL0.modify(CNTP_CTL_EL0::IMASK::SET);
+    match timer::aarch64_timer_mode() {
+        ArchTimerMode::El1Virt => CNTV_CTL_EL0.modify(CNTV_CTL_EL0::IMASK::SET),
+        ArchTimerMode::El1Phys | ArchTimerMode::El2HypPhys => {
+            CNTP_CTL_EL0.modify(CNTP_CTL_EL0::IMASK::SET);
+        }
     }
 }
 
 pub fn systick_irq_enable() {
-    if cfg!(feature = "cntv-timer") {
-        CNTV_CTL_EL0.modify(CNTV_CTL_EL0::IMASK::CLEAR);
-    } else {
-        CNTP_CTL_EL0.modify(CNTP_CTL_EL0::IMASK::CLEAR);
+    match timer::aarch64_timer_mode() {
+        ArchTimerMode::El1Virt => CNTV_CTL_EL0.modify(CNTV_CTL_EL0::IMASK::CLEAR),
+        ArchTimerMode::El1Phys | ArchTimerMode::El2HypPhys => {
+            CNTP_CTL_EL0.modify(CNTP_CTL_EL0::IMASK::CLEAR);
+        }
     }
 }
 
 pub fn systick_irq_is_enabled() -> bool {
-    if cfg!(feature = "cntv-timer") {
-        !CNTV_CTL_EL0.is_set(CNTV_CTL_EL0::IMASK)
-    } else {
-        !CNTP_CTL_EL0.is_set(CNTP_CTL_EL0::IMASK)
+    match timer::aarch64_timer_mode() {
+        ArchTimerMode::El1Virt => !CNTV_CTL_EL0.is_set(CNTV_CTL_EL0::IMASK),
+        ArchTimerMode::El1Phys | ArchTimerMode::El2HypPhys => {
+            !CNTP_CTL_EL0.is_set(CNTP_CTL_EL0::IMASK)
+        }
     }
 }
 
 pub fn systick_set_interval(ticks: usize) {
-    if cfg!(feature = "cntv-timer") {
-        CNTV_TVAL_EL0.set(ticks as u64);
-    } else {
-        CNTP_TVAL_EL0.set(ticks as u64);
+    match timer::aarch64_timer_mode() {
+        ArchTimerMode::El1Virt => CNTV_TVAL_EL0.set(ticks as u64),
+        ArchTimerMode::El1Phys | ArchTimerMode::El2HypPhys => CNTP_TVAL_EL0.set(ticks as u64),
     }
 }
