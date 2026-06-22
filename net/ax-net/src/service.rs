@@ -172,7 +172,6 @@ impl NetControl {
     }
 
     pub fn default_routes(&self) -> Vec<RouteInfo> {
-        let _state = self.state.read();
         self.routes.read().default_routes()
     }
 
