@@ -20,3 +20,8 @@ shell_init_cmd = "/usr/bin/busybox-tests.sh"
 success_regex = ["(?m)^PASS: \\d+  FAIL: 0", "(?m)^Test run completed"]
 fail_regex = ['(?i)\bpanic(?:ked)?\b', '(?m)^FAIL: ']
 timeout = 600
+
+[host_http_server]
+bind = "127.0.0.1"
+port = 18080
+body = "busybox wget host ok\n"

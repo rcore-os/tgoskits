@@ -49,6 +49,13 @@ bb_case_fail() {
     exit 1
 }
 
+bb_default_gateway() {
+    _bb_gateway=$(busybox route -n 2>/dev/null | busybox awk '$1 == "0.0.0.0" { print $2; exit }')
+    echo "${_bb_gateway:-10.0.2.2}"
+}
+
+export BB_HOST_GATEWAY=$(bb_default_gateway)
+
 bb_case_start "busybox_adjtimex"
 _t=$({ timeout 10 sh -c "busybox adjtimex 2>&1"; } 2>&1)
 if [ -n "$_t" ]; then echo "PASS: busybox_adjtimex"; bb_case_pass; else echo "FAIL_DETAIL: busybox_adjtimex (empty)"; bb_case_fail; fi
@@ -64,7 +71,7 @@ _t=$(printf '%s\n' "$_t" | sed '/^BUSYBOX_ARP_STATUS:/d')
 if [ "$_status" = 0 ] && { [ -z "$_t" ] || echo "$_t" | grep -qF "HWtype" || echo "$_t" | grep -qF "[ether]"; }; then echo "PASS: busybox_arp"; bb_case_pass; else echo "FAIL_DETAIL: busybox_arp"; echo "$_t"; bb_case_fail; fi
 
 bb_case_start "busybox_arping"
-_t=$({ timeout 3 sh -c "busybox arping -f -c 1 -w 1 10.0.2.2 2>&1"; echo "ARPING_STATUS:$?"; } 2>&1)
+_t=$({ timeout 3 sh -c "busybox arping -f -c 1 -w 1 \"$BB_HOST_GATEWAY\" 2>&1"; echo "ARPING_STATUS:$?"; } 2>&1)
 if echo "$_t" | grep -qF "ARPING_STATUS:0" && echo "$_t" | grep -Eq "Received [1-9][0-9]* response[(]s[)]|Unicast reply"; then echo "PASS: busybox_arping"; bb_case_pass; else echo "FAIL_DETAIL: busybox_arping"; echo "$_t"; bb_case_fail; fi
 
 bb_case_start "busybox_arping_loopback_negative"
@@ -1084,24 +1091,12 @@ if echo "$_t" | grep -qF "3"; then echo "PASS: busybox_wc"; bb_case_pass; else e
 
 bb_case_start "busybox_wget"
 _t=$({ timeout 30 sh -c '
-busybox rm -rf /tmp/bb_wget_root /tmp/bb_wget.html
-busybox mkdir -p /tmp/bb_wget_root
-{
-    busybox printf "HTTP/1.0 200 OK\r\n"
-    busybox printf "Content-Length: 22\r\n"
-    busybox printf "Connection: close\r\n"
-    busybox printf "\r\n"
-    busybox printf "busybox wget local ok\n"
-} > /tmp/bb_wget_root/response.http
-busybox nc -l -p 18080 -w 10 < /tmp/bb_wget_root/response.http >/tmp/bb_wget_nc.out 2>&1 &
-server_pid=$!
-busybox sleep 1
-timeout 10 busybox wget -O /tmp/bb_wget.html http://127.0.0.1:18080/index.html 2>&1
+busybox rm -f /tmp/bb_wget.html
+timeout 10 busybox wget -O /tmp/bb_wget.html "http://$BB_HOST_GATEWAY:18080/index.html" 2>&1
 wget_status=$?
-busybox kill "$server_pid" 2>/dev/null || true
 busybox test "$wget_status" -eq 0 &&
 busybox test -s /tmp/bb_wget.html &&
-busybox grep -q "busybox wget local ok" /tmp/bb_wget.html &&
+busybox grep -q "busybox wget host ok" /tmp/bb_wget.html &&
 busybox echo wget_download_ok
 '; } 2>&1)
 if echo "$_t" | grep -qF "wget_download_ok"; then echo "PASS: busybox_wget"; bb_case_pass; else echo "FAIL_DETAIL: busybox_wget"; echo "$_t"; bb_case_fail; fi
