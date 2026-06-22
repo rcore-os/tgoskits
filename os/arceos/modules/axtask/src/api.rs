@@ -184,6 +184,38 @@ pub fn on_timer_irq(scheduler_tick: bool) {
         // Since irq and preemption are both disabled here,
         // we can get current run queue with the default `ax_kernel_guard::NoOp`.
         current_run_queue::<NoOp>().scheduler_timer_tick();
+        run_tick_hook();
+    }
+}
+
+/// Optional per-tick hook, used by cgroup cpu.max bandwidth accounting.
+///
+/// Stored as a raw `fn()` address; `0` means no hook is registered, so the
+/// default behaviour is unchanged for systems that never call
+/// [`set_tick_hook`].
+#[cfg(feature = "irq")]
+static TICK_HOOK: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
+
+/// Register a hook invoked on every scheduler timer tick.
+///
+/// Passing a function enables it; there is no overhead and no behavioural
+/// change until a hook is registered. Intended for the kernel cgroup layer to
+/// drive `cpu.max` bandwidth throttling.
+#[cfg(feature = "irq")]
+#[cfg_attr(doc, doc(cfg(feature = "irq")))]
+pub fn set_tick_hook(hook: fn()) {
+    TICK_HOOK.store(hook as usize, core::sync::atomic::Ordering::Release);
+}
+
+#[cfg(feature = "irq")]
+fn run_tick_hook() {
+    let addr = TICK_HOOK.load(core::sync::atomic::Ordering::Acquire);
+    if addr != 0 {
+        // SAFETY: `addr` is only ever set by `set_tick_hook` from a valid
+        // `fn()` pointer, and never cleared, so the transmute reconstructs a
+        // live function pointer.
+        let hook: fn() = unsafe { core::mem::transmute::<usize, fn()>(addr) };
+        hook();
     }
 }
 

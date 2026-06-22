@@ -32,6 +32,17 @@ fn extract_memory_state(
         .map(|ctrl| ctrl.state().clone())
 }
 
+/// Pull the `CpuState` out of a node's controller map, if the `cpu` controller
+/// is active. Used to populate the [`CgroupNode::cpu`] fast path.
+fn extract_cpu_state(
+    controllers: &BTreeMap<String, Arc<dyn controller::CgroupController>>,
+) -> Option<Arc<super::cpu::CpuState>> {
+    controllers
+        .get("cpu")
+        .and_then(|ctrl| ctrl.as_any().downcast_ref::<super::cpu::CpuController>())
+        .map(|ctrl| ctrl.state().clone())
+}
+
 /// A cgroup node in the hierarchy.
 pub struct CgroupNode {
     /// Stable cgroup id used by cgroupfs VFS entries.
@@ -56,6 +67,9 @@ pub struct CgroupNode {
     /// node — fast path for allocation charge/uncharge. `None` if the node has
     /// no memory controller (charging skips such nodes).
     pub memory: Option<Arc<super::memory::MemoryState>>,
+    /// CPU controller state when the `cpu` controller is active on this node —
+    /// fast path for the `cpu.max` bandwidth tick. `None` if absent.
+    pub cpu: Option<Arc<super::cpu::CpuState>>,
     /// UID this subtree is delegated to (set when an admin chowns the cgroup
     /// directory to an unprivileged user). `None` means only root may write.
     pub delegated_to: SpinNoIrq<Option<u32>>,
@@ -79,6 +93,7 @@ impl CgroupNode {
             .unwrap_or_else(|| Arc::new(PidsState::new()));
 
         let memory = extract_memory_state(&controllers);
+        let cpu = extract_cpu_state(&controllers);
 
         Arc::new(Self {
             id: ROOT_ID,
@@ -91,6 +106,7 @@ impl CgroupNode {
             parent: None,
             pids,
             memory,
+            cpu,
             delegated_to: SpinNoIrq::new(None),
         })
     }
@@ -130,6 +146,7 @@ impl CgroupNode {
             .unwrap_or_else(|| Arc::new(PidsState::new()));
 
         let memory = extract_memory_state(&controllers);
+        let cpu = extract_cpu_state(&controllers);
 
         let child = Arc::new(CgroupNode {
             id,
@@ -142,6 +159,7 @@ impl CgroupNode {
             parent: Some(Arc::downgrade(self)),
             pids,
             memory,
+            cpu,
             delegated_to: SpinNoIrq::new(None),
         });
 

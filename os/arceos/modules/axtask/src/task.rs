@@ -110,7 +110,10 @@ pub struct TaskInner {
 
     interrupted: AtomicBool,
     interrupt_waker: AtomicWaker,
-
+    /// cgroup `cpu.max` bandwidth throttle flag. Default `false`; when set, the
+    /// run queue treats the task as not runnable until the next period. No
+    /// effect unless the cgroup layer registers a tick hook that sets it.
+    throttled: AtomicBool,
     exit_code: AtomicI32,
     wait_for_exit: WaitQueue,
 
@@ -365,6 +368,7 @@ impl TaskInner {
             preempt_disable_count: AtomicUsize::new(0),
             interrupted: AtomicBool::new(false),
             interrupt_waker: AtomicWaker::new(),
+            throttled: AtomicBool::new(false),
             exit_code: AtomicI32::new(0),
             wait_for_exit: WaitQueue::new(),
             kstack,
@@ -455,6 +459,20 @@ impl TaskInner {
     #[inline]
     pub(crate) fn set_in_wait_queue(&self, in_wait_queue: bool) {
         self.in_wait_queue.store(in_wait_queue, Ordering::Release);
+    }
+
+    /// Whether this task is throttled by its cgroup `cpu.max` bandwidth limit.
+    #[inline]
+    pub fn is_throttled(&self) -> bool {
+        self.throttled.load(Ordering::Acquire)
+    }
+
+    /// Set the cgroup `cpu.max` bandwidth throttle flag. Setting `true` makes
+    /// the scheduler skip the task until the flag is cleared on the next
+    /// period. Default is `false`, preserving existing behaviour.
+    #[inline]
+    pub fn set_throttled(&self, throttled: bool) {
+        self.throttled.store(throttled, Ordering::Release);
     }
 
     /// Returns task's current timer ticket ID.

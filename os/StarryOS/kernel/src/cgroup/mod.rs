@@ -52,5 +52,7 @@ impl ax_cgroup::CgroupProvider for KernelCgroupProvider {
 pub fn init() {
     ax_cgroup::init();
     register_provider(&KernelCgroupProvider as &'static dyn ax_cgroup::CgroupProvider);
+    // Drive cpu.max bandwidth throttling from the scheduler timer tick.
+    ax_task::set_tick_hook(cpu::bandwidth_tick);
     info!("cgroup: initialized");
 }
