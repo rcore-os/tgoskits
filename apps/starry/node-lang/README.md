@@ -36,7 +36,7 @@ apps/starry/node-lang/
   qemu-<arch>.toml             # QEMU run config (4 arches)
   node/
     run_node_carpet.sh         # on-target gate: runs node-carpet.js, prints TEST PASSED iff it printed NODE_CARPET_OK
-    node-carpet.js             # language + stdlib carpet (the on-target gate; 359 checks on node v22.22.2 — a few are version-gated; prints NODE_CARPET_OK)
+    node-carpet.js             # language + stdlib carpet (the on-target gate; 367 checks on node v22.22.2 — a few are version-gated for newer majors; prints NODE_CARPET_OK)
     node-cli-carpet.sh         # 184-check `node` CLI option-surface carpet — host-validated auxiliary, staged for inspection (NOT part of the on-target gate)
 ```
 
