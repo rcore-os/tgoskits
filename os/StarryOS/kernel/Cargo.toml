@@ -23,6 +23,8 @@ ipi = ["ax-feat/ipi"]
 memtrack = ["ax-feat/backtrace", "ax-alloc/tracking"]
 rknpu = ["ax-driver/rknpu", "dep:ax-dma"]
 jpeg = ["ax-driver/jpeg", "dep:ax-dma"]
+rga = ["ax-driver/rga", "dep:rockchip-rga", "dep:dma-api"]
+rga-selftest = ["rga"]
 std-compat = []
 k230-kpu = ["ax-feat/xuantie-c9xx", "dep:axklib", "dep:k230-kpu"]
 plat-dyn = [
@@ -91,6 +93,8 @@ ax-runtime.workspace = true
 ax-sync.workspace = true
 ax-task.workspace = true
 ax-dma = { workspace = true, optional = true }
+dma-api = { workspace = true, optional = true }
+rockchip-rga = { workspace = true, optional = true }
 sg2002-tpu = { workspace = true, optional = true }
 k230-kpu = { workspace = true, optional = true }
 crab-usb.workspace = true

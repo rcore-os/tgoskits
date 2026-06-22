@@ -21,6 +21,12 @@ use crate::{
 /// Initialize and run initproc.
 pub fn init(args: &[String], envs: &[String]) {
     static_keys::global_init();
+
+    // Runs after `axruntime::rust_main` has probed all PostKernel drivers (so the
+    // RockchipRga device, if any, is registered) and in a delay-capable context.
+    #[cfg(feature = "rga-selftest")]
+    crate::rga_selftest::run();
+
     tracepoint_init().expect("Failed to initialize tracepoints");
 
     crate::ebpf::init_ebpf();
