@@ -150,6 +150,11 @@ pub fn post_allocator() {
     arch::Arch::post_allocator();
 }
 
+/// Returns boot arguments captured from FDT or built into the image.
+pub fn bootargs() -> Option<&'static str> {
+    cmdline::cmdline()
+}
+
 /// Get the current kernel page table physical address and ASID
 pub fn kernel_page_table_paddr() -> usize {
     arch::Arch::kernel_page_table().addr

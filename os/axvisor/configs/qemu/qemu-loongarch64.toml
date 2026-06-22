@@ -8,8 +8,6 @@ args = [
   "-smp",
   "1",
   "-nographic",
-  "-serial",
-  "mon:stdio",
   "-no-reboot",
   "-device",
   "virtio-blk-pci,drive=disk0",

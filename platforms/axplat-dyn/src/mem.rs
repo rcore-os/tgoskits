@@ -81,14 +81,6 @@ impl MemIf for MemIfImpl {
     fn reserved_phys_ram_ranges() -> &'static [RawRange] {
         RESERVED_LIST.call_once(|| {
             let mut list = Vec::new();
-            #[cfg(target_arch = "x86_64")]
-            for &range in X86_RESERVED_RAM_RANGES {
-                push_non_overlapping(&mut list, range);
-            }
-            #[cfg(target_arch = "loongarch64")]
-            for &range in LOONGARCH_RESERVED_RAM_RANGES {
-                push_non_overlapping(&mut list, range);
-            }
             for r in somehal::mem::memory_map() {
                 if matches!(
                     r.memory_type,
@@ -96,6 +88,14 @@ impl MemIf for MemIfImpl {
                 ) {
                     push_non_overlapping(&mut list, (r.physical_start, r.size_in_bytes));
                 }
+            }
+            #[cfg(target_arch = "x86_64")]
+            for &range in X86_RESERVED_RAM_RANGES {
+                push_non_overlapping(&mut list, range);
+            }
+            #[cfg(target_arch = "loongarch64")]
+            for &range in LOONGARCH_RESERVED_RAM_RANGES {
+                push_non_overlapping(&mut list, range);
             }
             list
         })
