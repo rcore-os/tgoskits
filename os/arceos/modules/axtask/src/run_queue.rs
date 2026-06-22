@@ -696,7 +696,7 @@ impl AxRunQueue {
             // scheduler lock for every empty-queue probe — on 8-core
             // boards this significantly reduces cache-line contention on
             // the scheduler lock word.
-            if get_run_queue(target).scheduler.is_empty() {
+            if get_run_queue(target).scheduler.get_mut().is_empty() {
                 continue;
             }
             let task = {
