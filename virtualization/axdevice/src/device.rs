@@ -531,7 +531,8 @@ impl AxVmDevices {
     /// Checks whether `[base, base + size)` conflicts with any already
     /// registered MMIO range.
     fn check_mmio_conflict(&self, base: u64, size: u64) -> Result<(), RegistryError> {
-        if size == 0 {
+        // Reject zero-sized and wrapped ranges (base+size would overflow).
+        if size == 0 || base.checked_add(size).is_none() {
             return Err(RegistryError::AddressConflict {
                 resource: Resource::MmioRange { base, size },
                 existing: Resource::MmioRange { base: 0, size: 0 },
@@ -539,11 +540,14 @@ impl AxVmDevices {
             });
         }
 
+        // checked_add already passed, so end is safe.
+        let end = base + size;
+
         // Check the immediately-preceding entry.
         if let Some((prev_base, &prev_idx)) = self.mmio_index.range(..base).next_back()
             && let Some((existing_base, existing_size)) =
                 self.mmio_range_of_device(prev_idx, *prev_base)
-            && existing_base + existing_size > base
+            && existing_base.wrapping_add(existing_size) > base
         {
             return Err(RegistryError::AddressConflict {
                 resource: Resource::MmioRange { base, size },
@@ -556,7 +560,6 @@ impl AxVmDevices {
         }
 
         // Check the immediately-following entry.
-        let end = base + size;
         if let Some((next_base, &next_idx)) = self.mmio_index.range(base..).next()
             && *next_base < end
             && let Some((existing_base, existing_size)) =
@@ -578,7 +581,7 @@ impl AxVmDevices {
     /// Checks whether `[base, base + size)` conflicts with any already
     /// registered port I/O range.
     fn check_port_conflict(&self, base: u16, size: u16) -> Result<(), RegistryError> {
-        if size == 0 {
+        if size == 0 || base.checked_add(size).is_none() {
             return Err(RegistryError::AddressConflict {
                 resource: Resource::PortRange { base, size },
                 existing: Resource::PortRange { base: 0, size: 0 },
@@ -589,7 +592,7 @@ impl AxVmDevices {
         if let Some((prev_base, &prev_idx)) = self.port_index.range(..base).next_back()
             && let Some((existing_base, existing_size)) =
                 self.port_range_of_device(prev_idx, *prev_base)
-            && existing_base + existing_size > base
+            && existing_base.wrapping_add(existing_size) > base
         {
             return Err(RegistryError::AddressConflict {
                 resource: Resource::PortRange { base, size },
@@ -601,6 +604,7 @@ impl AxVmDevices {
             });
         }
 
+        // checked_add already passed, so end is safe.
         let end = base + size;
         if let Some((next_base, &next_idx)) = self.port_index.range(base..).next()
             && *next_base < end
@@ -704,7 +708,7 @@ impl AxVmDevices {
         let in_range = dev.resources().into_iter().any(|r| {
             matches!(r,
                 Resource::MmioRange { base: b, size: s }
-                if b == base && addr < b + s)
+                if b == base && s > 0 && addr < b.wrapping_add(s))
         });
         in_range.then_some(idx)
     }
@@ -715,7 +719,7 @@ impl AxVmDevices {
         let in_range = dev.resources().into_iter().any(|r| {
             matches!(r,
                 Resource::PortRange { base: b, size: s }
-                if b == base && addr < b + s)
+                if b == base && s > 0 && addr < b.wrapping_add(s))
         });
         in_range.then_some(idx)
     }

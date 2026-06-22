@@ -724,6 +724,91 @@ fn test_builtin_meta_factory_builds_dummy_config() {
 }
 
 #[test]
+fn test_wrapped_native_mmio_resource_is_rejected() {
+    // Simulate a native Device whose resources() returns an overflowing
+    // MmioRange — this must be rejected by the registry, not panic.
+    // Use a valid GuestPhysAddrRange (wrapped ranges are rejected by
+    // the range constructor) and instead exercise the overflow via
+    // zero-sized MMIO (which the adapter already maps to size=0 for
+    // truly wrapped ranges).
+    let mut devices = empty_devices();
+    let mut bundle = DeviceBundle::new();
+    bundle.push(DeviceRegistration::Device(MmioDeviceAdapter::from_arc(
+        mmio_device("zero-size", 0x1000, 0x1000),
+    )));
+    assert_eq!(
+        devices.register_bundle(bundle).err(),
+        Some(AxError::AddrInUse)
+    );
+    assert_eq!(devices.devices().count(), 0);
+}
+
+#[test]
+fn test_native_device_resource_overflow_rejected() {
+    // Directly construct a Resource with an overflowing MmioRange to
+    // exercise the checked_add path without going through the adapter
+    // or range constructor.
+    use axdevice_base::{Device, DeviceError, RegistryError, Resource};
+
+    struct OverflowDevice;
+    impl Device for OverflowDevice {
+        fn name(&self) -> &str {
+            "overflow"
+        }
+        fn resources(&self) -> Vec<Resource> {
+            vec![Resource::MmioRange {
+                base: u64::MAX - 1,
+                size: 4,
+            }]
+        }
+        fn handle(
+            &self,
+            _: &axdevice_base::BusAccess,
+        ) -> Result<axdevice_base::BusResponse, DeviceError> {
+            Err(DeviceError::NotFound)
+        }
+        fn as_any(&self) -> &dyn std::any::Any {
+            self
+        }
+    }
+
+    let mut devices = empty_devices();
+    let result = devices.register(Arc::new(OverflowDevice));
+    assert!(matches!(result, Err(RegistryError::AddressConflict { .. })));
+}
+
+#[test]
+fn test_native_device_port_resource_overflow_rejected() {
+    use axdevice_base::{Device, DeviceError, RegistryError, Resource};
+
+    struct OverflowPortDevice;
+    impl Device for OverflowPortDevice {
+        fn name(&self) -> &str {
+            "overflow-port"
+        }
+        fn resources(&self) -> Vec<Resource> {
+            vec![Resource::PortRange {
+                base: u16::MAX - 1,
+                size: 4,
+            }]
+        }
+        fn handle(
+            &self,
+            _: &axdevice_base::BusAccess,
+        ) -> Result<axdevice_base::BusResponse, DeviceError> {
+            Err(DeviceError::NotFound)
+        }
+        fn as_any(&self) -> &dyn std::any::Any {
+            self
+        }
+    }
+
+    let mut devices = empty_devices();
+    let result = devices.register(Arc::new(OverflowPortDevice));
+    assert!(matches!(result, Err(RegistryError::AddressConflict { .. })));
+}
+
+#[test]
 fn test_build_with_factories_preserves_legacy_ivc_config() {
     let mut factories = DeviceFactoryRegistry::new();
     register_builtin_factories(&mut factories).unwrap();
