@@ -1,6 +1,6 @@
 ---
 name: resolve-github-issue
-description: Resolve recent or specified GitHub issues in this tgoskits repository. Use this skill when the user asks to inspect the latest issue, analyze root cause, avoid loosening tests, use subagents for investigation or review, add deterministic regression coverage, submit a PR, or link a PR so merging closes an issue.
+description: Resolve recent or specified bug, regression, CI failure, panic, hang, timeout, flaky, or failing-test GitHub issues in this tgoskits repository.
 ---
 
 # Resolve GitHub Issue
@@ -11,10 +11,19 @@ Use this workflow to turn a GitHub issue into a root-cause fix, verified regress
 
 1. Identify the issue from the user request:
    - If a number or URL is provided, read that issue.
-   - If the user says "recent" or "latest", list recent open issues in `rcore-os/tgoskits` and choose the newest relevant one.
+   - If the user says "recent", "latest", or gives no issue number, list recent open issues in `rcore-os/tgoskits` and choose a bug-type issue, not a feature request.
 2. Read the full issue body, comments, linked PR/check logs, failure snippets, labels, and dates. Record exact failing command, architecture, target, test name, and observed error.
 3. Inspect the failing test or workflow before changing it. Determine what behavior it is supposed to prove, which runner discovers it, and what success/failure markers mean.
 4. If the issue touches Starry or ArceOS test-suit files, also use the matching project skill such as `starry-test-suit` or `arceos-test-adapter`.
+
+## Issue Selection
+
+When the user has not named a specific issue, prefer actionable bug-type issues:
+
+- Good candidates have label `bug`, title prefixes such as `ci(...)`, `fix(...)`, or words like bug, regression, panic, hang, timeout, flaky, failure, fail, broken, crash, deadlock, corruption, or CI.
+- Good candidates include concrete evidence: failing command, workflow/job URL, architecture, board/QEMU target, test case, panic/error text, or reproduction steps.
+- Avoid feature-demand or planning issues unless the user explicitly asks for them. Skip titles/bodies dominated by `feat`, support/add/implement, proposal, plan, "方案", "项目", umbrella tracking, roadmap, remaining work, or broad capability requests.
+- If the newest open issue is feature-like, continue down the recent issue list until a bug-type issue is found. If no actionable bug-type issue exists, report that and ask whether to handle a feature request instead.
 
 ## Root Cause First
 
@@ -52,7 +61,7 @@ Use this workflow to turn a GitHub issue into a root-cause fix, verified regress
 
 1. Create or use a focused branch for the issue. Keep unrelated changes out.
 2. Commit with a Conventional Commits title, usually `fix(<crate-or-area>): <summary>`.
-3. Open a draft PR unless the user explicitly asks for ready-for-review.
+3. Open a ready-for-review PR by default. Use a draft PR only if the user explicitly asks for draft, validation is intentionally incomplete, or there is a known blocker that should prevent review.
 4. PR title must be English. PR body must be Chinese and cover:
    - the problem and root cause;
    - the change and why each step is needed;
