@@ -670,7 +670,9 @@ impl AxRunQueue {
                 continue;
             }
             let task = {
-                let mut sched = get_run_queue(target).scheduler.lock();
+                let Some(mut sched) = get_run_queue(target).scheduler.try_lock() else {
+                    continue;
+                };
                 // A task must be Ready AND have finished its scheduling
                 // process on the original CPU (on_cpu == false) before it
                 // can be stolen.  Otherwise the original CPU's
@@ -709,10 +711,9 @@ impl AxRunQueue {
         let local_task = self.scheduler.lock().pick_next_task();
         let next = local_task
             .or_else(|| {
-                // TODO: temporarily disabled for bisect
                 #[cfg(feature = "smp")]
                 {
-                    None
+                    self.try_steal()
                 }
                 #[cfg(not(feature = "smp"))]
                 {
