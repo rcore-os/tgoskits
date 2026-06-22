@@ -757,6 +757,13 @@ impl AxVmDevices {
     }
 
     // ─── Iterator helpers ───────────────────────────────────────────
+    //
+    // NOTE: With the unified Device trait, all three iterators return
+    // every registered device regardless of bus type.  Callers that
+    // previously relied on per-bus filtering should use
+    // [`Device::resources()`] or downcasting via [`Device::as_any()`].
+    // Prefer [`devices()`] (the canonical iterator) or
+    // [`device_count()`] in new code.
 
     /// Iterates over all registered devices.
     pub fn iter_mmio_dev(&self) -> impl Iterator<Item = &dyn Device> {
