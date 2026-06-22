@@ -4,7 +4,7 @@
 //! mapped RGA cores plus a DMA capability. Operation submission will be added
 //! once the register programming path is verified against RK3588 hardware.
 
-#![no_std]
+#![cfg_attr(not(test), no_std)]
 
 extern crate alloc;
 
@@ -14,8 +14,9 @@ use core::ptr::NonNull;
 use dma_api::DeviceDma;
 use rdif_base::DriverGeneric;
 
-pub mod command;
-pub mod registers;
+use crate::backend::rga2::registers;
+
+pub mod backend;
 
 /// Rockchip RGA hardware generation known by this driver.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
