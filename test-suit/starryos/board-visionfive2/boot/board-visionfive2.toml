@@ -1,0 +1,10 @@
+board_type = "VisionFive2"
+# Current smoke frontier: dynamic boot reaches root-device discovery before
+# JH7110 block/rootfs support is available.
+success_regex = ["failed to determine root device from available block devices"]
+fail_regex = [
+  "(?i)segmentation fault",
+  "(?i)SIGSEGV",
+  "exit with code: 139",
+]
+timeout = 600

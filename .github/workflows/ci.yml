@@ -705,6 +705,14 @@ jobs:
             container_image: ""
             limit_to_owner: rcore-os
             main_pr_only: false
+          - name: Test starry self-hosted board visionfive2
+            use_container: false
+            runs_on: '["self-hosted","linux","board"]'
+            command: cargo xtask starry test board --board visionfive2
+            cache_key: ""
+            container_image: ""
+            limit_to_owner: rcore-os
+            main_pr_only: false
     uses: ./.github/workflows/reusable-command.yml
     with:
       runs_on: >-
