@@ -9,5 +9,5 @@ features = [
   "ax-driver/xhci-pci",
   "starry-kernel/input",
 ]
-log = "Warn"
+log = "Error"
 target = "riscv64gc-unknown-none-elf"

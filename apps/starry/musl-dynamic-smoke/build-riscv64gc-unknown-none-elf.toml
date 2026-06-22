@@ -7,6 +7,6 @@ features = [
   "ax-driver/virtio-input",
   "ax-driver/virtio-socket",
 ]
-log = "Warn"
+log = "Error"
 plat_dyn = false
 target = "riscv64gc-unknown-none-elf"

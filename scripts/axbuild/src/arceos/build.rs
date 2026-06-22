@@ -562,7 +562,7 @@ mod tests {
             &path,
             r#"
 features = ["axstd", "axstd/smp", "axfeat/net"]
-log = "Warn"
+log = "Error"
 
 "#,
         )
@@ -663,7 +663,7 @@ plat_dyn = false
             &path,
             r#"
 features = ["ax-std"]
-log = "Warn"
+log = "Error"
 max_cpu_num = 4
 
 "#,
@@ -708,7 +708,7 @@ max_cpu_num = 4
             &path,
             r#"
 features = ["ax-std"]
-log = "Warn"
+log = "Error"
 
 "#,
         )

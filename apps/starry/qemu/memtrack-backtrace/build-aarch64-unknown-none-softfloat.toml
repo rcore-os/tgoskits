@@ -11,5 +11,5 @@ features = [
   "starry-kernel/vsock",
   "starry-kernel/memtrack",
 ]
-log = "Warn"
+log = "Error"
 target = "aarch64-unknown-none-softfloat"

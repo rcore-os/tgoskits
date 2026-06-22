@@ -502,7 +502,7 @@ impl Default for BuildInfo {
     fn default() -> Self {
         Self {
             env: HashMap::new(),
-            log: LogLevel::Warn,
+            log: LogLevel::Error,
             features: vec!["ax-std".to_string()],
             max_cpu_num: None,
             axconfig_overrides: Vec::new(),

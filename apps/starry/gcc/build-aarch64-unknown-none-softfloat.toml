@@ -1,5 +1,5 @@
 target = "aarch64-unknown-none-softfloat"
-log = "Warn"
+log = "Error"
 features = [
   "qemu",
   "ax-driver/virtio-blk",

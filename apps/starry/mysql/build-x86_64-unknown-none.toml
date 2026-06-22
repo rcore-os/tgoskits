@@ -1,6 +1,6 @@
 target = "x86_64-unknown-none"
 axconfig_overrides = ["plat.phys-memory-size=0x8000_0000"]
-log = "Warn"
+log = "Error"
 features = [
     "ax-driver/virtio-blk",
     "ax-driver/virtio-net",

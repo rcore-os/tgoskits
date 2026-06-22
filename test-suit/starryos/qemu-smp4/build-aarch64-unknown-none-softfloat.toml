@@ -10,5 +10,5 @@ features = [
   "starry-kernel/vsock",
 ]
 max_cpu_num = 4
-log = "Warn"
+log = "Error"
 target = "aarch64-unknown-none-softfloat"

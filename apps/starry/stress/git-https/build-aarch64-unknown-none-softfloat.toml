@@ -9,5 +9,5 @@ features = [
   "starry-kernel/input",
   "starry-kernel/vsock",
 ]
-log = "Warn"
+log = "Error"
 target = "aarch64-unknown-none-softfloat"

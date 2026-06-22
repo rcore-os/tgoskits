@@ -8,5 +8,5 @@ features = [
   "ax-driver/virtio-socket",
 ]
 max_cpu_num = 4
-log = "Warn"
+log = "Error"
 target = "riscv64gc-unknown-none-elf"

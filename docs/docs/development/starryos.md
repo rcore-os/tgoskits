@@ -437,7 +437,7 @@ features = [
   "ax-driver/virtio-blk",
   "ax-driver/virtio-net",
 ]
-log = "Warn"
+log = "Error"
 target = "riscv64gc-unknown-none-elf"
 ```
 

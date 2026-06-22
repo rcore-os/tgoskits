@@ -451,7 +451,7 @@ C 测试位于 `test-suit/arceos/c/`：helloworld, httpclient, memtest, pthread�
 
 ```toml
 features = ["ax-std"]
-log = "Warn"
+log = "Error"
 max_cpu_num = 4
 
 [env]

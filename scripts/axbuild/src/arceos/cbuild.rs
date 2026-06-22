@@ -435,7 +435,7 @@ fn cflags(input: CFlagsInput<'_>) -> Vec<String> {
     }
     flags.push(format!(
         "-DAX_LOG_{}",
-        format!("{:?}", input.log.unwrap_or(LogLevel::Warn)).to_uppercase()
+        format!("{:?}", input.log.unwrap_or(LogLevel::Error)).to_uppercase()
     ));
     if input.mode == "release" {
         flags.push("-O3".to_string());

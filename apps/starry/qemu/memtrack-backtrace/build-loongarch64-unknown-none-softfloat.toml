@@ -1,6 +1,6 @@
 target = "loongarch64-unknown-none-softfloat"
 env = { BACKTRACE = "y" }
-log = "Warn"
+log = "Error"
 features = [
   "ax-hal/loongarch64-qemu-virt",
   "qemu",

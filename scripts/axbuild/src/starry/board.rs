@@ -157,7 +157,7 @@ mod tests {
             r#"
 target = "aarch64-unknown-none-softfloat"
 features = ["qemu"]
-log = "Warn"
+log = "Error"
 plat_dyn = false
 "#,
         );
@@ -167,7 +167,7 @@ plat_dyn = false
             r#"
 target = "x86_64-unknown-none"
 features = ["qemu"]
-log = "Warn"
+log = "Error"
 plat_dyn = false
 "#,
         );
@@ -205,7 +205,7 @@ log = "Info"
             r#"
 target = "aarch64-unknown-none-softfloat"
 features = ["qemu"]
-log = "Warn"
+log = "Error"
 plat_dyn = false
 "#,
         );
@@ -215,7 +215,7 @@ plat_dyn = false
             r#"
 target = "riscv64gc-unknown-none-elf"
 features = ["ax-driver/serial", "ax-driver/virtio-blk"]
-log = "Warn"
+log = "Error"
 "#,
         );
 

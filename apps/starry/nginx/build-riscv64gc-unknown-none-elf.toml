@@ -1,5 +1,5 @@
 target = "riscv64gc-unknown-none-elf"
-log = "Warn"
+log = "Error"
 features = [
   "ax-feat/rtc",
   "ax-driver/serial",

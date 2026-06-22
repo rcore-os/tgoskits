@@ -1,6 +1,6 @@
 target = "riscv64gc-unknown-none-elf"
 axconfig_overrides = ["plat.phys-memory-size=0x4000_0000"]
-log = "Warn"
+log = "Error"
 features = [
   "ax-feat/display",
   "ax-feat/rtc",
