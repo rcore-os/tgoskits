@@ -53,19 +53,6 @@ const fn valid_irq(irq: usize) -> bool {
     irq < PIC_IRQ_COUNT
 }
 
-#[cfg(feature = "hypervisor")]
-pub fn debug_snapshot(irq: usize) -> (u32, u32, u32, u32, u8) {
-    let (offset, _) = split_bit(irq);
-    let htv = unsafe { ((MMIO_BASE + PCH_INT_HTVEC + irq) as *mut u8).read_volatile() };
-    (
-        read_w(PCH_PIC_MASK + offset),
-        read_w(PCH_PIC_HTMSI_EN + offset),
-        read_w(PCH_PIC_EDGE + offset),
-        read_w(PCH_PIC_POL + offset),
-        htv,
-    )
-}
-
 pub fn enable_irq(irq: usize) {
     if !valid_irq(irq) {
         return;
