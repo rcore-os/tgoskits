@@ -1,0 +1,12 @@
+# Board test for the RGA2 boot-time selftest.
+# StarryOS must be built with the `rga-selftest` feature enabled
+# (board config `features` list or `FEATURES=rga-selftest` on the build command line).
+# The selftest runs automatically at boot; this case waits for the shell prompt and
+# then triggers a search of the buffered serial output for the expected result line.
+
+board_type = "OrangePi-5-Plus"
+shell_prefix = "root@starry:/root #"
+shell_init_cmd = "echo RGA_SELFTEST_CHECK"
+success_regex = ["(?m)^RGA2_SELFTEST core=\\d+ fill=PASS copy=PASS crc=0x[0-9a-fA-F]{8}\\s*$"]
+fail_regex = ['(?i)RGA2_SELFTEST.*FAIL', 'RGA2_SELFTEST no-rga2-core']
+timeout = 300
