@@ -19,6 +19,10 @@ use crate::{
 
 pub static RX_WAKE_COUNT: AtomicU64 = AtomicU64::new(0);
 
+/// DIAG: kicker 唤醒次数,用于确诊 kicker 是否真在跑。
+#[cfg(debug_assertions)]
+static RX_KICK_COUNT: AtomicU64 = AtomicU64::new(0);
+
 /// 上层(StarryOS)注册的"收到数据帧"回调,存为 `fn()` 裸指针。
 ///
 /// AIC8800 是 SDIO WiFi,RX 走自己的线程并独占 SDIO CARD_INT (IRQ#38),
@@ -56,6 +60,11 @@ fn align_up(val: usize, align: usize) -> usize {
 /// 启动 wifi-rx 线程
 pub fn start(bus: Arc<WifiBus>) {
     log::debug!("[wifi-rx] thread starting");
+    // RX poll kicker 仅 DC/DW 启用(与 TX kicker 对称)。D80/8801 走 upstream/dev
+    // 的纯事件(ISR)驱动路径,不启动周期 kicker。
+    if bus.transport.is_dual_pipe() {
+        start_rx_poll_kicker(bus.clone());
+    }
     crate::runtime::runtime().spawn_poll_task(
         "wifi-rx",
         alloc::boxed::Box::new(move |cx| {
@@ -97,18 +106,50 @@ pub fn start(bus: Arc<WifiBus>) {
     );
 }
 
+/// 周期性唤醒 RX 线程去轮询 func2 的兜底任务。
+///
+/// 背景:RX 线程纯靠 waker 驱动,唤醒源只有 ISR(IRQ#38)和每次 TX。命令 CFM
+/// 因发命令时顺带 wake 而能收到;但异步到来的帧(如 STA WPA2 握手的 EAPOL M1)
+/// 没有 TX 触发,若 IRQ#38 不可靠,RX 线程会一直睡、帧烂在 func2 FIFO 没人读。
+/// 这里每 10ms 唤醒一次 RX,确保异步入站帧能被及时捞出。
+fn start_rx_poll_kicker(bus: Arc<WifiBus>) {
+    crate::runtime::runtime().spawn_poll_task(
+        "wifi-rx-kick",
+        alloc::boxed::Box::new(move |cx| {
+            if *bus.state.lock() == BusState::Down {
+                return Poll::Ready(());
+            }
+            // 唤醒 RX 线程去 poll func2(不自己做 SDIO,避免与 RX 线程争锁)
+            bus.rx.irq_waker.wake();
+            // 每 ~1s 打一次心跳(仅 trace):证明 kicker 活着
+            #[cfg(debug_assertions)]
+            {
+                let kicks = RX_KICK_COUNT.fetch_add(1, Ordering::Relaxed) + 1;
+                if kicks.is_multiple_of(100) {
+                    log::trace!("[RXKICK] alive kicks={}", kicks);
+                }
+            }
+            // 阻塞 sleep:本任务独占一个 ax_task 线程,只拖慢自己
+            crate::runtime::runtime().sleep_ms(10);
+            // 自唤醒,让 block_on 立即重新 poll,形成 10ms 周期循环
+            cx.waker().wake_by_ref();
+            Poll::Pending
+        }),
+    );
+}
+
 // ===== RX 帧读取处理 =====
 
 /// 读取 block_cnt 并处理 SDIO_OTHER_INTERRUPT 重试
 ///
 /// # 返回
 /// (block_cnt, should_continue) - 读取的块计数和是否应该继续处理
-fn read_block_count_with_retry(bus: &WifiBus, other_int_retries: &mut u32) -> (u8, bool) {
+fn read_block_count_with_retry(bus: &WifiBus, func: u8, other_int_retries: &mut u32) -> (u8, bool) {
     let intstatus = {
-        match bus.transport.read_byte(1, bus.transport.block_cnt_reg()) {
+        match bus.transport.read_byte(func, bus.transport.block_cnt_reg()) {
             Ok(v) => v,
             Err(e) => {
-                log::error!("[wifi-rx] read block_cnt failed: {:?}", e);
+                log::error!("[wifi-rx] read block_cnt(func{}) failed: {:?}", func, e);
                 return (0, false);
             }
         }
@@ -196,7 +237,10 @@ fn resolve_rx_data_len(bus: &WifiBus, intstatus: u8) -> usize {
 /// byte 模式可为任意 ≤512 的字节数)。按 512 字节分段读,避免 1-bit SDIO 模式下单次
 /// CMD53 传输 block 数量过多导致 SDHCI 控制器超时;最后不足 512 的尾段以 byte 模式读
 /// (底层 read_fifo 对非 512 对齐长度自动走 byte-mode CMD53)。
-fn read_fifo_data(bus: &WifiBus, data_len: usize) -> Option<Vec<u8>> {
+///
+/// `func`:DC 的 CFM/indication 邮箱在 func2,数据帧在 func1,需按队列读对应 func 的
+/// FIFO;8801/D80 命令与数据同在 func1。
+fn read_fifo_data(bus: &WifiBus, func: u8, data_len: usize) -> Option<Vec<u8>> {
     let mut buf = vec![0u8; data_len];
     let mut offset = 0;
 
@@ -204,7 +248,7 @@ fn read_fifo_data(bus: &WifiBus, data_len: usize) -> Option<Vec<u8>> {
         let chunk_len = core::cmp::min(data_len - offset, SDIOWIFI_FUNC_BLOCKSIZE);
 
         if let Err(e) = bus.transport.read_fifo(
-            1,
+            func,
             bus.transport.rd_fifo_addr(),
             &mut buf[offset..offset + chunk_len],
         ) {
@@ -231,6 +275,18 @@ fn process_rx_frames(bus: &WifiBus) {
     // ISR 只设 flag 不 mask，这里先 mask CARD_INT 防止重入
     bus.transport.mask_card_irq();
 
+    // 排空 RX FIFO。DC/DW 是双管道:func2 是命令 CFM/indication 邮箱,func1 是数据
+    // 平面;两个 func 的 block_cnt 独立,需各自排空(EAPOL M1 等入站数据帧在 func1)。
+    // 8801/D80 命令与数据同在 func1,func2 不是独立邮箱——只排空 func1,避免对 func2
+    // 发无谓的 CMD52(cmd_func() 对 DC/DW=2,其余=1)。
+    if bus.transport.cmd_func() == 2 {
+        drain_func(bus, 2);
+    }
+    drain_func(bus, 1);
+}
+
+/// 排空指定 func 的 RX FIFO,读出所有待处理帧并分发。
+fn drain_func(bus: &WifiBus, func: u8) {
     let mut other_int_retries = 0u32;
 
     loop {
@@ -239,7 +295,8 @@ fn process_rx_frames(bus: &WifiBus) {
             // ISR 触发了，继续读取（不 break）
         }
 
-        let (intstatus, should_continue) = read_block_count_with_retry(bus, &mut other_int_retries);
+        let (intstatus, should_continue) =
+            read_block_count_with_retry(bus, func, &mut other_int_retries);
         if !should_continue {
             break;
         }
@@ -263,7 +320,7 @@ fn process_rx_frames(bus: &WifiBus) {
         );
 
         // 读取 FIFO 数据
-        let Some(buf) = read_fifo_data(bus, data_len) else {
+        let Some(buf) = read_fifo_data(bus, func, data_len) else {
             break;
         };
 
@@ -357,7 +414,7 @@ fn handle_mgmt_frame(bus: &WifiBus, mpdu: &[u8], pkt_len: usize) {
         0xB if pkt_len >= 30 => {
             let alg = u16::from_le_bytes([mpdu[24], mpdu[25]]);
             let seq = u16::from_le_bytes([mpdu[26], mpdu[27]]);
-            log::info!("[ap-rx] Auth from {:02x?}: alg={} seq={}", sa, alg, seq);
+            log::debug!("[ap-rx] Auth from {:02x?}: alg={} seq={}", sa, alg, seq);
 
             // 开放认证(alg=0)、Auth Request(seq=1) → 回 Auth Response
             if alg == 0 && seq == 1 {
@@ -367,13 +424,44 @@ fn handle_mgmt_frame(bus: &WifiBus, mpdu: &[u8], pkt_len: usize) {
         // Assoc/Reassoc Req → 交给 AP worker 线程处理(ME_STA_ADD + Assoc Resp)
         0x0 | 0x2 if pkt_len >= 28 => {
             let cap = u16::from_le_bytes([mpdu[24], mpdu[25]]);
-            log::info!("[ap-rx] {} from {:02x?}: cap=0x{:04x}", subtype, sa, cap);
+            log::debug!("[ap-rx] {} from {:02x?}: cap=0x{:04x}", subtype, sa, cap);
             // 不能在 RX 线程做 ME_STA_ADD(send_cmd 会死锁)，整帧入队转给 AP worker
             bus.ap
                 .assoc_queue
                 .lock()
                 .push_back(mpdu[..pkt_len].to_vec());
             bus.ap.assoc_pollset.wake();
+        }
+        // Deauth(0xC)/Disassoc(0xA):STA 断开。从驱动注册表移除(使重连能完整重新
+        // 注册),并把该 STA 的 sta_idx 入队,交 AP worker 发 MM_STA_DEL_REQ 释放固件
+        // 槽位。否则固件继续占用旧 idx,下一个 STA 被分到更大 idx,而下行数据帧用全局
+        // 单一 sta_idx 路由,非 0 槽位送不达 → 重连后 ping/SSH 不通。
+        0xC | 0xA => {
+            // DC/DW 专属:断开时清注册表 + 入队 MM_STA_DEL 释放固件槽位,使重连能
+            // 复用低位 sta_idx(DC 下行单一 sta_idx 路由只对低位槽位可靠)。
+            // D80/8801 走 upstream/dev 原有路径:不做注册表/槽位维护(固件自管理)。
+            if !bus.transport.is_dual_pipe() {
+                log::info!("[ap-rx] {} from {:02x?}", subtype, sa);
+                return;
+            }
+            let mut mac = [0u8; 6];
+            mac.copy_from_slice(sa);
+            let removed_idx = {
+                let mut tbl = bus.ap.registered_stas.lock();
+                let idx = tbl.iter().find(|(m, ..)| *m == mac).map(|(_, i, ..)| *i);
+                tbl.retain(|(m, ..)| *m != mac);
+                idx
+            };
+            if let Some(idx) = removed_idx {
+                bus.ap.sta_del_queue.lock().push_back(idx);
+                bus.ap.assoc_pollset.wake();
+            }
+            log::info!(
+                "[ap-rx] {} from {:02x?} (removed_from_table={})",
+                subtype,
+                sa,
+                removed_idx.is_some()
+            );
         }
         _ => {
             // Beacon / ProbeReq 等：周围 AP 和扫描设备的帧，与连接无关。
@@ -406,7 +494,7 @@ fn send_auth_response(bus: &WifiBus, dst: &[u8]) {
     frame.extend_from_slice(&0u16.to_le_bytes()); // status = success(0)
 
     match crate::fdrv::thread::tx::enqueue_mgmt_frame(bus, frame) {
-        Ok(()) => log::info!("[ap-tx] Auth Response queued -> {:02x?}", dst),
+        Ok(()) => log::debug!("[ap-tx] Auth Response queued -> {:02x?}", dst),
         Err(e) => log::warn!("[ap-tx] Auth Response enqueue failed: {:?}", e),
     }
 }
@@ -718,6 +806,12 @@ fn dispatch_frames(bus: &WifiBus, buf: &[u8]) {
 
         if !is_cfg {
             // ========== DATA 帧 ==========
+            log::trace!(
+                "[RXDIAG] DATA frame: pkt_type=0x{:02x} pkt_len={} offset={}",
+                pkt_type,
+                pkt_len,
+                offset
+            );
             let aggr_len = pkt_len + RX_HWHRD_LEN;
             let advance = align_up(aggr_len, RX_ALIGNMENT);
 

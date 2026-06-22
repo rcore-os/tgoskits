@@ -280,6 +280,21 @@ impl IrqHandler {
             self.inner.rx_wakers.wake(id);
         }
     }
+
+    pub fn enable_irq(&self) {
+        let iface = unsafe { &mut **self.inner.interface.get() };
+        iface.enable_irq();
+    }
+
+    pub fn disable_irq(&self) {
+        let iface = unsafe { &mut **self.inner.interface.get() };
+        iface.disable_irq();
+    }
+
+    pub fn is_irq_enabled(&self) -> bool {
+        let iface = unsafe { &mut **self.inner.interface.get() };
+        iface.is_irq_enabled()
+    }
 }
 
 pub struct TxQueue {

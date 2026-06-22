@@ -11,7 +11,7 @@ pub mod scan;
 // 重导出 cmd 中的公共 API（CMD 框架 + EAPOL）
 pub use apm::{
     send_apm_set_beacon_ie_req, send_apm_start_req, send_apm_stop_req, send_me_sta_add_req,
-    start_open_ap,
+    send_mm_sta_del_req, start_open_ap,
 };
 pub use cmd::*;
 pub use config::{

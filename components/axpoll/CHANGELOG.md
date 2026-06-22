@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0](https://github.com/rcore-os/tgoskits/compare/axpoll-v0.3.11...axpoll-v0.4.0) - 2026-06-22
+
+### Added
+
+- *(starry)* add Wayland app case ([#1160](https://github.com/rcore-os/tgoskits/pull/1160))
+- *(poll)* add irq-safe deferred notifications ([#1278](https://github.com/rcore-os/tgoskits/pull/1278))
+
 ## [0.3.11](https://github.com/rcore-os/tgoskits/compare/axpoll-v0.3.10...axpoll-v0.3.11) - 2026-06-09
 
 ### Added

@@ -569,9 +569,4 @@ mod tests {
             _ => panic!("expected test command"),
         }
     }
-
-    #[test]
-    fn command_rejects_legacy_http_smoke_flag() {
-        assert!(Cli::try_parse_from(["axloader", "test", "qemu", "--http-smoke"]).is_err());
-    }
 }

@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.21](https://github.com/rcore-os/tgoskits/compare/ax-task-v0.5.20...ax-task-v0.5.21) - 2026-06-22
+
+### Added
+
+- *(poll)* add irq-safe deferred notifications ([#1278](https://github.com/rcore-os/tgoskits/pull/1278))
+
+### Fixed
+
+- *(ax-task)* prioritize ready poll_io before interrupt ([#1337](https://github.com/rcore-os/tgoskits/pull/1337))
+
+### Other
+
+- *(ax-runtime)* adapt submit-poll fs block irq registration ([#1228](https://github.com/rcore-os/tgoskits/pull/1228))
+
 ## [0.5.20](https://github.com/rcore-os/tgoskits/compare/ax-task-v0.5.19...ax-task-v0.5.20) - 2026-06-12
 
 ### Fixed

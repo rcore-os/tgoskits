@@ -7,6 +7,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.3](https://github.com/rcore-os/tgoskits/compare/starry-kernel-v0.6.2...starry-kernel-v0.6.3) - 2026-06-22
+
+### Added
+
+- *(starry)* add Wayland app case ([#1160](https://github.com/rcore-os/tgoskits/pull/1160))
+- *(starry)* enhance VmPeak & VmHWM  ([#1316](https://github.com/rcore-os/tgoskits/pull/1316))
+- *(poll)* add irq-safe deferred notifications ([#1278](https://github.com/rcore-os/tgoskits/pull/1278))
+- *(starry-kmod)* support LoongArch DMW-backed kmods ([#1279](https://github.com/rcore-os/tgoskits/pull/1279))
+- *(ax-net)* add multi-interface support with per-interface routing, DNS, and SO_BINDTODEVICE ([#1244](https://github.com/rcore-os/tgoskits/pull/1244))
+- *(starry)* implement execveat syscall ([#1144](https://github.com/rcore-os/tgoskits/pull/1144))
+- runtime Wi-Fi AP/STA mode switch for AIC8800 on SG2002 (LicheeRV Nano) ([#1266](https://github.com/rcore-os/tgoskits/pull/1266))
+- tpu add tdma irq. ([#1269](https://github.com/rcore-os/tgoskits/pull/1269))
+- *(starry-kernel)* extend gdb support to aarch64 and loongarch64 ([#1247](https://github.com/rcore-os/tgoskits/pull/1247))
+- *(axruntime)* add compiler-backed stack protector support ([#1239](https://github.com/rcore-os/tgoskits/pull/1239))
+- AIC8800 Wi-Fi SoftAP for SG2002 (LicheeRV Nano) ([#1185](https://github.com/rcore-os/tgoskits/pull/1185))
+
+### Fixed
+
+- *(starry-signal)* populate siginfo.si_addr for synchronous SIGSEGV ([#1331](https://github.com/rcore-os/tgoskits/pull/1331))
+- *(starry-kernel)* align x86 ptrace gdb support ([#1314](https://github.com/rcore-os/tgoskits/pull/1314))
+- *(starry)* keep tmpfs directory cookies stable ([#1326](https://github.com/rcore-os/tgoskits/pull/1326))
+- *(starry)* prepopulate cold user pages before copy ([#1328](https://github.com/rcore-os/tgoskits/pull/1328))
+- *(starry-kernel)* filter console mouse escape reports ([#1302](https://github.com/rcore-os/tgoskits/pull/1302))
+- *(starry)* assign the init process real PID 1 ([#1233](https://github.com/rcore-os/tgoskits/pull/1233))
+- *(starry-kernel)* improve multiarch GDB ptrace support ([#1292](https://github.com/rcore-os/tgoskits/pull/1292))
+- *(starry)* widen loongarch64 user VA window to 128 TiB (match aarch64/x86_64) ([#1280](https://github.com/rcore-os/tgoskits/pull/1280))
+- *(starry)* report ENOSYS for the unimplemented new mount API ([#1241](https://github.com/rcore-os/tgoskits/pull/1241))
+- *(starry)* map sg2002 tty serial MMIO via iomap ([#1270](https://github.com/rcore-os/tgoskits/pull/1270))
+- *(starry)* align app qemu boot flow and own BPF JIT memory ([#1256](https://github.com/rcore-os/tgoskits/pull/1256))
+- *(starry)* provide /sys/fs/cgroup mount point in sysfs ([#1243](https://github.com/rcore-os/tgoskits/pull/1243))
+
+### Other
+
+- Feat/gdb smoke x86 64 native ([#1330](https://github.com/rcore-os/tgoskits/pull/1330))
+- Feat/x86 64 ptrace clean ([#1062](https://github.com/rcore-os/tgoskits/pull/1062))
+- *(ax-runtime)* adapt submit-poll fs block irq registration ([#1228](https://github.com/rcore-os/tgoskits/pull/1228))
+- seccomp and capablities ([#1275](https://github.com/rcore-os/tgoskits/pull/1275))
+- overlayfs ([#1223](https://github.com/rcore-os/tgoskits/pull/1223))
+
 ## [0.6.2](https://github.com/rcore-os/tgoskits/compare/starry-kernel-v0.6.1...starry-kernel-v0.6.2) - 2026-06-12
 
 ### Added

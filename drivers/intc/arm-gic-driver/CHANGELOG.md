@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.17.5](https://github.com/rcore-os/tgoskits/compare/arm-gic-driver-v0.17.4...arm-gic-driver-v0.17.5) - 2026-06-22
+
+### Other
+
+- *(ax-runtime)* adapt submit-poll fs block irq registration ([#1228](https://github.com/rcore-os/tgoskits/pull/1228))
+
 ## [0.17.4](https://github.com/rcore-os/tgoskits/compare/arm-gic-driver-v0.17.3...arm-gic-driver-v0.17.4) - 2026-06-12
 
 ### Other

@@ -2,12 +2,16 @@ use crate::{AbsInfo, DriverGeneric, EventType, InputDeviceId, InputError, InputE
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub struct Event {
+    pub handled: bool,
     pub input_ready: bool,
 }
 
 impl Event {
     pub const fn none() -> Self {
-        Self { input_ready: false }
+        Self {
+            handled: false,
+            input_ready: false,
+        }
     }
 }
 
@@ -17,6 +21,10 @@ pub trait Interface: DriverGeneric {
     fn physical_location(&self) -> &str;
 
     fn unique_id(&self) -> &str;
+
+    fn irq_num(&self) -> Option<usize> {
+        None
+    }
 
     fn get_event_bits(&mut self, ty: EventType, out: &mut [u8]) -> Result<bool, InputError>;
 
