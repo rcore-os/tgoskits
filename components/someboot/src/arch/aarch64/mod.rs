@@ -31,6 +31,7 @@ use crate::{
     consts::VM_LOAD_ADDRESS,
     mem::{__kimage_va_to_pa, PageTableInfo},
     smp::percpu_va_range,
+    timer::{self, ArchTimerMode},
 };
 
 pub struct Arch;
@@ -93,7 +94,10 @@ impl ArchTrait for Arch {
     }
 
     fn systimer_tick() -> usize {
-        CNTPCT_EL0.get() as _
+        match timer::aarch64_timer_mode() {
+            ArchTimerMode::El1Virt => CNTVCT_EL0.get() as _,
+            ArchTimerMode::El1Phys | ArchTimerMode::El2HypPhys => CNTPCT_EL0.get() as _,
+        }
     }
 
     fn shutdown() -> ! {
