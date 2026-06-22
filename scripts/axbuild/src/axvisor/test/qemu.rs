@@ -126,7 +126,7 @@ impl Axvisor {
         for build_group in &mut build_groups {
             rootfs::ensure_qemu_rootfs_ready(&build_group.request, self.app.workspace_root(), None)
                 .await?;
-            rootfs::prepare_loongarch_linux_memory_vmconfigs(
+            rootfs::prepare_loongarch_linux_vmconfigs(
                 &mut build_group.request,
                 self.app.workspace_root(),
                 None,

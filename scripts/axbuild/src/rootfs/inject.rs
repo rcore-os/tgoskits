@@ -55,47 +55,6 @@ pub(crate) fn read_text_file(
         .with_context(|| format!("{}:{guest_path} is not valid UTF-8", rootfs_img.display()))
 }
 
-/// Extracts one regular file from a rootfs image with `debugfs`.
-pub(crate) fn extract_file(
-    rootfs_img: &Path,
-    guest_path: &str,
-    output_path: &Path,
-) -> anyhow::Result<()> {
-    ensure!(
-        guest_path.starts_with('/'),
-        "guest path must be absolute: `{guest_path}`"
-    );
-
-    if let Some(parent) = output_path.parent() {
-        fs::create_dir_all(parent)
-            .with_context(|| format!("failed to create {}", parent.display()))?;
-    }
-    if output_path.exists() {
-        fs::remove_file(output_path)
-            .with_context(|| format!("failed to remove {}", output_path.display()))?;
-    }
-
-    let output = Command::new("debugfs")
-        .arg("-R")
-        .arg(format!("dump {guest_path} {}", output_path.display()))
-        .arg(rootfs_img)
-        .output()
-        .with_context(|| format!("failed to spawn debugfs for {}", rootfs_img.display()))?;
-    if !output.status.success() {
-        bail!(
-            "failed to extract {guest_path} from {}: {}",
-            rootfs_img.display(),
-            String::from_utf8_lossy(&output.stderr).trim()
-        );
-    }
-    ensure!(
-        output_path.exists(),
-        "debugfs did not create {} while extracting {guest_path}",
-        output_path.display()
-    );
-    Ok(())
-}
-
 /// Replaces one regular file inside a rootfs image with a host file.
 pub(crate) fn replace_file(
     rootfs_img: &Path,

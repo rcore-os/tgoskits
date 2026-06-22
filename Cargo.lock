@@ -1532,6 +1532,7 @@ dependencies = [
  "ax-std",
  "axbuild",
  "axdevice",
+ "axplat-dyn",
  "axvm",
  "axvmconfig",
  "byte-unit",

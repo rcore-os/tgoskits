@@ -75,6 +75,7 @@ axdevice = { workspace = true }
 ax-errno = { workspace = true }
 ax-memory-addr = { workspace = true }
 ax-driver.workspace = true
+axplat-dyn = { workspace = true, optional = true }
 
 # xtask dependencies (only used on host platforms)
 [target.'cfg(any(windows, all(unix, not(target_env = "musl"))))'.dependencies]

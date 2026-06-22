@@ -41,7 +41,7 @@ pub(super) async fn qemu(axvisor: &mut Axvisor, args: super::ArgsQemu) -> anyhow
         explicit_rootfs.as_deref(),
     )
     .await?;
-    prepare_loongarch_linux_memory_vmconfigs(
+    prepare_loongarch_linux_vmconfigs(
         &mut request,
         axvisor.app.workspace_root(),
         explicit_rootfs.as_deref(),
@@ -55,19 +55,19 @@ pub(super) async fn qemu(axvisor: &mut Axvisor, args: super::ArgsQemu) -> anyhow
         .await
 }
 
-pub(crate) fn prepare_loongarch_linux_memory_vmconfigs(
+pub(crate) fn prepare_loongarch_linux_vmconfigs(
     request: &mut ResolvedAxvisorRequest,
     workspace_root: &Path,
-    explicit_rootfs: Option<&Path>,
+    _explicit_rootfs: Option<&Path>,
 ) -> anyhow::Result<()> {
     if request.arch != "loongarch64" || request.vmconfigs.is_empty() {
         return Ok(());
     }
 
-    let rootfs_path = qemu_rootfs_path(request, workspace_root, explicit_rootfs)?;
+    let firmware_path = loongarch_uefi_firmware_path(workspace_root).ok_or_else(|| {
+        anyhow!("LoongArch UEFI firmware image was not found; expected ostool OVMF code.fd")
+    })?;
     let out_dir = workspace_root.join("tmp/axbuild/axvisor/loongarch64");
-    let kernel_path = out_dir.join("linux-qemu");
-    let firmware_path = loongarch_uefi_firmware_path(workspace_root);
     let mut prepared_vmconfigs = Vec::with_capacity(request.vmconfigs.len());
 
     for vmconfig in &request.vmconfigs {
@@ -85,14 +85,6 @@ pub(crate) fn prepare_loongarch_linux_memory_vmconfigs(
             continue;
         }
 
-        rootfs::inject::extract_file(&rootfs_path, "/guest/linux/linux-qemu", &kernel_path)
-            .with_context(|| {
-                format!(
-                    "failed to prepare LoongArch Linux kernel from {}",
-                    rootfs_path.display()
-                )
-            })?;
-
         let prepared_vmconfig = out_dir.join(
             vmconfig
                 .file_name()
@@ -100,19 +92,11 @@ pub(crate) fn prepare_loongarch_linux_memory_vmconfigs(
         );
         fs::create_dir_all(&out_dir)
             .with_context(|| format!("failed to create {}", out_dir.display()))?;
-        let mut patched = content
-            .replace("image_location = \"fs\"", "image_location = \"memory\"")
-            .replace(
-                "kernel_path = \"/guest/linux/linux-qemu\"",
-                &format!("kernel_path = \"{}\"", kernel_path.display()),
-            );
-        if let Some(firmware_path) = &firmware_path {
-            patched = replace_toml_string_value(
-                &patched,
-                "uefi_firmware_path",
-                &firmware_path.display().to_string(),
-            );
-        }
+        let patched = replace_toml_string_value(
+            &content,
+            "uefi_firmware_path",
+            &firmware_path.display().to_string(),
+        );
         fs::write(&prepared_vmconfig, patched)
             .with_context(|| format!("failed to write {}", prepared_vmconfig.display()))?;
         prepared_vmconfigs.push(prepared_vmconfig);

@@ -95,6 +95,13 @@ fn memory_images_for_vm(config: &AxVMCrateConfig) -> AxResult<&'static vmcfg::Me
         })
 }
 
+fn firmware_image_for_vm(config: &AxVMCrateConfig) -> Option<&'static [u8]> {
+    vmcfg::get_firmware_images()
+        .iter()
+        .find(|&v| v.id == config.base.id)
+        .map(|v| v.bios)
+}
+
 pub struct ImageLoader {
     main_memory: VMMemoryRegion,
     vm: AxVMRef,
@@ -294,6 +301,21 @@ impl ImageLoader {
 
             #[cfg(feature = "fs")]
             {
+                if let Some(buffer) = firmware_image_for_vm(&self.config) {
+                    info!(
+                        "Loading UEFI firmware image from build-time buffer at GPA {:#x}",
+                        load_gpa.as_usize()
+                    );
+                    let flash_len = self
+                        .config
+                        .kernel
+                        .memory_regions
+                        .iter()
+                        .find(|region| region.gpa == load_gpa.as_usize())
+                        .map_or(buffer.len(), |region| region.size);
+                    fill_vm_region(load_gpa, flash_len, 0xff, self.vm.clone())?;
+                    return load_vm_image_from_memory(buffer, load_gpa, self.vm.clone());
+                }
                 info!(
                     "Loading UEFI firmware image {} at GPA {:#x}",
                     firmware_path,
@@ -783,16 +805,31 @@ pub mod fs {
                 #[cfg(not(target_arch = "x86_64"))]
                 {
                     if loader.config.kernel.effective_boot_protocol() == VMBootProtocol::Uefi {
-                        let flash_len = loader
-                            .config
-                            .kernel
-                            .memory_regions
-                            .iter()
-                            .find(|region| region.gpa == bios_load_addr.as_usize())
-                            .map_or_else(|| image_size(bios_path), |region| Ok(region.size))?;
+                        let flash_len = if let Some(buffer) = firmware_image_for_vm(&loader.config)
+                        {
+                            loader
+                                .config
+                                .kernel
+                                .memory_regions
+                                .iter()
+                                .find(|region| region.gpa == bios_load_addr.as_usize())
+                                .map_or(buffer.len(), |region| region.size)
+                        } else {
+                            loader
+                                .config
+                                .kernel
+                                .memory_regions
+                                .iter()
+                                .find(|region| region.gpa == bios_load_addr.as_usize())
+                                .map_or_else(|| image_size(bios_path), |region| Ok(region.size))?
+                        };
                         fill_vm_region(bios_load_addr, flash_len, 0xff, loader.vm.clone())?;
                     }
-                    load_vm_image(bios_path, bios_load_addr, loader.vm.clone())?;
+                    if let Some(buffer) = firmware_image_for_vm(&loader.config) {
+                        load_vm_image_from_memory(buffer, bios_load_addr, loader.vm.clone())?;
+                    } else {
+                        load_vm_image(bios_path, bios_load_addr, loader.vm.clone())?;
+                    }
                 }
             } else {
                 return ax_err!(NotFound, "boot firmware load addr is missed");
