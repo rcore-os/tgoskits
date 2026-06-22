@@ -350,11 +350,13 @@ impl<B: BlockDevice> Jbd2Dev<B> {
         block_id: AbsoluteBN,
         count: u32,
     ) -> Ext4Result<()> {
-        if !self.journal_use || self.system.is_none() || count == 0 {
+        if !self.journal_use || count == 0 {
             return self.inner.read_blocks(buf, block_id, count);
         }
 
-        let system = self.system.as_ref().unwrap();
+        let Some(system) = self.system.as_ref() else {
+            return self.inner.read_blocks(buf, block_id, count);
+        };
         let block_size = self.inner.block_size() as usize;
         let required = block_size * count as usize;
         if buf.len() < required {
