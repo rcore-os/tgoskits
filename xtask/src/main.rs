@@ -1,3 +1,4 @@
+// CI baseline check: trigger full CI on clean dev to isolate a flaky board job.
 #![cfg_attr(not(any(windows, unix)), no_main)]
 #![cfg_attr(not(any(windows, unix)), no_std)]
 
