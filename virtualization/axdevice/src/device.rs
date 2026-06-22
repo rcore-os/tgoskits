@@ -473,7 +473,7 @@ impl AxVmDevices {
     }
 
     /// Registers a bundle atomically.  Conflict detection is performed by
-    /// [`AxVmDevices::register`].
+    /// [`DeviceRegistry::register`].
     pub fn register_bundle(&mut self, bundle: DeviceBundle) -> AxResult {
         for (index, pollable) in bundle.pollable.iter().enumerate() {
             if self

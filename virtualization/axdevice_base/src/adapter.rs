@@ -58,7 +58,11 @@ where
     }
 
     /// Creates an `Arc<dyn Device>` from an existing `Arc<T>`.
-    pub fn from_arc(device: Arc<T>) -> Arc<dyn Device> {
+    pub fn from_arc(device: Arc<T>) -> Arc<dyn Device>
+    where
+        T: 'static,
+        T: BaseDeviceOps<crate::GuestPhysAddrRange>,
+    {
         Arc::new(Self {
             name: type_name(device.emu_type()),
             inner: device,
@@ -74,6 +78,7 @@ where
 // SAFETY: The inner device uses internal synchronisation (e.g. `Mutex`,
 // `UnsafeCell` with proper barriers) and has been safely shared across
 // threads in the existing codebase via `Arc`.
+// All concrete device types are `Send + Sync`.
 unsafe impl<T> Send for MmioDeviceAdapter<T> {}
 unsafe impl<T> Sync for MmioDeviceAdapter<T> {}
 
@@ -138,7 +143,11 @@ where
     }
 
     /// Creates an `Arc<dyn Device>` from an existing `Arc<T>`.
-    pub fn from_arc(device: Arc<T>) -> Arc<dyn Device> {
+    pub fn from_arc(device: Arc<T>) -> Arc<dyn Device>
+    where
+        T: 'static,
+        T: BaseDeviceOps<SysRegAddrRange>,
+    {
         Arc::new(Self {
             name: type_name(device.emu_type()),
             inner: device,
@@ -215,7 +224,11 @@ where
     }
 
     /// Creates an `Arc<dyn Device>` from an existing `Arc<T>`.
-    pub fn from_arc(device: Arc<T>) -> Arc<dyn Device> {
+    pub fn from_arc(device: Arc<T>) -> Arc<dyn Device>
+    where
+        T: 'static,
+        T: BaseDeviceOps<PortRange>,
+    {
         Arc::new(Self {
             name: type_name(device.emu_type()),
             inner: device,
