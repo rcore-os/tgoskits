@@ -27,11 +27,14 @@
 #   x86_64       apk (openjdk17)       BellSoft musl tar   BellSoft musl tar     BellSoft musl tar   (4 JDKs)
 #   aarch64      apk (openjdk17)       BellSoft musl tar   BellSoft musl tar     BellSoft musl tar   (4 JDKs)
 #   riscv64      native-musl cross tar Alpine-musl apk     BellSoft GLIBC+gcompat Alpine-musl apk     (4 attempted)
-#   loongarch64  apk (openjdk17-loong) Alpine-musl apk     Loongson GLIBC+gcompat Alpine-musl apk     (4 attempted)
-#   JDK23 ships only as glibc on riscv64 (BellSoft generic-glibc) and loongarch64 (Loongson),
-#   so — exactly like prep-jdk-multi-rootfs.sh — we stage the gcompat shim (+ its libucontext /
-#   musl-obstack deps) so the Alpine-musl loader can satisfy the glibc JDK's libc.so.6 / ld-linux
-#   references, then ATTEMPT JDK23 on all 4 arches. The decision is made at run time by
+#   loongarch64  apk (openjdk17-loong) Alpine-musl apk     native-musl SRC-BUILD  Alpine-musl apk     (4 JDKs)
+#   JDK23 has no prebuilt musl build for riscv64/loongarch64. riscv64 uses BellSoft generic-glibc
+#   bridged by a real Debian glibc runtime; loongarch64 cross-compiles a native musl JDK23 from
+#   source (setup-loong-jdk23.sh, loong-jdk23-musl-port.patch) so it needs no glibc/gcompat at all.
+#   For the riscv64 glibc cell we stage a real Debian glibc runtime closure so the JDK's own
+#   ld-linux interp can satisfy its libc.so.6 references; loongarch64's native-musl JDK23 just
+#   needs the musl-loader compat symlinks (stage_loong_musl_compat). JDK23 is ATTEMPTED on all 4
+#   arches and the decision is made at run time by
 #   run-java.sh's timeout-guarded liveness probe: a glibc JDK that still segfaults/hangs under
 #   gcompat is a DOCUMENTED SKIP (partial-arch-deliver rule), never a fake pass or a failure.
 #   All musl cells (x86/aa fully, plus 17+21+25 on rv/loong) are the clean native path; javac
@@ -228,9 +231,10 @@ stage_jdk21() {
 
 # Stage JDK23 (full JDK with javac), all 4 arches — exactly the prep-jdk-multi-rootfs.sh
 # per-arch JDK23 cells. x86_64/aarch64 = BellSoft native-musl. riscv64 = BellSoft generic
-# GLIBC build; loongarch64 = Loongson GLIBC build (the only JDK23 that exists for those two
-# arches — no upstream Alpine-musl JDK23 for rv/loong). The glibc rv/loong cells are bridged
-# by the staged gcompat shim (see stage_gcompat); they are staged and TRIED, then run-java.sh's
+# GLIBC build (bridged by a real Debian glibc runtime); loongarch64 = a NATIVE loongarch64-musl
+# JDK23 cross-built FROM SOURCE (setup-loong-jdk23.sh) — no prebuilt musl JDK23 exists for loong
+# and the Loongson build is old-abi glibc. riscv64 is staged + TRIED via its glibc bridge; loong's
+# musl JDK23 just needs the stage_loong_musl_compat symlinks. Then run-java.sh's
 # timeout-guarded liveness probe includes them only if they actually run under gcompat, else
 # documents a SKIP (never a fake pass).
 stage_jdk23() {
@@ -244,7 +248,7 @@ stage_jdk23() {
         x86_64)  untar_strip1 "$JM/jdk23/bellsoft-jdk23.0.2+9-linux-x64-musl.tar.gz"     "$jdst" ;;
         aarch64) untar_strip1 "$JM/jdk23/bellsoft-jdk23.0.2+9-linux-aarch64-musl.tar.gz" "$jdst" ;;
         riscv64) untar_strip1 "$JM/jdk23/bellsoft-jdk23.0.2+9-linux-riscv64.tar.gz"      "$jdst" ;;  # glibc -> gcompat
-        loongarch64) untar_strip1 "$JM/jdk23/loongson23.1.17-fx-jdk23_37-linux-loongarch64.tar.gz" "$jdst" ;;  # glibc -> gcompat
+        loongarch64) untar_strip1 "$JM/jdk23/openjdk23-loongarch64-musl-srcbuild.tar.gz" "$jdst" ;;  # native musl (cross-built from loongson/jdk tag jdk-23+25-ls-0; see loong-jdk23-musl-port.patch)
     esac
     [[ -x "$jdst/bin/java" && -x "$jdst/bin/javac" ]] \
         || { echo "prebuild: jdk23 staged without java+javac for $arch" >&2; exit 3; }
@@ -364,9 +368,9 @@ stage_deps() {
 #     libdl) into the default multiarch search path; the JDK launcher's own interp
 #     (/lib/ld-linux-riscv64-lp64d.so.1) then loads it. The musl JDKs (17/21/25) keep using
 #     the musl loader and are unaffected.
-#   loongarch64: the only JDK23 is the old Loongson abi1.0 build (needs GLIBC_2.27, the
-#     legacy Loongson "world"); no compatible runtime exists for the upstreamed abi
-#     (glibc 2.36+), so it stays on the gcompat path and run-java.sh records a documented SKIP.
+#   loongarch64: NOT on the gcompat path — its JDK23 is a NATIVE loongarch64-musl build
+#     cross-compiled from source (setup-loong-jdk23.sh), so it runs directly on the Alpine-musl
+#     rootfs and only needs the stage_loong_musl_compat loader symlinks; it RUNS (no SKIP).
 stage_real_glibc_rv() {
     # Fetch (or cache-hit) the official Debian trixie riscv64 libc6 — the real glibc
     # runtime closure the BellSoft generic-glibc JDK23 needs. ensure_asset verifies the
@@ -386,10 +390,23 @@ stage_real_glibc_rv() {
     rm -rf "$t"
     echo "prebuild: staged REAL Debian glibc runtime for riscv64 (JDK23 glibc cell)"
 }
+# loongarch64: the source-built native-musl JDK23 (cross-compiled from loongson/jdk
+# jdk-23+25-ls-0 with loongarch64-linux-musl) names its loader the cross-toolchain way —
+# interp /lib64/ld-musl-loongarch-lp64d.so.1, NEEDED libc.so — whereas the Alpine loongarch64
+# rootfs ships musl as /lib/ld-musl-loongarch64.so.1 (+ libc.musl-loongarch64.so.1). It is the
+# same musl loongarch64-lp64d ABI; bridge the names with two symlinks so the JDK23 binaries can
+# exec (otherwise `java` fails ENOENT on its missing interpreter). JDK17/21/25 are Alpine-musl
+# and already use the rootfs loader, so they are unaffected.
+stage_loong_musl_compat() {
+    install -d "$overlay_dir/lib64" "$overlay_dir/lib"
+    ln -sf /lib/ld-musl-loongarch64.so.1 "$overlay_dir/lib64/ld-musl-loongarch-lp64d.so.1"
+    ln -sf ld-musl-loongarch64.so.1      "$overlay_dir/lib/libc.so"
+    echo "prebuild: staged loong musl-loader compat symlinks (native-musl source-built JDK23)"
+}
 stage_gcompat() {
     case "$arch" in
         riscv64) stage_real_glibc_rv; return 0 ;;
-        loongarch64) : ;;
+        loongarch64) stage_loong_musl_compat; return 0 ;;
         *) return 0 ;;
     esac
     local d="$DL/openjdk17-apks/$arch" apk
@@ -587,12 +604,20 @@ ensure_assets() {
                     "$BELLSOFT_CDN/23.0.2+9/bellsoft-jdk23.0.2+9-linux-riscv64.tar.gz" \
                     912dbba0e3dca9b0981891dda8746d221bd78f0346a46cb5027c70503952add4 ;;  # glibc -> gcompat
         loongarch64)
-            # Loongson 'loongsonNN-fx-jdk' glibc full tar — Loongson ships no stable github
-            # release for this asset (see jdk-multi/SOURCES.md §0); supply via cache or set
-            # JDK23_LOONG_TAR_URL to a maintainer-hosted copy.
-            ensure_asset "$JM/jdk23/loongson23.1.17-fx-jdk23_37-linux-loongarch64.tar.gz" \
-                "${JDK23_LOONG_TAR_URL:-}" \
-                55e4ab6a285962a24f2a916720899bcac0ce2838a63d44e75359aa49300fe8c9 ;;
+            # JDK23 for loongarch64 has NO usable prebuilt musl distribution: upstream/Alpine
+            # ship no musl JDK23 for loong (only 17/21/25), and the Loongson tar is old-abi
+            # (abi1.0) glibc that does not run under the upstream abi. We therefore cross-compile
+            # a NATIVE loongarch64-musl JDK23 from source (loongson/jdk tag jdk-23+25-ls-0). The
+            # resulting tarball is not downloadable, so the maintainer builds it once with
+            # apps/starry/java-lang/setup-loong-jdk23.sh (applies loong-jdk23-musl-port.patch).
+            # prebuild only verifies it is present and errors with a clear pointer otherwise.
+            [[ -f "$JM/jdk23/openjdk23-loongarch64-musl-srcbuild.tar.gz" ]] || {
+                echo "prebuild: ERROR missing $JM/jdk23/openjdk23-loongarch64-musl-srcbuild.tar.gz" >&2
+                echo "prebuild:   build it once: bash apps/starry/java-lang/setup-loong-jdk23.sh" >&2
+                echo "prebuild:   (cross-compiles loongson/jdk jdk-23+25-ls-0 -> loongarch64-musl; see loong-jdk23-musl-port.patch)" >&2
+                exit 4
+            }
+            echo "prebuild: jdk23 loongarch64 = native-musl source-build (openjdk23-loongarch64-musl-srcbuild.tar.gz present)" ;;
     esac
 
     # JDK25 — BellSoft musl tars (x86_64/aarch64); Alpine edge/community apks (riscv64);
