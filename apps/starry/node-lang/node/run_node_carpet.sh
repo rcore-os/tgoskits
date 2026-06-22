@@ -5,7 +5,7 @@
 # == the LANGUAGE layer. The on-target gated test is the language/runtime carpet:
 #   node /usr/bin/node-carpet.js
 # It exercises the V8 language surface, ESM/CJS interop, modern JS (ES2023+),
-# worker_threads, timers, and the core stdlib (359 checks), printing NODE_CARPET_OK
+# worker_threads, timers, and the core stdlib (367 checks), printing NODE_CARPET_OK
 # on its final line iff ZERO failures. TEST PASSED is printed iff it passes.
 #
 # The `node` CLI option carpet (node-cli-carpet.sh, full host-green evidence of every
