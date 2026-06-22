@@ -10,4 +10,3 @@ features = [
   "ax-driver/virtio-input",
   "starry-kernel/input",
 ]
-plat_dyn = true
