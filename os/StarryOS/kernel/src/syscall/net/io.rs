@@ -19,7 +19,7 @@ use super::addr::{
 use crate::{
     file::{FileLike, PacketSocket, Socket, add_file_like, get_file_like, netlink::NetlinkSocket},
     mm::{IoVec, IoVectorBuf, UserConstPtr, UserPtr, VmBytes, VmBytesMut},
-    syscall::net::{CMsg, CMsgBuilder},
+    syscall::net::{CMsg, CMsgBuilder, cmsg_space},
     time::TimeValueLike,
 };
 
@@ -54,8 +54,14 @@ fn parse_send_cmsgs(control_ptr: usize, control_len: usize) -> AxResult<Vec<CMsg
             return Err(AxError::InvalidInput);
         }
 
+        let Some(next_ptr) = cmsg_space(hdr.cmsg_len - size_of::<cmsghdr>())
+            .and_then(|space| ptr.checked_add(space))
+        else {
+            return Err(AxError::InvalidInput);
+        };
+
         cmsg.push(Box::new(CMsg::parse(hdr)?) as CMsgData);
-        ptr += hdr.cmsg_len;
+        ptr = next_ptr;
     }
 
     Ok(cmsg)

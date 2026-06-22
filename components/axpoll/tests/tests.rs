@@ -260,6 +260,21 @@ fn concurrent_deferred_wakes_partition_by_mask() {
 }
 
 #[test]
+fn irq_wake_drains_without_double_wake() {
+    let ps = PollSet::new();
+    assert_eq!(ps.wake_from_irq(IoEvents::IN), 0);
+
+    let counter = Counter::new();
+    let w = Waker::from(counter.clone());
+    unsafe { ps.register(&w, IoEvents::IN) };
+
+    assert_eq!(ps.wake_from_irq(IoEvents::IN), 1);
+    assert_eq!(counter.count(), 1);
+    assert_eq!(ps.wake_from_irq(IoEvents::IN), 0);
+    assert_eq!(counter.count(), 1);
+}
+
+#[test]
 fn full_capacity() {
     let ps = PollSet::new();
     let counter = Counter::new();

@@ -1195,7 +1195,7 @@ fn disable_qemu_cpu_feature(cpu: &mut String, feature: &str) {
     cpu.push_str(&disabled_feature);
 }
 
-fn apply_drive_snapshot_without_global_snapshot(qemu: &mut QemuConfig) {
+pub(crate) fn apply_drive_snapshot_without_global_snapshot(qemu: &mut QemuConfig) {
     let mut global_snapshot = false;
     qemu.args.retain(|arg| {
         let keep = arg != "-snapshot";
