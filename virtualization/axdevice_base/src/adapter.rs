@@ -60,7 +60,7 @@ where
     /// Creates an `Arc<dyn Device>` from an existing `Arc<T>`.
     pub fn from_arc(device: Arc<T>) -> Arc<dyn Device>
     where
-        T: 'static,
+        T: Send + Sync + 'static,
         T: BaseDeviceOps<crate::GuestPhysAddrRange>,
     {
         Arc::new(Self {
@@ -78,11 +78,11 @@ where
 // SAFETY: The inner device uses internal synchronisation (e.g. `Mutex`,
 // `UnsafeCell` with proper barriers) and has been safely shared across
 // threads in the existing codebase via `Arc`.
-// All concrete device types are `Send + Sync`.
-unsafe impl<T> Send for MmioDeviceAdapter<T> {}
-unsafe impl<T> Sync for MmioDeviceAdapter<T> {}
+// The bounds match what the concrete device types satisfy.
+unsafe impl<T: Send + Sync> Send for MmioDeviceAdapter<T> {}
+unsafe impl<T: Send + Sync> Sync for MmioDeviceAdapter<T> {}
 
-impl<T: Send + 'static> Device for MmioDeviceAdapter<T>
+impl<T: Send + Sync + 'static> Device for MmioDeviceAdapter<T>
 where
     T: BaseDeviceOps<crate::GuestPhysAddrRange>,
 {
@@ -93,7 +93,12 @@ where
     fn resources(&self) -> Vec<Resource> {
         let range = self.inner.address_range();
         let base = range.start.as_usize() as u64;
-        let size = (range.end.as_usize() - range.start.as_usize()) as u64;
+        let size = if range.end.as_usize() >= range.start.as_usize() {
+            (range.end.as_usize() - range.start.as_usize()) as u64
+        } else {
+            // Wrapped address range — the caller will reject size=0.
+            0
+        };
         alloc::vec![Resource::MmioRange { base, size }]
     }
 
@@ -145,7 +150,7 @@ where
     /// Creates an `Arc<dyn Device>` from an existing `Arc<T>`.
     pub fn from_arc(device: Arc<T>) -> Arc<dyn Device>
     where
-        T: 'static,
+        T: Send + Sync + 'static,
         T: BaseDeviceOps<SysRegAddrRange>,
     {
         Arc::new(Self {
@@ -160,10 +165,10 @@ where
     }
 }
 
-unsafe impl<T> Send for SysRegDeviceAdapter<T> {}
-unsafe impl<T> Sync for SysRegDeviceAdapter<T> {}
+unsafe impl<T: Send + Sync> Send for SysRegDeviceAdapter<T> {}
+unsafe impl<T: Send + Sync> Sync for SysRegDeviceAdapter<T> {}
 
-impl<T: Send + 'static> Device for SysRegDeviceAdapter<T>
+impl<T: Send + Sync + 'static> Device for SysRegDeviceAdapter<T>
 where
     T: BaseDeviceOps<SysRegAddrRange>,
 {
@@ -173,9 +178,13 @@ where
 
     fn resources(&self) -> Vec<Resource> {
         let range = self.inner.address_range();
-        alloc::vec![Resource::SysReg {
-            addr: range.start.0 as u32
-        }]
+        let addr = range.start.0 as u32;
+        let count = if range.end.0 >= range.start.0 {
+            (range.end.0 - range.start.0) as u32 + 1
+        } else {
+            0
+        };
+        alloc::vec![Resource::SysReg { addr, count }]
     }
 
     fn handle(&self, access: &BusAccess) -> Result<BusResponse, DeviceError> {
@@ -226,7 +235,7 @@ where
     /// Creates an `Arc<dyn Device>` from an existing `Arc<T>`.
     pub fn from_arc(device: Arc<T>) -> Arc<dyn Device>
     where
-        T: 'static,
+        T: Send + Sync + 'static,
         T: BaseDeviceOps<PortRange>,
     {
         Arc::new(Self {
@@ -241,10 +250,10 @@ where
     }
 }
 
-unsafe impl<T> Send for PortDeviceAdapter<T> {}
-unsafe impl<T> Sync for PortDeviceAdapter<T> {}
+unsafe impl<T: Send + Sync> Send for PortDeviceAdapter<T> {}
+unsafe impl<T: Send + Sync> Sync for PortDeviceAdapter<T> {}
 
-impl<T: Send + 'static> Device for PortDeviceAdapter<T>
+impl<T: Send + Sync + 'static> Device for PortDeviceAdapter<T>
 where
     T: BaseDeviceOps<PortRange>,
 {
@@ -255,7 +264,12 @@ where
     fn resources(&self) -> Vec<Resource> {
         let range = self.inner.address_range();
         let base = range.start.0;
-        let size = (range.end.0 - range.start.0).wrapping_add(1);
+        let size = if range.end.0 >= range.start.0 {
+            (range.end.0 - range.start.0).wrapping_add(1)
+        } else {
+            // Empty or wrapped range — the caller will reject size=0.
+            0
+        };
         alloc::vec![Resource::PortRange { base, size }]
     }
 

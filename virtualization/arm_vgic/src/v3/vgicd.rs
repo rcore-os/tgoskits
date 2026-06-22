@@ -47,6 +47,11 @@ pub struct VGicD {
     pub host_gicd_addr: HostPhysAddr,
 }
 
+// SAFETY: VGicD is only accessed through the VGicD lock / Vgic host layer,
+// and the UnsafeCell is guarded by Mutex in the Vgic super-struct.
+unsafe impl Send for VGicD {}
+unsafe impl Sync for VGicD {}
+
 impl VGicD {
     /// Creates a new VGicD instance.
     pub fn new(addr: GuestPhysAddr, size: Option<usize>) -> Self {

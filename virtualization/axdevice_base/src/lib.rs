@@ -465,10 +465,12 @@ pub enum Resource {
         /// Size of the range in bytes.
         size: u16,
     },
-    /// A single system register.
+    /// System register range.
     SysReg {
-        /// Register encoding (architecture-specific).
+        /// Register encoding range start (architecture-specific).
         addr: u32,
+        /// Number of registers in the range.
+        count: u32,
     },
     /// An interrupt line.
     Irq {

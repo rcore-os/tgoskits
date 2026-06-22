@@ -64,6 +64,11 @@ pub struct Gits {
     pub regs: UnsafeCell<VirtualGitsRegs>,
 }
 
+// SAFETY: Gits is only accessed through the Vgic host layer, and the
+// UnsafeCell is guarded by Mutex in the Vgic super-struct.
+unsafe impl Send for Gits {}
+unsafe impl Sync for Gits {}
+
 impl Gits {
     fn regs(&self) -> &VirtualGitsRegs {
         unsafe { &*self.regs.get() }

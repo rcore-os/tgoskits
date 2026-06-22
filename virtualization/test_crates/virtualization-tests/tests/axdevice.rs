@@ -32,7 +32,7 @@ use axvm_types::{
 use x86_vlapic::host::X86VlapicHostIf;
 
 /// Registers a legacy MMIO device through the new DeviceManager API.
-fn register_mmio<T: BaseDeviceOps<GuestPhysAddrRange> + Send + 'static>(
+fn register_mmio<T: BaseDeviceOps<GuestPhysAddrRange> + Send + Sync + 'static>(
     devices: &mut AxVmDevices,
     dev: Arc<T>,
 ) -> AxResult {
@@ -46,7 +46,7 @@ fn register_mmio<T: BaseDeviceOps<GuestPhysAddrRange> + Send + 'static>(
 }
 
 /// Registers a legacy Port device through the new DeviceManager API.
-fn register_port<T: BaseDeviceOps<PortRange> + Send + 'static>(
+fn register_port<T: BaseDeviceOps<PortRange> + Send + Sync + 'static>(
     devices: &mut AxVmDevices,
     dev: Arc<T>,
 ) -> AxResult {
@@ -60,7 +60,7 @@ fn register_port<T: BaseDeviceOps<PortRange> + Send + 'static>(
 }
 
 /// Registers a legacy SysReg device through the new DeviceManager API.
-fn register_sysreg<T: BaseDeviceOps<SysRegAddrRange> + Send + 'static>(
+fn register_sysreg<T: BaseDeviceOps<SysRegAddrRange> + Send + Sync + 'static>(
     devices: &mut AxVmDevices,
     dev: Arc<T>,
 ) -> AxResult {
@@ -405,19 +405,19 @@ fn test_empty_and_wrapped_ranges_are_rejected() {
 
     assert_eq!(
         register_mmio(&mut devices, empty_mmio),
-        Err(AxError::InvalidInput)
+        Err(AxError::AddrInUse)
     );
     assert_eq!(
         register_mmio(&mut devices, wrapped_mmio),
-        Err(AxError::InvalidInput)
+        Err(AxError::AddrInUse)
     );
     assert_eq!(
         register_port(&mut devices, invalid_port),
-        Err(AxError::InvalidInput)
+        Err(AxError::AddrInUse)
     );
     assert_eq!(
         register_sysreg(&mut devices, invalid_sysreg),
-        Err(AxError::InvalidInput)
+        Err(AxError::AddrInUse)
     );
     assert_eq!(devices.devices().count(), 0);
 }
@@ -598,7 +598,7 @@ fn test_duplicate_pollable_rejects_entire_bundle() {
 
     assert_eq!(
         devices.register_bundle(bundle).err(),
-        Some(AxError::InvalidInput)
+        Some(AxError::AlreadyExists)
     );
     assert_eq!(devices.devices().count(), 0);
     assert_eq!(devices.iter_pollable_dev().count(), 1);

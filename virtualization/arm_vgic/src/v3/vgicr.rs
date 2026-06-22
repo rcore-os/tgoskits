@@ -52,6 +52,11 @@ pub struct VGicR {
     pub regs: UnsafeCell<VGicRRegs>,
 }
 
+// SAFETY: VGicR is only accessed through the VGicR lock / Vgic host layer,
+// and the UnsafeCell is guarded by Mutex in the Vgic super-struct.
+unsafe impl Send for VGicR {}
+unsafe impl Sync for VGicR {}
+
 impl VGicR {
     /// Gets a reference to the registers.
     pub fn regs(&self) -> &VGicRRegs {
