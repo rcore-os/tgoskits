@@ -26,7 +26,8 @@ use ax_memory_addr::is_aligned_4k;
 use axdevice_base::PortDeviceAdapter;
 use axdevice_base::{
     AccessWidth, BusAccess, BusKind, BusResponse, BusRouter, Device, DeviceError, DeviceId,
-    DeviceRegistry, MmioDeviceAdapter, Port, RegistryError, Resource, SysRegAddr,
+    DeviceRegistry, InvalidResourceReason, MmioDeviceAdapter, Port, RegistryError, Resource,
+    SysRegAddr,
 };
 use axvm_types::{EmulatedDeviceConfig, EmulatedDeviceType, GuestPhysAddr};
 #[cfg(target_arch = "riscv64")]
@@ -52,16 +53,22 @@ fn log_device_io(
     trace!("emu_device {rw}: {addr_type} {addr:#x} in range {addr_range:#x} with width {width:?}")
 }
 
+/// Internal range entry cached in the index maps.
+struct RangeEntry {
+    slot: usize,
+    size: u64,
+}
+
 /// represent A vm own devices
 pub struct AxVmDevices {
-    /// Device slots (None = freed and available for reuse).
-    devices: Vec<Option<Arc<dyn Device>>>,
-    /// MMIO base address → device slot index.
-    mmio_index: BTreeMap<u64, usize>,
-    /// Port I/O base address → device slot index.
-    port_index: BTreeMap<u16, usize>,
-    /// System register address → device slot index.
-    sysreg_index: BTreeMap<u32, usize>,
+    /// Registered devices (append-only; index is the DeviceId).
+    devices: Vec<Arc<dyn Device>>,
+    /// MMIO base address → range entry (slot, size).
+    mmio_index: BTreeMap<u64, RangeEntry>,
+    /// Port I/O base address → range entry (slot, size).
+    port_index: BTreeMap<u16, RangeEntry>,
+    /// System register address → range entry (slot, count).
+    sysreg_index: BTreeMap<u32, RangeEntry>,
     /// Devices that require periodic polling.
     pollable_devices: Vec<Arc<dyn PollableDeviceOps>>,
     /// x86 IOAPIC — kept for type-specific access.
@@ -472,9 +479,9 @@ impl AxVmDevices {
         }
     }
 
-    /// Registers a bundle atomically.  Conflict detection is performed by
-    /// [`DeviceRegistry::register`].  If any device fails to register,
-    /// already-registered devices in this bundle are rolled back.
+    /// Registers a bundle atomically.  If any device fails to register,
+    /// already-registered devices in this bundle are rolled back via
+    /// `pop()` + index-key removal.
     pub fn register_bundle(&mut self, bundle: DeviceBundle) -> AxResult {
         for (index, pollable) in bundle.pollable.iter().enumerate() {
             if self
@@ -490,19 +497,32 @@ impl AxVmDevices {
             }
         }
 
-        let mut registered_ids: Vec<DeviceId> = Vec::new();
+        let saved_len = self.devices.len();
         for device in &bundle.devices {
             match self.register(device.clone()) {
-                Ok(id) => registered_ids.push(id),
+                Ok(_id) => {}
                 Err(e) => {
+                    // Rollback: pop back to saved_len, remove from index maps.
+                    while self.devices.len() > saved_len {
+                        let popped = self.devices.pop().unwrap();
+                        for r in popped.resources() {
+                            match *r {
+                                Resource::MmioRange { base, .. } => {
+                                    self.mmio_index.remove(&base);
+                                }
+                                Resource::PortRange { base, .. } => {
+                                    self.port_index.remove(&base);
+                                }
+                                Resource::SysReg { addr, .. } => {
+                                    self.sysreg_index.remove(&addr);
+                                }
+                            }
+                        }
+                    }
                     let kind = match &e {
                         RegistryError::AddressConflict { .. } => ax_errno::AxError::AddrInUse,
                         _ => ax_errno::AxError::InvalidInput,
                     };
-                    // Rollback already-registered devices.
-                    for id in registered_ids.iter().rev() {
-                        let _ = self.unregister(*id);
-                    }
                     return Err(ax_err_type!(
                         kind,
                         format!("device registration failed: {e:?}")
@@ -516,62 +536,49 @@ impl AxVmDevices {
 
     // ─── Registration helpers ───────────────────────────────────────
 
-    /// Finds a free slot in `devices` or appends a new one, returning the
-    /// index.
-    fn alloc_slot(&mut self) -> usize {
-        match self.devices.iter().position(|slot| slot.is_none()) {
-            Some(idx) => idx,
-            None => {
-                self.devices.push(None);
-                self.devices.len() - 1
-            }
-        }
-    }
-
     /// Checks whether `[base, base + size)` conflicts with any already
     /// registered MMIO range.
     fn check_mmio_conflict(&self, base: u64, size: u64) -> Result<(), RegistryError> {
-        // Reject zero-sized and wrapped ranges (base+size would overflow).
-        if size == 0 || base.checked_add(size).is_none() {
-            return Err(RegistryError::AddressConflict {
+        if size == 0 {
+            return Err(RegistryError::InvalidResource {
                 resource: Resource::MmioRange { base, size },
-                existing: Resource::MmioRange { base: 0, size: 0 },
-                existing_device: DeviceId::new(0),
+                reason: InvalidResourceReason::ZeroSized,
+            });
+        }
+        if base.checked_add(size).is_none() {
+            return Err(RegistryError::InvalidResource {
+                resource: Resource::MmioRange { base, size },
+                reason: InvalidResourceReason::AddressOverflow,
             });
         }
 
-        // checked_add already passed, so end is safe.
         let end = base + size;
 
         // Check the immediately-preceding entry.
-        if let Some((prev_base, &prev_idx)) = self.mmio_index.range(..base).next_back()
-            && let Some((existing_base, existing_size)) =
-                self.mmio_range_of_device(prev_idx, *prev_base)
-            && existing_base.wrapping_add(existing_size) > base
+        if let Some((prev_base, entry)) = self.mmio_index.range(..base).next_back()
+            && prev_base.wrapping_add(entry.size) > base
         {
             return Err(RegistryError::AddressConflict {
                 resource: Resource::MmioRange { base, size },
                 existing: Resource::MmioRange {
-                    base: existing_base,
-                    size: existing_size,
+                    base: *prev_base,
+                    size: entry.size,
                 },
-                existing_device: DeviceId::new(prev_idx as u32),
+                existing_device: DeviceId::new(entry.slot as u32),
             });
         }
 
         // Check the immediately-following entry.
-        if let Some((next_base, &next_idx)) = self.mmio_index.range(base..).next()
+        if let Some((next_base, entry)) = self.mmio_index.range(base..).next()
             && *next_base < end
-            && let Some((existing_base, existing_size)) =
-                self.mmio_range_of_device(next_idx, *next_base)
         {
             return Err(RegistryError::AddressConflict {
                 resource: Resource::MmioRange { base, size },
                 existing: Resource::MmioRange {
-                    base: existing_base,
-                    size: existing_size,
+                    base: *next_base,
+                    size: entry.size,
                 },
-                existing_device: DeviceId::new(next_idx as u32),
+                existing_device: DeviceId::new(entry.slot as u32),
             });
         }
 
@@ -581,43 +588,44 @@ impl AxVmDevices {
     /// Checks whether `[base, base + size)` conflicts with any already
     /// registered port I/O range.
     fn check_port_conflict(&self, base: u16, size: u16) -> Result<(), RegistryError> {
-        if size == 0 || base.checked_add(size).is_none() {
-            return Err(RegistryError::AddressConflict {
+        if size == 0 {
+            return Err(RegistryError::InvalidResource {
                 resource: Resource::PortRange { base, size },
-                existing: Resource::PortRange { base: 0, size: 0 },
-                existing_device: DeviceId::new(0),
+                reason: InvalidResourceReason::ZeroSized,
+            });
+        }
+        // Use u32 to allow base=0xffff, size=1 (end=0x10000 is valid).
+        let end = (base as u32).wrapping_add(size as u32);
+        if end > (u16::MAX as u32 + 1) {
+            return Err(RegistryError::InvalidResource {
+                resource: Resource::PortRange { base, size },
+                reason: InvalidResourceReason::AddressOverflow,
             });
         }
 
-        if let Some((prev_base, &prev_idx)) = self.port_index.range(..base).next_back()
-            && let Some((existing_base, existing_size)) =
-                self.port_range_of_device(prev_idx, *prev_base)
-            && existing_base.wrapping_add(existing_size) > base
+        if let Some((prev_base, entry)) = self.port_index.range(..base).next_back()
+            && (*prev_base as u32).wrapping_add(entry.size as u32) > base as u32
         {
             return Err(RegistryError::AddressConflict {
                 resource: Resource::PortRange { base, size },
                 existing: Resource::PortRange {
-                    base: existing_base,
-                    size: existing_size,
+                    base: *prev_base,
+                    size: entry.size as u16,
                 },
-                existing_device: DeviceId::new(prev_idx as u32),
+                existing_device: DeviceId::new(entry.slot as u32),
             });
         }
 
-        // checked_add already passed, so end is safe.
-        let end = base + size;
-        if let Some((next_base, &next_idx)) = self.port_index.range(base..).next()
-            && *next_base < end
-            && let Some((existing_base, existing_size)) =
-                self.port_range_of_device(next_idx, *next_base)
+        if let Some((next_base, entry)) = self.port_index.range(base..).next()
+            && (*next_base as u32) < end
         {
             return Err(RegistryError::AddressConflict {
                 resource: Resource::PortRange { base, size },
                 existing: Resource::PortRange {
-                    base: existing_base,
-                    size: existing_size,
+                    base: *next_base,
+                    size: entry.size as u16,
                 },
-                existing_device: DeviceId::new(next_idx as u32),
+                existing_device: DeviceId::new(entry.slot as u32),
             });
         }
 
@@ -628,20 +636,23 @@ impl AxVmDevices {
     /// registered system register range.
     fn check_sysreg_conflict(&self, addr: u32, count: u32) -> Result<(), RegistryError> {
         if count == 0 {
-            return Err(RegistryError::AddressConflict {
+            return Err(RegistryError::InvalidResource {
                 resource: Resource::SysReg { addr, count },
-                existing: Resource::SysReg { addr: 0, count: 0 },
-                existing_device: DeviceId::new(0),
+                reason: InvalidResourceReason::ZeroSized,
             });
         }
 
         let end = addr.saturating_add(count.saturating_sub(1));
+        if count > 0 && addr.checked_add(count).is_none() {
+            return Err(RegistryError::InvalidResource {
+                resource: Resource::SysReg { addr, count },
+                reason: InvalidResourceReason::AddressOverflow,
+            });
+        }
 
         // Check the immediately-preceding key: its range may extend into ours.
-        if let Some((prev_addr, &prev_idx)) = self.sysreg_index.range(..addr).next_back() {
-            let existing_count = self
-                .sysreg_count_of_device(prev_idx, *prev_addr)
-                .unwrap_or(1);
+        if let Some((prev_addr, entry)) = self.sysreg_index.range(..addr).next_back() {
+            let existing_count = entry.size as u32;
             let existing_end = prev_addr.saturating_add(existing_count.saturating_sub(1));
             if existing_end >= addr {
                 return Err(RegistryError::AddressConflict {
@@ -650,102 +661,70 @@ impl AxVmDevices {
                         addr: *prev_addr,
                         count: existing_count,
                     },
-                    existing_device: DeviceId::new(prev_idx as u32),
+                    existing_device: DeviceId::new(entry.slot as u32),
                 });
             }
         }
 
         // Check entries whose keys fall within our range.
-        if let Some((reg_addr, &idx)) = self.sysreg_index.range(addr..=end).next() {
-            let existing_count = self.sysreg_count_of_device(idx, *reg_addr).unwrap_or(1);
+        if let Some((reg_addr, entry)) = self.sysreg_index.range(addr..=end).next() {
             return Err(RegistryError::AddressConflict {
                 resource: Resource::SysReg { addr, count },
                 existing: Resource::SysReg {
                     addr: *reg_addr,
-                    count: existing_count,
+                    count: entry.size as u32,
                 },
-                existing_device: DeviceId::new(idx as u32),
+                existing_device: DeviceId::new(entry.slot as u32),
             });
         }
 
         Ok(())
     }
 
-    fn sysreg_count_of_device(&self, idx: usize, addr: u32) -> Option<u32> {
-        self.devices[idx].as_ref().and_then(|d| {
-            d.resources().into_iter().find_map(|r| match r {
-                Resource::SysReg { addr: a, count: c } if a == addr => Some(c),
-                _ => None,
-            })
-        })
-    }
-
-    /// Returns the `(base, size)` of the `MmioRange` resource of
-    /// `devices[idx]` whose `base` matches.
-    fn mmio_range_of_device(&self, idx: usize, base: u64) -> Option<(u64, u64)> {
-        let dev = self.devices[idx].as_ref()?;
-        dev.resources().into_iter().find_map(|r| match r {
-            Resource::MmioRange { base: b, size: s } if b == base => Some((b, s)),
-            _ => None,
-        })
-    }
-
-    /// Returns the `(base, size)` of the `PortRange` resource of
-    /// `devices[idx]` whose `base` matches.
-    fn port_range_of_device(&self, idx: usize, base: u16) -> Option<(u16, u16)> {
-        let dev = self.devices[idx].as_ref()?;
-        dev.resources().into_iter().find_map(|r| match r {
-            Resource::PortRange { base: b, size: s } if b == base => Some((b, s)),
-            _ => None,
-        })
-    }
-
     // ─── Lookup helpers ────────────────────────────────────────────
 
     fn lookup_mmio(&self, addr: u64) -> Option<usize> {
-        let (&base, &idx) = self.mmio_index.range(..=addr).next_back()?;
-        let dev = self.devices[idx].as_ref()?;
-        let in_range = dev.resources().into_iter().any(|r| {
-            matches!(r,
-                Resource::MmioRange { base: b, size: s }
-                if b == base && s > 0 && addr < b.wrapping_add(s))
-        });
-        in_range.then_some(idx)
+        let (&base, entry) = self.mmio_index.range(..=addr).next_back()?;
+        (addr < base.wrapping_add(entry.size)).then_some(entry.slot)
     }
 
     fn lookup_port(&self, addr: u16) -> Option<usize> {
-        let (&base, &idx) = self.port_index.range(..=addr).next_back()?;
-        let dev = self.devices[idx].as_ref()?;
-        let in_range = dev.resources().into_iter().any(|r| {
-            matches!(r,
-                Resource::PortRange { base: b, size: s }
-                if b == base && s > 0 && addr < b.wrapping_add(s))
-        });
-        in_range.then_some(idx)
+        let (&base, entry) = self.port_index.range(..=addr).next_back()?;
+        ((addr as u64) < (base as u64).wrapping_add(entry.size)).then_some(entry.slot)
     }
 
     fn lookup_sysreg(&self, addr: u32) -> Option<usize> {
-        let (&start, &idx) = self.sysreg_index.range(..=addr).next_back()?;
-        let count = self.sysreg_count_of_device(idx, start)?;
-        let end = start.saturating_add(count.saturating_sub(1));
-        (addr <= end).then_some(idx)
+        let (&start, entry) = self.sysreg_index.range(..=addr).next_back()?;
+        let end = start.saturating_add((entry.size as u32).saturating_sub(1));
+        (addr <= end).then_some(entry.slot)
     }
 
-    // ─── BTreeMap insertion / removal ──────────────────────────────
+    // ─── BTreeMap insertion ───────────────────────────────────────
 
     fn insert_resources(&mut self, idx: usize, resources: &[Resource]) {
         for r in resources {
             match *r {
-                Resource::MmioRange { base, .. } => {
-                    self.mmio_index.insert(base, idx);
+                Resource::MmioRange { base, size } => {
+                    self.mmio_index.insert(base, RangeEntry { slot: idx, size });
                 }
-                Resource::PortRange { base, .. } => {
-                    self.port_index.insert(base, idx);
+                Resource::PortRange { base, size } => {
+                    self.port_index.insert(
+                        base,
+                        RangeEntry {
+                            slot: idx,
+                            size: size as u64,
+                        },
+                    );
                 }
-                Resource::SysReg { addr, .. } => {
-                    self.sysreg_index.insert(addr, idx);
+                Resource::SysReg { addr, count } => {
+                    self.sysreg_index.insert(
+                        addr,
+                        RangeEntry {
+                            slot: idx,
+                            size: count as u64,
+                        },
+                    );
                 }
-                _ => {}
             }
         }
     }
@@ -754,12 +733,12 @@ impl AxVmDevices {
 
     /// Returns an iterator over all currently registered devices.
     pub fn devices(&self) -> impl Iterator<Item = &dyn Device> {
-        self.devices.iter().filter_map(|slot| slot.as_deref())
+        self.devices.iter().map(|slot| &**slot)
     }
 
     /// Returns the number of currently registered devices.
     pub fn device_count(&self) -> usize {
-        self.devices.iter().filter(|slot| slot.is_some()).count()
+        self.devices.len()
     }
 
     // ─── Iterator helpers ───────────────────────────────────────────
@@ -1022,65 +1001,25 @@ impl DeviceRegistry for AxVmDevices {
         let resources = device.resources();
 
         // 1. Conflict detection (only for address-range resources).
-        for r in &resources {
+        for r in resources {
             match *r {
                 Resource::MmioRange { base, size } => self.check_mmio_conflict(base, size)?,
                 Resource::PortRange { base, size } => self.check_port_conflict(base, size)?,
                 Resource::SysReg { addr, count } => self.check_sysreg_conflict(addr, count)?,
-                _ => { /* Irq / MSI / PciBar / DmaCapable — handled by factory */ }
             }
         }
 
-        // 2. Allocate a slot.
-        let idx = self.alloc_slot();
+        // 2. Append to device list; index is the DeviceId.
+        let idx = self.devices.len();
 
         // 3. Insert into index maps.
-        self.insert_resources(idx, &resources);
+        self.insert_resources(idx, resources);
 
         // 4. Store the device.
-        self.devices[idx] = Some(device);
+        self.devices.push(device);
 
         info!("AxVmDevices: registered device id={}", idx);
         Ok(DeviceId::new(idx as u32))
-    }
-
-    fn unregister(&mut self, id: DeviceId) -> Result<(), RegistryError> {
-        let idx = id.as_u32() as usize;
-
-        let device = self
-            .devices
-            .get(idx)
-            .and_then(|slot| slot.as_ref())
-            .ok_or_else(|| {
-                warn!(
-                    "AxVmDevices: unregister failed — DeviceId({}) not found",
-                    idx
-                );
-                RegistryError::DeviceNotFound(id)
-            })?;
-
-        // Remove from all index maps.
-        let resources = device.resources();
-        for r in &resources {
-            match *r {
-                Resource::MmioRange { base, .. } => {
-                    self.mmio_index.remove(&base);
-                }
-                Resource::PortRange { base, .. } => {
-                    self.port_index.remove(&base);
-                }
-                Resource::SysReg { addr, .. } => {
-                    self.sysreg_index.remove(&addr);
-                }
-                _ => {}
-            }
-        }
-
-        // Free the slot.
-        self.devices[idx] = None;
-
-        info!("AxVmDevices: unregistered device id={}", idx);
-        Ok(())
     }
 }
 
@@ -1093,7 +1032,7 @@ impl BusRouter for AxVmDevices {
         }
         .ok_or(DeviceError::NotFound)?;
 
-        let device = self.devices[idx].as_ref().ok_or(DeviceError::NotFound)?;
+        let device = &self.devices[idx];
         device.handle(access)
     }
 
@@ -1105,49 +1044,52 @@ impl BusRouter for AxVmDevices {
         }
         .ok_or(DeviceError::NotFound)?;
 
-        self.devices[idx].clone().ok_or(DeviceError::NotFound)
+        Ok(Arc::clone(&self.devices[idx]))
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use alloc::{sync::Arc, vec::Vec};
+    use alloc::sync::Arc;
     use core::any::Any;
 
     use axdevice_base::{
         AccessWidth, BusAccess, BusKind, BusResponse, BusRouter, Device, DeviceError,
-        DeviceRegistry, RegistryError, Resource,
+        DeviceRegistry, InvalidResourceReason, RegistryError, Resource,
     };
 
     use super::AxVmDevices;
 
     struct D {
-        a: u64,
-        s: u64,
+        resources: alloc::vec::Vec<Resource>,
         n: &'static str,
-        k: BusKind,
+    }
+    impl D {
+        fn new_mmio(a: u64, s: u64, n: &'static str) -> Self {
+            Self {
+                resources: alloc::vec![Resource::MmioRange { base: a, size: s }],
+                n,
+            }
+        }
+        fn new_port(base: u16, size: u16, n: &'static str) -> Self {
+            Self {
+                resources: alloc::vec![Resource::PortRange { base, size }],
+                n,
+            }
+        }
+        fn new_sysreg(addr: u32, n: &'static str) -> Self {
+            Self {
+                resources: alloc::vec![Resource::SysReg { addr, count: 1 }],
+                n,
+            }
+        }
     }
     impl Device for D {
         fn name(&self) -> &str {
             self.n
         }
-        fn resources(&self) -> Vec<Resource> {
-            let mut v = Vec::new();
-            match self.k {
-                BusKind::Mmio => v.push(Resource::MmioRange {
-                    base: self.a,
-                    size: self.s,
-                }),
-                BusKind::Port => v.push(Resource::PortRange {
-                    base: self.a as u16,
-                    size: self.s as u16,
-                }),
-                BusKind::SysReg => v.push(Resource::SysReg {
-                    addr: self.a as u32,
-                    count: 1,
-                }),
-            }
-            v
+        fn resources(&self) -> &[Resource] {
+            &self.resources
         }
         fn handle(&self, _a: &BusAccess) -> Result<BusResponse, DeviceError> {
             Ok(BusResponse::Read { value: 0 })
@@ -1160,13 +1102,8 @@ mod tests {
     #[test]
     fn test_register_dispatch() {
         let mut m = AxVmDevices::empty();
-        m.register(Arc::new(D {
-            a: 0x1000,
-            s: 0x100,
-            n: "d",
-            k: BusKind::Mmio,
-        }))
-        .unwrap();
+        m.register(Arc::new(D::new_mmio(0x1000, 0x100, "d")))
+            .unwrap();
         assert!(
             m.dispatch(&BusAccess {
                 kind: BusKind::Mmio,
@@ -1182,46 +1119,12 @@ mod tests {
     #[test]
     fn test_overlap() {
         let mut m = AxVmDevices::empty();
-        m.register(Arc::new(D {
-            a: 0x1000,
-            s: 0x200,
-            n: "a",
-            k: BusKind::Mmio,
-        }))
-        .unwrap();
+        m.register(Arc::new(D::new_mmio(0x1000, 0x200, "a")))
+            .unwrap();
         assert!(matches!(
-            m.register(Arc::new(D {
-                a: 0x1100,
-                s: 0x100,
-                n: "b",
-                k: BusKind::Mmio
-            })),
+            m.register(Arc::new(D::new_mmio(0x1100, 0x100, "b"))),
             Err(RegistryError::AddressConflict { .. })
         ));
-    }
-
-    #[test]
-    fn test_reuse() {
-        let mut m = AxVmDevices::empty();
-        let id = m
-            .register(Arc::new(D {
-                a: 0x1000,
-                s: 0x100,
-                n: "a",
-                k: BusKind::Mmio,
-            }))
-            .unwrap();
-        m.unregister(id).unwrap();
-        assert_eq!(
-            id,
-            m.register(Arc::new(D {
-                a: 0x2000,
-                s: 0x100,
-                n: "b",
-                k: BusKind::Mmio
-            }))
-            .unwrap()
-        );
     }
 
     #[test]
@@ -1241,20 +1144,8 @@ mod tests {
     #[test]
     fn test_port_sysreg() {
         let mut m = AxVmDevices::empty();
-        m.register(Arc::new(D {
-            a: 0x80,
-            s: 4,
-            n: "p",
-            k: BusKind::Port,
-        }))
-        .unwrap();
-        m.register(Arc::new(D {
-            a: 0xC000,
-            s: 4,
-            n: "s",
-            k: BusKind::SysReg,
-        }))
-        .unwrap();
+        m.register(Arc::new(D::new_port(0x80, 4, "p"))).unwrap();
+        m.register(Arc::new(D::new_sysreg(0xC000, "s"))).unwrap();
         assert!(
             m.dispatch(&BusAccess {
                 kind: BusKind::Port,
@@ -1275,5 +1166,127 @@ mod tests {
             })
             .is_ok()
         );
+    }
+
+    #[test]
+    fn test_stale_device_id_after_unregister() {
+        // No unregister API; DeviceIds are stable per AxVmDevices lifetime.
+        // The old slot-reuse test has been removed.
+    }
+
+    #[test]
+    fn test_write_request_returns_write_response() {
+        struct RwDevice;
+        impl Device for RwDevice {
+            fn name(&self) -> &str {
+                "rw"
+            }
+            fn resources(&self) -> &[Resource] {
+                static R: [Resource; 1] = [Resource::MmioRange {
+                    base: 0x1000,
+                    size: 0x100,
+                }];
+                &R
+            }
+            fn handle(&self, access: &BusAccess) -> Result<BusResponse, DeviceError> {
+                if access.is_read {
+                    Ok(BusResponse::Read { value: 0 })
+                } else {
+                    Ok(BusResponse::Write)
+                }
+            }
+            fn as_any(&self) -> &dyn Any {
+                self
+            }
+        }
+
+        let mut m = AxVmDevices::empty();
+        m.register(Arc::new(RwDevice)).unwrap();
+        let resp = m
+            .dispatch(&BusAccess {
+                kind: BusKind::Mmio,
+                is_read: false,
+                addr: 0x1000,
+                width: AccessWidth::Dword,
+                data: 0x42,
+            })
+            .unwrap();
+        assert!(matches!(resp, BusResponse::Write));
+    }
+
+    #[test]
+    fn test_port_max_address_valid() {
+        let mut m = AxVmDevices::empty();
+        m.register(Arc::new(D::new_port(0xffff, 1, "max-port")))
+            .unwrap();
+        assert!(
+            m.dispatch(&BusAccess {
+                kind: BusKind::Port,
+                is_read: true,
+                addr: 0xffff,
+                width: AccessWidth::Byte,
+                data: 0
+            })
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn test_zero_size_returns_invalid_resource() {
+        let mut m = AxVmDevices::empty();
+        let result = m.register(Arc::new(D::new_mmio(0x1000, 0, "zero")));
+        assert!(matches!(
+            result,
+            Err(RegistryError::InvalidResource {
+                reason: InvalidResourceReason::ZeroSized,
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn test_mmio_overflow_returns_invalid_resource() {
+        struct OverflowDevice;
+        impl Device for OverflowDevice {
+            fn name(&self) -> &str {
+                "overflow"
+            }
+            fn resources(&self) -> &[Resource] {
+                static R: [Resource; 1] = [Resource::MmioRange {
+                    base: u64::MAX - 1,
+                    size: 4,
+                }];
+                &R
+            }
+            fn handle(&self, _: &BusAccess) -> Result<BusResponse, DeviceError> {
+                Err(DeviceError::NotFound)
+            }
+            fn as_any(&self) -> &dyn Any {
+                self
+            }
+        }
+
+        let mut m = AxVmDevices::empty();
+        let result = m.register(Arc::new(OverflowDevice));
+        assert!(matches!(
+            result,
+            Err(RegistryError::InvalidResource {
+                reason: InvalidResourceReason::AddressOverflow,
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn test_port_overflow_returns_invalid_resource() {
+        let mut m = AxVmDevices::empty();
+        let result = m.register(Arc::new(D::new_port(0xffff, 2, "port-overflow")));
+        assert!(matches!(
+            result,
+            Err(RegistryError::InvalidResource {
+                reason: InvalidResourceReason::AddressOverflow,
+                ..
+            })
+        ));
     }
 }
