@@ -13,7 +13,7 @@ pub enum ArchTimerMode {
 }
 
 impl ArchTimerMode {
-    const fn from_raw(raw: u8) -> Self {
+    pub const fn from_raw(raw: u8) -> Self {
         match raw {
             1 => Self::El1Virt,
             2 => Self::El2HypPhys,

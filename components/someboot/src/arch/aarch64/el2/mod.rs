@@ -6,12 +6,12 @@ use aarch64_cpu_ext::asm::tlb::*;
 use page_table_generic::VirtAddr;
 
 use crate::{
-    arch::entry::el_entry,
+    arch::entry::{el_entry, eret_with_timer_mode_arg},
     mem::PageTableInfo,
-    timer::{self, ArchTimerMode},
+    timer::ArchTimerMode,
 };
 
-pub fn switch_to_elx() {
+pub fn switch_to_elx() -> ! {
     unsafe extern "C" {
         fn __cpu0_stack_top();
     }
@@ -19,7 +19,6 @@ pub fn switch_to_elx() {
     SPSel.write(SPSel::SP::ELx);
     SP_EL0.set(0);
     let current_el = CurrentEL.read(CurrentEL::EL);
-    timer::set_aarch64_timer_mode(ArchTimerMode::El2HypPhys);
 
     if current_el >= 3 {
         let el_entry = sym_addr!(el_entry);
@@ -41,13 +40,12 @@ pub fn switch_to_elx() {
 
             ELR_EL3.set(el_entry as _);
             SP_EL2.set(sp as _);
-            barrier::isb(barrier::SY);
-            eret();
+            eret_with_timer_mode_arg(ArchTimerMode::El2HypPhys);
         }
     }
 
     // Call el_entry directly if we're already in EL2
-    el_entry();
+    el_entry(ArchTimerMode::El2HypPhys as usize);
 }
 
 pub fn switch_to_elx_secondary(cpu_meta_paddr: usize) -> ! {

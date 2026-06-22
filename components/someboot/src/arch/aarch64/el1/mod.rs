@@ -6,12 +6,20 @@ use aarch64_cpu_ext::asm::tlb::*;
 use page_table_generic::VirtAddr;
 
 use crate::{
-    arch::entry::el_entry,
+    arch::entry::{el_entry, eret_with_timer_mode_arg},
     mem::PageTableInfo,
     timer::{self, ArchTimerMode},
 };
 
-pub fn switch_to_elx() {
+pub fn switch_to_elx() -> ! {
+    switch_to_elx_inner(None)
+}
+
+extern "C" fn switch_to_elx_from_el3(timer_mode_raw: usize) -> ! {
+    switch_to_elx_inner(Some(ArchTimerMode::from_raw(timer_mode_raw as u8)))
+}
+
+fn switch_to_elx_inner(preserved_timer_mode: Option<ArchTimerMode>) -> ! {
     unsafe extern "C" {
         fn __cpu0_stack_top();
     }
@@ -19,7 +27,8 @@ pub fn switch_to_elx() {
     SPSel.write(SPSel::SP::ELx);
     SP_EL0.set(0);
     let current_el = CurrentEL.read(CurrentEL::EL);
-    timer::set_aarch64_timer_mode(timer::select_aarch64_timer_mode(false, current_el >= 2));
+    let timer_mode = preserved_timer_mode
+        .unwrap_or_else(|| timer::select_aarch64_timer_mode(false, current_el >= 2));
     if current_el >= 2 {
         let el_entry = sym_addr!(el_entry);
         let sp = sym_addr!(__cpu0_stack_top);
@@ -37,12 +46,11 @@ pub fn switch_to_elx() {
                     + SPSR_EL3::I::Masked
                     + SPSR_EL3::F::Masked,
             );
-            let switch = sym_addr!(switch_to_elx);
+            let switch = sym_addr!(switch_to_elx_from_el3);
 
             ELR_EL3.set(switch as _);
             SP_EL2.set(sp as _);
-            barrier::isb(barrier::SY);
-            eret();
+            eret_with_timer_mode_arg(timer_mode);
         }
         // Disable EL1 timer traps and the timer offset.
         CNTHCTL_EL2.modify(CNTHCTL_EL2::EL1PCEN::SET + CNTHCTL_EL2::EL1PCTEN::SET);
@@ -60,11 +68,10 @@ pub fn switch_to_elx() {
 
         ELR_EL2.set(el_entry as _);
         SP_EL1.set(sp as _);
-        barrier::isb(barrier::SY);
-        eret();
+        eret_with_timer_mode_arg(timer_mode);
     }
 
-    el_entry();
+    el_entry(timer_mode as usize);
 }
 
 pub fn switch_to_elx_secondary(cpu_meta_paddr: usize) -> ! {
