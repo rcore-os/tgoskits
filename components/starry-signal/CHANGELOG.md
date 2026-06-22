@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.4](https://github.com/rcore-os/tgoskits/compare/starry-signal-v0.8.3...starry-signal-v0.8.4) - 2026-06-22
+
+### Fixed
+
+- *(starry-signal)* populate siginfo.si_addr for synchronous SIGSEGV ([#1331](https://github.com/rcore-os/tgoskits/pull/1331))
+
 ## [0.8.3](https://github.com/rcore-os/tgoskits/compare/starry-signal-v0.8.2...starry-signal-v0.8.3) - 2026-06-12
 
 ### Other

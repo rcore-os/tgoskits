@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.13](https://github.com/rcore-os/tgoskits/compare/axbuild-v0.4.12...axbuild-v0.4.13) - 2026-06-22
+
+### Added
+
+- *(starry)* add Wayland app case ([#1160](https://github.com/rcore-os/tgoskits/pull/1160))
+- *(axbuild)* add standalone axloader command ([#1312](https://github.com/rcore-os/tgoskits/pull/1312))
+- *(axbuild)* internalize Starry kallsyms flow ([#1309](https://github.com/rcore-os/tgoskits/pull/1309))
+- Enhance HTTP bootloader with inspection, publishing, and features ([#1148](https://github.com/rcore-os/tgoskits/pull/1148))
+- *(ax-net)* add multi-interface support with per-interface routing, DNS, and SO_BINDTODEVICE ([#1244](https://github.com/rcore-os/tgoskits/pull/1244))
+- *(axruntime)* add compiler-backed stack protector support ([#1239](https://github.com/rcore-os/tgoskits/pull/1239))
+- AIC8800 Wi-Fi SoftAP for SG2002 (LicheeRV Nano) ([#1185](https://github.com/rcore-os/tgoskits/pull/1185))
+
+### Fixed
+
+- *(starry)* route app qemu through dynamic boot ([#1267](https://github.com/rcore-os/tgoskits/pull/1267))
+- *(starry)* align app qemu boot flow and own BPF JIT memory ([#1256](https://github.com/rcore-os/tgoskits/pull/1256))
+
+### Other
+
+- Feat/x86 64 ptrace clean ([#1062](https://github.com/rcore-os/tgoskits/pull/1062))
+- *(arceos)* clean up Hermit remnants ([#1300](https://github.com/rcore-os/tgoskits/pull/1300))
+- *(ax-runtime)* adapt submit-poll fs block irq registration ([#1228](https://github.com/rcore-os/tgoskits/pull/1228))
+
 ## [0.4.12](https://github.com/rcore-os/tgoskits/compare/axbuild-v0.4.11...axbuild-v0.4.12) - 2026-06-12
 
 ### Added

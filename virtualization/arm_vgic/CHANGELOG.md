@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.13](https://github.com/rcore-os/tgoskits/compare/arm_vgic-v0.4.12...arm_vgic-v0.4.13) - 2026-06-22
+
+### Other
+
+- updated the following local packages: axvm-types, axdevice_base
+
 ## [0.4.12](https://github.com/rcore-os/tgoskits/compare/arm_vgic-v0.4.11...arm_vgic-v0.4.12) - 2026-06-09
 
 ### Other

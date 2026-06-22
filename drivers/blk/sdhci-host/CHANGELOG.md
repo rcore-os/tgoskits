@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.4](https://github.com/rcore-os/tgoskits/compare/sdhci-host-v0.1.3...sdhci-host-v0.1.4) - 2026-06-22
+
+### Fixed
+
+- *(sdhci-host)* preserve fifo irq error status ([#1291](https://github.com/rcore-os/tgoskits/pull/1291))
+
+### Other
+
+- *(ax-runtime)* adapt submit-poll fs block irq registration ([#1228](https://github.com/rcore-os/tgoskits/pull/1228))
+
 ## [0.1.3](https://github.com/rcore-os/tgoskits/compare/sdhci-host-v0.1.2...sdhci-host-v0.1.3) - 2026-06-09
 
 ### Other

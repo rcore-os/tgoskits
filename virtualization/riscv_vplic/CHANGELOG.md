@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.15](https://github.com/rcore-os/tgoskits/compare/riscv_vplic-v0.4.14...riscv_vplic-v0.4.15) - 2026-06-22
+
+### Other
+
+- *(axvm)* route RISC-V IRQs through vPLIC backend ([#1317](https://github.com/rcore-os/tgoskits/pull/1317))
+
 ## [0.4.14](https://github.com/rcore-os/tgoskits/compare/riscv_vplic-v0.4.13...riscv_vplic-v0.4.14) - 2026-06-09
 
 ### Added

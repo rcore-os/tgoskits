@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.2](https://github.com/rcore-os/tgoskits/compare/someboot-v0.2.1...someboot-v0.2.2) - 2026-06-22
+
+### Added
+
+- *(ax-runtime)* prefer UEFI RTC on dynamic platform ([#1294](https://github.com/rcore-os/tgoskits/pull/1294))
+
 ## [0.2.1](https://github.com/rcore-os/tgoskits/compare/someboot-v0.2.0...someboot-v0.2.1) - 2026-06-12
 
 ### Added
