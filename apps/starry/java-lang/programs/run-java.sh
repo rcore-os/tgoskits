@@ -203,6 +203,16 @@ PATH=/opt/jdk17/bin:$PATH TMPDIR=/root SLOW_EMU=1 JAVA=/opt/jdk17/bin/java JAVAC
   sh /root/jdkm/java-cli-core.sh >/tmp/cli.out 2>&1
 if grep -q '^JAVA_CLI_OK$' /tmp/cli.out; then echo "JAVA_CLI_OK"; acc 1 JAVA_CLI; else echo "JAVA_CLI FAIL:"; grep '  FAIL ' /tmp/cli.out | head; tail -8 /tmp/cli.out; acc 0 JAVA_CLI; fi
 
+# --- full JDK toolchain carpet (jdk17): jshell/jar/javap/javadoc/jdeps/jdeprscan/serialver/
+#     jlink/jmod/jpackage/jrunscript + ops-tool smokes. The whole developer toolchain (全集),
+#     not just javac+java. Heavy builds (jlink runtime / jpackage app-image) run under -Xint/TCG;
+#     the carpet skips-with-reason any tool that hits a kernel/platform limit (never a false PASS).
+setp /opt/jdk17
+echo "=== java toolchain carpet (jdk17; jshell + full JDK dev toolchain 全集) ==="
+TC_BIN=/opt/jdk17 PATH=/opt/jdk17/bin:$PATH TMPDIR=/root TC_HEAVY=0 \
+  sh /root/jdkm/java-toolchain-carpet.sh >/tmp/tc.out 2>&1
+if grep -q '^JAVA_TOOLCHAIN_OK$' /tmp/tc.out; then echo "JAVA_TOOLCHAIN_OK ($(grep '^# RESULTS' /tmp/tc.out))"; acc 1 JAVA_TOOLCHAIN; else echo "JAVA_TOOLCHAIN FAIL:"; grep '  FAIL ' /tmp/tc.out | head; tail -10 /tmp/tc.out; acc 0 JAVA_TOOLCHAIN; fi
+
 # --- full-JLS grammar carpet (single-file source mode, jdk17) ---
 setp /opt/jdk17
 echo "=== java grammar carpet (jdk17, full JLS) ==="

@@ -302,13 +302,14 @@ stage_test_sources() {
     install -m0644 "$PROG/JavaLangCarpet.java" "$d/"
     install -m0644 "$PROG/BackCompat.java"     "$d/"
     install -m0644 "$PROG/java-cli-core.sh"    "$d/"
+    install -m0644 "$PROG/java-toolchain-carpet.sh" "$d/"
     # Stage the on-target gate script (invoked as the ENTIRE shell_init_cmd). Keeping the gate
     # in a staged script — not inline in the toml — avoids the harness false-positive where the
     # echoed shell_init_cmd text containing `echo "TEST PASSED"` self-matches success_regex
     # (FIX1), and carries the per-arch honest SKIP logic for JDKs that can't run on rv/loong
     # (FIX2). One script serves all 4 arches (it detects the arch + JDK set at run time).
     install -Dm0755 "$PROG/run-java.sh" "$overlay_dir/usr/bin/run-java.sh"
-    echo "prebuild: staged $(ls "$d"/*.java | wc -l) .java + java-cli-core.sh into /root/jdkm + run-java.sh gate into /usr/bin"
+    echo "prebuild: staged $(ls "$d"/*.java | wc -l) .java + java-cli-core.sh + java-toolchain-carpet.sh into /root/jdkm + run-java.sh gate into /usr/bin"
 }
 
 # Stage a single .so (and its symlinks) from an apk into the overlay /usr/lib.
@@ -438,7 +439,7 @@ BCREAL_LIBS=(
     "h2-2.1.214.jar                   com/h2database/h2/2.1.214/h2-2.1.214.jar                                                 d623cdc0f61d218cf549a8d09f1c391ff91096116b22e2475475fce4fbe72bd0"
     "hsqldb-2.5.2.jar                 org/hsqldb/hsqldb/2.5.2/hsqldb-2.5.2.jar                                                 e4aa39c5afb318e8effdec80a0e6de7c9dacc453c1cf7666c515f29a16658dac"
     "gson-2.10.1.jar                  com/google/code/gson/gson/2.10.1/gson-2.10.1.jar                                        4241c14a7727c34feea6507ec801318a3d4a90f070e4525681079fb94ee4c593"
-    "bsh-2.0b6.jar                    org/beanshell/bsh/2.0b6/bsh-2.0b6.jar                                                    a17955976070c0573235ee662f2794a78082758b61accffce8d3f8aedcd91047"
+    "bsh-2.0b6.jar                    org/apache-extras/beanshell/bsh/2.0b6/bsh-2.0b6.jar                                     a17955976070c0573235ee662f2794a78082758b61accffce8d3f8aedcd91047"
     "junit-4.13.2.jar                 junit/junit/4.13.2/junit-4.13.2.jar                                                     8e495b634469d64fb8acfa3495a065cbacc8a0fff55ce1e31007be4c16dc57d3"
     "hamcrest-core-1.3.jar            org/hamcrest/hamcrest-core/1.3/hamcrest-core-1.3.jar                                     66fdef91e9739348df7a096aa384a5685f4e875584cce89386a7a47251c4d8e9"
 )
