@@ -829,6 +829,32 @@ fn test_build_with_factories_preserves_legacy_ivc_config() {
     assert_eq!(devices.devices().count(), 0);
 }
 
+#[test]
+fn test_sysreg_range_interior_address_dispatch() {
+    use axdevice_base::{AccessWidth, SysRegAddr};
+    let mut devices = empty_devices();
+    // Register a SysReg device covering 0x100..=0x110 (count = 0x11).
+    register_sysreg(&mut devices, Arc::new(MockSysRegDevice::new(0x100, 0x110))).unwrap();
+    // Exact start address should hit.
+    assert!(
+        devices
+            .handle_sys_reg_read(SysRegAddr::new(0x100), AccessWidth::Qword)
+            .is_ok()
+    );
+    // Interior address should also hit.
+    assert!(
+        devices
+            .handle_sys_reg_read(SysRegAddr::new(0x108), AccessWidth::Qword)
+            .is_ok()
+    );
+    // Address past the end should return an error.
+    assert!(
+        devices
+            .handle_sys_reg_read(SysRegAddr::new(0x111), AccessWidth::Qword)
+            .is_err()
+    );
+}
+
 // Mock implementation for x86_vlapic host callbacks when running
 // `cargo test -p axdevice` on x86_64 host.
 

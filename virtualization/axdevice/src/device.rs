@@ -725,7 +725,10 @@ impl AxVmDevices {
     }
 
     fn lookup_sysreg(&self, addr: u32) -> Option<usize> {
-        self.sysreg_index.get(&addr).copied()
+        let (&start, &idx) = self.sysreg_index.range(..=addr).next_back()?;
+        let count = self.sysreg_count_of_device(idx, start)?;
+        let end = start.saturating_add(count.saturating_sub(1));
+        (addr <= end).then_some(idx)
     }
 
     // ─── BTreeMap insertion / removal ──────────────────────────────
