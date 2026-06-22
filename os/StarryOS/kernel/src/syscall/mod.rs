@@ -48,7 +48,7 @@ pub fn handle_syscall(uctx: &mut UserContext) {
         return;
     };
 
-    trace!("Syscall {sysno:?}");
+    info!("SYSCALL_USED name={sysno:?} nr={}", uctx.sysno());
     match ax_task::current()
         .as_thread()
         .seccomp_state()

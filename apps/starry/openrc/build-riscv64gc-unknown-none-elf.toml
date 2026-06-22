@@ -10,5 +10,5 @@ features = [
   "starry-kernel/input",
   "starry-kernel/vsock",
 ]
-log = "Error"
+log = "Info"
 target = "riscv64gc-unknown-none-elf"
