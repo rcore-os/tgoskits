@@ -17,6 +17,7 @@ use rdif_base::DriverGeneric;
 use crate::backend::rga2::registers;
 
 pub mod backend;
+pub mod error;
 
 /// Rockchip RGA hardware generation known by this driver.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
