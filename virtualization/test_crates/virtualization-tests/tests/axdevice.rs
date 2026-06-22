@@ -22,8 +22,8 @@ use axdevice::{
     PortDeviceAdapter, SysRegDeviceAdapter, register_builtin_factories,
 };
 use axdevice_base::{
-    AccessWidth, BaseDeviceOps, DeviceRegistry as _, InterruptTriggerMode, IrqLine, Port,
-    PortRange, RegistryError, SysRegAddr, SysRegAddrRange,
+    AccessWidth, BaseDeviceOps, DeviceRegistry as _, InterruptTriggerMode, InvalidResourceReason,
+    IrqLine, Port, PortRange, RegistryError, SysRegAddr, SysRegAddrRange,
 };
 use axvm_types::{
     EmulatedDeviceConfig, EmulatedDeviceType, GuestPhysAddr, GuestPhysAddrRange, InterruptVector,
@@ -40,6 +40,7 @@ fn register_mmio<T: BaseDeviceOps<GuestPhysAddrRange> + Send + Sync + 'static>(
         .register(MmioDeviceAdapter::from_arc(dev))
         .map_err(|e| match e {
             RegistryError::AddressConflict { .. } => AxError::AddrInUse,
+            RegistryError::InvalidResource { .. } => AxError::InvalidInput,
             _ => AxError::InvalidInput,
         })?;
     Ok(())
@@ -54,6 +55,7 @@ fn register_port<T: BaseDeviceOps<PortRange> + Send + Sync + 'static>(
         .register(PortDeviceAdapter::from_arc(dev))
         .map_err(|e| match e {
             RegistryError::AddressConflict { .. } => AxError::AddrInUse,
+            RegistryError::InvalidResource { .. } => AxError::InvalidInput,
             _ => AxError::InvalidInput,
         })?;
     Ok(())
@@ -68,6 +70,7 @@ fn register_sysreg<T: BaseDeviceOps<SysRegAddrRange> + Send + Sync + 'static>(
         .register(SysRegDeviceAdapter::from_arc(dev))
         .map_err(|e| match e {
             RegistryError::AddressConflict { .. } => AxError::AddrInUse,
+            RegistryError::InvalidResource { .. } => AxError::InvalidInput,
             _ => AxError::InvalidInput,
         })?;
     Ok(())
@@ -405,19 +408,19 @@ fn test_empty_and_wrapped_ranges_are_rejected() {
 
     assert_eq!(
         register_mmio(&mut devices, empty_mmio),
-        Err(AxError::AddrInUse)
+        Err(AxError::InvalidInput)
     );
     assert_eq!(
         register_mmio(&mut devices, wrapped_mmio),
-        Err(AxError::AddrInUse)
+        Err(AxError::InvalidInput)
     );
     assert_eq!(
         register_port(&mut devices, invalid_port),
-        Err(AxError::AddrInUse)
+        Err(AxError::InvalidInput)
     );
     assert_eq!(
         register_sysreg(&mut devices, invalid_sysreg),
-        Err(AxError::AddrInUse)
+        Err(AxError::InvalidInput)
     );
     assert_eq!(devices.devices().count(), 0);
 }
@@ -725,12 +728,9 @@ fn test_builtin_meta_factory_builds_dummy_config() {
 
 #[test]
 fn test_wrapped_native_mmio_resource_is_rejected() {
-    // Simulate a native Device whose resources() returns an overflowing
-    // MmioRange — this must be rejected by the registry, not panic.
-    // Use a valid GuestPhysAddrRange (wrapped ranges are rejected by
-    // the range constructor) and instead exercise the overflow via
-    // zero-sized MMIO (which the adapter already maps to size=0 for
-    // truly wrapped ranges).
+    // Simulate a native Device whose resources() returns a zero-size
+    // MmioRange — this must be rejected as InvalidResource, not
+    // AddressConflict.
     let mut devices = empty_devices();
     let mut bundle = DeviceBundle::new();
     bundle.push(DeviceRegistration::Device(MmioDeviceAdapter::from_arc(
@@ -738,28 +738,26 @@ fn test_wrapped_native_mmio_resource_is_rejected() {
     )));
     assert_eq!(
         devices.register_bundle(bundle).err(),
-        Some(AxError::AddrInUse)
+        Some(AxError::InvalidInput)
     );
     assert_eq!(devices.devices().count(), 0);
 }
 
 #[test]
 fn test_native_device_resource_overflow_rejected() {
-    // Directly construct a Resource with an overflowing MmioRange to
-    // exercise the checked_add path without going through the adapter
-    // or range constructor.
-    use axdevice_base::{Device, DeviceError, RegistryError, Resource};
+    use axdevice_base::{Device, DeviceError, InvalidResourceReason, RegistryError, Resource};
 
     struct OverflowDevice;
     impl Device for OverflowDevice {
         fn name(&self) -> &str {
             "overflow"
         }
-        fn resources(&self) -> Vec<Resource> {
-            vec![Resource::MmioRange {
+        fn resources(&self) -> &[Resource] {
+            static R: [Resource; 1] = [Resource::MmioRange {
                 base: u64::MAX - 1,
                 size: 4,
-            }]
+            }];
+            &R
         }
         fn handle(
             &self,
@@ -774,23 +772,30 @@ fn test_native_device_resource_overflow_rejected() {
 
     let mut devices = empty_devices();
     let result = devices.register(Arc::new(OverflowDevice));
-    assert!(matches!(result, Err(RegistryError::AddressConflict { .. })));
+    assert!(matches!(
+        result,
+        Err(RegistryError::InvalidResource {
+            reason: InvalidResourceReason::AddressOverflow,
+            ..
+        })
+    ));
 }
 
 #[test]
 fn test_native_device_port_resource_overflow_rejected() {
-    use axdevice_base::{Device, DeviceError, RegistryError, Resource};
+    use axdevice_base::{Device, DeviceError, InvalidResourceReason, RegistryError, Resource};
 
     struct OverflowPortDevice;
     impl Device for OverflowPortDevice {
         fn name(&self) -> &str {
             "overflow-port"
         }
-        fn resources(&self) -> Vec<Resource> {
-            vec![Resource::PortRange {
+        fn resources(&self) -> &[Resource] {
+            static R: [Resource; 1] = [Resource::PortRange {
                 base: u16::MAX - 1,
                 size: 4,
-            }]
+            }];
+            &R
         }
         fn handle(
             &self,
@@ -805,7 +810,13 @@ fn test_native_device_port_resource_overflow_rejected() {
 
     let mut devices = empty_devices();
     let result = devices.register(Arc::new(OverflowPortDevice));
-    assert!(matches!(result, Err(RegistryError::AddressConflict { .. })));
+    assert!(matches!(
+        result,
+        Err(RegistryError::InvalidResource {
+            reason: InvalidResourceReason::AddressOverflow,
+            ..
+        })
+    ));
 }
 
 #[test]

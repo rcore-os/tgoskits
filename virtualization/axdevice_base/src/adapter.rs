@@ -351,12 +351,7 @@ mod tests {
         fn handle_read(&self, _addr: GuestPhysAddr, _width: AccessWidth) -> AxResult<usize> {
             Ok(self.read_val)
         }
-        fn handle_write(
-            &self,
-            _addr: GuestPhysAddr,
-            _width: AccessWidth,
-            _val: usize,
-        ) -> AxResult {
+        fn handle_write(&self, _addr: GuestPhysAddr, _width: AccessWidth, _val: usize) -> AxResult {
             Ok(())
         }
     }

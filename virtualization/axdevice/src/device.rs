@@ -1055,8 +1055,9 @@ mod tests {
 
     use axdevice_base::{
         AccessWidth, BusAccess, BusKind, BusResponse, BusRouter, Device, DeviceError,
-        DeviceRegistry, InvalidResourceReason, RegistryError, Resource,
+        DeviceRegistry, InvalidResourceReason, Port, RegistryError, Resource, SysRegAddr,
     };
+    use axvm_types::GuestPhysAddr;
 
     use super::AxVmDevices;
 
@@ -1170,8 +1171,49 @@ mod tests {
 
     #[test]
     fn test_stale_device_id_after_unregister() {
-        // No unregister API; DeviceIds are stable per AxVmDevices lifetime.
+        // DeviceRegistry no longer exposes unregister.
+        // DeviceIds are stable for the AxVmDevices lifetime.
         // The old slot-reuse test has been removed.
+    }
+
+    #[test]
+    fn test_read_request_rejects_write_response() {
+        // A device that incorrectly returns BusResponse::Write for a read
+        // should cause the handle_*_read methods to return an error.
+        struct WriteOnlyDevice;
+        impl Device for WriteOnlyDevice {
+            fn name(&self) -> &str {
+                "write-only"
+            }
+            fn resources(&self) -> &[Resource] {
+                static R: [Resource; 1] = [Resource::MmioRange {
+                    base: 0x1000,
+                    size: 0x100,
+                }];
+                &R
+            }
+            fn handle(&self, _access: &BusAccess) -> Result<BusResponse, DeviceError> {
+                Ok(BusResponse::Write)
+            }
+            fn as_any(&self) -> &dyn Any {
+                self
+            }
+        }
+
+        let mut m = AxVmDevices::empty();
+        m.register(Arc::new(WriteOnlyDevice)).unwrap();
+
+        // handle_mmio_read should detect the mismatched response.
+        let result = m.handle_mmio_read(GuestPhysAddr::from(0x1000), AccessWidth::Dword);
+        assert!(result.is_err());
+
+        // handle_sys_reg_read should also detect it.
+        let result = m.handle_sys_reg_read(SysRegAddr::new(0x1000), AccessWidth::Qword);
+        assert!(result.is_err());
+
+        // handle_port_read should also detect it.
+        let result = m.handle_port_read(Port::new(0x1000), AccessWidth::Byte);
+        assert!(result.is_err());
     }
 
     #[test]
@@ -1278,15 +1320,32 @@ mod tests {
     }
 
     #[test]
-    fn test_port_overflow_returns_invalid_resource() {
+    fn test_access_across_resource_boundary() {
+        // Access that starts inside a device's range but with a larger
+        // width still dispatches to the matching device.
         let mut m = AxVmDevices::empty();
-        let result = m.register(Arc::new(D::new_port(0xffff, 2, "port-overflow")));
-        assert!(matches!(
-            result,
-            Err(RegistryError::InvalidResource {
-                reason: InvalidResourceReason::AddressOverflow,
-                ..
+        m.register(Arc::new(D::new_mmio(0x1000, 0x8, "small")))
+            .unwrap();
+        assert!(
+            m.dispatch(&BusAccess {
+                kind: BusKind::Mmio,
+                is_read: false,
+                addr: 0x1004,
+                width: AccessWidth::Qword,
+                data: 0,
             })
+            .is_ok()
+        );
+        // 0x1008 == base + size — NotFound.
+        assert!(matches!(
+            m.dispatch(&BusAccess {
+                kind: BusKind::Mmio,
+                is_read: true,
+                addr: 0x1008,
+                width: AccessWidth::Dword,
+                data: 0
+            }),
+            Err(DeviceError::NotFound)
         ));
     }
 }
