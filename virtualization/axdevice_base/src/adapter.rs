@@ -20,7 +20,7 @@
 //! rewritten to implement `Device` natively the corresponding adapter can
 //! be removed.
 
-use alloc::{string::String, sync::Arc, vec::Vec};
+use alloc::{boxed::Box, string::String, sync::Arc};
 use core::any::Any;
 
 use crate::{
@@ -30,6 +30,36 @@ use crate::{
 
 fn type_name(emu_type: EmuDeviceType) -> String {
     alloc::format!("{:?}-adapter", emu_type)
+}
+
+fn mmio_resources(range: &crate::GuestPhysAddrRange) -> Box<[Resource]> {
+    let base = range.start.as_usize() as u64;
+    let size = if range.end.as_usize() >= range.start.as_usize() {
+        (range.end.as_usize() - range.start.as_usize()) as u64
+    } else {
+        0
+    };
+    alloc::vec![Resource::MmioRange { base, size }].into_boxed_slice()
+}
+
+fn sysreg_resources(range: &SysRegAddrRange) -> Box<[Resource]> {
+    let addr = range.start.0 as u32;
+    let count = if range.end.0 >= range.start.0 {
+        (range.end.0 - range.start.0) as u32 + 1
+    } else {
+        0
+    };
+    alloc::vec![Resource::SysReg { addr, count }].into_boxed_slice()
+}
+
+fn port_resources(range: &PortRange) -> Box<[Resource]> {
+    let base = range.start.0;
+    let size = if range.end.0 >= range.start.0 {
+        (range.end.0 - range.start.0).wrapping_add(1)
+    } else {
+        0
+    };
+    alloc::vec![Resource::PortRange { base, size }].into_boxed_slice()
 }
 
 // ---------------------------------------------------------------------------
@@ -43,6 +73,8 @@ pub struct MmioDeviceAdapter<T> {
     inner: Arc<T>,
     /// The human-readable name of this adapter.
     name: String,
+    /// Cached resource snapshot.
+    resources: Box<[Resource]>,
 }
 
 impl<T: Send> MmioDeviceAdapter<T>
@@ -51,9 +83,11 @@ where
 {
     /// Creates a new `MmioDeviceAdapter` from an owned device.
     pub fn new(device: T) -> Self {
+        let resources = mmio_resources(&device.address_range());
         Self {
             name: type_name(device.emu_type()),
             inner: Arc::new(device),
+            resources,
         }
     }
 
@@ -63,9 +97,11 @@ where
         T: Send + Sync + 'static,
         T: BaseDeviceOps<crate::GuestPhysAddrRange>,
     {
+        let resources = mmio_resources(&device.address_range());
         Arc::new(Self {
             name: type_name(device.emu_type()),
             inner: device,
+            resources,
         })
     }
 
@@ -90,16 +126,8 @@ where
         &self.name
     }
 
-    fn resources(&self) -> Vec<Resource> {
-        let range = self.inner.address_range();
-        let base = range.start.as_usize() as u64;
-        let size = if range.end.as_usize() >= range.start.as_usize() {
-            (range.end.as_usize() - range.start.as_usize()) as u64
-        } else {
-            // Wrapped address range — the caller will reject size=0.
-            0
-        };
-        alloc::vec![Resource::MmioRange { base, size }]
+    fn resources(&self) -> &[Resource] {
+        &self.resources
     }
 
     fn handle(&self, access: &BusAccess) -> Result<BusResponse, DeviceError> {
@@ -133,6 +161,8 @@ pub struct SysRegDeviceAdapter<T> {
     inner: Arc<T>,
     /// The human-readable name of this adapter.
     name: String,
+    /// Cached resource snapshot.
+    resources: Box<[Resource]>,
 }
 
 impl<T: Send> SysRegDeviceAdapter<T>
@@ -141,9 +171,11 @@ where
 {
     /// Creates a new `SysRegDeviceAdapter` from an owned device.
     pub fn new(device: T) -> Self {
+        let resources = sysreg_resources(&device.address_range());
         Self {
             name: type_name(device.emu_type()),
             inner: Arc::new(device),
+            resources,
         }
     }
 
@@ -153,9 +185,11 @@ where
         T: Send + Sync + 'static,
         T: BaseDeviceOps<SysRegAddrRange>,
     {
+        let resources = sysreg_resources(&device.address_range());
         Arc::new(Self {
             name: type_name(device.emu_type()),
             inner: device,
+            resources,
         })
     }
 
@@ -176,15 +210,8 @@ where
         &self.name
     }
 
-    fn resources(&self) -> Vec<Resource> {
-        let range = self.inner.address_range();
-        let addr = range.start.0 as u32;
-        let count = if range.end.0 >= range.start.0 {
-            (range.end.0 - range.start.0) as u32 + 1
-        } else {
-            0
-        };
-        alloc::vec![Resource::SysReg { addr, count }]
+    fn resources(&self) -> &[Resource] {
+        &self.resources
     }
 
     fn handle(&self, access: &BusAccess) -> Result<BusResponse, DeviceError> {
@@ -218,6 +245,8 @@ pub struct PortDeviceAdapter<T> {
     inner: Arc<T>,
     /// The human-readable name of this adapter.
     name: String,
+    /// Cached resource snapshot.
+    resources: Box<[Resource]>,
 }
 
 impl<T: Send> PortDeviceAdapter<T>
@@ -226,9 +255,11 @@ where
 {
     /// Creates a new `PortDeviceAdapter` from an owned device.
     pub fn new(device: T) -> Self {
+        let resources = port_resources(&device.address_range());
         Self {
             name: type_name(device.emu_type()),
             inner: Arc::new(device),
+            resources,
         }
     }
 
@@ -238,9 +269,11 @@ where
         T: Send + Sync + 'static,
         T: BaseDeviceOps<PortRange>,
     {
+        let resources = port_resources(&device.address_range());
         Arc::new(Self {
             name: type_name(device.emu_type()),
             inner: device,
+            resources,
         })
     }
 
@@ -261,16 +294,8 @@ where
         &self.name
     }
 
-    fn resources(&self) -> Vec<Resource> {
-        let range = self.inner.address_range();
-        let base = range.start.0;
-        let size = if range.end.0 >= range.start.0 {
-            (range.end.0 - range.start.0).wrapping_add(1)
-        } else {
-            // Empty or wrapped range — the caller will reject size=0.
-            0
-        };
-        alloc::vec![Resource::PortRange { base, size }]
+    fn resources(&self) -> &[Resource] {
+        &self.resources
     }
 
     fn handle(&self, access: &BusAccess) -> Result<BusResponse, DeviceError> {
@@ -295,7 +320,7 @@ where
 
 #[cfg(test)]
 mod tests {
-    use alloc::{sync::Arc, vec::Vec};
+    use alloc::sync::Arc;
     use core::any::Any;
 
     use ax_errno::AxResult;
@@ -326,7 +351,12 @@ mod tests {
         fn handle_read(&self, _addr: GuestPhysAddr, _width: AccessWidth) -> AxResult<usize> {
             Ok(self.read_val)
         }
-        fn handle_write(&self, _addr: GuestPhysAddr, _width: AccessWidth, _val: usize) -> AxResult {
+        fn handle_write(
+            &self,
+            _addr: GuestPhysAddr,
+            _width: AccessWidth,
+            _val: usize,
+        ) -> AxResult {
             Ok(())
         }
     }

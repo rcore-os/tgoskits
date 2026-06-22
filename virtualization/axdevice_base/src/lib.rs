@@ -377,78 +377,10 @@ pub enum Arch {
     LoongArch64,
 }
 
-/// Which vCPU(s) an interrupt should be delivered to.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum IrqTarget {
-    /// A specific vCPU by its index.
-    VCpu(usize),
-    /// Broadcast to every vCPU in the VM.
-    AllVCpus,
-    /// Deliver to the vCPU currently running at the lowest priority
-    /// (architecture-dependent).
-    LowestPriority,
-}
-
-/// Trigger configuration for an interrupt line.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum IrqConfig {
-    /// Edge-triggered interrupt.
-    Edge,
-    /// Level-triggered interrupt.
-    Level,
-}
-
-/// The reason an IRQ resource registration was rejected.
-#[derive(Debug, Clone)]
-pub enum IrqConflictReason {
-    /// The IRQ number exceeds the maximum supported value.
-    OutOfRange {
-        /// The requested IRQ line.
-        irq: u32,
-        /// The maximum valid IRQ line for this architecture.
-        max: u32,
-    },
-    /// The IRQ line is already exclusively owned by another device.
-    AlreadyExclusive {
-        /// The conflicting IRQ line.
-        irq: u32,
-        /// The device that already owns this line.
-        owner: DeviceId,
-    },
-    /// The trigger mode does not match the existing configuration on this
-    /// line.
-    TriggerMismatch {
-        /// The IRQ line.
-        irq: u32,
-        /// The trigger mode the new device expects.
-        expected: IrqConfig,
-        /// The trigger mode already configured on this line.
-        actual: IrqConfig,
-    },
-}
-
-/// The kind of a resource a device requests.
-///
-/// Used in [`RegistryError::MissingRequiredResource`] to report which
-/// required resource category was not declared.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ResourceKind {
-    /// MMIO address range.
-    Mmio,
-    /// Port I/O range.
-    Port,
-    /// System register.
-    SysReg,
-    /// Interrupt line.
-    Irq,
-    /// MSI / MSI-X vector block.
-    Msi,
-}
-
 /// A resource that a device declares it needs during registration.
 ///
 /// The device manager uses this information for address-range conflict
-/// detection, IRQ routing setup, and architecture-suitability checks.
+/// detection and architecture-suitability checks.
 #[derive(Debug, Clone)]
 pub enum Resource {
     /// An MMIO address window.
@@ -472,37 +404,33 @@ pub enum Resource {
         /// Number of registers in the range.
         count: u32,
     },
-    /// An interrupt line.
-    Irq {
-        /// IRQ number.
-        line: u32,
-        /// Which vCPU(s) the interrupt targets.
-        target: IrqTarget,
-    },
-    /// A dynamic PCI BAR that will be programmed at runtime.
-    PciBar {
-        /// BAR index (0–5).
-        bar_index: u8,
-        /// Requested size in bytes.
-        size: u64,
-        /// `true` if this BAR requests PIO space; `false` for MMIO.
-        is_pio: bool,
-    },
-    /// MSI / MSI-X capability with a requested number of vectors.
-    MSI {
-        /// Number of interrupt vectors requested.
-        count: u32,
-    },
-    /// Marker indicating the device is capable of DMA (used for IOMMU /
-    /// security checks). This does not consume an address range.
-    DmaCapable,
 }
 
-/// Errors that can be returned when registering or unregistering a device.
+/// The reason a resource was rejected as structurally invalid during
+/// validation.
+#[derive(Debug, Clone)]
+pub enum InvalidResourceReason {
+    /// The resource has a size or count of zero.
+    ZeroSized,
+    /// The resource's end address overflows the address space.
+    AddressOverflow,
+    /// The resource extends past the valid bus address range.
+    OutOfBusRange,
+    /// The bus kind of the resource is not supported on the current
+    /// architecture.
+    UnsupportedOnArchitecture,
+}
+
+/// Errors that can be returned when registering a device.
 #[derive(Debug, Clone)]
 pub enum RegistryError {
-    /// The given [`DeviceId`] does not refer to a currently-registered device.
-    DeviceNotFound(DeviceId),
+    /// The device declared a resource that is structurally invalid.
+    InvalidResource {
+        /// The invalid resource.
+        resource: Resource,
+        /// Why the resource was rejected.
+        reason: InvalidResourceReason,
+    },
     /// Two devices claim overlapping address ranges.
     AddressConflict {
         /// The resource the new device is attempting to register.
@@ -520,13 +448,6 @@ pub enum RegistryError {
         /// The current target architecture.
         arch: Arch,
     },
-    /// An IRQ resource could not be allocated.
-    IrqConflict {
-        /// The IRQ line that caused the conflict.
-        irq: u32,
-        /// The reason for the conflict.
-        reason: IrqConflictReason,
-    },
     /// The device is not compatible with the current target architecture.
     ArchNotSupported {
         /// Human-readable device name (for diagnostics).
@@ -535,14 +456,6 @@ pub enum RegistryError {
         required_arch: Arch,
         /// The architecture the hypervisor is currently built for.
         current_arch: Arch,
-    },
-    /// The device did not declare a resource that is mandatory for its
-    /// device class.
-    MissingRequiredResource {
-        /// The device that is missing a resource.
-        device: DeviceId,
-        /// The kind of resource that is missing.
-        missing: ResourceKind,
     },
 }
 
@@ -568,9 +481,13 @@ pub trait Device: Send + Sync + Any {
     /// diagnostics).
     fn name(&self) -> &str;
 
-    /// Returns the set of resources (MMIO windows, port ranges, IRQ lines,
-    /// …) this device requires.
-    fn resources(&self) -> Vec<Resource>;
+    /// Returns the resources (MMIO windows, port ranges, system registers)
+    /// this device requires.
+    ///
+    /// The returned slice is a stable snapshot computed at device construction
+    /// time. Callers may read it on both the registration path and the hot
+    /// path without allocation.
+    fn resources(&self) -> &[Resource];
 
     /// Handles a single bus access.
     ///
@@ -610,10 +527,6 @@ pub trait DeviceRegistry {
     /// On success the device is assigned a unique [`DeviceId`] and inserted
     /// into the manager's lookup structures.
     fn register(&mut self, device: Arc<dyn Device>) -> Result<DeviceId, RegistryError>;
-
-    /// Unregisters a previously registered device, removing its resources
-    /// from all lookup structures and freeing its slot.
-    fn unregister(&mut self, id: DeviceId) -> Result<(), RegistryError>;
 }
 
 /// Bus dispatch interface — the runtime hot-path half of a
