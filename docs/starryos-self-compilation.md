@@ -25,7 +25,7 @@ Host (Linux)
               └─ Debian rootfs (ext4)
                   └─ /usr/bin/self-compile-inner.sh
                       ├─ filter-workspace.sh (架构过滤)
-                      └─ cargo build -p starry-kernel --offline
+                      └─ cargo build --ignore-rust-version -p starryos --offline
                               │
                               ▼ 成功
                       debugfs dump → tmp/starryos-selfbuilt-<arch>

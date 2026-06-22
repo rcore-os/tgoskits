@@ -55,6 +55,14 @@ while [[ $# -gt 0 ]]; do
         --log)    LOG_LEVEL="${2:-info}"; shift 2 ;;
         --help|-h)
             echo "Usage: $0 [--arch riscv64|x86_64|aarch64] [--smp N] [--jobs N] [--commit SHA] [--ref REF] [--log none|error|warn|info]"
+            echo ""
+            echo "Options:"
+            echo "  --arch <arch>   Target architecture (default: riscv64)"
+            echo "  --smp <N>       QEMU CPUs and cargo build jobs (default: 4)"
+            echo "  --jobs <N>      Cargo build jobs (default: same as --smp)"
+            echo "  --commit <SHA>  Expected source commit for identity verification"
+            echo "  --ref <REF>     Expected git ref (informational, no strict check)"
+            echo "  --log <level>   Log level: none, error, warn, info (default: info)"
             exit 0
             ;;
         *) error "Unknown argument: $1";;
