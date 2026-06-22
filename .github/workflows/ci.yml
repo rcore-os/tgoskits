@@ -564,6 +564,7 @@ jobs:
           - name: Test axvisor self-hosted x86_64
             use_container: false
             runs_on: '["self-hosted","linux","intel","kvm"]'
+            require_kvm: true
             command: cargo xtask axvisor test qemu --arch x86_64 --test-case smoke-vmx
             cache_key: ""
             container_image: ""
@@ -572,6 +573,7 @@ jobs:
           - name: Test axvisor self-hosted x86_64 UEFI
             use_container: false
             runs_on: '["self-hosted","linux","intel","kvm"]'
+            require_kvm: true
             timeout_minutes: 20
             command: |
               sudo apt-get update
@@ -605,6 +607,7 @@ jobs:
           - name: Test axloader HTTP smoke
             use_container: false
             runs_on: '["self-hosted","linux","intel","kvm"]'
+            require_kvm: true
             timeout_minutes: 20
             command: |
               rustup target add x86_64-unknown-uefi
@@ -744,6 +747,7 @@ jobs:
           || (matrix.fetch_depth == 'full' && '0' || '1')
         }}
       timeout_minutes: ${{ matrix.timeout_minutes || 360 }}
+      require_kvm: ${{ matrix.require_kvm || false }}
       download_xtask_bin_artifact: >-
         ${{
           matrix.download_xtask_bin_artifact
