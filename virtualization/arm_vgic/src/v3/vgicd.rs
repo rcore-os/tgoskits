@@ -12,9 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use core::cell::UnsafeCell;
-
 use ax_errno::AxResult;
+use ax_kspin::SpinNoIrq;
 use axdevice_base::{AccessWidth, BaseDeviceOps, EmuDeviceType};
 use axvm_types::{GuestPhysAddr, GuestPhysAddrRange, HostPhysAddr};
 use bitmaps::Bitmap;
@@ -39,18 +38,13 @@ pub struct VGicD {
     pub size: usize,
 
     /// IRQs assigned to this VGicD.
-    pub assigned_irqs: UnsafeCell<Bitmap<{ MAX_IRQ_V3 }>>,
+    pub assigned_irqs: SpinNoIrq<Bitmap<{ MAX_IRQ_V3 }>>,
 
     /// The host physical address of the VGicD.
     ///
     /// TODO: move host gicd access to a separate crate, maybe arm_gic_driver.
     pub host_gicd_addr: HostPhysAddr,
 }
-
-// SAFETY: VGicD is only accessed through the VGicD lock / Vgic host layer,
-// and the UnsafeCell is guarded by Mutex in the Vgic super-struct.
-unsafe impl Send for VGicD {}
-unsafe impl Sync for VGicD {}
 
 impl VGicD {
     /// Creates a new VGicD instance.
@@ -60,7 +54,7 @@ impl VGicD {
         Self {
             addr,
             size,
-            assigned_irqs: UnsafeCell::new(Bitmap::new()),
+            assigned_irqs: SpinNoIrq::new(Bitmap::new()),
             host_gicd_addr: crate::api_reexp::get_host_gicd_base(),
         }
     }
@@ -75,9 +69,7 @@ impl VGicD {
         if irq >= MAX_IRQ_V3 as u32 {
             panic!("IRQ {} is out of range for VGicD", irq);
         }
-        unsafe {
-            (*self.assigned_irqs.get()).set(irq as usize, true);
-        }
+        self.assigned_irqs.lock().set(irq as usize, true);
 
         // TODO: update host GICD_ITARGETSR and GICD_IROUTER registers
         let gicd_itargetsr_paddr = self.host_gicd_addr + GICD_ITARGETSR + irq as usize;
@@ -258,7 +250,7 @@ impl BaseDeviceOps<GuestPhysAddrRange> for VGicD {
 impl VGicD {
     /// Checks if an IRQ is assigned to this VGicD.
     pub fn is_irq_assigned(&self, irq: u32) -> bool {
-        unsafe { (*self.assigned_irqs.get()).get(irq as usize) }
+        self.assigned_irqs.lock().get(irq as usize)
     }
 
     /// Checks if an IRQ is a Software Generated Interrupt (SGI).
