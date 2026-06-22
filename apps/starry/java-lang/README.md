@@ -78,17 +78,23 @@ gcompat); `javac` works on every staged cell.
 | :--: | :--: | :--: | :--: | :--: | :--: |
 | x86_64 | apk (openjdk17) | BellSoft musl | BellSoft musl | BellSoft musl | ⚠ kernel-blocked — see x86_64 note |
 | aarch64 | apk (openjdk17) | BellSoft musl | BellSoft musl | BellSoft musl | 4/4 |
-| riscv64 | native-musl cross | Alpine-musl | — N/A | Alpine-musl | 3/3 |
+| riscv64 | native-musl cross | Alpine-musl | BellSoft glibc + Debian rt | — N/A | 3/3 |
 | loongarch64 | apk (openjdk17-loong) | Alpine-musl | — N/A | Alpine-musl | 3/3 |
 
-**JDK23 staged-but-runtime-SKIPped on riscv64 / loongarch64** (documented per the
-partial-arch-tick rule): upstream ships JDK23 for these arches only as glibc.
-`prebuild.sh` **does still stage** that glibc JDK23 (and, on riscv64, a real Debian
-glibc runtime), and `run-java.sh` **liveness-probes it at run time** — but **glibc +
-gcompat segfaults the JVM — verified on REAL Linux 6.18 too, so this is NOT a StarryOS
-limitation** → the probe fails, JDK23 is **SKIPped and excluded from TOTAL** (never a
-false failure). Net effect: those two arches run **3 JDKs (17/21/25)** with a **3/3**
-version switch (JDK23 present on disk but not counted).
+**One JDK staged-but-runtime-SKIPped per non-aarch64 arch** (documented per the
+partial-arch-tick rule; the skipped version differs by arch — verified against the
+real `run-java.sh` `RUNNABLE JDKs:` / `SKIPPED JDKs:` gate output, not assumed):
+- **riscv64 runs `17/21/23`; JDK25 is SKIPped.** The Alpine riscv64 OpenJDK 25 is a
+  Zero-VM build that hits `IllegalInstruction` on the StarryOS RV64GC baseline (see the
+  per-JDK gate below). JDK23 **runs** — `prebuild.sh` stages BellSoft generic-glibc
+  JDK23 plus a real Debian-trixie glibc runtime, and the probe passes.
+- **loongarch64 runs `17/21/25`; JDK23 is SKIPped.** The only available LoongArch
+  JDK23 is the Loongson old-abi (abi1.0) glibc build (links a `GLIBC_2.27` Loongson
+  world, no matching runtime under the upstream abi); the probe fails. JDK25 (Alpine
+  musl) runs.
+
+Each arch therefore runs **3 JDKs** with a **3/3** version switch; the skipped JDK is
+present on disk but excluded from TOTAL (never a false failure).
 **aarch64** runs the **full 4 JDKs** with a **4/4** switch; `javac`, `java`, the
 language/grammar/CLI carpets, and BackCompat run on every staged JDK. **x86_64**
 stages all 4 JDKs and `javac` works on every cell, but the on-target JVM run is
@@ -96,9 +102,10 @@ currently blocked by a StarryOS kernel issue — see the **x86_64 status** note 
 
 ### riscv64 / loongarch64 — honest per-JDK runnability gate
 
-On `riscv64` (and, by the same reasoning, `loongarch64`) the staged JDK21/JDK25
-binaries can raise a repeated `user exception: IllegalInstruction` from
-JVM-generated code. **Root cause (verified):** the HotSpot RISC-V port probes ISA
+On `riscv64` the staged JDK25 binary raises a repeated `user exception:
+IllegalInstruction` from JVM-generated code (this is the riscv64 SKIP; the
+loongarch64 SKIP — JDK23 — is a separate glibc-abi mismatch, not an illegal
+instruction). **Root cause (verified):** the HotSpot RISC-V port probes ISA
 extensions via `riscv_hwprobe` (syscall 258) and `getauxval(AT_HWCAP)`; StarryOS
 reports the **RV64GC baseline** (`IMA + FD + C`, no `Zba/Zbb/Zbs`, no vector `V`).
 QEMU `-cpu rv64` already enables `Zba/Zbb/Zbc/Zbs` (bitmanip is pure userspace and
