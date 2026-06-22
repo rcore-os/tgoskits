@@ -55,21 +55,6 @@ if [[ ! -f "$workspace/Cargo.toml" ]]; then
     exit 1
 fi
 
-shell_quote() {
-    local value="$1"
-    local i char
-    printf "'"
-    for ((i = 0; i < ${#value}; i++)); do
-        char="${value:i:1}"
-        if [[ "$char" == "'" ]]; then
-            printf '%s' "'\\''"
-        else
-            printf '%s' "$char"
-        fi
-    done
-    printf "'"
-}
-
 tar_create_flags=()
 
 detect_tar_create_flags() {
@@ -294,35 +279,7 @@ tar_create -C "$out_dir" -rf "$src_tar" .tgoskits-source-meta
 cargo_registry_cache_count=0
 copy_cargo_registry_cache
 
-guest_runner="$out_dir/starry-macos-run.sh"
-{
-cat <<'EOF'
-#!/bin/sh
-set -eu
-export JOBS="${JOBS:-4}"
-export SMP="${SMP:-4}"
-export RAYON_NUM_THREADS="${RAYON_NUM_THREADS:-1}"
-export SOURCE_TMPFS="${SOURCE_TMPFS:-1}"
-export ARTIFACT_TO_BIN="${ARTIFACT_TO_BIN:-1}"
-export STARRY_KALLSYMS_RESERVED="${STARRY_KALLSYMS_RESERVED:-16M}"
-export RUSTC_THREADS="${RUSTC_THREADS:-2}"
-export SOURCE_DIR="${SOURCE_DIR:-/opt/tgoskits}"
-export WORK_DIR="${WORK_DIR:-/tmp/starryos-selfbuild-src}"
-export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-/tmp/starryos-selfbuild-target}"
-export ARTIFACT_DIR="${ARTIFACT_DIR:-/opt/starryos-selfbuild-artifacts}"
-export CARGO_VERBOSE="${CARGO_VERBOSE:-0}"
-export FEATURES="${FEATURES:-plat-dyn,ax-driver/virtio-blk,ax-driver/virtio-net,smp}"
-EOF
-printf 'if [ -z "${TGOSKITS_COMMIT:-}" ]; then export TGOSKITS_COMMIT=%s; fi\n' "$(shell_quote "$source_commit")"
-printf 'if [ -z "${TGOSKITS_REF:-}" ]; then export TGOSKITS_REF=%s; fi\n' "$(shell_quote "$source_ref")"
-cat <<'EOF'
-exec /bin/sh /opt/starry-macos-selfbuild.sh
-EOF
-} >"$guest_runner"
-chmod 0755 "$guest_runner"
-
-install -m 0755 "$app_dir/guest-selfbuild.sh" "$overlay_dir/opt/starry-macos-selfbuild.sh"
-install -m 0755 "$guest_runner" "$overlay_dir/opt/starry-macos-run.sh"
+install -m 0755 "$app_dir/guest-selfbuild.sh" "$overlay_dir/opt/starry-macos-run.sh"
 install -m 0644 "$src_tar" "$overlay_dir/opt/tgoskits-src.tar"
 install -m 0644 "$meta_file" "$overlay_dir/opt/tgoskits-src.meta"
 

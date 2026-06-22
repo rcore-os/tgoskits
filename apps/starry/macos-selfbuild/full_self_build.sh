@@ -91,7 +91,7 @@ dump_guest_artifact() {
     local host_path="$4"
 
     rm -f "$host_path"
-    "$debugfs" -R "dump -p $guest_path $host_path" "$rootfs"
+    "$debugfs" -R "dump $guest_path $host_path" "$rootfs"
     if [[ ! -s "$host_path" ]]; then
         echo "failed to extract $guest_path to $host_path" >&2
         return 1

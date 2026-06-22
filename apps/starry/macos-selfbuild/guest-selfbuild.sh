@@ -2,7 +2,7 @@
 set -eu
 
 marker="${MARKER:-STARRY-MACOS-SELFBUILD}"
-jobs="${JOBS:-8}"
+jobs="${JOBS:-4}"
 rayon_threads="${RAYON_NUM_THREADS:-1}"
 rustc_threads="${RUSTC_THREADS:-2}"
 cargo_bin="${CARGO_BIN:-/opt/cargo-nightly-sysroot}"
