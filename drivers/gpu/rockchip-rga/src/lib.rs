@@ -17,6 +17,7 @@ use rdif_base::DriverGeneric;
 use crate::backend::rga2::registers;
 
 pub mod backend;
+pub mod buffer;
 pub mod error;
 pub mod operation;
 
