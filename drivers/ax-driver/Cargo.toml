@@ -63,7 +63,7 @@ serial = [
 ]
 sg2002-placeholder = ["plat-dyn"]
 rknpu = ["plat-dyn", "rockchip-pm", "rockchip-soc", "dep:rockchip-npu"]
-rga = ["plat-dyn", "dep:rockchip-rga"]
+rga = ["plat-dyn", "rockchip-pm", "dep:rockchip-rga"]
 rockchip-sdhci = [
     "block",
     "plat-dyn",
