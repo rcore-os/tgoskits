@@ -411,6 +411,7 @@ nspawn_run "$OUTPUT_IMG" "
     export PATH=/root/.cargo/bin:\$PATH && \
     cd $DEST_PATH && \
     cp Cargo.toml Cargo.toml.orig && \
+	    cp Cargo.lock Cargo.lock.orig && \
     sed -i '/^[[:space:]]*\"components\//{/'"$EXCLUDE_ARCH"'/d}' Cargo.toml && \
     sed -i '/^[[:space:]]*\"drivers\/usb\/usb-device\/uvc\"/d' Cargo.toml && \
     rm -f Cargo.lock && \
@@ -420,7 +421,8 @@ nspawn_run "$OUTPUT_IMG" "
 	    cargo fetch --manifest-path Cargo.toml 2>&1 && cargo fetch --manifest-path Cargo.toml --target ${TARGET} 2>&1; \
     RET=\$?; \
     mv /root/.cargo/config.toml.bak /root/.cargo/config.toml; \
-    rm -f Cargo.toml.orig; \
+    mv Cargo.toml.orig Cargo.toml && \
+	    mv Cargo.lock.orig Cargo.lock && \
     exit \$RET
 "
 info "Cargo dependencies pre-fetched (--ignore-rust-version)."; info "Workspace pre-filtered — QEMU will skip filtering."
