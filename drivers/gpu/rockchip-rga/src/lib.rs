@@ -26,6 +26,7 @@ pub mod buffer;
 pub mod capabilities;
 pub mod error;
 pub mod operation;
+pub mod selftest;
 
 /// Rockchip RGA hardware generation known by this driver.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
