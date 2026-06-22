@@ -5,7 +5,7 @@
 //! hardware; board glue must still handle DMA allocation, cache sync, IRQ or
 //! polling, clocks, and power.
 
-use crate::registers;
+use super::registers;
 
 pub const MIN_DIMENSION: u32 = 34;
 pub const MAX_DIMENSION: u32 = 8192;
