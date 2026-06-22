@@ -300,6 +300,19 @@ impl<G: BaseGuard, T: ?Sized> BaseSpinLock<G, T> {
         // there's no need to lock the inner mutex.
         unsafe { &mut *self.data.get() }
     }
+
+    /// Returns a shared reference to the inner data without acquiring the
+    /// lock.  The data may be concurrently modified — the result is stale
+    /// the instant this returns.  Only use for racy heuristics analoguous
+    /// to Linux's `src_rq->nr_running > 1` check.
+    ///
+    /// This is a shared (`&`) reference rather than `&mut`, so it does not
+    /// carry `noalias` — the compiler will not assume exclusivity and will
+    /// not miscompile concurrent accesses to the same data from other CPUs.
+    #[inline(always)]
+    pub unsafe fn data_unchecked(&self) -> &T {
+        &*self.data.get()
+    }
 }
 
 impl<G: BaseGuard, T: Default> Default for BaseSpinLock<G, T> {

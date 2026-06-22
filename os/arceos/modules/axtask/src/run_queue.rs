@@ -696,8 +696,15 @@ impl AxRunQueue {
             // scheduler lock for every empty-queue probe — on 8-core
             // boards this significantly reduces cache-line contention on
             // the scheduler lock word.
-            if get_run_queue(target).scheduler.get_mut().is_empty() {
-                continue;
+            //
+            // Uses data_unchecked() rather than get_mut() to avoid creating
+            // a &mut reference that would carry noalias and allow the
+            // compiler to mis-optimise concurrent accesses from the remote
+            // CPU that owns the scheduler.
+            unsafe {
+                if get_run_queue(target).scheduler.data_unchecked().is_empty() {
+                    continue;
+                }
             }
             let task = {
                 let Some(mut sched) = get_run_queue(target).scheduler.try_lock() else {
