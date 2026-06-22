@@ -947,12 +947,9 @@ fn build_loongarch_dsdt_aml(platform: &FwCfgPlatformConfig) -> Vec<u8> {
 
     let mut aml = Vec::new();
     aml.extend(aml_scope("_SB_", scope_body));
-    aml.extend(aml_scope(
-        "\\",
-        aml_name_decl(
-            "_S5_",
-            aml_package(&[aml_int(5), aml_int(0), aml_int(0), aml_int(0)]),
-        ),
+    aml.extend(aml_name_decl(
+        "_S5_",
+        aml_package(&[aml_int(5), aml_int(0), aml_int(0), aml_int(0)]),
     ));
     aml
 }
