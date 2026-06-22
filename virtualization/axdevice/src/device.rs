@@ -496,12 +496,16 @@ impl AxVmDevices {
             match self.register(device.clone()) {
                 Ok(id) => registered_ids.push(id),
                 Err(e) => {
+                    let kind = match &e {
+                        RegistryError::AddressConflict { .. } => ax_errno::AxError::AddrInUse,
+                        _ => ax_errno::AxError::InvalidInput,
+                    };
                     // Rollback already-registered devices.
                     for id in registered_ids.iter().rev() {
                         let _ = self.unregister(*id);
                     }
                     return Err(ax_err_type!(
-                        InvalidInput,
+                        kind,
                         format!("device registration failed: {e:?}")
                     ));
                 }

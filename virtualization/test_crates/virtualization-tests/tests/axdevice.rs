@@ -530,7 +530,7 @@ fn test_bundle_internal_conflict_is_atomic() {
 
     assert_eq!(
         devices.register_bundle(bundle).err(),
-        Some(AxError::InvalidInput)
+        Some(AxError::AddrInUse)
     );
     assert_eq!(devices.devices().count(), 0);
 }
@@ -554,7 +554,7 @@ fn test_bundle_existing_conflict_leaves_all_registries_unchanged() {
 
     assert_eq!(
         devices.register_bundle(bundle).err(),
-        Some(AxError::InvalidInput)
+        Some(AxError::AddrInUse)
     );
     assert_eq!(devices.devices().count(), count_before);
 }
