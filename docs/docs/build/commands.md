@@ -25,7 +25,7 @@ cargo xtask <cmd>  →  cargo run -p tg-xtask -- <cmd>  →  axbuild::run()
 | `cargo xtask board ...` | `cargo board ...` | 板卡管理快捷入口 |
 | `cargo xtask ...` | `cargo xtask ...` | 其他命令无额外别名 |
 
-以下文档统一使用 `cargo xtask` 前缀，实际使用时可替换为对应的别名。例如：
+本文大多数通用命令仍展示 `cargo xtask` 前缀；StarryOS 快速上手和板卡配置流程优先展示 `cargo starry` 别名。实际使用时两种写法可以互换。例如：
 
 ```bash
 # 以下两条命令等价
@@ -107,12 +107,22 @@ cargo xtask starry <subcommand> [options]
 | `app list` | 列出 `apps/starry/` 下发现的可运行应用 |
 | `app run` | 构建并运行 `apps/starry/` 下发现的应用 |
 | `app board` | 在远程板卡上运行应用 |
-| `quick-start` | 常见平台便捷入口 |
+| `quick-start` | 旧版常见平台便捷入口，后续会废弃 |
 | `rootfs` | 下载 rootfs 到 target 目录 |
 | `defconfig` | 生成默认板卡配置 |
 | `config ls` | 列出可用板卡名称 |
 
-`quick-start` 提供常见 QEMU 平台和 Orange Pi 5 Plus 的简化工作流，每个平台包含 `build` 和 `run` 两阶段：
+推荐的 StarryOS 配置流程是先查看支持的板卡名称，再选择默认配置，后续直接执行常规子命令：
+
+```bash
+cargo starry config ls
+cargo starry defconfig <board>
+cargo starry build
+```
+
+`cargo starry defconfig <board>` 会把对应板卡配置复制到默认构建配置位置，并更新 StarryOS 命令快照。之后 `cargo starry build`、`cargo starry qemu`、`cargo starry uboot`、`cargo starry board` 等命令会沿用该配置。`quick-start` 是旧版便捷入口，保留用于兼容已有脚本，后续会废弃；新文档和新流程不再推荐使用它。
+
+旧版 `quick-start` 每个平台包含 `build` 和 `run` 两阶段：
 
 | 子命令 | 说明 |
 |--------|------|

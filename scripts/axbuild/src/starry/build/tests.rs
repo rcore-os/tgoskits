@@ -4,7 +4,6 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use ostool::build::config::Cargo;
 use tempfile::tempdir;
 
 use super::*;
@@ -408,49 +407,90 @@ fn riscv64_has_no_starry_default_platform() {
 }
 
 #[test]
-fn uimage_load_paddr_uses_dynamic_riscv64_fallback_without_axconfig() {
-    let cargo = Cargo {
-        env: HashMap::new(),
-        target: "scripts/targets/std/pie/riscv64gc-unknown-linux-musl.json".to_string(),
-        package: STARRY_PACKAGE.to_string(),
-        bin: None,
-        features: vec!["plat-dyn".to_string()],
-        log: None,
-        extra_config: None,
-        profile: None,
-        disable_someboot_build_config: true,
-        args: Vec::new(),
-        pre_build_cmds: Vec::new(),
-        post_build_cmds: Vec::new(),
-        to_bin: true,
-    };
+fn uimage_its_path_for_config_uses_same_basename_with_its_extension() {
+    let path = uimage_its_path_for_config(Path::new("os/StarryOS/configs/board/foo.toml"));
 
-    assert_eq!(uimage_load_paddr(&cargo, "riscv64").unwrap(), "0x80200000");
+    assert_eq!(path, PathBuf::from("os/StarryOS/configs/board/foo.its"));
 }
 
 #[test]
-fn uimage_load_paddr_uses_axconfig_when_available() {
-    let cargo = Cargo {
-        env: HashMap::from([(
-            "AX_CONFIG_PATH".to_string(),
-            "/tmp/generated.axconfig.toml".to_string(),
-        )]),
-        target: "riscv64gc-unknown-none-elf".to_string(),
-        package: STARRY_PACKAGE.to_string(),
-        bin: None,
-        features: vec!["plat-dyn".to_string()],
-        log: None,
-        extra_config: None,
-        profile: None,
-        disable_someboot_build_config: true,
-        args: Vec::new(),
-        pre_build_cmds: Vec::new(),
-        post_build_cmds: Vec::new(),
-        to_bin: true,
-    };
+fn uimage_generation_plan_is_absent_without_companion_its() {
+    let root = tempdir().unwrap();
+    let config = root.path().join("board/foo.toml");
+    fs::create_dir_all(config.parent().unwrap()).unwrap();
+    fs::write(&config, "target = \"riscv64gc-unknown-none-elf\"\n").unwrap();
+    let elf = root.path().join("target/kernel.elf");
 
-    let err = uimage_load_paddr(&cargo, "riscv64").unwrap_err();
-    assert!(err.to_string().contains("ax-config-gen"));
+    assert!(
+        uimage_generation_plan(&config, "riscv64", "riscv64gc-unknown-none-elf", &elf).is_none()
+    );
+}
+
+#[test]
+fn uimage_generation_plan_uses_mkimage_f_for_companion_its() {
+    let root = tempdir().unwrap();
+    let config = root.path().join("board/foo.toml");
+    fs::create_dir_all(config.parent().unwrap()).unwrap();
+    fs::write(&config, "target = \"riscv64gc-unknown-none-elf\"\n").unwrap();
+    fs::write(
+        root.path().join("board/foo.its"),
+        "kernel = \"${kernel_bin}\";\n",
+    )
+    .unwrap();
+    let elf = root.path().join("target/kernel.elf");
+
+    let plan = uimage_generation_plan(&config, "riscv64", "riscv64gc-unknown-none-elf", &elf)
+        .expect("companion ITS should request uImage generation");
+
+    assert_eq!(plan.source_its, root.path().join("board/foo.its"));
+    assert_eq!(
+        plan.rendered_its.parent(),
+        Some(root.path().join("target").as_path())
+    );
+    let rendered_name = plan.rendered_its.file_name().unwrap().to_string_lossy();
+    assert!(rendered_name.starts_with(".kernel.elf.uimage.its."));
+    assert!(rendered_name.ends_with(".tmp"));
+    assert_eq!(plan.kernel_bin, root.path().join("target/kernel.bin"));
+    assert_eq!(plan.output_uimg, root.path().join("target/kernel.uimg"));
+    assert_eq!(
+        mkimage_args_for_its(&plan.rendered_its, &plan.output_uimg),
+        vec![
+            "-f".to_string(),
+            plan.rendered_its.display().to_string(),
+            plan.output_uimg.display().to_string(),
+        ]
+    );
+}
+
+#[test]
+fn render_uimage_its_template_replaces_build_placeholders() {
+    let root = tempdir().unwrap();
+    let template = root.path().join("foo.its");
+    let rendered = root.path().join("rendered.its");
+    let kernel_elf = root.path().join("target/kernel.elf");
+    let kernel_bin = root.path().join("target/kernel.bin");
+    fs::write(
+        &template,
+        "bin=${kernel_bin}\nelf=${kernel_elf}\narch=${arch}\ntarget=${target}\n",
+    )
+    .unwrap();
+
+    render_uimage_its_template(
+        &template,
+        &rendered,
+        &kernel_elf,
+        &kernel_bin,
+        "riscv64",
+        "riscv64gc-unknown-none-elf",
+    )
+    .unwrap();
+
+    let output = fs::read_to_string(rendered).unwrap();
+    assert!(output.contains(&format!("bin={}", kernel_bin.display())));
+    assert!(output.contains(&format!("elf={}", kernel_elf.display())));
+    assert!(output.contains("arch=riscv64"));
+    assert!(output.contains("target=riscv64gc-unknown-none-elf"));
+    assert!(!output.contains("${"));
 }
 
 #[test]
@@ -584,26 +624,4 @@ fn ensure_starry_bin_arg_keeps_existing_bin_arg() {
     ensure_starry_bin_arg(&mut args, STARRY_PACKAGE, &metadata).unwrap();
 
     assert_eq!(args, vec!["--bin".to_string(), "starryos".to_string()]);
-}
-
-#[test]
-fn patch_starry_cargo_config_validates_uimage_without_shell_post_build() {
-    let request = request(
-        PathBuf::from("/tmp/.build.toml"),
-        "riscv64",
-        "riscv64gc-unknown-none-elf",
-    );
-    let mut build_info = default_starry_build_info_for_target(&request.target);
-    build_info.env.insert("UIMAGE".to_string(), "y".to_string());
-    let mut cargo = build_info.into_base_cargo_config_with_log(
-        request.package.clone(),
-        request.target.clone(),
-        StarryBuildInfo::build_cargo_args(&request.target, &[]),
-    );
-    cargo.features.push("plat-dyn".to_string());
-
-    let metadata = crate::build::workspace_metadata().unwrap();
-    patch_starry_cargo_config(&mut cargo, &request, &metadata).unwrap();
-
-    assert!(cargo.post_build_cmds.is_empty());
 }

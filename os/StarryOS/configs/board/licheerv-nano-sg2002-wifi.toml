@@ -1,4 +1,3 @@
-env = { UIMAGE = "y" }
 features = [
   "starry-kernel/sg2002-wifi",
   "axplat-dyn/thead-mae",
