@@ -24,9 +24,10 @@ use ax_memory_addr::PhysAddr;
 use ax_memory_addr::is_aligned_4k;
 use axdevice_base::{
     AccessWidth, BusAccess, BusKind, BusResponse, BusRouter, Device, DeviceError, DeviceId,
-    DeviceRegistry, MmioDeviceAdapter, Port, PortDeviceAdapter, RegistryError, Resource,
-    SysRegAddr,
+    DeviceRegistry, MmioDeviceAdapter, Port, RegistryError, Resource, SysRegAddr,
 };
+#[cfg(target_arch = "x86_64")]
+use axdevice_base::PortDeviceAdapter;
 use axvm_types::{EmulatedDeviceConfig, EmulatedDeviceType, GuestPhysAddr};
 #[cfg(target_arch = "riscv64")]
 use riscv_vplic::VPlicGlobal;

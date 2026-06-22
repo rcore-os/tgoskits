@@ -36,7 +36,7 @@ mod registration;
 #[cfg(target_arch = "aarch64")]
 pub use adapter::create_vtimer_devices;
 pub use axdevice_base::{
-    AccessWidth, BaseDeviceOps, BaseMmioDeviceOps, BasePortDeviceOps, BaseSysRegDeviceOps,
+    AccessWidth, BaseDeviceOps, BaseMmioDeviceOps, BasePortDeviceOps, BaseSysRegDeviceOps, Device,
     MmioDeviceAdapter, Port, PortDeviceAdapter, SysRegAddr, SysRegDeviceAdapter,
 };
 pub use axvm_types::GuestPhysAddr;
