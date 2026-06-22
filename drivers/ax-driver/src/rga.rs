@@ -41,6 +41,7 @@ fn probe(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
         let start_raw = reg.address as usize;
         let size_raw = reg.size.unwrap_or(0x1000) as usize;
         let (start, size, offset) = page_aligned_region(start_raw, size_raw);
+        // SAFETY: `start`/`size` are a page-aligned MMIO window from the FDT `reg`; iomap maps it and `offset` is within it.
         let base = unsafe { iomap(start, size)?.add(offset) };
         resources.push(RgaCoreResource {
             base,
