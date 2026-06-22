@@ -3,7 +3,6 @@
 //! 提供与 OS 解耦的高层 API，调用方负责将 fd / ioctl 解析为
 //! `(seq_no, vaddr, paddr)` 后再调用本模块。
 
-use alloc::collections::VecDeque;
 use core::{
     cell::Cell,
     sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering},
@@ -14,7 +13,7 @@ use ax_kspin::SpinNoPreempt as Mutex;
 use super::{
     TDMA_PHYS_BASE, TIU_PHYS_BASE,
     error::TpuError,
-    platform::{DelayFn, TiuIrqCallback, TpuRuntimeState},
+    platform::{TiuIrqCallback, TpuRuntimeState, WaitIrqFn},
     tdma::TdmaRegs,
     tiu::TiuRegs,
 };
@@ -39,34 +38,6 @@ pub enum TpuSubmitPath {
     DesNormal = 0,
 }
 
-/// TPU 任务节点
-#[derive(Debug)]
-pub struct TpuTaskNode {
-    /// 进程 ID
-    pub pid: u32,
-    /// 序列号
-    pub seq_no: u32,
-    /// DMA buffer 文件描述符
-    pub dmabuf_fd: i32,
-    /// DMA buffer 虚拟地址
-    pub dmabuf_vaddr: usize,
-    /// DMA buffer 物理地址
-    pub dmabuf_paddr: u64,
-    /// 提交路径
-    pub tpu_path: TpuSubmitPath,
-    /// 执行结果
-    pub ret: i32,
-}
-
-/// TPU 内核工作状态
-#[derive(Default)]
-pub struct TpuKernelWork {
-    /// 任务队列
-    pub task_list: VecDeque<TpuTaskNode>,
-    /// 完成队列
-    pub done_list: VecDeque<TpuTaskNode>,
-}
-
 /// TPU 设备内部状态
 struct TpuDeviceInner {
     /// TDMA 寄存器
@@ -77,8 +48,6 @@ struct TpuDeviceInner {
     state: TpuState,
     /// 运行时状态
     runtime: TpuRuntimeState,
-    /// 任务工作队列
-    kernel_work: TpuKernelWork,
     /// TIU 中断回调
     tiu_irq_callback: Option<TiuIrqCallback>,
 }
@@ -101,15 +70,18 @@ pub struct Sg2002Tpu {
     poll_fallback_hits: AtomicU64,
     /// 是否已经提示过兜底路径
     fallback_warned: AtomicBool,
-    /// 轮询等待时的延时函数指针（0 表示未注入，退化为自旋）。
-    delay_fn: AtomicUsize,
+    /// 注入的阻塞等待函数指针（0 表示未注入，退化为忙等自旋）。
+    wait_fn: AtomicUsize,
 }
 
-/// 等待 TDMA 完成时每轮轮询之间的延时（微秒）。
+/// 等待 TDMA 完成时每轮睡眠让出的时长（微秒）。
 ///
-/// 注入延时函数后，`wait_irq` 每隔该间隔检查一次中断标志/硬件状态，
-/// 而非空转自旋，从而既能精确计时又能给出有界的超时。
+/// `run_one` 每隔该间隔被唤醒检查一次中断标志/硬件状态；注入了阻塞等待
+/// 函数后这段时间睡眠让出 CPU，而非空转自旋。
 const WAIT_POLL_INTERVAL_US: u64 = 100;
+
+/// 等待 TDMA 完成的总超时（约 10 秒），以轮询间隔为步长。
+const WAIT_TOTAL_STEPS: u64 = 10_000_000 / WAIT_POLL_INTERVAL_US;
 
 impl Sg2002Tpu {
     /// 创建未初始化的 TPU 设备
@@ -139,7 +111,6 @@ impl Sg2002Tpu {
                 tiu: unsafe { TiuRegs::new(tiu_vaddr) },
                 state: TpuState::Uninitialized,
                 runtime: TpuRuntimeState::default(),
-                kernel_work: TpuKernelWork::default(),
                 tiu_irq_callback: None,
             }),
             seq_counter: AtomicU32::new(0),
@@ -147,7 +118,7 @@ impl Sg2002Tpu {
             irq_handler_hits: AtomicU64::new(0),
             poll_fallback_hits: AtomicU64::new(0),
             fallback_warned: AtomicBool::new(false),
-            delay_fn: AtomicUsize::new(0),
+            wait_fn: AtomicUsize::new(0),
         }
     }
 
@@ -165,25 +136,36 @@ impl Sg2002Tpu {
         inner.tiu_irq_callback = None;
     }
 
-    /// 注册轮询等待时的延时函数（由 OS glue 注入，见 [`DelayFn`]）。
+    /// 注册阻塞等待函数（由 OS glue 注入，见 [`WaitIrqFn`]）。
     ///
-    /// 注入后 `wait_irq` 会以 [`WAIT_POLL_INTERVAL_US`] 为间隔定时轮询，
-    /// 而非空转自旋；未注入时退化为 `spin_loop`。
-    pub fn set_delay_fn(&self, delay_fn: DelayFn) {
-        self.delay_fn.store(delay_fn as usize, Ordering::Release);
+    /// 注入后 `run_one` 等待 TDMA 完成时会调用它睡眠让出 CPU，而非忙等自旋；
+    /// 未注入时退化为 `spin_loop`。
+    pub fn set_wait_irq_fn(&self, wait_fn: WaitIrqFn) {
+        self.wait_fn.store(wait_fn as usize, Ordering::Release);
     }
 
-    /// 等待一轮轮询间隔：注入了延时函数则按 `usecs` 精确延时，否则自旋。
-    fn wait_poll_interval(&self, usecs: u64) {
-        let raw = self.delay_fn.load(Ordering::Acquire);
+    /// 阻塞等待 TDMA 中断到达，最多等待 `timeout_us` 微秒。
+    ///
+    /// 注入了等待函数则睡眠让出 CPU 等待，否则忙等自旋一轮。
+    /// 返回 `true` 表示中断已到达，`false` 表示超时（或自旋兜底一轮后未到）。
+    fn wait_irq_blocking(&self, timeout_us: u64) -> bool {
+        let raw = self.wait_fn.load(Ordering::Acquire);
         if raw != 0 {
-            // SAFETY: `delay_fn` 仅由 `set_delay_fn` 写入一个合法的 `DelayFn`
+            // SAFETY: `wait_fn` 仅由 `set_wait_irq_fn` 写入一个合法的 `WaitIrqFn`
             // 函数指针，非零即有效。
-            let delay: DelayFn = unsafe { core::mem::transmute::<usize, DelayFn>(raw) };
-            delay(usecs);
+            let wait: WaitIrqFn = unsafe { core::mem::transmute::<usize, WaitIrqFn>(raw) };
+            wait(timeout_us)
         } else {
             core::hint::spin_loop();
+            self.irq_pending.load(Ordering::Acquire)
         }
+    }
+
+    /// 查询中断标志是否已置位（只读，不清除）。
+    ///
+    /// 供 OS glue 注入的等待函数用作 `WaitQueue` 谓词。
+    pub fn irq_pending(&self) -> bool {
+        self.irq_pending.load(Ordering::Acquire)
     }
 
     /// 初始化 TPU 设备 (probe)
@@ -243,101 +225,59 @@ impl Sg2002Tpu {
         self.seq_counter.fetch_add(1, Ordering::SeqCst)
     }
 
-    /// 提交 DMA buffer 任务
+    /// 阻塞执行一次推理。**由 OS glue 的 worker 线程调用**。
     ///
-    /// 调用方需先将 ioctl 中的 fd 解析为 `(vaddr, paddr)`。
-    pub fn submit_dmabuf(
+    /// 调用方需先将 ioctl 中的 fd 解析为 `(vaddr, paddr)`。本函数会一直阻塞
+    /// 到该 dmabuf 推理完成（内部可能多段 fire→等中断→检查），其间等待硬件
+    /// 时通过注入的 [`WaitIrqFn`] 睡眠让出 CPU。
+    ///
+    /// 不在等待硬件期间持有 `inner` 自旋锁：依赖单 worker 串行访问硬件这一
+    /// 前提，寄存器从 `tdma_vaddr`/`tiu_vaddr` 局部重建（同 `handle_irq`），
+    /// 运行时状态放栈上，仅在状态翻转/读回调时短暂持锁。
+    pub fn run_one(
         &self,
-        fd: i32,
         seq_no: u32,
         dmabuf_vaddr: usize,
         dmabuf_paddr: u64,
     ) -> Result<(), TpuError> {
-        debug!("[TPU] submit dmabuf: fd={}, seq_no={}", fd, seq_no);
         debug!(
-            "[TPU] Buffer: vaddr=0x{:x}, paddr=0x{:x}",
-            dmabuf_vaddr, dmabuf_paddr
+            "[TPU] run_one: seq_no={}, vaddr=0x{:x}, paddr=0x{:x}",
+            seq_no, dmabuf_vaddr, dmabuf_paddr
         );
 
-        // 创建任务节点
-        let task = TpuTaskNode {
-            pid: 0, // 当前没有进程 ID 概念，可以后续扩展
-            seq_no,
-            dmabuf_fd: fd,
-            dmabuf_vaddr,
-            dmabuf_paddr,
-            tpu_path: TpuSubmitPath::DesNormal,
-            ret: 0,
+        // 仅短暂持锁：校验/翻转状态并取出 TIU 回调，随后立即释放，
+        // 不在等待硬件期间持锁（否则 worker 无法睡眠让出 CPU）。
+        let tiu_irq_callback = {
+            let mut inner = self.inner.lock();
+            if inner.state != TpuState::Idle && inner.state != TpuState::Uninitialized {
+                return Err(TpuError::NotInitialized);
+            }
+            inner.state = TpuState::Running;
+            inner.tiu_irq_callback
         };
 
-        // 添加到任务队列
-        let mut inner = self.inner.lock();
-        inner.kernel_work.task_list.push_back(task);
+        // 寄存器为纯 MMIO vaddr 包装，单 worker 串行访问，无需持锁重建。
+        let tdma = unsafe { TdmaRegs::new(self.tdma_vaddr) };
+        let tiu = unsafe { TiuRegs::new(self.tiu_vaddr) };
 
-        // 直接执行任务 (简化版本，不使用工作线程)
-        self.process_task_locked(&mut inner)?;
-
-        Ok(())
-    }
-
-    /// 处理任务 (内部函数，需要持有锁)
-    fn process_task_locked(&self, inner: &mut TpuDeviceInner) -> Result<(), TpuError> {
-        while let Some(mut task) = inner.kernel_work.task_list.pop_front() {
-            // 初始化 TPU
-            super::platform::resync_cmd_id(&inner.tdma, &inner.tiu);
-            inner.runtime.irq_received = false;
-
-            // 执行 DMA buffer
-            let result = self.run_dmabuf_internal(
-                inner,
-                task.seq_no,
-                task.dmabuf_vaddr as *const u8,
-                task.dmabuf_paddr,
-            );
-
-            task.ret = match result {
-                Ok(_) => 0,
-                Err(e) => {
-                    error!("TPU run dmabuf failed: {:?}", e);
-                    -1
-                }
-            };
-
-            // 移动到完成队列
-            inner.kernel_work.done_list.push_back(task);
-        }
-
-        Ok(())
-    }
-
-    /// 内部执行 DMA buffer
-    fn run_dmabuf_internal(
-        &self,
-        inner: &mut TpuDeviceInner,
-        seq_no: u32,
-        dmabuf_vaddr: *const u8,
-        dmabuf_paddr: u64,
-    ) -> Result<(), TpuError> {
-        if inner.state != TpuState::Idle && inner.state != TpuState::Uninitialized {
-            return Err(TpuError::NotInitialized);
-        }
-
-        inner.state = TpuState::Running;
+        // 运行时状态放栈上：worker 是唯一访问者，避免借用 vs 锁的张力。
+        let mut runtime = TpuRuntimeState {
+            current_seq_no: seq_no,
+            tiu_irq_callback,
+            ..TpuRuntimeState::default()
+        };
 
         // 简化版超时检查 (使用 Cell 实现内部可变性)
         let timeout_counter = Cell::new(0u64);
         let timeout_limit = 10_000_000_000u64; // 大约 10 秒
-        // 等待 TDMA 完成的总超时（约 10 秒），以轮询间隔为步长。
-        const WAIT_TIMEOUT_US: u64 = 10_000_000;
-        let wait_poll_steps = WAIT_TIMEOUT_US / WAIT_POLL_INTERVAL_US;
         self.irq_pending.store(false, Ordering::Release);
         let tdma_irq_poll = unsafe { TdmaRegs::new(self.tdma_vaddr) };
 
         let wait_irq = || -> Result<(), TpuError> {
-            // 优先等待外部 IRQ；每隔 `WAIT_POLL_INTERVAL_US` 检查一次，期间
-            // 通过注入的延时函数精确计时，而非空转自旋。
+            // 优先等待外部 IRQ：每轮睡眠 `WAIT_POLL_INTERVAL_US` 让出 CPU，
+            // 醒来后检查中断标志；并保留直接读 TDMA 状态寄存器的 MMIO 兜底。
             let mut steps = 0u64;
-            while steps < wait_poll_steps {
+            while steps < WAIT_TOTAL_STEPS {
                 if self.irq_pending.swap(false, Ordering::AcqRel) {
                     return Ok(());
                 }
@@ -359,7 +299,9 @@ impl Sg2002Tpu {
                     return Ok(());
                 }
 
-                self.wait_poll_interval(WAIT_POLL_INTERVAL_US);
+                // 睡眠让出 CPU 一轮；若注入的等待函数报告 IRQ 已到达则下一轮
+                // 立即被 swap 命中返回。
+                self.wait_irq_blocking(WAIT_POLL_INTERVAL_US);
                 steps += 1;
             }
             Err(TpuError::Timeout)
@@ -371,58 +313,28 @@ impl Sg2002Tpu {
             next > timeout_limit
         };
 
-        // 使用指针避免同时借用
-        let tdma = &inner.tdma as *const TdmaRegs;
-        let tiu = &inner.tiu as *const TiuRegs;
-        let tiu_irq_callback = inner.tiu_irq_callback;
-        let runtime = &mut inner.runtime;
-        runtime.current_seq_no = seq_no;
-        runtime.tiu_irq_callback = tiu_irq_callback;
-
         let result = unsafe {
             super::platform::run_dmabuf(
-                &*tdma,
-                &*tiu,
-                dmabuf_vaddr,
+                &tdma,
+                &tiu,
+                dmabuf_vaddr as *const u8,
                 dmabuf_paddr,
-                runtime,
+                &mut runtime,
                 wait_irq,
                 timeout_checker,
             )
         };
 
-        inner.state = TpuState::Idle;
+        {
+            let mut inner = self.inner.lock();
+            inner.runtime = runtime;
+            inner.state = TpuState::Idle;
+        }
+
+        if let Err(e) = &result {
+            error!("TPU run_one failed: seq_no={}, err={:?}", seq_no, e);
+        }
         result
-    }
-
-    /// 等待 DMA buffer 完成。返回任务的 `ret` 值。
-    ///
-    /// 若找不到对应 `seq_no`，返回 `Err(TpuError::NotInitialized)`。
-    pub fn wait_dmabuf(&self, seq_no: u32) -> Result<i32, TpuError> {
-        debug!("TPU wait dmabuf: seq_no={}", seq_no);
-
-        let mut inner = self.inner.lock();
-
-        // 在完成队列中查找
-        let mut found_idx = None;
-        for (idx, task) in inner.kernel_work.done_list.iter().enumerate() {
-            if task.seq_no == seq_no {
-                found_idx = Some(idx);
-                break;
-            }
-        }
-
-        if let Some(idx) = found_idx {
-            let task = inner.kernel_work.done_list.remove(idx).unwrap();
-            debug!(
-                "TPU wait dmabuf completed: seq_no={}, ret={}",
-                seq_no, task.ret
-            );
-            Ok(task.ret)
-        } else {
-            warn!("TPU wait dmabuf: seq_no {} not found", seq_no);
-            Err(TpuError::NotInitialized)
-        }
     }
 
     /// 刷新 DMA buffer 缓存 (通过物理地址)
