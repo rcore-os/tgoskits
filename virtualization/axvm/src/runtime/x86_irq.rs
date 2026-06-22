@@ -24,6 +24,16 @@ static IOAPIC_IRQ_PENDING: AtomicUsize = AtomicUsize::new(0);
 static IOAPIC_IRQ_HANDLES: [AtomicUsize; IOAPIC_GSI_COUNT] =
     [const { AtomicUsize::new(0) }; IOAPIC_GSI_COUNT];
 
+fn should_register_ioapic_irq_hook(vector: usize) -> bool {
+    (IOAPIC_VECTOR_BASE..IOAPIC_VECTOR_END).contains(&vector)
+        && vector != IOAPIC_VECTOR_BASE + PIT_TIMER_GSI
+}
+
+fn ioapic_irq_hook_vectors() -> impl Iterator<Item = usize> {
+    (IOAPIC_VECTOR_BASE..IOAPIC_VECTOR_END)
+        .filter(|vector| should_register_ioapic_irq_hook(*vector))
+}
+
 pub fn forward_passthrough_irq_from_vmexit(vm: &VMRef, vcpu: &VCpuRef, vector: usize) {
     if vector == IOAPIC_VECTOR_BASE + PIT_TIMER_GSI {
         return;
@@ -151,7 +161,7 @@ pub fn enable_ioapic_irq_forwarding(vm: &VMRef, vcpu: &VCpuRef) {
     }
 
     let mut registered = 0;
-    for vector in IOAPIC_VECTOR_BASE..IOAPIC_VECTOR_END {
+    for vector in ioapic_irq_hook_vectors() {
         let gsi = vector - IOAPIC_VECTOR_BASE;
         if IOAPIC_IRQ_HANDLES[gsi].load(Ordering::Acquire) != 0 {
             continue;
@@ -173,9 +183,11 @@ pub fn enable_ioapic_irq_forwarding(vm: &VMRef, vcpu: &VCpuRef) {
         IOAPIC_IRQ_HOOK_REGISTERED.store(true, Ordering::Release);
     }
     info!(
-        "Enabled x86 IOAPIC IRQ forwarding for host vectors {:#x}..{:#x} ({} newly registered)",
+        "Enabled x86 IOAPIC IRQ forwarding for host vectors {:#x}..{:#x}, excluding PIT vector \
+         {:#x} ({} newly registered)",
         IOAPIC_VECTOR_BASE,
         IOAPIC_VECTOR_END - 1,
+        IOAPIC_VECTOR_BASE + PIT_TIMER_GSI,
         registered
     );
 }
@@ -246,4 +258,43 @@ unsafe fn ioapic_irq_forwarding_handler(
     let bit = 1usize << (vector - IOAPIC_VECTOR_BASE);
     IOAPIC_IRQ_PENDING.fetch_or(bit, Ordering::AcqRel);
     irq::IrqReturn::Handled
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        COM1_GSI, IOAPIC_GSI_COUNT, IOAPIC_VECTOR_BASE, PIT_TIMER_GSI, ioapic_irq_hook_vectors,
+        should_register_ioapic_irq_hook,
+    };
+
+    #[test]
+    fn host_pit_vector_uses_synthetic_injection_not_irq_hook() {
+        assert!(!should_register_ioapic_irq_hook(
+            IOAPIC_VECTOR_BASE + PIT_TIMER_GSI
+        ));
+    }
+
+    #[test]
+    fn other_ioapic_vectors_still_register_forwarding_hooks() {
+        assert!(should_register_ioapic_irq_hook(
+            IOAPIC_VECTOR_BASE + COM1_GSI
+        ));
+        assert!(should_register_ioapic_irq_hook(IOAPIC_VECTOR_BASE + 18));
+        assert!(should_register_ioapic_irq_hook(
+            IOAPIC_VECTOR_BASE + IOAPIC_GSI_COUNT - 1
+        ));
+        assert!(!should_register_ioapic_irq_hook(
+            IOAPIC_VECTOR_BASE + IOAPIC_GSI_COUNT
+        ));
+    }
+
+    #[test]
+    fn hook_vector_iterator_matches_registration_policy() {
+        for vector in IOAPIC_VECTOR_BASE..IOAPIC_VECTOR_BASE + IOAPIC_GSI_COUNT {
+            assert_eq!(
+                ioapic_irq_hook_vectors().any(|hook| hook == vector),
+                should_register_ioapic_irq_hook(vector)
+            );
+        }
+    }
 }
