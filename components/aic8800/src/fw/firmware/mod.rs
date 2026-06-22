@@ -2,6 +2,7 @@
 
 mod data;
 mod dc;
+mod dc_rf_cfg;
 mod upload;
 
 pub use data::{FirmwareSet, get_firmware_set};

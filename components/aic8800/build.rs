@@ -65,47 +65,28 @@ const FIRMWARE_FILES: &[FirmwareFile] = &[
         sha256: "62d53a223eda1ea064ba82a6fe67829d0720e9f4e87d26763fd13316ccd2a90b",
     },
     // AIC8800DC-H (sub_id==2, chip_id_h) WiFi-only patch + patch table.
-    // In-tree only (from vendor rootfs); not on the pinned upstream mirror.
+    // Fetched from the pinned upstream mirror (same repo/commit as the other blobs).
     FirmwareFile {
         name: "fmacfw_patch_8800dc_h_u02.bin",
-        remote_path: "",
-        sha256: "e3257b02541d722fb02bcde673a5377bb38b0d7c5cb8c1c15a7fbb6a3c46238b",
+        remote_path: "aic8800DC/fmacfw_patch_8800dc_h_u02.bin",
+        sha256: "f388dcb419a0f677c777a1eaad798156eabdfbb72c512a4d993df0dbc4f351d1",
     },
     FirmwareFile {
         name: "fmacfw_patch_tbl_8800dc_h_u02.bin",
-        remote_path: "",
-        sha256: "1494ffd7e8d12536e516ab4d9551890aa24e52df4a8817a0a57d463f3dff0df5",
+        remote_path: "aic8800DC/fmacfw_patch_tbl_8800dc_h_u02.bin",
+        sha256: "0469686691b72fa8296ff7abd1669ba978bdc0f115137fd392aa00a2717ff887",
     },
     // AIC8800DC-H DPD calibration firmware: uploaded to 0x130000 and run via
     // start_app(0x130009, FNCALL) to power on the RF/misc-RAM (0x110000) region
-    // before patch_config. In-tree only.
+    // before patch_config. Fetched from the pinned upstream mirror.
     FirmwareFile {
         name: "fmacfw_calib_8800dc_h_u02.bin",
-        remote_path: "",
-        sha256: "4a3892ef1a61ad6f531d743786f911be4af68d4969d821fa6513f4c8df4620c8",
+        remote_path: "aic8800DC/fmacfw_calib_8800dc_h_u02.bin",
+        sha256: "12bdcdd48e41b33bfd74834bffa326b4469bea82e7134de079392fbc2508acc7",
     },
-    // RF config blobs (ldpc/agc/txgain) extracted from the vendor BSP source
-    // `aic8800dc_compat.c` as little-endian u32 arrays; in-tree only (no upstream).
-    FirmwareFile {
-        name: "dc_ldpc_cfg_ram.bin",
-        remote_path: "",
-        sha256: "57d0cf8c72806b08cb9d312977a2967de07a9e2c1725e3726b368f6144cf5765",
-    },
-    FirmwareFile {
-        name: "dc_agc_cfg_ram.bin",
-        remote_path: "",
-        sha256: "f2b81eece11b9b7704d626ebfa0f26e6284a94298b820a6ecfef7d335575d5ba",
-    },
-    FirmwareFile {
-        name: "dc_txgain_map.bin",
-        remote_path: "",
-        sha256: "539b30d9569e7df2b79e8b7d53d7d299fbb09606e051c3ea1b7e060ddd0ab284",
-    },
-    FirmwareFile {
-        name: "dc_txgain_map_h.bin",
-        remote_path: "",
-        sha256: "7007b07bf5348f04b7f1cb013447497efa136750213cb38c40488d7b0bd368eb",
-    },
+    // NB: the AIC8800DC RF config tables (ldpc/agc/txgain) are NOT firmware
+    // images and have no upstream mirror — they are vendor BSP source arrays,
+    // inlined as Rust byte arrays in `src/fw/firmware/dc_rf_cfg.rs` (no blob).
     FirmwareFile {
         name: "fmacfw_8800d80_u02.bin",
         remote_path: "aic8800_and_aic8800D80/fmacfw_8800d80_u02.bin",
