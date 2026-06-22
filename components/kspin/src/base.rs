@@ -311,7 +311,7 @@ impl<G: BaseGuard, T: ?Sized> BaseSpinLock<G, T> {
     /// not miscompile concurrent accesses to the same data from other CPUs.
     #[inline(always)]
     pub unsafe fn data_unchecked(&self) -> &T {
-        &*self.data.get()
+        unsafe { &*self.data.get() }
     }
 }
 
