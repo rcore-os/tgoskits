@@ -352,7 +352,7 @@ jobs:
       - detect_changes
       - static_checks
     strategy:
-      fail-fast: false
+      fail-fast: true
       matrix:
         include:
           - name: Run clippy

@@ -65,6 +65,17 @@ const ARRAY_REPEAT_VALUE: MaybeUninit<&'static mut AxRunQueue> = MaybeUninit::un
 static RUN_QUEUE_INITIALIZED: [AtomicBool; ax_config::plat::MAX_CPU_NUM] =
     [const { AtomicBool::new(false) }; ax_config::plat::MAX_CPU_NUM];
 
+/// Per-CPU back-off counters for `try_steal`, reducing scheduler lock
+/// contention when many CPUs are idle simultaneously.  Each idle CPU only
+/// probes remote run queues every `STEAL_BACKOFF_PERIOD` attempts.
+#[cfg(feature = "smp")]
+static STEAL_BACKOFF: [core::sync::atomic::AtomicU8; ax_config::plat::MAX_CPU_NUM] =
+    [const { core::sync::atomic::AtomicU8::new(0) }; ax_config::plat::MAX_CPU_NUM];
+
+/// Only scan remote run queues every N invocations of `try_steal`.
+#[cfg(feature = "smp")]
+const STEAL_BACKOFF_PERIOD: u8 = 8;
+
 #[cfg(not(feature = "host-test"))]
 fn main_task_stack() -> TaskStack {
     let (stack_ptr, stack_size) = ax_hal::mem::boot_stack_bounds(this_cpu_id());
@@ -664,6 +675,16 @@ impl AxRunQueue {
     #[allow(clippy::modulo_one, clippy::reversed_empty_ranges)]
     fn try_steal(&self) -> Option<AxTaskRef> {
         let current_cpu = self.cpu_id;
+
+        // Back-off: only attempt to steal every STEAL_BACKOFF_PERIOD calls.
+        // Without this, N idle CPUs would all `try_lock` every remote
+        // scheduler on every idle-loop iteration, starving the busy CPU
+        // out of its own lock and causing multi-second scheduling stalls.
+        let cnt = STEAL_BACKOFF[current_cpu].fetch_add(1, Ordering::Relaxed);
+        if cnt % STEAL_BACKOFF_PERIOD != 0 {
+            return None;
+        }
+
         for i in 1..ax_config::plat::MAX_CPU_NUM {
             let target = (current_cpu + i) % ax_config::plat::MAX_CPU_NUM;
             if !RUN_QUEUE_INITIALIZED[target].load(Ordering::Acquire) {
@@ -673,17 +694,31 @@ impl AxRunQueue {
                 let Some(mut sched) = get_run_queue(target).scheduler.try_lock() else {
                     continue;
                 };
-                // A task must be Ready AND have finished its scheduling
-                // process on the original CPU (on_cpu == false) before it
+                // A task must be Ready, have finished its scheduling
+                // process on the original CPU (on_cpu == false), and NOT
+                // be in an atomic context (preempt_count == 0) before it
                 // can be stolen.  Otherwise the original CPU's
                 // clear_prev_task_on_cpu() will race with switch_to() on
                 // this CPU and incorrectly clear on_cpu after we set it.
                 // Filtering these conditions inside the predicate avoids a
                 // "pick then put-back" window where the task is momentarily
                 // absent from any run queue.
+                //
+                // The preempt_count gate mirrors Linux's can_migrate_task()
+                // which refuses to migrate tasks in atomic context.
                 sched
                     .pick_next_task_matching(|t| {
-                        t.cpumask().get(current_cpu) && t.is_ready() && !t.on_cpu()
+                        #[cfg(feature = "preempt")]
+                        {
+                            t.cpumask().get(current_cpu)
+                                && t.is_ready()
+                                && !t.on_cpu()
+                                && t.preempt_count() == 0
+                        }
+                        #[cfg(not(feature = "preempt"))]
+                        {
+                            t.cpumask().get(current_cpu) && t.is_ready() && !t.on_cpu()
+                        }
                     })
                     .inspect(|task| {
                         task.set_cpu_id(current_cpu as _);
