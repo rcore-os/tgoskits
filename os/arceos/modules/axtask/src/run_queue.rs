@@ -673,6 +673,7 @@ impl AxRunQueue {
     #[cfg(feature = "smp")]
     // `ax_config::plat::MAX_CPU_NUM` is always greater than 1 with "smp" enabled.
     #[allow(clippy::modulo_one, clippy::reversed_empty_ranges)]
+    #[cfg_attr(not(feature = "preempt"), allow(dead_code))]
     fn try_steal(&self) -> Option<AxTaskRef> {
         let current_cpu = self.cpu_id;
 
@@ -681,7 +682,7 @@ impl AxRunQueue {
         // scheduler on every idle-loop iteration, starving the busy CPU
         // out of its own lock and causing multi-second scheduling stalls.
         let cnt = STEAL_BACKOFF[current_cpu].fetch_add(1, Ordering::Relaxed);
-        if cnt % STEAL_BACKOFF_PERIOD != 0 {
+        if !cnt.is_multiple_of(STEAL_BACKOFF_PERIOD) {
             return None;
         }
 
@@ -764,11 +765,22 @@ impl AxRunQueue {
             .or_else(|| {
                 #[cfg(feature = "smp")]
                 {
-                    // Only steal when the CPU is truly idle, mirroring Linux's
-                    // idle_balance() which is only called from the idle task path.
+                    // Work-stealing is only safe when preemption is enabled.
+                    // Without preempt (FIFO scheduler, no IPI), there is no
+                    // mechanism to kick a remote CPU after its task is stolen,
+                    // and the stolen task may depend on per-CPU resources that
+                    // were set up on its original CPU (e.g. Rockchip DMA/IRQ
+                    // routing).  This mirrors Linux's idle_balance() which
+                    // relies on the scheduler tick + NEED_RESCHED to preempt
+                    // the current task after waking it on a remote CPU.
+                    #[cfg(feature = "preempt")]
                     if crate::current().is_idle() {
                         self.try_steal()
                     } else {
+                        None
+                    }
+                    #[cfg(not(feature = "preempt"))]
+                    {
                         None
                     }
                 }
