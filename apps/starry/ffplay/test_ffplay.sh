@@ -84,8 +84,9 @@ export WAYLAND_DISPLAY="$DISP"
 # ======================================================================
 hdr "L2: ffplay Wayland (perf-tuned)"
 # ======================================================================
-if [ -f /usr/share/test.mp4 ]; then
+if [ -f /usr/share/test.mp4 ] && [ -s /usr/share/test.mp4 ]; then
     echo "--- starting ffplay (Mesa GLES2 path) ---"
+    echo "--- video file: $(wc -c < /usr/share/test.mp4) bytes ---"
     rm -f /tmp/ffplay_stdout.log /tmp/ffplay_stderr.log /tmp/ffplay_maps.log
 
     # GL 渲染器下需要强制软件渲染，LD_BIND_NOW=1 修复 musl + SDL2 退出时 PLT 解析失败 (exit 123)
@@ -99,15 +100,23 @@ if [ -f /usr/share/test.mp4 ]; then
 
     wait $FPID 2>/dev/null
     RC=$?
+    # Check for critical playback errors (moov atom not found, invalid data, etc.)
+    FFPLAY_ERRORS=$(grep -ciE "moov atom not found|Invalid data found|error.*input|could not find codec" /tmp/ffplay_stderr.log 2>/dev/null || true)
     case $RC in
-        0)   pass "L2: ffplay Wayland exit=0" ;;
+        0)
+            if [ "$FFPLAY_ERRORS" -gt 0 ]; then
+                fail "L2: ffplay Wayland exit=0 but had $FFPLAY_ERRORS codec errors"
+            else
+                pass "L2: ffplay Wayland exit=0"
+            fi
+            ;;
         123) pass "L2: ffplay Wayland exit=123 (known musl PLT cleanup)" ;;
-        124) pass "L2: ffplay Wayland survived 180s (timeout)" ;;
+        124) pass "L2: ffplay Wayland survived 300s (timeout)" ;;
         139) fail "L2: ffplay Wayland SIGSEGV" ;;
         *)   fail "L2: ffplay Wayland (exit=$RC)" ;;
     esac
 else
-    fail "L2: /usr/share/test.mp4 not found — ffplay never ran"
+    fail "L2: /usr/share/test.mp4 not found or empty — ffplay never ran"
 fi
 
 # ======================================================================

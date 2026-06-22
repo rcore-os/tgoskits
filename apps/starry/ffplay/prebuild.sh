@@ -242,6 +242,7 @@ populate_overlay() {
     # ffplay + ffmpeg + wget for video playback test
     copy_file_to_overlay /usr/bin/ffplay 0755
     copy_file_to_overlay /usr/bin/ffmpeg 0755
+    copy_file_to_overlay /usr/bin/ffprobe 0755
     copy_file_to_overlay /usr/bin/wget 0755
     copy_runtime_dependencies /usr/bin/ffplay
     copy_runtime_dependencies /usr/bin/ffmpeg
@@ -355,45 +356,79 @@ populate_overlay() {
     # Test script
     install -Dm0755 "$app_dir/test_ffplay.sh" "$overlay_dir/usr/bin/test_ffplay.sh"
 
-    # Sample video — downloaded on the host during build, included in the
+    # Sample video — generated on the host during build, included in the
     # overlay so the guest can play it without internet access.
-    # URL can be overridden via STARRY_VIDEO_URL (e.g. a local mirror or
-    # file:// URI when the default endpoint is unreachable from CI/Docker).
+    # Strategy: always generate a synthetic video first (guaranteed to work),
+    # then optionally download a real one if STARRY_VIDEO_URL is reachable.
     local video_url="${STARRY_VIDEO_URL:-https://media.w3.org/2010/05/sintel/trailer.mp4}"
     local video_dst="$overlay_dir/usr/share/test.mp4"
-    if [[ ! -f "$video_dst" ]]; then
-        echo "[ffplay prebuild] downloading sample video..."
-        if wget -4 -q --timeout=15 --dns-timeout=10 -O "$video_dst" "$video_url" 2>/dev/null; then
-            echo "[ffplay prebuild] sample video: $(wc -c < "$video_dst") bytes"
-        else
-            echo "[ffplay prebuild] WARNING: video download failed, generating synthetic..."
-            if command -v ffmpeg >/dev/null 2>&1; then
-                ffmpeg -y -f lavfi \
-                    -i "mandelbrot=size=640x360:rate=30:maxiter=200:start_scale=3:end_scale=0.001" \
-                    -t 60 -c:v libx264 -preset fast -b:v 800k -pix_fmt yuv420p \
-                    "$video_dst" 2>/dev/null
+    mkdir -p "$overlay_dir/usr/share"
+    if [[ ! -f "$video_dst" ]] || [[ ! -s "$video_dst" ]]; then
+        # Step 1: Always generate a synthetic mandelbrot video (reliable fallback).
+        echo "[ffplay prebuild] generating synthetic mandelbrot video..."
+        if command -v ffmpeg >/dev/null 2>&1; then
+            if ffmpeg -y -f lavfi \
+                -i "mandelbrot=size=320x180:rate=5:maxiter=50:start_scale=3:end_scale=0.01" \
+                -t 60 -c:v libx264 -preset ultrafast -b:v 100k -pix_fmt yuv420p \
+                "$video_dst" >/dev/null 2>&1 && \
+               [[ -s "$video_dst" ]] && \
+               ffprobe "$video_dst" >/dev/null 2>&1; then
                 echo "[ffplay prebuild] synthetic video: $(wc -c < "$video_dst") bytes"
+            else
+                echo "[ffplay prebuild] ERROR: synthetic video generation failed" >&2
+                rm -f "$video_dst"
+            fi
+        else
+            echo "[ffplay prebuild] ERROR: ffmpeg not found on host" >&2
+        fi
+
+        # Step 2: Try to download a real video (optional — overwrite synthetic).
+        if command -v wget >/dev/null 2>&1; then
+            echo "[ffplay prebuild] trying to download sample video..."
+            local tmp_dl="$video_dst.dl.mp4"
+            if wget -4 -q --dns-timeout=10 --timeout=30 -O "$tmp_dl" "$video_url" 2>/dev/null && \
+               [[ -s "$tmp_dl" ]] && \
+               ffprobe "$tmp_dl" >/dev/null 2>&1; then
+                mv "$tmp_dl" "$video_dst"
+                echo "[ffplay prebuild] downloaded video: $(wc -c < "$video_dst") bytes"
+            else
+                rm -f "$tmp_dl"
+                echo "[ffplay prebuild] download failed or invalid, keeping synthetic"
             fi
         fi
-        # Compress to 160p for faster playback
-        if command -v ffmpeg >/dev/null 2>&1 && [[ -f "$video_dst" ]]; then
-            # NOTE: temp file must have a recognizable extension so ffmpeg can
-            # infer the muxer — .tmp alone causes "Invalid argument".  We use
-            # .tmp.mp4 so the extension-based probe picks up MP4, then atomically
-            # rename over the original.
-            local compressed="$overlay_dir/usr/share/test.mp4.tmp.mp4"
-            echo "[ffplay prebuild] compressing to 160p..."
-            if ffmpeg -y -i "$video_dst" \
-                -vf "scale=284:160:flags=fast_bilinear" \
-                -r 5 -c:v libx264 -preset ultrafast -b:v 100k -pix_fmt yuv420p \
-                -an "$compressed" 2>&1; then
-                mv "$compressed" "$video_dst"
-                echo "[ffplay prebuild] compressed: $(wc -c < "$video_dst") bytes"
+
+        # Step 3: Compress to 160p for faster playback (skip if already small)
+        if command -v ffmpeg >/dev/null 2>&1 && [[ -s "$video_dst" ]]; then
+            local dst_size
+            dst_size=$(wc -c < "$video_dst")
+            if [[ "$dst_size" -gt 50000 ]]; then
+                local compressed="$overlay_dir/usr/share/test.mp4.tmp.mp4"
+                echo "[ffplay prebuild] compressing to 160p..."
+                if ffmpeg -y -i "$video_dst" \
+                    -vf "scale=284:160:flags=fast_bilinear" \
+                    -r 5 -c:v libx264 -preset ultrafast -b:v 100k -pix_fmt yuv420p \
+                    -an "$compressed" >/dev/null 2>&1 && \
+                    [[ -s "$compressed" ]] && \
+                    ffprobe "$compressed" >/dev/null 2>&1; then
+                    mv "$compressed" "$video_dst"
+                    echo "[ffplay prebuild] compressed: $(wc -c < "$video_dst") bytes"
+                else
+                    echo "[ffplay prebuild] ffmpeg compression failed, keeping original"
+                    rm -f "$compressed"
+                fi
             else
-                echo "[ffplay prebuild] ffmpeg compression failed, keeping original"
+                echo "[ffplay prebuild] video already small ($dst_size bytes), skipping compression"
             fi
         fi
     fi
+
+    # Final validation — ensure we have a usable video file
+    if [[ ! -s "$video_dst" ]] || ! ffprobe "$video_dst" >/dev/null 2>&1; then
+        echo "[ffplay prebuild] FATAL: no valid video file at $video_dst" >&2
+        rm -f "$video_dst"
+        exit 1
+    fi
+    echo "[ffplay prebuild] final video: $(wc -c < "$video_dst") bytes"
 }
 
 require_env STARRY_ROOTFS "$base_rootfs"
