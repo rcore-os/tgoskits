@@ -90,5 +90,5 @@ timeout = 1800
 [host_http_server]
 bind = "127.0.0.1"
 port = 18383
-body_size = 20971520
+body_size = 1048576
 body_byte = 97
