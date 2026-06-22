@@ -1,34 +1,37 @@
 # StarryOS macOS AArch64 自举编译
 
-这个 app 用来在 Apple Silicon macOS 上复现 StarryOS 自举编译，最终验证环境是
-Apple M3。Starry app runner 构建 AArch64 StarryOS 种子内核，准备 app overlay，
-用 QEMU HVF 启动它，然后在 StarryOS guest 里面直接运行 Cargo，再把 guest
-编译出的内核从 app runner 使用的 rootfs 中取回，并再次用 QEMU 启动验证。
+这个 app 用来在 Apple Silicon macOS 上复现 StarryOS 自举编译，验证环境是
+Apple M3。流程复用现有 Starry app runner：host 侧构建 AArch64 StarryOS
+种子内核，host 侧 `prebuild.sh` 准备 app overlay，app runner 注入 overlay
+并用 QEMU HVF 启动 StarryOS guest，然后在 guest 里面直接运行 Cargo。构建
+结束后，`full_self_build.sh` 从 app runner 使用的 rootfs 中取回 guest 编译
+出的内核，并再次用普通 QEMU 命令启动验证。
 
 
 ## 具体流程
 
 `full_self_build.sh` 是完整默认入口，流程按下面几个 stage 组织：
 
-| 阶段 | xtask 命令 | 作用 |
+| 阶段 | 命令/入口 | 作用 |
 | --- | --- | --- |
 | Stage 1 | `prepare_host_tools.sh` | 准备 macOS host 上构建 AArch64 种子内核需要的工具 wrapper |
-| Stage 2 | `cargo xtask starry app qemu -t macos-selfbuild --arch aarch64` | 使用现有 Starry app runner 构建种子内核、确保 rootfs、执行 `prebuild.sh`、通过内部 rootfs injector 注入 overlay，并启动 QEMU/HVF |
-| Stage 2 / prebuild | `cargo xtask image resize <ROOTFS> --size-mib 16384` | 在 overlay 注入前扩容 app runner 选中的 rootfs |
-| Stage 3 | QEMU/HVF 启动，guest Cargo 构建 | 在 StarryOS guest 内直接运行 `cargo build` |
+| Stage 2 | `cargo xtask starry app qemu -t macos-selfbuild --arch aarch64` | 使用现有 Starry app runner 构建种子内核、确保 rootfs、执行 `prebuild.sh`、通过内部 `rootfs::inject::inject_overlay()` 注入 overlay，并启动 QEMU/HVF |
+| Stage 2 / prebuild | `cargo xtask image resize <ROOTFS> --size-mib 16384` | host 侧 `prebuild.sh` 在 overlay 注入前扩容 app runner 选中的 rootfs |
+| Stage 3 | QEMU/HVF guest Cargo 构建 | StarryOS guest 启动后，由 `shell_init_cmd` 执行 guest runner，并在 guest 内直接运行 `cargo build` |
 | Stage 4 | `debugfs` 提取产物 | 从 app runner 使用的 rootfs 提取 guest-built 内核 ELF 和 `.bin` |
 
 ## 脚本职责
 
 | 脚本 | 角色 | 做什么 |
 | --- | --- | --- |
-| `full_self_build.sh` | 完整入口 | 准备 host 工具，运行现有 Starry app QEMU runner，并在 runner 成功后提取 guest-built 产物。 |
-| `prebuild.sh` | app runner prebuild | 扩容 app runner 选中的 rootfs，组装待注入 overlay：复制工具链 overlay、打包当前源码、复制离线 Cargo registry cache、写入 guest runner 和源码 metadata。 |
-| `prepare_toolchain_overlay.sh` | 内部/调试脚本 | 下载并准备 guest 里的 Rust/Cargo、Rust 源码、LLVM/libclang、musl C 工具链和 Cargo cache。输出是目录树，不是 rootfs 镜像。 |
+| `full_self_build.sh` | 完整入口 | 准备 host 工具，调用现有 Starry app QEMU runner，并在 runner 成功后从 rootfs 提取 guest-built 产物。通常只需要运行这个脚本。 |
+| `prebuild.sh` | host 侧 app runner prebuild | 由 app runner 在 host OS 上执行；接收 `STARRY_ROOTFS` 和 `STARRY_OVERLAY_DIR`，扩容选中的 rootfs，组装待注入 overlay：复制工具链 overlay、打包当前源码、复制离线 Cargo registry cache、写入 guest runner 和源码 metadata。它不负责注入 overlay，也不启动 QEMU。 |
+| `prepare_toolchain_overlay.sh` | 内部/调试脚本 | 下载并准备 guest 里的 Rust/Cargo、Rust 源码、LLVM/libclang、musl C 工具链和 Cargo cache。输出是目录树，不是 rootfs 镜像；默认由 `prebuild.sh` 调用。 |
 | `prepare_host_tools.sh` | 内部/调试脚本 | 准备 macOS host 上构建种子内核所需的 AArch64 musl 编译器 wrapper、`rust-nm`、`rust-objdump` 等工具。 |
 | `guest-selfbuild.sh` | guest 内脚本 | 在 StarryOS guest 中解包源码、写 Cargo 配置、执行 Cargo 构建、刷新 kallsyms，并复制 guest-built 内核产物。 |
 
-rootfs 由 axbuild image storage 选择。干净默认运行时，路径是：
+rootfs 由 axbuild image storage 选择；这个 app 不维护单独的 rootfs 副本。
+干净默认运行时，路径是：
 
 ```text
 tmp/axbuild/rootfs/rootfs-aarch64-alpine.img/rootfs-aarch64-alpine.img
@@ -42,11 +45,12 @@ target/starry-macos-selfbuild/rootfs.path
 ```
 
 app runner 通过现有内部 `rootfs::inject::inject_overlay()` 路径把自举 overlay
-注入这个 rootfs。
+注入这个 rootfs。本 app 不暴露也不依赖新的公共注入命令。
 
 因为 guest-built 产物需要写回 rootfs，`qemu-aarch64.toml` 设置
-`snapshot = false`。Starry app runner 默认会追加全局 `-snapshot`，但该字段
-可以按 case 显式关闭它。
+`snapshot = false`，让 Starry app runner 不追加全局 `-snapshot`。下面的
+单独启动验证命令仍然带 `-snapshot`，它只用于验证提取出的 `.bin` 能正常启动，
+不需要把 shell 写入持久化回 rootfs。
 
 ## 前置依赖
 
@@ -56,6 +60,10 @@ app runner 通过现有内部 `rootfs::inject::inject_overlay()` 路径把自举
 brew install qemu e2fsprogs zig llvm
 ```
 
+其中，`qemu` 用于 HVF 启动，`e2fsprogs` 提供 `e2fsck`、`debugfs` 和
+`resize2fs`，`zig` 用于生成 AArch64 musl 编译器 wrapper，`llvm` 用作
+`rust-nm`、`rust-objdump` 等工具的 fallback。
+
 ## 完整复现
 
 ### 1.开始自举编译：
@@ -64,6 +72,9 @@ brew install qemu e2fsprogs zig llvm
 ```bash
 apps/starry/macos-selfbuild/full_self_build.sh
 ```
+
+这个入口会自己调用 `cargo xtask starry app qemu -t macos-selfbuild --arch aarch64`，
+一般不需要手动运行更底层的脚本。
 
 自举成功时会看到：
 
@@ -89,8 +100,8 @@ qemu-system-aarch64 \
 
 ## 验证与耗时
 
-本次耗时是删除 target 目录和 rootfs 后，没有缓存的情况下，在 Apple M3 上运行默认
-`full_self_build.sh` 流程得到的；
+本次耗时是删除 `target` 目录和默认 rootfs image 后，没有缓存的情况下，在
+Apple M3 上运行默认 `full_self_build.sh` 流程得到的。
 
 
 最终验证运行的 host 环境是：
