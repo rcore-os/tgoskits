@@ -1,8 +1,10 @@
 //! Low-level building blocks for Rockchip RGA 2D accelerators.
 //!
-//! This crate intentionally starts with the smallest hardware-facing shape:
-//! mapped RGA cores plus a DMA capability. Operation submission will be added
-//! once the register programming path is verified against RK3588 hardware.
+//! `#![no_std]`, OS-independent. Provides per-generation hardware backends behind the
+//! [`backend::RgaBackend`] trait: the RGA2 backend programs real copy/fill commands over MMIO
+//! using contiguous DMA buffers with the local MMU disabled (direct physical addressing); the
+//! RGA3 backend is a skeleton pending its IOMMU/task-register path. Higher layers (OS glue,
+//! IRQ completion, clock/power management) are the responsibility of the platform crate.
 
 #![cfg_attr(not(test), no_std)]
 
