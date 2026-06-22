@@ -4,24 +4,28 @@ set -euo pipefail
 app_dir="${STARRY_APP_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"
 workspace="${STARRY_WORKSPACE:-$(cd "$app_dir/../../.." && pwd)}"
 overlay_dir="${STARRY_OVERLAY_DIR:-}"
+rootfs="${STARRY_ROOTFS:-}"
+rootfs_size_mib="${ROOTFS_SIZE_MIB:-16384}"
 out_dir="$workspace/target/starry-macos-selfbuild"
 export COPYFILE_DISABLE=1
 
 usage() {
     cat <<'USAGE'
 Usage:
-  STARRY_OVERLAY_DIR=/path/to/overlay apps/starry/macos-selfbuild/prebuild.sh
+  STARRY_ROOTFS=/path/to/rootfs.img STARRY_OVERLAY_DIR=/path/to/overlay \
+    apps/starry/macos-selfbuild/prebuild.sh
 
-Internal stage used by run_selfbuild.sh. It assembles the per-run overlay that
-will be injected into the copied work rootfs:
+Internal stage used by `cargo xtask starry app qemu`. It prepares the selected
+app runner rootfs and assembles the overlay that the app runner injects:
 
-  1. copies the prepared guest toolchain overlay cache;
-  2. archives the current checkout as /opt/tgoskits-src.tar;
-  3. copies Cargo registry cache archives needed for offline guest Cargo;
-  4. writes source metadata and the guest runner under /opt.
+  1. resizes the app runner rootfs with `cargo xtask image resize`;
+  2. copies the prepared guest toolchain overlay cache;
+  3. archives the current checkout as /opt/tgoskits-src.tar;
+  4. copies Cargo registry cache archives needed for offline guest Cargo;
+  5. writes source metadata and the guest runner under /opt.
 
-This script does not pull or resize the managed rootfs and does not launch QEMU.
-Run full_self_build.sh for the default end-to-end flow.
+This script does not inject the overlay and does not launch QEMU. The Starry app
+runner owns both steps. Run full_self_build.sh for the default end-to-end flow.
 USAGE
 }
 
@@ -38,6 +42,11 @@ fi
 
 if [[ -z "$overlay_dir" ]]; then
     echo "error: STARRY_OVERLAY_DIR is required" >&2
+    exit 1
+fi
+
+if [[ -z "$rootfs" ]]; then
+    echo "error: STARRY_ROOTFS is required" >&2
     exit 1
 fi
 
@@ -151,7 +160,7 @@ copy_cargo_registry_cache() {
     if [[ "${#cache_roots[@]}" = "0" ]]; then
         cat >&2 <<EOF
 error: Cargo registry cache was not found in the toolchain overlay or at $cache_root.
-Run apps/starry/macos-selfbuild/build_rootfs.sh, or run cargo fetch --locked on the host, then retry.
+Run cargo fetch --locked on the host, then retry.
 EOF
         exit 1
     fi
@@ -205,11 +214,28 @@ copy_overlay_tree() {
 
     if [[ ! -d "$src" ]]; then
         echo "toolchain overlay cache not found: $src" >&2
-        echo "run apps/starry/macos-selfbuild/build_rootfs.sh first" >&2
+        echo "run apps/starry/macos-selfbuild/prepare_toolchain_overlay.sh first, or rerun the full flow" >&2
         exit 1
     fi
 
     (cd "$src" && tar_create -cf - .) | (cd "$dst" && tar xf -)
+}
+
+resize_rootfs() {
+    if [[ "${RESIZE_ROOTFS:-1}" != "1" ]]; then
+        printf '%s\n' "$rootfs" >"$out_dir/rootfs.path"
+        return 0
+    fi
+
+    if [[ ! -f "$rootfs" ]]; then
+        echo "rootfs image not found: $rootfs" >&2
+        exit 1
+    fi
+
+    (cd "$workspace" && cargo xtask image resize "$rootfs" --size-mib "$rootfs_size_mib")
+    printf '%s\n' "$rootfs" >"$out_dir/rootfs.path"
+    echo "rootfs=$rootfs"
+    echo "rootfs_size_mib=$rootfs_size_mib"
 }
 
 prepare_toolchain_overlay() {
@@ -239,6 +265,7 @@ if git -C "$workspace" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
 fi
 
 mkdir -p "$out_dir" "$overlay_dir/opt"
+resize_rootfs
 prepare_toolchain_overlay
 
 meta_file="$out_dir/tgoskits-src.meta"

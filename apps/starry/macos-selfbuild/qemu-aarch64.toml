@@ -1,5 +1,5 @@
 # Apple Silicon macOS HVF self-build QEMU config. The rootfs is selected and
-# patched by the app-local runner; this config only carries the machine shape
+# patched by the Starry app runner; this config only carries the machine shape
 # for the xtask app case.
 args = [
     "-nographic",
@@ -20,6 +20,7 @@ args = [
 ]
 uefi = false
 to_bin = true
+snapshot = false
 shell_prefix = "root@starry:"
 shell_init_cmd = "/bin/sh /opt/starry-macos-run.sh"
 success_regex = ["(?m)^===STARRY-MACOS-SELFBUILD-PASS jobs=[0-9]+ elapsed=[0-9]+===$"]

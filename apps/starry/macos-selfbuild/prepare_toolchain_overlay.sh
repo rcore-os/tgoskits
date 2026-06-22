@@ -23,9 +23,8 @@ Usage:
 Internal/helper stage: downloads and prepares the AArch64 guest toolchain
 overlay used by the macOS StarryOS self-build app.
 
-The output is a filesystem tree, not a rootfs image. build_rootfs.sh refreshes
-this cache, and run_selfbuild.sh injects a per-run overlay copy into the copied
-work rootfs before booting QEMU.
+The output is a filesystem tree, not a rootfs image. prebuild.sh copies this
+cache into the Starry app runner overlay before QEMU starts.
 
 Environment:
   ALPINE_BRANCH        Alpine branch for APK packages (default: v3.23)

@@ -75,35 +75,30 @@ asset preparation flow.
 
 The `macos-selfbuild` case is an Apple Silicon macOS workflow that boots an
 AArch64 StarryOS SMP kernel with QEMU HVF, enters the StarryOS guest userland,
-and runs guest `cargo build` to build StarryOS again. It uses the upstream
-AArch64 timer and GIC behavior instead of app-private platform features.
+and runs guest `cargo build` to build StarryOS again.
 
 ```bash
 apps/starry/macos-selfbuild/full_self_build.sh
 qemu-system-aarch64 \
   -snapshot \
-  -nographic \
-  -accel hvf \
   -machine virt,gic-version=3 \
-  -cpu host \
+  -nographic \
+  -cpu cortex-a53 \
   -m 512M \
-  -smp 4 \
+  -smp 1 \
   -device virtio-blk-pci,drive=disk0 \
-  -drive id=disk0,if=none,format=raw,file=target/starry-macos-selfbuild/tgos-images/rootfs-aarch64-alpine.img/rootfs-aarch64-alpine.img,file.locking=off \
+  -drive id=disk0,if=none,format=raw,file=tmp/axbuild/rootfs/rootfs-aarch64-alpine.img/rootfs-aarch64-alpine.img,file.locking=off \
   -kernel target/starry-macos-selfbuild/uploaded/starryos-aarch64-unknown-none-softfloat.bin \
-  -monitor none \
-  -serial mon:stdio \
-  -net none
+  -netdev user,id=net0
 ```
 
-`full_self_build.sh` is the default full entrypoint. It builds the seed kernel,
-prepares the managed rootfs inputs with xtask, prepares the app-local guest
-toolchain overlay, runs guest Cargo from QEMU/HVF, and extracts the guest-built
-kernel from the copied work rootfs into `target/starry-macos-selfbuild/uploaded/`.
+`full_self_build.sh` is the default full entrypoint. It prepares host tools,
+uses `cargo xtask starry app qemu -t macos-selfbuild --arch aarch64` for the
+seed kernel build, rootfs preparation, overlay injection, and QEMU/HVF run, then
+extracts the guest-built kernel into `target/starry-macos-selfbuild/uploaded/`.
 See `macos-selfbuild/README.md` and `macos-selfbuild/README_CN.md` for the script
-roles, M3 validation environment, per-stage timing, rootfs path, direct runner
-details, PASS markers, and direct QEMU boot verification of the self-built
-kernel.
+roles, M3 validation environment, per-stage timing, rootfs path, PASS markers,
+and direct QEMU boot verification of the self-built kernel.
 
 ## Redis
 
