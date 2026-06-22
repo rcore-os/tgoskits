@@ -1192,7 +1192,17 @@ impl SimpleDirOps for ThreadDir {
                 }),
             )
             .into(),
-            "cgroup" => SimpleFile::new_regular(fs, move || Ok("0::/\n")).into(),
+            "cgroup" => SimpleFile::new_regular(fs, move || {
+                // cgroup v2 format: "0::<path>\n" where <path> is the cgroup
+                // this task currently belongs to. Falls back to "/" if the
+                // task has no thread / process data.
+                let path = task
+                    .try_as_thread()
+                    .map(|thr| thr.proc_data.cgroup.read().path.clone())
+                    .unwrap_or_else(|| String::from("/"));
+                Ok(format!("0::{}\n", path))
+            })
+            .into(),
             "ns" => SimpleDir::new_maker(
                 fs.clone(),
                 Arc::new(NsDir {

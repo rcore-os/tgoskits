@@ -177,6 +177,10 @@ const MEMORY_ATTRS: &[AttrInfo] = &[
         name: "events",
         read_only: true,
     },
+    AttrInfo {
+        name: "stat",
+        read_only: true,
+    },
 ];
 
 /// Memory controller instance (one per cgroup node).
@@ -222,6 +226,16 @@ impl CgroupController for MemoryController {
                 self.state.events_high.load(Ordering::Acquire),
                 self.state.events_oom.load(Ordering::Acquire),
             ),
+            // memory.stat — the kernel-provided breakdown is deferred (no
+            // reclaim/RSS bookkeeping yet); report `anon` as `current` and
+            // leave the rest zero so docker/runc parsers see all expected
+            // keys with honest zero values.
+            "stat" => format!(
+                "anon {current}\nfile 0\nkernel 0\nkernel_stack 0\nslab 0\nsock 0\nshmem \
+                 0\nfile_mapped 0\nfile_dirty 0\nfile_writeback 0\nanon_thp 0\ninactive_anon \
+                 0\nactive_anon {current}\ninactive_file 0\nactive_file 0\nunevictable 0\n",
+                current = self.state.current.load(Ordering::Acquire)
+            ),
             _ => return Err(VfsError::NotFound),
         };
         write_to_buf(&value, offset, buf)
@@ -262,7 +276,7 @@ impl CgroupController for MemoryController {
                 self.state.min.store(v, Ordering::Release);
                 Ok(data.len())
             }
-            "current" | "events" => Err(VfsError::OperationNotPermitted),
+            "current" | "events" | "stat" => Err(VfsError::OperationNotPermitted),
             _ => Err(VfsError::NotFound),
         }
     }

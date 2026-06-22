@@ -2,6 +2,15 @@
 //!
 //! Controls I/O bandwidth and prioritization for block devices.
 //! Provides `io.weight`, `io.max`, and `io.stat`.
+//!
+//! Scope (work F): this module persists per-device limits read/write through
+//! the cgroupfs interface (L3.5 — `io.max` round-trips, multi-device upsert,
+//! `default`/blank line tolerance). It does **not** enforce real I/O
+//! throttling: `rdif-block` exposes no queue layer to install a token bucket
+//! against, and adding cross-driver async throttling is out of scope for this
+//! milestone (mirrors Linux's early `blk-throttle` evolution). Once a queue
+//! layer lands, the persisted `IoState::limits` is the ground-truth source
+//! that an enforcement layer reads — no API change needed here.
 
 use alloc::{format, string::String, sync::Arc, vec::Vec};
 use core::sync::atomic::{AtomicU64, Ordering};

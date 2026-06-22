@@ -45,7 +45,9 @@ pub const ROOT_ID: CgroupId = 1;
 
 const BUILTIN_FILES: &[&str] = &[
     "cgroup.controllers",
+    "cgroup.events",
     "cgroup.procs",
+    "cgroup.stat",
     "cgroup.subtree_control",
     "cgroup.type",
 ];
@@ -148,6 +150,41 @@ pub fn procs_text(id: CgroupId) -> VfsResult<String> {
         let _ = writeln!(text, "{}", pid);
     }
     Ok(text)
+}
+
+/// `cgroup.events`: `populated` is 1 when this subtree contains any process,
+/// 0 otherwise. `frozen` is currently always 0 (no freezer support yet —
+/// reserved for cgroup.freeze in a later milestone).
+pub fn events_text(id: CgroupId) -> VfsResult<String> {
+    let node = core::get_node(id)?;
+    let populated = u32::from(subtree_has_processes(&node));
+    Ok(format!("populated {}\nfrozen 0\n", populated))
+}
+
+/// `cgroup.stat`: `nr_descendants` is the count of non-root cgroup descendants
+/// of this node (excluding the node itself). `nr_dying_descendants` is 0
+/// (we drop cgroups synchronously rather than tracking a deferred dying set).
+pub fn stat_text(id: CgroupId) -> VfsResult<String> {
+    let node = core::get_node(id)?;
+    let nr = count_descendants(&node);
+    Ok(format!("nr_descendants {}\nnr_dying_descendants 0\n", nr))
+}
+
+fn subtree_has_processes(node: &Arc<CgroupNode>) -> bool {
+    if !node.procs.lock().is_empty() {
+        return true;
+    }
+    let children: Vec<Arc<CgroupNode>> = node.children.lock().values().cloned().collect();
+    children.iter().any(subtree_has_processes)
+}
+
+fn count_descendants(node: &Arc<CgroupNode>) -> usize {
+    let children: Vec<Arc<CgroupNode>> = node.children.lock().values().cloned().collect();
+    let mut total = children.len();
+    for child in &children {
+        total += count_descendants(child);
+    }
+    total
 }
 
 pub fn subtree_control_text(id: CgroupId) -> VfsResult<String> {

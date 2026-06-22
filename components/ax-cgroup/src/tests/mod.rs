@@ -7,6 +7,7 @@
 mod cpu_logic;
 mod cpuset_logic;
 mod delegation;
+mod manager_iface;
 mod memory_charge;
 mod mock;
 mod parse;
