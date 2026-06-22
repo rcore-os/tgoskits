@@ -25,7 +25,7 @@
 //! module. The required order is `SOCKET_SET -> listen-table bucket`; this file
 //! must never acquire the outer service lock.
 
-use alloc::{boxed::Box, collections::VecDeque, sync::Arc, task::Wake, vec, vec::Vec};
+use alloc::{boxed::Box, collections::VecDeque, sync::Arc, vec, vec::Vec};
 use core::task::Waker;
 
 use ax_errno::{AxError, AxResult};
@@ -38,7 +38,7 @@ use smoltcp::{
 };
 
 use crate::{
-    SOCKET_SET,
+    DeferPollWake, SOCKET_SET,
     addr::listen_addrs_conflict,
     consts::{LISTEN_QUEUE_SIZE, TCP_RX_BUF_LEN, TCP_TX_BUF_LEN},
 };
@@ -65,23 +65,6 @@ pub(crate) struct AcceptedTcp {
     pub(crate) local_endpoint: IpEndpoint,
     /// Remote endpoint observed for this connection.
     pub(crate) remote_endpoint: IpEndpoint,
-}
-
-struct AcceptWake {
-    poll: Arc<PollSet>,
-}
-
-impl Wake for AcceptWake {
-    fn wake(self: Arc<Self>) {
-        self.wake_by_ref();
-    }
-
-    fn wake_by_ref(self: &Arc<Self>) {
-        // smoltcp invokes this from the net poll task context after publishing
-        // child socket readiness. Defer the actual PollSet wake until the net
-        // worker has released service/socket locks.
-        crate::defer_poll_wake(self.poll.clone(), IoEvents::IN);
-    }
 }
 
 impl ListenTableEntryInner {
@@ -265,7 +248,10 @@ impl ListenTable {
 
     /// Builds the smoltcp child-progress waker for a listener poll set.
     pub fn accept_waker(&self, accept_poll: Arc<PollSet>) -> Waker {
-        Waker::from(Arc::new(AcceptWake { poll: accept_poll }))
+        Waker::from(Arc::new(DeferPollWake {
+            poll: accept_poll,
+            ready: IoEvents::IN,
+        }))
     }
 
     /// Registers a waker for queued child progress.

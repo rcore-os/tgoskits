@@ -25,7 +25,7 @@
 //! - `LISTEN_TABLE` owns passive-open child sockets and accept wakeups.
 //! - `orphan` keeps dropped sockets alive long enough for FIN/TIME-WAIT cleanup.
 
-use alloc::{sync::Arc, task::Wake, vec, vec::Vec};
+use alloc::{sync::Arc, vec, vec::Vec};
 use core::{
     net::{Ipv4Addr, SocketAddr},
     sync::atomic::{AtomicBool, AtomicI32, AtomicU32, Ordering},
@@ -46,8 +46,8 @@ use smoltcp::{
 use spin::LazyLock;
 
 use crate::{
-    LISTEN_TABLE, RecvFlags, RecvOptions, SOCKET_SET, SendOptions, Shutdown, Socket, SocketAddrEx,
-    SocketOps,
+    DeferPollWake, LISTEN_TABLE, RecvFlags, RecvOptions, SOCKET_SET, SendOptions, Shutdown, Socket,
+    SocketAddrEx, SocketOps,
     addr::{allocate_ephemeral_port, listen_addrs_conflict},
     config::{DeviceBinding, InterfaceId},
     consts::{TCP_RX_BUF_LEN, TCP_TX_BUF_LEN},
@@ -106,24 +106,6 @@ pub struct TcpSocket {
 }
 
 unsafe impl Sync for TcpSocket {}
-
-struct TcpPollWake {
-    poll: Arc<PollSet>,
-    ready: IoEvents,
-}
-
-impl Wake for TcpPollWake {
-    fn wake(self: Arc<Self>) {
-        self.wake_by_ref();
-    }
-
-    fn wake_by_ref(self: &Arc<Self>) {
-        // smoltcp invokes socket wakers from the net poll task context after
-        // updating socket readiness. The socket set may still be locked there,
-        // so defer the actual PollSet wake to the net worker outer loop.
-        crate::defer_poll_wake(self.poll.clone(), self.ready);
-    }
-}
 
 impl TcpSocket {
     /// Creates a new TCP socket.
@@ -723,7 +705,7 @@ impl Pollable for TcpSocket {
                 self.poll_rx
                     .register(context.waker(), IoEvents::IN | IoEvents::RDHUP)
             };
-            Some(Waker::from(Arc::new(TcpPollWake {
+            Some(Waker::from(Arc::new(DeferPollWake {
                 poll: self.poll_rx.clone(),
                 ready: IoEvents::IN | IoEvents::RDHUP,
             })))
@@ -734,7 +716,7 @@ impl Pollable for TcpSocket {
             // Socket registration runs from task poll context before taking the
             // socket-set lock.
             unsafe { self.poll_tx.register(context.waker(), IoEvents::OUT) };
-            Some(Waker::from(Arc::new(TcpPollWake {
+            Some(Waker::from(Arc::new(DeferPollWake {
                 poll: self.poll_tx.clone(),
                 ready: IoEvents::OUT,
             })))

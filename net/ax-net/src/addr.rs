@@ -2,7 +2,7 @@
 
 use ax_errno::{AxResult, ax_bail};
 use ax_sync::Mutex;
-use smoltcp::wire::IpAddress;
+use smoltcp::wire::{IpAddress, Ipv4Address};
 
 const EPHEMERAL_PORT_START: u16 = 0xc000;
 const EPHEMERAL_PORT_END: u16 = 0xffff;
@@ -31,4 +31,14 @@ pub(crate) fn allocate_ephemeral_port(check_available: impl Fn(u16) -> bool) -> 
         tries += 1;
     }
     ax_bail!(AddrInUse, "no available ports");
+}
+
+/// Builds an IPv4 netmask from a CIDR prefix length.
+pub(crate) fn mask_from_prefix(prefix_len: u8) -> Ipv4Address {
+    let bits: u32 = if prefix_len == 0 {
+        0
+    } else {
+        u32::MAX << (32 - prefix_len.min(32) as u32)
+    };
+    Ipv4Address::from_bits(bits)
 }

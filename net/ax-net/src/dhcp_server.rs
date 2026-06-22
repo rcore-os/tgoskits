@@ -30,17 +30,21 @@ use crate::config::InterfaceId;
 const LEASE_SECS: u32 = 86400;
 
 /// Parsed DHCP-over-IPv4/UDP packet.
-pub(crate) struct ParsedDhcp<'a> {
+pub(crate) struct ParsedDhcp {
     pub(crate) src_addr: Ipv4Address,
     pub(crate) udp: UdpRepr,
-    pub(crate) dhcp: DhcpRepr<'a>,
+    pub(crate) message_type: DhcpMessageType,
+    pub(crate) transaction_id: u32,
+    pub(crate) client_hardware_address: EthernetAddress,
+    pub(crate) your_ip: Ipv4Address,
+    pub(crate) server_identifier: Option<Ipv4Address>,
+    pub(crate) subnet_mask: Option<Ipv4Address>,
+    pub(crate) router: Option<Ipv4Address>,
+    pub(crate) dns_servers: Vec<Ipv4Address>,
 }
 
 /// Parses an IPv4 UDP DHCP packet, leaving direction checks to the caller.
-pub(crate) fn parse_dhcp_packet<R>(
-    packet: &[u8],
-    f: impl FnOnce(ParsedDhcp<'_>) -> Option<R>,
-) -> Option<R> {
+pub(crate) fn parse_dhcp_packet(packet: &[u8]) -> Option<ParsedDhcp> {
     let ipv4_packet = Ipv4Packet::new_checked(packet).ok()?;
     let ipv4_repr = Ipv4Repr::parse(&ipv4_packet, &ChecksumCapabilities::default()).ok()?;
     if ipv4_repr.next_header != IpProtocol::Udp {
@@ -57,10 +61,20 @@ pub(crate) fn parse_dhcp_packet<R>(
     .ok()?;
     let dhcp_packet = DhcpPacket::new_checked(udp_packet.payload()).ok()?;
     let dhcp = DhcpRepr::parse(&dhcp_packet).ok()?;
-    f(ParsedDhcp {
+    Some(ParsedDhcp {
         src_addr: ipv4_repr.src_addr,
         udp,
-        dhcp,
+        message_type: dhcp.message_type,
+        transaction_id: dhcp.transaction_id,
+        client_hardware_address: dhcp.client_hardware_address,
+        your_ip: dhcp.your_ip,
+        server_identifier: dhcp.server_identifier,
+        subnet_mask: dhcp.subnet_mask,
+        router: dhcp.router,
+        dns_servers: dhcp
+            .dns_servers
+            .map(|servers| servers.iter().copied().collect())
+            .unwrap_or_default(),
     })
 }
 
@@ -108,36 +122,35 @@ impl DhcpServer {
             return None;
         }
 
-        parse_dhcp_packet(packet, |parsed| {
-            // Client -> server uses UDP src=68, dst=67.
-            if parsed.udp.src_port != DHCP_CLIENT_PORT || parsed.udp.dst_port != DHCP_SERVER_PORT {
-                return None;
+        let parsed = parse_dhcp_packet(packet)?;
+        // Client -> server uses UDP src=68, dst=67.
+        if parsed.udp.src_port != DHCP_CLIENT_PORT || parsed.udp.dst_port != DHCP_SERVER_PORT {
+            return None;
+        }
+
+        let client_mac = parsed.client_hardware_address;
+        let xid = parsed.transaction_id;
+
+        let reply_type = match parsed.message_type {
+            DhcpMessageType::Discover => {
+                info!(
+                    "[dhcp-srv] Discover from {client_mac} -> Offer {}",
+                    self.client_ip
+                );
+                DhcpMessageType::Offer
             }
+            DhcpMessageType::Request => {
+                self.leased_to = Some(client_mac);
+                info!(
+                    "[dhcp-srv] Request from {client_mac} -> Ack {}",
+                    self.client_ip
+                );
+                DhcpMessageType::Ack
+            }
+            _ => return None,
+        };
 
-            let client_mac = parsed.dhcp.client_hardware_address;
-            let xid = parsed.dhcp.transaction_id;
-
-            let reply_type = match parsed.dhcp.message_type {
-                DhcpMessageType::Discover => {
-                    info!(
-                        "[dhcp-srv] Discover from {client_mac} -> Offer {}",
-                        self.client_ip
-                    );
-                    DhcpMessageType::Offer
-                }
-                DhcpMessageType::Request => {
-                    self.leased_to = Some(client_mac);
-                    info!(
-                        "[dhcp-srv] Request from {client_mac} -> Ack {}",
-                        self.client_ip
-                    );
-                    DhcpMessageType::Ack
-                }
-                _ => return None,
-            };
-
-            Some(self.build_reply(client_mac, xid, reply_type))
-        })
+        Some(self.build_reply(client_mac, xid, reply_type))
     }
 
     /// Builds a complete IPv4 packet containing a DHCP Offer/Ack reply.

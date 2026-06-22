@@ -82,7 +82,6 @@ pub struct UdpSocket {
 
 impl UdpSocket {
     /// Creates a new UDP socket.
-    #[allow(clippy::new_without_default)]
     pub fn new() -> Self {
         Self {
             handle: SOCKET_SET.add(smol::Socket::new(
@@ -554,6 +553,12 @@ impl Pollable for UdpSocket {
         if events.intersects(IoEvents::IN | IoEvents::OUT) {
             self.general.register_waker(context.waker());
         }
+    }
+}
+
+impl Default for UdpSocket {
+    fn default() -> Self {
+        Self::new()
     }
 }
 

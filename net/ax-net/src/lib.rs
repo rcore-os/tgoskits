@@ -86,6 +86,14 @@ use spin::{LazyLock, Once};
 
 #[cfg(feature = "vsock")]
 pub use self::device::{VsockDevice, VsockDeviceList};
+use self::{
+    addr::mask_from_prefix,
+    device::{EthernetDevice, LoopbackDevice},
+    listen_table::ListenTable,
+    router::{RouteTable, Router, Rule, SharedRouteTable},
+    service::{NetControl, NetInterface, Service},
+    wrapper::SocketSetWrapper,
+};
 pub use self::{
     config::{
         DeviceBinding, InterfaceConfig, InterfaceFlags, InterfaceId, InterfaceInfo, InterfaceKind,
@@ -101,13 +109,6 @@ pub use self::{
         CMsgData, RecvFlags, RecvOptions, SendFlags, SendOptions, Shutdown, Socket, SocketAddrEx,
         SocketOps,
     },
-};
-use self::{
-    device::{EthernetDevice, LoopbackDevice},
-    listen_table::ListenTable,
-    router::{RouteTable, Router, Rule, SharedRouteTable},
-    service::{NetControl, NetInterface, Service},
-    wrapper::SocketSetWrapper,
 };
 
 static LISTEN_TABLE: LazyLock<ListenTable> = LazyLock::new(ListenTable::new);
@@ -125,6 +126,24 @@ type DeferredPollWake = (Arc<PollSet>, IoEvents);
 static DEFERRED_POLL_WAKE_PENDING: AtomicBool = AtomicBool::new(false);
 static DEFERRED_POLL_WAKES: LazyLock<Mutex<Vec<DeferredPollWake>>> =
     LazyLock::new(|| Mutex::new(Vec::new()));
+
+pub(crate) struct DeferPollWake {
+    pub(crate) poll: Arc<PollSet>,
+    pub(crate) ready: IoEvents,
+}
+
+impl Wake for DeferPollWake {
+    fn wake(self: Arc<Self>) {
+        self.wake_by_ref();
+    }
+
+    fn wake_by_ref(self: &Arc<Self>) {
+        // smoltcp invokes socket wakers from the net poll task context after
+        // updating readiness. The socket set may still be locked there, so
+        // defer the actual PollSet wake to the net worker outer loop.
+        defer_poll_wake(self.poll.clone(), self.ready);
+    }
+}
 
 /// Registry of wireless control-plane handles, keyed by interface name.
 ///
@@ -531,7 +550,7 @@ pub struct NetConfig {
 /// instead of the shared Ethernet IRQ framework.
 pub fn register_device_with_config(dev: Box<dyn EthernetDriver>, config: NetConfig) {
     let mac = EthernetAddress(dev.mac_address());
-    let server_ip = Ipv4Address::new(config.ip[0], config.ip[1], config.ip[2], config.ip[3]);
+    let server_ip = Ipv4Address::from(config.ip);
     let cidr = Ipv4Cidr::new(server_ip, config.prefix_len);
     // A dedicated-poll device gets RX out-of-band (via `wake_net_task_irq` and the
     // shared net poll task), so its socket wakers must be armed even though it
@@ -543,12 +562,8 @@ pub fn register_device_with_config(dev: Box<dyn EthernetDriver>, config: NetConf
     };
     let dev_idx = get_service().register_static_device(config.name.clone(), eth_dev, mac, cidr);
     if let Some(client_ip) = config.dhcp_server_client_ip {
-        let client_ip = Ipv4Address::new(client_ip[0], client_ip[1], client_ip[2], client_ip[3]);
-        let subnet_mask = if config.prefix_len == 0 {
-            Ipv4Address::from_bits(0)
-        } else {
-            Ipv4Address::from_bits(u32::MAX << (32 - config.prefix_len.min(32) as u32))
-        };
+        let client_ip = Ipv4Address::from(client_ip);
+        let subnet_mask = mask_from_prefix(config.prefix_len);
         get_service().enable_dhcp_server(dev_idx, server_ip, client_ip, subnet_mask);
     }
 
@@ -638,8 +653,8 @@ pub fn reconfigure_wifi(name: &str, mode: WifiMode<'_>) -> AxResult<()> {
                 dhcp_client_ip,
                 ..
             } => {
-                let server_ip = Ipv4Address::new(ip[0], ip[1], ip[2], ip[3]);
-                let client_ip = dhcp_client_ip.map(|c| Ipv4Address::new(c[0], c[1], c[2], c[3]));
+                let server_ip = Ipv4Address::from(ip);
+                let client_ip = dhcp_client_ip.map(Ipv4Address::from);
                 service.reconfigure_as_ap(dev, server_ip, prefix_len, client_ip);
             }
         }

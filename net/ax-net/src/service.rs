@@ -56,7 +56,7 @@
 //! waker.wake();  // WRONG: potential self-deadlock
 //! ```
 
-use alloc::{boxed::Box, format, string::String, vec, vec::Vec};
+use alloc::{boxed::Box, format, string::String, sync::Arc, vec, vec::Vec};
 use core::{
     pin::Pin,
     task::{Context, Waker},
@@ -75,9 +75,11 @@ use smoltcp::{
         Ipv4Packet, Ipv4Repr, UdpPacket, UdpRepr,
     },
 };
+use spin::RwLock;
 
 use crate::{
     SOCKET_SET,
+    addr::mask_from_prefix,
     config::{
         DeviceBinding, DnsServerEntry, DnsSource, InterfaceFlags, InterfaceId, InterfaceInfo,
         InterfaceKind, Ipv4InterfaceConfig, RouteInfo,
@@ -91,10 +93,6 @@ use crate::{
 fn now() -> Instant {
     Instant::from_micros_const((monotonic_time_nanos() / NANOS_PER_MICROS) as i64)
 }
-
-use alloc::sync::Arc;
-
-use spin::RwLock;
 
 struct ControlState {
     interfaces: Vec<NetInterface>,
@@ -421,73 +419,67 @@ impl DhcpState {
             return None;
         }
 
-        parse_dhcp_packet(packet, |parsed| {
-            if parsed.udp.src_port != DHCP_SERVER_PORT || parsed.udp.dst_port != DHCP_CLIENT_PORT {
-                return None;
-            }
+        let parsed = parse_dhcp_packet(packet)?;
+        if parsed.udp.src_port != DHCP_SERVER_PORT || parsed.udp.dst_port != DHCP_CLIENT_PORT {
+            return None;
+        }
 
-            let dhcp_repr = parsed.dhcp;
-            if dhcp_repr.client_hardware_address != self.mac
-                || dhcp_repr.transaction_id != self.transaction_id
-            {
-                return None;
-            }
+        if parsed.client_hardware_address != self.mac
+            || parsed.transaction_id != self.transaction_id
+        {
+            return None;
+        }
 
-            match (self.phase, dhcp_repr.message_type) {
-                (DhcpPhase::Discovering, DhcpMessageType::Offer) => {
-                    if !is_unicast_ipv4(dhcp_repr.your_ip) {
-                        return None;
-                    }
-                    self.offered_address = Some(dhcp_repr.your_ip);
-                    self.server_identifier = dhcp_repr.server_identifier.or(Some(parsed.src_addr));
-                    self.phase = DhcpPhase::Requesting;
-                    self.retry = 0;
-                    self.retry_at = timestamp;
-                    info!(
-                        "{}: DHCP offered address {} from {}",
-                        self.ifname,
-                        dhcp_repr.your_ip,
-                        self.server_identifier.unwrap_or(parsed.src_addr)
-                    );
-                    None
+        match (self.phase, parsed.message_type) {
+            (DhcpPhase::Discovering, DhcpMessageType::Offer) => {
+                if !is_unicast_ipv4(parsed.your_ip) {
+                    return None;
                 }
-                (DhcpPhase::Requesting, DhcpMessageType::Ack)
-                | (DhcpPhase::Bound, DhcpMessageType::Ack) => {
-                    let subnet_mask = dhcp_repr.subnet_mask?;
-                    let prefix_len = IpAddress::Ipv4(subnet_mask).prefix_len()?;
-                    if !is_unicast_ipv4(dhcp_repr.your_ip) {
-                        return None;
-                    }
-                    self.phase = DhcpPhase::Bound;
-                    self.retry = 0;
-                    let address = Ipv4Cidr::new(dhcp_repr.your_ip, prefix_len);
-                    Some(DhcpEvent::Configured {
-                        interface_id: self.interface_id,
-                        dev: self.dev,
-                        ifname: self.ifname.clone(),
-                        metric: self.metric,
-                        address,
-                        router: dhcp_repr.router,
-                        dns_servers: dhcp_repr
-                            .dns_servers
-                            .as_ref()
-                            .map(|servers| servers.iter().copied().collect())
-                            .unwrap_or_default(),
-                    })
-                }
-                (_, DhcpMessageType::Nak) => {
-                    let was_configured = self.address.is_some();
-                    self.reset(timestamp);
-                    was_configured.then_some(DhcpEvent::Deconfigured {
-                        interface_id: self.interface_id,
-                        dev: self.dev,
-                        ifname: self.ifname.clone(),
-                        metric: self.metric,
-                    })
-                }
-                _ => None,
+                self.offered_address = Some(parsed.your_ip);
+                self.server_identifier = parsed.server_identifier.or(Some(parsed.src_addr));
+                self.phase = DhcpPhase::Requesting;
+                self.retry = 0;
+                self.retry_at = timestamp;
+                info!(
+                    "{}: DHCP offered address {} from {}",
+                    self.ifname,
+                    parsed.your_ip,
+                    self.server_identifier.unwrap_or(parsed.src_addr)
+                );
+                None
             }
-        })
+            (DhcpPhase::Requesting, DhcpMessageType::Ack)
+            | (DhcpPhase::Bound, DhcpMessageType::Ack) => {
+                let subnet_mask = parsed.subnet_mask?;
+                let prefix_len = IpAddress::Ipv4(subnet_mask).prefix_len()?;
+                if !is_unicast_ipv4(parsed.your_ip) {
+                    return None;
+                }
+                self.phase = DhcpPhase::Bound;
+                self.retry = 0;
+                let address = Ipv4Cidr::new(parsed.your_ip, prefix_len);
+                Some(DhcpEvent::Configured {
+                    interface_id: self.interface_id,
+                    dev: self.dev,
+                    ifname: self.ifname.clone(),
+                    metric: self.metric,
+                    address,
+                    router: parsed.router,
+                    dns_servers: parsed.dns_servers,
+                })
+            }
+            (_, DhcpMessageType::Nak) => {
+                let was_configured = self.address.is_some();
+                self.reset(timestamp);
+                was_configured.then_some(DhcpEvent::Deconfigured {
+                    interface_id: self.interface_id,
+                    dev: self.dev,
+                    ifname: self.ifname.clone(),
+                    metric: self.metric,
+                })
+            }
+            _ => None,
+        }
     }
 
     fn poll_packet(&mut self, timestamp: Instant) -> Option<(usize, IpAddress, Vec<u8>)> {
@@ -972,16 +964,6 @@ fn dhcp_transaction_id(mac: EthernetAddress) -> u32 {
 
 fn is_unicast_ipv4(addr: Ipv4Address) -> bool {
     addr != Ipv4Address::UNSPECIFIED && addr != Ipv4Address::BROADCAST && !addr.is_multicast()
-}
-
-/// 由前缀长度构造 IPv4 子网掩码。
-fn mask_from_prefix(prefix_len: u8) -> Ipv4Address {
-    let bits: u32 = if prefix_len == 0 {
-        0
-    } else {
-        u32::MAX << (32 - prefix_len.min(32) as u32)
-    };
-    Ipv4Address::from_bits(bits)
 }
 
 fn build_dhcp_packet(

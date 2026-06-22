@@ -61,6 +61,30 @@ use crate::{
     request_poll,
 };
 
+enum RawIpHeader {
+    Ipv4(Ipv4Repr),
+    Ipv6(Ipv6Repr),
+}
+
+impl RawIpHeader {
+    fn buffer_len(&self) -> usize {
+        match self {
+            Self::Ipv4(header) => header.buffer_len(),
+            Self::Ipv6(header) => header.buffer_len(),
+        }
+    }
+
+    fn emit(&self, buf: &mut [u8]) {
+        match self {
+            Self::Ipv4(header) => header.emit(
+                &mut Ipv4Packet::new_unchecked(buf),
+                &smoltcp::phy::ChecksumCapabilities::ignored(),
+            ),
+            Self::Ipv6(header) => header.emit(&mut Ipv6Packet::new_unchecked(buf)),
+        }
+    }
+}
+
 /// A raw IP socket used for ICMP and ICMPv6 traffic.
 pub struct RawSocket {
     /// Handle into the global smoltcp socket set.
@@ -123,6 +147,37 @@ impl RawSocket {
     /// Borrows the underlying smoltcp raw socket by handle.
     fn with_smol_socket<R>(&self, f: impl FnOnce(&mut smol::Socket) -> R) -> R {
         SOCKET_SET.with_socket_mut::<smol::Socket, _, _>(self.handle, f)
+    }
+
+    fn outgoing_ip_header(
+        &self,
+        local: IpAddress,
+        remote: IpAddress,
+        next_header: IpProtocol,
+        payload_len: usize,
+        hop_limit: u8,
+    ) -> RawIpHeader {
+        match (self.ip_version, local, remote) {
+            (IpVersion::Ipv4, IpAddress::Ipv4(src_addr), IpAddress::Ipv4(dst_addr)) => {
+                RawIpHeader::Ipv4(Ipv4Repr {
+                    src_addr,
+                    dst_addr,
+                    next_header,
+                    payload_len,
+                    hop_limit,
+                })
+            }
+            (IpVersion::Ipv6, IpAddress::Ipv6(src_addr), IpAddress::Ipv6(dst_addr)) => {
+                RawIpHeader::Ipv6(Ipv6Repr {
+                    src_addr,
+                    dst_addr,
+                    next_header,
+                    payload_len,
+                    hop_limit,
+                })
+            }
+            _ => unreachable!(),
+        }
     }
 
     /// Validates that an address belongs to this socket's IP version.
@@ -345,77 +400,14 @@ impl SocketOps for RawSocket {
                 let next_header = socket.ip_protocol().expect("raw socket protocol");
                 let hop_limit = (*self.ttl.read()).unwrap_or(64);
 
-                let header_len = match self.ip_version {
-                    IpVersion::Ipv4 => Ipv4Repr {
-                        src_addr: match local {
-                            IpAddress::Ipv4(addr) => addr,
-                            _ => unreachable!(),
-                        },
-                        dst_addr: match remote {
-                            IpAddress::Ipv4(addr) => addr,
-                            _ => unreachable!(),
-                        },
-                        next_header,
-                        payload_len,
-                        hop_limit,
-                    }
-                    .buffer_len(),
-                    IpVersion::Ipv6 => Ipv6Repr {
-                        src_addr: match local {
-                            IpAddress::Ipv6(addr) => addr,
-                            _ => unreachable!(),
-                        },
-                        dst_addr: match remote {
-                            IpAddress::Ipv6(addr) => addr,
-                            _ => unreachable!(),
-                        },
-                        next_header,
-                        payload_len,
-                        hop_limit,
-                    }
-                    .buffer_len(),
-                };
+                let header =
+                    self.outgoing_ip_header(local, remote, next_header, payload_len, hop_limit);
+                let header_len = header.buffer_len();
 
                 let buf = socket
                     .send(header_len + payload_len)
                     .map_err(|_| AxError::WouldBlock)?;
-                match self.ip_version {
-                    IpVersion::Ipv4 => {
-                        let header = Ipv4Repr {
-                            src_addr: match local {
-                                IpAddress::Ipv4(addr) => addr,
-                                _ => unreachable!(),
-                            },
-                            dst_addr: match remote {
-                                IpAddress::Ipv4(addr) => addr,
-                                _ => unreachable!(),
-                            },
-                            next_header,
-                            payload_len,
-                            hop_limit,
-                        };
-                        header.emit(
-                            &mut Ipv4Packet::new_unchecked(&mut *buf),
-                            &smoltcp::phy::ChecksumCapabilities::ignored(),
-                        );
-                    }
-                    IpVersion::Ipv6 => {
-                        let header = Ipv6Repr {
-                            src_addr: match local {
-                                IpAddress::Ipv6(addr) => addr,
-                                _ => unreachable!(),
-                            },
-                            dst_addr: match remote {
-                                IpAddress::Ipv6(addr) => addr,
-                                _ => unreachable!(),
-                            },
-                            next_header,
-                            payload_len,
-                            hop_limit,
-                        };
-                        header.emit(&mut Ipv6Packet::new_unchecked(&mut *buf));
-                    }
-                }
+                header.emit(&mut *buf);
 
                 let written = src.read(&mut buf[header_len..])?;
                 if next_header == IpProtocol::Icmpv6 {
