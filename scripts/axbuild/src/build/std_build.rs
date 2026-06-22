@@ -108,7 +108,11 @@ pub(super) fn musl_toolchain_sysroot(cc: &str) -> Option<String> {
     (!sysroot.is_empty()).then(|| sysroot.to_string())
 }
 
-fn musl_toolchain_bindgen_args(cc: &str, sysroot: &str, tool_prefix: &str) -> Vec<String> {
+pub(super) fn musl_toolchain_bindgen_args(
+    cc: &str,
+    sysroot: &str,
+    tool_prefix: &str,
+) -> Vec<String> {
     let Some(toolchain_root) = musl_toolchain_root(cc, sysroot) else {
         return Vec::new();
     };
