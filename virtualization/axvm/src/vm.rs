@@ -24,8 +24,7 @@ use axdevice::{
     AxVmDeviceConfig, AxVmDevices, DeviceBuildContext, DeviceFactoryRegistry,
     register_builtin_factories,
 };
-use axdevice_base::AccessWidth;
-use axdevice_base::DeviceRegistry as _;
+use axdevice_base::{AccessWidth, DeviceRegistry as _};
 use axvcpu::{AxVCpu, AxVCpuExitReason};
 #[cfg(target_arch = "x86_64")]
 use axvm_types::EmulatedDeviceType;
