@@ -309,6 +309,12 @@ impl<G: BaseGuard, T: ?Sized> BaseSpinLock<G, T> {
     /// This is a shared (`&`) reference rather than `&mut`, so it does not
     /// carry `noalias` — the compiler will not assume exclusivity and will
     /// not miscompile concurrent accesses to the same data from other CPUs.
+    ///
+    /// # Safety
+    ///
+    /// The caller must ensure that no other thread is concurrently writing
+    /// to the inner data in a way that would cause a data race for the
+    /// specific fields being read.
     #[inline(always)]
     pub unsafe fn data_unchecked(&self) -> &T {
         unsafe { &*self.data.get() }
