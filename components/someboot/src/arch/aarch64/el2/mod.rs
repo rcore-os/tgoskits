@@ -189,7 +189,3 @@ pub fn systick_set_interval(ticks: usize) {
         core::arch::asm!("msr CNTHP_TVAL_EL2, {0:x}", in(reg) ticks);
     }
 }
-
-pub fn systick_tick() -> usize {
-    CNTPCT_EL0.get() as _
-}
