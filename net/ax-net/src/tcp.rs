@@ -48,6 +48,7 @@ use spin::LazyLock;
 use crate::{
     LISTEN_TABLE, RecvFlags, RecvOptions, SOCKET_SET, SendOptions, Shutdown, Socket, SocketAddrEx,
     SocketOps,
+    addr::{allocate_ephemeral_port, listen_addrs_conflict},
     config::{DeviceBinding, InterfaceId},
     consts::{TCP_RX_BUF_LEN, TCP_TX_BUF_LEN},
     general::GeneralOptions,
@@ -478,20 +479,10 @@ impl SocketOps for TcpSocket {
                     bound_endpoint.port = get_ephemeral_port()?;
                 }
                 let binding = get_control().local_binding_for(&bound_endpoint)?;
-                let register_bound = !self.bound_registered.load(Ordering::Acquire);
-                if register_bound {
-                    register_tcp_bound(bound_endpoint)?;
-                }
-                if let Err(err) = LISTEN_TABLE.listen(bound_endpoint, backlog) {
-                    if register_bound {
-                        unregister_tcp_bound(bound_endpoint);
-                    }
-                    return Err(err);
-                }
+                self.with_bound_endpoint_registered(bound_endpoint, || {
+                    LISTEN_TABLE.listen(bound_endpoint, backlog)
+                })?;
                 *self.bound_endpoint.lock() = bound_endpoint;
-                if register_bound {
-                    self.bound_registered.store(true, Ordering::Release);
-                }
                 if binding.bound_if.is_some() {
                     self.general.set_device_binding(binding);
                 }
@@ -782,9 +773,15 @@ impl Pollable for TcpSocket {
 
 impl Drop for TcpSocket {
     fn drop(&mut self) {
+        let endpoint = *self.bound_endpoint.lock();
+        if self.state.get() == State::Listening && endpoint.port != 0 {
+            LISTEN_TABLE.unlisten(endpoint);
+        }
+
         let should_orphan = self.with_smol_socket(|socket| {
-            matches!(
-                socket.state(),
+            let state = socket.state();
+            let should_orphan = matches!(
+                state,
                 smol::State::Established
                     | smol::State::CloseWait
                     | smol::State::FinWait1
@@ -792,13 +789,23 @@ impl Drop for TcpSocket {
                     | smol::State::Closing
                     | smol::State::LastAck
                     | smol::State::TimeWait
-            ) || socket.send_queue() > 0
+            ) || socket.send_queue() > 0;
+            if matches!(
+                state,
+                smol::State::Established
+                    | smol::State::SynSent
+                    | smol::State::SynReceived
+                    | smol::State::CloseWait
+                    | smol::State::FinWait1
+                    | smol::State::FinWait2
+                    | smol::State::Closing
+                    | smol::State::LastAck
+            ) {
+                debug!("TCP socket {}: closing on drop", self.handle);
+                socket.close();
+            }
+            should_orphan
         });
-
-        // Initiate graceful shutdown (send FIN if connected)
-        if let Err(err) = self.shutdown(Shutdown::Both) {
-            warn!("TCP socket {}: shutdown failed: {}", self.handle, err);
-        }
 
         // Unbind from API layer (port registry, etc.)
         self.unregister_bound_endpoint();
@@ -888,12 +895,7 @@ impl TcpSocket {
                     "TCP connection from {} to {}",
                     bound_endpoint, remote_endpoint
                 );
-                let register_bound = !self.bound_registered.load(Ordering::Acquire);
-                if register_bound {
-                    register_tcp_bound(bound_endpoint)?;
-                }
-
-                let result = {
+                self.with_bound_endpoint_registered(bound_endpoint, || {
                     let mut service = get_service();
                     let context = service.iface.context();
                     self.with_smol_socket(|socket| {
@@ -909,17 +911,8 @@ impl TcpSocket {
                             })?;
                         Ok::<(), AxError>(())
                     })
-                };
-                if let Err(err) = result {
-                    if register_bound {
-                        unregister_tcp_bound(bound_endpoint);
-                    }
-                    return Err(err);
-                }
+                })?;
                 *self.bound_endpoint.lock() = bound_endpoint;
-                if register_bound {
-                    self.bound_registered.store(true, Ordering::Release);
-                }
 
                 // Only set device binding if was originally unbound or bound to 0.0.0.0
                 // Binding to a specific IP should lock the interface
@@ -940,6 +933,31 @@ impl TcpSocket {
             self.bound_registered.store(true, Ordering::Release);
         }
         Ok(())
+    }
+
+    fn with_bound_endpoint_registered<R>(
+        &self,
+        endpoint: IpListenEndpoint,
+        f: impl FnOnce() -> AxResult<R>,
+    ) -> AxResult<R> {
+        let register_bound = !self.bound_registered.load(Ordering::Acquire);
+        if register_bound {
+            register_tcp_bound(endpoint)?;
+        }
+        match f() {
+            Ok(value) => {
+                if register_bound {
+                    self.bound_registered.store(true, Ordering::Release);
+                }
+                Ok(value)
+            }
+            Err(err) => {
+                if register_bound {
+                    unregister_tcp_bound(endpoint);
+                }
+                Err(err)
+            }
+        }
     }
 
     /// Removes the public TCP bind side-table entry, if present.
@@ -994,35 +1012,8 @@ fn tcp_port_available(port: u16) -> bool {
         && !TCP_BOUND_PORTS.lock().contains_key(&port)
 }
 
-/// Returns whether two listen/bind addresses conflict on the same port.
-fn listen_addrs_conflict(
-    a: Option<smoltcp::wire::IpAddress>,
-    b: Option<smoltcp::wire::IpAddress>,
-) -> bool {
-    a.is_none() || b.is_none() || a == b
-}
-
 fn get_ephemeral_port() -> AxResult<u16> {
-    const PORT_START: u16 = 0xc000;
-    const PORT_END: u16 = 0xffff;
-    static CURR: Mutex<u16> = Mutex::new(PORT_START);
-
-    let mut curr = CURR.lock();
-    let mut tries = 0;
-    // TODO: more robust
-    while tries <= PORT_END - PORT_START {
-        let port = *curr;
-        if *curr == PORT_END {
-            *curr = PORT_START;
-        } else {
-            *curr += 1;
-        }
-        if tcp_port_available(port) {
-            return Ok(port);
-        }
-        tries += 1;
-    }
-    ax_bail!(AddrInUse, "no available ports");
+    allocate_ephemeral_port(tcp_port_available)
 }
 
 #[cfg(test)]

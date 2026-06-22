@@ -330,7 +330,7 @@ fn tcp_port_available(port: u16) -> bool {
 struct ListenTableEntryInner {
     listen_endpoint: IpListenEndpoint,
     backlog: usize,
-    syn_queue: VecDeque<PendingTcp>,
+    syn_queue: VecDeque<AcceptedTcp>,
     accept_poll: Arc<PollSet>,
 }
 
@@ -377,17 +377,17 @@ pub fn accept(
         return Err(AxError::InvalidInput);
     };
 
-    let syn_queue: &mut VecDeque<PendingTcp> = &mut entry.syn_queue;
+    let syn_queue: &mut VecDeque<AcceptedTcp> = &mut entry.syn_queue;
     let mut idx = 0;
     while idx < syn_queue.len() {
-        let handle = syn_queue[idx].accepted.handle;
+        let handle = syn_queue[idx].handle;
         if is_closed_without_data(sockets, handle) {
             syn_queue.swap_remove_front(idx);
             sockets.remove(handle);
             continue;
         }
         if is_acceptable(sockets, handle) {
-            return Ok(syn_queue.swap_remove_front(idx).unwrap().accepted);
+            return Ok(syn_queue.swap_remove_front(idx).unwrap());
         }
         idx += 1;
     }
@@ -598,19 +598,15 @@ Unix transport 支持 Linux 风格的 credentials 查询：
 
 ### Vsock Socket
 
-vsock 是可选 feature，不属于 IP 协议，也不通过 smoltcp poll。facade 只把 `SocketOps` 映射到 `VsockTransport`：
+vsock 是可选 feature，不属于 IP 协议，也不通过 smoltcp poll。facade 只把 `SocketOps` 映射到 stream transport：
 
 ```rust
-pub enum VsockTransport {
-    Stream(VsockStreamTransport),
-}
-
 pub struct VsockSocket {
-    transport: VsockTransport,
+    transport: VsockStreamTransport,
 }
 ```
 
-核心连接状态位于 `vsock::connection_manager`，设备事件由 vsock 设备层推进。transport enum 提供 stream variant，并为后续 datagram 扩展保留结构。
+核心连接状态位于 `vsock::connection_manager`，设备事件由 vsock 设备层推进。
 
 #### Vsock Connection Manager
 

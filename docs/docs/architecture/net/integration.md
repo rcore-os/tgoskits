@@ -114,10 +114,10 @@ ax_net::unix::register_unix_namespace(crate::unix_ns::AxFsUnixNamespace);
 
 ### 动态 Wi-Fi 与 SoftAP
 
-带 `wifi_control()` 的设备会走动态注册路径。runtime 从驱动读取 link policy，并把 OOB RX 唤醒函数设置为 `ax_net::notify_oob_rx`：
+带 `wifi_control()` 的设备会走动态注册路径。runtime 从驱动读取 link policy，并把 OOB RX 唤醒函数设置为 `ax_net::wake_net_task_irq`：
 
 ```rust
-ctrl.set_rx_wake(ax_net::notify_oob_rx);
+ctrl.set_rx_wake(ax_net::wake_net_task_irq);
 let policy = ctrl.link_policy();
 ```
 

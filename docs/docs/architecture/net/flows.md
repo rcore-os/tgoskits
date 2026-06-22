@@ -342,7 +342,7 @@ incoming SYN
   -> snoop_tcp_packet()
   -> LISTEN_TABLE.incoming_tcp_packet()
   -> create child smoltcp TCP socket
-  -> enqueue PendingTcp
+  -> enqueue AcceptedTcp
   -> smoltcp consumes SYN and advances child state
 
 TcpSocket::accept()
@@ -507,7 +507,7 @@ vsock 只在 `vsock` feature 下启用：
 
 ```text
 VsockSocket
-  -> VsockTransport::Stream
+  -> VsockStreamTransport
   -> vsock::connection_manager
   -> rdif_vsock::Interface event path
 ```

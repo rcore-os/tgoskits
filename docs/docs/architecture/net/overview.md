@@ -25,7 +25,7 @@ TGOSKits 的网络能力收敛在 `net/ax-net`。它是 ArceOS、StarryOS 和 Ax
 | [orphan.rs](net/ax-net/src/orphan.rs) | TCP orphan socket 回收（RFC 793 TIME_WAIT） | `add_orphan`, `reap_orphans` |
 | [dhcp_server.rs](net/ax-net/src/dhcp_server.rs) | 最简 DHCP 服务器（SoftAP 模式） | `DhcpServer` |
 | [unix/](net/ax-net/src/unix/) | Unix domain socket | `UnixSocket`, `Transport` |
-| [vsock/](net/ax-net/src/vsock/) | 可选 vsock 支持（`vsock` feature） | `VsockSocket`, `VsockTransport` |
+| [vsock/](net/ax-net/src/vsock/) | 可选 vsock 支持（`vsock` feature） | `VsockSocket`, `VsockStreamTransport` |
 | [device/](net/ax-net/src/device/) | loopback、Ethernet、rd-net、vsock 设备适配 | `Device`, `EthernetDevice`, `RdNetDriver` |
 | [consts.rs](net/ax-net/src/consts.rs) | 缓冲区大小等常量 | `STANDARD_MTU`, `SOCKET_BUFFER_SIZE` |
 
@@ -47,7 +47,7 @@ TGOSKits 的网络能力收敛在 `net/ax-net`。它是 ArceOS、StarryOS 和 Ax
 | Loopback | 零状态 `LoopbackDevice` + `Router::dispatch()` 快速路径 inline 注入 `rx_buffer`，不经设备 worker 和队列分配 | 完整 |
 | TCP orphan 回收 | `orphan.rs`：Drop 后保留 smoltcp socket 直到 FIN/TIME_WAIT 完成，RFC 793 合规 | 完整 |
 | DHCP 服务器（SoftAP） | `dhcp_server.rs`：最简单客户端 DHCP 服务器，Discover→Offer、Request→Ack | 完整 |
-| OOB RX（SDIO Wi-Fi） | `EthernetDevice::new_oob_rx()` + `notify_oob_rx()` + 独立 poll task | 完整 |
+| OOB RX（SDIO Wi-Fi） | `EthernetDevice::new_oob_rx()` + `wake_net_task_irq()` + 独立 poll task | 完整 |
 | 动态设备注册 | `register_device_with_config()` 运行时添加静态 IP 设备（Wi-Fi AP） | 完整 |
 
 ## 设计原则

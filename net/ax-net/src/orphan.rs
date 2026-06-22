@@ -164,9 +164,3 @@ pub(crate) fn reap_orphans(timestamp: Instant, sockets: &mut SocketSet<'_>) {
         );
     }
 }
-
-/// Get current orphan socket count (for diagnostics).
-#[allow(dead_code)]
-pub(crate) fn orphan_count() -> usize {
-    ORPHAN_SOCKETS.lock().len()
-}

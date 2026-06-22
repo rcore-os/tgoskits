@@ -126,7 +126,7 @@ struct EthernetIrqState {
     /// RX readiness is delivered out-of-band (outside the ethernet IRQ
     /// framework) via the device readiness poll set, e.g. an SDIO Wi-Fi chip
     /// that owns its own card interrupt and pokes the stack through
-    /// `notify_oob_rx`.
+    /// `wake_net_task_irq`.
     oob_rx: bool,
     driver: SpinNoIrq<Box<dyn EthernetDriver>>,
     poll_ready: Arc<PollSet>,

@@ -39,6 +39,7 @@ use smoltcp::{
 
 use crate::{
     SOCKET_SET,
+    addr::listen_addrs_conflict,
     consts::{LISTEN_QUEUE_SIZE, TCP_RX_BUF_LEN, TCP_TX_BUF_LEN},
 };
 
@@ -50,7 +51,7 @@ struct ListenTableEntryInner {
     /// Maximum pending child sockets.
     backlog: usize,
     /// Pending smoltcp child sockets waiting for accept().
-    syn_queue: VecDeque<PendingTcp>,
+    syn_queue: VecDeque<AcceptedTcp>,
     /// Wakes accept/poll waiters when child readiness changes.
     accept_poll: Arc<PollSet>,
 }
@@ -64,11 +65,6 @@ pub(crate) struct AcceptedTcp {
     pub(crate) local_endpoint: IpEndpoint,
     /// Remote endpoint observed for this connection.
     pub(crate) remote_endpoint: IpEndpoint,
-}
-
-#[derive(Clone, Copy)]
-struct PendingTcp {
-    accepted: AcceptedTcp,
 }
 
 struct AcceptWake {
@@ -115,15 +111,15 @@ impl ListenTableEntryInner {
     fn into_handles(self) -> Vec<SocketHandle> {
         self.syn_queue
             .into_iter()
-            .map(|pending| pending.accepted.handle)
+            .map(|pending| pending.handle)
             .collect()
     }
 
     /// Returns whether a child socket for this endpoint pair already exists.
     fn has_pending(&self, src: IpEndpoint, dst: IpEndpoint) -> bool {
-        self.syn_queue.iter().any(|pending| {
-            pending.accepted.local_endpoint == dst && pending.accepted.remote_endpoint == src
-        })
+        self.syn_queue
+            .iter()
+            .any(|pending| pending.local_endpoint == dst && pending.remote_endpoint == src)
     }
 }
 
@@ -210,7 +206,7 @@ impl ListenTable {
             return Ok(entry
                 .syn_queue
                 .iter()
-                .any(|pending| is_acceptable(sockets, pending.accepted.handle)));
+                .any(|pending| is_acceptable(sockets, pending.handle)));
         }
         {
             warn!("accept before listen");
@@ -234,10 +230,10 @@ impl ListenTable {
             return Err(AxError::InvalidInput);
         };
 
-        let syn_queue: &mut VecDeque<PendingTcp> = &mut entry.syn_queue;
+        let syn_queue: &mut VecDeque<AcceptedTcp> = &mut entry.syn_queue;
         let mut idx = 0;
         while idx < syn_queue.len() {
-            let handle = syn_queue[idx].accepted.handle;
+            let handle = syn_queue[idx].handle;
             if is_closed_without_data(sockets, handle) {
                 syn_queue.swap_remove_front(idx);
                 sockets.remove(handle);
@@ -251,7 +247,7 @@ impl ListenTable {
                         syn_queue.len()
                     );
                 }
-                return Ok(syn_queue.swap_remove_front(idx).unwrap().accepted);
+                return Ok(syn_queue.swap_remove_front(idx).unwrap());
             }
             idx += 1;
         }
@@ -289,7 +285,7 @@ impl ListenTable {
             return;
         };
         for pending in &entry.syn_queue {
-            let socket: &mut tcp::Socket = sockets.get_mut(pending.accepted.handle);
+            let socket: &mut tcp::Socket = sockets.get_mut(pending.handle);
             socket.register_recv_waker(waker);
             socket.register_send_waker(waker);
         }
@@ -339,12 +335,10 @@ impl ListenTable {
                 "TCP socket {}: prepare for connection {} -> {}",
                 handle, src, entry.listen_endpoint
             );
-            entry.syn_queue.push_back(PendingTcp {
-                accepted: AcceptedTcp {
-                    handle,
-                    local_endpoint: dst,
-                    remote_endpoint: src,
-                },
+            entry.syn_queue.push_back(AcceptedTcp {
+                handle,
+                local_endpoint: dst,
+                remote_endpoint: src,
             });
             entry.accept_poll.clone()
         };
@@ -353,13 +347,6 @@ impl ListenTable {
         // the actual PollSet wake to the net worker outer loop.
         crate::defer_poll_wake(wake_poll, IoEvents::IN);
     }
-}
-
-fn listen_addrs_conflict(
-    a: Option<smoltcp::wire::IpAddress>,
-    b: Option<smoltcp::wire::IpAddress>,
-) -> bool {
-    a.is_none() || b.is_none() || a == b
 }
 
 fn is_acceptable(sockets: &SocketSet<'_>, handle: SocketHandle) -> bool {

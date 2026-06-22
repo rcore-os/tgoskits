@@ -32,7 +32,7 @@ use crate::{
     general::GeneralOptions,
     options::{Configurable, GetSocketOption, SetSocketOption},
     state::*,
-    vsock::{VsockAddr, VsockConnId, VsockTransport, VsockTransportOps},
+    vsock::{VsockAddr, VsockConnId, VsockTransportOps},
 };
 
 /// Stream transport for vsock sockets.
@@ -122,7 +122,7 @@ impl VsockTransportOps for VsockStreamTransport {
         })
     }
 
-    fn accept(&self) -> AxResult<(VsockTransport, VsockAddr)> {
+    fn accept(&self) -> AxResult<(VsockStreamTransport, VsockAddr)> {
         if self.state.get() != State::Listening {
             ax_bail!(InvalidInput, "not listening");
         }
@@ -149,7 +149,7 @@ impl VsockTransportOps for VsockStreamTransport {
                 general: GeneralOptions::new(1, 40, 0), // SOCK_STREAM
             };
 
-            Ok((VsockTransport::Stream(new_transport), peer_addr))
+            Ok((new_transport, peer_addr))
         })
     }
 

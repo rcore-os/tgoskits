@@ -553,7 +553,7 @@ Ethernet 设备在 IP packet 与真实 Ethernet frame 之间转换，并维护 A
 Ethernet 支持两种 RX readiness 模式：
 
 - IRQ 模式：`EthernetIrqRegistrar` 注册硬件 IRQ，IRQ 到来后 `handle_ethernet_irq()` 唤醒 `poll_ready`。
-- OOB RX 模式：用于 SDIO Wi-Fi 等设备，RX 就绪由设备外部线程调用 `notify_oob_rx()`，再唤醒 `{ifname}-oob-poll` 和设备 worker。
+- OOB RX 模式：用于 SDIO Wi-Fi 等设备，RX 就绪由设备外部线程调用 `wake_net_task_irq()`，再唤醒 `{ifname}-oob-poll` 和设备 worker。
 
 `register_waker()` 只在存在 IRQ registration 或 OOB RX wake source 时注册：
 

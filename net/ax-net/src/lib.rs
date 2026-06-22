@@ -37,6 +37,7 @@ extern crate alloc;
 #[cfg(test)]
 extern crate std;
 
+mod addr;
 mod config;
 mod consts;
 mod device;
@@ -509,13 +510,13 @@ pub struct NetConfig {
 
 /// Registers an extra Ethernet device with a static IPv4 address.
 ///
-/// If `dedicated_poll` is set, RX readiness is driven by [`notify_oob_rx`]
+/// If `dedicated_poll` is set, RX readiness is driven by [`wake_net_task_irq`]
 /// instead of the shared Ethernet IRQ framework.
 pub fn register_device_with_config(dev: Box<dyn EthernetDriver>, config: NetConfig) {
     let mac = EthernetAddress(dev.mac_address());
     let server_ip = Ipv4Address::new(config.ip[0], config.ip[1], config.ip[2], config.ip[3]);
     let cidr = Ipv4Cidr::new(server_ip, config.prefix_len);
-    // A dedicated-poll device gets RX out-of-band (via `notify_oob_rx` and the
+    // A dedicated-poll device gets RX out-of-band (via `wake_net_task_irq` and the
     // shared net poll task), so its socket wakers must be armed even though it
     // has no ethernet IRQ registration.
     let eth_dev = if config.dedicated_poll {
@@ -641,16 +642,6 @@ pub fn reconfigure_wifi(name: &str, mode: WifiMode<'_>) -> AxResult<()> {
 pub fn wake_net_task_irq() {
     NET_IRQ_NOTIFY.notify_irq();
     NET_POLL_WAKE.notify_one_from_irq();
-}
-
-/// Wakes the out-of-band RX poll task; intended as a device RX-data callback.
-///
-/// A device whose RX path sits outside the ethernet IRQ framework (e.g. an SDIO
-/// chip owning its own card interrupt) registers this as its RX callback. It
-/// only signals here; the dedicated poll task does the actual stack polling, so
-/// the device's RX thread is never blocked on the stack.
-pub fn notify_oob_rx() {
-    wake_net_task_irq();
 }
 
 fn next_poll_delay() -> Duration {

@@ -344,12 +344,10 @@ if let Some(entry) = table
         return;
     }
     let handle = sockets.add(socket);
-    entry.syn_queue.push_back(PendingTcp {
-        accepted: AcceptedTcp {
-            handle,
-            local_endpoint: dst,
-            remote_endpoint: src,
-        },
+    entry.syn_queue.push_back(AcceptedTcp {
+        handle,
+        local_endpoint: dst,
+        remote_endpoint: src,
     });
     entry.accept_poll.wake();
 }
@@ -814,7 +812,7 @@ Ethernet IRQ:
   -> return Wake
 
 OOB RX:
-  notify_oob_rx()
+  wake_net_task_irq()
   -> OOB_RX_SIGNAL.wake()
   -> {ifname}-oob-poll task
   -> request_poll()

@@ -235,7 +235,7 @@ pub struct NetConfig {
 
 ```rust
 pub fn register_device_with_config(dev: Box<dyn EthernetDriver>, config: NetConfig);
-pub fn notify_oob_rx();
+pub fn wake_net_task_irq();
 ```
 
 注册过程：
@@ -247,7 +247,7 @@ pub fn notify_oob_rx();
 - `dhcp_server_client_ip` 存在时启用内置单客户端 DHCP server。
 - 调用 `request_poll()` 让 net-poll worker 看到新状态。
 
-`dedicated_poll = true` 时，驱动侧收到 out-of-band RX 事件后调用 `notify_oob_rx()`。
+`dedicated_poll = true` 时，驱动侧收到 out-of-band RX 事件后调用 `wake_net_task_irq()`。
 
 ## 资源预算
 

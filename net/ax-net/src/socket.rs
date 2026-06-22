@@ -227,48 +227,6 @@ pub trait SocketOps: Configurable {
     fn shutdown(&self, how: Shutdown) -> AxResult;
 }
 
-impl<T: SocketOps + ?Sized> SocketOps for Box<T> {
-    fn bind(&self, local_addr: SocketAddrEx) -> AxResult {
-        (**self).bind(local_addr)
-    }
-
-    fn connect(&self, remote_addr: SocketAddrEx) -> AxResult {
-        (**self).connect(remote_addr)
-    }
-
-    fn listen(&self, backlog: usize) -> AxResult {
-        (**self).listen(backlog)
-    }
-
-    fn accept(&self) -> AxResult<Socket> {
-        (**self).accept()
-    }
-
-    fn send(&self, src: impl Read + IoBuf, options: SendOptions) -> AxResult<usize> {
-        (**self).send(src, options)
-    }
-
-    fn recv(&self, dst: impl Write + IoBufMut, options: RecvOptions<'_>) -> AxResult<usize> {
-        (**self).recv(dst, options)
-    }
-
-    fn recv_available(&self) -> AxResult<usize> {
-        (**self).recv_available()
-    }
-
-    fn local_addr(&self) -> AxResult<SocketAddrEx> {
-        (**self).local_addr()
-    }
-
-    fn peer_addr(&self) -> AxResult<SocketAddrEx> {
-        (**self).peer_addr()
-    }
-
-    fn shutdown(&self, how: Shutdown) -> AxResult {
-        (**self).shutdown(how)
-    }
-}
-
 /// Network socket abstraction.
 pub enum Socket {
     /// UDP socket.

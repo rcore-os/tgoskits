@@ -22,6 +22,14 @@
 //! Loopback ICMP-style traffic may be delivered through a local fast path. For
 //! connected raw sockets, packets from other peers can be skipped or deferred
 //! without corrupting the smoltcp receive queue format.
+//!
+//! # Locking
+//!
+//! Raw sockets keep their small deferred-packet slots behind IRQ-off spin locks
+//! because packet delivery may be inspected while the net poll worker is
+//! servicing device-originated receive work. These locks are only held around
+//! `Option<Vec<u8>>` swaps and never across route lookup, smoltcp polling, or
+//! userspace buffer I/O.
 
 use alloc::vec;
 use core::{

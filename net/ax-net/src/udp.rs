@@ -45,6 +45,7 @@ use spin::RwLock;
 
 use crate::{
     RecvFlags, RecvOptions, SOCKET_SET, SendFlags, SendOptions, Shutdown, SocketAddrEx, SocketOps,
+    addr::allocate_ephemeral_port,
     config::{DeviceBinding, InterfaceId},
     consts::{UDP_RX_BUF_LEN, UDP_TX_BUF_LEN},
     general::GeneralOptions,
@@ -125,6 +126,16 @@ impl UdpSocket {
         Ok(get_control()
             .select_route_with_binding(remote, self.general.device_binding())?
             .source)
+    }
+
+    fn send_source_for_remote(&self, remote: &IpAddress) -> AxResult<IpAddress> {
+        if let Some(local_ep) = *self.local_addr.read()
+            && !local_ep.addr.is_unspecified()
+        {
+            Ok(local_ep.addr)
+        } else {
+            self.source_for_remote(remote)
+        }
     }
 }
 
@@ -276,16 +287,7 @@ impl SocketOps for UdpSocket {
             let (remote_addr, source_addr) = match options.to {
                 Some(addr) => {
                     let addr = IpEndpoint::from(addr.into_ip()?);
-                    // Use bound address if bound to specific IP
-                    let src = if let Some(local_ep) = *self.local_addr.read() {
-                        if local_ep.addr.is_unspecified() {
-                            self.source_for_remote(&addr.addr)?
-                        } else {
-                            local_ep.addr
-                        }
-                    } else {
-                        self.source_for_remote(&addr.addr)?
-                    };
+                    let src = self.send_source_for_remote(&addr.addr)?;
                     (addr, src)
                 }
                 None => match self.remote_endpoint() {
@@ -326,16 +328,7 @@ impl SocketOps for UdpSocket {
         let resolved = match options.to {
             Some(addr) => {
                 let addr = IpEndpoint::from(addr.into_ip()?);
-                // Use bound address if bound to specific IP, otherwise route decision
-                let src = if let Some(local_ep) = *self.local_addr.read() {
-                    if local_ep.addr.is_unspecified() {
-                        self.source_for_remote(&addr.addr)?
-                    } else {
-                        local_ep.addr
-                    }
-                } else {
-                    self.source_for_remote(&addr.addr)?
-                };
+                let src = self.send_source_for_remote(&addr.addr)?;
                 Some((addr, src))
             }
             None => self.remote_endpoint().ok(),
@@ -570,25 +563,9 @@ impl Drop for UdpSocket {
 }
 
 fn get_ephemeral_port() -> AxResult<u16> {
-    const PORT_START: u16 = 0xc000;
-    const PORT_END: u16 = 0xffff;
-    static CURR: Mutex<u16> = Mutex::new(PORT_START);
-    let mut curr = CURR.lock();
-
-    let mut tries = 0;
-    while tries <= PORT_END - PORT_START {
-        let port = *curr;
-        if *curr == PORT_END {
-            *curr = PORT_START;
-        } else {
-            *curr += 1;
-        }
-        if SOCKET_SET.udp_port_available(IpAddress::Ipv4(Ipv4Addr::UNSPECIFIED), port) {
-            return Ok(port);
-        }
-        tries += 1;
-    }
-    ax_bail!(AddrInUse, "no available ports")
+    allocate_ephemeral_port(|port| {
+        SOCKET_SET.udp_port_available(IpAddress::Ipv4(Ipv4Addr::UNSPECIFIED), port)
+    })
 }
 
 #[cfg(test)]

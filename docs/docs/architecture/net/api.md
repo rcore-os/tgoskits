@@ -344,7 +344,7 @@ pub enum Socket {
 | `udp::UdpSocket` | `UdpSocket::new()` | AF_INET / SOCK_DGRAM |
 | `raw::RawSocket` | `RawSocket::new(ip_version, ip_protocol)` | AF_INET / SOCK_RAW |
 | `unix::UnixSocket` | `UnixSocket::new(Transport)` | AF_UNIX / stream,dgram |
-| `vsock::VsockSocket` | `VsockSocket::new(VsockTransport)` | AF_VSOCK / stream |
+| `vsock::VsockSocket` | `VsockSocket::new()` | AF_VSOCK / stream |
 
 ### 设备绑定
 
@@ -610,7 +610,7 @@ pub struct NetConfig {
 }
 
 pub fn register_device_with_config(dev: Box<dyn EthernetDriver>, config: NetConfig);
-pub fn notify_oob_rx();
+pub fn wake_net_task_irq();
 ```
 
 `register_device_with_config()` 用于运行期加入静态 IPv4 Ethernet 设备，例如 Wi-Fi AP 模式设备。它会：
@@ -621,7 +621,7 @@ pub fn notify_oob_rx();
 - 启动该设备的 RX/TX worker。
 - 可选启用内置单客户端 DHCP server。
 
-`dedicated_poll = true` 时，设备 RX readiness 不走 Ethernet IRQ registrar，而由外部驱动线程调用 `notify_oob_rx()` 唤醒 OOB poll task。
+`dedicated_poll = true` 时，设备 RX readiness 不走 Ethernet IRQ registrar，而由外部驱动线程调用 `wake_net_task_irq()` 唤醒 OOB poll task。
 
 ## Unix Namespace API
 
