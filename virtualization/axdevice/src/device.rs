@@ -204,7 +204,6 @@ impl AxVmDevices {
                             let addr = config.base_gpa + i * stride;
                             let size = config.length;
                             #[allow(clippy::arc_with_non_send_sync)]
-                            #[allow(clippy::arc_with_non_send_sync)]
                             this.register(MmioDeviceAdapter::from_arc(Arc::new(
                                 arm_vgic::v3::vgicr::VGicR::new(
                                     addr.into(),
