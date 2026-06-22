@@ -1,8 +1,5 @@
 use alloc::{collections::BTreeMap, format};
-use core::{
-    cell::UnsafeCell,
-    sync::atomic::{AtomicBool, Ordering},
-};
+use core::cell::UnsafeCell;
 
 use aarch64_cpu::registers::ID_AA64PFR0_EL1;
 use arm_gic_driver::v3::*;
@@ -12,7 +9,6 @@ use rdrive::{module_driver, probe::OnProbeError, register::ProbeFdt};
 use crate::common::ioremap;
 
 static CPU_IF: StaticCell<BTreeMap<usize, CpuInterfaceSlot>> = StaticCell::uninit();
-static GICD_SHARED_IRQ_CONFIG: AtomicBool = AtomicBool::new(true);
 
 struct CpuInterfaceSlot {
     inner: UnsafeCell<Option<CpuInterface>>,
@@ -86,13 +82,8 @@ fn probe_gic(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
     )
     .unwrap();
 
-    let configure_shared_irqs = someboot::arch::gicd_configures_shared_irqs();
-    GICD_SHARED_IRQ_CONFIG.store(configure_shared_irqs, Ordering::Release);
-
     let mut gic = unsafe { Gic::new(gicd.as_ptr().into(), gicr.as_ptr().into()) };
-    gic.init_with_options(GicInitOptions {
-        reset_interrupts: configure_shared_irqs,
-    });
+    gic.init();
     super::set_backend(super::GicBackend::V3);
 
     init_cpu_interface_map();
@@ -145,13 +136,8 @@ pub fn begin_irq() -> Option<ActiveIrq> {
 }
 
 pub fn irq_set_enable(raw: usize, enable: bool) {
-    let intid = unsafe { IntId::raw(raw as _) };
-    if !GICD_SHARED_IRQ_CONFIG.load(Ordering::Acquire) && !intid.is_private() {
-        return;
-    }
-
     with_gic(|gic| {
-        gic.set_irq_enable(intid, enable);
+        gic.set_irq_enable(unsafe { IntId::raw(raw as _) }, enable);
     });
 }
 

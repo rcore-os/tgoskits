@@ -75,7 +75,6 @@ qemu-system-aarch64 \
   -device virtio-blk-pci,drive=disk0 \
   -drive id=disk0,if=none,format=raw,file=target/starry-macos-selfbuild/tgos-images/rootfs-aarch64-alpine.img/rootfs-aarch64-alpine.img,file.locking=off \
   -kernel target/starry-macos-selfbuild/uploaded/starryos-aarch64-unknown-none-softfloat.bin \
-  -append "someboot.aarch64_gicd_spi=off" \
   -netdev user,id=net0
 ```
 
@@ -123,7 +122,6 @@ qemu-system-aarch64 \
   -device virtio-blk-pci,drive=disk0 \
   -drive id=disk0,if=none,format=raw,file=target/starry-macos-selfbuild/tgos-images/rootfs-aarch64-alpine.img/rootfs-aarch64-alpine.img,file.locking=off \
   -kernel target/starry-macos-selfbuild/uploaded/starryos-aarch64-unknown-none-softfloat.bin \
-  -append "someboot.aarch64_gicd_spi=off" \
   -netdev user,id=net0
 ```
 

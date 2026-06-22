@@ -255,23 +255,6 @@ pub struct Gic {
 
 unsafe impl Send for Gic {}
 
-#[derive(Debug, Clone, Copy, Eq, PartialEq)]
-pub struct GicInitOptions {
-    /// Reset interrupt distributor array registers during initialization.
-    ///
-    /// Keep this enabled for normal GICv3 hardware. Some emulated platforms may
-    /// expose GICv3 but reject early GICD interrupt array accesses.
-    pub reset_interrupts: bool,
-}
-
-impl Default for GicInitOptions {
-    fn default() -> Self {
-        Self {
-            reset_interrupts: true,
-        }
-    }
-}
-
 impl Gic {
     /// Create a new GICv3 driver instance.
     ///
@@ -351,11 +334,6 @@ impl Gic {
     /// gic.init(); // Initialize the distributor
     /// ```
     pub fn init(&mut self) {
-        self.init_with_options(GicInitOptions::default());
-    }
-
-    /// Initialize the GICv3 Distributor with platform-specific options.
-    pub fn init_with_options(&mut self, options: GicInitOptions) {
         // Read current configuration to determine security state
 
         self.security_state = self.gicd().get_security_state();
@@ -376,9 +354,7 @@ impl Gic {
         }
         trace!("GICv3 Distributor disabled");
 
-        if options.reset_interrupts {
-            self.gicd().reset_registers();
-        }
+        self.gicd().reset_registers();
 
         let ctrl = match self.security_state {
             SecurityState::Secure => {

@@ -17,8 +17,6 @@ args = [
     "8192M",
     "-smp",
     "4",
-    "-append",
-    "someboot.aarch64_gicd_spi=off",
 ]
 uefi = false
 to_bin = true

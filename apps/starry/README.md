@@ -76,8 +76,7 @@ asset preparation flow.
 The `macos-selfbuild` case is an Apple Silicon macOS workflow that boots an
 AArch64 StarryOS SMP kernel with QEMU HVF, enters the StarryOS guest userland,
 and runs guest `cargo build` to build StarryOS again. It uses the upstream
-AArch64 timer behavior; the macOS/HVF-specific GIC behavior is selected with a
-generic AArch64 boot argument instead of app-private Cargo features.
+AArch64 timer and GIC behavior instead of app-private platform features.
 
 ```bash
 apps/starry/macos-selfbuild/full_self_build.sh
@@ -92,7 +91,6 @@ qemu-system-aarch64 \
   -device virtio-blk-pci,drive=disk0 \
   -drive id=disk0,if=none,format=raw,file=target/starry-macos-selfbuild/tgos-images/rootfs-aarch64-alpine.img/rootfs-aarch64-alpine.img,file.locking=off \
   -kernel target/starry-macos-selfbuild/uploaded/starryos-aarch64-unknown-none-softfloat.bin \
-  -append "someboot.aarch64_gicd_spi=off" \
   -monitor none \
   -serial mon:stdio \
   -net none
