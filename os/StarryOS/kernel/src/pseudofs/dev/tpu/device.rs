@@ -6,10 +6,24 @@
 //! 异步模型（复刻原 Linux 驱动 `cvi_tpu_interface.c`）：`submit` 只把任务
 //! 入队并唤醒常驻 worker 线程后立即返回；worker 线程串行调用
 //! [`Sg2002Tpu::run_one`] 跑硬件，等待 TDMA 完成时通过 `IRQ_WQ` 睡眠让出
-//! CPU；`wait` 按 `seq_no` 睡 `DONE_WQ`，被 worker 完成时唤醒。
+//! CPU；`wait` 按 `(tid, seq_no)` 睡 `DONE_WQ`，被 worker 完成时唤醒。
 //!
 //! SG2002 默认单核，worker 等硬件时必须真正睡眠让出 CPU，相机前处理才能
 //! 与 TPU 推理重叠。
+//!
+//! # 接口约定（重要）
+//!
+//! - **`submit` 与 `wait` 必须在同一线程调用。** 完成项以 `(提交线程 tid,
+//!   用户 seq_no)` 为匹配键存入全局 `DONE_LIST`；`wait` 用「当前线程 tid +
+//!   传入 seq_no」检索。换线程 `wait` 会查不到结果而超时。该约束等价于原
+//!   Linux 驱动以 `current->pid` 隔离任务的语义，并隔离了不同进程/线程偶然
+//!   使用相同 `seq_no` 时的串扰（否则一个 waiter 可能取走他人的完成项）。
+//! - **`seq_no` 由用户态提供，仅需在「同一线程的在途请求之间」唯一。** 它不是
+//!   内核分配的全局令牌；跨线程不保证唯一也无需唯一，因为 tid 已隔离。
+//! - **buffer 生命周期：** `submit` 入队的 [`TpuTask`] 持有底层 Ion buffer 的
+//!   `Arc` 强引用，直到结果被 `wait` 取走（或因 `DONE_LIST` 超限被丢弃）。
+//!   因此用户在 worker 跑完前 `close(fd)` 不会导致 DMA 物理页被回收
+//!   （防 use-after-free）。
 
 use alloc::{collections::VecDeque, string::String, sync::Arc};
 use core::{
@@ -41,12 +55,18 @@ use crate::{
 
 /// 一个 TPU 推理任务（OS glue 侧）。
 struct TpuTask {
-    /// 序列号，submit / wait 通过它配对结果。
+    /// 提交线程 id。与 `seq_no` 组成复合匹配键，隔离跨进程/线程的相同 seq_no
+    /// （对应原 Linux 驱动 `node->pid = current->pid` 的隔离语义）。
+    tid: u64,
+    /// 序列号，submit / wait 通过 `(tid, seq_no)` 配对结果。
     seq_no: u32,
     /// DMA buffer 虚拟地址。
     vaddr: usize,
     /// DMA buffer 物理地址。
     paddr: u64,
+    /// 持有底层 Ion buffer 的强引用，保证 worker 跑硬件、结果被取走之前，
+    /// 即使用户提前 close fd，物理 DMA 页也不会被回收（防 use-after-free）。
+    _buffer: Arc<IonBuffer>,
     /// 执行结果（0 成功，-1 失败），由 worker 回填。
     ret: i32,
 }
@@ -55,6 +75,10 @@ struct TpuTask {
 static TASK_LIST: SpinNoIrq<VecDeque<TpuTask>> = SpinNoIrq::new(VecDeque::new());
 /// 已完成任务队列（对应 Linux `done_list`）。
 static DONE_LIST: SpinNoIrq<VecDeque<TpuTask>> = SpinNoIrq::new(VecDeque::new());
+/// `DONE_LIST` 上限。每个滞留完成项持有一个 `Arc<IonBuffer>`，提交后不 wait
+/// 的线程会令其无限累积；超限丢弃最旧项以释放 buffer（对应原驱动
+/// `DONE_LIST_MAX`）。
+const DONE_LIST_MAX: usize = 64;
 /// 唤醒 worker 取任务（对应 Linux `task_wait_queue`）。
 static TASK_WQ: WaitQueue = WaitQueue::new();
 /// 唤醒等待结果的提交者（对应 Linux `done_wait_queue`）。
@@ -148,7 +172,23 @@ fn tpu_worker(hw: Arc<Sg2002Tpu>) {
             .run_one(task.seq_no, task.vaddr, task.paddr)
             .map_or(-1, |_| 0);
 
-        DONE_LIST.lock().push_back(task);
+        // 入队完成结果并唤醒等待者。若提交线程从不 wait（或 wait 前退出），其
+        // 完成项会滞留并攥住 `Arc<IonBuffer>` 永不释放——故对 DONE_LIST 设上限，
+        // 超限时丢弃最旧项（连带释放其 buffer 强引用），对应原 Linux 驱动的
+        // `cvi_tpu_cleanup_done_list`。
+        {
+            let mut done = DONE_LIST.lock();
+            done.push_back(task);
+            while done.len() > DONE_LIST_MAX {
+                let dropped = done.pop_front();
+                if let Some(t) = dropped {
+                    warn!(
+                        "[TPU] done list full, dropping orphaned result (tid={}, seq_no={})",
+                        t.tid, t.seq_no
+                    );
+                }
+            }
+        }
         DONE_WQ.notify_all(false);
     }
 }
@@ -223,8 +263,9 @@ impl TpuDevice {
             TpuError::InvalidDmabuf
         })?;
 
-        // 获取底层 Ion buffer（fd 持有强引用，保证生命周期）
-        let buffer = ion_file.buffer();
+        // 获取底层 Ion buffer。clone 一份 Arc 强引用随任务存活，确保 worker
+        // 访问 DMA 内存期间（即使用户已 close fd）物理页不被回收。
+        let buffer = ion_file.buffer().clone();
         debug!(
             "[TPU] dmabuf info: handle={}, size={}, paddr=0x{:x}",
             buffer.handle.as_u32(),
@@ -233,9 +274,11 @@ impl TpuDevice {
         );
 
         let task = TpuTask {
+            tid: ax_task::current().id().as_u64(),
             seq_no: submit_arg.seq_no,
             vaddr: buffer.dma_info.cpu_addr.as_ptr() as usize,
             paddr: buffer.dma_info.bus_addr.as_u64(),
+            _buffer: buffer,
             ret: 0,
         };
 
@@ -246,22 +289,28 @@ impl TpuDevice {
         Ok(0)
     }
 
-    /// 等待 DMA buffer 完成：按 `seq_no` 睡 `DONE_WQ`，被 worker 唤醒后取结果。
+    /// 等待 DMA buffer 完成：按 `(tid, seq_no)` 睡 `DONE_WQ`，被 worker 唤醒后
+    /// 取结果。用调用线程 tid 与用户 seq_no 组成复合键，隔离跨进程/线程的相同
+    /// seq_no——否则两个进程都从 seq 0 开始会互相取走对方的完成项。
     fn wait_dmabuf(&self, arg: usize) -> Result<usize, TpuError> {
         let wait_arg = unsafe { &mut *(arg as *mut CviWaitDmaArg) };
         let seq_no = wait_arg.seq_no;
+        let tid = ax_task::current().id().as_u64();
 
-        // 睡在 DONE_WQ 上直到对应 seq_no 出现在完成队列（或超时）。
+        // 睡在 DONE_WQ 上直到对应 (tid, seq_no) 出现在完成队列（或超时）。
         // wait_timeout_until 睡前复检谓词，等价 Linux wait_event。
         let timed_out = DONE_WQ.wait_timeout_until(TPU_WAIT_TIMEOUT, || {
-            DONE_LIST.lock().iter().any(|t| t.seq_no == seq_no)
+            DONE_LIST
+                .lock()
+                .iter()
+                .any(|t| t.tid == tid && t.seq_no == seq_no)
         });
 
         // 取出该任务结果（即使超时也再查一次，处理临界完成）。
         let found = {
             let mut done = DONE_LIST.lock();
             done.iter()
-                .position(|t| t.seq_no == seq_no)
+                .position(|t| t.tid == tid && t.seq_no == seq_no)
                 .map(|idx| done.remove(idx).unwrap())
         };
 
@@ -276,8 +325,8 @@ impl TpuDevice {
             None => {
                 wait_arg.ret = -1;
                 warn!(
-                    "[TPU] wait dmabuf: seq_no {} not found (timed_out={})",
-                    seq_no, timed_out
+                    "[TPU] wait dmabuf: (tid={}, seq_no={}) not found (timed_out={})",
+                    tid, seq_no, timed_out
                 );
                 Err(TpuError::Timeout)
             }
