@@ -593,16 +593,26 @@ impl SocketOps for TcpSocket {
             self.with_smol_socket(|socket| {
                 if socket.recv_queue() > 0 {
                     if options.flags.contains(RecvFlags::PEEK) {
-                        dst.write(
+                        if dst.remaining_mut() == 0 {
+                            return Ok(0);
+                        }
+                        let len = dst.write(
                             socket
                                 .peek(dst.remaining_mut())
                                 .map_err(|_| ax_err_type!(NotConnected, "not connected?"))?,
-                        )
+                        )?;
+                        if len == 0 {
+                            return Err(AxError::WriteZero);
+                        }
+                        Ok(len)
                     } else {
                         // Drain currently available bytes from RX queue without waiting.
                         // This loop copies across smoltcp's internal buffer segments to fill
                         // the user buffer with as many bytes as are ready, but does not block
                         // waiting for more data to arrive.
+                        if dst.remaining_mut() == 0 {
+                            return Ok(0);
+                        }
                         let mut total = 0;
                         while socket.recv_queue() > 0 && dst.remaining_mut() > 0 {
                             let len = socket
@@ -613,7 +623,7 @@ impl SocketOps for TcpSocket {
                                 })
                                 .map_err(|_| ax_err_type!(NotConnected, "not connected?"))??;
                             if len == 0 {
-                                break;
+                                return Err(AxError::WriteZero);
                             }
                             total += len;
                         }

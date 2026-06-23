@@ -28,6 +28,16 @@
 //! - `socket`, `tcp`, `udp`, `raw`: POSIX-like IP socket surface.
 //! - `listen_table`, `orphan`, `wrapper`: side tables around smoltcp sockets.
 //! - `unix` and `vsock`: local transports outside the smoltcp IP path.
+//!
+//! # IPv6 status
+//!
+//! smoltcp is built with IPv6 packet support, but the ax-net control plane is
+//! still IPv4-first. Interface configuration tracks IPv4 addresses, DHCP is
+//! IPv4-only, Ethernet neighbor resolution uses ARP rather than NDP, and local
+//! address binding only matches IPv4 interface addresses. IPv6 sockets and
+//! packets may work in limited cases such as loopback or explicitly routed
+//! medium-IP paths, but Ethernet IPv6 with automatic addressing or neighbor
+//! discovery is not implemented yet.
 
 #![no_std]
 

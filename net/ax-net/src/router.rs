@@ -526,7 +526,7 @@ pub struct Router {
     queues: Arc<RouterQueues>,
     devices: Vec<Arc<DeviceHandle>>,
     table: SharedRouteTable,
-    tx_route_cache: Option<TxRouteCache>,
+    tx_route_cache: TxRouteCache,
 }
 impl Router {
     /// Creates the virtual multi-device endpoint used by smoltcp.
@@ -544,7 +544,7 @@ impl Router {
             queues,
             devices: Vec::new(),
             table,
-            tx_route_cache: None,
+            tx_route_cache: TxRouteCache::new(),
         }
     }
 
@@ -937,15 +937,58 @@ enum TxRoute {
 pub struct TxToken<'a> {
     tx_queue: Arc<BoundedPacketQueue<RoutedTxPacket>>,
     table: SharedRouteTable,
-    route_cache: &'a mut Option<TxRouteCache>,
+    route_cache: &'a mut TxRouteCache,
+}
+
+const TX_ROUTE_CACHE_CAPACITY: usize = 16;
+
+#[derive(Default)]
+struct TxRouteCache {
+    entries: Vec<TxRouteCacheEntry>,
 }
 
 #[derive(Clone, Copy)]
-struct TxRouteCache {
+struct TxRouteCacheEntry {
     generation: u64,
     src: IpAddress,
     dst: IpAddress,
     route: TxRoute,
+}
+
+impl TxRouteCache {
+    fn new() -> Self {
+        Self {
+            entries: Vec::with_capacity(TX_ROUTE_CACHE_CAPACITY),
+        }
+    }
+
+    fn lookup(&mut self, generation: u64, src: IpAddress, dst: IpAddress) -> Option<TxRoute> {
+        let idx = self.entries.iter().position(|entry| {
+            entry.generation == generation && entry.src == src && entry.dst == dst
+        })?;
+        let entry = self.entries.remove(idx);
+        let route = entry.route;
+        self.entries.push(entry);
+        Some(route)
+    }
+
+    fn insert(&mut self, generation: u64, src: IpAddress, dst: IpAddress, route: TxRoute) {
+        if let Some(idx) = self
+            .entries
+            .iter()
+            .position(|entry| entry.src == src && entry.dst == dst)
+        {
+            self.entries.remove(idx);
+        } else if self.entries.len() >= TX_ROUTE_CACHE_CAPACITY {
+            self.entries.remove(0);
+        }
+        self.entries.push(TxRouteCacheEntry {
+            generation,
+            src,
+            dst,
+            route,
+        });
+    }
 }
 
 impl smoltcp::phy::TxToken for TxToken<'_> {
@@ -978,7 +1021,7 @@ impl smoltcp::phy::TxToken for TxToken<'_> {
 
 fn tx_route_for_packet(
     table: &SharedRouteTable,
-    route_cache: &mut Option<TxRouteCache>,
+    route_cache: &mut TxRouteCache,
     packet: &[u8],
 ) -> TxRoute {
     let (src_addr, dst_addr, link_local) = match IpVersion::of_packet(packet) {
@@ -1013,12 +1056,8 @@ fn tx_route_for_packet(
         return TxRoute::Broadcast { dst: dst_addr };
     }
     let generation = table.generation();
-    if let Some(cache) = *route_cache
-        && cache.generation == generation
-        && cache.src == src_addr
-        && cache.dst == dst_addr
-    {
-        return cache.route;
+    if let Some(route) = route_cache.lookup(generation, src_addr, dst_addr) {
+        return route;
     }
     let routes = table.read();
     let Some(route) = routes.select_route_for_source(&dst_addr, &src_addr) else {
@@ -1033,12 +1072,7 @@ fn tx_route_for_packet(
         dev: route.dev,
         next_hop: route.next_hop,
     };
-    *route_cache = Some(TxRouteCache {
-        generation,
-        src: src_addr,
-        dst: dst_addr,
-        route,
-    });
+    route_cache.insert(generation, src_addr, dst_addr, route);
     route
 }
 
