@@ -2,9 +2,9 @@
 //! function, and DMA buffers; this module runs fill/copy, polls to completion, and CRC-checks output.
 use crate::{
     RgaCore,
-    backend::RgaStatus,
+    backend::{RgaDiag, RgaStatus},
     buffer::RgaDmaBuffer,
-    error::{Result, RgaError},
+    error::RgaError,
     operation::{ImageDesc, PixelFormat, RgaOperation},
 };
 
@@ -36,7 +36,7 @@ pub fn run_rga2_smoke(
     width: u32,
     height: u32,
     mut delay_us: impl FnMut(u32),
-) -> Result<SelftestReport> {
+) -> core::result::Result<SelftestReport, (RgaError, RgaDiag)> {
     let fmt = PixelFormat::Rgba8888;
     let stride = width * fmt.bytes_per_pixel();
     let src_img = ImageDesc::rgb(width, height, stride, fmt, src.phys_addr());
@@ -47,7 +47,8 @@ pub fn run_rga2_smoke(
     core.start(&RgaOperation::Fill {
         dst: dst_img,
         color,
-    })?;
+    })
+    .map_err(|e| (e, core.diag()))?;
     poll_done(core, &mut delay_us)?;
     dst.complete_for_cpu();
     let fill_ok = dst
@@ -67,7 +68,8 @@ pub fn run_rga2_smoke(
     core.start(&RgaOperation::Copy {
         src: src_img,
         dst: dst_img,
-    })?;
+    })
+    .map_err(|e| (e, core.diag()))?;
     poll_done(core, &mut delay_us)?;
     dst.complete_for_cpu();
     let crc = crc32(dst.cpu_bytes());
@@ -90,10 +92,11 @@ pub fn run_rga2_fill_imported(
     height: u32,
     color: u32,
     mut delay_us: impl FnMut(u32),
-) -> Result<()> {
+) -> core::result::Result<(), (RgaError, RgaDiag)> {
     let fmt = PixelFormat::Rgba8888;
     let dst = ImageDesc::rgb(width, height, width * fmt.bytes_per_pixel(), fmt, dst_phys);
-    core.start(&RgaOperation::Fill { dst, color })?;
+    core.start(&RgaOperation::Fill { dst, color })
+        .map_err(|e| (e, core.diag()))?;
     poll_done(core, &mut delay_us)
 }
 
@@ -108,7 +111,7 @@ pub fn run_rga2_blit_resize(
     dst_phys: u64,
     dst_dims: (u32, u32),
     mut delay_us: impl FnMut(u32),
-) -> Result<()> {
+) -> core::result::Result<(), (RgaError, RgaDiag)> {
     let fmt = PixelFormat::Rgba8888;
     let (src_w, src_h) = src_dims;
     let (dst_w, dst_h) = dst_dims;
@@ -116,11 +119,15 @@ pub fn run_rga2_blit_resize(
     let dst = ImageDesc::rgb(dst_w, dst_h, dst_w * fmt.bytes_per_pixel(), fmt, dst_phys);
     core.start(&RgaOperation::Blit(crate::operation::Blit::resize(
         src, dst,
-    )))?;
+    )))
+    .map_err(|e| (e, core.diag()))?;
     poll_done(core, &mut delay_us)
 }
 
-fn poll_done(core: &mut RgaCore, delay_us: &mut impl FnMut(u32)) -> Result<()> {
+fn poll_done(
+    core: &mut RgaCore,
+    delay_us: &mut impl FnMut(u32),
+) -> core::result::Result<(), (RgaError, RgaDiag)> {
     // ~50 ms budget at 100 us steps (spec letterbox target is < 5 ms; generous for bring-up).
     for _ in 0..500 {
         match core.poll_status() {
@@ -129,14 +136,16 @@ fn poll_done(core: &mut RgaCore, delay_us: &mut impl FnMut(u32)) -> Result<()> {
                 return Ok(());
             }
             RgaStatus::Error => {
+                let d = core.diag();
                 core.finish();
-                return Err(RgaError::Hardware);
+                return Err((RgaError::Hardware, d));
             }
             RgaStatus::Busy => delay_us(100),
         }
     }
-    core.recover()?; // timeout → reset core
-    Err(RgaError::Timeout)
+    let d = core.diag(); // capture BEFORE recover() clobbers SYS_CTRL/INT
+    core.recover().ok(); // timeout → reset core
+    Err((RgaError::Timeout, d))
 }
 
 #[cfg(test)]

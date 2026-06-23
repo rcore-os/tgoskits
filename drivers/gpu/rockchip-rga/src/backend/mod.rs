@@ -12,6 +12,19 @@ pub enum RgaStatus {
     Error,
 }
 
+/// One-shot snapshot of an RGA core's engine state, captured on a timeout so a board run can
+/// localize whether the engine never started, errored, or completed on a different bit.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct RgaDiag {
+    pub int: u32,
+    pub sys_ctrl: u32,
+    pub cmd_ctrl: u32,
+    pub cmd_base: u32,
+    pub status: u32,
+    pub version: u32,
+    pub cmd_phys: u64,
+}
+
 /// A generation-specific RGA core controller. Owns its MMIO region and DMA context.
 pub trait RgaBackend: Send {
     fn generation(&self) -> RgaVersion;
@@ -26,4 +39,8 @@ pub trait RgaBackend: Send {
     fn ack(&mut self);
     /// Reset the core for recovery (timeout/fatal error).
     fn reset(&mut self) -> Result<()>;
+    /// Read-only engine-state snapshot for diagnostics (default zeroed for backends without MMIO).
+    fn diag(&self) -> RgaDiag {
+        RgaDiag::default()
+    }
 }
