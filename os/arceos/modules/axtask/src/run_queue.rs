@@ -13,7 +13,7 @@ use ax_memory_addr::VirtAddr;
 use ax_sched::BaseScheduler;
 
 use crate::{
-    AxCpuMask, AxTaskRef, Scheduler, TaskInner, WaitQueue,
+    AxCpuMask, AxTaskRef, ForceUnlockGuard, Scheduler, TaskInner, WaitQueue,
     task::{CurrentTask, TASK_STACK_ALIGN, TaskStack, TaskState},
     wait_queue::WaitQueueGuard,
 };
@@ -209,8 +209,11 @@ pub(crate) fn select_run_queue<G: BaseGuard>(task: &AxTaskRef) -> AxRunQueueRef<
     }
     #[cfg(feature = "smp")]
     {
-        // When SMP is enabled, prefer the current CPU to keep the task's
-        // cache warm. Fall back to round-robin only when affinity forbids it.
+        // Always prefer the current CPU when affinity allows: it keeps the
+        // task's cache warm and, critically, guarantees the target CPU is
+        // awake.  Without preempt or IPI there is no way to kick a remote
+        // idle CPU, so falling back to round-robin is only done when the
+        // cpumask strictly forbids the current CPU.
         let current_cpu = this_cpu_id();
         let index = if task.cpumask().get(current_cpu) {
             current_cpu
@@ -227,10 +230,14 @@ pub(crate) fn select_run_queue<G: BaseGuard>(task: &AxTaskRef) -> AxRunQueueRef<
 
 /// Selects a run queue for waking a blocked task.
 ///
-/// Unlike new task placement, wakeups prefer the CPU that performs the wakeup
-/// when the task affinity allows it. This keeps most wakeups local while still
-/// falling back to the task's previous CPU or the normal selector if affinity
-/// requires it.
+/// This always prefers the CPU that performs the wakeup (current CPU) when
+/// the task affinity allows it, because the current CPU is the only one
+/// guaranteed to be awake.  Without preemption or IPI support there is no
+/// mechanism to kick a remote idle CPU — a task placed on a remote queue
+/// would be stuck forever until that CPU happens to take an interrupt.
+///
+/// Only when the task's cpumask excludes the current CPU do we fall back to
+/// the task's previous CPU or the round-robin selector.
 #[inline]
 pub(crate) fn select_wake_run_queue<G: BaseGuard>(task: &AxTaskRef) -> AxRunQueueRef<'static, G> {
     let irq_state = G::acquire();
@@ -246,14 +253,19 @@ pub(crate) fn select_wake_run_queue<G: BaseGuard>(task: &AxTaskRef) -> AxRunQueu
     #[cfg(feature = "smp")]
     {
         let current_cpu = this_cpu_id();
-        let last_cpu = task.cpu_id() as usize;
         let cpumask = task.cpumask();
+        // Always use the current CPU when affinity allows — it is the only
+        // CPU we know is awake.  Without preempt or IPI, placing a task on
+        // a remote idle CPU would strand it indefinitely.
         let index = if cpumask.get(current_cpu) {
             current_cpu
-        } else if last_cpu < ax_config::plat::MAX_CPU_NUM && cpumask.get(last_cpu) {
-            last_cpu
         } else {
-            select_run_queue_index(cpumask)
+            let last_cpu = task.cpu_id() as usize;
+            if last_cpu < ax_config::plat::MAX_CPU_NUM && cpumask.get(last_cpu) {
+                last_cpu
+            } else {
+                select_run_queue_index(cpumask)
+            }
         };
         AxRunQueueRef {
             inner: get_run_queue(index),
@@ -673,7 +685,6 @@ impl AxRunQueue {
     #[cfg(feature = "smp")]
     // `ax_config::plat::MAX_CPU_NUM` is always greater than 1 with "smp" enabled.
     #[allow(clippy::modulo_one, clippy::reversed_empty_ranges)]
-    #[cfg_attr(not(feature = "preempt"), allow(dead_code))]
     fn try_steal(&self) -> Option<AxTaskRef> {
         let current_cpu = self.cpu_id;
 
@@ -765,22 +776,14 @@ impl AxRunQueue {
             .or_else(|| {
                 #[cfg(feature = "smp")]
                 {
-                    // Work-stealing is only safe when preemption is enabled.
-                    // Without preempt (FIFO scheduler, no IPI), there is no
-                    // mechanism to kick a remote CPU after its task is stolen,
-                    // and the stolen task may depend on per-CPU resources that
-                    // were set up on its original CPU (e.g. Rockchip DMA/IRQ
-                    // routing).  This mirrors Linux's idle_balance() which
-                    // relies on the scheduler tick + NEED_RESCHED to preempt
-                    // the current task after waking it on a remote CPU.
-                    #[cfg(feature = "preempt")]
+                    // Only idle CPUs attempt work-stealing, mirroring
+                    // Linux's idle_balance().  try_steal() only pulls
+                    // Ready tasks that hold no per-CPU hardware state
+                    // (is_ready + !on_cpu), so stealing is safe even
+                    // without preempt or IPI.
                     if crate::current().is_idle() {
                         self.try_steal()
                     } else {
-                        None
-                    }
-                    #[cfg(not(feature = "preempt"))]
-                    {
                         None
                     }
                 }
@@ -894,6 +897,11 @@ fn gc_entry() {
     loop {
         // Drop all exited tasks and recycle resources.
         let n = EXITED_TASKS.with_current(|exited_tasks| exited_tasks.len());
+        // SAFETY: we are the per-CPU gc task. Every task we drop has
+        // already transitioned to Exited. If a dead owner's drop impl
+        // still runs a MutexGuard destructor, we must be able to
+        // release the mutex on its behalf.
+        let _force_unlock = unsafe { ForceUnlockGuard::new() };
         for _ in 0..n {
             // Do not do the slow drops in the critical section.
             let task = EXITED_TASKS.with_current(|exited_tasks| exited_tasks.pop_front());
@@ -908,6 +916,7 @@ fn gc_entry() {
                 }
             }
         }
+        drop(_force_unlock);
         // Always wait with a timeout to:
         // 1. Yield CPU to allow other tasks to complete `switch_to` and drop references
         // 2. Handle the race condition where `notify_one` is called before the GC task enters wait,

@@ -120,33 +120,21 @@ unsafe impl lock_api::RawMutex for RawMutex {
     }
 
     #[inline(always)]
-    #[allow(unexpected_cfgs)]
     unsafe fn unlock(&self) {
         let owner_id = self.owner_id.load(Ordering::Acquire);
         let current_id = current().id().as_u64();
-        // Kernel tasks (gc, migration-task) have no task_ext and may drop
-        // MutexGuards during cleanup of exited user tasks.  Skip the owner
-        // check in that case — the real owner is dead and we must release
-        // the lock to wake waiters.
-        #[cfg(feature = "task-ext")]
-        {
-            if current().task_ext().is_some() {
-                assert_eq!(
-                    owner_id,
-                    current_id,
-                    "Thread({current_id}) tried to release mutex it doesn't own \
-                     (owner={owner_id}), mutex={self:p}, curr={}",
-                    current().id_name(),
-                );
-            }
-        }
-        #[cfg(not(feature = "task-ext"))]
-        {
+        // Strict ownership invariant: the calling task must own the mutex.
+        // The only exception is the per-CPU gc task during teardown of an
+        // exited task — when the dead owner's MutexGuard is dropped by the
+        // gc, the gc must be allowed to release the mutex on its behalf.
+        // ForceUnlockGuard gates this path and is exclusively constructed by
+        // the gc task loop (see ax_task::ForceUnlockGuard).
+        if !ax_task::ForceUnlockGuard::is_active() {
             assert_eq!(
                 owner_id,
                 current_id,
-                "Thread({current_id}) tried to release mutex it doesn't own (owner={owner_id}), \
-                 mutex={self:p}, curr={}",
+                "Thread({current_id}) tried to release mutex it doesn't own \
+                 (owner={owner_id}), mutex={self:p}, curr={}",
                 current().id_name(),
             );
         }

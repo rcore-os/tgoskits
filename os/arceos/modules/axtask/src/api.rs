@@ -32,6 +32,58 @@ pub type AxTaskRef = Arc<AxTask>;
 /// The weak reference type of a task.
 pub type WeakAxTaskRef = Weak<AxTask>;
 
+/// Guards a region where mutex ownership validation is relaxed for task
+/// teardown. When the guard is live, [`RawMutex::unlock()`] may release a
+/// mutex owned by an already-exited task on behalf of that ex-owner.
+///
+/// This is the **only** legitimate call site for bypassing the "thread must
+/// own the mutex it releases" invariant. The guard is created exclusively by
+/// the per-CPU gc task when it drops exited [`TaskInner`] references whose
+/// drop impl may still hold a [`MutexGuard`]; without this bypass the gc
+/// task would trip the `owner_id == current_id` assertion while cleaning up
+/// dead owners.
+///
+/// # Safety
+///
+/// Must only be constructed from the per-CPU gc task when dropping resources
+/// of tasks that have already transitioned to [`TaskState::Exited`]. Every
+/// creation must be paired with exactly one destruction (drop).
+///
+/// [`MutexGuard`]: ax_sync::MutexGuard
+/// [`RawMutex::unlock()`]: ax_sync::RawMutex::unlock()
+pub struct ForceUnlockGuard(());
+
+static FORCE_UNLOCK_COUNT: core::sync::atomic::AtomicU32 =
+    core::sync::atomic::AtomicU32::new(0);
+
+impl ForceUnlockGuard {
+    /// Enters a force-unlock region.
+    ///
+    /// # Safety
+    ///
+    /// Must only be called from the per-CPU gc task path, before dropping
+    /// resources of exited tasks.
+    #[allow(clippy::new_without_default)]
+    pub unsafe fn new() -> Self {
+        let _ = FORCE_UNLOCK_COUNT.fetch_add(1, core::sync::atomic::Ordering::Release);
+        Self(())
+    }
+
+    /// Returns `true` when the current thread is inside a force-unlock
+    /// region (i.e., the per-CPU gc task is in the middle of exited-task
+    /// teardown and is permitted to release mutexes on behalf of dead
+    /// owners).
+    pub fn is_active() -> bool {
+        FORCE_UNLOCK_COUNT.load(core::sync::atomic::Ordering::Acquire) > 0
+    }
+}
+
+impl Drop for ForceUnlockGuard {
+    fn drop(&mut self) {
+        FORCE_UNLOCK_COUNT.fetch_sub(1, core::sync::atomic::Ordering::Release);
+    }
+}
+
 #[cfg(feature = "multitask")]
 static TASK_REGISTRY: spin::LazyLock<spin::RwLock<BTreeMap<u64, WeakAxTaskRef>>> =
     spin::LazyLock::new(|| spin::RwLock::new(BTreeMap::new()));
