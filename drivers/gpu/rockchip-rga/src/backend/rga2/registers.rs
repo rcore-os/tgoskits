@@ -72,4 +72,5 @@ pub const SCL_NONE: u32 = 0;
 pub const SCL_DOWN: u32 = 1;
 pub const SCL_UP: u32 = 2;
 // Width alignment required for the RGA path. CONFIRM ON BOARD (bench gates on %16).
+// Not enforced in validate() yet — the 4-vs-16 requirement is board-confirmed first (the bench's %16 is conservative).
 pub const WIDTH_ALIGN: u32 = 16;

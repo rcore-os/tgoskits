@@ -75,7 +75,8 @@ impl RgaBackend for Rga2Backend {
     }
 
     fn supports(&self, _op: &RgaOperation) -> Result<()> {
-        // PR-1: validation upstream guarantees same-size same-format copy / fill.
+        // Validation (incl. Blit geometry/format/CSC) is enforced upstream by op.validate();
+        // RGA2 accepts all validated ops.
         Ok(())
     }
 

@@ -114,7 +114,9 @@ pub fn run_rga2_blit_resize(
     let (dst_w, dst_h) = dst_dims;
     let src = ImageDesc::rgb(src_w, src_h, src_w * fmt.bytes_per_pixel(), fmt, src_phys);
     let dst = ImageDesc::rgb(dst_w, dst_h, dst_w * fmt.bytes_per_pixel(), fmt, dst_phys);
-    core.start(&RgaOperation::Blit(crate::operation::Blit::resize(src, dst)))?;
+    core.start(&RgaOperation::Blit(crate::operation::Blit::resize(
+        src, dst,
+    )))?;
     poll_done(core, &mut delay_us)
 }
 
