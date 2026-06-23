@@ -22,8 +22,8 @@ use axdevice::{
     PortDeviceAdapter, SysRegDeviceAdapter, register_builtin_factories,
 };
 use axdevice_base::{
-    AccessWidth, BaseDeviceOps, DeviceRegistry as _, InterruptTriggerMode, InvalidResourceReason,
-    IrqLine, Port, PortRange, RegistryError, SysRegAddr, SysRegAddrRange,
+    AccessWidth, BaseDeviceOps, DeviceRegistry as _, InterruptTriggerMode, IrqLine, Port,
+    PortRange, RegistryError, SysRegAddr, SysRegAddrRange,
 };
 use axvm_types::{
     EmulatedDeviceConfig, EmulatedDeviceType, GuestPhysAddr, GuestPhysAddrRange, InterruptVector,
