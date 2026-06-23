@@ -64,7 +64,7 @@ pub mod console {
 pub mod power {
     #[cfg(feature = "smp")]
     pub use ax_plat::power::cpu_boot;
-    pub use ax_plat::power::system_off;
+    pub use ax_plat::power::{system_off, system_reset};
 }
 
 /// Trap handling.

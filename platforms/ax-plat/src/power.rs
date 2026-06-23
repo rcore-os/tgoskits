@@ -14,6 +14,9 @@ pub trait PowerIf {
     /// Shutdown the whole system.
     fn system_off() -> !;
 
+    /// Reset the whole system.
+    fn system_reset() -> !;
+
     /// Get the number of CPU cores available on this platform.
     ///
     /// The platform should either get this value statically from its
