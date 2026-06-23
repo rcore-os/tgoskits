@@ -50,7 +50,7 @@ const fn encode_mode(render: u32, bitblt: u32) -> u32 {
 }
 
 /// Format-portion of SRC_INFO/DST_INFO: format code + R/B-swap modifier.
-/// CONFIRM ON BOARD: codes + modifier bit positions (vendor rga2.h). Abgr8888 retains its PR-1 code.
+/// CONFIRM ON BOARD: codes + modifier bit positions (vendor rga2.h).
 const fn hw_format(fmt: crate::operation::PixelFormat) -> u32 {
     use crate::operation::PixelFormat;
     match fmt {
@@ -60,7 +60,11 @@ const fn hw_format(fmt: crate::operation::PixelFormat) -> u32 {
         PixelFormat::Bgra8888 => registers::FMT_RGBA8888 | registers::INFO_RBSWAP,
         PixelFormat::Bgr888 => registers::FMT_RGB888 | registers::INFO_RBSWAP,
         PixelFormat::Rgb565 => registers::FMT_RGB565,
-        PixelFormat::Abgr8888 => registers::COLOR_FMT_ABGR8888,
+        // ABGR = RGBA byte-reversed → RGBA code + R/B-swap + alpha-swap (best effort).
+        // CONFIRM ON BOARD: exact ABGR encoding (vendor rga2.h).
+        PixelFormat::Abgr8888 => {
+            registers::FMT_RGBA8888 | registers::INFO_RBSWAP | registers::INFO_ALPHA_SWAP
+        }
         PixelFormat::Nv12 => registers::FMT_YCBCR_420_SP,
         PixelFormat::Nv21 => registers::FMT_YCRCB_420_SP,
         PixelFormat::Nv16 => registers::FMT_YCBCR_422_SP,
@@ -500,6 +504,79 @@ mod mmu_off_tests {
         assert_eq!(
             cmd.register(registers::DST_ACT_INFO),
             Some(639 | (359 << 16))
+        );
+    }
+
+    #[test]
+    fn hw_format_abgr_distinct_from_rgba() {
+        let abgr = encode_copy(
+            ImageDesc::rgb(8, 8, 8 * 4, PixelFormat::Abgr8888, 0x1000),
+            ImageDesc::rgb(8, 8, 8 * 4, PixelFormat::Abgr8888, 0x9000),
+        )
+        .unwrap()
+        .register(registers::SRC_INFO)
+        .unwrap();
+        let rgba = encode_copy(
+            ImageDesc::rgb(8, 8, 8 * 4, PixelFormat::Rgba8888, 0x1000),
+            ImageDesc::rgb(8, 8, 8 * 4, PixelFormat::Rgba8888, 0x9000),
+        )
+        .unwrap()
+        .register(registers::SRC_INFO)
+        .unwrap();
+        assert_ne!(abgr, rgba, "ABGR must not encode identically to RGBA");
+    }
+
+    #[test]
+    fn blit_upscale_programs_factor_and_mode() {
+        // 320x240 → 640x480 RGBA upscale.
+        let src = ImageDesc::rgb(320, 240, 320 * 4, PixelFormat::Rgba8888, 0x4000_0000);
+        let dst = ImageDesc::rgb(640, 480, 640 * 4, PixelFormat::Rgba8888, 0x4100_0000);
+        let cmd = encode_blit(&Blit::resize(src, dst)).unwrap();
+        assert_eq!(
+            cmd.register(registers::SRC_X_FACTOR),
+            Some((640u32 << 16) / 320)
+        );
+        assert_eq!(
+            cmd.register(registers::SRC_Y_FACTOR),
+            Some((480u32 << 16) / 240)
+        );
+        let si = cmd.register(registers::SRC_INFO).unwrap();
+        assert_eq!(
+            (si >> registers::SRC_INFO_HSCL_SHIFT) & 0x3,
+            registers::SCL_UP
+        );
+        assert_eq!(
+            (si >> registers::SRC_INFO_VSCL_SHIFT) & 0x3,
+            registers::SCL_UP
+        );
+    }
+
+    #[test]
+    fn blit_nv12_cropped_src_uv_offset() {
+        // Crop a 16x16 window at (8,4) from a 64x48 NV12 src into a 16x16 RGBA dst.
+        let src = ImageDesc::nv12(64, 48, 64, 0x4000_0000); // uv at +64*48
+        let dst = ImageDesc::rgb(16, 16, 16 * 4, PixelFormat::Rgba8888, 0x4100_0000);
+        let mut b = Blit::crop(
+            src,
+            Rect {
+                x: 8,
+                y: 4,
+                width: 16,
+                height: 16,
+            },
+            dst,
+        );
+        b.csc = Some(CscStandard::Bt601Limited);
+        let cmd = encode_blit(&b).unwrap();
+        // Y base: 0x4000_0000 + 4*64 + 8*1
+        assert_eq!(
+            cmd.register(registers::SRC_Y_RGB_BASE_ADDR),
+            Some(0x4000_0000 + 4 * 64 + 8)
+        );
+        // UV base: (0x4000_0000 + 64*48) + (4/2)*64 + 8*1
+        assert_eq!(
+            cmd.register(registers::SRC_CB_BASE_ADDR),
+            Some(0x4000_0000 + 64 * 48 + 2 * 64 + 8)
         );
     }
 }
