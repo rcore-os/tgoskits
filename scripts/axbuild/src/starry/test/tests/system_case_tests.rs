@@ -283,10 +283,10 @@ fn apk_curl_equivalence_is_in_system_grouped_qemu_case() {
             && script.contains("APK_CURL_EQUIVALENCE_TEST_FAILED")
             && script.contains("curl --connect-timeout")
             && script.contains("10.0.2.2")
-            && script.contains("1048576")
+            && script.contains("20971520")
             && script.contains("sha256sum -c")
-            && script.contains("9bc1b2a288b26af7257a36277ae3816a7d4f16e89c1e7e77d0a5c48bad62b360"),
-        "{} must download the local 1MiB HTTP fixture, write it to disk, then read it back and \
+            && script.contains("48b6fb8f1c2fec38d030604889d674722c4af237733c913b698400b59c9294b4"),
+        "{} must download the local 20MiB HTTP fixture, write it to disk, then read it back and \
          compare sha256",
         script_path.display()
     );
@@ -324,7 +324,7 @@ fn apk_curl_equivalence_is_in_system_grouped_qemu_case() {
             host_http_server
                 .get("body_size")
                 .and_then(toml::Value::as_integer),
-            Some(1024 * 1024)
+            Some(20 * 1024 * 1024)
         );
         assert_eq!(
             host_http_server
