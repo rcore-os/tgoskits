@@ -122,6 +122,8 @@ pub fn encode(op: &RgaOperation) -> crate::error::Result<CommandBuffer> {
     match op {
         RgaOperation::Copy { src, dst } => encode_copy(*src, *dst),
         RgaOperation::Fill { dst, color } => encode_fill(*dst, *color),
+        // Phase D Task D4 implements encode_blit
+        RgaOperation::Blit(_) => Err(crate::error::RgaError::Unsupported),
     }
 }
 

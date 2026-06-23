@@ -3,6 +3,8 @@ use crate::error::{Result, RgaError};
 
 pub const MIN_DIMENSION: u32 = 2;
 pub const MAX_DIMENSION: u32 = 8192;
+/// RGA2 destination max (smaller than src's 8192 — the DST_ACT_INFO field is 12-bit). CONFIRM ON BOARD.
+pub const DST_MAX_DIMENSION: u32 = 4096;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PixelFormat {
@@ -130,6 +132,10 @@ impl ImageDesc {
         // Semiplanar YUV requires a chroma plane base; its extent must also fit 32-bit.
         if self.format.is_semiplanar() {
             let uv = self.uv_phys_addr.ok_or(RgaError::Invalid)?;
+            // 4:2:0 chroma is half-height; height must be even so chroma rows are exact.
+            if !matches!(self.format, PixelFormat::Nv16) && !self.height.is_multiple_of(2) {
+                return Err(RgaError::Invalid);
+            }
             let uv_rows = if matches!(self.format, PixelFormat::Nv16) {
                 self.height
             } else {
@@ -150,12 +156,127 @@ impl ImageDesc {
     }
 }
 
+fn rect_within(r: &Rect, w: u32, h: u32) -> Result<()> {
+    if r.width == 0 || r.height == 0 {
+        return Err(RgaError::Invalid);
+    }
+    let x_end = r.x.checked_add(r.width).ok_or(RgaError::Overflow)?;
+    let y_end = r.y.checked_add(r.height).ok_or(RgaError::Overflow)?;
+    if x_end > w || y_end > h {
+        return Err(RgaError::Invalid);
+    }
+    Ok(())
+}
+
+fn check_scale(src_dim: u32, dst_dim: u32) -> Result<()> {
+    if dst_dim > src_dim.saturating_mul(16) || src_dim > dst_dim.saturating_mul(16) {
+        return Err(RgaError::Unsupported);
+    }
+    Ok(())
+}
+
+/// General single-pass blit: crop (`src_rect`) → scale → place (`dst_rect`), with optional CSC.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Blit {
+    pub src: ImageDesc,
+    pub dst: ImageDesc,
+    pub src_rect: Rect,
+    pub dst_rect: Rect,
+    /// `Some` only when the format pair crosses YUV↔RGB.
+    pub csc: Option<CscStandard>,
+}
+
+impl Blit {
+    pub fn new(
+        src: ImageDesc,
+        dst: ImageDesc,
+        src_rect: Rect,
+        dst_rect: Rect,
+        csc: Option<CscStandard>,
+    ) -> Self {
+        Self {
+            src,
+            dst,
+            src_rect,
+            dst_rect,
+            csc,
+        }
+    }
+
+    /// Full-surface src → full-surface dst (resize if dims differ), no CSC.
+    pub fn resize(src: ImageDesc, dst: ImageDesc) -> Self {
+        Self::new(
+            src,
+            dst,
+            Rect {
+                x: 0,
+                y: 0,
+                width: src.width,
+                height: src.height,
+            },
+            Rect {
+                x: 0,
+                y: 0,
+                width: dst.width,
+                height: dst.height,
+            },
+            None,
+        )
+    }
+
+    /// `src_rect` window → full dst.
+    pub fn crop(src: ImageDesc, src_rect: Rect, dst: ImageDesc) -> Self {
+        Self::new(
+            src,
+            dst,
+            src_rect,
+            Rect {
+                x: 0,
+                y: 0,
+                width: dst.width,
+                height: dst.height,
+            },
+            None,
+        )
+    }
+
+    pub fn validate(&self) -> Result<()> {
+        self.src.validate()?;
+        self.dst.validate()?;
+        if self.dst.width > DST_MAX_DIMENSION || self.dst.height > DST_MAX_DIMENSION {
+            return Err(RgaError::Invalid);
+        }
+        rect_within(&self.src_rect, self.src.width, self.src.height)?;
+        rect_within(&self.dst_rect, self.dst.width, self.dst.height)?;
+        check_scale(self.src_rect.width, self.dst_rect.width)?;
+        check_scale(self.src_rect.height, self.dst_rect.height)?;
+        let s = self.src.format;
+        let d = self.dst.format;
+        let crosses = s.is_yuv() != d.is_yuv();
+        match (s.is_yuv(), d.is_yuv()) {
+            (false, false) => {}
+            (true, false) | (false, true) => {}
+            (true, true) if s == d => {}
+            (true, true) => return Err(RgaError::Unsupported),
+        }
+        if crosses && self.csc.is_none() {
+            return Err(RgaError::Invalid);
+        }
+        if !crosses && self.csc.is_some() {
+            return Err(RgaError::Invalid);
+        }
+        Ok(())
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RgaOperation {
     /// Same-size, same-format blit.
     Copy { src: ImageDesc, dst: ImageDesc },
     /// Solid-color rectangle fill of the whole destination. `color` is packed in dst format order.
     Fill { dst: ImageDesc, color: u32 },
+    /// General blit: crop/scale/place with optional CSC (encoding implemented in Phase D Task D4).
+    Blit(Blit),
 }
 
 impl RgaOperation {
@@ -173,6 +294,7 @@ impl RgaOperation {
                 Ok(())
             }
             RgaOperation::Fill { dst, .. } => dst.validate(),
+            RgaOperation::Blit(b) => b.validate(),
         }
     }
 }
@@ -272,6 +394,69 @@ mod tests {
     fn packed_with_uv_base_is_invalid() {
         let mut d = ImageDesc::rgb(64, 48, 64 * 4, PixelFormat::Rgba8888, 0x4000_0000);
         d.uv_phys_addr = Some(0x5000_0000);
+        assert_eq!(d.validate(), Err(RgaError::Invalid));
+    }
+
+    fn rgb(w: u32, h: u32, a: u64) -> ImageDesc {
+        ImageDesc::rgb(w, h, w * 4, PixelFormat::Rgba8888, a)
+    }
+
+    #[test]
+    fn blit_resize_rgb_ok() {
+        assert_eq!(
+            Blit::resize(rgb(1920, 1080, 0x1000), rgb(640, 360, 0x9000)).validate(),
+            Ok(())
+        );
+    }
+
+    #[test]
+    fn blit_dst_over_4096_invalid() {
+        assert_eq!(
+            Blit::resize(rgb(64, 64, 0x1000), rgb(5000, 64, 0x9000)).validate(),
+            Err(RgaError::Invalid)
+        );
+    }
+
+    #[test]
+    fn blit_scale_beyond_16x_unsupported() {
+        assert_eq!(
+            Blit::resize(rgb(16, 16, 0x1000), rgb(512, 16, 0x9000)).validate(),
+            Err(RgaError::Unsupported)
+        );
+    }
+
+    #[test]
+    fn blit_src_rect_out_of_bounds_invalid() {
+        let mut b = Blit::resize(rgb(64, 64, 0x1000), rgb(64, 64, 0x9000));
+        b.src_rect = Rect {
+            x: 40,
+            y: 0,
+            width: 40,
+            height: 64,
+        };
+        assert_eq!(b.validate(), Err(RgaError::Invalid));
+    }
+
+    #[test]
+    fn blit_yuv_to_rgb_requires_csc() {
+        let src = ImageDesc::nv12(640, 480, 640, 0x1000);
+        let dst = rgb(640, 480, 0x9000);
+        let mut b = Blit::resize(src, dst);
+        assert_eq!(b.validate(), Err(RgaError::Invalid));
+        b.csc = Some(CscStandard::Bt601Limited);
+        assert_eq!(b.validate(), Ok(()));
+    }
+
+    #[test]
+    fn blit_rgb_to_rgb_with_csc_invalid() {
+        let mut b = Blit::resize(rgb(64, 64, 0x1000), rgb(64, 64, 0x9000));
+        b.csc = Some(CscStandard::Bt601Limited);
+        assert_eq!(b.validate(), Err(RgaError::Invalid));
+    }
+
+    #[test]
+    fn imagedesc_odd_height_nv12_invalid() {
+        let d = ImageDesc::nv12(64, 47, 64, 0x4000_0000); // odd height
         assert_eq!(d.validate(), Err(RgaError::Invalid));
     }
 }
