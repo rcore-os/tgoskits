@@ -169,4 +169,26 @@ mod mmu_off_tests {
             Some(encode_mode(registers::MODE_RENDER_RECTANGLE_FILL, 0))
         );
     }
+
+    #[test]
+    fn imported_backing_phys_flows_into_command() {
+        let backing = crate::buffer::RgaBufferBacking::Imported {
+            phys_addr: 0x4002_0000,
+            len: 64 * 48 * 4,
+        };
+        let dst = ImageDesc {
+            width: 64,
+            height: 48,
+            stride_bytes: 64 * 4,
+            format: PixelFormat::Rgba8888,
+            phys_addr: backing.phys_addr(),
+        };
+        let cmd = encode_fill(dst, 0xAABB_CCDD).unwrap();
+        // `len` is for caller-side bounds checking, not command encoding — only phys_addr
+        // flows into the hardware register, which is what this test verifies.
+        assert_eq!(
+            cmd.register(registers::DST_Y_RGB_BASE_ADDR),
+            Some(0x4002_0000)
+        );
+    }
 }
