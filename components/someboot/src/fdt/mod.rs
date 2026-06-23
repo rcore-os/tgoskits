@@ -71,17 +71,109 @@ pub(crate) fn save_fdt() {
     }
 }
 
-fn cpu_nodes() -> Option<impl Iterator<Item = fdt_raw::Node<'static>>> {
-    let fdt = fdt_base()?;
-    let iter = fdt.find_children_by_path("/cpus");
-    Some(iter.filter(|n| n.name().starts_with("cpu@")))
+fn cpu_nodes_from_fdt<'a>(fdt: fdt_raw::Fdt<'a>) -> impl Iterator<Item = fdt_raw::Node<'a>> + 'a {
+    fdt.find_children_by_path("/cpus")
+        .filter(|node| is_cpu_node_available(node))
+}
+
+fn cpu_id_list_from_fdt<'a>(fdt: fdt_raw::Fdt<'a>) -> impl Iterator<Item = usize> + 'a {
+    cpu_nodes_from_fdt(fdt).filter_map(|node| {
+        node.reg()
+            .and_then(|mut regs| regs.next())
+            .map(|reg| reg.address as usize)
+    })
 }
 
 pub fn cpu_id_list() -> Option<impl Iterator<Item = usize>> {
-    Some(cpu_nodes()?.map(|node| {
-        node.reg()
-            .and_then(|mut r| r.next())
-            .map(|reg| reg.address as usize)
-            .unwrap_or(0)
-    }))
+    Some(cpu_id_list_from_fdt(fdt_base()?))
+}
+
+fn is_cpu_node_available(node: &fdt_raw::Node<'_>) -> bool {
+    node.name().starts_with("cpu@")
+        && matches!(node.find_property_str("device_type"), None | Some("cpu"))
+        && matches!(
+            node.find_property_str("status"),
+            None | Some("okay") | Some("ok")
+        )
+}
+
+#[cfg(test)]
+mod tests {
+    use alloc::{format, vec::Vec};
+
+    use fdt_edit::{Fdt, Node, NodeId, Property};
+
+    use super::*;
+
+    #[test]
+    fn cpu_id_list_skips_disabled_cpu_nodes() {
+        let fdt = minimal_cpu_fdt();
+        let fdt_data = fdt.encode();
+        let raw = fdt_raw::Fdt::from_bytes(fdt_data.as_ref()).expect("parse test fdt");
+
+        let cpu_ids: Vec<_> = cpu_id_list_from_fdt(raw).collect();
+
+        assert_eq!(cpu_ids.as_slice(), &[1, 2, 3, 4]);
+    }
+
+    fn minimal_cpu_fdt() -> Fdt {
+        let mut fdt = Fdt::new();
+        let root = fdt.root_id();
+        let cpus = fdt.add_node(root, Node::new("cpus"));
+        fdt.node_mut(cpus)
+            .unwrap()
+            .set_property(prop_u32s("#address-cells", &[1]));
+        fdt.node_mut(cpus)
+            .unwrap()
+            .set_property(prop_u32s("#size-cells", &[0]));
+
+        add_cpu(&mut fdt, cpus, 0, Some("disabled"), true);
+        add_cpu(&mut fdt, cpus, 1, None, true);
+        add_cpu(&mut fdt, cpus, 2, Some("okay"), true);
+        add_cpu(&mut fdt, cpus, 3, Some("ok"), true);
+        add_cpu(&mut fdt, cpus, 4, None, true);
+        add_cpu(&mut fdt, cpus, 5, None, false);
+        fdt
+    }
+
+    fn add_cpu(fdt: &mut Fdt, parent: NodeId, hart_id: u32, status: Option<&str>, with_reg: bool) {
+        let cpu = fdt.add_node(parent, Node::new(&format!("cpu@{hart_id}")));
+        fdt.node_mut(cpu)
+            .unwrap()
+            .set_property(prop_str("device_type", "cpu"));
+        fdt.node_mut(cpu)
+            .unwrap()
+            .set_property(prop_strs("compatible", &["riscv"]));
+        if with_reg {
+            fdt.node_mut(cpu)
+                .unwrap()
+                .set_property(prop_u32s("reg", &[hart_id]));
+        }
+        if let Some(status) = status {
+            fdt.node_mut(cpu)
+                .unwrap()
+                .set_property(prop_str("status", status));
+        }
+    }
+
+    fn prop_u32s(name: &str, values: &[u32]) -> Property {
+        let mut data = Vec::new();
+        for value in values {
+            data.extend_from_slice(&value.to_be_bytes());
+        }
+        Property::new(name, data)
+    }
+
+    fn prop_str(name: &str, value: &str) -> Property {
+        prop_strs(name, &[value])
+    }
+
+    fn prop_strs(name: &str, values: &[&str]) -> Property {
+        let mut data = Vec::new();
+        for value in values {
+            data.extend_from_slice(value.as_bytes());
+            data.push(0);
+        }
+        Property::new(name, data)
+    }
 }

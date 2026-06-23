@@ -101,6 +101,13 @@ rockchip-dwmmc = [
     "dep:sdmmc-protocol",
     "sdmmc-protocol/sdio",
 ]
+starfive-jh7110-dwmmc = [
+    "block",
+    "plat-dyn",
+    "dep:dwmmc-host",
+    "dep:sdmmc-protocol",
+    "sdmmc-protocol/sdio",
+]
 rk3588-pcie = [
     "pci",
     "plat-dyn",
