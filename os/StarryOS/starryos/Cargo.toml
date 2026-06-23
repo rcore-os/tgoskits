@@ -34,6 +34,7 @@ k230 = [
 ]
 plat-dyn = ["dep:axplat-dyn", "starry-kernel/plat-dyn"]
 
+dma-heap = ["starry-kernel/dma-heap"]
 rknpu = ["ax-driver/rknpu", "starry-kernel/rknpu"]
 jpeg = ["ax-driver/jpeg", "starry-kernel/jpeg"]
 rga = ["ax-driver/rga", "starry-kernel/rga"]

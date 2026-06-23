@@ -7,6 +7,8 @@ mod card1;
 // exchanges buffers (JPU / NPU; RGA when its node lands).
 #[cfg(any(feature = "jpeg", feature = "rknpu"))]
 mod dmaheap;
+#[cfg(feature = "dma-heap")]
+mod dma_heap;
 mod drm;
 #[cfg(feature = "input")]
 pub mod event;
