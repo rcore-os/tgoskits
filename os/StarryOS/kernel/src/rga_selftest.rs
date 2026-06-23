@@ -3,12 +3,36 @@
 use dma_api::DmaDirection;
 use rockchip_rga::{
     RgaVersion, RockchipRga,
+    backend::RgaDiag,
     buffer::RgaDmaBuffer,
     selftest::{crc32, run_rga2_blit_resize, run_rga2_fill_imported, run_rga2_smoke},
 };
 
 const W: u32 = 64;
 const H: u32 = 48;
+
+fn log_diag(tag: &str, core_index: u8, d: &RgaDiag, src: u64, dst: u64) {
+    let done = d.int & (1 << 2) != 0;
+    let err = d.int & (1 << 0) != 0;
+    let busy = !done && !err;
+    warn!(
+        "{tag}_DIAG core={} int=0x{:08x} sys_ctrl=0x{:08x} cmd_ctrl=0x{:08x} cmd_base=0x{:08x} \
+         status=0x{:08x} ver=0x{:08x} cmd_phys=0x{:x} src=0x{:x} dst=0x{:x} busy={} done={} err={}",
+        core_index,
+        d.int,
+        d.sys_ctrl,
+        d.cmd_ctrl,
+        d.cmd_base,
+        d.status,
+        d.version,
+        d.cmd_phys,
+        src,
+        dst,
+        busy,
+        done,
+        err
+    );
+}
 
 pub fn run() {
     for dev in rdrive::get_list::<RockchipRga>() {
@@ -48,7 +72,16 @@ pub fn run() {
                 if r.copy_ok { "PASS" } else { "FAIL" },
                 r.crc
             ),
-            Err(e) => warn!("RGA2_SELFTEST core={} result=FAIL err={:?}", core_index, e),
+            Err((e, d)) => {
+                warn!("RGA2_SELFTEST core={} result=FAIL err={:?}", core_index, e);
+                log_diag(
+                    "RGA2_SELFTEST",
+                    core_index,
+                    &d,
+                    src.phys_addr(),
+                    dst.phys_addr(),
+                );
+            }
         }
         // Imported-buffer path: allocate via the real dma-heap allocator (exactly as a dma-buf
         // would be) and fill it with RGA2 — proving the dma-buf -> phys import seam end to end on
@@ -72,11 +105,12 @@ pub fn run() {
                             crc32(pixels)
                         );
                     }
-                    Err(e) => {
+                    Err((e, d)) => {
                         warn!(
                             "RGA2_DMABUF_SELFTEST core={} fill=FAIL err={:?}",
                             core_index, e
-                        )
+                        );
+                        log_diag("RGA2_DMABUF_SELFTEST", core_index, &d, 0, obj.phys_addr());
                     }
                 }
             }
@@ -93,12 +127,12 @@ pub fn run() {
             crate::pseudofs::dev::dma_heap::alloc(bytes),
             crate::pseudofs::dev::dma_heap::alloc(dst_bytes),
         ) {
-            (Ok(s), Ok(d)) => {
+            (Ok(s), Ok(d_buf)) => {
                 match run_rga2_blit_resize(
                     core,
                     s.phys_addr(),
                     (W, H),
-                    d.phys_addr(),
+                    d_buf.phys_addr(),
                     (dw, dh),
                     |us| {
                         ax_runtime::hal::time::busy_wait(core::time::Duration::from_micros(
@@ -107,18 +141,25 @@ pub fn run() {
                     },
                 ) {
                     Ok(()) => {
-                        d.sync_for_cpu();
+                        d_buf.sync_for_cpu();
                         info!(
                             "RGA2_BLIT_SELFTEST core={} resize=PASS crc=0x{:08x}",
                             core_index,
-                            crc32(&d.cpu_bytes()[..dst_bytes])
+                            crc32(&d_buf.cpu_bytes()[..dst_bytes])
                         );
                     }
-                    Err(e) => {
+                    Err((e, d)) => {
                         warn!(
                             "RGA2_BLIT_SELFTEST core={} resize=FAIL err={:?}",
                             core_index, e
-                        )
+                        );
+                        log_diag(
+                            "RGA2_BLIT_SELFTEST",
+                            core_index,
+                            &d,
+                            s.phys_addr(),
+                            d_buf.phys_addr(),
+                        );
                     }
                 }
             }
