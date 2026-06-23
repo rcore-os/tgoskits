@@ -1,0 +1,10 @@
+cmake_minimum_required(VERSION 3.20)
+project(rga-abi C)
+set(CMAKE_C_STANDARD 11)
+set(CMAKE_C_STANDARD_REQUIRED ON)
+set(CMAKE_C_EXTENSIONS OFF)
+
+add_executable(rga-abi src/main.c)
+target_compile_options(rga-abi PRIVATE -Wall -Wextra -Werror)
+target_link_options(rga-abi PRIVATE -static)
+install(TARGETS rga-abi RUNTIME DESTINATION usr/bin/starry-test-suit)
