@@ -27,6 +27,7 @@ pub mod backend;
 pub mod buffer;
 pub mod capabilities;
 pub mod error;
+pub mod librga_abi;
 pub mod operation;
 pub mod selftest;
 
