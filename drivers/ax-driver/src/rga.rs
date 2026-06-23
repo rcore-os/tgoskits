@@ -31,8 +31,29 @@ fn probe(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
     let config = detect_core_config(&info)
         .ok_or_else(|| OnProbeError::other("unsupported Rockchip RGA compatible string"))?;
 
-    // Power on the core's domain BEFORE any RGA MMIO (RgaCore::new reads the version register).
+    // PR-1 brings up RGA2 only. RGA3 bring-up (its clock tree, reset, and the real version
+    // register offset) is unverified and deferred to a later phase. On this SoC the RGA3 nodes
+    // probe BEFORE rga2, and RgaCore::new eagerly reads the version register at base+0x28 —
+    // touching an unclocked/unverified RGA3 core there raises a synchronous external abort that
+    // kills the boot before RGA2 is ever reached. Skip RGA3 until it is brought up properly.
+    if config.version == RgaVersion::Rga3 {
+        info!(
+            "RGA3 core (index {}) probe deferred in PR-1; skipping (RGA2-only bring-up)",
+            config.core_index
+        );
+        return Ok(());
+    }
+
+    // Bring the RGA2 core onto the bus BEFORE any MMIO: RgaCore::new reads the version register
+    // at base+0x28, which raises a synchronous external abort if the bus-interface clocks are
+    // still gated (U-Boot leaves the RGA clocks off at handoff). Power the domain, then ungate
+    // aclk/hclk/clk. If the clocks cannot be established, skip the core rather than fault the
+    // kernel on the version read.
     enable_power(config);
+    if let Err(e) = enable_rga2_clocks() {
+        warn!("RGA2 clock bring-up failed ({e:?}); skipping core to avoid an MMIO abort");
+        return Ok(());
+    }
 
     let irq = crate::binding_info_from_fdt(&info)?.irq_num();
 
@@ -83,8 +104,22 @@ fn enable_power(config: RgaCoreConfig) {
         },
         None => warn!("RGA: RockchipPM not found; assuming domain already powered"),
     }
-    // Clocks/resets are intentionally NOT enabled here yet — confirm on board whether PM-only suffices
-    // (the NPU probe gets away with PM-only). Add rockchip-soc Cru/Reset calls only if the board needs them.
+    // Bus clocks are ungated separately in enable_rga2_clocks() (RGA2 needs them live before any
+    // MMIO). Resets are left to the GLB power-on reset — the RGA DTS nodes carry no `resets`
+    // property and the cores are not held in reset at boot, so a manual deassert is unnecessary.
+}
+
+/// Ungate the RGA2 core's three CRU bus clocks (hclk, aclk, clk). U-Boot leaves the RGA clocks
+/// gated at handoff, so this is the load-bearing step that makes the version-register read at
+/// base+0x28 succeed (otherwise it aborts on a gated bus). The clock ids are the RK3588 BSP
+/// rk3588-cru.h values; their gate positions (CLKGATE_CON45 bits 7/8/9) live in the rockchip-soc
+/// CRU gate table.
+fn enable_rga2_clocks() -> Result<(), OnProbeError> {
+    // HCLK_RGA2 = 438, ACLK_RGA2 = 439, CLK_RGA2_CORE = 440 (rk3588-cru.h).
+    for &clk_id in &[438u32, 439, 440] {
+        crate::soc::rk3588_enable_clock(clk_id)?;
+    }
+    Ok(())
 }
 
 fn detect_core_config(info: &FdtInfo<'_>) -> Option<RgaCoreConfig> {
