@@ -133,8 +133,8 @@ unsafe impl lock_api::RawMutex for RawMutex {
             assert_eq!(
                 owner_id,
                 current_id,
-                "Thread({current_id}) tried to release mutex it doesn't own \
-                 (owner={owner_id}), mutex={self:p}, curr={}",
+                "Thread({current_id}) tried to release mutex it doesn't own (owner={owner_id}), \
+                 mutex={self:p}, curr={}",
                 current().id_name(),
             );
         }

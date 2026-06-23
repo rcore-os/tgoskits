@@ -53,8 +53,7 @@ pub type WeakAxTaskRef = Weak<AxTask>;
 /// [`RawMutex::unlock()`]: ax_sync::RawMutex::unlock()
 pub struct ForceUnlockGuard(());
 
-static FORCE_UNLOCK_COUNT: core::sync::atomic::AtomicU32 =
-    core::sync::atomic::AtomicU32::new(0);
+static FORCE_UNLOCK_COUNT: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
 
 impl ForceUnlockGuard {
     /// Enters a force-unlock region.
