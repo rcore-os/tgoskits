@@ -10,9 +10,12 @@ use crate::{
     runtime::{VCpuRef, VMRef},
 };
 
-const IOAPIC_VECTOR_BASE: usize = 0x20;
+// Keep this in sync with the x86 ACPI INTx vector base used by the host
+// platform. Host IOAPIC vectors are allocated as PCI_INTX_VECTOR_BASE + GSI,
+// while the guest vIOAPIC is asserted by GSI.
+const IOAPIC_VECTOR_BASE: usize = 0x30;
 const IOAPIC_GSI_COUNT: usize = 24;
-const IOAPIC_VECTOR_END: usize = IOAPIC_VECTOR_BASE + IOAPIC_GSI_COUNT;
+const PCI_INTX_GSI_START: usize = 16;
 
 const PIT_TIMER_GSI: usize = 0;
 const COM1_GSI: usize = 4;
@@ -127,9 +130,9 @@ pub fn drain_pending_ioapic_irqs(vm: &VMRef, vcpu: &VCpuRef) {
             break;
         }
 
-        for gsi in 0..IOAPIC_GSI_COUNT {
-            if pending & (1usize << gsi) != 0 {
-                forward_passthrough_irq(vm, vcpu, IOAPIC_VECTOR_BASE + gsi);
+        for host_gsi in 0..IOAPIC_GSI_COUNT {
+            if pending & (1usize << host_gsi) != 0 {
+                forward_passthrough_irq(vm, vcpu, vector_for_host_gsi(host_gsi));
             }
         }
     }
@@ -151,14 +154,19 @@ pub fn enable_ioapic_irq_forwarding(vm: &VMRef, vcpu: &VCpuRef) {
     }
 
     let mut registered = 0;
-    for vector in IOAPIC_VECTOR_BASE..IOAPIC_VECTOR_END {
-        let gsi = vector - IOAPIC_VECTOR_BASE;
-        if IOAPIC_IRQ_HANDLES[gsi].load(Ordering::Acquire) != 0 {
+    for (gsi, handle_slot) in IOAPIC_IRQ_HANDLES
+        .iter()
+        .enumerate()
+        .take(IOAPIC_GSI_COUNT)
+        .skip(PCI_INTX_GSI_START)
+    {
+        let vector = vector_for_host_gsi(gsi);
+        if handle_slot.load(Ordering::Acquire) != 0 {
             continue;
         }
         match irq::request_shared_irq(vector, ioapic_irq_forwarding_handler, NonNull::dangling()) {
             Ok(handle) => {
-                IOAPIC_IRQ_HANDLES[gsi].store(handle.id() as usize, Ordering::Release);
+                handle_slot.store(handle.id() as usize, Ordering::Release);
                 registered += 1;
             }
             Err(err) => {
@@ -173,20 +181,17 @@ pub fn enable_ioapic_irq_forwarding(vm: &VMRef, vcpu: &VCpuRef) {
         IOAPIC_IRQ_HOOK_REGISTERED.store(true, Ordering::Release);
     }
     info!(
-        "Enabled x86 IOAPIC IRQ forwarding for host vectors {:#x}..{:#x} ({} newly registered)",
-        IOAPIC_VECTOR_BASE,
-        IOAPIC_VECTOR_END - 1,
+        "Enabled x86 PCI INTx IRQ forwarding for host vectors {:#x}..{:#x} ({} newly registered)",
+        vector_for_host_gsi(PCI_INTX_GSI_START),
+        vector_for_host_gsi(IOAPIC_GSI_COUNT - 1),
         registered
     );
 }
 
 fn ioapic_irq_hook_registered(vector: usize) -> bool {
-    if !(IOAPIC_VECTOR_BASE..IOAPIC_VECTOR_END).contains(&vector) {
-        return false;
-    }
-
-    let gsi = vector - IOAPIC_VECTOR_BASE;
-    IOAPIC_IRQ_HANDLES[gsi].load(Ordering::Acquire) != 0
+    host_gsi_for_vector(vector)
+        .map(|host_gsi| IOAPIC_IRQ_HANDLES[host_gsi].load(Ordering::Acquire) != 0)
+        .unwrap_or(false)
 }
 
 pub fn disable_ioapic_irq_forwarding_for_vm(vm_id: usize) {
@@ -204,17 +209,36 @@ fn forward_passthrough_irq(vm: &VMRef, vcpu: &VCpuRef, vector: usize) {
         return;
     }
 
-    if !(IOAPIC_VECTOR_BASE..IOAPIC_VECTOR_END).contains(&vector) {
+    let Some(host_gsi) = host_gsi_for_vector(vector) else {
+        return;
+    };
+
+    if forward_guest_gsi(vm, vcpu, host_gsi) {
         return;
     }
 
-    let host_gsi = vector - IOAPIC_VECTOR_BASE;
-    let Some(guest_irq) = vm.get_devices().x86_ioapic_assert_gsi(host_gsi) else {
-        trace!(
-            "x86 passthrough IRQ vector {vector:#x} has no injectable guest vIOAPIC route for \
-             host GSI {host_gsi}"
-        );
-        return;
+    // The x86 smoke path passes through a QEMU PCI INTx device. The host ACPI
+    // route and the guest MP-table route can differ while both remain valid for
+    // their own PCI topology, so fall back to the guest's programmed PCI INTx
+    // lines instead of dropping the interrupt when the same-numbered GSI is not
+    // routable in the guest.
+    if host_gsi >= PCI_INTX_GSI_START {
+        for guest_gsi in PCI_INTX_GSI_START..IOAPIC_GSI_COUNT {
+            if guest_gsi != host_gsi && forward_guest_gsi(vm, vcpu, guest_gsi) {
+                return;
+            }
+        }
+    }
+
+    trace!(
+        "x86 passthrough IRQ vector {vector:#x} has no injectable guest vIOAPIC route for host \
+         GSI {host_gsi}"
+    );
+}
+
+fn forward_guest_gsi(vm: &VMRef, vcpu: &VCpuRef, guest_gsi: usize) -> bool {
+    let Some(guest_irq) = vm.get_devices().x86_ioapic_assert_gsi(guest_gsi) else {
+        return false;
     };
 
     vcpu.inject_interrupt_with_trigger(
@@ -226,6 +250,7 @@ fn forward_passthrough_irq(vm: &VMRef, vcpu: &VCpuRef, vector: usize) {
         },
     )
     .unwrap();
+    true
 }
 
 unsafe fn ioapic_irq_forwarding_handler(
@@ -233,9 +258,9 @@ unsafe fn ioapic_irq_forwarding_handler(
     _data: NonNull<()>,
 ) -> irq::IrqReturn {
     let vector = ctx.irq.0;
-    if !(IOAPIC_VECTOR_BASE..IOAPIC_VECTOR_END).contains(&vector) {
+    let Some(host_gsi) = host_gsi_for_vector(vector) else {
         return irq::IrqReturn::Unhandled;
-    }
+    };
 
     if IOAPIC_IRQ_FORWARD_VM_ID.load(Ordering::Acquire) == usize::MAX
         || IOAPIC_IRQ_FORWARD_VCPU_ID.load(Ordering::Acquire) == usize::MAX
@@ -243,7 +268,35 @@ unsafe fn ioapic_irq_forwarding_handler(
         return irq::IrqReturn::Unhandled;
     }
 
-    let bit = 1usize << (vector - IOAPIC_VECTOR_BASE);
+    let bit = 1usize << host_gsi;
     IOAPIC_IRQ_PENDING.fetch_or(bit, Ordering::AcqRel);
     irq::IrqReturn::Handled
+}
+
+fn host_gsi_for_vector(vector: usize) -> Option<usize> {
+    let host_gsi = vector.checked_sub(IOAPIC_VECTOR_BASE)?;
+    (host_gsi < IOAPIC_GSI_COUNT).then_some(host_gsi)
+}
+
+fn vector_for_host_gsi(host_gsi: usize) -> usize {
+    IOAPIC_VECTOR_BASE + host_gsi
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn x86_ioapic_forwarding_uses_platform_intx_vector_base() {
+        assert_eq!(IOAPIC_VECTOR_BASE, 0x30);
+        assert_eq!(host_gsi_for_vector(0x30 + 18), Some(18));
+        assert_eq!(vector_for_host_gsi(18), 0x30 + 18);
+        assert_eq!(host_gsi_for_vector(0x20), None);
+    }
+
+    #[test]
+    fn x86_ioapic_forwarding_only_hooks_pci_intx_lines() {
+        assert_eq!(vector_for_host_gsi(PCI_INTX_GSI_START), 0x40);
+        assert_eq!(vector_for_host_gsi(IOAPIC_GSI_COUNT - 1), 0x47);
+    }
 }
