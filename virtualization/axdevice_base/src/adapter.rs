@@ -320,23 +320,19 @@ where
 
 #[cfg(test)]
 mod tests {
-    use alloc::sync::Arc;
-    use core::any::Any;
-
     use ax_errno::AxResult;
     use axvm_types::GuestPhysAddr;
 
     use super::MmioDeviceAdapter;
     use crate::{
         BaseDeviceOps, Device, EmuDeviceType, GuestPhysAddrRange, Resource,
-        device::{AccessWidth, BusAccess, BusKind, BusResponse, DeviceError},
+        device::{AccessWidth, BusAccess, BusKind, BusResponse},
     };
 
     struct MockMmioDevice {
         addr: GuestPhysAddr,
         size: usize,
         read_val: usize,
-        name: &'static str,
     }
 
     impl BaseDeviceOps<GuestPhysAddrRange> for MockMmioDevice {
@@ -362,7 +358,6 @@ mod tests {
             addr: GuestPhysAddr::from(0x1000),
             size: 0x100,
             read_val: 42,
-            name: "mock",
         };
         let adapter = MmioDeviceAdapter::new(dev);
 
