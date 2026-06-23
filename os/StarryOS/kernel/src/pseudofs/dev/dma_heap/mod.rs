@@ -1,3 +1,4 @@
+mod device;
 mod file;
 mod object;
 mod uapi;
@@ -7,6 +8,7 @@ use core::{any::Any, ffi::c_int};
 
 use ax_errno::AxResult;
 use axfs_ng_vfs::{DeviceId, NodeFlags, VfsError, VfsResult};
+pub use device::DmaHeap;
 use file::DmaBufFile;
 pub use object::DmaBufObject;
 use starry_vm::VmMutPtr;
@@ -28,6 +30,9 @@ pub fn resolve_dmabuf_fd(fd: c_int) -> AxResult<Arc<DmaBufObject>> {
 
 /// Device ID for /dev/dma_heap/system
 pub const DMA_HEAP_SYSTEM_DEVICE_ID: DeviceId = DeviceId::new(252, 0);
+
+/// `/dev/dma_heap/cma` device id (alias node; same contiguous allocator as `system`).
+pub const DMA_HEAP_CMA_DEVICE_ID: DeviceId = DeviceId::new(252, 1);
 
 /// DMA heap system device
 pub struct DmaHeapSystem;
