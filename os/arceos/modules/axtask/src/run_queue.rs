@@ -771,22 +771,34 @@ impl AxRunQueue {
     /// Core reschedule subroutine.
     /// Pick the next task to run — from the local queue first, then by
     /// work-stealing from remote CPUs — and switch to it.
-    ///
-    /// Work-stealing is gated behind `preempt` because systems without
-    /// preempt (e.g. Axvisor with FIFO scheduler) have per-CPU interrupt
-    /// and DMA affinity: tasks woken by a CPU-local IRQ must not be
-    /// migrated to a different core, or subsequent I/O completion
-    /// handlers will also fire on the original CPU, leaving the task
-    /// stranded on the wrong core's run queue.
     fn resched(&mut self) {
         let local_task = self.scheduler.lock().pick_next_task();
         let next = local_task
             .or_else(|| {
-                #[cfg(all(feature = "smp", feature = "preempt"))]
+                #[cfg(feature = "smp")]
                 {
-                    self.try_steal()
+                    // Only idle CPUs attempt work-stealing, mirroring
+                    // Linux's idle_balance(). Work-stealing without
+                    // preempt is unsafe: there is no mechanism to kick
+                    // a remote CPU after its task is stolen, and the
+                    // stolen task may depend on per-CPU resources that
+                    // were set up on its original CPU (e.g. Rockchip
+                    // DMA/IRQ routing). This mirrors Linux's
+                    // idle_balance() which relies on the scheduler
+                    // tick + NEED_RESCHED to preempt the current task
+                    // after waking it on a remote CPU.
+                    #[cfg(feature = "preempt")]
+                    if crate::current().is_idle() {
+                        self.try_steal()
+                    } else {
+                        None
+                    }
+                    #[cfg(not(feature = "preempt"))]
+                    {
+                        None
+                    }
                 }
-                #[cfg(not(all(feature = "smp", feature = "preempt")))]
+                #[cfg(not(feature = "smp"))]
                 {
                     None
                 }
