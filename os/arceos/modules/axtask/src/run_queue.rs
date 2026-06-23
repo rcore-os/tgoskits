@@ -782,11 +782,11 @@ impl AxRunQueue {
         let local_task = self.scheduler.lock().pick_next_task();
         let next = local_task
             .or_else(|| {
-                #[cfg(feature = "preempt")]
+                #[cfg(all(feature = "smp", feature = "preempt"))]
                 {
                     self.try_steal()
                 }
-                #[cfg(not(feature = "preempt"))]
+                #[cfg(not(all(feature = "smp", feature = "preempt")))]
                 {
                     None
                 }
