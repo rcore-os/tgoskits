@@ -1,7 +1,11 @@
 //! Feature-gated RGA2 bring-up selftest. Logs one machine-parseable line over serial so the board
 //! harness can match it. No /dev/rga involved.
 use dma_api::DmaDirection;
-use rockchip_rga::{RgaVersion, RockchipRga, buffer::RgaDmaBuffer, selftest::run_rga2_smoke};
+use rockchip_rga::{
+    RgaVersion, RockchipRga,
+    buffer::RgaDmaBuffer,
+    selftest::{crc32, run_rga2_fill_imported, run_rga2_smoke},
+};
 
 const W: u32 = 64;
 const H: u32 = 48;
@@ -45,6 +49,41 @@ pub fn run() {
                 r.crc
             ),
             Err(e) => warn!("RGA2_SELFTEST core={} result=FAIL err={:?}", core_index, e),
+        }
+        // Imported-buffer path: allocate via the real dma-heap allocator (exactly as a dma-buf
+        // would be) and fill it with RGA2 — proving the dma-buf -> phys import seam end to end on
+        // hardware. Board-gated (no RGA2 engine in QEMU).
+        match crate::pseudofs::dev::dma_heap::alloc(bytes) {
+            Ok(obj) => {
+                let color: u32 = 0x00FF_00FF;
+                match run_rga2_fill_imported(core, obj.phys_addr(), W, H, color, |us| {
+                    ax_runtime::hal::time::busy_wait(core::time::Duration::from_micros(us as u64))
+                }) {
+                    Ok(()) => {
+                        obj.sync_for_cpu();
+                        let pixels = &obj.cpu_bytes()[..bytes];
+                        let fill_ok = pixels
+                            .chunks_exact(4)
+                            .all(|px| u32::from_le_bytes([px[0], px[1], px[2], px[3]]) == color);
+                        info!(
+                            "RGA2_DMABUF_SELFTEST core={} fill={} crc=0x{:08x}",
+                            core_index,
+                            if fill_ok { "PASS" } else { "FAIL" },
+                            crc32(pixels)
+                        );
+                    }
+                    Err(e) => {
+                        warn!(
+                            "RGA2_DMABUF_SELFTEST core={} fill=FAIL err={:?}",
+                            core_index, e
+                        )
+                    }
+                }
+            }
+            Err(e) => warn!(
+                "RGA2_DMABUF_SELFTEST core={} alloc=FAIL err={:?}",
+                core_index, e
+            ),
         }
         return;
     }

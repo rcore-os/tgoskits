@@ -92,6 +92,29 @@ pub fn run_rga2_smoke(
     })
 }
 
+/// Fill a destination plane referenced by a raw physical address (e.g. an imported dma-buf) with a
+/// solid color, polling to completion. Proves the imported-buffer submission path; the caller owns
+/// the backing memory and verifies the result (CRC / pixel check).
+pub fn run_rga2_fill_imported(
+    core: &mut RgaCore,
+    dst_phys: u64,
+    width: u32,
+    height: u32,
+    color: u32,
+    mut delay_us: impl FnMut(u32),
+) -> Result<()> {
+    let fmt = PixelFormat::Rgba8888;
+    let dst = ImageDesc {
+        width,
+        height,
+        stride_bytes: width * fmt.bytes_per_pixel(),
+        format: fmt,
+        phys_addr: dst_phys,
+    };
+    core.start(&RgaOperation::Fill { dst, color })?;
+    poll_done(core, &mut delay_us)
+}
+
 fn poll_done(core: &mut RgaCore, delay_us: &mut impl FnMut(u32)) -> Result<()> {
     // ~50 ms budget at 100 us steps (spec letterbox target is < 5 ms; generous for bring-up).
     for _ in 0..500 {

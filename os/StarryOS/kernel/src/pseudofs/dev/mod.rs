@@ -4,7 +4,7 @@ mod card0;
 #[cfg(feature = "rknpu")]
 mod card1;
 #[cfg(feature = "dma-heap")]
-mod dma_heap;
+pub(crate) mod dma_heap;
 mod drm;
 #[cfg(feature = "input")]
 pub mod event;
