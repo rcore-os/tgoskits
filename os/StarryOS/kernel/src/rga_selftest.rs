@@ -101,9 +101,9 @@ pub fn run() {
                     d.phys_addr(),
                     (dw, dh),
                     |us| {
-                        ax_runtime::hal::time::busy_wait(
-                            core::time::Duration::from_micros(us as u64),
-                        )
+                        ax_runtime::hal::time::busy_wait(core::time::Duration::from_micros(
+                            us as u64,
+                        ))
                     },
                 ) {
                     Ok(()) => {
@@ -115,7 +115,10 @@ pub fn run() {
                         );
                     }
                     Err(e) => {
-                        warn!("RGA2_BLIT_SELFTEST core={} resize=FAIL err={:?}", core_index, e)
+                        warn!(
+                            "RGA2_BLIT_SELFTEST core={} resize=FAIL err={:?}",
+                            core_index, e
+                        )
                     }
                 }
             }
