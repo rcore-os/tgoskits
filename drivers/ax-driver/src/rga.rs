@@ -56,6 +56,7 @@ fn probe(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
         warn!("RGA2 clock bring-up failed ({e:?}); skipping core to avoid an MMIO abort");
         return Ok(());
     }
+    deassert_rga2_resets();
 
     let irq = crate::binding_info_from_fdt(&info)?.irq_num();
 
@@ -106,9 +107,10 @@ fn enable_power(config: RgaCoreConfig) {
         },
         None => warn!("RGA: RockchipPM not found; assuming domain already powered"),
     }
-    // Bus clocks are ungated separately in enable_rga2_clocks() (RGA2 needs them live before any
-    // MMIO). Resets are left to the GLB power-on reset — the RGA DTS nodes carry no `resets`
-    // property and the cores are not held in reset at boot, so a manual deassert is unnecessary.
+    // Bus clocks are ungated in enable_rga2_clocks() and the soft-resets are deasserted in
+    // deassert_rga2_resets(), both before any MMIO. The version read succeeds without the reset
+    // deassert (it only needs the APB/hclk interface), but the 2D engine needs the AXI/core
+    // domains out of any residual reset to actually execute a submitted op.
 }
 
 /// Ungate the RGA2 core's three CRU bus clocks (hclk, aclk, clk). U-Boot leaves the RGA clocks
@@ -122,6 +124,20 @@ fn enable_rga2_clocks() -> Result<(), OnProbeError> {
         crate::soc::rk3588_enable_clock(clk_id)?;
     }
     Ok(())
+}
+
+/// Deassert the RGA2 CRU soft-resets so the AXI/core domains are out of any residual reset before
+/// the engine runs. FLAT reg*16+bit ids for this code's no-LUT ResetRockchip: SOFTRST_CON45 (0xa00
+/// + 45*4 = 0xab4) bits 7/8/9 -> 727 = SRST_H_RGA2, 728 = SRST_A_RGA2, 729 = SRST_RGA2_CORE.
+/// (NOT the Linux dt-binding indices 368/369/370 — those are array indices Linux maps through a
+/// LUT; this tree decodes the id directly as bank=id/16, offset=id%16, so they would hit the wrong
+/// register. Symmetric with the RGA2 clock gates at CLKGATE_CON45 bits 7/8/9.)
+fn deassert_rga2_resets() {
+    for &rst_id in &[727u64, 728, 729] {
+        if let Err(e) = crate::soc::rk3588_reset_deassert(rst_id) {
+            warn!("RGA2 reset_deassert({rst_id}) failed: {e:?}");
+        }
+    }
 }
 
 fn detect_core_config(info: &FdtInfo<'_>) -> Option<RgaCoreConfig> {
