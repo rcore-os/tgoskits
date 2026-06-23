@@ -14,12 +14,15 @@ use crate::{
     operation::RgaOperation,
 };
 
-// CONFIRM ON BOARD (Task 13): these bit values are best-known from the RGA2 register layout and are
-// validated/refined empirically against the vendor rga2 driver during board bring-up.
-const CMD_CTRL_START: u32 = 0x1; // CMD_CTRL bit0 = render-start
-const INT_DONE: u32 = 0x1; // INT bit0 = command complete
-const INT_ERROR: u32 = 0x2; // INT bit1 = error
-const SYS_CTRL_SOFT_RESET: u32 = 0x1; // SYS_CTRL bit0 = soft reset
+// Register bit values from the RK3588 TRM Part2 RGA2 chapter (cross-checked vs the vendor rga2 driver).
+const CMD_CTRL_START: u32 = 1 << 0; // CMD_CTRL.sw_cmd_line_st_p — start command fetch (auto-clears)
+// INT (0x0010): RO status flags in bits[3:0]; dedicated W1C clear bits in bits[7:4].
+const INT_DONE: u32 = 1 << 2; // sw_intr_af — all-command-finished ("done")
+const INT_ERROR: u32 = 1 << 0; // sw_intr_err — error
+const INT_DONE_CLR: u32 = 1 << 6; // sw_intr_af_clr (W1C)
+const INT_ERROR_CLR: u32 = 1 << 4; // sw_intr_err_clr (W1C)
+// SYS_CTRL (0x0000): soft-reset = aclk-domain (bit3) | core-clk-domain (bit4). (bit0 is command-start, NOT reset.)
+const SYS_CTRL_SOFT_RESET: u32 = (1 << 3) | (1 << 4);
 
 /// RGA2 core controller. Owns its MMIO region and a lazily-allocated DMA command buffer.
 pub struct Rga2Backend {
@@ -95,8 +98,10 @@ impl RgaBackend for Rga2Backend {
         cmd.prepare_for_device();
         let cmd_phys = cmd.phys_addr();
 
-        self.write32(registers::INT, INT_DONE | INT_ERROR); // clear stale status (assume W1C)
-        self.write32(registers::CMD_BASE, (cmd_phys >> 4) as u32); // RGA2 CMD_BASE is 16-byte-shifted
+        self.write32(registers::INT, INT_DONE_CLR | INT_ERROR_CLR); // W1C clear bits[7:4]
+        // TRM: CMD_BASE (sw_cmd_base[31:0]) is a raw byte address; the vendor rga2 driver writes the
+        // descriptor phys addr directly (no shift). Command buffer is 128B-aligned. BOARD-CONFIRM.
+        self.write32(registers::CMD_BASE, cmd_phys as u32);
         core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
         self.write32(registers::CMD_CTRL, CMD_CTRL_START);
         Ok(())
@@ -114,13 +119,13 @@ impl RgaBackend for Rga2Backend {
     }
 
     fn ack(&mut self) {
-        self.write32(registers::INT, INT_DONE | INT_ERROR); // W1C
+        self.write32(registers::INT, INT_DONE_CLR | INT_ERROR_CLR); // W1C clear bits[7:4]
     }
 
     fn reset(&mut self) -> Result<()> {
         self.write32(registers::SYS_CTRL, SYS_CTRL_SOFT_RESET);
         self.write32(registers::SYS_CTRL, 0);
-        self.write32(registers::INT, INT_DONE | INT_ERROR);
+        self.write32(registers::INT, INT_DONE_CLR | INT_ERROR_CLR); // W1C clear bits[7:4]
         Ok(())
     }
 }
