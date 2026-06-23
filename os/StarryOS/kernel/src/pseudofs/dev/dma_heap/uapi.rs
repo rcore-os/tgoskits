@@ -41,6 +41,7 @@ pub struct DmaHeapAllocationData {
 #[derive(Debug, Clone, Copy)]
 #[repr(C)]
 pub struct DmaBufSync {
+    /// Sync direction and phase flags; valid bits defined by `DMA_BUF_SYNC_VALID_FLAGS_MASK`.
     pub flags: u64,
 }
 
@@ -56,6 +57,8 @@ pub const DMA_BUF_IOCTL_SYNC: u32 = ioc_iow!(DMA_BUF_IOCTL_MAGIC, 0, DmaBufSync)
 pub const DMA_BUF_SYNC_READ: u64 = 1 << 0;
 pub const DMA_BUF_SYNC_WRITE: u64 = 2 << 0;
 pub const DMA_BUF_SYNC_RW: u64 = DMA_BUF_SYNC_READ | DMA_BUF_SYNC_WRITE;
+/// Begin-CPU-access phase: the absence of the `END` bit. Value `0`.
+pub const DMA_BUF_SYNC_START: u64 = 0 << 2;
 pub const DMA_BUF_SYNC_END: u64 = 1 << 2;
 /// Valid bits a caller may set in `dma_buf_sync.flags`.
 pub const DMA_BUF_SYNC_VALID_FLAGS_MASK: u64 = DMA_BUF_SYNC_RW | DMA_BUF_SYNC_END;
