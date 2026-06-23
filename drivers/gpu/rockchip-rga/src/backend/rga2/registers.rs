@@ -6,6 +6,7 @@ pub const SYS_CTRL: usize = 0x0000;
 pub const CMD_CTRL: usize = 0x0004;
 pub const CMD_BASE: usize = 0x0008;
 pub const INT: usize = 0x0010;
+pub const STATUS: usize = 0x000c;
 pub const VERSION_INFO: usize = 0x0028;
 
 pub const MODE_BASE: usize = 0x0100;

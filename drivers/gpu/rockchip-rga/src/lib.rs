@@ -17,7 +17,7 @@ use dma_api::DeviceDma;
 use rdif_base::DriverGeneric;
 
 use crate::{
-    backend::{RgaBackend, RgaStatus, rga2::Rga2Backend, rga3::Rga3Backend},
+    backend::{RgaBackend, RgaDiag, RgaStatus, rga2::Rga2Backend, rga3::Rga3Backend},
     capabilities::CoreCapabilities,
     error::{Result, RgaError},
     operation::RgaOperation,
@@ -141,6 +141,11 @@ impl RgaCore {
 
     pub fn poll_status(&self) -> RgaStatus {
         self.backend.poll()
+    }
+
+    /// Read-only engine-state snapshot for diagnostics.
+    pub fn diag(&self) -> RgaDiag {
+        self.backend.diag()
     }
 
     /// Call after `poll_status()` reports Done/Error.
