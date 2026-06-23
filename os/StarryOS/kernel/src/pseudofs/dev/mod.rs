@@ -23,6 +23,8 @@ mod r#loop;
 mod loop_block;
 #[cfg(feature = "jpeg")]
 mod mpp_service;
+#[cfg(feature = "rga")]
+mod rga;
 #[cfg(feature = "ext4")]
 pub use r#loop::LoopDevice;
 #[cfg(feature = "sg2002")]
@@ -516,6 +518,17 @@ fn builder(fs: Arc<SimpleFs>) -> DirMaker {
             NodeType::CharacterDevice,
             DeviceId::new(226, 128),
             dri_card0,
+        ),
+    );
+
+    #[cfg(feature = "rga")]
+    root.add(
+        "rga",
+        Device::new(
+            fs.clone(),
+            NodeType::CharacterDevice,
+            DeviceId::new(252, 16), // CONFIRM ON BOARD: real /dev/rga major/minor
+            Arc::new(rga::RgaDevice::new()),
         ),
     );
 
