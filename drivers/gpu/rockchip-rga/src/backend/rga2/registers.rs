@@ -45,3 +45,31 @@ pub const COLOR_NONE_SWAP: u32 = 0;
 pub const MMU_SRC_ENABLE: u32 = 1 << 0; // sw_src_mmu_en
 pub const MMU_SRC1_ENABLE: u32 = 1 << 4; // sw_src1_mmu_en
 pub const MMU_DST_ENABLE: u32 = 1 << 8; // sw_dst_mmu_en
+
+// SRC_INFO/DST_INFO format codes (bits[3:0]). CONFIRM ON BOARD (vendor rga2.h).
+pub const FMT_RGBA8888: u32 = 0x0;
+pub const FMT_RGBX8888: u32 = 0x1;
+pub const FMT_RGB888: u32 = 0x2;
+pub const FMT_RGB565: u32 = 0x4;
+pub const FMT_YCBCR_420_SP: u32 = 0xa; // NV12
+pub const FMT_YCRCB_420_SP: u32 = 0xe; // NV21
+pub const FMT_YCBCR_422_SP: u32 = 0x8; // NV16
+// SRC_INFO modifier bits. CONFIRM ON BOARD.
+pub const INFO_RBSWAP: u32 = 1 << 4;
+pub const INFO_ALPHA_SWAP: u32 = 1 << 5;
+pub const INFO_UVSWAP: u32 = 1 << 6;
+// SRC_INFO csc_mode (bits[9:8]) — YUV→RGB. CONFIRM ON BOARD value↔standard map.
+pub const SRC_INFO_CSC_SHIFT: u32 = 8;
+pub const CSC_BT601_LIMITED: u32 = 1;
+pub const CSC_BT601_FULL: u32 = 2;
+pub const CSC_BT709_LIMITED: u32 = 3;
+// DST_INFO dst_csc (bits[17:16]) — RGB→YUV. CONFIRM ON BOARD.
+pub const DST_INFO_CSC_SHIFT: u32 = 16;
+// SRC_INFO scale mode (h=bits[17:16], v=bits[15:14]); 00=none,01=down,10=up. CONFIRM ON BOARD split.
+pub const SRC_INFO_HSCL_SHIFT: u32 = 16;
+pub const SRC_INFO_VSCL_SHIFT: u32 = 14;
+pub const SCL_NONE: u32 = 0;
+pub const SCL_DOWN: u32 = 1;
+pub const SCL_UP: u32 = 2;
+// Width alignment required for the RGA path. CONFIRM ON BOARD (bench gates on %16).
+pub const WIDTH_ALIGN: u32 = 16;

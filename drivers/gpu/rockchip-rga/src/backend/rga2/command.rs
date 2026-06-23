@@ -49,25 +49,21 @@ const fn encode_mode(render: u32, bitblt: u32) -> u32 {
     (render & 0x7) | ((bitblt & 0x1) << 3) | (1 << 6)
 }
 
-/// Map an operation PixelFormat to the RGA2 hardware format code.
-/// TODO(board): confirm RGA2 format codes + color-swap vs the vendor rga2 driver. ABGR8888=0 is known;
-/// the other codes are placeholders refined during board bring-up (Task 7/13). Same-format copy is
-/// correct regardless of the code (byte-preserving); fill color interpretation is verified on board.
+/// Format-portion of SRC_INFO/DST_INFO: format code + R/B-swap modifier.
+/// CONFIRM ON BOARD: codes + modifier bit positions (vendor rga2.h). Abgr8888 retains its PR-1 code.
 const fn hw_format(fmt: crate::operation::PixelFormat) -> u32 {
     use crate::operation::PixelFormat;
     match fmt {
+        PixelFormat::Rgba8888 => registers::FMT_RGBA8888,
+        PixelFormat::Rgbx8888 => registers::FMT_RGBX8888,
+        PixelFormat::Rgb888 => registers::FMT_RGB888,
+        PixelFormat::Bgra8888 => registers::FMT_RGBA8888 | registers::INFO_RBSWAP,
+        PixelFormat::Bgr888 => registers::FMT_RGB888 | registers::INFO_RBSWAP,
+        PixelFormat::Rgb565 => registers::FMT_RGB565,
         PixelFormat::Abgr8888 => registers::COLOR_FMT_ABGR8888,
-        // TODO(board): confirm RGA2 format codes during board bring-up (Task 7/13).
-        // Same-format copy is correct regardless of the code (byte-preserving).
-        PixelFormat::Rgba8888
-        | PixelFormat::Rgbx8888
-        | PixelFormat::Bgra8888
-        | PixelFormat::Rgb888
-        | PixelFormat::Bgr888
-        | PixelFormat::Rgb565
-        | PixelFormat::Nv12
-        | PixelFormat::Nv21
-        | PixelFormat::Nv16 => 0,
+        PixelFormat::Nv12 => registers::FMT_YCBCR_420_SP,
+        PixelFormat::Nv21 => registers::FMT_YCRCB_420_SP,
+        PixelFormat::Nv16 => registers::FMT_YCBCR_422_SP,
     }
 }
 
@@ -171,6 +167,25 @@ mod mmu_off_tests {
         assert_eq!(
             cmd.register(registers::MODE_CTRL),
             Some(encode_mode(registers::MODE_RENDER_RECTANGLE_FILL, 0))
+        );
+    }
+
+    #[test]
+    fn hw_format_codes() {
+        use crate::operation::{ImageDesc, PixelFormat};
+        // RGB888 must now be 0x2 (the PR-1 stub returned 0).
+        let cmd = encode_copy(
+            ImageDesc::rgb(64, 48, 64 * 3, PixelFormat::Rgb888, 0x1000),
+            ImageDesc::rgb(64, 48, 64 * 3, PixelFormat::Rgb888, 0x9000),
+        )
+        .unwrap();
+        assert_eq!(
+            cmd.register(registers::SRC_INFO),
+            Some(registers::FMT_RGB888)
+        );
+        assert_eq!(
+            cmd.register(registers::DST_INFO),
+            Some(registers::FMT_RGB888)
         );
     }
 
