@@ -97,6 +97,27 @@ pub fn run_rga2_fill_imported(
     poll_done(core, &mut delay_us)
 }
 
+/// Downscale a src plane into a (possibly smaller) dst via the general Blit path, polling to
+/// completion. Caller owns the buffers + verifies output. Proves the resize encoding on hardware.
+///
+/// `src_phys`/`dst_phys` are the physical base addresses; dimensions are in pixels (RGBA8888).
+pub fn run_rga2_blit_resize(
+    core: &mut RgaCore,
+    src_phys: u64,
+    src_dims: (u32, u32),
+    dst_phys: u64,
+    dst_dims: (u32, u32),
+    mut delay_us: impl FnMut(u32),
+) -> Result<()> {
+    let fmt = PixelFormat::Rgba8888;
+    let (src_w, src_h) = src_dims;
+    let (dst_w, dst_h) = dst_dims;
+    let src = ImageDesc::rgb(src_w, src_h, src_w * fmt.bytes_per_pixel(), fmt, src_phys);
+    let dst = ImageDesc::rgb(dst_w, dst_h, dst_w * fmt.bytes_per_pixel(), fmt, dst_phys);
+    core.start(&RgaOperation::Blit(crate::operation::Blit::resize(src, dst)))?;
+    poll_done(core, &mut delay_us)
+}
+
 fn poll_done(core: &mut RgaCore, delay_us: &mut impl FnMut(u32)) -> Result<()> {
     // ~50 ms budget at 100 us steps (spec letterbox target is < 5 ms; generous for bring-up).
     for _ in 0..500 {

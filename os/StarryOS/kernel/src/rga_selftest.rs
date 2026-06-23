@@ -4,7 +4,7 @@ use dma_api::DmaDirection;
 use rockchip_rga::{
     RgaVersion, RockchipRga,
     buffer::RgaDmaBuffer,
-    selftest::{crc32, run_rga2_fill_imported, run_rga2_smoke},
+    selftest::{crc32, run_rga2_blit_resize, run_rga2_fill_imported, run_rga2_smoke},
 };
 
 const W: u32 = 64;
@@ -84,6 +84,42 @@ pub fn run() {
                 "RGA2_DMABUF_SELFTEST core={} alloc=FAIL err={:?}",
                 core_index, e
             ),
+        }
+        // Board-gated resize: downscale W×H → (W/2)×(H/2) via the general Blit path. Pixel
+        // correctness is validated on hardware; QEMU has no RGA2 engine.
+        let (dw, dh) = (W / 2, H / 2);
+        let dst_bytes = (dw * dh * 4) as usize;
+        match (
+            crate::pseudofs::dev::dma_heap::alloc(bytes),
+            crate::pseudofs::dev::dma_heap::alloc(dst_bytes),
+        ) {
+            (Ok(s), Ok(d)) => {
+                match run_rga2_blit_resize(
+                    core,
+                    s.phys_addr(),
+                    (W, H),
+                    d.phys_addr(),
+                    (dw, dh),
+                    |us| {
+                        ax_runtime::hal::time::busy_wait(
+                            core::time::Duration::from_micros(us as u64),
+                        )
+                    },
+                ) {
+                    Ok(()) => {
+                        d.sync_for_cpu();
+                        info!(
+                            "RGA2_BLIT_SELFTEST core={} resize=PASS crc=0x{:08x}",
+                            core_index,
+                            crc32(&d.cpu_bytes()[..dst_bytes])
+                        );
+                    }
+                    Err(e) => {
+                        warn!("RGA2_BLIT_SELFTEST core={} resize=FAIL err={:?}", core_index, e)
+                    }
+                }
+            }
+            _ => warn!("RGA2_BLIT_SELFTEST core={} alloc=FAIL", core_index),
         }
         return;
     }
