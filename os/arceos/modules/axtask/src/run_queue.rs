@@ -683,6 +683,7 @@ impl AxRunQueue {
     /// idle CPUs hammering CPU 0) and tries to pick a task from each.
     /// Returns [`None`] only when every other CPU's queue is also empty.
     #[cfg(feature = "smp")]
+    #[cfg_attr(not(feature = "preempt"), allow(dead_code))]
     // `ax_config::plat::MAX_CPU_NUM` is always greater than 1 with "smp" enabled.
     #[allow(clippy::modulo_one, clippy::reversed_empty_ranges)]
     fn try_steal(&self) -> Option<AxTaskRef> {
@@ -770,24 +771,22 @@ impl AxRunQueue {
     /// Core reschedule subroutine.
     /// Pick the next task to run — from the local queue first, then by
     /// work-stealing from remote CPUs — and switch to it.
+    ///
+    /// Work-stealing is gated behind `preempt` because systems without
+    /// preempt (e.g. Axvisor with FIFO scheduler) have per-CPU interrupt
+    /// and DMA affinity: tasks woken by a CPU-local IRQ must not be
+    /// migrated to a different core, or subsequent I/O completion
+    /// handlers will also fire on the original CPU, leaving the task
+    /// stranded on the wrong core's run queue.
     fn resched(&mut self) {
         let local_task = self.scheduler.lock().pick_next_task();
         let next = local_task
             .or_else(|| {
-                #[cfg(feature = "smp")]
+                #[cfg(feature = "preempt")]
                 {
-                    // Only idle CPUs attempt work-stealing, mirroring
-                    // Linux's idle_balance().  try_steal() only pulls
-                    // Ready tasks that hold no per-CPU hardware state
-                    // (is_ready + !on_cpu), so stealing is safe even
-                    // without preempt or IPI.
-                    if crate::current().is_idle() {
-                        self.try_steal()
-                    } else {
-                        None
-                    }
+                    self.try_steal()
                 }
-                #[cfg(not(feature = "smp"))]
+                #[cfg(not(feature = "preempt"))]
                 {
                     None
                 }
