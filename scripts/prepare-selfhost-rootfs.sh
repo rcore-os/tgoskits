@@ -394,40 +394,34 @@ CONFIG_EOF
 # Step 6: Pre-fetch cargo dependencies
 # ═══════════════════════════════════════════════════════════════════════════════
 
-# Pre-fetch cargo deps for offline build (all architectures).
-# The full workspace contains arch-specific crates that don't resolve for
-# other targets (e.g., arm_vcpu → aarch64-cpu on x86_64).  Temporarily
-# filter the workspace members to only those relevant to this target,
-# run cargo fetch, then restore the original Cargo.toml.
+# Pre-fetch cargo deps for the offline guest build.
+#
+# Fetch the FULL closure of the committed Cargo.lock with `--locked`, against
+# the unfiltered workspace.  The cache must be a superset of whatever the guest
+# resolves: the guest runs filter-workspace.sh at build time (dropping
+# arch-incompatible members + usb-device/uvc), so a full-closure fetch always
+# covers it.
+#
+# Do NOT regenerate the lockfile from a filtered manifest: that re-resolves to
+# different versions than the baked lock (e.g. getrandom 0.3.x instead of the
+# locked 0.4.2 -> wasip3 -> wit-bindgen subtree), leaving the offline build
+# unable to resolve crates the baked lock references.  `--locked` forbids any
+# lock change, so fetch and build see the same graph; the baked Cargo.toml /
+# Cargo.lock stay byte-identical to HEAD (source identity is preserved).
 info "Pre-fetching cargo dependencies for ${TARGET} (~10-30 min)..."
-
-# Build a sed pattern to remove arch-incompatible workspace members.
-# Each arch keeps its own prefix + common crates.
-case "$ARCH" in
-    riscv64) EXCLUDE_ARCH="arm_vcpu\|aarch64\|x86_64\|loongarch64\|kasm-aarch64\|arm_vgic" ;;
-    x86_64)  EXCLUDE_ARCH="arm_vcpu\|aarch64\|riscv\|loongarch64\|kasm-aarch64\|arm_vgic\|sg2002\|bsta1000b\|phytium\|raspi" ;;
-    arm)     EXCLUDE_ARCH="riscv\|x86_64\|loongarch64\|sg2002\|bsta1000b" ;;
-esac
 
 nspawn_run "$OUTPUT_IMG" "
     export PATH=/root/.cargo/bin:\$PATH && \
     cd $DEST_PATH && \
-    cp Cargo.toml Cargo.toml.orig && \
-	    cp Cargo.lock Cargo.lock.orig && \
-    sed -i '/^[[:space:]]*\"components\//{/'"$EXCLUDE_ARCH"'/d}' Cargo.toml && \
-    sed -i '/^[[:space:]]*\"drivers\/usb\/usb-device\/uvc\"/d' Cargo.toml && \
-    rm -f Cargo.lock && \
     cp /root/.cargo/config.toml /root/.cargo/config.toml.bak && \
     printf '[net]\noffline = false\n' > /root/.cargo/config.toml && \
-	    cargo generate-lockfile --ignore-rust-version --manifest-path Cargo.toml 2>&1 && \
-	    cargo fetch --manifest-path Cargo.toml 2>&1 && cargo fetch --manifest-path Cargo.toml --target ${TARGET} 2>&1; \
+        cargo fetch --locked 2>&1 && \
+        cargo fetch --locked --target ${TARGET} 2>&1; \
     RET=\$?; \
     mv /root/.cargo/config.toml.bak /root/.cargo/config.toml; \
-    mv Cargo.toml.orig Cargo.toml && \
-	    mv Cargo.lock.orig Cargo.lock && \
     exit \$RET
 "
-info "Cargo dependencies pre-fetched (--ignore-rust-version)."; info "Workspace pre-filtered — QEMU will skip filtering."
+info "Cargo dependencies pre-fetched (full --locked closure; QEMU filters at build time)."
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # Step 8: Pre-extract all .crate files to registry/src
