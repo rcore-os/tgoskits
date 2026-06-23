@@ -1,0 +1,6 @@
+args = ["-machine", "q35", "-cpu", "max", "-m", "512M", "-smp", "1", "-nographic", "-device", "virtio-blk-pci,drive=disk0", "-drive", "id=disk0,if=none,format=raw,file=${workspace}/tmp/axbuild/runtime-assets/apps/arceos/thread_perf/disk.img", "-device", "virtio-net-pci,netdev=net0", "-netdev", "user,id=net0", "-serial", "mon:stdio"]
+uefi = false
+to_bin = false
+success_regex = ["=== thread performance benchmark complete ==="]
+fail_regex = ["(?i)\\bpanic(?:ked)?\\b"]
+timeout = 120

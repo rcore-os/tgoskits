@@ -1,0 +1,19 @@
+[Unit]
+Description=Run Linux thread benchmark before ArceOS thread benchmark
+After=local-fs.target systemd-user-sessions.service
+RequiresMountsFor=/boot
+ConditionKernelCommandLine=bench_thread=1
+
+[Service]
+Type=oneshot
+ExecStartPre=/bin/sleep 5
+ExecStart=/usr/local/bin/run-thread-bench.sh
+StandardOutput=tty
+StandardError=tty
+TTYPath=/dev/ttyFIQ0
+TTYReset=no
+TTYVHangup=no
+TTYVTDisallocate=no
+
+[Install]
+WantedBy=multi-user.target
