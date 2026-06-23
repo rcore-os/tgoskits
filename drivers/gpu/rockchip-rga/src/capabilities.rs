@@ -8,6 +8,10 @@ pub struct CoreCapabilities {
     pub max_dimension: u32,
     pub copy: bool,
     pub fill: bool,
+    /// Resize (crop + scale) via hardware scaler. RGA2 only; RGA3 skeleton does not expose it.
+    pub resize: bool,
+    /// Colour-space conversion (YUV↔RGB). RGA2 only; RGA3 skeleton does not expose it.
+    pub csc: bool,
 }
 
 impl CoreCapabilities {
@@ -18,6 +22,8 @@ impl CoreCapabilities {
             max_dimension: 8192,
             copy: true,
             fill: matches!(generation, RgaVersion::Rga2),
+            resize: matches!(generation, RgaVersion::Rga2),
+            csc: matches!(generation, RgaVersion::Rga2),
         }
     }
 }
