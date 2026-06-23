@@ -101,7 +101,7 @@ sequenceDiagram
 
 ### DHCP Bootstrap
 
-如果存在 DHCP 接口，初始化末尾调用 `wait_for_dhcp_bootstrap()`：
+默认情况下，`init_network()` 只启动 DHCP 状态机并立即返回。需要启动阶段等待网络 ready 的调用方可以设置 `NetworkConfig::wait_for_dhcp_bootstrap = true`，此时初始化末尾调用 `wait_for_dhcp_bootstrap()`：
 
 ```rust
 fn wait_for_dhcp_bootstrap() {

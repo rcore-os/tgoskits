@@ -85,6 +85,10 @@ pub enum EthernetIrqOutcome {
 
 /// Platform hook used by Ethernet devices that expose a shared IRQ line.
 pub trait EthernetIrqRegistrar: Send + Sync {
+    fn supports_unregister(&self) -> bool {
+        false
+    }
+
     fn register_shared(
         &self,
         name: &str,

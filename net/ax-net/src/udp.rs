@@ -563,7 +563,6 @@ impl Default for UdpSocket {
 
 impl Drop for UdpSocket {
     fn drop(&mut self) {
-        self.shutdown(Shutdown::Both).ok();
         SOCKET_SET.remove(self.handle);
     }
 }

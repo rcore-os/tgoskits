@@ -70,6 +70,7 @@ flowchart TB
 pub struct NetworkConfig {
     pub interfaces: Vec<InterfaceConfig>,
     pub default_dns_servers: Vec<Ipv4Addr>,
+    pub wait_for_dhcp_bootstrap: bool,
 }
 
 pub struct InterfaceConfig {

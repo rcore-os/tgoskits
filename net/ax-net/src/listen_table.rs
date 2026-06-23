@@ -26,12 +26,16 @@
 //! must never acquire the outer service lock.
 
 use alloc::{collections::VecDeque, sync::Arc, vec, vec::Vec};
-use core::task::Waker;
+use core::{
+    hash::{Hash, Hasher},
+    sync::atomic::{AtomicUsize, Ordering},
+    task::Waker,
+};
 
 use ax_errno::{AxError, AxResult};
 use ax_sync::Mutex;
 use axpoll::{IoEvents, PollSet};
-use hashbrown::HashMap;
+use hashbrown::{HashMap, HashSet};
 use smoltcp::{
     iface::{SocketHandle, SocketSet},
     socket::tcp::{self, SocketBuffer, State},
@@ -41,18 +45,49 @@ use smoltcp::{
 use crate::{
     DeferPollWake, SOCKET_SET,
     addr::listen_addrs_conflict,
-    consts::{LISTEN_QUEUE_SIZE, TCP_RX_BUF_LEN, TCP_TX_BUF_LEN},
+    consts::{LISTEN_QUEUE_SIZE, TCP_LISTEN_RX_BUF_LEN, TCP_LISTEN_TX_BUF_LEN},
 };
+
+static GLOBAL_PENDING_CHILDREN: AtomicUsize = AtomicUsize::new(0);
 
 struct ListenTableEntryInner {
     /// Local endpoint accepted by this listener.
     listen_endpoint: IpListenEndpoint,
     /// Maximum pending child sockets.
     backlog: usize,
-    /// Pending smoltcp child sockets waiting for accept().
+    /// Pending smoltcp child sockets still completing TCP handshake.
     syn_queue: VecDeque<AcceptedTcp>,
+    /// Child sockets ready for accept().
+    ready_queue: VecDeque<AcceptedTcp>,
+    /// Endpoint pairs queued in either syn_queue or ready_queue.
+    pending_keys: HashSet<PendingKey>,
     /// Wakes accept/poll waiters when child readiness changes.
     accept_poll: Arc<PollSet>,
+}
+
+#[derive(Clone, Copy, Eq)]
+struct PendingKey {
+    src: IpEndpoint,
+    dst: IpEndpoint,
+}
+
+impl PendingKey {
+    fn new(src: IpEndpoint, dst: IpEndpoint) -> Self {
+        Self { src, dst }
+    }
+}
+
+impl PartialEq for PendingKey {
+    fn eq(&self, other: &Self) -> bool {
+        self.src == other.src && self.dst == other.dst
+    }
+}
+
+impl Hash for PendingKey {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.src.hash(state);
+        self.dst.hash(state);
+    }
 }
 
 /// Child TCP socket returned by accept().
@@ -66,6 +101,12 @@ pub(crate) struct AcceptedTcp {
     pub(crate) remote_endpoint: IpEndpoint,
 }
 
+impl AcceptedTcp {
+    fn pending_key(self) -> PendingKey {
+        PendingKey::new(self.remote_endpoint, self.local_endpoint)
+    }
+}
+
 impl ListenTableEntryInner {
     /// Creates a listener entry and clamps backlog to the global limit.
     pub fn new(listen_endpoint: IpListenEndpoint, backlog: usize) -> Self {
@@ -74,6 +115,8 @@ impl ListenTableEntryInner {
             listen_endpoint,
             backlog,
             syn_queue: VecDeque::with_capacity(backlog),
+            ready_queue: VecDeque::with_capacity(backlog),
+            pending_keys: HashSet::with_capacity(backlog),
             accept_poll: Arc::new(PollSet::new()),
         }
     }
@@ -93,15 +136,44 @@ impl ListenTableEntryInner {
     fn into_handles(self) -> Vec<SocketHandle> {
         self.syn_queue
             .into_iter()
+            .chain(self.ready_queue)
             .map(|pending| pending.handle)
             .collect()
     }
 
     /// Returns whether a child socket for this endpoint pair already exists.
     fn has_pending(&self, src: IpEndpoint, dst: IpEndpoint) -> bool {
-        self.syn_queue
-            .iter()
-            .any(|pending| pending.local_endpoint == dst && pending.remote_endpoint == src)
+        self.pending_keys.contains(&PendingKey::new(src, dst))
+    }
+
+    fn queued_len(&self) -> usize {
+        self.syn_queue.len() + self.ready_queue.len()
+    }
+
+    fn push_syn(&mut self, accepted: AcceptedTcp) {
+        self.pending_keys.insert(accepted.pending_key());
+        self.syn_queue.push_back(accepted);
+        GLOBAL_PENDING_CHILDREN.fetch_add(1, Ordering::Relaxed);
+    }
+
+    fn pop_ready(&mut self) -> Option<AcceptedTcp> {
+        let accepted = self.ready_queue.pop_front()?;
+        self.pending_keys.remove(&accepted.pending_key());
+        GLOBAL_PENDING_CHILDREN.fetch_sub(1, Ordering::Relaxed);
+        Some(accepted)
+    }
+
+    fn remove_syn_at(&mut self, idx: usize) -> Option<AcceptedTcp> {
+        let accepted = self.syn_queue.remove(idx)?;
+        self.pending_keys.remove(&accepted.pending_key());
+        GLOBAL_PENDING_CHILDREN.fetch_sub(1, Ordering::Relaxed);
+        Some(accepted)
+    }
+
+    fn mark_ready_at(&mut self, idx: usize) -> Option<AcceptedTcp> {
+        let accepted = self.syn_queue.remove(idx)?;
+        self.ready_queue.push_back(accepted);
+        Some(accepted)
     }
 }
 
@@ -163,6 +235,7 @@ impl ListenTable {
                 return;
             };
             let handles = entries.swap_remove(idx).into_handles();
+            GLOBAL_PENDING_CHILDREN.fetch_sub(handles.len(), Ordering::Relaxed);
             (handles, entries.is_empty())
         };
         if remove_port {
@@ -199,7 +272,7 @@ impl ListenTable {
             .find(|entry| entry.listen_endpoint == listen_endpoint)
         {
             Ok(entry
-                .syn_queue
+                .ready_queue
                 .iter()
                 .any(|pending| is_acceptable(sockets, pending.handle)))
         } else {
@@ -227,26 +300,12 @@ impl ListenTable {
             return Err(AxError::InvalidInput);
         };
 
-        let syn_queue: &mut VecDeque<AcceptedTcp> = &mut entry.syn_queue;
-        let mut idx = 0;
-        while idx < syn_queue.len() {
-            let handle = syn_queue[idx].handle;
-            if is_closed_without_data(sockets, handle) {
-                syn_queue.swap_remove_front(idx);
-                sockets.remove(handle);
+        while let Some(accepted) = entry.pop_ready() {
+            if is_closed_without_data(sockets, accepted.handle) {
+                sockets.remove(accepted.handle);
                 continue;
             }
-            if is_acceptable(sockets, handle) {
-                if idx > 0 {
-                    warn!(
-                        "slow SYN queue enumeration: index = {}, len = {}!",
-                        idx,
-                        syn_queue.len()
-                    );
-                }
-                return Ok(syn_queue.swap_remove_front(idx).unwrap());
-            }
-            idx += 1;
+            return Ok(accepted);
         }
         Err(AxError::WouldBlock)
     }
@@ -286,11 +345,47 @@ impl ListenTable {
         }) else {
             return;
         };
-        for pending in &entry.syn_queue {
+        for pending in entry.syn_queue.iter().chain(&entry.ready_queue) {
             let socket: &mut tcp::Socket = sockets.get_mut(pending.handle);
             socket.register_recv_waker(waker);
             socket.register_send_waker(waker);
         }
+    }
+
+    /// Advances pending child sockets into the ready queue or removes closed ones.
+    pub fn process_pending(&self, sockets: &mut SocketSet<'_>) -> bool {
+        let entries = self.tcp.lock().values().cloned().collect::<Vec<_>>();
+        let mut wake_polls = Vec::new();
+        let mut removed = Vec::new();
+        for entries in entries {
+            let mut table = entries.lock();
+            for entry in table.iter_mut() {
+                let mut idx = 0;
+                while idx < entry.syn_queue.len() {
+                    let handle = entry.syn_queue[idx].handle;
+                    if is_closed_without_data(sockets, handle) {
+                        if let Some(accepted) = entry.remove_syn_at(idx) {
+                            removed.push(accepted.handle);
+                        }
+                        continue;
+                    }
+                    if is_acceptable(sockets, handle) {
+                        entry.mark_ready_at(idx);
+                        wake_polls.push(entry.accept_poll.clone());
+                        continue;
+                    }
+                    idx += 1;
+                }
+            }
+        }
+        for handle in removed {
+            sockets.remove(handle);
+        }
+        let has_wake = !wake_polls.is_empty();
+        for poll in wake_polls {
+            crate::defer_poll_wake(poll, IoEvents::IN);
+        }
+        has_wake
     }
 
     /// Snoop hook called before smoltcp processes a potential passive open.
@@ -311,9 +406,13 @@ impl ListenTable {
             else {
                 return;
             };
-            if entry.syn_queue.len() >= entry.backlog {
+            if entry.queued_len() >= entry.backlog {
                 // SYN queue is full, drop the packet
                 warn!("SYN queue overflow!");
+                return;
+            }
+            if GLOBAL_PENDING_CHILDREN.load(Ordering::Relaxed) >= LISTEN_QUEUE_SIZE {
+                warn!("global SYN queue overflow!");
                 return;
             }
             if entry.has_pending(src, dst) {
@@ -324,8 +423,8 @@ impl ListenTable {
             // flow gets a child smoltcp socket so the protocol core can advance
             // the handshake independently before accept() returns it.
             let mut socket = smoltcp::socket::tcp::Socket::new(
-                SocketBuffer::new(vec![0; TCP_RX_BUF_LEN]),
-                SocketBuffer::new(vec![0; TCP_TX_BUF_LEN]),
+                SocketBuffer::new(vec![0; TCP_LISTEN_RX_BUF_LEN]),
+                SocketBuffer::new(vec![0; TCP_LISTEN_TX_BUF_LEN]),
             );
             if let Err(err) = socket.listen(IpListenEndpoint {
                 addr: None,
@@ -339,7 +438,7 @@ impl ListenTable {
                 "TCP socket {}: prepare for connection {} -> {}",
                 handle, src, entry.listen_endpoint
             );
-            entry.syn_queue.push_back(AcceptedTcp {
+            entry.push_syn(AcceptedTcp {
                 handle,
                 local_endpoint: dst,
                 remote_endpoint: src,
@@ -406,5 +505,62 @@ mod tests {
 
         assert!(!table.can_listen(specific));
         assert_eq!(table.listen(specific, 16), Err(AxError::AddrInUse));
+    }
+
+    #[test]
+    fn pending_keys_cover_syn_and_ready_queues() {
+        let mut entry = ListenTableEntryInner::new(endpoint(None, 8082), 16);
+        let src = IpEndpoint::new(IpAddress::Ipv4(Ipv4Address::new(198, 51, 100, 1)), 50000);
+        let dst = IpEndpoint::new(IpAddress::Ipv4(Ipv4Address::new(192, 0, 2, 1)), 8082);
+        let accepted = AcceptedTcp {
+            handle: SocketHandle::default(),
+            local_endpoint: dst,
+            remote_endpoint: src,
+        };
+
+        entry.push_syn(accepted);
+        assert!(entry.has_pending(src, dst));
+        assert_eq!(entry.queued_len(), 1);
+
+        entry.mark_ready_at(0).unwrap();
+        assert!(entry.has_pending(src, dst));
+        assert_eq!(entry.queued_len(), 1);
+
+        assert_eq!(entry.pop_ready().unwrap().remote_endpoint, src);
+        assert!(!entry.has_pending(src, dst));
+        assert_eq!(entry.queued_len(), 0);
+    }
+
+    #[test]
+    fn ready_queue_preserves_fifo_order() {
+        let mut entry = ListenTableEntryInner::new(endpoint(None, 8083), 16);
+        let dst = IpEndpoint::new(IpAddress::Ipv4(Ipv4Address::new(192, 0, 2, 1)), 8083);
+        for i in 1..=3 {
+            entry.push_syn(AcceptedTcp {
+                handle: SocketHandle::default(),
+                local_endpoint: dst,
+                remote_endpoint: IpEndpoint::new(
+                    IpAddress::Ipv4(Ipv4Address::new(198, 51, 100, i as u8)),
+                    50000 + i as u16,
+                ),
+            });
+        }
+
+        entry.mark_ready_at(0).unwrap();
+        entry.mark_ready_at(0).unwrap();
+        entry.mark_ready_at(0).unwrap();
+
+        assert_eq!(
+            entry.pop_ready().unwrap().remote_endpoint.addr,
+            IpAddress::Ipv4(Ipv4Address::new(198, 51, 100, 1))
+        );
+        assert_eq!(
+            entry.pop_ready().unwrap().remote_endpoint.addr,
+            IpAddress::Ipv4(Ipv4Address::new(198, 51, 100, 2))
+        );
+        assert_eq!(
+            entry.pop_ready().unwrap().remote_endpoint.addr,
+            IpAddress::Ipv4(Ipv4Address::new(198, 51, 100, 3))
+        );
     }
 }

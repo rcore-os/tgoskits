@@ -72,6 +72,7 @@ Router 对 smoltcp 暴露 `Medium::Ip`，Ethernet frame 处理在 `EthernetDevic
 pub struct NetworkConfig {
     pub interfaces: Vec<InterfaceConfig>,
     pub default_dns_servers: Vec<Ipv4Addr>,
+    pub wait_for_dhcp_bootstrap: bool,
 }
 ```
 
@@ -80,6 +81,7 @@ pub struct NetworkConfig {
 - `interfaces` 是显式接口配置列表。
 - 未显式匹配的 Ethernet 设备按默认策略注册。
 - `default_dns_servers` 是 fallback DNS 来源，metric 为 `u32::MAX`。
+- `wait_for_dhcp_bootstrap` 控制 `init_network()` 是否在返回前短暂等待 DHCP；默认 `false`。
 - `lo` 固定由 `ax-net` 创建，不出现在 `NetworkConfig` 中。
 
 ### InterfaceConfig
@@ -333,8 +335,8 @@ const TCP_INFO_DEFAULT_REORDERING: u32 = 3;
 | 常量 | 值 | 含义 |
 | --- | --- | --- |
 | `DNS_DEFAULT_TIMEOUT` | 5s | `dns_query()` 默认超时 |
-| `DHCP_BOOTSTRAP_ATTEMPTS` | 200 | DHCP bootstrap 最大轮数 |
-| `DHCP_BOOTSTRAP_POLL_INTERVAL` | 10ms | DHCP bootstrap 每轮 sleep |
+| `DHCP_BOOTSTRAP_ATTEMPTS` | 200 | 显式 DHCP bootstrap wait 的最大轮数 |
+| `DHCP_BOOTSTRAP_POLL_INTERVAL` | 10ms | 显式 DHCP bootstrap wait 每轮 sleep |
 | `DHCP_MAX_RETRY_SHIFT` | 4 | DHCP 指数退避上限，最大 16s |
 | `DHCP_MAX_RETRIES` | 8 | 进入 `Failed` 前的连续重试上限 |
 | `DHCP_FAILED_RETRY_SECS` | 60s | `Failed` 后重新进入 `Discovering` 的间隔 |
@@ -391,6 +393,7 @@ let config = NetworkConfig {
         },
     ],
     default_dns_servers: vec![],
+    wait_for_dhcp_bootstrap: false,
 };
 ```
 
@@ -407,6 +410,7 @@ let config = NetworkConfig {
         dns_servers: vec![],
     }],
     default_dns_servers: vec![Ipv4Addr::new(8, 8, 8, 8)],
+    wait_for_dhcp_bootstrap: true,
 };
 ```
 

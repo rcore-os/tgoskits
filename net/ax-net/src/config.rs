@@ -103,6 +103,8 @@ pub struct NetworkConfig {
     pub interfaces: Vec<InterfaceConfig>,
     /// DNS servers used when no interface-level DNS server is available.
     pub default_dns_servers: Vec<Ipv4Addr>,
+    /// Whether init_network should wait briefly for DHCP before returning.
+    pub wait_for_dhcp_bootstrap: bool,
 }
 
 /// Per-interface network configuration.

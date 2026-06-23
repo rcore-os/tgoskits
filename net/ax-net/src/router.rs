@@ -43,7 +43,7 @@ use alloc::{
 };
 use core::{
     ops::{Deref, DerefMut},
-    sync::atomic::{AtomicU64, AtomicUsize, Ordering},
+    sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
     task::Waker,
 };
 
@@ -250,6 +250,8 @@ struct DeviceHandle {
     tx_wake: Arc<WaitQueue>,
     /// Waker registered into the concrete device.
     rx_waker: Waker,
+    /// Whether rx_waker has already been registered into the concrete device.
+    rx_waker_registered: AtomicBool,
 }
 
 impl DeviceHandle {
@@ -270,6 +272,7 @@ impl DeviceHandle {
             rx_waker: Waker::from(Arc::new(DeviceRxWake {
                 device: weak.clone(),
             })),
+            rx_waker_registered: AtomicBool::new(false),
         })
     }
 
@@ -728,7 +731,9 @@ impl Router {
     /// Registers a global device-readiness waker for all devices.
     pub fn register_device_waker(&self, waker: &core::task::Waker) {
         for device in &self.devices {
-            register_device_poll(device, &device.rx_waker);
+            if !device.rx_waker_registered.swap(true, Ordering::AcqRel) {
+                register_device_poll(device, &device.rx_waker);
+            }
             register_device_poll(device, waker);
         }
     }

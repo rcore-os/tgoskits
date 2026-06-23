@@ -91,8 +91,8 @@ sequenceDiagram
     Lib->>Lib: NET_CONTROL.call_once(control)
     Lib->>Lib: SERVICE.call_once(Mutex(service))
 
-    Note over Lib: 5. DHCP bootstrap
-    opt DHCP enabled
+    Note over Lib: 5. Optional DHCP bootstrap wait
+    opt DHCP enabled && wait_for_dhcp_bootstrap
         loop 每个 dhcp_iface
             Lib->>Service: enable_dhcp(id, dev, mac, metric)
         end
@@ -104,7 +104,7 @@ sequenceDiagram
 
 - `routes` 是 `Arc<RwLock<RouteTable>>`，`Router` 和 `NetControl` 共享同一实例。
 - `NetControl` 先于 `SERVICE` 初始化，确保 `get_control()` 在 poll worker 启动前可用。
-- DHCP bootstrap 只要求任一 DHCP 接口配置成功即返回，避免断网卡阻塞启动。
+- DHCP 状态机会随 net-poll worker 异步推进；只有 `NetworkConfig::wait_for_dhcp_bootstrap` 为 true 时，初始化才短暂等待任一 DHCP 接口配置成功。
 
 ## 数据模型
 

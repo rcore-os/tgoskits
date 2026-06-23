@@ -768,6 +768,14 @@ impl Service {
         self.dhcp.iter().any(|state| state.address.is_some())
     }
 
+    pub fn network_configured(&self) -> bool {
+        self.control
+            .interfaces()
+            .iter()
+            .any(|interface| interface.ipv4.is_some())
+            || self.dhcp_configured()
+    }
+
     pub fn poll(&mut self, sockets: &mut SocketSet) -> bool {
         let timestamp = now();
         let mut dhcp_events = core::mem::take(&mut self.dhcp_events);
@@ -809,6 +817,7 @@ impl Service {
         self.dhcp_server_replies = dhcp_server_replies;
         let socket_state_changed =
             self.iface.poll(timestamp, &mut self.router, sockets) == PollResult::SocketStateChanged;
+        let accept_ready = crate::LISTEN_TABLE.process_pending(sockets);
         let dhcp_poll_next = self.poll_dhcp(timestamp);
 
         // Reap orphaned TCP sockets using the SocketSet already held by poll_until_idle().
@@ -818,6 +827,7 @@ impl Service {
             || dhcp_poll_next
             || dhcp_server_sent
             || socket_state_changed
+            || accept_ready
             || router_rx_pending
     }
 
@@ -1124,6 +1134,31 @@ mod tests {
 
         service.dhcp[1].address = Some(Ipv4Cidr::new(Ipv4Address::new(192, 0, 2, 10), 24));
         assert!(service.dhcp_configured());
+    }
+
+    #[test]
+    fn network_configured_accepts_static_ipv4_without_dhcp() {
+        let routes = Arc::new(RouteTableStore::new());
+        let router = Router::new(routes.clone());
+        let control = Arc::new(NetControl::new(
+            alloc::vec![NetInterface {
+                id: InterfaceId::new(2),
+                name: "eth0".into(),
+                kind: InterfaceKind::Ethernet,
+                mac: None,
+                ipv4: Some(Ipv4Cidr::new(Ipv4Address::new(192, 0, 2, 10), 24)),
+                gateway: None,
+                mtu: crate::consts::STANDARD_MTU,
+                metric: 100,
+                flags: InterfaceFlags::UP | InterfaceFlags::RUNNING,
+            }],
+            routes,
+            Vec::new(),
+        ));
+        let service = Service::new(router, control);
+
+        assert!(service.network_configured());
+        assert!(!service.dhcp_configured());
     }
 
     #[test]

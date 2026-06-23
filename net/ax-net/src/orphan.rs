@@ -70,15 +70,24 @@ static LAST_REAP_MICROS: LazyLock<Mutex<i64>> = LazyLock::new(|| Mutex::new(i64:
 const ORPHAN_MAX_LINGER: i64 = 60_000_000; // 60 seconds in microseconds
 const ORPHAN_MAX_SOCKETS: usize = 1024;
 const ORPHAN_REAP_INTERVAL: i64 = 1_000_000; // 1 second in microseconds
+const ORPHAN_FAST_REAP_THRESHOLD: usize = 64;
 
 /// Move a TCP socket to the orphan pool.
 ///
 /// Called from TcpSocket::drop() after shutdown and endpoint cleanup.
 pub(crate) fn add_orphan(handle: SocketHandle, timestamp: Instant) {
-    ORPHAN_SOCKETS.lock().push(OrphanSocket {
-        handle,
-        orphaned_at: timestamp,
-    });
+    let orphan_count = {
+        let mut orphans = ORPHAN_SOCKETS.lock();
+        orphans.push(OrphanSocket {
+            handle,
+            orphaned_at: timestamp,
+        });
+        orphans.len()
+    };
+    if orphan_count >= ORPHAN_FAST_REAP_THRESHOLD {
+        *LAST_REAP_MICROS.lock() = i64::MIN;
+        crate::request_poll();
+    }
 }
 
 /// Reap finished orphan sockets.

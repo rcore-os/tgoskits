@@ -131,15 +131,17 @@ static SERVICE: Once<Mutex<Service>> = Once::new();
 static NET_CONTROL: Once<Arc<NetControl>> = Once::new();
 static POLLING_INTERFACES: AtomicBool = AtomicBool::new(false);
 static POLL_AGAIN: AtomicBool = AtomicBool::new(false);
+static NEXT_POLL_AT: Mutex<Option<smoltcp::time::Instant>> = Mutex::new(None);
 static NET_POLL_REQUESTED: AtomicBool = AtomicBool::new(false);
 static NET_POLL_WAKE: WaitQueue = WaitQueue::new();
 static NET_POLL_DEVICE_WAKER: LazyLock<Waker> =
     LazyLock::new(|| Waker::from(Arc::new(NetPollWake)));
 type DeferredPollEntry = (Arc<PollSet>, IoEvents);
+const DEFERRED_POLL_WAKE_QUEUE_SIZE: usize = 1024;
 static DEFERRED_POLL_WAKE_PENDING: AtomicBool = AtomicBool::new(false);
 static DEFERRED_POLL_WAKES: LazyLock<async_channel::Sender<DeferredPollEntry>> =
     LazyLock::new(|| {
-        let (sender, receiver) = async_channel::unbounded();
+        let (sender, receiver) = async_channel::bounded(DEFERRED_POLL_WAKE_QUEUE_SIZE);
         DEFERRED_POLL_WAKE_RX.call_once(|| receiver);
         sender
     });
@@ -326,7 +328,7 @@ pub fn init_network(mut net_devs: EthernetDeviceList, config: NetworkConfig) -> 
     SERVICE.call_once(|| Mutex::new(service));
     get_service().register_device_waker(&NET_POLL_DEVICE_WAKER);
     ax_task::spawn_with_name(net_poll_worker, "net-poll".to_owned());
-    if dhcp_enabled {
+    if dhcp_enabled && config.wait_for_dhcp_bootstrap {
         wait_for_dhcp_bootstrap();
     }
     Ok(())
@@ -508,7 +510,13 @@ fn poll_until_idle() {
         }
 
         while POLL_AGAIN.swap(false, Ordering::AcqRel) {
-            while get_service().poll(&mut SOCKET_SET.inner.lock()) {}
+            while {
+                let mut service = get_service();
+                let mut sockets = SOCKET_SET.inner.lock();
+                let poll_next = service.poll(&mut sockets);
+                *NEXT_POLL_AT.lock() = service.next_poll_at(&sockets);
+                poll_next
+            } {}
         }
         POLLING_INTERFACES.store(false, Ordering::Release);
         if !POLL_AGAIN.load(Ordering::Acquire) {
@@ -528,7 +536,8 @@ pub fn request_poll() {
 
 pub(crate) fn defer_poll_wake(poll: Arc<PollSet>, ready: IoEvents) {
     if DEFERRED_POLL_WAKES.try_send((poll, ready)).is_err() {
-        warn!("deferred poll wake queue is closed; dropping wake");
+        warn!("deferred poll wake queue is full or closed; requesting poll fallback");
+        request_poll();
         return;
     }
     if !DEFERRED_POLL_WAKE_PENDING.swap(true, Ordering::AcqRel) {
@@ -745,10 +754,17 @@ pub fn wake_net_task_irq() {
 
 fn next_poll_delay() -> Duration {
     const IDLE_POLL_INTERVAL: Duration = Duration::from_millis(100);
-    let next = {
+    let requested = NET_POLL_REQUESTED.load(Ordering::Acquire)
+        || NET_IRQ_NOTIFY.is_pending()
+        || DEFERRED_POLL_WAKE_PENDING.load(Ordering::Acquire);
+    let next = if requested {
         let mut service = get_service();
         let sockets = SOCKET_SET.inner.lock();
-        service.next_poll_at(&sockets)
+        let next = service.next_poll_at(&sockets);
+        *NEXT_POLL_AT.lock() = next;
+        next
+    } else {
+        *NEXT_POLL_AT.lock()
     };
     let Some(next) = next else {
         return IDLE_POLL_INTERVAL;
@@ -939,6 +955,21 @@ fn wait_for_dhcp_bootstrap() {
         ax_task::sleep(DHCP_BOOTSTRAP_POLL_INTERVAL);
     }
     warn!("DHCP bootstrap timed out");
+}
+
+/// Waits until at least one configured network address is available.
+pub fn wait_for_network(timeout: Duration) -> AxResult {
+    let deadline = ax_hal::time::monotonic_time_nanos().saturating_add(timeout.as_nanos() as u64);
+    loop {
+        request_poll();
+        if get_service().network_configured() {
+            return Ok(());
+        }
+        if ax_hal::time::monotonic_time_nanos() >= deadline {
+            return Err(ax_err_type!(TimedOut, "network configuration timed out"));
+        }
+        ax_task::sleep(DHCP_BOOTSTRAP_POLL_INTERVAL);
+    }
 }
 
 #[cfg(test)]
