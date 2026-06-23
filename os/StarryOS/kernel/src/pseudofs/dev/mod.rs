@@ -3,7 +3,7 @@
 mod card0;
 #[cfg(feature = "rknpu")]
 mod card1;
-#[cfg(feature = "rknpu")]
+#[cfg(feature = "dma-heap")]
 mod dma_heap;
 mod drm;
 #[cfg(feature = "input")]

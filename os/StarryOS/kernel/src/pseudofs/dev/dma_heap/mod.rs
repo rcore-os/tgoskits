@@ -1,4 +1,16 @@
+mod object;
 mod uapi;
+
+use alloc::sync::Arc;
+
+use ax_errno::AxResult;
+pub use object::DmaBufObject;
+
+/// Allocate a dma-buf-backed contiguous buffer directly from the kernel (no userspace fd).
+/// Used by the RGA selftest's imported-buffer case.
+pub fn alloc(len: usize) -> AxResult<Arc<DmaBufObject>> {
+    DmaBufObject::alloc(len)
+}
 
 use core::any::Any;
 
