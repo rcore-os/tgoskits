@@ -42,6 +42,6 @@ pub const MODE_BITBLT_SRC_TO_DST: u32 = 0;
 pub const COLOR_FMT_ABGR8888: u32 = 0;
 pub const COLOR_NONE_SWAP: u32 = 0;
 
-pub const MMU_SRC_ENABLE: u32 = 0x7;
-pub const MMU_SRC1_ENABLE: u32 = 0x7 << 4;
-pub const MMU_DST_ENABLE: u32 = 0x7 << 8;
+pub const MMU_SRC_ENABLE: u32 = 1 << 0; // sw_src_mmu_en
+pub const MMU_SRC1_ENABLE: u32 = 1 << 4; // sw_src1_mmu_en
+pub const MMU_DST_ENABLE: u32 = 1 << 8; // sw_dst_mmu_en
