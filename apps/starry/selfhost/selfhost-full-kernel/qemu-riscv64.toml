@@ -10,6 +10,10 @@ args = [
 ]
 uefi = false
 to_bin = true
+# Self-compilation writes /opt/starryos-selfbuilt into the rootfs and the host
+# extracts it via debugfs after QEMU exits; snapshot must stay off so the guest
+# writes persist (the app runner defaults snapshot to true).
+snapshot = false
 shell_prefix = "root@starry:"
 shell_init_cmd = "/usr/bin/self-compile.sh"
 success_regex = ["(?m)^SELFHOST_SUCCESS\\s*$"]

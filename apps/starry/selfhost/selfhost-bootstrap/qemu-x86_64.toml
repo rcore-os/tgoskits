@@ -10,6 +10,10 @@ args = [
 ]
 uefi = false
 to_bin = true
+# Bootstrap installs build tools + Rust into the blueprint rootfs; snapshot must
+# stay off so those guest writes persist for later self-compilation runs (the
+# app runner defaults snapshot to true).
+snapshot = false
 shell_init_cmd = "/usr/bin/self-compile-inner.sh"
 success_regex = ["(?m)^SELFHOST_BOOTSTRAP_SUCCESS\\s*$"]
 fail_regex = ['(?i)\bpanicked\b', 'SELFHOST_BOOTSTRAP_FAILED']
