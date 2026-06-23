@@ -231,9 +231,13 @@ impl TcpSocket {
             let rcv_wnd = recv_capacity
                 .saturating_sub(recv_queue)
                 .min(u32::MAX as usize) as u32;
-            let snd_wnd = send_capacity
-                .saturating_sub(socket.send_queue())
-                .min(u32::MAX as usize) as u32;
+            let snd_wnd = if socket.remote_endpoint().is_some() {
+                send_capacity
+                    .saturating_sub(socket.send_queue())
+                    .min(u32::MAX as usize) as u32
+            } else {
+                0
+            };
 
             let mut options = TcpInfoOptions::empty();
             if socket.timestamp_enabled() {
@@ -1063,7 +1067,7 @@ mod tests {
         assert_eq!(info.rcv_mss, (STANDARD_MTU - 40) as u32);
         assert_eq!(info.pmtu, STANDARD_MTU as u32);
         assert_eq!(info.notsent_bytes, 0);
-        assert_eq!(info.snd_wnd, TCP_TX_BUF_LEN as u32);
+        assert_eq!(info.snd_wnd, 0);
         assert_eq!(info.snd_cwnd, 0);
         assert_eq!(info.rcv_space, TCP_RX_BUF_LEN as u32);
         assert_eq!(info.rcv_wnd, TCP_RX_BUF_LEN as u32);
