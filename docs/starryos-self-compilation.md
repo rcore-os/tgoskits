@@ -8,8 +8,10 @@
 
 | 架构 | 种子内核 | QEMU 启动 | rootfs | 自编译 | 耗时 | 备注 |
 |------|---------|----------|--------|--------|------|------|
-| riscv64 | ✅ | ✅ | 已就绪 | ✅ | ~100 min | TCG 模拟，SMP=1 |
-| x86_64 | ✅ | ✅ (KVM) | 已就绪 | ✅ | ~7 min | KVM + SMP=4, 301 crates |
+| riscv64 | ✅ | ✅ | 已就绪 | ✅ | ~100 min | TCG 模拟，SMP=1；种子/guest 均为静态平台 bare-metal，构建流程一致 |
+| x86_64 | ✅ | ✅ (KVM) | 已就绪 | ⚠️ 最终链接失败 | — | guest 编译 425/426 crate 后链接失败，见 §x86_64 自编译构建流程不匹配 |
+
+> **x86_64 自编译当前状态（运行时验证 2026-06）**: guest 内 `cargo build` 可编译整个 workspace（425/426 crate），但最终链接 `starryos` 二进制时失败：`someboot.x: symbol not found: _head / kernel_entry`。已验证可工作的部分：GCC 16 种子内核构建、StarryOS OVMF/UEFI+KVM 启动到 shell、`snapshot=false` 产物持久化、源码身份校验、完整离线依赖闭包。**根因与修复路径见下方 §x86_64 自编译构建流程不匹配。** riscv64 自编译不受影响（构建流程一致）。
 
 ### 测试链路
 
@@ -30,6 +32,44 @@ Host (Linux)
                               ▼ 成功
                       debugfs dump → tmp/starryos-selfbuilt-<arch>
 ```
+
+## x86_64 自编译构建流程不匹配（待修复）
+
+**现象**: guest 内自编译在编译完整个 workspace（425/426 crate）后，最终链接 `starryos`
+二进制失败：
+
+```
+rust-lld: error: someboot.x:9 ENTRY(_head); :109 ABSOLUTE(kernel_entry)
+  -> symbol not found: _head / kernel_entry
+```
+
+**根因**: 种子内核构建与 guest 自编译走了**两套不同的构建流程**。
+
+- x86_64 的 `plat_dyn` 默认为 `true`（`build-x86_64-unknown-none.toml` 未声明该字段，
+  `resolve_effective_plat_dyn` 对 `x86_64-*` 返回 `true`）。因此**种子构建**经 axbuild
+  改写为 ArceOS std/PIE 流程：有效目标是 `scripts/targets/std/pie/x86_64-unknown-linux-musl.json`，
+  `-Zbuild-std`，并通过**自定义链接器 wrapper**（`std_build.rs`）将所有 rlib 包进单个
+  `--start-group/--end-group`、强制 `-pie` 与 `-u _head`。`_head`/`kernel_entry` 仅被
+  `someboot.x` 的 `ENTRY`/`ABSOLUTE` 引用、无 `#[used]`、无 Rust 调用方，**只有 `-u _head`
+  这类命令行 undefined 才能强制抽取 someboot 归档成员**。
+- 而 **guest 自编译**（`selfhost-full-kernel/prebuild.sh` 生成的 inner script）手写了一个
+  `cargo build -p starryos --target x86_64-unknown-none`（裸 bare-metal 目标，plain rust-lld，
+  无 wrapper、无 archive grouping、无 `-u _head`，且用 glibc gcc symlink 为 musl-gcc）。
+  这套简化构建避开了 musl 工具链 / `-Zbuild-std`，但也因此**无法抽取 someboot 的
+  `_head`/`kernel_entry`，最终链接失败**。
+
+riscv64 不受影响：其 `build-riscv64gc-unknown-none-elf.toml` 显式 `plat_dyn = false` + 静态
+平台，种子与 guest 均为 bare-metal `riscv64gc-unknown-none-elf`，**两套流程一致**，故链接通过。
+
+**修复路径**（已在 host 上离线验证：种子流程可正确链接 someboot，仅余 GCC 16 `__stack_chk_fail`
+需 `CFLAGS=-fno-stack-protector`）：
+
+1. inner script 改为调用种子流程而非手写 cargo build：
+   `CFLAGS=-fno-stack-protector cargo xtask starry build -c apps/starry/selfhost/build-x86_64-unknown-none.toml --arch x86_64`，
+   并从 `target/x86_64-unknown-linux-musl/release/starryos` 拷贝产物到 `/opt/starryos-selfbuilt`。
+2. 在 guest rootfs 中提供真实的 musl 交叉工具链（`x86_64-linux-musl-cc`/`ar`）——
+   `prepare-selfhost-rootfs.sh` 需补充安装（现仅有 glibc gcc + symlink hack，对 musl 目标 std 构建不足）。
+3. 端到端验证后再标记 x86_64 自编译为 ✅。
 
 ## 前置依赖 PR
 
