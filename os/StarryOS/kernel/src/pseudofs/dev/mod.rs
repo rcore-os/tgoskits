@@ -8,7 +8,7 @@ mod card1;
 #[cfg(any(feature = "jpeg", feature = "rknpu"))]
 mod dmaheap;
 #[cfg(feature = "dma-heap")]
-mod dma_heap;
+pub(crate) mod dma_heap;
 mod drm;
 #[cfg(feature = "input")]
 pub mod event;
