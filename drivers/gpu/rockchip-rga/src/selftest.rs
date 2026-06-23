@@ -39,20 +39,8 @@ pub fn run_rga2_smoke(
 ) -> Result<SelftestReport> {
     let fmt = PixelFormat::Rgba8888;
     let stride = width * fmt.bytes_per_pixel();
-    let src_img = ImageDesc {
-        width,
-        height,
-        stride_bytes: stride,
-        format: fmt,
-        phys_addr: src.phys_addr(),
-    };
-    let dst_img = ImageDesc {
-        width,
-        height,
-        stride_bytes: stride,
-        format: fmt,
-        phys_addr: dst.phys_addr(),
-    };
+    let src_img = ImageDesc::rgb(width, height, stride, fmt, src.phys_addr());
+    let dst_img = ImageDesc::rgb(width, height, stride, fmt, dst.phys_addr());
 
     // 1) Fill dst with a known color, verify the engine wrote it.
     let color: u32 = 0x1122_33ff;
@@ -104,13 +92,7 @@ pub fn run_rga2_fill_imported(
     mut delay_us: impl FnMut(u32),
 ) -> Result<()> {
     let fmt = PixelFormat::Rgba8888;
-    let dst = ImageDesc {
-        width,
-        height,
-        stride_bytes: width * fmt.bytes_per_pixel(),
-        format: fmt,
-        phys_addr: dst_phys,
-    };
+    let dst = ImageDesc::rgb(width, height, width * fmt.bytes_per_pixel(), fmt, dst_phys);
     core.start(&RgaOperation::Fill { dst, color })?;
     poll_done(core, &mut delay_us)
 }

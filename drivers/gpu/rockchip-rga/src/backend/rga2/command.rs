@@ -57,9 +57,17 @@ const fn hw_format(fmt: crate::operation::PixelFormat) -> u32 {
     use crate::operation::PixelFormat;
     match fmt {
         PixelFormat::Abgr8888 => registers::COLOR_FMT_ABGR8888,
-        PixelFormat::Rgba8888 => 0,
-        PixelFormat::Bgra8888 => 0,
-        PixelFormat::Rgb888 => 0,
+        // TODO(board): confirm RGA2 format codes during board bring-up (Task 7/13).
+        // Same-format copy is correct regardless of the code (byte-preserving).
+        PixelFormat::Rgba8888
+        | PixelFormat::Rgbx8888
+        | PixelFormat::Bgra8888
+        | PixelFormat::Rgb888
+        | PixelFormat::Bgr888
+        | PixelFormat::Rgb565
+        | PixelFormat::Nv12
+        | PixelFormat::Nv21
+        | PixelFormat::Nv16 => 0,
     }
 }
 
@@ -123,13 +131,7 @@ mod mmu_off_tests {
     use crate::operation::{ImageDesc, PixelFormat};
 
     fn img(w: u32, h: u32, addr: u64) -> ImageDesc {
-        ImageDesc {
-            width: w,
-            height: h,
-            stride_bytes: w * 4,
-            format: PixelFormat::Rgba8888,
-            phys_addr: addr,
-        }
+        ImageDesc::rgb(w, h, w * 4, PixelFormat::Rgba8888, addr)
     }
 
     #[test]
@@ -176,13 +178,7 @@ mod mmu_off_tests {
             phys_addr: 0x4002_0000,
             len: 64 * 48 * 4,
         };
-        let dst = ImageDesc {
-            width: 64,
-            height: 48,
-            stride_bytes: 64 * 4,
-            format: PixelFormat::Rgba8888,
-            phys_addr: backing.phys_addr(),
-        };
+        let dst = ImageDesc::rgb(64, 48, 64 * 4, PixelFormat::Rgba8888, backing.phys_addr());
         let cmd = encode_fill(dst, 0xAABB_CCDD).unwrap();
         // `len` is for caller-side bounds checking, not command encoding — only phys_addr
         // flows into the hardware register, which is what this test verifies.
