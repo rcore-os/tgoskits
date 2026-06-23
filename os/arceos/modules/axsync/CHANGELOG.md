@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.21](https://github.com/rcore-os/tgoskits/compare/ax-sync-v0.5.20...ax-sync-v0.5.21) - 2026-06-23
+
+### Other
+
+- updated the following local packages: ax-lockdep, ax-kspin, ax-task, ax-task
+
 ## [0.5.20](https://github.com/rcore-os/tgoskits/compare/ax-sync-v0.5.19...ax-sync-v0.5.20) - 2026-06-22
 
 ### Other

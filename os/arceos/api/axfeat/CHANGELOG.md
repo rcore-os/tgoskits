@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.22](https://github.com/rcore-os/tgoskits/compare/ax-feat-v0.5.21...ax-feat-v0.5.22) - 2026-06-23
+
+### Other
+
+- updated the following local packages: ax-hal, ax-net, ax-runtime, ax-kspin, axbacktrace, ax-alloc, ax-driver, ax-ipi, ax-task, ax-sync, ax-display, ax-fs-ng, ax-input, ax-log
+
 ## [0.5.21](https://github.com/rcore-os/tgoskits/compare/ax-feat-v0.5.20...ax-feat-v0.5.21) - 2026-06-22
 
 ### Added

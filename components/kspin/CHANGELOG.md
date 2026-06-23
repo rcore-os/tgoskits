@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.12](https://github.com/rcore-os/tgoskits/compare/ax-kspin-v0.3.11...ax-kspin-v0.3.12) - 2026-06-23
+
+### Other
+
+- updated the following local packages: ax-lockdep
+
 ## [0.3.11](https://github.com/rcore-os/tgoskits/compare/ax-kspin-v0.3.10...ax-kspin-v0.3.11) - 2026-06-09
 
 ### Added

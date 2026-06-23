@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.4](https://github.com/rcore-os/tgoskits/compare/starry-kernel-v0.6.3...starry-kernel-v0.6.4) - 2026-06-23
+
+### Added
+
+- *(starry)* support reboot syscall ([#1358](https://github.com/rcore-os/tgoskits/pull/1358))
+
+### Fixed
+
+- *(starry)* non-blocking tty serial read respects O_NONBLOCK
+
+### Other
+
+- *(starry-kernel)* consolidate rknpu DRM ioctl helpers into drm.rs ([#1351](https://github.com/rcore-os/tgoskits/pull/1351))
+- *(ax-net)* add locking and concurrency documentation and remove deprecated interfaces ([#1340](https://github.com/rcore-os/tgoskits/pull/1340))
+- Tpu kworker clean ([#1352](https://github.com/rcore-os/tgoskits/pull/1352))
+
 ## [0.6.3](https://github.com/rcore-os/tgoskits/compare/starry-kernel-v0.6.2...starry-kernel-v0.6.3) - 2026-06-22
 
 ### Added
