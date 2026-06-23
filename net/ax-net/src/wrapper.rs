@@ -47,6 +47,7 @@ pub(crate) struct SocketSetWrapper<'a> {
     pub inner: Mutex<SocketSet<'a>>,
     /// UDP bind ownership tracked with Linux-style wildcard conflicts.
     udp_binds: Mutex<HashMap<UdpBindKey, SocketHandle>>,
+    udp_handles: Mutex<HashMap<SocketHandle, UdpBindKey>>,
 }
 
 impl<'a> SocketSetWrapper<'a> {
@@ -55,6 +56,7 @@ impl<'a> SocketSetWrapper<'a> {
         Self {
             inner: Mutex::new(SocketSet::new(vec![])),
             udp_binds: Mutex::new(HashMap::new()),
+            udp_handles: Mutex::new(HashMap::new()),
         }
     }
 
@@ -90,6 +92,7 @@ impl<'a> SocketSetWrapper<'a> {
             return Err(AxError::AddrInUse);
         }
         binds.insert(key, handle);
+        self.udp_handles.lock().insert(handle, key);
         Ok(())
     }
 
@@ -107,9 +110,9 @@ impl<'a> SocketSetWrapper<'a> {
 
     /// Removes any UDP bind table entries owned by `handle`.
     pub fn udp_unbind(&self, handle: SocketHandle) {
-        self.udp_binds
-            .lock()
-            .retain(|_, bound_handle| *bound_handle != handle);
+        if let Some(key) = self.udp_handles.lock().remove(&handle) {
+            self.udp_binds.lock().remove(&key);
+        }
     }
 
     /// Removes a socket and all wrapper-maintained side-table state.

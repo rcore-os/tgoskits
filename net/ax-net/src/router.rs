@@ -19,9 +19,8 @@
 //! - RX workers poll real devices and enqueue `RxPacket`s into a bounded shared
 //!   RX queue. `Router::poll()` drains that queue into the smoltcp-facing packet
 //!   buffer.
-//! - smoltcp TX writes into `tx_buffer`. `Router::dispatch()` parses the IP
-//!   destination, selects a route, and enqueues the packet to the chosen device
-//!   worker.
+//! - smoltcp TX tokens enqueue routed IP packets into a bounded queue.
+//!   `Router::dispatch()` drains that queue to loopback or device workers.
 //! - Loopback bypasses workers and the shared RX queue: dispatch copies directly
 //!   from TX buffer to RX buffer and asks the protocol core to poll again.
 //!
@@ -43,7 +42,8 @@ use alloc::{
     vec::Vec,
 };
 use core::{
-    sync::atomic::{AtomicUsize, Ordering},
+    ops::{Deref, DerefMut},
+    sync::atomic::{AtomicU64, AtomicUsize, Ordering},
     task::Waker,
 };
 
@@ -68,9 +68,12 @@ use crate::{
     config::{DeviceBinding, InterfaceId, RouteInfo},
     consts::{DEVICE_RX_QUEUE_SIZE, DEVICE_TX_QUEUE_SIZE, SOCKET_BUFFER_SIZE, STANDARD_MTU},
     device::{ArpEntry, Device},
+    poll_register, poll_wake,
 };
 
 const DEVICE_RX_WORKER_BATCH: usize = 16;
+const IPV4_PROTOCOL_OFFSET: usize = 9;
+const IPV6_NEXT_HEADER_OFFSET: usize = 6;
 
 #[derive(Debug)]
 pub struct Rule {
@@ -122,16 +125,50 @@ impl Rule {
     }
 }
 
-type PacketBuffer = smoltcp::storage::PacketBuffer<'static, InterfaceId>;
-// TX metadata is created before route lookup; dispatch() selects the real
-// egress interface from the packet destination and route table.
-const TX_INTERFACE_PLACEHOLDER: InterfaceId = InterfaceId::new(0);
+pub(crate) type RxPacketBuffer = smoltcp::storage::PacketBuffer<'static, InterfaceId>;
 
 /// Bounded FIFO used between the protocol core and per-device workers.
 struct BoundedPacketQueue<T> {
     inner: Mutex<VecDeque<T>>,
     capacity: usize,
     len: AtomicUsize,
+}
+
+struct PacketData {
+    bytes: [u8; STANDARD_MTU],
+    len: usize,
+}
+
+impl PacketData {
+    fn copy_from(packet: &[u8]) -> Option<Self> {
+        if packet.len() > STANDARD_MTU {
+            return None;
+        }
+        let mut bytes = [0; STANDARD_MTU];
+        bytes[..packet.len()].copy_from_slice(packet);
+        Some(Self {
+            bytes,
+            len: packet.len(),
+        })
+    }
+
+    fn new(len: usize) -> Option<Self> {
+        if len > STANDARD_MTU {
+            return None;
+        }
+        Some(Self {
+            bytes: [0; STANDARD_MTU],
+            len,
+        })
+    }
+
+    fn as_slice(&self) -> &[u8] {
+        &self.bytes[..self.len]
+    }
+
+    fn as_mut_slice(&mut self) -> &mut [u8] {
+        &mut self.bytes[..self.len]
+    }
 }
 
 impl<T> BoundedPacketQueue<T> {
@@ -163,52 +200,36 @@ impl<T> BoundedPacketQueue<T> {
     fn is_empty(&self) -> bool {
         self.len.load(Ordering::Acquire) == 0
     }
+
+    fn len(&self) -> usize {
+        self.len.load(Ordering::Acquire)
+    }
 }
 
 struct TxPacket {
     /// Next-hop IP selected by the route table.
     next_hop: IpAddress,
     /// Complete IP packet to transmit.
-    bytes: QueuedPacket,
+    bytes: PacketData,
 }
 
 struct RxPacket {
     /// Interface that received the packet.
     interface_id: InterfaceId,
     /// Complete IP packet received from a device.
-    bytes: QueuedPacket,
-}
-
-/// Fixed-size packet storage for bounded router queues.
-///
-/// Keeping packets inline avoids per-packet heap allocation while preserving a
-/// predictable memory ceiling from the queue capacity constants.
-struct QueuedPacket {
-    bytes: [u8; STANDARD_MTU],
-    len: usize,
-}
-
-impl QueuedPacket {
-    fn new(packet: &[u8]) -> Option<Self> {
-        if packet.len() > STANDARD_MTU {
-            return None;
-        }
-        let mut bytes = [0; STANDARD_MTU];
-        bytes[..packet.len()].copy_from_slice(packet);
-        Some(Self {
-            bytes,
-            len: packet.len(),
-        })
-    }
-
-    fn as_slice(&self) -> &[u8] {
-        &self.bytes[..self.len]
-    }
+    bytes: PacketData,
 }
 
 struct RouterQueues {
     /// Shared RX queue filled by device workers and drained by `Router::poll`.
     rx: Arc<BoundedPacketQueue<RxPacket>>,
+    /// Packets emitted by smoltcp and annotated with their egress route.
+    tx: Arc<BoundedPacketQueue<RoutedTxPacket>>,
+}
+
+struct RoutedTxPacket {
+    route: TxRoute,
+    bytes: PacketData,
 }
 
 /// Runtime handle for one physical or virtual device.
@@ -253,7 +274,7 @@ impl DeviceHandle {
     }
 
     fn enqueue_tx(&self, next_hop: IpAddress, packet: &[u8]) -> bool {
-        let Some(bytes) = QueuedPacket::new(packet) else {
+        let Some(bytes) = PacketData::copy_from(packet) else {
             warn!(
                 "{}: packet to {} exceeds MTU ({} bytes), dropping",
                 self.name,
@@ -273,23 +294,31 @@ impl DeviceHandle {
         self.tx_wake.notify_one(true);
         true
     }
+
+    fn push_tx(&self, next_hop: IpAddress, bytes: PacketData) -> bool {
+        if self.tx_queue.push(TxPacket { next_hop, bytes }).is_err() {
+            warn!(
+                "{}: TX queue is full, dropping packet to {}",
+                self.name, next_hop
+            );
+            return false;
+        }
+        self.tx_wake.notify_one(true);
+        true
+    }
 }
 
 fn register_device_poll(device: &DeviceHandle, waker: &core::task::Waker) {
     let poll = { device.inner.lock().readiness_poll() };
     if let Some(poll) = poll {
-        // Device poll set is cloned while holding the device lock; registration
-        // runs after releasing it.
-        unsafe { poll.register(waker, IoEvents::IN | IoEvents::OUT | IoEvents::ERR) };
+        poll_register(&poll, waker, IoEvents::IN | IoEvents::OUT | IoEvents::ERR);
     }
 }
 
 fn wake_device_poll(device: &DeviceHandle) {
     let poll = { device.inner.lock().readiness_poll() };
     if let Some(poll) = poll {
-        // Device readiness has been published by the net poll task, and the
-        // device lock has been released before running wakers.
-        unsafe { poll.wake(IoEvents::IN | IoEvents::OUT | IoEvents::ERR) };
+        poll_wake(&poll, IoEvents::IN | IoEvents::OUT | IoEvents::ERR);
     }
 }
 
@@ -435,36 +464,87 @@ impl RouteTable {
     }
 }
 
-pub(crate) type SharedRouteTable = Arc<RwLock<RouteTable>>;
+pub(crate) struct RouteTableStore {
+    inner: RwLock<RouteTable>,
+    generation: AtomicU64,
+}
+
+impl RouteTableStore {
+    pub fn new() -> Self {
+        Self {
+            inner: RwLock::new(RouteTable::new()),
+            generation: AtomicU64::new(0),
+        }
+    }
+
+    pub fn read(&self) -> impl Deref<Target = RouteTable> + '_ {
+        self.inner.read()
+    }
+
+    pub fn write(&self) -> RouteTableWrite<'_> {
+        RouteTableWrite {
+            store: self,
+            guard: self.inner.write(),
+        }
+    }
+
+    fn generation(&self) -> u64 {
+        self.generation.load(Ordering::Acquire)
+    }
+}
+
+pub(crate) struct RouteTableWrite<'a> {
+    store: &'a RouteTableStore,
+    guard: spin::RwLockWriteGuard<'a, RouteTable>,
+}
+
+impl Deref for RouteTableWrite<'_> {
+    type Target = RouteTable;
+
+    fn deref(&self) -> &Self::Target {
+        &self.guard
+    }
+}
+
+impl DerefMut for RouteTableWrite<'_> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.guard
+    }
+}
+
+impl Drop for RouteTableWrite<'_> {
+    fn drop(&mut self) {
+        self.store.generation.fetch_add(1, Ordering::Release);
+    }
+}
+
+pub(crate) type SharedRouteTable = Arc<RouteTableStore>;
 
 /// Virtual smoltcp device that multiplexes all concrete devices.
 pub struct Router {
-    rx_buffer: PacketBuffer,
-    tx_buffer: PacketBuffer,
+    rx_buffer: RxPacketBuffer,
     queues: Arc<RouterQueues>,
     devices: Vec<Arc<DeviceHandle>>,
     table: SharedRouteTable,
+    tx_route_cache: Option<TxRouteCache>,
 }
 impl Router {
     /// Creates the virtual multi-device endpoint used by smoltcp.
     pub fn new(table: SharedRouteTable) -> Self {
-        let rx_buffer = PacketBuffer::new(
-            vec![PacketMetadata::EMPTY; SOCKET_BUFFER_SIZE],
-            vec![0u8; STANDARD_MTU * SOCKET_BUFFER_SIZE],
-        );
-        let tx_buffer = PacketBuffer::new(
+        let rx_buffer = RxPacketBuffer::new(
             vec![PacketMetadata::EMPTY; SOCKET_BUFFER_SIZE],
             vec![0u8; STANDARD_MTU * SOCKET_BUFFER_SIZE],
         );
         let queues = Arc::new(RouterQueues {
             rx: Arc::new(BoundedPacketQueue::new(DEVICE_RX_QUEUE_SIZE)),
+            tx: Arc::new(BoundedPacketQueue::new(SOCKET_BUFFER_SIZE)),
         });
         Self {
             rx_buffer,
-            tx_buffer,
             queues,
             devices: Vec::new(),
             table,
+            tx_route_cache: None,
         }
     }
 
@@ -676,53 +756,27 @@ impl Router {
         let mut poll_next = false;
         let Router {
             rx_buffer,
-            tx_buffer,
+            queues,
             devices,
-            table,
             ..
         } = self;
-        while let Ok((_, packet)) = tx_buffer.dequeue() {
-            match IpVersion::of_packet(packet).expect("got invalid IP packet") {
-                IpVersion::Ipv4 => {
-                    let packet = smoltcp::wire::Ipv4Packet::new_checked(packet)
-                        .expect("got invalid IPv4 packet");
-                    let src_addr = IpAddress::Ipv4(packet.src_addr());
-                    let dst_addr = IpAddress::Ipv4(packet.dst_addr());
-                    if packet.dst_addr().is_broadcast() {
-                        poll_next |=
-                            dispatch_link_local_fanout(devices, dst_addr, packet.into_inner());
-                    } else {
-                        poll_next |= dispatch_unicast_packet(
-                            rx_buffer,
-                            devices,
-                            table,
-                            src_addr,
-                            dst_addr,
-                            packet.into_inner(),
-                            sockets,
-                        );
-                    }
+        while let Some(packet) = queues.tx.pop() {
+            match packet.route {
+                TxRoute::Broadcast { dst } => {
+                    poll_next |= dispatch_link_local_fanout(devices, dst, packet.bytes.as_slice());
                 }
-                IpVersion::Ipv6 => {
-                    let packet = smoltcp::wire::Ipv6Packet::new_checked(packet)
-                        .expect("got invalid IPv6 packet");
-                    let src_addr = IpAddress::Ipv6(packet.src_addr());
-                    let dst_addr = IpAddress::Ipv6(packet.dst_addr());
-                    if packet.dst_addr().is_multicast() {
-                        poll_next |=
-                            dispatch_link_local_fanout(devices, dst_addr, packet.into_inner());
-                    } else {
-                        poll_next |= dispatch_unicast_packet(
-                            rx_buffer,
-                            devices,
-                            table,
-                            src_addr,
-                            dst_addr,
-                            packet.into_inner(),
-                            sockets,
-                        );
-                    }
+                TxRoute::Direct { dst, dev, next_hop } => {
+                    poll_next |= dispatch_unicast_packet(
+                        rx_buffer,
+                        devices,
+                        dev,
+                        next_hop,
+                        dst,
+                        packet.bytes,
+                        sockets,
+                    );
                 }
+                TxRoute::Drop => {}
             }
         }
         poll_next
@@ -744,36 +798,27 @@ fn dispatch_link_local_fanout(
 }
 
 fn dispatch_unicast_packet(
-    rx_buffer: &mut PacketBuffer,
+    rx_buffer: &mut RxPacketBuffer,
     devices: &[Arc<DeviceHandle>],
-    table: &SharedRouteTable,
-    src_addr: IpAddress,
+    dev: usize,
+    next_hop: IpAddress,
     dst_addr: IpAddress,
-    packet: &[u8],
+    packet: PacketData,
     sockets: &mut SocketSet<'_>,
 ) -> bool {
-    let routes = table.read();
-    let Some(route) = routes.select_route_for_source(&dst_addr, &src_addr) else {
-        warn!(
-            "No route found for source {} destination {}",
-            src_addr, dst_addr
-        );
-        return false;
-    };
-
-    let dev = &devices[route.dev];
+    let dev = &devices[dev];
     if dev.interface_id == InterfaceId::LOOPBACK {
         // Loopback packets are copied directly from the TX buffer into the RX
         // buffer, bypassing per-device workers and the shared RX queue.
-        inject_loopback_rx_direct(rx_buffer, dst_addr, packet, sockets)
+        inject_loopback_rx_direct(rx_buffer, dst_addr, packet.as_slice(), sockets)
     } else {
-        dev.enqueue_tx(route.next_hop, packet)
+        dev.push_tx(next_hop, packet)
     }
 }
 
 /// Injects a loopback packet directly into the smoltcp-facing RX buffer.
 fn inject_loopback_rx_direct(
-    rx_buffer: &mut PacketBuffer,
+    rx_buffer: &mut RxPacketBuffer,
     dst_addr: IpAddress,
     packet: &[u8],
     sockets: &mut SocketSet<'_>,
@@ -796,17 +841,17 @@ fn inject_loopback_rx(
     dst_addr: IpAddress,
     packet: &[u8],
 ) -> bool {
-    let Some(bytes) = QueuedPacket::new(packet) else {
+    if packet.len() > STANDARD_MTU {
         warn!(
             "Loopback: packet to {} exceeds MTU ({} bytes), dropping",
             dst_addr,
             packet.len()
         );
         return false;
-    };
+    }
     let rx = RxPacket {
         interface_id: InterfaceId::LOOPBACK,
-        bytes,
+        bytes: PacketData::copy_from(packet).unwrap(),
     };
     if rx_queue.push(rx).is_err() {
         warn!("Loopback: RX queue full, dropping packet to {}", dst_addr);
@@ -835,7 +880,7 @@ fn device_tx_worker(device: Arc<DeviceHandle>) {
 
 /// Dedicated worker that polls one device and forwards packets to router RX.
 fn device_rx_worker(device: Arc<DeviceHandle>) {
-    let mut rx_buffer = PacketBuffer::new(
+    let mut rx_buffer = RxPacketBuffer::new(
         vec![PacketMetadata::EMPTY; DEVICE_RX_WORKER_BATCH],
         vec![0u8; STANDARD_MTU * DEVICE_RX_WORKER_BATCH],
     );
@@ -855,17 +900,7 @@ fn device_rx_worker(device: Arc<DeviceHandle>) {
         while let Ok((interface_id, packet)) = rx_buffer.dequeue() {
             let rx = RxPacket {
                 interface_id,
-                bytes: match QueuedPacket::new(packet) {
-                    Some(bytes) => bytes,
-                    None => {
-                        warn!(
-                            "{}: RX packet exceeds MTU ({} bytes), dropping",
-                            device.name,
-                            packet.len()
-                        );
-                        continue;
-                    }
-                },
+                bytes: PacketData::copy_from(packet).unwrap(),
             };
             if device.rx_queue.push(rx).is_err() {
                 warn!("{}: RX queue is full, dropping packet", device.name);
@@ -885,47 +920,158 @@ fn device_rx_worker(device: Arc<DeviceHandle>) {
 }
 
 /// smoltcp TX token backed by the router's temporary TX buffer.
-pub struct TxToken<'a>(&'a mut PacketBuffer);
+#[derive(Clone, Copy, Default)]
+enum TxRoute {
+    Direct {
+        dst: IpAddress,
+        dev: usize,
+        next_hop: IpAddress,
+    },
+    Broadcast {
+        dst: IpAddress,
+    },
+    #[default]
+    Drop,
+}
+
+pub struct TxToken<'a> {
+    tx_queue: Arc<BoundedPacketQueue<RoutedTxPacket>>,
+    table: SharedRouteTable,
+    route_cache: &'a mut Option<TxRouteCache>,
+}
+
+#[derive(Clone, Copy)]
+struct TxRouteCache {
+    generation: u64,
+    src: IpAddress,
+    dst: IpAddress,
+    route: TxRoute,
+}
 
 impl smoltcp::phy::TxToken for TxToken<'_> {
     fn consume<R, F>(self, len: usize, f: F) -> R
     where
         F: FnOnce(&mut [u8]) -> R,
     {
-        // TX metadata is ignored: Router::dispatch parses the emitted IP
-        // packet and selects the actual egress interface from the route table.
-        f(self
-            .0
-            .enqueue(len, TX_INTERFACE_PLACEHOLDER)
-            .expect("This was checked before creating the TxToken"))
+        let TxToken {
+            tx_queue,
+            table,
+            route_cache,
+        } = self;
+        let mut packet =
+            PacketData::new(len).expect("This was checked before creating the TxToken");
+        let result = f(packet.as_mut_slice());
+        let route = tx_route_for_packet(&table, route_cache, packet.as_slice());
+        if !matches!(route, TxRoute::Drop)
+            && tx_queue
+                .push(RoutedTxPacket {
+                    route,
+                    bytes: packet,
+                })
+                .is_err()
+        {
+            warn!("Router TX queue is full after token reservation, dropping packet");
+        }
+        result
     }
+}
+
+fn tx_route_for_packet(
+    table: &SharedRouteTable,
+    route_cache: &mut Option<TxRouteCache>,
+    packet: &[u8],
+) -> TxRoute {
+    let (src_addr, dst_addr, link_local) = match IpVersion::of_packet(packet) {
+        Ok(IpVersion::Ipv4) => match Ipv4Packet::new_checked(packet) {
+            Ok(packet) => (
+                IpAddress::Ipv4(packet.src_addr()),
+                IpAddress::Ipv4(packet.dst_addr()),
+                packet.dst_addr().is_broadcast() || packet.dst_addr().is_multicast(),
+            ),
+            Err(_) => {
+                warn!("dropping malformed IPv4 TX packet");
+                return TxRoute::Drop;
+            }
+        },
+        Ok(IpVersion::Ipv6) => match Ipv6Packet::new_checked(packet) {
+            Ok(packet) => (
+                IpAddress::Ipv6(packet.src_addr()),
+                IpAddress::Ipv6(packet.dst_addr()),
+                packet.dst_addr().is_multicast(),
+            ),
+            Err(_) => {
+                warn!("dropping malformed IPv6 TX packet");
+                return TxRoute::Drop;
+            }
+        },
+        Err(_) => {
+            warn!("dropping non-IP TX packet");
+            return TxRoute::Drop;
+        }
+    };
+    if link_local {
+        return TxRoute::Broadcast { dst: dst_addr };
+    }
+    let generation = table.generation();
+    if let Some(cache) = *route_cache
+        && cache.generation == generation
+        && cache.src == src_addr
+        && cache.dst == dst_addr
+    {
+        return cache.route;
+    }
+    let routes = table.read();
+    let Some(route) = routes.select_route_for_source(&dst_addr, &src_addr) else {
+        warn!(
+            "No route found for source {} destination {}",
+            src_addr, dst_addr
+        );
+        return TxRoute::Drop;
+    };
+    let route = TxRoute::Direct {
+        dst: dst_addr,
+        dev: route.dev,
+        next_hop: route.next_hop,
+    };
+    *route_cache = Some(TxRouteCache {
+        generation,
+        src: src_addr,
+        dst: dst_addr,
+        route,
+    });
+    route
 }
 
 /// Detects passive TCP opens before smoltcp consumes the incoming packet.
 fn snoop_tcp_packet(buf: &[u8], sockets: &mut SocketSet<'_>) {
-    let (src_addr, dst_addr, payload) = match IpVersion::of_packet(buf).unwrap() {
-        IpVersion::Ipv4 => {
-            let packet = Ipv4Packet::new_unchecked(buf);
-            if packet.next_header() != IpProtocol::Tcp {
+    let (src_addr, dst_addr, payload) = match IpVersion::of_packet(buf) {
+        Ok(IpVersion::Ipv4) => {
+            if buf.get(IPV4_PROTOCOL_OFFSET).copied() != Some(IpProtocol::Tcp.into()) {
                 return;
             }
+            let Ok(packet) = Ipv4Packet::new_checked(buf) else {
+                return;
+            };
             (
                 IpAddress::Ipv4(packet.src_addr()),
                 IpAddress::Ipv4(packet.dst_addr()),
                 packet.payload(),
             )
         }
-        IpVersion::Ipv6 => {
-            let packet = Ipv6Packet::new_unchecked(buf);
-            if packet.next_header() != IpProtocol::Tcp {
+        Ok(IpVersion::Ipv6) => {
+            if buf.get(IPV6_NEXT_HEADER_OFFSET).copied() != Some(IpProtocol::Tcp.into()) {
                 return;
             }
+            let Ok(packet) = Ipv6Packet::new_checked(buf) else {
+                return;
+            };
             (
                 IpAddress::Ipv6(packet.src_addr()),
                 IpAddress::Ipv6(packet.dst_addr()),
                 packet.payload(),
             )
         }
+        Err(_) => return,
     };
     let tcp_packet = TcpPacket::new_unchecked(payload);
     let src_addr = (src_addr, tcp_packet.src_port()).into();
@@ -957,27 +1103,42 @@ impl smoltcp::phy::Device for Router {
     type TxToken<'a> = TxToken<'a>;
 
     fn receive(&mut self, _timestamp: Instant) -> Option<(Self::RxToken<'_>, Self::TxToken<'_>)> {
-        if self.rx_buffer.is_empty() || self.tx_buffer.is_full() {
+        let Router {
+            rx_buffer,
+            queues,
+            table,
+            tx_route_cache,
+            ..
+        } = self;
+        if rx_buffer.is_empty() || queues.tx.len() >= SOCKET_BUFFER_SIZE {
             None
         } else {
             Some((
                 {
-                    let (interface_id, packet) = self.rx_buffer.dequeue().unwrap();
+                    let (interface_id, packet) = rx_buffer.dequeue().unwrap();
                     RxToken {
                         interface_id,
                         packet,
                     }
                 },
-                TxToken(&mut self.tx_buffer),
+                TxToken {
+                    tx_queue: queues.tx.clone(),
+                    table: table.clone(),
+                    route_cache: tx_route_cache,
+                },
             ))
         }
     }
 
     fn transmit(&mut self, _timestamp: Instant) -> Option<Self::TxToken<'_>> {
-        if self.tx_buffer.is_full() {
+        if self.queues.tx.len() >= SOCKET_BUFFER_SIZE {
             None
         } else {
-            Some(TxToken(&mut self.tx_buffer))
+            Some(TxToken {
+                tx_queue: self.queues.tx.clone(),
+                table: self.table.clone(),
+                route_cache: &mut self.tx_route_cache,
+            })
         }
     }
 

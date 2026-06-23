@@ -67,7 +67,8 @@ pub(crate) fn init_dyn_net() {
     register_unix_namespace();
     let config = parse_network_config();
     let (nics, wireless) = collect_dyn_net_devices();
-    ax_net::init_network(nics, config);
+    ax_net::init_network(nics, config)
+        .unwrap_or_else(|err| panic!("failed to initialize network: {err:?}"));
     register_wireless_devices(wireless);
 }
 
@@ -78,7 +79,8 @@ pub(crate) fn init_static_net() {
     register_unix_namespace();
     let config = parse_network_config();
     let (nics, wireless) = collect_static_net_devices();
-    ax_net::init_network(nics, config);
+    ax_net::init_network(nics, config)
+        .unwrap_or_else(|err| panic!("failed to initialize network: {err:?}"));
     register_wireless_devices(wireless);
 }
 

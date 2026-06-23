@@ -195,7 +195,6 @@ pub(crate) type SharedRouteTable = Arc<RwLock<RouteTable>>;
 
 pub struct Router {
     rx_buffer: PacketBuffer,
-    tx_buffer: PacketBuffer,
     queues: Arc<RouterQueues>,
     devices: Vec<Arc<DeviceHandle>>,
     table: SharedRouteTable,
@@ -239,30 +238,33 @@ self.routes
 
 ### `SharedRouteTable`
 
-`SharedRouteTable` 是 route lookup 和 TX dispatch 的共享边界。socket connect/send 通过控制面查询 route；Router dispatch 在 [router.rs](net/ax-net/src/router.rs#L672) 直接读路由表并根据 smoltcp 已选择的源地址决定出接口：
+`SharedRouteTable` 是 route lookup 和 TX 生成路径的共享边界。socket connect/send 通过控制面查询 route；`TxToken::consume()` 在 smoltcp 生成完整 IP packet 后根据 smoltcp 已选择的源地址决定出接口。Router 内部维护最近一次 `(src, dst) -> TxRoute` 缓存，并用 route-table generation 原子值失效；缓存命中时不获取路由表读锁，cache miss 才读路由表：
 
 ```rust
-// router.rs:672-695, 摘要
-let routes = self.table.read();
+// router.rs, 摘要
+let generation = table.generation();
+if let Some(cache) = self.tx_route_cache
+    && cache.generation == generation
+    && cache.src == src_addr
+    && cache.dst == dst_addr
+{
+    return cache.route;
+}
+
+let routes = table.read();
 let Some(route) = routes.select_route_for_source(&dst_addr, &src_addr) else {
     warn!("No route found for source {} destination {}", src_addr, dst_addr);
-    continue;
+    return TxRoute::Drop;
 };
 
-let dev = &self.devices[route.dev];
-if dev.interface_id == InterfaceId::LOOPBACK {
-    poll_next |= inject_loopback_rx_direct(
-        &mut self.rx_buffer,
-        dst_addr,
-        packet.into_inner(),
-        sockets,
-    );
-} else {
-    poll_next |= dev.enqueue_tx(route.next_hop, packet.into_inner());
+TxRoute::Direct {
+    dst: dst_addr,
+    dev: route.dev,
+    next_hop: route.next_hop,
 }
 ```
 
-因此 `SharedRouteTable` 是 TX 热路径锁，但只做规则查找，不访问 driver，不访问 socket payload。接口配置或 DHCP 更新通过写锁替换某接口的 IPv4 路由规则。
+因此 `SharedRouteTable` 不再是每个 TX packet 必经的锁；它只在 route cache miss 或控制面更新时参与。`Router::dispatch()` 只消费 `RoutedTxPacket` 中保存的 route，不再持路由表锁重复解析同一个 packet。接口配置或 DHCP 更新通过写锁替换某接口的 IPv4 路由规则，并递增 generation 让 TX route cache 失效。
 
 ## Socket 层锁
 
@@ -593,7 +595,7 @@ while !self.rx_buffer.is_full() {
 }
 ```
 
-`Router::dispatch()` 在 smoltcp poll 之后处理 `tx_buffer`。普通设备走 per-device TX queue；loopback 直接注入 `rx_buffer`，避免设备队列 hop。相关逻辑见 [router.rs](net/ax-net/src/router.rs#L653)。
+`Router::dispatch()` 在 smoltcp poll 之后处理 routed TX queue。普通设备走 per-device TX queue；loopback 直接注入 `rx_buffer`，避免设备队列 hop。相关逻辑见 [router.rs](net/ax-net/src/router.rs#L653)。
 
 ## 设备驱动短锁
 
@@ -713,8 +715,8 @@ NET_POLL_WAKE wait
        -> Router::poll(): shared RX queue lock
        -> DHCP events may commit NetControl/RouteTable
        -> smoltcp Interface::poll()
-       -> orphan reaper: ORPHAN_SOCKETS.lock()
-       -> Router::dispatch(): RouteTable.read + per-device TX queue lock
+       -> orphan reaper: ORPHAN_SOCKETS.lock() at most once per second unless over capacity
+       -> Router::dispatch(): per-device TX queue lock
 ```
 
 `poll_until_idle()` 是唯一执行完整 smoltcp poll 的路径。socket 调用者只 `request_poll()`，不会在热路径同步抢 `SERVICE` 推进整个协议栈。

@@ -70,14 +70,17 @@ use alloc::{
 use core::{
     net::IpAddr,
     sync::atomic::{AtomicBool, Ordering},
-    task::Waker,
+    task::{Context, Waker},
     time::Duration,
 };
 
 use ax_errno::{AxError, AxResult, ax_err_type};
 use ax_sync::Mutex;
-use ax_task::{IrqNotify, WaitQueue};
-use axpoll::{IoEvents, PollSet};
+use ax_task::{
+    IrqNotify, WaitQueue,
+    future::{block_on, poll_io, timeout as task_timeout},
+};
+use axpoll::{IoEvents, PollSet, Pollable};
 use smoltcp::{
     socket::dns::{self, GetQueryResultError, StartQueryError},
     wire::{DnsQueryType, EthernetAddress, IpAddress, Ipv4Address, Ipv4Cidr},
@@ -90,7 +93,7 @@ use self::{
     addr::mask_from_prefix,
     device::{EthernetDevice, LoopbackDevice},
     listen_table::ListenTable,
-    router::{RouteTable, Router, Rule, SharedRouteTable},
+    router::{RouteTableStore, Router, Rule, SharedRouteTable},
     service::{NetControl, NetInterface, Service},
     wrapper::SocketSetWrapper,
 };
@@ -124,8 +127,13 @@ static NET_POLL_DEVICE_WAKER: LazyLock<Waker> =
     LazyLock::new(|| Waker::from(Arc::new(NetPollWake)));
 type DeferredPollEntry = (Arc<PollSet>, IoEvents);
 static DEFERRED_POLL_WAKE_PENDING: AtomicBool = AtomicBool::new(false);
-static DEFERRED_POLL_WAKES: LazyLock<Mutex<Vec<DeferredPollEntry>>> =
-    LazyLock::new(|| Mutex::new(Vec::new()));
+static DEFERRED_POLL_WAKES: LazyLock<async_channel::Sender<DeferredPollEntry>> =
+    LazyLock::new(|| {
+        let (sender, receiver) = async_channel::unbounded();
+        DEFERRED_POLL_WAKE_RX.call_once(|| receiver);
+        sender
+    });
+static DEFERRED_POLL_WAKE_RX: Once<async_channel::Receiver<DeferredPollEntry>> = Once::new();
 
 pub(crate) struct DeferPollWake {
     pub(crate) poll: Arc<PollSet>,
@@ -175,19 +183,17 @@ pub(crate) fn get_control() -> &'static NetControl {
 
 /// Initializes the network subsystem by NIC devices.
 ///
-/// # Panics
-///
-/// Panics if called more than once, or if the configuration contains invalid values.
-pub fn init_network(mut net_devs: EthernetDeviceList, config: NetworkConfig) {
+/// Returns an error if called more than once, or if the configuration contains invalid values.
+pub fn init_network(mut net_devs: EthernetDeviceList, config: NetworkConfig) -> AxResult {
     if SERVICE.get().is_some() {
-        panic!("init_network() called more than once");
+        return Err(AxError::AlreadyExists);
     }
 
     info!("Initialize network subsystem...");
 
-    validate_config(&config);
+    validate_config(&config)?;
 
-    let routes: SharedRouteTable = Arc::new(spin::RwLock::new(RouteTable::new()));
+    let routes: SharedRouteTable = Arc::new(RouteTableStore::new());
     let mut router = Router::new(routes.clone());
     let mut interfaces = Vec::new();
     let mut dns = Vec::new();
@@ -212,11 +218,14 @@ pub fn init_network(mut net_devs: EthernetDeviceList, config: NetworkConfig) {
             order,
             mac,
             dev.device_name(),
-        );
+        )?;
         let cfg = cfg_idx.map(|idx| &config.interfaces[idx]);
         let name = cfg.map_or(default_name, |cfg| cfg.name.clone());
         if interfaces.iter().any(|interface| interface.name == name) {
-            panic!("interface name conflict: {}", name);
+            return Err(ax_err_type!(
+                AlreadyExists,
+                format!("interface name conflict: {}", name)
+            ));
         }
         let id = InterfaceId::new((order as u32) + 2);
         let metric = cfg.map_or(100, |cfg| cfg.metric);
@@ -281,7 +290,7 @@ pub fn init_network(mut net_devs: EthernetDeviceList, config: NetworkConfig) {
         });
     }
 
-    ensure_all_interface_configs_used(&config, &used_configs);
+    ensure_all_interface_configs_used(&config, &used_configs)?;
 
     add_default_dns_servers(&config, &mut dns);
 
@@ -310,41 +319,67 @@ pub fn init_network(mut net_devs: EthernetDeviceList, config: NetworkConfig) {
     if dhcp_enabled {
         wait_for_dhcp_bootstrap();
     }
+    Ok(())
 }
 
-fn validate_config(config: &NetworkConfig) {
+fn validate_config(config: &NetworkConfig) -> AxResult {
     for cfg in &config.interfaces {
         if cfg.name == "lo" {
-            panic!("interface name 'lo' is reserved");
+            return Err(ax_err_type!(
+                InvalidInput,
+                "interface name 'lo' is reserved"
+            ));
+        }
+        if cfg.metric == 0 {
+            return Err(ax_err_type!(
+                InvalidInput,
+                format!("interface {} uses reserved metric 0", cfg.name)
+            ));
         }
         if cfg.dhcp && cfg.static_ip.is_some() {
-            panic!(
-                "interface {} has both DHCP and static IP configured",
-                cfg.name
-            );
+            return Err(ax_err_type!(
+                InvalidInput,
+                format!(
+                    "interface {} has both DHCP and static IP configured",
+                    cfg.name
+                )
+            ));
         }
         if let Some(static_cfg) = &cfg.static_ip {
             if static_cfg.ip.is_unspecified() {
-                panic!("Invalid static IP for {}: unspecified address", cfg.name);
+                return Err(ax_err_type!(
+                    InvalidInput,
+                    format!("Invalid static IP for {}: unspecified address", cfg.name)
+                ));
             }
             if static_cfg.prefix_len > 32 {
-                panic!("Invalid static IP for {}: prefix length > 32", cfg.name);
+                return Err(ax_err_type!(
+                    InvalidInput,
+                    format!("Invalid static IP for {}: prefix length > 32", cfg.name)
+                ));
             }
         }
         for (i, dns) in cfg.dns_servers.iter().enumerate() {
             if dns.is_unspecified() {
-                panic!(
-                    "Invalid DNS server for {} at index {}: unspecified address",
-                    cfg.name, i
-                );
+                return Err(ax_err_type!(
+                    InvalidInput,
+                    format!(
+                        "Invalid DNS server for {} at index {}: unspecified address",
+                        cfg.name, i
+                    )
+                ));
             }
         }
     }
     for (i, dns) in config.default_dns_servers.iter().enumerate() {
         if dns.is_unspecified() {
-            panic!("Invalid DNS server at index {}: unspecified address", i);
+            return Err(ax_err_type!(
+                InvalidInput,
+                format!("Invalid DNS server at index {}: unspecified address", i)
+            ));
         }
     }
+    Ok(())
 }
 
 fn register_loopback(router: &mut Router, interfaces: &mut Vec<NetInterface>) -> Ipv4Cidr {
@@ -374,15 +409,19 @@ fn register_loopback(router: &mut Router, interfaces: &mut Vec<NetInterface>) ->
     lo_ip
 }
 
-fn ensure_all_interface_configs_used(config: &NetworkConfig, used_configs: &[bool]) {
+fn ensure_all_interface_configs_used(config: &NetworkConfig, used_configs: &[bool]) -> AxResult {
     for (i, used) in used_configs.iter().enumerate() {
         if !used {
-            panic!(
-                "interface config {} did not match any device",
-                config.interfaces[i].name
-            );
+            return Err(ax_err_type!(
+                InvalidInput,
+                format!(
+                    "interface config {} did not match any device",
+                    config.interfaces[i].name
+                )
+            ));
         }
     }
+    Ok(())
 }
 
 fn add_default_dns_servers(config: &NetworkConfig, dns: &mut Vec<config::DnsServerEntry>) {
@@ -406,7 +445,7 @@ fn find_interface_config(
     order: usize,
     mac: EthernetAddress,
     driver_name: &str,
-) -> Option<usize> {
+) -> AxResult<Option<usize>> {
     let mut matched = None;
     for (idx, cfg) in configs.iter().enumerate() {
         if used[idx] {
@@ -419,7 +458,10 @@ fn find_interface_config(
         };
         if is_match {
             if matched.is_some() {
-                panic!("multiple interface configs match device {}", driver_name);
+                return Err(ax_err_type!(
+                    InvalidInput,
+                    format!("multiple interface configs match device {}", driver_name)
+                ));
             }
             matched = Some(idx);
         }
@@ -427,7 +469,7 @@ fn find_interface_config(
     if let Some(idx) = matched {
         used[idx] = true;
     }
-    matched
+    Ok(matched)
 }
 
 /// Init vsock subsystem by vsock devices.
@@ -475,27 +517,37 @@ pub fn request_poll() {
 }
 
 pub(crate) fn defer_poll_wake(poll: Arc<PollSet>, ready: IoEvents) {
-    DEFERRED_POLL_WAKES.lock().push((poll, ready));
+    if DEFERRED_POLL_WAKES.try_send((poll, ready)).is_err() {
+        warn!("deferred poll wake queue is closed; dropping wake");
+        return;
+    }
     if !DEFERRED_POLL_WAKE_PENDING.swap(true, Ordering::AcqRel) {
         NET_POLL_WAKE.notify_one(true);
     }
 }
 
+pub(crate) fn poll_register(poll: &PollSet, waker: &Waker, interests: IoEvents) {
+    unsafe { poll.register(waker, interests) };
+}
+
+pub(crate) fn poll_wake(poll: &PollSet, ready: IoEvents) -> usize {
+    unsafe { poll.wake(ready) }
+}
+
 fn drain_deferred_poll_wakes() {
+    let _ = LazyLock::force(&DEFERRED_POLL_WAKES);
+    let receiver = DEFERRED_POLL_WAKE_RX
+        .get()
+        .expect("deferred poll wake queue not initialized");
     loop {
-        let wakes = {
-            let mut wakes = DEFERRED_POLL_WAKES.lock();
-            if wakes.is_empty() {
-                DEFERRED_POLL_WAKE_PENDING.store(false, Ordering::Release);
-                return;
-            }
-            core::mem::take(&mut *wakes)
-        };
-        for (poll, ready) in wakes {
-            // Readiness was published before the wake was deferred, and no
-            // service/socket/device locks are held while draining.
-            unsafe { poll.wake(ready) };
+        while let Ok((poll, ready)) = receiver.try_recv() {
+            poll_wake(&poll, ready);
         }
+        DEFERRED_POLL_WAKE_PENDING.store(false, Ordering::Release);
+        if receiver.is_empty() {
+            return;
+        }
+        DEFERRED_POLL_WAKE_PENDING.store(true, Ordering::Release);
     }
 }
 
@@ -775,6 +827,32 @@ pub fn dns_query_timeout(name: &str, timeout: Duration) -> AxResult<Vec<IpAddr>>
 
 struct DnsSocketGuard(smoltcp::iface::SocketHandle);
 
+struct DnsQueryPoll<'a> {
+    socket: &'a DnsSocketGuard,
+    query_handle: dns::QueryHandle,
+    poll: Arc<PollSet>,
+}
+
+impl Pollable for DnsQueryPoll<'_> {
+    fn poll(&self) -> IoEvents {
+        match SOCKET_SET.with_socket_mut::<dns::Socket, _, _>(self.socket.0, |socket| {
+            socket.get_query_result(self.query_handle)
+        }) {
+            Ok(_) | Err(GetQueryResultError::Failed) => IoEvents::IN,
+            Err(GetQueryResultError::Pending) => IoEvents::empty(),
+        }
+    }
+
+    fn register(&self, context: &mut Context<'_>, interests: IoEvents) {
+        if interests.contains(IoEvents::IN) {
+            SOCKET_SET.with_socket_mut::<dns::Socket, _, _>(self.socket.0, |socket| {
+                socket.register_query_waker(self.query_handle, context.waker());
+            });
+            poll_register(&self.poll, context.waker(), IoEvents::IN);
+        }
+    }
+}
+
 impl DnsSocketGuard {
     fn query_timeout(
         &self,
@@ -803,34 +881,36 @@ impl DnsSocketGuard {
             }
         })?;
 
-        let start_time = ax_hal::time::monotonic_time_nanos();
-        let timeout_ns = u64::try_from(timeout.as_nanos()).unwrap_or(u64::MAX);
-        let deadline = start_time.saturating_add(timeout_ns);
-
-        loop {
-            request_poll();
-            match SOCKET_SET.with_socket_mut::<dns::Socket, _, _>(self.0, |socket| {
-                socket
-                    .get_query_result(query_handle)
-                    .map_err(|err| match err {
-                        GetQueryResultError::Pending => AxError::WouldBlock,
-                        GetQueryResultError::Failed => {
-                            ax_err_type!(ConnectionRefused, "DNS query failed")
-                        }
-                    })
-            }) {
-                Ok(addrs) => {
-                    return Ok(addrs.into_iter().map(IpAddr::from).collect());
+        let poll = Arc::new(PollSet::new());
+        let waiter = DnsQueryPoll {
+            socket: self,
+            query_handle,
+            poll,
+        };
+        block_on(task_timeout(
+            Some(timeout),
+            poll_io(&waiter, IoEvents::IN, false, || {
+                request_poll();
+                match SOCKET_SET.with_socket_mut::<dns::Socket, _, _>(self.0, |socket| {
+                    socket
+                        .get_query_result(query_handle)
+                        .map_err(|err| match err {
+                            GetQueryResultError::Pending => AxError::WouldBlock,
+                            GetQueryResultError::Failed => {
+                                ax_err_type!(ConnectionRefused, "DNS query failed")
+                            }
+                        })
+                }) {
+                    Ok(addrs) => Ok(addrs.into_iter().map(IpAddr::from).collect()),
+                    Err(AxError::WouldBlock) => Err(AxError::WouldBlock),
+                    Err(err) => Err(err),
                 }
-                Err(AxError::WouldBlock) => {
-                    if ax_hal::time::monotonic_time_nanos() >= deadline {
-                        return Err(ax_err_type!(TimedOut, "DNS query timed out"));
-                    }
-                    ax_task::yield_now();
-                }
-                Err(err) => return Err(err),
-            }
-        }
+            }),
+        ))?
+        .map_err(|err| match err {
+            AxError::TimedOut => ax_err_type!(TimedOut, "DNS query timed out"),
+            err => err,
+        })
     }
 }
 
@@ -864,7 +944,7 @@ pub(crate) mod test_support {
         config::{InterfaceFlags, InterfaceId, InterfaceKind},
         consts::STANDARD_MTU,
         device::LoopbackDevice,
-        router::{RouteTable, Router, Rule, SharedRouteTable},
+        router::{RouteTableStore, Router, Rule, SharedRouteTable},
         service::{NetControl, NetInterface, Service},
     };
 
@@ -883,7 +963,7 @@ pub(crate) mod test_support {
         static INIT: Once = Once::new();
 
         INIT.call_once(|| {
-            let routes: SharedRouteTable = Arc::new(spin::RwLock::new(RouteTable::new()));
+            let routes: SharedRouteTable = Arc::new(RouteTableStore::new());
             let mut router = Router::new(routes.clone());
             let local_dev = router.add_device(LOCAL_IF, Box::new(LoopbackDevice::new()));
             let peer_dev = router.add_device(PEER_IF, Box::new(LoopbackDevice::new()));

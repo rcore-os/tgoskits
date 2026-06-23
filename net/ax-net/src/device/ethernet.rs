@@ -20,14 +20,13 @@
 //! and does not inspect TCP/UDP socket state. Route selection is performed by
 //! the router before Ethernet sees the packet.
 
-use alloc::{boxed::Box, string::String, sync::Arc, vec, vec::Vec};
+use alloc::{boxed::Box, collections::VecDeque, string::String, sync::Arc, vec::Vec};
 use core::ptr::NonNull;
 
 use ax_sync::spin::SpinNoIrq;
 use axpoll::PollSet;
 use hashbrown::HashMap;
 use smoltcp::{
-    storage::{PacketBuffer, PacketMetadata},
     time::{Duration, Instant},
     wire::{
         ArpOperation, ArpPacket, ArpRepr, EthernetAddress, EthernetFrame, EthernetProtocol,
@@ -39,6 +38,7 @@ use crate::{
     config::InterfaceId,
     consts::{ETHERNET_MAX_PENDING_PACKETS, STANDARD_MTU},
     device::{ArpEntry, Device, EthernetDriver, NetDeviceError, NetIrqEvents},
+    router::RxPacketBuffer,
 };
 
 const EMPTY_MAC: EthernetAddress = EthernetAddress([0; 6]);
@@ -120,6 +120,11 @@ struct PendingNeighbor {
     requested_at: Instant,
 }
 
+struct PendingPacket {
+    next_hop: IpAddress,
+    payload: Box<[u8]>,
+}
+
 struct EthernetIrqState {
     irq: Option<usize>,
     irq_registration: spin::Once<Box<dyn EthernetIrqRegistration>>,
@@ -145,7 +150,7 @@ pub struct EthernetDevice {
     pending_neighbors: HashMap<IpAddress, PendingNeighbor>,
     ip: Option<Ipv4Cidr>,
 
-    pending_packets: PacketBuffer<'static, IpAddress>,
+    pending_packets: VecDeque<PendingPacket>,
 }
 
 unsafe fn handle_ethernet_irq(data: NonNull<()>) -> EthernetIrqOutcome {
@@ -195,14 +200,6 @@ impl EthernetDevice {
             driver: SpinNoIrq::new(inner),
             poll_ready: Arc::new(PollSet::new()),
         });
-        let pending_packets = PacketBuffer::new(
-            vec![PacketMetadata::EMPTY; ETHERNET_MAX_PENDING_PACKETS],
-            vec![
-                0u8;
-                (STANDARD_MTU + EthernetFrame::<&[u8]>::header_len())
-                    * ETHERNET_MAX_PENDING_PACKETS
-            ],
-        );
         if let Some(irq) = inner.irq {
             let data = NonNull::from(Arc::get_mut(&mut inner).expect("new Arc is unique")).cast();
             if let Some(registrar) = ETHERNET_IRQ_REGISTRAR.get().copied() {
@@ -234,7 +231,7 @@ impl EthernetDevice {
             pending_neighbors: HashMap::new(),
             ip,
 
-            pending_packets,
+            pending_packets: VecDeque::with_capacity(ETHERNET_MAX_PENDING_PACKETS),
         }
     }
 
@@ -287,7 +284,7 @@ impl EthernetDevice {
         &mut self,
         frame: &[u8],
         interface_id: InterfaceId,
-        buffer: &mut PacketBuffer<InterfaceId>,
+        buffer: &mut RxPacketBuffer,
         timestamp: Instant,
         snoop: &mut dyn FnMut(&[u8]),
     ) -> bool {
@@ -430,70 +427,32 @@ impl EthernetDevice {
                 );
             }
 
-            // Drain every entry in the pending queue and either send it (if
-            // the next-hop is now resolved) or re-queue it in arrival order.
-            // Peeking the head and stopping on the first mismatch would
-            // permanently block packets queued behind an unresolvable
-            // next-hop (e.g. a SYN to a fake IP at the head holds back a
-            // SYN to the gateway behind it).
-            //
-            // The kept buffer is pre-sized so the drain does not have to
-            // grow it through reallocations while a high-priority ARP IRQ
-            // is being processed.
-            let mut kept: Vec<(IpAddress, Vec<u8>)> =
-                Vec::with_capacity(ETHERNET_MAX_PENDING_PACKETS);
-            for _ in 0..ETHERNET_MAX_PENDING_PACKETS {
-                let Ok((&next_hop, buf)) = self.pending_packets.peek() else {
-                    break;
-                };
-                enum Action {
-                    Send(EthernetAddress, Vec<u8>),
-                    Refresh(Vec<u8>),
-                    Keep(Vec<u8>),
-                }
-                let action = match self.neighbors.get(&next_hop) {
+            let mut idx = 0;
+            while idx < self.pending_packets.len() {
+                let next_hop = self.pending_packets[idx].next_hop;
+                match self.neighbors.get(&next_hop) {
                     Some(neighbor) if neighbor.expires_at > now => {
-                        Action::Send(neighbor.hardware_address, buf.to_vec())
-                    }
-                    Some(_) => Action::Refresh(buf.to_vec()),
-                    None => Action::Keep(buf.to_vec()),
-                };
-                let _ = self.pending_packets.dequeue();
-
-                match action {
-                    Action::Send(mac, payload) => {
+                        let packet = self.pending_packets.remove(idx).unwrap();
                         let mut inner = self.inner.driver.lock();
                         info!(
                             "{}: sending pending IPv4 packet to {} via {}",
-                            self.name, next_hop, mac
+                            self.name, next_hop, neighbor.hardware_address
                         );
                         Self::send_to(
                             &mut **inner,
-                            mac,
-                            payload.len(),
-                            |b| b.copy_from_slice(&payload),
+                            neighbor.hardware_address,
+                            packet.payload.len(),
+                            |b| b.copy_from_slice(&packet.payload),
                             EthernetProtocol::Ipv4,
                         );
                     }
-                    Action::Refresh(payload) => {
+                    Some(_) => {
                         self.neighbors.remove(&next_hop);
                         let _ = self.request_arp(next_hop, now);
-                        kept.push((next_hop, payload));
+                        idx += 1;
                     }
-                    Action::Keep(payload) => {
-                        kept.push((next_hop, payload));
-                    }
+                    None => idx += 1,
                 }
-            }
-            for (next_hop, payload) in kept {
-                let Ok(dst) = self.pending_packets.enqueue(payload.len(), next_hop) else {
-                    warn!(
-                        "{}: pending buffer overflow while restoring queue entry to {}",
-                        self.name, next_hop
-                    );
-                    break;
-                };
-                dst.copy_from_slice(&payload);
             }
         }
     }
@@ -507,7 +466,7 @@ impl Device for EthernetDevice {
     fn recv(
         &mut self,
         interface_id: InterfaceId,
-        buffer: &mut PacketBuffer<InterfaceId>,
+        buffer: &mut RxPacketBuffer,
         timestamp: Instant,
         snoop: &mut dyn FnMut(&[u8]),
     ) -> bool {
@@ -579,15 +538,18 @@ impl Device for EthernetDevice {
         if need_request && !self.request_arp(next_hop, timestamp) {
             return false;
         }
-        if self.pending_packets.is_full() {
+        if self.pending_packets.len() >= ETHERNET_MAX_PENDING_PACKETS {
             warn!("Pending packets buffer is full, dropping packet");
             return false;
         }
-        let Ok(dst_buffer) = self.pending_packets.enqueue(packet.len(), next_hop) else {
-            warn!("Failed to enqueue packet in pending packets buffer");
+        if packet.len() > STANDARD_MTU {
+            warn!("Pending packet exceeds MTU, dropping packet");
             return false;
-        };
-        dst_buffer.copy_from_slice(packet);
+        }
+        self.pending_packets.push_back(PendingPacket {
+            next_hop,
+            payload: packet.into(),
+        });
         false
     }
 

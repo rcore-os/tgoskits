@@ -57,14 +57,11 @@
 //! ```
 
 use alloc::{boxed::Box, format, string::String, sync::Arc, vec, vec::Vec};
-use core::{
-    pin::Pin,
-    task::{Context, Waker},
-};
+use core::task::Waker;
 
 use ax_errno::{AxResult, ax_err_type};
-use ax_hal::time::{NANOS_PER_MICROS, TimeValue, monotonic_time_nanos, wall_time_nanos};
-use ax_task::future::sleep_until;
+use ax_hal::time::{NANOS_PER_MICROS, monotonic_time_nanos, wall_time_nanos};
+use hashbrown::HashMap;
 use smoltcp::{
     iface::{Interface, PollResult, SocketSet},
     phy::ChecksumCapabilities,
@@ -78,7 +75,6 @@ use smoltcp::{
 use spin::RwLock;
 
 use crate::{
-    SOCKET_SET,
     addr::mask_from_prefix,
     config::{
         DeviceBinding, DnsServerEntry, DnsSource, InterfaceFlags, InterfaceId, InterfaceInfo,
@@ -96,6 +92,7 @@ fn now() -> Instant {
 
 struct ControlState {
     interfaces: Vec<NetInterface>,
+    interface_up: HashMap<InterfaceId, bool>,
     dns: Vec<DnsServerEntry>,
 }
 
@@ -110,8 +107,16 @@ impl NetControl {
         routes: SharedRouteTable,
         dns: Vec<DnsServerEntry>,
     ) -> Self {
+        let interface_up = interfaces
+            .iter()
+            .map(|interface| (interface.id, interface.flags.contains(InterfaceFlags::UP)))
+            .collect();
         Self {
-            state: RwLock::new(ControlState { interfaces, dns }),
+            state: RwLock::new(ControlState {
+                interfaces,
+                interface_up,
+                dns,
+            }),
             routes,
         }
     }
@@ -213,17 +218,14 @@ impl NetControl {
         let routes = self.routes.read();
         let route = routes
             .select_route_if(dst_addr, |interface_id| {
-                if binding
+                binding
                     .bound_if
-                    .is_some_and(|bound_if| bound_if != interface_id)
-                {
-                    return false;
-                }
-                state
-                    .interfaces
-                    .iter()
-                    .find(|interface| interface.id == interface_id)
-                    .is_some_and(|interface| interface.flags.contains(InterfaceFlags::UP))
+                    .is_none_or(|bound_if| bound_if == interface_id)
+                    && state
+                        .interface_up
+                        .get(&interface_id)
+                        .copied()
+                        .unwrap_or(false)
             })
             .ok_or_else(|| {
                 ax_err_type!(
@@ -248,6 +250,7 @@ impl NetControl {
         routes: Vec<crate::router::Rule>,
     ) {
         let mut state = self.state.write();
+        let mut is_up = None;
         if let Some(interface) = state
             .interfaces
             .iter_mut()
@@ -255,6 +258,19 @@ impl NetControl {
         {
             interface.ipv4 = update.ipv4;
             interface.gateway = update.gateway;
+            if update.up {
+                interface
+                    .flags
+                    .insert(InterfaceFlags::UP | InterfaceFlags::RUNNING);
+            } else {
+                interface
+                    .flags
+                    .remove(InterfaceFlags::UP | InterfaceFlags::RUNNING);
+            }
+            is_up = Some(interface.flags.contains(InterfaceFlags::UP));
+        }
+        if let Some(is_up) = is_up {
+            state.interface_up.insert(update.interface_id, is_up);
         }
         state.dns.retain(|entry| {
             entry.interface_id != update.interface_id || entry.source != update.dns_source
@@ -280,7 +296,11 @@ impl NetControl {
         self.routes
             .write()
             .replace_ipv4_rules_for_interface(interface.id, routes);
-        self.state.write().interfaces.push(interface);
+        let mut state = self.state.write();
+        state
+            .interface_up
+            .insert(interface.id, interface.flags.contains(InterfaceFlags::UP));
+        state.interfaces.push(interface);
     }
 
     fn allocate_interface_id(&self) -> InterfaceId {
@@ -308,16 +328,10 @@ pub struct Service {
     pub iface: Interface,
     router: Router,
     control: Arc<NetControl>,
-    timeouts: Vec<TimeoutRegistration>,
     dhcp: Vec<DhcpState>,
     dhcp_server: Option<DhcpServer>,
     dhcp_events: Vec<DhcpEvent>,
     dhcp_server_replies: Vec<(usize, Vec<u8>)>,
-}
-
-struct TimeoutRegistration {
-    deadline: Instant,
-    _future: Pin<Box<dyn Future<Output = ()> + Send>>,
 }
 
 #[derive(Clone)]
@@ -360,6 +374,7 @@ struct NetworkStateUpdate {
     gateway: Option<Ipv4Address>,
     dns_source: DnsSource,
     dns_servers: Vec<Ipv4Address>,
+    up: bool,
 }
 
 struct DhcpState {
@@ -378,15 +393,27 @@ struct DhcpState {
     dns_servers: Vec<Ipv4Address>,
 }
 
+enum DhcpPoll {
+    Send {
+        dev: usize,
+        next_hop: IpAddress,
+        packet: Vec<u8>,
+    },
+    Failed(DhcpEvent),
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum DhcpPhase {
     Discovering,
     Requesting,
     Bound,
+    Failed,
 }
 
 const DHCP_PARAMETER_REQUEST_LIST: &[u8] = &[1, 3, 6, 42];
 const DHCP_MAX_RETRY_SHIFT: usize = 4;
+const DHCP_MAX_RETRIES: usize = 8;
+const DHCP_FAILED_RETRY_SECS: u64 = 60;
 const DHCP_MAX_IPV4_HEADER_LEN: usize = 60;
 const DHCP_UDP_HEADER_LEN: usize = 8;
 
@@ -488,7 +515,10 @@ impl DhcpState {
         }
     }
 
-    fn poll_packet(&mut self, timestamp: Instant) -> Option<(usize, IpAddress, Vec<u8>)> {
+    fn poll_packet(&mut self, timestamp: Instant) -> Option<DhcpPoll> {
+        if self.phase == DhcpPhase::Failed && timestamp >= self.retry_at {
+            self.reset(timestamp);
+        }
         if self.phase == DhcpPhase::Bound || timestamp < self.retry_at {
             return None;
         }
@@ -500,25 +530,36 @@ impl DhcpState {
                 self.offered_address,
                 self.server_identifier,
             ),
-            DhcpPhase::Bound => return None,
+            DhcpPhase::Bound | DhcpPhase::Failed => return None,
         };
 
+        if self.retry >= DHCP_MAX_RETRIES {
+            warn!("{}: DHCP failed after {} retries", self.ifname, self.retry);
+            self.phase = DhcpPhase::Failed;
+            self.retry_at = timestamp + SmolDuration::from_secs(DHCP_FAILED_RETRY_SECS);
+            return Some(DhcpPoll::Failed(DhcpEvent::Deconfigured {
+                interface_id: self.interface_id,
+                dev: self.dev,
+                ifname: self.ifname.clone(),
+                metric: self.metric,
+            }));
+        }
         let retry_delay_secs = 1usize << self.retry.min(DHCP_MAX_RETRY_SHIFT);
         self.retry = self.retry.saturating_add(1);
         self.retry_at = timestamp + SmolDuration::from_secs(retry_delay_secs as u64);
         debug!("{}: DHCP sending {:?}", self.ifname, message_type);
 
-        Some((
-            self.dev,
-            IpAddress::Ipv4(Ipv4Address::BROADCAST),
-            build_dhcp_packet(
+        Some(DhcpPoll::Send {
+            dev: self.dev,
+            next_hop: IpAddress::Ipv4(Ipv4Address::BROADCAST),
+            packet: build_dhcp_packet(
                 self.mac,
                 self.transaction_id,
                 message_type,
                 requested_ip,
                 server_identifier,
             ),
-        ))
+        })
     }
 
     fn reset(&mut self, timestamp: Instant) {
@@ -541,7 +582,6 @@ impl Service {
             iface,
             router,
             control,
-            timeouts: Vec::new(),
             dhcp: Vec::new(),
             dhcp_server: None,
             dhcp_events: Vec::new(),
@@ -666,6 +706,7 @@ impl Service {
             gateway: None,
             dns_source: DnsSource::Static,
             dns_servers: Vec::new(),
+            up: true,
         });
 
         match client_ip {
@@ -706,6 +747,7 @@ impl Service {
             gateway: None,
             dns_source: DnsSource::Static,
             dns_servers: Vec::new(),
+            up: false,
         });
 
         self.enable_dhcp(interface.id, dev, interface.name, mac, interface.metric);
@@ -725,8 +767,6 @@ impl Service {
         let timestamp = now();
         let mut dhcp_events = core::mem::take(&mut self.dhcp_events);
         let mut dhcp_server_replies = core::mem::take(&mut self.dhcp_server_replies);
-        dhcp_events.clear();
-        dhcp_server_replies.clear();
         let router_rx_pending;
 
         {
@@ -782,13 +822,27 @@ impl Service {
 
     fn poll_dhcp(&mut self, timestamp: Instant) -> bool {
         let mut poll_next = false;
+        let mut events = core::mem::take(&mut self.dhcp_events);
         for state in &mut self.dhcp {
-            if let Some((dev, next_hop, packet)) = state.poll_packet(timestamp) {
-                poll_next |= self
-                    .router
-                    .send_on_device(dev, next_hop, &packet, timestamp);
+            if let Some(poll) = state.poll_packet(timestamp) {
+                match poll {
+                    DhcpPoll::Send {
+                        dev,
+                        next_hop,
+                        packet,
+                    } => {
+                        poll_next |= self
+                            .router
+                            .send_on_device(dev, next_hop, &packet, timestamp);
+                    }
+                    DhcpPoll::Failed(event) => events.push(event),
+                }
             }
         }
+        for event in events.drain(..) {
+            self.handle_dhcp_event(event);
+        }
+        self.dhcp_events = events;
         poll_next
     }
 
@@ -833,6 +887,7 @@ impl Service {
                     gateway: router,
                     dns_source: DnsSource::Dhcp,
                     dns_servers,
+                    up: true,
                 }
             }
             DhcpEvent::Deconfigured {
@@ -866,6 +921,7 @@ impl Service {
                     gateway: None,
                     dns_source: DnsSource::Dhcp,
                     dns_servers: Vec::new(),
+                    up: false,
                 }
             }
         };
@@ -922,27 +978,6 @@ impl Service {
     }
 
     pub fn register_waker(&mut self, binding: DeviceBinding, waker: &Waker) {
-        let next = self.iface.poll_at(now(), &SOCKET_SET.inner.lock());
-
-        if let Some(t) = next {
-            let next = TimeValue::from_micros(t.total_micros() as _);
-
-            let mut fut = Box::pin(sleep_until(next));
-            let mut cx = Context::from_waker(waker);
-
-            if fut.as_mut().poll(&mut cx).is_ready() {
-                waker.wake_by_ref();
-                return;
-            } else {
-                let now = now();
-                self.timeouts.retain(|timeout| timeout.deadline > now);
-                self.timeouts.push(TimeoutRegistration {
-                    deadline: t,
-                    _future: fut,
-                });
-            }
-        }
-
         self.router.register_waker(binding, waker);
     }
 
@@ -1051,11 +1086,11 @@ mod tests {
     use smoltcp::wire::EthernetAddress;
 
     use super::*;
-    use crate::{device::LoopbackDevice, router::RouteTable};
+    use crate::{device::LoopbackDevice, router::RouteTableStore};
 
     #[test]
     fn dhcp_configured_is_true_once_any_interface_has_address() {
-        let routes = Arc::new(spin::RwLock::new(RouteTable::new()));
+        let routes = Arc::new(RouteTableStore::new());
         let mut router = Router::new(routes.clone());
         let dev0 = router.add_device(InterfaceId::new(2), Box::new(LoopbackDevice::new()));
         let dev1 = router.add_device(InterfaceId::new(3), Box::new(LoopbackDevice::new()));
@@ -1084,7 +1119,7 @@ mod tests {
 
     #[test]
     fn interface_address_table_handles_loopback_and_two_ethernet_addresses() {
-        let routes = Arc::new(spin::RwLock::new(RouteTable::new()));
+        let routes = Arc::new(RouteTableStore::new());
         let router = Router::new(routes.clone());
         let control = Arc::new(NetControl::new(Vec::new(), routes, Vec::new()));
         let mut service = Service::new(router, control);

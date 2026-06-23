@@ -26,7 +26,7 @@ sidebar_label: "Socket 系统"
 
 socket 层通过 `SocketOps` trait 和 `Socket` 枚举把系统调用语义映射到协议栈内部对象。它将 AF_INET、AF_UNIX、AF_VSOCK 的地址统一为 `SocketAddrEx`，将 `bind/connect/listen/accept/send/recv/shutdown` 统一为 trait 方法，并通过 `GeneralOptions` 维护 `O_NONBLOCK`、`SO_REUSEADDR`、超时和 `SO_BINDTODEVICE` 等通用选项。
 
-IP 类 socket（TCP/UDP/raw）持有 smoltcp `SocketHandle`，注册到全局 `SocketSetWrapper`。socket 层补齐 smoltcp 不直接提供的 POSIX 语义——TCP accept queue（`ListenTable`）、UDP wildcard bind 冲突（`udp_binds` side table）、raw connected-peer 过滤。出接口选择由控制面 `NetControl` 在 bind/connect 时决策，实际发包由 `Router::dispatch()` 在 net-poll worker 中完成；socket 操作本身不同步推进 `Interface::poll()`，只调用 `request_poll()` 请求 worker 推进。
+IP 类 socket（TCP/UDP/raw）持有 smoltcp `SocketHandle`，注册到全局 `SocketSetWrapper`。socket 层补齐 smoltcp 不直接提供的 POSIX 语义——TCP accept queue（`ListenTable`）、UDP wildcard bind 冲突（`udp_binds` side table）、raw connected-peer 过滤。出接口选择由控制面 `NetControl` 在 bind/connect 时决策，实际发包 route 在 `TxToken::consume()` 中随 packet 生成计算，随后由 `Router::dispatch()` 在 net-poll worker 中分发；socket 操作本身不同步推进 `Interface::poll()`，只调用 `request_poll()` 请求 worker 推进。
 
 Unix domain socket 和 vsock 不经过 smoltcp，各自维护独立的 transport、namespace 和连接状态，但共享 `SocketOps`/`Configurable`/`Pollable` 入口，向上层呈现一致的 socket facade。
 
@@ -448,6 +448,7 @@ TCP socket 的主要职责：
 - `listen()`：把 endpoint 移入 `ListenTable`。
 - `accept()`：从 `ListenTable` 取出 child handle，构造已连接 `TcpSocket`。
 - `send/recv()`：只操作 smoltcp socket buffer，不同步驱动完整 interface poll。
+- `shutdown(Read)`：只设置本地 `rx_closed` 并唤醒读端，使后续 `recv()` 返回 EOF；不会调用 smoltcp `abort()`，因此不会向对端发送 RST。`shutdown(Write)` / `shutdown(Both)` 仍通过 smoltcp close 路径发送 FIN。
 - `drop()`：必要时把未完全关闭的 smoltcp socket移入 orphan reaper。
 
 ### UDP Socket
@@ -722,12 +723,11 @@ pub fn send_poller_with<P: Pollable, F: FnMut() -> AxResult<T>, T>(
 
 ### IP socket readiness
 
-TCP/UDP/raw 的 `poll()` 都会先 `request_poll()`，表示需要专用 net-poll worker 推进 smoltcp：
+IP socket 的阻塞等待会按需请求专用 net-poll worker 推进 smoltcp。TCP/raw 的 readiness poll 会主动 `request_poll()`；UDP 只在存在可推进状态时唤醒 worker，避免纯 readiness 查询造成额外 poll：
 
 ```rust
 impl Pollable for UdpSocket {
     fn poll(&self) -> IoEvents {
-        request_poll();
         if self.local_addr.read().is_none() {
             return IoEvents::empty();
         }
@@ -776,6 +776,7 @@ TcpSocket::drop
 ```
 
 这样 FIN、LAST-ACK、TIME-WAIT 等状态仍由 net-poll worker 推进，避免应用对象释放后协议状态被过早销毁。
+空闲情况下 orphan reaper 至多每 1 秒扫描一次 orphan pool；如果 pool 超过容量上限，则下一轮 poll 仍会立即扫描，优先释放已关闭或超时的 orphan。
 
 ### UDP/raw cleanup
 

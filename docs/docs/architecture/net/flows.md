@@ -37,12 +37,12 @@ flowchart TB
     Service --> Iface["smoltcp Interface::poll()"]
     Service --> Dhcp["DHCP client/server"]
     Service --> Orphan["TCP orphan reaper"]
-    Service --> Dispatch["Router::dispatch(): tx_buffer -> device"]
+    Service --> Dispatch["Router::dispatch(): routed TX queue -> device"]
 ```
 
 ## 初始化阶段
 
-初始化阶段构造控制面、单协议核心和多设备数据面。`init_network()` 是一次性入口，重复调用会 panic。
+初始化阶段构造控制面、单协议核心和多设备数据面。`init_network()` 是一次性入口，配置错误返回 `AxError`；重复初始化仍由全局单例保护，调用方在启动阶段按需把错误升级为 panic。
 
 ### 配置校验
 
@@ -53,6 +53,7 @@ flowchart TB
 - 静态 IP 不能是 unspecified。
 - 静态 prefix 不能大于 32。
 - DNS server 不能是 unspecified。
+- 非 loopback 接口 metric 不能为 0，metric 0 保留给 `lo`。
 - 每个显式 `InterfaceConfig` 必须匹配一个设备。
 - 一个设备不能被多个 config 同时匹配。
 - 接口名不能冲突。
@@ -229,7 +230,7 @@ sequenceDiagram
     Driver-->>RxW: IRQ/OOB readiness
     RxW->>Driver: Device::recv()
     Driver-->>RxW: IP packet in local PacketBuffer
-    RxW->>Queue: push(RxPacket{interface_id, QueuedPacket})
+    RxW->>Queue: push(RxPacket{interface_id, PacketData})
     RxW->>Poll: request_poll()
     Poll->>Router: drain queue into rx_buffer
     Router->>Sock: snoop_tcp_packet()
@@ -266,8 +267,8 @@ sequenceDiagram
     App->>Poll: request_poll()
     Poll->>Smol: Interface::poll()
     Smol->>Router: TxToken::consume(IP packet)
+    Router->>Router: tx_route_for_packet(dst, src)
     Poll->>Router: dispatch()
-    Router->>Router: select_route_for_source(dst, src)
     alt loopback
         Router->>Router: inject_loopback_rx_direct()
     else Ethernet
@@ -279,8 +280,8 @@ sequenceDiagram
 
 dispatch 规则：
 
-- IPv4 limited broadcast 发往所有非 loopback 设备。
-- IPv4/IPv6 单播按 `(dst, src)` 查 `select_route_for_source()`。
+- IPv4 limited broadcast 和 IPv4 multicast 发往所有非 loopback 设备。
+- IPv4/IPv6 单播在 `TxToken::consume()` 中按 `(dst, src)` 查 `select_route_for_source()`，`dispatch()` 只使用已保存的 route。
 - 源地址必须与 route rule 的 source 一致，避免多宿主环境下从错误接口发包。
 - loopback 目的地直接写入 `Router.rx_buffer`。
 - 普通设备 TX 进入 per-device `tx_queue`，由 TX worker 调用 `Device::send()`。
@@ -290,7 +291,7 @@ dispatch 规则：
 loopback 普通 TX 不进入设备队列：
 
 ```text
-Router.tx_buffer
+Router routed TX queue
   -> Router::dispatch()
   -> inject_loopback_rx_direct()
   -> Router.rx_buffer
@@ -403,6 +404,7 @@ Discovering --Offer--> Requesting --ACK--> Bound
       ^          |          |                 |
       |          |          +--NAK/reset------+
       +--retry---+--timeout/retry-------------+
+      +--Failed after max retries, retry after 60s
 ```
 
 入站 packet 路径：
@@ -423,7 +425,7 @@ Router::poll()
 - DNS registry。
 - route table 中该接口的 IPv4 rules。
 
-出站 DHCP packet 由 `poll_dhcp()` 生成，再通过 `Router::send_on_device()` 从指定设备广播。
+出站 DHCP packet 由 `poll_dhcp()` 生成，再通过 `Router::send_on_device()` 从指定设备广播。连续重试超过上限后接口进入 `Failed` 并提交一次 deconfigure；`Failed` 不永久停机，60 秒后自动回到 `Discovering` 继续尝试。
 
 ### DHCP Server
 
@@ -454,10 +456,10 @@ dns_query_timeout(name, timeout)
   -> filter routable DNS server by control plane route lookup
   -> SOCKET_SET.add(dns::Socket)
   -> start_query()
-  -> loop:
+  -> poll_io():
        request_poll()
        get_query_result()
-       pending -> yield / timeout check
+       pending -> register_query_waker() / timeout
   -> DnsSocketGuard::drop() removes socket
 ```
 

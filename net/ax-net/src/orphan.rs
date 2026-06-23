@@ -65,9 +65,11 @@ enum ReapReason {
 /// - net-poll worker to reap finished orphans
 static ORPHAN_SOCKETS: LazyLock<Mutex<Vec<OrphanSocket>>> =
     LazyLock::new(|| Mutex::new(Vec::new()));
+static LAST_REAP_MICROS: LazyLock<Mutex<i64>> = LazyLock::new(|| Mutex::new(i64::MIN));
 
 const ORPHAN_MAX_LINGER: i64 = 60_000_000; // 60 seconds in microseconds
 const ORPHAN_MAX_SOCKETS: usize = 1024;
+const ORPHAN_REAP_INTERVAL: i64 = 1_000_000; // 1 second in microseconds
 
 /// Move a TCP socket to the orphan pool.
 ///
@@ -97,6 +99,22 @@ pub(crate) fn add_orphan(handle: SocketHandle, timestamp: Instant) {
 /// are removed first. Connections still inside the linger window are preserved
 /// so normal FIN/TIME_WAIT teardown can complete.
 pub(crate) fn reap_orphans(timestamp: Instant, sockets: &mut SocketSet<'_>) {
+    let now_micros = timestamp.total_micros();
+    let orphan_count = ORPHAN_SOCKETS.lock().len();
+    if orphan_count == 0 {
+        *LAST_REAP_MICROS.lock() = now_micros;
+        return;
+    }
+    {
+        let mut last_reap = LAST_REAP_MICROS.lock();
+        if orphan_count <= ORPHAN_MAX_SOCKETS
+            && now_micros.saturating_sub(*last_reap) < ORPHAN_REAP_INTERVAL
+        {
+            return;
+        }
+        *last_reap = now_micros;
+    }
+
     let mut removed = Vec::new();
     let remaining_overflow = {
         let mut orphans = ORPHAN_SOCKETS.lock();

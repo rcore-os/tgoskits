@@ -148,7 +148,7 @@ pub struct StaticIpConfig {
 
 ## 初始化校验
 
-`init_network()` 对配置执行 fail-fast 校验。启动阶段配置错误直接 panic，避免系统在半初始化网络状态下运行。
+`init_network()` 对配置执行 fail-fast 校验。配置错误返回 `AxError`，避免系统在半初始化网络状态下运行；启动层可以在早期初始化阶段把该错误转换为带上下文的 panic。
 
 ### 校验规则
 
@@ -161,6 +161,7 @@ pub struct StaticIpConfig {
 | gateway | 可以是 `0.0.0.0`，表示无默认路由 |
 | DNS server | 不能是 `0.0.0.0` |
 | matcher | 每个显式配置必须匹配唯一设备 |
+| metric | 非 loopback 接口不能使用 `0`；metric 0 保留给 `lo` |
 
 ### 默认策略
 
@@ -280,13 +281,13 @@ pub const LISTEN_QUEUE_SIZE: usize = 512;
 | 常量 | 含义 |
 | --- | --- |
 | `STANDARD_MTU` | Router 和 Ethernet 默认 MTU |
-| `SOCKET_BUFFER_SIZE` | Router RX/TX smoltcp-facing packet buffer 槽位数 |
+| `SOCKET_BUFFER_SIZE` | Router RX smoltcp-facing packet buffer 槽位数，以及 routed TX queue 槽位数 |
 | `DEVICE_RX_QUEUE_SIZE` | 所有真实设备共享的 device-to-Router RX queue 槽位数 |
 | `DEVICE_TX_QUEUE_SIZE` | 每设备 TX queue 槽位数 |
 | `ETHERNET_MAX_PENDING_PACKETS` | ARP resolution pending packet 上限 |
 | `LISTEN_QUEUE_SIZE` | TCP listen backlog clamp 上限 |
 
-Router queue 中的 packet 使用 inline `[u8; STANDARD_MTU] + len`，不为每个 queued packet 分配 `Box<[u8]>`。
+Router queue 中的 packet 使用内联 `PacketData { [u8; STANDARD_MTU], len }`，避免队列热路径每包 alloc/free 和全局 pool 锁争用。
 更完整的拷贝边界、队列满行为和内存预算见[内存与队列](memory.md)。
 
 ### Unix Stream Buffer
@@ -321,13 +322,11 @@ const TCP_KEEPCNT_MAX: u32 = 127;
 ### TCP_INFO
 
 ```rust
-const TCP_INFO_DEFAULT_MSS: u32 = 1460;
-const TCP_INFO_DEFAULT_PMTU: u32 = 1500;
 const TCP_INFO_INITIAL_RTO_MICROS: u32 = 1_000_000;
 const TCP_INFO_DEFAULT_REORDERING: u32 = 3;
 ```
 
-这些值用于填充 `TcpInfo` 中无法直接从 smoltcp 获得或需要 Linux 兼容默认值的字段。
+`TcpInfo.pmtu` 来自当前 remote route 对应接口的 MTU；没有 remote 或 route 时回退到 `STANDARD_MTU`。`snd_mss` / `rcv_mss` 由 PMTU 扣除 IPv4/IPv6 + TCP 头部估算后，再与 socket buffer capacity 取较小值。其余 smoltcp 不直接暴露、但 Linux 兼容需要的字段使用上面的默认值。
 
 ### DHCP / DNS / ARP
 
@@ -337,6 +336,8 @@ const TCP_INFO_DEFAULT_REORDERING: u32 = 3;
 | `DHCP_BOOTSTRAP_ATTEMPTS` | 200 | DHCP bootstrap 最大轮数 |
 | `DHCP_BOOTSTRAP_POLL_INTERVAL` | 10ms | DHCP bootstrap 每轮 sleep |
 | `DHCP_MAX_RETRY_SHIFT` | 4 | DHCP 指数退避上限，最大 16s |
+| `DHCP_MAX_RETRIES` | 8 | 进入 `Failed` 前的连续重试上限 |
+| `DHCP_FAILED_RETRY_SECS` | 60s | `Failed` 后重新进入 `Discovering` 的间隔 |
 | `DHCP_SERVER_LEASE_SECS` | 86400s | 内置 SoftAP DHCP server 返回的固定租约时间 |
 | `NEIGHBOR_TTL` | 300s | ARP neighbor cache TTL |
 | `ARP_REQUEST_RETRY` | 1s | ARP request 重试间隔 |

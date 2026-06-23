@@ -528,7 +528,6 @@ impl SocketOps for UdpSocket {
 
 impl Pollable for UdpSocket {
     fn poll(&self) -> IoEvents {
-        request_poll();
         if self.local_addr.read().is_none() {
             return IoEvents::empty();
         }

@@ -41,7 +41,7 @@ use smoltcp::{
     iface::SocketHandle,
     socket::tcp as smol,
     time::Duration,
-    wire::{IpEndpoint, IpListenEndpoint},
+    wire::{IpAddress, IpEndpoint, IpListenEndpoint},
 };
 use spin::LazyLock;
 
@@ -50,11 +50,11 @@ use crate::{
     SocketAddrEx, SocketOps,
     addr::{allocate_ephemeral_port, listen_addrs_conflict},
     config::{DeviceBinding, InterfaceId},
-    consts::{TCP_RX_BUF_LEN, TCP_TX_BUF_LEN},
+    consts::{STANDARD_MTU, TCP_RX_BUF_LEN, TCP_TX_BUF_LEN},
     general::GeneralOptions,
     get_control, get_service, interface_by_id,
     options::{Configurable, GetSocketOption, SetSocketOption, TcpInfo, TcpInfoOptions, TcpState},
-    request_poll,
+    poll_register, poll_wake, request_poll,
     state::*,
 };
 
@@ -65,8 +65,6 @@ const TCP_USER_TIMEOUT_DEFAULT_MS: u32 = 0;
 const TCP_KEEPIDLE_MAX_SECS: u32 = 32767;
 const TCP_KEEPINTVL_MAX_SECS: u32 = 32767;
 const TCP_KEEPCNT_MAX: u32 = 127;
-const TCP_INFO_DEFAULT_MSS: u32 = 1460;
-const TCP_INFO_DEFAULT_PMTU: u32 = 1500;
 const TCP_INFO_INITIAL_RTO_MICROS: u32 = 1_000_000;
 const TCP_INFO_DEFAULT_REORDERING: u32 = 3;
 
@@ -195,9 +193,47 @@ impl TcpSocket {
     }
 
     fn tcp_info_snapshot(&self) -> TcpInfo {
+        let remote_addr = self.with_smol_socket(|socket| {
+            socket
+                .remote_endpoint()
+                .or_else(|| *self.peer_endpoint.lock())
+                .map(|endpoint| endpoint.addr)
+        });
+        let (pmtu, header_len) = remote_addr
+            .and_then(|addr| {
+                get_control()
+                    .select_route_with_binding(&addr, self.general.device_binding())
+                    .ok()
+                    .and_then(|route| {
+                        interface_by_id(route.interface_id).map(|interface| {
+                            let header_len = match addr {
+                                IpAddress::Ipv4(_) => 40,
+                                IpAddress::Ipv6(_) => 60,
+                            };
+                            (interface.mtu, header_len)
+                        })
+                    })
+            })
+            .unwrap_or((STANDARD_MTU, 40));
+        let route_mss = pmtu.saturating_sub(header_len).min(u32::MAX as usize) as u32;
+
         self.with_smol_socket(|socket| {
             let send_queue = socket.send_queue().min(u32::MAX as usize) as u32;
-            let snd_mss = TCP_INFO_DEFAULT_MSS;
+            let recv_queue = socket.recv_queue();
+            let send_capacity = socket.send_capacity();
+            let recv_capacity = socket.recv_capacity();
+            let snd_mss = (route_mss as usize)
+                .min(send_capacity)
+                .min(u32::MAX as usize) as u32;
+            let rcv_mss = (route_mss as usize)
+                .min(recv_capacity)
+                .min(u32::MAX as usize) as u32;
+            let rcv_wnd = recv_capacity
+                .saturating_sub(recv_queue)
+                .min(u32::MAX as usize) as u32;
+            let snd_wnd = send_capacity
+                .saturating_sub(socket.send_queue())
+                .min(u32::MAX as usize) as u32;
 
             let mut options = TcpInfoOptions::empty();
             if socket.timestamp_enabled() {
@@ -213,12 +249,14 @@ impl TcpSocket {
                     .unwrap_or(TCP_INFO_INITIAL_RTO_MICROS),
                 ato_micros: socket.ack_delay().map(duration_micros_u32).unwrap_or(0),
                 snd_mss,
-                rcv_mss: snd_mss,
+                rcv_mss,
                 notsent_bytes: send_queue,
-                pmtu: TCP_INFO_DEFAULT_PMTU,
+                pmtu: pmtu.min(u32::MAX as usize) as u32,
                 advmss: snd_mss,
                 reordering: TCP_INFO_DEFAULT_REORDERING,
-                snd_wnd: 0,
+                rcv_space: rcv_wnd,
+                snd_wnd,
+                rcv_wnd,
                 ..Default::default()
             }
         })
@@ -281,11 +319,13 @@ impl TcpSocket {
 
     fn poll_listener(&self) -> IoEvents {
         let mut events = IoEvents::empty();
-        let endpoint = self.bound_endpoint().unwrap();
+        let Ok(endpoint) = self.bound_endpoint() else {
+            return events;
+        };
         let sockets = SOCKET_SET.inner.lock();
         events.set(
             IoEvents::IN,
-            LISTEN_TABLE.can_accept(endpoint, &sockets).unwrap(),
+            LISTEN_TABLE.can_accept(endpoint, &sockets).unwrap_or(false),
         );
         events
     }
@@ -312,8 +352,11 @@ impl Configurable for TcpSocket {
                 **keep_alive = self.with_smol_socket(|socket| socket.keep_alive().is_some());
             }
             O::MaxSegment(max_segment) => {
-                // TODO(mivik): get actual MSS
-                **max_segment = 1460;
+                **max_segment = self.with_smol_socket(|socket| {
+                    let send_capacity = socket.send_capacity();
+                    let default_mss = STANDARD_MTU.saturating_sub(40);
+                    default_mss.min(send_capacity)
+                });
             }
             O::TcpKeepIdle(keep_idle) => {
                 **keep_idle = self.keep_idle_secs.load(Ordering::Relaxed);
@@ -535,7 +578,7 @@ impl SocketOps for TcpSocket {
 
     fn recv(&self, mut dst: impl Write + IoBufMut, options: RecvOptions<'_>) -> AxResult<usize> {
         if self.rx_closed.load(Ordering::Acquire) {
-            return Err(AxError::NotConnected);
+            return Ok(0);
         }
         if self.state.get() == State::Closed {
             return Err(AxError::NotConnected);
@@ -628,7 +671,8 @@ impl SocketOps for TcpSocket {
         if how.has_read() {
             self.rx_closed.store(true, Ordering::Release);
             // rx_closed is visible before waking RDHUP/EOF waiters.
-            unsafe { self.poll_rx_closed.wake(IoEvents::RDHUP | IoEvents::IN) };
+            poll_wake(&self.poll_rx_closed, IoEvents::RDHUP | IoEvents::IN);
+            request_poll();
         }
 
         // stream
@@ -671,7 +715,6 @@ impl SocketOps for TcpSocket {
 
 impl Pollable for TcpSocket {
     fn poll(&self) -> IoEvents {
-        request_poll();
         let mut events = match self.state.get() {
             State::Connecting => self.poll_connect(),
             State::Connected | State::Idle | State::Closed => self.poll_stream(),
@@ -690,21 +733,18 @@ impl Pollable for TcpSocket {
             if port != 0 {
                 let endpoint = *self.bound_endpoint.lock();
                 if let Some(accept_poll) = LISTEN_TABLE.accept_poll(endpoint) {
-                    // accept registration runs from task poll context after
-                    // releasing the listen-table lock.
-                    unsafe { accept_poll.register(context.waker(), IoEvents::IN) };
+                    poll_register(&accept_poll, context.waker(), IoEvents::IN);
                     let accept_waker = LISTEN_TABLE.accept_waker(accept_poll.clone());
                     accept_registration = Some((endpoint, accept_poll, accept_waker));
                 }
             }
         }
         let recv_waker = if events.intersects(IoEvents::IN | IoEvents::RDHUP) {
-            // Socket registration runs from task poll context before taking the
-            // socket-set lock.
-            unsafe {
-                self.poll_rx
-                    .register(context.waker(), IoEvents::IN | IoEvents::RDHUP)
-            };
+            poll_register(
+                &self.poll_rx,
+                context.waker(),
+                IoEvents::IN | IoEvents::RDHUP,
+            );
             Some(Waker::from(Arc::new(DeferPollWake {
                 poll: self.poll_rx.clone(),
                 ready: IoEvents::IN | IoEvents::RDHUP,
@@ -713,9 +753,7 @@ impl Pollable for TcpSocket {
             None
         };
         let send_waker = if events.contains(IoEvents::OUT) {
-            // Socket registration runs from task poll context before taking the
-            // socket-set lock.
-            unsafe { self.poll_tx.register(context.waker(), IoEvents::OUT) };
+            poll_register(&self.poll_tx, context.waker(), IoEvents::OUT);
             Some(Waker::from(Arc::new(DeferPollWake {
                 poll: self.poll_tx.clone(),
                 ready: IoEvents::OUT,
@@ -744,11 +782,11 @@ impl Pollable for TcpSocket {
             self.general.register_waker(context.waker());
         }
         if events.contains(IoEvents::RDHUP) {
-            // Registration happens from socket poll task context.
-            unsafe {
-                self.poll_rx_closed
-                    .register(context.waker(), IoEvents::RDHUP | IoEvents::IN)
-            };
+            poll_register(
+                &self.poll_rx_closed,
+                context.waker(),
+                IoEvents::RDHUP | IoEvents::IN,
+            );
         }
     }
 }
@@ -1021,14 +1059,14 @@ mod tests {
             .unwrap();
 
         assert_eq!(info.state, TcpState::Closed);
-        assert_eq!(info.snd_mss, TCP_INFO_DEFAULT_MSS);
-        assert_eq!(info.rcv_mss, TCP_INFO_DEFAULT_MSS);
-        assert_eq!(info.pmtu, TCP_INFO_DEFAULT_PMTU);
+        assert_eq!(info.snd_mss, (STANDARD_MTU - 40) as u32);
+        assert_eq!(info.rcv_mss, (STANDARD_MTU - 40) as u32);
+        assert_eq!(info.pmtu, STANDARD_MTU as u32);
         assert_eq!(info.notsent_bytes, 0);
-        assert_eq!(info.snd_wnd, 0);
+        assert_eq!(info.snd_wnd, TCP_TX_BUF_LEN as u32);
         assert_eq!(info.snd_cwnd, 0);
-        assert_eq!(info.rcv_space, 0);
-        assert_eq!(info.rcv_wnd, 0);
+        assert_eq!(info.rcv_space, TCP_RX_BUF_LEN as u32);
+        assert_eq!(info.rcv_wnd, TCP_RX_BUF_LEN as u32);
     }
 
     #[test]

@@ -13,7 +13,7 @@ sidebar_label: "控制面"
 | --- | --- |
 | [config.rs](net/ax-net/src/config.rs) | 控制面公开数据模型：`InterfaceId`、`InterfaceInfo`、`NetworkConfig`、`RouteInfo`、`DeviceBinding` |
 | [service.rs](net/ax-net/src/service.rs) | `NetControl`、接口 registry、DNS registry、DHCP commit、route 查询入口 |
-| [router.rs](net/ax-net/src/router.rs) | `RouteTable`、`Rule`、`RouteDecision`、TX dispatch route lookup |
+| [router.rs](net/ax-net/src/router.rs) | `RouteTable`、`Rule`、`RouteDecision`、TX token route lookup 和 dispatch |
 | [general.rs](net/ax-net/src/general.rs) | socket 通用选项中的 `SO_BINDTODEVICE` / `DeviceBinding` 存取 |
 | [tcp.rs](net/ax-net/src/tcp.rs)、[udp.rs](net/ax-net/src/udp.rs)、[raw.rs](net/ax-net/src/raw.rs) | connect/send/bind 时使用控制面做地址、路由和设备绑定决策 |
 
@@ -45,12 +45,13 @@ flowchart TB
     Dns --> DnsQuery["dns_servers()/dns_query_timeout()"]
     Binding --> RouteLookup
     RouteLookup --> Sockets["TCP/UDP/raw connect/send"]
-    Routes --> Dispatch["Router::dispatch()"]
+    Routes --> TxToken["TxToken::consume()"]
+    TxToken --> Dispatch["Router::dispatch()"]
 ```
 
 控制面状态的写入路径只有两个：`init_network()` 构造初始状态，`commit_interface_update()` 在 DHCP ACK/NAK 后原子替换某接口的地址、DNS 和路由规则。两条路径都在 `Service` 锁内执行，确保 smoltcp IP address list 与控制面状态一致更新。
 
-`SharedRouteTable`（`Arc<RwLock<RouteTable>>`）同时被 `NetControl`（查询侧）和 `Router`（TX dispatch 侧）持有，两者指向同一实例。控制面通过 `select_route_with_binding()` 提供 socket 级别的路由查询；`Router::dispatch()` 通过 `select_route_for_source()` 做实际发包时的出接口选择。两者共享同一套路由规则，但查询时机和过滤条件不同。
+`SharedRouteTable`（`Arc<RwLock<RouteTable>>`）同时被 `NetControl`（查询侧）和 `Router`（TX token 侧）持有，两者指向同一实例。控制面通过 `select_route_with_binding()` 提供 socket 级别的路由查询；`TxToken::consume()` 在 smoltcp 生成完整 IP packet 后通过 `select_route_for_source()` 做实际发包时的出接口选择，并把结果保存在 `RoutedTxPacket` 中。两者共享同一套路由规则，但查询时机和过滤条件不同。
 
 ## 初始化流程
 
@@ -263,7 +264,7 @@ NET_CONTROL.call_once(|| control);
 SERVICE.call_once(|| Mutex::new(service));
 ```
 
-这个共享关系很关键：控制面查询看到的是 `NetControl.routes`，数据面 TX dispatch 使用的是 `Router.table`，两者实际指向同一个 `SharedRouteTable`。
+这个共享关系很关键：控制面查询看到的是 `NetControl.routes`，数据面 TX route lookup 通过 `Router.table` 完成，两者实际指向同一个 `SharedRouteTable`。
 
 ### DNS 注册表
 
@@ -468,7 +469,7 @@ pub fn select_route_with_binding(
 }
 ```
 
-TX dispatch 使用 `select_route_for_source()`：
+TX packet 生成路径使用 `select_route_for_source()`：
 
 ```rust
 pub fn select_route_for_source(
@@ -871,13 +872,14 @@ flowchart LR
     Connect -->|"查路由"| SR
     SR -->|"RouteDecision"| Send
     Send -->|"写入 smoltcp TX buffer"| Poll
-    Poll -->|"TX IP 包"| Dispatch
-    Dispatch -->|"select_route_for_source()"| Control
+    Poll -->|"TX IP 包"| TxToken
+    TxToken["TxToken::consume()"] -->|"select_route_for_source()"| Control
+    TxToken --> Dispatch
 ```
 
 - **bind**：`local_binding_for()` 从监听地址推导出 `DeviceBinding`，写入 `GeneralOptions::bound_if`。
 - **connect**：`select_route_with_binding()` 按目的地址 + 绑定约束选出接口和源地址，smoltcp 用此源地址构造 SYN。
-- **send**：socket 只写入 smoltcp TX buffer 并 `request_poll()`，真正的出接口选择在 `Router::dispatch()` 中由 `select_route_for_source()` 完成。
+- **send**：socket 只写入 smoltcp TX buffer 并 `request_poll()`，真正的出接口选择在 `TxToken::consume()` 中由 `select_route_for_source()` 完成，`Router::dispatch()` 只按 `RoutedTxPacket` 中保存的 route 分发。
 - **poll**：smoltcp 消费 RX 包后改变 socket readiness，通过 `register_waker()` 注册的 waker 唤醒等待的 socket 操作。
 
-这种设计确保控制面查询与数据面发送在时间上解耦：bind/connect 时做一次路由决策确定源地址，实际发包时再由 dispatch 根据完整 IP 包头选择出接口。
+这种设计确保控制面查询与数据面发送在时间上解耦：bind/connect 时做一次路由决策确定源地址，实际发包时再由 `TxToken::consume()` 根据完整 IP 包头选择出接口。

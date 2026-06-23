@@ -23,7 +23,7 @@ sidebar_label: "多设备实现"
 
 多设备层的核心是 `Router`——它实现 smoltcp 的 `phy::Device` trait，对协议核心暴露 `Medium::Ip` 层的单一虚拟设备，内部聚合 loopback 和多个 Ethernet 设备。smoltcp 只通过 `Router::receive()`/`transmit()` 读写 IP packet，不感知真实网卡数量。每个 packet 携带 ingress `InterfaceId` 元数据，用于 TCP SYN snoop、DHCP 分发和诊断。
 
-TX 方向由 `Router::dispatch()` 在每次 `Service::poll()` 周期中执行：解析 smoltcp 输出的 IP 包头，通过共享 `RouteTable` 的 `select_route_for_source()` 选择出接口和 next hop。Loopback 目的地址走直接注入快速路径（`inject_loopback_rx_direct()`），在同一 poll 周期内完成 TX→RX 回环；Ethernet 设备的 packet 推入 per-device 有界 TX queue，由专用 TX worker 调用 `Device::send()` 发出。
+TX 方向由 `TxToken::consume()` 在 smoltcp 生成 packet 后立即解析一次 IP 头，通过共享 `RouteTable` 的 `select_route_for_source()` 选出出接口和 next hop，并把 packet 连同 `TxRoute` 放入 Router 的有界 TX queue。`Router::dispatch()` 在每次 `Service::poll()` 周期中只消费这个预先计算好的 route：Loopback 目的地址走直接注入快速路径（`inject_loopback_rx_direct()`），在同一 poll 周期内完成 TX→RX 回环；Ethernet 设备的 packet 推入 per-device 有界 TX queue，由专用 TX worker 调用 `Device::send()` 发出。
 
 设备 worker（`device_rx_worker`/`device_tx_worker`）只和有界队列交互，不进入 `Service` 或 `SocketSet` 锁。RX worker 从硬件读取 packet 后推入共享 `RouterQueues::rx`，并调用 `request_poll()` 唤醒 net-poll worker；TX worker 从 per-device TX queue 取出 packet 调用设备发送。这种隔离确保硬件收发延迟不阻塞协议核心，协议核心锁也不阻塞设备收发。
 
@@ -36,20 +36,20 @@ flowchart TB
 
     subgraph RouterState["Router state"]
         RxBuf["rx_buffer"]
-        TxBuf["tx_buffer"]
+        TxQueue["routed TX queue"]
         Routes["SharedRouteTable"]
         Devices["Vec<DeviceHandle>"]
         RxQueue["shared bounded RX queue"]
     end
 
     Router --> RxBuf
-    Router --> TxBuf
+    Router --> TxQueue
     Router --> Routes
     Router --> Devices
     Devices --> RxQueue
 
     DevRx["per-device RX worker"] --> RxQueue
-    TxBuf --> Dispatch["Router::dispatch()"]
+    TxQueue --> Dispatch["Router::dispatch()"]
     Dispatch --> Loopback["loopback direct injection"]
     Dispatch --> DevTx["per-device TX queue"]
     DevTx --> TxWorker["per-device TX worker"]
@@ -178,7 +178,6 @@ rd_net::Net
 ```rust
 pub struct Router {
     rx_buffer: PacketBuffer,
-    tx_buffer: PacketBuffer,
     queues: Arc<RouterQueues>,
     devices: Vec<Arc<DeviceHandle>>,
     table: SharedRouteTable,
@@ -188,8 +187,8 @@ pub struct Router {
 字段语义：
 
 - `rx_buffer`：smoltcp-facing RX packet buffer，由 `Router::receive()` 消费。
-- `tx_buffer`：smoltcp-facing TX packet buffer，由 `TxToken::consume()` 写入。
 - `queues.rx`：所有非 loopback 设备 worker 共享的有界 RX 队列。
+- `queues.tx`：smoltcp `TxToken::consume()` 生成的 `RoutedTxPacket` 队列，保存完整 IP packet 和已计算的 `TxRoute`。
 - `devices`：Router 内部设备索引空间，和公开 `InterfaceId` 分离。
 - `table`：与控制面共享的 route table。
 
@@ -222,19 +221,19 @@ impl smoltcp::phy::Device for Router {
     type TxToken<'a> = TxToken<'a>;
 
     fn receive(&mut self, _timestamp: Instant) -> Option<(Self::RxToken<'_>, Self::TxToken<'_>)> {
-        if self.rx_buffer.is_empty() || self.tx_buffer.is_full() {
+        if self.rx_buffer.is_empty() || self.queues.tx.len() >= SOCKET_BUFFER_SIZE {
             None
         } else {
             let (interface_id, packet) = self.rx_buffer.dequeue().unwrap();
-            Some((RxToken { interface_id, packet }, TxToken(&mut self.tx_buffer)))
+            Some((RxToken { interface_id, packet }, self.tx_token()))
         }
     }
 
     fn transmit(&mut self, _timestamp: Instant) -> Option<Self::TxToken<'_>> {
-        if self.tx_buffer.is_full() {
+        if self.queues.tx.len() >= SOCKET_BUFFER_SIZE {
             None
         } else {
-            Some(TxToken(&mut self.tx_buffer))
+            Some(self.tx_token())
         }
     }
 
@@ -248,7 +247,7 @@ impl smoltcp::phy::Device for Router {
 }
 ```
 
-ingress `InterfaceId` 在 `Router::poll()` 阶段用于 TCP SYN snoop、DHCP 分发和后续诊断；进入 smoltcp `RxToken` 后只作为 Router 内部元数据保留，smoltcp 本身仍只消费 IP packet。`TxToken` 写入时先使用内部占位接口 ID，真实出接口由 `Router::dispatch()` 解析 IP header 后按 route table 决定。
+ingress `InterfaceId` 在 `Router::poll()` 阶段用于 TCP SYN snoop、DHCP 分发和后续诊断；进入 smoltcp `RxToken` 后只作为 Router 内部元数据保留，smoltcp 本身仍只消费 IP packet。`TxToken` 写入时准备一个内联 `PacketData`，让 smoltcp 直接填入完整 IP packet；填充完成后立刻做一次 IP header 校验和 route lookup，生成 `RoutedTxPacket` 入队，后续 `dispatch()` 不再重复解析 IP 头。`Router` 还维护最近 `(src, dst) -> TxRoute` 缓存，route table generation 未变化且命中时不会获取路由表读锁。
 
 ## 队列与 Buffer
 
@@ -273,34 +272,39 @@ struct BoundedPacketQueue<T> {
 - `is_empty()` 只读原子 `len`，用于 worker wait predicate。
 - 共享 RX queue 容量由 `DEVICE_RX_QUEUE_SIZE` 控制；per-device TX queue 容量由 `DEVICE_TX_QUEUE_SIZE` 控制。
 
-### QueuedPacket
+### PacketData
 
-队列中保存的是固定大小 packet buffer，而不是每包堆分配：
+队列中保存的是内联固定大小 packet buffer，而不是每包堆分配或全局 buffer pool：
 
 ```rust
-struct QueuedPacket {
+struct PacketData {
     bytes: [u8; STANDARD_MTU],
     len: usize,
 }
 ```
 
-`QueuedPacket::new(packet)` 会拒绝超过 `STANDARD_MTU` 的 packet。这个设计牺牲了端到端 zero-copy，但给出了明确内存上限，并避免早期 loopback 队列路径中的 `to_vec()` 分配。
+`PacketData::new(len)` 和 `PacketData::copy_from(packet)` 会拒绝超过 `STANDARD_MTU` 的 packet。这个设计牺牲了端到端 zero-copy，但避免了 RX/TX queue 热路径的每包 alloc/free，也避免了全局 packet pool 锁争用，并给出了明确内存上限。
 
 ### RX/TX Packet
 
 ```rust
 struct RxPacket {
     interface_id: InterfaceId,
-    bytes: QueuedPacket,
+    bytes: PacketData,
 }
 
 struct TxPacket {
     next_hop: IpAddress,
-    bytes: QueuedPacket,
+    bytes: PacketData,
+}
+
+struct RoutedTxPacket {
+    route: TxRoute,
+    bytes: PacketData,
 }
 ```
 
-RX 需要保存 ingress `InterfaceId`，用于 DHCP 分发、诊断和后续扩展；TX 保存的是 route table 已经选择好的 next hop。
+RX 需要保存 ingress `InterfaceId`，用于 DHCP 分发、诊断和后续扩展；per-device TX 保存的是 route table 已经选择好的 next hop。Router 的中间 TX queue 保存 `RoutedTxPacket`，避免 `dispatch()` 再次解析同一个 IP packet。
 
 ## 数据路径
 
@@ -350,29 +354,29 @@ pub fn poll(
 
 ### TX Path
 
-smoltcp 发送 packet 时只写入 `tx_buffer`，随后由 Router dispatch：
+smoltcp 发送 packet 时由 `TxToken::consume()` 写入 `PacketData`，同时计算 route，随后由 Router dispatch：
 
 ```text
 smoltcp socket
   -> TxToken::consume()
-  -> Router.tx_buffer
+  -> PacketData + tx_route_for_packet()
+  -> RouterQueues::tx
   -> Router::dispatch()
-  -> route lookup by dst + source
   -> loopback direct RX or per-device TX queue
 ```
 
 dispatch 规则：
 
-- IPv4 limited broadcast：复制到所有非 loopback 设备。
-- IPv4/IPv6 单播：使用 `select_route_for_source(dst, src)`，确保源地址和出接口一致。
+- IPv4 limited broadcast 和 IPv4 multicast：复制到所有非 loopback 设备。
+- IPv4/IPv6 单播：使用 `TxToken::consume()` 已计算的 `TxRoute::Direct`，确保源地址和出接口一致。
 - IPv6 multicast：Router 层会发往非 loopback 设备；完整 Ethernet IPv6/NDP 不在当前设备层完成范围。
-- 无 route：记录 warning 并丢弃该 packet。
+- malformed / non-IP / 无 route：在 `tx_route_for_packet()` 中记录 warning 并标记为 `TxRoute::Drop`，不进入 Router TX queue。
 
 普通设备 TX 进入对应设备的 TX queue：
 
 ```rust
 fn enqueue_tx(&self, next_hop: IpAddress, packet: &[u8]) -> bool {
-    let Some(bytes) = QueuedPacket::new(packet) else {
+    let Some(bytes) = PacketData::copy_from(packet) else {
         return false;
     };
     if self.tx_queue.push(TxPacket { next_hop, bytes }).is_err() {
@@ -475,7 +479,7 @@ fn device_rx_worker(device: Arc<DeviceHandle>) {
         }
 
         while let Ok((interface_id, packet)) = rx_buffer.dequeue() {
-            let Some(bytes) = QueuedPacket::new(packet) else {
+            let Some(bytes) = PacketData::copy_from(packet) else {
                 continue;
             };
             if device.rx_queue.push(RxPacket { interface_id, bytes }).is_err() {
@@ -750,7 +754,7 @@ socket readiness:
 - 单 smoltcp `Interface` 保持 socket handle、wildcard listen 和动态 route 的一致性。
 - per-device worker 解耦硬件收发和协议核心。
 - 有界队列防止网络热路径无界增长。
-- `QueuedPacket` 避免每包堆分配。
+- 内联 `PacketData` 避免队列热路径每包 alloc/free 和全局 pool 锁争用。
 - loopback direct injection 避免额外 queue hop。
 
 不承诺端到端 zero-copy。若后续要继续降低复制，需要同时调整 `rd-net` buffer ownership、smoltcp token 和 Router queue 的 packet 生命周期。

@@ -5,14 +5,14 @@ sidebar_label: "内存与队列"
 
 # 内存与队列
 
-`ax-net` 的数据面内存模型以有界队列和明确拷贝边界为核心。当前实现不承诺端到端 zero-copy；它优先保证嵌入式/unikernel 场景下的内存上限、锁边界和协议栈所有权清晰。RX 方向从驱动 buffer 进入 Router 队列，再进入 smoltcp socket buffer，最终复制到用户 buffer；TX 方向从用户 buffer 写入 smoltcp socket buffer，再进入 Router TX buffer、设备 TX queue，最后交给驱动发送。
+`ax-net` 的数据面内存模型以有界队列和明确拷贝边界为核心。当前实现不承诺端到端 zero-copy；它优先保证嵌入式/unikernel 场景下的内存上限、锁边界和协议栈所有权清晰。RX 方向从驱动 buffer 进入 Router 队列，再进入 smoltcp socket buffer，最终复制到用户 buffer；TX 方向从用户 buffer 写入 smoltcp socket buffer，再由 smoltcp `TxToken` 生成带路由信息的 packet，进入设备 TX queue，最后交给驱动发送。
 
 核心源码：
 
 | 源码 | 职责 |
 | --- | --- |
 | [consts.rs](net/ax-net/src/consts.rs) | socket buffer、Router packet buffer、设备 RX/TX queue 容量 |
-| [router.rs](net/ax-net/src/router.rs) | `BoundedPacketQueue`、`QueuedPacket`、`Router.rx_buffer` / `tx_buffer`、RX/TX worker |
+| [router.rs](net/ax-net/src/router.rs) | `BoundedPacketQueue`、`PacketData`、`Router.rx_buffer`、routed TX queue、RX/TX worker |
 | [service.rs](net/ax-net/src/service.rs) | `Service::poll()` 中的 RX drain、smoltcp poll、TX dispatch 顺序 |
 | [device/driver.rs](net/ax-net/src/device/driver.rs) | `rd-net` buffer 适配、`VecRxBuffer` / `VecTxBuffer`、RX prefetch |
 | [device/ethernet.rs](net/ax-net/src/device/ethernet.rs) | Ethernet 解封装、ARP pending packet、driver TX buffer 写入 |
@@ -25,7 +25,7 @@ sidebar_label: "内存与队列"
 | 内存域 | 典型对象 | 所有者 | 生命周期 |
 | --- | --- | --- | --- |
 | Driver buffer | `NetRxBuffer` / `NetTxBuffer`、`rd_net::RxQueue` / `TxQueue` | 具体网卡驱动或 `RdNetDriver` | 单个收发操作或驱动队列周期 |
-| Router queue / packet buffer | `QueuedPacket`、`RxPacket`、`TxPacket`、`Router.rx_buffer`、`Router.tx_buffer` | `Router` / device worker | packet 在设备 worker 与 net-poll worker 之间流转期间 |
+| Router queue / packet buffer | `PacketData`、`RxPacket`、`RoutedTxPacket`、`TxPacket`、`Router.rx_buffer` | `Router` / device worker | packet 在设备 worker 与 net-poll worker 之间流转期间 |
 | smoltcp socket buffer | TCP `SocketBuffer`、UDP/raw `PacketBuffer` | 全局 `SocketSet` 中的具体 socket | socket 生命周期内固定分配 |
 | 用户 buffer | syscall 传入的 `Read` / `Write` / `IoBufMut` | 调用者线程 | 单次 `send()` / `recv()` 调用 |
 
@@ -45,7 +45,7 @@ flowchart LR
 
     subgraph Core["net-poll worker: Service + smoltcp Interface + Router"]
         RxBuf["Router.rx_buffer<br/>SOCKET_BUFFER_SIZE"]
-        TxBuf["Router.tx_buffer<br/>SOCKET_BUFFER_SIZE"]
+        TxQueue["Router routed TX queue<br/>SOCKET_BUFFER_SIZE"]
         Poll["Interface::poll()"]
         Dispatch["Router::dispatch()"]
     end
@@ -73,8 +73,8 @@ flowchart LR
     UserTx -->|"copy: send"| UdpRawBuf
     TcpBuf --> Poll
     UdpRawBuf --> Poll
-    Poll --> TxBuf
-    TxBuf --> Dispatch
+    Poll -->|"fill PacketData + route"| TxQueue
+    TxQueue --> Dispatch
     Dispatch -->|"copy: selected dev"| TxQ0
     Dispatch -->|"copy: selected dev"| TxQ1
     TxQ0 -->|"copy: EthernetDevice::send"| TxMem
@@ -87,7 +87,7 @@ flowchart LR
 
 - 设备 worker 不持有 `Service` 或 `SocketSet` 锁。
 - net-poll worker 是唯一推进 smoltcp `Interface` 的线程。
-- Router queue 使用 inline `[u8; STANDARD_MTU]`，避免每包堆分配。
+- Router queue 使用内联 `PacketData { [u8; STANDARD_MTU], len }`，避免每包堆分配和全局 buffer pool 热锁。
 - queue 满时丢包并 warning，不创建无界 backlog。
 - loopback 普通 TX 直接注入 `Router.rx_buffer`，少一次队列 hop。
 
@@ -113,7 +113,7 @@ pub const ETHERNET_MAX_PENDING_PACKETS: usize = 128;
 
 | 常量 | 作用范围 | 默认内存预算 |
 | --- | --- | --- |
-| `SOCKET_BUFFER_SIZE` | `Router.rx_buffer` 和 `Router.tx_buffer` 的 packet metadata 槽位；每个 data buffer 是 `STANDARD_MTU * SOCKET_BUFFER_SIZE` | RX 约 96 KiB，TX 约 96 KiB |
+| `SOCKET_BUFFER_SIZE` | `Router.rx_buffer` 的 smoltcp-facing packet metadata 槽位，以及 routed TX queue 的槽位数；每个 data buffer 是 `STANDARD_MTU * SOCKET_BUFFER_SIZE` | RX 约 96 KiB；TX 最多约 96 KiB 在途 |
 | `DEVICE_RX_QUEUE_SIZE` | 所有真实设备共享的 device-to-Router RX queue | 256 × 1500B，约 384 KiB |
 | `DEVICE_TX_QUEUE_SIZE` | 每个真实设备独立的 TX queue | 每设备 128 × 1500B，约 192 KiB |
 | `TCP_RX_BUF_LEN` / `TCP_TX_BUF_LEN` | 每个 TCP socket 的 smoltcp byte buffer | 每连接约 128 KiB |
@@ -132,7 +132,7 @@ flowchart TB
     DriverRx["驱动 RX 内存<br/>rd-net RxQueue / NetRxBuffer"]
     EthRecv["EthernetDevice::recv()<br/>解析 Ethernet/ARP/IPv4"]
     LocalBuf["RX worker 本地 PacketBuffer<br/>1 * STANDARD_MTU"]
-    SharedRx["shared RX queue<br/>RxPacket + QueuedPacket<br/>DEVICE_RX_QUEUE_SIZE"]
+    SharedRx["shared RX queue<br/>RxPacket + PacketData<br/>DEVICE_RX_QUEUE_SIZE"]
     RouterRx["Router.rx_buffer<br/>PacketBuffer InterfaceId<br/>SOCKET_BUFFER_SIZE"]
     SmolPoll["smoltcp Interface::poll()"]
     SocketRx["TCP/UDP/raw socket RX buffer"]
@@ -152,7 +152,7 @@ NIC / virtqueue / rd-net RX memory
   -> NetRxBuffer / VecRxBuffer
   -> EthernetDevice::recv()
   -> device_rx_worker local PacketBuffer<InterfaceId>
-  -> BoundedPacketQueue<RxPacket> (QueuedPacket inline copy)
+  -> BoundedPacketQueue<RxPacket> (inline PacketData)
   -> Router.rx_buffer (PacketBuffer<InterfaceId>)
   -> smoltcp Interface::poll()
   -> TCP/UDP/raw socket RX buffer in SocketSet
@@ -191,7 +191,7 @@ let mut rx_buffer = PacketBuffer::new(
 
 ```text
 local PacketBuffer slice
-  -> QueuedPacket { bytes: [u8; STANDARD_MTU], len }
+  -> PacketData { bytes: [u8; STANDARD_MTU], len }
   -> RxPacket { interface_id, bytes }
   -> RouterQueues::rx.push()
 ```
@@ -221,7 +221,7 @@ while !self.rx_buffer.is_full() {
 }
 ```
 
-这一步又发生一次 copy：`QueuedPacket` 的 inline bytes 复制到 `Router.rx_buffer`。随后 smoltcp `Interface::poll()` 通过 `Router::receive()` 获取 `RxToken` 并解析 IP/TCP/UDP/raw，最后写入具体 socket 的 RX buffer：
+这一步又发生一次 copy：`PacketData` 中的 bytes 复制到 `Router.rx_buffer`。之后 smoltcp `Interface::poll()` 通过 `Router::receive()` 获取 `RxToken` 并解析 IP/TCP/UDP/raw，最后写入具体 socket 的 RX buffer：
 
 - TCP：写入 TCP socket 的 byte stream RX buffer。
 - UDP：写入 UDP packet buffer 和 metadata。
@@ -261,16 +261,16 @@ flowchart TB
     UserSend["用户 send/write buffer"]
     SocketTx["TCP/UDP/raw socket TX buffer"]
     SmolPoll["smoltcp Interface::poll()"]
-    RouterTx["Router.tx_buffer<br/>PacketBuffer placeholder ifindex 0<br/>SOCKET_BUFFER_SIZE"]
-    Dispatch["Router::dispatch()<br/>route by dst + src"]
-    DevTx["per-device TX queue<br/>TxPacket + QueuedPacket<br/>DEVICE_TX_QUEUE_SIZE"]
+    RouterTx["Router routed TX queue<br/>RoutedTxPacket<br/>SOCKET_BUFFER_SIZE"]
+    Dispatch["Router::dispatch()<br/>match precomputed route"]
+    DevTx["per-device TX queue<br/>TxPacket + PacketData<br/>DEVICE_TX_QUEUE_SIZE"]
     EthSend["EthernetDevice::send()<br/>ARP / Ethernet header"]
     Pending["ARP pending PacketBuffer<br/>ETHERNET_MAX_PENDING_PACKETS"]
     DriverTx["驱动 TX 内存<br/>NetTxBuffer / rd-net TxQueue"]
 
     UserSend -->|"copy to socket"| SocketTx
     SocketTx --> SmolPoll
-    SmolPoll -->|"generate IP packet"| RouterTx
+    SmolPoll -->|"generate IP packet + route once"| RouterTx
     RouterTx --> Dispatch
     Dispatch -->|"copy selected packet"| DevTx
     DevTx --> EthSend
@@ -283,9 +283,9 @@ flowchart TB
 user Read / IoBuf
   -> smoltcp TCP/UDP/raw socket TX buffer
   -> smoltcp Interface::poll()
-  -> Router.tx_buffer
+  -> RouterQueues::tx
   -> Router::dispatch()
-  -> per-device BoundedPacketQueue<TxPacket> (QueuedPacket inline copy)
+  -> per-device BoundedPacketQueue<TxPacket> (inline PacketData)
   -> device_tx_worker
   -> EthernetDevice::send()
   -> NetTxBuffer / VecTxBuffer
@@ -305,37 +305,39 @@ send()
 
 TCP 的用户 bytes 进入 TCP TX byte buffer。UDP/raw 发送会申请一个 packet-sized smoltcp buffer，然后把用户 payload 写进去；UDP `MSG_MORE` corking 会在 socket 层暂存第一次 send 的 endpoint/source，最终 flush 时一次性写入 smoltcp UDP packet buffer。
 
-### smoltcp 到 Router.tx_buffer
+### smoltcp 到 Router TX Queue
 
-net-poll worker 执行 `Interface::poll()` 时，smoltcp 根据 TCP/UDP/raw socket 状态生成完整 IP packet。`Router::transmit()` 返回 `TxToken`，`TxToken::consume()` 把 packet 写入 `Router.tx_buffer`：
+net-poll worker 执行 `Interface::poll()` 时，smoltcp 根据 TCP/UDP/raw socket 状态生成完整 IP packet。`Router::transmit()` 返回 `TxToken`，`TxToken::consume()` 准备内联 `PacketData`，让 smoltcp 写入 packet，然后立即解析一次 IP header 并计算 `TxRoute`：
 
 ```rust
 fn consume<R, F>(self, len: usize, f: F) -> R
 where
     F: FnOnce(&mut [u8]) -> R,
 {
-    f(self
-        .0
-        .enqueue(len, TX_INTERFACE_PLACEHOLDER)
-        .expect("This was checked before creating the TxToken"))
+    let mut packet = PacketData::new(len).expect("checked before creating TxToken");
+    let result = f(packet.as_mut_slice());
+    let route = tx_route_for_packet(&self.table, packet.as_slice());
+    if !matches!(route, TxRoute::Drop) {
+        let _ = self.tx_queue.push(RoutedTxPacket { route, bytes: packet });
+    }
+    result
 }
 ```
 
-这里的 metadata 使用内部占位 `InterfaceId(0)`，因为真实出接口必须等 IP header 生成后才能按 `(dst, src)` 查 route table。
+这一步是 TX packet 的唯一 IP header 解析点。malformed / non-IP / 无 route packet 会被标记为 `TxRoute::Drop` 并直接丢弃，不占用 Router TX queue 槽位。`Router` 还维护一个带 route-table generation 的最近 `(src, dst) -> TxRoute` 缓存；缓存命中时只读原子 generation，不获取 route table 读锁。
 
 ### Router.dispatch 到 per-device TX Queue
 
-`Router::dispatch()` 从 `Router.tx_buffer` 取完整 IP packet：
+`Router::dispatch()` 从 Router routed TX queue 取 `RoutedTxPacket`，只 match 已计算好的 `TxRoute`：
 
 - loopback：直接复制到 `Router.rx_buffer`。
-- IPv4 limited broadcast：复制到所有非 loopback device 的 TX queue。
-- 普通单播：解析 `src/dst`，调用 `select_route_for_source(dst, src)`，把 packet 复制到选中设备的 `tx_queue`。
+- IPv4 limited broadcast 和 IPv4 multicast：复制到所有非 loopback device 的 TX queue。
+- 普通单播：使用 `TxRoute::Direct { dev, next_hop, .. }`，把 `PacketData` 移交到选中设备的 `tx_queue`，避免再复制一份 packet。
 
 普通 Ethernet TX 入队形态：
 
 ```text
-Router.tx_buffer packet slice
-  -> QueuedPacket { bytes: [u8; STANDARD_MTU], len }
+RoutedTxPacket { route, bytes: PacketData }
   -> TxPacket { next_hop, bytes }
   -> DeviceHandle.tx_queue
 ```
@@ -367,7 +369,7 @@ loopback 普通 socket TX 是特殊快速路径：
 flowchart LR
     UserA["发送端用户 buffer"]
     SockA["发送端 socket TX buffer"]
-    RouterTx["Router.tx_buffer"]
+    RouterTx["Router routed TX queue"]
     Inject["inject_loopback_rx_direct()<br/>snoop TCP SYN"]
     RouterRx["Router.rx_buffer"]
     Poll["同一轮 Interface::poll()"]
@@ -387,7 +389,7 @@ flowchart LR
 ```text
 user send()
   -> smoltcp socket TX buffer
-  -> Router.tx_buffer
+  -> RouterQueues::tx
   -> Router::dispatch()
   -> inject_loopback_rx_direct()
   -> Router.rx_buffer
@@ -396,7 +398,7 @@ user send()
   -> user recv()
 ```
 
-这个路径不进入 `DeviceHandle.tx_queue`，也不进入共享 `RouterQueues::rx`。它仍会把 IP packet 从 `Router.tx_buffer` 复制到 `Router.rx_buffer`，但避免了早期实现中的 `to_vec()` 分配和额外 RX queue hop。`inject_loopback_rx_direct()` 在写入 `rx_buffer` 前调用 `snoop_tcp_packet()`，因此 loopback TCP SYN 能在同一轮 poll 中预创建 accept child socket。
+这个路径不进入 `DeviceHandle.tx_queue`，也不进入共享 `RouterQueues::rx`。它把 `RoutedTxPacket` 中的 IP packet 直接复制到 `Router.rx_buffer`，避免了早期实现中的 `to_vec()` 分配和额外 RX queue hop。`inject_loopback_rx_direct()` 在写入 `rx_buffer` 前调用 `snoop_tcp_packet()`，因此 loopback TCP SYN 能在同一轮 poll 中预创建 accept child socket。
 
 `send_on_device()` 的 loopback 分支仍可能使用共享 RX queue，这是控制面指定设备发送路径；普通 socket loopback TX 走 direct injection。
 
@@ -423,7 +425,7 @@ user send()
 | 项目 | 估算 |
 | --- | --- |
 | `Router.rx_buffer` | `64 * 1500` ≈ 96 KiB |
-| `Router.tx_buffer` | `64 * 1500` ≈ 96 KiB |
+| Router routed TX queue | 最多 `64 * 1500` ≈ 96 KiB 在途 `PacketData` |
 | shared RX queue | `256 * 1500` ≈ 384 KiB |
 | per-device TX queue | `2 * 128 * 1500` ≈ 384 KiB |
 | ARP pending packets | `2 * 128 * 1500` ≈ 384 KiB |

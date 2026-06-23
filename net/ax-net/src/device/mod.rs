@@ -22,12 +22,11 @@ use alloc::{string::String, sync::Arc, vec::Vec};
 
 use axpoll::PollSet;
 use smoltcp::{
-    storage::PacketBuffer,
     time::Instant,
     wire::{IpAddress, Ipv4Cidr},
 };
 
-use crate::config::InterfaceId;
+use crate::{config::InterfaceId, router::RxPacketBuffer};
 
 mod driver;
 mod ethernet;
@@ -67,7 +66,7 @@ pub trait Device: Send + Sync {
     fn recv(
         &mut self,
         interface_id: InterfaceId,
-        buffer: &mut PacketBuffer<InterfaceId>,
+        buffer: &mut RxPacketBuffer,
         timestamp: Instant,
         snoop: &mut dyn FnMut(&[u8]),
     ) -> bool;

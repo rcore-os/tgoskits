@@ -476,7 +476,8 @@ pub struct TcpInfo {
 `TcpInfo` 的字段来源分三类：
 
 - 直接来自 smoltcp：连接状态、收发队列长度、窗口估计等。
-- 来自 `tcp.rs` 默认值：MSS、PMTU、初始 RTO、reordering 等 Linux 兼容默认字段。
+- 来自 route/socket 状态：PMTU 取当前 remote route 对应接口 MTU，MSS 由 PMTU 和 socket buffer capacity 合成。
+- 来自 `tcp.rs` 默认值：初始 RTO、reordering 等 Linux 兼容默认字段。
 - 合成或保守值：smoltcp 未暴露的拥塞控制细节、ECN/SACK/window scale 等字段以保守方式填充。
 
 因此 `TCP_INFO` 适合用于 Linux 兼容探测和调试，不应被上层当作完整 Linux TCP 栈的拥塞控制 ABI。
