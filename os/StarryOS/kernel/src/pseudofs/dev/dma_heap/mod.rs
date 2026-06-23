@@ -1,3 +1,5 @@
+mod uapi;
+
 use core::any::Any;
 
 use axfs_ng_vfs::{DeviceId, NodeFlags, VfsError, VfsResult};
