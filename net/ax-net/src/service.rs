@@ -57,7 +57,10 @@
 //! ```
 
 use alloc::{boxed::Box, format, string::String, sync::Arc, vec, vec::Vec};
-use core::task::Waker;
+use core::{
+    sync::atomic::{AtomicU32, Ordering},
+    task::Waker,
+};
 
 use ax_errno::{AxResult, ax_err_type};
 use ax_hal::time::{NANOS_PER_MICROS, monotonic_time_nanos, wall_time_nanos};
@@ -89,6 +92,8 @@ use crate::{
 fn now() -> Instant {
     Instant::from_micros_const((monotonic_time_nanos() / NANOS_PER_MICROS) as i64)
 }
+
+static DHCP_XID_SEQ: AtomicU32 = AtomicU32::new(0x9e37_79b9);
 
 struct ControlState {
     interfaces: Vec<NetInterface>,
@@ -1005,11 +1010,15 @@ enum DhcpEvent {
 }
 
 fn dhcp_transaction_id(mac: EthernetAddress) -> u32 {
-    let mut value = (wall_time_nanos() as u32).rotate_left(7);
+    let seq = DHCP_XID_SEQ.fetch_add(0x9e37_79b9, Ordering::Relaxed);
+    let mut value = (wall_time_nanos() as u32)
+        ^ ((monotonic_time_nanos() >> 16) as u32).rotate_left(11)
+        ^ seq.rotate_left(5);
     for byte in mac.0 {
-        value = value.rotate_left(5) ^ u32::from(byte);
+        value ^= u32::from(byte);
+        value = value.wrapping_mul(0x045d_9f3b).rotate_left(7);
     }
-    value
+    value ^ (value >> 16)
 }
 
 fn is_unicast_ipv4(addr: Ipv4Address) -> bool {

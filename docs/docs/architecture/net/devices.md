@@ -512,14 +512,13 @@ pub fn register_device_waker(&self, waker: &Waker) {
 pub fn register_waker(&self, binding: DeviceBinding, waker: &Waker) {
     for device in &self.devices {
         if binding.bound_if.is_none_or(|id| id == device.interface_id) {
-            device.inner.lock().register_waker(&device.rx_waker);
             device.inner.lock().register_waker(waker);
         }
     }
 }
 ```
 
-`register_device_waker()` 用于 net-poll worker 的全局设备 readiness；`register_waker(binding, waker)` 用于 socket readiness，只向 `SO_BINDTODEVICE` 或本地地址绑定允许的接口注册。
+`register_device_waker()` 用于 net-poll worker 的全局设备 readiness，并同时确保设备 RX worker 的内部 waker 已注册；`register_waker(binding, waker)` 用于 socket readiness，只向 `SO_BINDTODEVICE` 或本地地址绑定允许的接口注册调用方 waker，避免每个 socket 重复注册内部 RX waker。
 
 ## Ethernet 链路层
 

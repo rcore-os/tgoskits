@@ -745,7 +745,6 @@ impl Router {
     pub fn register_waker(&self, binding: DeviceBinding, waker: &core::task::Waker) {
         for device in &self.devices {
             if binding.bound_if.is_none_or(|id| id == device.interface_id) {
-                register_device_poll(device, &device.rx_waker);
                 register_device_poll(device, waker);
             }
         }
