@@ -77,7 +77,7 @@ const fn scale_factor(src_dim: u32, dst_dim: u32) -> u32 {
     }
 }
 
-fn src_csc_bits(csc: Option<CscStandard>) -> u32 {
+const fn src_csc_bits(csc: Option<CscStandard>) -> u32 {
     match csc {
         Some(CscStandard::Bt601Limited) => {
             registers::CSC_BT601_LIMITED << registers::SRC_INFO_CSC_SHIFT
@@ -96,6 +96,8 @@ fn rect_base(plane_base: u64, x: u32, y: u32, stride_bytes: u32, bpp: u32) -> u3
     (plane_base + (y as u64) * (stride_bytes as u64) + (x as u64) * (bpp as u64)) as u32 // validated to fit
 }
 
+/// Encode a general blit (crop/scale/place/CSC), MMU disabled. Assumes a validated `Blit`
+/// (`RgaCore::start` calls `op.validate()` first); rect dims are non-zero per that contract.
 pub fn encode_blit(blit: &Blit) -> crate::error::Result<CommandBuffer> {
     let mut buf = CommandBuffer::zeroed();
     let Blit {
@@ -169,8 +171,13 @@ pub fn encode_blit(blit: &Blit) -> crate::error::Result<CommandBuffer> {
     } else {
         registers::SCL_UP
     };
+    // SRC_INFO.csc_mode encodes YUV→RGB; only set when src is YUV (not RGB→YUV direction).
     let src_info = hw_format(src.format)
-        | src_csc_bits(*csc)
+        | if src.format.is_yuv() {
+            src_csc_bits(*csc)
+        } else {
+            0
+        }
         | (scl_x << registers::SRC_INFO_HSCL_SHIFT)
         | (scl_y << registers::SRC_INFO_VSCL_SHIFT);
     buf.set_register(registers::SRC_INFO, src_info);
@@ -435,6 +442,64 @@ mod mmu_off_tests {
         assert_eq!(
             (si >> registers::SRC_INFO_CSC_SHIFT) & 0x3,
             registers::CSC_BT601_LIMITED
+        );
+    }
+
+    #[test]
+    fn blit_rgb_to_nv12_sets_dst_csc() {
+        // RGB→YUV writes dst_csc in DST_INFO; src csc bits stay 0.
+        let src = ImageDesc::rgb(640, 480, 640 * 4, PixelFormat::Rgba8888, 0x4000_0000);
+        let dst = ImageDesc::nv12(640, 480, 640, 0x4100_0000);
+        let mut b = Blit::resize(src, dst);
+        b.csc = Some(CscStandard::Bt709Limited);
+        let cmd = encode_blit(&b).unwrap();
+        let di = cmd.register(registers::DST_INFO).unwrap();
+        assert_eq!(di & 0xf, registers::FMT_YCBCR_420_SP);
+        assert_eq!(
+            (di >> registers::DST_INFO_CSC_SHIFT) & 0x3,
+            registers::CSC_BT709_LIMITED
+        );
+        // YUV dst → DST_CB_BASE programmed
+        assert_eq!(
+            cmd.register(registers::DST_CB_BASE_ADDR),
+            Some(0x4100_0000 + 640 * 480)
+        );
+        // src is RGB → no src csc bits
+        let si = cmd.register(registers::SRC_INFO).unwrap();
+        assert_eq!((si >> registers::SRC_INFO_CSC_SHIFT) & 0x3, 0);
+    }
+
+    #[test]
+    fn letterbox_is_fill_plus_blit_into_centered_rect() {
+        let dst = ImageDesc::rgb(640, 640, 640 * 3, PixelFormat::Rgb888, 0x4100_0000);
+        let fill = encode_fill(dst, 0x0072_7272).unwrap();
+        assert_eq!(fill.register(registers::SRC_BG_COLOR), Some(0x0072_7272));
+        let src = ImageDesc::rgb(1920, 1080, 1920 * 3, PixelFormat::Rgb888, 0x4000_0000);
+        let b = Blit::new(
+            src,
+            dst,
+            Rect {
+                x: 0,
+                y: 0,
+                width: 1920,
+                height: 1080,
+            },
+            Rect {
+                x: 0,
+                y: 140,
+                width: 640,
+                height: 360,
+            },
+            None,
+        );
+        let cmd = encode_blit(&b).unwrap();
+        assert_eq!(
+            cmd.register(registers::DST_Y_RGB_BASE_ADDR),
+            Some(0x4100_0000 + 140 * 640 * 3)
+        );
+        assert_eq!(
+            cmd.register(registers::DST_ACT_INFO),
+            Some(639 | (359 << 16))
         );
     }
 }
