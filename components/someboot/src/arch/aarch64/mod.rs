@@ -104,6 +104,10 @@ impl ArchTrait for Arch {
         power::shutdown()
     }
 
+    fn reset() -> ! {
+        power::reset()
+    }
+
     fn secondary_entry_fn_address() -> *const () {
         _secondary_entry as *const ()
     }

@@ -95,6 +95,9 @@ pub trait ArchTrait {
     fn set_user_page_table(val: PageTableInfo);
 
     fn shutdown() -> !;
+    fn reset() -> ! {
+        Self::shutdown()
+    }
     fn secondary_entry_fn_address() -> *const ();
     fn cpu_on(hartid: usize, entry: usize, arg: usize) -> Result<(), CpuOnError>;
 
