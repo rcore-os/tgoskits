@@ -22,7 +22,7 @@ Host (Linux)
       ├─ debugfs -w → rm + write         (幂等 overlay 注入)
       └─ cargo xtask starry app qemu -t selfhost/selfhost-full-kernel (16G, OVMF UEFI)
           └─ StarryOS 内核
-              └─ Debian rootfs (ext4)
+              └─ selfhost rootfs (ext4)
                   └─ /usr/bin/self-compile-inner.sh
                       ├─ filter-workspace.sh (架构过滤)
                       └─ cargo build --ignore-rust-version -p starryos --offline
@@ -209,21 +209,29 @@ sudo ./scripts/prepare-selfhost-rootfs.sh --arch x86_64
 ```
 scripts/
 ├── self-compile.sh          # 主入口：xtask app runner → QEMU → cargo build → debugfs 提取
-├── prepare-selfhost-rootfs.sh  # 准备包含编译依赖的 Debian rootfs 镜像
-└── run-selfbuilt-kernel.sh     # 提取并启动自编译内核（OVMF UEFI for x86_64）
+├── prepare-selfhost-rootfs.sh  # 准备包含编译依赖的 Debian rootfs 镜像（需要 sudo）
+├── run-selfbuilt-kernel.sh     # 提取并启动自编译内核（OVMF UEFI for x86_64）
+└── filter-workspace.sh      # 架构过滤：从 Cargo.toml 移除不兼容的 workspace members
 
 apps/starry/selfhost/
-├── build-x86_64-unknown-none.toml   # x86_64 bare-metal build config（plat_dyn + axplat-dyn/efi）
+├── build-x86_64-unknown-none.toml   # x86_64 bare-metal build config（axplat-dyn/efi）
+├── selfhost-bootstrap/
+│   ├── prebuild.sh                  # 生成 bootstrap overlay（Alpine base → selfhost rootfs）
+│   └── qemu-x86_64.toml             # QEMU 配置（4G, apk + rustup, shell_init_cmd）
 └── selfhost-full-kernel/
     ├── prebuild.sh                  # 生成所有 overlay（inner script, linker.x, axconfig）
     └── qemu-x86_64.toml             # QEMU 配置（16G, cache=writeback, OVMF UEFI）
 ```
 
-**CI 不运行的原因**: Debian rootfs 镜像制备后约 8-12GB（含 rustup nightly 工具链 ~6.9GB、预缓存 crate、系统包），未上传到 tgosimages release，CI 容器无法下载。
+**CI 不运行的原因**: selfhost rootfs 镜像制备后约 8-12GB（含 rustup nightly 工具链 ~6.9GB、预缓存 crate、系统包），未上传到 tgosimages release，CI 容器无法下载。
 
 **手动运行**:
 ```bash
-# 准备 rootfs（首次或依赖变更时，需要 sudo）
+# 准备 rootfs（首次，二选一）
+#   方式 A（推荐，无 sudo）：基于 Alpine 通过 QEMU 自举 (~20 min)
+./scripts/self-compile.sh --arch x86_64 --bootstrap
+
+#   方式 B（需要 sudo）：在宿主机构建 Debian rootfs
 sudo ./scripts/prepare-selfhost-rootfs.sh --arch x86_64 --force
 
 # 运行自编译（x86_64 KVM, SMP=4）
@@ -239,7 +247,7 @@ sudo ./scripts/prepare-selfhost-rootfs.sh --arch x86_64 --force
 ## 已知限制
 
 1. **`phys-memory-size` 硬编码 8GB (riscv64)**: 动态 RAM 检测因启动阶段地址空间不一致无法实现。x86_64 使用 axplat-dyn + somehal 动态检测，无需硬编码。
-2. **自编译测试不在标准 CI 中运行**: 需要 Debian rootfs 镜像（制备后 ~8-12GB），CI 环境无法承载，仅支持本地手动测试。
+2. **自编译测试不在标准 CI 中运行**: 需要 selfhost rootfs 镜像（制备后 ~8-12GB），CI 环境无法承载，仅支持本地手动测试。
 3. **QEMU 内存配置**: riscv64 使用 `-m 8G`，x86_64 使用 `-m 16G`（qemu-x86_64.toml 中配置）。
 4. **aarch64 引导已验证**: rootfs 准备 + 种子内核引导 + shell 可用均通过，完整编译因 TCG 模拟性能限制（预计 4-8h）未运行。需动态平台默认配置 + PIE 目标（`--config test-suit/starryos/qemu-smp1/build-aarch64-unknown-none-softfloat.toml`）。
 5. **页面回收仅支持干净页**: 脏页在极端压力下作为最后手段回收（记录 warning），缺少脏页写回机制。
@@ -248,7 +256,7 @@ sudo ./scripts/prepare-selfhost-rootfs.sh --arch x86_64 --force
 
 - **QEMU**: riscv64 (TCG) / x86_64 (KVM) / aarch64 (TCG)，内存按 arch 配置（riscv64: 8G, x86_64: 16G）
 - **内核**: StarryOS (dev 分支)
-- **根文件系统**: Debian (per-arch), ext4, rustc nightly-2026-04-27
-- **Host 依赖**: `qemu-system-*`, `debugfs`（来自 e2fsprogs），x86_64 额外需要 `objcopy`（binutils）和 OVMF firmware（edk2-ovmf）；仅 `prepare-selfhost-rootfs.sh` 需要 `sudo` 和 `systemd-nspawn`
+- **根文件系统**: Debian 或 Alpine (per-arch), ext4, rustc nightly-2026-04-27
+- **Host 依赖**: `qemu-system-*`, `debugfs`（来自 e2fsprogs），x86_64 额外需要 `objcopy`（binutils）和 OVMF firmware（edk2-ovmf）。仅 `prepare-selfhost-rootfs.sh` 需要 `sudo` 和 `systemd-nspawn`；`--bootstrap` 路径全程无 sudo。
 - **源码**: StarryOS monorepo (离线，预取依赖)
 - **SMP**: 已验证 SMP=4 正常（VFS 锁 `SpinNoIrq` → `SpinNoPreempt` + journal coherence 修复）

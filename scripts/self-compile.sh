@@ -8,12 +8,15 @@
 # parsing, env-var forwarding, and post-QEMU binary extraction.
 #
 # Prerequisites:
-#   - scripts/prepare-selfhost-rootfs.sh (run once to create the selfhost rootfs)
+#   - Rootfs (run once to create the selfhost rootfs):
+#       Option A (recommended, no sudo): ./scripts/self-compile.sh --arch x86_64 --bootstrap
+#       Option B (needs sudo):           sudo ./scripts/prepare-selfhost-rootfs.sh --arch x86_64 --force
 #   - qemu-system-<arch>, debugfs (from e2fsprogs)
 #
 # Usage:
 #   ./scripts/self-compile.sh [--arch riscv64|x86_64|aarch64] [--smp N] [--jobs N] \
-#                            [--commit SHA] [--ref REF] [--log none|error|warn|info]
+#                            [--commit SHA] [--ref REF] [--log none|error|warn|info] \
+#                            [--bootstrap]
 #
 #
 # Output:
@@ -56,7 +59,7 @@ while [[ $# -gt 0 ]]; do
         --log)    LOG_LEVEL="${2:-info}"; shift 2 ;;
         --bootstrap)  BOOTSTRAP="true"; shift ;;
         --help|-h)
-            echo "Usage: $0 [--arch riscv64|x86_64|aarch64] [--smp N] [--jobs N] [--commit SHA] [--ref REF] [--log none|error|warn|info]"
+            echo "Usage: $0 [--arch riscv64|x86_64|aarch64] [--smp N] [--jobs N] [--commit SHA] [--ref REF] [--log none|error|warn|info] [--bootstrap]"
             echo ""
             echo "Options:"
             echo "  --arch <arch>   Target architecture (default: riscv64)"
@@ -65,6 +68,7 @@ while [[ $# -gt 0 ]]; do
             echo "  --commit <SHA>  Expected source commit for identity verification"
             echo "  --ref <REF>     Expected git ref (informational, no strict check)"
             echo "  --log <level>   Log level: none, error, warn, info (default: info)"
+            echo "  --bootstrap     Bootstrap selfhost rootfs via QEMU (no host sudo)"
             exit 0
             ;;
         *) error "Unknown argument: $1";;
@@ -82,7 +86,7 @@ case "$ARCH" in
         ;;
     x86_64)
         SELF_COMPILE_TARGET="x86_64-unknown-none"
-        ROOTFS_IMG="tmp/debian-selfhost/rootfs-x86_64-debian-selfhost.img"
+        ROOTFS_IMG="tmp/selfhost/rootfs-x86_64-selfhost-working.img"
         ;;
     aarch64)
         SELF_COMPILE_TARGET="aarch64-unknown-none-softfloat"
@@ -102,25 +106,34 @@ command -v debugfs &>/dev/null || error "debugfs not found (install e2fsprogs)"
 # selfhost rootfs blueprint to a working copy so the blueprint stays
 # pristine and the self-compiled binary persists after QEMU exits.
 if [ "$ARCH" = "x86_64" ]; then
-    mkdir -p tmp/debian-selfhost
-    DEBIAN_SRC="tmp/axbuild/rootfs/rootfs-x86_64-debian-selfhost.img"
+    mkdir -p tmp/selfhost
+    # The selfhost rootfs blueprint is created once (by --bootstrap or
+    # prepare-selfhost-rootfs.sh) and reused across runs.  Each run clones
+    # it to a working copy so the blueprint stays pristine.
+    #
+    # --bootstrap creates an Alpine-based selfhost rootfs via QEMU (no host sudo).
+    # prepare-selfhost-rootfs.sh creates a Debian-based selfhost rootfs (needs sudo).
+    # Both paths produce a rootfs at the same blueprint path, and both are
+    # compatible with self-compilation (the bare-metal target doesn't link libc).
+    SELFHOST_BLUEPRINT="tmp/axbuild/rootfs/rootfs-x86_64-selfhost.img"
 
-    if [ ! -f "$DEBIAN_SRC" ] && [ "$BOOTSTRAP" = "true" ]; then
+    if [ ! -f "$SELFHOST_BLUEPRINT" ] && [ "$BOOTSTRAP" = "true" ]; then
         info "=== Bootstrapping selfhost rootfs via QEMU (no host sudo) ==="
+        info "This creates an Alpine-based selfhost rootfs with build tools + Rust."
         ALPINE_ROOTFS="tmp/axbuild/rootfs/rootfs-x86_64-alpine.img"
         [ -f "$ALPINE_ROOTFS" ] || error \
             "Alpine rootfs not found: $ALPINE_ROOTFS
 Run: cargo xtask starry rootfs --arch x86_64"
 
         info "Alpine base: $ALPINE_ROOTFS ($(stat -c%s "$ALPINE_ROOTFS") bytes)"
-        info "Cloning Alpine -> bootstrap blueprint ($DEBIAN_SRC) ..."
-        mkdir -p "$(dirname "$DEBIAN_SRC")"
-        cp "$ALPINE_ROOTFS" "$DEBIAN_SRC" || error "Failed to clone Alpine rootfs"
-        qemu-img resize -f raw "$DEBIAN_SRC" 12G >/dev/null 2>&1 || true
-        if [ "$(stat -c%s "$DEBIAN_SRC")" -lt 3000000000 ]; then
-            truncate -s 12G "$DEBIAN_SRC"
+        info "Cloning Alpine base → selfhost blueprint ($SELFHOST_BLUEPRINT) ..."
+        mkdir -p "$(dirname "$SELFHOST_BLUEPRINT")"
+        cp "$ALPINE_ROOTFS" "$SELFHOST_BLUEPRINT" || error "Failed to clone Alpine rootfs"
+        qemu-img resize -f raw "$SELFHOST_BLUEPRINT" 12G >/dev/null 2>&1 || true
+        if [ "$(stat -c%s "$SELFHOST_BLUEPRINT")" -lt 3000000000 ]; then
+            truncate -s 12G "$SELFHOST_BLUEPRINT"
         fi
-        info "Blueprint: $DEBIAN_SRC ($(stat -c%s "$DEBIAN_SRC") bytes)"
+        info "Blueprint: $SELFHOST_BLUEPRINT ($(stat -c%s "$SELFHOST_BLUEPRINT") bytes)"
 
         info "=== Starting QEMU bootstrap (~15-20 min) ==="
         info "The guest will install build tools + Rust, then power off."
@@ -133,10 +146,10 @@ Run: cargo xtask starry rootfs --arch x86_64"
         if [ "$BOOTSTRAP_EXIT" -ne 0 ]; then
             error "Bootstrap failed (exit=$BOOTSTRAP_EXIT). Retry or use: sudo ./scripts/prepare-selfhost-rootfs.sh --arch x86_64 --force"
         fi
-        info "Bootstrap complete: $DEBIAN_SRC ($(stat -c%s "$DEBIAN_SRC") bytes)"
+        info "Bootstrap complete: $SELFHOST_BLUEPRINT ($(stat -c%s "$SELFHOST_BLUEPRINT") bytes)"
     fi
 
-    [ -f "$DEBIAN_SRC" ] || error "Debian rootfs not found: $DEBIAN_SRC
+    [ -f "$SELFHOST_BLUEPRINT" ] || error "Selfhost rootfs not found: $SELFHOST_BLUEPRINT
 
 Options:
   1. Bootstrap via QEMU (no sudo): ./scripts/self-compile.sh --arch x86_64 --bootstrap
@@ -144,8 +157,8 @@ Options:
 Once created, the rootfs is reused across runs."
 
     if [ ! -f "$ROOTFS_IMG" ]; then
-        info "Cloning rootfs: $DEBIAN_SRC → $ROOTFS_IMG (this may take a moment)..."
-        cp "$DEBIAN_SRC" "$ROOTFS_IMG" || error "Failed to clone rootfs"
+        info "Cloning rootfs: $SELFHOST_BLUEPRINT → $ROOTFS_IMG (this may take a moment)..."
+        cp "$SELFHOST_BLUEPRINT" "$ROOTFS_IMG" || error "Failed to clone rootfs"
         info "Rootfs clone created ($(stat -c%s "$ROOTFS_IMG") bytes)"
     else
         info "Using existing working copy: $ROOTFS_IMG"

@@ -2,12 +2,18 @@
 #
 # prebuild.sh — Bootstrap overlay generator for QEMU-based selfhost rootfs.
 #
-# Generates an Alpine-compatible bootstrap inner script.  The guest:
+# Generates an Alpine-compatible bootstrap inner script that creates a
+# selfhost rootfs from the Alpine base (the only x86_64 managed rootfs
+# available without host sudo).  The guest:
 #   1. Installs build tools (apk add)
-#   2. Installs bash (for Debian inner script compatibility)
+#   2. Installs bash (for inner script compatibility)
 #   3. Installs Rust nightly (rustup)
 #   4. Fetches cargo dependencies
 #   5. Writes success marker and powers off
+#
+# The resulting selfhost rootfs is Alpine-based (musl libc); this does not
+# affect self-compilation because the bare-metal target (x86_64-unknown-none)
+# does not link any libc.
 #
 # Env vars (set by axbuild app runner or self-compile.sh):
 #   STARRY_OVERLAY_DIR   — staging directory for rootfs injection

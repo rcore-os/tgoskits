@@ -91,7 +91,7 @@ esac
 if [ -z "$ROOTFS_IMG" ]; then
     case "$ARCH" in
         riscv64)  ROOTFS_IMG="tmp/axbuild/rootfs/rootfs-riscv64-debian-selfhost-v2.img" ;;
-        x86_64)   ROOTFS_IMG="tmp/debian-selfhost/rootfs-x86_64-debian-selfhost.img" ;;
+        x86_64)   ROOTFS_IMG="tmp/selfhost/rootfs-x86_64-selfhost-working.img" ;;
         aarch64)  ROOTFS_IMG="tmp/axbuild/rootfs/rootfs-aarch64-debian-selfhost.img" ;;
     esac
 fi

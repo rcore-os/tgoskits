@@ -19,7 +19,9 @@
 #   aarch64: qemu-aarch64-static, debootstrap (pacman -S debootstrap qemu-user-static-binfmt)
 #
 # Output:
-#   tmp/axbuild/rootfs/rootfs-<arch>-debian-selfhost.img
+#   riscv64  — tmp/axbuild/rootfs/rootfs-riscv64-debian-selfhost-v2.img
+#   x86_64   — tmp/axbuild/rootfs/rootfs-x86_64-selfhost.img
+#   aarch64  — tmp/axbuild/rootfs/rootfs-aarch64-debian-selfhost.img
 #
 # Example:
 #   sudo ./scripts/prepare-selfhost-rootfs.sh --arch x86_64
@@ -83,7 +85,7 @@ case "$ARCH" in
         NSPAWN_MACHINE=""
         DEBIAN_ARCH="amd64"
         BASE_IMG=""
-        OUTPUT_IMG="$ROOTFS_DIR/rootfs-x86_64-debian-selfhost.img"
+        OUTPUT_IMG="$ROOTFS_DIR/rootfs-x86_64-selfhost.img"
         NEED_QEMU=0
         ;;
     arm)
