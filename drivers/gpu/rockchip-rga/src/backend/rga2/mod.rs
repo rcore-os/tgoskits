@@ -99,8 +99,9 @@ impl RgaBackend for Rga2Backend {
         let cmd_phys = cmd.phys_addr();
 
         self.write32(registers::INT, INT_DONE_CLR | INT_ERROR_CLR); // W1C clear bits[7:4]
-        // TRM: CMD_BASE (sw_cmd_base[31:0]) is a raw byte address; the vendor rga2 driver writes the
-        // descriptor phys addr directly (no shift). Command buffer is 128B-aligned. BOARD-CONFIRM.
+        // CMD_BASE (sw_cmd_base[31:0]) is a raw byte address — confirmed against the vendor rga2 driver:
+        // `rga2_write(virt_to_phys(cmd_buff), RGA2_CMD_BASE)`, no shift. (The >>4 belongs to MMU_*_BASE,
+        // the page-table base used only on the MMU-on path.) Command buffer is 128B-aligned.
         self.write32(registers::CMD_BASE, cmd_phys as u32);
         core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
         self.write32(registers::CMD_CTRL, CMD_CTRL_START);
