@@ -7,7 +7,7 @@
 //! polling, clocks, and power.
 
 use super::registers;
-use crate::operation::{ImageDesc, RgaOperation};
+use crate::operation::{Blit, CscStandard, ImageDesc, RgaOperation};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CommandBuffer {
@@ -67,6 +67,150 @@ const fn hw_format(fmt: crate::operation::PixelFormat) -> u32 {
     }
 }
 
+/// 16.16 fixed-point scale factor for one axis. CONFIRM ON BOARD: exact rounding (+1/-1 vendor forms).
+/// `dim << 16` is overflow-safe in u32 because dims are bounded ≤ 8192 (8192<<16 < u32::MAX).
+const fn scale_factor(src_dim: u32, dst_dim: u32) -> u32 {
+    if dst_dim < src_dim {
+        (src_dim << 16) / dst_dim // downscale: src/dst
+    } else {
+        (dst_dim << 16) / src_dim // upscale: dst/src
+    }
+}
+
+fn src_csc_bits(csc: Option<CscStandard>) -> u32 {
+    match csc {
+        Some(CscStandard::Bt601Limited) => {
+            registers::CSC_BT601_LIMITED << registers::SRC_INFO_CSC_SHIFT
+        }
+        Some(CscStandard::Bt601Full) => registers::CSC_BT601_FULL << registers::SRC_INFO_CSC_SHIFT,
+        Some(CscStandard::Bt709Limited) => {
+            registers::CSC_BT709_LIMITED << registers::SRC_INFO_CSC_SHIFT
+        }
+        None => 0,
+    }
+}
+
+/// Effective plane base for a windowed rect: base + y*stride + x*bpp (truncated to the 32-bit
+/// register width; validation guarantees the surface + extent fit 32-bit).
+fn rect_base(plane_base: u64, x: u32, y: u32, stride_bytes: u32, bpp: u32) -> u32 {
+    (plane_base + (y as u64) * (stride_bytes as u64) + (x as u64) * (bpp as u64)) as u32 // validated to fit
+}
+
+pub fn encode_blit(blit: &Blit) -> crate::error::Result<CommandBuffer> {
+    let mut buf = CommandBuffer::zeroed();
+    let Blit {
+        src,
+        dst,
+        src_rect,
+        dst_rect,
+        csc,
+    } = blit;
+    let src_bpp = src.format.bytes_per_pixel();
+    let dst_bpp = dst.format.bytes_per_pixel();
+
+    // --- destination ---
+    buf.set_register(
+        registers::DST_Y_RGB_BASE_ADDR,
+        rect_base(
+            dst.phys_addr,
+            dst_rect.x,
+            dst_rect.y,
+            dst.stride_bytes,
+            dst_bpp,
+        ),
+    );
+    let dst_csc = if !src.format.is_yuv() && dst.format.is_yuv() {
+        let mode = match csc {
+            Some(CscStandard::Bt709Limited) => registers::CSC_BT709_LIMITED,
+            Some(CscStandard::Bt601Full) => registers::CSC_BT601_FULL,
+            _ => registers::CSC_BT601_LIMITED,
+        };
+        mode << registers::DST_INFO_CSC_SHIFT
+    } else {
+        0
+    };
+    buf.set_register(registers::DST_INFO, hw_format(dst.format) | dst_csc);
+    buf.set_register(registers::DST_VIR_INFO, (dst.stride_bytes / 4) & 0x7fff);
+    buf.set_register(
+        registers::DST_ACT_INFO,
+        ((dst_rect.width - 1) & 0x0fff) | (((dst_rect.height - 1) & 0x0fff) << 16),
+    );
+    if dst.format.is_semiplanar()
+        && let Some(uv) = dst.uv_phys_addr
+    {
+        buf.set_register(
+            registers::DST_CB_BASE_ADDR,
+            rect_base(uv, dst_rect.x, dst_rect.y / 2, dst.stride_bytes, 1),
+        );
+    }
+
+    // --- source ---
+    buf.set_register(
+        registers::SRC_Y_RGB_BASE_ADDR,
+        rect_base(
+            src.phys_addr,
+            src_rect.x,
+            src_rect.y,
+            src.stride_bytes,
+            src_bpp,
+        ),
+    );
+    let scl_x = if dst_rect.width == src_rect.width {
+        registers::SCL_NONE
+    } else if dst_rect.width < src_rect.width {
+        registers::SCL_DOWN
+    } else {
+        registers::SCL_UP
+    };
+    let scl_y = if dst_rect.height == src_rect.height {
+        registers::SCL_NONE
+    } else if dst_rect.height < src_rect.height {
+        registers::SCL_DOWN
+    } else {
+        registers::SCL_UP
+    };
+    let src_info = hw_format(src.format)
+        | src_csc_bits(*csc)
+        | (scl_x << registers::SRC_INFO_HSCL_SHIFT)
+        | (scl_y << registers::SRC_INFO_VSCL_SHIFT);
+    buf.set_register(registers::SRC_INFO, src_info);
+    buf.set_register(registers::SRC_VIR_INFO, (src.stride_bytes / 4) & 0x7fff);
+    buf.set_register(
+        registers::SRC_ACT_INFO,
+        ((src_rect.width - 1) & 0x1fff) | (((src_rect.height - 1) & 0x1fff) << 16),
+    );
+    if scl_x != registers::SCL_NONE {
+        buf.set_register(
+            registers::SRC_X_FACTOR,
+            scale_factor(src_rect.width, dst_rect.width),
+        );
+    }
+    if scl_y != registers::SCL_NONE {
+        buf.set_register(
+            registers::SRC_Y_FACTOR,
+            scale_factor(src_rect.height, dst_rect.height),
+        );
+    }
+    if src.format.is_semiplanar()
+        && let Some(uv) = src.uv_phys_addr
+    {
+        buf.set_register(
+            registers::SRC_CB_BASE_ADDR,
+            rect_base(uv, src_rect.x, src_rect.y / 2, src.stride_bytes, 1),
+        );
+    }
+
+    buf.set_register(registers::MMU_CTRL1, 0); // MMU OFF
+    buf.set_register(
+        registers::MODE_CTRL,
+        encode_mode(
+            registers::MODE_RENDER_BITBLT,
+            registers::MODE_BITBLT_SRC_TO_DST,
+        ),
+    );
+    Ok(buf)
+}
+
 /// Encode a same-size copy with the local MMU DISABLED (direct physical base addresses).
 pub fn encode_copy(src: ImageDesc, dst: ImageDesc) -> crate::error::Result<CommandBuffer> {
     let mut buf = CommandBuffer::zeroed();
@@ -118,15 +262,14 @@ pub fn encode(op: &RgaOperation) -> crate::error::Result<CommandBuffer> {
     match op {
         RgaOperation::Copy { src, dst } => encode_copy(*src, *dst),
         RgaOperation::Fill { dst, color } => encode_fill(*dst, *color),
-        // Phase D Task D4 implements encode_blit
-        RgaOperation::Blit(_) => Err(crate::error::RgaError::Unsupported),
+        RgaOperation::Blit(b) => encode_blit(b),
     }
 }
 
 #[cfg(test)]
 mod mmu_off_tests {
-    use super::{encode_copy, encode_fill, encode_mode, registers};
-    use crate::operation::{ImageDesc, PixelFormat};
+    use super::{encode_blit, encode_copy, encode_fill, encode_mode, registers};
+    use crate::operation::{Blit, CscStandard, ImageDesc, PixelFormat, Rect};
 
     fn img(w: u32, h: u32, addr: u64) -> ImageDesc {
         ImageDesc::rgb(w, h, w * 4, PixelFormat::Rgba8888, addr)
@@ -202,6 +345,96 @@ mod mmu_off_tests {
         assert_eq!(
             cmd.register(registers::DST_Y_RGB_BASE_ADDR),
             Some(0x4002_0000)
+        );
+    }
+
+    #[test]
+    fn blit_downscale_programs_factor_and_mode() {
+        let src = ImageDesc::rgb(1920, 1080, 1920 * 3, PixelFormat::Rgb888, 0x4000_0000);
+        let dst = ImageDesc::rgb(640, 360, 640 * 3, PixelFormat::Rgb888, 0x4100_0000);
+        let cmd = encode_blit(&Blit::resize(src, dst)).unwrap();
+        assert_eq!(
+            cmd.register(registers::SRC_ACT_INFO),
+            Some(1919 | (1079 << 16))
+        );
+        assert_eq!(
+            cmd.register(registers::DST_ACT_INFO),
+            Some(639 | (359 << 16))
+        );
+        assert_eq!(
+            cmd.register(registers::SRC_X_FACTOR),
+            Some((1920u32 << 16) / 640)
+        );
+        assert_eq!(
+            cmd.register(registers::SRC_Y_FACTOR),
+            Some((1080u32 << 16) / 360)
+        );
+        let src_info = cmd.register(registers::SRC_INFO).unwrap();
+        assert_eq!(src_info & 0xf, registers::FMT_RGB888);
+        assert_eq!(
+            (src_info >> registers::SRC_INFO_HSCL_SHIFT) & 0x3,
+            registers::SCL_DOWN
+        );
+        assert_eq!(
+            (src_info >> registers::SRC_INFO_VSCL_SHIFT) & 0x3,
+            registers::SCL_DOWN
+        );
+    }
+
+    #[test]
+    fn blit_dst_subrect_offsets_base() {
+        let src = ImageDesc::rgb(320, 240, 320 * 4, PixelFormat::Rgba8888, 0x4000_0000);
+        let dst = ImageDesc::rgb(640, 480, 640 * 4, PixelFormat::Rgba8888, 0x4100_0000);
+        let b = Blit::new(
+            src,
+            dst,
+            Rect {
+                x: 0,
+                y: 0,
+                width: 320,
+                height: 240,
+            },
+            Rect {
+                x: 160,
+                y: 120,
+                width: 320,
+                height: 240,
+            },
+            None,
+        );
+        let cmd = encode_blit(&b).unwrap();
+        assert_eq!(
+            cmd.register(registers::DST_Y_RGB_BASE_ADDR),
+            Some(0x4100_0000 + 120 * 640 * 4 + 160 * 4)
+        );
+        let si = cmd.register(registers::SRC_INFO).unwrap();
+        assert_eq!(
+            (si >> registers::SRC_INFO_HSCL_SHIFT) & 0x3,
+            registers::SCL_NONE
+        );
+        assert_eq!(cmd.register(registers::SRC_X_FACTOR), Some(0));
+    }
+
+    #[test]
+    fn blit_nv12_to_rgb_sets_csc_and_uv_base() {
+        let src = ImageDesc::nv12(640, 480, 640, 0x4000_0000);
+        let dst = ImageDesc::rgb(640, 480, 640 * 4, PixelFormat::Rgba8888, 0x4100_0000);
+        let mut b = Blit::resize(src, dst);
+        b.csc = Some(CscStandard::Bt601Limited);
+        let cmd = encode_blit(&b).unwrap();
+        assert_eq!(
+            cmd.register(registers::SRC_Y_RGB_BASE_ADDR),
+            Some(0x4000_0000)
+        );
+        assert_eq!(
+            cmd.register(registers::SRC_CB_BASE_ADDR),
+            Some(0x4000_0000 + 640 * 480)
+        );
+        let si = cmd.register(registers::SRC_INFO).unwrap();
+        assert_eq!(si & 0xf, registers::FMT_YCBCR_420_SP);
+        assert_eq!(
+            (si >> registers::SRC_INFO_CSC_SHIFT) & 0x3,
+            registers::CSC_BT601_LIMITED
         );
     }
 }
