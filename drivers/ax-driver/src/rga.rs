@@ -14,6 +14,9 @@ crate::model_register!(
     name: "Rockchip RGA",
     level: ProbeLevel::PostKernel,
     priority: ProbePriority::DEFAULT,
+    // Match all three RGA cores. rdrive probes each matching FDT node independently (its probed
+    // set is keyed per node, not per driver), so every core gets its own probe() call; PR-1
+    // brings up RGA2 and defers the RGA3 cores in probe().
     probe_kinds: &[
         ProbeKind::Fdt {
             compatibles: &[
@@ -31,11 +34,10 @@ fn probe(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
     let config = detect_core_config(&info)
         .ok_or_else(|| OnProbeError::other("unsupported Rockchip RGA compatible string"))?;
 
-    // PR-1 brings up RGA2 only. RGA3 bring-up (its clock tree, reset, and the real version
-    // register offset) is unverified and deferred to a later phase. On this SoC the RGA3 nodes
-    // probe BEFORE rga2, and RgaCore::new eagerly reads the version register at base+0x28 —
-    // touching an unclocked/unverified RGA3 core there raises a synchronous external abort that
-    // kills the boot before RGA2 is ever reached. Skip RGA3 until it is brought up properly.
+    // PR-1 brings up RGA2 only. RGA3's clock tree / reset / real version-register offset are
+    // unverified and deferred to a later phase, so skip the RGA3 cores here (they still each get a
+    // probe() call now that rdrive probes every matching node). Skipping before any MMIO avoids
+    // the synchronous external abort an unclocked/unverified RGA3 version-read would raise.
     if config.version == RgaVersion::Rga3 {
         info!(
             "RGA3 core (index {}) probe deferred in PR-1; skipping (RGA2-only bring-up)",
