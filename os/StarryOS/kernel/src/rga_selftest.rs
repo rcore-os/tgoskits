@@ -124,6 +124,15 @@ pub fn run() {
             }
             _ => warn!("RGA2_BLIT_SELFTEST core={} alloc=FAIL", core_index),
         }
+        // Completion path: PR-1 is polling-only (poll the RGA2 INT status register), which works
+        // regardless of GIC routing. This board has a confirmed FDT->GIC gap (the dwmmc completion
+        // IRQ never fires), so the RGA completion IRQ likely never fires either; confirming that is a
+        // Phase B probe. Log the path explicitly so the board run reports it.
+        info!("RGA2_SELFTEST completion=POLLED");
+        // End-of-suite sentinel: the board success_regex matches THIS line, printed only after all
+        // three selftests have run — never an intermediate PASS line, because ostool tears down on
+        // the first success_regex match (which would otherwise drop the dmabuf/blit results).
+        info!("RGA_SELFTEST_SUITE_DONE");
         return;
     }
     warn!("RGA2_SELFTEST no-rga2-core");

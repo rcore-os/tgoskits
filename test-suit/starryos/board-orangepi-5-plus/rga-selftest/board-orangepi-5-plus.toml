@@ -3,10 +3,16 @@
 # (board config `features` list or `FEATURES=rga-selftest` on the build command line).
 # The selftest runs automatically at boot; this case waits for the shell prompt and
 # then triggers a search of the buffered serial output for the expected result line.
+#
+# success_regex matches the end-of-suite sentinel `RGA_SELFTEST_SUITE_DONE`, printed only after the
+# fill/copy, dmabuf, and blit-resize selftests have all run. It must NOT match an intermediate PASS
+# line (e.g. the first `RGA2_SELFTEST ... PASS`): ostool tears down on the FIRST success_regex match,
+# which would drop the later selftest results from the run. fail_regex still fails the case on any
+# per-selftest FAIL/alloc-fail line, so a passing run means all three selftests passed.
 
 board_type = "OrangePi-5-Plus"
 shell_prefix = "root@starry:/root #"
 shell_init_cmd = "echo RGA_SELFTEST_CHECK"
-success_regex = ["(?m)^RGA2_SELFTEST core=\\d+ fill=PASS copy=PASS crc=0x[0-9a-fA-F]{8}\\s*$"]
-fail_regex = ['(?i)RGA2_SELFTEST.*FAIL', 'RGA2_SELFTEST no-rga2-core']
+success_regex = ["(?m)^RGA_SELFTEST_SUITE_DONE\\s*$"]
+fail_regex = ['(?i)RGA2_\w*SELFTEST.*FAIL', 'RGA2_SELFTEST no-rga2-core']
 timeout = 300
