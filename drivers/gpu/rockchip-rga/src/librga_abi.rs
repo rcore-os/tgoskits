@@ -354,7 +354,8 @@ mod tests {
 
     #[test]
     fn rga_req_embeds_three_images() {
-        assert!(core::mem::size_of::<RgaReq>() >= 1 + 3 * 48);
+        // render_mode + src/dst/pat (3 × RgaImgInfo) at minimum; the exact 296 B is guarded above.
+        assert!(core::mem::size_of::<RgaReq>() >= 3 * core::mem::size_of::<RgaImgInfo>());
     }
 
     #[test]
@@ -483,8 +484,8 @@ mod tests {
             RgaOperation::Blit(b) => {
                 assert_eq!(b.src.phys_addr, src_phys);
                 assert_eq!(b.src.uv_phys_addr, src_uv);
-                // stride = vir_w * bpp = 1920 * 1 (NV12 Y-plane bpp)
-                assert_eq!(b.src.stride_bytes, 1920 * 1);
+                // stride = vir_w * bpp = 1920 * 1 (NV12 Y-plane bpp = 1)
+                assert_eq!(b.src.stride_bytes, 1920);
                 // dst rect: x_offset=0, y_offset=0, act_w=640, act_h=640
                 assert_eq!(
                     b.dst_rect,
