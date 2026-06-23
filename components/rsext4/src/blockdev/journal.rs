@@ -354,24 +354,28 @@ impl<B: BlockDevice> Jbd2Dev<B> {
             return self.inner.read_blocks(buf, block_id, count);
         }
 
-        let Some(system) = self.system.as_ref() else {
-            return self.inner.read_blocks(buf, block_id, count);
-        };
-        let block_size = self.inner.block_size() as usize;
-        let required = block_size * count as usize;
+        let required = BLOCK_SIZE * count as usize;
         if buf.len() < required {
             return Err(Ext4Error::buffer_too_small(buf.len(), required));
         }
 
+        // Bulk-read the whole range in a single device round-trip, then overlay
+        // any block that has a pending journal update so the read reflects the
+        // not-yet-committed metadata.  A read that falls between a metadata
+        // `write_blocks(is_metadata: true)` and the journal commit would
+        // otherwise see stale on-disk data, which causes the read-modify-write
+        // in the inode/bitmap cache write helpers to build a buffer that
+        // silently drops prior modifications to the same block.
+        self.inner.read_blocks(buf, block_id, count)?;
+
+        let Some(system) = self.system.as_ref() else {
+            return Ok(());
+        };
         for i in 0..count {
             let bid = block_id.checked_add(i)?;
-            let off = (i as usize) * block_size;
-
             if let Some(update) = system.commit_queue.iter().find(|queued| queued.0 == bid) {
-                buf[off..off + block_size].copy_from_slice(&update.1[..block_size]);
-            } else {
-                self.inner
-                    .read_blocks(&mut buf[off..off + block_size], bid, 1)?;
+                let off = (i as usize) * BLOCK_SIZE;
+                buf[off..off + BLOCK_SIZE].copy_from_slice(&update.1[..BLOCK_SIZE]);
             }
         }
         Ok(())
@@ -401,6 +405,10 @@ impl<B: BlockDevice> Jbd2Dev<B> {
         if buf.len() < required {
             return Err(Ext4Error::buffer_too_small(buf.len(), required));
         }
+
+        // Validate the whole block range up front so a later overflow cannot
+        // leave earlier blocks committed while the call still reports failure.
+        block_id.checked_add(count.saturating_sub(1))?;
 
         // Track whether a journal commit happened during the loop.
         // `enqueue_journal_update` commits when the queue fills up,

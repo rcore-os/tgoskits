@@ -190,6 +190,10 @@ impl<B: BlockDevice> BlockDev<B> {
             return Err(Ext4Error::buffer_too_small(buffer.len(), required_size));
         }
 
+        // Validate the whole range up front so an overflow cannot occur after
+        // the (irreversible) device write while invalidating cache entries.
+        block_id.checked_add(count.saturating_sub(1))?;
+
         self.dev.write(buffer, block_id, count)?;
 
         // Invalidate any cached entries that overlap with the directly-written
