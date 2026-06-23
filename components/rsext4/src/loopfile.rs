@@ -257,7 +257,12 @@ pub fn get_file_inode<B: BlockDevice>(
                             && let Some(entry) = classic_dir::find_entry(&cached.data, target)
                             && entry.file_type != Ext4DirEntryTail::RESERVED_FT
                         {
-                            direct_found = InodeNumber::new(entry.inode).ok();
+                            // Match the linear-scan branch above: a corrupt inode
+                            // number is a hard error, not a silent miss.
+                            direct_found = Some(
+                                InodeNumber::new(entry.inode)
+                                    .map_err(|_| Ext4Error::corrupted())?,
+                            );
                             break;
                         }
                     }
