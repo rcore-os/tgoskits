@@ -24,8 +24,6 @@ pub use r#loop::LoopDevice;
 pub mod ion;
 #[cfg(feature = "memtrack")]
 mod memtrack;
-#[cfg(feature = "rknpu")]
-mod rknpu_drm;
 mod rtc;
 #[cfg(feature = "sg2002")]
 pub mod tpu;

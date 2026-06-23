@@ -2,7 +2,7 @@ use alloc::borrow::Cow;
 use core::{
     any::Any,
     convert::TryFrom,
-    ffi::{CStr, c_char, c_ulong},
+    ffi::CStr,
     mem,
     sync::atomic::{AtomicUsize, Ordering},
     task::Context,
@@ -16,12 +16,12 @@ use axfs_ng_vfs::{DeviceId, NodeFlags, VfsError, VfsResult};
 use axpoll::{IoEvents, Pollable};
 use linux_raw_sys::general::O_CLOEXEC;
 
-use super::rknpu_drm::DrmVersion;
+use super::drm::{DrmUnique, DrmVersion};
 use crate::{
     file::FileLike,
     pseudofs::{
         DeviceOps,
-        dev::rknpu_drm::{io_size, ioctl_nr, is_driver_ioctl},
+        dev::drm::{io_size, ioctl_nr, is_driver_ioctl},
         device::DeviceMmap,
     },
 };
@@ -58,17 +58,6 @@ static RKNPU_ACTION_LOG_COUNT: AtomicUsize = AtomicUsize::new(0);
 static RKNPU_MEM_CREATE_LOG_COUNT: AtomicUsize = AtomicUsize::new(0);
 static RKNPU_MEM_SYNC_LOG_COUNT: AtomicUsize = AtomicUsize::new(0);
 static RKNPU_SUBMIT_LOG_COUNT: AtomicUsize = AtomicUsize::new(0);
-
-/// DRM_IOCTL_VERSION ioctl argument type
-#[repr(C)]
-#[derive(Debug, Clone, Copy, Default)]
-pub struct DrmUnique {
-    /// Length of unique string identifier
-    pub unique_len: c_ulong,
-    /// Pointer to user-space buffer holding unique name for driver
-    /// instantiation
-    pub unique: *mut c_char,
-}
 
 /// RKNPU command types
 #[repr(u32)]
@@ -641,7 +630,7 @@ fn drm_prime_handle_to_fd_ioctl(data: &mut [u8]) -> VfsResult<usize> {
 /// similar to the Linux kernel implementation with proper error handling.
 unsafe fn drm_copy_field(
     buf: *mut u8,
-    buf_len: &mut c_ulong,
+    buf_len: &mut usize,
     value: *const u8,
 ) -> Result<(), VfsError> {
     // Handle NULL value case - same as kernel's WARN_ONCE check
@@ -727,7 +716,7 @@ pub fn drm_version(data: &mut [u8]) -> VfsResult<()> {
     unsafe {
         // Copy driver name
         let ret = drm_copy_field(
-            data.name.cast(),
+            data.name as *mut u8,
             &mut data.name_len,
             DRM1_NAME.as_ptr().cast(),
         );
@@ -749,7 +738,7 @@ pub fn drm_version(data: &mut [u8]) -> VfsResult<()> {
 
         // Copy driver description
         let ret = drm_copy_field(
-            data.desc.cast(),
+            data.desc as *mut u8,
             &mut data.desc_len,
             DRM1_DESC.as_ptr().cast(),
         );
