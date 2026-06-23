@@ -263,7 +263,7 @@ impl Starry {
                 &rootfs_path,
                 rootfs::RootfsPatchMode::EnsureDiskBootNet,
             );
-            if !qemu.args.iter().any(|arg| arg == "-snapshot") {
+            if case.snapshot && !qemu.args.iter().any(|arg| arg == "-snapshot") {
                 qemu.args.push("-snapshot".to_string());
             }
             qemu::apply_dynamic_platform_qemu_boot(&mut qemu, &cargo);

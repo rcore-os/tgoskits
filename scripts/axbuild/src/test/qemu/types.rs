@@ -88,6 +88,8 @@ pub(crate) struct QemuCaseExtraConfig {
     pub(crate) host_symbolize_success_regex: Vec<String>,
     #[serde(default)]
     pub(crate) host_http_server: Option<HostHttpServerConfig>,
+    #[serde(default)]
+    pub(crate) snapshot: Option<bool>,
 }
 
 pub(super) fn list_qemu_cases_unexpected_error(err: anyhow::Error) -> ListQemuCasesError {
