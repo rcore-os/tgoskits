@@ -461,7 +461,7 @@ fn builder(fs: Arc<SimpleFs>) -> DirMaker {
     // accelerators share buffers from (zero-copy across JPU / NPU / RGA). Every
     // heap name maps to the same allocator. Available under any accelerator
     // feature, not just `jpeg`.
-    #[cfg(any(feature = "jpeg", feature = "rknpu"))]
+    #[cfg(any(feature = "jpeg", feature = "rknpu", feature = "rga"))]
     {
         let mut dma_heap_dir = DirMapping::new();
         for name in dmaheap::HEAP_NAMES {
@@ -521,9 +521,7 @@ fn builder(fs: Arc<SimpleFs>) -> DirMaker {
 
     #[cfg(feature = "rknpu")]
     {
-        // RockChip-specific NPU companion card (DRM card1). The contiguous
-        // `/dev/dma_heap` it allocates from is registered above under the shared
-        // accelerator gate.
+        // RockChip-specific NPU companion card (DRM card1).
         dri_dir.add(
             "card1",
             Device::new(
