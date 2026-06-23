@@ -476,9 +476,11 @@ fn builder(fs: Arc<SimpleFs>) -> DirMaker {
         ),
     );
 
-    #[cfg(feature = "rknpu")]
+    #[cfg(feature = "dma-heap")]
     {
-        // DMA heap devices (rknpu only)
+        // Real dma-buf allocator, shared by the NPU and RGA import paths.
+        // /dev/dma_heap/{system,cma} are aliases over the same contiguous allocator.
+        let heap = Arc::new(dma_heap::DmaHeap::new());
         let mut dma_heap_dir = DirMapping::new();
         dma_heap_dir.add(
             "system",
@@ -486,14 +488,26 @@ fn builder(fs: Arc<SimpleFs>) -> DirMaker {
                 fs.clone(),
                 NodeType::CharacterDevice,
                 dma_heap::DMA_HEAP_SYSTEM_DEVICE_ID,
-                Arc::new(dma_heap::DmaHeapSystem::new()),
+                heap.clone(),
+            ),
+        );
+        dma_heap_dir.add(
+            "cma",
+            Device::new(
+                fs.clone(),
+                NodeType::CharacterDevice,
+                dma_heap::DMA_HEAP_CMA_DEVICE_ID,
+                heap,
             ),
         );
         root.add(
             "dma_heap",
             SimpleDir::new_maker(fs.clone(), Arc::new(dma_heap_dir)),
         );
+    }
 
+    #[cfg(feature = "rknpu")]
+    {
         // RockChip-specific NPU companion card (DRM card1).
         dri_dir.add(
             "card1",
