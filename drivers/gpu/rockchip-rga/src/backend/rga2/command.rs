@@ -75,10 +75,7 @@ pub fn encode_copy(src: ImageDesc, dst: ImageDesc) -> crate::error::Result<Comma
     );
     buf.set_register(registers::SRC_Y_RGB_BASE_ADDR, src.phys_addr as u32);
     buf.set_register(registers::SRC_INFO, hw_format(src.format));
-    buf.set_register(
-        registers::SRC_VIR_INFO,
-        ((src.stride_bytes / 4) & 0x7fff) | (((src.stride_bytes / 4) & 0x03ff) << 16),
-    );
+    buf.set_register(registers::SRC_VIR_INFO, (src.stride_bytes / 4) & 0x7fff);
     buf.set_register(
         registers::SRC_ACT_INFO,
         ((src.width - 1) & 0x1fff) | (((src.height - 1) & 0x1fff) << 16),
