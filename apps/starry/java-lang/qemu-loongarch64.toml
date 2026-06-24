@@ -6,6 +6,11 @@
 # bridges the cross-toolchain musl-loader naming). The loader path lists lib + lib/server +
 # lib/zero so whichever VM dir ships resolves. -machine virt -cpu la464 -m 8192M (== openjdk-multi loong). The rootfs
 # is the per-app rootfs-loongarch64-alpine.img which prebuild.sh grows to 6G so the JDKs fit.
+# Platform: static loongarch64-qemu-virt (uefi=false / to_bin=true), NOT the dynamic-UEFI
+# path the lighter loong apps use. A full JVM under -Xint spins indefinitely on the dynamic
+# loong platform here (no AGGREGATE output well past the 25200s budget), whereas the static
+# ELF path boots and reaches 13/13; this mirrors the ZR233-accepted heavy-runtime exception
+# (cf. the openjdk-multi loong config). Lighter apps stay dynamic.
 args = [
     "-machine", "virt", "-cpu", "la464", "-nographic", "-m", "8192M", "-smp", "1",
     "-device", "virtio-blk-pci,drive=disk0",

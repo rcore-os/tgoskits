@@ -20,7 +20,7 @@
 #   injects — exactly as prep-jdk-multi-rootfs.sh grows its image to 6 GiB. Disk on the host
 #   is cheap; the running QEMU only ever maps a -Xmx512m JVM, so the larger image is free.
 #   We resize the image in place; the qemu-<arch>.toml points the drive at this same
-#   per-app image (rootfs-<arch>-java-lang.img), so the grown image is what boots.
+#   per-app image (rootfs-<arch>-alpine.img), so the grown image is what boots.
 #
 # ── PER-ARCH JDK SET (matches what openjdk-multi PROVED green) ────────────────────────
 #                JDK17                 JDK21               JDK23                 JDK25
@@ -42,7 +42,7 @@
 #
 # Guest layout (== openjdk-multi): /opt/jdk{17,21,23,25} (update-alternatives candidate
 # roots), /opt/jdk-current symlink, /root/.sdkman/candidates/java/* candidate symlinks,
-# /root/jdkm/*.java test sources. The per-JDK musl loader path is set by the qemu toml at
+# /root/jdkm/*.java test sources. The per-JDK musl loader path is set by run-java.sh at
 # run time (NOT here), one JDK at a time, to avoid the cross-JDK launcher mis-resolution.
 #
 # Env from the app runner: STARRY_ARCH, STARRY_OVERLAY_DIR, STARRY_APP_DIR, STARRY_ROOTFS,
@@ -262,13 +262,7 @@ stage_jdk25() {
     case "$arch" in
         x86_64)  untar_strip1 "$JM/jdk25/bellsoft-jdk25+37-linux-x64-musl.tar.gz"     "$jdst" ;;
         aarch64) untar_strip1 "$JM/jdk25/bellsoft-jdk25+37-linux-aarch64-musl.tar.gz" "$jdst" ;;
-        riscv64)
-            local T; T="$(mktemp -d)"; local a apk
-            for a in openjdk25-jre-headless openjdk25-jdk openjdk25-jmods; do
-                apk="$(ls "$ALP/riscv64-${a}-"*.apk 2>/dev/null | head -1)"
-                [[ -n "$apk" ]] && apk_into "$apk" "$T"
-            done
-            cp -a "$T/usr/lib/jvm/java-25-openjdk/." "$jdst/"; rm -rf "$T" ;;
+        riscv64) untar_strip1 "$JM/jdk25/openjdk25-riscv64-musl-srcbuild.tar.gz" "$jdst" ;;  # native musl server VM (cross-built from openjdk/jdk25u tag jdk-25.0.4+5; the lui->c.lui peephole is guarded (imm & 0xfff)==0 so it never emits the reserved C.LUI x5,0 that traps the BellSoft build — see apps/starry/java-lang/setup-rv-jdk25.sh / rv-jdk25-musl-port.patch)
         loongarch64)
             local T; T="$(mktemp -d)"; local a apk
             for a in openjdk25-loongarch-jre-headless openjdk25-loongarch-jre openjdk25-loongarch-jdk openjdk25-loongarch-jmods; do
@@ -279,13 +273,6 @@ stage_jdk25() {
     esac
     if [[ -x "$jdst/bin/java" && -x "$jdst/bin/javac" ]]; then
         echo "prebuild: jdk25 staged ($(du -sh "$jdst" | cut -f1), javac present)"
-    elif [[ "$arch" == riscv64 ]]; then
-        # jdk25 on riscv64 is the Alpine Zero-VM build, which always SKIPs at the run-time
-        # liveness probe (IllegalInstruction on the RV64GC baseline). Staging it is therefore
-        # best-effort: a transient apk-extraction miss must not abort the whole suite, which
-        # carries the real 17/21/23 cells. Drop the partial dir; the probe records the SKIP.
-        echo "prebuild: WARNING jdk25 not fully staged for riscv64 (Zero-VM cell — SKIPs at probe regardless)" >&2
-        rm -rf "$jdst"
     else
         echo "prebuild: jdk25 staged without java+javac for $arch" >&2; exit 3
     fi
@@ -630,9 +617,17 @@ ensure_assets() {
                     "$BELLSOFT_CDN/25+37/bellsoft-jdk25+37-linux-aarch64-musl.tar.gz" \
                     0d0aae364e44768059358434fe8bfe2aaa209866586c9f38842fec6f03f363c3 ;;
         riscv64)
-            ensure_alpine_apk "$ALP/riscv64-openjdk25-jre-headless-25.0.3_p9-r1.apk" edge/community riscv64 openjdk25-jre-headless-25.0.3_p9-r1.apk
-            ensure_alpine_apk "$ALP/riscv64-openjdk25-jdk-25.0.3_p9-r1.apk"          edge/community riscv64 openjdk25-jdk-25.0.3_p9-r1.apk
-            ensure_alpine_apk "$ALP/riscv64-openjdk25-jmods-25.0.3_p9-r1.apk"        edge/community riscv64 openjdk25-jmods-25.0.3_p9-r1.apk ;;
+            # jdk25 riscv64 = native riscv64-musl SERVER VM, cross-built from source: prebuilt
+            # riscv64 JDK25 server VMs trap on the RV64GC baseline (BellSoft emits a reserved
+            # C.LUI x5,0; Alpine ships only a Zero VM). Build once with
+            # apps/starry/java-lang/setup-rv-jdk25.sh (openjdk/jdk25u jdk-25.0.4+5; the lui->c.lui
+            # peephole is guarded (imm & 0xfff)==0 by rv-jdk25-musl-port.patch so it never emits C.LUI x5,0).
+            [[ -f "$JM/jdk25/openjdk25-riscv64-musl-srcbuild.tar.gz" ]] || {
+                echo "prebuild: ERROR missing $JM/jdk25/openjdk25-riscv64-musl-srcbuild.tar.gz" >&2
+                echo "prebuild:   build it once: bash apps/starry/java-lang/setup-rv-jdk25.sh" >&2
+                exit 4
+            }
+            echo "prebuild: jdk25 riscv64 = native-musl source-build (openjdk25-riscv64-musl-srcbuild.tar.gz present)" ;;
         loongarch64)
             local g="$JM/jdk25/loongarch64-alpine-musl"
             ensure_alpine_apk "$g/openjdk25-loongarch-jre-headless-25.0.1_p8-r1.apk" edge/community loongarch64 openjdk25-loongarch-jre-headless-25.0.1_p8-r1.apk 28e19f2c14d8137d9e767347ef61953af99fec263a1374e6221d4d22b8ef3796

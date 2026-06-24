@@ -40,11 +40,13 @@ case "$(uname -m)" in
   *)           ARCH="$(uname -m)" ;;
 esac
 
-# Candidate JDK set per arch (matches what prebuild.sh stages). ALL 4 arches now TRY JDK23:
-# x86_64/aarch64 via the BellSoft native-musl build; riscv64 (BellSoft generic-glibc) and
-# loongarch64 (Loongson glibc) via the gcompat shim staged by prebuild.sh. The timeout-guarded
-# liveness probe below decides per cell — a glibc JDK that runs under gcompat is counted; one
-# that still segfaults/hangs is a documented SKIP (not a failure, not a fake pass).
+# Candidate JDK set per arch (matches what prebuild.sh stages). ALL 4 arches now run JDK23:
+# x86_64/aarch64 via the BellSoft native-musl build; riscv64 via BellSoft generic-glibc JDK23
+# bridged by a staged real Debian-glibc runtime closure (gcompat musl-shim is insufficient for
+# the JVM); loongarch64 via a NATIVE loongarch64-musl JDK23 cross-built FROM SOURCE (loongson/jdk
+# jdk-23+25-ls-0). The timeout-guarded liveness probe below decides per cell — a JDK that boots
+# `java -version` is counted; one that still segfaults/hangs is a documented SKIP (not a failure,
+# not a fake pass).
 case "$ARCH" in
   x86_64|aarch64|riscv64|loongarch64) JDKS="17 21 23 25" ;;
   *)                                  JDKS="17 21 25"    ;;
@@ -262,6 +264,6 @@ done
 # --- aggregate gate ---
 [ -n "$SKIPPED" ] && echo "AGGREGATE: skipped JDKs on $ARCH = $SKIPPED (documented SKIP, not failures)"
 echo "AGGREGATE: PASS=$PASS TOTAL=$TOTAL (runnable JDKs: $RUNNABLE)"
-if [ "$PASS" = "$TOTAL" ] && [ "$TOTAL" -gt 0 ]; then echo "TEST PASSED"; exit 0; fi
+if [ "$PASS" = "$TOTAL" ] && [ "$TOTAL" -gt 0 ]; then echo "AGGREGATE PASS=$PASS/$TOTAL"; echo "JDK_MULTI_OK=1"; echo "TEST PASSED"; exit 0; fi
 echo "TEST FAILED"
 exit 1

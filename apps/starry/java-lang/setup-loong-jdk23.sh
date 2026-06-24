@@ -17,7 +17,10 @@ set -euo pipefail
 
 JDK_TAG="jdk-23+25-ls-0"                                  # Loongson LoongArch port, JDK23 GA
 SRC_REPO="https://github.com/loongson/jdk.git"
-DL="${JAVA_DL_ROOT:-/home/heke/rcore/download}"
+# Default cache mirrors prebuild.sh's JAVA_DL_ROOT default so a tarball built here lands
+# exactly where prebuild.sh later reads it. A developer with an existing cache overrides
+# JAVA_DL_ROOT (e.g. JAVA_DL_ROOT=/path/to/download).
+DL="${JAVA_DL_ROOT:-${STARRY_STAGING_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}/.cache/java-dl}"
 JM="$DL/jdk-multi"
 SRC="$DL/loong-jdk23-src"
 CROSS="${LOONG_MUSL_CROSS:-/opt/loongarch64-linux-musl-cross}"

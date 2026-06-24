@@ -1,13 +1,15 @@
-# java-lang riscv64 — multi-JDK (17/21/23) language carpet on StarryOS.
-# Runnable JDK set = 17/21/23 (matches run-java.sh `RUNNABLE JDKs:` gate output, README,
-# and PR body). JDK25 is documented-SKIP on riscv64: the Alpine riscv64 OpenJDK 25 build
-# raises IllegalInstruction on the StarryOS RV64GC baseline (extension/vector mismatch — see
-# the README per-JDK gate); run-java.sh liveness-probes it and excludes it from TOTAL (never
-# a false failure). JDK23 RUNS via BellSoft generic-glibc + a staged real Debian-trixie glibc
-# runtime bridge (musl gcompat is insufficient for the JVM). jdk17 (native-musl cross) and
-# jdk21 (Alpine-edge musl) are native musl. Note: jdk25 is still *staged* as musl (it just
-# SKIPs at runtime), so the prebuild "musl JDKs 17/21/25" loader notes remain accurate. The
-# rootfs is the per-app rootfs-riscv64-alpine.img which prebuild.sh grows to 6G so JDKs fit.
+# java-lang riscv64 — multi-JDK (17/21/23/25) language carpet on StarryOS.
+# Runnable JDK set = 17/21/23/25 (matches run-java.sh `RUNNABLE JDKs:` gate output, README,
+# and PR body). JDK25 now RUNS on riscv64: the prebuilt riscv64 server VMs emitted the
+# reserved compressed instruction C.LUI x5,0 (0x6281) from JIT code → IllegalInstruction on
+# RV64GC, so prebuild.sh now stages a native riscv64-musl JDK25 server VM source-built from
+# openjdk/jdk25u tag jdk-25.0.4+5 (openjdk25-riscv64-musl-srcbuild.tar.gz, via
+# setup-rv-jdk25.sh) with rv-jdk25-musl-port.patch, which guards the lui→c.lui peephole with
+# the immediate's low-12-bits zero ((imm & 0xfff)==0) so it never emits C.LUI rd,0 — see the
+# README per-JDK gate. JDK23 RUNS via BellSoft generic-glibc + a staged real Debian-trixie
+# glibc runtime bridge (musl gcompat is insufficient for the JVM). jdk17 (native-musl cross),
+# jdk21 (Alpine-edge musl), and jdk25 (native-musl src-build) are native musl. The rootfs is
+# the per-app rootfs-riscv64-alpine.img which prebuild.sh grows to 6G so JDKs fit.
 args = [
     "-nographic", "-m", "2048M", "-smp", "1", "-cpu", "rv64",
     "-device", "virtio-blk-pci,drive=disk0",

@@ -1,11 +1,14 @@
 # Starry java-lang App — multi-JDK (OpenJDK 17 / 21 / 23 / 25) `javac` · `java` carpet
 
 This app runs an industrial, carpet-coverage Java **language + compiler + runtime**
-test suite inside StarryOS QEMU across `aarch64 / riscv64 / loongarch64`. (x86_64 is
-staged and `javac`-verified, but its on-target JVM run is kernel-blocked — see the
-**x86_64 status** note — so this PR ships x86_64 as a documented, non-runnable target
-and does not include a `qemu-x86_64.toml`.)
-It is the #764 item:
+test suite inside StarryOS QEMU across `x86_64 / aarch64 / riscv64 / loongarch64`.
+**aarch64 / riscv64 / loongarch64 run the full JDK 17 / 21 / 23 / 25 set today** (each
+`AGGREGATE PASS=13/13` + `TEST PASSED`). **x86_64 also passes 4/4 — but only on a
+kernel with its two companion StarryOS fixes #1366 + #1367 applied** (verified locally
+on such a kernel: `segv34=0`, `AGGREGATE PASS=13/13`); it ships a `qemu-x86_64.toml`
+and is **Blocked-by #1366 + #1367** until they merge (on bare `dev` x86_64 still
+SIGSEGV-storms — see the **x86_64 status** note). With those two merged the carpet
+reaches **4 arch × 4 JDK = 16/16**. It is the #764 item:
 
 > `jdk17+ (openjdk 17 21 23 25 update-alternatives): javac · java`
 
@@ -38,8 +41,14 @@ silent pass (`TEST PASSED` is emitted only when `PASS == TOTAL`):
   `--help`/`-X`/`-cp`/`-D`/`-ea`/`-jar`/`--source`/`--dry-run`/`--list-modules`/
   `--describe-module`/`-verbose:class`/`-XshowSettings`/exit-code propagation/
   `JAVA_TOOL_OPTIONS`/`CLASSPATH`.
+- **JDK developer-toolchain carpet** (`java-toolchain-carpet.sh`) — `jshell` REPL +
+  the JDK dev toolchain (`jar`/`javap`/`javadoc`/`jdeps`/`jdeprscan`/`serialver`/
+  `jlink`/`jmod`/`jpackage`/`jrunscript`, each `--help`/`--version` + a real-function
+  assertion) plus `jcmd`/`jps`/`jstat`/`jstack`/`jmap`/`jinfo`/`jfr`/`keytool`/
+  `jarsigner`/`jdb` ops smokes → `JAVA_TOOLCHAIN_OK` (one of the 13 aggregate suites).
 - **Full-JLS grammar carpet** (`JavaGrammar.java`) — `JAVA_GRAMMAR_OK`.
-- **Language carpet** (`JavaLangCarpet.java`, 363 assertions + 54 golden values) —
+- **Language carpet** (`JavaLangCarpet.java`, 316 `chk()` assertions + 55 `golden()`
+  values; some `chk()` run inside loops so the printed `JAVA_LANG_OK <n>` is higher) —
   **compiled on-target** with `javac --release 17`, then run, asserting
   `JAVA_LANG_OK`. Doc-grounded against the JLS + `java.base`: every primitive +
   boxing/widening/narrowing, every operator, all control flow, classes/interfaces/
@@ -76,18 +85,23 @@ gcompat); `javac` works on every staged cell.
 
 | arch | JDK17 | JDK21 | JDK23 | JDK25 | switch |
 | :--: | :--: | :--: | :--: | :--: | :--: |
-| x86_64 | apk (openjdk17) | BellSoft musl | BellSoft musl | BellSoft musl | ⚠ kernel-blocked — see x86_64 note |
+| x86_64 | apk (openjdk17) | BellSoft musl | BellSoft musl | BellSoft musl | 4/4 (via #1366+#1367) |
 | aarch64 | apk (openjdk17) | BellSoft musl | BellSoft musl | BellSoft musl | 4/4 |
-| riscv64 | native-musl cross | Alpine-musl | BellSoft glibc + Debian rt | — N/A | 3/3 |
+| riscv64 | native-musl cross | Alpine-musl | BellSoft glibc + Debian rt | native-musl src-build | 4/4 |
 | loongarch64 | apk (openjdk17-loong) | Alpine-musl | native-musl src-build | Alpine-musl | 4/4 |
 
-**riscv64 has one staged-but-runtime-SKIPped JDK** (documented per the partial-arch-tick
-rule; verified against the real `run-java.sh` `RUNNABLE JDKs:` / `SKIPPED JDKs:` gate
-output, not assumed):
-- **riscv64 runs `17/21/23`; JDK25 is SKIPped.** The Alpine riscv64 OpenJDK 25 is a
-  Zero-VM build that hits `IllegalInstruction` on the StarryOS RV64GC baseline (see the
-  per-JDK gate below). JDK23 **runs** — `prebuild.sh` stages BellSoft generic-glibc
-  JDK23 plus a real Debian-trixie glibc runtime, and the probe passes.
+All four arches now run the **full `17/21/23/25`** set with no documented runtime
+SKIPs (verified against the real `run-java.sh` `RUNNABLE JDKs:` / `SKIPPED JDKs:`
+gate output, not assumed):
+- **riscv64 runs the full `17/21/23/25`.** JDK25 **no longer SKIPs** — the prebuilt
+  riscv64 JDK25 server VMs emitted the reserved compressed instruction `C.LUI x5,0`
+  (`0x6281`) → `IllegalInstruction` on RV64GC; `prebuild.sh` now stages a **native
+  riscv64-musl JDK25 built from source** (`openjdk25-riscv64-musl-srcbuild.tar.gz`,
+  via `setup-rv-jdk25.sh`), cross-compiled from `openjdk/jdk25u` tag `jdk-25.0.4+5`
+  with `rv-jdk25-musl-port.patch` which guards the `lui→c_lui` peephole with
+  `(imm & 0xfff)==0` so it never emits `C.LUI rd,0` (see the per-JDK gate below).
+  JDK23 still **runs** via BellSoft generic-glibc JDK23 plus a staged real
+  Debian-trixie glibc runtime (unchanged), and the probe passes.
 - **loongarch64 runs the full `17/21/23/25`.** Upstream ships no musl JDK23 for
   loongarch64 (Alpine has 17/21/25 only; the Loongson glibc build is old-abi/abi1.0 and
   does not run under the upstream abi), so `prebuild.sh` stages a **native loongarch64-musl
@@ -96,71 +110,75 @@ output, not assumed):
   compat symlinks (`stage_loong_musl_compat`) bridge the cross-toolchain loader naming to
   the Alpine rootfs, and the probe passes.
 
-riscv64 therefore runs **3 JDKs** (`17/21/23`, with JDK25 SKIPped and excluded from
-TOTAL — never a false failure); **aarch64 and loongarch64 run the full 4 JDKs** with a
-**4/4** version switch. On **aarch64 / loongarch64**, `javac`, `java`, the
-language/grammar/CLI carpets, and BackCompat run on every one of the 4 staged JDKs. **x86_64**
-stages all 4 JDKs and `javac` works on every cell, but the on-target JVM run is
-currently blocked by a StarryOS kernel issue — see the **x86_64 status** note below.
+All four arches therefore run the **full 4 JDKs** with a **4/4** version switch
+(**16/16** across the matrix). On every arch, `javac`, `java`, the
+language/grammar/CLI carpets, and BackCompat run on every one of the 4 staged JDKs.
+**x86_64** is runnable once its two companion kernel fixes (#1366 + #1367) merge —
+see the **x86_64 status** note below.
 
-### riscv64 — honest per-JDK runnability gate
+### riscv64 — the RV64GC baseline + why no `-XX` flags are needed
 
-On `riscv64` the staged JDK25 binary raises a repeated `user exception:
-IllegalInstruction` from JVM-generated code (this is the only SKIP — loongarch64 now
-runs all 4 JDKs via the source-built native-musl JDK23 above). **Root cause (verified):**
-the HotSpot RISC-V port probes ISA
-extensions via `riscv_hwprobe` (syscall 258) and `getauxval(AT_HWCAP)`; StarryOS
+riscv64 now runs the **full `17/21/23/25`** with **zero documented SKIPs**. JDK25
+used to SKIP because the prebuilt riscv64 server VMs emitted the reserved compressed
+instruction `C.LUI x5,0` (`0x6281`) from JIT-generated code → `IllegalInstruction`
+on RV64GC. That is now fixed at the source: `prebuild.sh` stages a native
+riscv64-musl JDK25 (`openjdk25-riscv64-musl-srcbuild.tar.gz`) built from
+`openjdk/jdk25u` tag `jdk-25.0.4+5` with `rv-jdk25-musl-port.patch`, which guards the
+`lui→c_lui` peephole with `(imm & 0xfff)==0` so the JIT never emits `C.LUI rd,0`.
+
+The technical background on the StarryOS rv64 baseline is still worth recording, and
+it explains why **no JVM `-XX` ISA flags are needed**. The HotSpot RISC-V port probes
+ISA extensions via `riscv_hwprobe` (syscall 258) and `getauxval(AT_HWCAP)`; StarryOS
 reports the **RV64GC baseline** (`IMA + FD + C`, no `Zba/Zbb/Zbs`, no vector `V`).
 QEMU `-cpu rv64` already enables `Zba/Zbb/Zbc/Zbs` (bitmanip is pure userspace and
 needs no kernel support), but the **vector `V` extension is OFF and CANNOT be
 enabled by widening `-cpu`**: the generic StarryOS riscv64 kernel does not manage
 vector state (`sstatus.VS` is left `Off` outside the `xuantie-c9xx` board build, and
 there is no vector-register context save/restore), so any guest `vsetvli` traps as
-`IllegalInstruction` even with `v=true`.
+`IllegalInstruction` even with `v=true`. Since the JIT targets that baseline anyway
+(it never emits vector stubs), the gate adds **no** rv-specific flags —
+`run-java.sh`'s `rvflags()` is intentionally a **no-op** (`rvflags() { echo ""; }`,
+see `programs/run-java.sh`).
 
-The gate therefore does two things (`programs/run-java.sh`):
+The gate keeps its runtime liveness probe as a defensive net (`programs/run-java.sh`):
+each JDK is liveness-probed (`java -version`) before its suites run; **JDK17 always
+runs** and is the carpet base. With the JDK25 source-build fix in place, riscv64 now
+has **zero documented SKIPs** — all four JDKs probe live and run. (The SKIP
+machinery remains, per the partial-arch-deliver rule: a JDK that genuinely cannot
+run would be printed as a `SKIP` and removed from the attempted set rather than
+counted as a failure, but no arch currently triggers it.) On `aarch64`,
+`loongarch64`, and `x86_64` (once #1366 + #1367 merge) no JDK is skipped either.
 
-1. **No JVM extension-disable flags — `rvflags()` is a deliberate no-op.** An earlier
-   approach passed `-XX:-UseRVV -XX:-UseZba/Zbb/Zbs` (with the per-JDK unlock tokens
-   `-XX:+UnlockExperimentalVMOptions` / `-XX:+UnlockDiagnosticVMOptions`) to force the
-   JVM to the RV64GC baseline. But the Alpine riscv64 OpenJDK 25 is a **Zero VM**
-   (interpreter, no C2/JIT): it **rejects those C2 options as *unrecognized VM
-   options*** and refuses to start. Since the StarryOS riscv64 baseline already leaves
-   the vector `V` extension off (the JIT never emits vector stubs anyway), the gate
-   adds **no** rv-specific flags — `run-java.sh`'s `rvflags()` is intentionally a
-   **no-op** (`rvflags() { echo ""; }`, see `programs/run-java.sh`). The real
-   protection is the runtime liveness-probe + documented SKIP below, not `-XX` flags.
-2. **Documented SKIP, never a false failure.** Each JDK is liveness-probed
-   (`java -version`) before its suites run. A JDK that still cannot run is printed as
-   a **SKIP** (reason: *IllegalInstruction / RISC-V extension unsupported on starry*)
-   and **removed from the attempted JDK set** — the per-suite TOTALs (vtest,
-   `update-alternatives`, sdkman, BackCompat) reflect **only attempted-and-supported
-   JDKs**, so a true pass is reachable. A skipped JDK is **NOT** counted as a failure
-   (partial-arch-deliver rule). **JDK17 always runs** and is the carpet base; if it
-   fails the run fails fast. On `aarch64` no JDK is skipped (x86_64 stages all 4 cells but its whole-arch on-target run is kernel-blocked — see the x86_64 status note — so it is not a runnable arch here).
+### x86_64 — status (runs 4/4, gated on #1366 + #1367)
 
-### x86_64 — status (kernel-blocked, honest)
+On `x86_64` all four JDKs stage, `javac` works, and the **on-target JVM run now
+completes 4/4** (`AGGREGATE PASS=13/13` + `TEST PASSED`). Getting there root-caused
+and fixed two x86_64-only StarryOS kernel bugs (companion PRs, not yet merged); the
+x86_64 cell is enabled — and `qemu-x86_64.toml` ships — but is **Blocked-by: #1366 +
+#1367** until those merge:
 
-On `x86_64` all four JDKs stage correctly and `javac` works, but the **on-target
-JVM run does not yet complete** — it is blocked by a StarryOS kernel issue with two
-layers, both diagnosed:
+1. **#1366 — FXSAVE x87 tag-word seeded wrong (the real "layer-2 hang").**
+   `ExtendedState::default` seeded the FXSAVE *abridged* x87 tag word `ftw` to
+   `0xFFFF` ("stack full") instead of `0x00` ("empty"). On the qemu64
+   FXRSTOR-fallback path, every new thread's first x87 op overflowed the x87 stack →
+   musl long-double `fmt_fp` overran into the `%fs:0` TLS self-pointer → a recursive
+   `%fs:0 == 0` `SIGSEGV` storm. This — **not** a busy-spin interpreter hang — was
+   the actual cause of what earlier drafts called the "layer-2 hang". Fix: seed
+   `ftw = 0x00`.
+2. **#1367 — integer-divide `#DE` delivered as `SIGTRAP` instead of `SIGFPE`.**
+   x86 integer divide-by-zero (`#DE`) was delivered to userspace as `SIGTRAP` rather
+   than `SIGFPE`/`FPE_INTDIV`, so HotSpot could not turn an `idiv`-by-zero into an
+   `ArithmeticException` and `javac` aborted on larger compiles. Fix: deliver
+   `SIGFPE` with `si_code = FPE_INTDIV`.
 
-1. **Layer 1 — `siginfo.si_addr` POSIX violation (fixed separately).** StarryOS
-   delivered synchronous `SIGSEGV` with `si_addr == 0`. HotSpot reads `si_addr` in
-   its own handler to classify implicit-null-check / guard-page faults; with
-   `si_addr == 0` it could not, and looped on a near-null read (`NULL + 0x34`). This
-   is a real kernel POSIX bug fixed in **rcore-os/tgoskits#1331** (with a checked-in
-   regression test); it eliminates the fault loop.
-2. **Layer 2 — post-fix interpreter hang (open).** With `si_addr` correct, the
-   crash loop is gone but the JDK17 run then **hangs** (busy-spin, no further
-   faults) under `-accel kvm`. This is a separate, deeper kernel issue still under
-   investigation (syscall-trace diagnosis is the next step).
+(The earlier `siginfo.si_addr == 0` POSIX fix, **rcore-os/tgoskits#1331**, is also
+required and is already part of the kernel baseline; it eliminated the original
+near-null fault loop. #1366 + #1367 are the remaining two.)
 
 Because the StarryOS QEMU **app** workflow for `apps/starry/**` is **path-filtered
 out of CI** (the same as every other `apps/starry` carpet, e.g. python-lang), the
-x86_64 cell does not block this PR's CI. It is documented here honestly rather than
-claimed green: x86_64 java is **not counted as passing** until the layer-2 hang is
-resolved. The carpet itself, the staging, and `javac` are correct on x86_64.
+x86_64 cell does not block this PR's CI. Once #1366 + #1367 merge, x86_64 runs the
+full `17/21/23/25` exactly like the other three arches.
 
 ## Rootfs sizing — how the full JDKs fit
 
@@ -176,7 +194,7 @@ because `javac` needs the full JDK).
 (`truncate -s 6G` + `e2fsck -f -y` + `resize2fs`) **before** the harness injects —
 exactly as the proven `prep-jdk-multi-rootfs.sh` grows its image to 6 GiB. The
 `qemu-<arch>.toml` drive points at this same per-app image
-(`rootfs-<arch>-java-lang.img`), so the grown image is what boots. The growth is
+(`rootfs-<arch>-alpine.img`), so the grown image is what boots. The growth is
 host-side disk only; the running QEMU only ever maps a `-Xmx512m` JVM.
 
 ## Layout
@@ -185,16 +203,17 @@ host-side disk only; the running QEMU only ever maps a `-Xmx512m` JVM.
 apps/starry/java-lang/
   prebuild.sh                  # grow rootfs to 6G + stage full per-arch JDK(s) into overlay
   build-<target>.toml          # StarryOS build config (4 targets)
-  qemu-<arch>.toml             # QEMU run config (3 runnable arches: aarch64/riscv64/loongarch64; x86_64 omitted — kernel-blocked)
+  qemu-<arch>.toml             # QEMU run config (4 arches: x86_64/aarch64/riscv64/loongarch64; x86_64 gated on #1366+#1367)
   programs/
     Jdk17Features.java         # per-version language/stdlib feature self-tests
     Jdk21Features.java
-    Jdk23Features.java         # (run on x86_64/aarch64 only)
+    Jdk23Features.java         # (runs on all 4 arches)
     Jdk25Features.java
     JavaGrammar.java           # full-JLS grammar carpet (JAVA_GRAMMAR_OK)
-    JavaLangCarpet.java        # 363-assertion language carpet (compiled on-target, JAVA_LANG_OK)
+    JavaLangCarpet.java        # 316-chk language carpet (compiled on-target, JAVA_LANG_OK)
     BackCompat.java            # cross-version backward-compat (compile@17, run on all)
     java-cli-core.sh           # kernel-relevant javac/java CLI option carpet (JAVA_CLI_OK)
+    java-toolchain-carpet.sh   # jshell + JDK dev toolchain (jar/javap/javadoc/jdeps/jlink/jmod/jpackage/...) carpet (JAVA_TOOLCHAIN_OK)
     run-java.sh                # on-target aggregate gate (staged to /usr/bin; shell_init_cmd runs it)
     backcompat/
       README.md                # the real-world Java-8 forward-compat suite + lib coords/sha256
@@ -211,19 +230,20 @@ would land verbatim in the captured stream and be matched by
 when the real gate prints `TEST FAILED`). Staged, the only echoed text is
 `sh /usr/bin/run-java.sh`, so the regex only ever matches the gate's REAL stdout
 (same pattern as `node-lang/run_node_carpet.sh`). The script detects the arch + JDK
-set at run time, so one script serves all arches (the 3 runnable arches here; x86_64 staging is identical but not run).
+set at run time, so one script serves all four arches.
 
 Guest layout (== `openjdk-multi`): `/opt/jdk{17,21,23,25}` (update-alternatives
 candidate roots), `/opt/jdk-current` symlink, `~/.sdkman/candidates/java/*`,
 `/root/jdkm/*.java`. The **per-JDK** musl loader path
-(`/etc/ld-musl-<arch>.path`) is set by `qemu-<arch>.toml` at run time, **one JDK at
-a time** — a single shared path listing all JDK lib dirs makes JDK 23/25 mis-resolve
+(`/etc/ld-musl-<arch>.path`) is set by `run-java.sh` (`setp`/`LDP=/etc/ld-musl-$ARCH.path`)
+at run time, **one JDK at a time** — a single shared path listing all JDK lib dirs makes JDK 23/25 mis-resolve
 their runtime libs to the first entry (jdk17) and fails the source launcher
 (root-caused + validated host+starry).
 
 ## Run
 
 ```bash
+cargo xtask starry app qemu -t java-lang --arch x86_64
 cargo xtask starry app qemu -t java-lang --arch aarch64
 cargo xtask starry app qemu -t java-lang --arch riscv64
 cargo xtask starry app qemu -t java-lang --arch loongarch64
@@ -234,21 +254,24 @@ sets both `-Xms` and `-Xmx` (a bare ergonomic-heap JVM hits "Too small maximum h
 on starry). The aggregate gate prints `TEST PASSED`
 (`success_regex = (?m)^TEST PASSED\s*$`) only when `PASS == TOTAL` over the genuinely
 attempted suites; any `SUITE FAIL`, a `TEST FAILED`, or a JVM `panic` makes the run
-fail fast. Documented per-JDK SKIPs (riscv64/loongarch64, above) are excluded from
-`TOTAL` and are not failures.
+fail fast. All four arches currently run the full `17/21/23/25` with **zero
+documented SKIPs**; the SKIP machinery (excluded from `TOTAL`, never a failure)
+remains as a defensive net per the partial-arch-deliver rule but is not triggered.
 
-> **x86_64 is intentionally not a runnable target in this PR** — there is no
-> `qemu-x86_64.toml`. Its on-target JVM run is kernel-blocked (layer-2 hang, see
-> the **x86_64 status** note), and the local app-qemu path (`-kernel`, no PVH
-> note) cannot boot x86 StarryOS anyway; apps/starry QEMU jobs are additionally
-> path-filtered out of CI. The three shipped arches (aarch64 / riscv64 /
-> loongarch64) boot locally via qemu-system-<arch> and are the runnable coverage.
+> **x86_64 is a runnable target in this PR** — it ships a `qemu-x86_64.toml` and runs
+> the full `17/21/23/25` (4/4). It is **Blocked-by: #1366 + #1367** (the two
+> x86_64-only StarryOS kernel fixes in the **x86_64 status** note) until those merge.
+> Note the local app-qemu path (`-kernel`, no PVH note) cannot boot x86 StarryOS via
+> `qemu-system-x86_64 -kernel` directly; x86_64 boots through the harness's
+> UEFI/OVMF path. apps/starry QEMU jobs are path-filtered out of CI for every arch.
 
 ## Host golden evidence
 
 The full `javac`/`java` launcher surface (every `--help`/`--help-extra`/`-X`
-option, 204 checks → `JAVA_CLI_OK`) and the language carpet golden are validated
-host-side via `java-lang-work/java-cli-carpet.sh`, `JavaLangCarpet.golden.txt`, and
-`run-java-lang-carpet.sh`. The on-target run uses the kernel-relevant
-`java-cli-core.sh` subset (tractable under QEMU TCG) plus the on-target compile +
-run of the full `JavaLangCarpet.java`.
+option, the 68-check host golden referenced by `java-cli-core.sh` /
+`java-toolchain-carpet.sh`) is validated host-side and delivered with the carpet
+sources (it is not part of the on-target `programs/` tree, since the full surface is
+not meaningfully kernel-dependent). The on-target run ships and uses the
+kernel-relevant `java-cli-core.sh` subset (`JAVA_CLI_OK`, tractable under QEMU TCG)
+plus the on-target compile + run of the full `JavaLangCarpet.java`
+(`JAVA_LANG_OK`).
