@@ -520,7 +520,7 @@ impl<T: RawUart, const TX: usize, const RX: usize> SerialIrqHandler<T, TX, RX> {
         budget: usize,
         out: &mut SerialIrqOutcome,
     ) -> usize {
-        let limit = budget.min(core.raw.tx_load_size().max(1));
+        let limit = budget;
         let mut sent = 0;
         while sent < limit && core.raw.tx_ready() {
             let Some(byte) = self.tx.ring.peek_copy() else {
@@ -803,21 +803,21 @@ mod tests {
     }
 
     #[test]
-    fn repeated_tx_kicks_eventually_drain_backlog() {
+    fn soft_tx_kick_uses_budget_while_hardware_ready() {
         let mut uart = MockUart::new();
-        uart.tx_ready_budget = 3;
+        uart.tx_ready_budget = TX_KICK_BUDGET + 8;
         uart.tx_load_size = 1;
-        let parts = SerialIrqHandler::<MockUart, 8, 8>::split(uart, OwnerId(0));
+        let parts = SerialIrqHandler::<MockUart, 64, 8>::split(uart, OwnerId(0));
         let mut tx = parts.tx;
-        tx.submit(b"abc");
+        let data = [b'x'; TX_KICK_BUDGET + 8];
+        tx.submit(&data);
         parts.irq.startup(lease(), &Config::new()).unwrap();
 
-        for remaining in [2, 1, 0] {
-            let outcome = parts.irq.service(lease(), SerialSoftWork::TX_KICK);
-            assert_eq!(outcome.tx_sent, 1);
-            assert!(outcome.tx_wakeup);
-            assert_eq!(tx.chars_in_buffer(), remaining);
-        }
+        let outcome = parts.irq.service(lease(), SerialSoftWork::TX_KICK);
+
+        assert_eq!(outcome.tx_sent, TX_KICK_BUDGET);
+        assert!(outcome.tx_wakeup);
+        assert_eq!(tx.chars_in_buffer(), 8);
     }
 
     #[test]

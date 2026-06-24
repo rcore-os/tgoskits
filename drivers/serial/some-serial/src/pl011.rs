@@ -482,7 +482,7 @@ impl Pl011 {
 
         self.registers()
             .uarticr
-            .set(active & !(UARTIS::TX::SET.value | UARTIS::RX::SET.value | UARTIS::RT::SET.value));
+            .set(active & !(UARTIS::RX::SET.value | UARTIS::RT::SET.value));
 
         IrqSnapshot {
             claimed: true,
@@ -669,7 +669,7 @@ impl RawUart for Pl011 {
 
         // 根据ARM文档的建议配置流程：
         // 1. 禁用UART
-        let original_enable = self.registers().uartcr.is_set(UARTCR::UARTEN); // 保存原始使能状态
+        let original_cr = self.registers().uartcr.extract(); // 保存原始使能状态
         self.registers().uartcr.modify(UARTCR::UARTEN::CLEAR); // 禁用UART
 
         // 2. 等待当前字符传输完成
@@ -698,8 +698,12 @@ impl RawUart for Pl011 {
         self.registers().uartlcr_h.modify(UARTLCR_H::FEN::SET);
 
         // 6. 恢复UART使能状态
-        if original_enable {
-            self.registers().uartcr.modify(UARTCR::UARTEN::SET); // 重新启用UART
+        if original_cr.is_set(UARTCR::UARTEN) {
+            self.registers().uartcr.modify(
+                UARTCR::UARTEN.val(original_cr.read(UARTCR::UARTEN))
+                    + UARTCR::TXE.val(original_cr.read(UARTCR::TXE))
+                    + UARTCR::RXE.val(original_cr.read(UARTCR::RXE)),
+            );
         }
 
         Ok(())
@@ -889,6 +893,15 @@ mod tests {
         }
     }
 
+    fn read_test_reg(regs: &Pl011Registers, offset: usize) -> u32 {
+        unsafe {
+            (regs as *const Pl011Registers)
+                .cast::<u32>()
+                .add(offset / core::mem::size_of::<u32>())
+                .read_volatile()
+        }
+    }
+
     fn owner_lease() -> OwnerLease<'static> {
         unsafe { OwnerLease::new_unchecked(OwnerId(0)) }
     }
@@ -969,6 +982,35 @@ mod tests {
         assert_eq!(outcome.tx_sent, 1);
         assert_eq!(regs.uartdr.get() as u8, b'x');
         assert_eq!(tx.chars_in_buffer(), 0);
+    }
+
+    #[test]
+    fn tx_irq_snapshot_acknowledges_tx_interrupt() {
+        let (mut regs, mut uart) = pl011_with_registers();
+
+        write_test_reg(&mut regs, 0x040, UARTIS::TX::SET.value);
+        let snapshot = uart.take_irq_snapshot();
+
+        assert!(snapshot.claimed);
+        assert!(snapshot.sources.contains(IrqSource::TX_SPACE));
+        assert_eq!(
+            read_test_reg(&regs, 0x044) & UARTIS::TX::SET.value,
+            UARTIS::TX::SET.value
+        );
+    }
+
+    #[test]
+    fn set_config_preserves_enabled_tx_and_rx_paths() {
+        let (regs, mut uart) = pl011_with_registers();
+        regs.uartcr
+            .write(UARTCR::UARTEN::SET + UARTCR::TXE::SET + UARTCR::RXE::SET);
+
+        uart.set_config(&Config::new()).unwrap();
+
+        let cr = regs.uartcr.extract();
+        assert!(cr.is_set(UARTCR::UARTEN));
+        assert!(cr.is_set(UARTCR::TXE));
+        assert!(cr.is_set(UARTCR::RXE));
     }
 
     #[test]
