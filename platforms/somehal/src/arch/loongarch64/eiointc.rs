@@ -43,19 +43,21 @@ module_driver!(
 );
 
 pub fn set_irq_enable(irq: usize, enable: bool) {
-    if enable {
-        enable_irq(irq, EIOINTC_VECTOR_COUNT);
-    } else {
-        disable_irq(irq, EIOINTC_VECTOR_COUNT);
-    }
+    with_eiointc("setting EIOINTC IRQ enable", |intc| {
+        if enable {
+            intc.enable_irq(irq);
+        } else {
+            intc.disable_irq(irq);
+        }
+    });
 }
 
 pub fn claim_irq() -> Option<usize> {
-    claim_irq_from(EIOINTC_VECTOR_COUNT)
+    with_eiointc("claiming EIOINTC IRQ", |intc| intc.claim_irq()).flatten()
 }
 
 pub fn complete_irq(irq: usize) {
-    complete_irq_for(irq, EIOINTC_VECTOR_COUNT);
+    with_eiointc("completing EIOINTC IRQ", |intc| intc.complete_irq(irq));
 }
 
 fn probe_eiointc_fdt(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
@@ -75,6 +77,26 @@ fn register_eiointc(dev: PlatformDevice) -> Result<(), OnProbeError> {
     someboot::irq::irq_set_enable(someboot::irq::IrqId::new(EIOINTC_IRQ), true);
     dev.register(rdif_intc::Intc::new(intc));
     Ok(())
+}
+
+fn with_eiointc<R>(op: &str, f: impl FnOnce(&mut EioIntc) -> R) -> Option<R> {
+    if !rdrive::is_initialized() {
+        return None;
+    }
+
+    for intc in rdrive::get_list::<rdif_intc::Intc>() {
+        let Ok(intc) = intc.downcast::<EioIntc>() else {
+            continue;
+        };
+        let Ok(mut intc) = intc.try_lock() else {
+            warn!("failed to lock Loongson EIOINTC when {op}");
+            return None;
+        };
+        return Some(f(&mut intc));
+    }
+
+    warn!("Loongson EIOINTC is not registered when {op}");
+    None
 }
 
 struct EioIntc {
@@ -110,55 +132,55 @@ impl EioIntc {
             iocsr_write_w(EIOINTC_REG_BOUNCE + i * 4, u32::MAX);
         }
     }
-}
 
-fn enable_irq(irq: usize, vectors: usize) {
-    if !contains_irq(irq, vectors, "enable") {
-        return;
-    }
+    fn enable_irq(&mut self, irq: usize) {
+        if !self.contains_irq(irq, "enable") {
+            return;
+        }
 
-    let (offset, bit) = eiointc_reg_bit(irq);
-    for base in [EIOINTC_REG_ENABLE, EIOINTC_REG_BOUNCE] {
-        let addr = base + offset;
-        iocsr_write_d(addr, iocsr_read_d(addr) | bit);
-    }
-}
-
-fn disable_irq(irq: usize, vectors: usize) {
-    if !contains_irq(irq, vectors, "disable") {
-        return;
-    }
-
-    let (offset, bit) = eiointc_reg_bit(irq);
-    let addr = EIOINTC_REG_ENABLE + offset;
-    iocsr_write_d(addr, iocsr_read_d(addr) & !bit);
-}
-
-fn claim_irq_from(vectors: usize) -> Option<usize> {
-    for i in 0..(vectors / VEC_COUNT_PER_REG) {
-        let flags = iocsr_read_d(EIOINTC_REG_ISR + i * 8);
-        if flags != 0 {
-            return Some(flags.trailing_zeros() as usize + VEC_COUNT_PER_REG * i);
+        let (offset, bit) = eiointc_reg_bit(irq);
+        for base in [EIOINTC_REG_ENABLE, EIOINTC_REG_BOUNCE] {
+            let addr = base + offset;
+            iocsr_write_d(addr, iocsr_read_d(addr) | bit);
         }
     }
-    None
-}
 
-fn complete_irq_for(irq: usize, vectors: usize) {
-    if !contains_irq(irq, vectors, "complete") {
-        return;
+    fn disable_irq(&mut self, irq: usize) {
+        if !self.contains_irq(irq, "disable") {
+            return;
+        }
+
+        let (offset, bit) = eiointc_reg_bit(irq);
+        let addr = EIOINTC_REG_ENABLE + offset;
+        iocsr_write_d(addr, iocsr_read_d(addr) & !bit);
     }
 
-    let (offset, bit) = eiointc_reg_bit(irq);
-    iocsr_write_d(EIOINTC_REG_ISR + offset, bit);
-}
+    fn claim_irq(&mut self) -> Option<usize> {
+        for i in 0..(self.vectors / VEC_COUNT_PER_REG) {
+            let flags = iocsr_read_d(EIOINTC_REG_ISR + i * 8);
+            if flags != 0 {
+                return Some(flags.trailing_zeros() as usize + VEC_COUNT_PER_REG * i);
+            }
+        }
+        None
+    }
 
-fn contains_irq(irq: usize, vectors: usize, op: &str) -> bool {
-    if irq < vectors {
-        true
-    } else {
-        warn!("skip {op} for out-of-range EIOINTC IRQ {irq}");
-        false
+    fn complete_irq(&mut self, irq: usize) {
+        if !self.contains_irq(irq, "complete") {
+            return;
+        }
+
+        let (offset, bit) = eiointc_reg_bit(irq);
+        iocsr_write_d(EIOINTC_REG_ISR + offset, bit);
+    }
+
+    fn contains_irq(&self, irq: usize, op: &str) -> bool {
+        if irq < self.vectors {
+            true
+        } else {
+            warn!("skip {op} for out-of-range EIOINTC IRQ {irq}");
+            false
+        }
     }
 }
 

@@ -150,7 +150,7 @@ pub fn post_allocator() {
     arch::Arch::post_allocator();
 }
 
-/// Returns boot arguments captured from FDT or built into the image.
+/// Returns boot arguments captured from FDT, UEFI load options, or built into the image.
 pub fn bootargs() -> Option<&'static str> {
     cmdline::cmdline()
 }
