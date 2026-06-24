@@ -662,10 +662,11 @@ pub fn detach(self: &Arc<Self>) -> VfsResult<()> {
 |---|---|---|
 | `MS_SHARED | MS_PRIVATE` | `EINVAL` | 已支持 |
 | `MS_SHARED | MS_BIND` | `EINVAL` | 已支持 |
-| `MS_PRIVATE` | 修改已有 mount 的传播属性 | 已支持当前测试覆盖的 private 语义 |
-| `MS_SHARED` | 修改已有 mount 的传播属性 | 已支持当前测试覆盖的 shared peer 传播语义 |
-| `MS_SLAVE` | 修改已有 mount 的传播属性 | 已支持当前测试覆盖的 slave 单向传播语义 |
+| `MS_PRIVATE` | 修改已有 mount 的传播属性 | 已支持当前测试覆盖的 private 语义，停止后续传播 |
+| `MS_SHARED` | 修改已有 mount 的传播属性 | 已支持当前测试覆盖的 shared peer 双向传播语义 |
+| `MS_SLAVE` | 修改已有 mount 的传播属性 | 已支持当前测试覆盖的 master → slave 单向传播语义 |
 | `MS_UNBINDABLE` | 修改已有 mount 的传播属性 | 已支持 bind 禁止与 recursive bind prune |
+| propagation flag + `MS_REC` | 递归修改 mount subtree | 已支持 |
 | `MS_BIND` | 普通 bind，不带 nested submount | 已支持 |
 | `MS_BIND` on subdirectory | bind mount 内部子目录 | 已支持 |
 | `MS_BIND|MS_REC` | recursive bind，带 nested submount | 已支持 |
@@ -715,11 +716,15 @@ pub fn detach(self: &Arc<Self>) -> VfsResult<()> {
 
 ## 8. 当前仍未覆盖或未完全实现的点
 
-虽然这次 `util-linux` 测试已经全绿，但仍有一些 Linux mount/namespace 语义没有在本轮实现：
+虽然 shared subtree 的核心传播路径已经实现，但仍有一些更深层 Linux
+mount/namespace 语义没有完全覆盖：
 
 - 更完整的 shared subtree propagation corner case
 - 更复杂 namespace 拓扑下的传播行为
 - 真实 peer group 生命周期管理
+- 复杂多级 shared+slave 拓扑中的 `propagate_from` 展示与边界行为
+- `MS_MOVE` 在 shared subtree 中的全部 Linux 限制和传播规则
+- detached mount、过挂载堆栈和传播失败时的完整事务回滚
 - 其他普通 mount flags，如 `MS_NODEV`、`MS_NOSUID`、`MS_NOEXEC` 等
 - `MNT_FORCE` 的真实强制卸载语义
 
