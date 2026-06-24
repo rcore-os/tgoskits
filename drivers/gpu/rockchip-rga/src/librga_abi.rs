@@ -342,12 +342,11 @@ pub struct RgaReq {
     pub uvvds_mode: u8,             // offset 356
     pub osd_info: OsdInfo,          // offset 357
     pub pre_intr_info: PreIntrInfo, // offset 405
-    pub fg_global_alpha: u8,        // offset 421
-    pub bg_global_alpha: u8,        // offset 422
-    pub feature: RgaFeature,        // offset 439
-    pub _pad5: [u8; 3],             // padding to align csc_clip
-    pub full_csc_clip: CscClip,     // offset 446
-    pub _reserved_tail: [u8; 44], /* C struct: uint8_t reservr[43] + trailing pad → 504 total (520-44=476? no, 460+44=504) */
+    pub fg_global_alpha: u8,        // offset 440
+    pub bg_global_alpha: u8,        // offset 441
+    pub feature: RgaFeature,        // offset 444
+    pub full_csc_clip: CscClip,     // offset 448
+    pub _reserved_tail: [u8; 48],   // kernel reservr[43] + trailing pad → 504 total
 }
 
 // Drift guards — MUST match the arm64/LP64 ABI verified via C probe.
@@ -557,10 +556,12 @@ pub fn rk_format_to_pixel(format_field: u32) -> Result<PixelFormat> {
         0x3 => Ok(PixelFormat::Bgra8888),
         0x4 => Ok(PixelFormat::Rgb565),
         0x7 => Ok(PixelFormat::Bgr888),
-        0x7 => Ok(PixelFormat::Yuyv422), // YUV422 packed; UYVY also 0x7 with swap
-        0x8 => Ok(PixelFormat::Nv16),
-        0xa => Ok(PixelFormat::Nv12),
-        0xe => Ok(PixelFormat::Nv21),
+        // Packed YUV 4:2:2 — format-FIELD codes (kernel enum rga_surf_format), NOT hw registers.
+        0x1c => Ok(PixelFormat::Yuyv422), // RGA_FORMAT_YUYV_422
+        0x1e => Ok(PixelFormat::Uyvy422), // RGA_FORMAT_UYVY_422
+        0x8 => Ok(PixelFormat::Nv16),     // YCbCr_422_SP
+        0xa => Ok(PixelFormat::Nv12),     // YCbCr_420_SP
+        0xe => Ok(PixelFormat::Nv21),     // YCrCb_420_SP
         _ => Err(RgaError::Unsupported),
     }
 }
