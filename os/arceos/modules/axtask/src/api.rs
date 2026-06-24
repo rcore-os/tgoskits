@@ -53,8 +53,6 @@ pub type WeakAxTaskRef = Weak<AxTask>;
 /// [`RawMutex::unlock()`]: ax_sync::RawMutex::unlock()
 pub struct ForceUnlockGuard(());
 
-static FORCE_UNLOCK_COUNT: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
-
 impl ForceUnlockGuard {
     /// Enters a force-unlock region.
     ///
@@ -64,22 +62,25 @@ impl ForceUnlockGuard {
     /// resources of exited tasks.
     #[allow(clippy::new_without_default)]
     pub unsafe fn new() -> Self {
-        let _ = FORCE_UNLOCK_COUNT.fetch_add(1, core::sync::atomic::Ordering::Release);
+        crate::run_queue::inc_force_unlock();
         Self(())
     }
 
-    /// Returns `true` when the current thread is inside a force-unlock
-    /// region (i.e., the per-CPU gc task is in the middle of exited-task
-    /// teardown and is permitted to release mutexes on behalf of dead
-    /// owners).
+    /// Returns `true` when the current CPU's gc task is inside a
+    /// force-unlock region (i.e., tearing down exited tasks and
+    /// permitted to release mutexes on behalf of dead owners on this
+    /// CPU).
+    ///
+    /// The counter is per-CPU, so a GC teardown on one core never
+    /// weakens the owner assertion on any other core.
     pub fn is_active() -> bool {
-        FORCE_UNLOCK_COUNT.load(core::sync::atomic::Ordering::Acquire) > 0
+        crate::run_queue::is_force_unlock_active()
     }
 }
 
 impl Drop for ForceUnlockGuard {
     fn drop(&mut self) {
-        FORCE_UNLOCK_COUNT.fetch_sub(1, core::sync::atomic::Ordering::Release);
+        crate::run_queue::dec_force_unlock();
     }
 }
 

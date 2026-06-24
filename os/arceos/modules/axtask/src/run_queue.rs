@@ -36,12 +36,33 @@ percpu_static! {
     EXITED_TASKS: VecDeque<AxTaskRef> = VecDeque::new(),
     WAIT_FOR_EXIT: WaitQueue = WaitQueue::new(),
     IDLE_TASK: LazyInit<AxTaskRef> = LazyInit::new(),
+    /// Per-CPU counter: > 0 when this CPU's GC task is tearing down
+    /// exited tasks and is permitted to release mutexes on behalf of
+    /// dead owners.  Scoped per-CPU so that a GC on one core does not
+    /// weaken the owner check on any other core.
+    FORCE_UNLOCK_COUNT: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0),
     /// Stores a raw pointer to the previous task running on this CPU.
     /// The pointer is valid only within the window between `switch_to` storing it
     /// and `clear_prev_task_on_cpu` consuming it — both in the same non-preemptible
     /// call chain, so the task cannot be freed while the pointer is held.
     #[cfg(feature = "smp")]
     PREV_TASK: Option<NonNull<crate::AxTask>> = None,
+}
+
+pub(crate) fn inc_force_unlock() {
+    FORCE_UNLOCK_COUNT.with_current(|c| {
+        let _ = c.fetch_add(1, core::sync::atomic::Ordering::Release);
+    });
+}
+
+pub(crate) fn dec_force_unlock() {
+    FORCE_UNLOCK_COUNT.with_current(|c| {
+        c.fetch_sub(1, core::sync::atomic::Ordering::Release);
+    });
+}
+
+pub(crate) fn is_force_unlock_active() -> bool {
+    FORCE_UNLOCK_COUNT.with_current(|c| c.load(core::sync::atomic::Ordering::Acquire) > 0)
 }
 
 /// An array of references to run queues, one for each CPU, indexed by cpu_id.
