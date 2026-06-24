@@ -1,10 +1,15 @@
 #!/usr/bin/env bash
 #
-# prepare-selfhost-rootfs.sh — Prepare a Debian rootfs image with rustc, cargo,
-# and the full StarryOS source tree for offline self-compilation inside QEMU.
+# prepare-selfhost-rootfs.sh — Maintainer tool to create a selfhost Debian rootfs
+# blueprint with rustc, cargo, and the full StarryOS source tree for offline
+# x86_64 self-compilation inside QEMU.
+#
+# This script requires sudo, debootstrap and systemd-nspawn.  It is NOT the
+# primary verification path for reviewers; the produced blueprint image is
+# reused by self-compile.sh (which clones it to a working copy each run).
 #
 # Usage:
-#   ./scripts/prepare-selfhost-rootfs.sh --arch riscv64|x86_64|aarch64 [--force]
+#   sudo ./scripts/prepare-selfhost-rootfs.sh --arch riscv64|x86_64|aarch64 [--force]
 #
 #   --arch    Target architecture (required):
 #               riscv64 — RISC-V 64-bit (needs existing Debian base image)
