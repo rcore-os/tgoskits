@@ -27,7 +27,7 @@ args = [
     "user,id=net0",
     # KVM is disabled because Weston's initialization (weston_compositor_startup)
     # hangs under KVM acceleration.  The root cause is likely a race in timerfd
-    # or eventfd that only manifests at KVM speed.  TCG is used instead.
+    # or eventfd that only manifests at KVM speed.  TCG is used instead
     # Re-enable once the KVM hang is fixed: "-accel", "kvm",
     "-accel", "tcg",
 ]
