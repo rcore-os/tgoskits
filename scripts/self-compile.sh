@@ -9,8 +9,11 @@
 #
 # Prerequisites:
 #   - Rootfs (run once to create the selfhost rootfs):
-#       Option A (recommended, no sudo): ./scripts/self-compile.sh --arch x86_64 --bootstrap
-#       Option B (needs sudo):           sudo ./scripts/prepare-selfhost-rootfs.sh --arch x86_64 --force
+#       sudo ./scripts/prepare-selfhost-rootfs.sh --arch x86_64 --force
+#     The x86_64 self-compile requires a complete Debian rootfs with musl
+#     toolchain, kallsyms tools, firmware, and full offline dependency closure.
+#     --bootstrap is available for bootstrapping an Alpine base image only and
+#     does NOT provision the prerequisites the x86_64 xtask flow requires.
 #   - qemu-system-<arch>, debugfs (from e2fsprogs)
 #
 # Usage:
@@ -68,7 +71,9 @@ while [[ $# -gt 0 ]]; do
             echo "  --commit <SHA>  Expected source commit for identity verification"
             echo "  --ref <REF>     Expected git ref (informational, no strict check)"
             echo "  --log <level>   Log level: none, error, warn, info (default: info)"
-            echo "  --bootstrap     Bootstrap selfhost rootfs via QEMU (no host sudo)"
+            echo "  --bootstrap     Bootstrap an Alpine base rootfs via QEMU (no host sudo).
+                    Not sufficient for x86_64 self-compile; use
+                    prepare-selfhost-rootfs.sh instead."
             exit 0
             ;;
         *) error "Unknown argument: $1";;
