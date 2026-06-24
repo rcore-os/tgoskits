@@ -21,6 +21,20 @@ pub const RGA_CACHE_FLUSH: u32 = 0x501c;
 pub const RENDER_BITBLT: u8 = 0;
 pub const RENDER_COLOR_FILL: u8 = 2;
 
+// --- New-style ioctl commands (rga.h, _IOC with magic 'r') ---
+// RGA_IOC_MAGIC = 'r' (0x72). Computed from the kernel source:
+//   _IOWR('r', 3, sizeof(struct rga_buffer_pool)) = _IOWR(0x72, 3, 16)
+//   _IOW('r',  4, sizeof(struct rga_buffer_pool)) = _IOW(0x72, 4, 16)
+// sizeof(rga_buffer_pool) = 16 (uint64_t + uint32_t, padded to 8-byte alignment).
+pub const RGA_IOC_IMPORT_BUFFER: u32 = 0xC0107203;
+pub const RGA_IOC_RELEASE_BUFFER: u32 = 0x40107204;
+
+/// Buffer type constants for rga_external_buffer.type (rga.h enum rga_memory_type).
+pub const RGA_DMA_BUFFER: u32 = 0;
+pub const RGA_VIRTUAL_ADDRESS: u32 = 1;
+pub const RGA_PHYSICAL_ADDRESS: u32 = 2;
+pub const RGA_DMA_BUFFER_PTR: u32 = 3;
+
 // --- Sub-structs (rga.h, in declaration order) ---
 
 /// Kernel `rga_img_info_t` (rga.h). arm64/LP64 sizeof == 56 (verified via C probe).
@@ -225,6 +239,49 @@ pub struct PreIntrInfo {
 pub struct RgaFeature {
     pub bits: u32,
 }
+
+// --- Import/release buffer structs (rga.h) ---
+
+/// Kernel `struct rga_memory_parm` (rga.h). sizeof == 16.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Default)]
+pub struct RgaMemoryParm {
+    pub width: u32,
+    pub height: u32,
+    pub format: u32,
+    pub size: u32,
+}
+
+/// Kernel `struct rga_external_buffer` (rga.h). sizeof == 288 on LP64.
+/// Userspace fills memory + type + memory_parm; kernel fills handle.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct RgaExternalBuffer {
+    pub memory: u64,                // offset 0: dma-buf fd or phys addr
+    pub r#type: u32,                // offset 8: RGA_DMA_BUFFER / RGA_DMA_BUFFER_PTR
+    pub handle: u32,                // offset 12: output handle (filled by kernel)
+    pub memory_parm: RgaMemoryParm, // offset 16
+    pub _reserve: [u8; 252],        // offset 32  (kernel: uint8_t reserve[252])
+}
+
+// Default manually; [u8; 252] > 32
+impl Default for RgaExternalBuffer {
+    fn default() -> Self {
+        unsafe { core::mem::zeroed() }
+    }
+}
+
+/// Kernel `struct rga_buffer_pool` (rga.h). sizeof == 16 on LP64.
+/// Passed as the ioctl argument for IMPORT/RELEASE_BUFFER.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Default)]
+pub struct RgaBufferPool {
+    pub buffers_ptr: u64, // userspace pointer to RgaExternalBuffer array
+    pub size: u32,        // number of buffers
+}
+
+const _: () = assert!(core::mem::size_of::<RgaExternalBuffer>() == 288);
+const _: () = assert!(core::mem::size_of::<RgaBufferPool>() == 16);
 
 // ---------------------------------------------------------------------------
 // Main ioctl argument struct
