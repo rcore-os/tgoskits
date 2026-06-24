@@ -427,6 +427,26 @@ mod mmu_off_tests {
     }
 
     #[test]
+    fn blit_equal_dims_matches_copy_word_for_word() {
+        // On hardware, FILLBLIT (a same-size `Blit::resize`) wrote all-zeros while `encode_copy`
+        // works on the same buffer type. If the two command blocks are byte-identical, the
+        // blit-writes-zeros bug is NOT in the encoding — it redirects to src-sync / addressing /
+        // engine-state. This pins exactly which side of that fork we are on.
+        let src = ImageDesc::rgb(64, 48, 64 * 4, PixelFormat::Rgba8888, 0x4000_0000);
+        let dst = ImageDesc::rgb(64, 48, 64 * 4, PixelFormat::Rgba8888, 0x4010_0000);
+        let copy = encode_copy(src, dst).unwrap();
+        let blit = encode_blit(&Blit::resize(src, dst)).unwrap();
+        let (c, b) = (copy.words(), blit.words());
+        for i in 0..c.len() {
+            assert_eq!(
+                c[i], b[i],
+                "equal-dims blit diverges from copy at word {i}: copy=0x{:08x} blit=0x{:08x}",
+                c[i], b[i]
+            );
+        }
+    }
+
+    #[test]
     fn copy_does_not_program_pattern_words() {
         // set_pat_info is fill-only in our encoder: copy/blit work without it on hardware, so we do
         // NOT add it there (don't perturb the proven bitblt path). Guard against accidental coupling.
