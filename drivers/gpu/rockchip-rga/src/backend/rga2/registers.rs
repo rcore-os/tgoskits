@@ -66,12 +66,19 @@ pub const CSC_BT601_FULL: u32 = 2;
 pub const CSC_BT709_LIMITED: u32 = 3;
 // DST_INFO dst_csc (bits[17:16]) — RGB→YUV. CONFIRM ON BOARD.
 pub const DST_INFO_CSC_SHIFT: u32 = 16;
-// SRC_INFO scale mode (h=bits[17:16], v=bits[15:14]); 00=none,01=down,10=up. CONFIRM ON BOARD split.
-pub const SRC_INFO_HSCL_SHIFT: u32 = 16;
-pub const SRC_INFO_VSCL_SHIFT: u32 = 14;
+// SRC_INFO scale mode: HSCL=bits[15:14], VSCL=bits[17:16]; 00=none,01=down,10=up
+// (vendor rga2_reg_info.h m_RGA2_SRC_INFO_SW_SW_SRC_HSCL_MODE=0x3<<14, VSCL=0x3<<16; mode value
+// from RGA2_reg_get_param x_flag/y_flag: 1=down, 2=up). The shifts were previously transposed
+// (HSCL=16, VSCL=14); harmless for a symmetric square resize but wrong for any axis-asymmetric scale.
+pub const SRC_INFO_HSCL_SHIFT: u32 = 14;
+pub const SRC_INFO_VSCL_SHIFT: u32 = 16;
 pub const SCL_NONE: u32 = 0;
 pub const SCL_DOWN: u32 = 1;
 pub const SCL_UP: u32 = 2;
+// SRC_INFO scaler filter (SCL_FILTER bits[25:24] = scale_bicu_mode). Vendor bring-up uses bicubic
+// (=2) for any scaling op (rga2_drv.c req.scale_bicu_mode=2); 0 = bypass.
+pub const SRC_INFO_SCL_FILTER_SHIFT: u32 = 24;
+pub const SCL_FILTER_BICUBIC: u32 = 2;
 // Width alignment required for the RGA path. CONFIRM ON BOARD (bench gates on %16).
 // Not enforced in validate() yet — the 4-vs-16 requirement is board-confirmed first (the bench's %16 is conservative).
 pub const WIDTH_ALIGN: u32 = 16;

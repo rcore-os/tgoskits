@@ -46,7 +46,12 @@ fn command_index(register: usize) -> Option<usize> {
 }
 
 const fn encode_mode(render: u32, bitblt: u32) -> u32 {
-    (render & 0x7) | ((bitblt & 0x1) << 3) | (1 << 6)
+    // MODE_CTRL: render_mode bits[2:0], bitblt_mode bit3. Vendor RGA2_set_mode_ctrl only sets
+    // gradient_sat (bit6) from `alpha_rop_flag >> 7` and intr_cf_e (bit7) from CMD_fin_int_enable;
+    // both are 0 for a plain fill/copy/blit. The previous unconditional `(1<<6)` forced
+    // SW_GRADIENT_SAT on (vendor rga2_reg_info.h m_RGA2_MODE_CTRL_SW_GRADIENT_SAT = 0x1<<6), which
+    // is NOT a generic run-enable and corrupted fill/copy output.
+    (render & 0x7) | ((bitblt & 0x1) << 3)
 }
 
 /// Format-portion of SRC_INFO/DST_INFO: format code + R/B-swap modifier.
@@ -71,13 +76,26 @@ const fn hw_format(fmt: crate::operation::PixelFormat) -> u32 {
     }
 }
 
-/// 16.16 fixed-point scale factor for one axis. CONFIRM ON BOARD: exact rounding (+1/-1 vendor forms).
-/// `dim << 16` is overflow-safe in u32 because dims are bounded ≤ 8192 (8192<<16 < u32::MAX).
+/// One axis of SRC_X_FACTOR / SRC_Y_FACTOR (16.16 fixed point), matching the vendor
+/// `RGA2_reg_get_param` (rga2_reg_info.c):
+///
+/// - downscale (src > dst): `(dst << 16) / src`, written into the LOW half (bits[15:0]).
+/// - upscale (src < dst): `((src - 1) << 16) / (dst - 1)`, written into the HIGH half (bits[31:16]).
+/// - equal: 0.
+///
+/// The factor is the smaller dimension over the larger, so it is always <= 1.0 (<= 0x10000); the
+/// previous `(src<<16)/dst` was the reciprocal (>1.0 for downscale), which steps the source pointer
+/// far past SRC_ACT_INFO and stalls the scaler (the run-8 BUSY-50ms resize hang). `dim << 16` is
+/// overflow-safe in u32 because dims are bounded <= 8192 (8192<<16 < u32::MAX).
 const fn scale_factor(src_dim: u32, dst_dim: u32) -> u32 {
-    if dst_dim < src_dim {
-        (src_dim << 16) / dst_dim // downscale: src/dst
+    if src_dim > dst_dim {
+        // downscale: coefficient in low half [15:0]
+        ((dst_dim << 16) / src_dim) & 0xffff
+    } else if src_dim < dst_dim {
+        // upscale: coefficient in high half [31:16]
+        (((src_dim - 1) << 16) / (dst_dim - 1)) << 16
     } else {
-        (dst_dim << 16) / src_dim // upscale: dst/src
+        0
     }
 }
 
@@ -176,6 +194,14 @@ pub fn encode_blit(blit: &Blit) -> crate::error::Result<CommandBuffer> {
         registers::SCL_UP
     };
     // SRC_INFO.csc_mode encodes YUV→RGB; only set when src is YUV (not RGB→YUV direction).
+    // When either axis scales, also select the scaler filter (SCL_FILTER bits[25:24] =
+    // scale_bicu_mode). The vendor bring-up uses bicubic (=2) for any scaling op
+    // (rga2_drv.c req.scale_bicu_mode=2); leaving it 0 with HSCL/VSCL set is a degenerate config.
+    let scl_filter = if scl_x != registers::SCL_NONE || scl_y != registers::SCL_NONE {
+        registers::SCL_FILTER_BICUBIC << registers::SRC_INFO_SCL_FILTER_SHIFT
+    } else {
+        0
+    };
     let src_info = hw_format(src.format)
         | if src.format.is_yuv() {
             src_csc_bits(*csc)
@@ -183,7 +209,8 @@ pub fn encode_blit(blit: &Blit) -> crate::error::Result<CommandBuffer> {
             0
         }
         | (scl_x << registers::SRC_INFO_HSCL_SHIFT)
-        | (scl_y << registers::SRC_INFO_VSCL_SHIFT);
+        | (scl_y << registers::SRC_INFO_VSCL_SHIFT)
+        | scl_filter;
     buf.set_register(registers::SRC_INFO, src_info);
     buf.set_register(registers::SRC_VIR_INFO, (src.stride_bytes / 4) & 0x7fff);
     buf.set_register(
@@ -260,7 +287,11 @@ pub fn encode_fill(dst: ImageDesc, color: u32) -> crate::error::Result<CommandBu
         registers::DST_ACT_INFO,
         ((dst.width - 1) & 0x0fff) | (((dst.height - 1) & 0x0fff) << 16),
     );
-    buf.set_register(registers::SRC_BG_COLOR, color);
+    // Solid fill color lives in SRC_FG_COLOR (vendor RGA2_set_reg_color_fill:
+    // `*bRGA_SRC_FG_COLOR = msg->fg_color`, RGA2_SRC_FG_COLOR_OFFSET = 0x2c). The previous
+    // SRC_BG_COLOR (0x28) write left FG=0, so the engine completed but filled with the foreground
+    // default instead of the requested color (run-8 fill=FAIL wrong pixels).
+    buf.set_register(registers::SRC_FG_COLOR, color);
     buf.set_register(registers::MMU_CTRL1, 0);
     buf.set_register(
         registers::MODE_CTRL,
@@ -316,7 +347,9 @@ mod mmu_off_tests {
             cmd.register(registers::DST_Y_RGB_BASE_ADDR),
             Some(0x4020_0000)
         );
-        assert_eq!(cmd.register(registers::SRC_BG_COLOR), Some(0x0000_00ff));
+        // Vendor solid-fill color lives in SRC_FG_COLOR (0x2c), not SRC_BG_COLOR (0x28).
+        assert_eq!(cmd.register(registers::SRC_FG_COLOR), Some(0x0000_00ff));
+        assert_eq!(cmd.register(registers::SRC_BG_COLOR), Some(0));
         assert_eq!(cmd.register(registers::MMU_CTRL1), Some(0));
         assert_eq!(
             cmd.register(registers::MODE_CTRL),
@@ -372,13 +405,15 @@ mod mmu_off_tests {
             cmd.register(registers::DST_ACT_INFO),
             Some(639 | (359 << 16))
         );
+        // Vendor downscale factor = (dst<<16)/src in the LOW half (bits[15:0]):
+        // (640<<16)/1920 = 0x5555, (360<<16)/1080 = 0x5555.
         assert_eq!(
             cmd.register(registers::SRC_X_FACTOR),
-            Some((1920u32 << 16) / 640)
+            Some(((640u32 << 16) / 1920) & 0xffff)
         );
         assert_eq!(
             cmd.register(registers::SRC_Y_FACTOR),
-            Some((1080u32 << 16) / 360)
+            Some(((360u32 << 16) / 1080) & 0xffff)
         );
         let src_info = cmd.register(registers::SRC_INFO).unwrap();
         assert_eq!(src_info & 0xf, registers::FMT_RGB888);
@@ -389,6 +424,11 @@ mod mmu_off_tests {
         assert_eq!(
             (src_info >> registers::SRC_INFO_VSCL_SHIFT) & 0x3,
             registers::SCL_DOWN
+        );
+        // Scaler filter selected (bicubic) when scaling.
+        assert_eq!(
+            (src_info >> registers::SRC_INFO_SCL_FILTER_SHIFT) & 0x3,
+            registers::SCL_FILTER_BICUBIC
         );
     }
 
@@ -477,7 +517,7 @@ mod mmu_off_tests {
     fn letterbox_is_fill_plus_blit_into_centered_rect() {
         let dst = ImageDesc::rgb(640, 640, 640 * 3, PixelFormat::Rgb888, 0x4100_0000);
         let fill = encode_fill(dst, 0x0072_7272).unwrap();
-        assert_eq!(fill.register(registers::SRC_BG_COLOR), Some(0x0072_7272));
+        assert_eq!(fill.register(registers::SRC_FG_COLOR), Some(0x0072_7272));
         let src = ImageDesc::rgb(1920, 1080, 1920 * 3, PixelFormat::Rgb888, 0x4000_0000);
         let b = Blit::new(
             src,
@@ -532,13 +572,15 @@ mod mmu_off_tests {
         let src = ImageDesc::rgb(320, 240, 320 * 4, PixelFormat::Rgba8888, 0x4000_0000);
         let dst = ImageDesc::rgb(640, 480, 640 * 4, PixelFormat::Rgba8888, 0x4100_0000);
         let cmd = encode_blit(&Blit::resize(src, dst)).unwrap();
+        // Vendor upscale factor = ((src-1)<<16)/(dst-1) in the HIGH half (bits[31:16]):
+        // ((320-1)<<16)/(640-1) << 16, ((240-1)<<16)/(480-1) << 16.
         assert_eq!(
             cmd.register(registers::SRC_X_FACTOR),
-            Some((640u32 << 16) / 320)
+            Some((((320u32 - 1) << 16) / (640 - 1)) << 16)
         );
         assert_eq!(
             cmd.register(registers::SRC_Y_FACTOR),
-            Some((480u32 << 16) / 240)
+            Some((((240u32 - 1) << 16) / (480 - 1)) << 16)
         );
         let si = cmd.register(registers::SRC_INFO).unwrap();
         assert_eq!(
