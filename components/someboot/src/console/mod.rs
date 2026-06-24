@@ -219,9 +219,29 @@ unsafe impl Sync for EarlyconSenderCell {}
 
 impl Con for EarlyconSenderCell {
     fn write_bytes(&self, bytes: &[u8]) -> usize {
+        const MAX_NO_PROGRESS_SPINS: usize = 1 << 20;
+
         unsafe {
             if let Some(ref mut sender) = *self.0.get() {
-                sender.write_bytes(bytes)
+                let mut written = 0;
+                let mut no_progress_spins = 0;
+                while written < bytes.len() {
+                    let n = sender.write_bytes(&bytes[written..]);
+                    if n == 0 {
+                        no_progress_spins += 1;
+                        if no_progress_spins >= MAX_NO_PROGRESS_SPINS {
+                            // Early console output is best-effort. If the UART
+                            // stops accepting bytes, report the rest as
+                            // consumed so boot does not hang inside logging.
+                            return bytes.len();
+                        }
+                        core::hint::spin_loop();
+                        continue;
+                    }
+                    no_progress_spins = 0;
+                    written += n;
+                }
+                written
             } else {
                 // No sender available, simply return the length of bytes to indicate all bytes "written"
                 bytes.len()

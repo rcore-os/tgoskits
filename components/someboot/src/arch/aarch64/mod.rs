@@ -153,7 +153,7 @@ impl ArchTrait for Arch {
     }
 
     fn virt_to_phys(vaddr: *const u8) -> usize {
-        if is_mmu_enabled() {
+        if crate::mem::mmu::is_kernel_relocated() {
             if percpu_va_range().contains(&(vaddr as usize)) {
                 vaddr as usize - 0xFF00_0000_0000 - PAGE_OFFSET
             } else if vaddr as usize >= VM_LOAD_ADDRESS {
@@ -195,6 +195,10 @@ impl ArchTrait for Arch {
 
     fn kernel_space() -> core::ops::Range<usize> {
         PAGE_OFFSET..usize::MAX
+    }
+
+    fn is_mmu_enabled() -> bool {
+        elx::is_mmu_enabled()
     }
 
     fn cpu_on(hartid: usize, entry: usize, arg: usize) -> Result<(), crate::power::CpuOnError> {

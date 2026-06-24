@@ -48,6 +48,9 @@ Current Axvisor LoongArch QEMU tests intentionally use the static `ax-hal/loonga
 - On AArch64, keep the someboot `hv` feature scoped to the EL2 kernel path. For non-`hv` EL1 boot, choose the EL1 arch timer at runtime from the boot EL: use CNTP when EL2 is available and CNTV when EL2 is unavailable, and keep the FDT timer interrupt index consistent with the selected mode.
 - Build page tables for identity/firmware access, direct map, kernel high map, MMIO, and per-CPU data as the arch requires.
 - Flush TLB/cache and use architecture barriers around page table writes, boot argument writes, and secondary CPU release.
+- Treat hardware MMU enablement, direct-map/kernel-space addressability, and final kernel relocation as separate states. Generic relocation detection should use the final `VM_LOAD_ADDRESS`, not the broader arch kernel/direct-map range; for example AArch64 `hv` builds can use `PAGE_OFFSET = 0`, and LoongArch DMW can make RAM addressable before execution reaches the final high mapping.
+- On AArch64, keep the SCTLR.M enable to relocated-entry branch window free of UART logging. Address helpers must not switch to relocated addresses while still executing on the pre-relocation path.
+- On LoongArch, do not treat the DMW direct-map window as final kernel relocation. Address helpers may use DMW for early direct mapping, but relocated-kernel checks should only become true after execution reaches the final `VM_LOAD_ADDRESS` high mapping.
 - After `ExitBootServices`, do not call UEFI Boot Services. Retry only through the correct memory-map-key sequence before exit.
 
 ## SMP Bring-Up Rules
