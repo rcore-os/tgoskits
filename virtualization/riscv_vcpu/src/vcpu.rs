@@ -726,7 +726,7 @@ impl RISCVVCpu {
                                 return Ok(AxVCpuExitReason::Nothing);
                             }
                         }
-                        axvisor_api::host::remote_hfence_vvma_all();
+                        axvisor_api::arch::remote_hfence_vvma_all();
                         self.sbi_return(RET_SUCCESS, 0);
                         return Ok(AxVCpuExitReason::Nothing);
                     }

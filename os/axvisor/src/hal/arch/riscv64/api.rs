@@ -11,4 +11,8 @@ impl ArchIf for ArchImpl {
         let bootarg = ax_hal::dtb::get_bootarg();
         (bootarg != 0).then(|| bootarg.into())
     }
+
+    fn remote_hfence_vvma_all() {
+        axvisor_core::arch::riscv64::hfence_vvma_all();
+    }
 }

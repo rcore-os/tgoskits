@@ -25,8 +25,6 @@
 //! # Available APIs
 //!
 //! - [`get_host_cpu_num`] - Get the total number of CPUs in the host system.
-//! - [`remote_hfence_vvma_all`] - Flush guest VS-stage address-translation
-//!   caches on all host CPUs.
 //!
 //! # Implementation
 //!
@@ -72,13 +70,6 @@ pub trait HostIf {
     /// Performs host runtime initialization for the current CPU before AxVisor
     /// enables virtualization on it.
     fn init_percpu();
-
-    /// Flushes guest VS-stage address-translation caches on all host CPUs.
-    ///
-    /// RISC-V SBI RFENCE calls require the firmware/hypervisor to complete
-    /// remote TLB maintenance before returning to the guest. Architectures
-    /// without this cache hierarchy can implement this as a no-op.
-    fn remote_hfence_vvma_all();
 
     /// Terminates the current host runtime with `exit_code`.
     #[cfg(feature = "shell")]

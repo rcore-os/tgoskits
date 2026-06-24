@@ -69,6 +69,13 @@ pub trait ArchIf {
     #[cfg(target_arch = "x86_64")]
     fn host_tsc_frequency_mhz() -> Option<u32>;
 
+    /// Flushes guest VS-stage address-translation caches on all host CPUs.
+    ///
+    /// RISC-V SBI RFENCE calls require the firmware/hypervisor to complete
+    /// remote TLB maintenance before returning to the guest.
+    #[cfg(target_arch = "riscv64")]
+    fn remote_hfence_vvma_all();
+
     /// Inject a virtual interrupt to the current virtual CPU using hardware
     /// virtualization support.
     ///
