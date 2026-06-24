@@ -68,7 +68,7 @@ use ax_kspin::SpinRwLock as RwLock;
 use ax_task::future::sleep_until;
 use smoltcp::{
     iface::{Interface, PollResult, SocketSet},
-    phy::ChecksumCapabilities,
+    phy::{Checksum, ChecksumCapabilities},
     time::{Duration as SmolDuration, Instant},
     wire::{
         DHCP_CLIENT_PORT, DHCP_SERVER_PORT, DhcpMessageType, DhcpPacket, DhcpRepr, EthernetAddress,
@@ -999,7 +999,7 @@ fn build_dhcp_packet(
         router: None,
         subnet_mask: None,
         relay_agent_ip: Ipv4Address::UNSPECIFIED,
-        broadcast: false,
+        broadcast: true,
         requested_ip,
         client_identifier: Some(mac),
         server_identifier,
@@ -1024,7 +1024,8 @@ fn build_dhcp_packet(
     };
 
     let mut buffer = vec![0; ipv4_repr.buffer_len() + ipv4_repr.payload_len];
-    let checksum_caps = ChecksumCapabilities::default();
+    let mut checksum_caps = ChecksumCapabilities::default();
+    checksum_caps.udp = Checksum::None;
     let mut ipv4_packet = Ipv4Packet::new_unchecked(&mut buffer);
     ipv4_repr.emit(&mut ipv4_packet, &checksum_caps);
     let mut udp_packet = UdpPacket::new_unchecked(ipv4_packet.payload_mut());
