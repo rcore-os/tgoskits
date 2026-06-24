@@ -31,6 +31,14 @@ pub const DST_VIR_INFO: usize = 0x0148;
 pub const DST_ACT_INFO: usize = 0x014c;
 pub const ALPHA_CTRL0: usize = 0x0150;
 pub const ALPHA_CTRL1: usize = 0x0154;
+// FADING_CTRL (cmd 0x58, word 22) and PAT_CON (cmd 0x5c, word 23): the pattern/fading registers
+// the vendor `RGA2_set_pat_info` writes UNCONDITIONALLY for every render mode, including color fill
+// (rga2_reg_info.c:1009-1030, called before the render-mode switch). Verbatim offsets from
+// rga2_reg_info.h:307-308. A solid fill leaves them logically inert, but the vendor still programs
+// them from a zeroed `pat` descriptor; our command block's omission of these two words is the SOLE
+// deviation from the proven-working reference color-fill block (see encode_fill).
+pub const FADING_CTRL: usize = 0x0158;
+pub const PAT_CON: usize = 0x015c;
 pub const MMU_CTRL1: usize = 0x016c;
 pub const MMU_SRC_BASE: usize = 0x0170;
 pub const MMU_SRC1_BASE: usize = 0x0174;
