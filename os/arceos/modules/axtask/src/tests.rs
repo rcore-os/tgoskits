@@ -20,7 +20,7 @@ type TestJob = (Box<dyn FnOnce() + Send + 'static>, mpsc::Sender<TestResult>);
 
 static TEST_WORKER: OnceLock<mpsc::Sender<TestJob>> = OnceLock::new();
 
-fn run_in_test_scheduler<F>(f: F)
+pub(crate) fn run_in_test_scheduler<F>(f: F)
 where
     F: FnOnce() + Send + 'static,
 {
