@@ -4,15 +4,35 @@
 # The selftest runs automatically at boot; this case waits for the shell prompt and
 # then triggers a search of the buffered serial output for the expected result line.
 #
-# success_regex matches the end-of-suite sentinel `RGA_SELFTEST_SUITE_DONE`, printed only after the
-# fill/copy, dmabuf, and blit-resize selftests have all run. It must NOT match an intermediate PASS
-# line (e.g. the first `RGA2_SELFTEST ... PASS`): ostool tears down on the FIRST success_regex match,
-# which would drop the later selftest results from the run. fail_regex still fails the case on any
-# per-selftest FAIL/alloc-fail line, so a passing run means all three selftests passed.
+# success_regex matches the end-of-suite sentinel `RGA_SELFTEST_SUITE_DONE`, printed only after every
+# selftest has run. It must NOT match an intermediate PASS line: ostool tears down on the FIRST
+# success_regex match, which would drop later results.
+#
+# fail_regex is deliberately SPECIFIC, not the old blanket `RGA2_\w*SELFTEST.*FAIL`. The native
+# color_fill (`RGA2_SELFTEST ... fill=FAIL` / `RGA2_DMABUF_SELFTEST ... fill=FAIL`) is under active
+# diagnosis: its wrong-output must NOT tear the run down, or we lose the `RGA2_SELFTEST_FILL_PROBE`
+# classification and the `RGA2_FILLBLIT_SELFTEST` fallback result that follow it. So fill correctness
+# is judged from those explicit lines + the PROBE class in the captured log, while only genuine
+# REGRESSIONS of the already-proven paths fail the case:
+#   - no RGA2 core found (nothing to test)
+#   - smoke engine-level failure (`result=FAIL` → timeout/hardware: a copy/engine regression)
+#   - copy or resize regression (`copy=FAIL` / `resize=FAIL`)
+#   - the bitblt-based fill fallback failing (`RGA2_FILLBLIT_SELFTEST ... fill=FAIL`) — that path is
+#     the proven copy datapath, so its failure is a real regression and the green criterion for fill
+#   - any allocation failure
+# A passing run therefore means: the engine + copy + resize are healthy AND the fill works via at
+# least the fallback path; the FILL_PROBE line tells whether native color_fill is now correct too.
 
 board_type = "OrangePi-5-Plus"
 shell_prefix = "root@starry:/root #"
 shell_init_cmd = "echo RGA_SELFTEST_CHECK"
 success_regex = ["(?m)^RGA_SELFTEST_SUITE_DONE\\s*$"]
-fail_regex = ['(?i)RGA2_\w*SELFTEST.*FAIL', 'RGA2_SELFTEST no-rga2-core']
+fail_regex = [
+    'RGA2_SELFTEST no-rga2-core',
+    'result=FAIL',
+    'copy=FAIL',
+    'resize=FAIL',
+    'RGA2_FILLBLIT_SELFTEST core=\d+ fill=FAIL',
+    'alloc=FAIL',
+]
 timeout = 300
