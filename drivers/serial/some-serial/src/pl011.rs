@@ -4,7 +4,9 @@ use rdif_serial::{
     InterruptMask, IrqSnapshot, IrqSource, RawUart, RxFlag, RxSample, SerialDirection, SerialEvent,
     TransBytesError, TransferError,
 };
-use tock_registers::{interfaces::*, register_bitfields, register_structs, registers::*};
+use tock_registers::{
+    LocalRegisterCopy, interfaces::*, register_bitfields, register_structs, registers::*,
+};
 
 use crate::{Config, ConfigError, DataBits, Parity, StopBits};
 
@@ -142,6 +144,7 @@ unsafe impl Sync for Pl011Registers {}
 pub struct Pl011 {
     base: Reg,
     clock_freq: u32,
+    saved_rx_status: Pl011RxStatus,
 }
 
 impl Pl011 {
@@ -158,7 +161,11 @@ impl Pl011 {
     pub fn new(base: NonNull<u8>, clock_freq: u32) -> Self {
         let base = Reg(base.cast());
 
-        Self { base, clock_freq }
+        Self {
+            base,
+            clock_freq,
+            saved_rx_status: Pl011RxStatus::empty(),
+        }
     }
 
     fn registers(&self) -> &Pl011Registers {
@@ -357,12 +364,13 @@ impl Pl011 {
             event |= SerialEvent::TX_READY;
         }
 
-        let rsr = self.registers().uartrsr_ecr.extract();
-        if rsr.is_set(UARTRSR_ECR::FE) || rsr.is_set(UARTRSR_ECR::PE) || rsr.is_set(UARTRSR_ECR::BE)
+        let status =
+            self.saved_rx_status | Pl011RxStatus::from_rsr(self.registers().uartrsr_ecr.extract());
+        if status.intersects(Pl011RxStatus::FRAMING | Pl011RxStatus::PARITY | Pl011RxStatus::BREAK)
         {
             event |= SerialEvent::RX_ERROR;
         }
-        if rsr.is_set(UARTRSR_ECR::OE) {
+        if status.contains(Pl011RxStatus::OVERRUN) {
             event |= SerialEvent::RX_ERROR | SerialEvent::OVERRUN;
         }
 
@@ -427,23 +435,16 @@ impl Pl011 {
             return None;
         }
 
-        let dr = self.registers().uartdr.extract();
-        let data = dr.read(UARTDR::DATA) as u8;
-
-        if dr.is_set(UARTDR::FE) {
-            return Some(Err(TransferError::Framing));
+        let sample = self.read_rx()?;
+        if sample.overrun {
+            return Some(Err(TransferError::Overrun(sample.byte.unwrap_or(0))));
         }
-        if dr.is_set(UARTDR::PE) {
-            return Some(Err(TransferError::Parity));
+        match sample.flag {
+            RxFlag::Normal => sample.byte.map(Ok),
+            RxFlag::Break => Some(Err(TransferError::Break)),
+            RxFlag::Parity => Some(Err(TransferError::Parity)),
+            RxFlag::Framing => Some(Err(TransferError::Framing)),
         }
-        if dr.is_set(UARTDR::OE) {
-            return Some(Err(TransferError::Overrun(data)));
-        }
-        if dr.is_set(UARTDR::BE) {
-            return Some(Err(TransferError::Break));
-        }
-
-        Some(Ok(data))
     }
 
     pub fn take_irq_snapshot(&mut self) -> IrqSnapshot {
@@ -466,6 +467,7 @@ impl Pl011 {
             || mis.is_set(UARTIS::OE)
         {
             sources |= IrqSource::RX_STATUS;
+            self.saved_rx_status |= Pl011RxStatus::from_irq_status(mis);
         }
         if mis.is_set(UARTIS::TX) {
             sources |= IrqSource::TX_SPACE;
@@ -490,16 +492,22 @@ impl Pl011 {
 
     pub fn read_rx(&mut self) -> Option<RxSample> {
         if self.registers().uartfr.is_set(UARTFR::RXFE) {
-            return None;
+            self.saved_rx_status |= Pl011RxStatus::from_rsr(self.registers().uartrsr_ecr.extract());
+            return self.saved_rx_status.take_status_sample();
         }
 
         let dr = self.registers().uartdr.extract();
         let data = dr.read(UARTDR::DATA) as u8;
-        let flag = if dr.is_set(UARTDR::BE) {
+        let status = Pl011RxStatus::from_data(dr);
+        if !status.is_empty() {
+            self.saved_rx_status.remove(status);
+        }
+
+        let flag = if status.contains(Pl011RxStatus::BREAK) {
             RxFlag::Break
-        } else if dr.is_set(UARTDR::PE) {
+        } else if status.contains(Pl011RxStatus::PARITY) {
             RxFlag::Parity
-        } else if dr.is_set(UARTDR::FE) {
+        } else if status.contains(Pl011RxStatus::FRAMING) {
             RxFlag::Framing
         } else {
             RxFlag::Normal
@@ -508,7 +516,96 @@ impl Pl011 {
         Some(RxSample {
             byte: Some(data),
             flag,
-            overrun: dr.is_set(UARTDR::OE),
+            overrun: status.contains(Pl011RxStatus::OVERRUN),
+        })
+    }
+}
+
+bitflags::bitflags! {
+    #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+    struct Pl011RxStatus: u32 {
+        const FRAMING = 1 << 0;
+        const PARITY  = 1 << 1;
+        const BREAK   = 1 << 2;
+        const OVERRUN = 1 << 3;
+    }
+}
+
+impl Pl011RxStatus {
+    fn from_data(dr: LocalRegisterCopy<u32, UARTDR::Register>) -> Self {
+        let mut status = Self::empty();
+        if dr.is_set(UARTDR::FE) {
+            status |= Self::FRAMING;
+        }
+        if dr.is_set(UARTDR::PE) {
+            status |= Self::PARITY;
+        }
+        if dr.is_set(UARTDR::BE) {
+            status |= Self::BREAK;
+        }
+        if dr.is_set(UARTDR::OE) {
+            status |= Self::OVERRUN;
+        }
+        status
+    }
+
+    fn from_irq_status(mis: LocalRegisterCopy<u32, UARTIS::Register>) -> Self {
+        let mut status = Self::empty();
+        if mis.is_set(UARTIS::FE) {
+            status |= Self::FRAMING;
+        }
+        if mis.is_set(UARTIS::PE) {
+            status |= Self::PARITY;
+        }
+        if mis.is_set(UARTIS::BE) {
+            status |= Self::BREAK;
+        }
+        if mis.is_set(UARTIS::OE) {
+            status |= Self::OVERRUN;
+        }
+        status
+    }
+
+    fn from_rsr(rsr: LocalRegisterCopy<u32, UARTRSR_ECR::Register>) -> Self {
+        let mut status = Self::empty();
+        if rsr.is_set(UARTRSR_ECR::FE) {
+            status |= Self::FRAMING;
+        }
+        if rsr.is_set(UARTRSR_ECR::PE) {
+            status |= Self::PARITY;
+        }
+        if rsr.is_set(UARTRSR_ECR::BE) {
+            status |= Self::BREAK;
+        }
+        if rsr.is_set(UARTRSR_ECR::OE) {
+            status |= Self::OVERRUN;
+        }
+        status
+    }
+
+    fn flag(self) -> RxFlag {
+        if self.contains(Self::BREAK) {
+            RxFlag::Break
+        } else if self.contains(Self::PARITY) {
+            RxFlag::Parity
+        } else if self.contains(Self::FRAMING) {
+            RxFlag::Framing
+        } else {
+            RxFlag::Normal
+        }
+    }
+
+    fn take_status_sample(&mut self) -> Option<RxSample> {
+        if self.is_empty() {
+            return None;
+        }
+
+        let status = *self;
+        *self = Self::empty();
+        Some(RxSample {
+            byte: None,
+            flag: status.flag(),
+            overrun: status.contains(Self::OVERRUN),
         })
     }
 }
@@ -826,6 +923,28 @@ mod tests {
         assert_eq!(sample.byte, Some(0xab));
         assert_eq!(sample.flag, RxFlag::Normal);
         assert!(sample.overrun);
+    }
+
+    #[test]
+    fn irq_status_without_rx_byte_is_preserved_after_irq_ack() {
+        let (mut regs, mut uart) = pl011_with_registers();
+
+        write_test_reg(
+            &mut regs,
+            0x040,
+            UARTIS::OE::SET.value | UARTIS::PE::SET.value,
+        );
+        write_test_reg(&mut regs, 0x018, UARTFR::RXFE::SET.value);
+
+        let snapshot = uart.take_irq_snapshot();
+        assert!(snapshot.claimed);
+        assert!(snapshot.sources.contains(IrqSource::RX_STATUS));
+
+        let sample = uart.read_rx().expect("saved RX status should be available");
+        assert_eq!(sample.byte, None);
+        assert_eq!(sample.flag, RxFlag::Parity);
+        assert!(sample.overrun);
+        assert!(uart.read_rx().is_none());
     }
 
     #[test]

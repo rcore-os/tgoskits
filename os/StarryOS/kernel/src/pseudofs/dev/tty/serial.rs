@@ -76,6 +76,7 @@ struct SerialBackend {
     irq_num: usize,
     irq_handle: SpinNoIrq<Option<IrqHandle>>,
     started: AtomicBool,
+    start_lock: Mutex<()>,
     events: SerialEvents,
     input_source: Arc<PollSet>,
     output_source: Arc<PollSet>,
@@ -199,6 +200,7 @@ pub fn bind_console_to(proc: &Process) -> AxResult<()> {
     if let Some(index) = SERIAL_REGISTRY.console_index
         && let Some(entry) = SERIAL_REGISTRY.entries.get(index)
     {
+        entry.backend.ensure_started()?;
         return entry.tty.bind_to(proc);
     }
     Err(AxError::NoSuchDevice)
@@ -291,6 +293,7 @@ fn new_serial_tty(number: usize, serial: SerialDevice) -> AxResult<SerialTtyEntr
         irq_num,
         irq_handle: SpinNoIrq::new(None),
         started: AtomicBool::new(false),
+        start_lock: Mutex::new(()),
         events: SerialEvents::new(),
         input_source: Arc::new(PollSet::new()),
         output_source: Arc::new(PollSet::new()),
@@ -299,9 +302,6 @@ fn new_serial_tty(number: usize, serial: SerialDevice) -> AxResult<SerialTtyEntr
     });
 
     backend.register_irq()?;
-    if !backend.start_port() {
-        return Err(AxError::Unsupported);
-    }
     spawn_serial_event_worker(backend.clone());
 
     let terminal = Arc::new(Terminal::default());
@@ -358,6 +358,10 @@ impl SerialBackend {
         if self.started.load(Ordering::Acquire) {
             return true;
         }
+        let _guard = self.start_lock.lock();
+        if self.started.load(Ordering::Acquire) {
+            return true;
+        }
 
         let Some(handle) = *self.irq_handle.lock() else {
             return false;
@@ -383,9 +387,18 @@ impl SerialBackend {
             return false;
         }
 
-        publish_serial_outcome(self, self.port.startup_catch_up(), false);
         self.started.store(true, Ordering::Release);
+        publish_serial_outcome(self, self.port.startup_catch_up(), false);
+        self.events.publish(SerialEventBits::RX_READY);
         true
+    }
+
+    fn ensure_started(&self) -> AxResult<()> {
+        if self.start_port() {
+            Ok(())
+        } else {
+            Err(AxError::Unsupported)
+        }
     }
 }
 
@@ -460,6 +473,10 @@ fn publish_serial_outcome(
 
 impl TtyRead for SerialReader {
     fn read(&mut self, buf: &mut [u8]) -> usize {
+        if !self.backend.started.load(Ordering::Acquire) {
+            return 0;
+        }
+
         let mut total = 0;
         let mut temp = [RxItem::default(); SERIAL_RX_DRAIN_CHUNK];
 
@@ -498,8 +515,15 @@ impl TtyRead for SerialReader {
 }
 
 impl TtyWrite for SerialWriter {
+    fn open(&self) -> AxResult<()> {
+        self.backend.ensure_started()
+    }
+
     fn write(&self, buf: &[u8]) {
         if buf.is_empty() {
+            return;
+        }
+        if self.backend.ensure_started().is_err() {
             return;
         }
         let _guard = self.backend.output_lock.lock();
@@ -516,6 +540,9 @@ impl TtyWrite for SerialWriter {
 
     fn try_write(&self, buf: &[u8]) -> usize {
         if buf.is_empty() {
+            return 0;
+        }
+        if self.backend.ensure_started().is_err() {
             return 0;
         }
         let Some(_guard) = self.backend.output_lock.try_lock() else {
@@ -537,6 +564,9 @@ impl TtyWrite for SerialWriter {
             return;
         };
         if old.baudrate() == Some(new_baud) {
+            return;
+        }
+        if self.backend.ensure_started().is_err() {
             return;
         }
         if let Err(err) = self

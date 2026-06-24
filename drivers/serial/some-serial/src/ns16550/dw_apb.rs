@@ -95,24 +95,28 @@ impl Kind for DwApb {
 
         self.wait_not_busy();
 
-        let mut lcr: LineControlFlags = self.read_flags(UART_LCR);
-        lcr.insert(LineControlFlags::DIVISOR_LATCH_ACCESS);
-        self.write_flags(UART_LCR, lcr);
+        let lcr: LineControlFlags = self.read_flags(UART_LCR);
+        self.write_flags(UART_LCR, lcr | LineControlFlags::DIVISOR_LATCH_ACCESS);
 
         self.write_reg(UART_DLL, ((divider >> DLF_LEN) & 0xff) as u8);
         self.write_reg(UART_DLH, ((divider >> (DLF_LEN + 8)) & 0xff) as u8);
         self.write_u32(UART_DLF_OFFSET, (divider & ((1 << DLF_LEN) - 1)) as u32);
 
-        lcr.remove(LineControlFlags::DIVISOR_LATCH_ACCESS);
         self.write_flags(UART_LCR, lcr);
 
         Ok(())
     }
 
     fn baudrate(&self, clock_freq: u32) -> u32 {
+        let lcr: LineControlFlags = self.read_flags(UART_LCR);
+        self.write_flags(UART_LCR, lcr | LineControlFlags::DIVISOR_LATCH_ACCESS);
+
         let dll = self.read_reg(UART_DLL) as u64;
         let dlh = self.read_reg(UART_DLH) as u64;
         let dlf = (self.read_u32(UART_DLF_OFFSET) & ((1 << DLF_LEN) - 1)) as u64;
+
+        self.write_flags(UART_LCR, lcr);
+
         let divider = (dll << DLF_LEN) | (dlh << (DLF_LEN + 8)) | dlf;
 
         if divider == 0 {

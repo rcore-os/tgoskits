@@ -100,6 +100,10 @@ impl<R: TtyRead, W: TtyWrite> Tty<R, W> {
 }
 
 impl<R: TtyRead, W: TtyWrite> DeviceOps for Tty<R, W> {
+    fn open(&self, _exclusive: bool) -> AxResult<()> {
+        self.writer.open()
+    }
+
     fn read_at(&self, buf: &mut [u8], _offset: u64) -> AxResult<usize> {
         if self.is_ptm || self.terminal.job_control.current_in_foreground() {
             self.ldisc.lock().read(buf)
@@ -282,6 +286,7 @@ fn filter_cursor_position_requests(match_len: &mut usize, bytes: &[u8]) -> (Vec<
 
 impl<R: TtyRead, W: TtyWrite> Pollable for Tty<R, W> {
     fn poll(&self) -> IoEvents {
+        let _ = self.writer.open();
         let mut events = IoEvents::OUT | self.terminal.job_control.poll();
         if self.is_ptm || events.contains(IoEvents::IN) {
             events.set(IoEvents::IN, self.ldisc.lock().poll_read());
@@ -290,6 +295,7 @@ impl<R: TtyRead, W: TtyWrite> Pollable for Tty<R, W> {
     }
 
     fn register(&self, context: &mut Context<'_>, events: IoEvents) {
+        let _ = self.writer.open();
         if !self.is_ptm {
             self.terminal.job_control.register(context, events);
         }

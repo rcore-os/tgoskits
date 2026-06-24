@@ -294,14 +294,15 @@ impl<T: RawUart, const TX: usize, const RX: usize> SerialCore<T, TX, RX> {
                 break;
             };
 
+            match sample.flag {
+                RxFlag::Normal => {}
+                RxFlag::Break => self.counters.rx_breaks += 1,
+                RxFlag::Parity => self.counters.rx_parity_errors += 1,
+                RxFlag::Framing => self.counters.rx_framing_errors += 1,
+            }
+
             if let Some(byte) = sample.byte {
                 self.counters.rx_bytes += 1;
-                match sample.flag {
-                    RxFlag::Normal => {}
-                    RxFlag::Break => self.counters.rx_breaks += 1,
-                    RxFlag::Parity => self.counters.rx_parity_errors += 1,
-                    RxFlag::Framing => self.counters.rx_framing_errors += 1,
-                }
 
                 if self
                     .rx_fifo
@@ -542,5 +543,27 @@ mod tests {
         core.handle_irq();
 
         assert!(core.counters().rx_queue_dropped > 0);
+    }
+
+    #[test]
+    fn rx_status_without_byte_is_preserved_as_queue_event() {
+        let mut uart = MockUart::new().irq(IrqSource::RX_STATUS);
+        uart.rx.push_back(RxSample {
+            byte: None,
+            flag: RxFlag::Parity,
+            overrun: true,
+        });
+        let mut core = started_core::<16, 16>(uart);
+
+        let outcome = core.handle_irq();
+
+        assert!(outcome.claimed);
+        assert_eq!(outcome.rx_pushed, 1);
+        assert_eq!(core.counters().rx_parity_errors, 1);
+        assert_eq!(core.counters().rx_fifo_overruns, 1);
+
+        let mut items = [RxItem::default(); 1];
+        assert_eq!(core.drain_rx(&mut items), 1);
+        assert_eq!(items[0], RxItem::Overrun);
     }
 }

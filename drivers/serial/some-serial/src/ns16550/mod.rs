@@ -46,22 +46,26 @@ pub trait Kind: Clone + Send + Sync + 'static {
             return Err(ConfigError::InvalidBaudrate);
         }
 
-        let mut lcr: LineControlFlags = self.read_flags(UART_LCR);
-        lcr.insert(LineControlFlags::DIVISOR_LATCH_ACCESS);
-        self.write_flags(UART_LCR, lcr);
+        let lcr: LineControlFlags = self.read_flags(UART_LCR);
+        self.write_flags(UART_LCR, lcr | LineControlFlags::DIVISOR_LATCH_ACCESS);
 
         self.write_reg(UART_DLL, (divisor & 0xFF) as u8);
         self.write_reg(UART_DLH, ((divisor >> 8) & 0xFF) as u8);
 
-        lcr.remove(LineControlFlags::DIVISOR_LATCH_ACCESS);
         self.write_flags(UART_LCR, lcr);
 
         Ok(())
     }
 
     fn baudrate(&self, clock_freq: u32) -> u32 {
+        let lcr: LineControlFlags = self.read_flags(UART_LCR);
+        self.write_flags(UART_LCR, lcr | LineControlFlags::DIVISOR_LATCH_ACCESS);
+
         let dll = self.read_reg(UART_DLL) as u16;
         let dlh = self.read_reg(UART_DLH) as u16;
+
+        self.write_flags(UART_LCR, lcr);
+
         let divisor = dll | (dlh << 8);
 
         if divisor == 0 {
@@ -697,6 +701,8 @@ mod tests {
     use super::*;
 
     static REGS: [AtomicU8; 8] = [const { AtomicU8::new(0) }; 8];
+    static DLL_REG: AtomicU8 = AtomicU8::new(0);
+    static DLH_REG: AtomicU8 = AtomicU8::new(0);
     static THR_WRITES: AtomicUsize = AtomicUsize::new(0);
     static TEST_LOCK: Mutex<()> = Mutex::new(());
 
@@ -705,6 +711,17 @@ mod tests {
 
     impl Kind for MockKind {
         fn read_reg(&self, reg: u8) -> u8 {
+            let dlab = REGS[UART_LCR as usize].load(Ordering::SeqCst)
+                & LineControlFlags::DIVISOR_LATCH_ACCESS.bits()
+                != 0;
+            if dlab {
+                return match reg {
+                    UART_DLL => DLL_REG.load(Ordering::SeqCst),
+                    UART_DLH => DLH_REG.load(Ordering::SeqCst),
+                    _ => REGS[reg as usize].load(Ordering::SeqCst),
+                };
+            }
+
             let value = REGS[reg as usize].load(Ordering::SeqCst);
             if reg == UART_RBR {
                 REGS[UART_LSR as usize].fetch_and(
@@ -719,6 +736,23 @@ mod tests {
         }
 
         fn write_reg(&self, reg: u8, val: u8) {
+            let dlab = REGS[UART_LCR as usize].load(Ordering::SeqCst)
+                & LineControlFlags::DIVISOR_LATCH_ACCESS.bits()
+                != 0;
+            if dlab {
+                match reg {
+                    UART_DLL => {
+                        DLL_REG.store(val, Ordering::SeqCst);
+                        return;
+                    }
+                    UART_DLH => {
+                        DLH_REG.store(val, Ordering::SeqCst);
+                        return;
+                    }
+                    _ => {}
+                }
+            }
+
             REGS[reg as usize].store(val, Ordering::SeqCst);
             if reg == UART_THR {
                 let iir = REGS[UART_IIR as usize].load(Ordering::SeqCst);
@@ -748,6 +782,8 @@ mod tests {
         for reg in &REGS {
             reg.store(0, Ordering::SeqCst);
         }
+        DLL_REG.store(0, Ordering::SeqCst);
+        DLH_REG.store(0, Ordering::SeqCst);
         THR_WRITES.store(0, Ordering::SeqCst);
     }
 
@@ -768,6 +804,28 @@ mod tests {
         let mut core = SerialCore::new(uart);
         core.startup(&Config::new()).unwrap();
         core
+    }
+
+    #[test]
+    fn baudrate_reads_divisor_latch_without_consuming_rx_register() {
+        let (_guard, uart) = serial();
+        let original_lcr = LineControlFlags::WORD_LENGTH_8 | LineControlFlags::STOP_BITS;
+        REGS[UART_LCR as usize].store(original_lcr.bits(), Ordering::SeqCst);
+        REGS[UART_LSR as usize].store(LineStatusFlags::DATA_READY.bits(), Ordering::SeqCst);
+        REGS[UART_RBR as usize].store(0, Ordering::SeqCst);
+        REGS[UART_IER as usize].store(0, Ordering::SeqCst);
+        DLL_REG.store(1, Ordering::SeqCst);
+        DLH_REG.store(0, Ordering::SeqCst);
+
+        assert_eq!(uart.baudrate(), 115_200);
+        assert_eq!(
+            REGS[UART_LCR as usize].load(Ordering::SeqCst),
+            original_lcr.bits()
+        );
+        assert!(
+            LineStatusFlags::from_bits_retain(REGS[UART_LSR as usize].load(Ordering::SeqCst))
+                .contains(LineStatusFlags::DATA_READY)
+        );
     }
 
     #[test]

@@ -54,6 +54,10 @@ pub trait TtyRead: Send + Sync + 'static {
     fn read(&mut self, buf: &mut [u8]) -> usize;
 }
 pub trait TtyWrite: Send + Sync + 'static {
+    fn open(&self) -> AxResult<()> {
+        Ok(())
+    }
+
     fn write(&self, buf: &[u8]);
 
     fn try_write(&self, buf: &[u8]) -> usize {
