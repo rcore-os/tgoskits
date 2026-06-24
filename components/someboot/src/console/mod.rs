@@ -63,14 +63,23 @@ pub(crate) fn debug_to_memory_desc() -> Option<MemoryDescriptor> {
 }
 
 pub fn _print(args: core::fmt::Arguments) {
+    if runtime_output_claimed() {
+        return;
+    }
     let _ = ConFmt {}.write_fmt(args);
 }
 
 pub fn _write_bytes(bytes: &[u8]) -> usize {
+    if runtime_output_claimed() {
+        return bytes.len();
+    }
     con().write_bytes(bytes)
 }
 
 pub fn _write_str(s: &str) {
+    if runtime_output_claimed() {
+        return;
+    }
     con().write_str(s);
 }
 
@@ -173,11 +182,34 @@ impl Con for NoCon {
 }
 
 static mut CON: &dyn Con = &NoCon;
+static RUNTIME_OUTPUT_CLAIMED: AtomicBool = AtomicBool::new(false);
 
 pub(crate) unsafe fn set_out(v: &'static dyn Con) {
     unsafe {
         CON = v;
     }
+}
+
+/// Marks the boot console output path as superseded by a runtime console.
+///
+/// Once an OS serial/tty runtime owns the UART registers, the boot console must
+/// not write the same hardware directly. It still reports bytes as consumed so
+/// generic logging paths cannot spin forever after the handoff.
+pub fn claim_runtime_output() {
+    RUNTIME_OUTPUT_CLAIMED.store(true, Ordering::Release);
+}
+
+#[cfg(not(test))]
+fn runtime_output_claimed() -> bool {
+    // On AArch64, exclusive atomic instructions such as LDXR/LDAXR are not
+    // reliable before the MMU is enabled. Keep the pre-MMU boot console path
+    // free of atomic reads and only honor the runtime handoff afterwards.
+    crate::mem::mmu::is_mmu_enabled() && RUNTIME_OUTPUT_CLAIMED.load(Ordering::Acquire)
+}
+
+#[cfg(test)]
+fn runtime_output_claimed() -> bool {
+    RUNTIME_OUTPUT_CLAIMED.load(Ordering::Acquire)
 }
 
 pub struct EarlySerial {
@@ -397,6 +429,44 @@ impl Con for EarlyconCell {
             written += n;
         }
         written
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use core::sync::atomic::{AtomicUsize, Ordering};
+
+    use super::*;
+
+    struct CountingCon;
+
+    static WRITE_CALLS: AtomicUsize = AtomicUsize::new(0);
+
+    impl Con for CountingCon {
+        fn write_bytes(&self, bytes: &[u8]) -> usize {
+            WRITE_CALLS.fetch_add(1, Ordering::Relaxed);
+            bytes.len()
+        }
+    }
+
+    static COUNTING_CON: CountingCon = CountingCon;
+
+    #[test]
+    fn runtime_output_claim_consumes_without_touching_boot_console() {
+        WRITE_CALLS.store(0, Ordering::Relaxed);
+        RUNTIME_OUTPUT_CLAIMED.store(false, Ordering::Relaxed);
+
+        unsafe { set_out(&COUNTING_CON) };
+
+        assert_eq!(_write_bytes(b"before"), 6);
+        assert_eq!(WRITE_CALLS.load(Ordering::Relaxed), 1);
+
+        claim_runtime_output();
+
+        assert_eq!(_write_bytes(b"after"), 5);
+        assert_eq!(WRITE_CALLS.load(Ordering::Relaxed), 1);
+
+        RUNTIME_OUTPUT_CLAIMED.store(false, Ordering::Relaxed);
     }
 }
 

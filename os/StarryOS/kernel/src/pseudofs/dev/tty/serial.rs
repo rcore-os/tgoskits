@@ -202,6 +202,7 @@ pub fn bind_console_to(proc: &Process) -> AxResult<()> {
         && let Some(entry) = SERIAL_REGISTRY.entries.get(index)
     {
         entry.backend.ensure_started()?;
+        ax_runtime::hal::console::claim_runtime_output();
         return entry.tty.bind_to(proc);
     }
     Err(AxError::NoSuchDevice)
@@ -433,6 +434,8 @@ fn spawn_serial_event_worker(backend: Arc<SerialBackend>) {
                 if pending.contains(SerialEventBits::TX_SPACE) {
                     backend.tx_notify.notify();
                     unsafe { backend.output_source.wake(IoEvents::OUT) };
+                    let outcome = backend.port.service_on_owner(SerialSoftWork::TX_KICK);
+                    publish_serial_outcome(&backend, outcome, false);
                 }
             }
         },
@@ -536,7 +539,9 @@ impl TtyWrite for SerialWriter {
         let _guard = self.backend.output_lock.lock();
         let mut written = 0;
         while written < buf.len() {
-            let count = self.backend.port.try_write(&buf[written..]);
+            let result = self.backend.port.try_write(&buf[written..]);
+            publish_serial_outcome(&self.backend, result.outcome, false);
+            let count = result.accepted;
             if count == 0 {
                 self.backend.tx_notify.wait();
                 continue;
@@ -555,7 +560,9 @@ impl TtyWrite for SerialWriter {
         let Some(_guard) = self.backend.output_lock.try_lock() else {
             return 0;
         };
-        self.backend.port.try_write(buf)
+        let result = self.backend.port.try_write(buf);
+        publish_serial_outcome(&self.backend, result.outcome, false);
+        result.accepted
     }
 
     fn flush_echo_before_input(&self) -> bool {

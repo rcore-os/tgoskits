@@ -46,6 +46,8 @@ impl ConsoleIf for DummyConsole {
         Err(ConsoleDeviceIdError::NotSpecified)
     }
 
+    fn claim_runtime_output() {}
+
     #[cfg(feature = "irq")]
     fn irq_num() -> Option<usize> {
         None

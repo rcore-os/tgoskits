@@ -546,7 +546,8 @@ impl<T: RawUart, const TX: usize, const RX: usize> SerialIrqHandler<T, TX, RX> {
             core.tx_irq_enabled = true;
         }
 
-        if sent > 0 && self.tx.blocked.swap(false, Ordering::AcqRel) {
+        if sent > 0 {
+            self.tx.blocked.store(false, Ordering::Release);
             out.tx_wakeup = true;
         }
         out.tx_sent += sent;
@@ -637,6 +638,7 @@ mod tests {
         irq: VecDeque<IrqSnapshot>,
         rx: VecDeque<RxSample>,
         tx_ready_budget: usize,
+        tx_load_size: usize,
         tx_written: Vec<u8>,
         mask: InterruptMask,
     }
@@ -647,6 +649,7 @@ mod tests {
                 irq: VecDeque::new(),
                 rx: VecDeque::new(),
                 tx_ready_budget: 0,
+                tx_load_size: 16,
                 tx_written: Vec::new(),
                 mask: InterruptMask::empty(),
             }
@@ -739,7 +742,7 @@ mod tests {
         }
 
         fn tx_load_size(&self) -> usize {
-            16
+            self.tx_load_size
         }
 
         fn tx_idle(&mut self) -> bool {
@@ -779,7 +782,42 @@ mod tests {
         let outcome = parts.irq.service(lease(), SerialSoftWork::TX_KICK);
 
         assert_eq!(outcome.tx_sent, 3);
+        assert!(outcome.tx_wakeup);
         assert_eq!(tx.chars_in_buffer(), 0);
+    }
+
+    #[test]
+    fn tx_kick_wakes_again_when_queue_still_has_data() {
+        let mut uart = MockUart::new();
+        uart.tx_ready_budget = 1;
+        let parts = SerialIrqHandler::<MockUart, 8, 8>::split(uart, OwnerId(0));
+        let mut tx = parts.tx;
+        tx.submit(b"abc");
+        parts.irq.startup(lease(), &Config::new()).unwrap();
+
+        let outcome = parts.irq.service(lease(), SerialSoftWork::TX_KICK);
+
+        assert_eq!(outcome.tx_sent, 1);
+        assert!(outcome.tx_wakeup);
+        assert_eq!(tx.chars_in_buffer(), 2);
+    }
+
+    #[test]
+    fn repeated_tx_kicks_eventually_drain_backlog() {
+        let mut uart = MockUart::new();
+        uart.tx_ready_budget = 3;
+        uart.tx_load_size = 1;
+        let parts = SerialIrqHandler::<MockUart, 8, 8>::split(uart, OwnerId(0));
+        let mut tx = parts.tx;
+        tx.submit(b"abc");
+        parts.irq.startup(lease(), &Config::new()).unwrap();
+
+        for remaining in [2, 1, 0] {
+            let outcome = parts.irq.service(lease(), SerialSoftWork::TX_KICK);
+            assert_eq!(outcome.tx_sent, 1);
+            assert!(outcome.tx_wakeup);
+            assert_eq!(tx.chars_in_buffer(), remaining);
+        }
     }
 
     #[test]

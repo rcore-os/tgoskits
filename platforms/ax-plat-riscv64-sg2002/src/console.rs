@@ -48,6 +48,8 @@ impl ConsoleIf for ConsoleIfImpl {
         Err(ConsoleDeviceIdError::NotSpecified)
     }
 
+    fn claim_runtime_output() {}
+
     /// Returns the IRQ number for the console, if applicable.
     #[cfg(feature = "irq")]
     fn irq_num() -> Option<usize> {

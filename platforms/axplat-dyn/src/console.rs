@@ -45,6 +45,10 @@ impl ConsoleIf for ConsoleIfImpl {
         })
     }
 
+    fn claim_runtime_output() {
+        somehal::console::claim_runtime_output();
+    }
+
     /// Returns the IRQ number for the console input interrupt.
     ///
     /// Returns `None` if input interrupt is not supported.

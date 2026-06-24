@@ -157,8 +157,8 @@ fn grouped_runner_script_runs_all_commands_and_reports_summary() {
     assert!(content.contains("'SUITE_GROUPED_TEST_BEGIN'"));
     assert!(content.contains("'SUITE_GROUPED_TEST_PASSED'"));
     assert!(content.contains("'SUITE_GROUPED_TEST_FAILED'"));
-    assert!(content.contains("'/usr/bin/alpha'"));
-    assert!(content.contains("'/usr/bin/beta --flag'"));
+    assert!(content.contains("'command-1'"));
+    assert!(content.contains("'command-2'"));
     assert!(content.contains("SUITE_GROUPED_TESTS_PASSED"));
 }
 

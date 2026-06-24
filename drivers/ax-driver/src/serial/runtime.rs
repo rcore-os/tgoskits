@@ -20,7 +20,7 @@ pub trait InterruptSerial: Send + Sync + 'static {
     fn shutdown(&self) -> Result<(), IrqError>;
     fn set_config(&self, config: &Config) -> Result<(), ConfigError>;
 
-    fn try_write(&self, bytes: &[u8]) -> usize;
+    fn try_write(&self, bytes: &[u8]) -> SerialWriteResult;
     fn write_room(&self) -> usize;
     fn chars_in_buffer(&self) -> usize;
     fn tx_idle(&self) -> bool;
@@ -32,6 +32,12 @@ pub trait InterruptSerial: Send + Sync + 'static {
     fn service_on_owner(&self, work: SerialSoftWork) -> SerialIrqOutcome;
 
     fn counters(&self) -> SerialCounters;
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+pub struct SerialWriteResult {
+    pub accepted: usize,
+    pub outcome: SerialIrqOutcome,
 }
 
 pub struct KernelSerialPort<T: RawUart> {
@@ -145,12 +151,16 @@ impl<T: RawUart> InterruptSerial for KernelSerialPort<T> {
             .map_err(|_| ConfigError::RegisterError)?
     }
 
-    fn try_write(&self, bytes: &[u8]) -> usize {
+    fn try_write(&self, bytes: &[u8]) -> SerialWriteResult {
         let submit = self.tx.lock().submit(bytes);
+        let mut outcome = SerialIrqOutcome::default();
         if submit.needs_kick {
-            let _ = self.service_on_owner(SerialSoftWork::TX_KICK);
+            outcome = self.service_on_owner(SerialSoftWork::TX_KICK);
         }
-        submit.accepted
+        SerialWriteResult {
+            accepted: submit.accepted,
+            outcome,
+        }
     }
 
     fn write_room(&self) -> usize {

@@ -594,15 +594,17 @@ impl<T: Kind> Ns16550<T> {
 
     /// 启用或禁用 FIFO
     pub fn enable_fifo(&mut self, enable: bool) {
-        if enable && self.is_16550_plus() {
+        if enable {
             let mut fcr = FifoControlFlags::ENABLE_FIFO;
             fcr.insert(FifoControlFlags::CLEAR_RECEIVER_FIFO);
             fcr.insert(FifoControlFlags::CLEAR_TRANSMITTER_FIFO);
             fcr.insert(FifoControlFlags::TRIGGER_1_BYTE);
             self.write_flags(UART_FCR, fcr);
-        } else {
-            self.write_flags(UART_FCR, FifoControlFlags::empty());
+            if self.is_fifo_enabled() {
+                return;
+            }
         }
+        self.write_flags(UART_FCR, FifoControlFlags::empty());
     }
 
     /// 设置 FIFO 触发级别
@@ -756,6 +758,19 @@ mod tests {
             }
 
             REGS[reg as usize].store(val, Ordering::SeqCst);
+            if reg == UART_FCR {
+                if val & FifoControlFlags::ENABLE_FIFO.bits() != 0 {
+                    REGS[UART_IIR as usize].fetch_or(
+                        InterruptIdentificationFlags::FIFO_ENABLE_MASK.bits(),
+                        Ordering::SeqCst,
+                    );
+                } else {
+                    REGS[UART_IIR as usize].fetch_and(
+                        !InterruptIdentificationFlags::FIFO_ENABLE_MASK.bits(),
+                        Ordering::SeqCst,
+                    );
+                }
+            }
             if reg == UART_THR {
                 let iir = REGS[UART_IIR as usize].load(Ordering::SeqCst);
                 if iir & InterruptIdentificationFlags::FIFO_ENABLE_MASK.bits() == 0 {
@@ -897,6 +912,19 @@ mod tests {
         assert!(mcr.contains(ModemControlFlags::DATA_TERMINAL_READY));
         assert!(mcr.contains(ModemControlFlags::REQUEST_TO_SEND));
         assert!(mcr.contains(ModemControlFlags::OUT_2));
+    }
+
+    #[test]
+    fn startup_enables_fifo_before_checking_fifo_status() {
+        let (_guard, mut uart) = serial();
+
+        uart.startup(&Config::new()).unwrap();
+
+        let iir = InterruptIdentificationFlags::from_bits_retain(
+            REGS[UART_IIR as usize].load(Ordering::SeqCst),
+        );
+        assert!(iir.contains(InterruptIdentificationFlags::FIFO_ENABLE_MASK));
+        assert_eq!(uart.tx_load_size(), UART_FIFO_SIZE as usize);
     }
 
     #[test]
