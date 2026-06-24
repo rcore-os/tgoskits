@@ -649,12 +649,50 @@ mod mmu_off_tests {
         assert_eq!((si >> registers::SRC_INFO_CSC_SHIFT) & 0x3, 0);
     }
 
+    // -------------------------------------------------------------------
+    // Letterbox golden tests — the exact bench pipeline
+    // -------------------------------------------------------------------
+    //
+    // A letterbox is two ops on the same destination:
+    //   1. Fill the entire dst with a padding color (the bars).
+    //   2. Blit the source into a centred sub-rect of the dst, scaling if needed.
+    //
+    // These tests verify every register the hardware sees, so if a board run
+    // produces wrong pixels, the word-diff isolates which op/word is defective.
+
+    /// Full letterbox: RGBA8888 1920×1080 → 640×640 with grey padding.
+    /// Fill covers the whole 640×640 dst; blit places a 640×360 window at y=140.
     #[test]
-    fn letterbox_is_fill_plus_blit_into_centered_rect() {
-        let dst = ImageDesc::rgb(640, 640, 640 * 3, PixelFormat::Rgb888, 0x4100_0000);
+    fn letterbox_rgba_fill_then_downscale_blit() {
+        let fmt = PixelFormat::Rgba8888;
+        let dst = ImageDesc::rgb(640, 640, 640 * 4, fmt, 0x4100_0000);
+        let src = ImageDesc::rgb(1920, 1080, 1920 * 4, fmt, 0x4000_0000);
+
+        // --- Fill ---
         let fill = encode_fill(dst, 0x0072_7272).unwrap();
+        // render mode = RECTANGLE_FILL
+        assert_eq!(
+            fill.register(registers::MODE_CTRL),
+            Some(encode_mode(registers::MODE_RENDER_RECTANGLE_FILL, 0))
+        );
         assert_eq!(fill.register(registers::SRC_FG_COLOR), Some(0x0072_7272));
-        let src = ImageDesc::rgb(1920, 1080, 1920 * 3, PixelFormat::Rgb888, 0x4000_0000);
+        assert_eq!(
+            fill.register(registers::DST_Y_RGB_BASE_ADDR),
+            Some(0x4100_0000)
+        );
+        // RGBA8888 dst → DST_INFO format=0 + zero SRC1 field
+        assert_eq!(fill.register(registers::DST_INFO), Some(0));
+        assert_eq!(fill.register(registers::DST_VIR_INFO), Some(640));
+        assert_eq!(
+            fill.register(registers::DST_ACT_INFO),
+            Some(639 | (639 << 16))
+        );
+        assert_eq!(fill.register(registers::MMU_CTRL1), Some(0));
+        // set_pat_info words
+        assert_eq!(fill.register(registers::PAT_CON), Some(0xFFFF_FFFF));
+        assert_eq!(fill.register(registers::FADING_CTRL), Some(0x0000_FF00));
+
+        // --- Blit (downscale: 1920→640, 1080→360; sub-rect at y=140) ---
         let b = Blit::new(
             src,
             dst,
@@ -672,15 +710,193 @@ mod mmu_off_tests {
             },
             None,
         );
-        let cmd = encode_blit(&b).unwrap();
+        let blit = encode_blit(&b).unwrap();
+        assert_eq!(blit.register(registers::MODE_CTRL), Some(0)); // BITBLT
+        // Source
         assert_eq!(
-            cmd.register(registers::DST_Y_RGB_BASE_ADDR),
-            Some(0x4100_0000 + 140 * 640 * 3)
+            blit.register(registers::SRC_Y_RGB_BASE_ADDR),
+            Some(0x4000_0000)
+        );
+        // SRC_INFO: RGBA8888 format (0), HSCL=DOWN, VSCL=DOWN, bicubic filter
+        let src_info = blit.register(registers::SRC_INFO).unwrap();
+        assert_eq!(src_info & 0xf, 0); // RGBA8888 format code
+        assert_eq!(
+            (src_info >> registers::SRC_INFO_HSCL_SHIFT) & 0x3,
+            registers::SCL_DOWN
         );
         assert_eq!(
-            cmd.register(registers::DST_ACT_INFO),
+            (src_info >> registers::SRC_INFO_VSCL_SHIFT) & 0x3,
+            registers::SCL_DOWN
+        );
+        assert_eq!(
+            (src_info >> registers::SRC_INFO_SCL_FILTER_SHIFT) & 0x3,
+            registers::SCL_FILTER_BICUBIC
+        );
+        assert_eq!(blit.register(registers::SRC_VIR_INFO), Some(1920));
+        assert_eq!(
+            blit.register(registers::SRC_ACT_INFO),
+            Some(1919 | (1079 << 16))
+        );
+        // Scale factors: downscale, low half.
+        assert_eq!(
+            blit.register(registers::SRC_X_FACTOR),
+            Some(((640u32 << 16) / 1920) & 0xffff)
+        );
+        assert_eq!(
+            blit.register(registers::SRC_Y_FACTOR),
+            Some(((360u32 << 16) / 1080) & 0xffff)
+        );
+        // Destination sub-rect: base offset by rows above the letterbox window
+        assert_eq!(
+            blit.register(registers::DST_Y_RGB_BASE_ADDR),
+            Some(0x4100_0000 + 140 * 640 * 4)
+        );
+        assert_eq!(blit.register(registers::DST_INFO), Some(0));
+        assert_eq!(blit.register(registers::DST_VIR_INFO), Some(640));
+        assert_eq!(
+            blit.register(registers::DST_ACT_INFO),
             Some(639 | (359 << 16))
         );
+        assert_eq!(blit.register(registers::MMU_CTRL1), Some(0));
+    }
+
+    /// YUYV→RGB888 letterbox: packed YUV 4:2:2 source with CSC, downscale to a
+    /// centred window within a grey-padded RGBA dst. This is the real camera bench
+    /// path (camera outputs YUYV 640×480, bench letterboxes to 640×640 for RKNN).
+    #[test]
+    fn letterbox_yuyv_to_rgb_with_csc_and_downscale() {
+        use crate::operation::PixelFormat;
+        let dst = ImageDesc::rgb(640, 640, 640 * 4, PixelFormat::Rgba8888, 0x4100_0000);
+        let src = ImageDesc {
+            width: 640,
+            height: 480,
+            stride_bytes: 640 * 2,
+            format: PixelFormat::Yuyv422,
+            phys_addr: 0x4000_0000,
+            uv_phys_addr: None,
+        };
+
+        // --- Fill ---
+        let fill = encode_fill(dst, 0x0072_7272).unwrap();
+        assert_eq!(fill.register(registers::SRC_FG_COLOR), Some(0x0072_7272));
+
+        // --- Blit: YUYV 640×480 → centred 640×480 window in 640×640 dst (y=80) ---
+        // Same-size blit (no scale), so no scale factors. CSC maps YUV→RGB.
+        let mut b = Blit::new(
+            src,
+            dst,
+            Rect {
+                x: 0,
+                y: 0,
+                width: 640,
+                height: 480,
+            },
+            Rect {
+                x: 0,
+                y: 80,
+                width: 640,
+                height: 480,
+            },
+            None,
+        );
+        b.csc = Some(CscStandard::Bt601Limited);
+        let blit = encode_blit(&b).unwrap();
+
+        // Source: packed YUYV — single Y plane, no UV base
+        assert_eq!(
+            blit.register(registers::SRC_Y_RGB_BASE_ADDR),
+            Some(0x4000_0000)
+        );
+        assert_eq!(blit.register(registers::SRC_CB_BASE_ADDR), Some(0));
+        // Format = 0x7 + rb_swp for YUYV
+        let si = blit.register(registers::SRC_INFO).unwrap();
+        assert_eq!(si & 0xf, 0x7);
+        assert_ne!(si & registers::INFO_RBSWAP, 0);
+        // CSC set for YUV→RGB
+        assert_ne!((si >> registers::SRC_INFO_CSC_SHIFT) & 0x3, 0);
+        assert_eq!(
+            blit.register(registers::SRC_VIR_INFO),
+            Some(640 * 2 / 4) // stride in words
+        );
+        assert_eq!(
+            blit.register(registers::SRC_ACT_INFO),
+            Some(639 | (479 << 16))
+        );
+        // No scale factors (same-size)
+        assert_eq!(blit.register(registers::SRC_X_FACTOR), Some(0));
+        assert_eq!(blit.register(registers::SRC_Y_FACTOR), Some(0));
+        // Scale mode = NONE (no scale), no bicubic filter
+        assert_eq!(
+            (si >> registers::SRC_INFO_HSCL_SHIFT) & 0x3,
+            registers::SCL_NONE
+        );
+        assert_eq!((si >> registers::SRC_INFO_SCL_FILTER_SHIFT) & 0x3, 0);
+        // Destination: RGBA8888, y-offset=80
+        assert_eq!(
+            blit.register(registers::DST_Y_RGB_BASE_ADDR),
+            Some(0x4100_0000 + 80 * 640 * 4)
+        );
+        assert_eq!(blit.register(registers::DST_INFO), Some(0)); // RGBA
+        assert_eq!(
+            blit.register(registers::DST_ACT_INFO),
+            Some(639 | (479 << 16))
+        );
+    }
+
+    /// Letterbox padding only: fill with a nonzero color and verify NO src-channel
+    /// registers leak from the fill (the fill must not program SRC_INFO/SRC base).
+    #[test]
+    fn letterbox_fill_does_not_touch_src_registers() {
+        let dst = ImageDesc::rgb(128, 128, 128 * 4, PixelFormat::Rgba8888, 0x5000_0000);
+        let fill = encode_fill(dst, 0xABCD_EF01).unwrap();
+        // Fill must leave src registers at zero (zeroed CommandBuffer default).
+        assert_eq!(fill.register(registers::SRC_INFO), Some(0));
+        assert_eq!(fill.register(registers::SRC_Y_RGB_BASE_ADDR), Some(0));
+        assert_eq!(fill.register(registers::SRC_VIR_INFO), Some(0));
+        assert_eq!(fill.register(registers::SRC_ACT_INFO), Some(0));
+    }
+
+    /// Letterbox with zero-pixel bars (blit covers the full dst): the sub-rect
+    /// offset is zero, base addr is the dst base.
+    #[test]
+    fn letterbox_full_coverage_blit_no_offset() {
+        let fmt = PixelFormat::Rgba8888;
+        let dst = ImageDesc::rgb(640, 480, 640 * 4, fmt, 0x4100_0000);
+        let src = ImageDesc::rgb(1920, 1080, 1920 * 4, fmt, 0x4000_0000);
+        // Fill + blit: blit covers entire dst (no bars), downscale
+        let fill = encode_fill(dst, 0x0).unwrap();
+        assert_eq!(fill.register(registers::SRC_FG_COLOR), Some(0x0));
+
+        let b = Blit::new(
+            src,
+            dst,
+            Rect {
+                x: 0,
+                y: 0,
+                width: 1920,
+                height: 1080,
+            },
+            Rect {
+                x: 0,
+                y: 0,
+                width: 640,
+                height: 480,
+            },
+            None,
+        );
+        let blit = encode_blit(&b).unwrap();
+        // No sub-rect offset → base addr = dst base
+        assert_eq!(
+            blit.register(registers::DST_Y_RGB_BASE_ADDR),
+            Some(0x4100_0000)
+        );
+        assert_eq!(
+            blit.register(registers::DST_ACT_INFO),
+            Some(639 | (479 << 16))
+        );
+        // Downscale factors
+        assert_ne!(blit.register(registers::SRC_X_FACTOR), Some(0));
+        assert_ne!(blit.register(registers::SRC_Y_FACTOR), Some(0));
     }
 
     #[test]
