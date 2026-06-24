@@ -65,13 +65,35 @@ pub fn run() {
         match run_rga2_smoke(core, &mut src, &mut dst, W, H, |us| {
             ax_runtime::hal::time::busy_wait(core::time::Duration::from_micros(us as u64))
         }) {
-            Ok(r) => info!(
-                "RGA2_SELFTEST core={} fill={} copy={} crc=0x{:08x}",
-                core_index,
-                if r.fill_ok { "PASS" } else { "FAIL" },
-                if r.copy_ok { "PASS" } else { "FAIL" },
-                r.crc
-            ),
+            Ok(r) => {
+                info!(
+                    "RGA2_SELFTEST core={} fill={} copy={} crc=0x{:08x}",
+                    core_index,
+                    if r.fill_ok { "PASS" } else { "FAIL" },
+                    if r.copy_ok { "PASS" } else { "FAIL" },
+                    r.crc
+                );
+                // Completed-but-wrong output: dump the completion diag so the run shows whether af
+                // (INT bit2) latched (done=true => encoding/cache bug, not a detection problem).
+                if !r.fill_ok {
+                    log_diag(
+                        "RGA2_SELFTEST_VERIFY_FILL",
+                        core_index,
+                        &r.fill_diag,
+                        src.phys_addr(),
+                        dst.phys_addr(),
+                    );
+                }
+                if !r.copy_ok {
+                    log_diag(
+                        "RGA2_SELFTEST_VERIFY_COPY",
+                        core_index,
+                        &r.copy_diag,
+                        src.phys_addr(),
+                        dst.phys_addr(),
+                    );
+                }
+            }
             Err((e, d)) => {
                 warn!("RGA2_SELFTEST core={} result=FAIL err={:?}", core_index, e);
                 log_diag(
@@ -92,7 +114,7 @@ pub fn run() {
                 match run_rga2_fill_imported(core, obj.phys_addr(), W, H, color, |us| {
                     ax_runtime::hal::time::busy_wait(core::time::Duration::from_micros(us as u64))
                 }) {
-                    Ok(()) => {
+                    Ok(diag) => {
                         obj.sync_for_cpu();
                         let pixels = &obj.cpu_bytes()[..bytes];
                         let fill_ok = pixels
@@ -104,6 +126,17 @@ pub fn run() {
                             if fill_ok { "PASS" } else { "FAIL" },
                             crc32(pixels)
                         );
+                        // This is the path that produced run-8 crc=0x8a258aec. The diag shows
+                        // whether af latched (done=true) on the wrong-output imported fill.
+                        if !fill_ok {
+                            log_diag(
+                                "RGA2_DMABUF_SELFTEST_VERIFY",
+                                core_index,
+                                &diag,
+                                0,
+                                obj.phys_addr(),
+                            );
+                        }
                     }
                     Err((e, d)) => {
                         warn!(
@@ -140,7 +173,7 @@ pub fn run() {
                         ))
                     },
                 ) {
-                    Ok(()) => {
+                    Ok(_diag) => {
                         d_buf.sync_for_cpu();
                         info!(
                             "RGA2_BLIT_SELFTEST core={} resize=PASS crc=0x{:08x}",
