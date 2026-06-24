@@ -106,7 +106,7 @@ impl ax_log::LogIf for LogIfImpl {
     }
 
     fn current_time() -> core::time::Duration {
-        ax_hal::time::monotonic_time()
+        ax_hal::time::boot_elapsed_time()
     }
 
     fn current_cpu_id() -> Option<usize> {
@@ -164,6 +164,7 @@ pub fn rust_main(cpu_id: usize, arg: usize) -> ! {
     // This is a no-op for allocator backends that do not need per-CPU state.
     ax_alloc::init_percpu_slab(cpu_id);
     ax_hal::init_early(cpu_id, arg);
+    ax_hal::time::init_boot_time_base();
     let log_level = option_env!("AX_LOG").unwrap_or("info");
 
     ax_println!(

@@ -18,23 +18,11 @@ fn path_to_str(path: &impl AsRef<std::ffi::OsStr>) -> &str {
 }
 
 fn print_prompt() {
-    print!("arceos> ");
+    print!(
+        "arceos:{}$ ",
+        path_to_str(&std::env::current_dir().unwrap())
+    );
     std::io::stdout().flush().unwrap();
-}
-
-fn print_ready() {
-    #[cfg(feature = "arceos")]
-    {
-        let elapsed = ax_api::time::ax_monotonic_time();
-        println!(
-            "ARCEOS_READY elapsed={}.{:03}s",
-            elapsed.as_secs(),
-            elapsed.subsec_millis()
-        );
-    }
-
-    #[cfg(not(feature = "arceos"))]
-    println!("ARCEOS_READY");
 }
 
 fn main() {
@@ -43,7 +31,7 @@ fn main() {
 
     let mut buf = [0; MAX_CMD_LEN];
     let mut cursor = 0;
-    print_ready();
+    cmd::run_cmd("help".as_bytes());
     print_prompt();
 
     loop {

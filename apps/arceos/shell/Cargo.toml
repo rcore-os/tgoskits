@@ -11,10 +11,9 @@ publish = false
 
 [features]
 default = []
-arceos = ["dep:ax-api", "dep:ax-std", "ax-std/fs"]
+arceos = ["dep:ax-std", "ax-std/fs"]
 
 [dependencies]
-ax-api = { workspace = true, optional = true }
 ax-std = { workspace = true, optional = true }
 
 [package.metadata.axstd]

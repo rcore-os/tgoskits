@@ -58,4 +58,12 @@ cat > /tmp/starry-shrc <<'EOF'
 export PS1='${USER}@${HOSTNAME}:${PWD} # '
 EOF
 export ENV=/tmp/starry-shrc
+
+if [ -r /proc/uptime ]; then
+    read uptime _ < /proc/uptime
+    printf '\nSTARRY_READY elapsed=%ss\n\n' "$uptime" > /dev/console
+else
+    printf '\nSTARRY_READY elapsed=unknown\n\n' > /dev/console
+fi
+
 exec /bin/sh -l -i

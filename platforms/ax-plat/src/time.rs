@@ -8,6 +8,8 @@ pub use core::time::Duration;
 /// represent a duration, but a clock time.
 pub type TimeValue = Duration;
 
+static BOOT_TIME_BASE_NANOS: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+
 /// Number of milliseconds in a second.
 pub const MILLIS_PER_SEC: u64 = 1_000;
 /// Number of microseconds in a second.
@@ -55,6 +57,25 @@ pub fn monotonic_time_nanos() -> u64 {
 /// Returns the time elapsed since system boot in [`TimeValue`].
 pub fn monotonic_time() -> TimeValue {
     TimeValue::from_nanos(monotonic_time_nanos())
+}
+
+/// Initializes the boot-time base used by [`boot_elapsed_time`].
+pub fn init_boot_time_base() {
+    BOOT_TIME_BASE_NANOS.store(
+        monotonic_time_nanos(),
+        core::sync::atomic::Ordering::Relaxed,
+    );
+}
+
+/// Returns nanoseconds elapsed since the boot-time base was initialized.
+pub fn boot_elapsed_nanos() -> u64 {
+    monotonic_time_nanos()
+        .saturating_sub(BOOT_TIME_BASE_NANOS.load(core::sync::atomic::Ordering::Relaxed))
+}
+
+/// Returns the time elapsed since the boot-time base was initialized.
+pub fn boot_elapsed_time() -> TimeValue {
+    TimeValue::from_nanos(boot_elapsed_nanos())
 }
 
 /// Returns nanoseconds elapsed since epoch (also known as realtime).

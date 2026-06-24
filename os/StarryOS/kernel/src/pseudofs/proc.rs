@@ -19,7 +19,7 @@ use ax_lazyinit::LazyInit;
 use ax_memory_addr::{MemoryAddr, VirtAddr};
 use ax_runtime::hal::{
     paging::MappingFlags,
-    time::{monotonic_time, wall_time},
+    time::{boot_elapsed_time, monotonic_time, wall_time},
 };
 use ax_task::{AxCpuMask, AxTaskRef, TaskState, WeakAxTaskRef, current};
 use axfs_ng_vfs::{DeviceId, Filesystem, NodePermission, NodeType, VfsError, VfsResult};
@@ -1276,7 +1276,7 @@ fn builder(fs: Arc<SimpleFs>) -> DirMaker {
     root.add(
         "uptime",
         SimpleFile::new_regular(fs.clone(), || {
-            let up = monotonic_time();
+            let up = boot_elapsed_time();
             let secs = up.as_secs();
             let cs = up.subsec_millis() / 10;
             // Approximate total idle as uptime × cpu_count (no per-CPU idle accounting yet).

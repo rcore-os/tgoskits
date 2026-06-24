@@ -11,5 +11,5 @@ features = [
   "ax-driver/rockchip-dwmmc",
   "rknpu",
 ]
-log = "Info"
+log = "Warn"
 max_cpu_num = 8

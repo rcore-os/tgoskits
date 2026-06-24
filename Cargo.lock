@@ -333,7 +333,6 @@ dependencies = [
 name = "arceos-shell"
 version = "0.3.1"
 dependencies = [
- "ax-api",
  "ax-std",
 ]
 
