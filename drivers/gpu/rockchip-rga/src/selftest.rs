@@ -25,6 +25,11 @@ pub struct SelftestReport {
     pub fill_ok: bool,
     pub copy_ok: bool,
     pub crc: u32,
+    /// Engine state captured the instant the fill op reported Done, BEFORE finish() W1C-cleared
+    /// INT. Lets the OS glue print whether af (INT bit2) actually latched on a wrong-output fill.
+    pub fill_diag: RgaDiag,
+    /// Same, captured at the copy op's completion.
+    pub copy_diag: RgaDiag,
 }
 
 /// Run a fill then a copy on a powered RGA2 core, polling to completion with a bounded number of
@@ -49,7 +54,7 @@ pub fn run_rga2_smoke(
         color,
     })
     .map_err(|e| (e, core.diag()))?;
-    poll_done(core, &mut delay_us)?;
+    let fill_diag = poll_done(core, &mut delay_us)?;
     dst.complete_for_cpu();
     let fill_ok = dst
         .cpu_bytes()
@@ -70,7 +75,7 @@ pub fn run_rga2_smoke(
         dst: dst_img,
     })
     .map_err(|e| (e, core.diag()))?;
-    poll_done(core, &mut delay_us)?;
+    let copy_diag = poll_done(core, &mut delay_us)?;
     dst.complete_for_cpu();
     let crc = crc32(dst.cpu_bytes());
     let copy_ok = crc == src_crc;
@@ -79,6 +84,8 @@ pub fn run_rga2_smoke(
         fill_ok,
         copy_ok,
         crc,
+        fill_diag,
+        copy_diag,
     })
 }
 
@@ -92,7 +99,7 @@ pub fn run_rga2_fill_imported(
     height: u32,
     color: u32,
     mut delay_us: impl FnMut(u32),
-) -> core::result::Result<(), (RgaError, RgaDiag)> {
+) -> core::result::Result<RgaDiag, (RgaError, RgaDiag)> {
     let fmt = PixelFormat::Rgba8888;
     let dst = ImageDesc::rgb(width, height, width * fmt.bytes_per_pixel(), fmt, dst_phys);
     core.start(&RgaOperation::Fill { dst, color })
@@ -111,7 +118,7 @@ pub fn run_rga2_blit_resize(
     dst_phys: u64,
     dst_dims: (u32, u32),
     mut delay_us: impl FnMut(u32),
-) -> core::result::Result<(), (RgaError, RgaDiag)> {
+) -> core::result::Result<RgaDiag, (RgaError, RgaDiag)> {
     let fmt = PixelFormat::Rgba8888;
     let (src_w, src_h) = src_dims;
     let (dst_w, dst_h) = dst_dims;
@@ -124,16 +131,21 @@ pub fn run_rga2_blit_resize(
     poll_done(core, &mut delay_us)
 }
 
+/// Poll to completion. On success returns the engine-state diag captured the instant Done was
+/// observed — BEFORE `finish()` runs `ack()` and W1C-clears the INT af/err flags. The caller can
+/// thus tell whether af (INT bit2) actually latched even when the op completed but produced wrong
+/// pixels (the wrong-output case is otherwise indistinguishable from a clean completion).
 fn poll_done(
     core: &mut RgaCore,
     delay_us: &mut impl FnMut(u32),
-) -> core::result::Result<(), (RgaError, RgaDiag)> {
+) -> core::result::Result<RgaDiag, (RgaError, RgaDiag)> {
     // ~50 ms budget at 100 us steps (spec letterbox target is < 5 ms; generous for bring-up).
     for _ in 0..500 {
         match core.poll_status() {
             RgaStatus::Done => {
+                let d = core.diag(); // capture un-acked INT (af/err still set) before finish()
                 core.finish();
-                return Ok(());
+                return Ok(d);
             }
             RgaStatus::Error => {
                 let d = core.diag();
