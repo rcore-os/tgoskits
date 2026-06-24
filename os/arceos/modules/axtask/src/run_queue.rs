@@ -197,6 +197,23 @@ fn request_current_reschedule() {
         return;
     }
     clear_remote_reschedule_pending_for_current_cpu();
+    // Non-preempt systems rely on cooperation: a busy CPU discovers new
+    // tasks on its next voluntary yield, but an idle CPU in WFI will not
+    // check its run queue again until an interrupt fires.  The IPI that
+    // brought us here woke the idle CPU; yielding now forces an immediate
+    // reschedule so that any task just migrated to this CPU is picked up
+    // without waiting for another interrupt.
+    //
+    // This is safe because:
+    // - `ipi_handler` drops the IPI queue lock before calling callbacks,
+    //   so no lock is held across the yield.
+    // - context_switch saves/restores the full register state (including
+    //   sstatus on RISC-V), so the trap frame survives the switch.
+    // - The idle task has no cooperative state to lose — its loop is
+    //   purely `yield → WFI → yield → …`.
+    if crate::current().is_idle() {
+        crate::api::yield_now_unchecked();
+    }
 }
 
 #[cfg(all(test, feature = "smp", feature = "ipi", feature = "host-test"))]

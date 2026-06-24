@@ -58,24 +58,15 @@ impl<T> BaseScheduler for FifoScheduler<T> {
         &mut self,
         predicate: impl Fn(&Self::SchedItem) -> bool,
     ) -> Option<Self::SchedItem> {
-        let mut skipped = alloc::vec::Vec::new();
-        loop {
-            match self.ready_queue.pop_front() {
-                Some(task) if predicate(&task) => {
-                    for t in skipped.into_iter().rev() {
-                        self.ready_queue.push_front(t);
-                    }
+        for _ in 0..self.ready_queue.len() {
+            if let Some(task) = self.ready_queue.pop_front() {
+                if predicate(&task) {
                     return Some(task);
                 }
-                Some(task) => skipped.push(task),
-                None => {
-                    for t in skipped.into_iter().rev() {
-                        self.ready_queue.push_front(t);
-                    }
-                    return None;
-                }
+                self.ready_queue.push_back(task);
             }
         }
+        None
     }
 
     fn put_prev_task(&mut self, prev: Self::SchedItem, _preempt: bool) {
