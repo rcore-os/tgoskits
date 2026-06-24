@@ -87,9 +87,31 @@ int main(void)
               "SA_RESTART flag preserved across fork");
     }
 
-    /* Test 3: SA_RESTART with accept() (common PostgreSQL pattern) */
-    /* Skip: requires socket setup; the pipe tests above validate the
-     * core mechanism. */
+    /* Test 3: a default-ignored signal must not leak EINTR. */
+    {
+        int pipefd[2];
+        CHECK(pipe(pipefd) == 0, "pipe for ignored signal created");
+
+        pid_t pid = fork();
+        if (pid == 0) {
+            close(pipefd[1]);
+            char buf[1];
+            ssize_t n = read(pipefd[0], buf, 1);
+            close(pipefd[0]);
+            _exit(n == 1 ? 0 : 1);
+        }
+        close(pipefd[0]);
+        usleep(50000);
+        kill(pid, SIGURG);
+        usleep(50000);
+        write(pipefd[1], "x", 1);
+        close(pipefd[1]);
+
+        int status;
+        waitpid(pid, &status, 0);
+        CHECK(WIFEXITED(status) && WEXITSTATUS(status) == 0,
+              "default-ignored SIGURG does not interrupt read");
+    }
 
     TEST_DONE();
 }

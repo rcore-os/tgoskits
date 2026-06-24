@@ -64,7 +64,7 @@ use c::{
 use cmake::{
     build_cmake_build_command, build_cmake_configure_command,
     build_cmake_configure_command_with_source_dir, build_cmake_install_command,
-    build_grouped_c_root_project_configure_command,
+    build_grouped_c_root_project_configure_command, grouped_c_subcase_list,
 };
 use env::{prepare_guest_package_env, prepare_guest_prebuild_env, prepare_host_cross_build_env};
 pub(crate) use grouped_c::prepare_grouped_case_assets_sync;

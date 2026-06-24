@@ -10,6 +10,7 @@
 #include <sys/mount.h>
 #include <sys/stat.h>
 #include <sys/types.h>
+#include <sys/wait.h>
 #include <unistd.h>
 
 static int __pass = 0;
@@ -191,6 +192,30 @@ static void expect_write_errno(const char *path, const char *data,
     CHECK(written == -1 && saved_errno == expected_errno, msg);
 }
 
+static void expect_write_ok(const char *path, const char *data, const char *msg)
+{
+    int fd = open(path, O_WRONLY);
+    if (fd < 0) {
+        CHECK(0, msg);
+        return;
+    }
+
+    errno = 0;
+    ssize_t written = write(fd, data, strlen(data));
+    int saved_errno = errno;
+    close(fd);
+    errno = saved_errno;
+    CHECK(written == (ssize_t)strlen(data), msg);
+}
+
+static void expect_file_contains(const char *path, const char *needle,
+                                 const char *msg)
+{
+    char buf[4096];
+    ssize_t nread = read_text_file(path, buf, sizeof(buf));
+    CHECK(nread >= 0 && strstr(buf, needle) != NULL, msg);
+}
+
 static void expect_link_errno(const char *old_path, const char *new_path,
                               int expected_errno, const char *msg)
 {
@@ -253,7 +278,9 @@ int main(void)
     nread = read_text_file(CGROUP2_PATH "/cgroup.controllers", buf, sizeof(buf));
     CHECK(nread >= 0, "read root cgroup.controllers");
     if (nread >= 0) {
-        CHECK(nread == 0, "root cgroup.controllers is empty before controllers exist");
+        CHECK(strstr(buf, "cpu") != NULL && strstr(buf, "memory") != NULL
+                  && strstr(buf, "pids") != NULL,
+              "root cgroup.controllers exposes mock controllers");
     }
 
     nread = read_text_file(CGROUP2_PATH "/cgroup.subtree_control", buf, sizeof(buf));
@@ -262,17 +289,85 @@ int main(void)
         CHECK(nread == 0, "root cgroup.subtree_control is initially empty");
     }
 
-    expect_write_errno(CGROUP2_PATH "/cgroup.subtree_control", "+pids",
-                       EINVAL, "writing +pids to subtree_control fails with EINVAL");
+    expect_write_ok(CGROUP2_PATH "/cgroup.subtree_control",
+                    "+cpu +memory +pids",
+                    "enable mock controllers in subtree_control");
+    expect_file_contains(CGROUP2_PATH "/cgroup.subtree_control", "memory",
+                         "subtree_control reports enabled controllers");
+    expect_write_errno(CGROUP2_PATH "/cgroup.subtree_control", "+invalid",
+                       EINVAL,
+                       "enabling an unknown controller fails with EINVAL");
 
     expect_mkdir_ok(CGROUP2_PATH "/a", "mkdir child cgroup a succeeds");
     expect_path_exists(CGROUP2_PATH "/a", "child cgroup a exists");
     expect_empty_file(CGROUP2_PATH "/a/cgroup.procs",
                       "child cgroup.procs is empty before migration exists");
-    expect_empty_file(CGROUP2_PATH "/a/cgroup.controllers",
-                      "child cgroup.controllers is empty before controllers exist");
+    expect_file_contains(CGROUP2_PATH "/a/cgroup.controllers", "pids",
+                         "child cgroup.controllers exposes mock controllers");
     expect_empty_file(CGROUP2_PATH "/a/cgroup.subtree_control",
                       "child cgroup.subtree_control is initially empty");
+    expect_file_contains(CGROUP2_PATH "/a/memory.max", "max",
+                         "memory.max has Linux-compatible default");
+    expect_write_ok(CGROUP2_PATH "/a/memory.max", "268435456",
+                    "write mock memory.max succeeds");
+    expect_file_contains(CGROUP2_PATH "/a/memory.max", "268435456",
+                         "mock memory.max value can be read back");
+    expect_write_ok(CGROUP2_PATH "/a/cpu.max", "50000 100000",
+                    "write mock cpu.max succeeds");
+    expect_file_contains(CGROUP2_PATH "/a/cpu.max", "50000 100000",
+                         "mock cpu.max value can be read back");
+
+    char pid_text[32];
+    snprintf(pid_text, sizeof(pid_text), "%ld", (long)getpid());
+    expect_write_ok(CGROUP2_PATH "/a/cgroup.procs", pid_text,
+                    "move current process into child cgroup");
+    nread = read_text_file(CGROUP2_PATH "/a/cgroup.procs", buf, sizeof(buf));
+    CHECK(nread >= 0 && buffer_contains_pid(buf, getpid()),
+          "child cgroup.procs contains migrated process");
+    expect_file_contains("/proc/self/cgroup", "0::/a",
+                         "/proc/self/cgroup reports migrated path");
+
+    int ready[2];
+    int release[2];
+    CHECK(pipe(ready) == 0 && pipe(release) == 0,
+          "create synchronization pipes for inheritance test");
+    pid_t child = fork();
+    if (child == 0) {
+        close(ready[0]);
+        close(release[1]);
+        char marker = 'R';
+        if (write(ready[1], &marker, 1) != 1
+            || read(release[0], &marker, 1) != 1) {
+            _exit(2);
+        }
+        _exit(0);
+    }
+    CHECK(child > 0, "fork child for cgroup inheritance");
+    if (child > 0) {
+        close(ready[1]);
+        close(release[0]);
+        char marker = 0;
+        CHECK(read(ready[0], &marker, 1) == 1,
+              "child reaches cgroup inheritance checkpoint");
+        nread = read_text_file(CGROUP2_PATH "/a/cgroup.procs", buf, sizeof(buf));
+        CHECK(nread >= 0 && buffer_contains_pid(buf, child),
+              "fork child inherits parent cgroup");
+
+        expect_write_ok(CGROUP2_PATH "/cgroup.procs", "0",
+                        "move current process back to root cgroup");
+        expect_file_contains("/proc/self/cgroup", "0::/",
+                             "/proc/self/cgroup reports root path");
+        marker = 'X';
+        CHECK(write(release[1], &marker, 1) == 1,
+              "release inherited child");
+        int status = 0;
+        CHECK(waitpid(child, &status, 0) == child
+                  && WIFEXITED(status) && WEXITSTATUS(status) == 0,
+              "reap inherited child");
+        close(ready[0]);
+        close(release[1]);
+    }
+
     expect_mkdir_errno(CGROUP2_PATH "/a", EEXIST,
                        "duplicate mkdir child cgroup fails with EEXIST");
 

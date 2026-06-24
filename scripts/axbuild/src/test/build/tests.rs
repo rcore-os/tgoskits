@@ -368,6 +368,16 @@ fn grouped_c_root_configure_command_passes_selected_subcase_list() {
 }
 
 #[test]
+fn grouped_c_subcase_list_is_sorted_and_comma_separated() {
+    let root = tempdir().unwrap();
+    let case = fake_case(root.path(), "system");
+    let beta = fake_c_subcase(root.path(), &case, "beta", &["beta"]);
+    let alpha = fake_c_subcase(root.path(), &case, "alpha", &["alpha"]);
+
+    assert_eq!(grouped_c_subcase_list(&[&beta, &alpha]), "alpha,beta");
+}
+
+#[test]
 fn cross_compile_spec_maps_supported_arches() {
     assert_eq!(
         cross_compile_spec("aarch64").unwrap(),

@@ -14,6 +14,7 @@
 #include <string.h>
 #include <sys/mman.h>
 #include <sys/sendfile.h>
+#include <sys/stat.h>
 #include <sys/syscall.h>
 #include <sys/uio.h>
 #include <sys/wait.h>
@@ -130,6 +131,11 @@ static void test_memfd_normal(void)
     CHECK(w == (ssize_t)len, "write 长度正确");
 
     CHECK_RET(fsync(fd), 0, "fsync 后可见写入");
+
+    CHECK_RET(fchmod(fd, 0511), 0, "fchmod memfd 成功");
+    struct stat st = {0};
+    CHECK_RET(fstat(fd, &st), 0, "fstat memfd 成功");
+    CHECK((st.st_mode & 0777) == 0511, "memfd mode 已更新");
 
     CHECK_RET(lseek(fd, 0, SEEK_SET), 0, "lseek SEEK_SET 0");
 
