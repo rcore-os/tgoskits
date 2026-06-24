@@ -73,6 +73,11 @@ const fn hw_format(fmt: crate::operation::PixelFormat) -> u32 {
         PixelFormat::Nv12 => registers::FMT_YCBCR_420_SP,
         PixelFormat::Nv21 => registers::FMT_YCRCB_420_SP,
         PixelFormat::Nv16 => registers::FMT_YCBCR_422_SP,
+        // Packed YUV 4:2:2, format code 0x7. Swap flags per kernel rga2_reg_info.c:266-269.
+        // YUYV: cbcr_swp=0 (Cb before Cr in each pair), rb_swp=1 (treats YUYV as little-endian RG)
+        // UYVY: cbcr_swp=0, rb_swp=0
+        PixelFormat::Yuyv422 => registers::FMT_YUV422_PACKED | registers::INFO_RBSWAP,
+        PixelFormat::Uyvy422 => registers::FMT_YUV422_PACKED,
     }
 }
 
@@ -676,6 +681,48 @@ mod mmu_off_tests {
             cmd.register(registers::DST_ACT_INFO),
             Some(639 | (359 << 16))
         );
+    }
+
+    #[test]
+    fn hw_format_yuyv_has_correct_code_and_swaps() {
+        // YUYV → format 0x7 + rb_swp (kernel rga2_reg_info.c:268)
+        use crate::operation::PixelFormat;
+        let yuyv = super::hw_format(PixelFormat::Yuyv422);
+        assert_eq!(yuyv & 0xf, 0x7);
+        assert_ne!(yuyv & registers::INFO_RBSWAP, 0);
+        let uyvy = super::hw_format(PixelFormat::Uyvy422);
+        assert_eq!(uyvy & 0xf, 0x7);
+        assert_eq!(uyvy & registers::INFO_RBSWAP, 0); // no swap for UYVY
+    }
+
+    #[test]
+    fn blit_yuyv_to_rgb_sets_csc_and_no_uv_base() {
+        // YUYV 640×480 → RGB888 640×480: packed YUV source (single plane) → no UV base,
+        // but CSC is required (crosses YUV↔RGB).
+        use crate::operation::PixelFormat;
+        let src = ImageDesc {
+            width: 640,
+            height: 480,
+            stride_bytes: 640 * 2, // 2 bytes per pixel for packed YUYV
+            format: PixelFormat::Yuyv422,
+            phys_addr: 0x4000_0000,
+            uv_phys_addr: None,
+        };
+        let dst = ImageDesc::rgb(640, 480, 640 * 3, PixelFormat::Rgb888, 0x4100_0000);
+        let mut b = Blit::resize(src, dst);
+        b.csc = Some(CscStandard::Bt601Limited);
+        let cmd = encode_blit(&b).unwrap();
+        // Y base = phys (no rect offset for full-surface resize)
+        assert_eq!(
+            cmd.register(registers::SRC_Y_RGB_BASE_ADDR),
+            Some(0x4000_0000)
+        );
+        // No UV base: packed YUV, not semiplanar
+        assert_eq!(cmd.register(registers::SRC_CB_BASE_ADDR), Some(0));
+        let si = cmd.register(registers::SRC_INFO).unwrap();
+        assert_eq!(si & 0xf, 0x7);
+        let csc = (si >> registers::SRC_INFO_CSC_SHIFT) & 0x3;
+        assert_ne!(csc, 0, "CSC must be set for YUV→RGB");
     }
 
     #[test]

@@ -275,7 +275,14 @@ impl DeviceOps for RgaDevice {
         match cmd {
             librga_abi::RGA_BLIT_SYNC => self.handle_blit_sync(arg),
             librga_abi::RGA_BLIT_ASYNC => Err(VfsError::Unsupported),
-            librga_abi::RGA_GET_VERSION => Ok(0),
+            librga_abi::RGA_GET_VERSION => {
+                // The MultiRGA v1.3.1 kernel writes a version string like "3.00" (5 bytes
+                // incl. NUL). Our RGA2 core reports v3.2 (hw_version raw 0x032660D8).
+                // Return a plausible version so librga doesn't reject the driver.
+                let version: [u8; 5] = *b"3.02\0";
+                unsafe { (arg as *mut [u8; 5]).vm_write(&version)? };
+                Ok(0)
+            }
             librga_abi::RGA_IOC_IMPORT_BUFFER => self.handle_import_buffer(arg),
             librga_abi::RGA_IOC_RELEASE_BUFFER => self.handle_release_buffer(arg),
             _ => Err(VfsError::NotATty),
