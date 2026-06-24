@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.22](https://github.com/rcore-os/tgoskits/compare/ax-task-v0.5.21...ax-task-v0.5.22) - 2026-06-23
+
+### Other
+
+- updated the following local packages: ax-hal, ax-hal, ax-lockdep, ax-kspin, ax-alloc, axpoll, ax-ipi, ax-mm
+
 ## [0.5.21](https://github.com/rcore-os/tgoskits/compare/ax-task-v0.5.20...ax-task-v0.5.21) - 2026-06-22
 
 ### Added

@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.10](https://github.com/rcore-os/tgoskits/compare/ax-plat-riscv64-visionfive2-v0.1.9...ax-plat-riscv64-visionfive2-v0.1.10) - 2026-06-23
+
+### Added
+
+- *(starry)* support reboot syscall ([#1358](https://github.com/rcore-os/tgoskits/pull/1358))
+
 ## [0.1.9](https://github.com/rcore-os/tgoskits/compare/ax-plat-riscv64-visionfive2-v0.1.8...ax-plat-riscv64-visionfive2-v0.1.9) - 2026-06-22
 
 ### Other

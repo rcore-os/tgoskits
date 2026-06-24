@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.14](https://github.com/rcore-os/tgoskits/compare/axbuild-v0.4.13...axbuild-v0.4.14) - 2026-06-23
+
+### Added
+
+- *(axbuild, starry)* add rootfs resize and macOS self-build workflow ([#1333](https://github.com/rcore-os/tgoskits/pull/1333))
+- *(axbuild)* use ITS companion files for Starry uImage ([#1349](https://github.com/rcore-os/tgoskits/pull/1349))
+
+### Other
+
+- Enhance archive extraction logic and add legacy file tests ([#1355](https://github.com/rcore-os/tgoskits/pull/1355))
+- *(axbuild)* modularize command implementation ([#1347](https://github.com/rcore-os/tgoskits/pull/1347))
+
 ## [0.4.13](https://github.com/rcore-os/tgoskits/compare/axbuild-v0.4.12...axbuild-v0.4.13) - 2026-06-22
 
 ### Added

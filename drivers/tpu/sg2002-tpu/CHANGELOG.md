@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0](https://github.com/rcore-os/tgoskits/compare/sg2002-tpu-v0.2.0...sg2002-tpu-v0.3.0) - 2026-06-23
+
+### Other
+
+- Tpu kworker clean ([#1352](https://github.com/rcore-os/tgoskits/pull/1352))
+
 ## [0.2.0](https://github.com/rcore-os/tgoskits/compare/sg2002-tpu-v0.1.6...sg2002-tpu-v0.2.0) - 2026-06-22
 
 ### Added

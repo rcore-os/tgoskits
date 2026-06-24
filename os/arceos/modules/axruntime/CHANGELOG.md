@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.1](https://github.com/rcore-os/tgoskits/compare/ax-runtime-v0.8.0...ax-runtime-v0.8.1) - 2026-06-23
+
+### Fixed
+
+- *(platform)* support AArch64 HVF timer boot ([#1334](https://github.com/rcore-os/tgoskits/pull/1334))
+
+### Other
+
+- *(ax-net)* add locking and concurrency documentation and remove deprecated interfaces ([#1340](https://github.com/rcore-os/tgoskits/pull/1340))
+
 ## [0.8.0](https://github.com/rcore-os/tgoskits/compare/ax-runtime-v0.7.0...ax-runtime-v0.8.0) - 2026-06-22
 
 ### Added

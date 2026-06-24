@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.8](https://github.com/rcore-os/tgoskits/compare/crab-usb-v0.9.7...crab-usb-v0.9.8) - 2026-06-23
+
+### Other
+
+- updated the following local packages: dma-api
+
 ## [0.9.7](https://github.com/rcore-os/tgoskits/compare/crab-usb-v0.9.6...crab-usb-v0.9.7) - 2026-06-22
 
 ### Fixed

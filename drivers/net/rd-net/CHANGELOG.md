@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.6](https://github.com/rcore-os/tgoskits/compare/rd-net-v0.1.5...rd-net-v0.1.6) - 2026-06-23
+
+### Other
+
+- *(ax-net)* add locking and concurrency documentation and remove deprecated interfaces ([#1340](https://github.com/rcore-os/tgoskits/pull/1340))
+
 ## [0.1.5](https://github.com/rcore-os/tgoskits/compare/rd-net-v0.1.4...rd-net-v0.1.5) - 2026-06-22
 
 ### Added

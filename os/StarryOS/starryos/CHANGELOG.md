@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.18](https://github.com/rcore-os/tgoskits/compare/starryos-v0.5.17...starryos-v0.5.18) - 2026-06-23
+
+### Other
+
+- updated the following local packages: axplat-dyn, ax-hal, starry-kernel, axbuild, ax-driver, ax-feat, ax-std
+
 ## [0.5.17](https://github.com/rcore-os/tgoskits/compare/starryos-v0.5.16...starryos-v0.5.17) - 2026-06-22
 
 ### Added

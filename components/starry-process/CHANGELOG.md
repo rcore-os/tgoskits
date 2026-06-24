@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.10](https://github.com/rcore-os/tgoskits/compare/starry-process-v0.4.9...starry-process-v0.4.10) - 2026-06-23
+
+### Other
+
+- updated the following local packages: ax-kspin, ax-kspin
+
 ## [0.4.9](https://github.com/rcore-os/tgoskits/compare/starry-process-v0.4.8...starry-process-v0.4.9) - 2026-06-09
 
 ### Added
