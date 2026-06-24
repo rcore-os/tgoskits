@@ -50,6 +50,9 @@ fn iomap_usize(paddr: usize, size: usize) -> usize {
 const CAMERA_FORMAT_MJPEG: u8 = 1;
 const MIN_VALID_JPEG_BYTES: usize = 4096;
 const MAX_CAPTURE_TRIES: u32 = 8;
+/// 期望的分辨率像素面积上限：640x480 (VGA)。驱动选择不超过此上限、且最接近的
+/// 帧，从而优先 640x480 而非默认 1280x720。
+const CAMERA_PREFERRED_MAX_PIXELS: u32 = 640 * 480;
 
 pub const CVI_CAMERA_IOCTL_INIT: u32 = 1;
 pub const CVI_CAMERA_IOCTL_GET_INFO: u32 = 2;
@@ -209,6 +212,10 @@ fn init_usb_camera() -> Result<UsbCameraSession, &'static str> {
     })?;
     let cfg_total = u16::from_le_bytes([cfg_buf[2], cfg_buf[3]]) as usize;
     let cfg = &cfg_buf[..cfg_total.min(cfg_buf.len())];
+    // 偏好 640x480：把分辨率选择的像素面积上限设为 VGA。驱动会在不超过该上限
+    // 的帧里选最接近的一个，于是命中 640x480 而非默认的 1280x720。必须在
+    // `parse_uvc_video_stream` 之前设置。
+    uvc::set_preferred_max_pixels(CAMERA_PREFERRED_MAX_PIXELS);
     let mut sel = uvc::parse_uvc_video_stream(cfg, cfg_total).map_err(|e| {
         warn!("cvi-camera: parse UVC video stream failed: {e:?}");
         map_usb_init_error(e)
