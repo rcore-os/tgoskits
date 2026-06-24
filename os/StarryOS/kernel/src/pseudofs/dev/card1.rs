@@ -764,7 +764,11 @@ pub fn drm_version(data: &mut [u8]) -> VfsResult<()> {
         }
 
         // Copy driver date
-        let ret = drm_copy_field(data.date as *mut u8, &mut data.date_len, DRM1_DATE.as_ptr());
+        let ret = drm_copy_field(
+            data.date as *mut u8,
+            &mut data.date_len,
+            DRM1_DATE.as_ptr() as *const u8,
+        );
         if let Err(e) = ret {
             warn!("[drm_version] Failed to copy driver date: {:?}", e);
             return Err(VfsError::InvalidData);
