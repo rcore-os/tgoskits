@@ -280,10 +280,27 @@ nspawn_run "$OUTPUT_IMG" "
     apt-get update -qq && \
     apt-get install -y -qq --no-install-recommends \
         rustc cargo libstd-rust-dev build-essential ca-certificates curl \
-        libclang-dev clang && \
+        libclang-dev clang pkgconf libudev-dev && \
     apt-get clean
 "
 info "Toolchain ready."
+
+# x86_64 self-compile drives the ArceOS std/PIE flow (cargo xtask starry build),
+# whose effective target is x86_64-unknown-linux-musl.  Provide a musl C toolchain
+# via Debian's standard musl-tools package (lightweight; no custom cross toolchain)
+# and the cc/ar/gcc names the std build + lwprintf-rs build.rs expect.
+if [ "$ARCH" = "x86_64" ]; then
+    info "Installing musl-tools for the x86_64 std build target..."
+    nspawn_run "$OUTPUT_IMG" "
+        export DEBIAN_FRONTEND=noninteractive && \
+        apt-get install -y -qq --no-install-recommends musl-tools musl-dev && \
+        apt-get clean && \
+        ln -sf /usr/bin/musl-gcc /usr/local/bin/x86_64-linux-musl-cc && \
+        ln -sf /usr/bin/musl-gcc /usr/local/bin/x86_64-linux-musl-gcc && \
+        ln -sf /usr/bin/ar      /usr/local/bin/x86_64-linux-musl-ar
+    "
+    info "musl toolchain ready (musl-tools + x86_64-linux-musl-{cc,gcc,ar} symlinks)."
+fi
 
 # ─── Install nightly rustc via rustup ─────────────────────────────────────────
 
@@ -310,6 +327,16 @@ nspawn_run "$OUTPUT_IMG" "
         -y
 "
 info "Nightly rustc installed (via host rustup)."
+
+# x86_64 self-compile drives the xtask flow, whose kallsyms post-step needs
+# gen_ksym + cargo-binutils (rust-nm/rust-objcopy) + llvm-tools.  Pre-install them
+# guest-native during the bake (network available) so the offline guest never
+# attempts the network auto-install (the inner script also disables that).
+if [ "$ARCH" = "x86_64" ]; then
+    info "Installing kallsyms tools (llvm-tools-preview, cargo-binutils, ksym)..."
+    nspawn_run "$OUTPUT_IMG" "export RUSTUP_HOME=/root/.rustup CARGO_HOME=/root/.cargo PATH=/root/.cargo/bin:\$PATH CARGO_NET_OFFLINE=false && rustup component add llvm-tools-preview && cargo install --locked cargo-binutils && cargo install --locked ksym"
+    info "kallsyms tools installed."
+fi
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # Step 3: Expand image for source tree + cargo registry (~4-6 GB)
@@ -342,6 +369,17 @@ git archive HEAD | tar -x -C "$TEMP_SRC/"
 git rev-parse HEAD > "$TEMP_SRC/.source-commit" 2>/dev/null || \
     die "failed to resolve HEAD — ensure you are in the repo root"
 [ -f "$TEMP_SRC/os/StarryOS/kernel/Cargo.toml" ] || die "Kernel Cargo.toml missing"
+
+# The AIC8800 firmware blobs are gitignored (absent from git archive), but xtask
+# SHA-256-hashes them before every Starry build and fetches them online if missing.
+# Stage the host's blobs into the source tree so the offline guest has them.
+if compgen -G "$REPO_ROOT/components/aic8800/firmware/*.bin" >/dev/null 2>&1; then
+    mkdir -p "$TEMP_SRC/components/aic8800/firmware"
+    cp "$REPO_ROOT"/components/aic8800/firmware/*.bin "$TEMP_SRC/components/aic8800/firmware/"
+    info "Staged $(ls "$TEMP_SRC"/components/aic8800/firmware/*.bin | wc -l) AIC8800 firmware blob(s) for offline build."
+else
+    warn "AIC8800 firmware blobs not found on host; x86_64 self-compile may attempt an online fetch."
+fi
 chmod -R a+rX "$TEMP_SRC"
 
 info "Copying source tree into rootfs at $DEST_PATH..."
@@ -359,7 +397,7 @@ fi
 
 systemd-nspawn "${nspawn_args[@]}" /usr/bin/bash -c "
     mkdir -p $DEST_PATH && \
-    cp -r $STABLE/* $DEST_PATH/ && \
+    cp -a $STABLE/. $DEST_PATH/ && \
     cp $STABLE/.source-commit $DEST_PATH/.source-commit && \
     chown -R root:root $DEST_PATH && \
     chmod -R a+rX $DEST_PATH

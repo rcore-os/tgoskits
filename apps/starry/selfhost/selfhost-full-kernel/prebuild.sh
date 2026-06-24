@@ -86,13 +86,10 @@ export CARGO_BUILD_JOBS=${cargo_build_jobs}
 export PATH=/root/.cargo/bin:/usr/local/bin:/usr/bin:/bin
 export RUSTUP_HOME=/root/.rustup
 export CARGO_HOME=/root/.cargo
-# Use system gcc instead of musl-gcc for bare-metal C compilation.
+# Host-side build scripts (proc-macros etc.) target the gnu host triple and use
+# gcc.  The musl build target's C deps use x86_64-linux-musl-cc, provided by the
+# rootfs (musl-tools symlinks from prepare-selfhost-rootfs.sh) — do not shadow it.
 export CC=gcc
-# lwprintf-rs build.rs explicitly invokes x86_64-linux-musl-gcc for sysroot
-# detection. Symlink it to gcc so the build succeeds in the Debian guest.
-if ! command -v x86_64-linux-musl-gcc >/dev/null 2>&1; then
-    ln -sf /usr/bin/gcc /usr/bin/x86_64-linux-musl-gcc
-fi
 
 cd /opt/starryos
 
@@ -129,48 +126,101 @@ cd /opt/starryos
 	fi
 echo "[self-compile] ARG ARCH=${arch} TARGET=${target} SMP=${smp} CARGO_BUILD_JOBS=${cargo_build_jobs}"
 
-# Filter workspace for arch-specific crates.
-echo "[self-compile] Filtering workspace for ${arch}..."
-/usr/bin/filter-workspace.sh "${arch}" Cargo.toml
-
-# Patch axalloc to 64G capacity
+# Patch axalloc to 64G capacity (large RAM under self-compile).
 echo "[self-compile] Patching page allocator to 64G..."
 if [ -f os/arceos/modules/axalloc/Cargo.toml ] && [ -s os/arceos/modules/axalloc/Cargo.toml ]; then
     sed -i '/^default = /s|page-alloc-4g|page-alloc-64g|g' os/arceos/modules/axalloc/Cargo.toml
 fi
 
-# -Cincremental is NOT passed: the flag expects Option<Path>, so
-# \"-Cincremental=false\" creates a literal directory named \"false\"
-# in crate source trees.  Omit the flag to disable incremental
-# compilation cleanly.
-export RUSTFLAGS="-Ccodegen-units=16 -Copt-level=0 -Clink-arg=-Tlinker.x -Clink-arg=-no-pie -Clink-arg=-znostart-stop-gc"
-export AX_CONFIG_PATH=/opt/starryos/.axconfig.toml
-echo "[self-compile] AX_CONFIG_PATH=\$AX_CONFIG_PATH"
 echo "[self-compile] Rustc version: \$(rustc --version 2>/dev/null || echo 'unknown')"
 echo "[self-compile] Cargo version: \$(cargo --version 2>/dev/null || echo 'unknown')"
-echo "[self-compile] Starting cargo build (target=${target}, jobs=${cargo_build_jobs})..."
+echo "[self-compile] Building (target=${target}, arch=${arch})..."
 echo "BUILD_START"
 
 export CARGO_TERM_PROGRESS_WHEN=always
 export CARGO_TERM_PROGRESS_WIDTH=120
 set +e
-export PATH=/root/.cargo/bin:/usr/bin:/bin; /usr/bin/bash -c 'while true; do sleep 30; echo "[self-compile] ... still compiling ..."; done' &
+/usr/bin/bash -c 'while true; do sleep 30; echo "[self-compile] ... still compiling ..."; done' &
 HEARTBEAT_PID=\$!
-cargo build --ignore-rust-version -p starryos \
-            --target ${target} \
-            --features qemu,ax-driver/virtio-blk,ax-driver/virtio-net,ax-driver/virtio-gpu,ax-driver/virtio-input,ax-driver/virtio-socket${dyn_features} \
-            --offline
-BUILD_RC=\$?
+
+BINARY=""
+BUILD_RC=1
+
+if [ "${arch}" = "x86_64" ]; then
+    # x86_64 is a plat_dyn (EFI/PIE) build: the bootable kernel can ONLY be produced
+    # by the canonical xtask flow (musl-PIE std target + -Zbuild-std + the rust-lld
+    # linker wrapper that pins -u _head and groups archives).  A hand-rolled
+    # bare-metal cargo build cannot link someboot's _head/kernel_entry.
+    export CARGO_NET_OFFLINE=true
+    export AXBUILD_STARRY_KALLSYMS_AUTO_INSTALL=0
+
+    # ostool forces --target-dir=<workspace>/target and ignores CARGO_TARGET_DIR, so
+    # symlink the multi-GB kernel target + std scaffolding onto the /tmp tmpfs to
+    # avoid overflowing the near-full rootfs image.
+    mkdir -p /tmp/build/target /tmp/build/ws-tmp
+    [ -L target ] || { rm -rf target; ln -s /tmp/build/target target; }
+    [ -L tmp ]    || { rm -rf tmp;    ln -s /tmp/build/ws-tmp tmp; }
+
+    # Offline preconditions (reqwest ignores CARGO_NET_OFFLINE): AIC8800 firmware
+    # blobs (hashed before every Starry build) and the kallsyms tools must be present,
+    # else xtask would fetch/install them online and fail.
+    if [ -z "\$(ls -A components/aic8800/firmware/*.bin 2>/dev/null)" ]; then
+        echo "SELF_COMPILE_FAILED: AIC8800 firmware blobs missing (xtask would fetch online)"
+    elif ! command -v gen_ksym >/dev/null 2>&1 || ! command -v rust-nm >/dev/null 2>&1 || ! command -v rust-objcopy >/dev/null 2>&1; then
+        echo "SELF_COMPILE_FAILED: kallsyms tools (gen_ksym/rust-nm/rust-objcopy) missing offline"
+    else
+        # Build the host tool for the gnu host triple (prebuilt std), NOT the kernel's
+        # bare x86_64-unknown-none default; else the std xtask binary is mis-built as
+        # no_std and segfaults at startup.  Run the produced binary directly.
+        unset CARGO_BUILD_TARGET
+        # /root/.cargo/config.toml [build] rustflags carries --no-rosegment (for
+        # the bare-metal kernel); that flag poisons the gnu host-tool link because
+        # cc rejects it.  Scope RUSTFLAGS="" to this one cargo invocation so the
+        # kernel build that follows (via xtask) keeps its own xtask-managed flags.
+        RUSTFLAGS="" cargo build -p tg-xtask --target x86_64-unknown-linux-gnu
+        XTASK=/tmp/build/x86_64-unknown-linux-gnu/debug/tg-xtask
+        if [ -x "\$XTASK" ]; then
+            CFLAGS=-fno-stack-protector CXXFLAGS=-fno-stack-protector \\
+                "\$XTASK" starry build -c apps/starry/selfhost/build-${target}.toml --arch ${arch}
+            BUILD_RC=\$?
+            __elf=/tmp/build/target/x86_64-unknown-linux-musl/release/starryos
+            if [ -f "\$__elf" ] && [ -s "\$__elf" ]; then
+                cp "\$__elf" /opt/starryos-selfbuilt
+                sync
+                echo "BINARY=\$__elf"
+                echo "BINARY_SIZE=\$(stat -c%s "\$__elf")"
+                echo "SELF_COMPILE_SUCCESS"
+                exit 0
+            fi
+            echo "SELF_COMPILE_FAILED: rc=\$BUILD_RC elf_not_found=\$__elf"
+            exit 1
+        else
+            echo "SELF_COMPILE_FAILED: host tg-xtask build failed"
+            exit 1
+        fi
+    fi
+else
+    # riscv64/others: static (plat_dyn=false) bare-metal build matches the seed.
+    /usr/bin/filter-workspace.sh "${arch}" Cargo.toml
+    export RUSTFLAGS="-Ccodegen-units=16 -Copt-level=0 -Clink-arg=-Tlinker.x -Clink-arg=-no-pie -Clink-arg=-znostart-stop-gc"
+    export AX_CONFIG_PATH=/opt/starryos/.axconfig.toml
+    cargo build --ignore-rust-version -p starryos \\
+                --target ${target} \\
+                --features qemu,ax-driver/virtio-blk,ax-driver/virtio-net,ax-driver/virtio-gpu,ax-driver/virtio-input,ax-driver/virtio-socket${dyn_features} \\
+                --offline
+    BUILD_RC=\$?
+    [ -f Cargo.toml.bak ] && mv Cargo.toml.bak Cargo.toml
+    BINARY=/tmp/build/${target}/debug/starryos
+fi
+
 kill \$HEARTBEAT_PID 2>/dev/null || true
 wait \$HEARTBEAT_PID 2>/dev/null || true
 echo "BUILD_END"
-# filter-workspace.sh creates Cargo.toml.bak; restore for cleanliness
-[ -f Cargo.toml.bak ] && mv Cargo.toml.bak Cargo.toml
 
-BINARY=/tmp/build/${target}/debug/starryos
-if [ \$BUILD_RC -eq 0 ] && [ -f "\$BINARY" ] && [ -s "\$BINARY" ]; then
+if [ "\$BUILD_RC" -eq 0 ] && [ -n "\$BINARY" ] && [ -f "\$BINARY" ] && [ -s "\$BINARY" ]; then
     cp "\$BINARY" /opt/starryos-selfbuilt
     sync
+    echo "BINARY=\$BINARY"
     echo "BINARY_SIZE=\$(stat -c%s "\$BINARY")"
     echo "SELF_COMPILE_SUCCESS"
 else
