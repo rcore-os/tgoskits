@@ -9,9 +9,9 @@
 | 架构 | 种子内核 | QEMU 启动 | rootfs | 自编译 | 耗时 | 备注 |
 |------|---------|----------|--------|--------|------|------|
 | riscv64 | ✅ | ✅ | 已就绪 | ✅ | ~100 min | TCG 模拟，SMP=1；种子/guest 均为静态平台 bare-metal，构建流程一致 |
-| x86_64 | ✅ | ✅ (KVM) | 已就绪 | ⚠️ 最终链接失败 | — | guest 编译 425/426 crate 后链接失败，见 §x86_64 自编译构建流程不匹配 |
+| x86_64 | ✅ | ✅ (KVM) | 已就绪 | ✅ | ~10 min | KVM + SMP=4, 448 crates; guest 构建走 xtask musl-PIE std 流程 (plat-dyn) |
 
-> **x86_64 自编译当前状态（运行时验证 2026-06）**: guest 内 `cargo build` 可编译整个 workspace（425/426 crate），但最终链接 `starryos` 二进制时失败：`someboot.x: symbol not found: _head / kernel_entry`。已验证可工作的部分：GCC 16 种子内核构建、StarryOS OVMF/UEFI+KVM 启动到 shell、`snapshot=false` 产物持久化、源码身份校验、完整离线依赖闭包。**根因与修复路径见下方 §x86_64 自编译构建流程不匹配。** riscv64 自编译不受影响（构建流程一致）。
+> **x86_64 自编译已通过运行时验证（2026-06）**: 完整闭环已验证——guest 驱动 `cargo xtask starry build`（经 `tg-xtask` + musl-PIE std 流程 + `-Zbuild-std` + linker wrapper + `-u _head`），编译全部 448 crate + 链接 + kallsyms（10737 符号） + objcopy，产出 16 MB ELF。产物经 OVMF/UEFI 启动到 StarryOS shell 提示符。详细修复路径见下方 §x86_64 自编译构建流程不匹配（已修复）。riscv64 不受影响（构建流程一致）。
 
 ### 测试链路
 
@@ -33,7 +33,7 @@ Host (Linux)
                       debugfs dump → tmp/starryos-selfbuilt-<arch>
 ```
 
-## x86_64 自编译构建流程不匹配（待修复）
+## x86_64 自编译构建流程不匹配（已修复）
 
 **现象**: guest 内自编译在编译完整个 workspace（425/426 crate）后，最终链接 `starryos`
 二进制失败：
