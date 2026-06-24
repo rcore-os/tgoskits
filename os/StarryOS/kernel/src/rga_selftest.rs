@@ -110,7 +110,9 @@ pub fn run() {
         // hardware. Board-gated (no RGA2 engine in QEMU).
         match crate::pseudofs::dev::dma_heap::alloc(bytes) {
             Ok(obj) => {
-                let color: u32 = 0x00FF_00FF;
+                // Distinctive probe: all four bytes distinct so the engine's channel/format
+                // transform is unambiguous in the pixel dump below (0x00FF00FF was R/B-symmetric).
+                let color: u32 = 0x1122_3344;
                 match run_rga2_fill_imported(core, obj.phys_addr(), W, H, color, |us| {
                     ax_runtime::hal::time::busy_wait(core::time::Duration::from_micros(us as u64))
                 }) {
@@ -129,6 +131,29 @@ pub fn run() {
                         // This is the path that produced run-8 crc=0x8a258aec. The diag shows
                         // whether af latched (done=true) on the wrong-output imported fill.
                         if !fill_ok {
+                            // Dump the actual engine output so the exact channel/format transform
+                            // can be derived: with a distinct-byte probe, comparing want vs px0
+                            // reveals the byte permutation / CSC the engine applied (and px0 vs
+                            // pxmid/pxlast reveals uniform-vs-pattern).
+                            let n = bytes / 4;
+                            let px = |i: usize| {
+                                u32::from_le_bytes([
+                                    pixels[i * 4],
+                                    pixels[i * 4 + 1],
+                                    pixels[i * 4 + 2],
+                                    pixels[i * 4 + 3],
+                                ])
+                            };
+                            warn!(
+                                "RGA2_DMABUF_SELFTEST_PIX core={} want=0x{:08x} px0=0x{:08x} \
+                                 px1=0x{:08x} pxmid=0x{:08x} pxlast=0x{:08x}",
+                                core_index,
+                                color,
+                                px(0),
+                                px(1),
+                                px(n / 2),
+                                px(n - 1)
+                            );
                             log_diag(
                                 "RGA2_DMABUF_SELFTEST_VERIFY",
                                 core_index,
