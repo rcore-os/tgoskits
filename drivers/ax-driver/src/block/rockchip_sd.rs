@@ -137,7 +137,7 @@ fn probe(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
     let raw = SharedDriver::new(sd);
     let dev = SdmmcBlockDevice::new(
         raw,
-        SdmmcBlockConfig::dma("rockchip-sd", card_info.capacity_blocks.unwrap_or(0), true),
+        SdmmcBlockConfig::fifo("rockchip-sd", card_info.capacity_blocks.unwrap_or(0), false),
     );
     let irq = probe.register_block(dev)?;
     info!("rockchip-sd block device registered irq={:?}", irq);

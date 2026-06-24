@@ -1,4 +1,8 @@
-use core::{num::NonZeroUsize, ptr::NonNull};
+use core::{
+    num::NonZeroUsize,
+    ptr::NonNull,
+    sync::atomic::{Ordering, fence},
+};
 
 use dma_api::{CoherentArray, DeviceDma, DmaDirection, StreamingMap};
 use log::warn;
@@ -308,7 +312,7 @@ impl DwMmc {
             return self.poll_fifo_request(request, id, slot);
         }
 
-        let (cmd_index, phase, stage) = match &active.inner {
+        let (cmd_index, phase, mut stage) = match &active.inner {
             BlockRequestKind::Read {
                 cmd_index,
                 phase,
@@ -334,23 +338,23 @@ impl DwMmc {
                     if let Some(active) = request.as_mut() {
                         match &mut active.inner {
                             BlockRequestKind::Read {
-                                stage,
+                                stage: request_stage,
                                 response: stored_response,
                                 ..
                             }
                             | BlockRequestKind::Write {
-                                stage,
+                                stage: request_stage,
                                 response: stored_response,
                                 ..
                             } => {
-                                *stage = BlockRequestStage::Data;
+                                *request_stage = BlockRequestStage::Data;
                                 *stored_response = Some(response);
+                                stage = BlockRequestStage::Data;
                             }
                             BlockRequestKind::FifoRead { .. }
                             | BlockRequestKind::FifoWrite { .. } => unreachable!(),
                         }
                     }
-                    return Ok(DataCommandPoll::Pending);
                 }
                 // Future CommandPoll variants: best-effort, treat as still pending.
                 Ok(_) => return Ok(DataCommandPoll::Pending),
@@ -663,6 +667,17 @@ impl DwMmc {
                 );
             }
         });
+
+        // The IDMAC descriptor ring lives in dma-api "coherent" memory, which the
+        // platform maps as uncached Normal memory. Per the dma-api contract
+        // ("ordering barriers are still the driver's responsibility"), a Device
+        // MMIO store does NOT order prior uncached Normal stores on aarch64, so
+        // the IDMAC could observe the `pldmnd`/command kick below before it
+        // observes the freshly written descriptors — reading a stale OWN bit,
+        // never starting the transfer, and never asserting data-transfer-over,
+        // which deadlocks the IRQ/poll completion loop. Insert a full barrier so
+        // the descriptor stores are visible before the device is kicked.
+        fence(Ordering::SeqCst);
 
         self.clear_all_int_status();
         self.irq_state.clear(u32::MAX);

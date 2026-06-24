@@ -30,12 +30,7 @@ pub(crate) struct SdmmcBlockConfig {
 }
 
 impl SdmmcBlockConfig {
-    #[cfg(any(
-        feature = "k230-sdhci",
-        feature = "rockchip-dwmmc",
-        feature = "rockchip-sdhci",
-        test
-    ))]
+    #[cfg(any(feature = "k230-sdhci", feature = "rockchip-sdhci", test))]
     pub(crate) fn dma(name: &'static str, capacity_blocks: u64, irq_driven: bool) -> Self {
         Self {
             name,
@@ -48,7 +43,12 @@ impl SdmmcBlockConfig {
         }
     }
 
-    #[cfg(any(feature = "rockchip-sdhci", feature = "phytium-mci", test))]
+    #[cfg(any(
+        feature = "rockchip-dwmmc",
+        feature = "rockchip-sdhci",
+        feature = "phytium-mci",
+        test
+    ))]
     pub(crate) fn fifo(name: &'static str, capacity_blocks: u64, irq_driven: bool) -> Self {
         Self {
             name,

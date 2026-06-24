@@ -531,6 +531,16 @@ mod tests {
     }
 
     #[test]
+    fn event_prefers_transfer_completion_when_command_and_data_bits_are_both_set() {
+        let raw = crate::regs::RIntSts::new()
+            .with_command_done(true)
+            .with_data_transfer_over(true)
+            .into_bits();
+
+        assert_eq!(event_from_raw_status(raw), Event::TransferComplete);
+    }
+
+    #[test]
     fn event_reports_error_status_without_translating_to_os_action() {
         let raw = crate::regs::RIntSts::new()
             .with_response_timeout(true)
