@@ -2,7 +2,7 @@ use kernutil::StaticCell;
 use page_table_generic::PageTable;
 pub use page_table_generic::{PagingError, PagingResult};
 
-use crate::mem::ram::Ram;
+use crate::{ArchTrait, mem::ram::Ram};
 
 pub type ArchPageTable<A> = PageTable<<crate::arch::Arch as crate::ArchTrait>::P, A>;
 

@@ -2,52 +2,26 @@
 
 extern crate alloc;
 
-use alloc::boxed::Box;
-use core::{
-    any::Any,
-    fmt::{Debug, Display},
-    num::NonZeroU32,
-};
+use core::fmt::Display;
 
 use bitflags::bitflags;
 pub use rdif_base::{DriverGeneric, KError};
 
-pub type BIrqHandler = Box<dyn TIrqHandler>;
-pub type BSender = Box<dyn TSender>;
-pub type BReceiver = Box<dyn TReceiver>;
-pub type BSerial = Box<dyn Interface>;
+mod queue;
+mod raw;
+#[path = "core.rs"]
+mod serial_core;
+mod types;
 
-impl DriverGeneric for Box<dyn Interface> {
-    fn name(&self) -> &str {
-        self.as_ref().name()
-    }
-
-    fn raw_any(&self) -> Option<&dyn Any> {
-        self.as_ref().raw_any()
-    }
-
-    fn raw_any_mut(&mut self) -> Option<&mut dyn Any> {
-        self.as_mut().raw_any_mut()
-    }
-}
-
-mod serial;
-
-pub use serial::*;
+pub use self::{queue::*, raw::*, serial_core::*, types::*};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConfigError {
-    /// 无效的波特率
     InvalidBaudrate,
-    /// 不支持的数据位配置
     UnsupportedDataBits,
-    /// 不支持的停止位配置
     UnsupportedStopBits,
-    /// 不支持的奇偶校验配置
     UnsupportedParity,
-    /// 寄存器访问错误
     RegisterError,
-    /// 超时错误
     Timeout,
 }
 
@@ -81,7 +55,6 @@ pub enum TransferError {
     Closed,
 }
 
-/// 数据位配置
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum DataBits {
@@ -91,7 +64,6 @@ pub enum DataBits {
     Eight = 8,
 }
 
-/// 停止位配置
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum StopBits {
@@ -99,7 +71,6 @@ pub enum StopBits {
     Two = 2,
 }
 
-/// 奇偶校验配置
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Parity {
     None,
@@ -110,23 +81,40 @@ pub enum Parity {
 }
 
 bitflags! {
-    /// 中断状态标志
-    #[derive(Debug, Clone, Copy)]
-    pub struct InterruptMask: u32 {
-        /// received data, including error data
-        const RX_AVAILABLE = 0x01;
-        const TX_EMPTY = 0x02;
+    /// Polling-only serial events for direct raw users such as someboot.
+    ///
+    /// Runtime `SerialCore` does not use this high-level snapshot type; it uses
+    /// `IrqSnapshot`, `RxSample`, and TX/RX software FIFOs instead.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct SerialEvent: u32 {
+        const RX_READY = 0x01;
+        const TX_READY = 0x02;
+        const RX_ERROR = 0x04;
+        const TX_ERROR = 0x08;
+        const OVERRUN = 0x10;
+        const MODEM_STATUS = 0x20;
+        const IRQ_ACK = 0x40;
     }
 }
 
-impl InterruptMask {
-    pub fn rx_available(&self) -> bool {
-        self.contains(InterruptMask::RX_AVAILABLE)
+impl SerialEvent {
+    pub fn rx_ready(&self) -> bool {
+        self.contains(Self::RX_READY)
     }
 
-    pub fn tx_empty(&self) -> bool {
-        self.contains(InterruptMask::TX_EMPTY)
+    pub fn tx_ready(&self) -> bool {
+        self.contains(Self::TX_READY)
     }
+
+    pub fn rx_error(&self) -> bool {
+        self.intersects(Self::RX_ERROR | Self::OVERRUN)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SerialDirection {
+    Input,
+    Output,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -163,230 +151,16 @@ impl Config {
     }
 }
 
-pub trait InterfaceRaw: Send + Any + 'static {
-    type IrqHandler: TIrqHandler;
-    type Sender: TSender;
-    type Receiver: TReceiver;
-
-    fn name(&self) -> &str;
-
-    fn base_addr(&self) -> usize;
-
-    // ==================== 配置管理 ====================
-    fn set_config(&mut self, config: &Config) -> Result<(), ConfigError>;
-
-    fn baudrate(&self) -> u32;
-    fn data_bits(&self) -> DataBits;
-    fn stop_bits(&self) -> StopBits;
-    fn parity(&self) -> Parity;
-    fn clock_freq(&self) -> Option<NonZeroU32>;
-
-    fn open(&mut self);
-    fn close(&mut self);
-
-    // ==================== 回环控制 ====================
-    /// 启用回环模式
-    fn enable_loopback(&mut self);
-    /// 禁用回环模式
-    fn disable_loopback(&mut self);
-    /// 检查回环模式是否启用
-    fn is_loopback_enabled(&self) -> bool;
-
-    // ==================== 中断管理 ====================
-    /// 设置中断使能掩码
-    fn set_irq_mask(&mut self, mask: InterruptMask);
-    /// 获取当前中断使能掩码
-    fn get_irq_mask(&self) -> InterruptMask;
-
-    fn irq_handler(&mut self) -> Option<Self::IrqHandler>;
-    fn take_tx(&mut self) -> Option<Self::Sender>;
-    fn take_rx(&mut self) -> Option<Self::Receiver>;
-
-    fn set_tx(&mut self, tx: Self::Sender) -> Result<(), SetBackError>;
-    fn set_rx(&mut self, rx: Self::Receiver) -> Result<(), SetBackError>;
-}
-
-#[derive(Clone, Copy)]
-pub struct SetBackError {
-    want: usize,
-    actual: usize,
-}
-
-impl SetBackError {
-    /// Create a new SetBackError
-    /// # Safety
-    pub fn new(want: usize, actual: usize) -> Self {
-        Self {
-            want: want as _,
-            actual: actual as _,
-        }
-    }
-}
-
-impl core::error::Error for SetBackError {}
-
-impl Debug for SetBackError {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        write!(
-            f,
-            "Failed to set back, base address not eq  {:#x} != {:#x}",
-            self.want, self.actual
-        )
-    }
-}
-
-impl Display for SetBackError {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        Debug::fmt(self, f)
-    }
-}
-
-pub trait Interface: DriverGeneric {
-    fn irq_handler(&mut self) -> Option<Box<dyn TIrqHandler>>;
-    fn take_tx(&mut self) -> Option<Box<dyn TSender>>;
-    fn take_rx(&mut self) -> Option<Box<dyn TReceiver>>;
-    /// Base address of the serial port
-    fn base_addr(&self) -> usize;
-
-    fn set_config(&mut self, config: &Config) -> Result<(), ConfigError>;
-
-    fn baudrate(&self) -> u32;
-    fn data_bits(&self) -> DataBits;
-    fn stop_bits(&self) -> StopBits;
-    fn parity(&self) -> Parity;
-    fn clock_freq(&self) -> Option<NonZeroU32>;
-
-    fn enable_loopback(&mut self);
-    fn disable_loopback(&mut self);
-    fn is_loopback_enabled(&self) -> bool;
-
-    fn enable_interrupts(&mut self, mask: InterruptMask);
-    fn disable_interrupts(&mut self, mask: InterruptMask);
-    fn get_enabled_interrupts(&self) -> InterruptMask;
-}
-
-pub trait TIrqHandler: Send + Sync + 'static {
-    fn clean_interrupt_status(&self) -> InterruptMask;
-}
-
-pub trait TSender: Send + 'static {
-    fn write_byte(&mut self, byte: u8) -> bool;
-
-    fn write_bytes(&mut self, bytes: &[u8]) -> usize {
-        let mut written = 0;
-        for &byte in bytes.iter() {
-            if !self.write_byte(byte) {
-                break;
-            }
-            written += 1;
-        }
-        written
-    }
-}
-
-pub trait TReceiver: Send + 'static {
-    fn read_byte(&mut self) -> Option<Result<u8, TransferError>>;
-
-    /// Recv data into buf, return recv bytes. If return bytes is less than buf.len(), it means no more data.
-    fn read_bytes(&mut self, bytes: &mut [u8]) -> Result<usize, TransBytesError> {
-        let mut read_count = 0;
-        for byte in bytes.iter_mut() {
-            match self.read_byte() {
-                Some(Ok(b)) => {
-                    *byte = b;
-                }
-                Some(Err(e)) => {
-                    return Err(TransBytesError {
-                        bytes_transferred: read_count,
-                        kind: e,
-                    });
-                }
-                None => break,
-            }
-
-            read_count += 1;
-        }
-
-        Ok(read_count)
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    use alloc::vec::Vec;
-
     use super::*;
 
-    struct LimitedSender {
-        capacity: usize,
-        bytes: Vec<u8>,
-    }
-
-    impl TSender for LimitedSender {
-        fn write_byte(&mut self, byte: u8) -> bool {
-            if self.bytes.len() == self.capacity {
-                return false;
-            }
-            self.bytes.push(byte);
-            true
-        }
-    }
-
-    struct ScriptedReceiver {
-        next: Vec<Option<Result<u8, TransferError>>>,
-    }
-
-    impl TReceiver for ScriptedReceiver {
-        fn read_byte(&mut self) -> Option<Result<u8, TransferError>> {
-            if self.next.is_empty() {
-                None
-            } else {
-                self.next.remove(0)
-            }
-        }
-    }
-
     #[test]
-    fn write_bytes_stops_on_full() {
-        let mut sender = LimitedSender {
-            capacity: 2,
-            bytes: Vec::new(),
-        };
+    fn serial_event_reports_readiness_and_errors() {
+        let event = SerialEvent::RX_READY | SerialEvent::OVERRUN;
 
-        let written = sender.write_bytes(&[0x11, 0x22, 0x33]);
-
-        assert_eq!(written, 2);
-        assert_eq!(sender.bytes, [0x11, 0x22]);
-    }
-
-    #[test]
-    fn read_bytes_stops_on_empty() {
-        let mut receiver = ScriptedReceiver {
-            next: Vec::from([Some(Ok(0x11)), Some(Ok(0x22)), None]),
-        };
-        let mut buffer = [0; 4];
-
-        let read = receiver.read_bytes(&mut buffer).unwrap();
-
-        assert_eq!(read, 2);
-        assert_eq!(&buffer[..read], [0x11, 0x22]);
-    }
-
-    #[test]
-    fn read_bytes_reports_partial_error() {
-        let mut receiver = ScriptedReceiver {
-            next: Vec::from([
-                Some(Ok(0x11)),
-                Some(Ok(0x22)),
-                Some(Err(TransferError::Parity)),
-            ]),
-        };
-        let mut buffer = [0; 4];
-
-        let err = receiver.read_bytes(&mut buffer).unwrap_err();
-
-        assert_eq!(err.bytes_transferred, 2);
-        assert_eq!(err.kind, TransferError::Parity);
-        assert_eq!(&buffer[..err.bytes_transferred], [0x11, 0x22]);
+        assert!(event.rx_ready());
+        assert!(!event.tx_ready());
+        assert!(event.rx_error());
     }
 }

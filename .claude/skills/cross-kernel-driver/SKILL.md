@@ -20,9 +20,10 @@ For nontrivial driver design or refactoring, read `references/architecture.md` b
 5. For ArceOS/dynamic-platform integration, keep adapters in the existing platform module names such as `platform/axplat-dyn/src/drivers/blk`, even if the reusable crate lives under `drivers/block`.
 6. Use small capability traits or API objects instead of a monolithic `KernelHal`. Split MMIO, DMA, IRQ event, queue contract, and wake/poll boundaries.
 7. Model queues as independent running units. Prefer APIs such as `submit`, `reclaim`, `poll`, `submit_request`, and `poll_request`.
-8. Make IRQ paths return stable events, normally `handle_irq() -> Event`. OS Glue decides whether to wake a thread, wake a future, schedule a worker, or set a pending flag.
-9. When IRQ and task paths share mutable driver state, look for an explicit exclusion protocol: task-side mutation masks the exact interrupt source before taking the lock, while IRQ only touches pre-registered stable state. Document the lifetime/safety contract; otherwise prefer atomics/pending bits plus a deferred worker.
-10. Validate the changed crate with formatting and targeted clippy before finishing.
+8. For IRQ-driven devices, keep IRQ endpoints and queue endpoints separate. IRQ handlers should synchronize hardware events into queue-local completion state; queues should advance their own work without locking the IRQ handler or re-reading shared/destructive IRQ status.
+9. Make IRQ paths return stable events, normally `handle_irq() -> Event`. OS Glue decides whether to wake a thread, wake a future, schedule a worker, or set a pending flag.
+10. When IRQ and task paths share mutable driver state, look for an explicit exclusion protocol: task-side mutation masks the exact interrupt source before taking the lock, while IRQ only touches pre-registered stable state. Document the lifetime/safety contract; otherwise prefer atomics/pending bits plus a deferred worker.
+11. Validate the changed crate with formatting and targeted clippy before finishing.
 
 ## Dependency Rules
 
@@ -69,6 +70,8 @@ pub trait IQueue {
 IRQ handlers should identify/clear the interrupt source and extract an `Event`. They should not block, run long slow paths, or hold broad locks. Keep the principle visible during reviews: "interrupts synchronize state; tasks advance flow" (`中断只同步状态，任务才推进流程`).
 
 When a driver intentionally shares registries or queue maps between task setup and IRQ completion paths, prefer an xHCI-style exclusion protocol over taking the same spinlock in IRQ: task context masks the same device interrupter/MSI source before mutation; IRQ context does not take that lock and only touches entries whose lifetime was established before interrupts were enabled. This avoids same-lock IRQ reentry deadlocks, but it does not make allocation, blocking, arbitrary wakers, or unrelated OS callbacks safe in hard IRQ.
+
+For split queue designs, do not make an IRQ handler lock a queue mutex that task context can hold. If IRQ and queues share one hardware register block, put exclusive register access behind one short, non-blocking core/gate, let the IRQ endpoint be the sole reader/clearer of shared or destructive IRQ status, and fan out results into independent per-queue completion state. Queue `poll` should normally mean "consume synchronized completion state", not "peek the global IRQ/status register again".
 
 ## Validation
 

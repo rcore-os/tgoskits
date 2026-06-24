@@ -77,7 +77,10 @@ pub(crate) fn create_pty_pair() -> (Arc<PtyDriver>, Arc<PtyDriver>) {
         TtyConfig {
             reader: PtyReader::new(master_to_slave),
             writer: PtyWriter::new(slave_to_master, poll_rx_master),
-            process_mode: ProcessMode::InterruptDriven(poll_rx_slave),
+            process_mode: ProcessMode::InterruptDriven {
+                input: poll_rx_slave,
+                output: None,
+            },
         },
     );
 

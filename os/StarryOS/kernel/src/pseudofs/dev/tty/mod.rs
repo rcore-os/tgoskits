@@ -1,10 +1,15 @@
-mod ntty;
 mod ptm;
 mod pts;
 mod pty;
+mod serial;
 mod terminal;
 
-use alloc::sync::{Arc, Weak};
+use alloc::{
+    format,
+    string::String,
+    sync::{Arc, Weak},
+    vec::Vec,
+};
 use core::{any::Any, ops::Deref, sync::atomic::Ordering, task::Context};
 
 use ax_errno::{AxError, AxResult};
@@ -22,10 +27,12 @@ use self::terminal::{
     termios::{Termios, Termios2},
 };
 pub use self::{
-    ntty::{N_TTY, NTtyDriver},
     ptm::Ptmx,
     pts::PtsDir,
     pty::PtyDriver,
+    serial::{
+        SerialTtyDriver, arm_console_irq, bind_console_to, console_device, serial_tty_entries,
+    },
 };
 use crate::{
     pseudofs::DeviceOps,
@@ -35,11 +42,21 @@ use crate::{
 const ANSI_CURSOR_POSITION_REQUEST: &[u8] = b"\x1b[6n";
 const ANSI_CURSOR_POSITION_RESPONSE: &[u8] = b"\x1b[1;1R";
 
+pub fn terminal_device_path(term: &(dyn Any + Send + Sync)) -> Option<String> {
+    if let Some(pts) = term.downcast_ref::<PtyDriver>() {
+        Some(format!("/dev/pts/{}", pts.pty_number()))
+    } else {
+        term.downcast_ref::<SerialTtyDriver>()
+            .map(|tty| format!("/dev/ttyS{}", tty.serial_number()))
+    }
+}
+
 /// Tty device
 pub struct Tty<R, W> {
     this: Weak<Self>,
     terminal: Arc<Terminal>,
     ldisc: Mutex<LineDiscipline<R, W>>,
+    cursor_position_request_match: Mutex<usize>,
     writer: W,
     is_ptm: bool,
 }
@@ -53,6 +70,7 @@ impl<R: TtyRead, W: TtyWrite + Clone> Tty<R, W> {
             this: this.clone(),
             terminal,
             ldisc,
+            cursor_position_request_match: Mutex::new(0),
             writer,
             is_ptm,
         })
@@ -94,12 +112,17 @@ impl<R: TtyRead, W: TtyWrite> DeviceOps for Tty<R, W> {
         if self.is_ptm {
             self.writer.write(buf);
         } else {
+            let (output, response_count) = {
+                let mut match_len = self.cursor_position_request_match.lock();
+                filter_cursor_position_requests(&mut match_len, buf)
+            };
             let term = self.terminal.load_termios();
-            write_output_bytes(&self.writer, term.as_ref(), buf);
-            if contains_bytes(buf, ANSI_CURSOR_POSITION_REQUEST) {
-                self.ldisc
-                    .lock()
-                    .inject_input(ANSI_CURSOR_POSITION_RESPONSE);
+            write_output_bytes(&self.writer, term.as_ref(), &output);
+            if response_count > 0 {
+                let mut ldisc = self.ldisc.lock();
+                for _ in 0..response_count {
+                    ldisc.inject_input(ANSI_CURSOR_POSITION_RESPONSE);
+                }
             }
         }
         Ok(buf.len())
@@ -122,7 +145,13 @@ impl<R: TtyRead, W: TtyWrite> DeviceOps for Tty<R, W> {
                 // Faultable user memory access inside an atomic context (preemption
                 // disabled) will call might_sleep() in handle_page_fault and panic.
                 let termios = Arc::new(Termios2::new((arg as *const Termios).vm_read()?));
-                *self.terminal.termios.lock() = termios;
+                let old = {
+                    let mut guard = self.terminal.termios.lock();
+                    let old = guard.clone();
+                    *guard = termios.clone();
+                    old
+                };
+                self.writer.termios_changed(old.as_ref(), termios.as_ref());
                 if cmd == TCSETSF {
                     self.ldisc.lock().drain_input();
                 }
@@ -130,7 +159,13 @@ impl<R: TtyRead, W: TtyWrite> DeviceOps for Tty<R, W> {
             TCSETS2 | TCSETSF2 | TCSETSW2 => {
                 // TODO: drain output?
                 let termios = Arc::new((arg as *const Termios2).vm_read()?);
-                *self.terminal.termios.lock() = termios;
+                let old = {
+                    let mut guard = self.terminal.termios.lock();
+                    let old = guard.clone();
+                    *guard = termios.clone();
+                    old
+                };
+                self.writer.termios_changed(old.as_ref(), termios.as_ref());
                 if cmd == TCSETSF2 {
                     self.ldisc.lock().drain_input();
                 }
@@ -219,11 +254,30 @@ impl<R: TtyRead, W: TtyWrite> DeviceOps for Tty<R, W> {
     }
 }
 
-fn contains_bytes(haystack: &[u8], needle: &[u8]) -> bool {
-    !needle.is_empty()
-        && haystack
-            .windows(needle.len())
-            .any(|window| window == needle)
+fn filter_cursor_position_requests(match_len: &mut usize, bytes: &[u8]) -> (Vec<u8>, usize) {
+    let mut output = Vec::with_capacity(bytes.len());
+    let mut count = 0;
+    for &byte in bytes {
+        loop {
+            if byte == ANSI_CURSOR_POSITION_REQUEST[*match_len] {
+                *match_len += 1;
+                if *match_len == ANSI_CURSOR_POSITION_REQUEST.len() {
+                    *match_len = 0;
+                    count += 1;
+                }
+                break;
+            }
+            if *match_len > 0 {
+                output.extend_from_slice(&ANSI_CURSOR_POSITION_REQUEST[..*match_len]);
+                *match_len = 0;
+                continue;
+            } else {
+                output.push(byte);
+                break;
+            }
+        }
+    }
+    (output, count)
 }
 
 impl<R: TtyRead, W: TtyWrite> Pollable for Tty<R, W> {
@@ -261,5 +315,60 @@ impl DeviceOps for CurrentTty {
 
     fn as_any(&self) -> &dyn Any {
         self
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use alloc::vec::Vec;
+
+    use super::filter_cursor_position_requests;
+
+    #[test]
+    fn cursor_position_request_matcher_spans_writes() {
+        let mut match_len = 0;
+
+        assert_eq!(
+            filter_cursor_position_requests(&mut match_len, b"\x1b["),
+            (Vec::new(), 0)
+        );
+        assert_eq!(
+            filter_cursor_position_requests(&mut match_len, b"6"),
+            (Vec::new(), 0)
+        );
+        assert_eq!(
+            filter_cursor_position_requests(&mut match_len, b"n"),
+            (Vec::new(), 1)
+        );
+        assert_eq!(match_len, 0);
+    }
+
+    #[test]
+    fn cursor_position_request_matcher_recovers_after_partial_mismatch() {
+        let mut match_len = 0;
+
+        assert_eq!(
+            filter_cursor_position_requests(&mut match_len, b"\x1bX"),
+            (b"\x1bX".to_vec(), 0)
+        );
+        assert_eq!(match_len, 0);
+        assert_eq!(
+            filter_cursor_position_requests(&mut match_len, b"\x1b[6n"),
+            (Vec::new(), 1)
+        );
+        assert_eq!(
+            filter_cursor_position_requests(&mut match_len, b"\x1b[6n\x1b[6n"),
+            (Vec::new(), 2)
+        );
+    }
+
+    #[test]
+    fn cursor_position_request_filter_preserves_other_output() {
+        let mut match_len = 0;
+
+        assert_eq!(
+            filter_cursor_position_requests(&mut match_len, b"ab\x1b[6ncd"),
+            (b"abcd".to_vec(), 1)
+        );
     }
 }

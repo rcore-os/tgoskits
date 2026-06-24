@@ -77,16 +77,8 @@ fn update_snapshot_for_board(
     snapshot.arch = Some(starry_arch_for_target_checked(&board.target)?.to_string());
     snapshot.target = Some(board.target.clone());
     snapshot.config = Some(snapshot_path_value(workspace_root, build_config_path));
-    snapshot.qemu.qemu_config = snapshot
-        .qemu
-        .qemu_config
-        .as_ref()
-        .map(|path| snapshot_path_value(workspace_root, path));
-    snapshot.uboot.uboot_config = snapshot
-        .uboot
-        .uboot_config
-        .as_ref()
-        .map(|path| snapshot_path_value(workspace_root, path));
+    snapshot.qemu.qemu_config = None;
+    snapshot.uboot.uboot_config = None;
     snapshot.store(workspace_root)?;
     Ok(())
 }
@@ -162,7 +154,7 @@ mod tests {
     }
 
     #[test]
-    fn write_defconfig_generates_build_file_and_updates_snapshot() {
+    fn write_defconfig_generates_build_file_and_resets_runtime_config() {
         let root = tempdir().unwrap();
         write_workspace(root.path());
         let source = write_board(
@@ -214,16 +206,8 @@ log = "Warn"
                 "tmp/axbuild/config/starryos/build-riscv64gc-unknown-none-elf.toml"
             ))
         );
-        assert_eq!(
-            snapshot.qemu.qemu_config,
-            Some(PathBuf::from(
-                "test-suit/starryos/qemu-smp1/system/qemu-riscv64.toml"
-            ))
-        );
-        assert_eq!(
-            snapshot.uboot.uboot_config,
-            Some(PathBuf::from("configs/uboot.toml"))
-        );
+        assert_eq!(snapshot.qemu.qemu_config, None);
+        assert_eq!(snapshot.uboot.uboot_config, None);
     }
 
     #[test]

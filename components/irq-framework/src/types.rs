@@ -275,6 +275,11 @@ impl IrqRequest {
         self.auto_enable = auto_enable;
         self
     }
+
+    /// Returns whether the action should be enabled after request.
+    pub const fn auto_enable_mode(&self) -> AutoEnable {
+        self.auto_enable
+    }
 }
 
 /// Token returned from request and used for later lifecycle operations.

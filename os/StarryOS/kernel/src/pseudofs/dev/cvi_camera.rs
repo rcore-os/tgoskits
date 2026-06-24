@@ -12,6 +12,7 @@ use sg200x_bsp::{
     pinmux::{FMUX_SD1_D1, FMUX_SD1_D2, Pinmux},
     soc::{FMUX_BASE, IOBLK_BASE, IOBLK_GRTC_BASE},
 };
+use some_serial::InterruptMask;
 use starry_vm::{VmMutPtr, vm_write_slice};
 use tock_registers::interfaces::Writeable;
 
@@ -40,11 +41,23 @@ unsafe fn cvi_camera_raw_irq_handler(
     let mut uart3 = some_serial::ns16550::dw_apb::DwApbUart::new(
         phys_to_virt(PhysAddr::from(UART3_ADDR)).as_usize(),
     );
+    let _ = uart3.handle_irq();
+    let mut scratch = [0u8; 64];
     let mut buf = CAMERA_UART_BUF.lock();
-    while let Some(c) = uart3.getchar() {
-        let _ = buf.push_back(c);
+    loop {
+        let n = match uart3.try_read(&mut scratch) {
+            Ok(n) => n,
+            Err(err) => err.bytes_transferred,
+        };
+        if n == 0 {
+            break;
+        }
+        for &byte in &scratch[..n] {
+            let _ = buf.push_back(byte);
+        }
     }
-    uart3.set_ier(true);
+    let mask = uart3.get_irq_mask();
+    uart3.set_irq_mask(mask | InterruptMask::RX_AVAILABLE);
     ax_runtime::hal::irq::IrqReturn::Handled
 }
 
@@ -332,7 +345,15 @@ impl UartTransport for Uart3 {
         let mut uart3 = some_serial::ns16550::dw_apb::DwApbUart::new(
             phys_to_virt(PhysAddr::from(UART3_ADDR)).as_usize(),
         );
-        data.iter().for_each(|x| uart3.putchar(*x));
+        let mut written = 0;
+        while written < data.len() {
+            let n = uart3.try_write(&data[written..]);
+            if n == 0 {
+                core::hint::spin_loop();
+                continue;
+            }
+            written += n;
+        }
         Ok(())
     }
 
@@ -387,7 +408,8 @@ impl CviCamera {
             phys_to_virt(PhysAddr::from(UART3_ADDR)).as_usize(),
         );
         uart3.init_with_baud_clk(1_500_000, some_serial::ns16550::dw_apb::SG2002_UART_CLOCK);
-        uart3.set_ier(true);
+        let mask = uart3.get_irq_mask();
+        uart3.set_irq_mask(mask | InterruptMask::RX_AVAILABLE);
         let _ = ax_runtime::hal::irq::request_shared_irq(
             47,
             cvi_camera_raw_irq_handler,

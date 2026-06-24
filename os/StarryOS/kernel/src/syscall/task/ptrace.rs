@@ -1184,7 +1184,7 @@ pub fn ptrace_setup_singlestep(
         let _ = ptrace_write_u16_unlocked(&mut aspace, saved_addr, saved_insn as u16);
     }
 
-    let first_half = match ptrace_read_u16_unlocked(&aspace, pc) {
+    let first_half = match ptrace_read_u16_unlocked(&mut aspace, pc) {
         Ok(half) => half,
         Err(_) => {
             tracee.set_ptrace_ss_saved_insn_for(tid, None);
@@ -1195,7 +1195,7 @@ pub fn ptrace_setup_singlestep(
     let current_insn = if insn_len == 2 {
         first_half as u32
     } else {
-        match ptrace_read_u32_unlocked(&aspace, pc) {
+        match ptrace_read_u32_unlocked(&mut aspace, pc) {
             Ok(word) => word,
             Err(_) => {
                 tracee.set_ptrace_ss_saved_insn_for(tid, None);
@@ -1208,7 +1208,7 @@ pub fn ptrace_setup_singlestep(
         tracee.set_ptrace_ss_saved_insn_for(tid, None);
         return;
     }
-    let orig_insn = match ptrace_read_u16_unlocked(&aspace, next_insn_addr) {
+    let orig_insn = match ptrace_read_u16_unlocked(&mut aspace, next_insn_addr) {
         Ok(half) => half,
         Err(_) => {
             tracee.set_ptrace_ss_saved_insn_for(tid, None);
@@ -1221,7 +1221,10 @@ pub fn ptrace_setup_singlestep(
         return;
     }
 
-    let _ = ptrace_write_u16_unlocked(&mut aspace, next_insn_addr, EBREAK_INSN);
+    if ptrace_write_u16_unlocked(&mut aspace, next_insn_addr, EBREAK_INSN).is_err() {
+        tracee.set_ptrace_ss_saved_insn_for(tid, None);
+        return;
+    }
     tracee.set_ptrace_ss_saved_insn_for(tid, Some((next_insn_addr, orig_insn as usize)));
     ax_runtime::hal::cpu::asm::flush_icache_all();
 }
@@ -1241,7 +1244,7 @@ pub fn ptrace_setup_singlestep(
         let _ = ptrace_write_u32_unlocked(&mut aspace, saved_addr, saved_insn as u32);
     }
 
-    let current_insn = match ptrace_read_u32_unlocked(&aspace, pc) {
+    let current_insn = match ptrace_read_u32_unlocked(&mut aspace, pc) {
         Ok(insn) => insn,
         Err(_) => {
             tracee.set_ptrace_ss_saved_insn_for(tid, None);
@@ -1249,7 +1252,7 @@ pub fn ptrace_setup_singlestep(
         }
     };
     let next_insn_addr = aarch64_next_pc(current_insn, pc, uctx);
-    let orig_insn = match ptrace_read_u32_unlocked(&aspace, next_insn_addr) {
+    let orig_insn = match ptrace_read_u32_unlocked(&mut aspace, next_insn_addr) {
         Ok(insn) => insn,
         Err(_) => {
             tracee.set_ptrace_ss_saved_insn_for(tid, None);
@@ -1262,7 +1265,10 @@ pub fn ptrace_setup_singlestep(
         return;
     }
 
-    let _ = ptrace_write_u32_unlocked(&mut aspace, next_insn_addr, AARCH64_BRK_INSN);
+    if ptrace_write_u32_unlocked(&mut aspace, next_insn_addr, AARCH64_BRK_INSN).is_err() {
+        tracee.set_ptrace_ss_saved_insn_for(tid, None);
+        return;
+    }
     tracee.set_ptrace_ss_saved_insn_for(tid, Some((next_insn_addr, orig_insn as usize)));
     ax_runtime::hal::cpu::asm::flush_icache_all();
 }
@@ -1282,7 +1288,7 @@ pub fn ptrace_setup_singlestep(
         let _ = ptrace_write_u32_unlocked(&mut aspace, saved_addr, saved_insn as u32);
     }
 
-    let current_insn = match ptrace_read_u32_unlocked(&aspace, pc) {
+    let current_insn = match ptrace_read_u32_unlocked(&mut aspace, pc) {
         Ok(insn) => insn,
         Err(_) => {
             tracee.set_ptrace_ss_saved_insn_for(tid, None);
@@ -1290,7 +1296,7 @@ pub fn ptrace_setup_singlestep(
         }
     };
     let next_insn_addr = loongarch_next_pc(current_insn, pc, uctx);
-    let orig_insn = match ptrace_read_u32_unlocked(&aspace, next_insn_addr) {
+    let orig_insn = match ptrace_read_u32_unlocked(&mut aspace, next_insn_addr) {
         Ok(insn) => insn,
         Err(_) => {
             tracee.set_ptrace_ss_saved_insn_for(tid, None);
@@ -1303,7 +1309,10 @@ pub fn ptrace_setup_singlestep(
         return;
     }
 
-    let _ = ptrace_write_u32_unlocked(&mut aspace, next_insn_addr, LOONGARCH_BREAK_INSN);
+    if ptrace_write_u32_unlocked(&mut aspace, next_insn_addr, LOONGARCH_BREAK_INSN).is_err() {
+        tracee.set_ptrace_ss_saved_insn_for(tid, None);
+        return;
+    }
     tracee.set_ptrace_ss_saved_insn_for(tid, Some((next_insn_addr, orig_insn as usize)));
     ax_runtime::hal::cpu::asm::flush_icache_all();
 }
@@ -1728,7 +1737,8 @@ fn loongarch_reg(uctx: &ax_runtime::hal::cpu::uspace::UserContext, index: usize)
 }
 
 #[cfg(target_arch = "riscv64")]
-fn ptrace_read_u16_unlocked(aspace: &AddrSpace, addr: usize) -> AxResult<u16> {
+fn ptrace_read_u16_unlocked(aspace: &mut AddrSpace, addr: usize) -> AxResult<u16> {
+    ptrace_populate_remote_range(aspace, addr, size_of::<u16>(), MappingFlags::READ)?;
     let mut bytes = [0u8; size_of::<u16>()];
     aspace.read(VirtAddr::from_usize(addr), &mut bytes)?;
     Ok(u16::from_ne_bytes(bytes))
@@ -1739,7 +1749,8 @@ fn ptrace_read_u16_unlocked(aspace: &AddrSpace, addr: usize) -> AxResult<u16> {
     target_arch = "aarch64",
     target_arch = "loongarch64"
 ))]
-fn ptrace_read_u32_unlocked(aspace: &AddrSpace, addr: usize) -> AxResult<u32> {
+fn ptrace_read_u32_unlocked(aspace: &mut AddrSpace, addr: usize) -> AxResult<u32> {
+    ptrace_populate_remote_range(aspace, addr, size_of::<u32>(), MappingFlags::READ)?;
     let mut bytes = [0u8; size_of::<u32>()];
     aspace.read(VirtAddr::from_usize(addr), &mut bytes)?;
     Ok(u32::from_ne_bytes(bytes))
@@ -1747,12 +1758,14 @@ fn ptrace_read_u32_unlocked(aspace: &AddrSpace, addr: usize) -> AxResult<u32> {
 
 #[cfg(target_arch = "riscv64")]
 fn ptrace_write_u16_unlocked(aspace: &mut AddrSpace, addr: usize, data: u16) -> AxResult {
+    ptrace_populate_remote_range(aspace, addr, size_of::<u16>(), MappingFlags::WRITE)?;
     aspace.write(VirtAddr::from_usize(addr), &data.to_ne_bytes())?;
     Ok(())
 }
 
 #[cfg(any(target_arch = "aarch64", target_arch = "loongarch64"))]
 fn ptrace_write_u32_unlocked(aspace: &mut AddrSpace, addr: usize, data: u32) -> AxResult {
+    ptrace_populate_remote_range(aspace, addr, size_of::<u32>(), MappingFlags::WRITE)?;
     aspace.write(VirtAddr::from_usize(addr), &data.to_ne_bytes())?;
     Ok(())
 }

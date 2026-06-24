@@ -32,7 +32,8 @@ pub fn enable_mmu() -> ! {
 
     // Do not touch the debug UART in this final pre-relocation window. Some
     // boards can leave the early UART TX FIFO full here, and any console access
-    // after SCTLR.M is set can also observe software MMU state too early.
+    // after SCTLR.M is set can observe hardware MMU state before the kernel has
+    // actually jumped to the relocated virtual entry.
     setup_sctlr();
 
     super::relocate::reset();

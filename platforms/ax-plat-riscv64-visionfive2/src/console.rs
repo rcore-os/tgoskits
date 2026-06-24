@@ -3,7 +3,7 @@ use ax_lazyinit::LazyInit;
 #[cfg(feature = "irq")]
 use ax_plat::console::ConsoleIrqEvent;
 use ax_plat::{
-    console::ConsoleIf,
+    console::{ConsoleDeviceIdError, ConsoleDeviceIdResult, ConsoleIf},
     mem::{pa, phys_to_virt},
 };
 use uart_16550::MmioSerialPort;
@@ -50,6 +50,10 @@ impl ConsoleIf for ConsoleIfImpl {
             }
         }
         bytes.len()
+    }
+
+    fn device_id() -> ConsoleDeviceIdResult {
+        Err(ConsoleDeviceIdError::NotSpecified)
     }
 
     /// Returns the IRQ number for the console, if applicable.

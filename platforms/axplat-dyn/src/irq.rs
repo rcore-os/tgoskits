@@ -35,8 +35,13 @@ impl IrqIf for IrqIfImpl {
                 return Some(irq_num);
             }
 
-            if !dispatch_irq(irq_num).handled {
-                warn!("Unhandled IRQ {irq:?}");
+            let outcome = dispatch_irq(irq_num);
+            if !outcome.handled {
+                if outcome.called == 0 {
+                    warn!("Unhandled IRQ {irq:?}");
+                } else {
+                    debug!("Spurious IRQ {irq:?}");
+                }
             }
             irq_num
         };

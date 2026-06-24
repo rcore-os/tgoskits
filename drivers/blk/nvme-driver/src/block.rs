@@ -117,6 +117,7 @@ impl NvmeBlockDriver {
             limits(
                 inner.nvme.dma_mask(),
                 inner.nvme.page_size(),
+                inner.nvme.max_transfer_bytes(),
                 inner.namespace,
                 self.queue_depth,
             )
@@ -190,6 +191,7 @@ impl Interface for NvmeBlockDriver {
                 inner.namespace,
                 inner.nvme.dma_mask(),
                 inner.nvme.page_size(),
+                inner.nvme.max_transfer_bytes(),
                 queue,
                 prp_lists,
             ))
@@ -279,6 +281,7 @@ struct NvmeQueueCore {
     namespace: Namespace,
     dma_mask: u64,
     page_size: usize,
+    max_transfer_bytes: Option<usize>,
     depth: usize,
     queue: UnsafeCell<HardwareQueue>,
     state: UnsafeCell<NvmeQueueState>,
@@ -345,6 +348,7 @@ impl NvmeQueueCore {
         namespace: Namespace,
         dma_mask: u64,
         page_size: usize,
+        max_transfer_bytes: Option<usize>,
         queue: HardwareQueue,
         prp_lists: Vec<CoherentArray<u64>>,
     ) -> Arc<Self> {
@@ -361,6 +365,7 @@ impl NvmeQueueCore {
             namespace,
             dma_mask,
             page_size,
+            max_transfer_bytes,
             depth,
             queue: UnsafeCell::new(queue),
             state: UnsafeCell::new(NvmeQueueState {
@@ -382,7 +387,13 @@ impl NvmeQueueCore {
         QueueInfo {
             id: self.id,
             device: device_info(self.name, self.namespace),
-            limits: limits(self.dma_mask, self.page_size, self.namespace, self.depth),
+            limits: limits(
+                self.dma_mask,
+                self.page_size,
+                self.max_transfer_bytes,
+                self.namespace,
+                self.depth,
+            ),
         }
     }
 
@@ -835,17 +846,25 @@ fn device_info(name: &'static str, namespace: Namespace) -> DeviceInfo {
 fn limits(
     dma_mask: u64,
     page_size: usize,
+    controller_max_transfer_bytes: Option<usize>,
     namespace: Namespace,
     max_inflight: usize,
 ) -> QueueLimits {
-    let dma_alignment = page_size.max(namespace.lba_size.max(1));
+    let lba_size = namespace.lba_size.max(1);
+    let dma_alignment = page_size.max(lba_size);
     let prp_entries = page_size / core::mem::size_of::<u64>();
-    let max_bytes = page_size.saturating_mul(prp_entries + 1);
+    let prp_capacity_bytes = page_size.saturating_mul(prp_entries + 1);
+    let max_bytes = controller_max_transfer_bytes
+        .map_or(prp_capacity_bytes, |max_transfer| {
+            prp_capacity_bytes.min(max_transfer)
+        })
+        .max(lba_size);
     let max_blocks = max_bytes
-        .checked_div(namespace.lba_size.max(1))
+        .checked_div(lba_size)
         .unwrap_or(1)
         .max(1)
         .min(u16::MAX as usize + 1) as u32;
+    let max_bytes = (max_blocks as usize).saturating_mul(lba_size);
     QueueLimits {
         dma_mask,
         dma_alignment,
@@ -854,7 +873,11 @@ fn limits(
         max_segments: prp_entries + 1,
         max_segment_size: max_bytes,
         supported_flags: RequestFlags::NONE,
-        supports_flush: true,
+        // Do not advertise flush until the driver plumbs a reliable capability
+        // check from Identify/Feature data. Some QEMU NVMe backends reject the
+        // Flush command with "Invalid Field", which must not surface as fsync
+        // I/O errors.
+        supports_flush: false,
         supports_discard: false,
         supports_write_zeroes: false,
     }
@@ -876,12 +899,13 @@ mod tests {
             lba_count: 1024,
             metadata_size: 0,
         };
-        let limits = limits(u64::MAX, 4096, namespace, 8);
+        let limits = limits(u64::MAX, 4096, None, namespace, 8);
 
         assert_eq!(limits.dma_alignment, 4096);
         assert_eq!(limits.max_segments, 513);
         assert_eq!(limits.max_segment_size, 4096 * 513);
         assert!(limits.max_blocks_per_request >= 8);
+        assert!(!limits.supports_flush);
     }
 
     #[test]
@@ -892,12 +916,26 @@ mod tests {
             lba_count: 1024,
             metadata_size: 0,
         };
-        let limits = limits(u64::MAX, 4096, namespace, 8);
+        let limits = limits(u64::MAX, 4096, None, namespace, 8);
 
         assert_eq!(limits.dma_alignment, 8192);
         assert_eq!(limits.max_segments, 513);
-        assert_eq!(limits.max_segment_size, 4096 * 513);
+        assert_eq!(limits.max_segment_size, 8192 * 256);
         assert_eq!(limits.max_blocks_per_request, 256);
+    }
+
+    #[test]
+    fn queue_limits_respect_controller_transfer_limit() {
+        let namespace = Namespace {
+            id: 1,
+            lba_size: 512,
+            lba_count: 1024,
+            metadata_size: 0,
+        };
+        let limits = limits(u64::MAX, 4096, Some(512 * 1024), namespace, 8);
+
+        assert_eq!(limits.max_blocks_per_request, 1024);
+        assert_eq!(limits.max_segment_size, 512 * 1024);
     }
 
     #[test]

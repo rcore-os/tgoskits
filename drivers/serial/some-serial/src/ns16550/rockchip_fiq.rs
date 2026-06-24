@@ -2,24 +2,21 @@
 
 extern crate alloc;
 
-use alloc::boxed::Box;
 use core::{any::Any, num::NonZeroU32, ptr::NonNull};
 
 use heapless::{String, Vec};
 use rdif_serial::{
-    BSerial, Config, ConfigError, DataBits, DriverGeneric, Interface, InterruptMask, Parity,
-    SerialDyn, StopBits, TIrqHandler, TReceiver, TSender, TransferError,
+    Config, ConfigError, DataBits, DriverGeneric, InterruptMask, IrqSnapshot, Parity, RawUart,
+    RxSample, SerialEvent, StopBits, TransferError,
 };
 
 use super::{
-    Kind, Ns16550, Ns16550IrqHandler,
+    Kind, Ns16550,
     registers::{
-        UART_DLH, UART_DLL, UART_FCR, UART_IER, UART_IER_RDI, UART_IIR, UART_IIR_CTI, UART_LCR,
-        UART_LCR_DLAB, UART_LCR_WLEN8, UART_LSR, UART_LSR_BI, UART_LSR_DR, UART_LSR_TEMT, UART_MCR,
-        UART_RBR, UART_THR,
+        LineStatusFlags, UART_DLH, UART_DLL, UART_FCR, UART_IER, UART_IER_RDI, UART_LCR,
+        UART_LCR_DLAB, UART_LCR_WLEN8, UART_LSR, UART_LSR_DR, UART_LSR_THRE, UART_MCR, UART_RBR,
     },
 };
-use crate::{RawReceiver, RawSender};
 
 pub const ROCKCHIP_FIQ_RK3588_UART_CLOCK: u32 = 24_000_000;
 pub const ROCKCHIP_FIQ_DEFAULT_BAUDRATE: u32 = 1_500_000;
@@ -28,10 +25,8 @@ const REG_SHIFT: usize = 2;
 const DEBUG_MAX: usize = 64;
 const HISTORY_MAX: usize = 16;
 const UART_USR: u8 = 0x1f;
-const RK_UART_RFL: u8 = 0x21;
 const UART_SRR: u8 = 0x22;
 const UART_USR_TX_FIFO_NOT_FULL: u32 = 0x02;
-const UART_USR_BUSY: u32 = 0x01;
 
 pub type CommandString = String<DEBUG_MAX>;
 
@@ -477,49 +472,15 @@ impl RockchipFiqPort {
         self.write_reg(UART_FCR, 0x01);
         self.write_reg(UART_MCR, 0);
     }
-
-    fn read_debug_byte(&self) -> Option<u8> {
-        let iir = self.read_u32(UART_IIR);
-        let usr = self.read_u32(UART_USR);
-        let lsr = self.read_reg(UART_LSR);
-
-        if (iir & 0x3f) == UART_IIR_CTI as u32 {
-            let rfl = self.read_u32(RK_UART_RFL);
-            if lsr & (UART_LSR_DR | UART_LSR_BI) == 0 && usr & UART_USR_BUSY == 0 && rfl == 0 {
-                let _ = self.read_reg(UART_RBR);
-            }
-        }
-
-        if lsr & UART_LSR_DR != 0 {
-            Some(self.read_reg(UART_RBR))
-        } else {
-            None
-        }
-    }
-
-    fn write_debug_byte(&self, byte: u8) -> bool {
-        let mut count = 10_000;
-        while self.read_u32(UART_USR) & UART_USR_TX_FIFO_NOT_FULL == 0 {
-            if count == 0 {
-                return false;
-            }
-            count -= 1;
-            core::hint::spin_loop();
-        }
-        self.write_reg(UART_THR, byte);
-        true
-    }
-
-    fn flush(&self) {
-        while self.read_reg(UART_LSR) & UART_LSR_TEMT == 0 {
-            core::hint::spin_loop();
-        }
-    }
 }
 
 impl Kind for RockchipFiqPort {
     fn read_reg(&self, reg: u8) -> u8 {
-        (self.read_u32(reg) & 0xff) as u8
+        let mut value = (self.read_u32(reg) & 0xff) as u8;
+        if reg == UART_LSR && self.read_u32(UART_USR) & UART_USR_TX_FIFO_NOT_FULL != 0 {
+            value |= UART_LSR_THRE;
+        }
+        value
     }
 
     fn write_reg(&self, reg: u8, val: u8) {
@@ -553,58 +514,19 @@ impl Kind for RockchipFiqPort {
     }
 }
 
-pub struct RockchipFiqSender {
-    pub(crate) base: RockchipFiqPort,
-}
-
-impl RockchipFiqSender {
-    pub fn base_addr(&self) -> usize {
-        self.base.base_addr()
-    }
-}
-
-impl RawSender for RockchipFiqSender {
-    fn write_byte(&mut self, byte: u8) -> bool {
-        self.base.write_debug_byte(byte)
-    }
-}
-
-pub struct RockchipFiqReceiver {
-    pub(crate) base: RockchipFiqPort,
-}
-
-impl RockchipFiqReceiver {
-    pub fn base_addr(&self) -> usize {
-        self.base.base_addr()
-    }
-}
-
-impl RawReceiver for RockchipFiqReceiver {
-    fn read_byte(&mut self) -> Option<Result<u8, TransferError>> {
-        self.base.read_debug_byte().map(Ok)
-    }
-}
-
 impl Ns16550<RockchipFiqPort> {
     pub fn new_rockchip_fiq(base: NonNull<u8>, clock_freq: u32) -> Self {
         let base = RockchipFiqPort::new(base.as_ptr() as usize);
         Self {
             base,
             clock_freq,
-            irq: Some(Ns16550IrqHandler { base }),
-            tx: Some(crate::Sender::Ns16550RockchipFiqSender(RockchipFiqSender {
-                base,
-            })),
-            rx: Some(crate::Receiver::Ns16550RockchipFiqReceiver(
-                RockchipFiqReceiver { base },
-            )),
+            saved_lsr: LineStatusFlags::empty(),
         }
     }
 }
 
 pub struct RockchipFiqSerial {
-    serial: BSerial,
-    port: RockchipFiqPort,
+    serial: Ns16550<RockchipFiqPort>,
     debugger: FiqDebugger,
     config: RockchipFiqConfig,
 }
@@ -614,17 +536,12 @@ impl RockchipFiqSerial {
         let config = config.normalised();
         let port = RockchipFiqPort::new(base.as_ptr() as usize);
         port.init_debug_port(config.baudrate);
-        let serial = SerialDyn::new_boxed(Ns16550::new_rockchip_fiq(base, config.clock_hz));
+        let serial = Ns16550::new_rockchip_fiq(base, config.clock_hz);
         Self {
             serial,
-            port,
             debugger: FiqDebugger::new(config),
             config,
         }
-    }
-
-    pub fn new_boxed(base: NonNull<u8>, config: RockchipFiqConfig) -> BSerial {
-        Box::new(Self::new(base, config))
     }
 
     pub fn config(&self) -> RockchipFiqConfig {
@@ -633,18 +550,6 @@ impl RockchipFiqSerial {
 
     pub fn handle_fiq_byte(&mut self, byte: u8, emit: &mut impl FnMut(FiqDebuggerEvent)) {
         self.debugger.handle_byte(byte, emit);
-    }
-
-    pub fn poll_fiq_events(&mut self, emit: &mut impl FnMut(FiqDebuggerEvent)) -> usize {
-        let mut count = 0;
-        while let Some(byte) = self.port.read_debug_byte() {
-            count += 1;
-            self.debugger.handle_byte(byte, emit);
-        }
-        if !self.debugger.console_enabled() {
-            self.port.flush();
-        }
-        count
     }
 
     pub fn debugger(&self) -> &FiqDebugger {
@@ -670,21 +575,21 @@ impl DriverGeneric for RockchipFiqSerial {
     }
 }
 
-impl Interface for RockchipFiqSerial {
-    fn irq_handler(&mut self) -> Option<Box<dyn TIrqHandler>> {
-        self.serial.irq_handler()
-    }
-
-    fn take_tx(&mut self) -> Option<Box<dyn TSender>> {
-        self.serial.take_tx()
-    }
-
-    fn take_rx(&mut self) -> Option<Box<dyn TReceiver>> {
-        self.serial.take_rx()
+impl RawUart for RockchipFiqSerial {
+    fn name(&self) -> &'static str {
+        "Rockchip FIQ Debugger UART"
     }
 
     fn base_addr(&self) -> usize {
         self.serial.base_addr()
+    }
+
+    fn startup(&mut self, config: &Config) -> Result<(), ConfigError> {
+        self.serial.startup(config)
+    }
+
+    fn shutdown(&mut self) {
+        self.serial.shutdown()
     }
 
     fn set_config(&mut self, config: &Config) -> Result<(), ConfigError> {
@@ -723,16 +628,52 @@ impl Interface for RockchipFiqSerial {
         self.serial.is_loopback_enabled()
     }
 
-    fn enable_interrupts(&mut self, mask: InterruptMask) {
-        self.serial.enable_interrupts(mask)
+    fn set_irq_mask(&mut self, mask: InterruptMask) {
+        self.serial.set_irq_mask(mask)
     }
 
-    fn disable_interrupts(&mut self, mask: InterruptMask) {
-        self.serial.disable_interrupts(mask)
+    fn poll_status(&mut self) -> SerialEvent {
+        self.serial.poll_status()
     }
 
-    fn get_enabled_interrupts(&self) -> InterruptMask {
-        self.serial.get_enabled_interrupts()
+    fn take_irq_snapshot(&mut self) -> IrqSnapshot {
+        self.serial.take_irq_snapshot()
+    }
+
+    fn read_rx(&mut self) -> Option<RxSample> {
+        self.serial.read_rx()
+    }
+
+    fn tx_ready(&mut self) -> bool {
+        self.serial.tx_ready()
+    }
+
+    fn write_tx(&mut self, byte: u8) {
+        self.serial.write_tx(byte)
+    }
+
+    fn tx_load_size(&self) -> usize {
+        self.serial.tx_load_size()
+    }
+
+    fn tx_idle(&mut self) -> bool {
+        self.serial.tx_idle()
+    }
+
+    fn ack_modem_status(&mut self) {
+        self.serial.ack_modem_status()
+    }
+
+    fn ack_busy_detect(&mut self) {
+        self.serial.ack_busy_detect()
+    }
+
+    fn write_byte(&mut self, byte: u8) {
+        self.serial.write_byte(byte);
+    }
+
+    fn read_byte(&mut self, status: SerialEvent) -> Option<Result<u8, TransferError>> {
+        self.serial.read_byte(status)
     }
 }
 

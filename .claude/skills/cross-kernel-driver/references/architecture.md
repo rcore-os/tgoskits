@@ -178,6 +178,16 @@ wakers, heap allocation, sleeping locks, or unrelated subsystem locks safe in a
 hard IRQ. If the driver cannot prove this protocol, use atomics/pending bits and
 an OS Glue deferred worker instead.
 
+### IRQ/Queue Isolation Pattern
+
+For devices with split runtime endpoints, treat the IRQ handle as a state synchronizer, not as a queue owner:
+
+- Give the IRQ handle its own endpoint object, separate from TX/RX queues, completion queues, block queues, network rings, or accelerator engines.
+- Let the IRQ handle be the only runtime path that reads and clears shared or destructive interrupt/status registers. Queue-side code should not rediscover readiness by peeking the same global register, because that can clear or consume another queue's event.
+- Fan out IRQ results into queue-local completion state, for example per-queue atomics, bitmaps, counters, or pending lists. The state should name the affected queue or engine and preserve errors separately from readiness.
+- If an IRQ arrives while another context owns the raw register block, record a pending IRQ bit and return quickly. Drain it from a safe context or the next IRQ pass instead of spinning in interrupt context.
+- Keep raw driver event snapshots close to hardware semantics. Put OS wakeups, task scheduling, and per-queue completion ownership in the adapter/runtime layer above the raw register code.
+
 ## Queue/Runtime Pattern
 
 Model queues as independent running units. This matches network TX/RX queues, NVMe admin/IO queues, block request queues, and many accelerator command queues.
@@ -199,6 +209,14 @@ Runtime wrappers can then choose:
 
 Avoid a single global `Driver::poll` if the hardware naturally exposes multiple queues or engines. Avoid a "big object + big lock + callbacks" shape unless the device is truly that simple.
 
+In an IRQ-driven split design, queue operations consume synchronized queue-local state:
+
+- Queue `poll` should answer whether that queue has a synchronized completion, budget, error, or readiness state. It should not normally read or clear global hardware IRQ status.
+- Queue `submit`/`try_write` should consume that queue's own permits or descriptor budget and then program only the register path needed to advance that queue.
+- Queue `reclaim`/`try_read` should consume that queue's own completion or error state. Do not let one queue consume another queue's event because a shared register reported combined status.
+- If a hardware status register reports multiple queues or directions in one destructive read, split that status immediately in the IRQ/event layer and store independent queue-local state before any queue code runs.
+- For FIFO-style devices where one readiness interrupt may cover a bounded burst, model the budget explicitly if more than one operation can be performed. Avoid hidden loops that re-read global status from a queue path.
+
 For a block queue adapter, align portable queue state with `rdif_block::IQueue`:
 
 - `buffer_config()` should expose block-size, alignment, and DMA mask constraints.
@@ -210,11 +228,14 @@ For a block queue adapter, align portable queue state with `rdif_block::IQueue`:
 
 - Prefer `&mut self` for externally visible operations that require exclusive access.
 - Do not make OS locks part of the portable Driver Trait.
-- Use internal locks only for short critical sections such as pending flags or small status updates.
+- Do not take a blocking mutex from an IRQ handler when task context can hold the same mutex. Use a non-blocking borrow gate, try-lock with explicit pending state, or a small atomic/interrupt-safe state handoff.
+- Use internal locks only for short non-IRQ critical sections such as pending flags or small status updates. In IRQ context, prefer atomics, per-queue pending bits, or an explicit deferred drain path.
 - If task and IRQ contexts share a lock-protected registry, require the IRQ/task
   exclusion protocol above: mask the same interrupt source before task-side
   mutation, keep IRQ lock-free for that registry, and document why the fast path
   cannot race lifetime or structure changes.
+- When one raw register block is shared by several queues or endpoints, centralize mutable register access in one core object. Wrap it in `UnsafeCell` or another narrow unsafe primitive only in the adapter/runtime layer, document the exclusion rule, and avoid exposing unsynchronized raw access to queues.
+- Separate synchronization ownership from hardware logic. The raw driver should expose register-level primitives and stable event snapshots; the runtime/adapter should decide how IRQ, queues, pending state, and wakeups are synchronized.
 - Keep `unsafe` in callback bridges, MMIO construction, and DMA glue boundaries where possible.
 - Do slow work in task/worker/executor/polling context, not in IRQ context.
 

@@ -1,13 +1,14 @@
-use alloc::{collections::VecDeque, sync::Arc, task::Wake, vec::Vec};
+use alloc::{boxed::Box, collections::VecDeque, sync::Arc, task::Wake, vec::Vec};
 use core::{
     future::poll_fn,
     marker::PhantomData,
     ops::Range,
-    sync::atomic::{AtomicBool, Ordering},
+    sync::atomic::{AtomicBool, AtomicUsize, Ordering},
     task::{Poll, Waker},
 };
 
 use ax_errno::{AxError, AxResult};
+use ax_kspin::SpinNoIrq;
 use ax_task::future::block_on;
 use axpoll::{IoEvents, PollSet};
 use linux_raw_sys::general::{
@@ -22,22 +23,20 @@ use starry_signal::SignalInfo;
 use super::{Terminal, termios::Termios2};
 use crate::task::send_signal_to_process_group;
 
-const BUF_SIZE: usize = 80;
+const BUF_SIZE: usize = 4096;
+const ECHO_QUEUE_CAP: usize = 4096;
+const ECHO_WRITE_CHUNK: usize = 256;
 
 type ReadBuf = Arc<ringbuf::StaticRb<u8, BUF_SIZE>>;
 
 /// How should we process inputs?
 pub enum ProcessMode {
-    /// Process inputs without an external event source.
-    ///
-    /// This is used as the fallback for consoles without an RX interrupt. A
-    /// background task drains input directly and yields when idle, so signals
-    /// and serial auto-init commands still work while no user task is blocked
-    /// in `read()`.
-    Manual,
     /// Spawns task for processing inputs, relying on an external event source
     /// to wake it up.
-    InterruptDriven(Arc<PollSet>),
+    InterruptDriven {
+        input: Arc<PollSet>,
+        output: Option<Arc<PollSet>>,
+    },
     /// Do not process inputs.
     ///
     /// This is only used by the master side of pseudo tty. The argument is the
@@ -56,6 +55,20 @@ pub trait TtyRead: Send + Sync + 'static {
 }
 pub trait TtyWrite: Send + Sync + 'static {
     fn write(&self, buf: &[u8]);
+
+    fn flush_echo_before_input(&self) -> bool {
+        false
+    }
+
+    fn max_sync_echo_bytes(&self) -> usize {
+        if self.flush_echo_before_input() {
+            usize::MAX
+        } else {
+            0
+        }
+    }
+
+    fn termios_changed(&self, _old: &Termios2, _new: &Termios2) {}
 }
 
 pub fn write_output_bytes<W: TtyWrite + ?Sized>(writer: &W, term: &Termios2, buf: &[u8]) {
@@ -89,7 +102,7 @@ struct InputReader<R, W> {
     terminal: Arc<Terminal>,
 
     reader: R,
-    writer: W,
+    echo: Arc<EchoQueue<W>>,
 
     buf_tx: CachingProd<ReadBuf>,
     read_buf: [u8; BUF_SIZE],
@@ -113,6 +126,7 @@ impl<R: TtyRead, W: TtyWrite> InputReader<R, W> {
         }
         let term = self.terminal.load_termios();
         let mut sent = 0;
+        let mut echo = Vec::new();
         loop {
             if let Some(offset) = &mut self.line_read {
                 let read = self.buf_tx.push_slice(&self.line_buf[*offset..]);
@@ -147,7 +161,7 @@ impl<R: TtyRead, W: TtyWrite> InputReader<R, W> {
 
             let eof = term.canonical() && ch == term.special_char(VEOF);
             if term.echo() && !eof {
-                self.output_char(&term, ch);
+                Self::append_echo_char(&term, ch, &mut echo);
             }
             if signaled {
                 self.line_buf.clear();
@@ -192,6 +206,14 @@ impl<R: TtyRead, W: TtyWrite> InputReader<R, W> {
             }
         }
 
+        if !echo.is_empty() {
+            if echo.len() <= self.echo.max_sync_bytes() {
+                self.echo.write_now(&echo);
+            } else {
+                self.echo.enqueue(&echo);
+            }
+        }
+
         sent > 0 || progressed
     }
 
@@ -212,25 +234,101 @@ impl<R: TtyRead, W: TtyWrite> InputReader<R, W> {
         }
     }
 
-    fn output_char(&self, term: &Termios2, ch: u8) {
+    fn append_echo_char(term: &Termios2, ch: u8, out: &mut Vec<u8>) {
         match ch {
-            b'\n' => write_output_bytes(&self.writer, term, b"\n"),
-            b'\t' => self.writer.write(b"\t"),
-            ch if ch == term.special_char(VERASE) => self.writer.write(b"\x08 \x08"),
+            b'\n' if term.has_oflag(OPOST) && term.has_oflag(ONLCR) => {
+                out.extend_from_slice(b"\r\n");
+            }
+            b'\n' => out.push(b'\n'),
+            b'\t' => out.push(b'\t'),
+            ch if ch == term.special_char(VERASE) => out.extend_from_slice(b"\x08 \x08"),
             ch if ch == b' ' || ch.is_ascii_graphic() || !ch.is_ascii() => {
-                self.writer.write(&[ch]);
+                out.push(ch);
             }
             ch if ch.is_ascii_control() && term.has_lflag(ECHOCTL) => {
                 let escaped = if ch == b'\x7f' { b'?' } else { ch + 0x40 };
-                self.writer.write(&[b'^', escaped]);
+                out.extend_from_slice(&[b'^', escaped]);
             }
             ch if ch.is_ascii_control() => {
-                self.writer.write(&[ch]);
+                out.push(ch);
             }
             other => {
                 warn!("Ignored echo char: {other:#x}");
             }
         }
+    }
+}
+
+struct EchoQueue<W> {
+    writer: W,
+    queue: SpinNoIrq<VecDeque<u8>>,
+    wake_source: Arc<PollSet>,
+    dropped: AtomicUsize,
+}
+
+impl<W: TtyWrite> EchoQueue<W> {
+    fn new(writer: W, wake_source: Arc<PollSet>) -> Arc<Self> {
+        Arc::new(Self {
+            writer,
+            queue: SpinNoIrq::new(VecDeque::new()),
+            wake_source,
+            dropped: AtomicUsize::new(0),
+        })
+    }
+
+    fn enqueue(&self, bytes: &[u8]) {
+        if bytes.is_empty() {
+            return;
+        }
+
+        let queued = {
+            let mut queue = self.queue.lock();
+            let space = ECHO_QUEUE_CAP.saturating_sub(queue.len());
+            let queued = bytes.len().min(space);
+            queue.extend(bytes[..queued].iter().copied());
+            queued
+        };
+
+        if queued < bytes.len() {
+            self.dropped
+                .fetch_add(bytes.len() - queued, Ordering::AcqRel);
+        }
+        unsafe { self.wake_source.wake(IoEvents::OUT) };
+    }
+
+    fn max_sync_bytes(&self) -> usize {
+        self.writer.max_sync_echo_bytes()
+    }
+
+    fn write_now(&self, bytes: &[u8]) {
+        self.writer.write(bytes);
+    }
+
+    fn drain_available(&self) -> bool {
+        let mut progressed = false;
+        loop {
+            let chunk = {
+                let mut queue = self.queue.lock();
+                if queue.is_empty() {
+                    break;
+                }
+                let len = queue.len().min(ECHO_WRITE_CHUNK);
+                let mut chunk = Vec::with_capacity(len);
+                for _ in 0..len {
+                    chunk.push(queue.pop_front().unwrap());
+                }
+                chunk
+            };
+            self.writer.write(&chunk);
+            progressed = true;
+        }
+
+        let dropped = self.dropped.swap(0, Ordering::AcqRel);
+        if dropped > 0 {
+            warn!("Dropped {dropped} tty echo byte(s)");
+            progressed = true;
+        }
+        progressed
     }
 }
 
@@ -248,7 +346,7 @@ impl<R: TtyRead> SimpleReader<R> {
 
 enum Processor<R> {
     InterruptDriven,
-    Passive(SimpleReader<R>, Arc<PollSet>),
+    Passive(Box<SimpleReader<R>>, Arc<PollSet>),
 }
 
 pub struct LineDiscipline<R, W> {
@@ -256,7 +354,7 @@ pub struct LineDiscipline<R, W> {
     buf_rx: CachingCons<ReadBuf>,
     injected_input: VecDeque<u8>,
     input_ready: Arc<PollSet>,
-    pump_retry: Arc<PollSet>,
+    worker_source: Arc<PollSet>,
     eof_ready: Arc<AtomicBool>,
     clear_line_buf: Arc<AtomicBool>,
     processor: Processor<R>,
@@ -282,19 +380,23 @@ impl Wake for WakeSignal {
 impl<R: TtyRead, W: TtyWrite> LineDiscipline<R, W> {
     fn drive_input(reader: &mut InputReader<R, W>, input_ready: &PollSet) -> bool {
         let mut progressed = false;
+        progressed |= reader.echo.drain_available();
         while reader.drain_source_into_line_buffer() {
             progressed = true;
+            reader.echo.drain_available();
             // New line-discipline input is visible before waking readers.
             unsafe { input_ready.wake(IoEvents::IN) };
         }
+        progressed |= reader.echo.drain_available();
         progressed
     }
 
     fn spawn_interrupt_driven_reader(
         mut reader: InputReader<R, W>,
         input_source: Arc<PollSet>,
+        output_source: Option<Arc<PollSet>>,
         input_ready: Arc<PollSet>,
-        pump_retry: Arc<PollSet>,
+        worker_source: Arc<PollSet>,
     ) {
         ax_task::spawn_with_name(
             move || loop {
@@ -314,7 +416,10 @@ impl<R: TtyRead, W: TtyWrite> LineDiscipline<R, W> {
                     }));
                     // The reader task registers from ordinary task context.
                     unsafe { input_source.register(&waker, IoEvents::IN) };
-                    unsafe { pump_retry.register(&waker, IoEvents::OUT) };
+                    if let Some(output_source) = output_source.as_ref() {
+                        unsafe { output_source.register(&waker, IoEvents::OUT) };
+                    }
+                    unsafe { worker_source.register(&waker, IoEvents::OUT) };
 
                     if Self::drive_input(&mut reader, input_ready.as_ref())
                         || fired.swap(false, Ordering::AcqRel)
@@ -329,27 +434,19 @@ impl<R: TtyRead, W: TtyWrite> LineDiscipline<R, W> {
         );
     }
 
-    fn spawn_polling_reader(mut reader: InputReader<R, W>, input_ready: Arc<PollSet>) {
-        ax_task::spawn_with_name(
-            move || loop {
-                if !Self::drive_input(&mut reader, input_ready.as_ref()) {
-                    ax_task::yield_now();
-                }
-            },
-            "tty-poll-reader".into(),
-        );
-    }
-
     pub fn new(terminal: Arc<Terminal>, config: TtyConfig<R, W>) -> Self {
         let (buf_tx, buf_rx) = ReadBuf::default().split();
 
         let eof_ready = Arc::new(AtomicBool::new(false));
         let clear_line_buf = Arc::new(AtomicBool::new(false));
+        let input_ready = Arc::new(PollSet::new());
+        let worker_source = Arc::new(PollSet::new());
+        let echo = EchoQueue::new(config.writer, worker_source.clone());
         let reader = InputReader {
             terminal: terminal.clone(),
 
             reader: config.reader,
-            writer: config.writer,
+            echo: echo.clone(),
 
             buf_tx,
             read_buf: [0; BUF_SIZE],
@@ -361,30 +458,25 @@ impl<R: TtyRead, W: TtyWrite> LineDiscipline<R, W> {
             clear_line_buf: clear_line_buf.clone(),
         };
 
-        let input_ready = Arc::new(PollSet::new());
-        let pump_retry = Arc::new(PollSet::new());
         let processor = match config.process_mode {
-            ProcessMode::InterruptDriven(input_source) => {
+            ProcessMode::InterruptDriven { input, output } => {
                 Self::spawn_interrupt_driven_reader(
                     reader,
-                    input_source,
+                    input,
+                    output,
                     input_ready.clone(),
-                    pump_retry.clone(),
+                    worker_source.clone(),
                 );
-                Processor::InterruptDriven
-            }
-            ProcessMode::Manual => {
-                Self::spawn_polling_reader(reader, input_ready.clone());
                 Processor::InterruptDriven
             }
             ProcessMode::Passive(poll_rx) => {
                 let InputReader { reader, buf_tx, .. } = reader;
                 Processor::Passive(
-                    SimpleReader {
+                    Box::new(SimpleReader {
                         reader,
                         read_buf: [0; BUF_SIZE],
                         buf_tx,
-                    },
+                    }),
                     poll_rx,
                 )
             }
@@ -394,7 +486,7 @@ impl<R: TtyRead, W: TtyWrite> LineDiscipline<R, W> {
             buf_rx,
             injected_input: VecDeque::new(),
             input_ready,
-            pump_retry,
+            worker_source,
             eof_ready,
             clear_line_buf,
             processor,
@@ -503,21 +595,22 @@ impl<R: TtyRead, W: TtyWrite> LineDiscipline<R, W> {
 
         let read = self.buf_rx.pop_slice(buf);
         // Buffer space was freed before waking the input pump.
-        unsafe { self.pump_retry.wake(IoEvents::OUT) };
+        unsafe { self.worker_source.wake(IoEvents::OUT) };
         Ok(read)
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use alloc::{sync::Arc, vec::Vec};
-    use core::sync::atomic::AtomicBool;
+    use alloc::{sync::Arc, vec, vec::Vec};
+    use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
     use axpoll::PollSet;
     use ringbuf::traits::{Observer, Split};
 
     use super::{
-        BUF_SIZE, InputReader, LineDiscipline, ProcessMode, ReadBuf, TtyConfig, TtyRead, TtyWrite,
+        BUF_SIZE, EchoQueue, InputReader, LineDiscipline, ProcessMode, ReadBuf, TtyConfig, TtyRead,
+        TtyWrite,
     };
     use crate::pseudofs::dev::tty::terminal::Terminal;
 
@@ -545,6 +638,58 @@ mod tests {
         fn write(&self, _buf: &[u8]) {}
     }
 
+    struct CountingWriter {
+        calls: Arc<AtomicUsize>,
+        bytes: Arc<AtomicUsize>,
+    }
+
+    impl TtyWrite for CountingWriter {
+        fn write(&self, buf: &[u8]) {
+            self.calls.fetch_add(1, Ordering::Relaxed);
+            self.bytes.fetch_add(buf.len(), Ordering::Relaxed);
+        }
+    }
+
+    struct OrderedEchoWriter {
+        calls: Arc<AtomicUsize>,
+        bytes: Arc<AtomicUsize>,
+    }
+
+    impl TtyWrite for OrderedEchoWriter {
+        fn write(&self, buf: &[u8]) {
+            self.calls.fetch_add(1, Ordering::Relaxed);
+            self.bytes.fetch_add(buf.len(), Ordering::Relaxed);
+        }
+
+        fn flush_echo_before_input(&self) -> bool {
+            true
+        }
+    }
+
+    struct LimitedEchoWriter {
+        calls: Arc<AtomicUsize>,
+        bytes: Arc<AtomicUsize>,
+        limit: usize,
+    }
+
+    impl TtyWrite for LimitedEchoWriter {
+        fn write(&self, buf: &[u8]) {
+            self.calls.fetch_add(1, Ordering::Relaxed);
+            self.bytes.fetch_add(buf.len(), Ordering::Relaxed);
+        }
+
+        fn max_sync_echo_bytes(&self) -> usize {
+            self.limit
+        }
+    }
+
+    struct PanicWriter;
+    impl TtyWrite for PanicWriter {
+        fn write(&self, _buf: &[u8]) {
+            panic!("canonical input drain must not synchronously write echo bytes");
+        }
+    }
+
     fn make_reader(
         data: Vec<u8>,
     ) -> (
@@ -555,7 +700,7 @@ mod tests {
         let reader = InputReader {
             terminal: Arc::new(Terminal::default()),
             reader: MockReader::new(data),
-            writer: MockWriter,
+            echo: EchoQueue::new(MockWriter, Arc::new(PollSet::new())),
             buf_tx,
             read_buf: [0; BUF_SIZE],
             read_range: 0..0,
@@ -601,6 +746,158 @@ mod tests {
             rx.occupied_len() > 0,
             "buf_rx must contain data after the newline is processed"
         );
+    }
+
+    #[test]
+    fn canonical_echo_is_batched_after_input_progress() {
+        let (buf_tx, rx) = ReadBuf::default().split();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let bytes = Arc::new(AtomicUsize::new(0));
+        let mut reader = InputReader {
+            terminal: Arc::new(Terminal::default()),
+            reader: MockReader::new(b"hello\n".to_vec()),
+            echo: EchoQueue::new(
+                CountingWriter {
+                    calls: calls.clone(),
+                    bytes: bytes.clone(),
+                },
+                Arc::new(PollSet::new()),
+            ),
+            buf_tx,
+            read_buf: [0; BUF_SIZE],
+            read_range: 0..0,
+            line_buf: Vec::new(),
+            line_read: None,
+            eof_ready: Arc::new(AtomicBool::new(false)),
+            clear_line_buf: Arc::new(AtomicBool::new(false)),
+        };
+
+        assert!(reader.drain_source_into_line_buffer());
+        assert_eq!(rx.occupied_len(), b"hello\n".len());
+        assert_eq!(calls.load(Ordering::Relaxed), 0);
+        assert_eq!(bytes.load(Ordering::Relaxed), 0);
+
+        reader.echo.drain_available();
+        assert_eq!(calls.load(Ordering::Relaxed), 1);
+        assert_eq!(bytes.load(Ordering::Relaxed), b"hello\r\n".len());
+    }
+
+    #[test]
+    fn canonical_echo_can_be_flushed_before_input_is_returned() {
+        let (buf_tx, rx) = ReadBuf::default().split();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let bytes = Arc::new(AtomicUsize::new(0));
+        let mut reader = InputReader {
+            terminal: Arc::new(Terminal::default()),
+            reader: MockReader::new(b"echo marker\n".to_vec()),
+            echo: EchoQueue::new(
+                OrderedEchoWriter {
+                    calls: calls.clone(),
+                    bytes: bytes.clone(),
+                },
+                Arc::new(PollSet::new()),
+            ),
+            buf_tx,
+            read_buf: [0; BUF_SIZE],
+            read_range: 0..0,
+            line_buf: Vec::new(),
+            line_read: None,
+            eof_ready: Arc::new(AtomicBool::new(false)),
+            clear_line_buf: Arc::new(AtomicBool::new(false)),
+        };
+
+        assert!(reader.drain_source_into_line_buffer());
+        assert_eq!(rx.occupied_len(), b"echo marker\n".len());
+        assert_eq!(calls.load(Ordering::Relaxed), 1);
+        assert_eq!(bytes.load(Ordering::Relaxed), b"echo marker\r\n".len());
+    }
+
+    #[test]
+    fn canonical_small_echo_respects_sync_limit() {
+        let (buf_tx, rx) = ReadBuf::default().split();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let bytes = Arc::new(AtomicUsize::new(0));
+        let mut reader = InputReader {
+            terminal: Arc::new(Terminal::default()),
+            reader: MockReader::new(b"echo marker\n".to_vec()),
+            echo: EchoQueue::new(
+                LimitedEchoWriter {
+                    calls: calls.clone(),
+                    bytes: bytes.clone(),
+                    limit: 64,
+                },
+                Arc::new(PollSet::new()),
+            ),
+            buf_tx,
+            read_buf: [0; BUF_SIZE],
+            read_range: 0..0,
+            line_buf: Vec::new(),
+            line_read: None,
+            eof_ready: Arc::new(AtomicBool::new(false)),
+            clear_line_buf: Arc::new(AtomicBool::new(false)),
+        };
+
+        assert!(reader.drain_source_into_line_buffer());
+        assert_eq!(rx.occupied_len(), b"echo marker\n".len());
+        assert_eq!(calls.load(Ordering::Relaxed), 1);
+        assert_eq!(bytes.load(Ordering::Relaxed), b"echo marker\r\n".len());
+    }
+
+    #[test]
+    fn canonical_large_echo_exceeding_sync_limit_is_queued() {
+        let (buf_tx, rx) = ReadBuf::default().split();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let bytes = Arc::new(AtomicUsize::new(0));
+        let mut input = vec![b'a'; 128];
+        input.push(b'\n');
+        let mut reader = InputReader {
+            terminal: Arc::new(Terminal::default()),
+            reader: MockReader::new(input),
+            echo: EchoQueue::new(
+                LimitedEchoWriter {
+                    calls: calls.clone(),
+                    bytes: bytes.clone(),
+                    limit: 64,
+                },
+                Arc::new(PollSet::new()),
+            ),
+            buf_tx,
+            read_buf: [0; BUF_SIZE],
+            read_range: 0..0,
+            line_buf: Vec::new(),
+            line_read: None,
+            eof_ready: Arc::new(AtomicBool::new(false)),
+            clear_line_buf: Arc::new(AtomicBool::new(false)),
+        };
+
+        assert!(reader.drain_source_into_line_buffer());
+        assert_eq!(rx.occupied_len(), 129);
+        assert_eq!(calls.load(Ordering::Relaxed), 0);
+        assert_eq!(bytes.load(Ordering::Relaxed), 0);
+
+        reader.echo.drain_available();
+        assert_eq!(calls.load(Ordering::Relaxed), 1);
+        assert_eq!(bytes.load(Ordering::Relaxed), 130);
+    }
+
+    #[test]
+    fn canonical_input_progress_does_not_wait_for_echo_writer() {
+        let (buf_tx, rx) = ReadBuf::default().split();
+        let mut reader = InputReader {
+            terminal: Arc::new(Terminal::default()),
+            reader: MockReader::new(b"burst\n".to_vec()),
+            echo: EchoQueue::new(PanicWriter, Arc::new(PollSet::new())),
+            buf_tx,
+            read_buf: [0; BUF_SIZE],
+            read_range: 0..0,
+            line_buf: Vec::new(),
+            line_read: None,
+            eof_ready: Arc::new(AtomicBool::new(false)),
+            clear_line_buf: Arc::new(AtomicBool::new(false)),
+        };
+
+        assert!(reader.drain_source_into_line_buffer());
+        assert_eq!(rx.occupied_len(), b"burst\n".len());
     }
 
     #[test]

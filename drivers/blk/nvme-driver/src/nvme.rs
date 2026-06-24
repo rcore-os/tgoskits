@@ -25,6 +25,7 @@ pub struct Nvme {
     sqes: u32,
     cqes: u32,
     page_size: usize,
+    max_transfer_bytes: Option<usize>,
     io_queue_interrupts: bool,
     interrupt_vector: u32,
 }
@@ -94,6 +95,7 @@ impl Nvme {
             sqes: 6,
             cqes: 4,
             page_size: config.page_size,
+            max_transfer_bytes: None,
             io_queue_interrupts: config.io_queue_interrupts,
             interrupt_vector: config.interrupt_vector,
         };
@@ -141,6 +143,7 @@ impl Nvme {
         debug!("Controller: {:?}", controller);
 
         self.num_ns = controller.number_of_namespaces as _;
+        self.max_transfer_bytes = controller_max_transfer_bytes(config.page_size, controller.mdts);
         if config.io_queue_interrupts {
             self.mask_interrupt_vector(config.interrupt_vector);
         }
@@ -249,6 +252,10 @@ impl Nvme {
 
     pub fn page_size(&self) -> usize {
         self.page_size
+    }
+
+    pub(crate) const fn max_transfer_bytes(&self) -> Option<usize> {
+        self.max_transfer_bytes
     }
 
     pub fn io_queue_interrupts_enabled(&self) -> bool {
@@ -382,6 +389,14 @@ impl Nvme {
 
 unsafe impl Send for Nvme {}
 
+fn controller_max_transfer_bytes(page_size: usize, mdts: u8) -> Option<usize> {
+    if mdts == 0 {
+        None
+    } else {
+        Some(page_size.checked_shl(u32::from(mdts)).unwrap_or(usize::MAX))
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct Namespace {
     pub id: u32,
@@ -392,7 +407,7 @@ pub struct Namespace {
 
 #[cfg(test)]
 mod tests {
-    use super::Config;
+    use super::{Config, controller_max_transfer_bytes};
 
     #[test]
     fn config_defaults_to_polling_and_can_enable_intx() {
@@ -403,5 +418,15 @@ mod tests {
         let irq_config = config.with_intx_irq();
         assert!(irq_config.io_queue_interrupts);
         assert_eq!(irq_config.interrupt_vector, 0);
+    }
+
+    #[test]
+    fn controller_mdts_zero_means_unrestricted_transfer_size() {
+        assert_eq!(controller_max_transfer_bytes(4096, 0), None);
+    }
+
+    #[test]
+    fn controller_mdts_scales_with_controller_page_size() {
+        assert_eq!(controller_max_transfer_bytes(4096, 7), Some(512 * 1024));
     }
 }

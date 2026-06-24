@@ -4,6 +4,7 @@ use alloc::{
 };
 
 use ax_fs_ng::vfs::FS_CONTEXT;
+use ax_kernel_guard::NoPreemptIrqSave;
 use ax_runtime::hal::cpu::uspace::UserContext;
 use ax_sync::Mutex;
 use ax_task::{AxTaskExt, spawn_task};
@@ -12,7 +13,7 @@ use starry_process::{Pid, Process};
 use crate::{
     file::FD_TABLE,
     mm::{copy_from_kernel, load_user_app, new_user_aspace_empty},
-    pseudofs::{self, dev::tty::N_TTY},
+    pseudofs::{self, dev::tty},
     task::{ProcessData, ProcessImage, Thread, add_task_to_table, new_user_task, spawn_alarm_task},
     tracepoint::tracepoint_init,
 };
@@ -68,7 +69,9 @@ pub fn init(args: &[String], envs: &[String]) {
     let proc = Process::new_init(pid);
     proc.add_thread(pid);
 
-    N_TTY.bind_to(&proc).expect("Failed to bind ntty");
+    if let Err(err) = tty::bind_console_to(&proc) {
+        warn!("Failed to bind console tty: {err:?}");
+    }
 
     let proc = ProcessData::new(
         proc,
@@ -89,8 +92,13 @@ pub fn init(args: &[String], envs: &[String]) {
     let thr = Thread::new(pid, proc, None, starry_signal::SignalSet::default());
     *task.task_ext_mut() = Some(AxTaskExt::from_impl(thr));
 
-    let task = spawn_task(task);
-    add_task_to_table(&task);
+    let task = {
+        let _guard = NoPreemptIrqSave::new();
+        let task = spawn_task(task);
+        add_task_to_table(&task);
+        tty::arm_console_irq();
+        task
+    };
 
     // TODO: wait for all processes to finish
     let exit_code = task.join();

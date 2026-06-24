@@ -324,6 +324,23 @@ fn request_auto_enable_no_restores_line_but_keeps_action_disabled() {
 }
 
 #[test]
+fn irq_request_exposes_auto_enable_mode() {
+    let counter = AtomicUsize::new(0);
+    let data = NonNull::from(&counter).cast();
+
+    assert_eq!(
+        IrqRequest::new(count_handler, data).auto_enable_mode(),
+        AutoEnable::Yes
+    );
+    assert_eq!(
+        IrqRequest::new(count_handler, data)
+            .auto_enable(AutoEnable::No)
+            .auto_enable_mode(),
+        AutoEnable::No
+    );
+}
+
+#[test]
 fn shared_request_temporarily_disables_existing_line_and_restores_it() {
     let ops = MockOps::with_cpus(1);
     let registry = Registry::new(ops.clone());
