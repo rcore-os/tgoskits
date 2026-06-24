@@ -63,10 +63,14 @@ pub const FMT_RGB565: u32 = 0x4;
 pub const FMT_YCBCR_420_SP: u32 = 0xa; // NV12
 pub const FMT_YCRCB_420_SP: u32 = 0xe; // NV21
 pub const FMT_YCBCR_422_SP: u32 = 0x8; // NV16
+/// Packed YUV 4:2:2 — single plane, interleaved. Format code 0x7 per kernel
+/// rga2_reg_info.c:266-269. The byte-order variants (YUYV/UYVY/VYUY/YVYU) are
+/// distinguished by cbcr_swap / rb_swap flags in SRC_INFO, set in `hw_format`.
+pub const FMT_YUV422_PACKED: u32 = 0x7;
 // SRC_INFO modifier bits. CONFIRM ON BOARD.
 pub const INFO_RBSWAP: u32 = 1 << 4;
 pub const INFO_ALPHA_SWAP: u32 = 1 << 5;
-pub const INFO_UVSWAP: u32 = 1 << 6;
+pub const INFO_UVSWAP: u32 = 1 << 6; // aka cbcr_swp — swap Cb/Cr order
 // DST_INFO SRC1 (foreground constant / second-source) format field. A color FILL feeds fg_color
 // through the SRC1 path; the vendor sets its format/swap from `msg->src1.format` into DST_INFO, NOT
 // into SRC_INFO (rga2_reg_info.c RGA2_set_reg_dst_info, lines 446-448; color_fill dispatch at 1084

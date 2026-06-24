@@ -18,6 +18,11 @@ pub enum PixelFormat {
     Nv12,
     Nv21,
     Nv16,
+    /// Packed YUV 4:2:2, byte order Y0:Cb0:Y1:Cr0. Single-plane, interleaved.
+    /// RGA2 hw format 0x7, cbcr_swp=0, rb_swp=1 (kernel rga2_reg_info.c:268).
+    Yuyv422,
+    /// Packed YUV 4:2:2, byte order Cb0:Y0:Cr0:Y1.
+    Uyvy422,
 }
 
 impl PixelFormat {
@@ -27,18 +32,26 @@ impl PixelFormat {
         match self {
             Self::Rgba8888 | Self::Rgbx8888 | Self::Bgra8888 | Self::Abgr8888 => 4,
             Self::Rgb888 | Self::Bgr888 => 3,
-            Self::Rgb565 => 2,
+            Self::Rgb565 | Self::Yuyv422 | Self::Uyvy422 => 2,
             Self::Nv12 | Self::Nv21 | Self::Nv16 => 1,
         }
     }
 
     pub const fn is_yuv(self) -> bool {
-        matches!(self, Self::Nv12 | Self::Nv21 | Self::Nv16)
+        matches!(
+            self,
+            Self::Nv12 | Self::Nv21 | Self::Nv16 | Self::Yuyv422 | Self::Uyvy422
+        )
     }
 
     /// Semiplanar YUV (separate interleaved CbCr plane) — requires a UV plane base.
     pub const fn is_semiplanar(self) -> bool {
         matches!(self, Self::Nv12 | Self::Nv21 | Self::Nv16)
+    }
+
+    /// Packed YUV (single-plane, interleaved) — no separate UV plane.
+    pub const fn is_packed_yuv(self) -> bool {
+        matches!(self, Self::Yuyv422 | Self::Uyvy422)
     }
 }
 
@@ -127,6 +140,11 @@ impl ImageDesc {
             .ok_or(RgaError::Overflow)?;
         if end > u32::MAX as u64 {
             return Err(RgaError::Invalid);
+        }
+
+        // Packed YUV: single-plane, no UV base required.
+        if self.format.is_packed_yuv() && self.uv_phys_addr.is_some() {
+            return Err(RgaError::Invalid); // packed format must not carry a UV base
         }
 
         // Semiplanar YUV requires a chroma plane base; its extent must also fit 32-bit.
@@ -372,7 +390,12 @@ mod tests {
         assert_eq!(PixelFormat::Rgb888.bytes_per_pixel(), 3);
         assert_eq!(PixelFormat::Rgb565.bytes_per_pixel(), 2);
         assert_eq!(PixelFormat::Nv12.bytes_per_pixel(), 1);
+        assert_eq!(PixelFormat::Yuyv422.bytes_per_pixel(), 2);
+        assert_eq!(PixelFormat::Uyvy422.bytes_per_pixel(), 2);
         assert!(PixelFormat::Nv12.is_semiplanar() && PixelFormat::Nv12.is_yuv());
+        assert!(!PixelFormat::Nv12.is_packed_yuv());
+        assert!(PixelFormat::Yuyv422.is_packed_yuv() && PixelFormat::Yuyv422.is_yuv());
+        assert!(!PixelFormat::Yuyv422.is_semiplanar());
         assert!(!PixelFormat::Rgb888.is_yuv());
     }
 

@@ -557,6 +557,7 @@ pub fn rk_format_to_pixel(format_field: u32) -> Result<PixelFormat> {
         0x3 => Ok(PixelFormat::Bgra8888),
         0x4 => Ok(PixelFormat::Rgb565),
         0x7 => Ok(PixelFormat::Bgr888),
+        0x7 => Ok(PixelFormat::Yuyv422), // YUV422 packed; UYVY also 0x7 with swap
         0x8 => Ok(PixelFormat::Nv16),
         0xa => Ok(PixelFormat::Nv12),
         0xe => Ok(PixelFormat::Nv21),
