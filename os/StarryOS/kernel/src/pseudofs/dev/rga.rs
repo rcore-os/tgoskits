@@ -99,6 +99,26 @@ impl RgaDevice {
             .find(|c| c.config().version == RgaVersion::Rga2)
             .ok_or(VfsError::NoSuchDevice)?;
 
+        // DMA coherency: the dma-heap backing is CACHED (see DmaBufObject), so before the engine
+        // reads the source / writes the destination we must clean dirty CPU lines to DRAM
+        // (sync_for_device), and after the engine writes the destination we must invalidate so the
+        // CPU/NPU reads the engine's output rather than stale cache (sync_for_cpu). A fully
+        // Linux-faithful driver would leave this to userspace `DMA_BUF_IOCTL_SYNC`, but we do it
+        // defensively here: callers (e.g. librga) do not reliably bracket the op, and on a cached
+        // backing the engine's output is otherwise clobbered by the destination's dirty alloc-time
+        // lines — the exact failure the rga-selftest hit before this clean-before/invalidate-after
+        // discipline was added.
+        if let Some(o) = src_obj.as_ref() {
+            o.sync_for_device();
+        }
+        if let Some(o) = src_uv_obj.as_ref() {
+            o.sync_for_device();
+        }
+        dst_obj.sync_for_device();
+        if let Some(o) = dst_uv_obj.as_ref() {
+            o.sync_for_device();
+        }
+
         // Submit + busy-wait poll (no IRQ in PR-E1).
         core.start(&op).map_err(|_| VfsError::InvalidInput)?;
 
@@ -106,7 +126,12 @@ impl RgaDevice {
             match core.poll_status() {
                 RgaStatus::Done => {
                     core.finish();
-                    // dst_obj / dst_uv_obj kept alive above; hardware is done writing.
+                    // Hardware is done writing; invalidate the destination(s) so the CPU/NPU sees
+                    // the engine's writes (cached backing). src/dst objs kept alive across the op.
+                    dst_obj.sync_for_cpu();
+                    if let Some(o) = dst_uv_obj.as_ref() {
+                        o.sync_for_cpu();
+                    }
                     return Ok(0);
                 }
                 RgaStatus::Error => {
