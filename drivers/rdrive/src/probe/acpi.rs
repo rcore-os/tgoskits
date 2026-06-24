@@ -287,8 +287,8 @@ mod tests {
         AcpiGsiController, AcpiHandler, AcpiId, AcpiIoApic, AcpiIrqPolarity, AcpiIrqTrigger,
         AcpiIsaIrqOverride, AcpiPchPic, AcpiResourceRange, AcpiRoot, AcpiRouting, LinkIrqResource,
         LinkIrqResourceKind, PciLinkAllocator, System, irq_descriptor_gsi,
-        is_buffer_field_to_field_unit_store_gap, pci_link_irq_field_candidates,
-        route_with_irq_descriptor_flags, select_pci_link_irq,
+        is_buffer_field_to_field_unit_store_gap, pci_irq_descriptor_gsi,
+        pci_link_irq_field_candidates, route_with_irq_descriptor_flags, select_pci_link_irq,
     };
     use crate::register::{DriverRegister, ProbeKind, ProbeLevel, ProbePriority};
 
@@ -533,6 +533,26 @@ mod tests {
             .expect("IOAPIC routes the legacy GSI from the ACPI PCI link");
         assert_eq!(route.gsi, 10);
         assert_eq!(route.controller_input, 10);
+    }
+
+    #[test]
+    fn pci_link_descriptor_reports_selected_power_of_two_gsi_directly() {
+        let resource = LinkIrqResource {
+            kind: LinkIrqResourceKind::SmallIrq,
+            descriptor: IrqDescriptor {
+                is_consumer: false,
+                trigger: InterruptTrigger::Level,
+                polarity: InterruptPolarity::ActiveLow,
+                is_shared: true,
+                is_wake_capable: false,
+                irq: 1 << 4,
+            },
+            irqs: alloc::vec![4],
+        };
+
+        let descriptor = resource.descriptor_for_irq(4);
+        assert_eq!(descriptor.irq, 4);
+        assert_eq!(pci_irq_descriptor_gsi(&descriptor), Some(4));
     }
 
     #[test]
@@ -1115,7 +1135,7 @@ impl System {
         let Some(irq) = self.resolve_endpoint_gsi(info.address, intx_route)? else {
             return Ok(None);
         };
-        let Some(gsi) = irq_descriptor_gsi(&irq) else {
+        let Some(gsi) = pci_irq_descriptor_gsi(&irq) else {
             return Err(OnProbeError::other(format!(
                 "ACPI PCI endpoint {} pin {} returned an invalid IRQ descriptor: {:?}",
                 info.address, intx_route.root_pin, irq
@@ -2372,10 +2392,7 @@ fn build_link_srs_buffer(resource: &LinkIrqResource, irq: u32) -> Result<Vec<u8>
 impl LinkIrqResource {
     fn descriptor_for_irq(&self, irq: u32) -> IrqDescriptor {
         let mut descriptor = self.descriptor.clone();
-        descriptor.irq = match self.kind {
-            LinkIrqResourceKind::SmallIrq if irq < 16 => 1u32 << irq,
-            _ => irq,
-        };
+        descriptor.irq = irq;
         descriptor
     }
 }
@@ -2436,6 +2453,10 @@ fn irq_descriptor_gsi(descriptor: &IrqDescriptor) -> Option<u32> {
     } else {
         Some(irq)
     }
+}
+
+fn pci_irq_descriptor_gsi(descriptor: &IrqDescriptor) -> Option<u32> {
+    Some(descriptor.irq)
 }
 
 fn route_with_irq_descriptor_flags(

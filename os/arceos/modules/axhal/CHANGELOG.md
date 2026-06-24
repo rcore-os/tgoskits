@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.21](https://github.com/rcore-os/tgoskits/compare/ax-hal-v0.5.20...ax-hal-v0.5.21) - 2026-06-23
+
+### Added
+
+- *(starry)* support reboot syscall ([#1358](https://github.com/rcore-os/tgoskits/pull/1358))
+- *(starry)* add VisionFive2 board smoke ([#1348](https://github.com/rcore-os/tgoskits/pull/1348))
+
+### Fixed
+
+- *(platform)* support AArch64 HVF timer boot ([#1334](https://github.com/rcore-os/tgoskits/pull/1334))
+
+## [0.5.20](https://github.com/rcore-os/tgoskits/compare/ax-hal-v0.5.19...ax-hal-v0.5.20) - 2026-06-22
+
+### Other
+
+- *(ax-runtime)* adapt submit-poll fs block irq registration ([#1228](https://github.com/rcore-os/tgoskits/pull/1228))
+
 ## [0.5.19](https://github.com/rcore-os/tgoskits/compare/ax-hal-v0.5.18...ax-hal-v0.5.19) - 2026-06-12
 
 ### Fixed

@@ -48,6 +48,23 @@ fn write_board_to_build_config(build_config_path: &Path, board: &Board) -> anyho
             build_config_path.display()
         )
     })?;
+    copy_companion_its(&board.path, build_config_path)?;
+    Ok(())
+}
+
+fn copy_companion_its(src_config: &Path, dst_config: &Path) -> anyhow::Result<()> {
+    let src_its = src_config.with_extension("its");
+    if !src_its.exists() {
+        return Ok(());
+    }
+    let dst_its = dst_config.with_extension("its");
+    fs::copy(&src_its, &dst_its).map_err(|e| {
+        anyhow!(
+            "failed to copy Starry uImage ITS {} to {}: {e}",
+            src_its.display(),
+            dst_its.display()
+        )
+    })?;
     Ok(())
 }
 
@@ -230,6 +247,29 @@ plat_dyn = false
         assert!(err.contains("unknown Starry board `missing`"));
         assert!(err.contains(&board::board_dir(root.path()).unwrap().display().to_string()));
         assert!(err.contains("qemu-aarch64"));
+    }
+
+    #[test]
+    fn write_defconfig_copies_companion_its_with_matching_output_basename() {
+        let root = tempdir().unwrap();
+        write_workspace(root.path());
+        let source = write_board(
+            root.path(),
+            "licheerv-nano-sg2002",
+            r#"
+target = "riscv64gc-unknown-none-elf"
+features = ["sg2002"]
+log = "Info"
+"#,
+        );
+        fs::write(source.with_extension("its"), "ITS_TEMPLATE").unwrap();
+
+        let build_config_path = write_defconfig(root.path(), "licheerv-nano-sg2002").unwrap();
+
+        assert_eq!(
+            fs::read_to_string(build_config_path.with_extension("its")).unwrap(),
+            "ITS_TEMPLATE"
+        );
     }
 
     #[test]

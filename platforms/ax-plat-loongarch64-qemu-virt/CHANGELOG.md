@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.16](https://github.com/rcore-os/tgoskits/compare/ax-plat-loongarch64-qemu-virt-v0.5.15...ax-plat-loongarch64-qemu-virt-v0.5.16) - 2026-06-23
+
+### Added
+
+- *(starry)* support reboot syscall ([#1358](https://github.com/rcore-os/tgoskits/pull/1358))
+
+## [0.5.15](https://github.com/rcore-os/tgoskits/compare/ax-plat-loongarch64-qemu-virt-v0.5.14...ax-plat-loongarch64-qemu-virt-v0.5.15) - 2026-06-22
+
+### Added
+
+- *(starry)* add Wayland app case ([#1160](https://github.com/rcore-os/tgoskits/pull/1160))
+- *(ax-plat-loongarch64-qemu-virt)* detect RAM size from the FDT ([#1214](https://github.com/rcore-os/tgoskits/pull/1214))
+
 ## [0.5.14](https://github.com/rcore-os/tgoskits/compare/ax-plat-loongarch64-qemu-virt-v0.5.13...ax-plat-loongarch64-qemu-virt-v0.5.14) - 2026-06-12
 
 ### Fixed

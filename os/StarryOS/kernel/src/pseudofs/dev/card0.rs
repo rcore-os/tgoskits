@@ -36,6 +36,7 @@ use alloc::{
 };
 use core::{
     any::Any,
+    ptr::NonNull,
     sync::atomic::{AtomicU32, AtomicU64, Ordering},
     task::Context,
 };
@@ -70,10 +71,10 @@ use super::drm::{
     DRM_MODE_PROP_IMMUTABLE, DRM_MODE_PROP_OBJECT, DRM_MODE_PROP_RANGE, DRM_PLANE_TYPE_PRIMARY,
     DRM_PROP_NAME_LEN, DrmAuth, DrmEvent, DrmEventVblank, DrmGetCap, DrmModeAtomic, DrmModeCardRes,
     DrmModeCreateBlob, DrmModeCreateDumb, DrmModeCrtc, DrmModeCrtcPageFlip, DrmModeDestroyBlob,
-    DrmModeDestroyDumb, DrmModeFbCmd2, DrmModeGetBlob, DrmModeGetConnector, DrmModeGetEncoder,
-    DrmModeGetPlane, DrmModeGetPlaneRes, DrmModeGetProperty, DrmModeMapDumb, DrmModeModeInfo,
-    DrmModeObjGetProperties, DrmModePropertyEnum, DrmPrimeHandle, DrmSetClientCap, DrmSetVersion,
-    DrmUnique, DrmVersion, DrmWaitVblank,
+    DrmModeDestroyDumb, DrmModeDirtyFB, DrmModeFbCmd2, DrmModeGetBlob, DrmModeGetConnector,
+    DrmModeGetEncoder, DrmModeGetPlane, DrmModeGetPlaneRes, DrmModeGetProperty, DrmModeMapDumb,
+    DrmModeModeInfo, DrmModeObjGetProperties, DrmModePropertyEnum, DrmPrimeHandle, DrmSetClientCap,
+    DrmSetVersion, DrmUnique, DrmVersion, DrmWaitVblank,
 };
 use crate::pseudofs::{DeviceMmap, DeviceOps};
 
@@ -290,11 +291,13 @@ pub struct Card0 {
     /// Serializes the lazy initialization of `in_formats_blob` so
     /// only one allocation lands in `system_blobs`.
     system_blobs_init: Mutex<()>,
+    /// Registered virtio-gpu IRQ action, when the display backend advertises one.
+    irq_handle: spin::Once<ax_runtime::hal::irq::IrqHandle>,
 }
 
 impl Card0 {
     pub fn new() -> Arc<Self> {
-        Arc::new(Self {
+        let card = Arc::new(Self {
             events: Mutex::new(VecDeque::with_capacity(MAX_EVENTS)),
             poll_rx: PollSet::new(),
             sequence: AtomicU32::new(0),
@@ -314,7 +317,40 @@ impl Card0 {
             system_blobs: Mutex::new(BTreeMap::new()),
             in_formats_blob: AtomicU32::new(0),
             system_blobs_init: Mutex::new(()),
-        })
+            irq_handle: spin::Once::new(),
+        });
+        card.register_irq();
+        card
+    }
+
+    fn register_irq(self: &Arc<Self>) {
+        if !ax_display::has_display() {
+            return;
+        }
+        let Some(irq) = ax_display::framebuffer_irq_num() else {
+            return;
+        };
+
+        let data = NonNull::from(self.as_ref()).cast();
+        let request = ax_runtime::hal::irq::IrqRequest::new(card0_irq_handler, data)
+            .share_mode(ax_runtime::hal::irq::ShareMode::Shared)
+            .auto_enable(ax_runtime::hal::irq::AutoEnable::No);
+        match ax_runtime::hal::irq::request_irq(irq, request) {
+            Ok(handle) => {
+                self.irq_handle.call_once(|| handle);
+                ax_display::framebuffer_enable_irq();
+                if let Some(handle) = self.irq_handle.get().copied()
+                    && let Err(err) = ax_runtime::hal::irq::enable_irq(handle)
+                {
+                    warn!("failed to enable display irq handler for irq {irq}: {err:?}");
+                    ax_display::framebuffer_disable_irq();
+                }
+            }
+            Err(err) => {
+                warn!("failed to register display irq handler for irq {irq}: {err:?}");
+                ax_display::framebuffer_disable_irq();
+            }
+        }
     }
 
     /// Lazily construct the `IN_FORMATS` blob the first time a caller
@@ -490,7 +526,7 @@ impl DeviceOps for Card0 {
 
             DRM_IOCTL_GET_MAGIC => handle_get_magic(arg),
             DRM_IOCTL_AUTH_MAGIC => handle_auth_magic(arg),
-            DRM_IOCTL_MODE_DIRTYFB => handle_dirty_fb(arg),
+            DRM_IOCTL_MODE_DIRTYFB => self.handle_dirty_fb(arg),
             DRM_IOCTL_PRIME_HANDLE_TO_FD => handle_prime_handle_to_fd(arg),
             DRM_IOCTL_PRIME_FD_TO_HANDLE => handle_prime_fd_to_handle(arg),
 
@@ -527,6 +563,17 @@ impl DeviceOps for Card0 {
 
     fn flags(&self) -> NodeFlags {
         NodeFlags::NON_CACHEABLE | NodeFlags::STREAM
+    }
+}
+
+unsafe fn card0_irq_handler(
+    _ctx: ax_runtime::hal::irq::IrqContext,
+    _data: NonNull<()>,
+) -> ax_runtime::hal::irq::IrqReturn {
+    if ax_display::framebuffer_handle_irq() {
+        ax_runtime::hal::irq::IrqReturn::Handled
+    } else {
+        ax_runtime::hal::irq::IrqReturn::Unhandled
     }
 }
 
@@ -736,10 +783,6 @@ fn handle_get_magic(arg: usize) -> VfsResult<usize> {
 }
 
 fn handle_auth_magic(_arg: usize) -> VfsResult<usize> {
-    Ok(0)
-}
-
-fn handle_dirty_fb(_arg: usize) -> VfsResult<usize> {
     Ok(0)
 }
 
@@ -1221,6 +1264,16 @@ fn range_u32(name: &'static str, atomic: u32) -> PropMeta {
 }
 
 impl Card0 {
+    fn handle_dirty_fb(&self, arg: usize) -> VfsResult<usize> {
+        let ptr = arg as *const DrmModeDirtyFB;
+        let dirty: DrmModeDirtyFB = ptr.vm_read().map_err(|_| VfsError::BadAddress)?;
+        if !self.fbs.lock().contains_key(&dirty.fb_id) {
+            return Err(VfsError::InvalidInput);
+        }
+        self.present_fb(dirty.fb_id);
+        Ok(0)
+    }
+
     fn handle_page_flip(&self, arg: usize) -> VfsResult<usize> {
         let ptr = arg as *const DrmModeCrtcPageFlip;
         let f: DrmModeCrtcPageFlip = ptr.vm_read().map_err(|_| VfsError::BadAddress)?;

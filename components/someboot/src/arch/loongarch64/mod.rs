@@ -154,6 +154,16 @@ impl ArchTrait for Arch {
         }
     }
 
+    fn reset() -> ! {
+        if efi_stub::is_uefi_available() {
+            efi_stub::reset(efi_stub::ResetType::COLD, efi_stub::Status::SUCCESS, None);
+        }
+
+        loop {
+            spin_loop();
+        }
+    }
+
     fn secondary_entry_fn_address() -> *const () {
         _secondary_entry as *const ()
     }

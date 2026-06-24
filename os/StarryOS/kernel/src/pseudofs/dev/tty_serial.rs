@@ -9,10 +9,7 @@ use ax_errno::{AxError, LinuxError};
 use ax_kspin::SpinNoIrq;
 use ax_memory_addr::{PhysAddr, pa};
 use ax_sync::Mutex;
-use ax_task::{
-    IrqNotify,
-    future::{block_on, poll_io},
-};
+use ax_task::IrqNotify;
 use axfs_ng_vfs::{NodeFlags, VfsResult};
 use axpoll::{IoEvents, PollSet, Pollable};
 use bytemuck::AnyBitPattern;
@@ -254,15 +251,18 @@ impl DeviceOps for TtySerial {
         if buf.is_empty() {
             return Ok(0);
         }
-        block_on(poll_io(self, IoEvents::IN, false, || {
-            let mut rx = self.rx_buf.lock();
-            if rx.is_empty() {
-                return Err(AxError::WouldBlock);
-            }
-            let n = buf.len().min(rx.len());
-            rx.drain_into(&mut buf[..n]);
-            Ok(n)
-        }))
+        // Non-blocking drain only. The blocking/`O_NONBLOCK` semantics are
+        // handled one layer up in `File::read`, which wraps this in
+        // `poll_io(.., self.nonblocking(), ..)`. Blocking here too (the old
+        // `block_on(poll_io(.., false, ..))`) ignored the fd's `O_NONBLOCK`
+        // and made non-blocking reads of an idle UART hang forever.
+        let mut rx = self.rx_buf.lock();
+        if rx.is_empty() {
+            return Err(AxError::WouldBlock);
+        }
+        let n = buf.len().min(rx.len());
+        rx.drain_into(&mut buf[..n]);
+        Ok(n)
     }
 
     fn write_at(&self, buf: &[u8], _offset: u64) -> VfsResult<usize> {

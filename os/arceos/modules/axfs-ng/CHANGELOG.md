@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.21](https://github.com/rcore-os/tgoskits/compare/ax-fs-ng-v0.5.20...ax-fs-ng-v0.5.21) - 2026-06-23
+
+### Other
+
+- updated the following local packages: ax-kspin, dma-api, rsext4, rdif-block, ax-sync
+
+## [0.5.20](https://github.com/rcore-os/tgoskits/compare/ax-fs-ng-v0.5.19...ax-fs-ng-v0.5.20) - 2026-06-22
+
+### Other
+
+- *(ax-runtime)* adapt submit-poll fs block irq registration ([#1228](https://github.com/rcore-os/tgoskits/pull/1228))
+
 ## [0.5.19](https://github.com/rcore-os/tgoskits/compare/ax-fs-ng-v0.5.18...ax-fs-ng-v0.5.19) - 2026-06-12
 
 ### Other

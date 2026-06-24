@@ -1,6 +1,6 @@
 [package]
 name = "ax-ipi"
-version = "0.5.18"
+version = "0.5.20"
 repository = "https://github.com/rcore-os/tgoskits"
 edition.workspace = true
 authors = ["Keyang Hu <keyang.hu@qq.com>"]

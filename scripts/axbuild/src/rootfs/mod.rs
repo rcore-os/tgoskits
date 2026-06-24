@@ -11,5 +11,7 @@
 pub(crate) mod inject;
 /// QEMU argument patch helpers for wiring a rootfs image into runner configs.
 pub(crate) mod qemu;
+/// Ext rootfs image resize helpers.
+pub(crate) mod resize;
 /// Runtime dependency synchronization helpers for rootfs overlay trees.
 pub(crate) mod runtime;

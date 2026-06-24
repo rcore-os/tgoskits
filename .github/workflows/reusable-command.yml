@@ -52,6 +52,11 @@ on:
         required: false
         type: number
         default: 360
+      require_kvm:
+        description: Require readable and writable /dev/kvm on self-hosted host jobs.
+        required: false
+        type: boolean
+        default: false
       upload_xtask_bin_artifact:
         description: Upload the tg-xtask binary as a workflow artifact after the command succeeds.
         required: false
@@ -85,6 +90,88 @@ jobs:
         uses: actions/checkout@v6
         with:
           fetch-depth: ${{ inputs.fetch_depth }}
+
+      - name: Preflight self-hosted host runner
+        if: contains(inputs.runs_on, 'self-hosted')
+        shell: bash
+        env:
+          REQUIRED_RUNNER_LABELS: ${{ inputs.runs_on }}
+          REQUIRE_KVM: ${{ inputs.require_kvm }}
+        run: |
+          set -euo pipefail
+
+          failures=0
+
+          record_error() {
+            echo "::error::$1"
+            failures=1
+          }
+
+          require_command() {
+            local name="$1"
+            if command -v "${name}" >/dev/null 2>&1; then
+              echo "${name}: $(command -v "${name}")"
+            else
+              record_error "required command '${name}' was not found in PATH"
+            fi
+          }
+
+          {
+            echo "## Self-hosted runner preflight"
+            echo ""
+            echo "- Runner: \`${RUNNER_NAME:-unknown}\`"
+            echo "- OS/arch: \`${RUNNER_OS:-unknown}/${RUNNER_ARCH:-unknown}\`"
+            echo "- Required labels: \`${REQUIRED_RUNNER_LABELS}\`"
+            echo "- KVM required: \`${REQUIRE_KVM}\`"
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+          echo "Runner name: ${RUNNER_NAME:-unknown}"
+          echo "Runner OS/arch: ${RUNNER_OS:-unknown}/${RUNNER_ARCH:-unknown}"
+          echo "Required labels: ${REQUIRED_RUNNER_LABELS}"
+          echo "PATH=${PATH}"
+          echo "User: $(id -un 2>/dev/null || whoami 2>/dev/null || echo unknown)"
+          echo "Groups: $(id -nG 2>/dev/null || groups 2>/dev/null || echo unknown)"
+
+          require_command rustc
+          require_command cargo
+
+          if command -v rustc >/dev/null 2>&1; then
+            rustc -vV
+          fi
+          if command -v cargo >/dev/null 2>&1; then
+            cargo -V
+          fi
+
+          if [ "${REQUIRE_KVM}" = "true" ]; then
+            if [ -e /dev/kvm ]; then
+              ls -l /dev/kvm || true
+              if [ ! -r /dev/kvm ] || [ ! -w /dev/kvm ]; then
+                record_error "/dev/kvm exists but is not readable and writable by the runner user"
+              fi
+            else
+              record_error "/dev/kvm does not exist on this runner"
+            fi
+
+            if command -v lsmod >/dev/null 2>&1; then
+              lsmod | grep -E '^kvm' || echo "::warning::lsmod did not report loaded kvm modules"
+            elif [ -r /proc/modules ]; then
+              grep -E '^kvm' /proc/modules || echo "::warning::/proc/modules did not report loaded kvm modules"
+            else
+              echo "::warning::unable to inspect loaded kvm modules"
+            fi
+
+            if [ -r /proc/cpuinfo ]; then
+              awk -F ': *' '/^(vendor_id|CPU implementer)/ { print "CPU vendor/implementer: " $2; exit }' /proc/cpuinfo || true
+            fi
+          fi
+
+          if [ "${failures}" -ne 0 ]; then
+            {
+              echo ""
+              echo "Preflight failed before the test command ran. Check the runner label assignment, PATH, Rust toolchain installation, and KVM device permissions."
+            } >> "${GITHUB_STEP_SUMMARY}"
+            exit 1
+          fi
 
       - name: Restore Rust cache
         if: inputs.cache_key != ''

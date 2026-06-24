@@ -281,6 +281,15 @@ impl ArchTrait for Arch {
         }
     }
 
+    fn reset() -> ! {
+        let _ = sbi::system_reset_reboot();
+        loop {
+            unsafe {
+                core::arch::asm!("wfi", options(nomem, nostack, preserves_flags));
+            }
+        }
+    }
+
     fn secondary_entry_fn_address() -> *const () {
         _secondary_entry as *const ()
     }

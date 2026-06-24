@@ -1,0 +1,27 @@
+args = [
+    "-nographic",
+    "-m",
+    "1G",
+    "-cpu",
+    "rv64",
+    "-device",
+    "virtio-gpu-pci",
+    "-device",
+    "virtio-keyboard-pci",
+    "-device",
+    "virtio-mouse-pci",
+    "-device",
+    "virtio-blk-pci,drive=disk0",
+    "-drive",
+    "id=disk0,if=none,format=raw,file=${workspace}/tmp/axbuild/rootfs/rootfs-riscv64-alpine.img",
+]
+uefi = false
+to_bin = true
+shell_prefix = "root@starry:"
+shell_init_cmd = "/usr/bin/wayland-test.sh"
+success_regex = ["(?m)^WAYLAND_TEST_PASSED\\s*$"]
+fail_regex = [
+    '(?i)\bpanic(?:ked)?\b',
+    "(?m)^WAYLAND_TEST_FAILED(?:[: ].*)?$",
+]
+timeout = 600

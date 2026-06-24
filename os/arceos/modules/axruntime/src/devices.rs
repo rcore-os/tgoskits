@@ -128,7 +128,7 @@ fn adapt_net_device(
     let policy = if let Some(ctrl) = net.wifi_control() {
         // SDIO Wi-Fi RX is out-of-band (not the ethernet IRQ framework); the
         // chip's RX-data callback wakes the stack's dedicated poll task.
-        ctrl.set_rx_wake(ax_net::notify_oob_rx);
+        ctrl.set_rx_wake(ax_net::wake_net_task_irq);
         ctrl.link_policy()
     } else {
         None

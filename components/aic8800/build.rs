@@ -60,6 +60,34 @@ const FIRMWARE_FILES: &[FirmwareFile] = &[
         sha256: "e7eea12cc85fca5d8667182b4520b6a0929044c70c6d9e9a3d7ece8b16169688",
     },
     FirmwareFile {
+        name: "fmacfw_patch_tbl_8800dc_u02.bin",
+        remote_path: "aic8800DC/fmacfw_patch_tbl_8800dc_u02.bin",
+        sha256: "62d53a223eda1ea064ba82a6fe67829d0720e9f4e87d26763fd13316ccd2a90b",
+    },
+    // AIC8800DC-H (sub_id==2, chip_id_h) WiFi-only patch + patch table.
+    // Fetched from the pinned upstream mirror (same repo/commit as the other blobs).
+    FirmwareFile {
+        name: "fmacfw_patch_8800dc_h_u02.bin",
+        remote_path: "aic8800DC/fmacfw_patch_8800dc_h_u02.bin",
+        sha256: "f388dcb419a0f677c777a1eaad798156eabdfbb72c512a4d993df0dbc4f351d1",
+    },
+    FirmwareFile {
+        name: "fmacfw_patch_tbl_8800dc_h_u02.bin",
+        remote_path: "aic8800DC/fmacfw_patch_tbl_8800dc_h_u02.bin",
+        sha256: "0469686691b72fa8296ff7abd1669ba978bdc0f115137fd392aa00a2717ff887",
+    },
+    // AIC8800DC-H DPD calibration firmware: uploaded to 0x130000 and run via
+    // start_app(0x130009, FNCALL) to power on the RF/misc-RAM (0x110000) region
+    // before patch_config. Fetched from the pinned upstream mirror.
+    FirmwareFile {
+        name: "fmacfw_calib_8800dc_h_u02.bin",
+        remote_path: "aic8800DC/fmacfw_calib_8800dc_h_u02.bin",
+        sha256: "12bdcdd48e41b33bfd74834bffa326b4469bea82e7134de079392fbc2508acc7",
+    },
+    // NB: the AIC8800DC RF config tables (ldpc/agc/txgain) are NOT firmware
+    // images and have no upstream mirror — they are vendor BSP source arrays,
+    // inlined as Rust byte arrays in `src/fw/firmware/dc_rf_cfg.rs` (no blob).
+    FirmwareFile {
         name: "fmacfw_8800d80_u02.bin",
         remote_path: "aic8800_and_aic8800D80/fmacfw_8800d80_u02.bin",
         sha256: "ffb49ede6004e58453f01489edf28b888b509529c3173554c98aa94fbb33507d",
@@ -95,6 +123,14 @@ fn read_if_matches(path: &Path, expected_sha256: &str) -> Option<Vec<u8>> {
 
 /// Download a blob from the pinned upstream commit and verify its digest.
 fn download(file: &FirmwareFile) -> Vec<u8> {
+    assert!(
+        !file.remote_path.is_empty(),
+        "firmware {} has no upstream mirror (remote_path is empty) and was not found in the \
+         in-tree firmware dir or $AIC8800_FIRMWARE_DIR. This blob is vendored in \
+         components/aic8800/firmware/ — ensure it is checked out (it is allow-listed in that \
+         dir's .gitignore).",
+        file.name
+    );
     let url = format!(
         "https://raw.githubusercontent.com/{}/{}/{}",
         FIRMWARE_REPO, FIRMWARE_COMMIT, file.remote_path

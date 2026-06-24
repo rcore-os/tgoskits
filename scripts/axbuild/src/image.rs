@@ -2,7 +2,11 @@ use std::path::{Path, PathBuf};
 
 use clap::{Args as ClapArgs, Subcommand};
 
-use crate::{context::AppContext, support::download::file_sha256};
+use crate::{
+    context::AppContext,
+    rootfs::resize::{ResizeOptions, resize_ext_rootfs_image},
+    support::download::file_sha256,
+};
 
 pub mod config;
 pub mod registry;
@@ -60,6 +64,8 @@ pub enum Command {
     Ls(ArgsLs),
     /// Pull an image and verify its sha256 checksum.
     Pull(ArgsPull),
+    /// Resize an ext rootfs image, optionally copying it first.
+    Resize(ArgsResize),
     /// Print and optionally verify the sha256 of a local image.
     Check(ArgsCheck),
 }
@@ -100,6 +106,20 @@ pub struct ArgsCheck {
     pub sha256: Option<String>,
 }
 
+#[derive(ClapArgs)]
+pub struct ArgsResize {
+    /// Rootfs image to resize.
+    pub image: PathBuf,
+
+    /// Output image path. When omitted, resize IMAGE in place.
+    #[arg(short, long)]
+    pub output: Option<PathBuf>,
+
+    /// Final image size in MiB. Shrinking is rejected.
+    #[arg(long = "size-mib", value_name = "MIB")]
+    pub size_mib: u64,
+}
+
 pub(crate) async fn run(args: ImageArgs) -> anyhow::Result<()> {
     execute(args).await
 }
@@ -109,6 +129,7 @@ async fn execute(args: ImageArgs) -> anyhow::Result<()> {
     match args.command {
         Command::Ls(ls) => list_images(app.workspace_root(), &args.overrides, ls).await,
         Command::Pull(pull) => pull_image(app.workspace_root(), &args.overrides, pull).await,
+        Command::Resize(resize) => resize_image(resize),
         Command::Check(check) => {
             let path = to_absolute_path(&check.image)?;
             let ok = check_image(&path, check.sha256.as_deref())?;
@@ -220,6 +241,19 @@ async fn pull_image(
     Ok(())
 }
 
+fn resize_image(args: ArgsResize) -> anyhow::Result<()> {
+    let input = to_absolute_path(&args.image)?;
+    let output = args.output.as_deref().map(to_absolute_path).transpose()?;
+    let image = resize_ext_rootfs_image(ResizeOptions {
+        input,
+        output,
+        size_mib: args.size_mib,
+    })?;
+
+    println!("rootfs image resized at {}", image.display());
+    Ok(())
+}
+
 fn to_absolute_path(path: &Path) -> anyhow::Result<PathBuf> {
     Ok(if path.is_absolute() {
         path.to_path_buf()
@@ -312,6 +346,29 @@ mod tests {
                 assert_eq!(args.sha256.as_deref(), Some("abc"));
             }
             _ => panic!("expected check command"),
+        }
+    }
+
+    #[test]
+    fn parses_resize_with_output() {
+        let cli = Cli::try_parse_from([
+            "image",
+            "resize",
+            "rootfs.img",
+            "--size-mib",
+            "16384",
+            "--output",
+            "selfbuild.img",
+        ])
+        .unwrap();
+
+        match cli.command {
+            Command::Resize(args) => {
+                assert_eq!(args.image, PathBuf::from("rootfs.img"));
+                assert_eq!(args.output, Some(PathBuf::from("selfbuild.img")));
+                assert_eq!(args.size_mib, 16384);
+            }
+            _ => panic!("expected resize command"),
         }
     }
 }

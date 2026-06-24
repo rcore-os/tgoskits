@@ -31,6 +31,15 @@ impl PowerIf for PowerImpl {
         }
     }
 
+    fn system_reset() -> ! {
+        info!("Resetting...");
+        sbi_rt::system_reset(sbi_rt::ColdReboot, sbi_rt::NoReason);
+        warn!("It should reset!");
+        loop {
+            ax_cpu::asm::halt();
+        }
+    }
+
     fn cpu_num() -> usize {
         crate::config::plat::MAX_CPU_NUM
     }

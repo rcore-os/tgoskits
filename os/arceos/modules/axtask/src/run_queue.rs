@@ -189,12 +189,131 @@ fn get_run_queue(index: usize) -> &'static mut AxRunQueue {
 }
 
 #[cfg(all(feature = "smp", feature = "ipi"))]
+#[cfg_attr(all(test, feature = "host-test"), allow(dead_code))]
+fn request_current_reschedule() {
+    #[cfg(feature = "preempt")]
+    if let Some(curr) = crate::current_may_uninit() {
+        curr.set_force_resched_pending(true);
+        return;
+    }
+    clear_remote_reschedule_pending_for_current_cpu();
+}
+
+#[cfg(all(test, feature = "smp", feature = "ipi", feature = "host-test"))]
+static REMOTE_RESCHEDULE_REQUESTS: core::sync::atomic::AtomicUsize =
+    core::sync::atomic::AtomicUsize::new(0);
+
+#[cfg(all(
+    feature = "smp",
+    feature = "ipi",
+    not(all(test, feature = "host-test"))
+))]
+static REMOTE_RESCHEDULE_PENDING: [AtomicBool; ax_config::plat::MAX_CPU_NUM] =
+    [const { AtomicBool::new(false) }; ax_config::plat::MAX_CPU_NUM];
+
+#[cfg(all(test, feature = "smp", feature = "ipi", feature = "host-test"))]
+static REMOTE_RESCHEDULE_PENDING: AtomicBool = AtomicBool::new(false);
+
+#[cfg(all(feature = "smp", feature = "ipi"))]
+pub(crate) fn clear_remote_reschedule_pending_for_current_cpu() {
+    #[cfg(not(all(test, feature = "host-test")))]
+    REMOTE_RESCHEDULE_PENDING[this_cpu_id()].store(false, Ordering::Release);
+    #[cfg(all(test, feature = "host-test"))]
+    REMOTE_RESCHEDULE_PENDING.store(false, Ordering::Release);
+}
+
+#[cfg(all(
+    feature = "smp",
+    feature = "ipi",
+    not(all(test, feature = "host-test"))
+))]
+fn request_remote_reschedule(cpu_id: usize) {
+    if !REMOTE_RESCHEDULE_PENDING[cpu_id].swap(true, Ordering::AcqRel) {
+        ax_ipi::run_on_cpu(cpu_id, request_current_reschedule);
+    }
+}
+
+#[cfg(all(test, feature = "smp", feature = "ipi", feature = "host-test"))]
+fn request_remote_reschedule(cpu_id: usize) {
+    let _ = cpu_id;
+    // Host tests run with one dummy CPU and a no-op send_ipi(), so record the
+    // scheduler-visible request that a real ax-ipi callback would carry.
+    if !REMOTE_RESCHEDULE_PENDING.swap(true, Ordering::AcqRel) {
+        REMOTE_RESCHEDULE_REQUESTS.fetch_add(1, Ordering::Release);
+    }
+}
+
+#[cfg(all(feature = "smp", feature = "ipi"))]
 fn kick_remote_cpu(cpu_id: usize) {
     if cpu_id != this_cpu_id() {
-        ax_hal::irq::send_ipi(
-            ax_hal::irq::IPI_IRQ,
-            ax_hal::irq::IpiTarget::Other { cpu_id },
+        // axruntime's IPI handler only drains ax-ipi callbacks. A bare hardware
+        // IPI can wake an idle CPU, but it does not ask a running remote CPU to
+        // reschedule after a task is queued there.
+        request_remote_reschedule(cpu_id);
+    }
+}
+
+#[cfg(all(test, feature = "smp", feature = "ipi", feature = "host-test"))]
+mod tests {
+    use core::sync::atomic::Ordering;
+
+    // Host-test mode collapses per-CPU state into process-global statics, so
+    // keep the shared pending/count assertions in one test.
+    #[test]
+    fn remote_reschedule_request_is_coalesced_and_forced() {
+        const REMOTE_CPU: usize = 1;
+
+        super::REMOTE_RESCHEDULE_REQUESTS.store(0, Ordering::Release);
+        super::REMOTE_RESCHEDULE_PENDING.store(false, Ordering::Release);
+
+        super::kick_remote_cpu(REMOTE_CPU);
+
+        assert_eq!(
+            super::REMOTE_RESCHEDULE_REQUESTS.load(Ordering::Acquire),
+            1,
+            "remote CPU kicks must enqueue a scheduler-visible reschedule request",
         );
+        super::kick_remote_cpu(REMOTE_CPU);
+
+        assert_eq!(
+            super::REMOTE_RESCHEDULE_REQUESTS.load(Ordering::Acquire),
+            1,
+            "remote CPU kicks should coalesce identical pending reschedule requests",
+        );
+
+        super::clear_remote_reschedule_pending_for_current_cpu();
+        super::kick_remote_cpu(REMOTE_CPU);
+
+        assert_eq!(
+            super::REMOTE_RESCHEDULE_REQUESTS.load(Ordering::Acquire),
+            2,
+            "remote CPU kicks must be accepted again after the pending bit is cleared",
+        );
+
+        #[cfg(feature = "preempt")]
+        crate::tests::run_in_test_scheduler(|| {
+            let curr = crate::current();
+
+            curr.set_preempt_pending(false);
+            curr.set_force_resched_pending(false);
+
+            super::request_current_reschedule();
+
+            assert!(
+                curr.force_resched_pending_for_test(),
+                "remote IPI reschedule must request forced rotation",
+            );
+            assert!(
+                !curr.preempt_pending_for_test(),
+                "remote IPI reschedule must not rely on ordinary RR preemption",
+            );
+
+            curr.set_force_resched_pending(false);
+            curr.set_preempt_pending(false);
+        });
+
+        super::REMOTE_RESCHEDULE_PENDING.store(false, Ordering::Release);
+        super::REMOTE_RESCHEDULE_REQUESTS.store(0, Ordering::Release);
     }
 }
 
@@ -499,6 +618,32 @@ impl<G: BaseGuard> CurrentRunQueueRef<'_, G> {
             self.inner.resched();
         } else {
             curr.set_preempt_pending(true);
+        }
+    }
+
+    #[cfg(feature = "preempt")]
+    pub fn force_resched(&mut self) {
+        let curr = &self.current_task;
+        assert!(curr.is_running());
+
+        let can_preempt = curr.can_preempt(1);
+        trace!(
+            "current task is forced to reschedule: {}, allow={}",
+            curr.id_name(),
+            can_preempt
+        );
+        if can_preempt {
+            #[cfg(feature = "smp")]
+            if !curr.cpumask().get(self.inner.cpu_id) {
+                self.migrate_current_to_affinity();
+                return;
+            }
+
+            self.inner
+                .put_task_with_state(curr.clone(), TaskState::Running, false);
+            self.inner.resched();
+        } else {
+            curr.set_force_resched_pending(true);
         }
     }
 

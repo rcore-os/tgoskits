@@ -119,6 +119,17 @@ impl ArchTrait for Arch {
         }
     }
 
+    fn reset() -> ! {
+        unsafe {
+            x86::irq::disable();
+            x86::io::outb(0x64, 0xfe);
+        }
+
+        loop {
+            unsafe { x86::halt() };
+        }
+    }
+
     fn secondary_entry_fn_address() -> *const () {
         _secondary_entry as *const ()
     }

@@ -8,6 +8,10 @@ pub fn shutdown() -> ! {
     crate::arch::Arch::shutdown()
 }
 
+pub fn reset() -> ! {
+    crate::arch::Arch::reset()
+}
+
 pub fn cpu_on(cpu_idx: usize) -> Result<(), CpuOnError> {
     let entry = secondary_entry_addr();
     debug!("Secondary entry address: {entry:#x}");

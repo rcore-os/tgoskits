@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.14](https://github.com/rcore-os/tgoskits/compare/axdevice-v0.4.13...axdevice-v0.4.14) - 2026-06-23
+
+### Other
+
+- updated the following local packages: ax-kspin, arm_vgic, riscv_vplic, x86_vlapic
+
+## [0.4.13](https://github.com/rcore-os/tgoskits/compare/axdevice-v0.4.12...axdevice-v0.4.13) - 2026-06-22
+
+### Other
+
+- Issue 595 device foundation ([#1258](https://github.com/rcore-os/tgoskits/pull/1258))
+
 ## [0.4.12](https://github.com/rcore-os/tgoskits/compare/axdevice-v0.4.11...axdevice-v0.4.12) - 2026-06-09
 
 ### Fixed

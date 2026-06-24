@@ -119,6 +119,10 @@ impl PowerIf for DummyPower {
         unimplemented!()
     }
 
+    fn system_reset() -> ! {
+        unimplemented!()
+    }
+
     fn cpu_num() -> usize {
         1
     }

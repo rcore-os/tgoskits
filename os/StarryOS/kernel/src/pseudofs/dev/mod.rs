@@ -24,8 +24,6 @@ pub use r#loop::LoopDevice;
 pub mod ion;
 #[cfg(feature = "memtrack")]
 mod memtrack;
-#[cfg(feature = "rknpu")]
-mod rknpu_drm;
 mod rtc;
 #[cfg(feature = "sg2002")]
 pub mod tpu;
@@ -33,7 +31,7 @@ pub mod tty;
 
 #[cfg(all(feature = "sg2002", not(feature = "plat-dyn")))]
 mod cvi_camera;
-#[cfg(all(feature = "sg2002", not(feature = "plat-dyn")))]
+#[cfg(feature = "sg2002")]
 mod cvi_usb_camera;
 #[cfg(all(feature = "sg2002", not(feature = "plat-dyn")))]
 mod pinmux;
@@ -499,6 +497,15 @@ fn builder(fs: Arc<SimpleFs>) -> DirMaker {
                 Arc::new(tty_serial::new_tty_s2(115200)),
             ),
         );
+        root.add(
+            "cvi-usb-camera0",
+            Device::new(
+                fs.clone(),
+                NodeType::CharacterDevice,
+                DeviceId::new(10, 202),
+                Arc::new(cvi_usb_camera::CviCamera::new()),
+            ),
+        );
     }
     #[cfg(all(feature = "sg2002", not(feature = "plat-dyn")))]
     {
@@ -509,15 +516,6 @@ fn builder(fs: Arc<SimpleFs>) -> DirMaker {
                 NodeType::CharacterDevice,
                 DeviceId::new(10, 201),
                 Arc::new(cvi_camera::CviCamera::new()),
-            ),
-        );
-        root.add(
-            "cvi-usb-camera0",
-            Device::new(
-                fs.clone(),
-                NodeType::CharacterDevice,
-                DeviceId::new(10, 202),
-                Arc::new(cvi_usb_camera::CviCamera::new()),
             ),
         );
         root.add(

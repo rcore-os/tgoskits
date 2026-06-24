@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.0](https://github.com/rcore-os/tgoskits/compare/ax-net-v0.8.0...ax-net-v0.9.0) - 2026-06-23
+
+### Other
+
+- *(ax-net)* add locking and concurrency documentation and remove deprecated interfaces ([#1340](https://github.com/rcore-os/tgoskits/pull/1340))
+
+## [0.8.0](https://github.com/rcore-os/tgoskits/compare/ax-net-v0.7.3...ax-net-v0.8.0) - 2026-06-22
+
+### Added
+
+- *(poll)* add irq-safe deferred notifications ([#1278](https://github.com/rcore-os/tgoskits/pull/1278))
+- *(ax-net)* add multi-interface support with per-interface routing, DNS, and SO_BINDTODEVICE ([#1244](https://github.com/rcore-os/tgoskits/pull/1244))
+- runtime Wi-Fi AP/STA mode switch for AIC8800 on SG2002 (LicheeRV Nano) ([#1266](https://github.com/rcore-os/tgoskits/pull/1266))
+- AIC8800 Wi-Fi SoftAP for SG2002 (LicheeRV Nano) ([#1185](https://github.com/rcore-os/tgoskits/pull/1185))
+
 ## [0.7.3](https://github.com/rcore-os/tgoskits/compare/ax-net-v0.7.2...ax-net-v0.7.3) - 2026-06-12
 
 ### Added

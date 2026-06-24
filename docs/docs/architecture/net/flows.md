@@ -1,5 +1,5 @@
 ---
-sidebar_position: 9
+sidebar_position: 10
 sidebar_label: "运行时流程"
 ---
 
@@ -146,7 +146,7 @@ fn poll_until_idle() {
         }
 
         while POLL_AGAIN.swap(false, Ordering::AcqRel) {
-            while poll_once() {}
+            while get_service().poll(&mut SOCKET_SET.inner.lock()) {}
         }
         POLLING_INTERFACES.store(false, Ordering::Release);
         if !POLL_AGAIN.load(Ordering::Acquire) {
@@ -156,7 +156,7 @@ fn poll_until_idle() {
 }
 ```
 
-`poll_once()` 的锁顺序是：
+`poll_until_idle()` 内联 poll 调用的锁顺序是：
 
 ```text
 SERVICE -> SOCKET_SET.inner -> Service::poll()
@@ -342,7 +342,7 @@ incoming SYN
   -> snoop_tcp_packet()
   -> LISTEN_TABLE.incoming_tcp_packet()
   -> create child smoltcp TCP socket
-  -> enqueue PendingTcp
+  -> enqueue AcceptedTcp
   -> smoltcp consumes SYN and advances child state
 
 TcpSocket::accept()
@@ -507,7 +507,7 @@ vsock 只在 `vsock` feature 下启用：
 
 ```text
 VsockSocket
-  -> VsockTransport::Stream
+  -> VsockStreamTransport
   -> vsock::connection_manager
   -> rdif_vsock::Interface event path
 ```

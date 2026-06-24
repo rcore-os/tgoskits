@@ -200,6 +200,14 @@ pub struct WifiControlHandle {
     inner: Arc<NetInner>,
 }
 
+impl Clone for WifiControlHandle {
+    fn clone(&self) -> Self {
+        Self {
+            inner: self.inner.clone(),
+        }
+    }
+}
+
 unsafe impl Send for WifiControlHandle {}
 unsafe impl Sync for WifiControlHandle {}
 
@@ -279,6 +287,21 @@ impl IrqHandler {
         for id in event.rx_queue.iter() {
             self.inner.rx_wakers.wake(id);
         }
+    }
+
+    pub fn enable_irq(&self) {
+        let iface = unsafe { &mut **self.inner.interface.get() };
+        iface.enable_irq();
+    }
+
+    pub fn disable_irq(&self) {
+        let iface = unsafe { &mut **self.inner.interface.get() };
+        iface.disable_irq();
+    }
+
+    pub fn is_irq_enabled(&self) -> bool {
+        let iface = unsafe { &mut **self.inner.interface.get() };
+        iface.is_irq_enabled()
     }
 }
 

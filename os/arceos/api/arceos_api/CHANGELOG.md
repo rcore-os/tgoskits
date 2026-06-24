@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.2](https://github.com/rcore-os/tgoskits/compare/ax-api-v0.6.1...ax-api-v0.6.2) - 2026-06-23
+
+### Other
+
+- *(ax-net)* add locking and concurrency documentation and remove deprecated interfaces ([#1340](https://github.com/rcore-os/tgoskits/pull/1340))
+
+## [0.6.1](https://github.com/rcore-os/tgoskits/compare/ax-api-v0.6.0...ax-api-v0.6.1) - 2026-06-22
+
+### Other
+
+- *(ax-runtime)* adapt submit-poll fs block irq registration ([#1228](https://github.com/rcore-os/tgoskits/pull/1228))
+
 ## [0.6.0](https://github.com/rcore-os/tgoskits/compare/ax-api-v0.5.19...ax-api-v0.6.0) - 2026-06-12
 
 ### Fixed

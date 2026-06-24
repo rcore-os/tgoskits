@@ -22,6 +22,11 @@ mod power;
 
 pub use boot::boot_stack_bounds;
 pub use generic_timer::try_init_epoch_offset;
+
+#[cfg(feature = "irq")]
+pub fn enable_timer_irq() {
+    somehal::timer::irq_enable();
+}
 #[cfg(all(feature = "irq", target_arch = "riscv64", feature = "hv"))]
 pub use irq::register_virtual_irq_injector;
 
