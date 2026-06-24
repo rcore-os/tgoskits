@@ -73,13 +73,29 @@ impl DmaBufObject {
         self.inner.as_slice_cpu()
     }
 
-    /// Hand ownership to a device (flush CPU writes). Under the aarch64 uncached contiguous
-    /// allocator this is a no-op; retained so a future cached mode is a one-line change.
+    /// Mutable CPU view, for pre-seeding the buffer before a device write (e.g. the RGA selftest
+    /// poisons the destination with a sentinel so it can tell "engine wrote nothing" from "wrote
+    /// zeros"). A real dma-buf is CPU-writable via mmap; this is the in-kernel equivalent. Requires
+    /// `&mut self` (use `Arc::get_mut` on a freshly-allocated, not-yet-shared buffer).
+    ///
+    /// # Safety
+    /// Caller must not retain the slice across a device submission, and must
+    /// `sync_for_device()` afterwards so the device sees the writes (the backing is CACHED).
+    pub unsafe fn cpu_bytes_mut(&mut self) -> &mut [u8] {
+        unsafe { self.inner.as_mut_slice_cpu() }
+    }
+
+    /// Hand ownership to the device before it accesses the buffer: cleans (flushes) dirty CPU cache
+    /// lines to DRAM. The contiguous DMA backing is CACHED on aarch64 (NOT uncached — only the
+    /// `alloc_coherent` path is uncached), and the allocation is zero-initialised via the CPU, so
+    /// those zero lines are dirty; without this clean a later eviction can clobber the device's
+    /// output. Bidirectional direction → this performs the clean.
     pub fn sync_for_device(&self) {
         self.inner.prepare_for_device_all();
     }
 
-    /// Reclaim ownership for the CPU (invalidate). No-op under the aarch64 uncached allocator.
+    /// Reclaim ownership for the CPU after a device write: invalidates the CPU cache so reads see
+    /// the device's DRAM writes rather than stale cached data. Bidirectional → this invalidates.
     pub fn sync_for_cpu(&self) {
         self.inner.complete_for_cpu_all();
     }

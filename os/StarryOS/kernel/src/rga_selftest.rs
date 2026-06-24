@@ -1,5 +1,7 @@
 //! Feature-gated RGA2 bring-up selftest. Logs one machine-parseable line over serial so the board
 //! harness can match it. No /dev/rga involved.
+use alloc::sync::Arc;
+
 use dma_api::DmaDirection;
 use rockchip_rga::{
     RgaVersion, RockchipRga,
@@ -75,9 +77,14 @@ pub fn run() {
             None => continue,
         };
         let bytes = (W * H * 4) as usize;
+        // Destinations are Bidirectional, NOT FromDevice: the contiguous DMA backing is CACHED, so
+        // the alloc-zero leaves dirty CPU lines over the dst. prepare_for_device (a clean) only runs
+        // for ToDevice/Bidirectional — so a Bidirectional dst gets cleaned before the engine writes
+        // (no dirty-line clobber) AND the pre-op poison reaches DRAM, which is what lets the readback
+        // distinguish NOWRITE (poison survives) from ZERO (engine wrote zeros).
         let (mut src, mut dst) = match (
             RgaDmaBuffer::alloc(&dma, bytes, DmaDirection::ToDevice),
-            RgaDmaBuffer::alloc(&dma, bytes, DmaDirection::FromDevice),
+            RgaDmaBuffer::alloc(&dma, bytes, DmaDirection::Bidirectional),
         ) {
             (Ok(s), Ok(d)) => (s, d),
             _ => {
@@ -148,10 +155,23 @@ pub fn run() {
         // would be) and fill it with RGA2 — proving the dma-buf -> phys import seam end to end on
         // hardware. Board-gated (no RGA2 engine in QEMU).
         match crate::pseudofs::dev::dma_heap::alloc(bytes) {
-            Ok(obj) => {
+            Ok(mut obj) => {
                 // Distinctive probe: all four bytes distinct so the engine's channel/format
                 // transform is unambiguous in the pixel dump below (0x00FF00FF was R/B-symmetric).
                 let color: u32 = 0x1122_3344;
+                // Poison + flush before the fill (same protocol as the smoke fill): the dma-heap
+                // backing is CACHED, so cleaning the dirty alloc-zero/poison lines to DRAM before the
+                // engine writes prevents an eviction from clobbering the output, and a surviving
+                // poison after the op means the engine never wrote (NOWRITE) vs wrote zeros (ZERO).
+                // Arc::get_mut succeeds: freshly allocated, not yet shared.
+                if let Some(m) = Arc::get_mut(&mut obj) {
+                    // SAFETY: slice not retained across the device submission; sync_for_device follows.
+                    let b = unsafe { m.cpu_bytes_mut() };
+                    for px in b.chunks_exact_mut(4) {
+                        px.copy_from_slice(&SMOKE_FILL_POISON.to_le_bytes());
+                    }
+                }
+                obj.sync_for_device();
                 match run_rga2_fill_imported(core, obj.phys_addr(), W, H, color, |us| {
                     ax_runtime::hal::time::busy_wait(core::time::Duration::from_micros(us as u64))
                 }) {
@@ -161,37 +181,36 @@ pub fn run() {
                         let fill_ok = pixels
                             .chunks_exact(4)
                             .all(|px| u32::from_le_bytes([px[0], px[1], px[2], px[3]]) == color);
+                        let n = bytes / 4;
+                        let px = |i: usize| {
+                            u32::from_le_bytes([
+                                pixels[i * 4],
+                                pixels[i * 4 + 1],
+                                pixels[i * 4 + 2],
+                                pixels[i * 4 + 3],
+                            ])
+                        };
+                        let fill_px = [px(0), px(1), px(n / 2), px(n - 1)];
                         info!(
-                            "RGA2_DMABUF_SELFTEST core={} fill={} crc=0x{:08x}",
+                            "RGA2_DMABUF_SELFTEST core={} fill={} class={} crc=0x{:08x}",
                             core_index,
                             if fill_ok { "PASS" } else { "FAIL" },
+                            classify_fill(&fill_px, color, SMOKE_FILL_POISON),
                             crc32(pixels)
                         );
-                        // This is the path that produced run-8 crc=0x8a258aec. The diag shows
-                        // whether af latched (done=true) on the wrong-output imported fill.
                         if !fill_ok {
-                            // Dump the actual engine output so the exact channel/format transform
-                            // can be derived: with a distinct-byte probe, comparing want vs px0
-                            // reveals the byte permutation / CSC the engine applied (and px0 vs
-                            // pxmid/pxlast reveals uniform-vs-pattern).
-                            let n = bytes / 4;
-                            let px = |i: usize| {
-                                u32::from_le_bytes([
-                                    pixels[i * 4],
-                                    pixels[i * 4 + 1],
-                                    pixels[i * 4 + 2],
-                                    pixels[i * 4 + 3],
-                                ])
-                            };
+                            // want vs px0 reveals the byte permutation / CSC; px0 vs pxmid/pxlast
+                            // reveals uniform-vs-pattern; the poison classifier separates no-write.
                             warn!(
-                                "RGA2_DMABUF_SELFTEST_PIX core={} want=0x{:08x} px0=0x{:08x} \
-                                 px1=0x{:08x} pxmid=0x{:08x} pxlast=0x{:08x}",
+                                "RGA2_DMABUF_SELFTEST_PIX core={} want=0x{:08x} poison=0x{:08x} \
+                                 px0=0x{:08x} px1=0x{:08x} pxmid=0x{:08x} pxlast=0x{:08x}",
                                 core_index,
                                 color,
-                                px(0),
-                                px(1),
-                                px(n / 2),
-                                px(n - 1)
+                                SMOKE_FILL_POISON,
+                                fill_px[0],
+                                fill_px[1],
+                                fill_px[2],
+                                fill_px[3]
                             );
                             log_diag(
                                 "RGA2_DMABUF_SELFTEST_VERIFY",
@@ -216,20 +235,40 @@ pub fn run() {
                 core_index, e
             ),
         }
-        // Board-gated resize: downscale W×H → (W/2)×(H/2) via the general Blit path. Pixel
-        // correctness is validated on hardware; QEMU has no RGA2 engine.
+        // Real-source resize: downscale a SOLID-color W×H src into (W/2)×(H/2). A uniform source
+        // downscales to the SAME uniform color (any averaging/bicubic of equal samples == that
+        // value), so `dst == color` is an exact pixel-correctness check — unlike the prior
+        // zero-source resize, which only proved the op completed. Src is CPU-filled then flushed;
+        // the Bidirectional dst is poisoned + cleaned so a FAIL is classifiable. RgaDmaBuffer (not
+        // dma-heap) so the src is CPU-writable.
         let (dw, dh) = (W / 2, H / 2);
         let dst_bytes = (dw * dh * 4) as usize;
+        let resize_color: u32 = SMOKE_FILL_COLOR;
         match (
-            crate::pseudofs::dev::dma_heap::alloc(bytes),
-            crate::pseudofs::dev::dma_heap::alloc(dst_bytes),
+            RgaDmaBuffer::alloc(&dma, bytes, DmaDirection::ToDevice),
+            RgaDmaBuffer::alloc(&dma, dst_bytes, DmaDirection::Bidirectional),
         ) {
-            (Ok(s), Ok(d_buf)) => {
+            (Ok(mut rs_src), Ok(mut rs_dst)) => {
+                // SAFETY: slices are not retained across the device submission below.
+                {
+                    let s = unsafe { rs_src.cpu_bytes_mut() };
+                    for px in s.chunks_exact_mut(4) {
+                        px.copy_from_slice(&resize_color.to_le_bytes());
+                    }
+                }
+                rs_src.prepare_for_device();
+                {
+                    let d = unsafe { rs_dst.cpu_bytes_mut() };
+                    for px in d.chunks_exact_mut(4) {
+                        px.copy_from_slice(&SMOKE_FILL_POISON.to_le_bytes());
+                    }
+                }
+                rs_dst.prepare_for_device();
                 match run_rga2_blit_resize(
                     core,
-                    s.phys_addr(),
+                    rs_src.phys_addr(),
                     (W, H),
-                    d_buf.phys_addr(),
+                    rs_dst.phys_addr(),
                     (dw, dh),
                     |us| {
                         ax_runtime::hal::time::busy_wait(core::time::Duration::from_micros(
@@ -238,12 +277,41 @@ pub fn run() {
                     },
                 ) {
                     Ok(_diag) => {
-                        d_buf.sync_for_cpu();
+                        rs_dst.complete_for_cpu();
+                        let pixels = rs_dst.cpu_bytes();
+                        let n = dst_bytes / 4;
+                        let px = |i: usize| {
+                            u32::from_le_bytes([
+                                pixels[i * 4],
+                                pixels[i * 4 + 1],
+                                pixels[i * 4 + 2],
+                                pixels[i * 4 + 3],
+                            ])
+                        };
+                        let rpx = [px(0), px(1), px(n / 2), px(n - 1)];
+                        let resize_ok = pixels
+                            .chunks_exact(4)
+                            .all(|p| u32::from_le_bytes([p[0], p[1], p[2], p[3]]) == resize_color);
                         info!(
-                            "RGA2_BLIT_SELFTEST core={} resize=PASS crc=0x{:08x}",
+                            "RGA2_BLIT_SELFTEST core={} resize={} class={} crc=0x{:08x}",
                             core_index,
-                            crc32(&d_buf.cpu_bytes()[..dst_bytes])
+                            if resize_ok { "PASS" } else { "FAIL" },
+                            classify_fill(&rpx, resize_color, SMOKE_FILL_POISON),
+                            crc32(pixels)
                         );
+                        if !resize_ok {
+                            warn!(
+                                "RGA2_BLIT_SELFTEST_PIX core={} want=0x{:08x} poison=0x{:08x} \
+                                 px0=0x{:08x} px1=0x{:08x} pxmid=0x{:08x} pxlast=0x{:08x}",
+                                core_index,
+                                resize_color,
+                                SMOKE_FILL_POISON,
+                                rpx[0],
+                                rpx[1],
+                                rpx[2],
+                                rpx[3]
+                            );
+                        }
                     }
                     Err((e, d)) => {
                         warn!(
@@ -254,8 +322,8 @@ pub fn run() {
                             "RGA2_BLIT_SELFTEST",
                             core_index,
                             &d,
-                            s.phys_addr(),
-                            d_buf.phys_addr(),
+                            rs_src.phys_addr(),
+                            rs_dst.phys_addr(),
                         );
                     }
                 }
@@ -263,15 +331,24 @@ pub fn run() {
             _ => warn!("RGA2_BLIT_SELFTEST core={} alloc=FAIL", core_index),
         }
         // Bitblt-based fill via the PROVEN copy/blit datapath: CPU-fill a src with the solid color,
-        // then same-size blit src→dst. Independent of the dedicated color_fill_mode; guaranteed
-        // correct if bitblt is correct (copy + resize already PASS on this board). Doubles as the
-        // fill fallback implementation if native color_fill cannot be made to work.
+        // then same-size blit src→dst (an equal-dims Blit encodes byte-identically to a Copy).
+        // Doubles as the fill fallback implementation if native color_fill regresses. Poison + clean
+        // the dst first (cached backing) so the engine's output is not clobbered and a FAIL is
+        // classifiable.
         let blitfill_color: u32 = SMOKE_FILL_COLOR;
         match (
             RgaDmaBuffer::alloc(&dma, bytes, DmaDirection::ToDevice),
-            RgaDmaBuffer::alloc(&dma, bytes, DmaDirection::FromDevice),
+            RgaDmaBuffer::alloc(&dma, bytes, DmaDirection::Bidirectional),
         ) {
-            (Ok(mut bf_src), Ok(bf_dst)) => {
+            (Ok(mut bf_src), Ok(mut bf_dst)) => {
+                // SAFETY: slice not retained across the submission below.
+                {
+                    let d = unsafe { bf_dst.cpu_bytes_mut() };
+                    for px in d.chunks_exact_mut(4) {
+                        px.copy_from_slice(&SMOKE_FILL_POISON.to_le_bytes());
+                    }
+                }
+                bf_dst.prepare_for_device();
                 match run_rga2_fill_via_blit(
                     core,
                     &mut bf_src,
@@ -287,15 +364,40 @@ pub fn run() {
                 ) {
                     Ok(_d) => {
                         bf_dst.complete_for_cpu();
-                        let ok = bf_dst.cpu_bytes().chunks_exact(4).all(|px| {
-                            u32::from_le_bytes([px[0], px[1], px[2], px[3]]) == blitfill_color
+                        let pixels = bf_dst.cpu_bytes();
+                        let n = bytes / 4;
+                        let px = |i: usize| {
+                            u32::from_le_bytes([
+                                pixels[i * 4],
+                                pixels[i * 4 + 1],
+                                pixels[i * 4 + 2],
+                                pixels[i * 4 + 3],
+                            ])
+                        };
+                        let bpx = [px(0), px(1), px(n / 2), px(n - 1)];
+                        let ok = pixels.chunks_exact(4).all(|p| {
+                            u32::from_le_bytes([p[0], p[1], p[2], p[3]]) == blitfill_color
                         });
                         info!(
-                            "RGA2_FILLBLIT_SELFTEST core={} fill={} crc=0x{:08x}",
+                            "RGA2_FILLBLIT_SELFTEST core={} fill={} class={} crc=0x{:08x}",
                             core_index,
                             if ok { "PASS" } else { "FAIL" },
-                            crc32(bf_dst.cpu_bytes())
+                            classify_fill(&bpx, blitfill_color, SMOKE_FILL_POISON),
+                            crc32(pixels)
                         );
+                        if !ok {
+                            warn!(
+                                "RGA2_FILLBLIT_SELFTEST_PIX core={} want=0x{:08x} poison=0x{:08x} \
+                                 px0=0x{:08x} px1=0x{:08x} pxmid=0x{:08x} pxlast=0x{:08x}",
+                                core_index,
+                                blitfill_color,
+                                SMOKE_FILL_POISON,
+                                bpx[0],
+                                bpx[1],
+                                bpx[2],
+                                bpx[3]
+                            );
+                        }
                     }
                     Err((e, d)) => {
                         warn!(
