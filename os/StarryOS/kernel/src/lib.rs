@@ -34,3 +34,22 @@ mod time;
 mod tracepoint;
 mod trap;
 mod uprobe;
+
+#[cfg(axtest)]
+pub fn init_axtest_linkage() {}
+
+#[cfg(axtest)]
+mod axtests {
+    use axtest::prelude::*;
+
+    #[axtest]
+    fn arithmetic_smoke() {
+        ax_assert_eq!(2 + 2, 4);
+    }
+
+    #[axtest]
+    fn kernel_result_smoke() -> axtest::AxTestResult {
+        ax_assert!(true);
+        axtest::AxTestResult::Ok
+    }
+}

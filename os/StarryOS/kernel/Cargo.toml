@@ -50,6 +50,7 @@ stack-guard-page = ["ax-feat/stack-guard-page"]
 stack-protector = ["ax-feat/stack-protector"]
 
 [dependencies]
+axtest.workspace = true
 ax-feat = { workspace = true, features = [
     "fp-simd",
     "irq",
@@ -65,7 +66,6 @@ ax-feat = { workspace = true, features = [
     "ext4fs",
     "net",
 ] }
-
 ax-alloc = { workspace = true }
 ax-config.workspace = true
 ax-crate-interface.workspace = true

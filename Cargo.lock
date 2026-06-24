@@ -293,6 +293,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "arceos-axtest-suit"
+version = "0.1.0"
+dependencies = [
+ "ax-hal",
+ "ax-std",
+ "axtest",
+]
+
+[[package]]
 name = "arceos-helloworld"
 version = "0.1.0"
 dependencies = [
@@ -1435,6 +1444,22 @@ dependencies = [
  "linux-raw-sys 0.12.1",
  "spin",
  "tokio",
+]
+
+[[package]]
+name = "axtest"
+version = "0.5.11"
+dependencies = [
+ "axtest-macros",
+]
+
+[[package]]
+name = "axtest-macros"
+version = "0.5.11"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.117",
 ]
 
 [[package]]
@@ -7655,6 +7680,7 @@ dependencies = [
  "axnsproxy",
  "axplat-dyn",
  "axpoll",
+ "axtest",
  "bitflags 2.13.0",
  "bitmaps",
  "bytemuck",
@@ -7758,6 +7784,7 @@ dependencies = [
  "ax-std",
  "axbuild",
  "axplat-dyn",
+ "axtest",
  "clap",
  "starry-kernel",
  "tokio",

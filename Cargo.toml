@@ -18,6 +18,8 @@ members = [
     "bootloader/axloader",
 
     "components/aic8800",
+    "components/axtest/axtest",
+    "components/axtest/axtest_macros",
     "components/ax-lazyinit",
     "components/axbacktrace",
     "components/axcpu",
@@ -108,6 +110,7 @@ members = [
     "os/arceos/ulib/*",
     "os/axvisor",
     "scripts/axbuild",
+    "test-suit/arceos/axtest/smoke",
     "test-suit/arceos/rust",
     "apps/arceos/*",
     "apps/starry/qemu/rust-hello/rust",
@@ -180,6 +183,8 @@ ax-sched = { version = "0.5.8", path = "components/axsched" }
 ax-std = { version = "0.5.22", path = "os/arceos/ulib/axstd" }
 ax-sync = { version = "0.5.22", path = "os/arceos/modules/axsync" }
 ax-task = { version = "0.5.23", path = "os/arceos/modules/axtask" }
+axtest = { version = "0.5.11", path = "components/axtest/axtest" }
+axtest-macros = { version = "0.5.11", path = "components/axtest/axtest_macros" }
 ax-timer-list = { version = "0.3.5", path = "components/timer_list" }
 axaddrspace = { version = "0.5.14", path = "virtualization/axaddrspace" }
 axbacktrace = { version = "0.4.4", path = "components/axbacktrace" }

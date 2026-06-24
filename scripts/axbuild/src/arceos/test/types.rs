@@ -11,6 +11,7 @@ use crate::{
 pub(super) enum QemuTestFlow {
     Rust,
     C,
+    Axtest,
     Generic(String),
 }
 

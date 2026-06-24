@@ -16,6 +16,16 @@ SECTIONS {
         _ex_table_start = .;
         KEEP(*(__ex_table))
         _ex_table_end = .;
+
+        . = ALIGN(0x10);
+        __axtest_array = .;
+        KEEP(*(SORT(.axtest_array)))
+        __axtest_array_end = .;
+
+        . = ALIGN(0x10);
+        __axtest_mod_hooks_start = .;
+        KEEP(*(SORT(.axtest_mod_hooks)))
+        __axtest_mod_hooks_end = .;
     }
 
     scope_local : AT(ADDR(scope_local) - AX_LINKER_LOAD_OFFSET) {

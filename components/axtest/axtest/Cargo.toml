@@ -1,0 +1,14 @@
+[package]
+name = "axtest"
+description = "A white-box unit testing framework for ArceOS."
+documentation = "https://docs.rs/axtest"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[dependencies]
+axtest-macros.workspace = true

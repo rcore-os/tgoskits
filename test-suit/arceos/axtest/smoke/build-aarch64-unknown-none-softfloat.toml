@@ -1,0 +1,5 @@
+features = [
+    "ax-driver/plat-dyn",
+]
+log = "Info"
+max_cpu_num = 1
