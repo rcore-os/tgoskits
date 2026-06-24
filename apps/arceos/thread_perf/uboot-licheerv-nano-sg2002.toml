@@ -1,0 +1,13 @@
+# U-Boot runner config for the Rust ArceOS thread benchmark on LicheeRV Nano SG2002.
+# Change serial if your USB-UART is not /dev/ttyUSB0.
+serial = "/dev/ttyUSB1"
+baud_rate = "115200"
+dtb_file = "os/StarryOS/configs/board/licheerv-nano-sg2002.dtb"
+
+kernel_load_addr = "0x80200000"
+fit_load_addr = "0x82200000"
+bootm_addr = "0x82200000"
+
+success_regex = ["=== thread performance benchmark complete ==="]
+fail_regex = ["(?i)\\bpanic(?:ked)?\\b"]
+timeout = 300

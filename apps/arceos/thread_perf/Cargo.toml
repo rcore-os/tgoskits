@@ -9,9 +9,19 @@ publish = false
 default = []
 arceos = ["dep:ax-std", "ax-std/alloc", "ax-std/multitask", "ax-std/irq"]
 orangepi-5-plus = ["arceos", "ax-std/serial", "ax-std/rockchip-soc"]
+licheerv-nano-sg2002 = [
+    "arceos",
+    "ax-std/serial",
+    "ax-driver/sg2002-placeholder",
+    "ax-driver/cvsd",
+    "axplat-dyn/irq",
+    "axplat-dyn/thead-mae",
+]
 
 [dependencies]
 ax-std = { path = "../../../os/arceos/ulib/axstd", optional = true, default-features = false }
+ax-driver = { workspace = true, optional = true }
+axplat-dyn = { workspace = true, optional = true }
 
 [package.metadata.axstd]
 features = ["log-level-off"]

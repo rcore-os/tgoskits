@@ -1,0 +1,11 @@
+# Rust ArceOS thread benchmark for LicheeRV Nano SG2002.
+target = "riscv64gc-unknown-none-elf"
+features = [
+    "licheerv-nano-sg2002",
+]
+log = "Warn"
+max_cpu_num = 1
+plat_dyn = true
+
+[env]
+UIMAGE = "y"

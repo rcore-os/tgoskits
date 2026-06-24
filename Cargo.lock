@@ -355,7 +355,9 @@ dependencies = [
 name = "arceos-thread_perf"
 version = "0.1.0"
 dependencies = [
+ "ax-driver",
  "ax-std",
+ "axplat-dyn",
 ]
 
 [[package]]
