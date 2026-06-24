@@ -55,7 +55,8 @@ pub const MMU_SRC_ENABLE: u32 = 1 << 0; // sw_src_mmu_en
 pub const MMU_SRC1_ENABLE: u32 = 1 << 4; // sw_src1_mmu_en
 pub const MMU_DST_ENABLE: u32 = 1 << 8; // sw_dst_mmu_en
 
-// SRC_INFO/DST_INFO format codes (bits[3:0]). CONFIRM ON BOARD (vendor rga2.h).
+// SRC_INFO/DST_INFO format codes (bits[3:0]). Board-validated 2026-06-24 — run 12
+// copy+resize produce correct pixels on RGA2 (OrangePi-5-Plus).
 pub const FMT_RGBA8888: u32 = 0x0;
 pub const FMT_RGBX8888: u32 = 0x1;
 pub const FMT_RGB888: u32 = 0x2;
@@ -67,7 +68,8 @@ pub const FMT_YCBCR_422_SP: u32 = 0x8; // NV16
 /// rga2_reg_info.c:266-269. The byte-order variants (YUYV/UYVY/VYUY/YVYU) are
 /// distinguished by cbcr_swap / rb_swap flags in SRC_INFO, set in `hw_format`.
 pub const FMT_YUV422_PACKED: u32 = 0x7;
-// SRC_INFO modifier bits. CONFIRM ON BOARD.
+// SRC_INFO modifier bits. R/B+alpha swaps validated (copy+resize correct pixels, run 12).
+// YUYV swap (rb_swp=1, cbcr_swp via INFO_UVSWAP) NOT YET board-tested.
 pub const INFO_RBSWAP: u32 = 1 << 4;
 pub const INFO_ALPHA_SWAP: u32 = 1 << 5;
 pub const INFO_UVSWAP: u32 = 1 << 6; // aka cbcr_swp — swap Cb/Cr order

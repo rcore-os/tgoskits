@@ -270,6 +270,13 @@ impl Blit {
         check_scale(self.src_rect.height, self.dst_rect.height)?;
         let s = self.src.format;
         let d = self.dst.format;
+        // Packed YUV (YUYV/UYVY) as a blit DESTINATION uses different RGA2 hw register
+        // codes than as a source (0xe/0xc vs 0x7 — rga2_reg_info.c dst-info path). Our
+        // hw_format is src-only. Reject until the dst path is implemented (PR scope is
+        // YUYV→RGB, not RGB→YUYV).
+        if d.is_packed_yuv() {
+            return Err(RgaError::Unsupported);
+        }
         let crosses = s.is_yuv() != d.is_yuv();
         match (s.is_yuv(), d.is_yuv()) {
             (false, false) => {}
@@ -481,5 +488,23 @@ mod tests {
     fn imagedesc_odd_height_nv12_invalid() {
         let d = ImageDesc::nv12(64, 47, 64, 0x4000_0000); // odd height
         assert_eq!(d.validate(), Err(RgaError::Invalid));
+    }
+
+    #[test]
+    fn blit_packed_yuv_dst_is_unsupported() {
+        // YUYV as dst uses different hw dst codes (0xe/0xc) which we don't encode yet.
+        let src = ImageDesc::rgb(640, 480, 640 * 4, PixelFormat::Rgba8888, 0x1000);
+        let dst = ImageDesc {
+            width: 640,
+            height: 480,
+            stride_bytes: 640 * 2,
+            format: PixelFormat::Yuyv422,
+            phys_addr: 0x9000,
+            uv_phys_addr: None,
+        };
+        assert_eq!(
+            Blit::resize(src, dst).validate(),
+            Err(RgaError::Unsupported)
+        );
     }
 }
