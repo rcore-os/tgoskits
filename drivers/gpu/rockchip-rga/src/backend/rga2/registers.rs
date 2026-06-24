@@ -59,6 +59,15 @@ pub const FMT_YCBCR_422_SP: u32 = 0x8; // NV16
 pub const INFO_RBSWAP: u32 = 1 << 4;
 pub const INFO_ALPHA_SWAP: u32 = 1 << 5;
 pub const INFO_UVSWAP: u32 = 1 << 6;
+// DST_INFO SRC1 (foreground constant / second-source) format field. A color FILL feeds fg_color
+// through the SRC1 path; the vendor sets its format/swap from `msg->src1.format` into DST_INFO, NOT
+// into SRC_INFO (rga2_reg_info.c RGA2_set_reg_dst_info, lines 446-448; color_fill dispatch at 1084
+// calls dst_info but never src_info). Masks (rga2_reg_info.h:137-152):
+//   SW_SRC1_FMT       0x7<<7   SW_SRC1_RB_SWP 0x1<<10   SW_SRC1_ALPHA_SWP 0x1<<11
+pub const DST_INFO_SRC1_FMT_SHIFT: u32 = 7;
+pub const DST_INFO_SRC1_FMT_MASK: u32 = 0x7;
+pub const DST_INFO_SRC1_RB_SWAP: u32 = 1 << 10;
+pub const DST_INFO_SRC1_ALPHA_SWAP: u32 = 1 << 11;
 // SRC_INFO csc_mode (bits[9:8]) — YUV→RGB. CONFIRM ON BOARD value↔standard map.
 pub const SRC_INFO_CSC_SHIFT: u32 = 8;
 pub const CSC_BT601_LIMITED: u32 = 1;
