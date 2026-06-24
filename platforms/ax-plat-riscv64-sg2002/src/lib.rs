@@ -1,5 +1,4 @@
 #![no_std]
-#![feature(used_with_arg)]
 #![cfg(any(target_arch = "riscv32", target_arch = "riscv64"))]
 
 extern crate alloc;

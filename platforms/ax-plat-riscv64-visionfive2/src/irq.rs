@@ -35,13 +35,13 @@ fn this_context() -> usize {
 }
 
 pub(super) fn init_percpu() {
+    PLIC.lock().reset_context(this_context());
     // enable soft interrupts, timer interrupts, and external interrupts
     unsafe {
         sie::set_ssoft();
         sie::set_stimer();
         sie::set_sext();
     }
-    PLIC.lock().init_by_context(this_context());
 }
 
 macro_rules! with_cause {

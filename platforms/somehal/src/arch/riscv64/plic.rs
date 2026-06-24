@@ -157,10 +157,10 @@ fn complete_external_irq_source(source: NonZeroU32) {
 }
 
 pub fn secondary_init_intc(cpu_idx: usize) {
-    enable_local_interrupts();
     if let Some(handler) = get_irq_handler() {
         handler.init_context(cpu_idx);
     }
+    enable_local_interrupts();
 }
 
 pub fn send_ipi_to_cpu(cpu_id: usize) {
@@ -206,11 +206,14 @@ fn probe_plic(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
         context_by_cpu: contexts.clone(),
     };
     IRQ_HANDLER.init(irq_handler);
-    IRQ_HANDLER.init_current_context();
+    if let Some(handler) = get_irq_handler() {
+        handler.reset_all_contexts();
+    }
     let plic = RiscvPlic {
         inner: plic,
         context_by_cpu: contexts,
         affinity_by_source: vec![crate::irq::IrqAffinity::Any; ndev.saturating_add(1)],
+        enabled_by_source: vec![false; ndev.saturating_add(1)],
         sources: ndev,
     };
     enable_local_interrupts();
@@ -319,6 +322,7 @@ struct RiscvPlic {
     inner: Plic,
     context_by_cpu: Vec<Option<usize>>,
     affinity_by_source: Vec<crate::irq::IrqAffinity>,
+    enabled_by_source: Vec<bool>,
     sources: usize,
 }
 
@@ -332,14 +336,6 @@ impl RiscvPlicIrqHandler {
         current_context(&self.context_by_cpu)
     }
 
-    fn init_current_context(&self) {
-        if let Some(context) = self.current_context() {
-            self.init_context_by_context_id(context);
-        } else {
-            warn_missing_current_context();
-        }
-    }
-
     fn init_context(&self, cpu_idx: usize) {
         if let Some(context) = self.context_by_cpu.get(cpu_idx).and_then(|ctx| *ctx) {
             self.init_context_by_context_id(context);
@@ -351,6 +347,17 @@ impl RiscvPlicIrqHandler {
     fn init_context_by_context_id(&self, context: usize) {
         self.inner.init_by_context(context);
         trace!("PLIC context {context} initialized");
+    }
+
+    fn reset_all_contexts(&self) {
+        for context in self.context_by_cpu.iter().filter_map(|context| *context) {
+            self.reset_context_by_context_id(context);
+        }
+    }
+
+    fn reset_context_by_context_id(&self, context: usize) {
+        self.inner.reset_context(context);
+        trace!("PLIC context {context} reset");
     }
 
     fn claim_current(&self) -> Option<NonZeroU32> {
@@ -380,6 +387,7 @@ impl RiscvPlic {
             warn!("skip enabling out-of-range PLIC source {}", source.get());
             return;
         }
+        self.enabled_by_source[source.get() as usize] = true;
         self.inner.set_priority(source, DEFAULT_PRIORITY);
         let current = current_context(&self.context_by_cpu);
         for context in self.contexts_for_source(source) {
@@ -391,6 +399,15 @@ impl RiscvPlic {
     }
 
     fn disable_source(&mut self, source: NonZeroU32) {
+        if source.get() as usize > self.sources {
+            warn!("skip disabling out-of-range PLIC source {}", source.get());
+            return;
+        }
+        self.enabled_by_source[source.get() as usize] = false;
+        self.disable_source_contexts(source);
+    }
+
+    fn disable_source_contexts(&mut self, source: NonZeroU32) {
         for context in self.context_by_cpu.iter().filter_map(|context| *context) {
             self.inner.disable(source, context);
         }
@@ -419,9 +436,10 @@ impl RiscvPlic {
             return None;
         }
 
-        self.disable_source(source);
+        let was_enabled = self.enabled_by_source[source.get() as usize];
+        self.disable_source_contexts(source);
         self.affinity_by_source[source.get() as usize] = affinity;
-        if self.inner.get_priority(source) != 0 {
+        if was_enabled {
             for context in self.contexts_for_source(source) {
                 self.inner.enable(source, context);
             }

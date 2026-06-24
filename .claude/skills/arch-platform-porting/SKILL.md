@@ -101,7 +101,8 @@ Adjust the package list to match the crates touched.
 4. Inspect symbols and generated images with `llvm-objdump`, `readelf`, and map files. Confirm runtime addresses, not only link addresses.
 5. Compare with local Linux architecture code for ordering of MMU, trap, SMP, and cache/TLB barriers when uncertain. First search for a local Linux source tree, then inspect the matching `arch/<linux-arch>` directory; do not assume a fixed path.
 6. On one-shot timer platforms, verify the IRQ handler acknowledges the current timer interrupt before dispatching into code that reprograms the next event. In particular, LoongArch timer handlers must not clear `TICLR` after `_handle_irq()` / `dispatch_irq()`, because the timer tick path may already have armed a near-deadline event and a late acknowledge can clear the freshly-pending interrupt, leaving timer-based sleeps stuck.
-7. Turn the root cause into a regression test or a focused QEMU case when practical.
+7. On RISC-V PLIC platforms, take ownership of every supervisor context before enabling `sie.SEXT`: clear inherited source-enable bits from firmware/bootloader state, initialize thresholds, and keep a software "source enabled" state instead of inferring enablement from non-zero priority. IRQ framework setup may set affinity while an action is still disabled; affinity changes must not enable a source until the framework explicitly enables the line.
+8. Turn the root cause into a regression test or a focused QEMU case when practical.
 
 ## Common Failure Signals
 
