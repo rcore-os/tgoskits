@@ -335,6 +335,19 @@ pub fn encode_fill(dst: ImageDesc, color: u32) -> crate::error::Result<CommandBu
     // plain (non-gradient, non-ROP-mask) fill `gr_color` and `rop_mask_stride` are 0, which our
     // zeroed command buffer already provides — so no extra writes are required.
     buf.set_register(registers::SRC_FG_COLOR, color);
+    // Mirror the vendor's UNCONDITIONAL `RGA2_set_pat_info` (rga2_reg_info.c:1009-1030), which runs
+    // for every render mode BEFORE the color_fill/bitblt switch. With a zeroed `pat` descriptor (no
+    // pattern, as for a solid fill) its arithmetic underflows:
+    //   PAT_CON      = (pat.act_w-1) | ((pat.act_h-1)<<8) | (x_off<<16) | (y_off<<24)
+    //                = (0-1) | ((0-1)<<8) | 0 | 0  = 0xFFFF_FFFF
+    //   FADING_CTRL  = (num<<8) | offset,  num = ((act_w*act_h)-1)&0xff = 0xff,  offset = 0
+    //                = 0x0000_FF00
+    // A word-for-word diff of our color-fill command block against the verified reference block
+    // (rga2_reg_info.c color_fill_mode dispatch) showed these two words (22/23) were the ONLY
+    // deviation: we left them 0. The pattern path is logically inert for a SOLID fill, but the
+    // engine still ingests the full 32-word block, so we reproduce the reference exactly.
+    buf.set_register(registers::PAT_CON, 0xFFFF_FFFF);
+    buf.set_register(registers::FADING_CTRL, 0x0000_FF00);
     buf.set_register(registers::MMU_CTRL1, 0);
     buf.set_register(
         registers::MODE_CTRL,
@@ -402,10 +415,24 @@ mod mmu_off_tests {
         // RGA2_set_reg_src_info; SRC_INFO is irrelevant to FG-color interpretation).
         assert_eq!(cmd.register(registers::SRC_INFO), Some(0));
         assert_eq!(cmd.register(registers::MMU_CTRL1), Some(0));
+        // The fill must reproduce the vendor's unconditional set_pat_info words (PAT_CON/FADING_CTRL)
+        // — the sole command-block deviation found by the reference word-diff. Zeroed `pat` underflows
+        // to 0xFFFF_FFFF / 0x0000_FF00.
+        assert_eq!(cmd.register(registers::PAT_CON), Some(0xFFFF_FFFF));
+        assert_eq!(cmd.register(registers::FADING_CTRL), Some(0x0000_FF00));
         assert_eq!(
             cmd.register(registers::MODE_CTRL),
             Some(encode_mode(registers::MODE_RENDER_RECTANGLE_FILL, 0))
         );
+    }
+
+    #[test]
+    fn copy_does_not_program_pattern_words() {
+        // set_pat_info is fill-only in our encoder: copy/blit work without it on hardware, so we do
+        // NOT add it there (don't perturb the proven bitblt path). Guard against accidental coupling.
+        let cmd = encode_copy(img(64, 48, 0x4000_0000), img(64, 48, 0x4010_0000)).unwrap();
+        assert_eq!(cmd.register(registers::PAT_CON), Some(0));
+        assert_eq!(cmd.register(registers::FADING_CTRL), Some(0));
     }
 
     #[test]
