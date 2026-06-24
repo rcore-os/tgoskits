@@ -7,10 +7,8 @@ use alloc::{
 };
 
 use ax_io::{Read, Write};
-#[cfg(feature = "vfs")]
-use axfs_ng_vfs::Mountpoint;
 use axfs_ng_vfs::{
-    Location, Metadata, NodePermission, NodeType, VfsError, VfsResult,
+    Location, Metadata, Mountpoint, NodePermission, NodeType, VfsError, VfsResult,
     path::{Component, Components, Path, PathBuf},
 };
 use spin::Once;
@@ -44,6 +42,13 @@ fn register_fs_context(ctx: &Arc<Mutex<FsContext>>) {
     registry.push(Arc::downgrade(ctx));
 }
 
+/// Wrap and register a filesystem context for installation in a task scope.
+pub fn new_fs_context_handle(ctx: FsContext) -> Arc<Mutex<FsContext>> {
+    let ctx = Arc::new(Mutex::new(ctx));
+    register_fs_context(&ctx);
+    ctx
+}
+
 /// Returns `true` if any live `FsContext` has its `root_dir` or `current_dir`
 /// inside the given `mountpoint`.
 #[cfg(feature = "vfs")]
@@ -67,14 +72,12 @@ pub fn is_mount_busy(mp: &Arc<Mountpoint>) -> bool {
 scope_local::scope_local! {
     /// Task-local filesystem context, defaulting to a clone of [`ROOT_FS_CONTEXT`].
     pub static FS_CONTEXT: Arc<Mutex<FsContext>> = {
-        let ctx = Arc::new(Mutex::new(
+        new_fs_context_handle(
             ROOT_FS_CONTEXT
                 .get()
                 .expect("Root FS context not initialized")
                 .clone(),
-        ));
-        register_fs_context(&ctx);
-        ctx
+        )
     };
 }
 
@@ -93,6 +96,7 @@ pub struct ReadDirEntry {
 /// Provides `std::fs`-like interface.
 #[derive(Debug, Clone)]
 pub struct FsContext {
+    namespace_root: Arc<Mountpoint>,
     root_dir: Location,
     current_dir: Location,
 }
@@ -100,7 +104,9 @@ pub struct FsContext {
 impl FsContext {
     /// Creates a new context with `root_dir` as both root and current directory.
     pub fn new(root_dir: Location) -> Self {
+        let namespace_root = root_dir.namespace_root_mountpoint();
         Self {
+            namespace_root,
             root_dir: root_dir.clone(),
             current_dir: root_dir,
         }
@@ -116,6 +122,28 @@ impl FsContext {
         &self.current_dir
     }
 
+    /// Copy the complete mount tree and remap root/cwd into the copied tree.
+    ///
+    /// Filesystem objects and dentries stay shared; subsequent mount topology
+    /// changes are private to the returned context.
+    pub fn unshare_mount_namespace(&self) -> VfsResult<Self> {
+        let (namespace_root, mut remapped) = self
+            .namespace_root
+            .clone_tree_and_remap(&[self.root_dir.clone(), self.current_dir.clone()])?;
+        let current_dir = remapped.pop().ok_or(VfsError::InvalidInput)?;
+        let root_dir = remapped.pop().ok_or(VfsError::InvalidInput)?;
+        Ok(Self {
+            namespace_root,
+            root_dir,
+            current_dir,
+        })
+    }
+
+    /// Returns whether two filesystem contexts refer to the same mount tree.
+    pub fn shares_mount_namespace(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.namespace_root, &other.namespace_root)
+    }
+
     /// Changes the current working directory to `current_dir`.
     pub fn set_current_dir(&mut self, current_dir: Location) -> VfsResult<()> {
         current_dir.check_is_dir()?;
@@ -128,6 +156,7 @@ impl FsContext {
     pub fn with_current_dir(&self, current_dir: Location) -> VfsResult<Self> {
         current_dir.check_is_dir()?;
         Ok(Self {
+            namespace_root: self.namespace_root.clone(),
             root_dir: self.root_dir.clone(),
             current_dir,
         })
@@ -400,6 +429,7 @@ impl FsContext {
         let new_root_mp = new_root.mountpoint().clone();
         old_root_mp.pivot_mount(&new_root_mp, &put_old)?;
         let new_root_loc = new_root_mp.root_location();
+        self.namespace_root = new_root_mp;
         self.root_dir = new_root_loc.clone();
         // Only replace cwd if it was pointing at the old root — mirrors
         // Linux's chroot_fs_refs / replace_path semantics.
@@ -449,9 +479,13 @@ impl FsContext {
         for ctx_arc in refs {
             let mut ctx = ctx_arc.lock();
 
+            let update_namespace = Arc::ptr_eq(&ctx.namespace_root, old_root.mountpoint());
             let update_root = old_root.ptr_eq(&ctx.root_dir);
             let update_cwd = old_root.ptr_eq(&ctx.current_dir);
 
+            if update_namespace {
+                ctx.namespace_root = new_root.mountpoint().clone();
+            }
             if update_root {
                 ctx.root_dir = new_root.clone();
             }

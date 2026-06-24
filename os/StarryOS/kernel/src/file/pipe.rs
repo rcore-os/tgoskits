@@ -1,7 +1,12 @@
-use alloc::{borrow::Cow, format, sync::Arc};
+use alloc::{
+    borrow::Cow,
+    collections::BTreeMap,
+    format,
+    sync::{Arc, Weak},
+};
 use core::{
     mem,
-    sync::atomic::{AtomicBool, Ordering},
+    sync::atomic::{AtomicBool, AtomicUsize, Ordering},
     task::Context,
 };
 
@@ -37,7 +42,12 @@ struct Shared {
     poll_rx: PollSet,
     poll_tx: PollSet,
     poll_close: PollSet,
+    readers: AtomicUsize,
+    writers: AtomicUsize,
+    had_writer: AtomicBool,
 }
+
+static NAMED_PIPES: Mutex<BTreeMap<(u64, u64), Weak<Shared>>> = Mutex::new(BTreeMap::new());
 
 pub struct Pipe {
     read_side: bool,
@@ -46,19 +56,30 @@ pub struct Pipe {
 }
 impl Drop for Pipe {
     fn drop(&mut self) {
-        // Peer close is visible through Arc strong count before this wake.
+        if self.read_side {
+            self.shared.readers.fetch_sub(1, Ordering::AcqRel);
+        } else {
+            self.shared.writers.fetch_sub(1, Ordering::AcqRel);
+        }
         unsafe { self.shared.poll_close.wake(IoEvents::HUP | IoEvents::ERR) };
     }
 }
 
 impl Pipe {
-    pub fn new() -> (Pipe, Pipe) {
-        let shared = Arc::new(Shared {
+    fn new_shared(readers: usize, writers: usize) -> Arc<Shared> {
+        Arc::new(Shared {
             buffer: Mutex::new(HeapRb::new(RING_BUFFER_INIT_SIZE)),
             poll_rx: PollSet::new(),
             poll_tx: PollSet::new(),
             poll_close: PollSet::new(),
-        });
+            readers: AtomicUsize::new(readers),
+            writers: AtomicUsize::new(writers),
+            had_writer: AtomicBool::new(writers != 0),
+        })
+    }
+
+    pub fn new() -> (Pipe, Pipe) {
+        let shared = Self::new_shared(1, 1);
         let read_end = Pipe {
             read_side: true,
             shared: shared.clone(),
@@ -72,6 +93,34 @@ impl Pipe {
         (read_end, write_end)
     }
 
+    /// Open one endpoint of a pathname-backed FIFO.
+    pub fn open_named(key: (u64, u64), read_side: bool) -> Self {
+        let shared = {
+            let mut pipes = NAMED_PIPES.lock();
+            if let Some(shared) = pipes.get(&key).and_then(Weak::upgrade) {
+                shared
+            } else {
+                let shared = Self::new_shared(0, 0);
+                pipes.insert(key, Arc::downgrade(&shared));
+                shared
+            }
+        };
+
+        if read_side {
+            shared.readers.fetch_add(1, Ordering::AcqRel);
+            unsafe { shared.poll_tx.wake(IoEvents::OUT) };
+        } else {
+            shared.writers.fetch_add(1, Ordering::AcqRel);
+            shared.had_writer.store(true, Ordering::Release);
+            unsafe { shared.poll_rx.wake(IoEvents::IN) };
+        }
+        Self {
+            read_side,
+            shared,
+            non_blocking: AtomicBool::new(false),
+        }
+    }
+
     pub const fn is_read(&self) -> bool {
         self.read_side
     }
@@ -81,7 +130,11 @@ impl Pipe {
     }
 
     pub fn closed(&self) -> bool {
-        Arc::strong_count(&self.shared) == 1
+        if self.read_side {
+            self.shared.writers.load(Ordering::Acquire) == 0
+        } else {
+            self.shared.readers.load(Ordering::Acquire) == 0
+        }
     }
 
     pub fn capacity(&self) -> usize {
@@ -139,7 +192,7 @@ impl FileLike for Pipe {
                 // Pipe capacity was freed before waking writers.
                 unsafe { self.shared.poll_tx.wake(IoEvents::OUT) };
                 Ok(read)
-            } else if self.closed() {
+            } else if self.closed() && self.shared.had_writer.load(Ordering::Acquire) {
                 Ok(0)
             } else {
                 Err(AxError::WouldBlock)
@@ -226,7 +279,7 @@ impl Pollable for Pipe {
         let mut events = IoEvents::empty();
         let buf = self.shared.buffer.lock();
         if self.read_side {
-            let closed = self.closed();
+            let closed = self.closed() && self.shared.had_writer.load(Ordering::Acquire);
             events.set(IoEvents::IN, buf.occupied_len() > 0);
             events.set(IoEvents::HUP, closed);
         } else {

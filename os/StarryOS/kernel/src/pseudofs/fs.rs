@@ -38,10 +38,15 @@ pub struct SimpleFs {
 
 impl SimpleFs {
     /// Creates a new simple filesystem.
+    ///
+    /// The `root` callback receives the filesystem handle and the pre-allocated
+    /// root inode (always 1). The root directory must use this inode so that the
+    /// filesystem root consistently reports inode 1 (required by runc and other
+    /// container runtimes).
     pub fn new_with(
         name: String,
         fs_type: u32,
-        root: impl FnOnce(Arc<Self>) -> DirMaker,
+        root: impl FnOnce(Arc<Self>, u64) -> DirMaker,
     ) -> Filesystem {
         let fs = Arc::new(Self {
             name,
@@ -49,9 +54,12 @@ impl SimpleFs {
             inodes: SpinNoIrq::new(Slab::new()),
             root: SpinNoIrq::new(None),
         });
-        let root = root(fs.clone());
+        // Reserve inode 1 before the builder creates child nodes, so children
+        // get inodes 2, 3, ... and the root directory can use inode 1.
+        let root_ino = fs.alloc_inode();
+        let root_maker = root(fs.clone(), root_ino);
         fs.set_root(DirEntry::new_dir(
-            |this| DirNode::new(root(this)),
+            |this| DirNode::new(root_maker(this)),
             Reference::root(),
         ));
         Filesystem::new(fs)
@@ -98,6 +106,20 @@ impl SimpleFsNode {
     /// Creates a new filesystem node.
     pub fn new(fs: Arc<SimpleFs>, node_type: NodeType, mode: NodePermission) -> Self {
         let ino = fs.alloc_inode();
+        Self::new_with_inode(fs, node_type, mode, ino)
+    }
+
+    /// Creates a new filesystem node with a pre-allocated inode number.
+    ///
+    /// The caller must have already reserved `ino` in the filesystem's slab
+    /// (via [`SimpleFs::alloc_inode`]) before any other node allocations, so
+    /// that the slab correctly tracks the inode lifecycle.
+    pub fn new_with_inode(
+        fs: Arc<SimpleFs>,
+        node_type: NodeType,
+        mode: NodePermission,
+        ino: u64,
+    ) -> Self {
         let metadata = Metadata {
             device: 0,
             inode: ino,

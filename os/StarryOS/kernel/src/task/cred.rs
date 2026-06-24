@@ -54,6 +54,9 @@ pub struct Cred {
     pub cap_bounding: u64,
     /// Ambient Linux capabilities.
     pub cap_ambient: u64,
+    /// Preserve permitted capabilities when all user IDs transition away
+    /// from zero (`PR_SET_KEEPCAPS`).
+    pub keep_caps: bool,
 }
 
 impl Cred {
@@ -79,6 +82,7 @@ impl Cred {
             cap_effective: CAP_MASK,
             cap_bounding: CAP_MASK,
             cap_ambient: 0,
+            keep_caps: false,
         }
     }
 
@@ -103,6 +107,7 @@ impl Cred {
             cap_effective: 0,
             cap_bounding: CAP_MASK,
             cap_ambient: 0,
+            keep_caps: false,
         }
     }
 
@@ -121,7 +126,9 @@ impl Cred {
         let new_all_nonroot = self.uid != 0 && self.euid != 0 && self.suid != 0;
 
         if old_all_root && new_all_nonroot {
-            self.cap_permitted = 0;
+            if !old.keep_caps {
+                self.cap_permitted = 0;
+            }
             self.cap_effective = 0;
             self.cap_ambient = 0;
         } else if old.euid == 0 && self.euid != 0 {

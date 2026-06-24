@@ -32,15 +32,20 @@ use crate::{
 
 fn create_filesystem(manager: Arc<UsbFsManager>) -> Filesystem {
     info!("usbfs: creating filesystem instance");
-    SimpleFs::new_with("usbfs".into(), descriptor::USBFS_MAGIC, move |fs| {
-        SimpleDir::new_maker(
-            fs.clone(),
-            Arc::new(UsbRootDir {
-                fs: fs.clone(),
-                manager: manager.clone(),
-            }),
-        )
-    })
+    SimpleFs::new_with(
+        "usbfs".into(),
+        descriptor::USBFS_MAGIC,
+        move |fs, root_ino| {
+            SimpleDir::new_maker_with_inode(
+                fs.clone(),
+                Arc::new(UsbRootDir {
+                    fs: fs.clone(),
+                    manager: manager.clone(),
+                }),
+                root_ino,
+            )
+        },
+    )
 }
 
 pub(crate) fn new_usbfs() -> LinuxResult<Option<Filesystem>> {

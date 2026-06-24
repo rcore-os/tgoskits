@@ -44,7 +44,9 @@ impl ResolveAtResult {
     pub fn into_file(self) -> Option<Location> {
         match self {
             Self::File(file) => Some(file),
-            Self::Other(_) => None,
+            Self::Other(file_like) => file_like
+                .downcast_ref::<crate::file::memfd::Memfd>()
+                .map(|memfd| memfd.inner().inner().location().clone()),
         }
     }
 

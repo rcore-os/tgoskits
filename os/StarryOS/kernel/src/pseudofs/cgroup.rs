@@ -1,7 +1,6 @@
 use alloc::{string::ToString, sync::Arc, vec::Vec};
 use core::any::Any;
 
-use ax_errno::LinuxError;
 use axfs_ng_vfs::{
     DirEntry, DirEntrySink, DirNode, DirNodeOps, FileNode, Filesystem, FilesystemOps, Metadata,
     MetadataUpdate, NodeOps, NodePermission, NodeType, Reference, VfsError, VfsResult,
@@ -15,62 +14,14 @@ use crate::cgroup::{CgroupId, root_id};
 
 const CGROUP2_SUPER_MAGIC: u32 = 0x6367_7270;
 
-#[derive(Clone, Copy)]
-enum CgroupFileKind {
-    Controllers,
-    Procs,
-    SubtreeControl,
-}
-
-impl CgroupFileKind {
-    fn from_name(name: &str) -> Option<Self> {
-        match name {
-            "cgroup.controllers" => Some(Self::Controllers),
-            "cgroup.procs" => Some(Self::Procs),
-            "cgroup.subtree_control" => Some(Self::SubtreeControl),
-            _ => None,
-        }
-    }
-
-    fn name(self) -> &'static str {
-        match self {
-            Self::Controllers => "cgroup.controllers",
-            Self::Procs => "cgroup.procs",
-            Self::SubtreeControl => "cgroup.subtree_control",
-        }
-    }
-
-    fn permission(self) -> NodePermission {
-        let mode = match self {
-            Self::Controllers => 0o444,
-            Self::Procs | Self::SubtreeControl => 0o644,
-        };
-        NodePermission::from_bits_truncate(mode)
-    }
-}
-
-const CGROUP_FILES: [CgroupFileKind; 3] = [
-    CgroupFileKind::Controllers,
-    CgroupFileKind::Procs,
-    CgroupFileKind::SubtreeControl,
-];
-
 struct CgroupFile {
     id: CgroupId,
-    kind: CgroupFileKind,
+    name: &'static str,
 }
 
 impl CgroupFile {
     fn read_content(&self) -> VfsResult<Vec<u8>> {
-        Ok(match self.kind {
-            CgroupFileKind::Controllers => crate::cgroup::controllers_text(self.id)?
-                .as_bytes()
-                .to_vec(),
-            CgroupFileKind::Procs => crate::cgroup::procs_text(self.id)?.into_bytes(),
-            CgroupFileKind::SubtreeControl => crate::cgroup::subtree_control_text(self.id)?
-                .as_bytes()
-                .to_vec(),
-        })
+        Ok(crate::cgroup::read_interface(self.id, self.name)?.into_bytes())
     }
 }
 
@@ -89,16 +40,35 @@ impl DirectRwFsFileOps for CgroupFile {
     }
 
     fn write_at(&self, buf: &[u8], _offset: u64) -> VfsResult<usize> {
-        match self.kind {
-            CgroupFileKind::Controllers => {
-                crate::cgroup::ensure_node_exists(self.id)?;
-                return Err(VfsError::from(LinuxError::EACCES));
-            }
-            CgroupFileKind::Procs => crate::cgroup::write_procs(self.id, buf)?,
-            CgroupFileKind::SubtreeControl => crate::cgroup::write_subtree_control(self.id, buf)?,
-        }
+        crate::cgroup::write_interface(self.id, self.name, buf)?;
         Ok(buf.len())
     }
+}
+
+fn file_permission(name: &str) -> NodePermission {
+    let readonly = matches!(
+        name,
+        "cgroup.controllers"
+            | "cgroup.events"
+            | "cgroup.type"
+            | "cgroup.stat"
+            | "cpu.stat"
+            | "cpu.pressure"
+            | "memory.current"
+            | "memory.swap.current"
+            | "memory.events"
+            | "memory.events.local"
+            | "memory.stat"
+            | "memory.pressure"
+            | "pids.current"
+            | "pids.events"
+            | "pids.events.local"
+            | "io.stat"
+            | "io.pressure"
+            | "cpuset.cpus.effective"
+            | "cpuset.mems.effective"
+    );
+    NodePermission::from_bits_truncate(if readonly { 0o444 } else { 0o644 })
 }
 
 struct CgroupDir {
@@ -123,21 +93,40 @@ impl CgroupDir {
         })
     }
 
+    fn new_with_inode(fs: Arc<SimpleFs>, id: CgroupId, this: WeakDirEntry, ino: u64) -> Arc<Self> {
+        debug_assert!(crate::cgroup::path(id).is_ok());
+        Arc::new(Self {
+            node: SimpleFsNode::new_with_inode(
+                fs.clone(),
+                NodeType::Directory,
+                NodePermission::from_bits_truncate(0o755),
+                ino,
+            ),
+            this,
+            fs,
+            id,
+        })
+    }
+
     fn new_maker(fs: Arc<SimpleFs>, id: CgroupId) -> DirMaker {
         Arc::new(move |this| Self::new(fs.clone(), id, this))
+    }
+
+    fn new_maker_with_inode(fs: Arc<SimpleFs>, id: CgroupId, ino: u64) -> DirMaker {
+        Arc::new(move |this| Self::new_with_inode(fs.clone(), id, this, ino))
     }
 
     fn this_entry(&self) -> VfsResult<DirEntry> {
         self.this.upgrade().ok_or(VfsError::NotFound)
     }
 
-    fn file_entry(&self, kind: CgroupFileKind) -> VfsResult<DirEntry> {
+    fn file_entry(&self, name: &'static str) -> VfsResult<DirEntry> {
         let file = SpecialFsFile::new_regular_with_perm(
             self.fs.clone(),
-            CgroupFile { id: self.id, kind },
-            kind.permission(),
+            CgroupFile { id: self.id, name },
+            file_permission(name),
         );
-        let reference = Reference::new(self.this.upgrade(), kind.name().to_string());
+        let reference = Reference::new(self.this.upgrade(), name.to_string());
         Ok(DirEntry::new_file(
             FileNode::new(file),
             NodeType::RegularFile,
@@ -174,8 +163,8 @@ impl DirNodeOps for CgroupDir {
         let mut names = Vec::new();
         names.push(DOT.to_string());
         names.push(DOTDOT.to_string());
-        for kind in CGROUP_FILES {
-            names.push(kind.name().to_string());
+        for name in crate::cgroup::INTERFACE_FILES {
+            names.push((*name).to_string());
         }
         names.extend(crate::cgroup::child_names(self.id)?);
 
@@ -199,8 +188,8 @@ impl DirNodeOps for CgroupDir {
     }
 
     fn lookup(&self, name: &str) -> VfsResult<DirEntry> {
-        if let Some(kind) = CgroupFileKind::from_name(name) {
-            return self.file_entry(kind);
+        if let Some(name) = crate::cgroup::interface_file_name(name) {
+            return self.file_entry(name);
         }
 
         let child_id = crate::cgroup::lookup_child(self.id, name)?;
@@ -255,6 +244,6 @@ pub(crate) fn new_cgroup2fs() -> Filesystem {
     SimpleFs::new_with("cgroup2".into(), CGROUP2_SUPER_MAGIC, cgroup2fs_builder)
 }
 
-fn cgroup2fs_builder(fs: Arc<SimpleFs>) -> DirMaker {
-    CgroupDir::new_maker(fs, root_id())
+fn cgroup2fs_builder(fs: Arc<SimpleFs>, root_ino: u64) -> DirMaker {
+    CgroupDir::new_maker_with_inode(fs, root_id(), root_ino)
 }

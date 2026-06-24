@@ -30,6 +30,7 @@ use kbpf_basic::{
     prog::BpfProgMeta,
     raw_tracepoint::BpfRawTracePointArg,
 };
+use starry_vm::vm_write_slice;
 
 pub(crate) mod error;
 pub mod map;
@@ -82,6 +83,14 @@ fn read_bpf_attr(uattr: usize, size: u32) -> AxResult<bpf_attr> {
     // unread tail bytes remain zero from the `vec![0u8; ..]` initialization.
     let attr = unsafe { core::ptr::read(buf.as_ptr() as *const bpf_attr) };
     Ok(attr)
+}
+
+fn write_bpf_attr(uattr: usize, size: u32, attr: &bpf_attr) -> AxResult<()> {
+    let copy_len = (size as usize).min(core::mem::size_of::<bpf_attr>());
+    let bytes =
+        unsafe { core::slice::from_raw_parts((attr as *const bpf_attr).cast::<u8>(), copy_len) };
+    vm_write_slice(uattr as *mut u8, bytes)?;
+    Ok(())
 }
 
 fn handle_map_create(attr: &bpf_attr) -> AxResult<isize> {
@@ -144,6 +153,18 @@ fn handle_raw_tracepoint_open(attr: &bpf_attr) -> AxResult<isize> {
     bpf_raw_tracepoint_open(arg)
 }
 
+fn handle_cgroup_device_attach(attr: &bpf_attr) -> AxResult<isize> {
+    const BPF_CGROUP_DEVICE: u32 = 6;
+    let attach_type = unsafe { attr.__bindgen_anon_5.attach_type };
+    if attach_type != BPF_CGROUP_DEVICE {
+        return Err(AxError::InvalidInput);
+    }
+    // Cgroup-device eBPF enforcement is not implemented yet. Accept the
+    // attachment lifecycle so runtimes can configure a container; Starry's
+    // current cgroup implementation leaves device access unfiltered.
+    Ok(0)
+}
+
 /// `bpf(2)` syscall entry-point. The numeric command is decoded into the
 /// canonical [`bpf_cmd`] enum from `kbpf-basic` (no locally-redefined
 /// command constants).
@@ -155,7 +176,7 @@ pub fn sys_bpf(cmd: u64, uattr: usize, size: u32) -> AxResult<isize> {
         warn!("bpf: unrecognized command {cmd}");
         AxError::InvalidInput
     })?;
-    let attr = read_bpf_attr(uattr, size)?;
+    let mut attr = read_bpf_attr(uattr, size)?;
     match cmd {
         bpf_cmd::BPF_MAP_CREATE => handle_map_create(&attr),
         bpf_cmd::BPF_PROG_LOAD => handle_prog_load(&attr),
@@ -166,6 +187,16 @@ pub fn sys_bpf(cmd: u64, uattr: usize, size: u32) -> AxResult<isize> {
         bpf_cmd::BPF_MAP_GET_NEXT_KEY => handle_map_get_next_key(&attr),
         bpf_cmd::BPF_MAP_FREEZE => handle_map_freeze(&attr),
         bpf_cmd::BPF_MAP_LOOKUP_AND_DELETE_ELEM => handle_map_lookup_and_delete(&attr),
+        bpf_cmd::BPF_PROG_ATTACH | bpf_cmd::BPF_PROG_DETACH => handle_cgroup_device_attach(&attr),
+        bpf_cmd::BPF_PROG_QUERY => {
+            // Starry does not currently attach eBPF programs to cgroups.
+            // Report an empty attachment set so userspace can perform the
+            // standard query-before-update sequence.
+            attr.query.attach_flags = 0;
+            attr.query.__bindgen_anon_2.prog_cnt = 0;
+            write_bpf_attr(uattr, size, &attr)?;
+            Ok(0)
+        }
         other => {
             warn!("bpf: unsupported command {other:?}");
             Err(AxError::InvalidInput)

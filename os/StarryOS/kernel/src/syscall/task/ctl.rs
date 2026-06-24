@@ -403,6 +403,22 @@ pub fn sys_prctl(
             };
             (arg2 as *mut i32).vm_write(enabled)?;
         }
+        PR_GET_KEEPCAPS => {
+            if arg2 != 0 || arg3 != 0 || arg4 != 0 || arg5 != 0 {
+                return Err(AxError::InvalidInput);
+            }
+            return Ok(current().as_thread().cred().keep_caps as isize);
+        }
+        PR_SET_KEEPCAPS => {
+            if arg2 > 1 || arg3 != 0 || arg4 != 0 || arg5 != 0 {
+                return Err(AxError::InvalidInput);
+            }
+            let thread_ref = current();
+            let thread = thread_ref.as_thread();
+            let mut new = (*thread.cred()).clone();
+            new.keep_caps = arg2 != 0;
+            thread.set_cred(new);
+        }
         PR_CAPBSET_READ => {
             // Query whether a capability is still present in the bounding set.
             if arg2 > CAP_LAST_CAP as usize {

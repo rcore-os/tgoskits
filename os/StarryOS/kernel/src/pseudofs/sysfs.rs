@@ -62,7 +62,7 @@ pub fn new_sysfs() -> Filesystem {
     SimpleFs::new_with("sysfs".into(), 0x62656572, builder)
 }
 
-fn builder(fs: Arc<SimpleFs>) -> DirMaker {
+fn builder(fs: Arc<SimpleFs>, root_ino: u64) -> DirMaker {
     let mut root = DirMapping::new();
     root.add(
         "class",
@@ -106,7 +106,7 @@ fn builder(fs: Arc<SimpleFs>) -> DirMaker {
         );
         SimpleDir::new_maker(fs.clone(), Arc::new(fs_dir))
     });
-    SimpleDir::new_maker(fs.clone(), Arc::new(root))
+    SimpleDir::new_maker_with_inode(fs.clone(), Arc::new(root), root_ino)
 }
 
 /// `/sys/dev/` — `char/` and `block/` subdirs.

@@ -2,13 +2,15 @@ use alloc::{borrow::Cow, sync::Arc};
 use core::task::Context;
 
 use ax_errno::AxResult;
+use ax_fs_ng::vfs::FsContext;
 use ax_kspin::SpinNoIrq;
 use axnsproxy::{
     IpcNamespace, MntNamespace, NetNamespace, PidNamespace, UserNamespace, UtNamespace,
 };
 use axpoll::{IoEvents, Pollable};
 use linux_raw_sys::general::{
-    CLONE_NEWIPC, CLONE_NEWNET, CLONE_NEWNS, CLONE_NEWPID, CLONE_NEWUSER, CLONE_NEWUTS,
+    CLONE_NEWCGROUP, CLONE_NEWIPC, CLONE_NEWNET, CLONE_NEWNS, CLONE_NEWPID, CLONE_NEWUSER,
+    CLONE_NEWUTS,
 };
 
 use super::FileLike;
@@ -20,10 +22,14 @@ use super::FileLike;
 pub enum NsFd {
     Uts(Arc<SpinNoIrq<UtNamespace>>),
     Ipc(Arc<SpinNoIrq<IpcNamespace>>),
-    Mnt(Arc<SpinNoIrq<MntNamespace>>),
+    Mnt {
+        namespace: Arc<SpinNoIrq<MntNamespace>>,
+        fs_context: FsContext,
+    },
     Pid(Arc<SpinNoIrq<PidNamespace>>),
     Net(Arc<SpinNoIrq<NetNamespace>>),
     User(Arc<SpinNoIrq<UserNamespace>>),
+    Cgroup,
 }
 
 impl NsFd {
@@ -32,10 +38,11 @@ impl NsFd {
         match self {
             NsFd::Uts(_) => CLONE_NEWUTS,
             NsFd::Ipc(_) => CLONE_NEWIPC,
-            NsFd::Mnt(_) => CLONE_NEWNS,
+            NsFd::Mnt { .. } => CLONE_NEWNS,
             NsFd::Pid(_) => CLONE_NEWPID,
             NsFd::Net(_) => CLONE_NEWNET,
             NsFd::User(_) => CLONE_NEWUSER,
+            NsFd::Cgroup => CLONE_NEWCGROUP,
         }
     }
 }
@@ -45,10 +52,11 @@ impl FileLike for NsFd {
         match self {
             NsFd::Uts(_) => "anon_inode:[uts_ns]".into(),
             NsFd::Ipc(_) => "anon_inode:[ipc_ns]".into(),
-            NsFd::Mnt(_) => "anon_inode:[mnt_ns]".into(),
+            NsFd::Mnt { .. } => "anon_inode:[mnt_ns]".into(),
             NsFd::Pid(_) => "anon_inode:[pid_ns]".into(),
             NsFd::Net(_) => "anon_inode:[net_ns]".into(),
             NsFd::User(_) => "anon_inode:[user_ns]".into(),
+            NsFd::Cgroup => "anon_inode:[cgroup_ns]".into(),
         }
     }
 

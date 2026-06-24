@@ -103,6 +103,9 @@ pub fn add_task_to_table(task: &AxTaskRef) {
     let pid = proc.pid();
     let mut proc_table = PROCESS_TABLE.write();
     proc_table.insert(pid, proc_data);
+    drop(proc_table);
+
+    crate::cgroup::register_process(pid, proc.parent().map(|parent| parent.pid()));
 
     let pg = proc.group();
     let mut pg_table = PROCESS_GROUP_TABLE.write();
@@ -152,6 +155,7 @@ pub fn get_process_data(pid: Pid) -> AxResult<Arc<ProcessData>> {
 /// [`Arc<ProcessData>`] references (e.g. task objects) are still alive.
 pub fn remove_process(pid: Pid) {
     PROCESS_TABLE.write().remove(&pid);
+    crate::cgroup::unregister_process(pid);
 }
 
 /// Records a PID as zombie (exited but not yet reaped).

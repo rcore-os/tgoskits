@@ -12,13 +12,14 @@ use crate::pseudofs::{NodeOpsMux, SimpleDir, SimpleDirOps, SimpleFile, SimpleFs}
 const SYSFS_MAGIC: u32 = 0x6265_6572;
 
 pub(super) fn new_bus_usb_sysfs() -> Filesystem {
-    SimpleFs::new_with("sysfs".into(), SYSFS_MAGIC, |fs| {
-        SimpleDir::new_maker(
+    SimpleFs::new_with("sysfs".into(), SYSFS_MAGIC, |fs, root_ino| {
+        SimpleDir::new_maker_with_inode(
             fs.clone(),
             Arc::new(SysUsbDir {
                 fs,
                 manager: irq::manager(),
             }),
+            root_ino,
         )
     })
 }

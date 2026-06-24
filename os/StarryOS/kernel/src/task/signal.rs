@@ -29,6 +29,19 @@ pub struct SyscallRestartInfo {
     pub saved_sysno: usize,
 }
 
+impl SyscallRestartInfo {
+    pub fn restart(&self, uctx: &mut UserContext) {
+        let restart_ip = uctx.ip() - SYSCALL_INSN_LEN;
+        uctx.set_ip(restart_ip);
+        uctx.set_arg0(self.saved_a0);
+        // On x86_64, rax holds both the syscall number and the return value.
+        #[cfg(target_arch = "x86_64")]
+        uctx.set_sysno(self.saved_sysno);
+        #[cfg(not(target_arch = "x86_64"))]
+        let _ = self.saved_sysno;
+    }
+}
+
 #[cfg(target_arch = "riscv64")]
 #[derive(Clone, Copy)]
 struct UserStackFrame {
@@ -324,18 +337,7 @@ pub fn check_signals(
                     && (uctx.retval() as isize) == -(ax_errno::LinuxError::EINTR.code() as isize)
                     && restartable
                 {
-                    let new_ip = uctx.ip() - SYSCALL_INSN_LEN;
-                    uctx.set_ip(new_ip);
-                    uctx.set_arg0(info.saved_a0);
-                    // On x86_64, rax holds both the syscall number and the return
-                    // value, so the syscall entry path clobbered sysno with -EINTR.
-                    // Restore it before the syscall instruction re-executes. On
-                    // RISC-V/AArch64/LoongArch64 sysno lives in a separate register
-                    // (a7/x8/a7) that was not touched, so no restore is needed.
-                    #[cfg(target_arch = "x86_64")]
-                    uctx.set_sysno(info.saved_sysno);
-                    #[cfg(not(target_arch = "x86_64"))]
-                    let _ = info.saved_sysno;
+                    info.restart(uctx);
                 }
             })
     else {

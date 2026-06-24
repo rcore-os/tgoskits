@@ -47,7 +47,6 @@ pub fn handle_syscall(uctx: &mut UserContext) {
         uctx.set_retval(-LinuxError::ENOSYS.code() as _);
         return;
     };
-
     trace!("Syscall {sysno:?}");
     match ax_task::current()
         .as_thread()
@@ -198,7 +197,7 @@ pub fn handle_syscall(uctx: &mut UserContext) {
         Sysno::chmod => sys_chmod(uctx.arg0() as _, uctx.arg1() as _),
         Sysno::fchmod => sys_fchmod(uctx.arg0() as _, uctx.arg1() as _),
         Sysno::fchmodat => sys_fchmodat(uctx.arg0() as _, uctx.arg1() as _, uctx.arg2() as _, 0),
-        Sysno::fchmodat2 => sys_fchmodat(
+        Sysno::fchmodat2 => sys_fchmodat2(
             uctx.arg0() as _,
             uctx.arg1() as _,
             uctx.arg2() as _,
@@ -964,4 +963,9 @@ pub fn handle_syscall(uctx: &mut UserContext) {
     if uctx.ip() == prev_ip {
         uctx.set_retval(new_retval);
     }
+    // Returning from a syscall is a safe scheduling boundary. This also
+    // provides forward progress on platforms where timer interrupts do not
+    // currently drive the RR scheduler tick: ready userspace threads still
+    // get CPU time instead of depending on incidental kernel lock traffic.
+    ax_task::yield_now();
 }

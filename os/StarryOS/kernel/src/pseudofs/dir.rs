@@ -152,6 +152,26 @@ impl<O: SimpleDirOps> SimpleDir<O> {
             )
         })
     }
+
+    /// Create a [`DirMaker`] with a pre-allocated root inode.
+    ///
+    /// Use this when the root directory must have a specific inode number
+    /// (e.g. procfs root must be inode 1 for runc compatibility).
+    /// The caller must have already reserved `ino` in the filesystem's slab.
+    pub fn new_maker_with_inode(fs: Arc<SimpleFs>, ops: Arc<O>, ino: u64) -> DirMaker {
+        Arc::new(move |this| {
+            SimpleDir::new(
+                SimpleFsNode::new_with_inode(
+                    fs.clone(),
+                    NodeType::Directory,
+                    NodePermission::from_bits_truncate(0o755),
+                    ino,
+                ),
+                ops.clone(),
+                this,
+            )
+        })
+    }
 }
 
 #[inherit_methods(from = "self.node")]
