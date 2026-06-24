@@ -112,14 +112,14 @@ command -v debugfs &>/dev/null || error "debugfs not found (install e2fsprogs)"
 # pristine and the self-compiled binary persists after QEMU exits.
 if [ "$ARCH" = "x86_64" ]; then
     mkdir -p tmp/selfhost
-    # The selfhost rootfs blueprint is created once (by --bootstrap or
-    # prepare-selfhost-rootfs.sh) and reused across runs.  Each run clones
+    # The selfhost rootfs blueprint is created once by
+    # prepare-selfhost-rootfs.sh and reused across runs.  Each run clones
     # it to a working copy so the blueprint stays pristine.
     #
-    # --bootstrap creates an Alpine-based selfhost rootfs via QEMU (no host sudo).
-    # prepare-selfhost-rootfs.sh creates a Debian-based selfhost rootfs (needs sudo).
-    # Both paths produce a rootfs at the same blueprint path, and both are
-    # compatible with self-compilation (the bare-metal target doesn't link libc).
+    # --bootstrap (for bootstrapping an Alpine base image only) does NOT
+    # provision the prerequisites the x86_64 xtask flow requires (musl
+    # toolchain, kallsyms tools, firmware, complete source).  Use
+    # prepare-selfhost-rootfs.sh for x86_64 self-compile.
     SELFHOST_BLUEPRINT="tmp/axbuild/rootfs/rootfs-x86_64-selfhost.img"
 
     if [ ! -f "$SELFHOST_BLUEPRINT" ] && [ "$BOOTSTRAP" = "true" ]; then
@@ -156,10 +156,10 @@ Run: cargo xtask starry rootfs --arch x86_64"
 
     [ -f "$SELFHOST_BLUEPRINT" ] || error "Selfhost rootfs not found: $SELFHOST_BLUEPRINT
 
-Options:
-  1. Bootstrap via QEMU (no sudo): ./scripts/self-compile.sh --arch x86_64 --bootstrap
-  2. Build via debootstrap (needs sudo): sudo ./scripts/prepare-selfhost-rootfs.sh --arch x86_64 --force
-Once created, the rootfs is reused across runs."
+Run: sudo ./scripts/prepare-selfhost-rootfs.sh --arch x86_64 --force
+This provisions a Debian rootfs with all prerequisites for x86_64 self-compile
+(musl toolchain, kallsyms tools, firmware, complete source, offline deps).
+Once created, the blueprint is reused across runs."
 
     if [ ! -f "$ROOTFS_IMG" ]; then
         info "Cloning rootfs: $SELFHOST_BLUEPRINT → $ROOTFS_IMG (this may take a moment)..."
