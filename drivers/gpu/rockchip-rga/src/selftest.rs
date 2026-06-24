@@ -21,6 +21,12 @@ pub fn crc32(data: &[u8]) -> u32 {
     !crc
 }
 
+/// Solid color the smoke fill writes. Packed ABGR/RGBA byte order [0xff,0x33,0x22,0x11].
+pub const SMOKE_FILL_COLOR: u32 = 0x1122_33ff;
+/// Sentinel the smoke fill writes into the destination BEFORE the fill, so a board run can tell
+/// "engine wrote nothing" (readback == this) apart from "wrote zeros" / "wrote the wrong color".
+pub const SMOKE_FILL_POISON: u32 = 0xDEAD_BEEF;
+
 pub struct SelftestReport {
     pub fill_ok: bool,
     pub copy_ok: bool,
@@ -30,6 +36,10 @@ pub struct SelftestReport {
     pub fill_diag: RgaDiag,
     /// Same, captured at the copy op's completion.
     pub copy_diag: RgaDiag,
+    /// Destination samples [px0, px1, pxmid, pxlast] read back AFTER the fill (the dst was poisoned
+    /// with `SMOKE_FILL_POISON` before it). The OS glue classifies these: all==color → fill works;
+    /// all==poison → engine wrote nothing; all==0 → wrote zeros; uniform-other → wrong channel/format.
+    pub fill_px: [u32; 4],
 }
 
 /// Run a fill then a copy on a powered RGA2 core, polling to completion with a bounded number of
@@ -47,8 +57,18 @@ pub fn run_rga2_smoke(
     let src_img = ImageDesc::rgb(width, height, stride, fmt, src.phys_addr());
     let dst_img = ImageDesc::rgb(width, height, stride, fmt, dst.phys_addr());
 
-    // 1) Fill dst with a known color, verify the engine wrote it.
-    let color: u32 = 0x1122_33ff;
+    // 1) Fill dst with a known color, verify the engine wrote it. POISON the destination with a
+    //    sentinel first and flush it to the device: a freshly-zeroed buffer cannot distinguish
+    //    "engine wrote nothing" from "engine wrote zeros", but a poisoned one can.
+    let color: u32 = SMOKE_FILL_COLOR;
+    // SAFETY: the mutable slice is not retained across the device submission below.
+    {
+        let dbytes = unsafe { dst.cpu_bytes_mut() };
+        for px in dbytes.chunks_exact_mut(4) {
+            px.copy_from_slice(&SMOKE_FILL_POISON.to_le_bytes());
+        }
+    }
+    dst.prepare_for_device();
     core.start(&RgaOperation::Fill {
         dst: dst_img,
         color,
@@ -60,6 +80,13 @@ pub fn run_rga2_smoke(
         .cpu_bytes()
         .chunks_exact(4)
         .all(|px| u32::from_le_bytes([px[0], px[1], px[2], px[3]]) == color);
+    let fill_px = {
+        let b = dst.cpu_bytes();
+        let n = b.len() / 4;
+        let px =
+            |i: usize| u32::from_le_bytes([b[i * 4], b[i * 4 + 1], b[i * 4 + 2], b[i * 4 + 3]]);
+        [px(0), px(1), px(n / 2), px(n.saturating_sub(1))]
+    };
 
     // 2) Fill src via CPU, copy src->dst, CRC dst and compare to src.
     // SAFETY: the mutable slice is not retained across the submission below.
@@ -86,6 +113,7 @@ pub fn run_rga2_smoke(
         crc,
         fill_diag,
         copy_diag,
+        fill_px,
     })
 }
 
@@ -126,6 +154,39 @@ pub fn run_rga2_blit_resize(
     let dst = ImageDesc::rgb(dst_w, dst_h, dst_w * fmt.bytes_per_pixel(), fmt, dst_phys);
     core.start(&RgaOperation::Blit(crate::operation::Blit::resize(
         src, dst,
+    )))
+    .map_err(|e| (e, core.diag()))?;
+    poll_done(core, &mut delay_us)
+}
+
+/// Fill a destination via the PROVEN bitblt datapath instead of the dedicated color_fill_mode:
+/// CPU-fill `src` with the solid color, flush it, then do a same-size (no-scale) blit src→dst.
+/// If the engine's bitblt is correct (validated on hardware: copy + resize PASS) this is a
+/// guaranteed-correct fill — independent of any color_fill quirk. Used as both a diagnostic and a
+/// fallback implementation. The caller owns `dst` (raw phys) and verifies the output.
+pub fn run_rga2_fill_via_blit(
+    core: &mut RgaCore,
+    src: &mut RgaDmaBuffer,
+    dst_phys: u64,
+    width: u32,
+    height: u32,
+    color: u32,
+    mut delay_us: impl FnMut(u32),
+) -> core::result::Result<RgaDiag, (RgaError, RgaDiag)> {
+    let fmt = PixelFormat::Rgba8888;
+    let stride = width * fmt.bytes_per_pixel();
+    // SAFETY: the mutable slice is not retained across the device submission below.
+    {
+        let sbytes = unsafe { src.cpu_bytes_mut() };
+        for px in sbytes.chunks_exact_mut(4) {
+            px.copy_from_slice(&color.to_le_bytes());
+        }
+    }
+    src.prepare_for_device();
+    let src_img = ImageDesc::rgb(width, height, stride, fmt, src.phys_addr());
+    let dst_img = ImageDesc::rgb(width, height, stride, fmt, dst_phys);
+    core.start(&RgaOperation::Blit(crate::operation::Blit::resize(
+        src_img, dst_img,
     )))
     .map_err(|e| (e, core.diag()))?;
     poll_done(core, &mut delay_us)

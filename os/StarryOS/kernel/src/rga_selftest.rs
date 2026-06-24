@@ -5,7 +5,10 @@ use rockchip_rga::{
     RgaVersion, RockchipRga,
     backend::RgaDiag,
     buffer::RgaDmaBuffer,
-    selftest::{crc32, run_rga2_blit_resize, run_rga2_fill_imported, run_rga2_smoke},
+    selftest::{
+        SMOKE_FILL_COLOR, SMOKE_FILL_POISON, crc32, run_rga2_blit_resize, run_rga2_fill_imported,
+        run_rga2_fill_via_blit, run_rga2_smoke,
+    },
 };
 
 const W: u32 = 64;
@@ -32,6 +35,27 @@ fn log_diag(tag: &str, core_index: u8, d: &RgaDiag, src: u64, dst: u64) {
         done,
         err
     );
+}
+
+/// Classify the four destination samples a poisoned native Fill produced, so the board log states
+/// exactly what the engine did (instead of just PASS/FAIL):
+///   COLOR_OK      — all samples == requested fill color (the fill works)
+///   NOWRITE       — all samples == the pre-fill poison (engine completed but never wrote the dst)
+///   ZERO          — all samples == 0 (wrote, but cleared instead of the color)
+///   OTHER_UNIFORM — all samples equal but neither color/poison/0 (wrong channel order / format)
+///   MIXED         — samples differ (partial write / pattern / gradient)
+fn classify_fill(px: &[u32; 4], want: u32, poison: u32) -> &'static str {
+    if px.iter().all(|&p| p == want) {
+        "COLOR_OK"
+    } else if px.iter().all(|&p| p == poison) {
+        "NOWRITE"
+    } else if px.iter().all(|&p| p == 0) {
+        "ZERO"
+    } else if px.iter().all(|&p| p == px[0]) {
+        "OTHER_UNIFORM"
+    } else {
+        "MIXED"
+    }
 }
 
 pub fn run() {
@@ -72,6 +96,21 @@ pub fn run() {
                     if r.fill_ok { "PASS" } else { "FAIL" },
                     if r.copy_ok { "PASS" } else { "FAIL" },
                     r.crc
+                );
+                // Poison-sentinel probe: state exactly what the native (color_fill_mode) Fill did to
+                // the destination, so a FAIL is actionable (no-write vs zero vs wrong-channel).
+                let [fp0, fp1, fpmid, fplast] = r.fill_px;
+                info!(
+                    "RGA2_SELFTEST_FILL_PROBE core={} class={} want=0x{:08x} poison=0x{:08x} \
+                     px0=0x{:08x} px1=0x{:08x} pxmid=0x{:08x} pxlast=0x{:08x}",
+                    core_index,
+                    classify_fill(&r.fill_px, SMOKE_FILL_COLOR, SMOKE_FILL_POISON),
+                    SMOKE_FILL_COLOR,
+                    SMOKE_FILL_POISON,
+                    fp0,
+                    fp1,
+                    fpmid,
+                    fplast
                 );
                 // Completed-but-wrong output: dump the completion diag so the run shows whether af
                 // (INT bit2) latched (done=true => encoding/cache bug, not a detection problem).
@@ -222,6 +261,58 @@ pub fn run() {
                 }
             }
             _ => warn!("RGA2_BLIT_SELFTEST core={} alloc=FAIL", core_index),
+        }
+        // Bitblt-based fill via the PROVEN copy/blit datapath: CPU-fill a src with the solid color,
+        // then same-size blit src→dst. Independent of the dedicated color_fill_mode; guaranteed
+        // correct if bitblt is correct (copy + resize already PASS on this board). Doubles as the
+        // fill fallback implementation if native color_fill cannot be made to work.
+        let blitfill_color: u32 = SMOKE_FILL_COLOR;
+        match (
+            RgaDmaBuffer::alloc(&dma, bytes, DmaDirection::ToDevice),
+            RgaDmaBuffer::alloc(&dma, bytes, DmaDirection::FromDevice),
+        ) {
+            (Ok(mut bf_src), Ok(bf_dst)) => {
+                match run_rga2_fill_via_blit(
+                    core,
+                    &mut bf_src,
+                    bf_dst.phys_addr(),
+                    W,
+                    H,
+                    blitfill_color,
+                    |us| {
+                        ax_runtime::hal::time::busy_wait(core::time::Duration::from_micros(
+                            us as u64,
+                        ))
+                    },
+                ) {
+                    Ok(_d) => {
+                        bf_dst.complete_for_cpu();
+                        let ok = bf_dst.cpu_bytes().chunks_exact(4).all(|px| {
+                            u32::from_le_bytes([px[0], px[1], px[2], px[3]]) == blitfill_color
+                        });
+                        info!(
+                            "RGA2_FILLBLIT_SELFTEST core={} fill={} crc=0x{:08x}",
+                            core_index,
+                            if ok { "PASS" } else { "FAIL" },
+                            crc32(bf_dst.cpu_bytes())
+                        );
+                    }
+                    Err((e, d)) => {
+                        warn!(
+                            "RGA2_FILLBLIT_SELFTEST core={} fill=FAIL err={:?}",
+                            core_index, e
+                        );
+                        log_diag(
+                            "RGA2_FILLBLIT_SELFTEST",
+                            core_index,
+                            &d,
+                            bf_src.phys_addr(),
+                            bf_dst.phys_addr(),
+                        );
+                    }
+                }
+            }
+            _ => warn!("RGA2_FILLBLIT_SELFTEST core={} alloc=FAIL", core_index),
         }
         // Completion path: PR-1 is polling-only (poll the RGA2 INT status register), which works
         // regardless of GIC routing. This board has a confirmed FDT->GIC gap (the dwmmc completion
