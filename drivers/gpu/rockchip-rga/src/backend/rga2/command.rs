@@ -76,6 +76,38 @@ const fn hw_format(fmt: crate::operation::PixelFormat) -> u32 {
     }
 }
 
+/// SRC1 (foreground-constant) format field for DST_INFO, derived from a packed `hw_format` value.
+///
+/// A color FILL routes `fg_color` (SRC_FG_COLOR, 0x12c) through the engine's SRC1 / foreground
+/// channel; the vendor programs that channel's format/rb_swap/alpha_swap into DST_INFO bits[11:7]
+/// from `msg->src1.format` (rga2_reg_info.c RGA2_set_reg_dst_info:419-448), and the color_fill
+/// dispatch (rga2_reg_info.c:1084) calls `RGA2_set_reg_dst_info` but NEVER `RGA2_set_reg_src_info` —
+/// so SRC_INFO (0x104) is irrelevant to a fill and the FG color order is decided entirely by these
+/// SRC1 bits. `fg_color` is written verbatim (RGA2_set_reg_color_fill:953, no normalization).
+///
+/// `RgaOperation::Fill { color }` is documented as packed in dst-format order (operation.rs), so we
+/// set SRC1 == dst format/swap: the engine then interprets `color` in the SAME channel order it
+/// writes to the dst, guaranteeing a verbatim round-trip (e.g. RGBA8888 dst, SRC1=RGBA8888 → memory
+/// bytes [R,G,B,A]). Relying on the zeroed default (SRC1=0=RGBA8888/no-swap) only works for RGBA;
+/// this makes BGRA/ABGR/RGB888 fills correct and deterministic too.
+///
+/// The dst-position layout from `hw_format` is `fmt[3:0] | rb_swap(1<<4) | alpha_swap(1<<5)`; remap
+/// those into the SRC1 positions `fmt[9:7] | rb_swap(1<<10) | alpha_swap(1<<11)`. Format codes 0..6
+/// fit the 3-bit SRC1_FMT field (RGBA=0, RGBX=1, RGB888=2, RGB565=4); a fill dst is always RGB-family.
+const fn src1_fill_format(dst_fmt_bits: u32) -> u32 {
+    let fmt = dst_fmt_bits & 0xf;
+    let rb_swap = (dst_fmt_bits & registers::INFO_RBSWAP) != 0;
+    let alpha_swap = (dst_fmt_bits & registers::INFO_ALPHA_SWAP) != 0;
+    let mut reg = (fmt & registers::DST_INFO_SRC1_FMT_MASK) << registers::DST_INFO_SRC1_FMT_SHIFT;
+    if rb_swap {
+        reg |= registers::DST_INFO_SRC1_RB_SWAP;
+    }
+    if alpha_swap {
+        reg |= registers::DST_INFO_SRC1_ALPHA_SWAP;
+    }
+    reg
+}
+
 /// One axis of SRC_X_FACTOR / SRC_Y_FACTOR (16.16 fixed point), matching the vendor
 /// `RGA2_reg_get_param` (rga2_reg_info.c):
 ///
@@ -281,16 +313,27 @@ pub fn encode_copy(src: ImageDesc, dst: ImageDesc) -> crate::error::Result<Comma
 pub fn encode_fill(dst: ImageDesc, color: u32) -> crate::error::Result<CommandBuffer> {
     let mut buf = CommandBuffer::zeroed();
     buf.set_register(registers::DST_Y_RGB_BASE_ADDR, dst.phys_addr as u32);
-    buf.set_register(registers::DST_INFO, hw_format(dst.format));
+    // DST_INFO carries BOTH the dst format (bits[5:0]) AND the SRC1/foreground-constant format
+    // (bits[11:7]). The fill's FG color is interpreted through the SRC1 channel — the vendor
+    // color_fill path programs DST_INFO but never SRC_INFO (rga2_reg_info.c:1084), so the FG channel
+    // order is governed solely by these SRC1 bits. We set SRC1 == dst format so the engine reads
+    // `color` (packed in dst-format order) in the same channel order it writes back, giving a
+    // verbatim round-trip. run-9 fill=FAIL (engine done, wrong color) was this missing SRC1 field:
+    // SRC1 was left implicitly 0 and never tied to the dst format.
+    let dst_fmt = hw_format(dst.format);
+    buf.set_register(registers::DST_INFO, dst_fmt | src1_fill_format(dst_fmt));
     buf.set_register(registers::DST_VIR_INFO, (dst.stride_bytes / 4) & 0x7fff);
     buf.set_register(
         registers::DST_ACT_INFO,
         ((dst.width - 1) & 0x0fff) | (((dst.height - 1) & 0x0fff) << 16),
     );
     // Solid fill color lives in SRC_FG_COLOR (vendor RGA2_set_reg_color_fill:
-    // `*bRGA_SRC_FG_COLOR = msg->fg_color`, RGA2_SRC_FG_COLOR_OFFSET = 0x2c). The previous
-    // SRC_BG_COLOR (0x28) write left FG=0, so the engine completed but filled with the foreground
-    // default instead of the requested color (run-8 fill=FAIL wrong pixels).
+    // `*bRGA_SRC_FG_COLOR = msg->fg_color`, RGA2_SRC_FG_COLOR_OFFSET = 0x2c), written verbatim with
+    // no driver-side normalization (the SRC1 format above tells the engine how to read it). The
+    // earlier SRC_BG_COLOR (0x28) write left FG=0; this writes the requested color into FG.
+    // The vendor solid-color arm also writes CF_GR_A/B/G/R and SRC_VIR_INFO=mask_stride<<16; for a
+    // plain (non-gradient, non-ROP-mask) fill `gr_color` and `rop_mask_stride` are 0, which our
+    // zeroed command buffer already provides — so no extra writes are required.
     buf.set_register(registers::SRC_FG_COLOR, color);
     buf.set_register(registers::MMU_CTRL1, 0);
     buf.set_register(
@@ -350,11 +393,52 @@ mod mmu_off_tests {
         // Vendor solid-fill color lives in SRC_FG_COLOR (0x2c), not SRC_BG_COLOR (0x28).
         assert_eq!(cmd.register(registers::SRC_FG_COLOR), Some(0x0000_00ff));
         assert_eq!(cmd.register(registers::SRC_BG_COLOR), Some(0));
+        // DST_INFO carries the dst format (RGBA8888=0) in bits[5:0] AND the SRC1/foreground format in
+        // bits[11:7]. For an RGBA8888 dst both are 0, so DST_INFO is 0 — but the SRC1 field MUST be
+        // explicitly tied to the dst format (the fill FG color is interpreted through SRC1, vendor
+        // color_fill path never programs SRC_INFO). See fill_src1_format_tracks_dst.
+        assert_eq!(cmd.register(registers::DST_INFO), Some(0));
+        // The fill must NOT touch SRC_INFO (the vendor color_fill dispatch never calls
+        // RGA2_set_reg_src_info; SRC_INFO is irrelevant to FG-color interpretation).
+        assert_eq!(cmd.register(registers::SRC_INFO), Some(0));
         assert_eq!(cmd.register(registers::MMU_CTRL1), Some(0));
         assert_eq!(
             cmd.register(registers::MODE_CTRL),
             Some(encode_mode(registers::MODE_RENDER_RECTANGLE_FILL, 0))
         );
+    }
+
+    #[test]
+    fn fill_src1_format_tracks_dst() {
+        // The FG-color channel order is set by the SRC1 format field in DST_INFO (bits[11:7]); it
+        // must mirror the dst format/swap so `color` (packed in dst order) round-trips verbatim.
+        // RGBA8888 dst → SRC1 fmt=0, no swaps → SRC1 field 0.
+        let rgba = encode_fill(
+            ImageDesc::rgb(16, 16, 16 * 4, PixelFormat::Rgba8888, 0x4000_0000),
+            0x1122_33ff,
+        )
+        .unwrap()
+        .register(registers::DST_INFO)
+        .unwrap();
+        assert_eq!((rgba >> registers::DST_INFO_SRC1_FMT_SHIFT) & 0x7, 0);
+        assert_eq!(rgba & registers::DST_INFO_SRC1_RB_SWAP, 0);
+        assert_eq!(rgba & registers::DST_INFO_SRC1_ALPHA_SWAP, 0);
+        // BGRA8888 dst → hw_format = RGBA(0) | R/B-swap → SRC1 fmt=0 + SRC1_RB_SWAP set, mirroring the
+        // dst R/B-swap so the FG color is read with R/B swapped exactly as the dst writes it.
+        let bgra = encode_fill(
+            ImageDesc::rgb(16, 16, 16 * 4, PixelFormat::Bgra8888, 0x4000_0000),
+            0x1122_33ff,
+        )
+        .unwrap()
+        .register(registers::DST_INFO)
+        .unwrap();
+        // dst bits: RGBA fmt 0 + dst R/B swap (bit4).
+        assert_eq!(bgra & 0xf, registers::FMT_RGBA8888);
+        assert_ne!(bgra & registers::INFO_RBSWAP, 0);
+        // SRC1 bits: fmt 0 + SRC1 R/B swap (bit10), alpha swap clear.
+        assert_eq!((bgra >> registers::DST_INFO_SRC1_FMT_SHIFT) & 0x7, 0);
+        assert_ne!(bgra & registers::DST_INFO_SRC1_RB_SWAP, 0);
+        assert_eq!(bgra & registers::DST_INFO_SRC1_ALPHA_SWAP, 0);
     }
 
     #[test]
