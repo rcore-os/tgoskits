@@ -1,0 +1,8 @@
+# Rust ArceOS thread benchmark for Orange Pi 5 Plus / RK3588.
+target = "aarch64-unknown-none-softfloat"
+features = [
+    "orangepi-5-plus",
+]
+log = "Warn"
+max_cpu_num = 1
+plat_dyn = true

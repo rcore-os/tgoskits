@@ -7,10 +7,11 @@ publish = false
 
 [features]
 default = []
-arceos = ["dep:ax-std", "ax-std/multitask", "ax-std/irq"]
+arceos = ["dep:ax-std", "ax-std/alloc", "ax-std/multitask", "ax-std/irq"]
+orangepi-5-plus = ["arceos", "ax-std/serial", "ax-std/rockchip-soc"]
 
 [dependencies]
-ax-std = { workspace = true, optional = true }
+ax-std = { path = "../../../os/arceos/ulib/axstd", optional = true, default-features = false }
 
 [package.metadata.axstd]
 features = ["log-level-off"]

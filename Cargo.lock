@@ -352,6 +352,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "arceos-thread_perf"
+version = "0.1.0"
+dependencies = [
+ "ax-std",
+]
+
+[[package]]
 name = "arceos-thread_test"
 version = "0.1.0"
 dependencies = [

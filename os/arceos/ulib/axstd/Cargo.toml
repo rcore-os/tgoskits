@@ -96,6 +96,8 @@ virtio-net = ["ax-driver/virtio-net"]
 virtio-gpu = ["ax-driver/virtio-gpu"]
 virtio-input = ["ax-driver/virtio-input"]
 virtio-socket = ["ax-driver/virtio-socket"]
+serial = ["ax-driver/serial"]
+rockchip-soc = ["ax-driver/rockchip-soc"]
 
 # Display
 display = ["ax-api/display", "ax-feat/display"]

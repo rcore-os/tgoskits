@@ -1,0 +1,9 @@
+# U-Boot runner config for the Rust ArceOS thread benchmark on Orange Pi 5 Plus.
+# Change serial if your USB-UART is not /dev/ttyUSB0, or let ostool board config override it.
+serial = "/dev/ttyUSB1"
+baud_rate = "1500000"
+dtb_file = "os/StarryOS/configs/board/orangepi-5-plus.dtb"
+
+success_regex = ["=== thread performance benchmark complete ==="]
+fail_regex = ["(?i)\\bpanic(?:ked)?\\b"]
+timeout = 300

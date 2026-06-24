@@ -1,28 +1,35 @@
+#[cfg(not(feature = "arceos"))]
+use std::thread;
 use std::{
     sync::{
         Arc,
         atomic::{AtomicBool, AtomicUsize, Ordering},
     },
-    thread,
     time::Instant,
 };
 
 use arceos_thread_perf::{BenchStats, estimated_switch_ns};
 #[cfg(feature = "arceos")]
-use ax_std as _;
+use ax_std::{self as _, thread};
 
 const CREATE_ITERS: u64 = 100_000;
 const SWITCH_ITERS: u64 = 1_000_000;
 const WARMUP_ITERS: u64 = 1_000;
+const THREAD_STACK_SIZE: usize = 64 * 1024;
 
 fn main() {
+    #[cfg(feature = "arceos")]
     println!("=== ArceOS thread performance benchmark ===\n");
+    #[cfg(not(feature = "arceos"))]
+    println!("=== Linux Rust thread performance benchmark ===\n");
     println!("fixed create/join iters: {CREATE_ITERS}");
     println!("fixed switch iters: {SWITCH_ITERS}");
     println!("fixed warmup iters: {WARMUP_ITERS}");
-    println!(
-        "note: switch test uses AtomicUsize + thread::yield_now ping-pong, not Linux futex.\n"
-    );
+    println!("thread stack size: {THREAD_STACK_SIZE} bytes");
+    #[cfg(feature = "arceos")]
+    println!("note: uses ax_std::thread for spawn/join/yield_now.\n");
+    #[cfg(not(feature = "arceos"))]
+    println!("note: uses std::thread for spawn/join/yield_now.\n");
 
     bench_thread_create(CREATE_ITERS, WARMUP_ITERS);
     bench_thread_switch(SWITCH_ITERS, WARMUP_ITERS);
@@ -30,9 +37,20 @@ fn main() {
     println!("=== thread performance benchmark complete ===");
 }
 
+fn spawn_bench_thread<F, T>(f: F) -> thread::JoinHandle<T>
+where
+    F: FnOnce() -> T + Send + 'static,
+    T: Send + 'static,
+{
+    thread::Builder::new()
+        .stack_size(THREAD_STACK_SIZE)
+        .spawn(f)
+        .expect("failed to spawn benchmark thread")
+}
+
 fn run_create_join_loop(iters: u64) {
     for _ in 0..iters {
-        thread::spawn(|| {}).join().unwrap();
+        spawn_bench_thread(|| {}).join().unwrap();
     }
 }
 
@@ -62,7 +80,7 @@ fn bench_thread_switch(iters: u64, warmup: u64) {
 
     let worker_turn = Arc::clone(&turn);
     let worker_ready = Arc::clone(&ready);
-    let worker = thread::spawn(move || {
+    let worker = spawn_bench_thread(move || {
         worker_ready.store(true, Ordering::Release);
 
         for _ in 0..total_iters {
