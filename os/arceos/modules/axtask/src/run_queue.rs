@@ -218,12 +218,15 @@ fn kick_remote_cpu(cpu_id: usize) {
 mod tests {
     use core::sync::atomic::Ordering;
 
+    // Host-test mode collapses per-CPU state into process-global statics, so
+    // keep the shared pending/count assertions in one test.
     #[test]
-    fn remote_cpu_kick_requests_reschedule() {
+    fn remote_reschedule_request_is_coalesced_and_forced() {
         const REMOTE_CPU: usize = 1;
 
         super::REMOTE_RESCHEDULE_REQUESTS.store(0, Ordering::Release);
         super::REMOTE_RESCHEDULE_PENDING.store(false, Ordering::Release);
+
         super::kick_remote_cpu(REMOTE_CPU);
 
         assert_eq!(
@@ -231,15 +234,6 @@ mod tests {
             1,
             "remote CPU kicks must enqueue a scheduler-visible reschedule request",
         );
-    }
-
-    #[test]
-    fn remote_cpu_kick_coalesces_reschedule_request() {
-        const REMOTE_CPU: usize = 1;
-
-        super::REMOTE_RESCHEDULE_REQUESTS.store(0, Ordering::Release);
-        super::REMOTE_RESCHEDULE_PENDING.store(false, Ordering::Release);
-        super::kick_remote_cpu(REMOTE_CPU);
         super::kick_remote_cpu(REMOTE_CPU);
 
         assert_eq!(
@@ -247,23 +241,17 @@ mod tests {
             1,
             "remote CPU kicks should coalesce identical pending reschedule requests",
         );
-    }
 
-    #[test]
-    fn remote_reschedule_callback_without_deferred_request_clears_pending() {
-        super::REMOTE_RESCHEDULE_PENDING.store(true, Ordering::Release);
+        super::clear_remote_reschedule_pending_for_current_cpu();
+        super::kick_remote_cpu(REMOTE_CPU);
 
-        super::request_current_reschedule();
-
-        assert!(
-            !super::REMOTE_RESCHEDULE_PENDING.load(Ordering::Acquire),
-            "callbacks that cannot defer a reschedule must clear the coalescing bit",
+        assert_eq!(
+            super::REMOTE_RESCHEDULE_REQUESTS.load(Ordering::Acquire),
+            2,
+            "remote CPU kicks must be accepted again after the pending bit is cleared",
         );
-    }
 
-    #[cfg(feature = "preempt")]
-    #[test]
-    fn remote_reschedule_callback_requests_forced_reschedule() {
+        #[cfg(feature = "preempt")]
         crate::tests::run_in_test_scheduler(|| {
             let curr = crate::current();
 
@@ -280,7 +268,13 @@ mod tests {
                 !curr.preempt_pending_for_test(),
                 "remote IPI reschedule must not rely on ordinary RR preemption",
             );
+
+            curr.set_force_resched_pending(false);
+            curr.set_preempt_pending(false);
         });
+
+        super::REMOTE_RESCHEDULE_PENDING.store(false, Ordering::Release);
+        super::REMOTE_RESCHEDULE_REQUESTS.store(0, Ordering::Release);
     }
 }
 

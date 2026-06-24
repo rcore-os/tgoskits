@@ -26,6 +26,12 @@ static void fail_msg_at(const char *msg, int iter)
     abort();
 }
 
+static void phase_at(int iter, const char *phase)
+{
+    printf("ITER %d %s\n", iter, phase);
+    fflush(stdout);
+}
+
 static cpu_set_t single_cpu(int cpu)
 {
     cpu_set_t set;
@@ -74,9 +80,11 @@ static void run_iteration(int iter)
     int child_cpu = parent_cpu ^ 1;
 
     cpu_set_t parent_set = single_cpu(parent_cpu);
+    phase_at(iter, "parent-setaffinity begin");
     if (sched_setaffinity(0, sizeof(parent_set), &parent_set) != 0) {
         fail_at("set parent affinity", iter);
     }
+    phase_at(iter, "parent-setaffinity done");
 
     pid_t child = fork();
     if (child < 0) {
@@ -90,10 +98,12 @@ static void run_iteration(int iter)
     }
 
     cpu_set_t child_set = single_cpu(child_cpu);
+    phase_at(iter, "child-setaffinity begin");
     if (sched_setaffinity(child, sizeof(child_set), &child_set) != 0) {
         kill(child, SIGKILL);
         fail_at("set child affinity", iter);
     }
+    phase_at(iter, "child-setaffinity done");
 
     cpu_set_t observed_child;
     CPU_ZERO(&observed_child);
@@ -111,7 +121,9 @@ static void run_iteration(int iter)
     }
     require_only_cpu(&observed_parent, parent_cpu, "parent affinity should match requested CPU");
 
+    phase_at(iter, "wait begin");
     reap_killed_child(child, iter);
+    phase_at(iter, "wait done");
 }
 
 int main(void)
