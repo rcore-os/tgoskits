@@ -12,6 +12,11 @@ use starry_vm::{VmMutPtr, VmPtr};
 
 use crate::pseudofs::{DeviceOps, dev::dma_heap};
 
+/// Per-task process key — the unique task ID from the scheduler.
+fn current_id() -> u64 {
+    ax_task::current().id().as_u64()
+}
+
 /// A buffer imported via `RGA_IOC_IMPORT_BUFFER`. Stores the physical address and, when
 /// imported from a dma-buf fd, keeps the backing allocation alive until release.
 struct ImportedBuf {
@@ -22,8 +27,9 @@ struct ImportedBuf {
 }
 
 /// `/dev/rga` character device with a handle table for the MultiRGA import API.
+/// Handles are keyed by (task_id, handle) so Process A cannot resolve Process B's buffers.
 pub struct RgaDevice {
-    handle_table: Mutex<BTreeMap<u32, ImportedBuf>>,
+    handle_table: Mutex<BTreeMap<(u64, u32), ImportedBuf>>,
     next_handle: Mutex<u32>,
 }
 
@@ -35,18 +41,19 @@ impl RgaDevice {
         }
     }
 
-    /// Allocate a unique non-zero handle and insert the entry in one critical section.
+    /// Allocate a unique non-zero handle keyed by the current task, and insert the entry
+    /// in one critical section.
     fn alloc_handle(&self, entry: ImportedBuf) -> VfsResult<u32> {
+        let tid = current_id();
         let mut table = self.handle_table.lock();
         let mut next = self.next_handle.lock();
-        // Bounded probe; the table is capped in practice (≤ 64 entries per session).
         for _ in 0..=u32::MAX {
             let h = *next;
             *next = h.wrapping_add(1);
-            if h == 0 || table.contains_key(&h) {
+            if h == 0 || table.contains_key(&(tid, h)) {
                 continue;
             }
-            table.insert(h, entry);
+            table.insert((tid, h), entry);
             return Ok(h);
         }
         Err(VfsError::NoMemory)
@@ -64,8 +71,11 @@ impl RgaDevice {
         }
         if handle_flag {
             let handle = raw as u32;
+            let tid = current_id();
             let table = self.handle_table.lock();
-            let entry = table.get(&handle).ok_or(VfsError::BadFileDescriptor)?;
+            let entry = table
+                .get(&(tid, handle))
+                .ok_or(VfsError::BadFileDescriptor)?;
             // Clone the Arc so the dma-buf stays alive across submit+poll even if a concurrent
             // RELEASE_BUFFER removes the table entry mid-op. RGA_PHYSICAL_ADDRESS entries carry
             // None — the caller owns coherency for raw phys imports.
@@ -123,7 +133,7 @@ impl RgaDevice {
             return Err(VfsError::NoSuchDevice);
         }
 
-        let mut guard = devs[0].lock().map_err(|_| VfsError::ResourceBusy)?;
+        let mut guard = devs[0].try_lock().map_err(|_| VfsError::ResourceBusy)?;
         let rga = &mut *guard;
 
         let core = rga
@@ -240,6 +250,7 @@ impl RgaDevice {
 
         let elem_size = core::mem::size_of::<librga_abi::RgaExternalBuffer>();
         let base = pool.buffers_ptr as usize;
+        let tid = current_id();
         let mut table = self.handle_table.lock();
 
         for i in 0..pool.size as usize {
@@ -249,7 +260,7 @@ impl RgaDevice {
                     .vm_read_uninit()?
                     .assume_init()
             };
-            if table.remove(&ext.handle).is_none() {
+            if table.remove(&(tid, ext.handle)).is_none() {
                 return Err(VfsError::BadFileDescriptor);
             }
         }
