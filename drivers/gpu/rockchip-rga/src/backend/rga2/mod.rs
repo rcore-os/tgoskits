@@ -28,9 +28,8 @@ const INT_ERROR_CLR: u32 = 1 << 4; // sw_intr_err_clr (W1C)
 const INT_DONE_EN: u32 = 1 << 10; // sw_intr_af_e — all-command-finished interrupt enable
 const INT_MMU_EN: u32 = 1 << 9; // sw_intr_mmu_e — MMU interrupt enable
 const INT_ERROR_EN: u32 = 1 << 8; // sw_intr_err_e — error interrupt enable
-// STATUS (0x000c): bit0 sw_rga_sta (0=idle, 1=working). Used as a completion fallback: a single
-// command-list op that has returned to idle (bit0==0) with no INT error flag has finished.
-const STATUS_BUSY: u32 = 1 << 0; // sw_rga_sta — RGA engine working
+// STATUS (0x000c): bit0 sw_rga_sta (0=idle, 1=working). Read back into RgaDiag for diagnostics; no
+// longer a completion signal (poll() relies on the af/err INT flags).
 // SYS_CTRL (0x0000): soft-reset = aclk-domain (bit3) | core-clk-domain (bit4). (bit0 is command-start, NOT reset.)
 const SYS_CTRL_SOFT_RESET: u32 = (1 << 3) | (1 << 4);
 // SYS_CTRL run/mode bits. Value 0x66 is the vendor rga2_drv.c convention (RK3288-family TRM);
@@ -139,17 +138,15 @@ impl RgaBackend for Rga2Backend {
     }
 
     fn poll(&self) -> RgaStatus {
+        // Authoritative completion = the af flag (INT bit2), armed before start in submit(). The
+        // earlier STATUS.sw_rga_sta==0 idle fallback was removed: on the very first poll the engine
+        // may not have transitioned to busy yet (sw_rga_sta still 0), so the fallback could report
+        // Done before the op ran. Relying on the af/err flags also makes "did af latch?" observable
+        // for the wrong-output case (the selftest now dumps diag on the Ok-but-FAIL path).
         let int = self.read32(registers::INT);
         if int & INT_ERROR != 0 {
             RgaStatus::Error
         } else if int & INT_DONE != 0 {
-            // Primary completion signal: the af flag, now armed via submit()'s enable write.
-            RgaStatus::Done
-        } else if self.read32(registers::STATUS) & STATUS_BUSY == 0 {
-            // Robustness fallback: no error flag and the engine has returned to idle
-            // (STATUS.sw_rga_sta==0) => the single-command op finished even if the af flag read
-            // back late. (On-board diag for the copy/fill op showed status=0x100, i.e. bit0==0
-            // = idle, already a completed state.) Covers any latch/visibility lag on INT bit2.
             RgaStatus::Done
         } else {
             RgaStatus::Busy
