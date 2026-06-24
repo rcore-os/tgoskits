@@ -46,12 +46,17 @@ impl PtyWriter {
 
 impl TtyWrite for PtyWriter {
     fn write(&self, buf: &[u8]) {
-        let read = self.0.lock().push_slice(buf);
-        // PTY bytes are committed before waking the peer reader.
-        unsafe { self.1.wake(IoEvents::IN) };
+        let read = self.try_write(buf);
         if read < buf.len() {
             warn!("Discarding {} bytes written to pty", buf.len() - read);
         }
+    }
+
+    fn try_write(&self, buf: &[u8]) -> usize {
+        let read = self.0.lock().push_slice(buf);
+        // PTY bytes are committed before waking the peer reader.
+        unsafe { self.1.wake(IoEvents::IN) };
+        read
     }
 }
 

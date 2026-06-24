@@ -46,8 +46,7 @@
 //!     .stop_bits(some_serial::StopBits::One)
 //!     .parity(some_serial::Parity::None);
 //!
-//! uart.set_config(&config).unwrap();
-//! uart.open();
+//! uart.startup(&config).unwrap();
 //!
 //! while !uart.tx_ready() {
 //!     core::hint::spin_loop();

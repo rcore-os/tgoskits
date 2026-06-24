@@ -73,7 +73,7 @@ someboot 等 allocator 初始化前路径直接保存这个对象，不需要 `B
 ```rust
 use core::ptr::NonNull;
 use some_serial::{
-    ns16550::Ns16550, Config, DataBits, InterfaceRaw as _, Parity, SerialDirection, StopBits,
+    ns16550::Ns16550, Config, DataBits, Parity, RawUart as _, StopBits,
 };
 
 let base_addr = NonNull::new(0x9000000 as *mut u8).unwrap();
@@ -85,27 +85,32 @@ let config = Config::new()
     .stop_bits(StopBits::One)
     .parity(Parity::None);
 
-uart.set_config(&config).expect("Failed to configure UART");
-uart.open();
+uart.startup(&config).expect("Failed to configure UART");
 uart.enable_loopback();
 
 let test_data = b"Hello, Serial!";
 let mut sent = 0;
 while sent < test_data.len() {
-    let n = uart.try_write(&test_data[sent..]);
-    if n == 0 {
+    let status = uart.poll_status();
+    if !status.tx_ready() {
         core::hint::spin_loop();
+        continue;
     }
-    sent += n;
+    uart.write_byte(test_data[sent]);
+    sent += 1;
 }
 println!("Sent {} bytes", sent);
 
 let mut buffer = [0u8; 64];
-let received = if uart.pending(SerialDirection::Input) {
-    uart.try_read(&mut buffer).expect("Failed to receive")
-} else {
-    0
-};
+let mut received = 0;
+while received < buffer.len() {
+    let status = uart.poll_status();
+    let Some(result) = uart.read_byte(status) else {
+        break;
+    };
+    buffer[received] = result.expect("Failed to receive");
+    received += 1;
+}
 println!("Received {} bytes: {:?}", received, &buffer[..received]);
 ```
 
@@ -138,55 +143,44 @@ let mut uart = some_serial::ns16550::Ns16550::new_mmio(
 #### 中断驱动通信
 
 ```rust
-use some_serial::{InterfaceRaw as _, InterruptMask};
+use rdif_serial::{InterruptMask, RawUart as _};
 use some_serial::pl011::Pl011;
 
 // 创建并配置 UART
 let mut uart = Pl011::new(base_addr, clock_freq);
-uart.set_config(&config).unwrap();
-uart.open();
+uart.startup(&config).unwrap();
 
 // 启用中断
-uart.set_irq_mask(InterruptMask::RX_AVAILABLE | InterruptMask::TX_EMPTY);
+uart.set_irq_mask(InterruptMask::RX | InterruptMask::TX_SPACE);
 
 // 在中断控制器回调中同步硬件 IRQ 状态
-let event = uart.handle_irq();
-if event.rx_ready() {
-    // 运行时决定唤醒任务或继续轮询
+let snapshot = uart.take_irq_snapshot();
+if snapshot.claimed {
+    // 上层 runtime 决定是否读取 RX FIFO、推进 TX FIFO、唤醒任务。
 }
-
-// 数据搬运仍由任务态通过 try_read/try_write 推进
 ```
 
 #### 平台检测与适配
 
-需要运行时动态分发的 rdrive/Starry 路径可以把 concrete 设备包装成 `rdif_serial::BSerial`。
-这个对象只负责控制和 split/restore；拆出的 TX/RX/IRQ runtime parts 各自持有可复制寄存器入口，
-并通过共享原子状态同步 IRQ event 和 read-clear 错误位，不在 rdif adapter 内使用 Mutex。
+需要运行时动态分发的 rdrive/Starry 路径应在 OS glue 层把 concrete raw driver 包装进
+`rdif_serial::SerialCore`，再由目标内核提供端口锁。`some-serial` 自身不包含 mutex、
+wait queue、poll set 或任务唤醒逻辑。
 
 ```rust
 use core::ptr::NonNull;
-use rdif_serial::{BSerial, Interface as _, TTxQueue as _};
+use rdif_serial::{Config, SerialCore};
+use some_serial::ns16550::Ns16550;
 
-fn create_serial_for_runtime(base_addr: NonNull<u8>, clock_freq: u32) -> BSerial {
-    some_serial::ns16550::Ns16550::new_mmio_boxed(base_addr, clock_freq, 1)
-}
-
-let mut serial = create_serial_for_runtime(
+let raw = Ns16550::new_mmio(
     NonNull::new(0x40000000 as *mut u8).unwrap(),
     16_000_000,
+    1,
 );
+let mut core = SerialCore::new(raw);
+core.startup(&Config::new().baudrate(115200)).unwrap();
 
-let mut tx = serial.take_tx().expect("missing TX queue");
-let mut sent = 0;
-let bytes = b"runtime serial\n";
-while sent < bytes.len() {
-    let n = tx.try_write(&bytes[sent..]);
-    if n == 0 {
-        core::hint::spin_loop();
-    }
-    sent += n;
-}
+let accepted = core.enqueue_tx(b"runtime serial\n").accepted;
+assert!(accepted > 0);
 ```
 
 #### 平台特定配置获取
@@ -237,8 +231,8 @@ let stop_bits = uart.stop_bits();
 let parity = uart.parity();
 
 // 查询 I/O 就绪事件
-let event = uart.poll();
-let can_write = uart.pending(some_serial::SerialDirection::Output);
+let event = uart.poll_status();
+let can_write = event.tx_ready();
 ```
 
 ## 测试
@@ -289,7 +283,7 @@ cargo test --test test --  --show-output --uboot
 ### 添加新驱动支持
 
 1. **创建驱动模块**：在 `src/` 目录下创建新的驱动文件
-2. **实现 raw 接口**：驱动对象实现 `InterfaceRaw` 的配置、IRQ mask、`pending`、`poll`、`try_write`、`try_read`、`handle_irq`
+2. **实现 raw 接口**：驱动对象实现 `RawUart` 的配置、IRQ mask、IRQ snapshot、RX sample、TX ready/write 等寄存器级方法
 3. **添加测试**：为新驱动编写完整的测试套件
 4. **更新文档**：在 README 中添加驱动说明和使用示例
 5. **提交 PR**：详细描述新驱动的功能和使用方法
@@ -304,9 +298,8 @@ pub struct NewDriver {
     // 驱动寄存器句柄、时钟、saved status、IRQ mask shadow 等状态
 }
 
-impl InterfaceRaw for NewDriver {
-    // 实现配置、开关、IRQ mask
-    // 实现 pending/poll/try_write/try_read/handle_irq
+impl RawUart for NewDriver {
+    // 实现配置、IRQ mask、take_irq_snapshot、read_rx、tx_ready、write_tx 等方法
 }
 ```
 

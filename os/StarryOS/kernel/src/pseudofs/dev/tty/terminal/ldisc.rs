@@ -56,6 +56,11 @@ pub trait TtyRead: Send + Sync + 'static {
 pub trait TtyWrite: Send + Sync + 'static {
     fn write(&self, buf: &[u8]);
 
+    fn try_write(&self, buf: &[u8]) -> usize {
+        self.write(buf);
+        buf.len()
+    }
+
     fn flush_echo_before_input(&self) -> bool {
         false
     }
@@ -301,25 +306,39 @@ impl<W: TtyWrite> EchoQueue<W> {
     }
 
     fn write_now(&self, bytes: &[u8]) {
-        self.writer.write(bytes);
+        let written = self.writer.try_write(bytes);
+        if written < bytes.len() {
+            self.enqueue(&bytes[written..]);
+        }
     }
 
     fn drain_available(&self) -> bool {
         let mut progressed = false;
         loop {
             let chunk = {
-                let mut queue = self.queue.lock();
+                let queue = self.queue.lock();
                 if queue.is_empty() {
                     break;
                 }
                 let len = queue.len().min(ECHO_WRITE_CHUNK);
                 let mut chunk = Vec::with_capacity(len);
-                for _ in 0..len {
-                    chunk.push(queue.pop_front().unwrap());
+                for byte in queue.iter().take(len) {
+                    chunk.push(*byte);
                 }
                 chunk
             };
-            self.writer.write(&chunk);
+            let written = self.writer.try_write(&chunk);
+            if written == 0 {
+                break;
+            }
+            {
+                let mut queue = self.queue.lock();
+                for _ in 0..written {
+                    if queue.pop_front().is_none() {
+                        break;
+                    }
+                }
+            }
             progressed = true;
         }
 
@@ -648,6 +667,11 @@ mod tests {
             self.calls.fetch_add(1, Ordering::Relaxed);
             self.bytes.fetch_add(buf.len(), Ordering::Relaxed);
         }
+
+        fn try_write(&self, buf: &[u8]) -> usize {
+            self.write(buf);
+            buf.len()
+        }
     }
 
     struct OrderedEchoWriter {
@@ -659,6 +683,11 @@ mod tests {
         fn write(&self, buf: &[u8]) {
             self.calls.fetch_add(1, Ordering::Relaxed);
             self.bytes.fetch_add(buf.len(), Ordering::Relaxed);
+        }
+
+        fn try_write(&self, buf: &[u8]) -> usize {
+            self.write(buf);
+            buf.len()
         }
 
         fn flush_echo_before_input(&self) -> bool {
@@ -678,8 +707,38 @@ mod tests {
             self.bytes.fetch_add(buf.len(), Ordering::Relaxed);
         }
 
+        fn try_write(&self, buf: &[u8]) -> usize {
+            self.write(buf);
+            buf.len()
+        }
+
         fn max_sync_echo_bytes(&self) -> usize {
             self.limit
+        }
+    }
+
+    struct BackpressuredWriter {
+        calls: Arc<AtomicUsize>,
+        bytes: Arc<AtomicUsize>,
+        budget: Arc<AtomicUsize>,
+    }
+
+    impl TtyWrite for BackpressuredWriter {
+        fn write(&self, _buf: &[u8]) {
+            panic!("echo flushing must use non-blocking try_write");
+        }
+
+        fn try_write(&self, buf: &[u8]) -> usize {
+            self.calls.fetch_add(1, Ordering::Relaxed);
+            let budget = self.budget.load(Ordering::Acquire);
+            let written = buf.len().min(budget);
+            self.budget.fetch_sub(written, Ordering::AcqRel);
+            self.bytes.fetch_add(written, Ordering::Relaxed);
+            written
+        }
+
+        fn flush_echo_before_input(&self) -> bool {
+            true
         }
     }
 
@@ -898,6 +957,32 @@ mod tests {
 
         assert!(reader.drain_source_into_line_buffer());
         assert_eq!(rx.occupied_len(), b"burst\n".len());
+    }
+
+    #[test]
+    fn synchronous_echo_backpressure_queues_unsent_suffix() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let bytes = Arc::new(AtomicUsize::new(0));
+        let budget = Arc::new(AtomicUsize::new(2));
+        let echo = EchoQueue::new(
+            BackpressuredWriter {
+                calls: calls.clone(),
+                bytes: bytes.clone(),
+                budget: budget.clone(),
+            },
+            Arc::new(PollSet::new()),
+        );
+
+        echo.write_now(b"abcdef");
+
+        assert_eq!(bytes.load(Ordering::Relaxed), 2);
+        assert_eq!(echo.queue.lock().len(), 4);
+
+        budget.store(4, Ordering::Release);
+        assert!(echo.drain_available());
+        assert_eq!(bytes.load(Ordering::Relaxed), 6);
+        assert!(echo.queue.lock().is_empty());
+        assert!(calls.load(Ordering::Relaxed) >= 2);
     }
 
     #[test]

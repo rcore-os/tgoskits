@@ -35,6 +35,7 @@ pub type SerialTtyDriver = Tty<SerialReader, SerialWriter>;
 
 const SERIAL_RX_DRAIN_CHUNK: usize = 256;
 const SERIAL_SYNC_ECHO_LIMIT: usize = 256;
+const SERIAL_DEFAULT_BAUDRATE: u32 = 115_200;
 
 bitflags! {
     #[derive(Clone, Copy, Debug, Default)]
@@ -364,7 +365,7 @@ impl SerialBackend {
 
         if let Err(err) = self
             .port
-            .startup(&Config::new().baudrate(self.port.baudrate()))
+            .startup(&Config::new().baudrate(startup_baudrate(self.port.baudrate())))
         {
             warn!(
                 "{} failed to start serial port {}: {:?}",
@@ -385,6 +386,14 @@ impl SerialBackend {
         publish_serial_outcome(self, self.port.startup_catch_up(), false);
         self.started.store(true, Ordering::Release);
         true
+    }
+}
+
+fn startup_baudrate(current: u32) -> u32 {
+    if current == 0 {
+        SERIAL_DEFAULT_BAUDRATE
+    } else {
+        current
     }
 }
 
@@ -503,6 +512,16 @@ impl TtyWrite for SerialWriter {
             }
             written += count;
         }
+    }
+
+    fn try_write(&self, buf: &[u8]) -> usize {
+        if buf.is_empty() {
+            return 0;
+        }
+        let Some(_guard) = self.backend.output_lock.try_lock() else {
+            return 0;
+        };
+        self.backend.port.try_write(buf)
     }
 
     fn flush_echo_before_input(&self) -> bool {
@@ -695,5 +714,11 @@ mod tests {
             select_console_candidate(&candidates, Err(ConsoleDeviceIdError::NoHardwareDevice)),
             None
         );
+    }
+
+    #[test]
+    fn zero_hardware_baudrate_uses_runtime_default() {
+        assert_eq!(super::startup_baudrate(0), super::SERIAL_DEFAULT_BAUDRATE);
+        assert_eq!(super::startup_baudrate(1_500_000), 1_500_000);
     }
 }
