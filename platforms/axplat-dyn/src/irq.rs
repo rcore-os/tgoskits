@@ -1,7 +1,7 @@
 #[cfg(all(target_arch = "riscv64", feature = "hv"))]
 use core::sync::atomic::{AtomicPtr, Ordering};
 
-use ax_plat::irq::{IrqIf, dispatch_irq};
+use ax_plat::irq::{IrqAffinity, IrqError, IrqIf, dispatch_irq};
 
 #[cfg(all(target_arch = "riscv64", feature = "hv"))]
 const RISCV_INTERRUPT_BIT: usize = 1usize << (usize::BITS as usize - 1);
@@ -21,6 +21,14 @@ impl IrqIf for IrqIfImpl {
     /// Enables or disables the given IRQ.
     fn set_enable(irq_raw: usize, enabled: bool) {
         somehal::irq::irq_set_enable(irq_raw.into(), enabled);
+    }
+
+    fn set_affinity(irq_raw: usize, affinity: IrqAffinity) -> Result<(), IrqError> {
+        let affinity = match affinity {
+            IrqAffinity::Any => somehal::irq::IrqAffinity::Any,
+            IrqAffinity::Fixed(cpu) => somehal::irq::IrqAffinity::Fixed { cpu_id: cpu.0 },
+        };
+        somehal::irq::irq_set_affinity(irq_raw.into(), affinity).map_err(|_| IrqError::Unsupported)
     }
 
     /// Handles the IRQ.

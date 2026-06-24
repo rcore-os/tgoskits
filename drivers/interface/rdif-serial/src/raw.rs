@@ -57,7 +57,7 @@ pub trait RawUart: Send + Any + 'static {
     /// Read a raw hardware status snapshot.
     ///
     /// This is for polling users that directly own the raw UART, such as
-    /// someboot early console. Runtime `SerialCore` must not call this method.
+    /// someboot early console. Runtime TX/RX queues must not call this method.
     fn poll_status(&mut self) -> SerialEvent;
 
     /// Direct polling helper for early console users.

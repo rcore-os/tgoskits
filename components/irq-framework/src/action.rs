@@ -4,15 +4,17 @@ use core::{
     sync::atomic::AtomicBool,
 };
 
-use crate::{AutoEnable, CpuId, CpuMask, IrqRequest, IrqScope, RawIrqHandler};
+use crate::{AutoEnable, CpuId, CpuMask, IrqExecution, IrqRequest, IrqScope, RawIrqHandler};
 
 pub(crate) struct Action {
     pub(crate) id: u64,
     pub(crate) handler: RawIrqHandler,
     pub(crate) data: NonNull<()>,
     pub(crate) scope: IrqScope,
+    pub(crate) execution: IrqExecution,
     pub(crate) enabled: AtomicBool,
     pub(crate) detached: AtomicBool,
+    pub(crate) running: AtomicBool,
     pending_enable: UnsafeCell<CpuMask>,
     pub(crate) next: *mut Action,
 }
@@ -29,8 +31,10 @@ impl Action {
             handler: request.handler,
             data: request.data,
             scope: request.scope,
+            execution: request.execution,
             enabled: AtomicBool::new(request.auto_enable == AutoEnable::Yes),
             detached: AtomicBool::new(false),
+            running: AtomicBool::new(false),
             pending_enable: UnsafeCell::new(CpuMask::empty()),
             next: ptr::null_mut(),
         }

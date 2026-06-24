@@ -696,7 +696,9 @@ mod tests {
     use core::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
     use std::sync::{Mutex, MutexGuard};
 
-    use rdif_serial::{RxItem, SerialCore};
+    use rdif_serial::{
+        OwnerId, OwnerLease, RxItem, SerialIrqHandler, SerialParts, TSerialIrqHandler,
+    };
 
     use super::*;
 
@@ -800,10 +802,14 @@ mod tests {
         )
     }
 
-    fn started_core(uart: Ns16550<MockKind>) -> SerialCore<Ns16550<MockKind>, 64, 64> {
-        let mut core = SerialCore::new(uart);
-        core.startup(&Config::new()).unwrap();
-        core
+    fn owner_lease() -> OwnerLease<'static> {
+        unsafe { OwnerLease::new_unchecked(OwnerId(0)) }
+    }
+
+    fn started_parts(uart: Ns16550<MockKind>) -> SerialParts<Ns16550<MockKind>, 64, 64> {
+        let parts = SerialIrqHandler::<_, 64, 64>::split(uart, OwnerId(0));
+        parts.irq.startup(owner_lease(), &Config::new()).unwrap();
+        parts
     }
 
     #[test]
@@ -930,8 +936,11 @@ mod tests {
     #[test]
     fn serial_core_single_irq_services_rx_and_tx_fifo() {
         let (_guard, uart) = serial();
-        let mut core = started_core(uart);
-        assert_eq!(core.enqueue_tx(b"ab").accepted, 2);
+        let parts = started_parts(uart);
+        let mut tx = parts.tx;
+        let mut rx_queue = parts.rx;
+        let irq = parts.irq;
+        assert_eq!(tx.submit(b"ab").accepted, 2);
 
         REGS[UART_IIR as usize].store(
             InterruptIdentificationFlags::TRANSMITTER_HOLDING_EMPTY.bits(),
@@ -941,7 +950,7 @@ mod tests {
             LineStatusFlags::TRANSMITTER_HOLDING_EMPTY.bits(),
             Ordering::SeqCst,
         );
-        let outcome = core.handle_irq();
+        let outcome = irq.handle(owner_lease());
         assert!(outcome.claimed);
         assert_eq!(outcome.tx_sent, 1);
         assert_eq!(REGS[UART_THR as usize].load(Ordering::SeqCst), b'a');
@@ -952,12 +961,12 @@ mod tests {
         );
         REGS[UART_LSR as usize].store(LineStatusFlags::DATA_READY.bits(), Ordering::SeqCst);
         REGS[UART_RBR as usize].store(b'z', Ordering::SeqCst);
-        let outcome = core.handle_irq();
+        let outcome = irq.handle(owner_lease());
         assert!(outcome.claimed);
         assert_eq!(outcome.rx_pushed, 1);
 
         let mut rx = [RxItem::default(); 1];
-        assert_eq!(core.drain_rx(&mut rx), 1);
+        assert_eq!(rx_queue.drain(&mut rx), 1);
         assert_eq!(
             rx[0],
             RxItem::Byte {
@@ -970,8 +979,10 @@ mod tests {
     #[test]
     fn serial_core_does_not_synthesize_tx_irq_from_plain_lsr_ready() {
         let (_guard, uart) = serial();
-        let mut core = started_core(uart);
-        assert_eq!(core.enqueue_tx(b"x").accepted, 1);
+        let parts = started_parts(uart);
+        let mut tx = parts.tx;
+        let irq = parts.irq;
+        assert_eq!(tx.submit(b"x").accepted, 1);
         REGS[UART_IIR as usize].store(
             InterruptIdentificationFlags::NO_INTERRUPT_PENDING.bits(),
             Ordering::SeqCst,
@@ -981,10 +992,10 @@ mod tests {
             Ordering::SeqCst,
         );
 
-        let outcome = core.handle_irq();
+        let outcome = irq.handle(owner_lease());
         assert!(!outcome.claimed);
         assert_eq!(outcome.tx_sent, 0);
-        assert_eq!(core.chars_in_buffer(), 1);
+        assert_eq!(tx.chars_in_buffer(), 1);
     }
 
     #[test]
@@ -1023,7 +1034,8 @@ mod tests {
     #[test]
     fn hard_irq_claims_and_clears_modem_status_interrupt() {
         let (_guard, uart) = serial();
-        let mut core = started_core(uart);
+        let parts = started_parts(uart);
+        let irq = parts.irq;
 
         REGS[UART_IIR as usize].store(
             InterruptIdentificationFlags::MODEM_STATUS.bits()
@@ -1035,7 +1047,7 @@ mod tests {
             Ordering::SeqCst,
         );
 
-        let outcome = core.handle_irq();
+        let outcome = irq.handle(owner_lease());
         assert!(outcome.claimed);
         assert_eq!(outcome.rx_pushed, 0);
         assert_eq!(outcome.tx_sent, 0);
@@ -1049,7 +1061,9 @@ mod tests {
     #[test]
     fn serial_core_rx_irq_drains_raw_fifo() {
         let (_guard, uart) = serial();
-        let mut core = started_core(uart);
+        let parts = started_parts(uart);
+        let mut rx_queue = parts.rx;
+        let irq = parts.irq;
 
         REGS[UART_IIR as usize].store(
             InterruptIdentificationFlags::RECEIVED_DATA_AVAILABLE.bits(),
@@ -1058,12 +1072,12 @@ mod tests {
         REGS[UART_LSR as usize].store(LineStatusFlags::DATA_READY.bits(), Ordering::SeqCst);
         REGS[UART_RBR as usize].store(b'r', Ordering::SeqCst);
 
-        let outcome = core.handle_irq();
+        let outcome = irq.handle(owner_lease());
         assert!(outcome.claimed);
         assert_eq!(outcome.rx_pushed, 1);
 
         let mut rx = [RxItem::default(); 1];
-        assert_eq!(core.drain_rx(&mut rx), 1);
+        assert_eq!(rx_queue.drain(&mut rx), 1);
         assert_eq!(
             rx[0],
             RxItem::Byte {
@@ -1076,10 +1090,12 @@ mod tests {
     #[test]
     fn serial_core_tx_irq_uses_software_fifo() {
         let (_guard, uart) = serial();
-        let mut core = started_core(uart);
+        let parts = started_parts(uart);
+        let mut tx = parts.tx;
+        let irq = parts.irq;
 
-        assert_eq!(core.enqueue_tx(b"ab").accepted, 2);
-        assert_eq!(core.chars_in_buffer(), 2);
+        assert_eq!(tx.submit(b"ab").accepted, 2);
+        assert_eq!(tx.chars_in_buffer(), 2);
 
         REGS[UART_IIR as usize].store(
             InterruptIdentificationFlags::TRANSMITTER_HOLDING_EMPTY.bits(),
@@ -1090,17 +1106,19 @@ mod tests {
             Ordering::SeqCst,
         );
 
-        let outcome = core.handle_irq();
+        let outcome = irq.handle(owner_lease());
         assert!(outcome.claimed);
         assert_eq!(outcome.tx_sent, 1);
         assert_eq!(REGS[UART_THR as usize].load(Ordering::SeqCst), b'a');
-        assert_eq!(core.chars_in_buffer(), 1);
+        assert_eq!(tx.chars_in_buffer(), 1);
     }
 
     #[test]
     fn serial_core_saved_lsr_error_is_consumed_by_rx_fifo() {
         let (_guard, uart) = serial();
-        let mut core = started_core(uart);
+        let parts = started_parts(uart);
+        let mut rx_queue = parts.rx;
+        let irq = parts.irq;
 
         REGS[UART_IIR as usize].store(
             InterruptIdentificationFlags::RECEIVER_LINE_STATUS.bits(),
@@ -1112,12 +1130,12 @@ mod tests {
         );
         REGS[UART_RBR as usize].store(b'p', Ordering::SeqCst);
 
-        let outcome = core.handle_irq();
+        let outcome = irq.handle(owner_lease());
         assert!(outcome.claimed);
         assert_eq!(outcome.rx_pushed, 1);
 
         let mut rx = [RxItem::default(); 1];
-        assert_eq!(core.drain_rx(&mut rx), 1);
+        assert_eq!(rx_queue.drain(&mut rx), 1);
         assert_eq!(
             rx[0],
             RxItem::Byte {
@@ -1130,7 +1148,9 @@ mod tests {
     #[test]
     fn serial_core_rx_overrun_returns_current_byte_and_marker() {
         let (_guard, uart) = serial();
-        let mut core = started_core(uart);
+        let parts = started_parts(uart);
+        let mut rx_queue = parts.rx;
+        let irq = parts.irq;
 
         REGS[UART_IIR as usize].store(
             InterruptIdentificationFlags::RECEIVER_LINE_STATUS.bits(),
@@ -1142,12 +1162,12 @@ mod tests {
         );
         REGS[UART_RBR as usize].store(b'S', Ordering::SeqCst);
 
-        let outcome = core.handle_irq();
+        let outcome = irq.handle(owner_lease());
         assert!(outcome.claimed);
         assert_eq!(outcome.rx_pushed, 2);
 
         let mut rx = [RxItem::default(); 2];
-        assert_eq!(core.drain_rx(&mut rx), 2);
+        assert_eq!(rx_queue.drain(&mut rx), 2);
         assert_eq!(
             rx[0],
             RxItem::Byte {

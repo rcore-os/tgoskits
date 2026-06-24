@@ -137,6 +137,13 @@ impl PowerIf for DummyPower {
 impl IrqIf for DummyIrq {
     fn set_enable(_irq: usize, _enabled: bool) {}
 
+    fn set_affinity(
+        _irq: usize,
+        _affinity: ax_plat::irq::IrqAffinity,
+    ) -> Result<(), ax_plat::irq::IrqError> {
+        Err(ax_plat::irq::IrqError::Unsupported)
+    }
+
     fn handle(_irq: usize) -> Option<usize> {
         None
     }

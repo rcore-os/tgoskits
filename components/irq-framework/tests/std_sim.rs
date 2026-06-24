@@ -8,8 +8,8 @@ use std::{
 };
 
 use irq_framework::{
-    AutoEnable, CpuId, CpuMask, IrqContext, IrqError, IrqNumber, IrqOps, IrqRequest, IrqReturn,
-    IrqScope, Registry, ShareMode,
+    AutoEnable, CpuId, CpuMask, IrqAffinity, IrqContext, IrqError, IrqExecution, IrqNumber, IrqOps,
+    IrqRequest, IrqReturn, IrqScope, Registry, ShareMode,
 };
 
 #[derive(Clone, Default)]
@@ -26,6 +26,7 @@ struct MockInner {
     line_enabled: Mutex<Vec<(usize, Option<usize>, bool)>>,
     calls: Mutex<Vec<OpCall>>,
     fail_set_enabled: Mutex<Vec<(usize, Option<usize>, bool)>>,
+    fail_set_affinity: AtomicBool,
     remote_calls: AtomicUsize,
 }
 
@@ -35,6 +36,10 @@ enum OpCall {
         irq: usize,
         cpu: Option<usize>,
         enabled: bool,
+    },
+    SetAffinity {
+        irq: usize,
+        affinity: IrqAffinity,
     },
     IsEnabled {
         irq: usize,
@@ -84,6 +89,10 @@ impl MockOps {
             .lock()
             .unwrap()
             .push((irq, cpu, enabled));
+    }
+
+    fn fail_set_affinity(&self) {
+        self.inner.fail_set_affinity.store(true, Ordering::SeqCst);
     }
 
     fn set_line_enabled(&self, irq: usize, cpu: Option<usize>, enabled: bool) {
@@ -177,6 +186,17 @@ impl IrqOps for MockOps {
             return Err(IrqError::Controller);
         }
         self.set_line_state_from_calls(irq.0, cpu.map(|cpu| cpu.0), enabled);
+        Ok(())
+    }
+
+    fn set_affinity(&self, irq: IrqNumber, affinity: IrqAffinity) -> Result<(), IrqError> {
+        self.inner.calls.lock().unwrap().push(OpCall::SetAffinity {
+            irq: irq.0,
+            affinity,
+        });
+        if self.inner.fail_set_affinity.load(Ordering::SeqCst) {
+            return Err(IrqError::Controller);
+        }
         Ok(())
     }
 
@@ -689,6 +709,106 @@ fn exclusive_and_shared_conflict() {
 }
 
 #[test]
+fn fixed_affinity_is_set_before_restoring_enabled_line() {
+    let ops = MockOps::with_cpus(2);
+    let registry = Registry::new(ops.clone());
+    let counter = AtomicUsize::new(0);
+    let data = NonNull::from(&counter).cast();
+
+    registry
+        .request(
+            IrqNumber(41),
+            IrqRequest::new(count_handler, data).affinity(IrqAffinity::Fixed(CpuId(1))),
+        )
+        .unwrap();
+
+    assert_eq!(
+        ops.calls(),
+        vec![
+            OpCall::IsEnabled { irq: 41, cpu: None },
+            OpCall::SetEnabled {
+                irq: 41,
+                cpu: None,
+                enabled: false,
+            },
+            OpCall::SetAffinity {
+                irq: 41,
+                affinity: IrqAffinity::Fixed(CpuId(1)),
+            },
+            OpCall::SetEnabled {
+                irq: 41,
+                cpu: None,
+                enabled: true,
+            },
+        ]
+    );
+}
+
+#[test]
+fn fixed_affinity_rejects_offline_cpu_and_controller_failure() {
+    let ops = MockOps::with_cpus(2);
+    let registry = Registry::new(ops.clone());
+    let counter = AtomicUsize::new(0);
+    let data = NonNull::from(&counter).cast();
+
+    ops.set_online(1, false);
+    assert_eq!(
+        registry.request(
+            IrqNumber(42),
+            IrqRequest::new(count_handler, data).affinity(IrqAffinity::Fixed(CpuId(1))),
+        ),
+        Err(IrqError::CpuOffline)
+    );
+
+    ops.set_online(1, true);
+    ops.fail_set_affinity();
+    assert_eq!(
+        registry.request(
+            IrqNumber(42),
+            IrqRequest::new(count_handler, data).affinity(IrqAffinity::Fixed(CpuId(1))),
+        ),
+        Err(IrqError::Controller)
+    );
+}
+
+#[test]
+fn shared_actions_must_use_same_affinity_and_execution_contract() {
+    let registry = Registry::new(MockOps::with_cpus(2));
+    let first = AtomicUsize::new(0);
+    let second = AtomicUsize::new(0);
+
+    registry
+        .request(
+            IrqNumber(43),
+            IrqRequest::new(count_handler, NonNull::from(&first).cast())
+                .share_mode(ShareMode::Shared)
+                .affinity(IrqAffinity::Fixed(CpuId(0)))
+                .execution(IrqExecution::NonReentrant),
+        )
+        .unwrap();
+
+    assert_eq!(
+        registry.request(
+            IrqNumber(43),
+            IrqRequest::new(count_handler, NonNull::from(&second).cast())
+                .share_mode(ShareMode::Shared)
+                .affinity(IrqAffinity::Fixed(CpuId(1)))
+                .execution(IrqExecution::NonReentrant),
+        ),
+        Err(IrqError::Busy)
+    );
+    assert_eq!(
+        registry.request(
+            IrqNumber(43),
+            IrqRequest::new(count_handler, NonNull::from(&second).cast())
+                .share_mode(ShareMode::Shared)
+                .affinity(IrqAffinity::Fixed(CpuId(0))),
+        ),
+        Err(IrqError::Busy)
+    );
+}
+
+#[test]
 fn free_waits_for_inflight_dispatch_and_detaches_action() {
     struct Blocker {
         entered: Arc<Barrier>,
@@ -735,6 +855,91 @@ fn free_waits_for_inflight_dispatch_and_detaches_action() {
     assert!(!outcome.handled);
     assert_eq!(outcome.called, 0);
     assert_eq!(blocker.calls.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn non_reentrant_action_skips_nested_dispatch() {
+    struct Blocker {
+        entered: Arc<Barrier>,
+        release: Arc<Barrier>,
+        calls: AtomicUsize,
+    }
+
+    unsafe fn blocking_handler(_ctx: IrqContext, data: NonNull<()>) -> IrqReturn {
+        let blocker = unsafe { data.cast::<Blocker>().as_ref() };
+        blocker.calls.fetch_add(1, Ordering::SeqCst);
+        blocker.entered.wait();
+        blocker.release.wait();
+        IrqReturn::Handled
+    }
+
+    let registry = Arc::new(Registry::new(MockOps::with_cpus(1)));
+    let blocker = Box::new(Blocker {
+        entered: Arc::new(Barrier::new(2)),
+        release: Arc::new(Barrier::new(2)),
+        calls: AtomicUsize::new(0),
+    });
+    let data = NonNull::from(blocker.as_ref()).cast();
+    registry
+        .request(
+            IrqNumber(44),
+            IrqRequest::new(blocking_handler, data).execution(IrqExecution::NonReentrant),
+        )
+        .unwrap();
+
+    let dispatch_registry = registry.clone();
+    let dispatch_thread =
+        thread::spawn(move || dispatch_registry.dispatch(IrqNumber(44), CpuId(0)));
+    blocker.entered.wait();
+
+    let nested = registry.dispatch(IrqNumber(44), CpuId(0));
+    assert!(!nested.handled);
+    assert_eq!(nested.called, 0);
+    assert_eq!(blocker.calls.load(Ordering::SeqCst), 1);
+
+    blocker.release.wait();
+    let outcome = dispatch_thread.join().unwrap();
+    assert!(outcome.handled);
+    assert_eq!(outcome.called, 1);
+}
+
+#[test]
+fn synchronize_waits_for_inflight_dispatch() {
+    struct Blocker {
+        entered: Arc<Barrier>,
+        release: Arc<Barrier>,
+    }
+
+    unsafe fn blocking_handler(_ctx: IrqContext, data: NonNull<()>) -> IrqReturn {
+        let blocker = unsafe { data.cast::<Blocker>().as_ref() };
+        blocker.entered.wait();
+        blocker.release.wait();
+        IrqReturn::Handled
+    }
+
+    let registry = Arc::new(Registry::new(MockOps::with_cpus(1)));
+    let blocker = Box::new(Blocker {
+        entered: Arc::new(Barrier::new(2)),
+        release: Arc::new(Barrier::new(2)),
+    });
+    let data = NonNull::from(blocker.as_ref()).cast();
+    let handle = registry
+        .request(IrqNumber(45), IrqRequest::new(blocking_handler, data))
+        .unwrap();
+
+    let dispatch_registry = registry.clone();
+    let dispatch_thread =
+        thread::spawn(move || dispatch_registry.dispatch(IrqNumber(45), CpuId(0)));
+    blocker.entered.wait();
+
+    let sync_registry = registry.clone();
+    let sync_thread = thread::spawn(move || sync_registry.synchronize(handle));
+    thread::sleep(std::time::Duration::from_millis(30));
+    assert!(!sync_thread.is_finished());
+
+    blocker.release.wait();
+    dispatch_thread.join().unwrap();
+    sync_thread.join().unwrap().unwrap();
 }
 
 #[test]
@@ -1077,6 +1282,14 @@ impl IrqOps for BlockingLineOps {
             self.inner.false_release.wait();
         }
         self.inner.line_enabled.store(enabled, Ordering::SeqCst);
+        Ok(())
+    }
+
+    fn set_affinity(&self, irq: IrqNumber, affinity: IrqAffinity) -> Result<(), IrqError> {
+        self.inner.calls.lock().unwrap().push(OpCall::SetAffinity {
+            irq: irq.0,
+            affinity,
+        });
         Ok(())
     }
 

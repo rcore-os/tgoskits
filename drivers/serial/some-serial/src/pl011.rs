@@ -862,7 +862,7 @@ mod tests {
     use core::ptr::NonNull;
     use std::boxed::Box;
 
-    use rdif_serial::SerialCore;
+    use rdif_serial::{OwnerId, OwnerLease, SerialIrqHandler, SerialParts, TSerialIrqHandler};
 
     use super::*;
 
@@ -889,10 +889,14 @@ mod tests {
         }
     }
 
-    fn started_core(uart: Pl011) -> SerialCore<Pl011, 64, 64> {
-        let mut core = SerialCore::new(uart);
-        core.startup(&Config::new()).unwrap();
-        core
+    fn owner_lease() -> OwnerLease<'static> {
+        unsafe { OwnerLease::new_unchecked(OwnerId(0)) }
+    }
+
+    fn started_parts(uart: Pl011) -> SerialParts<Pl011, 64, 64> {
+        let parts = SerialIrqHandler::<_, 64, 64>::split(uart, OwnerId(0));
+        parts.irq.startup(owner_lease(), &Config::new()).unwrap();
+        parts
     }
 
     #[test]
@@ -950,19 +954,21 @@ mod tests {
     #[test]
     fn serial_core_tx_irq_drains_software_fifo() {
         let (mut regs, uart) = pl011_with_registers();
-        let mut core = started_core(uart);
+        let parts = started_parts(uart);
+        let mut tx = parts.tx;
+        let irq = parts.irq;
 
         write_test_reg(&mut regs, 0x018, UARTFR::TXFF::SET.value);
-        assert_eq!(core.enqueue_tx(b"x").accepted, 1);
-        assert_eq!(core.chars_in_buffer(), 1);
+        assert_eq!(tx.submit(b"x").accepted, 1);
+        assert_eq!(tx.chars_in_buffer(), 1);
 
         write_test_reg(&mut regs, 0x018, 0);
         write_test_reg(&mut regs, 0x040, UARTIS::TX::SET.value);
-        let outcome = core.handle_irq();
+        let outcome = irq.handle(owner_lease());
         assert!(outcome.claimed);
         assert_eq!(outcome.tx_sent, 1);
         assert_eq!(regs.uartdr.get() as u8, b'x');
-        assert_eq!(core.chars_in_buffer(), 0);
+        assert_eq!(tx.chars_in_buffer(), 0);
     }
 
     #[test]

@@ -10,6 +10,7 @@ mod types;
 
 pub use registry::Registry;
 pub use types::{
-    AutoEnable, CpuId, CpuMask, CpuMaskIter, IrqContext, IrqError, IrqHandle, IrqNumber, IrqOps,
-    IrqOutcome, IrqRequest, IrqReturn, IrqScope, IrqStatus, RawIrqHandler, ShareMode,
+    AutoEnable, CpuId, CpuMask, CpuMaskIter, IrqAffinity, IrqContext, IrqError, IrqExecution,
+    IrqHandle, IrqNumber, IrqOps, IrqOutcome, IrqRequest, IrqReturn, IrqScope, IrqStatus,
+    RawIrqHandler, ShareMode,
 };

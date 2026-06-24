@@ -6,12 +6,13 @@ use core::{
 
 use ax_driver::serial::{
     self as ax_serial, BInterruptSerial, Config, RxFlag, RxItem, SerialDevice, SerialIrqOutcome,
+    SerialSoftWork,
 };
 use ax_errno::{AxError, AxResult};
 use ax_kspin::SpinNoIrq;
 use ax_runtime::hal::{
     console::{ConsoleDeviceIdError, ConsoleDeviceIdResult},
-    irq::{AutoEnable, IrqHandle, IrqRequest, ShareMode},
+    irq::{AutoEnable, CpuId, IrqAffinity, IrqExecution, IrqHandle, IrqRequest, ShareMode},
 };
 use ax_sync::Mutex;
 use ax_task::IrqNotify;
@@ -335,6 +336,8 @@ impl SerialBackend {
         let data = NonNull::new(Arc::into_raw(self.clone()) as *mut ()).unwrap();
         let request = IrqRequest::new(serial_raw_irq_handler, data)
             .share_mode(ShareMode::Shared)
+            .affinity(IrqAffinity::Fixed(CpuId(self.port.owner_cpu())))
+            .execution(IrqExecution::NonReentrant)
             .auto_enable(AutoEnable::No);
         match ax_runtime::hal::irq::request_irq(self.irq_num, request) {
             Ok(handle) => {
@@ -379,7 +382,7 @@ impl SerialBackend {
         }
 
         if let Err(err) = ax_runtime::hal::irq::enable_irq(handle) {
-            self.port.shutdown();
+            let _ = self.port.shutdown();
             warn!(
                 "Failed to enable {} IRQ handler for irq {}: {err:?}",
                 self.tty_name, self.irq_num
@@ -388,7 +391,11 @@ impl SerialBackend {
         }
 
         self.started.store(true, Ordering::Release);
-        publish_serial_outcome(self, self.port.startup_catch_up(), false);
+        publish_serial_outcome(
+            self,
+            self.port.service_on_owner(SerialSoftWork::RESERVICE),
+            false,
+        );
         self.events.publish(SerialEventBits::RX_READY);
         true
     }
@@ -434,11 +441,11 @@ fn spawn_serial_event_worker(backend: Arc<SerialBackend>) {
 }
 
 unsafe fn serial_raw_irq_handler(
-    _ctx: ax_runtime::hal::irq::IrqContext,
+    ctx: ax_runtime::hal::irq::IrqContext,
     data: NonNull<()>,
 ) -> ax_runtime::hal::irq::IrqReturn {
     let backend = unsafe { &*(data.as_ptr() as *const SerialBackend) };
-    let outcome = backend.port.handle_irq();
+    let outcome = backend.port.handle_irq_on_owner(ctx.cpu);
     if !outcome.claimed {
         return ax_runtime::hal::irq::IrqReturn::Unhandled;
     }

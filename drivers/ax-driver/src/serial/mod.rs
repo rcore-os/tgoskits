@@ -3,7 +3,9 @@ use alloc::{string::String, vec::Vec};
 use ax_errno::AxError;
 use fdt_edit::{Fdt, RegFixed};
 use log::warn;
-pub use rdif_serial::{Config, ConfigError, RxFlag, RxItem, SerialCounters, SerialIrqOutcome};
+pub use rdif_serial::{
+    Config, ConfigError, RxFlag, RxItem, SerialCounters, SerialIrqOutcome, SerialSoftWork,
+};
 use rdrive::{Device, DeviceId, DriverGeneric, probe::acpi::AcpiInfo, register::FdtInfo};
 
 mod ns16550;

@@ -1,18 +1,16 @@
 //! Portable interrupt-driven serial runtime primitives.
 //!
 //! The reusable stack is intentionally split by synchronization ownership:
-//! raw UART drivers expose only register-level operations, `SerialCore` owns
-//! the TX software FIFO and RX flip FIFO, and OS glue wraps the core in the
-//! kernel's short port lock. Runtime queues and TTY code must not access UART
-//! registers directly; only the locked core may read destructive IRQ/status
-//! registers.
+//! raw UART drivers expose only register-level operations, `TxQueue` and
+//! `RxQueue` own independent lock-free software queues, and `SerialIrqHandler`
+//! is the only endpoint allowed to touch runtime UART registers.
 //!
-//! IRQ handlers call `SerialCore::handle_irq()` to synchronize hardware state
-//! into software queues. Task or worker context drains `RxItem`s and enqueues TX
-//! bytes, but never polls the shared UART IRQ/status register to rediscover
-//! readiness. This keeps the fast path bounded and leaves wakeups, wait queues,
-//! poll sets, and line discipline processing to OS-specific layers above this
-//! crate.
+//! OS glue must route the hardware IRQ and software TX kick to the handler's
+//! owner CPU and pass an `OwnerLease`. Task or worker context drains `RxItem`s
+//! and enqueues TX bytes, but never polls the shared UART IRQ/status register
+//! to rediscover readiness. This keeps the fast path bounded and leaves wakeups,
+//! wait queues, poll sets, and line discipline processing to OS-specific layers
+//! above this crate.
 
 #![no_std]
 
@@ -99,8 +97,8 @@ pub enum Parity {
 bitflags! {
     /// Polling-only serial events for direct raw users such as someboot.
     ///
-    /// Runtime `SerialCore` does not use this high-level snapshot type; it uses
-    /// `IrqSnapshot`, `RxSample`, and TX/RX software FIFOs instead.
+    /// Runtime `SerialIrqHandler` does not use this high-level snapshot type;
+    /// it uses `IrqSnapshot`, `RxSample`, and TX/RX software FIFOs instead.
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     pub struct SerialEvent: u32 {
         const RX_READY = 0x01;

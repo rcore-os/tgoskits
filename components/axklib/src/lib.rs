@@ -45,9 +45,9 @@ use core::{ptr::NonNull, time::Duration};
 pub use ax_errno::{AxError, AxResult};
 pub use ax_memory_addr::{PhysAddr, VirtAddr};
 pub use irq_framework::{
-    AutoEnable as IrqAutoEnable, CpuId as IrqCpuId, CpuMask as IrqCpuMask, IrqContext, IrqError,
-    IrqHandle, IrqNumber, IrqOutcome, IrqRequest, IrqReturn, IrqScope, IrqStatus, RawIrqHandler,
-    ShareMode as IrqShareMode,
+    AutoEnable as IrqAutoEnable, CpuId as IrqCpuId, CpuMask as IrqCpuMask, IrqAffinity, IrqContext,
+    IrqError, IrqExecution, IrqHandle, IrqNumber, IrqOutcome, IrqRequest, IrqReturn, IrqScope,
+    IrqStatus, RawIrqHandler, ShareMode as IrqShareMode,
 };
 use trait_ffi::*;
 
@@ -151,6 +151,29 @@ pub trait Klib {
 
     /// Disable an IRQ action by handle.
     fn irq_disable(handle: IrqHandle) -> AxResult;
+
+    /// Runs a raw thunk synchronously on the requested CPU.
+    ///
+    /// This is an owner-context bridge for driver runtimes that must keep all
+    /// register access on a fixed CPU. Platform glue should override this when
+    /// cross-CPU IPI execution is available.
+    ///
+    /// # Safety
+    ///
+    /// `arg` must stay valid until the function returns, and `f` must be safe
+    /// to execute in the target CPU's IRQ/IPI context.
+    unsafe fn irq_run_on_cpu_sync(
+        cpu: IrqCpuId,
+        f: unsafe fn(*mut ()),
+        arg: *mut (),
+    ) -> Result<(), IrqError> {
+        if cpu.0 == 0 {
+            unsafe { f(arg) };
+            Ok(())
+        } else {
+            Err(IrqError::Unsupported)
+        }
+    }
 }
 
 /// Convenience re-export for memory IO mapping.
@@ -172,13 +195,13 @@ pub mod time {
 /// Convenience re-exports for IRQ operations.
 pub mod irq {
     pub use super::{
-        IrqAutoEnable as AutoEnable, IrqContext, IrqCpuId as CpuId, IrqCpuMask as CpuMask,
-        IrqError, IrqHandle, IrqNumber, IrqOutcome, IrqRequest, IrqReturn, IrqScope,
-        IrqShareMode as ShareMode, IrqStatus, RawIrqHandler,
+        IrqAffinity, IrqAutoEnable as AutoEnable, IrqContext, IrqCpuId as CpuId,
+        IrqCpuMask as CpuMask, IrqError, IrqExecution, IrqHandle, IrqNumber, IrqOutcome,
+        IrqRequest, IrqReturn, IrqScope, IrqShareMode as ShareMode, IrqStatus, RawIrqHandler,
         klib::{
             irq_disable as disable, irq_enable as enable, irq_free as free,
             irq_request_percpu as request_percpu, irq_request_shared as request_shared,
-            irq_set_enable as set_enable,
+            irq_run_on_cpu_sync as run_on_cpu_sync, irq_set_enable as set_enable,
         },
     };
 }

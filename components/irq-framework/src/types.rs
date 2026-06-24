@@ -97,6 +97,24 @@ pub enum IrqScope {
     },
 }
 
+/// Hardware routing preference for an IRQ line.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum IrqAffinity {
+    /// The platform may route the line to any CPU.
+    Any,
+    /// Route the line to one fixed logical CPU.
+    Fixed(CpuId),
+}
+
+/// Execution contract for an IRQ action.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum IrqExecution {
+    /// The handler may run concurrently if the controller delivers it that way.
+    Concurrent,
+    /// The framework prevents nested/concurrent calls to this action.
+    NonReentrant,
+}
+
 /// Whether an IRQ line is exclusive or shared.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ShareMode {
@@ -150,6 +168,8 @@ pub struct IrqStatus {
     pub in_service: bool,
     /// Number of in-flight dispatches for this descriptor.
     pub in_flight: usize,
+    /// Whether this action is currently running.
+    pub action_running: bool,
 }
 
 /// IRQ framework errors.
@@ -215,6 +235,11 @@ pub trait IrqOps {
         arg: *mut (),
     ) -> Result<(), IrqError>;
 
+    /// Routes a global IRQ line to the requested CPU affinity.
+    fn set_affinity(&self, _irq: IrqNumber, _affinity: IrqAffinity) -> Result<(), IrqError> {
+        Err(IrqError::Unsupported)
+    }
+
     /// Enables or disables an IRQ line.
     fn set_enabled(
         &self,
@@ -242,6 +267,8 @@ pub struct IrqRequest {
     pub(crate) handler: RawIrqHandler,
     pub(crate) data: NonNull<()>,
     pub(crate) scope: IrqScope,
+    pub(crate) affinity: IrqAffinity,
+    pub(crate) execution: IrqExecution,
     pub(crate) share_mode: ShareMode,
     pub(crate) auto_enable: AutoEnable,
 }
@@ -253,6 +280,8 @@ impl IrqRequest {
             handler,
             data,
             scope: IrqScope::Global,
+            affinity: IrqAffinity::Any,
+            execution: IrqExecution::Concurrent,
             share_mode: ShareMode::Exclusive,
             auto_enable: AutoEnable::Yes,
         }
@@ -261,6 +290,18 @@ impl IrqRequest {
     /// Sets the IRQ scope.
     pub const fn scope(mut self, scope: IrqScope) -> Self {
         self.scope = scope;
+        self
+    }
+
+    /// Sets the IRQ affinity.
+    pub const fn affinity(mut self, affinity: IrqAffinity) -> Self {
+        self.affinity = affinity;
+        self
+    }
+
+    /// Sets the action execution contract.
+    pub const fn execution(mut self, execution: IrqExecution) -> Self {
+        self.execution = execution;
         self
     }
 

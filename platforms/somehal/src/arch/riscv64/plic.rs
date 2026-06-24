@@ -1,4 +1,4 @@
-use alloc::{format, vec::Vec};
+use alloc::{format, vec, vec::Vec};
 use core::{num::NonZeroU32, ptr::NonNull};
 
 use ax_riscv_plic::{PLICRegs, Plic, PlicIrqHandler};
@@ -69,6 +69,24 @@ pub fn irq_set_enable(irq: rdrive::IrqId, enable: bool) {
         external if external & INTC_IRQ_BASE == 0 => set_external_irq_enable(external, enable),
         other => warn!("unsupported RISC-V local IRQ {other:#x}"),
     }
+}
+
+pub fn irq_set_affinity(
+    irq: rdrive::IrqId,
+    affinity: crate::irq::IrqAffinity,
+) -> Result<(), &'static str> {
+    let raw: usize = irq.into();
+    if raw & INTC_IRQ_BASE != 0 {
+        return Err("RISC-V local IRQ affinity cannot be changed");
+    }
+    let Some(source) = NonZeroU32::new(raw as u32) else {
+        return Err("invalid PLIC source 0");
+    };
+    with_plic("setting PLIC IRQ affinity", |plic| {
+        plic.set_source_affinity(source, affinity)
+    })
+    .flatten()
+    .ok_or("RISC-V PLIC is not registered or affinity target is invalid")
 }
 
 enum Completion {
@@ -192,6 +210,7 @@ fn probe_plic(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
     let plic = RiscvPlic {
         inner: plic,
         context_by_cpu: contexts,
+        affinity_by_source: vec![crate::irq::IrqAffinity::Any; ndev.saturating_add(1)],
         sources: ndev,
     };
     enable_local_interrupts();
@@ -299,6 +318,7 @@ fn get_irq_handler() -> Option<&'static RiscvPlicIrqHandler> {
 struct RiscvPlic {
     inner: Plic,
     context_by_cpu: Vec<Option<usize>>,
+    affinity_by_source: Vec<crate::irq::IrqAffinity>,
     sources: usize,
 }
 
@@ -362,7 +382,7 @@ impl RiscvPlic {
         }
         self.inner.set_priority(source, DEFAULT_PRIORITY);
         let current = current_context(&self.context_by_cpu);
-        for context in self.context_by_cpu.iter().filter_map(|context| *context) {
+        for context in self.contexts_for_source(source) {
             self.inner.enable(source, context);
         }
         if current.is_none() {
@@ -373,6 +393,53 @@ impl RiscvPlic {
     fn disable_source(&mut self, source: NonZeroU32) {
         for context in self.context_by_cpu.iter().filter_map(|context| *context) {
             self.inner.disable(source, context);
+        }
+    }
+
+    fn set_source_affinity(
+        &mut self,
+        source: NonZeroU32,
+        affinity: crate::irq::IrqAffinity,
+    ) -> Option<()> {
+        if source.get() as usize > self.sources {
+            warn!(
+                "skip setting affinity for out-of-range PLIC source {}",
+                source.get()
+            );
+            return None;
+        }
+        if let crate::irq::IrqAffinity::Fixed { cpu_id } = affinity
+            && self
+                .context_by_cpu
+                .get(cpu_id)
+                .and_then(|ctx| *ctx)
+                .is_none()
+        {
+            warn!("PLIC supervisor context for affinity CPU {cpu_id} is not found");
+            return None;
+        }
+
+        self.disable_source(source);
+        self.affinity_by_source[source.get() as usize] = affinity;
+        if self.inner.get_priority(source) != 0 {
+            for context in self.contexts_for_source(source) {
+                self.inner.enable(source, context);
+            }
+        }
+        Some(())
+    }
+
+    fn contexts_for_source(&self, source: NonZeroU32) -> Vec<usize> {
+        match self.affinity_by_source[source.get() as usize] {
+            crate::irq::IrqAffinity::Any => {
+                self.context_by_cpu.iter().filter_map(|ctx| *ctx).collect()
+            }
+            crate::irq::IrqAffinity::Fixed { cpu_id } => self
+                .context_by_cpu
+                .get(cpu_id)
+                .and_then(|ctx| *ctx)
+                .into_iter()
+                .collect(),
         }
     }
 }
