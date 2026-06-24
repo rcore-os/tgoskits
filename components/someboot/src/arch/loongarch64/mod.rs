@@ -297,10 +297,6 @@ impl ArchTrait for Arch {
         addrspace::PAGE_OFFSET..usize::MAX
     }
 
-    fn is_kernel_relocated_at(addr: usize) -> bool {
-        (addrspace::VM_LOAD_ADDRESS..usize::MAX).contains(&addr)
-    }
-
     fn is_mmu_enabled() -> bool {
         crmd::read().pg()
     }
