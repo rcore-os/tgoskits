@@ -2,7 +2,7 @@
 //! handle-import API to the Phase D submit path. Real RGA2 hardware execution is board-gated;
 //! on QEMU `get_list` returns empty and the ioctl returns `ENODEV`.
 
-use alloc::{collections::btree_map::BTreeMap, sync::Arc, vec::Vec};
+use alloc::{collections::btree_map::BTreeMap, sync::Arc};
 use core::{any::Any, ffi::c_int};
 
 use ax_sync::Mutex;
