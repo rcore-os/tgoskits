@@ -1,0 +1,1 @@
+echo RGA_SELFTEST_BOOT_OK
