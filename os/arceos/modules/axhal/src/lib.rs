@@ -55,16 +55,19 @@ pub mod paging;
 
 /// Console input and output.
 pub mod console {
+    pub use ax_plat::console::{
+        ConsoleDeviceId, ConsoleDeviceIdError, ConsoleDeviceIdResult, claim_runtime_output,
+        device_id, read_bytes, write_bytes, write_text_bytes,
+    };
     #[cfg(feature = "irq")]
     pub use ax_plat::console::{ConsoleIrqEvent, handle_irq, irq_num, set_input_irq_enabled};
-    pub use ax_plat::console::{read_bytes, write_bytes, write_text_bytes};
 }
 
 /// CPU power management.
 pub mod power {
     #[cfg(feature = "smp")]
     pub use ax_plat::power::cpu_boot;
-    pub use ax_plat::power::system_off;
+    pub use ax_plat::power::{system_off, system_reset};
 }
 
 /// Trap handling.
@@ -91,9 +94,9 @@ pub use ax_cpu as cpu;
 pub use ax_cpu::asm;
 #[cfg(feature = "uspace")]
 pub use ax_cpu::uspace;
-pub use ax_plat::init::init_later;
 #[cfg(feature = "smp")]
 pub use ax_plat::init::init_later_secondary;
+pub use ax_plat::{init::init_later, platform::platform_name};
 
 /// Initializes the platform and boot argument.
 /// This function should be called as early as possible.

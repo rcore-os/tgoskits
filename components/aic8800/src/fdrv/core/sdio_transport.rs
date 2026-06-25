@@ -28,21 +28,62 @@ pub struct SdioTransport {
     sdio: Arc<Mutex<dyn SdioHost>>,
     card_irq: Option<Arc<dyn SdioCardIrq>>,
     is_v3: bool,
+    /// 命令/数据邮箱所在的 SDIO function。DC/DW = 2(真机实测 CFM 在 func2),
+    /// 其余 = 1。RX 线程读 block_cnt/RD_FIFO、TX 线程写 WR_FIFO 都用它。
+    cmd_func: u8,
+    /// 芯片型号。保留完整变体,供上层线程(ap/rx/tx)按变体精确门控
+    /// DC/DW 专属行为,使 D80/8801 走与 upstream/dev 一致的原有路径。
+    chip: ChipVariant,
 }
 
 impl SdioTransport {
     /// 从任意 SdioHost 实现创建 SdioTransport
     pub fn new<H: SdioHost + 'static>(sdio: H, chip: ChipVariant) -> Arc<Self> {
         let card_irq = sdio.card_irq_ctrl();
+        let cmd_func = if matches!(chip, ChipVariant::Aic8800DC | ChipVariant::Aic8800DW) {
+            2
+        } else {
+            1
+        };
         Arc::new(Self {
             sdio: Arc::new(Mutex::new(sdio)),
             card_irq,
             is_v3: chip.is_v3(),
+            cmd_func,
+            chip,
         })
     }
 
     pub fn is_v3(&self) -> bool {
         self.is_v3
+    }
+
+    /// 芯片型号(完整变体)
+    pub fn chip(&self) -> ChipVariant {
+        self.chip
+    }
+
+    /// 是否为双管道芯片(AIC8800DC/DW):命令走 func2、数据走 func1。
+    ///
+    /// 等价于 `matches!(chip, Aic8800DC | Aic8800DW)`,也等价于 `cmd_func()==2`,
+    /// 但语义清晰。上层 AP/RX/TX 线程用它门控 DC/DW 专属行为,确保 D80/8801
+    /// 走 upstream/dev 已验证的原有路径,不受 DC 适配影响。
+    pub fn is_dual_pipe(&self) -> bool {
+        matches!(self.chip, ChipVariant::Aic8800DC | ChipVariant::Aic8800DW)
+    }
+
+    /// 命令/数据邮箱所在的 SDIO function(DC/DW=2, 其余=1)
+    pub fn cmd_func(&self) -> u8 {
+        self.cmd_func
+    }
+
+    /// 数据/管理帧平面所在的 SDIO function。
+    ///
+    /// DC/DW 的 SDIO 是双管道:func2 是命令邮箱(命令 TX→CFM RX),
+    /// func1 是数据平面(数据/管理帧 TX/RX + 流控,真机实测数据帧 RX 在 func1)。
+    /// 命令走 cmd_func()=2,数据/管理帧走本方法=1。非 DC 芯片两者都是 func1。
+    pub fn data_func(&self) -> u8 {
+        1
     }
 
     pub fn block_cnt_reg(&self) -> u32 {

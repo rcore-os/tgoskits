@@ -83,6 +83,18 @@ static long pt(int request, pid_t pid, void *addr, void *data)
     return ptrace(request, pid, addr, data);
 }
 
+static int wait_child(pid_t pid, int *status, int options, const char *msg)
+{
+    pid_t got;
+    do {
+        got = waitpid(pid, status, options);
+    } while (got == -1 && errno == EINTR);
+    if (got != pid) {
+        return fail(msg);
+    }
+    return 0;
+}
+
 static int getregs(pid_t pid, struct x86_64_user_regs *regs)
 {
     struct iovec iov = {.iov_base = regs, .iov_len = sizeof(*regs)};
@@ -100,8 +112,8 @@ static int setregs(pid_t pid, const struct x86_64_user_regs *regs)
 
 static int wait_trap(pid_t pid, int *status)
 {
-    if (waitpid(pid, status, 0) != pid) {
-        return fail("waitpid");
+    if (wait_child(pid, status, 0, "waitpid") != 0) {
+        return 1;
     }
     if (!WIFSTOPPED(*status) || WSTOPSIG(*status) != SIGTRAP) {
         printf("FAIL: expected SIGTRAP stop, status=%#x\n", *status);
@@ -234,8 +246,8 @@ static int trace_dynamic_target(void)
     if (pt(PTRACE_CONT, pid, NULL, NULL) != 0) {
         return fail("cont to exit");
     }
-    if (waitpid(pid, &status, 0) != pid) {
-        return fail("waitpid exit");
+    if (wait_child(pid, &status, 0, "waitpid exit") != 0) {
+        return 1;
     }
     if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) {
         printf("FAIL: traced dynamic target did not exit cleanly, status=%#x\n", status);

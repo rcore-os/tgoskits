@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.3](https://github.com/rcore-os/tgoskits/compare/sdmmc-protocol-v0.1.2...sdmmc-protocol-v0.1.3) - 2026-06-22
+
+### Other
+
+- *(ax-runtime)* adapt submit-poll fs block irq registration ([#1228](https://github.com/rcore-os/tgoskits/pull/1228))
+
 ## [0.1.2](https://github.com/rcore-os/tgoskits/compare/sdmmc-protocol-v0.1.1...sdmmc-protocol-v0.1.2) - 2026-06-03
 
 ### Other

@@ -48,7 +48,12 @@ impl SdmmcBlockConfig {
         }
     }
 
-    #[cfg(any(feature = "rockchip-sdhci", feature = "phytium-mci", test))]
+    #[cfg(any(
+        feature = "rockchip-sdhci",
+        feature = "phytium-mci",
+        feature = "starfive-jh7110-dwmmc",
+        test
+    ))]
     pub(crate) fn fifo(name: &'static str, capacity_blocks: u64, irq_driven: bool) -> Self {
         Self {
             name,
@@ -608,7 +613,7 @@ pub(crate) fn submit_sdhci_write_request(
     Ok(BlockRequestId::new(usize::from(id)))
 }
 
-#[cfg(feature = "rockchip-dwmmc")]
+#[cfg(any(feature = "rockchip-dwmmc", feature = "starfive-jh7110-dwmmc"))]
 impl SdmmcBlockHost for dwmmc_host::DwMmc {
     type Request = dwmmc_host::BlockRequest;
     type Slot = dwmmc_host::BlockRequestSlot;

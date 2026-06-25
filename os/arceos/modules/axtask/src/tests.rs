@@ -1,9 +1,15 @@
 use core::sync::atomic::{AtomicUsize, Ordering};
+#[cfg(feature = "irq")]
+use std::sync::{Arc, Barrier};
 use std::{
     panic::{AssertUnwindSafe, catch_unwind, resume_unwind},
-    sync::{Arc, Barrier, OnceLock, mpsc},
+    sync::{OnceLock, mpsc},
+    task::Context,
     thread,
 };
+
+use ax_errno::{AxError, AxResult};
+use axpoll::{IoEvents, Pollable};
 
 #[cfg(feature = "irq")]
 use crate::IrqNotify;
@@ -14,7 +20,7 @@ type TestJob = (Box<dyn FnOnce() + Send + 'static>, mpsc::Sender<TestResult>);
 
 static TEST_WORKER: OnceLock<mpsc::Sender<TestJob>> = OnceLock::new();
 
-fn run_in_test_scheduler<F>(f: F)
+pub(crate) fn run_in_test_scheduler<F>(f: F)
 where
     F: FnOnce() + Send + 'static,
 {
@@ -36,10 +42,107 @@ where
     }
 }
 
+struct CountingPollable {
+    polls: AtomicUsize,
+    registers: AtomicUsize,
+}
+
+impl CountingPollable {
+    fn new() -> Self {
+        Self {
+            polls: AtomicUsize::new(0),
+            registers: AtomicUsize::new(0),
+        }
+    }
+
+    fn poll_count(&self) -> usize {
+        self.polls.load(Ordering::Relaxed)
+    }
+
+    fn register_count(&self) -> usize {
+        self.registers.load(Ordering::Relaxed)
+    }
+}
+
+impl Pollable for CountingPollable {
+    fn poll(&self) -> IoEvents {
+        self.polls.fetch_add(1, Ordering::Relaxed);
+        IoEvents::OUT
+    }
+
+    fn register(&self, _context: &mut Context<'_>, _events: IoEvents) {
+        self.registers.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
 #[cfg(any(feature = "lockdep", feature = "preempt"))]
 const RAW_TASK_STACK_SIZE: usize = 0x10000;
 #[cfg(not(any(feature = "lockdep", feature = "preempt")))]
 const RAW_TASK_STACK_SIZE: usize = 0x1000;
+
+#[test]
+fn poll_io_ready_operation_wins_over_pending_interrupt() {
+    run_in_test_scheduler(|| {
+        let curr = current();
+        let pollable = CountingPollable::new();
+        let calls = AtomicUsize::new(0);
+        curr.interrupt();
+
+        let result = crate::future::block_on(crate::future::poll_io(
+            &pollable,
+            IoEvents::OUT,
+            false,
+            || -> AxResult<usize> {
+                calls.fetch_add(1, Ordering::Relaxed);
+                Ok(5)
+            },
+        ));
+
+        assert_eq!(result, Ok(5));
+        assert_eq!(calls.load(Ordering::Relaxed), 1);
+        assert_eq!(pollable.poll_count(), 0);
+        assert_eq!(pollable.register_count(), 0);
+        assert_eq!(curr.take_interrupt(), true);
+    });
+}
+
+#[test]
+fn poll_io_blocked_operation_observes_pending_interrupt() {
+    run_in_test_scheduler(|| {
+        let curr = current();
+        curr.interrupt();
+
+        let result = crate::future::block_on(crate::future::poll_io(
+            &CountingPollable::new(),
+            IoEvents::OUT,
+            false,
+            || -> AxResult<usize> { Err(AxError::WouldBlock) },
+        ));
+
+        assert_eq!(result, Err(AxError::Interrupted));
+        assert_eq!(curr.take_interrupt(), false);
+    });
+}
+
+#[test]
+fn poll_io_nonblocking_wouldblock_wins_over_pending_interrupt() {
+    run_in_test_scheduler(|| {
+        let curr = current();
+        let pollable = CountingPollable::new();
+        curr.interrupt();
+
+        let result = crate::future::block_on(crate::future::poll_io(
+            &pollable,
+            IoEvents::OUT,
+            true,
+            || -> AxResult<usize> { Err(AxError::WouldBlock) },
+        ));
+
+        assert_eq!(result, Err(AxError::WouldBlock));
+        assert_eq!(pollable.register_count(), 1);
+        assert_eq!(curr.take_interrupt(), true);
+    });
+}
 
 #[test]
 fn test_sched_fifo() {

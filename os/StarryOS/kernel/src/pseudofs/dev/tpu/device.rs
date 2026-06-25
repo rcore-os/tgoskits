@@ -2,10 +2,38 @@
 //!
 //! 将 ioctl 命令翻译为 `Sg2002Tpu` 调用，并通过 fd 解析 Ion buffer
 //! 物理/虚拟地址。
+//!
+//! 异步模型（复刻原 Linux 驱动 `cvi_tpu_interface.c`）：`submit` 只把任务
+//! 入队并唤醒常驻 worker 线程后立即返回；worker 线程串行调用
+//! [`Sg2002Tpu::run_one`] 跑硬件，等待 TDMA 完成时通过 `IRQ_WQ` 睡眠让出
+//! CPU；`wait` 按 `(tid, seq_no)` 睡 `DONE_WQ`，被 worker 完成时唤醒。
+//!
+//! SG2002 默认单核，worker 等硬件时必须真正睡眠让出 CPU，相机前处理才能
+//! 与 TPU 推理重叠。
+//!
+//! # 接口约定（重要）
+//!
+//! - **`submit` 与 `wait` 必须在同一线程调用。** 完成项以 `(提交线程 tid,
+//!   用户 seq_no)` 为匹配键存入全局 `DONE_LIST`；`wait` 用「当前线程 tid +
+//!   传入 seq_no」检索。换线程 `wait` 会查不到结果而超时。该约束等价于原
+//!   Linux 驱动以 `current->pid` 隔离任务的语义，并隔离了不同进程/线程偶然
+//!   使用相同 `seq_no` 时的串扰（否则一个 waiter 可能取走他人的完成项）。
+//! - **`seq_no` 由用户态提供，仅需在「同一线程的在途请求之间」唯一。** 它不是
+//!   内核分配的全局令牌；跨线程不保证唯一也无需唯一，因为 tid 已隔离。
+//! - **buffer 生命周期：** `submit` 入队的 [`TpuTask`] 持有底层 Ion buffer 的
+//!   `Arc` 强引用，直到结果被 `wait` 取走（或因 `DONE_LIST` 超限被丢弃）。
+//!   因此用户在 worker 跑完前 `close(fd)` 不会导致 DMA 物理页被回收
+//!   （防 use-after-free）。
 
-use alloc::sync::Arc;
-use core::ptr::NonNull;
+use alloc::{collections::VecDeque, string::String, sync::Arc};
+use core::{
+    ptr::NonNull,
+    sync::atomic::{AtomicBool, AtomicPtr, Ordering},
+    time::Duration,
+};
 
+use ax_kspin::SpinNoIrq;
+use ax_task::WaitQueue;
 use sg2002_tpu::{
     ion::IonBuffer,
     tpu::{
@@ -25,6 +53,46 @@ use crate::{
     pseudofs::DeviceOps,
 };
 
+/// 一个 TPU 推理任务（OS glue 侧）。
+struct TpuTask {
+    /// 提交线程 id。与 `seq_no` 组成复合匹配键，隔离跨进程/线程的相同 seq_no
+    /// （对应原 Linux 驱动 `node->pid = current->pid` 的隔离语义）。
+    tid: u64,
+    /// 序列号，submit / wait 通过 `(tid, seq_no)` 配对结果。
+    seq_no: u32,
+    /// DMA buffer 虚拟地址。
+    vaddr: usize,
+    /// DMA buffer 物理地址。
+    paddr: u64,
+    /// 持有底层 Ion buffer 的强引用，保证 worker 跑硬件、结果被取走之前，
+    /// 即使用户提前 close fd，物理 DMA 页也不会被回收（防 use-after-free）。
+    _buffer: Arc<IonBuffer>,
+    /// 执行结果（0 成功，-1 失败），由 worker 回填。
+    ret: i32,
+}
+
+/// 待执行任务队列（对应 Linux `task_list`）。
+static TASK_LIST: SpinNoIrq<VecDeque<TpuTask>> = SpinNoIrq::new(VecDeque::new());
+/// 已完成任务队列（对应 Linux `done_list`）。
+static DONE_LIST: SpinNoIrq<VecDeque<TpuTask>> = SpinNoIrq::new(VecDeque::new());
+/// `DONE_LIST` 上限。每个滞留完成项持有一个 `Arc<IonBuffer>`，提交后不 wait
+/// 的线程会令其无限累积；超限丢弃最旧项以释放 buffer（对应原驱动
+/// `DONE_LIST_MAX`）。
+const DONE_LIST_MAX: usize = 64;
+/// 唤醒 worker 取任务（对应 Linux `task_wait_queue`）。
+static TASK_WQ: WaitQueue = WaitQueue::new();
+/// 唤醒等待结果的提交者（对应 Linux `done_wait_queue`）。
+static DONE_WQ: WaitQueue = WaitQueue::new();
+/// TDMA 硬件中断到达时唤醒在此睡眠的 worker。
+static IRQ_WQ: WaitQueue = WaitQueue::new();
+/// worker 线程是否已启动（保证只 spawn 一次）。
+static WORKER_SPAWNED: AtomicBool = AtomicBool::new(false);
+/// 指向唯一 TPU 硬件实例，供注入的 [`tpu_wait_irq`] 读取中断标志。
+///
+/// SG2002 只有一个 TPU；`Sg2002Tpu` 由 worker 持有的 `Arc` 保活，实际生命
+/// 周期与内核同长，这里的裸指针始终有效。
+static HW_PTR: AtomicPtr<Sg2002Tpu> = AtomicPtr::new(core::ptr::null_mut());
+
 /// TPU 字符设备
 pub struct TpuDevice {
     /// 硬件层
@@ -38,6 +106,9 @@ pub struct TpuDevice {
 // interrupt-names = "tiu_irq\0tdma_irq";
 // so TDMA uses the second IRQ: 0x4c (76).
 const TPU_TDMA_IRQ: usize = 76;
+
+/// 等待 TDMA 完成的总超时（约 10 秒）。
+const TPU_WAIT_TIMEOUT: Duration = Duration::from_secs(10);
 
 fn register_tpu_irq(hw: &Arc<Sg2002Tpu>) -> bool {
     let data = unsafe { NonNull::new_unchecked(Arc::as_ptr(hw) as *mut ()) };
@@ -54,20 +125,72 @@ unsafe fn tpu_tdma_irq_handler(
     data: NonNull<()>,
 ) -> ax_runtime::hal::irq::IrqReturn {
     let hw = unsafe { &*(data.as_ptr() as *const Sg2002Tpu) };
-    info!("[TPU] tdma irq {} received", TPU_TDMA_IRQ);
     if hw.handle_irq() {
         warn!("[TPU] tdma irq {} reports error status", TPU_TDMA_IRQ);
     }
+    // 唤醒在 IRQ_WQ 上睡眠的 worker。中断上下文不重调度（resched=false），
+    // 对齐 kpu.rs 的做法；WaitQueue 由 SpinNoIrq 守护，IRQ 内 notify 安全。
+    IRQ_WQ.notify_all(false);
     ax_runtime::hal::irq::IrqReturn::Handled
 }
 
-/// 注入给 driver core 的延时函数：按给定微秒数忙等。
+/// 注入给 driver core 的阻塞等待函数：在超时内睡眠等待 TDMA 中断到达。
 ///
-/// driver core 在等待 TDMA 完成时以此为轮询间隔精确计时（见
-/// `Sg2002Tpu::set_delay_fn`），避免空转自旋。submit 全程持有 core 的
-/// `SpinNoPreempt` 锁，因此这里只能忙等、不能睡眠让出。
-fn tpu_delay(usecs: u64) {
-    ax_runtime::hal::time::busy_wait(core::time::Duration::from_micros(usecs));
+/// 由 worker 线程上下文调用（普通可调度任务），睡眠让出 CPU；硬件中断到达时
+/// `tpu_tdma_irq_handler` 经 `IRQ_WQ` 唤醒。返回 `true` 表示中断已到达，
+/// `false` 表示本轮超时。
+fn tpu_wait_irq(timeout_us: u64) -> bool {
+    let hw = HW_PTR.load(Ordering::Acquire);
+    if hw.is_null() {
+        return false;
+    }
+    // SAFETY: HW_PTR 指向 worker 持有的 Arc 内的实例，生命周期与内核同长。
+    let hw = unsafe { &*hw };
+    // wait_timeout_until 在睡前于队列锁内复检谓词，等价 Linux wait_event，
+    // 无唤醒先于等待的丢失风险。返回 true 表示超时。
+    !IRQ_WQ.wait_timeout_until(Duration::from_micros(timeout_us), || hw.irq_pending())
+}
+
+/// 常驻 worker 线程主循环（对应 Linux `work_thread_main`）。
+///
+/// 串行取任务、调用 `run_one` 跑硬件、回填结果到 `DONE_LIST` 并唤醒等待者。
+/// 单 worker 保证硬件串行访问，无需额外 run 锁。
+fn tpu_worker(hw: Arc<Sg2002Tpu>) {
+    info!("[TPU] worker thread started");
+    loop {
+        // 取一个任务；队列空则睡在 TASK_WQ 上让出 CPU。
+        // 注意：拿到 guard 后立即在表达式内释放，绝不持锁调用 wait*。
+        let mut task = loop {
+            if let Some(task) = TASK_LIST.lock().pop_front() {
+                break task;
+            }
+            TASK_WQ.wait_until(|| !TASK_LIST.lock().is_empty());
+        };
+
+        // 跑硬件：内部等待 TDMA 完成时经注入的 tpu_wait_irq 睡眠让出 CPU。
+        task.ret = hw
+            .run_one(task.seq_no, task.vaddr, task.paddr)
+            .map_or(-1, |_| 0);
+
+        // 入队完成结果并唤醒等待者。若提交线程从不 wait（或 wait 前退出），其
+        // 完成项会滞留并攥住 `Arc<IonBuffer>` 永不释放——故对 DONE_LIST 设上限，
+        // 超限时丢弃最旧项（连带释放其 buffer 强引用），对应原 Linux 驱动的
+        // `cvi_tpu_cleanup_done_list`。
+        {
+            let mut done = DONE_LIST.lock();
+            done.push_back(task);
+            while done.len() > DONE_LIST_MAX {
+                let dropped = done.pop_front();
+                if let Some(t) = dropped {
+                    warn!(
+                        "[TPU] done list full, dropping orphaned result (tid={}, seq_no={})",
+                        t.tid, t.seq_no
+                    );
+                }
+            }
+        }
+        DONE_WQ.notify_all(false);
+    }
 }
 
 impl TpuDevice {
@@ -77,12 +200,7 @@ impl TpuDevice {
     /// 调用者必须确保偏移计算后的虚拟地址有效。
     pub unsafe fn new() -> Self {
         let hw = Arc::new(unsafe { Sg2002Tpu::new() });
-        hw.set_delay_fn(tpu_delay);
-        if let Err(err) = hw.init() {
-            warn!("[TPU] init failed: {:?}", err);
-        }
-        let irq_registered = register_tpu_irq(&hw);
-        Self { hw, irq_registered }
+        Self::setup(hw)
     }
 
     /// 使用指定的虚拟地址创建 TPU 设备
@@ -92,15 +210,31 @@ impl TpuDevice {
     #[allow(dead_code)]
     pub unsafe fn from_vaddr(tdma_vaddr: *mut u8, tiu_vaddr: *mut u8) -> Self {
         let hw = Arc::new(unsafe { Sg2002Tpu::from_vaddr(tdma_vaddr, tiu_vaddr) });
-        hw.set_delay_fn(tpu_delay);
+        Self::setup(hw)
+    }
+
+    /// 公共初始化：注入等待函数、注册中断、启动 worker 线程。
+    fn setup(hw: Arc<Sg2002Tpu>) -> Self {
+        hw.set_wait_irq_fn(tpu_wait_irq);
         if let Err(err) = hw.init() {
             warn!("[TPU] init failed: {:?}", err);
         }
         let irq_registered = register_tpu_irq(&hw);
+
+        // 发布硬件指针供 tpu_wait_irq 读取中断标志，并启动唯一 worker 线程。
+        if WORKER_SPAWNED
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
+        {
+            HW_PTR.store(Arc::as_ptr(&hw) as *mut Sg2002Tpu, Ordering::Release);
+            let worker_hw = hw.clone();
+            ax_task::spawn_with_name(move || tpu_worker(worker_hw), String::from("tpu-worker"));
+        }
+
         Self { hw, irq_registered }
     }
 
-    /// 提交 DMA buffer 任务
+    /// 提交 DMA buffer 任务：解析 fd → 入队 → 唤醒 worker → 立即返回。
     fn submit_dmabuf(&self, arg: usize) -> Result<usize, TpuError> {
         // 从用户空间读取参数
         let submit_arg = unsafe { &*(arg as *const CviSubmitDmaArg) };
@@ -129,8 +263,9 @@ impl TpuDevice {
             TpuError::InvalidDmabuf
         })?;
 
-        // 获取底层 Ion buffer（fd 持有强引用，保证生命周期）
-        let buffer = ion_file.buffer();
+        // 获取底层 Ion buffer。clone 一份 Arc 强引用随任务存活，确保 worker
+        // 访问 DMA 内存期间（即使用户已 close fd）物理页不被回收。
+        let buffer = ion_file.buffer().clone();
         debug!(
             "[TPU] dmabuf info: handle={}, size={}, paddr=0x{:x}",
             buffer.handle.as_u32(),
@@ -138,38 +273,62 @@ impl TpuDevice {
             buffer.dma_info.bus_addr.as_u64()
         );
 
-        let dmabuf_vaddr = buffer.dma_info.cpu_addr.as_ptr() as usize;
-        let dmabuf_paddr = buffer.dma_info.bus_addr.as_u64();
+        let task = TpuTask {
+            tid: ax_task::current().id().as_u64(),
+            seq_no: submit_arg.seq_no,
+            vaddr: buffer.dma_info.cpu_addr.as_ptr() as usize,
+            paddr: buffer.dma_info.bus_addr.as_u64(),
+            _buffer: buffer,
+            ret: 0,
+        };
 
-        let (irq_before, poll_before) = self.hw.irq_stats();
-
-        self.hw
-            .submit_dmabuf(submit_arg.fd, submit_arg.seq_no, dmabuf_vaddr, dmabuf_paddr)?;
-
-        let (irq_hits, poll_hits) = self.hw.irq_stats();
-        let irq_delta = irq_hits.saturating_sub(irq_before);
-        let poll_delta = poll_hits.saturating_sub(poll_before);
-        info!(
-            "[TPU] irq stats after submit: delta_irq={}, delta_poll_fallback={}, total_irq={}, \
-             total_poll_fallback={}",
-            irq_delta, poll_delta, irq_hits, poll_hits
-        );
+        // 入队并唤醒 worker，随后立即返回（submit 不等推理）。
+        TASK_LIST.lock().push_back(task);
+        TASK_WQ.notify_one(true);
 
         Ok(0)
     }
 
-    /// 等待 DMA buffer 完成
+    /// 等待 DMA buffer 完成：按 `(tid, seq_no)` 睡 `DONE_WQ`，被 worker 唤醒后
+    /// 取结果。用调用线程 tid 与用户 seq_no 组成复合键，隔离跨进程/线程的相同
+    /// seq_no——否则两个进程都从 seq 0 开始会互相取走对方的完成项。
     fn wait_dmabuf(&self, arg: usize) -> Result<usize, TpuError> {
         let wait_arg = unsafe { &mut *(arg as *mut CviWaitDmaArg) };
+        let seq_no = wait_arg.seq_no;
+        let tid = ax_task::current().id().as_u64();
 
-        match self.hw.wait_dmabuf(wait_arg.seq_no) {
-            Ok(ret) => {
-                wait_arg.ret = ret;
+        // 睡在 DONE_WQ 上直到对应 (tid, seq_no) 出现在完成队列（或超时）。
+        // wait_timeout_until 睡前复检谓词，等价 Linux wait_event。
+        let timed_out = DONE_WQ.wait_timeout_until(TPU_WAIT_TIMEOUT, || {
+            DONE_LIST
+                .lock()
+                .iter()
+                .any(|t| t.tid == tid && t.seq_no == seq_no)
+        });
+
+        // 取出该任务结果（即使超时也再查一次，处理临界完成）。
+        let found = {
+            let mut done = DONE_LIST.lock();
+            done.iter()
+                .position(|t| t.tid == tid && t.seq_no == seq_no)
+                .map(|idx| done.remove(idx).unwrap())
+        };
+
+        match found {
+            Some(task) => {
+                wait_arg.ret = task.ret;
+                if task.ret != 0 {
+                    return Err(TpuError::Timeout);
+                }
                 Ok(0)
             }
-            Err(e) => {
+            None => {
                 wait_arg.ret = -1;
-                Err(e)
+                warn!(
+                    "[TPU] wait dmabuf: (tid={}, seq_no={}) not found (timed_out={})",
+                    tid, seq_no, timed_out
+                );
+                Err(TpuError::Timeout)
             }
         }
     }

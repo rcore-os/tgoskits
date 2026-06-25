@@ -31,6 +31,7 @@ use crate::{
     consts::VM_LOAD_ADDRESS,
     mem::{__kimage_va_to_pa, PageTableInfo},
     smp::percpu_va_range,
+    timer::{self, ArchTimerMode},
 };
 
 pub struct Arch;
@@ -93,11 +94,18 @@ impl ArchTrait for Arch {
     }
 
     fn systimer_tick() -> usize {
-        CNTPCT_EL0.get() as _
+        match timer::aarch64_timer_mode() {
+            ArchTimerMode::El1Virt => CNTVCT_EL0.get() as _,
+            ArchTimerMode::El1Phys | ArchTimerMode::El2HypPhys => CNTPCT_EL0.get() as _,
+        }
     }
 
     fn shutdown() -> ! {
         power::shutdown()
+    }
+
+    fn reset() -> ! {
+        power::reset()
     }
 
     fn secondary_entry_fn_address() -> *const () {
@@ -145,7 +153,7 @@ impl ArchTrait for Arch {
     }
 
     fn virt_to_phys(vaddr: *const u8) -> usize {
-        if is_mmu_enabled() {
+        if crate::mem::mmu::is_kernel_relocated() {
             if percpu_va_range().contains(&(vaddr as usize)) {
                 vaddr as usize - 0xFF00_0000_0000 - PAGE_OFFSET
             } else if vaddr as usize >= VM_LOAD_ADDRESS {
@@ -187,6 +195,10 @@ impl ArchTrait for Arch {
 
     fn kernel_space() -> core::ops::Range<usize> {
         PAGE_OFFSET..usize::MAX
+    }
+
+    fn is_mmu_enabled() -> bool {
+        elx::is_mmu_enabled()
     }
 
     fn cpu_on(hartid: usize, entry: usize, arg: usize) -> Result<(), crate::power::CpuOnError> {

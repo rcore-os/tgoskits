@@ -1,6 +1,6 @@
 [package]
 name = "ax-net"
-version = "0.7.3"
+version = "0.9.0"
 repository = "https://github.com/rcore-os/tgoskits"
 edition.workspace = true
 authors = ["Mivik <mivikq@gmail.com>"]
@@ -41,6 +41,7 @@ features = [
   "medium-ip",
   "proto-ipv4",
   "proto-ipv6",
+  "packetmeta-id",
   "socket-raw",
   "socket-icmp",
   "socket-udp",

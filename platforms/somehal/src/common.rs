@@ -9,6 +9,13 @@ pub trait PlatOp {
 
     fn irq_set_enable(irq: IrqId, enable: bool);
 
+    fn irq_set_affinity(
+        _irq: IrqId,
+        _affinity: crate::irq::IrqAffinity,
+    ) -> Result<(), &'static str> {
+        Err("IRQ affinity is not supported by this platform")
+    }
+
     fn send_ipi(_irq: IrqId, _target: crate::irq::IpiTarget) {
         panic!("IPI is not implemented for this dynamic platform");
     }

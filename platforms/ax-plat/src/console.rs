@@ -3,6 +3,21 @@
 use core::fmt::{Arguments, Result, Write};
 
 use bitflags::bitflags;
+pub use rdrive::DeviceId as ConsoleDeviceId;
+
+/// Why the platform could not provide a hardware console device id.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ConsoleDeviceIdError {
+    /// No firmware or command-line hardware console was specified.
+    NotSpecified,
+    /// A console was specified, but it does not describe a hardware device.
+    NoHardwareDevice,
+    /// A hardware console was specified, but no probed device matched it.
+    DeviceNotFound,
+}
+
+/// Result type returned by the platform console device selector.
+pub type ConsoleDeviceIdResult = core::result::Result<ConsoleDeviceId, ConsoleDeviceIdError>;
 
 bitflags! {
     /// Console input IRQ events returned by the platform.
@@ -27,6 +42,19 @@ pub trait ConsoleIf {
     ///
     /// Returns the number of bytes read.
     fn read_bytes(bytes: &mut [u8]) -> usize;
+
+    /// Returns the runtime-discovered hardware device selected as the console.
+    ///
+    /// Static platforms that do not have a runtime device manager should return
+    /// [`ConsoleDeviceIdError::NotSpecified`].
+    fn device_id() -> ConsoleDeviceIdResult;
+
+    /// Hands platform console output ownership to a higher-level runtime driver.
+    ///
+    /// After this call, low-level console write paths must stop touching the
+    /// same hardware registers if the platform firmware console is backed by a
+    /// runtime-owned device.
+    fn claim_runtime_output();
 
     /// Returns the IRQ number for the console input interrupt.
     ///

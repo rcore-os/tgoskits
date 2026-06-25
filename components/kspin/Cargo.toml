@@ -1,6 +1,6 @@
 [package]
 name = "ax-kspin"
-version = "0.3.11"
+version = "0.3.12"
 repository = "https://github.com/rcore-os/tgoskits"
 edition.workspace = true
 authors = ["Yuekai Jia <equation618@gmail.com>"]

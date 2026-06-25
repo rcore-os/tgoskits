@@ -89,6 +89,53 @@ register_structs! {
     }
 }
 
+const GICD_IGROUPR: usize = 0x0080;
+const GICD_ICENABLER: usize = 0x0180;
+const GICD_ICPENDR: usize = 0x0280;
+const GICD_ICACTIVER: usize = 0x0380;
+const GICD_IPRIORITYR: usize = 0x0400;
+const GICD_ICFGR: usize = 0x0c00;
+
+#[inline(always)]
+fn reg32_addr(base: *const DistributorReg, offset: usize, index: usize) -> *mut u32 {
+    (base as usize + offset + index * core::mem::size_of::<u32>()) as *mut u32
+}
+
+#[inline(always)]
+fn reg8_addr(base: *const DistributorReg, offset: usize, index: usize) -> *mut u8 {
+    (base as usize + offset + index) as *mut u8
+}
+
+#[inline(always)]
+fn mmio_write32(addr: *mut u32, value: u32) {
+    unsafe {
+        core::arch::asm!(
+            "str {value:w}, [{addr}]",
+            addr = in(reg) addr,
+            value = in(reg) value,
+            options(nostack, preserves_flags)
+        );
+    }
+}
+
+#[inline(always)]
+fn mmio_write8(addr: *mut u8, value: u8) {
+    unsafe {
+        core::arch::asm!(
+            "strb {value:w}, [{addr}]",
+            addr = in(reg) addr,
+            value = in(reg) value,
+            options(nostack, preserves_flags)
+        );
+    }
+}
+
+fn write_reg32_range(base: *const DistributorReg, offset: usize, num_regs: usize, value: u32) {
+    for i in 0..num_regs {
+        mmio_write32(reg32_addr(base, offset, i), value);
+    }
+}
+
 #[allow(dead_code)]
 impl DistributorReg {
     pub fn get_security_state(&self) -> SecurityState {
@@ -184,9 +231,7 @@ impl DistributorReg {
         let num_regs = max_interrupts.div_ceil(32) as usize;
         let num_regs = num_regs.min(self.ICENABLER.len());
 
-        for i in 0..num_regs {
-            self.ICENABLER[i].set(u32::MAX);
-        }
+        write_reg32_range(self, GICD_ICENABLER, num_regs, u32::MAX);
     }
 
     /// Enable specific interrupt
@@ -242,9 +287,7 @@ impl DistributorReg {
         let num_regs = max_interrupts.div_ceil(32) as usize;
         let num_regs = num_regs.min(self.ICPENDR.len());
 
-        for i in 0..num_regs {
-            self.ICPENDR[i].set(u32::MAX);
-        }
+        write_reg32_range(self, GICD_ICPENDR, num_regs, u32::MAX);
     }
 
     /// Clear all active interrupts
@@ -252,9 +295,7 @@ impl DistributorReg {
         let num_regs = max_interrupts.div_ceil(32) as usize;
         let num_regs = num_regs.min(self.ICACTIVER.len());
 
-        for i in 0..num_regs {
-            self.ICACTIVER[i].set(u32::MAX);
-        }
+        write_reg32_range(self, GICD_ICACTIVER, num_regs, u32::MAX);
     }
 
     /// Set interrupt priority
@@ -280,7 +321,7 @@ impl DistributorReg {
         // Set default priority (0xA0 - middle priority) for all interrupts
         for i in 32..num_priorities {
             // Skip SGIs and PPIs
-            self.IPRIORITYR[i as usize].set(0xA0);
+            mmio_write8(reg8_addr(self, GICD_IPRIORITYR, i as usize), 0xA0);
         }
     }
 
@@ -289,9 +330,7 @@ impl DistributorReg {
         let num_regs = max_interrupts.div_ceil(32) as usize;
         let num_regs = num_regs.min(self.IGROUPR.len());
 
-        for i in 0..num_regs {
-            self.IGROUPR[i].set(u32::MAX);
-        }
+        write_reg32_range(self, GICD_IGROUPR, num_regs, u32::MAX);
     }
 
     /// Set interrupt group and modifier
@@ -349,9 +388,7 @@ impl DistributorReg {
         let num_regs = num_regs.min(self.ICFGR.len());
 
         // Configure all interrupts as level-sensitive (0x0) by default
-        for i in 0..num_regs {
-            self.ICFGR[i].set(0);
-        }
+        write_reg32_range(self, GICD_ICFGR, num_regs, 0);
     }
 
     /// Set interrupt routing (affinity) using IROUTER registers

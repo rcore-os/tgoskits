@@ -6,9 +6,9 @@ use core::{
 };
 
 use crate::{
-    CpuId, IrqContext, IrqError, IrqHandle, IrqNumber, IrqOps, IrqOutcome, IrqRequest, IrqReturn,
-    IrqScope, IrqStatus,
-    action::Action,
+    CpuId, IrqAffinity, IrqContext, IrqError, IrqExecution, IrqHandle, IrqNumber, IrqOps,
+    IrqOutcome, IrqRequest, IrqReturn, IrqScope, IrqStatus,
+    action::{Action, ActionHandler},
     descriptor::{Descriptor, action_matches_cpu, recompute_scope_line_desired},
     lock::MetadataLock,
 };
@@ -48,28 +48,32 @@ impl<O: IrqOps> Registry<O> {
     }
 
     /// Registers an IRQ action.
-    pub fn request(&self, irq: IrqNumber, request: IrqRequest) -> Result<IrqHandle, IrqError> {
+    pub fn request(&self, irq: IrqNumber, mut request: IrqRequest) -> Result<IrqHandle, IrqError> {
         self.validate_request(&request)?;
 
         let snapshot = self.snapshot_and_disable_scope_line(irq, request.scope)?;
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
-        let action = Box::new(Action::new(id, &request));
+        let action = Box::new(Action::new(id, &mut request));
         let action = Box::into_raw(action);
         let irq_state = self.lock.lock(&self.ops);
         let result = self.insert_action_locked(irq, &request, action);
         self.lock.unlock(&self.ops, irq_state);
 
-        let restore_result = self.restore_scope_line_snapshot(irq, request.scope, &snapshot);
-
         if let Err(err) = result {
             unsafe {
                 drop(Box::from_raw(action));
             }
-            let _ = restore_result;
+            let _ = self.restore_scope_line_snapshot(irq, request.scope, &snapshot);
             return Err(err);
         }
 
         let handle = IrqHandle { irq, id };
+        if let Err(err) = self.apply_affinity(irq, request.affinity) {
+            self.drop_detached_action(handle);
+            let _ = self.restore_scope_line_snapshot(irq, request.scope, &snapshot);
+            return Err(err);
+        }
+        let restore_result = self.restore_scope_line_snapshot(irq, request.scope, &snapshot);
         if let Err(err) = restore_result {
             self.drop_detached_action(handle);
             return Err(err);
@@ -110,6 +114,24 @@ impl<O: IrqOps> Registry<O> {
     pub fn disable(&self, handle: IrqHandle) -> Result<(), IrqError> {
         let scope = self.set_action_enabled(handle, false)?;
         self.apply_enabled(handle, scope, false)
+    }
+
+    /// Waits until no handler is in flight for this IRQ descriptor.
+    pub fn synchronize(&self, handle: IrqHandle) -> Result<(), IrqError> {
+        if self.ops.in_irq_context() {
+            return Err(IrqError::InIrqContext);
+        }
+        loop {
+            let in_flight = self.with_action(handle, |_| {
+                self.descriptor(handle.irq)
+                    .map(|desc| desc.in_flight.load(Ordering::Acquire))
+                    .unwrap_or(0)
+            })?;
+            if in_flight == 0 {
+                return Ok(());
+            }
+            self.ops.relax();
+        }
     }
 
     fn set_action_enabled(&self, handle: IrqHandle, enabled: bool) -> Result<IrqScope, IrqError> {
@@ -153,6 +175,8 @@ impl<O: IrqOps> Registry<O> {
                 in_flight,
             )
         })?;
+        let action_running =
+            self.with_action(handle, |action| action.running.load(Ordering::Acquire))?;
         let cpu = status_cpu(scope, self.ops.current_cpu());
         let line_enabled = match self.ops.is_enabled(handle.irq, cpu) {
             Ok(enabled) => enabled,
@@ -175,6 +199,7 @@ impl<O: IrqOps> Registry<O> {
             pending,
             in_service,
             in_flight,
+            action_running,
         })
     }
 
@@ -201,8 +226,12 @@ impl<O: IrqOps> Registry<O> {
                 continue;
             }
 
+            let Some(_guard) = ActionRunGuard::enter(action) else {
+                continue;
+            };
+
             outcome.called += 1;
-            match unsafe { (action.handler)(ctx, action.data) } {
+            match action.call(ctx) {
                 IrqReturn::Unhandled => {}
                 IrqReturn::Handled => outcome.handled = true,
                 IrqReturn::Wake => {
@@ -237,10 +266,18 @@ impl<O: IrqOps> Registry<O> {
     }
 
     fn validate_request(&self, request: &IrqRequest) -> Result<(), IrqError> {
+        if request.is_boxed() && request.execution == IrqExecution::Concurrent {
+            return Err(IrqError::Busy);
+        }
         if let IrqScope::PerCpu { cpus } = request.scope
             && cpus.is_empty()
         {
             return Err(IrqError::InvalidCpu);
+        }
+        if let IrqAffinity::Fixed(cpu) = request.affinity
+            && !self.ops.cpu_online(cpu)
+        {
+            return Err(IrqError::CpuOffline);
         }
         Ok(())
     }
@@ -377,6 +414,16 @@ impl<O: IrqOps> Registry<O> {
                 }
                 Ok(())
             }
+        }
+    }
+
+    fn apply_affinity(&self, irq: IrqNumber, affinity: IrqAffinity) -> Result<(), IrqError> {
+        match affinity {
+            IrqAffinity::Any => Ok(()),
+            IrqAffinity::Fixed(cpu) if self.ops.cpu_online(cpu) => {
+                self.ops.set_affinity(irq, affinity)
+            }
+            IrqAffinity::Fixed(_) => Err(IrqError::CpuOffline),
         }
     }
 
@@ -697,6 +744,18 @@ impl<O: IrqOps> Registry<O> {
     }
 }
 
+impl Action {
+    fn call(&self, ctx: IrqContext) -> IrqReturn {
+        match &self.handler {
+            ActionHandler::Raw { handler, data } => unsafe { handler(ctx, *data) },
+            ActionHandler::Boxed(handler) => {
+                let handler = unsafe { &mut *handler.get() };
+                handler(ctx)
+            }
+        }
+    }
+}
+
 struct LineStateSnapshot {
     global: bool,
     percpu: Vec<(CpuId, bool)>,
@@ -717,6 +776,31 @@ impl LineStateSnapshot {
 struct DispatchGuard<'a, O: IrqOps> {
     registry: &'a Registry<O>,
     irq: IrqNumber,
+}
+
+struct ActionRunGuard<'a> {
+    action: &'a Action,
+}
+
+impl<'a> ActionRunGuard<'a> {
+    fn enter(action: &'a Action) -> Option<Self> {
+        match action.execution {
+            IrqExecution::Concurrent => Some(Self { action }),
+            IrqExecution::NonReentrant => action
+                .running
+                .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+                .ok()
+                .map(|_| Self { action }),
+        }
+    }
+}
+
+impl Drop for ActionRunGuard<'_> {
+    fn drop(&mut self) {
+        if self.action.execution == IrqExecution::NonReentrant {
+            self.action.running.store(false, Ordering::Release);
+        }
+    }
 }
 
 impl<O: IrqOps> Drop for DispatchGuard<'_, O> {

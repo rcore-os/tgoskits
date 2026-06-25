@@ -25,7 +25,7 @@
 //! - `LISTEN_TABLE` owns passive-open child sockets and accept wakeups.
 //! - `orphan` keeps dropped sockets alive long enough for FIN/TIME-WAIT cleanup.
 
-use alloc::{sync::Arc, task::Wake, vec, vec::Vec};
+use alloc::{sync::Arc, vec};
 use core::{
     net::{Ipv4Addr, SocketAddr},
     sync::atomic::{AtomicBool, AtomicI32, AtomicU32, Ordering},
@@ -36,35 +36,28 @@ use ax_errno::{AxError, AxResult, LinuxError, ax_bail, ax_err_type};
 use ax_io::prelude::*;
 use ax_sync::Mutex;
 use axpoll::{IoEvents, PollSet, Pollable};
-use hashbrown::HashMap;
+use hashbrown::{HashMap, HashSet};
 use smoltcp::{
     iface::SocketHandle,
     socket::tcp as smol,
     time::Duration,
-    wire::{IpEndpoint, IpListenEndpoint},
+    wire::{IpEndpoint, IpListenEndpoint, IpProtocol},
 };
 use spin::LazyLock;
 
 use crate::{
-    LISTEN_TABLE, RecvFlags, RecvOptions, SOCKET_SET, SendOptions, Shutdown, Socket, SocketAddrEx,
-    SocketOps,
+    DeferPollWake, LISTEN_TABLE, RecvFlags, RecvOptions, SOCKET_SET, SendOptions, Shutdown, Socket,
+    SocketAddrEx, SocketOps,
+    addr::{allocate_ephemeral_port, listen_addrs_conflict},
     config::{DeviceBinding, InterfaceId},
     consts::{TCP_RX_BUF_LEN, TCP_TX_BUF_LEN},
-    endpoint_from_ip_endpoint,
     general::GeneralOptions,
     get_control, get_service, interface_by_id,
+    ip_tos::{EgressIpTosKey, clear_egress_ip_tos, set_egress_ip_tos},
     options::{Configurable, GetSocketOption, SetSocketOption, TcpInfo, TcpInfoOptions, TcpState},
     request_poll,
     state::*,
 };
-
-/// Allocates a smoltcp TCP socket with ax-net's default buffers.
-pub(crate) fn new_tcp_socket() -> smol::Socket<'static> {
-    smol::Socket::new(
-        smol::SocketBuffer::new(vec![0; TCP_RX_BUF_LEN]),
-        smol::SocketBuffer::new(vec![0; TCP_TX_BUF_LEN]),
-    )
-}
 
 const TCP_KEEPIDLE_DEFAULT_SECS: u32 = 7200;
 const TCP_KEEPINTVL_DEFAULT_SECS: u32 = 75;
@@ -88,6 +81,8 @@ pub struct TcpSocket {
     bound_endpoint: Mutex<IpListenEndpoint>,
     /// Connected peer endpoint once established.
     peer_endpoint: Mutex<Option<IpEndpoint>>,
+    /// Currently registered egress IP_TOS policy for this TCP socket.
+    tos_key: Mutex<Option<EgressIpTosKey>>,
     /// Whether `bound_endpoint` is registered in `TCP_BOUND_PORTS`.
     bound_registered: AtomicBool,
 
@@ -115,32 +110,18 @@ pub struct TcpSocket {
 
 unsafe impl Sync for TcpSocket {}
 
-struct TcpPollWake {
-    poll: Arc<PollSet>,
-    ready: IoEvents,
-}
-
-impl Wake for TcpPollWake {
-    fn wake(self: Arc<Self>) {
-        self.wake_by_ref();
-    }
-
-    fn wake_by_ref(self: &Arc<Self>) {
-        // smoltcp invokes socket wakers from the net poll task context after
-        // updating socket readiness. The socket set may still be locked there,
-        // so defer the actual PollSet wake to the net worker outer loop.
-        crate::defer_poll_wake(self.poll.clone(), self.ready);
-    }
-}
-
 impl TcpSocket {
     /// Creates a new TCP socket.
     pub fn new() -> Self {
         Self {
             state: StateLock::new(State::Idle),
-            handle: SOCKET_SET.add(new_tcp_socket()),
+            handle: SOCKET_SET.add(smol::Socket::new(
+                smol::SocketBuffer::new(vec![0; TCP_RX_BUF_LEN]),
+                smol::SocketBuffer::new(vec![0; TCP_TX_BUF_LEN]),
+            )),
             bound_endpoint: Mutex::new(empty_endpoint()),
             peer_endpoint: Mutex::new(None),
+            tos_key: Mutex::new(None),
             bound_registered: AtomicBool::new(false),
 
             general: GeneralOptions::new(1, 2, 6), // SOCK_STREAM
@@ -178,6 +159,7 @@ impl TcpSocket {
             handle,
             bound_endpoint: Mutex::new(empty_endpoint()),
             peer_endpoint: Mutex::new(Some(remote_endpoint)),
+            tos_key: Mutex::new(None),
             bound_registered: AtomicBool::new(false),
 
             general: GeneralOptions::new(1, 2, 6), // SOCK_STREAM
@@ -191,7 +173,10 @@ impl TcpSocket {
             poll_tx: Arc::new(PollSet::new()),
             poll_rx_closed: PollSet::new(),
         };
-        let endpoint = endpoint_from_ip_endpoint(local_endpoint);
+        let endpoint = IpListenEndpoint {
+            addr: Some(local_endpoint.addr),
+            port: local_endpoint.port,
+        };
         *result.bound_endpoint.lock() = endpoint;
         result.general.set_device_binding(
             get_control()
@@ -223,13 +208,51 @@ impl TcpSocket {
         SOCKET_SET.with_socket_mut::<smol::Socket, _, _>(self.handle, f)
     }
 
-    fn keep_alive_interval(&self) -> Duration {
-        Duration::from_secs(self.keep_idle_secs.load(Ordering::Relaxed) as u64)
+    fn egress_ip_tos_key(&self) -> Option<EgressIpTosKey> {
+        if self.is_listening() {
+            return EgressIpTosKey::listener(IpProtocol::Tcp, *self.bound_endpoint.lock());
+        }
+
+        let local = self
+            .with_smol_socket(|socket| socket.local_endpoint())
+            .or_else(|| {
+                let endpoint = *self.bound_endpoint.lock();
+                endpoint.addr.map(|addr| IpEndpoint {
+                    addr,
+                    port: endpoint.port,
+                })
+            });
+        let remote = self
+            .with_smol_socket(|socket| socket.remote_endpoint())
+            .or_else(|| *self.peer_endpoint.lock());
+
+        EgressIpTosKey::exact(IpProtocol::Tcp, local?, remote?)
+    }
+
+    fn sync_egress_ip_tos(&self) {
+        let key = self.egress_ip_tos_key();
+        let tos = self.general.ip_tos();
+        let mut tracked = self.tos_key.lock();
+        if *tracked != key {
+            if let Some(old) = *tracked {
+                clear_egress_ip_tos(old);
+            }
+            *tracked = key;
+        }
+        if let Some(key) = key {
+            set_egress_ip_tos(key, tos);
+        }
+    }
+
+    fn clear_tracked_egress_ip_tos(&self) {
+        if let Some(key) = self.tos_key.lock().take() {
+            clear_egress_ip_tos(key);
+        }
     }
 
     fn tcp_info_snapshot(&self) -> TcpInfo {
         self.with_smol_socket(|socket| {
-            let send_queue = saturating_u32(socket.send_queue());
+            let send_queue = socket.send_queue().min(u32::MAX as usize) as u32;
             let snd_mss = TCP_INFO_DEFAULT_MSS;
 
             let mut options = TcpInfoOptions::empty();
@@ -265,23 +288,6 @@ impl TcpSocket {
         Ok(endpoint)
     }
 
-    fn store_pending_error(&self, err: LinuxError) {
-        self.pending_error.store(err.code(), Ordering::Release);
-    }
-
-    fn clear_pending_error(&self) {
-        self.pending_error.store(0, Ordering::Release);
-    }
-
-    fn take_pending_error(&self) -> i32 {
-        self.pending_error.swap(0, Ordering::AcqRel)
-    }
-
-    fn connect_error(&self) -> AxError {
-        LinuxError::try_from(self.pending_error.load(Ordering::Acquire))
-            .map_or(AxError::ConnectionRefused, AxError::from)
-    }
-
     fn poll_connect(&self) -> IoEvents {
         let mut events = IoEvents::empty();
         self.with_smol_socket(|socket| match socket.state() {
@@ -289,7 +295,7 @@ impl TcpSocket {
                 // wait for connection
             }
             smol::State::Established => {
-                self.clear_pending_error();
+                self.pending_error.store(0, Ordering::Release);
                 self.state.set(State::Connected); // connected
                 *self.peer_endpoint.lock() = socket.remote_endpoint();
                 debug!(
@@ -301,7 +307,8 @@ impl TcpSocket {
             }
             state => {
                 *self.peer_endpoint.lock() = None;
-                self.store_pending_error(LinuxError::ECONNREFUSED);
+                self.pending_error
+                    .store(LinuxError::ECONNREFUSED.code(), Ordering::Release);
                 self.state.set(State::Closed); // connection failed
                 debug!(
                     "TCP socket {}: connect failed in state {:?}",
@@ -345,7 +352,7 @@ impl Configurable for TcpSocket {
         use GetSocketOption as O;
 
         if let O::Error(error) = option {
-            **error = self.take_pending_error();
+            **error = self.pending_error.swap(0, Ordering::AcqRel);
             return Ok(true);
         }
 
@@ -393,6 +400,12 @@ impl Configurable for TcpSocket {
     fn set_option_inner(&self, option: SetSocketOption) -> AxResult<bool> {
         use SetSocketOption as O;
 
+        if let O::IpTos(tos) = option {
+            self.general.set_ip_tos(*tos);
+            self.sync_egress_ip_tos();
+            return Ok(true);
+        }
+
         if self.general.set_option_inner(option)? {
             return Ok(true);
         }
@@ -404,7 +417,8 @@ impl Configurable for TcpSocket {
                 });
             }
             O::KeepAlive(keep_alive) => {
-                let interval = self.keep_alive_interval();
+                let interval =
+                    Duration::from_secs(self.keep_idle_secs.load(Ordering::Relaxed) as u64);
                 self.with_smol_socket(|socket| {
                     socket.set_keep_alive(keep_alive.then_some(interval));
                 });
@@ -490,10 +504,13 @@ impl SocketOps for TcpSocket {
             let events = self.poll_connect();
             if !events.contains(IoEvents::OUT) {
                 Err(AxError::WouldBlock)
-            } else if self.state() == State::Connected {
+            } else if self.state.get() == State::Connected {
                 Ok(())
             } else {
-                Err(self.connect_error())
+                Err(
+                    LinuxError::try_from(self.pending_error.load(Ordering::Acquire))
+                        .map_or(AxError::ConnectionRefused, AxError::from),
+                )
             }
         })
     }
@@ -506,20 +523,11 @@ impl SocketOps for TcpSocket {
                     bound_endpoint.port = get_ephemeral_port()?;
                 }
                 let binding = get_control().local_binding_for(&bound_endpoint)?;
-                let register_bound = !self.bound_registered.load(Ordering::Acquire);
-                if register_bound {
-                    register_tcp_bound(bound_endpoint)?;
-                }
-                if let Err(err) = LISTEN_TABLE.listen(bound_endpoint, backlog) {
-                    if register_bound {
-                        unregister_tcp_bound(bound_endpoint);
-                    }
-                    return Err(err);
-                }
+                self.with_bound_endpoint_registered(bound_endpoint, || {
+                    LISTEN_TABLE.listen(bound_endpoint, backlog)
+                })?;
                 *self.bound_endpoint.lock() = bound_endpoint;
-                if register_bound {
-                    self.bound_registered.store(true, Ordering::Release);
-                }
+                self.sync_egress_ip_tos();
                 if binding.bound_if.is_some() {
                     self.general.set_device_binding(binding);
                 }
@@ -533,7 +541,7 @@ impl SocketOps for TcpSocket {
     }
 
     fn accept(&self) -> AxResult<Socket> {
-        if !self.is_listening() {
+        if self.state.get() != State::Listening {
             ax_bail!(InvalidInput, "not listening");
         }
 
@@ -550,6 +558,8 @@ impl SocketOps for TcpSocket {
                     accepted.local_endpoint,
                     accepted.remote_endpoint,
                 );
+                socket.general.set_ip_tos(self.general.ip_tos());
+                socket.sync_egress_ip_tos();
                 debug!(
                     "accepted connection from {}, {}",
                     accepted.handle, accepted.remote_endpoint
@@ -592,7 +602,7 @@ impl SocketOps for TcpSocket {
         if self.rx_closed.load(Ordering::Acquire) {
             return Err(AxError::NotConnected);
         }
-        if self.state() == State::Closed {
+        if self.state.get() == State::Closed {
             return Err(AxError::NotConnected);
         }
         let extra_nb = options.flags.contains(RecvFlags::DONTWAIT);
@@ -637,7 +647,7 @@ impl SocketOps for TcpSocket {
     }
 
     fn recv_available(&self) -> AxResult<usize> {
-        if self.is_listening() {
+        if self.state.get() == State::Listening {
             return Err(AxError::InvalidInput);
         }
         let available = self.with_smol_socket(|socket| socket.recv_queue());
@@ -652,7 +662,10 @@ impl SocketOps for TcpSocket {
         let endpoint = self.with_smol_socket(|socket| {
             socket
                 .local_endpoint()
-                .map(endpoint_from_ip_endpoint)
+                .map(|endpoint| IpListenEndpoint {
+                    addr: Some(endpoint.addr),
+                    port: endpoint.port,
+                })
                 .unwrap_or_else(|| *self.bound_endpoint.lock())
         });
         Ok(SocketAddrEx::Ip(SocketAddr::new(
@@ -691,6 +704,7 @@ impl SocketOps for TcpSocket {
                         debug!("TCP socket {}: shutting down", self.handle);
                         socket.close();
                     });
+                    self.clear_tracked_egress_ip_tos();
                     self.unregister_bound_endpoint();
                     *self.bound_endpoint.lock() = empty_endpoint();
                     request_poll();
@@ -709,6 +723,7 @@ impl SocketOps for TcpSocket {
         if let Ok(guard) = self.state.lock(State::Listening) {
             guard.transit(State::Closed, || {
                 LISTEN_TABLE.unlisten(self.bound_endpoint()?);
+                self.clear_tracked_egress_ip_tos();
                 self.unregister_bound_endpoint();
                 *self.bound_endpoint.lock() = empty_endpoint();
                 request_poll();
@@ -724,7 +739,7 @@ impl SocketOps for TcpSocket {
 impl Pollable for TcpSocket {
     fn poll(&self) -> IoEvents {
         request_poll();
-        let mut events = match self.state() {
+        let mut events = match self.state.get() {
             State::Connecting => self.poll_connect(),
             State::Connected | State::Idle | State::Closed => self.poll_stream(),
             State::Listening => self.poll_listener(),
@@ -736,7 +751,8 @@ impl Pollable for TcpSocket {
 
     fn register(&self, context: &mut Context<'_>, events: IoEvents) {
         let mut accept_registration = None;
-        if self.is_listening() && events.intersects(IoEvents::IN | IoEvents::RDHUP) {
+        if self.state.get() == State::Listening && events.intersects(IoEvents::IN | IoEvents::RDHUP)
+        {
             let port = self.bound_endpoint.lock().port;
             if port != 0 {
                 let endpoint = *self.bound_endpoint.lock();
@@ -756,7 +772,7 @@ impl Pollable for TcpSocket {
                 self.poll_rx
                     .register(context.waker(), IoEvents::IN | IoEvents::RDHUP)
             };
-            Some(Waker::from(Arc::new(TcpPollWake {
+            Some(Waker::from(Arc::new(DeferPollWake {
                 poll: self.poll_rx.clone(),
                 ready: IoEvents::IN | IoEvents::RDHUP,
             })))
@@ -767,7 +783,7 @@ impl Pollable for TcpSocket {
             // Socket registration runs from task poll context before taking the
             // socket-set lock.
             unsafe { self.poll_tx.register(context.waker(), IoEvents::OUT) };
-            Some(Waker::from(Arc::new(TcpPollWake {
+            Some(Waker::from(Arc::new(DeferPollWake {
                 poll: self.poll_tx.clone(),
                 ready: IoEvents::OUT,
             })))
@@ -806,9 +822,15 @@ impl Pollable for TcpSocket {
 
 impl Drop for TcpSocket {
     fn drop(&mut self) {
+        let endpoint = *self.bound_endpoint.lock();
+        if self.state.get() == State::Listening && endpoint.port != 0 {
+            LISTEN_TABLE.unlisten(endpoint);
+        }
+
         let should_orphan = self.with_smol_socket(|socket| {
-            matches!(
-                socket.state(),
+            let state = socket.state();
+            let should_orphan = matches!(
+                state,
                 smol::State::Established
                     | smol::State::CloseWait
                     | smol::State::FinWait1
@@ -816,15 +838,26 @@ impl Drop for TcpSocket {
                     | smol::State::Closing
                     | smol::State::LastAck
                     | smol::State::TimeWait
-            ) || socket.send_queue() > 0
+            ) || socket.send_queue() > 0;
+            if matches!(
+                state,
+                smol::State::Established
+                    | smol::State::SynSent
+                    | smol::State::SynReceived
+                    | smol::State::CloseWait
+                    | smol::State::FinWait1
+                    | smol::State::FinWait2
+                    | smol::State::Closing
+                    | smol::State::LastAck
+            ) {
+                debug!("TCP socket {}: closing on drop", self.handle);
+                socket.close();
+            }
+            should_orphan
         });
 
-        // Initiate graceful shutdown (send FIN if connected)
-        if let Err(err) = self.shutdown(Shutdown::Both) {
-            warn!("TCP socket {}: shutdown failed: {}", self.handle, err);
-        }
-
         // Unbind from API layer (port registry, etc.)
+        self.clear_tracked_egress_ip_tos();
         self.unregister_bound_endpoint();
 
         if should_orphan {
@@ -840,10 +873,6 @@ impl Drop for TcpSocket {
         // Wake net-poll worker to process teardown
         crate::request_poll();
     }
-}
-
-fn saturating_u32(value: usize) -> u32 {
-    value.min(u32::MAX as usize) as u32
 }
 
 fn duration_micros_u32(value: Duration) -> u32 {
@@ -887,7 +916,7 @@ impl TcpSocket {
                 }
             })?
             .transit(State::Connecting, || {
-                self.clear_pending_error();
+                self.pending_error.store(0, Ordering::Release);
                 // TODO: check remote addr unreachable
                 // let (bound_endpoint, remote_endpoint) = self.get_endpoint_pair(remote_addr)?;
                 let remote_endpoint = IpEndpoint::from(remote_addr);
@@ -916,12 +945,7 @@ impl TcpSocket {
                     "TCP connection from {} to {}",
                     bound_endpoint, remote_endpoint
                 );
-                let register_bound = !self.bound_registered.load(Ordering::Acquire);
-                if register_bound {
-                    register_tcp_bound(bound_endpoint)?;
-                }
-
-                let result = {
+                self.with_bound_endpoint_registered(bound_endpoint, || {
                     let mut service = get_service();
                     let context = service.iface.context();
                     self.with_smol_socket(|socket| {
@@ -937,17 +961,8 @@ impl TcpSocket {
                             })?;
                         Ok::<(), AxError>(())
                     })
-                };
-                if let Err(err) = result {
-                    if register_bound {
-                        unregister_tcp_bound(bound_endpoint);
-                    }
-                    return Err(err);
-                }
+                })?;
                 *self.bound_endpoint.lock() = bound_endpoint;
-                if register_bound {
-                    self.bound_registered.store(true, Ordering::Release);
-                }
 
                 // Only set device binding if was originally unbound or bound to 0.0.0.0
                 // Binding to a specific IP should lock the interface
@@ -956,6 +971,7 @@ impl TcpSocket {
                         .set_device_binding(get_control().local_binding_for(&bound_endpoint)?);
                 }
                 // else: bound to specific IP, keep existing interface binding
+                self.sync_egress_ip_tos();
 
                 Ok(())
             })
@@ -970,6 +986,31 @@ impl TcpSocket {
         Ok(())
     }
 
+    fn with_bound_endpoint_registered<R>(
+        &self,
+        endpoint: IpListenEndpoint,
+        f: impl FnOnce() -> AxResult<R>,
+    ) -> AxResult<R> {
+        let register_bound = !self.bound_registered.load(Ordering::Acquire);
+        if register_bound {
+            register_tcp_bound(endpoint)?;
+        }
+        match f() {
+            Ok(value) => {
+                if register_bound {
+                    self.bound_registered.store(true, Ordering::Release);
+                }
+                Ok(value)
+            }
+            Err(err) => {
+                if register_bound {
+                    unregister_tcp_bound(endpoint);
+                }
+                Err(err)
+            }
+        }
+    }
+
     /// Removes the public TCP bind side-table entry, if present.
     fn unregister_bound_endpoint(&self) {
         if self.bound_registered.swap(false, Ordering::AcqRel) {
@@ -978,7 +1019,7 @@ impl TcpSocket {
     }
 }
 
-static TCP_BOUND_PORTS: LazyLock<Mutex<HashMap<u16, Vec<Option<smoltcp::wire::IpAddress>>>>> =
+static TCP_BOUND_PORTS: LazyLock<Mutex<HashMap<u16, HashSet<Option<smoltcp::wire::IpAddress>>>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
 /// Registers TCP bind ownership with wildcard/specific address conflicts.
@@ -995,7 +1036,7 @@ fn register_tcp_bound(endpoint: IpListenEndpoint) -> AxResult {
     {
         return Err(AxError::AddrInUse);
     }
-    bound_addrs.push(endpoint.addr);
+    bound_addrs.insert(endpoint.addr);
     Ok(())
 }
 
@@ -1004,9 +1045,7 @@ fn unregister_tcp_bound(endpoint: IpListenEndpoint) {
     if endpoint.port != 0 {
         let mut bound_ports = TCP_BOUND_PORTS.lock();
         if let Some(bound_addrs) = bound_ports.get_mut(&endpoint.port) {
-            if let Some(idx) = bound_addrs.iter().position(|&addr| addr == endpoint.addr) {
-                bound_addrs.swap_remove(idx);
-            }
+            bound_addrs.remove(&endpoint.addr);
             if bound_addrs.is_empty() {
                 bound_ports.remove(&endpoint.port);
             }
@@ -1022,35 +1061,8 @@ fn tcp_port_available(port: u16) -> bool {
         && !TCP_BOUND_PORTS.lock().contains_key(&port)
 }
 
-/// Returns whether two listen/bind addresses conflict on the same port.
-fn listen_addrs_conflict(
-    a: Option<smoltcp::wire::IpAddress>,
-    b: Option<smoltcp::wire::IpAddress>,
-) -> bool {
-    a.is_none() || b.is_none() || a == b
-}
-
 fn get_ephemeral_port() -> AxResult<u16> {
-    const PORT_START: u16 = 0xc000;
-    const PORT_END: u16 = 0xffff;
-    static CURR: Mutex<u16> = Mutex::new(PORT_START);
-
-    let mut curr = CURR.lock();
-    let mut tries = 0;
-    // TODO: more robust
-    while tries <= PORT_END - PORT_START {
-        let port = *curr;
-        if *curr == PORT_END {
-            *curr = PORT_START;
-        } else {
-            *curr += 1;
-        }
-        if tcp_port_available(port) {
-            return Ok(port);
-        }
-        tries += 1;
-    }
-    ax_bail!(AddrInUse, "no available ports");
+    allocate_ephemeral_port(tcp_port_available)
 }
 
 #[cfg(test)]

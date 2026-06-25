@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.2](https://github.com/rcore-os/tgoskits/compare/ax-driver-v0.8.1...ax-driver-v0.8.2) - 2026-06-23
+
+### Other
+
+- updated the following local packages: rd-net, aic8800, ax-kspin, dma-api, ax-alloc, axklib, some-serial, crab-usb, dwmmc-host, eth-intel, rdif-block, nvme-driver, phytium-mci-host, ramdisk, realtek-rtl8125, rockchip-npu, rockchip-rga, rockchip-soc, sdhci-host
+
+## [0.8.1](https://github.com/rcore-os/tgoskits/compare/ax-driver-v0.8.0...ax-driver-v0.8.1) - 2026-06-22
+
+### Added
+
+- *(starry)* add Wayland app case ([#1160](https://github.com/rcore-os/tgoskits/pull/1160))
+- *(rockchip-rga)* add dry-run command buffer ([#1248](https://github.com/rcore-os/tgoskits/pull/1248))
+- AIC8800 Wi-Fi SoftAP for SG2002 (LicheeRV Nano) ([#1185](https://github.com/rcore-os/tgoskits/pull/1185))
+
+### Other
+
+- *(ax-runtime)* adapt submit-poll fs block irq registration ([#1228](https://github.com/rcore-os/tgoskits/pull/1228))
+
 ## [0.8.0](https://github.com/rcore-os/tgoskits/compare/ax-driver-v0.7.1...ax-driver-v0.8.0) - 2026-06-12
 
 ### Added

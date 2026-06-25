@@ -1,17 +1,20 @@
 use alloc::sync::Arc;
 
 use ax_errno::AxResult;
-use ax_memory_addr::{PhysAddr, PhysAddrRange, VirtAddr, VirtAddrRange};
+use ax_memory_addr::{PhysAddr, VirtAddr, VirtAddrRange};
 use ax_runtime::hal::paging::{MappingFlags, PageSize, PageTableCursor, PagingError};
 use ax_sync::Mutex;
 
-use super::{AddrSpace, Backend, BackendOps, pages_in};
+use super::{AddrSpace, Backend, BackendOps, CloneMapAccounting, MemoryAccounting, pages_in};
 
 /// Linear mapping backend.
 ///
 /// The offset between the virtual address and the physical address is
 /// constant, which is specified by `pa_va_offset`. For example, the virtual
 /// address `vaddr` is mapped to the physical address `vaddr - pa_va_offset`.
+///
+/// Device/DMA and signal-trampoline mappings use this backend; they are not
+/// counted in process RSS (Linux `VM_PFNMAP|VM_IO` analogue).
 #[derive(Clone)]
 pub struct LinearBackend {
     start: VirtAddr,
@@ -49,15 +52,28 @@ impl BackendOps for LinearBackend {
         PageSize::Size4K
     }
 
-    fn map(&self, range: VirtAddrRange, flags: MappingFlags, pt: &mut PageTableCursor) -> AxResult {
-        let pa_range = PhysAddrRange::from_start_size(self.pa(range.start), range.size());
+    fn map(
+        &self,
+        range: VirtAddrRange,
+        flags: MappingFlags,
+        _acct: Option<&MemoryAccounting>,
+        pt: &mut PageTableCursor,
+    ) -> AxResult {
+        let pa_range =
+            ax_memory_addr::PhysAddrRange::from_start_size(self.pa(range.start), range.size());
         debug!("Linear::map: {range:?} -> {pa_range:?} {flags:?}");
         pt.map_region(range.start, |va| self.pa(va), range.size(), flags, false)?;
         Ok(())
     }
 
-    fn unmap(&self, range: VirtAddrRange, pt: &mut PageTableCursor) -> AxResult {
-        let pa_range = PhysAddrRange::from_start_size(self.pa(range.start), range.size());
+    fn unmap(
+        &self,
+        range: VirtAddrRange,
+        _acct: Option<&MemoryAccounting>,
+        pt: &mut PageTableCursor,
+    ) -> AxResult {
+        let pa_range =
+            ax_memory_addr::PhysAddrRange::from_start_size(self.pa(range.start), range.size());
         debug!("Linear::unmap: {range:?} -> {pa_range:?}");
         for vaddr in pages_in(range, PageSize::Size4K)? {
             match pt.unmap(vaddr) {
@@ -76,22 +92,18 @@ impl BackendOps for LinearBackend {
         _old_pt: &mut PageTableCursor,
         _new_pt: &mut PageTableCursor,
         _new_aspace: &Arc<Mutex<AddrSpace>>,
+        _acct: CloneMapAccounting<'_>,
     ) -> AxResult<Backend> {
         Ok(Backend::Linear(self.clone()))
     }
 
     fn split(&mut self, _align_diff: usize) -> Option<Backend> {
-        // linear backend can be trivially split since it does not have any state.
         Some(Backend::Linear(self.clone()))
     }
 
-    fn shrink_left(&mut self, _shrink_size: usize) {
-        // linear backend can be trivially shrunk since it does not have any state.
-    }
+    fn shrink_left(&mut self, _shrink_size: usize) {}
 
-    fn shrink_right(&mut self, _shrink_size: usize) {
-        // linear backend can be trivially shrunk since it does not have any state.
-    }
+    fn shrink_right(&mut self, _shrink_size: usize) {}
 }
 
 impl Backend {
@@ -104,12 +116,6 @@ impl Backend {
         })
     }
 
-    /// Like [`new_linear`], but keeps `anchor` alive as long as the VMA exists.
-    ///
-    /// Use this when the linear mapping covers physical memory owned by an
-    /// `Arc`-managed object (e.g., `Arc<IonBuffer>`). The `anchor` clone is
-    /// dropped when the backend is dropped (i.e., on `munmap` or process exit),
-    /// which is the correct point to allow the physical pages to be freed.
     pub fn new_linear_anchored(
         start: VirtAddr,
         offset: isize,

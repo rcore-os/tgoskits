@@ -1,7 +1,7 @@
 use ax_runtime::hal::cpu::uspace::{ExceptionInfo, ExceptionKind, ReturnReason, UserContext};
 use ax_task::TaskInner;
 use starry_process::Pid;
-use starry_signal::{SignalInfo, Signo};
+use starry_signal::{FPE_INTDIV, SEGV_ACCERR, SEGV_MAPERR, SignalInfo, Signo};
 use starry_vm::{VmMutPtr, VmPtr};
 use syscalls::Sysno;
 
@@ -98,13 +98,36 @@ pub fn new_user_task(name: &str, mut uctx: UserContext, set_child_tid: usize) ->
                         }
                     }
                     ReturnReason::PageFault(addr, flags) => {
-                        if !thr.proc_data.aspace().lock().handle_page_fault(addr, flags) {
-                            info!(
+                        // Classify si_code while holding the aspace lock: an
+                        // existing mapping that rejected the access is a
+                        // permission violation (SEGV_ACCERR), otherwise the
+                        // address is unmapped (SEGV_MAPERR) — matching Linux's
+                        // do_user_addr_fault().
+                        let si_code = {
+                            let aspace = thr.proc_data.aspace();
+                            let mut aspace = aspace.lock();
+                            if aspace.handle_page_fault(addr, flags) {
+                                None
+                            } else if aspace.find_area(addr).is_some() {
+                                Some(SEGV_ACCERR)
+                            } else {
+                                Some(SEGV_MAPERR)
+                            }
+                        };
+                        if let Some(si_code) = si_code {
+                            warn!(
                                 "{:?}: segmentation fault at {:#x} {:?}",
                                 thr.proc_data.proc, addr, flags
                             );
-                            raise_signal_fatal(SignalInfo::new_kernel(Signo::SIGSEGV), &uctx)
-                                .expect("Failed to send SIGSEGV");
+                            // POSIX: a synchronous SIGSEGV must carry the
+                            // faulting address in si_addr so handlers can
+                            // classify and recover from guard-page / implicit-
+                            // null-check faults.
+                            raise_signal_fatal(
+                                SignalInfo::new_fault(Signo::SIGSEGV, si_code, addr.as_usize()),
+                                &uctx,
+                            )
+                            .expect("Failed to send SIGSEGV");
                         }
                     }
                     ReturnReason::Interrupt => {}
@@ -148,12 +171,19 @@ pub fn new_user_task(name: &str, mut uctx: UserContext, set_child_tid: usize) ->
                                         target_arch = "aarch64",
                                         target_arch = "loongarch64"
                                     ))]
-                                    let _ = crate::syscall::ptrace_restore_singlestep_insn(
-                                        &thr.proc_data,
-                                        thr.tid(),
-                                        addr,
-                                        insn,
-                                    );
+                                    {
+                                        let restored =
+                                            crate::syscall::ptrace_restore_singlestep_insn(
+                                                &thr.proc_data,
+                                                thr.tid(),
+                                                addr,
+                                                insn,
+                                            );
+                                        if restored {
+                                            thr.proc_data
+                                                .set_ptrace_singlestep_for(thr.tid(), false);
+                                        }
+                                    }
                                     #[cfg(not(any(
                                         target_arch = "riscv64",
                                         target_arch = "aarch64",
@@ -209,15 +239,15 @@ pub fn new_user_task(name: &str, mut uctx: UserContext, set_child_tid: usize) ->
                             exception_iss_value(&exc_info),
                             exc_info
                         );
-                        let signo = match kind {
+                        let sig_info = match kind {
                             ExceptionKind::Misaligned => {
                                 #[cfg(target_arch = "loongarch64")]
                                 if unsafe { uctx.emulate_unaligned() }.is_ok() {
                                     break 'exc;
                                 }
-                                Signo::SIGBUS
+                                SignalInfo::new_kernel(Signo::SIGBUS)
                             }
-                            ExceptionKind::Breakpoint => Signo::SIGTRAP,
+                            ExceptionKind::Breakpoint => SignalInfo::new_kernel(Signo::SIGTRAP),
                             ExceptionKind::IllegalInstruction => {
                                 // AArch64 EL0 reads of ID_AA64*_EL1 (CPU feature
                                 // detection, e.g. the Go runtime) trap as EC=0 /
@@ -227,12 +257,24 @@ pub fn new_user_task(name: &str, mut uctx: UserContext, set_child_tid: usize) ->
                                 if unsafe { uctx.emulate_mrs_id_reg() } {
                                     break 'exc;
                                 }
-                                Signo::SIGILL
+                                SignalInfo::new_kernel(Signo::SIGILL)
                             }
-                            _ => Signo::SIGTRAP,
+                            // x86 `#DE`: integer divide-by-zero or the
+                            // `INT_MIN / -1` overflow. POSIX/Linux deliver SIGFPE
+                            // with si_code FPE_INTDIV and si_addr = faulting PC.
+                            // The HotSpot JVM's x86 interpreter/JIT emit a bare
+                            // `idiv` and rely on exactly this signal to raise a
+                            // Java ArithmeticException; routing it through the old
+                            // `_ => SIGTRAP` fall-through made the JVM abort mid
+                            // javac compilation. (Other arches do not trap on
+                            // integer divide-by-zero, so they never reach here.)
+                            ExceptionKind::ArithmeticError => {
+                                SignalInfo::new_fault(Signo::SIGFPE, FPE_INTDIV, uctx.ip())
+                            }
+                            _ => SignalInfo::new_kernel(Signo::SIGTRAP),
                         };
-                        raise_signal_fatal(SignalInfo::new_kernel(signo), &uctx)
-                            .expect("Failed to send SIGTRAP");
+                        raise_signal_fatal(sig_info, &uctx)
+                            .expect("Failed to send fatal exception signal");
                     }
                     r => {
                         warn!("Unexpected return reason: {r:?}");

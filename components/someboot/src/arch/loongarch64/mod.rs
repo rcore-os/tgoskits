@@ -154,6 +154,16 @@ impl ArchTrait for Arch {
         }
     }
 
+    fn reset() -> ! {
+        if efi_stub::is_uefi_available() {
+            efi_stub::reset(efi_stub::ResetType::COLD, efi_stub::Status::SUCCESS, None);
+        }
+
+        loop {
+            spin_loop();
+        }
+    }
+
     fn secondary_entry_fn_address() -> *const () {
         _secondary_entry as *const ()
     }
@@ -285,6 +295,10 @@ impl ArchTrait for Arch {
 
     fn kernel_space() -> core::ops::Range<usize> {
         addrspace::PAGE_OFFSET..usize::MAX
+    }
+
+    fn is_mmu_enabled() -> bool {
+        crmd::read().pg()
     }
 
     fn cpu_on(hartid: usize, entry: usize, arg: usize) -> Result<(), CpuOnError> {

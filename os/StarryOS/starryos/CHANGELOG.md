@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.18](https://github.com/rcore-os/tgoskits/compare/starryos-v0.5.17...starryos-v0.5.18) - 2026-06-23
+
+### Other
+
+- updated the following local packages: axplat-dyn, ax-hal, starry-kernel, axbuild, ax-driver, ax-feat, ax-std
+
+## [0.5.17](https://github.com/rcore-os/tgoskits/compare/starryos-v0.5.16...starryos-v0.5.17) - 2026-06-22
+
+### Added
+
+- *(axruntime)* add compiler-backed stack protector support ([#1239](https://github.com/rcore-os/tgoskits/pull/1239))
+- AIC8800 Wi-Fi SoftAP for SG2002 (LicheeRV Nano) ([#1185](https://github.com/rcore-os/tgoskits/pull/1185))
+
+### Fixed
+
+- *(tui)* set TERM in init.sh so TUI applications(e.g. top) can start ([#1194](https://github.com/rcore-os/tgoskits/pull/1194))
+
+### Other
+
+- *(ax-runtime)* adapt submit-poll fs block irq registration ([#1228](https://github.com/rcore-os/tgoskits/pull/1228))
+
 ## [0.5.16](https://github.com/rcore-os/tgoskits/compare/starryos-v0.5.15...starryos-v0.5.16) - 2026-06-12
 
 ### Added

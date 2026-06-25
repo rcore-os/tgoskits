@@ -215,6 +215,7 @@ impl Identify for IdentifyController {
         ControllerInfo {
             vendor_id: raw.vendor_id,
             product_id: raw.product_id,
+            mdts: raw.mdts,
             sqes_max: raw.sqes >> 4,
             sqes_min: raw.sqes & 0b1111,
             cqes_max: raw.cqes >> 4,
@@ -236,7 +237,9 @@ pub struct ControllerData {
     pub serial_number: [u8; 20],
     pub model_number: [u8; 40],
     pub firmware_revision: [u8; 8],
-    pub rsv: [u8; 512 - 8 - 40 - 20 - 2 - 2],
+    pub rsv_before_mdts: [u8; 5],
+    pub mdts: u8,
+    pub rsv: [u8; 512 - 8 - 40 - 20 - 2 - 2 - 5 - 1],
     pub sqes: u8,
     pub cqes: u8,
     pub max_cmd: u16,
@@ -247,10 +250,34 @@ pub struct ControllerData {
 pub struct ControllerInfo {
     pub vendor_id: u16,
     pub product_id: u16,
+    pub mdts: u8,
     pub sqes_max: u8,
     pub sqes_min: u8,
     pub cqes_max: u8,
     pub cqes_min: u8,
     pub max_cmd: u16,
     pub number_of_namespaces: u32,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Identify, IdentifyController};
+
+    #[test]
+    fn identify_controller_reads_mdts_from_spec_offset() {
+        let mut data = [0_u8; 4096];
+        data[77] = 7;
+        data[512] = 0x66;
+        data[513] = 0x44;
+        data[516..520].copy_from_slice(&3_u32.to_le_bytes());
+
+        let info = IdentifyController::new().parse(&data);
+
+        assert_eq!(info.mdts, 7);
+        assert_eq!(info.sqes_min, 6);
+        assert_eq!(info.sqes_max, 6);
+        assert_eq!(info.cqes_min, 4);
+        assert_eq!(info.cqes_max, 4);
+        assert_eq!(info.number_of_namespaces, 3);
+    }
 }

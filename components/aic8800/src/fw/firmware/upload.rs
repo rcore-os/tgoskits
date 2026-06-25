@@ -122,35 +122,6 @@ pub fn init_aic8801_firmware<H: SdioHost>(
     Ok(())
 }
 
-/// AIC8800DC 固件初始化流程
-pub fn init_aic8800dc_firmware<H: SdioHost>(
-    transport: &mut IpcTransport<H>,
-    fw_set: &FirmwareSet,
-    chip_rev: &ChipRevision,
-) -> Result<(), SdioError> {
-    let upload_addr = if chip_rev.rev == CHIP_REV_U01 {
-        RAM_FMAC_FW_ADDR
-    } else {
-        ROM_FMAC_FW_ADDR
-    };
-    upload_firmware(transport, fw_set.wl_fw, upload_addr)?;
-
-    if chip_rev.rev == CHIP_REV_U01 && !fw_set.wl_patch.is_empty() {
-        upload_firmware(transport, fw_set.wl_patch, ROM_FMAC_PATCH_ADDR)?;
-    }
-
-    let boot_addr = if chip_rev.rev == CHIP_REV_U01 {
-        RAM_FMAC_FW_ADDR
-    } else {
-        ROM_FMAC_FW_ADDR
-    };
-    let status = ipc_start_app(transport, boot_addr, HOST_START_APP_DUMMY)?;
-    log::debug!("[aic8800] AIC8800DC start_app status = 0x{:08x}", status);
-
-    log::info!("[aic8800] AIC8800DC firmware init done");
-    Ok(())
-}
-
 /// AIC8800D80 Patch 配置
 pub fn aicwifi_patch_config_8800d80<H: SdioHost>(
     transport: &mut IpcTransport<H>,

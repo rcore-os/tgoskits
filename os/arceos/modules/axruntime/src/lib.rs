@@ -67,6 +67,10 @@ mod wifi_glue;
 
 pub use ax_hal as hal;
 
+mod build_info {
+    include!(concat!(env!("OUT_DIR"), "/build_info.rs"));
+}
+
 #[cfg(feature = "smp")]
 pub use self::mp::rust_main_secondary;
 
@@ -188,10 +192,10 @@ pub fn rust_main(cpu_id: usize, arg: usize) -> ! {
             backtrace = {}
             smp = {}
         "},
-        ax_config::ARCH,
-        ax_config::PLATFORM,
-        option_env!("AX_TARGET").unwrap_or(""),
-        option_env!("AX_MODE").unwrap_or(""),
+        build_info::ARCH,
+        hal::platform_name(),
+        build_info::TARGET,
+        build_info::MODE,
         log_level,
         axbacktrace::is_enabled(),
         ax_hal::cpu_num()
@@ -462,6 +466,7 @@ static NEXT_PERIODIC_DEADLINE_NANOS: u64 = 0;
 
 #[cfg(feature = "irq")]
 fn init_timer() {
+    ax_hal::time::enable_timer_irq();
     let now_ns = ax_hal::time::monotonic_time_nanos();
     unsafe {
         NEXT_PERIODIC_DEADLINE_NANOS

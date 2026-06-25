@@ -21,6 +21,9 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
+#define TEST_TIMEOUT_MS 5000
+#define WAIT_POLL_INTERVAL_US 10000
+
 static volatile sig_atomic_t got_usr1 = 0;
 
 static void on_usr1(int signo)
@@ -127,8 +130,38 @@ int main(void)
     }
 
     int status = 0;
-    if (waitpid(child, &status, 0) != child) {
-        perror("parent: waitpid");
+    int waited_ms = 0;
+    pid_t waited = 0;
+    while (waited_ms < TEST_TIMEOUT_MS) {
+        waited = waitpid(child, &status, WNOHANG);
+        if (waited == child) {
+            break;
+        }
+        if (waited < 0) {
+            if (errno == EINTR) {
+                continue;
+            }
+            perror("parent: waitpid");
+            return 1;
+        }
+        usleep(WAIT_POLL_INTERVAL_US);
+        waited_ms += WAIT_POLL_INTERVAL_US / 1000;
+        if (kill(child, SIGUSR1) != 0) {
+            if (errno == ESRCH) {
+                continue;
+            }
+            perror("parent: retry kill(SIGUSR1)");
+            kill(child, SIGKILL);
+            waitpid(child, NULL, 0);
+            return 1;
+        }
+    }
+
+    if (waited != child) {
+        fprintf(stderr, "FAIL: child did not exit after SIGUSR1 within %d ms\n",
+                TEST_TIMEOUT_MS);
+        kill(child, SIGKILL);
+        waitpid(child, NULL, 0);
         return 1;
     }
 

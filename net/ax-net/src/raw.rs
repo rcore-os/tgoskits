@@ -22,6 +22,14 @@
 //! Loopback ICMP-style traffic may be delivered through a local fast path. For
 //! connected raw sockets, packets from other peers can be skipped or deferred
 //! without corrupting the smoltcp receive queue format.
+//!
+//! # Locking
+//!
+//! Raw sockets keep their small deferred-packet slots behind IRQ-off spin locks
+//! because packet delivery may be inspected while the net poll worker is
+//! servicing device-originated receive work. These locks are only held around
+//! `Option<Vec<u8>>` swaps and never across route lookup, smoltcp polling, or
+//! userspace buffer I/O.
 
 use alloc::vec;
 use core::{
@@ -49,21 +57,33 @@ use crate::{
     consts::{RAW_RX_BUF_LEN, RAW_TX_BUF_LEN},
     general::GeneralOptions,
     get_control, interface_by_id,
+    ip_tos::apply_ip_tos,
     options::{Configurable, GetSocketOption, SetSocketOption},
     request_poll,
 };
 
-/// Allocates a smoltcp raw socket for one IP version and protocol.
-pub(crate) fn new_raw_socket(
-    ip_version: IpVersion,
-    ip_protocol: IpProtocol,
-) -> smol::Socket<'static> {
-    smol::Socket::new(
-        Some(ip_version),
-        Some(ip_protocol),
-        smol::PacketBuffer::new(vec![PacketMetadata::EMPTY; 256], vec![0; RAW_RX_BUF_LEN]),
-        smol::PacketBuffer::new(vec![PacketMetadata::EMPTY; 256], vec![0; RAW_TX_BUF_LEN]),
-    )
+enum RawIpHeader {
+    Ipv4(Ipv4Repr),
+    Ipv6(Ipv6Repr),
+}
+
+impl RawIpHeader {
+    fn buffer_len(&self) -> usize {
+        match self {
+            Self::Ipv4(header) => header.buffer_len(),
+            Self::Ipv6(header) => header.buffer_len(),
+        }
+    }
+
+    fn emit(&self, buf: &mut [u8]) {
+        match self {
+            Self::Ipv4(header) => header.emit(
+                &mut Ipv4Packet::new_unchecked(buf),
+                &smoltcp::phy::ChecksumCapabilities::ignored(),
+            ),
+            Self::Ipv6(header) => header.emit(&mut Ipv6Packet::new_unchecked(buf)),
+        }
+    }
 }
 
 /// A raw IP socket used for ICMP and ICMPv6 traffic.
@@ -93,11 +113,15 @@ pub struct RawSocket {
 impl RawSocket {
     /// Creates a raw socket for the given IP version and protocol.
     pub fn new(ip_version: IpVersion, ip_protocol: IpProtocol) -> Self {
-        let handle = SOCKET_SET.add(new_raw_socket(ip_version, ip_protocol));
         let general = GeneralOptions::new(3, 2, u8::from(ip_protocol) as i32); // SOCK_RAW
         general.set_device_binding(DeviceBinding::default());
         Self {
-            handle,
+            handle: SOCKET_SET.add(smol::Socket::new(
+                Some(ip_version),
+                Some(ip_protocol),
+                smol::PacketBuffer::new(vec![PacketMetadata::EMPTY; 256], vec![0; RAW_RX_BUF_LEN]),
+                smol::PacketBuffer::new(vec![PacketMetadata::EMPTY; 256], vec![0; RAW_TX_BUF_LEN]),
+            )),
             ip_version,
             local_addr: RwLock::new(None),
             peer_addr: RwLock::new(None),
@@ -124,6 +148,37 @@ impl RawSocket {
     /// Borrows the underlying smoltcp raw socket by handle.
     fn with_smol_socket<R>(&self, f: impl FnOnce(&mut smol::Socket) -> R) -> R {
         SOCKET_SET.with_socket_mut::<smol::Socket, _, _>(self.handle, f)
+    }
+
+    fn outgoing_ip_header(
+        &self,
+        local: IpAddress,
+        remote: IpAddress,
+        next_header: IpProtocol,
+        payload_len: usize,
+        hop_limit: u8,
+    ) -> RawIpHeader {
+        match (self.ip_version, local, remote) {
+            (IpVersion::Ipv4, IpAddress::Ipv4(src_addr), IpAddress::Ipv4(dst_addr)) => {
+                RawIpHeader::Ipv4(Ipv4Repr {
+                    src_addr,
+                    dst_addr,
+                    next_header,
+                    payload_len,
+                    hop_limit,
+                })
+            }
+            (IpVersion::Ipv6, IpAddress::Ipv6(src_addr), IpAddress::Ipv6(dst_addr)) => {
+                RawIpHeader::Ipv6(Ipv6Repr {
+                    src_addr,
+                    dst_addr,
+                    next_header,
+                    payload_len,
+                    hop_limit,
+                })
+            }
+            _ => unreachable!(),
+        }
     }
 
     /// Validates that an address belongs to this socket's IP version.
@@ -160,8 +215,12 @@ impl RawSocket {
             .source)
     }
 
-    /// Parses a complete IP packet and returns its source plus deliverable bytes.
-    fn parse_ip_packet<'a>(&self, packet: &'a [u8]) -> AxResult<(IpAddress, &'a [u8])> {
+    /// Splits a complete IP packet into source and bytes returned to userspace.
+    ///
+    /// Linux raw IPv4 receive returns the IP header plus payload, while raw IPv6
+    /// receive returns only the transport payload. The returned slice preserves
+    /// that ABI difference.
+    fn split_packet_for_delivery<'a>(&self, packet: &'a [u8]) -> AxResult<(IpAddress, &'a [u8])> {
         match self.ip_version {
             IpVersion::Ipv4 => {
                 let packet = Ipv4Packet::new_checked(packet)
@@ -342,76 +401,17 @@ impl SocketOps for RawSocket {
                 let next_header = socket.ip_protocol().expect("raw socket protocol");
                 let hop_limit = (*self.ttl.read()).unwrap_or(64);
 
-                let header_len = match self.ip_version {
-                    IpVersion::Ipv4 => Ipv4Repr {
-                        src_addr: match local {
-                            IpAddress::Ipv4(addr) => addr,
-                            _ => unreachable!(),
-                        },
-                        dst_addr: match remote {
-                            IpAddress::Ipv4(addr) => addr,
-                            _ => unreachable!(),
-                        },
-                        next_header,
-                        payload_len,
-                        hop_limit,
-                    }
-                    .buffer_len(),
-                    IpVersion::Ipv6 => Ipv6Repr {
-                        src_addr: match local {
-                            IpAddress::Ipv6(addr) => addr,
-                            _ => unreachable!(),
-                        },
-                        dst_addr: match remote {
-                            IpAddress::Ipv6(addr) => addr,
-                            _ => unreachable!(),
-                        },
-                        next_header,
-                        payload_len,
-                        hop_limit,
-                    }
-                    .buffer_len(),
-                };
+                let header =
+                    self.outgoing_ip_header(local, remote, next_header, payload_len, hop_limit);
+                let header_len = header.buffer_len();
 
                 let buf = socket
                     .send(header_len + payload_len)
                     .map_err(|_| AxError::WouldBlock)?;
-                match self.ip_version {
-                    IpVersion::Ipv4 => {
-                        let header = Ipv4Repr {
-                            src_addr: match local {
-                                IpAddress::Ipv4(addr) => addr,
-                                _ => unreachable!(),
-                            },
-                            dst_addr: match remote {
-                                IpAddress::Ipv4(addr) => addr,
-                                _ => unreachable!(),
-                            },
-                            next_header,
-                            payload_len,
-                            hop_limit,
-                        };
-                        header.emit(
-                            &mut Ipv4Packet::new_unchecked(&mut *buf),
-                            &smoltcp::phy::ChecksumCapabilities::ignored(),
-                        );
-                    }
-                    IpVersion::Ipv6 => {
-                        let header = Ipv6Repr {
-                            src_addr: match local {
-                                IpAddress::Ipv6(addr) => addr,
-                                _ => unreachable!(),
-                            },
-                            dst_addr: match remote {
-                                IpAddress::Ipv6(addr) => addr,
-                                _ => unreachable!(),
-                            },
-                            next_header,
-                            payload_len,
-                            hop_limit,
-                        };
-                        header.emit(&mut Ipv6Packet::new_unchecked(&mut *buf));
-                    }
+                header.emit(&mut *buf);
+                let ip_tos = self.general.ip_tos();
+                if ip_tos != 0 {
+                    apply_ip_tos(buf, ip_tos);
                 }
 
                 let written = src.read(&mut buf[header_len..])?;
@@ -455,7 +455,7 @@ impl SocketOps for RawSocket {
                         *self.deferred_rx.lock() = Some((source, packet));
                         return Err(AxError::WouldBlock);
                     }
-                    let (_, payload) = self.parse_ip_packet(&packet)?;
+                    let (_, payload) = self.split_packet_for_delivery(&packet)?;
                     return self.deliver_packet(source, payload, &mut dst, &mut options);
                 }
 
@@ -473,7 +473,7 @@ impl SocketOps for RawSocket {
 
                 let wire_packet = if options.flags.contains(RecvFlags::PEEK) {
                     let packet = socket.peek().map_err(|_| AxError::WouldBlock)?;
-                    let (source, _) = self.parse_ip_packet(packet)?;
+                    let (source, _) = self.split_packet_for_delivery(packet)?;
                     if let Some(peer) = *self.peer_addr.read()
                         && source != peer
                     {
@@ -483,7 +483,7 @@ impl SocketOps for RawSocket {
                 } else {
                     socket.recv().map_err(|_| AxError::WouldBlock)?
                 };
-                let (source, packet) = self.parse_ip_packet(wire_packet)?;
+                let (source, packet) = self.split_packet_for_delivery(wire_packet)?;
 
                 if !self.source_matches_peer(source) {
                     *self.deferred_rx.lock() = Some((source, wire_packet.to_vec()));

@@ -214,6 +214,8 @@ pub fn sys_mmap(
                     .as_ref()
                     .expect("file-backed mmap has cached device_mmap")
                 {
+                    #[cfg(feature = "rknpu")]
+                    Ok(DeviceMmap::PhysicalCached(..)) => false,
                     Ok(DeviceMmap::Physical(..))
                     | Ok(DeviceMmap::PhysicalResolved(..))
                     | Ok(DeviceMmap::PhysicalPages(..))
@@ -338,6 +340,22 @@ pub fn sys_mmap(
                             None => Backend::new_linear(start, pa_va_offset, true),
                         }
                     }
+                    #[cfg(feature = "rknpu")]
+                    Ok(DeviceMmap::PhysicalCached(mut range, retain)) => {
+                        range.start += offset;
+                        if range.is_empty() {
+                            return Err(AxError::InvalidInput);
+                        }
+                        length = length.min(range.size().align_down(page_size));
+                        let pa_va_offset =
+                            start.as_usize() as isize - range.start.as_usize() as isize;
+                        match retain {
+                            Some(retain) => {
+                                Backend::new_linear_anchored(start, pa_va_offset, true, retain)
+                            }
+                            None => Backend::new_linear(start, pa_va_offset, true),
+                        }
+                    }
                     Ok(DeviceMmap::PhysicalResolved(range, retain)) => {
                         mapping_flags |= MappingFlags::UNCACHED;
                         if range.is_empty() {
@@ -400,6 +418,25 @@ pub fn sys_mmap(
                                     }
                                     DeviceMmap::Physical(range, retain) => {
                                         mapping_flags |= MappingFlags::UNCACHED;
+                                        if range.is_empty() {
+                                            return Err(AxError::InvalidInput);
+                                        }
+                                        length =
+                                            capped_device_map_len(length, range.size(), page_size);
+                                        let pa_va_offset = start.as_usize() as isize
+                                            - range.start.as_usize() as isize;
+                                        match retain {
+                                            Some(retain) => Backend::new_linear_anchored(
+                                                start,
+                                                pa_va_offset,
+                                                true,
+                                                retain,
+                                            ),
+                                            None => Backend::new_linear(start, pa_va_offset, true),
+                                        }
+                                    }
+                                    #[cfg(feature = "rknpu")]
+                                    DeviceMmap::PhysicalCached(range, retain) => {
                                         if range.is_empty() {
                                             return Err(AxError::InvalidInput);
                                         }

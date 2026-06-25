@@ -14,10 +14,9 @@ use core::time::Duration;
 
 #[cfg(feature = "paging")]
 use ax_memory_addr::MemoryAddr;
-#[cfg(feature = "irq")]
-use axklib::IrqError;
 use axklib::{
-    AxError, AxResult, IrqCpuMask, IrqHandle, Klib, PhysAddr, RawIrqHandler, VirtAddr, impl_trait,
+    AxError, AxResult, IrqCpuId, IrqCpuMask, IrqError, IrqHandle, Klib, PhysAddr, RawIrqHandler,
+    VirtAddr, impl_trait,
 };
 
 struct KlibImpl;
@@ -274,6 +273,22 @@ impl_trait! {
             #[cfg(not(feature = "irq"))]
             {
                 Err(AxError::Unsupported)
+            }
+        }
+
+        unsafe fn irq_run_on_cpu_sync(
+            _cpu: IrqCpuId,
+            _f: unsafe fn(*mut ()),
+            _arg: *mut (),
+        ) -> Result<(), IrqError> {
+            #[cfg(feature = "irq")]
+            {
+                unsafe { ax_hal::irq::run_on_cpu_sync(_cpu, _f, _arg) }
+            }
+            #[cfg(not(feature = "irq"))]
+            {
+                let _ = (_cpu, _f, _arg);
+                Err(IrqError::Unsupported)
             }
         }
     }

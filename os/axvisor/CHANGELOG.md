@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.14](https://github.com/rcore-os/tgoskits/compare/axvisor-v0.5.13...axvisor-v0.5.14) - 2026-06-23
+
+### Other
+
+- Enhance archive extraction logic and add legacy file tests ([#1355](https://github.com/rcore-os/tgoskits/pull/1355))
+
+## [0.5.13](https://github.com/rcore-os/tgoskits/compare/axvisor-v0.5.12...axvisor-v0.5.13) - 2026-06-22
+
+### Added
+
+- *(axruntime)* add compiler-backed stack protector support ([#1239](https://github.com/rcore-os/tgoskits/pull/1239))
+
+### Fixed
+
+- *(axvisor)* map qemu high mmio pci windows ([#1289](https://github.com/rcore-os/tgoskits/pull/1289))
+
+### Other
+
+- *(ax-runtime)* adapt submit-poll fs block irq registration ([#1228](https://github.com/rcore-os/tgoskits/pull/1228))
+
 ## [0.5.12](https://github.com/rcore-os/tgoskits/compare/axvisor-v0.5.11...axvisor-v0.5.12) - 2026-06-12
 
 ### Other

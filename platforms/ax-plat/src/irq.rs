@@ -4,8 +4,9 @@ use core::sync::atomic::{AtomicUsize, Ordering};
 
 use ax_kernel_guard::BaseGuard;
 pub use irq_framework::{
-    AutoEnable, CpuId, CpuMask, IrqContext, IrqError, IrqHandle, IrqNumber, IrqOps, IrqOutcome,
-    IrqRequest, IrqReturn, IrqScope, IrqStatus, RawIrqHandler, Registry, ShareMode,
+    AutoEnable, BoxedIrqHandler, CpuId, CpuMask, IrqAffinity, IrqContext, IrqError, IrqExecution,
+    IrqHandle, IrqNumber, IrqOps, IrqOutcome, IrqRequest, IrqReturn, IrqScope, IrqStatus,
+    RawIrqHandler, Registry, ShareMode,
 };
 use spin::Once;
 
@@ -17,6 +18,23 @@ static RUN_ON_CPU_SYNC: AtomicUsize = AtomicUsize::new(0);
 /// Installs the runtime-provided synchronous cross-CPU call implementation.
 pub fn set_run_on_cpu_sync(run_on_cpu_sync: RunOnCpuSync) {
     RUN_ON_CPU_SYNC.store(run_on_cpu_sync as usize, Ordering::Release);
+}
+
+/// Runs a raw thunk synchronously on the requested CPU.
+///
+/// This is the generic owner-CPU execution bridge used by device runtimes that
+/// must keep register access on one non-reentrant CPU context.
+///
+/// # Safety
+///
+/// `arg` must stay valid until this function returns, and `f` must be safe to
+/// execute in the target CPU's IRQ/IPI context.
+pub unsafe fn run_on_cpu_sync(
+    cpu: CpuId,
+    f: unsafe fn(*mut ()),
+    arg: *mut (),
+) -> Result<(), IrqError> {
+    PlatIrqOps.run_on_cpu_sync(cpu, f, arg)
 }
 
 struct PlatIrqOps;
@@ -75,6 +93,10 @@ impl IrqOps for PlatIrqOps {
         Ok(())
     }
 
+    fn set_affinity(&self, irq: IrqNumber, affinity: IrqAffinity) -> Result<(), IrqError> {
+        set_affinity(irq.0, affinity)
+    }
+
     fn is_enabled(&self, _irq: IrqNumber, _cpu: Option<CpuId>) -> Result<bool, IrqError> {
         Err(IrqError::Unsupported)
     }
@@ -104,8 +126,11 @@ fn registry() -> &'static Registry<PlatIrqOps> {
 
 /// Requests an IRQ action through the dynamic IRQ framework.
 pub fn request_irq(irq: usize, request: IrqRequest) -> Result<IrqHandle, IrqError> {
+    let auto_enable = request.auto_enable_mode();
     let handle = registry().request(IrqNumber(irq), request)?;
-    if let Err(err) = registry().enable(handle) {
+    if auto_enable == AutoEnable::Yes
+        && let Err(err) = registry().enable(handle)
+    {
         let _ = registry().free(handle);
         return Err(err);
     }
@@ -121,6 +146,22 @@ pub fn request_shared_irq(
     request_irq(
         irq,
         IrqRequest::new(handler, data).share_mode(ShareMode::Shared),
+    )
+}
+
+/// Requests a boxed IRQ action.
+pub fn request_boxed_irq(irq: usize, request: IrqRequest) -> Result<IrqHandle, IrqError> {
+    request_irq(irq, request)
+}
+
+/// Requests a boxed shared IRQ action.
+pub fn request_boxed_shared_irq(
+    irq: usize,
+    handler: BoxedIrqHandler,
+) -> Result<IrqHandle, IrqError> {
+    request_irq(
+        irq,
+        IrqRequest::new_boxed(handler).share_mode(ShareMode::Shared),
     )
 }
 
@@ -150,6 +191,11 @@ pub fn enable_irq(handle: IrqHandle) -> Result<(), IrqError> {
 /// Disables an IRQ action.
 pub fn disable_irq(handle: IrqHandle) -> Result<(), IrqError> {
     registry().disable(handle)
+}
+
+/// Waits until no handler for this IRQ descriptor is in flight.
+pub fn synchronize_irq(handle: IrqHandle) -> Result<(), IrqError> {
+    registry().synchronize(handle)
 }
 
 /// Returns the status of an IRQ action.
@@ -204,6 +250,9 @@ pub enum IpiTarget {
 pub trait IrqIf {
     /// Enables or disables the given IRQ.
     fn set_enable(irq: usize, enabled: bool);
+
+    /// Routes a global IRQ to a fixed CPU when supported.
+    fn set_affinity(irq: usize, affinity: IrqAffinity) -> Result<(), IrqError>;
 
     /// Handles the IRQ.
     ///

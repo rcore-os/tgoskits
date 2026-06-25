@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.7](https://github.com/rcore-os/tgoskits/compare/loongarch_vcpu-v0.5.6...loongarch_vcpu-v0.5.7) - 2026-06-23
+
+### Other
+
+- updated the following local packages: ax-kspin, axvcpu
+
+## [0.5.6](https://github.com/rcore-os/tgoskits/compare/loongarch_vcpu-v0.5.5...loongarch_vcpu-v0.5.6) - 2026-06-22
+
+### Other
+
+- updated the following local packages: axvcpu
+
 ## [0.5.5](https://github.com/rcore-os/tgoskits/compare/loongarch_vcpu-v0.5.4...loongarch_vcpu-v0.5.5) - 2026-06-09
 
 ### Other

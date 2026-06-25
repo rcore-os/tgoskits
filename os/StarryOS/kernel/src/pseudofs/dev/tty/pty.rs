@@ -55,19 +55,25 @@ impl PtyWriter {
 
 impl TtyWrite for PtyWriter {
     fn write(&self, buf: &[u8]) {
-        let read = self.0.lock().push_slice(buf);
-        // PTY bytes are committed before waking the peer reader.
-        unsafe { self.1.wake(IoEvents::IN) };
+        let read = self.try_write(buf);
         if read < buf.len() {
             warn!("Discarding {} bytes written to pty", buf.len() - read);
         }
     }
 
+    fn try_write(&self, buf: &[u8]) -> usize {
+        let read = self.0.lock().push_slice(buf);
+        // PTY bytes are committed before waking the peer reader.
+        unsafe { self.1.wake(IoEvents::IN) };
+        read
+    }
+
     fn close(&self) {
-        // Mark the writer as closed so the reader (master) side can see
-        // POLLHUP and read EOF.  The peer's poll/read path drains any
-        // already-buffered bytes first, then reports hangup on the next
-        // non-blocking poll or read after the buffer is empty.
+        // Mark this writer side as fully closed so the peer reader can report
+        // POLLHUP / read EOF, and wake the peer reader's poll set so its
+        // blocked poll()/read() observe the hangup. The peer drains any
+        // already-buffered bytes first, then sees hangup on the next poll/read
+        // once the buffer is empty.
         self.2.store(true, Ordering::Release);
         unsafe { self.1.wake(IoEvents::IN) };
     }
@@ -78,6 +84,8 @@ pub(crate) fn create_pty_pair() -> (Arc<PtyDriver>, Arc<PtyDriver>) {
     let slave_to_master = Arc::new(HeapRb::new(PTY_BUF_SIZE));
     let poll_rx_slave = Arc::new(PollSet::new());
     let poll_rx_master = Arc::new(PollSet::new());
+    // Shared close-flags: each writer sets its own flag on last-fd close so the
+    // peer reader can observe hangup (POLLHUP / EOF).
     let master_closed = Arc::new(AtomicBool::new(false));
     let slave_closed = Arc::new(AtomicBool::new(false));
 
@@ -101,7 +109,10 @@ pub(crate) fn create_pty_pair() -> (Arc<PtyDriver>, Arc<PtyDriver>) {
         TtyConfig {
             reader: PtyReader::new(master_to_slave, master_closed),
             writer: PtyWriter::new(slave_to_master, poll_rx_master, slave_closed),
-            process_mode: ProcessMode::InterruptDriven(poll_rx_slave),
+            process_mode: ProcessMode::InterruptDriven {
+                input: poll_rx_slave,
+                output: None,
+            },
         },
     );
 

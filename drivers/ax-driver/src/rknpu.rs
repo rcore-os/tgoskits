@@ -2,11 +2,11 @@ use alloc::vec::Vec;
 
 use log::info;
 use rdrive::{probe::OnProbeError, register::ProbeFdt};
-use rockchip_npu::{Rknpu, RknpuConfig, RknpuType};
 pub use rockchip_npu::{
-    RknpuAction,
+    GemBufferInfo, GemCachePolicy, RknpuAction,
     ioctrl::{RknpuMemCreate, RknpuMemMap, RknpuMemSync, RknpuSubmit},
 };
+use rockchip_npu::{Rknpu, RknpuConfig, RknpuType};
 use rockchip_pm::{PowerDomain, RockchipPM};
 
 use crate::mmio::iomap;
@@ -82,6 +82,10 @@ pub fn is_available() -> bool {
 
 pub fn obj_addr_and_size(handle: u32) -> Result<(usize, usize), Error> {
     with_npu(|npu| npu.get_obj_addr_and_size(handle).ok_or(Error::NotFound))
+}
+
+pub fn buffer_info(handle: u32) -> Result<GemBufferInfo, Error> {
+    with_npu(|npu| npu.get_buffer_info(handle).ok_or(Error::NotFound))
 }
 
 pub fn submit(args: &mut RknpuSubmit) -> Result<(), Error> {

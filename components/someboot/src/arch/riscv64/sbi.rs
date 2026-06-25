@@ -41,6 +41,15 @@ pub fn system_reset_shutdown() -> Result<(), isize> {
     }
 }
 
+pub fn system_reset_reboot() -> Result<(), isize> {
+    let ret = sbi_rt::system_reset(sbi_rt::ColdReboot, sbi_rt::NoReason);
+    if ret.error == 0 {
+        Ok(())
+    } else {
+        Err(ret.error as isize)
+    }
+}
+
 pub fn detect_timebase_frequency() -> Option<usize> {
     let fdt_ptr = crate::fdt::fdt_addr()?;
     let fdt = unsafe { fdt_raw::Fdt::from_ptr(fdt_ptr).ok()? };

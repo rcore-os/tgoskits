@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.14](https://github.com/rcore-os/tgoskits/compare/x86_vcpu-v0.5.13...x86_vcpu-v0.5.14) - 2026-06-23
+
+### Other
+
+- updated the following local packages: axvcpu, x86_vlapic
+
+## [0.5.13](https://github.com/rcore-os/tgoskits/compare/x86_vcpu-v0.5.12...x86_vcpu-v0.5.13) - 2026-06-22
+
+### Other
+
+- updated the following local packages: axvm-types, axdevice_base, axvcpu, x86_vlapic
+
 ## [0.5.12](https://github.com/rcore-os/tgoskits/compare/x86_vcpu-v0.5.11...x86_vcpu-v0.5.12) - 2026-06-09
 
 ### Added
