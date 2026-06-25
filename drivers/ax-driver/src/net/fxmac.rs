@@ -1,6 +1,7 @@
 use alloc::{boxed::Box, collections::VecDeque, sync::Arc, vec, vec::Vec};
 use core::{alloc::Layout, cmp, ptr::NonNull};
 
+use ax_kspin::SpinRaw as Mutex;
 use dma_api::{DmaAddr, DmaAllocHandle, DmaConstraints, DmaOp};
 use fxmac_rs::{FXmac, FXmacGetMacAddress, FXmacLwipPortTx, FXmacRecvHandler, xmac_init};
 use rd_net::{DmaBuffer, Event, IRxQueue, ITxQueue, NetError, QueueConfig};
@@ -25,7 +26,7 @@ pub fn register(plat_dev: PlatformDevice) {
 }
 
 struct FxmacNet {
-    inner: Arc<spin::Mutex<FxmacInner>>,
+    inner: Arc<Mutex<FxmacInner>>,
     tx_created: bool,
     rx_created: bool,
     irq_enabled: bool,
@@ -37,7 +38,7 @@ impl FxmacNet {
         FXmacGetMacAddress(&mut hwaddr, 0);
         let device = xmac_init(&hwaddr);
         Self {
-            inner: Arc::new(spin::Mutex::new(FxmacInner {
+            inner: Arc::new(Mutex::new(FxmacInner {
                 device,
                 hwaddr,
                 rx_buffers: VecDeque::with_capacity(QUEUE_SIZE),
@@ -130,7 +131,7 @@ impl From<DmaBuffer> for RuntimeNetBuffer {
 }
 
 struct FxmacTxQueue {
-    inner: Arc<spin::Mutex<FxmacInner>>,
+    inner: Arc<Mutex<FxmacInner>>,
 }
 
 impl ITxQueue for FxmacTxQueue {
@@ -159,7 +160,7 @@ impl ITxQueue for FxmacTxQueue {
 }
 
 struct FxmacRxQueue {
-    inner: Arc<spin::Mutex<FxmacInner>>,
+    inner: Arc<Mutex<FxmacInner>>,
 }
 
 impl IRxQueue for FxmacRxQueue {
