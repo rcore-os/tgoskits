@@ -92,8 +92,9 @@ A small QEMU test case is provided under:
 test-suit/starryos/qemu-smp1/offline-monitor/
 ```
 
-It injects the collector into the StarryOS rootfs, runs it for 60 seconds, and
-prints the generated logs between markers so the host can extract them.
+It injects the collector into the StarryOS rootfs, runs it for a short
+5-second smoke interval, and prints the generated logs between markers so the
+host can extract them.
 
 ```sh
 cargo xtask starry test qemu --arch x86_64 -c qemu-smp1/offline-monitor

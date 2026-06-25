@@ -7,7 +7,7 @@ mkdir -p "$OUT_DIR"
 sh /usr/bin/system-monitor.sh \
   --out-dir "$OUT_DIR" \
   --interval-sec 1 \
-  --duration-sec 60
+  --duration-sec 5
 
 echo STARRY_SYSTEM_METRICS_BEGIN
 cat "$OUT_DIR/system_metrics.csv"
