@@ -534,150 +534,311 @@ impl AxVmDevices {
         Ok(())
     }
 
-    // ─── Registration helpers ───────────────────────────────────────
+    // ─── Resource rollback ────────────────────────────────────────
 
-    /// Checks whether `[base, base + size)` conflicts with any already
-    /// registered MMIO range.
-    fn check_mmio_conflict(&self, base: u64, size: u64) -> Result<(), RegistryError> {
-        if size == 0 {
-            return Err(RegistryError::InvalidResource {
-                resource: Resource::MmioRange { base, size },
-                reason: InvalidResourceReason::ZeroSized,
-            });
-        }
-        if base.checked_add(size).is_none() {
-            return Err(RegistryError::InvalidResource {
-                resource: Resource::MmioRange { base, size },
-                reason: InvalidResourceReason::AddressOverflow,
-            });
-        }
-
-        let end = base + size;
-
-        // Check the immediately-preceding entry.
-        if let Some((prev_base, entry)) = self.mmio_index.range(..base).next_back()
-            && prev_base.wrapping_add(entry.size) > base
-        {
-            return Err(RegistryError::AddressConflict {
-                resource: Resource::MmioRange { base, size },
-                existing: Resource::MmioRange {
-                    base: *prev_base,
-                    size: entry.size,
-                },
-                existing_device: DeviceId::new(entry.slot as u32),
-            });
-        }
-
-        // Check the immediately-following entry.
-        if let Some((next_base, entry)) = self.mmio_index.range(base..).next()
-            && *next_base < end
-        {
-            return Err(RegistryError::AddressConflict {
-                resource: Resource::MmioRange { base, size },
-                existing: Resource::MmioRange {
-                    base: *next_base,
-                    size: entry.size,
-                },
-                existing_device: DeviceId::new(entry.slot as u32),
-            });
-        }
-
-        Ok(())
-    }
-
-    /// Checks whether `[base, base + size)` conflicts with any already
-    /// registered port I/O range.
-    fn check_port_conflict(&self, base: u16, size: u16) -> Result<(), RegistryError> {
-        if size == 0 {
-            return Err(RegistryError::InvalidResource {
-                resource: Resource::PortRange { base, size },
-                reason: InvalidResourceReason::ZeroSized,
-            });
-        }
-        // Use u32 to allow base=0xffff, size=1 (end=0x10000 is valid).
-        let end = (base as u32).wrapping_add(size as u32);
-        if end > (u16::MAX as u32 + 1) {
-            return Err(RegistryError::InvalidResource {
-                resource: Resource::PortRange { base, size },
-                reason: InvalidResourceReason::AddressOverflow,
-            });
-        }
-
-        if let Some((prev_base, entry)) = self.port_index.range(..base).next_back()
-            && (*prev_base as u32).wrapping_add(entry.size as u32) > base as u32
-        {
-            return Err(RegistryError::AddressConflict {
-                resource: Resource::PortRange { base, size },
-                existing: Resource::PortRange {
-                    base: *prev_base,
-                    size: entry.size as u16,
-                },
-                existing_device: DeviceId::new(entry.slot as u32),
-            });
-        }
-
-        if let Some((next_base, entry)) = self.port_index.range(base..).next()
-            && (*next_base as u32) < end
-        {
-            return Err(RegistryError::AddressConflict {
-                resource: Resource::PortRange { base, size },
-                existing: Resource::PortRange {
-                    base: *next_base,
-                    size: entry.size as u16,
-                },
-                existing_device: DeviceId::new(entry.slot as u32),
-            });
-        }
-
-        Ok(())
-    }
-
-    /// Checks whether a system register range conflicts with any already
-    /// registered system register range.
-    fn check_sysreg_conflict(&self, addr: u32, count: u32) -> Result<(), RegistryError> {
-        if count == 0 {
-            return Err(RegistryError::InvalidResource {
-                resource: Resource::SysReg { addr, count },
-                reason: InvalidResourceReason::ZeroSized,
-            });
-        }
-
-        let end = addr.saturating_add(count.saturating_sub(1));
-        if count > 0 && addr.checked_add(count).is_none() {
-            return Err(RegistryError::InvalidResource {
-                resource: Resource::SysReg { addr, count },
-                reason: InvalidResourceReason::AddressOverflow,
-            });
-        }
-
-        // Check the immediately-preceding key: its range may extend into ours.
-        if let Some((prev_addr, entry)) = self.sysreg_index.range(..addr).next_back() {
-            let existing_count = entry.size as u32;
-            let existing_end = prev_addr.saturating_add(existing_count.saturating_sub(1));
-            if existing_end >= addr {
-                return Err(RegistryError::AddressConflict {
-                    resource: Resource::SysReg { addr, count },
-                    existing: Resource::SysReg {
-                        addr: *prev_addr,
-                        count: existing_count,
-                    },
-                    existing_device: DeviceId::new(entry.slot as u32),
-                });
+    /// Removes `resources` from the index maps.  Used to undo a
+    /// partially-completed insertion when a conflict is discovered
+    /// mid-way through `insert_resources`.
+    fn rollback_resources(&mut self, resources: &[Resource]) {
+        for r in resources {
+            match *r {
+                Resource::MmioRange { base, .. } => {
+                    self.mmio_index.remove(&base);
+                }
+                Resource::PortRange { base, .. } => {
+                    self.port_index.remove(&base);
+                }
+                Resource::SysReg { addr, .. } => {
+                    self.sysreg_index.remove(&addr);
+                }
             }
         }
+    }
 
-        // Check entries whose keys fall within our range.
-        if let Some((reg_addr, entry)) = self.sysreg_index.range(addr..=end).next() {
-            return Err(RegistryError::AddressConflict {
-                resource: Resource::SysReg { addr, count },
-                existing: Resource::SysReg {
-                    addr: *reg_addr,
-                    count: entry.size as u32,
-                },
-                existing_device: DeviceId::new(entry.slot as u32),
-            });
+    // ─── BTreeMap insertion with inline conflict detection ─────────
+
+    /// Inserts every resource of device `idx` into the three BTreeMap
+    /// indices, checking for validity errors and range conflicts
+    /// as each key is inserted.
+    ///
+    /// Because earlier resources of the *same* device are already in
+    /// the index when later ones are checked, same-device internal
+    /// overlaps are caught by the same predecessor/successor probes
+    /// that catch cross-device overlaps.  A conflict is reported as
+    /// [`InvalidResourceReason::OverlappingResources`] when the
+    /// neighbour entry belongs to the current device, and as
+    /// [`RegistryError::AddressConflict`] otherwise.
+    ///
+    /// On any error the keys inserted so far are rolled back through
+    /// [`rollback_resources`], leaving the indices unchanged.
+    fn insert_resources(
+        &mut self,
+        idx: usize,
+        resources: &[Resource],
+    ) -> Result<(), RegistryError> {
+        for (i, r) in resources.iter().enumerate() {
+            match *r {
+                Resource::MmioRange { base, size } => {
+                    if size == 0 {
+                        return Err(RegistryError::InvalidResource {
+                            resource: Resource::MmioRange { base, size },
+                            reason: InvalidResourceReason::ZeroSized,
+                        });
+                    }
+                    if base.checked_add(size).is_none() {
+                        return Err(RegistryError::InvalidResource {
+                            resource: Resource::MmioRange { base, size },
+                            reason: InvalidResourceReason::AddressOverflow,
+                        });
+                    }
+
+                    // Key collision.
+                    if let Some(existing) = self.mmio_index.get(&base) {
+                        let existing_size = existing.size;
+                        let existing_slot = existing.slot;
+                        self.rollback_resources(&resources[..i]);
+                        return Err(RegistryError::AddressConflict {
+                            resource: Resource::MmioRange { base, size },
+                            existing: Resource::MmioRange {
+                                base,
+                                size: existing_size,
+                            },
+                            existing_device: DeviceId::new(existing_slot as u32),
+                        });
+                    }
+
+                    self.mmio_index.insert(base, RangeEntry { slot: idx, size });
+
+                    // Predecessor check.
+                    if let Some((prev_base, existing)) = self.mmio_index.range(..base).next_back()
+                        && prev_base.wrapping_add(existing.size) > base
+                    {
+                        let conflicting_base = *prev_base;
+                        let conflicting_size = existing.size;
+                        let conflicting_slot = existing.slot;
+                        self.rollback_resources(&resources[..=i]);
+                        if conflicting_slot == idx {
+                            return Err(RegistryError::InvalidResource {
+                                resource: Resource::MmioRange { base, size },
+                                reason: InvalidResourceReason::OverlappingResources,
+                            });
+                        }
+                        return Err(RegistryError::AddressConflict {
+                            resource: Resource::MmioRange { base, size },
+                            existing: Resource::MmioRange {
+                                base: conflicting_base,
+                                size: conflicting_size,
+                            },
+                            existing_device: DeviceId::new(conflicting_slot as u32),
+                        });
+                    }
+
+                    // Successor check.
+                    let end = base + size;
+                    if let Some(next_start) = base.checked_add(1)
+                        && let Some((next_base, existing)) =
+                            self.mmio_index.range(next_start..).next()
+                        && *next_base < end
+                    {
+                        let conflicting_base = *next_base;
+                        let conflicting_size = existing.size;
+                        let conflicting_slot = existing.slot;
+                        self.rollback_resources(&resources[..=i]);
+                        if conflicting_slot == idx {
+                            return Err(RegistryError::InvalidResource {
+                                resource: Resource::MmioRange { base, size },
+                                reason: InvalidResourceReason::OverlappingResources,
+                            });
+                        }
+                        return Err(RegistryError::AddressConflict {
+                            resource: Resource::MmioRange { base, size },
+                            existing: Resource::MmioRange {
+                                base: conflicting_base,
+                                size: conflicting_size,
+                            },
+                            existing_device: DeviceId::new(conflicting_slot as u32),
+                        });
+                    }
+                }
+                Resource::PortRange { base, size } => {
+                    if size == 0 {
+                        return Err(RegistryError::InvalidResource {
+                            resource: Resource::PortRange { base, size },
+                            reason: InvalidResourceReason::ZeroSized,
+                        });
+                    }
+                    let end = (base as u32).wrapping_add(size as u32);
+                    if end > (u16::MAX as u32 + 1) {
+                        return Err(RegistryError::InvalidResource {
+                            resource: Resource::PortRange { base, size },
+                            reason: InvalidResourceReason::AddressOverflow,
+                        });
+                    }
+
+                    // Key collision.
+                    if let Some(existing) = self.port_index.get(&base) {
+                        let existing_size = existing.size as u16;
+                        let existing_slot = existing.slot;
+                        self.rollback_resources(&resources[..i]);
+                        return Err(RegistryError::AddressConflict {
+                            resource: Resource::PortRange { base, size },
+                            existing: Resource::PortRange {
+                                base,
+                                size: existing_size,
+                            },
+                            existing_device: DeviceId::new(existing_slot as u32),
+                        });
+                    }
+
+                    self.port_index.insert(
+                        base,
+                        RangeEntry {
+                            slot: idx,
+                            size: size as u64,
+                        },
+                    );
+
+                    // Predecessor check.
+                    if let Some((prev_base, existing)) = self.port_index.range(..base).next_back()
+                        && (*prev_base as u32).wrapping_add(existing.size as u32) > base as u32
+                    {
+                        let conflicting_base = *prev_base;
+                        let conflicting_size = existing.size as u16;
+                        let conflicting_slot = existing.slot;
+                        self.rollback_resources(&resources[..=i]);
+                        if conflicting_slot == idx {
+                            return Err(RegistryError::InvalidResource {
+                                resource: Resource::PortRange { base, size },
+                                reason: InvalidResourceReason::OverlappingResources,
+                            });
+                        }
+                        return Err(RegistryError::AddressConflict {
+                            resource: Resource::PortRange { base, size },
+                            existing: Resource::PortRange {
+                                base: conflicting_base,
+                                size: conflicting_size,
+                            },
+                            existing_device: DeviceId::new(conflicting_slot as u32),
+                        });
+                    }
+
+                    // Successor check.
+                    if let Some(next_port) = base.checked_add(1)
+                        && let Some((next_base, existing)) =
+                            self.port_index.range(next_port..).next()
+                        && (*next_base as u32) < end
+                    {
+                        let conflicting_base = *next_base;
+                        let conflicting_size = existing.size as u16;
+                        let conflicting_slot = existing.slot;
+                        self.rollback_resources(&resources[..=i]);
+                        if conflicting_slot == idx {
+                            return Err(RegistryError::InvalidResource {
+                                resource: Resource::PortRange { base, size },
+                                reason: InvalidResourceReason::OverlappingResources,
+                            });
+                        }
+                        return Err(RegistryError::AddressConflict {
+                            resource: Resource::PortRange { base, size },
+                            existing: Resource::PortRange {
+                                base: conflicting_base,
+                                size: conflicting_size,
+                            },
+                            existing_device: DeviceId::new(conflicting_slot as u32),
+                        });
+                    }
+                }
+                Resource::SysReg { addr, count } => {
+                    if count == 0 {
+                        return Err(RegistryError::InvalidResource {
+                            resource: Resource::SysReg { addr, count },
+                            reason: InvalidResourceReason::ZeroSized,
+                        });
+                    }
+                    if addr.checked_add(count.saturating_sub(1)).is_none() {
+                        return Err(RegistryError::InvalidResource {
+                            resource: Resource::SysReg { addr, count },
+                            reason: InvalidResourceReason::AddressOverflow,
+                        });
+                    }
+
+                    // Key collision.
+                    if let Some(existing) = self.sysreg_index.get(&addr) {
+                        let existing_count = existing.size as u32;
+                        let existing_slot = existing.slot;
+                        self.rollback_resources(&resources[..i]);
+                        return Err(RegistryError::AddressConflict {
+                            resource: Resource::SysReg { addr, count },
+                            existing: Resource::SysReg {
+                                addr,
+                                count: existing_count,
+                            },
+                            existing_device: DeviceId::new(existing_slot as u32),
+                        });
+                    }
+
+                    let end = addr.saturating_add(count.saturating_sub(1));
+                    self.sysreg_index.insert(
+                        addr,
+                        RangeEntry {
+                            slot: idx,
+                            size: count as u64,
+                        },
+                    );
+
+                    // Predecessor check.
+                    if let Some((prev_addr, existing)) = self.sysreg_index.range(..addr).next_back()
+                        && prev_addr.saturating_add((existing.size as u32).saturating_sub(1))
+                            >= addr
+                    {
+                        let conflicting_addr = *prev_addr;
+                        let conflicting_count = existing.size as u32;
+                        let conflicting_slot = existing.slot;
+                        self.rollback_resources(&resources[..=i]);
+                        if conflicting_slot == idx {
+                            return Err(RegistryError::InvalidResource {
+                                resource: Resource::SysReg { addr, count },
+                                reason: InvalidResourceReason::OverlappingResources,
+                            });
+                        }
+                        return Err(RegistryError::AddressConflict {
+                            resource: Resource::SysReg { addr, count },
+                            existing: Resource::SysReg {
+                                addr: conflicting_addr,
+                                count: conflicting_count,
+                            },
+                            existing_device: DeviceId::new(conflicting_slot as u32),
+                        });
+                    }
+
+                    // Successor check.
+                    if let Some(next_addr) = addr.checked_add(1)
+                        && let Some((reg_addr, existing)) =
+                            self.sysreg_index.range(next_addr..).next()
+                        && *reg_addr <= end
+                    {
+                        let conflicting_addr = *reg_addr;
+                        let conflicting_count = existing.size as u32;
+                        let conflicting_slot = existing.slot;
+                        self.rollback_resources(&resources[..=i]);
+                        if conflicting_slot == idx {
+                            return Err(RegistryError::InvalidResource {
+                                resource: Resource::SysReg { addr, count },
+                                reason: InvalidResourceReason::OverlappingResources,
+                            });
+                        }
+                        return Err(RegistryError::AddressConflict {
+                            resource: Resource::SysReg { addr, count },
+                            existing: Resource::SysReg {
+                                addr: conflicting_addr,
+                                count: conflicting_count,
+                            },
+                            existing_device: DeviceId::new(conflicting_slot as u32),
+                        });
+                    }
+                }
+            }
         }
-
         Ok(())
     }
 
@@ -697,36 +858,6 @@ impl AxVmDevices {
         let (&start, entry) = self.sysreg_index.range(..=addr).next_back()?;
         let end = start.saturating_add((entry.size as u32).saturating_sub(1));
         (addr <= end).then_some(entry.slot)
-    }
-
-    // ─── BTreeMap insertion ───────────────────────────────────────
-
-    fn insert_resources(&mut self, idx: usize, resources: &[Resource]) {
-        for r in resources {
-            match *r {
-                Resource::MmioRange { base, size } => {
-                    self.mmio_index.insert(base, RangeEntry { slot: idx, size });
-                }
-                Resource::PortRange { base, size } => {
-                    self.port_index.insert(
-                        base,
-                        RangeEntry {
-                            slot: idx,
-                            size: size as u64,
-                        },
-                    );
-                }
-                Resource::SysReg { addr, count } => {
-                    self.sysreg_index.insert(
-                        addr,
-                        RangeEntry {
-                            slot: idx,
-                            size: count as u64,
-                        },
-                    );
-                }
-            }
-        }
     }
 
     // ─── Public helpers ───────────────────────────────────────────
@@ -998,26 +1129,9 @@ impl Default for AxVmDevices {
 
 impl DeviceRegistry for AxVmDevices {
     fn register(&mut self, device: Arc<dyn Device>) -> Result<DeviceId, RegistryError> {
-        let resources = device.resources();
-
-        // 1. Conflict detection (only for address-range resources).
-        for r in resources {
-            match *r {
-                Resource::MmioRange { base, size } => self.check_mmio_conflict(base, size)?,
-                Resource::PortRange { base, size } => self.check_port_conflict(base, size)?,
-                Resource::SysReg { addr, count } => self.check_sysreg_conflict(addr, count)?,
-            }
-        }
-
-        // 2. Append to device list; index is the DeviceId.
         let idx = self.devices.len();
-
-        // 3. Insert into index maps.
-        self.insert_resources(idx, resources);
-
-        // 4. Store the device.
+        self.insert_resources(idx, device.resources())?;
         self.devices.push(device);
-
         info!("AxVmDevices: registered device id={}", idx);
         Ok(DeviceId::new(idx as u32))
     }
@@ -1170,10 +1284,149 @@ mod tests {
     }
 
     #[test]
-    fn test_stale_device_id_after_unregister() {
-        // DeviceRegistry no longer exposes unregister.
-        // DeviceIds are stable for the AxVmDevices lifetime.
-        // The old slot-reuse test has been removed.
+    fn test_same_device_overlapping_mmio_rejected() {
+        // Same device declaring [0x1000, 0x1200) and [0x1100, 0x1300)
+        struct OverlapDevice;
+        impl Device for OverlapDevice {
+            fn name(&self) -> &str {
+                "overlap"
+            }
+            fn resources(&self) -> &[Resource] {
+                static R: [Resource; 2] = [
+                    Resource::MmioRange {
+                        base: 0x1000,
+                        size: 0x200,
+                    },
+                    Resource::MmioRange {
+                        base: 0x1100,
+                        size: 0x200,
+                    },
+                ];
+                &R
+            }
+            fn handle(&self, _: &BusAccess) -> Result<BusResponse, DeviceError> {
+                Ok(BusResponse::Read { value: 0 })
+            }
+            fn as_any(&self) -> &dyn Any {
+                self
+            }
+        }
+
+        let mut m = AxVmDevices::empty();
+        let result = m.register(Arc::new(OverlapDevice));
+        assert!(matches!(
+            result,
+            Err(RegistryError::InvalidResource {
+                reason: InvalidResourceReason::OverlappingResources,
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn test_same_device_nested_mmio_rejected() {
+        // Same device declaring [0x1000, 0x2000) and [0x1800, 0x1900) —
+        // smaller range is fully inside larger range.
+        struct NestedDevice;
+        impl Device for NestedDevice {
+            fn name(&self) -> &str {
+                "nested"
+            }
+            fn resources(&self) -> &[Resource] {
+                static R: [Resource; 2] = [
+                    Resource::MmioRange {
+                        base: 0x1000,
+                        size: 0x1000,
+                    },
+                    Resource::MmioRange {
+                        base: 0x1800,
+                        size: 0x100,
+                    },
+                ];
+                &R
+            }
+            fn handle(&self, _: &BusAccess) -> Result<BusResponse, DeviceError> {
+                Ok(BusResponse::Read { value: 0 })
+            }
+            fn as_any(&self) -> &dyn Any {
+                self
+            }
+        }
+
+        let mut m = AxVmDevices::empty();
+        let result = m.register(Arc::new(NestedDevice));
+        assert!(matches!(
+            result,
+            Err(RegistryError::InvalidResource {
+                reason: InvalidResourceReason::OverlappingResources,
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn test_same_device_mmio_port_same_addr_allowed() {
+        // Same numeric address on different buses is allowed.
+        struct DualBusDevice;
+        impl Device for DualBusDevice {
+            fn name(&self) -> &str {
+                "dual-bus"
+            }
+            fn resources(&self) -> &[Resource] {
+                static R: [Resource; 2] = [
+                    Resource::MmioRange {
+                        base: 0x1000,
+                        size: 0x100,
+                    },
+                    Resource::PortRange {
+                        base: 0x1000,
+                        size: 0x10,
+                    },
+                ];
+                &R
+            }
+            fn handle(&self, access: &BusAccess) -> Result<BusResponse, DeviceError> {
+                if access.is_read {
+                    Ok(BusResponse::Read { value: 0 })
+                } else {
+                    Ok(BusResponse::Write)
+                }
+            }
+            fn as_any(&self) -> &dyn Any {
+                self
+            }
+        }
+
+        let mut m = AxVmDevices::empty();
+        assert!(m.register(Arc::new(DualBusDevice)).is_ok());
+    }
+
+    #[test]
+    fn test_sysreg_max_single_register_valid() {
+        // addr = u32::MAX, count = 1 is the highest valid single-register
+        // range and should not be rejected as overflow.
+        struct MaxSysRegDevice;
+        impl Device for MaxSysRegDevice {
+            fn name(&self) -> &str {
+                "max-sysreg"
+            }
+            fn resources(&self) -> &[Resource] {
+                static R: [Resource; 1] = [Resource::SysReg {
+                    addr: u32::MAX,
+                    count: 1,
+                }];
+                &R
+            }
+            fn handle(&self, _: &BusAccess) -> Result<BusResponse, DeviceError> {
+                Ok(BusResponse::Read { value: 0 })
+            }
+            fn as_any(&self) -> &dyn Any {
+                self
+            }
+        }
+
+        let mut m = AxVmDevices::empty();
+        assert!(m.register(Arc::new(MaxSysRegDevice)).is_ok());
     }
 
     #[test]

@@ -419,6 +419,10 @@ pub enum InvalidResourceReason {
     /// The bus kind of the resource is not supported on the current
     /// architecture.
     UnsupportedOnArchitecture,
+    /// The device declared multiple resources of the same bus kind whose
+    /// address ranges overlap each other, which would corrupt the
+    /// dispatch index.
+    OverlappingResources,
 }
 
 /// Errors that can be returned when registering a device.
