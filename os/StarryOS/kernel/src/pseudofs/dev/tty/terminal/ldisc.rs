@@ -372,6 +372,10 @@ struct SimpleReader<R> {
     buf_tx: CachingProd<ReadBuf>,
 }
 impl<R: TtyRead> SimpleReader<R> {
+    pub fn closed(&self) -> bool {
+        self.reader.closed()
+    }
+
     pub fn poll(&mut self) {
         let read = self.reader.read(&mut self.read_buf);
         let _ = self.buf_tx.push_slice(&self.read_buf[..read]);
@@ -542,10 +546,17 @@ impl<R: TtyRead, W: TtyWrite> LineDiscipline<R, W> {
     }
 
     pub fn poll_read(&mut self) -> bool {
+        // Peer writer fully closed (Passive mode) → report readable so poll()
+        // wakes and the caller's read() observes EOF / POLLHUP instead of
+        // blocking forever after the last fd to the writer side is dropped.
+        let writer_closed = match &self.processor {
+            Processor::Passive(reader, _) => reader.closed(),
+            _ => false,
+        };
         if let Processor::Passive(reader, _) = &mut self.processor {
             reader.poll();
         }
-        if !self.injected_input.is_empty() {
+        if writer_closed || !self.injected_input.is_empty() {
             return true;
         }
         let term = self.terminal.termios.lock().clone();
@@ -592,7 +603,13 @@ impl<R: TtyRead, W: TtyWrite> LineDiscipline<R, W> {
         if matches!(self.processor, Processor::Passive(_, _)) {
             let read = self.buf_rx.pop_slice(buf);
             return if read == 0 {
-                Err(AxError::WouldBlock)
+                // Buffer drained: if the peer writer has closed, report EOF;
+                // otherwise the read would block.
+                if matches!(&self.processor, Processor::Passive(reader, _) if reader.closed()) {
+                    Ok(0)
+                } else {
+                    Err(AxError::WouldBlock)
+                }
             } else {
                 Ok(read)
             };
