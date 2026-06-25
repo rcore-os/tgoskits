@@ -57,7 +57,7 @@ sidebar_label: "锁使用问题跟踪"
 | `os/StarryOS/kernel/src/file/netlink.rs` 和 `os/StarryOS/kernel/src/file/packet.rs` | 已调整为锁内取出消息或包，锁外 copy 到用户缓冲区。 | 旧问题是持 `SpinNoIrq` 时写用户内存，page fault 路径要求 IRQ enabled。 | 保持“队列状态锁内移动数据，用户内存访问锁外执行”的规则。 |
 | `os/arceos/modules/axfs-ng/src/highlevel/file.rs` | 仍有 `spin::RwLock`，包括 `GLOBAL_CACHED_FILES` 和 `append_lock`。 | `spin::RwLock` 仍不属于 lockdep-aware `ax-kspin` / `ax-sync` 路径。`append_lock` 是历史记录中明确延期的 RwLock 设计问题。 | 近期不引入新 RwLock。先确认是否必须读写分离；不必须的点评估 mutex 化，必须的点保留并记录风险。 |
 | `os/StarryOS/kernel/src/file/mod.rs`、`task/mod.rs`、`task/ops.rs` 等 | 仍有若干 `spin::RwLock`；`file/signalfd.rs` 的 signal mask 已改成 `SpinNoIrq<SignalSet>`。 | 剩余 RwLock 还不在 lockdep 统一可见范围内，且可能参与 FD table、task 状态等运行时路径。signalfd mask 只是单个可拷贝 bitset，当前不需要外部 `spin::RwLock`。 | 按运行时重要性分批审计：能 mutex 化的先 mutex 化；不能 mutex 化的先冻结新增使用，不把 RwLock 作为近期替换目标。后续若实现项目自有、lockdep-aware 的 RwLock，再评估 signalfd mask 是否值得恢复读写分离。 |
-| drivers / portable crates 中的 `spin::Mutex` | 当前代码仍可搜到若干直接使用，例如 `drivers/usb/usb-host`、`drivers/ax-driver`、`drivers/rdrive`、`drivers/firmware/arm-scmi-rs`、`drivers/interface/rdif-serial`、`memory/buddy-slab-allocator`。 | portable crate 不能简单依赖 ArceOS 专用锁；同时这些锁若进入内核运行路径，仍可能是 lockdep 盲区。 | 需要按 crate 边界设计同步抽象，区分纯 portable、test-only、host-only 和内核运行路径。 |
+| drivers / portable crates 中的 `spin::Mutex` | 业务代码中的直接 `spin::Mutex` 已清理；当前只应剩 lockdep 检测用例和文档引用。 | 后续若 portable crate 新增锁，仍不能随手回到外部 `spin::Mutex`，否则内核运行路径会重新形成 lockdep 盲区。 | 继续依赖 `spin-lint` 和复查命令防回退。新增 driver 锁时按 crate 边界选择项目内锁或明确的同步抽象。 |
 
 ## 调整计划
 
@@ -65,7 +65,7 @@ sidebar_label: "锁使用问题跟踪"
 
 | 优先级 | 工作项 | 范围 | 完成标准 |
 | --- | --- | --- | --- |
-| P0 | 建立锁使用分类清单 | `SpinNoIrq`、`SpinNoPreempt`、`spin::Mutex`、`spin::RwLock`、关键 atomic | 每个候选点标出保护对象、是否 IRQ/waker 路径、是否可能 sleep / fault / 分配 / I/O / 回调。 |
+| P0 | 建立锁使用分类清单 | `SpinNoIrq`、`SpinNoPreempt`、剩余 `spin::RwLock`、关键 atomic | 每个候选点标出保护对象、是否 IRQ/waker 路径、是否可能 sleep / fault / 分配 / I/O / 回调。 |
 | P1 | 缩小 VFS dentry / mount 锁范围 | `components/axfs-ng-vfs/src/node/dir.rs`、`components/axfs-ng-vfs/src/mount.rs` | VFS 自旋锁内只做 cache / mount 元数据操作；FS 后端调用在锁外执行。 |
 | P1 | 清理自旋锁内的高风险操作 | 用户内存访问、后端 callback、block I/O、可能分配的 waker 入队 | `might_sleep()` 覆盖路径下不再出现持 spin guard 的 user copy / callback / I/O。 |
 | P1 | 修正 epoll ready queue fast path | `os/StarryOS/kernel/src/file/epoll.rs` | waker 路径不做堆扩容；通过预分配、限长队列或延迟到任务上下文解决。 |
@@ -73,7 +73,7 @@ sidebar_label: "锁使用问题跟踪"
 | P2 | 明确早期启动 sleepability 边界 | rootfs mount、pseudofs init、tmpfs root_dir | 区分早期启动误伤和运行期 atomic sleep bug；减少因为启动阶段限制而长期保留自旋锁的场景。 |
 | P2 | 复查 tmpfs 保守自旋锁 | `os/StarryOS/kernel/src/pseudofs/tmp.rs` | VFS 后端调用移出 spin guard 后，评估 tmpfs entries / metadata 是否能改成 mutex 或进一步缩短自旋锁范围。 |
 | P3 | 处理已有 `spin::RwLock` 盲区 | `axfs-ng` highlevel file、Starry FD/task/signal 等 | 不新增 RwLock 方案；逐点判断能否 mutex 化，不能的记录为 deferred 并冻结新增使用。 |
-| P3 | portable drivers 同步抽象 | `drivers/`、`memory/` 中的 `spin::Mutex` | 区分 portable core 和 OS glue；内核运行路径不继续直接依赖外部 `spin::Mutex` 作为默认锁。 |
+| P3 | portable drivers 同步抽象 | `drivers/`、`memory/` 中后续新增或调整的锁 | 区分 portable core 和 OS glue；内核运行路径不重新直接依赖外部 `spin::Mutex` 作为默认锁。 |
 | P3 | atomic 与锁的合理性审计 | mount flags、epoll membership、cached file reclaim、file flags 等 | 独立标志可保留 atomic；复合不变量、flag+data 发布协议、队列/map 生命周期应回到锁或明确内存序协议。 |
 
 ### Atomic 使用准则
@@ -103,7 +103,8 @@ sidebar_label: "锁使用问题跟踪"
 
 ## 复查命令
 
-外部 `spin::Mutex` / `spin::RwLock` 复查：
+外部 `spin::Mutex` / `spin::RwLock` 复查。`spin::Mutex` 结果应只剩明确允许的
+lockdep 检测用例和文档引用；`spin::RwLock` 仍是后续阶段：
 
 ```bash
 rg -n "^use spin::Mutex|^use spin::\{[^}]*Mutex|spin::Mutex|spin::MutexGuard|spin::mutex::" \
