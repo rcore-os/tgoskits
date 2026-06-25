@@ -19,6 +19,7 @@ mod init;
 #[cfg(feature = "irq")]
 mod irq;
 mod mem;
+mod platform;
 mod power;
 mod time;
 

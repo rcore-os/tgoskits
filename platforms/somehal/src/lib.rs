@@ -14,11 +14,13 @@ pub(crate) mod common;
 pub mod cpu;
 mod driver;
 pub mod irq;
+pub mod platform;
 pub mod rtc;
 pub mod setup;
 
 pub use boot_console::{ConsoleDeviceIdError, device_id as console_device_id};
 pub use page_table_generic::{PagingError, PagingResult};
+pub use platform::platform_name;
 pub use setup::KernelOp;
 pub use someboot::{
     console, entry, fdt_addr, fdt_addr_phys, mem, power, rsdp_addr_phys, smp, timer,
