@@ -58,15 +58,21 @@ impl<T> BaseScheduler for FifoScheduler<T> {
         &mut self,
         predicate: impl Fn(&Self::SchedItem) -> bool,
     ) -> Option<Self::SchedItem> {
-        for _ in 0..self.ready_queue.len() {
-            if let Some(task) = self.ready_queue.pop_front() {
-                if predicate(&task) {
-                    return Some(task);
-                }
-                self.ready_queue.push_back(task);
+        let mut cursor = self.ready_queue.cursor_front_mut();
+        loop {
+            let task_ptr = cursor.current_ptr()?;
+            let matched = unsafe {
+                Arc::increment_strong_count(task_ptr.as_ptr());
+                let task = Arc::from_raw(task_ptr.as_ptr());
+                let matched = predicate(&task);
+                drop(task);
+                matched
+            };
+            if matched {
+                return cursor.remove_current();
             }
+            cursor.move_next();
         }
-        None
     }
 
     fn put_prev_task(&mut self, prev: Self::SchedItem, _preempt: bool) {
