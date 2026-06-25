@@ -48,6 +48,7 @@ pub mod smp;
 pub mod timer;
 
 pub use acpi::rsdp_addr_phys;
+pub use cmdline::cmdline;
 pub use fdt::{fdt_addr, fdt_addr_phys};
 pub use page_table_generic::*;
 pub use somehal_macros::{entry, someboot_secondary_entry as secondary_entry};

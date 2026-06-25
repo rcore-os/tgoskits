@@ -38,6 +38,12 @@ impl ConsoleIf for TestConsole {
         0
     }
 
+    fn device_id() -> ax_plat::console::ConsoleDeviceIdResult {
+        Err(ax_plat::console::ConsoleDeviceIdError::NotSpecified)
+    }
+
+    fn claim_runtime_output() {}
+
     fn irq_num() -> Option<usize> {
         None
     }

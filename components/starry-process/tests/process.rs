@@ -128,10 +128,14 @@ fn thread_exit() {
     assert!(!last);
     assert_eq!(child.exit_code(), 7);
 
-    child.group_exit();
+    let mut snapshot = child.start_group_exit(9).unwrap();
+    snapshot.sort();
+    assert_eq!(snapshot, vec![102]);
     assert!(child.is_group_exited());
 
     let last2 = child.exit_thread(102, 3);
     assert!(last2);
-    assert_eq!(child.exit_code(), 7);
+    assert_eq!(child.exit_code(), 9);
+    assert!(child.start_group_exit(11).is_none());
+    assert_eq!(child.exit_code(), 9);
 }

@@ -110,12 +110,64 @@ static int remove_by_batched_getdents(const char *dir)
     return 0;
 }
 
+static int cleanup_dir(const char *dir)
+{
+    char buf[512];
+    int fd = open(dir, O_RDONLY | O_DIRECTORY);
+    if (fd < 0) {
+        if (errno == ENOENT) {
+            return 0;
+        }
+        if (errno == ENOTDIR && unlink(dir) == 0) {
+            return 0;
+        }
+        return fail_errno("open cleanup dir", dir);
+    }
+
+    for (;;) {
+        int nread = (int)syscall(SYS_getdents64, fd, buf, sizeof(buf));
+        if (nread < 0) {
+            close(fd);
+            return fail_errno("cleanup getdents64", dir);
+        }
+        if (nread == 0) {
+            break;
+        }
+
+        for (int pos = 0; pos < nread;) {
+            struct linux_dirent64 *d = (struct linux_dirent64 *)(void *)(buf + pos);
+            if (d->d_reclen == 0 || pos + d->d_reclen > nread) {
+                close(fd);
+                return fail_msg("cleanup parse dirent", dir, "invalid reclen");
+            }
+            if (strcmp(d->d_name, ".") != 0 && strcmp(d->d_name, "..") != 0) {
+                if (unlinkat(fd, d->d_name, 0) != 0) {
+                    if ((errno != EISDIR && errno != EPERM) ||
+                        unlinkat(fd, d->d_name, AT_REMOVEDIR) != 0) {
+                        close(fd);
+                        return fail_errno("cleanup unlinkat", d->d_name);
+                    }
+                }
+            }
+            pos += d->d_reclen;
+        }
+    }
+
+    close(fd);
+    if (rmdir(dir) != 0 && errno != ENOENT) {
+        return fail_errno("cleanup rmdir", dir);
+    }
+    return 0;
+}
+
 static int run_case(const char *label, const char *dir)
 {
     const int count = 160;
 
     printf("[TEST] %s dir=%s count=%d\n", label, dir, count);
-    rmdir(dir);
+    if (cleanup_dir(dir) != 0) {
+        return 1;
+    }
     if (mkdir(dir, 0755) != 0) {
         return fail_errno("mkdir", dir);
     }
@@ -140,8 +192,9 @@ static int run_rename_case(const char *label, const char *src_dir, const char *d
 
     printf("[TEST] %s rename dir-cookie src=%s dst=%s count=%d\n", label, src_dir, dst_dir,
            count);
-    rmdir(src_dir);
-    rmdir(dst_dir);
+    if (cleanup_dir(src_dir) != 0 || cleanup_dir(dst_dir) != 0) {
+        return 1;
+    }
     if (mkdir(src_dir, 0755) != 0) {
         return fail_errno("mkdir src", src_dir);
     }

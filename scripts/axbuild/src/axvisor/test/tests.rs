@@ -8,10 +8,22 @@ use tempfile::tempdir;
 use super::*;
 use crate::{axvisor::build, context::ResolvedAxvisorRequest};
 
+const X86_LINUX_DIRECT_BOOT_CMDLINE_LIMIT: usize = 231;
+
 #[derive(serde::Deserialize)]
 struct TestBuildConfigVmConfigs {
     #[serde(default)]
     vm_configs: Vec<PathBuf>,
+}
+
+#[derive(serde::Deserialize)]
+struct TestVmKernelConfig {
+    kernel: TestVmKernel,
+}
+
+#[derive(serde::Deserialize)]
+struct TestVmKernel {
+    cmdline: String,
 }
 
 fn write_qemu_config(root: &Path, case: &str, arch: &str, body: &str) -> PathBuf {
@@ -655,9 +667,23 @@ fn x86_linux_direct_boot_configs_keep_timer_calibration_bypass() {
         "os/axvisor/configs/vms/qemu/x86_64/linux-svm-smp1.toml",
     ] {
         let content = fs::read_to_string(workspace_root.join(path)).unwrap();
+        let config: TestVmKernelConfig = toml::from_str(&content).unwrap();
+        let cmdline = config.kernel.cmdline;
+
         assert!(
-            content.contains("no_timer_check"),
+            cmdline.contains("no_timer_check"),
             "{path} should keep no_timer_check to avoid x86 Linux guest timer calibration stalls"
+        );
+        assert!(
+            cmdline.len() <= X86_LINUX_DIRECT_BOOT_CMDLINE_LIMIT,
+            "{path} cmdline length {} exceeds the currently verified x86 direct-boot limit of {} \
+             bytes and can truncate getty arguments",
+            cmdline.len(),
+            X86_LINUX_DIRECT_BOOT_CMDLINE_LIMIT
+        );
+        assert!(
+            cmdline.contains("-- -n -l /bin/sh -L 115200 ttyS0"),
+            "{path} should keep complete getty arguments after `--` so init does not exit"
         );
     }
 }

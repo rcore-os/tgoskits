@@ -1,11 +1,8 @@
 //! Synopsys DesignWare APB UART backend for the NS16550-compatible core.
 
-use rdif_serial::InterfaceRaw;
+use rdif_serial::RawUart;
 
-use super::{
-    Config, DataBits, Kind, Ns16550, Ns16550IrqHandler, Ns16550Receiver, Ns16550Sender, Parity,
-    StopBits, registers::*,
-};
+use super::{Config, DataBits, Kind, Ns16550, Parity, StopBits, registers::*};
 
 /// Default UART source clock used by SG2002 / CV181x boards.
 pub const SG2002_UART_CLOCK: u32 = 25_000_000;
@@ -81,6 +78,10 @@ impl Kind for DwApb {
         self.base
     }
 
+    fn ack_busy_detect(&self) {
+        let _ = self.read_u32(UART_USR_OFFSET);
+    }
+
     fn set_baudrate(&self, clock_freq: u32, baudrate: u32) -> Result<(), super::ConfigError> {
         if baudrate == 0 || clock_freq == 0 {
             return Err(super::ConfigError::InvalidBaudrate);
@@ -94,24 +95,28 @@ impl Kind for DwApb {
 
         self.wait_not_busy();
 
-        let mut lcr: LineControlFlags = self.read_flags(UART_LCR);
-        lcr.insert(LineControlFlags::DIVISOR_LATCH_ACCESS);
-        self.write_flags(UART_LCR, lcr);
+        let lcr: LineControlFlags = self.read_flags(UART_LCR);
+        self.write_flags(UART_LCR, lcr | LineControlFlags::DIVISOR_LATCH_ACCESS);
 
         self.write_reg(UART_DLL, ((divider >> DLF_LEN) & 0xff) as u8);
         self.write_reg(UART_DLH, ((divider >> (DLF_LEN + 8)) & 0xff) as u8);
         self.write_u32(UART_DLF_OFFSET, (divider & ((1 << DLF_LEN) - 1)) as u32);
 
-        lcr.remove(LineControlFlags::DIVISOR_LATCH_ACCESS);
         self.write_flags(UART_LCR, lcr);
 
         Ok(())
     }
 
     fn baudrate(&self, clock_freq: u32) -> u32 {
+        let lcr: LineControlFlags = self.read_flags(UART_LCR);
+        self.write_flags(UART_LCR, lcr | LineControlFlags::DIVISOR_LATCH_ACCESS);
+
         let dll = self.read_reg(UART_DLL) as u64;
         let dlh = self.read_reg(UART_DLH) as u64;
         let dlf = (self.read_u32(UART_DLF_OFFSET) & ((1 << DLF_LEN) - 1)) as u64;
+
+        self.write_flags(UART_LCR, lcr);
+
         let divider = (dll << DLF_LEN) | (dlh << (DLF_LEN + 8)) | dlf;
 
         if divider == 0 {
@@ -133,15 +138,7 @@ impl Ns16550<DwApb> {
         Ns16550 {
             base: DwApb::new(base),
             clock_freq,
-            irq: Some(Ns16550IrqHandler {
-                base: DwApb::new(base),
-            }),
-            tx: Some(crate::Sender::Ns16550DwApbSender(Ns16550Sender {
-                base: DwApb::new(base),
-            })),
-            rx: Some(crate::Receiver::Ns16550DwApbReceiver(Ns16550Receiver {
-                base: DwApb::new(base),
-            })),
+            saved_lsr: LineStatusFlags::empty(),
         }
     }
 
@@ -172,8 +169,8 @@ impl Ns16550<DwApb> {
 
         self.base.write_reg(UART_IER, 0);
         self.base.write_reg(UART_FCR, UART_FCR_ENABLE_FIFO);
-        self.base.write_reg(UART_MCR, 0);
-        self.base.write_reg(UART_MCR, UART_MCR_RTS);
+        self.base
+            .write_reg(UART_MCR, UART_MCR_DTR | UART_MCR_RTS | UART_MCR_OUT2);
 
         self.set_config(
             &Config::new()
@@ -189,29 +186,6 @@ impl Ns16550<DwApb> {
         self.init_with_baud_clk(baud, clk_hz);
     }
 
-    /// Writes one byte, blocking until the transmitter is empty.
-    pub fn putchar(&mut self, c: u8) {
-        while self.base.line_status() & UART_LSR_TEMT == 0 {
-            core::hint::spin_loop();
-        }
-        self.base.write_reg(UART_THR, c);
-    }
-
-    /// Reads one byte if data is ready.
-    pub fn getchar(&mut self) -> Option<u8> {
-        if self.base.line_status() & UART_LSR_DR != 0 {
-            Some(self.base.read_reg(UART_RBR))
-        } else {
-            None
-        }
-    }
-
-    /// Enables or disables receive-data interrupts.
-    pub fn set_ier(&mut self, enabled: bool) {
-        self.base
-            .write_reg(UART_IER, if enabled { UART_IER_RDI } else { 0 });
-    }
-
     /// Reads the line status register.
     pub fn line_status(&self) -> u32 {
         self.base.line_status() as u32
@@ -220,5 +194,42 @@ impl Ns16550<DwApb> {
     /// Reads the component parameter register.
     pub fn cpr(&self) -> u32 {
         self.base.cpr()
+    }
+
+    pub fn new_raw(base: core::ptr::NonNull<u8>, clock_freq: u32) -> Self {
+        Self::new_with_clock(base.as_ptr() as usize, clock_freq)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::boxed::Box;
+
+    use super::*;
+
+    #[test]
+    fn busy_detect_interrupt_is_claimed_as_irq_ack() {
+        let regs = Box::leak(Box::new([0u32; 0x100 / 4]));
+        regs[UART_IIR as usize] = UART_IIR_BUSY as u32;
+        regs[UART_USR_OFFSET / 4] = 0x1;
+
+        let mut uart = DwApbUart::new(regs.as_ptr() as usize);
+
+        assert_eq!(uart.handle_irq(), rdif_serial::SerialEvent::IRQ_ACK);
+        assert_eq!(regs[UART_USR_OFFSET / 4], 0x1);
+    }
+
+    #[test]
+    fn new_raw_does_not_touch_hardware_registers() {
+        let regs = Box::leak(Box::new([0u32; 0x100 / 4]));
+        regs[UART_DLF_OFFSET / 4] = 0x33;
+
+        let base = core::ptr::NonNull::new(regs.as_mut_ptr().cast()).unwrap();
+        let serial = DwApbUart::new_raw(base, SG2002_UART_CLOCK);
+
+        assert_eq!(regs[UART_FCR as usize], 0);
+        assert_eq!(regs[UART_MCR as usize], 0);
+        assert_eq!(regs[UART_DLF_OFFSET / 4], 0x33);
+        drop(serial);
     }
 }

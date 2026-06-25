@@ -95,6 +95,16 @@ fn starry_system_grouped_qemu_configs_report_subcase_timing() {
                 "{} must end a grouped subcase timing section",
                 path.display()
             );
+            assert!(
+                !command.contains("sort -nr") && !command.contains("head -n"),
+                "{} must not depend on external sort/head pipelines in the final timing summary",
+                path.display()
+            );
+            assert!(
+                command.contains("done < \"$timing_file\""),
+                "{} must read grouped subcase timing from the timing file, not from stdin",
+                path.display()
+            );
             let failure_branch = command.find("else\n").unwrap_or_else(|| {
                 panic!(
                     "{} must contain a failure branch for grouped subcases",

@@ -1,8 +1,19 @@
-use core::{cell::UnsafeCell, fmt::Write, ptr::NonNull};
+use core::{
+    cell::UnsafeCell,
+    fmt::Write,
+    ptr::NonNull,
+    sync::atomic::{AtomicBool, Ordering},
+};
 
 use byte_unit::{Byte, UnitType};
 use kernutil::memory::{MemoryDescriptor, MemoryType};
-use some_serial::*;
+#[cfg(target_arch = "x86_64")]
+use some_serial::ns16550::Port;
+use some_serial::{
+    RawUart, SerialEvent, TransferError,
+    ns16550::{self, Mmio, Ns16550},
+    pl011,
+};
 
 use crate::{
     cmdline::EarlyconConfig,
@@ -52,14 +63,23 @@ pub(crate) fn debug_to_memory_desc() -> Option<MemoryDescriptor> {
 }
 
 pub fn _print(args: core::fmt::Arguments) {
+    if runtime_output_claimed() {
+        return;
+    }
     let _ = ConFmt {}.write_fmt(args);
 }
 
 pub fn _write_bytes(bytes: &[u8]) -> usize {
+    if runtime_output_claimed() {
+        return bytes.len();
+    }
     con().write_bytes(bytes)
 }
 
 pub fn _write_str(s: &str) {
+    if runtime_output_claimed() {
+        return;
+    }
     con().write_str(s);
 }
 
@@ -162,6 +182,7 @@ impl Con for NoCon {
 }
 
 static mut CON: &dyn Con = &NoCon;
+static RUNTIME_OUTPUT_CLAIMED: AtomicBool = AtomicBool::new(false);
 
 pub(crate) unsafe fn set_out(v: &'static dyn Con) {
     unsafe {
@@ -169,17 +190,122 @@ pub(crate) unsafe fn set_out(v: &'static dyn Con) {
     }
 }
 
-pub fn set_earlycon_sender(sender: Sender) {
-    unsafe {
-        *EARLYCON_SENDER.0.get() = Some(sender);
-        set_out(&EARLYCON_SENDER);
+/// Marks the boot console output path as superseded by a runtime console.
+///
+/// Once an OS serial/tty runtime owns the UART registers, the boot console must
+/// not write the same hardware directly. It still reports bytes as consumed so
+/// generic logging paths cannot spin forever after the handoff.
+pub fn claim_runtime_output() {
+    RUNTIME_OUTPUT_CLAIMED.store(true, Ordering::Release);
+}
+
+#[cfg(not(test))]
+fn runtime_output_claimed() -> bool {
+    // On AArch64, exclusive atomic instructions such as LDXR/LDAXR are not
+    // reliable before the MMU is enabled. Keep the pre-MMU boot console path
+    // free of atomic reads and only honor the runtime handoff afterwards.
+    crate::mem::mmu::is_mmu_enabled() && RUNTIME_OUTPUT_CLAIMED.load(Ordering::Acquire)
+}
+
+#[cfg(test)]
+fn runtime_output_claimed() -> bool {
+    RUNTIME_OUTPUT_CLAIMED.load(Ordering::Acquire)
+}
+
+pub struct EarlySerial {
+    raw: EarlySerialRaw,
+    tx_state: SerialEvent,
+    rx_state: SerialEvent,
+}
+
+pub enum EarlySerialRaw {
+    Ns16550Mmio(Ns16550<Mmio>),
+    #[cfg(target_arch = "x86_64")]
+    Ns16550Port(Ns16550<Port>),
+    Pl011(pl011::Pl011),
+}
+
+impl EarlySerial {
+    pub fn new(raw: EarlySerialRaw) -> Self {
+        Self {
+            raw,
+            tx_state: SerialEvent::empty(),
+            rx_state: SerialEvent::empty(),
+        }
+    }
+
+    pub fn try_write(&mut self, bytes: &[u8]) -> usize {
+        let mut written = 0;
+        while written < bytes.len() {
+            self.refresh_status();
+            if !self.tx_state.tx_ready() {
+                break;
+            }
+            self.with_raw(|serial| serial.write_byte(bytes[written]));
+            self.tx_state
+                .remove(SerialEvent::TX_READY | SerialEvent::TX_ERROR);
+            written += 1;
+        }
+        written
+    }
+
+    pub fn try_read(&mut self, bytes: &mut [u8]) -> Result<usize, some_serial::TransBytesError> {
+        let mut read = 0;
+        let mut first_error = None;
+        for byte in bytes.iter_mut() {
+            self.refresh_status();
+            if !self.rx_state.rx_ready() && !self.rx_state.rx_error() {
+                break;
+            }
+            let status = self.rx_state;
+            self.rx_state
+                .remove(SerialEvent::RX_READY | SerialEvent::RX_ERROR | SerialEvent::OVERRUN);
+            match self.with_raw(|serial| serial.read_byte(status)) {
+                Some(Ok(b)) => {
+                    *byte = b;
+                    read += 1;
+                }
+                Some(Err(TransferError::Overrun(b))) => {
+                    *byte = b;
+                    read += 1;
+                    first_error.get_or_insert(TransferError::Overrun(b));
+                }
+                Some(Err(err)) => {
+                    first_error.get_or_insert(err);
+                }
+                None => break,
+            }
+        }
+        if let Some(kind) = first_error {
+            Err(some_serial::TransBytesError {
+                bytes_transferred: read,
+                kind,
+            })
+        } else {
+            Ok(read)
+        }
+    }
+
+    fn refresh_status(&mut self) {
+        let event = self.with_raw(|serial| serial.poll_status());
+        self.tx_state |= event & (SerialEvent::TX_READY | SerialEvent::TX_ERROR);
+        self.rx_state |=
+            event & (SerialEvent::RX_READY | SerialEvent::RX_ERROR | SerialEvent::OVERRUN);
+    }
+
+    fn with_raw<R>(&mut self, f: impl FnOnce(&mut dyn RawUart) -> R) -> R {
+        match &mut self.raw {
+            EarlySerialRaw::Ns16550Mmio(serial) => f(serial),
+            #[cfg(target_arch = "x86_64")]
+            EarlySerialRaw::Ns16550Port(serial) => f(serial),
+            EarlySerialRaw::Pl011(serial) => f(serial),
+        }
     }
 }
 
-pub fn set_earlycon_receiver(receiver: Receiver) {
-    unsafe {
-        *EARLYCON_RECEIVER.0.get() = Some(receiver);
-    }
+pub fn set_earlycon_serial(serial: EarlySerial) {
+    EARLYCON.set_serial(serial);
+    unsafe { set_out(&EARLYCON) };
 }
 
 pub fn read_byte() -> Option<u8> {
@@ -187,16 +313,7 @@ pub fn read_byte() -> Option<u8> {
         return Some(byte);
     }
 
-    unsafe {
-        if let Some(ref mut receiver) = *EARLYCON_RECEIVER.0.get() {
-            match receiver.read_byte() {
-                Some(Ok(byte)) => Some(byte),
-                _ => None,
-            }
-        } else {
-            None
-        }
-    }
+    EARLYCON.read_byte()
 }
 
 pub fn irq_num() -> Option<usize> {
@@ -211,51 +328,147 @@ pub fn handle_irq() -> u32 {
     <crate::arch::Arch as crate::ArchTrait>::Console::handle_irq()
 }
 
-static EARLYCON_SENDER: EarlyconSenderCell = EarlyconSenderCell(UnsafeCell::new(None));
+static EARLYCON: EarlyconCell = EarlyconCell(EarlyconMutex::new(None));
 
-struct EarlyconSenderCell(UnsafeCell<Option<Sender>>);
+struct EarlyconMutex<T> {
+    locked: AtomicBool,
+    inner: UnsafeCell<T>,
+}
 
-unsafe impl Sync for EarlyconSenderCell {}
+unsafe impl<T: Send> Sync for EarlyconMutex<T> {}
 
-impl Con for EarlyconSenderCell {
-    fn write_bytes(&self, bytes: &[u8]) -> usize {
-        const MAX_NO_PROGRESS_SPINS: usize = 1 << 20;
+impl<T> EarlyconMutex<T> {
+    const fn new(value: T) -> Self {
+        Self {
+            locked: AtomicBool::new(false),
+            inner: UnsafeCell::new(value),
+        }
+    }
 
-        unsafe {
-            if let Some(ref mut sender) = *self.0.get() {
-                let mut written = 0;
-                let mut no_progress_spins = 0;
-                while written < bytes.len() {
-                    let n = sender.write_bytes(&bytes[written..]);
-                    if n == 0 {
-                        no_progress_spins += 1;
-                        if no_progress_spins >= MAX_NO_PROGRESS_SPINS {
-                            // Early console output is best-effort. If the UART
-                            // stops accepting bytes, report the rest as
-                            // consumed so boot does not hang inside logging.
-                            return bytes.len();
-                        }
-                        core::hint::spin_loop();
-                        continue;
-                    }
-                    no_progress_spins = 0;
-                    written += n;
-                }
-                written
-            } else {
-                // No sender available, simply return the length of bytes to indicate all bytes "written"
-                bytes.len()
+    fn with_lock<R>(&self, f: impl FnOnce(&mut T) -> R) -> R {
+        // Do not replace this with spin::Mutex or the rdif runtime wrapper.
+        // someboot runs before the normal allocator is available, so early
+        // serial cannot allocate Box/Arc-backed runtime state and must keep a
+        // raw register-level enum here. On AArch64, exclusive atomic
+        // instructions such as LDXR/LDAXR are not reliable before the MMU is
+        // enabled, so the early console must also avoid touching the atomic
+        // lock word on that path. Before MMU setup, someboot is still in the
+        // single-core early-output phase and can access the serial object
+        // directly; after MMU setup, the custom atomic lock below provides real
+        // exclusion for later console users.
+        if !crate::mem::mmu::is_mmu_enabled() {
+            return unsafe { f(&mut *self.inner.get()) };
+        }
+
+        let irq_enabled = crate::irq::irq_local_is_enabled();
+        crate::irq::irq_local_set_enable(false);
+        while self
+            .locked
+            .compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed)
+            .is_err()
+        {
+            while self.locked.load(Ordering::Acquire) {
+                core::hint::spin_loop();
             }
         }
+        let ret = unsafe { f(&mut *self.inner.get()) };
+        self.locked.store(false, Ordering::Release);
+        crate::irq::irq_local_set_enable(irq_enabled);
+        ret
     }
 }
 
-static EARLYCON_RECEIVER: EarlyconReceiverCell = EarlyconReceiverCell(UnsafeCell::new(None));
+struct EarlyconCell(EarlyconMutex<Option<EarlySerial>>);
 
-#[allow(dead_code)]
-struct EarlyconReceiverCell(UnsafeCell<Option<Receiver>>);
+impl EarlyconCell {
+    fn set_serial(&self, serial: EarlySerial) {
+        self.0.with_lock(|earlycon| *earlycon = Some(serial));
+    }
 
-unsafe impl Sync for EarlyconReceiverCell {}
+    fn read_byte(&self) -> Option<u8> {
+        self.0.with_lock(|earlycon| {
+            let serial = earlycon.as_mut()?;
+
+            let mut byte = [0];
+            match serial.try_read(&mut byte) {
+                Ok(1) => Some(byte[0]),
+                Err(err) if err.bytes_transferred == 1 => Some(byte[0]),
+                _ => None,
+            }
+        })
+    }
+
+    fn try_write(&self, bytes: &[u8]) -> Option<usize> {
+        self.0
+            .with_lock(|earlycon| earlycon.as_mut().map(|serial| serial.try_write(bytes)))
+    }
+}
+
+impl Con for EarlyconCell {
+    fn write_bytes(&self, bytes: &[u8]) -> usize {
+        const MAX_NO_PROGRESS_SPINS: usize = 1 << 20;
+
+        let mut written = 0;
+        let mut no_progress_spins = 0;
+        while written < bytes.len() {
+            let Some(n) = self.try_write(&bytes[written..]) else {
+                return bytes.len();
+            };
+            if n == 0 {
+                no_progress_spins += 1;
+                if no_progress_spins >= MAX_NO_PROGRESS_SPINS {
+                    // Early console output is best-effort. If the UART stops
+                    // accepting bytes, report the rest as consumed so boot does
+                    // not hang inside logging.
+                    return bytes.len();
+                }
+                core::hint::spin_loop();
+                continue;
+            }
+            no_progress_spins = 0;
+            written += n;
+        }
+        written
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use core::sync::atomic::{AtomicUsize, Ordering};
+
+    use super::*;
+
+    struct CountingCon;
+
+    static WRITE_CALLS: AtomicUsize = AtomicUsize::new(0);
+
+    impl Con for CountingCon {
+        fn write_bytes(&self, bytes: &[u8]) -> usize {
+            WRITE_CALLS.fetch_add(1, Ordering::Relaxed);
+            bytes.len()
+        }
+    }
+
+    static COUNTING_CON: CountingCon = CountingCon;
+
+    #[test]
+    fn runtime_output_claim_consumes_without_touching_boot_console() {
+        WRITE_CALLS.store(0, Ordering::Relaxed);
+        RUNTIME_OUTPUT_CLAIMED.store(false, Ordering::Relaxed);
+
+        unsafe { set_out(&COUNTING_CON) };
+
+        assert_eq!(_write_bytes(b"before"), 6);
+        assert_eq!(WRITE_CALLS.load(Ordering::Relaxed), 1);
+
+        claim_runtime_output();
+
+        assert_eq!(_write_bytes(b"after"), 5);
+        assert_eq!(WRITE_CALLS.load(Ordering::Relaxed), 1);
+
+        RUNTIME_OUTPUT_CLAIMED.store(false, Ordering::Relaxed);
+    }
+}
 
 pub fn set_earlycon_by_cmdline() -> Result<(), &'static str> {
     let config = crate::cmdline::earlycon().ok_or("No earlycon parameter found")?;
@@ -266,10 +479,8 @@ pub fn set_earlycon_by_cmdline() -> Result<(), &'static str> {
                 {
                     let base = config.base_addr.ok_or("missing io base address")? as u16;
                     let mut uart = some_serial::ns16550::Ns16550::new_port(base, 1_843_200);
-                    let tx = uart.take_tx().ok_or("failed to take io sender")?;
-                    let rx = uart.take_rx().ok_or("failed to take io receiver")?;
-                    set_earlycon_sender(tx);
-                    set_earlycon_receiver(rx);
+                    uart.open();
+                    set_earlycon_serial(EarlySerial::new(EarlySerialRaw::Ns16550Port(uart)));
                     false
                 }
                 #[cfg(not(target_arch = "x86_64"))]
@@ -305,11 +516,8 @@ fn set_pl011(config: &EarlyconConfig) -> Result<(), &'static str> {
         NonNull::new(_fixmap_io(base_addr)).ok_or("Invalid base address for pl011 earlycon")?;
 
     let mut serial = pl011::Pl011::new(base_addr, 0);
-    let tx = serial.take_tx().ok_or("no tx")?;
-    let rx = serial.take_rx().ok_or("no rx")?;
-
-    set_earlycon_sender(tx);
-    set_earlycon_receiver(rx);
+    serial.open();
+    set_earlycon_serial(EarlySerial::new(EarlySerialRaw::Pl011(serial)));
 
     Ok(())
 }
@@ -328,11 +536,8 @@ fn set_16550_mmio(config: &EarlyconConfig) -> Result<(), &'static str> {
     };
 
     let mut serial = ns16550::Ns16550::new_mmio(base_addr, 0, width);
-    let tx = serial.take_tx().ok_or("no tx")?;
-    let rx = serial.take_rx().ok_or("no rx")?;
-
-    set_earlycon_sender(tx);
-    set_earlycon_receiver(rx);
+    serial.open();
+    set_earlycon_serial(EarlySerial::new(EarlySerialRaw::Ns16550Mmio(serial)));
 
     Ok(())
 }

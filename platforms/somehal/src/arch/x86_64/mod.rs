@@ -40,6 +40,7 @@ module_driver!(
 struct X86IoApicIntc {
     ioapics: Vec<X86IoApic>,
     routes: Vec<AcpiGsiRoute>,
+    destinations: Vec<(usize, u8)>,
 }
 
 impl X86IoApicIntc {
@@ -47,6 +48,7 @@ impl X86IoApicIntc {
         Self {
             ioapics: ioapics.iter().copied().map(X86IoApic::new).collect(),
             routes: Vec::new(),
+            destinations: Vec::new(),
         }
     }
 
@@ -92,12 +94,47 @@ impl X86IoApicIntc {
     }
 
     fn set_route_enable(&mut self, route: &AcpiGsiRoute, enable: bool) {
+        let dest = self.destination_for_vector(route.vector);
         for ioapic in &mut self.ioapics {
             if ioapic.contains_route(route) {
-                ioapic.set_route_enable(route, enable);
+                ioapic.set_route_enable(route, enable, dest);
                 return;
             }
         }
+    }
+
+    fn set_vector_destination(&mut self, vector: usize, dest: u8) -> bool {
+        if let Some((_, existing)) = self
+            .destinations
+            .iter_mut()
+            .find(|(known_vector, _)| *known_vector == vector)
+        {
+            *existing = dest;
+        } else {
+            self.destinations.push((vector, dest));
+        }
+
+        let routes = self.routes_for_vector(vector);
+        if routes.is_empty() {
+            return false;
+        }
+
+        for route in routes {
+            for ioapic in &mut self.ioapics {
+                if ioapic.contains_route(&route) {
+                    ioapic.set_route_destination(&route, dest);
+                    break;
+                }
+            }
+        }
+        true
+    }
+
+    fn destination_for_vector(&self, vector: usize) -> u8 {
+        self.destinations
+            .iter()
+            .find_map(|(known_vector, dest)| (*known_vector == vector).then_some(*dest))
+            .unwrap_or(0)
     }
 }
 
@@ -148,7 +185,7 @@ impl X86IoApic {
             && self.contains(route.gsi)
     }
 
-    fn set_route_enable(&mut self, route: &AcpiGsiRoute, enable: bool) {
+    fn set_route_enable(&mut self, route: &AcpiGsiRoute, enable: bool, dest: u8) {
         if !self.contains_route(route) {
             return;
         }
@@ -159,12 +196,25 @@ impl X86IoApic {
             entry.set_vector(route.vector as u8);
             entry.set_mode(IrqMode::Fixed);
             entry.set_flags(intx_flags(route.trigger, route.polarity) | IrqFlags::MASKED);
-            entry.set_dest(0);
+            entry.set_dest(dest);
             self.ioapic.set_table_entry(input, entry);
 
             if enable {
                 self.ioapic.enable_irq(input);
             }
+        }
+    }
+
+    fn set_route_destination(&mut self, route: &AcpiGsiRoute, dest: u8) {
+        if !self.contains_route(route) {
+            return;
+        }
+
+        unsafe {
+            let input = route.controller_input;
+            let mut entry = self.ioapic.table_entry(input);
+            entry.set_dest(dest);
+            self.ioapic.set_table_entry(input, entry);
         }
     }
 }
@@ -214,6 +264,31 @@ impl PlatOp for Plat {
         }
 
         set_ioapic_vector_enable(raw, enable);
+    }
+
+    fn irq_set_affinity(
+        irq: rdrive::IrqId,
+        affinity: crate::irq::IrqAffinity,
+    ) -> Result<(), &'static str> {
+        let raw = irq.raw();
+        if raw == someboot::irq::systimer_irq().raw() {
+            return Err("x86 local APIC timer affinity cannot be changed");
+        }
+
+        let dest = match affinity {
+            crate::irq::IrqAffinity::Any => 0,
+            crate::irq::IrqAffinity::Fixed { cpu_id } => {
+                let Some(apic_id) = someboot::smp::cpu_idx_to_id(cpu_id) else {
+                    return Err("x86 IRQ affinity target CPU is not known");
+                };
+                apic_id as u8
+            }
+        };
+        if set_ioapic_vector_destination(raw, dest) {
+            Ok(())
+        } else {
+            Err("x86 IOAPIC route for IRQ vector was not found")
+        }
     }
 
     fn send_ipi(irq: rdrive::IrqId, target: crate::irq::IpiTarget) {
@@ -301,6 +376,19 @@ fn set_ioapic_vector_enable(vector: usize, enable: bool) {
             return;
         }
     }
+}
+
+fn set_ioapic_vector_destination(vector: usize, dest: u8) -> bool {
+    for intc in rdrive::get_list::<rdif_intc::Intc>() {
+        if intc.descriptor().name.starts_with("ACPI IOAPIC")
+            && let Ok(ioapic) = intc.downcast::<X86IoApicIntc>()
+            && let Ok(mut ioapic) = ioapic.try_lock()
+            && ioapic.set_vector_destination(vector, dest)
+        {
+            return true;
+        }
+    }
+    false
 }
 
 fn intx_flags(trigger: AcpiIrqTrigger, polarity: AcpiIrqPolarity) -> IrqFlags {

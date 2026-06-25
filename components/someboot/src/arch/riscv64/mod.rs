@@ -247,7 +247,7 @@ impl ArchTrait for Arch {
     }
 
     fn is_mmu_enabled() -> bool {
-        satp_mode() != 0
+        current_satp_mode() != 0
     }
 
     fn kernel_page_table() -> PageTableInfo {
@@ -445,8 +445,8 @@ pub(crate) fn disable_local_irqs() {
 }
 
 pub(crate) fn current_page_table() -> PageTableInfo {
-    let satp = read_satp();
-    let mode = satp_mode_from(satp);
+    let satp = current_satp();
+    let mode = satp >> 60;
     let addr = if mode == 0 {
         KERNEL_PAGE_TABLE_ADDR.load(Ordering::Relaxed)
     } else {
@@ -455,20 +455,16 @@ pub(crate) fn current_page_table() -> PageTableInfo {
     PageTableInfo { asid: 0, addr }
 }
 
-fn read_satp() -> usize {
+fn current_satp_mode() -> usize {
+    current_satp() >> 60
+}
+
+fn current_satp() -> usize {
     let satp: usize;
     unsafe {
         core::arch::asm!("csrr {satp}, satp", satp = out(reg) satp, options(nostack, preserves_flags));
     }
     satp
-}
-
-fn satp_mode() -> usize {
-    satp_mode_from(read_satp())
-}
-
-fn satp_mode_from(satp: usize) -> usize {
-    satp >> 60
 }
 
 pub(crate) fn write_satp(root_paddr: usize) {

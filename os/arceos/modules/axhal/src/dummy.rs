@@ -3,7 +3,7 @@
 #[cfg(feature = "irq")]
 use ax_plat::irq::{IpiTarget, IrqIf};
 use ax_plat::{
-    console::ConsoleIf,
+    console::{ConsoleDeviceIdError, ConsoleDeviceIdResult, ConsoleIf},
     impl_plat_interface,
     init::InitIf,
     mem::{MemIf, RawRange},
@@ -41,6 +41,12 @@ impl ConsoleIf for DummyConsole {
     fn read_bytes(_bytes: &mut [u8]) -> usize {
         unimplemented!()
     }
+
+    fn device_id() -> ConsoleDeviceIdResult {
+        Err(ConsoleDeviceIdError::NotSpecified)
+    }
+
+    fn claim_runtime_output() {}
 
     #[cfg(feature = "irq")]
     fn irq_num() -> Option<usize> {
@@ -132,6 +138,13 @@ impl PowerIf for DummyPower {
 #[impl_plat_interface]
 impl IrqIf for DummyIrq {
     fn set_enable(_irq: usize, _enabled: bool) {}
+
+    fn set_affinity(
+        _irq: usize,
+        _affinity: ax_plat::irq::IrqAffinity,
+    ) -> Result<(), ax_plat::irq::IrqError> {
+        Err(ax_plat::irq::IrqError::Unsupported)
+    }
 
     fn handle(_irq: usize) -> Option<usize> {
         None

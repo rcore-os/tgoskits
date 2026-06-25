@@ -171,12 +171,19 @@ pub fn new_user_task(name: &str, mut uctx: UserContext, set_child_tid: usize) ->
                                         target_arch = "aarch64",
                                         target_arch = "loongarch64"
                                     ))]
-                                    let _ = crate::syscall::ptrace_restore_singlestep_insn(
-                                        &thr.proc_data,
-                                        thr.tid(),
-                                        addr,
-                                        insn,
-                                    );
+                                    {
+                                        let restored =
+                                            crate::syscall::ptrace_restore_singlestep_insn(
+                                                &thr.proc_data,
+                                                thr.tid(),
+                                                addr,
+                                                insn,
+                                            );
+                                        if restored {
+                                            thr.proc_data
+                                                .set_ptrace_singlestep_for(thr.tid(), false);
+                                        }
+                                    }
                                     #[cfg(not(any(
                                         target_arch = "riscv64",
                                         target_arch = "aarch64",
