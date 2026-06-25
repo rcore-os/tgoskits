@@ -2355,6 +2355,7 @@ name = "crab-usb"
 version = "0.9.8"
 dependencies = [
  "anyhow",
+ "ax-kspin",
  "bitflags 2.13.0",
  "crossbeam",
  "crossbeam-skiplist",
