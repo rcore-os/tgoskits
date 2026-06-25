@@ -139,6 +139,16 @@ impl Termios2 {
         }
     }
 
+    pub fn default_b115200() -> Self {
+        let mut termios = Termios::default();
+        termios.c_cflag = (termios.c_cflag & !CBAUD) | B115200;
+        Self {
+            termios,
+            c_ispeed: B115200,
+            c_ospeed: B115200,
+        }
+    }
+
     pub fn input_speed(&self) -> speed_t {
         self.c_ispeed
     }
