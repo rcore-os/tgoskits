@@ -8,7 +8,7 @@
 //!
 //! # Features
 //!
-//! - `Mutex`, `RwLock`, `Once`/`SyncOnceCell`, and `LazyLock` equivalents
+//! - `RwLock`, `Once`/`SyncOnceCell`, and `LazyLock` equivalents
 //!
 //! - Support for `no_std` environments
 //!
@@ -53,11 +53,6 @@
 //!
 //! - `lock_api` enables support for [`lock_api`](https://crates.io/crates/lock_api)
 //!
-//! - `ticket_mutex` uses a ticket lock for the implementation of `Mutex`
-//!
-//! - `fair_mutex` enables a fairer implementation of `Mutex` that uses eventual fairness to avoid
-//!   starvation
-//!
 //! - `std` enables support for thread yielding instead of spinning
 //!
 //! - `portable-atomic` enables usage of the `portable-atomic` crate
@@ -78,17 +73,9 @@ use core::sync::atomic;
 #[cfg(feature = "portable-atomic")]
 use portable_atomic as atomic;
 
-#[cfg(feature = "barrier")]
-#[cfg_attr(docsrs, doc(cfg(feature = "barrier")))]
-pub mod barrier;
 #[cfg(feature = "lazylock")]
 #[cfg_attr(docsrs, doc(cfg(feature = "lazylock")))]
 pub mod lazylock;
-#[cfg(feature = "lockdep")]
-mod lockdep;
-#[cfg(feature = "mutex")]
-#[cfg_attr(docsrs, doc(cfg(feature = "mutex")))]
-pub mod mutex;
 #[cfg(feature = "once")]
 #[cfg_attr(docsrs, doc(cfg(feature = "once")))]
 pub mod once;
@@ -97,9 +84,6 @@ pub mod relax;
 #[cfg_attr(docsrs, doc(cfg(feature = "rwlock")))]
 pub mod rwlock;
 
-#[cfg(feature = "mutex")]
-#[cfg_attr(docsrs, doc(cfg(feature = "mutex")))]
-pub use mutex::MutexGuard;
 #[cfg(feature = "std")]
 #[cfg_attr(docsrs, doc(cfg(feature = "std")))]
 pub use relax::Yield;
@@ -111,14 +95,6 @@ pub use rwlock::RwLockReadGuard;
 // Avoid confusing inference errors by aliasing away the relax strategy parameter. Users that need to use a different
 // relax strategy can do so by accessing the types through their fully-qualified path. This is a little bit horrible
 // but sadly adding a default type parameter is *still* a breaking change in Rust (for understandable reasons).
-
-/// A primitive that synchronizes the execution of multiple threads. See [`barrier::Barrier`] for documentation.
-///
-/// A note for advanced users: this alias exists to avoid subtle type inference errors due to the default relax
-/// strategy type parameter. If you need a non-default relax strategy, use the fully-qualified path.
-#[cfg(feature = "barrier")]
-#[cfg_attr(docsrs, doc(cfg(feature = "barrier")))]
-pub type Barrier = crate::barrier::Barrier;
 
 /// A value which is initialized on the first access. See [`lazylock::LazyLock`] for documentation.
 ///
@@ -133,14 +109,6 @@ pub type LazyLock<T, F = fn() -> T> = crate::lazylock::LazyLock<T, F>;
 #[cfg(feature = "lazylock")]
 #[cfg_attr(docsrs, doc(cfg(feature = "lazylock")))]
 pub type Lazy<T, F = fn() -> T> = crate::lazylock::LazyLock<T, F>;
-
-/// A primitive that synchronizes the execution of multiple threads. See [`mutex::Mutex`] for documentation.
-///
-/// A note for advanced users: this alias exists to avoid subtle type inference errors due to the default relax
-/// strategy type parameter. If you need a non-default relax strategy, use the fully-qualified path.
-#[cfg(feature = "mutex")]
-#[cfg_attr(docsrs, doc(cfg(feature = "mutex")))]
-pub type Mutex<T> = crate::mutex::Mutex<T>;
 
 /// A primitive that provides lazy one-time initialization. See [`once::Once`] for documentation.
 ///
@@ -179,16 +147,6 @@ pub type RwLockWriteGuard<'a, T> = crate::rwlock::RwLockWriteGuard<'a, T>;
 #[cfg(feature = "lock_api")]
 #[cfg_attr(docsrs, doc(cfg(feature = "lock_api")))]
 pub mod lock_api {
-    /// A lock that provides mutually exclusive data access (compatible with [`lock_api`](https://crates.io/crates/lock_api)).
-    #[cfg(feature = "mutex")]
-    #[cfg_attr(docsrs, doc(cfg(feature = "mutex")))]
-    pub type Mutex<T> = lock_api_crate::Mutex<crate::Mutex<()>, T>;
-
-    /// A guard that provides mutable data access (compatible with [`lock_api`](https://crates.io/crates/lock_api)).
-    #[cfg(feature = "mutex")]
-    #[cfg_attr(docsrs, doc(cfg(feature = "mutex")))]
-    pub type MutexGuard<'a, T> = lock_api_crate::MutexGuard<'a, crate::Mutex<()>, T>;
-
     /// A lock that provides data access to either one writer or many readers (compatible with [`lock_api`](https://crates.io/crates/lock_api)).
     #[cfg(feature = "rwlock")]
     #[cfg_attr(docsrs, doc(cfg(feature = "rwlock")))]
@@ -221,28 +179,4 @@ pub mod lock_api {
     #[cfg_attr(docsrs, doc(cfg(feature = "rwlock")))]
     pub type MappedRwLockWriteGuard<'a, T> =
         lock_api_crate::MappedRwLockWriteGuard<'a, crate::RwLock<()>, T>;
-}
-
-/// In the event of an invalid operation, it's best to abort the current process.
-#[cfg(feature = "fair_mutex")]
-fn abort() -> ! {
-    #[cfg(not(feature = "std"))]
-    {
-        // Panicking while panicking is defined by Rust to result in an abort.
-        struct Panic;
-
-        impl Drop for Panic {
-            fn drop(&mut self) {
-                panic!("aborting due to invalid operation");
-            }
-        }
-
-        let _panic = Panic;
-        panic!("aborting due to invalid operation");
-    }
-
-    #[cfg(feature = "std")]
-    {
-        std::process::abort();
-    }
 }

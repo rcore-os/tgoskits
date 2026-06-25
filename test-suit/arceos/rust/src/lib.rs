@@ -39,11 +39,7 @@ pub mod exception;
 pub mod fs;
 #[cfg(all(
     feature = "ax-std",
-    any(
-        feature = "lockdep-baseline",
-        feature = "lockdep-detect",
-        feature = "lockdep-spin-detect"
-    )
+    any(feature = "lockdep-baseline", feature = "lockdep-detect",)
 ))]
 pub mod lockdep;
 #[cfg(all(feature = "memtest", feature = "ax-std"))]
@@ -113,11 +109,6 @@ test_runner!(
     lockdep::baseline::run
 );
 test_runner!("lockdep-detect", run_lockdep_detect, lockdep::detect::run);
-test_runner!(
-    "lockdep-spin-detect",
-    run_lockdep_spin_detect,
-    lockdep::spin_detect::run
-);
 test_runner!("memtest", run_memtest, mem::test::run);
 test_runner!("net-loopback", run_net_loopback, net::loopback::run);
 test_runner!("sched-cfs", run_sched_cfs, task::priority::run);
@@ -191,12 +182,6 @@ const SELECTED_TESTS: &[TestCase] = &[
         "lockdep-detect",
         "lockdep order inversion detection",
         run_lockdep_detect,
-    ),
-    #[cfg(feature = "lockdep-spin-detect")]
-    TestCase::new(
-        "lockdep-spin-detect",
-        "lockdep spin mutex order inversion detection",
-        run_lockdep_spin_detect,
     ),
     #[cfg(feature = "memtest")]
     TestCase::new("memtest", "memory allocator and collections", run_memtest),

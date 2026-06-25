@@ -29,7 +29,6 @@ description = "Spin-based synchronization primitives"
 readme = "README.md"
 keywords = [
     "spinlock",
-    "mutex",
     "rwlock",
 ]
 license = "MIT"
@@ -43,37 +42,21 @@ rustdoc-args = [
 ]
 
 [features]
-barrier = ["mutex"]
 default = [
     "lock_api",
-    "mutex",
-    "spin_mutex",
     "rwlock",
     "once",
     "lazylock",
-    "barrier",
 ]
-fair_mutex = ["mutex"]
 lazy = ["lazylock"]
 lazylock = ["once"]
-lockdep = [
-    "mutex",
-    "dep:ax-lockdep",
-]
 lock_api = ["dep:lock_api_crate"]
-mutex = []
 once = []
 portable-atomic = ["dep:portable-atomic"]
 portable_atomic = ["portable-atomic"]
 rustc-dep-of-std = ["core"]
 rwlock = []
-spin_mutex = ["mutex"]
 std = []
-ticket_mutex = ["mutex"]
-use_ticket_mutex = [
-    "mutex",
-    "ticket_mutex",
-]
 
 [lib]
 name = "spin"
@@ -82,16 +65,7 @@ path = "src/lib.rs"
 [[example]]
 name = "debug"
 path = "examples/debug.rs"
-required-features = [
-    "mutex",
-    "rwlock",
-]
-
-[[bench]]
-name = "mutex"
-path = "benches/mutex.rs"
-harness = false
-required-features = ["ticket_mutex"]
+required-features = ["rwlock"]
 
 [dependencies.core]
 version = "1.0.0"
@@ -102,10 +76,6 @@ package = "rustc-std-workspace-core"
 version = "0.4"
 optional = true
 package = "lock_api"
-
-[dependencies.ax-lockdep]
-path = "../lockdep"
-optional = true
 
 [dependencies.portable-atomic]
 version = "1.3"

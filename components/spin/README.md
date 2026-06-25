@@ -36,58 +36,22 @@ Include the following under the `[dependencies]` section in your `Cargo.toml` fi
 spin = "x.y"
 ```
 
-## Example
+## TGOSKits vendored status
 
-When calling `lock` on a `Mutex` you will get a guard value that provides access
-to the data. When this guard is dropped, the mutex will become available again.
-
-```rust
-extern crate spin;
-use std::{sync::Arc, thread};
-
-fn main() {
-    let counter = Arc::new(spin::Mutex::new(0));
-
-    let thread = thread::spawn({
-        let counter = counter.clone();
-        move || {
-            for _ in 0..100 {
-                *counter.lock() += 1;
-            }
-        }
-    });
-
-    for _ in 0..100 {
-        *counter.lock() += 1;
-    }
-
-    thread.join().unwrap();
-
-    assert_eq!(*counter.lock(), 200);
-}
-```
+This vendored copy is intentionally reduced during the TGOSKits spin migration.
+`spin::Mutex`, `spin::mutex`, `spin::Barrier`, and the mutex-related feature
+flags have been removed. New mutex users should choose a project-local lock such
+as `ax_kspin` or `ax_sync` according to their context semantics.
 
 ## Feature flags
 
 The crate comes with a few feature flags that you may wish to use.
-
-- `mutex` enables the `Mutex` type.
-
-- `spin_mutex` enables the `SpinMutex` type.
-
-- `ticket_mutex` enables the `TicketMutex` type.
-
-- `use_ticket_mutex` switches to a ticket lock for the implementation of `Mutex`. This
-  is recommended only on targets for which ordinary spinning locks perform very badly
-  because it will change the implementation used by other crates that depend on `spin`.
 
 - `rwlock` enables the `RwLock` type.
 
 - `once` enables the `Once` type.
 
 - `lazylock` enables the `LazyLock` type.
-
-- `barrier` enables the `Barrier` type.
 
 - `lock_api` enables support for [`lock_api`](https://crates.io/crates/lock_api)
 
