@@ -160,6 +160,18 @@ fn add_to_fd(result: OpenResult, flags: u32) -> AxResult<i32> {
                     file = ax_fs_ng::vfs::File::new(FileBackend::Direct(loc), file.flags());
                 }
             }
+            // Call open() on the final device after /dev/ptmx and /dev/tty
+            // rewrites, so PTY open-count tracking (Tty) pairs the last-fd
+            // close with peer POLLHUP/EOF notification. Block devices already
+            // use the O_EXCL hook above, so skip them to avoid a double open().
+            if let Ok(device) = file.location().entry().downcast::<Device>() {
+                let is_block = device
+                    .metadata()
+                    .is_ok_and(|m| m.node_type == NodeType::BlockDevice);
+                if !is_block {
+                    device.inner().open(flags & O_EXCL != 0)?;
+                }
+            }
             Arc::new(File::new(file, flags))
         }
         OpenResult::Dir(dir) => Arc::new(Directory::new(dir, flags)),
