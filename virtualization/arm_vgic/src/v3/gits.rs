@@ -20,7 +20,7 @@ use ax_kspin::SpinNoIrq;
 use ax_memory_addr::PhysAddr;
 use axdevice_base::{AccessWidth, BaseDeviceOps};
 use axvm_types::{GuestPhysAddr, GuestPhysAddrRange, HostPhysAddr};
-use log::{debug, trace};
+use log::{debug, trace, warn};
 use spin::{Mutex, Once};
 
 use super::{
@@ -62,6 +62,12 @@ pub struct Gits {
 
     /// Virtual GITS registers.
     pub regs: SpinNoIrq<VirtualGitsRegs>,
+
+    /// Serialises CWRITER command-queue submission so that only one
+    /// vCPU can process the queue at a time, preventing races where
+    /// two vCPUs see the same old `creadr` and re-process already-
+    /// handled commands.
+    pub submission_lock: SpinNoIrq<()>,
 }
 
 impl Gits {
@@ -97,6 +103,7 @@ impl Gits {
             host_gits_base,
             is_root_vm,
             regs,
+            submission_lock: SpinNoIrq::new(()),
         }
     }
 }
@@ -202,6 +209,11 @@ impl BaseDeviceOps<GuestPhysAddrRange> for Gits {
                 }
             }
             GITS_CWRITER => {
+                // Serialise concurrent command-queue submissions: two
+                // vCPUs writing CWRITER must not see the same old
+                // creadr, or one may re-process commands already
+                // handled by the other.
+                let _submission = self.submission_lock.lock();
                 self.with_regs_mut(|r| r.cwriter = val);
 
                 if val != 0 {
@@ -210,12 +222,14 @@ impl BaseDeviceOps<GuestPhysAddrRange> for Gits {
                     let mut cmdq = get_cmdq(self.host_gits_base).lock();
                     let new_creadr = cmdq.insert_cmd(cbaser, creadr, val);
                     self.with_regs_mut(|r| r.creadr = new_creadr);
+                    drop(cmdq);
                 }
 
                 Ok(())
             }
             GITS_CREADR => {
-                panic!("GITS_CREADR should not be written by guest!");
+                warn!("GITS_CREADR: guest write ignored (read-only register)");
+                Ok(())
             }
             GITS_TYPER => perform_mmio_write(gits_base + reg, width, val),
             _ => perform_mmio_write(gits_base + reg, width, val),
@@ -407,7 +421,10 @@ impl Cmdq {
         let origin_vm_readr = vm_creadr;
 
         // todo: handle wrap around
-        let cmd_size = vm_writer - origin_vm_readr;
+        let cmd_size = vm_writer.wrapping_sub(origin_vm_readr);
+        if cmd_size == 0 || cmd_size > 0x10000 {
+            return vm_writer;
+        }
         let cmd_num = cmd_size / BYTES_PER_CMD;
 
         trace!(
