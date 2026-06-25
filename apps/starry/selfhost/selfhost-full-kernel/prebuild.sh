@@ -166,8 +166,10 @@ if [ "${arch}" = "x86_64" ]; then
     # else xtask would fetch/install them online and fail.
     if [ -z "\$(ls -A components/aic8800/firmware/*.bin 2>/dev/null)" ]; then
         echo "SELF_COMPILE_FAILED: AIC8800 firmware blobs missing (xtask would fetch online)"
+        exit 1
     elif ! command -v gen_ksym >/dev/null 2>&1 || ! command -v rust-nm >/dev/null 2>&1 || ! command -v rust-objcopy >/dev/null 2>&1; then
         echo "SELF_COMPILE_FAILED: kallsyms tools (gen_ksym/rust-nm/rust-objcopy) missing offline"
+        exit 1
     else
         # Build the host tool for the gnu host triple (prebuilt std), NOT the kernel's
         # bare x86_64-unknown-none default; else the std xtask binary is mis-built as
@@ -190,11 +192,14 @@ if [ "${arch}" = "x86_64" ]; then
                 echo "BINARY=\$__elf"
                 echo "BINARY_SIZE=\$(stat -c%s "\$__elf")"
                 echo "SELF_COMPILE_SUCCESS"
+                kill \$HEARTBEAT_PID 2>/dev/null || true
                 exit 0
             fi
+            kill \$HEARTBEAT_PID 2>/dev/null || true
             echo "SELF_COMPILE_FAILED: rc=\$BUILD_RC elf_not_found=\$__elf"
             exit 1
         else
+            kill \$HEARTBEAT_PID 2>/dev/null || true
             echo "SELF_COMPILE_FAILED: host tg-xtask build failed"
             exit 1
         fi

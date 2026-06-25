@@ -158,7 +158,9 @@ Run: cargo xtask starry rootfs --arch x86_64"
 
 The blueprint must be placed at this path before running self-compile.
 Maintainers can create it via: prepare-selfhost-rootfs.sh --arch x86_64 --force
-(recommended: place the blueprint image, then all runs clone it).\n\nSee docs/starryos-self-compilation.md for details."
+(recommended: place the blueprint, then all runs clone it from there).
+
+See docs/starryos-self-compilation.md for details."
 
     if [ ! -f "$ROOTFS_IMG" ]; then
         info "Cloning rootfs: $SELFHOST_BLUEPRINT → $ROOTFS_IMG (this may take a moment)..."

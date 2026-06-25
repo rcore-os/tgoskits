@@ -61,15 +61,16 @@ rust-lld: error: someboot.x:9 ENTRY(_head); :109 ABSOLUTE(kernel_entry)
 riscv64 不受影响：其 `build-riscv64gc-unknown-none-elf.toml` 显式 `plat_dyn = false` + 静态
 平台，种子与 guest 均为 bare-metal `riscv64gc-unknown-none-elf`，**两套流程一致**，故链接通过。
 
-**修复路径**（已在 host 上离线验证：种子流程可正确链接 someboot，仅余 GCC 16 `__stack_chk_fail`
-需 `CFLAGS=-fno-stack-protector`）：
+**修复方式**（已实现并端到端验证）：
 
-1. inner script 改为调用种子流程而非手写 cargo build：
-   `CFLAGS=-fno-stack-protector cargo xtask starry build -c apps/starry/selfhost/build-x86_64-unknown-none.toml --arch x86_64`，
-   并从 `target/x86_64-unknown-linux-musl/release/starryos` 拷贝产物到 `/opt/starryos-selfbuilt`。
-2. 在 guest rootfs 中提供真实的 musl 交叉工具链（`x86_64-linux-musl-cc`/`ar`）——
-   `prepare-selfhost-rootfs.sh` 需补充安装（现仅有 glibc gcc + symlink hack，对 musl 目标 std 构建不足）。
-3. 端到端验证后再标记 x86_64 自编译为 ✅。
+1. inner script 改为调用种子流程：先行构建 `tg-xtask`（gnu host triple），再通过
+   `CFLAGS=-fno-stack-protector cargo xtask starry build -c apps/starry/selfhost/build-x86_64-unknown-none.toml --arch x86_64`
+   驱动 musl-PIE std 流程，产物从 `target/x86_64-unknown-linux-musl/release/starryos` 拷贝到
+   `/opt/starryos-selfbuilt`。`SELF_COMPILE_SUCCESS` 在 ELF 检测后立即发出。
+2. `prepare-selfhost-rootfs.sh` 已补充：`musl-tools`/`musl-dev`（+ `x86_64-linux-musl-{cc,gcc,ar}` symlinks）、
+   `llvm-tools-preview` + `cargo-binutils` + `ksym`（kallsyms 工具）、AIC8800 firmware blobs、
+   `pkgconf libudev-dev`、`/bin/sh → /bin/bash`（linker wrapper 兼容）及完整源码与离线依赖闭包。
+   该脚本作为维护者工具；reviewer 验证路径使用制备好的 blueprint image。
 
 ## 前置依赖 PR
 
