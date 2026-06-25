@@ -2,7 +2,7 @@
 //! handle-import API to the Phase D submit path. Real RGA2 hardware execution is board-gated;
 //! on QEMU `get_list` returns empty and the ioctl returns `ENODEV`.
 
-use alloc::{collections::btree_map::BTreeMap, sync::Arc};
+use alloc::{collections::btree_map::BTreeMap, sync::Arc, vec::Vec};
 use core::{any::Any, ffi::c_int};
 
 use ax_sync::Mutex;
@@ -27,10 +27,14 @@ struct ImportedBuf {
 }
 
 /// `/dev/rga` character device with a handle table for the MultiRGA import API.
-/// Handles are keyed by (task_id, handle) so Process A cannot resolve Process B's buffers.
+/// Handles and staged requests are keyed by (task_id, id) so Process A cannot touch
+/// Process B's buffers/requests.
 pub struct RgaDevice {
     handle_table: Mutex<BTreeMap<(u64, u32), ImportedBuf>>,
     next_handle: Mutex<u32>,
+    /// Requests staged via RGA_IOC_REQUEST_CONFIG, awaiting RGA_IOC_REQUEST_SUBMIT.
+    requests: Mutex<BTreeMap<(u64, u32), Vec<librga_abi::RgaReq>>>,
+    next_request_id: Mutex<u32>,
 }
 
 impl RgaDevice {
@@ -38,6 +42,8 @@ impl RgaDevice {
         Self {
             handle_table: Mutex::new(BTreeMap::new()),
             next_handle: Mutex::new(1),
+            requests: Mutex::new(BTreeMap::new()),
+            next_request_id: Mutex::new(1),
         }
     }
 
@@ -97,8 +103,13 @@ impl RgaDevice {
                 .vm_read_uninit()?
                 .assume_init()
         };
+        self.execute_blit(&req)
+    }
 
-        let parsed = librga_abi::parse(&req).map_err(|_| VfsError::InvalidInput)?;
+    /// Submit one already-read `RgaReq` to the engine and block until completion.
+    /// Shared by the legacy `RGA_BLIT_SYNC` path and the `RGA_IOC_REQUEST_SUBMIT` task path.
+    fn execute_blit(&self, req: &librga_abi::RgaReq) -> VfsResult<usize> {
+        let parsed = librga_abi::parse(req).map_err(|_| VfsError::InvalidInput)?;
 
         let handle_flag = req.handle_flag != 0;
 
@@ -266,6 +277,125 @@ impl RgaDevice {
         }
         Ok(0)
     }
+
+    /// `RGA_IOC_GET_DRVIER_VERSION` — librga reads this at init to pick the ABI. Report the
+    /// MultiRGA v1.3.1 driver version we mirror, so librga uses the matching `rga_req` layout.
+    fn handle_get_driver_version(&self, arg: usize) -> VfsResult<usize> {
+        let mut v = librga_abi::RgaVersionT {
+            major: 1,
+            minor: 3,
+            revision: 1,
+            string: [0; 16],
+        };
+        v.string[..5].copy_from_slice(b"1.3.1");
+        unsafe { (arg as *mut librga_abi::RgaVersionT).vm_write(v)? };
+        Ok(0)
+    }
+
+    /// `RGA_IOC_GET_HW_VERSION` — librga enumerates scheduler cores. Report one RGA2 core
+    /// at hardware v3.2 (matches the OrangePi-5-Plus version register 0x032660D8).
+    fn handle_get_hw_version(&self, arg: usize) -> VfsResult<usize> {
+        let mut hw = librga_abi::RgaHwVersions::default();
+        hw.size = 1;
+        hw.version[0] = librga_abi::RgaVersionT {
+            major: 3,
+            minor: 2,
+            revision: 0,
+            string: [0; 16],
+        };
+        hw.version[0].string[..3].copy_from_slice(b"3.2");
+        unsafe { (arg as *mut librga_abi::RgaHwVersions).vm_write(hw)? };
+        Ok(0)
+    }
+
+    /// `RGA_IOC_REQUEST_CREATE` — allocate a request id (written back to userspace).
+    fn handle_request_create(&self, arg: usize) -> VfsResult<usize> {
+        let tid = current_id();
+        let mut next = self.next_request_id.lock();
+        let mut requests = self.requests.lock();
+        // Pick a non-zero id not already live for this task.
+        let id = loop {
+            let id = *next;
+            *next = id.wrapping_add(1);
+            if id != 0 && !requests.contains_key(&(tid, id)) {
+                break id;
+            }
+        };
+        requests.insert((tid, id), Vec::new());
+        drop(requests);
+        drop(next);
+        unsafe { (arg as *mut u32).vm_write(id)? };
+        Ok(0)
+    }
+
+    /// Read the `task_num` `RgaReq` array a request points at (bounded).
+    fn read_request_tasks(req: &librga_abi::RgaUserRequest) -> VfsResult<Vec<librga_abi::RgaReq>> {
+        if req.task_num == 0 || req.task_num > 16 || req.task_ptr == 0 {
+            return Err(VfsError::InvalidInput);
+        }
+        let elem = core::mem::size_of::<librga_abi::RgaReq>();
+        let base = req.task_ptr as usize;
+        let mut tasks = Vec::with_capacity(req.task_num as usize);
+        for i in 0..req.task_num as usize {
+            let p = base + i * elem;
+            let t: librga_abi::RgaReq = unsafe {
+                (p as *const librga_abi::RgaReq)
+                    .vm_read_uninit()?
+                    .assume_init()
+            };
+            tasks.push(t);
+        }
+        Ok(tasks)
+    }
+
+    /// `RGA_IOC_REQUEST_CONFIG` — stage a request's tasks without running them.
+    fn handle_request_config(&self, arg: usize) -> VfsResult<usize> {
+        let ureq: librga_abi::RgaUserRequest = unsafe {
+            (arg as *const librga_abi::RgaUserRequest)
+                .vm_read_uninit()?
+                .assume_init()
+        };
+        let tasks = Self::read_request_tasks(&ureq)?;
+        let tid = current_id();
+        self.requests.lock().insert((tid, ureq.id), tasks);
+        Ok(0)
+    }
+
+    /// `RGA_IOC_REQUEST_SUBMIT` — run a request's tasks (carried inline, or previously
+    /// staged via CONFIG) and block until each completes. We are always synchronous.
+    fn handle_request_submit(&self, arg: usize) -> VfsResult<usize> {
+        let ureq: librga_abi::RgaUserRequest = unsafe {
+            (arg as *const librga_abi::RgaUserRequest)
+                .vm_read_uninit()?
+                .assume_init()
+        };
+        let tid = current_id();
+        // Tasks may be carried inline (common im2d single-blit) or staged by a prior CONFIG.
+        let tasks = if ureq.task_num > 0 {
+            Self::read_request_tasks(&ureq)?
+        } else {
+            self.requests
+                .lock()
+                .get(&(tid, ureq.id))
+                .cloned()
+                .ok_or(VfsError::InvalidInput)?
+        };
+        // Drop any staged copy now that we own the tasks.
+        self.requests.lock().remove(&(tid, ureq.id));
+
+        for task in &tasks {
+            self.execute_blit(task)?;
+        }
+        Ok(0)
+    }
+
+    /// `RGA_IOC_REQUEST_CANCEL` — drop a staged request.
+    fn handle_request_cancel(&self, arg: usize) -> VfsResult<usize> {
+        let id: u32 = unsafe { (arg as *const u32).vm_read_uninit()?.assume_init() };
+        let tid = current_id();
+        self.requests.lock().remove(&(tid, id));
+        Ok(0)
+    }
 }
 
 impl Default for RgaDevice {
@@ -295,8 +425,14 @@ impl DeviceOps for RgaDevice {
                 unsafe { (arg as *mut [u8; 5]).vm_write(version)? };
                 Ok(0)
             }
+            librga_abi::RGA_IOC_GET_DRVIER_VERSION => self.handle_get_driver_version(arg),
+            librga_abi::RGA_IOC_GET_HW_VERSION => self.handle_get_hw_version(arg),
             librga_abi::RGA_IOC_IMPORT_BUFFER => self.handle_import_buffer(arg),
             librga_abi::RGA_IOC_RELEASE_BUFFER => self.handle_release_buffer(arg),
+            librga_abi::RGA_IOC_REQUEST_CREATE => self.handle_request_create(arg),
+            librga_abi::RGA_IOC_REQUEST_CONFIG => self.handle_request_config(arg),
+            librga_abi::RGA_IOC_REQUEST_SUBMIT => self.handle_request_submit(arg),
+            librga_abi::RGA_IOC_REQUEST_CANCEL => self.handle_request_cancel(arg),
             _ => Err(VfsError::NotATty),
         }
     }
