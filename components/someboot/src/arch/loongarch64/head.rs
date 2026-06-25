@@ -6,9 +6,6 @@ use crate::{
     efi_stub::{efi_pe_entry, pe::*},
 };
 
-const PE_IMAGE_BASE: usize =
-    const_u64_from_env(env!("SOMEBOOT_LOONGARCH64_PE_IMAGE_BASE")) as usize;
-
 /// LoongArch64 kernel header implementing functionality similar to
 /// Linux arch/loongarch/kernel/head.S _head section
 #[unsafe(naked)]
@@ -51,7 +48,7 @@ pub unsafe extern "C" fn _head() {
         ".long _stext - _head",         // BaseOfCode
 
         // Extra header fields
-        ".quad {pe_image_base}",        // ImageBase
+        ".quad {phys_link_kaddr}",      // ImageBase
         ".long PAGE_SIZE",              // SectionAlignment (PECOFF_SEGMENT_ALIGN)
         ".long PECOFF_FILE_ALIGN",      // FileAlignment (PECOFF_FILE_ALIGN)
         ".short 0",                     // MajorOperatingSystemVersion
@@ -113,7 +110,6 @@ pub unsafe extern "C" fn _head() {
         dos_signature = const IMAGE_DOS_SIGNATURE,
         linux_pe_magic = const LINUX_PE_MAGIC,
         phys_link_kaddr = const KERNEL_LOAD_ADDRESS,
-        pe_image_base = const PE_IMAGE_BASE,
         efi_pe_entry = sym efi_pe_entry,
         image_nt_signature = const IMAGE_NT_SIGNATURE,
         file_machine = const IMAGE_FILE_MACHINE_LOONGARCH64,
@@ -122,40 +118,4 @@ pub unsafe extern "C" fn _head() {
         minor_image_version = const LINUX_EFISTUB_MINOR_VERSION,
         image_subsystem = const IMAGE_SUBSYSTEM_EFI_APPLICATION,
     )
-}
-
-const fn const_u64_from_env(value: &str) -> u64 {
-    let bytes = value.as_bytes();
-    let mut index = 0;
-    let mut parsed = 0;
-    let radix;
-
-    if bytes.len() >= 2 && bytes[0] == b'0' && (bytes[1] == b'x' || bytes[1] == b'X') {
-        index = 2;
-        radix = 16;
-    } else {
-        radix = 10;
-    }
-
-    while index < bytes.len() {
-        let digit = match bytes[index] {
-            b'_' => {
-                index += 1;
-                continue;
-            }
-            b'0'..=b'9' => bytes[index] - b'0',
-            b'a'..=b'f' => bytes[index] - b'a' + 10,
-            b'A'..=b'F' => bytes[index] - b'A' + 10,
-            _ => panic!("invalid numeric environment value"),
-        };
-
-        if digit as u64 >= radix {
-            panic!("invalid numeric environment value");
-        }
-
-        parsed = parsed * radix + digit as u64;
-        index += 1;
-    }
-
-    parsed
 }
