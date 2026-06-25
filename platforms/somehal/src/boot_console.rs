@@ -34,17 +34,19 @@ fn device_id_from_bootargs_with(
     serial_device_id: impl Fn(usize) -> Option<DeviceId>,
 ) -> Result<DeviceId, ConsoleDeviceIdError> {
     let cmdline = cmdline.ok_or(ConsoleDeviceIdError::NotSpecified)?;
-    let mut last_spec = None;
+    let mut has_console_spec = false;
+    let mut last_hardware_serial = None;
 
     for spec in console_specs(cmdline) {
-        last_spec = Some(spec);
+        has_console_spec = true;
+        if let ConsoleSpec::HardwareSerial(index) = spec {
+            last_hardware_serial = Some(index);
+        }
     }
 
-    match last_spec {
-        Some(ConsoleSpec::HardwareSerial(index)) => {
-            serial_device_id(index).ok_or(ConsoleDeviceIdError::DeviceNotFound)
-        }
-        Some(ConsoleSpec::VirtualTty) => Err(ConsoleDeviceIdError::NoHardwareDevice),
+    match last_hardware_serial {
+        Some(index) => serial_device_id(index).ok_or(ConsoleDeviceIdError::DeviceNotFound),
+        None if has_console_spec => Err(ConsoleDeviceIdError::NoHardwareDevice),
         None => Err(ConsoleDeviceIdError::NotSpecified),
     }
 }
@@ -179,19 +181,19 @@ mod tests {
         );
         assert_eq!(
             device_id_from_bootargs(Some("console=ttyS2 console=tty1")),
-            Err(ConsoleDeviceIdError::NoHardwareDevice)
+            Err(ConsoleDeviceIdError::DeviceNotFound)
         );
     }
 
     #[test]
-    fn later_virtual_console_overrides_earlier_serial_console() {
+    fn later_virtual_console_does_not_hide_hardware_device_id() {
         let serial2_device = DeviceId::from(42);
 
         assert_eq!(
             device_id_from_bootargs_with(Some("console=ttyS2,1500000 console=tty1"), |index| {
                 (index == 2).then_some(serial2_device)
             }),
-            Err(ConsoleDeviceIdError::NoHardwareDevice)
+            Ok(serial2_device)
         );
     }
 
@@ -217,7 +219,7 @@ mod tests {
                 Some("console=ttyS2,1500000 console=ttyS3,115200 console=tty1"),
                 |index| (index == 2).then_some(serial2_device),
             ),
-            Err(ConsoleDeviceIdError::NoHardwareDevice)
+            Err(ConsoleDeviceIdError::DeviceNotFound)
         );
         assert_eq!(
             device_id_from_bootargs_with(
