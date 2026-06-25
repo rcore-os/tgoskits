@@ -1,0 +1,863 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Cache-Control" content="no-store, no-cache, must-revalidate">
+  <meta http-equiv="Pragma" content="no-cache">
+  <meta http-equiv="Expires" content="0">
+  <title>离线机器人监测平台</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --ink: #17202a;
+      --muted: #607080;
+      --line: #d8dee8;
+      --panel: rgba(255, 255, 255, 0.78);
+      --page: #eef3f7;
+      --teal: #0f766e;
+      --blue: #2563eb;
+      --starry-summary: #60a5fa;
+      --rose: #be123c;
+      --amber: #b45309;
+      --green: #15803d;
+      --slate: #334155;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background:
+        radial-gradient(circle at 12% 0%, rgba(96, 165, 250, 0.18), transparent 34%),
+        radial-gradient(circle at 92% 8%, rgba(15, 118, 110, 0.14), transparent 30%),
+        linear-gradient(180deg, #f8fbff 0%, var(--page) 44%, #e8eef5 100%);
+      color: var(--ink);
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      line-height: 1.45;
+    }
+    header {
+      padding: 22px 28px 18px;
+      background: #101820;
+      color: #fff;
+      border-bottom: 4px solid var(--teal);
+    }
+    h1 {
+      margin: 0;
+      font-size: clamp(22px, 3vw, 34px);
+      letter-spacing: 0;
+    }
+    header p { margin: 6px 0 0; color: #cfdae6; max-width: 980px; }
+    main { max-width: 1480px; margin: 0 auto; padding: 18px; }
+    section {
+      background: var(--panel);
+      border: 1px solid rgba(216, 222, 232, 0.72);
+      border-radius: 8px;
+      margin-bottom: 16px;
+      padding: 16px;
+      box-shadow: 0 14px 36px rgba(23, 32, 42, 0.08);
+      backdrop-filter: blur(10px);
+    }
+    h2 {
+      margin: 0 0 12px;
+      font-size: 18px;
+      letter-spacing: 0;
+    }
+    .imports {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 16px;
+    }
+    .import-box {
+      display: grid;
+      grid-template-columns: 150px 1fr;
+      gap: 10px 12px;
+      align-items: center;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 12px;
+      background: rgba(251, 252, 254, 0.72);
+    }
+    .import-box h3 {
+      grid-column: 1 / -1;
+      margin: 0 0 4px;
+      font-size: 16px;
+    }
+    label { color: var(--muted); font-size: 13px; }
+    input[type="file"] { width: 100%; min-width: 0; }
+    button {
+      appearance: none;
+      border: 1px solid var(--slate);
+      background: var(--slate);
+      color: #fff;
+      border-radius: 6px;
+      padding: 8px 12px;
+      cursor: pointer;
+      font-weight: 650;
+    }
+    button.secondary { background: #fff; color: var(--slate); }
+    .actions { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 12px; }
+    .status { margin-top: 10px; color: var(--muted); font-size: 13px; }
+    .summary-grid {
+      display: grid;
+      gap: 12px;
+    }
+    .summary-row {
+      display: grid;
+      grid-template-columns: 120px repeat(6, minmax(110px, 1fr));
+      gap: 10px;
+      align-items: stretch;
+    }
+    .summary-label,
+    .summary-cell {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 12px;
+      min-height: 86px;
+    }
+    .summary-label {
+      display: flex;
+      align-items: center;
+      font-weight: 750;
+    }
+    .summary-cell {
+      background: rgba(251, 252, 254, 0.72);
+    }
+    .summary-row.starry .summary-label,
+    .summary-row.starry .summary-cell {
+      background: var(--starry-summary);
+      border-color: rgba(96, 165, 250, 0.88);
+      color: #fff;
+    }
+    .summary-row.linux .summary-label,
+    .summary-row.linux .summary-cell {
+      background: rgba(255, 255, 255, 0.84);
+      color: var(--ink);
+    }
+    .summary-cell span { display: block; color: var(--muted); font-size: 12px; }
+    .summary-row.starry .summary-cell span { color: #eff6ff; }
+    .summary-cell strong { display: block; margin-top: 7px; font-size: 22px; }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 16px;
+    }
+    .chart-wrap {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 12px;
+      background: rgba(251, 252, 254, 0.74);
+      min-height: 300px;
+    }
+    .chart-title {
+      display: flex;
+      justify-content: space-between;
+      gap: 8px;
+      margin-bottom: 8px;
+      color: var(--muted);
+      font-size: 13px;
+    }
+    canvas { width: 100%; height: 280px; display: block; }
+    .chart-legend,
+    .chart-readout {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px 12px;
+      margin-top: 8px;
+      color: var(--muted);
+      font-size: 12px;
+    }
+    .chart-readout {
+      min-height: 22px;
+      color: var(--ink);
+    }
+    .timeline {
+      height: 56px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      overflow: hidden;
+      display: flex;
+      background: rgba(232, 237, 243, 0.72);
+    }
+    .state-segment { height: 100%; min-width: 2px; }
+    .legend {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      margin-top: 10px;
+      color: var(--muted);
+      font-size: 12px;
+    }
+    .swatch { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 5px; }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 13px;
+    }
+    th, td {
+      border-bottom: 1px solid var(--line);
+      padding: 8px;
+      text-align: left;
+      vertical-align: top;
+    }
+    th { color: var(--muted); font-weight: 700; background: #f8fafc; }
+    .table-scroll { overflow: auto; max-height: 340px; border: 1px solid var(--line); border-radius: 8px; }
+    .playbar {
+      display: grid;
+      grid-template-columns: auto 1fr 110px;
+      gap: 10px;
+      align-items: center;
+      margin-top: 12px;
+    }
+    input[type="range"] { width: 100%; }
+    @media (max-width: 980px) {
+      .imports, .grid { grid-template-columns: 1fr; }
+      .summary-row { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .summary-label { grid-column: 1 / -1; min-height: auto; }
+      .import-box { grid-template-columns: 1fr; }
+      .playbar { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>离线机器人监测平台</h1>
+    <p>RK3588 + StarryOS 离线日志回放、资源监测和 Linux 基线对比。</p>
+  </header>
+  <main>
+    <section>
+      <h2>日志导入</h2>
+      <div class="imports">
+        <div class="import-box">
+          <h3>StarryOS</h3>
+          <label for="starry-system">system_metrics.csv</label>
+          <input id="starry-system" type="file" accept=".csv,text/csv">
+          <label for="starry-robot">robot_trace.csv</label>
+          <input id="starry-robot" type="file" accept=".csv,text/csv">
+          <label for="starry-events">events.jsonl</label>
+          <input id="starry-events" type="file" accept=".jsonl,.json,application/json">
+        </div>
+        <div class="import-box">
+          <h3>Linux 基线</h3>
+          <label for="linux-system">system_metrics.csv</label>
+          <input id="linux-system" type="file" accept=".csv,text/csv">
+          <label for="linux-robot">robot_trace.csv</label>
+          <input id="linux-robot" type="file" accept=".csv,text/csv">
+          <label for="linux-events">events.jsonl</label>
+          <input id="linux-events" type="file" accept=".jsonl,.json,application/json">
+        </div>
+      </div>
+      <div class="actions">
+        <button id="load">渲染日志</button>
+        <button id="clear" class="secondary">清空</button>
+        <button id="download-report" class="secondary">下载分析报告 HTML</button>
+      </div>
+      <div id="status" class="status">尚未导入日志。</div>
+    </section>
+
+    <section>
+      <h2>摘要</h2>
+      <div id="kpis" class="summary-grid"></div>
+    </section>
+
+    <section>
+      <h2>曲线图</h2>
+      <div class="grid">
+        <div class="chart-wrap">
+          <div class="chart-title"><strong>CPU 总占用</strong><span>%</span></div>
+          <canvas id="cpu-chart" width="720" height="260"></canvas>
+          <div id="cpu-chart-legend" class="chart-legend"></div>
+          <div id="cpu-chart-readout" class="chart-readout"></div>
+        </div>
+        <div class="chart-wrap">
+          <div class="chart-title"><strong>内存已用</strong><span>MiB</span></div>
+          <canvas id="mem-chart" width="720" height="260"></canvas>
+          <div id="mem-chart-legend" class="chart-legend"></div>
+          <div id="mem-chart-readout" class="chart-readout"></div>
+        </div>
+        <div class="chart-wrap">
+          <div class="chart-title"><strong>AI 推理链路</strong><span>ms</span></div>
+          <canvas id="latency-chart" width="720" height="260"></canvas>
+          <div id="latency-chart-legend" class="chart-legend"></div>
+          <div id="latency-chart-readout" class="chart-readout"></div>
+        </div>
+        <div class="chart-wrap">
+          <div class="chart-title"><strong>帧率</strong><span>frames/s</span></div>
+          <canvas id="fps-chart" width="720" height="260"></canvas>
+          <div id="fps-chart-legend" class="chart-legend"></div>
+          <div id="fps-chart-readout" class="chart-readout"></div>
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <h2>机器人状态时间线</h2>
+      <div id="timeline" class="timeline"></div>
+      <div class="legend" id="legend"></div>
+      <div class="playbar">
+        <button id="play" class="secondary">播放</button>
+        <input id="scrub" type="range" min="0" max="0" value="0">
+        <strong id="clock">0.0 s</strong>
+      </div>
+    </section>
+
+    <section>
+      <h2>Linux 与 StarryOS 对比</h2>
+      <div class="table-scroll">
+        <table id="compare-table"></table>
+      </div>
+    </section>
+
+    <section>
+      <h2>异常与事件</h2>
+      <div class="table-scroll">
+        <table id="events-table"></table>
+      </div>
+    </section>
+
+  </main>
+
+  <script>
+    const COLORS = {
+      starry: "#0f766e",
+      linux: "#2563eb",
+      teal: "#0f766e",
+      rose: "#be123c",
+      amber: "#b45309",
+      green: "#15803d",
+      search: "#64748b",
+      chase: "#2563eb",
+      grab: "#b45309",
+      stop: "#be123c",
+      unknown: "#94a3b8"
+    };
+
+    const CHART_CONFIG = {
+      "cpu-chart": {unit: "%", decimals: 1},
+      "mem-chart": {unit: " MiB", decimals: 1},
+      "latency-chart": {unit: " ms", decimals: 1},
+      "fps-chart": {unit: " fps", decimals: 1}
+    };
+
+    const state = {
+      starry: emptyRun("StarryOS"),
+      linux: emptyRun("Linux"),
+      currentMs: 0,
+      timer: null
+    };
+
+    function emptyRun(label) {
+      return { label, system: [], robot: [], events: [], errors: [] };
+    }
+
+    function text(id) {
+      const file = document.getElementById(id).files[0];
+      if (!file) return Promise.resolve("");
+      return file.text();
+    }
+
+    function parseCsv(input) {
+      if (!input.trim()) return [];
+      const rows = [];
+      const lines = input.replace(/\r\n/g, "\n").replace(/\r/g, "\n").trim().split("\n");
+      const headers = splitCsvLine(lines.shift());
+      for (const line of lines) {
+        if (!line.trim()) continue;
+        const cells = splitCsvLine(line);
+        const row = {};
+        headers.forEach((header, index) => {
+          row[header] = normalize(cells[index] ?? "");
+        });
+        rows.push(row);
+      }
+      return rows;
+    }
+
+    function splitCsvLine(line) {
+      const out = [];
+      let cell = "";
+      let quoted = false;
+      for (let i = 0; i < line.length; i++) {
+        const ch = line[i];
+        if (ch === '"' && line[i + 1] === '"') {
+          cell += '"';
+          i++;
+        } else if (ch === '"') {
+          quoted = !quoted;
+        } else if (ch === "," && !quoted) {
+          out.push(cell);
+          cell = "";
+        } else {
+          cell += ch;
+        }
+      }
+      out.push(cell);
+      return out;
+    }
+
+    function parseJsonl(input, errors) {
+      if (!input.trim()) return [];
+      const rows = [];
+      input.replace(/\r\n/g, "\n").replace(/\r/g, "\n").split("\n").forEach((line, index) => {
+        if (!line.trim()) return;
+        try {
+          rows.push(JSON.parse(line));
+        } catch (err) {
+          errors.push(`events.jsonl:${index + 1}: ${err.message}`);
+        }
+      });
+      return rows;
+    }
+
+    function normalize(value) {
+      const trimmed = String(value).trim();
+      if (trimmed === "" || trimmed === "NA") return null;
+      const num = Number(trimmed);
+      return Number.isFinite(num) && trimmed !== "" ? num : trimmed;
+    }
+
+    async function loadAll() {
+      state.starry = emptyRun("StarryOS");
+      state.linux = emptyRun("Linux");
+      const [ss, sr, se, ls, lr, le] = await Promise.all([
+        text("starry-system"), text("starry-robot"), text("starry-events"),
+        text("linux-system"), text("linux-robot"), text("linux-events")
+      ]);
+      state.starry.system = parseCsv(ss);
+      state.starry.robot = parseCsv(sr);
+      state.starry.events = parseJsonl(se, state.starry.errors);
+      state.linux.system = parseCsv(ls);
+      state.linux.robot = parseCsv(lr);
+      state.linux.events = parseJsonl(le, state.linux.errors);
+      state.currentMs = 0;
+      render();
+    }
+
+    function num(row, key) {
+      const value = row?.[key];
+      return typeof value === "number" && Number.isFinite(value) ? value : null;
+    }
+
+    function mean(values) {
+      const valid = values.filter(Number.isFinite);
+      return valid.length ? valid.reduce((a, b) => a + b, 0) / valid.length : null;
+    }
+
+    function max(values) {
+      const valid = values.filter(Number.isFinite);
+      return valid.length ? Math.max(...valid) : null;
+    }
+
+    function percentile(values, p) {
+      const valid = values.filter(Number.isFinite).sort((a, b) => a - b);
+      if (!valid.length) return null;
+      const idx = Math.min(valid.length - 1, Math.ceil((p / 100) * valid.length) - 1);
+      return valid[idx];
+    }
+
+    function fmt(value, suffix = "") {
+      return Number.isFinite(value) ? `${value.toFixed(value >= 100 ? 0 : 1)}${suffix}` : "NA";
+    }
+
+    function duration(run) {
+      const rows = [...run.system, ...run.robot];
+      return max(rows.map(row => num(row, "timestamp_ms"))) ?? 0;
+    }
+
+    function metrics(run) {
+      const cpu = run.system.map(row => num(row, "cpu_total_pct"));
+      const mem = run.system.map(row => num(row, "mem_peak_kib"));
+      const fps = run.robot.map(row => num(row, "fps"));
+      const e2e = run.robot.map(row => num(row, "e2e_ms"));
+      const npu = run.robot.map(row => num(row, "npu_ms"));
+      const safety = max(run.robot.map(row => num(row, "safety_stop_count"))) ?? 0;
+      return {
+        samples: run.system.length + run.robot.length,
+        durationMs: duration(run),
+        cpuAvg: mean(cpu),
+        cpuPeak: max(cpu),
+        memPeakMiB: (max(mem) ?? NaN) / 1024,
+        fpsAvg: mean(fps),
+        fpsMin: percentile(fps, 1),
+        e2eP95: percentile(e2e, 95),
+        e2eP99: percentile(e2e, 99),
+        npuP95: percentile(npu, 95),
+        safety,
+        events: run.events.length,
+        missing: countMissing(run)
+      };
+    }
+
+    function countMissing(run) {
+      return [...run.system, ...run.robot].reduce((sum, row) => {
+        return sum + Object.values(row).filter(value => value === null).length;
+      }, 0);
+    }
+
+    function render() {
+      const starryMetrics = metrics(state.starry);
+      const linuxMetrics = metrics(state.linux);
+      renderKpis(starryMetrics, linuxMetrics);
+      renderCharts();
+      renderTimeline();
+      renderCompare(starryMetrics, linuxMetrics);
+      renderEvents();
+      renderStatus();
+      document.getElementById("scrub").max = Math.max(duration(state.starry), duration(state.linux));
+    }
+
+    function chartDataSets() {
+      return {
+        "cpu-chart": [
+          series(state.starry.system, "timestamp_ms", "cpu_total_pct", COLORS.starry, "StarryOS CPU"),
+          series(state.linux.system, "timestamp_ms", "cpu_total_pct", COLORS.linux, "Linux CPU")
+        ],
+        "mem-chart": [
+          series(state.starry.system.map(row => ({...row, mem_mib: num(row, "mem_used_kib") / 1024})), "timestamp_ms", "mem_mib", COLORS.starry, "StarryOS 内存"),
+          series(state.linux.system.map(row => ({...row, mem_mib: num(row, "mem_used_kib") / 1024})), "timestamp_ms", "mem_mib", COLORS.linux, "Linux 内存")
+        ],
+        "latency-chart": [
+          series(state.starry.robot, "timestamp_ms", "capture_ms", COLORS.green, "摄像头采集"),
+          series(state.starry.robot, "timestamp_ms", "npu_ms", COLORS.teal, "NPU 推理"),
+          series(state.starry.robot, "timestamp_ms", "e2e_ms", COLORS.rose, "端到端")
+        ],
+        "fps-chart": [
+          series(state.starry.robot, "timestamp_ms", "fps", COLORS.starry, "StarryOS 帧率"),
+          series(state.linux.robot, "timestamp_ms", "fps", COLORS.linux, "Linux 帧率")
+        ]
+      };
+    }
+
+    function renderCharts() {
+      const datasets = chartDataSets();
+      Object.entries(datasets).forEach(([canvasId, chartSets]) => drawLine(canvasId, chartSets));
+    }
+
+    function renderKpis(starryMetrics, linuxMetrics) {
+      const fields = [
+        ["平均 FPS", metric => fmt(metric.fpsAvg)],
+        ["端到端 P95", metric => fmt(metric.e2eP95, " ms")],
+        ["端到端 P99", metric => fmt(metric.e2eP99, " ms")],
+        ["NPU P95", metric => fmt(metric.npuP95, " ms")],
+        ["内存峰值", metric => fmt(metric.memPeakMiB, " MiB")],
+        ["事件数", metric => `${metric.events}`]
+      ];
+      const row = (name, metrics, klass) => `
+        <div class="summary-row ${klass}">
+          <div class="summary-label">${name}</div>
+          ${fields.map(([label, getter]) => `
+            <div class="summary-cell"><span>${label}</span><strong>${getter(metrics)}</strong></div>
+          `).join("")}
+        </div>`;
+      document.getElementById("kpis").innerHTML = row("StarryOS", starryMetrics, "starry") + row("Linux", linuxMetrics, "linux");
+    }
+
+    function series(rows, xKey, yKey, color, label) {
+      return {
+        color,
+        label,
+        points: rows.map(row => [num(row, xKey), num(row, yKey)]).filter(([x, y]) => Number.isFinite(x) && Number.isFinite(y))
+      };
+    }
+
+    function drawLine(canvasId, datasets) {
+      const canvas = document.getElementById(canvasId);
+      const ctx = canvas.getContext("2d");
+      const rect = canvas.getBoundingClientRect();
+      const dpr = Math.max(1, window.devicePixelRatio || 1);
+      const width = Math.max(420, Math.round(rect.width || canvas.clientWidth || 720));
+      const height = 280;
+      const targetWidth = Math.round(width * dpr);
+      const targetHeight = Math.round(height * dpr);
+      if (canvas.width !== targetWidth || canvas.height !== targetHeight) {
+        canvas.width = targetWidth;
+        canvas.height = targetHeight;
+      }
+      canvas.style.height = `${height}px`;
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      ctx.clearRect(0, 0, width, height);
+      ctx.fillStyle = "#ffffff";
+      ctx.fillRect(0, 0, width, height);
+      const points = datasets.flatMap(ds => ds.points);
+      if (!points.length) {
+        ctx.fillStyle = "#607080";
+        ctx.fillText("NA", 18, 28);
+        return;
+      }
+      const xs = points.map(p => p[0]);
+      const ys = points.map(p => p[1]);
+      const minX = Math.min(...xs);
+      const maxX = Math.max(...xs);
+      const minY = Math.min(0, ...ys);
+      const maxY = Math.max(...ys) || 1;
+      const pad = {left: 48, right: 18, top: 14, bottom: 34};
+      drawAxes(ctx, width, height, pad, minY, maxY);
+      for (const ds of datasets) {
+        if (!ds.points.length) continue;
+        ctx.strokeStyle = ds.color;
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ds.points.forEach(([x, y], index) => {
+          const px = scale(x, minX, maxX, pad.left, width - pad.right);
+          const py = scale(y, minY, maxY, height - pad.bottom, pad.top);
+          if (index === 0) ctx.moveTo(px, py);
+          else ctx.lineTo(px, py);
+        });
+        ctx.stroke();
+      }
+      drawCurrentPoints(ctx, datasets, width, height, pad, minX, maxX, minY, maxY, canvasId);
+      drawCursor(ctx, width, height, pad, minX, maxX);
+      renderChartMeta(canvasId, datasets);
+    }
+
+    function drawAxes(ctx, width, height, pad, minY, maxY) {
+      ctx.strokeStyle = "#d8dee8";
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(pad.left, pad.top);
+      ctx.lineTo(pad.left, height - pad.bottom);
+      ctx.lineTo(width - pad.right, height - pad.bottom);
+      ctx.stroke();
+      ctx.fillStyle = "#607080";
+      ctx.font = "12px sans-serif";
+      ctx.fillText(fmt(maxY), 6, pad.top + 8);
+      ctx.fillText(fmt(minY), 6, height - pad.bottom);
+    }
+
+    function drawCurrentPoints(ctx, datasets, width, height, pad, minX, maxX, minY, maxY, canvasId) {
+      if (!Number.isFinite(state.currentMs)) return;
+      for (const ds of datasets) {
+        const nearest = nearestPoint(ds.points, state.currentMs);
+        if (!nearest) continue;
+        const [x, y] = nearest;
+        const px = scale(x, minX, maxX, pad.left, width - pad.right);
+        const py = scale(y, minY, maxY, height - pad.bottom, pad.top);
+        ctx.fillStyle = ds.color;
+        ctx.beginPath();
+        ctx.arc(px, py, 4, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
+
+    function renderChartMeta(canvasId, datasets) {
+      const config = CHART_CONFIG[canvasId] || {unit: "", decimals: 1};
+      const legend = document.getElementById(`${canvasId}-legend`);
+      const readout = document.getElementById(`${canvasId}-readout`);
+      if (legend) {
+        legend.innerHTML = datasets.map(ds => `
+          <span><i class="swatch" style="background:${ds.color}"></i>${ds.label}</span>
+        `).join("");
+      }
+      if (readout) {
+        const items = datasets.map(ds => {
+          const nearest = nearestPoint(ds.points, state.currentMs);
+          return nearest ? `${ds.label}: ${formatValue(nearest[1], config)}` : `${ds.label}: NA`;
+        });
+        readout.textContent = `当前 ${(state.currentMs / 1000).toFixed(1)} s | ${items.join(" | ")}`;
+      }
+    }
+
+    function nearestPoint(points, targetMs) {
+      if (!points.length) return null;
+      let best = points[0];
+      let bestDelta = Math.abs(points[0][0] - targetMs);
+      for (const point of points) {
+        const delta = Math.abs(point[0] - targetMs);
+        if (delta < bestDelta) {
+          best = point;
+          bestDelta = delta;
+        }
+      }
+      return best;
+    }
+
+    function formatValue(value, config) {
+      if (!Number.isFinite(value)) return "NA";
+      return `${value.toFixed(config.decimals ?? 1)}${config.unit || ""}`;
+    }
+
+    function drawCursor(ctx, width, height, pad, minX, maxX) {
+      if (!state.currentMs) return;
+      const x = scale(state.currentMs, minX, maxX, pad.left, width - pad.right);
+      ctx.strokeStyle = "#b45309";
+      ctx.setLineDash([4, 4]);
+      ctx.beginPath();
+      ctx.moveTo(x, pad.top);
+      ctx.lineTo(x, height - pad.bottom);
+      ctx.stroke();
+      ctx.setLineDash([]);
+    }
+
+    function scale(value, inMin, inMax, outMin, outMax) {
+      if (inMax === inMin) return outMin;
+      return outMin + ((value - inMin) / (inMax - inMin)) * (outMax - outMin);
+    }
+
+    function renderTimeline() {
+      const rows = state.starry.robot.length ? state.starry.robot : state.linux.robot;
+      const timeline = document.getElementById("timeline");
+      if (!rows.length) {
+        timeline.innerHTML = "";
+        document.getElementById("legend").innerHTML = "";
+        return;
+      }
+      const total = duration({system: [], robot: rows, events: []}) || 1;
+      const segments = [];
+      let prev = rows[0];
+      for (let i = 1; i < rows.length; i++) {
+        if (rows[i].state !== prev.state) {
+          segments.push([prev.state || "unknown", num(prev, "timestamp_ms") || 0, num(rows[i], "timestamp_ms") || 0]);
+          prev = rows[i];
+        }
+      }
+      segments.push([prev.state || "unknown", num(prev, "timestamp_ms") || 0, total]);
+      timeline.innerHTML = segments.map(([name, start, end]) => {
+        const width = Math.max(0.3, ((end - start) / total) * 100);
+        return `<div class="state-segment" title="${name}" style="width:${width}%;background:${COLORS[name] || COLORS.unknown}"></div>`;
+      }).join("");
+      const names = [...new Set(segments.map(s => s[0]))];
+      document.getElementById("legend").innerHTML = names.map(name =>
+        `<span><i class="swatch" style="background:${COLORS[name] || COLORS.unknown}"></i>${name}</span>`
+      ).join("");
+    }
+
+    function renderCompare(starryMetrics, linuxMetrics) {
+      const rows = [
+        ["实验时长", fmt(starryMetrics.durationMs / 1000, " s"), fmt(linuxMetrics.durationMs / 1000, " s")],
+        ["CPU 平均", fmt(starryMetrics.cpuAvg, "%"), fmt(linuxMetrics.cpuAvg, "%")],
+        ["CPU 峰值", fmt(starryMetrics.cpuPeak, "%"), fmt(linuxMetrics.cpuPeak, "%")],
+        ["内存峰值", fmt(starryMetrics.memPeakMiB, " MiB"), fmt(linuxMetrics.memPeakMiB, " MiB")],
+        ["平均 FPS", fmt(starryMetrics.fpsAvg), fmt(linuxMetrics.fpsAvg)],
+        ["FPS P1", fmt(starryMetrics.fpsMin), fmt(linuxMetrics.fpsMin)],
+        ["端到端 P95", fmt(starryMetrics.e2eP95, " ms"), fmt(linuxMetrics.e2eP95, " ms")],
+        ["端到端 P99", fmt(starryMetrics.e2eP99, " ms"), fmt(linuxMetrics.e2eP99, " ms")],
+        ["NPU P95", fmt(starryMetrics.npuP95, " ms"), fmt(linuxMetrics.npuP95, " ms")],
+        ["缺失字段数", starryMetrics.missing, linuxMetrics.missing]
+      ];
+      document.getElementById("compare-table").innerHTML = `
+        <thead><tr><th>指标</th><th>StarryOS</th><th>Linux</th></tr></thead>
+        <tbody>${rows.map(row => `<tr><td>${row[0]}</td><td>${row[1]}</td><td>${row[2]}</td></tr>`).join("")}</tbody>
+      `;
+    }
+
+    function renderEvents() {
+      const rows = [
+        ...state.starry.events.map(event => ({platform: "StarryOS", ...event})),
+        ...state.linux.events.map(event => ({platform: "Linux", ...event}))
+      ].sort((a, b) => (a.timestamp_ms || 0) - (b.timestamp_ms || 0));
+      document.getElementById("events-table").innerHTML = `
+        <thead><tr><th>时间</th><th>平台</th><th>级别</th><th>来源</th><th>事件</th><th>说明</th></tr></thead>
+        <tbody>${rows.map(event => `
+          <tr>
+            <td>${fmt((event.timestamp_ms || 0) / 1000, " s")}</td>
+            <td>${event.platform || ""}</td>
+            <td>${event.level || ""}</td>
+            <td>${event.source || ""}</td>
+            <td>${event.event || ""}</td>
+            <td>${event.message || ""}</td>
+          </tr>
+        `).join("")}</tbody>
+      `;
+    }
+
+    function renderStatus() {
+      const errors = [...state.starry.errors, ...state.linux.errors];
+      const loaded = [
+        `StarryOS 系统 ${state.starry.system.length}`,
+        `StarryOS 机器人 ${state.starry.robot.length}`,
+        `StarryOS 事件 ${state.starry.events.length}`,
+        `Linux 系统 ${state.linux.system.length}`,
+        `Linux 机器人 ${state.linux.robot.length}`,
+        `Linux 事件 ${state.linux.events.length}`
+      ].join(" | ");
+      document.getElementById("status").textContent = errors.length ? `${loaded} | 解析错误：${errors.join("; ")}` : loaded;
+    }
+
+    function download(filename, mime, content) {
+      const url = URL.createObjectURL(new Blob([content], {type: mime}));
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = filename;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(url);
+    }
+
+    function makeReportBody(starryMetrics, linuxMetrics) {
+      return `
+        <h1>离线监测分析报告</h1>
+        <div class="report-grid">
+          <div class="report-card"><strong>StarryOS</strong><br>FPS ${fmt(starryMetrics.fpsAvg)} | E2E P95 ${fmt(starryMetrics.e2eP95, " ms")} | NPU P95 ${fmt(starryMetrics.npuP95, " ms")} | CPU 峰值 ${fmt(starryMetrics.cpuPeak, "%")} | 内存峰值 ${fmt(starryMetrics.memPeakMiB, " MiB")}</div>
+          <div class="report-card"><strong>Linux</strong><br>FPS ${fmt(linuxMetrics.fpsAvg)} | E2E P95 ${fmt(linuxMetrics.e2eP95, " ms")} | NPU P95 ${fmt(linuxMetrics.npuP95, " ms")} | CPU 峰值 ${fmt(linuxMetrics.cpuPeak, "%")} | 内存峰值 ${fmt(linuxMetrics.memPeakMiB, " MiB")}</div>
+        </div>
+        <h2>CPU 总占用</h2><img alt="CPU 总占用" src="${document.getElementById("cpu-chart").toDataURL("image/png")}">
+        <h2>内存已用</h2><img alt="内存已用" src="${document.getElementById("mem-chart").toDataURL("image/png")}">
+        <h2>AI 推理链路</h2><img alt="AI 推理链路" src="${document.getElementById("latency-chart").toDataURL("image/png")}">
+        <h2>帧率</h2><img alt="帧率" src="${document.getElementById("fps-chart").toDataURL("image/png")}">
+        <h2>Linux 与 StarryOS 对比</h2>${document.getElementById("compare-table").outerHTML}
+        <h2>异常与事件</h2>${document.getElementById("events-table").outerHTML}
+      `;
+    }
+
+    function makeReportHtml() {
+      const starryMetrics = metrics(state.starry);
+      const linuxMetrics = metrics(state.linux);
+      const data = JSON.stringify({starry: state.starry, linux: state.linux}).replace(/<\/script/gi, "<\\/script");
+      const dataScript = '<script type="application/json" id="offline-monitor-data">' + data + '</' + 'script>';
+      return `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><title>离线监测分析报告</title>
+        <style>
+          body{font-family:system-ui,sans-serif;margin:24px;color:#17202a;background:#f8fafc}
+          h1{font-size:26px} h2{font-size:18px;margin-top:24px}
+          table{border-collapse:collapse;width:100%;font-size:13px;background:#fff}
+          td,th{border:1px solid #d8dee8;padding:6px;text-align:left}
+          img{max-width:100%;border:1px solid #d8dee8;border-radius:6px;background:#fff}
+          .report-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;margin:12px 0 20px}
+          .report-card{border:1px solid #d8dee8;border-radius:8px;padding:12px;background:#fff}
+        </style>
+        </head><body>${makeReportBody(starryMetrics, linuxMetrics)}${dataScript}</body></html>`;
+    }
+
+    function downloadReport() {
+      download("offline-monitor-analysis.html", "text/html", makeReportHtml());
+    }
+
+    function tick() {
+      const maxMs = Number(document.getElementById("scrub").max || 0);
+      state.currentMs = Math.min(maxMs, state.currentMs + 500);
+      document.getElementById("scrub").value = state.currentMs;
+      document.getElementById("clock").textContent = `${(state.currentMs / 1000).toFixed(1)} s`;
+      renderCharts();
+      if (state.currentMs >= maxMs) {
+        clearInterval(state.timer);
+        state.timer = null;
+        document.getElementById("play").textContent = "播放";
+      }
+    }
+
+    document.getElementById("load").addEventListener("click", loadAll);
+    document.getElementById("clear").addEventListener("click", () => {
+      for (const input of document.querySelectorAll("input[type=file]")) input.value = "";
+      state.starry = emptyRun("StarryOS");
+      state.linux = emptyRun("Linux");
+      state.currentMs = 0;
+      render();
+    });
+    document.getElementById("download-report").addEventListener("click", downloadReport);
+    document.getElementById("play").addEventListener("click", () => {
+      if (state.timer) {
+        clearInterval(state.timer);
+        state.timer = null;
+        document.getElementById("play").textContent = "播放";
+      } else {
+        document.getElementById("play").textContent = "暂停";
+        state.timer = setInterval(tick, 250);
+      }
+    });
+    document.getElementById("scrub").addEventListener("input", event => {
+      state.currentMs = Number(event.target.value);
+      document.getElementById("clock").textContent = `${(state.currentMs / 1000).toFixed(1)} s`;
+      tick();
+    });
+    render();
+  </script>
+</body>
+</html>

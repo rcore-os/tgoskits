@@ -33,6 +33,21 @@ Example:
 cargo xtask starry app board -t orangepi-5-plus-uvc
 ```
 
+## Resource Monitor
+
+The `resource-monitor` case provides an offline user-space collector and a static
+viewer for StarryOS application experiments. It samples existing `/proc` files
+into CSV/JSONL logs and replays StarryOS/Linux runs locally in the browser; it
+does not add kernel counters, drivers, online telemetry, or robot workload
+control.
+
+```bash
+cd apps/starry/resource-monitor/offline-viewer
+python3 -m http.server 8000
+```
+
+See `resource-monitor/README.md` for the QEMU smoke test and log format.
+
 ## PicoClaw CLI
 
 The `picoclaw-cli` case is an opt-in StarryOS x86_64 QEMU workflow for checking

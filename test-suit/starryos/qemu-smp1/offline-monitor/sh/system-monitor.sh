@@ -1,0 +1,1 @@
+../../../../../apps/starry/resource-monitor/system-monitor.sh
