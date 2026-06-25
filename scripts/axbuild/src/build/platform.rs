@@ -340,10 +340,7 @@ pub(super) fn ax_hal_platform_feature_name<'a>(
 }
 
 pub(super) fn is_known_ax_hal_platform_feature(platform: &str) -> bool {
-    matches!(
-        platform,
-        "riscv64-sg2002" | "riscv64-visionfive2" | "loongarch64-qemu-virt"
-    )
+    matches!(platform, "riscv64-sg2002" | "loongarch64-qemu-virt")
 }
 
 pub(super) fn has_ax_hal_platform_feature(
