@@ -2,15 +2,16 @@
 //!
 //! The reusable stack is intentionally split by synchronization ownership:
 //! raw UART drivers expose only register-level operations, `TxQueue` and
-//! `RxQueue` own independent lock-free software queues, and `SerialIrqHandler`
-//! is the only endpoint allowed to touch runtime UART registers.
+//! `RxQueue` own independent lock-free software queues, `SerialPort` owns the
+//! task/worker control path, and `SerialIrqHandler` is the IRQ-only endpoint.
 //!
-//! OS glue must route the hardware IRQ and software TX kick to the handler's
-//! owner CPU and pass an `OwnerLease`. Task or worker context drains `RxItem`s
-//! and enqueues TX bytes, but never polls the shared UART IRQ/status register
-//! to rediscover readiness. This keeps the fast path bounded and leaves wakeups,
-//! wait queues, poll sets, and line discipline processing to OS-specific layers
-//! above this crate.
+//! OS glue must route hardware IRQs and control/service calls to the configured
+//! owner CPU and pass an `OwnerLease`. Task context drains `RxItem`s and
+//! enqueues TX bytes through the queues, while worker context uses `SerialPort`
+//! for bounded soft service. Neither TX nor RX queues poll the shared UART
+//! IRQ/status register to rediscover readiness. This keeps the fast path bounded
+//! and leaves wakeups, wait queues, poll sets, and line discipline processing to
+//! OS-specific layers above this crate.
 
 #![no_std]
 

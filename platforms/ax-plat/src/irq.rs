@@ -4,9 +4,9 @@ use core::sync::atomic::{AtomicUsize, Ordering};
 
 use ax_kernel_guard::BaseGuard;
 pub use irq_framework::{
-    AutoEnable, CpuId, CpuMask, IrqAffinity, IrqContext, IrqError, IrqExecution, IrqHandle,
-    IrqNumber, IrqOps, IrqOutcome, IrqRequest, IrqReturn, IrqScope, IrqStatus, RawIrqHandler,
-    Registry, ShareMode,
+    AutoEnable, BoxedIrqHandler, CpuId, CpuMask, IrqAffinity, IrqContext, IrqError, IrqExecution,
+    IrqHandle, IrqNumber, IrqOps, IrqOutcome, IrqRequest, IrqReturn, IrqScope, IrqStatus,
+    RawIrqHandler, Registry, ShareMode,
 };
 use spin::Once;
 
@@ -146,6 +146,22 @@ pub fn request_shared_irq(
     request_irq(
         irq,
         IrqRequest::new(handler, data).share_mode(ShareMode::Shared),
+    )
+}
+
+/// Requests a boxed IRQ action.
+pub fn request_boxed_irq(irq: usize, request: IrqRequest) -> Result<IrqHandle, IrqError> {
+    request_irq(irq, request)
+}
+
+/// Requests a boxed shared IRQ action.
+pub fn request_boxed_shared_irq(
+    irq: usize,
+    handler: BoxedIrqHandler,
+) -> Result<IrqHandle, IrqError> {
+    request_irq(
+        irq,
+        IrqRequest::new_boxed(handler).share_mode(ShareMode::Shared),
     )
 }
 

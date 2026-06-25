@@ -698,9 +698,7 @@ mod tests {
     use core::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
     use std::sync::{Mutex, MutexGuard};
 
-    use rdif_serial::{
-        OwnerId, OwnerLease, RxItem, SerialIrqHandler, SerialParts, TSerialIrqHandler,
-    };
+    use rdif_serial::{OwnerId, OwnerLease, RxItem, SerialParts, SerialPort};
 
     use super::*;
 
@@ -822,8 +820,8 @@ mod tests {
     }
 
     fn started_parts(uart: Ns16550<MockKind>) -> SerialParts<64, 64> {
-        let parts = SerialIrqHandler::<64, 64>::split(uart, OwnerId(0));
-        parts.irq.startup(owner_lease(), &Config::new()).unwrap();
+        let parts = SerialPort::<64, 64>::split(uart, OwnerId(0));
+        parts.port.startup(owner_lease(), &Config::new()).unwrap();
         parts
     }
 
@@ -967,7 +965,7 @@ mod tests {
         let parts = started_parts(uart);
         let mut tx = parts.tx;
         let mut rx_queue = parts.rx;
-        let irq = parts.irq;
+        let mut irq = parts.irq;
         assert_eq!(tx.submit(b"ab").accepted, 2);
 
         REGS[UART_IIR as usize].store(
@@ -1009,7 +1007,7 @@ mod tests {
         let (_guard, uart) = serial();
         let parts = started_parts(uart);
         let mut tx = parts.tx;
-        let irq = parts.irq;
+        let mut irq = parts.irq;
         assert_eq!(tx.submit(b"x").accepted, 1);
         REGS[UART_IIR as usize].store(
             InterruptIdentificationFlags::NO_INTERRUPT_PENDING.bits(),
@@ -1063,7 +1061,7 @@ mod tests {
     fn hard_irq_claims_and_clears_modem_status_interrupt() {
         let (_guard, uart) = serial();
         let parts = started_parts(uart);
-        let irq = parts.irq;
+        let mut irq = parts.irq;
 
         REGS[UART_IIR as usize].store(
             InterruptIdentificationFlags::MODEM_STATUS.bits()
@@ -1091,7 +1089,7 @@ mod tests {
         let (_guard, uart) = serial();
         let parts = started_parts(uart);
         let mut rx_queue = parts.rx;
-        let irq = parts.irq;
+        let mut irq = parts.irq;
 
         REGS[UART_IIR as usize].store(
             InterruptIdentificationFlags::RECEIVED_DATA_AVAILABLE.bits(),
@@ -1120,7 +1118,7 @@ mod tests {
         let (_guard, uart) = serial();
         let parts = started_parts(uart);
         let mut tx = parts.tx;
-        let irq = parts.irq;
+        let mut irq = parts.irq;
 
         assert_eq!(tx.submit(b"ab").accepted, 2);
         assert_eq!(tx.chars_in_buffer(), 2);
@@ -1146,7 +1144,7 @@ mod tests {
         let (_guard, uart) = serial();
         let parts = started_parts(uart);
         let mut rx_queue = parts.rx;
-        let irq = parts.irq;
+        let mut irq = parts.irq;
 
         REGS[UART_IIR as usize].store(
             InterruptIdentificationFlags::RECEIVER_LINE_STATUS.bits(),
@@ -1178,7 +1176,7 @@ mod tests {
         let (_guard, uart) = serial();
         let parts = started_parts(uart);
         let mut rx_queue = parts.rx;
-        let irq = parts.irq;
+        let mut irq = parts.irq;
 
         REGS[UART_IIR as usize].store(
             InterruptIdentificationFlags::RECEIVER_LINE_STATUS.bits(),

@@ -259,18 +259,21 @@ bitflags::bitflags! {
     }
 }
 
-pub trait TSerialIrqHandler: Send + Sync + 'static {
-    fn owner(&self) -> OwnerId;
-    fn handle(&self, lease: OwnerLease<'_>) -> SerialIrqOutcome;
-    fn service(&self, lease: OwnerLease<'_>, work: SerialSoftWork) -> SerialIrqOutcome;
-}
-
 type DynRawUart = Box<dyn RawUart>;
 
 pub struct SerialParts<const TX: usize = DEFAULT_TX_CAP, const RX: usize = DEFAULT_RX_CAP> {
+    pub port: Arc<SerialPort<TX, RX>>,
     pub tx: TxQueue<TX>,
     pub rx: RxQueue<RX>,
-    pub irq: Arc<SerialIrqHandler<TX, RX>>,
+    pub irq: SerialIrqHandler<TX, RX>,
+}
+
+pub struct SerialPort<const TX: usize = DEFAULT_TX_CAP, const RX: usize = DEFAULT_RX_CAP> {
+    owner: OwnerId,
+    core: Arc<OwnerCell<CoreInner<DynRawUart>>>,
+    tx: Arc<TxState<TX>>,
+    rx: Arc<RxState<RX>>,
+    counters: Arc<SerialCountersAtomic>,
 }
 
 pub struct SerialIrqHandler<const TX: usize = DEFAULT_TX_CAP, const RX: usize = DEFAULT_RX_CAP> {
@@ -281,7 +284,7 @@ pub struct SerialIrqHandler<const TX: usize = DEFAULT_TX_CAP, const RX: usize = 
     counters: Arc<SerialCountersAtomic>,
 }
 
-impl<const TX: usize, const RX: usize> SerialIrqHandler<TX, RX> {
+impl<const TX: usize, const RX: usize> SerialPort<TX, RX> {
     pub fn split(raw: impl RawUart, owner: OwnerId) -> SerialParts<TX, RX> {
         Self::split_boxed(Box::new(raw), owner)
     }
@@ -291,14 +294,22 @@ impl<const TX: usize, const RX: usize> SerialIrqHandler<TX, RX> {
         let tx = Arc::new(TxState::new());
         let rx = Arc::new(RxState::new());
         let counters = Arc::new(SerialCountersAtomic::new());
-        let irq = Arc::new(Self {
+        let port = Arc::new(Self {
             owner,
-            core,
+            core: core.clone(),
+            tx: tx.clone(),
+            rx: rx.clone(),
+            counters: counters.clone(),
+        });
+        let irq = SerialIrqHandler {
+            owner,
+            core: core.clone(),
             tx: tx.clone(),
             rx: rx.clone(),
             counters,
-        });
+        };
         SerialParts {
+            port,
             tx: TxQueue {
                 state: tx,
                 _single_producer: PhantomData,
@@ -309,6 +320,10 @@ impl<const TX: usize, const RX: usize> SerialIrqHandler<TX, RX> {
             },
             irq,
         }
+    }
+
+    pub fn owner(&self) -> OwnerId {
+        self.owner
     }
 
     pub fn startup(
@@ -380,6 +395,22 @@ impl<const TX: usize, const RX: usize> SerialIrqHandler<TX, RX> {
     fn assert_owner(&self, lease: &OwnerLease<'_>) {
         assert_eq!(lease.owner(), self.owner);
     }
+}
+
+impl<const TX: usize, const RX: usize> SerialIrqHandler<TX, RX> {
+    pub fn owner(&self) -> OwnerId {
+        self.owner
+    }
+
+    pub fn handle(&mut self, mut lease: OwnerLease<'_>) -> SerialIrqOutcome {
+        self.assert_owner(&lease);
+        let mut core = unsafe { self.core.access(&mut lease) };
+        self.handle_locked(&mut core)
+    }
+
+    fn assert_owner(&self, lease: &OwnerLease<'_>) {
+        assert_eq!(lease.owner(), self.owner);
+    }
 
     fn handle_locked(&self, core: &mut CoreInner<DynRawUart>) -> SerialIrqOutcome {
         let mut out = SerialIrqOutcome::default();
@@ -435,6 +466,104 @@ impl<const TX: usize, const RX: usize> SerialIrqHandler<TX, RX> {
         out
     }
 
+    fn service_rx(&self, core: &mut CoreInner<DynRawUart>, budget: usize) -> RxService {
+        let mut result = RxService::default();
+        for _ in 0..budget {
+            let Some(sample) = core.raw.read_rx() else {
+                break;
+            };
+            result.consumed += 1;
+
+            match sample.flag {
+                RxFlag::Normal => {}
+                RxFlag::Break => {
+                    self.counters.rx_breaks.fetch_add(1, Ordering::Relaxed);
+                }
+                RxFlag::Parity => {
+                    self.counters
+                        .rx_parity_errors
+                        .fetch_add(1, Ordering::Relaxed);
+                }
+                RxFlag::Framing => {
+                    self.counters
+                        .rx_framing_errors
+                        .fetch_add(1, Ordering::Relaxed);
+                }
+            };
+
+            if let Some(byte) = sample.byte {
+                self.counters.rx_bytes.fetch_add(1, Ordering::Relaxed);
+                if self.rx.push_from_owner(RxItem::Byte {
+                    byte,
+                    flag: sample.flag,
+                }) {
+                    result.published += 1;
+                } else {
+                    self.counters
+                        .rx_queue_dropped
+                        .fetch_add(1, Ordering::Relaxed);
+                }
+            }
+
+            if sample.overrun {
+                self.rx.overrun.fetch_add(1, Ordering::Relaxed);
+                self.counters
+                    .rx_fifo_overruns
+                    .fetch_add(1, Ordering::Relaxed);
+                if self.rx.push_from_owner(RxItem::Overrun) {
+                    result.published += 1;
+                } else {
+                    self.counters
+                        .rx_queue_dropped
+                        .fetch_add(1, Ordering::Relaxed);
+                }
+            }
+        }
+        result
+    }
+
+    fn service_tx(
+        &self,
+        core: &mut CoreInner<DynRawUart>,
+        budget: usize,
+        out: &mut SerialIrqOutcome,
+    ) -> usize {
+        let limit = budget;
+        let mut sent = 0;
+        while sent < limit && core.raw.tx_ready() {
+            let Some(byte) = self.tx.ring.peek_copy() else {
+                break;
+            };
+            core.raw.write_tx(byte);
+            let committed = self.tx.ring.pop();
+            debug_assert_eq!(committed, Some(byte));
+            self.tx.sent.fetch_add(1, Ordering::Relaxed);
+            self.counters.tx_bytes.fetch_add(1, Ordering::Relaxed);
+            sent += 1;
+        }
+
+        if self.tx.ring.is_empty() {
+            if core.tx_irq_enabled {
+                core.irq_mask.remove(InterruptMask::TX_SPACE);
+                core.raw.set_irq_mask(core.irq_mask);
+                core.tx_irq_enabled = false;
+            }
+        } else if !core.tx_irq_enabled {
+            core.irq_mask.insert(InterruptMask::TX_SPACE);
+            core.raw.set_irq_mask(core.irq_mask);
+            core.tx_irq_enabled = true;
+        }
+
+        if sent > 0 {
+            self.tx.blocked.store(false, Ordering::Release);
+            out.tx_wakeup = true;
+        }
+        out.tx_sent += sent;
+        sent
+    }
+}
+
+impl<const TX: usize, const RX: usize> SerialPort<TX, RX> {
     fn service_soft_locked(
         &self,
         core: &mut CoreInner<DynRawUart>,
@@ -551,20 +680,8 @@ impl<const TX: usize, const RX: usize> SerialIrqHandler<TX, RX> {
         out.tx_sent += sent;
         sent
     }
-}
 
-impl<const TX: usize, const RX: usize> TSerialIrqHandler for SerialIrqHandler<TX, RX> {
-    fn owner(&self) -> OwnerId {
-        self.owner
-    }
-
-    fn handle(&self, mut lease: OwnerLease<'_>) -> SerialIrqOutcome {
-        self.assert_owner(&lease);
-        let mut core = unsafe { self.core.access(&mut lease) };
-        self.handle_locked(&mut core)
-    }
-
-    fn service(&self, mut lease: OwnerLease<'_>, work: SerialSoftWork) -> SerialIrqOutcome {
+    pub fn service(&self, mut lease: OwnerLease<'_>, work: SerialSoftWork) -> SerialIrqOutcome {
         self.assert_owner(&lease);
         let mut core = unsafe { self.core.access(&mut lease) };
         self.service_soft_locked(&mut core, work)
@@ -756,7 +873,7 @@ mod tests {
 
     #[test]
     fn tx_queue_only_submits_software_work() {
-        let parts = SerialIrqHandler::<8, 8>::split(MockUart::new(), OwnerId(0));
+        let parts = SerialPort::<8, 8>::split(MockUart::new(), OwnerId(0));
         let mut tx = parts.tx;
 
         let submit = tx.submit(b"abc");
@@ -768,8 +885,9 @@ mod tests {
 
     #[test]
     fn split_erases_raw_type_and_keeps_capacity_generics() {
-        let parts: SerialParts<8, 8> = SerialIrqHandler::split(MockUart::new(), OwnerId(0));
+        let parts: SerialParts<8, 8> = SerialPort::split(MockUart::new(), OwnerId(0));
 
+        assert_eq!(parts.port.owner(), OwnerId(0));
         assert_eq!(parts.irq.owner(), OwnerId(0));
         assert_eq!(parts.tx.write_room(), 7);
         assert!(!parts.rx.rx_pending());
@@ -779,12 +897,12 @@ mod tests {
     fn owner_service_flushes_tx_queue() {
         let mut uart = MockUart::new();
         uart.tx_ready_budget = 3;
-        let parts = SerialIrqHandler::<8, 8>::split(uart, OwnerId(0));
+        let parts = SerialPort::<8, 8>::split(uart, OwnerId(0));
         let mut tx = parts.tx;
         tx.submit(b"abc");
-        parts.irq.startup(lease(), &Config::new()).unwrap();
+        parts.port.startup(lease(), &Config::new()).unwrap();
 
-        let outcome = parts.irq.service(lease(), SerialSoftWork::TX_KICK);
+        let outcome = parts.port.service(lease(), SerialSoftWork::TX_KICK);
 
         assert_eq!(outcome.tx_sent, 3);
         assert!(outcome.tx_wakeup);
@@ -795,12 +913,12 @@ mod tests {
     fn tx_kick_wakes_again_when_queue_still_has_data() {
         let mut uart = MockUart::new();
         uart.tx_ready_budget = 1;
-        let parts = SerialIrqHandler::<8, 8>::split(uart, OwnerId(0));
+        let parts = SerialPort::<8, 8>::split(uart, OwnerId(0));
         let mut tx = parts.tx;
         tx.submit(b"abc");
-        parts.irq.startup(lease(), &Config::new()).unwrap();
+        parts.port.startup(lease(), &Config::new()).unwrap();
 
-        let outcome = parts.irq.service(lease(), SerialSoftWork::TX_KICK);
+        let outcome = parts.port.service(lease(), SerialSoftWork::TX_KICK);
 
         assert_eq!(outcome.tx_sent, 1);
         assert!(outcome.tx_wakeup);
@@ -812,13 +930,13 @@ mod tests {
         let mut uart = MockUart::new();
         uart.tx_ready_budget = TX_KICK_BUDGET + 8;
         uart.tx_load_size = 1;
-        let parts = SerialIrqHandler::<64, 8>::split(uart, OwnerId(0));
+        let parts = SerialPort::<64, 8>::split(uart, OwnerId(0));
         let mut tx = parts.tx;
         let data = [b'x'; TX_KICK_BUDGET + 8];
         tx.submit(&data);
-        parts.irq.startup(lease(), &Config::new()).unwrap();
+        parts.port.startup(lease(), &Config::new()).unwrap();
 
-        let outcome = parts.irq.service(lease(), SerialSoftWork::TX_KICK);
+        let outcome = parts.port.service(lease(), SerialSoftWork::TX_KICK);
 
         assert_eq!(outcome.tx_sent, TX_KICK_BUDGET);
         assert!(outcome.tx_wakeup);
@@ -831,10 +949,11 @@ mod tests {
             .irq(IrqSource::RX_DATA)
             .rx_byte(b'A')
             .rx_byte(b'B');
-        let parts = SerialIrqHandler::<8, 8>::split(uart, OwnerId(0));
-        parts.irq.startup(lease(), &Config::new()).unwrap();
+        let parts = SerialPort::<8, 8>::split(uart, OwnerId(0));
+        parts.port.startup(lease(), &Config::new()).unwrap();
 
-        let outcome = parts.irq.handle(lease());
+        let mut irq = parts.irq;
+        let outcome = irq.handle(lease());
 
         assert!(outcome.claimed);
         assert_eq!(outcome.rx_pushed, 2);
@@ -863,10 +982,11 @@ mod tests {
         for &byte in burst {
             uart = uart.rx_byte(byte);
         }
-        let parts = SerialIrqHandler::<8, 128>::split(uart, OwnerId(0));
-        parts.irq.startup(lease(), &Config::new()).unwrap();
+        let parts = SerialPort::<8, 128>::split(uart, OwnerId(0));
+        parts.port.startup(lease(), &Config::new()).unwrap();
 
-        let outcome = parts.irq.handle(lease());
+        let mut irq = parts.irq;
+        let outcome = irq.handle(lease());
 
         assert!(outcome.claimed);
         assert_eq!(outcome.rx_pushed, burst.len());
@@ -892,10 +1012,11 @@ mod tests {
             flag: RxFlag::Parity,
             overrun: true,
         });
-        let parts = SerialIrqHandler::<8, 8>::split(uart, OwnerId(0));
-        parts.irq.startup(lease(), &Config::new()).unwrap();
+        let parts = SerialPort::<8, 8>::split(uart, OwnerId(0));
+        parts.port.startup(lease(), &Config::new()).unwrap();
 
-        let outcome = parts.irq.handle(lease());
+        let mut irq = parts.irq;
+        let outcome = irq.handle(lease());
 
         assert!(outcome.claimed);
         assert_eq!(outcome.rx_pushed, 2);

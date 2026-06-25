@@ -1,18 +1,15 @@
-use alloc::{format, string::String, sync::Arc, vec, vec::Vec};
-use core::{
-    ptr::NonNull,
-    sync::atomic::{AtomicBool, AtomicU32, Ordering},
-};
+use alloc::{boxed::Box, format, string::String, sync::Arc, vec, vec::Vec};
+use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 use ax_driver::serial::{
-    self as ax_serial, Config, RxFlag, RxItem, SerialDevice, SerialIrqOutcome, SerialPort,
-    SerialSoftWork,
+    self as ax_serial, Config, ConfigError, OwnerId, RxFlag, RxItem, RxQueue, SerialDevice,
+    SerialIrqHandler, SerialIrqOutcome, SerialPort, SerialSoftWork, TxQueue,
 };
 use ax_errno::{AxError, AxResult};
 use ax_kspin::SpinNoIrq;
 use ax_runtime::hal::{
     console::{ConsoleDeviceIdError, ConsoleDeviceIdResult},
-    irq::{AutoEnable, CpuId, IrqAffinity, IrqExecution, IrqHandle, IrqRequest, ShareMode},
+    irq::{AutoEnable, CpuId, IrqAffinity, IrqHandle, IrqRequest, ShareMode},
 };
 use ax_sync::Mutex;
 use ax_task::IrqNotify;
@@ -73,7 +70,10 @@ struct SerialBackend {
     tty_name: String,
     rdrive_device_id: RDriveDeviceId,
     number: usize,
-    port: SerialPort,
+    owner: OwnerId,
+    port: Arc<SerialPort>,
+    tx: SpinNoIrq<TxQueue>,
+    rx: SpinNoIrq<RxQueue>,
     irq_num: usize,
     irq_handle: SpinNoIrq<Option<IrqHandle>>,
     started: AtomicBool,
@@ -222,7 +222,7 @@ impl SerialRegistry {
         let numbers = assign_tty_numbers(
             serials
                 .iter()
-                .map(|serial| serial.alias_index())
+                .map(|serial| serial.info.alias_index)
                 .collect::<Vec<_>>()
                 .as_slice(),
         );
@@ -232,8 +232,7 @@ impl SerialRegistry {
             let Some(number) = number else {
                 warn!(
                     "Skipping serial device {} at {} because ttyS number could not be assigned",
-                    serial.name(),
-                    serial.fdt_path()
+                    serial.name, serial.info.fdt_path
                 );
                 continue;
             };
@@ -278,19 +277,29 @@ impl SerialRegistry {
 
 fn new_serial_tty(number: usize, serial: SerialDevice) -> AxResult<SerialTtyEntry> {
     let tty_name = format!("ttyS{number}");
-    let name = serial.name().into();
-    let info = serial.info().clone();
-    let rdrive_device_id = serial.rdrive_device_id();
-    let Some(irq_num) = serial.irq_num() else {
+    let SerialDevice {
+        name,
+        rdrive_device_id,
+        info,
+        runtime,
+    } = serial;
+    let Some(irq_num) = info.irq_num else {
         return Err(AxError::Unsupported);
     };
-    let port = serial.into_port();
+    let port = runtime.port;
+    let tx = runtime.tx;
+    let rx = runtime.rx;
+    let irq = runtime.irq;
+    let owner = port.owner();
     let backend = Arc::new(SerialBackend {
         name,
         tty_name: tty_name.clone(),
         rdrive_device_id,
         number,
+        owner,
         port,
+        tx: SpinNoIrq::new(tx),
+        rx: SpinNoIrq::new(rx),
         irq_num,
         irq_handle: SpinNoIrq::new(None),
         started: AtomicBool::new(false),
@@ -302,7 +311,7 @@ fn new_serial_tty(number: usize, serial: SerialDevice) -> AxResult<SerialTtyEntr
         output_lock: Mutex::new(()),
     });
 
-    backend.register_irq()?;
+    backend.register_irq(irq)?;
     spawn_serial_event_worker(backend.clone());
 
     let terminal = Arc::new(Terminal::default());
@@ -332,22 +341,29 @@ fn new_serial_tty(number: usize, serial: SerialDevice) -> AxResult<SerialTtyEntr
 }
 
 impl SerialBackend {
-    fn register_irq(self: &Arc<Self>) -> AxResult<()> {
-        let data = NonNull::new(Arc::into_raw(self.clone()) as *mut ()).unwrap();
-        let request = IrqRequest::new(serial_raw_irq_handler, data)
-            .share_mode(ShareMode::Shared)
-            .affinity(IrqAffinity::Fixed(CpuId(self.port.owner_cpu())))
-            .execution(IrqExecution::NonReentrant)
-            .auto_enable(AutoEnable::No);
+    fn register_irq(self: &Arc<Self>, mut irq: SerialIrqHandler) -> AxResult<()> {
+        let backend = self.clone();
+        let request = IrqRequest::new_boxed(Box::new(move |ctx| {
+            let outcome = backend.handle_irq_on_owner(ctx.cpu, &mut irq);
+            if !outcome.claimed {
+                return ax_runtime::hal::irq::IrqReturn::Unhandled;
+            }
+            let events = publish_serial_outcome(&backend, outcome, true);
+            if events.is_empty() {
+                ax_runtime::hal::irq::IrqReturn::Handled
+            } else {
+                ax_runtime::hal::irq::IrqReturn::Wake
+            }
+        }))
+        .share_mode(ShareMode::Shared)
+        .affinity(IrqAffinity::Fixed(CpuId(self.owner.0)))
+        .auto_enable(AutoEnable::No);
         match ax_runtime::hal::irq::request_irq(self.irq_num, request) {
             Ok(handle) => {
                 *self.irq_handle.lock() = Some(handle);
                 Ok(())
             }
             Err(err) => {
-                unsafe {
-                    Arc::decrement_strong_count(data.as_ptr() as *const SerialBackend);
-                }
                 warn!(
                     "Failed to register {} IRQ handler for irq {}: {err:?}",
                     self.tty_name, self.irq_num
@@ -370,9 +386,8 @@ impl SerialBackend {
             return false;
         };
 
-        if let Err(err) = self
-            .port
-            .startup(&Config::new().baudrate(startup_baudrate(self.port.baudrate())))
+        if let Err(err) =
+            self.startup_port(&Config::new().baudrate(startup_baudrate(self.baudrate())))
         {
             warn!(
                 "{} failed to start serial port {}: {:?}",
@@ -382,7 +397,7 @@ impl SerialBackend {
         }
 
         if let Err(err) = ax_runtime::hal::irq::enable_irq(handle) {
-            let _ = self.port.shutdown();
+            self.shutdown_port();
             warn!(
                 "Failed to enable {} IRQ handler for irq {}: {err:?}",
                 self.tty_name, self.irq_num
@@ -393,7 +408,7 @@ impl SerialBackend {
         self.started.store(true, Ordering::Release);
         publish_serial_outcome(
             self,
-            self.port.service_on_owner(SerialSoftWork::RESERVICE),
+            self.service_on_owner(SerialSoftWork::RESERVICE),
             false,
         );
         self.events.publish(SerialEventBits::RX_READY);
@@ -406,6 +421,50 @@ impl SerialBackend {
         } else {
             Err(AxError::Unsupported)
         }
+    }
+
+    fn startup_port(&self, config: &Config) -> Result<SerialIrqOutcome, ConfigError> {
+        ax_serial::run_on_owner(self.owner, |lease| self.port.startup(lease, config))
+            .map_err(|_| ConfigError::RegisterError)?
+    }
+
+    fn shutdown_port(&self) {
+        let _ = ax_serial::run_on_owner(self.owner, |lease| self.port.shutdown(lease));
+    }
+
+    fn set_port_config(&self, config: &Config) -> Result<(), ConfigError> {
+        ax_serial::run_on_owner(self.owner, |lease| self.port.set_config(lease, config))
+            .map_err(|_| ConfigError::RegisterError)?
+    }
+
+    fn baudrate(&self) -> u32 {
+        ax_serial::run_on_owner(self.owner, |lease| self.port.baudrate(lease)).unwrap_or(0)
+    }
+
+    fn service_on_owner(&self, work: SerialSoftWork) -> SerialIrqOutcome {
+        ax_serial::run_on_owner(self.owner, |lease| self.port.service(lease, work))
+            .unwrap_or_default()
+    }
+
+    fn handle_irq_on_owner(&self, cpu: CpuId, irq: &mut SerialIrqHandler) -> SerialIrqOutcome {
+        let Some(lease) = ax_serial::owner_lease_for_cpu(self.owner, cpu) else {
+            return SerialIrqOutcome::default();
+        };
+        irq.handle(lease)
+    }
+
+    fn submit_tx(&self, bytes: &[u8]) -> (usize, SerialIrqOutcome) {
+        let submit = self.tx.lock().submit(bytes);
+        let outcome = if submit.needs_kick {
+            self.service_on_owner(SerialSoftWork::TX_KICK)
+        } else {
+            SerialIrqOutcome::default()
+        };
+        (submit.accepted, outcome)
+    }
+
+    fn drain_rx(&self, out: &mut [RxItem]) -> usize {
+        self.rx.lock().drain(out)
     }
 }
 
@@ -433,30 +492,13 @@ fn spawn_serial_event_worker(backend: Arc<SerialBackend>) {
                 if pending.contains(SerialEventBits::TX_SPACE) {
                     backend.tx_notify.notify();
                     unsafe { backend.output_source.wake(IoEvents::OUT) };
-                    let outcome = backend.port.service_on_owner(SerialSoftWork::TX_KICK);
+                    let outcome = backend.service_on_owner(SerialSoftWork::TX_KICK);
                     publish_serial_outcome(&backend, outcome, false);
                 }
             }
         },
         task_name,
     );
-}
-
-unsafe fn serial_raw_irq_handler(
-    ctx: ax_runtime::hal::irq::IrqContext,
-    data: NonNull<()>,
-) -> ax_runtime::hal::irq::IrqReturn {
-    let backend = unsafe { &*(data.as_ptr() as *const SerialBackend) };
-    let outcome = backend.port.handle_irq_on_owner(ctx.cpu);
-    if !outcome.claimed {
-        return ax_runtime::hal::irq::IrqReturn::Unhandled;
-    }
-    let events = publish_serial_outcome(backend, outcome, true);
-    if events.is_empty() {
-        ax_runtime::hal::irq::IrqReturn::Handled
-    } else {
-        ax_runtime::hal::irq::IrqReturn::Wake
-    }
 }
 
 fn publish_serial_outcome(
@@ -491,7 +533,7 @@ impl TtyRead for SerialReader {
 
         while total < buf.len() {
             let limit = (buf.len() - total).min(temp.len());
-            let read = self.backend.port.drain_rx(&mut temp[..limit]);
+            let read = self.backend.drain_rx(&mut temp[..limit]);
             if read == 0 {
                 break;
             }
@@ -538,7 +580,7 @@ impl TtyWrite for SerialWriter {
         let _guard = self.backend.output_lock.lock();
         let mut written = 0;
         while written < buf.len() {
-            let (count, outcome) = self.backend.port.submit_tx(&buf[written..]);
+            let (count, outcome) = self.backend.submit_tx(&buf[written..]);
             publish_serial_outcome(&self.backend, outcome, false);
             if count == 0 {
                 self.backend.tx_notify.wait();
@@ -558,7 +600,7 @@ impl TtyWrite for SerialWriter {
         let Some(_guard) = self.backend.output_lock.try_lock() else {
             return 0;
         };
-        let (count, outcome) = self.backend.port.submit_tx(buf);
+        let (count, outcome) = self.backend.submit_tx(buf);
         publish_serial_outcome(&self.backend, outcome, false);
         count
     }
@@ -583,8 +625,7 @@ impl TtyWrite for SerialWriter {
         }
         if let Err(err) = self
             .backend
-            .port
-            .set_config(&Config::new().baudrate(new_baud))
+            .set_port_config(&Config::new().baudrate(new_baud))
         {
             warn!(
                 "{} failed to set baudrate {new_baud} on {}: {:?}",

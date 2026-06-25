@@ -358,6 +358,92 @@ fn irq_request_exposes_auto_enable_mode() {
             .auto_enable_mode(),
         AutoEnable::No
     );
+    assert_eq!(
+        IrqRequest::new_boxed(Box::new(|_| IrqReturn::Handled)).auto_enable_mode(),
+        AutoEnable::Yes
+    );
+}
+
+#[test]
+fn boxed_callback_persists_captured_state() {
+    let registry = Registry::new(MockOps::with_cpus(1));
+    let calls = Arc::new(AtomicUsize::new(0));
+    let callback_calls = calls.clone();
+
+    registry
+        .request(
+            IrqNumber(46),
+            IrqRequest::new_boxed(Box::new(move |ctx| {
+                assert_eq!(ctx.irq, IrqNumber(46));
+                callback_calls.fetch_add(1, Ordering::SeqCst);
+                IrqReturn::Wake
+            })),
+        )
+        .unwrap();
+
+    let first = registry.dispatch(IrqNumber(46), CpuId(0));
+    let second = registry.dispatch(IrqNumber(46), CpuId(0));
+
+    assert!(first.handled);
+    assert!(first.wake);
+    assert_eq!(first.called, 1);
+    assert!(second.handled);
+    assert!(second.wake);
+    assert_eq!(second.called, 1);
+    assert_eq!(calls.load(Ordering::SeqCst), 2);
+}
+
+#[test]
+fn boxed_callback_rejects_concurrent_execution() {
+    let registry = Registry::new(MockOps::with_cpus(1));
+
+    let err = registry
+        .request(
+            IrqNumber(47),
+            IrqRequest::new_boxed(Box::new(|_| IrqReturn::Handled))
+                .execution(IrqExecution::Concurrent),
+        )
+        .unwrap_err();
+
+    assert_eq!(err, IrqError::Busy);
+}
+
+#[test]
+fn boxed_callback_is_non_reentrant() {
+    let registry = Arc::new(Registry::new(MockOps::with_cpus(1)));
+    let entered = Arc::new(Barrier::new(2));
+    let release = Arc::new(Barrier::new(2));
+    let calls = Arc::new(AtomicUsize::new(0));
+    let callback_entered = entered.clone();
+    let callback_release = release.clone();
+    let callback_calls = calls.clone();
+
+    registry
+        .request(
+            IrqNumber(48),
+            IrqRequest::new_boxed(Box::new(move |_| {
+                callback_calls.fetch_add(1, Ordering::SeqCst);
+                callback_entered.wait();
+                callback_release.wait();
+                IrqReturn::Handled
+            })),
+        )
+        .unwrap();
+
+    let dispatch_registry = registry.clone();
+    let dispatch_thread =
+        thread::spawn(move || dispatch_registry.dispatch(IrqNumber(48), CpuId(0)));
+    entered.wait();
+
+    let nested = registry.dispatch(IrqNumber(48), CpuId(0));
+    assert!(!nested.handled);
+    assert_eq!(nested.called, 0);
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+
+    release.wait();
+    let outcome = dispatch_thread.join().unwrap();
+    assert!(outcome.handled);
+    assert_eq!(outcome.called, 1);
 }
 
 #[test]

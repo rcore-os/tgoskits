@@ -45,9 +45,9 @@ use core::{ptr::NonNull, time::Duration};
 pub use ax_errno::{AxError, AxResult};
 pub use ax_memory_addr::{PhysAddr, VirtAddr};
 pub use irq_framework::{
-    AutoEnable as IrqAutoEnable, CpuId as IrqCpuId, CpuMask as IrqCpuMask, IrqAffinity, IrqContext,
-    IrqError, IrqExecution, IrqHandle, IrqNumber, IrqOutcome, IrqRequest, IrqReturn, IrqScope,
-    IrqStatus, RawIrqHandler, ShareMode as IrqShareMode,
+    AutoEnable as IrqAutoEnable, BoxedIrqHandler, CpuId as IrqCpuId, CpuMask as IrqCpuMask,
+    IrqAffinity, IrqContext, IrqError, IrqExecution, IrqHandle, IrqNumber, IrqOutcome, IrqRequest,
+    IrqReturn, IrqScope, IrqStatus, RawIrqHandler, ShareMode as IrqShareMode,
 };
 use trait_ffi::*;
 
@@ -195,7 +195,7 @@ pub mod time {
 /// Convenience re-exports for IRQ operations.
 pub mod irq {
     pub use super::{
-        IrqAffinity, IrqAutoEnable as AutoEnable, IrqContext, IrqCpuId as CpuId,
+        BoxedIrqHandler, IrqAffinity, IrqAutoEnable as AutoEnable, IrqContext, IrqCpuId as CpuId,
         IrqCpuMask as CpuMask, IrqError, IrqExecution, IrqHandle, IrqNumber, IrqOutcome,
         IrqRequest, IrqReturn, IrqScope, IrqShareMode as ShareMode, IrqStatus, RawIrqHandler,
         klib::{

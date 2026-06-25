@@ -4,7 +4,7 @@ use log::info;
 use rdrive::{probe::OnProbeError, register::ProbeFdt};
 use some_serial::pl011;
 
-use super::{PlatformSerialDevice, SerialPort, prop_u32, serial_device_info};
+use super::{PlatformSerialDevice, prop_u32, serial_device_info, serial_runtime};
 
 model_register!(
     name: "PL011 serial",
@@ -31,16 +31,16 @@ fn probe(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
     let mmio_base = crate::mmio::iomap(base_reg.address as usize, mmio_size as usize)?;
     let clock_freq = prop_u32(info.node.as_node(), "clock-frequency").unwrap_or(24_000_000);
     let raw = pl011::Pl011::new(mmio_base, clock_freq);
-    let serial = SerialPort::new(raw);
-    let base = serial.base_addr();
-    let baudrate = serial.baudrate();
+    let serial = serial_runtime(raw);
+    let base = serial.base_addr;
+    let baudrate = serial.baudrate;
     let device_info = serial_device_info(&info, &base_reg, base, baudrate);
 
     info!("PL011 serial@{base:#x} registered successfully");
     plat_dev.register(PlatformSerialDevice::new(
-        serial.name().into(),
+        serial.name.into(),
         device_info,
-        serial,
+        serial.runtime,
     ));
     Ok(())
 }

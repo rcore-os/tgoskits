@@ -1,26 +1,36 @@
 use alloc::{string::String, vec::Vec};
+use core::cell::UnsafeCell;
 
 use ax_errno::AxError;
+use ax_kernel_guard::IrqSave;
+use axklib::irq::{CpuId, IrqError, run_on_cpu_sync};
 use fdt_edit::{Fdt, RegFixed};
 use log::warn;
 pub use rdif_serial::{
-    Config, ConfigError, RxFlag, RxItem, SerialCounters, SerialIrqOutcome, SerialSoftWork,
+    Config, ConfigError, OwnerId, OwnerLease, RawUart, RxFlag, RxItem, RxQueue, SerialCounters,
+    SerialIrqHandler, SerialIrqOutcome, SerialParts, SerialPort, SerialSoftWork, TxQueue,
 };
 use rdrive::{Device, DeviceId, DriverGeneric, probe::acpi::AcpiInfo, register::FdtInfo};
 
 mod ns16550;
 mod pl011;
 mod rockchip_fiq;
-mod runtime;
-
-pub use runtime::SerialPort;
 
 use crate::{BindingInfo, binding_info_from_acpi, binding_info_from_fdt};
+
+pub type SerialRuntime = SerialParts;
+
+struct SerialProbeRuntime {
+    name: &'static str,
+    base_addr: usize,
+    baudrate: u32,
+    runtime: SerialRuntime,
+}
 
 struct PlatformSerialDevice {
     name: String,
     info: SerialDeviceInfo,
-    port: Option<SerialPort>,
+    runtime: Option<SerialRuntime>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -35,18 +45,18 @@ pub struct SerialDeviceInfo {
 }
 
 pub struct SerialDevice {
-    name: String,
-    rdrive_device_id: DeviceId,
-    info: SerialDeviceInfo,
-    port: SerialPort,
+    pub name: String,
+    pub rdrive_device_id: DeviceId,
+    pub info: SerialDeviceInfo,
+    pub runtime: SerialRuntime,
 }
 
 impl PlatformSerialDevice {
-    fn new(name: String, info: SerialDeviceInfo, port: SerialPort) -> Self {
+    fn new(name: String, info: SerialDeviceInfo, runtime: SerialRuntime) -> Self {
         Self {
             name,
             info,
-            port: Some(port),
+            runtime: Some(runtime),
         }
     }
 }
@@ -57,53 +67,16 @@ impl DriverGeneric for PlatformSerialDevice {
     }
 }
 
-impl SerialDevice {
-    pub fn name(&self) -> &str {
-        &self.name
-    }
-
-    pub fn info(&self) -> &SerialDeviceInfo {
-        &self.info
-    }
-
-    pub fn rdrive_device_id(&self) -> DeviceId {
-        self.rdrive_device_id
-    }
-
-    pub fn fdt_path(&self) -> &str {
-        &self.info.fdt_path
-    }
-
-    pub fn alias_index(&self) -> Option<usize> {
-        self.info.alias_index
-    }
-
-    pub fn paddr(&self) -> usize {
-        self.info.paddr
-    }
-
-    pub fn mapped_base(&self) -> usize {
-        self.info.mapped_base
-    }
-
-    pub fn baudrate(&self) -> u32 {
-        self.port.baudrate()
-    }
-
-    pub fn irq_num(&self) -> Option<usize> {
-        self.info.irq_num
-    }
-
-    pub fn set_config(&self, config: &Config) -> Result<(), ConfigError> {
-        self.port.set_config(config)
-    }
-
-    pub fn set_baudrate(&self, baudrate: u32) -> Result<(), ConfigError> {
-        self.port.set_config(&Config::new().baudrate(baudrate))
-    }
-
-    pub fn into_port(self) -> SerialPort {
-        self.port
+fn serial_runtime(raw: impl RawUart) -> SerialProbeRuntime {
+    let name = raw.name();
+    let base_addr = raw.base_addr();
+    let baudrate = raw.baudrate();
+    let runtime = SerialPort::split(raw, OwnerId(0));
+    SerialProbeRuntime {
+        name,
+        base_addr,
+        baudrate,
+        runtime,
     }
 }
 
@@ -115,14 +88,59 @@ impl TryFrom<Device<PlatformSerialDevice>> for SerialDevice {
         let mut dev = base.lock().map_err(|_| AxError::BadState)?;
         let name = dev.name.clone();
         let info = dev.info.clone();
-        let port = dev.port.take().ok_or(AxError::BadState)?;
+        let runtime = dev.runtime.take().ok_or(AxError::BadState)?;
         Ok(Self {
             name,
             rdrive_device_id,
             info,
-            port,
+            runtime,
         })
     }
+}
+
+pub fn run_on_owner<F, R>(owner: OwnerId, op: F) -> Result<R, IrqError>
+where
+    F: FnOnce(OwnerLease<'_>) -> R,
+{
+    struct OwnerCall<F, R> {
+        owner: OwnerId,
+        op: UnsafeCell<Option<F>>,
+        result: UnsafeCell<Option<R>>,
+    }
+
+    unsafe fn thunk<F, R>(arg: *mut ())
+    where
+        F: FnOnce(OwnerLease<'_>) -> R,
+    {
+        let call = unsafe { &*(arg as *const OwnerCall<F, R>) };
+        let op = unsafe { &mut *call.op.get() }
+            .take()
+            .expect("serial owner call entered twice");
+        let _irq_guard = IrqSave::new();
+        let lease = unsafe { OwnerLease::new_unchecked(call.owner) };
+        let result = op(lease);
+        unsafe { *call.result.get() = Some(result) };
+    }
+
+    let call = OwnerCall {
+        owner,
+        op: UnsafeCell::new(Some(op)),
+        result: UnsafeCell::new(None),
+    };
+    unsafe {
+        run_on_cpu_sync(
+            CpuId(owner.0),
+            thunk::<F, R>,
+            (&call as *const OwnerCall<F, R> as *mut ()).cast(),
+        )?;
+    }
+    Ok(unsafe { &mut *call.result.get() }
+        .take()
+        .expect("serial owner call did not complete"))
+}
+
+pub fn owner_lease_for_cpu(owner: OwnerId, cpu: CpuId) -> Option<OwnerLease<'static>> {
+    (cpu.0 == owner.0).then(|| unsafe { OwnerLease::new_unchecked(owner) })
 }
 
 pub fn take_serial_devices() -> Vec<SerialDevice> {

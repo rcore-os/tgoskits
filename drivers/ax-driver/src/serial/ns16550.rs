@@ -11,7 +11,8 @@ use rdrive::{
 use some_serial::ns16550 as serial_ns16550;
 
 use super::{
-    PlatformSerialDevice, SerialPort, acpi_serial_device_info, prop_u32, serial_device_info,
+    PlatformSerialDevice, SerialProbeRuntime, acpi_serial_device_info, prop_u32,
+    serial_device_info, serial_runtime,
 };
 
 const ACPI_NS16550_CLOCK: u32 = 1_843_200;
@@ -59,41 +60,42 @@ fn probe(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
     let reg_width = prop_u32(node, "reg-io-width").unwrap_or(1) as usize;
     let reg_shift = prop_u32(node, "reg-shift").map(|shift| 1usize << shift);
     let ns16550_width = reg_shift.unwrap_or(reg_width);
-    let mut serial: Option<SerialPort> = None;
+    let mut serial: Option<SerialProbeRuntime> = None;
 
     for compatible in node.compatibles() {
         if compatible == "snps,dw-apb-uart" {
             let clock_freq = prop_u32(node, "clock-frequency")
                 .unwrap_or(serial_ns16550::dw_apb::SG2002_UART_CLOCK);
             let raw = serial_ns16550::DwApbUart::new_raw(mmio_base, clock_freq);
-            serial = Some(SerialPort::new(raw));
+            serial = Some(serial_runtime(raw));
             break;
         }
 
         if matches!(compatible, "ns16550a" | "ns16550") {
             let clock_freq = prop_u32(node, "clock-frequency").unwrap_or(24_000_000);
             let raw = serial_ns16550::Ns16550::new_mmio(mmio_base, clock_freq, ns16550_width);
-            serial = Some(SerialPort::new(raw));
+            serial = Some(serial_runtime(raw));
             break;
         }
     }
 
     let serial = serial.ok_or(OnProbeError::NotMatch)?;
-    let base = serial.base_addr();
-    let baudrate = serial.baudrate();
-    let device_info = serial_device_info(&info, &base_reg, base, baudrate);
+    let device_info = serial_device_info(&info, &base_reg, serial.base_addr, serial.baudrate);
 
-    info!("NS16550 serial@{base:#x} registered successfully");
+    info!(
+        "NS16550 serial@{:#x} registered successfully",
+        serial.base_addr
+    );
     plat_dev.register(PlatformSerialDevice::new(
-        serial.name().into(),
+        serial.name.into(),
         device_info,
-        serial,
+        serial.runtime,
     ));
     Ok(())
 }
 
 struct AcpiSerialResource {
-    serial: SerialPort,
+    serial: SerialProbeRuntime,
     paddr: usize,
     mapped_base: usize,
 }
@@ -107,9 +109,13 @@ fn probe_acpi(probe: ProbeAcpi<'_>) -> Result<(), OnProbeError> {
     } else {
         acpi_mmio_serial(info)?
     };
-    let baudrate = resource.serial.baudrate();
-    let device_info = acpi_serial_device_info(info, resource.paddr, resource.mapped_base, baudrate);
-    let serial_name = resource.serial.name().into();
+    let device_info = acpi_serial_device_info(
+        info,
+        resource.paddr,
+        resource.mapped_base,
+        resource.serial.baudrate,
+    );
+    let serial_name = resource.serial.name.into();
     let plat_dev = probe.into_platform_device();
 
     info!(
@@ -119,7 +125,7 @@ fn probe_acpi(probe: ProbeAcpi<'_>) -> Result<(), OnProbeError> {
     plat_dev.register(PlatformSerialDevice::new(
         serial_name,
         device_info,
-        resource.serial,
+        resource.serial.runtime,
     ));
     Ok(())
 }
@@ -136,8 +142,8 @@ fn acpi_io_serial(info: &AcpiInfo<'_>) -> Result<Option<AcpiSerialResource>, OnP
         ))
     })?;
     let raw = serial_ns16550::Ns16550::new_port(port, ACPI_NS16550_CLOCK);
-    let serial = SerialPort::new(raw);
-    let mapped_base = serial.base_addr();
+    let serial = serial_runtime(raw);
+    let mapped_base = serial.base_addr;
     Ok(Some(AcpiSerialResource {
         serial,
         paddr: usize::from(port),
@@ -167,8 +173,8 @@ fn acpi_mmio_serial(info: &AcpiInfo<'_>) -> Result<AcpiSerialResource, OnProbeEr
     let mmio_base = crate::mmio::iomap(paddr, mmio_size)?;
     let raw =
         serial_ns16550::Ns16550::new_mmio(mmio_base, ACPI_NS16550_CLOCK, ACPI_NS16550_REG_WIDTH);
-    let serial = SerialPort::new(raw);
-    let mapped_base = serial.base_addr();
+    let serial = serial_runtime(raw);
+    let mapped_base = serial.base_addr;
     Ok(AcpiSerialResource {
         serial,
         paddr,

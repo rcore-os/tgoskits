@@ -866,7 +866,7 @@ mod tests {
     use core::ptr::NonNull;
     use std::boxed::Box;
 
-    use rdif_serial::{OwnerId, OwnerLease, SerialIrqHandler, SerialParts, TSerialIrqHandler};
+    use rdif_serial::{OwnerId, OwnerLease, SerialParts, SerialPort};
 
     use super::*;
 
@@ -907,8 +907,8 @@ mod tests {
     }
 
     fn started_parts(uart: Pl011) -> SerialParts<64, 64> {
-        let parts = SerialIrqHandler::<64, 64>::split(uart, OwnerId(0));
-        parts.irq.startup(owner_lease(), &Config::new()).unwrap();
+        let parts = SerialPort::<64, 64>::split(uart, OwnerId(0));
+        parts.port.startup(owner_lease(), &Config::new()).unwrap();
         parts
     }
 
@@ -969,7 +969,7 @@ mod tests {
         let (mut regs, uart) = pl011_with_registers();
         let parts = started_parts(uart);
         let mut tx = parts.tx;
-        let irq = parts.irq;
+        let mut irq = parts.irq;
 
         write_test_reg(&mut regs, 0x018, UARTFR::TXFF::SET.value);
         assert_eq!(tx.submit(b"x").accepted, 1);
