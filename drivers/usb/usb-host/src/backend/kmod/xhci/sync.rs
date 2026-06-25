@@ -1,10 +1,8 @@
 use alloc::sync::Arc;
 use core::cell::UnsafeCell;
 
-use spin::{
-    RwLock,
-    mutex::{SpinMutex, SpinMutexGuard},
-};
+use ax_kspin::{SpinRaw as SpinMutex, SpinRawGuard as SpinMutexGuard};
+use spin::RwLock;
 
 use super::reg::{DisableIrqGuard, XhciRegisters};
 
