@@ -528,6 +528,12 @@ impl DirNodeOps for Inode {
             let target_ino = InodeNumber::new(node.inode() as u32).map_err(into_vfs_err)?;
             Self::update_ctime_with(fs, dev, target_ino)?;
         }
+        // Mirror create(): the ext4 cache stack (DataBlockCache → BlockDev 4-entry LRU)
+        // has coherence gaps, so flush the new directory entry to disk before the
+        // lookup below reads it back. Unlike create() (which builds its DirEntry
+        // directly from the known inode number), link() ends in lookup_locked, so
+        // without this flush the lookup can spuriously miss the just-linked entry.
+        self.fs.sync_to_disk()?;
         self.lookup_locked(name)
     }
 
