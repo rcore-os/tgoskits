@@ -28,6 +28,7 @@ pub use self::{
 };
 
 type MovedPage = (VirtAddr, VirtAddr, PhysAddr, MappingFlags, PageSize, bool);
+const CLONED_ADDR_SPACE_LOCK_SUBCLASS: u32 = 1;
 
 fn rollback_moved_pages(cursor: &mut PageTableCursor, moved_pages: &[MovedPage]) {
     for &(src_va, dst_va, paddr, flags, page_size, dst_newly_mapped) in moved_pages.iter().rev() {
@@ -582,7 +583,10 @@ impl AddrSpace {
         let new_aspace = Arc::new(Mutex::new(Self::new_empty(self.base(), self.size())?));
         let new_aspace_clone = new_aspace.clone();
 
-        let mut guard = new_aspace.lock_nested(1);
+        // The caller holds the source AddrSpace lock while this fresh AddrSpace
+        // is being populated. The new lock is not published yet, so this is a
+        // structured source -> cloned-address-space nesting.
+        let mut guard = new_aspace.lock_nested(CLONED_ADDR_SPACE_LOCK_SUBCLASS);
         let child_rss = guard.rss() as *const MemoryAccounting;
         let child_acct = unsafe { &*child_rss };
         let parent_acct = &self.rss;
