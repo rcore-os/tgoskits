@@ -1318,7 +1318,10 @@ dependencies = [
  "axdevice_base",
  "axvm-types",
  "cfg-if",
+ "divan",
  "log",
+ "paste",
+ "rand 0.10.1",
  "riscv_vplic",
  "x86_vlapic",
 ]
