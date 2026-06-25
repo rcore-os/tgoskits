@@ -47,7 +47,7 @@ multitask = [
     "ax-sync/multitask",
     "ax-runtime/multitask",
 ]
-lockdep = ["multitask", "ax-sync/lockdep", "ax-kspin/lockdep"]
+lockdep = ["multitask", "ax-sync/lockdep", "ax-kspin/lockdep", "dep:spin", "spin/lockdep"]
 task-ext = ["ax-task/task-ext"]
 tracepoint-hooks = ["ax-task/tracepoint-hooks"]
 sched-fifo = ["ax-task/sched-fifo"]
@@ -123,3 +123,4 @@ ax-runtime.workspace = true
 ax-sync = { workspace = true, optional = true }
 ax-task = { workspace = true, optional = true }
 ax-kspin = { workspace = true, optional = true }
+spin = { workspace = true, optional = true }

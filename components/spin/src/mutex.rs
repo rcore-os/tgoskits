@@ -30,18 +30,22 @@ pub use self::ticket::{TicketMutex, TicketMutexGuard};
 #[cfg(feature = "fair_mutex")]
 #[cfg_attr(docsrs, doc(cfg(feature = "fair_mutex")))]
 pub mod fair;
-#[cfg(feature = "fair_mutex")]
-#[cfg_attr(docsrs, doc(cfg(feature = "fair_mutex")))]
-pub use self::fair::{FairMutex, FairMutexGuard, Starvation};
-
-use crate::{RelaxStrategy, Spin};
 use core::{
     fmt,
+    mem::ManuallyDrop,
     ops::{Deref, DerefMut},
 };
 
+#[cfg(feature = "fair_mutex")]
+#[cfg_attr(docsrs, doc(cfg(feature = "fair_mutex")))]
+pub use self::fair::{FairMutex, FairMutexGuard, Starvation};
+use crate::{RelaxStrategy, Spin};
+
 #[cfg(all(not(feature = "spin_mutex"), not(feature = "use_ticket_mutex")))]
-compile_error!("The `mutex` feature flag was used (perhaps through another feature?) without either `spin_mutex` or `use_ticket_mutex`. One of these is required.");
+compile_error!(
+    "The `mutex` feature flag was used (perhaps through another feature?) without either \
+     `spin_mutex` or `use_ticket_mutex`. One of these is required."
+);
 
 #[cfg(all(not(feature = "use_ticket_mutex"), feature = "spin_mutex"))]
 type InnerMutex<T, R> = self::spin::SpinMutex<T, R>;
@@ -76,8 +80,9 @@ type InnerMutexGuard<'a, T, R> = self::ticket::TicketMutexGuard<'a, T, R>;
 /// # Thread safety example
 ///
 /// ```
-/// use spin;
 /// use std::sync::{Arc, Barrier};
+///
+/// use spin;
 ///
 /// let thread_count = 1000;
 /// let spin_mutex = Arc::new(spin::Mutex::new(0));
@@ -111,6 +116,8 @@ type InnerMutexGuard<'a, T, R> = self::ticket::TicketMutexGuard<'a, T, R>;
 /// # }
 /// ```
 pub struct Mutex<T: ?Sized, R = Spin> {
+    #[cfg(feature = "lockdep")]
+    lockdep: crate::lockdep::Map,
     inner: InnerMutex<T, R>,
 }
 
@@ -123,6 +130,8 @@ pub struct Mutex<T: ?Sized, R = Spin> {
 /// [`SpinMutexGuard`]: ./struct.SpinMutexGuard.html
 pub struct MutexGuard<'a, T: 'a + ?Sized, R> {
     inner: InnerMutexGuard<'a, T, R>,
+    #[cfg(feature = "lockdep")]
+    lock_addr: usize,
 }
 
 // SAFETY: Same unsafe impls as `std::sync::Mutex`
@@ -152,8 +161,11 @@ impl<T, R> Mutex<T, R> {
     /// }
     /// ```
     #[inline(always)]
+    #[track_caller]
     pub const fn new(value: T) -> Self {
         Self {
+            #[cfg(feature = "lockdep")]
+            lockdep: crate::lockdep::Map::new(),
             inner: InnerMutex::new(value),
         }
     }
@@ -188,14 +200,28 @@ impl<T: ?Sized, R: RelaxStrategy> Mutex<T, R> {
     /// }
     /// ```
     #[inline(always)]
+    #[track_caller]
     pub fn lock(&self) -> MutexGuard<'_, T, R> {
+        #[cfg(feature = "lockdep")]
+        let lockdep = crate::lockdep::LockdepAcquire::prepare(self, false);
         MutexGuard {
             inner: self.inner.lock(),
+            #[cfg(feature = "lockdep")]
+            lock_addr: {
+                lockdep.finish(true);
+                lockdep.lock_addr()
+            },
         }
     }
 }
 
 impl<T: ?Sized, R> Mutex<T, R> {
+    #[cfg(feature = "lockdep")]
+    #[inline(always)]
+    pub(crate) fn lockdep_map(&self) -> &crate::lockdep::Map {
+        &self.lockdep
+    }
+
     /// Returns `true` if the lock is currently held.
     ///
     /// # Safety
@@ -216,6 +242,8 @@ impl<T: ?Sized, R> Mutex<T, R> {
     /// lock to FFI that doesn't know how to deal with RAII.
     #[inline(always)]
     pub unsafe fn force_unlock(&self) {
+        #[cfg(feature = "lockdep")]
+        crate::lockdep::force_release(self as *const _ as *const () as usize);
         self.inner.force_unlock()
     }
 
@@ -234,10 +262,18 @@ impl<T: ?Sized, R> Mutex<T, R> {
     /// assert!(maybe_guard2.is_none());
     /// ```
     #[inline(always)]
+    #[track_caller]
     pub fn try_lock(&self) -> Option<MutexGuard<'_, T, R>> {
-        self.inner
-            .try_lock()
-            .map(|guard| MutexGuard { inner: guard })
+        #[cfg(feature = "lockdep")]
+        let lockdep = crate::lockdep::LockdepAcquire::prepare(self, true);
+        let guard = self.inner.try_lock();
+        #[cfg(feature = "lockdep")]
+        lockdep.finish(guard.is_some());
+        guard.map(|guard| MutexGuard {
+            inner: guard,
+            #[cfg(feature = "lockdep")]
+            lock_addr: lockdep.lock_addr(),
+        })
     }
 
     /// Returns a mutable reference to the underlying data.
@@ -292,7 +328,11 @@ impl<'a, T: ?Sized, R> MutexGuard<'a, T, R> {
     /// ```
     #[inline(always)]
     pub fn leak(this: Self) -> &'a mut T {
-        InnerMutexGuard::leak(this.inner)
+        let this = ManuallyDrop::new(this);
+        // SAFETY: The outer guard is intentionally leaked, so moving out the
+        // inner guard without running `Drop` preserves the permanent lock.
+        let inner = unsafe { core::ptr::read(&this.inner) };
+        InnerMutexGuard::leak(inner)
     }
 }
 
@@ -321,6 +361,14 @@ impl<'a, T: ?Sized, R> DerefMut for MutexGuard<'a, T, R> {
     }
 }
 
+#[cfg(feature = "lockdep")]
+impl<'a, T: ?Sized, R> Drop for MutexGuard<'a, T, R> {
+    /// The dropping of the MutexGuard will release the lock it was created from.
+    fn drop(&mut self) {
+        crate::lockdep::release(self.lock_addr);
+    }
+}
+
 #[cfg(feature = "lock_api")]
 unsafe impl<R: RelaxStrategy> lock_api_crate::RawMutex for Mutex<(), R> {
     type GuardMarker = lock_api_crate::GuardSend;
@@ -343,5 +391,25 @@ unsafe impl<R: RelaxStrategy> lock_api_crate::RawMutex for Mutex<(), R> {
 
     fn is_locked(&self) -> bool {
         self.inner.is_locked()
+    }
+}
+
+#[cfg(all(test, feature = "lockdep"))]
+mod lockdep_tests {
+    use super::Mutex;
+
+    #[test]
+    #[should_panic(expected = "lock order inversion")]
+    fn lockdep_rejects_order_inversion() {
+        static A: Mutex<()> = Mutex::new(());
+        static B: Mutex<()> = Mutex::new(());
+
+        {
+            let _a = A.lock();
+            let _b = B.lock();
+        }
+
+        let _b = B.lock();
+        let _a = A.lock();
     }
 }

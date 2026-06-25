@@ -769,6 +769,7 @@ dependencies = [
  "ax-sync",
  "ax-task",
  "axbacktrace",
+ "spin 0.12.0",
 ]
 
 [[package]]
@@ -7664,6 +7665,7 @@ dependencies = [
 name = "spin"
 version = "0.12.0"
 dependencies = [
+ "ax-lockdep",
  "lock_api",
 ]
 

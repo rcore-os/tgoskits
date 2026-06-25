@@ -74,6 +74,7 @@ extern crate portable_atomic;
 
 #[cfg(not(feature = "portable-atomic"))]
 use core::sync::atomic;
+
 #[cfg(feature = "portable-atomic")]
 use portable_atomic as atomic;
 
@@ -83,6 +84,8 @@ pub mod barrier;
 #[cfg(feature = "lazylock")]
 #[cfg_attr(docsrs, doc(cfg(feature = "lazylock")))]
 pub mod lazylock;
+#[cfg(feature = "lockdep")]
+mod lockdep;
 #[cfg(feature = "mutex")]
 #[cfg_attr(docsrs, doc(cfg(feature = "mutex")))]
 pub mod mutex;
@@ -126,7 +129,6 @@ pub type Barrier = crate::barrier::Barrier;
 pub type LazyLock<T, F = fn() -> T> = crate::lazylock::LazyLock<T, F>;
 
 /// A type alias to [`LazyLock`] for compatibility reasons.
-///
 #[deprecated(note = "use `spin::LazyLock` instead")]
 #[cfg(feature = "lazylock")]
 #[cfg_attr(docsrs, doc(cfg(feature = "lazylock")))]
