@@ -36,8 +36,8 @@ harness = false
 name = "global_allocator"
 
 [dependencies]
+ax-kspin = { workspace = true }
 log = "0.4"
-spin = { workspace = true }
 
 [dev-dependencies]
 divan = "0.1.21"
