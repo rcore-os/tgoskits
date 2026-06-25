@@ -1,19 +1,14 @@
 /*
- * bug-open-fifo-wronly-no-reader-no-enxio: open(FIFO, O_WRONLY|O_NONBLOCK)
- * with no reader must ENXIO.
+ * bug-open-fifo-wronly-no-reader-no-enxio: FIFO open semantics.
  *
  * man 2 open §"ENXIO" (1st variant):
  *   "O_NONBLOCK | O_WRONLY is set, the named file is a FIFO, and no process
  *    has the FIFO open for reading."
  *
- * Linux behavior: -1 ENXIO.
- * StarryOS bug: returns valid fd (FIFO handling doesn't check reader presence).
- *
- * Fix (deep PR): conservative kernel-side check at add_to_fd entry —
- * starry's vfs has no per-FIFO reader_count yet, so any O_WRONLY|O_NONBLOCK
- * open of a FIFO returns ENXIO unconditionally. This matches the test
- * (no-reader case) but is conservative for the with-reader case (full
- * Fifo state machine left to a separate IPC subsystem PR).
+ * Linux behavior:
+ *   - O_WRONLY|O_NONBLOCK with no reader returns -1/ENXIO.
+ *   - O_WRONLY|O_NONBLOCK with an existing reader succeeds.
+ *   - O_RDWR succeeds and the returned fd is both readable and writable.
  */
 #define _GNU_SOURCE
 #include <errno.h>
@@ -24,22 +19,52 @@
 #include <sys/types.h>
 #include <unistd.h>
 
+#define CHECK(cond, msg) do { \
+    if (!(cond)) { \
+        printf("FAIL: %s: errno=%d (%s)\n", msg, errno, strerror(errno)); \
+        return 1; \
+    } \
+    printf("PASS: %s\n", msg); \
+} while (0)
+
 int main(void)
 {
-    const char *fifo = "/tmp/bug_fifo_no_reader";
+    const char *fifo = "/tmp/bug_fifo_open_semantics";
     unlink(fifo);
     if (mkfifo(fifo, 0644) != 0) { perror("mkfifo"); return 1; }
 
     errno = 0;
     int fd = open(fifo, O_WRONLY | O_NONBLOCK);
-    int ok = (fd == -1 && errno == ENXIO);
-    if (ok) {
-        printf("PASS: open(FIFO, O_WRONLY|O_NONBLOCK) no reader -> -1 ENXIO\n");
-    } else {
-        printf("FAIL: expected -1 ENXIO, got fd=%d errno=%d (%s)\n",
-               fd, errno, strerror(errno));
-    }
+    CHECK(fd == -1 && errno == ENXIO,
+          "open(FIFO, O_WRONLY|O_NONBLOCK) no reader -> -1 ENXIO");
+
+    int reader = open(fifo, O_RDONLY | O_NONBLOCK);
+    CHECK(reader >= 0, "open(FIFO, O_RDONLY|O_NONBLOCK) creates reader");
+
+    errno = 0;
+    int writer = open(fifo, O_WRONLY | O_NONBLOCK);
+    CHECK(writer >= 0,
+          "open(FIFO, O_WRONLY|O_NONBLOCK) succeeds when reader exists");
+
+    const char byte = 'x';
+    CHECK(write(writer, &byte, 1) == 1, "writer writes to reader-backed FIFO");
+    char out = 0;
+    CHECK(read(reader, &out, 1) == 1 && out == byte,
+          "reader receives byte from writer-backed FIFO");
+
+    close(writer);
+    close(reader);
+
+    int rw = open(fifo, O_RDWR | O_NONBLOCK);
+    CHECK(rw >= 0, "open(FIFO, O_RDWR|O_NONBLOCK) succeeds");
+    const char self_byte = 'y';
+    CHECK(write(rw, &self_byte, 1) == 1, "O_RDWR FIFO fd is writable");
+    out = 0;
+    CHECK(read(rw, &out, 1) == 1 && out == self_byte,
+          "O_RDWR FIFO fd is readable");
+
+    close(rw);
     if (fd >= 0) close(fd);
     unlink(fifo);
-    return ok ? 0 : 1;
+    return 0;
 }

@@ -19,7 +19,7 @@ use ax_task::{
 };
 use axpoll::{IoEvents, PollSet, Pollable};
 use linux_raw_sys::{
-    general::{O_RDONLY, O_WRONLY, S_IFIFO},
+    general::{O_RDONLY, O_RDWR, O_WRONLY, S_IFIFO},
     ioctl::FIONREAD,
 };
 use ringbuf::{
@@ -50,15 +50,17 @@ struct Shared {
 static NAMED_PIPES: Mutex<BTreeMap<(u64, u64), Weak<Shared>>> = Mutex::new(BTreeMap::new());
 
 pub struct Pipe {
-    read_side: bool,
+    readable: bool,
+    writable: bool,
     shared: Arc<Shared>,
     non_blocking: AtomicBool,
 }
 impl Drop for Pipe {
     fn drop(&mut self) {
-        if self.read_side {
+        if self.readable {
             self.shared.readers.fetch_sub(1, Ordering::AcqRel);
-        } else {
+        }
+        if self.writable {
             self.shared.writers.fetch_sub(1, Ordering::AcqRel);
         }
         unsafe { self.shared.poll_close.wake(IoEvents::HUP | IoEvents::ERR) };
@@ -81,59 +83,76 @@ impl Pipe {
     pub fn new() -> (Pipe, Pipe) {
         let shared = Self::new_shared(1, 1);
         let read_end = Pipe {
-            read_side: true,
+            readable: true,
+            writable: false,
             shared: shared.clone(),
             non_blocking: AtomicBool::new(false),
         };
         let write_end = Pipe {
-            read_side: false,
+            readable: false,
+            writable: true,
             shared,
             non_blocking: AtomicBool::new(false),
         };
         (read_end, write_end)
     }
 
-    /// Open one endpoint of a pathname-backed FIFO.
-    pub fn open_named(key: (u64, u64), read_side: bool) -> Self {
-        let shared = {
-            let mut pipes = NAMED_PIPES.lock();
-            if let Some(shared) = pipes.get(&key).and_then(Weak::upgrade) {
-                shared
-            } else {
-                let shared = Self::new_shared(0, 0);
-                pipes.insert(key, Arc::downgrade(&shared));
-                shared
-            }
-        };
+    fn named_shared(key: (u64, u64)) -> Arc<Shared> {
+        let mut pipes = NAMED_PIPES.lock();
+        if let Some(shared) = pipes.get(&key).and_then(Weak::upgrade) {
+            shared
+        } else {
+            let shared = Self::new_shared(0, 0);
+            pipes.insert(key, Arc::downgrade(&shared));
+            shared
+        }
+    }
 
-        if read_side {
+    pub fn named_reader_count(key: (u64, u64)) -> usize {
+        let pipes = NAMED_PIPES.lock();
+        pipes
+            .get(&key)
+            .and_then(Weak::upgrade)
+            .map(|shared| shared.readers.load(Ordering::Acquire))
+            .unwrap_or(0)
+    }
+
+    /// Open one endpoint of a pathname-backed FIFO.
+    pub fn open_named(key: (u64, u64), readable: bool, writable: bool) -> Self {
+        let shared = Self::named_shared(key);
+
+        if readable {
             shared.readers.fetch_add(1, Ordering::AcqRel);
             unsafe { shared.poll_tx.wake(IoEvents::OUT) };
-        } else {
+        }
+        if writable {
             shared.writers.fetch_add(1, Ordering::AcqRel);
             shared.had_writer.store(true, Ordering::Release);
             unsafe { shared.poll_rx.wake(IoEvents::IN) };
         }
         Self {
-            read_side,
+            readable,
+            writable,
             shared,
             non_blocking: AtomicBool::new(false),
         }
     }
 
     pub const fn is_read(&self) -> bool {
-        self.read_side
+        self.readable
     }
 
     pub const fn is_write(&self) -> bool {
-        !self.read_side
+        self.writable
     }
 
     pub fn closed(&self) -> bool {
-        if self.read_side {
+        if self.readable && !self.writable {
             self.shared.writers.load(Ordering::Acquire) == 0
-        } else {
+        } else if self.writable && !self.readable {
             self.shared.readers.load(Ordering::Acquire) == 0
+        } else {
+            false
         }
     }
 
@@ -241,7 +260,13 @@ impl FileLike for Pipe {
 
     fn stat(&self) -> AxResult<Kstat> {
         Ok(Kstat {
-            mode: S_IFIFO | if self.is_read() { 0o444 } else { 0o222 },
+            mode: S_IFIFO
+                | match (self.readable, self.writable) {
+                    (true, true) => 0o666,
+                    (true, false) => 0o444,
+                    (false, true) => 0o222,
+                    (false, false) => 0,
+                },
             ..Default::default()
         })
     }
@@ -251,7 +276,12 @@ impl FileLike for Pipe {
     }
 
     fn open_flags(&self) -> u32 {
-        if self.is_read() { O_RDONLY } else { O_WRONLY }
+        match (self.readable, self.writable) {
+            (true, true) => O_RDWR,
+            (true, false) => O_RDONLY,
+            (false, true) => O_WRONLY,
+            (false, false) => O_RDONLY,
+        }
     }
 
     fn set_nonblocking(&self, nonblocking: bool) -> AxResult {
@@ -278,11 +308,12 @@ impl Pollable for Pipe {
     fn poll(&self) -> IoEvents {
         let mut events = IoEvents::empty();
         let buf = self.shared.buffer.lock();
-        if self.read_side {
+        if self.readable {
             let closed = self.closed() && self.shared.had_writer.load(Ordering::Acquire);
             events.set(IoEvents::IN, buf.occupied_len() > 0);
             events.set(IoEvents::HUP, closed);
-        } else {
+        }
+        if self.writable {
             events.set(IoEvents::ERR, self.closed());
             events.set(IoEvents::OUT, buf.vacant_len() > 0);
         }
