@@ -348,6 +348,7 @@ dependencies = [
  "axfs-ng-vfs",
  "embedded-graphics",
  "rand 0.8.6",
+ "spin 0.12.0",
 ]
 
 [[package]]
