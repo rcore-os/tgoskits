@@ -21,7 +21,6 @@ const AX_HAL_PLATFORM_FEATURE_TARGET_ARCHES: &[(&str, &[&str])] = &[
     ("plat-dyn", &["aarch64", "loongarch64", "riscv64", "x86_64"]),
     ("loongarch64-qemu-virt", &["loongarch64"]),
     ("riscv64-sg2002", &["riscv64"]),
-    ("riscv64-visionfive2", &["riscv64"]),
 ];
 
 pub(super) fn docs_rs_targets(package: &Package) -> Vec<String> {

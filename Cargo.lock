@@ -810,7 +810,6 @@ dependencies = [
  "ax-plat",
  "ax-plat-loongarch64-qemu-virt",
  "ax-plat-riscv64-sg2002",
- "ax-plat-riscv64-visionfive2",
  "axplat-dyn",
  "cfg-if",
  "fdt-parser",
@@ -1048,7 +1047,7 @@ dependencies = [
  "loongArch64",
  "mmio-api",
  "toml 1.1.2+spec-1.1.0",
- "uart_16550 0.5.0",
+ "uart_16550",
 ]
 
 [[package]]
@@ -1079,25 +1078,6 @@ dependencies = [
  "sg200x-bsp",
  "some-serial",
  "spin 0.12.0",
-]
-
-[[package]]
-name = "ax-plat-riscv64-visionfive2"
-version = "0.1.10"
-dependencies = [
- "ax-config-macros",
- "ax-cpu",
- "ax-kspin",
- "ax-lazyinit",
- "ax-plat",
- "ax-riscv-plic",
- "axklib",
- "log",
- "rdrive",
- "riscv",
- "riscv_goldfish",
- "sbi-rt",
- "uart_16550 0.4.0",
 ]
 
 [[package]]
@@ -8699,17 +8679,6 @@ name = "typenum"
 version = "1.20.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b6f5e870be6c3b371b77fe0ee0bafb859fa4964b4404c27de1d380043c4dda20"
-
-[[package]]
-name = "uart_16550"
-version = "0.4.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "94d293f51425981fdb1b766beae254dbb711a17e8c4b549dc69b9b7ee0d478d5"
-dependencies = [
- "bitflags 2.13.0",
- "rustversion",
- "x86",
-]
 
 [[package]]
 name = "uart_16550"

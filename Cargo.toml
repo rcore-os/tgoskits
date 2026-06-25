@@ -188,7 +188,6 @@ axfs-ng-vfs = { version = "0.5.1", path = "components/axfs-ng-vfs" }
 axhvc = { version = "0.4.9", path = "virtualization/axhvc" }
 axklib = { version = "0.6.5", path = "components/axklib" }
 axplat-dyn = { version = "0.7.5", path = "platforms/axplat-dyn", default-features = false }
-ax-plat-riscv64-visionfive2 = { version = "0.1.10", path = "platforms/ax-plat-riscv64-visionfive2" }
 axpoll = { version = "0.4.1", path = "components/axpoll" }
 axvcpu = { version = "0.7.1", path = "virtualization/axvcpu" }
 axvisor = { version = "0.5.14", path = "os/axvisor" }
