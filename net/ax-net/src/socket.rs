@@ -136,6 +136,15 @@ bitflags! {
 /// Type alias for ancillary control message data.
 pub type CMsgData = Box<dyn Any + Send + Sync>;
 
+/// IP ancillary data reported through `recvmsg`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IpCmsg {
+    /// IPv4 TOS byte for `IP_RECVTOS`.
+    Ipv4Tos(u8),
+    /// IPv6 traffic-class byte for `IPV6_RECVTCLASS`.
+    Ipv6TrafficClass(u8),
+}
+
 /// Options for sending data to a socket.
 ///
 /// See [`SocketOps::send`].

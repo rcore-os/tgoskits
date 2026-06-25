@@ -53,7 +53,7 @@ use ax_task::WaitQueue;
 use axpoll::IoEvents;
 use smoltcp::{
     iface::SocketSet,
-    phy::{DeviceCapabilities, Medium},
+    phy::{DeviceCapabilities, Medium, PacketMeta},
     storage::PacketMetadata,
     time::Instant,
     wire::{
@@ -68,6 +68,8 @@ use crate::{
     config::{DeviceBinding, InterfaceId, RouteInfo},
     consts::{DEVICE_RX_QUEUE_SIZE, DEVICE_TX_QUEUE_SIZE, SOCKET_BUFFER_SIZE, STANDARD_MTU},
     device::{ArpEntry, Device},
+    ip_tos::apply_egress_ip_tos,
+    rx_meta::packet_meta_for_rx_packet,
 };
 
 const DEVICE_RX_WORKER_BATCH: usize = 16;
@@ -122,10 +124,32 @@ impl Rule {
     }
 }
 
-type PacketBuffer = smoltcp::storage::PacketBuffer<'static, InterfaceId>;
+#[derive(Debug, Clone, Copy)]
+struct RxMetadata {
+    interface_id: InterfaceId,
+    packet_meta: PacketMeta,
+}
+
+type RouterPacketBuffer = smoltcp::storage::PacketBuffer<'static, RxMetadata>;
+type DevicePacketBuffer = smoltcp::storage::PacketBuffer<'static, InterfaceId>;
+
 // TX metadata is created before route lookup; dispatch() selects the real
 // egress interface from the packet destination and route table.
 const TX_INTERFACE_PLACEHOLDER: InterfaceId = InterfaceId::new(0);
+
+fn rx_metadata(interface_id: InterfaceId, packet: &[u8]) -> RxMetadata {
+    RxMetadata {
+        interface_id,
+        packet_meta: packet_meta_for_rx_packet(packet),
+    }
+}
+
+fn tx_metadata() -> RxMetadata {
+    RxMetadata {
+        interface_id: TX_INTERFACE_PLACEHOLDER,
+        packet_meta: PacketMeta::default(),
+    }
+}
 
 /// Bounded FIFO used between the protocol core and per-device workers.
 struct BoundedPacketQueue<T> {
@@ -439,8 +463,8 @@ pub(crate) type SharedRouteTable = Arc<RwLock<RouteTable>>;
 
 /// Virtual smoltcp device that multiplexes all concrete devices.
 pub struct Router {
-    rx_buffer: PacketBuffer,
-    tx_buffer: PacketBuffer,
+    rx_buffer: RouterPacketBuffer,
+    tx_buffer: RouterPacketBuffer,
     queues: Arc<RouterQueues>,
     devices: Vec<Arc<DeviceHandle>>,
     table: SharedRouteTable,
@@ -448,11 +472,11 @@ pub struct Router {
 impl Router {
     /// Creates the virtual multi-device endpoint used by smoltcp.
     pub fn new(table: SharedRouteTable) -> Self {
-        let rx_buffer = PacketBuffer::new(
+        let rx_buffer = RouterPacketBuffer::new(
             vec![PacketMetadata::EMPTY; SOCKET_BUFFER_SIZE],
             vec![0u8; STANDARD_MTU * SOCKET_BUFFER_SIZE],
         );
-        let tx_buffer = PacketBuffer::new(
+        let tx_buffer = RouterPacketBuffer::new(
             vec![PacketMetadata::EMPTY; SOCKET_BUFFER_SIZE],
             vec![0u8; STANDARD_MTU * SOCKET_BUFFER_SIZE],
         );
@@ -611,7 +635,10 @@ impl Router {
             let bytes = packet.bytes.as_slice();
             snoop_tcp_packet(bytes, sockets);
             snoop(packet.interface_id, bytes);
-            let Ok(dst) = self.rx_buffer.enqueue(bytes.len(), packet.interface_id) else {
+            let Ok(dst) = self
+                .rx_buffer
+                .enqueue(bytes.len(), rx_metadata(packet.interface_id, bytes))
+            else {
                 warn!("Router RX buffer is full, dropping packet");
                 break;
             };
@@ -682,6 +709,7 @@ impl Router {
             ..
         } = self;
         while let Ok((_, packet)) = tx_buffer.dequeue() {
+            apply_egress_ip_tos(packet);
             match IpVersion::of_packet(packet).expect("got invalid IP packet") {
                 IpVersion::Ipv4 => {
                     let packet = smoltcp::wire::Ipv4Packet::new_checked(packet)
@@ -744,7 +772,7 @@ fn dispatch_link_local_fanout(
 }
 
 fn dispatch_unicast_packet(
-    rx_buffer: &mut PacketBuffer,
+    rx_buffer: &mut RouterPacketBuffer,
     devices: &[Arc<DeviceHandle>],
     table: &SharedRouteTable,
     src_addr: IpAddress,
@@ -773,13 +801,14 @@ fn dispatch_unicast_packet(
 
 /// Injects a loopback packet directly into the smoltcp-facing RX buffer.
 fn inject_loopback_rx_direct(
-    rx_buffer: &mut PacketBuffer,
+    rx_buffer: &mut RouterPacketBuffer,
     dst_addr: IpAddress,
     packet: &[u8],
     sockets: &mut SocketSet<'_>,
 ) -> bool {
     snoop_tcp_packet(packet, sockets);
-    let Ok(dst) = rx_buffer.enqueue(packet.len(), InterfaceId::LOOPBACK) else {
+    let Ok(dst) = rx_buffer.enqueue(packet.len(), rx_metadata(InterfaceId::LOOPBACK, packet))
+    else {
         warn!("Loopback: RX buffer full, dropping packet to {}", dst_addr);
         return false;
     };
@@ -835,7 +864,7 @@ fn device_tx_worker(device: Arc<DeviceHandle>) {
 
 /// Dedicated worker that polls one device and forwards packets to router RX.
 fn device_rx_worker(device: Arc<DeviceHandle>) {
-    let mut rx_buffer = PacketBuffer::new(
+    let mut rx_buffer = DevicePacketBuffer::new(
         vec![PacketMetadata::EMPTY; DEVICE_RX_WORKER_BATCH],
         vec![0u8; STANDARD_MTU * DEVICE_RX_WORKER_BATCH],
     );
@@ -885,7 +914,7 @@ fn device_rx_worker(device: Arc<DeviceHandle>) {
 }
 
 /// smoltcp TX token backed by the router's temporary TX buffer.
-pub struct TxToken<'a>(&'a mut PacketBuffer);
+pub struct TxToken<'a>(&'a mut RouterPacketBuffer);
 
 impl smoltcp::phy::TxToken for TxToken<'_> {
     fn consume<R, F>(self, len: usize, f: F) -> R
@@ -896,7 +925,7 @@ impl smoltcp::phy::TxToken for TxToken<'_> {
         // packet and selects the actual egress interface from the route table.
         f(self
             .0
-            .enqueue(len, TX_INTERFACE_PLACEHOLDER)
+            .enqueue(len, tx_metadata())
             .expect("This was checked before creating the TxToken"))
     }
 }
@@ -939,6 +968,7 @@ fn snoop_tcp_packet(buf: &[u8], sockets: &mut SocketSet<'_>) {
 /// smoltcp RX token for one packet queued by the router.
 pub struct RxToken<'a> {
     interface_id: InterfaceId,
+    packet_meta: PacketMeta,
     packet: &'a [u8],
 }
 
@@ -949,6 +979,10 @@ impl<'a> smoltcp::phy::RxToken for RxToken<'a> {
     {
         let _ingress_if = self.interface_id;
         f(self.packet)
+    }
+
+    fn meta(&self) -> PacketMeta {
+        self.packet_meta
     }
 }
 
@@ -962,9 +996,10 @@ impl smoltcp::phy::Device for Router {
         } else {
             Some((
                 {
-                    let (interface_id, packet) = self.rx_buffer.dequeue().unwrap();
+                    let (metadata, packet) = self.rx_buffer.dequeue().unwrap();
                     RxToken {
-                        interface_id,
+                        interface_id: metadata.interface_id,
+                        packet_meta: metadata.packet_meta,
                         packet,
                     }
                 },

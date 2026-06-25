@@ -43,6 +43,7 @@ mod consts;
 mod device;
 mod dhcp_server;
 mod general;
+mod ip_tos;
 mod listen_table;
 /// Socket option types and the [`Configurable`](options::Configurable) trait.
 pub mod options;
@@ -50,6 +51,7 @@ mod orphan;
 /// Raw socket implementation.
 pub mod raw;
 mod router;
+mod rx_meta;
 mod service;
 mod socket;
 pub(crate) mod state;
@@ -106,8 +108,8 @@ pub use self::{
         set_ethernet_irq_registrar,
     },
     socket::{
-        CMsgData, RecvFlags, RecvOptions, SendFlags, SendOptions, Shutdown, Socket, SocketAddrEx,
-        SocketOps,
+        CMsgData, IpCmsg, RecvFlags, RecvOptions, SendFlags, SendOptions, Shutdown, Socket,
+        SocketAddrEx, SocketOps,
     },
 };
 
