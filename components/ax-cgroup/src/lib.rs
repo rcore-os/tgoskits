@@ -8,6 +8,10 @@
 #![no_std]
 
 extern crate alloc;
+// Host-side unit tests need std (e.g. std::sync::Once); the non-test build
+// stays strictly no_std.
+#[cfg(test)]
+extern crate std;
 
 /// cgroup-specific error type, independent of any VFS implementation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -328,6 +332,18 @@ pub struct CgroupForkGuard {
     state: GuardState,
 }
 
+impl ::core::fmt::Debug for CgroupForkGuard {
+    fn fmt(&self, f: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {
+        // CgroupNode is intentionally not Debug (large, self-referential via
+        // Weak parent links), so report the guard by its stable identity only.
+        f.debug_struct("CgroupForkGuard")
+            .field("cgroup", &self.cgroup.id)
+            .field("pid", &self.pid)
+            .field("state", &self.state)
+            .finish()
+    }
+}
+
 impl CgroupForkGuard {
     /// Finalize fork: register membership.
     /// Must be called BEFORE child becomes runnable (before spawn_task).
@@ -358,6 +374,7 @@ impl CgroupForkGuard {
     ///   1. remove_process_from_node (reverse membership)
     ///   2. uncharge_path (release pids charge)
     ///   3. set state = Cancelled
+    ///
     /// Reversing steps 1 and 2 would create a window where other CPUs see
     /// membership present but charge already decremented.
     ///

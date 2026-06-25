@@ -14,3 +14,9 @@ readme = "README.md"
 ax-kspin = { workspace = true }
 ax-lazyinit = { workspace = true }
 log = "0.4"
+
+[dev-dependencies]
+# Host unit tests run SpinNoIrq in user space, where the kernel_guard IRQ
+# primitives (cli/sti) are illegal and SIGSEGV. The host-test feature swaps
+# them for no-ops, matching the pattern used by starry-process/starry-signal.
+ax-kspin = { workspace = true, features = ["host-test"] }
