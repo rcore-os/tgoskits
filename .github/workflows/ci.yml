@@ -306,6 +306,13 @@ jobs:
             container_image: base
             fetch_depth: full
             upload_xtask_bin_artifact: true
+          - name: Run spin-lint
+            use_container: true
+            runs_on: '["ubuntu-latest"]'
+            command: cargo xtask spin-lint
+            cache_key: ""
+            container_image: base
+            fetch_depth: "1"
     uses: ./.github/workflows/reusable-command.yml
     with:
       runs_on: >-
