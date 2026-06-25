@@ -28,6 +28,20 @@ pub const RENDER_COLOR_FILL: u8 = 2;
 // sizeof(rga_buffer_pool) = 16 (uint64_t + uint32_t, padded to 8-byte alignment).
 pub const RGA_IOC_IMPORT_BUFFER: u32 = 0xC0107203;
 pub const RGA_IOC_RELEASE_BUFFER: u32 = 0x40107204;
+// Version queries librga calls at init (rga.h):
+//   _IOR('r', 1, sizeof(rga_version_t)=28)      → driver version
+//   _IOR('r', 2, sizeof(rga_hw_versions_t)=144) → per-core hw versions
+pub const RGA_IOC_GET_DRVIER_VERSION: u32 = 0x801C_7201;
+pub const RGA_IOC_GET_HW_VERSION: u32 = 0x8090_7202;
+// Job-scheduler request API (librga ≥ v1.9 im2d path):
+//   _IOR('r',  5, sizeof(uint32_t)=4)            → create, returns request id
+//   _IOWR('r', 6, sizeof(rga_user_request)=152)  → submit (run)
+//   _IOWR('r', 7, sizeof(rga_user_request)=152)  → config (stage, no run)
+//   _IOWR('r', 8, sizeof(uint32_t)=4)            → cancel
+pub const RGA_IOC_REQUEST_CREATE: u32 = 0x8004_7205;
+pub const RGA_IOC_REQUEST_SUBMIT: u32 = 0xC098_7206;
+pub const RGA_IOC_REQUEST_CONFIG: u32 = 0xC098_7207;
+pub const RGA_IOC_REQUEST_CANCEL: u32 = 0xC004_7208;
 
 /// Buffer type constants for rga_external_buffer.type (rga.h enum rga_memory_type).
 pub const RGA_DMA_BUFFER: u32 = 0;
@@ -280,6 +294,52 @@ pub struct RgaBufferPool {
     pub size: u32,        // number of buffers
 }
 
+// --- Version-query structs (rga.h) ---
+
+/// Kernel `struct rga_version_t` (rga.h). sizeof == 28.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Default)]
+pub struct RgaVersionT {
+    pub major: u32,
+    pub minor: u32,
+    pub revision: u32,
+    pub string: [u8; 16],
+}
+
+/// Kernel `struct rga_hw_versions_t` (rga.h). sizeof == 144. `size` = number of cores.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Default)]
+pub struct RgaHwVersions {
+    pub version: [RgaVersionT; 5],
+    pub size: u32,
+}
+
+/// Kernel `struct rga_user_request` (rga.h). sizeof == 152. The ioctl argument for
+/// RGA_IOC_REQUEST_SUBMIT / RGA_IOC_REQUEST_CONFIG. `task_ptr` points to a `task_num`-long
+/// array of `RgaReq`.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct RgaUserRequest {
+    pub task_ptr: u64,
+    pub task_num: u32,
+    pub id: u32,
+    pub sync_mode: u32,
+    pub release_fence_fd: u32,
+    pub mpi_config_flags: u32,
+    pub acquire_fence_fd: u32,
+    pub reservr: [u8; 120],
+}
+
+impl Default for RgaUserRequest {
+    fn default() -> Self {
+        // SAFETY: all-zero is valid for this repr(C) struct (no pointers/invariants).
+        unsafe { core::mem::zeroed() }
+    }
+}
+
+const _: () = assert!(core::mem::size_of::<RgaVersionT>() == 28);
+const _: () = assert!(core::mem::size_of::<RgaHwVersions>() == 144);
+const _: () = assert!(core::mem::size_of::<RgaUserRequest>() == 152);
 const _: () = assert!(core::mem::size_of::<RgaExternalBuffer>() == 288);
 const _: () = assert!(core::mem::size_of::<RgaBufferPool>() == 16);
 
