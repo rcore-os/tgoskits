@@ -1350,13 +1350,13 @@ name = "axfs-ng-vfs"
 version = "0.5.1"
 dependencies = [
  "ax-errno 0.6.0",
+ "ax-kspin",
  "bitflags 2.13.0",
  "cfg-if",
  "hashbrown 0.16.1",
  "inherit-methods-macro",
  "log",
  "smallvec",
- "spin 0.12.0",
 ]
 
 [[package]]

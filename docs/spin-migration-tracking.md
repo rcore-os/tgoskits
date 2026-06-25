@@ -70,7 +70,7 @@
 
 ### 3. 清理 `spin::Mutex`
 
-状态：待办
+状态：进行中
 
 目标：
 
@@ -78,6 +78,14 @@
 - 按上下文语义替换为项目内合适锁类型。
 - 删除项目代码对 `spin::Mutex` 的依赖。
 - 删除或禁用 vendored `spin` 中 `Mutex` 的对外使用面。
+
+当前进展：
+
+- `components/axfs-ng-vfs` 已将 VFS 内部 `Mutex` / `MutexGuard` 别名从
+  `spin::Mutex` 切换为 `ax_kspin::SpinNoPreempt`，保持非睡眠自旋语义，
+  同时可通过 `axfs-ng-vfs/lockdep` 接入 `ax-kspin` lockdep。
+- `ax-fs-ng/lockdep` 和 `ax-feat/lockdep` 已向下传播 `axfs-ng-vfs/lockdep`，
+  ArceOS lockdep 测试套件也显式启用该 feature。
 
 替换原则：
 
@@ -180,6 +188,6 @@ FEATURES=lockdep cargo xtask starry test qemu --arch riscv64 -c qemu-smp4/system
 | --- | --- | --- | --- |
 | 收口外部 `spin` 依赖 | 进行中 | `components/spin*`、workspace patch | `cargo tree`、`Cargo.lock` 检查 |
 | 增加防回退 lint | 已完成 | `cargo xtask spin-lint`、CI `static_checks` | `cargo xtask spin-lint`、人为引入外部 `spin` 后 lint 失败 |
-| 清理 `spin::Mutex` | 待办 | 项目内锁替换、删除 Mutex 使用面 | clippy、lockdep、StarryOS/ArceOS 测试 |
+| 清理 `spin::Mutex` | 进行中 | 项目内锁替换、删除 Mutex 使用面 | clippy、lockdep、StarryOS/ArceOS 测试 |
 | 替换 `spin::RwLock` | 待办 | 项目内读写锁、lockdep/might_sleep 接入 | 单元测试、lockdep、might_sleep 测试 |
 | 完全移除 `spin` | 待办 | 删除 vendored crate 和 patch | `cargo tree`、全量 CI |

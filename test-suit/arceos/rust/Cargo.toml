@@ -30,11 +30,12 @@ debug-panic-path = ["ax-std", "dep:axbacktrace", "ax-std/backtrace"]
 display-basic = ["ax-std", "ax-driver/virtio-gpu", "dep:embedded-graphics", "ax-std/display"]
 exception-breakpoint = ["ax-std"]
 exception-page-fault = ["ax-std", "ax-std/paging"]
-lockdep-baseline = ["ax-std", "dep:ax-kspin", "dep:axfs-ng-vfs", "ax-std/alloc", "ax-std/multitask"]
+lockdep-baseline = ["ax-std", "dep:ax-kspin", "dep:axfs-ng-vfs", "axfs-ng-vfs/lockdep", "ax-std/alloc", "ax-std/multitask"]
 lockdep-detect = [
     "ax-std",
     "dep:ax-kspin",
     "dep:axfs-ng-vfs",
+    "axfs-ng-vfs/lockdep",
     "ax-std/alloc",
     "ax-std/multitask",
     "ax-std/lockdep",
