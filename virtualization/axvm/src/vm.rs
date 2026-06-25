@@ -271,6 +271,15 @@ impl AxVM {
 
         let dtb_addr = inner_mut.config.image_config().dtb_load_gpa;
         let vcpu_id_pcpu_sets = inner_mut.config.phys_cpu_ls.get_vcpu_affinities_pcpu_ids();
+        #[cfg(target_arch = "loongarch64")]
+        let loongarch_iocsr_state = {
+            let vcpu_state_count = vcpu_id_pcpu_sets
+                .iter()
+                .map(|(vcpu_id, ..)| *vcpu_id)
+                .max()
+                .map_or(0, |vcpu_id| vcpu_id + 1);
+            loongarch_vcpu::LoongArchIocsrState::new(vcpu_state_count)?
+        };
 
         debug!("dtb_load_gpa: {dtb_addr:?}");
         debug!("id: {}, VCpuIdPCpuSets: {vcpu_id_pcpu_sets:#x?}", self.id());
@@ -293,6 +302,8 @@ impl AxVM {
                 dtb_addr: dtb_addr.unwrap_or_default().as_usize(),
                 boot_args: inner_mut.config.cpu_config.boot_args,
                 boot_stack_top: inner_mut.config.cpu_config.boot_stack_top,
+                firmware_boot: inner_mut.config.cpu_config.firmware_boot,
+                iocsr_state: loongarch_iocsr_state.clone(),
             };
 
             // FIXME: VCpu is neither `Send` nor `Sync` by design, check whether

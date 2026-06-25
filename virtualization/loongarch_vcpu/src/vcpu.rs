@@ -13,6 +13,7 @@ use loongArch64::register::prmd;
 use crate::exception::{TrapKind, current_badi, handle_exception_irq, handle_exception_sync};
 use crate::{
     context_frame::LoongArchContextFrame,
+    exception::LoongArchIocsrStateRef,
     host,
     registers::{
         CSR_ASID, CSR_CRMD, CSR_ECFG, CSR_KSAVE_KSP, CSR_PGDH, CSR_PGDL, CSR_PRMD, CSR_PWCH,
@@ -52,6 +53,7 @@ pub struct LoongArchVCpu {
     vm_id: VMId,
     vcpu_id: VCpuId,
     cpu_id: usize,
+    iocsr_state: LoongArchIocsrStateRef,
     guest_timer_token: Option<usize>,
     last_badi: usize,
     entry_logged: bool,
@@ -116,13 +118,14 @@ const LOCAL_INTERRUPT_MASK: usize = (1 << (INT_IPI + 1)) - 1;
 #[cfg(target_arch = "loongarch64")]
 const HOST_DMW_CACHED_BASE: usize = 0x9000_0000_0000_0000;
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct LoongArchVCpuCreateConfig {
     pub cpu_id: usize,
     pub dtb_addr: usize,
     pub boot_args: [usize; 3],
     pub boot_stack_top: usize,
     pub firmware_boot: bool,
+    pub iocsr_state: LoongArchIocsrStateRef,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -139,7 +142,6 @@ impl AxArchVCpu for LoongArchVCpu {
     type SetupConfig = LoongArchVCpuSetupConfig;
 
     fn new(_vm_id: usize, _vcpu_id: usize, config: Self::CreateConfig) -> AxResult<Self> {
-        crate::exception::validate_guest_iocsr_capacity(_vm_id, _vcpu_id)?;
         let mut ctx = LoongArchContextFrame::default();
         if config.firmware_boot {
             // Firmware reset entry keeps the initial argument registers in their
@@ -164,6 +166,7 @@ impl AxArchVCpu for LoongArchVCpu {
             vm_id: _vm_id,
             vcpu_id: _vcpu_id,
             cpu_id: config.cpu_id,
+            iocsr_state: config.iocsr_state,
             guest_timer_token: None,
             last_badi: 0,
             entry_logged: false,
@@ -201,8 +204,8 @@ impl AxArchVCpu for LoongArchVCpu {
                 self.enable_guest_mode();
             }
             if crate::exception::inject_enabled_pending_interrupt(
+                &self.iocsr_state,
                 &mut self.ctx,
-                self.vm_id,
                 self.vcpu_id,
             ) {
                 log::trace!(
@@ -311,9 +314,12 @@ impl AxArchVCpu for LoongArchVCpu {
             crate::registers::inject_interrupt(vector);
         } else if vector <= INT_IPI {
             self.ctx.gcsr_estat |= 1usize << vector;
-        } else if let Some(hwi) =
-            crate::exception::inject_guest_eiointc_vector(self.vm_id, self.vcpu_id, vector)
-        {
+        } else if let Some(hwi) = crate::exception::inject_guest_eiointc_vector(
+            &self.iocsr_state,
+            self.vm_id,
+            self.vcpu_id,
+            vector,
+        ) {
             crate::registers::inject_interrupt(hwi);
         } else {
             log::warn!("Ignoring unsupported LoongArch interrupt vector {vector}");
@@ -329,9 +335,12 @@ impl AxArchVCpu for LoongArchVCpu {
 impl LoongArchVCpu {
     #[cfg(target_arch = "loongarch64")]
     pub fn inject_external_interrupt(&mut self, vector: usize, physical_irq: usize) -> AxResult {
-        if let Some(hwi) =
-            crate::exception::inject_guest_eiointc_vector(self.vm_id, self.vcpu_id, vector)
-        {
+        if let Some(hwi) = crate::exception::inject_guest_eiointc_vector(
+            &self.iocsr_state,
+            self.vm_id,
+            self.vcpu_id,
+            vector,
+        ) {
             self.ctx.gcsr_estat |= 1usize << hwi;
             log::debug!(
                 "LoongArch guest external IRQ pending: VM[{}] VCpu[{}] physical_irq={}, \
@@ -387,7 +396,7 @@ impl LoongArchVCpu {
     fn init_hv(&mut self, config: LoongArchVCpuSetupConfig) {
         self.init_vm_context(config);
         #[cfg(target_arch = "loongarch64")]
-        crate::exception::init_guest_iocsr(self.vm_id, self.vcpu_id);
+        crate::exception::init_guest_iocsr(&self.iocsr_state, self.vcpu_id);
         #[cfg(target_arch = "loongarch64")]
         unsafe {
             gintc_set_hwi_passthrough(0);
@@ -569,6 +578,7 @@ impl LoongArchVCpu {
 
         match exit_reason {
             TrapKind::Synchronous => handle_exception_sync(
+                &self.iocsr_state,
                 &mut self.ctx,
                 self.vm_id,
                 self.vcpu_id,

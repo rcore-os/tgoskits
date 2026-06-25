@@ -13,7 +13,10 @@ mod vcpu;
 
 pub use self::{
     context_frame::LoongArchContextFrame,
-    exception::{TrapKind, clear_guest_iocsr_vm, handle_exception_irq, handle_exception_sync},
+    exception::{
+        LoongArchIocsrState, LoongArchIocsrStateRef, TrapKind, handle_exception_irq,
+        handle_exception_sync,
+    },
     pcpu::LoongArchPerCpu,
     registers::inject_interrupt,
     vcpu::{LoongArchVCpu, LoongArchVCpuCreateConfig, LoongArchVCpuSetupConfig},
