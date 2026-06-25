@@ -441,9 +441,10 @@ CONFIG_EOF
 #
 # Fetch the FULL closure of the committed Cargo.lock with `--locked`, against
 # the unfiltered workspace.  The cache must be a superset of whatever the guest
-# resolves: the guest runs filter-workspace.sh at build time (dropping
-# arch-incompatible members + usb-device/uvc), so a full-closure fetch always
-# covers it.
+# resolves: the full-closure fetch is a superset of whatever the guest
+# resolves.  riscv64/aarch64 guests run filter-workspace.sh at build time;
+# x86_64 builds via xtask against the full workspace — either way the
+# full --locked fetch covers all needed crates.
 #
 # Do NOT regenerate the lockfile from a filtered manifest: that re-resolves to
 # different versions than the baked lock (e.g. getrandom 0.3.x instead of the
@@ -467,7 +468,7 @@ nspawn_run "$OUTPUT_IMG" "
 info "Cargo dependencies pre-fetched (full --locked closure; QEMU filters at build time)."
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# Step 8: Pre-extract all .crate files to registry/src
+# Step 7: Pre-extract all .crate files to registry/src
 # ═══════════════════════════════════════════════════════════════════════════════
 # On StarryOS rsext4, reading the registry index (thousands of small files)
 # and extracting .crate tarballs is extremely slow due to single-block I/O.
@@ -502,7 +503,7 @@ nspawn_run "$OUTPUT_IMG" "
 info "Registry pre-extraction complete."
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# Step 9: Verify
+# Step 8: Verify
 # ═══════════════════════════════════════════════════════════════════════════════
 
 info "Verifying rootfs..."

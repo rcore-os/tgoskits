@@ -126,12 +126,6 @@ cd /opt/starryos
 	fi
 echo "[self-compile] ARG ARCH=${arch} TARGET=${target} SMP=${smp} CARGO_BUILD_JOBS=${cargo_build_jobs}"
 
-# Patch axalloc to 64G capacity (large RAM under self-compile).
-echo "[self-compile] Patching page allocator to 64G..."
-if [ -f os/arceos/modules/axalloc/Cargo.toml ] && [ -s os/arceos/modules/axalloc/Cargo.toml ]; then
-    sed -i '/^default = /s|page-alloc-4g|page-alloc-64g|g' os/arceos/modules/axalloc/Cargo.toml
-fi
-
 echo "[self-compile] Rustc version: \$(rustc --version 2>/dev/null || echo 'unknown')"
 echo "[self-compile] Cargo version: \$(cargo --version 2>/dev/null || echo 'unknown')"
 echo "[self-compile] Building (target=${target}, arch=${arch})..."
@@ -377,18 +371,6 @@ AXEOF
     echo "[prebuild] minimal .axconfig.toml generated (${arch})"
 }
 
-# ── axalloc Cargo.toml — page allocator config ───────────────────────────────
-gen_axalloc_cargo() {
-    mkdir -p "$overlay_dir/opt/starryos/os/arceos/modules/axalloc"
-    local src="$repo_root/os/arceos/modules/axalloc/Cargo.toml"
-    if [ -f "$src" ]; then
-        cp "$src" "$overlay_dir/opt/starryos/os/arceos/modules/axalloc/Cargo.toml"
-        echo "[prebuild] axalloc/Cargo.toml copied"
-    else
-        echo "[prebuild] WARNING: axalloc/Cargo.toml not found at $src" >&2
-    fi
-}
-
 # ── sh/ scripts — case-level shell scripts copied into guest ──────────────────
 # When prebuild.sh is used, the app runner no longer auto-copies sh/* into the
 # overlay.  We explicitly copy them here so existing qemu-*.toml files with
@@ -413,7 +395,6 @@ gen_inner_script
 gen_filter_workspace
 gen_linker_script
 gen_axconfig
-gen_axalloc_cargo
 gen_sh_scripts
 
 echo "[prebuild] All overlay files generated in $overlay_dir"

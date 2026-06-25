@@ -74,7 +74,7 @@ echo "[bootstrap] Build tools installed."
 echo "[bootstrap] Installing Rust via rustup..."
 if ! command -v rustup >/dev/null 2>&1; then
     curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
-        | sh -s -- -y --default-toolchain nightly-2026-04-27 --profile minimal \
+        | sh -s -- -y --default-toolchain $(grep -oP 'channel\s*=\s*"\K[^"]+' rust-toolchain.toml 2>/dev/null || echo nightly-2026-05-28) --profile minimal \
         || fail "rustup install failed"
 fi
 . "$HOME/.cargo/env" 2>/dev/null || . "$HOME/.cargo/env"
