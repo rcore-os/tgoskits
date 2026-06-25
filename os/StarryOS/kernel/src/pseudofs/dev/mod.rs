@@ -11,6 +11,7 @@ pub mod event;
 mod fb;
 #[cfg(feature = "sg2002")]
 mod irq_byte_ring;
+mod kmsg;
 #[cfg(feature = "k230-kpu")]
 mod kpu;
 #[cfg(feature = "dev-log")]
@@ -331,6 +332,17 @@ fn builder(fs: Arc<SimpleFs>) -> DirMaker {
             NodeType::CharacterDevice,
             DeviceId::new(10, 1024),
             Arc::new(CpuDmaLatency),
+        ),
+    );
+    // /dev/kmsg — standard char major 1, minor 11 (LANANA memory-device major,
+    // same group as null/zero/random above).
+    root.add(
+        "kmsg",
+        Device::new(
+            fs.clone(),
+            NodeType::CharacterDevice,
+            DeviceId::new(1, 11),
+            Arc::new(kmsg::Kmsg),
         ),
     );
     root.add(
