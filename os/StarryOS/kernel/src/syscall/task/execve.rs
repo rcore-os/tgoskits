@@ -385,6 +385,14 @@ fn do_execve(
         proc_data.proc.rename_thread(my_tid, tgid);
     }
 
+    // All ptrace tracees (both TRACEME and ATTACH) unconditionally
+    // stop with SIGTRAP on execve (Linux ptrace(2)). PTRACE_O_TRACEEXEC
+    // only controls whether the stop carries PTRACE_EVENT_EXEC data,
+    // not whether the stop itself occurs.
+    if proc_data.is_ptrace_traceme() || proc_data.is_ptrace_attached() {
+        proc_data.set_ptrace_exec_stop_pending();
+    }
+
     // Reset every user-visible register to a fresh-process state, not
     // just IP/SP. Linux's `start_thread()` clears all GP registers,
     // resets the TLS pointer, and clobbers any FP/SIMD state to the
@@ -406,14 +414,6 @@ fn do_execve(
         auxv_len,
         has_ldso,
     );
-
-    // All ptrace tracees (both TRACEME and ATTACH) unconditionally
-    // stop with SIGTRAP on execve (Linux ptrace(2)). PTRACE_O_TRACEEXEC
-    // only controls whether the stop carries PTRACE_EVENT_EXEC data,
-    // not whether the stop itself occurs.
-    if proc_data.is_ptrace_traceme() || proc_data.is_ptrace_attached() {
-        proc_data.set_ptrace_exec_stop_pending();
-    }
 
     // Unblock a vfork parent waiting for this child to exec.
     // Must be last: by now CLOEXEC fds are closed so the parent's pipe
