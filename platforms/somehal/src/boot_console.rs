@@ -34,24 +34,17 @@ fn device_id_from_bootargs_with(
     serial_device_id: impl Fn(usize) -> Option<DeviceId>,
 ) -> Result<DeviceId, ConsoleDeviceIdError> {
     let cmdline = cmdline.ok_or(ConsoleDeviceIdError::NotSpecified)?;
-    let mut saw_supported_console = false;
-    let mut saw_hardware_console = false;
-    let mut last_hardware_device_id = None;
+    let mut last_spec = None;
 
     for spec in console_specs(cmdline) {
-        saw_supported_console = true;
-        if let ConsoleSpec::HardwareSerial(index) = spec {
-            saw_hardware_console = true;
-            if let Some(device_id) = serial_device_id(index) {
-                last_hardware_device_id = Some(device_id);
-            }
-        }
+        last_spec = Some(spec);
     }
 
-    match last_hardware_device_id {
-        Some(device_id) => Ok(device_id),
-        None if saw_hardware_console => Err(ConsoleDeviceIdError::DeviceNotFound),
-        None if saw_supported_console => Err(ConsoleDeviceIdError::NoHardwareDevice),
+    match last_spec {
+        Some(ConsoleSpec::HardwareSerial(index)) => {
+            serial_device_id(index).ok_or(ConsoleDeviceIdError::DeviceNotFound)
+        }
+        Some(ConsoleSpec::VirtualTty) => Err(ConsoleDeviceIdError::NoHardwareDevice),
         None => Err(ConsoleDeviceIdError::NotSpecified),
     }
 }
@@ -186,19 +179,19 @@ mod tests {
         );
         assert_eq!(
             device_id_from_bootargs(Some("console=ttyS2 console=tty1")),
-            Err(ConsoleDeviceIdError::DeviceNotFound)
+            Err(ConsoleDeviceIdError::NoHardwareDevice)
         );
     }
 
     #[test]
-    fn virtual_console_does_not_clear_earlier_serial_console() {
+    fn later_virtual_console_overrides_earlier_serial_console() {
         let serial2_device = DeviceId::from(42);
 
         assert_eq!(
             device_id_from_bootargs_with(Some("console=ttyS2,1500000 console=tty1"), |index| {
                 (index == 2).then_some(serial2_device)
             }),
-            Ok(serial2_device)
+            Err(ConsoleDeviceIdError::NoHardwareDevice)
         );
     }
 
@@ -216,7 +209,7 @@ mod tests {
     }
 
     #[test]
-    fn later_missing_hardware_console_does_not_clear_earlier_available_serial_console() {
+    fn later_missing_hardware_console_overrides_earlier_available_serial_console() {
         let serial2_device = DeviceId::from(42);
 
         assert_eq!(
@@ -224,7 +217,14 @@ mod tests {
                 Some("console=ttyS2,1500000 console=ttyS3,115200 console=tty1"),
                 |index| (index == 2).then_some(serial2_device),
             ),
-            Ok(serial2_device)
+            Err(ConsoleDeviceIdError::NoHardwareDevice)
+        );
+        assert_eq!(
+            device_id_from_bootargs_with(
+                Some("console=ttyS2,1500000 console=ttyS3,115200"),
+                |index| (index == 2).then_some(serial2_device),
+            ),
+            Err(ConsoleDeviceIdError::DeviceNotFound)
         );
     }
 

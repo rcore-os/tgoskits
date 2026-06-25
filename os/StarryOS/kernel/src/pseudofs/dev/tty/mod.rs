@@ -56,7 +56,6 @@ pub struct Tty<R, W> {
     this: Weak<Self>,
     terminal: Arc<Terminal>,
     ldisc: Mutex<LineDiscipline<R, W>>,
-    cursor_position_request_match: Mutex<usize>,
     writer: W,
     is_ptm: bool,
 }
@@ -70,7 +69,6 @@ impl<R: TtyRead, W: TtyWrite + Clone> Tty<R, W> {
             this: this.clone(),
             terminal,
             ldisc,
-            cursor_position_request_match: Mutex::new(0),
             writer,
             is_ptm,
         })
@@ -116,10 +114,7 @@ impl<R: TtyRead, W: TtyWrite> DeviceOps for Tty<R, W> {
         if self.is_ptm {
             self.writer.write(buf);
         } else {
-            let (output, response_count) = {
-                let mut match_len = self.cursor_position_request_match.lock();
-                filter_cursor_position_requests(&mut match_len, buf)
-            };
+            let (output, response_count) = filter_cursor_position_requests(buf);
             let term = self.terminal.load_termios();
             write_output_bytes(&self.writer, term.as_ref(), &output);
             if response_count > 0 {
@@ -258,29 +253,21 @@ impl<R: TtyRead, W: TtyWrite> DeviceOps for Tty<R, W> {
     }
 }
 
-fn filter_cursor_position_requests(match_len: &mut usize, bytes: &[u8]) -> (Vec<u8>, usize) {
+fn filter_cursor_position_requests(bytes: &[u8]) -> (Vec<u8>, usize) {
     let mut output = Vec::with_capacity(bytes.len());
     let mut count = 0;
-    for &byte in bytes {
-        loop {
-            if byte == ANSI_CURSOR_POSITION_REQUEST[*match_len] {
-                *match_len += 1;
-                if *match_len == ANSI_CURSOR_POSITION_REQUEST.len() {
-                    *match_len = 0;
-                    count += 1;
-                }
-                break;
-            }
-            if *match_len > 0 {
-                output.extend_from_slice(&ANSI_CURSOR_POSITION_REQUEST[..*match_len]);
-                *match_len = 0;
-                continue;
-            } else {
-                output.push(byte);
-                break;
-            }
-        }
+    let mut rest = bytes;
+
+    while let Some(pos) = rest
+        .windows(ANSI_CURSOR_POSITION_REQUEST.len())
+        .position(|window| window == ANSI_CURSOR_POSITION_REQUEST)
+    {
+        output.extend_from_slice(&rest[..pos]);
+        count += 1;
+        rest = &rest[pos + ANSI_CURSOR_POSITION_REQUEST.len()..];
     }
+
+    output.extend_from_slice(rest);
     (output, count)
 }
 
@@ -331,50 +318,47 @@ mod tests {
     use super::filter_cursor_position_requests;
 
     #[test]
-    fn cursor_position_request_matcher_spans_writes() {
-        let mut match_len = 0;
-
+    fn cursor_position_request_matcher_does_not_buffer_partial_writes() {
         assert_eq!(
-            filter_cursor_position_requests(&mut match_len, b"\x1b["),
-            (Vec::new(), 0)
+            filter_cursor_position_requests(b"\x1b["),
+            (b"\x1b[".to_vec(), 0)
         );
-        assert_eq!(
-            filter_cursor_position_requests(&mut match_len, b"6"),
-            (Vec::new(), 0)
-        );
-        assert_eq!(
-            filter_cursor_position_requests(&mut match_len, b"n"),
-            (Vec::new(), 1)
-        );
-        assert_eq!(match_len, 0);
+        assert_eq!(filter_cursor_position_requests(b"6"), (b"6".to_vec(), 0));
+        assert_eq!(filter_cursor_position_requests(b"n"), (b"n".to_vec(), 0));
     }
 
     #[test]
     fn cursor_position_request_matcher_recovers_after_partial_mismatch() {
-        let mut match_len = 0;
-
         assert_eq!(
-            filter_cursor_position_requests(&mut match_len, b"\x1bX"),
+            filter_cursor_position_requests(b"\x1bX"),
             (b"\x1bX".to_vec(), 0)
         );
-        assert_eq!(match_len, 0);
+        assert_eq!(filter_cursor_position_requests(b"\x1b[6n"), (Vec::new(), 1));
         assert_eq!(
-            filter_cursor_position_requests(&mut match_len, b"\x1b[6n"),
-            (Vec::new(), 1)
-        );
-        assert_eq!(
-            filter_cursor_position_requests(&mut match_len, b"\x1b[6n\x1b[6n"),
+            filter_cursor_position_requests(b"\x1b[6n\x1b[6n"),
             (Vec::new(), 2)
         );
     }
 
     #[test]
     fn cursor_position_request_filter_preserves_other_output() {
-        let mut match_len = 0;
-
         assert_eq!(
-            filter_cursor_position_requests(&mut match_len, b"ab\x1b[6ncd"),
+            filter_cursor_position_requests(b"ab\x1b[6ncd"),
             (b"abcd".to_vec(), 1)
         );
+    }
+
+    #[test]
+    fn cursor_position_request_filter_flushes_unmatched_prefix() {
+        assert_eq!(
+            filter_cursor_position_requests(b"\x1b[31mred"),
+            (b"\x1b[31mred".to_vec(), 0)
+        );
+
+        assert_eq!(
+            filter_cursor_position_requests(b"\x1b["),
+            (b"\x1b[".to_vec(), 0)
+        );
+        assert_eq!(filter_cursor_position_requests(b"A"), (b"A".to_vec(), 0));
     }
 }
