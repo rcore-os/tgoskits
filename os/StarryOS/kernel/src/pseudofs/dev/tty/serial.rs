@@ -5,7 +5,7 @@ use core::{
 };
 
 use ax_driver::serial::{
-    self as ax_serial, BInterruptSerial, Config, RxFlag, RxItem, SerialDevice, SerialIrqOutcome,
+    self as ax_serial, Config, RxFlag, RxItem, SerialDevice, SerialIrqOutcome, SerialPort,
     SerialSoftWork,
 };
 use ax_errno::{AxError, AxResult};
@@ -73,7 +73,7 @@ struct SerialBackend {
     tty_name: String,
     rdrive_device_id: RDriveDeviceId,
     number: usize,
-    port: BInterruptSerial,
+    port: SerialPort,
     irq_num: usize,
     irq_handle: SpinNoIrq<Option<IrqHandle>>,
     started: AtomicBool,
@@ -278,14 +278,13 @@ impl SerialRegistry {
 
 fn new_serial_tty(number: usize, serial: SerialDevice) -> AxResult<SerialTtyEntry> {
     let tty_name = format!("ttyS{number}");
-    let runtime = serial.into_runtime_port()?;
-    let name = runtime.name().into();
-    let info = runtime.info().clone();
-    let rdrive_device_id = runtime.rdrive_device_id();
-    let Some(irq_num) = runtime.irq_num() else {
+    let name = serial.name().into();
+    let info = serial.info().clone();
+    let rdrive_device_id = serial.rdrive_device_id();
+    let Some(irq_num) = serial.irq_num() else {
         return Err(AxError::Unsupported);
     };
-    let port = runtime.port();
+    let port = serial.into_port();
     let backend = Arc::new(SerialBackend {
         name,
         tty_name: tty_name.clone(),
@@ -539,9 +538,8 @@ impl TtyWrite for SerialWriter {
         let _guard = self.backend.output_lock.lock();
         let mut written = 0;
         while written < buf.len() {
-            let result = self.backend.port.try_write(&buf[written..]);
-            publish_serial_outcome(&self.backend, result.outcome, false);
-            let count = result.accepted;
+            let (count, outcome) = self.backend.port.submit_tx(&buf[written..]);
+            publish_serial_outcome(&self.backend, outcome, false);
             if count == 0 {
                 self.backend.tx_notify.wait();
                 continue;
@@ -560,9 +558,9 @@ impl TtyWrite for SerialWriter {
         let Some(_guard) = self.backend.output_lock.try_lock() else {
             return 0;
         };
-        let result = self.backend.port.try_write(buf);
-        publish_serial_outcome(&self.backend, result.outcome, false);
-        result.accepted
+        let (count, outcome) = self.backend.port.submit_tx(buf);
+        publish_serial_outcome(&self.backend, outcome, false);
+        count
     }
 
     fn flush_echo_before_input(&self) -> bool {

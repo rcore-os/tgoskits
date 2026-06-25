@@ -11,8 +11,7 @@ use rdrive::{
 use some_serial::ns16550 as serial_ns16550;
 
 use super::{
-    BInterruptSerial, KernelSerialPort, PlatformSerialDevice, acpi_serial_device_info, prop_u32,
-    serial_device_info,
+    PlatformSerialDevice, SerialPort, acpi_serial_device_info, prop_u32, serial_device_info,
 };
 
 const ACPI_NS16550_CLOCK: u32 = 1_843_200;
@@ -60,21 +59,21 @@ fn probe(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
     let reg_width = prop_u32(node, "reg-io-width").unwrap_or(1) as usize;
     let reg_shift = prop_u32(node, "reg-shift").map(|shift| 1usize << shift);
     let ns16550_width = reg_shift.unwrap_or(reg_width);
-    let mut serial: Option<BInterruptSerial> = None;
+    let mut serial: Option<SerialPort> = None;
 
     for compatible in node.compatibles() {
         if compatible == "snps,dw-apb-uart" {
             let clock_freq = prop_u32(node, "clock-frequency")
                 .unwrap_or(serial_ns16550::dw_apb::SG2002_UART_CLOCK);
             let raw = serial_ns16550::DwApbUart::new_raw(mmio_base, clock_freq);
-            serial = Some(KernelSerialPort::new_dyn(raw));
+            serial = Some(SerialPort::new(raw));
             break;
         }
 
         if matches!(compatible, "ns16550a" | "ns16550") {
             let clock_freq = prop_u32(node, "clock-frequency").unwrap_or(24_000_000);
             let raw = serial_ns16550::Ns16550::new_mmio(mmio_base, clock_freq, ns16550_width);
-            serial = Some(KernelSerialPort::new_dyn(raw));
+            serial = Some(SerialPort::new(raw));
             break;
         }
     }
@@ -94,7 +93,7 @@ fn probe(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
 }
 
 struct AcpiSerialResource {
-    serial: BInterruptSerial,
+    serial: SerialPort,
     paddr: usize,
     mapped_base: usize,
 }
@@ -137,7 +136,7 @@ fn acpi_io_serial(info: &AcpiInfo<'_>) -> Result<Option<AcpiSerialResource>, OnP
         ))
     })?;
     let raw = serial_ns16550::Ns16550::new_port(port, ACPI_NS16550_CLOCK);
-    let serial = KernelSerialPort::new_dyn(raw);
+    let serial = SerialPort::new(raw);
     let mapped_base = serial.base_addr();
     Ok(Some(AcpiSerialResource {
         serial,
@@ -168,7 +167,7 @@ fn acpi_mmio_serial(info: &AcpiInfo<'_>) -> Result<AcpiSerialResource, OnProbeEr
     let mmio_base = crate::mmio::iomap(paddr, mmio_size)?;
     let raw =
         serial_ns16550::Ns16550::new_mmio(mmio_base, ACPI_NS16550_CLOCK, ACPI_NS16550_REG_WIDTH);
-    let serial = KernelSerialPort::new_dyn(raw);
+    let serial = SerialPort::new(raw);
     let mapped_base = serial.base_addr();
     Ok(AcpiSerialResource {
         serial,

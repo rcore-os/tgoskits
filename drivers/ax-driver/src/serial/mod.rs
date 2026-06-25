@@ -13,14 +13,14 @@ mod pl011;
 mod rockchip_fiq;
 mod runtime;
 
-pub use runtime::{BInterruptSerial, InterruptSerial, KernelSerialPort};
+pub use runtime::SerialPort;
 
 use crate::{BindingInfo, binding_info_from_acpi, binding_info_from_fdt};
 
 struct PlatformSerialDevice {
     name: String,
     info: SerialDeviceInfo,
-    interface: Option<BInterruptSerial>,
+    port: Option<SerialPort>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -38,23 +38,15 @@ pub struct SerialDevice {
     name: String,
     rdrive_device_id: DeviceId,
     info: SerialDeviceInfo,
-    interface: BInterruptSerial,
-}
-
-pub struct SerialRuntimePort {
-    name: String,
-    rdrive_device_id: DeviceId,
-    info: SerialDeviceInfo,
-    irq_num: usize,
-    port: BInterruptSerial,
+    port: SerialPort,
 }
 
 impl PlatformSerialDevice {
-    fn new(name: String, info: SerialDeviceInfo, interface: BInterruptSerial) -> Self {
+    fn new(name: String, info: SerialDeviceInfo, port: SerialPort) -> Self {
         Self {
             name,
             info,
-            interface: Some(interface),
+            port: Some(port),
         }
     }
 }
@@ -95,7 +87,7 @@ impl SerialDevice {
     }
 
     pub fn baudrate(&self) -> u32 {
-        self.interface.baudrate()
+        self.port.baudrate()
     }
 
     pub fn irq_num(&self) -> Option<usize> {
@@ -103,52 +95,15 @@ impl SerialDevice {
     }
 
     pub fn set_config(&self, config: &Config) -> Result<(), ConfigError> {
-        self.interface.set_config(config)
+        self.port.set_config(config)
     }
 
     pub fn set_baudrate(&self, baudrate: u32) -> Result<(), ConfigError> {
-        self.interface.set_config(&Config::new().baudrate(baudrate))
+        self.port.set_config(&Config::new().baudrate(baudrate))
     }
 
-    pub fn into_runtime_port(self) -> Result<SerialRuntimePort, AxError> {
-        let irq_num = self.info.irq_num.ok_or(AxError::Unsupported)?;
-        Ok(SerialRuntimePort {
-            name: self.name,
-            rdrive_device_id: self.rdrive_device_id,
-            info: self.info,
-            irq_num,
-            port: self.interface,
-        })
-    }
-}
-
-impl SerialRuntimePort {
-    pub fn name(&self) -> &str {
-        &self.name
-    }
-
-    pub fn info(&self) -> &SerialDeviceInfo {
-        &self.info
-    }
-
-    pub fn rdrive_device_id(&self) -> DeviceId {
-        self.rdrive_device_id
-    }
-
-    pub fn fdt_path(&self) -> &str {
-        &self.info.fdt_path
-    }
-
-    pub fn alias_index(&self) -> Option<usize> {
-        self.info.alias_index
-    }
-
-    pub fn irq_num(&self) -> Option<usize> {
-        Some(self.irq_num)
-    }
-
-    pub fn port(&self) -> BInterruptSerial {
-        self.port.clone()
+    pub fn into_port(self) -> SerialPort {
+        self.port
     }
 }
 
@@ -160,12 +115,12 @@ impl TryFrom<Device<PlatformSerialDevice>> for SerialDevice {
         let mut dev = base.lock().map_err(|_| AxError::BadState)?;
         let name = dev.name.clone();
         let info = dev.info.clone();
-        let interface = dev.interface.take().ok_or(AxError::BadState)?;
+        let port = dev.port.take().ok_or(AxError::BadState)?;
         Ok(Self {
             name,
             rdrive_device_id,
             info,
-            interface,
+            port,
         })
     }
 }

@@ -8,7 +8,7 @@ use some_serial::ns16550::rockchip_fiq::{
     RockchipFiqSerial,
 };
 
-use super::{KernelSerialPort, PlatformSerialDevice, SerialDeviceInfo, prop_u32};
+use super::{PlatformSerialDevice, SerialDeviceInfo, SerialPort, prop_u32};
 use crate::BindingInfo;
 
 model_register!(
@@ -39,7 +39,7 @@ fn probe(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
     }
 
     let raw = RockchipFiqSerial::new(mmio_base, fdt_config.config);
-    let serial = KernelSerialPort::new_dyn(raw);
+    let serial = SerialPort::new(raw);
     let base = serial.base_addr();
     info!(
         "Rockchip FIQ debugger UART@{base:#x} registered successfully, serial-id={}, baudrate={}, \

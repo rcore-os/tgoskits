@@ -8,57 +8,25 @@ use rdif_serial::{
     SerialIrqHandler, SerialIrqOutcome, SerialSoftWork, TSerialIrqHandler, TxQueue,
 };
 
-pub type BInterruptSerial = Arc<dyn InterruptSerial>;
-
-pub trait InterruptSerial: Send + Sync + 'static {
-    fn name(&self) -> &str;
-    fn base_addr(&self) -> usize;
-    fn owner_cpu(&self) -> usize;
-
-    fn baudrate(&self) -> u32;
-    fn startup(&self, config: &Config) -> Result<SerialIrqOutcome, ConfigError>;
-    fn shutdown(&self) -> Result<(), IrqError>;
-    fn set_config(&self, config: &Config) -> Result<(), ConfigError>;
-
-    fn try_write(&self, bytes: &[u8]) -> SerialWriteResult;
-    fn write_room(&self) -> usize;
-    fn chars_in_buffer(&self) -> usize;
-    fn tx_idle(&self) -> bool;
-
-    fn drain_rx(&self, out: &mut [RxItem]) -> usize;
-    fn rx_pending(&self) -> bool;
-
-    fn handle_irq_on_owner(&self, cpu: CpuId) -> SerialIrqOutcome;
-    fn service_on_owner(&self, work: SerialSoftWork) -> SerialIrqOutcome;
-
-    fn counters(&self) -> SerialCounters;
-}
-
-#[derive(Clone, Copy, Debug, Default)]
-pub struct SerialWriteResult {
-    pub accepted: usize,
-    pub outcome: SerialIrqOutcome,
-}
-
-pub struct KernelSerialPort<T: RawUart> {
+pub struct SerialPort {
     name: String,
     base_addr: usize,
     owner: OwnerId,
     tx: SpinNoIrq<TxQueue>,
     rx: SpinNoIrq<RxQueue>,
-    irq: Arc<SerialIrqHandler<T>>,
+    irq: Arc<SerialIrqHandler>,
 }
 
-impl<T: RawUart> KernelSerialPort<T> {
-    pub fn new(raw: T) -> Self {
+impl SerialPort {
+    pub fn new(raw: impl RawUart) -> Self {
         Self::new_with_owner(raw, 0)
     }
 
-    pub fn new_with_owner(raw: T, owner_cpu: usize) -> Self {
+    pub fn new_with_owner(raw: impl RawUart, owner_cpu: usize) -> Self {
         let name = raw.name().into();
         let base_addr = raw.base_addr();
         let owner = OwnerId(owner_cpu);
-        let parts = SerialIrqHandler::split(raw, owner);
+        let parts: rdif_serial::SerialParts = SerialIrqHandler::split(raw, owner);
         Self {
             name,
             base_addr,
@@ -69,26 +37,99 @@ impl<T: RawUart> KernelSerialPort<T> {
         }
     }
 
-    pub fn new_dyn(raw: T) -> BInterruptSerial {
-        Arc::new(Self::new(raw))
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    pub fn base_addr(&self) -> usize {
+        self.base_addr
+    }
+
+    pub fn owner_cpu(&self) -> usize {
+        self.owner.0
+    }
+
+    pub fn baudrate(&self) -> u32 {
+        self.run_on_owner(|irq, lease| irq.baudrate(lease))
+            .unwrap_or(0)
+    }
+
+    pub fn startup(&self, config: &Config) -> Result<SerialIrqOutcome, ConfigError> {
+        self.run_on_owner(|irq, lease| irq.startup(lease, config))
+            .map_err(|_| ConfigError::RegisterError)?
+    }
+
+    pub fn shutdown(&self) -> Result<(), IrqError> {
+        self.run_on_owner(|irq, lease| irq.shutdown(lease))
+    }
+
+    pub fn set_config(&self, config: &Config) -> Result<(), ConfigError> {
+        self.run_on_owner(|irq, lease| irq.set_config(lease, config))
+            .map_err(|_| ConfigError::RegisterError)?
+    }
+
+    pub fn submit_tx(&self, bytes: &[u8]) -> (usize, SerialIrqOutcome) {
+        let submit = self.tx.lock().submit(bytes);
+        let outcome = if submit.needs_kick {
+            self.service_on_owner(SerialSoftWork::TX_KICK)
+        } else {
+            SerialIrqOutcome::default()
+        };
+        (submit.accepted, outcome)
+    }
+
+    pub fn write_room(&self) -> usize {
+        self.tx.lock().write_room()
+    }
+
+    pub fn chars_in_buffer(&self) -> usize {
+        self.tx.lock().chars_in_buffer()
+    }
+
+    pub fn tx_idle(&self) -> bool {
+        self.run_on_owner(|irq, lease| irq.tx_idle(lease))
+            .unwrap_or(false)
+    }
+
+    pub fn drain_rx(&self, out: &mut [RxItem]) -> usize {
+        self.rx.lock().drain(out)
+    }
+
+    pub fn rx_pending(&self) -> bool {
+        self.rx.lock().rx_pending()
+    }
+
+    pub fn handle_irq_on_owner(&self, cpu: CpuId) -> SerialIrqOutcome {
+        let Some(lease) = self.owner_lease_for_cpu(cpu) else {
+            return SerialIrqOutcome::default();
+        };
+        self.irq.handle(lease)
+    }
+
+    pub fn service_on_owner(&self, work: SerialSoftWork) -> SerialIrqOutcome {
+        self.run_on_owner(|irq, lease| irq.service(lease, work))
+            .unwrap_or_default()
+    }
+
+    pub fn counters(&self) -> SerialCounters {
+        self.irq.counters()
     }
 
     fn run_on_owner<F, R>(&self, op: F) -> Result<R, IrqError>
     where
-        F: FnOnce(&SerialIrqHandler<T>, OwnerLease<'_>) -> R,
+        F: FnOnce(&SerialIrqHandler, OwnerLease<'_>) -> R,
     {
-        struct OwnerCall<'a, T: RawUart, F, R> {
-            port: &'a KernelSerialPort<T>,
+        struct OwnerCall<'a, F, R> {
+            port: &'a SerialPort,
             op: UnsafeCell<Option<F>>,
             result: UnsafeCell<Option<R>>,
         }
 
-        unsafe fn thunk<T, F, R>(arg: *mut ())
+        unsafe fn thunk<F, R>(arg: *mut ())
         where
-            T: RawUart,
-            F: FnOnce(&SerialIrqHandler<T>, OwnerLease<'_>) -> R,
+            F: FnOnce(&SerialIrqHandler, OwnerLease<'_>) -> R,
         {
-            let call = unsafe { &*(arg as *const OwnerCall<'_, T, F, R>) };
+            let call = unsafe { &*(arg as *const OwnerCall<'_, F, R>) };
             let op = unsafe { &mut *call.op.get() }
                 .take()
                 .expect("serial owner call entered twice");
@@ -105,8 +146,8 @@ impl<T: RawUart> KernelSerialPort<T> {
         unsafe {
             run_on_cpu_sync(
                 CpuId(self.owner.0),
-                thunk::<T, F, R>,
-                (&call as *const OwnerCall<'_, T, F, R> as *mut ()).cast(),
+                thunk::<F, R>,
+                (&call as *const OwnerCall<'_, F, R> as *mut ()).cast(),
             )?;
         }
         Ok(unsafe { &mut *call.result.get() }
@@ -116,87 +157,5 @@ impl<T: RawUart> KernelSerialPort<T> {
 
     fn owner_lease_for_cpu(&self, cpu: CpuId) -> Option<OwnerLease<'static>> {
         (cpu.0 == self.owner.0).then(|| unsafe { OwnerLease::new_unchecked(self.owner) })
-    }
-}
-
-impl<T: RawUart> InterruptSerial for KernelSerialPort<T> {
-    fn name(&self) -> &str {
-        &self.name
-    }
-
-    fn base_addr(&self) -> usize {
-        self.base_addr
-    }
-
-    fn owner_cpu(&self) -> usize {
-        self.owner.0
-    }
-
-    fn baudrate(&self) -> u32 {
-        self.run_on_owner(|irq, lease| irq.baudrate(lease))
-            .unwrap_or(0)
-    }
-
-    fn startup(&self, config: &Config) -> Result<SerialIrqOutcome, ConfigError> {
-        self.run_on_owner(|irq, lease| irq.startup(lease, config))
-            .map_err(|_| ConfigError::RegisterError)?
-    }
-
-    fn shutdown(&self) -> Result<(), IrqError> {
-        self.run_on_owner(|irq, lease| irq.shutdown(lease))
-    }
-
-    fn set_config(&self, config: &Config) -> Result<(), ConfigError> {
-        self.run_on_owner(|irq, lease| irq.set_config(lease, config))
-            .map_err(|_| ConfigError::RegisterError)?
-    }
-
-    fn try_write(&self, bytes: &[u8]) -> SerialWriteResult {
-        let submit = self.tx.lock().submit(bytes);
-        let mut outcome = SerialIrqOutcome::default();
-        if submit.needs_kick {
-            outcome = self.service_on_owner(SerialSoftWork::TX_KICK);
-        }
-        SerialWriteResult {
-            accepted: submit.accepted,
-            outcome,
-        }
-    }
-
-    fn write_room(&self) -> usize {
-        self.tx.lock().write_room()
-    }
-
-    fn chars_in_buffer(&self) -> usize {
-        self.tx.lock().chars_in_buffer()
-    }
-
-    fn tx_idle(&self) -> bool {
-        self.run_on_owner(|irq, lease| irq.tx_idle(lease))
-            .unwrap_or(false)
-    }
-
-    fn drain_rx(&self, out: &mut [RxItem]) -> usize {
-        self.rx.lock().drain(out)
-    }
-
-    fn rx_pending(&self) -> bool {
-        self.rx.lock().rx_pending()
-    }
-
-    fn handle_irq_on_owner(&self, cpu: CpuId) -> SerialIrqOutcome {
-        let Some(lease) = self.owner_lease_for_cpu(cpu) else {
-            return SerialIrqOutcome::default();
-        };
-        self.irq.handle(lease)
-    }
-
-    fn service_on_owner(&self, work: SerialSoftWork) -> SerialIrqOutcome {
-        self.run_on_owner(|irq, lease| irq.service(lease, work))
-            .unwrap_or_default()
-    }
-
-    fn counters(&self) -> SerialCounters {
-        self.irq.counters()
     }
 }

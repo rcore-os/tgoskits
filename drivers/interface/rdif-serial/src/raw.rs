@@ -1,3 +1,4 @@
+use alloc::boxed::Box;
 use core::{any::Any, num::NonZeroU32};
 
 use crate::{
@@ -93,4 +94,106 @@ pub trait RawUart: Send + Any + 'static {
 
     fn ack_modem_status(&mut self) {}
     fn ack_busy_detect(&mut self) {}
+}
+
+impl RawUart for Box<dyn RawUart> {
+    fn name(&self) -> &'static str {
+        self.as_ref().name()
+    }
+
+    fn base_addr(&self) -> usize {
+        self.as_ref().base_addr()
+    }
+
+    fn clock_freq(&self) -> Option<NonZeroU32> {
+        self.as_ref().clock_freq()
+    }
+
+    fn startup(&mut self, config: &Config) -> Result<(), ConfigError> {
+        self.as_mut().startup(config)
+    }
+
+    fn shutdown(&mut self) {
+        self.as_mut().shutdown();
+    }
+
+    fn set_config(&mut self, config: &Config) -> Result<(), ConfigError> {
+        self.as_mut().set_config(config)
+    }
+
+    fn baudrate(&self) -> u32 {
+        self.as_ref().baudrate()
+    }
+
+    fn data_bits(&self) -> crate::DataBits {
+        self.as_ref().data_bits()
+    }
+
+    fn stop_bits(&self) -> crate::StopBits {
+        self.as_ref().stop_bits()
+    }
+
+    fn parity(&self) -> crate::Parity {
+        self.as_ref().parity()
+    }
+
+    fn enable_loopback(&mut self) {
+        self.as_mut().enable_loopback();
+    }
+
+    fn disable_loopback(&mut self) {
+        self.as_mut().disable_loopback();
+    }
+
+    fn is_loopback_enabled(&self) -> bool {
+        self.as_ref().is_loopback_enabled()
+    }
+
+    fn set_irq_mask(&mut self, mask: InterruptMask) {
+        self.as_mut().set_irq_mask(mask);
+    }
+
+    fn take_irq_snapshot(&mut self) -> IrqSnapshot {
+        self.as_mut().take_irq_snapshot()
+    }
+
+    fn read_rx(&mut self) -> Option<RxSample> {
+        self.as_mut().read_rx()
+    }
+
+    fn tx_ready(&mut self) -> bool {
+        self.as_mut().tx_ready()
+    }
+
+    fn write_tx(&mut self, byte: u8) {
+        self.as_mut().write_tx(byte);
+    }
+
+    fn poll_status(&mut self) -> SerialEvent {
+        self.as_mut().poll_status()
+    }
+
+    fn write_byte(&mut self, byte: u8) {
+        self.as_mut().write_byte(byte);
+    }
+
+    fn read_byte(&mut self, status: SerialEvent) -> Option<Result<u8, TransferError>> {
+        self.as_mut().read_byte(status)
+    }
+
+    fn tx_load_size(&self) -> usize {
+        self.as_ref().tx_load_size()
+    }
+
+    fn tx_idle(&mut self) -> bool {
+        self.as_mut().tx_idle()
+    }
+
+    fn ack_modem_status(&mut self) {
+        self.as_mut().ack_modem_status();
+    }
+
+    fn ack_busy_detect(&mut self) {
+        self.as_mut().ack_busy_detect();
+    }
 }

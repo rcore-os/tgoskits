@@ -906,8 +906,8 @@ mod tests {
         unsafe { OwnerLease::new_unchecked(OwnerId(0)) }
     }
 
-    fn started_parts(uart: Pl011) -> SerialParts<Pl011, 64, 64> {
-        let parts = SerialIrqHandler::<_, 64, 64>::split(uart, OwnerId(0));
+    fn started_parts(uart: Pl011) -> SerialParts<64, 64> {
+        let parts = SerialIrqHandler::<64, 64>::split(uart, OwnerId(0));
         parts.irq.startup(owner_lease(), &Config::new()).unwrap();
         parts
     }

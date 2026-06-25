@@ -1,4 +1,4 @@
-use alloc::sync::Arc;
+use alloc::{boxed::Box, sync::Arc};
 use core::{
     cell::{Cell, UnsafeCell},
     marker::PhantomData,
@@ -265,30 +265,28 @@ pub trait TSerialIrqHandler: Send + Sync + 'static {
     fn service(&self, lease: OwnerLease<'_>, work: SerialSoftWork) -> SerialIrqOutcome;
 }
 
-pub struct SerialParts<
-    T: RawUart,
-    const TX: usize = DEFAULT_TX_CAP,
-    const RX: usize = DEFAULT_RX_CAP,
-> {
+type DynRawUart = Box<dyn RawUart>;
+
+pub struct SerialParts<const TX: usize = DEFAULT_TX_CAP, const RX: usize = DEFAULT_RX_CAP> {
     pub tx: TxQueue<TX>,
     pub rx: RxQueue<RX>,
-    pub irq: Arc<SerialIrqHandler<T, TX, RX>>,
+    pub irq: Arc<SerialIrqHandler<TX, RX>>,
 }
 
-pub struct SerialIrqHandler<
-    T: RawUart,
-    const TX: usize = DEFAULT_TX_CAP,
-    const RX: usize = DEFAULT_RX_CAP,
-> {
+pub struct SerialIrqHandler<const TX: usize = DEFAULT_TX_CAP, const RX: usize = DEFAULT_RX_CAP> {
     owner: OwnerId,
-    core: Arc<OwnerCell<CoreInner<T>>>,
+    core: Arc<OwnerCell<CoreInner<DynRawUart>>>,
     tx: Arc<TxState<TX>>,
     rx: Arc<RxState<RX>>,
     counters: Arc<SerialCountersAtomic>,
 }
 
-impl<T: RawUart, const TX: usize, const RX: usize> SerialIrqHandler<T, TX, RX> {
-    pub fn split(raw: T, owner: OwnerId) -> SerialParts<T, TX, RX> {
+impl<const TX: usize, const RX: usize> SerialIrqHandler<TX, RX> {
+    pub fn split(raw: impl RawUart, owner: OwnerId) -> SerialParts<TX, RX> {
+        Self::split_boxed(Box::new(raw), owner)
+    }
+
+    pub fn split_boxed(raw: Box<dyn RawUart>, owner: OwnerId) -> SerialParts<TX, RX> {
         let core = Arc::new(OwnerCell::new(CoreInner::new(raw)));
         let tx = Arc::new(TxState::new());
         let rx = Arc::new(RxState::new());
@@ -383,7 +381,7 @@ impl<T: RawUart, const TX: usize, const RX: usize> SerialIrqHandler<T, TX, RX> {
         assert_eq!(lease.owner(), self.owner);
     }
 
-    fn handle_locked(&self, core: &mut CoreInner<T>) -> SerialIrqOutcome {
+    fn handle_locked(&self, core: &mut CoreInner<DynRawUart>) -> SerialIrqOutcome {
         let mut out = SerialIrqOutcome::default();
         if core.state != PortState::Running {
             return out;
@@ -439,7 +437,7 @@ impl<T: RawUart, const TX: usize, const RX: usize> SerialIrqHandler<T, TX, RX> {
 
     fn service_soft_locked(
         &self,
-        core: &mut CoreInner<T>,
+        core: &mut CoreInner<DynRawUart>,
         work: SerialSoftWork,
     ) -> SerialIrqOutcome {
         let mut out = SerialIrqOutcome::default();
@@ -458,7 +456,7 @@ impl<T: RawUart, const TX: usize, const RX: usize> SerialIrqHandler<T, TX, RX> {
         out
     }
 
-    fn service_rx(&self, core: &mut CoreInner<T>, budget: usize) -> RxService {
+    fn service_rx(&self, core: &mut CoreInner<DynRawUart>, budget: usize) -> RxService {
         let mut result = RxService::default();
         for _ in 0..budget {
             let Some(sample) = core.raw.read_rx() else {
@@ -516,7 +514,7 @@ impl<T: RawUart, const TX: usize, const RX: usize> SerialIrqHandler<T, TX, RX> {
 
     fn service_tx(
         &self,
-        core: &mut CoreInner<T>,
+        core: &mut CoreInner<DynRawUart>,
         budget: usize,
         out: &mut SerialIrqOutcome,
     ) -> usize {
@@ -555,9 +553,7 @@ impl<T: RawUart, const TX: usize, const RX: usize> SerialIrqHandler<T, TX, RX> {
     }
 }
 
-impl<T: RawUart, const TX: usize, const RX: usize> TSerialIrqHandler
-    for SerialIrqHandler<T, TX, RX>
-{
+impl<const TX: usize, const RX: usize> TSerialIrqHandler for SerialIrqHandler<TX, RX> {
     fn owner(&self) -> OwnerId {
         self.owner
     }
@@ -760,7 +756,7 @@ mod tests {
 
     #[test]
     fn tx_queue_only_submits_software_work() {
-        let parts = SerialIrqHandler::<MockUart, 8, 8>::split(MockUart::new(), OwnerId(0));
+        let parts = SerialIrqHandler::<8, 8>::split(MockUart::new(), OwnerId(0));
         let mut tx = parts.tx;
 
         let submit = tx.submit(b"abc");
@@ -771,10 +767,19 @@ mod tests {
     }
 
     #[test]
+    fn split_erases_raw_type_and_keeps_capacity_generics() {
+        let parts: SerialParts<8, 8> = SerialIrqHandler::split(MockUart::new(), OwnerId(0));
+
+        assert_eq!(parts.irq.owner(), OwnerId(0));
+        assert_eq!(parts.tx.write_room(), 7);
+        assert!(!parts.rx.rx_pending());
+    }
+
+    #[test]
     fn owner_service_flushes_tx_queue() {
         let mut uart = MockUart::new();
         uart.tx_ready_budget = 3;
-        let parts = SerialIrqHandler::<MockUart, 8, 8>::split(uart, OwnerId(0));
+        let parts = SerialIrqHandler::<8, 8>::split(uart, OwnerId(0));
         let mut tx = parts.tx;
         tx.submit(b"abc");
         parts.irq.startup(lease(), &Config::new()).unwrap();
@@ -790,7 +795,7 @@ mod tests {
     fn tx_kick_wakes_again_when_queue_still_has_data() {
         let mut uart = MockUart::new();
         uart.tx_ready_budget = 1;
-        let parts = SerialIrqHandler::<MockUart, 8, 8>::split(uart, OwnerId(0));
+        let parts = SerialIrqHandler::<8, 8>::split(uart, OwnerId(0));
         let mut tx = parts.tx;
         tx.submit(b"abc");
         parts.irq.startup(lease(), &Config::new()).unwrap();
@@ -807,7 +812,7 @@ mod tests {
         let mut uart = MockUart::new();
         uart.tx_ready_budget = TX_KICK_BUDGET + 8;
         uart.tx_load_size = 1;
-        let parts = SerialIrqHandler::<MockUart, 64, 8>::split(uart, OwnerId(0));
+        let parts = SerialIrqHandler::<64, 8>::split(uart, OwnerId(0));
         let mut tx = parts.tx;
         let data = [b'x'; TX_KICK_BUDGET + 8];
         tx.submit(&data);
@@ -826,7 +831,7 @@ mod tests {
             .irq(IrqSource::RX_DATA)
             .rx_byte(b'A')
             .rx_byte(b'B');
-        let parts = SerialIrqHandler::<MockUart, 8, 8>::split(uart, OwnerId(0));
+        let parts = SerialIrqHandler::<8, 8>::split(uart, OwnerId(0));
         parts.irq.startup(lease(), &Config::new()).unwrap();
 
         let outcome = parts.irq.handle(lease());
@@ -858,7 +863,7 @@ mod tests {
         for &byte in burst {
             uart = uart.rx_byte(byte);
         }
-        let parts = SerialIrqHandler::<MockUart, 8, 128>::split(uart, OwnerId(0));
+        let parts = SerialIrqHandler::<8, 128>::split(uart, OwnerId(0));
         parts.irq.startup(lease(), &Config::new()).unwrap();
 
         let outcome = parts.irq.handle(lease());
@@ -887,7 +892,7 @@ mod tests {
             flag: RxFlag::Parity,
             overrun: true,
         });
-        let parts = SerialIrqHandler::<MockUart, 8, 8>::split(uart, OwnerId(0));
+        let parts = SerialIrqHandler::<8, 8>::split(uart, OwnerId(0));
         parts.irq.startup(lease(), &Config::new()).unwrap();
 
         let outcome = parts.irq.handle(lease());
