@@ -26,6 +26,10 @@
 #define PIDFD_SIGNAL_PROCESS_GROUP (1U << 2)
 #endif
 
+#ifndef WNOWAIT
+#define WNOWAIT 0x01000000
+#endif
+
 #ifndef SI_USER
 #define SI_USER 0
 #endif
@@ -54,6 +58,21 @@ static int x_pidfd_open(pid_t pid, unsigned int flags)
 static int x_pidfd_send_signal(int pidfd, int sig, void *info, unsigned int flags)
 {
     return (int)syscall(__NR_pidfd_send_signal, pidfd, sig, info, flags);
+}
+
+static int wait_child_zombie(pid_t child)
+{
+    siginfo_t info;
+
+    for (int i = 0; i < 1000; i++) {
+        memset(&info, 0, sizeof(info));
+        if (waitid(P_PID, (id_t)child, &info, WEXITED | WNOWAIT | WNOHANG) == 0 &&
+            info.si_pid == child) {
+            return 0;
+        }
+        usleep(1000);
+    }
+    return -1;
 }
 
 /* Child blocks on sync[0] until parent writes one byte to sync[1]. */
@@ -356,10 +375,7 @@ static void test_send_signal_zero_probes(void)
         _exit(0);
     }
 
-    for (int i = 0; i < 1000 && kill(child, 0) != 0; i++) {
-        usleep(1000);
-    }
-    CHECK(kill(child, 0) == 0, "子进程 zombie 未 reap");
+    CHECK(wait_child_zombie(child) == 0, "子进程 zombie 未 reap");
 
     pfd = x_pidfd_open(child, 0);
     if (pfd >= 0) {

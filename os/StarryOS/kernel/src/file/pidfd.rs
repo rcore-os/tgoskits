@@ -77,6 +77,20 @@ impl PidFd {
         get_process_data(proc_data.proc.pid())?;
         Ok(proc_data)
     }
+
+    pub fn process_data_signal_target(&self) -> AxResult<Arc<ProcessData>> {
+        // Linux keeps pidfds usable for signal permission/probe checks while
+        // the target is a zombie that has not been reaped yet.  `waitpid()`
+        // removes the zombie entry and usually drops the last strong
+        // `ProcessData` owner, so the weak upgrade below still reports ESRCH
+        // for a reaped pidfd.
+        if let Some(thread_exit) = &self.thread_exit
+            && thread_exit.load(Ordering::Acquire)
+        {
+            return Err(AxError::NoSuchProcess);
+        }
+        self.proc_data.upgrade().ok_or(AxError::NoSuchProcess)
+    }
 }
 impl FileLike for PidFd {
     fn path(&self) -> Cow<'_, str> {

@@ -112,12 +112,20 @@ static ssize_t io_write_all(int fd, const void *buf, size_t len)
 static long read_status_kb_from(const char *path, const char *key)
 {
     int fd = open(path, O_RDONLY);
-    expect(fd >= 0, path);
+    if (fd < 0) {
+        fprintf(stderr, "FAIL: open %s for %s errno=%d (%s)\n",
+                path, key, errno, strerror(errno));
+        abort();
+    }
 
     char buf[4096];
     ssize_t n = read(fd, buf, sizeof(buf) - 1);
     close(fd);
-    expect(n > 0, path);
+    if (n <= 0) {
+        fprintf(stderr, "FAIL: read %s for %s returned %zd errno=%d (%s)\n",
+                path, key, n, errno, strerror(errno));
+        abort();
+    }
     buf[n] = '\0';
 
     char prefix[64];
@@ -171,12 +179,20 @@ static int rss_kb_not_dropped_by_page(long before, long after, long page_kb)
 static long read_status_pid_from(const char *path, const char *key)
 {
     int fd = open(path, O_RDONLY);
-    expect(fd >= 0, path);
+    if (fd < 0) {
+        fprintf(stderr, "FAIL: open %s for %s errno=%d (%s)\n",
+                path, key, errno, strerror(errno));
+        abort();
+    }
 
     char buf[4096];
     ssize_t n = read(fd, buf, sizeof(buf) - 1);
     close(fd);
-    expect(n > 0, path);
+    if (n <= 0) {
+        fprintf(stderr, "FAIL: read %s for %s returned %zd errno=%d (%s)\n",
+                path, key, n, errno, strerror(errno));
+        abort();
+    }
     buf[n] = '\0';
 
     char prefix[64];
@@ -660,10 +676,10 @@ static void test_fork_rw_file_read_child_write(long page_size)
             (ssize_t)sizeof(child_after_write)) {
             _exit(1);
         }
+        close(notify[1]);
         if (io_read_all(release[0], &byte, 1) != 1) {
             _exit(1);
         }
-        close(notify[1]);
         close(release[0]);
         close(fd);
         _exit(0);
