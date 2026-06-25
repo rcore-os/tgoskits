@@ -88,6 +88,16 @@ pub fn cpu_id_list() -> Option<impl Iterator<Item = usize>> {
     Some(cpu_id_list_from_fdt(fdt_base()?))
 }
 
+pub fn platform_name() -> Option<&'static str> {
+    platform_name_from_fdt(fdt_base()?)
+}
+
+fn platform_name_from_fdt<'a>(fdt: fdt_raw::Fdt<'a>) -> Option<&'a str> {
+    let root = fdt.find_by_path("/")?;
+    root.find_property_str("model")
+        .or_else(|| root.compatibles().next())
+}
+
 fn is_cpu_node_available(node: &fdt_raw::Node<'_>) -> bool {
     node.name().starts_with("cpu@")
         && matches!(node.find_property_str("device_type"), None | Some("cpu"))
@@ -114,6 +124,38 @@ mod tests {
         let cpu_ids: Vec<_> = cpu_id_list_from_fdt(raw).collect();
 
         assert_eq!(cpu_ids.as_slice(), &[1, 2, 3, 4]);
+    }
+
+    #[test]
+    fn platform_name_prefers_root_model() {
+        let mut fdt = minimal_cpu_fdt();
+        let root = fdt.root_id();
+        fdt.node_mut(root)
+            .unwrap()
+            .set_property(prop_str("model", "QEMU Arm Virtual Machine"));
+        fdt.node_mut(root)
+            .unwrap()
+            .set_property(prop_strs("compatible", &["linux,dummy-virt"]));
+        let fdt_data = fdt.encode();
+        let raw = fdt_raw::Fdt::from_bytes(fdt_data.as_ref()).expect("parse test fdt");
+
+        assert_eq!(
+            platform_name_from_fdt(raw),
+            Some("QEMU Arm Virtual Machine")
+        );
+    }
+
+    #[test]
+    fn platform_name_falls_back_to_root_compatible() {
+        let mut fdt = minimal_cpu_fdt();
+        let root = fdt.root_id();
+        fdt.node_mut(root)
+            .unwrap()
+            .set_property(prop_strs("compatible", &["qemu,virt", "linux,dummy-virt"]));
+        let fdt_data = fdt.encode();
+        let raw = fdt_raw::Fdt::from_bytes(fdt_data.as_ref()).expect("parse test fdt");
+
+        assert_eq!(platform_name_from_fdt(raw), Some("qemu,virt"));
     }
 
     fn minimal_cpu_fdt() -> Fdt {

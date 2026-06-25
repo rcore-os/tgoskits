@@ -94,9 +94,9 @@ pub use ax_cpu as cpu;
 pub use ax_cpu::asm;
 #[cfg(feature = "uspace")]
 pub use ax_cpu::uspace;
-pub use ax_plat::init::init_later;
 #[cfg(feature = "smp")]
 pub use ax_plat::init::init_later_secondary;
+pub use ax_plat::{init::init_later, platform::platform_name};
 
 /// Initializes the platform and boot argument.
 /// This function should be called as early as possible.
