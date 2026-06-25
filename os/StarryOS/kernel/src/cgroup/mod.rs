@@ -8,12 +8,30 @@
 use alloc::sync::Arc;
 
 pub use ax_cgroup::{
-    CgroupId, CgroupNode, GLOBAL_CGROUP_ROOT, all_attr_names, attach_initial_process,
-    attr_is_read_only, begin_fork, child_names, controllers_text, create_child, ensure_node_exists,
-    exit_process, is_controller_attr, is_interface_file_name, lookup_child, path, procs_text,
-    read_attr_at, register_provider, remove_child, root_id, subtree_control_text, write_attr,
-    write_procs, write_subtree_control,
+    CgroupError, CgroupId, CgroupNode, CgroupResult, GLOBAL_CGROUP_ROOT, all_attr_names,
+    attach_initial_process, attr_is_read_only, begin_fork, child_names, controllers_text,
+    create_child, ensure_node_exists, exit_process, is_controller_attr, is_interface_file_name,
+    lookup_child, path, procs_text, read_attr_at, register_provider, remove_child, root_id,
+    subtree_control_text, write_attr, write_procs, write_subtree_control,
 };
+use ax_errno::LinuxError;
+
+/// Convert cgroup core error to VFS error.
+/// Free function to satisfy Rust orphan rule: neither `CgroupError` nor
+/// `VfsError` (= `AxError`) is defined in this crate.
+pub(crate) fn cgroup_err_to_vfs(e: CgroupError) -> axfs_ng_vfs::VfsError {
+    match e {
+        CgroupError::NotInitialized => LinuxError::EINVAL.into(),
+        CgroupError::NotFound => LinuxError::ENOENT.into(),
+        CgroupError::AlreadyExists => LinuxError::EEXIST.into(),
+        CgroupError::ResourceBusy => LinuxError::EBUSY.into(),
+        CgroupError::InvalidInput => LinuxError::EINVAL.into(),
+        CgroupError::NoSuchProcess => LinuxError::ESRCH.into(),
+        CgroupError::OperationNotPermitted => LinuxError::EPERM.into(),
+        CgroupError::DirectoryNotEmpty => LinuxError::ENOTEMPTY.into(),
+        CgroupError::LimitExceeded => LinuxError::EAGAIN.into(),
+    }
+}
 
 mod cpu;
 

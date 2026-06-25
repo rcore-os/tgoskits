@@ -4,7 +4,7 @@
 
 use core::sync::atomic::{AtomicI64, Ordering};
 
-use ax_errno::{AxError, AxResult};
+use crate::CgroupError;
 
 /// Per-cgroup pids state.
 pub struct PidsState {
@@ -34,7 +34,7 @@ impl PidsState {
     }
 
     /// Atomically check and charge this local pids counter.
-    pub fn try_charge_local(&self) -> AxResult<()> {
+    pub fn try_charge_local(&self) -> Result<(), CgroupError> {
         let max = self.max.load(Ordering::Acquire);
         if max < 0 {
             self.current.fetch_add(1, Ordering::AcqRel);
@@ -43,7 +43,7 @@ impl PidsState {
         loop {
             let current = self.current.load(Ordering::Acquire);
             if current >= max {
-                return Err(AxError::WouldBlock);
+                return Err(CgroupError::LimitExceeded);
             }
             if self
                 .current

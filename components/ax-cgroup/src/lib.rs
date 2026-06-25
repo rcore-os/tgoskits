@@ -9,6 +9,31 @@
 
 extern crate alloc;
 
+/// cgroup-specific error type, independent of any VFS implementation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CgroupError {
+    /// Subsystem not initialized or provider not registered.
+    NotInitialized,
+    /// Requested cgroup node not found.
+    NotFound,
+    /// A cgroup with this name already exists.
+    AlreadyExists,
+    /// cgroup has active members, pending forks, or domain constraint violation.
+    ResourceBusy,
+    /// Invalid input (malformed UTF-8, out-of-range value, etc.).
+    InvalidInput,
+    /// Target process does not exist or is zombie.
+    NoSuchProcess,
+    /// Operation not permitted (e.g. writing read-only attribute).
+    OperationNotPermitted,
+    /// Cannot remove a cgroup that still has child cgroups.
+    DirectoryNotEmpty,
+    /// pids.max limit reached; Linux fork(2) semantics → EAGAIN.
+    LimitExceeded,
+}
+
+pub type CgroupResult<T> = Result<T, CgroupError>;
+
 mod core;
 pub mod cpu;
 pub mod pids;
@@ -26,7 +51,6 @@ pub use core::{CgroupNode, GLOBAL_CGROUP_ROOT};
 use ::core::{fmt::Write, str, sync::atomic::Ordering};
 use ax_kspin::SpinNoIrq;
 use ax_lazyinit::LazyInit;
-use axfs_ng_vfs::{VfsError, VfsResult};
 #[allow(unused_imports)]
 use log::info;
 pub use provider::CgroupProvider;
@@ -97,12 +121,12 @@ pub fn register_provider(provider: &'static dyn CgroupProvider) {
         .set(provider);
 }
 
-fn with_provider<F, R>(f: F) -> VfsResult<R>
+fn with_provider<F, R>(f: F) -> CgroupResult<R>
 where
-    F: FnOnce(&dyn CgroupProvider) -> VfsResult<R>,
+    F: FnOnce(&dyn CgroupProvider) -> CgroupResult<R>,
 {
-    let cell = PROVIDER.get().ok_or(VfsError::BadState)?;
-    let provider = cell.get().ok_or(VfsError::BadState)?;
+    let cell = PROVIDER.get().ok_or(CgroupError::NotInitialized)?;
+    let provider = cell.get().ok_or(CgroupError::NotInitialized)?;
     f(provider)
 }
 
@@ -110,44 +134,44 @@ pub fn root_id() -> CgroupId {
     core::root_id()
 }
 
-pub fn path(id: CgroupId) -> VfsResult<String> {
+pub fn path(id: CgroupId) -> CgroupResult<String> {
     core::path(id)
 }
 
-pub fn ensure_node_exists(id: CgroupId) -> VfsResult<()> {
+pub fn ensure_node_exists(id: CgroupId) -> CgroupResult<()> {
     core::get_node(id).map(|_| ())
 }
 
-pub fn child_names(id: CgroupId) -> VfsResult<Vec<String>> {
+pub fn child_names(id: CgroupId) -> CgroupResult<Vec<String>> {
     core::child_names(id)
 }
 
-pub fn lookup_child(parent_id: CgroupId, name: &str) -> VfsResult<CgroupId> {
+pub fn lookup_child(parent_id: CgroupId, name: &str) -> CgroupResult<CgroupId> {
     core::lookup_child(parent_id, name)
 }
 
-pub fn create_child(parent_id: CgroupId, name: &str) -> VfsResult<CgroupId> {
-    let _membership = MEMBERSHIP.get().ok_or(VfsError::BadState)?.lock();
+pub fn create_child(parent_id: CgroupId, name: &str) -> CgroupResult<CgroupId> {
+    let _membership = MEMBERSHIP.get().ok_or(CgroupError::NotInitialized)?.lock();
     if is_interface_file_name(name) || is_controller_attr(parent_id, name)? {
-        return Err(VfsError::AlreadyExists);
+        return Err(CgroupError::AlreadyExists);
     }
     core::create_child(parent_id, name)
 }
 
-pub fn remove_child(parent_id: CgroupId, name: &str) -> VfsResult<()> {
-    let membership = MEMBERSHIP.get().ok_or(VfsError::BadState)?.lock();
+pub fn remove_child(parent_id: CgroupId, name: &str) -> CgroupResult<()> {
+    let membership = MEMBERSHIP.get().ok_or(CgroupError::NotInitialized)?.lock();
     let child_id = core::lookup_child(parent_id, name)?;
     if pending_count_in_node(&membership, child_id) != 0 {
-        return Err(VfsError::ResourceBusy);
+        return Err(CgroupError::ResourceBusy);
     }
     core::remove_child(parent_id, name)
 }
 
-pub fn controllers_text(id: CgroupId) -> VfsResult<String> {
+pub fn controllers_text(id: CgroupId) -> CgroupResult<String> {
     Ok(core::get_node(id)?.controller_list())
 }
 
-pub fn procs_text(id: CgroupId) -> VfsResult<String> {
+pub fn procs_text(id: CgroupId) -> CgroupResult<String> {
     let node = core::get_node(id)?;
     let mut text = String::new();
     for pid in node.procs.lock().iter() {
@@ -156,39 +180,39 @@ pub fn procs_text(id: CgroupId) -> VfsResult<String> {
     Ok(text)
 }
 
-pub fn subtree_control_text(id: CgroupId) -> VfsResult<String> {
+pub fn subtree_control_text(id: CgroupId) -> CgroupResult<String> {
     let node = core::get_node(id)?;
     Ok(node.subtree_control.lock().join(" "))
 }
 
-pub fn write_subtree_control(id: CgroupId, data: &[u8]) -> VfsResult<()> {
-    let membership = MEMBERSHIP.get().ok_or(VfsError::BadState)?.lock();
+pub fn write_subtree_control(id: CgroupId, data: &[u8]) -> CgroupResult<()> {
+    let membership = MEMBERSHIP.get().ok_or(CgroupError::NotInitialized)?.lock();
     let node = core::get_node(id)?;
     let text = str::from_utf8(data)
-        .map_err(|_| VfsError::InvalidInput)?
+        .map_err(|_| CgroupError::InvalidInput)?
         .trim();
     let mut next = node.subtree_control.lock().clone();
     for part in text.split_whitespace() {
         if let Some(name) = part.strip_prefix('+') {
             if !controller_available(&node, name) {
-                return Err(VfsError::InvalidInput);
+                return Err(CgroupError::InvalidInput);
             }
             if is_domain_controller(name)
                 && node.id != root_id()
                 && node_has_processes_or_pending(&membership, &node)
             {
-                return Err(VfsError::ResourceBusy);
+                return Err(CgroupError::ResourceBusy);
             }
             if !next.iter().any(|controller| controller == name) {
                 next.push(name.to_string());
             }
         } else if let Some(name) = part.strip_prefix('-') {
             if !controller_available(&node, name) {
-                return Err(VfsError::InvalidInput);
+                return Err(CgroupError::InvalidInput);
             }
             next.retain(|controller| controller != name);
         } else {
-            return Err(VfsError::InvalidInput);
+            return Err(CgroupError::InvalidInput);
         }
     }
     next.sort_by_key(|controller| match controller.as_str() {
@@ -200,11 +224,11 @@ pub fn write_subtree_control(id: CgroupId, data: &[u8]) -> VfsResult<()> {
     Ok(())
 }
 
-pub fn write_procs(id: CgroupId, data: &[u8]) -> VfsResult<()> {
+pub fn write_procs(id: CgroupId, data: &[u8]) -> CgroupResult<()> {
     let text = str::from_utf8(data)
-        .map_err(|_| VfsError::InvalidInput)?
+        .map_err(|_| CgroupError::InvalidInput)?
         .trim();
-    let pid: u32 = text.parse().map_err(|_| VfsError::InvalidInput)?;
+    let pid: u32 = text.parse().map_err(|_| CgroupError::InvalidInput)?;
     migrate_process(pid, id)
 }
 
@@ -218,7 +242,7 @@ fn path_to_root(node: Arc<CgroupNode>) -> Vec<Arc<CgroupNode>> {
     path
 }
 
-fn charge_path(path: &[Arc<CgroupNode>]) -> VfsResult<()> {
+fn charge_path(path: &[Arc<CgroupNode>]) -> CgroupResult<()> {
     for (charged, node) in path.iter().enumerate() {
         if let Err(err) = node.pids.try_charge_local() {
             for charged_node in &path[..charged] {
@@ -277,8 +301,8 @@ fn remove_process_from_node(node: &CgroupNode, pid: u32) -> bool {
     procs.len() != old_len
 }
 
-pub fn attach_initial_process(pid: u32) -> VfsResult<()> {
-    let mut membership = MEMBERSHIP.get().ok_or(VfsError::BadState)?.lock();
+pub fn attach_initial_process(pid: u32) -> CgroupResult<()> {
+    let mut membership = MEMBERSHIP.get().ok_or(CgroupError::NotInitialized)?.lock();
     let root = core::get_node(root_id())?;
     charge_path(&path_to_root(root.clone()))?;
     add_process_to_node(&root, pid);
@@ -286,15 +310,36 @@ pub fn attach_initial_process(pid: u32) -> VfsResult<()> {
     Ok(())
 }
 
+/// Three-state lifecycle for CgroupForkGuard.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum GuardState {
+    /// begin_fork succeeded; charge is held but membership not yet committed.
+    Pending,
+    /// commit() called; membership is finalized, pid is in procs list.
+    Committed,
+    /// cancel_fork() called after commit; membership reversed, Drop is no-op.
+    Cancelled,
+}
+
 pub struct CgroupForkGuard {
     cgroup: Arc<CgroupNode>,
     charged_path: Vec<Arc<CgroupNode>>,
     pid: u32,
-    committed: bool,
+    state: GuardState,
 }
 
 impl CgroupForkGuard {
-    pub fn commit(mut self) {
+    /// Finalize fork: register membership.
+    /// Must be called BEFORE child becomes runnable (before spawn_task).
+    ///
+    /// Deviation from reviewer B3: uses `&mut self` instead of `self` to
+    /// allow subsequent `cancel_fork()` call if spawn_task fails.
+    pub fn commit(&mut self) {
+        debug_assert!(
+            self.state == GuardState::Pending,
+            "commit called on non-Pending guard: {:?}",
+            self.state
+        );
         let mut membership = MEMBERSHIP
             .get()
             .expect("cgroup membership initialized")
@@ -302,31 +347,82 @@ impl CgroupForkGuard {
         membership.pending_pids.remove(&self.pid);
         membership.detached_pids.remove(&self.pid);
         add_process_to_node(&self.cgroup, self.pid);
-        self.committed = true;
+        self.state = GuardState::Committed;
+    }
+
+    /// Cancel a committed fork (e.g. if a future spawn_task fails after commit).
+    /// Reverses all commit effects; after this call, Drop is a no-op.
+    /// Linux equivalent: cgroup_cancel_fork().
+    ///
+    /// INVARIANT: Execution order is strict —
+    ///   1. remove_process_from_node (reverse membership)
+    ///   2. uncharge_path (release pids charge)
+    ///   3. set state = Cancelled
+    /// Reversing steps 1 and 2 would create a window where other CPUs see
+    /// membership present but charge already decremented.
+    ///
+    /// NOTE: cancel_fork does NOT touch pending_pids or detached_pids —
+    /// commit() already removed the pid from both maps. Re-removing here
+    /// would be a no-op but misleading to future readers.
+    ///
+    /// Idempotent: calling cancel_fork on an already-Cancelled guard is a no-op.
+    pub fn cancel_fork(&mut self) {
+        if self.state == GuardState::Cancelled {
+            return; // Already cancelled — idempotent.
+        }
+        // Hard state precondition: cancel_fork is ONLY meaningful for
+        // Committed guards. Pending should never reach here (call site bug);
+        // Cancelled is handled above. Fires in debug + test builds.
+        debug_assert_eq!(
+            self.state,
+            GuardState::Committed,
+            "cancel_fork: expected Committed, got {:?}",
+            self.state
+        );
+        // Step 1: Reverse commit — remove from procs list.
+        remove_process_from_node(&self.cgroup, self.pid);
+        // Step 2: Uncharge the path immediately — do NOT rely on Drop.
+        uncharge_path(&self.charged_path);
+        // Step 3: Transition to terminal Cancelled state; Drop becomes no-op.
+        self.state = GuardState::Cancelled;
     }
 }
 
 impl Drop for CgroupForkGuard {
     fn drop(&mut self) {
-        if !self.committed {
-            if let Some(membership) = MEMBERSHIP.get() {
-                let mut membership = membership.lock();
-                membership.pending_pids.remove(&self.pid);
+        match self.state {
+            GuardState::Pending => {
+                // Never committed: rollback pending + uncharge.
+                // MEMBERSHIP cleanup is best-effort; if uninitialized (extreme
+                // panic scenario), skip pending cleanup only.
+                if let Some(membership) = MEMBERSHIP.get() {
+                    let mut membership = membership.lock();
+                    membership.pending_pids.remove(&self.pid);
+                }
+                // VERIFIED FACT: uncharge_path operates only on AtomicI64
+                // in CgroupNode.pids (see uncharge_local impl); it does NOT
+                // access MEMBERSHIP or any global state. charge_path and
+                // path_to_root are also MEMBERSHIP-free.
+                // Therefore, safe to call unconditionally even if MEMBERSHIP
+                // was never initialized.
                 uncharge_path(&self.charged_path);
-            } else {
-                uncharge_path(&self.charged_path);
+            }
+            GuardState::Committed | GuardState::Cancelled => {
+                // Committed: membership finalized, child owns its charge.
+                // Cancelled: cancel_fork already reversed everything.
+                // Both are terminal states — Drop MUST be a no-op.
             }
         }
     }
 }
 
-pub fn begin_fork(parent_cgroup: &Arc<CgroupNode>, pid: u32) -> VfsResult<CgroupForkGuard> {
-    let mut membership = MEMBERSHIP.get().ok_or(VfsError::BadState)?.lock();
+pub fn begin_fork(parent_cgroup: &Arc<CgroupNode>, pid: u32) -> CgroupResult<CgroupForkGuard> {
+    let mut membership = MEMBERSHIP.get().ok_or(CgroupError::NotInitialized)?.lock();
     if !can_host_process(parent_cgroup) {
-        return Err(VfsError::ResourceBusy);
+        return Err(CgroupError::ResourceBusy);
     }
     if membership.pending_pids.contains_key(&pid) {
-        return Err(VfsError::ResourceBusy);
+        return Err(CgroupError::ResourceBusy);
     }
     let charged_path = path_to_root(parent_cgroup.clone());
     charge_path(&charged_path)?;
@@ -335,31 +431,31 @@ pub fn begin_fork(parent_cgroup: &Arc<CgroupNode>, pid: u32) -> VfsResult<Cgroup
         cgroup: parent_cgroup.clone(),
         charged_path,
         pid,
-        committed: false,
+        state: GuardState::Pending,
     })
 }
 
-pub fn migrate_process(pid: u32, target_id: CgroupId) -> VfsResult<()> {
-    let mut membership = MEMBERSHIP.get().ok_or(VfsError::BadState)?.lock();
+pub fn migrate_process(pid: u32, target_id: CgroupId) -> CgroupResult<()> {
+    let mut membership = MEMBERSHIP.get().ok_or(CgroupError::NotInitialized)?.lock();
     let target = core::get_node(target_id)?;
     if !can_host_process(&target) {
-        return Err(VfsError::ResourceBusy);
+        return Err(CgroupError::ResourceBusy);
     }
     if membership.pending_pids.contains_key(&pid) {
-        return Err(VfsError::ResourceBusy);
+        return Err(CgroupError::ResourceBusy);
     }
 
     with_provider(|provider| {
         if membership.detached_pids.contains(&pid) || provider.is_zombie(pid) {
-            return Err(VfsError::NoSuchProcess);
+            return Err(CgroupError::NoSuchProcess);
         }
 
-        let old = provider.get_cgroup(pid).ok_or(VfsError::NotFound)?;
+        let old = provider.get_cgroup(pid).ok_or(CgroupError::NotFound)?;
         if old.id == target.id {
             return Ok(());
         }
         if !old.procs.lock().contains(&pid) {
-            return Err(VfsError::NoSuchProcess);
+            return Err(CgroupError::NoSuchProcess);
         }
 
         let target_path = path_to_root(target.clone());
@@ -378,7 +474,7 @@ pub fn migrate_process(pid: u32, target_id: CgroupId) -> VfsResult<()> {
 
         if !remove_process_from_node(&old, pid) {
             uncharge_path(&target_path[..target_unique_len]);
-            return Err(VfsError::NoSuchProcess);
+            return Err(CgroupError::NoSuchProcess);
         }
         add_process_to_node(&target, pid);
         provider.set_cgroup(pid, target);
@@ -388,11 +484,21 @@ pub fn migrate_process(pid: u32, target_id: CgroupId) -> VfsResult<()> {
     })
 }
 
-pub fn exit_process(pid: u32) -> VfsResult<()> {
-    let mut membership = MEMBERSHIP.get().ok_or(VfsError::BadState)?.lock();
+pub fn exit_process(pid: u32) -> CgroupResult<()> {
+    let mut membership = MEMBERSHIP.get().ok_or(CgroupError::NotInitialized)?.lock();
+
+    // INVARIANT: If commit is always before spawn_task, a pid in pending_pids
+    // should never reach exit_process — the child is not yet runnable.
+    // If this assert fires, there is a bug in the fork ordering.
+    debug_assert!(
+        !membership.pending_pids.contains_key(&pid),
+        "exit_process called on pending pid {pid} — fork ordering violation"
+    );
 
     with_provider(|provider| {
-        let cgroup = provider.get_cgroup(pid).ok_or(VfsError::NotFound)?;
+        let cgroup = provider.get_cgroup(pid).ok_or(CgroupError::NotFound)?;
+        // remove_process_from_node returns false if pid was already removed
+        // (idempotent — prevents double uncharge on repeated exit_process calls).
         if remove_process_from_node(&cgroup, pid) {
             uncharge_path(&path_to_root(cgroup));
         }
@@ -401,7 +507,7 @@ pub fn exit_process(pid: u32) -> VfsResult<()> {
     })
 }
 
-pub fn all_attr_names(id: CgroupId) -> VfsResult<Vec<String>> {
+pub fn all_attr_names(id: CgroupId) -> CgroupResult<Vec<String>> {
     let node = core::get_node(id)?;
     Ok(CONTROLLER_ATTRS
         .iter()
@@ -410,14 +516,14 @@ pub fn all_attr_names(id: CgroupId) -> VfsResult<Vec<String>> {
         .collect())
 }
 
-pub fn is_controller_attr(id: CgroupId, name: &str) -> VfsResult<bool> {
+pub fn is_controller_attr(id: CgroupId, name: &str) -> CgroupResult<bool> {
     let node = core::get_node(id)?;
     Ok(CONTROLLER_ATTRS
         .iter()
         .any(|attr| attr.name == name && attr_available(&node, name)))
 }
 
-pub fn attr_is_read_only(id: CgroupId, name: &str) -> VfsResult<Option<bool>> {
+pub fn attr_is_read_only(id: CgroupId, name: &str) -> CgroupResult<Option<bool>> {
     ensure_node_exists(id)?;
     Ok(CONTROLLER_ATTRS
         .iter()
@@ -456,9 +562,14 @@ fn attr_available(node: &CgroupNode, name: &str) -> bool {
     controller_available(node, owner)
 }
 
-pub fn read_attr_at(id: CgroupId, name: &str, offset: usize, buf: &mut [u8]) -> VfsResult<usize> {
+pub fn read_attr_at(
+    id: CgroupId,
+    name: &str,
+    offset: usize,
+    buf: &mut [u8],
+) -> CgroupResult<usize> {
     if !is_controller_attr(id, name)? {
-        return Err(VfsError::NotFound);
+        return Err(CgroupError::NotFound);
     }
     let value = match name {
         "pids.max" => {
@@ -497,7 +608,7 @@ pub fn read_attr_at(id: CgroupId, name: &str, offset: usize, buf: &mut [u8]) -> 
                 bw.throttled_usec.load(Ordering::Acquire),
             )
         }
-        _ => return Err(VfsError::NotFound),
+        _ => return Err(CgroupError::NotFound),
     };
 
     let bytes = value.as_bytes();
@@ -510,62 +621,62 @@ pub fn read_attr_at(id: CgroupId, name: &str, offset: usize, buf: &mut [u8]) -> 
     Ok(n)
 }
 
-pub fn write_attr(id: CgroupId, name: &str, data: &[u8]) -> VfsResult<usize> {
+pub fn write_attr(id: CgroupId, name: &str, data: &[u8]) -> CgroupResult<usize> {
     let node = core::get_node(id)?;
     if !is_controller_attr(id, name)? {
-        return Err(VfsError::NotFound);
+        return Err(CgroupError::NotFound);
     }
     let text = str::from_utf8(data)
-        .map_err(|_| VfsError::InvalidInput)?
+        .map_err(|_| CgroupError::InvalidInput)?
         .trim();
     match name {
         "pids.max" => {
             let value = if text == "max" {
                 -1
             } else {
-                text.parse::<i64>().map_err(|_| VfsError::InvalidInput)?
+                text.parse::<i64>().map_err(|_| CgroupError::InvalidInput)?
             };
             if text != "max" && value < 0 {
-                return Err(VfsError::InvalidInput);
+                return Err(CgroupError::InvalidInput);
             }
             node.pids.max.store(value, Ordering::Release);
         }
-        "pids.current" | "cpu.stat" => return Err(VfsError::OperationNotPermitted),
+        "pids.current" | "cpu.stat" => return Err(CgroupError::OperationNotPermitted),
         "cpu.weight" => {
-            let value = text.parse::<i64>().map_err(|_| VfsError::InvalidInput)?;
+            let value = text.parse::<i64>().map_err(|_| CgroupError::InvalidInput)?;
             if !(1..=10_000).contains(&value) {
-                return Err(VfsError::InvalidInput);
+                return Err(CgroupError::InvalidInput);
             }
             node.cpu.weight.store(value, Ordering::Release);
         }
         "cpu.max" => write_cpu_max(&node, text)?,
-        _ => return Err(VfsError::NotFound),
+        _ => return Err(CgroupError::NotFound),
     }
     Ok(data.len())
 }
 
-fn write_cpu_max(node: &CgroupNode, text: &str) -> VfsResult<()> {
+fn write_cpu_max(node: &CgroupNode, text: &str) -> CgroupResult<()> {
     let parts = text.split_whitespace().collect::<Vec<_>>();
     if parts.is_empty() || parts.len() > 2 {
-        return Err(VfsError::InvalidInput);
+        return Err(CgroupError::InvalidInput);
     }
     let quota = if parts[0] == "max" {
         -1
     } else {
         let quota = parts[0]
             .parse::<i64>()
-            .map_err(|_| VfsError::InvalidInput)?;
+            .map_err(|_| CgroupError::InvalidInput)?;
         if quota <= 0 {
-            return Err(VfsError::InvalidInput);
+            return Err(CgroupError::InvalidInput);
         }
         quota
     };
     let period = if parts.len() == 2 {
         let period = parts[1]
             .parse::<i64>()
-            .map_err(|_| VfsError::InvalidInput)?;
+            .map_err(|_| CgroupError::InvalidInput)?;
         if !(1_000..=1_000_000).contains(&period) {
-            return Err(VfsError::InvalidInput);
+            return Err(CgroupError::InvalidInput);
         }
         period
     } else {
@@ -579,4 +690,61 @@ fn write_cpu_max(node: &CgroupNode, text: &str) -> VfsResult<()> {
     node.cpu.bandwidth.consumed.store(0, Ordering::Release);
     node.cpu.bandwidth.period_start.store(0, Ordering::Release);
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct MockProvider;
+    impl CgroupProvider for MockProvider {
+        fn is_zombie(&self, _pid: u32) -> bool {
+            true
+        }
+        fn get_cgroup(&self, _pid: u32) -> Option<Arc<CgroupNode>> {
+            None
+        }
+        fn set_cgroup(&self, _pid: u32, _cgroup: Arc<CgroupNode>) {}
+    }
+
+    static INIT: std::sync::Once = std::sync::Once::new();
+
+    fn ensure_init() {
+        INIT.call_once(|| {
+            init();
+            register_provider(&MockProvider);
+        });
+    }
+
+    #[test]
+    fn test_charge_uncharge_roundtrip() {
+        ensure_init();
+        let root = core::GLOBAL_CGROUP_ROOT.get().expect("root initialized");
+        let before = root.pids.current.load(Ordering::Acquire);
+        let path = path_to_root(root.clone());
+        charge_path(&path).expect("charge should succeed");
+        let after_charge = root.pids.current.load(Ordering::Acquire);
+        assert_eq!(after_charge, before + 1);
+        uncharge_path(&path);
+        let after_uncharge = root.pids.current.load(Ordering::Acquire);
+        assert_eq!(after_uncharge, before);
+    }
+
+    #[test]
+    fn test_fork_limit_exceeded() {
+        ensure_init();
+        let root = core::GLOBAL_CGROUP_ROOT.get().expect("root initialized");
+        // Set pids.max = 1
+        root.pids.max.store(1, Ordering::Release);
+        // First begin_fork should succeed (current=0 < max=1)
+        let mut guard = begin_fork(&root, 10001).expect("first begin_fork");
+        guard.commit();
+        // Second begin_fork should fail (current=1 >= max=1)
+        let result = begin_fork(&root, 10002);
+        assert_eq!(result.unwrap_err(), CgroupError::LimitExceeded);
+        // Cleanup: remove process, uncharge, restore pids.max
+        remove_process_from_node(&root, 10001);
+        uncharge_path(&path_to_root(root.clone()));
+        root.pids.max.store(-1, Ordering::Release);
+    }
 }

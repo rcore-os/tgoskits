@@ -224,7 +224,7 @@ impl CloneArgs {
             (parent_tid as *mut Pid).vm_write(tid).ok();
         }
 
-        let (new_proc_data, cgroup_guard) = if flags.contains(CloneFlags::THREAD) {
+        let (mut new_proc_data, mut cgroup_guard) = if flags.contains(CloneFlags::THREAD) {
             // Thread: share parent's ProcessData, no cgroup pids charge.
             // Threads belong to the same process and share cgroup membership;
             // only the process leader's PID appears in cgroup.procs.
@@ -282,8 +282,8 @@ impl CloneArgs {
             let parent_cgroup = old_proc_data.cgroup.read().clone();
             *proc_data.cgroup.write() = parent_cgroup.clone();
 
-            let cgroup_guard =
-                crate::cgroup::begin_fork(&parent_cgroup, tid).map_err(|_| AxError::WouldBlock)?;
+            let cgroup_guard = crate::cgroup::begin_fork(&parent_cgroup, tid)
+                .map_err(crate::cgroup::cgroup_err_to_vfs)?;
             proc_data.set_heap_top(old_proc_data.get_heap_top());
             proc_data.replace_personality(old_proc_data.personality());
             // Inherit parent dumpable (PR_SET_DUMPABLE state). Linux: child
@@ -417,11 +417,27 @@ impl CloneArgs {
             new_proc_data.set_ptrace_stop(tid, starry_signal::Signo::SIGSTOP, &new_uctx);
         }
 
-        let task = spawn_task(new_task);
-        add_task_to_table(&task);
-        if let Some(guard) = cgroup_guard {
+        // INVARIANT: From this point (guard.commit()) to spawn_task(), NO fallible
+        // operation may be inserted. If a future code change adds a fallible call
+        // between commit and spawn_task, it MUST call guard.cancel_fork() on failure
+        // to reverse the cgroup membership and prevent pids charge leak.
+        //
+        // SMP visibility: commit modifies cgroup membership under MEMBERSHIP lock.
+        // spawn_task publishes the child via run-queue insertion, which uses a
+        // release/acquire lock (rq lock). Other CPUs see the child only after
+        // acquiring the rq lock, establishing happens-before for the membership
+        // state written by commit.
+        if let Some(ref mut guard) = cgroup_guard {
             guard.commit();
         }
+
+        let task = spawn_task(new_task);
+        // SAFETY/INVARIANT: spawn_task currently returns AxTaskRef (Arc-based) and
+        // does not return Result. If a future version changes spawn_task to be
+        // fallible (returning Result), the failure branch MUST call
+        // guard.cancel_fork() to reverse cgroup membership and prevent pids charge
+        // leak. Failure to do so is a correctness regression.
+        add_task_to_table(&task);
 
         if trace_clone && needs_vfork_block {
             let _ = crate::task::send_signal_to_thread(

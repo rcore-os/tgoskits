@@ -11,9 +11,9 @@ use alloc::{
 use ::core::sync::atomic::{AtomicU64, Ordering};
 use ax_kspin::SpinNoIrq;
 use ax_lazyinit::LazyInit;
-use axfs_ng_vfs::{VfsError, VfsResult};
 
 use super::{CgroupId, ROOT_ID, cpu::CpuState, pids::PidsState};
+use crate::{CgroupError, CgroupResult};
 
 static NEXT_CGROUP_ID: AtomicU64 = AtomicU64::new(ROOT_ID + 1);
 static CGROUP_REGISTRY: LazyInit<SpinNoIrq<BTreeMap<CgroupId, Weak<CgroupNode>>>> = LazyInit::new();
@@ -62,10 +62,10 @@ impl CgroupNode {
     }
 
     /// Create a child cgroup under this node.
-    pub fn create_child(self: &Arc<Self>, name: &str) -> VfsResult<Arc<CgroupNode>> {
+    pub fn create_child(self: &Arc<Self>, name: &str) -> CgroupResult<Arc<CgroupNode>> {
         let mut children = self.children.lock();
         if children.contains_key(name) {
-            return Err(VfsError::AlreadyExists);
+            return Err(CgroupError::AlreadyExists);
         }
         let child_path = if self.path == "/" {
             format!("/{}", name)
@@ -137,45 +137,45 @@ fn unregister_subtree(node: &Arc<CgroupNode>) {
     unregister_node(node.id);
 }
 
-pub fn get_node(id: CgroupId) -> VfsResult<Arc<CgroupNode>> {
-    let registry = CGROUP_REGISTRY.get().ok_or(VfsError::NotFound)?;
+pub fn get_node(id: CgroupId) -> CgroupResult<Arc<CgroupNode>> {
+    let registry = CGROUP_REGISTRY.get().ok_or(CgroupError::NotFound)?;
     registry
         .lock()
         .get(&id)
         .and_then(Weak::upgrade)
-        .ok_or(VfsError::NotFound)
+        .ok_or(CgroupError::NotFound)
 }
 
-pub fn path(id: CgroupId) -> VfsResult<String> {
+pub fn path(id: CgroupId) -> CgroupResult<String> {
     Ok(get_node(id)?.path.clone())
 }
 
-pub fn child_names(id: CgroupId) -> VfsResult<Vec<String>> {
+pub fn child_names(id: CgroupId) -> CgroupResult<Vec<String>> {
     Ok(get_node(id)?.children.lock().keys().cloned().collect())
 }
 
-pub fn lookup_child(parent_id: CgroupId, name: &str) -> VfsResult<CgroupId> {
+pub fn lookup_child(parent_id: CgroupId, name: &str) -> CgroupResult<CgroupId> {
     get_node(parent_id)?
         .children
         .lock()
         .get(name)
         .map(|child| child.id)
-        .ok_or(VfsError::NotFound)
+        .ok_or(CgroupError::NotFound)
 }
 
-pub fn create_child(parent_id: CgroupId, name: &str) -> VfsResult<CgroupId> {
+pub fn create_child(parent_id: CgroupId, name: &str) -> CgroupResult<CgroupId> {
     Ok(get_node(parent_id)?.create_child(name)?.id)
 }
 
-pub fn remove_child(parent_id: CgroupId, name: &str) -> VfsResult<()> {
+pub fn remove_child(parent_id: CgroupId, name: &str) -> CgroupResult<()> {
     let parent = get_node(parent_id)?;
     let mut children = parent.children.lock();
-    let child = children.get(name).cloned().ok_or(VfsError::NotFound)?;
+    let child = children.get(name).cloned().ok_or(CgroupError::NotFound)?;
     if !child.children.lock().is_empty() {
-        return Err(VfsError::DirectoryNotEmpty);
+        return Err(CgroupError::DirectoryNotEmpty);
     }
     if !child.procs.lock().is_empty() {
-        return Err(VfsError::ResourceBusy);
+        return Err(CgroupError::ResourceBusy);
     }
     children.remove(name);
     unregister_subtree(&child);
