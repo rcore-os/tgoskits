@@ -174,6 +174,10 @@ pub struct DrmGetCap {
 
 /// DRM capability IDs (`DRM_CAP_*`).  Only the ones we report are listed.
 pub const DRM_CAP_DUMB_BUFFER: u64 = 0x1;
+pub const DRM_CAP_PRIME: u64 = 0x5;
+/// DRM PRIME capability bits for `DRM_CAP_PRIME` value — bitmask, not a bool.
+pub const DRM_PRIME_CAP_IMPORT: u64 = 0x1;
+pub const DRM_PRIME_CAP_EXPORT: u64 = 0x2;
 pub const DRM_CAP_TIMESTAMP_MONOTONIC: u64 = 0x6;
 pub const DRM_CAP_CRTC_IN_VBLANK_EVENT: u64 = 0x12;
 /// Reported by Linux DRM drivers that honor the `modifier[]` array in
