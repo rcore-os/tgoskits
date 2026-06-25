@@ -29,3 +29,13 @@ install -Dm0755 "$app_dir/debug/apache-graceful-signal.sh" "$overlay_dir/usr/bin
 install -Dm0755 "$app_dir/debug/apache-cgi-pipe-exec.sh" "$overlay_dir/usr/bin/apache-cgi-pipe-exec.sh"
 install -Dm0755 "$app_dir/debug/apache-log-append-reopen.sh" "$overlay_dir/usr/bin/apache-log-append-reopen.sh"
 install -Dm0755 "$app_dir/runner/apache-alpine-mirror.sh" "$overlay_dir/usr/bin/apache-alpine-mirror.sh"
+
+# Debug-only: TCP_DEFER_ACCEPT setsockopt probe (script + prebuilt static binary).
+# The static binary is a build artifact and is not tracked in the repository.
+# Set APACHE_DEBUG_PROBE_BIN to its path to have it injected into the overlay;
+# when unset the smoke/phase workflows are unaffected.
+install -Dm0755 "$app_dir/debug/apache-tcp-defer-accept-probe.sh" "$overlay_dir/usr/bin/apache-tcp-defer-accept-probe.sh"
+probe_bin="${APACHE_DEBUG_PROBE_BIN:-}"
+if [[ -n "$probe_bin" && -f "$probe_bin" ]]; then
+    install -Dm0755 "$probe_bin" "$overlay_dir/usr/bin/tcp-defer-accept-probe"
+fi
