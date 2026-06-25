@@ -115,11 +115,14 @@ impl Build {
     }
 
     fn prepare_loongarch64(&mut self) {
-        self.kernel_paddr =
-            env_u64("SOMEBOOT_LOONGARCH64_KERNEL_LOAD_PADDR").unwrap_or(0x8000_0000);
+        if let Some(kernel_paddr) = env_u64("SOMEBOOT_LOONGARCH64_KERNEL_LOAD_PADDR") {
+            self.kernel_paddr = kernel_paddr;
+        }
+        let pe_image_base = env_u64("SOMEBOOT_LOONGARCH64_PE_IMAGE_BASE").unwrap_or(0);
         self.kernel_vaddr = 0xffff_ffff_8000_0000;
 
         println!("cargo:rustc-cfg=efi");
+        println!("cargo:rustc-env=SOMEBOOT_LOONGARCH64_PE_IMAGE_BASE={pe_image_base:#x}");
 
         self.write_linker_script(LinkerArch::Loongarch64);
     }
