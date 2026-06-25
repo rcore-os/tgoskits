@@ -138,6 +138,31 @@ fn starry_system_grouped_qemu_configs_report_subcase_timing() {
 }
 
 #[test]
+fn signal_interrupt_eintr_subcase_bounds_child_wait() {
+    let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let source_path = workspace_root
+        .join("test-suit/starryos/qemu-smp1/system/test-signal-interrupt-eintr/src/main.c");
+    let source = fs::read_to_string(&source_path)
+        .unwrap_or_else(|err| panic!("failed to read {}: {err}", source_path.display()));
+
+    assert!(
+        source.contains("poll(&pfd, 1, -1)") && source.matches("kill(child, SIGUSR1)").count() >= 2,
+        "{} must preserve the poll EINTR check and retry SIGUSR1 while the child is still running",
+        source_path.display()
+    );
+    assert!(
+        source.contains("TEST_TIMEOUT_MS") && source.contains("WNOHANG"),
+        "{} must bound the parent wait for the interruptible child",
+        source_path.display()
+    );
+    assert!(
+        !source.contains("waitpid(child, &status, 0)"),
+        "{} must not let a stuck child consume the whole grouped QEMU timeout",
+        source_path.display()
+    );
+}
+
+#[test]
 fn zombie_bugfix_commands_are_in_system_grouped_qemu_case() {
     let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     let system_dir = workspace_root.join("test-suit/starryos/qemu-smp1/system");
