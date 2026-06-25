@@ -4,7 +4,8 @@ mod binding;
     feature = "k230-sdhci",
     feature = "phytium-mci",
     feature = "rockchip-dwmmc",
-    feature = "rockchip-sdhci"
+    feature = "rockchip-sdhci",
+    feature = "starfive-jh7110-dwmmc"
 ))]
 pub(crate) mod sdmmc;
 #[allow(unused)]
@@ -30,6 +31,8 @@ mod rockchip;
 pub mod rockchip_mmc;
 #[cfg(feature = "rockchip-dwmmc")]
 pub mod rockchip_sd;
+#[cfg(feature = "starfive-jh7110-dwmmc")]
+pub mod starfive_mmc;
 
 #[cfg(sync_block_dev)]
 use alloc::{boxed::Box, sync::Arc};

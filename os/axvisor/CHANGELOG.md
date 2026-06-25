@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.14](https://github.com/rcore-os/tgoskits/compare/axvisor-v0.5.13...axvisor-v0.5.14) - 2026-06-23
+
+### Other
+
+- Enhance archive extraction logic and add legacy file tests ([#1355](https://github.com/rcore-os/tgoskits/pull/1355))
+
 ## [0.5.13](https://github.com/rcore-os/tgoskits/compare/axvisor-v0.5.12...axvisor-v0.5.13) - 2026-06-22
 
 ### Added

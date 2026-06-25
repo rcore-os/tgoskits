@@ -4,10 +4,11 @@
 pub use ax_config::devices::IPI_IRQ;
 use ax_cpu::trap::set_irq_handler;
 pub use ax_plat::irq::{
-    AutoEnable, CpuId, CpuMask, IrqContext, IrqError, IrqHandle, IrqNumber, IrqOutcome, IrqRequest,
-    IrqReturn, IrqScope, IrqStatus, RawIrqHandler, ShareMode, cpu_online, disable_irq,
-    dispatch_irq, enable_irq, free_irq, handle, irq_status, request_irq, request_percpu_irq,
-    request_shared_irq, set_enable, set_run_on_cpu_sync,
+    AutoEnable, BoxedIrqHandler, CpuId, CpuMask, IrqAffinity, IrqContext, IrqError, IrqExecution,
+    IrqHandle, IrqNumber, IrqOutcome, IrqRequest, IrqReturn, IrqScope, IrqStatus, RawIrqHandler,
+    ShareMode, cpu_online, disable_irq, dispatch_irq, enable_irq, free_irq, handle, irq_status,
+    request_boxed_irq, request_boxed_shared_irq, request_irq, request_percpu_irq,
+    request_shared_irq, run_on_cpu_sync, set_enable, set_run_on_cpu_sync, synchronize_irq,
 };
 #[cfg(feature = "ipi")]
 pub use ax_plat::irq::{IpiTarget, send_ipi};

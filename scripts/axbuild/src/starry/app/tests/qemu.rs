@@ -159,6 +159,35 @@ fail_regex = []
         load_qemu_app_case_fields(root.path(), &app, qemu_config.as_deref().unwrap()).unwrap();
 
     assert_eq!(fields.rootfs_path, Some(rootfs_path));
+    assert!(fields.snapshot);
+}
+
+#[test]
+fn qemu_case_fields_load_snapshot_disable() {
+    let root = tempdir().unwrap();
+    write_case_file(
+        root.path(),
+        "macos-selfbuild",
+        "qemu-aarch64.toml",
+        r#"args = []
+uefi = false
+to_bin = true
+snapshot = false
+success_regex = []
+fail_regex = []
+"#,
+    );
+    let app = discover_apps(root.path())
+        .unwrap()
+        .into_iter()
+        .find(|app| app.name == "macos-selfbuild")
+        .unwrap();
+    let qemu_config = resolve_qemu_config(&app, Some("aarch64"), None).unwrap();
+
+    let fields =
+        load_qemu_app_case_fields(root.path(), &app, qemu_config.as_deref().unwrap()).unwrap();
+
+    assert!(!fields.snapshot);
 }
 
 #[test]
@@ -172,6 +201,7 @@ fn app_qemu_test_case_preserves_host_symbolize_success_regex() {
         build_config_path: None,
         qemu_config_path: Some(qemu_config_path.clone()),
         rootfs_path: PathBuf::from("/tmp/rootfs.img"),
+        snapshot: true,
         test_commands: Vec::new(),
         host_symbolize_success_regex: vec!["symbolized".to_string()],
         host_http_server: Some(HostHttpServerConfig {

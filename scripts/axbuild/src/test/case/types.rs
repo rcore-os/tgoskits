@@ -18,7 +18,7 @@ pub(super) const CASE_APK_CACHE_DIR_NAME: &str = "apk-cache";
 pub(super) const CASE_SH_DIR_NAME: &str = "sh";
 pub(super) const CASE_ROOTFS_COPY_NAME: &str = "case-rootfs.img";
 pub(super) const GROUPED_RUNNER_SCRIPT_FORMAT_VERSION: &str =
-    "grouped-runner-starry-init-autoload-v1";
+    "grouped-runner-starry-init-autoload-v2-short-command-labels";
 pub(super) const PYTHON_PIPELINE_CACHE_VERSION: &str = "python-apk-v1";
 pub(super) const RUST_PIPELINE_CACHE_VERSION: &str = "rust-cross-v1";
 /// QEMU global snapshot flag -- all disk writes go to a temporary file and are

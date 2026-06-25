@@ -178,6 +178,61 @@ url = "https://example.com/{image_name}.tar.gz"
     assert_eq!(fs::read(extract_dir.join("sentinel")).unwrap(), b"keep");
 }
 
+#[tokio::test]
+async fn pull_image_replaces_legacy_file_at_extract_dir() {
+    let dir = tempdir().unwrap();
+    let image_name = "linux";
+    let archive_bytes = make_tar_gz(&[("kernel.bin", b"kernel")]);
+    let sha256 = sha256_hex(&archive_bytes);
+    let registry_path = dir.path().join(REGISTRY_FILENAME);
+    fs::write(
+        &registry_path,
+        format!(
+            r#"
+[[images]]
+name = "{image_name}"
+version = "0.0.1"
+released_at = "2025-01-01T00:00:00Z"
+description = "Linux guest"
+sha256 = "{sha256}"
+arch = "aarch64"
+url = "https://example.com/{image_name}.tar.gz"
+"#
+        ),
+    )
+    .unwrap();
+    fs::write(
+        dir.path().join(image_archive_filename(
+            &image_entry(
+                image_name,
+                "0.0.1",
+                format!("https://example.com/{image_name}.tar.gz").as_str(),
+            ),
+            ImageSpecRef::parse(image_name),
+        )),
+        archive_bytes,
+    )
+    .unwrap();
+    let extract_dir = dir
+        .path()
+        .join(image_extract_dir_name(ImageSpecRef::parse(image_name)));
+    fs::write(&extract_dir, b"legacy image file").unwrap();
+
+    let storage = Storage::new(dir.path().to_path_buf()).unwrap();
+    let extracted = storage
+        .pull_image(ImageSpecRef::parse(image_name), None, true)
+        .await
+        .unwrap();
+
+    assert_eq!(extracted, extract_dir);
+    assert!(extract_dir.is_dir());
+    assert_eq!(fs::read(extract_dir.join("kernel.bin")).unwrap(), b"kernel");
+    assert_eq!(
+        fs::read_to_string(extract_dir.join(EXTRACTED_SHA256_FILENAME)).unwrap(),
+        sha256
+    );
+}
+
 #[test]
 fn config_without_auto_sync_requires_local_registry() {
     let dir = tempdir().unwrap();

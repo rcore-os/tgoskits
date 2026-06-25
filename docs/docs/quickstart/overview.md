@@ -106,10 +106,11 @@ qemu-system-loongarch64 --version
 
 ## 3. 命令入口
 
-TGOSKits 当前通过 `cargo xtask` 统一封装各系统的常用命令。无论是快速启动、测试套件还是镜像准备，优先从这一入口进入，通常最接近仓库当前的维护方式。当前仓库推荐通过 `cargo xtask` 统一调度：
+TGOSKits 当前通过 `cargo xtask` 统一封装各系统的常用命令，同时在 `.cargo/config.toml` 中提供了 `cargo arceos`、`cargo starry`、`cargo axvisor` 等快捷别名。StarryOS 快速上手推荐直接使用 `cargo starry`：先用 `config ls` 查看支持的板卡，再用 `defconfig <board>` 选择配置，后续继续执行 `build`、`qemu`、`uboot`、`board` 或测试命令。
 
 ```bash
 cargo xtask --help
+cargo starry --help
 ```
 
 常见入口如下：
@@ -117,7 +118,7 @@ cargo xtask --help
 | 目标 | 文档 | 常用命令 |
 |------|------|----------|
 | ArceOS | [ArceOS 快速上手](./arceos) | `cargo xtask arceos qemu ...` |
-| StarryOS | [StarryOS 快速上手](./starryos) | `cargo xtask starry qemu ...` |
+| StarryOS | [StarryOS 快速上手](./starryos) | `cargo starry config ls` / `cargo starry defconfig <board>` |
 | Axvisor | [Axvisor 快速上手](./axvisor) | `cargo xtask axvisor test qemu ...` |
 
 环境确认无误后，可以直接进入具体系统的快速上手页面。每一页都会给出当前项目中可用的最短命令路径，而不是抽象的概念说明。

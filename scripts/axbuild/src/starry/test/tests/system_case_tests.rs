@@ -95,6 +95,16 @@ fn starry_system_grouped_qemu_configs_report_subcase_timing() {
                 "{} must end a grouped subcase timing section",
                 path.display()
             );
+            assert!(
+                !command.contains("sort -nr") && !command.contains("head -n"),
+                "{} must not depend on external sort/head pipelines in the final timing summary",
+                path.display()
+            );
+            assert!(
+                command.contains("done < \"$timing_file\""),
+                "{} must read grouped subcase timing from the timing file, not from stdin",
+                path.display()
+            );
             let failure_branch = command.find("else\n").unwrap_or_else(|| {
                 panic!(
                     "{} must contain a failure branch for grouped subcases",
@@ -125,6 +135,31 @@ fn starry_system_grouped_qemu_configs_report_subcase_timing() {
             );
         }
     }
+}
+
+#[test]
+fn signal_interrupt_eintr_subcase_bounds_child_wait() {
+    let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let source_path = workspace_root
+        .join("test-suit/starryos/qemu-smp1/system/test-signal-interrupt-eintr/src/main.c");
+    let source = fs::read_to_string(&source_path)
+        .unwrap_or_else(|err| panic!("failed to read {}: {err}", source_path.display()));
+
+    assert!(
+        source.contains("poll(&pfd, 1, -1)") && source.matches("kill(child, SIGUSR1)").count() >= 2,
+        "{} must preserve the poll EINTR check and retry SIGUSR1 while the child is still running",
+        source_path.display()
+    );
+    assert!(
+        source.contains("TEST_TIMEOUT_MS") && source.contains("WNOHANG"),
+        "{} must bound the parent wait for the interruptible child",
+        source_path.display()
+    );
+    assert!(
+        !source.contains("waitpid(child, &status, 0)"),
+        "{} must not let a stuck child consume the whole grouped QEMU timeout",
+        source_path.display()
+    );
 }
 
 #[test]

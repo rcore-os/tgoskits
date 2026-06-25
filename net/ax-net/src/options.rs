@@ -176,6 +176,7 @@ define_options! {
     SocketProtocol(i32),
     SocketDomain(i32),
     BindToDevice(Option<InterfaceId>),
+    Priority(i32),
 
     // --- TCP level options (TCP_*) ----
     NoDelay(bool),
@@ -188,6 +189,9 @@ define_options! {
 
     // ---- IP level options (IP_*) ----
     Ttl(u8),
+    IpTos(u8),
+    RecvTos(bool),
+    RecvTrafficClass(bool),
     RecvErr(bool),
 
     // ---- Extra options ----

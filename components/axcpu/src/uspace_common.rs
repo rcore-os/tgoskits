@@ -30,6 +30,11 @@ pub enum ExceptionKind {
     IllegalInstruction,
     /// A misaligned access exception.
     Misaligned,
+    /// An integer arithmetic exception, i.e. x86 `#DE` (divide-by-zero or the
+    /// `INT_MIN / -1` overflow). On x86 this is a real CPU trap that must become
+    /// `SIGFPE`; the other architectures do not trap on integer divide-by-zero,
+    /// so they never produce this kind.
+    ArithmeticError,
     /// Other kinds of exceptions.
     Other,
 }

@@ -193,6 +193,28 @@ pub fn fdt_phandle_to_device_id(phandle: Phandle) -> Option<DeviceId> {
     probe::fdt::try_system().and_then(|system| system.phandle_to_device_id(phandle))
 }
 
+pub fn fdt_path_to_device_id(path: &str) -> Option<DeviceId> {
+    probe::fdt::try_system().and_then(|system| system.path_to_device_id(path))
+}
+
+pub fn note_fdt_device_path(path: &str, device_id: DeviceId) -> bool {
+    probe::fdt::try_system().is_some_and(|system| system.note_device_path(path, device_id))
+}
+
+pub fn acpi_path_to_device_id(path: &str) -> Option<DeviceId> {
+    probe::acpi::try_system().and_then(|system| system.path_to_device_id(path))
+}
+
+pub fn acpi_resource_address_to_device_id(
+    address: probe::acpi::AcpiResourceAddress,
+) -> Option<DeviceId> {
+    probe::acpi::try_system().and_then(|system| system.resource_address_to_device_id(address))
+}
+
+pub fn acpi_spcr_console_device_id() -> Option<DeviceId> {
+    probe::acpi::spcr_console_device_id()
+}
+
 pub fn with_fdt<T>(f: impl FnOnce(&Fdt) -> T) -> Option<T> {
     probe::fdt::try_system().map(|system| f(system.fdt()))
 }

@@ -63,6 +63,24 @@ pub fn irq_set_enable(irq: rdrive::IrqId, enable: bool) {
     }
 }
 
+pub fn irq_set_affinity(
+    irq: rdrive::IrqId,
+    affinity: crate::irq::IrqAffinity,
+) -> Result<(), &'static str> {
+    let raw = irq.into();
+    match backend() {
+        GicBackend::V2 => v2::irq_set_affinity(raw, affinity),
+        GicBackend::V3 => v3::irq_set_affinity(raw, affinity),
+        GicBackend::None => {
+            if v3::is_support_icc() {
+                v3::irq_set_affinity(raw, affinity)
+            } else {
+                v2::irq_set_affinity(raw, affinity)
+            }
+        }
+    }
+}
+
 pub fn send_ipi(irq: rdrive::IrqId, target: crate::irq::IpiTarget) {
     let raw = irq.into();
     match backend() {

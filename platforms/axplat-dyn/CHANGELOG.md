@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.5](https://github.com/rcore-os/tgoskits/compare/axplat-dyn-v0.7.4...axplat-dyn-v0.7.5) - 2026-06-23
+
+### Added
+
+- *(starry)* support reboot syscall ([#1358](https://github.com/rcore-os/tgoskits/pull/1358))
+
+### Fixed
+
+- *(platform)* support AArch64 HVF timer boot ([#1334](https://github.com/rcore-os/tgoskits/pull/1334))
+
 ## [0.7.4](https://github.com/rcore-os/tgoskits/compare/axplat-dyn-v0.7.3...axplat-dyn-v0.7.4) - 2026-06-22
 
 ### Added

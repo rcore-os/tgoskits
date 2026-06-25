@@ -1,5 +1,5 @@
 ---
-sidebar_position: 7
+sidebar_position: 8
 sidebar_label: "对外接口"
 ---
 
@@ -131,7 +131,6 @@ pub fn init_network(net_devs: EthernetDeviceList, config: NetworkConfig);
 
 ```rust
 pub fn request_poll();
-pub fn poll_interfaces();
 ```
 
 `request_poll()` 是 socket、设备和控制路径使用的轻量进度请求入口：
@@ -142,8 +141,6 @@ pub fn request_poll() {
     NET_POLL_WAKE.notify_one(true);
 }
 ```
-
-`poll_interfaces()` 保留为 public trigger/debug API，内部只转调 `request_poll()`，不会在调用者线程中同步执行完整 `Service::poll()`。
 
 ### Vsock 初始化
 
@@ -249,14 +246,6 @@ pub struct ArpEntry {
 
 `device` 字段是真实接口名。loopback 不产生 ARP entry。
 
-### 兼容 helper
-
-```rust
-pub fn eth0_ipv4_config() -> Option<Ipv4InterfaceConfig>;
-```
-
-该函数是旧调用方的 convenience helper。新代码应优先使用 `ipv4_config(name)` 或接口 registry API，避免重新引入固定 `eth0` 假设。
-
 ## Socket Facade
 
 socket API 统一 AF_INET、AF_UNIX 和 AF_VSOCK 的公共操作形状。协议细节由具体 backend 负责。
@@ -355,7 +344,7 @@ pub enum Socket {
 | `udp::UdpSocket` | `UdpSocket::new()` | AF_INET / SOCK_DGRAM |
 | `raw::RawSocket` | `RawSocket::new(ip_version, ip_protocol)` | AF_INET / SOCK_RAW |
 | `unix::UnixSocket` | `UnixSocket::new(Transport)` | AF_UNIX / stream,dgram |
-| `vsock::VsockSocket` | `VsockSocket::new(VsockTransport)` | AF_VSOCK / stream |
+| `vsock::VsockSocket` | `VsockSocket::new()` | AF_VSOCK / stream |
 
 ### 设备绑定
 
@@ -621,7 +610,7 @@ pub struct NetConfig {
 }
 
 pub fn register_device_with_config(dev: Box<dyn EthernetDriver>, config: NetConfig);
-pub fn notify_oob_rx();
+pub fn wake_net_task_irq();
 ```
 
 `register_device_with_config()` 用于运行期加入静态 IPv4 Ethernet 设备，例如 Wi-Fi AP 模式设备。它会：
@@ -632,7 +621,7 @@ pub fn notify_oob_rx();
 - 启动该设备的 RX/TX worker。
 - 可选启用内置单客户端 DHCP server。
 
-`dedicated_poll = true` 时，设备 RX readiness 不走 Ethernet IRQ registrar，而由外部驱动线程调用 `notify_oob_rx()` 唤醒 OOB poll task。
+`dedicated_poll = true` 时，设备 RX readiness 不走 Ethernet IRQ registrar，而由外部驱动线程调用 `wake_net_task_irq()` 唤醒 OOB poll task。
 
 ## Unix Namespace API
 
@@ -677,7 +666,7 @@ TCP/UDP 在 bind port 为 `0` 时分配临时端口。临时端口范围从 `491
 
 ### API 使用建议
 
-- 新代码使用 `interfaces()`、`interface_by_name()`、`interface_by_id()` 和 `ipv4_config(name)`，不要依赖 `eth0_ipv4_config()`。
+- 使用 `interfaces()`、`interface_by_name()`、`interface_by_id()` 和 `ipv4_config(name)` 查询接口状态。
 - socket 发送路径不要直接使用 `default_routes()` 自行选路，应交给 TCP/UDP/raw backend。
 - 设备驱动只实现 `EthernetDriver`，不要直接接触 `Router` 或 `SocketSet`。
 - 需要唤醒协议栈进度时调用 `request_poll()`，不要从调用者上下文同步 poll smoltcp。

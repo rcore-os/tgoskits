@@ -8,7 +8,7 @@ keywords = ["os", "nvme", "block", "driver"]
 license = "MIT"
 name = "nvme-driver"
 repository.workspace = true
-version = "0.6.0"
+version = "0.6.1"
 
 [dependencies]
 dma-api.workspace = true

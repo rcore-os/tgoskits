@@ -1,10 +1,11 @@
 board_type = "VisionFive2"
-# Current smoke frontier: dynamic boot reaches root-device discovery before
-# JH7110 block/rootfs support is available.
-success_regex = ["failed to determine root device from available block devices"]
+shell_prefix = "root@starry:"
+shell_init_cmd = "echo STARRY_VISIONFIVE2_SHELL_OK"
+success_regex = ["(?m)^STARRY_VISIONFIVE2_SHELL_OK\\s*$"]
 fail_regex = [
   "(?i)segmentation fault",
   "(?i)SIGSEGV",
   "exit with code: 139",
+  "failed to determine root device from available block devices",
 ]
 timeout = 600

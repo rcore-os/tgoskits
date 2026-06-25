@@ -285,7 +285,23 @@ impl ExtendedState {
         // state; the legacy fields below seed the FXSAVE fallback path too.
         let mut area: XsaveArea = unsafe { core::mem::MaybeUninit::zeroed().assume_init() };
         area.legacy.fcw = 0x37f;
-        area.legacy.ftw = 0xffff;
+        // In the 512-byte FXSAVE/FXRSTOR area the x87 tag word is *abridged*: the
+        // low byte of this field is one bit per x87 register, where 0 = empty and
+        // 1 = occupied (FXRSTOR then derives the full tag from the register data).
+        // A freshly-initialized FPU (FNINIT) has an EMPTY x87 stack, i.e. abridged
+        // tag 0x00 — NOT the legacy full-tag-word value 0xFFFF (which encodes "all
+        // empty" only in the 2-bits-per-register FSAVE/FRSTOR format). Seeding
+        // 0xFFFF here set the abridged byte to 0xFF, so on the FXSAVE-fallback path
+        // (CPUs/VMs without XSAVE, e.g. the default `qemu64` model, where
+        // `ExtendedState::restore` uses FXRSTOR rather than XRSTOR) every new task
+        // resumed with all eight x87 registers tagged occupied — a "full" stack.
+        // The first `fld`/`fild` then overflowed it, yielding the x87 indefinite
+        // value, which is exactly how musl's x87 long-double `fmt_fp` loop got a
+        // wild operand, over-ran its on-stack digit array into the thread's `%fs:0`
+        // TLS self-pointer, and triggered the recursive-SIGSEGV storm that broke
+        // the x86 java workload. (On real XSAVE hardware XRSTOR re-inits x87 from
+        // the zeroed XSTATE_BV header, which is why the bug was qemu64-only.)
+        area.legacy.ftw = 0x0000;
         area.legacy.mxcsr = 0x1f80;
         Self { area }
     }

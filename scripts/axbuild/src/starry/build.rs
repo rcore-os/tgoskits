@@ -143,13 +143,9 @@ pub(crate) fn load_cargo_config(request: &ResolvedStarryRequest) -> anyhow::Resu
 
 fn normalize_starry_platform_features(features: &mut Vec<String>) {
     let has_sg2002 = features.iter().any(|feature| feature == "sg2002");
-    let has_vf2 = features.iter().any(|feature| feature == "vf2");
 
     if has_sg2002 {
         features.push("ax-hal/riscv64-sg2002".to_string());
-    }
-    if has_vf2 {
-        features.push("ax-hal/riscv64-visionfive2".to_string());
     }
 
     features.sort();
@@ -186,38 +182,7 @@ fn patch_starry_cargo_config(
             .or_insert_with(|| platform.to_string());
     }
 
-    if cargo.env.get("UIMAGE").map(|v| v.as_str()) == Some("y") {
-        validate_uimage_generation(cargo, &request.arch)?;
-    }
-
     Ok(())
-}
-
-fn uimg_arch_for(arch: &str) -> String {
-    match arch {
-        "aarch64" => "arm64".to_string(),
-        "riscv64" => "riscv".to_string(),
-        other => other.to_string(),
-    }
-}
-
-fn validate_uimage_generation(cargo: &Cargo, arch: &str) -> anyhow::Result<()> {
-    if cargo.env.contains_key("AX_CONFIG_PATH") {
-        return Ok(());
-    }
-
-    if !uses_dynamic_platform(&cargo.features) {
-        return Err(anyhow::anyhow!(
-            "AX_CONFIG_PATH is required for UIMAGE generation"
-        ));
-    }
-
-    match arch {
-        "aarch64" | "riscv64" => Ok(()),
-        other => Err(anyhow::anyhow!(
-            "AX_CONFIG_PATH is required for UIMAGE generation on {other}"
-        )),
-    }
 }
 
 pub(crate) async fn build_starry_artifact(
@@ -241,7 +206,7 @@ pub(crate) async fn build_starry_artifact(
 pub(crate) fn postprocess_starry_artifact(
     workspace_root: &Path,
     request: &ResolvedStarryRequest,
-    cargo: &Cargo,
+    _cargo: &Cargo,
     build_output: &ostool::build::CargoBuildOutput,
 ) -> anyhow::Result<()> {
     let elf = build_output.elf_path();
@@ -249,8 +214,13 @@ pub(crate) fn postprocess_starry_artifact(
     generate_kallsyms(elf)?;
     refresh_bin_if_present(elf)?;
 
-    if cargo.env.get("UIMAGE").map(|v| v.as_str()) == Some("y") {
-        generate_uimage(workspace_root, cargo, &request.arch, elf)?;
+    if let Some(plan) = uimage_generation_plan(
+        &request.build_info_path,
+        &request.arch,
+        &request.target,
+        elf,
+    ) {
+        generate_uimage_from_its(workspace_root, &plan, &request.arch, &request.target, elf)?;
     }
 
     Ok(())
@@ -383,50 +353,113 @@ fn refresh_bin_if_present(kernel_elf: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn generate_uimage(
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct UimageGenerationPlan {
+    source_its: PathBuf,
+    rendered_its: PathBuf,
+    kernel_bin: PathBuf,
+    output_uimg: PathBuf,
+}
+
+pub(crate) fn uimage_its_path_for_config(config_path: &Path) -> PathBuf {
+    config_path.with_extension("its")
+}
+
+fn uimage_generation_plan(
+    config_path: &Path,
+    _arch: &str,
+    _target: &str,
+    kernel_elf: &Path,
+) -> Option<UimageGenerationPlan> {
+    let source_its = uimage_its_path_for_config(config_path);
+    source_its.exists().then(|| {
+        let rendered_its = temp_file_path(kernel_elf, "uimage.its")
+            .expect("kernel ELF path should have a valid parent and filename");
+        let kernel_bin = kernel_elf.with_extension("bin");
+        let output_uimg = kernel_bin.with_extension("uimg");
+        UimageGenerationPlan {
+            source_its,
+            rendered_its,
+            kernel_bin,
+            output_uimg,
+        }
+    })
+}
+
+fn generate_uimage_from_its(
     workspace_root: &Path,
-    cargo: &Cargo,
+    plan: &UimageGenerationPlan,
     arch: &str,
+    target: &str,
     kernel_elf: &Path,
 ) -> anyhow::Result<()> {
-    let bin = kernel_elf.with_extension("bin");
-    if !bin.exists() {
-        refresh_bin_if_present(kernel_elf)?;
-    }
-    if !bin.exists() {
-        bail!(
-            "kernel BIN is required for UIMAGE generation: {}",
-            bin.display()
-        );
-    }
-    let uimg = bin.with_extension("uimg");
-    let paddr = uimage_load_paddr(cargo, arch)?;
-    let stage = StageLog::start(format!(
-        "starry uImage arch={} load={} bin={} out={}",
+    refresh_bin(kernel_elf, &plan.kernel_bin)?;
+    render_uimage_its_template(
+        &plan.source_its,
+        &plan.rendered_its,
+        kernel_elf,
+        &plan.kernel_bin,
         arch,
-        paddr,
-        bin.display(),
-        uimg.display()
+        target,
+    )?;
+    let stage = StageLog::start(format!(
+        "starry uImage arch={} its={} out={}",
+        arch,
+        plan.source_its.display(),
+        plan.output_uimg.display()
     ));
-    Command::new("mkimage")
+    let result = Command::new("mkimage")
         .current_dir(workspace_root)
-        .arg("-A")
-        .arg(uimg_arch_for(arch))
-        .arg("-O")
-        .arg("linux")
-        .arg("-T")
-        .arg("kernel")
-        .arg("-C")
-        .arg("none")
-        .arg("-a")
-        .arg(&paddr)
-        .arg("-d")
-        .arg(&bin)
-        .arg(&uimg)
+        .args(mkimage_args_for_its(&plan.rendered_its, &plan.output_uimg))
         .exec()
-        .with_context(|| format!("failed to generate {}", uimg.display()))?;
+        .with_context(|| format!("failed to generate {}", plan.output_uimg.display()));
+    let cleanup = fs::remove_file(&plan.rendered_its)
+        .with_context(|| format!("failed to remove {}", plan.rendered_its.display()));
+    result?;
+    cleanup?;
     stage.done();
     Ok(())
+}
+
+fn refresh_bin(kernel_elf: &Path, bin: &Path) -> anyhow::Result<()> {
+    let stage = StageLog::start(format!("starry bin refresh {}", bin.display()));
+    Command::new("rust-objcopy")
+        .arg("--strip-all")
+        .arg("-O")
+        .arg("binary")
+        .arg(kernel_elf)
+        .arg(bin)
+        .exec()
+        .with_context(|| format!("failed to refresh {}", bin.display()))?;
+    stage.done();
+    Ok(())
+}
+
+fn render_uimage_its_template(
+    template: &Path,
+    rendered: &Path,
+    kernel_elf: &Path,
+    kernel_bin: &Path,
+    arch: &str,
+    target: &str,
+) -> anyhow::Result<()> {
+    let content = fs::read_to_string(template)
+        .with_context(|| format!("failed to read {}", template.display()))?;
+    let rendered_content = content
+        .replace("${kernel_bin}", &kernel_bin.display().to_string())
+        .replace("${kernel_elf}", &kernel_elf.display().to_string())
+        .replace("${arch}", arch)
+        .replace("${target}", target);
+    fs::write(rendered, rendered_content)
+        .with_context(|| format!("failed to write {}", rendered.display()))
+}
+
+fn mkimage_args_for_its(rendered_its: &Path, output_uimg: &Path) -> Vec<String> {
+    vec![
+        "-f".to_string(),
+        rendered_its.display().to_string(),
+        output_uimg.display().to_string(),
+    ]
 }
 
 fn ensure_kallsyms_tools() -> anyhow::Result<()> {
@@ -546,48 +579,6 @@ fn temp_file_path(path: &Path, suffix: &str) -> anyhow::Result<PathBuf> {
         .and_then(|name| name.to_str())
         .ok_or_else(|| anyhow!("invalid path filename: {}", path.display()))?;
     Ok(parent.join(format!(".{name}.{suffix}.{}.tmp", std::process::id())))
-}
-
-fn uimage_load_paddr(cargo: &Cargo, arch: &str) -> anyhow::Result<String> {
-    if let Some(config_path) = cargo.env.get("AX_CONFIG_PATH") {
-        return axconfig_kernel_base_paddr(Path::new(config_path));
-    }
-
-    if !uses_dynamic_platform(&cargo.features) {
-        return Err(anyhow::anyhow!(
-            "AX_CONFIG_PATH is required for UIMAGE generation"
-        ));
-    }
-
-    match arch {
-        "aarch64" => Ok("0x200000".to_string()),
-        "riscv64" => Ok("0x80200000".to_string()),
-        other => Err(anyhow::anyhow!(
-            "AX_CONFIG_PATH is required for UIMAGE generation on {other}"
-        )),
-    }
-}
-
-fn axconfig_kernel_base_paddr(path: &Path) -> anyhow::Result<String> {
-    let output = Command::new("ax-config-gen")
-        .arg(path)
-        .arg("-r")
-        .arg("plat.kernel-base-paddr")
-        .output()
-        .with_context(|| format!("failed to read kernel base paddr from {}", path.display()))?;
-    if !output.status.success() {
-        bail!("ax-config-gen exited with status {}", output.status);
-    }
-    let paddr = String::from_utf8_lossy(&output.stdout)
-        .trim()
-        .replace('_', "");
-    if paddr.is_empty() {
-        bail!(
-            "ax-config-gen returned empty plat.kernel-base-paddr for {}",
-            path.display()
-        );
-    }
-    Ok(paddr)
 }
 
 fn remove_qemu_feature_for_dynamic_platform(cargo: &mut Cargo) {

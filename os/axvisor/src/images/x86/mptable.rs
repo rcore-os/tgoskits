@@ -142,16 +142,9 @@ fn push_pci_interrupt_entries(entries: &mut Vec<Vec<u8>>) {
 }
 
 const fn pci_intx_gsi(dev: u8, pin: u8) -> u8 {
-    // The current x86 smoke setup passes the outer q35 00:03.0 virtio-blk
-    // device through to the guest. QEMU routes that device's INTA# to host
-    // IOAPIC GSI 18, and Axvisor forwards host IOAPIC GSIs by number. Keep the
-    // guest MP table on the same line until a PCI IRQ router derives this from
-    // platform/device topology.
-    if dev == 3 && pin == 0 {
-        18
-    } else {
-        16 + ((dev + pin) & 3)
-    }
+    // Match q35 PCI INTx swizzling so the guest MP table uses the same GSI
+    // line that the host platform forwards for the passthrough device.
+    16 + ((dev + pin) & 3)
 }
 
 fn interrupt_entry(
@@ -198,5 +191,10 @@ mod tests {
             u32::from_le_bytes([fp[4], fp[5], fp[6], fp[7]]) as usize,
             MP_CONFIG_GPA
         );
+    }
+
+    #[test]
+    fn q35_dev3_inta_uses_swizzled_gsi19() {
+        assert_eq!(pci_intx_gsi(3, 0), 19);
     }
 }

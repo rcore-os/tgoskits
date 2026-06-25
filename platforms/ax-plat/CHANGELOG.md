@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.0](https://github.com/rcore-os/tgoskits/compare/ax-plat-v0.6.4...ax-plat-v0.7.0) - 2026-06-23
+
+### Added
+
+- *(starry)* support reboot syscall ([#1358](https://github.com/rcore-os/tgoskits/pull/1358))
+
 ## [0.6.4](https://github.com/rcore-os/tgoskits/compare/ax-plat-v0.6.3...ax-plat-v0.6.4) - 2026-06-22
 
 ### Other

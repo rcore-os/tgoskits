@@ -200,6 +200,14 @@ pub struct WifiControlHandle {
     inner: Arc<NetInner>,
 }
 
+impl Clone for WifiControlHandle {
+    fn clone(&self) -> Self {
+        Self {
+            inner: self.inner.clone(),
+        }
+    }
+}
+
 unsafe impl Send for WifiControlHandle {}
 unsafe impl Sync for WifiControlHandle {}
 

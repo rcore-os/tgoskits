@@ -1,6 +1,6 @@
 [package]
 name = "axnsproxy"
-version = "0.2.2"
+version = "0.2.3"
 edition.workspace = true
 description = "Namespace proxy for Starry OS"
 keywords = ["starry-os"]

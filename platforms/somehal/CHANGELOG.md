@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.2](https://github.com/rcore-os/tgoskits/compare/somehal-v0.7.1...somehal-v0.7.2) - 2026-06-23
+
+### Fixed
+
+- *(platform)* support AArch64 HVF timer boot ([#1334](https://github.com/rcore-os/tgoskits/pull/1334))
+
 ## [0.7.1](https://github.com/rcore-os/tgoskits/compare/somehal-v0.7.0...somehal-v0.7.1) - 2026-06-22
 
 ### Added

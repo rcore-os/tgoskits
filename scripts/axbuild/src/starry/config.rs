@@ -48,6 +48,23 @@ fn write_board_to_build_config(build_config_path: &Path, board: &Board) -> anyho
             build_config_path.display()
         )
     })?;
+    copy_companion_its(&board.path, build_config_path)?;
+    Ok(())
+}
+
+fn copy_companion_its(src_config: &Path, dst_config: &Path) -> anyhow::Result<()> {
+    let src_its = src_config.with_extension("its");
+    if !src_its.exists() {
+        return Ok(());
+    }
+    let dst_its = dst_config.with_extension("its");
+    fs::copy(&src_its, &dst_its).map_err(|e| {
+        anyhow!(
+            "failed to copy Starry uImage ITS {} to {}: {e}",
+            src_its.display(),
+            dst_its.display()
+        )
+    })?;
     Ok(())
 }
 
@@ -60,16 +77,8 @@ fn update_snapshot_for_board(
     snapshot.arch = Some(starry_arch_for_target_checked(&board.target)?.to_string());
     snapshot.target = Some(board.target.clone());
     snapshot.config = Some(snapshot_path_value(workspace_root, build_config_path));
-    snapshot.qemu.qemu_config = snapshot
-        .qemu
-        .qemu_config
-        .as_ref()
-        .map(|path| snapshot_path_value(workspace_root, path));
-    snapshot.uboot.uboot_config = snapshot
-        .uboot
-        .uboot_config
-        .as_ref()
-        .map(|path| snapshot_path_value(workspace_root, path));
+    snapshot.qemu.qemu_config = None;
+    snapshot.uboot.uboot_config = None;
     snapshot.store(workspace_root)?;
     Ok(())
 }
@@ -145,7 +154,7 @@ mod tests {
     }
 
     #[test]
-    fn write_defconfig_generates_build_file_and_updates_snapshot() {
+    fn write_defconfig_generates_build_file_and_resets_runtime_config() {
         let root = tempdir().unwrap();
         write_workspace(root.path());
         let source = write_board(
@@ -197,16 +206,8 @@ log = "Warn"
                 "tmp/axbuild/config/starryos/build-riscv64gc-unknown-none-elf.toml"
             ))
         );
-        assert_eq!(
-            snapshot.qemu.qemu_config,
-            Some(PathBuf::from(
-                "test-suit/starryos/qemu-smp1/system/qemu-riscv64.toml"
-            ))
-        );
-        assert_eq!(
-            snapshot.uboot.uboot_config,
-            Some(PathBuf::from("configs/uboot.toml"))
-        );
+        assert_eq!(snapshot.qemu.qemu_config, None);
+        assert_eq!(snapshot.uboot.uboot_config, None);
     }
 
     #[test]
@@ -230,6 +231,29 @@ plat_dyn = false
         assert!(err.contains("unknown Starry board `missing`"));
         assert!(err.contains(&board::board_dir(root.path()).unwrap().display().to_string()));
         assert!(err.contains("qemu-aarch64"));
+    }
+
+    #[test]
+    fn write_defconfig_copies_companion_its_with_matching_output_basename() {
+        let root = tempdir().unwrap();
+        write_workspace(root.path());
+        let source = write_board(
+            root.path(),
+            "licheerv-nano-sg2002",
+            r#"
+target = "riscv64gc-unknown-none-elf"
+features = ["sg2002"]
+log = "Info"
+"#,
+        );
+        fs::write(source.with_extension("its"), "ITS_TEMPLATE").unwrap();
+
+        let build_config_path = write_defconfig(root.path(), "licheerv-nano-sg2002").unwrap();
+
+        assert_eq!(
+            fs::read_to_string(build_config_path.with_extension("its")).unwrap(),
+            "ITS_TEMPLATE"
+        );
     }
 
     #[test]

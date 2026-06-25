@@ -408,6 +408,9 @@ fn extracted_archive_matches(extract_dir: &Path, expected_sha256: &str) -> anyho
     if !extract_dir.exists() {
         return Ok(false);
     }
+    if !extract_dir.is_dir() {
+        return Ok(false);
+    }
 
     let marker_path = extract_dir.join(EXTRACTED_SHA256_FILENAME);
     let actual_sha256 = match fs::read_to_string(&marker_path) {
@@ -430,8 +433,12 @@ async fn extract_archive(
     expected_sha256: &str,
 ) -> anyhow::Result<()> {
     if extract_dir.exists() {
-        fs::remove_dir_all(extract_dir)
-            .with_context(|| format!("failed to remove {}", extract_dir.display()))?;
+        if extract_dir.is_dir() {
+            fs::remove_dir_all(extract_dir)
+        } else {
+            fs::remove_file(extract_dir)
+        }
+        .with_context(|| format!("failed to remove {}", extract_dir.display()))?;
     }
     fs::create_dir_all(extract_dir)
         .with_context(|| format!("failed to create {}", extract_dir.display()))?;

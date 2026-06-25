@@ -10,6 +10,14 @@ pub const SI_TIMER: i32 = -2;
 pub const SEGV_MAPERR: i32 = 1;
 /// `si_code` for SIGSEGV: invalid permissions for mapped object.
 pub const SEGV_ACCERR: i32 = 2;
+/// `si_code` for SIGFPE: integer divide by zero (x86 `#DE`). Linux value from
+/// include/uapi/asm-generic/siginfo.h; HotSpot's x86 SIGFPE handler keys on this
+/// to turn an `idiv`-by-zero into a Java `ArithmeticException`.
+pub const FPE_INTDIV: i32 = 1;
+/// `si_code` for SIGFPE: integer overflow (x86 `#OF`). Reserved for future
+/// integer-overflow trap support; defined alongside `FPE_INTDIV` for a complete
+/// SIGFPE si_code set, not yet produced by the kernel.
+pub const FPE_INTOVF: i32 = 2;
 use strum::{EnumIter, FromRepr, IntoEnumIterator};
 
 use crate::DefaultSignalAction;

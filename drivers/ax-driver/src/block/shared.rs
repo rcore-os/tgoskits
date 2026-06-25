@@ -44,7 +44,8 @@ impl<T> SharedDriver<T> {
         feature = "k230-sdhci",
         feature = "phytium-mci",
         feature = "rockchip-dwmmc",
-        feature = "rockchip-sdhci"
+        feature = "rockchip-sdhci",
+        feature = "starfive-jh7110-dwmmc"
     ))]
     pub(crate) fn try_with_mut<R>(&self, f: impl FnOnce(&mut T) -> R) -> Option<R> {
         let mut guard = self.inner.try_enter()?;

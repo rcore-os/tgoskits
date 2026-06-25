@@ -11,7 +11,7 @@ edition.workspace = true
 license.workspace = true
 name = "starryos"
 repository.workspace = true
-version = "0.5.17"
+version = "0.5.18"
 
 [features]
 default = []
@@ -51,7 +51,6 @@ plat-dyn = ["dep:axplat-dyn", "starry-kernel/plat-dyn"]
 rknpu = ["ax-driver/rknpu", "starry-kernel/rknpu"]
 std-compat = ["starry-kernel/std-compat"]
 stack-protector = ["ax-std/stack-protector", "starry-kernel/stack-protector"]
-vf2 = ["ax-hal/riscv64-visionfive2"]
 
 [[bin]]
 name = "starryos"

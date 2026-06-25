@@ -18,6 +18,7 @@ mod init;
 #[cfg(feature = "irq")]
 mod irq;
 mod mem;
+mod platform;
 mod power;
 
 pub use boot::boot_stack_bounds;
