@@ -30,7 +30,7 @@
 //! ```rust,no_run
 //! use core::ptr::NonNull;
 //!
-//! use some_serial::{Config, RawUart as _, ns16550::Ns16550};
+//! use some_serial::{Config, RawUart as _, ns16550::Ns16550, pl011::Pl011};
 //!
 //! // 选择合适的驱动
 //! #[cfg(target_arch = "aarch64")]
@@ -48,10 +48,10 @@
 //!
 //! uart.startup(&config).unwrap();
 //!
-//! while !uart.tx_ready() {
+//! while !uart.poll_status().tx_ready() {
 //!     core::hint::spin_loop();
 //! }
-//! uart.write_tx(b'h');
+//! uart.write_byte(b'h');
 //! ```
 
 #[cfg(test)]
