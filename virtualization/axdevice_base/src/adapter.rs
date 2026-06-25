@@ -111,13 +111,6 @@ where
     }
 }
 
-// SAFETY: The inner device uses internal synchronisation (e.g. `Mutex`,
-// `UnsafeCell` with proper barriers) and has been safely shared across
-// threads in the existing codebase via `Arc`.
-// The bounds match what the concrete device types satisfy.
-unsafe impl<T: Send + Sync> Send for MmioDeviceAdapter<T> {}
-unsafe impl<T: Send + Sync> Sync for MmioDeviceAdapter<T> {}
-
 impl<T: Send + Sync + 'static> Device for MmioDeviceAdapter<T>
 where
     T: BaseDeviceOps<crate::GuestPhysAddrRange>,
@@ -199,9 +192,6 @@ where
     }
 }
 
-unsafe impl<T: Send + Sync> Send for SysRegDeviceAdapter<T> {}
-unsafe impl<T: Send + Sync> Sync for SysRegDeviceAdapter<T> {}
-
 impl<T: Send + Sync + 'static> Device for SysRegDeviceAdapter<T>
 where
     T: BaseDeviceOps<SysRegAddrRange>,
@@ -282,9 +272,6 @@ where
         &self.inner
     }
 }
-
-unsafe impl<T: Send + Sync> Send for PortDeviceAdapter<T> {}
-unsafe impl<T: Send + Sync> Sync for PortDeviceAdapter<T> {}
 
 impl<T: Send + Sync + 'static> Device for PortDeviceAdapter<T>
 where

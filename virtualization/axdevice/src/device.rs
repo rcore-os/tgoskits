@@ -874,27 +874,9 @@ impl AxVmDevices {
 
     // ─── Iterator helpers ───────────────────────────────────────────
     //
-    // NOTE: With the unified Device trait, all three iterators return
-    // every registered device regardless of bus type.  Callers that
-    // previously relied on per-bus filtering should use
-    // [`Device::resources()`] or downcasting via [`Device::as_any()`].
-    // Prefer [`devices()`] (the canonical iterator) or
-    // [`device_count()`] in new code.
-
-    /// Iterates over all registered devices.
-    pub fn iter_mmio_dev(&self) -> impl Iterator<Item = &dyn Device> {
-        self.devices()
-    }
-
-    /// Iterates over all registered devices.
-    pub fn iter_sys_reg_dev(&self) -> impl Iterator<Item = &dyn Device> {
-        self.devices()
-    }
-
-    /// Iterates over all registered devices.
-    pub fn iter_port_dev(&self) -> impl Iterator<Item = &dyn Device> {
-        self.devices()
-    }
+    // NOTE: With the unified Device trait, [`devices()`] is the
+    // canonical iterator.  Use [`Device::resources()`] or
+    // [`Device::as_any()`] for per-bus filtering in new code.
 
     /// Iterates over devices that require periodic polling.
     pub fn iter_pollable_dev(&self) -> impl Iterator<Item = &Arc<dyn PollableDeviceOps>> {
@@ -1141,8 +1123,16 @@ impl BusRouter for AxVmDevices {
     fn dispatch(&self, access: &BusAccess) -> Result<BusResponse, DeviceError> {
         let idx = match access.kind {
             BusKind::Mmio => self.lookup_mmio(access.addr),
-            BusKind::Port => self.lookup_port(access.addr as u16),
-            BusKind::SysReg => self.lookup_sysreg(access.addr as u32),
+            BusKind::Port => {
+                let port = u16::try_from(access.addr)
+                    .map_err(|_| DeviceError::OutOfRange { addr: access.addr })?;
+                self.lookup_port(port)
+            }
+            BusKind::SysReg => {
+                let reg = u32::try_from(access.addr)
+                    .map_err(|_| DeviceError::OutOfRange { addr: access.addr })?;
+                self.lookup_sysreg(reg)
+            }
         }
         .ok_or(DeviceError::NotFound)?;
 
@@ -1153,8 +1143,16 @@ impl BusRouter for AxVmDevices {
     fn lookup(&self, access: &BusAccess) -> Result<Arc<dyn Device>, DeviceError> {
         let idx = match access.kind {
             BusKind::Mmio => self.lookup_mmio(access.addr),
-            BusKind::Port => self.lookup_port(access.addr as u16),
-            BusKind::SysReg => self.lookup_sysreg(access.addr as u32),
+            BusKind::Port => {
+                let port = u16::try_from(access.addr)
+                    .map_err(|_| DeviceError::OutOfRange { addr: access.addr })?;
+                self.lookup_port(port)
+            }
+            BusKind::SysReg => {
+                let reg = u32::try_from(access.addr)
+                    .map_err(|_| DeviceError::OutOfRange { addr: access.addr })?;
+                self.lookup_sysreg(reg)
+            }
         }
         .ok_or(DeviceError::NotFound)?;
 
@@ -1433,16 +1431,28 @@ mod tests {
     fn test_read_request_rejects_write_response() {
         // A device that incorrectly returns BusResponse::Write for a read
         // should cause the handle_*_read methods to return an error.
+        // The device declares a resource on each bus so that the lookup
+        // actually finds it instead of returning NotFound.
         struct WriteOnlyDevice;
         impl Device for WriteOnlyDevice {
             fn name(&self) -> &str {
                 "write-only"
             }
             fn resources(&self) -> &[Resource] {
-                static R: [Resource; 1] = [Resource::MmioRange {
-                    base: 0x1000,
-                    size: 0x100,
-                }];
+                static R: [Resource; 3] = [
+                    Resource::MmioRange {
+                        base: 0x1000,
+                        size: 0x100,
+                    },
+                    Resource::PortRange {
+                        base: 0x1000,
+                        size: 0x10,
+                    },
+                    Resource::SysReg {
+                        addr: 0x1000,
+                        count: 1,
+                    },
+                ];
                 &R
             }
             fn handle(&self, _access: &BusAccess) -> Result<BusResponse, DeviceError> {

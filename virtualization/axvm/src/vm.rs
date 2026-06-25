@@ -1116,10 +1116,9 @@ impl AxVM {
         // - Background threads or timers
         if let Some(inner_const) = self.inner_const.get() {
             debug!(
-                "VM[{}] devices cleanup: {} MMIO devices, {} SysReg devices",
+                "VM[{}] devices cleanup: {} device(s)",
                 self.id(),
-                inner_const.devices.iter_mmio_dev().count(),
-                inner_const.devices.iter_sys_reg_dev().count()
+                inner_const.devices.devices().count()
             );
 
             // TODO: Add device-specific cleanup if needed
