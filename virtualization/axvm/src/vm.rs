@@ -880,7 +880,31 @@ impl AxVM {
             return Ok(());
         }
 
-        self.get_devices().handle_mmio_write(addr, width, data)
+        self.get_devices().handle_mmio_write(addr, width, data)?;
+        #[cfg(target_arch = "loongarch64")]
+        self.drain_loongarch_pch_pic_events();
+        Ok(())
+    }
+
+    #[cfg(target_arch = "loongarch64")]
+    fn drain_loongarch_pch_pic_events(&self) {
+        self.get_devices().drain_loongarch_pch_pic_events(|event| {
+            if !event.asserted {
+                trace!(
+                    "LoongArch VM[{}] PCH-PIC deassert event for EIOINTC vector {}",
+                    self.id(),
+                    event.vector
+                );
+                return;
+            }
+            if let Err(err) = crate::inject_vm_vcpu_interrupt(self.id(), 0, event.vector) {
+                warn!(
+                    "failed to inject LoongArch VM[{}] PCH-PIC output vector {}: {err:?}",
+                    self.id(),
+                    event.vector
+                );
+            }
+        });
     }
 
     fn handle_nested_page_fault(&self, addr: GuestPhysAddr, access_flags: MappingFlags) -> bool {

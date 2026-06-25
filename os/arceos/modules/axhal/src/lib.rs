@@ -79,6 +79,10 @@ pub mod loongarch64_hv_irq {
             guest_vector,
         );
     }
+
+    pub fn unregister_guest_irq_routes(vm_id: usize) {
+        ax_plat::irq::unregister_loongarch_guest_irq_routes(vm_id);
+    }
 }
 
 #[cfg(feature = "paging")]

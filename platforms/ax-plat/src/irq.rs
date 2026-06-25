@@ -284,6 +284,9 @@ pub trait LoongArchHvIrqIf {
         vcpu_id: usize,
         guest_vector: usize,
     );
+
+    /// Removes all guest IRQ routes owned by one VM.
+    fn unregister_guest_irq_routes(vm_id: usize);
 }
 
 /// Registers the virtual interrupt injector used by LoongArch hypervisor builds.
@@ -306,4 +309,10 @@ pub fn register_loongarch_guest_irq_route(
         vcpu_id,
         guest_vector
     ));
+}
+
+/// Removes all LoongArch guest IRQ routes owned by one VM.
+#[cfg(target_arch = "loongarch64")]
+pub fn unregister_loongarch_guest_irq_routes(vm_id: usize) {
+    crate::__priv::call_interface!(LoongArchHvIrqIf::unregister_guest_irq_routes(vm_id));
 }

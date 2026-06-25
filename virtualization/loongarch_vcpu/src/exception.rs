@@ -1,11 +1,11 @@
-use alloc::boxed::Box;
+use alloc::{boxed::Box, format};
 use core::{
     mem::offset_of,
     sync::atomic::{AtomicUsize, Ordering},
     time::Duration,
 };
 
-use ax_errno::AxResult;
+use ax_errno::{AxResult, ax_err};
 use axvcpu::{AxVCpuExitReason, GuestPhysAddr, MappingFlags, VCpuId, VMId};
 
 use crate::{context_frame::LoongArchContextFrame, host};
@@ -283,6 +283,20 @@ fn iocsr_vcpu_index(vm_id: VMId, vcpu_id: VCpuId) -> Option<usize> {
     }
 }
 
+pub(crate) fn validate_guest_iocsr_capacity(vm_id: VMId, vcpu_id: VCpuId) -> AxResult {
+    if iocsr_vcpu_index(vm_id, vcpu_id).is_some() {
+        Ok(())
+    } else {
+        ax_err!(
+            InvalidInput,
+            format!(
+                "LoongArch IOCSR state capacity exceeded: VM[{vm_id}] VCpu[{vcpu_id}], max VM \
+                 count {MAX_IOCSR_VMS}, max vCPU count {MAX_IOCSR_CPUS}"
+            )
+        )
+    }
+}
+
 fn iocsr_mail_buf_index(vcpu_index: usize, addr: usize) -> Option<usize> {
     if !(LOONGARCH_IOCSR_MAIL_BUF0..=LOONGARCH_IOCSR_MAIL_BUF3).contains(&addr)
         || !(addr - LOONGARCH_IOCSR_MAIL_BUF0).is_multiple_of(8)
@@ -472,8 +486,13 @@ fn update_guest_eiointc_irq(ctx: &mut LoongArchContextFrame, vcpu_index: usize) 
 
 pub(crate) fn init_guest_iocsr(vm_id: VMId, vcpu_id: VCpuId) {
     let Some(vcpu_index) = iocsr_vcpu_index(vm_id, vcpu_id) else {
+        log::warn!(
+            "LoongArch guest IOCSR init skipped: VM[{vm_id}] VCpu[{vcpu_id}] exceeds capacity"
+        );
         return;
     };
+
+    clear_guest_iocsr_vcpu(vcpu_index);
 
     for word in 0..EIOINTC_NODEMAP_WORDS {
         let value = ((1usize << (word * 2 + 1)) << 16) | (1usize << (word * 2));
@@ -493,6 +512,49 @@ pub(crate) fn init_guest_iocsr(vm_id: VMId, vcpu_id: VCpuId) {
     for word in 0..EIOINTC_COREMAP_WORDS {
         EIOINTC_COREMAP_WORDS_STORAGE[eiointc_word_index(vcpu_index, EIOINTC_COREMAP_WORDS, word)]
             .store(0x0101_0101, Ordering::Release);
+    }
+}
+
+pub fn clear_guest_iocsr_vm(vm_id: VMId) {
+    if vm_id >= MAX_IOCSR_VMS {
+        return;
+    }
+
+    for vcpu_id in 0..MAX_IOCSR_CPUS {
+        clear_guest_iocsr_vcpu(vm_id * MAX_IOCSR_CPUS + vcpu_id);
+    }
+}
+
+fn clear_guest_iocsr_vcpu(vcpu_index: usize) {
+    IOCSR_IPI_STATUS_WORDS[vcpu_index].store(0, Ordering::Release);
+    IOCSR_IPI_ENABLE_WORDS[vcpu_index].store(0, Ordering::Release);
+    EIOINTC_VIRT_CONFIG_WORDS[vcpu_index].store(0, Ordering::Release);
+
+    for word in 0..IOCSR_MAIL_BUF_COUNT {
+        IOCSR_MAIL_BUF_WORDS[vcpu_index * IOCSR_MAIL_BUF_COUNT + word].store(0, Ordering::Release);
+    }
+    for word in 0..EIOINTC_ISR_REG_COUNT {
+        EIOINTC_ISR_WORDS[eiointc_isr_index(vcpu_index, word)].store(0, Ordering::Release);
+    }
+    for word in 0..EIOINTC_NODEMAP_WORDS {
+        EIOINTC_NODEMAP_WORDS_STORAGE[eiointc_word_index(vcpu_index, EIOINTC_NODEMAP_WORDS, word)]
+            .store(0, Ordering::Release);
+    }
+    for word in 0..EIOINTC_IPMAP_WORDS {
+        EIOINTC_IPMAP_WORDS_STORAGE[eiointc_word_index(vcpu_index, EIOINTC_IPMAP_WORDS, word)]
+            .store(0, Ordering::Release);
+    }
+    for word in 0..EIOINTC_ENABLE_WORDS_PER_VCPU {
+        EIOINTC_ENABLE_WORDS[eiointc_word_index(vcpu_index, EIOINTC_ENABLE_WORDS_PER_VCPU, word)]
+            .store(0, Ordering::Release);
+    }
+    for word in 0..EIOINTC_BOUNCE_WORDS {
+        EIOINTC_BOUNCE_WORDS_STORAGE[eiointc_word_index(vcpu_index, EIOINTC_BOUNCE_WORDS, word)]
+            .store(0, Ordering::Release);
+    }
+    for word in 0..EIOINTC_COREMAP_WORDS {
+        EIOINTC_COREMAP_WORDS_STORAGE[eiointc_word_index(vcpu_index, EIOINTC_COREMAP_WORDS, word)]
+            .store(0, Ordering::Release);
     }
 }
 

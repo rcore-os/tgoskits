@@ -221,6 +221,8 @@ pub fn init_guest_vm(raw_cfg: &str) -> AxResult<usize> {
             format!("VM[{vm_id}] already exists")
         ));
     }
+    #[cfg(target_arch = "loongarch64")]
+    crate::manager::register_loongarch_passthrough_irq_routes(vm_id);
 
     #[cfg(all(
         feature = "fs",

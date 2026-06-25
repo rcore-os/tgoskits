@@ -120,15 +120,39 @@ impl ax_plat::irq::LoongArchHvIrqIf for IrqIfImpl {
             return;
         }
 
+        let target = (vm_id << IRQ_TARGET_VM_SHIFT) | vcpu_id;
+        let previous_target = LOONGARCH_GUEST_IRQ_TARGETS[physical_irq].load(Ordering::Acquire);
+        if previous_target != IRQ_TARGET_NONE && previous_target != target {
+            warn!(
+                "LoongArch guest IRQ route conflict: physical_irq={} is already routed to encoded \
+                 target {:#x}, ignoring VM[{}] VCpu[{}]",
+                physical_irq, previous_target, vm_id, vcpu_id
+            );
+            return;
+        }
+
+        LOONGARCH_GUEST_IRQ_TARGETS[physical_irq].store(target, Ordering::Release);
         LOONGARCH_GUEST_IRQ_ROUTES[physical_irq].store(guest_vector + 1, Ordering::Release);
-        LOONGARCH_GUEST_IRQ_TARGETS[physical_irq]
-            .store((vm_id << IRQ_TARGET_VM_SHIFT) | vcpu_id, Ordering::Release);
         somehal::irq::irq_set_enable(physical_irq.into(), true);
         debug!(
             "LoongArch dynamic guest IRQ route: physical_irq={}, target=VM[{}] VCpu[{}], \
              guest_vector={}",
             physical_irq, vm_id, vcpu_id, guest_vector
         );
+    }
+
+    fn unregister_guest_irq_routes(vm_id: usize) {
+        for physical_irq in 0..LOONGARCH_MAX_IRQ_COUNT {
+            let target = LOONGARCH_GUEST_IRQ_TARGETS[physical_irq].load(Ordering::Acquire);
+            if target == IRQ_TARGET_NONE || (target >> IRQ_TARGET_VM_SHIFT) != vm_id {
+                continue;
+            }
+
+            LOONGARCH_GUEST_IRQ_ROUTES[physical_irq].store(IRQ_ROUTE_NONE, Ordering::Release);
+            LOONGARCH_GUEST_IRQ_TARGETS[physical_irq].store(IRQ_TARGET_NONE, Ordering::Release);
+            somehal::irq::irq_set_enable(physical_irq.into(), false);
+            debug!("LoongArch dynamic guest IRQ route removed: physical_irq={physical_irq}");
+        }
     }
 }
 

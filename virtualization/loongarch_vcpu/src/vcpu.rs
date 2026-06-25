@@ -139,6 +139,7 @@ impl AxArchVCpu for LoongArchVCpu {
     type SetupConfig = LoongArchVCpuSetupConfig;
 
     fn new(_vm_id: usize, _vcpu_id: usize, config: Self::CreateConfig) -> AxResult<Self> {
+        crate::exception::validate_guest_iocsr_capacity(_vm_id, _vcpu_id)?;
         let mut ctx = LoongArchContextFrame::default();
         if config.firmware_boot {
             // Firmware reset entry keeps the initial argument registers in their

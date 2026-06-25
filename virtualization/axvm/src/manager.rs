@@ -41,6 +41,8 @@ pub(crate) fn push_existing_vm(vm: AxVMRef) -> bool {
 pub(crate) fn remove_existing_vm(vm_id: VMId) -> Option<AxVMRef> {
     let vm = VM_REGISTRY.lock().remove(&vm_id)?;
     crate::runtime::vcpus::cleanup_vm_vcpus(vm_id);
+    #[cfg(target_arch = "loongarch64")]
+    loongarch_vcpu::clear_guest_iocsr_vm(vm_id);
     Some(vm)
 }
 

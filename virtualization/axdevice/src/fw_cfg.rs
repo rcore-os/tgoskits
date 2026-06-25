@@ -1,6 +1,6 @@
 use alloc::{format, vec, vec::Vec};
 
-use ax_errno::{AxResult, ax_err};
+use ax_errno::{AxResult, ax_err, ax_err_type};
 use ax_kspin::SpinNoIrq as Mutex;
 use axdevice_base::{AccessWidth, BaseDeviceOps, EmuDeviceType};
 use axvm_types::{GuestPhysAddr, GuestPhysAddrRange};
@@ -58,6 +58,7 @@ const FW_CFG_DMA_CTL_SKIP: u32 = 0x04;
 const FW_CFG_DMA_CTL_SELECT: u32 = 0x08;
 const FW_CFG_DMA_CTL_WRITE: u32 = 0x10;
 const FW_CFG_DMA_DESC_SIZE: usize = 16;
+const FW_CFG_DMA_SCRATCH_SIZE: usize = 4096;
 
 #[derive(Clone, Copy, Debug)]
 pub struct FwCfgRamRegion {
@@ -472,6 +473,8 @@ impl FwCfg {
         R: FnMut(GuestPhysAddr, &mut [u8]) -> AxResult,
         W: FnMut(GuestPhysAddr, &[u8]) -> AxResult,
     {
+        validate_dma_buffer(buffer_addr, length)?;
+
         let mut state = self.state.lock();
         if control & FW_CFG_DMA_CTL_SELECT != 0 {
             state.selected = (control >> 16) as u16;
@@ -494,22 +497,15 @@ impl FwCfg {
                 );
                 let entry = self.selected_bytes(state.selected);
                 let data = entry.as_slice();
-                let start = state.offset.min(data.len());
-                let end = start.saturating_add(length).min(data.len());
-                let mut out = Vec::with_capacity(length);
-                out.extend_from_slice(&data[start..end]);
-                out.resize(length, 0);
+                let start = state.offset;
                 state.offset = state.offset.saturating_add(length);
                 drop(state);
-                write_guest(buffer_addr, &out)
+                dma_read_entry(data, start, length, buffer_addr, write_guest)
             }
             FW_CFG_DMA_CTL_WRITE => {
-                let mut ignored = vec![0; length];
-                if length != 0 {
-                    read_guest(buffer_addr, &mut ignored)?;
-                }
                 state.offset = state.offset.saturating_add(length);
-                Ok(())
+                drop(state);
+                dma_discard_guest_write(length, buffer_addr, read_guest)
             }
             _ => {
                 warn!("invalid fw_cfg DMA control {:#x}", control);
@@ -517,6 +513,79 @@ impl FwCfg {
             }
         }
     }
+}
+
+fn validate_dma_buffer(buffer_addr: GuestPhysAddr, length: usize) -> AxResult {
+    buffer_addr
+        .as_usize()
+        .checked_add(length)
+        .ok_or_else(|| ax_err_type!(InvalidInput, "fw_cfg DMA buffer address overflow"))?;
+    Ok(())
+}
+
+fn dma_read_entry<W>(
+    data: &[u8],
+    start: usize,
+    length: usize,
+    buffer_addr: GuestPhysAddr,
+    write_guest: &mut W,
+) -> AxResult
+where
+    W: FnMut(GuestPhysAddr, &[u8]) -> AxResult,
+{
+    let mut remaining = length;
+    let mut guest_offset = 0usize;
+    let mut data_offset = start.min(data.len());
+    let zeroes = [0u8; FW_CFG_DMA_SCRATCH_SIZE];
+
+    while remaining != 0 {
+        let chunk_len = remaining.min(FW_CFG_DMA_SCRATCH_SIZE);
+        let guest_addr = add_guest_offset(buffer_addr, guest_offset)?;
+        let available = data.len().saturating_sub(data_offset).min(chunk_len);
+        if available == chunk_len {
+            write_guest(guest_addr, &data[data_offset..data_offset + chunk_len])?;
+        } else {
+            if available != 0 {
+                write_guest(guest_addr, &data[data_offset..data_offset + available])?;
+            }
+            let zero_addr = add_guest_offset(buffer_addr, guest_offset + available)?;
+            write_guest(zero_addr, &zeroes[..chunk_len - available])?;
+        }
+
+        remaining -= chunk_len;
+        guest_offset += chunk_len;
+        data_offset = data_offset.saturating_add(chunk_len);
+    }
+
+    Ok(())
+}
+
+fn dma_discard_guest_write<R>(
+    length: usize,
+    buffer_addr: GuestPhysAddr,
+    read_guest: &mut R,
+) -> AxResult
+where
+    R: FnMut(GuestPhysAddr, &mut [u8]) -> AxResult,
+{
+    let mut scratch = [0u8; FW_CFG_DMA_SCRATCH_SIZE];
+    let mut remaining = length;
+    let mut guest_offset = 0usize;
+    while remaining != 0 {
+        let chunk_len = remaining.min(scratch.len());
+        let guest_addr = add_guest_offset(buffer_addr, guest_offset)?;
+        read_guest(guest_addr, &mut scratch[..chunk_len])?;
+        remaining -= chunk_len;
+        guest_offset += chunk_len;
+    }
+    Ok(())
+}
+
+fn add_guest_offset(base: GuestPhysAddr, offset: usize) -> AxResult<GuestPhysAddr> {
+    base.as_usize()
+        .checked_add(offset)
+        .map(GuestPhysAddr::from_usize)
+        .ok_or_else(|| ax_err_type!(InvalidInput, "fw_cfg DMA buffer address overflow"))
 }
 
 struct FwCfgFile<'a> {
@@ -1352,5 +1421,54 @@ impl BaseDeviceOps<GuestPhysAddrRange> for FwCfg {
             self.write_selector(width, val);
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use core::cell::Cell;
+
+    use super::*;
+
+    #[test]
+    fn dma_read_uses_bounded_chunks_for_large_guest_length() {
+        let writes = Cell::new(0usize);
+        dma_read_entry(
+            b"abc",
+            0,
+            FW_CFG_DMA_SCRATCH_SIZE * 2 + 17,
+            GuestPhysAddr::from_usize(0x8000),
+            &mut |_addr, buffer| {
+                assert!(buffer.len() <= FW_CFG_DMA_SCRATCH_SIZE);
+                writes.set(writes.get() + 1);
+                Ok(())
+            },
+        )
+        .unwrap();
+
+        assert!(writes.get() > 1);
+    }
+
+    #[test]
+    fn dma_write_discard_uses_bounded_chunks_for_large_guest_length() {
+        let reads = Cell::new(0usize);
+        dma_discard_guest_write(
+            FW_CFG_DMA_SCRATCH_SIZE * 2 + 17,
+            GuestPhysAddr::from_usize(0x8000),
+            &mut |_addr, buffer| {
+                assert!(buffer.len() <= FW_CFG_DMA_SCRATCH_SIZE);
+                buffer.fill(0xaa);
+                reads.set(reads.get() + 1);
+                Ok(())
+            },
+        )
+        .unwrap();
+
+        assert!(reads.get() > 1);
+    }
+
+    #[test]
+    fn dma_rejects_buffer_address_overflow() {
+        assert!(validate_dma_buffer(GuestPhysAddr::from_usize(usize::MAX), 2).is_err());
     }
 }

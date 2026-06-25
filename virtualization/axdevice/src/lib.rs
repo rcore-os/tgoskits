@@ -54,7 +54,7 @@ pub use fw_cfg::{
     FwCfgSerialConfig,
 };
 #[cfg(target_arch = "loongarch64")]
-pub use loongarch_pch_pic::LoongArchPchPic;
+pub use loongarch_pch_pic::{LoongArchPchPic, PchPicOutputEvent};
 pub use registration::{DeviceBundle, DeviceRegistration, PollableDeviceOps};
 #[cfg(target_arch = "x86_64")]
 pub use x86_vlapic::IoApicInterrupt;
