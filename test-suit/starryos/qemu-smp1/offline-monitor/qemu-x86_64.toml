@@ -18,5 +18,5 @@ to_bin = false
 shell_prefix = "root@starry:"
 shell_init_cmd = "/usr/bin/run-offline-monitor.sh"
 success_regex = ["(?m)^STARRY_EVENTS_END\\s*$"]
-fail_regex = ['(?i)\bpanic(?:ked)?\b']
+fail_regex = ['(?i)\bpanic(?:ked)?\b', '(?m)^OFFLINE_MONITOR_FAILED\s*$']
 timeout = 180
