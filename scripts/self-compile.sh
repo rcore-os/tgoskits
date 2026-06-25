@@ -50,6 +50,7 @@ _numeric_level() {
 }
 _log_allowed() { [ "$(_numeric_level "${LOG_LEVEL}")" -ge "$1" ]; }
 info()  { if _log_allowed 3; then printf "[self-compile] %s\n" "$*"; fi; }
+warn()  { if _log_allowed 2; then printf "[self-compile] WARN: %s\n" "$*" >&2; fi; }
 error() { printf "[self-compile] ERROR: %s\n" "$*" >&2; exit 1; }
 
 while [[ $# -gt 0 ]]; do
@@ -154,11 +155,46 @@ Run: cargo xtask starry rootfs --arch x86_64"
         info "Bootstrap complete: $SELFHOST_BLUEPRINT ($(stat -c%s "$SELFHOST_BLUEPRINT") bytes)"
     fi
 
+    # ─── Downloadable blueprint (tgosimages release) ──────────────────────────
+    #
+    # If the blueprint is still missing after the bootstrap check above, attempt
+    # to download a pre-built image from the tgosimages release.  The download
+    # is compressed (xz) and verified by SHA-256.  This is the recommended path
+    # for reviewers/CI; see docs/starryos-self-compilation.md.
+    if [ ! -f "$SELFHOST_BLUEPRINT" ]; then
+        SELFHOST_URL="https://github.com/rcore-os/tgosimages/releases/download/selfhost-rootfs/rootfs-x86_64-selfhost.img.xz"
+        SELFHOST_SHA256="b17c330958c8970c9db4faec7306182101a0bf34f2b850c80781d63321f49eb8"
+        SELFHOST_DL="${SELFHOST_BLUEPRINT}.xz"
+
+        info "Blueprint not found; attempting download from tgosimages release..."
+        if command -v curl >/dev/null 2>&1; then
+            curl -L -o "$SELFHOST_DL" "$SELFHOST_URL" 2>&1 || true
+        elif command -v wget >/dev/null 2>&1; then
+            wget -q --show-progress -O "$SELFHOST_DL" "$SELFHOST_URL" 2>&1 || true
+        fi
+
+        if [ -f "$SELFHOST_DL" ] && [ -s "$SELFHOST_DL" ]; then
+            ACTUAL_SHA=$(sha256sum "$SELFHOST_DL" 2>/dev/null | cut -d' ' -f1)
+            if [ "${ACTUAL_SHA:-}" = "$SELFHOST_SHA256" ]; then
+                info "SHA-256 verified; decompressing..."
+                xz -d "$SELFHOST_DL" || error "Failed to decompress $SELFHOST_DL"
+                info "Blueprint downloaded and verified: $SELFHOST_BLUEPRINT ($(stat -c%s "$SELFHOST_BLUEPRINT") bytes)"
+            else
+                rm -f "$SELFHOST_DL"
+                warn "Downloaded blueprint SHA-256 mismatch (expected ${SELFHOST_SHA256}, got ${ACTUAL_SHA:-none})."
+                warn "The tgosimages release may need updating; falling back to local preparation."
+            fi
+        else
+            warn "Blueprint download failed or returned empty (URL: $SELFHOST_URL)."
+            warn "Falling back to local rootfs preparation."
+        fi
+    fi
+
     [ -f "$SELFHOST_BLUEPRINT" ] || error "Selfhost rootfs not found: $SELFHOST_BLUEPRINT
 
 The blueprint must be placed at this path before running self-compile.
-Maintainers can create it via: prepare-selfhost-rootfs.sh --arch x86_64 --force
-(recommended: place the blueprint, then all runs clone it from there).
+Options: download a pre-built image from the tgosimages release, or create
+one via prepare-selfhost-rootfs.sh (maintainer tool, requires sudo).
 
 See docs/starryos-self-compilation.md for details."
 
