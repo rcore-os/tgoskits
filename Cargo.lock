@@ -151,6 +151,7 @@ version = "0.2.0"
 dependencies = [
  "aes",
  "atomic-waker",
+ "ax-kspin",
  "digest 0.10.7",
  "dma-api",
  "hmac",
@@ -162,7 +163,6 @@ dependencies = [
  "sdio-host-cv1800",
  "sha1 0.10.6",
  "sha2 0.10.9",
- "spin 0.12.0",
  "ureq",
 ]
 
@@ -6471,6 +6471,7 @@ name = "rdrive"
 version = "0.23.1"
 dependencies = [
  "acpi",
+ "ax-kspin",
  "fdt-edit",
  "fdt-raw",
  "log",
