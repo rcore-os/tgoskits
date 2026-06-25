@@ -168,13 +168,19 @@ Run: cargo xtask starry rootfs --arch x86_64"
 
         info "Blueprint not found; attempting download from tgosimages release..."
         if command -v curl >/dev/null 2>&1; then
-            curl -L -o "$SELFHOST_DL" "$SELFHOST_URL" 2>&1 || true
+            curl -fL -o "$SELFHOST_DL" "$SELFHOST_URL" 2>&1 || true
         elif command -v wget >/dev/null 2>&1; then
             wget -q --show-progress -O "$SELFHOST_DL" "$SELFHOST_URL" 2>&1 || true
         fi
 
         if [ -f "$SELFHOST_DL" ] && [ -s "$SELFHOST_DL" ]; then
-            ACTUAL_SHA=$(sha256sum "$SELFHOST_DL" 2>/dev/null | cut -d' ' -f1)
+            # Guard against a missing sha256sum: under `set -euo pipefail` the
+            # pipe would abort the script (exit 127) instead of failing closed.
+            if command -v sha256sum >/dev/null 2>&1; then
+                ACTUAL_SHA=$(sha256sum "$SELFHOST_DL" | cut -d' ' -f1)
+            else
+                ACTUAL_SHA=""
+            fi
             if [ "${ACTUAL_SHA:-}" = "$SELFHOST_SHA256" ]; then
                 info "SHA-256 verified; decompressing..."
                 xz -d "$SELFHOST_DL" || error "Failed to decompress $SELFHOST_DL"
@@ -241,6 +247,9 @@ if [ "$APP_EXIT" -eq 0 ]; then
     # The app runner modifies the rootfs in-place.  Extract the guest-built
     # kernel from the rootfs image via debugfs.
     mkdir -p "$(dirname "$CACHED_KERNEL")"
+    # Remove any stale binary from a previous run so a failed extraction
+    # cannot be reported as a fresh success by the [ -f && -s ] check below.
+    rm -f "$CACHED_KERNEL"
     debugfs -R "dump /opt/starryos-selfbuilt $CACHED_KERNEL" "$ROOTFS_IMG" 2>/dev/null || true
 
     if [ -f "$CACHED_KERNEL" ] && [ -s "$CACHED_KERNEL" ]; then

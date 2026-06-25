@@ -248,23 +248,32 @@ pub fn get_file_inode<B: BlockDevice>(
                     total_size.div_ceil(BLOCK_SIZE)
                 };
                 let mut inode_copy = current_inode;
-                if let Ok(blocks_map) =
-                    resolve_inode_block_allextend(fs, block_dev, &mut inode_copy)
-                {
-                    for lbn in 0..total_blocks {
-                        if let Some(phys) = blocks_map.get(&(lbn as u32))
-                            && let Some(cached) = fs.datablock_cache.get(*phys)
-                            && let Some(entry) = classic_dir::find_entry(&cached.data, target)
-                            && entry.file_type != Ext4DirEntryTail::RESERVED_FT
-                        {
-                            // Match the linear-scan branch above: a corrupt inode
-                            // number is a hard error, not a silent miss.
-                            direct_found = Some(
-                                InodeNumber::new(entry.inode)
-                                    .map_err(|_| Ext4Error::corrupted())?,
-                            );
-                            break;
+                match resolve_inode_block_allextend(fs, block_dev, &mut inode_copy) {
+                    Ok(blocks_map) => {
+                        for lbn in 0..total_blocks {
+                            if let Some(phys) = blocks_map.get(&(lbn as u32))
+                                && let Some(cached) = fs.datablock_cache.get(*phys)
+                                && let Some(entry) = classic_dir::find_entry(&cached.data, target)
+                                && entry.file_type != Ext4DirEntryTail::RESERVED_FT
+                            {
+                                // Match the linear-scan branch above: a corrupt inode
+                                // number is a hard error, not a silent miss.
+                                direct_found = Some(
+                                    InodeNumber::new(entry.inode)
+                                        .map_err(|_| Ext4Error::corrupted())?,
+                                );
+                                break;
+                            }
                         }
+                    }
+                    Err(e) => {
+                        // Do not silently treat a resolve failure as "not found":
+                        // surface a corrupt extent tree / I/O error instead of a miss.
+                        warn!(
+                            "get_file_inode: direct block-scan resolve failed, treating as miss: \
+                             name={} path={} err={:?}",
+                            name, path, e
+                        );
                     }
                 }
                 match direct_found {
