@@ -660,6 +660,9 @@ static void test_fork_rw_file_read_child_write(long page_size)
             (ssize_t)sizeof(child_after_write)) {
             _exit(1);
         }
+        if (io_read_all(release[0], &byte, 1) != 1) {
+            _exit(1);
+        }
         close(notify[1]);
         close(release[0]);
         close(fd);
@@ -704,7 +707,6 @@ static void test_fork_rw_file_read_child_write(long page_size)
                (ssize_t)sizeof(child_after_write),
            "read child RSS after RW file COW write");
     close(notify[0]);
-    close(release[1]);
     expect(child_after_write.pid == child, "child pid matches after COW write");
 
     snprintf(child_status, sizeof(child_status), "/proc/%d/status", child);
@@ -737,6 +739,8 @@ static void test_fork_rw_file_read_child_write(long page_size)
                parent_anon_after_fork + page_kb * RSS_TOUCH_TOLERANCE,
            "parent RssAnon stable within tolerance after child COW write");
 
+    expect(io_write_all(release[1], "D", 1) == 1, "release fork RW file child after proc read");
+    close(release[1]);
     expect(waitpid(child, &status, 0) == child, "waitpid fork RW file child");
     expect(WIFEXITED(status) && WEXITSTATUS(status) == 0,
            "fork RW file child exits cleanly");
