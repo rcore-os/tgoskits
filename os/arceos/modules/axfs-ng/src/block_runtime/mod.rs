@@ -14,11 +14,11 @@ mod tests {
     };
 
     use ax_errno::AxError;
+    use ax_kspin::SpinRaw as SpinNoIrq;
     use rdif_block::{
         BlkError, CompletionHint, DeviceInfo, DriverGeneric, IQueue, Interface, QueueInfo,
         QueueLimits, Request, RequestId, RequestOp, RequestStatus,
     };
-    use spin::Mutex as SpinNoIrq;
 
     use super::*;
     use crate::os::{BlockTaskOps, install_dma_op, set_task_ops};
