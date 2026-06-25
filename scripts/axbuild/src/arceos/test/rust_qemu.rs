@@ -7,8 +7,8 @@ use regex::Regex;
 use super::{
     ARCEOS_RUST_ALL_FEATURE, ARCEOS_RUST_DEBUG_BACKTRACE_FEATURE,
     ARCEOS_RUST_DEBUG_PANIC_PATH_FEATURE, ARCEOS_RUST_EXCEPTION_PAGE_FAULT_FEATURE,
-    ARCEOS_RUST_LOCKDEP_DETECT_FEATURE, ARCEOS_RUST_QEMU_FEATURES,
-    ARCEOS_RUST_STACK_GUARD_PAGE_FEATURE,
+    ARCEOS_RUST_LOCKDEP_DETECT_FEATURE, ARCEOS_RUST_LOCKDEP_SPIN_DETECT_FEATURE,
+    ARCEOS_RUST_QEMU_FEATURES, ARCEOS_RUST_STACK_GUARD_PAGE_FEATURE,
     assets::test_build_args,
     discovery::discover_rust_qemu_cases,
     runner::run_prepared_qemu_groups,
@@ -141,10 +141,10 @@ fn apply_rust_qemu_feature_overrides(
             ];
             qemu.timeout = Some(qemu.timeout.unwrap_or(30).min(30));
         }
-        Some(ARCEOS_RUST_LOCKDEP_DETECT_FEATURE) => {
+        Some(feature) if is_lockdep_detect_feature(feature) => {
             qemu.success_regex = vec!["lockdep: lock order inversion detected".to_string()];
             qemu.fail_regex =
-                vec!["lockdep did not report an expected lock order inversion".to_string()];
+                vec![r"lockdep did not report an expected .*lock order inversion".to_string()];
             qemu.timeout = Some(qemu.timeout.unwrap_or(30).min(30));
         }
         Some(ARCEOS_RUST_STACK_GUARD_PAGE_FEATURE) => {
@@ -162,6 +162,13 @@ fn apply_rust_qemu_feature_overrides(
         }
         _ => {}
     }
+}
+
+fn is_lockdep_detect_feature(feature: &str) -> bool {
+    matches!(
+        feature,
+        ARCEOS_RUST_LOCKDEP_DETECT_FEATURE | ARCEOS_RUST_LOCKDEP_SPIN_DETECT_FEATURE
+    )
 }
 
 fn add_cargo_feature(cargo: &mut Cargo, feature: &str) {
@@ -352,6 +359,7 @@ mod tests {
             "fs-basic",
             "lockdep-baseline",
             ARCEOS_RUST_LOCKDEP_DETECT_FEATURE,
+            ARCEOS_RUST_LOCKDEP_SPIN_DETECT_FEATURE,
             "net-loopback",
             "sched-cfs",
             "sched-rr",
@@ -495,7 +503,34 @@ BT 0 ip=0x1 fp=0x2
         );
         assert_eq!(
             qemu.fail_regex,
-            vec!["lockdep did not report an expected lock order inversion"]
+            vec![r"lockdep did not report an expected .*lock order inversion"]
+        );
+        assert_eq!(qemu.timeout, Some(30));
+    }
+
+    #[test]
+    fn arceos_rust_lockdep_spin_detect_qemu_uses_lockdep_result_regex() {
+        let mut cargo = rust_test_cargo_for_target("x86_64-unknown-none");
+        let mut qemu = QemuConfig {
+            success_regex: vec!["ArceOS test suite run OK!".to_string()],
+            fail_regex: vec![r"(?i)\bpanic(?:ked)?\b".to_string()],
+            timeout: Some(60),
+            ..QemuConfig::default()
+        };
+
+        apply_rust_qemu_feature_overrides(
+            &mut cargo,
+            &mut qemu,
+            Some(ARCEOS_RUST_LOCKDEP_SPIN_DETECT_FEATURE),
+        );
+
+        assert_eq!(
+            qemu.success_regex,
+            vec!["lockdep: lock order inversion detected"]
+        );
+        assert_eq!(
+            qemu.fail_regex,
+            vec![r"lockdep did not report an expected .*lock order inversion"]
         );
         assert_eq!(qemu.timeout, Some(30));
     }
