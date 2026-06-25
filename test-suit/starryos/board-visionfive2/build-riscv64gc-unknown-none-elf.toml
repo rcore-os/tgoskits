@@ -1,6 +1,9 @@
 # Build-time config template for StarryOS on VisionFive2.
 target = "riscv64gc-unknown-none-elf"
 features = [
+  "ax-feat/rtc",
+  "ax-driver/rtc",
   "ax-driver/serial",
+  "ax-driver/starfive-jh7110-dwmmc",
 ]
 log = "Info"
