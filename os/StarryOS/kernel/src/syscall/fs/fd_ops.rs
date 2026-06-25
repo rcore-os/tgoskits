@@ -397,6 +397,13 @@ pub fn sys_close_range(first: i32, last: i32, flags: u32) -> AxResult<isize> {
 
     let cloexec = flags.contains(CloseRangeFlags::CLOEXEC);
     let mut fd_table = FD_TABLE.write();
+    // Collect closed fds and defer `release_locks_on_close` until after the
+    // table write lock is dropped. `release_locks_on_close()` walks every fd
+    // table through `fd_tables_contain_file()` (which acquires `FD_TABLE`),
+    // so running it under the write guard self-deadlocks on the first closed
+    // fd — every `dup2()`/`dup3()` that replaces an open fd (shell pipeline
+    // setup) hangs. Mirrors the `close_all_fds` / execve CLOEXEC pattern.
+    let mut closing = alloc::vec::Vec::new();
     if let Some(max_index) = fd_table.ids().next_back() {
         for fd in first..=last.min(max_index as i32) {
             if cloexec {
@@ -404,9 +411,13 @@ pub fn sys_close_range(first: i32, last: i32, flags: u32) -> AxResult<isize> {
                     f.cloexec = true;
                 }
             } else if let Some(f) = fd_table.remove(fd as _) {
-                crate::file::release_locks_on_close(f);
+                closing.push(f);
             }
         }
+    }
+    drop(fd_table);
+    for f in closing {
+        crate::file::release_locks_on_close(f);
     }
 
     Ok(0)
@@ -473,12 +484,18 @@ pub fn sys_dup3(old_fd: c_int, new_fd: c_int, flags: c_int) -> AxResult<isize> {
         .ok_or(AxError::BadFileDescriptor)?;
     f.cloexec = flags.contains(Dup3Flags::O_CLOEXEC);
 
-    if let Some(prev) = fd_table.remove(new_fd as _) {
-        crate::file::release_locks_on_close(prev);
-    }
+    let prev = fd_table.remove(new_fd as _);
     fd_table
         .add_at(new_fd as _, f)
         .map_err(|_| AxError::BadFileDescriptor)?;
+    drop(fd_table);
+    // `release_locks_on_close()` walks all fd tables via
+    // `fd_tables_contain_file()` (acquiring `FD_TABLE`), so it must run AFTER
+    // the write lock is released — otherwise every dup2()/dup3() that replaces
+    // an open fd self-deadlocks (shell pipeline redirection, etc.).
+    if let Some(prev) = prev {
+        crate::file::release_locks_on_close(prev);
+    }
 
     Ok(new_fd as _)
 }
