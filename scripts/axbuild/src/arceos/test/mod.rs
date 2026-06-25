@@ -25,7 +25,6 @@ const ARCEOS_RUST_DEBUG_BACKTRACE_FEATURE: &str = "debug-backtrace";
 const ARCEOS_RUST_DEBUG_PANIC_PATH_FEATURE: &str = "debug-panic-path";
 const ARCEOS_RUST_EXCEPTION_PAGE_FAULT_FEATURE: &str = "exception-page-fault";
 const ARCEOS_RUST_LOCKDEP_DETECT_FEATURE: &str = "lockdep-detect";
-const ARCEOS_RUST_LOCKDEP_SPIN_DETECT_FEATURE: &str = "lockdep-spin-detect";
 const ARCEOS_RUST_STACK_GUARD_PAGE_FEATURE: &str = "task-stack-guard-page";
 
 const ARCEOS_RUST_QEMU_FEATURES: &[&str] = &[
@@ -38,7 +37,6 @@ const ARCEOS_RUST_QEMU_FEATURES: &[&str] = &[
     "fs-basic",
     "lockdep-baseline",
     ARCEOS_RUST_LOCKDEP_DETECT_FEATURE,
-    ARCEOS_RUST_LOCKDEP_SPIN_DETECT_FEATURE,
     "memtest",
     "net-loopback",
     "sched-cfs",

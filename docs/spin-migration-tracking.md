@@ -90,9 +90,10 @@
   `realtek-rtl8125`、`aic8800`、`rdrive`、`ax-driver`、`crab-usb`、
   `ax-fs-ng`、`ax-std` 和 StarryOS `wext` 中的业务 `spin::Mutex` 用法
   已替换为项目内锁。
-- `test-suit/arceos/rust/src/lockdep/spin_detect.rs` 仍保留 `spin::Mutex`
-  作为 lockdep 对 vendored `spin` 兼容层的检测用例；这不是业务使用。
-- `components/kspin/src/base.rs` 只保留 `spin::Mutex` 的来源说明文档引用。
+- vendored `components/spin` 已移除 `spin::Mutex`、`spin::mutex`、
+  mutex 相关 feature 和依赖该实现的 `spin::Barrier` 暴露面；新增
+  `spin::Mutex` 使用会直接编译失败。
+- `components/kspin/src/base.rs` 只保留 `spin::Mutex` 的历史来源说明文档引用。
 - 剩余 `spin::RwLock`、`spin::Once`、`spin::LazyLock` 使用属于后续阶段，
   不包含在本阶段和本 PR 的实现范围内。
 

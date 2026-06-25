@@ -57,7 +57,7 @@ sidebar_label: "锁使用问题跟踪"
 | `os/StarryOS/kernel/src/file/netlink.rs` 和 `os/StarryOS/kernel/src/file/packet.rs` | 已调整为锁内取出消息或包，锁外 copy 到用户缓冲区。 | 旧问题是持 `SpinNoIrq` 时写用户内存，page fault 路径要求 IRQ enabled。 | 保持“队列状态锁内移动数据，用户内存访问锁外执行”的规则。 |
 | `os/arceos/modules/axfs-ng/src/highlevel/file.rs` | 仍有 `spin::RwLock`，包括 `GLOBAL_CACHED_FILES` 和 `append_lock`。 | `spin::RwLock` 仍不属于 lockdep-aware `ax-kspin` / `ax-sync` 路径。`append_lock` 是历史记录中明确延期的 RwLock 设计问题。 | 近期不引入新 RwLock。先确认是否必须读写分离；不必须的点评估 mutex 化，必须的点保留并记录风险。 |
 | `os/StarryOS/kernel/src/file/mod.rs`、`task/mod.rs`、`task/ops.rs` 等 | 仍有若干 `spin::RwLock`；`file/signalfd.rs` 的 signal mask 已改成 `SpinNoIrq<SignalSet>`。 | 剩余 RwLock 还不在 lockdep 统一可见范围内，且可能参与 FD table、task 状态等运行时路径。signalfd mask 只是单个可拷贝 bitset，当前不需要外部 `spin::RwLock`。 | 按运行时重要性分批审计：能 mutex 化的先 mutex 化；不能 mutex 化的先冻结新增使用，不把 RwLock 作为近期替换目标。后续若实现项目自有、lockdep-aware 的 RwLock，再评估 signalfd mask 是否值得恢复读写分离。 |
-| drivers / portable crates 中的 `spin::Mutex` | 业务代码中的直接 `spin::Mutex` 已清理；当前只应剩 lockdep 检测用例和文档引用。 | 后续若 portable crate 新增锁，仍不能随手回到外部 `spin::Mutex`，否则内核运行路径会重新形成 lockdep 盲区。 | 继续依赖 `spin-lint` 和复查命令防回退。新增 driver 锁时按 crate 边界选择项目内锁或明确的同步抽象。 |
+| drivers / portable crates 中的 `spin::Mutex` | 业务代码中的直接 `spin::Mutex` 已清理，vendored `spin` 也不再暴露 Mutex API。 | 后续若 portable crate 新增锁，仍不能绕回外部 `spin::Mutex`，否则内核运行路径会重新形成 lockdep 盲区。 | 继续依赖 `spin-lint` 和编译期 API 缺失防回退。新增 driver 锁时按 crate 边界选择项目内锁或明确的同步抽象。 |
 
 ## 调整计划
 
@@ -103,8 +103,8 @@ sidebar_label: "锁使用问题跟踪"
 
 ## 复查命令
 
-外部 `spin::Mutex` / `spin::RwLock` 复查。`spin::Mutex` 结果应只剩明确允许的
-lockdep 检测用例和文档引用；`spin::RwLock` 仍是后续阶段：
+外部 `spin::Mutex` / `spin::RwLock` 复查。`spin::Mutex` 结果应只剩历史文档
+引用；`spin::RwLock` 仍是后续阶段：
 
 ```bash
 rg -n "^use spin::Mutex|^use spin::\{[^}]*Mutex|spin::Mutex|spin::MutexGuard|spin::mutex::" \

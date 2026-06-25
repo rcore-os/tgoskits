@@ -40,15 +40,6 @@ lockdep-detect = [
     "ax-std/multitask",
     "ax-std/lockdep",
 ]
-lockdep-spin-detect = [
-    "ax-std",
-    "dep:ax-kspin",
-    "dep:spin",
-    "ax-std/alloc",
-    "ax-std/multitask",
-    "ax-std/lockdep",
-    "spin/lockdep",
-]
 all = [
     "memtest",
     "task-yield",
@@ -78,4 +69,3 @@ axfs-ng-vfs = { workspace = true, optional = true }
 ax-kspin = { workspace = true, optional = true }
 embedded-graphics = { version = "0.8", optional = true }
 rand = { version = "0.8", default-features = false, features = ["small_rng"], optional = true }
-spin = { workspace = true, optional = true }

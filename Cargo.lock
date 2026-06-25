@@ -348,7 +348,6 @@ dependencies = [
  "axfs-ng-vfs",
  "embedded-graphics",
  "rand 0.8.6",
- "spin 0.12.0",
 ]
 
 [[package]]
@@ -770,7 +769,6 @@ dependencies = [
  "ax-sync",
  "ax-task",
  "axbacktrace",
- "spin 0.12.0",
 ]
 
 [[package]]
@@ -7642,7 +7640,6 @@ version = "0.10.0"
 name = "spin"
 version = "0.12.0"
 dependencies = [
- "ax-lockdep",
  "lock_api",
 ]
 
