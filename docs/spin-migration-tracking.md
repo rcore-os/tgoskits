@@ -47,13 +47,13 @@
 
 ### 2. 增加防回退 lint
 
-状态：待办
+状态：已完成
 
 目标：
 
-- 新增一个编译前检查，行为类似 `sync-lint`。
-- 在真正 build/test 前阻止外部 `spin` 被重新引入。
-- 将该检查纳入 GitHub workflow。
+- 新增一个编译前检查，行为类似 `sync-lint`。（已完成：`cargo xtask spin-lint`）
+- 在真正 build/test 前阻止外部 `spin` 被重新引入。（已完成）
+- 将该检查纳入 GitHub workflow。（已完成：CI `static_checks` 在 `test_checks` 前执行）
 
 建议检查项：
 
@@ -64,7 +64,7 @@
 
 验收标准：
 
-- 本地可通过 `cargo xtask <lint-name>` 或类似入口单独运行。
+- 本地可通过 `cargo xtask spin-lint` 单独运行。
 - CI 在 build/test 前执行该 lint。
 - 人为添加 registry 版 `spin` 时，lint 能稳定失败。
 
@@ -168,21 +168,18 @@
 cargo fmt
 cargo xtask clippy --package <changed-crate>
 cargo xtask sync-lint
-cargo xtask <spin-lint-name>
+cargo xtask spin-lint
 FEATURES=lockdep cargo xtask arceos test qemu -g rust --arch riscv64 --no-symbolize --keep-qemu-log
 FEATURES=lockdep cargo xtask starry test qemu --arch riscv64 -c qemu-smp1/system
 FEATURES=lockdep cargo xtask starry test qemu --arch riscv64 -c qemu-smp4/system
 ```
-
-其中 `<spin-lint-name>` 需要在第 2 阶段确定实际命令名。
 
 ## 跟踪表
 
 | 阶段 | 状态 | 主要产物 | 验证 |
 | --- | --- | --- | --- |
 | 收口外部 `spin` 依赖 | 进行中 | `components/spin*`、workspace patch | `cargo tree`、`Cargo.lock` 检查 |
-| 增加防回退 lint | 待办 | 编译前 lint、CI workflow | 人为引入外部 `spin` 后 lint 失败 |
+| 增加防回退 lint | 已完成 | `cargo xtask spin-lint`、CI `static_checks` | `cargo xtask spin-lint`、人为引入外部 `spin` 后 lint 失败 |
 | 清理 `spin::Mutex` | 待办 | 项目内锁替换、删除 Mutex 使用面 | clippy、lockdep、StarryOS/ArceOS 测试 |
 | 替换 `spin::RwLock` | 待办 | 项目内读写锁、lockdep/might_sleep 接入 | 单元测试、lockdep、might_sleep 测试 |
 | 完全移除 `spin` | 待办 | 删除 vendored crate 和 patch | `cargo tree`、全量 CI |
-
