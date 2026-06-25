@@ -8,7 +8,9 @@ use core::{
     task::Context,
 };
 
-use ax_driver::rknpu::{self, RknpuAction, RknpuMemCreate, RknpuMemMap, RknpuMemSync, RknpuSubmit};
+use ax_driver::rknpu::{
+    self, GemCachePolicy, RknpuAction, RknpuMemCreate, RknpuMemMap, RknpuMemSync, RknpuSubmit,
+};
 use ax_errno::{AxError, AxResult};
 use ax_memory_addr::PhysAddrRange;
 use ax_runtime::hal::{cpu::asm::user_copy, mem::virt_to_phys, time::monotonic_time_nanos};
@@ -221,17 +223,32 @@ impl DeviceOps for Card1 {
             warn!("card1: mmap could not resolve handle {handle}");
             return DeviceMmap::None;
         };
-        DeviceMmap::Physical(exported.range, None)
+        exported.device_mmap_kind()
     }
 }
 
 struct ExportedGemBuffer {
     range: PhysAddrRange,
+    cache_policy: GemCachePolicy,
 }
 
 impl ExportedGemBuffer {
-    fn new(range: PhysAddrRange) -> Self {
-        Self { range }
+    fn new(range: PhysAddrRange, cache_policy: GemCachePolicy) -> Self {
+        Self {
+            range,
+            cache_policy,
+        }
+    }
+
+    fn device_mmap_kind(&self) -> DeviceMmap {
+        match self.cache_policy {
+            GemCachePolicy::Cacheable => DeviceMmap::PhysicalCached(self.range, None),
+            // Starry does not expose a write-combine PTE mode yet; keep it
+            // non-cacheable instead of accidentally upgrading it to cached.
+            GemCachePolicy::NonCacheable | GemCachePolicy::WriteCombine => {
+                DeviceMmap::Physical(self.range, None)
+            }
+        }
     }
 }
 
@@ -241,7 +258,7 @@ impl FileLike for ExportedGemBuffer {
     }
 
     fn device_mmap(&self, _offset: u64, _length: u64) -> AxResult<DeviceMmap> {
-        Ok(DeviceMmap::Physical(self.range, None))
+        Ok(self.device_mmap_kind())
     }
 }
 
@@ -266,13 +283,14 @@ fn map_handle_from_offset(offset: u64) -> Option<u32> {
 }
 
 fn exported_gem_buffer(handle: u32) -> AxResult<ExportedGemBuffer> {
-    let (obj_addr, size) = rknpu::obj_addr_and_size(handle)
+    let info = rknpu::buffer_info(handle)
         .map_err(map_rknpu_err)
         .map_err(|_| AxError::NotFound)?;
-    let paddr = virt_to_phys(obj_addr.into());
-    Ok(ExportedGemBuffer::new(PhysAddrRange::from_start_size(
-        paddr, size,
-    )))
+    let paddr = virt_to_phys(info.obj_addr.into());
+    Ok(ExportedGemBuffer::new(
+        PhysAddrRange::from_start_size(paddr, info.size),
+        info.cache_policy,
+    ))
 }
 
 fn map_rknpu_err(err: rknpu::Error) -> VfsError {
@@ -694,7 +712,27 @@ mod tests {
     #[test]
     fn exported_buffer_reports_physical_device_mmap() {
         let range = PhysAddrRange::from_start_size(0x1234_5000.into(), 0x4000);
-        let exported = ExportedGemBuffer::new(range);
+        let exported = ExportedGemBuffer::new(range, GemCachePolicy::Cacheable);
+
+        assert!(
+            matches!(exported.device_mmap(0, 0).unwrap(), DeviceMmap::PhysicalCached(actual, None) if actual == range)
+        );
+    }
+
+    #[test]
+    fn exported_buffer_defaults_to_uncached_device_mmap() {
+        let range = PhysAddrRange::from_start_size(0x1234_5000.into(), 0x4000);
+        let exported = ExportedGemBuffer::new(range, GemCachePolicy::NonCacheable);
+
+        assert!(
+            matches!(exported.device_mmap(0, 0).unwrap(), DeviceMmap::Physical(actual, None) if actual == range)
+        );
+    }
+
+    #[test]
+    fn exported_buffer_maps_write_combine_as_uncached_without_wc_pte_support() {
+        let range = PhysAddrRange::from_start_size(0x1234_5000.into(), 0x4000);
+        let exported = ExportedGemBuffer::new(range, GemCachePolicy::WriteCombine);
 
         assert!(
             matches!(exported.device_mmap(0, 0).unwrap(), DeviceMmap::Physical(actual, None) if actual == range)
@@ -729,7 +767,7 @@ pub fn drm_version(data: &mut [u8]) -> VfsResult<()> {
         let ret = drm_copy_field(
             data.date as *mut u8,
             &mut data.date_len,
-            DRM1_DATE.as_ptr() as *const u8,
+            DRM1_DATE.as_ptr().cast(),
         );
         if let Err(e) = ret {
             warn!("[drm_version] Failed to copy driver date: {:?}", e);
