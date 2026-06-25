@@ -11,6 +11,7 @@ license.workspace = true
 fat = ["dep:fatfs"]
 ext4 = ["dep:rsext4"]
 vfs = []
+lockdep = ["axfs-ng-vfs/lockdep"]
 times = []
 std = []
 
