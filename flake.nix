@@ -39,7 +39,7 @@
 
           llvmPackages = pkgs.llvmPackages;
           rustBin = inputs.rust-overlay.lib.mkRustBin {
-            distRoot = "https://mirrors.ustc.edu.cn/rust-static";
+            # distRoot = "https://mirrors.ustc.edu.cn/rust-static";
           } pkgs;
           rustToolchain = rustBin.fromRustupToolchainFile ./rust-toolchain.toml;
 
