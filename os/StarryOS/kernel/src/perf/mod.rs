@@ -10,6 +10,10 @@ pub mod bpf;
 pub mod hw;
 pub mod kprobe;
 pub mod raw_tracepoint;
+/// PMU overflow-IRQ sampling backend (M2). ARM PMUv3 only; the counting and
+/// tracing paths are arch-agnostic, but sampling depends on `ax_cpu::pmu`.
+#[cfg(target_arch = "aarch64")]
+pub mod sampling;
 pub mod tracepoint;
 pub mod uprobe;
 

@@ -483,6 +483,17 @@ pub mod counter {
         pmev_switch!(write n, "PMEVCNTR", value);
     }
 
+    /// Preloads counter `n` so it overflows after `period` events.
+    ///
+    /// Writes `PMEVCNTRn_EL0 = (0u32).wrapping_sub(period)`: a 32-bit counter set
+    /// `period` short of wrapping past `0xFFFF_FFFF` raises its overflow (and the
+    /// `PMOVSCLR_EL0` / `PMINTENSET_EL1` interrupt, if enabled) once it has counted
+    /// `period` more events. The sampling IRQ handler calls this to re-arm the next
+    /// sample. Out-of-range `n` is a no-op (debug builds assert).
+    pub fn preload(n: usize, period: u32) {
+        write(n, (0u32).wrapping_sub(period) as u64);
+    }
+
     /// Reads `PMEVTYPERn_EL0`. Out-of-range `n` returns 0.
     fn read_typer(n: usize) -> u64 {
         pmev_switch!(read n, "PMEVTYPER")
@@ -492,4 +503,100 @@ pub mod counter {
     fn write_typer(n: usize, value: u64) {
         pmev_switch!(write n, "PMEVTYPER", value);
     }
+}
+
+/// The PMU overflow-interrupt control registers (`PMOVSCLR_EL0`,
+/// `PMINTENSET_EL1` / `PMINTENCLR_EL1`).
+///
+/// These drive the sampling IRQ path: a counter that wraps past its 32-bit
+/// maximum sets its bit in `PMOVSCLR_EL0`, and — if armed in `PMINTENSET_EL1` —
+/// asserts the PMU overflow interrupt. The handler reads [`status`] to find which
+/// counters fired, services them, and [`clear`]s their bits (write-1-to-clear).
+///
+/// `n` is a programmable counter index in `0..=30` (matching
+/// [`counter`]); bit 31 of `PMOVSCLR_EL0` is the dedicated cycle counter, which
+/// M2 sampling does not use. Out-of-range `n` (`>= 32`) is guarded as a no-op.
+pub mod overflow {
+    use core::arch::asm;
+
+    /// Highest programmable-counter index whose overflow bit fits below the
+    /// cycle-counter bit (31). Indices `0..=30` map to bit `1 << n`.
+    const MAX_COUNTER: usize = 30;
+
+    /// Reads `PMOVSCLR_EL0` (overflow flag status): bit `n` set ⇒ programmable
+    /// counter `n` overflowed; bit 31 ⇒ the cycle counter overflowed.
+    ///
+    /// Returns the low 32 bits, the architecturally defined extent of the flags.
+    pub fn status() -> u32 {
+        let value: u64;
+        unsafe {
+            asm!("mrs {}, PMOVSCLR_EL0", out(reg) value);
+        }
+        value as u32
+    }
+
+    /// Clears the given overflow-status bits (`PMOVSCLR_EL0 = mask`,
+    /// write-1-to-clear).
+    ///
+    /// Only the bits set in `mask` are affected; writing 0 to a bit leaves it
+    /// unchanged.
+    pub fn clear(mask: u32) {
+        unsafe {
+            asm!("msr PMOVSCLR_EL0, {}", in(reg) mask as u64);
+        }
+    }
+
+    /// Enables the overflow interrupt for programmable counter `n`
+    /// (`PMINTENSET_EL1 |= 1 << n`).
+    ///
+    /// Out-of-range `n` is a no-op (debug builds assert).
+    pub fn enable_irq(n: usize) {
+        debug_assert!(n <= MAX_COUNTER);
+        if n > MAX_COUNTER {
+            return;
+        }
+        unsafe {
+            asm!("msr PMINTENSET_EL1, {}", in(reg) 1u64 << n);
+        }
+    }
+
+    /// Disables the overflow interrupt for programmable counter `n`
+    /// (`PMINTENCLR_EL1 = 1 << n`).
+    ///
+    /// Out-of-range `n` is a no-op (debug builds assert).
+    pub fn disable_irq(n: usize) {
+        debug_assert!(n <= MAX_COUNTER);
+        if n > MAX_COUNTER {
+            return;
+        }
+        unsafe {
+            asm!("msr PMINTENCLR_EL1, {}", in(reg) 1u64 << n);
+        }
+    }
+}
+
+/// The interrupted program counter (`ELR_EL1`).
+///
+/// Read at the top of the PMU overflow IRQ handler, this is the PC the CPU was
+/// executing when the sampling interrupt was taken — the value reported by
+/// `PERF_SAMPLE_IP`.
+pub fn interrupted_pc() -> u64 {
+    let value;
+    unsafe {
+        asm!("mrs {}, ELR_EL1", out(reg) value);
+    }
+    value
+}
+
+/// Whether the interrupted context was EL0 (user).
+///
+/// Reads `SPSR_EL1.M[3:0]`: the value `0b0000` is `EL0t`, so the sample landed in
+/// user mode iff the low four bits are zero. Any other mode (`EL1t` / `EL1h` /
+/// AArch32 modes) is kernel/non-EL0.
+pub fn interrupted_is_user() -> bool {
+    let spsr: u64;
+    unsafe {
+        asm!("mrs {}, SPSR_EL1", out(reg) spsr);
+    }
+    (spsr & 0xf) == 0
 }
