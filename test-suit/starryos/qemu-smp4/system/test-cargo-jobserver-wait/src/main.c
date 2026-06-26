@@ -1026,6 +1026,16 @@ static void close_build_script_child(struct build_script_child *child)
     }
 }
 
+static int build_script_wave_output_complete(struct build_script_child *children)
+{
+    for (int i = 0; i < BUILD_SCRIPT_WAVE; i++) {
+        if (!children[i].out_eof || !children[i].err_eof) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
 static void test_build_script_wave(void)
 {
     printf("[phase] concurrent build-script stdout/stderr wave\n");
@@ -1071,7 +1081,8 @@ static void test_build_script_wave(void)
 
     int reaped = 0;
     int loops = 0;
-    while (reaped < BUILD_SCRIPT_WAVE && loops++ < MAX_LOOPS) {
+    while ((reaped < BUILD_SCRIPT_WAVE || !build_script_wave_output_complete(children)) &&
+           loops++ < MAX_LOOPS) {
         struct pollfd pfds[BUILD_SCRIPT_WAVE * 2];
         int child_index[BUILD_SCRIPT_WAVE * 2];
         int is_stderr[BUILD_SCRIPT_WAVE * 2];
@@ -1151,6 +1162,11 @@ static void test_build_script_wave(void)
                  BUILD_SCRIPT_WAVE, reaped, loops);
         note_pass(detail);
     } else {
+        for (int i = 0; i < BUILD_SCRIPT_WAVE; i++) {
+            printf("    build-script child %d: out_eof=%d err_eof=%d out_bytes=%d err_bytes=%d\n",
+                   i, children[i].out_eof, children[i].err_eof,
+                   children[i].out_bytes, children[i].err_bytes);
+        }
         char detail[160];
         snprintf(detail, sizeof(detail), "scripts=%d reaped=%d output_ok=%d loops=%d",
                  BUILD_SCRIPT_WAVE, reaped, all_output, loops);
@@ -1724,6 +1740,8 @@ static void test_cargo_worker_accounting_reaper(void)
     pthread_t waiter;
     int worker_started = 0;
     int waiter_started = 0;
+    uint64_t notifications = 0;
+    int loops = 0;
     for (int i = 0; i < ACCOUNTING_WORKERS; i++) {
         int rc = pthread_create(&workers[i], NULL, cargo_accounting_worker, &state);
         if (rc != 0) {
@@ -1744,8 +1762,6 @@ static void test_cargo_worker_accounting_reaper(void)
     }
     waiter_started = 1;
 
-    uint64_t notifications = 0;
-    int loops = 0;
     while (loops++ < MAX_LOOPS) {
         if (cargo_accounting_reap_once(&state) < 0) {
             break;
