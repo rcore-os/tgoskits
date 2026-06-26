@@ -5,7 +5,7 @@ use crate::{
     backend::{RgaDiag, RgaStatus},
     buffer::RgaDmaBuffer,
     error::RgaError,
-    operation::{ImageDesc, PixelFormat, RgaOperation},
+    operation::{Blit, CscStandard, ImageDesc, PixelFormat, Rect, RgaOperation},
 };
 
 /// IEEE 802.3 CRC-32 (poly 0xEDB88320), used to fingerprint destination buffers.
@@ -154,6 +154,49 @@ pub fn run_rga2_blit_resize(
     let dst = ImageDesc::rgb(dst_w, dst_h, dst_w * fmt.bytes_per_pixel(), fmt, dst_phys);
     core.start(&RgaOperation::Blit(crate::operation::Blit::resize(
         src, dst,
+    )))
+    .map_err(|e| (e, core.diag()))?;
+    poll_done(core, &mut delay_us)
+}
+
+/// Same-size YUYV422 -> RGB888 colour-space conversion — the exact op the tennis app submits via
+/// librga (`imcvtcolor`). `src_phys` is a packed YUYV422 plane, `dst_phys` an RGB888 plane, both
+/// `w*h`. This isolates the CSC datapath: the resize selftest (RGBA, no CSC) passes on hardware, so
+/// if THIS fails the bug is in the YUYV-packed-src + YUV->RGB CSC register encoding, not the engine.
+pub fn run_rga2_csc_yuyv(
+    core: &mut RgaCore,
+    src_phys: u64,
+    dst_phys: u64,
+    w: u32,
+    h: u32,
+    mut delay_us: impl FnMut(u32),
+) -> core::result::Result<RgaDiag, (RgaError, RgaDiag)> {
+    let src = ImageDesc::rgb(
+        w,
+        h,
+        w * PixelFormat::Yuyv422.bytes_per_pixel(),
+        PixelFormat::Yuyv422,
+        src_phys,
+    );
+    let dst = ImageDesc::rgb(
+        w,
+        h,
+        w * PixelFormat::Rgb888.bytes_per_pixel(),
+        PixelFormat::Rgb888,
+        dst_phys,
+    );
+    let full = Rect {
+        x: 0,
+        y: 0,
+        width: w,
+        height: h,
+    };
+    core.start(&RgaOperation::Blit(Blit::new(
+        src,
+        dst,
+        full,
+        full,
+        Some(CscStandard::Bt601Limited),
     )))
     .map_err(|e| (e, core.diag()))?;
     poll_done(core, &mut delay_us)
