@@ -7789,6 +7789,7 @@ dependencies = [
  "syscalls",
  "tock-registers 0.9.0",
  "uluru",
+ "usb-serial",
  "weak-map",
  "x86",
  "xmas-elf",
@@ -8930,6 +8931,13 @@ dependencies = [
  "keyboard-types",
  "log",
  "tokio",
+ "usb-if",
+]
+
+[[package]]
+name = "usb-serial"
+version = "0.1.0"
+dependencies = [
  "usb-if",
 ]
 

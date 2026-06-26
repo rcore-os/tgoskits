@@ -87,6 +87,75 @@ pub(crate) fn new_bus_usb_sysfs() -> Filesystem {
     sysfs::new_bus_usb_sysfs()
 }
 
+#[derive(Clone)]
+pub(crate) struct UsbDeviceSnapshotInfo {
+    pub(crate) bus_num: u8,
+    pub(crate) device_num: u8,
+    pub(crate) descriptor_blob: Vec<u8>,
+}
+
+pub(crate) struct UsbDeviceHandle {
+    lease: manager::UsbDeviceLease,
+}
+
+impl UsbDeviceHandle {
+    pub(crate) fn claim_interface(&self, interface: u8, alternate: u8) -> AxResult<()> {
+        self.lease.claim_interface(interface, alternate)
+    }
+
+    pub(crate) fn release_interface(&self, interface: u8) -> AxResult<()> {
+        self.lease.release_interface(interface)
+    }
+
+    pub(crate) fn control_transfer(
+        &self,
+        b_request_type: u8,
+        b_request: u8,
+        w_value: u16,
+        w_index: u16,
+        data: &mut [u8],
+    ) -> AxResult<usize> {
+        self.lease
+            .control_transfer(b_request_type, b_request, w_value, w_index, data)
+    }
+
+    pub(crate) fn bulk_in(&self, endpoint: u8, data: &mut [u8]) -> AxResult<usize> {
+        self.lease.bulk_in(endpoint, data)
+    }
+
+    pub(crate) fn bulk_out(&self, endpoint: u8, data: &[u8]) -> AxResult<usize> {
+        self.lease.bulk_out(endpoint, data)
+    }
+}
+
+pub(crate) fn usb_device_snapshots() -> Vec<UsbDeviceSnapshotInfo> {
+    let Some(manager) = manager() else {
+        return Vec::new();
+    };
+
+    let mut snapshots = Vec::new();
+    for bus_num in manager.bus_numbers() {
+        for device_num in manager.device_numbers(bus_num) {
+            let Some(snapshot) = manager.device_snapshot(bus_num, device_num) else {
+                continue;
+            };
+            snapshots.push(UsbDeviceSnapshotInfo {
+                bus_num,
+                device_num,
+                descriptor_blob: snapshot.descriptor_blob,
+            });
+        }
+    }
+    snapshots
+}
+
+pub(crate) fn acquire_usb_device(bus_num: u8, device_num: u8) -> AxResult<UsbDeviceHandle> {
+    let manager = manager().ok_or(AxError::NoSuchDevice)?;
+    manager
+        .acquire_device(bus_num, device_num)
+        .map(|lease| UsbDeviceHandle { lease })
+}
+
 pub(crate) fn is_usbfs_device(inner: &dyn Any) -> bool {
     inner.is::<tree::UsbDeviceOps>()
 }

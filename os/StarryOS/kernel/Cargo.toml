@@ -88,6 +88,7 @@ ax-dma = { workspace = true, optional = true }
 sg2002-tpu = { workspace = true, optional = true }
 k230-kpu = { workspace = true, optional = true }
 crab-usb.workspace = true
+usb-serial.workspace = true
 rdrive.workspace = true
 
 axbacktrace = { workspace = true }
