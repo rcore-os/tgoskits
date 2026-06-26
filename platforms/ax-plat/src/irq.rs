@@ -325,6 +325,9 @@ pub trait IrqIf {
     /// Sends an inter-processor interrupt (IPI) to the specified target CPU or all CPUs.
     fn send_ipi(irq_num: IrqId, target: IpiTarget);
 
+    /// Returns the platform IRQ id used for runtime IPIs.
+    fn ipi_irq() -> IrqId;
+
     /// Resolves a firmware/controller interrupt source to a framework IRQ id.
     fn resolve_source(source: IrqSource) -> Result<IrqId, IrqError>;
 
@@ -366,6 +369,10 @@ mod tests {
         }
 
         fn send_ipi(_irq_num: IrqId, _target: IpiTarget) {}
+
+        fn ipi_irq() -> IrqId {
+            IrqId::new(CPU_LOCAL_IRQ_DOMAIN, HwIrq(0))
+        }
 
         fn resolve_source(_source: IrqSource) -> Result<IrqId, IrqError> {
             Err(IrqError::Unsupported)

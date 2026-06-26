@@ -1,7 +1,5 @@
 //! Interrupt management.
 
-#[cfg(all(feature = "ipi", not(plat_dyn)))]
-pub use ax_config::devices::IPI_IRQ;
 use ax_cpu::trap::set_irq_handler;
 pub use ax_plat::irq::{
     AARCH64_GIC_DOMAIN, AcpiGsiController, AcpiGsiRoute, AcpiIrqPolarity, AcpiIrqTrigger,
@@ -19,31 +17,9 @@ pub use ax_plat::irq::{
 pub use ax_plat::irq::{IpiTarget, send_ipi};
 
 /// Returns the platform IRQ id used for inter-processor interrupts.
-#[cfg(all(feature = "ipi", plat_dyn))]
+#[cfg(feature = "ipi")]
 pub fn ipi_irq() -> IrqId {
-    axplat_dyn::ipi_irq()
-}
-
-/// Returns the platform IRQ id used for inter-processor interrupts.
-#[cfg(all(feature = "ipi", not(plat_dyn)))]
-pub fn ipi_irq() -> IrqId {
-    #[cfg(target_arch = "riscv64")]
-    {
-        const RISCV_INTERRUPT_BIT: usize = 1usize << (usize::BITS as usize - 1);
-        if IPI_IRQ & RISCV_INTERRUPT_BIT != 0 {
-            return IrqId::new(
-                CPU_LOCAL_IRQ_DOMAIN,
-                HwIrq((IPI_IRQ & !RISCV_INTERRUPT_BIT) as u32),
-            );
-        }
-    }
-
-    #[cfg(target_arch = "loongarch64")]
-    {
-        return IrqId::new(CPU_LOCAL_IRQ_DOMAIN, HwIrq(IPI_IRQ as u32));
-    }
-
-    IrqNumber(IPI_IRQ).expect("IPI IRQ exceeds legacy IRQ width")
+    ax_plat::irq::ipi_irq()
 }
 
 /// IRQ handler.
