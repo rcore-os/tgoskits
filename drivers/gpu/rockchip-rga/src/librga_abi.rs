@@ -391,17 +391,17 @@ pub struct RgaReq {
     pub dither_mode: u8,            // offset 306
     pub _pad3: [u8; 1],             // offset 307 (padding to align full_csc)
     pub full_csc: FullCsc,          // offset 308
-    pub in_fence_fd: i32,           // offset 340
-    pub core: u8,                   // offset 344
-    pub priority: u8,               // offset 345
-    pub _pad4: [u8; 2],             // offset 346
-    pub out_fence_fd: i32,          // offset 348
-    pub handle_flag: u8,            // offset 352
-    pub mosaic_info: MosaicInfo,    // offset 353
-    pub uvhds_mode: u8,             // offset 355
-    pub uvvds_mode: u8,             // offset 356
-    pub osd_info: OsdInfo,          // offset 357
-    pub pre_intr_info: PreIntrInfo, // offset 405
+    pub in_fence_fd: i32,           // offset 348  (full_csc is 40 bytes: flag + 3x csc_coe_t@12)
+    pub core: u8,                   // offset 352
+    pub priority: u8,               // offset 353
+    pub _pad4: [u8; 2],             // offset 354
+    pub out_fence_fd: i32,          // offset 356
+    pub handle_flag: u8,            // offset 360
+    pub mosaic_info: MosaicInfo,    // offset 361
+    pub uvhds_mode: u8,             // offset 363
+    pub uvvds_mode: u8,             // offset 364
+    pub osd_info: OsdInfo,          // offset 368
+    pub pre_intr_info: PreIntrInfo, // offset 424
     pub fg_global_alpha: u8,        // offset 440
     pub bg_global_alpha: u8,        // offset 441
     pub feature: RgaFeature,        // offset 444
@@ -679,6 +679,16 @@ mod tests {
         assert_eq!(core::mem::offset_of!(RgaReq, scale_mode), 210);
         assert_eq!(core::mem::offset_of!(RgaReq, yuv2rgb_mode), 274);
         assert_eq!(core::mem::offset_of!(RgaReq, rotate_mode), 276);
+        // Tail offsets, verified against the librga userspace header (csc_coe_t is 12 bytes
+        // and full_csc_t is 40, so everything after full_csc sits 8 bytes later than a naive
+        // 32-byte full_csc would place it). handle_flag@360 is the field the kernel reads to
+        // decide whether src/dst addresses are import handles or raw fds; a wrong offset here
+        // silently flips that decision and breaks every handle-based blit.
+        assert_eq!(core::mem::offset_of!(RgaReq, full_csc), 308);
+        assert_eq!(core::mem::offset_of!(RgaReq, in_fence_fd), 348);
+        assert_eq!(core::mem::offset_of!(RgaReq, core), 352);
+        assert_eq!(core::mem::offset_of!(RgaReq, out_fence_fd), 356);
+        assert_eq!(core::mem::offset_of!(RgaReq, handle_flag), 360);
     }
 
     #[test]
