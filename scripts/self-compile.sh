@@ -164,8 +164,10 @@ Run: cargo xtask starry rootfs --arch x86_64"
     #
     # If the blueprint is still missing after the bootstrap check above, attempt
     # to download a pre-built image from the tgosimages release.  The download
-    # is compressed (xz) and verified by SHA-256.  This is the recommended path
-    # for reviewers/CI; see docs/starryos-self-compilation.md.
+    # is compressed (xz) and verified by SHA-256.
+    # NOTE: this release is maintainer-hosted and is not yet published;
+    # once uploaded this becomes the recommended reviewer/CI path (no host sudo).
+    # See docs/starryos-self-compilation.md.
     if [ ! -f "$SELFHOST_BLUEPRINT" ]; then
         SELFHOST_URL="https://github.com/rcore-os/tgosimages/releases/download/selfhost-rootfs/rootfs-x86_64-selfhost.img.xz"
         SELFHOST_SHA256="b17c330958c8970c9db4faec7306182101a0bf34f2b850c80781d63321f49eb8"

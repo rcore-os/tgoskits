@@ -263,7 +263,7 @@ apps/starry/selfhost/
     └── qemu-x86_64.toml             # QEMU 配置（16G, cache=writeback, OVMF UEFI）
 ```
 
-**CI 不运行的原因**: selfhost rootfs 镜像制备后约 8-12GB（含 rustup nightly 工具链 ~6.9GB、预缓存 crate、系统包），未上传到 tgosimages release，CI 容器无法下载。
+**CI 不运行的原因**: selfhost rootfs 镜像制备后约 8-12GB（含 rustup nightly 工具链 ~6.9GB、预缓存 crate、系统包）。下载/校验链已在 `self-compile.sh` 中实现（reviewer 免 sudo），但镜像尚未上传到 tgosimages release（维护者托管待发布）；当前 CI 容器无法下载。
 
 **手动运行**:
 ```bash
