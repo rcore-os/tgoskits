@@ -258,6 +258,51 @@ fn start_sampling_notify_worker(
     );
 }
 
+/// Allocate, zero, and header-initialize one sampling mmap ring of `len` bytes.
+///
+/// Shared by the M2 system-wide path ([`HwPerfEvent::device_mmap`]) and the
+/// per-task sampling path. Validates the libbpf/`perf` mmap geometry
+/// (`(1 + 2^N) * PAGE_SIZE`), allocates contiguous pages, zeros them, writes the
+/// `perf_event_mmap_page` header's data-region geometry, and returns the sole
+/// strong `Arc<GlobalPage>` (the caller threads it into the VMA retainer and/or
+/// keeps an anchor), the ring's kernel vaddr, and its physical start.
+#[cfg(target_arch = "aarch64")]
+fn alloc_sampling_ring(len: usize) -> AxResult<(Arc<GlobalPage>, usize, PhysAddr)> {
+    // libbpf/`perf` require `(1 + 2^N) * PAGE_SIZE`: one header page plus a
+    // power-of-two-page data ring. Reject anything else.
+    if len == 0 || !len.is_multiple_of(ax_memory_addr::PAGE_SIZE_4K) {
+        return Err(AxError::InvalidInput);
+    }
+    let num_pages = len / ax_memory_addr::PAGE_SIZE_4K;
+    if num_pages < 2 || !(num_pages - 1).is_power_of_two() {
+        return Err(AxError::InvalidInput);
+    }
+
+    // Allocate and zero the contiguous ring pages (mirror `bpf.rs`).
+    let mut pages = GlobalPage::alloc_contiguous(num_pages, ax_memory_addr::PAGE_SIZE_4K)?;
+    pages.zero();
+    let kvirt = pages.start_vaddr();
+    let paddr = virt_to_phys(kvirt);
+
+    // Initialize the `perf_event_mmap_page` header in page 0. The pages are
+    // already zeroed, so only the data-region geometry must be set: the data
+    // ring starts after the header page and spans the rest of the mapping.
+    // `data_head`/`data_tail` stay 0 (empty ring).
+    let header = kvirt.as_usize() as *mut perf_event_mmap_page;
+    let data_size = (len - RING_DATA_OFFSET) as u64;
+    // SAFETY: `header` points at the freshly allocated, zeroed header page,
+    // which is `>= size_of::<perf_event_mmap_page>()` (≥ 1 page = 4096 B, and
+    // the struct is < 4096 B). No reader sees it until the VMA maps it.
+    unsafe {
+        core::ptr::addr_of_mut!((*header).data_offset).write(RING_DATA_OFFSET as u64);
+        core::ptr::addr_of_mut!((*header).data_size).write(data_size);
+        core::ptr::addr_of_mut!((*header).data_head).write(0);
+        core::ptr::addr_of_mut!((*header).data_tail).write(0);
+    }
+
+    Ok((Arc::new(pages), kvirt.as_usize(), paddr))
+}
+
 /// A hardware-PMU perf event: one allocated counter plus the timing
 /// accumulators `perf stat` reads back through `read_format`, and — for sampling
 /// events — the [`SamplingState`] driving the overflow-IRQ ring buffer.
@@ -368,6 +413,19 @@ impl Drop for HwPerfEvent {
 #[cfg(target_arch = "aarch64")]
 impl Pollable for HwPerfEvent {
     fn poll(&self) -> IoEvents {
+        // Per-task events: a sampling one is readable when its ring (on the
+        // shared `PerTaskCounter`) has unread bytes; a counting one is always
+        // readable (`read(perf_fd)` returns the current value without blocking).
+        if let Some(ptc) = &self.per_task {
+            if ptc.is_sampling() {
+                return if ptc.ring_has_data() {
+                    IoEvents::IN
+                } else {
+                    IoEvents::empty()
+                };
+            }
+            return IoEvents::IN;
+        }
         match &self.sampling {
             // Sampling events are readable only when the ring has unread bytes
             // (`data_tail != data_head`): that is what `perf record`'s poll
@@ -386,6 +444,15 @@ impl Pollable for HwPerfEvent {
     }
 
     fn register(&self, context: &mut core::task::Context<'_>, events: IoEvents) {
+        // Per-task sampling events register a waker on the ptc's `PollSet` (the
+        // one the per-task notify worker wakes). Counting events (per-task or
+        // system-wide) never transition readiness, so they register nothing.
+        if let Some(ptc) = &self.per_task {
+            if ptc.is_sampling() && events.contains(IoEvents::IN) {
+                ptc.register_poll(context);
+            }
+            return;
+        }
         // Counting events never transition readiness, so only sampling events
         // register a waker — on the same `PollSet` the notify worker wakes.
         if let Some(sampling) = &self.sampling
@@ -464,6 +531,7 @@ impl PerfEventOps for HwPerfEvent {
                     ring_len,
                     period,
                     sample_type,
+                    id: 0,
                     notify: notify_ptr,
                 },
             );
@@ -556,6 +624,13 @@ impl PerfEventOps for HwPerfEvent {
     }
 
     fn device_mmap(&mut self, len: usize) -> AxResult<(PhysAddr, Arc<dyn Any + Send + Sync>)> {
+        // Per-task sampling: the ring + notify/poll machinery live on the shared
+        // `PerTaskCounter` (the scheduler hook builds the IRQ slot from there).
+        // Allocate the ring, spawn the notify worker, and hand both to the ptc.
+        if let Some(ptc) = &self.per_task {
+            return device_mmap_per_task(ptc, len);
+        }
+
         // Only sampling events expose a ring buffer; counting events have
         // nothing to map.
         let Some(sampling) = &mut self.sampling else {
@@ -569,50 +644,68 @@ impl PerfEventOps for HwPerfEvent {
             return Err(AxError::ResourceBusy);
         }
 
-        // libbpf/`perf` require `(1 + 2^N) * PAGE_SIZE`: one header page plus a
-        // power-of-two-page data ring. Reject anything else.
-        if len == 0 || !len.is_multiple_of(ax_memory_addr::PAGE_SIZE_4K) {
-            return Err(AxError::InvalidInput);
-        }
-        let num_pages = len / ax_memory_addr::PAGE_SIZE_4K;
-        if num_pages < 2 || !(num_pages - 1).is_power_of_two() {
-            return Err(AxError::InvalidInput);
-        }
-
-        // Allocate and zero the contiguous ring pages (mirror `bpf.rs`).
-        let mut pages = GlobalPage::alloc_contiguous(num_pages, ax_memory_addr::PAGE_SIZE_4K)?;
-        pages.zero();
-        let kvirt = pages.start_vaddr();
-        let paddr = virt_to_phys(kvirt);
-
-        // Initialize the `perf_event_mmap_page` header in page 0. The pages are
-        // already zeroed, so only the data-region geometry must be set: the data
-        // ring starts after the header page and spans the rest of the mapping.
-        // `data_head`/`data_tail` stay 0 (empty ring).
-        let header = kvirt.as_usize() as *mut perf_event_mmap_page;
-        let data_size = (len - RING_DATA_OFFSET) as u64;
-        // SAFETY: `header` points at the freshly allocated, zeroed header page,
-        // which is `>= size_of::<perf_event_mmap_page>()` (≥ 1 page = 4096 B,
-        // and the struct is < 4096 B). No reader sees it until the VMA maps it.
-        unsafe {
-            core::ptr::addr_of_mut!((*header).data_offset).write(RING_DATA_OFFSET as u64);
-            core::ptr::addr_of_mut!((*header).data_size).write(data_size);
-            core::ptr::addr_of_mut!((*header).data_head).write(0);
-            core::ptr::addr_of_mut!((*header).data_tail).write(0);
-        }
+        // Allocate + zero + header-init the ring (shared with the per-task path).
+        let (pages, ring_vaddr, paddr) = alloc_sampling_ring(len)?;
 
         // Hand the sole strong ref to the caller (threaded into the VMA via
         // `DeviceMmap::Physical`'s retainer); keep only a `Weak`. See `bpf.rs`
         // for the ownership/UAF rationale.
-        let pages = Arc::new(pages);
         sampling.ring = Some(RingState {
             pages: Arc::downgrade(&pages),
-            ring_vaddr: kvirt.as_usize(),
+            ring_vaddr,
             ring_len: len,
         });
         let anchor: Arc<dyn Any + Send + Sync> = pages;
         Ok((paddr, anchor))
     }
+}
+
+/// `device_mmap` for a per-task sampling event.
+///
+/// Allocates the ring (via [`alloc_sampling_ring`]), spawns the deferred notify
+/// worker, and stores the ring vaddr/len + the page/notify/poll anchors onto the
+/// shared [`super::task::PerTaskCounter`] via `set_ring`. The next
+/// [`super::task::perf_sched_in`] for the target task will see a mapped ring and
+/// arm the overflow IRQ. The returned anchor is the ring pages `Arc`, threaded
+/// into the user VMA so the mapping outlives `close(perf_fd)`.
+///
+/// Rejecting a second mmap: a per-task event is opened once and mmap'd once by
+/// `perf record`; a second attempt while the ring is still set is rejected.
+#[cfg(target_arch = "aarch64")]
+fn device_mmap_per_task(
+    ptc: &Arc<super::task::PerTaskCounter>,
+    len: usize,
+) -> AxResult<(PhysAddr, Arc<dyn Any + Send + Sync>)> {
+    // Only sampling per-task events have a ring; counting events reject mmap.
+    if !ptc.is_sampling() {
+        return Err(AxError::Unsupported);
+    }
+    // One live ring per fd: refuse if a ring is already mapped.
+    if ptc.ring_mapped() {
+        return Err(AxError::ResourceBusy);
+    }
+
+    let (pages, ring_vaddr, paddr) = alloc_sampling_ring(len)?;
+
+    // Spawn the deferred worker (mirrors the M2 path): it turns IRQ-context
+    // `notify_irq` pokes into `axpoll` `IoEvents::IN` wakeups.
+    let poll_ready = Arc::new(PollSet::new());
+    let notify = Arc::new(IrqNotify::new());
+    let poll_alive = Arc::new(AtomicBool::new(true));
+    start_sampling_notify_worker(poll_ready.clone(), notify.clone(), poll_alive.clone());
+
+    // Publish the ring + anchors onto the ptc so `perf_sched_in` can arm it.
+    ptc.set_ring(
+        pages.clone(),
+        ring_vaddr,
+        len,
+        notify,
+        poll_ready,
+        poll_alive,
+    );
+
+    let anchor: Arc<dyn Any + Send + Sync> = pages;
+    Ok((paddr, anchor))
 }
 
 /// Open a hardware-PMU perf event from a user `perf_event_attr`.
@@ -655,14 +748,17 @@ pub fn perf_event_open_hw(attr: &perf_event_attr, pid: i32) -> AxResult<HwPerfEv
     let is_sampling = sample_period > 0;
 
     if is_sampling {
-        // M2 supports exactly one record layout: PERF_SAMPLE_IP. Reject anything
-        // else up front so the IRQ handler's fixed 16-byte record is always
-        // valid. A period that does not fit a 32-bit programmable counter is
-        // also rejected (the counter preload is 32-bit).
-        if attr.sample_type != PERF_SAMPLE_IP {
+        // The IRQ handler (build_sample) emits the scalar sample_type fields perf
+        // requests, so accept any combination of SUPPORTED bits — but IP must be
+        // set (real perf always sets it for samples) and no unsupported bit
+        // (CALLCHAIN/RAW/READ/REGS/…) may be present. A period that does not fit a
+        // 32-bit programmable counter is also rejected (the preload is 32-bit).
+        if attr.sample_type & PERF_SAMPLE_IP == 0
+            || attr.sample_type & !super::sampling::SUPPORTED_SAMPLE_TYPE != 0
+        {
             warn!(
-                "perf_event_open: sampling sample_type {:#x} unsupported (only PERF_SAMPLE_IP in \
-                 M2)",
+                "perf_event_open: sampling sample_type {:#x} unsupported (need PERF_SAMPLE_IP and \
+                 only scalar fields)",
                 attr.sample_type
             );
             return Err(AxError::Unsupported);
@@ -755,8 +851,8 @@ pub fn perf_event_open_hw(attr: &perf_event_attr, pid: i32) -> AxResult<HwPerfEv
     })
 }
 
-/// Open a per-task hardware-PMU counting event (`perf_event_open` with `pid >
-/// 0`).
+/// Open a per-task hardware-PMU event (`perf_event_open` with `pid > 0`):
+/// counting (`perf stat -- cmd`) or sampling (`perf record -- cmd`).
 ///
 /// Resolves the target task, decodes the requested ARM event onto a
 /// *programmable* counter (per-task never uses the dedicated cycle counter, so a
@@ -766,8 +862,12 @@ pub fn perf_event_open_hw(attr: &perf_event_attr, pid: i32) -> AxResult<HwPerfEv
 /// counter is programmed lazily by the scheduler hook the next time the target
 /// runs (or by [`super::task::on_exec`] for `enable_on_exec`).
 ///
-/// Per-task *sampling* is not implemented; a `sample_period > 0` per-task event
-/// still counts (it just never produces samples).
+/// When `attr.sample_period > 0` (and `sample_type == PERF_SAMPLE_IP`) the event
+/// is a per-task *sampling* event: the scheduler hooks arm the M2 overflow-IRQ
+/// path for the slices the task runs, so samples are attributed to the task. The
+/// ring buffer is allocated lazily in [`HwPerfEvent::device_mmap`] (perf mmaps
+/// before enabling). The returned `HwPerfEvent` carries no `sampling` state of
+/// its own — for per-task events the ring/notify live on the `PerTaskCounter`.
 #[cfg(target_arch = "aarch64")]
 fn perf_event_open_hw_per_task(attr: &perf_event_attr, pid: i32) -> AxResult<HwPerfEvent> {
     use crate::task::AsThread;
@@ -778,6 +878,31 @@ fn perf_event_open_hw_per_task(attr: &perf_event_attr, pid: i32) -> AxResult<HwP
 
     let exclude_user = attr.exclude_user() != 0;
     let exclude_kernel = attr.exclude_kernel() != 0;
+
+    // `sample_period` shares a union with `sample_freq`. Per-task sampling
+    // supports only fixed-period (`-c`); a non-zero value selects sampling.
+    // SAFETY: both union arms are `u64` in a `repr(C)` POD copied from user space.
+    let sample_period_u64 = unsafe { attr.__bindgen_anon_1.sample_period };
+    let is_sampling = sample_period_u64 > 0;
+    if is_sampling {
+        // Same sample_type rule as the system-wide path: IP must be set and only
+        // SUPPORTED scalar bits may be present (build_sample emits them).
+        if attr.sample_type & PERF_SAMPLE_IP == 0
+            || attr.sample_type & !super::sampling::SUPPORTED_SAMPLE_TYPE != 0
+        {
+            warn!(
+                "perf_event_open: per-task sampling sample_type {:#x} unsupported (need \
+                 PERF_SAMPLE_IP and only scalar fields)",
+                attr.sample_type
+            );
+            return Err(AxError::Unsupported);
+        }
+        if sample_period_u64 > u32::MAX as u64 {
+            warn!("perf_event_open: per-task sample_period {sample_period_u64} exceeds 32-bit");
+            return Err(AxError::InvalidInput);
+        }
+    }
+    let sample_period = sample_period_u64 as u32;
 
     // Decode the ARM event. Per-task always uses a programmable counter, so even
     // CPU_CYCLES maps to ARM event 0x11 (never the dedicated cycle counter).
@@ -825,13 +950,18 @@ fn perf_event_open_hw_per_task(attr: &perf_event_attr, pid: i32) -> AxResult<HwP
     let enable_on_exec = attr.enable_on_exec() != 0;
 
     let ptc = Arc::new(super::task::PerTaskCounter::new(
-        n,
-        event,
-        exclude_user,
-        exclude_kernel,
-        attr.read_format,
-        enabled,
-        enable_on_exec,
+        super::task::PerTaskConfig {
+            n,
+            event,
+            exclude_user,
+            exclude_kernel,
+            read_format: attr.read_format,
+            enabled,
+            enable_on_exec,
+            // `0` ⇒ counting; `> 0` ⇒ per-task sampling.
+            sample_period,
+            sample_type: attr.sample_type,
+        },
     ));
     super::task::attach(thr, ptc.clone());
 

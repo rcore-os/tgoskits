@@ -1,4 +1,4 @@
-//! PMU overflow-IRQ sampling backend (M2: `perf record` via `PERF_SAMPLE_IP`).
+//! PMU overflow-IRQ sampling backend (`perf record`).
 //!
 //! This is the IRQ half of hardware-PMU sampling. A sampling perf event
 //! ([`super::hw::HwPerfEvent`] with `sample_period > 0`) preloads a programmable
@@ -8,6 +8,14 @@
 //! overflowed counter, writes it into that event's mmap ring buffer, re-arms the
 //! counter, and wakes a deferred worker (via [`ax_task::IrqNotify`]) that
 //! delivers `POLLIN` to userspace pollers.
+//!
+//! The record emitted honours the event's `attr.sample_type`: [`build_sample`]
+//! lays out every requested scalar field in the canonical `man perf_event_open`
+//! order, so the real `perf` tool — which always sets `IP|TID|TIME|PERIOD` —
+//! parses the stream and reports samples. The supported field set is
+//! [`SUPPORTED_SAMPLE_TYPE`]; an unsupported bit is rejected at open in
+//! [`super::hw`]. A `sample_type` of exactly `PERF_SAMPLE_IP` still yields the
+//! original 16-byte IP-only record.
 //!
 //! IRQ-context discipline (enforced throughout this module's handler path):
 //! no allocation, no sleeping locks, and the interrupted `ELR_EL1` / `SPSR_EL1`
@@ -60,11 +68,48 @@ const PERF_RECORD_MISC_KERNEL: u16 = 1;
 /// `PERF_RECORD_MISC_USER`: the sample landed in user (EL0) context.
 const PERF_RECORD_MISC_USER: u16 = 2;
 
-/// Size of an M2 `PERF_SAMPLE_IP` record: 8-byte header + one 8-byte `ip`.
-const SAMPLE_RECORD_LEN: usize = 16;
+/// Upper bound on a single `PERF_RECORD_SAMPLE` we emit: 8-byte header plus at
+/// most nine 8-byte scalar fields (IDENTIFIER, IP, TID(pid+tid), TIME, ADDR, ID,
+/// STREAM_ID, CPU(cpu+res), PERIOD). [`build_sample`] writes into a stack buffer
+/// of this size and returns the actual length.
+const SAMPLE_RECORD_MAX_LEN: usize = 8 + 9 * 8;
 
-/// `perf_event_sample_format::PERF_SAMPLE_IP`. The only `sample_type` M2 emits.
-const PERF_SAMPLE_IP: u64 = 1;
+// `perf_event_sample_format` bits (see `man perf_event_open`). Only the scalar
+// fields below are supported; every other bit (READ, CALLCHAIN, RAW,
+// BRANCH_STACK, REGS_USER/INTR, STACK_USER, WEIGHT, DATA_SRC, TRANSACTION,
+// PHYS_ADDR, …) is rejected at open time.
+/// `PERF_SAMPLE_IP`: instruction pointer. Always set by real `perf` for samples.
+const PERF_SAMPLE_IP: u64 = 1 << 0;
+/// `PERF_SAMPLE_TID`: thread + process id (`u32 pid, u32 tid`).
+const PERF_SAMPLE_TID: u64 = 1 << 1;
+/// `PERF_SAMPLE_TIME`: monotonic timestamp (`u64`).
+const PERF_SAMPLE_TIME: u64 = 1 << 2;
+/// `PERF_SAMPLE_ADDR`: data address (`u64`); always 0 for our IP samples.
+const PERF_SAMPLE_ADDR: u64 = 1 << 3;
+/// `PERF_SAMPLE_ID`: event id (`u64`).
+const PERF_SAMPLE_ID: u64 = 1 << 6;
+/// `PERF_SAMPLE_CPU`: cpu number (`u32 cpu, u32 res`).
+const PERF_SAMPLE_CPU: u64 = 1 << 7;
+/// `PERF_SAMPLE_PERIOD`: sampling period (`u64`).
+const PERF_SAMPLE_PERIOD: u64 = 1 << 8;
+/// `PERF_SAMPLE_STREAM_ID`: stream id (`u64`).
+const PERF_SAMPLE_STREAM_ID: u64 = 1 << 9;
+/// `PERF_SAMPLE_IDENTIFIER`: leading event id (`u64`), emitted first.
+const PERF_SAMPLE_IDENTIFIER: u64 = 1 << 16;
+
+/// Every `sample_type` bit the sampling backend can emit a well-formed
+/// `PERF_RECORD_SAMPLE` for. A sampling event whose `sample_type` sets any bit
+/// outside this mask is rejected at open ([`super::hw`] reuses this constant);
+/// real `perf record` sets `IP|TID|TIME|PERIOD`, all within the mask.
+pub const SUPPORTED_SAMPLE_TYPE: u64 = PERF_SAMPLE_IP
+    | PERF_SAMPLE_TID
+    | PERF_SAMPLE_TIME
+    | PERF_SAMPLE_ADDR
+    | PERF_SAMPLE_ID
+    | PERF_SAMPLE_CPU
+    | PERF_SAMPLE_PERIOD
+    | PERF_SAMPLE_STREAM_ID
+    | PERF_SAMPLE_IDENTIFIER;
 
 /// Everything the overflow handler needs for one counter, in a lock-free,
 /// alloc-free `Copy` POD.
@@ -79,10 +124,16 @@ pub struct SampleSlot {
     /// Total ring length in bytes (header page + data region).
     pub ring_len: usize,
     /// Sampling period: the counter is re-armed to overflow after this many
-    /// events via [`ax_cpu::pmu::counter::preload`].
+    /// events via [`ax_cpu::pmu::counter::preload`]. Also emitted as the
+    /// `PERF_SAMPLE_PERIOD` field of each record.
     pub period: u32,
-    /// `attr.sample_type`. For M2 this is exactly `PERF_SAMPLE_IP`.
+    /// `attr.sample_type`: the set of scalar fields each record carries (see
+    /// [`build_sample`]). Validated against [`SUPPORTED_SAMPLE_TYPE`] at open.
     pub sample_type: u64,
+    /// Event id emitted for the `PERF_SAMPLE_ID` / `PERF_SAMPLE_IDENTIFIER`
+    /// fields. `0` when the event was opened without per-event ids (the common
+    /// case in this single-group implementation).
+    pub id: u64,
     /// Raw pointer to the owning event's [`IrqNotify`], woken after each sample.
     /// Kept alive by the event's strong `Arc<IrqNotify>` for as long as the slot
     /// is registered (see module docs).
@@ -231,24 +282,32 @@ pub unsafe fn pmu_overflow_handler(_ctx: IrqContext, _data: NonNull<()>) -> IrqR
             continue;
         };
 
-        // M2 supports exactly PERF_SAMPLE_IP; `hw.rs` rejects anything else at
-        // open time. Re-check defensively here (the slot carries `sample_type`)
-        // so a future non-IP sample_type never produces a malformed record: skip
-        // building a record but still re-arm and clear the overflow below.
-        if slot.sample_type == PERF_SAMPLE_IP {
-            // Record layout is fixed: header{type=9, misc, size=16} + ip:u64.
-            let mut record = [0u8; SAMPLE_RECORD_LEN];
-            record[0..4].copy_from_slice(&PERF_RECORD_SAMPLE.to_ne_bytes());
-            record[4..6].copy_from_slice(&misc.to_ne_bytes());
-            record[6..8].copy_from_slice(&(SAMPLE_RECORD_LEN as u16).to_ne_bytes());
-            record[8..16].copy_from_slice(&ip.to_ne_bytes());
+        // Build one PERF_RECORD_SAMPLE honouring the event's `sample_type`
+        // (validated at open to set IP and only supported bits). pid/tid are
+        // best-effort: the interrupted task's scheduler id (non-zero, stable per
+        // task) — enough for perf to parse + count samples; precise user TID is a
+        // future refinement. time/cpu are the real interrupt-time values.
+        let tid = ax_task::current().id().as_u64() as u32;
+        let time = ax_runtime::hal::time::monotonic_time_nanos();
+        let cpu = ax_hal::percpu::this_cpu_id() as u32;
+        let mut record = [0u8; SAMPLE_RECORD_MAX_LEN];
+        let data = SampleData {
+            ip,
+            pid: tid, // best-effort: same scheduler id for pid and tid
+            tid,
+            time,
+            addr: 0,
+            id: slot.id,
+            stream_id: 0,
+            cpu,
+            period: slot.period as u64,
+        };
+        let len = build_sample(&mut record, slot.sample_type, misc, &data);
 
-            // SAFETY: `ring_vaddr`/`ring_len` describe live, kernel-mapped pages
-            // for as long as the slot is registered (the event pins them, and
-            // teardown unregisters before freeing). `ring_write` only touches
-            // that region.
-            unsafe { ring_write(slot.ring_vaddr, slot.ring_len, &record) };
-        }
+        // SAFETY: `ring_vaddr`/`ring_len` describe live, kernel-mapped pages for
+        // as long as the slot is registered (the event pins them, and teardown
+        // unregisters before freeing). `ring_write` only touches that region.
+        unsafe { ring_write(slot.ring_vaddr, slot.ring_len, &record[..len]) };
 
         // Re-arm the counter for the next sample.
         ax_cpu::pmu::counter::preload(n, slot.period);
@@ -263,6 +322,99 @@ pub unsafe fn pmu_overflow_handler(_ctx: IrqContext, _data: NonNull<()>) -> IrqR
     // Clear exactly the overflow bits we serviced.
     ax_cpu::pmu::overflow::clear(handled);
     IrqReturn::Handled
+}
+
+/// Lays out one `PERF_RECORD_SAMPLE` into `buf` per `sample_type`, returning its
+/// total length in bytes.
+///
+/// The fields are written in the canonical order mandated by `man
+/// perf_event_open` (`PERF_RECORD_SAMPLE`), each gated on its `sample_type` bit:
+///
+/// 1. header — `u32 type = PERF_RECORD_SAMPLE`, `u16 misc`, `u16 size`
+///    (back-patched once the body length is known)
+/// 2. `IDENTIFIER` → `u64 id`
+/// 3. `IP` → `u64 ip`
+/// 4. `TID` → `u32 pid`, `u32 tid`
+/// 5. `TIME` → `u64 time`
+/// 6. `ADDR` → `u64 addr`
+/// 7. `ID` → `u64 id`
+/// 8. `STREAM_ID` → `u64 stream_id`
+/// 9. `CPU` → `u32 cpu`, `u32 res = 0`
+/// 10. `PERIOD` → `u64 period`
+///
+/// `buf` must be at least [`SAMPLE_RECORD_MAX_LEN`] bytes. With
+/// `sample_type == PERF_SAMPLE_IP` exactly, the result is the original 16-byte
+/// IP-only record (8-byte header + `u64 ip`).
+/// The per-sample scalar values [`build_sample`] may emit (those not implied by
+/// `sample_type` alone). Gathered by the overflow handler at interrupt time.
+struct SampleData {
+    ip: u64,
+    pid: u32,
+    tid: u32,
+    time: u64,
+    addr: u64,
+    id: u64,
+    stream_id: u64,
+    cpu: u32,
+    period: u64,
+}
+
+fn build_sample(buf: &mut [u8], sample_type: u64, misc: u16, d: &SampleData) -> usize {
+    // Cursor into `buf`. All offsets stay within `SAMPLE_RECORD_MAX_LEN` because
+    // at most the header + 9 u64-sized fields are written and the caller passes a
+    // buffer of that size. `put!` appends a native-endian scalar and advances the
+    // cursor (a macro, not a closure, so it never holds a borrow of `off`).
+    let mut off = 0usize;
+    macro_rules! put {
+        ($v:expr) => {{
+            let bytes = $v.to_ne_bytes();
+            buf[off..off + bytes.len()].copy_from_slice(&bytes);
+            off += bytes.len();
+        }};
+    }
+
+    // Header: type, misc, and a placeholder size (back-patched below).
+    put!(PERF_RECORD_SAMPLE); // u32
+    put!(misc); // u16
+    let size_off = off;
+    put!(0u16); // size placeholder
+
+    // Body, in canonical PERF_RECORD_SAMPLE order, each field gated by its bit.
+    if sample_type & PERF_SAMPLE_IDENTIFIER != 0 {
+        put!(d.id);
+    }
+    if sample_type & PERF_SAMPLE_IP != 0 {
+        put!(d.ip);
+    }
+    if sample_type & PERF_SAMPLE_TID != 0 {
+        // pid and tid are a packed `u32` pair in one 8-byte slot.
+        put!(d.pid);
+        put!(d.tid);
+    }
+    if sample_type & PERF_SAMPLE_TIME != 0 {
+        put!(d.time);
+    }
+    if sample_type & PERF_SAMPLE_ADDR != 0 {
+        put!(d.addr);
+    }
+    if sample_type & PERF_SAMPLE_ID != 0 {
+        put!(d.id);
+    }
+    if sample_type & PERF_SAMPLE_STREAM_ID != 0 {
+        put!(d.stream_id);
+    }
+    if sample_type & PERF_SAMPLE_CPU != 0 {
+        // cpu and a reserved zero, again a packed `u32` pair.
+        put!(d.cpu);
+        put!(0u32);
+    }
+    if sample_type & PERF_SAMPLE_PERIOD != 0 {
+        put!(d.period);
+    }
+
+    // Back-patch the header's `size` field now that the total length is known.
+    buf[size_off..size_off + 2].copy_from_slice(&(off as u16).to_ne_bytes());
+    off
 }
 
 /// Writes one record into a perf ring buffer, IRQ-safe and self-contained.
