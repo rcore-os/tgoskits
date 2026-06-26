@@ -9,6 +9,10 @@
 pub mod bpf;
 pub mod hw;
 pub mod kprobe;
+/// Per-CPU hardware-PMU state (allocator, cluster identity). ARM PMUv3 only;
+/// the per-core counter pools + cluster classification live here.
+#[cfg(target_arch = "aarch64")]
+pub mod percpu;
 pub mod raw_tracepoint;
 /// PMU overflow-IRQ sampling backend (M2). ARM PMUv3 only; the counting and
 /// tracing paths are arch-agnostic, but sampling depends on CPU PMU registers.
