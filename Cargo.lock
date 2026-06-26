@@ -1451,6 +1451,7 @@ name = "axtest"
 version = "0.5.11"
 dependencies = [
  "axtest-macros",
+ "xcover",
 ]
 
 [[package]]
@@ -9719,6 +9720,15 @@ checksum = "32e45ad4206f6d2479085147f02bc2ef834ac85886624a23575ae137c8aa8156"
 dependencies = [
  "libc",
  "rustix 1.1.4",
+]
+
+[[package]]
+name = "xcover"
+version = "0.1.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d31bbf5947dceb8fb458d145a9ceb6331654588504cc188aee4a84636fceddb7"
+dependencies = [
+ "portable-atomic",
 ]
 
 [[package]]

@@ -5,3 +5,4 @@ max_cpu_num = 1
 
 [env]
 AXTEST = "y"
+AXTEST_COVERAGE = "y"

@@ -2,7 +2,7 @@ args = [
     "-machine",
     "virt,gic-version=3",
     "-m",
-    "128M",
+    "256M",
     "-cpu",
     "cortex-a72",
     "-smp",

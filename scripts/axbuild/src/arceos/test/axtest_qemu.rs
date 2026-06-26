@@ -46,6 +46,9 @@ pub(super) async fn test_axtest_qemu(
     let mut prepared = prepare_rust_qemu_cases(arceos, target, cases).await?;
     for case in &mut prepared {
         append_encoded_rustflags(&mut case.cargo, AXTEST_RUSTFLAGS);
+        if crate::support::axtest_coverage::enabled(&case.cargo) {
+            crate::support::axtest_coverage::prepare_cargo(&mut case.cargo);
+        }
     }
 
     run_prepared_qemu_groups(

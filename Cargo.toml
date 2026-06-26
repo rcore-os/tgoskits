@@ -185,6 +185,7 @@ ax-sync = { version = "0.5.22", path = "os/arceos/modules/axsync" }
 ax-task = { version = "0.5.23", path = "os/arceos/modules/axtask" }
 axtest = { version = "0.5.11", path = "components/axtest/axtest" }
 axtest-macros = { version = "0.5.11", path = "components/axtest/axtest_macros" }
+xcover = { version = "0.1.2", default-features = false, features = ["alloc"] }
 ax-timer-list = { version = "0.3.5", path = "components/timer_list" }
 axaddrspace = { version = "0.5.14", path = "virtualization/axaddrspace" }
 axbacktrace = { version = "0.4.4", path = "components/axbacktrace" }

@@ -252,6 +252,9 @@ impl Axvisor {
         let mut cargo = build::load_cargo_config(&request)?;
         if env_truthy(&cargo.env, "AXTEST") {
             append_encoded_rustflags(&mut cargo, AXTEST_RUSTFLAGS);
+            if crate::support::axtest_coverage::enabled(&cargo) {
+                crate::support::axtest_coverage::prepare_cargo(&mut cargo);
+            }
         }
         request.vmconfigs = qemu_group_vmconfigs(&request, &cargo)?;
 

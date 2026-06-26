@@ -21,6 +21,7 @@ fn main() {
     axtest::set_printer(axtest_print);
     let summary = axtest::init().run_tests();
     if summary.failed == 0 {
+        axtest::dump_coverage();
         ax_std::println!("AXTEST_SUITE_OK");
         ax_hal::power::system_off();
     } else {

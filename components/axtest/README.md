@@ -227,6 +227,87 @@ to_bin = true
 uefi = false
 ```
 
+## Coverage
+
+axtest supports LLVM source-based coverage via [xcover](https://crates.io/crates/xcover). The guest serializes `.profraw` data into memory, and the host extracts it through QEMU's monitor interface.
+
+### Running with Coverage
+
+Set `AXTEST_COVERAGE=y` alongside `AXTEST=y`:
+
+```toml
+# test-suit/<os>/axtest/qemu/build-aarch64-unknown-none-softfloat.toml
+target = "aarch64-unknown-none-softfloat"
+features = []
+log = "Info"
+
+[env]
+AXTEST = "y"
+AXTEST_COVERAGE = "y"
+```
+
+Or pass it as a host environment variable:
+
+```bash
+AXTEST_COVERAGE=y cargo xtask arceos test qemu --test-group axtest --arch aarch64
+AXTEST_COVERAGE=y cargo xtask axvisor test qemu --test-group axtest --arch x86_64
+```
+
+The build tool will automatically:
+1. Add the `axtest/coverage` Cargo feature
+2. Inject `--cfg axtest_coverage`, `-Cinstrument-coverage`, `-Zno-profiler-runtime` into rustflags
+3. Set up a QEMU monitor socket for memory extraction
+
+### How It Works
+
+```
+Guest                              Host (axbuild)
+─────                              ──────────────
+tests pass
+  │
+  ▼
+axtest::dump_coverage()
+  ├─ xcover::write_profraw(Vec)    capture guard scans stdout
+  │   serializes LLVM profraw        │
+  │   into guest memory              │
+  └─ prints marker:                 parses marker, extracts addr/size
+     AXTEST_COVERAGE status=ready      │
+     addr=0x... size=...               ▼
+                                    connects to QEMU monitor
+                                    sends: memsave <addr> <size> <path>
+                                      │
+                                      ▼
+                                    <path>/coverage.profraw saved
+```
+
+`dump_coverage()` is already called in all three OS entry points (ArceOS, StarryOS, Axvisor). No changes needed in test code.
+
+### Using the Profraw File
+
+The `.profraw` file is saved to `<workspace>/tmp/axbuild/axtest-coverage/<package>-<target>/coverage.profraw`.
+
+Convert and generate reports with standard LLVM tools:
+
+```bash
+# Merge profraw into profdata
+llvm-profdata merge -sparse coverage.profraw -o coverage.profdata
+
+# Generate HTML report
+llvm-cov show target/<target>/debug/<binary> \
+  -instr-profile=coverage.profdata \
+  -format=html -output-dir=coverage-report
+
+# Print summary
+llvm-cov report target/<target>/debug/<binary> \
+  -instr-profile=coverage.profdata
+```
+
+### Requirements
+
+- **Unix host** — coverage capture uses QEMU monitor via Unix domain socket
+- **Both flags** — `AXTEST=y` and `AXTEST_COVERAGE=y` must be set
+- **Entry point** — `axtest::dump_coverage()` must be called after tests (already done in all OS entry points)
+
 ## Output Format
 
 axtest emits KTAP-compatible output with additional sentinel lines for CI parsing:

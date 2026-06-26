@@ -363,6 +363,9 @@ impl Starry {
         let mut cargo = build::load_cargo_config(&request)?;
         if crate::build::env_truthy(&cargo.env, "AXTEST") {
             crate::build::append_encoded_rustflags(&mut cargo, AXTEST_RUSTFLAGS);
+            if crate::support::axtest_coverage::enabled(&cargo) {
+                crate::support::axtest_coverage::prepare_cargo(&mut cargo);
+            }
         }
 
         Ok((request, cargo))

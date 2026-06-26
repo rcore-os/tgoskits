@@ -48,5 +48,4 @@ pub(super) async fn test(axvisor: &mut Axvisor, args: ArgsTest) -> anyhow::Resul
 }
 
 const AXVISOR_TEST_SUITE_OS: &str = "axvisor";
-const AXVISOR_NORMAL_GROUP: &str = "normal";
-pub(crate) const AXVISOR_AXTEST_GROUP: &str = "axtest";
+pub(crate) const AXVISOR_NORMAL_GROUP: &str = "normal";
