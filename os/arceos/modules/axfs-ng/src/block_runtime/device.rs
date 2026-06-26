@@ -707,17 +707,20 @@ impl BlockDeviceHandle {
     ) -> Option<bool> {
         loop {
             match result {
-                Ok(RequestStatus::Pending) => match self.pending.lock().finish_pending_poll(key) {
-                    PollProgress::Pending | PollProgress::Complete => return Some(false),
-                    PollProgress::Repoll => {
-                        let submitted = self
-                            .pending
-                            .lock()
-                            .request(key)
-                            .map(|request| request.submitted_request())?;
-                        result = self.poll_request(submitted.queue_id, submitted.request_id);
+                Ok(RequestStatus::Pending) => {
+                    let progress = self.pending.lock().finish_pending_poll(key);
+                    match progress {
+                        PollProgress::Pending | PollProgress::Complete => return Some(false),
+                        PollProgress::Repoll => {
+                            let submitted = self
+                                .pending
+                                .lock()
+                                .request(key)
+                                .map(|request| request.submitted_request())?;
+                            result = self.poll_request(submitted.queue_id, submitted.request_id);
+                        }
                     }
-                },
+                }
                 Ok(RequestStatus::Complete) => {
                     let task_id = self.pending.lock().complete(key, Ok(()));
                     self.wake_completed_request(key, task_id);
