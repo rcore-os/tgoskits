@@ -10,7 +10,10 @@ use axfs_ng_vfs::{NodeFlags, VfsError, VfsResult};
 use rockchip_rga::{RgaVersion, RockchipRga, backend::RgaStatus, librga_abi};
 use starry_vm::{VmMutPtr, VmPtr};
 
-use crate::pseudofs::{DeviceOps, dev::dma_heap};
+use crate::{
+    pseudofs::{DeviceOps, dev::dma_heap},
+    task::AsThread,
+};
 
 /// Per-task process key — the unique task ID from the scheduler.
 fn current_id() -> u64 {
@@ -109,7 +112,31 @@ impl RgaDevice {
     /// Submit one already-read `RgaReq` to the engine and block until completion.
     /// Shared by the legacy `RGA_BLIT_SYNC` path and the `RGA_IOC_REQUEST_SUBMIT` task path.
     fn execute_blit(&self, req: &librga_abi::RgaReq) -> VfsResult<usize> {
-        let parsed = librga_abi::parse(req).map_err(|_| VfsError::InvalidInput)?;
+        let parsed = match librga_abi::parse(req) {
+            Ok(p) => p,
+            Err(e) => {
+                warn!(
+                    "RGA_BLIT parse FAIL {:?}: render={} rotate={} sina={} cosa={} sfmt=0x{:x} \
+                     dfmt=0x{:x} s={}x{}/{}x{} d={}x{}/{}x{}",
+                    e,
+                    req.render_mode,
+                    req.rotate_mode,
+                    req.sina,
+                    req.cosa,
+                    req.src.format,
+                    req.dst.format,
+                    req.src.act_w,
+                    req.src.act_h,
+                    req.src.vir_w,
+                    req.src.vir_h,
+                    req.dst.act_w,
+                    req.dst.act_h,
+                    req.dst.vir_w,
+                    req.dst.vir_h,
+                );
+                return Err(VfsError::InvalidInput);
+            }
+        };
 
         let handle_flag = req.handle_flag != 0;
 
@@ -134,9 +161,13 @@ impl RgaDevice {
             (None, None)
         };
 
-        let op = parsed
-            .into_operation(src_phys, src_uv_phys, dst_phys, dst_uv_phys)
-            .map_err(|_| VfsError::InvalidInput)?;
+        let op = match parsed.into_operation(src_phys, src_uv_phys, dst_phys, dst_uv_phys) {
+            Ok(o) => o,
+            Err(e) => {
+                warn!("RGA_BLIT into_operation FAIL {:?}", e);
+                return Err(VfsError::InvalidInput);
+            }
+        };
 
         // QEMU path: no RGA2 device → ENODEV.
         let devs = rdrive::get_list::<RockchipRga>();
@@ -144,7 +175,20 @@ impl RgaDevice {
             return Err(VfsError::NoSuchDevice);
         }
 
-        let mut guard = devs[0].try_lock().map_err(|_| VfsError::ResourceBusy)?;
+        // The RK3588 DTB exposes three RGA cores as separate devices (rga3_core0 @
+        // fdb60000, rga3_core1 @ fdb70000, rga2_core0 @ fdb80000). Only the RGA2
+        // backend is implemented (RGA3 is an Unsupported skeleton). Lock the device
+        // that actually owns the RGA2 core -- NOT blindly devs[0], which is an RGA3
+        // core on this board and has no RGA2 core (-> NoSuchDevice, blit fails).
+        let mut guard = devs
+            .iter()
+            .filter_map(|d| d.try_lock().ok())
+            .find(|g| {
+                g.cores()
+                    .iter()
+                    .any(|c| c.config().version == RgaVersion::Rga2)
+            })
+            .ok_or(VfsError::NoSuchDevice)?;
         let rga = &mut *guard;
 
         let core = rga
@@ -163,7 +207,10 @@ impl RgaDevice {
             o.sync_for_device();
         }
 
-        core.start(&op).map_err(|_| VfsError::InvalidInput)?;
+        if let Err(e) = core.start(&op) {
+            warn!("RGA_BLIT core.start failed: {:?}", e);
+            return Err(VfsError::InvalidInput);
+        }
 
         for _ in 0..500 {
             match core.poll_status() {
@@ -180,7 +227,12 @@ impl RgaDevice {
                     return Ok(0);
                 }
                 RgaStatus::Error => {
+                    let d = core.diag();
                     core.finish();
+                    warn!(
+                        "RGA_BLIT poll=Error int=0x{:08x} status=0x{:08x} cmd_ctrl=0x{:08x}",
+                        d.int, d.status, d.cmd_ctrl
+                    );
                     return Err(VfsError::Io);
                 }
                 RgaStatus::Busy => {
@@ -189,7 +241,12 @@ impl RgaDevice {
             }
         }
 
+        let d = core.diag();
         let _ = core.recover();
+        warn!(
+            "RGA_BLIT poll=Timeout int=0x{:08x} status=0x{:08x} cmd_ctrl=0x{:08x}",
+            d.int, d.status, d.cmd_ctrl
+        );
         Err(VfsError::TimedOut)
     }
 
@@ -228,10 +285,27 @@ impl RgaDevice {
                         obj: Some(obj),
                     }
                 }
-                librga_abi::RGA_PHYSICAL_ADDRESS => ImportedBuf {
-                    phys_addr: ext.memory,
-                    obj: None,
-                },
+                librga_abi::RGA_PHYSICAL_ADDRESS => {
+                    // A raw physical address bypasses all buffer bookkeeping: the RGA DMA
+                    // engine (MMU-off) will read/write whatever physical page userspace names
+                    // — kernel memory, another process's pages, anything. Gate it behind
+                    // CAP_SYS_RAWIO (the capability Linux requires for /dev/mem-class raw I/O)
+                    // so only privileged callers can use it; unprivileged code must import a
+                    // dma-buf fd, whose physical range the kernel owns and can bound. The clean
+                    // long-term fix is the dma-buf unification (see the follow-up design) which
+                    // lets every buffer arrive as an fd and removes this path entirely.
+                    if !ax_task::current().as_thread().cred().has_cap_sys_rawio() {
+                        warn!(
+                            "RGA_IOC_IMPORT_BUFFER: RGA_PHYSICAL_ADDRESS requires CAP_SYS_RAWIO; \
+                             denied"
+                        );
+                        return Err(VfsError::OperationNotPermitted);
+                    }
+                    ImportedBuf {
+                        phys_addr: ext.memory,
+                        obj: None,
+                    }
+                }
                 _ => return Err(VfsError::Unsupported),
             };
 
@@ -241,7 +315,7 @@ impl RgaDevice {
             // Write-back must succeed for userspace to know the handle; on fault the
             // alloc_handle entry is already inserted (it's a permanent leak but the fault
             // means the process is dying anyway — mirroring the kernel's behaviour).
-            unsafe { (ptr as *mut librga_abi::RgaExternalBuffer).vm_write(ext)? };
+            (ptr as *mut librga_abi::RgaExternalBuffer).vm_write(ext)?;
         }
         Ok(0)
     }
@@ -288,23 +362,26 @@ impl RgaDevice {
             string: [0; 16],
         };
         v.string[..5].copy_from_slice(b"1.3.1");
-        unsafe { (arg as *mut librga_abi::RgaVersionT).vm_write(v)? };
+        (arg as *mut librga_abi::RgaVersionT).vm_write(v)?;
         Ok(0)
     }
 
-    /// `RGA_IOC_GET_HW_VERSION` — librga enumerates scheduler cores. Report one RGA2 core
-    /// at hardware v3.2 (matches the OrangePi-5-Plus version register 0x032660D8).
+    /// `RGA_IOC_GET_HW_VERSION` — librga enumerates scheduler cores and classifies each by
+    /// (major, minor, revision). The RK3588 RGA2 core's key is (3, 2, 0x63318) — librga's
+    /// `rga_get_info()` maps exactly this to `RGA_2_ENHANCE` and grants YUYV_422 input + the
+    /// CSC features (`im2d_impl.cpp`). Reporting revision 0 hit librga's `default:` branch
+    /// (TRY_TO_COMPATIBLE) and aborted with "rga2 get info failed", rejecting every op.
     fn handle_get_hw_version(&self, arg: usize) -> VfsResult<usize> {
         let mut hw = librga_abi::RgaHwVersions::default();
         hw.size = 1;
         hw.version[0] = librga_abi::RgaVersionT {
             major: 3,
             minor: 2,
-            revision: 0,
+            revision: 0x63318,
             string: [0; 16],
         };
-        hw.version[0].string[..3].copy_from_slice(b"3.2");
-        unsafe { (arg as *mut librga_abi::RgaHwVersions).vm_write(hw)? };
+        hw.version[0].string[..8].copy_from_slice(b"3.2.0e63");
+        (arg as *mut librga_abi::RgaHwVersions).vm_write(hw)?;
         Ok(0)
     }
 
@@ -324,7 +401,7 @@ impl RgaDevice {
         requests.insert((tid, id), Vec::new());
         drop(requests);
         drop(next);
-        unsafe { (arg as *mut u32).vm_write(id)? };
+        (arg as *mut u32).vm_write(id)?;
         Ok(0)
     }
 
@@ -422,7 +499,7 @@ impl DeviceOps for RgaDevice {
             librga_abi::RGA_BLIT_ASYNC => Err(VfsError::Unsupported),
             librga_abi::RGA_GET_VERSION => {
                 let version: [u8; 5] = *b"3.02\0";
-                unsafe { (arg as *mut [u8; 5]).vm_write(version)? };
+                (arg as *mut [u8; 5]).vm_write(version)?;
                 Ok(0)
             }
             librga_abi::RGA_IOC_GET_DRVIER_VERSION => self.handle_get_driver_version(arg),
@@ -443,5 +520,17 @@ impl DeviceOps for RgaDevice {
 
     fn flags(&self) -> NodeFlags {
         NodeFlags::NON_CACHEABLE
+    }
+
+    /// Release this task's imported-buffer handles and staged requests when it
+    /// closes `/dev/rga`. This is invoked per-open from `Drop for File`, in the
+    /// owning task's context on both explicit `close(2)` and process exit, so
+    /// `current_id()` is the owner. Without it the `(task_id, _)`-keyed entries
+    /// would persist for the kernel's lifetime — a slow leak, and a future task
+    /// that reuses the id could observe the dead task's handles.
+    fn close(&self, _exclusive: bool) {
+        let tid = current_id();
+        self.handle_table.lock().retain(|&(t, _), _| t != tid);
+        self.requests.lock().retain(|&(t, _), _| t != tid);
     }
 }
