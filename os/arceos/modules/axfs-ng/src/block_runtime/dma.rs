@@ -1,6 +1,9 @@
 use alloc::{boxed::Box, vec::Vec};
+use core::num::NonZeroUsize;
 
-use dma_api::{ContiguousArray, DeviceDma, DmaDirection, DmaOp};
+#[cfg(test)]
+use dma_api::DmaOp;
+use dma_api::{CompletedDma, ContiguousArray, CpuDmaBuffer, DeviceDma, DmaDirection};
 use rdif_block::{BlkError, Segment, TransferChunk};
 
 /// Guard retained in the pending table until the request reaches completion.
@@ -19,15 +22,13 @@ unsafe impl Send for DmaBufferGuard {}
 
 impl DmaBufferGuard {
     pub fn new(
-        dma_op: &'static dyn DmaOp,
-        dma_mask: u64,
+        dma: &DeviceDma,
         len: usize,
         align: usize,
         direction: DmaDirection,
         chunk: TransferChunk,
         src: Option<&[u8]>,
     ) -> Result<Self, BlkError> {
-        let dma = DeviceDma::new(dma_mask, dma_op);
         let mut buffer = dma
             .contiguous_array_zero_with_align(len.max(1), align.max(1), direction)
             .map_err(BlkError::from)?;
@@ -90,6 +91,49 @@ impl DmaBufferGuard {
             self.buffer.copy_from_device_to_slice(dst);
         }
     }
+}
+
+pub enum RuntimeDmaBuffer {
+    Legacy(DmaBufferGuard),
+    Owned(CompletedDma),
+}
+
+impl RuntimeDmaBuffer {
+    pub fn complete(self, dst: Option<&mut [u8]>) {
+        match self {
+            Self::Legacy(guard) => guard.complete(dst),
+            Self::Owned(buffer) => {
+                if let Some(dst) = dst {
+                    buffer.copy_from_device_to_slice(dst);
+                }
+            }
+        }
+    }
+}
+
+pub fn new_owned_dma_buffer(
+    dma: &DeviceDma,
+    len: usize,
+    align: usize,
+    direction: DmaDirection,
+    src: Option<&[u8]>,
+) -> Result<CpuDmaBuffer, BlkError> {
+    let mut buffer = CpuDmaBuffer::new_zero(
+        dma,
+        NonZeroUsize::new(len.max(1)).expect("len.max(1) is non-zero"),
+        align.max(1),
+        direction,
+    )
+    .map_err(BlkError::from)?;
+    match direction {
+        DmaDirection::FromDevice => {}
+        DmaDirection::ToDevice | DmaDirection::Bidirectional => {
+            if let Some(src) = src {
+                buffer.copy_to_device_from_slice(src);
+            }
+        }
+    }
+    Ok(buffer)
 }
 
 #[cfg(test)]

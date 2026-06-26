@@ -15,7 +15,7 @@
 use alloc::format;
 use core::time::Duration;
 
-use dwmmc_host::DwMmc;
+use dwmmc_host::{DwMmc, rdif as dwmmc_rdif};
 use log::{info, warn};
 use rdif_clk::ClockId;
 use rdrive::{
@@ -25,17 +25,10 @@ use rdrive::{
 use sdmmc_protocol::{
     Error, OperationPoll,
     error::Phase,
-    sdio::{CardInfo, SdioInitScratch, SdioSdmmc},
+    sdio::{CardInfo, SdioHost2Adapter, SdioInitScratch, SdioSdmmc},
 };
 
-use crate::{
-    block::{
-        ProbeFdtBlock, SharedDriver,
-        sdmmc::{SdmmcBlockConfig, SdmmcBlockDevice},
-    },
-    mmio::iomap,
-    soc::scmi,
-};
+use crate::{block::ProbeFdtBlock, mmio::iomap, soc::scmi};
 
 const DWMMC_STABLE_REFERENCE_CLOCK: u32 = 50_000_000;
 const ENABLE_SD_SPEED_SELECTION: bool = true;
@@ -48,7 +41,7 @@ const RK3588_SDMMC_DRV_PHASE_DEG: u32 = 90;
 const RK3588_SDMMC_SAMPLE_PHASE_DEG: u32 = 0;
 const RK3588_SDMMC_SAMPLE_PHASE_CANDIDATES: [u32; 8] = [0, 45, 90, 135, 180, 225, 270, 315];
 
-type RockchipDwMmc = SdioSdmmc<DwMmc>;
+type RockchipDwMmc = SdioSdmmc<SdioHost2Adapter<DwMmc>>;
 
 mod phase;
 
@@ -104,13 +97,11 @@ fn probe(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
              CRU rate"
         );
     }
-    info!("rockchip-dwmmc: reset controller");
-    host.reset_and_init()
-        .map_err(|e| init_error(base_reg.address, mmio_size, e))?;
-    host.set_dma(axklib::dma::device_with_mask(u32::MAX as u64));
+    let dma = axklib::dma::device_with_mask(u32::MAX as u64);
+    host.set_dma(dma.clone());
 
-    info!("rockchip-dwmmc: initialize card");
-    let mut sd = SdioSdmmc::new(host);
+    info!("rockchip-dwmmc: initialize card through native host2 bus ops");
+    let mut sd = SdioSdmmc::new_host2(host);
     sd.set_sd_speed_selection_enabled(ENABLE_SD_SPEED_SELECTION);
     let card_info = poll_card_init(&mut sd).map_err(|e| {
         warn!("rockchip-dwmmc: card init failed: {:?}", e);
@@ -134,10 +125,14 @@ fn probe(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
         tune_rk3588_sdmmc_sample_phase(&mut sd, reference_clock);
     }
 
-    let raw = SharedDriver::new(sd);
-    let dev = SdmmcBlockDevice::new(
-        raw,
-        SdmmcBlockConfig::dma("rockchip-sd", card_info.capacity_blocks.unwrap_or(0), true),
+    let dev = dwmmc_rdif::device(
+        sd,
+        dwmmc_rdif::dma_config(
+            "rockchip-sd",
+            card_info.capacity_blocks.unwrap_or(0),
+            true,
+            dma,
+        ),
     );
     let irq = probe.register_block(dev)?;
     info!("rockchip-sd block device registered irq={:?}", irq);
