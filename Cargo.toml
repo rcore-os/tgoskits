@@ -118,7 +118,6 @@ members = [
 ]
 exclude = [
     "components/spin",
-    "components/spin-0.10",
     "os/StarryOS/lkm/linux-hello",
     "virtualization/test_crates",
 ]
@@ -320,7 +319,3 @@ ixgbe-driver = "0.1.1-preview.1"
 x86 = "0.52"
 kmod-tools = "0.3"
 kprobe = "0.6"
-
-[patch.crates-io]
-spin = { path = "components/spin" }
-spin_0_10 = { package = "spin", path = "components/spin-0.10" }

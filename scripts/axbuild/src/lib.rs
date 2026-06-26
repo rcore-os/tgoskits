@@ -57,7 +57,7 @@ enum Commands {
     Clippy(ClippyArgs),
     /// Run high-confidence atomic ordering checks for suspicious `Relaxed` synchronization
     SyncLint(SyncLintArgs),
-    /// Verify that the `spin` crate resolves only to the vendored migration copies
+    /// Verify that no external `spin` package is resolved
     SpinLint,
     /// Remote board management via ostool-server
     Board {

@@ -12,7 +12,7 @@
 
 ## 总目标
 
-- 项目不再从 crates.io 引入 `spin`。
+- 项目不再从 crates.io 引入任何版本的 `spin`，包括传递依赖。
 - `spin` 的临时 vendored 版本只作为迁移缓冲区存在。
 - 项目业务代码不再直接使用 `spin::Mutex`。
 - 项目代码不再直接使用 `spin::RwLock`。
@@ -35,15 +35,17 @@
 目标：
 
 - 将外部 `spin` crate vendored 到 `components/spin`。
-- 如果依赖树中存在旧版本 `spin`，用 `components/spin-*` 临时兼容。
-- 根 `Cargo.toml` 通过 workspace dependency 和 `[patch.crates-io]` 指向本仓库路径。
-- `Cargo.lock` 中不再出现来自 crates.io registry 的 `spin`。
+- 根 `Cargo.toml` 通过 workspace dependency 指向本仓库路径。
+- 仍需使用 `spin` 的 workspace crate 显式通过 workspace/path 边界依赖本仓库路径。
+- 不使用 `[patch.crates-io]` 全局改写第三方依赖解析。
+- 禁止通过直接或传递依赖重新解析到 crates.io 上的任何版本 `spin`。
 
 验收标准：
 
-- `cargo tree` 中的 `spin` 均解析到 `components/spin*`。
-- `Cargo.lock` 中 `spin` 条目没有 registry `source` 和 `checksum`。
-- 全项目没有直接依赖外部 registry 版 `spin`。
+- workspace 内直接 `spin` 依赖均解析到 `components/spin`。
+- `Cargo.lock` 中不存在带 registry `source` 或 `checksum` 的 `spin` 包。
+- 根 `Cargo.toml` 没有 `spin` 的 `[patch.crates-io]` 覆盖。
+- 全项目 manifest 没有直接依赖外部 registry 版 `spin`。
 
 ### 2. 增加防回退 lint
 
@@ -52,21 +54,22 @@
 目标：
 
 - 新增一个编译前检查，行为类似 `sync-lint`。（已完成：`cargo xtask spin-lint`）
-- 在真正 build/test 前阻止外部 `spin` 被重新引入。（已完成）
+- 在真正 build/test 前阻止 workspace crate 重新直接或传递依赖外部 `spin`。（已完成）
 - 将该检查纳入 GitHub workflow。（已完成：CI `static_checks` 在 `test_checks` 前执行）
 
 建议检查项：
 
-- `Cargo.toml` 不允许新增 crates.io 版 `spin` 依赖。
+- `Cargo.toml` 不允许新增 crates.io 版 `spin` 直接依赖。
 - `Cargo.lock` 不允许出现 registry 来源的 `spin`。
-- 允许的 `spin` 来源只能是 `components/spin` 或明确登记的迁移兼容目录。
+- 根 `Cargo.toml` 不允许新增 `spin` 的 `[patch.crates-io]` 覆盖。
+- 允许的 `spin` 来源只能是 `components/spin`。
 - 检查输出应包含文件、依赖名、来源和修复建议。
 
 验收标准：
 
 - 本地可通过 `cargo xtask spin-lint` 单独运行。
 - CI 在 build/test 前执行该 lint。
-- 人为添加 registry 版 `spin` 时，lint 能稳定失败。
+- 人为添加 registry 版直接或传递 `spin` 依赖、或 `spin` crates.io patch 时，lint 能稳定失败。
 
 ### 3. 清理 `spin::Mutex`
 
@@ -148,9 +151,9 @@
 目标：
 
 - 清理剩余 `spin` API 使用。
-- 删除 `components/spin` 和临时兼容目录。
-- 删除根 `Cargo.toml` 中的 `spin` workspace dependency 和 `[patch.crates-io]` 项。
-- 删除防回退 lint 中的临时兼容白名单，只保留禁止外部 `spin` 的规则。
+- 删除 `components/spin`。
+- 删除根 `Cargo.toml` 中的 `spin` workspace dependency。
+- 删除防回退 lint 中的本地迁移白名单，只保留禁止外部 `spin` 的规则。
 
 验收标准：
 
@@ -171,7 +174,7 @@
 
 ## 需要跟踪的风险
 
-- 间接依赖再次引入 registry 版 `spin`。
+- workspace crate 再次直接或传递依赖 registry 版 `spin`。
 - 替换 `spin::Mutex` 时误把非睡眠路径改成可睡眠路径。
 - 替换 `spin::RwLock` 时引入读写锁升级或公平性语义变化。
 - 新读写锁未正确接入 lockdep，导致锁顺序问题不可见。
@@ -196,8 +199,8 @@ FEATURES=lockdep cargo xtask starry test qemu --arch riscv64 -c qemu-smp4/system
 
 | 阶段 | 状态 | 主要产物 | 验证 |
 | --- | --- | --- | --- |
-| 收口外部 `spin` 依赖 | 已完成 | `components/spin*`、workspace patch | `cargo tree`、`Cargo.lock` 检查 |
+| 收口外部 `spin` 依赖 | 已完成 | `components/spin`、workspace/path 依赖、`Cargo.lock` 检查 | `cargo xtask spin-lint` |
 | 增加防回退 lint | 已完成 | `cargo xtask spin-lint`、CI `static_checks` | `cargo xtask spin-lint`、人为引入外部 `spin` 后 lint 失败 |
 | 清理 `spin::Mutex` | 已完成（业务使用） | 项目内锁替换、删除 Mutex 使用面 | clippy、lockdep、StarryOS/ArceOS 测试 |
 | 替换 `spin::RwLock` | 待办 | 项目内读写锁、lockdep/might_sleep 接入 | 单元测试、lockdep、might_sleep 测试 |
-| 完全移除 `spin` | 待办 | 删除 vendored crate 和 patch | `cargo tree`、全量 CI |
+| 完全移除 `spin` | 待办 | 删除 vendored crate | `cargo tree`、全量 CI |
