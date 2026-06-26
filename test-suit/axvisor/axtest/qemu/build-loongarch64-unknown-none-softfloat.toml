@@ -1,0 +1,7 @@
+target = "loongarch64-unknown-none-softfloat"
+features = []
+log = "Info"
+max_cpu_num = 1
+
+[env]
+AXTEST = "y"

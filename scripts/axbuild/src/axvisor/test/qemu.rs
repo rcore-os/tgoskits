@@ -23,9 +23,12 @@ use super::{
 };
 use crate::{
     axvisor::{ArgsTestQemu, Axvisor, build, rootfs},
+    build::{append_encoded_rustflags, env_truthy},
     context::{AxvisorCliArgs, ResolvedAxvisorRequest, SnapshotPersistence},
     test::{case as test_case, qemu as test_qemu},
 };
+
+const AXTEST_RUSTFLAGS: &[&str] = &["--cfg", "axtest", "--check-cfg", "cfg(axtest)"];
 
 impl Axvisor {
     pub(super) async fn test_qemu(&mut self, args: ArgsTestQemu) -> anyhow::Result<()> {
@@ -246,7 +249,10 @@ impl Axvisor {
     ) -> anyhow::Result<(ResolvedAxvisorRequest, Cargo)> {
         let mut request = request.clone();
         request.build_info_path = build_config_path.to_path_buf();
-        let cargo = build::load_cargo_config(&request)?;
+        let mut cargo = build::load_cargo_config(&request)?;
+        if env_truthy(&cargo.env, "AXTEST") {
+            append_encoded_rustflags(&mut cargo, AXTEST_RUSTFLAGS);
+        }
         request.vmconfigs = qemu_group_vmconfigs(&request, &cargo)?;
 
         Ok((request, cargo))

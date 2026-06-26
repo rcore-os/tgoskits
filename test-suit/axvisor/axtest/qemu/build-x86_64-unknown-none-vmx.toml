@@ -1,0 +1,7 @@
+target = "x86_64-unknown-none-vmx"
+features = ["ept-level-4"]
+log = "Info"
+max_cpu_num = 1
+
+[env]
+AXTEST = "y"

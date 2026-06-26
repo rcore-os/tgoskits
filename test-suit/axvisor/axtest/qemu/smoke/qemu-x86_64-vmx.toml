@@ -1,0 +1,26 @@
+args = [
+  "-nographic",
+  "-cpu",
+  "host",
+  "-machine",
+  "q35,kernel-irqchip=on",
+  "-accel",
+  "kvm",
+  "-smp",
+  "1",
+  "-m",
+  "128M",
+  "-display",
+  "none",
+  "-serial",
+  "mon:stdio",
+]
+timeout = 60
+fail_regex = [
+  "(?i)\\bpanic(?:ked)?\\b",
+  "AXTEST_SUITE_FAIL",
+  "AXTEST_CASE status=fail",
+]
+success_regex = ["AXTEST_SUITE_OK"]
+to_bin = false
+uefi = false
