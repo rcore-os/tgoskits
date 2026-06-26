@@ -52,6 +52,21 @@ use super::PerfReadValues;
 #[cfg(target_arch = "aarch64")]
 use super::sampling::{self, SampleSlot};
 
+/// Dynamically-assigned `perf_event_attr.type` for the ARM PMUv3 CPU PMU,
+/// exposed at `/sys/bus/event_source/devices/armv8_pmuv3_0/type`.
+///
+/// Linux assigns PMU type ids dynamically, starting after the fixed
+/// `perf_type_id` range (`0..=5`). This workspace already hands out the next
+/// two ids to the tracing event sources (kprobe = 6, uprobe = 7; see
+/// `PERF_EVENT_SOURCES` in `pseudofs::sysfs`), so the first free id is 8.
+///
+/// The real `perf` tool reads this id from sysfs and puts it in
+/// `perf_event_attr.type` for named events such as `armv8_pmuv3_0/cpu_cycles/`.
+/// The dispatcher in [`super::perf_event_open`] routes it here, and
+/// [`perf_event_open_hw`] then treats it exactly like `PERF_TYPE_RAW`: the low
+/// 16 bits of `config` are the ARM event number on a programmable counter.
+pub const ARMV8_PMUV3_PERF_TYPE: u32 = 8;
+
 /// `sample_type` value M2 supports: `perf_event_sample_format::PERF_SAMPLE_IP`.
 /// A sampling event with any other `sample_type` is rejected at open.
 #[cfg(target_arch = "aarch64")]
@@ -606,8 +621,15 @@ pub fn perf_event_open_hw(attr: &perf_event_attr) -> AxResult<HwPerfEvent> {
             };
             alloc_programmable(event, exclude_user, exclude_kernel)?
         }
-    } else if attr.type_ == perf_type_id::PERF_TYPE_RAW as u32 {
-        // Raw events: low 16 bits of `config` are the ARM event number.
+    } else if attr.type_ == perf_type_id::PERF_TYPE_RAW as u32
+        || attr.type_ == ARMV8_PMUV3_PERF_TYPE
+    {
+        // Raw events (`PERF_TYPE_RAW`) and dynamic ARM PMUv3 events
+        // (`ARMV8_PMUV3_PERF_TYPE`, the sysfs-advertised PMU type) are decoded
+        // identically: the low 16 bits of `config` are the ARM event number.
+        // The real `perf` tool resolves a named event like
+        // `armv8_pmuv3_0/cpu_cycles/` to (type = ARMV8_PMUV3_PERF_TYPE,
+        // config = 0x11) via sysfs, so it lands here.
         let event = (attr.config & 0xFFFF) as u16;
         alloc_programmable(event, exclude_user, exclude_kernel)?
     } else {

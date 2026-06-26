@@ -361,6 +361,37 @@ const PERF_EVENT_SOURCES: &[(&str, u32)] = &[
     ("tracepoint", 2), // PERF_TYPE_TRACEPOINT
 ];
 
+/// The hardware PMU device name advertised under
+/// `/sys/bus/event_source/devices/`. The real `perf` tool reads
+/// `<this>/type` to learn the dynamic perf type and resolves named events such
+/// as `armv8_pmuv3_0/cpu_cycles/` against `<this>/events/` + `<this>/format/`.
+/// Only meaningful on aarch64 (ARM PMUv3).
+#[cfg(target_arch = "aarch64")]
+const ARMV8_PMUV3_DEVICE: &str = "armv8_pmuv3_0";
+
+/// Named ARM PMUv3 event aliases exposed under
+/// `/sys/bus/event_source/devices/armv8_pmuv3_0/events/<name>`, each serving
+/// `"event=0xNN\n"`. `perf` substitutes the parsed value into the `config` bits
+/// declared by `format/event` (`config:0-15`). These are the standard ARMv8
+/// PMUv3 event numbers (ARM ARM, `PMU events`). `cpu_cycles` (ARM event `0x11`)
+/// is the primary/default event.
+#[cfg(target_arch = "aarch64")]
+const ARMV8_PMUV3_EVENTS: &[(&str, u16)] = &[
+    ("cpu_cycles", 0x11),
+    ("instructions", 0x08),
+    ("cache_references", 0x04),
+    ("cache_misses", 0x03),
+    ("l1d_cache", 0x04),
+    ("l1d_cache_refill", 0x03),
+    ("l1i_cache_refill", 0x01),
+    ("branch_instructions", 0x21),
+    ("branch_misses", 0x10),
+    ("bus_cycles", 0x1d),
+    ("br_retired", 0x21),
+    ("br_mis_pred", 0x10),
+    ("inst_retired", 0x08),
+];
+
 struct EventSourceBusDir {
     fs: Arc<SimpleFs>,
 }
@@ -388,11 +419,28 @@ struct EventSourceDevicesDir {
 
 impl SimpleDirOps for EventSourceDevicesDir {
     fn child_names<'a>(&'a self) -> Box<dyn Iterator<Item = Cow<'a, str>> + 'a> {
-        Box::new(PERF_EVENT_SOURCES.iter().map(|(n, _)| Cow::Borrowed(*n)))
+        let tracing = PERF_EVENT_SOURCES.iter().map(|(n, _)| Cow::Borrowed(*n));
+        // The ARM PMUv3 CPU PMU is a hardware (counting/sampling) event source,
+        // distinct from the tracing sources above. It is always listed on
+        // aarch64 — the device is a static description of the architectural PMU,
+        // so it is advertised regardless of `ax_cpu::pmu::probe()` (which a
+        // `perf_event_open` against the type still consults and may reject).
+        #[cfg(target_arch = "aarch64")]
+        let pmu = core::iter::once(Cow::Borrowed(ARMV8_PMUV3_DEVICE));
+        #[cfg(not(target_arch = "aarch64"))]
+        let pmu = core::iter::empty();
+        Box::new(tracing.chain(pmu))
     }
 
     fn lookup_child(&self, name: &str) -> VfsResult<NodeOpsMux> {
         let fs = self.fs.clone();
+        #[cfg(target_arch = "aarch64")]
+        if name == ARMV8_PMUV3_DEVICE {
+            return Ok(NodeOpsMux::Dir(SimpleDir::new_maker(
+                fs.clone(),
+                Arc::new(HwPmuDeviceDir { fs }),
+            )));
+        }
         let ty = PERF_EVENT_SOURCES
             .iter()
             .find(|(n, _)| *n == name)
@@ -402,6 +450,103 @@ impl SimpleDirOps for EventSourceDevicesDir {
             fs.clone(),
             Arc::new(EventSourceDeviceDir { fs: fs.clone(), ty }),
         )))
+    }
+}
+
+/// `/sys/bus/event_source/devices/armv8_pmuv3_0/` — the ARM PMUv3 CPU PMU,
+/// the hardware event source the real `perf` tool drives. Richer than the
+/// tracing devices: it exposes `type`, `cpus`, a `format/` describing where the
+/// event number lives in `config`, and an `events/` directory of named event
+/// aliases. aarch64-only.
+#[cfg(target_arch = "aarch64")]
+struct HwPmuDeviceDir {
+    fs: Arc<SimpleFs>,
+}
+
+#[cfg(target_arch = "aarch64")]
+impl SimpleDirOps for HwPmuDeviceDir {
+    fn child_names<'a>(&'a self) -> Box<dyn Iterator<Item = Cow<'a, str>> + 'a> {
+        Box::new(
+            ["type", "cpus", "format", "events"]
+                .into_iter()
+                .map(Cow::Borrowed),
+        )
+    }
+
+    fn lookup_child(&self, name: &str) -> VfsResult<NodeOpsMux> {
+        let fs = self.fs.clone();
+        match name {
+            // The dynamic perf type `perf` puts in `perf_event_attr.type`; the
+            // dispatcher routes it to the hardware-PMU backend.
+            "type" => {
+                let body = format!("{}\n", crate::perf::hw::ARMV8_PMUV3_PERF_TYPE);
+                Ok(SimpleFile::new_regular(fs, move || Ok(body.clone())).into())
+            }
+            // CPUs this PMU covers; reuse the shared online-CPU range ("0\n"
+            // under smp1). Matches Linux's `<pmu>/cpus`.
+            "cpus" => Ok(SimpleFile::new_regular(fs, || Ok(cpu_range_string())).into()),
+            "format" => Ok(NodeOpsMux::Dir(SimpleDir::new_maker(
+                fs.clone(),
+                Arc::new(HwPmuFormatDir { fs }),
+            ))),
+            "events" => Ok(NodeOpsMux::Dir(SimpleDir::new_maker(
+                fs.clone(),
+                Arc::new(HwPmuEventsDir { fs }),
+            ))),
+            _ => Err(VfsError::NotFound),
+        }
+    }
+}
+
+/// `/sys/bus/event_source/devices/armv8_pmuv3_0/format/` — declares the bit
+/// layout of `perf_event_attr.config`. `perf` parses `event=config:0-15` to
+/// learn that the event number it looks up under `events/` belongs in bits
+/// `0..=15` of `config`, exactly where [`crate::perf::hw::perf_event_open_hw`]
+/// reads it (`config & 0xFFFF`).
+#[cfg(target_arch = "aarch64")]
+struct HwPmuFormatDir {
+    fs: Arc<SimpleFs>,
+}
+
+#[cfg(target_arch = "aarch64")]
+impl SimpleDirOps for HwPmuFormatDir {
+    fn child_names<'a>(&'a self) -> Box<dyn Iterator<Item = Cow<'a, str>> + 'a> {
+        Box::new(["event"].into_iter().map(Cow::Borrowed))
+    }
+
+    fn lookup_child(&self, name: &str) -> VfsResult<NodeOpsMux> {
+        let fs = self.fs.clone();
+        match name {
+            "event" => Ok(SimpleFile::new_regular(fs, || Ok("config:0-15\n".to_owned())).into()),
+            _ => Err(VfsError::NotFound),
+        }
+    }
+}
+
+/// `/sys/bus/event_source/devices/armv8_pmuv3_0/events/` — named event aliases.
+/// Each file `<name>` serves `"event=0xNN\n"`; `perf` substitutes the value
+/// into the `config` bits declared by `format/event` to build the
+/// `perf_event_attr`. See [`ARMV8_PMUV3_EVENTS`].
+#[cfg(target_arch = "aarch64")]
+struct HwPmuEventsDir {
+    fs: Arc<SimpleFs>,
+}
+
+#[cfg(target_arch = "aarch64")]
+impl SimpleDirOps for HwPmuEventsDir {
+    fn child_names<'a>(&'a self) -> Box<dyn Iterator<Item = Cow<'a, str>> + 'a> {
+        Box::new(ARMV8_PMUV3_EVENTS.iter().map(|(n, _)| Cow::Borrowed(*n)))
+    }
+
+    fn lookup_child(&self, name: &str) -> VfsResult<NodeOpsMux> {
+        let fs = self.fs.clone();
+        let event = ARMV8_PMUV3_EVENTS
+            .iter()
+            .find(|(n, _)| *n == name)
+            .map(|(_, e)| *e)
+            .ok_or(VfsError::NotFound)?;
+        let body = format!("event={event:#04x}\n");
+        Ok(SimpleFile::new_regular(fs, move || Ok(body.clone())).into())
     }
 }
 

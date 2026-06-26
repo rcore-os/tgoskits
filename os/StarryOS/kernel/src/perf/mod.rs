@@ -283,12 +283,14 @@ pub fn perf_event_open(
     group_fd: i32,
     flags: u32,
 ) -> AxResult<isize> {
-    // Hardware-PMU events (`PERF_TYPE_HARDWARE` / `PERF_TYPE_RAW`) must be
-    // dispatched before `PerfProbeArgs::try_from_perf_attr`, which maps any
-    // non-probe type through `perf_sw_ids` and rejects hardware configs with
-    // `EINVAL`.
+    // Hardware-PMU events (`PERF_TYPE_HARDWARE` / `PERF_TYPE_RAW`, plus the
+    // dynamic ARM PMUv3 type `hw::ARMV8_PMUV3_PERF_TYPE` the real `perf` tool
+    // resolves from sysfs) must be dispatched before
+    // `PerfProbeArgs::try_from_perf_attr`, which maps any non-probe type through
+    // `perf_sw_ids` and rejects hardware configs with `EINVAL`.
     let event: Box<dyn PerfEventOps> = if attr.type_ == PerfTypeId::PERF_TYPE_HARDWARE as u32
         || attr.type_ == PerfTypeId::PERF_TYPE_RAW as u32
+        || attr.type_ == hw::ARMV8_PMUV3_PERF_TYPE
     {
         Box::new(hw::perf_event_open_hw(attr)?)
     } else {
