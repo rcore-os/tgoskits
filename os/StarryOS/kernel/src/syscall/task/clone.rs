@@ -224,7 +224,7 @@ impl CloneArgs {
             (parent_tid as *mut Pid).vm_write(tid).ok();
         }
 
-        let (mut new_proc_data, mut cgroup_guard) = if flags.contains(CloneFlags::THREAD) {
+        let (new_proc_data, mut cgroup_guard) = if flags.contains(CloneFlags::THREAD) {
             // Thread: share parent's ProcessData, no cgroup pids charge.
             // Threads belong to the same process and share cgroup membership;
             // only the process leader's PID appears in cgroup.procs.

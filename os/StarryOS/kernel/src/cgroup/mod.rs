@@ -8,11 +8,11 @@
 use alloc::sync::Arc;
 
 pub use ax_cgroup::{
-    CgroupError, CgroupId, CgroupNode, CgroupResult, GLOBAL_CGROUP_ROOT, all_attr_names,
-    attach_initial_process, attr_is_read_only, begin_fork, child_names, controllers_text,
-    create_child, ensure_node_exists, exit_process, is_controller_attr, is_interface_file_name,
-    lookup_child, path, procs_text, read_attr_at, register_provider, remove_child, root_id,
-    subtree_control_text, write_attr, write_procs, write_subtree_control,
+    CgroupError, CgroupId, CgroupNode, GLOBAL_CGROUP_ROOT, all_attr_names, attach_initial_process,
+    attr_is_read_only, begin_fork, child_names, controllers_text, create_child, ensure_node_exists,
+    exit_process, is_controller_attr, is_interface_file_name, lookup_child, path, procs_text,
+    read_attr_at, register_provider, remove_child, root_id, subtree_control_text, write_attr,
+    write_procs, write_subtree_control,
 };
 use ax_errno::LinuxError;
 
@@ -20,7 +20,16 @@ use ax_errno::LinuxError;
 /// Free function to satisfy Rust orphan rule: neither `CgroupError` nor
 /// `VfsError` (= `AxError`) is defined in this crate.
 pub(crate) fn cgroup_err_to_vfs(e: CgroupError) -> axfs_ng_vfs::VfsError {
-    match e {
+    // Map to a Linux errno, then canonicalize to the Ax-native `AxErrorKind`
+    // representation. Other pseudo-filesystems (proc/sysfs/overlay) return
+    // Ax-native errors directly; VFS fast-paths compare against Ax-native
+    // variants by value (e.g. `open(O_CREAT)`'s pre-resolve in fd_ops matches
+    // `Err(AxError::NotFound)`). A Linux-tagged ENOENT is a distinct i32 from
+    // the Ax-native NotFound, so without canonicalize() those matches miss and
+    // a create on cgroupfs leaks ENOENT instead of reaching create() (EPERM).
+    // The mapping is bijective for these codes, so the user-visible errno at
+    // the syscall boundary is unchanged.
+    let err: axfs_ng_vfs::VfsError = match e {
         CgroupError::NotInitialized => LinuxError::EINVAL.into(),
         CgroupError::NotFound => LinuxError::ENOENT.into(),
         CgroupError::AlreadyExists => LinuxError::EEXIST.into(),
@@ -30,7 +39,8 @@ pub(crate) fn cgroup_err_to_vfs(e: CgroupError) -> axfs_ng_vfs::VfsError {
         CgroupError::OperationNotPermitted => LinuxError::EPERM.into(),
         CgroupError::DirectoryNotEmpty => LinuxError::ENOTEMPTY.into(),
         CgroupError::LimitExceeded => LinuxError::EAGAIN.into(),
-    }
+    };
+    err.canonicalize()
 }
 
 mod cpu;

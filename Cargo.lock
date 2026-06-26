@@ -575,10 +575,8 @@ dependencies = [
 name = "ax-cgroup"
 version = "0.1.0"
 dependencies = [
- "ax-errno 0.6.0",
  "ax-kspin",
  "ax-lazyinit",
- "axfs-ng-vfs",
  "log",
 ]
 
