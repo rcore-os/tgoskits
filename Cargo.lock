@@ -5456,9 +5456,9 @@ dependencies = [
 
 [[package]]
 name = "ostool"
-version = "0.23.4"
+version = "0.23.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cd1b6c39b541fdb2c9222bd1a66fdaad0c46657866470101a87e0763c7a7893d"
+checksum = "14149ab21b57e002a6463c775d0f459f232bab08e378ae46ba618a01aec45d5e"
 dependencies = [
  "anyhow",
  "async-trait",
