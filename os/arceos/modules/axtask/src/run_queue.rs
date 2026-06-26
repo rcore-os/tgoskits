@@ -156,7 +156,6 @@ fn request_current_reschedule() {
     #[cfg(feature = "preempt")]
     if let Some(curr) = crate::current_may_uninit() {
         curr.set_force_resched_pending(true);
-        return;
     }
 }
 
