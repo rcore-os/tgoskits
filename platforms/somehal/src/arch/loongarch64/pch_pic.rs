@@ -39,14 +39,25 @@ module_driver!(
     ],
 );
 
-pub fn set_irq_enable(irq: usize, enable: bool) {
-    with_pch_pic("setting PCH-PIC IRQ enable", |pic| {
-        if enable {
-            pic.enable_irq(irq);
-        } else {
-            pic.disable_irq(irq);
+pub fn input_for_vector(vector: usize) -> Option<usize> {
+    with_pch_pic("mapping PCH-PIC vector to input", |pic| {
+        pic.input_for_vector(vector, "map")
+    })
+    .flatten()
+}
+
+pub fn setup_acpi_route(route: &rdif_intc::AcpiGsiRoute) -> Option<usize> {
+    with_pch_pic("setting up PCH-PIC ACPI route", |pic| {
+        if !pic.supports_acpi_gsi(route) {
+            return None;
         }
-    });
+        let domain = crate::irq::domain_by_owner(pic.owner)?.id;
+        let translation =
+            rdif_intc::IrqTranslation::from_controller(domain, pic.translate_acpi(route).ok()?);
+        pic.configure_acpi(&translation, route).ok()?;
+        Some(translation.id.hwirq.0 as usize)
+    })
+    .flatten()
 }
 
 fn probe_pch_pic_fdt(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
@@ -117,13 +128,19 @@ fn register_pch_pic(
     vector_count: Option<usize>,
 ) -> Result<(), OnProbeError> {
     let detected_vector_count = detect_vector_count(&mmio).unwrap_or(PCH_PIC_VECTOR_COUNT);
+    let domain = crate::irq::alloc_irq_domain(
+        dev.descriptor.device_id(),
+        crate::irq::IrqDomainKind::LoongArchPchPic,
+    )
+    .map_err(|err| OnProbeError::other(format!("failed to register PCH-PIC domain: {err:?}")))?;
     let pic = PchPic::new(
+        dev.descriptor.device_id(),
         mmio,
         base_vector,
         vector_count.unwrap_or(detected_vector_count),
     );
     pic.init();
-    dev.register(rdif_intc::Intc::new(pic));
+    dev.register(rdif_intc::Intc::new(domain, pic));
     Ok(())
 }
 
@@ -153,14 +170,21 @@ fn with_pch_pic<R>(op: &str, f: impl FnOnce(&mut PchPic) -> R) -> Option<R> {
 }
 
 struct PchPic {
+    owner: rdrive::DeviceId,
     mmio: MmioRaw,
     base_vector: usize,
     vector_count: usize,
 }
 
 impl PchPic {
-    fn new(mmio: MmioRaw, base_vector: usize, vector_count: usize) -> Self {
+    fn new(
+        owner: rdrive::DeviceId,
+        mmio: MmioRaw,
+        base_vector: usize,
+        vector_count: usize,
+    ) -> Self {
         Self {
+            owner,
             mmio,
             base_vector,
             vector_count,
@@ -192,6 +216,10 @@ impl PchPic {
         let (offset, bit) = pch_pic_reg_bit(input);
         let addr = PCH_PIC_MASK + offset;
         self.write_w(addr, self.read_w(addr) | bit);
+    }
+
+    fn vector_for_input(&self, input: usize) -> Option<usize> {
+        (input < self.vector_count).then_some(self.base_vector + input)
     }
 
     fn input_for_vector(&self, vector: usize, op: &str) -> Option<usize> {
@@ -271,29 +299,73 @@ impl Interface for PchPic {
             && self.vector_for_acpi_route(route).is_some()
     }
 
-    fn setup_irq_by_acpi(&mut self, route: &rdif_intc::AcpiGsiRoute) -> rdrive::IrqId {
-        let Some(vector) = self.vector_for_acpi_route(route) else {
+    fn translate_acpi(
+        &self,
+        route: &rdif_intc::AcpiGsiRoute,
+    ) -> Result<rdif_intc::ControllerIrqTranslation, rdif_intc::IrqError> {
+        if !self.supports_acpi_gsi(route) {
             warn!(
                 "unsupported ACPI PCH-PIC route: controller={:?} address={:#x} input={}",
                 route.controller, route.controller_address, route.controller_input
             );
-            return self.base_vector.into();
-        };
-        self.configure_input(usize::from(route.controller_input), route);
-        vector.into()
+            return Err(rdif_intc::IrqError::Unsupported);
+        }
+        Ok(rdif_intc::ControllerIrqTranslation::new(rdif_intc::HwIrq(
+            u32::from(route.controller_input),
+        )))
     }
 
-    fn setup_irq_by_fdt(&mut self, irq_prop: &[u32]) -> rdrive::IrqId {
+    fn configure_acpi(
+        &mut self,
+        translation: &rdif_intc::IrqTranslation,
+        route: &rdif_intc::AcpiGsiRoute,
+    ) -> Result<(), rdif_intc::IrqError> {
+        if !self.supports_acpi_gsi(route) {
+            return Err(rdif_intc::IrqError::Unsupported);
+        }
+        if translation.id.hwirq != rdif_intc::HwIrq(u32::from(route.controller_input)) {
+            return Err(rdif_intc::IrqError::InvalidIrq);
+        }
+        self.configure_input(usize::from(route.controller_input), route);
+        Ok(())
+    }
+
+    fn translate_fdt(
+        &self,
+        irq_prop: &[u32],
+    ) -> Result<rdif_intc::ControllerIrqTranslation, rdif_intc::IrqError> {
         let Some(input) = fdt_first_cell_vector(irq_prop) else {
             warn!("empty PCH-PIC interrupt specifier");
-            return self.base_vector.into();
+            return Err(rdif_intc::IrqError::InvalidIrq);
         };
         if input >= self.vector_count {
             warn!(
                 "PCH-PIC interrupt input {input} exceeds vector count {}",
                 self.vector_count
             );
+            return Err(rdif_intc::IrqError::InvalidIrq);
         }
-        (self.base_vector + input).into()
+        Ok(rdif_intc::ControllerIrqTranslation::new(rdif_intc::HwIrq(
+            input as u32,
+        )))
+    }
+
+    fn set_enabled(
+        &mut self,
+        hwirq: rdif_intc::HwIrq,
+        enabled: bool,
+    ) -> Result<(), rdif_intc::IrqError> {
+        let input = hwirq.0 as usize;
+        let Some(vector) = self.vector_for_input(input) else {
+            warn!("skip {enabled} for out-of-range PCH-PIC input {input}");
+            return Err(rdif_intc::IrqError::InvalidIrq);
+        };
+        super::eiointc::set_irq_enable(vector, enabled)?;
+        if enabled {
+            self.enable_irq(vector);
+        } else {
+            self.disable_irq(vector);
+        }
+        Ok(())
     }
 }
