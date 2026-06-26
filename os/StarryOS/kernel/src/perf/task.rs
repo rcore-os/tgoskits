@@ -822,16 +822,63 @@ pub fn on_mmap_sideband(
     }
 }
 
-/// Task-exit hook: free every HW counter the exiting thread still holds.
+/// Clone side-band hook: emit a `PERF_RECORD_FORK` describing the new child into
+/// every per-task event monitoring the **parent** that requested `attr.task`.
 ///
-/// Idempotent per counter via [`free_hw`]; safe even if the perf fd is still
-/// open (its `Drop` will call `free_hw` again and find it already freed).
+/// Called from `do_clone` in the parent's (forking task's) context, after the
+/// child task is spawned. The record's body describes the child (`child_pid` /
+/// `child_tid`) with the parent as `ppid`/`ptid`; its `sample_id_all` trailer is
+/// the parent's id (the event's monitored task), so `t.pid`/`t.tid` = parent.
+pub fn on_clone_sideband(parent_thr: &Thread, child_pid: u32, child_tid: u32) {
+    if PERF_TASK_ACTIVE.load(Ordering::Acquire) == 0 {
+        return;
+    }
+    let ppid = parent_thr.proc_data.proc.pid();
+    let ptid = parent_thr.tid();
+    // Snapshot want_task targets, then drop the counter lock before any ring write.
+    let targets: Vec<SidebandTarget> = {
+        let counters = parent_thr.perf_counters.lock();
+        counters
+            .iter()
+            .filter(|ptc| ptc.want_task)
+            .filter_map(|ptc| sideband_target(ptc, ppid, ptid))
+            .collect()
+    };
+    for t in &targets {
+        sideband::emit_fork(t, child_pid, ppid, child_tid, ptid);
+    }
+}
+
+/// Task-exit hook: emit `PERF_RECORD_EXIT` (for `attr.task` events) then free
+/// every HW counter the exiting thread still holds.
+///
+/// The EXIT record must be written *before* [`free_hw`] zeroes the ring geometry,
+/// so it is emitted per counter just before that counter is freed; the exiting
+/// thread is the subject and its parent (if any) supplies `ppid`/`ptid`.
+///
+/// `free_hw` is idempotent per counter; safe even if the perf fd is still open
+/// (its `Drop` will call `free_hw` again and find it already freed).
 pub fn on_task_exit(thr: &Thread) {
     if PERF_TASK_ACTIVE.load(Ordering::Acquire) == 0 {
         return;
     }
+    let pid = thr.proc_data.proc.pid();
+    let tid = thr.tid();
+    let (ppid, ptid) = match thr.proc_data.proc.parent() {
+        // The parent process's tgid; its main-thread tid equals that tgid.
+        Some(p) => {
+            let ppid = p.pid();
+            (ppid, ppid)
+        }
+        None => (0, 0),
+    };
     let counters = thr.perf_counters.lock();
     for ptc in counters.iter() {
+        if ptc.want_task
+            && let Some(t) = sideband_target(ptc, pid, tid)
+        {
+            sideband::emit_exit(&t, pid, ppid, tid, ptid);
+        }
         free_hw(ptc);
     }
 }

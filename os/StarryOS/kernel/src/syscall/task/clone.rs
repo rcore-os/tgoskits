@@ -424,6 +424,16 @@ impl CloneArgs {
         // even when the parent blocks below.
         trace_sched_process_fork(curr.id().as_u64(), tid as u64);
 
+        // perf side-band: tell any `attr.task` event watching the parent that it
+        // forked a child (PERF_RECORD_FORK), so `perf record` can account it.
+        // Emitted before any vfork-wait below, in the parent's context.
+        #[cfg(target_arch = "aarch64")]
+        crate::perf::task::on_clone_sideband(
+            curr.as_thread(),
+            new_proc_data.proc.pid(),
+            tid as u32,
+        );
+
         // Block the parent until the child exec's or exits.
         if needs_vfork_block {
             new_proc_data.wait_vfork_done();

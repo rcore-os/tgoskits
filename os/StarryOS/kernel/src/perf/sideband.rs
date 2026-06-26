@@ -28,6 +28,10 @@ use alloc::vec::Vec;
 
 /// `PERF_RECORD_COMM`.
 const PERF_RECORD_COMM: u32 = 3;
+/// `PERF_RECORD_EXIT`.
+const PERF_RECORD_EXIT: u32 = 4;
+/// `PERF_RECORD_FORK`.
+const PERF_RECORD_FORK: u32 = 7;
 /// `PERF_RECORD_MMAP2`.
 const PERF_RECORD_MMAP2: u32 = 10;
 /// `PERF_RECORD_MISC_USER`: the record describes user-space state.
@@ -162,6 +166,38 @@ pub fn emit_comm(t: &SidebandTarget, comm: &str, exec: bool) {
     push_trailer(&mut b, t);
     let misc = PERF_RECORD_MISC_USER | if exec { PERF_RECORD_MISC_COMM_EXEC } else { 0 };
     finish_and_write(b, t, PERF_RECORD_COMM, misc);
+}
+
+/// Emit a `PERF_RECORD_FORK` (`type_` == [`PERF_RECORD_FORK`]) or
+/// `PERF_RECORD_EXIT` task-lifetime record. Both carry the same body: the subject
+/// task's `pid`/`tid`, its parent's `ppid`/`ptid`, then a `time` stamp.
+///
+/// The `sample_id_all` trailer reflects the task whose context emits the record
+/// (the *parent* for `FORK`, the *exiting task* for `EXIT`) — encoded by the
+/// caller in `t.pid`/`t.tid` — matching Linux's `perf_event_header__init_id`.
+fn emit_task(t: &SidebandTarget, type_: u32, pid: u32, ppid: u32, tid: u32, ptid: u32) {
+    let mut b = Vec::with_capacity(64);
+    b.extend_from_slice(&[0u8; 8]); // header placeholder
+    push_u32(&mut b, pid);
+    push_u32(&mut b, ppid);
+    push_u32(&mut b, tid);
+    push_u32(&mut b, ptid);
+    push_u64(&mut b, ax_runtime::hal::time::monotonic_time_nanos());
+    push_trailer(&mut b, t);
+    // FORK/EXIT carry no cpu-mode misc bits (the task, not a sampled IP).
+    finish_and_write(b, t, type_, 0);
+}
+
+/// Emit a `PERF_RECORD_FORK` describing a newly-cloned child (`pid`/`tid`) of the
+/// monitored parent (`ppid`/`ptid`). `t` is built in the parent's context.
+pub fn emit_fork(t: &SidebandTarget, pid: u32, ppid: u32, tid: u32, ptid: u32) {
+    emit_task(t, PERF_RECORD_FORK, pid, ppid, tid, ptid);
+}
+
+/// Emit a `PERF_RECORD_EXIT` for the exiting task (`pid`/`tid`) and its parent
+/// (`ppid`/`ptid`). `t` is built in the exiting task's context.
+pub fn emit_exit(t: &SidebandTarget, pid: u32, ppid: u32, tid: u32, ptid: u32) {
+    emit_task(t, PERF_RECORD_EXIT, pid, ppid, tid, ptid);
 }
 
 /// Emit a `PERF_RECORD_MMAP2` for one executable mapping.
