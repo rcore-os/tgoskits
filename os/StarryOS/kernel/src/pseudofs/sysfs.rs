@@ -670,7 +670,7 @@ impl SimpleDirOps for PmuDeviceDir {
                 // microarchitectural event map. Format is the raw MIDR_EL1
                 // as hex (no 0x prefix) — perf's filename__read_str reads
                 // until EOF and compares bytewise.
-                let midr = ax_cpu::pmu::read_midr_el1();
+                let midr = crate::perf::read_midr_el1();
                 Ok(alloc::format!("{midr:016x}\n"))
             })
             .into()),
@@ -808,7 +808,7 @@ impl SimpleDirOps for CpuIdRegsDir {
     fn lookup_child(&self, name: &str) -> VfsResult<NodeOpsMux> {
         match name {
             "midr_el1" => Ok(SimpleFile::new_regular(self.fs.clone(), || {
-                let midr = ax_cpu::pmu::read_midr_el1();
+                let midr = crate::perf::read_midr_el1();
                 Ok(alloc::format!("{midr:016x}\n"))
             })
             .into()),

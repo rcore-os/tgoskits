@@ -599,7 +599,6 @@ impl PerfEventOps for HwPerfEvent {
                 value,
                 time_enabled,
                 time_running,
-                id: 0,
                 read_format: ptc.read_format(),
             });
         }
@@ -615,8 +614,6 @@ impl PerfEventOps for HwPerfEvent {
             value: self.raw_value(),
             time_enabled,
             time_running,
-            // M1 does not assign per-event ids (no event groups); report 0.
-            id: 0,
             read_format: self.read_format,
         })
     }

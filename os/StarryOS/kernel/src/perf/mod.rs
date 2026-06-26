@@ -22,10 +22,15 @@ pub mod tracepoint;
 pub mod uprobe;
 
 use alloc::{borrow::Cow, boxed::Box, sync::Arc, vec};
-use core::{any::Any, ffi::c_void, fmt::Debug};
+use core::{
+    any::Any,
+    ffi::c_void,
+    fmt::Debug,
+    sync::atomic::{AtomicU64, Ordering},
+};
 
 use ax_errno::{AxError, AxResult};
-use ax_io::Read;
+use ax_io::{Read, Write};
 use ax_kspin::{SpinNoPreempt, SpinNoPreemptGuard};
 use ax_lazyinit::LazyInit;
 use ax_memory_addr::{PAGE_SIZE_4K, PhysAddr, PhysAddrRange, VirtAddr, VirtAddrRange};
@@ -41,9 +46,42 @@ use kbpf_basic::{
 use crate::{
     ebpf::{error::BpfResultExt, transform::EbpfKernelAuxiliary},
     file::{FileLike, Kstat, add_file_like, get_file_like},
-    mm::VmBytes,
+    mm::{VmBytes, VmBytesMut},
     pseudofs::DeviceMmap,
 };
+
+/// Monotonic source of per-event `perf` ids (`PERF_EVENT_IOC_ID`,
+/// `PERF_SAMPLE_ID`, `read_format`'s `PERF_FORMAT_ID`). Linux assigns every
+/// `perf_event` a unique non-zero id; `perf record` reads it back with
+/// `PERF_EVENT_IOC_ID` right after `mmap` to build its id→event map, so the
+/// value must be unique and stable for the life of the event. Starts at 1 so 0
+/// stays reserved for "no id".
+static NEXT_PERF_EVENT_ID: AtomicU64 = AtomicU64::new(1);
+
+/// `MIDR_EL1` for the cpuid `sysfs`/`procfs` nodes (`/proc/cpuinfo`,
+/// `/sys/devices/.../cpuid`, `.../regs/identification/midr_el1`).
+///
+/// The real register on aarch64 (ARM PMUv3); `0` on other arches, where there is
+/// no PMU and the nodes exist only so the layout stays uniform. Centralizes the
+/// `#[cfg(target_arch = "aarch64")]` gate so the pseudo-fs call sites stay arch
+/// agnostic (and compile under multi-target clippy).
+pub fn read_midr_el1() -> u64 {
+    #[cfg(target_arch = "aarch64")]
+    {
+        ax_cpu::pmu::read_midr_el1()
+    }
+    #[cfg(not(target_arch = "aarch64"))]
+    {
+        0
+    }
+}
+
+/// `ioctl` type byte for the perf-event ioctls (`'$'`).
+const PERF_IOC_TYPE: u32 = 0x24;
+/// `PERF_EVENT_IOC_SET_OUTPUT` request number (`_IO('$', 5)`).
+const PERF_IOC_NR_SET_OUTPUT: u32 = 5;
+/// `PERF_EVENT_IOC_ID` request number (`_IOR('$', 7, __u64 *)`).
+const PERF_IOC_NR_ID: u32 = 7;
 
 /// Behaviour every perf event implements. Each variant in the dispatcher
 /// (kprobe / tracepoint / software-bpf / uprobe / hardware-PMU) provides a
@@ -118,9 +156,9 @@ pub struct PerfReadValues {
     /// Wall time the event was scheduled onto hardware, in nanoseconds.
     /// Equal to `time_enabled` in M1 (no multiplexing).
     pub time_running: u64,
-    /// Per-event id (`PERF_FORMAT_ID`). M1 has no event groups, so 0.
-    pub id: u64,
     /// `attr.read_format`, controlling which fields [`PerfEvent::read`] emits.
+    /// The `PERF_FORMAT_ID` value itself comes from the owning [`PerfEvent`]'s
+    /// id (so `read` and `PERF_EVENT_IOC_ID` agree), not from this snapshot.
     pub read_format: u64,
 }
 
@@ -128,25 +166,52 @@ pub struct PerfReadValues {
 /// `Box<dyn PerfEventOps>` so the inner implementation can stay generic.
 pub struct PerfEvent {
     event: SpinNoPreempt<Box<dyn PerfEventOps>>,
+    /// Unique, stable perf-event id (see [`NEXT_PERF_EVENT_ID`]). Returned by
+    /// `PERF_EVENT_IOC_ID` and used as the `read_format` `PERF_FORMAT_ID` value.
+    id: u64,
 }
 
 impl Debug for PerfEvent {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_struct("PerfEvent").finish()
+        f.debug_struct("PerfEvent").field("id", &self.id).finish()
     }
 }
 
 impl PerfEvent {
-    /// Wrap a per-type perf event impl.
+    /// Wrap a per-type perf event impl, assigning it a fresh unique id.
     pub fn new(event: Box<dyn PerfEventOps>) -> Self {
         PerfEvent {
             event: SpinNoPreempt::new(event),
+            id: NEXT_PERF_EVENT_ID.fetch_add(1, Ordering::Relaxed),
         }
     }
 
     /// Borrow the inner impl under the lock.
     pub fn event(&self) -> SpinNoPreemptGuard<'_, Box<dyn PerfEventOps>> {
         self.event.lock()
+    }
+
+    /// Handle `PERF_EVENT_IOC_SET_OUTPUT`: validate the redirect target and
+    /// accept it. `arg` is the leader event's fd, or `-1` to detach.
+    ///
+    /// The only events `perf record` redirects with `SET_OUTPUT` in this kernel
+    /// are its `PERF_COUNT_SW_DUMMY` tracking events, which never write ring
+    /// records, so the sample-producing leader keeps filling the single mmap
+    /// ring perf reads. We therefore validate that the target is a perf event
+    /// and accept; we do not yet physically merge two *record-producing* events
+    /// into one ring (that would only matter for `perf record -e a,b`).
+    fn set_output(&self, arg: usize) -> AxResult<usize> {
+        // `arg == -1` detaches the output (Linux semantics); nothing to wire.
+        if arg as i32 == -1 {
+            return Ok(0);
+        }
+        // The target must be an open perf-event fd, else EINVAL (Linux behaviour
+        // for a non-perf or bad output fd).
+        let target = get_file_like(arg as i32)?;
+        if target.into_any_arc().downcast::<PerfEvent>().is_err() {
+            return Err(AxError::InvalidInput);
+        }
+        Ok(0)
     }
 }
 
@@ -186,7 +251,9 @@ impl FileLike for PerfEvent {
             n += 1;
         }
         if values.read_format & PERF_FORMAT_ID != 0 {
-            fields[n] = values.id;
+            // The id is the wrapper's, so `read(perf_fd)` reports the same value
+            // `PERF_EVENT_IOC_ID` handed userspace (the inner snapshot has none).
+            fields[n] = self.id;
             n += 1;
         }
 
@@ -213,6 +280,32 @@ impl FileLike for PerfEvent {
     }
 
     fn ioctl(&self, cmd: u32, arg: usize) -> AxResult<usize> {
+        // Several perf ioctls carry a `_IOC` direction/size in the high bits
+        // (`PERF_EVENT_IOC_ID` is `_IOR`, `SET_OUTPUT` is `_IO`), so match on the
+        // `('$', nr)` pair rather than the full encoded value. These are absent
+        // from `kbpf_basic`'s `PerfEventIoc`, so handle them before the enum
+        // conversion (which would otherwise reject them as `EINVAL`).
+        if (cmd >> 8) & 0xff == PERF_IOC_TYPE {
+            match cmd & 0xff {
+                // `PERF_EVENT_IOC_ID`: write this event's unique id (a `u64`) to
+                // the user pointer in `arg`. `perf record` issues this right after
+                // `mmap` to build its id→event map; rejecting it makes perf abort
+                // with the misleading "failed to mmap" error.
+                PERF_IOC_NR_ID => {
+                    VmBytesMut::new(arg as *mut u8, core::mem::size_of::<u64>())
+                        .write(&self.id.to_ne_bytes())?;
+                    return Ok(0);
+                }
+                // `PERF_EVENT_IOC_SET_OUTPUT`: redirect this event's records into
+                // the ring buffer owned by the perf event whose fd is `arg`
+                // (or detach when `arg == -1`). `perf record` uses this so the
+                // events it opens on one CPU/task share a single mmap ring.
+                PERF_IOC_NR_SET_OUTPUT => {
+                    return self.set_output(arg);
+                }
+                _ => {}
+            }
+        }
         // `PERF_EVENT_IOC_RESET` (0x2403) is absent from `kbpf_basic`'s
         // `PerfEventIoc`, so handle it before the enum conversion. Only the
         // hardware-PMU variant implements `reset`; the tracing variants keep
