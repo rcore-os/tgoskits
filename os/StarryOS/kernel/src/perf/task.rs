@@ -178,6 +178,9 @@ pub struct PerTaskCounter {
     want_task: bool,
     /// `attr.sample_id_all`: side-band records carry the sample-id trailer.
     sample_id_all: bool,
+    /// `attr.inherit`: clone this event onto `fork`/`clone` children (writing into
+    /// the same ring) so `perf record` follows them. Driven by [`on_clone_inherit`].
+    inherit: bool,
 
     /// Kernel virtual address of the ring's first page (`perf_event_mmap_page`),
     /// or `0` until `mmap(perf_fd)` runs ([`set_ring`](Self::set_ring)). Read by
@@ -279,6 +282,8 @@ pub struct PerTaskConfig {
     pub want_task: bool,
     /// `attr.sample_id_all`: append the sample-id trailer to every side-band record.
     pub sample_id_all: bool,
+    /// `attr.inherit`: clone this event onto `fork`/`clone` children.
+    pub inherit: bool,
 }
 
 impl PerTaskCounter {
@@ -314,6 +319,7 @@ impl PerTaskCounter {
             want_mmap2: cfg.want_mmap2,
             want_task: cfg.want_task,
             sample_id_all: cfg.sample_id_all,
+            inherit: cfg.inherit,
             ring_vaddr: AtomicUsize::new(0),
             ring_len: AtomicUsize::new(0),
             notify_ptr: AtomicUsize::new(0),
@@ -417,6 +423,30 @@ impl PerTaskCounter {
         let anchors = guard.as_ref()?;
         let pages: Arc<dyn Any + Send + Sync> = anchors.ring_pages.clone();
         Some((vaddr, len, pages))
+    }
+
+    /// Expose this counter's ring for an `attr.inherit` child to redirect into.
+    ///
+    /// Unlike [`output_ring`](Self::output_ring) this also works for a counter
+    /// that is *itself* redirected (an inherited child of an inherited child):
+    /// it hands back the redirect anchor so all descendants point at the one
+    /// root ring. Returns `(ring_vaddr, ring_len, anchor)`, or `None` before the
+    /// ring is mapped.
+    pub fn inherit_ring(&self) -> Option<(usize, usize, Arc<dyn Any + Send + Sync>)> {
+        let vaddr = self.ring_vaddr.load(Ordering::Acquire);
+        if vaddr == 0 {
+            return None;
+        }
+        let len = self.ring_len.load(Ordering::Acquire);
+        // Owned ring: pin its pages directly.
+        if let Some(anchors) = self.anchors.lock().as_ref() {
+            let pages: Arc<dyn Any + Send + Sync> = anchors.ring_pages.clone();
+            return Some((vaddr, len, pages));
+        }
+        // Redirected ring (this counter is itself an inherited / SET_OUTPUT
+        // source): re-share the same anchor so the grandchild pins the root ring.
+        let anchor = self.redirect_anchor.lock().as_ref()?.clone();
+        Some((vaddr, len, anchor))
     }
 
     /// Point this counter's samples at *another* event's ring
@@ -846,6 +876,89 @@ pub fn on_clone_sideband(parent_thr: &Thread, child_pid: u32, child_tid: u32) {
     };
     for t in &targets {
         sideband::emit_fork(t, child_pid, ppid, child_tid, ptid);
+    }
+}
+
+/// Clone-inherit hook (`attr.inherit`): for each counter on the parent with
+/// `inherit` set, create a matching counter on the freshly-cloned `child_thr` so
+/// `perf record` follows it. The child counter writes into the **same ring** as
+/// the parent event (the child has no fd / ring of its own): it is set up exactly
+/// like a `PERF_EVENT_IOC_SET_OUTPUT` redirect, sharing the parent's `sample_id`
+/// so all samples aggregate under one event. Inheritance is transitive — the
+/// child's counter is itself `inherit`, so its own children inherit in turn (all
+/// pointing at the one root ring via [`PerTaskCounter::inherit_ring`]).
+///
+/// Called from `do_clone` in the parent's context, *before* the child is
+/// scheduled. Each inherited counter takes its own programmable HW slot; if the
+/// slots are exhausted the inheritance for that event is skipped (the child is
+/// simply not monitored — we do not time-multiplex), and likewise a sampling
+/// event whose ring is not mapped yet cannot be followed.
+pub fn on_clone_inherit(parent_thr: &Thread, child_thr: &Thread) {
+    if PERF_TASK_ACTIVE.load(Ordering::Acquire) == 0 {
+        return;
+    }
+    /// Everything needed to rebuild a child counter, snapshotted under the parent
+    /// lock so the (allocating) child construction happens lock-free.
+    struct InheritSpec {
+        cfg: PerTaskConfig,
+        sample_id: u64,
+        ring: Option<(usize, usize, Arc<dyn Any + Send + Sync>)>,
+        is_sampling: bool,
+    }
+    let specs: Vec<InheritSpec> = {
+        let counters = parent_thr.perf_counters.lock();
+        counters
+            .iter()
+            .filter(|p| p.inherit && !p.dead.load(Ordering::Acquire))
+            .map(|p| InheritSpec {
+                cfg: PerTaskConfig {
+                    n: 0, // assigned after the slot is reserved below
+                    event: p.event,
+                    exclude_user: p.exclude_user,
+                    exclude_kernel: p.exclude_kernel,
+                    read_format: p.read_format,
+                    // Follow the parent's current enable state; the child runs the
+                    // monitored workload from birth, so it does not wait on exec.
+                    enabled: p.enabled.load(Ordering::Acquire),
+                    enable_on_exec: false,
+                    sample_period: p.sample_period,
+                    sample_type: p.sample_type,
+                    freq: p.freq,
+                    target_freq: p.freq_target,
+                    want_comm: p.want_comm,
+                    want_mmap2: p.want_mmap2,
+                    want_task: p.want_task,
+                    sample_id_all: p.sample_id_all,
+                    inherit: true,
+                },
+                sample_id: p.sample_id.load(Ordering::Relaxed),
+                ring: p.inherit_ring(),
+                is_sampling: p.is_sampling,
+            })
+            .collect()
+    };
+    for mut spec in specs {
+        // A sampling event with no ring yet has nowhere to write the child's
+        // samples; skip (perf maps the ring before enabling, so this is rare).
+        if spec.is_sampling && spec.ring.is_none() {
+            continue;
+        }
+        let Some(n) = hw::alloc_programmable_counter() else {
+            warn!(
+                "perf: attr.inherit skipped for child tid {} (no free PMU counter)",
+                child_thr.tid()
+            );
+            continue;
+        };
+        spec.cfg.n = n;
+        let child = Arc::new(PerTaskCounter::new(spec.cfg));
+        // Share the parent event's id so inherited samples aggregate under it.
+        child.set_sample_id(spec.sample_id);
+        // Redirect the child's output into the (root) parent ring it inherited.
+        if let Some((vaddr, len, anchor)) = spec.ring {
+            child.set_redirect_ring(vaddr, len, anchor);
+        }
+        attach(child_thr, child);
     }
 }
 

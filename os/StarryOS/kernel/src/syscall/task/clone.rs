@@ -375,6 +375,11 @@ impl CloneArgs {
                 return Err(err.into());
             }
         }
+        // perf: clone any `attr.inherit` event from the parent onto the child so
+        // `perf record` follows it. Done before the child is scheduled (it is not
+        // yet spawned) so the counter is present the first time the child runs.
+        #[cfg(target_arch = "aarch64")]
+        crate::perf::task::on_clone_inherit(curr_thread, &thr);
         *new_task.task_ext_mut() = Some(AxTaskExt::from_impl(thr));
 
         // vfork(2) and clone(CLONE_VFORK) must sleep the parent until the child

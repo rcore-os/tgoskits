@@ -1113,6 +1113,8 @@ fn perf_event_open_hw_per_task(attr: &perf_event_attr, pid: i32) -> AxResult<HwP
             want_mmap2: attr.mmap2() != 0,
             want_task: attr.task() != 0,
             sample_id_all: attr.sample_id_all() != 0,
+            // Follow forked children into the same ring (`perf record` default).
+            inherit: attr.inherit() != 0,
         },
     ));
     super::task::attach(thr, ptc.clone());
