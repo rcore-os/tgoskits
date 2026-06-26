@@ -112,31 +112,10 @@ impl RgaDevice {
     /// Submit one already-read `RgaReq` to the engine and block until completion.
     /// Shared by the legacy `RGA_BLIT_SYNC` path and the `RGA_IOC_REQUEST_SUBMIT` task path.
     fn execute_blit(&self, req: &librga_abi::RgaReq) -> VfsResult<usize> {
-        let parsed = match librga_abi::parse(req) {
-            Ok(p) => p,
-            Err(e) => {
-                warn!(
-                    "RGA_BLIT parse FAIL {:?}: render={} rotate={} sina={} cosa={} sfmt=0x{:x} \
-                     dfmt=0x{:x} s={}x{}/{}x{} d={}x{}/{}x{}",
-                    e,
-                    req.render_mode,
-                    req.rotate_mode,
-                    req.sina,
-                    req.cosa,
-                    req.src.format,
-                    req.dst.format,
-                    req.src.act_w,
-                    req.src.act_h,
-                    req.src.vir_w,
-                    req.src.vir_h,
-                    req.dst.act_w,
-                    req.dst.act_h,
-                    req.dst.vir_w,
-                    req.dst.vir_h,
-                );
-                return Err(VfsError::InvalidInput);
-            }
-        };
+        let parsed = librga_abi::parse(req).map_err(|e| {
+            warn!("RGA_BLIT: rejecting unsupported request: {e:?}");
+            VfsError::InvalidInput
+        })?;
 
         let handle_flag = req.handle_flag != 0;
 
