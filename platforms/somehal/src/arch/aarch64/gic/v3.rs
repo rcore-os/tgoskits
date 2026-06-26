@@ -135,8 +135,14 @@ pub fn begin_irq() -> Option<ActiveIrq> {
 }
 
 pub fn irq_set_enable(irq: IrqId, enable: bool) -> Result<(), crate::irq::IrqError> {
+    let intid = unsafe { IntId::raw(irq.hwirq.0) };
+    if intid.is_private() {
+        current_cpu_interface().set_irq_enable(intid, enable);
+        return Ok(());
+    }
+
     super::with_gic_domain::<Gic, _>(irq.domain, |gic| {
-        gic.set_irq_enable(unsafe { IntId::raw(irq.hwirq.0) }, enable);
+        gic.set_irq_enable(intid, enable);
     })
 }
 
@@ -202,10 +208,10 @@ fn init_cpu_interface(gic: &Gic, cpu_idx: usize) {
 }
 
 fn current_cpu_interface() -> &'static CpuInterface {
-    let cpu_idx = crate::cpu::current_cpu_idx()
-        .unwrap_or_else(|| panic!("current logical CPU index is not available for GICv3 SGI"));
-    // SAFETY: send_ipi is only valid after the current CPU has completed
-    // interrupt-controller initialization and stored its CpuInterface.
+    let cpu_idx = someboot::smp::early_current_cpu_idx();
+    // SAFETY: GICv3 private IRQ operations can run before the OS per-CPU
+    // register is initialized, so use the architecture CPU-id convention that
+    // someboot also uses to enter this secondary CPU.
     unsafe { cpu_interface_slot(cpu_idx).get(cpu_idx) }
 }
 
