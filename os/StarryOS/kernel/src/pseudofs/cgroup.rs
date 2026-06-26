@@ -22,7 +22,9 @@ const CGROUP2_SUPER_MAGIC: u32 = 0x6367_7270;
 #[derive(Clone, Copy)]
 enum CgroupFileKind {
     Controllers,
+    Events,
     Procs,
+    Stat,
     SubtreeControl,
     Type,
 }
@@ -31,7 +33,9 @@ impl CgroupFileKind {
     fn from_name(name: &str) -> Option<Self> {
         match name {
             "cgroup.controllers" => Some(Self::Controllers),
+            "cgroup.events" => Some(Self::Events),
             "cgroup.procs" => Some(Self::Procs),
+            "cgroup.stat" => Some(Self::Stat),
             "cgroup.subtree_control" => Some(Self::SubtreeControl),
             "cgroup.type" => Some(Self::Type),
             _ => None,
@@ -41,7 +45,9 @@ impl CgroupFileKind {
     fn name(self) -> &'static str {
         match self {
             Self::Controllers => "cgroup.controllers",
+            Self::Events => "cgroup.events",
             Self::Procs => "cgroup.procs",
+            Self::Stat => "cgroup.stat",
             Self::SubtreeControl => "cgroup.subtree_control",
             Self::Type => "cgroup.type",
         }
@@ -49,16 +55,18 @@ impl CgroupFileKind {
 
     fn permission(self) -> NodePermission {
         let mode = match self {
-            Self::Controllers | Self::Type => 0o444,
+            Self::Controllers | Self::Type | Self::Events | Self::Stat => 0o444,
             Self::Procs | Self::SubtreeControl => 0o644,
         };
         NodePermission::from_bits_truncate(mode)
     }
 }
 
-const CGROUP_FILES: [CgroupFileKind; 4] = [
+const CGROUP_FILES: [CgroupFileKind; 6] = [
     CgroupFileKind::Controllers,
+    CgroupFileKind::Events,
     CgroupFileKind::Procs,
+    CgroupFileKind::Stat,
     CgroupFileKind::SubtreeControl,
     CgroupFileKind::Type,
 ];
@@ -74,7 +82,9 @@ impl CgroupFile {
             CgroupFileKind::Controllers => crate::cgroup::controllers_text(self.id)?
                 .as_bytes()
                 .to_vec(),
+            CgroupFileKind::Events => crate::cgroup::events_text(self.id)?.into_bytes(),
             CgroupFileKind::Procs => crate::cgroup::procs_text(self.id)?.into_bytes(),
+            CgroupFileKind::Stat => crate::cgroup::stat_text(self.id)?.into_bytes(),
             CgroupFileKind::SubtreeControl => crate::cgroup::subtree_control_text(self.id)?
                 .as_bytes()
                 .to_vec(),
@@ -99,7 +109,10 @@ impl DirectRwFsFileOps for CgroupFile {
 
     fn write_at(&self, buf: &[u8], _offset: u64) -> VfsResult<usize> {
         match self.kind {
-            CgroupFileKind::Controllers | CgroupFileKind::Type => {
+            CgroupFileKind::Controllers
+            | CgroupFileKind::Type
+            | CgroupFileKind::Events
+            | CgroupFileKind::Stat => {
                 crate::cgroup::ensure_node_exists(self.id)?;
                 return Err(VfsError::from(LinuxError::EACCES));
             }

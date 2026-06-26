@@ -4,7 +4,8 @@
 
 use super::mock::{ensure_init, test_guard};
 use crate::{
-    create_child, events_text, read_attr_at, root_id, stat_text, write_attr, write_subtree_control,
+    CgroupProvider, create_child, events_text, exit_process, read_attr_at, root_id, stat_text,
+    write_attr, write_subtree_control,
 };
 
 fn add_pid(id: u64, pid: u32) {
@@ -87,4 +88,31 @@ fn memory_stat_keys_present_with_honest_zeros() {
 
     // memory.stat is read-only.
     assert!(write_attr(m, "memory.stat", b"x").is_err());
+}
+
+#[test]
+fn cgroup_events_emits_inotify_on_populated_flip() {
+    let _g = test_guard();
+    let mock = ensure_init();
+    mock.reset();
+
+    // A leaf cgroup with one process: its whole ancestor chain is populated.
+    let leaf = create_child(root_id(), "notif_leaf").unwrap();
+    add_pid(leaf, 8888);
+    let node = crate::core::get_node(leaf).unwrap();
+    mock.set_cgroup(8888, node);
+
+    // Last process exits -> populated flips 1 -> 0 for the leaf AND root,
+    // so systemd's inotify watch on cgroup.events sees IN_MODIFY without polling.
+    exit_process(8888).unwrap();
+
+    let fired = mock.populated_notifications();
+    assert!(
+        fired.iter().any(|p| p == "/notif_leaf"),
+        "expected populated notification for /notif_leaf, got {fired:?}"
+    );
+    assert!(
+        fired.iter().any(|p| p == "/"),
+        "expected populated notification for root, got {fired:?}"
+    );
 }

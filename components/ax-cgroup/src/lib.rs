@@ -178,6 +178,29 @@ fn subtree_has_processes(node: &Arc<CgroupNode>) -> bool {
     children.iter().any(subtree_has_processes)
 }
 
+/// Snapshot the `populated` (subtree-has-processes) state of every node on a
+/// path-to-root, so a caller can detect which cgroups flip after a membership
+/// mutation. Index `i` corresponds to `path[i]`.
+fn populated_snapshot(path: &[Arc<CgroupNode>]) -> Vec<bool> {
+    path.iter().map(subtree_has_processes).collect()
+}
+
+/// After a membership mutation, compare each path node's `populated` state to
+/// `before` and fire `notify_populated_changed` for every cgroup that flipped.
+/// Linux notifies `cgroup.events` on the cgroup itself and each ancestor whose
+/// subtree transitioned empty<->non-empty.
+fn notify_populated_changes(
+    provider: &dyn CgroupProvider,
+    path: &[Arc<CgroupNode>],
+    before: &[bool],
+) {
+    for (node, &was) in path.iter().zip(before.iter()) {
+        if subtree_has_processes(node) != was {
+            provider.notify_populated_changed(&node.path);
+        }
+    }
+}
+
 fn count_descendants(node: &Arc<CgroupNode>) -> usize {
     let children: Vec<Arc<CgroupNode>> = node.children.lock().values().cloned().collect();
     let mut total = children.len();
@@ -643,6 +666,9 @@ pub fn migrate_process(pid: u32, target_id: CgroupId) -> VfsResult<()> {
 
         let target_path = path_to_root(target.clone());
         let old_path = path_to_root(old.clone());
+        // Snapshot populated state of both paths before the move.
+        let target_populated_before = populated_snapshot(&target_path);
+        let old_populated_before = populated_snapshot(&old_path);
         let mut target_unique_len = target_path.len();
         let mut old_unique_len = old_path.len();
         while target_unique_len > 0
@@ -680,6 +706,10 @@ pub fn migrate_process(pid: u32, target_id: CgroupId) -> VfsResult<()> {
         if mem_total > 0 {
             uncharge_mem_path(&old_path[..old_unique_len], mem_total);
         }
+        // Old subtree may have just emptied (1->0); target subtree may have
+        // just become populated (0->1). Notify cgroup.events on both sides.
+        notify_populated_changes(provider, &old_path, &old_populated_before);
+        notify_populated_changes(provider, &target_path, &target_populated_before);
         Ok(())
     })
 }
@@ -690,6 +720,9 @@ pub fn exit_process(pid: u32) -> VfsResult<()> {
     with_provider(|provider| {
         let cgroup = provider.get_cgroup(pid).ok_or(VfsError::NotFound)?;
         let path = path_to_root(cgroup);
+        // Snapshot populated state before removal so we can emit cgroup.events
+        // notifications for any cgroup whose subtree becomes empty.
+        let populated_before = populated_snapshot(&path);
         // Release the process's memory charge across the whole path first.
         if let Some(mem_total) = membership.charged_mem.remove(&pid)
             && mem_total > 0
@@ -700,6 +733,7 @@ pub fn exit_process(pid: u32) -> VfsResult<()> {
             uncharge_path(&path);
         }
         membership.detached_pids.insert(pid);
+        notify_populated_changes(provider, &path, &populated_before);
         Ok(())
     })
 }

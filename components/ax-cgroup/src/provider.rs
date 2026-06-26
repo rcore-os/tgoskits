@@ -25,6 +25,20 @@ pub trait CgroupProvider: Send + Sync {
     /// UID of the currently-acting process (the caller of a cgroupfs write).
     /// Used for delegation permission checks. Root is UID 0.
     fn current_uid(&self) -> u32;
+
+    /// Notify that a cgroup's `populated` state (cgroup.events) just flipped.
+    ///
+    /// `cgroup_path` is the hierarchy-relative path of the cgroup whose
+    /// `populated` field changed (e.g. `"/foo.service"`). The kernel maps this
+    /// to the mounted `cgroup.events` file and emits an inotify `IN_MODIFY`, so
+    /// systemd-style watchers learn a unit became empty (last process exited)
+    /// or non-empty without polling.
+    ///
+    /// Default is a no-op: providers that do not back a filesystem (host test
+    /// mocks, headless embedders) need not implement it.
+    fn notify_populated_changed(&self, cgroup_path: &str) {
+        let _ = cgroup_path;
+    }
 }
 
 /// Internal cell for the provider singleton.

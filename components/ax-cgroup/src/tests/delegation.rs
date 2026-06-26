@@ -23,6 +23,14 @@ fn subtree_control_requires_delegation_for_non_root() {
     let mock = ensure_init();
     mock.reset();
 
+    // Precondition: under cgroup v2, a child may enable `pids` in its own
+    // subtree_control only if the parent (here root) already delegates it.
+    // Make this explicit so the test is self-contained: the cgroup tree is a
+    // process-global singleton and mock.reset() clears per-pid maps but NOT
+    // the hierarchy's subtree_control, so relying on another test to have
+    // enabled +pids on root makes this test order-dependent (flaky).
+    write_subtree_control(root_id(), b"+pids").unwrap();
+
     let node = create_child(root_id(), "deleg_a").unwrap();
 
     // Unprivileged caller without delegation is rejected.

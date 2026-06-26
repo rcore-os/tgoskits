@@ -7,7 +7,7 @@
 //! process-wide and may only be set up once, so [`ensure_init`] funnels every
 //! test through a single [`std::sync::OnceLock`].
 
-use alloc::{boxed::Box, sync::Arc};
+use alloc::{boxed::Box, string::String, sync::Arc, vec::Vec};
 use std::{
     collections::{BTreeMap, BTreeSet},
     sync::{Mutex, OnceLock},
@@ -23,6 +23,10 @@ struct MockState {
     /// UID returned by `current_uid`; defaults to 0 (root) so existing tests
     /// retain full write rights unless they opt into an unprivileged caller.
     current_uid: u32,
+    /// Records cgroup paths for which `notify_populated_changed` fired, in
+    /// order, so tests can assert populated-flip edge semantics without a real
+    /// inotify backend.
+    populated_notifications: Vec<String>,
 }
 
 /// Host mock of the kernel [`CgroupProvider`].
@@ -58,6 +62,12 @@ impl MockProvider {
         state.cgroups.clear();
         state.zombies.clear();
         state.current_uid = 0;
+        state.populated_notifications.clear();
+    }
+
+    /// cgroup paths for which `notify_populated_changed` has fired since reset.
+    pub fn populated_notifications(&self) -> Vec<String> {
+        self.state.lock().unwrap().populated_notifications.clone()
     }
 }
 
@@ -76,6 +86,14 @@ impl CgroupProvider for MockProvider {
 
     fn current_uid(&self) -> u32 {
         self.state.lock().unwrap().current_uid
+    }
+
+    fn notify_populated_changed(&self, cgroup_path: &str) {
+        self.state
+            .lock()
+            .unwrap()
+            .populated_notifications
+            .push(cgroup_path.into());
     }
 }
 

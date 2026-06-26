@@ -10,9 +10,9 @@ use alloc::sync::Arc;
 pub use ax_cgroup::{
     CgroupId, CgroupNode, GLOBAL_CGROUP_ROOT, all_attr_names, attach_initial_process,
     attr_is_read_only, begin_fork, child_names, controllers_text, create_child, ensure_node_exists,
-    exit_process, is_controller_attr, is_interface_file_name, lookup_child, path, procs_text,
-    read_attr_at, register_provider, remove_child, root_id, subtree_control_text, write_attr,
-    write_procs, write_subtree_control,
+    events_text, exit_process, is_controller_attr, is_interface_file_name, lookup_child, path,
+    procs_text, read_attr_at, register_provider, remove_child, root_id, stat_text,
+    subtree_control_text, write_attr, write_procs, write_subtree_control,
 };
 
 mod cpu;
@@ -45,6 +45,23 @@ impl ax_cgroup::CgroupProvider for KernelCgroupProvider {
         ax_task::current()
             .try_as_thread()
             .map_or(0, |thr| thr.cred().euid)
+    }
+
+    fn notify_populated_changed(&self, cgroup_path: &str) {
+        // cgroup2 is mounted both at the native `/cgroup` and at the
+        // systemd-canonical `/sys/fs/cgroup`. inotify matches the watched path
+        // exactly, so emit IN_MODIFY on the `cgroup.events` file under each
+        // known mount point. A trailing slash on the root path is normalized
+        // away so we never produce `//cgroup.events`.
+        let rel = cgroup_path.strip_suffix('/').unwrap_or(cgroup_path);
+        for mount in ["/cgroup", "/sys/fs/cgroup"] {
+            let path = if rel.is_empty() || rel == "/" {
+                alloc::format!("{mount}/cgroup.events")
+            } else {
+                alloc::format!("{mount}{rel}/cgroup.events")
+            };
+            crate::file::inotify::notify_modify_path(&path);
+        }
     }
 }
 
