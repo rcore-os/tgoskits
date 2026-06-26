@@ -5,7 +5,7 @@ use log::info;
 use rdrive::{probe::OnProbeError, register::ProbeFdt};
 pub use rockchip_npu::{
     GemBufferInfo, GemCachePolicy, RknpuAction,
-    ioctrl::{RknpuMemCreate, RknpuMemMap, RknpuMemSync, RknpuSubmit},
+    ioctrl::{RknpuMemCreate, RknpuMemDestroy, RknpuMemMap, RknpuMemSync, RknpuSubmit},
 };
 use rockchip_npu::{Rknpu, RknpuConfig, RknpuType};
 use rockchip_pm::{PowerDomain, RockchipPM};
@@ -89,6 +89,13 @@ pub fn buffer_info(handle: u32) -> Result<GemBufferInfo, Error> {
     with_npu(|npu| npu.get_buffer_info(handle).ok_or(Error::NotFound))
 }
 
+/// A lifetime retainer for the buffer backing `handle`. Holding the returned
+/// `Arc` keeps the backing allocation alive independent of the GEM pool, so a
+/// mapping can outlive a `MemDestroy` without dangling.
+pub fn buffer_retainer(handle: u32) -> Result<Arc<dyn Any + Send + Sync>, Error> {
+    with_npu(|npu| npu.buffer_retainer(handle).ok_or(Error::NotFound))
+}
+
 pub fn submit(args: &mut RknpuSubmit) -> Result<(), Error> {
     with_npu(|npu| npu.submit_ioctrl(args).map_err(|_| Error::InvalidData))
 }
@@ -113,6 +120,15 @@ pub fn mem_import(
 
 pub fn mem_sync(args: &mut RknpuMemSync) -> Result<(), Error> {
     with_npu(|npu| npu.mem_sync(args).map_err(|_| Error::InvalidData))
+}
+
+/// Release a GEM handle, freeing an owned allocation or dropping the retainer of
+/// an imported buffer. A missing handle is a no-op.
+pub fn mem_destroy(handle: u32) -> Result<(), Error> {
+    with_npu(|npu| {
+        npu.destroy(handle);
+        Ok(())
+    })
 }
 
 pub fn mem_map_offset(handle: u32) -> Result<u64, Error> {

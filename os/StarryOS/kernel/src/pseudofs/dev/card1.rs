@@ -1,4 +1,4 @@
-use alloc::borrow::Cow;
+use alloc::{borrow::Cow, sync::Arc};
 use core::{
     any::Any,
     convert::TryFrom,
@@ -9,7 +9,8 @@ use core::{
 };
 
 use ax_driver::rknpu::{
-    self, GemCachePolicy, RknpuAction, RknpuMemCreate, RknpuMemMap, RknpuMemSync, RknpuSubmit,
+    self, GemCachePolicy, RknpuAction, RknpuMemCreate, RknpuMemDestroy, RknpuMemMap, RknpuMemSync,
+    RknpuSubmit,
 };
 use ax_errno::{AxError, AxResult};
 use ax_memory_addr::{PhysAddr, PhysAddrRange};
@@ -238,23 +239,35 @@ impl DeviceOps for Card1 {
 struct ExportedGemBuffer {
     range: PhysAddrRange,
     cache_policy: GemCachePolicy,
+    /// Keeps the backing GEM allocation alive for as long as a mapping derived
+    /// from this buffer exists, so a `MemDestroy` (or a closed source dma-buf fd)
+    /// cannot free pages that are still mapped (use-after-free guard).
+    retainer: Arc<dyn Any + Send + Sync>,
 }
 
 impl ExportedGemBuffer {
-    fn new(range: PhysAddrRange, cache_policy: GemCachePolicy) -> Self {
+    fn new(
+        range: PhysAddrRange,
+        cache_policy: GemCachePolicy,
+        retainer: Arc<dyn Any + Send + Sync>,
+    ) -> Self {
         Self {
             range,
             cache_policy,
+            retainer,
         }
     }
 
     fn device_mmap_kind(&self) -> DeviceMmap {
+        // Anchor the mapping to the backing allocation so it cannot be freed while
+        // still mapped.
+        let anchor = Some(self.retainer.clone());
         match self.cache_policy {
-            GemCachePolicy::Cacheable => DeviceMmap::PhysicalCached(self.range, None),
+            GemCachePolicy::Cacheable => DeviceMmap::PhysicalCached(self.range, anchor),
             // Starry does not expose a write-combine PTE mode yet; keep it
             // non-cacheable instead of accidentally upgrading it to cached.
             GemCachePolicy::NonCacheable | GemCachePolicy::WriteCombine => {
-                DeviceMmap::Physical(self.range, None)
+                DeviceMmap::Physical(self.range, anchor)
             }
         }
     }
@@ -299,10 +312,16 @@ fn exported_gem_buffer(handle: u32) -> AxResult<ExportedGemBuffer> {
     // buffers (whose CPU va is not necessarily in the linear map) map correctly;
     // for owned coherent buffers `dma_addr == phys(obj_addr)`, so this is
     // equivalent.
+    // Hold a retainer for the backing allocation so a mapping of this handle
+    // survives a concurrent MemDestroy / source-fd close without dangling.
+    let retainer = rknpu::buffer_retainer(handle)
+        .map_err(map_rknpu_err)
+        .map_err(|_| AxError::NotFound)?;
     let paddr = PhysAddr::from(info.dma_addr as usize);
     Ok(ExportedGemBuffer::new(
         PhysAddrRange::from_start_size(paddr, info.size),
         info.cache_policy,
+        retainer,
     ))
 }
 
@@ -500,7 +519,14 @@ pub fn rknpu_driver_ioctl(op: RknpuCmd, arg: usize) -> VfsResult<usize> {
             )?;
         }
         RknpuCmd::MemDestroy => {
-            info!("rknpu mem_destroy ioctl");
+            let mut mem_destroy = RknpuMemDestroy::default();
+            copy_from_user(
+                &mut mem_destroy as *mut _ as *mut u8,
+                arg as *const u8,
+                mem::size_of::<RknpuMemDestroy>(),
+            )?;
+            info!("rknpu mem_destroy ioctl: handle={}", mem_destroy.handle);
+            rknpu::mem_destroy(mem_destroy.handle).map_err(map_rknpu_err)?;
         }
         RknpuCmd::MemSync => {
             let mut mem_sync = RknpuMemSync::default();
@@ -751,30 +777,30 @@ mod tests {
     #[test]
     fn exported_buffer_reports_physical_device_mmap() {
         let range = PhysAddrRange::from_start_size(0x1234_5000.into(), 0x4000);
-        let exported = ExportedGemBuffer::new(range, GemCachePolicy::Cacheable);
+        let exported = ExportedGemBuffer::new(range, GemCachePolicy::Cacheable, Arc::new(()));
 
         assert!(
-            matches!(exported.device_mmap(0, 0).unwrap(), DeviceMmap::PhysicalCached(actual, None) if actual == range)
+            matches!(exported.device_mmap(0, 0).unwrap(), DeviceMmap::PhysicalCached(actual, Some(_)) if actual == range)
         );
     }
 
     #[test]
     fn exported_buffer_defaults_to_uncached_device_mmap() {
         let range = PhysAddrRange::from_start_size(0x1234_5000.into(), 0x4000);
-        let exported = ExportedGemBuffer::new(range, GemCachePolicy::NonCacheable);
+        let exported = ExportedGemBuffer::new(range, GemCachePolicy::NonCacheable, Arc::new(()));
 
         assert!(
-            matches!(exported.device_mmap(0, 0).unwrap(), DeviceMmap::Physical(actual, None) if actual == range)
+            matches!(exported.device_mmap(0, 0).unwrap(), DeviceMmap::Physical(actual, Some(_)) if actual == range)
         );
     }
 
     #[test]
     fn exported_buffer_maps_write_combine_as_uncached_without_wc_pte_support() {
         let range = PhysAddrRange::from_start_size(0x1234_5000.into(), 0x4000);
-        let exported = ExportedGemBuffer::new(range, GemCachePolicy::WriteCombine);
+        let exported = ExportedGemBuffer::new(range, GemCachePolicy::WriteCombine, Arc::new(()));
 
         assert!(
-            matches!(exported.device_mmap(0, 0).unwrap(), DeviceMmap::Physical(actual, None) if actual == range)
+            matches!(exported.device_mmap(0, 0).unwrap(), DeviceMmap::Physical(actual, Some(_)) if actual == range)
         );
     }
 }
