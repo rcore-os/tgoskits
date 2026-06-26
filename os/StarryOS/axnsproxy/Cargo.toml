@@ -9,7 +9,6 @@ license.workspace = true
 authors.workspace = true
 
 [dependencies]
-ax-config = { workspace = true }
 ax-errno = { workspace = true }
 ax-kspin = { workspace = true }
 linux-raw-sys = { version = "0.12", default-features = false, features = [

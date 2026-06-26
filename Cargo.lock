@@ -1407,7 +1407,6 @@ dependencies = [
 name = "axnsproxy"
 version = "0.2.3"
 dependencies = [
- "ax-config",
  "ax-errno 0.6.0",
  "ax-kspin",
  "linux-raw-sys 0.12.1",
