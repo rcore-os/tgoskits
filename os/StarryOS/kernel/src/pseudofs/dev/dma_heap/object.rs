@@ -52,13 +52,11 @@ impl DmaBufObject {
         self.inner.dma_addr().as_u64()
     }
 
-    /// Allocation length in bytes (page-rounded).
-    pub fn len(&self) -> usize {
+    /// Allocation length in bytes (page-rounded). Crate-internal: the type lives in a
+    /// `pub(crate)` module, so this is its true visibility and keeps clippy's
+    /// `len_without_is_empty` from demanding an `is_empty` no caller needs.
+    pub(crate) fn len(&self) -> usize {
         self.inner.bytes_len()
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.len() == 0
     }
 
     /// Physical range for mmap.
