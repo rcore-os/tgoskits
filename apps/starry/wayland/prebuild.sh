@@ -390,6 +390,8 @@ populate_overlay() {
     mkdir -p "$overlay_dir/usr/bin"
     cp "$app_dir/wayland-test.sh" "$overlay_dir/usr/bin/wayland-test.sh"
     chmod 0755 "$overlay_dir/usr/bin/wayland-test.sh"
+    cp "$app_dir/wayland-quick-start.sh" "$overlay_dir/usr/bin/wayland-quick-start.sh"
+    chmod 0755 "$overlay_dir/usr/bin/wayland-quick-start.sh"
 
     copy_base_text_file_to_overlay /etc/apk/repositories
     copy_base_text_file_to_overlay /etc/resolv.conf

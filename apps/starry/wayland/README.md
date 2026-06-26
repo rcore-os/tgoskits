@@ -151,7 +151,11 @@ cargo xtask starry app qemu \
   --qemu-config tmp/wayland-manual/qemu-x86_64-vnc.toml
 ```
 
-Wait for the serial console to print the `root@starry:` prompt.
+When using [`quick_start.sh`](quick_start.sh), the generated VNC config runs
+`/usr/bin/wayland-quick-start.sh` automatically after the `root@starry:` prompt.
+That script starts Weston, waits for `/tmp/wayland-*`, exports the Wayland/GTK
+environment, starts `gtk4-demo`, prints `WAYLAND_QUICK_START_READY`, and keeps
+the QEMU/VNC session alive for interaction.
 
 ### Step 4: Open the VNC Viewer
 
@@ -211,6 +215,9 @@ truncated package, rerun the loop; the next mirror will be tried.
 
 Still inside StarryOS:
 
+If you launched with `quick_start.sh`, this step is already done
+automatically.
+
 ```sh
 export XDG_RUNTIME_DIR=/tmp
 chmod 0700 /tmp
@@ -233,6 +240,9 @@ ls -l /tmp/wayland-*
 ```
 
 ### Step 7: Start GTK4 Demo
+
+If you launched with `quick_start.sh`, this step is already done
+automatically.
 
 ```sh
 export WAYLAND_DISPLAY="$(basename "$(ls /tmp/wayland-* | head -1)")"
