@@ -80,6 +80,7 @@ members = [
     "drivers/usb/usb-device/uvc",
     "drivers/usb/usb-host",
     "drivers/usb/usb-if",
+    "drivers/usb/usb-serial",
     "drivers/usb/utils/*",
 
     "os/StarryOS/axnsproxy",
@@ -248,6 +249,7 @@ crab-usb = { version = "0.9.8", path = "drivers/usb/usb-host" }
 crab-uvc = { version = "0.1.1", path = "drivers/usb/usb-device/uvc" }
 ktest-helper = { version = "0.1.1", path = "drivers/usb/utils/ktest-helper" }
 usb-if = { version = "0.7.2", path = "drivers/usb/usb-if" }
+usb-serial = { version = "0.1.0", path = "drivers/usb/usb-serial" }
 dwmmc-host = { version = "0.1.5", path = "drivers/blk/dwmmc-host", default-features = false }
 phytium-mci-host = { version = "0.1.5", path = "drivers/blk/phytium-mci-host", default-features = false }
 sdhci-host = { version = "0.1.5", path = "drivers/blk/sdhci-host", default-features = false }

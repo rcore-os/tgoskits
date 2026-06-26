@@ -1,5 +1,4 @@
 mod backend;
-mod descriptors;
 
 use alloc::{collections::VecDeque, string::ToString, sync::Arc, vec::Vec};
 use core::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
@@ -145,21 +144,21 @@ impl UsbSerialBackendState {
 
         let port = find_usb_serial_port(self.index).ok_or(AxError::NoSuchDevice)?;
         let handle = usbfs::acquire_usb_device(port.bus_num, port.device_num)?;
-        handle.claim_interface(port.interface, 0)?;
+        handle.claim_interface(port.interface(), 0)?;
         let baudrate = self.baudrate.load(Ordering::Acquire);
-        if let Err(err) = port.backend.init(&handle, &port, baudrate) {
-            let _ = handle.release_interface(port.interface);
+        if let Err(err) = port.init(&handle, baudrate) {
+            let _ = handle.release_interface(port.interface());
             return Err(err);
         }
         info!(
             "usb-serial: ttyUSB{} attached to {} device {}:{} iface {} in={:#04x} out={:#04x}",
             self.index,
-            port.backend.name(),
+            port.name(),
             port.bus_num,
             port.device_num,
-            port.interface,
-            port.bulk_in,
-            port.bulk_out
+            port.interface(),
+            port.bulk_in(),
+            port.bulk_out()
         );
         let new_session = Arc::new(UsbSerialSession { handle, port });
         *session = Some(new_session.clone());
@@ -175,11 +174,7 @@ impl UsbSerialBackendState {
             return Ok(());
         }
         let session = self.ensure_session()?;
-        if let Err(err) = session
-            .port
-            .backend
-            .set_baud(&session.handle, &session.port, baudrate)
-        {
+        if let Err(err) = session.port.set_baud(&session.handle, baudrate) {
             self.request_session_teardown(Some(&session));
             self.baudrate.store(old, Ordering::Release);
             return Err(err);
@@ -268,7 +263,7 @@ impl UsbSerialBackendState {
             while offset < chunk.len() {
                 let actual = match session
                     .handle
-                    .bulk_out(session.port.bulk_out, &chunk[offset..])
+                    .bulk_out(session.port.bulk_out(), &chunk[offset..])
                 {
                     Ok(actual) => actual,
                     Err(err) => {
@@ -376,7 +371,7 @@ impl UsbSerialBackendState {
     }
 
     fn bulk_in_rx(&self, session: &UsbSerialSession, buf: &mut [u8]) -> AxResult<usize> {
-        session.handle.bulk_in(session.port.bulk_in, buf)
+        session.handle.bulk_in(session.port.bulk_in(), buf)
     }
 
     fn start_rx_worker(self: &Arc<Self>) {
@@ -527,6 +522,6 @@ impl TtyWrite for UsbSerialWriter {
 
 impl Drop for UsbSerialSession {
     fn drop(&mut self) {
-        let _ = self.handle.release_interface(self.port.interface);
+        let _ = self.handle.release_interface(self.port.interface());
     }
 }
