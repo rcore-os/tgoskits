@@ -1,3 +1,2 @@
 QEMU_LVZ_REPO=https://github.com/Hengyu-Yu/QEMU-LVZ.git
-QEMU_LVZ_VERSION=9.0.50
 QEMU_LVZ_TARGET_LIST=loongarch64-softmmu

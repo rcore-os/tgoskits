@@ -2,8 +2,8 @@ use alloc::{format, vec};
 
 use ax_errno::{AxError, AxResult, ax_err_type};
 
-use super::GuestPlatform;
 use crate::fdt::vm_fdt::FdtWriter;
+use crate::guest_platform::loongarch64::GuestPlatform;
 
 const PHANDLE_CPU0: u32 = 0x8000;
 const PHANDLE_CPUIC: u32 = 0x8001;

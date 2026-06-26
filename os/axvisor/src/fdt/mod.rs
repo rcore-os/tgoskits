@@ -19,6 +19,8 @@
 
 mod create;
 mod device;
+#[cfg(target_arch = "loongarch64")]
+pub(crate) mod loongarch64;
 mod parser;
 mod print;
 pub(crate) mod vm_fdt;
@@ -143,7 +145,7 @@ pub fn handle_fdt_operations(
         parse_reserved_memory_regions(vm_create_config, dtb)?;
         parse_passthrough_devices_address(vm_config, vm_create_config, dtb)?;
         #[cfg(target_arch = "loongarch64")]
-        parse_loongarch_guest_irq_routes(vm_config, dtb)?;
+        loongarch64::guest_irq_route_dtb::parse_guest_irq_routes(vm_config, dtb)?;
         #[cfg(target_arch = "aarch64")]
         parse_vm_interrupt(vm_config, dtb)?;
     } else {

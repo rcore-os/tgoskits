@@ -1,4 +1,3 @@
-mod firmware_fdt;
 mod probe;
 mod resources;
 
@@ -148,7 +147,7 @@ impl GuestPlatform {
 
 pub fn load_firmware_fdt(vm: &AxVMRef, config: &AxVMCrateConfig) -> AxResult {
     let platform = GuestPlatform::discover(vm, config);
-    let fdt = firmware_fdt::build(&platform)?;
+    let fdt = crate::fdt::loongarch64::guest_firmware_dtb::build(&platform)?;
     debug!(
         "VM[{}] loading LoongArch UEFI firmware FDT: {} bytes at {:#x}",
         config.base.id,
