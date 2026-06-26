@@ -17,6 +17,9 @@ use super::{
     qemu::{DEFAULT_STARRY_SHELL_PREFIX, PerfQemuConfig, QemuRun},
 };
 
+const SHELL_INIT_WRITE_CHUNK: usize = 64;
+const SHELL_INIT_WRITE_DELAY: Duration = Duration::from_millis(1);
+
 #[derive(Default, Serialize)]
 pub(super) struct PerfWindowReport {
     pub(super) enabled: bool,
@@ -260,9 +263,13 @@ fn trim_window(window: &mut Vec<u8>, keep: usize) {
 }
 
 fn write_shell_init_command(stdin: &mut impl Write, cmd: &str) -> anyhow::Result<()> {
-    stdin
-        .write_all(cmd.as_bytes())
-        .context("failed to write qperf shell init command")?;
+    for chunk in cmd.as_bytes().chunks(SHELL_INIT_WRITE_CHUNK) {
+        stdin
+            .write_all(chunk)
+            .context("failed to write qperf shell init command")?;
+        stdin.flush().ok();
+        thread::sleep(SHELL_INIT_WRITE_DELAY);
+    }
     stdin
         .write_all(b"\n")
         .context("failed to terminate qperf shell init command")?;
