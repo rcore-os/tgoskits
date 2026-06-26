@@ -389,10 +389,6 @@ pub fn xmac_init(hwaddr: &[u8; 6]) -> &'static mut FXmac {
 
     FXmacInitDma(&mut xmac);
 
-    // initialize interrupt
-    // 网卡中断初始化设置
-    FXmacSetupIsr(&mut xmac);
-
     // end of FXmacLwipPortInit()
 
     if (xmac.lwipport.feature & FXMAC_LWIP_PORT_CONFIG_UNICAST_ADDRESS_FILITER) != 0 {
@@ -422,6 +418,28 @@ pub fn xmac_init(hwaddr: &[u8; 6]) -> &'static mut FXmac {
     XMAC.store(xmac_ref as *mut FXmac, Ordering::Relaxed);
 
     xmac_ref
+}
+
+impl FXmac {
+    /// Returns the controller-local hardware IRQ line for queue 0.
+    pub fn irq_hwirq(&self) -> u32 {
+        self.config.queue_irq_num[0]
+    }
+
+    /// Handles a queue interrupt from the OS-registered IRQ callback.
+    pub fn handle_irq(&mut self) {
+        FXmacIntrHandler(self.irq_hwirq() as i32, self);
+    }
+
+    /// Enables queue 0 interrupts after the OS has registered an IRQ handler.
+    pub fn enable_irq(&mut self) {
+        FXmacQueueIrqEnable(self, 0, FXMAC_IXR_ALL_MASK);
+    }
+
+    /// Disables queue 0 interrupts while the OS mutates shared device state.
+    pub fn disable_irq(&mut self) {
+        FXmacQueueIrqDisable(self, 0, FXMAC_IXR_ALL_MASK);
+    }
 }
 
 /// Starts the Ethernet controller.

@@ -9,8 +9,7 @@ pub mod systick;
 pub struct Plat;
 
 fn gic_domain() -> crate::irq::IrqDomainId {
-    crate::irq::domain_by_kind(crate::irq::IrqDomainKind::AArch64Gic)
-        .map(|domain| domain.id)
+    crate::irq::domain_by_kind_fast(crate::irq::IrqDomainKind::AArch64Gic)
         .expect("AArch64 GIC IRQ domain is not registered")
 }
 
@@ -20,6 +19,12 @@ fn is_gic_domain(domain: crate::irq::IrqDomainId) -> bool {
 
 pub(crate) fn gic_irq_id(hwirq: HwIrq) -> IrqId {
     IrqId::new(gic_domain(), hwirq)
+}
+
+pub(crate) fn gic_irq_id_checked(hwirq: HwIrq) -> Result<IrqId, IrqError> {
+    crate::irq::domain_by_kind_fast(crate::irq::IrqDomainKind::AArch64Gic)
+        .map(|domain| IrqId::new(domain, hwirq))
+        .ok_or(IrqError::Unsupported)
 }
 
 impl PlatOp for Plat {
