@@ -68,10 +68,11 @@ fn set_ioapic_gsi_enabled_from_irq_impl(
 #[cfg(all(feature = "plat-dyn", not(test)))]
 fn set_ioapic_gsi_enabled_from_irq_impl(
     gsi: u32,
-    _irq: IrqId,
+    irq: IrqId,
     enabled: bool,
 ) -> Result<(), IrqError> {
-    arceos::set_ioapic_gsi_enabled_from_irq(gsi, enabled)
+    let _ = gsi;
+    arceos::set_ioapic_gsi_enabled_from_irq(irq.hwirq.0, enabled)
 }
 
 #[cfg(all(not(feature = "plat-dyn"), not(test)))]
