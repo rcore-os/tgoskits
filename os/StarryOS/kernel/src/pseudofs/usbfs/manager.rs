@@ -74,6 +74,13 @@ struct UsbDeviceRecord {
     next_session_id: u64,
 }
 
+struct UsbProbeUpdate {
+    stable_id: UsbStableId,
+    snapshot: UsbDeviceSnapshot,
+    unopened_info: Option<DeviceInfo>,
+    openable: bool,
+}
+
 type EndpointHandle = Arc<Mutex<Endpoint>>;
 
 struct LiveDeviceState {
@@ -360,6 +367,58 @@ impl Drop for UsbDeviceLease {
     }
 }
 
+fn merge_probe_updates(
+    state: &mut UsbFsState,
+    host_device_id: RDriveDeviceId,
+    updates: Vec<UsbProbeUpdate>,
+) {
+    for update in updates {
+        let record = state
+            .devices
+            .entry(update.stable_id)
+            .or_insert_with(|| UsbDeviceRecord {
+                host_device_id,
+                snapshot: update.snapshot.clone(),
+                present: true,
+                unopened_info: None,
+                live_device: None,
+                open_count: 0,
+                openable: update.openable,
+                synthetic: false,
+                next_session_id: 1,
+            });
+        record.host_device_id = host_device_id;
+        record.snapshot = update.snapshot;
+        record.present = true;
+        record.openable = update.openable;
+        record.unopened_info = update.unopened_info;
+    }
+}
+
+fn present_usb_probe_devices(
+    state: &UsbFsState,
+    host_device_id: RDriveDeviceId,
+) -> Vec<rdrive::probe::usb::UsbDevice> {
+    state
+        .devices
+        .iter()
+        .filter(|(stable_id, record)| {
+            stable_id.host_device_id == host_device_id && record.present && !record.synthetic
+        })
+        .map(|(stable_id, record)| {
+            rdrive::probe::usb::UsbDevice::new(
+                rdrive::probe::usb::UsbDeviceKey::new(
+                    stable_id.host_device_id,
+                    stable_id.device_id,
+                ),
+                record.snapshot.bus_num,
+                record.snapshot.device_num,
+                record.snapshot.descriptor_blob.clone(),
+            )
+        })
+        .collect()
+}
+
 impl UsbFsManager {
     pub(super) fn new(hosts: Vec<UsbHostState>) -> Self {
         let mut hosts = hosts;
@@ -634,32 +693,25 @@ impl UsbFsManager {
                 );
                 let unopened_info = device.into_device_info();
                 let openable = unopened_info.is_some();
-                updates.push((stable_id, snapshot, unopened_info, openable));
+                updates.push(UsbProbeUpdate {
+                    stable_id,
+                    snapshot,
+                    unopened_info,
+                    openable,
+                });
             }
             updates
         };
 
-        for (stable_id, snapshot, unopened_info, openable) in updates {
-            let record = state
-                .devices
-                .entry(stable_id)
-                .or_insert_with(|| UsbDeviceRecord {
-                    host_device_id: device_id,
-                    snapshot: snapshot.clone(),
-                    present: true,
-                    unopened_info: None,
-                    live_device: None,
-                    open_count: 0,
-                    openable,
-                    synthetic: false,
-                    next_session_id: 1,
-                });
-            record.host_device_id = device_id;
-            record.snapshot = snapshot;
-            record.present = true;
-            record.openable = openable;
-            record.unopened_info = unopened_info;
-        }
+        merge_probe_updates(&mut state, device_id, updates);
+
+        // crab-usb currently reports newly discovered devices, not a full bus
+        // snapshot and not explicit disconnect events. Keep usbfs state
+        // authoritative for additive discovery only; absence from this update
+        // must not be treated as device removal.
+        let usb_probe_devices = present_usb_probe_devices(&state, device_id);
+        drop(state);
+        super::sync_known_usb_devices(device_id, &usb_probe_devices);
     }
 
     fn ensure_live_device(&self, stable_id: UsbStableId) -> AxResult<()> {
@@ -1385,4 +1437,84 @@ pub(super) fn discover_hosts() -> (Vec<UsbHostState>, Vec<PendingUsbIrqSlot>) {
 
     info!("usbfs: discovered {} USB host(s)", initialized_hosts.len());
     (initialized_hosts, irq_slots)
+}
+
+#[cfg(test)]
+mod tests {
+    use alloc::{collections::BTreeSet, vec, vec::Vec};
+
+    use super::*;
+
+    fn test_snapshot(bus_num: u8, device_num: u8, vendor_id: u16) -> UsbDeviceSnapshot {
+        let mut descriptor_blob = vec![18, 0x01, 0x00, 0x02, 0xff, 0, 0, 64];
+        descriptor_blob.extend_from_slice(&vendor_id.to_le_bytes());
+        descriptor_blob.extend_from_slice(&0xea60u16.to_le_bytes());
+        descriptor_blob.extend_from_slice(&[0x00, 0x01, 1, 2, 3, 1]);
+        UsbDeviceSnapshot {
+            bus_num,
+            device_num,
+            descriptor_blob,
+        }
+    }
+
+    fn test_update(
+        host_device_id: RDriveDeviceId,
+        stable_device_id: usize,
+        device_num: u8,
+    ) -> UsbProbeUpdate {
+        UsbProbeUpdate {
+            stable_id: UsbStableId {
+                host_device_id,
+                device_id: stable_device_id,
+            },
+            snapshot: test_snapshot(1, device_num, stable_device_id as u16),
+            unopened_info: None,
+            openable: false,
+        }
+    }
+
+    fn present_device_numbers(state: &UsbFsState, host_device_id: RDriveDeviceId) -> BTreeSet<u8> {
+        present_usb_probe_devices(state, host_device_id)
+            .into_iter()
+            .map(|device| device.device_num())
+            .collect()
+    }
+
+    #[test]
+    fn incremental_probe_updates_are_additive_without_removal_events() {
+        let host_device_id = RDriveDeviceId::new();
+        let mut state = UsbFsState::default();
+
+        merge_probe_updates(
+            &mut state,
+            host_device_id,
+            vec![
+                test_update(host_device_id, 0x10, 2),
+                test_update(host_device_id, 0x11, 3),
+            ],
+        );
+        assert_eq!(
+            present_device_numbers(&state, host_device_id),
+            BTreeSet::from([2, 3])
+        );
+
+        merge_probe_updates(&mut state, host_device_id, Vec::new());
+        // An empty incremental update means "no newly discovered devices", not
+        // "the host has no devices". Removals need an explicit backend event or
+        // a real full-bus snapshot before they can be synchronized safely.
+        assert_eq!(
+            present_device_numbers(&state, host_device_id),
+            BTreeSet::from([2, 3])
+        );
+
+        merge_probe_updates(
+            &mut state,
+            host_device_id,
+            vec![test_update(host_device_id, 0x12, 4)],
+        );
+        assert_eq!(
+            present_device_numbers(&state, host_device_id),
+            BTreeSet::from([2, 3, 4])
+        );
+    }
 }

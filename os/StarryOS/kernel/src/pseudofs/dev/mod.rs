@@ -341,18 +341,20 @@ fn builder(fs: Arc<SimpleFs>) -> DirMaker {
             tty::console_device(),
         ),
     );
-    root.add_dynamic("ttyUSB0", {
-        let fs = fs.clone();
-        move || {
-            Device::new(
-                fs.clone(),
-                NodeType::CharacterDevice,
-                DeviceId::new(188, 0),
-                tty::usb_serial_tty(0).expect("ttyUSB0 slot must exist"),
-            )
-            .into()
-        }
-    });
+    for number in 0..tty::usb_serial_tty_count() {
+        root.add_dynamic(format!("ttyUSB{number}"), {
+            let fs = fs.clone();
+            move || {
+                Device::new(
+                    fs.clone(),
+                    NodeType::CharacterDevice,
+                    DeviceId::new(188, number as u32),
+                    tty::usb_serial_tty(number).expect("ttyUSB slot must exist"),
+                )
+                .into()
+            }
+        });
+    }
 
     root.add(
         "ptmx",

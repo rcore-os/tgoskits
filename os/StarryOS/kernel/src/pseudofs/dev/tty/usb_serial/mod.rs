@@ -22,9 +22,9 @@ use crate::pseudofs::usbfs::{self, UsbDeviceHandle};
 
 pub type UsbSerialTtyDriver = Tty<UsbSerialReader, UsbSerialWriter>;
 
-// The devfs entry is static for now: /dev/ttyUSB0 is always present and lazily
-// attaches to the first supported USB serial adapter when the tty is opened.
-const USB_SERIAL_PORTS: usize = 1;
+// The devfs entries are static for now: /dev/ttyUSB0..3 are always present and
+// lazily attach to the corresponding probed USB serial adapter when opened.
+const USB_SERIAL_PORTS: usize = 4;
 const USB_SERIAL_DEFAULT_BAUDRATE: u32 = 115_200;
 const USB_SERIAL_RX_CHUNK: usize = 64;
 const USB_SERIAL_TX_CHUNK: usize = 256;
@@ -73,6 +73,20 @@ pub struct UsbSerialWriter {
 
 pub fn usb_serial_tty(index: usize) -> Option<Arc<UsbSerialTtyDriver>> {
     USB_SERIAL_TTYS.get(index).cloned()
+}
+
+pub fn usb_serial_tty_count() -> usize {
+    USB_SERIAL_PORTS
+}
+
+pub(crate) fn register_usb_serial_probe() {
+    backend::register_usb_serial_probe();
+}
+
+pub(super) fn usb_serial_device_removed(bus_num: u8, device_num: u8) {
+    for tty in USB_SERIAL_TTYS.iter() {
+        tty.writer.backend.device_removed(bus_num, device_num);
+    }
 }
 
 impl UsbSerialTtyDriver {
@@ -345,6 +359,16 @@ impl UsbSerialBackendState {
             if !self.rx_worker_started.load(Ordering::Acquire) {
                 self.finish_session_teardown(None);
             }
+        }
+    }
+
+    fn device_removed(&self, bus_num: u8, device_num: u8) {
+        let failed_session = self.session.lock().as_ref().and_then(|session| {
+            (session.port.bus_num == bus_num && session.port.device_num == device_num)
+                .then(|| session.clone())
+        });
+        if let Some(session) = failed_session {
+            self.request_session_teardown(Some(&session));
         }
     }
 

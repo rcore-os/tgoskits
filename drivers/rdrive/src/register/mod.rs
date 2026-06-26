@@ -3,11 +3,15 @@ use core::ops::Deref;
 
 pub use fdt::NodeType as Node;
 
-use crate::probe::{acpi, fdt, pci, static_};
+use crate::probe::{acpi, fdt, pci, static_, usb};
 pub use crate::probe::{
     acpi::{AcpiInfo, ProbeAcpi},
     fdt::{FdtInfo, ProbeFdt},
     pci::{PciInfo, ProbePci},
+    usb::{
+        ProbeUsb, UsbClass, UsbClassId, UsbClassMatch, UsbDevice, UsbDeviceId, UsbDeviceKey,
+        UsbInfo, UsbInterfaceInfo, UsbRemove,
+    },
 };
 
 #[repr(transparent)]
@@ -69,6 +73,12 @@ pub enum ProbeKind {
     },
     Pci {
         on_probe: pci::FnOnProbe,
+    },
+    Usb {
+        ids: &'static [usb::UsbDeviceId],
+        classes: &'static [usb::UsbClassMatch],
+        on_probe: usb::FnOnProbe,
+        on_remove: Option<usb::FnOnRemove>,
     },
 }
 

@@ -178,6 +178,19 @@ pub fn probe_all(stop_if_fail: bool) -> Result<(), ProbeError> {
     Ok(())
 }
 
+/// Synchronize the complete USB device set for one USB host.
+///
+/// New matching devices are probed and previously probed bindings for this host
+/// that no longer appear in `devices` are removed.
+pub fn sync_usb_devices_for_host(
+    host: DeviceId,
+    devices: &[probe::usb::UsbDevice],
+    stop_if_fail: bool,
+) -> Result<(), ProbeError> {
+    let unregistered = edit(|manager| manager.unregistered())?;
+    probe::usb::sync_host_with(host, &unregistered, devices, stop_if_fail)
+}
+
 pub fn get_list<T: DriverGeneric>() -> Vec<Device<T>> {
     read(|manager| manager.dev_container.devices())
 }

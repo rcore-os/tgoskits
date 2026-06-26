@@ -42,6 +42,10 @@ impl DeviceContainer {
             .insert(descriptor.device_id, DeviceOwner::new(descriptor, device));
     }
 
+    pub fn remove(&mut self, id: DeviceId) -> bool {
+        self.devices.remove(&id).is_some()
+    }
+
     pub fn get_typed<T: DriverGeneric>(&self, id: DeviceId) -> Result<Device<T>, GetDeviceError> {
         let dev = self.devices.get(&id).ok_or(GetDeviceError::NotFound)?;
 
@@ -122,6 +126,18 @@ mod tests {
         container.insert(Descriptor::new(), DeviceTest);
         let devices = container.devices::<Empty>();
         assert_eq!(devices.len(), 2);
+    }
+
+    #[test]
+    fn test_remove_device() {
+        let mut container = DeviceContainer::default();
+        let desc = Descriptor::new();
+        let id = desc.device_id;
+        container.insert(desc, Empty);
+
+        assert!(container.remove(id));
+        assert!(container.get_typed::<Empty>(id).is_err());
+        assert!(!container.remove(id));
     }
 
     #[test]

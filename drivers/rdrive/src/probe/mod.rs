@@ -10,6 +10,7 @@ pub mod acpi;
 pub mod fdt;
 pub mod pci;
 pub mod static_;
+pub mod usb;
 
 #[derive(thiserror::Error, Debug)]
 pub enum ProbeError {

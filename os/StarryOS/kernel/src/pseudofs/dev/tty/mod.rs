@@ -27,6 +27,7 @@ use self::terminal::{
     ldisc::{LineDiscipline, ProcessMode, TtyConfig, TtyRead, TtyWrite, write_output_bytes},
     termios::{Termios, Termios2},
 };
+pub(crate) use self::usb_serial::register_usb_serial_probe;
 pub use self::{
     ptm::Ptmx,
     pts::PtsDir,
@@ -34,7 +35,7 @@ pub use self::{
     serial::{
         SerialTtyDriver, arm_console_irq, bind_console_to, console_device, serial_tty_entries,
     },
-    usb_serial::{UsbSerialTtyDriver, usb_serial_tty},
+    usb_serial::{UsbSerialTtyDriver, usb_serial_tty, usb_serial_tty_count},
 };
 use crate::{
     pseudofs::DeviceOps,

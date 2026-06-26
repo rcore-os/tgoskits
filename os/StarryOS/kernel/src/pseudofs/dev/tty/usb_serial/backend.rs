@@ -1,7 +1,35 @@
 use ax_errno::{AxError, AxResult};
-use usb_serial::{ControlTransfer, UsbSerialChip, UsbSerialPort, probe_supported_port};
+use rdrive::{
+    DriverGeneric, PlatformDevice,
+    probe::{
+        OnProbeError,
+        usb::{ProbeUsb, UsbDeviceId, UsbInfo, UsbRemove},
+    },
+    register::{DriverRegister, ProbeKind, ProbeLevel, ProbePriority},
+};
+use spin::Once;
+use usb_serial::{ControlTransfer, UsbSerialChip, UsbSerialPort, cp210x, probe_supported_port};
 
-use crate::pseudofs::usbfs::{self, UsbDeviceHandle, UsbDeviceSnapshotInfo};
+use crate::pseudofs::usbfs::UsbDeviceHandle;
+
+const CP210X_IDS: &[UsbDeviceId] = &[UsbDeviceId {
+    vendor_id: cp210x::VENDOR_ID,
+    product_id: cp210x::PRODUCT_ID_EA60,
+}];
+
+static USB_SERIAL_REGISTER_ONCE: Once<()> = Once::new();
+
+static USB_SERIAL_REGISTER: DriverRegister = DriverRegister {
+    name: "USB serial tty",
+    level: ProbeLevel::PostKernel,
+    priority: ProbePriority::DEFAULT,
+    probe_kinds: &[ProbeKind::Usb {
+        ids: CP210X_IDS,
+        classes: &[],
+        on_probe: probe_usb_serial,
+        on_remove: Some(remove_usb_serial),
+    }],
+};
 
 #[derive(Clone, Copy)]
 pub(super) struct UsbSerialPortInfo {
@@ -12,10 +40,10 @@ pub(super) struct UsbSerialPortInfo {
 }
 
 impl UsbSerialPortInfo {
-    fn new(snapshot: &UsbDeviceSnapshotInfo, chip: UsbSerialChip, port: UsbSerialPort) -> Self {
+    fn new(info: UsbInfo<'_>, chip: UsbSerialChip, port: UsbSerialPort) -> Self {
         Self {
-            bus_num: snapshot.bus_num,
-            device_num: snapshot.device_num,
+            bus_num: info.bus_num(),
+            device_num: info.device_num(),
             chip,
             port,
         }
@@ -46,6 +74,12 @@ impl UsbSerialPortInfo {
     }
 }
 
+impl DriverGeneric for UsbSerialPortInfo {
+    fn name(&self) -> &str {
+        self.name()
+    }
+}
+
 struct StarryControl<'a>(&'a UsbDeviceHandle);
 
 impl ControlTransfer for StarryControl<'_> {
@@ -64,16 +98,27 @@ impl ControlTransfer for StarryControl<'_> {
     }
 }
 
+pub(super) fn register_usb_serial_probe() {
+    USB_SERIAL_REGISTER_ONCE.call_once(|| {
+        rdrive::register_add(USB_SERIAL_REGISTER.clone());
+    });
+}
+
+fn probe_usb_serial(probe: ProbeUsb<'_>) -> Result<(), OnProbeError> {
+    let info = probe.info();
+    let matched = probe_supported_port(info.descriptor_blob()).ok_or(OnProbeError::NotMatch)?;
+    let platform: PlatformDevice = probe.into_platform_device();
+    platform.register(UsbSerialPortInfo::new(info, matched.chip, matched.port));
+    Ok(())
+}
+
+fn remove_usb_serial(remove: UsbRemove) {
+    super::usb_serial_device_removed(remove.bus_num(), remove.device_num());
+}
+
 pub(super) fn find_usb_serial_port(index: usize) -> Option<UsbSerialPortInfo> {
-    usbfs::usb_device_snapshots()
+    rdrive::get_list::<UsbSerialPortInfo>()
         .into_iter()
-        .filter_map(|snapshot| {
-            let matched = probe_supported_port(&snapshot.descriptor_blob)?;
-            Some(UsbSerialPortInfo::new(
-                &snapshot,
-                matched.chip,
-                matched.port,
-            ))
-        })
+        .filter_map(|device| device.lock().ok().map(|guard| *guard))
         .nth(index)
 }

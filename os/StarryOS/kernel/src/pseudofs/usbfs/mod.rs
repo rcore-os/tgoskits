@@ -49,6 +49,7 @@ pub(crate) fn new_usbfs() -> LinuxResult<Option<Filesystem>> {
     }
 
     info!("usbfs: initializing manager");
+    crate::pseudofs::dev::tty::register_usb_serial_probe();
     let (hosts, irq_slots) = manager::discover_hosts();
     if hosts.is_empty() {
         info!("usbfs: no USB host found, skip mounting usbfs");
@@ -90,13 +91,6 @@ pub(crate) fn new_bus_usb_sysfs() -> Filesystem {
     sysfs::new_bus_usb_sysfs()
 }
 
-#[derive(Clone)]
-pub(crate) struct UsbDeviceSnapshotInfo {
-    pub(crate) bus_num: u8,
-    pub(crate) device_num: u8,
-    pub(crate) descriptor_blob: Vec<u8>,
-}
-
 pub(crate) struct UsbDeviceHandle {
     lease: manager::UsbDeviceLease,
 }
@@ -131,25 +125,10 @@ impl UsbDeviceHandle {
     }
 }
 
-pub(crate) fn usb_device_snapshots() -> Vec<UsbDeviceSnapshotInfo> {
-    let Some(manager) = manager() else {
-        return Vec::new();
-    };
-
-    let mut snapshots = Vec::new();
-    for bus_num in manager.bus_numbers() {
-        for device_num in manager.device_numbers(bus_num) {
-            let Some(snapshot) = manager.device_snapshot(bus_num, device_num) else {
-                continue;
-            };
-            snapshots.push(UsbDeviceSnapshotInfo {
-                bus_num,
-                device_num,
-                descriptor_blob: snapshot.descriptor_blob,
-            });
-        }
+fn sync_known_usb_devices(host: rdrive::DeviceId, devices: &[rdrive::probe::usb::UsbDevice]) {
+    if let Err(err) = rdrive::sync_usb_devices_for_host(host, devices, false) {
+        warn!("usbfs: USB driver probe failed: {err}");
     }
-    snapshots
 }
 
 pub(crate) fn acquire_usb_device(bus_num: u8, device_num: u8) -> AxResult<UsbDeviceHandle> {
