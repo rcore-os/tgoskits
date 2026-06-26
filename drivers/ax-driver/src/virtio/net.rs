@@ -3,6 +3,7 @@ extern crate alloc;
 use alloc::{boxed::Box, collections::BTreeMap, format, sync::Arc};
 use core::{
     cell::UnsafeCell,
+    hint::spin_loop,
     sync::atomic::{AtomicBool, Ordering},
 };
 
@@ -116,7 +117,7 @@ impl<T: VirtIoTransport> rd_net::Interface for VirtIoNetDevice<T> {
 
 struct VirtioNetInnerCell<T: VirtIoTransport> {
     inner: UnsafeCell<NetInner<T>>,
-    task_active: AtomicBool,
+    access_active: AtomicBool,
 }
 
 unsafe impl<T: VirtIoTransport> Send for VirtioNetInnerCell<T> {}
@@ -126,42 +127,49 @@ impl<T: VirtIoTransport> VirtioNetInnerCell<T> {
     fn new(inner: NetInner<T>) -> Self {
         Self {
             inner: UnsafeCell::new(inner),
-            task_active: AtomicBool::new(false),
+            access_active: AtomicBool::new(false),
         }
     }
 
     fn with_task<R>(&self, f: impl FnOnce(&mut NetInner<T>) -> R) -> R {
         let _guard = NoPreemptIrqSave::new();
-        let _active = TaskAccessFlag::enter(&self.task_active);
-        // SAFETY: task-side callers enter with local IRQ/preemption disabled,
-        // and upper rd-net users serialize queue/device calls with SpinNoIrq.
+        let _active = VirtioNetAccessGuard::enter_task(&self.access_active);
+        // SAFETY: `access_active` serializes all mutable access to the shared
+        // raw transport. Task-side callers also keep local IRQ/preemption off.
         f(unsafe { &mut *self.inner.get() })
     }
 
     fn with_irq<R>(&self, f: impl FnOnce(&mut NetInner<T>) -> R) -> R {
-        debug_assert!(
-            !self.task_active.load(Ordering::Acquire),
-            "virtio-net IRQ access interrupted task access"
-        );
-        // SAFETY: IRQ-side access never waits on a task lock. The task side
-        // excludes local IRQ reentry while it mutates the shared raw queues.
+        let _active = VirtioNetAccessGuard::enter_irq(&self.access_active);
+        // SAFETY: `access_active` serializes IRQ-side access with task-side
+        // queue operations while preserving interrupt acknowledgment.
         f(unsafe { &mut *self.inner.get() })
     }
 }
 
-struct TaskAccessFlag<'a>(&'a AtomicBool);
+struct VirtioNetAccessGuard<'a>(&'a AtomicBool);
 
-impl<'a> TaskAccessFlag<'a> {
+impl<'a> VirtioNetAccessGuard<'a> {
+    fn enter_task(active: &'a AtomicBool) -> Self {
+        Self::enter(active)
+    }
+
+    fn enter_irq(active: &'a AtomicBool) -> Self {
+        Self::enter(active)
+    }
+
     fn enter(active: &'a AtomicBool) -> Self {
-        debug_assert!(
-            !active.swap(true, Ordering::AcqRel),
-            "virtio-net inner task access is already active"
-        );
+        while active
+            .compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed)
+            .is_err()
+        {
+            spin_loop();
+        }
         Self(active)
     }
 }
 
-impl Drop for TaskAccessFlag<'_> {
+impl Drop for VirtioNetAccessGuard<'_> {
     fn drop(&mut self) {
         self.0.store(false, Ordering::Release);
     }
@@ -353,5 +361,43 @@ fn map_net_error(err: VirtIoError) -> NetError {
         other => NetError::Other(Box::new(rd_net::KError::Unknown(virtio::map_virtio_error(
             other,
         )))),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    extern crate std;
+
+    use core::sync::atomic::{AtomicBool, Ordering};
+    use std::{
+        sync::{Arc, mpsc},
+        thread,
+        time::Duration,
+    };
+
+    use super::VirtioNetAccessGuard;
+
+    #[test]
+    fn irq_access_waits_for_task_access_to_finish() {
+        let active = Arc::new(AtomicBool::new(false));
+        let irq_entered = Arc::new(AtomicBool::new(false));
+        let (started_tx, started_rx) = mpsc::channel();
+        let task_guard = VirtioNetAccessGuard::enter_task(&active);
+
+        let irq_active = Arc::clone(&active);
+        let irq_entered_clone = Arc::clone(&irq_entered);
+        let irq_thread = thread::spawn(move || {
+            started_tx.send(()).unwrap();
+            let _irq_guard = VirtioNetAccessGuard::enter_irq(&irq_active);
+            irq_entered_clone.store(true, Ordering::Release);
+        });
+
+        started_rx.recv().unwrap();
+        thread::sleep(Duration::from_millis(20));
+        assert!(!irq_entered.load(Ordering::Acquire));
+
+        drop(task_guard);
+        irq_thread.join().unwrap();
+        assert!(irq_entered.load(Ordering::Acquire));
     }
 }
