@@ -2,7 +2,7 @@ use core::arch::naked_asm;
 
 // use super::entry::kernel_entry;
 use crate::{
-    arch::addrspace::KERNEL_LOAD_ADDRESS,
+    arch::addrspace::{EFI_IMAGE_BASE, KERNEL_LOAD_ADDRESS},
     efi_stub::{efi_pe_entry, pe::*},
 };
 
@@ -48,7 +48,7 @@ pub unsafe extern "C" fn _head() {
         ".long _stext - _head",         // BaseOfCode
 
         // Extra header fields
-        ".quad {phys_link_kaddr}",      // ImageBase
+        ".quad {efi_image_base}",       // ImageBase
         ".long PAGE_SIZE",              // SectionAlignment (PECOFF_SEGMENT_ALIGN)
         ".long PECOFF_FILE_ALIGN",      // FileAlignment (PECOFF_FILE_ALIGN)
         ".short 0",                     // MajorOperatingSystemVersion
@@ -110,6 +110,7 @@ pub unsafe extern "C" fn _head() {
         dos_signature = const IMAGE_DOS_SIGNATURE,
         linux_pe_magic = const LINUX_PE_MAGIC,
         phys_link_kaddr = const KERNEL_LOAD_ADDRESS,
+        efi_image_base = const EFI_IMAGE_BASE,
         efi_pe_entry = sym efi_pe_entry,
         image_nt_signature = const IMAGE_NT_SIGNATURE,
         file_machine = const IMAGE_FILE_MACHINE_LOONGARCH64,

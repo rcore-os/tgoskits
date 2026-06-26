@@ -28,6 +28,7 @@ fn main() {
         out_dir,
         kernel_vaddr: 0x200000,
         kernel_paddr: 0x200000,
+        efi_image_base: 0,
         uspace,
         hv,
         page_size: 4096,
@@ -74,6 +75,7 @@ struct Build {
     out_dir: PathBuf,
     kernel_vaddr: u64,
     kernel_paddr: u64,
+    efi_image_base: u64,
     uspace: bool,
     hv: bool,
     page_size: usize,
@@ -115,7 +117,10 @@ impl Build {
     }
 
     fn prepare_loongarch64(&mut self) {
-        self.kernel_paddr = 0x8000_0000;
+        if let Some(kernel_paddr) = env_u64("SOMEBOOT_LOONGARCH64_KERNEL_LOAD_PADDR") {
+            self.kernel_paddr = kernel_paddr;
+            self.efi_image_base = kernel_paddr;
+        }
         self.kernel_vaddr = 0xffff_ffff_8000_0000;
 
         println!("cargo:rustc-cfg=efi");
@@ -157,11 +162,14 @@ impl Build {
     fn gen_defines(&self) {
         let kernel_load_vaddr = self.kernel_vaddr as usize;
         let kernel_load_paddr = self.kernel_paddr as usize;
+        let efi_image_base = self.efi_image_base as usize;
         let defines = quote::quote! {
             #[allow(dead_code)]
             pub const VM_LOAD_ADDRESS: usize = #kernel_load_vaddr;
             #[allow(dead_code)]
             pub const KERNEL_LOAD_ADDRESS: usize = #kernel_load_paddr;
+            #[allow(dead_code)]
+            pub const EFI_IMAGE_BASE: usize = #efi_image_base;
         };
         let syntax_tree = syn::parse2(defines).unwrap();
         let formatted = prettyplease::unparse(&syntax_tree);
