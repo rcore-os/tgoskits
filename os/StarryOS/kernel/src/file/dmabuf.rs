@@ -8,7 +8,7 @@
 //! fd is closed first; it is freed only when both the fd and every mmap drop.
 
 use alloc::{borrow::Cow, sync::Arc};
-use core::{alloc::Layout, any::Any};
+use core::{alloc::Layout, any::Any, ffi::c_int};
 
 use ax_dma::DMAInfo;
 use ax_errno::{AxError, AxResult};
@@ -72,6 +72,56 @@ impl DmaBufFile {
     pub fn phys_base(&self) -> usize {
         self.alloc.dma.bus_addr.as_u64() as usize
     }
+
+    /// Size of the allocation in bytes (page-rounded up from the request).
+    pub fn size(&self) -> usize {
+        self.alloc.size
+    }
+}
+
+/// A physically-contiguous, device-reachable DMA buffer that the accelerator
+/// dev-nodes (JPU / RGA / NPU) can share by fd for zero-copy. The RK3588 engines
+/// run IOMMU-bypassed, so the physical base is exactly what they program into
+/// their address registers.
+pub trait ContiguousDmaBuf {
+    /// Device-reachable physical/bus base address.
+    fn dma_phys_base(&self) -> usize;
+    /// Allocation length in bytes.
+    fn dma_size(&self) -> usize;
+    /// Kernel CPU virtual base, if the buffer is CPU-mapped (the coherent heap is).
+    fn dma_cpu_base(&self) -> Option<usize>;
+    /// A type-erased owner whose lifetime keeps the pages alive; an importer
+    /// stores it so the buffer cannot be freed while another engine references it.
+    fn dma_retainer(&self) -> Arc<dyn Any + Send + Sync>;
+}
+
+impl ContiguousDmaBuf for DmaBufFile {
+    fn dma_phys_base(&self) -> usize {
+        self.phys_base()
+    }
+
+    fn dma_size(&self) -> usize {
+        self.size()
+    }
+
+    fn dma_cpu_base(&self) -> Option<usize> {
+        Some(self.alloc.dma.cpu_addr.as_ptr() as usize)
+    }
+
+    fn dma_retainer(&self) -> Arc<dyn Any + Send + Sync> {
+        self.alloc.clone()
+    }
+}
+
+/// Resolve a userspace dma-buf fd to its backing contiguous allocation. Returns
+/// `None` if the fd is not one of our shareable contiguous buffers (e.g. a
+/// socket, pipe, or regular file) — callers reject with `EINVAL`.
+///
+/// This is the single seam every accelerator node uses to turn an fd into a
+/// physical address, so JPU / RGA / NPU all resolve shared buffers identically.
+pub fn resolve_contiguous_dmabuf(fd: c_int) -> Option<Arc<DmaBufFile>> {
+    let file = super::get_file_like(fd).ok()?;
+    file.downcast_arc::<DmaBufFile>().ok()
 }
 
 impl Pollable for DmaBufFile {

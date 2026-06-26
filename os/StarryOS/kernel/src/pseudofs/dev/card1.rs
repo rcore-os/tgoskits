@@ -12,15 +12,18 @@ use ax_driver::rknpu::{
     self, GemCachePolicy, RknpuAction, RknpuMemCreate, RknpuMemMap, RknpuMemSync, RknpuSubmit,
 };
 use ax_errno::{AxError, AxResult};
-use ax_memory_addr::PhysAddrRange;
-use ax_runtime::hal::{cpu::asm::user_copy, mem::virt_to_phys, time::monotonic_time_nanos};
+use ax_memory_addr::{PhysAddr, PhysAddrRange};
+use ax_runtime::hal::{cpu::asm::user_copy, time::monotonic_time_nanos};
 use axfs_ng_vfs::{DeviceId, NodeFlags, VfsError, VfsResult};
 use axpoll::{IoEvents, Pollable};
 use linux_raw_sys::general::O_CLOEXEC;
 
 use super::drm::{DrmUnique, DrmVersion};
 use crate::{
-    file::FileLike,
+    file::{
+        FileLike,
+        dmabuf::{ContiguousDmaBuf, resolve_contiguous_dmabuf},
+    },
     pseudofs::{
         DeviceOps,
         dev::drm::{io_size, ioctl_nr, is_driver_ioctl},
@@ -52,6 +55,8 @@ const DRM_IOCTL_GET_UNIQUE_NR: u32 = 1;
 const DRM_IOCTL_GEM_FLINK_NR: u32 = 10;
 /// DRM ioctl prime handle to fd command number
 const DRM_IOCTL_PRIME_HANDLE_TO_FD_NR: u32 = 0x2d;
+/// DRM ioctl prime fd to handle command number (import an external dma-buf)
+const DRM_IOCTL_PRIME_FD_TO_HANDLE_NR: u32 = 0x2e;
 const RKNPU_ACTION_LOG_LIMIT: usize = 16;
 const RKNPU_MEM_CREATE_LOG_LIMIT: usize = 16;
 const RKNPU_MEM_SYNC_LOG_LIMIT: usize = 32;
@@ -192,6 +197,9 @@ impl DeviceOps for Card1 {
                 DRM_IOCTL_PRIME_HANDLE_TO_FD_NR => {
                     drm_prime_handle_to_fd_ioctl(&mut stack_data)?;
                 }
+                DRM_IOCTL_PRIME_FD_TO_HANDLE_NR => {
+                    drm_prime_fd_to_handle_ioctl(&mut stack_data)?;
+                }
 
                 _ => {
                     panic!("card1: unsupported ioctl nr {nr:#x}");
@@ -286,7 +294,12 @@ fn exported_gem_buffer(handle: u32) -> AxResult<ExportedGemBuffer> {
     let info = rknpu::buffer_info(handle)
         .map_err(map_rknpu_err)
         .map_err(|_| AxError::NotFound)?;
-    let paddr = virt_to_phys(info.obj_addr.into());
+    // The NPU runs IOMMU-bypassed, so the GEM buffer's `dma_addr` is its physical
+    // base. Use it directly instead of `virt_to_phys(obj_addr)` so imported
+    // buffers (whose CPU va is not necessarily in the linear map) map correctly;
+    // for owned coherent buffers `dma_addr == phys(obj_addr)`, so this is
+    // equivalent.
+    let paddr = PhysAddr::from(info.dma_addr as usize);
     Ok(ExportedGemBuffer::new(
         PhysAddrRange::from_start_size(paddr, info.size),
         info.cache_policy,
@@ -639,6 +652,32 @@ fn drm_prime_handle_to_fd_ioctl(data: &mut [u8]) -> VfsResult<usize> {
             warn!("drm_prime_handle_to_fd_ioctl: failed to allocate fd: {err}");
             VfsError::NoMemory
         })?;
+    Ok(0)
+}
+
+/// Handles DRM prime fd to handle ioctl: imports an external dma-buf fd (e.g. a
+/// `/dev/dma_heap` buffer that a vendor lib decoded into) as a GEM handle, so the
+/// NPU can read it zero-copy. The buffer's allocation is retained for the
+/// handle's lifetime, so closing the source fd does not free it (UAF-safe).
+fn drm_prime_fd_to_handle_ioctl(data: &mut [u8]) -> VfsResult<usize> {
+    let req = unsafe { &mut *(data.as_mut_ptr() as *mut DrmPrimeHande) };
+    info!("drm_prime_fd_to_handle_ioctl {req:#x?}");
+
+    let buf = resolve_contiguous_dmabuf(req.fd).ok_or_else(|| {
+        warn!(
+            "drm_prime_fd_to_handle_ioctl: fd {} is not a contiguous dma-buf",
+            req.fd
+        );
+        VfsError::InvalidInput
+    })?;
+    let dma_addr = buf.dma_phys_base() as u64;
+    let obj_addr = buf.dma_cpu_base().ok_or(VfsError::InvalidInput)?;
+    let size = buf.dma_size();
+    let retainer = buf.dma_retainer();
+
+    // flags = 0 -> NonCacheable mmap, correct for the coherent dma-heap buffer.
+    let handle = rknpu::mem_import(dma_addr, obj_addr, size, 0, retainer).map_err(map_rknpu_err)?;
+    req.handle = handle;
     Ok(0)
 }
 

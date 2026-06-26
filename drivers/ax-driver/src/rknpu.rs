@@ -1,4 +1,5 @@
-use alloc::vec::Vec;
+use alloc::{sync::Arc, vec::Vec};
+use core::any::Any;
 
 use log::info;
 use rdrive::{probe::OnProbeError, register::ProbeFdt};
@@ -94,6 +95,20 @@ pub fn submit(args: &mut RknpuSubmit) -> Result<(), Error> {
 
 pub fn mem_create(args: &mut RknpuMemCreate) -> Result<(), Error> {
     with_npu(|npu| npu.create(args).map_err(|_| Error::InvalidData))
+}
+
+/// Import an externally-owned, physically-contiguous buffer (resolved from a
+/// dma-buf fd) into the GEM pool, returning a handle the rest of the NPU ABI
+/// (`MemMap`/`mmap`/submit) resolves like any other. `retainer` keeps the
+/// exporter's allocation alive for the handle's lifetime.
+pub fn mem_import(
+    dma_addr: u64,
+    obj_addr: usize,
+    size: usize,
+    flags: u32,
+    retainer: Arc<dyn Any + Send + Sync>,
+) -> Result<u32, Error> {
+    with_npu(|npu| Ok(npu.import(dma_addr, obj_addr, size, flags, retainer)))
 }
 
 pub fn mem_sync(args: &mut RknpuMemSync) -> Result<(), Error> {

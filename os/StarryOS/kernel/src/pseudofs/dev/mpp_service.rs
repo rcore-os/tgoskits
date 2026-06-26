@@ -19,10 +19,7 @@ use ax_runtime::hal::cpu::asm::user_copy;
 use ax_sync::Mutex;
 use axfs_ng_vfs::{DeviceId, VfsError, VfsResult};
 
-use crate::{
-    file::{dmabuf::DmaBufFile, get_file_like},
-    pseudofs::DeviceOps,
-};
+use crate::{file::dmabuf::resolve_contiguous_dmabuf, pseudofs::DeviceOps};
 
 fn copy_from_user(dst: *mut u8, src: *const u8, size: usize) -> VfsResult<()> {
     if unsafe { user_copy(dst, src, size) } != 0 {
@@ -212,8 +209,7 @@ fn run_decode(state: &mut TaskState) -> VfsResult<()> {
 /// physical base of its contiguous buffer. MPP allocates these from our
 /// `/dev/dma_heap` ([`DmaBufFile`]).
 fn resolve_fd(fd: u32) -> Option<u32> {
-    let file = get_file_like(fd as c_int).ok()?;
-    let buf = file.downcast_arc::<DmaBufFile>().ok()?;
+    let buf = resolve_contiguous_dmabuf(fd as c_int)?;
     // The decoder is 32-bit (device_with_mask(u32::MAX)); reject buffers above
     // 4 GiB rather than silently truncating the address.
     u32::try_from(buf.phys_base()).ok()

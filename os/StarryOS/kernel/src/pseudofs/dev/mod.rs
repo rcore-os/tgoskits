@@ -3,9 +3,9 @@
 mod card0;
 #[cfg(feature = "rknpu")]
 mod card1;
-#[cfg(all(feature = "rknpu", not(feature = "jpeg")))]
-mod dma_heap;
-#[cfg(feature = "jpeg")]
+// The real contiguous coherent dma-heap is shared by every accelerator that
+// exchanges buffers (JPU / NPU; RGA when its node lands).
+#[cfg(any(feature = "jpeg", feature = "rknpu"))]
 mod dmaheap;
 mod drm;
 #[cfg(feature = "input")]
@@ -442,10 +442,9 @@ fn builder(fs: Arc<SimpleFs>) -> DirMaker {
         }
     }
 
-    // /dev/mpp_service — Rockchip MPP-compatible JPEG decoder node, plus the
-    // /dev/dma_heap contiguous allocator MPP allocates its buffers from.
-    // Registered unconditionally under `jpeg`; the node itself reports an error
-    // if the hardware was not probed.
+    // /dev/mpp_service — Rockchip MPP-compatible JPEG decoder node. Registered
+    // unconditionally under `jpeg`; the node itself reports an error if the
+    // hardware was not probed.
     #[cfg(feature = "jpeg")]
     {
         root.add(
@@ -457,7 +456,14 @@ fn builder(fs: Arc<SimpleFs>) -> DirMaker {
                 Arc::new(mpp_service::MppService::new()),
             ),
         );
+    }
 
+    // /dev/dma_heap — the real contiguous, DMA-coherent allocator that the
+    // accelerators share buffers from (zero-copy across JPU / NPU / RGA). Every
+    // heap name maps to the same allocator. Available under any accelerator
+    // feature, not just `jpeg`.
+    #[cfg(any(feature = "jpeg", feature = "rknpu"))]
+    {
         let mut dma_heap_dir = DirMapping::new();
         for name in dmaheap::HEAP_NAMES {
             dma_heap_dir.add(
@@ -516,28 +522,9 @@ fn builder(fs: Arc<SimpleFs>) -> DirMaker {
 
     #[cfg(feature = "rknpu")]
     {
-        // DMA heap (rknpu stub). When the `jpeg` feature is on, a real
-        // contiguous dma-heap is registered instead (see below), so skip the
-        // stub to avoid a duplicate `/dev/dma_heap`.
-        #[cfg(not(feature = "jpeg"))]
-        {
-            let mut dma_heap_dir = DirMapping::new();
-            dma_heap_dir.add(
-                "system",
-                Device::new(
-                    fs.clone(),
-                    NodeType::CharacterDevice,
-                    dma_heap::DMA_HEAP_SYSTEM_DEVICE_ID,
-                    Arc::new(dma_heap::DmaHeapSystem::new()),
-                ),
-            );
-            root.add(
-                "dma_heap",
-                SimpleDir::new_maker(fs.clone(), Arc::new(dma_heap_dir)),
-            );
-        }
-
-        // RockChip-specific NPU companion card (DRM card1).
+        // RockChip-specific NPU companion card (DRM card1). The contiguous
+        // `/dev/dma_heap` it allocates from is registered above under the shared
+        // accelerator gate.
         dri_dir.add(
             "card1",
             Device::new(
