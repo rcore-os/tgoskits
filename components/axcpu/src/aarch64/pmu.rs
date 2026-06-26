@@ -49,6 +49,15 @@ fn write_pmcr_el0(value: u64) {
     }
 }
 
+/// Writes `PMUSERENR_EL0` (user-mode enable register), which gates EL0 access to
+/// the PMU registers.
+#[inline]
+fn write_pmuserenr_el0(value: u64) {
+    unsafe {
+        asm!("msr PMUSERENR_EL0, {}", in(reg) value);
+    }
+}
+
 /// Returns the raw `ID_AA64DFR0_EL1.PMUVer` field (bits `[11:8]`).
 #[inline]
 fn pmu_version() -> u64 {
@@ -95,6 +104,16 @@ pub fn init_cpu() {
     // PMCR_EL0.P (bit 1, W1): reset all programmable event counters to 0.
     let pmcr = read_pmcr_el0();
     write_pmcr_el0(pmcr | (1 << 0) | (1 << 1));
+
+    // Allow EL0 to read the counters directly, for `rdpmc`-style self-monitoring
+    // (a process reads its event via `mrs PMEVCNTRn_EL0` / `PMCCNTR_EL0` using
+    // the `perf_event_mmap_page` it mapped, with no syscall):
+    //   PMUSERENR_EL0.ER (bit 3) = EL0 read of the event counters + `PMSELR_EL0`,
+    //   PMUSERENR_EL0.CR (bit 2) = EL0 read of the cycle counter `PMCCNTR_EL0`.
+    // EN (bit 0, full unprivileged access) and SW (software increment) are left
+    // clear — read access only. Matches the unrestricted `perf_event_paranoid`
+    // (`-1`) this kernel advertises in `/proc/sys/kernel`.
+    write_pmuserenr_el0((1 << 3) | (1 << 2));
 }
 
 /// Reads the raw `MIDR_EL1` (main ID register).

@@ -55,13 +55,17 @@
 //! ## Scope / deferrals
 //!
 //! Single-core M2 scope: no counter multiplexing (so `time_running ==
-//! time_enabled`), no cross-core migration. Sampling is fixed-period only
-//! (`-c <period>`); frequency mode (`-F`, `sample_freq`) is deferred.
-//! `attr.inherit` (following `fork`/`clone` children) is likewise deferred: the
-//! counter follows the single attached task only.
+//! time_enabled`), no cross-core migration. Sampling supports both fixed-period
+//! (`-c <period>`) and frequency mode (`-F`, `sample_freq`); in frequency mode
+//! the overflow handler adapts the period per slice toward the target rate.
+//! `attr.inherit` (following `fork`/`clone` children) is deferred: the counter
+//! follows the single attached task only.
 
 use alloc::sync::Arc;
-use core::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use core::{
+    any::Any,
+    sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
+};
 
 use ax_alloc::GlobalPage;
 use ax_kspin::SpinNoIrq;
@@ -143,10 +147,20 @@ pub struct PerTaskCounter {
     /// the overflow-IRQ path each slice instead of plain counting.
     is_sampling: bool,
     /// Sampling period (events between overflows); `0` for counting events. The
-    /// counter is `preload`ed to overflow after this many events each slice.
+    /// counter is `preload`ed to overflow after this many events each slice. In
+    /// frequency mode this is the per-slice initial estimate the handler adapts.
     sample_period: u32,
     /// `attr.sample_type`. For sampling this is exactly `PERF_SAMPLE_IP`.
     sample_type: u64,
+    /// Frequency mode (`attr.freq`): the overflow handler re-derives the period
+    /// after each sample to converge on `freq_target` Hz. Fixed period when false.
+    freq: bool,
+    /// Target sample rate (Hz) for frequency mode; `0` in fixed-period mode.
+    freq_target: u32,
+    /// Unique event id emitted in `PERF_SAMPLE_ID` / `IDENTIFIER` records (set
+    /// once via [`set_sample_id`](Self::set_sample_id) from the `PerfEvent`
+    /// wrapper, before any scheduler hook runs); `0` until then.
+    sample_id: AtomicU64,
 
     /// Kernel virtual address of the ring's first page (`perf_event_mmap_page`),
     /// or `0` until `mmap(perf_fd)` runs ([`set_ring`](Self::set_ring)). Read by
@@ -168,6 +182,14 @@ pub struct PerTaskCounter {
     /// [`SampleSlot`]'s raw pointers). Behind a [`SpinNoIrq`] so the hot-path
     /// hooks (which only read the atomics above) never block on it.
     anchors: SpinNoIrq<Option<SamplingAnchors>>,
+
+    /// `PERF_EVENT_IOC_SET_OUTPUT` redirect anchor: when this event's samples are
+    /// redirected into *another* event's ring, this pins that ring's pages while
+    /// we may write into them. `ring_vaddr`/`ring_len` then point at the target
+    /// ring and `notify_ptr` stays `0` (the target's poller re-checks
+    /// `data_head`; the overflow handler guards the null notify). Set by
+    /// [`set_redirect_ring`](Self::set_redirect_ring) instead of [`set_ring`](Self::set_ring).
+    redirect_anchor: SpinNoIrq<Option<Arc<dyn Any + Send + Sync>>>,
 }
 
 /// Strong references that keep a per-task sampling event's ring + notify alive,
@@ -180,8 +202,9 @@ pub struct PerTaskCounter {
 struct SamplingAnchors {
     /// The contiguous ring pages. Holding this `Arc` keeps the kernel mapping
     /// (`ring_vaddr`/`ring_len`) live; it drops only in [`free_hw`], after the
-    /// slot is unregistered.
-    _ring_pages: Arc<GlobalPage>,
+    /// slot is unregistered. Also handed out (cloned) by
+    /// [`PerTaskCounter::output_ring`] so a redirecting event can pin it.
+    ring_pages: Arc<GlobalPage>,
     /// IRQ-safe notification the overflow handler pokes; drained by the worker.
     /// Holding this `Arc` keeps `notify_ptr` valid for the registered slot.
     notify: Arc<IrqNotify>,
@@ -221,10 +244,16 @@ pub struct PerTaskConfig {
     pub enabled: bool,
     /// `attr.enable_on_exec`.
     pub enable_on_exec: bool,
-    /// Sampling period (`> 0` ⇒ sampling event); `0` ⇒ counting event.
+    /// Sampling period (`> 0` ⇒ sampling event); `0` ⇒ counting event. In
+    /// frequency mode this is the initial estimate the overflow handler adapts.
     pub sample_period: u32,
     /// `attr.sample_type` (only meaningful when `sample_period > 0`).
     pub sample_type: u64,
+    /// Frequency mode (`attr.freq`): the overflow handler adapts the period each
+    /// slice toward `target_freq` Hz. Fixed `-c` period when false.
+    pub freq: bool,
+    /// Target sample rate (Hz) for frequency mode; `0` in fixed-period mode.
+    pub target_freq: u32,
 }
 
 impl PerTaskCounter {
@@ -253,16 +282,26 @@ impl PerTaskCounter {
             is_sampling: cfg.sample_period > 0,
             sample_period: cfg.sample_period,
             sample_type: cfg.sample_type,
+            freq: cfg.freq,
+            freq_target: cfg.target_freq,
+            sample_id: AtomicU64::new(0),
             ring_vaddr: AtomicUsize::new(0),
             ring_len: AtomicUsize::new(0),
             notify_ptr: AtomicUsize::new(0),
             anchors: SpinNoIrq::new(None),
+            redirect_anchor: SpinNoIrq::new(None),
         }
     }
 
     /// `attr.read_format` for serializing `read(perf_fd)`.
     pub fn read_format(&self) -> u64 {
         self.read_format
+    }
+
+    /// Record the unique event id for `PERF_SAMPLE_ID` / `IDENTIFIER`. Called
+    /// once at open (before the scheduler hooks run), so a relaxed store suffices.
+    pub fn set_sample_id(&self, id: u64) {
+        self.sample_id.store(id, Ordering::Relaxed);
     }
 
     /// Mark userspace-enabled (`ioctl(ENABLE)` / open-enabled). The target's next
@@ -315,7 +354,7 @@ impl PerTaskCounter {
         let notify_ptr = Arc::as_ptr(&notify) as usize;
         // Install the strong anchors first; the atomics below gate the hot path.
         *self.anchors.lock() = Some(SamplingAnchors {
-            _ring_pages: ring_pages,
+            ring_pages,
             notify,
             poll_ready,
             poll_alive,
@@ -333,6 +372,43 @@ impl PerTaskCounter {
     /// fd's `device_mmap` (to reject a second mapping).
     pub fn ring_mapped(&self) -> bool {
         self.ring_vaddr.load(Ordering::Acquire) != 0
+    }
+
+    /// Expose this counter's mmap ring for a `PERF_EVENT_IOC_SET_OUTPUT` redirect
+    /// (target side). Returns `(ring_vaddr, ring_len, pages)` with a strong clone
+    /// of the ring `Arc` so the redirecting event pins the pages. `None` until the
+    /// ring is mmap'd. Only an *owned* ring is shared, not a redirected one.
+    pub fn output_ring(&self) -> Option<(usize, usize, Arc<dyn Any + Send + Sync>)> {
+        let vaddr = self.ring_vaddr.load(Ordering::Acquire);
+        if vaddr == 0 {
+            return None;
+        }
+        let len = self.ring_len.load(Ordering::Acquire);
+        let guard = self.anchors.lock();
+        let anchors = guard.as_ref()?;
+        let pages: Arc<dyn Any + Send + Sync> = anchors.ring_pages.clone();
+        Some((vaddr, len, pages))
+    }
+
+    /// Point this counter's samples at *another* event's ring
+    /// (`PERF_EVENT_IOC_SET_OUTPUT`, source side).
+    ///
+    /// Pins the target ring via `anchor`, then publishes its geometry so
+    /// [`perf_sched_in`] arms this counter to write `PERF_RECORD_SAMPLE`s into it.
+    /// `notify_ptr` is left `0`: a redirected source has no poll worker of its own
+    /// (the target's poller observes the advancing `data_head`), and the overflow
+    /// handler skips a null notify. Publishing `ring_vaddr` last makes the
+    /// non-zero value the readiness signal `perf_sched_in` keys on.
+    pub fn set_redirect_ring(
+        &self,
+        ring_vaddr: usize,
+        ring_len: usize,
+        anchor: Arc<dyn Any + Send + Sync>,
+    ) {
+        *self.redirect_anchor.lock() = Some(anchor);
+        self.notify_ptr.store(0, Ordering::Release);
+        self.ring_len.store(ring_len, Ordering::Release);
+        self.ring_vaddr.store(ring_vaddr, Ordering::Release);
     }
 
     /// Readiness for `poll(perf_fd)`: `true` when the ring has unread bytes.
@@ -452,8 +528,13 @@ pub fn perf_sched_in(thr: &Thread) {
                     ring_len: ptc.ring_len.load(Ordering::Acquire),
                     period: ptc.sample_period,
                     sample_type: ptc.sample_type,
-                    id: 0,
+                    id: ptc.sample_id.load(Ordering::Relaxed),
                     notify: ptc.notify_ptr.load(Ordering::Acquire) as *const (),
+                    // Frequency mode adapts the period within each slice; the slot
+                    // starts at the initial estimate with no prior timestamp.
+                    freq: ptc.freq,
+                    target_freq: ptc.freq_target,
+                    last_time: 0,
                 },
             );
             // Arm the per-counter overflow interrupt, then start counting.
@@ -607,6 +688,10 @@ pub fn free_hw(ptc: &PerTaskCounter) {
             anchors.poll_alive.store(false, Ordering::Release);
             anchors.notify.notify();
         }
+        // Drop a SET_OUTPUT redirect anchor too, if this event was redirected
+        // into another's ring (its own `anchors` is then `None`). Safe after the
+        // slot is unregistered: the handler can no longer reach the target ring.
+        *ptc.redirect_anchor.lock() = None;
         // Zero the published geometry so no later hook can re-arm a stale ring.
         ptc.ring_vaddr.store(0, Ordering::Release);
         ptc.notify_ptr.store(0, Ordering::Release);

@@ -61,6 +61,49 @@ const PMU_IRQ: usize = 23;
 /// [`ax_cpu::pmu::overflow`]); the registry is sized one past this for indexing.
 const MAX_COUNTER: usize = 30;
 
+/// Minimum sampling period for frequency mode. Floors the adaptive control loop
+/// so a rare event cannot drive the period to 0 (which would re-arm the counter
+/// to overflow only after a full `2^32` wrap, i.e. effectively never). `1`
+/// matches Linux's lower bound — a counter preloaded to overflow after a single
+/// event.
+const MIN_FREQ_PERIOD: u32 = 1;
+/// Maximum sampling period: the programmable counter is 32-bit, so the preload
+/// `(0u32).wrapping_sub(period)` requires `period <= u32::MAX`.
+const MAX_SAMPLE_PERIOD: u32 = u32::MAX;
+/// Upper bound on a frequency-mode target rate (Hz). Mirrors the advertised
+/// `/proc/sys/kernel/perf_event_max_sample_rate`; a wild `sample_freq` is clamped
+/// here rather than rejected so `perf` still records.
+pub const MAX_TARGET_FREQ: u32 = 100_000;
+
+/// Initial period estimate for a frequency-mode event targeting `freq` Hz.
+///
+/// Assumes a ~1 GHz event rate as the starting point (so e.g. `-F 4000` starts
+/// at `250_000`); [`pmu_overflow_handler`] adapts from here within a few samples.
+/// Clamped so a degenerate `freq` cannot produce a 0 period.
+pub fn initial_period_for_freq(freq: u32) -> u32 {
+    (1_000_000_000u64 / freq.max(1) as u64).clamp(MIN_FREQ_PERIOD as u64, MAX_SAMPLE_PERIOD as u64)
+        as u32
+}
+
+/// Next adaptive period after a frequency-mode sample (Linux `perf_adjust_period`).
+///
+/// `cur` events elapsed over `delta_ns` ns produced exactly one sample; to hit
+/// `target_freq` samples/sec the ideal period is `cur * 1e9 / (delta_ns *
+/// target_freq)`. The move toward that ideal is damped by 1/8 to avoid
+/// oscillation, then clamped to a valid 32-bit period. All integer math (IRQ
+/// context): the `u128` intermediate cannot overflow for `cur,delta_ns <= u64`.
+fn next_freq_period(cur: u32, target_freq: u32, delta_ns: u64) -> u32 {
+    if delta_ns == 0 || target_freq == 0 {
+        return cur;
+    }
+    let ideal = (cur as u128 * 1_000_000_000u128) / (delta_ns as u128 * target_freq as u128);
+    let ideal = ideal.clamp(MIN_FREQ_PERIOD as u128, MAX_SAMPLE_PERIOD as u128) as i64;
+    // Damp by 1/8 toward the ideal (the `+7` biases the truncating divide so a
+    // small positive gap still nudges the period up; it converges either way).
+    let delta = (ideal - cur as i64 + 7) / 8;
+    (cur as i64 + delta).clamp(MIN_FREQ_PERIOD as i64, MAX_SAMPLE_PERIOD as i64) as u32
+}
+
 /// `PERF_RECORD_SAMPLE` discriminant (`perf_event_type::PERF_RECORD_SAMPLE`).
 const PERF_RECORD_SAMPLE: u32 = 9;
 /// `PERF_RECORD_MISC_KERNEL`: the sample landed in kernel (EL1) context.
@@ -138,6 +181,16 @@ pub struct SampleSlot {
     /// Kept alive by the event's strong `Arc<IrqNotify>` for as long as the slot
     /// is registered (see module docs).
     pub notify: *const (),
+    /// Frequency mode (`attr.freq`): after each sample re-derive [`period`](Self::period)
+    /// to converge on [`target_freq`](Self::target_freq) samples/sec. Fixed
+    /// `-c` period when false.
+    pub freq: bool,
+    /// Target sample rate in Hz for frequency mode; `0` in fixed-period mode.
+    pub target_freq: u32,
+    /// Monotonic ns of the previous sample, for the frequency-mode delta. `0`
+    /// before the first sample, when the period is left at its initial estimate.
+    /// Mutated in place by the handler as the period adapts.
+    pub last_time: u64,
 }
 
 // SAFETY: `SampleSlot` is a plain bag of integers plus a raw pointer. The
@@ -273,14 +326,24 @@ pub unsafe fn pmu_overflow_handler(_ctx: IrqContext, _data: NonNull<()>) -> IrqR
 
         // SAFETY: we run on the core that took the IRQ with local IRQs masked,
         // so this CPU's `REGISTRY` is not being mutated concurrently (register /
-        // unregister disable local IRQs).
-        let slot = unsafe { REGISTRY.current_ref_mut_raw() }[n];
-        let Some(slot) = slot else {
+        // unregister disable local IRQs). Take a mutable borrow so frequency
+        // mode can write the adapted period/`last_time` back into the slot.
+        let registry = unsafe { REGISTRY.current_ref_mut_raw() };
+        let Some(slot) = registry[n].as_mut() else {
             // Overflow on a counter with no sampling slot (e.g. a counting-only
             // event that happened to wrap with its IRQ somehow set): just clear
             // it below. Do not re-arm — counting events manage their own value.
             continue;
         };
+
+        // Snapshot the fields the record + re-arm need (copied out so the slot
+        // can be mutated below without aliasing the borrow).
+        let sample_type = slot.sample_type;
+        let id = slot.id;
+        let notify_ptr = slot.notify;
+        let ring_vaddr = slot.ring_vaddr;
+        let ring_len = slot.ring_len;
+        let cur_period = slot.period;
 
         // Build one PERF_RECORD_SAMPLE honouring the event's `sample_type`
         // (validated at open to set IP and only supported bits). pid/tid are
@@ -297,26 +360,51 @@ pub unsafe fn pmu_overflow_handler(_ctx: IrqContext, _data: NonNull<()>) -> IrqR
             tid,
             time,
             addr: 0,
-            id: slot.id,
+            id,
             stream_id: 0,
             cpu,
-            period: slot.period as u64,
+            period: cur_period as u64,
         };
-        let len = build_sample(&mut record, slot.sample_type, misc, &data);
+        let len = build_sample(&mut record, sample_type, misc, &data);
 
         // SAFETY: `ring_vaddr`/`ring_len` describe live, kernel-mapped pages for
         // as long as the slot is registered (the event pins them, and teardown
         // unregisters before freeing). `ring_write` only touches that region.
-        unsafe { ring_write(slot.ring_vaddr, slot.ring_len, &record[..len]) };
+        unsafe { ring_write(ring_vaddr, ring_len, &record[..len]) };
+
+        // Frequency mode: adapt the period toward the target rate and persist it
+        // (plus the sample timestamp) in the slot for the next interval. Fixed
+        // mode re-arms with the unchanged period.
+        let next_period = if slot.freq {
+            let np = if slot.last_time != 0 {
+                next_freq_period(
+                    cur_period,
+                    slot.target_freq,
+                    time.saturating_sub(slot.last_time),
+                )
+            } else {
+                cur_period
+            };
+            slot.period = np;
+            slot.last_time = time;
+            np
+        } else {
+            cur_period
+        };
 
         // Re-arm the counter for the next sample.
-        ax_cpu::pmu::counter::preload(n, slot.period);
+        ax_cpu::pmu::counter::preload(n, next_period);
 
-        // Wake the deferred worker so it can deliver POLLIN. The pointer is
-        // valid: the event holds the backing `Arc<IrqNotify>` while registered.
-        // SAFETY: see the module-level `notify` soundness note.
-        let notify = unsafe { &*(slot.notify as *const IrqNotify) };
-        notify.notify_irq();
+        // Wake the deferred worker so it can deliver POLLIN. A redirected event
+        // (`PERF_EVENT_IOC_SET_OUTPUT` into another event's ring) writes into the
+        // leader's ring but has no notify of its own — its `notify` is null, and
+        // the leader's own poller re-checks `data_head` on its next poll. The
+        // pointer, when non-null, is valid: the owning event holds the backing
+        // `Arc<IrqNotify>` while registered (see the module-level soundness note).
+        if !notify_ptr.is_null() {
+            let notify = unsafe { &*(notify_ptr as *const IrqNotify) };
+            notify.notify_irq();
+        }
     }
 
     // Clear exactly the overflow bits we serviced.

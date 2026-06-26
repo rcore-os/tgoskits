@@ -134,6 +134,41 @@ pub trait PerfEventOps: Pollable + Send + Sync + Debug {
     fn reset(&mut self) -> AxResult<()> {
         Err(AxError::Unsupported)
     }
+
+    /// Record the unique event id this event emits in its `PERF_SAMPLE_ID` /
+    /// `PERF_SAMPLE_IDENTIFIER` sample fields. Called once by [`PerfEvent::new`]
+    /// with the same id `PERF_EVENT_IOC_ID` reports, so a reader can demultiplex
+    /// the events sharing one ring (`perf record -e a,b`). Default no-op: the
+    /// tracing variants emit no hardware samples.
+    fn set_sample_id(&mut self, _id: u64) {}
+
+    /// Expose this event's mmap ring so another event can redirect its records
+    /// into it (`PERF_EVENT_IOC_SET_OUTPUT`, target side).
+    ///
+    /// Returns `(ring_vaddr, ring_len, anchor)` where `anchor` is a strong
+    /// reference pinning the ring's backing pages for as long as the redirecting
+    /// event holds it. Only a mapped hardware-PMU sampling event
+    /// ([`hw::HwPerfEvent`]) returns `Some`; everything else has no ring to share.
+    fn output_ring(&self) -> Option<(usize, usize, Arc<dyn Any + Send + Sync>)> {
+        None
+    }
+
+    /// Redirect this event's `PERF_RECORD_SAMPLE` output into `ring_vaddr` /
+    /// `ring_len` (another event's ring, from its [`output_ring`](Self::output_ring)),
+    /// pinning it via `anchor` (`PERF_EVENT_IOC_SET_OUTPUT`, source side).
+    ///
+    /// The default accepts as a no-op: events that produce no ring records (the
+    /// `PERF_COUNT_SW_DUMMY` tracking event `perf record` redirects, the tracing
+    /// variants) need no actual redirect. Only [`hw::HwPerfEvent`] sampling events
+    /// override this to make their overflow handler write into the shared ring.
+    fn redirect_output(
+        &mut self,
+        _ring_vaddr: usize,
+        _ring_len: usize,
+        _anchor: Arc<dyn Any + Send + Sync>,
+    ) -> AxResult<()> {
+        Ok(())
+    }
 }
 
 /// `read_format` bit selecting `time_enabled` in `read(perf_fd)`.
@@ -178,11 +213,14 @@ impl Debug for PerfEvent {
 }
 
 impl PerfEvent {
-    /// Wrap a per-type perf event impl, assigning it a fresh unique id.
-    pub fn new(event: Box<dyn PerfEventOps>) -> Self {
+    /// Wrap a per-type perf event impl, assigning it a fresh unique id and
+    /// threading that id into the inner event so its samples carry it.
+    pub fn new(mut event: Box<dyn PerfEventOps>) -> Self {
+        let id = NEXT_PERF_EVENT_ID.fetch_add(1, Ordering::Relaxed);
+        event.set_sample_id(id);
         PerfEvent {
             event: SpinNoPreempt::new(event),
-            id: NEXT_PERF_EVENT_ID.fetch_add(1, Ordering::Relaxed),
+            id,
         }
     }
 
@@ -191,15 +229,15 @@ impl PerfEvent {
         self.event.lock()
     }
 
-    /// Handle `PERF_EVENT_IOC_SET_OUTPUT`: validate the redirect target and
-    /// accept it. `arg` is the leader event's fd, or `-1` to detach.
+    /// Handle `PERF_EVENT_IOC_SET_OUTPUT`: redirect this event's records into the
+    /// ring owned by the perf event whose fd is `arg` (or detach when `arg == -1`).
     ///
-    /// The only events `perf record` redirects with `SET_OUTPUT` in this kernel
-    /// are its `PERF_COUNT_SW_DUMMY` tracking events, which never write ring
-    /// records, so the sample-producing leader keeps filling the single mmap
-    /// ring perf reads. We therefore validate that the target is a perf event
-    /// and accept; we do not yet physically merge two *record-producing* events
-    /// into one ring (that would only matter for `perf record -e a,b`).
+    /// `perf record` opens its events on one CPU/task and points all but the
+    /// leader at the leader's single mmap ring with this ioctl. The redirect is a
+    /// real merge: a hardware sampling source ([`hw::HwPerfEvent`]) starts writing
+    /// its overflow `PERF_RECORD_SAMPLE`s into the target's ring (so `perf record
+    /// -e a,b` captures both events). Sources that produce no ring records (the
+    /// `PERF_COUNT_SW_DUMMY` tracking event, tracing variants) accept as a no-op.
     fn set_output(&self, arg: usize) -> AxResult<usize> {
         // `arg == -1` detaches the output (Linux semantics); nothing to wire.
         if arg as i32 == -1 {
@@ -208,8 +246,18 @@ impl PerfEvent {
         // The target must be an open perf-event fd, else EINVAL (Linux behaviour
         // for a non-perf or bad output fd).
         let target = get_file_like(arg as i32)?;
-        if target.into_any_arc().downcast::<PerfEvent>().is_err() {
-            return Err(AxError::InvalidInput);
+        let target = target
+            .into_any_arc()
+            .downcast::<PerfEvent>()
+            .map_err(|_| AxError::InvalidInput)?;
+        // Pull the target's ring (a mapped HW sampling event) and point this
+        // event's output at it. If the target has no ring (e.g. it is itself a
+        // non-mmap'd or non-sampling event), there is nothing to merge into; the
+        // source keeps its own ring — `redirect_output` is then never called.
+        if let Some((ring_vaddr, ring_len, anchor)) = target.event.lock().output_ring() {
+            self.event
+                .lock()
+                .redirect_output(ring_vaddr, ring_len, anchor)?;
         }
         Ok(0)
     }

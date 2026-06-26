@@ -212,8 +212,14 @@ impl RingState {
 /// `Arc`) drops.
 #[cfg(target_arch = "aarch64")]
 struct SamplingState {
-    /// Sampling period (events between overflows). Always `> 0`.
+    /// Sampling period (events between overflows). Always `> 0`. In frequency
+    /// mode this is the initial estimate; the overflow handler adapts it.
     period: u32,
+    /// Frequency mode (`attr.freq`): the handler re-derives the period after each
+    /// sample to converge on `target_freq` Hz. Fixed `-c` period when false.
+    freq: bool,
+    /// Target sample rate (Hz) for frequency mode; `0` in fixed-period mode.
+    target_freq: u32,
     /// `attr.sample_type`. M2 requires exactly `PERF_SAMPLE_IP`.
     sample_type: u64,
     /// Readiness set readers wait on; woken (with `IoEvents::IN`) by the worker.
@@ -224,6 +230,12 @@ struct SamplingState {
     poll_alive: Arc<AtomicBool>,
     /// The ring buffer pages, `Some` after the first `mmap(perf_fd)`.
     ring: Option<RingState>,
+    /// `PERF_EVENT_IOC_SET_OUTPUT` redirect: when `Some((vaddr, len, anchor))`,
+    /// this event's overflow handler writes into *another* event's ring
+    /// (`vaddr`/`len`) instead of `ring`, so `perf record -e a,b` lands both
+    /// events in one mmap buffer. `anchor` pins the target ring's pages for as
+    /// long as this event may write into them.
+    redirect: Option<(usize, usize, Arc<dyn Any + Send + Sync>)>,
 }
 
 #[cfg(target_arch = "aarch64")]
@@ -317,6 +329,11 @@ fn alloc_sampling_ring(len: usize) -> AxResult<(Arc<GlobalPage>, usize, PhysAddr
 pub struct HwPerfEvent {
     /// The physical counter backing this event.
     counter: Counter,
+    /// Unique event id emitted in `PERF_SAMPLE_ID` / `PERF_SAMPLE_IDENTIFIER`
+    /// records (the same id `PERF_EVENT_IOC_ID` reports), so a reader can tell
+    /// apart events sharing one ring. Set by [`set_sample_id`](PerfEventOps::set_sample_id);
+    /// `0` until then.
+    sample_id: u64,
     /// `attr.read_format`, controlling which fields `read(perf_fd)` emits.
     read_format: u64,
     /// Monotonic ns timestamp of the last `enable`, or `None` while disabled.
@@ -377,6 +394,53 @@ impl HwPerfEvent {
             ax_cpu::pmu::counter::disable(n);
             sampling::unregister(n);
         }
+    }
+
+    /// `device_mmap` for a counting event: the single-page `perf_event_mmap_page`
+    /// userspace maps for `rdpmc` self-monitoring.
+    ///
+    /// No ring buffer — the page only carries the metadata a userspace reader
+    /// needs to read this event's hardware counter directly: `cap_user_rdpmc`,
+    /// the 1-based `index` selecting the counter, and its `pmc_width`. `offset`
+    /// stays 0: with no multiplexing the raw counter value *is* the count, so
+    /// `count = rdpmc(index - 1)` masked to `pmc_width` bits. The page is never
+    /// updated after this, so `lock` stays 0 (the userspace seqlock reads once).
+    /// EL0 read access to the counters is enabled globally in
+    /// [`ax_cpu::pmu::init_cpu`] via `PMUSERENR_EL0`.
+    fn device_mmap_rdpmc(&self, len: usize) -> AxResult<(PhysAddr, Arc<dyn Any + Send + Sync>)> {
+        if len < ax_memory_addr::PAGE_SIZE_4K {
+            return Err(AxError::InvalidInput);
+        }
+        let mut pages = GlobalPage::alloc_contiguous(1, ax_memory_addr::PAGE_SIZE_4K)?;
+        pages.zero();
+        let kvirt = pages.start_vaddr();
+        let paddr = virt_to_phys(kvirt);
+
+        // Encode which hardware counter backs this event. The mmap-page `index`
+        // is 1-based (0 ⇒ rdpmc unusable); `index - 1` is the ARM counter the
+        // reader accesses — `PMEVCNTR(index-1)_EL0`, or `PMCCNTR_EL0` for the
+        // dedicated cycle counter (ARM index 31 ⇒ page index 32).
+        let (index, pmc_width): (u32, u16) = match self.counter {
+            Counter::Cycle => (32, 64),
+            Counter::Programmable(n) => (n as u32 + 1, 32),
+        };
+
+        let header = kvirt.as_usize() as *mut perf_event_mmap_page;
+        // SAFETY: freshly allocated, zeroed page, `>= size_of::<perf_event_mmap_page>()`
+        // (≥ 1 page = 4096 B); no reader sees it until the VMA maps it.
+        unsafe {
+            core::ptr::addr_of_mut!((*header).version).write(1);
+            core::ptr::addr_of_mut!((*header).compat_version).write(0);
+            core::ptr::addr_of_mut!((*header).index).write(index);
+            core::ptr::addr_of_mut!((*header).offset).write(0);
+            core::ptr::addr_of_mut!((*header).pmc_width).write(pmc_width);
+            // `capabilities` is a union over a bitfield; `cap_user_rdpmc` is bit 2
+            // (after `cap_bit0` and `cap_bit0_is_deprecated`). Write the `u64` arm.
+            core::ptr::addr_of_mut!((*header).__bindgen_anon_1.capabilities).write(1u64 << 2);
+        }
+
+        let anchor: Arc<dyn Any + Send + Sync> = Arc::new(pages);
+        Ok((paddr, anchor))
     }
 }
 
@@ -510,13 +574,19 @@ impl PerfEventOps for HwPerfEvent {
             };
             let period = sampling.period;
             let sample_type = sampling.sample_type;
-            // Capture the ring (if mmap'd) and the notify pointer for the slot.
-            let ring = sampling.ring.as_ref();
-            let (ring_vaddr, ring_len) = match ring {
-                Some(r) => (r.ring_vaddr, r.ring_len),
-                // No ring yet (enable before mmap): nothing for the handler to
-                // write into. Use a zero slot so a stray overflow is a no-op.
-                None => (0, 0),
+            let freq = sampling.freq;
+            let target_freq = sampling.target_freq;
+            // Pick the ring this event writes into: a SET_OUTPUT redirect target
+            // (another event's ring) takes precedence; otherwise this event's own
+            // mmap'd ring; otherwise a zero slot (enable-before-mmap is a no-op
+            // until a mapping appears).
+            let (ring_vaddr, ring_len) = if let Some((rv, rl, _anchor)) = &sampling.redirect {
+                (*rv, *rl)
+            } else {
+                match sampling.ring.as_ref() {
+                    Some(r) => (r.ring_vaddr, r.ring_len),
+                    None => (0, 0),
+                }
             };
             let notify_ptr = Arc::as_ptr(&sampling.notify) as *const ();
 
@@ -533,8 +603,11 @@ impl PerfEventOps for HwPerfEvent {
                     ring_len,
                     period,
                     sample_type,
-                    id: 0,
+                    id: self.sample_id,
                     notify: notify_ptr,
+                    freq,
+                    target_freq,
+                    last_time: 0,
                 },
             );
             // 4. Arm the per-counter overflow interrupt, then start counting.
@@ -622,6 +695,49 @@ impl PerfEventOps for HwPerfEvent {
         self
     }
 
+    fn set_sample_id(&mut self, id: u64) {
+        self.sample_id = id;
+        // Per-task: mirror onto the shared counter the scheduler hook reads.
+        if let Some(ptc) = &self.per_task {
+            ptc.set_sample_id(id);
+        }
+    }
+
+    fn output_ring(&self) -> Option<(usize, usize, Arc<dyn Any + Send + Sync>)> {
+        // Per-task: the ring lives on the shared `PerTaskCounter`.
+        if let Some(ptc) = &self.per_task {
+            return ptc.output_ring();
+        }
+        // System-wide sampling: hand out the mapped ring, upgrading the `Weak` to
+        // a strong `Arc` so the redirecting event pins the pages even if this
+        // event is later closed/munmap'd.
+        let ring = self.sampling.as_ref()?.ring.as_ref()?;
+        let pages = ring.pages.upgrade()?;
+        let anchor: Arc<dyn Any + Send + Sync> = pages;
+        Some((ring.ring_vaddr, ring.ring_len, anchor))
+    }
+
+    fn redirect_output(
+        &mut self,
+        ring_vaddr: usize,
+        ring_len: usize,
+        anchor: Arc<dyn Any + Send + Sync>,
+    ) -> AxResult<()> {
+        // Per-task sampling source: stash the redirect on the shared counter so
+        // the scheduler hook arms this counter to write into the target ring.
+        if let Some(ptc) = &self.per_task {
+            ptc.set_redirect_ring(ring_vaddr, ring_len, anchor);
+            return Ok(());
+        }
+        // System-wide sampling source: record the redirect; `enable` builds the
+        // `SampleSlot` against it. A non-sampling (counting) HW event produces no
+        // records, so redirecting it is a harmless no-op.
+        if let Some(sampling) = &mut self.sampling {
+            sampling.redirect = Some((ring_vaddr, ring_len, anchor));
+        }
+        Ok(())
+    }
+
     fn device_mmap(&mut self, len: usize) -> AxResult<(PhysAddr, Arc<dyn Any + Send + Sync>)> {
         // Per-task sampling: the ring + notify/poll machinery live on the shared
         // `PerTaskCounter` (the scheduler hook builds the IRQ slot from there).
@@ -630,10 +746,11 @@ impl PerfEventOps for HwPerfEvent {
             return device_mmap_per_task(ptc, len);
         }
 
-        // Only sampling events expose a ring buffer; counting events have
-        // nothing to map.
+        // A counting event has no ring; it exposes a single-page
+        // `perf_event_mmap_page` for `rdpmc` (userspace reads the counter
+        // directly via `mrs`). Only sampling events allocate a ring below.
         let Some(sampling) = &mut self.sampling else {
-            return Err(AxError::Unsupported);
+            return self.device_mmap_rdpmc(len);
         };
 
         // One live mapping per perf fd (Linux semantics). A stale `Weak` from an
@@ -707,6 +824,23 @@ fn device_mmap_per_task(
     Ok((paddr, anchor))
 }
 
+/// Resolve the `(period, target_freq)` a sampling event runs with, from the raw
+/// `sample_period`/`sample_freq` union value and the `attr.freq` flag.
+///
+/// Fixed mode (`!is_freq`): the raw value is the period (range-checked to fit 32
+/// bits by the caller); `target_freq` is `0`. Frequency mode (`is_freq`): the raw
+/// value is a target rate (Hz), clamped to [`sampling::MAX_TARGET_FREQ`]; the
+/// returned period is an initial estimate the overflow handler then adapts.
+#[cfg(target_arch = "aarch64")]
+fn resolve_sampling(raw: u64, is_freq: bool) -> (u32, u32) {
+    if is_freq {
+        let freq = raw.clamp(1, sampling::MAX_TARGET_FREQ as u64) as u32;
+        (sampling::initial_period_for_freq(freq), freq)
+    } else {
+        (raw.min(u32::MAX as u64) as u32, 0)
+    }
+}
+
 /// Open a hardware-PMU perf event from a user `perf_event_attr`.
 ///
 /// Supports `PERF_TYPE_HARDWARE` (cycles via the dedicated counter, every
@@ -738,20 +872,21 @@ pub fn perf_event_open_hw(attr: &perf_event_attr, pid: i32) -> AxResult<HwPerfEv
     let exclude_user = attr.exclude_user() != 0;
     let exclude_kernel = attr.exclude_kernel() != 0;
 
-    // `sample_period` shares a union with `sample_freq` (frequency mode). M2
-    // supports only fixed-period sampling, so read the period variant directly.
-    // A non-zero value selects the sampling (M2) path; zero is counting (M1).
+    // `sample_period` shares a union with `sample_freq`: `attr.freq` selects which
+    // arm is live. A non-zero value (period or freq) selects the sampling path;
+    // zero is counting. `resolve_sampling` turns either into the (initial period,
+    // target_freq) pair the backend uses.
     // SAFETY: `perf_event_attr` is a `repr(C)` POD copied bytewise from user
-    // space; both union arms are `u64`, so reading `sample_period` is sound.
-    let sample_period = unsafe { attr.__bindgen_anon_1.sample_period };
-    let is_sampling = sample_period > 0;
+    // space; both union arms are `u64`, so reading the field is sound.
+    let raw = unsafe { attr.__bindgen_anon_1.sample_period };
+    let is_freq = attr.freq() != 0;
+    let is_sampling = raw > 0;
 
     if is_sampling {
         // The IRQ handler (build_sample) emits the scalar sample_type fields perf
         // requests, so accept any combination of SUPPORTED bits — but IP must be
         // set (real perf always sets it for samples) and no unsupported bit
-        // (CALLCHAIN/RAW/READ/REGS/…) may be present. A period that does not fit a
-        // 32-bit programmable counter is also rejected (the preload is 32-bit).
+        // (CALLCHAIN/RAW/READ/REGS/…) may be present.
         if attr.sample_type & PERF_SAMPLE_IP == 0
             || attr.sample_type & !super::sampling::SUPPORTED_SAMPLE_TYPE != 0
         {
@@ -762,11 +897,14 @@ pub fn perf_event_open_hw(attr: &perf_event_attr, pid: i32) -> AxResult<HwPerfEv
             );
             return Err(AxError::Unsupported);
         }
-        if sample_period > u32::MAX as u64 {
-            warn!("perf_event_open: sample_period {sample_period} exceeds 32-bit counter");
+        // A fixed period must fit the 32-bit programmable counter (the preload is
+        // 32-bit). Frequency mode carries a (small) rate here, not a period.
+        if !is_freq && raw > u32::MAX as u64 {
+            warn!("perf_event_open: sample_period {raw} exceeds 32-bit counter");
             return Err(AxError::InvalidInput);
         }
     }
+    let (sample_period, target_freq) = resolve_sampling(raw, is_freq);
 
     // Select the ARM event and counter. Sampling events ALWAYS take a
     // programmable counter — even CPU_CYCLES maps to ARM event 0x11 — because
@@ -826,12 +964,15 @@ pub fn perf_event_open_hw(attr: &perf_event_attr, pid: i32) -> AxResult<HwPerfEv
         let poll_alive = Arc::new(AtomicBool::new(true));
         start_sampling_notify_worker(poll_ready.clone(), notify.clone(), poll_alive.clone());
         Some(SamplingState {
-            period: sample_period as u32,
+            period: sample_period,
+            freq: is_freq,
+            target_freq,
             sample_type: attr.sample_type,
             poll_ready,
             notify,
             poll_alive,
             ring: None,
+            redirect: None,
         })
     } else {
         None
@@ -839,6 +980,8 @@ pub fn perf_event_open_hw(attr: &perf_event_attr, pid: i32) -> AxResult<HwPerfEv
 
     Ok(HwPerfEvent {
         counter,
+        // Assigned by `set_sample_id` once the `PerfEvent` wrapper is built.
+        sample_id: 0,
         read_format: attr.read_format,
         // `disabled = 1`: do not enable; timing accumulators start empty.
         enabled_since: None,
@@ -878,11 +1021,14 @@ fn perf_event_open_hw_per_task(attr: &perf_event_attr, pid: i32) -> AxResult<HwP
     let exclude_user = attr.exclude_user() != 0;
     let exclude_kernel = attr.exclude_kernel() != 0;
 
-    // `sample_period` shares a union with `sample_freq`. Per-task sampling
-    // supports only fixed-period (`-c`); a non-zero value selects sampling.
+    // `sample_period` shares a union with `sample_freq`; `attr.freq` selects the
+    // arm. A non-zero value (period or rate) selects sampling. Frequency mode is
+    // supported: `resolve_sampling` yields the initial period + target rate, and
+    // the scheduler hook arms the adaptive overflow path per slice.
     // SAFETY: both union arms are `u64` in a `repr(C)` POD copied from user space.
-    let sample_period_u64 = unsafe { attr.__bindgen_anon_1.sample_period };
-    let is_sampling = sample_period_u64 > 0;
+    let raw = unsafe { attr.__bindgen_anon_1.sample_period };
+    let is_freq = attr.freq() != 0;
+    let is_sampling = raw > 0;
     if is_sampling {
         // Same sample_type rule as the system-wide path: IP must be set and only
         // SUPPORTED scalar bits may be present (build_sample emits them).
@@ -896,12 +1042,12 @@ fn perf_event_open_hw_per_task(attr: &perf_event_attr, pid: i32) -> AxResult<HwP
             );
             return Err(AxError::Unsupported);
         }
-        if sample_period_u64 > u32::MAX as u64 {
-            warn!("perf_event_open: per-task sample_period {sample_period_u64} exceeds 32-bit");
+        if !is_freq && raw > u32::MAX as u64 {
+            warn!("perf_event_open: per-task sample_period {raw} exceeds 32-bit");
             return Err(AxError::InvalidInput);
         }
     }
-    let sample_period = sample_period_u64 as u32;
+    let (sample_period, target_freq) = resolve_sampling(raw, is_freq);
 
     // Decode the ARM event. Per-task always uses a programmable counter, so even
     // CPU_CYCLES maps to ARM event 0x11 (never the dedicated cycle counter).
@@ -960,6 +1106,8 @@ fn perf_event_open_hw_per_task(attr: &perf_event_attr, pid: i32) -> AxResult<HwP
             // `0` ⇒ counting; `> 0` ⇒ per-task sampling.
             sample_period,
             sample_type: attr.sample_type,
+            freq: is_freq,
+            target_freq,
         },
     ));
     super::task::attach(thr, ptc.clone());
@@ -967,6 +1115,8 @@ fn perf_event_open_hw_per_task(attr: &perf_event_attr, pid: i32) -> AxResult<HwP
     Ok(HwPerfEvent {
         // Inert placeholders: the per-task path drives `ptc`, not these fields.
         counter: Counter::Programmable(n),
+        // Mirrors the wrapper id onto the ptc via `set_sample_id`; 0 until then.
+        sample_id: 0,
         read_format: attr.read_format,
         enabled_since: None,
         time_enabled: 0,
