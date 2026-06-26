@@ -75,6 +75,10 @@ impl IrqIf for IrqIfImpl {
         somehal::irq::send_ipi(id, target);
     }
 
+    fn ipi_irq() -> IrqId {
+        somehal::irq::ipi_irq()
+    }
+
     fn resolve_source(source: IrqSource) -> Result<IrqId, IrqError> {
         somehal::irq::resolve_irq_source(source)
     }
