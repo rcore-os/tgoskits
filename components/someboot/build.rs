@@ -117,9 +117,9 @@ impl Build {
     }
 
     fn prepare_loongarch64(&mut self) {
-        if let Some(kernel_paddr) = env_u64("SOMEBOOT_LOONGARCH64_KERNEL_LOAD_PADDR") {
-            self.kernel_paddr = kernel_paddr;
-            self.efi_image_base = kernel_paddr;
+        if self.hv {
+            self.kernel_paddr = 0x8000_0000;
+            self.efi_image_base = self.kernel_paddr;
         }
         self.kernel_vaddr = 0xffff_ffff_8000_0000;
 
