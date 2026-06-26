@@ -1,6 +1,7 @@
 use alloc::{boxed::Box, string::String};
 use core::ptr::NonNull;
 
+use irq_framework::IrqId;
 use rdif_display::{DisplayError as RdifDisplayError, Interface};
 
 use crate::{DisplayDevice, DisplayError, DisplayInfo, PixelFormat};
@@ -9,12 +10,20 @@ pub struct RdifDisplayDevice {
     name: String,
     device: Box<dyn Interface>,
     fb_base_vaddr: NonNull<u8>,
+    irq: Option<IrqId>,
 }
 
 unsafe impl Send for RdifDisplayDevice {}
 
 impl RdifDisplayDevice {
-    pub fn new(mut device: Box<dyn Interface>) -> Result<Self, DisplayError> {
+    pub fn new(device: Box<dyn Interface>) -> Result<Self, DisplayError> {
+        Self::new_with_irq(device, None)
+    }
+
+    pub fn new_with_irq(
+        mut device: Box<dyn Interface>,
+        irq: Option<IrqId>,
+    ) -> Result<Self, DisplayError> {
         let name = device.name().into();
         let fb_base_vaddr = {
             let mut framebuffer = device.framebuffer().map_err(map_display_error)?;
@@ -25,6 +34,7 @@ impl RdifDisplayDevice {
             name,
             device,
             fb_base_vaddr,
+            irq,
         })
     }
 
@@ -57,8 +67,8 @@ impl DisplayDevice for RdifDisplayDevice {
         Ok(())
     }
 
-    fn irq_num(&self) -> Option<usize> {
-        self.device.irq_num()
+    fn irq_id(&self) -> Option<IrqId> {
+        self.irq
     }
 
     fn enable_irq(&mut self) {
@@ -97,5 +107,58 @@ fn map_display_error(error: RdifDisplayError) -> DisplayError {
         RdifDisplayError::NotAvailable => DisplayError::NotAvailable,
         RdifDisplayError::InvalidFramebuffer => DisplayError::InvalidFramebuffer,
         RdifDisplayError::Other(_) => DisplayError::BadState,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use irq_framework::{HwIrq, IrqDomainId, IrqId};
+    use rdif_display::{DisplayInfo, DriverGeneric, FrameBuffer, PixelFormat};
+
+    use super::*;
+
+    struct TestDisplay {
+        fb: [u8; 16],
+    }
+
+    impl DriverGeneric for TestDisplay {
+        fn name(&self) -> &str {
+            "test-display"
+        }
+    }
+
+    impl Interface for TestDisplay {
+        fn info(&self) -> DisplayInfo {
+            DisplayInfo {
+                width: 2,
+                height: 2,
+                stride: 8,
+                format: PixelFormat::Xrgb8888,
+                fb_size: self.fb.len(),
+            }
+        }
+
+        fn framebuffer(&mut self) -> Result<FrameBuffer<'_>, rdif_display::DisplayError> {
+            Ok(FrameBuffer::from_slice(&mut self.fb))
+        }
+    }
+
+    #[test]
+    fn rdif_display_device_exposes_resolved_irq_id() {
+        let irq = IrqId::new(IrqDomainId(7), HwIrq(42));
+        let device =
+            RdifDisplayDevice::new_with_irq(Box::new(TestDisplay { fb: [0; 16] }), Some(irq))
+                .unwrap();
+        let erased = crate::ErasedDisplayDevice::new(device);
+
+        assert_eq!(erased.irq_id(), Some(irq));
+    }
+
+    #[test]
+    fn rdif_display_device_without_resolved_irq_has_no_irq_id() {
+        let device = RdifDisplayDevice::new(Box::new(TestDisplay { fb: [0; 16] })).unwrap();
+        let erased = crate::ErasedDisplayDevice::new(device);
+
+        assert_eq!(erased.irq_id(), None);
     }
 }

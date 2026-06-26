@@ -655,6 +655,7 @@ version = "0.5.21"
 dependencies = [
  "ax-lazyinit",
  "ax-sync",
+ "irq-framework",
  "log",
  "rdif-display",
 ]
@@ -695,6 +696,7 @@ dependencies = [
  "fdt-edit",
  "fxmac_rs",
  "heapless 0.9.3",
+ "irq-framework",
  "ixgbe-driver",
  "log",
  "mmio-api",
@@ -784,6 +786,7 @@ dependencies = [
  "chrono",
  "dma-api",
  "intrusive-collections",
+ "irq-framework",
  "log",
  "lru 0.16.4",
  "rdif-block",
@@ -824,6 +827,7 @@ version = "0.5.21"
 dependencies = [
  "ax-lazyinit",
  "ax-sync",
+ "irq-framework",
  "log",
  "rdif-input",
 ]
@@ -955,6 +959,7 @@ dependencies = [
  "enum_dispatch",
  "event-listener",
  "hashbrown 0.16.1",
+ "irq-framework",
  "log",
  "rd-net",
  "rdif-vsock",
@@ -1140,8 +1145,10 @@ dependencies = [
  "chrono",
  "dma-api",
  "indoc",
+ "irq-framework",
  "rd-net",
  "rdif-block",
+ "rdif-intc",
  "rdrive",
  "sdhci-cv1800",
  "spin",
@@ -1880,9 +1887,9 @@ checksum = "64fa3c856b712db6612c019f14756e64e4bcea13337a6b33b696333a9eaa2d06"
 
 [[package]]
 name = "byte-unit"
-version = "5.2.3"
+version = "5.2.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "37bcaa4a0975bed4a760af3efe4368825098ce5f9d37a30c5a021d635dc63d8f"
+checksum = "4a813de7f2bbedb7dce265b64f1cf5908ebe4d56281ece8d847e98113788b9b0"
 dependencies = [
  "rust_decimal",
  "schemars",
@@ -1946,9 +1953,9 @@ checksum = "8ae3f5d315924270530207e2a68396c3cc547f6dca3fbdca317cfb1a51edb593"
 
 [[package]]
 name = "camino"
-version = "1.2.3"
+version = "1.2.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b4ce8d3bd5823c7504d3f579f13e7b2f3da252fcb938c594d5680ee508bf846f"
+checksum = "5f2d30e4173c4026932d51d31d6b0613b1fd3014bf3f9f8943d4ba139c437ba0"
 dependencies = [
  "serde_core",
 ]
@@ -3927,9 +3934,9 @@ checksum = "df3b46402a9d5adb4c86a0cf463f42e19994e3ee891101b1841f30a545cb49a9"
 
 [[package]]
 name = "hybrid-array"
-version = "0.4.12"
+version = "0.4.13"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9155a582abd142abc056962c29e3ce5ff2ad5469f4246b537ed42c5deba857da"
+checksum = "818356c5132c1fede50f837ca96afbe78ff42413047f4abb886217845e1b6c8c"
 dependencies = [
  "typenum",
 ]
@@ -6384,6 +6391,7 @@ name = "rdif-intc"
 version = "0.14.3"
 dependencies = [
  "cfg-if",
+ "irq-framework",
  "rdif-base",
 ]
 
@@ -7598,6 +7606,7 @@ dependencies = [
  "anyhow",
  "arm-gic-driver",
  "ax-riscv-plic",
+ "irq-framework",
  "kernutil",
  "log",
  "loongArch64",

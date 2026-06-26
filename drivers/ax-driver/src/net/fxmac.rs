@@ -270,14 +270,22 @@ impl fxmac_rs::KernelFunc for FxmacKernelFunc {
             data: NonNull<()>,
         ) -> axklib::irq::IrqReturn {
             let handler = unsafe { *data.cast::<fn(usize)>().as_ref() };
-            handler(ctx.irq.0);
+            handler(ctx.irq.hwirq.0 as usize);
             axklib::irq::IrqReturn::Handled
         }
 
         let data = Box::leak(Box::new(handler));
         let data = NonNull::from(data).cast();
-        if let Err(err) = axklib::irq::request_shared(irq, raw_irq_handler, data) {
-            log::warn!("failed to request FXmac irq {irq}: {err:?}");
+        let Ok(irq_id) = fxmac_irq_id(irq) else {
+            log::warn!("failed to request FXmac irq {irq}: invalid IRQ number");
+            return;
+        };
+        if let Err(err) = axklib::irq::request_shared(irq_id, raw_irq_handler, data) {
+            log::warn!("failed to request FXmac irq {irq_id:?}: {err:?}");
         }
     }
+}
+
+fn fxmac_irq_id(raw: usize) -> Result<axklib::irq::IrqId, axklib::irq::IrqError> {
+    axklib::irq::try_legacy_irq(raw)
 }

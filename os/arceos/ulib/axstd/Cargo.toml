@@ -39,6 +39,7 @@ hv = ["ax-feat/hv"]
 # Interrupts
 irq = ["ax-api/irq", "ax-feat/irq", "ax-posix-api/irq"]
 ipi = ["ax-api/ipi", "ax-feat/ipi"]
+wake-ipi = ["ax-feat/wake-ipi"]
 
 # Custom or default platforms
 ext-ld = ["ax-feat/ext-ld"]
