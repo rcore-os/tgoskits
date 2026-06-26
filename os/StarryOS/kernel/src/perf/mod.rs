@@ -38,7 +38,7 @@ use crate::{
 };
 
 /// Behaviour every perf event implements. Each variant in the dispatcher
-/// (kprobe / tracepoint / software-bpf / uprobe) provides a
+/// (kprobe / tracepoint / software-bpf / uprobe / hardware-PMU) provides a
 /// `Box<dyn PerfEventOps>` that `PerfEvent` then drives through the file
 /// layer (`ioctl`, `mmap`, `read`, etc.).
 pub trait PerfEventOps: Pollable + Send + Sync + Debug {
@@ -69,12 +69,15 @@ pub trait PerfEventOps: Pollable + Send + Sync + Debug {
         Err(AxError::Unsupported)
     }
 
-    /// Read the current counter value (`read(perf_fd, &val, 8)`).
+    /// Read the current counter value plus timing, for `read(perf_fd)`.
     ///
     /// Only the hardware-PMU variant ([`hw::HwPerfEvent`]) overrides this;
     /// the tracing variants have no counter to read and keep the default,
-    /// so `read(perf_fd)` returns `Unsupported` for them.
-    fn read_count(&mut self) -> AxResult<u64> {
+    /// so `read(perf_fd)` returns `Unsupported` for them. The returned
+    /// [`PerfReadValues`] carries the raw counter value, the enabled/running
+    /// times, and the `read_format` that [`PerfEvent::read`] uses to decide
+    /// which of those fields to serialize.
+    fn read_values(&mut self) -> AxResult<PerfReadValues> {
         Err(AxError::Unsupported)
     }
 
@@ -85,6 +88,32 @@ pub trait PerfEventOps: Pollable + Send + Sync + Debug {
     fn reset(&mut self) -> AxResult<()> {
         Err(AxError::Unsupported)
     }
+}
+
+/// `read_format` bit selecting `time_enabled` in `read(perf_fd)`.
+const PERF_FORMAT_TOTAL_TIME_ENABLED: u64 = 1 << 0;
+/// `read_format` bit selecting `time_running` in `read(perf_fd)`.
+const PERF_FORMAT_TOTAL_TIME_RUNNING: u64 = 1 << 1;
+/// `read_format` bit selecting the per-event `id` in `read(perf_fd)`.
+const PERF_FORMAT_ID: u64 = 1 << 2;
+
+/// Counter snapshot returned by [`PerfEventOps::read_values`].
+///
+/// Mirrors the fields Linux's `read(perf_fd)` can emit, gated by
+/// `read_format`. M1 supports `value`, `time_enabled`, `time_running`, and
+/// `id`, but not `PERF_FORMAT_GROUP`.
+pub struct PerfReadValues {
+    /// The raw counter value.
+    pub value: u64,
+    /// Wall time the event has been enabled, in nanoseconds.
+    pub time_enabled: u64,
+    /// Wall time the event was scheduled onto hardware, in nanoseconds.
+    /// Equal to `time_enabled` in M1 (no multiplexing).
+    pub time_running: u64,
+    /// Per-event id (`PERF_FORMAT_ID`). M1 has no event groups, so 0.
+    pub id: u64,
+    /// `attr.read_format`, controlling which fields [`PerfEvent::read`] emits.
+    pub read_format: u64,
 }
 
 /// File-like handle returned by `perf_event_open(2)`. Locks a
@@ -125,17 +154,42 @@ impl Pollable for PerfEvent {
 
 impl FileLike for PerfEvent {
     fn read(&self, dst: &mut crate::file::IoDst) -> AxResult<usize> {
-        // M0: a hardware-PMU event reads as a single bare `u64` counter
-        // value (`read_format == 0`). The tracing variants keep the default
-        // `read_count` and propagate `Unsupported` here. We always write the
-        // counter in native byte order, matching Linux's `read(perf_fd)`.
-        let value = self.event.lock().read_count()?;
-        let bytes = value.to_ne_bytes();
-        if dst.remaining_mut() < bytes.len() {
+        // A hardware-PMU event reads as a sequence of native-endian `u64`s in
+        // Linux's strict `read_format` order: always `value`; then
+        // `time_enabled` if `PERF_FORMAT_TOTAL_TIME_ENABLED`; then
+        // `time_running` if `PERF_FORMAT_TOTAL_TIME_RUNNING`; then `id` if
+        // `PERF_FORMAT_ID`. `PERF_FORMAT_GROUP` is unsupported in M1. With
+        // `read_format == 0` this is exactly the 8-byte bare counter value
+        // (M0 behaviour). The tracing variants keep the default `read_values`
+        // and propagate `Unsupported` here.
+        let values = self.event.lock().read_values()?;
+
+        // Build the field sequence gated by `read_format`, in Linux order.
+        let mut fields = [0u64; 4];
+        let mut n = 0;
+        fields[n] = values.value;
+        n += 1;
+        if values.read_format & PERF_FORMAT_TOTAL_TIME_ENABLED != 0 {
+            fields[n] = values.time_enabled;
+            n += 1;
+        }
+        if values.read_format & PERF_FORMAT_TOTAL_TIME_RUNNING != 0 {
+            fields[n] = values.time_running;
+            n += 1;
+        }
+        if values.read_format & PERF_FORMAT_ID != 0 {
+            fields[n] = values.id;
+            n += 1;
+        }
+
+        let total = n * core::mem::size_of::<u64>();
+        if dst.remaining_mut() < total {
             return Err(AxError::InvalidInput);
         }
-        dst.write(&bytes)?;
-        Ok(bytes.len())
+        for value in &fields[..n] {
+            dst.write(&value.to_ne_bytes())?;
+        }
+        Ok(total)
     }
 
     fn write(&self, _src: &mut crate::file::IoSrc) -> AxResult<usize> {
@@ -198,7 +252,7 @@ impl FileLike for PerfEvent {
 
 /// `perf_event_open(2)` syscall entry. Copies the user `perf_event_attr` in
 /// and trampolines into [`perf_event_open`], which holds the dispatcher
-/// across kprobe / tracepoint / software / uprobe types.
+/// across kprobe / tracepoint / software / uprobe / hardware types.
 pub fn sys_perf_event_open(
     attr_uptr: usize,
     pid: i32,
@@ -225,10 +279,13 @@ pub fn perf_event_open(
     group_fd: i32,
     flags: u32,
 ) -> AxResult<isize> {
-    // Hardware-PMU events must be dispatched before
-    // `PerfProbeArgs::try_from_perf_attr`, which maps any non-probe type
-    // through `perf_sw_ids` and rejects hardware configs with `EINVAL`.
-    let event: Box<dyn PerfEventOps> = if attr.type_ == PerfTypeId::PERF_TYPE_HARDWARE as u32 {
+    // Hardware-PMU events (`PERF_TYPE_HARDWARE` / `PERF_TYPE_RAW`) must be
+    // dispatched before `PerfProbeArgs::try_from_perf_attr`, which maps any
+    // non-probe type through `perf_sw_ids` and rejects hardware configs with
+    // `EINVAL`.
+    let event: Box<dyn PerfEventOps> = if attr.type_ == PerfTypeId::PERF_TYPE_HARDWARE as u32
+        || attr.type_ == PerfTypeId::PERF_TYPE_RAW as u32
+    {
         Box::new(hw::perf_event_open_hw(attr)?)
     } else {
         let args = PerfProbeArgs::try_from_perf_attr::<EbpfKernelAuxiliary>(
