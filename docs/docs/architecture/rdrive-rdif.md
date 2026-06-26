@@ -161,7 +161,7 @@ sequenceDiagram
 
 ## IRQ 解析与统一注册模型
 
-修改后的 IRQ 路径把平台中断解析收敛到 `ax-driver` probe / 注册阶段。FDT、ACPI、PCI、manual/static 注册都会先得到一个 `BindingInfo`，再经 `register_*_with_info` 注册到 `rdrive`。`BindingInfo` 是纯注册载荷，只公开已经解析好的 `Option<usize>` IRQ number，不再携带 FDT/ACPI/PCI IRQ source 描述，也不直接执行平台解析副作用；解析和 interrupt-controller setup 由 `ax-driver` 的 binding resolver / PCI resolver 完成。`rdrive` 只把 ACPI/FDT probe metadata 交给 resolver，不保存平台 IRQ route/source 记录。
+IRQ 路径使用 domain 化的 `IrqId` 作为运行时注册 key。FDT、ACPI、PCI、manual/static 注册都会先得到一个 `BindingInfo`，再经 `register_*_with_info` 注册到 `rdrive`。`BindingInfo` 可以携带已经解析好的 `IrqId`，也可以携带待平台解析的 firmware source，例如 `AcpiGsiRoute` 或 `FdtInterrupt`；运行时在真正注册 handler 前调用 `ax_hal::irq::resolve_irq_source(...)`，由平台 IRQ resolver 解析并执行 interrupt-controller setup。`rdrive` 只把 ACPI/FDT probe metadata 交给 resolver，不把平台 IRQ route/source 记录混进自己的设备 registry。
 
 ```mermaid
 sequenceDiagram
@@ -177,11 +177,8 @@ sequenceDiagram
 
     alt FDT device
         Probe->>Resolver: binding_info_from_fdt(FdtInfo)
-        Resolver->>Probe: read first interrupts() entry
-        Resolver->>Registry: get Intc by interrupt_parent phandle
-        Registry-->>Resolver: rdif_intc::Intc
-        Resolver->>Intc: setup_irq_by_fdt(specifier)
-        Intc-->>Resolver: irq number
+        Resolver->>Probe: read first interrupts() entry + interrupt-parent
+        Resolver-->>Binding: BindingIrq::fdt_interrupt_with_controller(parent, specifier)
     else ACPI device
         Probe->>Resolver: binding_info_from_acpi(AcpiInfo)
         Resolver->>Probe: read first AcpiGsiRoute
@@ -191,28 +188,28 @@ sequenceDiagram
         Intc-->>Resolver: irq number
     else PCI endpoint
         Probe->>Resolver: binding_info_from_pci(PciInfo, requirement)
-        Resolver->>Pci: resolve_intx_irq(PciInfo)
-        Pci->>Intc: setup_irq_by_acpi/_by_fdt(route)
-        Pci-->>Resolver: Option<usize>
+        Resolver->>Pci: resolve_intx_binding(PciInfo)
+        Pci-->>Resolver: Option<BindingIrq>
     else Manual / Static
-        Probe->>Binding: BindingInfo::empty() / with_irq(...)
+        Probe->>Binding: BindingInfo::empty() / with_irq_id(...) / with_irq(...)
     end
 
-    Resolver-->>Probe: BindingInfo(irq = Option usize)
+    Resolver-->>Probe: BindingInfo(irq = Option BindingIrq)
     Probe->>Registry: register_*_with_info(device, BindingInfo)
-    Registry-->>Probe: Option<usize>
-    Runtime->>Registry: get PlatformDevice
-    Registry-->>Runtime: device + irq_num()
-    Runtime->>Hal: request_shared_irq(irq, handler)
+    Runtime->>Registry: take PlatformDevice
+    Registry-->>Runtime: device + BindingIrq
+    Runtime->>Hal: resolve_irq_source(source)
+    Hal-->>Runtime: IrqId
+    Runtime->>Hal: request_shared_irq(IrqId, handler)
 ```
 
-这个边界让平台解析和中断控制器 setup 留在 `ax-driver` 侧：
+这个边界让平台 IRQ namespace 解析留在平台 resolver 侧：
 
-- FDT 设备读取第一个 `interrupts()` 项，通过 `interrupt_parent` phandle 找到 `rdif-intc`，并在 probe 时调用 `setup_irq_by_fdt()`。
-- ACPI 设备从 `AcpiInfo` 读取首个 `AcpiGsiRoute`，通过能匹配该 route 的 `rdif-intc` 调用 `setup_irq_by_acpi()`，把 trigger/polarity/vector 等控制器参数配置好后只返回数字 IRQ。
-- PCI 设备先在枚举阶段计算 INTx swizzle route，再由 `ax-driver::pci::resolve_intx_irq()` 按 ACPI route、FDT `interrupt-map`、已注册 legacy route、`interrupt_line` fallback 的顺序解析；ACPI/FDT 命中后仍交给对应 `rdif-intc` 完成 setup。
-- 无中断的设备注册为 `None`；声明了中断但无法解析的 FDT 设备返回 probe error；PCI required IRQ 最终无结果时返回 probe error，optional IRQ 允许注册为 `None`。
-- `ax-runtime`、`ax-hal`、`ax-net-ng`、StarryOS usbfs 等上层只消费 `Option<usize>` / `usize`，不再处理 FDT/ACPI/PCI IRQ source。
+- FDT 设备读取第一个 `interrupts()` 项并连同 `interrupt-parent` 保存为 `BindingIrq::fdt_interrupt_with_controller(...)`；generic driver probe 不调用 `rdif_intc::setup_irq_by_fdt()` 取得裸数字，避免把 GIC/PLIC/PCH 等控制器本地线号混进 legacy IRQ namespace。
+- ACPI PCI INTx route 保存为 `BindingIrq::acpi_gsi_route(...)`，保留 trigger、polarity、controller 和 input 等元数据；x86 IOAPIC 等平台 resolver 使用这些信息执行控制器 setup，而不是把 route flatten 成裸 GSI。
+- PCI 设备先在枚举阶段计算 INTx swizzle route，再由 `ax-driver::pci::resolve_intx_binding()` 按 ACPI route、FDT `interrupt-map`、已注册 legacy route、`interrupt_line` fallback 的顺序返回 `BindingIrq`。静态或未 domain 化平台仍可返回 legacy IRQ 作为兼容入口。
+- 无中断的设备注册为 `None`；PCI required IRQ 最终无结果时返回 probe error，optional IRQ 允许注册为 `None`。
+- `ax-runtime`、`ax-hal`、`ax-net-ng`、StarryOS usbfs 等上层以 `IrqId` 注册 handler。需要处理 firmware source 的地方应先经 `resolve_irq_source(...)`，不应自行做 `usize` 算术换算。
 
 网络 IRQ 的 runtime 适配也遵循同一方向。`ax-net-ng` 只暴露网络领域自己的 `EthernetIrqAction`、`EthernetIrqOutcome` 和注册错误类型，不再在公开 registrar trait 中泄漏 `ax-hal::irq::{RawIrqHandler, IrqContext, IrqReturn, IrqError}`。`ax-runtime` 持有 HAL IRQ registration，并把 HAL raw handler trampoline 适配到 `EthernetIrqAction`；因此网络 runtime 只描述“是否需要唤醒 poll 方”，HAL ABI 留在 ArceOS runtime 边界内。
 
