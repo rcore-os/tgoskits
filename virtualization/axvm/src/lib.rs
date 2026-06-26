@@ -100,3 +100,27 @@ pub fn host_phys_to_virt(paddr: ax_memory_addr::PhysAddr) -> ax_memory_addr::Vir
 pub fn shutdown_host_filesystems() -> ax_errno::AxResult {
     host::arceos::shutdown_host_filesystems()
 }
+
+/// Register a native host IRQ as the source for one x86 guest IOAPIC GSI.
+#[cfg(target_arch = "x86_64")]
+pub fn register_x86_ioapic_irq_forwarding_route(guest_gsi: usize, host_irq: irq_framework::IrqId) {
+    runtime::register_x86_ioapic_irq_forwarding_route(guest_gsi, host_irq);
+}
+
+/// Register a native host IRQ and trigger mode as the source for one x86 guest
+/// IOAPIC GSI.
+#[cfg(target_arch = "x86_64")]
+pub fn register_x86_ioapic_irq_forwarding_route_with_trigger(
+    guest_gsi: usize,
+    host_irq: irq_framework::IrqId,
+    trigger: InterruptTriggerMode,
+) {
+    runtime::register_x86_ioapic_irq_forwarding_route_with_trigger(guest_gsi, host_irq, trigger);
+}
+
+/// Register a callback to activate one x86 guest IOAPIC GSI after the guest has
+/// programmed a usable virtual IOAPIC route for it.
+#[cfg(target_arch = "x86_64")]
+pub fn register_x86_ioapic_irq_forwarding_activator(guest_gsi: usize, activator: fn()) {
+    runtime::register_x86_ioapic_irq_forwarding_activator(guest_gsi, activator);
+}
