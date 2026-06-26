@@ -11,10 +11,26 @@ impl DriverGeneric for super::v2::Gic {
 }
 
 impl Interface for super::v2::Gic {
-    fn setup_irq_by_fdt(&mut self, irq_prop: &[u32]) -> IrqId {
-        let config = fdt_parse_irq_config(irq_prop).unwrap();
+    fn translate_fdt(&self, irq_prop: &[u32]) -> Result<ControllerIrqTranslation, IrqError> {
+        let config = fdt_parse_irq_config(irq_prop).map_err(|_| IrqError::InvalidIrq)?;
+        Ok(ControllerIrqTranslation::with_trigger(
+            HwIrq(config.id.to_u32()),
+            config.trigger.into(),
+        ))
+    }
+
+    fn configure(&mut self, translation: &IrqTranslation) -> Result<(), IrqError> {
+        let config = crate::define::IrqConfig {
+            id: unsafe { crate::define::IntId::raw(translation.id.hwirq.0) },
+            trigger: translation.trigger.unwrap_or(Trigger::LevelHigh).into(),
+        };
         self.set_cfg(config.id, config.trigger);
-        config.id.into()
+        Ok(())
+    }
+
+    fn set_enabled(&mut self, hwirq: HwIrq, enabled: bool) -> Result<(), IrqError> {
+        self.set_irq_enable(unsafe { crate::define::IntId::raw(hwirq.0) }, enabled);
+        Ok(())
     }
 }
 
@@ -27,23 +43,26 @@ impl DriverGeneric for super::v3::Gic {
 
 #[cfg(target_arch = "aarch64")]
 impl Interface for super::v3::Gic {
-    fn setup_irq_by_fdt(&mut self, irq_prop: &[u32]) -> IrqId {
-        let config = fdt_parse_irq_config(irq_prop).unwrap();
+    fn translate_fdt(&self, irq_prop: &[u32]) -> Result<ControllerIrqTranslation, IrqError> {
+        let config = fdt_parse_irq_config(irq_prop).map_err(|_| IrqError::InvalidIrq)?;
+        Ok(ControllerIrqTranslation::with_trigger(
+            HwIrq(config.id.to_u32()),
+            config.trigger.into(),
+        ))
+    }
+
+    fn configure(&mut self, translation: &IrqTranslation) -> Result<(), IrqError> {
+        let config = crate::define::IrqConfig {
+            id: unsafe { crate::define::IntId::raw(translation.id.hwirq.0) },
+            trigger: translation.trigger.unwrap_or(Trigger::LevelHigh).into(),
+        };
         self.set_cfg(config.id, config.trigger);
-        config.id.into()
+        Ok(())
     }
-}
 
-impl From<crate::define::IntId> for IrqId {
-    fn from(id: crate::define::IntId) -> Self {
-        (id.to_u32() as usize).into()
-    }
-}
-
-impl From<IrqId> for crate::define::IntId {
-    fn from(id: IrqId) -> Self {
-        let raw: usize = id.into();
-        unsafe { crate::define::IntId::raw(raw as u32) }
+    fn set_enabled(&mut self, hwirq: HwIrq, enabled: bool) -> Result<(), IrqError> {
+        self.set_irq_enable(unsafe { crate::define::IntId::raw(hwirq.0) }, enabled);
+        Ok(())
     }
 }
 
