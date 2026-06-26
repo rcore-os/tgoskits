@@ -2,7 +2,7 @@ use alloc::{boxed::Box, string::String};
 use core::sync::atomic::{AtomicBool, Ordering};
 
 use ax_errno::AxResult;
-use spin::RwLock;
+use ax_kspin::SpinRwLock as RwLock;
 
 use crate::block::runtime::BlockIrqAction;
 
@@ -35,11 +35,12 @@ pub fn register_shared_block_irq(
     irq: usize,
     action: BlockIrqAction,
 ) -> AxResult<Box<dyn BlockIrqRegistration>> {
-    IRQ_REGISTRAR
+    let registrar = IRQ_REGISTRAR
         .read()
         .as_ref()
-        .ok_or(ax_errno::AxError::BadState)?
-        .register_shared(name, irq, action)
+        .copied()
+        .ok_or(ax_errno::AxError::BadState)?;
+    registrar.register_shared(name, irq, action)
 }
 
 pub fn has_irq_registrar() -> bool {
