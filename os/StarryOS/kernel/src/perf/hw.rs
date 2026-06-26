@@ -857,8 +857,10 @@ pub fn perf_event_open_hw(attr: &perf_event_attr, pid: i32) -> AxResult<HwPerfEv
         return Err(AxError::Unsupported);
     };
 
-    // Idempotent per-CPU global enable (`PMCR_EL0.E`).
-    ax_cpu::pmu::init_cpu();
+    // Per-CPU one-time clean-slate bring-up on the opening core (replaces the
+    // bare per-open `init_cpu()`; the clears inside run exactly once per core,
+    // so re-opens never disturb live counters of other events).
+    super::percpu::ensure_core_inited();
 
     // Refresh the counter count the allocator sizes its bitmask against. Safe
     // to set every open: M1 is single-core so `num_counters` is invariant.
