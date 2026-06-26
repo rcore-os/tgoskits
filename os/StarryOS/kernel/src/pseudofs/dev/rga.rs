@@ -351,15 +351,18 @@ impl RgaDevice {
     /// CSC features (`im2d_impl.cpp`). Reporting revision 0 hit librga's `default:` branch
     /// (TRY_TO_COMPATIBLE) and aborted with "rga2 get info failed", rejecting every op.
     fn handle_get_hw_version(&self, arg: usize) -> VfsResult<usize> {
-        let mut hw = librga_abi::RgaHwVersions::default();
-        hw.size = 1;
-        hw.version[0] = librga_abi::RgaVersionT {
+        let mut v0 = librga_abi::RgaVersionT {
             major: 3,
             minor: 2,
             revision: 0x63318,
             string: [0; 16],
         };
-        hw.version[0].string[..8].copy_from_slice(b"3.2.0e63");
+        v0.string[..8].copy_from_slice(b"3.2.0e63");
+        let mut hw = librga_abi::RgaHwVersions {
+            size: 1,
+            ..Default::default()
+        };
+        hw.version[0] = v0;
         (arg as *mut librga_abi::RgaHwVersions).vm_write(hw)?;
         Ok(0)
     }

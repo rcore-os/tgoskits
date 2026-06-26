@@ -67,6 +67,7 @@ impl DmaBufObject {
     }
 
     /// CPU view of the buffer (used by the RGA selftest to verify hardware output).
+    #[cfg(feature = "rga-selftest")]
     pub fn cpu_bytes(&self) -> &[u8] {
         self.inner.as_slice_cpu()
     }
@@ -79,6 +80,7 @@ impl DmaBufObject {
     /// # Safety
     /// Caller must not retain the slice across a device submission, and must
     /// `sync_for_device()` afterwards so the device sees the writes (the backing is CACHED).
+    #[cfg(feature = "rga-selftest")]
     pub unsafe fn cpu_bytes_mut(&mut self) -> &mut [u8] {
         unsafe { self.inner.as_mut_slice_cpu() }
     }
