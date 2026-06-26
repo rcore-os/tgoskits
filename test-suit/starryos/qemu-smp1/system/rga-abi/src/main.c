@@ -41,8 +41,9 @@ struct rga_buffer_pool {
     uint32_t size;
 };
 
-/* Verified rga_req field offsets (LP64, kernel rga.h): render_mode@0, src@8, dst@64,
-   handle_flag@352. rga_img_info_t: yrgb_addr@+0, format@+24, act_w@+28, vir_w@+36. */
+/* Verified rga_req field offsets (LP64, librga rga_ioctl.h): render_mode@0, src@8, dst@64,
+   handle_flag@360 (full_csc is 40 bytes: flag + 3x csc_coe_t@12). rga_img_info_t:
+   yrgb_addr@+0, format@+24, act_w@+28, vir_w@+36. */
 static void put_u16(unsigned char *b, size_t off, uint16_t v) { memcpy(b + off, &v, 2); }
 static void put_u32(unsigned char *b, size_t off, uint32_t v) { memcpy(b + off, &v, 4); }
 static void put_u64(unsigned char *b, size_t off, uint64_t v) { memcpy(b + off, &v, 8); }
@@ -112,7 +113,7 @@ int main(void)
     put_u16(req, 64 + 30, 64); /* dst.act_h */
     put_u16(req, 64 + 36, 64); /* dst.vir_w */
     put_u16(req, 64 + 38, 64); /* dst.vir_h */
-    req[352] = 1;              /* handle_flag = 1 (addrs are handles) */
+    req[360] = 1;              /* handle_flag = 1 (addrs are handles) */
 
     errno = 0;
     int rc = ioctl(fd, RGA_BLIT_SYNC, req);
