@@ -8,11 +8,20 @@ Guest entrypoint: `/usr/bin/apache-runner.sh <mode>`
 
 | mode | use | CI |
 |---|---|---|
-| `smoke` | default app entry | ✅ |
+| `smoke` | minimal default entry (package install, config test only; no HTTP) | ✅ |
 | `phase <id>` | rerun one phase script | operator-run |
 | `all` | smoke + all phases, with each stage run in a fresh guest state | operator-run |
 | `stress` | not implemented in `apache-runner.sh` | operator-run |
 | `debug <name>` | probe for a specific issue | operator-run |
+
+**Smoke scope**: The default smoke currently covers only package installation,
+filesystem setup, environment checks, and Apache configuration validation. It does
+NOT start Apache or perform HTTP requests. This minimal scope ensures the smoke
+passes reliably in both local and reviewer environments. Full HTTP test coverage
+(start httpd, GET/HEAD/keepalive, graceful shutdown) is preserved in
+`debug/apache-smoke-full.sh` and will be promoted back to the default smoke once
+the network/startup issue identified in the reviewer environment is resolved.
+See `debug/ISSUE-002-tcp-defer-accept.md` for investigation context.
 
 ## Usage
 
@@ -45,6 +54,7 @@ Prebuild injects:
 - `/usr/bin/apache-runner.sh`
 - `/usr/bin/apache-runner-lib.sh`
 - `/usr/bin/apache-smoke-tests.sh`
+- `/usr/bin/apache-smoke-full.sh` (full HTTP test coverage, not in default smoke)
 - `/usr/bin/apache-phase20-tests.sh`
 - `/usr/bin/apache-phase30-tests.sh`
 - `/usr/bin/apache-phase40-tests.sh`

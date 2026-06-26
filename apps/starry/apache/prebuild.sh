@@ -12,6 +12,7 @@ fi
 install -Dm0755 "$app_dir/runner/apache-runner.sh" "$overlay_dir/usr/bin/apache-runner.sh"
 install -Dm0755 "$app_dir/runner/apache-runner-lib.sh" "$overlay_dir/usr/bin/apache-runner-lib.sh"
 install -Dm0755 "$app_dir/smoke/apache-smoke-tests.sh" "$overlay_dir/usr/bin/apache-smoke-tests.sh"
+install -Dm0755 "$app_dir/debug/apache-smoke-full.sh" "$overlay_dir/usr/bin/apache-smoke-full.sh"
 install -Dm0755 "$app_dir/phase/apache-2-0-mpm-prefork-tests.sh" "$overlay_dir/usr/bin/apache-phase20-tests.sh"
 install -Dm0755 "$app_dir/phase/apache-3-0-http-static-tests.sh" "$overlay_dir/usr/bin/apache-phase30-tests.sh"
 install -Dm0755 "$app_dir/phase/apache-4-0-directory-access-tests.sh" "$overlay_dir/usr/bin/apache-phase40-tests.sh"
