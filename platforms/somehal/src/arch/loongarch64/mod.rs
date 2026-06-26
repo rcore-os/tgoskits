@@ -29,16 +29,14 @@ fn cpu_local_irq(raw: usize) -> IrqId {
 }
 
 fn pch_pic_irq(input: usize) -> IrqId {
-    let domain = crate::irq::domain_by_kind(crate::irq::IrqDomainKind::LoongArchPchPic)
-        .expect("LoongArch PCH-PIC IRQ domain is not registered")
-        .id;
+    let domain = crate::irq::domain_by_kind_fast(crate::irq::IrqDomainKind::LoongArchPchPic)
+        .expect("LoongArch PCH-PIC IRQ domain is not registered");
     IrqId::new(domain, HwIrq(input as u32))
 }
 
 fn eiointc_irq(external: usize) -> IrqId {
-    let domain = crate::irq::domain_by_kind(crate::irq::IrqDomainKind::LoongArchEioIntc)
-        .expect("LoongArch EIOINTC IRQ domain is not registered")
-        .id;
+    let domain = crate::irq::domain_by_kind_fast(crate::irq::IrqDomainKind::LoongArchEioIntc)
+        .expect("LoongArch EIOINTC IRQ domain is not registered");
     IrqId::new(domain, HwIrq(external as u32))
 }
 

@@ -303,7 +303,7 @@ impl KpuResource {
             runtime_direct_io_size: 0,
             runtime_ddr_paddr: 0,
             runtime_ddr_size: 0,
-            irq: plic_irq(k230_kpu::KPU_IRQ).ok(),
+            irq: fallback_irq(),
             from_fdt,
         }
     }
@@ -352,6 +352,13 @@ impl KpuResource {
             "canaan,qemu-runtime-ddr",
             "canaan,k230-kpu-qemu-runtime-ddr",
         );
+        let irq = match decode_fdt_irq(&node.interrupts()) {
+            Ok(irq) => irq,
+            Err(err) => {
+                warn!("k230-kpu devfs: failed to resolve KPU IRQ: {err:?}");
+                return None;
+            }
+        };
 
         Some(Self {
             cfg_paddr: cfg_reg.address as usize,
@@ -394,7 +401,7 @@ impl KpuResource {
             runtime_ddr_size: runtime_ddr
                 .map(|(_paddr, size)| size)
                 .unwrap_or(fallback.runtime_ddr_size),
-            irq: decode_fdt_irq(&node.interrupts()).or(fallback.irq),
+            irq,
             from_fdt: true,
         })
     }
@@ -457,6 +464,17 @@ unsafe fn kpu_irq_handler(
     ax_runtime::hal::irq::IrqReturn::Handled
 }
 
+#[cfg(feature = "plat-dyn")]
+fn fallback_irq() -> Option<ax_runtime::hal::irq::IrqId> {
+    None
+}
+
+#[cfg(not(feature = "plat-dyn"))]
+fn fallback_irq() -> Option<ax_runtime::hal::irq::IrqId> {
+    plic_irq(k230_kpu::KPU_IRQ).ok()
+}
+
+#[cfg(not(feature = "plat-dyn"))]
 fn plic_irq(raw: usize) -> Result<ax_runtime::hal::irq::IrqId, ax_runtime::hal::irq::IrqError> {
     let hwirq = u32::try_from(raw).map_err(|_| ax_runtime::hal::irq::IrqError::InvalidIrq)?;
     Ok(ax_runtime::hal::irq::IrqId::new(
@@ -468,20 +486,17 @@ fn plic_irq(raw: usize) -> Result<ax_runtime::hal::irq::IrqId, ax_runtime::hal::
 #[cfg(feature = "plat-dyn")]
 fn decode_fdt_irq(
     interrupts: &[rdrive::probe::fdt::InterruptRef],
-) -> Option<ax_runtime::hal::irq::IrqId> {
-    let interrupt = interrupts.first()?;
-    let controller = rdrive::fdt_phandle_to_device_id(interrupt.interrupt_parent)?;
+) -> Result<Option<ax_runtime::hal::irq::IrqId>, ax_runtime::hal::irq::IrqError> {
+    let Some(interrupt) = interrupts.first() else {
+        return Ok(None);
+    };
+    let controller = rdrive::fdt_phandle_to_device_id(interrupt.interrupt_parent)
+        .ok_or(ax_runtime::hal::irq::IrqError::Unsupported)?;
     ax_runtime::irq::resolve_binding_irq(ax_driver::BindingIrq::fdt_interrupt_with_controller(
         controller,
         interrupt.specifier.clone(),
     ))
-    .map_err(|err| {
-        warn!(
-            "k230-kpu devfs: failed to resolve FDT IRQ {:?}: {err:?}",
-            interrupt.specifier
-        );
-    })
-    .ok()
+    .map(Some)
 }
 
 #[cfg(feature = "plat-dyn")]

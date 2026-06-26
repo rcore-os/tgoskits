@@ -23,9 +23,8 @@ fn riscv_irq_id(raw: usize) -> IrqId {
             HwIrq((raw & !RISCV_INTERRUPT_BIT) as u32),
         )
     } else {
-        let domain = crate::irq::domain_by_kind(crate::irq::IrqDomainKind::RiscvPlic)
-            .expect("RISC-V PLIC IRQ domain is not registered")
-            .id;
+        let domain = crate::irq::domain_by_kind_fast(crate::irq::IrqDomainKind::RiscvPlic)
+            .expect("RISC-V PLIC IRQ domain is not registered");
         IrqId::new(domain, HwIrq(raw as u32))
     }
 }
