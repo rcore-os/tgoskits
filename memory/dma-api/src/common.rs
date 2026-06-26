@@ -2,6 +2,7 @@ use core::alloc::Layout;
 
 use crate::{DeviceDma, DmaAllocHandle, DmaDirection, DmaError};
 
+#[derive(Clone, Copy)]
 pub(crate) enum AllocationKind {
     Coherent,
     Contiguous { direction: DmaDirection },

@@ -2,7 +2,8 @@ use core::{alloc::Layout, num::NonZeroUsize, ptr::NonNull};
 
 use ax_memory_addr::{MemoryAddr, PAGE_SIZE_4K, VirtAddr};
 use dma_api::{
-    DeviceDma, DmaAllocHandle, DmaConstraints, DmaDirection, DmaError, DmaMapHandle, DmaOp,
+    DeviceDma, DmaAllocHandle, DmaConstraints, DmaDirection, DmaDomainId, DmaError, DmaMapHandle,
+    DmaOp,
 };
 
 pub struct KlibDma;
@@ -13,8 +14,12 @@ pub fn op() -> &'static KlibDma {
     &DMA
 }
 
+pub const fn domain_id() -> DmaDomainId {
+    DmaDomainId::legacy_global()
+}
+
 pub fn device_with_mask(dma_mask: u64) -> DeviceDma {
-    DeviceDma::new(dma_mask, op())
+    DeviceDma::new(domain_id(), dma_mask, op())
 }
 
 struct DmaPages {
