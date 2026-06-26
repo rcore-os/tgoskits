@@ -8,8 +8,8 @@ use rockchip_rga::{
     backend::RgaDiag,
     buffer::RgaDmaBuffer,
     selftest::{
-        SMOKE_FILL_COLOR, SMOKE_FILL_POISON, crc32, run_rga2_blit_resize, run_rga2_fill_imported,
-        run_rga2_fill_via_blit, run_rga2_smoke,
+        SMOKE_FILL_COLOR, SMOKE_FILL_POISON, crc32, run_rga2_blit_resize, run_rga2_csc_yuyv,
+        run_rga2_fill_imported, run_rga2_fill_via_blit, run_rga2_smoke,
     },
 };
 
@@ -415,6 +415,134 @@ pub fn run() {
                 }
             }
             _ => warn!("RGA2_FILLBLIT_SELFTEST core={} alloc=FAIL", core_index),
+        }
+        // YUYV422 -> RGB888 CSC: the EXACT op the tennis app submits via librga imcvtcolor, on the
+        // same RgaDmaBuffer datapath the resize test PASSES with. A FAIL here isolates the
+        // YUV-packed-src + YUV->RGB CSC register encoding (vs the proven RGBA copy/resize path).
+        match (
+            RgaDmaBuffer::alloc(&dma, (W * H * 2) as usize, DmaDirection::ToDevice),
+            RgaDmaBuffer::alloc(&dma, (W * H * 3) as usize, DmaDirection::Bidirectional),
+        ) {
+            (Ok(mut yuyv_src), Ok(mut rgb_dst)) => {
+                // SAFETY: slices not retained across the submission below.
+                {
+                    // Mid-gray YUYV (Y=128, U=V=128) -> ~mid-gray RGB. Packed order Y0 U Y1 V.
+                    let s = unsafe { yuyv_src.cpu_bytes_mut() };
+                    for q in s.chunks_exact_mut(4) {
+                        q.copy_from_slice(&[128, 128, 128, 128]);
+                    }
+                }
+                yuyv_src.prepare_for_device();
+                {
+                    let d = unsafe { rgb_dst.cpu_bytes_mut() };
+                    for b in d.iter_mut() {
+                        *b = 0xAB; // poison: distinguishes NOWRITE from a real (wrong) write
+                    }
+                }
+                rgb_dst.prepare_for_device();
+                match run_rga2_csc_yuyv(
+                    core,
+                    yuyv_src.phys_addr(),
+                    rgb_dst.phys_addr(),
+                    W,
+                    H,
+                    |us| {
+                        ax_runtime::hal::time::busy_wait(core::time::Duration::from_micros(
+                            us as u64,
+                        ))
+                    },
+                ) {
+                    Ok(diag) => {
+                        rgb_dst.complete_for_cpu();
+                        let p = rgb_dst.cpu_bytes();
+                        info!(
+                            "RGA2_CSC_SELFTEST core={} result=PASS rgb[0..6]={},{},{},{},{},{}",
+                            core_index, p[0], p[1], p[2], p[3], p[4], p[5]
+                        );
+                        log_diag(
+                            "RGA2_CSC_SELFTEST",
+                            core_index,
+                            &diag,
+                            yuyv_src.phys_addr(),
+                            rgb_dst.phys_addr(),
+                        );
+                    }
+                    Err((e, d)) => {
+                        warn!(
+                            "RGA2_CSC_SELFTEST core={} result=FAIL err={:?}",
+                            core_index, e
+                        );
+                        log_diag(
+                            "RGA2_CSC_SELFTEST",
+                            core_index,
+                            &d,
+                            yuyv_src.phys_addr(),
+                            rgb_dst.phys_addr(),
+                        );
+                    }
+                }
+            }
+            _ => warn!("RGA2_CSC_SELFTEST core={} alloc=FAIL", core_index),
+        }
+        // Same YUYV->RGB CSC, but on /dev/dma_heap buffers (the app's exact buffer source)
+        // instead of dma-api RgaDmaBuffer. Isolates the dma-heap pool's phys/coherency from
+        // the handle-resolution path: if RGA2_CSC_DMABUF fails while RGA2_CSC_SELFTEST passes,
+        // the dma-heap buffers are the problem; if both pass, the app's failure is in the
+        // librga handle->resolve_buf->phys path, not the buffers.
+        match (
+            crate::pseudofs::dev::dma_heap::alloc((W * H * 2) as usize),
+            crate::pseudofs::dev::dma_heap::alloc((W * H * 3) as usize),
+        ) {
+            (Ok(mut ysrc), Ok(mut rdst)) => {
+                if let Some(m) = Arc::get_mut(&mut ysrc) {
+                    // SAFETY: slice not retained across the device submission below.
+                    let b = unsafe { m.cpu_bytes_mut() };
+                    for q in b.chunks_exact_mut(4) {
+                        q.copy_from_slice(&[128, 128, 128, 128]); // mid-gray YUYV
+                    }
+                }
+                ysrc.sync_for_device();
+                if let Some(m) = Arc::get_mut(&mut rdst) {
+                    let b = unsafe { m.cpu_bytes_mut() };
+                    for x in b.iter_mut() {
+                        *x = 0xAB; // poison
+                    }
+                }
+                rdst.sync_for_device();
+                match run_rga2_csc_yuyv(core, ysrc.phys_addr(), rdst.phys_addr(), W, H, |us| {
+                    ax_runtime::hal::time::busy_wait(core::time::Duration::from_micros(us as u64))
+                }) {
+                    Ok(diag) => {
+                        rdst.sync_for_cpu();
+                        let p = rdst.cpu_bytes();
+                        info!(
+                            "RGA2_CSC_DMABUF core={} result=PASS rgb[0..6]={},{},{},{},{},{}",
+                            core_index, p[0], p[1], p[2], p[3], p[4], p[5]
+                        );
+                        log_diag(
+                            "RGA2_CSC_DMABUF",
+                            core_index,
+                            &diag,
+                            ysrc.phys_addr(),
+                            rdst.phys_addr(),
+                        );
+                    }
+                    Err((e, d)) => {
+                        warn!(
+                            "RGA2_CSC_DMABUF core={} result=FAIL err={:?}",
+                            core_index, e
+                        );
+                        log_diag(
+                            "RGA2_CSC_DMABUF",
+                            core_index,
+                            &d,
+                            ysrc.phys_addr(),
+                            rdst.phys_addr(),
+                        );
+                    }
+                }
+            }
+            _ => warn!("RGA2_CSC_DMABUF core={} alloc=FAIL", core_index),
         }
         // Completion path: PR-1 is polling-only (poll the RGA2 INT status register), which works
         // regardless of GIC routing. This board has a confirmed FDT->GIC gap (the dwmmc completion
