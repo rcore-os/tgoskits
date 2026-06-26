@@ -623,10 +623,15 @@ struct DevicesDir {
 
 impl SimpleDirOps for DevicesDir {
     fn child_names<'a>(&'a self) -> Box<dyn Iterator<Item = Cow<'a, str>> + 'a> {
+        #[cfg(target_arch = "aarch64")]
+        let pmu = core::iter::once(Cow::Borrowed(ARMV8_PMUV3_DEVICE));
+        #[cfg(not(target_arch = "aarch64"))]
+        let pmu = core::iter::empty();
         Box::new(
             ["platform", "system", "virtual"]
                 .into_iter()
-                .map(Cow::Borrowed),
+                .map(Cow::Borrowed)
+                .chain(pmu),
         )
     }
 
@@ -636,8 +641,41 @@ impl SimpleDirOps for DevicesDir {
             "platform" => SimpleDir::new_maker(fs.clone(), Arc::new(PlatformBusDir { fs })),
             "system" => SimpleDir::new_maker(fs.clone(), Arc::new(SystemDir { fs })),
             "virtual" => SimpleDir::new_maker(fs.clone(), Arc::new(VirtualDir { fs })),
+            #[cfg(target_arch = "aarch64")]
+            ARMV8_PMUV3_DEVICE => SimpleDir::new_maker(fs.clone(), Arc::new(PmuDeviceDir { fs })),
             _ => return Err(VfsError::NotFound),
         }))
+    }
+}
+
+/// `/sys/devices/armv8_pmuv3_0/` — the ARM CPU PMU device node.
+///
+/// `perf record` reads `cpuid` (the raw MIDR_EL1, hex-encoded) to select the
+/// right `pmu-events` JSON map for the detected CPU microarchitecture.
+#[cfg(target_arch = "aarch64")]
+struct PmuDeviceDir {
+    fs: Arc<SimpleFs>,
+}
+
+#[cfg(target_arch = "aarch64")]
+impl SimpleDirOps for PmuDeviceDir {
+    fn child_names<'a>(&'a self) -> Box<dyn Iterator<Item = Cow<'a, str>> + 'a> {
+        Box::new(["cpuid"].into_iter().map(Cow::Borrowed))
+    }
+
+    fn lookup_child(&self, name: &str) -> VfsResult<NodeOpsMux> {
+        match name {
+            "cpuid" => Ok(SimpleFile::new_regular(self.fs.clone(), || {
+                // perf reads this to identify the CPU core and select a
+                // microarchitectural event map. Format is the raw MIDR_EL1
+                // as hex (no 0x prefix) — perf's filename__read_str reads
+                // until EOF and compares bytewise.
+                let midr = ax_cpu::pmu::read_midr_el1();
+                Ok(alloc::format!("{midr:016x}\n"))
+            })
+            .into()),
+            _ => Err(VfsError::NotFound),
+        }
     }
 }
 
@@ -710,7 +748,7 @@ struct SystemCpuEntryDir {
 
 impl SimpleDirOps for SystemCpuEntryDir {
     fn child_names<'a>(&'a self) -> Box<dyn Iterator<Item = Cow<'a, str>> + 'a> {
-        Box::new(["online"].into_iter().map(Cow::Borrowed))
+        Box::new(["online", "regs"].into_iter().map(Cow::Borrowed))
     }
 
     fn lookup_child(&self, name: &str) -> VfsResult<NodeOpsMux> {
@@ -723,6 +761,57 @@ impl SimpleDirOps for SystemCpuEntryDir {
                 };
                 Ok(SimpleFile::new_regular(self.fs.clone(), move || Ok(online.to_owned())).into())
             }
+            "regs" => Ok(NodeOpsMux::Dir(SimpleDir::new_maker(
+                self.fs.clone(),
+                Arc::new(CpuRegsDir {
+                    fs: self.fs.clone(),
+                }),
+            ))),
+            _ => Err(VfsError::NotFound),
+        }
+    }
+}
+
+/// `/sys/devices/system/cpu/cpu<N>/regs/` — `identification/midr_el1` for perf.
+struct CpuRegsDir {
+    fs: Arc<SimpleFs>,
+}
+
+impl SimpleDirOps for CpuRegsDir {
+    fn child_names<'a>(&'a self) -> Box<dyn Iterator<Item = Cow<'a, str>> + 'a> {
+        Box::new(["identification"].into_iter().map(Cow::Borrowed))
+    }
+
+    fn lookup_child(&self, name: &str) -> VfsResult<NodeOpsMux> {
+        match name {
+            "identification" => Ok(NodeOpsMux::Dir(SimpleDir::new_maker(
+                self.fs.clone(),
+                Arc::new(CpuIdRegsDir {
+                    fs: self.fs.clone(),
+                }),
+            ))),
+            _ => Err(VfsError::NotFound),
+        }
+    }
+}
+
+/// `/sys/devices/system/cpu/cpu<N>/regs/identification/` — `midr_el1` for perf.
+struct CpuIdRegsDir {
+    fs: Arc<SimpleFs>,
+}
+
+impl SimpleDirOps for CpuIdRegsDir {
+    fn child_names<'a>(&'a self) -> Box<dyn Iterator<Item = Cow<'a, str>> + 'a> {
+        Box::new(["midr_el1"].into_iter().map(Cow::Borrowed))
+    }
+
+    fn lookup_child(&self, name: &str) -> VfsResult<NodeOpsMux> {
+        match name {
+            "midr_el1" => Ok(SimpleFile::new_regular(self.fs.clone(), || {
+                let midr = ax_cpu::pmu::read_midr_el1();
+                Ok(alloc::format!("{midr:016x}\n"))
+            })
+            .into()),
             _ => Err(VfsError::NotFound),
         }
     }

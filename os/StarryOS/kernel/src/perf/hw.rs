@@ -294,6 +294,8 @@ fn alloc_sampling_ring(len: usize) -> AxResult<(Arc<GlobalPage>, usize, PhysAddr
     // which is `>= size_of::<perf_event_mmap_page>()` (≥ 1 page = 4096 B, and
     // the struct is < 4096 B). No reader sees it until the VMA maps it.
     unsafe {
+        core::ptr::addr_of_mut!((*header).version).write(1); // v1 protocol
+        core::ptr::addr_of_mut!((*header).compat_version).write(0);
         core::ptr::addr_of_mut!((*header).data_offset).write(RING_DATA_OFFSET as u64);
         core::ptr::addr_of_mut!((*header).data_size).write(data_size);
         core::ptr::addr_of_mut!((*header).data_head).write(0);
