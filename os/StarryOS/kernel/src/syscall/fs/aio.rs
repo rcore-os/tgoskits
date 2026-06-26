@@ -15,6 +15,7 @@ use core::{
 
 use ax_errno::{AxError, AxResult, LinuxError};
 use ax_fs_ng::vfs::FileFlags;
+use ax_kspin::SpinRwLock as RwLock;
 use ax_memory_addr::{MemoryAddr, VirtAddr, VirtAddrRange, align_up_4k};
 use ax_runtime::hal::{
     paging::{MappingFlags, PageSize},
@@ -27,7 +28,6 @@ use ax_task::{
 };
 use axpoll::{IoEvents, PollSet};
 use linux_raw_sys::general::timespec;
-use spin::RwLock;
 use starry_process::Pid;
 use starry_signal::SignalSet;
 use starry_vm::{VmMutPtr, VmPtr};
