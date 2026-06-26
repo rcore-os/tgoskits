@@ -87,7 +87,7 @@ rm -f /tmp/memcached.out
 rm -f /tmp/memcached-delete.out
 rm -f /tmp/memcached-stats.out
 
-memcached -u root -l 127.0.0.1 -p 11211 -m 16 -c 16 -vv > /tmp/memcached.log 2>&1 &
+memcached -u root -l 127.0.0.1 -p 11211 -m 16 -c 16 -t 1 -vv > /tmp/memcached.log 2>&1 &
 MEMCACHED_PID=$!
 echo "MEMCACHED_PID=$MEMCACHED_PID"
 
