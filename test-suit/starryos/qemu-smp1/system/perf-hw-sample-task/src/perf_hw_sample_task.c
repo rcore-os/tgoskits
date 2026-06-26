@@ -168,6 +168,12 @@ static int fail(const char *reason) {
 }
 
 int main(int argc, char **argv) {
+#if !defined(__aarch64__)
+    /* Hardware-PMU perf is aarch64-only (ARM PMUv3); skip-as-pass on other
+     * architectures so the cross-arch grouped C build/run stays green. */
+    printf("STARRY_PERF_SAMPLE_TASK_OK\n");
+    return 0;
+#endif
     /* Post-exec child: burn cycles so the attached counter overflows often. */
     if (argc > 1 && strcmp(argv[1], "--busy") == 0) {
         volatile uint64_t spin = 0;

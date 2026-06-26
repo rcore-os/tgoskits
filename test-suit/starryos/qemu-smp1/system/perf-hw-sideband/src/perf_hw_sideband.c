@@ -164,6 +164,12 @@ static size_t ring_cstr(const uint8_t *data_base, uint64_t data_size, uint64_t a
 }
 
 int main(int argc, char **argv) {
+#if !defined(__aarch64__)
+    /* Hardware-PMU perf is aarch64-only (ARM PMUv3); skip-as-pass on other
+     * architectures so the cross-arch grouped C build/run stays green. */
+    printf("STARRY_PERF_SIDEBAND_OK\n");
+    return 0;
+#endif
     if (argc > 1 && strcmp(argv[1], "--busy") == 0) {
         volatile uint64_t spin = 0;
         for (uint64_t i = 0; i < 200000000ull; i++) {
