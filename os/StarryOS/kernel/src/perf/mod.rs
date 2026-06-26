@@ -7,6 +7,7 @@
 //! `perf_event_mmap_page` header.
 
 pub mod bpf;
+pub mod hw;
 pub mod kprobe;
 pub mod raw_tracepoint;
 pub mod tracepoint;
@@ -67,6 +68,23 @@ pub trait PerfEventOps: Pollable + Send + Sync + Debug {
     fn device_mmap(&mut self, _len: usize) -> AxResult<(PhysAddr, Arc<dyn Any + Send + Sync>)> {
         Err(AxError::Unsupported)
     }
+
+    /// Read the current counter value (`read(perf_fd, &val, 8)`).
+    ///
+    /// Only the hardware-PMU variant ([`hw::HwPerfEvent`]) overrides this;
+    /// the tracing variants have no counter to read and keep the default,
+    /// so `read(perf_fd)` returns `Unsupported` for them.
+    fn read_count(&mut self) -> AxResult<u64> {
+        Err(AxError::Unsupported)
+    }
+
+    /// Reset the counter to zero (`PERF_EVENT_IOC_RESET`).
+    ///
+    /// Only the hardware-PMU variant ([`hw::HwPerfEvent`]) overrides this;
+    /// the tracing variants keep the default and reject the ioctl.
+    fn reset(&mut self) -> AxResult<()> {
+        Err(AxError::Unsupported)
+    }
 }
 
 /// File-like handle returned by `perf_event_open(2)`. Locks a
@@ -106,8 +124,18 @@ impl Pollable for PerfEvent {
 }
 
 impl FileLike for PerfEvent {
-    fn read(&self, _dst: &mut crate::file::IoDst) -> AxResult<usize> {
-        Err(AxError::Unsupported)
+    fn read(&self, dst: &mut crate::file::IoDst) -> AxResult<usize> {
+        // M0: a hardware-PMU event reads as a single bare `u64` counter
+        // value (`read_format == 0`). The tracing variants keep the default
+        // `read_count` and propagate `Unsupported` here. We always write the
+        // counter in native byte order, matching Linux's `read(perf_fd)`.
+        let value = self.event.lock().read_count()?;
+        let bytes = value.to_ne_bytes();
+        if dst.remaining_mut() < bytes.len() {
+            return Err(AxError::InvalidInput);
+        }
+        dst.write(&bytes)?;
+        Ok(bytes.len())
     }
 
     fn write(&self, _src: &mut crate::file::IoSrc) -> AxResult<usize> {
@@ -123,6 +151,15 @@ impl FileLike for PerfEvent {
     }
 
     fn ioctl(&self, cmd: u32, arg: usize) -> AxResult<usize> {
+        // `PERF_EVENT_IOC_RESET` (0x2403) is absent from `kbpf_basic`'s
+        // `PerfEventIoc`, so handle it before the enum conversion. Only the
+        // hardware-PMU variant implements `reset`; the tracing variants keep
+        // the default and return `Unsupported`.
+        const PERF_EVENT_IOC_RESET: u32 = 0x2403;
+        if cmd == PERF_EVENT_IOC_RESET {
+            self.event.lock().reset()?;
+            return Ok(0);
+        }
         let req = PerfEventIoc::try_from(cmd).map_err(|_| AxError::InvalidInput)?;
         match req {
             PerfEventIoc::Enable => {
@@ -188,17 +225,27 @@ pub fn perf_event_open(
     group_fd: i32,
     flags: u32,
 ) -> AxResult<isize> {
-    let args =
-        PerfProbeArgs::try_from_perf_attr::<EbpfKernelAuxiliary>(attr, pid, cpu, group_fd, flags)
-            .into_ax_result()?;
-    let event: Box<dyn PerfEventOps> = match args.type_ {
-        PerfTypeId::PERF_TYPE_KPROBE => Box::new(kprobe::perf_event_open_kprobe(args)?),
-        PerfTypeId::PERF_TYPE_SOFTWARE => Box::new(bpf::perf_event_open_bpf(args)),
-        PerfTypeId::PERF_TYPE_TRACEPOINT => Box::new(tracepoint::perf_event_open_tracepoint(args)?),
-        PerfTypeId::PERF_TYPE_UPROBE => Box::new(uprobe::perf_event_open_uprobe(args)?),
-        _ => {
-            warn!("perf_event_open: unsupported type {:?}", args.type_);
-            return Err(AxError::Unsupported);
+    // Hardware-PMU events must be dispatched before
+    // `PerfProbeArgs::try_from_perf_attr`, which maps any non-probe type
+    // through `perf_sw_ids` and rejects hardware configs with `EINVAL`.
+    let event: Box<dyn PerfEventOps> = if attr.type_ == PerfTypeId::PERF_TYPE_HARDWARE as u32 {
+        Box::new(hw::perf_event_open_hw(attr)?)
+    } else {
+        let args = PerfProbeArgs::try_from_perf_attr::<EbpfKernelAuxiliary>(
+            attr, pid, cpu, group_fd, flags,
+        )
+        .into_ax_result()?;
+        match args.type_ {
+            PerfTypeId::PERF_TYPE_KPROBE => Box::new(kprobe::perf_event_open_kprobe(args)?),
+            PerfTypeId::PERF_TYPE_SOFTWARE => Box::new(bpf::perf_event_open_bpf(args)),
+            PerfTypeId::PERF_TYPE_TRACEPOINT => {
+                Box::new(tracepoint::perf_event_open_tracepoint(args)?)
+            }
+            PerfTypeId::PERF_TYPE_UPROBE => Box::new(uprobe::perf_event_open_uprobe(args)?),
+            _ => {
+                warn!("perf_event_open: unsupported type {:?}", args.type_);
+                return Err(AxError::Unsupported);
+            }
         }
     };
     let event_arc: Arc<dyn FileLike> = Arc::new(PerfEvent::new(event));
