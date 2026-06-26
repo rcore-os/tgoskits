@@ -135,8 +135,14 @@ pub fn init_cpu() {
 }
 
 pub fn irq_set_enable(irq: IrqId, enable: bool) -> Result<(), crate::irq::IrqError> {
+    let intid = unsafe { IntId::raw(irq.hwirq.0) };
+    if intid.is_private() {
+        CPU_IF.set_irq_enable(intid, enable);
+        return Ok(());
+    }
+
     super::with_gic_domain::<Gic, _>(irq.domain, |gic| {
-        gic.set_irq_enable(unsafe { IntId::raw(irq.hwirq.0) }, enable);
+        gic.set_irq_enable(intid, enable);
     })
 }
 
