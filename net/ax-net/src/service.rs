@@ -649,6 +649,62 @@ impl Service {
         self.router.device_index(name)
     }
 
+    /// Replaces the IPv4 address/gateway for one interface by name.
+    pub fn configure_ipv4(
+        &mut self,
+        name: &str,
+        address: Option<Ipv4Cidr>,
+        gateway: Option<Ipv4Address>,
+    ) -> AxResult<()> {
+        let dev = self
+            .device_index(name)
+            .ok_or_else(|| ax_err_type!(NoSuchDevice, "network interface {name} does not exist"))?;
+        let Some(interface) = self.interface_for_dev(dev) else {
+            return Err(ax_err_type!(
+                NoSuchDevice,
+                "network interface {name} does not exist"
+            ));
+        };
+        if interface.kind == InterfaceKind::Loopback {
+            return Err(ax_err_type!(
+                InvalidInput,
+                "loopback IPv4 configuration is fixed"
+            ));
+        }
+        self.dhcp.retain(|state| state.interface_id != interface.id);
+        if self
+            .dhcp_server
+            .as_ref()
+            .is_some_and(|server| server.dev == dev)
+        {
+            self.dhcp_server = None;
+        }
+
+        self.commit_network_state(NetworkStateUpdate {
+            interface_id: interface.id,
+            dev,
+            metric: interface.metric,
+            old_ipv4: interface.ipv4,
+            ipv4: address,
+            gateway,
+            dns_source: DnsSource::Static,
+            dns_servers: Vec::new(),
+        });
+        Ok(())
+    }
+
+    /// Updates the administrative UP flag exposed for one interface.
+    pub fn set_interface_up(&mut self, name: &str, up: bool) -> AxResult<()> {
+        let mut state = self.control.state.write();
+        let interface = state
+            .interfaces
+            .iter_mut()
+            .find(|interface| interface.name == name)
+            .ok_or_else(|| ax_err_type!(NoSuchDevice, "network interface {name} does not exist"))?;
+        interface.flags.set(InterfaceFlags::UP, up);
+        Ok(())
+    }
+
     /// Reconfigures one wireless device as SoftAP: static IPv4 plus optional DHCP server.
     pub fn reconfigure_as_ap(
         &mut self,

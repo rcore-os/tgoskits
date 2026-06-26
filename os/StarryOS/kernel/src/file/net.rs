@@ -6,6 +6,7 @@ use alloc::{
 use core::{
     ffi::c_int,
     mem::offset_of,
+    net::Ipv4Addr,
     ops::Deref,
     sync::atomic::{AtomicBool, AtomicI32, Ordering},
     task::Context,
@@ -21,9 +22,9 @@ use axpoll::{IoEvents, Pollable};
 use linux_raw_sys::{
     general::{O_RDWR, S_IFSOCK},
     ioctl::{
-        FIONREAD, SIOCGIFADDR, SIOCGIFBRDADDR, SIOCGIFCONF, SIOCGIFDSTADDR, SIOCGIFFLAGS,
-        SIOCGIFHWADDR, SIOCGIFINDEX, SIOCGIFMAP, SIOCGIFMETRIC, SIOCGIFMTU, SIOCGIFNETMASK,
-        SIOCGIFTXQLEN,
+        FIONREAD, SIOCDIFADDR, SIOCGIFADDR, SIOCGIFBRDADDR, SIOCGIFCONF, SIOCGIFDSTADDR,
+        SIOCGIFFLAGS, SIOCGIFHWADDR, SIOCGIFINDEX, SIOCGIFMAP, SIOCGIFMETRIC, SIOCGIFMTU,
+        SIOCGIFNETMASK, SIOCGIFTXQLEN, SIOCSIFADDR, SIOCSIFBRDADDR, SIOCSIFFLAGS, SIOCSIFNETMASK,
     },
     net::{AF_INET, ifreq},
 };
@@ -131,6 +132,20 @@ fn write_ifreq_hwaddr(arg: usize, hw_type: u16, hwaddr: &[u8]) -> AxResult<()> {
     write_ifreq_data(arg, &addr)
 }
 
+fn read_ifreq_sockaddr(arg: usize) -> AxResult<Ipv4Addr> {
+    let addr = read_user_bytes::<16>((arg + IFREQ_DATA_OFFSET) as *const u8)?;
+    let family = u16::from_ne_bytes([addr[0], addr[1]]);
+    if family as u32 != AF_INET {
+        return Err(AxError::InvalidInput);
+    }
+    Ok(Ipv4Addr::new(addr[4], addr[5], addr[6], addr[7]))
+}
+
+fn read_ifreq_flags(arg: usize) -> AxResult<i16> {
+    let data = read_user_bytes::<2>((arg + IFREQ_DATA_OFFSET) as *const u8)?;
+    Ok(i16::from_ne_bytes(data))
+}
+
 fn write_ifconf_entry(buf: usize, offset: usize, name: &str, ip: [u8; 4]) -> AxResult<()> {
     let mut ifreq = [0; IFREQ_COMPAT_LEN];
     let name = name.as_bytes();
@@ -149,6 +164,20 @@ fn ipv4_netmask(prefix_len: u8) -> [u8; 4] {
         return [0; 4];
     }
     (!0u32 << (32 - prefix_len)).to_be_bytes()
+}
+
+fn netmask_prefix_len(netmask: Ipv4Addr) -> AxResult<u8> {
+    let mask = u32::from_be_bytes(netmask.octets());
+    let prefix = mask.leading_ones() as u8;
+    let expected = if prefix == 0 {
+        0
+    } else {
+        !0u32 << (32 - prefix)
+    };
+    if mask != expected {
+        return Err(AxError::InvalidInput);
+    }
+    Ok(prefix)
 }
 
 fn ipv4_broadcast(config: ax_net::Ipv4InterfaceConfig) -> [u8; 4] {
@@ -345,6 +374,52 @@ impl FileLike for Socket {
                 let idx = read_ifreq_interface(arg)?.id.get() as i32;
                 write_ifreq_data(arg, &idx.to_ne_bytes())?;
             }
+            SIOCSIFADDR => {
+                let info = read_ifreq_interface(arg)?;
+                let address = read_ifreq_sockaddr(arg)?;
+                if address.is_unspecified() {
+                    ax_net::configure_ipv4_addr(&info.name, None, None)?;
+                    return Ok(0);
+                }
+                let prefix_len = info
+                    .ipv4
+                    .map(|ipv4| ipv4.address.prefix_len())
+                    .unwrap_or(32);
+                ax_net::configure_ipv4_addr(
+                    &info.name,
+                    Some((address, prefix_len)),
+                    info.ipv4.and_then(|ipv4| {
+                        ipv4.gateway.map(|gateway| Ipv4Addr::from(gateway.octets()))
+                    }),
+                )?;
+            }
+            SIOCSIFNETMASK => {
+                let info = read_ifreq_interface(arg)?;
+                let netmask = read_ifreq_sockaddr(arg)?;
+                let prefix_len = netmask_prefix_len(netmask)?;
+                let Some(ipv4) = info.ipv4 else {
+                    return Err(AxError::NoSuchDeviceOrAddress);
+                };
+                let address = Ipv4Addr::from(ipv4.address.address().octets());
+                ax_net::configure_ipv4_addr(
+                    &info.name,
+                    Some((address, prefix_len)),
+                    ipv4.gateway.map(|gateway| Ipv4Addr::from(gateway.octets())),
+                )?;
+            }
+            SIOCSIFFLAGS => {
+                let info = read_ifreq_interface(arg)?;
+                let flags = read_ifreq_flags(arg)?;
+                ax_net::set_interface_up(&info.name, flags & IFF_UP != 0)?;
+            }
+            SIOCSIFBRDADDR => {
+                let _info = read_ifreq_interface(arg)?;
+                let _addr = read_ifreq_sockaddr(arg)?;
+            }
+            SIOCDIFADDR => {
+                let info = read_ifreq_interface(arg)?;
+                ax_net::configure_ipv4_addr(&info.name, None, None)?;
+            }
             _ => {
                 if super::wext::is_wext_ioctl(cmd) {
                     return super::wext::handle(cmd, arg);
@@ -372,5 +447,25 @@ impl Pollable for Socket {
 
     fn register(&self, context: &mut Context<'_>, events: IoEvents) {
         self.inner.register(context, events);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn netmask_prefix_len_accepts_contiguous_masks() {
+        assert_eq!(netmask_prefix_len(Ipv4Addr::new(255, 255, 255, 0)), Ok(24));
+        assert_eq!(netmask_prefix_len(Ipv4Addr::new(255, 255, 0, 0)), Ok(16));
+        assert_eq!(netmask_prefix_len(Ipv4Addr::new(0, 0, 0, 0)), Ok(0));
+    }
+
+    #[test]
+    fn netmask_prefix_len_rejects_sparse_masks() {
+        assert_eq!(
+            netmask_prefix_len(Ipv4Addr::new(255, 0, 255, 0)),
+            Err(AxError::InvalidInput)
+        );
     }
 }

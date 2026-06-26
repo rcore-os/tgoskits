@@ -27,11 +27,12 @@ use alloc::{
 };
 use core::{
     mem::size_of,
+    net::Ipv4Addr,
     sync::atomic::{AtomicBool, Ordering},
     task::Context,
 };
 
-use ax_errno::{AxError, AxResult};
+use ax_errno::{AxError, AxResult, LinuxError};
 use ax_kspin::SpinNoIrq as Mutex;
 use ax_net::{InterfaceFlags, InterfaceInfo, InterfaceKind};
 use ax_task::future::{block_on, poll_io};
@@ -56,6 +57,7 @@ const MAX_QUEUED: usize = 128;
 const NLMSG_ERROR: u16 = 2;
 const NLMSG_DONE: u16 = 3;
 const NLM_F_MULTI: u16 = 2;
+const NLM_F_ACK: u16 = 4;
 
 /// Generic netlink controller family ID. Linux's
 /// `Documentation/netlink/genetlink-legacy.rst` reserves this for
@@ -76,6 +78,7 @@ const CTRL_MAX_ATTR: u32 = 11;
 
 const RTM_GETLINK: u16 = 18;
 const RTM_NEWLINK: u16 = 16;
+const RTM_DELADDR: u16 = 21;
 const RTM_GETADDR: u16 = 22;
 const RTM_NEWADDR: u16 = 20;
 
@@ -352,6 +355,15 @@ impl NetlinkSocket {
         let in_root = in_root_net_ns();
         let mut response = Vec::new();
         match header.ty {
+            RTM_NEWLINK => {
+                push_route_update_ack(&mut response, request, pid, handle_newlink(request));
+            }
+            RTM_NEWADDR => {
+                push_route_update_ack(&mut response, request, pid, handle_newaddr(request));
+            }
+            RTM_DELADDR => {
+                push_route_update_ack(&mut response, request, pid, handle_deladdr(request));
+            }
             RTM_GETLINK => {
                 for link in link_infos() {
                     if !in_root && link.index != 1 {
@@ -368,9 +380,20 @@ impl NetlinkSocket {
                     push_addr_message(&mut response, header.seq, pid, &addr);
                 }
             }
-            _ => {}
+            _ => {
+                if header.flags & NLM_F_ACK != 0 {
+                    push_nlmsg_error(
+                        &mut response,
+                        request,
+                        pid,
+                        -(LinuxError::EOPNOTSUPP.code()),
+                    );
+                }
+            }
         }
-        push_done_message(&mut response, header.seq, pid);
+        if matches!(header.ty, RTM_GETLINK | RTM_GETADDR) {
+            push_done_message(&mut response, header.seq, pid);
+        }
         Ok(response)
     }
 
@@ -685,6 +708,139 @@ fn push_addr_message(out: &mut Vec<u8>, seq: u32, pid: u32, addr: &AddrInfo) {
     out.extend_from_slice(&body);
 }
 
+fn handle_newlink(request: &[u8]) -> Result<(), LinuxError> {
+    let header_len = size_of::<NlMsgHdr>();
+    if request.len() < header_len + size_of::<IfInfoMsg>() {
+        return Err(LinuxError::EINVAL);
+    }
+    let msg = unsafe {
+        request
+            .as_ptr()
+            .add(header_len)
+            .cast::<IfInfoMsg>()
+            .read_unaligned()
+    };
+    let Some(id) = ax_net::InterfaceId::from_linux_ifindex(msg.index) else {
+        return Err(LinuxError::ENODEV);
+    };
+    let info = ax_net::interface_by_id(id).ok_or(LinuxError::ENODEV)?;
+    if !in_root_net_ns() && info.kind != ax_net::InterfaceKind::Loopback {
+        return Err(LinuxError::EACCES);
+    }
+    if msg.change & IFF_UP != 0 {
+        ax_net::set_interface_up(&info.name, msg.flags & IFF_UP != 0).map_err(LinuxError::from)?;
+    }
+    Ok(())
+}
+
+fn handle_newaddr(request: &[u8]) -> Result<(), LinuxError> {
+    let header_len = size_of::<NlMsgHdr>();
+    if request.len() < header_len + size_of::<IfAddrMsg>() {
+        return Err(LinuxError::EINVAL);
+    }
+    let msg = unsafe {
+        request
+            .as_ptr()
+            .add(header_len)
+            .cast::<IfAddrMsg>()
+            .read_unaligned()
+    };
+    if msg.family != AF_INET || msg.prefix_len > 32 {
+        return Err(LinuxError::EINVAL);
+    }
+    let id = ax_net::InterfaceId::from_linux_ifindex(msg.index as i32).ok_or(LinuxError::ENODEV)?;
+    let info = ax_net::interface_by_id(id).ok_or(LinuxError::ENODEV)?;
+    if !in_root_net_ns() && info.kind != ax_net::InterfaceKind::Loopback {
+        return Err(LinuxError::EACCES);
+    }
+    let attrs = route_attrs(request, header_len + size_of::<IfAddrMsg>())?;
+    let address = attr_ipv4(&attrs, IFA_LOCAL)
+        .or_else(|| attr_ipv4(&attrs, IFA_ADDRESS))
+        .ok_or(LinuxError::EINVAL)?;
+    let gateway = info
+        .ipv4
+        .and_then(|ipv4| ipv4.gateway.map(|gateway| Ipv4Addr::from(gateway.octets())));
+    ax_net::configure_ipv4_addr(&info.name, Some((address, msg.prefix_len)), gateway)
+        .map_err(LinuxError::from)
+}
+
+fn handle_deladdr(request: &[u8]) -> Result<(), LinuxError> {
+    let header_len = size_of::<NlMsgHdr>();
+    if request.len() < header_len + size_of::<IfAddrMsg>() {
+        return Err(LinuxError::EINVAL);
+    }
+    let msg = unsafe {
+        request
+            .as_ptr()
+            .add(header_len)
+            .cast::<IfAddrMsg>()
+            .read_unaligned()
+    };
+    if msg.family != AF_INET {
+        return Err(LinuxError::EINVAL);
+    }
+    let id = ax_net::InterfaceId::from_linux_ifindex(msg.index as i32).ok_or(LinuxError::ENODEV)?;
+    let info = ax_net::interface_by_id(id).ok_or(LinuxError::ENODEV)?;
+    if !in_root_net_ns() && info.kind != ax_net::InterfaceKind::Loopback {
+        return Err(LinuxError::EACCES);
+    }
+    let attrs = route_attrs(request, header_len + size_of::<IfAddrMsg>())?;
+    let requested = attr_ipv4(&attrs, IFA_LOCAL).or_else(|| attr_ipv4(&attrs, IFA_ADDRESS));
+    if let (Some(current), Some(requested)) = (
+        info.ipv4
+            .map(|ipv4| Ipv4Addr::from(ipv4.address.address().octets())),
+        requested,
+    ) && current != requested
+    {
+        return Err(LinuxError::EADDRNOTAVAIL);
+    }
+    ax_net::configure_ipv4_addr(&info.name, None, None).map_err(LinuxError::from)
+}
+
+fn push_route_update_ack(
+    out: &mut Vec<u8>,
+    request: &[u8],
+    pid: u32,
+    result: Result<(), LinuxError>,
+) {
+    let err = result.err().map_or(0, |err| -err.code());
+    push_nlmsg_error(out, request, pid, err);
+}
+
+fn route_attrs(request: &[u8], start: usize) -> Result<Vec<(u16, Vec<u8>)>, LinuxError> {
+    let header = unsafe { request.as_ptr().cast::<NlMsgHdr>().read_unaligned() };
+    let end = (header.len as usize).min(request.len());
+    if start > end {
+        return Err(LinuxError::EINVAL);
+    }
+    parse_route_attrs(&request[start..end])
+}
+
+fn parse_route_attrs(mut buf: &[u8]) -> Result<Vec<(u16, Vec<u8>)>, LinuxError> {
+    let mut attrs = Vec::new();
+    while buf.len() >= size_of::<RtAttr>() {
+        let attr = unsafe { buf.as_ptr().cast::<RtAttr>().read_unaligned() };
+        let len = attr.len as usize;
+        if len < size_of::<RtAttr>() || len > buf.len() {
+            return Err(LinuxError::EINVAL);
+        }
+        attrs.push((attr.ty, buf[size_of::<RtAttr>()..len].to_vec()));
+        let aligned = (len + 3) & !3;
+        if aligned > buf.len() {
+            return Err(LinuxError::EINVAL);
+        }
+        buf = &buf[aligned..];
+    }
+    Ok(attrs)
+}
+
+fn attr_ipv4(attrs: &[(u16, Vec<u8>)], ty: u16) -> Option<Ipv4Addr> {
+    attrs
+        .iter()
+        .find(|(attr_ty, value)| *attr_ty == ty && value.len() >= 4)
+        .map(|(_, value)| Ipv4Addr::new(value[0], value[1], value[2], value[3]))
+}
+
 fn push_ctrl_family(out: &mut Vec<u8>, seq: u32, pid: u32, multi: bool) {
     let mut payload = Vec::new();
     push_struct(
@@ -809,4 +965,58 @@ unsafe fn as_bytes<T>(value: &T) -> &[u8] {
 fn pad_to_align4(out: &mut Vec<u8>) {
     let aligned = (out.len() + 3) & !3;
     out.resize(aligned, 0);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_route_attrs_extracts_ipv4_attributes() {
+        let mut buf = Vec::new();
+        push_attr(&mut buf, IFA_ADDRESS, &[10, 0, 2, 15]);
+        push_attr(&mut buf, IFA_LOCAL, &[192, 0, 2, 33]);
+
+        let attrs = parse_route_attrs(&buf).unwrap();
+
+        assert_eq!(
+            attr_ipv4(&attrs, IFA_ADDRESS),
+            Some(Ipv4Addr::new(10, 0, 2, 15))
+        );
+        assert_eq!(
+            attr_ipv4(&attrs, IFA_LOCAL),
+            Some(Ipv4Addr::new(192, 0, 2, 33))
+        );
+    }
+
+    #[test]
+    fn push_route_update_ack_encodes_linux_errno() {
+        let mut request = Vec::new();
+        push_struct(
+            &mut request,
+            &NlMsgHdr {
+                len: size_of::<NlMsgHdr>() as u32,
+                ty: RTM_NEWADDR,
+                flags: NLM_F_ACK,
+                seq: 7,
+                pid: 11,
+            },
+        );
+
+        let mut response = Vec::new();
+        push_route_update_ack(&mut response, &request, 23, Err(LinuxError::EINVAL));
+
+        let header = unsafe { response.as_ptr().cast::<NlMsgHdr>().read_unaligned() };
+        let error_offset = size_of::<NlMsgHdr>();
+        let error = i32::from_ne_bytes(
+            response[error_offset..error_offset + size_of::<i32>()]
+                .try_into()
+                .unwrap(),
+        );
+
+        assert_eq!(header.ty, NLMSG_ERROR);
+        assert_eq!(header.seq, 7);
+        assert_eq!(header.pid, 23);
+        assert_eq!(error, -LinuxError::EINVAL.code());
+    }
 }

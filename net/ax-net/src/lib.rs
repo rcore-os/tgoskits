@@ -67,7 +67,7 @@ use alloc::{
     borrow::ToOwned, boxed::Box, format, string::String, sync::Arc, task::Wake, vec, vec::Vec,
 };
 use core::{
-    net::IpAddr,
+    net::{IpAddr, Ipv4Addr},
     sync::atomic::{AtomicBool, Ordering},
     task::Waker,
     time::Duration,
@@ -500,6 +500,36 @@ pub fn ipv4_config(name: &str) -> Option<Ipv4InterfaceConfig> {
 /// Returns public snapshots of configured IPv4 default routes.
 pub fn default_routes() -> Vec<RouteInfo> {
     get_control().default_routes()
+}
+
+/// Replaces an interface's runtime IPv4 configuration.
+pub fn configure_ipv4(
+    name: &str,
+    address: Option<Ipv4Cidr>,
+    gateway: Option<Ipv4Address>,
+) -> AxResult<()> {
+    get_service().configure_ipv4(name, address, gateway)?;
+    request_poll();
+    Ok(())
+}
+
+/// Convenience wrapper for configuring IPv4 from core address types.
+pub fn configure_ipv4_addr(
+    name: &str,
+    address: Option<(Ipv4Addr, u8)>,
+    gateway: Option<Ipv4Addr>,
+) -> AxResult<()> {
+    let address =
+        address.map(|(ip, prefix_len)| Ipv4Cidr::new(Ipv4Address::from(ip.octets()), prefix_len));
+    let gateway = gateway.map(|gateway| Ipv4Address::from(gateway.octets()));
+    configure_ipv4(name, address, gateway)
+}
+
+/// Updates an interface's administrative UP flag.
+pub fn set_interface_up(name: &str, up: bool) -> AxResult<()> {
+    get_service().set_interface_up(name, up)?;
+    request_poll();
+    Ok(())
 }
 
 /// Runtime configuration for a statically addressed Ethernet device.
