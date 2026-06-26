@@ -61,7 +61,7 @@
 //! `attr.inherit` (following `fork`/`clone` children) is deferred: the counter
 //! follows the single attached task only.
 
-use alloc::sync::Arc;
+use alloc::{string::String, sync::Arc, vec::Vec};
 use core::{
     any::Any,
     sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
@@ -69,13 +69,22 @@ use core::{
 
 use ax_alloc::GlobalPage;
 use ax_kspin::SpinNoIrq;
+use ax_runtime::hal::paging::MappingFlags;
 use ax_task::IrqNotify;
 
 use super::{
     hw,
     sampling::{self, SampleSlot},
+    sideband::{self, Mmap2Info, SidebandTarget},
 };
 use crate::task::Thread;
+
+// `PROT_*` / `MAP_*` values for the `prot`/`flags` fields of MMAP2 records.
+const PROT_READ: u32 = 1;
+const PROT_WRITE: u32 = 2;
+const PROT_EXEC: u32 = 4;
+const MAP_SHARED: u32 = 1;
+const MAP_PRIVATE: u32 = 2;
 
 /// Number of per-task counters currently attached anywhere in the system.
 ///
@@ -161,6 +170,14 @@ pub struct PerTaskCounter {
     /// once via [`set_sample_id`](Self::set_sample_id) from the `PerfEvent`
     /// wrapper, before any scheduler hook runs); `0` until then.
     sample_id: AtomicU64,
+    /// `attr.comm`: this event wants `PERF_RECORD_COMM` side-band records.
+    want_comm: bool,
+    /// `attr.mmap2`: this event wants `PERF_RECORD_MMAP2` side-band records.
+    want_mmap2: bool,
+    /// `attr.task`: this event wants `PERF_RECORD_FORK` / `EXIT` side-band records.
+    want_task: bool,
+    /// `attr.sample_id_all`: side-band records carry the sample-id trailer.
+    sample_id_all: bool,
 
     /// Kernel virtual address of the ring's first page (`perf_event_mmap_page`),
     /// or `0` until `mmap(perf_fd)` runs ([`set_ring`](Self::set_ring)). Read by
@@ -254,6 +271,14 @@ pub struct PerTaskConfig {
     pub freq: bool,
     /// Target sample rate (Hz) for frequency mode; `0` in fixed-period mode.
     pub target_freq: u32,
+    /// `attr.comm`: emit `PERF_RECORD_COMM` side-band records (process name).
+    pub want_comm: bool,
+    /// `attr.mmap2`: emit `PERF_RECORD_MMAP2` side-band records (executable maps).
+    pub want_mmap2: bool,
+    /// `attr.task`: emit `PERF_RECORD_FORK` / `EXIT` side-band records.
+    pub want_task: bool,
+    /// `attr.sample_id_all`: append the sample-id trailer to every side-band record.
+    pub sample_id_all: bool,
 }
 
 impl PerTaskCounter {
@@ -285,6 +310,10 @@ impl PerTaskCounter {
             freq: cfg.freq,
             freq_target: cfg.target_freq,
             sample_id: AtomicU64::new(0),
+            want_comm: cfg.want_comm,
+            want_mmap2: cfg.want_mmap2,
+            want_task: cfg.want_task,
+            sample_id_all: cfg.sample_id_all,
             ring_vaddr: AtomicUsize::new(0),
             ring_len: AtomicUsize::new(0),
             notify_ptr: AtomicUsize::new(0),
@@ -626,6 +655,171 @@ pub fn on_exec(thr: &Thread) {
     // Program the now-enabled counters onto HW for the current task. Takes the
     // list lock itself, so it is released above first.
     perf_sched_in(thr);
+}
+
+/// Build a side-band write target for `ptc` if it has a mapped ring and requested
+/// any side-band record (`attr.comm`/`mmap2`/`task`); else `None`.
+fn sideband_target(ptc: &PerTaskCounter, pid: u32, tid: u32) -> Option<SidebandTarget> {
+    let ring_vaddr = ptc.ring_vaddr.load(Ordering::Acquire);
+    if ring_vaddr == 0 || !(ptc.want_comm || ptc.want_mmap2 || ptc.want_task) {
+        return None;
+    }
+    Some(SidebandTarget {
+        ring_vaddr,
+        ring_len: ptc.ring_len.load(Ordering::Acquire),
+        sample_type: ptc.sample_type,
+        sample_id_all: ptc.sample_id_all,
+        id: ptc.sample_id.load(Ordering::Relaxed),
+        pid,
+        tid,
+    })
+}
+
+/// Snapshot the executable file-backed mappings of `thr`'s address space as
+/// `MMAP2` records. Collected under the aspace lock and returned owned, so the
+/// caller writes the ring (which masks IRQs) without holding that lock.
+fn collect_exec_maps(thr: &Thread) -> Vec<Mmap2Info> {
+    let aspace = thr.proc_data.aspace();
+    let mm = aspace.lock();
+    let mut maps = Vec::new();
+    for area in mm.areas() {
+        let flags = area.flags();
+        if !flags.contains(MappingFlags::EXECUTE) {
+            continue;
+        }
+        // Only file-backed areas can be symbolized (perf opens the file). An
+        // anonymous executable mapping (JIT) has no file and is skipped.
+        let Ok(fi) = area.backend().file_info() else {
+            continue;
+        };
+        let mut prot = 0u32;
+        if flags.contains(MappingFlags::READ) {
+            prot |= PROT_READ;
+        }
+        if flags.contains(MappingFlags::WRITE) {
+            prot |= PROT_WRITE;
+        }
+        prot |= PROT_EXEC;
+        maps.push(Mmap2Info {
+            addr: area.start().as_usize() as u64,
+            len: (area.end().as_usize() - area.start().as_usize()) as u64,
+            pgoff: fi.offset.unwrap_or(0),
+            maj: 0,
+            min: 0,
+            ino: fi.inode.unwrap_or(0),
+            prot,
+            flags: if fi.shared { MAP_SHARED } else { MAP_PRIVATE },
+            filename: fi.path,
+        });
+    }
+    maps
+}
+
+/// Exec side-band hook: emit `PERF_RECORD_COMM` (new process name) and one
+/// `PERF_RECORD_MMAP2` per executable mapping (the exec image + the dynamic
+/// loader), into every per-task event monitoring this thread that asked for them.
+///
+/// Called from `do_execve` right after [`on_exec`], in the exec'd task's context
+/// (so [`current`] is this task and `thr`'s address space is the new image).
+/// `perf record` mmaps the ring before releasing the child, so the ring exists.
+pub fn on_exec_sideband(thr: &Thread) {
+    if PERF_TASK_ACTIVE.load(Ordering::Acquire) == 0 {
+        return;
+    }
+    let pid = thr.proc_data.proc.pid() as u32;
+    let tid = thr.tid() as u32;
+
+    /// A target plus which record kinds it wants (so the COMM/MMAP2 loops below
+    /// can each skip non-subscribers without re-walking the counter list).
+    struct WantTarget {
+        target: SidebandTarget,
+        comm: bool,
+        mmap2: bool,
+    }
+    // Snapshot targets, then drop the counter lock before any ring write.
+    let targets: Vec<WantTarget> = {
+        let counters = thr.perf_counters.lock();
+        counters
+            .iter()
+            .filter_map(|ptc| {
+                sideband_target(ptc, pid, tid).map(|target| WantTarget {
+                    target,
+                    comm: ptc.want_comm,
+                    mmap2: ptc.want_mmap2,
+                })
+            })
+            .collect()
+    };
+    if targets.is_empty() {
+        return;
+    }
+
+    // COMM: the new process name (this hook runs in the exec'd task's context).
+    let curr = ax_task::current();
+    let name = curr.name();
+    for wt in &targets {
+        if wt.comm {
+            sideband::emit_comm(&wt.target, &name, true);
+        }
+    }
+
+    // MMAP2: one per executable file-backed mapping of the new image.
+    if targets.iter().any(|wt| wt.mmap2) {
+        let maps = collect_exec_maps(thr);
+        for wt in &targets {
+            if wt.mmap2 {
+                for m in &maps {
+                    sideband::emit_mmap2(&wt.target, m);
+                }
+            }
+        }
+    }
+}
+
+/// mmap side-band hook: emit a `PERF_RECORD_MMAP2` for a newly-mapped executable
+/// file region of the current task (a shared library the dynamic loader just
+/// `mmap`ed), into every monitoring per-task event that asked for mmap records.
+///
+/// Called from `sys_mmap` after a successful executable, file-backed mapping.
+pub fn on_mmap_sideband(
+    thr: &Thread,
+    addr: usize,
+    len: usize,
+    pgoff: usize,
+    prot: u32,
+    shared: bool,
+    filename: &str,
+) {
+    if PERF_TASK_ACTIVE.load(Ordering::Acquire) == 0 {
+        return;
+    }
+    let pid = thr.proc_data.proc.pid() as u32;
+    let tid = thr.tid() as u32;
+    let targets: Vec<SidebandTarget> = {
+        let counters = thr.perf_counters.lock();
+        counters
+            .iter()
+            .filter(|ptc| ptc.want_mmap2)
+            .filter_map(|ptc| sideband_target(ptc, pid, tid))
+            .collect()
+    };
+    if targets.is_empty() {
+        return;
+    }
+    let m = Mmap2Info {
+        addr: addr as u64,
+        len: len as u64,
+        pgoff: pgoff as u64,
+        maj: 0,
+        min: 0,
+        ino: 0,
+        prot,
+        flags: if shared { MAP_SHARED } else { MAP_PRIVATE },
+        filename: String::from(filename),
+    };
+    for t in &targets {
+        sideband::emit_mmap2(t, &m);
+    }
 }
 
 /// Task-exit hook: free every HW counter the exiting thread still holds.

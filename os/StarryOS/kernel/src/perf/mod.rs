@@ -14,6 +14,11 @@ pub mod raw_tracepoint;
 /// tracing paths are arch-agnostic, but sampling depends on `ax_cpu::pmu`.
 #[cfg(target_arch = "aarch64")]
 pub mod sampling;
+/// Side-band records (`PERF_RECORD_COMM`/`MMAP2`/`FORK`/`EXIT`) for `perf report`
+/// symbolization. Writes into the sampling ring from process context, so it is
+/// gated like `sampling`.
+#[cfg(target_arch = "aarch64")]
+pub mod sideband;
 /// Per-task hardware-PMU counting (`perf stat -- cmd`, M3). ARM PMUv3 only; the
 /// scheduler hooks call into `ax_cpu::pmu`, so it is gated like `sampling`.
 #[cfg(target_arch = "aarch64")]

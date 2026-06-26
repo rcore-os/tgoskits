@@ -586,3 +586,26 @@ unsafe fn ring_write(ring_vaddr: usize, ring_len: usize, record: &[u8]) {
         core::ptr::addr_of_mut!((*header).data_head).write_volatile(head.wrapping_add(len as u64));
     }
 }
+
+/// Write one record into a sampling ring from **process context** (the side-band
+/// path: `PERF_RECORD_MMAP2` / `COMM` / `FORK` / `EXIT` emitted at execve / mmap /
+/// clone / exit), serialized against the overflow handler.
+///
+/// The overflow handler ([`pmu_overflow_handler`]) writes the same ring in hard-
+/// IRQ context on this core; a process-context writer must therefore mask local
+/// IRQs ([`NoPreemptIrqSave`]) so the handler cannot run mid-write and interleave
+/// a sample at the same `data_head`. On a single core this fully serializes the
+/// two writers (M2 scope). The actual copy + head publish reuses [`ring_write`].
+///
+/// # Safety
+///
+/// Same contract as [`ring_write`]: `ring_vaddr`/`ring_len` must describe a live,
+/// kernel-mapped ring (header page + data region) whose pages stay pinned for the
+/// duration of the call (the event holds the backing `Arc` while the slot/ring is
+/// registered).
+pub unsafe fn ring_write_process(ring_vaddr: usize, ring_len: usize, record: &[u8]) {
+    let _guard = NoPreemptIrqSave::new();
+    // SAFETY: caller upholds the ring liveness contract; IRQs are masked so the
+    // overflow handler cannot race this write on the current core.
+    unsafe { ring_write(ring_vaddr, ring_len, record) };
+}

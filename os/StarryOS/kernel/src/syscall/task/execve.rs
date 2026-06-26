@@ -420,6 +420,10 @@ fn do_execve(
     // `perf stat -- cmd` relies on this to start counting at the child's exec.
     #[cfg(target_arch = "aarch64")]
     crate::perf::task::on_exec(thr);
+    // Emit COMM + MMAP2 side-band records for the new image so `perf report` can
+    // symbolize this task's samples (the new aspace + name are committed above).
+    #[cfg(target_arch = "aarch64")]
+    crate::perf::task::on_exec_sideband(thr);
 
     // Unblock a vfork parent waiting for this child to exec.
     // Must be last: by now CLOEXEC fds are closed so the parent's pipe

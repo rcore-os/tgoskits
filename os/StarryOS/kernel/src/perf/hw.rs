@@ -1108,6 +1108,11 @@ fn perf_event_open_hw_per_task(attr: &perf_event_attr, pid: i32) -> AxResult<HwP
             sample_type: attr.sample_type,
             freq: is_freq,
             target_freq,
+            // Side-band records for `perf report` symbolization.
+            want_comm: attr.comm() != 0,
+            want_mmap2: attr.mmap2() != 0,
+            want_task: attr.task() != 0,
+            sample_id_all: attr.sample_id_all() != 0,
         },
     ));
     super::task::attach(thr, ptc.clone());
