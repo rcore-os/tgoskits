@@ -12,9 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use core::{cell::UnsafeCell, ptr};
+use core::ptr;
 
-use ax_kspin::SpinNoIrq as Mutex;
+use ax_kspin::SpinNoIrq;
 use ax_memory_addr::PhysAddr;
 use axdevice_base::{AccessWidth, BaseDeviceOps};
 use axvm_types::{GuestPhysAddr, GuestPhysAddrRange, HostPhysAddr};
@@ -49,19 +49,18 @@ pub struct VGicR {
     pub host_gicr_base_this_cpu: HostPhysAddr,
 
     /// Virtual GICR registers.
-    pub regs: UnsafeCell<VGicRRegs>,
+    pub regs: SpinNoIrq<VGicRRegs>,
 }
 
 impl VGicR {
-    /// Gets a reference to the registers.
-    pub fn regs(&self) -> &VGicRRegs {
-        unsafe { &*self.regs.get() }
+    /// Accesses the registers immutably under the internal lock.
+    fn with_regs<R>(&self, f: impl FnOnce(&VGicRRegs) -> R) -> R {
+        f(&self.regs.lock())
     }
 
-    /// Gets a mutable reference to the registers.
-    #[allow(clippy::mut_from_ref)]
-    pub fn regs_mut(&self) -> &mut VGicRRegs {
-        unsafe { &mut *self.regs.get() }
+    /// Accesses the registers mutably under the internal lock.
+    fn with_regs_mut<R>(&self, f: impl FnOnce(&mut VGicRRegs) -> R) -> R {
+        f(&mut self.regs.lock())
     }
 
     /// Creates a new VGicR instance.
@@ -74,7 +73,7 @@ impl VGicR {
             size,
             cpu_id,
             host_gicr_base_this_cpu,
-            regs: UnsafeCell::new(VGicRRegs { propbaser: 0 }),
+            regs: SpinNoIrq::new(VGicRRegs { propbaser: 0 }),
         }
     }
 }
@@ -128,7 +127,7 @@ impl BaseDeviceOps<GuestPhysAddrRange> for VGicR {
                 // all the redist share one prop tbl
                 // mmio_perform_access(gicr_base, mmio);
 
-                Ok(self.regs().propbaser)
+                Ok(self.with_regs(|r| r.propbaser))
             }
             GICR_SYNCR => {
                 // always return 0 for synchronization register
@@ -181,7 +180,7 @@ impl BaseDeviceOps<GuestPhysAddrRange> for VGicR {
             }
             GICR_PROPBASER => {
                 // all the redist share one prop tbl
-                self.regs_mut().propbaser = value;
+                self.with_regs_mut(|r| r.propbaser = value);
                 Ok(())
             }
             GICR_SETLPIR | GICR_CLRLPIR | GICR_INVALLR => {
@@ -284,17 +283,17 @@ impl LpiPropTable {
 }
 
 /// Global LPI property table instance.
-pub static LPT: Once<Mutex<LpiPropTable>> = Once::new();
+pub static LPT: Once<spin::Mutex<LpiPropTable>> = Once::new();
 
 /// Gets or initializes the global LPI property table.
 pub fn get_lpt(
     host_gicd_typer: u32,
     host_gicr_base: HostPhysAddr,
     size_per_gicr: Option<usize>,
-) -> &'static Mutex<LpiPropTable> {
+) -> &'static spin::Mutex<LpiPropTable> {
     if !LPT.is_completed() {
         LPT.call_once(|| {
-            Mutex::new(LpiPropTable::new(
+            spin::Mutex::new(LpiPropTable::new(
                 host_gicd_typer,
                 host_gicr_base,
                 size_per_gicr,

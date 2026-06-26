@@ -14,14 +14,14 @@
 
 //! WARNING: Identical mapping only!!
 
-use core::{cell::UnsafeCell, ptr};
+use core::ptr;
 
-use ax_kspin::SpinNoIrq as Mutex;
+use ax_kspin::SpinNoIrq;
 use ax_memory_addr::PhysAddr;
 use axdevice_base::{AccessWidth, BaseDeviceOps};
 use axvm_types::{GuestPhysAddr, GuestPhysAddrRange, HostPhysAddr};
-use log::{debug, trace};
-use spin::Once;
+use log::{debug, trace, warn};
+use spin::{Mutex, Once};
 
 use super::{
     registers::*,
@@ -61,17 +61,22 @@ pub struct Gits {
     pub is_root_vm: bool,
 
     /// Virtual GITS registers.
-    pub regs: UnsafeCell<VirtualGitsRegs>,
+    pub regs: SpinNoIrq<VirtualGitsRegs>,
+
+    /// Serialises CWRITER command-queue submission so that only one
+    /// vCPU can process the queue at a time, preventing races where
+    /// two vCPUs see the same old `creadr` and re-process already-
+    /// handled commands.
+    pub submission_lock: SpinNoIrq<()>,
 }
 
 impl Gits {
-    fn regs(&self) -> &VirtualGitsRegs {
-        unsafe { &*self.regs.get() }
+    fn with_regs<R>(&self, f: impl FnOnce(&VirtualGitsRegs) -> R) -> R {
+        f(&self.regs.lock())
     }
 
-    #[allow(clippy::mut_from_ref)]
-    fn regs_mut(&self) -> &mut VirtualGitsRegs {
-        unsafe { &mut *self.regs.get() }
+    fn with_regs_mut<R>(&self, f: impl FnOnce(&mut VirtualGitsRegs) -> R) -> R {
+        f(&mut self.regs.lock())
     }
 
     /// Creates a new GITS instance.
@@ -82,7 +87,7 @@ impl Gits {
         is_root_vm: bool,
     ) -> Self {
         let size = size.unwrap_or(DEFAULT_GITS_SIZE); // 4K
-        let regs = UnsafeCell::new(VirtualGitsRegs::default());
+        let regs = SpinNoIrq::new(VirtualGitsRegs::default());
 
         // ensure cmdq and lpi prop table is initialized before VMs are up
         let _ = get_cmdq(host_gits_base);
@@ -98,6 +103,7 @@ impl Gits {
             host_gits_base,
             is_root_vm,
             regs,
+            submission_lock: SpinNoIrq::new(()),
         }
     }
 }
@@ -132,29 +138,25 @@ impl BaseDeviceOps<GuestPhysAddrRange> for Gits {
         // mmio_perform_access(gits_base, mmio);
         match reg {
             GITS_CTRL => perform_mmio_read(gits_base + reg, width),
-            GITS_CBASER => Ok(self.regs().cbaser),
+            GITS_CBASER => Ok(self.with_regs(|r| r.cbaser)),
             GITS_DT_BASER => {
                 if self.is_root_vm {
                     perform_mmio_read(gits_base + reg, width)
                 } else {
-                    Ok(
-                        (self.regs().dt_baser)
-                            & (1usize.unbounded_shl(width.size() as u32 * 8) - 1),
-                    )
+                    Ok((self.with_regs(|r| r.dt_baser))
+                        & (1usize.unbounded_shl(width.size() as u32 * 8) - 1))
                 }
             }
             GITS_CT_BASER => {
                 if self.is_root_vm {
                     perform_mmio_read(gits_base + reg, width)
                 } else {
-                    Ok(
-                        (self.regs().ct_baser)
-                            & (1usize.unbounded_shl(width.size() as u32 * 8) - 1),
-                    )
+                    Ok((self.with_regs(|r| r.ct_baser))
+                        & (1usize.unbounded_shl(width.size() as u32 * 8) - 1))
                 }
             }
-            GITS_CWRITER => Ok(self.regs().cwriter),
-            GITS_CREADR => Ok(self.regs().creadr),
+            GITS_CWRITER => Ok(self.with_regs(|r| r.cwriter)),
+            GITS_CREADR => Ok(self.with_regs(|r| r.creadr)),
             GITS_TYPER => perform_mmio_read(gits_base + reg, width),
             _ => perform_mmio_read(gits_base + reg, width),
         }
@@ -187,14 +189,14 @@ impl BaseDeviceOps<GuestPhysAddrRange> for Gits {
                     perform_mmio_write(gits_base + reg, width, val)?;
                 }
 
-                self.regs_mut().cbaser = val;
+                self.with_regs_mut(|r| r.cbaser = val);
                 Ok(())
             }
             GITS_DT_BASER => {
                 if self.is_root_vm {
                     perform_mmio_write(gits_base + reg, width, val)
                 } else {
-                    self.regs_mut().dt_baser = val;
+                    self.with_regs_mut(|r| r.dt_baser = val);
                     Ok(())
                 }
             }
@@ -202,26 +204,32 @@ impl BaseDeviceOps<GuestPhysAddrRange> for Gits {
                 if self.is_root_vm {
                     perform_mmio_write(gits_base + reg, width, val)
                 } else {
-                    self.regs_mut().ct_baser = val;
+                    self.with_regs_mut(|r| r.ct_baser = val);
                     Ok(())
                 }
             }
             GITS_CWRITER => {
-                self.regs_mut().cwriter = val;
+                // Serialise concurrent command-queue submissions: two
+                // vCPUs writing CWRITER must not see the same old
+                // creadr, or one may re-process commands already
+                // handled by the other.
+                let _submission = self.submission_lock.lock();
+                self.with_regs_mut(|r| r.cwriter = val);
 
                 if val != 0 {
-                    let regs = self.regs();
-                    let cbaser = regs.cbaser;
-                    let creadr = regs.creadr;
+                    let (cbaser, creadr) = self.with_regs(|r| (r.cbaser, r.creadr));
 
                     let mut cmdq = get_cmdq(self.host_gits_base).lock();
-                    self.regs_mut().creadr = cmdq.insert_cmd(cbaser, creadr, val);
+                    let new_creadr = cmdq.insert_cmd(cbaser, creadr, val);
+                    self.with_regs_mut(|r| r.creadr = new_creadr);
+                    drop(cmdq);
                 }
 
                 Ok(())
             }
             GITS_CREADR => {
-                panic!("GITS_CREADR should not be written by guest!");
+                warn!("GITS_CREADR: guest write ignored (read-only register)");
+                Ok(())
             }
             GITS_TYPER => perform_mmio_write(gits_base + reg, width, val),
             _ => perform_mmio_write(gits_base + reg, width, val),
@@ -413,7 +421,10 @@ impl Cmdq {
         let origin_vm_readr = vm_creadr;
 
         // todo: handle wrap around
-        let cmd_size = vm_writer - origin_vm_readr;
+        let cmd_size = vm_writer.wrapping_sub(origin_vm_readr);
+        if cmd_size == 0 || cmd_size > 0x10000 {
+            return vm_writer;
+        }
         let cmd_num = cmd_size / BYTES_PER_CMD;
 
         trace!(

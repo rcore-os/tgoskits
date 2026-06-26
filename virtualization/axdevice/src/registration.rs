@@ -17,7 +17,7 @@
 use alloc::{sync::Arc, vec::Vec};
 
 use ax_errno::AxResult;
-use axdevice_base::{BaseMmioDeviceOps, BasePortDeviceOps, BaseSysRegDeviceOps};
+use axdevice_base::Device;
 
 /// A device capability that can be polled by the VM runtime.
 pub trait PollableDeviceOps: Send + Sync {
@@ -28,12 +28,8 @@ pub trait PollableDeviceOps: Send + Sync {
 /// One strongly typed capability contributed by a device.
 #[non_exhaustive]
 pub enum DeviceRegistration {
-    /// An MMIO access capability.
-    Mmio(Arc<dyn BaseMmioDeviceOps>),
-    /// A port I/O access capability.
-    Port(Arc<dyn BasePortDeviceOps>),
-    /// A system register access capability.
-    SysReg(Arc<dyn BaseSysRegDeviceOps>),
+    /// A device implementing the unified [`Device`] trait.
+    Device(Arc<dyn Device>),
     /// A capability that requires periodic polling.
     Pollable(Arc<dyn PollableDeviceOps>),
 }
@@ -44,9 +40,7 @@ pub enum DeviceRegistration {
 /// [`DeviceRegistration`] when adding future capability kinds.
 #[derive(Default)]
 pub struct DeviceBundle {
-    pub(crate) mmio: Vec<Arc<dyn BaseMmioDeviceOps>>,
-    pub(crate) port: Vec<Arc<dyn BasePortDeviceOps>>,
-    pub(crate) sysreg: Vec<Arc<dyn BaseSysRegDeviceOps>>,
+    pub(crate) devices: Vec<Arc<dyn Device>>,
     pub(crate) pollable: Vec<Arc<dyn PollableDeviceOps>>,
 }
 
@@ -54,9 +48,7 @@ impl DeviceBundle {
     /// Creates an empty bundle.
     pub const fn new() -> Self {
         Self {
-            mmio: Vec::new(),
-            port: Vec::new(),
-            sysreg: Vec::new(),
+            devices: Vec::new(),
             pollable: Vec::new(),
         }
     }
@@ -71,9 +63,7 @@ impl DeviceBundle {
     /// Adds one capability to this bundle.
     pub fn push(&mut self, registration: DeviceRegistration) {
         match registration {
-            DeviceRegistration::Mmio(device) => self.mmio.push(device),
-            DeviceRegistration::Port(device) => self.port.push(device),
-            DeviceRegistration::SysReg(device) => self.sysreg.push(device),
+            DeviceRegistration::Device(device) => self.devices.push(device),
             DeviceRegistration::Pollable(device) => self.pollable.push(device),
         }
     }
@@ -86,10 +76,7 @@ impl DeviceBundle {
 
     /// Returns whether this bundle contains no capabilities.
     pub fn is_empty(&self) -> bool {
-        self.mmio.is_empty()
-            && self.port.is_empty()
-            && self.sysreg.is_empty()
-            && self.pollable.is_empty()
+        self.devices.is_empty() && self.pollable.is_empty()
     }
 }
 
