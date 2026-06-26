@@ -21,6 +21,8 @@ pub(crate) const AXTEST_COVERAGE_RUSTFLAGS: &[&str] = &[
 const COVERAGE_FEATURE: &str = "axtest/coverage";
 const COVERAGE_FILE_NAME: &str = "coverage.profraw";
 const MARKER_PREFIX: &str = "AXTEST_COVERAGE status=ready";
+const SUITE_OK_MARKER: &str = "AXTEST_SUITE_OK";
+pub(crate) const COVERAGE_DONE_MARKER: &str = "AXTEST_COVERAGE_DONE";
 
 pub(crate) fn enabled(cargo: &Cargo) -> bool {
     crate::build::env_truthy(&cargo.env, "AXTEST_COVERAGE")
@@ -91,6 +93,26 @@ pub(crate) fn apply_qemu_monitor(qemu: &mut QemuConfig, paths: &AxtestCoveragePa
     ]);
 }
 
+/// Replace the QEMU success regex so that ostool waits for coverage extraction
+/// to complete (signaled by `AXTEST_COVERAGE_DONE`) instead of matching
+/// `AXTEST_SUITE_OK` prematurely.
+pub(crate) fn update_success_regex(qemu: &mut QemuConfig) {
+    for regex in &mut qemu.success_regex {
+        if regex.contains(SUITE_OK_MARKER) {
+            *regex = regex.replace(SUITE_OK_MARKER, COVERAGE_DONE_MARKER);
+        }
+    }
+    // If no success regex contained the marker, add one for coverage done.
+    if !qemu
+        .success_regex
+        .iter()
+        .any(|r| r.contains(COVERAGE_DONE_MARKER))
+    {
+        qemu.success_regex
+            .push(COVERAGE_DONE_MARKER.to_string());
+    }
+}
+
 #[cfg(unix)]
 mod capture {
     use std::{
@@ -106,7 +128,7 @@ mod capture {
     use anyhow::{Context, bail};
     use regex::Regex;
 
-    use super::{AxtestCoveragePaths, MARKER_PREFIX};
+    use super::{AxtestCoveragePaths, COVERAGE_DONE_MARKER, MARKER_PREFIX, SUITE_OK_MARKER};
 
     pub(crate) struct AxtestCoverageCaptureGuard {
         saved_stdout: i32,
@@ -121,6 +143,7 @@ mod capture {
         profraw_path: PathBuf,
         line_buf: String,
         dumped: bool,
+        completion_signaled: bool,
         error: Option<String>,
         monitor_conn: Option<UnixStream>,
     }
@@ -156,6 +179,7 @@ mod capture {
                 profraw_path: paths.profraw_path.clone(),
                 line_buf: String::new(),
                 dumped: false,
+                completion_signaled: false,
                 error: None,
                 monitor_conn: None,
             }));
@@ -177,19 +201,42 @@ mod capture {
             let reader = std::thread::spawn(move || {
                 let mut pipe = unsafe { fs::File::from_raw_fd(read_fd) };
                 let mut terminal = unsafe { fs::File::from_raw_fd(tee_stdout) };
+                let mut tee_buf = String::new();
                 let mut buf = [0u8; 8192];
                 loop {
                     match pipe.read(&mut buf) {
                         Ok(0) => break,
                         Ok(n) => {
-                            terminal.write_all(&buf[..n])?;
+                            let chunk = String::from_utf8_lossy(&buf[..n]);
+                            tee_buf.push_str(&chunk);
+                            // Flush complete lines to terminal, filtering out
+                            // AXTEST_SUITE_OK so ostool doesn't kill QEMU before
+                            // coverage extraction finishes.
+                            while let Some(newline) = tee_buf.find('\n') {
+                                let line = &tee_buf[..=newline];
+                                if !line.contains(SUITE_OK_MARKER) {
+                                    terminal.write_all(line.as_bytes())?;
+                                }
+                                tee_buf.drain(..=newline + 1);
+                            }
                             if let Ok(mut state) = reader_state.lock() {
                                 state.push_bytes(&buf[..n]);
+                                // If coverage was just extracted, signal completion
+                                // to ostool so it can stop waiting.
+                                if state.dumped && !state.completion_signaled {
+                                    state.completion_signaled = true;
+                                    let marker = format!("{COVERAGE_DONE_MARKER}\n");
+                                    terminal.write_all(marker.as_bytes())?;
+                                }
                             }
                         }
                         Err(err) if err.kind() == io::ErrorKind::Interrupted => {}
                         Err(err) => return Err(err),
                     }
+                }
+                // Flush any remaining partial line
+                if !tee_buf.is_empty() && !tee_buf.contains(SUITE_OK_MARKER) {
+                    terminal.write_all(tee_buf.as_bytes())?;
                 }
                 terminal.flush()
             });
