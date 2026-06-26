@@ -5,7 +5,7 @@ use alloc::sync::Arc;
 use ax_kspin::SpinRaw as Mutex;
 use heapless::Vec as ArrayVec;
 use mmio_api::MmioOp;
-#[cfg(virtio_dev)]
+#[cfg(any(test, virtio_dev))]
 use pcie::CommandRegister;
 #[cfg(virtio_dev)]
 use rdrive::probe::pci::{Endpoint, EndpointRc};
@@ -26,6 +26,7 @@ use virtio_drivers::transport::{
     },
 };
 
+use crate::BindingIrq;
 #[cfg(virtio_dev)]
 use crate::virtio::VirtIoHalImpl;
 
@@ -39,39 +40,135 @@ pub(crate) use acpi::acpi_irq_for_endpoint;
 pub(crate) use fdt::fdt_irq_for_endpoint;
 
 const MAX_PCIE_LEGACY_IRQS: usize = 8;
+#[cfg(virtio_dev)]
+const MAX_TAKEN_ENDPOINT_CONFIGS: usize = 16;
 const PCI_INTX_LINES: usize = 4;
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct LegacyIrq {
+    binding: BindingIrq,
+    raw: Option<usize>,
+}
+
+impl LegacyIrq {
+    fn try_legacy(raw: usize) -> Option<Self> {
+        let binding = BindingIrq::try_legacy(raw).ok()?;
+        Some(Self {
+            binding,
+            raw: Some(raw),
+        })
+    }
+
+    #[cfg(plat_dyn)]
+    fn native(binding: BindingIrq, raw: Option<usize>) -> Self {
+        Self { binding, raw }
+    }
+
+    fn legacy_num(&self) -> Option<usize> {
+        self.raw.or_else(|| self.binding.legacy_num())
+    }
+
+    #[cfg(plat_dyn)]
+    fn native_binding(&self) -> Option<BindingIrq> {
+        self.binding
+            .legacy_num()
+            .is_none()
+            .then(|| self.binding.clone())
+    }
+}
+
+#[derive(Clone)]
 struct LegacyIrqRoute {
     bus_start: u8,
     bus_end: u8,
-    irqs: [usize; PCI_INTX_LINES],
-    irq_count: u8,
+    irqs: ArrayVec<LegacyIrq, PCI_INTX_LINES>,
 }
 
 impl LegacyIrqRoute {
     fn from_irqs(bus_start: u8, bus_end: u8, irq_list: &[usize]) -> Option<Self> {
+        let mut irqs: ArrayVec<LegacyIrq, PCI_INTX_LINES> = ArrayVec::new();
+        for irq in irq_list.iter().take(PCI_INTX_LINES) {
+            irqs.push(LegacyIrq::try_legacy(*irq)?).ok()?;
+        }
+        Self::from_legacy_irqs(bus_start, bus_end, &irqs)
+    }
+
+    fn from_legacy_irqs(bus_start: u8, bus_end: u8, irq_list: &[LegacyIrq]) -> Option<Self> {
         let irq_count = irq_list.len().min(PCI_INTX_LINES);
         if irq_count == 0 {
             return None;
         }
 
-        let mut irqs = [0; PCI_INTX_LINES];
-        irqs[..irq_count].copy_from_slice(&irq_list[..irq_count]);
+        let mut irqs: ArrayVec<LegacyIrq, PCI_INTX_LINES> = ArrayVec::new();
+        for irq in &irq_list[..irq_count] {
+            irqs.push(irq.clone()).ok()?;
+        }
         Some(Self {
             bus_start,
             bus_end,
             irqs,
-            irq_count: irq_count as u8,
         })
     }
 
-    fn matches(&self, bus_start: u8, bus_end: u8, irq_list: &[usize]) -> bool {
+    fn matches_irqs(&self, bus_start: u8, bus_end: u8, irq_list: &[usize]) -> bool {
+        let mut irqs: ArrayVec<LegacyIrq, PCI_INTX_LINES> = ArrayVec::new();
+        for irq in irq_list.iter().take(PCI_INTX_LINES) {
+            let Some(irq) = LegacyIrq::try_legacy(*irq) else {
+                return false;
+            };
+            if irqs.push(irq).is_err() {
+                return false;
+            }
+        }
+        self.matches_legacy_irqs(bus_start, bus_end, &irqs)
+    }
+
+    fn matches_legacy_irqs(&self, bus_start: u8, bus_end: u8, irq_list: &[LegacyIrq]) -> bool {
         let irq_count = irq_list.len().min(PCI_INTX_LINES);
         self.bus_start == bus_start
             && self.bus_end == bus_end
-            && usize::from(self.irq_count) == irq_count
-            && self.irqs[..irq_count] == irq_list[..irq_count]
+            && self.irqs.len() == irq_count
+            && self.irqs.iter().eq(irq_list[..irq_count].iter())
+    }
+
+    #[cfg(not(plat_dyn))]
+    fn binding_for(&self, info: PciInfo) -> Option<BindingIrq> {
+        let route = info.intx_route?;
+        if info.address.bus() < self.bus_start
+            || info.address.bus() > self.bus_end
+            || !(1..=PCI_INTX_LINES as u8).contains(&route.root_pin)
+        {
+            return None;
+        }
+
+        let irq_count = self.irqs.len();
+        let route_index = if irq_count == 1 {
+            0
+        } else {
+            (usize::from(route.root_device) + usize::from(route.root_pin) - 1) % irq_count
+        };
+        self.irqs.get(route_index).map(|irq| irq.binding.clone())
+    }
+
+    #[cfg(plat_dyn)]
+    fn native_binding_for(&self, info: PciInfo) -> Option<BindingIrq> {
+        let route = info.intx_route?;
+        if info.address.bus() < self.bus_start
+            || info.address.bus() > self.bus_end
+            || !(1..=PCI_INTX_LINES as u8).contains(&route.root_pin)
+        {
+            return None;
+        }
+
+        let irq_count = self.irqs.len();
+        let route_index = if irq_count == 1 {
+            0
+        } else {
+            (usize::from(route.root_device) + usize::from(route.root_pin) - 1) % irq_count
+        };
+        self.irqs
+            .get(route_index)
+            .and_then(LegacyIrq::native_binding)
     }
 
     fn irq_for(&self, info: PciInfo) -> Option<usize> {
@@ -83,17 +180,20 @@ impl LegacyIrqRoute {
             return None;
         }
 
-        let irq_count = usize::from(self.irq_count);
+        let irq_count = self.irqs.len();
         let route_index = if irq_count == 1 {
             0
         } else {
             (usize::from(route.root_device) + usize::from(route.root_pin) - 1) % irq_count
         };
-        Some(self.irqs[route_index])
+        self.irqs.get(route_index).and_then(LegacyIrq::legacy_num)
     }
 }
 
 static LEGACY_IRQ_ROUTES: Mutex<ArrayVec<LegacyIrqRoute, MAX_PCIE_LEGACY_IRQS>> =
+    Mutex::new(ArrayVec::new());
+#[cfg(virtio_dev)]
+static TAKEN_ENDPOINT_CONFIGS: Mutex<ArrayVec<TakenEndpointConfig, MAX_TAKEN_ENDPOINT_CONFIGS>> =
     Mutex::new(ArrayVec::new());
 
 pub const DEVICE_NAME: &str = "pci-ecam";
@@ -201,14 +301,15 @@ pub fn register_ecam_controller_with_mmio_op(
     Ok(())
 }
 
-pub fn resolve_intx_irq(info: PciInfo) -> Result<Option<usize>, OnProbeError> {
+pub fn resolve_intx_binding(info: PciInfo) -> Result<Option<BindingIrq>, OnProbeError> {
     #[cfg(plat_dyn)]
     {
-        resolve_intx_irq_with_resolvers(
+        resolve_intx_binding_with_resolvers(
             info,
             dynamic_pci_irq_source(),
             crate::pci::acpi_irq_for_endpoint,
             crate::pci::fdt_irq_for_endpoint,
+            native_legacy_binding_for_endpoint,
             legacy_irq_for_endpoint,
             interrupt_line_irq,
         )
@@ -216,23 +317,135 @@ pub fn resolve_intx_irq(info: PciInfo) -> Result<Option<usize>, OnProbeError> {
 
     #[cfg(not(plat_dyn))]
     {
-        if let Some(irq) = legacy_irq_for_endpoint(info) {
+        if let Some(irq) = legacy_binding_for_endpoint(info) {
             return Ok(Some(irq));
         }
 
-        Ok(interrupt_line_irq(info.interrupt_line))
+        interrupt_line_irq(info.interrupt_line)
+            .map(legacy_binding)
+            .transpose()
     }
 }
 
-#[cfg(any(plat_dyn, test))]
+pub fn resolve_intx_irq(info: PciInfo) -> Result<Option<usize>, OnProbeError> {
+    resolve_intx_binding(info).map(|irq| irq.and_then(|irq| irq.legacy_num()))
+}
+
+pub fn prepare_intx_passthrough(info: PciInfo) -> Result<(), OnProbeError> {
+    #[cfg(virtio_dev)]
+    {
+        if info.interrupt_pin == 0 {
+            return Err(OnProbeError::NotMatch);
+        }
+
+        let bdf = as_device_function(info.address);
+        let configs = TAKEN_ENDPOINT_CONFIGS.lock();
+        let config = configs
+            .iter()
+            .find(|config| config.bdf == bdf)
+            .ok_or(OnProbeError::NotMatch)?;
+
+        config
+            .access
+            .update_command(prepare_intx_passthrough_command);
+        log::info!(
+            "prepared PCI INTx passthrough endpoint {} with native config handoff",
+            info.address
+        );
+        Ok(())
+    }
+
+    #[cfg(not(virtio_dev))]
+    {
+        let _ = info;
+        Err(OnProbeError::Unsupported(
+            "PCI INTx passthrough handoff requires captured endpoint config access",
+        ))
+    }
+}
+
+pub fn unmask_intx_passthrough(info: PciInfo) -> Result<(), OnProbeError> {
+    #[cfg(virtio_dev)]
+    {
+        if info.interrupt_pin == 0 {
+            return Err(OnProbeError::NotMatch);
+        }
+
+        let bdf = as_device_function(info.address);
+        let configs = TAKEN_ENDPOINT_CONFIGS.lock();
+        let config = configs
+            .iter()
+            .find(|config| config.bdf == bdf)
+            .ok_or(OnProbeError::NotMatch)?;
+
+        config
+            .access
+            .update_command(unmask_intx_passthrough_command);
+        log::info!(
+            "unmasked PCI INTx passthrough endpoint {} after guest route became ready",
+            info.address
+        );
+        Ok(())
+    }
+
+    #[cfg(not(virtio_dev))]
+    {
+        let _ = info;
+        Err(OnProbeError::Unsupported(
+            "PCI INTx passthrough handoff requires captured endpoint config access",
+        ))
+    }
+}
+
+#[cfg(any(test, virtio_dev))]
+fn prepare_intx_passthrough_command(mut command: CommandRegister) -> CommandRegister {
+    command.insert(
+        CommandRegister::IO_ENABLE
+            | CommandRegister::MEMORY_ENABLE
+            | CommandRegister::BUS_MASTER_ENABLE
+            | CommandRegister::INTERRUPT_DISABLE,
+    );
+    command
+}
+
+#[cfg(any(test, virtio_dev))]
+fn unmask_intx_passthrough_command(mut command: CommandRegister) -> CommandRegister {
+    command.remove(CommandRegister::INTERRUPT_DISABLE);
+    command
+}
+
+#[cfg(test)]
 fn resolve_intx_irq_with_resolvers(
     info: PciInfo,
     dynamic_source: Option<DynamicPciIrqSource>,
     acpi_irq: impl FnOnce(PciInfo) -> Result<Option<usize>, OnProbeError>,
     fdt_irq: impl FnOnce(PciInfo) -> Result<Option<usize>, OnProbeError>,
+    native_legacy_irq: impl FnOnce(PciInfo) -> Option<BindingIrq>,
     legacy_irq: impl FnOnce(PciInfo) -> Option<usize>,
     interrupt_line: impl FnOnce(u8) -> Option<usize>,
 ) -> Result<Option<usize>, OnProbeError> {
+    resolve_intx_binding_with_resolvers(
+        info,
+        dynamic_source,
+        |info| legacy_irq_result(acpi_irq(info)?),
+        |info| legacy_irq_result(fdt_irq(info)?),
+        native_legacy_irq,
+        legacy_irq,
+        interrupt_line,
+    )
+    .map(|irq| irq.and_then(|irq| irq.legacy_num()))
+}
+
+#[cfg(any(plat_dyn, test))]
+fn resolve_intx_binding_with_resolvers(
+    info: PciInfo,
+    dynamic_source: Option<DynamicPciIrqSource>,
+    acpi_irq: impl FnOnce(PciInfo) -> Result<Option<BindingIrq>, OnProbeError>,
+    fdt_irq: impl FnOnce(PciInfo) -> Result<Option<BindingIrq>, OnProbeError>,
+    native_legacy_irq: impl FnOnce(PciInfo) -> Option<BindingIrq>,
+    legacy_irq: impl FnOnce(PciInfo) -> Option<usize>,
+    interrupt_line: impl FnOnce(u8) -> Option<usize>,
+) -> Result<Option<BindingIrq>, OnProbeError> {
     match dynamic_source {
         Some(DynamicPciIrqSource::Acpi) => {
             if info.intx_route.is_none() {
@@ -244,16 +457,32 @@ fn resolve_intx_irq_with_resolvers(
             if info.intx_route.is_none() {
                 return Ok(None);
             }
+            if let Some(irq) = native_legacy_irq(info) {
+                return Ok(Some(irq));
+            }
             return fdt_irq(info);
         }
         None => {}
     }
 
     if let Some(irq) = legacy_irq(info) {
-        return Ok(Some(irq));
+        return legacy_irq_result(Some(irq));
     }
 
-    Ok(interrupt_line(info.interrupt_line))
+    legacy_irq_result(interrupt_line(info.interrupt_line))
+}
+
+#[cfg(any(plat_dyn, test))]
+fn legacy_irq_result(raw: Option<usize>) -> Result<Option<BindingIrq>, OnProbeError> {
+    raw.map(legacy_binding).transpose()
+}
+
+fn legacy_binding(raw: usize) -> Result<BindingIrq, OnProbeError> {
+    BindingIrq::try_legacy(raw).map_err(|_| {
+        OnProbeError::other(format!(
+            "legacy PCI INTx IRQ {raw} exceeds IRQ framework hardware line width"
+        ))
+    })
 }
 
 #[cfg(plat_dyn)]
@@ -280,6 +509,22 @@ pub fn legacy_irq_for_endpoint(info: PciInfo) -> Option<usize> {
         .lock()
         .iter()
         .find_map(|route| route.irq_for(info))
+}
+
+#[cfg(not(plat_dyn))]
+fn legacy_binding_for_endpoint(info: PciInfo) -> Option<BindingIrq> {
+    LEGACY_IRQ_ROUTES
+        .lock()
+        .iter()
+        .find_map(|route| route.binding_for(info))
+}
+
+#[cfg(plat_dyn)]
+fn native_legacy_binding_for_endpoint(info: PciInfo) -> Option<BindingIrq> {
+    LEGACY_IRQ_ROUTES
+        .lock()
+        .iter()
+        .find_map(|route| route.native_binding_for(info))
 }
 
 pub fn legacy_irq_for_address(address: PciAddress) -> Option<usize> {
@@ -323,7 +568,7 @@ mod tests {
 
     #[cfg(plat_dyn)]
     use axklib::{
-        AxError, AxResult, IrqCpuMask, IrqHandle, Klib, PhysAddr, RawIrqHandler, VirtAddr,
+        AxError, AxResult, IrqCpuMask, IrqHandle, IrqId, Klib, PhysAddr, RawIrqHandler, VirtAddr,
         impl_trait,
     };
     use rdrive::probe::{
@@ -333,8 +578,11 @@ mod tests {
 
     use super::{
         DynamicPciIrqSource, LegacyIrqRoute, legacy_line_to_irq_for_platform,
+        prepare_intx_passthrough_command, resolve_intx_binding_with_resolvers,
         resolve_intx_irq_with_resolvers, select_dynamic_pci_irq_source,
+        unmask_intx_passthrough_command,
     };
+    use crate::{BindingIrq, BindingIrqSource};
 
     #[cfg(plat_dyn)]
     struct KlibImpl;
@@ -378,10 +626,20 @@ mod tests {
                 false
             }
 
-            fn irq_set_enable(_irq: usize, _enabled: bool) {}
+            fn irq_set_enable(_irq: IrqId, _enabled: bool) -> axklib::AxResult {
+                Ok(())
+            }
 
             fn irq_request_shared(
-                _irq: usize,
+            _irq: IrqId,
+                _handler: RawIrqHandler,
+                _data: core::ptr::NonNull<()>,
+            ) -> AxResult<IrqHandle> {
+                Err(AxError::Unsupported)
+            }
+
+            fn irq_request_shared_disabled(
+                _irq: IrqId,
                 _handler: RawIrqHandler,
                 _data: core::ptr::NonNull<()>,
             ) -> AxResult<IrqHandle> {
@@ -389,7 +647,7 @@ mod tests {
             }
 
             fn irq_request_percpu(
-                _irq: usize,
+            _irq: IrqId,
                 _cpus: IrqCpuMask,
                 _handler: RawIrqHandler,
                 _data: core::ptr::NonNull<()>,
@@ -476,6 +734,7 @@ mod tests {
                 fdt_called.set(true);
                 Ok(Some(55))
             },
+            |_| None,
             |_| {
                 legacy_called.set(true);
                 Some(66)
@@ -494,6 +753,167 @@ mod tests {
     }
 
     #[test]
+    fn resolve_intx_binding_acpi_keeps_gsi_source_native() {
+        let info = endpoint_with_intx_route();
+        let irq = resolve_intx_binding_with_resolvers(
+            info,
+            Some(DynamicPciIrqSource::Acpi),
+            |_| Ok(Some(BindingIrq::acpi_gsi(18))),
+            |_| Ok(Some(BindingIrq::acpi_gsi(19))),
+            |_| None,
+            |_| Some(66),
+            |_| Some(77),
+        )
+        .unwrap()
+        .unwrap();
+
+        assert_eq!(irq.legacy_num(), None);
+        assert_eq!(
+            irq.as_irq_source(),
+            Some(irq_framework::IrqSource::AcpiGsi(18))
+        );
+    }
+
+    #[test]
+    fn resolve_intx_binding_acpi_keeps_route_metadata_native() {
+        let info = endpoint_with_intx_route();
+        let controller = rdrive::DeviceId::new();
+        let route = irq_framework::AcpiGsiRoute {
+            gsi: 10,
+            vector: 0x3a,
+            controller: irq_framework::AcpiGsiController::IoApic,
+            controller_id: 0,
+            controller_address: 0xfec0_0000,
+            controller_input: 10,
+            trigger: irq_framework::AcpiIrqTrigger::Level,
+            polarity: irq_framework::AcpiIrqPolarity::ActiveLow,
+        };
+        let irq = resolve_intx_binding_with_resolvers(
+            info,
+            Some(DynamicPciIrqSource::Acpi),
+            |_| Ok(Some(BindingIrq::acpi_gsi_route(route))),
+            |_| {
+                Ok(Some(BindingIrq::fdt_interrupt_with_controller(
+                    controller,
+                    [0, 42, 4],
+                )))
+            },
+            |_| None,
+            |_| Some(66),
+            |_| Some(77),
+        )
+        .unwrap()
+        .unwrap();
+
+        assert_eq!(irq.legacy_num(), None);
+        assert_eq!(
+            irq.as_irq_source(),
+            Some(irq_framework::IrqSource::AcpiGsiRoute(route))
+        );
+    }
+
+    #[test]
+    fn resolve_intx_binding_fdt_keeps_interrupt_cells_native() {
+        let info = endpoint_with_intx_route();
+        let controller = rdrive::DeviceId::new();
+        let irq = resolve_intx_binding_with_resolvers(
+            info,
+            Some(DynamicPciIrqSource::Fdt),
+            |_| Ok(Some(BindingIrq::acpi_gsi(18))),
+            |_| {
+                Ok(Some(BindingIrq::fdt_interrupt_with_controller(
+                    controller,
+                    [0, 42, 4],
+                )))
+            },
+            |_| None,
+            |_| Some(66),
+            |_| Some(77),
+        )
+        .unwrap()
+        .unwrap();
+
+        assert_eq!(irq.legacy_num(), None);
+        let BindingIrq::Source(BindingIrqSource::FdtInterrupt(spec)) = irq else {
+            panic!("expected native FDT interrupt binding");
+        };
+        assert_eq!(spec.controller, controller);
+        assert_eq!(spec.cells, [0, 42, 4]);
+    }
+
+    #[test]
+    fn resolve_intx_binding_fdt_prefers_registered_native_legacy_route() {
+        let info = endpoint_with_intx_route();
+        let fdt_called = Cell::new(false);
+        let legacy_called = Cell::new(false);
+        let line_called = Cell::new(false);
+        let controller = rdrive::DeviceId::new();
+        let irq = resolve_intx_binding_with_resolvers(
+            info,
+            Some(DynamicPciIrqSource::Fdt),
+            |_| Ok(Some(BindingIrq::acpi_gsi(18))),
+            |_| {
+                fdt_called.set(true);
+                Ok(Some(BindingIrq::fdt_interrupt_with_controller(
+                    controller,
+                    [0, 0, 4],
+                )))
+            },
+            |_| {
+                Some(BindingIrq::fdt_interrupt_with_controller(
+                    controller,
+                    [0, 245, 4],
+                ))
+            },
+            |_| {
+                legacy_called.set(true);
+                Some(66)
+            },
+            |_| {
+                line_called.set(true);
+                Some(77)
+            },
+        )
+        .unwrap()
+        .unwrap();
+
+        assert!(!fdt_called.get());
+        assert!(!legacy_called.get());
+        assert!(!line_called.get());
+        assert_eq!(irq.legacy_num(), None);
+        let BindingIrq::Source(BindingIrqSource::FdtInterrupt(spec)) = irq else {
+            panic!("expected native FDT interrupt binding");
+        };
+        assert_eq!(spec.controller, controller);
+        assert_eq!(spec.cells, [0, 245, 4]);
+    }
+
+    #[test]
+    fn resolve_intx_binding_static_fallback_keeps_legacy_irq_compatibility() {
+        let info = endpoint_with_intx_route();
+        let controller = rdrive::DeviceId::new();
+        let irq = resolve_intx_binding_with_resolvers(
+            info,
+            None,
+            |_| Ok(Some(BindingIrq::acpi_gsi(18))),
+            |_| {
+                Ok(Some(BindingIrq::fdt_interrupt_with_controller(
+                    controller,
+                    [0, 42, 4],
+                )))
+            },
+            |_| None,
+            |_| None,
+            |_| Some(77),
+        )
+        .unwrap()
+        .unwrap();
+
+        assert_eq!(irq.legacy_num(), Some(77));
+        assert_eq!(irq.as_irq_source(), None);
+    }
+
+    #[test]
     fn resolve_intx_irq_fdt_none_does_not_fallback_to_legacy_or_interrupt_line() {
         let info = endpoint_with_intx_route();
         let acpi_called = Cell::new(false);
@@ -508,6 +928,7 @@ mod tests {
                 Ok(Some(44))
             },
             |_| Ok(None),
+            |_| None,
             |_| {
                 legacy_called.set(true);
                 Some(66)
@@ -540,6 +961,7 @@ mod tests {
                 fdt_called.set(true);
                 Ok(Some(55))
             },
+            |_| None,
             |_| {
                 legacy_called.set(true);
                 Some(66)
@@ -579,6 +1001,7 @@ mod tests {
                 fdt_called.set(true);
                 Ok(Some(55))
             },
+            |_| None,
             |_| {
                 legacy_called.set(true);
                 Some(66)
@@ -616,6 +1039,7 @@ mod tests {
                 Ok(Some(55))
             },
             |_| None,
+            |_| None,
             |line| {
                 line_called.set(true);
                 assert_eq!(line, 9);
@@ -628,6 +1052,40 @@ mod tests {
         assert!(!acpi_called.get());
         assert!(!fdt_called.get());
         assert!(line_called.get());
+    }
+
+    #[test]
+    fn prepare_intx_passthrough_command_masks_native_intx_until_guest_route_ready() {
+        let mut command = pcie::CommandRegister::INTERRUPT_DISABLE;
+
+        command = prepare_intx_passthrough_command(command);
+
+        assert!(command.contains(pcie::CommandRegister::IO_ENABLE));
+        assert!(command.contains(pcie::CommandRegister::MEMORY_ENABLE));
+        assert!(command.contains(pcie::CommandRegister::BUS_MASTER_ENABLE));
+        assert!(command.contains(pcie::CommandRegister::INTERRUPT_DISABLE));
+
+        command = prepare_intx_passthrough_command(pcie::CommandRegister::empty());
+
+        assert!(command.contains(pcie::CommandRegister::IO_ENABLE));
+        assert!(command.contains(pcie::CommandRegister::MEMORY_ENABLE));
+        assert!(command.contains(pcie::CommandRegister::BUS_MASTER_ENABLE));
+        assert!(command.contains(pcie::CommandRegister::INTERRUPT_DISABLE));
+    }
+
+    #[test]
+    fn unmask_intx_passthrough_command_clears_native_intx_mask() {
+        let mut command = pcie::CommandRegister::INTERRUPT_DISABLE
+            | pcie::CommandRegister::IO_ENABLE
+            | pcie::CommandRegister::MEMORY_ENABLE
+            | pcie::CommandRegister::BUS_MASTER_ENABLE;
+
+        command = unmask_intx_passthrough_command(command);
+
+        assert!(command.contains(pcie::CommandRegister::IO_ENABLE));
+        assert!(command.contains(pcie::CommandRegister::MEMORY_ENABLE));
+        assert!(command.contains(pcie::CommandRegister::BUS_MASTER_ENABLE));
+        assert!(!command.contains(pcie::CommandRegister::INTERRUPT_DISABLE));
     }
 
     fn endpoint_with_intx_route() -> PciInfo {
@@ -655,7 +1113,7 @@ pub fn register_legacy_irq_routes(bus_start: u8, bus_end: u8, irqs: &[usize]) {
     let mut routes = LEGACY_IRQ_ROUTES.lock();
     if routes
         .iter()
-        .any(|route| route.matches(bus_start, bus_end, irqs))
+        .any(|route| route.matches_irqs(bus_start, bus_end, irqs))
     {
         return;
     }
@@ -663,6 +1121,34 @@ pub fn register_legacy_irq_routes(bus_start: u8, bus_end: u8, irqs: &[usize]) {
         log::warn!("too many PCIe legacy IRQ routes; dropping IRQs {irqs:?}");
     } else {
         log::info!("PCIe legacy IRQ route: logical bus {bus_start}..={bus_end} -> IRQs {irqs:?}");
+    }
+}
+
+#[cfg(plat_dyn)]
+pub fn register_native_legacy_irq_route(
+    bus_start: u8,
+    bus_end: u8,
+    irq: BindingIrq,
+    raw_irq: Option<usize>,
+) {
+    let irq = LegacyIrq::native(irq, raw_irq);
+    let Some(route) =
+        LegacyIrqRoute::from_legacy_irqs(bus_start, bus_end, core::slice::from_ref(&irq))
+    else {
+        return;
+    };
+
+    let mut routes = LEGACY_IRQ_ROUTES.lock();
+    if routes
+        .iter()
+        .any(|route| route.matches_legacy_irqs(bus_start, bus_end, core::slice::from_ref(&irq)))
+    {
+        return;
+    }
+    if routes.push(route).is_err() {
+        log::warn!("too many PCIe native legacy IRQ routes; dropping IRQ {irq:?}");
+    } else {
+        log::info!("PCIe native legacy IRQ route: logical bus {bus_start}..={bus_end} -> {irq:?}");
     }
 }
 
@@ -705,12 +1191,37 @@ fn take_virtio_transport_with_intx_policy(
     }
     enable_virtio_pci_command(endpoint);
 
-    let mut root = PciRoot::new(EndpointConfigAccess::new(bdf, endpoint.take()));
+    let config_access = EndpointConfigAccess::new(bdf, endpoint.take());
+    remember_taken_endpoint_config(&config_access);
+
+    let mut root = PciRoot::new(config_access);
     PciTransport::new::<VirtIoHalImpl, _>(&mut root, bdf).map_err(|err| {
         OnProbeError::other(format!(
             "failed to create VirtIO PCI transport at {bdf}: {err:?}"
         ))
     })
+}
+
+#[cfg(virtio_dev)]
+fn remember_taken_endpoint_config(access: &EndpointConfigAccess) {
+    let mut configs = TAKEN_ENDPOINT_CONFIGS.lock();
+    if let Some(config) = configs.iter_mut().find(|config| config.bdf == access.bdf) {
+        config.access = access.clone_for_handoff();
+        return;
+    }
+
+    if configs
+        .push(TakenEndpointConfig {
+            bdf: access.bdf,
+            access: access.clone_for_handoff(),
+        })
+        .is_err()
+    {
+        log::warn!(
+            "too many taken PCI endpoint configs; dropping passthrough handoff access for {}",
+            access.bdf
+        );
+    }
 }
 
 #[cfg(virtio_dev)]
@@ -758,6 +1269,12 @@ fn as_device_function_info(endpoint: &Endpoint) -> DeviceFunctionInfo {
 }
 
 #[cfg(virtio_dev)]
+struct TakenEndpointConfig {
+    bdf: DeviceFunction,
+    access: EndpointConfigAccess,
+}
+
+#[cfg(virtio_dev)]
 struct EndpointConfigAccess {
     bdf: DeviceFunction,
     endpoint: Arc<Mutex<Endpoint>>,
@@ -774,6 +1291,19 @@ impl EndpointConfigAccess {
 
     fn assert_same_function(&self, device_function: DeviceFunction) {
         assert_eq!(device_function, self.bdf);
+    }
+
+    fn clone_for_handoff(&self) -> Self {
+        // SAFETY: EndpointConfigAccess serializes all shared config-space
+        // accesses through the same internal mutex.
+        unsafe { self.unsafe_clone() }
+    }
+
+    fn update_command<F>(&self, f: F)
+    where
+        F: FnOnce(CommandRegister) -> CommandRegister,
+    {
+        self.endpoint.lock().update_command(f);
     }
 }
 

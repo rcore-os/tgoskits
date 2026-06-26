@@ -19,7 +19,7 @@ pub fn input_device_count() -> u32 {
 
 use ax_errno::{AxError, AxResult};
 use ax_input::{ErasedInputDevice, Event, EventType, InputDevice, InputDeviceId, InputError};
-use ax_runtime::hal::time::wall_time;
+use ax_runtime::hal::{irq::IrqId, time::wall_time};
 use ax_sync::spin::SpinNoIrq as Mutex;
 use axfs_ng_vfs::{DeviceId, NodeFlags, NodeType, VfsResult};
 use axpoll::{IoEvents, PollSet, Pollable};
@@ -118,8 +118,8 @@ const ABS_MAX: usize = 0x40;
 pub struct EventDev {
     inner: Mutex<Inner>,
     waiters: PollSet,
-    /// IRQ line the underlying driver advertises, when available.
-    irq: Option<usize>,
+    /// IRQ domain id the runtime resolved for the underlying driver.
+    irq: Option<IrqId>,
     irq_handle: spin::Once<ax_runtime::hal::irq::IrqHandle>,
     ev_bits: Bitmap<{ EventType::COUNT as usize }>,
     /// Cached `EVIOCGPROP` bitmap. Computed once at probe from the driver's
@@ -172,7 +172,7 @@ impl EventDev {
             let _ = device.get_event_bits(EventType::Absolute, &mut abs_bits);
         }
 
-        let irq = device.irq_num();
+        let irq = device.irq_id();
         Self {
             inner: Mutex::new(Inner {
                 device,
@@ -238,12 +238,12 @@ impl EventDev {
                 if let Some(handle) = self.irq_handle.get().copied()
                     && let Err(err) = ax_runtime::hal::irq::enable_irq(handle)
                 {
-                    warn!("failed to enable evdev irq handler for irq {irq}: {err:?}");
+                    warn!("failed to enable evdev irq handler for irq {irq:?}: {err:?}");
                     self.inner.lock().device.disable_irq();
                 }
             }
             Err(err) => {
-                warn!("failed to register evdev irq handler for irq {irq}: {err:?}");
+                warn!("failed to register evdev irq handler for irq {irq:?}: {err:?}");
                 self.inner.lock().device.disable_irq();
             }
         }

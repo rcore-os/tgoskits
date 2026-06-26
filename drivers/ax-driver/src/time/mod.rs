@@ -51,7 +51,7 @@ fn init_epoch_offset(node_name: &str, unix_timestamp: u64) -> Result<(), OnProbe
 #[cfg(test)]
 mod tests {
     use axklib::{
-        AxError, AxResult, IrqCpuMask, IrqHandle, Klib, PhysAddr, RawIrqHandler, VirtAddr,
+        AxError, AxResult, IrqCpuMask, IrqHandle, IrqId, Klib, PhysAddr, RawIrqHandler, VirtAddr,
         impl_trait,
     };
 
@@ -95,10 +95,20 @@ mod tests {
                 false
             }
 
-            fn irq_set_enable(_irq: usize, _enabled: bool) {}
+            fn irq_set_enable(_irq: IrqId, _enabled: bool) -> axklib::AxResult {
+                Ok(())
+            }
 
             fn irq_request_shared(
-                _irq: usize,
+            _irq: IrqId,
+                _handler: RawIrqHandler,
+                _data: core::ptr::NonNull<()>,
+            ) -> AxResult<IrqHandle> {
+                Err(AxError::Unsupported)
+            }
+
+            fn irq_request_shared_disabled(
+                _irq: IrqId,
                 _handler: RawIrqHandler,
                 _data: core::ptr::NonNull<()>,
             ) -> AxResult<IrqHandle> {
@@ -106,7 +116,7 @@ mod tests {
             }
 
             fn irq_request_percpu(
-                _irq: usize,
+            _irq: IrqId,
                 _cpus: IrqCpuMask,
                 _handler: RawIrqHandler,
                 _data: core::ptr::NonNull<()>,
