@@ -405,8 +405,8 @@ impl Drop for ReclaimGuard {
 }
 
 #[cfg(feature = "vfs")]
-static GLOBAL_CACHED_FILES: spin::RwLock<alloc::vec::Vec<Arc<CachedFileShared>>> =
-    spin::RwLock::new(alloc::vec::Vec::new());
+static GLOBAL_CACHED_FILES: ax_kspin::SpinRwLock<alloc::vec::Vec<Arc<CachedFileShared>>> =
+    ax_kspin::SpinRwLock::new(alloc::vec::Vec::new());
 
 #[cfg(feature = "vfs")]
 static RECLAIM_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
