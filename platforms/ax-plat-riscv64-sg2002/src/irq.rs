@@ -175,4 +175,8 @@ impl IrqIf for IrqIfImpl {
             }
         }
     }
+
+    fn ipi_irq() -> usize {
+        S_SOFT
+    }
 }

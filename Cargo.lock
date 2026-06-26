@@ -755,7 +755,6 @@ name = "ax-feat"
 version = "0.5.22"
 dependencies = [
  "ax-alloc",
- "ax-config",
  "ax-display",
  "ax-driver",
  "ax-fs-ng",
@@ -800,7 +799,6 @@ name = "ax-hal"
 version = "0.5.21"
 dependencies = [
  "ax-alloc",
- "ax-config",
  "ax-cpu",
  "ax-kernel-guard",
  "ax-kspin",
@@ -843,12 +841,12 @@ dependencies = [
 name = "ax-ipi"
 version = "0.5.20"
 dependencies = [
- "ax-config",
  "ax-hal",
  "ax-kspin",
  "ax-lazyinit",
  "ax-percpu",
  "log",
+ "toml 1.1.2+spec-1.1.0",
 ]
 
 [[package]]
@@ -1116,7 +1114,6 @@ version = "0.8.1"
 dependencies = [
  "aic8800",
  "ax-alloc",
- "ax-config",
  "ax-crate-interface",
  "ax-ctor-bare",
  "ax-display",
@@ -1147,6 +1144,7 @@ dependencies = [
  "rdrive",
  "sdhci-cv1800",
  "spin 0.12.0",
+ "toml 1.1.2+spec-1.1.0",
 ]
 
 [[package]]
@@ -1192,7 +1190,6 @@ name = "ax-task"
 version = "0.5.22"
 dependencies = [
  "ax-alloc",
- "ax-config",
  "ax-cpumask",
  "ax-crate-interface",
  "ax-errno 0.6.0",
@@ -1213,6 +1210,7 @@ dependencies = [
  "futures-util",
  "log",
  "spin 0.12.0",
+ "toml 1.1.2+spec-1.1.0",
 ]
 
 [[package]]
@@ -1409,7 +1407,6 @@ dependencies = [
 name = "axnsproxy"
 version = "0.2.3"
 dependencies = [
- "ax-config",
  "ax-errno 0.6.0",
  "ax-kspin",
  "linux-raw-sys 0.12.1",
@@ -1426,7 +1423,6 @@ name = "axplat-dyn"
 version = "0.7.5"
 dependencies = [
  "anyhow",
- "ax-config-macros",
  "ax-cpu",
  "ax-driver",
  "ax-errno 0.6.0",
@@ -5456,9 +5452,9 @@ dependencies = [
 
 [[package]]
 name = "ostool"
-version = "0.23.4"
+version = "0.23.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cd1b6c39b541fdb2c9222bd1a66fdaad0c46657866470101a87e0763c7a7893d"
+checksum = "14149ab21b57e002a6463c775d0f459f232bab08e378ae46ba618a01aec45d5e"
 dependencies = [
  "anyhow",
  "async-trait",

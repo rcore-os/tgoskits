@@ -42,6 +42,10 @@ pub fn systick_irq() -> rdrive::IrqId {
     S_TIMER.into()
 }
 
+pub fn ipi_irq() -> rdrive::IrqId {
+    S_SOFT.into()
+}
+
 pub fn irq_set_enable(irq: rdrive::IrqId, enable: bool) {
     let raw: usize = irq.into();
     match raw {

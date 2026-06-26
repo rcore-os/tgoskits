@@ -4,8 +4,11 @@ use core::{
     sync::atomic::{AtomicU64, Ordering},
 };
 
-use ax_config::ARCH;
 use ax_kspin::SpinNoIrq;
+
+mod build_info {
+    include!(concat!(env!("OUT_DIR"), "/build_info.rs"));
+}
 
 /// The initial root UTS namespace, shared by all processes until
 /// they call `unshare(CLONE_NEWUTS)`.
@@ -63,7 +66,7 @@ pub fn build_utsname(ns: &UtNamespace) -> linux_raw_sys::system::new_utsname {
         nodename: ns.nodename,
         release: pad_str("10.0.0"),
         version: pad_str("10.0.0"),
-        machine: pad_str(ARCH),
+        machine: pad_str(build_info::ARCH),
         domainname: ns.domainname,
     }
 }

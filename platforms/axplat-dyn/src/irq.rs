@@ -68,6 +68,10 @@ impl IrqIf for IrqIfImpl {
         };
         somehal::irq::send_ipi(id.into(), target);
     }
+
+    fn ipi_irq() -> usize {
+        somehal::irq::ipi_irq().raw()
+    }
 }
 
 #[cfg(all(target_arch = "riscv64", feature = "hv"))]

@@ -90,6 +90,10 @@ impl PlatOp for Plat {
         }
     }
 
+    fn ipi_irq() -> rdrive::IrqId {
+        IPI_IRQ.into()
+    }
+
     fn begin_irq(raw: usize) -> Option<Self::ActiveIrq> {
         match raw {
             raw if raw == someboot::irq::systimer_irq().raw() => {

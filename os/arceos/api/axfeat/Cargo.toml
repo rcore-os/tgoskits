@@ -32,7 +32,6 @@ defplat = ["ax-hal/defplat"]
 plat-dyn = [
     "paging",
     "ax-runtime/plat-dyn",
-    "ax-config/plat-dyn",
 ]
 
 # Memory
@@ -110,7 +109,6 @@ dwarf = ["axbacktrace/dwarf"]
 [dependencies]
 ax-alloc = { workspace = true, optional = true }
 axbacktrace.workspace = true
-ax-config = { workspace = true, optional = true }
 ax-driver = { workspace = true, optional = true }
 ax-display = { workspace = true, optional = true }
 ax-fs-ng = { workspace = true, optional = true }
