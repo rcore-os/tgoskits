@@ -1,0 +1,3 @@
+# Diff/patch artifacts carry the original source context lines verbatim (incl. blank
+# context lines that read as trailing whitespace); exclude them from whitespace checks.
+*.patch -whitespace
