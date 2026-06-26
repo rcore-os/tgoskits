@@ -236,6 +236,10 @@ impl IrqIf for IrqIfImpl {
         }
     }
 
+    fn ipi_irq() -> IrqId {
+        cpu_local_irq(IPI_IRQ)
+    }
+
     fn resolve_source(source: IrqSource) -> Result<IrqId, IrqError> {
         match source {
             IrqSource::ControllerLine { domain, hwirq }
