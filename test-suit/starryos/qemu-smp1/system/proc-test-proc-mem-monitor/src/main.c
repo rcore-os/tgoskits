@@ -54,6 +54,43 @@ static int memfd_create_sys(const char *name, unsigned int flags)
 enum { MMAP_PROBE_SIZE = 2 * 1024 * 1024 };
 enum { LAZY_MAP_PAGES = MMAP_PROBE_SIZE / 4096 };
 enum { RSS_TOUCH_TOLERANCE = 16 };
+enum { PROC_READ_RETRIES = 10 };
+enum { PROC_READ_RETRY_DELAY_US = 10000 };
+
+static void dump_proc_file(const char *path)
+{
+    int fd = open(path, O_RDONLY);
+    if (fd < 0) {
+        fprintf(stderr, "DIAG: open %s errno=%d (%s)\n", path, errno, strerror(errno));
+        return;
+    }
+
+    fprintf(stderr, "DIAG: begin %s\n", path);
+    char buf[512];
+    for (;;) {
+        ssize_t n = read(fd, buf, sizeof(buf));
+        if (n < 0) {
+            if (errno == EINTR) {
+                continue;
+            }
+            fprintf(stderr, "DIAG: read %s errno=%d (%s)\n", path, errno, strerror(errno));
+            break;
+        }
+        if (n == 0) {
+            break;
+        }
+        fwrite(buf, 1, (size_t)n, stderr);
+    }
+    fprintf(stderr, "DIAG: end %s\n", path);
+    close(fd);
+}
+
+static void dump_proc_diagnostics(void)
+{
+    dump_proc_file("/proc/self/status");
+    dump_proc_file("/proc/self/statm");
+    dump_proc_file("/proc/meminfo");
+}
 
 static void expect(int condition, const char *message)
 {
@@ -61,6 +98,7 @@ static void expect(int condition, const char *message)
         fputs("FAIL: ", stderr);
         fputs(message, stderr);
         fputc('\n', stderr);
+        dump_proc_diagnostics();
         abort();
     }
 }
@@ -111,38 +149,61 @@ static ssize_t io_write_all(int fd, const void *buf, size_t len)
 
 static long read_status_kb_from(const char *path, const char *key)
 {
-    int fd = open(path, O_RDONLY);
-    if (fd < 0) {
-        fprintf(stderr, "FAIL: open %s for %s errno=%d (%s)\n",
-                path, key, errno, strerror(errno));
-        abort();
-    }
-
     char buf[4096];
-    ssize_t n = read(fd, buf, sizeof(buf) - 1);
-    close(fd);
-    if (n <= 0) {
-        fprintf(stderr, "FAIL: read %s for %s returned %zd errno=%d (%s)\n",
-                path, key, n, errno, strerror(errno));
-        abort();
-    }
-    buf[n] = '\0';
-
     char prefix[64];
     snprintf(prefix, sizeof(prefix), "%s:\t", key);
 
-    char *save = NULL;
-    char *line = strtok_r(buf, "\n", &save);
-    while (line != NULL) {
-        if (strncmp(line, prefix, strlen(prefix)) == 0) {
-            long value = -1;
-            expect(sscanf(line + strlen(prefix), "%ld kB", &value) == 1, key);
-            return value;
+    for (int attempt = 0; attempt < PROC_READ_RETRIES; ++attempt) {
+        int fd = open(path, O_RDONLY);
+        if (fd < 0) {
+            if (attempt + 1 < PROC_READ_RETRIES
+                && (errno == EINTR || errno == EAGAIN || errno == ENOENT)) {
+                usleep(PROC_READ_RETRY_DELAY_US);
+                continue;
+            }
+            fprintf(stderr, "FAIL: open %s for %s errno=%d (%s)\n",
+                    path, key, errno, strerror(errno));
+            dump_proc_diagnostics();
+            abort();
         }
-        line = strtok_r(NULL, "\n", &save);
+
+        ssize_t n = read(fd, buf, sizeof(buf) - 1);
+        close(fd);
+        if (n <= 0) {
+            if (attempt + 1 < PROC_READ_RETRIES && (n == 0 || errno == EINTR || errno == EAGAIN)) {
+                usleep(PROC_READ_RETRY_DELAY_US);
+                continue;
+            }
+            fprintf(stderr, "FAIL: read %s for %s returned %zd errno=%d (%s)\n",
+                    path, key, n, errno, strerror(errno));
+            dump_proc_diagnostics();
+            abort();
+        }
+        buf[n] = '\0';
+
+        char local[sizeof(buf)];
+        memcpy(local, buf, (size_t)n + 1);
+
+        char *save = NULL;
+        char *line = strtok_r(local, "\n", &save);
+        while (line != NULL) {
+            if (strncmp(line, prefix, strlen(prefix)) == 0) {
+                long value = -1;
+                expect(sscanf(line + strlen(prefix), "%ld kB", &value) == 1, key);
+                return value;
+            }
+            line = strtok_r(NULL, "\n", &save);
+        }
+
+        if (attempt + 1 < PROC_READ_RETRIES) {
+            usleep(PROC_READ_RETRY_DELAY_US);
+        }
     }
 
-    expect(0, "missing status key");
+    fprintf(stderr, "FAIL: missing status key %s in %s after retries\n", key, path);
+    dump_proc_file(path);
+    dump_proc_diagnostics();
+    abort();
     return -1;
 }
 
@@ -178,38 +239,61 @@ static int rss_kb_not_dropped_by_page(long before, long after, long page_kb)
 
 static long read_status_pid_from(const char *path, const char *key)
 {
-    int fd = open(path, O_RDONLY);
-    if (fd < 0) {
-        fprintf(stderr, "FAIL: open %s for %s errno=%d (%s)\n",
-                path, key, errno, strerror(errno));
-        abort();
-    }
-
     char buf[4096];
-    ssize_t n = read(fd, buf, sizeof(buf) - 1);
-    close(fd);
-    if (n <= 0) {
-        fprintf(stderr, "FAIL: read %s for %s returned %zd errno=%d (%s)\n",
-                path, key, n, errno, strerror(errno));
-        abort();
-    }
-    buf[n] = '\0';
-
     char prefix[64];
     snprintf(prefix, sizeof(prefix), "%s:\t", key);
 
-    char *save = NULL;
-    char *line = strtok_r(buf, "\n", &save);
-    while (line != NULL) {
-        if (strncmp(line, prefix, strlen(prefix)) == 0) {
-            long value = -1;
-            expect(sscanf(line + strlen(prefix), "%ld", &value) == 1, key);
-            return value;
+    for (int attempt = 0; attempt < PROC_READ_RETRIES; ++attempt) {
+        int fd = open(path, O_RDONLY);
+        if (fd < 0) {
+            if (attempt + 1 < PROC_READ_RETRIES
+                && (errno == EINTR || errno == EAGAIN || errno == ENOENT)) {
+                usleep(PROC_READ_RETRY_DELAY_US);
+                continue;
+            }
+            fprintf(stderr, "FAIL: open %s for %s errno=%d (%s)\n",
+                    path, key, errno, strerror(errno));
+            dump_proc_diagnostics();
+            abort();
         }
-        line = strtok_r(NULL, "\n", &save);
+
+        ssize_t n = read(fd, buf, sizeof(buf) - 1);
+        close(fd);
+        if (n <= 0) {
+            if (attempt + 1 < PROC_READ_RETRIES && (n == 0 || errno == EINTR || errno == EAGAIN)) {
+                usleep(PROC_READ_RETRY_DELAY_US);
+                continue;
+            }
+            fprintf(stderr, "FAIL: read %s for %s returned %zd errno=%d (%s)\n",
+                    path, key, n, errno, strerror(errno));
+            dump_proc_diagnostics();
+            abort();
+        }
+        buf[n] = '\0';
+
+        char local[sizeof(buf)];
+        memcpy(local, buf, (size_t)n + 1);
+
+        char *save = NULL;
+        char *line = strtok_r(local, "\n", &save);
+        while (line != NULL) {
+            if (strncmp(line, prefix, strlen(prefix)) == 0) {
+                long value = -1;
+                expect(sscanf(line + strlen(prefix), "%ld", &value) == 1, key);
+                return value;
+            }
+            line = strtok_r(NULL, "\n", &save);
+        }
+
+        if (attempt + 1 < PROC_READ_RETRIES) {
+            usleep(PROC_READ_RETRY_DELAY_US);
+        }
     }
 
-    expect(0, "missing status pid key");
+    fprintf(stderr, "FAIL: missing status pid key %s in %s after retries\n", key, path);
+    dump_proc_file(path);
+    dump_proc_diagnostics();
+    abort();
     return -1;
 }
 
