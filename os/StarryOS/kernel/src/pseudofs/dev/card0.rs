@@ -404,7 +404,7 @@ impl Card0 {
         if !ax_display::has_display() {
             return;
         }
-        let Some(irq) = ax_display::framebuffer_irq_num() else {
+        let Some(irq) = ax_display::framebuffer_irq_id() else {
             return;
         };
 
@@ -419,12 +419,12 @@ impl Card0 {
                 if let Some(handle) = self.irq_handle.get().copied()
                     && let Err(err) = ax_runtime::hal::irq::enable_irq(handle)
                 {
-                    warn!("failed to enable display irq handler for irq {irq}: {err:?}");
+                    warn!("failed to enable display irq handler for irq {irq:?}: {err:?}");
                     ax_display::framebuffer_disable_irq();
                 }
             }
             Err(err) => {
-                warn!("failed to register display irq handler for irq {irq}: {err:?}");
+                warn!("failed to register display irq handler for irq {irq:?}: {err:?}");
                 ax_display::framebuffer_disable_irq();
             }
         }
