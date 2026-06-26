@@ -33,7 +33,7 @@ use axvm_types::{EmulatedDeviceConfig, EmulatedDeviceType, GuestPhysAddr};
 #[cfg(target_arch = "riscv64")]
 use riscv_vplic::VPlicGlobal;
 #[cfg(target_arch = "x86_64")]
-use x86_vlapic::{EmulatedIoApic, EmulatedPit, EmulatedSerialPort, IoApicInterrupt};
+use x86_vlapic::{EmulatedIoApic, EmulatedPit, EmulatedSerialPort, IoApicEoi, IoApicInterrupt};
 
 use crate::{
     AxVmDeviceConfig, DeviceBuildContext, DeviceBundle, DeviceFactoryRegistry, FwCfg,
@@ -943,7 +943,7 @@ impl AxVmDevices {
 
     /// Broadcast an x86 local APIC EOI to the virtual IOAPIC.
     #[cfg(target_arch = "x86_64")]
-    pub fn x86_ioapic_end_of_interrupt(&self, vector: u8) -> Option<IoApicInterrupt> {
+    pub fn x86_ioapic_end_of_interrupt(&self, vector: u8) -> Option<IoApicEoi> {
         self.x86_ioapic
             .as_ref()
             .and_then(|ioapic| ioapic.end_of_interrupt(vector))

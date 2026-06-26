@@ -17,4 +17,5 @@ axdevice.workspace = true
 axdevice_base.workspace = true
 axvm.workspace = true
 axvm-types.workspace = true
+irq-framework.workspace = true
 x86_vlapic.workspace = true
