@@ -50,9 +50,9 @@ pub fn init_cpu(cpu_idx: usize) {
 }
 
 fn get_primary_gicd() -> Result<Device<Intc>, crate::irq::IrqError> {
-    let domain = crate::irq::domain_by_kind(crate::irq::IrqDomainKind::AArch64Gic)
+    let domain = crate::irq::domain_by_kind_fast(crate::irq::IrqDomainKind::AArch64Gic)
         .ok_or(crate::irq::IrqError::Unsupported)?;
-    crate::irq::intc_by_domain(domain.id)
+    crate::irq::intc_by_domain(domain)
 }
 
 pub fn with_gic_domain<T: Interface, R>(
@@ -60,8 +60,8 @@ pub fn with_gic_domain<T: Interface, R>(
     f: impl FnOnce(&mut T) -> R,
 ) -> Result<R, crate::irq::IrqError> {
     let mut intc = crate::irq::intc_by_domain(domain)?
-        .lock()
-        .map_err(|_| crate::irq::IrqError::Controller)?;
+        .try_lock()
+        .map_err(|_| crate::irq::IrqError::Busy)?;
     let gic = intc
         .typed_mut::<T>()
         .ok_or(crate::irq::IrqError::Unsupported)?;
@@ -72,8 +72,8 @@ pub fn with_primary_gic<T: Interface, R>(
     f: impl FnOnce(&mut T) -> R,
 ) -> Result<R, crate::irq::IrqError> {
     let mut intc = get_primary_gicd()?
-        .lock()
-        .map_err(|_| crate::irq::IrqError::Controller)?;
+        .try_lock()
+        .map_err(|_| crate::irq::IrqError::Busy)?;
     let gic = intc
         .typed_mut::<T>()
         .ok_or(crate::irq::IrqError::Unsupported)?;

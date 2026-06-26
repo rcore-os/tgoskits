@@ -84,7 +84,11 @@ impl IrqIf for IrqIfImpl {
         {
             somehal::irq::aarch64_gic_irq_id_checked(hwirq)
         }
-        #[cfg(any(target_arch = "loongarch64", target_arch = "riscv64", target_arch = "x86_64"))]
+        #[cfg(any(target_arch = "loongarch64", target_arch = "x86_64"))]
+        {
+            Ok(IrqId::new(somehal::irq::CPU_LOCAL_IRQ_DOMAIN, hwirq))
+        }
+        #[cfg(target_arch = "riscv64")]
         {
             Ok(IrqId::new(somehal::irq::CPU_LOCAL_IRQ_DOMAIN, hwirq))
         }

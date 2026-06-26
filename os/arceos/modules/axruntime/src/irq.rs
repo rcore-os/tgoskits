@@ -84,10 +84,8 @@ fn resolve_fdt_irq_spec(_spec: ax_driver::FdtIrqSpec) -> Result<IrqId, IrqError>
 /// Resolves a per-CPU trap IRQ through the platform IRQ domain.
 #[cfg(all(target_arch = "aarch64", feature = "plat-dyn"))]
 pub fn resolve_percpu_irq(irq: usize) -> IrqId {
-    IrqId::new(
-        ax_hal::irq::AARCH64_GIC_DOMAIN,
-        HwIrq(u32::try_from(irq).expect("AArch64 per-CPU IRQ exceeds GIC INTID width")),
-    )
+    let hwirq = HwIrq(u32::try_from(irq).expect("AArch64 per-CPU IRQ exceeds GIC INTID width"));
+    ax_hal::irq::resolve_percpu_irq(hwirq).expect("AArch64 per-CPU IRQ domain is not registered")
 }
 
 /// Resolves a per-CPU trap IRQ through the platform IRQ domain.

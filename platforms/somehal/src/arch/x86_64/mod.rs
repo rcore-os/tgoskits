@@ -1,4 +1,5 @@
 use alloc::vec::Vec;
+use core::sync::atomic::{AtomicU64, Ordering};
 
 use rdif_intc::{AcpiGsiRoute, AcpiIrqPolarity, AcpiIrqTrigger};
 use rdrive::{
@@ -8,7 +9,6 @@ use rdrive::{
         acpi::{AcpiId, AcpiIoApic, ProbeAcpi},
     },
 };
-use spin::Mutex;
 use x2apic::ioapic::{IoApic, IrqFlags, IrqMode};
 
 use crate::{
@@ -28,12 +28,19 @@ const ICR_FIXED_BASE: u32 = 0x0000_4000;
 const ICR_DEST_SELF: u32 = 0x0004_0000;
 const ICR_DEST_ALL_EXCLUDING_SELF: u32 = 0x000c_0000;
 
-#[derive(Clone, Copy, Debug)]
-struct VectorRoute {
-    irq: IrqId,
+const UNMAPPED_VECTOR_ROUTE: u64 = u64::MAX;
+static VECTOR_ROUTES: [AtomicU64; 256] = [const { AtomicU64::new(UNMAPPED_VECTOR_ROUTE) }; 256];
+
+fn pack_irq(irq: IrqId) -> u64 {
+    (u64::from(irq.domain.0) << 32) | u64::from(irq.hwirq.0)
 }
 
-static VECTOR_ROUTES: Mutex<[Option<VectorRoute>; 256]> = Mutex::new([const { None }; 256]);
+fn unpack_irq(raw: u64) -> IrqId {
+    IrqId::new(
+        crate::irq::IrqDomainId((raw >> 32) as u16),
+        HwIrq(raw as u32),
+    )
+}
 
 fn lapic_timer_irq_id() -> IrqId {
     IrqId::new(X86_LAPIC_DOMAIN, HwIrq(0))
@@ -61,13 +68,12 @@ fn trap_vector_irq_id(raw: usize) -> Option<IrqId> {
         return Some(lapic_ipi_irq_id());
     }
 
-    Some(
-        VECTOR_ROUTES
-            .lock()
-            .get(raw)
-            .and_then(|route| route.map(|route| route.irq))
-            .unwrap_or_else(|| cpu_local_vector_irq_id(raw)),
-    )
+    let mapped = VECTOR_ROUTES
+        .get(raw)
+        .map(|route| route.load(Ordering::Acquire))
+        .filter(|raw| *raw != UNMAPPED_VECTOR_ROUTE)
+        .map(unpack_irq);
+    Some(mapped.unwrap_or_else(|| cpu_local_vector_irq_id(raw)))
 }
 
 module_driver!(
@@ -494,9 +500,9 @@ fn resolve_acpi_gsi(gsi: u32) -> Result<IrqId, IrqError> {
 
 fn resolve_acpi_route(route: irq_framework::AcpiGsiRoute) -> Result<IrqId, IrqError> {
     let route = route_to_rdif(route);
-    let domain = crate::irq::domain_by_kind(crate::irq::IrqDomainKind::X86IoApic)
+    let domain = crate::irq::domain_by_kind_fast(crate::irq::IrqDomainKind::X86IoApic)
         .ok_or(IrqError::Unsupported)?;
-    let intc = crate::irq::intc_by_domain(domain.id)?;
+    let intc = crate::irq::intc_by_domain(domain)?;
     let mut intc = intc.lock().map_err(|_| IrqError::Controller)?;
 
     if !intc.supports_acpi_gsi(&route) {
@@ -558,14 +564,19 @@ fn install_vector_route(vector: usize, irq: IrqId) -> Result<u8, IrqError> {
         return Err(IrqError::Busy);
     }
 
-    let mut routes = VECTOR_ROUTES.lock();
-    let Some(slot) = routes.get_mut(vector) else {
+    let Some(slot) = VECTOR_ROUTES.get(vector) else {
         return Err(IrqError::InvalidIrq);
     };
-    match *slot {
-        None => *slot = Some(VectorRoute { irq }),
-        Some(old) if old.irq == irq => {}
-        Some(_) => return Err(IrqError::Busy),
+    let raw = pack_irq(irq);
+    match slot.compare_exchange(
+        UNMAPPED_VECTOR_ROUTE,
+        raw,
+        Ordering::AcqRel,
+        Ordering::Acquire,
+    ) {
+        Ok(_) => {}
+        Err(old) if old == raw => {}
+        Err(_) => return Err(IrqError::Busy),
     }
     Ok(vector_u8)
 }
@@ -641,6 +652,10 @@ fn lapic_ptr(offset: u32) -> *mut u32 {
 mod tests {
     use super::*;
 
+    fn clear_vector_route(vector: usize) {
+        VECTOR_ROUTES[vector].store(UNMAPPED_VECTOR_ROUTE, Ordering::Release);
+    }
+
     #[test]
     fn lapic_timer_and_ioapic_gsi_zero_are_different_irq_domains() {
         assert_eq!(lapic_timer_irq_id().domain, X86_LAPIC_DOMAIN);
@@ -673,13 +688,13 @@ mod tests {
         assert_eq!(trap_vector_irq_id(vector), Some(irq));
         assert_ne!(trap_vector_irq_id(vector), Some(ioapic_gsi_irq_id(3)));
 
-        VECTOR_ROUTES.lock()[vector] = None;
+        clear_vector_route(vector);
     }
 
     #[test]
     fn unknown_vector_is_cpu_local_so_it_can_still_eoi() {
         let vector = 0x71;
-        VECTOR_ROUTES.lock()[vector] = None;
+        clear_vector_route(vector);
         let irq = trap_vector_irq_id(vector).expect("unknown vectors still need ActiveIrq");
 
         assert_eq!(irq.domain, CPU_LOCAL_IRQ_DOMAIN);
@@ -706,7 +721,7 @@ mod tests {
             Err(IrqError::Busy)
         );
         assert_eq!(install_vector_route(vector, irq), Ok(vector as u8));
-        VECTOR_ROUTES.lock()[vector] = None;
+        clear_vector_route(vector);
     }
 
     #[test]
