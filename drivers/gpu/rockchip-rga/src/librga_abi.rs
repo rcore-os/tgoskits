@@ -489,11 +489,29 @@ fn csc_for(src: PixelFormat, dst: PixelFormat, _yuv2rgb_mode: u8) -> Option<CscS
 /// Parse a librga `rga_req` into the supported op shape. Rejects rotation, blend/ROP,
 /// and unrecognised render modes.
 pub fn parse(req: &RgaReq) -> Result<ParsedRgaReq> {
-    if req.rotate_mode != 0 || req.sina != 0 || req.cosa != 0 {
+    // Reject only ACTUAL rotation. librga always populates the rotation matrix with
+    // the identity (sina=0, cosa=0x10000 == cos 0° in 16.16 fixed point) for a
+    // non-rotated blit, so `cosa != 0` is NOT a rotation — gating on it rejected
+    // every librga blit. The engine only applies the matrix when rotate_mode != 0.
+    if req.rotate_mode != 0 {
         return Err(RgaError::Unsupported);
     }
     if req.alpha_rop_flag != 0 {
         return Err(RgaError::Unsupported);
+    }
+    // Features the RGA2 op model can't honour and which would silently MIS-RENDER
+    // (change the produced pixels, not merely drop a quality hint) if ignored.
+    // Reject them so librga gets EINVAL instead of wrong output. `scale_mode` (the
+    // scaling-filter quality) and `dither_mode` are quality hints the engine may
+    // safely ignore, so they are deliberately NOT gated here.
+    if req.color_key_min != 0 || req.color_key_max != 0 {
+        return Err(RgaError::Unsupported); // chroma/colour-key compositing
+    }
+    if req.palette_mode != 0 {
+        return Err(RgaError::Unsupported); // indexed / palette colour
+    }
+    if req.pd_mode != 0 {
+        return Err(RgaError::Unsupported); // Porter-Duff alpha blend
     }
     let src = img_ref(&req.src)?;
     let dst = img_ref(&req.dst)?;
@@ -760,6 +778,53 @@ mod tests {
             ..Default::default()
         };
         assert!(matches!(parse(&req), Err(RgaError::Unsupported)));
+    }
+
+    #[test]
+    fn parse_rejects_unhonourable_features() {
+        // Each correctness-changing feature must be rejected, not silently ignored.
+        let base = || RgaReq {
+            render_mode: RENDER_BITBLT,
+            src: img(0x2, 64, 64, 64, 0x1000),
+            dst: img(0x2, 64, 64, 64, 0x2000),
+            ..Default::default()
+        };
+        assert!(matches!(
+            parse(&RgaReq {
+                color_key_min: 1,
+                ..base()
+            }),
+            Err(RgaError::Unsupported)
+        ));
+        assert!(matches!(
+            parse(&RgaReq {
+                color_key_max: 1,
+                ..base()
+            }),
+            Err(RgaError::Unsupported)
+        ));
+        assert!(matches!(
+            parse(&RgaReq {
+                palette_mode: 1,
+                ..base()
+            }),
+            Err(RgaError::Unsupported)
+        ));
+        assert!(matches!(
+            parse(&RgaReq {
+                pd_mode: 1,
+                ..base()
+            }),
+            Err(RgaError::Unsupported)
+        ));
+        // A scaling-filter hint is NOT a correctness change: a plain copy still parses.
+        assert!(
+            parse(&RgaReq {
+                scale_mode: 1,
+                ..base()
+            })
+            .is_ok()
+        );
     }
 
     #[test]
