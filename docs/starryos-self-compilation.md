@@ -256,8 +256,8 @@ scripts/
 apps/starry/selfhost/
 ├── build-x86_64-unknown-none.toml   # x86_64 bare-metal build config（axplat-dyn/efi）
 ├── selfhost-bootstrap/
-│   ├── prebuild.sh                  # 生成 bootstrap overlay（Alpine base → selfhost rootfs）
-│   └── qemu-x86_64.toml             # QEMU 配置（4G, apk + rustup, shell_init_cmd）
+│   ├── prebuild.sh                  # overlay: provisions the full toolchain (apk, Rust, kallsyms, source, firmware, musl symlinks); NO host sudo
+│   └── qemu-x86_64.toml             # QEMU config (16G, smp 4, shell_prefix/shell_init_cmd, 2h timeout)
 └── selfhost-full-kernel/
     ├── prebuild.sh                  # 生成所有 overlay（inner script, linker.x, axconfig）
     └── qemu-x86_64.toml             # QEMU 配置（16G, cache=writeback, OVMF UEFI）
@@ -269,7 +269,7 @@ apps/starry/selfhost/
 ```bash
 # Blueprint: 将 selfhost rootfs 置于 tmp/axbuild/rootfs/rootfs-x86_64-selfhost.img。
 # 维护者通过 prepare-selfhost-rootfs.sh 制备（需 sudo、debootstrap、systemd-nspawn；
-# 后续计划提供 QEMU Debian bootstrap 或可下载/可校验的预制 blueprint）。
+# 可下载蓝图（reviewer：免 sudo）与 QEMU bootstrap（provision only）见下文）。
 
 # 运行自编译（x86_64 KVM, SMP=4）
 ./scripts/self-compile.sh --arch x86_64 --smp 4

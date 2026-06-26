@@ -117,16 +117,21 @@ if [ "$ARCH" = "x86_64" ]; then
     # prepare-selfhost-rootfs.sh and reused across runs.  Each run clones
     # it to a working copy so the blueprint stays pristine.
     #
-    # --bootstrap (for bootstrapping an Alpine base image only) does NOT
-    # provision the prerequisites the x86_64 xtask flow requires (musl
-    # toolchain, kallsyms tools, firmware, complete source).  Use
-    # prepare-selfhost-rootfs.sh for x86_64 self-compile.
+    # --bootstrap provisions a COMPLETE selfhost rootfs from the Alpine base
+    # entirely inside QEMU (no host sudo): build toolchain, Rust, kallsyms tools,
+    # full source, AIC8800 firmware, and a warmed dependency cache (workspace +
+    # -Zbuild-std).  See apps/starry/selfhost/selfhost-bootstrap/prebuild.sh.
     SELFHOST_BLUEPRINT="tmp/axbuild/rootfs/rootfs-x86_64-selfhost.img"
 
     if [ ! -f "$SELFHOST_BLUEPRINT" ] && [ "$BOOTSTRAP" = "true" ]; then
         info "=== Bootstrapping selfhost rootfs via QEMU (no host sudo) ==="
         info "This creates an Alpine-based selfhost rootfs with build tools + Rust."
         ALPINE_ROOTFS="tmp/axbuild/rootfs/rootfs-x86_64-alpine.img"
+        # The managed-image store nests the image as <dir>/<same-name>; resolve
+        # to the actual ext4 file when the path is a directory.
+        if [ -d "$ALPINE_ROOTFS" ]; then
+            ALPINE_ROOTFS="$ALPINE_ROOTFS/rootfs-x86_64-alpine.img"
+        fi
         [ -f "$ALPINE_ROOTFS" ] || error \
             "Alpine rootfs not found: $ALPINE_ROOTFS
 Run: cargo xtask starry rootfs --arch x86_64"
@@ -135,9 +140,9 @@ Run: cargo xtask starry rootfs --arch x86_64"
         info "Cloning Alpine base → selfhost blueprint ($SELFHOST_BLUEPRINT) ..."
         mkdir -p "$(dirname "$SELFHOST_BLUEPRINT")"
         cp "$ALPINE_ROOTFS" "$SELFHOST_BLUEPRINT" || error "Failed to clone Alpine rootfs"
-        qemu-img resize -f raw "$SELFHOST_BLUEPRINT" 12G >/dev/null 2>&1 || true
+        qemu-img resize -f raw "$SELFHOST_BLUEPRINT" 16G >/dev/null 2>&1 || true
         if [ "$(stat -c%s "$SELFHOST_BLUEPRINT")" -lt 3000000000 ]; then
-            truncate -s 12G "$SELFHOST_BLUEPRINT"
+            truncate -s 16G "$SELFHOST_BLUEPRINT"
         fi
         info "Blueprint: $SELFHOST_BLUEPRINT ($(stat -c%s "$SELFHOST_BLUEPRINT") bytes)"
 
