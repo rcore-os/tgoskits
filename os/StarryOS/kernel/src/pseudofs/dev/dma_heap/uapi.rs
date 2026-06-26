@@ -53,12 +53,12 @@ pub const DMA_HEAP_IOCTL_ALLOC: u32 = ioc_iowr!(DMA_HEAP_IOCTL_MAGIC, 0, DmaHeap
 /// `DMA_BUF_IOCTL_SYNC = _IOW('b', 0x0, struct dma_buf_sync)`.
 pub const DMA_BUF_IOCTL_SYNC: u32 = ioc_iow!(DMA_BUF_IOCTL_MAGIC, 0, DmaBufSync);
 
-// dma_buf_sync.flags bits (linux/dma-buf.h).
-pub const DMA_BUF_SYNC_READ: u64 = 1 << 0;
-pub const DMA_BUF_SYNC_WRITE: u64 = 2 << 0;
+// dma_buf_sync.flags bits (linux/dma-buf.h: READ = 1<<0, WRITE = 2<<0, START = 0<<2, END = 1<<2).
+pub const DMA_BUF_SYNC_READ: u64 = 1;
+pub const DMA_BUF_SYNC_WRITE: u64 = 2;
 pub const DMA_BUF_SYNC_RW: u64 = DMA_BUF_SYNC_READ | DMA_BUF_SYNC_WRITE;
 /// Begin-CPU-access phase: the absence of the `END` bit. Value `0`.
-pub const DMA_BUF_SYNC_START: u64 = 0 << 2;
+pub const DMA_BUF_SYNC_START: u64 = 0;
 pub const DMA_BUF_SYNC_END: u64 = 1 << 2;
 /// Valid bits a caller may set in `dma_buf_sync.flags`.
 pub const DMA_BUF_SYNC_VALID_FLAGS_MASK: u64 = DMA_BUF_SYNC_RW | DMA_BUF_SYNC_END;

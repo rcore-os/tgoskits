@@ -127,11 +127,12 @@ fn enable_rga2_clocks() -> Result<(), OnProbeError> {
 }
 
 /// Deassert the RGA2 CRU soft-resets so the AXI/core domains are out of any residual reset before
-/// the engine runs. FLAT reg*16+bit ids for this code's no-LUT ResetRockchip: SOFTRST_CON45 (0xa00
-/// + 45*4 = 0xab4) bits 7/8/9 -> 727 = SRST_H_RGA2, 728 = SRST_A_RGA2, 729 = SRST_RGA2_CORE.
-/// (NOT the Linux dt-binding indices 368/369/370 — those are array indices Linux maps through a
-/// LUT; this tree decodes the id directly as bank=id/16, offset=id%16, so they would hit the wrong
-/// register. Symmetric with the RGA2 clock gates at CLKGATE_CON45 bits 7/8/9.)
+/// the engine runs. These are FLAT reg*16+bit ids for this code's no-LUT ResetRockchip: at
+/// SOFTRST_CON45 (0xa00 plus 45*4 = 0xab4), bits 7/8/9 give 727 = SRST_H_RGA2, 728 = SRST_A_RGA2,
+/// and 729 = SRST_RGA2_CORE. These are NOT the Linux dt-binding indices 368/369/370, which are
+/// array indices Linux maps through a LUT; this tree decodes the id directly as bank = id/16 and
+/// offset = id%16, so those would hit the wrong register. Symmetric with the RGA2 clock gates at
+/// CLKGATE_CON45 bits 7/8/9.
 fn deassert_rga2_resets() {
     for &rst_id in &[727u64, 728, 729] {
         if let Err(e) = crate::soc::rk3588_reset_deassert(rst_id) {

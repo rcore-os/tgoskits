@@ -25,6 +25,7 @@ impl DmaBufFile {
     }
 
     /// The underlying buffer (for `resolve_dmabuf_fd` / RGA import).
+    #[cfg(feature = "rga")]
     pub fn buffer(&self) -> &Arc<DmaBufObject> {
         &self.buf
     }
