@@ -754,13 +754,13 @@ mod tests {
         // Set pids.max = 1
         root.pids.max.store(1, Ordering::Release);
         // First begin_fork should succeed (current=0 < max=1)
-        let mut guard = begin_fork(&root, 10001).expect("first begin_fork");
+        let mut guard = begin_fork(root, 10001).expect("first begin_fork");
         guard.commit();
         // Second begin_fork should fail (current=1 >= max=1)
-        let result = begin_fork(&root, 10002);
+        let result = begin_fork(root, 10002);
         assert_eq!(result.unwrap_err(), CgroupError::LimitExceeded);
         // Cleanup: remove process, uncharge, restore pids.max
-        remove_process_from_node(&root, 10001);
+        remove_process_from_node(root, 10001);
         uncharge_path(&path_to_root(root.clone()));
         root.pids.max.store(-1, Ordering::Release);
     }
