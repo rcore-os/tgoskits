@@ -44,10 +44,13 @@
 #define PERF_SAMPLE_IP (1ull << 0)
 #define PERF_SAMPLE_TID (1ull << 1)
 #define PERF_SAMPLE_TIME (1ull << 2)
-/* A coarse period keeps the sample count low (~hundreds) so the 8-page data ring
- * never wraps before the EXIT record (written last, at the monitored task's
- * exit) — a wrap would overwrite the tail we walk from and lose it. */
-#define SAMPLE_PERIOD 200000ull
+/* This test validates side-band records (FORK/EXIT), not samples. Set the period
+ * far above the busy loop's cycle budget so the counter effectively never
+ * overflows: the data ring then holds only the side-band records and never wraps.
+ * (A small period let the grouped run — where the loop runs longer than in
+ * isolation — produce ~1000 samples that wrapped the 8-page ring and overwrote
+ * the EXIT record, which is written last, at the monitored task's exit.) */
+#define SAMPLE_PERIOD 0x40000000ull
 
 #ifndef PERF_EVENT_IOC_DISABLE
 #define PERF_EVENT_IOC_DISABLE 0x2401u

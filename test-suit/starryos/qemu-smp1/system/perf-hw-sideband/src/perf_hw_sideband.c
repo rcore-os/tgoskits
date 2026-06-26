@@ -42,7 +42,10 @@
 #define PERF_SAMPLE_IP (1ull << 0)
 #define PERF_SAMPLE_TID (1ull << 1)
 #define PERF_SAMPLE_TIME (1ull << 2)
-#define SAMPLE_PERIOD 50000ull
+/* This test validates side-band records (COMM/MMAP2), not samples. Set the period
+ * far above the busy loop's cycle budget so the counter effectively never
+ * overflows: the data ring then holds only the side-band records and never wraps. */
+#define SAMPLE_PERIOD 0x40000000ull
 
 #ifndef PERF_EVENT_IOC_DISABLE
 #define PERF_EVENT_IOC_DISABLE 0x2401u

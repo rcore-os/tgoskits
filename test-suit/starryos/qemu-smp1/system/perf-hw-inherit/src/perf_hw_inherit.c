@@ -43,9 +43,11 @@
 #define PERF_SAMPLE_IP (1ull << 0)
 #define PERF_SAMPLE_TID (1ull << 1)
 #define PERF_SAMPLE_TIME (1ull << 2)
-/* Coarse period: keep total samples (C + inherited G into one ring) in the low
- * hundreds so the 8-page data ring never wraps before the EXIT records. */
-#define SAMPLE_PERIOD 500000ull
+/* This test validates inheritance via EXIT records (written last, at task exit),
+ * not samples. Set the period far above the busy loops' cycle budget so the
+ * counter effectively never overflows: the shared ring then holds only the
+ * side-band records and never wraps (a wrap would overwrite the EXIT records). */
+#define SAMPLE_PERIOD 0x40000000ull
 
 #ifndef PERF_EVENT_IOC_DISABLE
 #define PERF_EVENT_IOC_DISABLE 0x2401u
