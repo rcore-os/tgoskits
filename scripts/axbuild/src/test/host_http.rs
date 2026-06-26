@@ -271,7 +271,9 @@ fn write_dir_response(stream: &mut impl Write, status: &str, content_type: &str,
         body.len(),
     );
     if stream.write_all(head.as_bytes()).is_ok() {
-        let _ = write_body_chunks(stream, body.len(), |offset, len| &body[offset..offset + len]);
+        let _ = write_body_chunks(stream, body.len(), |offset, len| {
+            &body[offset..offset + len]
+        });
     }
 }
 

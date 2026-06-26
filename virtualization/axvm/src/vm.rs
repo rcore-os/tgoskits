@@ -464,6 +464,7 @@ impl AxVM {
                     passthrough_timer: passthrough,
                     boot_args: inner_mut.config.cpu_config.boot_args,
                     boot_stack_top: inner_mut.config.cpu_config.boot_stack_top,
+                    firmware_boot: inner_mut.config.cpu_config.firmware_boot,
                 }
             };
             #[cfg(not(any(
@@ -646,7 +647,7 @@ impl AxVM {
     pub(crate) fn loongarch_external_irq_vector(
         &self,
         fallback_vector: usize,
-        physical_irq: usize,
+        _physical_irq: usize,
     ) -> Option<usize> {
         match self
             .get_devices()
@@ -744,7 +745,6 @@ impl AxVM {
         FwCfgPlatformConfig::default()
     }
 
-
     /// Run a vCPU according to the given vcpu_id.
     ///
     /// ## Arguments
@@ -836,7 +836,8 @@ impl AxVM {
                                         reg_width,
                                         signed_ext,
                                     } => {
-                                        let raw = self.get_devices().handle_mmio_read(addr, width)?;
+                                        let raw =
+                                            self.get_devices().handle_mmio_read(addr, width)?;
                                         let masked = raw & width_mask(width);
                                         let val = if signed_ext {
                                             sign_extend_value(masked, width)
@@ -1133,6 +1134,32 @@ impl AxVM {
         }
     }
 
+    /// Reads raw bytes from guest physical memory.
+    pub fn read_from_guest(&self, gpa_ptr: GuestPhysAddr, buffer: &mut [u8]) -> AxResult {
+        let g = self.inner_mut.lock();
+        let Some(chunks) = g
+            .address_space
+            .translated_byte_buffer(gpa_ptr, buffer.len())
+        else {
+            return ax_err!(InvalidInput, "Failed to translate guest physical address");
+        };
+
+        let mut copied = 0;
+        for chunk in chunks {
+            let len = (buffer.len() - copied).min(chunk.len());
+            buffer[copied..copied + len].copy_from_slice(&chunk[..len]);
+            copied += len;
+            if copied == buffer.len() {
+                return Ok(());
+            }
+        }
+
+        ax_err!(
+            InvalidInput,
+            "Insufficient guest memory to read the requested buffer"
+        )
+    }
+
     /// Writes an object of type `T` to the guest physical address.
     pub fn write_to_guest_of<T>(&self, gpa_ptr: GuestPhysAddr, data: &T) -> AxResult {
         match self
@@ -1158,6 +1185,30 @@ impl AxVM {
             }
             None => ax_err!(InvalidInput, "Failed to translate guest physical address"),
         }
+    }
+
+    /// Writes raw bytes into guest physical memory.
+    pub fn write_to_guest(&self, gpa_ptr: GuestPhysAddr, data: &[u8]) -> AxResult {
+        let g = self.inner_mut.lock();
+        let Some(mut chunks) = g.address_space.translated_byte_buffer(gpa_ptr, data.len()) else {
+            return ax_err!(InvalidInput, "Failed to translate guest physical address");
+        };
+
+        let mut copied = 0;
+        for chunk in chunks.iter_mut() {
+            let len = (data.len() - copied).min(chunk.len());
+            chunk[..len].copy_from_slice(&data[copied..copied + len]);
+            crate::clean_dcache_range((chunk.as_ptr() as usize).into(), len);
+            copied += len;
+            if copied == data.len() {
+                return Ok(());
+            }
+        }
+
+        ax_err!(
+            InvalidInput,
+            "Insufficient guest memory to write the requested buffer"
+        )
     }
 
     /// Allocates an IVC channel for inter-VM communication region.
@@ -1233,29 +1284,28 @@ impl AxVM {
         &self,
         layout: Layout,
         gpa: Option<GuestPhysAddr>,
-    ) -> AxResult<&[u8]> {
+    ) -> AxResult {
         assert!(
             layout.size() > 0,
             "Cannot allocate zero-sized memory region"
         );
+        let gpa =
+            gpa.ok_or_else(|| ax_err_type!(InvalidInput, "Reserved memory GPA is required"))?;
         let mut g = self.inner_mut.lock();
         g.address_space.map_linear(
-            gpa.unwrap(),
-            gpa.unwrap().as_usize().into(),
+            gpa,
+            gpa.as_usize().into(),
             layout.size(),
             MappingFlags::READ | MappingFlags::WRITE | MappingFlags::EXECUTE | MappingFlags::USER,
         )?;
-        let hva = gpa.unwrap().as_usize().into();
-        let tem_hva = gpa.unwrap().as_usize() as *mut u8;
-        let s = unsafe { core::slice::from_raw_parts_mut(tem_hva, layout.size()) };
-        let gpa = gpa.unwrap();
+        let hva = gpa.as_usize().into();
         g.memory_regions.push(VMMemoryRegion {
             gpa,
             hva,
             layout,
             needs_dealloc: false, // This is a reserved region, not allocated
         });
-        Ok(s)
+        Ok(())
     }
 
     /// Cleanup resources for the VM before drop.

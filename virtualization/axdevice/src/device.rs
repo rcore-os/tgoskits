@@ -967,9 +967,10 @@ impl AxVmDevices {
 
     /// Add a QEMU fw_cfg MMIO device to the device list.
     pub fn add_fw_cfg_dev(&mut self, dev: Arc<FwCfg>) -> AxResult {
-        self.register(MmioDeviceAdapter::from_arc(dev.clone())
-            as Arc<dyn Device + Send + Sync + 'static>)
-            .map_err(|e| ax_err_type!(InvalidInput, format!("register fw_cfg: {e:?}")))?;
+        self.register(
+            MmioDeviceAdapter::from_arc(dev.clone()) as Arc<dyn Device + Send + Sync + 'static>
+        )
+        .map_err(|e| ax_err_type!(InvalidInput, format!("register fw_cfg: {e:?}")))?;
         self.fw_cfg = Some(dev);
         Ok(())
     }
