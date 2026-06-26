@@ -1,0 +1,13 @@
+[package]
+name = "sdio-host2"
+version = "0.1.0"
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "no_std SD/SDIO/MMC host bus transaction traits and types"
+keywords.workspace = true
+categories.workspace = true
+
+[dependencies]
+dma-api.workspace = true
