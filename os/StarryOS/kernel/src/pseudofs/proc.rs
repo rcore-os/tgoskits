@@ -162,6 +162,46 @@ fn render_cpuinfo() -> String {
     buf
 }
 
+/// Read a root-node device-tree property as its raw bytes (NUL-separated,
+/// NUL-terminated string list), exactly as Linux exposes under
+/// `/proc/device-tree/`. Returns `None` when the FDT is unavailable (non-FDT
+/// platform) or the property is missing/empty.
+#[cfg(feature = "plat-dyn")]
+fn read_dt_root_property(name: &str) -> Option<Vec<u8>> {
+    rdrive::with_fdt(|fdt| {
+        let root = fdt.get_by_path("/")?;
+        let prop = root.as_node().get_property(name)?;
+        (!prop.data.is_empty()).then(|| prop.data.clone())
+    })
+    .flatten()
+    .map(|mut bytes| {
+        // Real OF always NUL-terminates; guard a malformed blob. Do NOT flatten
+        // interior NULs — consumers (e.g. librockchip_mpp) expect raw bytes.
+        if bytes.last() != Some(&0) {
+            bytes.push(0);
+        }
+        bytes
+    })
+}
+
+#[cfg(not(feature = "plat-dyn"))]
+fn read_dt_root_property(_name: &str) -> Option<Vec<u8>> {
+    None
+}
+
+/// Root device-tree `compatible` (`/proc/device-tree/compatible`). Falls back to
+/// a fixed RK3588 value so SoC-detecting userspace (librockchip_mpp's
+/// `read_soc_name`, which `strstr`s for the SoC name) still works when the FDT
+/// is unavailable.
+fn render_dt_compatible() -> Vec<u8> {
+    read_dt_root_property("compatible").unwrap_or_else(|| b"rockchip,rk3588\0".to_vec())
+}
+
+/// Root device-tree `model` (`/proc/device-tree/model`).
+fn render_dt_model() -> Vec<u8> {
+    read_dt_root_property("model").unwrap_or_else(|| b"Rockchip RK3588\0".to_vec())
+}
+
 #[cfg(target_arch = "riscv64")]
 fn render_cpu_entry(buf: &mut String, idx: usize) {
     let _ = writeln!(buf, "processor\t: {idx}");
@@ -1497,6 +1537,24 @@ fn builder(fs: Arc<SimpleFs>) -> DirMaker {
         );
 
         SimpleDir::new_maker(fs.clone(), Arc::new(net))
+    });
+
+    // /proc/device-tree/{compatible,model} — minimal Open Firmware view from the
+    // live FDT. SoC-detecting userspace (e.g. librockchip_mpp's read_soc_name)
+    // opens /proc/device-tree/compatible and matches the SoC string; without it
+    // such libraries fail to identify the chip. A full FDT mirror is unnecessary
+    // (only MPP reads device-tree; librga/rknn probe via their own /dev nodes).
+    root.add("device-tree", {
+        let mut dt = DirMapping::new();
+        dt.add(
+            "compatible",
+            SimpleFile::new_regular(fs.clone(), || Ok(render_dt_compatible())),
+        );
+        dt.add(
+            "model",
+            SimpleFile::new_regular(fs.clone(), || Ok(render_dt_model())),
+        );
+        SimpleDir::new_maker(fs.clone(), Arc::new(dt))
     });
 
     root.add("dynamic_debug", {
