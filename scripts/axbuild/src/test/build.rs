@@ -1765,7 +1765,11 @@ fn shell_single_quote(path: impl AsRef<Path>) -> String {
 
 /// Returns the Rust source directory for a QEMU test case.
 pub(crate) fn case_rust_source_dir(case: &TestQemuCase) -> PathBuf {
-    case.case_dir.join("rust")
+    if case.case_dir.join("Cargo.toml").is_file() {
+        case.case_dir.clone()
+    } else {
+        case.case_dir.join("rust")
+    }
 }
 
 /// Maps a StarryOS arch name to the corresponding Rust musl target triple.
@@ -1785,13 +1789,15 @@ fn rust_musl_target(arch: &str) -> anyhow::Result<&'static str> {
 /// Prepares overlay assets for a Rust-based QEMU test case.
 ///
 /// This pipeline:
-/// 1. Cross-compiles the Rust project in `rust/` using `cargo build --release`
-///    targeting the appropriate musl triple for the guest architecture.
+/// 1. Cross-compiles the Rust project in the case root or `rust/` using
+///    `cargo build --release` targeting the appropriate musl triple for the
+///    guest architecture.
 /// 2. Copies the resulting static binary into the overlay at `/usr/bin/`.
 /// 3. Injects the overlay into the rootfs image.
 ///
 /// The binary name is taken from the Cargo.toml `[[bin]]` name, or falls back
-/// to the package name.  The `rust/` directory must contain a `Cargo.toml`.
+/// to the package name.  The case root or `rust/` directory must contain a
+/// `Cargo.toml`.
 pub(crate) fn prepare_rust_case_assets_sync(
     arch: &str,
     case: &TestQemuCase,
@@ -1828,13 +1834,16 @@ pub(crate) fn prepare_rust_case_assets_sync(
         .exec()
         .with_context(|| format!("failed to install Rust target `{target_triple}` via rustup"))?;
 
-    // Extract the rootfs so we can use the Alpine cross-linker for architectures
-    // whose ELF format the host linker cannot handle (e.g. loongarch64).
+    // Extract the rootfs so we can inject the compiled binary and, when needed,
+    // use the Alpine cross-linker for architectures whose ELF format the host
+    // linker cannot handle (e.g. loongarch64).
     crate::rootfs::inject::extract_rootfs(case_rootfs, &layout.staging_root)?;
     (config.prepare_staging_root)(&layout.staging_root)?;
     write_musl_loader_search_path(arch, &layout.staging_root)?;
 
-    // Build a qemu-user wrapper for the cross-linker from the Alpine sysroot.
+    // Build qemu-user wrappers for Alpine binutils. Rust's musl targets have a
+    // self-contained linker on common arches; keep Alpine ld only where it is
+    // still required.
     let spec = cross_compile_spec(arch)?;
     let qemu_runner = find_host_binary_candidates(qemu_user_binary_names(arch)?)?;
     write_cross_bin_wrappers(layout, spec, &qemu_runner)?;
@@ -1855,13 +1864,6 @@ pub(crate) fn prepare_rust_case_assets_sync(
             .with_context(|| format!("failed to run rust case prebuild.sh for `{}`", case.name))?;
     }
 
-    // The linker env var name is CARGO_TARGET_<UPPER_TRIPLE>_LINKER.
-    let linker_env_key = format!(
-        "CARGO_TARGET_{}_LINKER",
-        target_triple.to_uppercase().replace('-', "_")
-    );
-    let linker_path = layout.cross_bin_dir.join("ld");
-
     // Cross-compile the Rust project for the musl target.
     let mut cmd = Command::new("cargo");
     cmd.arg("build")
@@ -1873,7 +1875,6 @@ pub(crate) fn prepare_rust_case_assets_sync(
         .arg("--target-dir")
         .arg(&layout.build_dir)
         .env("RUSTFLAGS", "-C target-feature=+crt-static")
-        .env(&linker_env_key, &linker_path)
         // Point pkg-config at the Alpine sysroot so crates with native deps
         // (e.g. dbus via keyring) can find their .pc files when cross-compiling.
         .env(
@@ -1889,6 +1890,14 @@ pub(crate) fn prepare_rust_case_assets_sync(
             layout.staging_root.display().to_string(),
         )
         .env("PKG_CONFIG_PATH", "");
+    if rust_case_needs_guest_linker(arch) {
+        // The linker env var name is CARGO_TARGET_<UPPER_TRIPLE>_LINKER.
+        let linker_env_key = format!(
+            "CARGO_TARGET_{}_LINKER",
+            target_triple.to_uppercase().replace('-', "_")
+        );
+        cmd.env(linker_env_key, layout.cross_bin_dir.join("ld"));
+    }
     cmd.exec().with_context(|| {
         format!(
             "failed to cross-compile Rust case `{}` for target `{target_triple}`",
@@ -1935,6 +1944,10 @@ pub(crate) fn prepare_rust_case_assets_sync(
     }
 
     crate::rootfs::inject::inject_overlay(case_rootfs, &layout.overlay_dir)
+}
+
+fn rust_case_needs_guest_linker(arch: &str) -> bool {
+    matches!(arch, "loongarch64")
 }
 
 /// Reads the binary name from a `Cargo.toml`.
