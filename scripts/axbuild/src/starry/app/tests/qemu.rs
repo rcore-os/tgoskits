@@ -210,6 +210,7 @@ fn app_qemu_test_case_preserves_host_symbolize_success_regex() {
             body: "fixture".to_string(),
             body_size: None,
             body_byte: b'X',
+            dir: None,
         }),
         subcases: Vec::new(),
     };
