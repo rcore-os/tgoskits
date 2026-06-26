@@ -39,12 +39,12 @@ mod pinmux;
 #[cfg(all(feature = "sg2002", not(feature = "plat-dyn")))]
 pub(super) mod pwm;
 
-use alloc::{format, sync::Arc};
+use alloc::{borrow::Cow, boxed::Box, format, sync::Arc, vec::Vec};
 use core::any::Any;
 
 use ax_errno::AxError;
 use ax_sync::Mutex;
-use axfs_ng_vfs::{DeviceId, Filesystem, NodeFlags, NodeType, VfsResult};
+use axfs_ng_vfs::{DeviceId, Filesystem, NodeFlags, NodeType, VfsError, VfsResult};
 #[cfg(feature = "sg2002")]
 use spin::Once;
 
@@ -54,7 +54,9 @@ pub static ION_DEVICE: Once<Arc<ion::IonDevice>> = Once::new();
 pub use log::bind_dev_log;
 use rand::{Rng, SeedableRng, rngs::SmallRng};
 
-use crate::pseudofs::{Device, DeviceOps, DirMaker, DirMapping, SimpleDir, SimpleFs};
+use crate::pseudofs::{
+    Device, DeviceOps, DirMaker, DirMapping, NodeOpsMux, SimpleDir, SimpleDirOps, SimpleFs,
+};
 
 const RANDOM_SEED: &[u8; 32] = b"0123456789abcdef0123456789abcdef";
 
@@ -341,21 +343,6 @@ fn builder(fs: Arc<SimpleFs>) -> DirMaker {
             tty::console_device(),
         ),
     );
-    for number in 0..tty::usb_serial_tty_count() {
-        root.add_dynamic(format!("ttyUSB{number}"), {
-            let fs = fs.clone();
-            move || {
-                Device::new(
-                    fs.clone(),
-                    NodeType::CharacterDevice,
-                    DeviceId::new(188, number as u32),
-                    tty::usb_serial_tty(number).expect("ttyUSB slot must exist"),
-                )
-                .into()
-            }
-        });
-    }
-
     root.add(
         "ptmx",
         Device::new(
@@ -587,5 +574,44 @@ fn builder(fs: Arc<SimpleFs>) -> DirMaker {
         );
     }
 
-    SimpleDir::new_maker(fs, Arc::new(root))
+    let usb_serial = UsbSerialDevDir { fs: fs.clone() };
+    SimpleDir::new_maker(fs, Arc::new(root.chain(usb_serial)))
+}
+
+struct UsbSerialDevDir {
+    fs: Arc<SimpleFs>,
+}
+
+impl SimpleDirOps for UsbSerialDevDir {
+    fn child_names<'a>(&'a self) -> Box<dyn Iterator<Item = Cow<'a, str>> + 'a> {
+        let names = tty::usb_serial_tty_minors()
+            .into_iter()
+            .map(|number| Cow::Owned(format!("ttyUSB{number}")))
+            .collect::<Vec<_>>();
+        Box::new(names.into_iter())
+    }
+
+    fn lookup_child(&self, name: &str) -> VfsResult<NodeOpsMux> {
+        let number = parse_usb_serial_tty_name(name).ok_or(VfsError::NotFound)?;
+        let tty = tty::usb_serial_tty(number).ok_or(VfsError::NotFound)?;
+        Ok(Device::new(
+            self.fs.clone(),
+            NodeType::CharacterDevice,
+            DeviceId::new(188, number as u32),
+            tty,
+        )
+        .into())
+    }
+
+    fn is_cacheable(&self) -> bool {
+        false
+    }
+}
+
+fn parse_usb_serial_tty_name(name: &str) -> Option<usize> {
+    let number = name.strip_prefix("ttyUSB")?;
+    if number.is_empty() {
+        return None;
+    }
+    number.parse().ok()
 }

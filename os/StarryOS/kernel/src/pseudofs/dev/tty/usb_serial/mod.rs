@@ -22,20 +22,14 @@ use crate::pseudofs::usbfs::{self, UsbDeviceHandle};
 
 pub type UsbSerialTtyDriver = Tty<UsbSerialReader, UsbSerialWriter>;
 
-// The devfs entries are static for now: /dev/ttyUSB0..3 are always present and
-// lazily attach to the corresponding probed USB serial adapter when opened.
-const USB_SERIAL_PORTS: usize = 4;
 const USB_SERIAL_DEFAULT_BAUDRATE: u32 = 115_200;
 const USB_SERIAL_RX_CHUNK: usize = 64;
 const USB_SERIAL_TX_CHUNK: usize = 256;
 const USB_SERIAL_RX_QUEUE_CAP: usize = 4096;
 const USB_SERIAL_TX_QUEUE_CAP: usize = 4096;
 
-static USB_SERIAL_TTYS: LazyLock<Vec<Arc<UsbSerialTtyDriver>>> = LazyLock::new(|| {
-    (0..USB_SERIAL_PORTS)
-        .map(new_usb_serial_tty)
-        .collect::<Vec<_>>()
-});
+static USB_SERIAL_TTYS: LazyLock<SpinNoIrq<Vec<Option<Arc<UsbSerialTtyDriver>>>>> =
+    LazyLock::new(|| SpinNoIrq::new(Vec::new()));
 
 struct UsbSerialSession {
     handle: UsbDeviceHandle,
@@ -43,7 +37,7 @@ struct UsbSerialSession {
 }
 
 struct UsbSerialBackendState {
-    index: usize,
+    minor: usize,
     // Owns the usbfs lease and claimed interface. Keeping this behind the tty
     // backend, instead of per open file, matches the current static devfs node
     // model and lets the RX/TX workers share one hardware session.
@@ -71,33 +65,52 @@ pub struct UsbSerialWriter {
     backend: Arc<UsbSerialBackendState>,
 }
 
-pub fn usb_serial_tty(index: usize) -> Option<Arc<UsbSerialTtyDriver>> {
-    USB_SERIAL_TTYS.get(index).cloned()
+pub fn usb_serial_tty(minor: usize) -> Option<Arc<UsbSerialTtyDriver>> {
+    if !usb_serial_tty_minors().contains(&minor) {
+        return None;
+    }
+
+    let mut ttys = USB_SERIAL_TTYS.lock();
+    if ttys.len() <= minor {
+        ttys.resize_with(minor + 1, || None);
+    }
+    Some(
+        ttys[minor]
+            .get_or_insert_with(|| new_usb_serial_tty(minor))
+            .clone(),
+    )
 }
 
-pub fn usb_serial_tty_count() -> usize {
-    USB_SERIAL_PORTS
+pub fn usb_serial_tty_minors() -> Vec<usize> {
+    backend::usb_serial_minors()
 }
 
 pub(crate) fn register_usb_serial_probe() {
     backend::register_usb_serial_probe();
 }
 
-pub(super) fn usb_serial_device_removed(bus_num: u8, device_num: u8) {
-    for tty in USB_SERIAL_TTYS.iter() {
-        tty.writer.backend.device_removed(bus_num, device_num);
+pub(super) fn usb_serial_device_removed(bus_num: u8, device_num: u8, interface: Option<u8>) {
+    let ttys = USB_SERIAL_TTYS
+        .lock()
+        .iter()
+        .filter_map(Clone::clone)
+        .collect::<Vec<_>>();
+    for tty in ttys {
+        tty.writer
+            .backend
+            .device_removed(bus_num, device_num, interface);
     }
 }
 
 impl UsbSerialTtyDriver {
     pub fn usb_serial_number(&self) -> usize {
-        self.writer.backend.index
+        self.writer.backend.minor
     }
 }
 
-fn new_usb_serial_tty(index: usize) -> Arc<UsbSerialTtyDriver> {
+fn new_usb_serial_tty(minor: usize) -> Arc<UsbSerialTtyDriver> {
     let backend = Arc::new(UsbSerialBackendState {
-        index,
+        minor,
         session: Mutex::new(None),
         baudrate: AtomicU32::new(USB_SERIAL_DEFAULT_BAUDRATE),
         started: AtomicBool::new(false),
@@ -156,7 +169,7 @@ impl UsbSerialBackendState {
             return Err(AxError::ResourceBusy);
         }
 
-        let port = find_usb_serial_port(self.index).ok_or(AxError::NoSuchDevice)?;
+        let port = find_usb_serial_port(self.minor).ok_or(AxError::NoSuchDevice)?;
         let handle = usbfs::acquire_usb_device(port.bus_num, port.device_num)?;
         handle.claim_interface(port.interface(), 0)?;
         let baudrate = self.baudrate.load(Ordering::Acquire);
@@ -166,7 +179,7 @@ impl UsbSerialBackendState {
         }
         info!(
             "usb-serial: ttyUSB{} attached to {} device {}:{} iface {} in={:#04x} out={:#04x}",
-            self.index,
+            self.minor,
             port.name(),
             port.bus_num,
             port.device_num,
@@ -331,7 +344,7 @@ impl UsbSerialBackendState {
         if dropped > 0 {
             let previous = self.dropped_rx.fetch_add(dropped, Ordering::AcqRel);
             if previous == 0 {
-                warn!("usb-serial: ttyUSB{} RX queue full", self.index);
+                warn!("usb-serial: ttyUSB{} RX queue full", self.minor);
             }
         }
         unsafe { self.input_source.wake(IoEvents::IN) };
@@ -362,10 +375,12 @@ impl UsbSerialBackendState {
         }
     }
 
-    fn device_removed(&self, bus_num: u8, device_num: u8) {
+    fn device_removed(&self, bus_num: u8, device_num: u8, interface: Option<u8>) {
         let failed_session = self.session.lock().as_ref().and_then(|session| {
-            (session.port.bus_num == bus_num && session.port.device_num == device_num)
-                .then(|| session.clone())
+            (session.port.bus_num == bus_num
+                && session.port.device_num == device_num
+                && interface.is_none_or(|interface| session.port.interface() == interface))
+            .then(|| session.clone())
         });
         if let Some(session) = failed_session {
             self.request_session_teardown(Some(&session));
@@ -428,7 +443,7 @@ impl UsbSerialBackendState {
                             } else {
                                 warn!(
                                     "usb-serial: ttyUSB{} RX worker failed to attach: {err:?}",
-                                    backend.index
+                                    backend.minor
                                 );
                                 backend.rx_worker_started.store(false, Ordering::Release);
                             }
@@ -448,7 +463,7 @@ impl UsbSerialBackendState {
                             backend.finish_session_teardown(Some(&session));
                             warn!(
                                 "usb-serial: ttyUSB{} RX worker stopped: {err:?}",
-                                backend.index
+                                backend.minor
                             );
                             break;
                         }
@@ -478,7 +493,7 @@ impl UsbSerialBackendState {
                 if let Err(err) = result {
                     warn!(
                         "usb-serial: ttyUSB{} TX worker stopped: {err:?}",
-                        backend.index
+                        backend.minor
                     );
                     backend.tx_worker_started.store(false, Ordering::Release);
                     break;
@@ -519,7 +534,7 @@ impl TtyWrite for UsbSerialWriter {
         if let Err(err) = self.backend.write_bytes(buf) {
             warn!(
                 "usb-serial: ttyUSB{} write failed: {err:?}",
-                self.backend.index
+                self.backend.minor
             );
         }
     }
@@ -538,7 +553,7 @@ impl TtyWrite for UsbSerialWriter {
         if let Err(err) = self.backend.set_baudrate(new_baud) {
             warn!(
                 "usb-serial: ttyUSB{} failed to set baudrate {new_baud}: {err:?}",
-                self.backend.index
+                self.backend.minor
             );
         }
     }

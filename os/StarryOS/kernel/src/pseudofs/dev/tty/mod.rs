@@ -35,7 +35,7 @@ pub use self::{
     serial::{
         SerialTtyDriver, arm_console_irq, bind_console_to, console_device, serial_tty_entries,
     },
-    usb_serial::{UsbSerialTtyDriver, usb_serial_tty, usb_serial_tty_count},
+    usb_serial::{UsbSerialTtyDriver, usb_serial_tty, usb_serial_tty_minors},
 };
 use crate::{
     pseudofs::DeviceOps,

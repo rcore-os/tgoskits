@@ -191,6 +191,20 @@ pub fn sync_usb_devices_for_host(
     probe::usb::sync_host_with(host, &unregistered, devices, stop_if_fail)
 }
 
+/// Probe an incremental USB device update for one USB host.
+///
+/// New matching devices are probed. Existing bindings are kept even when they
+/// do not appear in `devices`, so callers can use this with backends that report
+/// only newly discovered devices rather than a complete bus snapshot.
+pub fn probe_usb_devices_for_host(
+    host: DeviceId,
+    devices: &[probe::usb::UsbDevice],
+    stop_if_fail: bool,
+) -> Result<(), ProbeError> {
+    let unregistered = edit(|manager| manager.unregistered())?;
+    probe::usb::probe_host_with(host, &unregistered, devices, stop_if_fail)
+}
+
 pub fn get_list<T: DriverGeneric>() -> Vec<Device<T>> {
     read(|manager| manager.dev_container.devices())
 }

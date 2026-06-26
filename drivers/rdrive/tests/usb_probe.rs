@@ -292,6 +292,12 @@ fn usb_probe_matches_ids_and_populates_each_device_once() {
     .expect("USB probe should succeed");
     assert_eq!(SWITCH_A_PROBE_COUNT.load(Ordering::SeqCst), 1);
 
+    rdrive::probe_usb_devices_for_host(host, &[], true)
+        .expect("incremental USB probe should not remove existing devices");
+    assert_eq!(SWITCH_A_REMOVE_COUNT.load(Ordering::SeqCst), 0);
+    assert_eq!(get_list::<UsbTestDevice>().len(), 3);
+    assert_eq!(get_list::<SwitchDeviceA>().len(), 1);
+
     let switch_b = UsbDevice::new(
         UsbDeviceKey::new(host, 11),
         1,

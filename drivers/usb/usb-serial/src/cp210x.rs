@@ -38,6 +38,20 @@ pub fn probe(descriptor_blob: &[u8]) -> Option<UsbSerialPort> {
     bulk_pair_for_interface(descriptor_blob, is_data_interface)
 }
 
+pub fn probe_interface(descriptor_blob: &[u8], interface_number: u8) -> Option<UsbSerialPort> {
+    let UsbDeviceId {
+        vendor_id,
+        product_id,
+    } = device_id_from_descriptor_blob(descriptor_blob)?;
+    if !matches!((vendor_id, product_id), (VENDOR_ID, PRODUCT_ID_EA60)) {
+        return None;
+    }
+
+    bulk_pair_for_interface(descriptor_blob, |interface| {
+        interface.interface_number == interface_number && is_data_interface(interface)
+    })
+}
+
 pub fn init<T: ControlTransfer>(
     control: &T,
     port: &UsbSerialPort,

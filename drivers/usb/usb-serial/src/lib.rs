@@ -88,6 +88,17 @@ pub fn probe_supported_port(descriptor_blob: &[u8]) -> Option<UsbSerialPortMatch
     })
 }
 
+/// Probe the built-in USB serial chip families for one concrete interface.
+pub fn probe_supported_port_for_interface(
+    descriptor_blob: &[u8],
+    interface_number: u8,
+) -> Option<UsbSerialPortMatch> {
+    cp210x::probe_interface(descriptor_blob, interface_number).map(|port| UsbSerialPortMatch {
+        chip: UsbSerialChip::Cp210x,
+        port,
+    })
+}
+
 pub fn device_id_from_descriptor_blob(blob: &[u8]) -> Option<UsbDeviceId> {
     let desc = DeviceDescriptor::parse(blob)?;
     Some(UsbDeviceId {
@@ -266,5 +277,33 @@ mod tests {
                 }
             })
         );
+    }
+
+    #[test]
+    fn probe_supported_port_for_interface_selects_one_interface() {
+        let first = interface(2, 0, 0xff, 0, 0);
+        let second = interface(4, 0, 0xff, 0, 0);
+        let config = config(&[
+            &first,
+            &endpoint(0x82, 0x02),
+            &endpoint(0x01, 0x02),
+            &second,
+            &endpoint(0x84, 0x02),
+            &endpoint(0x03, 0x02),
+        ]);
+        let blob = descriptor_blob(&[config]);
+
+        assert_eq!(
+            probe_supported_port_for_interface(&blob, 4),
+            Some(UsbSerialPortMatch {
+                chip: UsbSerialChip::Cp210x,
+                port: UsbSerialPort {
+                    interface: 4,
+                    bulk_in: 0x84,
+                    bulk_out: 0x03,
+                }
+            })
+        );
+        assert_eq!(probe_supported_port_for_interface(&blob, 5), None);
     }
 }

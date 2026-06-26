@@ -246,6 +246,17 @@ pub(crate) fn sync_host_with(
         .sync_host(host, registers, devices, stop_if_fail)
 }
 
+pub(crate) fn probe_host_with(
+    host: DeviceId,
+    registers: &[DriverRegister],
+    devices: &[UsbDevice],
+    stop_if_fail: bool,
+) -> Result<(), ProbeError> {
+    USB.call_once(|| Mutex::new(System::new()))
+        .lock()
+        .probe_host(host, registers, devices, stop_if_fail)
+}
+
 struct System {
     bindings: BTreeMap<UsbProbeTarget, UsbBinding>,
 }
@@ -280,7 +291,20 @@ impl System {
         for target in stale {
             self.remove_binding(target);
         }
-        for device in devices {
+        for device in devices.iter().filter(|device| device.key().host == host) {
+            self.probe_one(device, registers, stop_if_fail)?;
+        }
+        Ok(())
+    }
+
+    fn probe_host(
+        &mut self,
+        host: DeviceId,
+        registers: &[DriverRegister],
+        devices: &[UsbDevice],
+        stop_if_fail: bool,
+    ) -> Result<(), ProbeError> {
+        for device in devices.iter().filter(|device| device.key().host == host) {
             self.probe_one(device, registers, stop_if_fail)?;
         }
         Ok(())

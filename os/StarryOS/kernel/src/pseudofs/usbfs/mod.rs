@@ -125,8 +125,8 @@ impl UsbDeviceHandle {
     }
 }
 
-fn sync_known_usb_devices(host: rdrive::DeviceId, devices: &[rdrive::probe::usb::UsbDevice]) {
-    if let Err(err) = rdrive::sync_usb_devices_for_host(host, devices, false) {
+fn probe_known_usb_devices(host: rdrive::DeviceId, devices: &[rdrive::probe::usb::UsbDevice]) {
+    if let Err(err) = rdrive::probe_usb_devices_for_host(host, devices, false) {
         warn!("usbfs: USB driver probe failed: {err}");
     }
 }

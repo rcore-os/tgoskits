@@ -711,7 +711,7 @@ impl UsbFsManager {
         // must not be treated as device removal.
         let usb_probe_devices = present_usb_probe_devices(&state, device_id);
         drop(state);
-        super::sync_known_usb_devices(device_id, &usb_probe_devices);
+        super::probe_known_usb_devices(device_id, &usb_probe_devices);
     }
 
     fn ensure_live_device(&self, stable_id: UsbStableId) -> AxResult<()> {
