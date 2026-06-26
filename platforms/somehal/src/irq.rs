@@ -161,6 +161,11 @@ pub fn intc_by_domain(domain: IrqDomainId) -> Result<Device<Intc>, IrqError> {
 }
 
 pub fn set_controller_irq_enabled(irq: IrqId, enabled: bool) -> Result<(), IrqError> {
+    #[cfg(target_arch = "x86_64")]
+    if domain_is_kind(irq.domain, IrqDomainKind::X86IoApic) {
+        return crate::arch::set_ioapic_gsi_enabled_from_irq(irq.hwirq.0, enabled);
+    }
+
     let intc = intc_by_domain(irq.domain)?;
     let mut intc = intc.try_lock().map_err(|_| IrqError::Busy)?;
     intc.set_enabled(irq.hwirq, enabled)
