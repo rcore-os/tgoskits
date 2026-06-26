@@ -8,15 +8,16 @@ extern crate alloc;
 
 use core::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 
-use ax_hal::{
-    irq::{IPI_IRQ, IpiTarget},
-    percpu::this_cpu_id,
-};
+use ax_hal::{irq::IpiTarget, percpu::this_cpu_id};
 use ax_kspin::SpinNoIrq;
 use ax_lazyinit::LazyInit;
 
 mod event;
 mod queue;
+
+mod build_info {
+    include!(concat!(env!("OUT_DIR"), "/build_info.rs"));
+}
 
 pub use event::{Callback, MulticastCallback};
 use queue::IpiEventQueue;
@@ -28,8 +29,8 @@ const IPI_CPU_NOT_READY: u8 = 0;
 const IPI_CPU_BECOMING_READY: u8 = 1;
 const IPI_CPU_READY: u8 = 2;
 
-static IPI_CPU_STATE: [AtomicU8; ax_config::plat::MAX_CPU_NUM] =
-    [const { AtomicU8::new(IPI_CPU_NOT_READY) }; ax_config::plat::MAX_CPU_NUM];
+static IPI_CPU_STATE: [AtomicU8; build_info::CPU_CAPACITY] =
+    [const { AtomicU8::new(IPI_CPU_NOT_READY) }; build_info::CPU_CAPACITY];
 
 static IPI_READY_CPUS: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
 
@@ -62,7 +63,7 @@ pub fn wait_for_all_cpus_ready() {
 
 /// Returns whether `cpu_id` is ready to receive and handle queued IPI callbacks.
 pub fn is_cpu_ready(cpu_id: usize) -> bool {
-    cpu_id < ax_config::plat::MAX_CPU_NUM
+    cpu_id < build_info::CPU_CAPACITY
         && IPI_CPU_STATE[cpu_id].load(Ordering::Acquire) == IPI_CPU_READY
 }
 
@@ -73,7 +74,7 @@ pub fn is_cpu_ready(cpu_id: usize) -> bool {
 /// Waiting for the transition to complete lets the caller send a conservative
 /// follow-up IPI after the CPU can receive callbacks.
 pub fn wait_until_cpu_ready(cpu_id: usize) -> bool {
-    if cpu_id >= ax_config::plat::MAX_CPU_NUM {
+    if cpu_id >= build_info::CPU_CAPACITY {
         return false;
     }
 
@@ -96,7 +97,10 @@ pub fn run_on_cpu<T: Into<Callback>>(dest_cpu: usize, callback: T) {
         unsafe { IPI_EVENT_QUEUE.remote_ref_raw(dest_cpu) }
             .lock()
             .push(this_cpu_id(), callback.into());
-        ax_hal::irq::send_ipi(IPI_IRQ, IpiTarget::Other { cpu_id: dest_cpu });
+        ax_hal::irq::send_ipi(
+            ax_hal::irq::ipi_irq(),
+            IpiTarget::Other { cpu_id: dest_cpu },
+        );
     }
 }
 
@@ -149,7 +153,7 @@ pub unsafe fn run_on_cpu_sync_raw(
 pub fn run_on_each_cpu<T: Into<MulticastCallback>>(callback: T) {
     info!("Send IPI event to all other CPUs");
     let current_cpu_id = this_cpu_id();
-    let cpu_num = ax_config::plat::MAX_CPU_NUM;
+    let cpu_num = ax_hal::cpu_num();
     let callback = callback.into();
 
     // Execute callback on current CPU immediately
@@ -164,7 +168,7 @@ pub fn run_on_each_cpu<T: Into<MulticastCallback>>(callback: T) {
     }
     // Send IPI to all other CPUs to trigger their callbacks
     ax_hal::irq::send_ipi(
-        IPI_IRQ,
+        ax_hal::irq::ipi_irq(),
         IpiTarget::AllExceptCurrent {
             cpu_id: current_cpu_id,
             cpu_num,

@@ -59,6 +59,22 @@ impl PlatOp for Plat {
         pch_pic::set_irq_enable(raw, enable);
     }
 
+    fn irq_set_affinity(
+        irq: rdrive::IrqId,
+        affinity: crate::irq::IrqAffinity,
+    ) -> Result<(), &'static str> {
+        let raw = irq.raw();
+        if raw == someboot::irq::systimer_irq().raw() || raw == IPI_IRQ {
+            return Err("LoongArch local IRQ affinity cannot be changed");
+        }
+        match affinity {
+            crate::irq::IrqAffinity::Any | crate::irq::IrqAffinity::Fixed { cpu_id: 0 } => Ok(()),
+            crate::irq::IrqAffinity::Fixed { .. } => {
+                Err("LoongArch EIOINTC affinity currently supports only CPU0")
+            }
+        }
+    }
+
     fn send_ipi(_irq: rdrive::IrqId, target: crate::irq::IpiTarget) {
         match target {
             crate::irq::IpiTarget::Current { cpu_id } | crate::irq::IpiTarget::Other { cpu_id } => {
@@ -72,6 +88,10 @@ impl PlatOp for Plat {
                 }
             }
         }
+    }
+
+    fn ipi_irq() -> rdrive::IrqId {
+        IPI_IRQ.into()
     }
 
     fn begin_irq(raw: usize) -> Option<Self::ActiveIrq> {

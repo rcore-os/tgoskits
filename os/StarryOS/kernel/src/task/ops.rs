@@ -102,9 +102,6 @@ pub fn add_task_to_table(task: &AxTaskRef) {
     let proc = &proc_data.proc;
     let pid = proc.pid();
     let mut proc_table = PROCESS_TABLE.write();
-    if proc_table.contains_key(&pid) {
-        return;
-    }
     proc_table.insert(pid, proc_data);
 
     let pg = proc.group();
@@ -538,6 +535,17 @@ pub fn do_exit(exit_code: i32, group_exit: bool) {
 
     trace_sched_process_exit(curr.id().as_u64(), exit_code);
 
+    if group_exit && let Some(tids) = thr.proc_data.proc.start_group_exit(exit_code) {
+        let sig = SignalInfo::new_kernel(Signo::SIGKILL);
+        for tid in tids {
+            if tid == thr.tid() {
+                continue;
+            }
+            let _ = send_signal_to_thread(None, tid, Some(sig.clone()));
+            let _ = zap_thread(tid);
+        }
+    }
+
     // Robust futex ownership must be released before clone-child-tid wakes a
     // pthread joiner; otherwise userspace can observe thread exit before the
     // OWNER_DIED handoff has been written.
@@ -674,13 +682,6 @@ pub fn do_exit(exit_code: i32, group_exit: bool) {
     unsafe { thr.exit_event.wake(axpoll::IoEvents::IN) };
     unsafe { thr.proc_data.thread_exit_event.wake(axpoll::IoEvents::IN) };
 
-    if group_exit && !process.is_group_exited() {
-        process.group_exit();
-        let sig = SignalInfo::new_kernel(Signo::SIGKILL);
-        for tid in process.threads() {
-            let _ = send_signal_to_thread(None, tid, Some(sig.clone()));
-        }
-    }
     thr.set_exit();
 }
 

@@ -12,9 +12,13 @@ categories = ["embedded", "no-std", "hardware-support"]
 [dependencies]
 bitflags = "2"
 embedded-hal = "1"
+dma-api.workspace = true
 log.workspace = true
+rdif-block = { workspace = true, optional = true }
+sdio-host2.workspace = true
 
 [features]
 default = ["spi"]
 spi = []
 sdio = []
+rdif = ["sdio", "dep:rdif-block"]

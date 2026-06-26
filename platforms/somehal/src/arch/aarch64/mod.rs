@@ -12,8 +12,19 @@ impl PlatOp for Plat {
         gic::irq_set_enable(irq, enable);
     }
 
+    fn irq_set_affinity(
+        irq: rdrive::IrqId,
+        affinity: crate::irq::IrqAffinity,
+    ) -> Result<(), &'static str> {
+        gic::irq_set_affinity(irq, affinity)
+    }
+
     fn send_ipi(irq: rdrive::IrqId, target: crate::irq::IpiTarget) {
         gic::send_ipi(irq, target);
+    }
+
+    fn ipi_irq() -> rdrive::IrqId {
+        0usize.into()
     }
 
     fn begin_irq(raw: usize) -> Option<Self::ActiveIrq> {

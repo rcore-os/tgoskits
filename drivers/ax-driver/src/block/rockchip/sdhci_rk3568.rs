@@ -22,23 +22,20 @@ use rdrive::{
     probe::OnProbeError,
     register::{FdtInfo, ProbeFdt},
 };
-use sdhci_host::{HostClock, Sdhci};
+use sdhci_host::{HostClock, HostResetHook, Sdhci, rdif as sdhci_rdif};
 use sdmmc_protocol::{
     Error, OperationPoll,
     error::{ErrorContext, Phase},
-    sdio::{CardInfo, CardInitPreference, SdioInitScratch, SdioSdmmc},
+    sdio::{CardInfo, CardInitPreference, SdioHost2Adapter, SdioInitScratch, SdioSdmmc},
 };
 use spin::Once;
 
-use crate::{
-    block::{
-        ProbeFdtBlock, SharedDriver,
-        sdmmc::{SdmmcBlockConfig, SdmmcBlockDevice},
-    },
-    mmio::iomap,
-};
+use crate::{block::ProbeFdtBlock, mmio::iomap};
 
-const SDHCI_POWER_330: u8 = 0x0e;
+// RK3568 DWCMSHC uses the same SDHCI completion interrupt path as RK3588:
+// the hard IRQ acknowledges/caches controller status and task-side RDIF
+// polling consumes the completion.
+const ROCKCHIP_RK3568_SDHCI_IRQ_DRIVEN: bool = true;
 
 const DWCMSHC_P_VENDOR_AREA1: usize = 0xe8;
 const DWCMSHC_AREA1_MASK: u16 = 0x0fff;
@@ -87,14 +84,22 @@ const PHY_DLL_CTRL_ENABLE: u8 = 0x1;
 const PHY_DLL_CNFG2_JUMPSTEP: u8 = 0x0a;
 
 static SDHCI_CLOCK: RockchipSdhciClock = RockchipSdhciClock;
+static SDHCI_RESET_HOOK: RockchipSdhciResetHook = RockchipSdhciResetHook;
 
-type RockchipSdhci = SdioSdmmc<Sdhci>;
+type RockchipSdhci = SdioSdmmc<SdioHost2Adapter<Sdhci>>;
 
 struct RockchipSdhciClock;
+struct RockchipSdhciResetHook;
 
 impl HostClock for RockchipSdhciClock {
     fn set_clock(&self, target_hz: u32) -> Result<(), Error> {
         set_sdhci_clock(target_hz)
+    }
+}
+
+impl HostResetHook for RockchipSdhciResetHook {
+    fn after_reset(&self, host: &mut Sdhci) -> Result<(), Error> {
+        init_dwcmshc_after_reset(host)
     }
 }
 
@@ -140,16 +145,12 @@ fn probe(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
     } else {
         warn!("rockchip-rk3568-sdhci: no core clock found; using SDHCI internal clock divider");
     }
-    info!("rockchip-rk3568-sdhci: reset controller");
-    host.reset_all()
-        .map_err(|e| init_error(base_reg.address, mmio_size, e))?;
-    init_dwcmshc_after_reset(mmio_base);
-    host.set_power(SDHCI_POWER_330);
-    host.enable_interrupts();
-    host.set_dma(axklib::dma::device_with_mask(u32::MAX as u64));
+    host.set_reset_hook(&SDHCI_RESET_HOOK);
+    let dma = axklib::dma::device_with_mask(u32::MAX as u64);
+    host.set_dma(dma.clone());
 
-    info!("rockchip-rk3568-sdhci: initialize card");
-    let mut card = SdioSdmmc::new(host);
+    info!("rockchip-rk3568-sdhci: initialize card through native host2 bus ops");
+    let mut card = SdioSdmmc::new_host2(host);
     let card_info = poll_card_init_mmc(&mut card)
         .map_err(|e| card_init_error(base_reg.address, mmio_size, e))?;
     info!(
@@ -164,13 +165,13 @@ fn probe(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
         card_info.ext_csd.is_some()
     );
 
-    let raw = SharedDriver::new(card);
-    let dev = SdmmcBlockDevice::new(
-        raw,
-        SdmmcBlockConfig::fifo(
+    let dev = sdhci_rdif::device(
+        card,
+        sdhci_rdif::dma_config(
             "rockchip-rk3568-sdhci",
             card_info.capacity_blocks.unwrap_or(0),
-            true,
+            ROCKCHIP_RK3568_SDHCI_IRQ_DRIVEN,
+            dma,
         ),
     );
     let irq = probe.register_block(dev)?;
@@ -200,7 +201,8 @@ fn poll_card_init_mmc(card: &mut RockchipSdhci) -> Result<CardInfo, Error> {
     }
 }
 
-fn init_dwcmshc_after_reset(base: NonNull<u8>) {
+fn init_dwcmshc_after_reset(host: &mut Sdhci) -> Result<(), Error> {
+    let base = NonNull::new(host.mmio_base() as *mut u8).ok_or(Error::InvalidArgument)?;
     let area1 = vendor_area1(base);
 
     // Match Linux rk35xx reset/set_clock setup for identification speed:
@@ -237,6 +239,7 @@ fn init_dwcmshc_after_reset(base: NonNull<u8>) {
         "rockchip-rk3568-sdhci: dwcmshc vendor init area1={:#x}",
         area1
     );
+    Ok(())
 }
 
 fn init_dwcmshc_phy_3v3(base: NonNull<u8>) {
@@ -383,19 +386,30 @@ mod tests {
     use super::*;
 
     #[test]
-    fn rk3568_block_io_uses_fifo_config() {
-        let config = SdmmcBlockConfig::fifo("rockchip-rk3568-sdhci", 8, true);
+    fn rk3568_block_io_uses_dma_config_with_irq_completion() {
+        let config = sdhci_rdif::dma_config(
+            "rockchip-rk3568-sdhci",
+            8,
+            ROCKCHIP_RK3568_SDHCI_IRQ_DRIVEN,
+            axklib::dma::device_with_mask(u32::MAX as u64),
+        );
 
-        assert!(!config.use_dma);
+        assert!(config.uses_dma());
+        assert!(config.irq_driven);
     }
 
     #[test]
-    fn rk3568_fifo_queue_limits_single_block_requests() {
-        let config = SdmmcBlockConfig::fifo("rockchip-rk3568-sdhci", 8, true);
-        let limits = crate::block::sdmmc::queue_limits(&config, u32::MAX as u64);
+    fn rk3568_dma_queue_limits_multi_block_requests() {
+        let config = sdhci_rdif::dma_config(
+            "rockchip-rk3568-sdhci",
+            8,
+            true,
+            axklib::dma::device_with_mask(u32::MAX as u64),
+        );
+        let limits = sdmmc_protocol::rdif::queue_limits(&config, u32::MAX as u64);
 
-        assert_eq!(limits.max_blocks_per_request, 1);
-        assert_eq!(limits.max_segment_size, crate::block::sdmmc::BLOCK_SIZE);
+        assert!(limits.max_blocks_per_request > 1);
+        assert!(limits.max_segment_size > sdmmc_protocol::rdif::BLOCK_SIZE);
         assert_eq!(limits.max_segments, 1);
     }
 }

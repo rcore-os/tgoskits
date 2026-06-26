@@ -1,3 +1,4 @@
+use alloc::boxed::Box;
 use core::ptr::NonNull;
 
 /// A platform IRQ number.
@@ -97,6 +98,24 @@ pub enum IrqScope {
     },
 }
 
+/// Hardware routing preference for an IRQ line.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum IrqAffinity {
+    /// The platform may route the line to any CPU.
+    Any,
+    /// Route the line to one fixed logical CPU.
+    Fixed(CpuId),
+}
+
+/// Execution contract for an IRQ action.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum IrqExecution {
+    /// The handler may run concurrently if the controller delivers it that way.
+    Concurrent,
+    /// The framework prevents nested/concurrent calls to this action.
+    NonReentrant,
+}
+
 /// Whether an IRQ line is exclusive or shared.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ShareMode {
@@ -150,6 +169,8 @@ pub struct IrqStatus {
     pub in_service: bool,
     /// Number of in-flight dispatches for this descriptor.
     pub in_flight: usize,
+    /// Whether this action is currently running.
+    pub action_running: bool,
 }
 
 /// IRQ framework errors.
@@ -187,6 +208,17 @@ pub struct IrqContext {
 /// Raw IRQ handler ABI.
 pub type RawIrqHandler = unsafe fn(ctx: IrqContext, data: NonNull<()>) -> IrqReturn;
 
+/// Boxed IRQ handler ABI.
+pub type BoxedIrqHandler = Box<dyn FnMut(IrqContext) -> IrqReturn + Send + 'static>;
+
+pub(crate) enum IrqHandler {
+    Raw {
+        handler: RawIrqHandler,
+        data: NonNull<()>,
+    },
+    Boxed(BoxedIrqHandler),
+}
+
 /// External capabilities supplied by the OS/platform adapter.
 pub trait IrqOps {
     /// Saved local IRQ state.
@@ -215,6 +247,11 @@ pub trait IrqOps {
         arg: *mut (),
     ) -> Result<(), IrqError>;
 
+    /// Routes a global IRQ line to the requested CPU affinity.
+    fn set_affinity(&self, _irq: IrqNumber, _affinity: IrqAffinity) -> Result<(), IrqError> {
+        Err(IrqError::Unsupported)
+    }
+
     /// Enables or disables an IRQ line.
     fn set_enabled(
         &self,
@@ -237,43 +274,77 @@ pub trait IrqOps {
 }
 
 /// Request parameters for an IRQ action.
-#[derive(Clone, Copy, Debug)]
 pub struct IrqRequest {
-    pub(crate) handler: RawIrqHandler,
-    pub(crate) data: NonNull<()>,
+    pub(crate) handler: Option<IrqHandler>,
     pub(crate) scope: IrqScope,
+    pub(crate) affinity: IrqAffinity,
+    pub(crate) execution: IrqExecution,
     pub(crate) share_mode: ShareMode,
     pub(crate) auto_enable: AutoEnable,
 }
 
 impl IrqRequest {
     /// Creates a new exclusive, global, auto-enabled IRQ request.
-    pub const fn new(handler: RawIrqHandler, data: NonNull<()>) -> Self {
+    pub fn new(handler: RawIrqHandler, data: NonNull<()>) -> Self {
         Self {
-            handler,
-            data,
+            handler: Some(IrqHandler::Raw { handler, data }),
             scope: IrqScope::Global,
+            affinity: IrqAffinity::Any,
+            execution: IrqExecution::Concurrent,
             share_mode: ShareMode::Exclusive,
             auto_enable: AutoEnable::Yes,
         }
     }
 
+    /// Creates a new exclusive, global, auto-enabled boxed IRQ request.
+    pub fn new_boxed(handler: BoxedIrqHandler) -> Self {
+        Self {
+            handler: Some(IrqHandler::Boxed(handler)),
+            scope: IrqScope::Global,
+            affinity: IrqAffinity::Any,
+            execution: IrqExecution::NonReentrant,
+            share_mode: ShareMode::Exclusive,
+            auto_enable: AutoEnable::Yes,
+        }
+    }
+
+    pub(crate) fn is_boxed(&self) -> bool {
+        matches!(self.handler.as_ref(), Some(IrqHandler::Boxed(_)))
+    }
+
     /// Sets the IRQ scope.
-    pub const fn scope(mut self, scope: IrqScope) -> Self {
+    pub fn scope(mut self, scope: IrqScope) -> Self {
         self.scope = scope;
         self
     }
 
+    /// Sets the IRQ affinity.
+    pub fn affinity(mut self, affinity: IrqAffinity) -> Self {
+        self.affinity = affinity;
+        self
+    }
+
+    /// Sets the action execution contract.
+    pub fn execution(mut self, execution: IrqExecution) -> Self {
+        self.execution = execution;
+        self
+    }
+
     /// Sets the sharing mode.
-    pub const fn share_mode(mut self, share_mode: ShareMode) -> Self {
+    pub fn share_mode(mut self, share_mode: ShareMode) -> Self {
         self.share_mode = share_mode;
         self
     }
 
     /// Sets whether the action should be enabled after request.
-    pub const fn auto_enable(mut self, auto_enable: AutoEnable) -> Self {
+    pub fn auto_enable(mut self, auto_enable: AutoEnable) -> Self {
         self.auto_enable = auto_enable;
         self
+    }
+
+    /// Returns whether the action should be enabled after request.
+    pub const fn auto_enable_mode(&self) -> AutoEnable {
+        self.auto_enable
     }
 }
 

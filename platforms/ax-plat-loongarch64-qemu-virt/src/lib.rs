@@ -33,5 +33,6 @@ mod irq;
 mod mem;
 #[cfg(feature = "smp")]
 mod mp;
+mod platform;
 mod power;
 mod time;

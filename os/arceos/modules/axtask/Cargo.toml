@@ -14,7 +14,6 @@ irq = ["ax-hal/irq", "dep:ax-timer-list"]
 ipi = ["irq", "ax-hal/ipi", "dep:ax-ipi"]
 multitask = [
   "stack-canary",
-  "dep:ax-config",
   "dep:axpoll",
   "dep:ax-sched",
   "dep:ax-cpumask",
@@ -61,7 +60,6 @@ test = ["host-test"]
 
 [dependencies]
 ax-alloc = {workspace = true, optional = true}
-ax-config = {workspace = true, optional = true}
 ax-cpumask = { workspace = true, optional = true }
 ax-crate-interface = {workspace = true, optional = true}
 ax-errno.workspace = true
@@ -88,3 +86,6 @@ spin = {workspace = true, optional = true}
 
 [target.'cfg(not(target_os = "none"))'.dev-dependencies]
 ax-hal = { workspace = true, features = ["fp-simd"] }
+
+[build-dependencies]
+toml.workspace = true

@@ -372,7 +372,7 @@ info "Pre-fetching cargo dependencies for ${TARGET} (~10-30 min)..."
 # Each arch keeps its own prefix + common crates.
 case "$ARCH" in
     riscv64) EXCLUDE_ARCH="arm_vcpu\|aarch64\|x86_64\|loongarch64\|kasm-aarch64\|arm_vgic" ;;
-    x86_64)  EXCLUDE_ARCH="arm_vcpu\|aarch64\|riscv\|loongarch64\|kasm-aarch64\|arm_vgic\|sg2002\|bsta1000b\|phytium\|raspi\|visionfive" ;;
+    x86_64)  EXCLUDE_ARCH="arm_vcpu\|aarch64\|riscv\|loongarch64\|kasm-aarch64\|arm_vgic\|sg2002\|bsta1000b\|phytium\|raspi" ;;
     arm)     EXCLUDE_ARCH="riscv\|x86_64\|loongarch64\|sg2002\|bsta1000b" ;;
 esac
 

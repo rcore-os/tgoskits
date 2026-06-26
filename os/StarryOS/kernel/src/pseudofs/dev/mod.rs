@@ -9,8 +9,9 @@ mod drm;
 #[cfg(feature = "input")]
 pub mod event;
 mod fb;
-#[cfg(feature = "sg2002")]
+#[cfg(all(feature = "sg2002", not(feature = "plat-dyn")))]
 mod irq_byte_ring;
+mod kmsg;
 #[cfg(feature = "k230-kpu")]
 mod kpu;
 #[cfg(feature = "dev-log")]
@@ -37,8 +38,6 @@ mod cvi_usb_camera;
 mod pinmux;
 #[cfg(all(feature = "sg2002", not(feature = "plat-dyn")))]
 pub(super) mod pwm;
-#[cfg(feature = "sg2002")]
-mod tty_serial;
 
 use alloc::{format, sync::Arc};
 use core::any::Any;
@@ -284,15 +283,40 @@ fn builder(fs: Arc<SimpleFs>) -> DirMaker {
             Arc::new(tty::CurrentTty),
         ),
     );
+    for entry in tty::serial_tty_entries() {
+        let number = entry.number();
+        let minor = u32::try_from(64 + number).unwrap_or(u32::MAX);
+        root.add(
+            format!("ttyS{number}"),
+            Device::new(
+                fs.clone(),
+                NodeType::CharacterDevice,
+                DeviceId::new(4, minor),
+                entry.tty(),
+            ),
+        );
+    }
     root.add(
         "console",
         Device::new(
             fs.clone(),
             NodeType::CharacterDevice,
             DeviceId::new(5, 1),
-            tty::N_TTY.clone(),
+            tty::console_device(),
         ),
     );
+    root.add_dynamic("ttyUSB0", {
+        let fs = fs.clone();
+        move || {
+            Device::new(
+                fs.clone(),
+                NodeType::CharacterDevice,
+                DeviceId::new(188, 0),
+                tty::usb_serial_tty(0).expect("ttyUSB0 slot must exist"),
+            )
+            .into()
+        }
+    });
 
     root.add(
         "ptmx",
@@ -331,6 +355,17 @@ fn builder(fs: Arc<SimpleFs>) -> DirMaker {
             NodeType::CharacterDevice,
             DeviceId::new(10, 1024),
             Arc::new(CpuDmaLatency),
+        ),
+    );
+    // /dev/kmsg — standard char major 1, minor 11 (LANANA memory-device major,
+    // same group as null/zero/random above).
+    root.add(
+        "kmsg",
+        Device::new(
+            fs.clone(),
+            NodeType::CharacterDevice,
+            DeviceId::new(1, 11),
+            Arc::new(kmsg::Kmsg),
         ),
     );
     root.add(
@@ -479,24 +514,9 @@ fn builder(fs: Arc<SimpleFs>) -> DirMaker {
                 ion_device,
             ),
         );
-        root.add(
-            "ttyS1",
-            Device::new(
-                fs.clone(),
-                NodeType::CharacterDevice,
-                DeviceId::new(4, 65),
-                Arc::new(tty_serial::new_tty_s1(115200)),
-            ),
-        );
-        root.add(
-            "ttyS2",
-            Device::new(
-                fs.clone(),
-                NodeType::CharacterDevice,
-                DeviceId::new(4, 66),
-                Arc::new(tty_serial::new_tty_s2(115200)),
-            ),
-        );
+    }
+    #[cfg(feature = "sg2002")]
+    {
         root.add(
             "cvi-usb-camera0",
             Device::new(

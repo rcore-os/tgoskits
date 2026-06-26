@@ -14,9 +14,6 @@
 
 use core::sync::atomic::{AtomicUsize, Ordering};
 
-#[cfg(not(feature = "plat-dyn"))]
-use ax_config::TASK_STACK_SIZE;
-use ax_config::plat::MAX_CPU_NUM;
 use ax_hal::mem::VirtAddr;
 #[cfg(not(feature = "plat-dyn"))]
 use ax_hal::mem::virt_to_phys;
@@ -31,7 +28,7 @@ impl SecondaryBootStack {
     fn alloc() -> Self {
         use ax_hal::mem::PAGE_SIZE_4K;
         use ax_memory_addr::align_up_4k;
-        let stack_size = align_up_4k(TASK_STACK_SIZE);
+        let stack_size = align_up_4k(crate::runtime_default_task_stack_size());
         let mut pages =
             ax_alloc::GlobalPage::alloc_contiguous(stack_size / PAGE_SIZE_4K, PAGE_SIZE_4K)
                 .expect("failed to allocate secondary boot stack");
@@ -49,11 +46,12 @@ impl SecondaryBootStack {
 }
 
 #[cfg(not(feature = "plat-dyn"))]
-static SECONDARY_BOOT_STACKS: [ax_lazyinit::LazyInit<SecondaryBootStack>; MAX_CPU_NUM - 1] =
-    [const { ax_lazyinit::LazyInit::new() }; MAX_CPU_NUM - 1];
+static SECONDARY_BOOT_STACKS: [ax_lazyinit::LazyInit<SecondaryBootStack>;
+    crate::build_info::CPU_CAPACITY - 1] =
+    [const { ax_lazyinit::LazyInit::new() }; crate::build_info::CPU_CAPACITY - 1];
 
-static SECONDARY_CPUID_BY_SLOT: [AtomicUsize; MAX_CPU_NUM - 1] =
-    [const { AtomicUsize::new(usize::MAX) }; MAX_CPU_NUM - 1];
+static SECONDARY_CPUID_BY_SLOT: [AtomicUsize; crate::build_info::CPU_CAPACITY - 1] =
+    [const { AtomicUsize::new(usize::MAX) }; crate::build_info::CPU_CAPACITY - 1];
 
 static ENTERED_CPUS: AtomicUsize = AtomicUsize::new(1);
 
@@ -84,7 +82,10 @@ fn secondary_boot_stack_bounds(cpu_id: usize) -> (VirtAddr, usize) {
     #[cfg(not(feature = "plat-dyn"))]
     {
         let slot = secondary_slot_from_cpu_id(cpu_id);
-        (secondary_boot_stack_bottom(slot), TASK_STACK_SIZE)
+        (
+            secondary_boot_stack_bottom(slot),
+            crate::runtime_default_task_stack_size(),
+        )
     }
 }
 
@@ -126,12 +127,12 @@ pub fn start_secondary_cpus(primary_cpu_id: usize) {
 pub fn rust_main_secondary(cpu_id: usize) -> ! {
     // Park harts whose logical index is beyond the compile-time CPU count: QEMU
     // may start more harts (`-smp M`) than the kernel was built for
-    // (`MAX_CPU_NUM == N`). Mirror Linux — run on the first N CPUs and park the
+    // (`CPU_CAPACITY == N`). Mirror Linux — run on the first N CPUs and park the
     // excess, rather than panicking in `percpu::init_secondary(cpu_id)` /
     // `AxCpuMask::one_shot(cpu_id)` / `RUN_QUEUES[cpu_id]`, which all assert
-    // `index < MAX_CPU_NUM`. Must precede `init_secondary`, which would otherwise
+    // `index < CPU_CAPACITY`. Must precede `init_secondary`, which would otherwise
     // mis-index the per-CPU area first.
-    if cpu_id >= MAX_CPU_NUM {
+    if cpu_id >= crate::build_info::CPU_CAPACITY {
         loop {
             ax_hal::asm::wait_for_irqs();
         }

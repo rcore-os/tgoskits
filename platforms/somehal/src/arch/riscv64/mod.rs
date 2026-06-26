@@ -11,6 +11,13 @@ impl PlatOp for Plat {
         plic::irq_set_enable(irq, enable);
     }
 
+    fn irq_set_affinity(
+        irq: rdrive::IrqId,
+        affinity: crate::irq::IrqAffinity,
+    ) -> Result<(), &'static str> {
+        plic::irq_set_affinity(irq, affinity)
+    }
+
     fn begin_irq(raw: usize) -> Option<Self::ActiveIrq> {
         plic::begin_irq(raw)
     }
@@ -44,6 +51,10 @@ impl PlatOp for Plat {
                 }
             }
         }
+    }
+
+    fn ipi_irq() -> rdrive::IrqId {
+        plic::ipi_irq()
     }
 
     fn send_ipi_to_cpu(cpu_id: usize) {

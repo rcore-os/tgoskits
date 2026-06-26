@@ -1,0 +1,309 @@
+-- ============================================================================
+-- LangBH.bs -- CARPET-LEVEL Bluespec Haskell / Classic (BH) language design for
+-- StarryOS #764 (HDL item: Bluespec / bsc, BH dialect).
+--
+-- Doc-grounded from the Bluespec Haskell (BH) language reference guide
+-- and the BH examples under .../execs/15-* and .../specs/testsuite.
+--
+-- ONE synthesizable top module (mkLangBH) that exercises the FULL BH (Classic)
+-- language surface and $display's DETERMINISTIC results -- captured AS GOLDEN on
+-- the host, then compared on target (golden-capture model; NO hardcoded expected
+-- values in the driver).  Every emitted line is of the form  LABEL=VALUE  so the
+-- driver diffs line-by-line, one check per line.
+--
+-- Sequencing is done the pure-BH way (the BhCount.bs idiom): a cycle-counter Reg
+-- gates rules with  when (cyc == N) ==> ...  so the $display order is FIXED.
+--
+-- Coverage (BH / Classic language surface):
+--   * pure functions: ordinary, recursive (fact, fib), higher-order (map/foldr/
+--     zipWith/(.)), lambda, guards via if/case, let / where, layout-sensitive
+--     do-less blocks.
+--   * data type declarations: enum (data C = ...), parameterised/tagged
+--     (data Shape = ...), deriving (Eq, Bits, Bounded, FShow).
+--   * struct ... deriving (Eq, Bits, FShow); field selection / update.
+--   * Maybe (Valid/Invalid), isValid / fromMaybe / pattern match.
+--   * polymorphic interface  (interface Acc a = ...)  + its module
+--     (mkAcc :: (Bits a sa, Arith a) => ...).
+--   * Reg (mkReg / mkRegU), := register write, _read.
+--   * rules with explicit  when  guards (conditional Actions) + scheduling.
+--   * Vector: genWith, map, foldr, zipWith, elem, reverse, select, update.
+--   * bit ops: + - * .&. .|. xor invert, <<, >>, zeroExtend, signExtend,
+--     truncate, pack/unpack, bit select [], concat (via Bit arithmetic / {}).
+--   * provisos / typeclass contexts on functions and modules; valueOf.
+--   * case + pattern matching over data constructors and Maybe.
+--
+-- Determinism: NO wall clock, NO $time, NO map/hash order, NO addresses.
+-- ============================================================================
+package LangBH (mkLangBH) where
+
+import Vector
+import FIFOF
+
+-- ---------------------------------------------------------------------------
+-- 1. data declarations: enum + tagged + deriving
+-- ---------------------------------------------------------------------------
+data State = Idle | Run | Stop | Wait
+   deriving (Eq, Bits, Bounded, FShow)
+
+-- a tagged data type with arguments (sum type with payloads)
+data Shape = Circ (Bit 8)               -- radius
+           | Rect (Bit 8) (Bit 8)       -- w h
+           | Dot
+   deriving (Eq, Bits, FShow)
+
+-- ---------------------------------------------------------------------------
+-- 2. struct + deriving + polymorphic struct
+-- ---------------------------------------------------------------------------
+struct Point =
+   px :: Bit 8
+   py :: Bit 8
+ deriving (Eq, Bits, FShow)
+
+struct Pair a b =
+   key :: a
+   val :: b
+ deriving (Eq, Bits, FShow)
+
+-- ---------------------------------------------------------------------------
+-- 3. pure functions: recursion, higher-order, guards, where, lambda
+-- ---------------------------------------------------------------------------
+fact :: Integer -> Integer
+fact n = if n <= 1 then 1 else n * fact (n - 1)
+
+fib :: Integer -> Integer
+fib n = if n < 2 then n else fib (n - 1) + fib (n - 2)
+
+-- area of a Shape via case / pattern match over constructors
+area :: Shape -> Bit 16
+area s = case s of
+            Circ r   -> 3 * zeroExtend r * zeroExtend r    -- ~ pi r^2 (pi~3)
+            Rect w h -> zeroExtend w * zeroExtend h
+            Dot      -> 0
+
+-- higher-order: apply a function twice ; function composition
+twice :: (a -> a) -> a -> a
+twice f x = f (f x)
+
+incr1 :: Bit 8 -> Bit 8
+incr1 x = x + 1
+dbl :: Bit 8 -> Bit 8
+dbl y = y + y
+addThenDbl :: Bit 8 -> Bit 8
+addThenDbl = compose dbl incr1                     -- function composition
+
+-- popcount of a 16-bit value: sum each bit, mapping over an index Vector.
+popcount :: Bit 16 -> Bit 8
+popcount x =
+   let idx :: Vector 16 (Bit 8)
+       idx = genWith fromInteger                 -- [0,1,..,15]
+       bitAt :: Bit 8 -> Bit 8
+       bitAt i = zeroExtend (x[i:i])
+   in foldr (+) 0 (map bitAt idx)
+
+-- ---------------------------------------------------------------------------
+-- 4. polymorphic interface + its module (provisos / typeclass context)
+-- ---------------------------------------------------------------------------
+interface Acc a =
+   add   :: a -> Action
+   total :: a
+   drain :: ActionValue a
+
+mkAcc :: (Bits a sa, Arith a) => Module (Acc a)
+mkAcc =
+   module
+      r :: Reg a <- mkReg (unpack 0)
+      interface
+         add x = r := r + x
+         total = r
+         drain = do
+                    let v = r
+                    r := unpack 0
+                    return v
+
+-- a saturating counter with a method guard (implicit condition)
+interface Counter =
+   up    :: Action
+   clear :: Action
+   value :: Bit 8
+
+mkSatCounter :: Module Counter
+mkSatCounter =
+   module
+      c :: Reg (Bit 8) <- mkReg 0
+      interface
+         up    = (c := c + 1) when (c < 255)      -- method guard (implicit cond)
+         clear = c := 0
+         value = c
+
+-- ---------------------------------------------------------------------------
+-- 5. The top: cycle-counter-sequenced rules so output order is deterministic.
+-- ---------------------------------------------------------------------------
+mkLangBH :: Module Empty
+mkLangBH =
+   module
+      acc  :: Acc (Bit 16) <- mkAcc
+      ctr  :: Counter      <- mkSatCounter
+      fifo :: FIFOF (Bit 8) <- mkFIFOF
+      cyc  :: Reg (Bit 8)   <- mkReg 0
+      -- a register file (Vector of Reg)
+      rf   :: Vector 4 (Reg (Bit 8)) <- replicateM (mkReg 0)
+      acc2 :: Reg (Bit 16) <- mkReg 0
+
+      -- pure values computed at elaboration / combinationally
+      let v8 :: Vector 8 (Bit 8)
+          v8 = genWith fromInteger                       -- [0..7]
+          w8 :: Vector 8 (Bit 8)
+          w8 = replicate 2
+          prod :: Vector 8 (Bit 8)
+          prod = zipWith (*) v8 w8                        -- elementwise v*2
+          vsum :: Bit 8
+          vsum = foldr (+) 0 v8                           -- 28
+          p :: Point
+          p = Point { px = 3; py = 4 }
+          pr :: Pair State (Bit 8)
+          pr = Pair { key = Stop; val = 0xAB }
+          mvalid :: Maybe (Bit 8)
+          mvalid = Valid 0x7E
+          minval :: Maybe (Bit 8)
+          minval = Invalid
+          sh1 = Circ 5
+          sh2 = Rect 6 7
+          sh3 = Dot
+
+      rules
+        "tick": when True ==> cyc := cyc + 1
+
+        -- ----- (A) pure arithmetic / recursion -----
+        "A": when (cyc == 0) ==> action
+                let f5 :: Bit 16
+                    f5 = fromInteger (fact 5)
+                    f7 :: Bit 16
+                    f7 = fromInteger (fact 7)
+                    f10 :: Bit 16
+                    f10 = fromInteger (fib 10)
+                    a8 :: Bit 8
+                    a8 = 7
+                    b8 :: Bit 8
+                    b8 = 3
+                $display "FACT5=%0d" f5
+                $display "FACT7=%0d" f7
+                $display "FIB10=%0d" f10
+                $display "ADD=%0d" (a8 + b8)
+                $display "SUB=%0d" (a8 - b8)
+                $display "MUL=%0d" (a8 * b8)
+                $display "DIV=%0d" (a8 / b8)
+                $display "MOD=%0d" (a8 % b8)
+
+        -- ----- (B) bit ops -----
+        "B": when (cyc == 1) ==> action
+                let x :: Bit 8
+                    x = 0xB3                                -- 1011 0011
+                    y :: Bit 4
+                    y = 0x5
+                $display "BAND=%0h" (x & 0x0F)
+                $display "BOR=%0h"  (x | 0x0F)
+                $display "BXOR=%0h" (x ^ 0xFF)
+                $display "BNOT=%0h" (invert x)
+                $display "SHL=%0h"  (x << 2)
+                $display "SHR=%0h"  (x >> 2)
+                let nyb :: Bit 4
+                    nyb = 0xF
+                    ze :: Bit 8
+                    ze = zeroExtend y
+                    se :: Bit 8
+                    se = signExtend nyb
+                    tr :: Bit 4
+                    tr = truncate x
+                    t40 :: Bit 8
+                    t40 = 40
+                $display "SEL7=%0d" (x[7:7])
+                $display "PART=%0h" (x[5:2])
+                $display "ZEXT=%0h" ze
+                $display "SEXT=%0h" se
+                $display "TRUNC=%0h" tr
+                $display "POPC=%0d" (popcount (zeroExtend x))
+                $display "ATD=%0d"  (addThenDbl 20)         -- (20+1)*2 = 42
+                $display "TWICE=%0d" (twice incr1 t40)
+
+        -- ----- (C) data / struct / enum / FShow / pattern match -----
+        "C": when (cyc == 2) ==> action
+                $display "ST_IDLE=" (fshow Idle)
+                $display "ST_RUN=" (fshow Run)
+                $display "ST_MIN=" (fshow (minBound :: State))
+                $display "ST_MAX=" (fshow (maxBound :: State))
+                $display "ST_PACK=%0d" ((pack Run) :: Bit 2)
+                $display "ST_EQ=%0d" (if Idle == Run then (1 :: Bit 8) else 0)
+                $display "PT=" (fshow p)
+                $display "PT_X=%0d" p.px
+                $display "PAIR=" (fshow pr)
+                $display "SH1=" (fshow sh1)
+                $display "SH2=" (fshow sh2)
+                $display "SH3=" (fshow sh3)
+                $display "AREA1=%0d" (area sh1)             -- 3*5*5 = 75
+                $display "AREA2=%0d" (area sh2)             -- 6*7   = 42
+                $display "AREA3=%0d" (area sh3)             -- 0
+
+        -- ----- (D) Maybe -----
+        "D": when (cyc == 3) ==> action
+                $display "MV_VALID=%0d" (if isValid mvalid then 1 else 0 :: Bit 8)
+                $display "MN_VALID=%0d" (if isValid minval then 1 else 0 :: Bit 8)
+                $display "MV_VAL=%0h" (fromMaybe 0 mvalid)
+                $display "MN_VAL=%0h" (fromMaybe 0xFF minval)
+                $display "MV_FSHOW=" (fshow mvalid)
+
+        -- ----- (E) Vector ops -----
+        "E": when (cyc == 4) ==> action
+                $display "VGEN0=%0d" (v8 !! 0)
+                $display "VGEN7=%0d" (v8 !! 7)
+                $display "VMUL3=%0d" (prod !! 3)            -- 3*2 = 6
+                $display "VSUM=%0d" vsum                    -- 28
+                $display "VELEM5=%0d" (if elem 5 v8 then 1 else 0 :: Bit 8)
+                $display "VELEM9=%0d" (if elem 9 v8 then 1 else 0 :: Bit 8)
+                $display "VREV0=%0d" (reverse v8 !! 0)      -- 7
+
+        -- ----- (F) register file write then read -----
+        "Fwr": when (cyc == 5) ==> action
+                  (select rf 0) := 10
+                  (select rf 1) := 20
+                  (select rf 2) := 30
+                  (select rf 3) := 40
+        "Frd": when (cyc == 6) ==> action
+                  $display "RF0=%0d" ((select rf 0)._read)
+                  $display "RF3=%0d" ((select rf 3)._read)
+                  let snap = readVReg rf
+                  $display "RFSUM=%0d" (foldr (+) 0 snap)   -- 100
+
+        -- ----- (G) sub-module Acc: Action / value / ActionValue -----
+        "Gadd1": when (cyc == 7) ==> acc.add 100
+        "Gadd2": when (cyc == 8) ==> acc.add 23
+        "Grd":   when (cyc == 9) ==> $display "ACC_TOTAL=%0d" acc.total
+        "Gdrn":  when (cyc == 10) ==> action
+                    v <- acc.drain
+                    $display "ACC_DRAIN=%0d" v
+        "Gaft":  when (cyc == 11) ==> $display "ACC_AFTER=%0d" acc.total
+
+        -- ----- (H) saturating counter (method guard) -----
+        "Hup1": when (cyc == 12) ==> ctr.up
+        "Hup2": when (cyc == 13) ==> ctr.up
+        "Hup3": when (cyc == 14) ==> ctr.up
+        "Hrd":  when (cyc == 15) ==> $display "CTR=%0d" ctr.value
+        "Hclr": when (cyc == 16) ==> ctr.clear
+        "Hrd2": when (cyc == 17) ==> $display "CTR_CLR=%0d" ctr.value
+
+        -- ----- (I) FIFO -----
+        "Ie1": when (cyc == 18) ==> fifo.enq 0xA1
+        "Ie2": when (cyc == 19) ==> fifo.enq 0xB2
+        "Id1": when (cyc == 20) ==> action
+                  $display "FIFO_FIRST=%0h" fifo.first
+                  fifo.deq
+        "Id2": when (cyc == 21) ==> action
+                  $display "FIFO_NEXT=%0h" fifo.first
+                  fifo.deq
+        "Iem": when (cyc == 22) ==> $display "FIFO_EMPTY=%0d" (if fifo.notEmpty then 0 else 1 :: Bit 8)
+
+        -- ----- (J) stateful accumulation across cycles (while-like) -----
+        "Jacc": when (cyc >= 23 && cyc <= 27) ==> acc2 := acc2 + zeroExtend (cyc - 22)  -- 1+2+3+4+5
+        "Jrd":  when (cyc == 28) ==> action
+                   $display "ACC2=%0d" acc2                 -- 15
+                   $display "BH_DONE"
+                   $finish 0

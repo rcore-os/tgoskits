@@ -1,6 +1,9 @@
+use alloc::boxed::Box;
 use core::{num::NonZeroUsize, ptr::NonNull};
 
-use dma_api::{CoherentArray, DeviceDma, DmaDirection, StreamingMap};
+use dma_api::{
+    CoherentArray, CompletedDma, CpuDmaBuffer, DeviceDma, DmaDirection, InFlightDma, PreparedDma,
+};
 use log::warn;
 use sdmmc_protocol::{
     block::{
@@ -38,9 +41,14 @@ pub type RequestId = BlockRequestId;
 pub struct BlockRequestSlot {
     next: usize,
     state: BlockTransferState,
+    completed_dma: Option<CompletedDma>,
 }
 
 impl BlockRequestSlot {
+    pub fn take_completed_dma(&mut self) -> Option<CompletedDma> {
+        self.completed_dma.take()
+    }
+
     pub fn start(
         &mut self,
         mode: BlockTransferMode,
@@ -60,10 +68,19 @@ impl BlockRequestSlot {
     }
 
     pub fn complete(&mut self, id: RequestId) -> Result<(), Error> {
+        self.complete_with_dma(id, None)
+    }
+
+    fn complete_with_dma(
+        &mut self,
+        id: RequestId,
+        completed_dma: Option<CompletedDma>,
+    ) -> Result<(), Error> {
         if self.state.id() != Some(id) {
             return Err(Error::InvalidArgument);
         }
         self.state = BlockTransferState::Idle;
+        self.completed_dma = completed_dma;
         Ok(())
     }
 
@@ -74,6 +91,24 @@ impl BlockRequestSlot {
 
 pub struct BlockRequest {
     inner: BlockRequestKind,
+}
+
+pub struct PreparedDmaSubmitError {
+    pub error: Error,
+    buffer: Box<PreparedDma>,
+}
+
+impl PreparedDmaSubmitError {
+    fn new(error: Error, buffer: PreparedDma) -> Self {
+        Self {
+            error,
+            buffer: Box::new(buffer),
+        }
+    }
+
+    pub fn into_buffer(self) -> PreparedDma {
+        *self.buffer
+    }
 }
 
 // `BlockRequest` owns the DMA mappings and descriptor buffer for one
@@ -109,7 +144,7 @@ enum BlockRequestKind {
     },
     Read {
         id: RequestId,
-        map: StreamingMap<u8>,
+        buffer: DmaRequestBuffer,
         _desc: CoherentArray<IdmacDesc>,
         cmd_index: u8,
         phase: Phase,
@@ -119,7 +154,7 @@ enum BlockRequestKind {
     },
     Write {
         id: RequestId,
-        _map: StreamingMap<u8>,
+        buffer: DmaRequestBuffer,
         _desc: CoherentArray<IdmacDesc>,
         cmd_index: u8,
         phase: Phase,
@@ -127,6 +162,54 @@ enum BlockRequestKind {
         stop_after_complete: bool,
         response: Option<Response>,
     },
+}
+
+enum DmaRequestBuffer {
+    Bounce {
+        buffer: InFlightDma,
+        readback: Option<(NonNull<u8>, usize)>,
+    },
+    Owned(InFlightDma),
+}
+
+impl DmaRequestBuffer {
+    fn complete(self, read: bool) -> Option<CompletedDma> {
+        self.finish(read, true)
+    }
+
+    fn abort(self, read: bool, quiesced: bool) -> Option<CompletedDma> {
+        self.finish(read, quiesced)
+    }
+
+    fn finish(self, read: bool, quiesced: bool) -> Option<CompletedDma> {
+        match self {
+            Self::Bounce { buffer, readback } => {
+                if !quiesced {
+                    let _quarantined = buffer.quarantine();
+                    return None;
+                }
+                if read {
+                    let completed = unsafe { buffer.complete_after_quiesce() };
+                    if let Some((dst, len)) = readback {
+                        completed.copy_from_device_to_slice(unsafe {
+                            core::slice::from_raw_parts_mut(dst.as_ptr(), len)
+                        });
+                    }
+                    None
+                } else {
+                    drop(unsafe { buffer.complete_after_quiesce() });
+                    None
+                }
+            }
+            Self::Owned(in_flight) => {
+                if !quiesced {
+                    let _quarantined = in_flight.quarantine();
+                    return None;
+                }
+                Some(unsafe { in_flight.complete_after_quiesce() })
+            }
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -223,6 +306,7 @@ impl DwMmc {
         mode: BlockTransferMode,
         slot: &mut BlockRequestSlot,
     ) -> Result<BlockRequest, Error> {
+        self.check_not_poisoned()?;
         let id = slot.start(mode, BlockTransferDirection::Read)?;
         let result = match mode {
             BlockTransferMode::Dma => {
@@ -254,6 +338,7 @@ impl DwMmc {
         mode: BlockTransferMode,
         slot: &mut BlockRequestSlot,
     ) -> Result<BlockRequest, Error> {
+        self.check_not_poisoned()?;
         let id = slot.start(mode, BlockTransferDirection::Write)?;
         let result = match mode {
             BlockTransferMode::Dma => {
@@ -265,6 +350,52 @@ impl DwMmc {
             _ => Err(Error::UnsupportedCommand),
         };
         match result {
+            Ok(request) => Ok(request),
+            Err(err) => {
+                let _ = slot.complete(id);
+                Err(err)
+            }
+        }
+    }
+
+    pub fn submit_prepared_read_blocks(
+        &mut self,
+        start_block: u32,
+        buffer: PreparedDma,
+        dma: &DeviceDma,
+        slot: &mut BlockRequestSlot,
+    ) -> Result<BlockRequest, PreparedDmaSubmitError> {
+        if let Err(err) = self.check_not_poisoned() {
+            return Err(PreparedDmaSubmitError::new(err, buffer));
+        }
+        let id = match slot.start(BlockTransferMode::Dma, BlockTransferDirection::Read) {
+            Ok(id) => id,
+            Err(err) => return Err(PreparedDmaSubmitError::new(err, buffer)),
+        };
+        match self.build_prepared_dma_read_request(start_block, buffer, dma, id) {
+            Ok(request) => Ok(request),
+            Err(err) => {
+                let _ = slot.complete(id);
+                Err(err)
+            }
+        }
+    }
+
+    pub fn submit_prepared_write_blocks(
+        &mut self,
+        start_block: u32,
+        buffer: PreparedDma,
+        dma: &DeviceDma,
+        slot: &mut BlockRequestSlot,
+    ) -> Result<BlockRequest, PreparedDmaSubmitError> {
+        if let Err(err) = self.check_not_poisoned() {
+            return Err(PreparedDmaSubmitError::new(err, buffer));
+        }
+        let id = match slot.start(BlockTransferMode::Dma, BlockTransferDirection::Write) {
+            Ok(id) => id,
+            Err(err) => return Err(PreparedDmaSubmitError::new(err, buffer)),
+        };
+        match self.build_prepared_dma_write_request(start_block, buffer, dma, id) {
             Ok(request) => Ok(request),
             Err(err) => {
                 let _ = slot.complete(id);
@@ -355,7 +486,7 @@ impl DwMmc {
                 // Future CommandPoll variants: best-effort, treat as still pending.
                 Ok(_) => return Ok(DataCommandPoll::Pending),
                 Err(err) => {
-                    self.abort_block_request(request, id, slot, phase);
+                    let _ = self.abort_block_request(request, id, slot, phase);
                     return Err(err);
                 }
             }
@@ -371,10 +502,19 @@ impl DwMmc {
             // Future BlockPoll variants: best-effort, treat as still pending.
             Ok(_) => Ok(DataCommandPoll::Pending),
             Err(err) => {
-                self.abort_block_request(request, id, slot, phase);
+                let _ = self.abort_block_request(request, id, slot, phase);
                 Err(err)
             }
         }
+    }
+
+    pub fn abort_block_request_response(
+        &mut self,
+        request: &mut Option<BlockRequest>,
+        id: RequestId,
+        slot: &mut BlockRequestSlot,
+    ) -> Result<(), Error> {
+        self.abort_block_request(request, id, slot, Phase::DataRead)
     }
 
     fn build_dma_read_request(
@@ -386,13 +526,10 @@ impl DwMmc {
         id: RequestId,
     ) -> Result<BlockRequest, Error> {
         let block_count = dma_read_block_count(size)?;
-        let map = dma
-            .map_streaming_slice_for_device(
-                unsafe { core::slice::from_raw_parts_mut(buffer.as_ptr(), size.get()) },
-                BLOCK_SIZE,
-                DmaDirection::FromDevice,
-            )
+        let backing = CpuDmaBuffer::new_zero(dma, size, BLOCK_SIZE, DmaDirection::FromDevice)
             .map_err(|err| map_dma_error(err, Phase::DataRead))?;
+        let dma_addr = backing.dma_addr().as_u64();
+        let in_flight = unsafe { backing.prepare_for_device().into_in_flight() };
         let mut desc = dma
             .coherent_array_zero_with_align::<IdmacDesc>(block_count as usize, IDMAC_DESC_ALIGN)
             .map_err(|err| map_dma_error(err, Phase::DataRead))?;
@@ -401,13 +538,16 @@ impl DwMmc {
         } else {
             cmd18(start_block)
         };
-        self.submit_idmac_transfer_mapped(&cmd, block_count, map.dma_addr().as_u64(), &mut desc)?;
+        self.submit_idmac_transfer_mapped(&cmd, block_count, dma_addr, &mut desc)?;
         Ok(BlockRequest {
             inner: BlockRequestKind::Read {
                 id,
-                map,
+                buffer: DmaRequestBuffer::Bounce {
+                    buffer: in_flight,
+                    readback: Some((buffer, size.get())),
+                },
                 _desc: desc,
-                cmd_index: cmd.cmd,
+                cmd_index: cmd.index,
                 phase: Phase::DataRead,
                 stage: BlockRequestStage::Command,
                 stop_after_complete: block_count > 1,
@@ -425,13 +565,13 @@ impl DwMmc {
         id: RequestId,
     ) -> Result<BlockRequest, Error> {
         let block_count = dma_write_block_count(size)?;
-        let map = dma
-            .map_streaming_slice_for_device(
-                unsafe { core::slice::from_raw_parts_mut(buffer.as_ptr(), size.get()) },
-                BLOCK_SIZE,
-                DmaDirection::ToDevice,
-            )
+        let mut backing = CpuDmaBuffer::new_zero(dma, size, BLOCK_SIZE, DmaDirection::ToDevice)
             .map_err(|err| map_dma_error(err, Phase::DataWrite))?;
+        backing.copy_to_device_from_slice(unsafe {
+            core::slice::from_raw_parts(buffer.as_ptr(), size.get())
+        });
+        let dma_addr = backing.dma_addr().as_u64();
+        let in_flight = unsafe { backing.prepare_for_device().into_in_flight() };
         let mut desc = dma
             .coherent_array_zero_with_align::<IdmacDesc>(block_count as usize, IDMAC_DESC_ALIGN)
             .map_err(|err| map_dma_error(err, Phase::DataWrite))?;
@@ -440,13 +580,124 @@ impl DwMmc {
         } else {
             cmd25(start_block)
         };
-        self.submit_idmac_transfer_mapped(&cmd, block_count, map.dma_addr().as_u64(), &mut desc)?;
+        self.submit_idmac_transfer_mapped(&cmd, block_count, dma_addr, &mut desc)?;
         Ok(BlockRequest {
             inner: BlockRequestKind::Write {
                 id,
-                _map: map,
+                buffer: DmaRequestBuffer::Bounce {
+                    buffer: in_flight,
+                    readback: None,
+                },
                 _desc: desc,
-                cmd_index: cmd.cmd,
+                cmd_index: cmd.index,
+                phase: Phase::DataWrite,
+                stage: BlockRequestStage::Command,
+                stop_after_complete: block_count > 1,
+                response: None,
+            },
+        })
+    }
+
+    fn build_prepared_dma_read_request(
+        &mut self,
+        start_block: u32,
+        buffer: PreparedDma,
+        dma: &DeviceDma,
+        id: RequestId,
+    ) -> Result<BlockRequest, PreparedDmaSubmitError> {
+        if buffer.direction() != DmaDirection::FromDevice || buffer.domain_id() != dma.domain_id() {
+            return Err(PreparedDmaSubmitError::new(Error::InvalidArgument, buffer));
+        }
+        let block_count = match dma_read_block_count(buffer.len()) {
+            Ok(block_count) => block_count,
+            Err(err) => return Err(PreparedDmaSubmitError::new(err, buffer)),
+        };
+        let mut desc = match dma
+            .coherent_array_zero_with_align::<IdmacDesc>(block_count as usize, IDMAC_DESC_ALIGN)
+        {
+            Ok(desc) => desc,
+            Err(err) => {
+                return Err(PreparedDmaSubmitError::new(
+                    map_dma_error(err, Phase::DataRead),
+                    buffer,
+                ));
+            }
+        };
+        let cmd = if block_count == 1 {
+            cmd17(start_block)
+        } else {
+            cmd18(start_block)
+        };
+        match self.submit_idmac_transfer_mapped(
+            &cmd,
+            block_count,
+            buffer.dma_addr().as_u64(),
+            &mut desc,
+        ) {
+            Ok(()) => {}
+            Err(err) => return Err(PreparedDmaSubmitError::new(err, buffer)),
+        }
+        let buffer = unsafe { buffer.into_in_flight() };
+        Ok(BlockRequest {
+            inner: BlockRequestKind::Read {
+                id,
+                buffer: DmaRequestBuffer::Owned(buffer),
+                _desc: desc,
+                cmd_index: cmd.index,
+                phase: Phase::DataRead,
+                stage: BlockRequestStage::Command,
+                stop_after_complete: block_count > 1,
+                response: None,
+            },
+        })
+    }
+
+    fn build_prepared_dma_write_request(
+        &mut self,
+        start_block: u32,
+        buffer: PreparedDma,
+        dma: &DeviceDma,
+        id: RequestId,
+    ) -> Result<BlockRequest, PreparedDmaSubmitError> {
+        if buffer.direction() != DmaDirection::ToDevice || buffer.domain_id() != dma.domain_id() {
+            return Err(PreparedDmaSubmitError::new(Error::InvalidArgument, buffer));
+        }
+        let block_count = match dma_write_block_count(buffer.len()) {
+            Ok(block_count) => block_count,
+            Err(err) => return Err(PreparedDmaSubmitError::new(err, buffer)),
+        };
+        let mut desc = match dma
+            .coherent_array_zero_with_align::<IdmacDesc>(block_count as usize, IDMAC_DESC_ALIGN)
+        {
+            Ok(desc) => desc,
+            Err(err) => {
+                return Err(PreparedDmaSubmitError::new(
+                    map_dma_error(err, Phase::DataWrite),
+                    buffer,
+                ));
+            }
+        };
+        let cmd = if block_count == 1 {
+            cmd24(start_block)
+        } else {
+            cmd25(start_block)
+        };
+        match self.submit_idmac_transfer_mapped(
+            &cmd,
+            block_count,
+            buffer.dma_addr().as_u64(),
+            &mut desc,
+        ) {
+            Ok(()) => {}
+            Err(err) => return Err(PreparedDmaSubmitError::new(err, buffer)),
+        }
+        let buffer = unsafe { buffer.into_in_flight() };
+        Ok(BlockRequest {
+            inner: BlockRequestKind::Write {
+                id,
+                buffer: DmaRequestBuffer::Owned(buffer),
+                _desc: desc,
+                cmd_index: cmd.index,
                 phase: Phase::DataWrite,
                 stage: BlockRequestStage::Command,
                 stop_after_complete: block_count > 1,
@@ -516,6 +767,7 @@ impl DwMmc {
         direction: DataDirection,
         slot: &mut BlockRequestSlot,
     ) -> Result<BlockRequest, Error> {
+        self.check_not_poisoned()?;
         let transfer_direction = match direction {
             DataDirection::Read => BlockTransferDirection::Read,
             DataDirection::Write => BlockTransferDirection::Write,
@@ -583,7 +835,7 @@ impl DwMmc {
                 len,
                 block_size: block_size_usize,
                 offset: 0,
-                cmd_index: cmd.cmd,
+                cmd_index: cmd.index,
                 phase,
                 stage: BlockRequestStage::Command,
                 stop_after_complete,
@@ -595,7 +847,7 @@ impl DwMmc {
                 len,
                 block_size: block_size_usize,
                 offset: 0,
-                cmd_index: cmd.cmd,
+                cmd_index: cmd.index,
                 phase,
                 stage: BlockRequestStage::Command,
                 stop_after_complete,
@@ -618,13 +870,12 @@ impl DwMmc {
         if block_count == 0 {
             return Err(Error::InvalidArgument);
         }
-        let direction = cmd.data_direction();
-        let phase = match direction {
-            DataDirection::Read => Phase::DataRead,
-            DataDirection::Write => Phase::DataWrite,
-            DataDirection::None => return Err(Error::InvalidArgument),
+        let (direction, phase) = match cmd.data_direction() {
+            Some(sdio_host2::DataDirection::Read) => (DataDirection::Read, Phase::DataRead),
+            Some(sdio_host2::DataDirection::Write) => (DataDirection::Write, Phase::DataWrite),
+            None => return Err(Error::InvalidArgument),
             // Future DataDirection variants are not supported by this engine.
-            _ => return Err(Error::InvalidArgument),
+            Some(_) => return Err(Error::InvalidArgument),
         };
         let byte_count = block_count
             .checked_mul(BLOCK_SIZE as u32)
@@ -665,7 +916,7 @@ impl DwMmc {
         });
 
         self.clear_all_int_status();
-        self.irq_state.clear(u32::MAX);
+        self.irq.state.clear(u32::MAX);
         self.program_data_phase(BLOCK_SIZE as u32, block_count);
         self.reset_dma_for_phase(phase)?;
 
@@ -688,21 +939,42 @@ impl DwMmc {
             Ok(()) => Ok(()),
             Err(err) => {
                 self.disable_idmac();
-                self.recover_after_idmac_error(phase);
+                let _ = self.recover_after_idmac_error(phase);
                 self.clear_all_int_status();
                 Err(err)
             }
         }
     }
 
-    fn finish_block_request(&mut self, request: BlockRequest) -> Result<(), Error> {
-        match request.inner {
+    fn finish_block_request(
+        &mut self,
+        request: BlockRequest,
+    ) -> Result<Option<CompletedDma>, Error> {
+        self.finish_block_request_with_quiesce(request, true)
+    }
+
+    fn finish_block_request_with_quiesce(
+        &mut self,
+        request: BlockRequest,
+        quiesced: bool,
+    ) -> Result<Option<CompletedDma>, Error> {
+        if !quiesced {
+            self.poison_dma();
+            core::mem::forget(request);
+            self.pending_data = None;
+            self.data_blocks_remaining = 0;
+            self.data_cmd_index = 0;
+            self.irq.state.end_request();
+            return Ok(None);
+        }
+        let completed_dma = match request.inner {
             BlockRequestKind::FifoRead { .. } | BlockRequestKind::FifoWrite { .. } => {
                 self.pending_data = None;
                 self.data_blocks_remaining = 0;
                 self.data_cmd_index = 0;
+                None
             }
-            BlockRequestKind::Read { stage, .. } => {
+            BlockRequestKind::Read { stage, buffer, .. } => {
                 if stage == BlockRequestStage::Command {
                     let _ = self.take_command_response();
                 }
@@ -711,8 +983,13 @@ impl DwMmc {
                 self.pending_data = None;
                 self.data_blocks_remaining = 0;
                 self.data_cmd_index = 0;
+                if quiesced {
+                    buffer.complete(true)
+                } else {
+                    buffer.abort(true, false)
+                }
             }
-            BlockRequestKind::Write { stage, .. } => {
+            BlockRequestKind::Write { stage, buffer, .. } => {
                 if stage == BlockRequestStage::Command {
                     let _ = self.take_command_response();
                 }
@@ -721,9 +998,15 @@ impl DwMmc {
                 self.pending_data = None;
                 self.data_blocks_remaining = 0;
                 self.data_cmd_index = 0;
+                if quiesced {
+                    buffer.complete(false)
+                } else {
+                    buffer.abort(false, false)
+                }
             }
-        }
-        Ok(())
+        };
+        self.irq.state.end_request();
+        Ok(completed_dma)
     }
 
     fn finish_dma_data(
@@ -737,12 +1020,10 @@ impl DwMmc {
         };
         let stop_after_complete = match &mut active.inner {
             BlockRequestKind::Read {
-                map,
                 stage,
                 stop_after_complete,
                 ..
             } => {
-                map.complete_for_cpu_all();
                 *stage = BlockRequestStage::Stop;
                 *stop_after_complete
             }
@@ -766,8 +1047,8 @@ impl DwMmc {
 
         let active = request.take().ok_or(Error::InvalidArgument)?;
         let response = active.response().ok_or(Error::InvalidArgument)?;
-        self.finish_block_request(active)?;
-        slot.complete(id)?;
+        let completed_dma = self.finish_block_request(active)?;
+        slot.complete_with_dma(id, completed_dma)?;
         Ok(DataCommandPoll::Complete(response))
     }
 
@@ -784,14 +1065,14 @@ impl DwMmc {
                 let _ = self.take_command_response()?;
                 let active = request.take().ok_or(Error::InvalidArgument)?;
                 let response = active.response().ok_or(Error::InvalidArgument)?;
-                self.finish_block_request(active)?;
-                slot.complete(id)?;
+                let completed_dma = self.finish_block_request(active)?;
+                slot.complete_with_dma(id, completed_dma)?;
                 Ok(DataCommandPoll::Complete(response))
             }
             // Future CommandPoll variants: best-effort, treat as still pending.
             Ok(_) => Ok(DataCommandPoll::Pending),
             Err(err) => {
-                self.abort_block_request(request, id, slot, phase);
+                let _ = self.abort_block_request(request, id, slot, phase);
                 Err(err)
             }
         }
@@ -843,7 +1124,7 @@ impl DwMmc {
                 // Future CommandPoll variants: best-effort, treat as still pending.
                 Ok(_) => return Ok(DataCommandPoll::Pending),
                 Err(err) => {
-                    self.abort_block_request(request, id, slot, phase);
+                    let _ = self.abort_block_request(request, id, slot, phase);
                     return Err(err);
                 }
             }
@@ -864,7 +1145,7 @@ impl DwMmc {
             // Future BlockPoll variants: best-effort, treat as still pending.
             Ok(_) => Ok(DataCommandPoll::Pending),
             Err(err) => {
-                self.abort_block_request(request, id, slot, phase);
+                let _ = self.abort_block_request(request, id, slot, phase);
                 Err(err)
             }
         }
@@ -930,7 +1211,8 @@ impl DwMmc {
 
         let active = request.take().ok_or(Error::InvalidArgument)?;
         let response = active.response().ok_or(Error::InvalidArgument)?;
-        self.finish_block_request(active)?;
+        let completed_dma = self.finish_block_request(active)?;
+        drop(completed_dma);
         self.pending_data = None;
         self.data_blocks_remaining = 0;
         self.data_cmd_index = 0;
@@ -944,12 +1226,22 @@ impl DwMmc {
         id: RequestId,
         slot: &mut BlockRequestSlot,
         phase: Phase,
-    ) {
-        let _ = request.take();
+    ) -> Result<(), Error> {
+        let active = request.take().ok_or(Error::InvalidArgument)?;
         self.disable_idmac();
-        self.recover_after_idmac_error(phase);
+        let recovery = self.recover_after_idmac_error(phase);
         self.clear_all_int_status();
-        let _ = slot.complete(id);
+        self.irq
+            .state
+            .clear(crate::DWMMC_INT_COMMAND_DONE | crate::DWMMC_INT_ERROR_MASK);
+        let completed_dma = self.finish_block_request_with_quiesce(active, recovery.is_ok())?;
+        drop(completed_dma);
+        self.pending_data = None;
+        self.data_blocks_remaining = 0;
+        self.data_cmd_index = 0;
+        self.command_state = crate::command::CommandState::Idle;
+        slot.complete(id)?;
+        recovery
     }
 
     fn disable_idmac(&self) {
@@ -961,7 +1253,7 @@ impl DwMmc {
         self.regs.bmod().write(0);
     }
 
-    fn recover_after_idmac_error(&mut self, phase: Phase) {
+    fn recover_after_idmac_error(&mut self, phase: Phase) -> Result<(), Error> {
         let status = self.regs.status().read().into_bits();
         let rintsts = self.regs.rintsts().read();
         warn!(
@@ -975,16 +1267,24 @@ impl DwMmc {
 
         self.regs.ctrl().update(|r| r.with_abort_read_data(true));
         let _ = self.regs.ctrl().read();
-        let _ = self.reset_fifo();
-        let _ = self.reset_dma();
+        let fifo = self.reset_fifo();
+        let dma = self.reset_dma_for_phase(phase);
         self.regs.ctrl().update(|r| r.with_abort_read_data(false));
         self.pending_data = None;
         self.data_blocks_remaining = 0;
         self.data_cmd_index = 0;
-    }
-
-    fn reset_dma(&self) -> Result<(), Error> {
-        self.reset_dma_for_phase(Phase::DataRead)
+        self.command_state = crate::command::CommandState::Idle;
+        match (fifo, dma) {
+            (Ok(()), Ok(())) => Ok(()),
+            (Err(err), _) | (_, Err(err)) => {
+                self.reset_and_init_preserving_irq()?;
+                warn!(
+                    "dwmmc: recovered IDMAC {:?} error by controller reset: {err:?}",
+                    phase
+                );
+                Ok(())
+            }
+        }
     }
 
     fn reset_dma_for_phase(&self, phase: Phase) -> Result<(), Error> {
@@ -1018,22 +1318,25 @@ impl DwMmc {
     }
 
     fn take_data_irq_status(&mut self) -> u32 {
-        let raw_status = self.regs.rintsts().read().into_bits();
-        let consume = raw_status
-            & (crate::DWMMC_INT_DATA_TRANSFER_OVER
-                | crate::DWMMC_INT_COMMAND_DONE
-                | crate::DWMMC_INT_ERROR_MASK);
-        if consume != 0 {
-            self.regs
-                .rintsts()
-                .write(crate::regs::RIntSts::from_bits(consume));
-        }
         let consume = crate::DWMMC_INT_DATA_TRANSFER_OVER
             | crate::DWMMC_INT_COMMAND_DONE
             | crate::DWMMC_INT_RXDR
             | crate::DWMMC_INT_TXDR
             | crate::DWMMC_INT_ERROR_MASK;
-        self.irq_state.take(consume) | raw_status
+        if self.completion_irq_enabled() {
+            return self.irq.state.take(consume);
+        }
+        let raw_status = self.regs.rintsts().read().into_bits();
+        let clear = raw_status
+            & (crate::DWMMC_INT_DATA_TRANSFER_OVER
+                | crate::DWMMC_INT_COMMAND_DONE
+                | crate::DWMMC_INT_ERROR_MASK);
+        if clear != 0 {
+            self.regs
+                .rintsts()
+                .write(crate::regs::RIntSts::from_bits(clear));
+        }
+        raw_status
     }
 }
 

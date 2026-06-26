@@ -89,7 +89,12 @@ static TASK_REGISTRY: spin::LazyLock<spin::RwLock<BTreeMap<u64, WeakAxTaskRef>>>
     spin::LazyLock::new(|| spin::RwLock::new(BTreeMap::new()));
 
 /// The wrapper type for [`ax_cpumask::CpuMask`] with SMP configuration.
-pub type AxCpuMask = ax_cpumask::CpuMask<{ ax_config::plat::MAX_CPU_NUM }>;
+pub type AxCpuMask = ax_cpumask::CpuMask<{ crate::build_info::CPU_CAPACITY }>;
+
+/// Returns the default stack size used by task creation helpers.
+pub fn default_task_stack_size() -> usize {
+    crate::build_info::DEFAULT_TASK_STACK_SIZE
+}
 
 cfg_if::cfg_if! {
     if #[cfg(feature = "sched-rr")] {
@@ -269,20 +274,20 @@ where
     spawn_task(TaskInner::new(f, name, stack_size))
 }
 
-/// Spawns a new task with the given name and the default stack size ([`ax_config::TASK_STACK_SIZE`]).
+/// Spawns a new task with the given name and the default stack size.
 ///
 /// Returns the task reference.
 pub fn spawn_with_name<F>(f: F, name: String) -> AxTaskRef
 where
     F: FnOnce() + Send + 'static,
 {
-    spawn_raw(f, name, ax_config::TASK_STACK_SIZE)
+    spawn_raw(f, name, default_task_stack_size())
 }
 
 /// Spawns a new task with the default parameters.
 ///
 /// The default task name is an empty string. The default task stack size is
-/// [`ax_config::TASK_STACK_SIZE`].
+/// [`default_task_stack_size`].
 ///
 /// Returns the task reference.
 pub fn spawn<F>(f: F) -> AxTaskRef
@@ -324,12 +329,11 @@ pub fn set_current_affinity(cpumask: AxCpuMask) -> bool {
         // the affinity. If not, we need to migrate the task to the correct CPU.
         #[cfg(feature = "smp")]
         if !cpumask.get(ax_hal::percpu::this_cpu_id()) {
-            const MIGRATION_TASK_STACK_SIZE: usize = ax_config::TASK_STACK_SIZE;
             // Spawn a new migration task for migrating.
             let migration_task = TaskInner::new(
                 move || crate::run_queue::migrate_entry(curr),
                 "migration-task".into(),
-                MIGRATION_TASK_STACK_SIZE,
+                default_task_stack_size(),
             )
             .into_arc();
 

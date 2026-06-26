@@ -141,6 +141,21 @@ pub fn irq_set_enable(raw: usize, enable: bool) {
     });
 }
 
+pub fn irq_set_affinity(raw: usize, affinity: crate::irq::IrqAffinity) -> Result<(), &'static str> {
+    let intid = unsafe { IntId::raw(raw as _) };
+    if intid.is_private() {
+        return Err("GICv2 private IRQ affinity cannot be changed");
+    }
+    let crate::irq::IrqAffinity::Fixed { cpu_id } = affinity else {
+        return Ok(());
+    };
+    let target_cpu = super::hardware_cpu_id(cpu_id);
+    with_gic(|gic| {
+        gic.set_target_cpu(intid, TargetList::new(&mut core::iter::once(target_cpu)));
+    });
+    Ok(())
+}
+
 pub fn send_ipi(raw: usize, target: crate::irq::IpiTarget) {
     let sgi = IntId::sgi(raw as u32);
     let target = match target {

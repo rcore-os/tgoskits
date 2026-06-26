@@ -2,7 +2,7 @@ use alloc::{collections::BTreeMap, vec::Vec};
 
 use rdif_block::{BlkError, RequestId};
 
-use super::DmaBufferGuard;
+use super::RuntimeDmaBuffer;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct RuntimeRequestId(usize);
@@ -56,14 +56,14 @@ pub struct PendingRequest {
     submitted: SubmittedRequest,
     state: RequestState,
     waiter_task_id: Option<u64>,
-    buffer_guard: Option<DmaBufferGuard>,
+    buffer_guard: Option<RuntimeDmaBuffer>,
     result: Option<Result<(), BlkError>>,
     polling: bool,
     repoll: bool,
 }
 
 impl PendingRequest {
-    pub fn submitted(submitted: SubmittedRequest, buffer_guard: Option<DmaBufferGuard>) -> Self {
+    pub fn submitted(submitted: SubmittedRequest, buffer_guard: Option<RuntimeDmaBuffer>) -> Self {
         Self {
             submitted,
             state: RequestState::Submitted,
@@ -95,7 +95,7 @@ impl PendingRequest {
         self.waiter_task_id
     }
 
-    pub fn take_completed_guard(&mut self) -> Option<DmaBufferGuard> {
+    pub fn take_completed_guard(&mut self) -> Option<RuntimeDmaBuffer> {
         if self.result.is_some() {
             self.buffer_guard.take()
         } else {
@@ -122,11 +122,22 @@ impl PendingRequest {
     }
 
     fn complete(&mut self, result: Result<(), BlkError>) -> Option<u64> {
+        self.complete_with_buffer(result, None)
+    }
+
+    fn complete_with_buffer(
+        &mut self,
+        result: Result<(), BlkError>,
+        buffer_guard: Option<RuntimeDmaBuffer>,
+    ) -> Option<u64> {
         if self.result.is_some() {
             return None;
         }
         let abandoned = matches!(self.state, RequestState::Abandoned);
         self.result = Some(result);
+        if buffer_guard.is_some() {
+            self.buffer_guard = buffer_guard;
+        }
         self.polling = false;
         self.repoll = false;
         self.state = if result.is_ok() {
@@ -176,7 +187,7 @@ impl PendingTable {
         &mut self,
         queue_id: usize,
         request_id: RequestId,
-        buffer_guard: Option<DmaBufferGuard>,
+        buffer_guard: Option<RuntimeDmaBuffer>,
     ) -> Result<RequestKey, BlkError> {
         if self.contains_inflight_driver_request(queue_id, request_id) {
             return Err(BlkError::InvalidRequest);
@@ -225,6 +236,17 @@ impl PendingTable {
             .and_then(|request| request.complete(result))
     }
 
+    pub fn complete_with_buffer(
+        &mut self,
+        key: RequestKey,
+        result: Result<(), BlkError>,
+        buffer_guard: Option<RuntimeDmaBuffer>,
+    ) -> Option<u64> {
+        self.requests
+            .get_mut(&key)
+            .and_then(|request| request.complete_with_buffer(result, buffer_guard))
+    }
+
     pub fn abandon(&mut self, key: RequestKey) {
         let remove = self
             .requests
@@ -271,7 +293,7 @@ impl PendingTable {
     pub fn take_completed(
         &mut self,
         key: RequestKey,
-    ) -> Option<(Result<(), BlkError>, Option<DmaBufferGuard>)> {
+    ) -> Option<(Result<(), BlkError>, Option<RuntimeDmaBuffer>)> {
         let request = self.requests.get(&key)?;
         let result = request.result?;
         let mut request = self.requests.remove(&key)?;

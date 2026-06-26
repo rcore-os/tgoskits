@@ -41,6 +41,7 @@ members = [
     "components/scope-local",
     "components/sdhci-cv1800",
     "components/sdio-host",
+    "components/sdio-host2",
     "components/someboot",
     "components/somehal-macros",
     "components/starry-process",
@@ -80,6 +81,7 @@ members = [
     "drivers/usb/usb-device/uvc",
     "drivers/usb/usb-host",
     "drivers/usb/usb-if",
+    "drivers/usb/usb-serial",
     "drivers/usb/utils/*",
 
     "os/StarryOS/axnsproxy",
@@ -188,7 +190,6 @@ axfs-ng-vfs = { version = "0.5.1", path = "components/axfs-ng-vfs" }
 axhvc = { version = "0.4.9", path = "virtualization/axhvc" }
 axklib = { version = "0.6.5", path = "components/axklib" }
 axplat-dyn = { version = "0.7.5", path = "platforms/axplat-dyn", default-features = false }
-ax-plat-riscv64-visionfive2 = { version = "0.1.10", path = "platforms/ax-plat-riscv64-visionfive2" }
 axpoll = { version = "0.4.1", path = "components/axpoll" }
 axvcpu = { version = "0.7.1", path = "virtualization/axvcpu" }
 axvisor = { version = "0.5.14", path = "os/axvisor" }
@@ -243,12 +244,14 @@ rdrive-macros = { version = "0.4.2", path = "drivers/rdrive-macros" }
 rsext4 = { version = "0.7.2", path = "components/rsext4" }
 scope-local = { version = "0.4.0", path = "components/scope-local" }
 sdio-host = { version = "0.1.0", package = "sdio-host-cv1800", path = "components/sdio-host" }
+sdio-host2 = { version = "0.1.0", path = "components/sdio-host2" }
 sdhci-cv1800 = { version = "0.1.1", path = "components/sdhci-cv1800" }
 aic8800 = { version = "0.2.0", path = "components/aic8800" }
 crab-usb = { version = "0.9.8", path = "drivers/usb/usb-host" }
 crab-uvc = { version = "0.1.1", path = "drivers/usb/usb-device/uvc" }
 ktest-helper = { version = "0.1.1", path = "drivers/usb/utils/ktest-helper" }
 usb-if = { version = "0.7.2", path = "drivers/usb/usb-if" }
+usb-serial = { version = "0.1.0", path = "drivers/usb/usb-serial" }
 dwmmc-host = { version = "0.1.5", path = "drivers/blk/dwmmc-host", default-features = false }
 phytium-mci-host = { version = "0.1.5", path = "drivers/blk/phytium-mci-host", default-features = false }
 sdhci-host = { version = "0.1.5", path = "drivers/blk/sdhci-host", default-features = false }
@@ -300,7 +303,7 @@ lock_api = { version = "0.4", default-features = false }
 log = "0.4"
 spin = "0.12"
 atomic-waker = { version = "1.1", default-features = false }
-ostool = { version = "0.23.4" }
+ostool = { version = "0.23.5" }
 riscv = { version = "0.16.1", default-features = false }
 sbi-rt = { version = "0.0.4", default-features = false }
 uefi = "0.37.0"

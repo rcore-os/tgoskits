@@ -3,15 +3,15 @@
 `no_std` SD Host Controller Interface (SDHCI v3.x) backend for
 [`sdmmc-protocol`](../sdmmc-protocol).
 
-This crate plugs SDHCI register programming into the
-`sdmmc_protocol::sdio::SdioHost` trait so `SdioSdmmc` can drive a real
-controller. Platform code is still responsible for MMIO mapping, clock/reset
+This crate plugs SDHCI register programming into the physical
+`sdio_host2::SdioHost` trait so `SdioSdmmc::new_host2` can drive a real
+controller through `sdmmc-protocol`. Platform code is still responsible for MMIO mapping, clock/reset
 tree setup, power rails, pinmux, IRQ routing, and DMA cache coherency.
 
 ## Status
 
 - Compiles as a `no_std` controller backend.
-- Intended for use through `sdmmc_protocol::sdio::SdioSdmmc`.
+- Intended for use through `sdmmc_protocol::sdio::SdioSdmmc::new_host2`.
 - Board-specific clock, power, pinmux, and DMA policy must be supplied by the
   caller.
 - Real hardware bring-up still depends on the surrounding SoC integration.
@@ -45,12 +45,10 @@ use sdhci_host::Sdhci;
 // caller has exclusive access to.
 let mmio = NonNull::new(0xFE31_0000 as *mut u8).unwrap();
 let mut host = unsafe { Sdhci::new(mmio) };
-host.reset_all()?;
-host.set_power(0x0f);
-host.enable_interrupts();
-host.enable_clock(150_000_000, 400_000)?;
+// Optional platform capabilities such as HostClock, HostResetHook, DMA, and
+// 1.8 V support are installed here before the protocol layer owns the host.
 
-let mut card = SdioSdmmc::new(host);
+let mut card = SdioSdmmc::new_host2(host);
 let mut scratch = SdioInitScratch::new();
 let mut request = card.submit_init(&mut scratch)?;
 while let OperationPoll::Pending = card.poll_init_request(&mut request)? {
@@ -66,7 +64,10 @@ the driver.
 
 ## Block Request Usage
 
-Use `Sdhci::submit_read_blocks` / `Sdhci::submit_write_blocks`, then drive
+Normal block-device integration should use `sdhci_host::rdif::device`, which
+routes RDIF requests through `sdmmc-protocol` and the native `sdio-host2`
+transaction path. The lower-level primitives remain available for controller
+bring-up: use `Sdhci::submit_read_blocks` / `Sdhci::submit_write_blocks`, then drive
 completion with `Sdhci::poll_block_request`. `BlockTransferMode::Dma` uses
 ADMA2 and owns request-buffer mapping, descriptor allocation, descriptor
 cache sync, and completion sync. `BlockTransferMode::Fifo` uses the FIFO
@@ -79,7 +80,7 @@ use dma_api::DeviceDma;
 use sdhci_host::{BlockRequestSlot, BlockTransferMode, RequestId, Sdhci};
 
 # use platform::DmaImpl;
-let dma = DeviceDma::new(u32::MAX as u64, &DmaImpl);
+let dma = DeviceDma::new_legacy(u32::MAX as u64, &DmaImpl);
 let mut host = unsafe { Sdhci::new_from_addr(0xFE31_0000) };
 let mut block = [0u8; 512];
 let ptr = NonNull::new(block.as_mut_ptr()).unwrap();
@@ -107,18 +108,22 @@ block-buffer contract.
 2. Configure the platform clock so the controller has a viable reference
    clock before calling `Sdhci::new` (RK3568 needs the CRU bringing
    `CLK_EMMC_CORE` up at ≥ 25 MHz).
-3. `host.reset_all()?` — clears CMD/DAT inhibits and the interrupt
-   registers.
-4. `host.set_power(POWER_330)` (or whatever your card needs).
-5. `host.enable_interrupts()` — enables status flags. The driver polls;
-   it does NOT enable signal-level IRQ delivery.
-6. `host.enable_clock(base_hz, 400_000)` — start at 400 kHz for
-   identification.
-7. Build `SdioSdmmc::new(host)`, submit initialization with
+3. Install optional capabilities such as `Sdhci::set_external_clock`,
+   `Sdhci::set_reset_hook`, `Sdhci::set_dma`, and
+   `Sdhci::enable_1v8_signaling` before handing the host to the protocol
+   layer.
+4. Build `SdioSdmmc::new_host2(host)`, submit initialization with
    `submit_init`, and drive it with `poll_init_request`. The protocol
-   layer will ramp the clock up to 25 MHz / 50 MHz via `set_clock`;
-   platform/runtime code chooses whether pending work spins, yields, or
-   waits for an IRQ.
+   layer starts with native `sdio-host2` bus operations for `ResetAll`,
+   `PowerOn`, initial voltage, 1-bit bus width, and 400 kHz identification
+   clock before issuing SD/MMC commands, then ramps the card to 25 MHz /
+   50 MHz via later bus ops. Platform/runtime code chooses whether pending
+   work spins, yields, or waits for an IRQ.
+
+The lower-level blocking helpers such as `Sdhci::reset_all`,
+`Sdhci::set_power`, and `Sdhci::enable_clock` remain useful for diagnostics,
+but normal card initialization should let `SdioSdmmc::new_host2` drive those
+steps through submit/poll bus operations.
 
 If the SoC requires external clock-tree programming for each SD speed, implement
 `sdhci_host::HostClock` in platform glue and register it with

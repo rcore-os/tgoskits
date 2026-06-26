@@ -54,7 +54,14 @@ usb = ["dep:crab-usb"]
 rockchip-dwc-xhci = ["usb", "plat-dyn", "rockchip-soc", "rockchip-pm"]
 xhci-mmio = ["usb", "plat-dyn"]
 xhci-pci = ["usb", "pci"]
-serial = ["plat-dyn", "dep:some-serial"]
+serial = [
+    "plat-dyn",
+    "dep:ax-errno",
+    "dep:ax-kernel-guard",
+    "dep:ax-kspin",
+    "dep:rdif-serial",
+    "dep:some-serial",
+]
 sg2002-placeholder = ["plat-dyn"]
 rknpu = ["plat-dyn", "rockchip-pm", "rockchip-soc", "dep:rockchip-npu"]
 rga = ["plat-dyn", "dep:rockchip-rga"]
@@ -66,7 +73,7 @@ rockchip-sdhci = [
     "dep:rdif-clk",
     "dep:sdhci-host",
     "dep:sdmmc-protocol",
-    "sdmmc-protocol/sdio",
+    "sdmmc-protocol/rdif",
 ]
 phytium-mci = [
     "block",
@@ -74,14 +81,14 @@ phytium-mci = [
     "dep:ax-kspin",
     "dep:phytium-mci-host",
     "dep:sdmmc-protocol",
-    "sdmmc-protocol/sdio",
+    "sdmmc-protocol/rdif",
 ]
 k230-sdhci = [
     "block",
     "plat-dyn",
     "dep:sdhci-host",
     "dep:sdmmc-protocol",
-    "sdmmc-protocol/sdio",
+    "sdmmc-protocol/rdif",
 ]
 rockchip-dwmmc = [
     "block",
@@ -91,6 +98,13 @@ rockchip-dwmmc = [
     "dep:ax-kspin",
     "dep:dwmmc-host",
     "dep:rdif-clk",
+    "dep:sdmmc-protocol",
+    "sdmmc-protocol/rdif",
+]
+starfive-jh7110-dwmmc = [
+    "block",
+    "plat-dyn",
+    "dep:dwmmc-host",
     "dep:sdmmc-protocol",
     "sdmmc-protocol/sdio",
 ]
@@ -135,6 +149,7 @@ rdif-block = { workspace = true, optional = true }
 rdif-clk = { workspace = true, optional = true }
 rdif-display = { workspace = true, optional = true }
 rdif-input = { workspace = true, optional = true }
+rdif-serial = { workspace = true, optional = true }
 rdif-intc.workspace = true
 rdif-pcie = { workspace = true, optional = true }
 rdif-vsock = { workspace = true, optional = true }

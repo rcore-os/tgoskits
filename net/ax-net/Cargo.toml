@@ -41,6 +41,7 @@ features = [
   "medium-ip",
   "proto-ipv4",
   "proto-ipv6",
+  "packetmeta-id",
   "socket-raw",
   "socket-icmp",
   "socket-udp",

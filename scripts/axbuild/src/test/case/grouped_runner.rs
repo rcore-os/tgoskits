@@ -54,9 +54,9 @@ pub(crate) fn write_grouped_case_runner_script(
         "failed=0\ntotal={}\nstep=0\n",
         test_commands.len()
     ));
-    for command in test_commands {
+    for (index, command) in test_commands.iter().enumerate() {
         let quoted = shell_single_quote(command);
-        let command_label = shell_single_quote(command);
+        let command_label = shell_single_quote(&format!("command-{}", index + 1));
         let begin = shell_single_quote(&config.begin_marker);
         let passed = shell_single_quote(&config.passed_marker);
         let failed = shell_single_quote(&config.failed_marker);

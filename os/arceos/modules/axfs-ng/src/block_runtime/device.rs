@@ -2,15 +2,17 @@ use alloc::{boxed::Box, format, string::String, sync::Arc, vec::Vec};
 use core::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 
 use ax_errno::{AxError, AxResult};
-use dma_api::DmaDirection;
+use dma_api::{DeviceDma, DmaDirection, DmaDomainId};
 use rdif_block::{
-    BlkError, CompletionHint, CompletionSink as RdifCompletionSink, DeviceInfo, IQueue, QueueInfo,
-    Request, RequestFlags, RequestId, RequestOp, RequestStatus, TransferChunk, TransferPlanner,
+    BlkError, CompletionHint, CompletionSink as RdifCompletionSink, DeviceInfo, IQueue,
+    OwnedRequest, QueueHandle, QueueInfo, Request, RequestFlags, RequestId, RequestOp,
+    RequestPoll as OwnedRequestPoll, RequestStatus, TransferChunk, TransferPlanner,
     TransferRuntimeCaps, validate_request,
 };
 
 use super::{
     BlockIrqBridge, DmaBufferGuard, DrainEvents, PendingTable, PollClaim, PollProgress, RequestKey,
+    RuntimeDmaBuffer, new_owned_dma_buffer,
 };
 use crate::os::{
     BlockIrqOutcome, BlockIrqRegistration, current_task_id, dma_op, notify_drain,
@@ -21,6 +23,11 @@ use crate::os::{
 
 const DEFAULT_MAX_TRANSFER_BYTES: usize = 1024 * 1024;
 const DEFAULT_SUBMIT_WINDOW: usize = 32;
+
+fn runtime_device_dma(domain: DmaDomainId, dma_mask: u64) -> Result<DeviceDma, BlkError> {
+    let dma_op = dma_op().ok_or(BlkError::Io)?;
+    Ok(DeviceDma::new(domain, dma_mask, dma_op))
+}
 
 type CompletionRecord = (RequestId, Result<(), BlkError>);
 
@@ -178,15 +185,29 @@ pub struct BlockDeviceHandle {
 }
 
 pub struct QueueRuntime {
-    queue: Box<dyn IQueue>,
+    queue: RuntimeQueue,
     driver_queue_id: usize,
     info: QueueInfo,
     planner: TransferPlanner,
 }
 
+enum RuntimeQueue {
+    Legacy(Box<dyn IQueue>),
+    Owned(QueueHandle),
+}
+
+impl RuntimeQueue {
+    fn info(&self) -> QueueInfo {
+        match self {
+            Self::Legacy(queue) => queue.info(),
+            Self::Owned(queue) => queue.info(),
+        }
+    }
+}
+
 impl QueueRuntime {
-    pub fn new(
-        queue: Box<dyn IQueue>,
+    fn new(
+        queue: RuntimeQueue,
         runtime_queue_id: usize,
         caps: TransferRuntimeCaps,
     ) -> Result<Self, BlkError> {
@@ -368,6 +389,20 @@ impl BlockDeviceHandle {
     pub fn new(
         name: impl Into<String>,
         queues: impl IntoIterator<Item = Box<dyn IQueue>>,
+        bridge: Arc<BlockIrqBridge>,
+        config: BlockRuntimeConfig,
+    ) -> Result<Arc<Self>, BlkError> {
+        Self::new_runtime(
+            name,
+            queues.into_iter().map(RuntimeQueue::Legacy),
+            bridge,
+            config,
+        )
+    }
+
+    fn new_runtime(
+        name: impl Into<String>,
+        queues: impl IntoIterator<Item = RuntimeQueue>,
         bridge: Arc<BlockIrqBridge>,
         config: BlockRuntimeConfig,
     ) -> Result<Arc<Self>, BlkError> {
@@ -707,17 +742,20 @@ impl BlockDeviceHandle {
     ) -> Option<bool> {
         loop {
             match result {
-                Ok(RequestStatus::Pending) => match self.pending.lock().finish_pending_poll(key) {
-                    PollProgress::Pending | PollProgress::Complete => return Some(false),
-                    PollProgress::Repoll => {
-                        let submitted = self
-                            .pending
-                            .lock()
-                            .request(key)
-                            .map(|request| request.submitted_request())?;
-                        result = self.poll_request(submitted.queue_id, submitted.request_id);
+                Ok(RequestStatus::Pending) => {
+                    let progress = self.pending.lock().finish_pending_poll(key);
+                    match progress {
+                        PollProgress::Pending | PollProgress::Complete => return Some(false),
+                        PollProgress::Repoll => {
+                            let submitted = self
+                                .pending
+                                .lock()
+                                .request(key)
+                                .map(|request| request.submitted_request())?;
+                            result = self.poll_request(submitted.queue_id, submitted.request_id);
+                        }
                     }
-                },
+                }
                 Ok(RequestStatus::Complete) => {
                     let task_id = self.pending.lock().complete(key, Ok(()));
                     self.wake_completed_request(key, task_id);
@@ -793,16 +831,7 @@ impl BlockDeviceHandle {
         loop {
             let mut queue = self.queues[queue_index].lock();
             let info = queue.info;
-            let mut segments = [];
-            let request = Request {
-                op: RequestOp::Flush,
-                lba: 0,
-                block_count: 0,
-                segments: &mut segments,
-                flags: RequestFlags::NONE,
-            };
-            validate_request(info, &request).map_err(map_blk_err_to_ax_err)?;
-            match queue.queue.submit_request(request) {
+            match submit_flush_request(&mut queue, info) {
                 Ok(request_id) => {
                     let key = self
                         .pending
@@ -1073,26 +1102,49 @@ impl BlockDeviceHandle {
     ) -> Result<WindowEntry, BlkError> {
         let chunk_range = chunk.byte_offset..chunk.byte_offset + chunk.byte_len;
         let src = write_src.map(|src| &src[chunk_range.clone()]);
-        let dma_op = dma_op().ok_or(BlkError::Io)?;
-        let mut guard = DmaBufferGuard::new(
-            dma_op,
-            info.limits.dma_mask,
-            chunk.byte_len,
-            info.limits.dma_alignment.max(1),
-            direction,
-            chunk,
-            src,
-        )?;
-        let segments = unsafe { guard.segments_for_submit() };
-        let request = Request {
-            op,
-            lba: chunk.lba,
-            block_count: chunk.block_count,
-            segments,
-            flags: RequestFlags::NONE,
+        let dma = runtime_device_dma(info.limits.dma_domain, info.limits.dma_mask)?;
+        let (request_id, buffer) = match &mut queue.queue {
+            RuntimeQueue::Legacy(legacy) => {
+                let mut guard = DmaBufferGuard::new(
+                    &dma,
+                    chunk.byte_len,
+                    info.limits.dma_alignment.max(1),
+                    direction,
+                    chunk,
+                    src,
+                )?;
+                let segments = unsafe { guard.segments_for_submit() };
+                let request = Request {
+                    op,
+                    lba: chunk.lba,
+                    block_count: chunk.block_count,
+                    segments,
+                    flags: RequestFlags::NONE,
+                };
+                validate_request(info, &request)?;
+                let request_id = legacy.submit_request(request)?;
+                (request_id, Some(RuntimeDmaBuffer::Legacy(guard)))
+            }
+            RuntimeQueue::Owned(owned) => {
+                let buffer = new_owned_dma_buffer(
+                    &dma,
+                    chunk.byte_len,
+                    info.limits.dma_alignment.max(1),
+                    direction,
+                    src,
+                )?;
+                let request_id = owned
+                    .submit_request(OwnedRequest {
+                        op,
+                        lba: chunk.lba,
+                        block_count: chunk.block_count,
+                        data: Some(buffer.prepare_for_device()),
+                        flags: RequestFlags::NONE,
+                    })
+                    .map_err(|err| err.error)?;
+                (request_id, None)
+            }
         };
-        validate_request(info, &request)?;
-        let request_id = queue.queue.submit_request(request)?;
         let key = {
             let mut pending = self.pending.lock();
             if pending.contains_inflight_driver_request(info.id, request_id) {
@@ -1101,11 +1153,13 @@ impl BlockDeviceHandle {
                 // request id. Keep the DMA guard alive instead of returning it
                 // to the allocator while a broken driver may still complete
                 // into the submitted buffer.
-                core::mem::forget(guard);
+                if let Some(buffer) = buffer {
+                    core::mem::forget(buffer);
+                }
                 self.poison_driver_contract_violation();
                 return Err(BlkError::InvalidRequest);
             }
-            pending.insert_submitted(info.id, request_id, Some(guard))?
+            pending.insert_submitted(info.id, request_id, buffer)?
         };
         Ok(WindowEntry {
             key,
@@ -1364,16 +1418,21 @@ fn build_rdif_block_device(
     drain_wake: Arc<dyn BlockDrainWake>,
 ) -> Result<RegisteredRdifBlockDevice, AxError> {
     let name = String::from(block.name());
-    let mut queues: Vec<Box<dyn IQueue>> = Vec::new();
-    while let Some(queue) = block.interface_mut().create_queue() {
-        queues.push(queue);
+    let mut queues = Vec::new();
+    while let Some(queue) = block.interface_mut().create_owned_queue() {
+        queues.push(RuntimeQueue::Owned(queue));
+    }
+    if queues.is_empty() {
+        while let Some(queue) = block.interface_mut().create_queue() {
+            queues.push(RuntimeQueue::Legacy(queue));
+        }
     }
     if queues.is_empty() {
         return Err(AxError::BadState);
     }
 
     let bridge = Arc::new(BlockIrqBridge::new());
-    let device = BlockDeviceHandle::new(
+    let device = BlockDeviceHandle::new_runtime(
         name.clone(),
         queues,
         bridge,
@@ -1387,6 +1446,10 @@ fn build_rdif_block_device(
             if block.is_irq_enabled() {
                 Ok(registrations)
             } else {
+                warn!(
+                    "rdif filesystem block device {name} registered IRQ handler but device did \
+                     not enable completion IRQ"
+                );
                 Err((AxError::Unsupported, registrations))
             }
         }) {
@@ -1416,19 +1479,37 @@ fn register_rdif_irq_handlers(
 ) -> RegisterIrqResult {
     let irq_sources = block.interface().irq_sources();
     if irq_sources.is_empty() {
+        warn!(
+            "rdif filesystem block device {} exposes no IRQ source",
+            block.name()
+        );
         return Err((AxError::Unsupported, Vec::new()));
     }
 
     let mut registrations = Vec::new();
     for source in irq_sources {
         let Some((irq_num, handler)) = block.take_irq_handler(source.id) else {
+            warn!(
+                "rdif filesystem block device {} has IRQ source {} but no handler",
+                block.name(),
+                source.id
+            );
             return Err((AxError::Unsupported, registrations));
         };
         let action = BlockIrqAction::new(handler, device.clone(), device_index);
         match register_shared_block_irq(format!("{}/{}", device.name(), source.id), irq_num, action)
         {
             Ok(registration) => registrations.push(registration),
-            Err(err) => return Err((err, registrations)),
+            Err(err) => {
+                warn!(
+                    "rdif filesystem block device {} failed to register IRQ source {} on irq {}: \
+                     {err:?}",
+                    block.name(),
+                    source.id,
+                    irq_num
+                );
+                return Err((err, registrations));
+            }
         }
     }
     Ok(registrations)
@@ -1500,7 +1581,17 @@ impl BlockDeviceHandle {
         request_id: RequestId,
     ) -> Result<RequestStatus, BlkError> {
         let queue = self.queue_by_runtime_id(queue_id)?;
-        queue.lock().queue.poll_request(request_id)
+        let mut queue = queue.lock();
+        match &mut queue.queue {
+            RuntimeQueue::Legacy(legacy) => legacy.poll_request(request_id),
+            RuntimeQueue::Owned(owned) => match owned.poll_request(request_id)? {
+                OwnedRequestPoll::Pending => Ok(RequestStatus::Pending),
+                OwnedRequestPoll::Ready(completed) => {
+                    self.finish_owned_completion(queue_id, completed);
+                    Ok(RequestStatus::Complete)
+                }
+            },
+        }
     }
 
     fn poll_queue_completions(
@@ -1510,13 +1601,77 @@ impl BlockDeviceHandle {
     ) -> Result<Vec<CompletionRecord>, BlkError> {
         let queue = self.queue_by_runtime_id(queue_id)?;
         let mut queue = queue.lock();
-        let mut sink = CollectCompletionSink::default();
-        queue.queue.poll_completions(request_ids, &mut sink)?;
-        Ok(sink.completions)
+        match &mut queue.queue {
+            RuntimeQueue::Legacy(legacy) => {
+                let mut sink = CollectCompletionSink::default();
+                legacy.poll_completions(request_ids, &mut sink)?;
+                Ok(sink.completions)
+            }
+            RuntimeQueue::Owned(owned) => {
+                let mut completions = Vec::new();
+                for &request_id in request_ids {
+                    match owned.poll_request(request_id)? {
+                        OwnedRequestPoll::Pending => {}
+                        OwnedRequestPoll::Ready(completed) => {
+                            let result = completed.result;
+                            let id = completed.id;
+                            self.finish_owned_completion(queue_id, completed);
+                            completions.push((id, result));
+                        }
+                    }
+                }
+                Ok(completions)
+            }
+        }
     }
 
     fn queue_by_runtime_id(&self, queue_id: usize) -> Result<&SpinNoIrq<QueueRuntime>, BlkError> {
         self.queues.get(queue_id).ok_or(BlkError::InvalidRequest)
+    }
+
+    fn finish_owned_completion(&self, queue_id: usize, completed: rdif_block::CompletedRequest) {
+        let key = self
+            .pending
+            .lock()
+            .matching_driver_keys(queue_id, &[completed.id])
+            .into_iter()
+            .next();
+        let Some(key) = key else {
+            return;
+        };
+        let buffer = completed.data.map(RuntimeDmaBuffer::Owned);
+        let task_id = self
+            .pending
+            .lock()
+            .complete_with_buffer(key, completed.result, buffer);
+        self.wake_completed_request(key, task_id);
+    }
+}
+
+#[cfg(feature = "ext4")]
+fn submit_flush_request(queue: &mut QueueRuntime, info: QueueInfo) -> Result<RequestId, BlkError> {
+    match &mut queue.queue {
+        RuntimeQueue::Legacy(legacy) => {
+            let mut segments = [];
+            let request = Request {
+                op: RequestOp::Flush,
+                lba: 0,
+                block_count: 0,
+                segments: &mut segments,
+                flags: RequestFlags::NONE,
+            };
+            validate_request(info, &request)?;
+            legacy.submit_request(request)
+        }
+        RuntimeQueue::Owned(owned) => owned
+            .submit_request(OwnedRequest {
+                op: RequestOp::Flush,
+                lba: 0,
+                block_count: 0,
+                data: None,
+                flags: RequestFlags::NONE,
+            })
+            .map_err(|err| err.error),
     }
 }
 

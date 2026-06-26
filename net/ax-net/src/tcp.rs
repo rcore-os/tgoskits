@@ -41,7 +41,7 @@ use smoltcp::{
     iface::SocketHandle,
     socket::tcp as smol,
     time::Duration,
-    wire::{IpEndpoint, IpListenEndpoint},
+    wire::{IpEndpoint, IpListenEndpoint, IpProtocol},
 };
 use spin::LazyLock;
 
@@ -53,6 +53,7 @@ use crate::{
     consts::{TCP_RX_BUF_LEN, TCP_TX_BUF_LEN},
     general::GeneralOptions,
     get_control, get_service, interface_by_id,
+    ip_tos::{EgressIpTosKey, clear_egress_ip_tos, set_egress_ip_tos},
     options::{Configurable, GetSocketOption, SetSocketOption, TcpInfo, TcpInfoOptions, TcpState},
     request_poll,
     state::*,
@@ -80,6 +81,8 @@ pub struct TcpSocket {
     bound_endpoint: Mutex<IpListenEndpoint>,
     /// Connected peer endpoint once established.
     peer_endpoint: Mutex<Option<IpEndpoint>>,
+    /// Currently registered egress IP_TOS policy for this TCP socket.
+    tos_key: Mutex<Option<EgressIpTosKey>>,
     /// Whether `bound_endpoint` is registered in `TCP_BOUND_PORTS`.
     bound_registered: AtomicBool,
 
@@ -118,6 +121,7 @@ impl TcpSocket {
             )),
             bound_endpoint: Mutex::new(empty_endpoint()),
             peer_endpoint: Mutex::new(None),
+            tos_key: Mutex::new(None),
             bound_registered: AtomicBool::new(false),
 
             general: GeneralOptions::new(1, 2, 6), // SOCK_STREAM
@@ -155,6 +159,7 @@ impl TcpSocket {
             handle,
             bound_endpoint: Mutex::new(empty_endpoint()),
             peer_endpoint: Mutex::new(Some(remote_endpoint)),
+            tos_key: Mutex::new(None),
             bound_registered: AtomicBool::new(false),
 
             general: GeneralOptions::new(1, 2, 6), // SOCK_STREAM
@@ -190,8 +195,59 @@ impl Default for TcpSocket {
 
 /// Private methods
 impl TcpSocket {
+    fn state(&self) -> State {
+        self.state.get()
+    }
+
+    #[inline]
+    fn is_listening(&self) -> bool {
+        self.state() == State::Listening
+    }
+
     fn with_smol_socket<R>(&self, f: impl FnOnce(&mut smol::Socket) -> R) -> R {
         SOCKET_SET.with_socket_mut::<smol::Socket, _, _>(self.handle, f)
+    }
+
+    fn egress_ip_tos_key(&self) -> Option<EgressIpTosKey> {
+        if self.is_listening() {
+            return EgressIpTosKey::listener(IpProtocol::Tcp, *self.bound_endpoint.lock());
+        }
+
+        let local = self
+            .with_smol_socket(|socket| socket.local_endpoint())
+            .or_else(|| {
+                let endpoint = *self.bound_endpoint.lock();
+                endpoint.addr.map(|addr| IpEndpoint {
+                    addr,
+                    port: endpoint.port,
+                })
+            });
+        let remote = self
+            .with_smol_socket(|socket| socket.remote_endpoint())
+            .or_else(|| *self.peer_endpoint.lock());
+
+        EgressIpTosKey::exact(IpProtocol::Tcp, local?, remote?)
+    }
+
+    fn sync_egress_ip_tos(&self) {
+        let key = self.egress_ip_tos_key();
+        let tos = self.general.ip_tos();
+        let mut tracked = self.tos_key.lock();
+        if *tracked != key {
+            if let Some(old) = *tracked {
+                clear_egress_ip_tos(old);
+            }
+            *tracked = key;
+        }
+        if let Some(key) = key {
+            set_egress_ip_tos(key, tos);
+        }
+    }
+
+    fn clear_tracked_egress_ip_tos(&self) {
+        if let Some(key) = self.tos_key.lock().take() {
+            clear_egress_ip_tos(key);
+        }
     }
 
     fn tcp_info_snapshot(&self) -> TcpInfo {
@@ -344,6 +400,12 @@ impl Configurable for TcpSocket {
     fn set_option_inner(&self, option: SetSocketOption) -> AxResult<bool> {
         use SetSocketOption as O;
 
+        if let O::IpTos(tos) = option {
+            self.general.set_ip_tos(*tos);
+            self.sync_egress_ip_tos();
+            return Ok(true);
+        }
+
         if self.general.set_option_inner(option)? {
             return Ok(true);
         }
@@ -465,6 +527,7 @@ impl SocketOps for TcpSocket {
                     LISTEN_TABLE.listen(bound_endpoint, backlog)
                 })?;
                 *self.bound_endpoint.lock() = bound_endpoint;
+                self.sync_egress_ip_tos();
                 if binding.bound_if.is_some() {
                     self.general.set_device_binding(binding);
                 }
@@ -495,6 +558,8 @@ impl SocketOps for TcpSocket {
                     accepted.local_endpoint,
                     accepted.remote_endpoint,
                 );
+                socket.general.set_ip_tos(self.general.ip_tos());
+                socket.sync_egress_ip_tos();
                 debug!(
                     "accepted connection from {}, {}",
                     accepted.handle, accepted.remote_endpoint
@@ -639,6 +704,7 @@ impl SocketOps for TcpSocket {
                         debug!("TCP socket {}: shutting down", self.handle);
                         socket.close();
                     });
+                    self.clear_tracked_egress_ip_tos();
                     self.unregister_bound_endpoint();
                     *self.bound_endpoint.lock() = empty_endpoint();
                     request_poll();
@@ -657,6 +723,7 @@ impl SocketOps for TcpSocket {
         if let Ok(guard) = self.state.lock(State::Listening) {
             guard.transit(State::Closed, || {
                 LISTEN_TABLE.unlisten(self.bound_endpoint()?);
+                self.clear_tracked_egress_ip_tos();
                 self.unregister_bound_endpoint();
                 *self.bound_endpoint.lock() = empty_endpoint();
                 request_poll();
@@ -790,6 +857,7 @@ impl Drop for TcpSocket {
         });
 
         // Unbind from API layer (port registry, etc.)
+        self.clear_tracked_egress_ip_tos();
         self.unregister_bound_endpoint();
 
         if should_orphan {
@@ -903,6 +971,7 @@ impl TcpSocket {
                         .set_device_binding(get_control().local_binding_for(&bound_endpoint)?);
                 }
                 // else: bound to specific IP, keep existing interface binding
+                self.sync_egress_ip_tos();
 
                 Ok(())
             })

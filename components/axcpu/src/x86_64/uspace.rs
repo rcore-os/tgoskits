@@ -152,6 +152,10 @@ impl ExceptionInfo {
             Ok(ExceptionVector::Debug) => ExceptionKind::Debug,
             Ok(ExceptionVector::Breakpoint) => ExceptionKind::Breakpoint,
             Ok(ExceptionVector::InvalidOpcode) => ExceptionKind::IllegalInstruction,
+            // `#DE`: integer divide-by-zero / `INT_MIN / -1`. Linux delivers this
+            // as SIGFPE/FPE_INTDIV; the HotSpot JVM's x86 interpreter and JIT
+            // rely on the trap to raise Java `ArithmeticException`.
+            Ok(ExceptionVector::Division) => ExceptionKind::ArithmeticError,
             _ => ExceptionKind::Other,
         }
     }

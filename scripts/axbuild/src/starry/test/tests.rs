@@ -204,6 +204,7 @@ fn grouped_host_http_test_case(
             body: "fixture".to_string(),
             body_size: Some(4),
             body_byte: b'Z',
+            dir: None,
         }),
         subcases: grouped_subcase_filter
             .as_ref()

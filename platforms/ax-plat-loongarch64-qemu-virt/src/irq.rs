@@ -107,6 +107,13 @@ impl IrqIf for IrqIfImpl {
         }
     }
 
+    fn set_affinity(
+        _irq: usize,
+        _affinity: ax_plat::irq::IrqAffinity,
+    ) -> Result<(), ax_plat::irq::IrqError> {
+        Err(ax_plat::irq::IrqError::Unsupported)
+    }
+
     /// Handles the IRQ.
     fn handle(irq: usize) -> Option<usize> {
         let mut irq = IrqType::new(irq);
@@ -185,5 +192,9 @@ impl IrqIf for IrqIfImpl {
                 }
             }
         }
+    }
+
+    fn ipi_irq() -> usize {
+        IPI_IRQ
     }
 }

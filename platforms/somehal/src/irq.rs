@@ -38,6 +38,15 @@ pub enum IpiTarget {
     },
 }
 
+/// Hardware routing preference for a global IRQ line.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum IrqAffinity {
+    /// Leave routing unchanged or platform-selected.
+    Any,
+    /// Route to one logical CPU.
+    Fixed { cpu_id: usize },
+}
+
 pub fn irq_setup_by_fdt(irq_parent: DeviceId, irq_cell: &[u32]) -> IrqId {
     let mut intc = rdrive::get::<Intc>(irq_parent).unwrap().lock().unwrap();
     debug!("Setting up IRQ {:?}", irq_cell);
@@ -50,8 +59,16 @@ pub fn irq_set_enable(irq: IrqId, enable: bool) {
     Plat::irq_set_enable(irq, enable);
 }
 
+pub fn irq_set_affinity(irq: IrqId, affinity: IrqAffinity) -> Result<(), &'static str> {
+    Plat::irq_set_affinity(irq, affinity)
+}
+
 pub fn send_ipi(irq: IrqId, target: IpiTarget) {
     Plat::send_ipi(irq, target);
+}
+
+pub fn ipi_irq() -> IrqId {
+    Plat::ipi_irq()
 }
 
 pub fn systick_irq() -> IrqId {

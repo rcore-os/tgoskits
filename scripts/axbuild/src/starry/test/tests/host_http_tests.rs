@@ -18,6 +18,7 @@ fn starry_qemu_case_starts_host_http_server_from_loaded_config() {
             body: "fixture".to_string(),
             body_size: Some(4),
             body_byte: b'Z',
+            dir: None,
         }),
         subcases: Vec::new(),
         grouped_subcase_filter: None,

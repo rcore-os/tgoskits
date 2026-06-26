@@ -1,4 +1,9 @@
-use std::path::{Path, PathBuf};
+use std::{
+    fs,
+    os::unix::fs::PermissionsExt,
+    path::{Path, PathBuf},
+    process::Command,
+};
 
 use tempfile::tempdir;
 
@@ -210,6 +215,7 @@ fn app_qemu_test_case_preserves_host_symbolize_success_regex() {
             body: "fixture".to_string(),
             body_size: None,
             body_byte: b'X',
+            dir: None,
         }),
         subcases: Vec::new(),
     };
@@ -225,5 +231,63 @@ fn app_qemu_test_case_preserves_host_symbolize_success_regex() {
             .as_ref()
             .map(|config| (config.bind.as_str(), config.port)),
         Some(("127.0.0.1", 18382))
+    );
+}
+
+#[test]
+fn claw_code_prebuild_replaces_stale_rootfs_directory() {
+    let root = tempdir().unwrap();
+    let workspace = root.path();
+    let repo = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(Path::parent)
+        .expect("axbuild manifest should live under scripts/axbuild")
+        .to_path_buf();
+    let script = repo.join("apps/starry/claw-code/prebuild.sh");
+
+    let cache = workspace.join("cache");
+    let bin = cache.join("claw");
+    fs::create_dir_all(&cache).unwrap();
+    fs::write(&bin, b"fake claw").unwrap();
+
+    let tools = workspace.join("tools");
+    fs::create_dir_all(&tools).unwrap();
+    let debugfs = tools.join("debugfs");
+    fs::write(
+        &debugfs,
+        "#!/usr/bin/env bash\nif [ \"$1\" = \"-w\" ]; then test -f \"$2\"; fi\nexit 0\n",
+    )
+    .unwrap();
+    fs::set_permissions(&debugfs, fs::Permissions::from_mode(0o755)).unwrap();
+
+    let rootfs_dir = workspace.join("tmp/axbuild/rootfs");
+    let default_rootfs = rootfs_dir.join("rootfs-x86_64-alpine.img");
+    let app_rootfs = rootfs_dir.join("rootfs-x86_64-claw-code.img");
+    fs::create_dir_all(&default_rootfs).unwrap();
+    fs::write(
+        default_rootfs.join("rootfs-x86_64-alpine.img"),
+        b"base rootfs",
+    )
+    .unwrap();
+    fs::create_dir_all(&app_rootfs).unwrap();
+
+    let path = format!("{}:{}", tools.display(), std::env::var("PATH").unwrap());
+    let status = Command::new("bash")
+        .arg(&script)
+        .current_dir(repo.join("apps/starry/claw-code"))
+        .env("CLAW_CACHE_DIR", &cache)
+        .env("STARRY_WORKSPACE", workspace)
+        .env("STARRY_ROOTFS", &app_rootfs)
+        .env("STARRY_OVERLAY_DIR", workspace.join("overlay"))
+        .env("PATH", path)
+        .status()
+        .unwrap();
+
+    assert!(status.success());
+    assert!(app_rootfs.is_file());
+    assert_eq!(fs::read(&app_rootfs).unwrap(), b"base rootfs");
+    assert_eq!(
+        fs::read(default_rootfs.join("rootfs-x86_64-alpine.img")).unwrap(),
+        b"base rootfs"
     );
 }

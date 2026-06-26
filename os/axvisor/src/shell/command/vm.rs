@@ -917,12 +917,8 @@ fn show_vm_basic_details(vm_id: usize, show_config: bool, show_stats: bool) {
             println!();
             println!("Device Summary:");
             println!(
-                "  MMIO Devices:   {}",
-                vm.get_devices().iter_mmio_dev().count()
-            );
-            println!(
-                "  SysReg Devices: {}",
-                vm.get_devices().iter_sys_reg_dev().count()
+                "  Registered Devices: {}",
+                vm.get_devices().devices().count()
             );
         }
 
@@ -1147,11 +1143,9 @@ fn show_vm_full_details(vm_id: usize) {
 
         // Devices
         println!();
-        let mmio_dev_count = vm.get_devices().iter_mmio_dev().count();
-        let sysreg_dev_count = vm.get_devices().iter_sys_reg_dev().count();
+        let device_count = vm.get_devices().devices().count();
         println!("Devices:");
-        println!("  MMIO Devices:   {}", mmio_dev_count);
-        println!("  SysReg Devices: {}", sysreg_dev_count);
+        println!("  Devices:        {}", device_count);
 
         // Additional Statistics
         println!();

@@ -18,7 +18,7 @@ pub(super) const CASE_APK_CACHE_DIR_NAME: &str = "apk-cache";
 pub(super) const CASE_SH_DIR_NAME: &str = "sh";
 pub(super) const CASE_ROOTFS_COPY_NAME: &str = "case-rootfs.img";
 pub(super) const GROUPED_RUNNER_SCRIPT_FORMAT_VERSION: &str =
-    "grouped-runner-starry-init-autoload-v1";
+    "grouped-runner-starry-init-autoload-v2-short-command-labels";
 pub(super) const PYTHON_PIPELINE_CACHE_VERSION: &str = "python-apk-v1";
 pub(super) const RUST_PIPELINE_CACHE_VERSION: &str = "rust-cross-v1";
 /// QEMU global snapshot flag -- all disk writes go to a temporary file and are
@@ -55,6 +55,12 @@ pub(crate) struct HostHttpServerConfig {
     pub(crate) body_size: Option<usize>,
     #[serde(default = "default_host_http_body_byte")]
     pub(crate) body_byte: u8,
+    /// When set, serve files from this host directory (path-routed static file
+    /// server with an autoindex at `/`) instead of a fixed body. Lets a guest
+    /// drive a real online `pip/uv install --find-links http://10.0.2.2:PORT/`
+    /// against a local wheel index over real TCP — hermetic (no internet).
+    #[serde(default)]
+    pub(crate) dir: Option<String>,
 }
 
 fn default_host_http_bind() -> String {

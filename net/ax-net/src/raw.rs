@@ -57,6 +57,7 @@ use crate::{
     consts::{RAW_RX_BUF_LEN, RAW_TX_BUF_LEN},
     general::GeneralOptions,
     get_control, interface_by_id,
+    ip_tos::apply_ip_tos,
     options::{Configurable, GetSocketOption, SetSocketOption},
     request_poll,
 };
@@ -408,6 +409,10 @@ impl SocketOps for RawSocket {
                     .send(header_len + payload_len)
                     .map_err(|_| AxError::WouldBlock)?;
                 header.emit(&mut *buf);
+                let ip_tos = self.general.ip_tos();
+                if ip_tos != 0 {
+                    apply_ip_tos(buf, ip_tos);
+                }
 
                 let written = src.read(&mut buf[header_len..])?;
                 if next_header == IpProtocol::Icmpv6 {
