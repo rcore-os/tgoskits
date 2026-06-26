@@ -3,6 +3,7 @@ extern crate alloc;
 use alloc::{boxed::Box, collections::BTreeMap, format, sync::Arc};
 use core::{
     cell::UnsafeCell,
+    hint::spin_loop,
     sync::atomic::{AtomicBool, Ordering},
 };
 
@@ -99,24 +100,26 @@ impl<T: VirtIoTransport> rd_net::Interface for VirtIoNetDevice<T> {
     }
 
     fn handle_irq(&mut self) -> Event {
-        self.inner.with_irq(|inner| {
-            let _ = inner.raw.ack_interrupt();
+        self.inner
+            .with_irq(|inner| {
+                let _ = inner.raw.ack_interrupt();
 
-            let mut event = Event::none();
-            if inner.raw.poll_transmit().is_some() {
-                event.tx_queue.insert(0);
-            }
-            if inner.raw.poll_receive().is_some() {
-                event.rx_queue.insert(0);
-            }
-            event
-        })
+                let mut event = Event::none();
+                if inner.raw.poll_transmit().is_some() {
+                    event.tx_queue.insert(0);
+                }
+                if inner.raw.poll_receive().is_some() {
+                    event.rx_queue.insert(0);
+                }
+                event
+            })
+            .unwrap_or_else(Event::none)
     }
 }
 
 struct VirtioNetInnerCell<T: VirtIoTransport> {
     inner: UnsafeCell<NetInner<T>>,
-    task_active: AtomicBool,
+    access_active: AtomicBool,
 }
 
 unsafe impl<T: VirtIoTransport> Send for VirtioNetInnerCell<T> {}
@@ -126,42 +129,48 @@ impl<T: VirtIoTransport> VirtioNetInnerCell<T> {
     fn new(inner: NetInner<T>) -> Self {
         Self {
             inner: UnsafeCell::new(inner),
-            task_active: AtomicBool::new(false),
+            access_active: AtomicBool::new(false),
         }
     }
 
     fn with_task<R>(&self, f: impl FnOnce(&mut NetInner<T>) -> R) -> R {
         let _guard = NoPreemptIrqSave::new();
-        let _active = TaskAccessFlag::enter(&self.task_active);
-        // SAFETY: task-side callers enter with local IRQ/preemption disabled,
-        // and upper rd-net users serialize queue/device calls with SpinNoIrq.
+        let _active = VirtioNetAccessGuard::enter_task(&self.access_active);
+        // SAFETY: `access_active` serializes all mutable access to the shared
+        // raw transport. Task-side callers also keep local IRQ/preemption off.
         f(unsafe { &mut *self.inner.get() })
     }
 
-    fn with_irq<R>(&self, f: impl FnOnce(&mut NetInner<T>) -> R) -> R {
-        debug_assert!(
-            !self.task_active.load(Ordering::Acquire),
-            "virtio-net IRQ access interrupted task access"
-        );
-        // SAFETY: IRQ-side access never waits on a task lock. The task side
-        // excludes local IRQ reentry while it mutates the shared raw queues.
-        f(unsafe { &mut *self.inner.get() })
+    fn with_irq<R>(&self, f: impl FnOnce(&mut NetInner<T>) -> R) -> Option<R> {
+        let _active = VirtioNetAccessGuard::try_enter_irq(&self.access_active)?;
+        // SAFETY: `access_active` serializes IRQ-side access with task-side
+        // queue operations without making the IRQ handler wait.
+        Some(f(unsafe { &mut *self.inner.get() }))
     }
 }
 
-struct TaskAccessFlag<'a>(&'a AtomicBool);
+struct VirtioNetAccessGuard<'a>(&'a AtomicBool);
 
-impl<'a> TaskAccessFlag<'a> {
-    fn enter(active: &'a AtomicBool) -> Self {
-        debug_assert!(
-            !active.swap(true, Ordering::AcqRel),
-            "virtio-net inner task access is already active"
-        );
+impl<'a> VirtioNetAccessGuard<'a> {
+    fn enter_task(active: &'a AtomicBool) -> Self {
+        while active
+            .compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed)
+            .is_err()
+        {
+            spin_loop();
+        }
         Self(active)
     }
+
+    fn try_enter_irq(active: &'a AtomicBool) -> Option<Self> {
+        active
+            .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+            .ok()
+            .map(|_| Self(active))
+    }
 }
 
-impl Drop for TaskAccessFlag<'_> {
+impl Drop for VirtioNetAccessGuard<'_> {
     fn drop(&mut self) {
         self.0.store(false, Ordering::Release);
     }
@@ -353,5 +362,23 @@ fn map_net_error(err: VirtIoError) -> NetError {
         other => NetError::Other(Box::new(rd_net::KError::Unknown(virtio::map_virtio_error(
             other,
         )))),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use core::sync::atomic::AtomicBool;
+
+    use super::VirtioNetAccessGuard;
+
+    #[test]
+    fn irq_access_is_rejected_while_task_access_is_active() {
+        let active = AtomicBool::new(false);
+        let task_guard = VirtioNetAccessGuard::enter_task(&active);
+
+        assert!(VirtioNetAccessGuard::try_enter_irq(&active).is_none());
+
+        drop(task_guard);
+        assert!(VirtioNetAccessGuard::try_enter_irq(&active).is_some());
     }
 }
