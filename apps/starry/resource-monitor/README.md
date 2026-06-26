@@ -4,10 +4,12 @@ This directory contains a small user-space helper for collecting and replaying
 resource-monitoring data for StarryOS application experiments. It is intended
 for offline board/QEMU debugging and demo evidence, not for cloud monitoring.
 
-The feature has two parts:
+The feature has three parts:
 
 - `system-monitor.sh`: a POSIX shell collector that samples existing `/proc`
   files and writes local CSV/JSONL logs.
+- `scripts/run-offline-monitor.sh`: an optional demo wrapper that runs the
+  collector and prints the generated logs between serial-friendly markers.
 - `offline-viewer/index.html`: a self-contained static HTML page that imports the
   logs with the browser File API and renders charts/tables without network
   access.
@@ -16,8 +18,9 @@ The feature has two parts:
 
 This is an application-layer tool for StarryOS user-space experiments. It does
 not add kernel counters, drivers, NPU tracing, USB tracing, robot control logic,
-or online telemetry services. When a metric is not exposed by the current OS
-interface, the collector writes `NA` instead of inventing a value.
+online telemetry services, or test-suite regression coverage. When a metric is
+not exposed by the current OS interface, the collector writes `NA` instead of
+inventing a value.
 
 The viewer can display optional `robot_trace.csv` files when they are provided,
 but this change does not include a robot test script. Precise robot/AI stage
@@ -63,8 +66,69 @@ Expected outputs:
 /root/monitor/events.jsonl
 ```
 
-Export these files to the host through serial logs, SD card, USB storage, TFTP,
-rootfs copy, or a local QEMU shared directory.
+`--interval-sec` controls the sampling period in seconds. `--duration-sec`
+controls the total collection time. `--out-dir` selects where the CSV/JSONL logs
+are written.
+
+For a short QEMU or board demo, run the wrapper instead. It prints markers that
+make serial-log extraction easier:
+
+```sh
+cd apps/starry/resource-monitor
+sh scripts/run-offline-monitor.sh \
+  --out-dir /root/monitor \
+  --interval-sec 1 \
+  --duration-sec 5
+```
+
+The wrapper prints:
+
+```text
+STARRY_SYSTEM_METRICS_BEGIN
+...
+STARRY_SYSTEM_METRICS_END
+STARRY_EVENTS_BEGIN
+...
+STARRY_EVENTS_END
+```
+
+If the collector is missing, exits with an error, or does not generate both log
+files, the wrapper prints `OFFLINE_MONITOR_FAILED` and exits non-zero.
+
+## StarryOS QEMU Or Board Usage
+
+This app is not wired into `test-suit/starryos`. To use it in StarryOS QEMU or on
+a board, make sure `system-monitor.sh` and, optionally,
+`scripts/run-offline-monitor.sh` are present in the guest rootfs or copied into
+the running system. Then run one of the commands above from the StarryOS shell.
+
+Export the generated files to the host through any local/offline path available
+for the environment:
+
+- serial output copied between the marker lines printed by the wrapper;
+- SD card or USB storage;
+- TFTP or direct Ethernet copy when local networking is available;
+- rootfs file copy after QEMU or board shutdown;
+- a QEMU shared directory when the local setup provides one.
+
+## Linux Baseline
+
+Collect Linux baseline logs with the same script and the same sampling settings.
+For fair comparisons, use the same board or the same QEMU resource configuration,
+the same workload, the same `--interval-sec`, and the same `--duration-sec`.
+
+```sh
+cd apps/starry/resource-monitor
+sh system-monitor.sh \
+  --out-dir logs/offline-monitor/linux \
+  --interval-sec 1 \
+  --duration-sec 60
+```
+
+Host Linux data is useful for viewer smoke testing, but it should not be treated
+as a strict performance baseline against StarryOS QEMU. A meaningful comparison
+needs matching CPU count, memory size, runtime duration, and application
+workload.
 
 ## Open The Offline Viewer
 
@@ -82,32 +146,22 @@ http://127.0.0.1:8000/
 ```
 
 The page can also be opened directly from the filesystem in browsers that allow
-local file import.
+local file import. Import `system_metrics.csv`, optional `robot_trace.csv`, and
+`events.jsonl` for StarryOS and/or Linux.
 
-## StarryOS QEMU Smoke Check
+## Current StarryOS Metric Limits
 
-A small QEMU test case is provided under:
+The collector only reads interfaces that already exist in the running system. On
+current StarryOS builds, some `/proc` counters may be absent or partial. The
+following fields may therefore be `NA` or less meaningful than the Linux
+baseline:
 
-```text
-test-suit/starryos/qemu-smp1/offline-monitor/
-```
+- per-core CPU fields when a guest exposes fewer than eight CPUs;
+- page allocation/free counters;
+- filesystem read/write counters;
+- context-switch counters when `/proc/stat` does not expose real `ctxt` data;
+- robot/AI timing fields unless the application provides `robot_trace.csv`.
 
-It injects the collector into the StarryOS rootfs, runs it for a short
-5-second smoke interval, and prints the generated logs between markers so the
-host can extract them.
-
-```sh
-cargo xtask starry test qemu --arch x86_64 -c qemu-smp1/offline-monitor
-```
-
-Use the extracted CSV/JSONL files as input to the offline viewer. On current
-StarryOS branches, some `/proc` counters may be absent or partial; the collector
-keeps those fields as `NA` and still validates the offline log path.
-
-## Fair Comparisons
-
-For a meaningful Linux vs StarryOS comparison, collect both datasets under the
-same conditions: same QEMU memory size/core count or the same RK3588 board,
-same sampling interval, same duration, and the same application workload. Host
-Linux data should only be used for viewer smoke testing, not as a strict baseline
-against StarryOS QEMU.
+Keeping these fields in the schema lets the viewer compare Linux and StarryOS
+logs without inventing unavailable data, and leaves room for future app or kernel
+instrumentation to fill them in.

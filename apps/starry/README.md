@@ -46,7 +46,7 @@ cd apps/starry/resource-monitor/offline-viewer
 python3 -m http.server 8000
 ```
 
-See `resource-monitor/README.md` for the QEMU smoke test and log format.
+See `resource-monitor/README.md` for the demo usage, log export flow, and file format.
 
 ## PicoClaw CLI
 
