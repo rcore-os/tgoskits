@@ -10,12 +10,14 @@ keywords = ["sd", "mmc", "phytium", "embedded", "no_std"]
 categories = ["embedded", "no-std", "hardware-support"]
 
 [dependencies]
-sdmmc-protocol = { workspace = true, default-features = false, features = ["sdio"] }
+sdmmc-protocol = { workspace = true, default-features = false, features = ["sdio", "rdif"] }
+sdio-host2.workspace = true
 bitfield-struct = "0.11"
 volatile = { version = "0.6", features = ["derive"] }
 log.workspace = true
 dma-api.workspace = true
 mmio-api.workspace = true
+rdif-block.workspace = true
 
 [features]
 default = []

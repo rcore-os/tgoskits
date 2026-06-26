@@ -81,6 +81,9 @@
 
 #![no_std]
 
+#[cfg(any(feature = "sdio", feature = "rdif"))]
+extern crate alloc;
+
 pub mod block;
 pub mod cmd;
 mod common;
@@ -93,6 +96,9 @@ pub mod spi;
 
 #[cfg(feature = "sdio")]
 pub mod sdio;
+
+#[cfg(feature = "rdif")]
+pub mod rdif;
 
 pub use block::{
     BlockBufferConfig, BlockPoll, BlockRequestId, BlockTransferDirection, BlockTransferMode,

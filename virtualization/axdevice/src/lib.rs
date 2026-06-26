@@ -26,19 +26,22 @@ extern crate alloc;
 #[macro_use]
 extern crate log;
 
+mod adapter;
 mod config;
 mod device;
 mod factory;
 mod range_alloc;
 mod registration;
 
+#[cfg(target_arch = "aarch64")]
+pub use adapter::create_vtimer_devices;
 pub use axdevice_base::{
-    AccessWidth, BaseDeviceOps, BaseMmioDeviceOps, BasePortDeviceOps, BaseSysRegDeviceOps, Port,
-    SysRegAddr,
+    AccessWidth, BaseDeviceOps, BaseMmioDeviceOps, BasePortDeviceOps, BaseSysRegDeviceOps, Device,
+    MmioDeviceAdapter, Port, PortDeviceAdapter, SysRegAddr, SysRegDeviceAdapter,
 };
 pub use axvm_types::GuestPhysAddr;
 pub use config::AxVmDeviceConfig;
-pub use device::{AxEmuDevices, AxVmDevices};
+pub use device::AxVmDevices;
 pub use factory::{
     DeviceBuildContext, DeviceFactory, DeviceFactoryRegistry, IrqResolver,
     register_builtin_factories,

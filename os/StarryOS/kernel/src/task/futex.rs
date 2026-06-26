@@ -17,7 +17,7 @@ use core::{
 
 use ax_errno::AxResult;
 use ax_memory_addr::VirtAddr;
-use ax_sync::Mutex;
+use ax_sync::{LockdepMutexExt, Mutex};
 use ax_task::{
     WaitChannel, WaitChannelGuard, current,
     future::{self, block_on, interruptible},
@@ -28,6 +28,8 @@ use crate::{
     mm::{AddrSpace, Backend, SharedPages},
     task::{AsThread, ProcessData},
 };
+
+const NESTED_WAIT_QUEUE_LOCK_SUBCLASS: u32 = 1;
 
 /// Wait queue used by futex.
 #[derive(Default)]
@@ -278,7 +280,7 @@ impl WaitQueue {
         match core::ptr::from_ref(self).cmp(&core::ptr::from_ref(target)) {
             Ordering::Less => {
                 let mut src = self.inner.lock();
-                let mut dst = target.inner.lock();
+                let mut dst = target.inner.lock_nested(NESTED_WAIT_QUEUE_LOCK_SUBCLASS);
                 let wake_second = condition.take().expect("condition used once")()?;
                 Self::wake_locked(&mut src.queue, wake_count, u32::MAX, &mut wakers);
                 if wake_second {
@@ -287,7 +289,7 @@ impl WaitQueue {
             }
             Ordering::Greater => {
                 let mut dst = target.inner.lock();
-                let mut src = self.inner.lock();
+                let mut src = self.inner.lock_nested(NESTED_WAIT_QUEUE_LOCK_SUBCLASS);
                 let wake_second = condition.take().expect("condition used once")()?;
                 Self::wake_locked(&mut src.queue, wake_count, u32::MAX, &mut wakers);
                 if wake_second {
@@ -368,7 +370,7 @@ impl WaitQueue {
         let count = match core::ptr::from_ref(self).cmp(&core::ptr::from_ref(target)) {
             Ordering::Less => {
                 let mut src = self.inner.lock();
-                let mut dst = target.inner.lock();
+                let mut dst = target.inner.lock_nested(NESTED_WAIT_QUEUE_LOCK_SUBCLASS);
                 if !condition.take().expect("condition used once")()? {
                     return Ok(None);
                 }
@@ -384,7 +386,7 @@ impl WaitQueue {
             }
             Ordering::Greater => {
                 let mut dst = target.inner.lock();
-                let mut src = self.inner.lock();
+                let mut src = self.inner.lock_nested(NESTED_WAIT_QUEUE_LOCK_SUBCLASS);
                 if !condition.take().expect("condition used once")()? {
                     return Ok(None);
                 }

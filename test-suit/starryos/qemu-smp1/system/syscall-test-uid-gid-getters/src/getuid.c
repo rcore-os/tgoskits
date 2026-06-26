@@ -11,7 +11,10 @@
 /* small inline helper */
 static int waitpid_safely(pid_t pid, int *status)
 {
-    pid_t r = waitpid(pid, status, 0);
+    pid_t r;
+    do {
+        r = waitpid(pid, status, 0);
+    } while (r < 0 && errno == EINTR);
     return r == pid ? 0 : -1;
 }
 

@@ -867,6 +867,7 @@ fn limits(
     let max_bytes = (max_blocks as usize).saturating_mul(lba_size);
     QueueLimits {
         dma_mask,
+        dma_domain: dma_api::DmaDomainId::legacy_global(),
         dma_alignment,
         max_inflight: max_inflight.max(1),
         max_blocks_per_request: max_blocks,

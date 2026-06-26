@@ -25,6 +25,8 @@ use axdevice::{
     register_builtin_factories,
 };
 use axdevice_base::AccessWidth;
+#[cfg(target_arch = "aarch64")]
+use axdevice_base::DeviceRegistry as _;
 use axvcpu::{AxVCpu, AxVCpuExitReason};
 #[cfg(target_arch = "x86_64")]
 use axvm_types::EmulatedDeviceType;
@@ -35,8 +37,6 @@ use x86_vcpu::{X86_APIC_ACCESS_GPA, x86_apic_access_page_addr};
 
 #[cfg(not(target_arch = "x86_64"))]
 use crate::vcpu::AxVCpuCreateConfig;
-#[cfg(target_arch = "aarch64")]
-use crate::vcpu::get_sysreg_device;
 use crate::{
     config::{AxVMConfig, PhysCpuList, VMInterruptMode},
     host::paging::{HostPagingHandler, virt_to_phys},
@@ -376,20 +376,15 @@ impl AxVM {
                 let cpu_id = self.id() - 1; // FIXME: get the real CPU id.
                 let mut gicd_found = false;
 
-                for device in devices.iter_mmio_dev() {
-                    if let Some(result) = axdevice_base::map_device_of_type(
-                        device,
-                        |gicd: &arm_vgic::v3::vgicd::VGicD| {
-                            debug!("VGicD found, assigning SPIs...");
+                for device in devices.devices() {
+                    if let Some(gicd) = device.as_any().downcast_ref::<arm_vgic::v3::vgicd::VGicD>()
+                    {
+                        debug!("VGicD found, assigning SPIs...");
 
-                            for spi in spis {
-                                gicd.assign_irq(*spi + 32, cpu_id, (0, 0, 0, cpu_id as _))
-                            }
+                        for spi in spis {
+                            gicd.assign_irq(*spi + 32, cpu_id, (0, 0, 0, cpu_id as _))
+                        }
 
-                            AxResult::Ok(())
-                        },
-                    ) {
-                        result?;
                         gicd_found = true;
                         break;
                     }
@@ -400,12 +395,16 @@ impl AxVM {
                 }
             } else {
                 // non-passthrough mode, we need to set up the virtual timer.
-                //
-                // FIXME: maybe let `axdevice` handle this automatically?
-                // how to let `axdevice` know whether the VM is in passthrough mode or not?
-                for dev in get_sysreg_device() {
-                    devices.add_sys_reg_dev(dev)?;
+                #[cfg(target_arch = "aarch64")]
+                for dev in axdevice::create_vtimer_devices() {
+                    devices
+                        .register(Arc::from(dev) as Arc<dyn axdevice_base::Device>)
+                        .map_err(|e| {
+                            ax_err_type!(InvalidInput, format!("register vtimer: {e:?}"))
+                        })?;
                 }
+                #[cfg(not(target_arch = "aarch64"))]
+                let _ = (); // silence unused warning on non-aarch64
             }
         }
 
@@ -1117,10 +1116,9 @@ impl AxVM {
         // - Background threads or timers
         if let Some(inner_const) = self.inner_const.get() {
             debug!(
-                "VM[{}] devices cleanup: {} MMIO devices, {} SysReg devices",
+                "VM[{}] devices cleanup: {} device(s)",
                 self.id(),
-                inner_const.devices.iter_mmio_dev().count(),
-                inner_const.devices.iter_sys_reg_dev().count()
+                inner_const.devices.devices().count()
             );
 
             // TODO: Add device-specific cleanup if needed
