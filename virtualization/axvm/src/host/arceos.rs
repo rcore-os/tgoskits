@@ -231,11 +231,19 @@ pub(crate) fn make_irq_id(domain: u16, hwirq: u32) -> ArceOsIrqId {
     )
 }
 
-#[cfg(all(target_arch = "x86_64", not(test)))]
+#[cfg(all(target_arch = "x86_64", not(test), not(feature = "plat-dyn")))]
 pub(crate) fn set_irq_enable(irq: ArceOsIrqId, enabled: bool) {
     if let Err(err) = modules::ax_hal::irq::set_enable(irq, enabled) {
         warn!("failed to set forwarded host IRQ {irq:?} enabled={enabled}: {err:?}");
     }
+}
+
+#[cfg(all(feature = "plat-dyn", target_arch = "x86_64", not(test)))]
+pub(crate) fn set_ioapic_gsi_enabled_from_irq(
+    gsi: u32,
+    enabled: bool,
+) -> Result<(), ArceOsIrqError> {
+    modules::ax_hal::irq::set_ioapic_gsi_enabled_from_irq(gsi, enabled)
 }
 
 #[cfg(target_arch = "x86_64")]

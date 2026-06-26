@@ -1,3 +1,5 @@
+use core::sync::atomic::{AtomicUsize, Ordering};
+
 use loongArch64::iocsr::{iocsr_read_d, iocsr_write_d, iocsr_write_w};
 use rdif_intc::Interface;
 use rdrive::{
@@ -21,6 +23,8 @@ const EIOINTC_REG_ISR: usize = 0x1800;
 const EIOINTC_REG_ROUTE: usize = 0x1c00;
 
 const VEC_COUNT_PER_REG: usize = 64;
+
+static EIOINTC_RUNTIME_VECTOR_COUNT: AtomicUsize = AtomicUsize::new(0);
 
 module_driver!(
     name: "Loongson EIOINTC",
@@ -50,11 +54,31 @@ pub fn set_irq_enable(irq: usize, enable: bool) -> Result<(), rdif_intc::IrqErro
 }
 
 pub fn claim_irq() -> Option<usize> {
-    with_eiointc("claiming EIOINTC IRQ", |intc| intc.claim_irq()).flatten()
+    let vectors = EIOINTC_RUNTIME_VECTOR_COUNT.load(Ordering::Acquire);
+    if vectors == 0 {
+        return None;
+    }
+
+    for i in 0..vectors.div_ceil(VEC_COUNT_PER_REG) {
+        let flags = iocsr_read_d(EIOINTC_REG_ISR + i * 8);
+        if flags == 0 {
+            continue;
+        }
+        let irq = flags.trailing_zeros() as usize + VEC_COUNT_PER_REG * i;
+        if irq < vectors {
+            return Some(irq);
+        }
+    }
+    None
 }
 
 pub fn complete_irq(irq: usize) {
-    with_eiointc("completing EIOINTC IRQ", |intc| intc.complete_irq(irq));
+    if irq >= EIOINTC_RUNTIME_VECTOR_COUNT.load(Ordering::Acquire) {
+        return;
+    }
+
+    let (offset, bit) = eiointc_reg_bit(irq);
+    iocsr_write_d(EIOINTC_REG_ISR + offset, bit);
 }
 
 fn probe_eiointc_fdt(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
@@ -71,6 +95,7 @@ fn probe_eiointc_acpi(probe: ProbeAcpi<'_>) -> Result<(), OnProbeError> {
 fn register_eiointc(dev: PlatformDevice) -> Result<(), OnProbeError> {
     let intc = EioIntc::new(EIOINTC_VECTOR_COUNT);
     intc.init();
+    EIOINTC_RUNTIME_VECTOR_COUNT.store(intc.vectors, Ordering::Release);
     someboot::irq::irq_set_enable(someboot::irq::IrqId::new(EIOINTC_IRQ), true);
     let domain = crate::irq::alloc_irq_domain(
         dev.descriptor.device_id(),
@@ -155,25 +180,6 @@ impl EioIntc {
         let (offset, bit) = eiointc_reg_bit(irq);
         let addr = EIOINTC_REG_ENABLE + offset;
         iocsr_write_d(addr, iocsr_read_d(addr) & !bit);
-    }
-
-    fn claim_irq(&mut self) -> Option<usize> {
-        for i in 0..(self.vectors / VEC_COUNT_PER_REG) {
-            let flags = iocsr_read_d(EIOINTC_REG_ISR + i * 8);
-            if flags != 0 {
-                return Some(flags.trailing_zeros() as usize + VEC_COUNT_PER_REG * i);
-            }
-        }
-        None
-    }
-
-    fn complete_irq(&mut self, irq: usize) {
-        if !self.contains_irq(irq, "complete") {
-            return;
-        }
-
-        let (offset, bit) = eiointc_reg_bit(irq);
-        iocsr_write_d(EIOINTC_REG_ISR + offset, bit);
     }
 
     fn contains_irq(&self, irq: usize, op: &str) -> bool {

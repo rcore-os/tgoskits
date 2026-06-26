@@ -484,22 +484,61 @@ fn set_forwarded_host_gsi_enabled(gsi: usize, enabled: bool) {
     if raw == INVALID_RAW_IRQ {
         return;
     }
-    irq::set_irq_enable(raw_to_host_irq(raw), enabled);
+    let irq = raw_to_host_irq(raw);
+    if let Err(err) = irq::set_ioapic_gsi_enabled_from_irq(gsi as u32, irq, enabled) {
+        warn!(
+            "failed to set forwarded IOAPIC GSI {gsi} host IRQ {irq:?} enabled={enabled}: {err:?}"
+        );
+    }
 }
 
-fn mask_forwarded_host_gsi(gsi: usize) {
-    if IOAPIC_IRQ_MASKED.fetch_or(gsi_bit(gsi), Ordering::AcqRel) & gsi_bit(gsi) == 0 {
-        set_forwarded_host_gsi_enabled(gsi, false);
+fn mask_forwarded_host_gsi(gsi: usize) -> bool {
+    let bit = gsi_bit(gsi);
+    if IOAPIC_IRQ_MASKED.fetch_or(bit, Ordering::AcqRel) & bit != 0 {
+        return true;
     }
+
+    let raw = IOAPIC_HOST_IRQS
+        .get(gsi)
+        .map(|irq| irq.load(Ordering::Acquire))
+        .unwrap_or(INVALID_RAW_IRQ);
+    if raw == INVALID_RAW_IRQ {
+        IOAPIC_IRQ_MASKED.fetch_and(!bit, Ordering::AcqRel);
+        return false;
+    }
+
+    let irq = raw_to_host_irq(raw);
+    if let Err(err) = irq::set_ioapic_gsi_enabled_from_irq(gsi as u32, irq, false) {
+        IOAPIC_IRQ_MASKED.fetch_and(!bit, Ordering::AcqRel);
+        warn!("failed to mask forwarded IOAPIC GSI {gsi} host IRQ {irq:?}: {err:?}");
+        return false;
+    }
+    true
 }
 
 fn unmask_forwarded_host_gsi(gsi: usize) {
     if gsi >= IOAPIC_GSI_COUNT {
         return;
     }
-    if IOAPIC_IRQ_MASKED.fetch_and(!gsi_bit(gsi), Ordering::AcqRel) & gsi_bit(gsi) != 0 {
-        set_forwarded_host_gsi_enabled(gsi, true);
+    let bit = gsi_bit(gsi);
+    if IOAPIC_IRQ_MASKED.load(Ordering::Acquire) & bit == 0 {
+        return;
     }
+
+    let raw = IOAPIC_HOST_IRQS
+        .get(gsi)
+        .map(|irq| irq.load(Ordering::Acquire))
+        .unwrap_or(INVALID_RAW_IRQ);
+    if raw == INVALID_RAW_IRQ {
+        return;
+    }
+
+    let irq = raw_to_host_irq(raw);
+    if let Err(err) = irq::set_ioapic_gsi_enabled_from_irq(gsi as u32, irq, true) {
+        warn!("failed to unmask forwarded IOAPIC GSI {gsi} host IRQ {irq:?}: {err:?}");
+        return;
+    }
+    IOAPIC_IRQ_MASKED.fetch_and(!bit, Ordering::AcqRel);
 }
 
 unsafe fn ioapic_irq_forwarding_handler(
@@ -517,7 +556,9 @@ unsafe fn ioapic_irq_forwarding_handler(
     }
 
     let bit = gsi_bit(gsi);
-    mask_forwarded_host_gsi(gsi);
+    if !mask_forwarded_host_gsi(gsi) {
+        return irq::IrqReturn::Unhandled;
+    }
     let level_triggered = is_level_triggered_forwarded_host_gsi(gsi);
     if level_triggered {
         IOAPIC_IRQ_PENDING_LEVEL.fetch_or(bit, Ordering::AcqRel);
