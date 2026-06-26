@@ -36,7 +36,7 @@ impl DmaBufObject {
         let rounded = len
             .checked_next_multiple_of(DMA_BUF_ALIGN)
             .ok_or(AxError::InvalidInput)?;
-        let dma = DeviceDma::new(u32::MAX as u64, axklib::dma::op());
+        let dma = DeviceDma::new_legacy(u32::MAX as u64, axklib::dma::op());
         let inner = dma
             .contiguous_array_zero_with_align::<u8>(
                 rounded,
