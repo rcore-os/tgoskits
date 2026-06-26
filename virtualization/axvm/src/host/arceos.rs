@@ -127,6 +127,11 @@ pub(crate) fn dispatch_host_irq(vector: usize) {
     modules::ax_hal::irq::handle_irq(vector);
 }
 
+#[cfg(target_arch = "loongarch64")]
+pub(crate) fn set_irq_enabled(irq: usize, enabled: bool) {
+    modules::ax_hal::irq::set_enable(irq, enabled);
+}
+
 impl HostCpu for ArceOsHost {
     type CpuMask = api::task::AxCpuMask;
 

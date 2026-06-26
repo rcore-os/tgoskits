@@ -1568,6 +1568,7 @@ dependencies = [
  "ax-page-table-entry",
  "ax-page-table-multiarch",
  "ax-percpu",
+ "ax-plat",
  "ax-std",
  "ax-timer-list",
  "axaddrspace",

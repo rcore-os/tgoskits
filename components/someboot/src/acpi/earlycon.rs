@@ -46,8 +46,6 @@ fn deal_with_spsr(spsr: &PhysicalMapping<impl Handler, Spcr>) -> Option<()> {
 
     let (vaddr, is_mmio) = match spsr.interface_type() {
         acpi::sdt::spcr::SpcrInterfaceType::Full16550
-        | acpi::sdt::spcr::SpcrInterfaceType::Full16450
-        | acpi::sdt::spcr::SpcrInterfaceType::Nvidia16550
         | acpi::sdt::spcr::SpcrInterfaceType::Generic16550 => match base_address.address_space {
             AddressSpace::SystemIo => {
                 #[cfg(target_arch = "x86_64")]

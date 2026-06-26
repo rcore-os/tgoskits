@@ -10,6 +10,11 @@ pub use irq_framework::{
 };
 use spin::Once;
 
+#[cfg(target_arch = "loongarch64")]
+pub mod loongarch64_hv;
+#[cfg(target_arch = "loongarch64")]
+pub use loongarch64_hv::LoongArchHvIrqIf;
+
 /// Raw synchronous cross-CPU call used by the IRQ registry.
 pub type RunOnCpuSync = unsafe fn(usize, unsafe fn(*mut ()), *mut ()) -> Result<(), IrqError>;
 
@@ -268,51 +273,4 @@ pub trait IrqIf {
 
     /// Sends an inter-processor interrupt (IPI) to the specified target CPU or all CPUs.
     fn send_ipi(irq_num: usize, target: IpiTarget);
-}
-
-/// LoongArch hypervisor IRQ routing extension.
-#[cfg(target_arch = "loongarch64")]
-#[def_plat_interface]
-pub trait LoongArchHvIrqIf {
-    /// Registers the virtual interrupt injector used by hypervisor builds.
-    fn register_virtual_irq_injector(injector: fn(usize, usize, usize, usize));
-
-    /// Routes one physical EIOINTC/PCH-PIC IRQ to a guest CPU interrupt vector.
-    fn register_guest_irq_route(
-        physical_irq: usize,
-        vm_id: usize,
-        vcpu_id: usize,
-        guest_vector: usize,
-    );
-
-    /// Removes all guest IRQ routes owned by one VM.
-    fn unregister_guest_irq_routes(vm_id: usize);
-}
-
-/// Registers the virtual interrupt injector used by LoongArch hypervisor builds.
-#[cfg(target_arch = "loongarch64")]
-pub fn register_loongarch_virtual_irq_injector(injector: fn(usize, usize, usize, usize)) {
-    crate::__priv::call_interface!(LoongArchHvIrqIf::register_virtual_irq_injector(injector));
-}
-
-/// Routes one physical EIOINTC/PCH-PIC IRQ to a LoongArch guest CPU interrupt vector.
-#[cfg(target_arch = "loongarch64")]
-pub fn register_loongarch_guest_irq_route(
-    physical_irq: usize,
-    vm_id: usize,
-    vcpu_id: usize,
-    guest_vector: usize,
-) {
-    crate::__priv::call_interface!(LoongArchHvIrqIf::register_guest_irq_route(
-        physical_irq,
-        vm_id,
-        vcpu_id,
-        guest_vector
-    ));
-}
-
-/// Removes all LoongArch guest IRQ routes owned by one VM.
-#[cfg(target_arch = "loongarch64")]
-pub fn unregister_loongarch_guest_irq_routes(vm_id: usize) {
-    crate::__priv::call_interface!(LoongArchHvIrqIf::unregister_guest_irq_routes(vm_id));
 }

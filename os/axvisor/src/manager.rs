@@ -22,13 +22,6 @@ pub struct AxvmManager {
 impl AxvmManager {
     /// Initialize the AxVM runtime services.
     pub fn new() -> AxResult<Self> {
-        #[cfg(target_arch = "loongarch64")]
-        {
-            ax_std::os::arceos::modules::ax_hal::loongarch64_hv_irq::register_virtual_irq_injector(
-                inject_loongarch_platform_irq,
-            );
-            ax_std::os::arceos::modules::ax_hal::loongarch64_hv_irq::enable_external_irq_line();
-        }
         Ok(Self {
             runtime: AxvmRuntime::new()?,
         })
@@ -227,17 +220,6 @@ impl AxvmManager {
 }
 
 #[cfg(target_arch = "loongarch64")]
-fn inject_loongarch_platform_irq(vm_id: usize, vcpu_id: usize, vector: usize, physical_irq: usize) {
-    if let Err(err) = axvm::inject_vm_vcpu_external_interrupt(vm_id, vcpu_id, vector, physical_irq)
-    {
-        warn!(
-            "failed to inject LoongArch platform IRQ {vector:#x}/physical {physical_irq:#x} for \
-             VM[{vm_id}] VCpu[{vcpu_id}]: {err:?}"
-        );
-    }
-}
-
-#[cfg(target_arch = "loongarch64")]
 pub(crate) fn register_loongarch_passthrough_irq_routes(vm_id: VMId) {
     let routes = crate::guest_platform::loongarch64::get_guest_irq_routes(vm_id);
     if routes.is_empty() {
@@ -258,7 +240,7 @@ pub(crate) fn register_loongarch_passthrough_irq_routes(vm_id: VMId) {
         routes.len()
     );
     for route in routes {
-        ax_std::os::arceos::modules::ax_hal::loongarch64_hv_irq::register_guest_irq_route(
+        axvm::register_loongarch_guest_irq_route(
             route.physical_irq,
             vm_id,
             vcpu_id,
@@ -269,5 +251,5 @@ pub(crate) fn register_loongarch_passthrough_irq_routes(vm_id: VMId) {
 
 #[cfg(target_arch = "loongarch64")]
 fn unregister_loongarch_passthrough_irq_routes(vm_id: VMId) {
-    ax_std::os::arceos::modules::ax_hal::loongarch64_hv_irq::unregister_guest_irq_routes(vm_id);
+    axvm::unregister_loongarch_guest_irq_routes(vm_id);
 }

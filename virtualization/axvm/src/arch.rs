@@ -179,14 +179,6 @@ mod riscv64 {
     }
 }
 
-#[cfg(target_arch = "riscv64")]
-pub(crate) fn register_platform_irq_injector() {
-    riscv64::register_platform_irq_injector();
-}
-
-#[cfg(not(target_arch = "riscv64"))]
-pub(crate) fn register_platform_irq_injector() {}
-
 #[cfg(target_arch = "loongarch64")]
 mod loongarch64 {
     use alloc::boxed::Box;
@@ -253,7 +245,24 @@ mod loongarch64 {
             }
         }
     }
+
+    pub(crate) fn register_platform_irq_injector() {
+        crate::runtime::loongarch_irq::register_platform_irq_injector();
+    }
 }
+
+#[cfg(target_arch = "riscv64")]
+pub(crate) fn register_platform_irq_injector() {
+    riscv64::register_platform_irq_injector();
+}
+
+#[cfg(target_arch = "loongarch64")]
+pub(crate) fn register_platform_irq_injector() {
+    loongarch64::register_platform_irq_injector();
+}
+
+#[cfg(not(any(target_arch = "riscv64", target_arch = "loongarch64")))]
+pub(crate) fn register_platform_irq_injector() {}
 
 #[cfg(target_arch = "aarch64")]
 mod aarch64 {
