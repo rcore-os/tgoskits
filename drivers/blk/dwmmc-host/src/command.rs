@@ -7,7 +7,7 @@
 use sdmmc_protocol::{
     CommandPoll, CommandResponsePoll,
     cmd::{Command as ProtoCmd, DataDirection},
-    error::{Error, Phase},
+    error::{Error, ErrorContext, Phase},
     response::{
         IfCondResponse, OcrResponse, R1Response, RcaResponse, Response, ResponseType,
         SdioOcrResponse, SdioRwResponse,
@@ -25,12 +25,15 @@ pub(crate) enum CommandState {
     WaitingInhibit {
         cmd: ProtoCmd,
         data: Option<crate::host::PendingData>,
+        polls: u32,
     },
     WaitingStart {
         cmd: ProtoCmd,
+        polls: u32,
     },
     Issued {
         cmd: ProtoCmd,
+        polls: u32,
     },
     Complete {
         response: Response,
@@ -62,7 +65,12 @@ impl DwMmc {
             return Err(Error::UnsupportedCommand);
         }
         let data = self.pending_data.take();
-        self.command_state = CommandState::WaitingInhibit { cmd: *cmd, data };
+        self.prepare_irq_for_request();
+        self.command_state = CommandState::WaitingInhibit {
+            cmd: *cmd,
+            data,
+            polls: 0,
+        };
         if let Err(err) = self.poll_command() {
             self.command_state = CommandState::Idle;
             return Err(err);
@@ -72,18 +80,39 @@ impl DwMmc {
 
     pub fn poll_command(&mut self) -> Result<CommandPoll, Error> {
         match self.command_state {
-            CommandState::WaitingInhibit { cmd, data } => {
+            CommandState::WaitingInhibit { cmd, data, polls } => {
                 if !self.command_can_issue(data.is_some()) {
+                    if polls >= COMMAND_WAIT_POLLS {
+                        let err =
+                            Error::Timeout(ErrorContext::for_cmd(Phase::CommandSend, cmd.index));
+                        self.command_state = CommandState::Failed { error: err };
+                        return Err(err);
+                    }
+                    self.command_state = CommandState::WaitingInhibit {
+                        cmd,
+                        data,
+                        polls: polls + 1,
+                    };
                     return Ok(CommandPoll::Pending);
                 }
                 self.program_command(&cmd, data);
                 return Ok(CommandPoll::Pending);
             }
-            CommandState::WaitingStart { cmd } => {
+            CommandState::WaitingStart { cmd, polls } => {
                 if self.regs.cmd().read().start_cmd() {
+                    if polls >= COMMAND_WAIT_POLLS {
+                        let err =
+                            Error::Timeout(ErrorContext::for_cmd(Phase::CommandSend, cmd.index));
+                        self.command_state = CommandState::Failed { error: err };
+                        return Err(err);
+                    }
+                    self.command_state = CommandState::WaitingStart {
+                        cmd,
+                        polls: polls + 1,
+                    };
                     return Ok(CommandPoll::Pending);
                 }
-                self.command_state = CommandState::Issued { cmd };
+                self.command_state = CommandState::Issued { cmd, polls: 0 };
                 return Ok(CommandPoll::Pending);
             }
             CommandState::Issued { .. } => {}
@@ -92,18 +121,18 @@ impl DwMmc {
             CommandState::Idle => return Err(Error::InvalidArgument),
         }
 
-        let CommandState::Issued { cmd } = self.command_state else {
+        let CommandState::Issued { cmd, polls } = self.command_state else {
             unreachable!();
         };
         let raw_status = self.take_command_irq_status();
         let status = crate::regs::RIntSts::from_bits(raw_status);
         if status.error() {
-            let err = self.translate_int_error(status, Phase::ResponseWait, cmd.cmd);
+            let err = self.translate_int_error(status, Phase::ResponseWait, cmd.index);
             self.command_state = CommandState::Failed { error: err };
             return Err(err);
         }
         if status.command_done() {
-            let response = match decode_response(self, cmd.resp_type) {
+            let response = match decode_response(self, cmd.response) {
                 Ok(r) => r,
                 Err(err) => {
                     // Park the FSM in Failed before propagating: bare `?` would
@@ -117,6 +146,15 @@ impl DwMmc {
             self.command_state = CommandState::Complete { response };
             return Ok(CommandPoll::Complete);
         }
+        if polls >= COMMAND_WAIT_POLLS {
+            let err = Error::Timeout(ErrorContext::for_cmd(Phase::ResponseWait, cmd.index));
+            self.command_state = CommandState::Failed { error: err };
+            return Err(err);
+        }
+        self.command_state = CommandState::Issued {
+            cmd,
+            polls: polls + 1,
+        };
         Ok(CommandPoll::Pending)
     }
 
@@ -124,10 +162,14 @@ impl DwMmc {
         match self.command_state {
             CommandState::Complete { response } => {
                 self.command_state = CommandState::Idle;
+                if self.data_cmd_index == 0 {
+                    self.irq.state.end_request();
+                }
                 Ok(response)
             }
             CommandState::Failed { error } => {
                 self.command_state = CommandState::Idle;
+                self.irq.state.end_request();
                 Err(error)
             }
             CommandState::Idle
@@ -145,19 +187,28 @@ impl DwMmc {
 
     fn program_command(&mut self, cmd: &ProtoCmd, data: Option<crate::host::PendingData>) {
         if data.is_some() {
-            self.data_cmd_index = cmd.cmd;
+            self.data_cmd_index = cmd.index;
         }
         self.clear_command_int_status();
         let data_dir = data.map(|d| {
             self.program_data_phase(d.block_size, d.block_count);
             d.direction
         });
-        self.regs.cmdarg().write(cmd.arg);
+        self.regs.cmdarg().write(cmd.argument);
         self.regs.cmd().write(encode_command(cmd, data_dir));
-        self.command_state = CommandState::WaitingStart { cmd: *cmd };
+        self.command_state = CommandState::WaitingStart {
+            cmd: *cmd,
+            polls: 0,
+        };
     }
 
     fn take_command_irq_status(&mut self) -> u32 {
+        if self.completion_irq_enabled() {
+            return self
+                .irq
+                .state
+                .take(crate::DWMMC_INT_COMMAND_DONE | crate::DWMMC_INT_ERROR_MASK);
+        }
         let raw_status = self.regs.rintsts().read().into_bits();
         let consume = raw_status & (crate::DWMMC_INT_COMMAND_DONE | crate::DWMMC_INT_ERROR_MASK);
         if consume != 0 {
@@ -165,9 +216,7 @@ impl DwMmc {
                 .rintsts()
                 .write(crate::regs::RIntSts::from_bits(consume));
         }
-        self.irq_state
-            .take(crate::DWMMC_INT_COMMAND_DONE | crate::DWMMC_INT_ERROR_MASK)
-            | raw_status
+        raw_status
     }
 
     fn clear_command_int_status(&mut self) {
@@ -178,10 +227,40 @@ impl DwMmc {
                 .rintsts()
                 .write(crate::regs::RIntSts::from_bits(raw_status));
         }
-        self.irq_state
+        self.irq
+            .state
             .clear(crate::DWMMC_INT_COMMAND_DONE | crate::DWMMC_INT_ERROR_MASK);
     }
+
+    fn prepare_irq_for_request(&mut self) {
+        self.clear_all_int_status();
+        self.irq.state.begin_request();
+    }
+
+    pub(crate) fn abort_command(&mut self) -> Result<(), Error> {
+        self.clear_command_int_status();
+        for _ in 0..COMMAND_WAIT_POLLS {
+            if !self.regs.cmd().read().start_cmd() {
+                self.clear_all_int_status();
+                self.reset_and_init_preserving_irq()?;
+                self.pending_data = None;
+                self.data_blocks_remaining = 0;
+                self.data_cmd_index = 0;
+                self.command_state = CommandState::Idle;
+                return Ok(());
+            }
+            core::hint::spin_loop();
+        }
+        self.reset_and_init_preserving_irq()?;
+        self.pending_data = None;
+        self.data_blocks_remaining = 0;
+        self.data_cmd_index = 0;
+        self.command_state = CommandState::Idle;
+        Ok(())
+    }
 }
+
+const COMMAND_WAIT_POLLS: u32 = 1_000_000;
 
 /// Build the CMD register value for a single command.
 ///
@@ -196,9 +275,9 @@ fn encode_command(cmd: &ProtoCmd, data_dir: Option<DataDirection>) -> Cmd {
         .with_start_cmd(true)
         .with_use_hold_reg(true)
         .with_wait_prvdata_complete(true)
-        .with_cmd_index(cmd.cmd & 0x3F);
+        .with_cmd_index(cmd.index & 0x3F);
 
-    match cmd.resp_type {
+    match cmd.response {
         ResponseType::None => {
             // No response_expect; no CRC check.
         }
@@ -230,7 +309,7 @@ fn encode_command(cmd: &ProtoCmd, data_dir: Option<DataDirection>) -> Cmd {
         _ => {}
     }
 
-    if cmd.cmd == 0 {
+    if cmd.index == 0 {
         // Power-up cards need 80 init clocks before CMD0.
         c = c.with_send_initialization(true);
     }
@@ -241,7 +320,7 @@ fn encode_command(cmd: &ProtoCmd, data_dir: Option<DataDirection>) -> Cmd {
         // some indices are overloaded (CMD6 = ACMD6 SET_BUS_WIDTH no-data /
         // SWITCH_FUNC read; CMD8 = SEND_IF_COND no-data on SD /
         // SEND_EXT_CSD read on MMC). We trust that signal here rather than
-        // inferring from `cmd.cmd`.
+        // inferring from `cmd.index`.
         if matches!(dir, DataDirection::Write) {
             c = c.with_read_write(true);
         }

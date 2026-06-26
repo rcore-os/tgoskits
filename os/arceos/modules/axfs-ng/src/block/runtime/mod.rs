@@ -16,9 +16,9 @@ pub use device::{
     BlockCompletionMode, BlockDeviceHandle, BlockDrainWake, BlockIrqAction, BlockRuntime,
     BlockRuntimeConfig, QueueRuntime, RdifBlockDevice, map_blk_err_to_ax_err,
 };
-pub use dma::DmaBufferGuard;
 #[cfg(test)]
 pub use dma::VEC_DMA_OP;
+pub use dma::{DmaBufferGuard, RuntimeDmaBuffer, new_owned_dma_buffer};
 pub use irq::{BlockIrqBridge, DrainEvents};
 pub use pending::{
     PendingRequest, PendingTable, PollClaim, PollProgress, RequestKey, RequestState,

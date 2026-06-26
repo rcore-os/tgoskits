@@ -4,9 +4,21 @@
 //! Implement [`SdioHost`] for your platform's SDIO peripheral; the host
 //! implementation controls command/data progress.
 
-use core::task::Waker;
+#[cfg(feature = "rdif")]
+use alloc::boxed::Box;
+use alloc::sync::Arc;
+use core::{
+    cell::UnsafeCell,
+    num::{NonZeroU16, NonZeroU32},
+    sync::atomic::{AtomicBool, Ordering},
+    task::Waker,
+};
 
+use dma_api::CompletedDma;
+#[cfg(feature = "rdif")]
+use dma_api::PreparedDma;
 use log::{debug, info, warn};
+pub use sdio_host2::{BusWidth, ClockSpeed, SignalVoltage};
 
 pub use crate::cmd::DataDirection;
 use crate::{
@@ -18,6 +30,26 @@ use crate::{
         CardState, CidResponse, CsdResponse, OcrResponse, Response, ResponseType, SwitchStatus,
     },
 };
+
+#[cfg(feature = "rdif")]
+pub(crate) struct DmaSubmitError {
+    pub error: Error,
+    buffer: Box<PreparedDma>,
+}
+
+#[cfg(feature = "rdif")]
+impl DmaSubmitError {
+    fn new(error: Error, buffer: PreparedDma) -> Self {
+        Self {
+            error,
+            buffer: Box::new(buffer),
+        }
+    }
+
+    pub(crate) fn into_buffer(self) -> PreparedDma {
+        *self.buffer
+    }
+}
 
 /// Host IRQ event category returned by portable controller cores.
 ///
@@ -122,70 +154,6 @@ pub fn block_queue_ready_from_host_event(event: &impl HostEvent) -> Option<usize
     }
 }
 
-/// SDIO bus width
-///
-/// Marked `#[non_exhaustive]`: UHS-II / SD Express widths may be added before
-/// 1.0; downstream match sites must keep a `_ => ...` arm.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[non_exhaustive]
-pub enum BusWidth {
-    /// 1-bit bus
-    Bit1,
-    /// 4-bit bus
-    Bit4,
-    /// 8-bit bus (eMMC). Configured via the MMC `CMD6 SWITCH` flow which is
-    /// outside the scope of the SD ACMD6 path used by this driver.
-    Bit8,
-}
-
-/// SDIO clock speed
-///
-/// Marked `#[non_exhaustive]`: HS400 / HS400_ES / SD Express modes are
-/// expected to land before 1.0; downstream match sites must keep a
-/// `_ => ...` arm.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[non_exhaustive]
-pub enum ClockSpeed {
-    /// Identification clock used during card reset / OCR negotiation.
-    Identification,
-    /// Default speed: up to 25 MHz
-    Default,
-    /// High speed: up to 50 MHz
-    HighSpeed,
-    /// SDR12: 12.5 MB/s
-    Sdr12,
-    /// SDR25: 25 MB/s
-    Sdr25,
-    /// SDR50: 50 MB/s
-    Sdr50,
-    /// SDR104: 104 MB/s
-    Sdr104,
-    /// DDR50: 50 MB/s (DDR)
-    Ddr50,
-    /// HS200: 200 MHz SDR, eMMC HS200 mode. Distinct from SDR104
-    /// because the host typically routes eMMC and SD UHS-I through
-    /// different timing tables.
-    Hs200,
-}
-
-/// Bus signaling voltage. Default-speed and HS modes use 3.3 V; UHS-I
-/// and HS200/HS400 require switching to 1.8 V via CMD11.
-///
-/// Marked `#[non_exhaustive]`: SD Express may introduce additional voltage
-/// domains; downstream match sites must keep a `_ => ...` arm.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[non_exhaustive]
-pub enum SignalVoltage {
-    /// 3.3 V (or 3.0 V — they share an IO domain on most controllers).
-    /// The bus comes up here at power-on.
-    V330,
-    /// 1.8 V — required for SDR50 / SDR104 / DDR50 / HS200 / HS400.
-    V180,
-    /// 1.2 V — only relevant on certain HS200_12V eMMC parts. Most
-    /// hosts don't implement it; treated as opt-in.
-    V120,
-}
-
 /// Trait that the platform must implement for the SDIO host controller.
 ///
 /// The driver tracks the published RCA itself, so host implementations no
@@ -231,6 +199,8 @@ pub trait SdioHost {
         request: &mut Self::DataRequest<'a>,
     ) -> Result<DataCommandPoll, Error>;
 
+    type BusRequest;
+
     /// Set the bus width
     fn set_bus_width(&mut self, width: BusWidth) -> Result<(), Error>;
 
@@ -255,14 +225,20 @@ pub trait SdioHost {
     /// index (CMD19 for SD UHS-I, CMD21 for eMMC HS200). The host is
     /// responsible for issuing tuning blocks in a loop, comparing
     /// against the expected pattern, and reporting back whether a
-    /// stable sampling phase was found.
+    /// stable sampling phase was found. `block_size` is the protocol tuning
+    /// pattern length: SD CMD19 is 64 bytes, MMC CMD21 is 64 bytes on 4-bit
+    /// buses and 128 bytes on 8-bit buses.
     ///
     /// Default returns `UnsupportedCommand`. Hosts that report success
     /// without actually tuning are silently lying to the caller — only
     /// implement this when the controller can validate the result.
-    fn execute_tuning(&mut self, _cmd_index: u8) -> Result<(), Error> {
+    fn execute_tuning(&mut self, _cmd_index: u8, _block_size: NonZeroU16) -> Result<(), Error> {
         Err(Error::UnsupportedCommand)
     }
+
+    fn submit_bus_op(&mut self, op: SdioBusOp) -> Result<Self::BusRequest, Error>;
+
+    fn poll_bus_op(&mut self, request: &mut Self::BusRequest) -> Result<OperationPoll<()>, Error>;
 
     /// Route command/data completion and error status to the host IRQ line.
     ///
@@ -311,6 +287,642 @@ pub trait SdioHost {
     /// (~584 million years) is safe to ignore.
     fn now_ms(&self) -> Option<u64> {
         None
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SdioBusOp {
+    ResetAll,
+    PowerOn,
+    PowerOff,
+    SetBusWidth(BusWidth),
+    SetClock(ClockSpeed),
+    SwitchVoltage(SignalVoltage),
+    ExecuteTuning {
+        cmd_index: u8,
+        block_size: NonZeroU16,
+    },
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct ReadyBusRequest;
+
+pub fn submit_ready_bus_op<H: SdioHost<BusRequest = ReadyBusRequest>>(
+    host: &mut H,
+    op: SdioBusOp,
+) -> Result<ReadyBusRequest, Error> {
+    match op {
+        SdioBusOp::ResetAll | SdioBusOp::PowerOn | SdioBusOp::PowerOff => {}
+        SdioBusOp::SetBusWidth(width) => host.set_bus_width(width)?,
+        SdioBusOp::SetClock(speed) => host.set_clock(speed)?,
+        SdioBusOp::SwitchVoltage(voltage) => host.switch_voltage(voltage)?,
+        SdioBusOp::ExecuteTuning {
+            cmd_index,
+            block_size,
+        } => host.execute_tuning(cmd_index, block_size)?,
+    }
+    Ok(ReadyBusRequest)
+}
+
+pub fn poll_ready_bus_op(_request: &mut ReadyBusRequest) -> Result<OperationPoll<()>, Error> {
+    Ok(OperationPoll::Complete(()))
+}
+
+/// Compatibility adapter that lets the SD/MMC card state machine run on a
+/// physical [`sdio_host2::SdioHost`] implementation.
+///
+/// The protocol-facing [`SdioHost`] trait is kept for existing callers. New
+/// host crates can implement `sdio_host2::SdioHost` natively and pass the host
+/// through this adapter.
+pub struct SdioHost2Adapter<H: SdioHost2Irq + 'static> {
+    core: Host2Shared<H>,
+    command_request: Option<H::TransactionRequest<'static>>,
+}
+
+/// IRQ-capable extension used by [`SdioHost2Adapter`].
+///
+/// `sdio-host2` intentionally does not define IRQ abstractions. This protocol
+/// crate only needs a way to forward host-specific completion IRQ handles when
+/// a physical host is wrapped for the legacy `SdioHost` card state machine.
+pub trait SdioHost2Irq: sdio_host2::SdioHost {
+    type Event: HostEvent + Default;
+    type IrqHandle: SdioIrqHandle<Event = Self::Event>;
+
+    fn irq_handle(&self) -> Self::IrqHandle;
+
+    fn completion_irq_enabled(&self) -> bool {
+        false
+    }
+
+    fn enable_completion_irq(&mut self) -> Result<(), Error> {
+        Ok(())
+    }
+
+    fn disable_completion_irq(&mut self) -> Result<(), Error> {
+        Ok(())
+    }
+
+    fn handle_irq(&mut self) -> Self::Event {
+        self.irq_handle().handle_irq()
+    }
+}
+
+impl<T> SdioHost2Irq for T
+where
+    T: sdio_host2::SdioHost + SdioIrqHost,
+{
+    type Event = <T as SdioHost>::Event;
+    type IrqHandle = <T as SdioIrqHost>::IrqHandle;
+
+    fn irq_handle(&self) -> Self::IrqHandle {
+        SdioIrqHost::irq_handle(self)
+    }
+
+    fn completion_irq_enabled(&self) -> bool {
+        SdioIrqHost::completion_irq_enabled(self)
+    }
+
+    fn enable_completion_irq(&mut self) -> Result<(), Error> {
+        SdioHost::enable_completion_irq(self)
+    }
+
+    fn disable_completion_irq(&mut self) -> Result<(), Error> {
+        SdioHost::disable_completion_irq(self)
+    }
+
+    fn handle_irq(&mut self) -> Self::Event {
+        SdioHost::handle_irq(self)
+    }
+}
+
+pub struct NoopSdioHost2IrqHandle<E>(core::marker::PhantomData<fn() -> E>);
+
+impl<E> Default for NoopSdioHost2IrqHandle<E> {
+    fn default() -> Self {
+        Self(core::marker::PhantomData)
+    }
+}
+
+impl<E> Clone for NoopSdioHost2IrqHandle<E> {
+    fn clone(&self) -> Self {
+        Self(core::marker::PhantomData)
+    }
+}
+
+impl<E> SdioIrqHandle for NoopSdioHost2IrqHandle<E>
+where
+    E: HostEvent + Default + 'static,
+{
+    type Event = E;
+
+    fn handle_irq(&self) -> Self::Event {
+        E::default()
+    }
+}
+
+struct Host2Shared<H> {
+    inner: Arc<Host2SharedInner<H>>,
+}
+
+struct Host2SharedInner<H> {
+    host: UnsafeCell<H>,
+    borrowed: AtomicBool,
+}
+
+// SAFETY: Access to `host` is serialized by `borrowed`; the wrapper never
+// hands out references that outlive a `with_*` call.
+unsafe impl<H: Send> Send for Host2SharedInner<H> {}
+// SAFETY: See the `Send` impl.
+unsafe impl<H: Send> Sync for Host2SharedInner<H> {}
+
+impl<H> Clone for Host2Shared<H> {
+    fn clone(&self) -> Self {
+        Self {
+            inner: self.inner.clone(),
+        }
+    }
+}
+
+impl<H> Host2Shared<H> {
+    fn new(host: H) -> Self {
+        Self {
+            inner: Arc::new(Host2SharedInner {
+                host: UnsafeCell::new(host),
+                borrowed: AtomicBool::new(false),
+            }),
+        }
+    }
+
+    fn with_ref<R>(&self, f: impl FnOnce(&H) -> R) -> R {
+        self.borrow(|host| f(host))
+    }
+
+    fn with_mut<R>(&self, f: impl FnOnce(&mut H) -> R) -> R {
+        self.borrow(|host| f(host))
+    }
+
+    fn borrow<R>(&self, f: impl FnOnce(&mut H) -> R) -> R {
+        if self
+            .inner
+            .borrowed
+            .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+            .is_err()
+        {
+            panic!("sdio-host2 adapter host borrowed concurrently");
+        }
+        struct BorrowGuard<'a>(&'a AtomicBool);
+        impl Drop for BorrowGuard<'_> {
+            fn drop(&mut self) {
+                self.0.store(false, Ordering::Release);
+            }
+        }
+        let _guard = BorrowGuard(&self.inner.borrowed);
+        // SAFETY: the atomic guard above serializes access to the host.
+        f(unsafe { &mut *self.inner.host.get() })
+    }
+}
+
+impl<H: SdioHost2Irq + 'static> SdioHost2Adapter<H> {
+    pub fn new(host: H) -> Self {
+        Self {
+            core: Host2Shared::new(host),
+            command_request: None,
+        }
+    }
+
+    pub fn with_host<R>(&self, f: impl FnOnce(&H) -> R) -> R {
+        self.core.with_ref(f)
+    }
+
+    fn drain_bus_op(&mut self, request: &mut SdioHost2BusRequest<H>) -> Result<(), Error> {
+        for _ in 0..SDIO_HOST2_COMPAT_POLL_LIMIT {
+            match self.poll_bus_op(request)? {
+                OperationPoll::Pending => core::hint::spin_loop(),
+                OperationPoll::Complete(()) => return Ok(()),
+            }
+        }
+        request.abort()?;
+        Err(Error::Timeout(ErrorContext::new(Phase::Init)))
+    }
+}
+
+const SDIO_HOST2_COMPAT_POLL_LIMIT: u32 = 1_000_000;
+
+// SAFETY: The physical host is only accessed through `Host2Shared`, which
+// serializes mutable borrows. `command_request` is only touched through
+// `&mut self` and is aborted in `Drop`.
+unsafe impl<H> Send for SdioHost2Adapter<H>
+where
+    H: SdioHost2Irq + Send + 'static,
+    H::TransactionRequest<'static>: Send,
+{
+}
+
+// SAFETY: Shared references only expose IRQ forwarding and `with_host`, both
+// mediated by `Host2Shared`. Request mutation still requires `&mut self`.
+unsafe impl<H> Sync for SdioHost2Adapter<H>
+where
+    H: SdioHost2Irq + Send + 'static,
+    H::TransactionRequest<'static>: Send,
+{
+}
+
+impl<H: SdioHost2Irq + 'static> Drop for SdioHost2Adapter<H> {
+    fn drop(&mut self) {
+        let Some(mut request) = self.command_request.take() else {
+            return;
+        };
+        let result = self
+            .core
+            .with_mut(|host| host.abort_transaction(&mut request))
+            .map_err(host2_error);
+        if let Err(err) = result {
+            warn!(
+                "sdio-host2 adapter: abort pending command on drop reported recovery error: \
+                 {err:?}"
+            );
+        }
+    }
+}
+
+pub struct SdioHost2DataRequest<'a, H: SdioHost2Irq + 'static> {
+    core: Host2Shared<H>,
+    inner: Option<H::TransactionRequest<'a>>,
+    completed_dma: Option<CompletedDma>,
+}
+
+impl<H: SdioHost2Irq + 'static> SdioHost2DataRequest<'_, H> {
+    pub(crate) fn abort(&mut self) -> Result<(), Error> {
+        let Some(mut request) = self.inner.take() else {
+            return Ok(());
+        };
+        let (result, completed_dma) = self.core.with_mut(|host| {
+            let result = host.abort_transaction(&mut request).map_err(host2_error);
+            let completed_dma = host.take_completed_dma(&mut request);
+            (result, completed_dma)
+        });
+        self.completed_dma = completed_dma;
+        result
+    }
+
+    #[cfg(feature = "rdif")]
+    pub(crate) fn take_completed_dma(&mut self) -> Option<CompletedDma> {
+        self.completed_dma.take()
+    }
+}
+
+impl<H: SdioHost2Irq + 'static> Drop for SdioHost2DataRequest<'_, H> {
+    fn drop(&mut self) {
+        if let Err(err) = self.abort() {
+            warn!(
+                "sdio-host2 adapter: abort pending data request on drop reported recovery error: \
+                 {err:?}"
+            );
+        }
+    }
+}
+
+pub struct SdioHost2BusRequest<H: SdioHost2Irq + 'static> {
+    core: Host2Shared<H>,
+    inner: Option<H::BusRequest>,
+}
+
+impl<H: SdioHost2Irq + 'static> SdioHost2BusRequest<H> {
+    fn abort(&mut self) -> Result<(), Error> {
+        let Some(mut request) = self.inner.take() else {
+            return Ok(());
+        };
+        self.core
+            .with_mut(|host| host.abort_bus_op(&mut request))
+            .map_err(host2_error)
+    }
+}
+
+impl<H: SdioHost2Irq + 'static> Drop for SdioHost2BusRequest<H> {
+    fn drop(&mut self) {
+        if let Err(err) = self.abort() {
+            warn!(
+                "sdio-host2 adapter: abort pending bus op on drop reported recovery error: {err:?}"
+            );
+        }
+    }
+}
+
+impl<H: SdioHost2Irq + 'static> SdioHost for SdioHost2Adapter<H> {
+    type Event = H::Event;
+    type DataRequest<'a>
+        = SdioHost2DataRequest<'a, H>
+    where
+        Self: 'a;
+    type BusRequest = SdioHost2BusRequest<H>;
+
+    fn submit_command(&mut self, cmd: &Command) -> Result<(), Error> {
+        if self.command_request.is_some() {
+            return Err(Error::Busy);
+        }
+        let request = self
+            .core
+            .with_mut(|host| unsafe {
+                host.submit_transaction(sdio_host2::Transaction::command(*cmd))
+            })
+            .map_err(host2_error)?;
+        self.command_request = Some(request);
+        Ok(())
+    }
+
+    fn poll_command_response(&mut self) -> Result<CommandResponsePoll, Error> {
+        let mut request = self.command_request.take().ok_or(Error::InvalidArgument)?;
+        match self
+            .core
+            .with_mut(|host| host.poll_transaction(&mut request))
+        {
+            Ok(sdio_host2::RequestPoll::Pending) => {
+                self.command_request = Some(request);
+                Ok(CommandResponsePoll::Pending)
+            }
+            Ok(sdio_host2::RequestPoll::Ready(Ok(raw))) => {
+                crate::response::response_from_raw(raw).map(CommandResponsePoll::Complete)
+            }
+            Ok(sdio_host2::RequestPoll::Ready(Err(err))) => Err(host2_error(err)),
+            Err(err) => {
+                self.command_request = Some(request);
+                Err(host2_poll_error(err))
+            }
+        }
+    }
+
+    fn submit_read_data<'a>(
+        &mut self,
+        cmd: &Command,
+        buf: &'a mut [u8],
+        block_size: u32,
+        block_count: u32,
+    ) -> Result<Self::DataRequest<'a>, Error> {
+        let data = sdio_host2::DataPhase::read(
+            nonzero_block_size(block_size)?,
+            nonzero_block_count(block_count)?,
+            buf,
+        )
+        .map_err(host2_error)?;
+        let request = self
+            .core
+            .with_mut(|host| unsafe {
+                host.submit_transaction(sdio_host2::Transaction::with_data(*cmd, data))
+            })
+            .map_err(host2_error)?;
+        Ok(SdioHost2DataRequest {
+            core: self.core.clone(),
+            inner: Some(request),
+            completed_dma: None,
+        })
+    }
+
+    fn submit_write_data<'a>(
+        &mut self,
+        cmd: &Command,
+        buf: &'a [u8],
+        block_size: u32,
+        block_count: u32,
+    ) -> Result<Self::DataRequest<'a>, Error> {
+        let data = sdio_host2::DataPhase::write(
+            nonzero_block_size(block_size)?,
+            nonzero_block_count(block_count)?,
+            buf,
+        )
+        .map_err(host2_error)?;
+        let request = self
+            .core
+            .with_mut(|host| unsafe {
+                host.submit_transaction(sdio_host2::Transaction::with_data(*cmd, data))
+            })
+            .map_err(host2_error)?;
+        Ok(SdioHost2DataRequest {
+            core: self.core.clone(),
+            inner: Some(request),
+            completed_dma: None,
+        })
+    }
+
+    fn poll_data_request<'a>(
+        &mut self,
+        request: &mut Self::DataRequest<'a>,
+    ) -> Result<DataCommandPoll, Error> {
+        let inner = request.inner.as_mut().ok_or(Error::InvalidArgument)?;
+        match request.core.with_mut(|host| host.poll_transaction(inner)) {
+            Ok(sdio_host2::RequestPoll::Pending) => Ok(DataCommandPoll::Pending),
+            Ok(sdio_host2::RequestPoll::Ready(Ok(raw))) => {
+                request.completed_dma = request
+                    .inner
+                    .as_mut()
+                    .and_then(|inner| request.core.with_mut(|host| host.take_completed_dma(inner)));
+                request.inner = None;
+                crate::response::response_from_raw(raw).map(DataCommandPoll::Complete)
+            }
+            Ok(sdio_host2::RequestPoll::Ready(Err(err))) => {
+                request.completed_dma = request
+                    .inner
+                    .as_mut()
+                    .and_then(|inner| request.core.with_mut(|host| host.take_completed_dma(inner)));
+                request.inner = None;
+                Err(host2_error(err))
+            }
+            Err(err) => Err(host2_poll_error(err)),
+        }
+    }
+
+    fn set_bus_width(&mut self, width: BusWidth) -> Result<(), Error> {
+        let mut request = self.submit_bus_op(SdioBusOp::SetBusWidth(width))?;
+        self.drain_bus_op(&mut request)
+    }
+
+    fn set_clock(&mut self, speed: ClockSpeed) -> Result<(), Error> {
+        let mut request = self.submit_bus_op(SdioBusOp::SetClock(speed))?;
+        self.drain_bus_op(&mut request)
+    }
+
+    fn switch_voltage(&mut self, voltage: SignalVoltage) -> Result<(), Error> {
+        let mut request = self.submit_bus_op(SdioBusOp::SwitchVoltage(voltage))?;
+        self.drain_bus_op(&mut request)
+    }
+
+    fn execute_tuning(&mut self, cmd_index: u8, block_size: NonZeroU16) -> Result<(), Error> {
+        let mut request = self.submit_bus_op(SdioBusOp::ExecuteTuning {
+            cmd_index,
+            block_size,
+        })?;
+        self.drain_bus_op(&mut request)
+    }
+
+    fn submit_bus_op(&mut self, op: SdioBusOp) -> Result<Self::BusRequest, Error> {
+        let op = match op {
+            SdioBusOp::ResetAll => sdio_host2::BusOp::ResetAll,
+            SdioBusOp::PowerOn => sdio_host2::BusOp::PowerOn,
+            SdioBusOp::PowerOff => sdio_host2::BusOp::PowerOff,
+            SdioBusOp::SetBusWidth(width) => sdio_host2::BusOp::SetBusWidth(width),
+            SdioBusOp::SetClock(speed) => sdio_host2::BusOp::SetClock(speed),
+            SdioBusOp::SwitchVoltage(voltage) => sdio_host2::BusOp::SetSignalVoltage(voltage),
+            SdioBusOp::ExecuteTuning {
+                cmd_index,
+                block_size,
+            } => {
+                let command = Command::new(cmd_index, 0, ResponseType::R1);
+                sdio_host2::BusOp::ExecuteTuning {
+                    command,
+                    block_size,
+                }
+            }
+        };
+        let inner = self
+            .core
+            .with_mut(|host| unsafe { host.submit_bus_op(op) })
+            .map_err(host2_error)?;
+        Ok(SdioHost2BusRequest {
+            core: self.core.clone(),
+            inner: Some(inner),
+        })
+    }
+
+    fn poll_bus_op(&mut self, request: &mut Self::BusRequest) -> Result<OperationPoll<()>, Error> {
+        let inner = request.inner.as_mut().ok_or(Error::InvalidArgument)?;
+        match request.core.with_mut(|host| host.poll_bus_op(inner)) {
+            Ok(sdio_host2::RequestPoll::Pending) => Ok(OperationPoll::Pending),
+            Ok(sdio_host2::RequestPoll::Ready(Ok(()))) => {
+                request.inner = None;
+                Ok(OperationPoll::Complete(()))
+            }
+            Ok(sdio_host2::RequestPoll::Ready(Err(err))) => {
+                request.inner = None;
+                Err(host2_error(err))
+            }
+            Err(err) => Err(host2_poll_error(err)),
+        }
+    }
+
+    fn enable_completion_irq(&mut self) -> Result<(), Error> {
+        self.core.with_mut(|host| host.enable_completion_irq())
+    }
+
+    fn disable_completion_irq(&mut self) -> Result<(), Error> {
+        self.core.with_mut(|host| host.disable_completion_irq())
+    }
+
+    fn handle_irq(&mut self) -> Self::Event {
+        self.core.with_mut(|host| host.handle_irq())
+    }
+
+    fn now_ms(&self) -> Option<u64> {
+        self.core.with_ref(|host| host.now_ms())
+    }
+}
+
+#[cfg(feature = "rdif")]
+impl<H: SdioHost2Irq + 'static> SdioHost2Adapter<H> {
+    pub(crate) fn submit_dma_data(
+        &mut self,
+        cmd: &Command,
+        direction: sdio_host2::DataDirection,
+        buffer: PreparedDma,
+        block_size: u32,
+        block_count: u32,
+    ) -> Result<SdioHost2DataRequest<'static, H>, DmaSubmitError> {
+        let block_size = match nonzero_block_size(block_size) {
+            Ok(block_size) => block_size,
+            Err(err) => return Err(DmaSubmitError::new(err, buffer)),
+        };
+        let block_count = match nonzero_block_count(block_count) {
+            Ok(block_count) => block_count,
+            Err(err) => return Err(DmaSubmitError::new(err, buffer)),
+        };
+        let data = sdio_host2::DataPhase::dma(direction, block_size, block_count, buffer).map_err(
+            |err| {
+                let (error, buffer) = err.into_parts();
+                DmaSubmitError::new(host2_error(error), buffer)
+            },
+        )?;
+        let transaction = sdio_host2::Transaction::with_data(*cmd, data);
+        let request = self
+            .core
+            .with_mut(|host| unsafe { host.submit_transaction_owned(transaction) });
+        match request {
+            Ok(request) => Ok(SdioHost2DataRequest {
+                core: self.core.clone(),
+                inner: Some(request),
+                completed_dma: None,
+            }),
+            Err(err) => {
+                let error = host2_error(err.error);
+                let Some(transaction) = err.into_transaction() else {
+                    panic!("sdio-host2 DMA submit consumed owned transaction on failure");
+                };
+                let Some(buffer) = recover_dma_buffer(transaction) else {
+                    panic!("sdio-host2 DMA submit failure did not return DMA buffer");
+                };
+                Err(DmaSubmitError::new(error, buffer))
+            }
+        }
+    }
+}
+
+#[cfg(feature = "rdif")]
+fn recover_dma_buffer(transaction: sdio_host2::Transaction<'_>) -> Option<PreparedDma> {
+    match transaction.data?.buffer {
+        sdio_host2::DataBuffer::Dma(buffer) => Some(buffer),
+        sdio_host2::DataBuffer::Read(_) | sdio_host2::DataBuffer::Write(_) => None,
+    }
+}
+
+impl<H: SdioHost2Irq + 'static> SdioIrqHost for SdioHost2Adapter<H> {
+    type IrqHandle = H::IrqHandle;
+
+    fn irq_handle(&self) -> Self::IrqHandle {
+        self.core.with_ref(|host| host.irq_handle())
+    }
+
+    fn completion_irq_enabled(&self) -> bool {
+        self.core.with_ref(|host| host.completion_irq_enabled())
+    }
+}
+
+impl<H: SdioHost2Irq + 'static> SdioSdmmc<SdioHost2Adapter<H>> {
+    pub fn new_host2(host: H) -> Self {
+        Self::new(SdioHost2Adapter::new(host))
+    }
+}
+
+fn nonzero_block_size(block_size: u32) -> Result<NonZeroU16, Error> {
+    u16::try_from(block_size)
+        .ok()
+        .and_then(NonZeroU16::new)
+        .ok_or(Error::InvalidArgument)
+}
+
+fn nonzero_block_count(block_count: u32) -> Result<NonZeroU32, Error> {
+    NonZeroU32::new(block_count).ok_or(Error::InvalidArgument)
+}
+
+fn host2_error(err: sdio_host2::Error) -> Error {
+    match err {
+        sdio_host2::Error::Busy => Error::Busy,
+        sdio_host2::Error::Timeout => Error::Timeout(ErrorContext::default()),
+        sdio_host2::Error::Crc => Error::Crc(ErrorContext::default()),
+        sdio_host2::Error::NoCard => Error::NoCard,
+        sdio_host2::Error::Unsupported => Error::UnsupportedCommand,
+        sdio_host2::Error::InvalidArgument => Error::InvalidArgument,
+        sdio_host2::Error::Misaligned => Error::Misaligned,
+        sdio_host2::Error::Bus => Error::BusError(ErrorContext::default()),
+        sdio_host2::Error::Controller => Error::BusError(ErrorContext::default()),
+        _ => Error::BusError(ErrorContext::default()),
+    }
+}
+
+fn host2_poll_error(err: sdio_host2::PollRequestError) -> Error {
+    match err {
+        sdio_host2::PollRequestError::AlreadyCompleted => Error::InvalidArgument,
+        sdio_host2::PollRequestError::WrongOwner
+        | sdio_host2::PollRequestError::WrongKind
+        | sdio_host2::PollRequestError::StaleGeneration
+        | sdio_host2::PollRequestError::RecoveryFailed => Error::BusError(ErrorContext::default()),
+        _ => Error::BusError(ErrorContext::default()),
     }
 }
 
@@ -604,6 +1216,7 @@ pub struct SdioInitRequest<'a, H: SdioHost + 'a> {
     mmc_switch_request: Option<MmcSwitchRequest>,
     status_request: Option<SdioStatusRequest>,
     command_request: Option<SdioCommandRequest>,
+    bus_request: Option<H::BusRequest>,
     current_bus_width: BusWidth,
     current_access_mode: Option<SdAccessMode>,
     sd_access_index: usize,
@@ -614,7 +1227,7 @@ pub struct SdioInitRequest<'a, H: SdioHost + 'a> {
 impl<'a, H: SdioHost + 'a> SdioInitRequest<'a, H> {
     fn new(preference: CardInitPreference, scratch: &'a mut SdioInitScratch) -> Self {
         Self {
-            state: SdioInitState::PollCmd0,
+            state: SdioInitState::ResetHost,
             preference,
             sd_v2: false,
             kind: None,
@@ -635,6 +1248,7 @@ impl<'a, H: SdioHost + 'a> SdioInitRequest<'a, H> {
             mmc_switch_request: None,
             status_request: None,
             command_request: None,
+            bus_request: None,
             current_bus_width: BusWidth::Bit1,
             current_access_mode: None,
             sd_access_index: 0,
@@ -658,6 +1272,15 @@ impl<'a, H: SdioHost + 'a> SdioInitRequest<'a, H> {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SdioInitState {
+    ResetHost,
+    PollResetHost,
+    PowerOn,
+    PollPowerOn,
+    ResetVoltage,
+    PollResetVoltage,
+    ResetBusWidth,
+    ResetClock,
+    SubmitCmd0,
     PollCmd0,
     PollCmd8,
     PollAcmd41Cmd55,
@@ -670,17 +1293,27 @@ enum SdioInitState {
     PollCmd7,
     PollSdBusWidthCmd55,
     PollSdBusWidthAcmd6,
+    PollSdHostBusWidth,
     FinishCardSetup,
+    PollSdDefaultClock,
     PollMmcExtCsd,
     PollMmcBusWidth,
+    PollMmcHostBusWidth,
     PrepareMmcSpeed,
+    PollMmcHs200VoltageSwitch,
     PollMmcHs200Switch,
+    PollMmcHs200Clock,
+    PollMmcHs200Tuning,
     PollMmcHs200Status,
     PollMmcHs52Switch,
+    PollMmcHighSpeedClock,
     PrepareSdSpeed,
     PollSdSwitchFunctionCheck,
     PollSdVoltageSwitch,
+    PollSdSignalVoltage,
     PollSdSetAccessMode,
+    PollSdClock,
+    PollSdTuning,
     PollSdStatus,
     Complete,
 }
@@ -767,6 +1400,19 @@ impl<H: SdioHost> SdioSdmmc<H> {
     /// tuning.
     pub fn set_sd_uhs_selection_enabled(&mut self, enabled: bool) {
         self.sd_uhs_selection_enabled = enabled;
+    }
+
+    fn mmc_tuning_block_size(&self) -> Result<NonZeroU16, Error> {
+        let bytes = if matches!(self.bus_width, BusWidth::Bit8) {
+            crate::cmd::MMC_TUNING_BLOCK_SIZE_8BIT
+        } else {
+            crate::cmd::SD_TUNING_BLOCK_SIZE
+        };
+        nonzero_block_size(bytes)
+    }
+
+    fn sd_tuning_block_size(&self) -> Result<NonZeroU16, Error> {
+        nonzero_block_size(crate::cmd::SD_TUNING_BLOCK_SIZE)
     }
 
     /// Which card family the driver detected. Meaningful only after a
@@ -1033,19 +1679,48 @@ impl<H: SdioHost> SdioSdmmc<H> {
         H: 'a,
     {
         debug!("sdio: init starting");
-        // Best-effort cleanup of any state a previous, aborted init may have
-        // left on the host (e.g. UHS_MODE bits, 4-bit bus, 50 MHz clock).
-        // We can't propagate failures here without poisoning the caller's
-        // retry path — `set_*` calls below run with `?` so the actual
-        // identification-mode requirements are enforced.
-        self.abort_init();
-
-        self.host.set_bus_width(BusWidth::Bit1)?;
-        self.host.set_clock(ClockSpeed::Identification)?;
-
-        debug!("sdio: CMD0 reset");
-        self.host.submit_command(&crate::cmd::CMD0)?;
         Ok(SdioInitRequest::new(preference, scratch))
+    }
+
+    fn submit_init_bus_op<'a>(
+        &mut self,
+        request: &mut SdioInitRequest<'a, H>,
+        op: SdioBusOp,
+        next: SdioInitState,
+    ) -> Result<OperationPoll<CardInfo>, Error> {
+        debug!("sdio: submit bus op {:?}", op);
+        request.bus_request = Some(self.host.submit_bus_op(op)?);
+        request.state = next;
+        Ok(OperationPoll::Pending)
+    }
+
+    fn poll_init_bus_op<'a>(
+        &mut self,
+        request: &mut SdioInitRequest<'a, H>,
+    ) -> Result<OperationPoll<()>, Error> {
+        let mut bus_request = request.bus_request.take().ok_or(Error::InvalidArgument)?;
+        match self.host.poll_bus_op(&mut bus_request) {
+            Ok(OperationPoll::Pending) => {
+                request.bus_request = Some(bus_request);
+                Ok(OperationPoll::Pending)
+            }
+            Ok(OperationPoll::Complete(())) => Ok(OperationPoll::Complete(())),
+            Err(err) => Err(err),
+        }
+    }
+
+    fn poll_init_bus_op_then<'a>(
+        &mut self,
+        request: &mut SdioInitRequest<'a, H>,
+        complete: impl FnOnce(
+            &mut Self,
+            &mut SdioInitRequest<'a, H>,
+        ) -> Result<OperationPoll<CardInfo>, Error>,
+    ) -> Result<OperationPoll<CardInfo>, Error> {
+        match self.poll_init_bus_op(request)? {
+            OperationPoll::Pending => Ok(OperationPoll::Pending),
+            OperationPoll::Complete(()) => complete(self, request),
+        }
     }
 
     /// Advance a submitted initialization request without blocking.
@@ -1078,6 +1753,91 @@ impl<H: SdioHost> SdioSdmmc<H> {
         const MMC_ACCESS_MODE_MASK: u32 = 0x6000_0000;
 
         match request.state {
+            SdioInitState::ResetHost => {
+                match self.host.submit_bus_op(SdioBusOp::ResetAll) {
+                    Ok(bus_request) => {
+                        request.bus_request = Some(bus_request);
+                        request.state = SdioInitState::PollResetHost;
+                    }
+                    Err(Error::UnsupportedCommand) => {
+                        debug!("sdio: host does not support reset bus op");
+                        request.state = SdioInitState::PowerOn;
+                    }
+                    Err(err) => return Err(err),
+                }
+                Ok(OperationPoll::Pending)
+            }
+            SdioInitState::PollResetHost => match self.poll_init_bus_op(request)? {
+                OperationPoll::Pending => Ok(OperationPoll::Pending),
+                OperationPoll::Complete(()) => {
+                    request.state = SdioInitState::PowerOn;
+                    Ok(OperationPoll::Pending)
+                }
+            },
+            SdioInitState::PowerOn => {
+                match self.host.submit_bus_op(SdioBusOp::PowerOn) {
+                    Ok(bus_request) => {
+                        request.bus_request = Some(bus_request);
+                        request.state = SdioInitState::PollPowerOn;
+                    }
+                    Err(Error::UnsupportedCommand) => {
+                        debug!("sdio: host does not support power-on bus op");
+                        request.state = SdioInitState::ResetVoltage;
+                    }
+                    Err(err) => return Err(err),
+                }
+                Ok(OperationPoll::Pending)
+            }
+            SdioInitState::PollPowerOn => match self.poll_init_bus_op(request)? {
+                OperationPoll::Pending => Ok(OperationPoll::Pending),
+                OperationPoll::Complete(()) => {
+                    request.state = SdioInitState::ResetVoltage;
+                    Ok(OperationPoll::Pending)
+                }
+            },
+            SdioInitState::ResetVoltage => {
+                match self
+                    .host
+                    .submit_bus_op(SdioBusOp::SwitchVoltage(SignalVoltage::V330))
+                {
+                    Ok(bus_request) => {
+                        request.bus_request = Some(bus_request);
+                        request.state = SdioInitState::PollResetVoltage;
+                    }
+                    Err(Error::UnsupportedCommand) => {
+                        debug!("sdio: host does not support voltage reset");
+                        request.state = SdioInitState::ResetBusWidth;
+                    }
+                    Err(err) => return Err(err),
+                }
+                Ok(OperationPoll::Pending)
+            }
+            SdioInitState::PollResetVoltage => match self.poll_init_bus_op(request)? {
+                OperationPoll::Pending => Ok(OperationPoll::Pending),
+                OperationPoll::Complete(()) => self.submit_init_bus_op(
+                    request,
+                    SdioBusOp::SetBusWidth(BusWidth::Bit1),
+                    SdioInitState::ResetClock,
+                ),
+            },
+            SdioInitState::ResetBusWidth => self.submit_init_bus_op(
+                request,
+                SdioBusOp::SetBusWidth(BusWidth::Bit1),
+                SdioInitState::ResetClock,
+            ),
+            SdioInitState::ResetClock => self.poll_init_bus_op_then(request, |driver, request| {
+                driver.submit_init_bus_op(
+                    request,
+                    SdioBusOp::SetClock(ClockSpeed::Identification),
+                    SdioInitState::SubmitCmd0,
+                )
+            }),
+            SdioInitState::SubmitCmd0 => self.poll_init_bus_op_then(request, |driver, request| {
+                debug!("sdio: CMD0 reset");
+                driver.host.submit_command(&crate::cmd::CMD0)?;
+                request.state = SdioInitState::PollCmd0;
+                Ok(OperationPoll::Pending)
+            }),
             SdioInitState::PollCmd0 => match self.host.poll_command_response()? {
                 CommandResponsePoll::Pending => Ok(OperationPoll::Pending),
                 CommandResponsePoll::Complete(_) => {
@@ -1326,26 +2086,27 @@ impl<H: SdioHost> SdioSdmmc<H> {
             },
             SdioInitState::PollSdBusWidthAcmd6 => match self.host.poll_command_response()? {
                 CommandResponsePoll::Pending => Ok(OperationPoll::Pending),
-                CommandResponsePoll::Complete(_) => {
-                    self.host.set_bus_width(BusWidth::Bit4)?;
-                    self.bus_width = BusWidth::Bit4;
+                CommandResponsePoll::Complete(_) => self.submit_init_bus_op(
+                    request,
+                    SdioBusOp::SetBusWidth(BusWidth::Bit4),
+                    SdioInitState::PollSdHostBusWidth,
+                ),
+            },
+            SdioInitState::PollSdHostBusWidth => {
+                self.poll_init_bus_op_then(request, |driver, request| {
+                    driver.bus_width = BusWidth::Bit4;
                     request.state = SdioInitState::FinishCardSetup;
                     Ok(OperationPoll::Pending)
-                }
-            },
+                })
+            }
             SdioInitState::FinishCardSetup => {
                 let kind = request.kind.ok_or(Error::InvalidArgument)?;
                 match kind {
-                    CardKind::Sd => {
-                        self.host.set_clock(ClockSpeed::Default)?;
-                        if self.sd_speed_selection_enabled {
-                            request.state = SdioInitState::PrepareSdSpeed;
-                        } else {
-                            debug!("sdio: SD speed selection disabled; staying at default speed");
-                            request.state = SdioInitState::Complete;
-                        }
-                        Ok(OperationPoll::Pending)
-                    }
+                    CardKind::Sd => self.submit_init_bus_op(
+                        request,
+                        SdioBusOp::SetClock(ClockSpeed::Default),
+                        SdioInitState::PollSdDefaultClock,
+                    ),
                     CardKind::Mmc => {
                         debug!("sdio: read MMC EXT_CSD");
                         // SAFETY: the slot's debug_assert traps re-lending; the
@@ -1358,6 +2119,17 @@ impl<H: SdioHost> SdioSdmmc<H> {
                         Ok(OperationPoll::Pending)
                     }
                 }
+            }
+            SdioInitState::PollSdDefaultClock => {
+                self.poll_init_bus_op_then(request, |driver, request| {
+                    if driver.sd_speed_selection_enabled {
+                        request.state = SdioInitState::PrepareSdSpeed;
+                    } else {
+                        debug!("sdio: SD speed selection disabled; staying at default speed");
+                        request.state = SdioInitState::Complete;
+                    }
+                    Ok(OperationPoll::Pending)
+                })
             }
             SdioInitState::PollMmcExtCsd => {
                 let ext_request = request
@@ -1394,22 +2166,16 @@ impl<H: SdioHost> SdioSdmmc<H> {
                     Ok(OperationPoll::Pending) => Ok(OperationPoll::Pending),
                     Ok(OperationPoll::Complete(())) => {
                         request.mmc_switch_request = None;
-                        match self.host.set_bus_width(request.current_bus_width) {
-                            Ok(()) => {
-                                self.bus_width = request.current_bus_width;
-                                request.state = SdioInitState::PrepareMmcSpeed;
+                        match self
+                            .host
+                            .submit_bus_op(SdioBusOp::SetBusWidth(request.current_bus_width))
+                        {
+                            Ok(bus_request) => {
+                                request.bus_request = Some(bus_request);
+                                request.state = SdioInitState::PollMmcHostBusWidth;
                                 Ok(OperationPoll::Pending)
                             }
-                            Err(err) if matches!(request.current_bus_width, BusWidth::Bit8) => {
-                                debug!("sdio: 8-bit refused ({:?}), trying 4-bit", err);
-                                submit_mmc_bus_width_or_continue(self, request, BusWidth::Bit4)
-                            }
-                            Err(err) if matches!(request.current_bus_width, BusWidth::Bit4) => {
-                                debug!("sdio: 4-bit refused ({:?}), staying at 1-bit", err);
-                                request.state = SdioInitState::PrepareMmcSpeed;
-                                Ok(OperationPoll::Pending)
-                            }
-                            Err(err) => Err(err),
+                            Err(err) => handle_mmc_host_bus_width_error(self, request, err),
                         }
                     }
                     Err(err) if matches!(request.current_bus_width, BusWidth::Bit8) => {
@@ -1426,6 +2192,21 @@ impl<H: SdioHost> SdioSdmmc<H> {
                     Err(err) => Err(err),
                 }
             }
+            SdioInitState::PollMmcHostBusWidth => {
+                let mut bus_request = request.bus_request.take().ok_or(Error::InvalidArgument)?;
+                match self.host.poll_bus_op(&mut bus_request) {
+                    Ok(OperationPoll::Pending) => {
+                        request.bus_request = Some(bus_request);
+                        Ok(OperationPoll::Pending)
+                    }
+                    Ok(OperationPoll::Complete(())) => {
+                        self.bus_width = request.current_bus_width;
+                        request.state = SdioInitState::PrepareMmcSpeed;
+                        Ok(OperationPoll::Pending)
+                    }
+                    Err(err) => handle_mmc_host_bus_width_error(self, request, err),
+                }
+            }
             SdioInitState::PrepareMmcSpeed => {
                 let Some(csd) = request.parsed_ext_csd.as_ref() else {
                     return Err(Error::InvalidArgument);
@@ -1436,15 +2217,13 @@ impl<H: SdioHost> SdioSdmmc<H> {
                     && dt.supports_hs200()
                 {
                     request.mmc_hs200_attempted = true;
-                    match self.host.switch_voltage(SignalVoltage::V180) {
-                        Ok(()) => {
-                            let switch_request = self.submit_mmc_switch(
-                                0b11,
-                                crate::cmd::ext_csd::HS_TIMING as u8,
-                                0x02,
-                            )?;
-                            request.mmc_switch_request = Some(switch_request);
-                            request.state = SdioInitState::PollMmcHs200Switch;
+                    match self
+                        .host
+                        .submit_bus_op(SdioBusOp::SwitchVoltage(SignalVoltage::V180))
+                    {
+                        Ok(bus_request) => {
+                            request.bus_request = Some(bus_request);
+                            request.state = SdioInitState::PollMmcHs200VoltageSwitch;
                             return Ok(OperationPoll::Pending);
                         }
                         // The host has no way to actually drive the IO rail
@@ -1468,6 +2247,41 @@ impl<H: SdioHost> SdioSdmmc<H> {
                 }
                 Ok(OperationPoll::Pending)
             }
+            SdioInitState::PollMmcHs200VoltageSwitch => {
+                let Some(csd) = request.parsed_ext_csd.as_ref() else {
+                    return Err(Error::InvalidArgument);
+                };
+                let supports_hs52 = csd.device_type().supports_hs_52();
+                match self.poll_init_bus_op(request) {
+                    Ok(OperationPoll::Pending) => Ok(OperationPoll::Pending),
+                    Ok(OperationPoll::Complete(())) => {
+                        let switch_request = self.submit_mmc_switch(
+                            0b11,
+                            crate::cmd::ext_csd::HS_TIMING as u8,
+                            0x02,
+                        )?;
+                        request.mmc_switch_request = Some(switch_request);
+                        request.state = SdioInitState::PollMmcHs200Switch;
+                        Ok(OperationPoll::Pending)
+                    }
+                    Err(err) => {
+                        debug!("sdio: switch_voltage(V180) failed ({:?})", err);
+                        self.rollback_to_hs_compat();
+                        if supports_hs52 {
+                            let switch_request = self.submit_mmc_switch(
+                                0b11,
+                                crate::cmd::ext_csd::HS_TIMING as u8,
+                                1,
+                            )?;
+                            request.mmc_switch_request = Some(switch_request);
+                            request.state = SdioInitState::PollMmcHs52Switch;
+                        } else {
+                            request.state = SdioInitState::Complete;
+                        }
+                        Ok(OperationPoll::Pending)
+                    }
+                }
+            }
             SdioInitState::PollMmcHs200Switch => {
                 let switch_request = request
                     .mmc_switch_request
@@ -1477,15 +2291,18 @@ impl<H: SdioHost> SdioSdmmc<H> {
                     Ok(OperationPoll::Pending) => Ok(OperationPoll::Pending),
                     Ok(OperationPoll::Complete(())) => {
                         request.mmc_switch_request = None;
-                        if self.host.set_clock(ClockSpeed::Hs200).is_ok()
-                            && self.host.execute_tuning(21).is_ok()
+                        match self
+                            .host
+                            .submit_bus_op(SdioBusOp::SetClock(ClockSpeed::Hs200))
                         {
-                            let status_request = self.submit_status()?;
-                            request.status_request = Some(status_request);
-                            request.state = SdioInitState::PollMmcHs200Status;
-                        } else {
-                            self.rollback_to_hs_compat();
-                            request.state = SdioInitState::PrepareMmcSpeed;
+                            Ok(bus_request) => {
+                                request.bus_request = Some(bus_request);
+                                request.state = SdioInitState::PollMmcHs200Clock;
+                            }
+                            Err(_) => {
+                                self.rollback_to_hs_compat();
+                                request.state = SdioInitState::PrepareMmcSpeed;
+                            }
                         }
                         Ok(OperationPoll::Pending)
                     }
@@ -1498,6 +2315,45 @@ impl<H: SdioHost> SdioSdmmc<H> {
                     }
                 }
             }
+            SdioInitState::PollMmcHs200Clock => match self.poll_init_bus_op(request) {
+                Ok(OperationPoll::Pending) => Ok(OperationPoll::Pending),
+                Ok(OperationPoll::Complete(())) => {
+                    let block_size = self.mmc_tuning_block_size()?;
+                    match self.host.submit_bus_op(SdioBusOp::ExecuteTuning {
+                        cmd_index: 21,
+                        block_size,
+                    }) {
+                        Ok(bus_request) => {
+                            request.bus_request = Some(bus_request);
+                            request.state = SdioInitState::PollMmcHs200Tuning;
+                        }
+                        Err(_) => {
+                            self.rollback_to_hs_compat();
+                            request.state = SdioInitState::PrepareMmcSpeed;
+                        }
+                    }
+                    Ok(OperationPoll::Pending)
+                }
+                Err(_) => {
+                    self.rollback_to_hs_compat();
+                    request.state = SdioInitState::PrepareMmcSpeed;
+                    Ok(OperationPoll::Pending)
+                }
+            },
+            SdioInitState::PollMmcHs200Tuning => match self.poll_init_bus_op(request) {
+                Ok(OperationPoll::Pending) => Ok(OperationPoll::Pending),
+                Ok(OperationPoll::Complete(())) => {
+                    let status_request = self.submit_status()?;
+                    request.status_request = Some(status_request);
+                    request.state = SdioInitState::PollMmcHs200Status;
+                    Ok(OperationPoll::Pending)
+                }
+                Err(_) => {
+                    self.rollback_to_hs_compat();
+                    request.state = SdioInitState::PrepareMmcSpeed;
+                    Ok(OperationPoll::Pending)
+                }
+            },
             SdioInitState::PollMmcHs200Status => {
                 let status_request = request
                     .status_request
@@ -1528,10 +2384,19 @@ impl<H: SdioHost> SdioSdmmc<H> {
                     Ok(OperationPoll::Pending) => Ok(OperationPoll::Pending),
                     Ok(OperationPoll::Complete(())) => {
                         request.mmc_switch_request = None;
-                        if let Err(_e) = self.host.set_clock(ClockSpeed::HighSpeed) {
-                            debug!("sdio: host refused HighSpeed clock ({:?})", _e);
+                        match self
+                            .host
+                            .submit_bus_op(SdioBusOp::SetClock(ClockSpeed::HighSpeed))
+                        {
+                            Ok(bus_request) => {
+                                request.bus_request = Some(bus_request);
+                                request.state = SdioInitState::PollMmcHighSpeedClock;
+                            }
+                            Err(_e) => {
+                                debug!("sdio: host refused HighSpeed clock ({:?})", _e);
+                                request.state = SdioInitState::Complete;
+                            }
                         }
-                        request.state = SdioInitState::Complete;
                         Ok(OperationPoll::Pending)
                     }
                     Err(_e) => {
@@ -1542,6 +2407,22 @@ impl<H: SdioHost> SdioSdmmc<H> {
                     }
                 }
             }
+            SdioInitState::PollMmcHighSpeedClock => match self.poll_init_bus_op(request) {
+                Ok(OperationPoll::Pending) => Ok(OperationPoll::Pending),
+                Ok(OperationPoll::Complete(())) => {
+                    info!(
+                        "sdio: MMC speed selected HighSpeed bus_width={:?}",
+                        self.bus_width
+                    );
+                    request.state = SdioInitState::Complete;
+                    Ok(OperationPoll::Pending)
+                }
+                Err(_e) => {
+                    debug!("sdio: host refused HighSpeed clock ({:?})", _e);
+                    request.state = SdioInitState::Complete;
+                    Ok(OperationPoll::Pending)
+                }
+            },
             SdioInitState::PrepareSdSpeed => {
                 // SAFETY: see ext_csd lend above; release happens on the
                 // PollSdSwitchFunctionCheck Complete arm below.
@@ -1597,8 +2478,15 @@ impl<H: SdioHost> SdioSdmmc<H> {
                     Ok(CommandResponsePoll::Pending) => Ok(OperationPoll::Pending),
                     Ok(CommandResponsePoll::Complete(_)) => {
                         request.command_request = None;
-                        match self.host.switch_voltage(SignalVoltage::V180) {
-                            Ok(()) => submit_sd_access_mode_switch(self, request, mode),
+                        match self
+                            .host
+                            .submit_bus_op(SdioBusOp::SwitchVoltage(SignalVoltage::V180))
+                        {
+                            Ok(bus_request) => {
+                                request.bus_request = Some(bus_request);
+                                request.state = SdioInitState::PollSdSignalVoltage;
+                                Ok(OperationPoll::Pending)
+                            }
                             Err(err) => {
                                 warn!("sdio: SD {} failed ({:?})", mode.name(), err);
                                 // SAFETY: no switch_function_request is in
@@ -1615,6 +2503,24 @@ impl<H: SdioHost> SdioSdmmc<H> {
                         request.command_request = None;
                         warn!("sdio: SD {} failed ({:?})", mode.name(), err);
                         // SAFETY: same as above — no in-flight data request.
+                        let status =
+                            SwitchStatus::from_raw(unsafe { *request.switch_status_buf.peek() });
+                        submit_next_sd_access_mode(self, request, status)
+                    }
+                }
+            }
+            SdioInitState::PollSdSignalVoltage => {
+                let mode = request.current_access_mode.ok_or(Error::InvalidArgument)?;
+                match self.poll_init_bus_op(request) {
+                    Ok(OperationPoll::Pending) => Ok(OperationPoll::Pending),
+                    Ok(OperationPoll::Complete(())) => {
+                        submit_sd_access_mode_switch(self, request, mode)
+                    }
+                    Err(err) => {
+                        warn!("sdio: SD {} failed ({:?})", mode.name(), err);
+                        // SAFETY: no switch_function_request is in flight on
+                        // this branch; the switch-status scratch slot was
+                        // released after the earlier function-check request.
                         let status =
                             SwitchStatus::from_raw(unsafe { *request.switch_status_buf.peek() });
                         submit_next_sd_access_mode(self, request, status)
@@ -1639,14 +2545,17 @@ impl<H: SdioHost> SdioSdmmc<H> {
                             warn!("sdio: SD {} failed (function mismatch)", mode.name());
                             submit_next_sd_access_mode(self, request, status)
                         } else {
-                            self.host.set_clock(mode.clock())?;
-                            if matches!(mode, SdAccessMode::Sdr50 | SdAccessMode::Sdr104) {
-                                self.host.execute_tuning(19)?;
+                            match self.host.submit_bus_op(SdioBusOp::SetClock(mode.clock())) {
+                                Ok(bus_request) => {
+                                    request.bus_request = Some(bus_request);
+                                    request.state = SdioInitState::PollSdClock;
+                                    Ok(OperationPoll::Pending)
+                                }
+                                Err(err) => {
+                                    warn!("sdio: SD {} failed ({:?})", mode.name(), err);
+                                    submit_next_sd_access_mode(self, request, status)
+                                }
                             }
-                            let status_request = self.submit_status()?;
-                            request.status_request = Some(status_request);
-                            request.state = SdioInitState::PollSdStatus;
-                            Ok(OperationPoll::Pending)
                         }
                     }
                     Err(err) => {
@@ -1654,6 +2563,69 @@ impl<H: SdioHost> SdioSdmmc<H> {
                         request.switch_status_buf.release();
                         warn!("sdio: SD {} failed ({:?})", mode.name(), err);
                         // SAFETY: just released above.
+                        let status =
+                            SwitchStatus::from_raw(unsafe { *request.switch_status_buf.peek() });
+                        submit_next_sd_access_mode(self, request, status)
+                    }
+                }
+            }
+            SdioInitState::PollSdClock => {
+                let mode = request.current_access_mode.ok_or(Error::InvalidArgument)?;
+                match self.poll_init_bus_op(request) {
+                    Ok(OperationPoll::Pending) => Ok(OperationPoll::Pending),
+                    Ok(OperationPoll::Complete(())) => {
+                        if matches!(mode, SdAccessMode::Sdr50 | SdAccessMode::Sdr104) {
+                            let block_size = self.sd_tuning_block_size()?;
+                            match self.host.submit_bus_op(SdioBusOp::ExecuteTuning {
+                                cmd_index: 19,
+                                block_size,
+                            }) {
+                                Ok(bus_request) => {
+                                    request.bus_request = Some(bus_request);
+                                    request.state = SdioInitState::PollSdTuning;
+                                    Ok(OperationPoll::Pending)
+                                }
+                                Err(err) => {
+                                    warn!("sdio: SD {} failed ({:?})", mode.name(), err);
+                                    // SAFETY: PollSdClock is reached after the
+                                    // switch request released the status slot.
+                                    let status = SwitchStatus::from_raw(unsafe {
+                                        *request.switch_status_buf.peek()
+                                    });
+                                    submit_next_sd_access_mode(self, request, status)
+                                }
+                            }
+                        } else {
+                            let status_request = self.submit_status()?;
+                            request.status_request = Some(status_request);
+                            request.state = SdioInitState::PollSdStatus;
+                            Ok(OperationPoll::Pending)
+                        }
+                    }
+                    Err(err) => {
+                        warn!("sdio: SD {} failed ({:?})", mode.name(), err);
+                        // SAFETY: PollSdClock is reached after the switch
+                        // request released the status slot.
+                        let status =
+                            SwitchStatus::from_raw(unsafe { *request.switch_status_buf.peek() });
+                        submit_next_sd_access_mode(self, request, status)
+                    }
+                }
+            }
+            SdioInitState::PollSdTuning => {
+                let mode = request.current_access_mode.ok_or(Error::InvalidArgument)?;
+                match self.poll_init_bus_op(request) {
+                    Ok(OperationPoll::Pending) => Ok(OperationPoll::Pending),
+                    Ok(OperationPoll::Complete(())) => {
+                        let status_request = self.submit_status()?;
+                        request.status_request = Some(status_request);
+                        request.state = SdioInitState::PollSdStatus;
+                        Ok(OperationPoll::Pending)
+                    }
+                    Err(err) => {
+                        warn!("sdio: SD {} failed ({:?})", mode.name(), err);
+                        // SAFETY: PollSdTuning is reached after the switch
+                        // request released the status slot.
                         let status =
                             SwitchStatus::from_raw(unsafe { *request.switch_status_buf.peek() });
                         submit_next_sd_access_mode(self, request, status)
@@ -1689,9 +2661,19 @@ impl<H: SdioHost> SdioSdmmc<H> {
             SdioInitState::Complete => {
                 let kind = request.kind.ok_or(Error::InvalidArgument)?;
                 let ocr = request.ocr.ok_or(Error::InvalidArgument)?;
+                let ext_csd_timing = request.parsed_ext_csd.as_ref().map(|csd| csd.timing());
+                let ext_csd_bus_width = request.parsed_ext_csd.as_ref().map(|csd| csd.bus_width());
                 info!(
-                    "sdio: init done kind={:?} sd_v2={} high_capacity={} rca={:#x} ocr={:#x}",
-                    kind, request.sd_v2, self.high_capacity, self.rca, ocr.raw
+                    "sdio: init done kind={:?} sd_v2={} high_capacity={} rca={:#x} ocr={:#x} \
+                     host_bus_width={:?} ext_csd_bus_width={:?} ext_csd_timing={:?}",
+                    kind,
+                    request.sd_v2,
+                    self.high_capacity,
+                    self.rca,
+                    ocr.raw,
+                    self.bus_width,
+                    ext_csd_bus_width,
+                    ext_csd_timing
                 );
                 Ok(OperationPoll::Complete(CardInfo {
                     kind,
@@ -1762,12 +2744,31 @@ fn submit_mmc_bus_width_or_continue<'a, H: SdioHost + 'a>(
         BusWidth::Bit1 => 0,
         BusWidth::Bit4 => 1,
         BusWidth::Bit8 => 2,
+        _ => return Err(Error::UnsupportedCommand),
     };
     request.current_bus_width = width;
     request.mmc_switch_request =
         Some(driver.submit_mmc_switch(0b11, crate::cmd::ext_csd::BUS_WIDTH as u8, value)?);
     request.state = SdioInitState::PollMmcBusWidth;
     Ok(OperationPoll::Pending)
+}
+
+fn handle_mmc_host_bus_width_error<'a, H: SdioHost + 'a>(
+    driver: &mut SdioSdmmc<H>,
+    request: &mut SdioInitRequest<'a, H>,
+    err: Error,
+) -> Result<OperationPoll<CardInfo>, Error> {
+    request.bus_request = None;
+    if matches!(request.current_bus_width, BusWidth::Bit8) {
+        debug!("sdio: 8-bit refused ({:?}), trying 4-bit", err);
+        submit_mmc_bus_width_or_continue(driver, request, BusWidth::Bit4)
+    } else if matches!(request.current_bus_width, BusWidth::Bit4) {
+        debug!("sdio: 4-bit refused ({:?}), staying at 1-bit", err);
+        request.state = SdioInitState::PrepareMmcSpeed;
+        Ok(OperationPoll::Pending)
+    } else {
+        Err(err)
+    }
 }
 
 fn submit_next_sd_access_mode<'a, H: SdioHost + 'a>(
@@ -1854,6 +2855,7 @@ fn sd_acmd6_arg(width: BusWidth) -> Result<u32, Error> {
         BusWidth::Bit1 => Ok(0),
         BusWidth::Bit4 => Ok(2),
         BusWidth::Bit8 => Err(Error::UnsupportedCommand),
+        _ => Err(Error::UnsupportedCommand),
     }
 }
 
@@ -1943,9 +2945,8 @@ mod tests {
         /// When `Some`, `execute_tuning` returns this error. Lets the
         /// HS200-fallback test simulate a controller that can't tune.
         tuning_result: Option<Error>,
-        /// Records the cmd_index passed to the most recent
-        /// `execute_tuning` call.
-        last_tuning_cmd: Option<u8>,
+        /// Records the most recent `execute_tuning` call.
+        last_tuning: Option<(u8, u16)>,
         pending_polls: usize,
         /// Optional monotonic clock value returned from
         /// [`SdioHost::now_ms`]. Tests advance this directly to verify the
@@ -1975,7 +2976,7 @@ mod tests {
                 last_voltage: None,
                 voltage_switch_result: None,
                 tuning_result: None,
-                last_tuning_cmd: None,
+                last_tuning: None,
                 pending_polls: 0,
                 now_ms: None,
             }
@@ -1998,7 +2999,7 @@ mod tests {
                 last_voltage: None,
                 voltage_switch_result: None,
                 tuning_result: None,
-                last_tuning_cmd: None,
+                last_tuning: None,
                 pending_polls: 0,
                 now_ms: None,
             }
@@ -2008,6 +3009,7 @@ mod tests {
     impl SdioHost for MockHost {
         type Event = ();
         type DataRequest<'a> = MockDataRequest<'a>;
+        type BusRequest = ReadyBusRequest;
 
         fn submit_command(&mut self, cmd: &Command) -> Result<(), Error> {
             self.commands.push(*cmd);
@@ -2110,12 +3112,23 @@ mod tests {
             Ok(())
         }
 
-        fn execute_tuning(&mut self, cmd_index: u8) -> Result<(), Error> {
-            self.last_tuning_cmd = Some(cmd_index);
+        fn execute_tuning(&mut self, cmd_index: u8, block_size: NonZeroU16) -> Result<(), Error> {
+            self.last_tuning = Some((cmd_index, block_size.get()));
             if let Some(e) = self.tuning_result {
                 return Err(e);
             }
             Ok(())
+        }
+
+        fn submit_bus_op(&mut self, op: SdioBusOp) -> Result<Self::BusRequest, Error> {
+            submit_ready_bus_op(self, op)
+        }
+
+        fn poll_bus_op(
+            &mut self,
+            request: &mut Self::BusRequest,
+        ) -> Result<OperationPoll<()>, Error> {
+            poll_ready_bus_op(request)
         }
 
         fn now_ms(&self) -> Option<u64> {
@@ -2298,9 +3311,9 @@ mod tests {
             .host
             .commands
             .iter()
-            .find(|c| c.cmd == 7)
+            .find(|c| c.index == 7)
             .expect("CMD7 issued");
-        assert_eq!(cmd7.arg, (0x1234u32) << 16);
+        assert_eq!(cmd7.argument, (0x1234u32) << 16);
     }
 
     #[test]
@@ -2311,12 +3324,19 @@ mod tests {
         let mut scratch = SdioInitScratch::new();
         let mut request = driver.submit_init(&mut scratch).unwrap();
 
+        assert!(driver.host.commands.is_empty());
+        for _ in 0..8 {
+            assert!(matches!(
+                driver.poll_init_request(&mut request).unwrap(),
+                OperationPoll::Pending
+            ));
+        }
         assert_eq!(
             driver
                 .host
                 .commands
                 .iter()
-                .map(|cmd| cmd.cmd)
+                .map(|cmd| cmd.index)
                 .collect::<Vec<_>>(),
             std::vec![0]
         );
@@ -2329,7 +3349,7 @@ mod tests {
                 .host
                 .commands
                 .iter()
-                .map(|cmd| cmd.cmd)
+                .map(|cmd| cmd.index)
                 .collect::<Vec<_>>(),
             std::vec![0]
         );
@@ -2344,16 +3364,18 @@ mod tests {
         let mut scratch = SdioInitScratch::new();
         let mut request = driver.submit_init(&mut scratch).unwrap();
 
-        assert!(matches!(
-            driver.poll_init_request(&mut request).unwrap(),
-            OperationPoll::Pending
-        ));
+        for _ in 0..9 {
+            assert!(matches!(
+                driver.poll_init_request(&mut request).unwrap(),
+                OperationPoll::Pending
+            ));
+        }
         assert_eq!(
             driver
                 .host
                 .commands
                 .iter()
-                .map(|cmd| cmd.cmd)
+                .map(|cmd| cmd.index)
                 .collect::<Vec<_>>(),
             std::vec![0, 8]
         );
@@ -2367,7 +3389,7 @@ mod tests {
                 .host
                 .commands
                 .iter()
-                .map(|cmd| cmd.cmd)
+                .map(|cmd| cmd.index)
                 .collect::<Vec<_>>(),
             std::vec![0, 8, 55]
         );
@@ -2394,7 +3416,7 @@ mod tests {
                 .host
                 .commands
                 .iter()
-                .map(|cmd| cmd.cmd)
+                .map(|cmd| cmd.index)
                 .collect::<Vec<_>>(),
             std::vec![1]
         );
@@ -2408,16 +3430,18 @@ mod tests {
             .submit_init_with_preference(CardInitPreference::MmcFirst, &mut scratch)
             .unwrap();
 
-        assert!(matches!(
-            driver.poll_init_request(&mut request).unwrap(),
-            OperationPoll::Pending
-        ));
+        for _ in 0..9 {
+            assert!(matches!(
+                driver.poll_init_request(&mut request).unwrap(),
+                OperationPoll::Pending
+            ));
+        }
         assert_eq!(
             driver
                 .host
                 .commands
                 .iter()
-                .map(|cmd| cmd.cmd)
+                .map(|cmd| cmd.index)
                 .collect::<Vec<_>>(),
             std::vec![0, 1]
         );
@@ -2439,7 +3463,7 @@ mod tests {
                 .host
                 .commands
                 .iter()
-                .map(|cmd| cmd.cmd)
+                .map(|cmd| cmd.index)
                 .collect::<Vec<_>>(),
             std::vec![6]
         );
@@ -2453,7 +3477,7 @@ mod tests {
                 .host
                 .commands
                 .iter()
-                .map(|cmd| cmd.cmd)
+                .map(|cmd| cmd.index)
                 .collect::<Vec<_>>(),
             std::vec![6, 13]
         );
@@ -2529,11 +3553,11 @@ mod tests {
                 .host
                 .commands
                 .iter()
-                .map(|cmd| cmd.cmd)
+                .map(|cmd| cmd.index)
                 .collect::<Vec<_>>(),
             std::vec![13]
         );
-        assert_eq!(driver.host.commands[0].arg, 0x1234 << 16);
+        assert_eq!(driver.host.commands[0].argument, 0x1234 << 16);
 
         assert!(matches!(
             driver.poll_status_request(&mut request).unwrap(),
@@ -2555,7 +3579,7 @@ mod tests {
                 .host
                 .commands
                 .iter()
-                .map(|cmd| cmd.cmd)
+                .map(|cmd| cmd.index)
                 .collect::<Vec<_>>(),
             std::vec![8]
         );
@@ -2584,7 +3608,7 @@ mod tests {
                 .host
                 .commands
                 .iter()
-                .map(|cmd| cmd.cmd)
+                .map(|cmd| cmd.index)
                 .collect::<Vec<_>>(),
             std::vec![6]
         );
@@ -2678,9 +3702,12 @@ mod tests {
 
         assert_eq!(driver.host.last_voltage, Some(SignalVoltage::V180));
         assert_eq!(driver.host.last_clock, Some(ClockSpeed::Sdr104));
-        assert_eq!(driver.host.last_tuning_cmd, Some(19));
+        assert_eq!(
+            driver.host.last_tuning,
+            Some((19, crate::cmd::SD_TUNING_BLOCK_SIZE as u16))
+        );
         assert!(
-            driver.host.commands.iter().any(|c| c.cmd == 11),
+            driver.host.commands.iter().any(|c| c.index == 11),
             "CMD11 issued before host voltage switch"
         );
         assert!(
@@ -2688,7 +3715,7 @@ mod tests {
                 .host
                 .commands
                 .iter()
-                .any(|c| c.cmd == 6 && c.arg == 0x80FF_FFF3),
+                .any(|c| c.index == 6 && c.argument == 0x80FF_FFF3),
             "CMD6 switched group 1 to SDR104"
         );
     }
@@ -2721,9 +3748,9 @@ mod tests {
             "legacy-HighSpeed init must never ask the host for 1.8 V"
         );
         assert_eq!(driver.host.last_clock, Some(ClockSpeed::HighSpeed));
-        assert_eq!(driver.host.last_tuning_cmd, None);
+        assert_eq!(driver.host.last_tuning, None);
         assert!(
-            !driver.host.commands.iter().any(|c| c.cmd == 11),
+            !driver.host.commands.iter().any(|c| c.index == 11),
             "CMD11 voltage switch must not be issued in legacy HighSpeed-only mode"
         );
         assert!(
@@ -2731,7 +3758,7 @@ mod tests {
                 .host
                 .commands
                 .iter()
-                .any(|c| c.cmd == 6 && c.arg == 0x80FF_FFF1),
+                .any(|c| c.index == 6 && c.argument == 0x80FF_FFF1),
             "CMD6 switched group 1 to HighSpeed"
         );
         assert!(
@@ -2739,7 +3766,7 @@ mod tests {
                 .host
                 .commands
                 .iter()
-                .any(|c| c.cmd == 6 && c.arg == 0x80FF_FFF3),
+                .any(|c| c.index == 6 && c.argument == 0x80FF_FFF3),
             "SDR104 must not be selected in legacy HighSpeed-only mode"
         );
     }
@@ -2766,15 +3793,36 @@ mod tests {
 
         assert_eq!(driver.host.last_voltage, Some(SignalVoltage::V180));
         assert_eq!(driver.host.last_clock, Some(ClockSpeed::HighSpeed));
-        assert_eq!(driver.host.last_tuning_cmd, None);
+        assert_eq!(driver.host.last_tuning, None);
         assert!(
             driver
                 .host
                 .commands
                 .iter()
-                .any(|c| c.cmd == 6 && c.arg == 0x80FF_FFF1),
+                .any(|c| c.index == 6 && c.argument == 0x80FF_FFF1),
             "CMD6 switched group 1 to HighSpeed after UHS fallback"
         );
+    }
+
+    #[test]
+    fn init_voltage_reset_only_ignores_unsupported() {
+        let mut host = MockHost::with_results(Vec::new());
+        host.voltage_switch_result = Some(Error::Busy);
+        let mut driver = SdioSdmmc::new(host);
+        let mut scratch = SdioInitScratch::new();
+        let mut request = driver.submit_init(&mut scratch).unwrap();
+
+        for _ in 0..4 {
+            assert!(matches!(
+                driver.poll_init_request(&mut request).unwrap(),
+                OperationPoll::Pending
+            ));
+        }
+        assert!(matches!(
+            driver.poll_init_request(&mut request),
+            Err(Error::Busy)
+        ));
+        assert!(matches!(request.state, SdioInitState::ResetVoltage));
     }
 
     #[test]
@@ -2794,8 +3842,8 @@ mod tests {
                 .host
                 .commands
                 .iter()
-                .filter(|c| c.cmd == 6)
-                .all(|c| c.arg == 2),
+                .filter(|c| c.index == 6)
+                .all(|c| c.argument == 2),
             "only ACMD6 bus-width switch is issued; no CMD6 SWITCH_FUNC"
         );
         assert!(
@@ -2806,7 +3854,7 @@ mod tests {
                 .any(|e| matches!(e, MockEvent::Voltage(SignalVoltage::V180))),
             "speed-selection-disabled init must never ask the host for 1.8 V"
         );
-        assert_eq!(driver.host.last_tuning_cmd, None);
+        assert_eq!(driver.host.last_tuning, None);
     }
 
     fn ocr_ready_mmc_sector() -> Response {
@@ -2890,19 +3938,19 @@ mod tests {
         assert!(info.ext_csd.is_some());
 
         let cmds = &driver.host.commands;
-        let cmd3 = cmds.iter().find(|c| c.cmd == 3).expect("CMD3 issued");
-        assert_eq!(cmd3.arg, 1u32 << 16);
-        assert!(cmds.iter().any(|c| c.cmd == 1), "CMD1 issued");
+        let cmd3 = cmds.iter().find(|c| c.index == 3).expect("CMD3 issued");
+        assert_eq!(cmd3.argument, 1u32 << 16);
+        assert!(cmds.iter().any(|c| c.index == 1), "CMD1 issued");
 
         // Two CMD6 SWITCHes — one for BUS_WIDTH, one for HS_TIMING.
-        let cmd6s: Vec<&Command> = cmds.iter().filter(|c| c.cmd == 6).collect();
+        let cmd6s: Vec<&Command> = cmds.iter().filter(|c| c.index == 6).collect();
         assert_eq!(cmd6s.len(), 2, "two CMD6 SWITCHes (BUS_WIDTH + HS_TIMING)");
         // First: WRITE_BYTE | BUS_WIDTH(183) | value=2 (8-bit)
         let bw_arg = (0b11u32 << 24) | ((183u32) << 16) | (2u32 << 8);
-        assert_eq!(cmd6s[0].arg, bw_arg, "BUS_WIDTH=8-bit");
+        assert_eq!(cmd6s[0].argument, bw_arg, "BUS_WIDTH=8-bit");
         // Second: WRITE_BYTE | HS_TIMING(185) | value=1 (HS)
         let hs_arg = (0b11u32 << 24) | ((185u32) << 16) | (1u32 << 8);
-        assert_eq!(cmd6s[1].arg, hs_arg, "HS_TIMING=1");
+        assert_eq!(cmd6s[1].argument, hs_arg, "HS_TIMING=1");
 
         // Host should have ended up at 8-bit (Bit8 was accepted).
         assert_eq!(driver.host.bus_width, Some(BusWidth::Bit8));
@@ -3018,16 +4066,24 @@ mod tests {
         let _info = poll_init_to_completion(&mut driver).expect("HS200 init succeeds");
 
         // HS_TIMING write should carry value 0x02, not 0x01.
-        let cmd6s: Vec<&Command> = driver.host.commands.iter().filter(|c| c.cmd == 6).collect();
+        let cmd6s: Vec<&Command> = driver
+            .host
+            .commands
+            .iter()
+            .filter(|c| c.index == 6)
+            .collect();
         // Two CMD6: BUS_WIDTH(=2) and HS_TIMING(=2)
         assert_eq!(cmd6s.len(), 2);
         let hs_timing_arg = (0b11u32 << 24) | ((185u32) << 16) | (0x02u32 << 8);
-        assert_eq!(cmd6s[1].arg, hs_timing_arg, "HS_TIMING=2 (HS200)");
+        assert_eq!(cmd6s[1].argument, hs_timing_arg, "HS_TIMING=2 (HS200)");
 
         // Host hooks were exercised.
         assert_eq!(driver.host.last_voltage, Some(SignalVoltage::V180));
         assert_eq!(driver.host.last_clock, Some(ClockSpeed::Hs200));
-        assert_eq!(driver.host.last_tuning_cmd, Some(21));
+        assert_eq!(
+            driver.host.last_tuning,
+            Some((21, crate::cmd::MMC_TUNING_BLOCK_SIZE_8BIT as u16))
+        );
 
         let hs200_clock_pos = driver
             .host
@@ -3043,10 +4099,10 @@ mod tests {
                 matches!(
                     event,
                     MockEvent::Command(Command {
-                        cmd: 6,
-                        arg,
+                        index: 6,
+                        argument,
                         ..
-                    }) if *arg == hs_timing_arg
+                    }) if *argument == hs_timing_arg
                 )
             })
             .expect("HS_TIMING=2 is programmed");
@@ -3114,7 +4170,10 @@ mod tests {
                 SignalVoltage::V330
             ]
         );
-        assert_eq!(driver.host.last_tuning_cmd, Some(21));
+        assert_eq!(
+            driver.host.last_tuning,
+            Some((21, crate::cmd::MMC_TUNING_BLOCK_SIZE_8BIT as u16))
+        );
         // But ended up at HighSpeed, not Hs200.
         assert_eq!(driver.host.last_clock, Some(ClockSpeed::HighSpeed));
 
@@ -3124,8 +4183,8 @@ mod tests {
             .host
             .commands
             .iter()
-            .filter(|c| c.cmd == 6 && ((c.arg >> 16) & 0xFF) as u8 == 185)
-            .map(|c| ((c.arg >> 8) & 0xFF) as u8)
+            .filter(|c| c.index == 6 && ((c.argument >> 16) & 0xFF) as u8 == 185)
+            .map(|c| ((c.argument >> 8) & 0xFF) as u8)
             .collect();
         assert_eq!(hs_timing_writes, std::vec![0x02, 0x01]);
     }
@@ -3169,14 +4228,14 @@ mod tests {
         // because no HS200 commands were issued, but the protocol may emit
         // it defensively. Verify HS200 was NOT entered: no HS_TIMING=2,
         // no tuning, final clock is HighSpeed.
-        assert_eq!(driver.host.last_tuning_cmd, None);
+        assert_eq!(driver.host.last_tuning, None);
         assert_eq!(driver.host.last_clock, Some(ClockSpeed::HighSpeed));
         let hs_timing_writes: Vec<u8> = driver
             .host
             .commands
             .iter()
-            .filter(|c| c.cmd == 6 && ((c.arg >> 16) & 0xFF) as u8 == 185)
-            .map(|c| ((c.arg >> 8) & 0xFF) as u8)
+            .filter(|c| c.index == 6 && ((c.argument >> 16) & 0xFF) as u8 == 185)
+            .map(|c| ((c.argument >> 8) & 0xFF) as u8)
             .collect();
         assert_eq!(hs_timing_writes, std::vec![0x01]);
     }
@@ -3212,11 +4271,11 @@ mod tests {
                 .host
                 .commands
                 .iter()
-                .map(|c| c.cmd)
+                .map(|c| c.index)
                 .collect::<Vec<_>>(),
             std::vec![18]
         );
-        assert_eq!(driver.host.commands[0].arg, 7);
+        assert_eq!(driver.host.commands[0].argument, 7);
     }
 
     #[test]
@@ -3241,11 +4300,11 @@ mod tests {
                 .host
                 .commands
                 .iter()
-                .map(|c| c.cmd)
+                .map(|c| c.index)
                 .collect::<Vec<_>>(),
             std::vec![25]
         );
-        assert_eq!(driver.host.commands[0].arg, 11);
+        assert_eq!(driver.host.commands[0].argument, 11);
         assert_eq!(driver.host.writes, std::vec![buf.to_vec()]);
     }
 
@@ -3318,5 +4377,361 @@ mod tests {
         let cloned = handle.clone();
 
         assert_eq!(cloned.handle_irq().kind(), HostEventKind::TransferComplete);
+    }
+
+    struct Host2Mock {
+        transactions: Vec<(
+            Command,
+            Option<(sdio_host2::DataDirection, usize, u32, u32)>,
+        )>,
+        bus_ops: Vec<sdio_host2::BusOp>,
+        response: sdio_host2::RawResponse,
+        transaction_error: Option<sdio_host2::Error>,
+        bus_pending_polls: usize,
+        bus_error: Option<sdio_host2::Error>,
+        transaction_aborts: usize,
+        bus_aborts: usize,
+    }
+
+    struct Host2TransactionRequest {
+        response: sdio_host2::RawResponse,
+        pending_polls: usize,
+        done: bool,
+    }
+
+    struct Host2BusRequest {
+        pending_polls: usize,
+        done: bool,
+    }
+
+    impl sdio_host2::SdioHost for Host2Mock {
+        type TransactionRequest<'a>
+            = Host2TransactionRequest
+        where
+            Self: 'a;
+        type BusRequest = Host2BusRequest;
+
+        unsafe fn submit_transaction<'a>(
+            &mut self,
+            transaction: sdio_host2::Transaction<'a>,
+        ) -> Result<Self::TransactionRequest<'a>, sdio_host2::Error>
+        where
+            Self: 'a,
+        {
+            let data = transaction.data.as_ref().map(|phase| {
+                (
+                    phase.direction,
+                    phase.buffer.len(),
+                    u32::from(phase.block_size.get()),
+                    phase.block_count.get(),
+                )
+            });
+            self.transactions.push((transaction.command, data));
+            Ok(Host2TransactionRequest {
+                response: self.response,
+                pending_polls: 0,
+                done: false,
+            })
+        }
+
+        fn poll_transaction<'a>(
+            &mut self,
+            request: &mut Self::TransactionRequest<'a>,
+        ) -> Result<sdio_host2::RequestPoll<sdio_host2::RawResponse>, sdio_host2::PollRequestError>
+        where
+            Self: 'a,
+        {
+            if request.done {
+                return Err(sdio_host2::PollRequestError::AlreadyCompleted);
+            }
+            if request.pending_polls > 0 {
+                request.pending_polls -= 1;
+                return Ok(sdio_host2::RequestPoll::Pending);
+            }
+            if let Some(err) = self.transaction_error.take() {
+                request.done = true;
+                return Ok(sdio_host2::RequestPoll::Ready(Err(err)));
+            }
+            request.done = true;
+            Ok(sdio_host2::RequestPoll::Ready(Ok(request.response)))
+        }
+
+        fn abort_transaction<'a>(
+            &mut self,
+            request: &mut Self::TransactionRequest<'a>,
+        ) -> Result<(), sdio_host2::Error>
+        where
+            Self: 'a,
+        {
+            if !request.done {
+                self.transaction_aborts += 1;
+                request.done = true;
+            }
+            Ok(())
+        }
+
+        unsafe fn submit_bus_op(
+            &mut self,
+            op: sdio_host2::BusOp,
+        ) -> Result<Self::BusRequest, sdio_host2::Error> {
+            self.bus_ops.push(op);
+            Ok(Host2BusRequest {
+                pending_polls: self.bus_pending_polls,
+                done: false,
+            })
+        }
+
+        fn poll_bus_op(
+            &mut self,
+            request: &mut Self::BusRequest,
+        ) -> Result<sdio_host2::RequestPoll<()>, sdio_host2::PollRequestError> {
+            if request.done {
+                return Err(sdio_host2::PollRequestError::AlreadyCompleted);
+            }
+            if request.pending_polls > 0 {
+                request.pending_polls -= 1;
+                return Ok(sdio_host2::RequestPoll::Pending);
+            }
+            if let Some(err) = self.bus_error.take() {
+                request.done = true;
+                return Ok(sdio_host2::RequestPoll::Ready(Err(err)));
+            }
+            request.done = true;
+            Ok(sdio_host2::RequestPoll::Ready(Ok(())))
+        }
+
+        fn abort_bus_op(
+            &mut self,
+            request: &mut Self::BusRequest,
+        ) -> Result<(), sdio_host2::Error> {
+            if !request.done {
+                self.bus_aborts += 1;
+                request.done = true;
+            }
+            Ok(())
+        }
+    }
+
+    impl SdioHost2Irq for Host2Mock {
+        type Event = ();
+        type IrqHandle = NoopSdioHost2IrqHandle<()>;
+
+        fn irq_handle(&self) -> Self::IrqHandle {
+            NoopSdioHost2IrqHandle::default()
+        }
+    }
+
+    impl Host2Mock {
+        fn new(response: sdio_host2::RawResponse) -> Self {
+            Self {
+                transactions: Vec::new(),
+                bus_ops: Vec::new(),
+                response,
+                transaction_error: None,
+                bus_pending_polls: 0,
+                bus_error: None,
+                transaction_aborts: 0,
+                bus_aborts: 0,
+            }
+        }
+    }
+
+    #[test]
+    fn host2_adapter_submits_read_as_physical_transaction() {
+        let host = Host2Mock::new(ok_r1().to_raw_response(ResponseType::R1));
+        let mut driver = SdioSdmmc::new_host2(host);
+        driver.high_capacity = true;
+        let mut buf = [0u8; 512];
+
+        let mut request = driver.submit_read_blocks_into(9, &mut buf).unwrap();
+        assert!(matches!(
+            driver.poll_data_request(&mut request).unwrap(),
+            DataCommandPoll::Complete(Response::R1(_))
+        ));
+
+        let transactions = driver.host().with_host(|host| host.transactions.clone());
+        assert_eq!(transactions.len(), 1);
+        assert_eq!(transactions[0].0.index, 17);
+        assert_eq!(transactions[0].0.argument, 9);
+        assert_eq!(
+            transactions[0].1,
+            Some((sdio_host2::DataDirection::Read, 512, 512, 1))
+        );
+    }
+
+    #[test]
+    fn host2_adapter_submits_bus_ops_for_clock_changes() {
+        let host = Host2Mock::new(sdio_host2::RawResponse::empty());
+        let mut driver = SdioSdmmc::new_host2(host);
+
+        driver
+            .host_mut()
+            .set_clock(ClockSpeed::HighSpeed)
+            .expect("bus op completes");
+
+        assert_eq!(
+            driver.host().with_host(|host| host.bus_ops.clone()),
+            std::vec![sdio_host2::BusOp::SetClock(ClockSpeed::HighSpeed)]
+        );
+    }
+
+    #[test]
+    fn host2_adapter_poll_error_releases_active_command() {
+        let mut host = Host2Mock::new(ok_r1().to_raw_response(ResponseType::R1));
+        host.transaction_error = Some(sdio_host2::Error::Timeout);
+        let mut adapter = SdioHost2Adapter::new(host);
+        let cmd = Command::new(13, 0, ResponseType::R1);
+
+        adapter.submit_command(&cmd).unwrap();
+        assert!(matches!(
+            adapter.poll_command_response(),
+            Err(Error::Timeout(_))
+        ));
+
+        adapter.submit_command(&cmd).unwrap();
+    }
+
+    #[test]
+    fn host2_sync_bus_wrapper_drains_pending_request() {
+        let mut host = Host2Mock::new(sdio_host2::RawResponse::empty());
+        host.bus_pending_polls = 3;
+        let mut driver = SdioSdmmc::new_host2(host);
+
+        driver
+            .host_mut()
+            .set_clock(ClockSpeed::HighSpeed)
+            .expect("compat wrapper drains pending bus request");
+
+        assert_eq!(
+            driver.host().with_host(|host| host.bus_ops.clone()),
+            std::vec![sdio_host2::BusOp::SetClock(ClockSpeed::HighSpeed)]
+        );
+    }
+
+    #[test]
+    fn host2_init_bus_op_pending_is_observed_without_spinning() {
+        let mut host = Host2Mock::new(sdio_host2::RawResponse::empty());
+        host.bus_pending_polls = 1;
+        let mut driver = SdioSdmmc::new_host2(host);
+        let mut scratch = SdioInitScratch::new();
+
+        let mut request = driver.submit_init(&mut scratch).unwrap();
+        assert!(driver.host().with_host(|host| host.bus_ops.is_empty()));
+
+        assert!(matches!(
+            driver.poll_init_request(&mut request).unwrap(),
+            OperationPoll::Pending
+        ));
+        assert_eq!(
+            driver.host().with_host(|host| host.bus_ops.clone()),
+            std::vec![sdio_host2::BusOp::ResetAll]
+        );
+        assert!(driver.host().with_host(|host| host.transactions.is_empty()));
+
+        assert!(matches!(
+            driver.poll_init_request(&mut request).unwrap(),
+            OperationPoll::Pending
+        ));
+        assert_eq!(driver.host().with_host(|host| host.bus_ops.len()), 1);
+        assert!(driver.host().with_host(|host| host.transactions.is_empty()));
+
+        assert!(matches!(
+            driver.poll_init_request(&mut request).unwrap(),
+            OperationPoll::Pending
+        ));
+        assert_eq!(driver.host().with_host(|host| host.bus_ops.len()), 1);
+        assert!(driver.host().with_host(|host| host.transactions.is_empty()));
+
+        assert!(matches!(
+            driver.poll_init_request(&mut request).unwrap(),
+            OperationPoll::Pending
+        ));
+        assert_eq!(
+            driver.host().with_host(|host| host.bus_ops.clone()),
+            std::vec![sdio_host2::BusOp::ResetAll, sdio_host2::BusOp::PowerOn]
+        );
+        assert!(driver.host().with_host(|host| host.transactions.is_empty()));
+    }
+
+    #[test]
+    fn host2_init_starts_with_physical_bus_ops_before_cmd0() {
+        let host = Host2Mock::new(sdio_host2::RawResponse::empty());
+        let mut driver = SdioSdmmc::new_host2(host);
+        let mut scratch = SdioInitScratch::new();
+        let mut request = driver.submit_init(&mut scratch).unwrap();
+
+        for _ in 0..16 {
+            assert!(matches!(
+                driver.poll_init_request(&mut request).unwrap(),
+                OperationPoll::Pending
+            ));
+            if driver
+                .host()
+                .with_host(|host| !host.transactions.is_empty())
+            {
+                break;
+            }
+        }
+
+        assert_eq!(
+            driver.host().with_host(|host| host.bus_ops.clone()),
+            std::vec![
+                sdio_host2::BusOp::ResetAll,
+                sdio_host2::BusOp::PowerOn,
+                sdio_host2::BusOp::SetSignalVoltage(SignalVoltage::V330),
+                sdio_host2::BusOp::SetBusWidth(BusWidth::Bit1),
+                sdio_host2::BusOp::SetClock(ClockSpeed::Identification),
+            ]
+        );
+        let transactions = driver.host().with_host(|host| host.transactions.clone());
+        assert_eq!(transactions.len(), 1);
+        assert_eq!(transactions[0].0.index, 0);
+        assert!(transactions[0].1.is_none());
+    }
+
+    #[test]
+    fn host2_init_bus_op_error_releases_request_slot() {
+        let mut host = Host2Mock::new(sdio_host2::RawResponse::empty());
+        host.bus_error = Some(sdio_host2::Error::Timeout);
+        let mut driver = SdioSdmmc::new_host2(host);
+        let mut scratch = SdioInitScratch::new();
+        let mut request = driver.submit_init(&mut scratch).unwrap();
+
+        assert!(matches!(
+            driver.poll_init_request(&mut request).unwrap(),
+            OperationPoll::Pending
+        ));
+        assert!(matches!(
+            driver.poll_init_request(&mut request),
+            Err(Error::Timeout(_))
+        ));
+        assert!(request.bus_request.is_none());
+    }
+
+    #[test]
+    fn host2_adapter_drop_aborts_pending_data_request() {
+        let host = Host2Mock::new(ok_r1().to_raw_response(ResponseType::R1));
+        let mut adapter = SdioHost2Adapter::new(host);
+        let cmd = Command::new(17, 0, ResponseType::R1);
+        let mut buf = [0u8; 512];
+
+        let request = adapter.submit_read_data(&cmd, &mut buf, 512, 1).unwrap();
+        drop(request);
+
+        assert_eq!(adapter.with_host(|host| host.transaction_aborts), 1);
+    }
+
+    #[test]
+    fn host2_sync_bus_timeout_aborts_pending_bus_request() {
+        let mut host = Host2Mock::new(sdio_host2::RawResponse::empty());
+        host.bus_pending_polls = (SDIO_HOST2_COMPAT_POLL_LIMIT as usize) + 1;
+        let mut adapter = SdioHost2Adapter::new(host);
+
+        assert!(matches!(
+            adapter.set_clock(ClockSpeed::HighSpeed),
+            Err(Error::Timeout(_))
+        ));
+
+        assert_eq!(adapter.with_host(|host| host.bus_aborts), 1);
     }
 }
