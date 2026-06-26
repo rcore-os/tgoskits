@@ -531,6 +531,30 @@
       Object.entries(datasets).forEach(([canvasId, chartSets]) => drawLine(canvasId, chartSets));
     }
 
+    function clearElement(element) {
+      while (element.firstChild) element.removeChild(element.firstChild);
+    }
+
+    function appendText(parent, tag, value, className = "") {
+      const node = document.createElement(tag);
+      if (className) node.className = className;
+      node.textContent = value ?? "";
+      parent.appendChild(node);
+      return node;
+    }
+
+    function appendSwatch(parent, color) {
+      const swatch = document.createElement("i");
+      swatch.className = "swatch";
+      swatch.style.background = color;
+      parent.appendChild(swatch);
+      return swatch;
+    }
+
+    function appendCell(row, tag, value) {
+      return appendText(row, tag, value);
+    }
+
     function renderKpis(starryMetrics, linuxMetrics) {
       const fields = [
         ["平均 FPS", metric => fmt(metric.fpsAvg)],
@@ -540,14 +564,23 @@
         ["内存峰值", metric => fmt(metric.memPeakMiB, " MiB")],
         ["事件数", metric => `${metric.events}`]
       ];
-      const row = (name, metrics, klass) => `
-        <div class="summary-row ${klass}">
-          <div class="summary-label">${name}</div>
-          ${fields.map(([label, getter]) => `
-            <div class="summary-cell"><span>${label}</span><strong>${getter(metrics)}</strong></div>
-          `).join("")}
-        </div>`;
-      document.getElementById("kpis").innerHTML = row("StarryOS", starryMetrics, "starry") + row("Linux", linuxMetrics, "linux");
+      const kpis = document.getElementById("kpis");
+      clearElement(kpis);
+      const addRow = (name, metrics, klass) => {
+        const row = document.createElement("div");
+        row.className = `summary-row ${klass}`;
+        appendText(row, "div", name, "summary-label");
+        fields.forEach(([label, getter]) => {
+          const cell = document.createElement("div");
+          cell.className = "summary-cell";
+          appendText(cell, "span", label);
+          appendText(cell, "strong", getter(metrics));
+          row.appendChild(cell);
+        });
+        kpis.appendChild(row);
+      };
+      addRow("StarryOS", starryMetrics, "starry");
+      addRow("Linux", linuxMetrics, "linux");
     }
 
     function series(rows, xKey, yKey, color, label) {
@@ -642,9 +675,13 @@
       const legend = document.getElementById(`${canvasId}-legend`);
       const readout = document.getElementById(`${canvasId}-readout`);
       if (legend) {
-        legend.innerHTML = datasets.map(ds => `
-          <span><i class="swatch" style="background:${ds.color}"></i>${ds.label}</span>
-        `).join("");
+        clearElement(legend);
+        datasets.forEach(ds => {
+          const item = document.createElement("span");
+          appendSwatch(item, ds.color);
+          item.appendChild(document.createTextNode(ds.label));
+          legend.appendChild(item);
+        });
       }
       if (readout) {
         const items = datasets.map(ds => {
@@ -694,11 +731,10 @@
     function renderTimeline() {
       const rows = state.starry.robot.length ? state.starry.robot : state.linux.robot;
       const timeline = document.getElementById("timeline");
-      if (!rows.length) {
-        timeline.innerHTML = "";
-        document.getElementById("legend").innerHTML = "";
-        return;
-      }
+      const legend = document.getElementById("legend");
+      clearElement(timeline);
+      clearElement(legend);
+      if (!rows.length) return;
       const total = duration({system: [], robot: rows, events: []}) || 1;
       const segments = [];
       let prev = rows[0];
@@ -709,14 +745,22 @@
         }
       }
       segments.push([prev.state || "unknown", num(prev, "timestamp_ms") || 0, total]);
-      timeline.innerHTML = segments.map(([name, start, end]) => {
+      segments.forEach(([name, start, end]) => {
+        const segment = document.createElement("div");
         const width = Math.max(0.3, ((end - start) / total) * 100);
-        return `<div class="state-segment" title="${name}" style="width:${width}%;background:${COLORS[name] || COLORS.unknown}"></div>`;
-      }).join("");
+        segment.className = "state-segment";
+        segment.title = name;
+        segment.style.width = `${width}%`;
+        segment.style.background = COLORS[name] || COLORS.unknown;
+        timeline.appendChild(segment);
+      });
       const names = [...new Set(segments.map(s => s[0]))];
-      document.getElementById("legend").innerHTML = names.map(name =>
-        `<span><i class="swatch" style="background:${COLORS[name] || COLORS.unknown}"></i>${name}</span>`
-      ).join("");
+      names.forEach(name => {
+        const item = document.createElement("span");
+        appendSwatch(item, COLORS[name] || COLORS.unknown);
+        item.appendChild(document.createTextNode(name));
+        legend.appendChild(item);
+      });
     }
 
     function renderCompare(starryMetrics, linuxMetrics) {
@@ -732,10 +776,16 @@
         ["NPU P95", fmt(starryMetrics.npuP95, " ms"), fmt(linuxMetrics.npuP95, " ms")],
         ["缺失字段数", starryMetrics.missing, linuxMetrics.missing]
       ];
-      document.getElementById("compare-table").innerHTML = `
-        <thead><tr><th>指标</th><th>StarryOS</th><th>Linux</th></tr></thead>
-        <tbody>${rows.map(row => `<tr><td>${row[0]}</td><td>${row[1]}</td><td>${row[2]}</td></tr>`).join("")}</tbody>
-      `;
+      const table = document.getElementById("compare-table");
+      clearElement(table);
+      const thead = table.createTHead();
+      const headRow = thead.insertRow();
+      ["指标", "StarryOS", "Linux"].forEach(label => appendCell(headRow, "th", label));
+      const tbody = table.createTBody();
+      rows.forEach(values => {
+        const row = tbody.insertRow();
+        values.forEach(value => appendCell(row, "td", value));
+      });
     }
 
     function renderEvents() {
@@ -743,19 +793,23 @@
         ...state.starry.events.map(event => ({platform: "StarryOS", ...event})),
         ...state.linux.events.map(event => ({platform: "Linux", ...event}))
       ].sort((a, b) => (a.timestamp_ms || 0) - (b.timestamp_ms || 0));
-      document.getElementById("events-table").innerHTML = `
-        <thead><tr><th>时间</th><th>平台</th><th>级别</th><th>来源</th><th>事件</th><th>说明</th></tr></thead>
-        <tbody>${rows.map(event => `
-          <tr>
-            <td>${fmt((event.timestamp_ms || 0) / 1000, " s")}</td>
-            <td>${event.platform || ""}</td>
-            <td>${event.level || ""}</td>
-            <td>${event.source || ""}</td>
-            <td>${event.event || ""}</td>
-            <td>${event.message || ""}</td>
-          </tr>
-        `).join("")}</tbody>
-      `;
+      const table = document.getElementById("events-table");
+      clearElement(table);
+      const thead = table.createTHead();
+      const headRow = thead.insertRow();
+      ["时间", "平台", "级别", "来源", "事件", "说明"].forEach(label => appendCell(headRow, "th", label));
+      const tbody = table.createTBody();
+      rows.forEach(event => {
+        const row = tbody.insertRow();
+        [
+          fmt((event.timestamp_ms || 0) / 1000, " s"),
+          event.platform || "",
+          event.level || "",
+          event.source || "",
+          event.event || "",
+          event.message || ""
+        ].forEach(value => appendCell(row, "td", value));
+      });
     }
 
     function renderStatus() {
