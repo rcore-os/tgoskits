@@ -1170,6 +1170,30 @@ mod tests {
     }
 
     #[test]
+    fn wayland_prebuild_runs_apk_with_staging_library_path() {
+        let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let prebuild =
+            fs::read_to_string(workspace_root.join("apps/starry/wayland/prebuild.sh")).unwrap();
+
+        assert!(
+            prebuild.contains(r#"LD_LIBRARY_PATH="$staging_root/lib:$staging_root/usr/lib""#),
+            "wayland prebuild must run qemu-user apk with staging root library paths"
+        );
+    }
+
+    #[test]
+    fn wayland_prebuild_normalizes_staging_absolute_symlinks() {
+        let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let prebuild =
+            fs::read_to_string(workspace_root.join("apps/starry/wayland/prebuild.sh")).unwrap();
+
+        assert!(
+            prebuild.contains("normalize_staging_absolute_symlinks"),
+            "wayland prebuild must rewrite staging absolute symlinks before qemu-user apk"
+        );
+    }
+
+    #[test]
     fn qemu_build_config_comes_from_app_dir() {
         let root = tempdir().unwrap();
         let build_config = write_case_file(

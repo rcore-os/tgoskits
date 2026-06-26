@@ -241,6 +241,30 @@ log(f"WAYLAND_PREFETCH prepared {len(resolved)} apk(s) for {apk_arch}")
 PY
 }
 
+
+normalize_staging_absolute_symlinks() {
+    STAGING_ROOT="$staging_root" python3 <<PY
+import os
+
+staging_root = os.environ["STAGING_ROOT"]
+
+for root, _, names in os.walk(staging_root):
+    for name in names:
+        path = os.path.join(root, name)
+        if not os.path.islink(path):
+            continue
+        target = os.readlink(path)
+        if not target.startswith("/"):
+            continue
+        staged_target = os.path.join(staging_root, target.lstrip("/"))
+        if not os.path.exists(staged_target) and not os.path.islink(staged_target):
+            continue
+        relative_target = os.path.relpath(staged_target, os.path.dirname(path))
+        os.unlink(path)
+        os.symlink(relative_target, path)
+PY
+}
+
 install_wayland_packages_in_staging() {
     local qemu_runner apk_dir
 
@@ -261,16 +285,19 @@ install_wayland_packages_in_staging() {
 
     echo "WAYLAND_PREBUILD extracting rootfs for qemu-user APK install"
     debugfs -R "rdump / $staging_root" "$rootfs"
+    normalize_staging_absolute_symlinks
 
     if [[ -f /etc/resolv.conf ]]; then
         cp /etc/resolv.conf "$staging_root/etc/resolv.conf"
     fi
 
     echo "WAYLAND_PREBUILD installing Weston and GTK demo into staging rootfs"
-    env -u LD_LIBRARY_PATH QEMU_LD_PREFIX="$staging_root" \
+    QEMU_LD_PREFIX="$staging_root" \
+    LD_LIBRARY_PATH="$staging_root/lib:$staging_root/usr/lib" \
         "$qemu_runner" -L "$staging_root" \
             "$staging_root/sbin/apk" \
             --root "$staging_root" \
+            --repositories-file "$staging_root/etc/apk/repositories" \
             --keys-dir "$staging_root/etc/apk/keys" \
             --allow-untrusted \
             --no-network \
