@@ -6735,6 +6735,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "rockchip-jpeg"
+version = "0.1.0"
+dependencies = [
+ "dma-api",
+ "rdif-base",
+]
+
+[[package]]
 name = "rockchip-npu"
 version = "0.2.7"
 dependencies = [

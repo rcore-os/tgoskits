@@ -76,6 +76,7 @@ members = [
     "drivers/soc/rockchip/*",
     "drivers/test_crates/*",
     "drivers/tpu/*",
+    "drivers/vpu/*",
     "drivers/usb/test_crates/*",
     "drivers/usb/usb-device/hid/*",
     "drivers/usb/usb-device/uvc",
