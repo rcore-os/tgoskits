@@ -1,7 +1,5 @@
 //! Interrupt management.
 
-#[cfg(feature = "ipi")]
-pub use ax_config::devices::IPI_IRQ;
 use ax_cpu::trap::set_irq_handler;
 pub use ax_plat::irq::{
     AutoEnable, BoxedIrqHandler, CpuId, CpuMask, IrqAffinity, IrqContext, IrqError, IrqExecution,
@@ -12,6 +10,12 @@ pub use ax_plat::irq::{
 };
 #[cfg(feature = "ipi")]
 pub use ax_plat::irq::{IpiTarget, send_ipi};
+
+/// Returns the platform IRQ number used for runtime IPIs.
+#[cfg(feature = "ipi")]
+pub fn ipi_irq() -> usize {
+    ax_plat::irq::ipi_irq()
+}
 
 /// IRQ handler.
 ///

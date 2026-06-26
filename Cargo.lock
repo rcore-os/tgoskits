@@ -755,7 +755,6 @@ name = "ax-feat"
 version = "0.5.22"
 dependencies = [
  "ax-alloc",
- "ax-config",
  "ax-display",
  "ax-driver",
  "ax-fs-ng",
@@ -800,7 +799,6 @@ name = "ax-hal"
 version = "0.5.21"
 dependencies = [
  "ax-alloc",
- "ax-config",
  "ax-cpu",
  "ax-kernel-guard",
  "ax-kspin",
@@ -843,12 +841,12 @@ dependencies = [
 name = "ax-ipi"
 version = "0.5.20"
 dependencies = [
- "ax-config",
  "ax-hal",
  "ax-kspin",
  "ax-lazyinit",
  "ax-percpu",
  "log",
+ "toml 1.1.2+spec-1.1.0",
 ]
 
 [[package]]
@@ -1116,7 +1114,6 @@ version = "0.8.1"
 dependencies = [
  "aic8800",
  "ax-alloc",
- "ax-config",
  "ax-crate-interface",
  "ax-ctor-bare",
  "ax-display",
@@ -1147,6 +1144,7 @@ dependencies = [
  "rdrive",
  "sdhci-cv1800",
  "spin 0.12.0",
+ "toml 1.1.2+spec-1.1.0",
 ]
 
 [[package]]
@@ -1192,7 +1190,6 @@ name = "ax-task"
 version = "0.5.22"
 dependencies = [
  "ax-alloc",
- "ax-config",
  "ax-cpumask",
  "ax-crate-interface",
  "ax-errno 0.6.0",
@@ -1213,6 +1210,7 @@ dependencies = [
  "futures-util",
  "log",
  "spin 0.12.0",
+ "toml 1.1.2+spec-1.1.0",
 ]
 
 [[package]]
@@ -1426,7 +1424,6 @@ name = "axplat-dyn"
 version = "0.7.5"
 dependencies = [
  "anyhow",
- "ax-config-macros",
  "ax-cpu",
  "ax-driver",
  "ax-errno 0.6.0",

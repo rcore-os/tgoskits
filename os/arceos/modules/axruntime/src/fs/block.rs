@@ -86,7 +86,7 @@ impl BlockTaskOps for RuntimeTaskOps {
     }
 
     fn spawn(&self, name: String, f: Box<dyn FnOnce() + Send + 'static>) {
-        ax_task::spawn_raw(f, name, ax_config::TASK_STACK_SIZE);
+        ax_task::spawn_raw(f, name, crate::runtime_default_task_stack_size());
     }
 }
 

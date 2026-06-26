@@ -151,4 +151,8 @@ impl IrqIf for DummyIrq {
     }
 
     fn send_ipi(_irq: usize, _target: IpiTarget) {}
+
+    fn ipi_irq() -> usize {
+        0
+    }
 }

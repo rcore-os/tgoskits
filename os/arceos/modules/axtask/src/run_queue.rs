@@ -53,8 +53,8 @@ percpu_static! {
 /// Access to this variable is marked as `unsafe` because it contains `MaybeUninit` references,
 /// which require careful handling to avoid undefined behavior. The array should be fully
 /// initialized before being accessed to ensure safe usage.
-static mut RUN_QUEUES: [MaybeUninit<&'static mut AxRunQueue>; ax_config::plat::MAX_CPU_NUM] =
-    [ARRAY_REPEAT_VALUE; ax_config::plat::MAX_CPU_NUM];
+static mut RUN_QUEUES: [MaybeUninit<&'static mut AxRunQueue>; crate::build_info::CPU_CAPACITY] =
+    [ARRAY_REPEAT_VALUE; crate::build_info::CPU_CAPACITY];
 #[allow(clippy::declare_interior_mutable_const)] // It's ok because it's used only for initialization `RUN_QUEUES`.
 const ARRAY_REPEAT_VALUE: MaybeUninit<&'static mut AxRunQueue> = MaybeUninit::uninit();
 
@@ -66,7 +66,7 @@ fn main_task_stack() -> TaskStack {
 
 #[cfg(feature = "host-test")]
 fn main_task_stack() -> TaskStack {
-    TaskStack::alloc(ax_config::TASK_STACK_SIZE)
+    TaskStack::alloc(crate::default_task_stack_size())
 }
 
 /// Returns a reference to the current run queue in [`CurrentRunQueueRef`].
@@ -109,7 +109,7 @@ pub(crate) fn current_run_queue<G: BaseGuard>() -> CurrentRunQueueRef<'static, G
 ///
 /// This function will panic if `cpu_mask` is empty, indicating that there are no available CPUs for task execution.
 #[cfg(feature = "smp")]
-// The modulo operation is safe here because `ax_config::plat::MAX_CPU_NUM` is always greater than 1 with "smp" enabled.
+// The modulo operation is safe here because `CPU_CAPACITY` is always greater than 1 with "smp" enabled.
 #[allow(clippy::modulo_one)]
 #[inline]
 fn select_run_queue_index(cpumask: AxCpuMask) -> usize {
@@ -120,7 +120,8 @@ fn select_run_queue_index(cpumask: AxCpuMask) -> usize {
 
     // Round-robin selection of the run queue index.
     loop {
-        let index = RUN_QUEUE_INDEX.fetch_add(1, Ordering::SeqCst) % ax_config::plat::MAX_CPU_NUM;
+        let index =
+            RUN_QUEUE_INDEX.fetch_add(1, Ordering::SeqCst) % crate::build_info::CPU_CAPACITY;
         if cpumask.get(index) {
             return index;
         }
@@ -168,8 +169,8 @@ static REMOTE_RESCHEDULE_REQUESTS: core::sync::atomic::AtomicUsize =
     feature = "ipi",
     not(all(test, feature = "host-test"))
 ))]
-static REMOTE_RESCHEDULE_PENDING: [AtomicBool; ax_config::plat::MAX_CPU_NUM] =
-    [const { AtomicBool::new(false) }; ax_config::plat::MAX_CPU_NUM];
+static REMOTE_RESCHEDULE_PENDING: [AtomicBool; crate::build_info::CPU_CAPACITY] =
+    [const { AtomicBool::new(false) }; crate::build_info::CPU_CAPACITY];
 
 #[cfg(all(test, feature = "smp", feature = "ipi", feature = "host-test"))]
 static REMOTE_RESCHEDULE_PENDING: AtomicBool = AtomicBool::new(false);
@@ -365,7 +366,7 @@ pub(crate) fn select_wake_run_queue<G: BaseGuard>(task: &AxTaskRef) -> AxRunQueu
         let cpumask = task.cpumask();
         let index = if cpumask.get(current_cpu) {
             current_cpu
-        } else if last_cpu < ax_config::plat::MAX_CPU_NUM && cpumask.get(last_cpu) {
+        } else if last_cpu < crate::build_info::CPU_CAPACITY && cpumask.get(last_cpu) {
             last_cpu
         } else {
             select_run_queue_index(cpumask)
@@ -732,12 +733,11 @@ impl<G: BaseGuard> CurrentRunQueueRef<'_, G> {
 
     #[cfg(feature = "smp")]
     fn migrate_current_to_affinity(&mut self) {
-        const MIGRATION_TASK_STACK_SIZE: usize = ax_config::TASK_STACK_SIZE;
         let curr = self.current_task.clone();
         let migration_task = TaskInner::new(
             move || crate::run_queue::migrate_entry(curr),
             "migration-task".into(),
-            MIGRATION_TASK_STACK_SIZE,
+            crate::default_task_stack_size(),
         )
         .into_arc();
 
@@ -749,7 +749,8 @@ impl AxRunQueue {
     /// Create a new run queue for the specified CPU.
     /// The run queue is initialized with a per-CPU gc task in its scheduler.
     fn new(cpu_id: usize) -> Self {
-        let gc_task = TaskInner::new(gc_entry, "gc".into(), ax_config::TASK_STACK_SIZE).into_arc();
+        let gc_task =
+            TaskInner::new(gc_entry, "gc".into(), crate::default_task_stack_size()).into_arc();
         // gc task should be pinned to the current CPU.
         gc_task.set_cpumask(AxCpuMask::one_shot(cpu_id));
 
@@ -977,11 +978,11 @@ pub(crate) fn init() {
     // Create the `idle` task (not current task).
     // The idle task will run when there is no other runnable task.
     #[cfg(feature = "lockdep")]
-    const IDLE_TASK_STACK_SIZE: usize = ax_config::TASK_STACK_SIZE;
+    let idle_task_stack_size = crate::default_task_stack_size();
     // TODO: Consider unifying the non-lockdep idle stack size with the task stack configuration.
     #[cfg(not(feature = "lockdep"))]
-    const IDLE_TASK_STACK_SIZE: usize = 16384;
-    let idle_task = TaskInner::new(|| crate::run_idle(), "idle".into(), IDLE_TASK_STACK_SIZE);
+    let idle_task_stack_size = 16384;
+    let idle_task = TaskInner::new(|| crate::run_idle(), "idle".into(), idle_task_stack_size);
     // idle task should be pinned to the current CPU.
     idle_task.set_cpumask(AxCpuMask::one_shot(cpu_id));
     IDLE_TASK.with_current(|i| {

@@ -22,7 +22,6 @@ thead-mae = ["somehal/thead-mae", "ax-cpu/xuantie-c9xx"]
 
 [dependencies]
 anyhow = { version = "1", default-features = false }
-ax-config-macros = { workspace = true }
 ax-cpu.workspace = true
 ax-driver = { workspace = true, features = ["plat-dyn"] }
 ax-errno.workspace = true

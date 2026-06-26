@@ -316,6 +316,10 @@ impl PlatOp for Plat {
         }
     }
 
+    fn ipi_irq() -> rdrive::IrqId {
+        APIC_IPI_VECTOR.into()
+    }
+
     fn begin_irq(raw: usize) -> Option<Self::ActiveIrq> {
         if raw == APIC_TIMER_VECTOR {
             return Some(ActiveIrq::new(someboot::irq::systimer_irq().raw().into()));

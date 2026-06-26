@@ -268,4 +268,7 @@ pub trait IrqIf {
 
     /// Sends an inter-processor interrupt (IPI) to the specified target CPU or all CPUs.
     fn send_ipi(irq_num: usize, target: IpiTarget);
+
+    /// Returns the platform IRQ number used for runtime IPIs.
+    fn ipi_irq() -> usize;
 }

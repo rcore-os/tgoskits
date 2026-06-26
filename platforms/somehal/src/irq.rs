@@ -67,6 +67,10 @@ pub fn send_ipi(irq: IrqId, target: IpiTarget) {
     Plat::send_ipi(irq, target);
 }
 
+pub fn ipi_irq() -> IrqId {
+    Plat::ipi_irq()
+}
+
 pub fn systick_irq() -> IrqId {
     Plat::systick_irq()
 }
