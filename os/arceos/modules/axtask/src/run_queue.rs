@@ -152,12 +152,11 @@ fn get_run_queue(index: usize) -> &'static mut AxRunQueue {
 #[cfg(all(feature = "smp", feature = "ipi"))]
 #[cfg_attr(all(test, feature = "host-test"), allow(dead_code))]
 fn request_current_reschedule() {
+    clear_remote_reschedule_pending_for_current_cpu();
     #[cfg(feature = "preempt")]
     if let Some(curr) = crate::current_may_uninit() {
         curr.set_force_resched_pending(true);
-        return;
     }
-    clear_remote_reschedule_pending_for_current_cpu();
 }
 
 #[cfg(all(test, feature = "smp", feature = "ipi", feature = "host-test"))]
@@ -257,6 +256,7 @@ mod tests {
 
             curr.set_preempt_pending(false);
             curr.set_force_resched_pending(false);
+            super::REMOTE_RESCHEDULE_PENDING.store(true, Ordering::Release);
 
             super::request_current_reschedule();
 
@@ -268,10 +268,24 @@ mod tests {
                 !curr.preempt_pending_for_test(),
                 "remote IPI reschedule must not rely on ordinary RR preemption",
             );
+            assert!(
+                !super::REMOTE_RESCHEDULE_PENDING.load(Ordering::Acquire),
+                "remote IPI callback must clear the coalescing bit when it is delivered",
+            );
 
             curr.set_force_resched_pending(false);
             curr.set_preempt_pending(false);
         });
+
+        #[cfg(feature = "preempt")]
+        {
+            super::kick_remote_cpu(REMOTE_CPU);
+            assert_eq!(
+                super::REMOTE_RESCHEDULE_REQUESTS.load(Ordering::Acquire),
+                3,
+                "a delivered remote IPI must allow a later kick to enqueue a new callback",
+            );
+        }
 
         super::REMOTE_RESCHEDULE_PENDING.store(false, Ordering::Release);
         super::REMOTE_RESCHEDULE_REQUESTS.store(0, Ordering::Release);
