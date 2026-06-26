@@ -1,5 +1,21 @@
 #!/bin/sh
 set -eu
+#
+# Apache smoke test — stable coverage of verified behaviors.
+#
+# This smoke tests Apache startup, basic HTTP GET/HEAD, keepalive, and graceful
+# shutdown on the current Alpine mirror-provided apache2 package. It does not
+# exercise all socket options or Linux-specific accept filters; behaviors that
+# depend on specific Apache compile-time features or that cannot be consistently
+# reproduced in the local test environment are isolated in debug probes under
+# qemu/debug/ and are not part of the default smoke flow.
+#
+# Known limitations:
+# - TCP_DEFER_ACCEPT is not triggered by the apache2 build currently pulled from
+#   the Alpine mirror in local tests. Debug coverage for TCP_DEFER_ACCEPT
+#   setsockopt behavior is provided by the dedicated probe at
+#   debug/tcp-defer-accept-probe.c and qemu/debug/qemu-x86_64-tcp-defer-accept-probe.toml.
+#   See debug/ISSUE-002-tcp-defer-accept.md for context and experimental results.
 
 BASE=/tmp/apache-tests
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname "$0")" && pwd)

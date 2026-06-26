@@ -67,3 +67,6 @@ Prebuild injects:
 
 - `debug/ISSUE-001-phase20-prefork-readiness.md` records the phase20 readiness
   overspecification finding and the debug probe used to investigate it.
+- `debug/ISSUE-002-tcp-defer-accept.md` records the Apache smoke failure in a
+  reviewer environment, the `TCP_DEFER_ACCEPT` setsockopt errno 92 warning,
+  and the debug probe isolating listen-socket behavior after setsockopt failure.
