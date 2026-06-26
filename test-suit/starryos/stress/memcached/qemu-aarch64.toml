@@ -95,7 +95,7 @@ rm -f /tmp/memcached.out
 rm -f /tmp/memcached-delete.out
 rm -f /tmp/memcached-stats.out
 
-memcached -u root -l 127.0.0.1 -p 11211 -m 16 -c 16 -vv > /tmp/memcached.log 2>&1 &
+memcached -u root -l 127.0.0.1 -p 11211 -m 16 -c 16 -t 1 -vv > /tmp/memcached.log 2>&1 &
 MEMCACHED_PID=$!
 echo "MEMCACHED_PID=$MEMCACHED_PID"
 
@@ -261,4 +261,3 @@ echo "MEMCACHED_TEST_DONE=$(date +%s)"
 success_regex = ["(?m)^MEMCACHED_TEST_DONE=\\d+\\s*$"]
 fail_regex = ['(?m)^(?:\x1b\[[0-9;]*[A-Za-z])*panicked at(?:\s|$)', '(?m)^MEMCACHED_TEST_FAILED\s*$']
 timeout = 1800
-
