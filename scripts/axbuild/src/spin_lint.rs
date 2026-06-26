@@ -11,6 +11,8 @@ use walkdir::{DirEntry, WalkDir};
 const MAIN_SPIN_PATH: &str = "components/spin";
 const COMPAT_SPIN_0_10_PATH: &str = "components/spin-0.10";
 const ALLOWED_SPIN_VERSIONS: &[&str] = &["0.10.0", "0.12.0"];
+const FORBIDDEN_SPIN_RWLOCK_PATTERNS: &[&str] =
+    &["spin::RwLock", "spin::rwlock", "use spin::RwLock"];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Finding {
@@ -72,6 +74,7 @@ fn lint_workspace(workspace_root: &Path) -> anyhow::Result<Vec<Finding>> {
     check_vendored_spin_crates(workspace_root, &mut findings)?;
     check_root_manifest(workspace_root, &mut findings)?;
     check_workspace_manifests(workspace_root, &mut findings)?;
+    check_no_spin_rwlock_usage(workspace_root, &mut findings)?;
     check_lockfile(workspace_root, &mut findings)?;
     Ok(findings)
 }
@@ -124,7 +127,7 @@ fn check_vendored_spin_crate(
 
     if name != Some("spin") || version != Some(expected_version) {
         findings.push(Finding::new(
-            manifest_path,
+            &manifest_path,
             label,
             format!(
                 "expected package `spin` version `{expected_version}`, found name `{:?}` version \
@@ -135,6 +138,30 @@ fn check_vendored_spin_crate(
                 "keep `{relative_path}` as the registered vendored spin {expected_version} copy"
             ),
         ));
+    }
+
+    let features = manifest.get("features").and_then(Value::as_table);
+    if let Some(features) = features {
+        if features.contains_key("rwlock") {
+            findings.push(Finding::new(
+                &manifest_path,
+                "features.rwlock",
+                "vendored spin must not expose the upstream rwlock feature",
+                "use `ax_kspin::SpinRwLock` instead of restoring `spin::RwLock`",
+            ));
+        }
+        if let Some(default_features) = features.get("default").and_then(Value::as_array) {
+            for (index, feature) in default_features.iter().enumerate() {
+                if feature.as_str() == Some("rwlock") {
+                    findings.push(Finding::new(
+                        &manifest_path,
+                        format!("features.default[{index}]"),
+                        "vendored spin default features must not include rwlock",
+                        "remove `rwlock` from the default feature set",
+                    ));
+                }
+            }
+        }
     }
 
     Ok(())
@@ -478,6 +505,62 @@ fn check_spin_dependency_table(
     let _ = workspace_root;
 }
 
+fn check_no_spin_rwlock_usage(
+    workspace_root: &Path,
+    findings: &mut Vec<Finding>,
+) -> anyhow::Result<()> {
+    for entry in WalkDir::new(workspace_root)
+        .into_iter()
+        .filter_entry(|entry| should_visit_source_entry(workspace_root, entry))
+    {
+        let entry = entry.context("failed to walk workspace source files")?;
+        if !entry.file_type().is_file()
+            || entry.path().extension().and_then(|ext| ext.to_str()) != Some("rs")
+        {
+            continue;
+        }
+
+        let path = entry.path();
+        if path == workspace_root.join("scripts/axbuild/src/spin_lint.rs") {
+            continue;
+        }
+        let contents = fs::read_to_string(path)
+            .with_context(|| format!("failed to read {}", path.display()))?;
+        for (line_index, line) in contents.lines().enumerate() {
+            for pattern in FORBIDDEN_SPIN_RWLOCK_PATTERNS {
+                if line.contains(pattern) {
+                    findings.push(Finding::new(
+                        path,
+                        format!("line {}", line_index + 1),
+                        format!("forbidden `{pattern}` usage"),
+                        "use `ax_kspin::SpinRwLock` for non-sleeping read-write locks",
+                    ));
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn should_visit_source_entry(workspace_root: &Path, entry: &DirEntry) -> bool {
+    if !entry.file_type().is_dir() {
+        return true;
+    }
+    let path = entry.path();
+    path == workspace_root
+        || !is_ignored_source_dir_name(entry)
+            && !path_is_under(workspace_root, path, MAIN_SPIN_PATH)
+            && !path_is_under(workspace_root, path, COMPAT_SPIN_0_10_PATH)
+}
+
+fn is_ignored_source_dir_name(entry: &DirEntry) -> bool {
+    matches!(
+        entry.file_name().to_str(),
+        Some(".git" | "target" | "tmp" | ".cache" | "docs")
+    )
+}
+
 fn check_no_external_source(
     manifest_path: &Path,
     location: impl Into<String>,
@@ -815,6 +898,75 @@ spin = { version = "0.12", path = "components/spin" }
             findings
                 .iter()
                 .any(|finding| finding.message.contains("missing crates.io patch table"))
+        );
+    }
+
+    #[test]
+    fn rejects_vendored_spin_rwlock_feature() {
+        let root = tempfile::tempdir().unwrap();
+        write_minimal_workspace(
+            root.path(),
+            r#"
+[[package]]
+name = "spin"
+version = "0.12.0"
+"#,
+        );
+        write_file(
+            root.path(),
+            "components/spin/Cargo.toml",
+            r#"
+[package]
+name = "spin"
+version = "0.12.0"
+
+[features]
+default = ["rwlock", "once"]
+rwlock = []
+"#,
+        );
+
+        let findings = lint_workspace(root.path()).unwrap();
+
+        assert!(
+            findings
+                .iter()
+                .any(|finding| finding.message.contains("must not expose"))
+        );
+        assert!(
+            findings
+                .iter()
+                .any(|finding| finding.message.contains("must not include rwlock"))
+        );
+    }
+
+    #[test]
+    fn rejects_spin_rwlock_source_usage() {
+        let root = tempfile::tempdir().unwrap();
+        write_minimal_workspace(
+            root.path(),
+            r#"
+[[package]]
+name = "spin"
+version = "0.12.0"
+"#,
+        );
+        write_file(
+            root.path(),
+            "crate/src/lib.rs",
+            r#"
+pub fn bad() {
+    let _lock = spin::RwLock::new(());
+}
+"#,
+        );
+
+        let findings = lint_workspace(root.path()).unwrap();
+
+        assert!(
+            findings
+                .iter()
+                .any(|finding| finding.message.contains("forbidden `spin::RwLock`"))
         );
     }
 

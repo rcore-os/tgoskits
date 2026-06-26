@@ -23,7 +23,6 @@ readme = "README.md"
 keywords = [
     "spinlock",
     "mutex",
-    "rwlock",
 ]
 license = "MIT"
 repository = "https://github.com/mvdnes/spin-rs.git"
@@ -60,7 +59,6 @@ default = [
     "lock_api",
     "mutex",
     "spin_mutex",
-    "rwlock",
     "once",
     "lazy",
     "barrier",
@@ -72,7 +70,6 @@ mutex = []
 once = []
 portable-atomic = ["dep:portable-atomic"]
 portable_atomic = ["portable-atomic"]
-rwlock = []
 spin_mutex = ["mutex"]
 std = []
 ticket_mutex = ["mutex"]

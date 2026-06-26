@@ -18,10 +18,9 @@ spinlocks. If you have access to `std`, it's likely that the primitives in
 
 ## Features
 
-- `Mutex`, `RwLock`, `Once`, `Lazy` and `Barrier` equivalents
+- `Mutex`, `Once`, `Lazy` and `Barrier` equivalents
 - Support for `no_std` environments
 - [`lock_api`](https://crates.io/crates/lock_api) compatibility
-- Upgradeable `RwLock` guards
 - Guards can be sent and shared between threads
 - Guard leaking
 - Ticket locks
@@ -34,6 +33,12 @@ Include the following under the `[dependencies]` section in your `Cargo.toml` fi
 ```toml
 spin = "x.y"
 ```
+
+## TGOSKits vendored status
+
+This vendored compatibility copy is intentionally reduced during the TGOSKits
+spin migration. `spin::RwLock`, `spin::rwlock`, and the `rwlock` feature have
+been removed. New read-write lock users should use `ax_kspin::SpinRwLock`.
 
 ## Example
 
@@ -79,8 +84,6 @@ The crate comes with a few feature flags that you may wish to use.
 - `use_ticket_mutex` switches to a ticket lock for the implementation of `Mutex`. This
   is recommended only on targets for which ordinary spinning locks perform very badly
   because it will change the implementation used by other crates that depend on `spin`.
-
-- `rwlock` enables the `RwLock` type.
 
 - `once` enables the `Once` type.
 

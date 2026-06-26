@@ -8,13 +8,11 @@
 //!
 //! # Features
 //!
-//! - `Mutex`, `RwLock`, `Once`/`SyncOnceCell`, and `SyncLazy` equivalents
+//! - `Mutex`, `Once`/`SyncOnceCell`, and `SyncLazy` equivalents
 //!
 //! - Support for `no_std` environments
 //!
 //! - [`lock_api`](https://crates.io/crates/lock_api) compatibility
-//!
-//! - Upgradeable `RwLock` guards
 //!
 //! - Guards can be sent and shared between threads
 //!
@@ -32,16 +30,9 @@
 //!
 //! Many of the types defined in this crate have 'additional capabilities' when compared to `std::sync`:
 //!
-//! - Because spinning does not depend on the thread-driven model of `std::sync`, guards ([`MutexGuard`],
-//!   [`RwLockReadGuard`], [`RwLockWriteGuard`], etc.) may be sent and shared between threads.
-//!
-//! - [`RwLockUpgradableGuard`] supports being upgraded into a [`RwLockWriteGuard`].
-//!
 //! - Guards support [leaking](https://doc.rust-lang.org/nomicon/leaking.html).
 //!
 //! - [`Once`] owns the value returned by its `call_once` initializer.
-//!
-//! - [`RwLock`] supports counting readers and writers.
 //!
 //! Conversely, the types in this crate do not have some of the features `std::sync` has:
 //!
@@ -91,9 +82,6 @@ pub mod mutex;
 #[cfg_attr(docsrs, doc(cfg(feature = "once")))]
 pub mod once;
 pub mod relax;
-#[cfg(feature = "rwlock")]
-#[cfg_attr(docsrs, doc(cfg(feature = "rwlock")))]
-pub mod rwlock;
 
 #[cfg(feature = "mutex")]
 #[cfg_attr(docsrs, doc(cfg(feature = "mutex")))]
@@ -102,9 +90,6 @@ pub use mutex::MutexGuard;
 #[cfg_attr(docsrs, doc(cfg(feature = "std")))]
 pub use relax::Yield;
 pub use relax::{RelaxStrategy, Spin};
-#[cfg(feature = "rwlock")]
-#[cfg_attr(docsrs, doc(cfg(feature = "rwlock")))]
-pub use rwlock::RwLockReadGuard;
 
 // Avoid confusing inference errors by aliasing away the relax strategy parameter. Users that need to use a different
 // relax strategy can do so by accessing the types through their fully-qualified path. This is a little bit horrible
@@ -142,31 +127,6 @@ pub type Mutex<T> = crate::mutex::Mutex<T>;
 #[cfg_attr(docsrs, doc(cfg(feature = "once")))]
 pub type Once<T = ()> = crate::once::Once<T>;
 
-/// A lock that provides data access to either one writer or many readers. See [`rwlock::RwLock`] for documentation.
-///
-/// A note for advanced users: this alias exists to avoid subtle type inference errors due to the default relax
-/// strategy type parameter. If you need a non-default relax strategy, use the fully-qualified path.
-#[cfg(feature = "rwlock")]
-#[cfg_attr(docsrs, doc(cfg(feature = "rwlock")))]
-pub type RwLock<T> = crate::rwlock::RwLock<T>;
-
-/// A guard that provides immutable data access but can be upgraded to [`RwLockWriteGuard`]. See
-/// [`rwlock::RwLockUpgradableGuard`] for documentation.
-///
-/// A note for advanced users: this alias exists to avoid subtle type inference errors due to the default relax
-/// strategy type parameter. If you need a non-default relax strategy, use the fully-qualified path.
-#[cfg(feature = "rwlock")]
-#[cfg_attr(docsrs, doc(cfg(feature = "rwlock")))]
-pub type RwLockUpgradableGuard<'a, T> = crate::rwlock::RwLockUpgradableGuard<'a, T>;
-
-/// A guard that provides mutable data access. See [`rwlock::RwLockWriteGuard`] for documentation.
-///
-/// A note for advanced users: this alias exists to avoid subtle type inference errors due to the default relax
-/// strategy type parameter. If you need a non-default relax strategy, use the fully-qualified path.
-#[cfg(feature = "rwlock")]
-#[cfg_attr(docsrs, doc(cfg(feature = "rwlock")))]
-pub type RwLockWriteGuard<'a, T> = crate::rwlock::RwLockWriteGuard<'a, T>;
-
 /// Spin synchronisation primitives, but compatible with [`lock_api`](https://crates.io/crates/lock_api).
 #[cfg(feature = "lock_api")]
 #[cfg_attr(docsrs, doc(cfg(feature = "lock_api")))]
@@ -181,26 +141,6 @@ pub mod lock_api {
     #[cfg_attr(docsrs, doc(cfg(feature = "mutex")))]
     pub type MutexGuard<'a, T> = lock_api_crate::MutexGuard<'a, crate::Mutex<()>, T>;
 
-    /// A lock that provides data access to either one writer or many readers (compatible with [`lock_api`](https://crates.io/crates/lock_api)).
-    #[cfg(feature = "rwlock")]
-    #[cfg_attr(docsrs, doc(cfg(feature = "rwlock")))]
-    pub type RwLock<T> = lock_api_crate::RwLock<crate::RwLock<()>, T>;
-
-    /// A guard that provides immutable data access (compatible with [`lock_api`](https://crates.io/crates/lock_api)).
-    #[cfg(feature = "rwlock")]
-    #[cfg_attr(docsrs, doc(cfg(feature = "rwlock")))]
-    pub type RwLockReadGuard<'a, T> = lock_api_crate::RwLockReadGuard<'a, crate::RwLock<()>, T>;
-
-    /// A guard that provides mutable data access (compatible with [`lock_api`](https://crates.io/crates/lock_api)).
-    #[cfg(feature = "rwlock")]
-    #[cfg_attr(docsrs, doc(cfg(feature = "rwlock")))]
-    pub type RwLockWriteGuard<'a, T> = lock_api_crate::RwLockWriteGuard<'a, crate::RwLock<()>, T>;
-
-    /// A guard that provides immutable data access but can be upgraded to [`RwLockWriteGuard`] (compatible with [`lock_api`](https://crates.io/crates/lock_api)).
-    #[cfg(feature = "rwlock")]
-    #[cfg_attr(docsrs, doc(cfg(feature = "rwlock")))]
-    pub type RwLockUpgradableReadGuard<'a, T> =
-        lock_api_crate::RwLockUpgradableReadGuard<'a, crate::RwLock<()>, T>;
 }
 
 /// In the event of an invalid operation, it's best to abort the current process.

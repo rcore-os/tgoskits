@@ -8,7 +8,7 @@ authors = [
 ]
 license = "MIT"
 repository = "https://github.com/mvdnes/spin-rs.git"
-keywords = ["spinlock", "mutex", "rwlock"]
+keywords = ["spinlock", "mutex"]
 description = "Spin-based synchronization primitives"
 rust-version = "1.60"
 
@@ -18,7 +18,7 @@ lock_api_crate = { package = "lock_api", version = "0.4", optional = true }
 portable-atomic = { version = "1.3", optional = true, default-features = false, features = ["require-cas"] }
 
 [features]
-default = ["lock_api", "mutex", "spin_mutex", "rwlock", "once", "lazy", "barrier"]
+default = ["lock_api", "mutex", "spin_mutex", "once", "lazy", "barrier"]
 
 # Enables `Mutex`. Must be used with either `spin_mutex` or `use_ticket_mutex`.
 mutex = []
@@ -34,9 +34,6 @@ fair_mutex = ["mutex"]
 
 # Enables the non-default ticket mutex implementation for `Mutex`.
 use_ticket_mutex = ["mutex", "ticket_mutex"]
-
-# Enables `RwLock`.
-rwlock = []
 
 # Enables `Once`.
 once = []
