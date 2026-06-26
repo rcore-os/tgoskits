@@ -63,7 +63,6 @@ ipi = ["irq"]
 
 [dependencies]
 ax-alloc = { workspace = true, optional = true }
-ax-config.workspace = true
 ax-cpu.workspace = true
 ax-kspin = { workspace = true, optional = true }
 ax-plat.workspace = true
@@ -86,5 +85,4 @@ ax-plat-riscv64-sg2002 = { workspace = true, optional = true }
 ax-plat-loongarch64-qemu-virt = { workspace = true, optional = true }
 
 [build-dependencies]
-ax-config.workspace = true
 toml.workspace = true

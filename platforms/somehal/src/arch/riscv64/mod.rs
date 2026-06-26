@@ -53,6 +53,10 @@ impl PlatOp for Plat {
         }
     }
 
+    fn ipi_irq() -> rdrive::IrqId {
+        plic::ipi_irq()
+    }
+
     fn send_ipi_to_cpu(cpu_id: usize) {
         plic::send_ipi_to_cpu(cpu_id);
     }

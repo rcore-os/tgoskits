@@ -23,6 +23,10 @@ impl PlatOp for Plat {
         gic::send_ipi(irq, target);
     }
 
+    fn ipi_irq() -> rdrive::IrqId {
+        0usize.into()
+    }
+
     fn begin_irq(raw: usize) -> Option<Self::ActiveIrq> {
         let _ = raw;
         gic::begin_irq()

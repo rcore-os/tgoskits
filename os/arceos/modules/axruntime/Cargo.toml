@@ -75,7 +75,6 @@ vsock = ["net", "ax-net/vsock", "ax-driver/vsock"]
 aic8800 = {workspace = true, optional = true}
 sdhci-cv1800 = {workspace = true, optional = true}
 ax-alloc = {workspace = true}
-ax-config = {workspace = true}
 ax-crate-interface = {workspace = true}
 ax-ctor-bare = {workspace = true}
 ax-display = {workspace = true, optional = true}
@@ -105,3 +104,6 @@ rdif-block = { workspace = true, optional = true }
 rd-net = { workspace = true, optional = true }
 rdrive.workspace = true
 spin = {workspace = true, optional = true}
+
+[build-dependencies]
+toml.workspace = true

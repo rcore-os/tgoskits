@@ -193,4 +193,8 @@ impl IrqIf for IrqIfImpl {
             }
         }
     }
+
+    fn ipi_irq() -> usize {
+        IPI_IRQ
+    }
 }
