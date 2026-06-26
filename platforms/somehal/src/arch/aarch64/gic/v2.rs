@@ -1,6 +1,7 @@
 use alloc::format;
 
 use arm_gic_driver::v2::*;
+use irq_framework::IrqId;
 use kernutil::StaticCell;
 use rdrive::{module_driver, probe::OnProbeError, register::ProbeFdt};
 
@@ -8,13 +9,6 @@ use crate::common::ioremap;
 
 static CPU_IF: StaticCell<CpuInterface> = StaticCell::uninit();
 static TRAP: StaticCell<TrapOp> = StaticCell::uninit();
-
-pub fn with_gic(f: impl FnOnce(&mut Gic)) {
-    let mut gic = super::get_gicd().lock().unwrap();
-    if let Some(gic) = gic.typed_mut::<Gic>() {
-        f(gic);
-    }
-}
 
 module_driver!(
     name: "GICv2",
@@ -80,7 +74,12 @@ fn probe_gic(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
 
     init_cpu();
 
-    dev.register(rdif_intc::Intc::new(gic));
+    let domain = crate::irq::alloc_irq_domain(
+        dev.descriptor.device_id(),
+        crate::irq::IrqDomainKind::AArch64Gic,
+    )
+    .map_err(|err| OnProbeError::other(format!("failed to register GICv2 domain: {err:?}")))?;
+    dev.register(rdif_intc::Intc::new(domain, gic));
 
     Ok(())
 }
@@ -135,24 +134,27 @@ pub fn init_cpu() {
     debug!("GICCv2 initialized");
 }
 
-pub fn irq_set_enable(raw: usize, enable: bool) {
-    with_gic(|gic| {
-        gic.set_irq_enable(unsafe { IntId::raw(raw as _) }, enable);
-    });
+pub fn irq_set_enable(irq: IrqId, enable: bool) -> Result<(), crate::irq::IrqError> {
+    super::with_gic_domain::<Gic, _>(irq.domain, |gic| {
+        gic.set_irq_enable(unsafe { IntId::raw(irq.hwirq.0) }, enable);
+    })
 }
 
-pub fn irq_set_affinity(raw: usize, affinity: crate::irq::IrqAffinity) -> Result<(), &'static str> {
-    let intid = unsafe { IntId::raw(raw as _) };
+pub fn irq_set_affinity(
+    irq: IrqId,
+    affinity: crate::irq::IrqAffinity,
+) -> Result<(), crate::irq::IrqError> {
+    let intid = unsafe { IntId::raw(irq.hwirq.0) };
     if intid.is_private() {
-        return Err("GICv2 private IRQ affinity cannot be changed");
+        return Err(crate::irq::IrqError::Unsupported);
     }
     let crate::irq::IrqAffinity::Fixed { cpu_id } = affinity else {
         return Ok(());
     };
     let target_cpu = super::hardware_cpu_id(cpu_id);
-    with_gic(|gic| {
+    super::with_gic_domain::<Gic, _>(irq.domain, |gic| {
         gic.set_target_cpu(intid, TargetList::new(&mut core::iter::once(target_cpu)));
-    });
+    })?;
     Ok(())
 }
 

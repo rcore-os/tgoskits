@@ -3,6 +3,8 @@ use ax_lazyinit::LazyInit;
 #[cfg(feature = "irq")]
 use ax_plat::console::ConsoleIrqEvent;
 use ax_plat::console::{ConsoleDeviceIdError, ConsoleDeviceIdResult, ConsoleIf};
+#[cfg(feature = "irq")]
+use ax_plat::irq::IrqId;
 use some_serial::ns16550::dw_apb::{DwApbUart, SG2002_UART_CLOCK};
 
 use crate::config::{devices::UART_PADDR, plat::PHYS_VIRT_OFFSET};
@@ -52,7 +54,7 @@ impl ConsoleIf for ConsoleIfImpl {
 
     /// Returns the IRQ number for the console, if applicable.
     #[cfg(feature = "irq")]
-    fn irq_num() -> Option<usize> {
+    fn irq_num() -> Option<IrqId> {
         // Some(crate::config::devices::UART_IRQ)
         None
     }

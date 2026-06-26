@@ -3,6 +3,7 @@ use core::cell::UnsafeCell;
 
 use aarch64_cpu::registers::ID_AA64PFR0_EL1;
 use arm_gic_driver::v3::*;
+use irq_framework::IrqId;
 use kernutil::StaticCell;
 use rdrive::{module_driver, probe::OnProbeError, register::ProbeFdt};
 
@@ -40,13 +41,6 @@ impl CpuInterfaceSlot {
         unsafe { &*self.inner.get() }.as_ref().unwrap_or_else(|| {
             panic!("GICv3 CPU interface for CPU index {cpu_idx} is not initialized")
         })
-    }
-}
-
-pub fn with_gic(f: impl FnOnce(&mut Gic)) {
-    let mut gic = super::get_gicd().lock().unwrap();
-    if let Some(gic) = gic.typed_mut::<Gic>() {
-        f(gic);
     }
 }
 
@@ -91,7 +85,12 @@ fn probe_gic(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
         crate::cpu::current_cpu_idx().unwrap_or_else(someboot::smp::early_current_cpu_idx);
     init_cpu_interface(&gic, cpu_idx);
 
-    dev.register(rdif_intc::Intc::new(gic));
+    let domain = crate::irq::alloc_irq_domain(
+        dev.descriptor.device_id(),
+        crate::irq::IrqDomainKind::AArch64Gic,
+    )
+    .map_err(|err| OnProbeError::other(format!("failed to register GICv3 domain: {err:?}")))?;
+    dev.register(rdif_intc::Intc::new(domain, gic));
 
     Ok(())
 }
@@ -135,16 +134,19 @@ pub fn begin_irq() -> Option<ActiveIrq> {
     })
 }
 
-pub fn irq_set_enable(raw: usize, enable: bool) {
-    with_gic(|gic| {
-        gic.set_irq_enable(unsafe { IntId::raw(raw as _) }, enable);
-    });
+pub fn irq_set_enable(irq: IrqId, enable: bool) -> Result<(), crate::irq::IrqError> {
+    super::with_gic_domain::<Gic, _>(irq.domain, |gic| {
+        gic.set_irq_enable(unsafe { IntId::raw(irq.hwirq.0) }, enable);
+    })
 }
 
-pub fn irq_set_affinity(raw: usize, affinity: crate::irq::IrqAffinity) -> Result<(), &'static str> {
-    let intid = unsafe { IntId::raw(raw as _) };
+pub fn irq_set_affinity(
+    irq: IrqId,
+    affinity: crate::irq::IrqAffinity,
+) -> Result<(), crate::irq::IrqError> {
+    let intid = unsafe { IntId::raw(irq.hwirq.0) };
     if intid.is_private() {
-        return Err("GICv3 private IRQ affinity cannot be changed");
+        return Err(crate::irq::IrqError::Unsupported);
     }
     let target = match affinity {
         crate::irq::IrqAffinity::Any => None,
@@ -152,7 +154,7 @@ pub fn irq_set_affinity(raw: usize, affinity: crate::irq::IrqAffinity) -> Result
             Some(affinity_from_mpidr(super::hardware_cpu_id(cpu_id)))
         }
     };
-    with_gic(|gic| gic.set_target_cpu(intid, target));
+    super::with_gic_domain::<Gic, _>(irq.domain, |gic| gic.set_target_cpu(intid, target))?;
     Ok(())
 }
 
@@ -173,7 +175,9 @@ fn affinity_from_mpidr(mpidr: usize) -> Affinity {
 }
 
 pub fn init_cpu(cpu_idx: usize) {
-    with_gic(|gic| init_cpu_interface(gic, cpu_idx));
+    if let Err(err) = super::with_primary_gic::<Gic, _>(|gic| init_cpu_interface(gic, cpu_idx)) {
+        warn!("failed to initialize GICv3 CPU interface for CPU {cpu_idx}: {err:?}");
+    }
 
     debug!("GICCv3 initialized");
 }

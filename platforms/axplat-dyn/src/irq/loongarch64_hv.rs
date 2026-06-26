@@ -1,6 +1,6 @@
 use core::sync::atomic::{AtomicPtr, AtomicUsize, Ordering};
 
-use ax_plat::irq::LoongArchHvIrqIf;
+use ax_plat::irq::{IrqId, IrqSource, LoongArchHvIrqIf};
 
 use super::IrqIfImpl;
 
@@ -17,6 +17,29 @@ static GUEST_IRQ_TARGETS: [AtomicUsize; LOONGARCH_MAX_IRQ_COUNT] =
     [const { AtomicUsize::new(IRQ_TARGET_NONE) }; LOONGARCH_MAX_IRQ_COUNT];
 static IRQ_MISS_LOGS: AtomicUsize = AtomicUsize::new(0);
 static IRQ_INJECT_LOGS: AtomicUsize = AtomicUsize::new(0);
+
+fn resolve_physical_irq(physical_irq: usize) -> Result<IrqId, ax_plat::irq::IrqError> {
+    let gsi = u32::try_from(physical_irq).map_err(|_| ax_plat::irq::IrqError::InvalidIrq)?;
+    somehal::irq::resolve_irq_source(IrqSource::AcpiGsi(gsi))
+}
+
+fn set_physical_irq_enabled(physical_irq: usize, enabled: bool) {
+    match resolve_physical_irq(physical_irq) {
+        Ok(irq) => {
+            if let Err(err) = somehal::irq::irq_set_enable(irq, enabled) {
+                warn!(
+                    "LoongArch guest IRQ route failed to set physical IRQ {physical_irq} \
+                     ({irq:?}) enabled={enabled}: {err:?}"
+                );
+            }
+        }
+        Err(err) => {
+            warn!(
+                "LoongArch guest IRQ route failed to resolve physical IRQ {physical_irq}: {err:?}"
+            );
+        }
+    }
+}
 
 #[impl_plat_interface]
 impl LoongArchHvIrqIf for IrqIfImpl {
@@ -49,7 +72,7 @@ impl LoongArchHvIrqIf for IrqIfImpl {
 
         GUEST_IRQ_TARGETS[physical_irq].store(target, Ordering::Release);
         GUEST_IRQ_ROUTES[physical_irq].store(guest_vector + 1, Ordering::Release);
-        somehal::irq::irq_set_enable(physical_irq.into(), true);
+        set_physical_irq_enabled(physical_irq, true);
         debug!(
             "LoongArch dynamic guest IRQ route: physical_irq={}, target=VM[{}] VCpu[{}], \
              guest_vector={}",
@@ -66,7 +89,7 @@ impl LoongArchHvIrqIf for IrqIfImpl {
 
             GUEST_IRQ_ROUTES[physical_irq].store(IRQ_ROUTE_NONE, Ordering::Release);
             GUEST_IRQ_TARGETS[physical_irq].store(IRQ_TARGET_NONE, Ordering::Release);
-            somehal::irq::irq_set_enable(physical_irq.into(), false);
+            set_physical_irq_enabled(physical_irq, false);
             debug!("LoongArch dynamic guest IRQ route removed: physical_irq={physical_irq}");
         }
     }
