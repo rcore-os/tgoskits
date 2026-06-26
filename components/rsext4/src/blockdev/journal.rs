@@ -199,7 +199,9 @@ impl<B: BlockDevice> Jbd2Dev<B> {
         };
 
         let status = jbd_sys.replay_with_mapping(self.inner.device_mut(), &self.journal_blocks);
-        self.inner.invalidate_cache();
+        if self.inner.invalidate_cache().is_err() {
+            return ReplayStatus::Incomplete;
+        }
         status
     }
 
@@ -245,7 +247,9 @@ impl<B: BlockDevice> Jbd2Dev<B> {
                 .commit_transaction_with_mapping(self.inner.device_mut(), &self.journal_blocks)
                 .expect("journal transaction commit failed");
             if committed {
-                self.inner.invalidate_cache();
+                self.inner
+                    .invalidate_cache()
+                    .expect("invalidate_cache failed during umount commit");
             }
         } else {
             trace!("Journal enabled but system uninitialized, skip commit");
@@ -274,7 +278,7 @@ impl<B: BlockDevice> Jbd2Dev<B> {
 
         let committed = Self::enqueue_journal_update(system, raw_dev, updates)?;
         if committed {
-            self.inner.invalidate_cache();
+            let _ = self.inner.invalidate_cache();
         }
         trace!("[JBD2 buffer] queued metadata block {block_id}");
         Ok(())
@@ -351,7 +355,7 @@ impl<B: BlockDevice> Jbd2Dev<B> {
             committed_any |= Self::enqueue_journal_update(system, raw_dev, updates)?;
         }
         if committed_any {
-            self.inner.invalidate_cache();
+            let _ = self.inner.invalidate_cache();
         }
 
         Ok(())
