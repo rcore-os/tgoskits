@@ -149,6 +149,30 @@ impl HwAlloc {
 #[cfg(target_arch = "aarch64")]
 static ALLOC: ax_kspin::SpinNoPreempt<HwAlloc> = ax_kspin::SpinNoPreempt::new(HwAlloc::new());
 
+/// Reserve a programmable counter for the per-task path ([`super::task`]).
+///
+/// The system-wide path reaches the allocator through [`alloc_programmable`],
+/// which also configures and validates the event; the per-task path keeps the
+/// slot unconfigured (the scheduler hook configures it per slice), so it needs a
+/// bare reservation. Returns the logical counter index, or `None` if no
+/// programmable counter is free.
+#[cfg(target_arch = "aarch64")]
+pub(crate) fn alloc_programmable_counter() -> Option<usize> {
+    match ALLOC.lock().alloc_counter() {
+        Some(Counter::Programmable(n)) => Some(n),
+        // `alloc_counter` only ever yields `Programmable`; the cycle counter is
+        // not handed to the per-task path.
+        _ => None,
+    }
+}
+
+/// Release a programmable counter previously reserved via
+/// [`alloc_programmable_counter`]. Called by [`super::task::free_hw`].
+#[cfg(target_arch = "aarch64")]
+pub(crate) fn free_programmable_counter(n: usize) {
+    ALLOC.lock().free(Counter::Programmable(n));
+}
+
 /// The backing pages of a sampling event's mmap ring buffer, after the first
 /// `mmap(perf_fd)`.
 ///
@@ -257,6 +281,14 @@ pub struct HwPerfEvent {
     time_running: u64,
     /// Sampling machinery, `Some` iff `attr.sample_period > 0`.
     sampling: Option<SamplingState>,
+    /// Per-task counting state, `Some` iff this event was opened with `pid > 0`.
+    ///
+    /// When set, this is the *only* live state: `counter` / `enabled_since` /
+    /// `time_*` / `sampling` are inert placeholders, the counter is driven from
+    /// the scheduler hooks in [`super::task`] (not from this fd's `enable`), and
+    /// the `PerfEventOps` methods + `Drop` delegate to the per-task path. The
+    /// `Arc` is shared with the target [`crate::task::Thread`]'s counter list.
+    per_task: Option<Arc<super::task::PerTaskCounter>>,
 }
 
 #[cfg(target_arch = "aarch64")]
@@ -304,6 +336,13 @@ impl HwPerfEvent {
 #[cfg(target_arch = "aarch64")]
 impl Drop for HwPerfEvent {
     fn drop(&mut self) {
+        // Per-task events do not own a system-wide counter or sampling state:
+        // release the HW counter through the per-task path (idempotent — the
+        // task-exit hook may have freed it already) and stop here.
+        if let Some(ptc) = &self.per_task {
+            super::task::free_hw(ptc);
+            return;
+        }
         // For sampling events, mask the IRQ, stop the counter, and clear the
         // registry slot BEFORE the `Arc<IrqNotify>`/`Arc<GlobalPage>` held in
         // `sampling` drop, so the overflow handler can never dereference a
@@ -382,6 +421,13 @@ fn ring_has_data(ring: &RingState) -> bool {
 #[cfg(target_arch = "aarch64")]
 impl PerfEventOps for HwPerfEvent {
     fn enable(&mut self) -> AxResult<()> {
+        // Per-task: just record userspace intent. The target task's next
+        // `perf_sched_in` programs the counter onto HW (or an immediate one if
+        // it is the running task at the next switch).
+        if let Some(ptc) = &self.per_task {
+            ptc.set_enabled();
+            return Ok(());
+        }
         if self.enabled_since.is_none() {
             self.enabled_since = Some(ax_runtime::hal::time::monotonic_time_nanos());
         }
@@ -435,6 +481,12 @@ impl PerfEventOps for HwPerfEvent {
     }
 
     fn disable(&mut self) -> AxResult<()> {
+        // Per-task: clear userspace intent. The next `perf_sched_out` folds the
+        // live slice and stops the HW counter; future slices skip it.
+        if let Some(ptc) = &self.per_task {
+            ptc.set_disabled();
+            return Ok(());
+        }
         // Sampling events: strict teardown (mask IRQ → stop counter → unregister
         // slot) so the handler can no longer touch this event, then accrue time.
         if self.sampling.is_some() {
@@ -455,6 +507,12 @@ impl PerfEventOps for HwPerfEvent {
     }
 
     fn reset(&mut self) -> AxResult<()> {
+        // Per-task: zero the accumulated count only (Linux `PERF_EVENT_IOC_RESET`
+        // semantics); timing is preserved.
+        if let Some(ptc) = &self.per_task {
+            ptc.reset();
+            return Ok(());
+        }
         match self.counter {
             Counter::Cycle => ax_cpu::pmu::cycles::reset(),
             Counter::Programmable(n) => ax_cpu::pmu::counter::reset(n),
@@ -463,6 +521,18 @@ impl PerfEventOps for HwPerfEvent {
     }
 
     fn read_values(&mut self) -> AxResult<PerfReadValues> {
+        // Per-task: the accumulated count + live slice lives on the shared
+        // `PerTaskCounter`; serialize it per this fd's `read_format`.
+        if let Some(ptc) = &self.per_task {
+            let (value, time_enabled, time_running) = super::task::read_values(ptc);
+            return Ok(PerfReadValues {
+                value,
+                time_enabled,
+                time_running,
+                id: 0,
+                read_format: ptc.read_format(),
+            });
+        }
         // Current timing = accumulated past windows + the live window, if any.
         let (mut time_enabled, mut time_running) = (self.time_enabled, self.time_running);
         if let Some(since) = self.enabled_since {
@@ -554,7 +624,7 @@ impl PerfEventOps for HwPerfEvent {
 /// value reset to 0) but left disabled: the attr carries `disabled = 1`, and
 /// the caller drives it with `ioctl(PERF_EVENT_IOC_ENABLE)`.
 #[cfg(target_arch = "aarch64")]
-pub fn perf_event_open_hw(attr: &perf_event_attr) -> AxResult<HwPerfEvent> {
+pub fn perf_event_open_hw(attr: &perf_event_attr, pid: i32) -> AxResult<HwPerfEvent> {
     // No PMUv3 → no hardware events.
     let Some(info) = ax_cpu::pmu::probe() else {
         return Err(AxError::Unsupported);
@@ -566,6 +636,12 @@ pub fn perf_event_open_hw(attr: &perf_event_attr) -> AxResult<HwPerfEvent> {
     // Refresh the counter count the allocator sizes its bitmask against. Safe
     // to set every open: M1 is single-core so `num_counters` is invariant.
     ALLOC.lock().num_counters = info.num_counters;
+
+    // `pid > 0`: attach a per-task counter to that task. `pid <= 0` (0 = self,
+    // -1 = system-wide) keeps the existing M1/M2 behaviour untouched below.
+    if pid > 0 {
+        return perf_event_open_hw_per_task(attr, pid);
+    }
 
     let exclude_user = attr.exclude_user() != 0;
     let exclude_kernel = attr.exclude_kernel() != 0;
@@ -674,6 +750,100 @@ pub fn perf_event_open_hw(attr: &perf_event_attr) -> AxResult<HwPerfEvent> {
         time_enabled: 0,
         time_running: 0,
         sampling,
+        // System-wide / self event: not per-task.
+        per_task: None,
+    })
+}
+
+/// Open a per-task hardware-PMU counting event (`perf_event_open` with `pid >
+/// 0`).
+///
+/// Resolves the target task, decodes the requested ARM event onto a
+/// *programmable* counter (per-task never uses the dedicated cycle counter, so a
+/// system-wide cycle event can run alongside it), reserves the slot from the M1
+/// allocator without programming it, and attaches a shared
+/// [`super::task::PerTaskCounter`] to the target [`crate::task::Thread`]. The HW
+/// counter is programmed lazily by the scheduler hook the next time the target
+/// runs (or by [`super::task::on_exec`] for `enable_on_exec`).
+///
+/// Per-task *sampling* is not implemented; a `sample_period > 0` per-task event
+/// still counts (it just never produces samples).
+#[cfg(target_arch = "aarch64")]
+fn perf_event_open_hw_per_task(attr: &perf_event_attr, pid: i32) -> AxResult<HwPerfEvent> {
+    use crate::task::AsThread;
+
+    // Resolve the target task and its `Thread` (kernel tasks have none).
+    let task = crate::task::get_task(pid as u32)?;
+    let thr = task.try_as_thread().ok_or(AxError::NoSuchProcess)?;
+
+    let exclude_user = attr.exclude_user() != 0;
+    let exclude_kernel = attr.exclude_kernel() != 0;
+
+    // Decode the ARM event. Per-task always uses a programmable counter, so even
+    // CPU_CYCLES maps to ARM event 0x11 (never the dedicated cycle counter).
+    let event = if attr.type_ == perf_type_id::PERF_TYPE_HARDWARE as u32 {
+        match ax_cpu::pmu::hw_event_to_arm(attr.config as u32) {
+            Some(event) => event,
+            None => {
+                warn!(
+                    "perf_event_open: unsupported per-task hardware config {:#x}",
+                    attr.config
+                );
+                return Err(AxError::Unsupported);
+            }
+        }
+    } else if attr.type_ == perf_type_id::PERF_TYPE_RAW as u32
+        || attr.type_ == ARMV8_PMUV3_PERF_TYPE
+    {
+        (attr.config & 0xFFFF) as u16
+    } else {
+        warn!(
+            "perf_event_open: unsupported per-task hardware type {:#x}",
+            attr.type_
+        );
+        return Err(AxError::Unsupported);
+    };
+
+    if !ax_cpu::pmu::event_supported(event) {
+        warn!(
+            "perf_event_open: per-task ARM event {:#x} not implemented on this CPU",
+            event
+        );
+        return Err(AxError::Unsupported);
+    }
+
+    // Reserve a programmable counter slot, but do NOT configure/enable HW now:
+    // the scheduler hook configures it per slice when the target runs.
+    let Some(n) = alloc_programmable_counter() else {
+        return Err(AxError::NoMemory);
+    };
+
+    // `disabled = 0` ⇒ count from the next sched-in; `disabled = 1` ⇒ wait for
+    // `enable_on_exec` / `ioctl(ENABLE)`. `perf stat -- cmd` sets both
+    // `disabled` and `enable_on_exec`, so it starts counting at the child's exec.
+    let enabled = attr.disabled() == 0;
+    let enable_on_exec = attr.enable_on_exec() != 0;
+
+    let ptc = Arc::new(super::task::PerTaskCounter::new(
+        n,
+        event,
+        exclude_user,
+        exclude_kernel,
+        attr.read_format,
+        enabled,
+        enable_on_exec,
+    ));
+    super::task::attach(thr, ptc.clone());
+
+    Ok(HwPerfEvent {
+        // Inert placeholders: the per-task path drives `ptc`, not these fields.
+        counter: Counter::Programmable(n),
+        read_format: attr.read_format,
+        enabled_since: None,
+        time_enabled: 0,
+        time_running: 0,
+        sampling: None,
+        per_task: Some(ptc),
     })
 }
 
@@ -734,6 +904,6 @@ impl PerfEventOps for HwPerfEvent {
 
 /// Non-aarch64 fallback: no hardware PMU support outside ARM PMUv3.
 #[cfg(not(target_arch = "aarch64"))]
-pub fn perf_event_open_hw(_attr: &perf_event_attr) -> AxResult<HwPerfEvent> {
+pub fn perf_event_open_hw(_attr: &perf_event_attr, _pid: i32) -> AxResult<HwPerfEvent> {
     Err(AxError::Unsupported)
 }

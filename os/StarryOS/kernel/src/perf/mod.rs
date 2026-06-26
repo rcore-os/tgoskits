@@ -14,6 +14,10 @@ pub mod raw_tracepoint;
 /// tracing paths are arch-agnostic, but sampling depends on `ax_cpu::pmu`.
 #[cfg(target_arch = "aarch64")]
 pub mod sampling;
+/// Per-task hardware-PMU counting (`perf stat -- cmd`, M3). ARM PMUv3 only; the
+/// scheduler hooks call into `ax_cpu::pmu`, so it is gated like `sampling`.
+#[cfg(target_arch = "aarch64")]
+pub mod task;
 pub mod tracepoint;
 pub mod uprobe;
 
@@ -292,7 +296,11 @@ pub fn perf_event_open(
         || attr.type_ == PerfTypeId::PERF_TYPE_RAW as u32
         || attr.type_ == hw::ARMV8_PMUV3_PERF_TYPE
     {
-        Box::new(hw::perf_event_open_hw(attr)?)
+        // Thread `pid` into the hardware path so it can choose between the
+        // system-wide M1 path (`pid <= 0`) and per-task counting (`pid > 0`).
+        // `cpu` / `group_fd` / `flags` are not consumed by the hardware path
+        // (single-CPU, no event groups), so they are intentionally dropped.
+        Box::new(hw::perf_event_open_hw(attr, pid)?)
     } else {
         let args = PerfProbeArgs::try_from_perf_attr::<EbpfKernelAuxiliary>(
             attr, pid, cpu, group_fd, flags,
