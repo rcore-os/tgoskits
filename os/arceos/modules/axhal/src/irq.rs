@@ -1,6 +1,6 @@
 //! Interrupt management.
 
-#[cfg(feature = "ipi")]
+#[cfg(all(feature = "ipi", not(plat_dyn)))]
 pub use ax_config::devices::IPI_IRQ;
 use ax_cpu::trap::set_irq_handler;
 pub use ax_plat::irq::{
@@ -19,58 +19,13 @@ pub use ax_plat::irq::{
 pub use ax_plat::irq::{IpiTarget, send_ipi};
 
 /// Returns the platform IRQ id used for inter-processor interrupts.
-///
-/// `IPI_IRQ` is still an architecture/platform raw constant. Keep the conversion
-/// here so IPI registration and delivery use the same IRQ domain.
-#[cfg(all(feature = "ipi", plat_dyn, target_arch = "aarch64"))]
+#[cfg(all(feature = "ipi", plat_dyn))]
 pub fn ipi_irq() -> IrqId {
-    axplat_dyn::ipi_irq(IPI_IRQ as u32)
+    axplat_dyn::ipi_irq()
 }
 
 /// Returns the platform IRQ id used for inter-processor interrupts.
-///
-/// `IPI_IRQ` is still an architecture/platform raw constant. Keep the conversion
-/// here so IPI registration and delivery use the same IRQ domain.
-#[cfg(all(feature = "ipi", plat_dyn, target_arch = "riscv64"))]
-pub fn ipi_irq() -> IrqId {
-    const RISCV_INTERRUPT_BIT: usize = 1usize << (usize::BITS as usize - 1);
-
-    if IPI_IRQ & RISCV_INTERRUPT_BIT != 0 {
-        IrqId::new(
-            CPU_LOCAL_IRQ_DOMAIN,
-            HwIrq((IPI_IRQ & !RISCV_INTERRUPT_BIT) as u32),
-        )
-    } else {
-        IrqNumber(IPI_IRQ).expect("IPI IRQ exceeds legacy IRQ width")
-    }
-}
-
-/// Returns the platform IRQ id used for inter-processor interrupts.
-///
-/// `IPI_IRQ` is still an architecture/platform raw constant. Keep the conversion
-/// here so IPI registration and delivery use the same IRQ domain.
-#[cfg(all(
-    feature = "ipi",
-    plat_dyn,
-    any(target_arch = "loongarch64", target_arch = "x86_64")
-))]
-pub fn ipi_irq() -> IrqId {
-    IrqId::new(CPU_LOCAL_IRQ_DOMAIN, HwIrq(IPI_IRQ as u32))
-}
-
-/// Returns the platform IRQ id used for inter-processor interrupts.
-#[cfg(all(
-    feature = "ipi",
-    not(all(
-        plat_dyn,
-        any(
-            target_arch = "aarch64",
-            target_arch = "loongarch64",
-            target_arch = "riscv64",
-            target_arch = "x86_64"
-        )
-    ))
-))]
+#[cfg(all(feature = "ipi", not(plat_dyn)))]
 pub fn ipi_irq() -> IrqId {
     #[cfg(target_arch = "riscv64")]
     {
