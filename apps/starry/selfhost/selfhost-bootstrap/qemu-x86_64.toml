@@ -10,12 +10,12 @@ args = [
 ]
 uefi = false
 to_bin = true
-# Bootstrap provisions the full selfhost rootfs (toolchain, Rust, kallsyms tools,
-# source, firmware) and warms the dependency cache with one online seed build, so
-# snapshot must stay off for those guest writes to persist (the app runner
-# defaults snapshot to true). The online seed build needs the same resources as
-# self-compilation (smp 4 / 16G); the cache warm-up makes the later OFFLINE
-# self-compile reproducible without host sudo.
+# Bootstrap provisions the full selfhost rootfs (build toolchain, Rust,
+# kallsyms tools, source tree, AIC8800 firmware, musl symlinks) inside QEMU with
+# NO host sudo.  Offline dependency-cache warming is intentionally NOT done
+# (resource-limited under StarryOS; see prebuild.sh and docs).  snapshot must
+# stay off so those guest writes (apk packages, Rust toolchain, kallsyms tools)
+# persist.
 snapshot = false
 # The bootstrap boots StarryOS (seed) + the Alpine rootfs, like every other
 # starry app, so the guest shell prompt is the standard `root@starry:`.
