@@ -3,6 +3,7 @@ mod pts;
 mod pty;
 mod serial;
 mod terminal;
+mod usb_serial;
 
 use alloc::{
     format,
@@ -38,6 +39,7 @@ pub use self::{
     serial::{
         SerialTtyDriver, arm_console_irq, bind_console_to, console_device, serial_tty_entries,
     },
+    usb_serial::{UsbSerialTtyDriver, usb_serial_tty},
 };
 use crate::{
     pseudofs::DeviceOps,
@@ -50,6 +52,8 @@ const ANSI_CURSOR_POSITION_RESPONSE: &[u8] = b"\x1b[1;1R";
 pub fn terminal_device_path(term: &(dyn Any + Send + Sync)) -> Option<String> {
     if let Some(pts) = term.downcast_ref::<PtyDriver>() {
         Some(format!("/dev/pts/{}", pts.pty_number()))
+    } else if let Some(tty) = term.downcast_ref::<UsbSerialTtyDriver>() {
+        Some(format!("/dev/ttyUSB{}", tty.usb_serial_number()))
     } else {
         term.downcast_ref::<SerialTtyDriver>()
             .map(|tty| format!("/dev/ttyS{}", tty.serial_number()))

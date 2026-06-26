@@ -325,6 +325,24 @@ impl UsbDeviceLease {
             .live_submit_control_transfer(self.stable_id, request)
     }
 
+    pub(super) fn control_transfer(
+        &self,
+        b_request_type: u8,
+        b_request: u8,
+        w_value: u16,
+        w_index: u16,
+        data: &mut [u8],
+    ) -> AxResult<usize> {
+        self.manager.live_control_transfer(
+            self.stable_id,
+            b_request_type,
+            b_request,
+            w_value,
+            w_index,
+            data,
+        )
+    }
+
     pub(super) fn release_endpoints(&self, endpoints: &[u8]) -> AxResult<()> {
         self.manager
             .live_release_endpoints(self.stable_id, endpoints)
