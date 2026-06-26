@@ -85,11 +85,7 @@ pub mod vmcfg {
 }
 
 pub fn get_vm_dtb_arc(_vm_cfg: &AxVMConfig) -> Option<Arc<[u8]>> {
-    #[cfg(any(
-        target_arch = "aarch64",
-        target_arch = "loongarch64",
-        target_arch = "riscv64"
-    ))]
+    #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
     {
         let cache_lock = dtb_cache().lock();
         if let Some(dtb) = cache_lock.get(&_vm_cfg.id()) {
@@ -144,19 +140,6 @@ pub fn init_guest_vm(raw_cfg: &str) -> AxResult<usize> {
         any(target_arch = "x86_64", target_arch = "loongarch64")
     ))]
     let release_host_filesystem = vm_config_needs_host_filesystem_release(&vm_create_config);
-    #[cfg(all(
-        feature = "fs",
-        any(target_arch = "x86_64", target_arch = "loongarch64")
-    ))]
-    debug!(
-        "VM[{}] host filesystem release check: image_location={:?}, passthrough_devices={}, \
-         passthrough_addresses={}, required={}",
-        vm_create_config.base.id,
-        vm_create_config.kernel.image_location,
-        vm_create_config.devices.passthrough_devices.len(),
-        vm_create_config.devices.passthrough_addresses.len(),
-        release_host_filesystem
-    );
 
     if let Some(linux) = super::images::get_image_header(&vm_create_config) {
         debug!(
@@ -299,29 +282,7 @@ fn configured_bios_load_gpa(cfg: &AxVMCrateConfig) -> Option<GuestPhysAddr> {
 fn vm_config_needs_host_filesystem_release(config: &AxVMCrateConfig) -> bool {
     let has_passthrough = !config.devices.passthrough_devices.is_empty()
         || !config.devices.passthrough_addresses.is_empty();
-    if !has_passthrough {
-        return false;
-    }
-
-    if config.kernel.image_location.as_deref() == Some("fs") {
-        return true;
-    }
-
-    #[cfg(target_arch = "loongarch64")]
-    {
-        let loongarch_uefi_rootfs_guest = config.kernel.effective_boot_protocol()
-            == VMBootProtocol::Uefi
-            && config.kernel.cmdline.as_deref().is_some_and(|cmdline| {
-                cmdline
-                    .split_ascii_whitespace()
-                    .any(|arg| arg == "root=/dev/vda")
-            });
-        if loongarch_uefi_rootfs_guest {
-            return true;
-        }
-    }
-
-    false
+    has_passthrough && config.kernel.image_location.as_deref() == Some("fs")
 }
 
 #[cfg(all(
@@ -367,13 +328,6 @@ fn vm_alloc_memory_regions(vm_create_config: &AxVMCrateConfig, vm: &AxVMRef) -> 
     };
 
     for memory in &vm_create_config.kernel.memory_regions {
-        debug!(
-            "VM[{}] allocating memory region: gpa={:#x}, size={:#x}, map_type={:?}",
-            vm.id(),
-            memory.gpa,
-            memory.size,
-            memory.map_type
-        );
         match memory.map_type {
             VmMemMappingType::MapAlloc => {
                 vm.alloc_memory_region(make_layout(memory)?, Some(GuestPhysAddr::from(memory.gpa)))
@@ -407,13 +361,6 @@ fn vm_alloc_memory_regions(vm_create_config: &AxVMCrateConfig, vm: &AxVMRef) -> 
                 })?;
             }
         }
-        debug!(
-            "VM[{}] memory region allocated: gpa={:#x}, size={:#x}, map_type={:?}",
-            vm.id(),
-            memory.gpa,
-            memory.size,
-            memory.map_type
-        );
     }
     Ok(())
 }

@@ -13,15 +13,15 @@
 // limitations under the License.
 
 use alloc::format;
-#[cfg(target_arch = "x86_64")]
-use alloc::vec::Vec;
 
 use ax_errno::{AxResult, ax_err, ax_err_type};
+use axvmconfig::AxVMCrateConfig;
 #[cfg(target_arch = "x86_64")]
 use axvmconfig::EmulatedDeviceType;
+#[cfg(any(target_arch = "loongarch64", target_arch = "x86_64"))]
+use axvmconfig::VMBootProtocol;
 #[cfg(target_arch = "x86_64")]
 use axvmconfig::VmMemMappingType;
-use axvmconfig::{AxVMCrateConfig, VMBootProtocol};
 use byte_unit::Byte;
 
 use axvm::{AxVMRef, GuestPhysAddr, VMMemoryRegion};
@@ -95,6 +95,7 @@ fn memory_images_for_vm(config: &AxVMCrateConfig) -> AxResult<&'static vmcfg::Me
         })
 }
 
+#[cfg(target_arch = "loongarch64")]
 fn firmware_image_for_vm(config: &AxVMCrateConfig) -> Option<&'static [u8]> {
     vmcfg::get_firmware_images()
         .iter()
@@ -175,11 +176,11 @@ impl ImageLoader {
         if self.loongarch_uefi_boot() {
             self.load_loongarch_uefi_firmware_dtb()?;
             self.add_loongarch_uefi_fw_cfg_from_memory(vm_imags.kernel, vm_imags.ramdisk)?;
-            self.load_boot_image_from_memory(vm_imags.bios)?;
+            self.load_loongarch_uefi_firmware_from_memory(vm_imags.bios)?;
             return Ok(());
         }
 
-        self.load_kernel_from_memory(vm_imags.kernel)?;
+        load_vm_image_from_memory(vm_imags.kernel, self.kernel_load_gpa, self.vm.clone())?;
 
         // Load Ramdisk image and record its size before regenerating the DTB.
         if let Some(buffer) = vm_imags.ramdisk {
@@ -190,11 +191,7 @@ impl ImageLoader {
 
         if let Some(dtb_arc) = get_vm_dtb_arc(&vm_config) {
             let _dtb_slice: &[u8] = &dtb_arc;
-            #[cfg(any(
-                target_arch = "aarch64",
-                target_arch = "riscv64",
-                target_arch = "loongarch64"
-            ))]
+            #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
             {
                 if let Some(dtb_src) = core::ptr::NonNull::new(_dtb_slice.as_ptr() as *mut u8) {
                     crate::fdt::update_fdt(
@@ -208,7 +205,7 @@ impl ImageLoader {
                 }
             }
         } else {
-            #[cfg(any(target_arch = "loongarch64", target_arch = "riscv64"))]
+            #[cfg(target_arch = "riscv64")]
             if let Some(buffer) = vm_imags.dtb {
                 let dtb_load_gpa = self
                     .dtb_load_gpa
@@ -273,16 +270,6 @@ impl ImageLoader {
             let load_gpa = self
                 .bios_load_gpa
                 .ok_or_else(|| ax_err_type!(NotFound, "boot firmware load address is missing"))?;
-            if self.config.kernel.effective_boot_protocol() == VMBootProtocol::Uefi {
-                let flash_len = self
-                    .config
-                    .kernel
-                    .memory_regions
-                    .iter()
-                    .find(|region| region.gpa == load_gpa.as_usize())
-                    .map_or(buffer.len(), |region| region.size);
-                fill_vm_region(load_gpa, flash_len, 0xff, self.vm.clone())?;
-            }
             load_vm_image_from_memory(buffer, load_gpa, self.vm.clone())?;
             #[cfg(target_arch = "x86_64")]
             if should_patch_x86_multiboot_info(&self.config) {
@@ -291,6 +278,7 @@ impl ImageLoader {
             return Ok(());
         }
 
+        #[cfg(target_arch = "x86_64")]
         if self.config.kernel.effective_boot_protocol() == VMBootProtocol::Uefi {
             let firmware_path = self.config.kernel.boot_firmware_path().ok_or_else(|| {
                 ax_errno::ax_err_type!(NotFound, "UEFI firmware image path is missed")
@@ -301,21 +289,6 @@ impl ImageLoader {
 
             #[cfg(feature = "fs")]
             {
-                if let Some(buffer) = firmware_image_for_vm(&self.config) {
-                    info!(
-                        "Loading UEFI firmware image from build-time buffer at GPA {:#x}",
-                        load_gpa.as_usize()
-                    );
-                    let flash_len = self
-                        .config
-                        .kernel
-                        .memory_regions
-                        .iter()
-                        .find(|region| region.gpa == load_gpa.as_usize())
-                        .map_or(buffer.len(), |region| region.size);
-                    fill_vm_region(load_gpa, flash_len, 0xff, self.vm.clone())?;
-                    return load_vm_image_from_memory(buffer, load_gpa, self.vm.clone());
-                }
                 info!(
                     "Loading UEFI firmware image {} at GPA {:#x}",
                     firmware_path,
@@ -396,19 +369,38 @@ impl ImageLoader {
     }
 
     #[cfg(target_arch = "loongarch64")]
+    fn load_loongarch_uefi_firmware_from_memory(&self, bios: Option<&[u8]>) -> AxResult {
+        let firmware = bios
+            .or_else(|| firmware_image_for_vm(&self.config))
+            .ok_or_else(|| {
+                ax_err_type!(
+                    NotFound,
+                    "LoongArch UEFI boot requires a build-time firmware image"
+                )
+            })?;
+        self.load_loongarch_uefi_firmware_image(firmware)
+    }
+
+    #[cfg(target_arch = "loongarch64")]
+    fn load_loongarch_uefi_firmware_image(&self, firmware: &[u8]) -> AxResult {
+        let load_gpa = self
+            .bios_load_gpa
+            .ok_or_else(|| ax_err_type!(NotFound, "LoongArch UEFI firmware load addr is missed"))?;
+        let flash_len = self
+            .config
+            .kernel
+            .memory_regions
+            .iter()
+            .find(|region| region.gpa == load_gpa.as_usize())
+            .map_or(firmware.len(), |region| region.size);
+        fill_vm_region(load_gpa, flash_len, 0xff, self.vm.clone())?;
+        load_vm_image_from_memory(firmware, load_gpa, self.vm.clone())
+    }
+
+    #[cfg(target_arch = "loongarch64")]
     fn load_loongarch_uefi_firmware_dtb(&self) -> AxResult {
         crate::guest_platform::loongarch64::prepare_uefi_runtime_config(&self.vm, &self.config);
         crate::guest_platform::loongarch64::load_firmware_fdt(&self.vm, &self.config)
-    }
-
-    fn load_kernel_from_memory(&self, kernel: &[u8]) -> AxResult {
-        load_vm_image_from_memory(kernel, self.kernel_load_gpa, self.vm.clone())
-    }
-
-    #[cfg(all(feature = "fs", target_arch = "loongarch64"))]
-    fn load_kernel_from_filesystem(&self, kernel_path: &str) -> AxResult {
-        let kernel = fs::read_full_image(kernel_path)?;
-        self.load_kernel_from_memory(&kernel)
     }
 
     #[cfg(target_arch = "x86_64")]
@@ -777,8 +769,14 @@ pub mod fs {
         if loader.loongarch_uefi_boot() {
             loader.load_loongarch_uefi_firmware_dtb()?;
             loader.add_loongarch_uefi_fw_cfg_from_filesystem()?;
+            loader.load_loongarch_uefi_firmware_from_filesystem()?;
+            return Ok(());
         } else {
-            loader.load_kernel_from_filesystem(&loader.config.kernel.kernel_path)?;
+            load_vm_image(
+                &loader.config.kernel.kernel_path,
+                loader.kernel_load_gpa,
+                loader.vm.clone(),
+            )?;
         }
         #[cfg(not(target_arch = "loongarch64"))]
         load_vm_image(
@@ -803,34 +801,7 @@ pub mod fs {
                     }
                 }
                 #[cfg(not(target_arch = "x86_64"))]
-                {
-                    if loader.config.kernel.effective_boot_protocol() == VMBootProtocol::Uefi {
-                        let flash_len = if let Some(buffer) = firmware_image_for_vm(&loader.config)
-                        {
-                            loader
-                                .config
-                                .kernel
-                                .memory_regions
-                                .iter()
-                                .find(|region| region.gpa == bios_load_addr.as_usize())
-                                .map_or(buffer.len(), |region| region.size)
-                        } else {
-                            loader
-                                .config
-                                .kernel
-                                .memory_regions
-                                .iter()
-                                .find(|region| region.gpa == bios_load_addr.as_usize())
-                                .map_or_else(|| image_size(bios_path), |region| Ok(region.size))?
-                        };
-                        fill_vm_region(bios_load_addr, flash_len, 0xff, loader.vm.clone())?;
-                    }
-                    if let Some(buffer) = firmware_image_for_vm(&loader.config) {
-                        load_vm_image_from_memory(buffer, bios_load_addr, loader.vm.clone())?;
-                    } else {
-                        load_vm_image(bios_path, bios_load_addr, loader.vm.clone())?;
-                    }
-                }
+                load_vm_image(bios_path, bios_load_addr, loader.vm.clone())?;
             } else {
                 return ax_err!(NotFound, "boot firmware load addr is missed");
             }
@@ -851,11 +822,6 @@ pub mod fs {
             loader.load_x86_multiboot_info(x86_boot::DEFAULT_BIOS_IMAGE, bios_load_gpa)?;
         }
 
-        #[cfg(target_arch = "loongarch64")]
-        if loader.loongarch_uefi_boot() {
-            return Ok(());
-        }
-
         // Load Ramdisk image if needed.
         if let Some(ramdisk_path) = &loader.config.kernel.ramdisk_path {
             loader.load_ramdisk_from_filesystem(ramdisk_path)?;
@@ -864,11 +830,7 @@ pub mod fs {
         let vm_config = crate::config::build_axvm_config(&loader.config);
         if let Some(dtb_arc) = get_vm_dtb_arc(&vm_config) {
             let _dtb_slice: &[u8] = &dtb_arc;
-            #[cfg(any(
-                target_arch = "aarch64",
-                target_arch = "riscv64",
-                target_arch = "loongarch64"
-            ))]
+            #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
             {
                 let dtb_src = core::ptr::NonNull::new(_dtb_slice.as_ptr() as *mut u8)
                     .ok_or_else(|| ax_err_type!(InvalidData, "Guest DTB pointer is null"))?;
@@ -904,6 +866,16 @@ pub mod fs {
                 ramdisk.map(|data| data.len())
             );
             self.add_loongarch_uefi_fw_cfg(kernel, ramdisk)
+        }
+
+        fn load_loongarch_uefi_firmware_from_filesystem(&self) -> AxResult {
+            let firmware = firmware_image_for_vm(&self.config).ok_or_else(|| {
+                ax_err_type!(
+                    NotFound,
+                    "LoongArch UEFI boot requires a build-time firmware image"
+                )
+            })?;
+            self.load_loongarch_uefi_firmware_image(firmware)
         }
     }
 

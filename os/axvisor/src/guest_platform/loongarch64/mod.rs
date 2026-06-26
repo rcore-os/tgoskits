@@ -12,7 +12,7 @@ use axvmconfig::{AxVMCrateConfig, EmulatedDeviceType};
 
 pub use resources::{
     LoongArchGuestIrqRoute, get_guest_irq_routes, prepare_uefi_fdt_config,
-    prepare_uefi_runtime_config, store_guest_irq_routes,
+    prepare_uefi_runtime_config,
 };
 
 use crate::images::load_vm_image_from_memory;

@@ -17,48 +17,22 @@ use alloc::{
     string::{String, ToString},
     vec::Vec,
 };
-#[cfg(any(
-    target_arch = "aarch64",
-    target_arch = "riscv64",
-    target_arch = "loongarch64"
-))]
+#[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
 use core::ptr::NonNull;
 
 use ax_errno::{AxError, AxResult, ax_err_type};
-#[cfg(any(
-    target_arch = "aarch64",
-    target_arch = "riscv64",
-    target_arch = "loongarch64"
-))]
+#[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
 use ax_memory_addr::MemoryAddr;
 use fdt_parser::{Fdt, Node};
 
 use super::vm_fdt::{FdtWriter, FdtWriterNode};
-#[cfg(any(
-    target_arch = "aarch64",
-    target_arch = "riscv64",
-    target_arch = "loongarch64"
-))]
+#[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
 use crate::images::load_vm_image_from_memory;
-#[cfg(any(
-    target_arch = "aarch64",
-    target_arch = "riscv64",
-    target_arch = "loongarch64"
-))]
+#[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
 use axvm::AxVMRef;
-#[cfg(any(
-    target_arch = "aarch64",
-    target_arch = "riscv64",
-    target_arch = "loongarch64",
-    test
-))]
+#[cfg(any(target_arch = "aarch64", target_arch = "riscv64", test))]
 use axvm::GuestPhysAddr;
-#[cfg(any(
-    target_arch = "aarch64",
-    target_arch = "riscv64",
-    target_arch = "loongarch64",
-    test
-))]
+#[cfg(any(target_arch = "aarch64", target_arch = "riscv64", test))]
 use axvm::VMMemoryRegion;
 use axvmconfig::AxVMCrateConfig;
 
@@ -146,10 +120,6 @@ pub fn crate_guest_fdt(
 
         previous_node_level = node.level;
 
-        #[cfg(target_arch = "loongarch64")]
-        let add_pci_interrupt_cells =
-            is_loongarch_pci_host_node(node) && node.find_property("#interrupt-cells").is_none();
-
         // Copy all properties of the node
         for prop in node.propertys() {
             if node_path.starts_with("/cpus") && should_skip_guest_cpu_prop(prop.name) {
@@ -157,13 +127,6 @@ pub fn crate_guest_fdt(
             }
             fdt_writer
                 .property(prop.name, prop.raw_value())
-                .map_err(fdt_write_err)?;
-        }
-
-        #[cfg(target_arch = "loongarch64")]
-        if add_pci_interrupt_cells {
-            fdt_writer
-                .property_u32("#interrupt-cells", 1)
                 .map_err(fdt_write_err)?;
         }
     }
@@ -180,14 +143,6 @@ pub fn crate_guest_fdt(
     }
 
     fdt_writer.finish().map_err(fdt_write_err)
-}
-
-#[cfg(target_arch = "loongarch64")]
-fn is_loongarch_pci_host_node(node: &Node<'_>) -> bool {
-    node.name().starts_with("pcie@")
-        && node
-            .compatibles()
-            .any(|compatible| compatible == "pci-host-ecam-generic")
 }
 
 /// Node processing action enumeration
@@ -336,12 +291,7 @@ fn need_cpu_node(phys_cpu_ids: &[usize], node: &Node, node_path: &str) -> bool {
 }
 
 /// Add memory node
-#[cfg(any(
-    target_arch = "aarch64",
-    target_arch = "riscv64",
-    target_arch = "loongarch64",
-    test
-))]
+#[cfg(any(target_arch = "aarch64", target_arch = "riscv64", test))]
 fn add_memory_node(
     new_memory: &[VMMemoryRegion],
     crate_config: &AxVMCrateConfig,
@@ -375,10 +325,6 @@ fn add_memory_node(
     ) {
         let gpa = mem.gpa.as_usize() as u64;
         let size = mem.size() as u64;
-        #[cfg(target_arch = "loongarch64")]
-        if gpa >= 0x1000_0000 {
-            continue;
-        }
         new_value.push((gpa >> 32) as u32);
         new_value.push((gpa & 0xFFFFFFFF) as u32);
         new_value.push((size >> 32) as u32);
@@ -583,7 +529,7 @@ pub fn update_fdt(
     Ok(())
 }
 
-#[cfg(any(target_arch = "riscv64", target_arch = "loongarch64"))]
+#[cfg(target_arch = "riscv64")]
 pub fn update_fdt(
     fdt_src: NonNull<u8>,
     dtb_size: usize,
@@ -707,11 +653,7 @@ mod tests {
     }
 }
 
-#[cfg(any(
-    target_arch = "aarch64",
-    target_arch = "riscv64",
-    target_arch = "loongarch64"
-))]
+#[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
 pub(crate) fn calculate_dtb_load_addr(vm: AxVMRef, fdt_size: usize) -> AxResult<GuestPhysAddr> {
     const MB: usize = 1024 * 1024;
 
@@ -722,9 +664,6 @@ pub(crate) fn calculate_dtb_load_addr(vm: AxVMRef, fdt_size: usize) -> AxResult<
         })?;
 
     let dtb_addr = vm.with_config(|config| {
-        #[cfg(target_arch = "loongarch64")]
-        let use_configured_dtb_addr = config.image_config.dtb_load_gpa.is_some();
-        #[cfg(not(target_arch = "loongarch64"))]
         let use_configured_dtb_addr =
             config.image_config.dtb_load_gpa.is_some() && !main_memory.is_identical();
 
@@ -747,7 +686,7 @@ pub(crate) fn calculate_dtb_load_addr(vm: AxVMRef, fdt_size: usize) -> AxResult<
     Ok(dtb_addr)
 }
 
-#[cfg(any(target_arch = "riscv64", target_arch = "loongarch64"))]
+#[cfg(target_arch = "riscv64")]
 pub(crate) fn patch_guest_fdt_for_runtime(
     fdt: &Fdt,
     memory_regions: &[VMMemoryRegion],
