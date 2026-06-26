@@ -1,3 +1,5 @@
+use core::sync::atomic::{AtomicUsize, Ordering};
+
 use rdif_intc::{AcpiIrqPolarity, AcpiIrqTrigger, Interface};
 use rdrive::{
     DriverGeneric, PlatformDevice, module_driver,
@@ -18,6 +20,11 @@ const PCH_PIC_MASK: usize = 0x20;
 const PCH_PIC_EDGE: usize = 0x60;
 const PCH_PIC_POL: usize = 0x3e0;
 const PCH_INT_HTVEC: usize = 0x200;
+
+const UNREGISTERED_PCH_PIC_BASE_VECTOR: usize = usize::MAX;
+
+static PCH_PIC_BASE_VECTOR: AtomicUsize = AtomicUsize::new(UNREGISTERED_PCH_PIC_BASE_VECTOR);
+static PCH_PIC_RUNTIME_VECTOR_COUNT: AtomicUsize = AtomicUsize::new(0);
 
 module_driver!(
     name: "Loongson PCH-PIC",
@@ -40,10 +47,12 @@ module_driver!(
 );
 
 pub fn input_for_vector(vector: usize) -> Option<usize> {
-    with_pch_pic("mapping PCH-PIC vector to input", |pic| {
-        pic.input_for_vector(vector, "map")
-    })
-    .flatten()
+    let base = PCH_PIC_BASE_VECTOR.load(Ordering::Acquire);
+    let count = PCH_PIC_RUNTIME_VECTOR_COUNT.load(Ordering::Acquire);
+    if base == UNREGISTERED_PCH_PIC_BASE_VECTOR || count == 0 {
+        return None;
+    }
+    vector.checked_sub(base).filter(|input| *input < count)
 }
 
 pub fn setup_acpi_route(route: &rdif_intc::AcpiGsiRoute) -> Option<usize> {
@@ -140,6 +149,8 @@ fn register_pch_pic(
         vector_count.unwrap_or(detected_vector_count),
     );
     pic.init();
+    PCH_PIC_BASE_VECTOR.store(pic.base_vector, Ordering::Release);
+    PCH_PIC_RUNTIME_VECTOR_COUNT.store(pic.vector_count, Ordering::Release);
     dev.register(rdif_intc::Intc::new(domain, pic));
     Ok(())
 }

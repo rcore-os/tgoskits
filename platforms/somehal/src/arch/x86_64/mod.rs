@@ -29,7 +29,10 @@ const ICR_DEST_SELF: u32 = 0x0004_0000;
 const ICR_DEST_ALL_EXCLUDING_SELF: u32 = 0x000c_0000;
 
 const UNMAPPED_VECTOR_ROUTE: u64 = u64::MAX;
+const UNMAPPED_IOAPIC_GSI_ROUTE: u64 = 0;
 static VECTOR_ROUTES: [AtomicU64; 256] = [const { AtomicU64::new(UNMAPPED_VECTOR_ROUTE) }; 256];
+static IOAPIC_GSI_ROUTES: [AtomicU64; 256] =
+    [const { AtomicU64::new(UNMAPPED_IOAPIC_GSI_ROUTE) }; 256];
 
 fn pack_irq(irq: IrqId) -> u64 {
     (u64::from(irq.domain.0) << 32) | u64::from(irq.hwirq.0)
@@ -40,6 +43,21 @@ fn unpack_irq(raw: u64) -> IrqId {
         crate::irq::IrqDomainId((raw >> 32) as u16),
         HwIrq(raw as u32),
     )
+}
+
+fn pack_ioapic_gsi_route(address: u64, input: u8) -> Result<u64, IrqError> {
+    if address & 0xfff != 0 {
+        return Err(IrqError::InvalidIrq);
+    }
+    let page = address >> 12;
+    if page == 0 || page >= (1u64 << 56) {
+        return Err(IrqError::InvalidIrq);
+    }
+    Ok((page << 8) | u64::from(input))
+}
+
+fn unpack_ioapic_gsi_route(route: u64) -> Option<(u64, u8)> {
+    (route != UNMAPPED_IOAPIC_GSI_ROUTE).then_some(((route >> 8) << 12, route as u8))
 }
 
 fn lapic_timer_irq_id() -> IrqId {
@@ -74,6 +92,24 @@ fn trap_vector_irq_id(raw: usize) -> Option<IrqId> {
         .filter(|raw| *raw != UNMAPPED_VECTOR_ROUTE)
         .map(unpack_irq);
     Some(mapped.unwrap_or_else(|| cpu_local_vector_irq_id(raw)))
+}
+
+pub fn set_ioapic_gsi_enabled_from_irq(gsi: u32, enabled: bool) -> Result<(), IrqError> {
+    let route = IOAPIC_GSI_ROUTES
+        .get(gsi as usize)
+        .and_then(|slot| unpack_ioapic_gsi_route(slot.load(Ordering::Acquire)))
+        .ok_or(IrqError::NotFound)?;
+
+    let (address, input) = route;
+    let mut ioapic = unsafe { IoApic::new(someboot::mem::phys_to_virt(address as usize) as u64) };
+    unsafe {
+        if enabled {
+            ioapic.enable_irq(input);
+        } else {
+            ioapic.disable_irq(input);
+        }
+    }
+    Ok(())
 }
 
 module_driver!(
@@ -324,6 +360,7 @@ impl rdif_intc::Interface for X86IoApicIntc {
         install_vector_route(route.vector, translation.id)?;
         self.remember_route(*route);
         if self.set_route_enable(route, false) {
+            publish_ioapic_gsi_route(route)?;
             Ok(())
         } else {
             Err(IrqError::Unsupported)
@@ -372,7 +409,7 @@ impl PlatOp for Plat {
         }
 
         if crate::irq::domain_is_kind(irq.domain, crate::irq::IrqDomainKind::X86IoApic) {
-            return crate::irq::set_controller_irq_enabled(irq, enable);
+            return set_ioapic_gsi_enabled_from_irq(irq.hwirq.0, enable);
         }
 
         Err(IrqError::InvalidIrq)
@@ -512,6 +549,15 @@ fn resolve_acpi_route(route: irq_framework::AcpiGsiRoute) -> Result<IrqId, IrqEr
     let translation = intc.translate_acpi(&route)?;
     intc.configure_acpi(&translation, &route)?;
     Ok(translation.id)
+}
+
+fn publish_ioapic_gsi_route(route: &AcpiGsiRoute) -> Result<(), IrqError> {
+    let slot = IOAPIC_GSI_ROUTES
+        .get(route.gsi as usize)
+        .ok_or(IrqError::InvalidIrq)?;
+    let packed = pack_ioapic_gsi_route(route.controller_address, route.controller_input)?;
+    slot.store(packed, Ordering::Release);
+    Ok(())
 }
 
 fn route_to_irq_framework(route: AcpiGsiRoute) -> irq_framework::AcpiGsiRoute {
