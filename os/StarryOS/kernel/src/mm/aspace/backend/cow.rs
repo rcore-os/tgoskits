@@ -318,9 +318,9 @@ impl CowBackend {
         match frame.count {
             1 => {
                 pt.protect(vaddr, vma_flags)?;
-                let defer_write =
-                    self.cow_deferred_file_write(vma_flags, pte_flags) && self.write_upgraded.get();
-                if defer_write && let Some(acct) = acct {
+                if self.cow_deferred_file_write(vma_flags, pte_flags)
+                    && let Some(acct) = acct
+                {
                     self.reclassify_or_adopt_cow_write(acct, vaddr);
                 }
                 return Ok(());
