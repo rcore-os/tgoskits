@@ -1581,6 +1581,7 @@ dependencies = [
  "byte-unit",
  "cfg-if",
  "extern-trait",
+ "irq-framework",
  "log",
  "loongarch_vcpu",
  "rdif-intc",
@@ -9036,6 +9037,7 @@ dependencies = [
  "axdevice_base",
  "axvm",
  "axvm-types",
+ "irq-framework",
  "x86_vlapic",
 ]
 
