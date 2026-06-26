@@ -29,7 +29,6 @@ description = "Spin-based synchronization primitives"
 readme = "README.md"
 keywords = [
     "spinlock",
-    "rwlock",
 ]
 license = "MIT"
 repository = "https://codeberg.org/zesterer/spin"
@@ -44,7 +43,6 @@ rustdoc-args = [
 [features]
 default = [
     "lock_api",
-    "rwlock",
     "once",
     "lazylock",
 ]
@@ -55,7 +53,6 @@ once = []
 portable-atomic = ["dep:portable-atomic"]
 portable_atomic = ["portable-atomic"]
 rustc-dep-of-std = ["core"]
-rwlock = []
 std = []
 
 [lib]
@@ -65,7 +62,6 @@ path = "src/lib.rs"
 [[example]]
 name = "debug"
 path = "examples/debug.rs"
-required-features = ["rwlock"]
 
 [dependencies.core]
 version = "1.0.0"
