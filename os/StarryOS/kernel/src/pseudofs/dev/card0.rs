@@ -694,10 +694,7 @@ impl Card0 {
         let src = pages.start_vaddr().as_usize() as *const u8;
         let dst = info.fb_base_vaddr as *mut u8;
 
-        if src_stride != 0
-            && info.stride != 0
-            && src_stride as usize != info.stride
-        {
+        if src_stride != 0 && info.stride != 0 && src_stride as usize != info.stride {
             // Stride mismatch — copy row by row to avoid diagonal tearing.
             let rows = (size as usize) / src_stride as usize;
             let dst_limit = info.fb_size / info.stride.max(1);
@@ -1169,7 +1166,14 @@ impl Card0 {
             }
         }
         let fb_id = self.next_fb_id.fetch_add(1, Ordering::Relaxed);
-        self.fbs.lock().insert(fb_id, Framebuffer { size, stride, pages });
+        self.fbs.lock().insert(
+            fb_id,
+            Framebuffer {
+                size,
+                stride,
+                pages,
+            },
+        );
         f.fb_id = fb_id;
         ptr.vm_write(f).map_err(|_| VfsError::BadAddress)?;
         Ok(0)
