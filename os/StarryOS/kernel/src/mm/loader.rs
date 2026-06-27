@@ -520,7 +520,7 @@ impl ElfCacheEntry {
     fn load(loc: Location) -> AxResult<Result<Self, Vec<u8>>> {
         let cache = CachedFile::get_or_create(loc)?;
 
-        let mut data = vec![0; 4096];
+        let mut data = vec![0; PAGE_SIZE_4K];
         let read = cache.read_at(&mut data[..], 0)?;
         data.truncate(read);
         match ElfCacheEntry::try_new_or_recover::<AxError>(cache.clone(), data, |data| {
