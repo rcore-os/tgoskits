@@ -2,7 +2,7 @@ use alloc::{collections::VecDeque, format, string::ToString, sync::Arc, vec, vec
 use core::{
     any::Any,
     ptr::NonNull,
-    sync::atomic::{AtomicU32, Ordering},
+    sync::atomic::{AtomicBool, AtomicU32, Ordering},
     task::Context,
     time::Duration,
 };
@@ -121,6 +121,10 @@ pub struct EventDev {
     /// IRQ line the underlying driver advertises, when available.
     irq: Option<usize>,
     irq_handle: spin::Once<ax_runtime::hal::irq::IrqHandle>,
+    /// Tracks whether any userspace process is blocked on `poll()`/`epoll`.
+    /// The polling fallback task only runs when this is `true`, avoiding
+    /// unnecessary CPU usage when no one is listening for input events.
+    has_waiters: AtomicBool,
     ev_bits: Bitmap<{ EventType::COUNT as usize }>,
     /// Cached `EVIOCGPROP` bitmap. Computed once at probe from the driver's
     /// raw bits with a synthesized `INPUT_PROP_POINTER` for absolute or
@@ -182,6 +186,7 @@ impl EventDev {
             waiters: PollSet::new(),
             irq,
             irq_handle: spin::Once::new(),
+            has_waiters: AtomicBool::new(false),
             ev_bits,
             prop_bits,
             abs_bits,
@@ -223,6 +228,12 @@ impl EventDev {
     }
 
     fn register_irq(self: &Arc<Self>) {
+        // Always start a polling fallback.  IRQ handlers may fail to fire
+        // (e.g. INTx routed but not delivered, MSI-X not negotiated, etc.)
+        // and libinput blocks on epoll_wait forever.  The polling task
+        // ensures events always reach userspace.
+        self.start_polling();
+
         let Some(irq) = self.irq else {
             return;
         };
@@ -247,6 +258,37 @@ impl EventDev {
                 self.inner.lock().device.disable_irq();
             }
         }
+    }
+
+    /// Spawn a background polling task that periodically drains input events
+    /// from the device.  Used as a fallback when IRQ delivery is unreliable
+    /// (e.g. MSI-X enabled but only INTx is resolved, or INTx routing fails).
+    /// The task only runs when there are active waiters (`has_waiters` is
+    /// true), avoiding unnecessary CPU usage when no one is listening.
+    fn start_polling(self: &Arc<Self>) {
+        let dev = self.clone();
+        ax_task::spawn_with_name(
+            move || {
+                loop {
+                    // Only poll when someone is blocked on poll()/epoll.
+                    // When there are no waiters, sleep longer to reduce
+                    // CPU overhead.
+                    if !dev.has_waiters.load(Ordering::Acquire) {
+                        ax_task::sleep(Duration::from_millis(200));
+                        continue;
+                    }
+
+                    let mut inner = dev.inner.lock();
+                    let ready = inner.drain_into_queue();
+                    drop(inner);
+                    if ready {
+                        unsafe { dev.waiters.wake(IoEvents::IN) };
+                    }
+                    ax_task::sleep(Duration::from_millis(10)); // ~100 Hz
+                }
+            },
+            "evdev-poll".into(),
+        );
     }
 }
 
@@ -525,6 +567,9 @@ impl Pollable for EventDev {
         if !events.contains(IoEvents::IN) {
             return;
         }
+        // Mark that someone is waiting for events, so the polling fallback
+        // task knows it should be active.
+        self.has_waiters.store(true, Ordering::Release);
         unsafe { self.waiters.register(context.waker(), IoEvents::IN) };
         if self.inner.lock().has_event() {
             context.waker().wake_by_ref();
