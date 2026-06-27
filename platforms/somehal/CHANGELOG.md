@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.3](https://github.com/rcore-os/tgoskits/compare/somehal-v0.7.2...somehal-v0.7.3) - 2026-06-27
+
+### Added
+
+- *(ax-runtime)* generate banner build info ([#1373](https://github.com/rcore-os/tgoskits/pull/1373))
+
+### Other
+
+- *(platform)* remove ax-config from dynamic runtime path ([#1387](https://github.com/rcore-os/tgoskits/pull/1387))
+- *(serial)* align IRQ model with dev ([#1265](https://github.com/rcore-os/tgoskits/pull/1265))
+
 ## [0.7.2](https://github.com/rcore-os/tgoskits/compare/somehal-v0.7.1...somehal-v0.7.2) - 2026-06-23
 
 ### Fixed

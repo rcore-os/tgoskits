@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.6](https://github.com/rcore-os/tgoskits/compare/starry-signal-v0.8.5...starry-signal-v0.8.6) - 2026-06-27
+
+### Fixed
+
+- *(axcpu)* deliver x86_64 #DE (divide error) as SIGFPE/FPE_INTDIV ([#1367](https://github.com/rcore-os/tgoskits/pull/1367))
+
 ## [0.8.5](https://github.com/rcore-os/tgoskits/compare/starry-signal-v0.8.4...starry-signal-v0.8.5) - 2026-06-23
 
 ### Other

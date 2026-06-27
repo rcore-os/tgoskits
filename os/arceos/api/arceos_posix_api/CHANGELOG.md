@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.23](https://github.com/rcore-os/tgoskits/compare/ax-posix-api-v0.5.22...ax-posix-api-v0.5.23) - 2026-06-27
+
+### Other
+
+- updated the following local packages: axpoll, scope-local, ax-hal, ax-task, ax-fs-ng, ax-net, ax-runtime, ax-feat, ax-alloc, ax-sync
+
 ## [0.5.22](https://github.com/rcore-os/tgoskits/compare/ax-posix-api-v0.5.21...ax-posix-api-v0.5.22) - 2026-06-23
 
 ### Other

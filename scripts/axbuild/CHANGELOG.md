@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.15](https://github.com/rcore-os/tgoskits/compare/axbuild-v0.4.14...axbuild-v0.4.15) - 2026-06-27
+
+### Fixed
+
+- *(locking)* remove spin mutex usage from kernel paths ([#1380](https://github.com/rcore-os/tgoskits/pull/1380))
+- *(claw-code)* respect managed rootfs image paths ([#1389](https://github.com/rcore-os/tgoskits/pull/1389))
+- *(starryos)* bound signal interrupt qemu test wait ([#1374](https://github.com/rcore-os/tgoskits/pull/1374))
+
+### Other
+
+- *(starry)* cover UV 0.11 and subcommand behavior in functional tests. ([#1211](https://github.com/rcore-os/tgoskits/pull/1211))
+- *(platforms)* remove VisionFive2 static platform ([#1371](https://github.com/rcore-os/tgoskits/pull/1371))
+- *(serial)* align IRQ model with dev ([#1265](https://github.com/rcore-os/tgoskits/pull/1265))
+
 ## [0.4.14](https://github.com/rcore-os/tgoskits/compare/axbuild-v0.4.13...axbuild-v0.4.14) - 2026-06-23
 
 ### Added

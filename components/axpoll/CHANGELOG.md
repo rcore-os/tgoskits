@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.2](https://github.com/rcore-os/tgoskits/compare/axpoll-v0.4.1...axpoll-v0.4.2) - 2026-06-27
+
+### Fixed
+
+- *(locking)* remove spin mutex usage from kernel paths ([#1380](https://github.com/rcore-os/tgoskits/pull/1380))
+
 ## [0.4.1](https://github.com/rcore-os/tgoskits/compare/axpoll-v0.4.0...axpoll-v0.4.1) - 2026-06-23
 
 ### Other

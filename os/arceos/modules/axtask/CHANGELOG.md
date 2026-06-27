@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.23](https://github.com/rcore-os/tgoskits/compare/ax-task-v0.5.22...ax-task-v0.5.23) - 2026-06-27
+
+### Fixed
+
+- *(ax-task)* clear delivered remote reschedule requests ([#1381](https://github.com/rcore-os/tgoskits/pull/1381))
+
+### Other
+
+- *(platform)* remove ax-config from dynamic runtime path ([#1387](https://github.com/rcore-os/tgoskits/pull/1387))
+- *(serial)* align IRQ model with dev ([#1265](https://github.com/rcore-os/tgoskits/pull/1265))
+
 ## [0.5.22](https://github.com/rcore-os/tgoskits/compare/ax-task-v0.5.21...ax-task-v0.5.22) - 2026-06-23
 
 ### Other

@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.6](https://github.com/rcore-os/tgoskits/compare/axklib-v0.6.5...axklib-v0.6.6) - 2026-06-27
+
+### Added
+
+- *(rdif-block)* add owned DMA queue primitives
+
+### Other
+
+- *(serial)* align IRQ model with dev ([#1265](https://github.com/rcore-os/tgoskits/pull/1265))
+
 ## [0.6.5](https://github.com/rcore-os/tgoskits/compare/axklib-v0.6.4...axklib-v0.6.5) - 2026-06-23
 
 ### Other

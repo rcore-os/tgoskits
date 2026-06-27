@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.19](https://github.com/rcore-os/tgoskits/compare/starryos-v0.5.18...starryos-v0.5.19) - 2026-06-27
+
+### Other
+
+- *(platforms)* remove VisionFive2 static platform ([#1371](https://github.com/rcore-os/tgoskits/pull/1371))
+
 ## [0.5.18](https://github.com/rcore-os/tgoskits/compare/starryos-v0.5.17...starryos-v0.5.18) - 2026-06-23
 
 ### Other

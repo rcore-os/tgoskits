@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.21](https://github.com/rcore-os/tgoskits/compare/ax-ipi-v0.5.20...ax-ipi-v0.5.21) - 2026-06-27
+
+### Other
+
+- *(platform)* remove ax-config from dynamic runtime path ([#1387](https://github.com/rcore-os/tgoskits/pull/1387))
+
 ## [0.5.20](https://github.com/rcore-os/tgoskits/compare/ax-ipi-v0.5.19...ax-ipi-v0.5.20) - 2026-06-23
 
 ### Other

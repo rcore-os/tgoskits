@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.6](https://github.com/rcore-os/tgoskits/compare/ax-plat-riscv64-sg2002-v0.4.5...ax-plat-riscv64-sg2002-v0.4.6) - 2026-06-27
+
+### Added
+
+- *(rdif-block)* add owned DMA queue primitives
+- *(ax-runtime)* generate banner build info ([#1373](https://github.com/rcore-os/tgoskits/pull/1373))
+
+### Other
+
+- *(platform)* remove ax-config from dynamic runtime path ([#1387](https://github.com/rcore-os/tgoskits/pull/1387))
+- *(serial)* align IRQ model with dev ([#1265](https://github.com/rcore-os/tgoskits/pull/1265))
+
 ## [0.4.5](https://github.com/rcore-os/tgoskits/compare/ax-plat-riscv64-sg2002-v0.4.4...ax-plat-riscv64-sg2002-v0.4.5) - 2026-06-23
 
 ### Added

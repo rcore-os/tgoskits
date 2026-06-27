@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0](https://github.com/rcore-os/tgoskits/compare/someboot-v0.2.3...someboot-v0.3.0) - 2026-06-27
+
+### Added
+
+- *(ax-runtime)* generate banner build info ([#1373](https://github.com/rcore-os/tgoskits/pull/1373))
+- *(ax-driver)* add VisionFive2 dynamic rtc and mmc ([#1353](https://github.com/rcore-os/tgoskits/pull/1353))
+
+### Fixed
+
+- *(locking)* remove spin mutex usage from kernel paths ([#1380](https://github.com/rcore-os/tgoskits/pull/1380))
+- *(someboot)* split MMU enable and relocation state ([#1362](https://github.com/rcore-os/tgoskits/pull/1362))
+
+### Other
+
+- *(serial)* align IRQ model with dev ([#1265](https://github.com/rcore-os/tgoskits/pull/1265))
+
 ## [0.2.3](https://github.com/rcore-os/tgoskits/compare/someboot-v0.2.2...someboot-v0.2.3) - 2026-06-23
 
 ### Added
