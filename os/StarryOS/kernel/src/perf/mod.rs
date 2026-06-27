@@ -13,7 +13,12 @@ pub mod tracepoint;
 pub mod uprobe;
 
 use alloc::{borrow::Cow, boxed::Box, sync::Arc, vec};
-use core::{any::Any, ffi::c_void, fmt::Debug};
+use core::{
+    any::Any,
+    ffi::c_void,
+    fmt::Debug,
+    sync::atomic::{AtomicBool, Ordering},
+};
 
 use ax_errno::{AxError, AxResult};
 use ax_io::Read;
@@ -21,7 +26,8 @@ use ax_kspin::{SpinNoPreempt, SpinNoPreemptGuard};
 use ax_lazyinit::LazyInit;
 use ax_memory_addr::{PAGE_SIZE_4K, PhysAddr, PhysAddrRange, VirtAddr, VirtAddrRange};
 use ax_runtime::hal::paging::MappingFlags;
-use axpoll::Pollable;
+use ax_task::future::{block_on, poll_io};
+use axpoll::{IoEvents, Pollable};
 pub use bpf::BpfPerfEventWrapper;
 use hashbrown::HashMap;
 use kbpf_basic::{
@@ -73,6 +79,9 @@ pub trait PerfEventOps: Pollable + Send + Sync + Debug {
 /// `Box<dyn PerfEventOps>` so the inner implementation can stay generic.
 pub struct PerfEvent {
     event: SpinNoPreempt<Box<dyn PerfEventOps>>,
+    /// O_NONBLOCK flag. When true, `read(2)` returns EAGAIN instead of
+    /// blocking on an empty ringbuf.
+    nonblocking: AtomicBool,
 }
 
 impl Debug for PerfEvent {
@@ -86,6 +95,7 @@ impl PerfEvent {
     pub fn new(event: Box<dyn PerfEventOps>) -> Self {
         PerfEvent {
             event: SpinNoPreempt::new(event),
+            nonblocking: AtomicBool::new(false),
         }
     }
 
@@ -105,9 +115,30 @@ impl Pollable for PerfEvent {
     }
 }
 
+/// Stack buffer size for reading a single perf ringbuf record. The
+/// ringbuf data region minimum is one page, and a single perf record
+/// always fits within one data-region page.
+const PERF_READ_BUF_SIZE: usize = PAGE_SIZE_4K;
+
 impl FileLike for PerfEvent {
-    fn read(&self, _dst: &mut crate::file::IoDst) -> AxResult<usize> {
-        Err(AxError::Unsupported)
+    fn read(&self, dst: &mut crate::file::IoDst) -> AxResult<usize> {
+        block_on(poll_io(self, IoEvents::IN, self.nonblocking(), || {
+            let mut event = self.event.lock();
+            let bpf_event = event
+                .as_any_mut()
+                .downcast_mut::<BpfPerfEventWrapper>()
+                .ok_or(AxError::Unsupported)?;
+            let mut buf = [0u8; PERF_READ_BUF_SIZE];
+            let n = bpf_event.try_read_record(&mut buf)?;
+            // Release the lock before writing to dst (I/O outside the spin
+            // lock) and before returning WouldBlock (the lock must not be
+            // held across the poll_io reschedule).
+            drop(event);
+            if n == 0 {
+                return Err(AxError::WouldBlock);
+            }
+            dst.write(&buf[..n]).map_err(|_| AxError::Io)
+        }))
     }
 
     fn write(&self, _src: &mut crate::file::IoSrc) -> AxResult<usize> {
@@ -156,6 +187,15 @@ impl FileLike for PerfEvent {
             PhysAddrRange::from_start_size(paddr, len),
             Some(anchor),
         ))
+    }
+
+    fn nonblocking(&self) -> bool {
+        self.nonblocking.load(Ordering::Acquire)
+    }
+
+    fn set_nonblocking(&self, on: bool) -> AxResult {
+        self.nonblocking.store(on, Ordering::Release);
+        Ok(())
     }
 }
 
