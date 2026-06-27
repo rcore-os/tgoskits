@@ -90,89 +90,12 @@ enum Counter {
     Programmable(usize),
 }
 
-/// Per-CPU counter allocator. M1 is single-core, so a single global allocator
-/// (mirroring the cycle-only PMU state already living in sysregs) tracks which
-/// physical counters are in use. `used` is a bitmask over programmable counter
-/// indices `0..num_counters`; `cycle_used` guards the dedicated cycle counter.
-#[cfg(target_arch = "aarch64")]
-struct HwAlloc {
-    /// Number of programmable counters (`PMCR_EL0.N`), from `ax_hal::pmu::info`.
-    num_counters: usize,
-    /// Bitmask of allocated programmable counters (bit `n` ⇒ index `n` in use).
-    used: u32,
-    /// Whether the dedicated cycle counter is allocated.
-    cycle_used: bool,
-}
-
-#[cfg(target_arch = "aarch64")]
-impl HwAlloc {
-    const fn new() -> Self {
-        HwAlloc {
-            num_counters: 0,
-            used: 0,
-            cycle_used: false,
-        }
-    }
-
-    /// Allocate the dedicated cycle counter, if free.
-    fn alloc_cycle(&mut self) -> Option<Counter> {
-        if self.cycle_used {
-            return None;
-        }
-        self.cycle_used = true;
-        Some(Counter::Cycle)
-    }
-
-    /// Allocate the lowest free programmable counter, if any.
-    fn alloc_counter(&mut self) -> Option<Counter> {
-        for n in 0..self.num_counters.min(32) {
-            if self.used & (1 << n) == 0 {
-                self.used |= 1 << n;
-                return Some(Counter::Programmable(n));
-            }
-        }
-        None
-    }
-
-    /// Release a previously allocated counter.
-    fn free(&mut self, counter: Counter) {
-        match counter {
-            Counter::Cycle => self.cycle_used = false,
-            Counter::Programmable(n) => {
-                if n < 32 {
-                    self.used &= !(1 << n);
-                }
-            }
-        }
-    }
-}
-
-#[cfg(target_arch = "aarch64")]
-static ALLOC: ax_kspin::SpinNoPreempt<HwAlloc> = ax_kspin::SpinNoPreempt::new(HwAlloc::new());
-
-/// Reserve a programmable counter for the per-task path ([`super::task`]).
-///
-/// The system-wide path reaches the allocator through [`alloc_programmable`],
-/// which also configures and validates the event; the per-task path keeps the
-/// slot unconfigured (the scheduler hook configures it per slice), so it needs a
-/// bare reservation. Returns the logical counter index, or `None` if no
-/// programmable counter is free.
-#[cfg(target_arch = "aarch64")]
-pub(crate) fn alloc_programmable_counter() -> Option<usize> {
-    match ALLOC.lock().alloc_counter() {
-        Some(Counter::Programmable(n)) => Some(n),
-        // `alloc_counter` only ever yields `Programmable`; the cycle counter is
-        // not handed to the per-task path.
-        _ => None,
-    }
-}
-
-/// Release a programmable counter previously reserved via
-/// [`alloc_programmable_counter`]. Called by [`super::task::free_hw`].
-#[cfg(target_arch = "aarch64")]
-pub(crate) fn free_programmable_counter(n: usize) {
-    ALLOC.lock().free(Counter::Programmable(n));
-}
+/// The counter allocator is per-CPU (`super::percpu::ALLOC`): `PMEVCNTRn_EL0` is
+/// banked per-PE, so each core owns its own pool. Reservation/release go through
+/// [`super::percpu::alloc_programmable_counter`] /
+/// [`super::percpu::free_programmable_counter`] (and the cycle-counter pair),
+/// which the per-task path drives per scheduling slice and the system-wide path
+/// at open/close on the owning core.
 
 /// The backing pages of a sampling event's mmap ring buffer, after the first
 /// `mmap(perf_fd)`.
@@ -464,10 +387,15 @@ impl Drop for HwPerfEvent {
         // programmable counter above; `disable` is idempotent), then release the
         // counter back to the allocator for reuse.
         match self.counter {
-            Counter::Cycle => ax_cpu::pmu::cycles::disable(),
-            Counter::Programmable(n) => ax_cpu::pmu::counter::disable(n),
+            Counter::Cycle => {
+                ax_cpu::pmu::cycles::disable();
+                super::percpu::free_cycle_counter();
+            }
+            Counter::Programmable(n) => {
+                ax_cpu::pmu::counter::disable(n);
+                super::percpu::free_programmable_counter(n);
+            }
         }
-        ALLOC.lock().free(self.counter);
         // Stop the deferred worker (mirrors `BpfPerfEventWrapper::drop`). The
         // `Arc`s in `sampling` drop after this returns.
         if let Some(sampling) = &self.sampling {
@@ -853,18 +781,15 @@ fn resolve_sampling(raw: u64, is_freq: bool) -> (u32, u32) {
 #[cfg(target_arch = "aarch64")]
 pub fn perf_event_open_hw(attr: &perf_event_attr, pid: i32) -> AxResult<HwPerfEvent> {
     // No PMUv3 → no hardware events.
-    let Some(info) = ax_hal::pmu::info() else {
+    if ax_hal::pmu::info().is_none() {
         return Err(AxError::Unsupported);
-    };
+    }
 
     // Per-CPU one-time clean-slate bring-up on the opening core (replaces the
     // bare per-open `init_cpu()`; the clears inside run exactly once per core,
-    // so re-opens never disturb live counters of other events).
+    // so re-opens never disturb live counters of other events). The per-CPU
+    // allocator caches this core's `PMCR.N` here, so no global counter count.
     super::percpu::ensure_core_inited();
-
-    // Refresh the counter count the allocator sizes its bitmask against. Safe
-    // to set every open: M1 is single-core so `num_counters` is invariant.
-    ALLOC.lock().num_counters = info.num_counters;
 
     // `pid > 0`: attach a per-task counter to that task. `pid <= 0` (0 = self,
     // -1 = system-wide) keeps the existing M1/M2 behaviour untouched below.
@@ -914,13 +839,14 @@ pub fn perf_event_open_hw(attr: &perf_event_attr, pid: i32) -> AxResult<HwPerfEv
     // the dedicated cycle counter is not used by the M2 overflow path.
     let counter = if attr.type_ == perf_type_id::PERF_TYPE_HARDWARE as u32 {
         if attr.config == perf_hw_id::PERF_COUNT_HW_CPU_CYCLES as u64 && !is_sampling {
-            // Counting CPU_CYCLES: the dedicated 64-bit cycle counter.
-            let Some(counter) = ALLOC.lock().alloc_cycle() else {
+            // Counting CPU_CYCLES: the dedicated 64-bit cycle counter, from this
+            // core's per-CPU pool.
+            if !super::percpu::alloc_cycle_counter() {
                 return Err(AxError::NoMemory);
-            };
+            }
             // `exclude_*` map onto the cycle filter; `configure` also resets.
             ax_cpu::pmu::cycles::configure(exclude_user, exclude_kernel);
-            counter
+            Counter::Cycle
         } else {
             // Map the generic hardware event to an ARM PMUv3 event number.
             // (CPU_CYCLES → 0x11 here for the sampling case.)
@@ -1085,11 +1011,10 @@ fn perf_event_open_hw_per_task(attr: &perf_event_attr, pid: i32) -> AxResult<HwP
         return Err(AxError::Unsupported);
     }
 
-    // Reserve a programmable counter slot, but do NOT configure/enable HW now:
-    // the scheduler hook configures it per slice when the target runs.
-    let Some(n) = alloc_programmable_counter() else {
-        return Err(AxError::NoMemory);
-    };
+    // No counter is reserved at open: the per-task path allocates a programmable
+    // slot from the *running* core's per-CPU pool at each `perf_sched_in` and
+    // releases it at `perf_sched_out`, so concurrent demand is bounded by the
+    // events of the running task per core, not by live events system-wide.
 
     // `disabled = 0` ⇒ count from the next sched-in; `disabled = 1` ⇒ wait for
     // `enable_on_exec` / `ioctl(ENABLE)`. `perf stat -- cmd` sets both
@@ -1099,7 +1024,6 @@ fn perf_event_open_hw_per_task(attr: &perf_event_attr, pid: i32) -> AxResult<HwP
 
     let ptc = Arc::new(super::task::PerTaskCounter::new(
         super::task::PerTaskConfig {
-            n,
             event,
             exclude_user,
             exclude_kernel,
@@ -1123,8 +1047,10 @@ fn perf_event_open_hw_per_task(attr: &perf_event_attr, pid: i32) -> AxResult<HwP
     super::task::attach(thr, ptc.clone());
 
     Ok(HwPerfEvent {
-        // Inert placeholders: the per-task path drives `ptc`, not these fields.
-        counter: Counter::Programmable(n),
+        // Inert placeholders: the per-task path drives `ptc` (which holds the
+        // per-slice slot), not these fields. `usize::MAX` is never used as a real
+        // counter index — the per-task `Drop` delegates to `free_hw` and returns.
+        counter: Counter::Programmable(usize::MAX),
         // Mirrors the wrapper id onto the ptc via `set_sample_id`; 0 until then.
         sample_id: 0,
         read_format: attr.read_format,
@@ -1150,7 +1076,7 @@ fn alloc_programmable(event: u16, exclude_user: bool, exclude_kernel: bool) -> A
         );
         return Err(AxError::Unsupported);
     }
-    let Some(Counter::Programmable(n)) = ALLOC.lock().alloc_counter() else {
+    let Some(n) = super::percpu::alloc_programmable_counter() else {
         return Err(AxError::NoMemory);
     };
     // `configure` applies the event + filter and resets the counter to 0.
