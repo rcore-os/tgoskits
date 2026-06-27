@@ -20,6 +20,9 @@ use kprobe::{CallBackFunc, KretprobeBuilder, ProbeBuilder, PtRegs};
 pub const PROBE_CONFIG_ENTRY: u64 = 0;
 /// Config value for return probes (kretprobe/uretprobe), per Linux PERF_TYPE_PROBE ABI.
 pub const PROBE_CONFIG_RETURN: u64 = 1;
+/// Maximum number of concurrently active kretprobe instances, matching
+/// Linux's `max(10, 2*NR_CPUS)` default for single-CPU configurations.
+const KRETPROBE_MAX_ACTIVE: u32 = 10;
 
 use crate::{
     file::FileLike,
@@ -187,9 +190,11 @@ fn perf_probe_arg_to_kretprobe_builder(
 ) -> AxResult<KretprobeBuilder<KernelRawMutex>> {
     let symbol = &args.name;
     let addr = lookup_symbol_addr(symbol)?;
-    Ok(KretprobeBuilder::<KernelRawMutex>::new(10)
-        .with_symbol(symbol.clone())
-        .with_symbol_addr(addr))
+    Ok(
+        KretprobeBuilder::<KernelRawMutex>::new(KRETPROBE_MAX_ACTIVE)
+            .with_symbol(symbol.clone())
+            .with_symbol_addr(addr),
+    )
 }
 
 /// Build a `ProbePerfEvent` for a `PERF_TYPE_KPROBE` perf_event_open call.

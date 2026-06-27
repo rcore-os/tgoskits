@@ -37,6 +37,11 @@ use crate::{
     file::FileLike,
 };
 
+/// Number of 4K pages reserved for x86_64 BPF JIT executable memory.
+/// Each JIT-compiled eBPF program fits within this space; the allocation
+/// is sized generously (16 KiB) since programs are typically < 1 page.
+const BPF_JIT_MEM_PAGES: usize = 4;
+
 /// Wraps `kbpf_basic::perf::bpf::BpfPerfEvent` with kernel state: a poll
 /// set so readers can wait for new records, and a weak handle to the
 /// backing pages produced by `device_mmap` (Some after the first
@@ -388,7 +393,7 @@ impl OwnedEbpfVm {
         #[cfg(target_arch = "x86_64")]
         {
             // TODO: calculate a more precise size.
-            let mut jit_exec_memory = BPFJitMemory::new(4)?;
+            let mut jit_exec_memory = BPFJitMemory::new(BPF_JIT_MEM_PAGES)?;
             // SAFETY: `jit_exec_memory` is moved into the returned
             // `OwnedEbpfVm` after `vm`; field drop order guarantees `vm` is
             // destroyed before the executable mapping is unmapped.
