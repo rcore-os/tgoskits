@@ -8,12 +8,15 @@
 # parsing, env-var forwarding, and post-QEMU binary extraction.
 #
 # Prerequisites:
-#   - Rootfs (run once to create the selfhost rootfs):
-#       sudo ./scripts/prepare-selfhost-rootfs.sh --arch x86_64 --force
-#     The x86_64 self-compile requires a complete Debian rootfs with musl
-#     toolchain, kallsyms tools, firmware, and full offline dependency closure.
-#     --bootstrap is available for bootstrapping an Alpine base image only and
-#     does NOT provision the prerequisites the x86_64 xtask flow requires.
+#   - Rootfs (run once to create the selfhost rootfs).  Two ways to produce it:
+#       (1) Maintainer tool (Debian, requires sudo, warms the offline cache):
+#             sudo ./scripts/prepare-selfhost-rootfs.sh --arch x86_64 --force
+#       (2) --bootstrap (Alpine, no host sudo): provisions the full toolchain
+#           (musl, Rust nightly, kallsyms tools, source, firmware) inside QEMU,
+#           but does NOT warm the offline dependency cache — so a self-contained
+#           offline self-compile on it will not complete.  See docs.
+#     The x86_64 self-compile then needs a warmed-cache rootfs (path 1 or a
+#     downloadable pre-built blueprint).
 #   - qemu-system-<arch>, debugfs (from e2fsprogs)
 #
 # Usage:
@@ -72,9 +75,11 @@ while [[ $# -gt 0 ]]; do
             echo "  --commit <SHA>  Expected source commit for identity verification"
             echo "  --ref <REF>     Expected git ref (informational, no strict check)"
             echo "  --log <level>   Log level: none, error, warn, info (default: info)"
-            echo "  --bootstrap     Bootstrap an Alpine base rootfs via QEMU (no host sudo).
-                    Not sufficient for x86_64 self-compile; use
-                    prepare-selfhost-rootfs.sh instead."
+            echo "  --bootstrap     Provision a complete selfhost rootfs (musl, Rust,
+                    kallsyms, source, firmware) from the Alpine base via QEMU, no
+                    host sudo, then stop.  Does NOT warm the offline cache; to
+                    self-compile use a warmed-cache rootfs (prepare-selfhost-rootfs.sh
+                    or the downloadable blueprint) and run without --bootstrap."
             exit 0
             ;;
         *) error "Unknown argument: $1";;
@@ -137,15 +142,31 @@ if [ "$ARCH" = "x86_64" ]; then
             "Alpine rootfs not found: $ALPINE_ROOTFS
 Run: cargo xtask starry rootfs --arch x86_64"
 
+        # The bootstrap app's qemu config (selfhost-bootstrap/qemu-x86_64.toml)
+        # mounts this NON-managed drive path so the app runner resolves it flat.
+        # A path under tmp/axbuild/rootfs/ would instead be rewritten to the
+        # managed image-store layout (<store>/<extract-dir>/<name>.img) and would
+        # not match the file created here.  Provision into that drive, then
+        # relocate to the blueprint once the guest powers off.
+        BOOTSTRAP_IMG="tmp/selfhost/rootfs-x86_64-selfhost-bootstrap.img"
+
         info "Alpine base: $ALPINE_ROOTFS ($(stat -c%s "$ALPINE_ROOTFS") bytes)"
-        info "Cloning Alpine base → selfhost blueprint ($SELFHOST_BLUEPRINT) ..."
-        mkdir -p "$(dirname "$SELFHOST_BLUEPRINT")"
-        cp "$ALPINE_ROOTFS" "$SELFHOST_BLUEPRINT" || error "Failed to clone Alpine rootfs"
-        qemu-img resize -f raw "$SELFHOST_BLUEPRINT" 16G >/dev/null 2>&1 || true
-        if [ "$(stat -c%s "$SELFHOST_BLUEPRINT")" -lt 3000000000 ]; then
-            truncate -s 16G "$SELFHOST_BLUEPRINT"
+        info "Cloning Alpine base → bootstrap image ($BOOTSTRAP_IMG) ..."
+        mkdir -p "$(dirname "$BOOTSTRAP_IMG")"
+        cp "$ALPINE_ROOTFS" "$BOOTSTRAP_IMG" || error "Failed to clone Alpine rootfs"
+        qemu-img resize -f raw "$BOOTSTRAP_IMG" 16G >/dev/null 2>&1 || true
+        if [ "$(stat -c%s "$BOOTSTRAP_IMG")" -lt 3000000000 ]; then
+            truncate -s 16G "$BOOTSTRAP_IMG"
         fi
-        info "Blueprint: $SELFHOST_BLUEPRINT ($(stat -c%s "$SELFHOST_BLUEPRINT") bytes)"
+        info "Bootstrap image: $BOOTSTRAP_IMG ($(stat -c%s "$BOOTSTRAP_IMG") bytes)"
+
+        # qemu-img/truncate only enlarge the block device; the ext4 filesystem
+        # inside is still the small Alpine-base size.  Grow it to fill the image
+        # so the guest has room for the toolchain (apk + rustup + build tools).
+        # resize2fs operates on the raw image file directly — no sudo / loop mount.
+        info "Growing ext4 filesystem to fill the bootstrap image..."
+        e2fsck -fy "$BOOTSTRAP_IMG" >/dev/null 2>&1 || true
+        resize2fs "$BOOTSTRAP_IMG" || error "Failed to grow ext4 filesystem in $BOOTSTRAP_IMG"
 
         info "=== Starting QEMU bootstrap (~15-20 min) ==="
         info "The guest will install build tools + Rust, then power off."
@@ -158,6 +179,11 @@ Run: cargo xtask starry rootfs --arch x86_64"
         if [ "$BOOTSTRAP_EXIT" -ne 0 ]; then
             error "Bootstrap failed (exit=$BOOTSTRAP_EXIT). Retry or use: sudo ./scripts/prepare-selfhost-rootfs.sh --arch x86_64 --force"
         fi
+
+        # Relocate the provisioned image to the blueprint path the full-kernel
+        # flow (and the working-copy clone below) consume.
+        mkdir -p "$(dirname "$SELFHOST_BLUEPRINT")"
+        mv "$BOOTSTRAP_IMG" "$SELFHOST_BLUEPRINT" || error "Failed to relocate bootstrap image to blueprint"
         info "Bootstrap complete: $SELFHOST_BLUEPRINT ($(stat -c%s "$SELFHOST_BLUEPRINT") bytes)"
     fi
 
@@ -211,6 +237,19 @@ Options: download a pre-built image from the tgosimages release, or create
 one via prepare-selfhost-rootfs.sh (maintainer tool, requires sudo).
 
 See docs/starryos-self-compilation.md for details."
+
+    # --bootstrap is a PROVISION-ONLY step: it produces the selfhost blueprint
+    # (no host sudo) and stops here.  It does NOT warm the offline dependency
+    # cache, so a self-contained offline self-compile on a freshly bootstrapped
+    # rootfs will not complete; self-compile against a warmed-cache rootfs
+    # (prepare-selfhost-rootfs.sh or the downloadable blueprint) by re-running
+    # without --bootstrap.
+    if [ "$BOOTSTRAP" = "true" ]; then
+        printf "[self-compile] Selfhost blueprint provisioned (no host sudo): %s\n" "$SELFHOST_BLUEPRINT"
+        info "Provisioning complete.  To self-compile, re-run without --bootstrap against a"
+        info "warmed-cache rootfs (prepare-selfhost-rootfs.sh or the downloadable blueprint)."
+        exit 0
+    fi
 
     if [ ! -f "$ROOTFS_IMG" ]; then
         info "Cloning rootfs: $SELFHOST_BLUEPRINT → $ROOTFS_IMG (this may take a moment)..."

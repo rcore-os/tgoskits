@@ -64,8 +64,9 @@ fail() {
     exit 1
 }
 
-echo "[bootstrap] Resizing root filesystem..."
-resize2fs /dev/vda 2>/dev/null || resize2fs /dev/sda 2>/dev/null || true
+# The root filesystem is grown to the full image size on the host (resize2fs,
+# before boot); the StarryOS guest cannot reliably resize it, so no in-guest
+# resize is attempted here.
 
 echo "[bootstrap] apk update + install build toolchain..."
 apk update || fail "apk update failed"
