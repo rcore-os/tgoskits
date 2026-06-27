@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.1](https://github.com/rcore-os/tgoskits/compare/sg2002-tpu-v0.3.0...sg2002-tpu-v0.3.1) - 2026-06-27
+
+### Other
+
+- updated the following local packages: ax-dma
+
 ## [0.3.0](https://github.com/rcore-os/tgoskits/compare/sg2002-tpu-v0.2.0...sg2002-tpu-v0.3.0) - 2026-06-23
 
 ### Other
