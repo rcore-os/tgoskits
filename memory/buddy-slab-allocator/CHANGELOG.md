@@ -89,6 +89,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - *(locking)* remove spin mutex usage from kernel paths ([#1380](https://github.com/rcore-os/tgoskits/pull/1380))
 
+### Other
+
+- release ([#1359](https://github.com/rcore-os/tgoskits/pull/1359))
+
+## [0.4.3](https://github.com/rcore-os/tgoskits/compare/buddy-slab-allocator-v0.4.2...buddy-slab-allocator-v0.4.3) - 2026-06-27
+
+### Fixed
+
+- *(locking)* remove spin mutex usage from kernel paths ([#1380](https://github.com/rcore-os/tgoskits/pull/1380))
+
 ## [0.4.2](https://github.com/rcore-os/tgoskits/compare/buddy-slab-allocator-v0.4.1...buddy-slab-allocator-v0.4.2) - 2026-06-03
 
 ### Other

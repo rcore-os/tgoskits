@@ -11,6 +11,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Other
 
+- release ([#1359](https://github.com/rcore-os/tgoskits/pull/1359))
+
+## [0.3.5](https://github.com/rcore-os/tgoskits/compare/rdif-eth-v0.3.4...rdif-eth-v0.3.5) - 2026-06-27
+
+### Other
+
 - updated the following local packages: dma-api
 
 ## [0.3.4](https://github.com/rcore-os/tgoskits/compare/rdif-eth-v0.3.3...rdif-eth-v0.3.4) - 2026-06-23
