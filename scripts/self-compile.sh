@@ -117,10 +117,11 @@ if [ "$ARCH" = "x86_64" ]; then
     # prepare-selfhost-rootfs.sh and reused across runs.  Each run clones
     # it to a working copy so the blueprint stays pristine.
     #
-    # --bootstrap provisions a COMPLETE selfhost rootfs from the Alpine base
-    # entirely inside QEMU (no host sudo): build toolchain, Rust, kallsyms tools,
-    # full source, AIC8800 firmware, and a warmed dependency cache (workspace +
-    # -Zbuild-std).  See apps/starry/selfhost/selfhost-bootstrap/prebuild.sh.
+    # --bootstrap PROVISIONS a selfhost rootfs from the Alpine base entirely
+    # inside QEMU (no host sudo): build toolchain, Rust, kallsyms tools, full
+    # source, AIC8800 firmware, musl symlinks.  It does NOT warm the offline
+    # dependency cache (-Zbuild-std), so it is not sufficient for a self-contained
+    # offline self-compile on its own.  See apps/starry/selfhost/selfhost-bootstrap/prebuild.sh.
     SELFHOST_BLUEPRINT="tmp/axbuild/rootfs/rootfs-x86_64-selfhost.img"
 
     if [ ! -f "$SELFHOST_BLUEPRINT" ] && [ "$BOOTSTRAP" = "true" ]; then
