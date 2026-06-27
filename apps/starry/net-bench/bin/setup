@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+# bin/setup - 配置 net-bench 测试环境
+#
+# 用法: setup
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+BENCH_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+
+exec bash "$BENCH_ROOT/bin/bench" --setup-only "$@"

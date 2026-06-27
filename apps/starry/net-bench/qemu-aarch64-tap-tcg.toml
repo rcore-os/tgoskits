@@ -1,0 +1,33 @@
+# StarryOS net-bench QEMU+TAP 配置（TCG 模式，用于 WSL2 x86_64 环境）
+#
+# 注意：WSL2 在 x86_64 上不支持 aarch64 KVM，必须使用 TCG 模拟
+# 性能数据仅供功能验证，不作为正式性能基线
+#
+# 前置条件：
+#   - br0 + tap0 已配置（192.168.100.0/24 网段）
+#
+# 用法:
+#   bash apps/starry/net-bench/run.sh aarch64 tap-tcg
+
+args = [
+    "-nographic",
+    "-m", "1G",
+    # TCG 模式（不使用 KVM）
+    "-cpu", "cortex-a72",
+    # 块设备
+    "-device", "virtio-blk-pci,drive=disk0",
+    "-drive", "id=disk0,if=none,format=raw,file=${workspace}/tmp/axbuild/rootfs/rootfs-aarch64-alpine.img",
+    # 网络设备（virtio-net + TAP）
+    "-device", "virtio-net-pci,netdev=net0,mac=52:54:00:12:34:56",
+    "-netdev", "tap,id=net0,ifname=tap0,script=no,downscript=no",
+    "-snapshot",
+    "-machine", "virt",
+]
+
+uefi = false
+to_bin = true
+shell_prefix = "root@starry:"
+shell_init_cmd = "/usr/bin/net-bench-tap.sh"
+success_regex = ["(?m)^NET_BENCH_PASSED\\s*$"]
+fail_regex = ['(?i)\bpanic(?:ked)?\b', "(?m)^NET_BENCH_FAILED:"]
+timeout = 300

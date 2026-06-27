@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+# bin/bench-wsl - WSL2 环境的快捷测试入口
+#
+# WSL2 推荐配置：aarch64 + TCG（已验证通过）
+# 原因：x86_64 host 无法 KVM 加速 aarch64，使用 TCG 模拟
+
+echo "=== WSL2 快捷测试（aarch64 + TCG）==="
+echo ""
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+exec "$SCRIPT_DIR/bench" vhost --arch aarch64 "$@"

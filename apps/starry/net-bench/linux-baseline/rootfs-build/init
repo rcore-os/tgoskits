@@ -1,0 +1,48 @@
+#!/bin/sh
+# Linux baseline init script
+
+mount -t proc none /proc
+mount -t sysfs none /sys
+mount -t devtmpfs none /dev
+
+# 配置网络
+ip link set lo up
+ip link set eth0 up
+ip addr add 192.168.100.2/24 dev eth0
+ip route add default via 192.168.100.1
+
+# 运行 net-bench 测试
+echo "=== Linux baseline: starting net-bench tests ==="
+HOST_IP="192.168.100.1"
+
+run_test() {
+    local test_id="$1"
+    shift
+    echo "NET_BENCH_BEGIN test_id=$test_id boot=1 iter=warmup"
+    iperf3 -c "$HOST_IP" -t 10 "$@" || true
+    echo "NET_BENCH_END test_id=$test_id boot=1 iter=warmup"
+    
+    for iter in {1..5}; do
+        echo "NET_BENCH_BEGIN test_id=$test_id boot=1 iter=$iter"
+        iperf3 -c "$HOST_IP" -t 10 "$@"
+        echo "NET_BENCH_END test_id=$test_id boot=1 iter=$iter"
+    done
+}
+
+# 等待 host iperf3 server 就绪
+for i in {1..15}; do
+    if nc -z "$HOST_IP" 5201 2>/dev/null; then
+        echo "=== iperf3 server ready ==="
+        break
+    fi
+    sleep 1
+done
+
+run_test tcp1  -P 1
+run_test tcp4  -P 4
+run_test tcp1r -P 1 -R
+run_test udp1g -u -b 1G
+run_test udp64 -u -b 0 -l 64
+
+echo "NET_BENCH_PASSED"
+poweroff -f
