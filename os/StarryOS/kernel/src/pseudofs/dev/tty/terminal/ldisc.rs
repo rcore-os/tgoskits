@@ -625,7 +625,10 @@ impl<R: TtyRead, W: TtyWrite> LineDiscipline<R, W> {
         } else {
             let vtime = term.special_char(VTIME);
             if vtime > 0 {
-                todo!();
+                // VTIME inter-byte / read-interval timer not yet
+                // implemented.  Reads proceed as if VTIME=0, which is
+                // a best-effort approximation that avoids blocking
+                // forever when the timer would have expired.
             }
             term.special_char(VMIN) as usize
         };

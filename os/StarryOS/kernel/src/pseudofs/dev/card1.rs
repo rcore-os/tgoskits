@@ -203,7 +203,8 @@ impl DeviceOps for Card1 {
                 }
 
                 _ => {
-                    panic!("card1: unsupported ioctl nr {nr:#x}");
+                    warn!("card1: unsupported ioctl nr {nr:#x}");
+                    return Err(VfsError::OperationNotSupported);
                 }
             }
             copy_to_user(arg as _, stack_data.as_mut_ptr(), out_size)?;

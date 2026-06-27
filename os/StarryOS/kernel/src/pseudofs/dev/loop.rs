@@ -27,6 +27,11 @@ use crate::{
     pseudofs::{DeviceMmap, DeviceOps},
 };
 
+/// Default read-ahead sector count for loop devices (matches Linux).
+const LOOP_DEFAULT_RA: u32 = 512;
+/// Maximum length of the backing-file path attached to a loop device.
+const LOOP_NAME_SIZE: usize = 64;
+
 /// HDIO_GETGEO ioctl command (get drive geometry).
 /// Not defined in linux-raw-sys, so we use the standard value directly.
 const HDIO_GETGEO: u32 = 0x0301;
@@ -60,8 +65,8 @@ impl LoopDevice {
             dev_id,
             file: Mutex::new(None),
             ro: AtomicBool::new(false),
-            ra: AtomicU32::new(512),
-            file_name: Mutex::new([0u8; 64]),
+            ra: AtomicU32::new(LOOP_DEFAULT_RA),
+            file_name: Mutex::new([0u8; LOOP_NAME_SIZE]),
             flags: AtomicU32::new(0),
             exclusive: AtomicBool::new(false),
             #[cfg(feature = "ext4")]
@@ -194,7 +199,7 @@ impl DeviceOps for LoopDevice {
                 self.detach_block_cache(guard.as_ref())?;
 
                 *guard = None;
-                *self.file_name.lock() = [0u8; 64];
+                *self.file_name.lock() = [0u8; LOOP_NAME_SIZE];
                 self.flags.store(0, Ordering::Relaxed);
             }
             LOOP_GET_STATUS => {
