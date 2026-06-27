@@ -383,12 +383,18 @@ impl OwnedEbpfVm {
                 let _ = vm.register_helper(*key, *value);
             }
         }
-        // TODO: not all of the address space is accessible to a BPF program;
-        // allowing the full `0..u64::MAX` range disables rbpf's bounds check
-        // and lets a buggy/hostile program read arbitrary kernel memory via
-        // direct loads. Narrow this to the legitimately-reachable context /
-        // map / stack ranges once kbpf-basic exposes the per-program bounds.
-        vm.register_allowed_memory(0..u64::MAX);
+        // bpftrace / libbpf / aya observability programs access kernel
+        // memory exclusively through registered helper functions (e.g.
+        // bpf_probe_read, bpf_map_lookup_elem), never via direct LD_ABS
+        // / LD_IND / LD_DW loads.  We intentionally do NOT call
+        // `register_allowed_memory` so rbpf's bounds check rejects any
+        // direct memory access, preventing a buggy or hostile program
+        // from reading arbitrary kernel memory.
+        //
+        // If a future program legitimately needs direct loads (e.g. a
+        // raw socket filter that touches packet data), register its
+        // specific buffer range here rather than re-opening the full
+        // address space.
 
         #[cfg(target_arch = "x86_64")]
         {
