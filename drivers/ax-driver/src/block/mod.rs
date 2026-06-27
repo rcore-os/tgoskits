@@ -29,6 +29,8 @@ pub mod starfive_mmc;
 #[cfg(sync_block_dev)]
 use alloc::{boxed::Box, sync::Arc};
 
+#[cfg(sync_block_dev)]
+use ax_kspin::SpinRaw as Mutex;
 pub use binding::*;
 #[cfg(sync_block_dev)]
 use rdif_block::{
@@ -37,8 +39,6 @@ use rdif_block::{
 };
 #[allow(unused)]
 pub(crate) use shared::SharedDriver;
-#[cfg(sync_block_dev)]
-use spin::Mutex;
 
 #[cfg(sync_block_dev)]
 pub(crate) trait SyncBlockOps: Send + 'static {

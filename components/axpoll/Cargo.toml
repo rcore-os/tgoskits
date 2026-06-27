@@ -19,9 +19,8 @@ linux-raw-sys = { version = "0.12", default-features = false, features = [
     "no_std",
     "general",
 ] }
-spin = { version = "0.12", default-features = false, features = [
+spin = { version = "0.12", path = "../spin", default-features = false, features = [
     "lazylock",
-    "spin_mutex",
 ] }
 
 [dev-dependencies]

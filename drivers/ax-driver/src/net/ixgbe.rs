@@ -1,6 +1,7 @@
 use alloc::{boxed::Box, collections::VecDeque, format, sync::Arc};
 use core::{alloc::Layout, cmp, ptr::NonNull, time::Duration};
 
+use ax_kspin::SpinRaw as Mutex;
 use dma_api::{DmaAddr, DmaAllocHandle, DmaConstraints, DmaOp};
 use ixgbe_driver::{
     INTEL_82599, INTEL_VEND, IxgbeDevice, IxgbeError, IxgbeHal, IxgbeNetBuf, MemPool, NicDevice,
@@ -66,7 +67,7 @@ fn probe_pci(mut probe: ProbePci<'_>) -> Result<(), OnProbeError> {
 }
 
 struct IxgbeNet {
-    inner: Arc<spin::Mutex<IxgbeInner>>,
+    inner: Arc<Mutex<IxgbeInner>>,
     tx_created: bool,
     rx_created: bool,
     irq_enabled: bool,
@@ -83,7 +84,7 @@ impl IxgbeNet {
             &mem_pool,
         )?;
         Ok(Self {
-            inner: Arc::new(spin::Mutex::new(IxgbeInner {
+            inner: Arc::new(Mutex::new(IxgbeInner {
                 device,
                 mem_pool,
                 rx_ready: VecDeque::with_capacity(RX_BUFFER_QUEUE_SIZE),
@@ -176,7 +177,7 @@ impl From<DmaBuffer> for RuntimeNetBuffer {
 }
 
 struct IxgbeTxQueue {
-    inner: Arc<spin::Mutex<IxgbeInner>>,
+    inner: Arc<Mutex<IxgbeInner>>,
 }
 
 impl ITxQueue for IxgbeTxQueue {
@@ -207,7 +208,7 @@ impl ITxQueue for IxgbeTxQueue {
 }
 
 struct IxgbeRxQueue {
-    inner: Arc<spin::Mutex<IxgbeInner>>,
+    inner: Arc<Mutex<IxgbeInner>>,
 }
 
 impl IRxQueue for IxgbeRxQueue {

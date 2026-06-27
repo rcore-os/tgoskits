@@ -117,6 +117,7 @@ members = [
     "os/StarryOS/lkm/*",
 ]
 exclude = [
+    "components/spin",
     "os/StarryOS/lkm/linux-hello",
     "virtualization/test_crates",
 ]
@@ -301,7 +302,7 @@ dma-api = { version = "0.8.2", path = "memory/dma-api" }
 mmio-api = { version = "0.2.2", path = "memory/mmio-api" }
 lock_api = { version = "0.4", default-features = false }
 log = "0.4"
-spin = "0.12"
+spin = { version = "0.12", path = "components/spin" }
 atomic-waker = { version = "1.1", default-features = false }
 ostool = { version = "0.23.5" }
 riscv = { version = "0.16.1", default-features = false }

@@ -16,6 +16,7 @@ libusb = ["umod"]
 umod = ["libusb1-sys"]
 
 [dependencies]
+ax-kspin = { workspace = true }
 bitflags = "2.8"
 crossbeam = {version = "0.8", features = ["alloc"], default-features = false}
 crossbeam-skiplist = {version = "0.1", features = [

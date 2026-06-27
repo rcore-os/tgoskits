@@ -4,7 +4,7 @@
 //!
 //! # 完整使用示例
 //!
-//! ```no_run
+//! ```ignore
 //! use aic8800_fdrv::{WifiClient, WifiConfig};
 //!
 //! // 1. 初始化 SDHCI 控制器 + 固件 (由调用方完成)

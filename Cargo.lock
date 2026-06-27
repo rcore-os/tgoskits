@@ -151,6 +151,7 @@ version = "0.2.0"
 dependencies = [
  "aes",
  "atomic-waker",
+ "ax-kspin",
  "digest 0.10.7",
  "dma-api",
  "hmac",
@@ -162,7 +163,6 @@ dependencies = [
  "sdio-host-cv1800",
  "sha1 0.10.6",
  "sha2 0.10.9",
- "spin 0.12.0",
  "ureq",
 ]
 
@@ -383,13 +383,13 @@ name = "arm-scmi-rs"
 version = "0.1.3"
 dependencies = [
  "aarch64-cpu-ext",
+ "ax-kspin",
  "bitflags 2.13.0",
  "log",
  "mbarrier",
  "nb",
  "num-align",
  "smccc",
- "spin 0.12.0",
  "thiserror 2.0.18",
  "tock-registers 0.10.1",
 ]
@@ -405,7 +405,7 @@ dependencies = [
  "axvcpu",
  "log",
  "numeric-enum-macro",
- "spin 0.12.0",
+ "spin",
 ]
 
 [[package]]
@@ -422,7 +422,7 @@ dependencies = [
  "axvm-types",
  "bitmaps",
  "log",
- "spin 0.12.0",
+ "spin",
  "tock-registers 0.10.1",
 ]
 
@@ -534,7 +534,7 @@ dependencies = [
  "ax-errno 0.6.0",
  "ax_slab_allocator",
  "bitmap-allocator",
- "buddy_system_allocator 0.10.0",
+ "buddy_system_allocator",
  "cfg-if",
  "criterion",
  "rand 0.8.6",
@@ -727,7 +727,7 @@ dependencies = [
  "sg200x-bsp",
  "simple-ahci",
  "some-serial",
- "spin 0.12.0",
+ "spin",
  "virtio-drivers",
  "x86",
 ]
@@ -790,7 +790,7 @@ dependencies = [
  "rsext4",
  "scope-local",
  "slab",
- "spin 0.12.0",
+ "spin",
  "starry-fatfs",
 ]
 
@@ -814,7 +814,7 @@ dependencies = [
  "heapless 0.9.3",
  "log",
  "rdrive",
- "spin 0.12.0",
+ "spin",
  "toml 1.1.2+spec-1.1.0",
 ]
 
@@ -960,7 +960,7 @@ dependencies = [
  "rdif-vsock",
  "ringbuf",
  "smoltcp 0.13.1",
- "spin 0.12.0",
+ "spin",
 ]
 
 [[package]]
@@ -995,7 +995,7 @@ dependencies = [
  "ax-kernel-guard",
  "ax-percpu-macros",
  "cfg-if",
- "spin 0.12.0",
+ "spin",
  "x86",
 ]
 
@@ -1024,7 +1024,7 @@ dependencies = [
  "irq-framework",
  "rdif-intc",
  "rdrive",
- "spin 0.12.0",
+ "spin",
 ]
 
 [[package]]
@@ -1075,7 +1075,7 @@ dependencies = [
  "sbi-rt",
  "sg200x-bsp",
  "some-serial",
- "spin 0.12.0",
+ "spin",
 ]
 
 [[package]]
@@ -1098,7 +1098,7 @@ dependencies = [
  "bindgen 0.72.1",
  "flatten_objects",
  "scope-local",
- "spin 0.12.0",
+ "spin",
 ]
 
 [[package]]
@@ -1143,7 +1143,7 @@ dependencies = [
  "rdif-block",
  "rdrive",
  "sdhci-cv1800",
- "spin 0.12.0",
+ "spin",
  "toml 1.1.2+spec-1.1.0",
 ]
 
@@ -1171,7 +1171,7 @@ dependencies = [
  "ax-runtime",
  "libc",
  "lock_api",
- "spin 0.12.0",
+ "spin",
 ]
 
 [[package]]
@@ -1209,7 +1209,7 @@ dependencies = [
  "extern-trait",
  "futures-util",
  "log",
- "spin 0.12.0",
+ "spin",
  "toml 1.1.2+spec-1.1.0",
 ]
 
@@ -1223,7 +1223,7 @@ version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6a04dda49054845b496a16f62a58614b1935ed2b4df0b91f9eea4179a5820f08"
 dependencies = [
- "buddy_system_allocator 0.12.0",
+ "buddy_system_allocator",
 ]
 
 [[package]]
@@ -1258,7 +1258,7 @@ dependencies = [
  "gimli 0.33.0",
  "log",
  "paste",
- "spin 0.12.0",
+ "spin",
 ]
 
 [[package]]
@@ -1333,7 +1333,6 @@ dependencies = [
  "axvm-types",
  "log",
  "serde",
- "spin 0.10.0",
 ]
 
 [[package]]
@@ -1351,13 +1350,13 @@ name = "axfs-ng-vfs"
 version = "0.5.1"
 dependencies = [
  "ax-errno 0.6.0",
+ "ax-kspin",
  "bitflags 2.13.0",
  "cfg-if",
  "hashbrown 0.16.1",
  "inherit-methods-macro",
  "log",
  "smallvec",
- "spin 0.12.0",
 ]
 
 [[package]]
@@ -1411,7 +1410,7 @@ dependencies = [
  "ax-kspin",
  "linux-raw-sys 0.12.1",
  "log",
- "spin 0.12.0",
+ "spin",
 ]
 
 [[package]]
@@ -1434,7 +1433,7 @@ dependencies = [
  "log",
  "rdrive",
  "somehal",
- "spin 0.12.0",
+ "spin",
 ]
 
 [[package]]
@@ -1445,7 +1444,7 @@ dependencies = [
  "bitflags 2.13.0",
  "futures",
  "linux-raw-sys 0.12.1",
- "spin 0.12.0",
+ "spin",
  "tokio",
 ]
 
@@ -1537,7 +1536,7 @@ dependencies = [
  "prettyplease",
  "proc-macro2",
  "quote",
- "spin 0.12.0",
+ "spin",
  "syn 2.0.117",
  "tokio",
  "toml 0.9.12+spec-1.1.0",
@@ -1580,7 +1579,7 @@ dependencies = [
  "rdrive",
  "riscv_vcpu",
  "riscv_vplic",
- "spin 0.12.0",
+ "spin",
  "x86_vcpu",
  "x86_vlapic",
 ]
@@ -1846,26 +1845,17 @@ dependencies = [
 name = "buddy-slab-allocator"
 version = "0.4.2"
 dependencies = [
+ "ax-kspin",
  "divan",
  "log",
  "rand 0.10.1",
- "spin 0.12.0",
 ]
-
-[[package]]
-name = "buddy_system_allocator"
-version = "0.10.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a7913f22349ffcfc6ca0ca9a656ec26cfbba538ed49c31a273dff2c5d1ea83d9"
 
 [[package]]
 name = "buddy_system_allocator"
 version = "0.12.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b672b945a3e4f4f40bfd4cd5ee07df9e796a42254ce7cd6d2599ad969244c44a"
-dependencies = [
- "spin 0.10.0",
-]
 
 [[package]]
 name = "bumpalo"
@@ -2354,6 +2344,7 @@ name = "crab-usb"
 version = "0.9.8"
 dependencies = [
  "anyhow",
+ "ax-kspin",
  "bitflags 2.13.0",
  "crossbeam",
  "crossbeam-skiplist",
@@ -2366,7 +2357,7 @@ dependencies = [
  "mbarrier",
  "nb",
  "num_enum",
- "spin 0.12.0",
+ "spin",
  "thiserror 2.0.18",
  "tock-registers 0.10.1",
  "trait-ffi",
@@ -3005,7 +2996,7 @@ dependencies = [
  "rdrive",
  "rockchip-soc",
  "some-serial",
- "spin 0.12.0",
+ "spin",
 ]
 
 [[package]]
@@ -5380,7 +5371,7 @@ dependencies = [
  "mbarrier",
  "mmio-api",
  "rdif-block",
- "spin 0.12.0",
+ "spin",
  "tock-registers 0.10.1",
 ]
 
@@ -6103,8 +6094,8 @@ checksum = "dc33ff2d4973d518d823d61aa239014831e521c75da58e3df4840d3f47749d09"
 name = "ramdisk"
 version = "0.1.6"
 dependencies = [
+ "ax-kspin",
  "rdif-block",
- "spin 0.12.0",
 ]
 
 [[package]]
@@ -6356,9 +6347,9 @@ dependencies = [
 name = "rdif-block"
 version = "0.9.1"
 dependencies = [
+ "ax-kspin",
  "dma-api",
  "rdif-base",
- "spin 0.12.0",
  "thiserror 2.0.18",
 ]
 
@@ -6464,6 +6455,7 @@ name = "rdrive"
 version = "0.23.1"
 dependencies = [
  "acpi",
+ "ax-kspin",
  "fdt-edit",
  "fdt-raw",
  "log",
@@ -6473,7 +6465,7 @@ dependencies = [
  "rdif-base",
  "rdif-pcie",
  "rdrive-macros",
- "spin 0.12.0",
+ "spin",
  "thiserror 2.0.18",
  "x86",
 ]
@@ -6491,11 +6483,11 @@ dependencies = [
 name = "realtek-rtl8125"
 version = "0.2.5"
 dependencies = [
+ "ax-kspin",
  "dma-api",
  "log",
  "mmio-api",
  "rdif-eth",
- "spin 0.12.0",
  "thiserror 2.0.18",
  "tock-registers 0.10.1",
 ]
@@ -6791,7 +6783,7 @@ dependencies = [
  "mbarrier",
  "num-align",
  "rdif-base",
- "spin 0.12.0",
+ "spin",
  "thiserror 2.0.18",
  "tock-registers 0.10.1",
 ]
@@ -7107,7 +7099,7 @@ version = "0.4.0"
 dependencies = [
  "ax-percpu",
  "ctor 0.6.3",
- "spin 0.12.0",
+ "spin",
 ]
 
 [[package]]
@@ -7581,7 +7573,6 @@ dependencies = [
  "arrayvec",
  "bit_field",
  "bitflags 2.13.0",
- "buddy_system_allocator 0.12.0",
  "byte-unit",
  "byteorder",
  "derive_more",
@@ -7603,7 +7594,7 @@ dependencies = [
  "smccc",
  "some-serial",
  "somehal-macros",
- "spin 0.12.0",
+ "spin",
  "syn 2.0.117",
  "thiserror 2.0.18",
  "tock-registers 0.10.1",
@@ -7631,7 +7622,7 @@ dependencies = [
  "sbi-rt",
  "someboot",
  "somehal-macros",
- "spin 0.12.0",
+ "spin",
  "thiserror 2.0.18",
  "tock-registers 0.10.1",
  "x2apic",
@@ -7650,18 +7641,7 @@ dependencies = [
 
 [[package]]
 name = "spin"
-version = "0.10.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d5fe4ccb98d9c292d56fec89a5e07da7fc4cf0dc11e156b41793132775d3e591"
-dependencies = [
- "lock_api",
-]
-
-[[package]]
-name = "spin"
 version = "0.12.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1527984ca054dfca79333baec451042863f485fbee01b7bf6d911de915cac865"
 dependencies = [
  "lock_api",
 ]
@@ -7776,7 +7756,7 @@ dependencies = [
  "sg200x-bsp",
  "slab",
  "some-serial",
- "spin 0.12.0",
+ "spin",
  "starry-process",
  "starry-signal",
  "starry-vm",
@@ -8913,7 +8893,7 @@ dependencies = [
  "futures",
  "log",
  "num_enum",
- "spin 0.12.0",
+ "spin",
  "thiserror 2.0.18",
 ]
 

@@ -2,6 +2,7 @@ use alloc::format;
 #[cfg(virtio_dev)]
 use alloc::sync::Arc;
 
+use ax_kspin::SpinRaw as Mutex;
 use heapless::Vec as ArrayVec;
 use mmio_api::MmioOp;
 #[cfg(virtio_dev)]
@@ -15,9 +16,6 @@ use rdrive::{
         pci::{PciAddress, PciInfo, PciMem32, PciMem64},
     },
 };
-#[cfg(virtio_dev)]
-use spin::Mutex;
-use spin::Mutex as SpinMutex;
 #[cfg(virtio_dev)]
 use virtio_drivers::transport::{
     DeviceType, Transport,
@@ -95,8 +93,8 @@ impl LegacyIrqRoute {
     }
 }
 
-static LEGACY_IRQ_ROUTES: SpinMutex<ArrayVec<LegacyIrqRoute, MAX_PCIE_LEGACY_IRQS>> =
-    SpinMutex::new(ArrayVec::new());
+static LEGACY_IRQ_ROUTES: Mutex<ArrayVec<LegacyIrqRoute, MAX_PCIE_LEGACY_IRQS>> =
+    Mutex::new(ArrayVec::new());
 
 pub const DEVICE_NAME: &str = "pci-ecam";
 
