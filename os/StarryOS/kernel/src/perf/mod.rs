@@ -21,7 +21,8 @@ use ax_kspin::{SpinNoPreempt, SpinNoPreemptGuard};
 use ax_lazyinit::LazyInit;
 use ax_memory_addr::{PAGE_SIZE_4K, PhysAddr, PhysAddrRange, VirtAddr, VirtAddrRange};
 use ax_runtime::hal::paging::MappingFlags;
-use axpoll::Pollable;
+use ax_task::future::{block_on, poll_io};
+use axpoll::{IoEvents, Pollable};
 pub use bpf::BpfPerfEventWrapper;
 use hashbrown::HashMap;
 use kbpf_basic::{
@@ -112,17 +113,23 @@ const PERF_READ_BUF_SIZE: usize = PAGE_SIZE_4K;
 
 impl FileLike for PerfEvent {
     fn read(&self, dst: &mut crate::file::IoDst) -> AxResult<usize> {
-        let mut event = self.event.lock();
-        let bpf_event = event
-            .as_any_mut()
-            .downcast_mut::<BpfPerfEventWrapper>()
-            .ok_or(AxError::Unsupported)?;
-        let mut buf = [0u8; PERF_READ_BUF_SIZE];
-        let n = bpf_event.try_read_record(&mut buf)?;
-        if n == 0 {
-            return Ok(0);
-        }
-        dst.write(&buf[..n]).map_err(|_| AxError::Io)
+        block_on(poll_io(self, IoEvents::IN, self.nonblocking(), || {
+            let mut event = self.event.lock();
+            let bpf_event = event
+                .as_any_mut()
+                .downcast_mut::<BpfPerfEventWrapper>()
+                .ok_or(AxError::Unsupported)?;
+            let mut buf = [0u8; PERF_READ_BUF_SIZE];
+            let n = bpf_event.try_read_record(&mut buf)?;
+            // Release the lock before writing to dst (I/O outside the spin
+            // lock) and before returning WouldBlock (the lock must not be
+            // held across the poll_io reschedule).
+            drop(event);
+            if n == 0 {
+                return Err(AxError::WouldBlock);
+            }
+            dst.write(&buf[..n]).map_err(|_| AxError::Io)
+        }))
     }
 
     fn write(&self, _src: &mut crate::file::IoSrc) -> AxResult<usize> {
