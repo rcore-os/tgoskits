@@ -13,7 +13,12 @@ pub mod tracepoint;
 pub mod uprobe;
 
 use alloc::{borrow::Cow, boxed::Box, sync::Arc, vec};
-use core::{any::Any, ffi::c_void, fmt::Debug};
+use core::{
+    any::Any,
+    ffi::c_void,
+    fmt::Debug,
+    sync::atomic::{AtomicBool, Ordering},
+};
 
 use ax_errno::{AxError, AxResult};
 use ax_io::Read;
@@ -74,6 +79,9 @@ pub trait PerfEventOps: Pollable + Send + Sync + Debug {
 /// `Box<dyn PerfEventOps>` so the inner implementation can stay generic.
 pub struct PerfEvent {
     event: SpinNoPreempt<Box<dyn PerfEventOps>>,
+    /// O_NONBLOCK flag. When true, `read(2)` returns EAGAIN instead of
+    /// blocking on an empty ringbuf.
+    nonblocking: AtomicBool,
 }
 
 impl Debug for PerfEvent {
@@ -87,6 +95,7 @@ impl PerfEvent {
     pub fn new(event: Box<dyn PerfEventOps>) -> Self {
         PerfEvent {
             event: SpinNoPreempt::new(event),
+            nonblocking: AtomicBool::new(false),
         }
     }
 
@@ -178,6 +187,15 @@ impl FileLike for PerfEvent {
             PhysAddrRange::from_start_size(paddr, len),
             Some(anchor),
         ))
+    }
+
+    fn nonblocking(&self) -> bool {
+        self.nonblocking.load(Ordering::Acquire)
+    }
+
+    fn set_nonblocking(&self, on: bool) -> AxResult {
+        self.nonblocking.store(on, Ordering::Release);
+        Ok(())
     }
 }
 
