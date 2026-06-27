@@ -54,7 +54,13 @@ impl DmaBufFile {
             .ok_or(AxError::InvalidInput)?
             .max(align);
         let layout = Layout::from_size_align(size, align).map_err(|_| AxError::InvalidInput)?;
-        let dma = unsafe { ax_dma::alloc_coherent_pages(layout) }.map_err(|_| AxError::NoMemory)?;
+        // The accelerators that consume these buffers (JPU/RGA/NPU) run with the
+        // IOMMU bypassed and program raw 32-bit physical DMA addresses, so the
+        // backing pages must live below 4 GiB. Plain `alloc_coherent_pages` draws
+        // from anywhere in RAM and returns >4 GiB pages on large-memory boards,
+        // which the 32-bit address registers cannot reach.
+        let dma =
+            unsafe { ax_dma::alloc_coherent_pages_dma32(layout) }.map_err(|_| AxError::NoMemory)?;
         Ok(Self {
             alloc: Arc::new(DmaBufAlloc { dma, size, align }),
         })
@@ -74,6 +80,10 @@ impl DmaBufFile {
     }
 
     /// Size of the allocation in bytes (page-rounded up from the request).
+    ///
+    /// Only the NPU import seam ([`ContiguousDmaBuf`]) needs this; the jpeg-only
+    /// build resolves buffers through [`Self::phys_base`].
+    #[cfg(feature = "rknpu")]
     pub fn size(&self) -> usize {
         self.alloc.size
     }
@@ -83,6 +93,11 @@ impl DmaBufFile {
 /// dev-nodes (JPU / RGA / NPU) can share by fd for zero-copy. The RK3588 engines
 /// run IOMMU-bypassed, so the physical base is exactly what they program into
 /// their address registers.
+///
+/// Consumed by the NPU import path (card1 `PRIME_FD_TO_HANDLE`), which needs the
+/// CPU base and a lifetime retainer; the jpeg-only `/dev/mpp_service` path uses
+/// the inherent [`DmaBufFile::phys_base`] instead, so this is gated on `rknpu`.
+#[cfg(feature = "rknpu")]
 pub trait ContiguousDmaBuf {
     /// Device-reachable physical/bus base address.
     fn dma_phys_base(&self) -> usize;
@@ -95,6 +110,7 @@ pub trait ContiguousDmaBuf {
     fn dma_retainer(&self) -> Arc<dyn Any + Send + Sync>;
 }
 
+#[cfg(feature = "rknpu")]
 impl ContiguousDmaBuf for DmaBufFile {
     fn dma_phys_base(&self) -> usize {
         self.phys_base()

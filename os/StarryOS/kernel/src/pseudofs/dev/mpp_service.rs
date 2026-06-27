@@ -209,10 +209,21 @@ fn run_decode(state: &mut TaskState) -> VfsResult<()> {
 /// physical base of its contiguous buffer. MPP allocates these from our
 /// `/dev/dma_heap` ([`DmaBufFile`]).
 fn resolve_fd(fd: u32) -> Option<u32> {
-    let buf = resolve_contiguous_dmabuf(fd as c_int)?;
+    let Some(buf) = resolve_contiguous_dmabuf(fd as c_int) else {
+        warn!("mpp_service: register fd {fd} is not a resolvable dma-buf");
+        return None;
+    };
     // The decoder is 32-bit (device_with_mask(u32::MAX)); reject buffers above
-    // 4 GiB rather than silently truncating the address.
-    u32::try_from(buf.phys_base()).ok()
+    // 4 GiB rather than silently truncating the address. /dev/dma_heap buffers
+    // are allocated below 4 GiB (dma32), so this should not trigger.
+    let phys = buf.phys_base();
+    match u32::try_from(phys) {
+        Ok(addr) => Some(addr),
+        Err(_) => {
+            warn!("mpp_service: dma-buf fd {fd} phys {phys:#x} exceeds 32-bit JPU range");
+            None
+        }
+    }
 }
 
 fn map_jpeg_err(err: jpeg::Error) -> VfsError {

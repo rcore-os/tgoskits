@@ -15,7 +15,7 @@ use ax_runtime::hal::cpu::asm::user_copy;
 use axfs_ng_vfs::{DeviceId, VfsError, VfsResult};
 
 use crate::{
-    file::{add_file_like, dmabuf::DmaBufFile},
+    file::{add_file_like, close_file_like, dmabuf::DmaBufFile},
     pseudofs::DeviceOps,
 };
 
@@ -25,8 +25,9 @@ pub const DMA_HEAP_DEVICE_ID: DeviceId = DeviceId::new(0xF1, 0x20);
 /// Heap node names exposed under `/dev/dma_heap/`. `librockchip_mpp` enumerates
 /// all of these (including the `-dma32` variants) at startup and picks one by
 /// buffer flags; exposing each as a node avoids the lib's fragile dup-a-sibling
-/// fallback. All map to the same contiguous coherent allocator (the decoder is
-/// 32-bit, so every allocation already satisfies the dma32 constraint).
+/// fallback. All map to the same contiguous coherent allocator, which always
+/// allocates below 4 GiB ([`DmaBufFile::alloc`] uses the dma32 page path) so the
+/// 32-bit IOMMU-bypassed accelerators can address every buffer.
 pub const HEAP_NAMES: &[&str] = &[
     "system",
     "system-uncached",
@@ -82,7 +83,12 @@ impl DeviceOps for DmaHeap {
         let fd = add_file_like(Arc::new(buf), false)?;
 
         data.fd = fd as u32;
-        copy_out(&data, arg)?;
+        if let Err(e) = copy_out(&data, arg) {
+            // Userspace never learns this fd, so close it here; otherwise the fd
+            // slot and its contiguous DMA buffer leak for the process lifetime.
+            let _ = close_file_like(fd);
+            return Err(e);
+        }
         Ok(0)
     }
 }
