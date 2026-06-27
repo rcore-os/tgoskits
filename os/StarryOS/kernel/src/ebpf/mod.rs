@@ -51,6 +51,12 @@ use crate::{
 /// without re-running the kbpf-basic init on every call.
 pub static BPF_HELPER_FUN_SET: LazyInit<BTreeMap<u32, RawBPFHelperFn>> = LazyInit::new();
 
+/// BPF helper ID for `bpf_probe_read` (legacy, address-space-agnostic).
+const BPF_FUNC_PROBE_READ: u32 = 4;
+/// BPF helper ID for `bpf_probe_read_kernel`. kbpf-basic only registers
+/// `bpf_probe_read` so we alias 113 onto the same raw helper.
+const BPF_FUNC_PROBE_READ_KERNEL: u32 = 113;
+
 /// Initialize the BPF subsystem: build the helper-function table from
 /// `kbpf-basic`. Must be called before `sys_bpf(BPF_PROG_LOAD)` so loaded
 /// programs can resolve the helper ids referenced in their instructions.
@@ -61,8 +67,8 @@ pub fn init_ebpf() {
     // tracepoint program uses to pull fields out of its sample buffer.
     // kbpf-basic only registers the legacy `bpf_probe_read` (id 4), whose raw
     // reader is address-space-agnostic in this VM, so alias 113 onto it.
-    if let Some(&probe_read) = set.get(&4) {
-        set.entry(113).or_insert(probe_read);
+    if let Some(&probe_read) = set.get(&BPF_FUNC_PROBE_READ) {
+        set.entry(BPF_FUNC_PROBE_READ_KERNEL).or_insert(probe_read);
     }
     BPF_HELPER_FUN_SET.init_once(set);
 }
