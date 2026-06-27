@@ -14,7 +14,7 @@ use starry_vm::{VmMutPtr, VmPtr};
 
 use crate::{
     file::{
-        Directory, FD_TABLE, File, FileDescriptor, FileLike, NsFd, Pipe, add_file_like,
+        Directory, FD_TABLE, FdTable, File, FileDescriptor, FileLike, NsFd, Pipe, add_file_like,
         close_file_like, get_file_like, memfd::Memfd, with_fs,
     },
     mm::vm_load_string,
@@ -374,7 +374,11 @@ pub fn sys_close_range(first: i32, last: i32, flags: u32) -> AxResult<isize> {
     if flags.contains(CloseRangeFlags::UNSHARE) {
         let curr = current();
         let proc_data = &curr.as_thread().proc_data;
-        let new_files = Arc::new(spin::RwLock::new(FD_TABLE.read().clone()));
+        let new_inner = spin::RwLock::new(FD_TABLE.read().clone());
+        let new_files = Arc::new(FdTable::from_inner(new_inner));
+        // Unshare stops sharing the old fd table; mirror the dec_task_count
+        // that the CLONE_FILES path pairs with inc_task_count.
+        FD_TABLE.dec_task_count();
         proc_data.with_current_scope_mut(|scope| {
             *FD_TABLE.scope_mut(scope).deref_mut() = new_files;
         });

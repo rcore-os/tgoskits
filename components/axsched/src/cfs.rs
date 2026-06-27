@@ -168,11 +168,32 @@ impl<T> BaseScheduler for CFScheduler<T> {
         }
     }
 
+    fn pick_next_task_matching(
+        &mut self,
+        predicate: impl Fn(&Self::SchedItem) -> bool,
+    ) -> Option<Self::SchedItem> {
+        let key = {
+            let mut found = None;
+            for ((v, id), task) in &self.ready_queue {
+                if predicate(task) {
+                    found = Some((*v, *id));
+                    break;
+                }
+            }
+            found
+        };
+        key.and_then(|k| self.ready_queue.remove(&k))
+    }
+
     fn put_prev_task(&mut self, prev: Self::SchedItem, _preempt: bool) {
         let taskid = self.id_pool.fetch_add(1, Ordering::Release);
         prev.set_id(taskid);
         self.ready_queue
             .insert((prev.clone().get_vruntime(), taskid), prev);
+    }
+
+    fn is_empty(&self) -> bool {
+        self.ready_queue.is_empty()
     }
 
     fn task_tick(&mut self, current: &Self::SchedItem) -> bool {

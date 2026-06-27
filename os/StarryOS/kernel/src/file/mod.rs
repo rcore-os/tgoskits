@@ -17,7 +17,7 @@ pub mod timerfd;
 mod wext;
 
 use alloc::{borrow::Cow, sync::Arc};
-use core::{ffi::c_int, time::Duration};
+use core::{ffi::c_int, sync::atomic::AtomicI32, time::Duration};
 
 use ax_errno::{AxError, AxResult};
 use ax_fs_ng::vfs::{FS_CONTEXT, FileBackend, FileFlags, OpenOptions};
@@ -262,9 +262,65 @@ pub struct FileDescriptor {
     pub cloexec: bool,
 }
 
+/// Shared file descriptor table with task-count tracking.
+///
+/// Mirrors Linux's `files_struct.count`: `task_count` tracks how many live
+/// tasks share this table via CLONE_FILES. Unlike `Arc::strong_count`, it is
+/// decremented synchronously in `close_all_fds()` (the exiting task's context),
+/// so the last exiting task always closes FDs in user-task context — never in
+/// the GC task's context.
+pub struct FdTable {
+    inner: RwLock<FlattenObjects<FileDescriptor, AX_FILE_LIMIT>>,
+    task_count: AtomicI32,
+}
+
+impl FdTable {
+    pub fn read(
+        &self,
+    ) -> impl core::ops::Deref<Target = FlattenObjects<FileDescriptor, AX_FILE_LIMIT>> + '_ {
+        self.inner.read()
+    }
+
+    pub fn write(
+        &self,
+    ) -> impl core::ops::DerefMut<Target = FlattenObjects<FileDescriptor, AX_FILE_LIMIT>> + '_ {
+        self.inner.write()
+    }
+
+    /// Record a new task sharing this table (clone with CLONE_FILES).
+    pub fn inc_task_count(&self) {
+        self.task_count
+            .fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Record a task exiting. Returns `true` if this was the last live task.
+    pub fn dec_task_count(&self) -> bool {
+        self.task_count
+            .fetch_sub(1, core::sync::atomic::Ordering::Relaxed)
+            == 1
+    }
+
+    /// Wrap an existing inner table (used in unshare)
+    pub fn from_inner(inner: RwLock<FlattenObjects<FileDescriptor, AX_FILE_LIMIT>>) -> Self {
+        Self {
+            inner,
+            task_count: AtomicI32::new(1),
+        }
+    }
+}
+
+impl Default for FdTable {
+    fn default() -> Self {
+        Self {
+            inner: RwLock::new(FlattenObjects::default()),
+            task_count: AtomicI32::new(1),
+        }
+    }
+}
+
 scope_local::scope_local! {
     /// The current file descriptor table.
-    pub static FD_TABLE: Arc<RwLock<FlattenObjects<FileDescriptor, AX_FILE_LIMIT>>> = Arc::default();
+    pub static FD_TABLE: Arc<FdTable> = Arc::default();
 }
 
 /// Get a file-like object by `fd`.
@@ -336,8 +392,10 @@ fn notify_close_write(fd: &FileDescriptor) {
 pub fn release_locks_on_close(fd: FileDescriptor) {
     let key = fd.inner.inode_key();
     notify_close_write(&fd);
-    if let Some(k) = key {
-        let pid = current().as_thread().proc_data.proc.pid();
+    if let Some(k) = key
+        && let Some(thr) = current().try_as_thread()
+    {
+        let pid = thr.proc_data.proc.pid();
         crate::syscall::release_inode_posix_locks(pid, k);
     }
     drop(fd);
@@ -352,20 +410,23 @@ pub fn release_locks_on_close(fd: FileDescriptor) {
 /// This must be called when a process exits, so that pipe write ends and other
 /// resources are properly released. Without this, parent processes blocking on
 /// pipe reads will never receive EOF.
+///
+/// Uses per-FdTable `task_count` (mirroring Linux's `files_struct.count`) to
+/// determine the last live task sharing the table.  The count is decremented
+/// inside the FD_TABLE write lock, synchronized with the CLONE_FILES path
+/// that holds the read lock before incrementing it.
 pub fn close_all_fds() {
-    // Acquire the write lock before checking strong_count. The clone(CLONE_FILES)
-    // path in syscall/task/clone.rs also acquires FD_TABLE.read() before cloning
-    // the Arc, creating a shared synchronization boundary. This ensures:
-    // - If close_all_fds acquires the write lock first, clone blocks on read lock
-    //   until we release, so strong_count cannot change during our check.
-    // - If clone holds the read lock first, we block on write lock, and by the
-    //   time we proceed strong_count already reflects the clone.
     let mut table = FD_TABLE.write();
 
     // CLONE_FILES may share the same fd table across multiple tasks/processes.
     // In that case, an exiting sharer must not clear the whole table, or other
     // live sharers (including the parent) will lose stdout/stderr unexpectedly.
-    if Arc::strong_count(&FD_TABLE) > 1 {
+    //
+    // dec_task_count() returns true when this is the last live task — the
+    // check is done under FD_TABLE.write() so it serialises with the
+    // inc_task_count() in the clone(CLONE_FILES) path (which holds
+    // FD_TABLE.read()).
+    if !FD_TABLE.dec_task_count() {
         return;
     }
 

@@ -49,27 +49,25 @@ pub fn handle_syscall(uctx: &mut UserContext) {
     };
 
     trace!("Syscall {sysno:?}");
-    match ax_task::current()
-        .as_thread()
-        .seccomp_state()
-        .evaluate(uctx)
-    {
-        SeccompDecision::Allow => {}
-        SeccompDecision::Errno(errno) => {
-            uctx.set_retval(seccomp_errno(errno));
-            return;
-        }
-        SeccompDecision::KillProcess => {
-            do_exit(Signo::SIGSYS as i32, true);
-            return;
-        }
-        SeccompDecision::KillThread => {
-            do_exit(Signo::SIGSYS as i32, false);
-            return;
-        }
-        SeccompDecision::UnsupportedAction => {
-            uctx.set_retval(-LinuxError::ENOSYS.code() as usize);
-            return;
+    if let Some(thr) = ax_task::current().try_as_thread() {
+        match thr.seccomp_state().evaluate(uctx) {
+            SeccompDecision::Allow => {}
+            SeccompDecision::Errno(errno) => {
+                uctx.set_retval(seccomp_errno(errno));
+                return;
+            }
+            SeccompDecision::KillProcess => {
+                do_exit(Signo::SIGSYS as i32, true);
+                return;
+            }
+            SeccompDecision::KillThread => {
+                do_exit(Signo::SIGSYS as i32, false);
+                return;
+            }
+            SeccompDecision::UnsupportedAction => {
+                uctx.set_retval(-LinuxError::ENOSYS.code() as usize);
+                return;
+            }
         }
     }
 
@@ -953,8 +951,8 @@ pub fn handle_syscall(uctx: &mut UserContext) {
         Sysno::timer_delete => sys_timer_delete(uctx.arg0() as _),
 
         _ => {
-            let tid = ax_task::current().as_thread().tid();
-            warn!("Unimplemented syscall: {sysno} (tid={tid})");
+            let tid = ax_task::current().try_as_thread().map(|t| t.tid());
+            warn!("Unimplemented syscall: {sysno} (tid={tid:?})");
             Err(AxError::Unsupported)
         }
     };

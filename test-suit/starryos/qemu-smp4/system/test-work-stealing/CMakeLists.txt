@@ -1,0 +1,8 @@
+cmake_minimum_required(VERSION 3.20)
+project(test-work-stealing C)
+set(CMAKE_C_STANDARD 11)
+set(CMAKE_C_STANDARD_REQUIRED ON)
+set(CMAKE_C_EXTENSIONS OFF)
+add_executable(test-work-stealing src/main.c)
+target_compile_options(test-work-stealing PRIVATE -Wall -Wextra -Werror)
+install(TARGETS test-work-stealing RUNTIME DESTINATION usr/bin/starry-test-suit)

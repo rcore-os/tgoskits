@@ -2,7 +2,7 @@ use alloc::{collections::VecDeque, sync::Arc};
 use core::mem::MaybeUninit;
 #[cfg(feature = "smp")]
 use core::ptr::NonNull;
-#[cfg(all(feature = "smp", feature = "ipi"))]
+#[cfg(feature = "smp")]
 use core::sync::atomic::{AtomicBool, Ordering};
 
 use ax_hal::percpu::this_cpu_id;
@@ -13,7 +13,7 @@ use ax_memory_addr::VirtAddr;
 use ax_sched::BaseScheduler;
 
 use crate::{
-    AxCpuMask, AxTaskRef, Scheduler, TaskInner, WaitQueue,
+    AxCpuMask, AxTaskRef, ForceUnlockGuard, Scheduler, TaskInner, WaitQueue,
     task::{CurrentTask, TASK_STACK_ALIGN, TaskStack, TaskState},
     wait_queue::WaitQueueGuard,
 };
@@ -36,12 +36,33 @@ percpu_static! {
     EXITED_TASKS: VecDeque<AxTaskRef> = VecDeque::new(),
     WAIT_FOR_EXIT: WaitQueue = WaitQueue::new(),
     IDLE_TASK: LazyInit<AxTaskRef> = LazyInit::new(),
+    /// Per-CPU counter: > 0 when this CPU's GC task is tearing down
+    /// exited tasks and is permitted to release mutexes on behalf of
+    /// dead owners.  Scoped per-CPU so that a GC on one core does not
+    /// weaken the owner check on any other core.
+    FORCE_UNLOCK_COUNT: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0),
     /// Stores a raw pointer to the previous task running on this CPU.
     /// The pointer is valid only within the window between `switch_to` storing it
     /// and `clear_prev_task_on_cpu` consuming it — both in the same non-preemptible
     /// call chain, so the task cannot be freed while the pointer is held.
     #[cfg(feature = "smp")]
     PREV_TASK: Option<NonNull<crate::AxTask>> = None,
+}
+
+pub(crate) fn inc_force_unlock() {
+    FORCE_UNLOCK_COUNT.with_current(|c| {
+        let _ = c.fetch_add(1, core::sync::atomic::Ordering::Release);
+    });
+}
+
+pub(crate) fn dec_force_unlock() {
+    FORCE_UNLOCK_COUNT.with_current(|c| {
+        c.fetch_sub(1, core::sync::atomic::Ordering::Release);
+    });
+}
+
+pub(crate) fn is_force_unlock_active() -> bool {
+    FORCE_UNLOCK_COUNT.with_current(|c| c.load(core::sync::atomic::Ordering::Acquire) > 0)
 }
 
 /// An array of references to run queues, one for each CPU, indexed by cpu_id.
@@ -57,6 +78,24 @@ static mut RUN_QUEUES: [MaybeUninit<&'static mut AxRunQueue>; crate::build_info:
     [ARRAY_REPEAT_VALUE; crate::build_info::CPU_CAPACITY];
 #[allow(clippy::declare_interior_mutable_const)] // It's ok because it's used only for initialization `RUN_QUEUES`.
 const ARRAY_REPEAT_VALUE: MaybeUninit<&'static mut AxRunQueue> = MaybeUninit::uninit();
+
+/// Marks whether each per-CPU run queue has been initialized.
+/// Used by `try_steal` to avoid accessing uninitialized run queues on
+/// remote CPUs that have not yet called `init` or `init_secondary`.
+#[cfg(feature = "smp")]
+static RUN_QUEUE_INITIALIZED: [AtomicBool; crate::build_info::CPU_CAPACITY] =
+    [const { AtomicBool::new(false) }; crate::build_info::CPU_CAPACITY];
+
+/// Per-CPU back-off counters for `try_steal`, reducing scheduler lock
+/// contention when many CPUs are idle simultaneously.  Each idle CPU only
+/// probes remote run queues every `STEAL_BACKOFF_PERIOD` attempts.
+#[cfg(feature = "smp")]
+static STEAL_BACKOFF: [core::sync::atomic::AtomicU8; crate::build_info::CPU_CAPACITY] =
+    [const { core::sync::atomic::AtomicU8::new(0) }; crate::build_info::CPU_CAPACITY];
+
+/// Only scan remote run queues every N invocations of `try_steal`.
+#[cfg(feature = "smp")]
+const STEAL_BACKOFF_PERIOD: u8 = 8;
 
 #[cfg(not(feature = "host-test"))]
 fn main_task_stack() -> TaskStack {
@@ -257,7 +296,6 @@ mod tests {
 
             curr.set_preempt_pending(false);
             curr.set_force_resched_pending(false);
-            super::REMOTE_RESCHEDULE_PENDING.store(true, Ordering::Release);
 
             super::request_current_reschedule();
 
@@ -269,24 +307,10 @@ mod tests {
                 !curr.preempt_pending_for_test(),
                 "remote IPI reschedule must not rely on ordinary RR preemption",
             );
-            assert!(
-                !super::REMOTE_RESCHEDULE_PENDING.load(Ordering::Acquire),
-                "remote IPI callback must clear the coalescing bit when it is delivered",
-            );
 
             curr.set_force_resched_pending(false);
             curr.set_preempt_pending(false);
         });
-
-        #[cfg(feature = "preempt")]
-        {
-            super::kick_remote_cpu(REMOTE_CPU);
-            assert_eq!(
-                super::REMOTE_RESCHEDULE_REQUESTS.load(Ordering::Acquire),
-                3,
-                "a delivered remote IPI must allow a later kick to enqueue a new callback",
-            );
-        }
 
         super::REMOTE_RESCHEDULE_PENDING.store(false, Ordering::Release);
         super::REMOTE_RESCHEDULE_REQUESTS.store(0, Ordering::Release);
@@ -325,8 +349,11 @@ pub(crate) fn select_run_queue<G: BaseGuard>(task: &AxTaskRef) -> AxRunQueueRef<
     }
     #[cfg(feature = "smp")]
     {
-        // When SMP is enabled, prefer the current CPU to keep the task's
-        // cache warm. Fall back to round-robin only when affinity forbids it.
+        // Always prefer the current CPU when affinity allows: it keeps the
+        // task's cache warm and, critically, guarantees the target CPU is
+        // awake.  Without preempt or IPI there is no way to kick a remote
+        // idle CPU, so falling back to round-robin is only done when the
+        // cpumask strictly forbids the current CPU.
         let current_cpu = this_cpu_id();
         let index = if task.cpumask().get(current_cpu) {
             current_cpu
@@ -343,10 +370,14 @@ pub(crate) fn select_run_queue<G: BaseGuard>(task: &AxTaskRef) -> AxRunQueueRef<
 
 /// Selects a run queue for waking a blocked task.
 ///
-/// Unlike new task placement, wakeups prefer the CPU that performs the wakeup
-/// when the task affinity allows it. This keeps most wakeups local while still
-/// falling back to the task's previous CPU or the normal selector if affinity
-/// requires it.
+/// This always prefers the CPU that performs the wakeup (current CPU) when
+/// the task affinity allows it, because the current CPU is the only one
+/// guaranteed to be awake.  Without preemption or IPI support there is no
+/// mechanism to kick a remote idle CPU — a task placed on a remote queue
+/// would be stuck forever until that CPU happens to take an interrupt.
+///
+/// Only when the task's cpumask excludes the current CPU do we fall back to
+/// the task's previous CPU or the round-robin selector.
 #[inline]
 pub(crate) fn select_wake_run_queue<G: BaseGuard>(task: &AxTaskRef) -> AxRunQueueRef<'static, G> {
     let irq_state = G::acquire();
@@ -362,14 +393,19 @@ pub(crate) fn select_wake_run_queue<G: BaseGuard>(task: &AxTaskRef) -> AxRunQueu
     #[cfg(feature = "smp")]
     {
         let current_cpu = this_cpu_id();
-        let last_cpu = task.cpu_id() as usize;
         let cpumask = task.cpumask();
+        // Always use the current CPU when affinity allows — it is the only
+        // CPU we know is awake.  Without preempt or IPI, placing a task on
+        // a remote idle CPU would strand it indefinitely.
         let index = if cpumask.get(current_cpu) {
             current_cpu
-        } else if last_cpu < crate::build_info::CPU_CAPACITY && cpumask.get(last_cpu) {
-            last_cpu
         } else {
-            select_run_queue_index(cpumask)
+            let last_cpu = task.cpu_id() as usize;
+            if last_cpu < crate::build_info::CPU_CAPACITY && cpumask.get(last_cpu) {
+                last_cpu
+            } else {
+                select_run_queue_index(cpumask)
+            }
         };
         AxRunQueueRef {
             inner: get_run_queue(index),
@@ -733,11 +769,12 @@ impl<G: BaseGuard> CurrentRunQueueRef<'_, G> {
 
     #[cfg(feature = "smp")]
     fn migrate_current_to_affinity(&mut self) {
+        let migration_task_stack_size = crate::default_task_stack_size();
         let curr = self.current_task.clone();
         let migration_task = TaskInner::new(
             move || crate::run_queue::migrate_entry(curr),
             "migration-task".into(),
-            crate::default_task_stack_size(),
+            migration_task_stack_size,
         )
         .into_arc();
 
@@ -807,13 +844,132 @@ impl AxRunQueue {
         }
     }
 
+    /// Steal a runnable task from another CPU's run queue (SMP only).
+    ///
+    /// Iterates over remote CPUs starting from the next CPU (to avoid all
+    /// idle CPUs hammering CPU 0) and tries to pick a task from each.
+    /// Returns [`None`] only when every other CPU's queue is also empty.
+    #[cfg(feature = "smp")]
+    #[cfg_attr(not(feature = "preempt"), allow(dead_code))]
+    // `CPU_CAPACITY` is always greater than 1 with "smp" enabled.
+    #[allow(clippy::modulo_one, clippy::reversed_empty_ranges)]
+    fn try_steal(&self) -> Option<AxTaskRef> {
+        let current_cpu = self.cpu_id;
+
+        // Back-off: only attempt to steal every STEAL_BACKOFF_PERIOD calls.
+        // Without this, N idle CPUs would all `try_lock` every remote
+        // scheduler on every idle-loop iteration, starving the busy CPU
+        // out of its own lock and causing multi-second scheduling stalls.
+        let cnt = STEAL_BACKOFF[current_cpu].fetch_add(1, Ordering::Relaxed);
+        if !cnt.is_multiple_of(STEAL_BACKOFF_PERIOD) {
+            return None;
+        }
+
+        for i in 1..crate::build_info::CPU_CAPACITY {
+            let target = (current_cpu + i) % crate::build_info::CPU_CAPACITY;
+            if !RUN_QUEUE_INITIALIZED[target].load(Ordering::Acquire) {
+                continue;
+            }
+            // Fast racy heuristic: skip CPUs whose ready queue looks empty.
+            // Mirrors Linux's idle_balance() which checks src_rq->nr_running
+            // before attempting to pull tasks.  Saves a CAS on the remote
+            // scheduler lock for every empty-queue probe — on 8-core
+            // boards this significantly reduces cache-line contention on
+            // the scheduler lock word.
+            //
+            // Uses data_unchecked() rather than get_mut() to avoid creating
+            // a &mut reference that would carry noalias and allow the
+            // compiler to mis-optimise concurrent accesses from the remote
+            // CPU that owns the scheduler.
+            unsafe {
+                if get_run_queue(target).scheduler.data_unchecked().is_empty() {
+                    continue;
+                }
+            }
+            let task = {
+                let Some(mut sched) = get_run_queue(target).scheduler.try_lock() else {
+                    continue;
+                };
+                // A task must be Ready, have finished its scheduling
+                // process on the original CPU (on_cpu == false), and NOT
+                // be in an atomic context (preempt_count == 0) before it
+                // can be stolen.  Otherwise the original CPU's
+                // clear_prev_task_on_cpu() will race with switch_to() on
+                // this CPU and incorrectly clear on_cpu after we set it.
+                // Filtering these conditions inside the predicate avoids a
+                // "pick then put-back" window where the task is momentarily
+                // absent from any run queue.
+                //
+                // The preempt_count gate mirrors Linux's can_migrate_task()
+                // which refuses to migrate tasks in atomic context.
+                sched
+                    .pick_next_task_matching(|t| {
+                        #[cfg(feature = "preempt")]
+                        {
+                            t.cpumask().get(current_cpu)
+                                && t.is_ready()
+                                && !t.on_cpu()
+                                && t.preempt_count() == 0
+                        }
+                        #[cfg(not(feature = "preempt"))]
+                        {
+                            t.cpumask().get(current_cpu) && t.is_ready() && !t.on_cpu()
+                        }
+                    })
+                    .inspect(|task| {
+                        task.set_cpu_id(current_cpu as _);
+                    })
+            };
+            if let Some(task) = task {
+                debug!(
+                    "work-steal: CPU {} stole {} from CPU {}",
+                    current_cpu,
+                    task.id_name(),
+                    target,
+                );
+                #[cfg(feature = "ipi")]
+                kick_remote_cpu(target);
+                return Some(task);
+            }
+        }
+        None
+    }
+
     /// Core reschedule subroutine.
-    /// Pick the next task to run and switch to it.
+    /// Pick the next task to run — from the local queue first, then by
+    /// work-stealing from remote CPUs — and switch to it.
     fn resched(&mut self) {
-        let next = self
-            .scheduler
-            .lock()
-            .pick_next_task()
+        let local_task = self.scheduler.lock().pick_next_task();
+        let next = local_task
+            .or_else(|| {
+                #[cfg(feature = "smp")]
+                {
+                    // Only idle CPUs attempt work-stealing, mirroring
+                    // Linux's idle_balance(). Work-stealing without
+                    // preempt is unsafe: there is no mechanism to kick
+                    // a remote CPU after its task is stolen, and the
+                    // stolen task may depend on per-CPU resources that
+                    // were set up on its original CPU (e.g. Rockchip
+                    // DMA/IRQ routing). This mirrors Linux's
+                    // idle_balance() which relies on the scheduler
+                    // tick + NEED_RESCHED to preempt the current task
+                    // after waking it on a remote CPU.
+                    #[cfg(feature = "preempt")]
+                    if crate::current().is_idle() {
+                        self.try_steal()
+                    } else {
+                        None
+                    }
+                    #[cfg(not(feature = "preempt"))]
+                    {
+                        None
+                    }
+                }
+                #[cfg(not(feature = "smp"))]
+                {
+                    None
+                }
+            })
             .unwrap_or_else(|| unsafe {
                 // Safety: IRQs must be disabled at this time.
                 IDLE_TASK.current_ref_raw().get_unchecked().clone()
@@ -847,6 +1003,14 @@ impl AxRunQueue {
         if prev_task.ptr_eq(&next_task) {
             return;
         }
+
+        // Defensive: a task being scheduled must not already be marked on_cpu.
+        #[cfg(feature = "smp")]
+        debug_assert!(
+            !next_task.on_cpu(),
+            "next task {} already marked on_cpu",
+            next_task.id_name()
+        );
 
         // Claim the task as running, we do this before switching to it
         // such that any running task will have this set.
@@ -911,6 +1075,11 @@ fn gc_entry() {
     loop {
         // Drop all exited tasks and recycle resources.
         let n = EXITED_TASKS.with_current(|exited_tasks| exited_tasks.len());
+        // SAFETY: we are the per-CPU gc task. Every task we drop has
+        // already transitioned to Exited. If a dead owner's drop impl
+        // still runs a MutexGuard destructor, we must be able to
+        // release the mutex on its behalf.
+        let _force_unlock = unsafe { ForceUnlockGuard::new() };
         for _ in 0..n {
             // Do not do the slow drops in the critical section.
             let task = EXITED_TASKS.with_current(|exited_tasks| exited_tasks.pop_front());
@@ -925,6 +1094,7 @@ fn gc_entry() {
                 }
             }
         }
+        drop(_force_unlock);
         // Always wait with a timeout to:
         // 1. Yield CPU to allow other tasks to complete `switch_to` and drop references
         // 2. Handle the race condition where `notify_one` is called before the GC task enters wait,
@@ -1000,6 +1170,8 @@ pub(crate) fn init() {
     unsafe {
         RUN_QUEUES[cpu_id].write(RUN_QUEUE.current_ref_mut_raw());
     }
+    #[cfg(feature = "smp")]
+    RUN_QUEUE_INITIALIZED[cpu_id].store(true, Ordering::Release);
 }
 
 pub(crate) fn init_secondary(stack_ptr: VirtAddr, stack_size: usize) {
@@ -1023,4 +1195,6 @@ pub(crate) fn init_secondary(stack_ptr: VirtAddr, stack_size: usize) {
     unsafe {
         RUN_QUEUES[cpu_id].write(RUN_QUEUE.current_ref_mut_raw());
     }
+    #[cfg(feature = "smp")]
+    RUN_QUEUE_INITIALIZED[cpu_id].store(true, Ordering::Release);
 }

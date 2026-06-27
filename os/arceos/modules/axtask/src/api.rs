@@ -32,6 +32,58 @@ pub type AxTaskRef = Arc<AxTask>;
 /// The weak reference type of a task.
 pub type WeakAxTaskRef = Weak<AxTask>;
 
+/// Guards a region where mutex ownership validation is relaxed for task
+/// teardown. When the guard is live, [`RawMutex::unlock()`] may release a
+/// mutex owned by an already-exited task on behalf of that ex-owner.
+///
+/// This is the **only** legitimate call site for bypassing the "thread must
+/// own the mutex it releases" invariant. The guard is created exclusively by
+/// the per-CPU gc task when it drops exited [`TaskInner`] references whose
+/// drop impl may still hold a [`MutexGuard`]; without this bypass the gc
+/// task would trip the `owner_id == current_id` assertion while cleaning up
+/// dead owners.
+///
+/// # Safety
+///
+/// Must only be constructed from the per-CPU gc task when dropping resources
+/// of tasks that have already transitioned to [`TaskState::Exited`]. Every
+/// creation must be paired with exactly one destruction (drop).
+///
+/// [`MutexGuard`]: ax_sync::MutexGuard
+/// [`RawMutex::unlock()`]: ax_sync::RawMutex::unlock()
+pub struct ForceUnlockGuard(());
+
+impl ForceUnlockGuard {
+    /// Enters a force-unlock region.
+    ///
+    /// # Safety
+    ///
+    /// Must only be called from the per-CPU gc task path, before dropping
+    /// resources of exited tasks.
+    #[allow(clippy::new_without_default)]
+    pub unsafe fn new() -> Self {
+        crate::run_queue::inc_force_unlock();
+        Self(())
+    }
+
+    /// Returns `true` when the current CPU's gc task is inside a
+    /// force-unlock region (i.e., tearing down exited tasks and
+    /// permitted to release mutexes on behalf of dead owners on this
+    /// CPU).
+    ///
+    /// The counter is per-CPU, so a GC teardown on one core never
+    /// weakens the owner assertion on any other core.
+    pub fn is_active() -> bool {
+        crate::run_queue::is_force_unlock_active()
+    }
+}
+
+impl Drop for ForceUnlockGuard {
+    fn drop(&mut self) {
+        crate::run_queue::dec_force_unlock();
+    }
+}
+
 #[cfg(feature = "multitask")]
 static TASK_REGISTRY: spin::LazyLock<spin::RwLock<BTreeMap<u64, WeakAxTaskRef>>> =
     spin::LazyLock::new(|| spin::RwLock::new(BTreeMap::new()));

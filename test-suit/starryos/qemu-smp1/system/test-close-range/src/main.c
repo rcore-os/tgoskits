@@ -245,6 +245,17 @@ static int close_range_unshare_child(void *arg)
     _exit(0);
 }
 
+/* Part 7 child: clone(CLONE_FILES) → unshare → close private fd → exit. */
+static int unshare_last_holder_clone_child(void *arg)
+{
+    int fd = (int)(long)arg;
+    int ret = do_close_range((unsigned int)fd, (unsigned int)fd, CLOSE_RANGE_UNSHARE);
+    if (ret != 0) _exit(10);
+    /* fd is now in child's private table; close it there. */
+    close(fd);
+    _exit(0);
+}
+
 /* Part 6: CLOSE_RANGE_UNSHARE must detach the fd table before closing. */
 static int part_06_unshare_keeps_parent_fd(void)
 {
@@ -291,6 +302,98 @@ static int part_06_unshare_keeps_parent_fd(void)
     return 0;
 }
 
+/* Part 7: CLONE_FILES + CLOSE_RANGE_UNSHARE + last holder exit must release fds.
+ *
+ * A worker process (forked before opening the file) opens a temp file,
+ * acquires a write lock, clones with CLONE_FILES, has the clone-child
+ * unshare and exit, then the worker itself exits.  The main process
+ * waits for the worker and verifies the lock was released — i.e.
+ * close_all_fds() ran in the worker's exit path and properly closed
+ * the locked fd via release_locks_on_close.
+ *
+ * Without the task_count fix in fd_ops.rs, unshare doesn't decrement
+ * the old table's task_count, so the worker (last holder) exits with
+ * task_count > 1 and close_all_fds returns early, pushing fd closure
+ * to scope/drop/GC context instead of the user-task exit path. */
+static int part_07_unshare_last_holder_release(void)
+{
+    unlink(TMPFILE);
+    CHECK_RET(create_temp_file("close_range_last_holder"), 0,
+              "Part 7: create temp file");
+
+    /* Fork worker BEFORE opening the file so the main process does not
+     * inherit a copy of the locked fd — it checks the lock independently. */
+    pid_t worker = fork();
+    CHECK_TRUE(worker >= 0, "Part 7: fork worker");
+    if (worker < 0) { unlink(TMPFILE); return 1; }
+
+    if (worker == 0) {
+        /* --- worker process --- */
+        int fd = open(TMPFILE, O_RDWR);
+        if (fd < 0) _exit(1);
+
+        /* Acquire a write lock. */
+        struct flock fl = {.l_type = F_WRLCK, .l_whence = SEEK_SET,
+                           .l_start = 0, .l_len = 0};
+        if (fcntl(fd, F_SETLK, &fl) == -1) { close(fd); _exit(2); }
+
+        void *stack = mmap(NULL, STACK_SIZE, PROT_READ | PROT_WRITE,
+                           MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+        if (stack == MAP_FAILED) { close(fd); _exit(3); }
+
+        /* Clone with CLONE_FILES: clone-child shares the locked fd. */
+        int child = clone(unshare_last_holder_clone_child,
+                          (char *)stack + STACK_SIZE,
+                          CLONE_FILES | SIGCHLD, (void *)(long)fd);
+        if (child < 0) { close(fd); munmap(stack, STACK_SIZE); _exit(4); }
+
+        /* Wait for clone-child to unshare and exit. */
+        int cstatus;
+        if (waitpid(child, &cstatus, 0) != child) {
+            close(fd); munmap(stack, STACK_SIZE); _exit(5);
+        }
+        if (!WIFEXITED(cstatus) || WEXITSTATUS(cstatus) != 0) {
+            close(fd); munmap(stack, STACK_SIZE); _exit(6);
+        }
+
+        munmap(stack, STACK_SIZE);
+        /* Worker is the last holder of the old shared table.
+         * DO NOT close(fd) — close_all_fds() must close it on exit. */
+        _exit(0);
+    }
+
+    /* --- main process --- */
+    /* Wait for worker to exit.  close_all_fds() runs in the worker's exit
+     * path and should release the lock. */
+    int wstatus;
+    CHECK_TRUE(waitpid(worker, &wstatus, 0) == worker, "Part 7: wait worker");
+    CHECK_TRUE(WIFEXITED(wstatus) && WEXITSTATUS(wstatus) == 0,
+               "Part 7: worker exited cleanly");
+
+    /* Now check that the lock was released. */
+    int fd = open(TMPFILE, O_RDWR);
+    CHECK_TRUE(fd >= 0, "Part 7: reopen file after worker exit");
+    if (fd < 0) { unlink(TMPFILE); return 1; }
+
+    struct flock fl = {.l_type = F_WRLCK, .l_whence = SEEK_SET,
+                       .l_start = 0, .l_len = 0};
+    errno = 0;
+    int ret = fcntl(fd, F_GETLK, &fl);
+    int saved_errno = errno;
+    CHECK_RET(ret, 0, "Part 7: F_GETLK succeeds");
+    CHECK_TRUE(fl.l_type == F_UNLCK,
+               "Part 7: lock released after last holder exit (F_UNLCK)");
+    if (fl.l_type != F_UNLCK) {
+        printf("  INFO  | Part 7: lock type=%d pid=%d\n",
+               (int)fl.l_type, (int)fl.l_pid);
+    }
+    (void)saved_errno;
+
+    safe_close(&fd);
+    unlink(TMPFILE);
+    return 0;
+}
+
 int main(void)
 {
     TEST_START("close_range: semantic validation");
@@ -301,6 +404,7 @@ int main(void)
     part_04_cloexec();
     part_05_negative();
     part_06_unshare_keeps_parent_fd();
+    part_07_unshare_last_holder_release();
 
     TEST_DONE();
 }

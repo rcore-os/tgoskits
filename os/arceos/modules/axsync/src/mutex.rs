@@ -123,10 +123,21 @@ unsafe impl lock_api::RawMutex for RawMutex {
     unsafe fn unlock(&self) {
         let owner_id = self.owner_id.load(Ordering::Acquire);
         let current_id = current().id().as_u64();
-        assert_eq!(
-            owner_id, current_id,
-            "Thread({current_id}) tried to release mutex it doesn't own",
-        );
+        // Strict ownership invariant: the calling task must own the mutex.
+        // The only exception is the per-CPU gc task during teardown of an
+        // exited task — when the dead owner's MutexGuard is dropped by the
+        // gc, the gc must be allowed to release the mutex on its behalf.
+        // ForceUnlockGuard gates this path and is exclusively constructed by
+        // the gc task loop (see ax_task::ForceUnlockGuard).
+        if !ax_task::ForceUnlockGuard::is_active() {
+            assert_eq!(
+                owner_id,
+                current_id,
+                "Thread({current_id}) tried to release mutex it doesn't own (owner={owner_id}), \
+                 mutex={self:p}, curr={}",
+                current().id_name(),
+            );
+        }
         #[cfg(feature = "lockdep")]
         crate::lockdep::release(self);
         self.owner_id.store(0, Ordering::Release);
@@ -174,6 +185,11 @@ impl RawMutex {
                         .wait_until(|| self.is_owner(current_id) || !self.is_locked_inner());
                     // This check is necessary: some newcomers may race with a wakened one.
                     if self.is_owner(current_id) {
+                        debug_assert_eq!(
+                            current().id().as_u64(),
+                            current_id,
+                            "current task changed while waiting for mutex"
+                        );
                         break;
                     }
                 }

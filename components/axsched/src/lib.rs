@@ -41,6 +41,17 @@ pub trait BaseScheduler {
     /// Returns [`None`] if there is not runnable task.
     fn pick_next_task(&mut self) -> Option<Self::SchedItem>;
 
+    /// Picks the next task matching a predicate, removing it from the
+    /// scheduler. Returns [`None`] if no matching task exists.
+    ///
+    /// The predicate check and removal happen atomically within a single
+    /// lock acquisition — the task is never left in an "out of queue"
+    /// window observable by other CPUs.
+    fn pick_next_task_matching(
+        &mut self,
+        predicate: impl Fn(&Self::SchedItem) -> bool,
+    ) -> Option<Self::SchedItem>;
+
     /// Puts the previous task back to the scheduler. The previous task is
     /// usually placed at the end of the ready queue, making it less likely
     /// to be re-scheduled.
@@ -58,4 +69,11 @@ pub trait BaseScheduler {
 
     /// set priority for a task
     fn set_priority(&mut self, task: &Self::SchedItem, prio: isize) -> bool;
+
+    /// Returns `true` if the ready queue has no runnable tasks.
+    ///
+    /// Used as a fast, racy heuristic (without holding the lock) to skip
+    /// empty queues before attempting work-stealing — mirrors Linux's
+    /// `src_rq->nr_running > 1` check in `idle_balance()`.
+    fn is_empty(&self) -> bool;
 }

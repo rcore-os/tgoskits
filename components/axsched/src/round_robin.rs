@@ -102,6 +102,27 @@ impl<T, const S: usize> BaseScheduler for RRScheduler<T, S> {
         self.ready_queue.pop_front()
     }
 
+    fn pick_next_task_matching(
+        &mut self,
+        predicate: impl Fn(&Self::SchedItem) -> bool,
+    ) -> Option<Self::SchedItem> {
+        let mut cursor = self.ready_queue.cursor_front_mut();
+        loop {
+            let task_ptr = cursor.current_ptr()?;
+            let matched = unsafe {
+                Arc::increment_strong_count(task_ptr.as_ptr());
+                let task = Arc::from_raw(task_ptr.as_ptr());
+                let matched = predicate(&task);
+                drop(task);
+                matched
+            };
+            if matched {
+                return cursor.remove_current();
+            }
+            cursor.move_next();
+        }
+    }
+
     fn put_prev_task(&mut self, prev: Self::SchedItem, preempt: bool) {
         if prev.time_slice() > 0 && preempt {
             self.ready_queue.push_front(prev)
@@ -109,6 +130,10 @@ impl<T, const S: usize> BaseScheduler for RRScheduler<T, S> {
             prev.reset_time_slice();
             self.ready_queue.push_back(prev)
         }
+    }
+
+    fn is_empty(&self) -> bool {
+        self.ready_queue.is_empty()
     }
 
     fn task_tick(&mut self, current: &Self::SchedItem) -> bool {
