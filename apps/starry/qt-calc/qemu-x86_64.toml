@@ -14,7 +14,7 @@ args = [
     "-device",
     "virtio-gpu-pci,xres=1024,yres=768",
     "-device",
-    "virtio-mouse-pci",
+    "virtio-tablet-pci",
     "-device",
     "virtio-keyboard-pci",
     "-device",
