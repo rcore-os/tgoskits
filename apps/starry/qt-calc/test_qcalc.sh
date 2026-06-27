@@ -177,7 +177,7 @@ export QT_WAYLAND_DISABLE_EGL=1
 echo "QT_CALC_STAGE launching qalculate-qt (wayland)..."
 
 calc_exit_code=0
-run_with_timeout 120 "$calc_bin" >/tmp/qt_stdout.log 2>/tmp/qt_err.log || calc_exit_code=$?
+run_with_timeout 60 "$calc_bin" >/tmp/qt_stdout.log 2>/tmp/qt_err.log || calc_exit_code=$?
 echo "QT_CALC_DIAG === Qt stderr ==="
 cat /tmp/qt_err.log 2>/dev/null | head -30
 echo "QT_CALC_DIAG === Qt stdout ==="
@@ -187,7 +187,6 @@ if [ "$calc_exit_code" -ne 0 ] && [ "$calc_exit_code" -ne 143 ]; then
     echo "QT_CALC_STAGE wayland failed ($calc_exit_code), trying offscreen..."
     export QT_QPA_PLATFORM=offscreen
     run_with_timeout 10 "$calc_bin" 2>/tmp/qt_err2.log || calc_exit_code=$?
-    fi
 fi
 
 # Check exit code — 0 (normal), 124 (timeout), 143 (SIGTERM) all indicate the

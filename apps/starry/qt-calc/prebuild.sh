@@ -117,7 +117,7 @@ REPO
             --no-scripts \
             add weston weston-backend-drm weston-shell-desktop \
                 qt6-qtwayland qalculate-qt \
-                font-dejavu \
+                font-dejavu fontconfig \
                 libinput libxkbcommon pixman xkeyboard-config
 }
 

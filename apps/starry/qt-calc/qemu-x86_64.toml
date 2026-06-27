@@ -26,8 +26,6 @@ args = [
     "-netdev",
     "user,id=net0",
     "-accel", "tcg",
-    "-qmp",
-    "tcp:localhost:4444,server,nowait",
 ]
 uefi = true
 to_bin = true
