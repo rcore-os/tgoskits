@@ -12,12 +12,12 @@ apache_runner_init_timeout_cmd() {
     if [ -n "$APACHE_RUNNER_TIMEOUT_CMD" ]; then
         return 0
     fi
-    if command -v timeout >/dev/null 2>&1; then
-        APACHE_RUNNER_TIMEOUT_CMD='timeout'
-        return 0
-    fi
     if busybox timeout 2>&1 | grep -qi 'usage'; then
         APACHE_RUNNER_TIMEOUT_CMD='busybox timeout'
+        return 0
+    fi
+    if command -v timeout >/dev/null 2>&1; then
+        APACHE_RUNNER_TIMEOUT_CMD='timeout'
         return 0
     fi
     apache_runner_log "timeout command not available"
