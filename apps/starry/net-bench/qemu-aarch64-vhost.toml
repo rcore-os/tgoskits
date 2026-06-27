@@ -1,0 +1,47 @@
+# StarryOS net-bench QEMU+TAP+vhost-net 配置（主力性能测试拓扑）
+#
+# 对齐 www/starry-net-qemu-benchmark-plan.md §2.3 要求：
+# - vhost=on：数据面卸载到 WSL2 内核 vhost-net，绕开 QEMU 用户态
+# - mq=on,queues=4：多队列预留（当前 Starry 单队列，驱动改造后生效）
+# - offload 显式控制：csum/gso/tso 用于验证 analysis §2.4 校验和 offload 打通
+#
+# 前置条件（见 setup-vhost-tap.sh）：
+#   - /dev/kvm 存在且可用（WSL2 需 Win11 + 嵌套虚拟化）
+#   - /dev/vhost-net 存在（内核 CONFIG_VHOST_NET=y/m）
+#   - br0 + tap0 已配置（192.168.100.0/24 网段）
+#
+# 用法:
+#   cargo xtask starry app qemu --test-case net-bench --arch aarch64 \
+#     --qemu-config apps/starry/net-bench/qemu-aarch64-vhost.toml
+#
+# 或通过 run.sh:
+#   bash apps/starry/net-bench/run.sh aarch64 vhost
+
+args = [
+    "-nographic",
+    "-m", "1G",
+    # KVM 加速（必须，否则退化为 TCG 解释执行，数据无意义）
+    "-accel", "kvm",
+    "-cpu", "host",
+    # 块设备
+    "-device", "virtio-blk-pci,drive=disk0",
+    "-drive", "id=disk0,if=none,format=raw,file=${workspace}/tmp/axbuild/rootfs/rootfs-aarch64-alpine.img",
+    # 网络设备（virtio-net + vhost-net）
+    "-device", "virtio-net-pci,netdev=net0,mac=52:54:00:12:34:56,mq=on,vectors=10,csum=on,gso=on,host_tso4=on,host_tso6=on,guest_tso4=on,guest_tso6=on",
+    "-netdev", "tap,id=net0,ifname=tap0,script=no,downscript=no,vhost=on,queues=4",
+]
+
+uefi = false
+to_bin = true
+shell_prefix = "root@starry:"
+shell_init_cmd = "/usr/bin/net-bench-tap.sh"
+success_regex = ["(?m)^NET_BENCH_PASSED\\s*$"]
+fail_regex = ['(?i)\bpanic(?:ked)?\b', "(?m)^NET_BENCH_FAILED:"]
+timeout = 300
+
+# 说明：
+# - vectors=10：2*queues + 2（控制）；queues=4 时需 10 个 MSI-X vector
+# - mq=on,queues=4：Starry 当前单队列，多队列需等 drivers/net 改造（analysis §3.1）
+# - offload 全开：baseline 建立后，可单独测试关闭 csum/tso 的影响
+# - vhost=on：核心，数据面下沉内核，绕开 QEMU 用户态转发瓶颈
+# - 内存从 512M 提升到 1G：vhost 多队列环境下避免内存压力

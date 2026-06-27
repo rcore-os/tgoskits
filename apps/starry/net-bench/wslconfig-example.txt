@@ -1,0 +1,80 @@
+# WSL2 降噪配置样例（对齐 qemu-benchmark-plan §3.2）
+#
+# 文件位置: %USERPROFILE%\.wslconfig (Windows 用户目录)
+#           例如: C:\Users\YourName\.wslconfig
+#
+# 修改后需重启 WSL: wsl --shutdown
+#
+# 这个配置的目标是压制 WSL2/Windows 环境的结构性噪声源（plan §1）:
+#   - 固定 CPU/内存，避免动态分配抖动
+#   - 关闭内存回收上报，减少周期性停顿
+#   - 启用嵌套虚拟化（必须，确保 /dev/kvm 可用）
+#   - 可选：隔离部分核专供 QEMU
+
+[wsl2]
+# 固定 vCPU 数量（必须 >= QEMU 要用的核数 + host 工具核数）
+# 例如: QEMU smp=4 + host iperf3/vhost 线程 = 至少 6-8 核
+processors=8
+
+# 固定内存，避免动态回收停顿（根据物理机调整，建议 >= 16GB）
+memory=16GB
+
+# 关闭 swap 或给足且固定（避免换页尖刺）
+# 选项 1（推荐）: 关闭 swap
+swap=0
+# 选项 2: 固定 swap 大小
+# swap=8GB
+# swapFile=C:\\temp\\wsl-swap.vhdx
+
+# 关闭内存回收上报（减少周期性停顿）
+pageReporting=false
+
+# 启用嵌套虚拟化（必须，否则 /dev/kvm 不可用）
+nestedVirtualization=true
+
+# 可选: 通过内核参数隔离部分核专供 QEMU（高级）
+# 例如: 8 核机器，隔离 4-7 核给 QEMU，0-3 核给 WSL2 系统任务
+# 需配合 taskset 使用: taskset -c 4-7 cargo xtask ...
+# kernelCommandLine=isolcpus=4-7
+
+# 可选: 禁用 Windows 侧的 Hyper-V 动态内存（进一步降噪）
+# 需在 Windows 侧设置，WSL2 无法直接控制
+# 参考: Hyper-V Manager -> WSL 虚拟机 -> Settings -> Memory -> 取消勾选 "Enable Dynamic Memory"
+
+# 可选: 固定 WSL2 虚拟机的优先级（Windows 侧）
+# 在任务管理器中找到 vmmem 进程，右键 -> Set priority -> High
+
+# ============================================================
+# 降噪纪律检查清单（plan §3.1-3.4）
+# ============================================================
+# Windows 宿主层:
+#   [ ] 电源计划设为"高性能/卓越性能"
+#   [ ] 关闭睡眠与 CPU 降频（BIOS C-state/Turbo 设置）
+#   [ ] 测试期间关闭杀毒实时扫描、Windows Update
+#   [ ] 关闭 Windows 内存压缩（可选）
+#
+# WSL2 层（本文件）:
+#   [ ] processors 固定且 >= 测试需求
+#   [ ] memory 固定且充足（不吃紧物理内存）
+#   [ ] swap 关闭或固定
+#   [ ] pageReporting=false
+#   [ ] nestedVirtualization=true
+#
+# QEMU / guest 绑核（脚本侧）:
+#   [ ] QEMU 用 taskset -c 绑到隔离核
+#   [ ] -smp 与绑核数一致
+#   [ ] guest 内用 taskset 把 iperf3/netperf 绑固定核
+#   [ ] vhost-net 内核线程（vhost-$pid）绑独立核
+#
+# 测量纪律:
+#   [ ] 每个数据点 >= 5 次，取均值 + 标准差
+#   [ ] warmup（丢弃前 1-2 次结果）
+#   [ ] 固定测试时长（如 iperf3 -t 30）
+#   [ ] 固定 MTU（先 1500）
+#   [ ] 记录环境指纹（WSL 内核版本、QEMU 版本、commit、offload 状态）
+#   [ ] 标准差 > 10% 判为不可信，需排查噪声后重测
+#
+# 可比性红线（plan §3.4）:
+#   [ ] Starry 与 Linux 基线在相同 .wslconfig 下背靠背测试
+#   [ ] 相同绑核、相同 QEMU 参数、相同 host 负载
+#   [ ] 中间不重启 Windows、不改电源计划

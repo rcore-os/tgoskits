@@ -55,10 +55,15 @@ scenario:
   slirp       QEMU usermode networking, smp=1 (default, smoke only)
   slirp-smp4  QEMU usermode networking, smp=4
   tap         TAP direct networking, requires $TAP_IFACE=$TAP_HOST_IP/24
-  all         Run slirp, slirp-smp4, then tap
+  vhost       TAP+vhost-net (primary perf topology), smp=1
+  vhost-smp4  TAP+vhost-net, smp=4 (multi-core scaling)
+  all         Run slirp, slirp-smp4, tap, vhost, vhost-smp4
 
 options:
   --repeat N  Reboot QEMU N times per scenario and aggregate (default 1)
+
+vhost setup:
+  sudo bash apps/starry/net-bench/setup-vhost-tap.sh setup
 EOF
 }
 
@@ -128,23 +133,68 @@ check_tap() {
         cat >&2 <<EOF
 error: TAP interface $TAP_IFACE does not exist
 
-setup example:
-  sudo ip tuntap add dev $TAP_IFACE mode tap user $USER
-  sudo ip addr add $TAP_HOST_IP/24 dev $TAP_IFACE
-  sudo ip link set $TAP_IFACE up
+setup:
+  sudo bash apps/starry/net-bench/setup-vhost-tap.sh setup
 EOF
         exit 1
     fi
-    if ! ip -4 addr show dev "$TAP_IFACE" | grep -q "$TAP_HOST_IP/24"; then
-        cat >&2 <<EOF
+    # TAP 可能挂在 bridge 上，不直接配 IP，检查 bridge
+    local bridge_name="br0"
+    if ip link show "$bridge_name" >/dev/null 2>&1; then
+        if ! ip -4 addr show dev "$bridge_name" | grep -q "$TAP_HOST_IP/24"; then
+            cat >&2 <<EOF
+error: Bridge $bridge_name exists but does not have $TAP_HOST_IP/24
+
+setup:
+  sudo bash apps/starry/net-bench/setup-vhost-tap.sh setup
+EOF
+            exit 1
+        fi
+    else
+        # 无 bridge，检查 TAP 本身是否有 IP
+        if ! ip -4 addr show dev "$TAP_IFACE" | grep -q "$TAP_HOST_IP/24"; then
+            cat >&2 <<EOF
 error: TAP interface $TAP_IFACE does not have $TAP_HOST_IP/24
 
-setup example:
-  sudo ip addr add $TAP_HOST_IP/24 dev $TAP_IFACE
-  sudo ip link set $TAP_IFACE up
+setup:
+  sudo bash apps/starry/net-bench/setup-vhost-tap.sh setup
+EOF
+            exit 1
+        fi
+    fi
+}
+
+check_vhost() {
+    if [[ ! -e /dev/kvm ]]; then
+        cat >&2 <<EOF
+error: /dev/kvm not found (KVM acceleration required for vhost scenario)
+
+WSL2 requires:
+  1. Windows 11 (or Win10 21H2+ with KB5020030)
+  2. Enable nested virtualization in %USERPROFILE%\.wslconfig:
+       [wsl2]
+       nestedVirtualization=true
+  3. Restart WSL: wsl --shutdown
+
+See apps/starry/net-bench/wslconfig-example.txt for full config.
 EOF
         exit 1
     fi
+    if [[ ! -e /dev/vhost-net ]]; then
+        cat >&2 <<EOF
+error: /dev/vhost-net not found (vhost-net module required)
+
+Try:
+  sudo modprobe vhost_net
+
+If that fails, your kernel may not have CONFIG_VHOST_NET enabled.
+Check with: zgrep VHOST_NET /proc/config.gz
+
+Without vhost-net, use 'tap' scenario instead (slower but functional).
+EOF
+        exit 1
+    fi
+    check_tap
 }
 
 # 汇总一个场景的全部 run log（跨 --repeat），输出干净的 mean/stddev 报告。
@@ -171,6 +221,18 @@ run_one() {
             check_tap
             bind_addr="$TAP_HOST_IP"
             qemu_config=(--qemu-config "apps/starry/net-bench/qemu-aarch64-tap.toml")
+            env_vars=(AX_IP=192.168.100.2 AX_GW="$TAP_HOST_IP" AX_PREFIX_LEN=24)
+            ;;
+        vhost)
+            check_vhost
+            bind_addr="$TAP_HOST_IP"
+            qemu_config=(--qemu-config "apps/starry/net-bench/qemu-aarch64-vhost.toml")
+            env_vars=(AX_IP=192.168.100.2 AX_GW="$TAP_HOST_IP" AX_PREFIX_LEN=24)
+            ;;
+        vhost-smp4)
+            check_vhost
+            bind_addr="$TAP_HOST_IP"
+            qemu_config=(--qemu-config "apps/starry/net-bench/qemu-aarch64-vhost-smp4.toml")
             env_vars=(AX_IP=192.168.100.2 AX_GW="$TAP_HOST_IP" AX_PREFIX_LEN=24)
             ;;
         *)
@@ -226,8 +288,10 @@ case "$SCENARIO" in
         run_one slirp
         run_one slirp-smp4
         run_one tap
+        run_one vhost
+        run_one vhost-smp4
         ;;
-    slirp|slirp-smp4|tap)
+    slirp|slirp-smp4|tap|vhost|vhost-smp4)
         run_one "$SCENARIO"
         ;;
     help)

@@ -1,0 +1,30 @@
+# StarryOS net-bench QEMU+TAP+vhost-net smp=4 配置（多核扩展测试）
+#
+# 基于 qemu-aarch64-vhost.toml，增加 smp=4 用于验证多核扩展曲线。
+# 对齐 methodology §1 "多核扩展比" 指标与 analysis §3.1 全局锁拆分验证。
+#
+# 用法:
+#   bash apps/starry/net-bench/run.sh aarch64 vhost-smp4
+#
+# 绑核建议（plan §3.3）：
+#   taskset -c 4-7 cargo xtask starry app qemu ...
+
+args = [
+    "-nographic",
+    "-m", "1G",
+    "-smp", "4",
+    "-accel", "kvm",
+    "-cpu", "host",
+    "-device", "virtio-blk-pci,drive=disk0",
+    "-drive", "id=disk0,if=none,format=raw,file=${workspace}/tmp/axbuild/rootfs/rootfs-aarch64-alpine.img",
+    "-device", "virtio-net-pci,netdev=net0,mac=52:54:00:12:34:56,mq=on,vectors=10,csum=on,gso=on,host_tso4=on,host_tso6=on,guest_tso4=on,guest_tso6=on",
+    "-netdev", "tap,id=net0,ifname=tap0,script=no,downscript=no,vhost=on,queues=4",
+]
+
+uefi = false
+to_bin = true
+shell_prefix = "root@starry:"
+shell_init_cmd = "/usr/bin/net-bench-tap.sh"
+success_regex = ["(?m)^NET_BENCH_PASSED\\s*$"]
+fail_regex = ['(?i)\bpanic(?:ked)?\b', "(?m)^NET_BENCH_FAILED:"]
+timeout = 300
