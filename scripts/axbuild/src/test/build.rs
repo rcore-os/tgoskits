@@ -1890,12 +1890,14 @@ pub(crate) fn prepare_rust_case_assets_sync(
             layout.staging_root.display().to_string(),
         )
         .env("PKG_CONFIG_PATH", "");
-    if rust_case_needs_guest_linker(arch) {
-        // The linker env var name is CARGO_TARGET_<UPPER_TRIPLE>_LINKER.
-        let linker_env_key = format!(
-            "CARGO_TARGET_{}_LINKER",
-            target_triple.to_uppercase().replace('-', "_")
-        );
+    // The linker env var name is CARGO_TARGET_<UPPER_TRIPLE>_LINKER.
+    let linker_env_key = format!(
+        "CARGO_TARGET_{}_LINKER",
+        target_triple.to_uppercase().replace('-', "_")
+    );
+    if arch == "riscv64" {
+        cmd.env(linker_env_key, "rust-lld");
+    } else if rust_case_needs_guest_linker(arch) {
         cmd.env(linker_env_key, layout.cross_bin_dir.join("ld"));
     }
     cmd.exec().with_context(|| {
@@ -1947,7 +1949,7 @@ pub(crate) fn prepare_rust_case_assets_sync(
 }
 
 fn rust_case_needs_guest_linker(arch: &str) -> bool {
-    matches!(arch, "loongarch64" | "riscv64")
+    matches!(arch, "loongarch64")
 }
 
 /// Reads the binary name from a `Cargo.toml`.
