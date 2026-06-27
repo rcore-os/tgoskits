@@ -11,7 +11,12 @@ where
 {
     let mut test_commands = Vec::new();
     for command in commands {
-        let command = command.as_ref().trim().to_string();
+        let command = command
+            .as_ref()
+            .replace("\r\n", "\n")
+            .replace('\r', "\n")
+            .trim()
+            .to_string();
         if command.is_empty() {
             bail!(
                 "{suite_name} grouped qemu case `{}` contains an empty test command",
