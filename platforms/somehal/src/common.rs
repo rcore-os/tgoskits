@@ -20,6 +20,8 @@ pub trait PlatOp {
         panic!("IPI is not implemented for this dynamic platform");
     }
 
+    fn ipi_irq() -> IrqId;
+
     fn begin_irq(raw: usize) -> Option<Self::ActiveIrq>;
 
     fn active_irq_id(active: &Self::ActiveIrq) -> IrqId;

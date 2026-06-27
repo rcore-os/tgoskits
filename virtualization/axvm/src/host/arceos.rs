@@ -171,7 +171,7 @@ pub(crate) fn send_ipi(cpu_id: usize) {
         return;
     }
     modules::ax_hal::irq::send_ipi(
-        modules::ax_hal::irq::IPI_IRQ,
+        modules::ax_hal::irq::ipi_irq(),
         modules::ax_hal::irq::IpiTarget::Other { cpu_id },
     );
 }
