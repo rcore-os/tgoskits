@@ -183,12 +183,6 @@ cat /tmp/qt_err.log 2>/dev/null | head -30
 echo "QT_CALC_DIAG === Qt stdout ==="
 cat /tmp/qt_stdout.log 2>/dev/null | head -10
 
-if [ "$calc_exit_code" -ne 0 ] && [ "$calc_exit_code" -ne 143 ]; then
-    echo "QT_CALC_STAGE wayland failed ($calc_exit_code), trying offscreen..."
-    export QT_QPA_PLATFORM=offscreen
-    run_with_timeout 10 "$calc_bin" 2>/tmp/qt_err2.log || calc_exit_code=$?
-fi
-
 # Check exit code — 0 (normal), 124 (timeout), 143 (SIGTERM) all indicate the
 # app ran and displayed without crashing for the full test window.
 if [ "$calc_exit_code" -eq 0 ] || [ "$calc_exit_code" -eq 124 ] || [ "$calc_exit_code" -eq 143 ]; then
@@ -196,11 +190,13 @@ if [ "$calc_exit_code" -eq 0 ] || [ "$calc_exit_code" -eq 124 ] || [ "$calc_exit
 else
     echo "QT_CALC_STAGE Qalculate-QT exited with code $calc_exit_code"
     tail -20 /tmp/weston.log 2>/dev/null || true
-    fail "Qalculate-QT exited with error code $calc_exit_code"
+    fail "Qalculate-QT exited with non-zero code $calc_exit_code"
 fi
 
-# ---- Check weston log for obvious errors ----
-if grep -iE "failed to open|no such file|permission denied|segfault|error" /tmp/weston.log >/tmp/weston-errors.out 2>&1; then
+# ---- Check weston log for critical errors ----
+# Only match definitive failure keywords; "error" alone is too broad (matches
+# "no error", "error recovery" etc. in normal Weston output).
+if grep -iE "failed to open|no such file|permission denied|segfault" /tmp/weston.log >/tmp/weston-errors.out 2>&1; then
     echo "QT_CALC_STAGE weston log contains errors:"
     cat /tmp/weston-errors.out
 else
