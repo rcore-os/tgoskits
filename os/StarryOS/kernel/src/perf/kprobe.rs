@@ -16,6 +16,11 @@ use axpoll::Pollable;
 use kbpf_basic::perf::{PerfProbeArgs, PerfProbeConfig};
 use kprobe::{CallBackFunc, KretprobeBuilder, ProbeBuilder, PtRegs};
 
+/// Config value for entry probes (kprobe/uprobe), per Linux PERF_TYPE_PROBE ABI.
+pub const PROBE_CONFIG_ENTRY: u64 = 0;
+/// Config value for return probes (kretprobe/uretprobe), per Linux PERF_TYPE_PROBE ABI.
+pub const PROBE_CONFIG_RETURN: u64 = 1;
+
 use crate::{
     file::FileLike,
     kprobe::{
@@ -188,19 +193,16 @@ fn perf_probe_arg_to_kretprobe_builder(
 }
 
 /// Build a `ProbePerfEvent` for a `PERF_TYPE_KPROBE` perf_event_open call.
-/// Config 0 = kprobe; config 1 = kretprobe (per kbpf-basic convention).
+/// Config `PROBE_CONFIG_ENTRY` (0) = kprobe; `PROBE_CONFIG_RETURN` (1) = kretprobe.
 pub fn perf_event_open_kprobe(args: PerfProbeArgs) -> AxResult<ProbePerfEvent> {
     let probe = match args.config {
-        PerfProbeConfig::Raw(val) => {
-            if val == 0 {
-                let builder = perf_probe_arg_to_kprobe_builder(&args)?;
-                ProbeTy::Kprobe(register_kprobe(builder))
-            } else if val == 1 {
-                let builder = perf_probe_arg_to_kretprobe_builder(&args)?;
-                ProbeTy::Kretprobe(register_kretprobe(builder))
-            } else {
-                return Err(AxError::InvalidInput);
-            }
+        PerfProbeConfig::Raw(PROBE_CONFIG_ENTRY) => {
+            let builder = perf_probe_arg_to_kprobe_builder(&args)?;
+            ProbeTy::Kprobe(register_kprobe(builder))
+        }
+        PerfProbeConfig::Raw(PROBE_CONFIG_RETURN) => {
+            let builder = perf_probe_arg_to_kretprobe_builder(&args)?;
+            ProbeTy::Kretprobe(register_kretprobe(builder))
         }
         _ => return Err(AxError::InvalidInput),
     };
