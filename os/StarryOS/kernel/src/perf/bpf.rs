@@ -23,7 +23,7 @@ use ax_memory_addr::{PAGE_SIZE_4K, PhysAddr};
 use ax_task::IrqNotify;
 use axpoll::{IoEvents, PollSet, Pollable};
 use kbpf_basic::{
-    linux_bpf::perf_event_sample_format,
+    linux_bpf::{perf_event_header, perf_event_mmap_page, perf_event_sample_format},
     perf::{PerfProbeArgs, bpf::BpfPerfEvent},
 };
 use kprobe::PtRegs;
@@ -72,6 +72,9 @@ pub struct BpfPerfEventWrapper {
     /// mapping still exists. See the type-level docs for the ownership
     /// rationale.
     pages: Option<Weak<GlobalPage>>,
+    /// Kernel virtual address of the ringbuf start, saved during
+    /// `device_mmap` for `read(2)` access.
+    mmap_kvirt: Option<usize>,
 }
 
 impl BpfPerfEventWrapper {
@@ -87,6 +90,7 @@ impl BpfPerfEventWrapper {
             poll_notify,
             poll_alive,
             pages: None,
+            mmap_kvirt: None,
         }
     }
 
@@ -112,6 +116,77 @@ impl BpfPerfEventWrapper {
             self.poll_notify.notify_irq();
         }
         Ok(())
+    }
+
+    /// Read one ringbuf record into `dst`, returning the number of bytes
+    /// copied (including the `perf_event_header`). Returns `Ok(0)` when no
+    /// data is available. Safety: the ringbuf pages are valid as long as
+    /// the kernel virtual address was saved during `device_mmap` and the
+    /// strong page ref still exists (checked via `is_mapped`).
+    pub(crate) fn try_read_record(&self, dst: &mut [u8]) -> AxResult<usize> {
+        let kvirt = self.mmap_kvirt.ok_or(AxError::NotConnected)?;
+        if !self.is_mapped() {
+            return Ok(0);
+        }
+
+        // SAFETY: the ringbuf pages are pinned by the VMA and zero-
+        // initialised; the `perf_event_mmap_page` at offset 0 was
+        // initialised by `BpfPerfEvent::do_mmap` during `device_mmap`.
+        let mmap = unsafe { &*(kvirt as *const perf_event_mmap_page) };
+        if mmap.data_tail == mmap.data_head {
+            return Ok(0);
+        }
+
+        let data_region_size = mmap.data_size as usize;
+        let tail = (mmap.data_tail as usize) % data_region_size;
+
+        // SAFETY: the data region starts at PAGE_SIZE offset into the
+        // ringbuf allocation; `data_size` was set by kbpf-basic during
+        // `do_mmap` and bounds the accessible region.
+        let data_region = unsafe {
+            core::slice::from_raw_parts((kvirt + PAGE_SIZE_4K) as *const u8, data_region_size)
+        };
+
+        let hdr_size = core::mem::size_of::<perf_event_header>();
+        if hdr_size > dst.len() {
+            return Err(AxError::InvalidInput);
+        }
+
+        // Read the perf_event_header (handling ring-wrap).
+        let hdr_end = wrapping_add(tail, hdr_size, data_region_size);
+        copy_ring(data_region, tail, hdr_end, &mut dst[..hdr_size]);
+
+        // SAFETY: the header bytes are a valid `perf_event_header` written
+        // by kbpf-basic's `RingPage::write_sample`.
+        let header = unsafe { &*(dst.as_ptr() as *const perf_event_header) };
+        let record_size = header.size as usize;
+
+        if record_size < hdr_size || record_size > dst.len() {
+            warn!(
+                "eBPF perf: bad record size {record_size} (hdr_size={hdr_size}, buf_len={})",
+                dst.len()
+            );
+            return Err(AxError::InvalidInput);
+        }
+
+        // Copy the full record (header already copied at offset 0).
+        if record_size > hdr_size {
+            let payload_start = wrapping_add(tail, hdr_size, data_region_size);
+            let payload_end = wrapping_add(tail, record_size, data_region_size);
+            copy_ring(
+                data_region,
+                payload_start,
+                payload_end,
+                &mut dst[hdr_size..record_size],
+            );
+        }
+
+        // Advance data_tail past this record.
+        // SAFETY: the mmap page is writable by the kernel.
+        let mmap_mut = unsafe { &mut *(kvirt as *mut perf_event_mmap_page) };
+        mmap_mut.data_tail += record_size as u64;
+
+        Ok(record_size)
     }
 }
 
@@ -143,6 +218,35 @@ fn start_bpf_perf_notify_worker(
 impl Debug for BpfPerfEventWrapper {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         write!(f, "BpfPerfEventWrapper")
+    }
+}
+
+/// Compute `(base + offset) % modulus`. The modulus is always the ring
+/// data-region size so the result fits in a single wrapping-modulo round.
+#[inline]
+fn wrapping_add(base: usize, offset: usize, modulus: usize) -> usize {
+    debug_assert!(modulus > 0);
+    let sum = base + offset;
+    if sum < modulus { sum } else { sum % modulus }
+}
+
+/// Copy bytes from a ring buffer (`src`) into a linear buffer (`dst`).
+/// The ring extent is `[from, to)` with `from` and `to` modulo-wrapped into
+/// the ring size. Handles the zero or one wrap case.
+fn copy_ring(src: &[u8], from: usize, to: usize, dst: &mut [u8]) {
+    let ring_size = src.len();
+    let len = to.wrapping_sub(from) % ring_size;
+    if len == 0 {
+        return;
+    }
+    debug_assert!(len <= dst.len(), "copy_ring: dst too small");
+    let end = from + len;
+    if end <= ring_size {
+        dst[..len].copy_from_slice(&src[from..end]);
+    } else {
+        let first = ring_size - from;
+        dst[..first].copy_from_slice(&src[from..]);
+        dst[first..len].copy_from_slice(&src[..(end % ring_size)]);
     }
 }
 
@@ -196,6 +300,7 @@ impl PerfEventOps for BpfPerfEventWrapper {
         // (see the type-level docs). Without the anchor the pages would free
         // under a live mapping.
         self.pages = Some(Arc::downgrade(&pages));
+        self.mmap_kvirt = Some(kvirt.as_usize());
         let anchor: Arc<dyn Any + Send + Sync> = pages;
         Ok((paddr, anchor))
     }

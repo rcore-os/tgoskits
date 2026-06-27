@@ -105,9 +105,24 @@ impl Pollable for PerfEvent {
     }
 }
 
+/// Stack buffer size for reading a single perf ringbuf record. The
+/// ringbuf data region minimum is one page, and a single perf record
+/// always fits within one data-region page.
+const PERF_READ_BUF_SIZE: usize = PAGE_SIZE_4K;
+
 impl FileLike for PerfEvent {
-    fn read(&self, _dst: &mut crate::file::IoDst) -> AxResult<usize> {
-        Err(AxError::Unsupported)
+    fn read(&self, dst: &mut crate::file::IoDst) -> AxResult<usize> {
+        let mut event = self.event.lock();
+        let bpf_event = event
+            .as_any_mut()
+            .downcast_mut::<BpfPerfEventWrapper>()
+            .ok_or(AxError::Unsupported)?;
+        let mut buf = [0u8; PERF_READ_BUF_SIZE];
+        let n = bpf_event.try_read_record(&mut buf)?;
+        if n == 0 {
+            return Ok(0);
+        }
+        dst.write(&buf[..n]).map_err(|_| AxError::Io)
     }
 
     fn write(&self, _src: &mut crate::file::IoSrc) -> AxResult<usize> {
