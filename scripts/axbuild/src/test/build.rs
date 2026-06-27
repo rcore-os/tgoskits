@@ -1947,7 +1947,7 @@ pub(crate) fn prepare_rust_case_assets_sync(
 }
 
 fn rust_case_needs_guest_linker(arch: &str) -> bool {
-    matches!(arch, "loongarch64")
+    matches!(arch, "loongarch64" | "riscv64")
 }
 
 /// Reads the binary name from a `Cargo.toml`.

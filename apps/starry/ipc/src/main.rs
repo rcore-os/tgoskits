@@ -106,8 +106,7 @@ unsafe fn child_process(
     libc::close(sockets[0]);
 
     let mut pipe_buf = [0u8; 64];
-    if !read_exact_cstr(pipe_parent_to_child[0], &mut pipe_buf)
-        || !cstr_eq(&pipe_buf, PIPE_PAYLOAD)
+    if !read_exact_cstr(pipe_parent_to_child[0], &mut pipe_buf) || !cstr_eq(&pipe_buf, PIPE_PAYLOAD)
     {
         libc::_exit(10);
     }
@@ -209,7 +208,10 @@ fn main() {
             0,
         )
         .cast::<SharedPage>();
-        state.check(shared != libc::MAP_FAILED.cast(), "create shared anonymous mmap page");
+        state.check(
+            shared != libc::MAP_FAILED.cast(),
+            "create shared anonymous mmap page",
+        );
 
         if state.fail > 0 {
             println!("IPC TEST FAILED");
