@@ -1,4 +1,4 @@
-# Qalculate-QT — Qt6 Calculator Test for StarryOS!
+# Qalculate-QT — Qt6 Calculator Test for StarryOS
 
 Tests Qt6/Wayland integration on StarryOS by running the
 [Qalculate-QT](https://qalculate.github.io/) calculator under the
