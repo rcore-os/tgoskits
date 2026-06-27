@@ -51,3 +51,83 @@ pub fn ensure_core_inited() -> (usize, ClusterId) {
     }
     (NUM_COUNTERS.read_current(), CLUSTER.with_current(|c| *c))
 }
+
+/// This core's programmable-counter count (after [`ensure_core_inited`]).
+pub fn current_num_counters() -> usize {
+    ensure_core_inited().0
+}
+
+/// Per-CPU programmable-counter allocator. `PMEVCNTRn_EL0` is banked per-PE, so
+/// each core has its own pool of `num_counters` programmable counters plus the
+/// dedicated cycle counter. A slot is reserved and released on the *same* core
+/// within one scheduling slice (`perf_sched_in`/`perf_sched_out`), so the pool
+/// stays coherent across task migration.
+struct HwAlloc {
+    /// Bitmask of allocated programmable counters (bit `n` ⇒ index `n` in use).
+    used: u32,
+    /// Whether the dedicated cycle counter is allocated.
+    cycle_used: bool,
+}
+
+impl HwAlloc {
+    const fn new() -> Self {
+        HwAlloc {
+            used: 0,
+            cycle_used: false,
+        }
+    }
+}
+
+#[ax_percpu::def_percpu]
+static ALLOC: HwAlloc = HwAlloc::new();
+
+/// Allocate the lowest free programmable counter on the current core, or `None`
+/// if all `num_counters` are in use.
+///
+/// Disables preemption + IRQs for the access so the per-CPU `ALLOC` is touched
+/// on a stable core (mirrors [`super::sampling`]'s `REGISTRY` discipline).
+pub fn alloc_programmable_counter() -> Option<usize> {
+    let num = current_num_counters().min(32);
+    let _guard = ax_kernel_guard::NoPreemptIrqSave::new();
+    // SAFETY: preemption + local IRQs are disabled by `_guard`, so we hold
+    // exclusive access to this CPU's `ALLOC` for the critical section.
+    let alloc = unsafe { ALLOC.current_ref_mut_raw() };
+    for n in 0..num {
+        if alloc.used & (1 << n) == 0 {
+            alloc.used |= 1 << n;
+            return Some(n);
+        }
+    }
+    None
+}
+
+/// Release a programmable counter previously allocated on the current core.
+pub fn free_programmable_counter(n: usize) {
+    if n >= 32 {
+        return;
+    }
+    let _guard = ax_kernel_guard::NoPreemptIrqSave::new();
+    // SAFETY: see [`alloc_programmable_counter`].
+    let alloc = unsafe { ALLOC.current_ref_mut_raw() };
+    alloc.used &= !(1 << n);
+}
+
+/// Allocate the dedicated cycle counter on the current core; `false` if taken.
+pub fn alloc_cycle_counter() -> bool {
+    let _guard = ax_kernel_guard::NoPreemptIrqSave::new();
+    // SAFETY: see [`alloc_programmable_counter`].
+    let alloc = unsafe { ALLOC.current_ref_mut_raw() };
+    if alloc.cycle_used {
+        return false;
+    }
+    alloc.cycle_used = true;
+    true
+}
+
+/// Release the dedicated cycle counter on the current core.
+pub fn free_cycle_counter() {
+    let _guard = ax_kernel_guard::NoPreemptIrqSave::new();
+    // SAFETY: see [`alloc_programmable_counter`].
+    let alloc = unsafe { ALLOC.current_ref_mut_raw() };
+    alloc.cycle_used = false;
+}
