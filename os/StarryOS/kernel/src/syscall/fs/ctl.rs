@@ -28,6 +28,9 @@ use crate::{
     time::TimeValueLike,
 };
 
+/// Maximum length of tracepoint path buffers (matches Linux TRACE_PATH_MAX).
+const TRACE_PATH_BUF_SIZE: usize = 64;
+
 /// `FIOCLEX` / `FIONCLEX`: set / clear the close-on-exec flag on a file descriptor
 /// via `ioctl` (the ioctl spelling of `fcntl(fd, F_SETFD, ...)`). libc/musl and CPython
 /// use these on freshly-opened fds; Linux implements them generically for any fd.
@@ -131,12 +134,12 @@ ktracepoint::define_event_trace!(
     TP_PROTO(path:&str, mode: u16),
     TP_STRUCT__entry {
         mode: u16,
-        path: [u8;64],
+        path: [u8; TRACE_PATH_BUF_SIZE],
     },
     TP_fast_assign {
         mode: mode,
         path: {
-            let mut buf = [0u8; 64];
+            let mut buf = [0u8; TRACE_PATH_BUF_SIZE];
             let bytes = path.as_bytes();
             let mut len = bytes.len().min(63);
             while !path.is_char_boundary(len) {

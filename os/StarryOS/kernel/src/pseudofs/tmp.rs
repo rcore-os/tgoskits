@@ -19,6 +19,11 @@ use axpoll::{IoEvents, Pollable};
 use hashbrown::HashMap;
 use slab::Slab;
 
+/// StatFs total block count reported for tmpfs (~4 GiB at 4096-byte blocks).
+const TMPFS_REPORTED_BLOCKS: u64 = 1 << 20;
+/// StatFs free inode count reported for tmpfs.
+const TMPFS_REPORTED_FREE_INODES: u64 = 1 << 16;
+
 const TMPFS_NESTED_DIR_ENTRIES_SUBCLASS: u32 = 1;
 
 fn fs_events_to_io(events: FsIoEvents) -> IoEvents {
@@ -154,11 +159,11 @@ impl FilesystemOps for MemoryFs {
         Ok(StatFs {
             fs_type: 0x01021994,
             block_size: 4096,
-            blocks: 1 << 20,
-            blocks_free: 1 << 20,
-            blocks_available: 1 << 20,
+            blocks: TMPFS_REPORTED_BLOCKS,
+            blocks_free: TMPFS_REPORTED_BLOCKS,
+            blocks_available: TMPFS_REPORTED_BLOCKS,
             file_count: 0,
-            free_file_count: 1 << 16,
+            free_file_count: TMPFS_REPORTED_FREE_INODES,
             name_length: axfs_ng_vfs::path::MAX_NAME_LEN as _,
             fragment_size: 4096,
             mount_flags: 0,
