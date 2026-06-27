@@ -26,7 +26,16 @@ ensure_host_packages() {
         x86_64)  command -v qemu-x86_64-static >/dev/null 2>&1 || missing+=(qemu-user-static) ;;
         aarch64) command -v qemu-aarch64-static >/dev/null 2>&1 || missing+=(qemu-user-static) ;;
     esac
-    [[ ${#missing[@]} -eq 0 ]] || { echo "missing: ${missing[*]}" >&2; exit 1; }
+    [[ ${#missing[@]} -eq 0 ]] && return
+
+    if ! command -v apt-get >/dev/null 2>&1; then
+        echo "missing: ${missing[*]}" >&2
+        exit 1
+    fi
+
+    echo "installing missing host packages: ${missing[*]}"
+    apt-get update
+    apt-get install -y --no-install-recommends "${missing[@]}"
 }
 
 extract_base_rootfs() {

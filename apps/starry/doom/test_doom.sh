@@ -19,13 +19,13 @@ hdr()  { printf "\n\033[1;33m=== %s ===\033[0m\n" "$*"; }
 
 printf '\033[?1000l\033[?1002l\033[?1003l\033[?1006l' 2>/dev/null || true
 
-hdr "L1: Weston compositor (pixman renderer, 214x120)"
+hdr "L1: Weston compositor (GL renderer / llvmpipe, 214x120)"
 [ ! -e /dev/dri/card0 ] && { fail "L1: no DRM device"; exit 1; }
 
 rm -f /tmp/weston.log /tmp/weston-stderr.log
-/usr/bin/weston \
+LIBGL_DEBUG=verbose LIBGL_ALWAYS_SOFTWARE=1 /usr/bin/weston \
     --backend=drm-backend.so \
-    --renderer=pixman \
+    --renderer=gl \
     --shell=kiosk-shell.so \
     --no-config \
     --idle-time=0 \
@@ -33,8 +33,8 @@ rm -f /tmp/weston.log /tmp/weston-stderr.log
     >/tmp/weston-stdout.log 2>/tmp/weston-stderr.log &
 WESTON_PID=$!
 
-# pixman 渲染的 Weston 启动很快，但给 60s 超时留余量
-WAYLAND_TIMEOUT=60
+# GL 渲染器 llvmpipe 初始化较慢，给 120s 超时
+WAYLAND_TIMEOUT=120
 READY=0
 for i in $(seq 1 $WAYLAND_TIMEOUT); do
     sleep 1
@@ -55,20 +55,22 @@ done
 
 export WAYLAND_DISPLAY="$DISP"
 
-hdr "L2: doomgeneric SDL2 Wayland (214x120)"
+hdr "L2: doomgeneric SDL2 Wayland (214x120, GL)"
 IWAD="/usr/share/games/doom/freedoom2.wad"
 if [ ! -f "$IWAD" ]; then
     IWAD="/usr/share/games/doom/freedoom1.wad"
 fi
 
 if [ -f "$IWAD" ]; then
-    echo "--- starting doomgeneric (SDL2 Wayland backend) ---"
+    echo "--- starting doomgeneric (SDL2 Wayland, GL llvmpipe) ---"
     rm -f /tmp/doomgeneric_stdout.log /tmp/doomgeneric_stderr.log
 
     export DOOMWADPATH=/usr/share/games/doom
     SDL_RENDER_DRIVER=opengles2 \
     SDL_VIDEODRIVER=wayland \
     SDL_AUDIODRIVER=dummy \
+    LIBGL_ALWAYS_SOFTWARE=1 \
+    SDL_RENDER_VSYNC=1 \
     /usr/bin/doomgeneric \
         -iwad "$IWAD" \
         -nosound \

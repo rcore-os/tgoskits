@@ -220,6 +220,8 @@ struct DumbBuffer {
 struct Framebuffer {
     /// Total backing size in bytes.
     size: u64,
+    /// Row stride (pitch) in bytes from CREATE_DUMB.
+    stride: u32,
     /// Backing pages. Shared with the (now possibly removed) dumb
     /// buffer; refcount keeps them alive until both this fb and any
     /// user mappings have been dropped.
@@ -681,25 +683,41 @@ impl Card0 {
         // the lock so `framebuffer_flush` doesn't run with the
         // map locked. Pages survive a concurrent DESTROY_DUMB because
         // the fb owns its own Arc<GlobalPage> clone.
-        let (pages, size) = match self.fbs.lock().get(&fb_id) {
-            Some(fb) => (fb.pages.clone(), fb.size),
+        let (pages, size, src_stride) = match self.fbs.lock().get(&fb_id) {
+            Some(fb) => (fb.pages.clone(), fb.size, fb.stride),
             None => return,
         };
         if !ax_display::has_display() {
             return;
         };
         let info = ax_display::framebuffer_info();
-        let copy = (size as usize).min(info.fb_size);
-        // SAFETY: `pages` owns the source pages; `info.fb_base_vaddr`
-        // is the axdisplay-owned scanout region; the two regions don't
-        // overlap because the per-buffer pages were allocated separately
-        // from the axdisplay framebuffer.
-        unsafe {
-            core::ptr::copy_nonoverlapping(
-                pages.start_vaddr().as_usize() as *const u8,
-                info.fb_base_vaddr as *mut u8,
-                copy,
-            );
+        let src = pages.start_vaddr().as_usize() as *const u8;
+        let dst = info.fb_base_vaddr as *mut u8;
+
+        if src_stride != 0
+            && info.stride != 0
+            && src_stride as usize != info.stride
+        {
+            // Stride mismatch — copy row by row to avoid diagonal tearing.
+            let rows = (size as usize) / src_stride as usize;
+            let dst_limit = info.fb_size / info.stride.max(1);
+            let rows = rows.min(dst_limit);
+            let bytes_per_row = (src_stride as usize).min(info.stride);
+            for row in 0..rows {
+                unsafe {
+                    core::ptr::copy_nonoverlapping(
+                        src.add(row * src_stride as usize),
+                        dst.add(row * info.stride),
+                        bytes_per_row,
+                    );
+                }
+            }
+        } else {
+            // Strides match (or unknown) — flat copy.
+            let copy = (size as usize).min(info.fb_size);
+            unsafe {
+                core::ptr::copy_nonoverlapping(src, dst, copy);
+            }
         }
         let _ = ax_display::framebuffer_flush();
     }
@@ -1132,12 +1150,12 @@ impl Card0 {
         // Resolve and clone-retain the dumb's backing under the dumbs
         // lock so a concurrent DESTROY_DUMB can't race the fb's
         // initial Arc bump.
-        let (pages, size) = {
+        let (pages, size, stride) = {
             let dumbs = self.dumbs.lock();
             let Some(b) = dumbs.get(&handle) else {
                 return Err(VfsError::InvalidInput);
             };
-            (b.pages.clone(), b.size)
+            (b.pages.clone(), b.size, b.pitch)
         };
         if f.flags & DRM_MODE_FB_MODIFIERS != 0 {
             for i in 0..4 {
@@ -1151,7 +1169,7 @@ impl Card0 {
             }
         }
         let fb_id = self.next_fb_id.fetch_add(1, Ordering::Relaxed);
-        self.fbs.lock().insert(fb_id, Framebuffer { size, pages });
+        self.fbs.lock().insert(fb_id, Framebuffer { size, stride, pages });
         f.fb_id = fb_id;
         ptr.vm_write(f).map_err(|_| VfsError::BadAddress)?;
         Ok(0)

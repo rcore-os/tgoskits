@@ -1,21 +1,16 @@
 args = [
     "-machine",
     "q35",
-    "-accel",
-    "tcg",
-    "-m",
-    "2G",
-    "-smp",
-    "4",
     "-serial",
     "stdio",
     "-vnc",
     ":0",
     "-vga",
     "none",
-    "-usb",
-    "-device",
-    "usb-tablet",
+    "-m",
+    "2G",
+    "-smp",
+    "4",
     "-device",
     "virtio-gpu-pci,xres=214,yres=120",
     "-device",
@@ -30,6 +25,7 @@ args = [
     "virtio-net-pci,netdev=net0",
     "-netdev",
     "user,id=net0",
+    "-accel", "tcg",
 ]
 uefi = true
 to_bin = true
