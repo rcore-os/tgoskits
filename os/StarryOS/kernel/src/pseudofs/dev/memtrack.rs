@@ -18,6 +18,11 @@ use crate::{
 };
 
 static STAMPED_GENERATION: AtomicU64 = AtomicU64::new(0);
+
+/// Buffer size for recording stack-based allocation samples.
+const SAMPLE_ALLOC_BUF_SIZE: usize = 4096;
+/// Buffer size for deeper call-stack allocation samples.
+const SAMPLE_HARD_LEAF_BUF_SIZE: usize = 8192;
 static SAMPLE_ALLOCATION: SpinNoIrq<Option<Vec<u8>>> = SpinNoIrq::new(None);
 
 #[derive(PartialEq, Eq, PartialOrd, Ord)]
@@ -79,8 +84,8 @@ fn run_memory_analysis() {
 
 #[inline(never)]
 fn record_sample_allocation() {
-    let mut sample = Vec::with_capacity(4096);
-    sample.resize(4096, 0xa5);
+    let mut sample = Vec::with_capacity(SAMPLE_ALLOC_BUF_SIZE);
+    sample.resize(SAMPLE_ALLOC_BUF_SIZE, 0xa5);
     *SAMPLE_ALLOCATION.lock() = Some(sample);
     ax_println!("Memory allocation sample recorded");
 }
@@ -88,8 +93,8 @@ fn record_sample_allocation() {
 #[unsafe(no_mangle)]
 #[inline(never)]
 fn starry_memtrack_sample_hard_leaf() -> Vec<u8> {
-    let mut sample = Vec::with_capacity(8192);
-    sample.resize(8192, 0x5a);
+    let mut sample = Vec::with_capacity(SAMPLE_HARD_LEAF_BUF_SIZE);
+    sample.resize(SAMPLE_HARD_LEAF_BUF_SIZE, 0x5a);
     core::hint::black_box(sample.as_ptr());
     sample
 }
