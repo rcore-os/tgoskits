@@ -106,7 +106,7 @@ else
     ls /usr/share/games/doom/ 2>&1
 fi
 
-hdr "L4: Diagnostic dump"
+hdr "L3: Diagnostic dump"
 echo "--- weston log (last 50 lines) ---"
 tail -50 /tmp/weston.log 2>&1 || true
 echo "--- weston stderr ---"

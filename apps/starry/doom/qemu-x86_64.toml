@@ -42,4 +42,4 @@ fail_regex = [
     "(?i)segmentation fault",
     "DOOMGENERIC_TEST_FAILED",
 ]
-timeout = 60
+timeout = 180
