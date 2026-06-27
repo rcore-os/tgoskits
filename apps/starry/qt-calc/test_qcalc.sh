@@ -1,10 +1,10 @@
 #!/bin/sh
 set -eu
 
-# Qalculate-QT test for StarryOS.
+# Qalculate-QT graphical test for StarryOS.
 # Starts Weston compositor with DRM backend + pixman renderer,
-# launches qalculate-qt (a Qt6 calculator) to verify Qt6/Wayland
-# integration and input devices work correctly.
+# launches qalculate-qt under Wayland to verify Qt6/Wayland
+# integration and compositor stability.
 
 green="$(printf '\033[32m')"
 red="$(printf '\033[31m')"
@@ -49,60 +49,14 @@ run_with_timeout() {
     wait "$cmd_pid"
 }
 
-write_apk_repositories() {
-    mirror="$1"
-    branch="$(sed -n 's#.*/\(v[0-9][0-9.]*\)/main#\1#p' /etc/apk/repositories 2>/dev/null | head -1)"
-    if [ -z "$branch" ]; then
-        branch="v3.22"
-    fi
-
-    cat >/etc/apk/repositories <<EOF
-${mirror}/${branch}/main
-${mirror}/${branch}/community
-EOF
-}
-
 install_qt_and_weston_packages() {
-    # Packages are already pre-installed in the rootfs via qemu-user in prebuild.sh
-    # Just verify they're available
+    # Packages are pre-installed in the rootfs via qemu-user in prebuild.sh
     echo "QT_CALC_PREP checking pre-installed packages..."
 
-    if command -v weston >/dev/null 2>&1; then
-        echo "QT_CALC_PREP weston found"
-    else
-        echo "QT_CALC_PREP weston not found, trying apk..."
-        packages="weston weston-backend-drm weston-shell-desktop qt6-qtbase font-dejavu"
-        mirrors="
-http://mirrors.huaweicloud.com/alpine
-http://dl-cdn.alpinelinux.org/alpine
-http://mirrors.aliyun.com/alpine
-http://mirrors.tuna.tsinghua.edu.cn/alpine
-http://mirrors.cernet.edu.cn/alpine
-"
-
-        if [ -n "${STARRY_APK_MIRROR:-}" ]; then
-            mirrors="${STARRY_APK_MIRROR}
-${mirrors}"
-        fi
-
-        for mirror in $mirrors; do
-            echo "QT_CALC_PREP trying apk mirror: $mirror"
-            write_apk_repositories "$mirror"
-            for attempt in 1 2; do
-                echo "QT_CALC_PREP apk add attempt $attempt via $mirror"
-                run_with_timeout 600 apk add --no-cache $packages
-                rc=$?
-                if [ "$rc" -eq 0 ]; then
-                    return 0
-                fi
-                echo "QT_CALC_PREP apk add failed via $mirror attempt $attempt rc=$rc"
-                rm -rf /var/cache/apk/* 2>/dev/null || true
-                sleep 2
-            done
-        done
-
-        return 1
+    if ! command -v weston >/dev/null 2>&1; then
+        fail "weston not found — prebuild may have failed"
     fi
+    echo "QT_CALC_PREP weston found"
 }
 
 cleanup() {
@@ -151,26 +105,14 @@ fi
 
 # Check for the Qt application binary
 calc_bin=""
-for bin in /usr/bin/qalculate-qt; do
-    if [ -x "$bin" ]; then
-        calc_bin="$bin"
-        echo "QT_CALC_PREP found Qt binary: $calc_bin"
-        break
-    fi
-done
-
-if [ -z "$calc_bin" ] || [ ! -x "$calc_bin" ]; then
-    echo "QT_CALC_PREP no Qt binary found, checking if Qt libraries are available..."
-    if [ -f /usr/lib/libQt6Core.so.6 ]; then
-        echo "QT_CALC_PREP Qt libraries found, will skip Qt application test"
-        calc_bin=""
-        export QT_CALC_SKIP_TEST=1
-    else
-        fail "Qt not found (no libQt6Core.so*)"
-    fi
+if [ -x /usr/bin/qalculate-qt ]; then
+    calc_bin="/usr/bin/qalculate-qt"
+    echo "QT_CALC_PREP found Qt binary: $calc_bin"
 fi
 
-echo "QT_CALC_PREP found Qt binary: $calc_bin"
+if [ -z "$calc_bin" ]; then
+    fail "qalculate-qt binary not found"
+fi
 
 # ---- Start Weston ----
 export XDG_RUNTIME_DIR=/tmp
@@ -229,42 +171,28 @@ fi
 
 export WAYLAND_DISPLAY="$disp"
 export QT_QPA_PLATFORM=wayland
-export EGL_PLATFORM=wayland
+export QT_WAYLAND_DISABLE_EGL=1
 
 # ---- Run Qalculate-QT ----
-echo "QT_CALC_STAGE running Qalculate-QT..."
-echo "QT_CALC_PREP Qt binary: $calc_bin"
+echo "QT_CALC_STAGE launching qalculate-qt (wayland)..."
 
 calc_exit_code=0
-if [ -n "$calc_bin" ]; then
-    export WAYLAND_DISPLAY="$disp"
-    export QT_QPA_PLATFORM=wayland
-    export QT_WAYLAND_DISABLE_EGL=1
-    echo "QT_CALC_STAGE launching: $calc_bin (wayland)"
-    run_with_timeout 120 $calc_bin >/tmp/qt_stdout.log 2>/tmp/qt_err.log || calc_exit_code=$?
-    echo "QT_CALC_DIAG === Qt stderr ==="
-    cat /tmp/qt_err.log 2>/dev/null | head -30
-    echo "QT_CALC_DIAG === Qt stdout ==="
-    cat /tmp/qt_stdout.log 2>/dev/null | head -10
+run_with_timeout 120 "$calc_bin" >/tmp/qt_stdout.log 2>/tmp/qt_err.log || calc_exit_code=$?
+echo "QT_CALC_DIAG === Qt stderr ==="
+cat /tmp/qt_err.log 2>/dev/null | head -30
+echo "QT_CALC_DIAG === Qt stdout ==="
+cat /tmp/qt_stdout.log 2>/dev/null | head -10
 
-    if [ "$calc_exit_code" -ne 0 ] && [ "$calc_exit_code" -ne 143 ]; then
-        echo "QT_CALC_STAGE wayland failed ($calc_exit_code), trying offscreen..."
-        export QT_QPA_PLATFORM=offscreen
-        run_with_timeout 10 "$calc_bin" 2>/tmp/qt_err2.log || calc_exit_code=$?
-    fi
-else
-    echo "QT_CALC_STAGE no Qt binary to run, verifying Weston compositor socket..."
-    if [ -S "/tmp/$WAYLAND_DISPLAY" ]; then
-        echo "QT_CALC_STAGE Wayland socket /tmp/$WAYLAND_DISPLAY is alive"
-        calc_exit_code=0
-    else
-        echo "QT_CALC_STAGE Wayland socket disappeared"
-        calc_exit_code=1
+if [ "$calc_exit_code" -ne 0 ] && [ "$calc_exit_code" -ne 143 ]; then
+    echo "QT_CALC_STAGE wayland failed ($calc_exit_code), trying offscreen..."
+    export QT_QPA_PLATFORM=offscreen
+    run_with_timeout 10 "$calc_bin" 2>/tmp/qt_err2.log || calc_exit_code=$?
     fi
 fi
 
-# Check exit code
-if [ "$calc_exit_code" -eq 0 ] || [ "$calc_exit_code" -eq 124 ] || [ "$calc_exit_code" -eq 143 ] || [ "$calc_exit_code" -eq 1 ]; then
+# Check exit code — 0 (normal), 124 (timeout), 143 (SIGTERM) all indicate the
+# app ran and displayed without crashing for the full test window.
+if [ "$calc_exit_code" -eq 0 ] || [ "$calc_exit_code" -eq 124 ] || [ "$calc_exit_code" -eq 143 ]; then
     echo "QT_CALC_STAGE Qalculate-QT completed (exit code: $calc_exit_code)"
 else
     echo "QT_CALC_STAGE Qalculate-QT exited with code $calc_exit_code"

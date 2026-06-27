@@ -1,4 +1,0 @@
-LIBUDEV_183 {
-    global:
-        udev_*;
-};

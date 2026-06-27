@@ -12,10 +12,10 @@ Currently supports: **x86_64**
 
 | File | Purpose |
 |---|---|
-| `prebuild.sh` | Enlarges the rootfs image, installs packages via qemu-user apk |
-| `test_qcalc.sh` | Guest-side automated test script (copied to `/usr/bin/test-qcalc.sh`) |
-| `qemu-x86_64.toml` | QEMU configuration script for x86_64 |
-| `build-x86_64-unknown-none.toml` | Kernel build flags |
+| `prebuild.sh` | Resizes rootfs, installs Weston + Qt6 + qalculate-qt via qemu-user apk |
+| `test_qcalc.sh` | Guest-side test script (copied to `/usr/bin/test-qcalc.sh`) |
+| `qemu-x86_64.toml` | QEMU launch config: virtio-gpu, virtio-input, 2G RAM, TCG |
+| `build-x86_64-unknown-none.toml` | Kernel build features (display, input, virtio drivers) |
 | `README.md` | This file |
 
 ## Running the Test
@@ -67,8 +67,7 @@ cargo xtask starry app qemu -t qt-calc --arch x86_64
 ## Known Limitations
 
 1. **x86_64 only** — other architectures not yet supported
-2. **Software rendering** — Weston uses pixman (software), Qt6 uses wl_shm (no EGL/GL)
-3. **Alpine v3.23** — packages pinned to v3.23 for musl compatibility (renameat2)
+2. **Software rendering** — Weston uses pixman, Qt6 uses wl_shm (no GL/EGL)
 
 ## References
 
