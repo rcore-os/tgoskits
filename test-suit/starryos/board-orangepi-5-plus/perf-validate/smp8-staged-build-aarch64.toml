@@ -1,0 +1,25 @@
+# STAGED smp8 build for perf-validate — NOT auto-discovered.
+#
+# `nearest_build_wrapper` only matches files named `build-*.toml`; this file is
+# named `smp8-staged-*` ON PURPOSE so it is ignored by the harness today. The
+# board boots cleanly only at max_cpu_num=1 right now (an smp8 late-boot hang at
+# "block device rockchip-sd registered" — a NON-perf bug, overlapping the
+# scheduler/load-balance effort). Gating CI on this build would hang.
+#
+# WHEN THE smp8 HANG IS FIXED: rename this file to
+# `build-aarch64-unknown-none-softfloat.toml` (replacing the smp1 wrapper) — or
+# just bump `max_cpu_num` in that file to 8 — to unlock every needs-smp8 /
+# needs-both-clusters check and turn the verdict from PARTIAL into FULL.
+target = "aarch64-unknown-none-softfloat"
+features = [
+  "ax-driver/list-pci-devices",
+  "ax-driver/rk3588-pcie",
+  "ax-driver/realtek-rtl8125",
+  "ax-driver/rockchip-soc",
+  "ax-driver/rockchip-dwc-xhci",
+  "ax-driver/rockchip-sdhci",
+  "ax-driver/rockchip-dwmmc",
+  "rknpu",
+]
+log = "Warn"
+max_cpu_num = 8
