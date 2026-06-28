@@ -381,6 +381,15 @@ pub struct HwPerfEvent {
     /// inert placeholder. The timing fields (`enabled_since` / `time_*`) still
     /// apply (a cpu-bound event runs continuously while enabled).
     sys_cpu: Option<SysCpuBinding>,
+    /// The core this event's HW counter lives on, for the self/system-wide
+    /// (`pid <= 0 && cpu < 0`) path whose counter is allocated on the opening
+    /// core and counts there. Because the monitoring thread is migratable, the
+    /// HW lifecycle (`enable`/`disable`/`reset`/`read`/`Drop`) must run on
+    /// `home_cpu` — via a synchronous IPI when the caller has migrated — so it
+    /// never stomps another core's banked `PMEVCNTRn` or frees the slot in the
+    /// wrong per-CPU pool. `usize::MAX` for the per-task / `sys_cpu` paths (which
+    /// route their HW ops to the owning core by other means).
+    home_cpu: usize,
 }
 
 #[cfg(target_arch = "aarch64")]
@@ -559,6 +568,184 @@ impl HwPerfEvent {
     fn sys_read(&self) -> u64 {
         self.sys_slot_op(SYS_OP_READ)
     }
+
+    // --- self/system-wide (`pid<=0 && cpu<0`) HW lifecycle, pinned to `home_cpu`.
+    // The `*_local` methods touch this core's banked PMU state directly; they run
+    // either on `home_cpu` (when the caller is there) or via [`hw_home_thunk`]
+    // over an IPI. They carry the exact logic the `enable`/`disable`/`reset`/
+    // `read`/`Drop` paths used before, just routed to the owning core.
+
+    /// Arm the HW counter (sampling overflow path, or plain counter enable).
+    fn hw_enable_local(&mut self) {
+        if let Some(sampling) = &self.sampling {
+            let Counter::Programmable(n) = self.counter else {
+                return; // unreachable: sampling always takes a programmable counter
+            };
+            let period = sampling.period;
+            let sample_type = sampling.sample_type;
+            let freq = sampling.freq;
+            let target_freq = sampling.target_freq;
+            let (ring_vaddr, ring_len) = if let Some((rv, rl, _anchor)) = &sampling.redirect {
+                (*rv, *rl)
+            } else {
+                match sampling.ring.as_ref() {
+                    Some(r) => (r.ring_vaddr, r.ring_len),
+                    None => (0, 0),
+                }
+            };
+            let notify_ptr = Arc::as_ptr(&sampling.notify) as *const ();
+            sampling::ensure_pmu_irq_registered();
+            ax_cpu::pmu::counter::preload(n, period);
+            sampling::register(
+                n,
+                SampleSlot {
+                    ring_vaddr,
+                    ring_len,
+                    period,
+                    sample_type,
+                    id: self.sample_id,
+                    notify: notify_ptr,
+                    freq,
+                    target_freq,
+                    last_time: 0,
+                },
+            );
+            ax_cpu::pmu::overflow::enable_irq(n);
+            ax_cpu::pmu::counter::enable(n);
+            return;
+        }
+        match self.counter {
+            Counter::Cycle => ax_cpu::pmu::cycles::enable(),
+            Counter::Programmable(n) => ax_cpu::pmu::counter::enable(n),
+        }
+    }
+
+    /// Stop the HW counter (sampling teardown, or plain counter disable). Keeps
+    /// the counter allocated so a post-disable `read` returns the final value.
+    fn hw_disable_local(&mut self) {
+        if self.sampling.is_some() {
+            self.teardown_sampling_irq();
+        } else {
+            match self.counter {
+                Counter::Cycle => ax_cpu::pmu::cycles::disable(),
+                Counter::Programmable(n) => ax_cpu::pmu::counter::disable(n),
+            }
+        }
+    }
+
+    /// Reset the HW counter to 0.
+    fn hw_reset_local(&mut self) {
+        match self.counter {
+            Counter::Cycle => ax_cpu::pmu::cycles::reset(),
+            Counter::Programmable(n) => ax_cpu::pmu::counter::reset(n),
+        }
+    }
+
+    /// Tear down + free the HW counter (sampling slot unregistered first so the
+    /// overflow handler can no longer reach the ring/notify), releasing it to
+    /// this core's per-CPU pool.
+    fn hw_free_local(&mut self) {
+        self.teardown_sampling_irq();
+        match self.counter {
+            Counter::Cycle => {
+                ax_cpu::pmu::cycles::disable();
+                super::percpu::free_cycle_counter();
+            }
+            Counter::Programmable(n) => {
+                ax_cpu::pmu::counter::disable(n);
+                super::percpu::free_programmable_counter(n);
+            }
+        }
+    }
+
+    /// Dispatch a [`HwOp`] to the matching `*_local` method on the current core.
+    fn hw_op_local(&mut self, op: HwOp) -> u64 {
+        match op {
+            HwOp::Enable => {
+                self.hw_enable_local();
+                0
+            }
+            HwOp::Disable => {
+                self.hw_disable_local();
+                0
+            }
+            HwOp::Reset => {
+                self.hw_reset_local();
+                0
+            }
+            HwOp::Read => self.hw_read_local(),
+            HwOp::Free => {
+                self.hw_free_local();
+                0
+            }
+        }
+    }
+
+    /// Read the HW counter value.
+    fn hw_read_local(&self) -> u64 {
+        self.raw_value()
+    }
+
+    /// Run a [`HwOp`] on this event's `home_cpu`: directly if the caller is on it
+    /// (or it is unset), else over a synchronous IPI. Pins the self/system-wide
+    /// counter's lifecycle to the core its slot lives on, so a migrated
+    /// monitoring thread never touches another core's banked counter / pool.
+    fn run_hw_on_home(&mut self, op: HwOp) -> u64 {
+        if self.home_cpu == usize::MAX || self.home_cpu == ax_hal::percpu::this_cpu_id() {
+            return self.hw_op_local(op);
+        }
+        let home = self.home_cpu;
+        let mut ho = HwHomeOp {
+            ev: self as *mut HwPerfEvent,
+            op,
+            value: 0,
+        };
+        let arg = &mut ho as *mut HwHomeOp as *mut ();
+        if ax_ipi::wait_until_cpu_ready(home) {
+            // SAFETY: `self` outlives the synchronous IPI (we block until the
+            // thunk returns), so the remote `&mut` does not alias our paused one.
+            let _ = unsafe { ax_ipi::run_on_cpu_sync_raw(home, hw_home_thunk, arg) };
+            ho.value
+        } else {
+            // Home core not ready (should not happen for an online core);
+            // best-effort local rather than skipping the op.
+            self.hw_op_local(op)
+        }
+    }
+}
+
+/// A HW-counter lifecycle operation routed to [`HwPerfEvent::home_cpu`].
+#[cfg(target_arch = "aarch64")]
+#[derive(Clone, Copy)]
+enum HwOp {
+    Enable,
+    Disable,
+    Reset,
+    Read,
+    Free,
+}
+
+/// IPI argument for [`hw_home_thunk`]: the event + the op, with the read value
+/// written back for the (blocked) caller.
+#[cfg(target_arch = "aarch64")]
+struct HwHomeOp {
+    ev: *mut HwPerfEvent,
+    op: HwOp,
+    value: u64,
+}
+
+/// IPI thunk running a [`HwOp`] on the event's `home_cpu`.
+///
+/// # Safety
+/// `arg` must point at a live [`HwHomeOp`] whose `ev` is a valid `HwPerfEvent`
+/// kept alive for the call — guaranteed because the caller blocks on
+/// `run_on_cpu_sync_raw` until this returns.
+#[cfg(target_arch = "aarch64")]
+unsafe fn hw_home_thunk(arg: *mut ()) {
+    let ho = unsafe { &mut *(arg as *mut HwHomeOp) };
+    super::percpu::ensure_core_inited();
+    let ev = unsafe { &mut *ho.ev };
+    ho.value = ev.hw_op_local(ho.op);
 }
 
 /// IPI opcode: alloc + configure a programmable counter (leaves it DISABLED).
@@ -675,26 +862,16 @@ impl Drop for HwPerfEvent {
             self.sys_free();
             return;
         }
-        // For sampling events, mask the IRQ, stop the counter, and clear the
-        // registry slot BEFORE the `Arc<IrqNotify>`/`Arc<GlobalPage>` held in
-        // `sampling` drop, so the overflow handler can never dereference a
-        // freed `notify` pointer or write into freed ring pages.
-        self.teardown_sampling_irq();
-        // Stop the cycle counter too (sampling already disabled its
-        // programmable counter above; `disable` is idempotent), then release the
-        // counter back to the allocator for reuse.
-        match self.counter {
-            Counter::Cycle => {
-                ax_cpu::pmu::cycles::disable();
-                super::percpu::free_cycle_counter();
-            }
-            Counter::Programmable(n) => {
-                ax_cpu::pmu::counter::disable(n);
-                super::percpu::free_programmable_counter(n);
-            }
-        }
+        // Self/system-wide event: tear down + free the HW counter ON its
+        // `home_cpu` (IPI if the closing thread migrated). For a sampling event
+        // this unregisters the per-CPU `REGISTRY` slot on `home_cpu` BEFORE the
+        // `Arc<IrqNotify>`/`Arc<GlobalPage>` drop below, so the overflow handler on
+        // that core can never dereference a freed `notify` or write freed ring
+        // pages, and the slot is returned to the correct core's pool.
+        self.run_hw_on_home(HwOp::Free);
         // Stop the deferred worker (mirrors `BpfPerfEventWrapper::drop`). The
-        // `Arc`s in `sampling` drop after this returns.
+        // `Arc`s in `sampling` drop after this returns — safe, the slot was just
+        // unregistered on `home_cpu`.
         if let Some(sampling) = &self.sampling {
             sampling.poll_alive.store(false, Ordering::Release);
             sampling.notify.notify();
@@ -802,62 +979,10 @@ impl PerfEventOps for HwPerfEvent {
         if self.enabled_since.is_none() {
             self.enabled_since = Some(ax_runtime::hal::time::monotonic_time_nanos());
         }
-        // Sampling events: arm the overflow IRQ path before starting the
-        // counter. A programmable counter is guaranteed (see `perf_event_open_hw`).
-        if let Some(sampling) = &self.sampling {
-            let Counter::Programmable(n) = self.counter else {
-                // Should be unreachable: sampling always takes a programmable
-                // counter. Fail loudly rather than silently never sampling.
-                return Err(AxError::Unsupported);
-            };
-            let period = sampling.period;
-            let sample_type = sampling.sample_type;
-            let freq = sampling.freq;
-            let target_freq = sampling.target_freq;
-            // Pick the ring this event writes into: a SET_OUTPUT redirect target
-            // (another event's ring) takes precedence; otherwise this event's own
-            // mmap'd ring; otherwise a zero slot (enable-before-mmap is a no-op
-            // until a mapping appears).
-            let (ring_vaddr, ring_len) = if let Some((rv, rl, _anchor)) = &sampling.redirect {
-                (*rv, *rl)
-            } else {
-                match sampling.ring.as_ref() {
-                    Some(r) => (r.ring_vaddr, r.ring_len),
-                    None => (0, 0),
-                }
-            };
-            let notify_ptr = Arc::as_ptr(&sampling.notify) as *const ();
-
-            // 1. Make sure the PMU overflow IRQ handler is registered AND the
-            //    PMU PPI is enabled on this core.
-            sampling::ensure_pmu_irq_registered();
-            // 2. Preload the counter so it overflows after `period` events.
-            ax_cpu::pmu::counter::preload(n, period);
-            // 3. Publish the slot so the handler can find this event's ring.
-            sampling::register(
-                n,
-                SampleSlot {
-                    ring_vaddr,
-                    ring_len,
-                    period,
-                    sample_type,
-                    id: self.sample_id,
-                    notify: notify_ptr,
-                    freq,
-                    target_freq,
-                    last_time: 0,
-                },
-            );
-            // 4. Arm the per-counter overflow interrupt, then start counting.
-            ax_cpu::pmu::overflow::enable_irq(n);
-            ax_cpu::pmu::counter::enable(n);
-            return Ok(());
-        }
-
-        match self.counter {
-            Counter::Cycle => ax_cpu::pmu::cycles::enable(),
-            Counter::Programmable(n) => ax_cpu::pmu::counter::enable(n),
-        }
+        // Self/system-wide event: arm the counter (sampling overflow path or plain
+        // enable) ON its `home_cpu`, where its slot + (for sampling) `REGISTRY`
+        // entry live — via IPI if this monitoring thread has migrated off it.
+        self.run_hw_on_home(HwOp::Enable);
         Ok(())
     }
 
@@ -881,16 +1006,11 @@ impl PerfEventOps for HwPerfEvent {
             }
             return Ok(());
         }
-        // Sampling events: strict teardown (mask IRQ → stop counter → unregister
-        // slot) so the handler can no longer touch this event, then accrue time.
-        if self.sampling.is_some() {
-            self.teardown_sampling_irq();
-        } else {
-            match self.counter {
-                Counter::Cycle => ax_cpu::pmu::cycles::disable(),
-                Counter::Programmable(n) => ax_cpu::pmu::counter::disable(n),
-            }
-        }
+        // Self/system-wide event: stop the counter (sampling strict teardown, or
+        // plain disable) ON its `home_cpu`, then accrue the enabled window. The
+        // counter stays allocated (freed only at `Drop`) so a post-disable
+        // `read(perf_fd)` returns the final value.
+        self.run_hw_on_home(HwOp::Disable);
         if let Some(since) = self.enabled_since.take() {
             let now = ax_runtime::hal::time::monotonic_time_nanos();
             let elapsed = now.saturating_sub(since);
@@ -915,10 +1035,8 @@ impl PerfEventOps for HwPerfEvent {
             self.sys_reset();
             return Ok(());
         }
-        match self.counter {
-            Counter::Cycle => ax_cpu::pmu::cycles::reset(),
-            Counter::Programmable(n) => ax_cpu::pmu::counter::reset(n),
-        }
+        // Self/system-wide event: reset the counter to 0 ON its `home_cpu`.
+        self.run_hw_on_home(HwOp::Reset);
         Ok(())
     }
 
@@ -953,7 +1071,10 @@ impl PerfEventOps for HwPerfEvent {
                 read_format: self.read_format,
             });
         }
-        // Current timing = accumulated past windows + the live window, if any.
+        // Self/system-wide event: read the counter from its `home_cpu` (IPI if the
+        // reader migrated off it — `PMEVCNTRn` is per-PE banked). Current timing =
+        // accumulated past windows + the live window, if any.
+        let value = self.run_hw_on_home(HwOp::Read);
         let (mut time_enabled, mut time_running) = (self.time_enabled, self.time_running);
         if let Some(since) = self.enabled_since {
             let now = ax_runtime::hal::time::monotonic_time_nanos();
@@ -962,7 +1083,7 @@ impl PerfEventOps for HwPerfEvent {
             time_running += elapsed;
         }
         Ok(PerfReadValues {
-            value: self.raw_value(),
+            value,
             time_enabled,
             time_running,
             read_format: self.read_format,
@@ -1208,6 +1329,8 @@ pub fn perf_event_open_hw(attr: &perf_event_attr, pid: i32, cpu: i32) -> AxResul
                 exclude_kernel,
                 slot: None,
             }),
+            // Routed via `sys_cpu`'s own IPI ops, not `home_cpu`.
+            home_cpu: usize::MAX,
         });
     }
 
@@ -1337,6 +1460,9 @@ pub fn perf_event_open_hw(attr: &perf_event_attr, pid: i32, cpu: i32) -> AxResul
         // Counts on the opening core (`cpu < 0`); the cpu-bound `-a` fan-out
         // returned earlier.
         sys_cpu: None,
+        // The counter is allocated on THIS (the opening) core; its HW lifecycle
+        // is pinned here via IPI even if the monitoring thread migrates.
+        home_cpu: ax_hal::percpu::this_cpu_id(),
     })
 }
 
@@ -1470,6 +1596,8 @@ fn perf_event_open_hw_per_task(attr: &perf_event_attr, pid: i32) -> AxResult<HwP
         sampling: None,
         per_task: Some(ptc),
         sys_cpu: None,
+        // Per-task HW lives in the scheduler hooks (per slice), not `home_cpu`.
+        home_cpu: usize::MAX,
     })
 }
 
