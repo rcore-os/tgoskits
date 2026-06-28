@@ -12,7 +12,126 @@
 //! initializes. The per-open `init_cpu()` call site is replaced by this, so the
 //! clears happen exactly once per core and re-opens never disturb live counters.
 
+use alloc::string::String;
+use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
 use ax_cpu::pmu::{self, ClusterId};
+
+/// Bitmask of online CPUs classified as Cortex-A55 (`Little`) by their real
+/// `MIDR_EL1`, recorded by [`ensure_core_inited`] as each core comes up. Backs
+/// the `armv8_cortex_a55` sysfs `cpus` mask.
+static A55_CPUS: AtomicUsize = AtomicUsize::new(0);
+/// Bitmask of online CPUs classified as Cortex-A76 (`Big`). Backs the
+/// `armv8_cortex_a76` sysfs `cpus` mask.
+static A76_CPUS: AtomicUsize = AtomicUsize::new(0);
+
+/// Test-only override: when set, CPUs are classified by parity (even = `Little`,
+/// odd = `Big`) instead of by `MIDR_EL1`, so a homogeneous machine (QEMU's
+/// Cortex-A53) can exercise the big.LITTLE cluster-skip / dual-PMU logic. Off by
+/// default; set via `/proc/sys/kernel/perf_test_force_clusters`.
+static FORCE_CLUSTER_BY_PARITY: AtomicBool = AtomicBool::new(false);
+
+/// Enable/disable the parity-based cluster override (test affordance).
+pub fn set_force_clusters(on: bool) {
+    FORCE_CLUSTER_BY_PARITY.store(on, Ordering::Release);
+}
+
+/// Whether the parity-based cluster override is currently enabled.
+pub fn force_clusters_enabled() -> bool {
+    FORCE_CLUSTER_BY_PARITY.load(Ordering::Acquire)
+}
+
+/// Classify a logical CPU into its [`ClusterId`].
+///
+/// Honors the parity test override first; otherwise reads the real-`MIDR`
+/// classification recorded at that core's [`ensure_core_inited`]. A core not yet
+/// brought up (and not under the override) reads as `Other(0)`.
+pub fn cluster_of_cpu(cpu: usize) -> ClusterId {
+    if FORCE_CLUSTER_BY_PARITY.load(Ordering::Acquire) {
+        return if cpu % 2 == 0 {
+            ClusterId::Little
+        } else {
+            ClusterId::Big
+        };
+    }
+    let bit = 1usize.checked_shl(cpu as u32).unwrap_or(0);
+    if A55_CPUS.load(Ordering::Acquire) & bit != 0 {
+        ClusterId::Little
+    } else if A76_CPUS.load(Ordering::Acquire) & bit != 0 {
+        ClusterId::Big
+    } else {
+        ClusterId::Other(0)
+    }
+}
+
+/// This core's effective cluster (honoring the test override).
+pub fn current_cluster() -> ClusterId {
+    cluster_of_cpu(ax_hal::percpu::this_cpu_id())
+}
+
+/// A set of clusters an event may run on. Generic/architectural events use
+/// [`ClusterMask::ALL`]; an event opened against a cluster's sysfs PMU
+/// (`armv8_cortex_a55` / `_a76`) is restricted to that cluster.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ClusterMask {
+    /// Matches any cluster (generic events run everywhere, incl. `Other` cores).
+    any: bool,
+    little: bool,
+    big: bool,
+}
+
+impl ClusterMask {
+    /// All clusters — the default for generic / architectural events.
+    pub const ALL: ClusterMask = ClusterMask {
+        any: true,
+        little: true,
+        big: true,
+    };
+    /// Cortex-A55 (`Little`) only.
+    pub const LITTLE_ONLY: ClusterMask = ClusterMask {
+        any: false,
+        little: true,
+        big: false,
+    };
+    /// Cortex-A76 (`Big`) only.
+    pub const BIG_ONLY: ClusterMask = ClusterMask {
+        any: false,
+        little: false,
+        big: true,
+    };
+
+    /// Whether an event with this mask may run on a core of `cluster`.
+    pub fn contains(self, cluster: ClusterId) -> bool {
+        if self.any {
+            return true;
+        }
+        match cluster {
+            ClusterId::Little => self.little,
+            ClusterId::Big => self.big,
+            ClusterId::Other(_) => false,
+        }
+    }
+}
+
+/// Render the Linux-style `cpus` list (e.g. `0,2` or `4-7`) of the online CPUs in
+/// `cluster`, for the per-cluster sysfs PMU's `cpus` file.
+pub fn cluster_cpu_list(cluster: ClusterId) -> String {
+    use core::fmt::Write;
+    let n = ax_hal::cpu_num();
+    let mut out = String::new();
+    let mut first = true;
+    for cpu in 0..n {
+        if cluster_of_cpu(cpu) == cluster {
+            if !first {
+                out.push(',');
+            }
+            let _ = write!(out, "{cpu}");
+            first = false;
+        }
+    }
+    out.push('\n');
+    out
+}
 
 /// Whether this core's PMU has had its one-time clean-slate bring-up.
 #[ax_percpu::def_percpu]
@@ -41,6 +160,21 @@ pub fn ensure_core_inited() -> (usize, ClusterId) {
         pmu::overflow::clear_all();
         let num = pmu::probe().map(|i| i.num_counters).unwrap_or(0);
         let cluster = pmu::cluster_id();
+        // Record this core's REAL-MIDR cluster in the global per-cluster CPU masks
+        // (backs the dual sysfs PMUs' `cpus`). The parity test override is applied
+        // on top in [`cluster_of_cpu`]; it does not touch these masks.
+        let bit = 1usize
+            .checked_shl(ax_hal::percpu::this_cpu_id() as u32)
+            .unwrap_or(0);
+        match cluster {
+            ClusterId::Little => {
+                A55_CPUS.fetch_or(bit, Ordering::AcqRel);
+            }
+            ClusterId::Big => {
+                A76_CPUS.fetch_or(bit, Ordering::AcqRel);
+            }
+            ClusterId::Other(_) => {}
+        }
         NUM_COUNTERS.write_current(num);
         // `ClusterId` is not a primitive int, so the `def_percpu` macro does not
         // generate `write_current`/`read_current` for it; use `with_current`
