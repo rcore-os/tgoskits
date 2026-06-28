@@ -97,6 +97,17 @@ static int read_file(const char *path, char *buf, size_t cap) {
     return 0;
 }
 
+/* Reset the global cluster override so it does not leak into later suite cases
+ * (the kernel AtomicBool survives process exit; tests run in alphabetical order). */
+static void reset_force_clusters(void) {
+    int pf = open("/proc/sys/kernel/perf_test_force_clusters", O_WRONLY);
+    if (pf >= 0) {
+        ssize_t w = write(pf, "0", 1);
+        (void)w;
+        close(pf);
+    }
+}
+
 static void child_alternate(void) {
     volatile uint64_t s = 0;
     for (int round = 0; round < 6; round++) {
@@ -179,6 +190,7 @@ int main(void) {
     }
     if (child < 0) {
         printf("cluster FAILED: fork errno=%d\n", errno);
+        reset_force_clusters();
         return 1;
     }
     for (size_t b = 0; b < sizeof(attr); b++) {
@@ -218,6 +230,7 @@ int main(void) {
         close((int)fd);
     }
 
+    reset_force_clusters();
     if (ok) {
         printf("STARRY_SMP_CLUSTER_OK\n");
         return 0;
