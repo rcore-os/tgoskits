@@ -496,11 +496,11 @@ pub(crate) fn perf_event_open(
         || attr.type_ == PerfTypeId::PERF_TYPE_RAW as u32
         || attr.type_ == hw::ARMV8_PMUV3_PERF_TYPE
     {
-        // Thread the typed target into the hardware path so task identities
-        // cannot be confused with a system-wide selector.
-        // `cpu` / `group_fd` / `flags` are not consumed by the hardware path
-        // (single-CPU, no event groups), so they are intentionally dropped.
-        Box::new(hw::perf_event_open_hw(attr, target)?)
+        // Thread the typed target + `cpu` into the hardware path: `target`
+        // selects per-task vs system-wide, and `cpu` drives the `perf stat -a`
+        // per-CPU fan-out (a system-wide event bound to one core's pool).
+        // `group_fd` / `flags` are not consumed by the hardware path.
+        Box::new(hw::perf_event_open_hw(attr, target, cpu)?)
     } else {
         let args = PerfProbeArgs::try_from_perf_attr::<EbpfKernelAuxiliary>(
             attr,
