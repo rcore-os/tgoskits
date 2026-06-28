@@ -1723,6 +1723,30 @@ fn builder(fs: Arc<SimpleFs>) -> DirMaker {
                 "perf_event_max_sample_rate",
                 SimpleFile::new_regular(fs.clone(), || Ok("100000\n")),
             );
+            // Test-only big.LITTLE cluster override: write "1" to classify CPUs by
+            // parity (even = A55/Little, odd = A76/Big) so the cluster-skip and
+            // dual-PMU logic can be exercised on a homogeneous machine (QEMU's
+            // Cortex-A53). Not a real Linux knob; default off (real MIDR used).
+            kernel.add(
+                "perf_test_force_clusters",
+                SimpleFile::new_regular(
+                    fs.clone(),
+                    super::file::RwFile::new(|op| match op {
+                        super::file::SimpleFileOperation::Read => {
+                            let s = if crate::perf::force_clusters_enabled() {
+                                "1\n"
+                            } else {
+                                "0\n"
+                            };
+                            Ok(Some(String::from(s)))
+                        }
+                        super::file::SimpleFileOperation::Write(data) => {
+                            crate::perf::set_force_clusters(data.first() == Some(&b'1'));
+                            Ok(None)
+                        }
+                    }),
+                ),
+            );
 
             SimpleDir::new_maker(fs.clone(), Arc::new(kernel))
         });
