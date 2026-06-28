@@ -207,6 +207,11 @@ pub struct PerTaskCounter {
     /// `attr.inherit`: clone this event onto `fork`/`clone` children (writing into
     /// the same ring) so `perf record` follows them. Driven by [`on_clone_inherit`].
     inherit: bool,
+    /// Which clusters this event may run on (big.LITTLE). Generic events use
+    /// [`ClusterMask::ALL`]; an event opened against a cluster's sysfs PMU is
+    /// restricted to that cluster — [`perf_sched_in`] skips arming it on a
+    /// non-matching core (its `time_enabled` still accrues, so `perf` scales).
+    valid_clusters: super::percpu::ClusterMask,
 
     /// Kernel virtual address of the ring's first page (`perf_event_mmap_page`),
     /// or `0` until `mmap(perf_fd)` runs ([`set_ring`](Self::set_ring)). Read by
@@ -308,6 +313,9 @@ pub struct PerTaskConfig {
     pub sample_id_all: bool,
     /// `attr.inherit`: clone this event onto `fork`/`clone` children.
     pub inherit: bool,
+    /// Which clusters this event may run on (from the PMU type it was opened
+    /// against). [`super::percpu::ClusterMask::ALL`] for generic events.
+    pub valid_clusters: super::percpu::ClusterMask,
 }
 
 impl PerTaskCounter {
@@ -347,6 +355,7 @@ impl PerTaskCounter {
             want_task: cfg.want_task,
             sample_id_all: cfg.sample_id_all,
             inherit: cfg.inherit,
+            valid_clusters: cfg.valid_clusters,
             ring_vaddr: AtomicUsize::new(0),
             ring_len: AtomicUsize::new(0),
             notify_ptr: AtomicUsize::new(0),
@@ -677,6 +686,16 @@ pub fn perf_sched_in(thr: &Thread) {
         if ptc.running.load(Ordering::Acquire) {
             continue;
         }
+        // big.LITTLE: an event opened against a specific cluster's PMU must not
+        // arm on a non-matching core. Leave it degraded (on-CPU, so `time_enabled`
+        // accrues, but no slot / `time_running`), so `perf` scales — matching
+        // Linux's `pmu->filter`.
+        if !ptc
+            .valid_clusters
+            .contains(super::percpu::current_cluster())
+        {
+            continue;
+        }
         // Arm if a programmable counter is free on this core; otherwise leave it
         // degraded (running == false, no slot). The rotation tick
         // ([`perf_rotate_current`]) cycles the slots among the over-subscribed
@@ -747,6 +766,9 @@ fn rotation_eligible(ptc: &PerTaskCounter) -> bool {
         && ptc.enabled.load(Ordering::Acquire)
         && !ptc.dead.load(Ordering::Acquire)
         && !ptc.is_sampling
+        // Skip a counter whose cluster mask excludes this core — it must not be
+        // rotated onto hardware here (it accrues `time_enabled` only).
+        && ptc.valid_clusters.contains(super::percpu::current_cluster())
 }
 
 /// Perf tick (Tier-2 multiplexing): if the currently-running task has more
@@ -1093,6 +1115,7 @@ pub fn on_clone_inherit(parent_thr: &Thread, child_thr: &Thread) {
                     want_task: p.want_task,
                     sample_id_all: p.sample_id_all,
                     inherit: true,
+                    valid_clusters: p.valid_clusters,
                 },
                 sample_id: p.sample_id.load(Ordering::Relaxed),
                 ring: p.inherit_ring(),

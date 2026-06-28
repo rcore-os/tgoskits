@@ -68,6 +68,83 @@ use super::sampling::{self, SampleSlot};
 /// 16 bits of `config` are the ARM event number on a programmable counter.
 pub const ARMV8_PMUV3_PERF_TYPE: u32 = 8;
 
+/// Dynamic `perf_event_attr.type` for the Cortex-A55 ("LITTLE") cluster PMU,
+/// exposed at `/sys/bus/event_source/devices/armv8_cortex_a55/type`. An event
+/// opened against it is restricted to the A55 cluster (its `cpus` mask).
+pub const ARMV8_CORTEX_A55_TYPE: u32 = 9;
+
+/// Dynamic `perf_event_attr.type` for the Cortex-A76 ("big") cluster PMU,
+/// exposed at `/sys/bus/event_source/devices/armv8_cortex_a76/type`. An event
+/// opened against it is restricted to the A76 cluster.
+pub const ARMV8_CORTEX_A76_TYPE: u32 = 10;
+
+/// The [`ClusterMask`](super::percpu::ClusterMask) an event opened against
+/// hardware `type_` is restricted to: the generic PMU (`PERF_TYPE_HARDWARE` /
+/// `PERF_TYPE_RAW` / `armv8_pmuv3_0` = 8) runs on all clusters; the cluster PMUs
+/// (9 / 10) are pinned to their cluster. `None` if `type_` is not a hardware PMU.
+#[cfg(target_arch = "aarch64")]
+fn cluster_mask_for_type(type_: u32) -> Option<super::percpu::ClusterMask> {
+    use super::percpu::ClusterMask;
+    if type_ == perf_type_id::PERF_TYPE_HARDWARE as u32
+        || type_ == perf_type_id::PERF_TYPE_RAW as u32
+        || type_ == ARMV8_PMUV3_PERF_TYPE
+    {
+        Some(ClusterMask::ALL)
+    } else if type_ == ARMV8_CORTEX_A55_TYPE {
+        Some(ClusterMask::LITTLE_ONLY)
+    } else if type_ == ARMV8_CORTEX_A76_TYPE {
+        Some(ClusterMask::BIG_ONLY)
+    } else {
+        None
+    }
+}
+
+/// Resolve a Linux `perf_hw_id` to an ARM event number, with the per-cluster
+/// `PERF_COUNT_HW_BRANCH_INSTRUCTIONS` (hw_id 4) special case.
+///
+/// Mirrors Linux's `__armv8_pmuv3_map_event_id`: BRANCH_INSTRUCTIONS prefers
+/// `PC_WRITE_RETIRED` (0x0C) when the CURRENT core implements it (true on A55),
+/// else `BR_RETIRED` (0x21, A76). The repo's static [`ax_cpu::pmu::hw_event_to_arm`]
+/// hard-maps it to 0x21, which is wrong on A55, so this resolver is used at the
+/// open/program sites where a per-core `PMCEID` (`event_supported`) is available.
+/// Every other hw_id falls through to the architectural static map.
+#[cfg(target_arch = "aarch64")]
+fn resolve_hw_event(hw_id: u32) -> Option<u16> {
+    const PERF_COUNT_HW_BRANCH_INSTRUCTIONS: u32 = 4;
+    const PC_WRITE_RETIRED: u16 = 0x0C;
+    const BR_RETIRED: u16 = 0x21;
+    if hw_id == PERF_COUNT_HW_BRANCH_INSTRUCTIONS {
+        if ax_cpu::pmu::event_supported(PC_WRITE_RETIRED) {
+            return Some(PC_WRITE_RETIRED);
+        }
+        if ax_cpu::pmu::event_supported(BR_RETIRED) {
+            return Some(BR_RETIRED);
+        }
+        return None;
+    }
+    ax_cpu::pmu::hw_event_to_arm(hw_id)
+}
+
+/// Decode the ARM PMUv3 event number from a hardware `perf_event_attr`
+/// (`type_` + `config`): `PERF_TYPE_HARDWARE` via the per-cluster
+/// [`resolve_hw_event`]; `PERF_TYPE_RAW` and the sysfs PMU types (generic
+/// `armv8_pmuv3_0` = 8, cluster `armv8_cortex_a55`/`_a76` = 9/10) take the low 16
+/// bits of `config`. `None` for an unsupported type/config.
+#[cfg(target_arch = "aarch64")]
+fn decode_arm_event(type_: u32, config: u64) -> Option<u16> {
+    if type_ == perf_type_id::PERF_TYPE_HARDWARE as u32 {
+        resolve_hw_event(config as u32)
+    } else if type_ == perf_type_id::PERF_TYPE_RAW as u32
+        || type_ == ARMV8_PMUV3_PERF_TYPE
+        || type_ == ARMV8_CORTEX_A55_TYPE
+        || type_ == ARMV8_CORTEX_A76_TYPE
+    {
+        Some((config & 0xFFFF) as u16)
+    } else {
+        None
+    }
+}
+
 /// `sample_type` value M2 supports: `perf_event_sample_format::PERF_SAMPLE_IP`.
 /// A sampling event with any other `sample_type` is rejected at open.
 #[cfg(target_arch = "aarch64")]
@@ -1094,30 +1171,23 @@ pub fn perf_event_open_hw(attr: &perf_event_attr, pid: i32, cpu: i32) -> AxResul
     // programmed / read / freed over a synchronous IPI. Sampling `-a`
     // (`perf record -a`) is not fanned out here — it stays on the current core.
     if cpu >= 0 && !is_sampling {
-        let event = if attr.type_ == perf_type_id::PERF_TYPE_HARDWARE as u32 {
-            match ax_cpu::pmu::hw_event_to_arm(attr.config as u32) {
-                Some(e) => e,
-                None => {
-                    warn!(
-                        "perf_event_open: unsupported -a hardware config {:#x}",
-                        attr.config
-                    );
-                    return Err(AxError::Unsupported);
-                }
-            }
-        } else if attr.type_ == perf_type_id::PERF_TYPE_RAW as u32
-            || attr.type_ == ARMV8_PMUV3_PERF_TYPE
-        {
-            (attr.config & 0xFFFF) as u16
-        } else {
+        // big.LITTLE: an event opened against a cluster's PMU but pinned to a CPU
+        // of another cluster cannot run there — reject with ENOENT so `perf`
+        // falls back / iterates PMUs (Linux `armpmu_event_init` cpumask gate).
+        let valid_clusters =
+            cluster_mask_for_type(attr.type_).unwrap_or(super::percpu::ClusterMask::ALL);
+        if !valid_clusters.contains(super::percpu::cluster_of_cpu(cpu as usize)) {
+            return Err(AxError::NotFound);
+        }
+        let Some(event) = decode_arm_event(attr.type_, attr.config) else {
             warn!(
-                "perf_event_open: unsupported -a hardware type {:#x}",
-                attr.type_
+                "perf_event_open: unsupported -a hardware type {:#x} config {:#x}",
+                attr.type_, attr.config
             );
             return Err(AxError::Unsupported);
         };
-        // Validated on the opening core; cluster-specific validation against the
-        // target core's PMCEID is a Layer-4 (S5) refinement.
+        // Validated on the opening core; the target cluster's PMCEID would refine
+        // this, but the common event set is architectural (all clusters).
         if !ax_cpu::pmu::event_supported(event) {
             warn!("perf_event_open: -a ARM event {event:#x} not implemented on this CPU");
             return Err(AxError::Unsupported);
@@ -1139,6 +1209,17 @@ pub fn perf_event_open_hw(attr: &perf_event_attr, pid: i32, cpu: i32) -> AxResul
                 slot: None,
             }),
         });
+    }
+
+    // System-wide / self counting+sampling on the opening core: an event opened
+    // against a cluster PMU whose cluster differs from the opening core cannot run
+    // here (it is pinned to this core) — ENOENT.
+    {
+        let valid_clusters =
+            cluster_mask_for_type(attr.type_).unwrap_or(super::percpu::ClusterMask::ALL);
+        if !valid_clusters.contains(super::percpu::current_cluster()) {
+            return Err(AxError::NotFound);
+        }
     }
 
     if is_sampling {
@@ -1179,9 +1260,10 @@ pub fn perf_event_open_hw(attr: &perf_event_attr, pid: i32, cpu: i32) -> AxResul
             ax_cpu::pmu::cycles::configure(exclude_user, exclude_kernel);
             Counter::Cycle
         } else {
-            // Map the generic hardware event to an ARM PMUv3 event number.
-            // (CPU_CYCLES → 0x11 here for the sampling case.)
-            let Some(event) = ax_cpu::pmu::hw_event_to_arm(attr.config as u32) else {
+            // Map the generic hardware event to an ARM PMUv3 event number
+            // (per-cluster BRANCH_INSTRUCTIONS resolution; CPU_CYCLES → 0x11 for
+            // the sampling case).
+            let Some(event) = resolve_hw_event(attr.config as u32) else {
                 warn!(
                     "perf_event_open: unsupported hardware config {:#x}",
                     attr.config
@@ -1192,13 +1274,15 @@ pub fn perf_event_open_hw(attr: &perf_event_attr, pid: i32, cpu: i32) -> AxResul
         }
     } else if attr.type_ == perf_type_id::PERF_TYPE_RAW as u32
         || attr.type_ == ARMV8_PMUV3_PERF_TYPE
+        || attr.type_ == ARMV8_CORTEX_A55_TYPE
+        || attr.type_ == ARMV8_CORTEX_A76_TYPE
     {
-        // Raw events (`PERF_TYPE_RAW`) and dynamic ARM PMUv3 events
-        // (`ARMV8_PMUV3_PERF_TYPE`, the sysfs-advertised PMU type) are decoded
-        // identically: the low 16 bits of `config` are the ARM event number.
-        // The real `perf` tool resolves a named event like
-        // `armv8_pmuv3_0/cpu_cycles/` to (type = ARMV8_PMUV3_PERF_TYPE,
-        // config = 0x11) via sysfs, so it lands here.
+        // Raw events (`PERF_TYPE_RAW`), the generic PMU (`armv8_pmuv3_0` = 8) and
+        // the cluster PMUs (`armv8_cortex_a55`/`_a76` = 9/10) are decoded
+        // identically: the low 16 bits of `config` are the ARM event number. The
+        // real `perf` tool resolves a named event like `armv8_pmuv3_0/cpu_cycles/`
+        // to (type, config = 0x11) via sysfs, so it lands here. (The cluster
+        // restriction was already enforced as ENOENT above.)
         let event = (attr.config & 0xFFFF) as u16;
         alloc_programmable(event, exclude_user, exclude_kernel)?
     } else {
@@ -1312,30 +1396,21 @@ fn perf_event_open_hw_per_task(attr: &perf_event_attr, pid: i32) -> AxResult<HwP
     }
     let (sample_period, target_freq) = resolve_sampling(raw, is_freq);
 
-    // Decode the ARM event. Per-task always uses a programmable counter, so even
-    // CPU_CYCLES maps to ARM event 0x11 (never the dedicated cycle counter).
-    let event = if attr.type_ == perf_type_id::PERF_TYPE_HARDWARE as u32 {
-        match ax_cpu::pmu::hw_event_to_arm(attr.config as u32) {
-            Some(event) => event,
-            None => {
-                warn!(
-                    "perf_event_open: unsupported per-task hardware config {:#x}",
-                    attr.config
-                );
-                return Err(AxError::Unsupported);
-            }
-        }
-    } else if attr.type_ == perf_type_id::PERF_TYPE_RAW as u32
-        || attr.type_ == ARMV8_PMUV3_PERF_TYPE
-    {
-        (attr.config & 0xFFFF) as u16
-    } else {
+    // Decode the ARM event (per-cluster BRANCH_INSTRUCTIONS resolution; cluster
+    // PMU types 9/10 accepted). Per-task always uses a programmable counter, so
+    // even CPU_CYCLES maps to ARM event 0x11 (never the dedicated cycle counter).
+    let Some(event) = decode_arm_event(attr.type_, attr.config) else {
         warn!(
-            "perf_event_open: unsupported per-task hardware type {:#x}",
-            attr.type_
+            "perf_event_open: unsupported per-task hardware type {:#x} config {:#x}",
+            attr.type_, attr.config
         );
         return Err(AxError::Unsupported);
     };
+    // The cluster the event is restricted to (big.LITTLE). A per-task event is
+    // NOT rejected for a cluster mismatch — it follows the task and simply skips
+    // arming on non-matching cores (`perf_sched_in`), matching Linux's filter.
+    let valid_clusters =
+        cluster_mask_for_type(attr.type_).unwrap_or(super::percpu::ClusterMask::ALL);
 
     if !ax_cpu::pmu::event_supported(event) {
         warn!(
@@ -1376,6 +1451,7 @@ fn perf_event_open_hw_per_task(attr: &perf_event_attr, pid: i32) -> AxResult<HwP
             sample_id_all: attr.sample_id_all() != 0,
             // Follow forked children into the same ring (`perf record` default).
             inherit: attr.inherit() != 0,
+            valid_clusters,
         },
     ));
     super::task::attach(thr, ptc.clone());

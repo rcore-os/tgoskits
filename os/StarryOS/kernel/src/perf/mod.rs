@@ -83,6 +83,28 @@ pub fn read_midr_el1() -> u64 {
     pmu::cpu_id_raw().unwrap_or(0)
 }
 
+/// Test-only: enable/disable the big.LITTLE cluster parity override (even CPU =
+/// `Little`, odd = `Big`) so a homogeneous machine can exercise the cluster
+/// logic. Backs `/proc/sys/kernel/perf_test_force_clusters`. No-op off aarch64.
+pub fn set_force_clusters(on: bool) {
+    #[cfg(target_arch = "aarch64")]
+    percpu::set_force_clusters(on);
+    #[cfg(not(target_arch = "aarch64"))]
+    let _ = on;
+}
+
+/// Whether the cluster parity override is enabled (see [`set_force_clusters`]).
+pub fn force_clusters_enabled() -> bool {
+    #[cfg(target_arch = "aarch64")]
+    {
+        percpu::force_clusters_enabled()
+    }
+    #[cfg(not(target_arch = "aarch64"))]
+    {
+        false
+    }
+}
+
 /// `ioctl` type byte for the perf-event ioctls (`'$'`).
 const PERF_IOC_TYPE: u32 = 0x24;
 /// `PERF_EVENT_IOC_SET_OUTPUT` request number (`_IO('$', 5)`).
@@ -457,6 +479,8 @@ pub fn perf_event_open(
     let event: Box<dyn PerfEventOps> = if attr.type_ == PerfTypeId::PERF_TYPE_HARDWARE as u32
         || attr.type_ == PerfTypeId::PERF_TYPE_RAW as u32
         || attr.type_ == hw::ARMV8_PMUV3_PERF_TYPE
+        || attr.type_ == hw::ARMV8_CORTEX_A55_TYPE
+        || attr.type_ == hw::ARMV8_CORTEX_A76_TYPE
     {
         // Thread `pid` + `cpu` into the hardware path: it chooses between
         // per-task counting (`pid > 0`), a cpu-bound system-wide event
