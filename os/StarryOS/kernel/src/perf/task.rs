@@ -679,9 +679,14 @@ pub fn perf_sched_in(thr: &Thread) {
         }
         // Mark on-CPU and open the `time_enabled` slice for EVERY enabled counter
         // — even one left degraded below — so an over-subscribed event still
-        // accrues enabled time and `perf` can scale it.
-        ptc.on_cpu.store(true, Ordering::Release);
-        ptc.last_in_ns.store(now, Ordering::Release);
+        // accrues enabled time and `perf` can scale it. Open a NEW slice only on
+        // the transition to on-CPU: `on_exec` re-enters this hook while a
+        // `disabled=0` counter is already armed (`on_cpu && running`), and
+        // clobbering `last_in_ns` then would push `time_running > time_enabled`
+        // at the next `perf_sched_out`.
+        if !ptc.on_cpu.swap(true, Ordering::AcqRel) {
+            ptc.last_in_ns.store(now, Ordering::Release);
+        }
         ptc.last_cpu.store(this_cpu, Ordering::Release);
         if ptc.running.load(Ordering::Acquire) {
             continue;
@@ -794,16 +799,25 @@ pub fn perf_rotate_current() {
     if counters.is_empty() {
         return;
     }
-    let free = super::percpu::current_num_counters();
-    if free == 0 {
-        return;
-    }
-    // Over-subscribed? Count the eligible (rotatable) counters.
+    // Over-subscribed? Count the eligible (rotatable) counters and how many
+    // already hold a slot.
     let mut n_eligible = 0usize;
+    let mut held_eligible = 0usize;
     for ptc in counters.iter() {
         if rotation_eligible(ptc) {
             n_eligible += 1;
+            if ptc.running.load(Ordering::Acquire) {
+                held_eligible += 1;
+            }
         }
+    }
+    // Slots available to THIS task = the ones it already holds + the free pool.
+    // Sizing the window against the raw `PMCR.N` would over-count when a sys_cpu
+    // or sampling event permanently holds a slot on this core, starving one
+    // rotatable event forever.
+    let free = held_eligible + super::percpu::free_programmable_count();
+    if free == 0 {
+        return;
     }
     if n_eligible <= free {
         return; // every eligible event already fits on hardware — no rotation.
@@ -1168,8 +1182,13 @@ pub fn on_task_exit(thr: &Thread) {
         }
         None => (0, 0),
     };
-    let counters = thr.perf_counters.lock();
-    for ptc in counters.iter() {
+    // Snapshot the counter list, then DROP the lock before `free_hw`: the lock is
+    // `SpinNoIrq` (IRQs off while held), and `free_hw` may issue a synchronous
+    // cross-core IPI (remote-running teardown) and drop `Arc<GlobalPage>` (page
+    // dealloc) — neither is safe under an IRQ-off lock that `perf_sched_in/out`
+    // also take. `on_task_exit` runs in process context, so the clone is fine.
+    let counters: Vec<Arc<PerTaskCounter>> = thr.perf_counters.lock().iter().cloned().collect();
+    for ptc in &counters {
         if ptc.want_task
             && let Some(t) = sideband_target(ptc, pid, tid)
         {
@@ -1308,9 +1327,16 @@ pub fn read_values(ptc: &PerTaskCounter) -> (u64, u64, u64) {
         let n = ptc.slot.load(Ordering::Acquire);
         if n != NO_SLOT {
             value += ax_cpu::pmu::counter::read(n);
-            let dt = now_ns().saturating_sub(ptc.last_in_ns.load(Ordering::Acquire));
-            time_enabled += dt;
-            time_running += dt;
+            let now = now_ns();
+            // `time_enabled` accrues over the whole on-CPU slice (`last_in_ns`);
+            // `time_running` only since the slot was actually held (`run_since_ns`)
+            // — for a rotation-admitted slice the latter is later, so basing both
+            // on `last_in_ns` would over-report running (running > enabled).
+            time_enabled += now.saturating_sub(ptc.last_in_ns.load(Ordering::Acquire));
+            let run_since = ptc.run_since_ns.load(Ordering::Acquire);
+            if run_since != 0 {
+                time_running += now.saturating_sub(run_since);
+            }
         }
     }
     (value, time_enabled, time_running)

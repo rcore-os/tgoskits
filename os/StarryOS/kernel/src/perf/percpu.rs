@@ -246,6 +246,23 @@ pub fn free_programmable_counter(n: usize) {
     alloc.used &= !(1 << n);
 }
 
+/// Number of programmable counters currently FREE in this core's pool. Used by
+/// the rotation tick to size the holding window against what is actually
+/// allocatable (a sys_cpu / sampling reservation on this core permanently
+/// consumes a slot), not the raw `PMCR.N`.
+pub fn free_programmable_count() -> usize {
+    let num = current_num_counters().min(32);
+    let _guard = ax_kernel_guard::NoPreemptIrqSave::new();
+    // SAFETY: see [`alloc_programmable_counter`].
+    let used = unsafe { ALLOC.current_ref_mut_raw().used };
+    let mask: u32 = if num >= 32 {
+        u32::MAX
+    } else {
+        (1u32 << num) - 1
+    };
+    (!used & mask).count_ones() as usize
+}
+
 /// Allocate the dedicated cycle counter on the current core; `false` if taken.
 pub fn alloc_cycle_counter() -> bool {
     let _guard = ax_kernel_guard::NoPreemptIrqSave::new();
