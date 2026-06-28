@@ -114,9 +114,9 @@ setup_tap() {
 
 ### 4. `qemu/vhost-aarch64-tcg.toml`
 ```toml
-# 保持简化配置（从 qemu-aarch64-tap-tcg.toml 复制）
+# 保持简化配置（单队列）
 "-device", "virtio-net-pci,netdev=net0,mac=52:54:00:12:34:56",
-"-netdev", "tap,id=net0,ifname=tap0,script=no,downscript=no",
+"-netdev", "tap,id=net0,ifname=tap0,script=no,downscript=no,vhost=on",
 ```
 
 ---

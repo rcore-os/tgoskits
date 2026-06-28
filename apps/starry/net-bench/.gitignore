@@ -1,3 +1,6 @@
 results/*
 !results/README.md
 !results/baseline-*.txt
+.bench-state.json
+__pycache__/
+*.pyc

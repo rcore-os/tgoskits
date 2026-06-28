@@ -1,163 +1,115 @@
-# net-bench 目录结构设计
+# net-bench 架构设计
+
+## 设计目标
+
+net-bench 是"入口 + 参数明确"的严肃网络性能测试架构。核心原则：
+
+1. **唯一严肃入口**：`run.sh` 显式接收架构 / 场景 / 加速器，保证可复现、可对照。
+2. **智能入口实验化**：`bin/bench` 的环境自动检测属于实验性便捷能力，默认不参与
+   严肃测试；它最终委托 `run.sh`，避免出现两套各自演化的执行路径。
+3. **公共流程封装**：把常量、配置矩阵、iperf3 生命周期、前置检查、指纹、汇总集中
+   到 `core/lib.sh`，消除散落硬编码、统一各入口行为。
 
 ## 目录组织
 
 ```
 apps/starry/net-bench/
-├── README.md                    # 项目文档
-├── docs/                        # 详细文档
-│   ├── TODO.md                  # 待办事项
-│   ├── STRUCTURE.md             # 架构设计（本文档）
-│   ├── REFACTOR.md              # 重构说明
-│   ├── TEST_REPORT.md           # 测试报告
-│   ├── MULTIQUEUE_ISSUE.md      # 多队列问题说明
-│   └── QUICK_START.md           # 快速入门
+├── run.sh                    # 唯一严肃入口（显式参数）
+├── run-with-perf.sh          # perf stat 包裹变体（复用 lib.sh）
+├── run-linux-baseline.sh     # Linux 同拓扑基线
+├── prebuild.sh               # rootfs 预构建（被 axbuild discovery 调用）
 │
-├── core/                        # 核心测试逻辑（环境无关）
-│   ├── net-bench-common.sh      # guest 侧核心逻辑
-│   ├── net-bench-slirp.sh       # SLIRP 模式入口
-│   ├── net-bench-tap.sh         # TAP/vhost 模式入口
-│   ├── net-bench-netperf.sh     # netperf 延迟测试
-│   ├── summarize.py             # 结果汇总
-│   ├── compare-baseline.py      # 基线对比
-│   └── prebuild.sh              # 构建前置（apk install）
+├── bin/                      # 入口壳（薄封装）
+│   ├── bench                 # 智能入口（实验性，委托 run.sh）
+│   ├── bench-wsl             # WSL2 快捷壳
+│   ├── setup                 # 配置网络（委托 env/setup-common.sh）
+│   └── teardown              # 清理（委托 env/teardown.sh）
 │
-├── env/                         # 环境配置脚本
-│   ├── detect-env.sh            # 自动检测环境类型（WSL/裸Linux/架构/KVM）
-│   ├── setup-common.sh          # 通用网络配置（br0/tap0/iperf3/dhcp）
-│   └── teardown.sh              # 自动回退清理
+├── core/                     # 核心逻辑
+│   ├── lib.sh                # 主机侧公共流程封装（nb_* 函数）
+│   ├── net-bench-common.sh   # guest 侧基准核心（iperf3 + 标记协议）
+│   ├── net-bench.sh          # SLIRP guest 入口
+│   ├── net-bench-tap.sh      # TAP/vhost guest 入口
+│   ├── net-bench-netperf.sh  # netperf 延迟测试
+│   ├── summarize.py          # 结果汇总（mean/stddev + NOISY）
+│   └── compare-baseline.py   # Starry vs Linux 基线对比
 │
-├── qemu/                        # QEMU 配置文件
-│   ├── vhost-x86_64-kvm.toml    # x86_64 + KVM
-│   ├── vhost-x86_64-tcg.toml    # x86_64 + TCG（无KVM）
-│   ├── vhost-aarch64-kvm.toml   # aarch64 + KVM
-│   └── vhost-aarch64-tcg.toml   # aarch64 + TCG
+├── env/                      # 环境管理
+│   ├── detect-env.sh         # 自动检测（JSON / human 输出）
+│   ├── setup-common.sh       # 通用网络配置（br0/tap0/dnsmasq DHCP，状态化）
+│   └── teardown.sh           # 状态化回滚清理（读取 .bench-state.json）
 │
-├── build-configs/               # 构建配置
-│   └── build-aarch64.toml
+├── qemu/                     # QEMU 配置矩阵
+│   └── <scenario>-<arch>-<accel>.toml
 │
-├── bin/                         # 统一入口
-│   ├── bench                    # 主入口：自动检测环境并测试
-│   ├── bench-wsl                # WSL2 快捷入口
-│   ├── setup                    # 配置入口
-│   └── teardown                 # 清理入口
-│
-└── results/                     # 测试结果
-    └── README.md
+├── build-<target>.toml       # 构建配置（启用 virtio-net/virtio-blk）
+├── docs/                     # 详细文档
+└── results/                  # 测试结果
 ```
 
-## 设计原则
+## 执行路径
 
-### 1. 环境自动检测
-`env/detect-env.sh` 负责检测：
-- 平台类型（WSL2 / 裸 Linux）
-- CPU 架构（x86_64 / aarch64）
-- KVM 可用性
-- vhost-net 可用性
+### 严肃入口
 
-输出推荐配置供其他脚本使用。
-
-### 2. 配置隔离
-- WSL 和裸 Linux 配置逻辑分离
-- 通用部分抽取到 `env/setup-common.sh`
-- 特定平台差异由检测脚本处理
-
-### 3. 自动回退
-所有配置操作记录到 `.bench-state.json`：
-```json
-{
-  "timestamp": "2026-06-27T14:00:00Z",
-  "created_resources": [
-    {"type": "bridge", "name": "br0"},
-    {"type": "tap", "name": "tap0"}
-  ],
-  "processes": [
-    {"pid": 12345, "cmd": "iperf3 -s"}
-  ]
-}
 ```
-清理时读取并恢复原始状态。
-
-### 4. 资源避让
-配置脚本检测已有资源：
-- 端口占用检测
-- 网络设备存在性检查
-- 进程重复启动避免
-
-### 5. 默认策略
-- 优先使用 x86_64 架构（最常见）
-- KVM 可用时优先使用 KVM
-- KVM 不可用时自动降级 TCG
-
-### 6. 统一入口
-`bin/bench` 自动完成：检测 → 配置 → 测试 → 清理
-
-## 环境检测逻辑
-
-`detect-env.sh` 输出 JSON 格式：
-```json
-{
-  "platform": "wsl2",
-  "arch": "x86_64",
-  "kvm_available": true,
-  "vhost_available": true,
-  "recommended_arch": "x86_64",
-  "recommended_accel": "kvm",
-  "recommended_config": "qemu/vhost-x86_64-kvm.toml"
-}
+run.sh --scenario S --arch A [--accel K] [--repeat N]
+    │  source core/lib.sh
+    ├─ 校验 arch/scenario/accel，推导默认 accel
+    ├─ 解析配置: qemu/<S>-<A>-<K>.toml
+    ├─ nb_check_scenario_prereq（kvm/vhost/tap 前置检查）
+    ├─ nb_write_fingerprint（环境指纹）
+    └─ for rep in 1..N:
+         ├─ nb_start_iperf3（host 服务端）
+         ├─ cargo xtask starry app qemu --test-case net-bench
+         │      └─ prebuild.sh 安装 iperf3 + core/net-bench*.sh 到 rootfs
+         │      └─ guest 跑 net-bench-common.sh（warmup + ITERS 迭代）
+         ├─ nb_stop_iperf3
+         └─ 收集日志
+       nb_summarize（summarize.py 汇总）
 ```
 
-## 使用流程
+### 智能入口（实验性）
 
-### 基本流程
-```bash
-# 一键测试（自动检测环境）
-bash apps/starry/net-bench/bin/bench
 ```
-
-### 手动流程
-```bash
-# 1. 配置环境（首次运行）
-bash apps/starry/net-bench/bin/setup
-
-# 2. 运行测试
-bash apps/starry/net-bench/bin/bench vhost --skip-setup
-
-# 3. 清理环境
-bash apps/starry/net-bench/bin/teardown
-```
-
-## 架构选择
-
-### 默认行为
-1. 检测 host 架构
-2. 检测 KVM 可用性
-3. 如果同架构且 KVM 可用 → 推荐 KVM 加速
-4. 如果跨架构或 KVM 不可用 → 使用 TCG
-
-### 用户指定
-```bash
-# 强制使用特定架构
-bash bin/bench vhost --arch aarch64
+bin/bench [scenario] [opts]
+    ├─ env/detect-env.sh（检测 WSL/arch/kvm/vhost）
+    ├─ 推断 ARCH/ACCEL，必要时 vhost→tap 降级
+    ├─ env/setup-common.sh（配置网络，记录状态）
+    ├─ 委托 run.sh --scenario ... --arch ... --accel ...
+    └─ trap EXIT → env/teardown.sh（状态化回滚）
 ```
 
 ## 配置文件命名规范
 
-QEMU 配置文件：`<scenario>-<arch>-<accel>.toml`
-- scenario: vhost, tap, slirp
-- arch: x86_64, aarch64
-- accel: kvm, tcg
+`qemu/<scenario>-<arch>-<accel>.toml`
 
-示例：
-- `vhost-x86_64-kvm.toml`
-- `vhost-aarch64-tcg.toml`
+- scenario：`slirp` / `tap` / `vhost` / `vhost-smp4` / `tap-smp4`
+- arch：`x86_64` / `aarch64`
+- accel：`kvm` / `tcg`
 
-## 兼容性
+`run.sh` 与 `bin/bench` 都通过 `nb_qemu_config` 解析该命名，新增场景/架构只需补齐
+对应 toml 文件即可被两个入口识别。
 
-### 向后兼容
-- 旧的 QEMU 配置文件保留（如 `qemu-aarch64-vhost.toml`）
-- 旧的脚本（`run.sh`, `setup-vhost-tap.sh`）仍可用
-- 新工具会尝试查找旧配置作为后备
+## 应用发现与 CI 关系
 
-### 迁移路径
-用户可以逐步迁移到新工具，两套工具可以共存。
+net-bench 列在 `apps/.ignore` 中，因此**不参与默认 app 发现 / CI 全量跑**——这与
+"严肃性能测试是显式触发、非默认测试入口"的设计一致。通过
+`cargo xtask starry app qemu --test-case net-bench ...` 显式指定时，发现逻辑会忽略
+`apps/.ignore` 从而正常构建运行（见 `scripts/axbuild/src/starry/app/`）。
+
+`prebuild.sh` 位于 app 根目录，被 axbuild 的 discovery 自动识别为预构建脚本；它负责
+向 rootfs 注入 iperf3 及 `core/` 下的 guest 基准脚本。
+
+## 自动回退（状态化）
+
+`env/setup-common.sh` 把创建的资源与进程记录到 `.bench-state.json`：
+
+```json
+{
+  "timestamp": "...",
+  "created_resources": [{"type": "bridge", "name": "br0"}, {"type": "tap", "name": "tap0"}],
+  "processes": [{"pid": 12345, "cmd": "iperf3 -s ..."}]
+}
+```
+
+`env/teardown.sh` 逆序读取并清理（SIGTERM→SIGKILL 终止进程、删除 tap/bridge）。

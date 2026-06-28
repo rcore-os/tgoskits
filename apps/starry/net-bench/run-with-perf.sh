@@ -1,115 +1,110 @@
 #!/usr/bin/env bash
 # apps/starry/net-bench/run-with-perf.sh — 集成 perf stat 采集 cycles/instructions
 #
-# 用法: bash run-with-perf.sh [arch] [scenario]
+# 用法: bash run-with-perf.sh [--arch A] [--scenario S] [--accel A]
 #
-# 目标：在运行 net-bench 的同时，使用 perf stat 采集 CPU 性能计数器，
+# 目标：在运行 net-bench 的同时，用 perf stat 采集 CPU 性能计数器，
 # 计算 cycles/byte 和 cycles/packet（methodology §1 核心 KPI）。
-
+#
+# 说明：这是显式入口 run.sh 的 perf 包裹变体，复用 core/lib.sh 公共流程，
+# 保证 iperf3 生命周期、前置检查、配置矩阵、汇总与 run.sh 完全一致。
 set -euo pipefail
 
-ARCH="${1:-aarch64}"
-SCENARIO="${2:-vhost}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-RESULTS_DIR="$SCRIPT_DIR/results"
-TIMESTAMP="$(date +%Y%m%d-%H%M%S)"
+# shellcheck source=core/lib.sh
+. "$SCRIPT_DIR/core/lib.sh"
+
+ARCH="aarch64"
+SCENARIO="vhost"
+ACCEL=""
 
 usage() {
     cat >&2 <<EOF
-usage: bash run-with-perf.sh [arch] [scenario]
+usage: bash run-with-perf.sh [--arch A] [--scenario S] [--accel A]
 
 目的：在 net-bench 测试期间采集 perf stat 数据，计算 cycles/byte 和 cycles/packet。
-
 对齐 methodology §1 "CPU 效率" 维度的核心 KPI 要求。
+
+options:
+  --arch A       aarch64|x86_64（默认 aarch64）
+  --scenario S   slirp|tap|vhost|vhost-smp4|tap-smp4（默认 vhost）
+  --accel A      kvm|tcg（默认：同架构且 KVM 可用时 kvm）
 
 输出:
   - results/perf-stat-<arch>-<scenario>-<timestamp>.txt
-  - results/summary-<arch>-<scenario>-<timestamp>.txt（包含 cycles 分析）
+  - results/summary-<arch>-<scenario>-<timestamp>.txt
 EOF
 }
 
-if [[ "$ARCH" == "help" || "$SCENARIO" == "help" ]]; then
-    usage
-    exit 0
-fi
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --arch) ARCH="${2:-}"; shift 2 ;;
+        --scenario) SCENARIO="${2:-}"; shift 2 ;;
+        --accel) ACCEL="${2:-}"; shift 2 ;;
+        -h|--help|help) usage; exit 0 ;;
+        *) nb_error "未知选项: $1"; usage; exit 1 ;;
+    esac
+done
 
-echo "=== Running net-bench with perf stat (arch=$ARCH, scenario=$SCENARIO) ==="
+nb_validate_arch "$ARCH" || exit 1
+nb_validate_scenario "$SCENARIO" || exit 1
+[[ -z "$ACCEL" ]] && ACCEL="$(nb_default_accel "$ARCH")"
 
-# 检查 perf 是否可用
-if ! command -v perf &>/dev/null; then
-    echo "error: perf not found. Install with: sudo apt-get install linux-tools-generic" >&2
-    exit 1
-fi
+nb_require_cmd perf "apt-get install linux-tools-generic"
+nb_require_cmd iperf3
+nb_require_cmd qemu-system-"$ARCH"
 
-# 启动 iperf3 server
-TAP_HOST_IP="${TAP_HOST_IP:-192.168.100.1}"
-echo "=== Starting iperf3 server on $TAP_HOST_IP:5201 ==="
-iperf3 -s -p 5201 -B "$TAP_HOST_IP" &
-IPERF_PID=$!
-trap "kill $IPERF_PID 2>/dev/null || true" EXIT
+TIMESTAMP="$(date +%Y%m%d-%H%M%S)"
+mkdir -p "$NB_RESULTS_DIR"
 
-sleep 2
+QEMU_CONFIG="$(nb_qemu_config "$SCENARIO" "$ARCH" "$ACCEL")"
+[[ -f "$QEMU_CONFIG" ]] || nb_die "QEMU 配置不存在: $QEMU_CONFIG"
+nb_check_scenario_prereq "$SCENARIO" "$ACCEL"
 
-# 准备 perf 输出文件
-PERF_OUT="$RESULTS_DIR/perf-stat-${ARCH}-${SCENARIO}-${TIMESTAMP}.txt"
+BIND_ADDR=""
+nb_scenario_needs_tap "$SCENARIO" && BIND_ADDR="$NB_TAP_HOST_IP"
 
-echo "=== Starting QEMU with perf stat ==="
-echo "perf output: $PERF_OUT"
+PERF_OUT="$NB_RESULTS_DIR/perf-stat-${ARCH}-${SCENARIO}-${TIMESTAMP}.txt"
+RESULT_FILE="$NB_RESULTS_DIR/starry-${ARCH}-${SCENARIO}-${TIMESTAMP}.txt"
+SERVER_LOG="$NB_RESULTS_DIR/iperf3-server-${ARCH}-${SCENARIO}-${TIMESTAMP}.log"
 
-# 运行 cargo xtask 并用 perf stat 包裹整个进程树
-# -e cycles,instructions,cache-references,cache-misses,branches,branch-misses
-# -d: detailed (L1/LLC cache)
-cd "$SCRIPT_DIR/../../.."
+nb_section "net-bench + perf stat (arch=$ARCH, scenario=$SCENARIO, accel=$ACCEL)"
+nb_start_iperf3 "$BIND_ADDR" "$SERVER_LOG"
+trap 'nb_stop_iperf3' EXIT
 
-perf stat -o "$PERF_OUT" \
-    -e cycles,instructions,cache-references,cache-misses,LLC-load-misses \
-    -- \
-    cargo xtask starry qemu \
-        --package net-bench \
-        --arch "$ARCH" \
-        --toml "apps/starry/net-bench/qemu-${ARCH}-${SCENARIO}.toml" \
-        2>&1 | tee "$RESULTS_DIR/starry-${ARCH}-${SCENARIO}-${TIMESTAMP}.txt"
+nb_info "perf 输出: $PERF_OUT"
+# guest 走 DHCP 获取地址，无需注入 AX_* 环境变量（见 lib.sh nb_guest_env_vars）。
+(cd "$NB_WORKSPACE" && \
+    perf stat -o "$PERF_OUT" \
+        -e cycles,instructions,cache-references,cache-misses,LLC-load-misses \
+        -- cargo xtask starry app qemu --test-case net-bench --arch "$ARCH" \
+            --qemu-config "$QEMU_CONFIG") 2>&1 | tee "$RESULT_FILE"
 
-# 停止 iperf3 server
-kill $IPERF_PID 2>/dev/null || true
+nb_stop_iperf3
 trap - EXIT
 
 echo ""
-echo "=== perf stat results ==="
+nb_section "perf stat 结果"
 cat "$PERF_OUT"
 
-# 解析 perf 输出并计算 cycles/byte
-echo ""
-echo "=== Analyzing cycles/byte and cycles/packet ==="
-
-# 从 perf 输出提取 cycles 和 instructions
+# 提取 cycles / instructions，给出 IPC（cycles/byte 需结合 summary 总字节手算）。
 CYCLES=$(grep -E '^\s*[0-9,]+\s+cycles' "$PERF_OUT" | awk '{gsub(/,/,"",$1); print $1}')
 INSTRUCTIONS=$(grep -E '^\s*[0-9,]+\s+instructions' "$PERF_OUT" | awk '{gsub(/,/,"",$1); print $1}')
-
-if [[ -n "$CYCLES" && -n "$INSTRUCTIONS" ]]; then
+if [[ -n "$CYCLES" && -n "$INSTRUCTIONS" ]] && command -v bc >/dev/null 2>&1; then
     IPC=$(echo "scale=3; $INSTRUCTIONS / $CYCLES" | bc -l)
-    echo "Total cycles: $CYCLES"
-    echo "Total instructions: $INSTRUCTIONS"
-    echo "IPC: $IPC"
-    
-    # 从 iperf3 结果提取总字节数（需要解析 summarize.py 输出）
-    # 这里先记录 cycles，后续可以手动或自动化计算 cycles/byte
     echo ""
-    echo "Note: To calculate cycles/byte, divide total cycles by total bytes from iperf3 summary."
-    echo "      To calculate cycles/packet, divide total cycles by total packets."
+    nb_info "Total cycles: $CYCLES"
+    nb_info "Total instructions: $INSTRUCTIONS"
+    nb_info "IPC: $IPC"
+    nb_info "cycles/byte = cycles / (summary 中 throughput*时长 推算的总字节)"
 else
-    echo "warning: Could not extract cycles/instructions from perf output" >&2
+    nb_warn "未能从 perf 输出提取 cycles/instructions（或缺少 bc）"
 fi
 
 echo ""
-echo "=== Summarizing test results ==="
-python3 "$SCRIPT_DIR/summarize.py" "$RESULTS_DIR/starry-${ARCH}-${SCENARIO}-${TIMESTAMP}.txt" \
-    > "$RESULTS_DIR/summary-${ARCH}-${SCENARIO}-${TIMESTAMP}.txt"
-
-cat "$RESULTS_DIR/summary-${ARCH}-${SCENARIO}-${TIMESTAMP}.txt"
+nb_summarize "$NB_RESULTS_DIR/summary-${ARCH}-${SCENARIO}-${TIMESTAMP}.txt" "$RESULT_FILE"
 
 echo ""
-echo "=== Complete ==="
-echo "Results:"
-echo "  - Test summary: $RESULTS_DIR/summary-${ARCH}-${SCENARIO}-${TIMESTAMP}.txt"
-echo "  - perf stat: $PERF_OUT"
+nb_section "完成"
+nb_info "测试汇总: $NB_RESULTS_DIR/summary-${ARCH}-${SCENARIO}-${TIMESTAMP}.txt"
+nb_info "perf stat: $PERF_OUT"

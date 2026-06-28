@@ -1,4 +1,4 @@
-target = "aarch64-unknown-none-softfloat"
+target = "x86_64-unknown-none"
 log = "Warn"
 max_cpu_num = 4
 features = [

@@ -36,23 +36,27 @@ if [ $retry -eq 15 ]; then
 fi
 
 # netperf 通用包装器
+#
+# 标记格式与 net-bench-common.sh 对齐（test=<id> iter=<n> warmup=<0|1>），
+# 但 netperf 输出为文本而非 iperf3 JSON，summarize.py 仅解析 iperf3 块，
+# 因此 netperf 结果由本脚本自带的可读输出呈现，不进入 summarize.py 吞吐统计。
 run_netperf_test() {
     local test_id="$1"
     local netperf_test="$2"
     shift 2
     local extra_args="$*"
-    
+
     # warmup
-    echo "NET_BENCH_BEGIN test_id=$test_id boot=1 iter=warmup"
+    echo "NET_BENCH_BEGIN test=$test_id iter=0 warmup=1"
     netperf -H "$HOST_IP" -t "$netperf_test" -l "$TEST_DURATION" $extra_args || echo "warmup: netperf returned non-zero"
-    echo "NET_BENCH_END test_id=$test_id boot=1 iter=warmup"
-    
+    echo "NET_BENCH_END test=$test_id iter=0"
+
     # 测量迭代
     iter=1
     while [ $iter -le "$MEASURE_ITER" ]; do
-        echo "NET_BENCH_BEGIN test_id=$test_id boot=1 iter=$iter"
+        echo "NET_BENCH_BEGIN test=$test_id iter=$iter warmup=0"
         netperf -H "$HOST_IP" -t "$netperf_test" -l "$TEST_DURATION" $extra_args
-        echo "NET_BENCH_END test_id=$test_id boot=1 iter=$iter"
+        echo "NET_BENCH_END test=$test_id iter=$iter"
         iter=$((iter + 1))
     done
 }

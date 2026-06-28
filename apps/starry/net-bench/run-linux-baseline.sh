@@ -7,7 +7,7 @@
 # 以建立公平的性能基线对比。遵循 methodology §4.1 和 qemu-plan §6.1 的纪律。
 #
 # 前置条件：
-#   1. br0 + tap0 已配置（sudo bash setup-vhost-tap.sh setup）
+#   1. br0 + tap0 已配置（sudo bash apps/starry/net-bench/bin/setup）
 #   2. 需要一个 Linux aarch64 内核和 rootfs（使用 Alpine Linux initramfs）
 set -euo pipefail
 
@@ -52,6 +52,9 @@ usage: bash apps/starry/net-bench/run-linux-baseline.sh [arch] [scenario] [--rep
 
 目的：使用与 Starry 相同的 QEMU+vhost 配置运行 Linux guest，建立性能基线。
 
+arch:
+  aarch64     仅支持 aarch64（当前限制）
+
 scenario:
   vhost       TAP+vhost-net, smp=1 (主力拓扑)
   vhost-smp4  TAP+vhost-net, smp=4 (多核扩展)
@@ -60,7 +63,7 @@ options:
   --repeat N  重复测试 N 次（默认 1）
 
 前置条件:
-  1. vhost 环境已配置: sudo bash apps/starry/net-bench/setup-vhost-tap.sh setup
+  1. vhost 环境已配置: sudo bash apps/starry/net-bench/bin/setup
   2. iperf3 已安装在 guest（通过 init script 或 rootfs）
   
 测试拓扑对齐 (qemu-plan §6.1):
@@ -84,7 +87,7 @@ check_prereq() {
     
     # 检查网络配置
     if ! ip addr show br0 &>/dev/null; then
-        echo "error: br0 not found. Run: sudo bash setup-vhost-tap.sh setup" >&2
+        echo "error: br0 not found. Run: sudo bash apps/starry/net-bench/bin/setup" >&2
         exit 1
     fi
     
@@ -130,14 +133,14 @@ HOST_IP="192.168.100.1"
 run_test() {
     local test_id="$1"
     shift
-    echo "NET_BENCH_BEGIN test_id=$test_id boot=1 iter=warmup"
-    iperf3 -c "$HOST_IP" -t 10 "$@" || true
-    echo "NET_BENCH_END test_id=$test_id boot=1 iter=warmup"
-    
-    for iter in {1..5}; do
-        echo "NET_BENCH_BEGIN test_id=$test_id boot=1 iter=$iter"
-        iperf3 -c "$HOST_IP" -t 10 "$@"
-        echo "NET_BENCH_END test_id=$test_id boot=1 iter=$iter"
+    echo "NET_BENCH_BEGIN test=$test_id iter=0 warmup=1"
+    iperf3 -c "$HOST_IP" -t 10 -J "$@" || true
+    echo "NET_BENCH_END test=$test_id iter=0"
+
+    for iter in 1 2 3 4 5; do
+        echo "NET_BENCH_BEGIN test=$test_id iter=$iter warmup=0"
+        iperf3 -c "$HOST_IP" -t 10 -J "$@"
+        echo "NET_BENCH_END test=$test_id iter=$iter"
     done
 }
 
@@ -185,7 +188,7 @@ run_linux_test() {
         return 1
     fi
     
-    # QEMU 参数（对齐 qemu-aarch64-vhost.toml）
+    # QEMU 参数（对齐 qemu/vhost-aarch64-kvm.toml 的拓扑）
     local qemu_cmd=(
         qemu-system-aarch64
         -machine virt -cpu host
@@ -274,7 +277,7 @@ main() {
     
     # 汇总结果
     echo "=== Summarizing Linux baseline results ==="
-    python3 "$SCRIPT_DIR/summarize.py" "$RESULTS_DIR"/linux-baseline-${ARCH}-${SCENARIO}-${TIMESTAMP}-r*.txt \
+    python3 "$SCRIPT_DIR/core/summarize.py" "$RESULTS_DIR"/linux-baseline-${ARCH}-${SCENARIO}-${TIMESTAMP}-r*.txt \
         > "$RESULTS_DIR/summary-linux-baseline-${ARCH}-${SCENARIO}-${TIMESTAMP}.txt"
     
     cat "$RESULTS_DIR/summary-linux-baseline-${ARCH}-${SCENARIO}-${TIMESTAMP}.txt"

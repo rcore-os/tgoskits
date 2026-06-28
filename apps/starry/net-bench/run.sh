@@ -1,304 +1,136 @@
 #!/usr/bin/env bash
-# apps/starry/net-bench/run.sh — StarryOS 网络性能测试入口
+# apps/starry/net-bench/run.sh — StarryOS 网络性能测试的唯一严肃入口
 #
-# 用法: bash apps/starry/net-bench/run.sh [arch] [scenario] [--repeat N]
-#   arch      当前仅支持 aarch64
-#   scenario  默认 slirp，可选：slirp, slirp-smp4, tap, all
-#   --repeat  每个场景重启 QEMU 跑 N 次，汇总跨启动方差（默认 1）
+# 设计：本入口"参数明确"——架构、场景、加速器都显式指定（或用明确默认值），
+# 不做隐式环境探测。智能/自动检测属于实验性能力，单独放在 bin/bench，
+# 默认不参与严肃测试流程（见 README "智能入口（实验性）"一节）。
 #
-# 每次 QEMU 启动内部，guest 脚本会跑 warmup + 5 次迭代（见 net-bench-common.sh），
-# 因此单次 --repeat 已能给出 within-boot 的 mean/stddev；--repeat>1 额外覆盖
-# cross-boot 方差。运行结束后自动调用 summarize.py 产出 per-test mean/stddev。
+# 用法:
+#   bash apps/starry/net-bench/run.sh [options]
+#
+# options:
+#   --scenario S   slirp|tap|vhost|vhost-smp4|tap-smp4（默认 vhost）
+#   --arch A       aarch64|x86_64（默认 aarch64）
+#   --accel A      kvm|tcg（默认：同架构且 /dev/kvm 可用时 kvm，否则 tcg）
+#   --repeat N     每个场景重启 QEMU 跑 N 次，汇总跨启动方差（默认 1）
+#   --no-summary   跳过 summarize.py 汇总
+#   -h, --help     显示帮助
+#
+# 兼容旧用法：前两个位置参数仍按 [arch] [scenario] 解析。
+#
+# 每次 QEMU 启动内部，guest 脚本跑 warmup + ITERS 次迭代（见 net-bench-common.sh），
+# 单次 --repeat 已给出 within-boot 的 mean/stddev；--repeat>1 额外覆盖 cross-boot 方差。
 set -euo pipefail
 
-ARCH="aarch64"
-SCENARIO="slirp"
-REPEAT=1
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=core/lib.sh
+. "$SCRIPT_DIR/core/lib.sh"
 
-# 解析位置参数与 --repeat（保持向后兼容：前两个非选项参数是 arch / scenario）。
+ARCH="aarch64"
+SCENARIO="vhost"
+ACCEL=""
+REPEAT=1
+DO_SUMMARY=true
+
+usage() {
+    cat >&2 <<EOF
+usage: bash apps/starry/net-bench/run.sh [options]
+
+options:
+  --scenario S   slirp|tap|vhost|vhost-smp4|tap-smp4（默认 vhost）
+  --arch A       aarch64|x86_64（默认 aarch64）
+  --accel A      kvm|tcg（默认：同架构且 /dev/kvm 可用时 kvm，否则 tcg）
+  --repeat N     每场景重启 QEMU 跑 N 次并汇总（默认 1）
+  --no-summary   跳过自动汇总
+  -h, --help     显示帮助
+
+scenario 说明:
+  slirp       QEMU usermode networking（仅功能冒烟，性能数据无意义）
+  tap         TAP 直连（无 vhost，功能/趋势兜底）
+  vhost       TAP + vhost-net（主力性能拓扑）
+  vhost-smp4  TAP + vhost-net, smp=4（多核扩展）
+  tap-smp4    TAP, smp=4（vhost 不可用时的多核兜底）
+
+TAP/vhost 前置配置:
+  sudo bash apps/starry/net-bench/bin/setup
+EOF
+}
+
+# 解析参数：支持显式选项，并保留 [arch] [scenario] 位置参数向后兼容。
 positional=()
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --repeat)
-            REPEAT="${2:-}"; shift 2
-            [[ "$REPEAT" =~ ^[1-9][0-9]*$ ]] || { echo "error: --repeat needs a positive integer" >&2; exit 1; }
-            ;;
-        --repeat=*)
-            REPEAT="${1#*=}"; shift
-            [[ "$REPEAT" =~ ^[1-9][0-9]*$ ]] || { echo "error: --repeat needs a positive integer" >&2; exit 1; }
-            ;;
-        -h|--help|help)
-            positional+=("help"); shift ;;
-        *)
-            positional+=("$1"); shift ;;
+        --scenario) SCENARIO="${2:-}"; shift 2 ;;
+        --scenario=*) SCENARIO="${1#*=}"; shift ;;
+        --arch) ARCH="${2:-}"; shift 2 ;;
+        --arch=*) ARCH="${1#*=}"; shift ;;
+        --accel) ACCEL="${2:-}"; shift 2 ;;
+        --accel=*) ACCEL="${1#*=}"; shift ;;
+        --repeat) REPEAT="${2:-}"; shift 2 ;;
+        --repeat=*) REPEAT="${1#*=}"; shift ;;
+        --no-summary) DO_SUMMARY=false; shift ;;
+        -h|--help|help) usage; exit 0 ;;
+        -*) nb_error "未知选项: $1"; usage; exit 1 ;;
+        *) positional+=("$1"); shift ;;
     esac
 done
 [[ ${#positional[@]} -ge 1 ]] && ARCH="${positional[0]}"
 [[ ${#positional[@]} -ge 2 ]] && SCENARIO="${positional[1]}"
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-WORKSPACE="$(cd "$SCRIPT_DIR/../../.." && pwd)"
-RESULTS_DIR="$SCRIPT_DIR/results"
-SUMMARIZER="$SCRIPT_DIR/summarize.py"
+[[ "$REPEAT" =~ ^[1-9][0-9]*$ ]] || nb_die "--repeat 需要正整数"
+nb_validate_arch "$ARCH" || exit 1
+nb_validate_scenario "$SCENARIO" || exit 1
+[[ -z "$ACCEL" ]] && ACCEL="$(nb_default_accel "$ARCH")"
+[[ "$ACCEL" == "kvm" || "$ACCEL" == "tcg" ]] || nb_die "--accel 仅支持 kvm|tcg"
+
+nb_require_cmd iperf3 "apt install iperf3"
+nb_require_cmd qemu-system-"$ARCH"
+
 TIMESTAMP="$(date +%Y%m%d-%H%M%S)"
-IPERF3_PORT=5201
-TAP_IFACE="${TAP_IFACE:-tap0}"
-TAP_HOST_IP="${TAP_HOST_IP:-192.168.100.1}"
+mkdir -p "$NB_RESULTS_DIR"
 
-mkdir -p "$RESULTS_DIR"
-
-usage() {
-    cat >&2 <<EOF
-usage: bash apps/starry/net-bench/run.sh [arch] [scenario] [--repeat N]
-
-scenario:
-  slirp       QEMU usermode networking, smp=1 (default, smoke only)
-  slirp-smp4  QEMU usermode networking, smp=4
-  tap         TAP direct networking, requires $TAP_IFACE=$TAP_HOST_IP/24
-  vhost       TAP+vhost-net (primary perf topology), smp=1
-  vhost-smp4  TAP+vhost-net, smp=4 (multi-core scaling)
-  all         Run slirp, slirp-smp4, tap, vhost, vhost-smp4
-
-options:
-  --repeat N  Reboot QEMU N times per scenario and aggregate (default 1)
-
-vhost setup:
-  sudo bash apps/starry/net-bench/setup-vhost-tap.sh setup
-EOF
-}
-
-check_arch() {
-    if [[ "$ARCH" != "aarch64" ]]; then
-        echo "error: apps/starry/net-bench currently only provides aarch64 QEMU configs" >&2
-        exit 1
-    fi
-}
-
-# 记录环境指纹（methodology §3.4 / plan §6.3 要求），写到 results 目录。
-write_fingerprint() {
-    local file="$1"
-    {
-        echo "# net-bench environment fingerprint"
-        echo "timestamp   : $TIMESTAMP"
-        echo "arch        : $ARCH"
-        echo "scenario    : $SCENARIO"
-        echo "repeat      : $REPEAT"
-        echo "host_uname  : $(uname -a)"
-        echo "host_nproc  : $(nproc 2>/dev/null || echo '?')"
-        local qemu_bin; qemu_bin="$(command -v "qemu-system-$ARCH" 2>/dev/null || true)"
-        if [[ -n "$qemu_bin" ]]; then
-            echo "qemu        : $("$qemu_bin" --version 2>/dev/null | head -1)"
-            echo "qemu_accel  : $("$qemu_bin" -accel help 2>/dev/null | tail -n +2 | tr '\n' ' ')"
-        fi
-        echo "iperf3_host : $(iperf3 --version 2>/dev/null | head -1)"
-        echo "kvm         : $([[ -e /dev/kvm ]] && echo present || echo absent)"
-        echo "vhost_net   : $([[ -e /dev/vhost-net ]] && echo present || echo absent)"
-        local commit; commit="$(git -C "$WORKSPACE" rev-parse --short HEAD 2>/dev/null || echo '?')"
-        echo "starry_commit: $commit"
-    } > "$file"
-    echo "=== net-bench: environment fingerprint -> $file ==="
-    cat "$file"
-}
-
-ensure_port_free() {
-    if command -v ss >/dev/null 2>&1 && ss -H -tln "sport = :$IPERF3_PORT" | grep -q .; then
-        echo "error: TCP port $IPERF3_PORT is already listening on host" >&2
-        echo "hint: stop the existing server, or confirm it listens on the expected address before running manually" >&2
-        ss -tlnp "sport = :$IPERF3_PORT" >&2 || true
-        exit 1
-    fi
-}
-
-start_iperf3_server() {
-    local bind_addr="$1" log_file="$2"
-    ensure_port_free
-    if [[ -n "$bind_addr" ]]; then
-        echo "=== net-bench: starting host iperf3 server on $bind_addr:$IPERF3_PORT ==="
-        iperf3 -s -p "$IPERF3_PORT" -B "$bind_addr" > "$log_file" 2>&1 &
-    else
-        echo "=== net-bench: starting host iperf3 server on 0.0.0.0:$IPERF3_PORT ==="
-        iperf3 -s -p "$IPERF3_PORT" > "$log_file" 2>&1 &
-    fi
-    iperf3_pid=$!
-    sleep 1
-    if ! kill -0 "$iperf3_pid" 2>/dev/null; then
-        echo "error: failed to start iperf3 server, see $log_file" >&2
-        exit 1
-    fi
-}
-
-check_tap() {
-    command -v ip >/dev/null 2>&1 || { echo "error: ip command not found" >&2; exit 1; }
-    if ! ip link show "$TAP_IFACE" >/dev/null 2>&1; then
-        cat >&2 <<EOF
-error: TAP interface $TAP_IFACE does not exist
-
-setup:
-  sudo bash apps/starry/net-bench/setup-vhost-tap.sh setup
-EOF
-        exit 1
-    fi
-    # TAP 可能挂在 bridge 上，不直接配 IP，检查 bridge
-    local bridge_name="br0"
-    if ip link show "$bridge_name" >/dev/null 2>&1; then
-        if ! ip -4 addr show dev "$bridge_name" | grep -q "$TAP_HOST_IP/24"; then
-            cat >&2 <<EOF
-error: Bridge $bridge_name exists but does not have $TAP_HOST_IP/24
-
-setup:
-  sudo bash apps/starry/net-bench/setup-vhost-tap.sh setup
-EOF
-            exit 1
-        fi
-    else
-        # 无 bridge，检查 TAP 本身是否有 IP
-        if ! ip -4 addr show dev "$TAP_IFACE" | grep -q "$TAP_HOST_IP/24"; then
-            cat >&2 <<EOF
-error: TAP interface $TAP_IFACE does not have $TAP_HOST_IP/24
-
-setup:
-  sudo bash apps/starry/net-bench/setup-vhost-tap.sh setup
-EOF
-            exit 1
-        fi
-    fi
-}
-
-check_vhost() {
-    if [[ ! -e /dev/kvm ]]; then
-        cat >&2 <<EOF
-error: /dev/kvm not found (KVM acceleration required for vhost scenario)
-
-WSL2 requires:
-  1. Windows 11 (or Win10 21H2+ with KB5020030)
-  2. Enable nested virtualization in %USERPROFILE%\.wslconfig:
-       [wsl2]
-       nestedVirtualization=true
-  3. Restart WSL: wsl --shutdown
-
-See apps/starry/net-bench/wslconfig-example.txt for full config.
-EOF
-        exit 1
-    fi
-    if [[ ! -e /dev/vhost-net ]]; then
-        cat >&2 <<EOF
-error: /dev/vhost-net not found (vhost-net module required)
-
-Try:
-  sudo modprobe vhost_net
-
-If that fails, your kernel may not have CONFIG_VHOST_NET enabled.
-Check with: zgrep VHOST_NET /proc/config.gz
-
-Without vhost-net, use 'tap' scenario instead (slower but functional).
-EOF
-        exit 1
-    fi
-    check_tap
-}
-
-# 汇总一个场景的全部 run log（跨 --repeat），输出干净的 mean/stddev 报告。
-summarize_scenario() {
-    local scenario="$1"; shift
-    local summary_file="$RESULTS_DIR/summary-$ARCH-$scenario-$TIMESTAMP.txt"
-    if ! command -v python3 >/dev/null 2>&1; then
-        echo "warning: python3 not found, skipping auto-summary" >&2
-        return
-    fi
-    echo "=== net-bench: summary ($scenario) -> $summary_file ==="
-    python3 "$SUMMARIZER" "$@" | tee "$summary_file"
-}
-
+# run_one — 跑单个场景的全部 repeat，并汇总。
 run_one() {
-    local scenario="$1" bind_addr="" test_case="net-bench" qemu_config=() env_vars=() server_log
-    case "$scenario" in
-        slirp)
-            ;;
-        slirp-smp4)
-            qemu_config=(--qemu-config "apps/starry/net-bench/qemu-aarch64-smp4.toml")
-            ;;
-        tap)
-            check_tap
-            bind_addr="$TAP_HOST_IP"
-            qemu_config=(--qemu-config "apps/starry/net-bench/qemu-aarch64-tap.toml")
-            env_vars=(AX_IP=192.168.100.2 AX_GW="$TAP_HOST_IP" AX_PREFIX_LEN=24)
-            ;;
-        vhost)
-            check_vhost
-            bind_addr="$TAP_HOST_IP"
-            qemu_config=(--qemu-config "apps/starry/net-bench/qemu-aarch64-vhost.toml")
-            env_vars=(AX_IP=192.168.100.2 AX_GW="$TAP_HOST_IP" AX_PREFIX_LEN=24)
-            ;;
-        vhost-smp4)
-            check_vhost
-            bind_addr="$TAP_HOST_IP"
-            qemu_config=(--qemu-config "apps/starry/net-bench/qemu-aarch64-vhost-smp4.toml")
-            env_vars=(AX_IP=192.168.100.2 AX_GW="$TAP_HOST_IP" AX_PREFIX_LEN=24)
-            ;;
-        *)
-            usage
-            exit 1
-            ;;
-    esac
+    local scenario="$1"
+    local accel="$ACCEL"
+    local qemu_config; qemu_config="$(nb_qemu_config "$scenario" "$ARCH" "$accel")"
 
-    write_fingerprint "$RESULTS_DIR/fingerprint-$ARCH-$scenario-$TIMESTAMP.txt"
+    [[ -f "$qemu_config" ]] || nb_die "QEMU 配置不存在: $qemu_config"
+    nb_check_scenario_prereq "$scenario" "$accel"
 
-    local run_logs=()
-    local rep
+    local bind_addr=""
+    nb_scenario_needs_tap "$scenario" && bind_addr="$NB_TAP_HOST_IP"
+
+    nb_write_fingerprint \
+        "$NB_RESULTS_DIR/fingerprint-$ARCH-$scenario-$TIMESTAMP.txt" \
+        "$ARCH" "$scenario" "$accel" "$REPEAT"
+
+    nb_info "场景=$scenario 架构=$ARCH 加速=$accel 配置=$qemu_config"
+
+    local run_logs=() rep
     for ((rep = 1; rep <= REPEAT; rep++)); do
-        local result_file="$RESULTS_DIR/starry-$ARCH-$scenario-$TIMESTAMP-r${rep}.txt"
-        server_log="$RESULTS_DIR/iperf3-server-$scenario-$TIMESTAMP-r${rep}.log"
-        start_iperf3_server "$bind_addr" "$server_log"
-        # shellcheck disable=SC2064
-        trap "kill $iperf3_pid 2>/dev/null || true" RETURN
+        local result_file="$NB_RESULTS_DIR/starry-$ARCH-$scenario-$TIMESTAMP-r${rep}.txt"
+        local server_log="$NB_RESULTS_DIR/iperf3-server-$ARCH-$scenario-$TIMESTAMP-r${rep}.log"
 
-        echo "=== net-bench: running StarryOS $test_case ($ARCH, $scenario, repeat $rep/$REPEAT) ==="
-        # Sample eBPF net_stats before bench (appended to result_file as NET_STATS_BEGIN/END block).
-        if command -v net_stats >/dev/null 2>&1; then
-            echo "=== net-bench: sampling net_stats (before) ===" | tee -a "$result_file"
-            timeout 6 net_stats --once 2>/dev/null | tee -a "$result_file" || true
-        fi
-        (cd "$WORKSPACE" && env "${env_vars[@]}" cargo xtask starry app qemu --test-case "$test_case" --arch "$ARCH" "${qemu_config[@]}") \
-            2>&1 | tee "$result_file"
-        # Sample eBPF net_stats after bench.
-        if command -v net_stats >/dev/null 2>&1; then
-            echo "=== net-bench: sampling net_stats (after) ===" | tee -a "$result_file"
-            timeout 6 net_stats --once 2>/dev/null | tee -a "$result_file" || true
-        fi
+        nb_start_iperf3 "$bind_addr" "$server_log"
 
-        kill "$iperf3_pid" 2>/dev/null || true
-        trap - RETURN
+        nb_section "运行 StarryOS net-bench ($ARCH, $scenario, repeat $rep/$REPEAT)"
+        # guest 走 DHCP 获取地址（SLIRP 由 QEMU usermode 应答；TAP/vhost 由 host
+        # bridge 上的 DHCP 服务应答，见 nb_check_tap）。无需注入 AX_* 环境变量。
+        (cd "$NB_WORKSPACE" && \
+            cargo xtask starry app qemu --test-case net-bench --arch "$ARCH" \
+                --qemu-config "$qemu_config") 2>&1 | tee "$result_file"
+
+        nb_stop_iperf3
         run_logs+=("$result_file")
-        echo "=== Results saved to $result_file ==="
+        nb_info "结果已保存: $result_file"
     done
 
-    summarize_scenario "$scenario" "${run_logs[@]}"
+    if [[ "$DO_SUMMARY" == "true" ]]; then
+        nb_summarize \
+            "$NB_RESULTS_DIR/summary-$ARCH-$scenario-$TIMESTAMP.txt" \
+            "${run_logs[@]}"
+    fi
 }
 
-if [[ "$ARCH" == "help" ]]; then
-    usage
-    exit 0
-fi
-
-command -v iperf3 >/dev/null 2>&1 || { echo "error: iperf3 not found on host (apt install iperf3)" >&2; exit 1; }
-check_arch
-
-case "$SCENARIO" in
-    all)
-        run_one slirp
-        run_one slirp-smp4
-        run_one tap
-        run_one vhost
-        run_one vhost-smp4
-        ;;
-    slirp|slirp-smp4|tap|vhost|vhost-smp4)
-        run_one "$SCENARIO"
-        ;;
-    help)
-        usage
-        ;;
-    *)
-        usage
-        exit 1
-        ;;
-esac
+run_one "$SCENARIO"

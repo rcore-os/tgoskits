@@ -1,188 +1,150 @@
 # net-bench 快速参考
 
-## 一键测试
+## 使用模式
+
+### 严肃测试（推荐，参数明确）
+
+显式指定架构 / 场景 / 加速器，保证可复现：
+
 ```bash
-bash apps/starry/net-bench/bin/bench
+# 主力性能拓扑（需先配置网络）
+sudo bash apps/starry/net-bench/bin/setup
+bash apps/starry/net-bench/run.sh --scenario vhost --arch x86_64 --repeat 5
+sudo bash apps/starry/net-bench/bin/teardown
+```
+
+也可直接用 xtask 跑单个配置（run.sh 内部即调用它）：
+
+```bash
+cargo xtask starry app qemu \
+    --test-case net-bench \
+    --arch x86_64 \
+    --qemu-config apps/starry/net-bench/qemu/vhost-x86_64-kvm.toml
+```
+
+### 智能入口（实验性，开发期便捷）
+
+自动检测环境并委托 run.sh：
+
+```bash
+bash apps/starry/net-bench/bin/bench vhost
+bash apps/starry/net-bench/bin/bench-wsl
+```
+
+## run.sh 选项
+
+```
+--scenario S   slirp|tap|vhost|vhost-smp4|tap-smp4（默认 vhost）
+--arch A       aarch64|x86_64（默认 aarch64）
+--accel A      kvm|tcg（默认：同架构且 KVM 可用时 kvm）
+--repeat N     每场景重启 QEMU 跑 N 次并汇总（默认 1）
+--no-summary   跳过自动汇总
 ```
 
 ## 常用命令
 
-### 测试
 ```bash
-# 默认配置（vhost，自动检测架构）
-bash apps/starry/net-bench/bin/bench
+# 单次 vhost
+bash apps/starry/net-bench/run.sh --scenario vhost --arch x86_64
 
-# 指定场景
-bash apps/starry/net-bench/bin/bench vhost
-bash apps/starry/net-bench/bin/bench vhost-smp4
-bash apps/starry/net-bench/bin/bench tap
+# 多次重启累积跨启动方差（推荐 >=5）
+bash apps/starry/net-bench/run.sh --scenario vhost --arch x86_64 --repeat 5
 
-# 重复测试
-bash apps/starry/net-bench/bin/bench vhost --repeat 5
+# 多核扩展
+bash apps/starry/net-bench/run.sh --scenario vhost-smp4 --arch x86_64 --repeat 5
 
-# 强制架构
-bash apps/starry/net-bench/bin/bench vhost --arch x86_64
-bash apps/starry/net-bench/bin/bench vhost --arch aarch64
+# 功能冒烟（SLIRP，无需 sudo/网络配置）
+bash apps/starry/net-bench/run.sh --scenario slirp --arch x86_64
+
+# CPU 效率（perf stat）
+bash apps/starry/net-bench/run-with-perf.sh --arch x86_64 --scenario vhost
+
+# Linux 同拓扑基线
+bash apps/starry/net-bench/run-linux-baseline.sh aarch64 vhost --repeat 5
 ```
 
-### 环境管理
+## 环境管理
+
 ```bash
-# 检测环境
+# 检测环境（无需 sudo）
 bash apps/starry/net-bench/env/detect-env.sh
 
-# 仅配置
-bash apps/starry/net-bench/bin/setup
+# 配置 TAP 网络（需 sudo，仅 vhost/tap 场景）
+sudo bash apps/starry/net-bench/bin/setup
 
-# 查看状态
-sudo bash apps/starry/net-bench/bin/teardown status
-
-# 清理
+# 查看状态 / 清理
+bash apps/starry/net-bench/bin/teardown status
 sudo bash apps/starry/net-bench/bin/teardown
 ```
 
-### 高级选项
-```bash
-# 仅配置环境，不运行测试
-bash apps/starry/net-bench/bin/bench --setup-only
-
-# 跳过配置，直接测试
-bash apps/starry/net-bench/bin/bench vhost --skip-setup
-
-# 测试后不自动清理
-bash apps/starry/net-bench/bin/bench vhost --no-cleanup
-```
+注意：`slirp` 场景用 QEMU usermode 网络，无需 sudo 配置；`vhost`/`tap` 需要 TAP 网络。
 
 ## 测试场景
 
-| 场景 | 说明 | 性能 |
+| 场景 | 拓扑 | 用途 |
 |------|------|------|
-| vhost | TAP+vhost-net | 推荐 |
-| vhost-smp4 | TAP+vhost-net+SMP4 | 多核 |
-| tap | TAP（无vhost） | 降级 |
-| slirp | SLIRP | 仅冒烟 |
+| vhost | TAP+vhost-net | 主力性能测试 |
+| vhost-smp4 | TAP+vhost-net+SMP4 | 多核扩展 |
+| tap | TAP（无vhost）| 功能/趋势兜底 |
+| tap-smp4 | TAP+SMP4 | vhost 不可用时多核兜底 |
+| slirp | SLIRP | 仅功能冒烟 |
 
 ## 环境要求
 
-### 必需
-- iperf3
-- bridge-utils
-- jq
-
-### 可选
-- dnsmasq（DHCP，否则 guest 需手动配 IP）
-- KVM（硬件加速，否则用 TCG）
-- vhost-net（高性能，否则降级 TAP）
-
-### 安装依赖
 ```bash
 sudo apt-get install -y iperf3 bridge-utils jq dnsmasq
 ```
 
-## 架构支持
-
-| Host 架构 | Guest 架构 | 加速 | 配置文件 |
-|----------|-----------|------|---------|
-| x86_64 | x86_64 | KVM | vhost-x86_64-kvm.toml（推荐）|
-| x86_64 | x86_64 | TCG | vhost-x86_64-tcg.toml |
-| x86_64 | aarch64 | TCG | vhost-aarch64-tcg.toml |
-| aarch64 | aarch64 | KVM | vhost-aarch64-kvm.toml |
-
-## 常见问题
-
-### KVM 不可用
-```bash
-# WSL2: 启用嵌套虚拟化
-# 编辑 %USERPROFILE%\.wslconfig:
-[wsl2]
-nestedVirtualization=true
-
-# 然后重启
-wsl --shutdown
-
-# 裸 Linux: 检查权限
-sudo chmod 666 /dev/kvm
-```
-
-### vhost-net 不可用
-```bash
-sudo modprobe vhost_net
-```
-
-### DHCP 失败
-```bash
-# 检查 dnsmasq
-ps aux | grep dnsmasq
-
-# 手动启动
-sudo dnsmasq --interface=br0 --bind-interfaces \
-    --dhcp-range=192.168.100.10,192.168.100.50,12h --port=0
-```
-
-### 端口占用
-```bash
-# 检查端口
-ss -tuln | grep 5201
-
-# 停止占用进程
-sudo pkill -f "iperf3 -s"
-```
+- KVM：`/dev/kvm` 可用（WSL2 需嵌套虚拟化）
+- vhost-net：`sudo modprobe vhost_net`
 
 ## 测试结果
 
 ```bash
-# 查看摘要
+# 查看汇总
 cat apps/starry/net-bench/results/summary-*.txt
 
 # 手动汇总
 python3 apps/starry/net-bench/core/summarize.py \
     apps/starry/net-bench/results/starry-*.txt
+
+# 基线对比
+python3 apps/starry/net-bench/core/compare-baseline.py \
+    results/summary-aarch64-vhost-*.txt \
+    results/summary-linux-baseline-aarch64-vhost-*.txt
 ```
 
-## 目录结构
+## 故障排查
 
-```
-apps/starry/net-bench/
-├── bin/bench       # 主入口
-├── bin/setup       # 配置
-├── bin/teardown    # 清理
-├── env/            # 环境脚本
-├── core/           # 核心逻辑
-├── qemu/           # QEMU 配置
-└── results/        # 测试结果
+### KVM 不可用
+```bash
+ls -l /dev/kvm
+# WSL2: 在 %USERPROFILE%\.wslconfig 加 [wsl2] nestedVirtualization=true，然后 wsl --shutdown
+# 裸 Linux: sudo modprobe kvm_intel  # 或 kvm_amd
 ```
 
-## 工作流程
-
-```
-bench 命令
-    ↓
-检测环境 (env/detect-env.sh)
-    ↓
-配置网络 (env/setup-common.sh)
-    ├─ 创建 br0/tap0
-    ├─ 启动 iperf3
-    └─ 启动 dnsmasq
-    ↓
-选择 QEMU 配置 (qemu/vhost-*.toml)
-    ↓
-运行测试 (cargo xtask starry app qemu)
-    ↓
-自动清理 (env/teardown.sh)
-    ├─ 停止进程
-    ├─ 删除网络设备
-    └─ 清理状态文件
+### vhost-net 不可用
+```bash
+ls -l /dev/vhost-net
+sudo modprobe vhost_net
 ```
 
-## 详细文档
+### 端口占用
+```bash
+ss -tlnp | grep 5201
+sudo pkill -f "iperf3 -s"
+```
 
-- [README.md](../README.md) - 完整文档
-- [STRUCTURE.md](STRUCTURE.md) - 架构设计
-- [REFACTOR.md](REFACTOR.md) - 重构说明
-- [TEST_REPORT.md](TEST_REPORT.md) - 测试报告
-- [TODO.md](TODO.md) - 待办事项
+## 关键指标与纪律
+
+- 每数据点 ≥5 次迭代，取 mean + stddev；stddev >10% 标注 NOISY
+- 每次测试前 warmup（丢弃首次）
+- 记录环境指纹（`fingerprint-*.txt`）
+- 核心 KPI：吞吐 Mbit/s、PPS、延迟 P50/P99、cycles/byte、多核扩展比
 
 ## 获取帮助
 
 ```bash
+bash apps/starry/net-bench/run.sh --help
 bash apps/starry/net-bench/bin/bench --help
 ```

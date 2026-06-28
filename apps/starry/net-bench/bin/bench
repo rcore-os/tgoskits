@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
-# bin/bench - net-bench 统一测试入口
+# bin/bench - net-bench 智能入口（实验性，非默认严肃测试入口）
 #
-# 功能：
-#   1. 自动检测环境（WSL/裸Linux/架构/KVM）
-#   2. 自动配置网络环境
-#   3. 运行 Starry net-bench 测试
-#   4. 测试结束后自动清理（可选）
+# 重要：严肃性能测试请使用"入口 + 参数明确"的 run.sh：
+#     bash apps/starry/net-bench/run.sh --scenario vhost --arch x86_64
+#
+# 本脚本是开发期便捷壳：自动检测环境（WSL/裸 Linux/架构/KVM/vhost），
+# 推断一组合理参数，再委托给 run.sh 执行实际测试。自动检测能力刻意保持
+# 实验性、不作为默认入口——它便于本机快速验证，但不保证可复现的严肃结论。
 #
 # 用法:
 #   bench [scenario] [options]
@@ -27,8 +28,9 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BENCH_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-ENV_DIR="$BENCH_ROOT/env"
-WORKSPACE="$(cd "$BENCH_ROOT/../../.." && pwd)"
+# shellcheck source=core/lib.sh
+. "$BENCH_ROOT/core/lib.sh"
+ENV_DIR="$NB_ENV_DIR"
 
 SCENARIO="vhost"
 REPEAT=1
@@ -40,29 +42,14 @@ SKIP_SETUP=false
 # 解析选项
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --repeat)
-            REPEAT="$2"
-            shift 2
-            ;;
-        --arch)
-            ARCH="$2"
-            shift 2
-            ;;
-        --no-cleanup)
-            AUTO_CLEANUP=false
-            shift
-            ;;
-        --setup-only)
-            SETUP_ONLY=true
-            shift
-            ;;
-        --skip-setup)
-            SKIP_SETUP=true
-            shift
-            ;;
+        --repeat) REPEAT="$2"; shift 2 ;;
+        --arch) ARCH="$2"; shift 2 ;;
+        --no-cleanup) AUTO_CLEANUP=false; shift ;;
+        --setup-only) SETUP_ONLY=true; shift ;;
+        --skip-setup) SKIP_SETUP=true; shift ;;
         -h|--help)
             cat <<EOF
-用法: bench [scenario] [options]
+用法: bench [scenario] [options]   （实验性智能入口；严肃测试请用 run.sh）
 
 场景:
   vhost       TAP+vhost-net (默认，主力测试)
@@ -77,214 +64,107 @@ while [[ $# -gt 0 ]]; do
   --setup-only        仅配置环境，不运行测试
   --skip-setup        跳过环境配置，直接测试
 
-示例:
-  bench                          # 使用默认配置（vhost，自动检测架构）
-  bench vhost --repeat 5         # vhost 场景，重复 5 次
-  bench vhost-smp4 --arch x86_64 # 强制使用 x86_64
-  bench --setup-only             # 仅配置环境
+严肃测试（参数明确，推荐）:
+  bash apps/starry/net-bench/run.sh --scenario vhost --arch x86_64
 EOF
             exit 0
             ;;
-        vhost|vhost-smp4|tap|slirp)
-            SCENARIO="$1"
-            shift
-            ;;
+        vhost|vhost-smp4|tap|tap-smp4|slirp) SCENARIO="$1"; shift ;;
         *)
-            echo "未知选项: $1" >&2
-            echo "有效场景: vhost, vhost-smp4, tap, slirp" >&2
-            echo "使用 --help 查看帮助" >&2
+            nb_error "未知选项: $1"
+            nb_error "有效场景: vhost, vhost-smp4, tap, tap-smp4, slirp"
+            nb_error "使用 --help 查看帮助"
             exit 1
             ;;
     esac
 done
 
-# 颜色输出
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-RED='\033[0;31m'
-BLUE='\033[0;34m'
-NC='\033[0m'
+[[ "$REPEAT" =~ ^[1-9][0-9]*$ ]] || nb_die "--repeat 需要正整数"
 
-info() { echo -e "${GREEN}[INFO]${NC} $*"; }
-warn() { echo -e "${YELLOW}[WARN]${NC} $*"; }
-error() { echo -e "${RED}[ERROR]${NC} $*" >&2; }
-section() { echo -e "${BLUE}===== $* =====${NC}"; }
-
-# 清理函数（在退出时调用）
+# 清理函数（退出时调用）
 cleanup() {
     local exit_code=$?
-    
     if [[ "$AUTO_CLEANUP" == "true" ]]; then
-        section "自动清理环境"
-        sudo bash "$ENV_DIR/teardown.sh" || warn "清理失败"
+        nb_section "自动清理环境"
+        sudo bash "$ENV_DIR/teardown.sh" || nb_warn "清理失败"
     else
-        info "跳过自动清理（使用 --no-cleanup）"
-        info "手动清理: sudo bash $BENCH_ROOT/bin/teardown"
+        nb_info "跳过自动清理（--no-cleanup）；手动清理: sudo bash $BENCH_ROOT/bin/teardown"
     fi
-    
     exit $exit_code
 }
 
-# 检测环境
+# 检测环境，推断 ARCH / ACCEL / 场景降级
+ACCEL=""
 detect_environment() {
-    section "检测运行环境"
-    
-    if [[ ! -x "$ENV_DIR/detect-env.sh" ]]; then
-        error "环境检测脚本不存在: $ENV_DIR/detect-env.sh"
-        exit 1
-    fi
-    
-    bash "$ENV_DIR/detect-env.sh" human
-    
-    # 获取 JSON 格式的检测结果
+    nb_section "检测运行环境（实验性自动检测）"
+    nb_require_cmd jq "sudo apt-get install -y jq"
+    bash "$ENV_DIR/detect-env.sh" human || true
+
     local env_json
     env_json=$(bash "$ENV_DIR/detect-env.sh" json)
-    
-    # 提取推荐配置
-    local recommended_arch recommended_accel
+    local recommended_arch kvm_available vhost_available host_arch
     recommended_arch=$(echo "$env_json" | jq -r '.recommended_arch')
-    recommended_accel=$(echo "$env_json" | jq -r '.recommended_accel')
-    
-    # 如果用户没有指定架构，使用推荐架构
-    if [[ -z "$ARCH" ]]; then
-        ARCH="$recommended_arch"
-        info "使用推荐架构: $ARCH ($recommended_accel)"
-    else
-        info "使用指定架构: $ARCH"
-    fi
-    
-    # 检查是否需要警告
-    local kvm_available vhost_available
     kvm_available=$(echo "$env_json" | jq -r '.kvm_available')
     vhost_available=$(echo "$env_json" | jq -r '.vhost_available')
-    
-    if [[ "$kvm_available" == "false" ]] && [[ "$recommended_accel" == "tcg" ]]; then
-        warn "⚠️  KVM 不可用，将使用 TCG 模拟（性能数据仅供功能验证）"
-    fi
-    
-    if [[ "$vhost_available" == "false" ]] && [[ "$SCENARIO" =~ ^vhost ]]; then
-        warn "⚠️  vhost-net 不可用，将降级到 TAP 模式"
-        if [[ "$SCENARIO" == "vhost" ]]; then
-            SCENARIO="tap"
-        elif [[ "$SCENARIO" == "vhost-smp4" ]]; then
-            SCENARIO="tap-smp4"
-        fi
-    fi
-}
-
-# 配置环境
-setup_environment() {
-    section "配置测试环境"
-    
-    # 检查依赖
-    if ! command -v jq >/dev/null 2>&1; then
-        error "需要 jq 工具，请安装: sudo apt-get install -y jq"
-        exit 1
-    fi
-    
-    # 运行通用配置
-    info "运行通用网络配置..."
-    if ! sudo bash "$ENV_DIR/setup-common.sh"; then
-        error "环境配置失败"
-        exit 1
-    fi
-    
-    info "✓ 环境配置完成"
-}
-
-# 运行测试
-run_test() {
-    section "运行 Starry net-bench 测试"
-    
-    info "场景: $SCENARIO"
-    info "架构: $ARCH"
-    info "重复次数: $REPEAT"
-    
-    # 检测需要的加速模式
-    local env_json
-    env_json=$(bash "$ENV_DIR/detect-env.sh" json)
-    local host_arch kvm_available
     host_arch=$(echo "$env_json" | jq -r '.host_arch')
-    kvm_available=$(echo "$env_json" | jq -r '.kvm_available')
-    
-    # 决定加速模式
-    local accel="tcg"
-    if [[ "$ARCH" == "$host_arch" ]] && [[ "$kvm_available" == "true" ]]; then
-        accel="kvm"
-    fi
-    
-    info "加速模式: $accel"
-    
-    # 构造 QEMU 配置文件路径
-    local qemu_config="${BENCH_ROOT}/qemu/${SCENARIO}-${ARCH}-${accel}.toml"
-    
-    # 检查配置文件是否存在
-    if [[ ! -f "$qemu_config" ]]; then
-        # 尝试旧的命名方式
-        local old_config="${BENCH_ROOT}/qemu-${ARCH}-${SCENARIO}.toml"
-        if [[ -f "$old_config" ]]; then
-            qemu_config="$old_config"
-            warn "使用旧配置文件: $old_config"
-            warn "注意：旧配置可能不匹配当前加速模式 ($accel)"
-        else
-            error "QEMU 配置文件不存在: $qemu_config"
-            error "也尝试了: $old_config"
-            exit 1
-        fi
-    fi
-    
-    info "QEMU 配置: $qemu_config"
-    
-    # 运行测试
-    cd "$WORKSPACE"
-    
-    local test_cmd="cargo xtask starry app qemu --test-case net-bench --arch $ARCH --qemu-config $qemu_config"
-    
-    info "执行: $test_cmd"
-    info ""
-    
-    if eval "$test_cmd"; then
-        info ""
-        info "✓ 测试完成"
+
+    if [[ -z "$ARCH" ]]; then
+        ARCH="$recommended_arch"
+        nb_info "使用推荐架构: $ARCH"
     else
-        error "测试失败"
-        return 1
+        nb_info "使用指定架构: $ARCH"
+    fi
+    nb_validate_arch "$ARCH" || exit 1
+
+    ACCEL="$(nb_default_accel "$ARCH")"
+    [[ "$ACCEL" == "tcg" ]] && nb_warn "将使用 TCG 模拟（性能数据仅供功能验证）"
+
+    if [[ "$vhost_available" == "false" ]] && [[ "$SCENARIO" =~ ^vhost ]]; then
+        nb_warn "vhost-net 不可用，降级到 TAP 模式"
+        case "$SCENARIO" in
+            vhost) SCENARIO="tap" ;;
+            vhost-smp4) SCENARIO="tap-smp4" ;;
+        esac
     fi
 }
 
-# 主函数
+setup_environment() {
+    nb_section "配置测试环境"
+    nb_info "运行通用网络配置..."
+    sudo bash "$ENV_DIR/setup-common.sh" || nb_die "环境配置失败"
+    nb_info "环境配置完成"
+}
+
 main() {
-    info "=== Starry net-bench 自动化测试 ==="
-    info ""
-    
-    # 检测环境
+    nb_info "=== Starry net-bench 智能入口（实验性）==="
+    nb_info "严肃测试请用: bash $BENCH_ROOT/run.sh --scenario $SCENARIO --arch <arch>"
+
     detect_environment
-    
-    # 配置环境
-    if [[ "$SKIP_SETUP" == "false" ]]; then
-        setup_environment
+
+    if [[ "$SCENARIO" == "slirp" ]]; then
+        nb_info "slirp 模式不需要网络配置"
+    elif [[ "$SKIP_SETUP" == "true" ]]; then
+        nb_info "跳过环境配置（--skip-setup）"
     else
-        info "跳过环境配置（--skip-setup）"
+        setup_environment
     fi
-    
-    # 如果只配置环境，则退出
+
     if [[ "$SETUP_ONLY" == "true" ]]; then
-        info ""
-        info "✓ 环境配置完成（--setup-only）"
-        info "运行测试: bash $BENCH_ROOT/bin/bench $SCENARIO --skip-setup"
+        nb_info "环境配置完成（--setup-only）"
+        nb_info "运行测试: bash $BENCH_ROOT/run.sh --scenario $SCENARIO --arch $ARCH --accel $ACCEL"
         exit 0
     fi
-    
-    # 注册清理函数（测试完成或失败时执行）
+
     if [[ "$AUTO_CLEANUP" == "true" ]]; then
         trap cleanup EXIT INT TERM
     fi
-    
-    # 运行测试
-    run_test
-    
-    info ""
-    info "=== 测试流程完成 ==="
+
+    # 委托给唯一严肃入口 run.sh 执行实际测试（单一事实来源）。
+    # 网络配置已由本脚本完成，故 run.sh 自身的前置检查只做校验。
+    nb_section "委托 run.sh 执行测试"
+    bash "$BENCH_ROOT/run.sh" --scenario "$SCENARIO" --arch "$ARCH" --accel "$ACCEL" --repeat "$REPEAT"
+
+    nb_info "=== 测试流程完成 ==="
 }
 
 main

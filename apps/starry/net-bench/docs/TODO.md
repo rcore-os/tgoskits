@@ -1,75 +1,50 @@
 # net-bench 待办事项
 
+## 已完成（本次重构）
+
+- 统一为单一严肃入口 `run.sh`（显式 arch/scenario/accel/repeat），智能入口
+  `bin/bench` 降级为实验性便捷壳并委托 `run.sh`
+- 抽取主机侧公共流程到 `core/lib.sh`（常量、配置矩阵、iperf3 生命周期、前置检查、
+  指纹、汇总），消除散落硬编码
+- 修复 `prebuild.sh` 引用 `core/` 下 guest 脚本的路径（原断裂）
+- 修复结果汇总路径（统一指向 `core/summarize.py`）
+- 移除 QEMU 配置中被 ostool 忽略的死字段 `prebuild = "core/prebuild.sh"`
+- 补齐配置矩阵：新增 `vhost-smp4`/`tap-smp4` 各 arch/accel 变体；修正
+  `vhost-aarch64-tcg` 缺 `vhost=on` 的问题
+- 新增 `build-x86_64-unknown-none.toml`，使 x86_64 配置可正确启用 virtio-net
+- 统一 netperf 标记格式与 `net-bench-common.sh` 对齐
+- 删除重复/失效文件：`core/prebuild.sh`、根目录 `net-bench-netperf.sh`、
+  根目录 `compare-baseline.py`、`setup-vhost-tap.sh`、`build-configs/`、旧根目录
+  `qemu-aarch64-*.toml`
+
 ## 高优先级
 
 ### 多队列支持
-- [ ] 在 `env/setup-common.sh` 中添加多队列 TAP 创建选项
-  ```bash
-  ip tuntap add mode tap tap0 multi_queue
-  ```
-- [ ] 检测内核是否支持多队列 TAP
-- [ ] 提供单队列和多队列两种配置
-- [ ] 更新文档说明多队列的使用场景和性能差异
+- [ ] 在 `env/setup-common.sh` 中按需创建多队列 TAP（`ip tuntap add ... multi_queue`）
+- [ ] 提供多队列专用 QEMU 配置（`mq=on,queues=N`），与单队列配置共存
+- [ ] 待 `drivers/net` 多队列改造后再启用 mq 参数（当前单队列，见 MULTIQUEUE_ISSUE.md）
 
 ### x86_64 + KVM 完整验证
-- [ ] 修复 x86_64 rootfs 中测试脚本缺失问题
-- [ ] 验证 x86_64 + KVM 完整测试流程
-- [ ] 在裸 Linux 环境测试
-
-### 文档完善
-- [ ] 创建 `docs/wsl-guide.md` - WSL2 环境详细指南
-- [ ] 创建 `docs/native-linux-guide.md` - 裸 Linux 环境详细指南
-- [ ] 更新主 README.md，整合新功能说明
+- [ ] 在裸 Linux x86_64 + KVM 环境端到端跑通 vhost 场景
+- [ ] 验证 x86_64 rootfs 中 guest 脚本注入与运行
 
 ## 中优先级
 
-### 配置扩展
-- [ ] 添加 tap/slirp 场景的 QEMU 配置
-- [ ] 添加 x86_64 构建配置
-- [ ] 支持更多架构（loongarch64/riscv64）
+### eBPF net_stats 集成修正
+- [ ] 将 net_stats 采样从 host 侧改为 guest 侧执行，输出纳入 QEMU guest log
+- [ ] 由 host 侧 summarize.py 解析 NET_STATS 块（已支持解析，待接入 guest 采样）
 
-### 脚本增强
-- [ ] 整合旧的 `run.sh` 功能到新框架
-- [ ] 整合 `run-linux-baseline.sh`（Linux 基线对比）
-- [ ] 添加 `--repeat` 功能的完整支持
-
-### CI/CD 集成
-- [ ] 提供 NOPASSWD sudo 配置说明
-- [ ] 添加 CI/CD 示例配置
-- [ ] 支持非交互式密码输入
+### CI 接入（可选，保持非默认）
+- [ ] 提供显式触发的 CI 示例（至少 SLIRP + TCG 冒烟），不纳入默认全量 app 测试
 
 ## 低优先级
 
-### 性能优化
-- [ ] 优化错误处理和日志输出
-- [ ] 减少重复的环境检测调用
-- [ ] 缓存检测结果
-
-### 功能增强
-- [ ] 支持自定义网络配置（IP 段、端口等）
-- [ ] 支持多个 TAP 设备（拓扑 B：guest ↔ guest）
-- [ ] 添加测试结果自动分析和可视化
-
-### 测试覆盖
-- [ ] 添加单元测试
-- [ ] 添加集成测试
-- [ ] 自动化回归测试
-
-## 已完成 
-
--  设计新的目录结构
--  实现环境自动检测
--  实现自动配置脚本
--  实现自动回退机制
--  重构测试入口脚本
--  创建核心文档
--  WSL2 环境测试验证（aarch64 + TCG）
--  处理多队列不兼容问题（移除参数）
--  创建 WSL2 快捷入口（bin/bench-wsl）
--  统一所有 QEMU 配置的网络参数
+- [ ] 支持 riscv64 / loongarch64 配置矩阵
+- [ ] 拓扑 B（guest ↔ guest 双 VM）支持
+- [ ] 结果自动可视化（多核扩展曲线、三方对比图）
 
 ## 备注
 
-- 多队列支持为性能优化项，当前单队列配置满足基线测试需求
-- x86_64 配置问题不影响 WSL2 主要使用场景（aarch64 + TCG）
-- 文档结构已调整，所有详细文档移至 `docs/` 目录
+- net-bench 列于 `apps/.ignore`，默认不参与 app 发现/CI，仅通过
+  `--test-case net-bench` 显式触发——符合"严肃测试显式入口、非默认"的设计。
+- 多队列为性能优化项；当前单队列配置满足基线测试需求。
