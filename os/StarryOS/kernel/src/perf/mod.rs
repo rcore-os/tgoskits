@@ -28,6 +28,10 @@ pub mod sideband;
 /// `sampling`.
 #[cfg(target_arch = "aarch64")]
 pub mod task;
+/// Per-CPU perf tick driving Tier-2 counter rotation (multiplexing). ARM PMUv3
+/// only; registered with the scheduler tick at [`perf_event_init`].
+#[cfg(target_arch = "aarch64")]
+pub mod tick;
 pub mod tracepoint;
 pub mod uprobe;
 
@@ -499,9 +503,13 @@ pub fn perf_event_open(
 static PERF_FILE: LazyInit<SpinNoPreempt<HashMap<usize, alloc::sync::Weak<dyn FileLike>>>> =
     LazyInit::new();
 
-/// Initialize the perf-event runtime: build the fd→event lookup table.
+/// Initialize the perf-event runtime: build the fd→event lookup table and
+/// register the Tier-2 rotation tick with the periodic scheduler tick.
 pub fn perf_event_init() {
     PERF_FILE.init_once(SpinNoPreempt::new(HashMap::new()));
+    // Drive per-CPU counter rotation (multiplexing) from the scheduler tick.
+    #[cfg(target_arch = "aarch64")]
+    ax_task::set_perf_tick(tick::perf_tick);
 }
 
 /// Implementation of `bpf_perf_event_output` helper: walk the fd→event map,
