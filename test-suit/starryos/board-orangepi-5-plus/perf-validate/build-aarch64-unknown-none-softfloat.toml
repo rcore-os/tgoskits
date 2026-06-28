@@ -1,0 +1,28 @@
+# Build wrapper for the perf-validate board case.
+#
+# This DECOUPLES perf-validate from the shared group build
+# (`../build-aarch64-unknown-none-softfloat.toml`): `nearest_build_wrapper`
+# walks up from this case dir and finds THIS file first, so perf-validate gets
+# its own kernel build without disturbing the boot/lsusb/npu/net/pcie cases.
+#
+# It is byte-for-byte the proven-booting group config EXCEPT `log = "Warn"`
+# (the long perf-validate run emits many lines; Warn keeps the 1.5M serial
+# console from stretching boot past the timeout — see board-run-mechanics).
+#
+# max_cpu_num = 1 today: the board boots cleanly only at smp1 (an smp8
+# late-boot hang at "block device rockchip-sd registered" — a NON-perf bug).
+# When that is fixed, flip to the `smp8-staged-build-aarch64.toml` variant (or
+# bump max_cpu_num here) to unlock the needs-smp8 / both-clusters checks.
+target = "aarch64-unknown-none-softfloat"
+features = [
+  "ax-driver/list-pci-devices",
+  "ax-driver/rk3588-pcie",
+  "ax-driver/realtek-rtl8125",
+  "ax-driver/rockchip-soc",
+  "ax-driver/rockchip-dwc-xhci",
+  "ax-driver/rockchip-sdhci",
+  "ax-driver/rockchip-dwmmc",
+  "rknpu",
+]
+log = "Warn"
+max_cpu_num = 1
