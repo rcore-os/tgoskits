@@ -1,0 +1,8 @@
+cmake_minimum_required(VERSION 3.20)
+project(perf-hw-smp-rotate C)
+set(CMAKE_C_STANDARD 11)
+set(CMAKE_C_STANDARD_REQUIRED ON)
+set(CMAKE_C_EXTENSIONS OFF)
+add_executable(perf-hw-smp-rotate src/perf_hw_smp_rotate.c)
+target_compile_options(perf-hw-smp-rotate PRIVATE -Wall -Wextra -Werror)
+install(TARGETS perf-hw-smp-rotate RUNTIME DESTINATION usr/bin/starry-test-suit)
