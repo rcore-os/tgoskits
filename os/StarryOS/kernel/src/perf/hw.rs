@@ -241,6 +241,26 @@ fn alloc_sampling_ring(len: usize) -> AxResult<(Arc<GlobalPage>, usize, PhysAddr
     Ok((Arc::new(pages), kvirt.as_usize(), paddr))
 }
 
+/// A system-wide event pinned to a specific CPU (`perf_event_open` with
+/// `pid <= 0 && cpu >= 0`, i.e. `perf stat -a`'s per-CPU fan-out).
+///
+/// Counting only: the event programs a programmable counter from the *target*
+/// core's per-CPU pool and counts all activity on that core. Because the fd may
+/// be opened, read, and closed from a different core, those operations run on
+/// `cpu` via a synchronous IPI (mirroring Linux `smp_call_function_single` in
+/// `__perf_event_read` / `perf_install_in_context`); they are infrequent (open /
+/// end-of-run read / close), never a hot path. `slot` is the counter index on
+/// `cpu`, `None` until the first `enable`.
+#[cfg(target_arch = "aarch64")]
+#[derive(Debug)]
+struct SysCpuBinding {
+    cpu: usize,
+    event: u16,
+    exclude_user: bool,
+    exclude_kernel: bool,
+    slot: Option<usize>,
+}
+
 /// A hardware-PMU perf event: one allocated counter plus the timing
 /// accumulators `perf stat` reads back through `read_format`, and — for sampling
 /// events — the [`SamplingState`] driving the overflow-IRQ ring buffer.
@@ -277,6 +297,13 @@ pub struct HwPerfEvent {
     /// the `PerfEventOps` methods + `Drop` delegate to the per-task path. The
     /// `Arc` is shared with the target [`crate::task::Thread`]'s counter list.
     per_task: Option<Arc<super::task::PerTaskCounter>>,
+    /// Cpu-bound system-wide counting state, `Some` iff opened with
+    /// `pid <= 0 && cpu >= 0` (the `perf stat -a` fan-out). When set, the counter
+    /// lives on `sys_cpu.cpu`'s per-CPU pool and `enable` / `read_values` /
+    /// `disable` / `Drop` drive it there (locally or via IPI); `counter` is an
+    /// inert placeholder. The timing fields (`enabled_since` / `time_*`) still
+    /// apply (a cpu-bound event runs continuously while enabled).
+    sys_cpu: Option<SysCpuBinding>,
 }
 
 #[cfg(target_arch = "aarch64")]
@@ -366,6 +393,193 @@ impl HwPerfEvent {
         let anchor: Arc<dyn Any + Send + Sync> = Arc::new(pages);
         Ok((paddr, anchor))
     }
+
+    /// Program (alloc + configure + enable) this cpu-bound system event's counter
+    /// on its target core. Idempotent: a no-op if already armed. Returns
+    /// `NoMemory` if the target core's pool is full.
+    fn sys_program(&mut self) -> AxResult<()> {
+        let Some(sc) = &mut self.sys_cpu else {
+            return Ok(());
+        };
+        if sc.slot.is_some() {
+            return Ok(());
+        }
+        let mut op = SysCpuOp {
+            op: SYS_OP_PROGRAM,
+            event: sc.event,
+            exclude_user: sc.exclude_user,
+            exclude_kernel: sc.exclude_kernel,
+            slot: 0,
+            value: 0,
+            ok: false,
+        };
+        run_sys_cpu_op(sc.cpu, &mut op);
+        if !op.ok {
+            return Err(AxError::NoMemory);
+        }
+        sc.slot = Some(op.slot);
+        Ok(())
+    }
+
+    /// Build + run a slot-only [`SysCpuOp`] (`START` / `STOP` / `READ`) on the
+    /// target core. No-op before the counter is allocated.
+    fn sys_slot_op(&self, op_code: u8) -> u64 {
+        let Some(sc) = &self.sys_cpu else {
+            return 0;
+        };
+        let Some(n) = sc.slot else {
+            return 0;
+        };
+        let mut op = SysCpuOp {
+            op: op_code,
+            event: sc.event,
+            exclude_user: sc.exclude_user,
+            exclude_kernel: sc.exclude_kernel,
+            slot: n,
+            value: 0,
+            ok: false,
+        };
+        run_sys_cpu_op(sc.cpu, &mut op);
+        op.value
+    }
+
+    /// Start (enable) the already-configured counter on its target core.
+    fn sys_start(&self) {
+        self.sys_slot_op(SYS_OP_START);
+    }
+
+    /// Stop (disable) the counter on its target core, keeping it allocated so its
+    /// value stays readable until `Drop`.
+    fn sys_stop(&self) {
+        self.sys_slot_op(SYS_OP_STOP);
+    }
+
+    /// Reset the counter to 0 on its target core (re-configure), if allocated.
+    fn sys_reset(&self) {
+        self.sys_slot_op(SYS_OP_RESET);
+    }
+
+    /// Stop + free this cpu-bound system event's counter on its target core.
+    fn sys_free(&mut self) {
+        let Some(sc) = &mut self.sys_cpu else {
+            return;
+        };
+        if let Some(n) = sc.slot.take() {
+            let mut op = SysCpuOp {
+                op: SYS_OP_FREE,
+                event: 0,
+                exclude_user: false,
+                exclude_kernel: false,
+                slot: n,
+                value: 0,
+                ok: false,
+            };
+            run_sys_cpu_op(sc.cpu, &mut op);
+        }
+    }
+
+    /// Read this cpu-bound system event's counter value from its target core.
+    fn sys_read(&self) -> u64 {
+        self.sys_slot_op(SYS_OP_READ)
+    }
+}
+
+/// IPI opcode: alloc + configure a programmable counter (leaves it DISABLED).
+#[cfg(target_arch = "aarch64")]
+const SYS_OP_PROGRAM: u8 = 0;
+/// IPI opcode: read a programmable counter.
+#[cfg(target_arch = "aarch64")]
+const SYS_OP_READ: u8 = 1;
+/// IPI opcode: disable + free a programmable counter.
+#[cfg(target_arch = "aarch64")]
+const SYS_OP_FREE: u8 = 2;
+/// IPI opcode: start (enable) an already-configured counter.
+#[cfg(target_arch = "aarch64")]
+const SYS_OP_START: u8 = 3;
+/// IPI opcode: stop (disable) a counter, keeping it allocated + its value.
+#[cfg(target_arch = "aarch64")]
+const SYS_OP_STOP: u8 = 4;
+/// IPI opcode: reset a counter to 0 (re-configure), keeping it allocated.
+#[cfg(target_arch = "aarch64")]
+const SYS_OP_RESET: u8 = 5;
+
+/// Argument marshalled to [`sys_cpu_op_thunk`] when it runs on the target core
+/// (in-place: outputs `slot`/`value`/`ok` are written back for the caller, which
+/// blocks on the synchronous IPI until the thunk returns).
+#[cfg(target_arch = "aarch64")]
+struct SysCpuOp {
+    op: u8,
+    event: u16,
+    exclude_user: bool,
+    exclude_kernel: bool,
+    slot: usize,
+    value: u64,
+    ok: bool,
+}
+
+/// Perform a [`SysCpuOp`] on the current core (the target core, reached locally
+/// or via the IPI in [`run_sys_cpu_op`]).
+///
+/// # Safety
+/// `arg` must point at a live [`SysCpuOp`] for the duration of the call (the
+/// caller keeps it alive across the synchronous IPI).
+#[cfg(target_arch = "aarch64")]
+unsafe fn sys_cpu_op_thunk(arg: *mut ()) {
+    let op = unsafe { &mut *(arg as *mut SysCpuOp) };
+    super::percpu::ensure_core_inited();
+    match op.op {
+        // Allocate + configure (resets to 0); leaves the counter DISABLED so a
+        // later STOP can pause it without freeing (perf reads the final value
+        // after DISABLE). A separate START enables it.
+        SYS_OP_PROGRAM => match super::percpu::alloc_programmable_counter() {
+            Some(n) => {
+                ax_cpu::pmu::counter::configure(n, op.event, op.exclude_user, op.exclude_kernel);
+                op.slot = n;
+                op.ok = true;
+            }
+            None => op.ok = false,
+        },
+        SYS_OP_START => {
+            ax_cpu::pmu::counter::enable(op.slot);
+            op.ok = true;
+        }
+        SYS_OP_STOP => {
+            // Stop counting but KEEP the slot + value: `read(perf_fd)` after
+            // DISABLE must still return the final count (Linux semantics).
+            ax_cpu::pmu::counter::disable(op.slot);
+            op.ok = true;
+        }
+        SYS_OP_RESET => {
+            // Re-configure resets the counter to 0 (Linux `PERF_EVENT_IOC_RESET`).
+            ax_cpu::pmu::counter::configure(op.slot, op.event, op.exclude_user, op.exclude_kernel);
+            op.ok = true;
+        }
+        SYS_OP_READ => {
+            op.value = ax_cpu::pmu::counter::read(op.slot);
+            op.ok = true;
+        }
+        SYS_OP_FREE => {
+            ax_cpu::pmu::counter::disable(op.slot);
+            super::percpu::free_programmable_counter(op.slot);
+            op.ok = true;
+        }
+        _ => {}
+    }
+}
+
+/// Run a [`SysCpuOp`] on `cpu`: directly if it is the current core, else via a
+/// synchronous IPI. Leaves `op.ok == false` if the target core is not ready.
+#[cfg(target_arch = "aarch64")]
+fn run_sys_cpu_op(cpu: usize, op: &mut SysCpuOp) {
+    let arg = op as *mut SysCpuOp as *mut ();
+    if cpu == ax_hal::percpu::this_cpu_id() {
+        // SAFETY: `op` is live for this call.
+        unsafe { sys_cpu_op_thunk(arg) };
+    } else if ax_ipi::wait_until_cpu_ready(cpu) {
+        // SAFETY: `op` outlives the synchronous IPI (we block until it returns),
+        // and the thunk only touches `cpu`'s per-CPU PMU state.
+        let _ = unsafe { ax_ipi::run_on_cpu_sync_raw(cpu, sys_cpu_op_thunk, arg) };
+    }
 }
 
 #[cfg(target_arch = "aarch64")]
@@ -376,6 +590,12 @@ impl Drop for HwPerfEvent {
         // task-exit hook may have freed it already) and stop here.
         if let Some(ptc) = &self.per_task {
             super::task::free_hw(ptc);
+            return;
+        }
+        // Cpu-bound system event: free its counter on the target core (IPI if the
+        // closing core differs), then stop.
+        if self.sys_cpu.is_some() {
+            self.sys_free();
             return;
         }
         // For sampling events, mask the IRQ, stop the counter, and clear the
@@ -490,6 +710,18 @@ impl PerfEventOps for HwPerfEvent {
             ptc.set_enabled();
             return Ok(());
         }
+        // Cpu-bound system event (`perf stat -a`): allocate + configure the
+        // counter on its target core (first enable), then start it. The counter
+        // stays allocated across DISABLE so `read(perf_fd)` returns the final
+        // count; it is freed only at `Drop`.
+        if self.sys_cpu.is_some() {
+            self.sys_program()?;
+            self.sys_start();
+            if self.enabled_since.is_none() {
+                self.enabled_since = Some(ax_runtime::hal::time::monotonic_time_nanos());
+            }
+            return Ok(());
+        }
         if self.enabled_since.is_none() {
             self.enabled_since = Some(ax_runtime::hal::time::monotonic_time_nanos());
         }
@@ -559,6 +791,19 @@ impl PerfEventOps for HwPerfEvent {
             ptc.set_disabled();
             return Ok(());
         }
+        // Cpu-bound system event: STOP (not free) its counter on the target core
+        // — the value must survive for a post-disable `read(perf_fd)` — then
+        // accrue the enabled window. The counter is freed only at `Drop`.
+        if self.sys_cpu.is_some() {
+            self.sys_stop();
+            if let Some(since) = self.enabled_since.take() {
+                let now = ax_runtime::hal::time::monotonic_time_nanos();
+                let elapsed = now.saturating_sub(since);
+                self.time_enabled += elapsed;
+                self.time_running += elapsed;
+            }
+            return Ok(());
+        }
         // Sampling events: strict teardown (mask IRQ → stop counter → unregister
         // slot) so the handler can no longer touch this event, then accrue time.
         if self.sampling.is_some() {
@@ -585,6 +830,14 @@ impl PerfEventOps for HwPerfEvent {
             ptc.reset();
             return Ok(());
         }
+        // Cpu-bound system event: if armed, reset the counter to 0 on its target
+        // core (re-configure); before enable there is nothing to reset, so
+        // `perf stat`'s RESET-before-ENABLE is a no-op (the counter is configured
+        // — and thus zeroed — at the first enable).
+        if self.sys_cpu.is_some() {
+            self.sys_reset();
+            return Ok(());
+        }
         match self.counter {
             Counter::Cycle => ax_cpu::pmu::cycles::reset(),
             Counter::Programmable(n) => ax_cpu::pmu::counter::reset(n),
@@ -602,6 +855,25 @@ impl PerfEventOps for HwPerfEvent {
                 time_enabled,
                 time_running,
                 read_format: ptc.read_format(),
+            });
+        }
+        // Cpu-bound system event: read the counter from its target core (IPI if
+        // the reader is elsewhere); timing is the enabled window (runs
+        // continuously while enabled, so time_running == time_enabled).
+        if self.sys_cpu.is_some() {
+            let value = self.sys_read();
+            let (mut time_enabled, mut time_running) = (self.time_enabled, self.time_running);
+            if let Some(since) = self.enabled_since {
+                let now = ax_runtime::hal::time::monotonic_time_nanos();
+                let elapsed = now.saturating_sub(since);
+                time_enabled += elapsed;
+                time_running += elapsed;
+            }
+            return Ok(PerfReadValues {
+                value,
+                time_enabled,
+                time_running,
+                read_format: self.read_format,
             });
         }
         // Current timing = accumulated past windows + the live window, if any.
@@ -673,6 +945,13 @@ impl PerfEventOps for HwPerfEvent {
         // Allocate the ring, spawn the notify worker, and hand both to the ptc.
         if let Some(ptc) = &self.per_task {
             return device_mmap_per_task(ptc, len);
+        }
+
+        // Cpu-bound system event: no `rdpmc` page — its counter lives on another
+        // core, so a userspace `mrs` on the mapping core would read the wrong PE's
+        // counter. (`perf stat -a` does not mmap; only self-monitoring does.)
+        if self.sys_cpu.is_some() {
+            return Err(AxError::Unsupported);
         }
 
         // A counting event has no ring; it exposes a single-page
@@ -779,7 +1058,7 @@ fn resolve_sampling(raw: u64, is_freq: bool) -> (u32, u32) {
 /// value reset to 0) but left disabled: the attr carries `disabled = 1`, and
 /// the caller drives it with `ioctl(PERF_EVENT_IOC_ENABLE)`.
 #[cfg(target_arch = "aarch64")]
-pub fn perf_event_open_hw(attr: &perf_event_attr, pid: i32) -> AxResult<HwPerfEvent> {
+pub fn perf_event_open_hw(attr: &perf_event_attr, pid: i32, cpu: i32) -> AxResult<HwPerfEvent> {
     // No PMUv3 → no hardware events.
     if ax_hal::pmu::info().is_none() {
         return Err(AxError::Unsupported);
@@ -809,6 +1088,58 @@ pub fn perf_event_open_hw(attr: &perf_event_attr, pid: i32) -> AxResult<HwPerfEv
     let raw = unsafe { attr.__bindgen_anon_1.sample_period };
     let is_freq = attr.freq() != 0;
     let is_sampling = raw > 0;
+
+    // `perf stat -a` per-CPU fan-out: a system-wide COUNTING event pinned to a
+    // specific cpu (`cpu >= 0`) counts on THAT core via its per-CPU pool,
+    // programmed / read / freed over a synchronous IPI. Sampling `-a`
+    // (`perf record -a`) is not fanned out here — it stays on the current core.
+    if cpu >= 0 && !is_sampling {
+        let event = if attr.type_ == perf_type_id::PERF_TYPE_HARDWARE as u32 {
+            match ax_cpu::pmu::hw_event_to_arm(attr.config as u32) {
+                Some(e) => e,
+                None => {
+                    warn!(
+                        "perf_event_open: unsupported -a hardware config {:#x}",
+                        attr.config
+                    );
+                    return Err(AxError::Unsupported);
+                }
+            }
+        } else if attr.type_ == perf_type_id::PERF_TYPE_RAW as u32
+            || attr.type_ == ARMV8_PMUV3_PERF_TYPE
+        {
+            (attr.config & 0xFFFF) as u16
+        } else {
+            warn!(
+                "perf_event_open: unsupported -a hardware type {:#x}",
+                attr.type_
+            );
+            return Err(AxError::Unsupported);
+        };
+        // Validated on the opening core; cluster-specific validation against the
+        // target core's PMCEID is a Layer-4 (S5) refinement.
+        if !ax_cpu::pmu::event_supported(event) {
+            warn!("perf_event_open: -a ARM event {event:#x} not implemented on this CPU");
+            return Err(AxError::Unsupported);
+        }
+        return Ok(HwPerfEvent {
+            counter: Counter::Programmable(usize::MAX),
+            sample_id: 0,
+            read_format: attr.read_format,
+            enabled_since: None,
+            time_enabled: 0,
+            time_running: 0,
+            sampling: None,
+            per_task: None,
+            sys_cpu: Some(SysCpuBinding {
+                cpu: cpu as usize,
+                event,
+                exclude_user,
+                exclude_kernel,
+                slot: None,
+            }),
+        });
+    }
 
     if is_sampling {
         // The IRQ handler (build_sample) emits the scalar sample_type fields perf
@@ -919,6 +1250,9 @@ pub fn perf_event_open_hw(attr: &perf_event_attr, pid: i32) -> AxResult<HwPerfEv
         sampling,
         // System-wide / self event: not per-task.
         per_task: None,
+        // Counts on the opening core (`cpu < 0`); the cpu-bound `-a` fan-out
+        // returned earlier.
+        sys_cpu: None,
     })
 }
 
@@ -1059,6 +1393,7 @@ fn perf_event_open_hw_per_task(attr: &perf_event_attr, pid: i32) -> AxResult<HwP
         time_running: 0,
         sampling: None,
         per_task: Some(ptc),
+        sys_cpu: None,
     })
 }
 
@@ -1119,6 +1454,6 @@ impl PerfEventOps for HwPerfEvent {
 
 /// Non-aarch64 fallback: no hardware PMU support outside ARM PMUv3.
 #[cfg(not(target_arch = "aarch64"))]
-pub fn perf_event_open_hw(_attr: &perf_event_attr, _pid: i32) -> AxResult<HwPerfEvent> {
+pub fn perf_event_open_hw(_attr: &perf_event_attr, _pid: i32, _cpu: i32) -> AxResult<HwPerfEvent> {
     Err(AxError::Unsupported)
 }

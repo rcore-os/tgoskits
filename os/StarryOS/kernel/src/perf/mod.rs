@@ -454,11 +454,12 @@ pub fn perf_event_open(
         || attr.type_ == PerfTypeId::PERF_TYPE_RAW as u32
         || attr.type_ == hw::ARMV8_PMUV3_PERF_TYPE
     {
-        // Thread `pid` into the hardware path so it can choose between the
-        // system-wide M1 path (`pid <= 0`) and per-task counting (`pid > 0`).
-        // `cpu` / `group_fd` / `flags` are not consumed by the hardware path
-        // (single-CPU, no event groups), so they are intentionally dropped.
-        Box::new(hw::perf_event_open_hw(attr, pid)?)
+        // Thread `pid` + `cpu` into the hardware path: it chooses between
+        // per-task counting (`pid > 0`), a cpu-bound system-wide event
+        // (`pid <= 0 && cpu >= 0`, the `perf stat -a` fan-out — counts on that
+        // core via its per-CPU pool), and the current-core path (`cpu < 0`).
+        // `group_fd` / `flags` are not consumed by the hardware path.
+        Box::new(hw::perf_event_open_hw(attr, pid, cpu)?)
     } else {
         let args = PerfProbeArgs::try_from_perf_attr::<EbpfKernelAuxiliary>(
             attr, pid, cpu, group_fd, flags,

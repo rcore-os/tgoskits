@@ -252,6 +252,11 @@ pub fn unregister(n: usize) {
 /// under smp1 the PMU PPI would otherwise stay masked and the overflow IRQ would
 /// never fire on cpu0.
 pub fn ensure_pmu_irq_registered() {
+    // Guarantee this core's PMU is brought up (PMCR.E set, clean slate) before
+    // we arm an overflow on it. On secondary cores nothing else does this, so
+    // without it the counter would never count / the overflow never fire.
+    super::percpu::ensure_core_inited();
+
     let pmu_irq = match pmu_irq() {
         Ok(irq) => irq,
         Err(err) => {
