@@ -283,17 +283,17 @@ impl LpiPropTable {
 }
 
 /// Global LPI property table instance.
-pub static LPT: Once<spin::Mutex<LpiPropTable>> = Once::new();
+pub static LPT: Once<SpinNoIrq<LpiPropTable>> = Once::new();
 
 /// Gets or initializes the global LPI property table.
 pub fn get_lpt(
     host_gicd_typer: u32,
     host_gicr_base: HostPhysAddr,
     size_per_gicr: Option<usize>,
-) -> &'static spin::Mutex<LpiPropTable> {
+) -> &'static SpinNoIrq<LpiPropTable> {
     if !LPT.is_completed() {
         LPT.call_once(|| {
-            spin::Mutex::new(LpiPropTable::new(
+            SpinNoIrq::new(LpiPropTable::new(
                 host_gicd_typer,
                 host_gicr_base,
                 size_per_gicr,

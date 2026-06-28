@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.17](https://github.com/rcore-os/tgoskits/compare/axvm-v0.5.16...axvm-v0.5.17) - 2026-06-27
+
+### Other
+
+- *(platform)* remove ax-config from dynamic runtime path ([#1387](https://github.com/rcore-os/tgoskits/pull/1387))
+- *(axdevice)* unify Device model with indexed dispatch and conflict detect ([#1335](https://github.com/rcore-os/tgoskits/pull/1335))
+
 ## [0.5.16](https://github.com/rcore-os/tgoskits/compare/axvm-v0.5.15...axvm-v0.5.16) - 2026-06-23
 
 ### Other

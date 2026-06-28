@@ -47,7 +47,7 @@ impl ByteAllocator for BuddyByteAllocator {
     }
 
     fn dealloc(&mut self, pos: NonNull<u8>, layout: Layout) {
-        self.inner.dealloc(pos, layout)
+        unsafe { self.inner.dealloc(pos, layout) }
     }
 
     fn total_bytes(&self) -> usize {

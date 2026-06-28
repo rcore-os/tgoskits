@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.1](https://github.com/rcore-os/tgoskits/compare/axdevice_base-v0.5.0...axdevice_base-v0.5.1) - 2026-06-27
+
+### Fixed
+
+- *(locking)* remove spin mutex usage from kernel paths ([#1380](https://github.com/rcore-os/tgoskits/pull/1380))
+
+### Other
+
+- *(axdevice)* unify Device model with indexed dispatch and conflict detect ([#1335](https://github.com/rcore-os/tgoskits/pull/1335))
+
 ## [0.5.0](https://github.com/rcore-os/tgoskits/compare/axdevice_base-v0.4.14...axdevice_base-v0.5.0) - 2026-06-22
 
 ### Other

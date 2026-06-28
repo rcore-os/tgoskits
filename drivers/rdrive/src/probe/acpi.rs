@@ -28,8 +28,9 @@ use acpi::{
     },
     sdt::spcr::{Spcr, SpcrInterfaceType},
 };
+use ax_kspin::SpinRaw as Mutex;
 pub use rdif_base::irq::{AcpiGsiController, AcpiGsiRoute, AcpiIrqPolarity, AcpiIrqTrigger};
-use spin::{Mutex, Once};
+use spin::Once;
 
 use crate::{
     DeviceId, PlatformDevice,
@@ -288,7 +289,7 @@ mod tests {
     use super::{
         AcpiGsiController, AcpiHandler, AcpiId, AcpiIoApic, AcpiIrqPolarity, AcpiIrqTrigger,
         AcpiIsaIrqOverride, AcpiPchPic, AcpiResourceRange, AcpiRoot, AcpiRouting, LinkIrqResource,
-        LinkIrqResourceKind, PciLinkAllocator, System, irq_descriptor_gsi,
+        LinkIrqResourceKind, Mutex, PciLinkAllocator, System, irq_descriptor_gsi,
         is_buffer_field_to_field_unit_store_gap, pci_irq_descriptor_gsi,
         pci_link_irq_field_candidates, route_with_irq_descriptor_flags, select_pci_link_irq,
     };
@@ -387,13 +388,13 @@ mod tests {
             interpreter: interpreter_with_devices(handler.clone()),
             handler,
             pci: None,
-            probed_names: spin::Mutex::new(alloc::collections::BTreeSet::new()),
-            populated_paths: spin::Mutex::new(alloc::collections::BTreeMap::new()),
-            populated_resources: spin::Mutex::new(alloc::collections::BTreeMap::new()),
+            probed_names: Mutex::new(alloc::collections::BTreeSet::new()),
+            populated_paths: Mutex::new(alloc::collections::BTreeMap::new()),
+            populated_resources: Mutex::new(alloc::collections::BTreeMap::new()),
         }
     }
 
-    static LAST_PATH: spin::Mutex<Option<String>> = spin::Mutex::new(None);
+    static LAST_PATH: Mutex<Option<String>> = Mutex::new(None);
 
     fn probe_rtc(probe: super::ProbeAcpi<'_>) -> Result<(), crate::probe::OnProbeError> {
         let info = probe.info();

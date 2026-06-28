@@ -1,6 +1,6 @@
 [package]
 name = "ax-cpu"
-version = "0.7.1"
+version = "0.8.0"
 repository = "https://github.com/rcore-os/tgoskits"
 edition.workspace = true
 authors = [

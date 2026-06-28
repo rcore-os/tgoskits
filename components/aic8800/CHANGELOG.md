@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.1](https://github.com/rcore-os/tgoskits/compare/aic8800-v0.2.0...aic8800-v0.2.1) - 2026-06-27
+
+### Fixed
+
+- *(locking)* remove spin mutex usage from kernel paths ([#1380](https://github.com/rcore-os/tgoskits/pull/1380))
+
 ## [0.2.0](https://github.com/rcore-os/tgoskits/compare/aic8800-v0.1.1...aic8800-v0.2.0) - 2026-06-23
 
 ### Added

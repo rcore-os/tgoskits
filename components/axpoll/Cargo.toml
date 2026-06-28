@@ -1,6 +1,6 @@
 [package]
 name = "axpoll"
-version = "0.4.1"
+version = "0.4.2"
 edition.workspace = true
 description = "A library for polling I/O events and waking up tasks."
 authors = ["Mivik <mivikq@gmail.com>", "朝倉水希 <asakuramizu111@gmail.com>"]
@@ -19,9 +19,8 @@ linux-raw-sys = { version = "0.12", default-features = false, features = [
     "no_std",
     "general",
 ] }
-spin = { version = "0.12", default-features = false, features = [
+spin = { version = "0.12", path = "../spin", default-features = false, features = [
     "lazylock",
-    "spin_mutex",
 ] }
 
 [dev-dependencies]

@@ -1,6 +1,6 @@
 [package]
 name = "ax-driver"
-version = "0.8.2"
+version = "0.9.0"
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
@@ -16,10 +16,10 @@ default = []
 plat-static = []
 plat-dyn = ["dep:fdt-edit"]
 irq = []
-pci = ["dep:pcie", "dep:rdif-pcie"]
+pci = ["dep:ax-kspin", "dep:pcie", "dep:rdif-pcie"]
 
 block = ["dep:ax-errno", "dep:ax-kspin", "dep:rdif-block"]
-net = ["dep:rd-net"]
+net = ["dep:ax-kspin", "dep:rd-net"]
 display = ["dep:ax-errno", "dep:rdif-display"]
 input = ["dep:ax-errno", "dep:rdif-input"]
 vsock = ["dep:ax-errno", "dep:rdif-vsock"]

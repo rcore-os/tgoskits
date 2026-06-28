@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.22](https://github.com/rcore-os/tgoskits/compare/ax-std-v0.5.21...ax-std-v0.5.22) - 2026-06-27
+
+### Fixed
+
+- *(locking)* remove spin mutex usage from kernel paths ([#1380](https://github.com/rcore-os/tgoskits/pull/1380))
+
 ## [0.5.21](https://github.com/rcore-os/tgoskits/compare/ax-std-v0.5.20...ax-std-v0.5.21) - 2026-06-23
 
 ### Other
