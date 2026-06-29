@@ -18,6 +18,7 @@ use core::time::Duration;
 use dwmmc_host::{CardDetect, DwMmc, HostClock, rdif as dwmmc_rdif};
 use fdt_edit::{Node, Phandle};
 use log::{info, warn};
+use rdif_pinctrl::PinctrlDevice;
 use rdrive::{
     probe::OnProbeError,
     register::{FdtInfo, ProbeFdt},
@@ -202,16 +203,19 @@ fn probe(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
 
 fn apply_rockchip_sd_resources(info: &FdtInfo<'_>) -> Result<(), OnProbeError> {
     apply_assigned_clocks(info, "SDMMC")?;
-    let Some(pinctrl) = rdrive::get_one::<RockchipPinCtrl>() else {
+    let Some(pinctrl) = rdrive::get_one::<PinctrlDevice>() else {
         warn!(
-            "[{}] RockchipPinCtrl not found; skip SDMMC pinctrl and fixed regulators",
+            "[{}] PinctrlDevice not found; skip SDMMC pinctrl and fixed regulators",
             info.node.name()
         );
         return Ok(());
     };
     let mut pinctrl = pinctrl
         .lock()
-        .map_err(|err| OnProbeError::other(format!("failed to lock RockchipPinCtrl: {err}")))?;
+        .map_err(|err| OnProbeError::other(format!("failed to lock PinctrlDevice: {err}")))?;
+    let pinctrl = pinctrl
+        .typed_mut::<RockchipPinCtrl>()
+        .ok_or_else(|| OnProbeError::other("PinctrlDevice is not backed by RockchipPinCtrl"))?;
     pinctrl.apply_default_pinctrl(info.node)?;
     for (name, supply) in sd_supply_phandles(info.node.as_node()) {
         if supply_has_fixed_gpio_enable(info, supply)? {
