@@ -1,5 +1,9 @@
 use alloc::{boxed::Box, collections::VecDeque, sync::Arc, vec, vec::Vec};
-use core::{alloc::Layout, cmp};
+use core::{
+    alloc::Layout,
+    cmp,
+    sync::atomic::{AtomicBool, Ordering},
+};
 
 use ax_kspin::SpinRaw as Mutex;
 use dma_api::{DmaAddr, DmaAllocHandle, DmaConstraints, DmaOp};
@@ -50,7 +54,11 @@ pub fn register(plat_dev: PlatformDevice) {
 }
 
 struct FxmacNet {
-    inner: Arc<Mutex<FxmacInner>>,
+    hw: Arc<Mutex<FxmacHw>>,
+    tx_state: Arc<Mutex<FxmacTxState>>,
+    rx_state: Arc<Mutex<FxmacRxState>>,
+    irq_state: Arc<FxmacIrqState>,
+    hwaddr: [u8; 6],
     tx_created: bool,
     rx_created: bool,
     irq_enabled: bool,
@@ -63,13 +71,16 @@ impl FxmacNet {
         let device = xmac_init(&hwaddr);
         device.disable_irq();
         Self {
-            inner: Arc::new(Mutex::new(FxmacInner {
-                device,
-                hwaddr,
-                rx_buffers: VecDeque::with_capacity(QUEUE_SIZE),
-                rx_packets: VecDeque::with_capacity(QUEUE_SIZE),
+            hw: Arc::new(Mutex::new(FxmacHw { device })),
+            tx_state: Arc::new(Mutex::new(FxmacTxState {
                 tx_done: VecDeque::with_capacity(QUEUE_SIZE),
             })),
+            rx_state: Arc::new(Mutex::new(FxmacRxState {
+                rx_buffers: VecDeque::with_capacity(QUEUE_SIZE),
+                rx_packets: VecDeque::with_capacity(QUEUE_SIZE),
+            })),
+            irq_state: Arc::new(FxmacIrqState::new()),
+            hwaddr,
             tx_created: false,
             rx_created: false,
             irq_enabled: false,
@@ -85,7 +96,7 @@ impl DriverGeneric for FxmacNet {
 
 impl rd_net::Interface for FxmacNet {
     fn mac_address(&self) -> [u8; 6] {
-        self.inner.lock().hwaddr
+        self.hwaddr
     }
 
     fn create_tx_queue(&mut self) -> Option<Box<dyn ITxQueue>> {
@@ -94,7 +105,9 @@ impl rd_net::Interface for FxmacNet {
         }
         self.tx_created = true;
         Some(Box::new(FxmacTxQueue {
-            inner: self.inner.clone(),
+            hw: Arc::clone(&self.hw),
+            tx_state: Arc::clone(&self.tx_state),
+            irq_state: Arc::clone(&self.irq_state),
         }))
     }
 
@@ -104,19 +117,19 @@ impl rd_net::Interface for FxmacNet {
         }
         self.rx_created = true;
         Some(Box::new(FxmacRxQueue {
-            inner: self.inner.clone(),
+            hw: Arc::clone(&self.hw),
+            rx_state: Arc::clone(&self.rx_state),
+            irq_state: Arc::clone(&self.irq_state),
         }))
     }
 
     fn enable_irq(&mut self) {
-        let mut inner = self.inner.lock();
-        inner.device.enable_irq();
+        self.hw.lock().device.enable_irq();
         self.irq_enabled = true;
     }
 
     fn disable_irq(&mut self) {
-        let mut inner = self.inner.lock();
-        inner.device.disable_irq();
+        self.hw.lock().device.disable_irq();
         self.irq_enabled = false;
     }
 
@@ -125,24 +138,80 @@ impl rd_net::Interface for FxmacNet {
     }
 
     fn handle_irq(&mut self) -> Event {
-        let mut inner = self.inner.lock();
-        inner.device.handle_irq();
+        let mut handler = FxmacIrqHandler {
+            hw: Arc::clone(&self.hw),
+            irq_state: Arc::clone(&self.irq_state),
+        };
+        rd_net::InterfaceIrqHandler::handle_irq(&mut handler)
+    }
+
+    fn take_irq_handler(&mut self) -> Option<rd_net::BIrqHandler> {
+        Some(Box::new(FxmacIrqHandler {
+            hw: Arc::clone(&self.hw),
+            irq_state: Arc::clone(&self.irq_state),
+        }))
+    }
+}
+
+struct FxmacHw {
+    device: &'static mut FXmac,
+}
+
+unsafe impl Send for FxmacHw {}
+
+struct FxmacTxState {
+    tx_done: VecDeque<u64>,
+}
+
+struct FxmacRxState {
+    rx_buffers: VecDeque<RuntimeNetBuffer>,
+    rx_packets: VecDeque<Vec<u8>>,
+}
+
+struct FxmacIrqState {
+    rx_pending: AtomicBool,
+    tx_pending: AtomicBool,
+}
+
+impl FxmacIrqState {
+    fn new() -> Self {
+        Self {
+            rx_pending: AtomicBool::new(false),
+            tx_pending: AtomicBool::new(false),
+        }
+    }
+
+    fn publish_all(&self) -> Event {
+        self.rx_pending.store(true, Ordering::Release);
+        self.tx_pending.store(true, Ordering::Release);
         let mut event = Event::none();
         event.tx_queue.insert(QUEUE_ID);
         event.rx_queue.insert(QUEUE_ID);
         event
     }
+
+    fn take_rx_pending(&self) -> bool {
+        self.rx_pending.swap(false, Ordering::AcqRel)
+    }
+
+    fn take_tx_pending(&self) -> bool {
+        self.tx_pending.swap(false, Ordering::AcqRel)
+    }
 }
 
-struct FxmacInner {
-    device: &'static mut FXmac,
-    hwaddr: [u8; 6],
-    rx_buffers: VecDeque<RuntimeNetBuffer>,
-    rx_packets: VecDeque<Vec<u8>>,
-    tx_done: VecDeque<u64>,
+struct FxmacIrqHandler {
+    hw: Arc<Mutex<FxmacHw>>,
+    irq_state: Arc<FxmacIrqState>,
 }
 
-unsafe impl Send for FxmacInner {}
+impl rd_net::InterfaceIrqHandler for FxmacIrqHandler {
+    fn handle_irq(&mut self) -> Event {
+        if let Some(mut hw) = self.hw.try_lock() {
+            hw.device.handle_irq();
+        }
+        self.irq_state.publish_all()
+    }
+}
 
 #[derive(Clone, Copy)]
 struct RuntimeNetBuffer {
@@ -162,7 +231,9 @@ impl From<DmaBuffer> for RuntimeNetBuffer {
 }
 
 struct FxmacTxQueue {
-    inner: Arc<Mutex<FxmacInner>>,
+    hw: Arc<Mutex<FxmacHw>>,
+    tx_state: Arc<Mutex<FxmacTxState>>,
+    irq_state: Arc<FxmacIrqState>,
 }
 
 impl ITxQueue for FxmacTxQueue {
@@ -176,22 +247,24 @@ impl ITxQueue for FxmacTxQueue {
 
     fn submit(&mut self, buffer: DmaBuffer) -> Result<(), NetError> {
         let packet = unsafe { core::slice::from_raw_parts(buffer.virt.as_ptr(), buffer.len) };
-        let mut inner = self.inner.lock();
-        let ret = FXmacLwipPortTx(inner.device, vec![packet.to_vec()]);
+        let ret = FXmacLwipPortTx(self.hw.lock().device, vec![packet.to_vec()]);
         if ret < 0 {
             return Err(NetError::Retry);
         }
-        inner.tx_done.push_back(buffer.bus_addr);
+        self.tx_state.lock().tx_done.push_back(buffer.bus_addr);
         Ok(())
     }
 
     fn reclaim(&mut self) -> Option<u64> {
-        self.inner.lock().tx_done.pop_front()
+        let _ = self.irq_state.take_tx_pending();
+        self.tx_state.lock().tx_done.pop_front()
     }
 }
 
 struct FxmacRxQueue {
-    inner: Arc<Mutex<FxmacInner>>,
+    hw: Arc<Mutex<FxmacHw>>,
+    rx_state: Arc<Mutex<FxmacRxState>>,
+    irq_state: Arc<FxmacIrqState>,
 }
 
 impl IRxQueue for FxmacRxQueue {
@@ -204,24 +277,25 @@ impl IRxQueue for FxmacRxQueue {
     }
 
     fn submit(&mut self, buffer: DmaBuffer) -> Result<(), NetError> {
-        self.inner.lock().rx_buffers.push_back(buffer.into());
+        self.rx_state.lock().rx_buffers.push_back(buffer.into());
         Ok(())
     }
 
     fn reclaim(&mut self) -> Option<(u64, usize)> {
-        let mut inner = self.inner.lock();
-        if inner.rx_buffers.is_empty() {
+        let mut rx_state = self.rx_state.lock();
+        if rx_state.rx_buffers.is_empty() {
             return None;
         }
 
-        if inner.rx_packets.is_empty()
-            && let Some(packets) = FXmacRecvHandler(inner.device)
+        let rx_pending = self.irq_state.take_rx_pending();
+        if (rx_pending || rx_state.rx_packets.is_empty())
+            && let Some(packets) = FXmacRecvHandler(self.hw.lock().device)
         {
-            inner.rx_packets.extend(packets);
+            rx_state.rx_packets.extend(packets);
         }
 
-        let packet = inner.rx_packets.pop_front()?;
-        let buffer = inner.rx_buffers.pop_front()?;
+        let packet = rx_state.rx_packets.pop_front()?;
+        let buffer = rx_state.rx_buffers.pop_front()?;
         let len = cmp::min(packet.len(), buffer.len);
         unsafe {
             core::ptr::copy_nonoverlapping(packet.as_ptr(), buffer.virt as *mut u8, len);

@@ -100,18 +100,13 @@ impl<T: VirtIoTransport> rd_net::Interface for VirtIoNetDevice<T> {
     }
 
     fn handle_irq(&mut self) -> Event {
-        self.inner.with_irq(|inner| {
-            let _ = inner.raw.ack_interrupt();
+        self.inner.handle_irq()
+    }
 
-            let mut event = Event::none();
-            if inner.raw.poll_transmit().is_some() {
-                event.tx_queue.insert(0);
-            }
-            if inner.raw.poll_receive().is_some() {
-                event.rx_queue.insert(0);
-            }
-            event
-        })
+    fn take_irq_handler(&mut self) -> Option<rd_net::BIrqHandler> {
+        Some(Box::new(VirtioNetIrqHandler {
+            inner: Arc::clone(&self.inner),
+        }))
     }
 }
 
@@ -139,11 +134,22 @@ impl<T: VirtIoTransport> VirtioNetInnerCell<T> {
         f(unsafe { &mut *self.inner.get() })
     }
 
-    fn with_irq<R>(&self, f: impl FnOnce(&mut NetInner<T>) -> R) -> R {
-        let _active = VirtioNetAccessGuard::enter_irq(&self.access_active);
+    fn try_with_irq<R>(&self, f: impl FnOnce(&mut NetInner<T>) -> R) -> Option<R> {
+        let _active = VirtioNetAccessGuard::try_enter_irq(&self.access_active)?;
         // SAFETY: `access_active` serializes IRQ-side access with task-side
-        // queue operations while preserving interrupt acknowledgment.
-        f(unsafe { &mut *self.inner.get() })
+        // queue operations. IRQ context never waits for task-side access.
+        Some(f(unsafe { &mut *self.inner.get() }))
+    }
+
+    fn handle_irq(&self) -> Event {
+        self.try_with_irq(|inner| {
+            let _ = inner.raw.ack_interrupt();
+        });
+
+        let mut event = Event::none();
+        event.tx_queue.insert(0);
+        event.rx_queue.insert(0);
+        event
     }
 }
 
@@ -154,8 +160,11 @@ impl<'a> VirtioNetAccessGuard<'a> {
         Self::enter(active)
     }
 
-    fn enter_irq(active: &'a AtomicBool) -> Self {
-        Self::enter(active)
+    fn try_enter_irq(active: &'a AtomicBool) -> Option<Self> {
+        active
+            .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+            .is_ok()
+            .then_some(Self(active))
     }
 
     fn enter(active: &'a AtomicBool) -> Self {
@@ -166,6 +175,16 @@ impl<'a> VirtioNetAccessGuard<'a> {
             spin_loop();
         }
         Self(active)
+    }
+}
+
+struct VirtioNetIrqHandler<T: VirtIoTransport> {
+    inner: Arc<VirtioNetInnerCell<T>>,
+}
+
+impl<T: VirtIoTransport + 'static> rd_net::InterfaceIrqHandler for VirtioNetIrqHandler<T> {
+    fn handle_irq(&mut self) -> Event {
+        self.inner.handle_irq()
     }
 }
 
@@ -368,36 +387,17 @@ fn map_net_error(err: VirtIoError) -> NetError {
 mod tests {
     extern crate std;
 
-    use core::sync::atomic::{AtomicBool, Ordering};
-    use std::{
-        sync::{Arc, mpsc},
-        thread,
-        time::Duration,
-    };
+    use core::sync::atomic::AtomicBool;
 
     use super::VirtioNetAccessGuard;
 
     #[test]
-    fn irq_access_waits_for_task_access_to_finish() {
-        let active = Arc::new(AtomicBool::new(false));
-        let irq_entered = Arc::new(AtomicBool::new(false));
-        let (started_tx, started_rx) = mpsc::channel();
+    fn irq_access_returns_none_when_task_access_is_active() {
+        let active = AtomicBool::new(false);
         let task_guard = VirtioNetAccessGuard::enter_task(&active);
 
-        let irq_active = Arc::clone(&active);
-        let irq_entered_clone = Arc::clone(&irq_entered);
-        let irq_thread = thread::spawn(move || {
-            started_tx.send(()).unwrap();
-            let _irq_guard = VirtioNetAccessGuard::enter_irq(&irq_active);
-            irq_entered_clone.store(true, Ordering::Release);
-        });
-
-        started_rx.recv().unwrap();
-        thread::sleep(Duration::from_millis(20));
-        assert!(!irq_entered.load(Ordering::Acquire));
-
+        assert!(VirtioNetAccessGuard::try_enter_irq(&active).is_none());
         drop(task_guard);
-        irq_thread.join().unwrap();
-        assert!(irq_entered.load(Ordering::Acquire));
+        assert!(VirtioNetAccessGuard::try_enter_irq(&active).is_some());
     }
 }

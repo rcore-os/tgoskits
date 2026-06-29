@@ -20,7 +20,7 @@ use ax_hal::irq::CPU_LOCAL_IRQ_DOMAIN;
     feature = "plat-dyn"
 ))]
 use ax_hal::irq::HwIrq;
-use ax_hal::irq::{IrqError, IrqHandle, IrqId, IrqSource, RawIrqHandler};
+use ax_hal::irq::{BoxedIrqHandler, IrqError, IrqHandle, IrqId, IrqSource, RawIrqHandler};
 
 /// Resolves an explicitly legacy numeric IRQ without truncating it.
 pub fn resolve_legacy_irq(irq: usize) -> Result<IrqId, IrqError> {
@@ -150,6 +150,27 @@ impl Registration {
         }
     }
 
+    pub fn register_boxed_shared(
+        name: impl Into<String>,
+        irq: IrqId,
+        handler: BoxedIrqHandler,
+    ) -> Result<Self, IrqError> {
+        let name = name.into();
+        match ax_hal::irq::request_boxed_shared_irq(irq, handler) {
+            Ok(handle) => {
+                info!("registered {name} irq {:?}", handle.irq());
+                Ok(Self {
+                    name,
+                    handle: Some(handle),
+                })
+            }
+            Err(err) => {
+                warn!("failed to register {name} irq handler for irq {irq:?}: {err:?}");
+                Err(err)
+            }
+        }
+    }
+
     pub fn handle(&self) -> Option<IrqHandle> {
         self.handle
     }
@@ -203,24 +224,7 @@ pub(crate) struct RuntimeNetIrqRegistrar;
 pub(crate) static NET_IRQ_REGISTRAR: RuntimeNetIrqRegistrar = RuntimeNetIrqRegistrar;
 
 #[cfg(feature = "net")]
-struct RuntimeNetIrqState {
-    action: ax_net::EthernetIrqAction,
-}
-
-#[cfg(feature = "net")]
-impl ax_net::EthernetIrqRegistration for HandlerRegistration<RuntimeNetIrqState> {}
-
-#[cfg(feature = "net")]
-unsafe fn handle_net_irq(
-    _ctx: ax_hal::irq::IrqContext,
-    data: NonNull<()>,
-) -> ax_hal::irq::IrqReturn {
-    let state = unsafe { data.cast::<RuntimeNetIrqState>().as_ref() };
-    match unsafe { state.action.run() } {
-        ax_net::EthernetIrqOutcome::Handled => ax_hal::irq::IrqReturn::Handled,
-        ax_net::EthernetIrqOutcome::Wake => ax_hal::irq::IrqReturn::Wake,
-    }
-}
+impl ax_net::EthernetIrqRegistration for Registration {}
 
 #[cfg(feature = "net")]
 fn map_net_irq_error(err: IrqError) -> ax_net::EthernetIrqRegistrationError {
@@ -247,13 +251,13 @@ impl ax_net::EthernetIrqRegistrar for RuntimeNetIrqRegistrar {
         action: ax_net::EthernetIrqAction,
     ) -> Result<Box<dyn ax_net::EthernetIrqRegistration>, ax_net::EthernetIrqRegistrationError>
     {
-        HandlerRegistration::register_shared(
-            name,
-            irq,
-            RuntimeNetIrqState { action },
-            handle_net_irq,
-        )
-        .map(|registration| Box::new(registration) as Box<dyn ax_net::EthernetIrqRegistration>)
-        .map_err(map_net_irq_error)
+        let mut action = action;
+        let handler = Box::new(move |_ctx| match action.run() {
+            ax_net::EthernetIrqOutcome::Handled => ax_hal::irq::IrqReturn::Handled,
+            ax_net::EthernetIrqOutcome::Wake => ax_hal::irq::IrqReturn::Wake,
+        });
+        Registration::register_boxed_shared(name, irq, handler)
+            .map(|registration| Box::new(registration) as Box<dyn ax_net::EthernetIrqRegistration>)
+            .map_err(map_net_irq_error)
     }
 }
