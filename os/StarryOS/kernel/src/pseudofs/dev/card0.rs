@@ -220,8 +220,14 @@ struct DumbBuffer {
 struct Framebuffer {
     /// Total backing size in bytes.
     size: u64,
-    /// Row stride (pitch) in bytes from CREATE_DUMB.
+    /// Row stride (pitch) in bytes — from ADDFB2.pitches[0].
     stride: u32,
+    /// Framebuffer width in pixels — from ADDFB2.width.
+    width: u32,
+    /// Framebuffer height in pixels — from ADDFB2.height.
+    height: u32,
+    /// Pixel format (DRM_FORMAT_*) — from ADDFB2.pixel_format.
+    pixel_format: u32,
     /// Backing pages. Shared with the (now possibly removed) dumb
     /// buffer; refcount keeps them alive until both this fb and any
     /// user mappings have been dropped.
@@ -683,8 +689,8 @@ impl Card0 {
         // the lock so `framebuffer_flush` doesn't run with the
         // map locked. Pages survive a concurrent DESTROY_DUMB because
         // the fb owns its own Arc<GlobalPage> clone.
-        let (pages, size, src_stride) = match self.fbs.lock().get(&fb_id) {
-            Some(fb) => (fb.pages.clone(), fb.size, fb.stride),
+        let (pages, src_stride, rows, size) = match self.fbs.lock().get(&fb_id) {
+            Some(fb) => (fb.pages.clone(), fb.stride, fb.height as usize, fb.size),
             None => return,
         };
         if !ax_display::has_display() {
@@ -696,7 +702,6 @@ impl Card0 {
 
         if src_stride != 0 && info.stride != 0 && src_stride as usize != info.stride {
             // Stride mismatch — copy row by row to avoid diagonal tearing.
-            let rows = (size as usize) / src_stride as usize;
             let dst_limit = info.fb_size / info.stride.max(1);
             let rows = rows.min(dst_limit);
             let bytes_per_row = (src_stride as usize).min(info.stride);
@@ -710,7 +715,7 @@ impl Card0 {
                 }
             }
         } else {
-            // Strides match (or unknown) — flat copy.
+            // Strides match (or one is unknown) — flat copy.
             let copy = (size as usize).min(info.fb_size);
             unsafe {
                 core::ptr::copy_nonoverlapping(src, dst, copy);
@@ -1147,13 +1152,45 @@ impl Card0 {
         // Resolve and clone-retain the dumb's backing under the dumbs
         // lock so a concurrent DESTROY_DUMB can't race the fb's
         // initial Arc bump.
-        let (pages, size, stride) = {
+        let (pages, size) = {
             let dumbs = self.dumbs.lock();
             let Some(b) = dumbs.get(&handle) else {
                 return Err(VfsError::InvalidInput);
             };
-            (b.pages.clone(), b.size, b.pitch)
+            (b.pages.clone(), b.size)
         };
+        // Use the plane stride from the ADDFB2 request (f.pitches[0])
+        // rather than the dumb buffer's pitch.  PRIME/import buffers may
+        // have a dumb pitch of 0 even when userspace supplies a valid
+        // stride in the ADDFB2 call.
+        let fb_stride = f.pitches[0];
+        let fb_width = f.width;
+        let fb_height = f.height;
+        let fb_pixel_format = f.pixel_format;
+
+        let bpp = match fb_pixel_format {
+            DRM_FORMAT_XRGB8888 | DRM_FORMAT_ARGB8888 => 32u32,
+            _ => {
+                warn!("ADDFB2: unsupported pixel_format {:#x}", fb_pixel_format);
+                return Err(VfsError::InvalidInput);
+            }
+        };
+        let visible_bytes = fb_width * (bpp / 8);
+        if fb_stride < visible_bytes {
+            warn!(
+                "ADDFB2: stride {} < visible bytes {} ({}bpp, {}px)",
+                fb_stride, visible_bytes, bpp, fb_width
+            );
+            return Err(VfsError::InvalidInput);
+        }
+        let fb_total = fb_stride as u64 * fb_height as u64;
+        if (size as u64) < fb_total {
+            warn!(
+                "ADDFB2: buffer size {} < fb_total {} ({}stride × {}height)",
+                size, fb_total, fb_stride, fb_height
+            );
+            return Err(VfsError::InvalidInput);
+        }
         if f.flags & DRM_MODE_FB_MODIFIERS != 0 {
             for i in 0..4 {
                 if f.handles[i] == 0 {
@@ -1170,7 +1207,10 @@ impl Card0 {
             fb_id,
             Framebuffer {
                 size,
-                stride,
+                stride: fb_stride,
+                width: fb_width,
+                height: fb_height,
+                pixel_format: fb_pixel_format,
                 pages,
             },
         );

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # doomgeneric prebuild — 模仿 ffplay 构建流程
-set -uo pipefail
+set -euo pipefail
 
 # Overridable defaults for Docker container environment
 : "${STARRY_ROOTFS:=/tmp/.tgos-images/rootfs-x86_64-alpine.img/rootfs-x86_64-alpine.img}"
