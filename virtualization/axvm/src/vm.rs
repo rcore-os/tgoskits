@@ -395,10 +395,6 @@ impl AxVM {
             MappingFlags::DEVICE | MappingFlags::READ | MappingFlags::WRITE,
         )?;
 
-        #[cfg_attr(
-            not(any(target_arch = "aarch64", target_arch = "x86_64")),
-            expect(unused_mut)
-        )]
         let mut devices = {
             let build_context = DeviceBuildContext::new(&interrupt_fabric);
             axdevice::AxVmDevices::build_with_factories(
