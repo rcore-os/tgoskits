@@ -336,7 +336,7 @@ fn register_pci_transport<T: Transport + 'static>(
     probe: rdrive::probe::pci::ProbePci<'_>,
     transport: T,
 ) -> Result<(), OnProbeError> {
-    let info = binding_info_from_pci(probe.info(), PciIrqRequirement::Required)?;
+    let info = binding_info_from_pci(probe.info(), PciIrqRequirement::Optional)?;
     let net = make_net(transport)?;
     let irq = probe
         .into_platform_device()

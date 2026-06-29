@@ -82,8 +82,8 @@ impl ax_plat::time::TimeIf for GenericTimer {
     }
     /// Returns the IRQ number for the timer interrupt.
     #[cfg(feature = "irq")]
-    fn irq_num() -> ax_plat::irq::IrqId {
-        somehal::irq::systick_irq()
+    fn irq_num() -> usize {
+        somehal::irq::systick_irq().into()
     }
     /// Set a one-shot timer.
     ///

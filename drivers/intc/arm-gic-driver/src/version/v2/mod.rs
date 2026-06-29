@@ -65,10 +65,6 @@ impl Gic {
         self.gicd
     }
 
-    pub fn max_intid(&self) -> u32 {
-        self.gicd().max_spi_num()
-    }
-
     pub fn cpu_interface(&self) -> CpuInterface {
         CpuInterface {
             gicd: self.gicd.as_ptr(),

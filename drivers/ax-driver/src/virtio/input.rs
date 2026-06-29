@@ -46,7 +46,8 @@ pub fn register_transport_with_info<T: Transport + 'static>(
     transport: T,
     info: BindingInfo,
 ) -> Result<(), OnProbeError> {
-    let dev = VirtIoInputDevice::new(transport).map_err(|err| {
+    let irq_num = info.irq_num();
+    let dev = VirtIoInputDevice::new(transport, irq_num).map_err(|err| {
         OnProbeError::other(format!("failed to initialize virtio-input: {err:?}"))
     })?;
     let irq = plat_dev.register_input_with_info(dev, info);
@@ -60,13 +61,14 @@ struct VirtIoInputDevice<T: Transport + 'static> {
     name: String,
     physical_location: String,
     unique_id: String,
+    irq_num: Option<usize>,
     irq_enabled: bool,
 }
 
 unsafe impl<T: Transport + 'static> Send for VirtIoInputDevice<T> {}
 
 impl<T: Transport + 'static> VirtIoInputDevice<T> {
-    fn new(transport: T) -> Result<Self, VirtIoError> {
+    fn new(transport: T, irq_num: Option<usize>) -> Result<Self, VirtIoError> {
         let mut raw = VirtIOInput::new(transport)?;
         let name = raw.name().unwrap_or_else(|_| "<unknown>".to_owned());
         let id = raw.ids()?;
@@ -96,6 +98,7 @@ impl<T: Transport + 'static> VirtIoInputDevice<T> {
             name,
             physical_location,
             unique_id,
+            irq_num,
             irq_enabled: false,
         })
     }
@@ -118,6 +121,10 @@ impl<T: Transport + 'static> rdif_input::Interface for VirtIoInputDevice<T> {
 
     fn unique_id(&self) -> &str {
         &self.unique_id
+    }
+
+    fn irq_num(&self) -> Option<usize> {
+        self.irq_num
     }
 
     fn get_event_bits(&mut self, ty: EventType, out: &mut [u8]) -> Result<bool, InputError> {

@@ -1,5 +1,3 @@
-use core::sync::atomic::{AtomicUsize, Ordering};
-
 use loongArch64::iocsr::{iocsr_read_d, iocsr_write_d, iocsr_write_w};
 use rdif_intc::Interface;
 use rdrive::{
@@ -24,8 +22,6 @@ const EIOINTC_REG_ROUTE: usize = 0x1c00;
 
 const VEC_COUNT_PER_REG: usize = 64;
 
-static EIOINTC_RUNTIME_VECTOR_COUNT: AtomicUsize = AtomicUsize::new(0);
-
 module_driver!(
     name: "Loongson EIOINTC",
     level: ProbeLevel::PreKernel,
@@ -46,39 +42,22 @@ module_driver!(
     ],
 );
 
-pub fn set_irq_enable(irq: usize, enable: bool) -> Result<(), rdif_intc::IrqError> {
+pub fn set_irq_enable(irq: usize, enable: bool) {
     with_eiointc("setting EIOINTC IRQ enable", |intc| {
-        intc.set_enabled(rdif_intc::HwIrq(irq as u32), enable)
-    })
-    .ok_or(rdif_intc::IrqError::Controller)?
+        if enable {
+            intc.enable_irq(irq);
+        } else {
+            intc.disable_irq(irq);
+        }
+    });
 }
 
 pub fn claim_irq() -> Option<usize> {
-    let vectors = EIOINTC_RUNTIME_VECTOR_COUNT.load(Ordering::Acquire);
-    if vectors == 0 {
-        return None;
-    }
-
-    for i in 0..vectors.div_ceil(VEC_COUNT_PER_REG) {
-        let flags = iocsr_read_d(EIOINTC_REG_ISR + i * 8);
-        if flags == 0 {
-            continue;
-        }
-        let irq = flags.trailing_zeros() as usize + VEC_COUNT_PER_REG * i;
-        if irq < vectors {
-            return Some(irq);
-        }
-    }
-    None
+    with_eiointc("claiming EIOINTC IRQ", |intc| intc.claim_irq()).flatten()
 }
 
 pub fn complete_irq(irq: usize) {
-    if irq >= EIOINTC_RUNTIME_VECTOR_COUNT.load(Ordering::Acquire) {
-        return;
-    }
-
-    let (offset, bit) = eiointc_reg_bit(irq);
-    iocsr_write_d(EIOINTC_REG_ISR + offset, bit);
+    with_eiointc("completing EIOINTC IRQ", |intc| intc.complete_irq(irq));
 }
 
 fn probe_eiointc_fdt(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
@@ -95,14 +74,8 @@ fn probe_eiointc_acpi(probe: ProbeAcpi<'_>) -> Result<(), OnProbeError> {
 fn register_eiointc(dev: PlatformDevice) -> Result<(), OnProbeError> {
     let intc = EioIntc::new(EIOINTC_VECTOR_COUNT);
     intc.init();
-    EIOINTC_RUNTIME_VECTOR_COUNT.store(intc.vectors, Ordering::Release);
     someboot::irq::irq_set_enable(someboot::irq::IrqId::new(EIOINTC_IRQ), true);
-    let domain = crate::irq::alloc_irq_domain(
-        dev.descriptor.device_id(),
-        crate::irq::IrqDomainKind::LoongArchEioIntc,
-    )
-    .map_err(|err| OnProbeError::other(format!("failed to register EIOINTC domain: {err:?}")))?;
-    dev.register(rdif_intc::Intc::new(domain, intc));
+    dev.register(rdif_intc::Intc::new(intc));
     Ok(())
 }
 
@@ -182,6 +155,25 @@ impl EioIntc {
         iocsr_write_d(addr, iocsr_read_d(addr) & !bit);
     }
 
+    fn claim_irq(&mut self) -> Option<usize> {
+        for i in 0..(self.vectors / VEC_COUNT_PER_REG) {
+            let flags = iocsr_read_d(EIOINTC_REG_ISR + i * 8);
+            if flags != 0 {
+                return Some(flags.trailing_zeros() as usize + VEC_COUNT_PER_REG * i);
+            }
+        }
+        None
+    }
+
+    fn complete_irq(&mut self, irq: usize) {
+        if !self.contains_irq(irq, "complete") {
+            return;
+        }
+
+        let (offset, bit) = eiointc_reg_bit(irq);
+        iocsr_write_d(EIOINTC_REG_ISR + offset, bit);
+    }
+
     fn contains_irq(&self, irq: usize, op: &str) -> bool {
         if irq < self.vectors {
             true
@@ -199,40 +191,17 @@ impl DriverGeneric for EioIntc {
 }
 
 impl Interface for EioIntc {
-    fn translate_fdt(
-        &self,
-        irq_prop: &[u32],
-    ) -> Result<rdif_intc::ControllerIrqTranslation, rdif_intc::IrqError> {
+    fn setup_irq_by_fdt(&mut self, irq_prop: &[u32]) -> rdrive::IrqId {
         let Some(vector) = fdt_first_cell_vector(irq_prop) else {
             warn!("empty EIOINTC interrupt specifier");
-            return Err(rdif_intc::IrqError::InvalidIrq);
+            return 0usize.into();
         };
         if vector >= self.vectors {
             warn!(
                 "EIOINTC interrupt vector {vector} exceeds vector count {}",
                 self.vectors
             );
-            return Err(rdif_intc::IrqError::InvalidIrq);
         }
-        Ok(rdif_intc::ControllerIrqTranslation::new(rdif_intc::HwIrq(
-            vector as u32,
-        )))
-    }
-
-    fn set_enabled(
-        &mut self,
-        hwirq: rdif_intc::HwIrq,
-        enabled: bool,
-    ) -> Result<(), rdif_intc::IrqError> {
-        let irq = hwirq.0 as usize;
-        if !self.contains_irq(irq, if enabled { "enable" } else { "disable" }) {
-            return Err(rdif_intc::IrqError::InvalidIrq);
-        }
-        if enabled {
-            self.enable_irq(irq);
-        } else {
-            self.disable_irq(irq);
-        }
-        Ok(())
+        vector.into()
     }
 }

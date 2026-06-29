@@ -1,6 +1,5 @@
 use alloc::{boxed::Box, string::String};
 
-use irq_framework::IrqId;
 use rdif_input::{InputError as RdifInputError, Interface};
 
 use crate::{
@@ -10,17 +9,12 @@ use crate::{
 pub struct RdifInputDevice {
     name: String,
     device: Box<dyn Interface>,
-    irq: Option<IrqId>,
 }
 
 impl RdifInputDevice {
     pub fn new(device: Box<dyn Interface>) -> Self {
-        Self::new_with_irq(device, None)
-    }
-
-    pub fn new_with_irq(device: Box<dyn Interface>, irq: Option<IrqId>) -> Self {
         let name = device.name().into();
-        Self { name, device, irq }
+        Self { name, device }
     }
 
     pub fn from_interface(device: impl Interface + 'static) -> Self {
@@ -45,8 +39,8 @@ impl InputDevice for RdifInputDevice {
         self.device.unique_id()
     }
 
-    fn irq_id(&self) -> Option<IrqId> {
-        self.irq
+    fn irq_num(&self) -> Option<usize> {
+        self.device.irq_num()
     }
 
     fn get_event_bits(&mut self, ty: EventType, out: &mut [u8]) -> InputResult<bool> {
@@ -102,66 +96,6 @@ impl From<rdif_input::InputDeviceId> for InputDeviceId {
             product: value.product,
             version: value.version,
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use irq_framework::{HwIrq, IrqDomainId, IrqId};
-    use rdif_input::{EventType, InputDeviceId, InputError, InputEvent};
-
-    use super::*;
-
-    struct TestInput;
-
-    impl rdif_input::DriverGeneric for TestInput {
-        fn name(&self) -> &str {
-            "test-input"
-        }
-    }
-
-    impl Interface for TestInput {
-        fn device_id(&self) -> InputDeviceId {
-            InputDeviceId {
-                bus_type: 3,
-                vendor: 1,
-                product: 2,
-                version: 1,
-            }
-        }
-
-        fn physical_location(&self) -> &str {
-            "test/input0"
-        }
-
-        fn unique_id(&self) -> &str {
-            "input0"
-        }
-
-        fn get_event_bits(&mut self, _ty: EventType, _out: &mut [u8]) -> Result<bool, InputError> {
-            Ok(false)
-        }
-
-        fn read_event(&mut self) -> Result<InputEvent, InputError> {
-            Err(InputError::Again)
-        }
-    }
-
-    #[test]
-    fn rdif_input_device_exposes_resolved_irq_id() {
-        let irq = IrqId::new(IrqDomainId(7), HwIrq(42));
-        let device = RdifInputDevice::new_with_irq(Box::new(TestInput), Some(irq));
-        let erased = crate::ErasedInputDevice::new(device);
-
-        assert_eq!(erased.irq_id(), Some(irq));
-    }
-
-    #[test]
-    fn rdif_input_device_without_resolved_irq_has_no_irq_id() {
-        let device = RdifInputDevice::new(Box::new(TestInput));
-        let erased = crate::ErasedInputDevice::new(device);
-
-        assert_eq!(erased.irq_id(), None);
     }
 }
 

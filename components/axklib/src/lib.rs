@@ -34,8 +34,7 @@
 //! axklib::time::busy_wait(core::time::Duration::from_micros(100));
 //!
 //! // request a shared IRQ action
-//! let irq = axklib::irq::try_legacy_irq(32)?;
-//! let handle = axklib::irq::request_shared(irq, my_irq_handler, data)?;
+//! let handle = axklib::irq::request_shared(32, my_irq_handler, data)?;
 //! ```
 
 #![no_std]
@@ -47,39 +46,10 @@ pub use ax_errno::{AxError, AxResult};
 pub use ax_memory_addr::{PhysAddr, VirtAddr};
 pub use irq_framework::{
     AutoEnable as IrqAutoEnable, BoxedIrqHandler, CpuId as IrqCpuId, CpuMask as IrqCpuMask,
-    IrqAffinity, IrqContext, IrqError, IrqExecution, IrqHandle, IrqId, IrqOutcome, IrqRequest,
+    IrqAffinity, IrqContext, IrqError, IrqExecution, IrqHandle, IrqNumber, IrqOutcome, IrqRequest,
     IrqReturn, IrqScope, IrqStatus, RawIrqHandler, ShareMode as IrqShareMode,
 };
 use trait_ffi::*;
-
-/// Compatibility IRQ domain used while non-domainized callers migrate.
-pub const LEGACY_IRQ_DOMAIN: irq_framework::IrqDomainId = irq_framework::IrqDomainId(0);
-
-/// Creates a legacy IRQ id without truncating the raw IRQ number.
-pub fn try_legacy_irq(raw: usize) -> Result<IrqId, IrqError> {
-    let hwirq = u32::try_from(raw).map_err(|_| IrqError::InvalidIrq)?;
-    Ok(IrqId::new(LEGACY_IRQ_DOMAIN, irq_framework::HwIrq(hwirq)))
-}
-
-/// Compatibility constructor for legacy numeric IRQ users.
-pub fn legacy_irq(raw: usize) -> Result<IrqId, IrqError> {
-    try_legacy_irq(raw)
-}
-
-/// Returns the legacy raw IRQ number when this id is in the legacy domain.
-pub const fn legacy_irq_raw(irq: IrqId) -> Option<usize> {
-    if irq.domain.0 == LEGACY_IRQ_DOMAIN.0 {
-        Some(irq.hwirq.0 as usize)
-    } else {
-        None
-    }
-}
-
-/// Legacy constructor kept only for upper-layer compatibility.
-#[allow(non_snake_case)]
-pub fn IrqNumber(raw: usize) -> Result<IrqId, IrqError> {
-    legacy_irq(raw)
-}
 
 pub mod dma;
 pub mod mmio;
@@ -152,26 +122,22 @@ pub trait Klib {
     /// Initializes the wall-clock epoch offset from an absolute epoch time.
     fn time_try_init_epoch_offset(epoch_time_nanos: u64) -> bool;
 
-    /// Enable or disable a domain-scoped platform IRQ.
-    fn irq_set_enable(irq: IrqId, enabled: bool) -> AxResult;
+    /// Enable or disable the edge/level for a platform IRQ.
+    ///
+    /// `irq` is a platform IRQ number. `enabled` selects whether the IRQ
+    /// should be enabled (true) or disabled (false).
+    fn irq_set_enable(irq: usize, enabled: bool);
 
     /// Request a shared IRQ action and return its handle on success.
     fn irq_request_shared(
-        irq: IrqId,
-        handler: RawIrqHandler,
-        data: NonNull<()>,
-    ) -> AxResult<IrqHandle>;
-
-    /// Request a shared IRQ action without enabling it.
-    fn irq_request_shared_disabled(
-        irq: IrqId,
+        irq: usize,
         handler: RawIrqHandler,
         data: NonNull<()>,
     ) -> AxResult<IrqHandle>;
 
     /// Request a per-CPU IRQ action and return its handle on success.
     fn irq_request_percpu(
-        irq: IrqId,
+        irq: usize,
         cpus: IrqCpuMask,
         handler: RawIrqHandler,
         data: NonNull<()>,
@@ -230,14 +196,12 @@ pub mod time {
 pub mod irq {
     pub use super::{
         BoxedIrqHandler, IrqAffinity, IrqAutoEnable as AutoEnable, IrqContext, IrqCpuId as CpuId,
-        IrqCpuMask as CpuMask, IrqError, IrqExecution, IrqHandle, IrqId, IrqNumber, IrqOutcome,
+        IrqCpuMask as CpuMask, IrqError, IrqExecution, IrqHandle, IrqNumber, IrqOutcome,
         IrqRequest, IrqReturn, IrqScope, IrqShareMode as ShareMode, IrqStatus, RawIrqHandler,
         klib::{
             irq_disable as disable, irq_enable as enable, irq_free as free,
             irq_request_percpu as request_percpu, irq_request_shared as request_shared,
-            irq_request_shared_disabled as request_shared_disabled,
             irq_run_on_cpu_sync as run_on_cpu_sync, irq_set_enable as set_enable,
         },
-        legacy_irq, legacy_irq_raw, try_legacy_irq,
     };
 }

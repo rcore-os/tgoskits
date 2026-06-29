@@ -1,6 +1,4 @@
 use ax_lazyinit::LazyInit;
-#[cfg(feature = "irq")]
-use ax_plat::irq::{CPU_LOCAL_IRQ_DOMAIN, HwIrq, IrqId};
 use ax_plat::time::TimeIf;
 use loongArch64::time::Time;
 
@@ -16,13 +14,7 @@ pub(super) fn init_percpu() {
         tcfg::set_init_val(0);
         tcfg::set_periodic(false);
         tcfg::set_en(true);
-        let irq = IrqId::new(
-            CPU_LOCAL_IRQ_DOMAIN,
-            HwIrq(crate::config::devices::TIMER_IRQ as u32),
-        );
-        if let Err(err) = ax_plat::irq::set_enable(irq, true) {
-            warn!("failed to enable timer IRQ: {err:?}");
-        }
+        ax_plat::irq::set_enable(crate::config::devices::TIMER_IRQ, true);
     }
 }
 
@@ -120,11 +112,8 @@ impl TimeIf for TimeIfImpl {
 
     /// Returns the IRQ number for the timer interrupt.
     #[cfg(feature = "irq")]
-    fn irq_num() -> IrqId {
-        IrqId::new(
-            CPU_LOCAL_IRQ_DOMAIN,
-            HwIrq(crate::config::devices::TIMER_IRQ as u32),
-        )
+    fn irq_num() -> usize {
+        crate::config::devices::TIMER_IRQ
     }
 
     /// Set a one-shot timer.

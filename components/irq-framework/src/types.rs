@@ -1,100 +1,9 @@
 use alloc::boxed::Box;
 use core::ptr::NonNull;
 
-/// An IRQ controller domain id.
-#[repr(transparent)]
+/// A platform IRQ number.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
-pub struct IrqDomainId(pub u16);
-
-/// Hardware interrupt line number within an IRQ domain.
-#[repr(transparent)]
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
-pub struct HwIrq(pub u32);
-
-/// A framework IRQ id, scoped by controller domain.
-#[repr(C)]
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
-pub struct IrqId {
-    /// IRQ controller domain.
-    pub domain: IrqDomainId,
-    /// Hardware interrupt line within the domain.
-    pub hwirq: HwIrq,
-}
-
-impl IrqId {
-    /// Creates an IRQ id from a domain and hardware line.
-    pub const fn new(domain: IrqDomainId, hwirq: HwIrq) -> Self {
-        Self { domain, hwirq }
-    }
-}
-
-/// CPU trap vector observed at the architecture trap boundary.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
-pub struct TrapVector(pub usize);
-
-/// A firmware or controller interrupt source that can be resolved to [`IrqId`].
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum IrqSource {
-    /// ACPI Global System Interrupt.
-    AcpiGsi(u32),
-    /// ACPI Global System Interrupt with explicit routing metadata.
-    AcpiGsiRoute(AcpiGsiRoute),
-    /// Explicit controller-domain line.
-    ControllerLine {
-        /// IRQ controller domain.
-        domain: IrqDomainId,
-        /// Hardware interrupt line within the domain.
-        hwirq: HwIrq,
-    },
-}
-
-/// ACPI IRQ trigger configuration.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum AcpiIrqTrigger {
-    /// Edge-triggered interrupt.
-    Edge,
-    /// Level-triggered interrupt.
-    Level,
-}
-
-/// ACPI IRQ polarity configuration.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum AcpiIrqPolarity {
-    /// Active-high interrupt.
-    ActiveHigh,
-    /// Active-low interrupt.
-    ActiveLow,
-}
-
-/// ACPI GSI controller kind.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum AcpiGsiController {
-    /// I/O APIC controller.
-    IoApic,
-    /// LoongArch PCH-PIC controller.
-    PchPic,
-}
-
-/// Fully described ACPI GSI routing metadata.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct AcpiGsiRoute {
-    /// Global System Interrupt number.
-    pub gsi: u32,
-    /// CPU trap vector programmed by the platform controller, if known.
-    pub vector: usize,
-    /// Controller kind.
-    pub controller: AcpiGsiController,
-    /// ACPI controller id.
-    pub controller_id: u16,
-    /// Controller MMIO base address.
-    pub controller_address: u64,
-    /// Controller-local input line.
-    pub controller_input: u8,
-    /// Trigger configuration.
-    pub trigger: AcpiIrqTrigger,
-    /// Polarity configuration.
-    pub polarity: AcpiIrqPolarity,
-}
+pub struct IrqNumber(pub usize);
 
 /// A logical CPU id.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
@@ -291,7 +200,7 @@ pub enum IrqError {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct IrqContext {
     /// IRQ number being dispatched.
-    pub irq: IrqId,
+    pub irq: IrqNumber,
     /// CPU handling the IRQ.
     pub cpu: CpuId,
 }
@@ -339,21 +248,26 @@ pub trait IrqOps {
     ) -> Result<(), IrqError>;
 
     /// Routes a global IRQ line to the requested CPU affinity.
-    fn set_affinity(&self, _irq: IrqId, _affinity: IrqAffinity) -> Result<(), IrqError> {
+    fn set_affinity(&self, _irq: IrqNumber, _affinity: IrqAffinity) -> Result<(), IrqError> {
         Err(IrqError::Unsupported)
     }
 
     /// Enables or disables an IRQ line.
-    fn set_enabled(&self, irq: IrqId, cpu: Option<CpuId>, enabled: bool) -> Result<(), IrqError>;
+    fn set_enabled(
+        &self,
+        irq: IrqNumber,
+        cpu: Option<CpuId>,
+        enabled: bool,
+    ) -> Result<(), IrqError>;
 
     /// Returns whether the IRQ line is enabled.
-    fn is_enabled(&self, irq: IrqId, cpu: Option<CpuId>) -> Result<bool, IrqError>;
+    fn is_enabled(&self, irq: IrqNumber, cpu: Option<CpuId>) -> Result<bool, IrqError>;
 
     /// Returns whether the IRQ line is pending.
-    fn is_pending(&self, irq: IrqId, cpu: Option<CpuId>) -> Result<bool, IrqError>;
+    fn is_pending(&self, irq: IrqNumber, cpu: Option<CpuId>) -> Result<bool, IrqError>;
 
     /// Returns whether the IRQ line is in service.
-    fn is_in_service(&self, irq: IrqId, cpu: Option<CpuId>) -> Result<bool, IrqError>;
+    fn is_in_service(&self, irq: IrqNumber, cpu: Option<CpuId>) -> Result<bool, IrqError>;
 
     /// Relaxes a spin wait.
     fn relax(&self);
@@ -437,13 +351,13 @@ impl IrqRequest {
 /// Token returned from request and used for later lifecycle operations.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct IrqHandle {
-    pub(crate) irq: IrqId,
+    pub(crate) irq: IrqNumber,
     pub(crate) id: u64,
 }
 
 impl IrqHandle {
     /// Returns the IRQ number associated with this handle.
-    pub const fn irq(self) -> IrqId {
+    pub const fn irq(self) -> IrqNumber {
         self.irq
     }
 

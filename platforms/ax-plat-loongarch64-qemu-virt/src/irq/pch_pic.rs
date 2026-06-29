@@ -41,14 +41,6 @@ const fn valid_irq(irq: usize) -> bool {
     irq < PIC_IRQ_COUNT
 }
 
-pub fn vector_for_input(input: usize) -> Option<usize> {
-    valid_irq(input).then_some(input)
-}
-
-pub fn input_for_vector(vector: usize) -> Option<usize> {
-    valid_irq(vector).then_some(vector)
-}
-
 pub fn enable_irq(irq: usize) {
     if !valid_irq(irq) {
         return;

@@ -1208,6 +1208,7 @@ pub fn FXmacHandleDmaTxError(instance_p: &mut FXmac) {
     // let mut dmacrreg: u32 = read_reg((instance_p.config.base_address + FXMAC_DMACR_OFFSET) as *const u32);
     // dmacrreg = dmacrreg | FXMAC_DMACR_ORCE_DISCARD_ON_ERR_MASK; /* force_discard_on_err */
     // write_reg((instance_p.config.base_address + FXMAC_DMACR_OFFSET) as *mut u32, dmacrreg);
+    // FXmacSetupIsr(instance_p);
     // FXmacInitDma(instance_p);
     //
     // FXmacStart(&instance_p->instance);

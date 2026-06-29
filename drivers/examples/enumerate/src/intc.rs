@@ -26,9 +26,9 @@ impl rdrive::DriverGeneric for IrqTest {
 }
 
 impl Interface for IrqTest {
-    fn translate_fdt(&self, irq_prop: &[u32]) -> Result<ControllerIrqTranslation, IrqError> {
-        debug!("IrqTest translate_fdt: {:?}", irq_prop);
-        Ok(ControllerIrqTranslation::new(HwIrq(42)))
+    fn setup_irq_by_fdt(&mut self, irq_prop: &[u32]) -> IrqId {
+        debug!("IrqTest setup_irq_by_fdt: {:?}", irq_prop);
+        42.into()
     }
 }
 
@@ -39,7 +39,7 @@ fn probe_intc(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
         fdt.node.name(),
         plat_dev.descriptor.irq_parent,
     );
-    plat_dev.register(Intc::new(IrqDomainId(0), IrqTest {}));
+    plat_dev.register(Intc::new(IrqTest {}));
 
     Ok(())
 }

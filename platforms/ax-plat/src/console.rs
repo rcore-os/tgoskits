@@ -60,7 +60,7 @@ pub trait ConsoleIf {
     ///
     /// Returns `None` if input interrupt is not supported.
     #[cfg(feature = "irq")]
-    fn irq_num() -> Option<irq_framework::IrqId>;
+    fn irq_num() -> Option<usize>;
 
     /// Enables or disables device-side console input interrupts.
     #[cfg(feature = "irq")]

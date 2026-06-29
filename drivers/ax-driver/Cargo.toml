@@ -139,7 +139,6 @@ fdt-edit = { workspace = true, optional = true }
 fxmac_rs = { workspace = true, optional = true }
 heapless.workspace = true
 ixgbe-driver = { workspace = true, optional = true }
-irq-framework.workspace = true
 log.workspace = true
 mmio-api.workspace = true
 nvme-driver = { workspace = true, optional = true }

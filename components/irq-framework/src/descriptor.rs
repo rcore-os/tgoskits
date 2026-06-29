@@ -4,12 +4,12 @@ use core::{
 };
 
 use crate::{
-    CpuId, CpuMask, IrqAffinity, IrqError, IrqExecution, IrqId, IrqRequest, IrqScope, ShareMode,
-    action::Action,
+    CpuId, CpuMask, IrqAffinity, IrqError, IrqExecution, IrqNumber, IrqRequest, IrqScope,
+    ShareMode, action::Action,
 };
 
 pub(crate) struct Descriptor {
-    pub(crate) irq: IrqId,
+    pub(crate) irq: IrqNumber,
     share_mode: ShareMode,
     affinity: IrqAffinity,
     execution: IrqExecution,
@@ -22,7 +22,7 @@ pub(crate) struct Descriptor {
 }
 
 impl Descriptor {
-    pub(crate) fn new(irq: IrqId, request: &IrqRequest) -> Self {
+    pub(crate) fn new(irq: IrqNumber, request: &IrqRequest) -> Self {
         Self {
             irq,
             share_mode: request.share_mode,
@@ -38,17 +38,10 @@ impl Descriptor {
     }
 
     pub(crate) fn compatible_with(&mut self, request: &IrqRequest) -> Result<(), IrqError> {
-        let mut has_active_actions = false;
-        for action in self.actions() {
+        let has_active_actions = self.actions().any(|action| {
             let action = unsafe { &*action };
-            if action.detached.load(Ordering::Acquire) {
-                continue;
-            }
-            has_active_actions = true;
-            if !scope_compatible(action.scope, request.scope) {
-                return Err(IrqError::InvalidIrq);
-            }
-        }
+            !action.detached.load(Ordering::Acquire)
+        });
 
         if !has_active_actions {
             self.share_mode = request.share_mode;
@@ -145,13 +138,6 @@ pub(crate) fn action_matches_cpu(scope: IrqScope, cpu: CpuId) -> bool {
         IrqScope::Global => true,
         IrqScope::PerCpu { cpus } => cpus.contains(cpu),
     }
-}
-
-fn scope_compatible(existing: IrqScope, requested: IrqScope) -> bool {
-    matches!(
-        (existing, requested),
-        (IrqScope::Global, IrqScope::Global) | (IrqScope::PerCpu { .. }, IrqScope::PerCpu { .. })
-    )
 }
 
 pub(crate) fn recompute_scope_line_desired(descriptor: &mut Descriptor, scope: IrqScope) {

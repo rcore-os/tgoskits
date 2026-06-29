@@ -10,8 +10,7 @@ mod types;
 
 pub use registry::Registry;
 pub use types::{
-    AcpiGsiController, AcpiGsiRoute, AcpiIrqPolarity, AcpiIrqTrigger, AutoEnable, BoxedIrqHandler,
-    CpuId, CpuMask, CpuMaskIter, HwIrq, IrqAffinity, IrqContext, IrqDomainId, IrqError,
-    IrqExecution, IrqHandle, IrqId, IrqOps, IrqOutcome, IrqRequest, IrqReturn, IrqScope, IrqSource,
-    IrqStatus, RawIrqHandler, ShareMode, TrapVector,
+    AutoEnable, BoxedIrqHandler, CpuId, CpuMask, CpuMaskIter, IrqAffinity, IrqContext, IrqError,
+    IrqExecution, IrqHandle, IrqNumber, IrqOps, IrqOutcome, IrqRequest, IrqReturn, IrqScope,
+    IrqStatus, RawIrqHandler, ShareMode,
 };
