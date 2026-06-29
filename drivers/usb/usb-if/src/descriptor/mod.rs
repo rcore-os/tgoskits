@@ -188,6 +188,13 @@ impl ConfigurationDescriptor {
     pub const LEN: usize = 9;
 }
 
+/// Parse a buffer containing one or more concatenated USB configuration descriptors.
+pub fn parse_concatenated_config_descriptors(
+    data: &[u8],
+) -> impl Iterator<Item = ConfigurationDescriptor> + '_ {
+    parser::parse_concatenated_config_descriptors(data).map(Into::into)
+}
+
 impl From<parser::DeviceDescriptor> for DeviceDescriptor {
     fn from(desc: parser::DeviceDescriptor) -> Self {
         DeviceDescriptor {

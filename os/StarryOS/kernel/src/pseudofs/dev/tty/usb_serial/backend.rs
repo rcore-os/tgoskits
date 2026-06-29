@@ -9,13 +9,13 @@ use rdrive::{
     DeviceId as RDriveDeviceId, DriverGeneric, PlatformDevice,
     probe::{
         OnProbeError,
-        usb::{ProbeUsb, UsbClassId, UsbClassMatch, UsbDeviceId, UsbInfo, UsbRemove},
+        usb::{ProbeUsb, UsbClassMatch, UsbClassPattern, UsbDeviceId, UsbInfo, UsbRemove},
     },
     register::{DriverRegister, ProbeKind, ProbeLevel, ProbePriority},
 };
 use spin::{LazyLock, Once};
 use usb_serial::{
-    ControlTransfer, UsbSerialChip, UsbSerialPort, cp210x, probe_supported_port_for_interface,
+    ControlTransfer, UsbSerialChip, UsbSerialPort, cp210x, probe_supported_port_from_descriptors,
 };
 
 use crate::pseudofs::usbfs::UsbDeviceHandle;
@@ -25,7 +25,7 @@ const CP210X_IDS: &[UsbDeviceId] = &[UsbDeviceId {
     product_id: cp210x::PRODUCT_ID_EA60,
 }];
 
-const CP210X_CLASSES: &[UsbClassMatch] = &[UsbClassMatch::Interface(UsbClassId::new(
+const CP210X_CLASSES: &[UsbClassMatch] = &[UsbClassMatch::Interface(UsbClassPattern::new(
     0xff,
     Some(0),
     Some(0),
@@ -70,7 +70,7 @@ impl UsbSerialPortInfo {
     }
 
     pub(super) fn interface(&self) -> u8 {
-        self.port.interface
+        self.port.interface_number
     }
 
     pub(super) fn bulk_in(&self) -> u8 {
@@ -180,9 +180,14 @@ pub(super) fn register_usb_serial_probe() {
 fn probe_usb_serial(probe: ProbeUsb<'_>) -> Result<(), OnProbeError> {
     let info = probe.info();
     let interface = info.interface().ok_or(OnProbeError::NotMatch)?;
-    let matched =
-        probe_supported_port_for_interface(info.descriptor_blob(), interface.interface_number)
-            .ok_or(OnProbeError::NotMatch)?;
+    let descriptor = info.device_descriptor().ok_or(OnProbeError::NotMatch)?;
+    let configurations = info.configurations();
+    let matched = probe_supported_port_from_descriptors(
+        &descriptor,
+        &configurations,
+        interface.interface_number,
+    )
+    .ok_or(OnProbeError::NotMatch)?;
     let platform: PlatformDevice = probe.into_platform_device();
     platform.register(UsbSerialPortInfo::new(info, matched.chip, matched.port));
     Ok(())
@@ -244,7 +249,7 @@ mod tests {
                 device_num: 2,
                 chip: UsbSerialChip::Cp210x,
                 port: UsbSerialPort {
-                    interface: 0,
+                    interface_number: 0,
                     bulk_in: 0x81,
                     bulk_out: 0x02,
                 },

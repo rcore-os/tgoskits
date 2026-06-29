@@ -49,13 +49,13 @@ pub struct UsbClass {
 
 /// USB class match pattern. `None` means wildcard for that field.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct UsbClassId {
+pub struct UsbClassPattern {
     pub class: u8,
     pub subclass: Option<u8>,
     pub protocol: Option<u8>,
 }
 
-impl UsbClassId {
+impl UsbClassPattern {
     pub const fn new(class: u8, subclass: Option<u8>, protocol: Option<u8>) -> Self {
         Self {
             class,
@@ -80,8 +80,8 @@ impl UsbClassId {
 /// Select whether a class match applies to the device descriptor or interfaces.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum UsbClassMatch {
-    Device(UsbClassId),
-    Interface(UsbClassId),
+    Device(UsbClassPattern),
+    Interface(UsbClassPattern),
 }
 
 /// Matched USB interface descriptor metadata.
@@ -127,8 +127,19 @@ impl UsbDevice {
         &self.descriptor_blob
     }
 
+    pub fn device_descriptor(&self) -> Option<DeviceDescriptor> {
+        DeviceDescriptor::parse(&self.descriptor_blob)
+    }
+
+    pub fn configurations(&self) -> Vec<ConfigurationDescriptor> {
+        configurations_from_descriptor_blob(&self.descriptor_blob)
+    }
+
     pub fn device_id(&self) -> Option<UsbDeviceId> {
-        device_id_from_descriptor_blob(&self.descriptor_blob)
+        self.device_descriptor().map(|desc| UsbDeviceId {
+            vendor_id: desc.vendor_id,
+            product_id: desc.product_id,
+        })
     }
 }
 
@@ -177,6 +188,14 @@ impl<'a> UsbInfo<'a> {
 
     pub fn descriptor_blob(&self) -> &[u8] {
         self.device.descriptor_blob()
+    }
+
+    pub fn device_descriptor(&self) -> Option<DeviceDescriptor> {
+        self.device.device_descriptor()
+    }
+
+    pub fn configurations(&self) -> Vec<ConfigurationDescriptor> {
+        self.device.configurations()
     }
 }
 
@@ -433,21 +452,6 @@ impl UsbProbeMatch {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-struct UsbProbeDedupeKey {
-    device: UsbDeviceKey,
-    interface: Option<u8>,
-}
-
-impl UsbProbeDedupeKey {
-    fn from_info(info: UsbInfo<'_>) -> Self {
-        Self {
-            device: info.key(),
-            interface: info.interface().map(|interface| interface.interface_number),
-        }
-    }
-}
-
 fn matching_infos<'a>(
     device: &'a UsbDevice,
     ids: &[UsbDeviceId],
@@ -520,10 +524,10 @@ fn matching_targets(
 
 fn push_matching_info<'a>(
     out: &mut Vec<UsbInfo<'a>>,
-    seen: &mut BTreeSet<UsbProbeDedupeKey>,
+    seen: &mut BTreeSet<UsbProbeTarget>,
     info: UsbInfo<'a>,
 ) {
-    if seen.insert(UsbProbeDedupeKey::from_info(info)) {
+    if seen.insert(UsbProbeTarget::from_info(info)) {
         out.push(info);
     }
 }
@@ -533,54 +537,37 @@ fn matches_usb_id(device_id: Option<UsbDeviceId>, ids: &[UsbDeviceId]) -> bool {
 }
 
 fn device_class_from_descriptor_blob(blob: &[u8]) -> Option<UsbClass> {
-    if blob.first().copied()? != 18 || blob.get(1).copied()? != 0x01 {
-        return None;
-    }
+    let desc = DeviceDescriptor::parse(blob)?;
     Some(UsbClass {
-        class: *blob.get(4)?,
-        subclass: *blob.get(5)?,
-        protocol: *blob.get(6)?,
+        class: desc.class,
+        subclass: desc.subclass,
+        protocol: desc.protocol,
     })
 }
 
-fn device_id_from_descriptor_blob(blob: &[u8]) -> Option<UsbDeviceId> {
-    if blob.first().copied()? != 18 || blob.get(1).copied()? != 0x01 {
-        return None;
-    }
-    let vendor_id = u16::from_le_bytes([*blob.get(8)?, *blob.get(9)?]);
-    let product_id = u16::from_le_bytes([*blob.get(10)?, *blob.get(11)?]);
-    Some(UsbDeviceId {
-        vendor_id,
-        product_id,
-    })
+fn configurations_from_descriptor_blob(blob: &[u8]) -> Vec<ConfigurationDescriptor> {
+    let Some(configurations) = blob.get(DeviceDescriptor::LEN..) else {
+        return Vec::new();
+    };
+    parse_concatenated_config_descriptors(configurations).collect()
 }
 
 fn interfaces_from_descriptor_blob(blob: &[u8]) -> Vec<UsbInterfaceInfo> {
-    let Some(device_len) = blob.first().copied().map(usize::from) else {
-        return Vec::new();
-    };
-    let mut cursor = device_len;
     let mut out = Vec::new();
-
-    while cursor + 2 <= blob.len() {
-        let len = blob[cursor] as usize;
-        let desc_type = blob[cursor + 1];
-        if len == 0 || cursor + len > blob.len() {
-            break;
+    for configuration in configurations_from_descriptor_blob(blob) {
+        for interfaces in configuration.interfaces {
+            for interface in interfaces.alt_settings {
+                out.push(UsbInterfaceInfo {
+                    interface_number: interface.interface_number,
+                    alternate_setting: interface.alternate_setting,
+                    class: UsbClass {
+                        class: interface.class,
+                        subclass: interface.subclass,
+                        protocol: interface.protocol,
+                    },
+                });
+            }
         }
-
-        if desc_type == 0x04 && len >= 9 {
-            out.push(UsbInterfaceInfo {
-                interface_number: blob[cursor + 2],
-                alternate_setting: blob[cursor + 3],
-                class: UsbClass {
-                    class: blob[cursor + 5],
-                    subclass: blob[cursor + 6],
-                    protocol: blob[cursor + 7],
-                },
-            });
-        }
-        cursor += len;
     }
 
     out

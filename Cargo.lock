@@ -6448,6 +6448,7 @@ dependencies = [
  "rdrive-macros",
  "spin",
  "thiserror 2.0.18",
+ "usb-if",
  "x86",
 ]
 

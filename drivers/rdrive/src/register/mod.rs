@@ -9,7 +9,7 @@ pub use crate::probe::{
     fdt::{FdtInfo, ProbeFdt},
     pci::{PciInfo, ProbePci},
     usb::{
-        ProbeUsb, UsbClass, UsbClassId, UsbClassMatch, UsbDevice, UsbDeviceId, UsbDeviceKey,
+        ProbeUsb, UsbClass, UsbClassMatch, UsbClassPattern, UsbDevice, UsbDeviceId, UsbDeviceKey,
         UsbInfo, UsbInterfaceInfo, UsbRemove,
     },
 };

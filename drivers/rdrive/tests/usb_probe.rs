@@ -4,7 +4,7 @@ use rdrive::{
     DriverGeneric, Platform, PlatformDevice, get_list,
     probe::{
         OnProbeError,
-        usb::{ProbeUsb, UsbClassId, UsbClassMatch, UsbDevice, UsbDeviceId, UsbDeviceKey},
+        usb::{ProbeUsb, UsbClassMatch, UsbClassPattern, UsbDevice, UsbDeviceId, UsbDeviceKey},
     },
     register::{DriverRegister, ProbeKind, ProbeLevel, ProbePriority},
 };
@@ -77,6 +77,20 @@ fn probe_usb(probe: ProbeUsb<'_>) -> Result<(), OnProbeError> {
 fn probe_usb_class(probe: ProbeUsb<'_>) -> Result<(), OnProbeError> {
     CLASS_PROBE_COUNT.fetch_add(1, Ordering::SeqCst);
     let (info, platform): (_, PlatformDevice) = probe.into_parts();
+    let device_id = info.device_id().ok_or(OnProbeError::NotMatch)?;
+    assert_eq!(
+        info.device_descriptor()
+            .ok_or(OnProbeError::NotMatch)?
+            .vendor_id,
+        device_id.vendor_id
+    );
+    assert_eq!(
+        info.configurations()
+            .first()
+            .ok_or(OnProbeError::NotMatch)?
+            .configuration_value,
+        1
+    );
     let interface = info.interface().ok_or(OnProbeError::NotMatch)?;
     assert_eq!(interface.interface_number, 4);
     assert_eq!(interface.alternate_setting, 0);
@@ -166,7 +180,9 @@ static USB_HID_CLASS_REGISTER: DriverRegister = DriverRegister {
     priority: ProbePriority::DEFAULT,
     probe_kinds: &[ProbeKind::Usb {
         ids: &[],
-        classes: &[UsbClassMatch::Interface(UsbClassId::new(0x03, None, None))],
+        classes: &[UsbClassMatch::Interface(UsbClassPattern::new(
+            0x03, None, None,
+        ))],
         on_probe: probe_usb_class,
         on_remove: None,
     }],
@@ -178,7 +194,7 @@ static USB_HUB_DEVICE_CLASS_REGISTER: DriverRegister = DriverRegister {
     priority: ProbePriority::DEFAULT,
     probe_kinds: &[ProbeKind::Usb {
         ids: &[],
-        classes: &[UsbClassMatch::Device(UsbClassId::new(
+        classes: &[UsbClassMatch::Device(UsbClassPattern::new(
             0x09,
             Some(0),
             Some(0),
@@ -194,7 +210,9 @@ static USB_SWITCH_A_REGISTER: DriverRegister = DriverRegister {
     priority: ProbePriority::DEFAULT,
     probe_kinds: &[ProbeKind::Usb {
         ids: &[],
-        classes: &[UsbClassMatch::Interface(UsbClassId::new(0x05, None, None))],
+        classes: &[UsbClassMatch::Interface(UsbClassPattern::new(
+            0x05, None, None,
+        ))],
         on_probe: probe_switch_a,
         on_remove: Some(remove_switch_a),
     }],
@@ -206,7 +224,9 @@ static USB_SWITCH_B_REGISTER: DriverRegister = DriverRegister {
     priority: ProbePriority::DEFAULT,
     probe_kinds: &[ProbeKind::Usb {
         ids: &[],
-        classes: &[UsbClassMatch::Interface(UsbClassId::new(0x06, None, None))],
+        classes: &[UsbClassMatch::Interface(UsbClassPattern::new(
+            0x06, None, None,
+        ))],
         on_probe: probe_switch_b,
         on_remove: None,
     }],

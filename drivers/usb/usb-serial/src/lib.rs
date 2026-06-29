@@ -2,8 +2,13 @@
 
 extern crate alloc;
 
+use alloc::vec::Vec;
+
 use usb_if::{
-    descriptor::{ConfigurationDescriptor, DeviceDescriptor, EndpointType, InterfaceDescriptor},
+    descriptor::{
+        ConfigurationDescriptor, DeviceDescriptor, EndpointType, InterfaceDescriptor,
+        parse_concatenated_config_descriptors,
+    },
     transfer::Direction,
 };
 
@@ -34,7 +39,7 @@ pub struct UsbDeviceId {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct UsbSerialPort {
-    pub interface: u8,
+    pub interface_number: u8,
     pub bulk_in: u8,
     pub bulk_out: u8,
 }
@@ -99,6 +104,19 @@ pub fn probe_supported_port_for_interface(
     })
 }
 
+pub fn probe_supported_port_from_descriptors(
+    descriptor: &DeviceDescriptor,
+    configurations: &[ConfigurationDescriptor],
+    interface_number: u8,
+) -> Option<UsbSerialPortMatch> {
+    cp210x::probe_interface_from_descriptors(descriptor, configurations, interface_number).map(
+        |port| UsbSerialPortMatch {
+            chip: UsbSerialChip::Cp210x,
+            port,
+        },
+    )
+}
+
 pub fn device_id_from_descriptor_blob(blob: &[u8]) -> Option<UsbDeviceId> {
     let desc = DeviceDescriptor::parse(blob)?;
     Some(UsbDeviceId {
@@ -107,13 +125,11 @@ pub fn device_id_from_descriptor_blob(blob: &[u8]) -> Option<UsbDeviceId> {
     })
 }
 
-pub fn bulk_pair_for_interface(
-    blob: &[u8],
+pub(crate) fn bulk_pair_for_configurations(
+    configurations: &[ConfigurationDescriptor],
     mut accept_interface: impl FnMut(&InterfaceDescriptor) -> bool,
 ) -> Option<UsbSerialPort> {
-    let mut rest = blob.get(DeviceDescriptor::LEN..)?;
-    while !rest.is_empty() {
-        let config = ConfigurationDescriptor::parse(rest)?;
+    for config in configurations {
         for interfaces in &config.interfaces {
             for interface in &interfaces.alt_settings {
                 if accept_interface(interface)
@@ -123,11 +139,6 @@ pub fn bulk_pair_for_interface(
                 }
             }
         }
-        let consumed = config.raw.len();
-        if consumed == 0 || consumed > rest.len() {
-            return None;
-        }
-        rest = &rest[consumed..];
     }
     None
 }
@@ -146,10 +157,17 @@ fn bulk_pair_from_interface(interface: &InterfaceDescriptor) -> Option<UsbSerial
     }
 
     Some(UsbSerialPort {
-        interface: interface.interface_number,
+        interface_number: interface.interface_number,
         bulk_in: bulk_in?,
         bulk_out: bulk_out?,
     })
+}
+
+pub(crate) fn configurations_from_descriptor_blob(
+    blob: &[u8],
+) -> Option<Vec<ConfigurationDescriptor>> {
+    let configurations = blob.get(DeviceDescriptor::LEN..)?;
+    Some(parse_concatenated_config_descriptors(configurations).collect())
 }
 
 #[cfg(test)]
@@ -204,6 +222,10 @@ mod tests {
         [7, 0x05, address, attributes, 64, 0, 0]
     }
 
+    fn configurations(blob: &[u8]) -> Vec<ConfigurationDescriptor> {
+        parse_concatenated_config_descriptors(&blob[DeviceDescriptor::LEN..]).collect()
+    }
+
     #[test]
     fn device_id_from_descriptor_blob_decodes_device_descriptor() {
         let blob = descriptor_blob(&[]);
@@ -231,11 +253,12 @@ mod tests {
             &endpoint(0x81, 0x02),
         ]);
         let blob = descriptor_blob(&[config]);
+        let configurations = configurations(&blob);
 
         assert_eq!(
-            bulk_pair_for_interface(&blob, |interface| interface.class == 0xff),
+            bulk_pair_for_configurations(&configurations, |interface| interface.class == 0xff),
             Some(UsbSerialPort {
-                interface: 3,
+                interface_number: 3,
                 bulk_in: 0x81,
                 bulk_out: 0x02,
             })
@@ -253,9 +276,10 @@ mod tests {
             &endpoint(0x02, 0x02),
         ]);
         let blob = descriptor_blob(&[config]);
+        let configurations = configurations(&blob);
 
         assert_eq!(
-            bulk_pair_for_interface(&blob, |interface| interface.class == 0xff),
+            bulk_pair_for_configurations(&configurations, |interface| interface.class == 0xff),
             None
         );
     }
@@ -271,7 +295,7 @@ mod tests {
             Some(UsbSerialPortMatch {
                 chip: UsbSerialChip::Cp210x,
                 port: UsbSerialPort {
-                    interface: 3,
+                    interface_number: 3,
                     bulk_in: 0x82,
                     bulk_out: 0x01,
                 }
@@ -298,12 +322,45 @@ mod tests {
             Some(UsbSerialPortMatch {
                 chip: UsbSerialChip::Cp210x,
                 port: UsbSerialPort {
-                    interface: 4,
+                    interface_number: 4,
                     bulk_in: 0x84,
                     bulk_out: 0x03,
                 }
             })
         );
         assert_eq!(probe_supported_port_for_interface(&blob, 5), None);
+    }
+
+    #[test]
+    fn probe_supported_port_from_descriptors_selects_one_interface() {
+        let first = interface(2, 0, 0xff, 0, 0);
+        let second = interface(4, 0, 0xff, 0, 0);
+        let config = config(&[
+            &first,
+            &endpoint(0x82, 0x02),
+            &endpoint(0x01, 0x02),
+            &second,
+            &endpoint(0x84, 0x02),
+            &endpoint(0x03, 0x02),
+        ]);
+        let blob = descriptor_blob(&[config]);
+        let descriptor = DeviceDescriptor::parse(&blob).unwrap();
+        let configurations = configurations(&blob);
+
+        assert_eq!(
+            probe_supported_port_from_descriptors(&descriptor, &configurations, 4),
+            Some(UsbSerialPortMatch {
+                chip: UsbSerialChip::Cp210x,
+                port: UsbSerialPort {
+                    interface_number: 4,
+                    bulk_in: 0x84,
+                    bulk_out: 0x03,
+                }
+            })
+        );
+        assert_eq!(
+            probe_supported_port_from_descriptors(&descriptor, &configurations, 5),
+            None
+        );
     }
 }

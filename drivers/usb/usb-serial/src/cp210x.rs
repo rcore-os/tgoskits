@@ -1,8 +1,8 @@
-use usb_if::descriptor::InterfaceDescriptor;
+use usb_if::descriptor::{ConfigurationDescriptor, DeviceDescriptor, InterfaceDescriptor};
 
 use crate::{
-    ControlTransfer, UsbDeviceId, UsbSerialPort, bulk_pair_for_interface,
-    device_id_from_descriptor_blob,
+    ControlTransfer, UsbSerialPort, bulk_pair_for_configurations,
+    configurations_from_descriptor_blob,
 };
 
 pub const VENDOR_ID: u16 = 0x10c4;
@@ -27,29 +27,47 @@ const CP210X_CONTROL_WRITE_RTS: u16 = 0x0200;
 const USB_CLASS_VENDOR_SPECIFIC: u8 = 0xff;
 
 pub fn probe(descriptor_blob: &[u8]) -> Option<UsbSerialPort> {
-    let UsbDeviceId {
-        vendor_id,
-        product_id,
-    } = device_id_from_descriptor_blob(descriptor_blob)?;
-    if !matches!((vendor_id, product_id), (VENDOR_ID, PRODUCT_ID_EA60)) {
-        return None;
-    }
-
-    bulk_pair_for_interface(descriptor_blob, is_data_interface)
+    let descriptor = DeviceDescriptor::parse(descriptor_blob)?;
+    let configurations = configurations_from_descriptor_blob(descriptor_blob)?;
+    probe_from_descriptors(&descriptor, &configurations)
 }
 
 pub fn probe_interface(descriptor_blob: &[u8], interface_number: u8) -> Option<UsbSerialPort> {
-    let UsbDeviceId {
-        vendor_id,
-        product_id,
-    } = device_id_from_descriptor_blob(descriptor_blob)?;
-    if !matches!((vendor_id, product_id), (VENDOR_ID, PRODUCT_ID_EA60)) {
+    let descriptor = DeviceDescriptor::parse(descriptor_blob)?;
+    let configurations = configurations_from_descriptor_blob(descriptor_blob)?;
+    probe_interface_from_descriptors(&descriptor, &configurations, interface_number)
+}
+
+pub fn probe_from_descriptors(
+    descriptor: &DeviceDescriptor,
+    configurations: &[ConfigurationDescriptor],
+) -> Option<UsbSerialPort> {
+    probe_configurations(descriptor, configurations, is_data_interface)
+}
+
+pub fn probe_interface_from_descriptors(
+    descriptor: &DeviceDescriptor,
+    configurations: &[ConfigurationDescriptor],
+    interface_number: u8,
+) -> Option<UsbSerialPort> {
+    probe_configurations(descriptor, configurations, |interface| {
+        interface.interface_number == interface_number && is_data_interface(interface)
+    })
+}
+
+fn probe_configurations(
+    descriptor: &DeviceDescriptor,
+    configurations: &[ConfigurationDescriptor],
+    accept_interface: impl FnMut(&InterfaceDescriptor) -> bool,
+) -> Option<UsbSerialPort> {
+    if !matches!(
+        (descriptor.vendor_id, descriptor.product_id),
+        (VENDOR_ID, PRODUCT_ID_EA60)
+    ) {
         return None;
     }
 
-    bulk_pair_for_interface(descriptor_blob, |interface| {
-        interface.interface_number == interface_number && is_data_interface(interface)
-    })
+    bulk_pair_for_configurations(configurations, accept_interface)
 }
 
 pub fn init<T: ControlTransfer>(
@@ -64,7 +82,7 @@ pub fn init<T: ControlTransfer>(
         control,
         CP210X_IFC_ENABLE,
         CP210X_UART_ENABLE,
-        port.interface,
+        port.interface_number,
         &mut [],
     )?;
     set_baud(control, port, baud)?;
@@ -72,7 +90,7 @@ pub fn init<T: ControlTransfer>(
         control,
         CP210X_SET_LINE_CTL,
         CP210X_BITS_DATA_8,
-        port.interface,
+        port.interface_number,
         &mut [],
     )?;
     cp210x_request(
@@ -82,11 +100,17 @@ pub fn init<T: ControlTransfer>(
             | CP210X_CONTROL_RTS
             | CP210X_CONTROL_WRITE_DTR
             | CP210X_CONTROL_WRITE_RTS,
-        port.interface,
+        port.interface_number,
         &mut [],
     )?;
     let mut flow = [0u8; 16];
-    cp210x_request(control, CP210X_SET_FLOW, 0, port.interface, &mut flow)?;
+    cp210x_request(
+        control,
+        CP210X_SET_FLOW,
+        0,
+        port.interface_number,
+        &mut flow,
+    )?;
     Ok(())
 }
 
@@ -96,7 +120,13 @@ pub fn set_baud<T: ControlTransfer>(
     baud: u32,
 ) -> Result<(), T::Error> {
     let mut data = baud.to_le_bytes();
-    cp210x_request(control, CP210X_SET_BAUDRATE, 0, port.interface, &mut data)?;
+    cp210x_request(
+        control,
+        CP210X_SET_BAUDRATE,
+        0,
+        port.interface_number,
+        &mut data,
+    )?;
     Ok(())
 }
 
@@ -104,10 +134,16 @@ fn cp210x_request<T: ControlTransfer>(
     control: &T,
     request: u8,
     value: u16,
-    interface: u8,
+    interface_number: u8,
     data: &mut [u8],
 ) -> Result<usize, T::Error> {
-    control.control_out(VENDOR_INTERFACE_OUT, request, value, interface as u16, data)
+    control.control_out(
+        VENDOR_INTERFACE_OUT,
+        request,
+        value,
+        interface_number as u16,
+        data,
+    )
 }
 
 fn is_data_interface(interface: &InterfaceDescriptor) -> bool {
@@ -192,7 +228,7 @@ mod tests {
         assert_eq!(
             probe(&blob),
             Some(UsbSerialPort {
-                interface: 1,
+                interface_number: 1,
                 bulk_in: 0x82,
                 bulk_out: 0x01,
             })
@@ -221,7 +257,7 @@ mod tests {
     fn init_emits_cp210x_control_sequence() {
         let recorder = Recorder::default();
         let port = UsbSerialPort {
-            interface: 2,
+            interface_number: 2,
             bulk_in: 0x82,
             bulk_out: 0x01,
         };
