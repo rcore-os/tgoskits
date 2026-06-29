@@ -345,10 +345,10 @@ impl ImageLoader {
             initrd: ramdisk,
             cmdline: self.config.kernel.cmdline.clone(),
             cpu_num: self.config.base.cpu_num as u16,
-            platform: Some(crate::guest_platform::loongarch64::fw_cfg_platform_config(
+            platform: crate::guest_platform::loongarch64::fw_cfg_platform_config(
                 &self.vm,
                 &self.config,
-            )),
+            ),
         })
     }
 

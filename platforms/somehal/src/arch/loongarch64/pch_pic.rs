@@ -279,11 +279,6 @@ impl Interface for PchPic {
             );
             return self.base_vector.into();
         };
-        debug!(
-            "LoongArch ACPI PCH-PIC route: gsi={}, input={}, vector={}, trigger={:?}, \
-             polarity={:?}",
-            route.gsi, route.controller_input, vector, route.trigger, route.polarity
-        );
         self.configure_input(usize::from(route.controller_input), route);
         vector.into()
     }

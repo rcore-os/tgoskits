@@ -20,8 +20,6 @@ use ax_errno::{AxError, AxResult, ax_err, ax_err_type};
 use ax_kspin::SpinNoIrq as Mutex;
 use ax_memory_addr::{align_down_4k, align_up_4k};
 use axaddrspace::{AddrSpace, MappingFlags};
-#[cfg(target_arch = "loongarch64")]
-use axdevice::FwCfgRamRegion;
 use axdevice::{
     AxVmDeviceConfig, AxVmDevices, DeviceBuildContext, DeviceFactoryRegistry, FwCfg,
     FwCfgPlatformConfig, register_builtin_factories,
@@ -101,7 +99,7 @@ pub struct FwCfgDeviceConfig {
     pub initrd: Option<&'static [u8]>,
     pub cmdline: Option<String>,
     pub cpu_num: u16,
-    pub platform: Option<FwCfgPlatformConfig>,
+    pub platform: FwCfgPlatformConfig,
 }
 
 /// Represents a memory region in a virtual machine.
@@ -675,9 +673,7 @@ impl AxVM {
             initrd: config.initrd,
             cmdline: config.cmdline,
             cpu_num: config.cpu_num,
-            platform: config
-                .platform
-                .unwrap_or_else(|| self.fw_cfg_platform_config()),
+            platform: config.platform,
         });
         debug!(
             "VM[{}] queued fw_cfg device: base={:#x}, size={:#x}, kernel={} bytes, initrd={:?}",
@@ -709,40 +705,6 @@ impl AxVM {
             )))?;
         }
         Ok(())
-    }
-
-    fn fw_cfg_platform_config(&self) -> FwCfgPlatformConfig {
-        #[cfg(target_arch = "loongarch64")]
-        {
-            let inner = self.inner_mut.lock();
-            let mut ram_regions = inner
-                .memory_regions
-                .iter()
-                .map(|region| FwCfgRamRegion {
-                    base: region.gpa.as_usize() as u64,
-                    size: region.size() as u64,
-                })
-                .filter(|region| region.size != 0)
-                .collect::<Vec<_>>();
-            ram_regions.sort_by_key(|region| region.base);
-
-            if !ram_regions.is_empty() {
-                let ram_regions: &'static [FwCfgRamRegion] =
-                    Box::leak(ram_regions.into_boxed_slice());
-                debug!(
-                    "VM[{}] LoongArch fw_cfg RAM regions: {:?}",
-                    self.id(),
-                    ram_regions
-                );
-                return FwCfgPlatformConfig {
-                    ram_regions,
-                    srat_regions: ram_regions,
-                    ..FwCfgPlatformConfig::default()
-                };
-            }
-        }
-
-        FwCfgPlatformConfig::default()
     }
 
     /// Run a vCPU according to the given vcpu_id.
@@ -909,7 +871,7 @@ impl AxVM {
                 );
                 return;
             }
-            if let Err(err) = crate::inject_vm_vcpu_interrupt(self.id(), 0, event.vector) {
+            if let Err(err) = crate::manager::inject_vm_vcpu_interrupt(self.id(), 0, event.vector) {
                 warn!(
                     "failed to inject LoongArch VM[{}] PCH-PIC output vector {}: {err:?}",
                     self.id(),

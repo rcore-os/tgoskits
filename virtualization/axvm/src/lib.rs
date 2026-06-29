@@ -52,8 +52,6 @@ pub use manager::{
     inject_current_vcpu_interrupt, register_vm,
 };
 #[cfg(target_arch = "loongarch64")]
-pub use manager::{inject_vm_vcpu_external_interrupt, inject_vm_vcpu_interrupt};
-#[cfg(target_arch = "loongarch64")]
 pub use runtime::loongarch_irq::{
     register_guest_irq_route as register_loongarch_guest_irq_route,
     unregister_guest_irq_routes as unregister_loongarch_guest_irq_routes,

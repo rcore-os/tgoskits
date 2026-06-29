@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use core::fmt;
+use core::{arch::asm, fmt};
 
 use ax_page_table_entry::{GenericPTE, MappingFlags};
 use ax_page_table_multiarch::PagingMetaData;
@@ -187,7 +187,14 @@ impl PagingMetaData for LoongArchPagingMetaDataL3 {
     type VirtAddr = GuestPhysAddr;
 
     fn flush_tlb(vaddr: Option<Self::VirtAddr>) {
-        let _ = vaddr;
+        unsafe {
+            // `invtlb 0x6/0x7` may trap on current LVZ bring-up path before the
+            // guest TLB context is fully configured. Use a conservative global
+            // invalidation instead. VM creation/setup is not performance critical.
+            let _ = vaddr;
+            asm!("invtlb 0x0, $r0, $r0");
+            asm!("dbar 0");
+        }
     }
 }
 

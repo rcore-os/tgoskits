@@ -565,10 +565,10 @@ fn vcpu_run() {
         return;
     };
 
-    debug!("VM[{}] VCpu[{}] waiting for running", vm.id(), vcpu.id());
+    info!("VM[{}] VCpu[{}] waiting for running", vm.id(), vcpu.id());
     wait_for(&vm_vcpus, || vm.running());
 
-    debug!("VM[{}] VCpu[{}] running...", vm.id(), vcpu.id());
+    info!("VM[{}] VCpu[{}] running...", vm.id(), vcpu.id());
     #[cfg(target_arch = "x86_64")]
     super::x86_irq::enable_ioapic_irq_forwarding(&vm, &vcpu);
     mark_vcpu_running(vm_id);
@@ -580,209 +580,201 @@ fn vcpu_run() {
         super::x86_irq::drain_pending_ioapic_irqs(&vm, &vcpu);
 
         match vm.run_vcpu(vcpu_id) {
-            Ok(exit_reason) => {
-                #[cfg(target_arch = "loongarch64")]
-                trace!("VM[{vm_id}] VCpu[{vcpu_id}] vm.run_vcpu returned: {exit_reason:?}");
+            Ok(exit_reason) => match exit_reason {
+                AxVCpuExitReason::Hypercall { nr, args } => {
+                    debug!("Hypercall [{nr}] args {args:x?}");
+                    use crate::runtime::hvc::HyperCall;
 
-                match exit_reason {
-                    AxVCpuExitReason::Hypercall { nr, args } => {
-                        debug!("Hypercall [{nr}] args {args:x?}");
-                        use crate::runtime::hvc::HyperCall;
-
-                        match HyperCall::new(vm.clone(), nr, args) {
-                            Ok(hypercall) => {
-                                let ret_val = match hypercall.execute() {
-                                    Ok(ret_val) => ret_val as isize,
-                                    Err(err) => {
-                                        warn!("Hypercall [{nr:#x}] failed: {err:?}");
-                                        -1
-                                    }
-                                };
-                                vcpu.set_return_value(ret_val as usize);
-                            }
-                            Err(err) => {
-                                warn!("Hypercall [{nr:#x}] failed: {err:?}");
-                            }
+                    match HyperCall::new(vm.clone(), nr, args) {
+                        Ok(hypercall) => {
+                            let ret_val = match hypercall.execute() {
+                                Ok(ret_val) => ret_val as isize,
+                                Err(err) => {
+                                    warn!("Hypercall [{nr:#x}] failed: {err:?}");
+                                    -1
+                                }
+                            };
+                            vcpu.set_return_value(ret_val as usize);
+                        }
+                        Err(err) => {
+                            warn!("Hypercall [{nr:#x}] failed: {err:?}");
                         }
                     }
-                    AxVCpuExitReason::FailEntry {
-                        hardware_entry_failure_reason,
-                    } => {
-                        warn!(
-                            "VM[{vm_id}] VCpu[{vcpu_id}] run failed with exit code \
-                             {hardware_entry_failure_reason}"
-                        );
-                    }
-                    AxVCpuExitReason::ExternalInterrupt { vector } => {
-                        debug!("VM[{vm_id}] run VCpu[{vcpu_id}] get irq {vector}");
+                }
+                AxVCpuExitReason::FailEntry {
+                    hardware_entry_failure_reason,
+                } => {
+                    warn!(
+                        "VM[{vm_id}] VCpu[{vcpu_id}] run failed with exit code \
+                         {hardware_entry_failure_reason}"
+                    );
+                }
+                AxVCpuExitReason::ExternalInterrupt { vector } => {
+                    debug!("VM[{vm_id}] run VCpu[{vcpu_id}] get irq {vector}");
 
-                        // TODO: maybe move this irq dispatcher to lower layer to accelerate the interrupt handling
-                        #[cfg(not(any(target_arch = "aarch64", target_arch = "riscv64")))]
+                    // TODO: maybe move this irq dispatcher to lower layer to accelerate the interrupt handling
+                    #[cfg(not(any(target_arch = "aarch64", target_arch = "riscv64")))]
+                    crate::host::arceos::dispatch_host_irq(vector as usize);
+                    #[cfg(target_arch = "riscv64")]
+                    vcpu.with_current_cpu_set(|| {
                         crate::host::arceos::dispatch_host_irq(vector as usize);
-                        #[cfg(target_arch = "riscv64")]
-                        vcpu.with_current_cpu_set(|| {
-                            crate::host::arceos::dispatch_host_irq(vector as usize);
-                            vcpu.get_arch_vcpu().latch_hvip_from_hw();
-                        });
+                        vcpu.get_arch_vcpu().latch_hvip_from_hw();
+                    });
+                    crate::check_timer_events();
+                    #[cfg(target_arch = "x86_64")]
+                    super::x86_irq::forward_passthrough_irq_from_vmexit(
+                        &vm,
+                        &vcpu,
+                        vector as usize,
+                    );
+                    #[cfg(target_arch = "x86_64")]
+                    super::x86_irq::inject_pending_serial_irq(&vm, &vcpu);
+                }
+                AxVCpuExitReason::PreemptionTimer => {
+                    crate::timer::check_events();
+                    #[cfg(target_arch = "x86_64")]
+                    super::x86_irq::inject_due_pit_irq0(&vm, &vcpu);
+                    #[cfg(target_arch = "x86_64")]
+                    super::x86_irq::inject_pending_serial_irq(&vm, &vcpu);
+                }
+                AxVCpuExitReason::InterruptEnd { vector: _vector } => {
+                    #[cfg(target_arch = "x86_64")]
+                    if let Some(vector) = _vector {
+                        super::x86_irq::inject_pending_ioapic_irq_after_eoi(&vm, &vcpu, vector);
+                    }
+                }
+                AxVCpuExitReason::Halt => {
+                    debug!("VM[{vm_id}] run VCpu[{vcpu_id}] Halt");
+                    #[cfg(target_arch = "x86_64")]
+                    super::x86_irq::inject_due_pit_irq0(&vm, &vcpu);
+                    #[cfg(target_arch = "x86_64")]
+                    super::x86_irq::inject_pending_serial_irq(&vm, &vcpu);
+                    #[cfg(target_arch = "x86_64")]
+                    continue;
+                    #[cfg(not(target_arch = "x86_64"))]
+                    wait(&vm_vcpus)
+                }
+                AxVCpuExitReason::Idle => {
+                    trace!("VM[{vm_id}] run VCpu[{vcpu_id}] Idle");
+                    #[cfg(target_arch = "loongarch64")]
+                    {
                         crate::check_timer_events();
-                        #[cfg(target_arch = "x86_64")]
-                        super::x86_irq::forward_passthrough_irq_from_vmexit(
-                            &vm,
-                            &vcpu,
-                            vector as usize,
-                        );
-                        #[cfg(target_arch = "x86_64")]
-                        super::x86_irq::inject_pending_serial_irq(&vm, &vcpu);
-                    }
-                    AxVCpuExitReason::PreemptionTimer => {
-                        crate::timer::check_events();
-                        #[cfg(target_arch = "x86_64")]
-                        super::x86_irq::inject_due_pit_irq0(&vm, &vcpu);
-                        #[cfg(target_arch = "x86_64")]
-                        super::x86_irq::inject_pending_serial_irq(&vm, &vcpu);
-                    }
-                    AxVCpuExitReason::InterruptEnd { vector: _vector } => {
-                        #[cfg(target_arch = "x86_64")]
-                        if let Some(vector) = _vector {
-                            super::x86_irq::inject_pending_ioapic_irq_after_eoi(&vm, &vcpu, vector);
-                        }
-                    }
-                    AxVCpuExitReason::Halt => {
-                        debug!("VM[{vm_id}] run VCpu[{vcpu_id}] Halt");
-                        #[cfg(target_arch = "x86_64")]
-                        super::x86_irq::inject_due_pit_irq0(&vm, &vcpu);
-                        #[cfg(target_arch = "x86_64")]
-                        super::x86_irq::inject_pending_serial_irq(&vm, &vcpu);
-                        #[cfg(target_arch = "x86_64")]
-                        continue;
-                        #[cfg(not(target_arch = "x86_64"))]
-                        wait(&vm_vcpus)
-                    }
-                    AxVCpuExitReason::Idle => {
-                        trace!("VM[{vm_id}] run VCpu[{vcpu_id}] Idle");
-                        #[cfg(target_arch = "loongarch64")]
-                        {
-                            crate::check_timer_events();
-                            if vcpu.get_arch_vcpu().has_enabled_pending_interrupt() {
-                                trace!(
-                                    "VM[{vm_id}] VCpu[{vcpu_id}] skips idle wait because guest \
-                                     has enabled pending interrupt"
-                                );
-                                continue;
-                            }
-                            let idle_timeout = vcpu.get_arch_vcpu().idle_wait_timeout();
+                        if vcpu.get_arch_vcpu().has_enabled_pending_interrupt() {
                             trace!(
-                                "VM[{vm_id}] VCpu[{vcpu_id}] host idle wait for {idle_timeout:?}"
+                                "VM[{vm_id}] VCpu[{vcpu_id}] skips idle wait because guest has \
+                                 enabled pending interrupt"
                             );
-                            ax_std::os::arceos::modules::ax_hal::asm::set_timer_irq_enabled(true);
-                            ax_std::os::arceos::modules::ax_hal::asm::enable_irqs();
-                            ax_std::os::arceos::modules::ax_hal::time::busy_wait(idle_timeout);
-                            ax_std::os::arceos::modules::ax_hal::asm::disable_irqs();
-                            ax_std::os::arceos::modules::ax_hal::asm::set_timer_irq_enabled(false);
-                        }
-                        #[cfg(not(target_arch = "loongarch64"))]
-                        {
-                            crate::check_timer_events();
-                        }
-                    }
-                    AxVCpuExitReason::Nothing => {}
-                    AxVCpuExitReason::CpuDown { _state } => {
-                        warn!("VM[{vm_id}] run VCpu[{vcpu_id}] CpuDown state {_state:#x}");
-                        wait(&vm_vcpus)
-                    }
-                    AxVCpuExitReason::CpuUp {
-                        target_cpu,
-                        entry_point,
-                        arg,
-                    } => {
-                        debug!(
-                            "VM[{vm_id}]'s VCpu[{vcpu_id}] try to boot target_cpu [{target_cpu}] \
-                             entry_point={entry_point:x} arg={arg:#x}"
-                        );
-
-                        // Get the mapping relationship between all vCPUs and physical CPUs from the configuration
-                        let vcpu_mappings = vm.get_vcpu_affinities_pcpu_ids();
-
-                        // Find the vCPU ID corresponding to the physical ID
-                        let Some(target_vcpu_id) =
-                            vcpu_mappings.iter().find_map(|(vcpu_id, _, phys_id)| {
-                                (*phys_id == target_cpu as usize).then_some(*vcpu_id)
-                            })
-                        else {
-                            warn!("Physical CPU ID {target_cpu} not found in VM configuration");
-                            vcpu.set_return_value(usize::MAX);
                             continue;
-                        };
+                        }
+                        let idle_timeout = vcpu.get_arch_vcpu().idle_wait_timeout();
+                        trace!("VM[{vm_id}] VCpu[{vcpu_id}] host idle wait for {idle_timeout:?}");
+                        ax_std::os::arceos::modules::ax_hal::asm::set_timer_irq_enabled(true);
+                        ax_std::os::arceos::modules::ax_hal::asm::enable_irqs();
+                        ax_std::os::arceos::modules::ax_hal::time::busy_wait(idle_timeout);
+                        ax_std::os::arceos::modules::ax_hal::asm::disable_irqs();
+                        ax_std::os::arceos::modules::ax_hal::asm::set_timer_irq_enabled(false);
+                    }
+                    #[cfg(not(target_arch = "loongarch64"))]
+                    {
+                        crate::check_timer_events();
+                    }
+                }
+                AxVCpuExitReason::Nothing => {}
+                AxVCpuExitReason::CpuDown { _state } => {
+                    warn!("VM[{vm_id}] run VCpu[{vcpu_id}] CpuDown state {_state:#x}");
+                    wait(&vm_vcpus)
+                }
+                AxVCpuExitReason::CpuUp {
+                    target_cpu,
+                    entry_point,
+                    arg,
+                } => {
+                    info!(
+                        "VM[{vm_id}]'s VCpu[{vcpu_id}] try to boot target_cpu [{target_cpu}] \
+                         entry_point={entry_point:x} arg={arg:#x}"
+                    );
 
-                        match vcpu_on(vm.clone(), target_vcpu_id, entry_point, arg as _) {
-                            Ok(()) => {
-                                #[cfg(not(target_arch = "riscv64"))]
-                                vcpu.set_gpr(0, 0);
-                                #[cfg(target_arch = "riscv64")]
-                                vcpu.set_gpr(RiscvGprIndex::A0 as usize, 0);
-                            }
-                            Err(err) => {
-                                warn!("Failed to boot VM[{vm_id}] VCpu[{target_vcpu_id}]: {err:?}");
-                                vcpu.set_return_value(usize::MAX);
-                            }
+                    // Get the mapping relationship between all vCPUs and physical CPUs from the configuration
+                    let vcpu_mappings = vm.get_vcpu_affinities_pcpu_ids();
+
+                    // Find the vCPU ID corresponding to the physical ID
+                    let Some(target_vcpu_id) =
+                        vcpu_mappings.iter().find_map(|(vcpu_id, _, phys_id)| {
+                            (*phys_id == target_cpu as usize).then_some(*vcpu_id)
+                        })
+                    else {
+                        warn!("Physical CPU ID {target_cpu} not found in VM configuration");
+                        vcpu.set_return_value(usize::MAX);
+                        continue;
+                    };
+
+                    match vcpu_on(vm.clone(), target_vcpu_id, entry_point, arg as _) {
+                        Ok(()) => {
+                            #[cfg(not(target_arch = "riscv64"))]
+                            vcpu.set_gpr(0, 0);
+                            #[cfg(target_arch = "riscv64")]
+                            vcpu.set_gpr(RiscvGprIndex::A0 as usize, 0);
+                        }
+                        Err(err) => {
+                            warn!("Failed to boot VM[{vm_id}] VCpu[{target_vcpu_id}]: {err:?}");
+                            vcpu.set_return_value(usize::MAX);
                         }
                     }
-                    AxVCpuExitReason::SystemDown => {
-                        warn!("VM[{vm_id}] run VCpu[{vcpu_id}] SystemDown");
-                        if let Err(err) = vm.shutdown() {
-                            warn!("VM[{vm_id}] shutdown failed: {err:?}");
-                        }
-                        // Notify all vCPUs to wake up to check the shutdown flag
-                        notify_all_vcpus(vm_id);
+                }
+                AxVCpuExitReason::SystemDown => {
+                    warn!("VM[{vm_id}] run VCpu[{vcpu_id}] SystemDown");
+                    if let Err(err) = vm.shutdown() {
+                        warn!("VM[{vm_id}] shutdown failed: {err:?}");
                     }
-                    AxVCpuExitReason::SendIPI {
+                    // Notify all vCPUs to wake up to check the shutdown flag
+                    notify_all_vcpus(vm_id);
+                }
+                AxVCpuExitReason::SendIPI {
+                    target_cpu,
+                    target_cpu_aux,
+                    send_to_all,
+                    send_to_self,
+                    vector,
+                } => {
+                    debug!(
+                        "VM[{vm_id}] run VCpu[{vcpu_id}] SendIPI, target_cpu={target_cpu:#x}, \
+                         target_cpu_aux={target_cpu_aux:#x}, vector={vector}",
+                    );
+                    let targets = ipi_targets(
+                        &vm,
+                        vcpu_id,
                         target_cpu,
                         target_cpu_aux,
                         send_to_all,
                         send_to_self,
-                        vector,
-                    } => {
-                        debug!(
-                            "VM[{vm_id}] run VCpu[{vcpu_id}] SendIPI, target_cpu={target_cpu:#x}, \
-                             target_cpu_aux={target_cpu_aux:#x}, vector={vector}",
+                    );
+                    if targets.is_empty() {
+                        warn!(
+                            "VM[{vm_id}] SendIPI has no target: target_cpu={target_cpu:#x}, \
+                             target_cpu_aux={target_cpu_aux:#x}"
                         );
-                        let targets = ipi_targets(
-                            &vm,
-                            vcpu_id,
-                            target_cpu,
-                            target_cpu_aux,
-                            send_to_all,
-                            send_to_self,
-                        );
-                        if targets.is_empty() {
-                            warn!(
-                                "VM[{vm_id}] SendIPI has no target: target_cpu={target_cpu:#x}, \
-                                 target_cpu_aux={target_cpu_aux:#x}"
-                            );
-                            continue;
-                        }
-
-                        if targets.get(vcpu_id) {
-                            crate::inject_current_vcpu_interrupt(vector as _)
-                                .expect("failed to inject self IPI into current vCPU");
-                        }
-                        let mut remote_targets = targets;
-                        remote_targets.set(vcpu_id, false);
-                        if !remote_targets.is_empty()
-                            && let Err(err) =
-                                vm.inject_interrupt_to_vcpu(remote_targets, vector as _)
-                        {
-                            warn!(
-                                "Failed to inject interrupt {vector} to VM[{vm_id}] targets \
-                                 {remote_targets:?}: {err:?}"
-                            );
-                        }
+                        continue;
                     }
-                    e => {
-                        warn!("VM[{vm_id}] run VCpu[{vcpu_id}] unhandled vmexit: {e:?}");
+
+                    if targets.get(vcpu_id) {
+                        crate::inject_current_vcpu_interrupt(vector as _)
+                            .expect("failed to inject self IPI into current vCPU");
+                    }
+                    let mut remote_targets = targets;
+                    remote_targets.set(vcpu_id, false);
+                    if !remote_targets.is_empty()
+                        && let Err(err) = vm.inject_interrupt_to_vcpu(remote_targets, vector as _)
+                    {
+                        warn!(
+                            "Failed to inject interrupt {vector} to VM[{vm_id}] targets \
+                             {remote_targets:?}: {err:?}"
+                        );
                     }
                 }
-            }
+                e => {
+                    warn!("VM[{vm_id}] run VCpu[{vcpu_id}] unhandled vmexit: {e:?}");
+                }
+            },
             Err(err) => {
                 error!("VM[{vm_id}] run VCpu[{vcpu_id}] get error {err:?}");
                 if let Err(err) = vm.shutdown() {
@@ -800,7 +792,7 @@ fn vcpu_run() {
                 vm_id, vcpu_id
             );
             wait_for(&vm_vcpus, || !vm.suspending());
-            debug!("VM[{}] VCpu[{}] resumed from suspend", vm_id, vcpu_id);
+            info!("VM[{}] VCpu[{}] resumed from suspend", vm_id, vcpu_id);
             continue;
         }
 
