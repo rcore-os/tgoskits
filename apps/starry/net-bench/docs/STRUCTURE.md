@@ -44,6 +44,9 @@ apps/starry/net-bench/
 │
 ├── build-<target>.toml       # 构建配置（启用 virtio-net/virtio-blk）
 ├── docs/                     # 详细文档
+├── linux-baseline/           # Linux 基线工件（由脚本按需生成，不入库）
+│   ├── initramfs.cpio.gz     # 从受管 Alpine rootfs 构建（gitignore）
+│   └── vmlinuz               # 可选：显式放置的 aarch64 内核（gitignore）
 └── results/                  # 测试结果
 ```
 

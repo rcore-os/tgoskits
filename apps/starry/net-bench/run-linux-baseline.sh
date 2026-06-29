@@ -14,6 +14,7 @@ set -euo pipefail
 ARCH="aarch64"
 SCENARIO="vhost"
 REPEAT=1
+REBUILD_ROOTFS=0
 
 # 解析参数
 positional=()
@@ -27,6 +28,8 @@ while [[ $# -gt 0 ]]; do
             REPEAT="${1#*=}"; shift
             [[ "$REPEAT" =~ ^[1-9][0-9]*$ ]] || { echo "error: --repeat needs a positive integer" >&2; exit 1; }
             ;;
+        --rebuild-rootfs)
+            REBUILD_ROOTFS=1; shift ;;
         -h|--help|help)
             positional+=("help"); shift ;;
         *)
@@ -60,7 +63,8 @@ scenario:
   vhost-smp4  TAP+vhost-net, smp=4 (多核扩展)
 
 options:
-  --repeat N  重复测试 N 次（默认 1）
+  --repeat N         重复测试 N 次（默认 1）
+  --rebuild-rootfs   强制重建 Linux baseline initramfs（忽略已有缓存）
 
 前置条件:
   1. vhost 环境已配置: sudo bash apps/starry/net-bench/bin/setup
@@ -97,41 +101,102 @@ check_prereq() {
     fi
 }
 
-# 准备 Linux guest rootfs（Alpine Linux minirootfs + iperf3）
+# 校验 initramfs 是否为完整可用的 gzip+cpio 归档。
+# 返回 0 表示有效，非 0 表示缺失或损坏（调用方据此决定是否重建）。
+validate_initramfs() {
+    local rootfs="$1"
+    [[ -f "$rootfs" ]] || return 1
+    # gzip 完整性
+    gzip -t "$rootfs" 2>/dev/null || return 1
+    # cpio 归档可完整列出，并且包含 init 入口
+    local listing
+    listing="$(gzip -dc "$rootfs" 2>/dev/null | cpio -it 2>/dev/null)" || return 1
+    [[ -n "$listing" ]] || return 1
+    grep -qx "./init\|init" <<<"$listing" || return 1
+    return 0
+}
+
+# 定位与 Starry 同源的受管 Alpine ext4 rootfs 镜像（内含 busybox/iperf3/ip/nc）。
+# 缺失时尝试通过 xtask 拉取；仍失败则明确报错。
+locate_alpine_image() {
+    local image_name="rootfs-${ARCH}-alpine.img"
+    local img="$WORKSPACE/tmp/axbuild/rootfs/$image_name/$image_name"
+
+    if [[ ! -f "$img" ]]; then
+        echo "=== Alpine rootfs image missing, fetching via xtask ===" >&2
+        ( cd "$WORKSPACE" && cargo xtask starry rootfs --arch "$ARCH" ) >&2 || {
+            echo "error: failed to ensure Alpine rootfs via 'cargo xtask starry rootfs --arch $ARCH'" >&2
+            return 1
+        }
+    fi
+    [[ -f "$img" ]] || {
+        echo "error: managed Alpine rootfs not found at $img" >&2
+        return 1
+    }
+    printf '%s\n' "$img"
+}
+
+# 准备 Linux guest initramfs：从受管 Alpine rootfs 提取真实的
+# busybox/iperf3/ip/nc 及依赖库，注入 init 脚本后打包为 cpio.gz。
+# 这样得到的 initramfs 真实可启动，且与 Starry 测试使用同一镜像来源，可复现。
 prepare_linux_rootfs() {
     local rootfs="$LINUX_DIR/initramfs.cpio.gz"
-    
-    if [[ -f "$rootfs" ]]; then
-        echo "=== Linux rootfs exists: $rootfs ==="
+
+    if [[ "$REBUILD_ROOTFS" -eq 0 ]] && validate_initramfs "$rootfs"; then
+        echo "=== Reusing valid Linux baseline initramfs: $rootfs ==="
         return 0
     fi
-    
-    echo "=== Preparing Linux baseline rootfs ==="
-    
+
+    if [[ -f "$rootfs" ]] && [[ "$REBUILD_ROOTFS" -eq 0 ]]; then
+        echo "warning: existing initramfs is missing/corrupt, rebuilding: $rootfs" >&2
+    fi
+    rm -f "$rootfs"
+
+    command -v debugfs >/dev/null 2>&1 || { echo "error: install e2fsprogs (debugfs)" >&2; exit 1; }
+    command -v cpio    >/dev/null 2>&1 || { echo "error: install cpio" >&2; exit 1; }
+
+    local alpine_img
+    alpine_img="$(locate_alpine_image)" || exit 1
+
+    echo "=== Building Linux baseline initramfs from $alpine_img ==="
+
     local tmpdir="$LINUX_DIR/rootfs-build"
+    rm -rf "$tmpdir"
     mkdir -p "$tmpdir"
-    
-    # 创建最小的 Alpine Linux initramfs
+
+    # 从 Alpine ext4 镜像完整提取根文件系统（含 busybox/iperf3/ip/nc 及 musl 库）。
+    debugfs -R "rdump / $tmpdir" "$alpine_img" >/dev/null 2>&1 || {
+        echo "error: debugfs rdump failed on $alpine_img" >&2
+        exit 1
+    }
+
+    # 校验关键依赖确实存在，避免打包出无法运行测试的 initramfs。
+    local missing=0 dep
+    for dep in bin/busybox usr/bin/iperf3; do
+        [[ -e "$tmpdir/$dep" ]] || { echo "error: $dep missing in extracted rootfs" >&2; missing=1; }
+    done
+    [[ "$missing" -eq 0 ]] || exit 1
+
+    # 注入 init 脚本（busybox ash 兼容：无 brace 展开，循环用 seq）。
     cat > "$tmpdir/init" <<'INIT_SCRIPT'
 #!/bin/sh
-# Linux baseline init script
+# Linux baseline init script (busybox ash compatible)
 
-mount -t proc none /proc
-mount -t sysfs none /sys
-mount -t devtmpfs none /dev
+mount -t proc none /proc 2>/dev/null
+mount -t sysfs none /sys 2>/dev/null
+mount -t devtmpfs none /dev 2>/dev/null
 
-# 配置网络
+# 配置网络（拓扑对齐 Starry：192.168.100.2/24，网关 .1）
 ip link set lo up
 ip link set eth0 up
 ip addr add 192.168.100.2/24 dev eth0
 ip route add default via 192.168.100.1
 
-# 运行 net-bench 测试
 echo "=== Linux baseline: starting net-bench tests ==="
 HOST_IP="192.168.100.1"
 
 run_test() {
-    local test_id="$1"
+    test_id="$1"
     shift
     echo "NET_BENCH_BEGIN test=$test_id iter=0 warmup=1"
     iperf3 -c "$HOST_IP" -t 10 -J "$@" || true
@@ -145,7 +210,7 @@ run_test() {
 }
 
 # 等待 host iperf3 server 就绪
-for i in {1..15}; do
+for i in $(seq 1 15); do
     if nc -z "$HOST_IP" 5201 2>/dev/null; then
         echo "=== iperf3 server ready ==="
         break
@@ -162,14 +227,19 @@ run_test udp64 -u -b 0 -l 64
 echo "NET_BENCH_PASSED"
 poweroff -f
 INIT_SCRIPT
-    
+
     chmod +x "$tmpdir/init"
-    
-    # 打包成 cpio
-    (cd "$tmpdir" && find . | cpio -o -H newc | gzip) > "$rootfs"
-    
-    echo "=== Linux rootfs created: $rootfs ==="
-    echo "note: This rootfs requires iperf3 binary in guest or use a full Alpine Linux image"
+
+    # 打包成 cpio.gz
+    ( cd "$tmpdir" && find . | cpio -o -H newc 2>/dev/null | gzip ) > "$rootfs"
+
+    # 自校验：确保新生成的 initramfs 真实可用
+    validate_initramfs "$rootfs" || {
+        echo "error: freshly built initramfs failed validation: $rootfs" >&2
+        exit 1
+    }
+
+    echo "=== Linux initramfs created: $rootfs ($(du -h "$rootfs" | cut -f1)) ==="
 }
 
 # 运行 Linux baseline 测试
@@ -180,13 +250,20 @@ run_linux_test() {
     
     echo "=== Linux baseline test (repeat $repeat_id/$REPEAT, smp=$smp) ===" | tee "$log_file"
     
-    # 检查宿主机内核路径
-    local kernel_img="/boot/vmlinuz-$(uname -r)"
-    if [[ ! -f "$kernel_img" ]]; then
-        echo "error: kernel image not found: $kernel_img" >&2
-        echo "hint: Provide a Linux aarch64 kernel in $LINUX_DIR/vmlinuz" >&2
+    # 解析 Linux 内核镜像：优先使用 baseline 目录内显式放置的内核，
+    # 否则在 host 架构与目标架构一致时回退到 host 内核；不一致则明确报错。
+    local kernel_img=""
+    if [[ -f "$LINUX_DIR/vmlinuz" ]]; then
+        kernel_img="$LINUX_DIR/vmlinuz"
+    elif [[ "$(uname -m)" == "aarch64" && -f "/boot/vmlinuz-$(uname -r)" ]]; then
+        kernel_img="/boot/vmlinuz-$(uname -r)"
+    fi
+    if [[ -z "$kernel_img" ]]; then
+        echo "error: no usable aarch64 Linux kernel found" >&2
+        echo "hint: place an aarch64 kernel at $LINUX_DIR/vmlinuz, or run on an aarch64 host" >&2
         return 1
     fi
+    echo "=== Using kernel: $kernel_img ===" | tee -a "$log_file"
     
     # QEMU 参数（对齐 qemu/vhost-aarch64-kvm.toml 的拓扑）
     local qemu_cmd=(

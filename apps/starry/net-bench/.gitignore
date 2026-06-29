@@ -4,3 +4,10 @@ results/*
 .bench-state.json
 __pycache__/
 *.pyc
+
+# Linux baseline generated artifacts (rootfs/kernel are built or fetched
+# on demand by run-linux-baseline.sh; never commit generated binaries).
+linux-baseline/initramfs.cpio.gz
+linux-baseline/rootfs-build/
+linux-baseline/vmlinuz
+linux-baseline/*.img

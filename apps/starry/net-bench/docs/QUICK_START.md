@@ -59,8 +59,10 @@ bash apps/starry/net-bench/run.sh --scenario slirp --arch x86_64
 # CPU 效率（perf stat）
 bash apps/starry/net-bench/run-with-perf.sh --arch x86_64 --scenario vhost
 
-# Linux 同拓扑基线
+# Linux 同拓扑基线（首次运行会从受管 Alpine rootfs 自动构建 initramfs）
 bash apps/starry/net-bench/run-linux-baseline.sh aarch64 vhost --repeat 5
+# 强制重建 initramfs（升级 rootfs 或缓存损坏时）
+bash apps/starry/net-bench/run-linux-baseline.sh aarch64 vhost --rebuild-rootfs
 ```
 
 ## 环境管理

@@ -12,6 +12,8 @@
 // Because the send/recv functions return the number of bytes transferred
 // (wrapped in AxResult<usize>), we probe the *return* site with kretprobe
 // for the byte count and use separate kprobe entry counters for packets.
+// Both directions parse the same `AxResult<usize>` sret-pointer layout, so
+// the probe does not depend on architecture-specific register conventions.
 //
 // Map layout (global array, index = NetKey enum value):
 //   0  TCP_TX_PKTS   1  TCP_TX_BYTES
@@ -20,7 +22,6 @@
 //   6  UDP_RX_PKTS   7  UDP_RX_BYTES
 
 use aya_ebpf::{
-    EbpfContext,
     macros::{kprobe, kretprobe, map},
     maps::Array,
     programs::{ProbeContext, RetProbeContext},
@@ -47,12 +48,17 @@ fn add_to(idx: u32, delta: u64) {
     }
 }
 
-// The ax_net SocketOps send variants observed in Starry return
-// `Result<usize, AxError>` through an sret pointer. At the return site, rax is
-// that pointer. The in-memory layout is:
+// Both `send` and `recv` in `ax_net::socket::SocketOps` share the same
+// signature shape, returning `AxResult<usize>` (i.e. `Result<usize, AxError>`
+// where `AxError` wraps an `i32`). That value is larger than a single register,
+// so the ABI returns it through an sret pointer; at the kretprobe site the
+// return register holds that pointer. The in-memory layout is:
 //   [+0]  u64  discriminant  (0 = Ok, non-zero = Err)
 //   [+8]  u64  payload       (byte count on Ok)
 //
+// Using this layout for both send and recv avoids depending on architecture-
+// specific argument-register conventions, so the probe stays correct across
+// compiler versions, optimization levels, and target architectures.
 #[inline(always)]
 fn read_ok_bytes_from_ptr(ptr: u64) -> Option<u64> {
     let ptr = ptr as *const u64;
@@ -66,16 +72,11 @@ fn read_ok_bytes_from_ptr(ptr: u64) -> Option<u64> {
     }
     // payload at offset 8
     let bytes = unsafe { aya_ebpf::helpers::bpf_probe_read_kernel(ptr.add(1)).ok()? };
-    Some(bytes)
-}
-
-#[inline(always)]
-fn recv_bytes(ctx: &RetProbeContext) -> u64 {
-    // The recv monomorphizations observed in Starry return the byte count in
-    // rdx. In aya's x86_64 pt_regs mapping, rdx is argument slot 2.
-    let pctx = ProbeContext::new(ctx.as_ptr());
-    let n = pctx.arg::<u64>(2).unwrap_or(0);
-    if n <= MAX_IO_BYTES { n } else { 0 }
+    if bytes <= MAX_IO_BYTES {
+        Some(bytes)
+    } else {
+        None
+    }
 }
 
 // ── TCP send (entry → count packet; retprobe → count bytes) ─────────────────
@@ -104,7 +105,9 @@ pub fn tcp_recv_entry(_ctx: ProbeContext) -> u32 {
 
 #[kretprobe]
 pub fn tcp_recv_ret(ctx: RetProbeContext) -> u32 {
-    add_to(TCP_RX_BYTES, recv_bytes(&ctx));
+    if let Some(n) = read_ok_bytes_from_ptr(ctx.ret::<u64>()) {
+        add_to(TCP_RX_BYTES, n);
+    }
     0
 }
 
@@ -134,7 +137,9 @@ pub fn udp_recv_entry(_ctx: ProbeContext) -> u32 {
 
 #[kretprobe]
 pub fn udp_recv_ret(ctx: RetProbeContext) -> u32 {
-    add_to(UDP_RX_BYTES, recv_bytes(&ctx));
+    if let Some(n) = read_ok_bytes_from_ptr(ctx.ret::<u64>()) {
+        add_to(UDP_RX_BYTES, n);
+    }
     0
 }
 

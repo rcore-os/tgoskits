@@ -1,5 +1,18 @@
 # net-bench 待办事项
 
+## 已完成（PR 反馈修复）
+
+- Linux 基线 initramfs 改为按需构建：从受管 Alpine rootfs（含 busybox/iperf3/
+  ip/nc）提取并打包，不再提交生成物；`run-linux-baseline.sh` 在缺失或校验失败
+  （gzip/cpio 完整性 + init 入口）时重建，并支持 `--rebuild-rootfs` 强制重建
+- 删除并 gitignore 失效的占位 `linux-baseline/initramfs.cpio.gz`（20 字节坏档）
+  与 `rootfs-build/` 中间产物
+- Linux 基线内核解析显式化：优先 `linux-baseline/vmlinuz`，否则仅在 host 架构
+  与目标一致时回退 host 内核，跨架构明确报错（避免静默用错内核）
+- eBPF net_stats：四个架构 QEMU 配置统一 `--test`，保证各架构都产生自测流量
+- eBPF net_stats：recv 改用与 send 相同的 `AxResult<usize>` sret 指针解析，
+  移除依赖 rdx 寄存器约定的脆弱实现
+
 ## 已完成（本次重构）
 
 - 统一为单一严肃入口 `run.sh`（显式 arch/scenario/accel/repeat），智能入口
