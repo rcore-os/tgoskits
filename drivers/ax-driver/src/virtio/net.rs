@@ -113,6 +113,7 @@ impl<T: VirtIoTransport> rd_net::Interface for VirtIoNetDevice<T> {
 struct VirtioNetInnerCell<T: VirtIoTransport> {
     inner: UnsafeCell<NetInner<T>>,
     access_active: AtomicBool,
+    irq_ack_pending: AtomicBool,
 }
 
 unsafe impl<T: VirtIoTransport> Send for VirtioNetInnerCell<T> {}
@@ -123,6 +124,7 @@ impl<T: VirtIoTransport> VirtioNetInnerCell<T> {
         Self {
             inner: UnsafeCell::new(inner),
             access_active: AtomicBool::new(false),
+            irq_ack_pending: AtomicBool::new(false),
         }
     }
 
@@ -131,7 +133,11 @@ impl<T: VirtIoTransport> VirtioNetInnerCell<T> {
         let _active = VirtioNetAccessGuard::enter_task(&self.access_active);
         // SAFETY: `access_active` serializes all mutable access to the shared
         // raw transport. Task-side callers also keep local IRQ/preemption off.
-        f(unsafe { &mut *self.inner.get() })
+        let inner = unsafe { &mut *self.inner.get() };
+        self.flush_pending_irq_ack(inner);
+        let ret = f(inner);
+        self.flush_pending_irq_ack(inner);
+        ret
     }
 
     fn try_with_irq<R>(&self, f: impl FnOnce(&mut NetInner<T>) -> R) -> Option<R> {
@@ -142,14 +148,26 @@ impl<T: VirtIoTransport> VirtioNetInnerCell<T> {
     }
 
     fn handle_irq(&self) -> Event {
-        self.try_with_irq(|inner| {
-            let _ = inner.raw.ack_interrupt();
-        });
+        if self
+            .try_with_irq(|inner| {
+                self.irq_ack_pending.store(false, Ordering::Release);
+                let _ = inner.raw.ack_interrupt();
+            })
+            .is_none()
+        {
+            self.irq_ack_pending.store(true, Ordering::Release);
+        }
 
         let mut event = Event::none();
         event.tx_queue.insert(0);
         event.rx_queue.insert(0);
         event
+    }
+
+    fn flush_pending_irq_ack(&self, inner: &mut NetInner<T>) {
+        if self.irq_ack_pending.swap(false, Ordering::AcqRel) {
+            let _ = inner.raw.ack_interrupt();
+        }
     }
 }
 
@@ -387,7 +405,7 @@ fn map_net_error(err: VirtIoError) -> NetError {
 mod tests {
     extern crate std;
 
-    use core::sync::atomic::AtomicBool;
+    use core::sync::atomic::{AtomicBool, Ordering};
 
     use super::VirtioNetAccessGuard;
 
@@ -399,5 +417,22 @@ mod tests {
         assert!(VirtioNetAccessGuard::try_enter_irq(&active).is_none());
         drop(task_guard);
         assert!(VirtioNetAccessGuard::try_enter_irq(&active).is_some());
+    }
+
+    #[test]
+    fn skipped_irq_access_records_pending_ack() {
+        let access_active = AtomicBool::new(false);
+        let irq_ack_pending = AtomicBool::new(false);
+        let task_guard = VirtioNetAccessGuard::enter_task(&access_active);
+
+        if VirtioNetAccessGuard::try_enter_irq(&access_active).is_none() {
+            irq_ack_pending.store(true, Ordering::Release);
+        }
+
+        assert!(irq_ack_pending.load(Ordering::Acquire));
+        drop(task_guard);
+        assert!(VirtioNetAccessGuard::try_enter_irq(&access_active).is_some());
+        assert!(irq_ack_pending.swap(false, Ordering::AcqRel));
+        assert!(!irq_ack_pending.load(Ordering::Acquire));
     }
 }
