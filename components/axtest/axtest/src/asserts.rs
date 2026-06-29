@@ -7,7 +7,10 @@ macro_rules! ax_assert {
     };
     ($cond:expr, $($arg:tt)+) => {
         if !$cond {
-            let _ = core::format_args!($($arg)+);
+            $crate::axtest_println!(
+                "assertion failed: {}",
+                core::format_args!($($arg)+)
+            );
             return $crate::AxTestResult::Failed;
         }
     };
@@ -19,6 +22,9 @@ macro_rules! ax_assert_eq {
         match (&$left, &$right) {
             (left_val, right_val) => {
                 if !(*left_val == *right_val) {
+                    $crate::axtest_println!(
+                        "assertion `left == right` failed\n  left: {left_val:?}\n right: {right_val:?}"
+                    );
                     return $crate::AxTestResult::Failed;
                 }
             }
@@ -28,7 +34,10 @@ macro_rules! ax_assert_eq {
         match (&$left, &$right) {
             (left_val, right_val) => {
                 if !(*left_val == *right_val) {
-                    let _ = core::format_args!($($arg)+);
+                    $crate::axtest_println!(
+                        "assertion `left == right` failed: {}\n  left: {left_val:?}\n right: {right_val:?}",
+                        core::format_args!($($arg)+)
+                    );
                     return $crate::AxTestResult::Failed;
                 }
             }
@@ -42,6 +51,9 @@ macro_rules! ax_assert_ne {
         match (&$left, &$right) {
             (left_val, right_val) => {
                 if *left_val == *right_val {
+                    $crate::axtest_println!(
+                        "assertion `left != right` failed\n  left: {left_val:?}\n right: {right_val:?}"
+                    );
                     return $crate::AxTestResult::Failed;
                 }
             }
@@ -51,7 +63,10 @@ macro_rules! ax_assert_ne {
         match (&$left, &$right) {
             (left_val, right_val) => {
                 if *left_val == *right_val {
-                    let _ = core::format_args!($($arg)+);
+                    $crate::axtest_println!(
+                        "assertion `left != right` failed: {}\n  left: {left_val:?}\n right: {right_val:?}",
+                        core::format_args!($($arg)+)
+                    );
                     return $crate::AxTestResult::Failed;
                 }
             }

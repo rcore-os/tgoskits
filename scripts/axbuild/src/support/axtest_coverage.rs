@@ -108,8 +108,7 @@ pub(crate) fn update_success_regex(qemu: &mut QemuConfig) {
         .iter()
         .any(|r| r.contains(COVERAGE_DONE_MARKER))
     {
-        qemu.success_regex
-            .push(COVERAGE_DONE_MARKER.to_string());
+        qemu.success_regex.push(COVERAGE_DONE_MARKER.to_string());
     }
 }
 
@@ -348,10 +347,7 @@ mod capture {
         while Instant::now() < deadline {
             if socket.exists() {
                 return UnixStream::connect(socket).with_context(|| {
-                    format!(
-                        "failed to connect QEMU monitor at {}",
-                        socket.display()
-                    )
+                    format!("failed to connect QEMU monitor at {}", socket.display())
                 });
             }
             std::thread::sleep(Duration::from_millis(20));

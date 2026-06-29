@@ -22,6 +22,10 @@ pub fn _print(args: Arguments<'_>) {
         return;
     }
 
+    // SAFETY: `printer` was loaded from `PRINTER`, which is only written by
+    // `set_printer` with the address of a valid `AxTestPrintFn` function
+    // pointer. The zero sentinel is handled above, so any non-zero value
+    // here is a valid function pointer of the expected type.
     let printer: AxTestPrintFn = unsafe { core::mem::transmute(printer) };
     printer(args);
 }
