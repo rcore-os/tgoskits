@@ -168,7 +168,7 @@ setup_tap() {
 - 满足基线测试需求
 
 **原始配置的多队列参数**：
-- 来自 `www/starry-net-qemu-benchmark-plan.md` 的高性能配置
+- 对应高性能多核扩展测试场景
 - 适合多核扩展测试
 - 但需要 TAP 设备支持（需要 `multi_queue` 创建）
 

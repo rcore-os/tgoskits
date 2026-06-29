@@ -3,8 +3,6 @@
 面向 StarryOS 网络栈优化的性能测试套件，提供"入口 + 参数明确"的严肃测试流程，
 覆盖吞吐 / PPS / 延迟 / CPU 效率 / 多核扩展等维度，并支持与 Linux 基线同拓扑对照。
 
-> 方法论与拓扑纪律见仓库 `www/starry-net-benchmark-methodology.md` 与
-> `www/starry-net-qemu-benchmark-plan.md`。
 
 ## 设计理念
 
