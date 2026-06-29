@@ -26,7 +26,8 @@ mod platform;
 mod std_build;
 
 pub(crate) use config_file::{
-    ensure_build_info, load_build_info, reject_arceos_app_c_field, reject_removed_std_field,
+    ensure_build_info, load_build_info, load_toml_with_rejector, read_toml_with_rejector,
+    reject_arceos_app_c_field, reject_removed_std_field,
 };
 pub(crate) use info::{
     ARCEOS_LINKER_SCRIPT, BuildInfo, build_info_enables_backtrace_path,

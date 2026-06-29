@@ -247,6 +247,22 @@ vm_configs = []
 }
 
 #[test]
+fn load_target_from_plain_build_config_returns_none() {
+    let root = tempdir().unwrap();
+    let path = root.path().join(".build.toml");
+    fs::write(
+        &path,
+        r#"
+features = ["fs"]
+log = "Info"
+"#,
+    )
+    .unwrap();
+
+    assert_eq!(load_target_from_build_config(&path).unwrap(), None);
+}
+
+#[test]
 fn load_target_from_build_config_rejects_removed_std_field() {
     let root = tempdir().unwrap();
     let path = root.path().join("qemu-aarch64.toml");

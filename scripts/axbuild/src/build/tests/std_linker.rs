@@ -1,18 +1,37 @@
 use super::*;
 
+fn load_std_cargo_config(path: &Path) -> toml::Table {
+    toml::from_str(&fs::read_to_string(path).unwrap()).unwrap()
+}
+
 #[test]
 fn std_cargo_config_uses_linux_musl_wrapper_with_plain_std_build() {
     let fake_dir = std_fake_lib_dir("x86_64-unknown-linux-musl").unwrap();
     let wrapper = std_linker_wrapper_path("x86_64-unknown-linux-musl", &fake_dir, false).unwrap();
     let config = std_cargo_config_path("x86_64-unknown-linux-musl", &wrapper, false, &[]).unwrap();
     let config = fs::read_to_string(config).unwrap();
+    let parsed: toml::Table = toml::from_str(&config).unwrap();
 
-    assert!(config.contains("build-std = [\"std\", \"panic_abort\"]"));
-    assert!(config.contains("build-std-features = []"));
-    assert!(config.contains("[target.x86_64-unknown-linux-musl]"));
+    assert_eq!(
+        parsed["unstable"]["build-std"].as_array().unwrap(),
+        &vec![
+            toml::Value::String("std".to_string()),
+            toml::Value::String("panic_abort".to_string())
+        ]
+    );
+    assert_eq!(
+        parsed["unstable"]["build-std-features"]
+            .as_array()
+            .unwrap()
+            .len(),
+        0
+    );
+    assert_eq!(
+        parsed["target"]["x86_64-unknown-linux-musl"]["linker"].as_str(),
+        Some(wrapper.display().to_string().as_str())
+    );
     assert!(!config.contains("--cfg"));
     assert!(!config.contains("--check-cfg"));
-    assert!(config.contains(&wrapper.display().to_string()));
     assert!(!config.contains("relocation-model"));
     assert!(!config.contains("code-model"));
     assert!(!config.contains("--cfg"));
@@ -99,6 +118,91 @@ fn std_cargo_config_and_wrapper_paths_are_partitioned_by_link_mode() {
             .display()
             .to_string()
             .ends_with("config-aarch64-unknown-linux-musl-dynamic.toml")
+    );
+}
+
+#[test]
+fn std_cargo_config_serializes_structured_toml_fields() {
+    let fake_dir = std_fake_lib_dir("x86_64-unknown-linux-musl").unwrap();
+    let wrapper = std_linker_wrapper_path("x86_64-unknown-linux-musl", &fake_dir, false).unwrap();
+    let path = std_cargo_config_path(
+        "x86_64-unknown-linux-musl",
+        &wrapper,
+        false,
+        &["--cfg".to_string(), r#"feature="quote\slash""#.to_string()],
+    )
+    .unwrap();
+
+    let config = load_std_cargo_config(&path);
+    let unstable = config.get("unstable").unwrap().as_table().unwrap();
+    assert_eq!(
+        unstable.get("build-std").unwrap().as_array().unwrap(),
+        &vec![
+            toml::Value::String("std".to_string()),
+            toml::Value::String("panic_abort".to_string())
+        ]
+    );
+    assert_eq!(
+        unstable
+            .get("build-std-features")
+            .unwrap()
+            .as_array()
+            .unwrap(),
+        &Vec::<toml::Value>::new()
+    );
+
+    let profile = config
+        .get("profile")
+        .unwrap()
+        .get("release")
+        .unwrap()
+        .as_table()
+        .unwrap();
+    assert_eq!(profile.get("lto").unwrap().as_bool(), Some(false));
+    assert_eq!(profile.get("panic").unwrap().as_str(), Some("abort"));
+
+    let target = config
+        .get("target")
+        .unwrap()
+        .get("x86_64-unknown-linux-musl")
+        .unwrap()
+        .as_table()
+        .unwrap();
+    assert_eq!(
+        target.get("linker").unwrap().as_str(),
+        Some(wrapper.display().to_string().as_str())
+    );
+    assert_eq!(
+        target
+            .get("rustflags")
+            .unwrap()
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|value| value.as_str().unwrap())
+            .collect::<Vec<_>>(),
+        vec!["--cfg", r#"feature="quote\slash""#]
+    );
+}
+
+#[test]
+fn std_cargo_config_serializes_empty_rustflags_as_empty_array() {
+    let fake_dir = std_fake_lib_dir("riscv64gc-unknown-linux-musl").unwrap();
+    let wrapper =
+        std_linker_wrapper_path("riscv64gc-unknown-linux-musl", &fake_dir, false).unwrap();
+    let path = std_cargo_config_path("riscv64gc-unknown-linux-musl", &wrapper, false, &[]).unwrap();
+
+    let config = load_std_cargo_config(&path);
+    let target = config
+        .get("target")
+        .unwrap()
+        .get("riscv64gc-unknown-linux-musl")
+        .unwrap()
+        .as_table()
+        .unwrap();
+    assert_eq!(
+        target.get("rustflags").unwrap().as_array().unwrap().len(),
+        0
     );
 }
 
