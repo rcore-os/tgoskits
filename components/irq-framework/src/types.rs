@@ -273,6 +273,8 @@ pub enum IrqError {
     InvalidCpu,
     /// The target CPU is offline.
     CpuOffline,
+    /// A synchronous IRQ operation timed out.
+    Timeout,
     /// IRQ line/action sharing rules reject the operation.
     Busy,
     /// Allocation failed.

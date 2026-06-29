@@ -232,7 +232,7 @@ fn map_net_irq_error(err: IrqError) -> ax_net::EthernetIrqRegistrationError {
         IrqError::Unsupported | IrqError::CpuOffline => {
             ax_net::EthernetIrqRegistrationError::Unsupported
         }
-        IrqError::NoMemory | IrqError::NotFound | IrqError::Controller => {
+        IrqError::NoMemory | IrqError::NotFound | IrqError::Timeout | IrqError::Controller => {
             ax_net::EthernetIrqRegistrationError::Other
         }
     }

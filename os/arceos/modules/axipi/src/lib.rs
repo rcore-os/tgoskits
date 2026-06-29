@@ -6,6 +6,7 @@
 extern crate log;
 extern crate alloc;
 
+use alloc::sync::Arc;
 use core::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 
 use ax_hal::{irq::IpiTarget, percpu::this_cpu_id};
@@ -33,6 +34,7 @@ static IPI_CPU_STATE: [AtomicU8; build_info::CPU_CAPACITY] =
     [const { AtomicU8::new(IPI_CPU_NOT_READY) }; build_info::CPU_CAPACITY];
 
 static IPI_READY_CPUS: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
+const SYNC_IPI_SPIN_LIMIT: usize = 10_000_000;
 
 /// Initialize the per-CPU IPI event queue.
 pub fn init() {
@@ -129,24 +131,30 @@ pub unsafe fn run_on_cpu_sync_raw(
     struct SyncCall {
         done: AtomicBool,
         f: unsafe fn(*mut ()),
-        arg: *mut (),
+        arg: usize,
     }
 
-    let call = SyncCall {
+    let call = Arc::new(SyncCall {
         done: AtomicBool::new(false),
         f,
-        arg,
-    };
-    let call_ptr = &call as *const SyncCall as usize;
-    run_on_cpu(dest_cpu, move || {
-        let call = unsafe { &*(call_ptr as *const SyncCall) };
-        unsafe { (call.f)(call.arg) };
-        call.done.store(true, Ordering::Release);
+        arg: arg as usize,
     });
-    while !call.done.load(Ordering::Acquire) {
+    let remote_call = Arc::clone(&call);
+    run_on_cpu(dest_cpu, move || {
+        unsafe { (remote_call.f)(remote_call.arg as *mut ()) };
+        remote_call.done.store(true, Ordering::Release);
+    });
+    wait_for_sync_call(&call.done)
+}
+
+fn wait_for_sync_call(done: &AtomicBool) -> Result<(), ax_hal::irq::IrqError> {
+    for _ in 0..SYNC_IPI_SPIN_LIMIT {
+        if done.load(Ordering::Acquire) {
+            return Ok(());
+        }
         core::hint::spin_loop();
     }
-    Ok(())
+    Err(ax_hal::irq::IrqError::Timeout)
 }
 
 /// Executes a callback on all other CPUs via IPI.
@@ -184,5 +192,27 @@ pub fn ipi_handler() {
     {
         debug!("Received IPI event from CPU {src_cpu_id}");
         callback.call();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sync_call_wait_returns_timeout_when_remote_cpu_does_not_complete() {
+        let done = AtomicBool::new(false);
+
+        assert_eq!(
+            wait_for_sync_call(&done),
+            Err(ax_hal::irq::IrqError::Timeout)
+        );
+    }
+
+    #[test]
+    fn sync_call_wait_returns_ok_after_completion() {
+        let done = AtomicBool::new(true);
+
+        assert_eq!(wait_for_sync_call(&done), Ok(()));
     }
 }

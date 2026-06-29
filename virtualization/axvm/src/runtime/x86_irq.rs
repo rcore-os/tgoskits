@@ -485,7 +485,7 @@ fn set_forwarded_host_gsi_enabled(gsi: usize, enabled: bool) {
         return;
     }
     let irq = raw_to_host_irq(raw);
-    if let Err(err) = irq::set_ioapic_gsi_enabled_from_irq(gsi as u32, irq, enabled) {
+    if let Err(err) = irq::set_host_irq_enable(irq, enabled) {
         warn!(
             "failed to set forwarded IOAPIC GSI {gsi} host IRQ {irq:?} enabled={enabled}: {err:?}"
         );
@@ -508,7 +508,7 @@ fn mask_forwarded_host_gsi(gsi: usize) -> bool {
     }
 
     let irq = raw_to_host_irq(raw);
-    if let Err(err) = irq::set_ioapic_gsi_enabled_from_irq(gsi as u32, irq, false) {
+    if let Err(err) = irq::set_host_irq_enable(irq, false) {
         IOAPIC_IRQ_MASKED.fetch_and(!bit, Ordering::AcqRel);
         warn!("failed to mask forwarded IOAPIC GSI {gsi} host IRQ {irq:?}: {err:?}");
         return false;
@@ -534,7 +534,7 @@ fn unmask_forwarded_host_gsi(gsi: usize) {
     }
 
     let irq = raw_to_host_irq(raw);
-    if let Err(err) = irq::set_ioapic_gsi_enabled_from_irq(gsi as u32, irq, true) {
+    if let Err(err) = irq::set_host_irq_enable(irq, true) {
         warn!("failed to unmask forwarded IOAPIC GSI {gsi} host IRQ {irq:?}: {err:?}");
         return;
     }

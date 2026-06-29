@@ -574,6 +574,9 @@ impl<O: IrqOps> Registry<O> {
                 self.ops.set_enabled(irq, Some(cpu), enabled)
             }
             Some(cpu) => {
+                if self.ops.in_irq_context() {
+                    return Err(IrqError::InIrqContext);
+                }
                 let mut request = RemoteEnable {
                     registry: self as *const Self as *mut (),
                     irq,
