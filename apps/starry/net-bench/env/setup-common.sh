@@ -75,7 +75,7 @@ setup_device_permissions() {
     if [[ -e /dev/kvm ]]; then
         chmod 666 /dev/kvm 2>/dev/null || warn "无法设置 /dev/kvm 权限"
     fi
-    
+
     # vhost-net：先尝试加载内核模块，再放开权限。新机器上 vhost_net 常未自动
     # 加载，缺少 modprobe 会导致 /dev/vhost-net 不存在、vhost 场景失败。
     if [[ ! -e /dev/vhost-net ]]; then
@@ -104,7 +104,7 @@ record_resource() {
     local type="$1"
     local name="$2"
     local details="${3:-}"
-    
+
     local tmp_file=$(mktemp)
     jq ".created_resources += [{\"type\": \"$type\", \"name\": \"$name\", \"details\": \"$details\"}]" "$STATE_FILE" > "$tmp_file"
     mv "$tmp_file" "$STATE_FILE"
@@ -114,7 +114,7 @@ record_resource() {
 record_process() {
     local pid="$1"
     local cmd="$2"
-    
+
     local tmp_file=$(mktemp)
     jq ".processes += [{\"pid\": $pid, \"cmd\": \"$cmd\"}]" "$STATE_FILE" > "$tmp_file"
     mv "$tmp_file" "$STATE_FILE"
@@ -146,12 +146,12 @@ setup_bridge() {
         warn "Bridge $BRIDGE 已存在，跳过创建"
         return 0
     fi
-    
+
     info "创建 bridge $BRIDGE"
     ip link add "$BRIDGE" type bridge || die "创建 bridge 失败"
     ip link set "$BRIDGE" up || die "启动 bridge 失败"
     ip addr add "$BRIDGE_IP" dev "$BRIDGE" || die "配置 bridge IP 失败"
-    
+
     record_resource "bridge" "$BRIDGE" "$BRIDGE_IP"
     info "Bridge $BRIDGE 创建成功: $BRIDGE_IP"
 }
@@ -167,12 +167,12 @@ setup_tap() {
         fi
         return 0
     fi
-    
+
     info "创建 TAP 设备 $TAP_DEVICE"
     ip tuntap add mode tap "$TAP_DEVICE" || die "创建 TAP 设备失败"
     ip link set "$TAP_DEVICE" up || die "启动 TAP 设备失败"
     ip link set "$TAP_DEVICE" master "$BRIDGE" || die "挂载 TAP 到 bridge 失败"
-    
+
     record_resource "tap" "$TAP_DEVICE" "master=$BRIDGE"
     info "TAP 设备 $TAP_DEVICE 创建成功"
 }
@@ -184,14 +184,14 @@ setup_dhcp() {
         info "dnsmasq 已在 $BRIDGE 上运行，跳过启动"
         return 0
     fi
-    
+
     # 检查 dnsmasq 命令是否存在
     if ! command -v dnsmasq >/dev/null 2>&1; then
         error "dnsmasq 未安装，但 TAP/vhost 场景的 guest 只支持 DHCP 获取地址。"
         error "安装后重试: sudo apt-get install -y dnsmasq"
         return 1
     fi
-    
+
     info "启动 DHCP 服务器 (dnsmasq): $DHCP_RANGE"
     # 重定向所有 fd 并 setsid 脱离控制终端，避免后台 daemon 持有调用方管道。
     setsid dnsmasq \
@@ -200,10 +200,10 @@ setup_dhcp() {
         --bind-interfaces \
         --dhcp-range="$DHCP_RANGE" \
         --port=0 </dev/null >/dev/null 2>&1 &
-    
+
     local dnsmasq_pid=$!
     sleep 1
-    
+
     if kill -0 "$dnsmasq_pid" 2>/dev/null; then
         record_process "$dnsmasq_pid" "dnsmasq --interface=$BRIDGE --dhcp-range=$DHCP_RANGE"
         info "DHCP 服务器启动成功 (PID: $dnsmasq_pid)"
@@ -217,27 +217,27 @@ setup_dhcp() {
 # 主函数
 main() {
     check_root
-    
+
     info "=== net-bench 通用环境配置 ==="
-    
+
     # 新机器上先补齐主机依赖（iperf3/ip/brctl/jq/dnsmasq）。
     check_dependencies
-    
+
     init_state
-    
+
     # 设置设备权限（含 vhost_net 模块加载）
     setup_device_permissions
-    
+
     # 配置网络
     setup_bridge
     setup_tap
-    
+
     # 启动服务
     # 注意：不在此启动 iperf3 服务端。iperf3 的生命周期由测试入口
     # （run.sh / run-with-perf.sh 的 nb_start_iperf3/nb_stop_iperf3）自管，
     # 这里若启动会与之争用端口 5201（端到端测试已验证此冲突）。
     setup_dhcp
-    
+
     # 显示配置摘要
     info ""
     info "=== 配置完成 ==="

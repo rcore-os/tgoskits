@@ -5,7 +5,7 @@
 在使用 vhost-net + TAP 网络时，遇到多队列配置错误：
 
 ```
-qemu-system-x86_64: -netdev tap,id=net0,ifname=tap0,script=no,downscript=no,vhost=on,queues=4: 
+qemu-system-x86_64: -netdev tap,id=net0,ifname=tap0,script=no,downscript=no,vhost=on,queues=4:
 could not configure /dev/net/tun (tap0): Invalid argument
 ```
 
@@ -21,7 +21,7 @@ could not configure /dev/net/tun (tap0): Invalid argument
    ```bash
    # 错误：默认单队列
    ip tuntap add mode tap tap0
-   
+
    # 正确：支持多队列
    ip tuntap add mode tap tap0 multi_queue
    ```
@@ -65,14 +65,14 @@ setup_tap() {
         warn "TAP 设备 $TAP_DEVICE 已存在，跳过创建"
         return 0
     fi
-    
+
     info "创建多队列 TAP 设备 $TAP_DEVICE (queues=4)"
-    
+
     # 添加 multi_queue 参数
     ip tuntap add mode tap "$TAP_DEVICE" multi_queue || die "创建 TAP 设备失败"
     ip link set "$TAP_DEVICE" up || die "启动 TAP 设备失败"
     ip link set "$TAP_DEVICE" master "$BRIDGE" || die "挂载 TAP 到 bridge 失败"
-    
+
     record_resource "tap" "$TAP_DEVICE" "master=$BRIDGE,queues=4"
     info "多队列 TAP 设备 $TAP_DEVICE 创建成功"
 }

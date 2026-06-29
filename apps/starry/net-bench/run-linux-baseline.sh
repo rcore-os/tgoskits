@@ -69,7 +69,7 @@ options:
 前置条件:
   1. vhost 环境已配置: sudo bash apps/starry/net-bench/bin/setup
   2. iperf3 已安装在 guest（通过 init script 或 rootfs）
-  
+
 测试拓扑对齐 (qemu-plan §6.1):
   - 相同的 vhost-net + KVM + virtio-net-pci
   - 相同的 mq/vectors/offload 参数
@@ -88,13 +88,13 @@ check_prereq() {
         echo "error: /dev/vhost-net not found. Run: sudo modprobe vhost_net" >&2
         exit 1
     fi
-    
+
     # 检查网络配置
     if ! ip addr show br0 &>/dev/null; then
         echo "error: br0 not found. Run: sudo bash apps/starry/net-bench/bin/setup" >&2
         exit 1
     fi
-    
+
     # 检查 Linux 内核
     if [[ ! -f "$LINUX_DIR/vmlinuz" ]]; then
         echo "info: Linux kernel not found, will use host kernel if available" >&2
@@ -247,9 +247,9 @@ run_linux_test() {
     local repeat_id="$1"
     local smp="${2:-1}"
     local log_file="$RESULTS_DIR/linux-baseline-${ARCH}-${SCENARIO}-${TIMESTAMP}-r${repeat_id}.txt"
-    
+
     echo "=== Linux baseline test (repeat $repeat_id/$REPEAT, smp=$smp) ===" | tee "$log_file"
-    
+
     # 解析 Linux 内核镜像：优先使用 baseline 目录内显式放置的内核，
     # 否则在 host 架构与目标架构一致时回退到 host 内核；不一致则明确报错。
     local kernel_img=""
@@ -264,7 +264,7 @@ run_linux_test() {
         return 1
     fi
     echo "=== Using kernel: $kernel_img ===" | tee -a "$log_file"
-    
+
     # QEMU 参数（对齐 qemu/vhost-aarch64-kvm.toml 的拓扑）
     local qemu_cmd=(
         qemu-system-aarch64
@@ -280,15 +280,15 @@ run_linux_test() {
         -nographic
         -serial mon:stdio
     )
-    
+
     # 启动 iperf3 server
     echo "=== Starting iperf3 server on $TAP_HOST_IP:5201 ===" | tee -a "$log_file"
     iperf3 -s -p 5201 -B "$TAP_HOST_IP" &
     local iperf_pid=$!
     trap "kill $iperf_pid 2>/dev/null || true" EXIT
-    
+
     sleep 2
-    
+
     # 运行 QEMU
     echo "=== Running Linux guest ===" | tee -a "$log_file"
     timeout 300 "${qemu_cmd[@]}" 2>&1 | tee -a "$log_file" || {
@@ -299,10 +299,10 @@ run_linux_test() {
         kill $iperf_pid 2>/dev/null || true
         return 1
     }
-    
+
     kill $iperf_pid 2>/dev/null || true
     trap - EXIT
-    
+
     echo "=== Test complete: $log_file ===" | tee -a "$log_file"
 }
 
@@ -312,21 +312,21 @@ main() {
         usage
         exit 0
     fi
-    
+
     if [[ "$ARCH" != "aarch64" ]]; then
         echo "error: only aarch64 is supported" >&2
         exit 1
     fi
-    
+
     check_prereq
     prepare_linux_rootfs
-    
+
     # 确定 smp 参数
     local smp=1
     if [[ "$SCENARIO" == "vhost-smp4" ]]; then
         smp=4
     fi
-    
+
     # 写环境指纹
     local fingerprint="$RESULTS_DIR/fingerprint-linux-baseline-${ARCH}-${SCENARIO}-${TIMESTAMP}.txt"
     {
@@ -346,19 +346,19 @@ main() {
     } > "$fingerprint"
     echo "=== Linux baseline fingerprint -> $fingerprint ==="
     cat "$fingerprint"
-    
+
     # 运行测试
     for r in $(seq 1 "$REPEAT"); do
         run_linux_test "$r" "$smp"
     done
-    
+
     # 汇总结果
     echo "=== Summarizing Linux baseline results ==="
     python3 "$SCRIPT_DIR/core/summarize.py" "$RESULTS_DIR"/linux-baseline-${ARCH}-${SCENARIO}-${TIMESTAMP}-r*.txt \
         > "$RESULTS_DIR/summary-linux-baseline-${ARCH}-${SCENARIO}-${TIMESTAMP}.txt"
-    
+
     cat "$RESULTS_DIR/summary-linux-baseline-${ARCH}-${SCENARIO}-${TIMESTAMP}.txt"
-    
+
     echo ""
     echo "=== Linux baseline test complete ==="
     echo "Results: $RESULTS_DIR/summary-linux-baseline-${ARCH}-${SCENARIO}-${TIMESTAMP}.txt"

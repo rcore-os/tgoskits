@@ -12,14 +12,14 @@ while true; do
     # 检查编译进程
     if pgrep -f "cargo.*starryos" > /dev/null; then
         echo "[$(date +%H:%M:%S)] Compilation in progress..."
-        
+
         # 显示最新编译信息
         if [[ -f "$LOG_FILE" ]]; then
             tail -3 "$LOG_FILE" | grep -E "Compiling|Finished" || echo "  (still compiling dependencies...)"
         fi
     elif pgrep -f "qemu-system-aarch64" > /dev/null; then
         echo "[$(date +%H:%M:%S)] QEMU running, test in progress..."
-        
+
         # 检查是否有测试输出
         if [[ -f "$LOG_FILE" ]]; then
             if grep -q "NET_BENCH_BEGIN" "$LOG_FILE"; then
@@ -29,13 +29,13 @@ while true; do
         fi
     else
         echo "[$(date +%H:%M:%S)] No active processes found."
-        
+
         # 检查是否有新结果
         LATEST_RESULT=$(ls -t "$RESULT_DIR"/starry-aarch64-vhost-*.txt 2>/dev/null | head -1)
         if [[ -n "$LATEST_RESULT" ]]; then
             echo ""
             echo "Latest result: $LATEST_RESULT"
-            
+
             # 检查测试是否完成
             if grep -q "NET_BENCH_PASSED" "$LATEST_RESULT"; then
                 echo "  ✅ Test PASSED!"
@@ -47,13 +47,13 @@ while true; do
                 echo "  ⏳ Test incomplete or in progress"
             fi
         fi
-        
+
         echo ""
         echo "Compilation may have completed. Check manually with:"
         echo "  tail -100 $LOG_FILE"
         break
     fi
-    
+
     echo ""
     sleep 30
 done

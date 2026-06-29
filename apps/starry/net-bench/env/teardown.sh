@@ -43,25 +43,25 @@ check_state_file() {
 # 停止进程
 stop_processes() {
     info "停止启动的进程..."
-    
+
     local process_count
     process_count=$(jq '.processes | length' "$STATE_FILE" 2>/dev/null || echo 0)
-    
+
     if [[ "$process_count" -eq 0 ]]; then
         info "  没有需要停止的进程"
         return 0
     fi
-    
+
     for i in $(seq 0 $((process_count - 1))); do
         local pid cmd
         pid=$(jq -r ".processes[$i].pid" "$STATE_FILE")
         cmd=$(jq -r ".processes[$i].cmd" "$STATE_FILE")
-        
+
         if kill -0 "$pid" 2>/dev/null; then
             info "  停止进程 $pid: $cmd"
             kill "$pid" 2>/dev/null || warn "    无法停止进程 $pid"
             sleep 0.5
-            
+
             # 如果进程仍在运行，强制终止
             if kill -0 "$pid" 2>/dev/null; then
                 warn "    进程 $pid 未响应，强制终止"
@@ -76,22 +76,22 @@ stop_processes() {
 # 删除网络资源
 cleanup_resources() {
     info "清理网络资源..."
-    
+
     local resource_count
     resource_count=$(jq '.created_resources | length' "$STATE_FILE" 2>/dev/null || echo 0)
-    
+
     if [[ "$resource_count" -eq 0 ]]; then
         info "  没有需要清理的资源"
         return 0
     fi
-    
+
     # 按逆序删除（先删除依赖资源）
     for i in $(seq $((resource_count - 1)) -1 0); do
         local type name details
         type=$(jq -r ".created_resources[$i].type" "$STATE_FILE")
         name=$(jq -r ".created_resources[$i].name" "$STATE_FILE")
         details=$(jq -r ".created_resources[$i].details" "$STATE_FILE")
-        
+
         case "$type" in
             tap)
                 if ip link show "$name" >/dev/null 2>&1; then
@@ -131,53 +131,53 @@ show_status() {
     if ! check_state_file; then
         return 0
     fi
-    
+
     info ""
     info "=== 当前配置状态 ==="
-    
+
     local process_count resource_count
     process_count=$(jq '.processes | length' "$STATE_FILE" 2>/dev/null || echo 0)
     resource_count=$(jq '.created_resources | length' "$STATE_FILE" 2>/dev/null || echo 0)
-    
+
     info "进程数: $process_count"
     if [[ "$process_count" -gt 0 ]]; then
         jq -r '.processes[] | "  PID \(.pid): \(.cmd)"' "$STATE_FILE"
     fi
-    
+
     info "网络资源数: $resource_count"
     if [[ "$resource_count" -gt 0 ]]; then
         jq -r '.created_resources[] | "  \(.type): \(.name) (\(.details))"' "$STATE_FILE"
     fi
-    
+
     info ""
 }
 
 # 主函数
 main() {
     local action="${1:-teardown}"
-    
+
     if [[ "$action" == "status" ]]; then
         show_status
         exit 0
     fi
-    
+
     check_root
-    
+
     info "=== net-bench 环境清理 ==="
-    
+
     if ! check_state_file; then
         info "环境已清理或未配置"
         exit 0
     fi
-    
+
     # 显示将要清理的内容
     show_status
-    
+
     # 执行清理
     stop_processes
     cleanup_resources
     cleanup_state_file
-    
+
     info ""
     info "=== 清理完成 ==="
 }
