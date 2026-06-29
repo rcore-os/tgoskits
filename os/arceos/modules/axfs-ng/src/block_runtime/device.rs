@@ -343,7 +343,7 @@ impl BlockIrqAction {
 
     pub fn run(&self) -> BlockIrqOutcome {
         let event = self.handler.handle_irq();
-        if self.device.record_driver_event_for_pending(event) {
+        if self.device.record_driver_event(event) {
             self.device.drain_wake.wake_drain_from_irq();
             BlockIrqOutcome::Handled
         } else {
@@ -503,10 +503,6 @@ impl BlockDeviceHandle {
 
     pub fn record_driver_event(&self, event: rdif_block::Event) -> bool {
         self.record_translated_event(event, false)
-    }
-
-    pub fn record_driver_event_for_pending(&self, event: rdif_block::Event) -> bool {
-        self.record_translated_event(event, true)
     }
 
     #[cfg(test)]
