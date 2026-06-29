@@ -25,7 +25,6 @@ dma-heap = ["dep:dma-api", "dep:axklib"]
 rknpu = ["ax-driver/rknpu", "dep:ax-dma", "dma-heap"]
 jpeg = ["ax-driver/jpeg", "dep:ax-dma"]
 rga = ["ax-driver/rga", "dep:rockchip-rga", "dma-heap"]
-rga-selftest = ["rga"]
 std-compat = []
 k230-kpu = ["ax-feat/xuantie-c9xx", "dep:axklib", "dep:k230-kpu"]
 plat-dyn = [

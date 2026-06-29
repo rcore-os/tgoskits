@@ -4,8 +4,8 @@ mod object;
 mod uapi;
 
 // The items below back the in-kernel helper API consumed only by the RGA driver
-// (`resolve_dmabuf_fd` for /dev/rga) and its selftest (`alloc`). They compile out when
-// dma-heap is built without rga (e.g. for rknpu, which uses its own allocator).
+// (`resolve_dmabuf_fd` for /dev/rga). They compile out when dma-heap is built without
+// rga (e.g. for rknpu, which uses its own allocator).
 #[cfg(feature = "rga")]
 use alloc::sync::Arc;
 #[cfg(feature = "rga")]
@@ -22,13 +22,6 @@ pub use object::DmaBufObject;
 
 #[cfg(feature = "rga")]
 use crate::file::FileLike;
-
-/// Allocate a dma-buf-backed contiguous buffer directly from the kernel (no userspace fd).
-/// Used by the RGA selftest's imported-buffer case.
-#[cfg(feature = "rga-selftest")]
-pub fn alloc(len: usize) -> AxResult<Arc<DmaBufObject>> {
-    DmaBufObject::alloc(len)
-}
 
 /// Resolve a dma-buf fd to its backing object (fd → phys+len). `/dev/rga` uses this to
 /// import a buffer for RGA submission.

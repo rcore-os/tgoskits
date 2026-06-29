@@ -1,0 +1,27 @@
+# Board test for the userspace RGA2 blit — replaces the old in-kernel `rga-selftest` boot hook.
+#
+# The kernel is built with `rga` so /dev/rga + /dev/dma_heap exist (see the build-*.toml here); no
+# boot-time driver selftest runs. The hardware is validated from userspace by the static
+# `rga-blit-hw` binary, which must be pre-staged in the board SD-card rootfs at
+# /guest/rga_test/rga-blit-hw. That binary is built by the qemu-smp1 aarch64 test-suit
+# (test-suit/starryos/qemu-smp1/system/rga-blit-hw, installed to usr/bin/starry-test-suit/) and
+# scp'd to the board while it runs Linux — the same out-of-band staging model the npu-yolov8 board
+# case uses for /guest/npu_demo.
+#
+# success_regex matches RGA_HW_BLIT_OK, printed by the `&&` chain ONLY after the binary exits 0
+# (all pixel asserts passed). ostool tears down on the first success_regex match, so this sentinel
+# is the last thing printed. fail_regex is catastrophic-only plus the binary's explicit
+# RGA_BLIT_HW_FAIL line, so a wrong-pixel result fails fast instead of waiting out the timeout.
+
+board_type = "OrangePi-5-Plus"
+shell_prefix = "root@starry:/root #"
+shell_init_cmd = "cd /guest/rga_test && ./rga-blit-hw && echo RGA_HW_BLIT_OK"
+success_regex = ["(?m)^RGA_HW_BLIT_OK\\s*$"]
+fail_regex = [
+    '(?i)\bpanic(?:ked)?\b',
+    '(?i)segmentation fault',
+    '(?i)SIGSEGV',
+    'exit with code: 139',
+    'RGA_BLIT_HW_FAIL',
+]
+timeout = 120

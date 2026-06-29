@@ -178,7 +178,7 @@ impl RgaDevice {
 
         // DMA coherency — the dma-heap backing is CACHED on aarch64.
         // Clean dirty CPU lines to DRAM before the engine reads src / writes dst, so
-        // stale cache lines cannot evict over engine output (the rga-selftest proved this).
+        // stale cache lines cannot evict over engine output (validated on hardware).
         for o in [&src_keep, &src_uv_keep, &dst_keep, &dst_uv_keep]
             .into_iter()
             .flatten()
