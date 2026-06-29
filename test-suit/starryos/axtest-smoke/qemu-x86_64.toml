@@ -1,12 +1,11 @@
 args = [
+    "-nographic",
     "-m",
-    "256M",
-    "-smp",
-    "1",
-    "-display",
-    "none",
-    "-serial",
-    "mon:stdio",
+    "512M",
+    "-device",
+    "nvme,serial=deadbeef,drive=nvm",
+    "-drive",
+    "id=nvm,if=none,format=raw,file=${workspace}/tmp/axbuild/rootfs/rootfs-x86_64-alpine.img",
 ]
 
 timeout = 60
