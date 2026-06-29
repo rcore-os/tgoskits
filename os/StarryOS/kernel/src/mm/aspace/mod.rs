@@ -476,6 +476,12 @@ impl AddrSpace {
         self.process_area_data(start, size, |dst, _offset, sync_size| {
             ax_runtime::hal::cache::clean_dcache_to_pou(dst, sync_size);
         })?;
+        // A text write may have populated or COW-remapped the tracee page just
+        // before this sync. Drop stale user translations before the tracee can
+        // fetch the patched instruction again.
+        let tlb_start = start.align_down_4k();
+        let tlb_size = (start + size).align_up_4k() - tlb_start;
+        crate::mm::flush_tlb_range(tlb_start, tlb_size);
         ax_runtime::hal::cache::flush_icache_all();
         Ok(())
     }
