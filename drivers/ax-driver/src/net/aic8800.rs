@@ -78,32 +78,20 @@ fn map_mmio(paddr: usize, size: usize) -> Result<usize, OnProbeError> {
     crate::mmio::iomap(paddr, size).map(|p| p.as_ptr() as usize)
 }
 
-fn resolve_fdt_irq(
-    info: &rdrive::register::FdtInfo<'_>,
-) -> Result<axklib::irq::IrqId, OnProbeError> {
-    let interrupt =
-        info.interrupts().into_iter().next().ok_or_else(|| {
-            OnProbeError::other(alloc::format!("[{}] has no irq", info.node.name()))
-        })?;
-    let parent = info
-        .phandle_to_device_id(interrupt.interrupt_parent)
-        .ok_or_else(|| {
-            OnProbeError::other(alloc::format!(
-                "[{}] interrupt-parent {} is not registered",
-                info.node.name(),
-                interrupt.interrupt_parent
-            ))
-        })?;
-    let mut intc = rdrive::get::<rdif_intc::Intc>(parent)
-        .map_err(|err| OnProbeError::other(alloc::format!("failed to get IRQ parent: {err:?}")))?
-        .lock()
-        .map_err(|err| OnProbeError::other(alloc::format!("failed to lock IRQ parent: {err:?}")))?;
-    let translation = intc
-        .translate_fdt(&interrupt.specifier)
-        .map_err(|err| OnProbeError::other(alloc::format!("failed to translate IRQ: {err:?}")))?;
-    intc.configure(&translation)
-        .map_err(|err| OnProbeError::other(alloc::format!("failed to configure IRQ: {err:?}")))?;
-    Ok(translation.id)
+/// Decodes the SDIO1 controller IRQ from the FDT node.
+///
+/// The SG2002 interrupt-parent is the RISC-V PLIC, whose `#interrupt-cells = 2`
+/// and whose specifier is `<irq-number, trigger-flags>` — the IRQ number is the
+/// **first** cell. (This differs from the ARM GIC's `<type, number, flags>`
+/// three-cell form used by the `block`/`usb` helpers, which must not be applied
+/// here: doing so would read the trigger flags as the IRQ number.)
+fn decode_fdt_irq(interrupts: &[rdrive::probe::fdt::InterruptRef]) -> Option<usize> {
+    let interrupt = interrupts.first()?;
+    match &*interrupt.specifier {
+        // PLIC: [irq] or [irq, flags] — first cell is the IRQ number.
+        [irq] | [irq, _] => Some(*irq as usize),
+        _ => None,
+    }
 }
 
 /// Raw IRQ trampoline: the SDIO1 controller interrupt is forwarded to the SDHCI
@@ -150,24 +138,19 @@ fn probe(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
     sdio1_hw_init(&cfg);
 
     // Register the SDIO1 controller IRQ (shared). Resolved from the FDT node.
-    let irq = resolve_fdt_irq(&info)?;
-    info!("[wifi] SDIO1 IRQ resolved to {irq:?}");
-    let irq_handle =
-        axklib::irq::request_shared_disabled(irq, sdio1_raw_irq_handler, NonNull::dangling())
-            .map_err(|e| {
-                OnProbeError::other(alloc::format!(
-                    "[wifi] failed to register SDIO1 IRQ {irq:?}: {e:?}"
-                ))
-            })?;
+    let irq = decode_fdt_irq(&info.interrupts())
+        .ok_or_else(|| OnProbeError::other(alloc::format!("[{}] has no irq", info.node.name())))?;
+    info!("[wifi] SDIO1 IRQ resolved to {irq}");
+    if let Err(e) = axklib::irq::request_shared(irq, sdio1_raw_irq_handler, NonNull::dangling()) {
+        return Err(OnProbeError::other(alloc::format!(
+            "[wifi] failed to register SDIO1 IRQ {irq}: {e:?}"
+        )));
+    }
 
     // SDHCI init.
     let mut sdio = CviSdhci::new(cfg.sdio1_base_va);
-    if let Err(e) = sdio.init() {
-        let _ = axklib::irq::free(irq_handle);
-        return Err(OnProbeError::other(alloc::format!(
-            "[wifi] SDIO1 init failed: {e:?}"
-        )));
-    }
+    sdio.init()
+        .map_err(|e| OnProbeError::other(alloc::format!("[wifi] SDIO1 init failed: {e:?}")))?;
     let (vid, did) = sdio.vendor_device_id();
     info!("[wifi] SDIO device: vendor={vid:#06x} device={did:#06x}");
     sdio.prepare_first_data_xfer();
@@ -175,15 +158,8 @@ fn probe(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
     // Hand the initialized SDIO host to the chip driver. It returns a single
     // device that is both data plane (`Interface`) and control plane
     // (`WifiControl`).
-    let mut wifi = match aic8800::probe(sdio) {
-        Ok(wifi) => wifi,
-        Err(e) => {
-            let _ = axklib::irq::free(irq_handle);
-            return Err(OnProbeError::other(alloc::format!(
-                "[wifi] chip probe failed: {e}"
-            )));
-        }
-    };
+    let mut wifi = aic8800::probe(sdio)
+        .map_err(|e| OnProbeError::other(alloc::format!("[wifi] chip probe failed: {e}")))?;
     info!("[wifi] chip probe complete");
 
     // Start an open SoftAP. SSID/channel are board policy expressed here, not in
@@ -191,19 +167,11 @@ fn probe(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
     // control plane.
     if let Err(e) = rd_net::WifiControl::start_ap_open(&mut wifi, AP_SSID, AP_CHANNEL) {
         error!("[wifi] AP start failed: {e:?}");
-        let _ = axklib::irq::free(irq_handle);
         return Err(OnProbeError::other(alloc::format!(
             "[wifi] AP start failed: {e:?}"
         )));
     }
     info!("[wifi] SoftAP started, channel {AP_CHANNEL}");
-
-    if let Err(e) = axklib::irq::enable(irq_handle) {
-        let _ = axklib::irq::free(irq_handle);
-        return Err(OnProbeError::other(alloc::format!(
-            "[wifi] failed to enable SDIO1 IRQ {irq:?}: {e:?}"
-        )));
-    }
 
     // Attach the board's SoftAP link policy to the device, then register it
     // through the ordinary net device path. The runtime reads the policy back

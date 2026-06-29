@@ -98,7 +98,7 @@ impl IOBitmap {
             (port - 0x8000, &mut self.io_bitmap_b_frame)
         };
         let bitmap =
-            unsafe { core::slice::from_raw_parts_mut(io_bit_map_frame.as_mut_ptr(), PAGE_SIZE) };
+            unsafe { core::slice::from_raw_parts_mut(io_bit_map_frame.as_mut_ptr(), 1024) };
         let byte = (port / 8) as usize;
         let bits = port % 8;
         if intercept {
@@ -362,29 +362,6 @@ mod tests {
         assert_ne!(addr_a.as_usize(), 0);
         assert_ne!(addr_b.as_usize(), 0);
         assert_ne!(addr_a.as_usize(), addr_b.as_usize());
-    }
-
-    #[test]
-    fn io_bitmap_can_intercept_high_port_in_low_half_bitmap() {
-        MockMmHal::run_test(|| {
-            let mut bitmap = IOBitmap::passthrough_all().unwrap();
-
-            bitmap.set_intercept(0x6000, true);
-
-            let byte = 0x6000 / 8;
-            let bit = 1 << (0x6000 % 8);
-            let bitmap_a = unsafe {
-                core::slice::from_raw_parts(bitmap.io_bitmap_a_frame.as_mut_ptr(), PAGE_SIZE)
-            };
-            assert_eq!(bitmap_a[byte] & bit, bit);
-
-            bitmap.set_intercept(0x6000, false);
-
-            let bitmap_a = unsafe {
-                core::slice::from_raw_parts(bitmap.io_bitmap_a_frame.as_mut_ptr(), PAGE_SIZE)
-            };
-            assert_eq!(bitmap_a[byte] & bit, 0);
-        });
     }
 
     #[test]

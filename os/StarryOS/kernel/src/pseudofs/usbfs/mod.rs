@@ -57,10 +57,7 @@ pub(crate) fn new_usbfs() -> LinuxResult<Option<Filesystem>> {
 
     let manager = Arc::new(UsbFsManager::new(hosts));
     irq::init_globals(manager.clone(), irq_slots);
-    // Polling USB hosts need their event handler active while the initial
-    // probe waits for xHCI command and transfer events.
     irq::start_event_pump();
-
     let initialized_hosts = manager::initialize_hosts(&manager) > 0;
     if !initialized_hosts {
         info!("usbfs: no USB host initialized, skip mounting usbfs");

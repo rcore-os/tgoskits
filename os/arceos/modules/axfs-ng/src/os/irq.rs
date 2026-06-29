@@ -3,7 +3,6 @@ use core::sync::atomic::{AtomicBool, Ordering};
 
 use ax_errno::AxResult;
 use ax_kspin::SpinRwLock as RwLock;
-use irq_framework::IrqId;
 
 use crate::block::runtime::BlockIrqAction;
 
@@ -18,7 +17,7 @@ pub trait BlockIrqRegistrar: Send + Sync {
     fn register_shared(
         &self,
         name: String,
-        irq: IrqId,
+        irq: usize,
         action: BlockIrqAction,
     ) -> AxResult<Box<dyn BlockIrqRegistration>>;
 }
@@ -33,7 +32,7 @@ pub fn set_irq_registrar(registrar: &'static dyn BlockIrqRegistrar) {
 
 pub fn register_shared_block_irq(
     name: String,
-    irq: IrqId,
+    irq: usize,
     action: BlockIrqAction,
 ) -> AxResult<Box<dyn BlockIrqRegistration>> {
     let registrar = IRQ_REGISTRAR

@@ -1,7 +1,5 @@
 use alloc::{boxed::Box, string::String};
 
-use irq_framework::IrqId;
-
 use crate::{AbsInfo, Event, EventType, InputDeviceId};
 
 pub type InputResult<T = ()> = Result<T, InputError>;
@@ -43,7 +41,7 @@ pub trait InputDevice: Send {
 
     fn unique_id(&self) -> &str;
 
-    fn irq_id(&self) -> Option<IrqId> {
+    fn irq_num(&self) -> Option<usize> {
         None
     }
 
@@ -108,8 +106,8 @@ impl InputDevice for ErasedInputDevice {
         self.inner.unique_id()
     }
 
-    fn irq_id(&self) -> Option<IrqId> {
-        self.inner.irq_id()
+    fn irq_num(&self) -> Option<usize> {
+        self.inner.irq_num()
     }
 
     fn get_event_bits(&mut self, ty: EventType, out: &mut [u8]) -> InputResult<bool> {

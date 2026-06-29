@@ -9,7 +9,7 @@ use some_serial::ns16550::rockchip_fiq::{
 };
 
 use super::{PlatformSerialDevice, SerialDeviceInfo, prop_u32, serial_runtime};
-use crate::{BindingInfo, BindingIrq};
+use crate::BindingInfo;
 
 model_register!(
     name: "rockchip fiq debugger serial",
@@ -58,7 +58,6 @@ fn probe(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
             fdt_config.uart_path, device_id
         );
     }
-    let irq = binding_info.irq_cloned();
     plat_dev.register(PlatformSerialDevice::new(
         serial.name.into(),
         SerialDeviceInfo {
@@ -67,7 +66,7 @@ fn probe(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
             paddr: fdt_config.reg.address as usize,
             mapped_base: base,
             baudrate: serial.baudrate,
-            irq,
+            irq_num: binding_info.irq_num(),
             binding_info,
         },
         serial.runtime,
@@ -90,8 +89,20 @@ fn uart_binding_info(fdt: &Fdt, uart_path: &str) -> Result<BindingInfo, OnProbeE
                 interrupt.interrupt_parent
             ))
         })?;
-    Ok(BindingInfo::with_binding_irq(Some(
-        BindingIrq::fdt_interrupt_with_controller(interrupt_parent, interrupt.specifier),
+    let intc = rdrive::get::<rdif_intc::Intc>(interrupt_parent).map_err(|err| {
+        OnProbeError::other(format!(
+            "failed to get interrupt controller {:?} for {uart_path}: {err:?}",
+            interrupt_parent
+        ))
+    })?;
+    let mut intc = intc.lock().map_err(|err| {
+        OnProbeError::other(format!(
+            "failed to lock interrupt controller {:?} for {uart_path}: {err:?}",
+            interrupt_parent
+        ))
+    })?;
+    Ok(BindingInfo::with_irq(Some(
+        intc.setup_irq_by_fdt(&interrupt.specifier).into(),
     )))
 }
 

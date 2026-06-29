@@ -16,7 +16,7 @@ mod ns16550;
 mod pl011;
 mod rockchip_fiq;
 
-use crate::{BindingInfo, BindingIrq, binding_info_from_acpi, binding_info_from_fdt};
+use crate::{BindingInfo, binding_info_from_acpi, binding_info_from_fdt};
 
 pub type SerialRuntime = SerialParts;
 
@@ -40,7 +40,7 @@ pub struct SerialDeviceInfo {
     pub paddr: usize,
     pub mapped_base: usize,
     pub baudrate: u32,
-    pub irq: Option<BindingIrq>,
+    pub irq_num: Option<usize>,
     pub binding_info: BindingInfo,
 }
 
@@ -170,14 +170,13 @@ fn serial_device_info(
     let fdt_path = info.node.path();
     let alias_index = rdrive::with_fdt(|fdt| serial_alias_index(fdt, &fdt_path)).flatten();
     let binding_info = serial_binding_info(info, &fdt_path);
-    let irq = binding_info.irq_cloned();
     SerialDeviceInfo {
         fdt_path,
         alias_index,
         paddr: base_reg.address as usize,
         mapped_base,
         baudrate,
-        irq,
+        irq_num: binding_info.irq_num(),
         binding_info,
     }
 }
@@ -189,14 +188,13 @@ fn acpi_serial_device_info(
     baudrate: u32,
 ) -> SerialDeviceInfo {
     let binding_info = acpi_serial_binding_info(info);
-    let irq = binding_info.irq_cloned();
     SerialDeviceInfo {
         fdt_path: info.path.into(),
         alias_index: None,
         paddr,
         mapped_base,
         baudrate,
-        irq,
+        irq_num: binding_info.irq_num(),
         binding_info,
     }
 }

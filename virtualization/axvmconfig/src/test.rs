@@ -49,10 +49,6 @@ passthrough_devices = [
     ["dev1", 0x0900_0000, 0x0900_0000, 0x0a00_0000, 0x2],
 ]
 
-passthrough_ports = [
-    [0x6000, 0x80],
-]
-
 emu_devices = [
     ["dev2", 0x0800_0000, 0x1_0000, 0, 0x21, []],
     ["dev3", 0x0808_0000, 0x1_0000, 0, 0x22, []],
@@ -106,9 +102,6 @@ interrupt_mode = "passthrough"
     assert_eq!(config.devices.passthrough_devices[1].base_hpa, 0x0900_0000);
     assert_eq!(config.devices.passthrough_devices[1].length, 0x0a00_0000);
     assert_eq!(config.devices.passthrough_devices[1].irq_id, 2);
-    assert_eq!(config.devices.passthrough_ports.len(), 1);
-    assert_eq!(config.devices.passthrough_ports[0].base, 0x6000);
-    assert_eq!(config.devices.passthrough_ports[0].length, 0x80);
     assert_eq!(config.devices.emu_devices.len(), 2);
     assert_eq!(config.devices.emu_devices[0].name, "dev2");
     assert_eq!(config.devices.emu_devices[0].base_gpa, 0x0800_0000);

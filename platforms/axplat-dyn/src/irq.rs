@@ -1,7 +1,10 @@
 #[cfg(all(target_arch = "riscv64", feature = "hv"))]
 use core::sync::atomic::{AtomicPtr, Ordering};
 
-use ax_plat::irq::{IrqAffinity, IrqError, IrqId, IrqIf, IrqSource, TrapVector, dispatch_irq};
+use ax_plat::irq::{IrqAffinity, IrqError, IrqIf, dispatch_irq};
+
+#[cfg(all(target_arch = "riscv64", feature = "hv"))]
+const RISCV_INTERRUPT_BIT: usize = 1usize << (usize::BITS as usize - 1);
 
 #[cfg(all(target_arch = "riscv64", feature = "hv"))]
 static VIRTUAL_IRQ_INJECTOR: AtomicPtr<()> = AtomicPtr::new(core::ptr::null_mut());
@@ -16,30 +19,31 @@ struct IrqIfImpl;
 #[impl_plat_interface]
 impl IrqIf for IrqIfImpl {
     /// Enables or disables the given IRQ.
-    fn set_enable(irq: IrqId, enabled: bool) -> Result<(), IrqError> {
-        somehal::irq::irq_set_enable(irq, enabled)
+    fn set_enable(irq_raw: usize, enabled: bool) {
+        somehal::irq::irq_set_enable(irq_raw.into(), enabled);
     }
 
-    fn set_affinity(irq: IrqId, affinity: IrqAffinity) -> Result<(), IrqError> {
+    fn set_affinity(irq_raw: usize, affinity: IrqAffinity) -> Result<(), IrqError> {
         let affinity = match affinity {
             IrqAffinity::Any => somehal::irq::IrqAffinity::Any,
             IrqAffinity::Fixed(cpu) => somehal::irq::IrqAffinity::Fixed { cpu_id: cpu.0 },
         };
-        somehal::irq::irq_set_affinity(irq, affinity)
+        somehal::irq::irq_set_affinity(irq_raw.into(), affinity).map_err(|_| IrqError::Unsupported)
     }
 
     /// Handles the IRQ.
-    fn handle(vector: TrapVector) -> Option<IrqId> {
-        let irq = {
-            let active = somehal::irq::begin_irq(vector.0)?;
+    fn handle(irq_num: usize) -> Option<usize> {
+        let irq_num = {
+            let active = somehal::irq::begin_irq(irq_num)?;
             let irq = active.id();
+            let irq_num = irq.raw();
 
             #[cfg(all(target_arch = "riscv64", feature = "hv"))]
-            if is_guest_forwardable(irq) && inject_virtual_irq(irq.hwirq.0 as usize) {
-                return Some(irq);
+            if (irq_num & RISCV_INTERRUPT_BIT == 0) && inject_virtual_irq(irq_num) {
+                return Some(irq_num);
             }
 
-            let outcome = dispatch_irq(irq);
+            let outcome = dispatch_irq(irq_num);
             if !outcome.handled {
                 if outcome.called == 0 {
                     warn!("Unhandled IRQ {irq:?}");
@@ -47,12 +51,12 @@ impl IrqIf for IrqIfImpl {
                     debug!("Spurious IRQ {irq:?}");
                 }
             }
-            irq
+            irq_num
         };
-        Some(irq)
+        Some(irq_num)
     }
 
-    fn send_ipi(id: IrqId, target: ax_plat::irq::IpiTarget) {
+    fn send_ipi(id: usize, target: ax_plat::irq::IpiTarget) {
         let target = match target {
             ax_plat::irq::IpiTarget::Current { cpu_id } => {
                 somehal::irq::IpiTarget::Current { cpu_id }
@@ -62,36 +66,12 @@ impl IrqIf for IrqIfImpl {
                 somehal::irq::IpiTarget::AllExceptCurrent { cpu_id, cpu_num }
             }
         };
-        somehal::irq::send_ipi(id, target);
+        somehal::irq::send_ipi(id.into(), target);
     }
 
-    fn ipi_irq() -> IrqId {
-        somehal::irq::ipi_irq()
+    fn ipi_irq() -> usize {
+        somehal::irq::ipi_irq().raw()
     }
-
-    fn resolve_source(source: IrqSource) -> Result<IrqId, IrqError> {
-        somehal::irq::resolve_irq_source(source)
-    }
-
-    fn resolve_percpu(hwirq: ax_plat::irq::HwIrq) -> Result<IrqId, IrqError> {
-        #[cfg(target_arch = "aarch64")]
-        {
-            somehal::irq::aarch64_gic_irq_id_checked(hwirq)
-        }
-        #[cfg(any(target_arch = "loongarch64", target_arch = "x86_64"))]
-        {
-            Ok(IrqId::new(somehal::irq::CPU_LOCAL_IRQ_DOMAIN, hwirq))
-        }
-        #[cfg(target_arch = "riscv64")]
-        {
-            Ok(IrqId::new(somehal::irq::CPU_LOCAL_IRQ_DOMAIN, hwirq))
-        }
-    }
-}
-
-#[cfg(any(all(target_arch = "riscv64", feature = "hv"), test))]
-fn is_guest_forwardable(irq: IrqId) -> bool {
-    somehal::irq::domain_is_kind(irq.domain, somehal::irq::IrqDomainKind::RiscvPlic)
 }
 
 #[cfg(all(target_arch = "riscv64", feature = "hv"))]
@@ -102,28 +82,4 @@ fn inject_virtual_irq(irq: usize) -> bool {
         return false;
     }
     unsafe { core::mem::transmute::<*mut (), fn(usize) -> bool>(injector)(irq) }
-}
-
-#[cfg(test)]
-mod tests {
-    use ax_plat::irq::{CPU_LOCAL_IRQ_DOMAIN, HwIrq, IrqId};
-
-    #[test]
-    fn cpu_local_irq_is_never_forwarded_to_guest() {
-        let irq = IrqId::new(CPU_LOCAL_IRQ_DOMAIN, HwIrq(5));
-
-        assert!(!super::is_guest_forwardable(irq));
-    }
-
-    #[test]
-    fn plic_irq_can_be_forwarded_to_guest() {
-        let domain = somehal::irq::alloc_irq_domain(
-            rdrive::DeviceId::new(),
-            somehal::irq::IrqDomainKind::RiscvPlic,
-        )
-        .unwrap();
-        let irq = IrqId::new(domain, HwIrq(10));
-
-        assert!(super::is_guest_forwardable(irq));
-    }
 }

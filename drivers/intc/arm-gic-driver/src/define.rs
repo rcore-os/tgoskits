@@ -80,18 +80,6 @@ pub const SPECIAL_RANGE: Range<u32> = Range {
     end: 1024,
 };
 
-/// Error returned when a raw INTID is not valid for the probed GIC.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct CheckedIntIdError;
-
-/// Create an [`IntId`] after validating it against the probed GIC range.
-pub fn checked_intid(raw: u32, max_intid: u32) -> Result<IntId, CheckedIntIdError> {
-    if raw >= max_intid || SPECIAL_RANGE.contains(&raw) {
-        return Err(CheckedIntIdError);
-    }
-    Ok(unsafe { IntId::raw(raw) })
-}
-
 /// An interrupt identifier (INTID) for the GIC.
 ///
 /// Represents a unique interrupt ID that can be used with the GIC hardware.

@@ -1,5 +1,3 @@
-#[cfg(feature = "irq")]
-use ax_plat::irq::{CPU_LOCAL_IRQ_DOMAIN, HwIrq, IrqId};
 use ax_plat::time::{NANOS_PER_SEC, TimeIf};
 use riscv::register::time;
 
@@ -78,12 +76,8 @@ impl TimeIf for TimeIfImpl {
 
     /// Returns the IRQ number for the timer interrupt.
     #[cfg(feature = "irq")]
-    fn irq_num() -> IrqId {
-        const INTC_IRQ_BASE: usize = 1 << (usize::BITS - 1);
-        IrqId::new(
-            CPU_LOCAL_IRQ_DOMAIN,
-            HwIrq((crate::config::devices::TIMER_IRQ & !INTC_IRQ_BASE) as u32),
-        )
+    fn irq_num() -> usize {
+        crate::config::devices::TIMER_IRQ
     }
 
     /// Set a one-shot timer.

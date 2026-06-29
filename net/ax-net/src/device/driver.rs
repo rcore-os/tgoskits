@@ -21,7 +21,6 @@
 use alloc::{boxed::Box, collections::VecDeque, string::String, vec::Vec};
 
 use ax_sync::spin::SpinNoIrq;
-use irq_framework::IrqId;
 use rd_net::{Net, NetError, RxQueue, TxQueue};
 
 const RX_PREFETCH_TARGET: usize = 1;
@@ -110,8 +109,8 @@ pub trait NetTxBuffer: Send {
 pub trait EthernetDriver: Send + Sync {
     /// Stable human-readable device name.
     fn device_name(&self) -> &str;
-    /// Platform IRQ id, if the device uses the shared Ethernet IRQ path.
-    fn irq_id(&self) -> Option<IrqId>;
+    /// Platform IRQ number, if the device uses the shared Ethernet IRQ path.
+    fn irq_num(&self) -> Option<usize>;
     /// Enables device IRQ delivery.
     fn enable_irq(&mut self);
     /// Disables device IRQ delivery.
@@ -180,14 +179,14 @@ struct RdNetState {
 pub struct RdNetDriver {
     name: String,
     mac: [u8; 6],
-    irq: Option<IrqId>,
+    irq: Option<usize>,
     irq_handler: Option<rd_net::IrqHandler>,
     state: SpinNoIrq<RdNetState>,
 }
 
 impl RdNetDriver {
     /// Wraps an `rd_net` endpoint as an Ethernet driver.
-    pub fn new(name: impl Into<String>, mut net: Net, irq: Option<IrqId>) -> NetDeviceResult<Self> {
+    pub fn new(name: impl Into<String>, mut net: Net, irq: Option<usize>) -> NetDeviceResult<Self> {
         let mac = net.mac_address();
         let tx_queue = net.create_tx_queue().map_err(map_net_error)?;
         let rx_queue = net.create_rx_queue().map_err(map_net_error)?;
@@ -224,7 +223,7 @@ impl EthernetDriver for RdNetDriver {
         &self.name
     }
 
-    fn irq_id(&self) -> Option<IrqId> {
+    fn irq_num(&self) -> Option<usize> {
         self.irq
     }
 

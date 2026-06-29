@@ -151,34 +151,15 @@ fn grouped_runner_script_runs_all_commands_and_reports_summary() {
     let content = fs::read_to_string(&runner).unwrap();
     assert!(content.contains("total=2"));
     assert!(content.contains("step=$((step + 1))"));
+    assert!(content.contains("printf '%s: step=%s/%s epoch=%s command=%s\\n'"));
+    assert!(content.contains("printf '%s: step=%s/%s epoch=%s status=0 command=%s\\n'"));
+    assert!(content.contains("printf '%s: step=%s/%s epoch=%s status=%s command=%s\\n'"));
     assert!(content.contains("'SUITE_GROUPED_TEST_BEGIN'"));
     assert!(content.contains("'SUITE_GROUPED_TEST_PASSED'"));
     assert!(content.contains("'SUITE_GROUPED_TEST_FAILED'"));
-    assert!(content.contains("'/usr/bin/alpha'"));
-    assert!(content.contains("'/usr/bin/beta --flag'"));
+    assert!(content.contains("'command-1'"));
+    assert!(content.contains("'command-2'"));
     assert!(content.contains("SUITE_GROUPED_TESTS_PASSED"));
-}
-
-#[test]
-fn grouped_runner_script_hashes_multiline_command_labels() {
-    let root = tempdir().unwrap();
-    let overlay = root.path().join("overlay");
-    let commands = vec![
-        "failed=0\nif [ \"$failed\" -ne 0 ]; then\n    echo \"SUITE_GROUPED_TEST_FAILED: \
-         nested\"\nfi"
-            .to_string(),
-    ];
-
-    let config = fake_config();
-    write_grouped_case_runner_script(&overlay, &commands, &config.grouped_runner).unwrap();
-
-    let runner = overlay.join("usr/bin/suite-run-case-tests");
-    let content = fs::read_to_string(&runner).unwrap();
-    assert!(content.contains("sh -c 'failed=0"));
-    assert!(content.contains("'inline-command:"));
-    assert!(content.contains("'SUITE_GROUPED_TEST_FAILED'"));
-    assert!(!content.contains("command=failed=0"));
-    assert!(!content.contains("command=echo"));
 }
 
 #[test]

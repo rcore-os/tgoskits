@@ -15,4 +15,3 @@ ax-sync = { workspace = true }
 ax-lazyinit = { workspace = true }
 log = { workspace = true }
 rdif-input.workspace = true
-irq-framework.workspace = true

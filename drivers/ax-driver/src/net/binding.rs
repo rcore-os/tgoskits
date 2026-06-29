@@ -6,7 +6,7 @@ use rd_net::{Interface, NetError};
 use rdrive::{Device, DriverGeneric, probe::OnProbeError};
 
 use crate::{
-    BindingInfo, BindingIrq, binding_info_from_acpi, binding_info_from_fdt,
+    BindingInfo, binding_info_from_acpi, binding_info_from_fdt,
     registration::{BoundDevice, register_bound_device},
 };
 #[cfg(feature = "pci")]
@@ -27,8 +27,8 @@ impl PlatformNetDevice {
         }
     }
 
-    pub fn take_net(&mut self) -> Option<(rd_net::Net, &'static str, Option<BindingIrq>)> {
-        Some((self.net.take()?, self.name, self.info.irq_cloned()))
+    pub fn take_net(&mut self) -> Option<(rd_net::Net, &'static str, Option<usize>)> {
+        Some((self.net.take()?, self.name, self.info.irq_num()))
     }
 
     pub fn binding_info(&self) -> &BindingInfo {
@@ -42,7 +42,7 @@ impl PlatformNetDevice {
 
 pub fn take_rd_net_device(
     device: Device<PlatformNetDevice>,
-) -> Result<(rd_net::Net, &'static str, Option<BindingIrq>), NetError> {
+) -> Result<(rd_net::Net, &'static str, Option<usize>), NetError> {
     let mut dev = device
         .lock()
         .map_err(|_| NetError::Other(Box::new(rd_net::KError::Unknown("device locked"))))?;

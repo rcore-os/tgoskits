@@ -6,8 +6,8 @@ use core::{
 };
 
 use crate::{
-    CpuId, IrqAffinity, IrqContext, IrqError, IrqExecution, IrqHandle, IrqId, IrqOps, IrqOutcome,
-    IrqRequest, IrqReturn, IrqScope, IrqStatus,
+    CpuId, IrqAffinity, IrqContext, IrqError, IrqExecution, IrqHandle, IrqNumber, IrqOps,
+    IrqOutcome, IrqRequest, IrqReturn, IrqScope, IrqStatus,
     action::{Action, ActionHandler},
     descriptor::{Descriptor, action_matches_cpu, recompute_scope_line_desired},
     lock::MetadataLock,
@@ -48,7 +48,7 @@ impl<O: IrqOps> Registry<O> {
     }
 
     /// Registers an IRQ action.
-    pub fn request(&self, irq: IrqId, mut request: IrqRequest) -> Result<IrqHandle, IrqError> {
+    pub fn request(&self, irq: IrqNumber, mut request: IrqRequest) -> Result<IrqHandle, IrqError> {
         self.validate_request(&request)?;
 
         let snapshot = self.snapshot_and_disable_scope_line(irq, request.scope)?;
@@ -204,7 +204,7 @@ impl<O: IrqOps> Registry<O> {
     }
 
     /// Dispatches an IRQ on the given CPU.
-    pub fn dispatch(&self, irq: IrqId, cpu: CpuId) -> IrqOutcome {
+    pub fn dispatch(&self, irq: IrqNumber, cpu: CpuId) -> IrqOutcome {
         let Some(head) = self.begin_dispatch(irq) else {
             return IrqOutcome::default();
         };
@@ -284,7 +284,7 @@ impl<O: IrqOps> Registry<O> {
 
     fn insert_action_locked(
         &self,
-        irq: IrqId,
+        irq: IrqNumber,
         request: &IrqRequest,
         action: *mut Action,
     ) -> Result<(), IrqError> {
@@ -337,7 +337,7 @@ impl<O: IrqOps> Registry<O> {
         result
     }
 
-    fn wait_and_remove_action(&self, irq: IrqId, action: *mut Action) -> Result<(), IrqError> {
+    fn wait_and_remove_action(&self, irq: IrqNumber, action: *mut Action) -> Result<(), IrqError> {
         loop {
             match self.try_remove_action(irq, action) {
                 Err(IrqError::Busy) => self.ops.relax(),
@@ -346,7 +346,7 @@ impl<O: IrqOps> Registry<O> {
         }
     }
 
-    fn try_remove_action(&self, irq: IrqId, action: *mut Action) -> Result<(), IrqError> {
+    fn try_remove_action(&self, irq: IrqNumber, action: *mut Action) -> Result<(), IrqError> {
         let irq_state = self.lock.lock(&self.ops);
         let result = (|| {
             let state = unsafe { &mut *self.state.get() };
@@ -417,7 +417,7 @@ impl<O: IrqOps> Registry<O> {
         }
     }
 
-    fn apply_affinity(&self, irq: IrqId, affinity: IrqAffinity) -> Result<(), IrqError> {
+    fn apply_affinity(&self, irq: IrqNumber, affinity: IrqAffinity) -> Result<(), IrqError> {
         match affinity {
             IrqAffinity::Any => Ok(()),
             IrqAffinity::Fixed(cpu) if self.ops.cpu_online(cpu) => {
@@ -447,7 +447,7 @@ impl<O: IrqOps> Registry<O> {
         Ok(())
     }
 
-    fn apply_scope_line_state(&self, irq: IrqId, scope: IrqScope) -> Result<(), IrqError> {
+    fn apply_scope_line_state(&self, irq: IrqNumber, scope: IrqScope) -> Result<(), IrqError> {
         match scope {
             IrqScope::Global => self.apply_line_state(irq, None),
             IrqScope::PerCpu { cpus } => {
@@ -461,7 +461,7 @@ impl<O: IrqOps> Registry<O> {
 
     fn snapshot_and_disable_scope_line(
         &self,
-        irq: IrqId,
+        irq: IrqNumber,
         scope: IrqScope,
     ) -> Result<LineStateSnapshot, IrqError> {
         let mut snapshot = LineStateSnapshot::new(scope);
@@ -487,7 +487,11 @@ impl<O: IrqOps> Registry<O> {
         Ok(snapshot)
     }
 
-    fn snapshot_and_disable_line(&self, irq: IrqId, cpu: Option<CpuId>) -> Result<bool, IrqError> {
+    fn snapshot_and_disable_line(
+        &self,
+        irq: IrqNumber,
+        cpu: Option<CpuId>,
+    ) -> Result<bool, IrqError> {
         let was_enabled = self.controller_line_enabled(irq, cpu)?;
         self.set_controller_enabled(irq, cpu, false)?;
         self.set_line_applied_if_present(irq, cpu, false)?;
@@ -496,7 +500,7 @@ impl<O: IrqOps> Registry<O> {
 
     fn restore_scope_line_snapshot(
         &self,
-        irq: IrqId,
+        irq: IrqNumber,
         scope: IrqScope,
         snapshot: &LineStateSnapshot,
     ) -> Result<(), IrqError> {
@@ -521,7 +525,7 @@ impl<O: IrqOps> Registry<O> {
 
     fn restore_line_snapshot(
         &self,
-        irq: IrqId,
+        irq: IrqNumber,
         cpu: Option<CpuId>,
         was_enabled: bool,
     ) -> Result<(), IrqError> {
@@ -532,7 +536,11 @@ impl<O: IrqOps> Registry<O> {
         Ok(())
     }
 
-    fn controller_line_enabled(&self, irq: IrqId, cpu: Option<CpuId>) -> Result<bool, IrqError> {
+    fn controller_line_enabled(
+        &self,
+        irq: IrqNumber,
+        cpu: Option<CpuId>,
+    ) -> Result<bool, IrqError> {
         match self.ops.is_enabled(irq, cpu) {
             Ok(enabled) => Ok(enabled),
             Err(IrqError::Unsupported) => {
@@ -542,7 +550,7 @@ impl<O: IrqOps> Registry<O> {
         }
     }
 
-    fn apply_line_state(&self, irq: IrqId, cpu: Option<CpuId>) -> Result<(), IrqError> {
+    fn apply_line_state(&self, irq: IrqNumber, cpu: Option<CpuId>) -> Result<(), IrqError> {
         loop {
             if let Some(cpu) = cpu
                 && !self.ops.cpu_online(cpu)
@@ -564,7 +572,7 @@ impl<O: IrqOps> Registry<O> {
 
     fn set_controller_enabled(
         &self,
-        irq: IrqId,
+        irq: IrqNumber,
         cpu: Option<CpuId>,
         enabled: bool,
     ) -> Result<(), IrqError> {
@@ -591,7 +599,7 @@ impl<O: IrqOps> Registry<O> {
         }
     }
 
-    fn begin_dispatch(&self, irq: IrqId) -> Option<*mut Action> {
+    fn begin_dispatch(&self, irq: IrqNumber) -> Option<*mut Action> {
         let irq_state = self.lock.lock(&self.ops);
         let result = {
             let state = unsafe { &mut *self.state.get() };
@@ -612,7 +620,7 @@ impl<O: IrqOps> Registry<O> {
         result
     }
 
-    fn end_dispatch(&self, irq: IrqId) {
+    fn end_dispatch(&self, irq: IrqNumber) {
         let irq_state = self.lock.lock(&self.ops);
         let state = unsafe { &mut *self.state.get() };
         if let Some(descriptor) = state
@@ -625,7 +633,7 @@ impl<O: IrqOps> Registry<O> {
         self.lock.unlock(&self.ops, irq_state);
     }
 
-    fn pending_enables_for_cpu(&self, cpu: CpuId) -> Vec<IrqId> {
+    fn pending_enables_for_cpu(&self, cpu: CpuId) -> Vec<IrqNumber> {
         let irq_state = self.lock.lock(&self.ops);
         let mut pending = Vec::new();
         for descriptor in &self.state_ref().descriptors {
@@ -642,7 +650,7 @@ impl<O: IrqOps> Registry<O> {
         pending
     }
 
-    fn clear_pending_enable_for_cpu(&self, irq: IrqId, cpu: CpuId) {
+    fn clear_pending_enable_for_cpu(&self, irq: IrqNumber, cpu: CpuId) {
         let irq_state = self.lock.lock(&self.ops);
         if let Some(descriptor) = self.descriptor(irq) {
             for action in descriptor.actions() {
@@ -655,7 +663,7 @@ impl<O: IrqOps> Registry<O> {
         self.lock.unlock(&self.ops, irq_state);
     }
 
-    fn line_state(&self, irq: IrqId, cpu: Option<CpuId>) -> Option<(bool, bool)> {
+    fn line_state(&self, irq: IrqNumber, cpu: Option<CpuId>) -> Option<(bool, bool)> {
         let irq_state = self.lock.lock(&self.ops);
         let result = self
             .descriptor(irq)
@@ -666,7 +674,7 @@ impl<O: IrqOps> Registry<O> {
 
     fn set_line_applied(
         &self,
-        irq: IrqId,
+        irq: IrqNumber,
         cpu: Option<CpuId>,
         enabled: bool,
     ) -> Result<(), IrqError> {
@@ -687,7 +695,7 @@ impl<O: IrqOps> Registry<O> {
 
     fn set_line_applied_if_present(
         &self,
-        irq: IrqId,
+        irq: IrqNumber,
         cpu: Option<CpuId>,
         enabled: bool,
     ) -> Result<(), IrqError> {
@@ -707,7 +715,7 @@ impl<O: IrqOps> Registry<O> {
         result
     }
 
-    fn framework_line_enabled(&self, irq: IrqId, cpu: Option<CpuId>) -> Result<bool, IrqError> {
+    fn framework_line_enabled(&self, irq: IrqNumber, cpu: Option<CpuId>) -> Result<bool, IrqError> {
         let irq_state = self.lock.lock(&self.ops);
         let result = (|| {
             let descriptor = self.descriptor(irq).ok_or(IrqError::NotFound)?;
@@ -724,7 +732,7 @@ impl<O: IrqOps> Registry<O> {
             .find(|action| action.id == handle.id && !action.detached.load(Ordering::Acquire))
     }
 
-    fn descriptor(&self, irq: IrqId) -> Option<&Descriptor> {
+    fn descriptor(&self, irq: IrqNumber) -> Option<&Descriptor> {
         self.state_ref()
             .descriptors
             .iter()
@@ -767,7 +775,7 @@ impl LineStateSnapshot {
 
 struct DispatchGuard<'a, O: IrqOps> {
     registry: &'a Registry<O>,
-    irq: IrqId,
+    irq: IrqNumber,
 }
 
 struct ActionRunGuard<'a> {
@@ -803,7 +811,7 @@ impl<O: IrqOps> Drop for DispatchGuard<'_, O> {
 
 struct RemoteEnable {
     registry: *mut (),
-    irq: IrqId,
+    irq: IrqNumber,
     cpu: CpuId,
     enabled: bool,
     result: Result<(), IrqError>,

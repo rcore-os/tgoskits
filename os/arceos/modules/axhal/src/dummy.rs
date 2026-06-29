@@ -1,7 +1,7 @@
 //! Dummy implementation of platform-related interfaces defined in [`axplat`].
 
 #[cfg(feature = "irq")]
-use ax_plat::irq::{HwIrq, IpiTarget, IrqError, IrqId, IrqIf, IrqNumber, IrqSource, TrapVector};
+use ax_plat::irq::{IpiTarget, IrqIf};
 use ax_plat::{
     console::{ConsoleDeviceIdError, ConsoleDeviceIdResult, ConsoleIf},
     impl_plat_interface,
@@ -49,7 +49,7 @@ impl ConsoleIf for DummyConsole {
     fn claim_runtime_output() {}
 
     #[cfg(feature = "irq")]
-    fn irq_num() -> Option<IrqId> {
+    fn irq_num() -> Option<usize> {
         None
     }
 
@@ -108,8 +108,8 @@ impl TimeIf for DummyTime {
     }
 
     #[cfg(feature = "irq")]
-    fn irq_num() -> IrqId {
-        IrqNumber(0).expect("dummy legacy IRQ exceeds legacy IRQ width")
+    fn irq_num() -> usize {
+        0
     }
 
     #[cfg(feature = "irq")]
@@ -137,35 +137,22 @@ impl PowerIf for DummyPower {
 #[cfg(feature = "irq")]
 #[impl_plat_interface]
 impl IrqIf for DummyIrq {
-    fn set_enable(_irq: IrqId, _enabled: bool) -> Result<(), IrqError> {
-        Ok(())
-    }
+    fn set_enable(_irq: usize, _enabled: bool) {}
 
     fn set_affinity(
-        _irq: IrqId,
+        _irq: usize,
         _affinity: ax_plat::irq::IrqAffinity,
     ) -> Result<(), ax_plat::irq::IrqError> {
         Err(ax_plat::irq::IrqError::Unsupported)
     }
 
-    fn handle(_irq: TrapVector) -> Option<IrqId> {
+    fn handle(_irq: usize) -> Option<usize> {
         None
     }
 
-    fn send_ipi(_irq: IrqId, _target: IpiTarget) {}
+    fn send_ipi(_irq: usize, _target: IpiTarget) {}
 
-    fn ipi_irq() -> IrqId {
-        IrqId::new(ax_plat::irq::CPU_LOCAL_IRQ_DOMAIN, HwIrq(0))
-    }
-
-    fn resolve_source(source: IrqSource) -> Result<IrqId, IrqError> {
-        match source {
-            IrqSource::ControllerLine { domain, hwirq } => Ok(IrqId::new(domain, hwirq)),
-            IrqSource::AcpiGsi(_) | IrqSource::AcpiGsiRoute(_) => Err(IrqError::Unsupported),
-        }
-    }
-
-    fn resolve_percpu(_hwirq: HwIrq) -> Result<IrqId, IrqError> {
-        Err(IrqError::Unsupported)
+    fn ipi_irq() -> usize {
+        0
     }
 }

@@ -44,7 +44,7 @@ impl ConsoleIf for TestConsole {
 
     fn claim_runtime_output() {}
 
-    fn irq_num() -> Option<irq_framework::IrqId> {
+    fn irq_num() -> Option<usize> {
         None
     }
 
@@ -75,8 +75,8 @@ impl TimeIf for TestTime {
         0
     }
 
-    fn irq_num() -> irq_framework::IrqId {
-        irq_framework::IrqId::new(irq_framework::IrqDomainId(0), irq_framework::HwIrq(0))
+    fn irq_num() -> usize {
+        0
     }
 
     fn set_oneshot_timer(_deadline_ns: u64) {}

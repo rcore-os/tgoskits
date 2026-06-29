@@ -26,7 +26,6 @@ use core::ptr::NonNull;
 use ax_sync::spin::SpinNoIrq;
 use axpoll::PollSet;
 use hashbrown::HashMap;
-use irq_framework::IrqId;
 use smoltcp::{
     storage::{PacketBuffer, PacketMetadata},
     time::{Duration, Instant},
@@ -89,7 +88,7 @@ pub trait EthernetIrqRegistrar: Send + Sync {
     fn register_shared(
         &self,
         name: &str,
-        irq: IrqId,
+        irq: usize,
         action: EthernetIrqAction,
     ) -> Result<Box<dyn EthernetIrqRegistration>, EthernetIrqRegistrationError>;
 }
@@ -122,7 +121,7 @@ struct PendingNeighbor {
 }
 
 struct EthernetIrqState {
-    irq: Option<IrqId>,
+    irq: Option<usize>,
     irq_registration: spin::Once<Box<dyn EthernetIrqRegistration>>,
     /// RX readiness is delivered out-of-band (outside the ethernet IRQ
     /// framework) via the device readiness poll set, e.g. an SDIO Wi-Fi chip
@@ -188,7 +187,7 @@ impl EthernetDevice {
         ip: Option<Ipv4Cidr>,
         oob_rx: bool,
     ) -> Self {
-        let irq = inner.irq_id();
+        let irq = inner.irq_num();
         let mut inner = Arc::new(EthernetIrqState {
             irq,
             irq_registration: spin::Once::new(),
@@ -215,14 +214,15 @@ impl EthernetDevice {
                     }
                     Err(err) => {
                         warn!(
-                            "failed to register ethernet irq handler for {name} irq {irq:?}: \
-                             {err:?}"
+                            "failed to register ethernet irq handler for {name} irq {}: {err:?}",
+                            irq
                         );
                     }
                 }
             } else {
                 warn!(
-                    "ethernet irq registrar is not installed for {name} irq {irq:?}; use polling"
+                    "ethernet irq registrar is not installed for {name} irq {}; use polling",
+                    irq
                 );
             }
         }

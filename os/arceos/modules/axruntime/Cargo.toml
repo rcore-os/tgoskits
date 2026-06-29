@@ -14,10 +14,6 @@ dma = ["paging"]
 ext-ld = []
 std-compat = []
 ipi = ["dep:ax-ipi"]
-# Register a lightweight IPI IRQ handler that only acknowledges SGIs so idle
-# CPUs can wake and re-enter the scheduler. This intentionally does not enable
-# the ax-ipi callback queue.
-wake-ipi = ["irq", "ax-hal/ipi"]
 irq = [
   "ax-hal/irq",
   "ax-task?/irq",
@@ -36,7 +32,6 @@ tls = ["ax-hal/tls", "ax-task?/tls"]
 plat-dyn = [
   "ax-driver/plat-dyn",
   "ax-hal/plat-dyn",
-  "dep:rdif-intc",
   "paging",
   "irq",
   "rtc",
@@ -105,9 +100,7 @@ cfg-if = {workspace = true}
 chrono = {version = "0.4", default-features = false}
 dma-api = { workspace = true, optional = true }
 indoc = "2"
-irq-framework = { workspace = true }
 rdif-block = { workspace = true, optional = true }
-rdif-intc = { workspace = true, optional = true }
 rd-net = { workspace = true, optional = true }
 rdrive.workspace = true
 spin = {workspace = true, optional = true}

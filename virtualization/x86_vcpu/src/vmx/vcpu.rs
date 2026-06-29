@@ -485,10 +485,6 @@ impl VmxVcpu {
                 true,
             );
         }
-        for range in config.passthrough_port_ranges() {
-            self.io_bitmap
-                .set_intercept_of_range(range.base as u32, range.length as u32, true);
-        }
         Ok(())
     }
 

@@ -55,16 +55,6 @@ pub fn is_x86_linux_image_config(config: &AxVMCrateConfig) -> bool {
     }
 }
 
-#[cfg(target_arch = "x86_64")]
-pub const fn x86_qemu_passthrough_block_intx() -> (u8, u8, u8, usize) {
-    (
-        x86_mptable::QEMU_PASSTHROUGH_BLOCK_DEVICE,
-        x86_mptable::QEMU_PASSTHROUGH_BLOCK_FUNCTION,
-        x86_mptable::QEMU_PASSTHROUGH_BLOCK_PIN,
-        x86_mptable::qemu_passthrough_block_gsi(),
-    )
-}
-
 pub fn get_image_header(config: &AxVMCrateConfig) -> Option<linux::Header> {
     match config.kernel.image_location.as_deref() {
         Some("memory") => with_memory_image(config, linux::Header::parse).flatten(),

@@ -1,7 +1,5 @@
 use alloc::{boxed::Box, string::String};
 
-use irq_framework::IrqId;
-
 use crate::DisplayInfo;
 
 pub type DisplayResult<T = ()> = Result<T, DisplayError>;
@@ -22,7 +20,7 @@ pub trait DisplayDevice: Send {
 
     fn flush(&mut self) -> DisplayResult;
 
-    fn irq_id(&self) -> Option<IrqId> {
+    fn irq_num(&self) -> Option<usize> {
         None
     }
 
@@ -71,8 +69,8 @@ impl DisplayDevice for ErasedDisplayDevice {
         self.inner.flush()
     }
 
-    fn irq_id(&self) -> Option<IrqId> {
-        self.inner.irq_id()
+    fn irq_num(&self) -> Option<usize> {
+        self.inner.irq_num()
     }
 
     fn enable_irq(&mut self) {

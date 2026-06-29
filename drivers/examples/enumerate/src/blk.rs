@@ -31,13 +31,7 @@ fn probe(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
         let intc = rdrive::get::<Intc>(irq).unwrap();
 
         for interrupt in info.interrupts() {
-            let mut intc = intc.lock().unwrap();
-            let translation = intc
-                .translate_fdt(&interrupt.specifier)
-                .expect("failed to translate interrupt");
-            intc.configure(&translation)
-                .expect("failed to configure interrupt");
-            let irq_id = translation.id;
+            let irq_id = intc.lock().unwrap().setup_irq_by_fdt(&interrupt.specifier);
             debug!(
                 "virtio mmio device [{}] setup irq: {:?}",
                 info.node.name(),
