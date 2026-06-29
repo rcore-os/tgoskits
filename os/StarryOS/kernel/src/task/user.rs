@@ -65,6 +65,24 @@ pub fn new_user_task(name: &str, mut uctx: UserContext, set_child_tid: usize) ->
                             }
                         }
 
+                        // Linux stops tracees *before* execve so the tracer
+                        // can read the original syscall arguments (path, argv,
+                        // envp) from the trap frame.  When no syscall-trace was
+                        // active (trace_state != Entry) we must create that
+                        // pre-execve stop here.  With syscall-trace active the
+                        // entry-stop above already covered it.
+                        if !matches!(trace_state, SyscallTraceState::Entry)
+                            && (thr.proc_data.is_ptrace_traceme()
+                                || thr.proc_data.is_ptrace_attached())
+                            && matches!(
+                                Sysno::new(saved_sysno),
+                                Some(Sysno::execve | Sysno::execveat)
+                            )
+                        {
+                            crate::syscall::ptrace_notify_exec(thr.proc_data.proc.pid());
+                            let _ = ptrace_stop_current(thr, Signo::SIGTRAP, &mut uctx);
+                        }
+
                         if let Some(exit_code) = ptrace_exit_event_code(saved_sysno, saved_a0)
                             && crate::syscall::ptrace_notify_exit(
                                 thr.proc_data.proc.pid(),
@@ -81,20 +99,26 @@ pub fn new_user_task(name: &str, mut uctx: UserContext, set_child_tid: usize) ->
                         {
                             continue;
                         }
-                        if matches!(
-                            thr.proc_data.take_ptrace_syscall_trace_for(tid),
-                            SyscallTraceState::Exit
-                        ) {
-                            let _ = ptrace_syscall_stop_current(thr, Signo::SIGTRAP, &mut uctx);
-                        }
-                        if thr.proc_data.take_ptrace_exec_stop_pending() {
-                            let _is_event =
-                                crate::syscall::ptrace_notify_exec(thr.proc_data.proc.pid());
-                            if let Some(_resume_sig) =
-                                ptrace_stop_current(thr, Signo::SIGTRAP, &mut uctx)
-                            {
-                                continue;
+                        let exec_pending = thr.proc_data.take_ptrace_exec_stop_pending();
+                        let syscall_trace = thr.proc_data.take_ptrace_syscall_trace_for(tid);
+                        match (exec_pending, syscall_trace) {
+                            // Normal syscall exit — non-execve path.
+                            (false, SyscallTraceState::Exit) => {
+                                let _ = ptrace_syscall_stop_current(thr, Signo::SIGTRAP, &mut uctx);
                             }
+                            // Execve with syscall-trace active (ATTACH/SEIZE),
+                            // or enabled during the pre-execve stop (TRACEME +
+                            // PTRACE_SYSCALL).  Deliver the exit-stop with the
+                            // return value and the PTRACE_EVENT_EXEC event.
+                            (true, SyscallTraceState::Exit | SyscallTraceState::Entry) => {
+                                crate::syscall::ptrace_notify_exec(thr.proc_data.proc.pid());
+                                let _ = ptrace_syscall_stop_current(thr, Signo::SIGTRAP, &mut uctx);
+                            }
+                            // Execve after pre-execve stop, but tracer used
+                            // PTRACE_CONT (no syscall-trace).  The pre-execve
+                            // stop already notified the tracer; no extra stop.
+                            (true, _) => {}
+                            (false, _) => {}
                         }
                     }
                     ReturnReason::PageFault(addr, flags) => {

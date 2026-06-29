@@ -344,6 +344,14 @@ pub fn check_signals(
 
     let signo = sig.signo();
 
+    // Signals whose disposition is Continue (SIGCONT) or that are
+    // unconditionally forwarded (SIGKILL, already checked above) must
+    // never create a ptrace-stop — they are consumed silently so that
+    // tracers observe only "real" stops.
+    if matches!(os_action, SignalOSAction::Continue) {
+        return true;
+    }
+
     if signo != Signo::SIGKILL
         && !thr
             .proc_data
