@@ -370,6 +370,7 @@ fn generate_firmware_img_loading_functions(
 
 fn main() -> anyhow::Result<()> {
     println!("cargo:rerun-if-changed=linker.ld");
+    println!("cargo::rustc-check-cfg=cfg(axtest)");
     let out_dir = PathBuf::from(env::var("OUT_DIR").context("OUT_DIR is not set")?);
     let linker = out_dir.join("linker.x");
     fs::write(&linker, include_str!("linker.ld"))?;

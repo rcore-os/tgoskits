@@ -189,10 +189,10 @@ mod capture {
             let connector_state = state.clone();
             let socket_path = paths.monitor_socket.clone();
             std::thread::spawn(move || {
-                if let Ok(conn) = wait_and_connect_monitor(&socket_path) {
-                    if let Ok(mut state) = connector_state.lock() {
-                        state.monitor_conn = Some(conn);
-                    }
+                if let Ok(conn) = wait_and_connect_monitor(&socket_path)
+                    && let Ok(mut state) = connector_state.lock()
+                {
+                    state.monitor_conn = Some(conn);
                 }
             });
 
