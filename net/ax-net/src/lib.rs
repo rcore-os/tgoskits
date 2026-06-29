@@ -731,13 +731,18 @@ fn net_poll_worker() {
         if !timed_out {
             take_poll_request(&NET_POLL_REQUESTED, || {});
         }
-        if NET_IRQ_NOTIFY.drain() {
+        let irq_pending = NET_IRQ_NOTIFY.drain();
+        if device_poll_fallback_due(timed_out, irq_pending, delay) {
             get_service().wake_all_devices();
         }
         drain_deferred_poll_wakes();
         poll_until_idle();
         drain_deferred_poll_wakes();
     }
+}
+
+fn device_poll_fallback_due(timed_out: bool, irq_pending: bool, delay: Duration) -> bool {
+    irq_pending || (timed_out && delay > Duration::ZERO)
 }
 
 fn take_poll_request(requested: &AtomicBool, after_observe: impl FnOnce()) -> bool {
@@ -751,9 +756,12 @@ fn take_poll_request(requested: &AtomicBool, after_observe: impl FnOnce()) -> bo
 
 #[cfg(test)]
 mod tests {
-    use core::sync::atomic::{AtomicBool, Ordering};
+    use core::{
+        sync::atomic::{AtomicBool, Ordering},
+        time::Duration,
+    };
 
-    use super::{publish_poll_request, take_poll_request};
+    use super::{device_poll_fallback_due, publish_poll_request, take_poll_request};
 
     #[test]
     fn poll_request_after_worker_drain_stays_pending() {
@@ -766,6 +774,21 @@ mod tests {
 
         assert!(requested.load(Ordering::Acquire));
         assert_eq!(wakes, 1);
+    }
+
+    #[test]
+    fn poll_timeout_wakes_devices_as_polling_fallback() {
+        assert!(device_poll_fallback_due(
+            true,
+            false,
+            Duration::from_millis(100)
+        ));
+    }
+
+    #[test]
+    fn immediate_socket_poll_does_not_force_device_fallback() {
+        assert!(!device_poll_fallback_due(true, false, Duration::ZERO));
+        assert!(device_poll_fallback_due(false, true, Duration::ZERO));
     }
 }
 
