@@ -129,6 +129,7 @@ fn map_block_irq_error(err: ax_hal::irq::IrqError) -> ax_errno::AxError {
         ax_hal::irq::IrqError::Busy | ax_hal::irq::IrqError::InIrqContext => {
             ax_errno::AxError::ResourceBusy
         }
+        ax_hal::irq::IrqError::Timeout => ax_errno::AxError::TimedOut,
         ax_hal::irq::IrqError::NoMemory => ax_errno::AxError::NoMemory,
         ax_hal::irq::IrqError::NotFound => ax_errno::AxError::NotFound,
         ax_hal::irq::IrqError::Controller => ax_errno::AxError::Io,

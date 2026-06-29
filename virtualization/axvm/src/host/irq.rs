@@ -27,63 +27,23 @@ pub(crate) fn request_shared_irq(
 #[cfg(test)]
 static TEST_ENABLED_IRQ_RAW: AtomicUsize = AtomicUsize::new(usize::MAX);
 
-#[cfg(any(test, not(feature = "plat-dyn")))]
-pub(crate) fn set_irq_enable(irq: IrqId, enabled: bool) {
-    set_irq_enable_impl(irq, enabled);
+pub(crate) fn set_host_irq_enable(irq: IrqId, enabled: bool) -> Result<(), IrqError> {
+    set_host_irq_enable_impl(irq, enabled)
 }
 
 #[cfg(test)]
-fn set_irq_enable_impl(irq: IrqId, enabled: bool) {
+fn set_host_irq_enable_impl(irq: IrqId, enabled: bool) -> Result<(), IrqError> {
     if enabled {
         TEST_ENABLED_IRQ_RAW.store(irq_to_test_raw(irq), Ordering::Release);
     } else if TEST_ENABLED_IRQ_RAW.load(Ordering::Acquire) == irq_to_test_raw(irq) {
         TEST_ENABLED_IRQ_RAW.store(usize::MAX, Ordering::Release);
     }
-}
-
-#[cfg(all(not(test), not(feature = "plat-dyn")))]
-fn set_irq_enable_impl(irq: IrqId, enabled: bool) {
-    arceos::set_irq_enable(irq, enabled);
-}
-
-pub(crate) fn set_ioapic_gsi_enabled_from_irq(
-    gsi: u32,
-    irq: IrqId,
-    enabled: bool,
-) -> Result<(), IrqError> {
-    set_ioapic_gsi_enabled_from_irq_impl(gsi, irq, enabled)
-}
-
-#[cfg(test)]
-fn set_ioapic_gsi_enabled_from_irq_impl(
-    gsi: u32,
-    irq: IrqId,
-    enabled: bool,
-) -> Result<(), IrqError> {
-    let _ = gsi;
-    set_irq_enable(irq, enabled);
     Ok(())
 }
 
-#[cfg(all(feature = "plat-dyn", not(test)))]
-fn set_ioapic_gsi_enabled_from_irq_impl(
-    gsi: u32,
-    irq: IrqId,
-    enabled: bool,
-) -> Result<(), IrqError> {
-    let _ = gsi;
-    arceos::set_ioapic_gsi_enabled_from_irq(irq.hwirq.0, enabled)
-}
-
-#[cfg(all(not(feature = "plat-dyn"), not(test)))]
-fn set_ioapic_gsi_enabled_from_irq_impl(
-    gsi: u32,
-    irq: IrqId,
-    enabled: bool,
-) -> Result<(), IrqError> {
-    let _ = gsi;
-    set_irq_enable(irq, enabled);
-    Ok(())
+#[cfg(not(test))]
+fn set_host_irq_enable_impl(irq: IrqId, enabled: bool) -> Result<(), IrqError> {
+    arceos::set_irq_enable(irq, enabled)
 }
 
 pub(crate) fn resolve_irq_source(source: IrqSource) -> Result<IrqId, arceos::ArceOsIrqError> {

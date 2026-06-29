@@ -1120,6 +1120,40 @@ fn remote_per_cpu_enable_uses_run_on_cpu_sync() {
 }
 
 #[test]
+fn remote_per_cpu_enable_from_irq_context_is_rejected_without_ipi() {
+    let ops = MockOps::with_cpus(4);
+    ops.set_current_cpu(0);
+    ops.set_line_enabled(13, Some(2), false);
+    let registry = Registry::new(ops.clone());
+    let counter = AtomicUsize::new(0);
+    let data = NonNull::from(&counter).cast();
+
+    let handle = registry
+        .request(
+            irq(13),
+            IrqRequest::new(count_handler, data)
+                .scope(IrqScope::PerCpu {
+                    cpus: CpuMask::from_cpu(CpuId(2)),
+                })
+                .auto_enable(AutoEnable::No),
+        )
+        .unwrap();
+    ops.inner.remote_calls.store(0, Ordering::SeqCst);
+    ops.clear_calls();
+
+    ops.set_in_irq(true);
+    assert_eq!(registry.enable(handle), Err(IrqError::InIrqContext));
+    ops.set_in_irq(false);
+
+    assert_eq!(ops.inner.remote_calls.load(Ordering::SeqCst), 0);
+    assert!(!ops.calls().contains(&OpCall::SetEnabled {
+        irq: 13,
+        cpu: Some(2),
+        enabled: true,
+    }));
+}
+
+#[test]
 fn failed_per_cpu_enable_rolls_back_action_state() {
     let ops = MockOps::with_cpus(4);
     ops.set_current_cpu(0);

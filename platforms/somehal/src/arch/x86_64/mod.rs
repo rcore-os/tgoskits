@@ -1,5 +1,4 @@
 use alloc::vec::Vec;
-use core::sync::atomic::{AtomicU64, Ordering};
 
 use rdif_intc::{AcpiGsiRoute, AcpiIrqPolarity, AcpiIrqTrigger};
 use rdrive::{
@@ -16,101 +15,19 @@ use crate::{
     irq::{CPU_LOCAL_IRQ_DOMAIN, HwIrq, IrqError, IrqId, IrqSource, X86_LAPIC_DOMAIN},
 };
 
-pub struct Plat;
-
-const APIC_TIMER_VECTOR: usize = 0x20;
-const APIC_IPI_VECTOR: usize = 0xf3;
-const LAPIC_REG_EOI: u32 = 0x0b0;
-const LAPIC_REG_ICR_LOW: u32 = 0x300;
-const LAPIC_REG_ICR_HIGH: u32 = 0x310;
-const ICR_DELIVERY_PENDING: u32 = 1 << 12;
-const ICR_FIXED_BASE: u32 = 0x0000_4000;
-const ICR_DEST_SELF: u32 = 0x0004_0000;
-const ICR_DEST_ALL_EXCLUDING_SELF: u32 = 0x000c_0000;
-
-const UNMAPPED_VECTOR_ROUTE: u64 = u64::MAX;
-const UNMAPPED_IOAPIC_GSI_ROUTE: u64 = 0;
-static VECTOR_ROUTES: [AtomicU64; 256] = [const { AtomicU64::new(UNMAPPED_VECTOR_ROUTE) }; 256];
-static IOAPIC_GSI_ROUTES: [AtomicU64; 256] =
-    [const { AtomicU64::new(UNMAPPED_IOAPIC_GSI_ROUTE) }; 256];
-
-fn pack_irq(irq: IrqId) -> u64 {
-    (u64::from(irq.domain.0) << 32) | u64::from(irq.hwirq.0)
-}
-
-fn unpack_irq(raw: u64) -> IrqId {
-    IrqId::new(
-        crate::irq::IrqDomainId((raw >> 32) as u16),
-        HwIrq(raw as u32),
-    )
-}
-
-fn pack_ioapic_gsi_route(address: u64, input: u8) -> Result<u64, IrqError> {
-    if address & 0xfff != 0 {
-        return Err(IrqError::InvalidIrq);
-    }
-    let page = address >> 12;
-    if page == 0 || page >= (1u64 << 56) {
-        return Err(IrqError::InvalidIrq);
-    }
-    Ok((page << 8) | u64::from(input))
-}
-
-fn unpack_ioapic_gsi_route(route: u64) -> Option<(u64, u8)> {
-    (route != UNMAPPED_IOAPIC_GSI_ROUTE).then_some(((route >> 8) << 12, route as u8))
-}
-
-fn lapic_timer_irq_id() -> IrqId {
-    IrqId::new(X86_LAPIC_DOMAIN, HwIrq(0))
-}
-
-fn lapic_ipi_irq_id() -> IrqId {
-    IrqId::new(CPU_LOCAL_IRQ_DOMAIN, HwIrq(APIC_IPI_VECTOR as u32))
-}
-
-fn cpu_local_vector_irq_id(raw: usize) -> IrqId {
-    IrqId::new(CPU_LOCAL_IRQ_DOMAIN, HwIrq(raw as u32))
-}
+mod lapic;
+mod vector;
 
 #[cfg(test)]
-fn ioapic_gsi_irq_id(gsi: u32) -> IrqId {
-    IrqId::new(crate::irq::IrqDomainId(7), HwIrq(gsi))
-}
+use vector::{APIC_IPI_VECTOR, APIC_TIMER_VECTOR, ioapic_gsi_irq_id};
+use vector::{
+    SPURIOUS_VECTOR, lapic_ipi_irq_id, lapic_timer_irq_id, local_vector_irq_id,
+    validate_external_vector,
+};
 
-fn trap_vector_irq_id(raw: usize) -> Option<IrqId> {
-    if raw == APIC_TIMER_VECTOR {
-        return Some(lapic_timer_irq_id());
-    }
+const MASKED_IOAPIC_PLACEHOLDER_VECTOR: u8 = 0x21;
 
-    if raw == APIC_IPI_VECTOR {
-        return Some(lapic_ipi_irq_id());
-    }
-
-    let mapped = VECTOR_ROUTES
-        .get(raw)
-        .map(|route| route.load(Ordering::Acquire))
-        .filter(|raw| *raw != UNMAPPED_VECTOR_ROUTE)
-        .map(unpack_irq);
-    Some(mapped.unwrap_or_else(|| cpu_local_vector_irq_id(raw)))
-}
-
-pub fn set_ioapic_gsi_enabled_from_irq(gsi: u32, enabled: bool) -> Result<(), IrqError> {
-    let route = IOAPIC_GSI_ROUTES
-        .get(gsi as usize)
-        .and_then(|slot| unpack_ioapic_gsi_route(slot.load(Ordering::Acquire)))
-        .ok_or(IrqError::NotFound)?;
-
-    let (address, input) = route;
-    let mut ioapic = unsafe { IoApic::new(someboot::mem::phys_to_virt(address as usize) as u64) };
-    unsafe {
-        if enabled {
-            ioapic.enable_irq(input);
-        } else {
-            ioapic.disable_irq(input);
-        }
-    }
-    Ok(())
-}
+pub struct Plat;
 
 module_driver!(
     name: "ACPI IOAPIC",
@@ -128,6 +45,7 @@ module_driver!(
 struct X86IoApicIntc {
     ioapics: Vec<X86IoApic>,
     routes: Vec<AcpiGsiRoute>,
+    vector_routes: Vec<(usize, IrqId)>,
     destinations: Vec<(usize, u8)>,
 }
 
@@ -136,8 +54,32 @@ impl X86IoApicIntc {
         Self {
             ioapics: ioapics.iter().copied().map(X86IoApic::new).collect(),
             routes: Vec::new(),
+            vector_routes: Vec::new(),
             destinations: Vec::new(),
         }
+    }
+
+    fn remember_vector_route(&mut self, vector: usize, irq: IrqId) -> Result<u8, IrqError> {
+        let vector_u8 = validate_external_vector(vector)?;
+        if let Some((_, existing)) = self
+            .vector_routes
+            .iter_mut()
+            .find(|(known_vector, _)| *known_vector == vector)
+        {
+            if *existing == irq {
+                return Ok(vector_u8);
+            }
+            return Err(IrqError::Busy);
+        }
+
+        self.vector_routes.push((vector, irq));
+        Ok(vector_u8)
+    }
+
+    fn irq_for_vector(&self, vector: usize) -> Option<IrqId> {
+        self.vector_routes
+            .iter()
+            .find_map(|(known_vector, irq)| (*known_vector == vector).then_some(*irq))
     }
 
     fn remember_route(&mut self, route: AcpiGsiRoute) {
@@ -249,7 +191,7 @@ impl X86IoApic {
         let redirection_entries = max_entry.saturating_add(1);
 
         unsafe {
-            ioapic.init(irq_vector_base(info.gsi_base) as u8);
+            ioapic.init(MASKED_IOAPIC_PLACEHOLDER_VECTOR);
             for input in 0..=max_entry {
                 let mut entry = ioapic.table_entry(input);
                 entry.set_flags(entry.flags() | IrqFlags::MASKED);
@@ -357,10 +299,9 @@ impl rdif_intc::Interface for X86IoApicIntc {
         if translation.id.hwirq != HwIrq(route.gsi) {
             return Err(IrqError::InvalidIrq);
         }
-        install_vector_route(route.vector, translation.id)?;
+        self.remember_vector_route(route.vector, translation.id)?;
         self.remember_route(*route);
         if self.set_route_enable(route, false) {
-            publish_ioapic_gsi_route(route)?;
             Ok(())
         } else {
             Err(IrqError::Unsupported)
@@ -409,7 +350,9 @@ impl PlatOp for Plat {
         }
 
         if crate::irq::domain_is_kind(irq.domain, crate::irq::IrqDomainKind::X86IoApic) {
-            return set_ioapic_gsi_enabled_from_irq(irq.hwirq.0, enable);
+            let intc = crate::irq::intc_by_domain(irq.domain)?;
+            let mut intc = intc.try_lock().map_err(|_| IrqError::Busy)?;
+            return intc.set_enabled(irq.hwirq, enable);
         }
 
         Err(IrqError::InvalidIrq)
@@ -429,10 +372,10 @@ impl PlatOp for Plat {
                 let Some(apic_id) = someboot::smp::cpu_idx_to_id(cpu_id) else {
                     return Err(IrqError::InvalidCpu);
                 };
-                apic_id as u8
+                u8::try_from(apic_id).map_err(|_| IrqError::InvalidCpu)?
             }
         };
-        if set_ioapic_gsi_destination(irq.hwirq.0, dest) {
+        if set_ioapic_gsi_destination(irq.domain, irq.hwirq.0, dest)? {
             Ok(())
         } else {
             Err(IrqError::NotFound)
@@ -440,27 +383,34 @@ impl PlatOp for Plat {
     }
 
     fn send_ipi(irq: IrqId, target: crate::irq::IpiTarget) {
-        let vector = irq.hwirq.0 as u8;
+        let Ok(vector) = lapic::ipi_vector(irq) else {
+            warn!("refuse to send non-runtime IPI IRQ {irq:?}");
+            return;
+        };
 
-        unsafe {
-            match target {
-                crate::irq::IpiTarget::Current { .. } => {
-                    send_lapic_ipi(0, ICR_FIXED_BASE | ICR_DEST_SELF | u32::from(vector))
-                }
-                crate::irq::IpiTarget::Other { cpu_id } => {
-                    let Some(apic_id) = someboot::smp::cpu_idx_to_id(cpu_id) else {
-                        warn!("failed to resolve CPU index {cpu_id} to APIC ID");
-                        return;
-                    };
-                    send_lapic_ipi(raw_apic_id(apic_id), ICR_FIXED_BASE | u32::from(vector));
-                }
-                crate::irq::IpiTarget::AllExceptCurrent { .. } => {
-                    send_lapic_ipi(
-                        0,
-                        ICR_FIXED_BASE | ICR_DEST_ALL_EXCLUDING_SELF | u32::from(vector),
-                    );
-                }
+        let result = match target {
+            crate::irq::IpiTarget::Current { .. } => lapic::send_ipi(
+                0,
+                lapic::ICR_FIXED_BASE | lapic::ICR_DEST_SELF | u32::from(vector),
+            ),
+            crate::irq::IpiTarget::Other { cpu_id } => {
+                let Some(apic_id) = someboot::smp::cpu_idx_to_id(cpu_id) else {
+                    warn!("failed to resolve CPU index {cpu_id} to APIC ID");
+                    return;
+                };
+                lapic::send_ipi_to_apic_id(
+                    apic_id as u32,
+                    lapic::ICR_FIXED_BASE | u32::from(vector),
+                )
             }
+            crate::irq::IpiTarget::AllExceptCurrent { .. } => lapic::send_ipi(
+                0,
+                lapic::ICR_FIXED_BASE | lapic::ICR_DEST_ALL_EXCLUDING_SELF | u32::from(vector),
+            ),
+        };
+
+        if let Err(err) = result {
+            warn!("failed to send runtime IPI vector {vector:#x}: {err:?}");
         }
     }
 
@@ -469,7 +419,27 @@ impl PlatOp for Plat {
     }
 
     fn begin_irq(raw: usize) -> Option<Self::ActiveIrq> {
-        trap_vector_irq_id(raw).map(ActiveIrq::new)
+        if raw == SPURIOUS_VECTOR {
+            return None;
+        }
+
+        if let Some(irq) = local_vector_irq_id(raw) {
+            return Some(ActiveIrq::new(irq));
+        }
+
+        match ioapic_irq_for_vector(raw) {
+            Ok(Some(irq)) => Some(ActiveIrq::new(irq)),
+            Ok(None) => {
+                warn!("unrouted x86 interrupt vector {raw:#x}");
+                lapic::eoi();
+                None
+            }
+            Err(err) => {
+                warn!("failed to resolve x86 interrupt vector {raw:#x}: {err:?}");
+                lapic::eoi();
+                None
+            }
+        }
     }
 
     fn active_irq_id(active: &Self::ActiveIrq) -> IrqId {
@@ -523,7 +493,7 @@ impl ActiveIrq {
 
 impl Drop for ActiveIrq {
     fn drop(&mut self) {
-        lapic_eoi();
+        lapic::eoi();
     }
 }
 
@@ -549,15 +519,6 @@ fn resolve_acpi_route(route: irq_framework::AcpiGsiRoute) -> Result<IrqId, IrqEr
     let translation = intc.translate_acpi(&route)?;
     intc.configure_acpi(&translation, &route)?;
     Ok(translation.id)
-}
-
-fn publish_ioapic_gsi_route(route: &AcpiGsiRoute) -> Result<(), IrqError> {
-    let slot = IOAPIC_GSI_ROUTES
-        .get(route.gsi as usize)
-        .ok_or(IrqError::InvalidIrq)?;
-    let packed = pack_ioapic_gsi_route(route.controller_address, route.controller_input)?;
-    slot.store(packed, Ordering::Release);
-    Ok(())
 }
 
 fn route_to_irq_framework(route: AcpiGsiRoute) -> irq_framework::AcpiGsiRoute {
@@ -604,40 +565,29 @@ fn route_to_rdif(route: irq_framework::AcpiGsiRoute) -> AcpiGsiRoute {
     }
 }
 
-fn install_vector_route(vector: usize, irq: IrqId) -> Result<u8, IrqError> {
-    let vector_u8 = u8::try_from(vector).map_err(|_| IrqError::InvalidIrq)?;
-    if matches!(vector, APIC_TIMER_VECTOR | APIC_IPI_VECTOR) {
-        return Err(IrqError::Busy);
-    }
-
-    let Some(slot) = VECTOR_ROUTES.get(vector) else {
-        return Err(IrqError::InvalidIrq);
-    };
-    let raw = pack_irq(irq);
-    match slot.compare_exchange(
-        UNMAPPED_VECTOR_ROUTE,
-        raw,
-        Ordering::AcqRel,
-        Ordering::Acquire,
-    ) {
-        Ok(_) => {}
-        Err(old) if old == raw => {}
-        Err(_) => return Err(IrqError::Busy),
-    }
-    Ok(vector_u8)
+fn set_ioapic_gsi_destination(
+    domain: crate::irq::IrqDomainId,
+    gsi: u32,
+    dest: u8,
+) -> Result<bool, IrqError> {
+    let intc = crate::irq::intc_by_domain(domain)?;
+    let mut intc = intc.try_lock().map_err(|_| IrqError::Busy)?;
+    let ioapic = intc
+        .typed_mut::<X86IoApicIntc>()
+        .ok_or(IrqError::Unsupported)?;
+    Ok(ioapic.set_gsi_destination(gsi, dest))
 }
 
-fn set_ioapic_gsi_destination(gsi: u32, dest: u8) -> bool {
-    for intc in rdrive::get_list::<rdif_intc::Intc>() {
-        if intc.descriptor().name.starts_with("ACPI IOAPIC")
-            && let Ok(ioapic) = intc.downcast::<X86IoApicIntc>()
-            && let Ok(mut ioapic) = ioapic.try_lock()
-            && ioapic.set_gsi_destination(gsi, dest)
-        {
-            return true;
-        }
-    }
-    false
+fn ioapic_irq_for_vector(vector: usize) -> Result<Option<IrqId>, IrqError> {
+    let Some(domain) = crate::irq::domain_by_kind_fast(crate::irq::IrqDomainKind::X86IoApic) else {
+        return Ok(None);
+    };
+    let intc = crate::irq::intc_by_domain(domain)?;
+    let mut intc = intc.try_lock().map_err(|_| IrqError::Busy)?;
+    let ioapic = intc
+        .typed_mut::<X86IoApicIntc>()
+        .ok_or(IrqError::Unsupported)?;
+    Ok(ioapic.irq_for_vector(vector))
 }
 
 fn intx_flags(trigger: AcpiIrqTrigger, polarity: AcpiIrqPolarity) -> IrqFlags {
@@ -651,55 +601,17 @@ fn intx_flags(trigger: AcpiIrqTrigger, polarity: AcpiIrqPolarity) -> IrqFlags {
     flags
 }
 
-fn irq_vector_base(gsi_base: u32) -> usize {
-    rdrive::probe::acpi::PCI_INTX_VECTOR_BASE + gsi_base as usize
-}
-
-fn lapic_eoi() {
-    unsafe {
-        lapic_write(LAPIC_REG_EOI, 0);
-    }
-}
-
-fn raw_apic_id(id: usize) -> u32 {
-    (id as u32) << 24
-}
-
-unsafe fn send_lapic_ipi(destination: u32, icr_low: u32) {
-    unsafe {
-        lapic_write(LAPIC_REG_ICR_HIGH, destination);
-        lapic_write(LAPIC_REG_ICR_LOW, icr_low);
-        while lapic_read(LAPIC_REG_ICR_LOW) & ICR_DELIVERY_PENDING != 0 {
-            core::hint::spin_loop();
-        }
-    }
-}
-
-unsafe fn lapic_read(offset: u32) -> u32 {
-    let ptr = lapic_ptr(offset) as *const u32;
-    unsafe { ptr.read_volatile() }
-}
-
-unsafe fn lapic_write(offset: u32, value: u32) {
-    let ptr = lapic_ptr(offset);
-    unsafe {
-        ptr.write_volatile(value);
-    }
-}
-
-fn lapic_ptr(offset: u32) -> *mut u32 {
-    const IA32_APIC_BASE: u32 = 0x1b;
-    const LAPIC_BASE_MASK: u64 = 0xffff_f000;
-    let base = unsafe { x86::msr::rdmsr(IA32_APIC_BASE) & LAPIC_BASE_MASK } as usize;
-    unsafe { someboot::mem::phys_to_virt(base).add(offset as usize) }.cast()
-}
-
 #[cfg(all(test, any(unix, windows)))]
 mod tests {
     use super::*;
 
-    fn clear_vector_route(vector: usize) {
-        VECTOR_ROUTES[vector].store(UNMAPPED_VECTOR_ROUTE, Ordering::Release);
+    fn empty_ioapic_intc() -> X86IoApicIntc {
+        X86IoApicIntc {
+            ioapics: Vec::new(),
+            routes: Vec::new(),
+            vector_routes: Vec::new(),
+            destinations: Vec::new(),
+        }
     }
 
     #[test]
@@ -712,7 +624,7 @@ mod tests {
     fn lapic_ipi_vector_is_cpu_local_not_ioapic_gsi() {
         let irq = lapic_ipi_irq_id();
         assert_eq!(irq.domain, CPU_LOCAL_IRQ_DOMAIN);
-        assert_eq!(trap_vector_irq_id(APIC_IPI_VECTOR), Some(irq));
+        assert_eq!(local_vector_irq_id(APIC_IPI_VECTOR), Some(irq));
         assert_ne!(
             irq,
             ioapic_gsi_irq_id((APIC_IPI_VECTOR - rdrive::probe::acpi::PCI_INTX_VECTOR_BASE) as u32)
@@ -729,45 +641,87 @@ mod tests {
     fn ioapic_vector_reverse_route_does_not_assume_base_plus_gsi() {
         let vector = rdrive::probe::acpi::PCI_INTX_VECTOR_BASE + 3;
         let irq = ioapic_gsi_irq_id(18);
-        install_vector_route(vector, irq).unwrap();
+        let mut intc = empty_ioapic_intc();
+        intc.remember_vector_route(vector, irq).unwrap();
 
-        assert_eq!(trap_vector_irq_id(vector), Some(irq));
-        assert_ne!(trap_vector_irq_id(vector), Some(ioapic_gsi_irq_id(3)));
-
-        clear_vector_route(vector);
+        assert_eq!(intc.irq_for_vector(vector), Some(irq));
+        assert_ne!(intc.irq_for_vector(vector), Some(ioapic_gsi_irq_id(3)));
     }
 
     #[test]
-    fn unknown_vector_is_cpu_local_so_it_can_still_eoi() {
+    fn unknown_vector_is_not_dispatched_as_cpu_local_irq() {
         let vector = 0x71;
-        clear_vector_route(vector);
-        let irq = trap_vector_irq_id(vector).expect("unknown vectors still need ActiveIrq");
 
-        assert_eq!(irq.domain, CPU_LOCAL_IRQ_DOMAIN);
-        assert_eq!(irq.hwirq, HwIrq(vector as u32));
-        assert_ne!(irq, ioapic_gsi_irq_id(vector as u32));
+        assert_eq!(local_vector_irq_id(vector), None);
+    }
+
+    #[test]
+    fn spurious_vector_is_not_dispatched() {
+        assert_eq!(local_vector_irq_id(SPURIOUS_VECTOR), None);
     }
 
     #[test]
     fn vector_route_rejects_reserved_out_of_range_and_collision() {
+        let mut intc = empty_ioapic_intc();
         assert_eq!(
-            install_vector_route(APIC_TIMER_VECTOR, ioapic_gsi_irq_id(1)),
+            intc.remember_vector_route(APIC_TIMER_VECTOR, ioapic_gsi_irq_id(1)),
             Err(IrqError::Busy)
         );
         assert_eq!(
-            install_vector_route(usize::from(u8::MAX) + 1, ioapic_gsi_irq_id(1)),
+            intc.remember_vector_route(APIC_IPI_VECTOR, ioapic_gsi_irq_id(1)),
+            Err(IrqError::Busy)
+        );
+        assert_eq!(
+            intc.remember_vector_route(SPURIOUS_VECTOR, ioapic_gsi_irq_id(1)),
+            Err(IrqError::Busy)
+        );
+        assert_eq!(
+            intc.remember_vector_route(0x1f, ioapic_gsi_irq_id(1)),
+            Err(IrqError::Busy)
+        );
+        assert_eq!(
+            intc.remember_vector_route(usize::from(u8::MAX) + 1, ioapic_gsi_irq_id(1)),
             Err(IrqError::InvalidIrq)
         );
 
         let vector = 0x72;
         let irq = ioapic_gsi_irq_id(7);
-        install_vector_route(vector, irq).unwrap();
+        intc.remember_vector_route(vector, irq).unwrap();
         assert_eq!(
-            install_vector_route(vector, ioapic_gsi_irq_id(8)),
+            intc.remember_vector_route(vector, ioapic_gsi_irq_id(8)),
             Err(IrqError::Busy)
         );
-        assert_eq!(install_vector_route(vector, irq), Ok(vector as u8));
-        clear_vector_route(vector);
+        assert_eq!(intc.remember_vector_route(vector, irq), Ok(vector as u8));
+    }
+
+    #[test]
+    fn ipi_vector_requires_runtime_ipi_irq_identity() {
+        assert_eq!(
+            lapic::ipi_vector(lapic_ipi_irq_id()),
+            Ok(APIC_IPI_VECTOR as u8)
+        );
+        assert_eq!(
+            lapic::ipi_vector(lapic_timer_irq_id()),
+            Err(IrqError::InvalidIrq)
+        );
+        assert_eq!(
+            lapic::ipi_vector(IrqId::new(CPU_LOCAL_IRQ_DOMAIN, HwIrq(0x41))),
+            Err(IrqError::InvalidIrq)
+        );
+    }
+
+    #[test]
+    fn xapic_destination_rejects_high_apic_ids_without_truncation() {
+        assert_eq!(lapic::xapic_destination(0xfe), Ok(0xfe00_0000));
+        assert_eq!(lapic::xapic_destination(0x100), Err(IrqError::InvalidCpu));
+    }
+
+    #[test]
+    fn x2apic_icr_encodes_full_destination_id() {
+        let icr = lapic::x2apic_icr(0x1234_5678, lapic::ICR_FIXED_BASE | APIC_IPI_VECTOR as u32);
+
+        assert_eq!(icr >> 32, 0x1234_5678);
+        assert_eq!(icr as u32, lapic::ICR_FIXED_BASE | APIC_IPI_VECTOR as u32);
     }
 
     #[test]

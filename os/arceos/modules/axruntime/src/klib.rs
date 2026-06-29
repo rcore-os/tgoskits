@@ -37,6 +37,7 @@ fn map_irq_error(err: IrqError) -> AxError {
     match err {
         IrqError::InvalidIrq | IrqError::InvalidCpu => AxError::InvalidInput,
         IrqError::CpuOffline | IrqError::Unsupported => AxError::Unsupported,
+        IrqError::Timeout => AxError::TimedOut,
         IrqError::Busy | IrqError::InIrqContext => AxError::ResourceBusy,
         IrqError::NoMemory => AxError::NoMemory,
         IrqError::NotFound => AxError::NotFound,

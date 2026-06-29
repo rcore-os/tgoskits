@@ -35,11 +35,6 @@ pub fn handle_irq(vector: usize) -> bool {
     handled
 }
 
-#[cfg(all(plat_dyn, target_arch = "x86_64"))]
-pub fn set_ioapic_gsi_enabled_from_irq(gsi: u32, enabled: bool) -> Result<(), IrqError> {
-    axplat_dyn::set_ioapic_gsi_enabled_from_irq(gsi, enabled)
-}
-
 /// Installs the default ArceOS IRQ dispatcher into `ax-cpu`'s runtime hook.
 ///
 /// This is intended for runtimes that dispatch traps through
