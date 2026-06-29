@@ -1,6 +1,7 @@
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU16, Ordering};
 
+use ax_kspin::SpinRaw as Mutex;
 pub use rdif_intc;
 use rdif_intc::Intc;
 pub type ControllerIrqId = irq_framework::IrqId;
@@ -9,7 +10,6 @@ pub use irq_framework::{
     IrqId, IrqSource,
 };
 use rdrive::{Device, DeviceId};
-use spin::Mutex;
 
 use crate::{arch::Plat, common::PlatOp};
 

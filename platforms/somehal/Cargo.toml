@@ -19,6 +19,7 @@ uspace = ["mmu", "someboot/uspace"]
 
 [dependencies]
 anyhow = {workspace = true}
+ax-kspin = { workspace = true }
 irq-framework = { workspace = true }
 page-table-generic = {workspace = true}
 rdif-intc.workspace = true

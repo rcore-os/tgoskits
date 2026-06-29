@@ -7606,6 +7606,7 @@ dependencies = [
  "aarch64-cpu 11.2.0",
  "anyhow",
  "arm-gic-driver",
+ "ax-kspin",
  "ax-riscv-plic",
  "irq-framework",
  "kernutil",

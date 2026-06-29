@@ -2,13 +2,10 @@ extern crate alloc;
 
 use rdif_intc::*;
 
-use crate::{define::SPECIAL_RANGE, fdt_parse_irq_config};
+use crate::{checked_intid, fdt_parse_irq_config};
 
-fn checked_intid(raw: u32, max_intid: u32) -> Result<crate::define::IntId, IrqError> {
-    if raw >= max_intid || SPECIAL_RANGE.contains(&raw) {
-        return Err(IrqError::InvalidIrq);
-    }
-    Ok(unsafe { crate::define::IntId::raw(raw) })
+fn checked_rdif_intid(raw: u32, max_intid: u32) -> Result<crate::define::IntId, IrqError> {
+    checked_intid(raw, max_intid).map_err(|_| IrqError::InvalidIrq)
 }
 
 impl DriverGeneric for super::v2::Gic {
@@ -28,7 +25,7 @@ impl Interface for super::v2::Gic {
 
     fn configure(&mut self, translation: &IrqTranslation) -> Result<(), IrqError> {
         let config = crate::define::IrqConfig {
-            id: checked_intid(translation.id.hwirq.0, self.max_intid())?,
+            id: checked_rdif_intid(translation.id.hwirq.0, self.max_intid())?,
             trigger: translation.trigger.unwrap_or(Trigger::LevelHigh).into(),
         };
         self.set_cfg(config.id, config.trigger);
@@ -36,7 +33,7 @@ impl Interface for super::v2::Gic {
     }
 
     fn set_enabled(&mut self, hwirq: HwIrq, enabled: bool) -> Result<(), IrqError> {
-        let intid = checked_intid(hwirq.0, self.max_intid())?;
+        let intid = checked_rdif_intid(hwirq.0, self.max_intid())?;
         self.set_irq_enable(intid, enabled);
         Ok(())
     }
@@ -61,7 +58,7 @@ impl Interface for super::v3::Gic {
 
     fn configure(&mut self, translation: &IrqTranslation) -> Result<(), IrqError> {
         let config = crate::define::IrqConfig {
-            id: checked_intid(translation.id.hwirq.0, self.max_intid())?,
+            id: checked_rdif_intid(translation.id.hwirq.0, self.max_intid())?,
             trigger: translation.trigger.unwrap_or(Trigger::LevelHigh).into(),
         };
         self.set_cfg(config.id, config.trigger);
@@ -69,7 +66,7 @@ impl Interface for super::v3::Gic {
     }
 
     fn set_enabled(&mut self, hwirq: HwIrq, enabled: bool) -> Result<(), IrqError> {
-        let intid = checked_intid(hwirq.0, self.max_intid())?;
+        let intid = checked_rdif_intid(hwirq.0, self.max_intid())?;
         self.set_irq_enable(intid, enabled);
         Ok(())
     }
