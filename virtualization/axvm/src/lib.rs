@@ -51,8 +51,13 @@ pub use manager::{
     AxvmRuntime, current_vcpu_id, current_vm_id, get_vm_by_id, get_vm_list,
     inject_current_vcpu_interrupt, register_vm,
 };
+#[cfg(target_arch = "loongarch64")]
+pub use runtime::loongarch_irq::{
+    register_guest_irq_route as register_loongarch_guest_irq_route,
+    unregister_guest_irq_routes as unregister_loongarch_guest_irq_routes,
+};
 pub use task::{AsVCpuTask, VCpuTask};
-pub use vm::{AxVCpuRef, AxVM, AxVMRef, VMMemoryRegion, VMStatus};
+pub use vm::{AxVCpuRef, AxVM, AxVMRef, FwCfgDeviceConfig, VMMemoryRegion, VMStatus};
 
 /// The architecture-independent per-CPU type.
 pub type AxVMPerCpu = axvcpu::AxPerCpu<vcpu::AxVMArchPerCpuImpl>;
@@ -88,7 +93,10 @@ pub fn host_phys_to_virt(paddr: ax_memory_addr::PhysAddr) -> ax_memory_addr::Vir
 }
 
 /// Shut down ArceOS filesystems so guest passthrough can take ownership.
-#[cfg(all(any(feature = "fs", feature = "host-fs"), target_arch = "x86_64"))]
+#[cfg(all(
+    any(feature = "fs", feature = "host-fs"),
+    any(target_arch = "x86_64", target_arch = "loongarch64")
+))]
 pub fn shutdown_host_filesystems() -> ax_errno::AxResult {
     host::arceos::shutdown_host_filesystems()
 }

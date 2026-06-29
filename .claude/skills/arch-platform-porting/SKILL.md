@@ -9,7 +9,7 @@ Use this skill when adding or fixing an architecture, switching QEMU cases to dy
 
 For detailed pitfalls and debugging notes from the LoongArch dynamic UEFI/SMP bring-up, read `references/boot-debugging.md` when the task touches early boot, trap vectors, MMU, SMP, UEFI exit, or Axvisor LVZ QEMU.
 
-Current Axvisor LoongArch QEMU tests intentionally use the static `ax-hal/loongarch64-qemu-virt` platform, non-UEFI QEMU boot, and an ELF kernel image without BIN conversion. Treat Axvisor LoongArch dynamic UEFI bring-up as a separate task unless the user explicitly asks to change that platform mode.
+Current Axvisor LoongArch QEMU bring-up uses the dynamic UEFI platform path. The host AxVisor boots through LoongArch OVMF, and Linux guests boot through guest UEFI with the kernel/rootfs read from the AxVisor runtime rootfs and the local OVMF firmware captured at build time.
 
 ## First Pass
 

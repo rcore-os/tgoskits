@@ -21,7 +21,7 @@ mod mem;
 mod platform;
 mod power;
 
-pub use boot::boot_stack_bounds;
+pub use boot::{boot_stack_bounds, bootargs};
 pub use generic_timer::try_init_epoch_offset;
 
 #[cfg(feature = "irq")]

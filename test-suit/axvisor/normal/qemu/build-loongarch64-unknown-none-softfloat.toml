@@ -1,10 +1,13 @@
 features = [
   "ax-driver/virtio-blk",
+  "axplat-dyn/efi",
   "ept-level-4",
   "fs",
 ]
 log = "Info"
 max_cpu_num = 1
-plat_dyn = false
 target = "loongarch64-unknown-none-softfloat"
 vm_configs = []
+
+[env]
+KERNEL_BUILTIN_CMDLINE = "root=/dev/vda earlycon=uart8250,mmio,0x1fe001e0,115200"

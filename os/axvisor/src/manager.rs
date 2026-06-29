@@ -61,6 +61,8 @@ impl AxvmManager {
 
     /// Remove a VM by ID.
     pub fn remove_vm(vm_id: VMId) -> Option<AxVMRef> {
+        #[cfg(target_arch = "loongarch64")]
+        unregister_loongarch_passthrough_irq_routes(vm_id);
         AxvmRuntime::remove_vm(vm_id)
     }
 
@@ -79,7 +81,10 @@ impl AxvmManager {
         axvm::get_vm_by_id(vm_id)
     }
 
-    #[cfg(all(feature = "fs", target_arch = "x86_64"))]
+    #[cfg(all(
+        feature = "fs",
+        any(target_arch = "x86_64", target_arch = "loongarch64")
+    ))]
     fn release_host_filesystem_for_guest_passthrough(&self) {
         if !crate::config::host_filesystem_release_required() {
             return;
@@ -91,7 +96,10 @@ impl AxvmManager {
         info!("Host filesystem cleanly unmounted before guest passthrough devices start");
     }
 
-    #[cfg(not(all(feature = "fs", target_arch = "x86_64")))]
+    #[cfg(not(all(
+        feature = "fs",
+        any(target_arch = "x86_64", target_arch = "loongarch64")
+    )))]
     fn release_host_filesystem_for_guest_passthrough(&self) {}
 
     /// Read VM config files from an Axvisor-owned directory.
@@ -209,4 +217,39 @@ impl AxvmManager {
         let size = Self::file_size(file_name)?;
         Self::read_file_exact(file_name, size)
     }
+}
+
+#[cfg(target_arch = "loongarch64")]
+pub(crate) fn register_loongarch_passthrough_irq_routes(vm_id: VMId) {
+    let routes = crate::guest_platform::loongarch64::get_guest_irq_routes(vm_id);
+    if routes.is_empty() {
+        if let Some(vm) = axvm::get_vm_by_id(vm_id) {
+            let passthrough = vm.with_config(|cfg| !cfg.pass_through_devices().is_empty());
+            if passthrough {
+                warn!(
+                    "VM[{vm_id}] has passthrough devices but no LoongArch guest IRQ route parsed"
+                );
+            }
+        }
+        return;
+    }
+
+    let vcpu_id = 0usize;
+    info!(
+        "Registering {} LoongArch passthrough IRQ route(s) for VM[{vm_id}]",
+        routes.len()
+    );
+    for route in routes {
+        axvm::register_loongarch_guest_irq_route(
+            route.physical_irq,
+            vm_id,
+            vcpu_id,
+            route.guest_vector,
+        );
+    }
+}
+
+#[cfg(target_arch = "loongarch64")]
+fn unregister_loongarch_passthrough_irq_routes(vm_id: VMId) {
+    axvm::unregister_loongarch_guest_irq_routes(vm_id);
 }

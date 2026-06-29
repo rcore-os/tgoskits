@@ -191,7 +191,7 @@ fn test_boot_config_validation_requires_uefi_inputs() {
 }
 
 #[test]
-fn test_boot_config_validation_rejects_x86_firmware_protocols_on_other_arches() {
+fn test_boot_config_validation_rejects_unsupported_firmware_protocols_on_other_arches() {
     let uefi_config = crate::VMKernelConfig {
         enable_bios: true,
         boot_protocol: Some(VMBootProtocol::Uefi),
@@ -213,7 +213,7 @@ fn test_boot_config_validation_rejects_x86_firmware_protocols_on_other_arches() 
     assert!(
         uefi_config
             .validate_boot_config_for_arch("loongarch64")
-            .is_err()
+            .is_ok()
     );
     assert!(uefi_config.validate_boot_config_for_arch("x86_64").is_ok());
 
@@ -258,7 +258,10 @@ fn test_emu_dev_type_from_usize() {
         );
     }
 
-    assert_eq!(EmulatedDeviceType::from_usize(0x3), None);
+    assert_eq!(
+        EmulatedDeviceType::from_usize(0x3),
+        Some(EmulatedDeviceType::FwCfg)
+    );
 }
 
 #[test]
@@ -266,7 +269,7 @@ fn test_rejects_unknown_emulated_device_type() {
     const EXAMPLE_DEVICE_CONFIG: &str = r#"
 passthrough_devices = []
 emu_devices = [
-    ["bad-device", 0x1000, 0x1000, 0, 0x3, []],
+    ["bad-device", 0x1000, 0x1000, 0, 0x4, []],
 ]
     "#;
 
@@ -367,6 +370,7 @@ fn test_emulated_device_type_removable() {
 
     assert!(!EmulatedDeviceType::Dummy.removable());
     assert!(!EmulatedDeviceType::Console.removable());
+    assert!(!EmulatedDeviceType::FwCfg.removable());
     assert!(!EmulatedDeviceType::IVCChannel.removable());
     assert!(!EmulatedDeviceType::GPPTDistributor.removable());
     assert!(!EmulatedDeviceType::GPPTITS.removable());
@@ -384,6 +388,7 @@ fn test_emulated_device_type_display() {
         "interrupt controller"
     );
     assert_eq!(format!("{}", EmulatedDeviceType::Console), "console");
+    assert_eq!(format!("{}", EmulatedDeviceType::FwCfg), "fw_cfg");
     assert_eq!(format!("{}", EmulatedDeviceType::IVCChannel), "ivc channel");
     assert_eq!(
         format!("{}", EmulatedDeviceType::GPPTRedistributor),

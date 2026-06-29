@@ -134,6 +134,11 @@ struct MemoryImage {
     pub ramdisk: Option<PathBuf>,
 }
 
+struct FirmwareImage {
+    pub id: usize,
+    pub bios: PathBuf,
+}
+
 fn boot_firmware_path(kernel_config: &Table, enable_bios: bool) -> Option<&str> {
     if !enable_bios {
         return None;
@@ -201,6 +206,20 @@ fn parse_config_file(config_file: &ConfigFile) -> Option<MemoryImage> {
         bios,
         ramdisk,
     })
+}
+
+fn parse_firmware_config_file(config_file: &ConfigFile) -> Option<FirmwareImage> {
+    let config = config_file.content.parse::<Table>().ok()?;
+    let id = config.get("base")?.as_table()?.get("id")?.as_integer()? as usize;
+    let kernel_config = config.get("kernel")?.as_table()?;
+    let enable_bios = kernel_config
+        .get("enable_bios")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let bios = boot_firmware_path(kernel_config, enable_bios)
+        .map(|v| convert_to_absolute(&config_file.path, v))?;
+
+    Some(FirmwareImage { id, bios })
 }
 
 /// Generate function to load guest images from config
@@ -297,6 +316,52 @@ fn generate_guest_img_loading_functions(
     Ok(())
 }
 
+fn generate_firmware_img_loading_functions(
+    out_file: &mut fs::File,
+    config_files: &[ConfigFile],
+) -> anyhow::Result<()> {
+    let mut firmware_images = vec![];
+
+    for config_file in config_files {
+        if let Some(files) = parse_firmware_config_file(config_file) {
+            let id = files.id;
+            let Ok(bios) = files.bios.canonicalize() else {
+                continue;
+            };
+            let bios = bios.display().to_string();
+
+            firmware_images.push(quote! {
+                FirmwareImage {
+                    id: #id,
+                    bios: include_bytes!(#bios),
+                }
+            });
+        }
+    }
+
+    let output = quote! {
+        /// One guest firmware image loaded from the build host.
+        pub struct FirmwareImage {
+            /// vm id in config file
+            pub id: usize,
+            /// boot firmware image
+            pub bios: &'static [u8],
+        }
+
+        /// Get firmware images from config file.
+        pub fn get_firmware_images() -> &'static [FirmwareImage] {
+            &[
+                #(#firmware_images),*
+            ]
+        }
+    };
+    let syntax_tree = syn::parse2(output)?;
+    let formatted = prettyplease::unparse(&syntax_tree);
+    out_file.write_all(formatted.as_bytes())?;
+
+    Ok(())
+}
+
 fn main() -> anyhow::Result<()> {
     println!("cargo:rerun-if-changed=linker.ld");
     let out_dir = PathBuf::from(env::var("OUT_DIR").context("OUT_DIR is not set")?);
@@ -348,6 +413,7 @@ fn main() -> anyhow::Result<()> {
             writeln!(output_file, "}}\n")?;
 
             // generate "load kernel and dtb images function"
+            generate_firmware_img_loading_functions(&mut output_file, &config_files)?;
             generate_guest_img_loading_functions(&mut output_file, config_files)?;
         }
         Err(error) => {

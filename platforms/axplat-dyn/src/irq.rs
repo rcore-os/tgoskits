@@ -3,6 +3,9 @@ use core::sync::atomic::{AtomicPtr, Ordering};
 
 use ax_plat::irq::{IrqAffinity, IrqError, IrqIf, dispatch_irq};
 
+#[cfg(all(target_arch = "loongarch64", feature = "hv"))]
+mod loongarch64_hv;
+
 #[cfg(all(target_arch = "riscv64", feature = "hv"))]
 const RISCV_INTERRUPT_BIT: usize = 1usize << (usize::BITS as usize - 1);
 
@@ -45,6 +48,11 @@ impl IrqIf for IrqIfImpl {
 
             let outcome = dispatch_irq(irq_num);
             if !outcome.handled {
+                #[cfg(all(target_arch = "loongarch64", feature = "hv"))]
+                if loongarch64_hv::inject_virtual_irq(irq_num) {
+                    return Some(irq_num);
+                }
+
                 if outcome.called == 0 {
                     warn!("Unhandled IRQ {irq:?}");
                 } else {

@@ -11,6 +11,7 @@ license = "Apache-2.0"
 
 [features]
 fp-simd = ["ax-cpu/fp-simd"]
+hypervisor = ["irq", "smp"]
 irq = ["ax-plat/irq"]
 paging = []
 rtc = ["dep:chrono"]

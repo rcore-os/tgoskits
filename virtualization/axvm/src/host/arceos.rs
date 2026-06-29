@@ -2,7 +2,11 @@
 
 extern crate alloc;
 
-#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+#[cfg(any(
+    target_arch = "x86_64",
+    target_arch = "aarch64",
+    target_arch = "loongarch64"
+))]
 use alloc::boxed::Box;
 use core::{
     sync::atomic::{AtomicUsize, Ordering},
@@ -84,11 +88,16 @@ impl HostTime for ArceOsHost {
         modules::ax_hal::time::monotonic_time()
     }
 
+    #[cfg(not(target_arch = "loongarch64"))]
     fn set_oneshot_timer(&self, deadline_ns: u64) {
         modules::ax_hal::time::set_oneshot_timer(deadline_ns);
     }
 
-    #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+    #[cfg(any(
+        target_arch = "x86_64",
+        target_arch = "aarch64",
+        target_arch = "loongarch64"
+    ))]
     fn register_timer(
         &self,
         deadline_ns: u64,
@@ -97,7 +106,7 @@ impl HostTime for ArceOsHost {
         crate::timer::register_timer(deadline_ns, callback)
     }
 
-    #[cfg(target_arch = "x86_64")]
+    #[cfg(any(target_arch = "x86_64", target_arch = "loongarch64"))]
     fn cancel_timer(&self, token: Self::CancelToken) {
         crate::timer::cancel_timer(token);
     }
@@ -116,6 +125,11 @@ pub(crate) fn handle_host_irq(vector: usize) -> Option<usize> {
 #[cfg(not(target_arch = "aarch64"))]
 pub(crate) fn dispatch_host_irq(vector: usize) {
     modules::ax_hal::irq::handle_irq(vector);
+}
+
+#[cfg(target_arch = "loongarch64")]
+pub(crate) fn set_irq_enabled(irq: usize, enabled: bool) {
+    modules::ax_hal::irq::set_enable(irq, enabled);
 }
 
 impl HostCpu for ArceOsHost {
@@ -214,7 +228,10 @@ pub(crate) fn phys_to_virt(paddr: ax_memory_addr::PhysAddr) -> ax_memory_addr::V
     modules::ax_hal::mem::phys_to_virt(paddr)
 }
 
-#[cfg(all(any(feature = "fs", feature = "host-fs"), target_arch = "x86_64"))]
+#[cfg(all(
+    any(feature = "fs", feature = "host-fs"),
+    any(target_arch = "x86_64", target_arch = "loongarch64")
+))]
 pub(crate) fn shutdown_host_filesystems() -> AxResult {
     modules::ax_fs_ng::shutdown_filesystems()
 }

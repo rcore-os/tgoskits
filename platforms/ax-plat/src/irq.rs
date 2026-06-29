@@ -10,6 +10,11 @@ pub use irq_framework::{
 };
 use spin::Once;
 
+#[cfg(target_arch = "loongarch64")]
+pub mod loongarch64_hv;
+#[cfg(target_arch = "loongarch64")]
+pub use loongarch64_hv::LoongArchHvIrqIf;
+
 /// Raw synchronous cross-CPU call used by the IRQ registry.
 pub type RunOnCpuSync = unsafe fn(usize, unsafe fn(*mut ()), *mut ()) -> Result<(), IrqError>;
 

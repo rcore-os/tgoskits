@@ -27,6 +27,16 @@ use crate::{
 
 const KERNEL_STACK_SIZE: usize = 0x40000; // 256 KiB
 
+#[derive(Clone, Copy, Debug)]
+enum PendingInterrupt {
+    Normal(usize),
+    #[cfg(target_arch = "loongarch64")]
+    LoongArchExternal {
+        vector: usize,
+        physical_irq: usize,
+    },
+}
+
 /// A global map that holds the vCPU task state for each VM.
 static VM_VCPU_TASKS: Mutex<BTreeMap<usize, Arc<VMVCpus>>> = Mutex::new(BTreeMap::new());
 fn get_vm_vcpus(vm_id: usize) -> Option<Arc<VMVCpus>> {
@@ -43,7 +53,7 @@ pub struct VMVCpus {
     // A map of tasks associated with the VCpus of this VM, keyed by vCPU ID.
     vcpu_task_list: Mutex<BTreeMap<usize, crate::AxTaskRef>>,
     // Pending virtual interrupts that must be injected by the owning vCPU task.
-    pending_interrupts: Mutex<BTreeMap<usize, Vec<usize>>>,
+    pending_interrupts: Mutex<BTreeMap<usize, Vec<PendingInterrupt>>>,
     /// The number of currently running or halting VCpus. Used to track when the VM is fully
     /// shutdown.
     ///
@@ -90,11 +100,38 @@ impl VMVCpus {
             .cloned()
             .ok_or_else(|| ax_err_type!(NotFound, format!("vCPU {vcpu_id} task not found")))?;
         let mut pending = self.pending_interrupts.lock();
-        pending.entry(vcpu_id).or_default().push(vector);
+        pending
+            .entry(vcpu_id)
+            .or_default()
+            .push(PendingInterrupt::Normal(vector));
         Ok(task.cpu_id() as usize)
     }
 
-    fn drain_pending_interrupts(&self, vcpu_id: usize) -> Vec<usize> {
+    #[cfg(target_arch = "loongarch64")]
+    fn queue_external_interrupt(
+        &self,
+        vcpu_id: usize,
+        vector: usize,
+        physical_irq: usize,
+    ) -> AxResult<usize> {
+        let task = self
+            .vcpu_task_list
+            .lock()
+            .get(&vcpu_id)
+            .cloned()
+            .ok_or_else(|| ax_err_type!(NotFound, format!("vCPU {vcpu_id} task not found")))?;
+        let mut pending = self.pending_interrupts.lock();
+        pending
+            .entry(vcpu_id)
+            .or_default()
+            .push(PendingInterrupt::LoongArchExternal {
+                vector,
+                physical_irq,
+            });
+        Ok(task.cpu_id() as usize)
+    }
+
+    fn drain_pending_interrupts(&self, vcpu_id: usize) -> Vec<PendingInterrupt> {
         let mut pending = self.pending_interrupts.lock();
         pending
             .get_mut(&vcpu_id)
@@ -222,19 +259,80 @@ pub(crate) fn queue_interrupt(vm_id: usize, vcpu_id: usize, vector: usize) -> Ax
     Ok(())
 }
 
+#[cfg(target_arch = "loongarch64")]
+pub(crate) fn queue_external_interrupt(
+    vm_id: usize,
+    vcpu_id: usize,
+    vector: usize,
+    physical_irq: usize,
+) -> AxResult {
+    let vm = crate::get_vm_by_id(vm_id)
+        .ok_or_else(|| ax_err_type!(NotFound, format!("VM[{vm_id}] not found")))?;
+    if matches!(
+        vm.vm_status(),
+        crate::VMStatus::Stopping | crate::VMStatus::Stopped
+    ) {
+        return Err(ax_err_type!(
+            BadState,
+            format!("VM[{vm_id}] is not accepting interrupts")
+        ));
+    }
+
+    let vm_vcpus = get_vm_vcpus(vm_id)
+        .ok_or_else(|| ax_err_type!(NotFound, format!("VM[{vm_id}] vCPU resources not found")))?;
+    let cpu_id = vm_vcpus.queue_external_interrupt(vcpu_id, vector, physical_irq)?;
+    vm_vcpus.notify_all();
+    crate::host::task::send_ipi(cpu_id);
+    Ok(())
+}
+
 pub(crate) fn inject_pending_interrupts(vm_id: usize, vcpu_id: usize, vcpu: &VCpuRef) {
     let Some(vm_vcpus) = get_vm_vcpus(vm_id) else {
         warn!("VM[{vm_id}] vCPU resources not found, cannot drain VCpu[{vcpu_id}] interrupts");
         return;
     };
 
-    for vector in vm_vcpus.drain_pending_interrupts(vcpu_id) {
-        trace!("Injecting queued interrupt {vector:#x} into VM[{vm_id}] VCpu[{vcpu_id}]");
-        if let Err(err) = vcpu.inject_interrupt(vector) {
-            warn!(
-                "Failed to inject queued interrupt {vector:#x} into VM[{vm_id}] VCpu[{vcpu_id}]: \
-                 {err:?}"
-            );
+    for interrupt in vm_vcpus.drain_pending_interrupts(vcpu_id) {
+        match interrupt {
+            PendingInterrupt::Normal(vector) => {
+                trace!("Injecting queued interrupt {vector:#x} into VM[{vm_id}] VCpu[{vcpu_id}]");
+                if let Err(err) = vcpu.inject_interrupt(vector) {
+                    warn!(
+                        "Failed to inject queued interrupt {vector:#x} into VM[{vm_id}] \
+                         VCpu[{vcpu_id}]: {err:?}"
+                    );
+                }
+            }
+            #[cfg(target_arch = "loongarch64")]
+            PendingInterrupt::LoongArchExternal {
+                vector,
+                physical_irq,
+            } => {
+                let Some(vm) = crate::get_vm_by_id(vm_id) else {
+                    warn!("VM[{vm_id}] not found while injecting queued LoongArch external IRQ");
+                    continue;
+                };
+                let Some(vector) = vm.loongarch_external_irq_vector(vector, physical_irq) else {
+                    trace!(
+                        "Queued LoongArch external interrupt physical_irq={physical_irq:#x} is \
+                         masked in VM[{vm_id}]"
+                    );
+                    continue;
+                };
+                trace!(
+                    "Injecting queued LoongArch external interrupt vector={vector:#x}, \
+                     physical_irq={physical_irq:#x} into VM[{vm_id}] VCpu[{vcpu_id}]"
+                );
+                if let Err(err) = vcpu
+                    .get_arch_vcpu()
+                    .inject_external_interrupt(vector, physical_irq)
+                {
+                    warn!(
+                        "Failed to inject queued LoongArch external interrupt vector={vector:#x}, \
+                         physical_irq={physical_irq:#x} into VM[{vm_id}] VCpu[{vcpu_id}]: {err:?}"
+                    );
+                }
+            }
         }
     }
 }
@@ -555,6 +653,31 @@ fn vcpu_run() {
                     continue;
                     #[cfg(not(target_arch = "x86_64"))]
                     wait(&vm_vcpus)
+                }
+                AxVCpuExitReason::Idle => {
+                    trace!("VM[{vm_id}] run VCpu[{vcpu_id}] Idle");
+                    #[cfg(target_arch = "loongarch64")]
+                    {
+                        crate::check_timer_events();
+                        if vcpu.get_arch_vcpu().has_enabled_pending_interrupt() {
+                            trace!(
+                                "VM[{vm_id}] VCpu[{vcpu_id}] skips idle wait because guest has \
+                                 enabled pending interrupt"
+                            );
+                            continue;
+                        }
+                        let idle_timeout = vcpu.get_arch_vcpu().idle_wait_timeout();
+                        trace!("VM[{vm_id}] VCpu[{vcpu_id}] host idle wait for {idle_timeout:?}");
+                        ax_std::os::arceos::modules::ax_hal::asm::set_timer_irq_enabled(true);
+                        ax_std::os::arceos::modules::ax_hal::asm::enable_irqs();
+                        ax_std::os::arceos::modules::ax_hal::time::busy_wait(idle_timeout);
+                        ax_std::os::arceos::modules::ax_hal::asm::disable_irqs();
+                        ax_std::os::arceos::modules::ax_hal::asm::set_timer_irq_enabled(false);
+                    }
+                    #[cfg(not(target_arch = "loongarch64"))]
+                    {
+                        crate::check_timer_events();
+                    }
                 }
                 AxVCpuExitReason::Nothing => {}
                 AxVCpuExitReason::CpuDown { _state } => {

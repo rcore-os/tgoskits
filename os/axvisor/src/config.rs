@@ -14,7 +14,10 @@
 
 use alloc::{format, sync::Arc};
 use core::alloc::Layout;
-#[cfg(all(feature = "fs", target_arch = "x86_64"))]
+#[cfg(all(
+    feature = "fs",
+    any(target_arch = "x86_64", target_arch = "loongarch64")
+))]
 use core::sync::atomic::{AtomicBool, Ordering};
 
 use ax_errno::{AxResult, ax_err_type};
@@ -39,7 +42,10 @@ use crate::images::ImageLoader;
 #[cfg(target_arch = "x86_64")]
 const DEFAULT_X86_BIOS_LOAD_GPA: usize = 0x8000;
 
-#[cfg(all(feature = "fs", target_arch = "x86_64"))]
+#[cfg(all(
+    feature = "fs",
+    any(target_arch = "x86_64", target_arch = "loongarch64")
+))]
 static HOST_FILESYSTEM_RELEASE_REQUIRED: AtomicBool = AtomicBool::new(false);
 
 #[allow(dead_code)]
@@ -79,11 +85,7 @@ pub mod vmcfg {
 }
 
 pub fn get_vm_dtb_arc(_vm_cfg: &AxVMConfig) -> Option<Arc<[u8]>> {
-    #[cfg(any(
-        target_arch = "aarch64",
-        target_arch = "loongarch64",
-        target_arch = "riscv64"
-    ))]
+    #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
     {
         let cache_lock = dtb_cache().lock();
         if let Some(dtb) = cache_lock.get(&_vm_cfg.id()) {
@@ -133,7 +135,10 @@ pub fn init_guest_vm(raw_cfg: &str) -> AxResult<usize> {
     let mut vm_create_config = AxVMCrateConfig::from_toml(raw_cfg)
         .map_err(|e| ax_err_type!(InvalidData, format!("Failed to resolve VM config: {e:?}")))?;
 
-    #[cfg(all(feature = "fs", target_arch = "x86_64"))]
+    #[cfg(all(
+        feature = "fs",
+        any(target_arch = "x86_64", target_arch = "loongarch64")
+    ))]
     let release_host_filesystem = vm_config_needs_host_filesystem_release(&vm_create_config);
 
     if let Some(linux) = super::images::get_image_header(&vm_create_config) {
@@ -199,8 +204,13 @@ pub fn init_guest_vm(raw_cfg: &str) -> AxResult<usize> {
             format!("VM[{vm_id}] already exists")
         ));
     }
+    #[cfg(target_arch = "loongarch64")]
+    crate::manager::register_loongarch_passthrough_irq_routes(vm_id);
 
-    #[cfg(all(feature = "fs", target_arch = "x86_64"))]
+    #[cfg(all(
+        feature = "fs",
+        any(target_arch = "x86_64", target_arch = "loongarch64")
+    ))]
     if release_host_filesystem {
         HOST_FILESYSTEM_RELEASE_REQUIRED.store(true, Ordering::Release);
     }
@@ -221,6 +231,12 @@ pub(crate) fn build_axvm_config(cfg: &AxVMCrateConfig) -> AxVMConfig {
         cpu_config: AxVCpuConfig {
             bsp_entry: GuestPhysAddr::from(cfg.kernel.entry_point),
             ap_entry: GuestPhysAddr::from(cfg.kernel.entry_point),
+            #[cfg(target_arch = "loongarch64")]
+            boot_args: [0; 3],
+            #[cfg(target_arch = "loongarch64")]
+            boot_stack_top: 0,
+            #[cfg(target_arch = "loongarch64")]
+            firmware_boot: cfg.kernel.effective_boot_protocol() == VMBootProtocol::Uefi,
         },
         image_config: VMImageConfig {
             kernel_load_gpa: GuestPhysAddr::from(cfg.kernel.kernel_load_addr),
@@ -259,14 +275,20 @@ fn configured_bios_load_gpa(cfg: &AxVMCrateConfig) -> Option<GuestPhysAddr> {
     None
 }
 
-#[cfg(all(feature = "fs", target_arch = "x86_64"))]
+#[cfg(all(
+    feature = "fs",
+    any(target_arch = "x86_64", target_arch = "loongarch64")
+))]
 fn vm_config_needs_host_filesystem_release(config: &AxVMCrateConfig) -> bool {
-    config.kernel.image_location.as_deref() == Some("fs")
-        && (!config.devices.passthrough_devices.is_empty()
-            || !config.devices.passthrough_addresses.is_empty())
+    let has_passthrough = !config.devices.passthrough_devices.is_empty()
+        || !config.devices.passthrough_addresses.is_empty();
+    has_passthrough && config.kernel.image_location.as_deref() == Some("fs")
 }
 
-#[cfg(all(feature = "fs", target_arch = "x86_64"))]
+#[cfg(all(
+    feature = "fs",
+    any(target_arch = "x86_64", target_arch = "loongarch64")
+))]
 pub fn host_filesystem_release_required() -> bool {
     HOST_FILESYSTEM_RELEASE_REQUIRED.load(Ordering::Acquire)
 }

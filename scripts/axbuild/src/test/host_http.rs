@@ -1,6 +1,6 @@
 use std::{
     fs,
-    io::{Read, Write},
+    io::{ErrorKind, Read, Write},
     net::TcpListener,
     path::{Path, PathBuf},
     sync::{
@@ -25,6 +25,8 @@ const BIND_RETRY_INTERVAL: Duration = Duration::from_millis(50);
 /// legitimately progressing transfer, yet finite so a wedged guest cannot block
 /// the server thread (and thus `Drop`/`join`) forever.
 const BODY_WRITE_TIMEOUT: Duration = Duration::from_secs(30);
+const BODY_STALL_TIMEOUT: Duration = Duration::from_secs(180);
+const BODY_CHUNK_SIZE: usize = 16 * 1024;
 
 pub(crate) struct HostHttpServerGuard {
     stop: Arc<AtomicBool>,
@@ -167,16 +169,12 @@ impl HostHttpBody {
 
     fn write_to(&self, stream: &mut impl Write) -> std::io::Result<()> {
         match self {
-            Self::Static(body) => stream.write_all(body),
+            Self::Static(body) => write_body_chunks(stream, body.len(), |offset, len| {
+                &body[offset..offset + len]
+            }),
             Self::Generated { size, byte } => {
-                let chunk = vec![*byte; 16 * 1024];
-                let mut remaining = *size;
-                while remaining > 0 {
-                    let len = remaining.min(chunk.len());
-                    stream.write_all(&chunk[..len])?;
-                    remaining -= len;
-                }
-                Ok(())
+                let chunk = vec![*byte; BODY_CHUNK_SIZE];
+                write_body_chunks(stream, *size, |_offset, len| &chunk[..len])
             }
             Self::Dir(_) => Ok(()),
         }
@@ -273,8 +271,55 @@ fn write_dir_response(stream: &mut impl Write, status: &str, content_type: &str,
         body.len(),
     );
     if stream.write_all(head.as_bytes()).is_ok() {
-        let _ = stream.write_all(body);
+        let _ = write_body_chunks(stream, body.len(), |offset, len| {
+            &body[offset..offset + len]
+        });
     }
+}
+
+fn write_body_chunks<'a>(
+    stream: &mut impl Write,
+    total: usize,
+    mut chunk_at: impl FnMut(usize, usize) -> &'a [u8],
+) -> std::io::Result<()> {
+    let mut written = 0;
+    let mut last_progress = Instant::now();
+
+    while written < total {
+        let len = (total - written).min(BODY_CHUNK_SIZE);
+        let chunk = chunk_at(written, len);
+        let mut chunk_written = 0;
+
+        while chunk_written < len {
+            match stream.write(&chunk[chunk_written..]) {
+                Ok(0) => {
+                    return Err(std::io::Error::new(
+                        ErrorKind::WriteZero,
+                        "host HTTP body stream stopped accepting bytes",
+                    ));
+                }
+                Ok(n) => {
+                    chunk_written += n;
+                    written += n;
+                    last_progress = Instant::now();
+                }
+                Err(err)
+                    if matches!(
+                        err.kind(),
+                        ErrorKind::WouldBlock | ErrorKind::TimedOut | ErrorKind::Interrupted
+                    ) =>
+                {
+                    if last_progress.elapsed() >= BODY_STALL_TIMEOUT {
+                        return Err(err);
+                    }
+                    thread::sleep(Duration::from_millis(100));
+                }
+                Err(err) => return Err(err),
+            }
+        }
+    }
+
+    Ok(())
 }
 
 impl Drop for HostHttpServerGuard {

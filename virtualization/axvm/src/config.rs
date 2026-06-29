@@ -32,6 +32,15 @@ pub struct AxVCpuConfig {
     pub bsp_entry: GuestPhysAddr,
     /// The entry address in GPA for the Application Processor (AP).
     pub ap_entry: GuestPhysAddr,
+    /// LoongArch Linux EFI-style boot arguments (a0, a1, a2).
+    #[cfg(target_arch = "loongarch64")]
+    pub boot_args: [usize; 3],
+    /// LoongArch Linux boot stack top.
+    #[cfg(target_arch = "loongarch64")]
+    pub boot_stack_top: usize,
+    /// Whether the LoongArch guest should be entered like firmware after CPU reset.
+    #[cfg(target_arch = "loongarch64")]
+    pub firmware_boot: bool,
 }
 
 /// Ramdisk image information.
@@ -100,6 +109,10 @@ pub fn adjusted_kernel_load_gpa(
     boot_protocol: VMBootProtocol,
     bios_load_gpa: Option<GuestPhysAddr>,
 ) -> Option<GuestPhysAddr> {
+    if boot_protocol == VMBootProtocol::Uefi {
+        return None;
+    }
+
     if !main_memory.is_identical() {
         return None;
     }
@@ -142,6 +155,16 @@ impl AxVMConfig {
     /// Returns configurations related to VM image load addresses.
     pub fn image_config(&self) -> &VMImageConfig {
         &self.image_config
+    }
+
+    /// Clears the configured DTB load address when no guest DTB is available.
+    pub fn clear_dtb_load_gpa(&mut self) {
+        self.image_config.dtb_load_gpa = None;
+    }
+
+    /// Sets the DTB load address used as an architecture boot argument.
+    pub fn set_dtb_load_gpa(&mut self, dtb_load_gpa: GuestPhysAddr) {
+        self.image_config.dtb_load_gpa = Some(dtb_load_gpa);
     }
 
     /// Returns whether VM images are loaded from the host filesystem.
@@ -209,7 +232,7 @@ impl AxVMConfig {
 
     /// Removes passthrough device from the VM configuration.
     pub fn remove_pass_through_device(&mut self, device: PassThroughDeviceConfig) {
-        self.pass_through_devices.retain(|d| d == &device);
+        self.pass_through_devices.retain(|d| d != &device);
     }
 
     /// Clears all passthrough devices from the VM configuration.

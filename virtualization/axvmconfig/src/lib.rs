@@ -590,14 +590,14 @@ impl VMKernelConfig {
 
         match self.effective_boot_protocol() {
             VMBootProtocol::Uefi => {
-                if arch != "x86_64" {
+                if !matches!(arch, "x86_64" | "loongarch64") {
                     warn!(
-                        "boot_protocol=uefi is only supported on x86_64; rejecting config on \
-                         {arch}"
+                        "boot_protocol=uefi is only supported on x86_64 and loongarch64; \
+                         rejecting config on {arch}"
                     );
                     return Err(ax_errno::ax_err_type!(
                         InvalidInput,
-                        "UEFI boot is only supported on x86_64"
+                        "UEFI boot is only supported on x86_64 and loongarch64"
                     ));
                 }
                 if self.boot_firmware_path().is_none() {

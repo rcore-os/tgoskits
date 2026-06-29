@@ -333,6 +333,7 @@ vm_configs = []
     assert!(cargo.features.contains(&"ept-level-4".to_string()));
     assert!(cargo.features.contains(&"fs".to_string()));
     assert!(cargo.features.contains(&"vmx".to_string()));
+    assert!(cargo.features.contains(&"plat-dyn".to_string()));
     assert!(cargo.features.contains(&"ax-std/plat-dyn".to_string()));
     assert!(cargo.features.contains(&"axvm/plat-dyn".to_string()));
     assert!(cargo.features.contains(&"ax-driver/plat-dyn".to_string()));
