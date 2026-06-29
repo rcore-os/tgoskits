@@ -50,7 +50,10 @@ use sg2002_tpu::{
 
 use crate::{
     file::{get_file_like, ion::IonBufferFile},
-    pseudofs::DeviceOps,
+    pseudofs::{
+        DeviceOps,
+        dev::{IrqRegistration, request_shared_disabled},
+    },
 };
 
 /// 一个 TPU 推理任务（OS glue 侧）。
@@ -97,8 +100,8 @@ static HW_PTR: AtomicPtr<Sg2002Tpu> = AtomicPtr::new(core::ptr::null_mut());
 pub struct TpuDevice {
     /// 硬件层
     hw: Arc<Sg2002Tpu>,
-    /// 是否已注册中断
-    irq_registered: bool,
+    /// TDMA IRQ action registration.
+    irq_registration: Option<IrqRegistration>,
 }
 
 // From SG2002 TPU DT node:
@@ -110,14 +113,31 @@ const TPU_TDMA_IRQ: usize = 76;
 /// 等待 TDMA 完成的总超时（约 10 秒）。
 const TPU_WAIT_TIMEOUT: Duration = Duration::from_secs(10);
 
-fn register_tpu_irq(hw: &Arc<Sg2002Tpu>) -> bool {
+fn register_tpu_irq(hw: &Arc<Sg2002Tpu>) -> Option<IrqRegistration> {
     let data = unsafe { NonNull::new_unchecked(Arc::as_ptr(hw) as *mut ()) };
-    if ax_runtime::hal::irq::request_shared_irq(TPU_TDMA_IRQ, tpu_tdma_irq_handler, data).is_err() {
-        warn!("[TPU] failed to register tdma irq {}", TPU_TDMA_IRQ);
-        return false;
+    let Ok(hwirq) = u32::try_from(TPU_TDMA_IRQ) else {
+        warn!("[TPU] invalid tdma irq {}", TPU_TDMA_IRQ);
+        return None;
+    };
+    let irq = ax_runtime::hal::irq::IrqId::new(
+        ax_runtime::hal::irq::RISCV_PLIC_DOMAIN,
+        ax_runtime::hal::irq::HwIrq(hwirq),
+    );
+    let registration = match request_shared_disabled(irq, tpu_tdma_irq_handler, data) {
+        Ok(registration) => registration,
+        Err(err) => {
+            warn!(
+                "[TPU] failed to register tdma irq {}: {err:?}",
+                TPU_TDMA_IRQ
+            );
+            return None;
+        }
+    };
+    if let Err(err) = registration.enable() {
+        warn!("[TPU] failed to enable tdma irq {}: {err:?}", TPU_TDMA_IRQ);
+        return None;
     }
-    ax_runtime::hal::irq::set_enable(TPU_TDMA_IRQ, true);
-    true
+    Some(registration)
 }
 
 unsafe fn tpu_tdma_irq_handler(
@@ -219,7 +239,7 @@ impl TpuDevice {
         if let Err(err) = hw.init() {
             warn!("[TPU] init failed: {:?}", err);
         }
-        let irq_registered = register_tpu_irq(&hw);
+        let irq_registration = register_tpu_irq(&hw);
 
         // 发布硬件指针供 tpu_wait_irq 读取中断标志，并启动唯一 worker 线程。
         if WORKER_SPAWNED
@@ -231,7 +251,10 @@ impl TpuDevice {
             ax_task::spawn_with_name(move || tpu_worker(worker_hw), String::from("tpu-worker"));
         }
 
-        Self { hw, irq_registered }
+        Self {
+            hw,
+            irq_registration,
+        }
     }
 
     /// 提交 DMA buffer 任务：解析 fd → 入队 → 唤醒 worker → 立即返回。
@@ -243,7 +266,7 @@ impl TpuDevice {
             "[TPU] submit dmabuf: fd={}, seq_no={}",
             submit_arg.fd, submit_arg.seq_no
         );
-        if !self.irq_registered {
+        if self.irq_registration.is_none() {
             warn!(
                 "[TPU] tdma irq {} not registered, execution may timeout",
                 TPU_TDMA_IRQ

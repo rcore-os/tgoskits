@@ -21,7 +21,7 @@ use rdif_block::{
 use rdrive::{Device, probe::OnProbeError};
 
 use crate::{
-    BindingInfo, binding_info_from_acpi, binding_info_from_fdt,
+    BindingInfo, BindingIrq, binding_info_from_acpi, binding_info_from_fdt,
     registration::{BoundDevice, register_bound_device},
 };
 #[cfg(feature = "pci")]
@@ -68,7 +68,7 @@ pub struct PlatformBlockDevice {
 /// objects directly, installing IRQ handlers according to the OS policy.
 pub struct RdifBlockDevice {
     name: String,
-    irq_num: Option<usize>,
+    irq: Option<BindingIrq>,
     interface: Box<dyn Interface>,
 }
 
@@ -191,6 +191,10 @@ impl Block {
 
     pub const fn is_irq_enabled(&self) -> bool {
         self.irq_enabled
+    }
+
+    pub fn irq(&self) -> Option<&BindingIrq> {
+        self.info.irq()
     }
 
     #[cfg(feature = "irq")]
@@ -343,8 +347,16 @@ impl RdifBlockDevice {
         &self.name
     }
 
-    pub const fn irq_num(&self) -> Option<usize> {
-        self.irq_num
+    pub fn irq(&self) -> Option<&BindingIrq> {
+        self.irq.as_ref()
+    }
+
+    pub fn irq_cloned(&self) -> Option<BindingIrq> {
+        self.irq.clone()
+    }
+
+    pub fn irq_num(&self) -> Option<usize> {
+        self.irq.as_ref().and_then(BindingIrq::legacy_num)
     }
 
     pub fn interface(&self) -> &dyn Interface {
@@ -369,7 +381,7 @@ impl RdifBlockDevice {
 
     #[cfg(feature = "irq")]
     pub fn take_irq_handler(&mut self, source_id: usize) -> Option<(usize, BlockIrqHandler)> {
-        let irq_num = self.irq_num?;
+        let irq_num = self.irq_num()?;
         self.interface
             .take_irq_handler(source_id)
             .map(BlockIrqHandler::new_raw)
@@ -595,11 +607,11 @@ impl TryFrom<Device<PlatformBlockDevice>> for RdifBlockDevice {
     fn try_from(base: Device<PlatformBlockDevice>) -> Result<Self, Self::Error> {
         let mut dev = base.lock().map_err(|_| AxError::BadState)?;
         let name = dev.name.clone();
-        let irq_num = dev.irq_num();
+        let irq = dev.info.irq_cloned();
         let interface = dev.interface.take().ok_or(AxError::BadState)?;
         Ok(Self {
             name,
-            irq_num,
+            irq,
             interface,
         })
     }
@@ -989,7 +1001,7 @@ mod tests {
         let device = PlatformBlockDevice::new(
             "test-block".into(),
             Box::new(TestInterface),
-            BindingInfo::with_irq(Some(irq)),
+            BindingInfo::with_irq(Some(irq)).unwrap(),
         );
 
         assert_eq!(BoundDevice::binding_info(&device).irq_num(), Some(irq));

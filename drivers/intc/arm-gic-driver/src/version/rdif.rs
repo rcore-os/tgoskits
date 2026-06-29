@@ -2,7 +2,11 @@ extern crate alloc;
 
 use rdif_intc::*;
 
-use crate::fdt_parse_irq_config;
+use crate::{checked_intid, fdt_parse_irq_config};
+
+fn checked_rdif_intid(raw: u32, max_intid: u32) -> Result<crate::define::IntId, IrqError> {
+    checked_intid(raw, max_intid).map_err(|_| IrqError::InvalidIrq)
+}
 
 impl DriverGeneric for super::v2::Gic {
     fn name(&self) -> &str {
@@ -11,10 +15,27 @@ impl DriverGeneric for super::v2::Gic {
 }
 
 impl Interface for super::v2::Gic {
-    fn setup_irq_by_fdt(&mut self, irq_prop: &[u32]) -> IrqId {
-        let config = fdt_parse_irq_config(irq_prop).unwrap();
+    fn translate_fdt(&self, irq_prop: &[u32]) -> Result<ControllerIrqTranslation, IrqError> {
+        let config = fdt_parse_irq_config(irq_prop).map_err(|_| IrqError::InvalidIrq)?;
+        Ok(ControllerIrqTranslation::with_trigger(
+            HwIrq(config.id.to_u32()),
+            config.trigger.into(),
+        ))
+    }
+
+    fn configure(&mut self, translation: &IrqTranslation) -> Result<(), IrqError> {
+        let config = crate::define::IrqConfig {
+            id: checked_rdif_intid(translation.id.hwirq.0, self.max_intid())?,
+            trigger: translation.trigger.unwrap_or(Trigger::LevelHigh).into(),
+        };
         self.set_cfg(config.id, config.trigger);
-        config.id.into()
+        Ok(())
+    }
+
+    fn set_enabled(&mut self, hwirq: HwIrq, enabled: bool) -> Result<(), IrqError> {
+        let intid = checked_rdif_intid(hwirq.0, self.max_intid())?;
+        self.set_irq_enable(intid, enabled);
+        Ok(())
     }
 }
 
@@ -27,23 +48,27 @@ impl DriverGeneric for super::v3::Gic {
 
 #[cfg(target_arch = "aarch64")]
 impl Interface for super::v3::Gic {
-    fn setup_irq_by_fdt(&mut self, irq_prop: &[u32]) -> IrqId {
-        let config = fdt_parse_irq_config(irq_prop).unwrap();
+    fn translate_fdt(&self, irq_prop: &[u32]) -> Result<ControllerIrqTranslation, IrqError> {
+        let config = fdt_parse_irq_config(irq_prop).map_err(|_| IrqError::InvalidIrq)?;
+        Ok(ControllerIrqTranslation::with_trigger(
+            HwIrq(config.id.to_u32()),
+            config.trigger.into(),
+        ))
+    }
+
+    fn configure(&mut self, translation: &IrqTranslation) -> Result<(), IrqError> {
+        let config = crate::define::IrqConfig {
+            id: checked_rdif_intid(translation.id.hwirq.0, self.max_intid())?,
+            trigger: translation.trigger.unwrap_or(Trigger::LevelHigh).into(),
+        };
         self.set_cfg(config.id, config.trigger);
-        config.id.into()
+        Ok(())
     }
-}
 
-impl From<crate::define::IntId> for IrqId {
-    fn from(id: crate::define::IntId) -> Self {
-        (id.to_u32() as usize).into()
-    }
-}
-
-impl From<IrqId> for crate::define::IntId {
-    fn from(id: IrqId) -> Self {
-        let raw: usize = id.into();
-        unsafe { crate::define::IntId::raw(raw as u32) }
+    fn set_enabled(&mut self, hwirq: HwIrq, enabled: bool) -> Result<(), IrqError> {
+        let intid = checked_rdif_intid(hwirq.0, self.max_intid())?;
+        self.set_irq_enable(intid, enabled);
+        Ok(())
     }
 }
 

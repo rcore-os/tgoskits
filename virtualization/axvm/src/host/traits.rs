@@ -72,9 +72,6 @@ pub trait HostCpu {
 
     /// Current host CPU ID.
     fn this_cpu_id(&self) -> usize;
-
-    /// Bind current task to one host CPU.
-    fn bind_current_to_cpu(&self, cpu_id: usize) -> AxResult;
 }
 
 /// Host console operations.

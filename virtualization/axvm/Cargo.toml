@@ -44,9 +44,11 @@ ax-std = { workspace = true, features = [
     "task-ext",
     "smp",
     "hv",
+    "wake-ipi",
 ] }
 ax-hal = { workspace = true, features = ["ipi"] }
 ax-timer-list = { workspace = true }
+irq-framework = { workspace = true }
 # System dependent modules provided by ArceOS-Hypervisor.
 axvcpu = { workspace = true }
 axaddrspace = { workspace = true }

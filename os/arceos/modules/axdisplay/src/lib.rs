@@ -44,9 +44,9 @@ pub fn framebuffer_flush() -> bool {
     MAIN_DISPLAY.lock().flush().is_ok()
 }
 
-/// Returns the main display IRQ line, if the driver advertises one.
-pub fn framebuffer_irq_num() -> Option<usize> {
-    MAIN_DISPLAY.lock().irq_num()
+/// Returns the resolved main display IRQ, if the runtime provided one.
+pub fn framebuffer_irq_id() -> Option<irq_framework::IrqId> {
+    MAIN_DISPLAY.lock().irq_id()
 }
 
 /// Enables IRQ handling in the main display driver.

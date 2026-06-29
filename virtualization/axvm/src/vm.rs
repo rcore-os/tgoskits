@@ -27,6 +27,10 @@ use axdevice::{
 use axdevice_base::AccessWidth;
 #[cfg(target_arch = "aarch64")]
 use axdevice_base::DeviceRegistry as _;
+#[cfg(target_arch = "x86_64")]
+use axdevice_base::DeviceRegistry as _;
+#[cfg(target_arch = "x86_64")]
+use axdevice_base::{BaseDeviceOps, PortDeviceAdapter};
 use axvcpu::{AxVCpu, AxVCpuExitReason};
 #[cfg(target_arch = "x86_64")]
 use axvm_types::EmulatedDeviceType;
@@ -356,7 +360,10 @@ impl AxVM {
             MappingFlags::DEVICE | MappingFlags::READ | MappingFlags::WRITE,
         )?;
 
-        #[cfg_attr(not(target_arch = "aarch64"), expect(unused_mut))]
+        #[cfg_attr(
+            not(any(target_arch = "aarch64", target_arch = "x86_64")),
+            expect(unused_mut)
+        )]
         let mut devices = {
             let build_context = DeviceBuildContext::new(&interrupt_fabric);
             axdevice::AxVmDevices::build_with_factories(
@@ -367,6 +374,23 @@ impl AxVM {
                 &build_context,
             )?
         };
+
+        #[cfg(target_arch = "x86_64")]
+        for port in inner_mut.config.pass_through_ports() {
+            let passthrough = Arc::new(crate::host::x86_port::HostPortPassthrough::new(
+                port.base,
+                port.length,
+            )?);
+            let range = passthrough.address_range();
+            debug!(
+                "PT port region: [{:#x}~{:#x}]",
+                range.start.number(),
+                range.end.number(),
+            );
+            devices
+                .register(PortDeviceAdapter::from_arc(passthrough))
+                .map_err(|err| ax_err_type!(InvalidInput, format!("register PT port: {err:?}")))?;
+        }
 
         #[cfg(target_arch = "aarch64")]
         {
@@ -434,12 +458,19 @@ impl AxVM {
             #[allow(clippy::let_unit_value)]
             let setup_config = <AxArchVCpuImpl as axvcpu::AxArchVCpu>::SetupConfig::default();
             #[cfg(target_arch = "x86_64")]
-            let setup_config = crate::vcpu::AxVCpuSetupConfig {
-                emulate_com1: inner_mut
-                    .config
-                    .emu_devices()
-                    .iter()
-                    .any(|dev| dev.emu_type == EmulatedDeviceType::Console),
+            let setup_config = {
+                let mut config = crate::vcpu::AxVCpuSetupConfig {
+                    emulate_com1: inner_mut
+                        .config
+                        .emu_devices()
+                        .iter()
+                        .any(|dev| dev.emu_type == EmulatedDeviceType::Console),
+                    ..Default::default()
+                };
+                for port in inner_mut.config.pass_through_ports() {
+                    config.add_passthrough_port_range(port.base, port.length)?;
+                }
+                config
             };
 
             let entry = if vcpu.id() == 0 {

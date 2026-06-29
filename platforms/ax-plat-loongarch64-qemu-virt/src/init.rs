@@ -27,7 +27,13 @@ impl InitIf for InitIfImpl {
         crate::time::init_percpu();
         #[cfg(feature = "smp")]
         {
-            ax_plat::irq::set_enable(crate::config::devices::IPI_IRQ, true);
+            let irq = ax_plat::irq::IrqId::new(
+                ax_plat::irq::CPU_LOCAL_IRQ_DOMAIN,
+                ax_plat::irq::HwIrq(crate::config::devices::IPI_IRQ as u32),
+            );
+            if let Err(err) = ax_plat::irq::set_enable(irq, true) {
+                warn!("failed to enable IPI IRQ: {err:?}");
+            }
         }
     }
 
@@ -35,6 +41,12 @@ impl InitIf for InitIfImpl {
     #[cfg(feature = "smp")]
     fn init_later_secondary(_cpu_id: usize) {
         crate::time::init_percpu();
-        ax_plat::irq::set_enable(crate::config::devices::IPI_IRQ, true);
+        let irq = ax_plat::irq::IrqId::new(
+            ax_plat::irq::CPU_LOCAL_IRQ_DOMAIN,
+            ax_plat::irq::HwIrq(crate::config::devices::IPI_IRQ as u32),
+        );
+        if let Err(err) = ax_plat::irq::set_enable(irq, true) {
+            warn!("failed to enable IPI IRQ: {err:?}");
+        }
     }
 }

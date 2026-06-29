@@ -64,33 +64,6 @@ pub const FXMAC3_QUEUE3_IRQ_NUM: u32 = (73 + 30);
 /// handler to access the controller instance.
 pub static XMAC: AtomicPtr<FXmac> = AtomicPtr::new(core::ptr::null_mut());
 
-/// Top-level interrupt handler for FXMAC.
-///
-/// This function should be registered as the interrupt handler for the FXMAC
-/// controller. It retrieves the global FXMAC instance and dispatches to the
-/// appropriate sub-handlers.
-///
-/// # Safety
-///
-/// This function accesses the global `XMAC` pointer. It assumes that the
-/// pointer has been properly initialized by [`xmac_init`].
-pub fn xmac_intr_handler(_irq: usize) {
-    debug!("Handling xmac intr ...");
-
-    let xmac = XMAC.load(Ordering::Relaxed);
-    if !xmac.is_null() {
-        let xmac_ptr = unsafe { &mut (*xmac) };
-
-        // maybe irq num
-        let vector = xmac_ptr.config.queue_irq_num[0];
-        FXmacIntrHandler(vector as i32, xmac_ptr);
-
-        info!("xmac intr is already handled");
-    } else {
-        error!("static FXmac has not been initialized");
-    }
-}
-
 /// Main interrupt handler for FXMAC controller.
 ///
 /// Processes all pending interrupts for the specified FXMAC instance. This
@@ -500,32 +473,4 @@ pub fn FXmacRecvIsrHandler(instance: &mut FXmac) {
 
     ethernetif_input_to_recv_packets(instance);
     // 处理后会开中断
-}
-
-/// 网卡中断设置
-pub fn FXmacSetupIsr(instance: &mut FXmac) {
-    // 获取当前CPU ID: 0, 1, 2, 3, 4, 5, 6, 7
-    // let cpu_id: u32 = get_cpu_id();
-    // 路由中断到指定的cpu，或所有的cpu
-
-    // Setup callbacks， 为指定类型设置回调函数
-    // FXmacSetHandler(&instance_p->instance, FXMAC_HANDLER_DMASEND, FXmacSendHandler, instance_p);
-    // FXmacSetHandler(&instance_p->instance, FXMAC_HANDLER_DMARECV, FXmacRecvIsrHandler, instance_p);
-    // FXmacSetHandler(&instance_p->instance, FXMAC_HANDLER_ERROR, FXmacErrorHandler, instance_p);
-    // FXmacSetHandler(&instance_p->instance, FXMAC_HANDLER_LINKCHANGE, FXmacLinkChange, instance_p);
-
-    // let IRQ_PRIORITY_VALUE_0 = 0x0;
-    // let IRQ_PRIORITY_VALUE_12 = 0xc;
-    // 设置中断优先级为IRQ_PRIORITY_VALUE_12
-
-    // setup interrupt handler, 该函数将自定义中断回调函数注册到对应的中断ID
-    // 使能对应中断
-    let irq_num = instance.config.queue_irq_num[0] as usize; // 32 + 55
-
-    // SPI(Shared Peripheral Interrupt) rang: 32..1020
-    info!("register callback function for irq: {}", irq_num);
-    ax_crate_interface::call_interface!(crate::KernelFunc::dma_request_irq(
-        irq_num,
-        xmac_intr_handler
-    ));
 }

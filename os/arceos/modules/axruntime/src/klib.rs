@@ -15,8 +15,8 @@ use core::time::Duration;
 #[cfg(feature = "paging")]
 use ax_memory_addr::MemoryAddr;
 use axklib::{
-    AxError, AxResult, IrqCpuId, IrqCpuMask, IrqError, IrqHandle, Klib, PhysAddr, RawIrqHandler,
-    VirtAddr, impl_trait,
+    AxError, AxResult, IrqCpuId, IrqCpuMask, IrqError, IrqHandle, IrqId, Klib, PhysAddr,
+    RawIrqHandler, VirtAddr, impl_trait,
 };
 
 struct KlibImpl;
@@ -207,13 +207,19 @@ impl_trait! {
         /// `ax_hal::irq::set_enable`. Platforms built without IRQ support
         /// ignore this request because there is no interrupt controller
         /// service to program.
-        fn irq_set_enable(_irq: usize, _enabled: bool) {
+        fn irq_set_enable(_irq: IrqId, _enabled: bool) -> AxResult {
             #[cfg(feature = "irq")]
-            ax_hal::irq::set_enable(_irq, _enabled);
+            {
+                ax_hal::irq::set_enable(_irq, _enabled).map_err(map_irq_error)
+            }
+            #[cfg(not(feature = "irq"))]
+            {
+                Err(AxError::Unsupported)
+            }
         }
 
         fn irq_request_shared(
-            _irq: usize,
+            _irq: IrqId,
             _handler: RawIrqHandler,
             _data: core::ptr::NonNull<()>,
         ) -> AxResult<IrqHandle> {
@@ -227,15 +233,37 @@ impl_trait! {
             }
         }
 
+        fn irq_request_shared_disabled(
+            _irq: IrqId,
+            _handler: RawIrqHandler,
+            _data: core::ptr::NonNull<()>,
+        ) -> AxResult<IrqHandle> {
+            #[cfg(feature = "irq")]
+            {
+                ax_hal::irq::request_irq(
+                    _irq,
+                    ax_hal::irq::IrqRequest::new(_handler, _data)
+                        .share_mode(ax_hal::irq::ShareMode::Shared)
+                        .auto_enable(ax_hal::irq::AutoEnable::No),
+                )
+                .map_err(map_irq_error)
+            }
+            #[cfg(not(feature = "irq"))]
+            {
+                Err(AxError::Unsupported)
+            }
+        }
+
         fn irq_request_percpu(
-            _irq: usize,
+            _irq: IrqId,
             _cpus: IrqCpuMask,
             _handler: RawIrqHandler,
             _data: core::ptr::NonNull<()>,
         ) -> AxResult<IrqHandle> {
             #[cfg(feature = "irq")]
             {
-                ax_hal::irq::request_percpu_irq(_irq, _cpus, _handler, _data).map_err(map_irq_error)
+                ax_hal::irq::request_percpu_irq(_irq, _cpus, _handler, _data)
+                    .map_err(map_irq_error)
             }
             #[cfg(not(feature = "irq"))]
             {

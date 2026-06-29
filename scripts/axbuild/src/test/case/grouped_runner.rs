@@ -2,6 +2,7 @@ use std::{fs, path::Path};
 
 use anyhow::{Context, ensure};
 use ostool::run::qemu::QemuConfig;
+use sha2::{Digest, Sha256};
 
 use super::{
     shell::{make_executable, shell_single_quote, write_executable_script},
@@ -54,9 +55,9 @@ pub(crate) fn write_grouped_case_runner_script(
         "failed=0\ntotal={}\nstep=0\n",
         test_commands.len()
     ));
-    for (index, command) in test_commands.iter().enumerate() {
+    for command in test_commands {
         let quoted = shell_single_quote(command);
-        let command_label = shell_single_quote(&format!("command-{}", index + 1));
+        let command_label = shell_single_quote(&grouped_command_label(command));
         let begin = shell_single_quote(&config.begin_marker);
         let passed = shell_single_quote(&config.passed_marker);
         let failed = shell_single_quote(&config.failed_marker);
@@ -108,4 +109,20 @@ fn write_grouped_case_autorun_profile_script(
     fs::write(&script_path, body)
         .with_context(|| format!("failed to write {}", script_path.display()))?;
     make_executable(&script_path)
+}
+
+fn grouped_command_label(command: &str) -> String {
+    let trimmed = command.trim();
+    if !trimmed.contains('\n') && trimmed.len() <= 120 {
+        return trimmed.to_string();
+    }
+
+    let mut hasher = Sha256::new();
+    hasher.update(trimmed.len().to_le_bytes());
+    hasher.update(trimmed.as_bytes());
+    let digest = hasher.finalize();
+    format!(
+        "inline-command:{:02x}{:02x}{:02x}{:02x}",
+        digest[0], digest[1], digest[2], digest[3]
+    )
 }

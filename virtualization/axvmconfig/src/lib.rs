@@ -27,7 +27,7 @@ use alloc::{string::String, vec::Vec};
 use ax_errno::AxResult;
 pub use axvm_types::{
     EmulatedDeviceConfig, EmulatedDeviceType, PassThroughAddressConfig, PassThroughDeviceConfig,
-    VMBootProtocol, VMInterruptMode, VMType, VmMemConfig, VmMemMappingType,
+    PassThroughPortConfig, VMBootProtocol, VMInterruptMode, VMType, VmMemConfig, VmMemMappingType,
 };
 
 mod emu_device_type_serde {
@@ -344,6 +344,73 @@ mod passthrough_address_config_vec_serde {
                 .map(Into::into)
                 .collect(),
         )
+    }
+}
+
+#[cfg_attr(all(feature = "std", any(windows, unix)), derive(schemars::JsonSchema))]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+struct PassThroughPortConfigSerde {
+    #[serde(default)]
+    base: u16,
+    #[serde(default)]
+    length: u16,
+}
+
+impl From<PassThroughPortConfigSerde> for PassThroughPortConfig {
+    fn from(value: PassThroughPortConfigSerde) -> Self {
+        Self {
+            base: value.base,
+            length: value.length,
+        }
+    }
+}
+
+impl From<&PassThroughPortConfig> for PassThroughPortConfigSerde {
+    fn from(value: &PassThroughPortConfig) -> Self {
+        Self {
+            base: value.base,
+            length: value.length,
+        }
+    }
+}
+
+mod passthrough_port_config_vec_serde {
+    use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
+
+    use super::*;
+
+    pub fn serialize<S>(value: &[PassThroughPortConfig], serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let value = value
+            .iter()
+            .map(PassThroughPortConfigSerde::from)
+            .collect::<Vec<_>>();
+        value.serialize(serializer)
+    }
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<Vec<PassThroughPortConfig>, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        Vec::<PassThroughPortConfigSerde>::deserialize(deserializer)?
+            .into_iter()
+            .map(|value| {
+                let port = PassThroughPortConfig::from(value);
+                if port.length == 0 {
+                    return Err(de::Error::custom("passthrough port range has zero length"));
+                }
+                if port.base.checked_add(port.length - 1).is_none() {
+                    return Err(de::Error::custom(alloc::format!(
+                        "passthrough port range overflows: base={:#x}, length={:#x}",
+                        port.base,
+                        port.length
+                    )));
+                }
+                Ok(port)
+            })
+            .collect()
     }
 }
 
@@ -702,6 +769,14 @@ pub struct VMDevicesConfig {
     )]
     #[serde(with = "passthrough_address_config_vec_serde")]
     pub passthrough_addresses: Vec<PassThroughAddressConfig>,
+    /// Host I/O port ranges passed through to the VM.
+    #[serde(default)]
+    #[cfg_attr(
+        all(feature = "std", any(windows, unix)),
+        schemars(with = "Vec<PassThroughPortConfigSerde>")
+    )]
+    #[serde(with = "passthrough_port_config_vec_serde")]
+    pub passthrough_ports: Vec<PassThroughPortConfig>,
 }
 
 /// The configuration structure for the guest VM serialized from a toml file provided by user,

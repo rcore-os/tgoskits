@@ -185,6 +185,16 @@ pub struct PassThroughAddressConfig {
     pub length: usize,
 }
 
+/// A part of `AxVMConfig`, which represents a host I/O port range passed through
+/// to a virtual machine.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct PassThroughPortConfig {
+    /// The first host I/O port number.
+    pub base: u16,
+    /// The number of ports in this range.
+    pub length: u16,
+}
+
 /// Describes how a guest VM should enter its boot image.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub enum VMBootProtocol {

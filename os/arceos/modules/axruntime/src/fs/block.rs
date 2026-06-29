@@ -140,7 +140,7 @@ impl BlockIrqRegistrar for RuntimeBlockIrqRegistrar {
     fn register_shared(
         &self,
         name: String,
-        irq: usize,
+        irq: irq_framework::IrqId,
         action: BlockIrqAction,
     ) -> ax_errno::AxResult<Box<dyn BlockIrqRegistration>> {
         let state = RuntimeBlockIrqState { action };
@@ -176,10 +176,27 @@ fn take_rdif_block_devices() -> Vec<RdifBlockDevice> {
         .into_iter()
         .map(|block| {
             let name = String::from(block.name());
-            let irq_num = block.irq_num();
-            RdifBlockDevice::new(name, irq_num, block.into_interface())
+            let irq = resolve_block_irq(block.irq_cloned());
+            RdifBlockDevice::new(name, irq, block.into_interface())
         })
         .collect()
+}
+
+#[cfg(feature = "irq")]
+fn resolve_block_irq(irq: Option<ax_driver::BindingIrq>) -> Option<irq_framework::IrqId> {
+    let irq = irq?;
+    match crate::irq::resolve_binding_irq(irq) {
+        Ok(id) => Some(id),
+        Err(err) => {
+            warn!("failed to resolve block IRQ: {err:?}");
+            None
+        }
+    }
+}
+
+#[cfg(not(feature = "irq"))]
+fn resolve_block_irq(_irq: Option<ax_driver::BindingIrq>) -> Option<irq_framework::IrqId> {
+    None
 }
 
 #[cfg(test)]

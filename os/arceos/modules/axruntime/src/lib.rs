@@ -450,7 +450,7 @@ pub(crate) fn init_percpu_irq(cpu_id: usize) {
         )
         .expect("failed to register timer IRQ handler");
 
-        #[cfg(feature = "ipi")]
+        #[cfg(any(feature = "ipi", feature = "wake-ipi"))]
         ax_hal::irq::request_percpu_irq(ax_hal::irq::ipi_irq(), cpus, ipi_irq_handler, unit_data())
             .expect("failed to register IPI IRQ handler");
     }
@@ -551,6 +551,14 @@ unsafe fn ipi_irq_handler(
     _data: core::ptr::NonNull<()>,
 ) -> ax_hal::irq::IrqReturn {
     ax_ipi::ipi_handler();
+    ax_hal::irq::IrqReturn::Handled
+}
+
+#[cfg(all(feature = "irq", feature = "wake-ipi", not(feature = "ipi")))]
+unsafe fn ipi_irq_handler(
+    _ctx: ax_hal::irq::IrqContext,
+    _data: core::ptr::NonNull<()>,
+) -> ax_hal::irq::IrqReturn {
     ax_hal::irq::IrqReturn::Handled
 }
 

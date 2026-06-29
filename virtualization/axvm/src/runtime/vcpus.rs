@@ -435,7 +435,9 @@ fn alloc_vcpu_task(vm: &VMRef, vcpu: VCpuRef) -> crate::AxTaskRef {
     );
 
     if let Some(phys_cpu_set) = vcpu.phys_cpu_set() {
-        vcpu_task.set_cpumask(crate::host::task::cpu_mask_from_raw_bits(phys_cpu_set));
+        vcpu_task.set_cpumask(crate::host::task::cpu_mask_from_raw_bits(
+            vcpu_task_cpu_mask(vm.id(), vcpu.id(), phys_cpu_set),
+        ));
     }
 
     // Use Weak reference in TaskExt to avoid keeping VM alive
@@ -448,6 +450,35 @@ fn alloc_vcpu_task(vm: &VMRef, vcpu: VCpuRef) -> crate::AxTaskRef {
         vcpu_task.cpumask()
     );
     crate::host::task::spawn_task(vcpu_task)
+}
+
+fn vcpu_task_cpu_mask(vm_id: usize, vcpu_id: usize, requested_mask: usize) -> usize {
+    let enabled_mask = crate::percpu::enabled_cpu_mask();
+    if enabled_mask == 0 {
+        warn!(
+            "VM[{vm_id}] VCpu[{vcpu_id}] has no initialized host CPU mask; using requested mask \
+             {requested_mask:#x}"
+        );
+        return requested_mask;
+    }
+
+    let initialized_requested_mask = requested_mask & enabled_mask;
+    if initialized_requested_mask != 0 {
+        if initialized_requested_mask != requested_mask {
+            warn!(
+                "VM[{vm_id}] VCpu[{vcpu_id}] requested host CPU mask {requested_mask:#x}, but \
+                 only {initialized_requested_mask:#x} is initialized for AxVM"
+            );
+        }
+        return initialized_requested_mask;
+    }
+
+    let fallback_mask = enabled_mask & enabled_mask.wrapping_neg();
+    warn!(
+        "VM[{vm_id}] VCpu[{vcpu_id}] requested host CPU mask {requested_mask:#x}, but none of \
+         those CPUs initialized AxVM; using initialized host CPU mask {fallback_mask:#x}"
+    );
+    fallback_mask
 }
 
 /// The main routine for VCpu task.
@@ -480,6 +511,8 @@ fn vcpu_run() {
 
         #[cfg(target_arch = "x86_64")]
         super::x86_irq::drain_pending_ioapic_irqs(&vm, &vcpu);
+        #[cfg(target_arch = "x86_64")]
+        super::x86_irq::activate_ready_ioapic_forwarding_routes(&vm);
 
         match vm.run_vcpu(vcpu_id) {
             Ok(exit_reason) => match exit_reason {
@@ -523,12 +556,6 @@ fn vcpu_run() {
                         vcpu.get_arch_vcpu().latch_hvip_from_hw();
                     });
                     crate::check_timer_events();
-                    #[cfg(target_arch = "x86_64")]
-                    super::x86_irq::forward_passthrough_irq_from_vmexit(
-                        &vm,
-                        &vcpu,
-                        vector as usize,
-                    );
                     #[cfg(target_arch = "x86_64")]
                     super::x86_irq::inject_pending_serial_irq(&vm, &vcpu);
                 }
