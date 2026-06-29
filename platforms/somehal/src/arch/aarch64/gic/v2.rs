@@ -1,6 +1,6 @@
 use alloc::format;
 
-use arm_gic_driver::v2::*;
+use arm_gic_driver::{checked_intid, v2::*};
 use irq_framework::IrqId;
 use kernutil::StaticCell;
 use rdrive::{module_driver, probe::OnProbeError, register::ProbeFdt};
@@ -135,23 +135,24 @@ pub fn init_cpu() {
 }
 
 pub fn irq_set_enable(irq: IrqId, enable: bool) -> Result<(), crate::irq::IrqError> {
-    let intid = unsafe { IntId::raw(irq.hwirq.0) };
-    if intid.is_private() {
+    if irq.hwirq.0 < 32 {
+        let intid = checked_private_intid(irq.hwirq.0)?;
         CPU_IF.set_irq_enable(intid, enable);
         return Ok(());
     }
 
     super::with_gic_domain::<Gic, _>(irq.domain, |gic| {
+        let intid = checked_runtime_intid(irq.hwirq.0, gic.max_intid())?;
         gic.set_irq_enable(intid, enable);
-    })
+        Ok(())
+    })?
 }
 
 pub fn irq_set_affinity(
     irq: IrqId,
     affinity: crate::irq::IrqAffinity,
 ) -> Result<(), crate::irq::IrqError> {
-    let intid = unsafe { IntId::raw(irq.hwirq.0) };
-    if intid.is_private() {
+    if irq.hwirq.0 < 32 {
         return Err(crate::irq::IrqError::Unsupported);
     }
     let crate::irq::IrqAffinity::Fixed { cpu_id } = affinity else {
@@ -159,9 +160,19 @@ pub fn irq_set_affinity(
     };
     let target_cpu = super::hardware_cpu_id(cpu_id);
     super::with_gic_domain::<Gic, _>(irq.domain, |gic| {
+        let intid = checked_runtime_intid(irq.hwirq.0, gic.max_intid())?;
         gic.set_target_cpu(intid, TargetList::new(&mut core::iter::once(target_cpu)));
-    })?;
+        Ok::<(), crate::irq::IrqError>(())
+    })??;
     Ok(())
+}
+
+fn checked_private_intid(raw: u32) -> Result<IntId, crate::irq::IrqError> {
+    checked_runtime_intid(raw, 32)
+}
+
+fn checked_runtime_intid(raw: u32, max_intid: u32) -> Result<IntId, crate::irq::IrqError> {
+    checked_intid(raw, max_intid).map_err(|_| crate::irq::IrqError::InvalidIrq)
 }
 
 pub fn send_ipi(raw: usize, target: crate::irq::IpiTarget) {

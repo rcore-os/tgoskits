@@ -1,8 +1,8 @@
 extern crate std;
 
-use crate::IntId;
 #[cfg(target_arch = "aarch64")]
 use crate::version::v3::{LPI, RedistributorV3, RedistributorV4, SGI};
+use crate::{CheckedIntIdError, IntId, checked_intid};
 
 #[cfg(target_arch = "aarch64")]
 #[test]
@@ -42,4 +42,11 @@ fn test_sgi() {
 fn test_ppi() {
     let id = IntId::ppi(17);
     assert_eq!(id.is_private(), true);
+}
+
+#[test]
+fn checked_intid_rejects_special_and_out_of_range_intids() {
+    assert_eq!(checked_intid(1019, 1020).unwrap().to_u32(), 1019);
+    assert_eq!(checked_intid(1020, 1024), Err(CheckedIntIdError));
+    assert_eq!(checked_intid(4096, 1024), Err(CheckedIntIdError));
 }
