@@ -7,7 +7,7 @@ extern crate ax_std as std;
 #[cfg(feature = "ax-std")]
 use core::fmt::Arguments;
 
-#[cfg(feature = "ax-std")]
+#[cfg(all(feature = "ax-std", axtest))]
 use axtest::prelude::*;
 
 #[cfg(feature = "ax-std")]
