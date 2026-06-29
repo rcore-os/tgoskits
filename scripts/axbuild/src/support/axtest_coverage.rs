@@ -7,8 +7,6 @@ use std::{
 
 use ostool::{build::config::Cargo, run::qemu::QemuConfig};
 
-use crate::context::axbuild_tmp_dir;
-
 pub(crate) const AXTEST_COVERAGE_RUSTFLAGS: &[&str] = &[
     "--cfg",
     "axtest_coverage",
@@ -19,7 +17,6 @@ pub(crate) const AXTEST_COVERAGE_RUSTFLAGS: &[&str] = &[
 ];
 
 const COVERAGE_FEATURE: &str = "axtest/coverage";
-const COVERAGE_FILE_NAME: &str = "coverage.profraw";
 const MARKER_PREFIX: &str = "AXTEST_COVERAGE status=ready";
 const SUITE_OK_MARKER: &str = "AXTEST_SUITE_OK";
 pub(crate) const COVERAGE_DONE_MARKER: &str = "AXTEST_COVERAGE_DONE";
@@ -47,20 +44,20 @@ pub(crate) struct AxtestCoveragePaths {
 
 impl AxtestCoveragePaths {
     pub(crate) fn new(workspace_root: &Path, package: &str, target: &str) -> anyhow::Result<Self> {
-        let dir = axbuild_tmp_dir(workspace_root)
-            .join("axtest-coverage")
-            .join(format!(
-                "{}-{}",
-                sanitize_path_component(package),
-                sanitize_path_component(target)
-            ));
+        let arch_triple = Path::new(target)
+            .file_stem()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_else(|| sanitize_path_component(target));
+        let profraw_filename = format!("{package}-{arch_triple}.profraw");
+        let dir = workspace_root.join("coverage");
         fs::create_dir_all(&dir)?;
+        let profraw_path = dir.join(profraw_filename);
         let mut hasher = DefaultHasher::new();
-        dir.hash(&mut hasher);
+        profraw_path.hash(&mut hasher);
         let socket_name = format!("axcov-{}-{:016x}.sock", std::process::id(), hasher.finish());
         Ok(Self {
             monitor_socket: std::env::temp_dir().join(socket_name),
-            profraw_path: dir.join(COVERAGE_FILE_NAME),
+            profraw_path,
         })
     }
 }
