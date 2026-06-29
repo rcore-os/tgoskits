@@ -10,7 +10,7 @@ mod hooks;
 pub mod print;
 
 pub use axtest_macros::{axtest, def_mod, def_test};
-pub use coverage::dump_coverage;
+pub use coverage::{dump_coverage, set_coverage_wait_fn};
 pub use executor::{AxTestExecutor, AxTestInitBuilder, InlineExecutor, init};
 pub use framework::{
     AxTestDescriptor, AxTestExecutionMode, AxTestResult, TestRunResult, TestSummary,
