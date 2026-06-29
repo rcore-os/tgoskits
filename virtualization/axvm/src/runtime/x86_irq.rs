@@ -3,7 +3,7 @@ use core::{
     sync::atomic::{AtomicBool, AtomicUsize, Ordering},
 };
 
-use spin::Mutex;
+use ax_kspin::SpinRaw as Mutex;
 
 use crate::{
     InterruptTriggerMode,
@@ -591,6 +591,8 @@ fn guest_gsi_for_host_irq(host_irq: irq::IrqId) -> Option<usize> {
 mod tests {
     use core::sync::atomic::{AtomicUsize, Ordering};
 
+    use ax_kspin::SpinRaw as Mutex;
+
     use super::{
         COM1_GSI, INVALID_RAW_IRQ, IOAPIC_GSI_COUNT, IOAPIC_HOST_IRQ_EXPLICIT,
         IOAPIC_HOST_IRQ_LEVEL_TRIGGERED, IOAPIC_HOST_IRQS, IOAPIC_IRQ_ACTIVATED,
@@ -605,7 +607,7 @@ mod tests {
     };
     use crate::InterruptTriggerMode;
 
-    static ROUTE_TEST_LOCK: spin::Mutex<()> = spin::Mutex::new(());
+    static ROUTE_TEST_LOCK: Mutex<()> = Mutex::new(());
     static ACTIVATION_COUNT: AtomicUsize = AtomicUsize::new(0);
 
     fn reset_forwarding_routes() {
