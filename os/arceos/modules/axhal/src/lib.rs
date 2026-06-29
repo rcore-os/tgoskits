@@ -43,9 +43,11 @@ mod build_info {
 }
 
 pub mod boot;
+pub mod cache;
 pub mod dtb;
 pub mod mem;
 pub mod percpu;
+pub mod pmu;
 pub mod time;
 
 #[cfg(feature = "tls")]

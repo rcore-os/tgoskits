@@ -113,8 +113,7 @@ impl KprobeAuxiliaryOps for KernelKprobeOps {
                 .expect("uprobe: target address not mapped");
             let kvaddr = ax_runtime::hal::mem::phys_to_virt(paddr);
             action(kvaddr.as_mut_ptr());
-            crate::mm::flush_tlb_range(vaddr.align_down_4k(), PAGE_SIZE_4K);
-            ax_runtime::hal::cpu::asm::flush_icache_all();
+            ax_runtime::hal::cache::sync_kernel_text(vaddr.align_down_4k(), PAGE_SIZE_4K);
             return;
         }
         let addr = VirtAddr::from(address);
@@ -175,8 +174,7 @@ impl KprobeAuxiliaryOps for KernelKprobeOps {
             .expect("uprobe: exec page not mapped after populate");
         let kvaddr = ax_runtime::hal::mem::phys_to_virt(paddr);
         action(kvaddr.as_mut_ptr());
-        crate::mm::flush_tlb_range(vaddr, PAGE_SIZE_4K);
-        ax_runtime::hal::cpu::asm::flush_icache_all();
+        ax_runtime::hal::cache::sync_kernel_text(vaddr, PAGE_SIZE_4K);
         vaddr.as_mut_ptr()
     }
 

@@ -4,8 +4,9 @@
 //! Counting events are one or more concurrent `PERF_TYPE_HARDWARE` /
 //! `PERF_TYPE_RAW` events, each backed by either the dedicated 64-bit cycle
 //! counter (`PMCCNTR_EL0`) or one of the programmable 32-bit event counters
-//! (`PMEVCNTRn_EL0`). The per-CPU sysreg layer lives in [`ax_cpu::pmu`]; this
-//! module allocates counters, configures the requested event, drives
+//! (`PMEVCNTRn_EL0`). PMU capability probing is exposed through `ax_hal::pmu`;
+//! the per-CPU sysreg operations remain in `ax_cpu::pmu`. This module allocates
+//! counters, configures the requested event, drives
 //! `ioctl(ENABLE/DISABLE/RESET)`, and serves `read(perf_fd)` with the timing
 //! fields `perf stat` expects.
 //!
@@ -95,7 +96,7 @@ enum Counter {
 /// indices `0..num_counters`; `cycle_used` guards the dedicated cycle counter.
 #[cfg(target_arch = "aarch64")]
 struct HwAlloc {
-    /// Number of programmable counters (`PMCR_EL0.N`), from [`ax_cpu::pmu::probe`].
+    /// Number of programmable counters (`PMCR_EL0.N`), from `ax_hal::pmu::info`.
     num_counters: usize,
     /// Bitmask of allocated programmable counters (bit `n` ⇒ index `n` in use).
     used: u32,
@@ -852,7 +853,7 @@ fn resolve_sampling(raw: u64, is_freq: bool) -> (u32, u32) {
 #[cfg(target_arch = "aarch64")]
 pub fn perf_event_open_hw(attr: &perf_event_attr, pid: i32) -> AxResult<HwPerfEvent> {
     // No PMUv3 → no hardware events.
-    let Some(info) = ax_cpu::pmu::probe() else {
+    let Some(info) = ax_hal::pmu::info() else {
         return Err(AxError::Unsupported);
     };
 

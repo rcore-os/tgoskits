@@ -43,22 +43,13 @@
 
 use core::{ptr::NonNull, sync::atomic::Ordering};
 
-use ax_hal::irq::{HwIrq, IrqContext, IrqId, IrqReturn};
+use ax_hal::irq::{IrqContext, IrqId, IrqReturn};
 use ax_kernel_guard::NoPreemptIrqSave;
 use ax_task::IrqNotify;
 use kbpf_basic::linux_bpf::perf_event_mmap_page;
 
-/// Architecturally fixed PMUv3 overflow interrupt INTID.
-///
-/// On ARMv8 the PMU overflow interrupt is wired as PPI 7, i.e. GIC INTID 23
-/// (`16 + 7`). This is hardcoded for M2: the proper path is to read the
-/// `interrupts` property of the FDT `arm,armv8-pmuv3` node, which is a deferred
-/// follow-up. On the RK3588 (and the QEMU `virt` machine) the PMU PPI is INTID
-/// 23, matching this constant.
-const PMU_IRQ: HwIrq = HwIrq(23);
-
 fn pmu_irq() -> Result<IrqId, ax_hal::irq::IrqError> {
-    ax_hal::irq::resolve_percpu_irq(PMU_IRQ)
+    ax_hal::pmu::irq()
 }
 
 /// Maximum programmable counter index (matches [`ax_cpu::pmu::counter`] /
@@ -254,7 +245,7 @@ pub fn unregister(n: usize) {
 /// Ensures [`pmu_overflow_handler`] is registered with the IRQ framework and the
 /// PMU overflow line is enabled on the current core.
 ///
-/// Idempotent: the first caller installs the per-CPU action for [`PMU_IRQ`]
+/// Idempotent: the first caller installs the per-CPU action for the PMU IRQ
 /// across all online CPUs. Every caller (re-)enables INTID 23 on the *current*
 /// core. The explicit `set_enable` is required: the framework's per-core line
 /// enable runs at `cpu_online`/boot, before this handler is ever registered, so
