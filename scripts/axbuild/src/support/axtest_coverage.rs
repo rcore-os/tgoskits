@@ -216,7 +216,7 @@ mod capture {
                                 if !line.contains(SUITE_OK_MARKER) {
                                     terminal.write_all(line.as_bytes())?;
                                 }
-                                tee_buf.drain(..=newline + 1);
+                                tee_buf.drain(..=newline);
                             }
                             if let Ok(mut state) = reader_state.lock() {
                                 state.push_bytes(&buf[..n]);
@@ -253,7 +253,16 @@ mod capture {
             if let Some(reader) = self.reader.take() {
                 reader
                     .join()
-                    .map_err(|_| anyhow::anyhow!("axtest coverage capture thread panicked"))??;
+                    .map_err(|payload| {
+                        let msg = payload
+                            .downcast_ref::<&'static str>()
+                            .map(|s| s.to_string())
+                            .or_else(|| {
+                                payload.downcast_ref::<String>().map(|s| s.clone())
+                            })
+                            .unwrap_or_else(|| "<non-string panic payload>".to_string());
+                        anyhow::anyhow!("axtest coverage capture thread panicked: {msg}")
+                    })??;
             }
             let state = self.state.lock().unwrap();
             if let Some(error) = &state.error {
