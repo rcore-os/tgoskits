@@ -550,13 +550,29 @@ pub fn parse(req: &RgaReq) -> Result<ParsedRgaReq> {
 
 impl RgaBufferRef {
     fn image_desc(&self, phys: u64, uv_phys: Option<u64>) -> ImageDesc {
+        let stride_bytes = self.vir_w * self.format.bytes_per_pixel();
+        // Semiplanar YUV (NV12/NV21/NV16) usually arrives as ONE dma-buf: the
+        // `uv_addr` in the rga_req is left 0 (or equal to the luma handle), and
+        // the chroma plane immediately follows luma. Derive its base the way the
+        // hardware expects (`yrgb + luma_extent`) so a single-fd semiplanar source
+        // gets a valid chroma base; otherwise `ImageDesc::validate` rejects it for
+        // a missing UV base. A genuinely separate chroma plane (distinct base) is
+        // honoured as-is.
+        let uv_phys_addr = if self.format.is_semiplanar() {
+            match uv_phys {
+                Some(uv) if uv != phys => Some(uv),
+                _ => Some(phys + stride_bytes as u64 * self.vir_h as u64),
+            }
+        } else {
+            uv_phys
+        };
         ImageDesc {
             width: self.vir_w,
             height: self.vir_h,
-            stride_bytes: self.vir_w * self.format.bytes_per_pixel(),
+            stride_bytes,
             format: self.format,
             phys_addr: phys,
-            uv_phys_addr: uv_phys,
+            uv_phys_addr,
         }
     }
 
@@ -914,6 +930,31 @@ mod tests {
         match op {
             RgaOperation::Blit(b) => {
                 assert_eq!(b.src.uv_phys_addr, Some(uv));
+            }
+            _ => panic!("expected Blit"),
+        }
+    }
+
+    #[test]
+    fn into_operation_nv12_single_fd_derives_uv() {
+        // Single-fd NV12 (the common librga handle-mode case): the rga_req carries
+        // no separate chroma base (uv == None). image_desc must derive it as
+        // `yrgb + stride*height` so validate() accepts the semiplanar source.
+        let req = RgaReq {
+            render_mode: RENDER_BITBLT,
+            src: img(0xa, 640, 480, 640, 0x0100_0000),
+            dst: img(0x2, 640, 480, 640, 0x0300_0000),
+            ..Default::default()
+        };
+        let p = parse(&req).expect("parse failed");
+        let src_phys: u64 = 0x0100_0000;
+        let op = p
+            .into_operation(src_phys, None, 0x0300_0000, None)
+            .expect("into_operation failed");
+        match op {
+            RgaOperation::Blit(b) => {
+                // stride 640 * 480 rows = luma extent immediately preceding chroma.
+                assert_eq!(b.src.uv_phys_addr, Some(src_phys + 640 * 480));
             }
             _ => panic!("expected Blit"),
         }
