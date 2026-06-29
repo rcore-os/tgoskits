@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.1](https://github.com/rcore-os/tgoskits/compare/scope-local-v0.4.0...scope-local-v0.4.1) - 2026-06-27
+
+### Fixed
+
+- *(locking)* remove spin mutex usage from kernel paths ([#1380](https://github.com/rcore-os/tgoskits/pull/1380))
+
 ## [0.4.0](https://github.com/rcore-os/tgoskits/compare/scope-local-v0.3.8...scope-local-v0.4.0) - 2026-06-09
 
 ### Added

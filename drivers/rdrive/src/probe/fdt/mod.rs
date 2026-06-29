@@ -1,11 +1,13 @@
 use alloc::{
-    collections::{BTreeMap, btree_set::BTreeSet},
+    collections::{BTreeMap, btree_map::Entry, btree_set::BTreeSet},
+    string::String,
     vec::Vec,
 };
 use core::ptr::NonNull;
 
-pub use fdt_edit::{ClockRef, Fdt, InterruptRef, NodeType, Phandle, RegInfo, Status};
-use spin::{Mutex, Once};
+use ax_kspin::SpinRaw as Mutex;
+pub use fdt_edit::{ClockRef, Fdt, InterruptRef, NodeId, NodeType, Phandle, RegInfo, Status};
+use spin::Once;
 
 use super::ProbeError;
 use crate::{
@@ -108,7 +110,8 @@ pub type FnOnProbe = for<'a> fn(ProbeFdt<'a>) -> Result<(), OnProbeError>;
 pub struct System {
     fdt: Fdt,
     phandle_2_device_id: BTreeMap<Phandle, DeviceId>,
-    probed_names: Mutex<BTreeSet<&'static str>>,
+    populated_paths: Mutex<BTreeMap<String, DeviceId>>,
+    populated_nodes: Mutex<BTreeSet<NodeId>>,
 }
 
 unsafe impl Send for System {}
@@ -120,6 +123,23 @@ impl System {
 
     pub fn phandle_to_device_id(&self, phandle: Phandle) -> Option<DeviceId> {
         self.phandle_2_device_id.get(&phandle).copied()
+    }
+
+    pub fn path_to_device_id(&self, path: &str) -> Option<DeviceId> {
+        self.populated_paths.lock().get(path).copied()
+    }
+
+    pub fn note_device_path(&self, path: &str, device_id: DeviceId) -> bool {
+        if self.fdt.get_by_path(path).is_none() {
+            return false;
+        }
+        match self.populated_paths.lock().entry(String::from(path)) {
+            Entry::Vacant(entry) => {
+                entry.insert(device_id);
+                true
+            }
+            Entry::Occupied(entry) => *entry.get() == device_id,
+        }
     }
 
     pub fn get_by_phandle(&self, phandle: Phandle) -> Option<NodeType<'_>> {
@@ -142,7 +162,8 @@ impl System {
         Ok(Self {
             fdt,
             phandle_2_device_id,
-            probed_names: Mutex::new(BTreeSet::new()),
+            populated_paths: Mutex::new(BTreeMap::new()),
+            populated_nodes: Mutex::new(BTreeSet::new()),
         })
     }
 
@@ -156,6 +177,7 @@ impl System {
 
     fn get_fdt_match_nodes<'a>(&'a self, register: &DriverRegister) -> Vec<ProbeFdtInfo<'a>> {
         let mut out = Vec::new();
+        let mut matched_nodes = BTreeSet::new();
         for node in self.fdt.all_nodes() {
             if matches!(node.as_node().status(), Some(Status::Disabled)) {
                 continue;
@@ -173,7 +195,7 @@ impl System {
                 };
 
                 for compatible in &node_compatibles {
-                    if compatibles.contains(compatible) {
+                    if compatibles.contains(compatible) && matched_nodes.insert(node.id()) {
                         out.push(ProbeFdtInfo {
                             name: register.name,
                             node,
@@ -193,7 +215,8 @@ impl System {
         let node_ls = self.get_fdt_match_nodes(register);
         let mut out = Vec::new();
         for node_info in node_ls {
-            if self.probed_names.lock().contains(node_info.name) {
+            let node_id = node_info.node.id();
+            if self.populated_nodes.lock().contains(&node_id) {
                 continue;
             }
             let node = node_info.node;
@@ -224,7 +247,8 @@ impl System {
             ));
 
             if res.is_ok() {
-                self.probed_names.lock().insert(node_info.name);
+                self.populated_paths.lock().insert(node.path(), id);
+                self.populated_nodes.lock().insert(node_id);
             }
 
             out.push(res);

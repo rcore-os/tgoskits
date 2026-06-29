@@ -18,7 +18,7 @@ use super::{
     gdt,
     trap::{IRQ_VECTOR_END, IRQ_VECTOR_START, LEGACY_SYSCALL_VECTOR, err_code_to_flags},
 };
-pub use crate::uspace_common::{ExceptionKind, ReturnReason};
+pub use crate::uspace_common::{ExceptionKind, ExceptionSyndrome, ReturnReason};
 
 /// Context to enter user space.
 #[derive(Debug, Clone, Copy)]
@@ -57,6 +57,22 @@ impl UserContext {
         flags.insert(RFlags::INTERRUPT_FLAG);
         flags.remove(RFlags::TRAP_FLAG | RFlags::NESTED_TASK | RFlags::RESUME_FLAG);
         self.tf.rflags = flags.bits();
+    }
+
+    /// Clears the single-step trap flag after a debug exception.
+    ///
+    /// Returns whether the flag had been set in the saved user context.
+    pub fn clear_single_step_after_debug(&mut self) -> bool {
+        let mut flags = RFlags::from_bits_truncate(self.tf.rflags);
+        let was_set = flags.contains(RFlags::TRAP_FLAG);
+        flags.remove(RFlags::TRAP_FLAG);
+        self.tf.rflags = flags.bits();
+        was_set
+    }
+
+    /// Returns the syscall instruction length in bytes.
+    pub const fn syscall_insn_len(&self) -> usize {
+        2
     }
 
     /// Gets the TLS area.
@@ -146,12 +162,30 @@ pub struct ExceptionInfo {
 }
 
 impl ExceptionInfo {
+    /// Returns the faulting virtual address when the CPU records one.
+    pub const fn fault_addr(&self) -> Option<usize> {
+        Some(self.cr2)
+    }
+
+    /// Returns architecture-neutral syndrome information for this exception.
+    pub const fn syndrome(&self) -> ExceptionSyndrome {
+        ExceptionSyndrome {
+            raw: self.error_code,
+            class: self.vector as u64,
+            iss: 0,
+        }
+    }
+
     /// Returns a generalized kind of this exception.
     pub fn kind(&self) -> ExceptionKind {
         match ExceptionVector::try_from(self.vector) {
             Ok(ExceptionVector::Debug) => ExceptionKind::Debug,
             Ok(ExceptionVector::Breakpoint) => ExceptionKind::Breakpoint,
             Ok(ExceptionVector::InvalidOpcode) => ExceptionKind::IllegalInstruction,
+            // `#DE`: integer divide-by-zero / `INT_MIN / -1`. Linux delivers this
+            // as SIGFPE/FPE_INTDIV; the HotSpot JVM's x86 interpreter and JIT
+            // rely on the trap to raise Java `ArithmeticException`.
+            Ok(ExceptionVector::Division) => ExceptionKind::ArithmeticError,
             _ => ExceptionKind::Other,
         }
     }

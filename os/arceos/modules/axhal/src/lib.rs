@@ -38,10 +38,16 @@ extern crate ax_memory_addr;
 mod platform_select;
 pub use platform_select::selected as platform;
 
+mod build_info {
+    include!(concat!(env!("OUT_DIR"), "/build_info.rs"));
+}
+
 pub mod boot;
+pub mod cache;
 pub mod dtb;
 pub mod mem;
 pub mod percpu;
+pub mod pmu;
 pub mod time;
 
 #[cfg(feature = "tls")]
@@ -55,16 +61,19 @@ pub mod paging;
 
 /// Console input and output.
 pub mod console {
+    pub use ax_plat::console::{
+        ConsoleDeviceId, ConsoleDeviceIdError, ConsoleDeviceIdResult, claim_runtime_output,
+        device_id, read_bytes, write_bytes, write_text_bytes,
+    };
     #[cfg(feature = "irq")]
     pub use ax_plat::console::{ConsoleIrqEvent, handle_irq, irq_num, set_input_irq_enabled};
-    pub use ax_plat::console::{read_bytes, write_bytes, write_text_bytes};
 }
 
 /// CPU power management.
 pub mod power {
     #[cfg(feature = "smp")]
     pub use ax_plat::power::cpu_boot;
-    pub use ax_plat::power::system_off;
+    pub use ax_plat::power::{system_off, system_reset};
 }
 
 /// Trap handling.
@@ -91,9 +100,9 @@ pub use ax_cpu as cpu;
 pub use ax_cpu::asm;
 #[cfg(feature = "uspace")]
 pub use ax_cpu::uspace;
-pub use ax_plat::init::init_later;
 #[cfg(feature = "smp")]
 pub use ax_plat::init::init_later_secondary;
+pub use ax_plat::{init::init_later, platform::platform_name};
 
 /// Initializes the platform and boot argument.
 /// This function should be called as early as possible.
@@ -115,8 +124,7 @@ pub fn init_early_secondary(cpu_id: usize) {
 /// When SMP is disabled, this function always returns 1.
 ///
 /// When SMP is enabled, it's the smaller one between the platform-declared CPU
-/// number [`ax_plat::power::cpu_num`] and the configured maximum CPU number
-/// `ax_config::plat::MAX_CPU_NUM`.
+/// number [`ax_plat::power::cpu_num`] and the build-time CPU capacity.
 ///
 /// This value is determined during the BSP initialization phase.
 pub fn cpu_num() -> usize {
@@ -127,7 +135,7 @@ pub fn cpu_num() -> usize {
         /// The number of CPUs in the system. Based on the number declared by the
         /// platform crate and limited by the configured maximum CPU number.
         static CPU_NUM: LazyLock<usize> = LazyLock::new(|| {
-            let max_cpu_num = ax_config::plat::MAX_CPU_NUM;
+            let max_cpu_num = build_info::CPU_CAPACITY;
             let plat_cpu_num = ax_plat::power::cpu_num();
             let cpu_num = plat_cpu_num.min(max_cpu_num);
 

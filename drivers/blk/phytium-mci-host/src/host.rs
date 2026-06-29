@@ -1,8 +1,10 @@
+use alloc::sync::Arc;
 use core::{
     ptr::NonNull,
-    sync::atomic::{self, AtomicBool, AtomicU32, Ordering},
+    sync::atomic::{self, AtomicBool, AtomicU32, AtomicU64, Ordering},
 };
 
+use dma_api::DeviceDma;
 use mmio_api::MmioRaw;
 use sdmmc_protocol::{
     error::{Error, ErrorContext, Phase},
@@ -22,9 +24,9 @@ use crate::{
 
 pub const DEFAULT_FIFO_OFFSET: usize = 0x200;
 const DEFAULT_FIFO_WORD_DEPTH: u32 = 128;
-const FIFO_THRESHOLD: u32 = (2 << 28) | (7 << 16) | 0x100;
-const CARD_READ_THRESHOLD_ENABLE: u32 = 1;
-const CARD_READ_THRESHOLD_DEPTH8: u32 = 1 << 23;
+pub(crate) const FIFO_THRESHOLD: u32 = (2 << 28) | (7 << 16) | 0x100;
+pub(crate) const CARD_READ_THRESHOLD_ENABLE: u32 = 1;
+pub(crate) const CARD_READ_THRESHOLD_DEPTH8: u32 = 1 << 23;
 const BMOD_SOFTWARE_RESET: u32 = 1;
 const RESET_POLL_LIMIT: usize = 1_000_000;
 const CLOCK_POLL_LIMIT: usize = 1_000_000;
@@ -38,68 +40,167 @@ pub(crate) struct PendingData {
 }
 
 pub(crate) struct IrqState {
-    pending_status: AtomicU32,
-    pending_idmac_status: AtomicU32,
+    status_mailbox: AtomicU64,
+    idmac_mailbox: AtomicU64,
+    next_generation: AtomicU32,
 }
+
+const IRQ_GENERATION_SHIFT: u64 = 32;
+const IRQ_STATUS_MASK: u64 = u32::MAX as u64;
 
 impl IrqState {
     const fn new() -> Self {
         Self {
-            pending_status: AtomicU32::new(0),
-            pending_idmac_status: AtomicU32::new(0),
+            status_mailbox: AtomicU64::new(0),
+            idmac_mailbox: AtomicU64::new(0),
+            next_generation: AtomicU32::new(0),
         }
     }
 
-    pub(crate) fn cache_status(&self, status: u32) {
+    pub(crate) fn begin_request(&self) {
+        let generation = self.next_generation();
+        let clean = pack_mailbox(generation, 0);
+        self.idmac_mailbox.store(clean, Ordering::Release);
+        self.status_mailbox.store(clean, Ordering::Release);
+    }
+
+    pub(crate) fn end_request(&self) {
+        self.status_mailbox.store(0, Ordering::Release);
+        self.idmac_mailbox.store(0, Ordering::Release);
+    }
+
+    pub(crate) fn cache_if_current(&self, generation: u32, status: u32, idmac_status: u32) {
+        if generation == 0 {
+            return;
+        }
         if status != 0 {
-            self.pending_status.fetch_or(status, Ordering::AcqRel);
+            cache_mailbox_if_current(&self.status_mailbox, generation, status);
+        }
+        if idmac_status != 0 {
+            cache_mailbox_if_current(&self.idmac_mailbox, generation, idmac_status);
         }
     }
 
-    pub(crate) fn cache_idmac_status(&self, status: u32) {
-        if status != 0 {
-            self.pending_idmac_status.fetch_or(status, Ordering::AcqRel);
-        }
+    pub(crate) fn generation(&self) -> u32 {
+        mailbox_generation(self.status_mailbox.load(Ordering::Acquire))
     }
 
     pub(crate) fn take_status(&self, mask: u32) -> u32 {
-        take_cached_bits(&self.pending_status, mask)
+        take_mailbox_bits(&self.status_mailbox, mask)
     }
 
     pub(crate) fn take_idmac_status(&self, mask: u32) -> u32 {
-        take_cached_bits(&self.pending_idmac_status, mask)
+        take_mailbox_bits(&self.idmac_mailbox, mask)
     }
 
     pub(crate) fn clear_status(&self, mask: u32) {
-        self.pending_status.fetch_and(!mask, Ordering::AcqRel);
+        clear_mailbox_bits(&self.status_mailbox, mask);
     }
 
     pub(crate) fn clear_all(&self) {
-        self.pending_status.store(0, Ordering::Release);
-        self.pending_idmac_status.store(0, Ordering::Release);
+        clear_mailbox_bits(&self.status_mailbox, u32::MAX);
+        clear_mailbox_bits(&self.idmac_mailbox, u32::MAX);
     }
 
     #[cfg(test)]
     pub(crate) fn pending_status(&self) -> u32 {
-        self.pending_status.load(Ordering::Acquire)
+        mailbox_status(self.status_mailbox.load(Ordering::Acquire))
     }
 
     #[cfg(test)]
     pub(crate) fn pending_idmac_status(&self) -> u32 {
-        self.pending_idmac_status.load(Ordering::Acquire)
+        mailbox_status(self.idmac_mailbox.load(Ordering::Acquire))
+    }
+
+    fn next_generation(&self) -> u32 {
+        let mut cur = self.next_generation.load(Ordering::Acquire);
+        loop {
+            let mut next = cur.wrapping_add(1);
+            if next == 0 {
+                next = 1;
+            }
+            match self.next_generation.compare_exchange_weak(
+                cur,
+                next,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => return next,
+                Err(observed) => cur = observed,
+            }
+        }
     }
 }
 
-fn take_cached_bits(cache: &AtomicU32, mask: u32) -> u32 {
-    let mut cur = cache.load(Ordering::Acquire);
+fn pack_mailbox(generation: u32, status: u32) -> u64 {
+    ((generation as u64) << IRQ_GENERATION_SHIFT) | status as u64
+}
+
+fn mailbox_generation(value: u64) -> u32 {
+    (value >> IRQ_GENERATION_SHIFT) as u32
+}
+
+fn mailbox_status(value: u64) -> u32 {
+    (value & IRQ_STATUS_MASK) as u32
+}
+
+fn cache_mailbox_if_current(mailbox: &AtomicU64, generation: u32, status: u32) {
+    let mut cur = mailbox.load(Ordering::Acquire);
     loop {
-        let taken = cur & mask;
+        if mailbox_generation(cur) != generation {
+            return;
+        }
+        let next = pack_mailbox(generation, mailbox_status(cur) | status);
+        match mailbox.compare_exchange_weak(cur, next, Ordering::AcqRel, Ordering::Acquire) {
+            Ok(_) => return,
+            Err(observed) => cur = observed,
+        }
+    }
+}
+
+fn take_mailbox_bits(mailbox: &AtomicU64, mask: u32) -> u32 {
+    let mut cur = mailbox.load(Ordering::Acquire);
+    loop {
+        let status = mailbox_status(cur);
+        let taken = status & mask;
         if taken == 0 {
             return 0;
         }
-        match cache.compare_exchange_weak(cur, cur & !mask, Ordering::AcqRel, Ordering::Acquire) {
+        let next = pack_mailbox(mailbox_generation(cur), status & !mask);
+        match mailbox.compare_exchange_weak(cur, next, Ordering::AcqRel, Ordering::Acquire) {
             Ok(_) => return taken,
-            Err(next) => cur = next,
+            Err(observed) => cur = observed,
+        }
+    }
+}
+
+fn clear_mailbox_bits(mailbox: &AtomicU64, mask: u32) {
+    let mut cur = mailbox.load(Ordering::Acquire);
+    loop {
+        let next = pack_mailbox(mailbox_generation(cur), mailbox_status(cur) & !mask);
+        match mailbox.compare_exchange_weak(cur, next, Ordering::AcqRel, Ordering::Acquire) {
+            Ok(_) => return,
+            Err(observed) => cur = observed,
+        }
+    }
+}
+
+pub(crate) struct IrqCore {
+    pub(crate) regs: VolatilePtr<'static, RegisterBlock>,
+    pub(crate) state: IrqState,
+}
+
+// SAFETY: `IrqCore` is shared only between task-side polling and the IRQ
+// top-half. MMIO accesses are volatile and event sharing goes through atomics.
+unsafe impl Send for IrqCore {}
+// SAFETY: See the `Send` impl.
+unsafe impl Sync for IrqCore {}
+
+impl IrqCore {
+    fn new(regs: VolatilePtr<'static, RegisterBlock>) -> Self {
+        Self {
+            regs,
+            state: IrqState::new(),
         }
     }
 }
@@ -112,9 +213,14 @@ pub struct PhytiumMci {
     pub(crate) pending_data: Option<PendingData>,
     pub(crate) data_cmd_index: u8,
     pub(crate) data_blocks_remaining: u32,
+    pub(crate) dma: Option<DeviceDma>,
+    pub(crate) dma_mask: u64,
+    pub(crate) dma_poisoned: bool,
     pub(crate) use_hold_reg: bool,
-    pub(crate) irq_state: IrqState,
+    pub(crate) irq: Arc<IrqCore>,
     completion_irq_enabled: AtomicBool,
+    pub(crate) host2_next_id: u64,
+    pub(crate) host2_active_id: Option<u64>,
 }
 
 impl PhytiumMci {
@@ -132,9 +238,14 @@ impl PhytiumMci {
             pending_data: None,
             data_cmd_index: 0,
             data_blocks_remaining: 0,
+            dma: None,
+            dma_mask: u32::MAX as u64,
+            dma_poisoned: false,
             use_hold_reg: true,
-            irq_state: IrqState::new(),
+            irq: Arc::new(IrqCore::new(regs)),
             completion_irq_enabled: AtomicBool::new(false),
+            host2_next_id: 0,
+            host2_active_id: None,
         }
     }
 
@@ -145,6 +256,28 @@ impl PhytiumMci {
     pub unsafe fn new_from_addr(base_addr: usize) -> Self {
         let base = NonNull::new(base_addr as *mut u8).expect("MMIO base address must be non-null");
         unsafe { Self::new(base) }
+    }
+
+    /// Install a DMA capability used by high-level data-transfer hooks.
+    ///
+    /// Once installed, `SdioHost` and `sdio_host2::SdioHost` data transactions
+    /// try the internal IDMAC first for 512-byte block I/O and fall back to the
+    /// FIFO state machine when the DMA path is not applicable.
+    pub fn set_dma(&mut self, dma: DeviceDma) {
+        self.dma_mask = dma.dma_mask();
+        self.dma = Some(dma);
+    }
+
+    pub(crate) fn check_not_poisoned(&self) -> Result<(), Error> {
+        if self.dma_poisoned {
+            Err(Error::BusError(ErrorContext::new(Phase::DataRead)))
+        } else {
+            Ok(())
+        }
+    }
+
+    pub(crate) fn poison_dma(&mut self) {
+        self.dma_poisoned = true;
     }
 
     pub fn reset_and_init(&mut self) -> Result<(), Error> {
@@ -165,7 +298,7 @@ impl PhytiumMci {
         self.regs.idinten().write(0);
         self.clear_all_int_status();
         self.regs.idsts().write(u32::MAX);
-        self.irq_state.clear_all();
+        self.irq.state.clear_all();
         self.completion_irq_enabled.store(false, Ordering::Release);
 
         self.regs.ctype().write(CType::new());
@@ -181,6 +314,16 @@ impl PhytiumMci {
         self.program_timing(TimingTable::sd_for_speed(
             sdmmc_protocol::sdio::ClockSpeed::Identification,
         )?)?;
+        self.dma_poisoned = false;
+        Ok(())
+    }
+
+    pub(crate) fn reset_and_init_preserving_irq(&mut self) -> Result<(), Error> {
+        let was_irq_enabled = self.completion_irq_enabled();
+        self.reset_and_init()?;
+        if was_irq_enabled {
+            self.enable_completion_irq();
+        }
         Ok(())
     }
 
@@ -269,14 +412,17 @@ impl PhytiumMci {
         self.regs.ctrl().update(|r| r.with_int_enable(false));
     }
 
+    pub(crate) fn clear_completion_irq_enabled(&self) {
+        self.completion_irq_enabled.store(false, Ordering::Release);
+    }
+
     pub fn completion_irq_enabled(&self) -> bool {
         self.completion_irq_enabled.load(Ordering::Acquire)
     }
 
     pub fn irq_handle(&self) -> PhytiumMciIrqHandle {
         PhytiumMciIrqHandle {
-            regs: self.regs,
-            irq_state: &self.irq_state,
+            irq: self.irq.clone(),
         }
     }
 
@@ -388,7 +534,7 @@ impl PhytiumMci {
         (self.base_addr + self.fifo_offset) as *mut u32
     }
 
-    fn write_ext_reg(&self, offset: usize, value: u32) {
+    pub(crate) fn write_ext_reg(&self, offset: usize, value: u32) {
         let ptr = (self.base_addr + offset) as *mut u32;
         unsafe {
             ptr.write_volatile(value);
@@ -411,16 +557,16 @@ impl sdmmc_protocol::sdio::SdioIrqHandle for PhytiumMciIrqHandle {
     type Event = Event;
 
     fn handle_irq(&self) -> Self::Event {
-        let raw = self.regs.rintsts().read().into_bits();
-        let idsts = self.regs.idsts().read();
+        let generation = self.irq.state.generation();
+        let raw = self.irq.regs.rintsts().read().into_bits();
+        let idsts = self.irq.regs.idsts().read();
         if raw != 0 {
-            self.regs.rintsts().write(RIntSts::from_bits(raw));
-            unsafe { &*self.irq_state }.cache_status(raw);
+            self.irq.regs.rintsts().write(RIntSts::from_bits(raw));
         }
         if idsts != 0 {
-            self.regs.idsts().write(idsts);
-            unsafe { &*self.irq_state }.cache_idmac_status(idsts);
+            self.irq.regs.idsts().write(idsts);
         }
+        self.irq.state.cache_if_current(generation, raw, idsts);
 
         PhytiumMci::event_from_raw_irq(raw, idsts)
     }
@@ -467,6 +613,8 @@ mod tests {
         let mut mmio = [0u32; 256];
         let base = NonNull::new(mmio.as_mut_ptr().cast()).unwrap();
         let host = unsafe { PhytiumMci::new(base) };
+        host.irq.state.begin_request();
+        let old_generation = host.irq.state.generation();
         const IDSTS_WORD: usize = 36;
         const IDSTS_RECEIVE: u32 = 1 << 1;
 
@@ -477,7 +625,16 @@ mod tests {
         };
 
         assert_eq!(host.handle_irq(), crate::Event::TransferComplete);
-        assert_eq!(host.irq_state.pending_idmac_status(), IDSTS_RECEIVE);
-        assert_eq!(host.irq_state.pending_status(), 0);
+        assert_eq!(host.irq.state.pending_idmac_status(), IDSTS_RECEIVE);
+        assert_eq!(host.irq.state.pending_status(), 0);
+
+        let _ = host.irq.state.take_idmac_status(IDSTS_RECEIVE);
+        host.irq.state.end_request();
+        host.irq.state.begin_request();
+        assert_ne!(host.irq.state.generation(), old_generation);
+        host.irq
+            .state
+            .cache_if_current(old_generation, 0, IDSTS_RECEIVE);
+        assert_eq!(host.irq.state.pending_idmac_status(), 0);
     }
 }

@@ -25,12 +25,13 @@
 //! module. The required order is `SOCKET_SET -> listen-table bucket`; this file
 //! must never acquire the outer service lock.
 
-use alloc::{boxed::Box, collections::VecDeque, sync::Arc, task::Wake, vec, vec::Vec};
+use alloc::{collections::VecDeque, sync::Arc, vec, vec::Vec};
 use core::task::Waker;
 
 use ax_errno::{AxError, AxResult};
 use ax_sync::Mutex;
 use axpoll::{IoEvents, PollSet};
+use hashbrown::HashMap;
 use smoltcp::{
     iface::{SocketHandle, SocketSet},
     socket::tcp::{self, SocketBuffer, State},
@@ -38,11 +39,10 @@ use smoltcp::{
 };
 
 use crate::{
-    SOCKET_SET,
+    DeferPollWake, SOCKET_SET,
+    addr::listen_addrs_conflict,
     consts::{LISTEN_QUEUE_SIZE, TCP_RX_BUF_LEN, TCP_TX_BUF_LEN},
 };
-
-const PORT_NUM: usize = 65536;
 
 struct ListenTableEntryInner {
     /// Local endpoint accepted by this listener.
@@ -50,7 +50,7 @@ struct ListenTableEntryInner {
     /// Maximum pending child sockets.
     backlog: usize,
     /// Pending smoltcp child sockets waiting for accept().
-    syn_queue: VecDeque<PendingTcp>,
+    syn_queue: VecDeque<AcceptedTcp>,
     /// Wakes accept/poll waiters when child readiness changes.
     accept_poll: Arc<PollSet>,
 }
@@ -64,28 +64,6 @@ pub(crate) struct AcceptedTcp {
     pub(crate) local_endpoint: IpEndpoint,
     /// Remote endpoint observed for this connection.
     pub(crate) remote_endpoint: IpEndpoint,
-}
-
-#[derive(Clone, Copy)]
-struct PendingTcp {
-    accepted: AcceptedTcp,
-}
-
-struct AcceptWake {
-    poll: Arc<PollSet>,
-}
-
-impl Wake for AcceptWake {
-    fn wake(self: Arc<Self>) {
-        self.wake_by_ref();
-    }
-
-    fn wake_by_ref(self: &Arc<Self>) {
-        // smoltcp invokes this from the net poll task context after publishing
-        // child socket readiness. Defer the actual PollSet wake until the net
-        // worker has released service/socket locks.
-        crate::defer_poll_wake(self.poll.clone(), IoEvents::IN);
-    }
 }
 
 impl ListenTableEntryInner {
@@ -115,15 +93,15 @@ impl ListenTableEntryInner {
     fn into_handles(self) -> Vec<SocketHandle> {
         self.syn_queue
             .into_iter()
-            .map(|pending| pending.accepted.handle)
+            .map(|pending| pending.handle)
             .collect()
     }
 
     /// Returns whether a child socket for this endpoint pair already exists.
     fn has_pending(&self, src: IpEndpoint, dst: IpEndpoint) -> bool {
-        self.syn_queue.iter().any(|pending| {
-            pending.accepted.local_endpoint == dst && pending.accepted.remote_endpoint == src
-        })
+        self.syn_queue
+            .iter()
+            .any(|pending| pending.local_endpoint == dst && pending.remote_endpoint == src)
     }
 }
 
@@ -131,25 +109,23 @@ type ListenTableEntry = Arc<Mutex<Vec<ListenTableEntryInner>>>;
 
 /// Per-port table of active TCP listeners.
 pub struct ListenTable {
-    tcp: Box<[ListenTableEntry]>,
+    tcp: Mutex<HashMap<u16, ListenTableEntry>>,
 }
 
 impl ListenTable {
     /// Creates an empty listen table indexed by TCP port.
     pub fn new() -> Self {
-        let tcp = unsafe {
-            let mut buf = Box::new_uninit_slice(PORT_NUM);
-            for i in 0..PORT_NUM {
-                buf[i].write(Arc::default());
-            }
-            buf.assume_init()
-        };
-        Self { tcp }
+        Self {
+            tcp: Mutex::new(HashMap::new()),
+        }
     }
 
     /// Checks whether a listen endpoint can be registered.
     pub fn can_listen(&self, listen_endpoint: IpListenEndpoint) -> bool {
-        self.tcp[listen_endpoint.port as usize]
+        let Some(entries) = self.listen_entry(listen_endpoint.port) else {
+            return true;
+        };
+        entries
             .lock()
             .iter()
             .all(|entry| !listen_addrs_conflict(entry.listen_endpoint.addr, listen_endpoint.addr))
@@ -159,7 +135,8 @@ impl ListenTable {
     pub fn listen(&self, listen_endpoint: IpListenEndpoint, backlog: usize) -> AxResult {
         let port = listen_endpoint.port;
         assert_ne!(port, 0);
-        let mut entries = self.tcp[port as usize].lock();
+        let entries = self.listen_entry_or_create(port);
+        let mut entries = entries.lock();
         if entries
             .iter()
             .any(|entry| listen_addrs_conflict(entry.listen_endpoint.addr, listen_endpoint.addr))
@@ -174,23 +151,34 @@ impl ListenTable {
     /// Removes a listener and destroys any unaccepted child sockets.
     pub fn unlisten(&self, listen_endpoint: IpListenEndpoint) {
         debug!("TCP socket unlisten on {}", listen_endpoint);
-        let handles = {
-            let mut entries = self.tcp[listen_endpoint.port as usize].lock();
+        let (handles, remove_port) = {
+            let Some(entries) = self.listen_entry(listen_endpoint.port) else {
+                return;
+            };
+            let mut entries = entries.lock();
             let Some(idx) = entries
                 .iter()
                 .position(|entry| entry.listen_endpoint == listen_endpoint)
             else {
                 return;
             };
-            entries.swap_remove(idx).into_handles()
+            let handles = entries.swap_remove(idx).into_handles();
+            (handles, entries.is_empty())
         };
+        if remove_port {
+            self.tcp.lock().remove(&listen_endpoint.port);
+        }
         for handle in handles {
             SOCKET_SET.remove(handle);
         }
     }
 
-    fn listen_entry(&self, port: u16) -> Arc<Mutex<Vec<ListenTableEntryInner>>> {
-        self.tcp[port as usize].clone()
+    fn listen_entry(&self, port: u16) -> Option<ListenTableEntry> {
+        self.tcp.lock().get(&port).cloned()
+    }
+
+    fn listen_entry_or_create(&self, port: u16) -> ListenTableEntry {
+        self.tcp.lock().entry(port).or_default().clone()
     }
 
     // Callers pass the locked SocketSet to keep the global order:
@@ -201,18 +189,20 @@ impl ListenTable {
         listen_endpoint: IpListenEndpoint,
         sockets: &SocketSet<'_>,
     ) -> AxResult<bool> {
-        let entries = self.listen_entry(listen_endpoint.port);
+        let Some(entries) = self.listen_entry(listen_endpoint.port) else {
+            warn!("accept before listen");
+            return Err(AxError::InvalidInput);
+        };
         let table = entries.lock();
         if let Some(entry) = table
             .iter()
             .find(|entry| entry.listen_endpoint == listen_endpoint)
         {
-            return Ok(entry
+            Ok(entry
                 .syn_queue
                 .iter()
-                .any(|pending| is_acceptable(sockets, pending.accepted.handle)));
-        }
-        {
+                .any(|pending| is_acceptable(sockets, pending.handle)))
+        } else {
             warn!("accept before listen");
             Err(AxError::InvalidInput)
         }
@@ -224,7 +214,10 @@ impl ListenTable {
         listen_endpoint: IpListenEndpoint,
         sockets: &mut SocketSet<'_>,
     ) -> AxResult<AcceptedTcp> {
-        let entries = self.listen_entry(listen_endpoint.port);
+        let Some(entries) = self.listen_entry(listen_endpoint.port) else {
+            warn!("accept before listen");
+            return Err(AxError::InvalidInput);
+        };
         let mut table = entries.lock();
         let Some(entry) = table
             .iter_mut()
@@ -234,10 +227,10 @@ impl ListenTable {
             return Err(AxError::InvalidInput);
         };
 
-        let syn_queue: &mut VecDeque<PendingTcp> = &mut entry.syn_queue;
+        let syn_queue: &mut VecDeque<AcceptedTcp> = &mut entry.syn_queue;
         let mut idx = 0;
         while idx < syn_queue.len() {
-            let handle = syn_queue[idx].accepted.handle;
+            let handle = syn_queue[idx].handle;
             if is_closed_without_data(sockets, handle) {
                 syn_queue.swap_remove_front(idx);
                 sockets.remove(handle);
@@ -251,7 +244,7 @@ impl ListenTable {
                         syn_queue.len()
                     );
                 }
-                return Ok(syn_queue.swap_remove_front(idx).unwrap().accepted);
+                return Ok(syn_queue.swap_remove_front(idx).unwrap());
             }
             idx += 1;
         }
@@ -260,7 +253,7 @@ impl ListenTable {
 
     /// Returns the listener readiness poll set for lock-free registration.
     pub fn accept_poll(&self, listen_endpoint: IpListenEndpoint) -> Option<Arc<PollSet>> {
-        let entries = self.listen_entry(listen_endpoint.port);
+        let entries = self.listen_entry(listen_endpoint.port)?;
         let table = entries.lock();
         table
             .iter()
@@ -270,7 +263,10 @@ impl ListenTable {
 
     /// Builds the smoltcp child-progress waker for a listener poll set.
     pub fn accept_waker(&self, accept_poll: Arc<PollSet>) -> Waker {
-        Waker::from(Arc::new(AcceptWake { poll: accept_poll }))
+        Waker::from(Arc::new(DeferPollWake {
+            poll: accept_poll,
+            ready: IoEvents::IN,
+        }))
     }
 
     /// Registers a waker for queued child progress.
@@ -281,7 +277,9 @@ impl ListenTable {
         accept_poll: &Arc<PollSet>,
         waker: &Waker,
     ) {
-        let entries = self.listen_entry(listen_endpoint.port);
+        let Some(entries) = self.listen_entry(listen_endpoint.port) else {
+            return;
+        };
         let table = entries.lock();
         let Some(entry) = table.iter().find(|entry| {
             entry.listen_endpoint == listen_endpoint && Arc::ptr_eq(&entry.accept_poll, accept_poll)
@@ -289,7 +287,7 @@ impl ListenTable {
             return;
         };
         for pending in &entry.syn_queue {
-            let socket: &mut tcp::Socket = sockets.get_mut(pending.accepted.handle);
+            let socket: &mut tcp::Socket = sockets.get_mut(pending.handle);
             socket.register_recv_waker(waker);
             socket.register_send_waker(waker);
         }
@@ -302,7 +300,9 @@ impl ListenTable {
         dst: IpEndpoint,
         sockets: &mut SocketSet<'_>,
     ) {
-        let entries = self.listen_entry(dst.port);
+        let Some(entries) = self.listen_entry(dst.port) else {
+            return;
+        };
         let wake_poll = {
             let mut table = entries.lock();
             let Some(entry) = table
@@ -339,12 +339,10 @@ impl ListenTable {
                 "TCP socket {}: prepare for connection {} -> {}",
                 handle, src, entry.listen_endpoint
             );
-            entry.syn_queue.push_back(PendingTcp {
-                accepted: AcceptedTcp {
-                    handle,
-                    local_endpoint: dst,
-                    remote_endpoint: src,
-                },
+            entry.syn_queue.push_back(AcceptedTcp {
+                handle,
+                local_endpoint: dst,
+                remote_endpoint: src,
             });
             entry.accept_poll.clone()
         };
@@ -353,13 +351,6 @@ impl ListenTable {
         // the actual PollSet wake to the net worker outer loop.
         crate::defer_poll_wake(wake_poll, IoEvents::IN);
     }
-}
-
-fn listen_addrs_conflict(
-    a: Option<smoltcp::wire::IpAddress>,
-    b: Option<smoltcp::wire::IpAddress>,
-) -> bool {
-    a.is_none() || b.is_none() || a == b
 }
 
 fn is_acceptable(sockets: &SocketSet<'_>, handle: SocketHandle) -> bool {

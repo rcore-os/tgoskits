@@ -5,7 +5,12 @@ use rdrive::probe::OnProbeError;
 mod cmos;
 #[cfg(any(test, target_arch = "x86_64"))]
 mod cmos_decode;
-#[cfg(any(test, target_arch = "loongarch64", target_arch = "x86_64"))]
+#[cfg(any(
+    test,
+    target_arch = "loongarch64",
+    target_arch = "riscv64",
+    target_arch = "x86_64"
+))]
 mod datetime;
 #[cfg(any(
     target_arch = "aarch64",
@@ -21,6 +26,10 @@ mod loongson;
 mod loongson_decode;
 #[cfg(target_arch = "aarch64")]
 mod pl031;
+#[cfg(target_arch = "riscv64")]
+mod starfive;
+#[cfg(any(test, target_arch = "riscv64"))]
+mod starfive_decode;
 
 fn init_epoch_offset(node_name: &str, unix_timestamp: u64) -> Result<(), OnProbeError> {
     if unix_timestamp == 0 {
@@ -42,7 +51,7 @@ fn init_epoch_offset(node_name: &str, unix_timestamp: u64) -> Result<(), OnProbe
 #[cfg(test)]
 mod tests {
     use axklib::{
-        AxError, AxResult, IrqCpuMask, IrqHandle, Klib, PhysAddr, RawIrqHandler, VirtAddr,
+        AxError, AxResult, IrqCpuMask, IrqHandle, IrqId, Klib, PhysAddr, RawIrqHandler, VirtAddr,
         impl_trait,
     };
 
@@ -86,10 +95,20 @@ mod tests {
                 false
             }
 
-            fn irq_set_enable(_irq: usize, _enabled: bool) {}
+            fn irq_set_enable(_irq: IrqId, _enabled: bool) -> axklib::AxResult {
+                Ok(())
+            }
 
             fn irq_request_shared(
-                _irq: usize,
+            _irq: IrqId,
+                _handler: RawIrqHandler,
+                _data: core::ptr::NonNull<()>,
+            ) -> AxResult<IrqHandle> {
+                Err(AxError::Unsupported)
+            }
+
+            fn irq_request_shared_disabled(
+                _irq: IrqId,
                 _handler: RawIrqHandler,
                 _data: core::ptr::NonNull<()>,
             ) -> AxResult<IrqHandle> {
@@ -97,7 +116,7 @@ mod tests {
             }
 
             fn irq_request_percpu(
-                _irq: usize,
+            _irq: IrqId,
                 _cpus: IrqCpuMask,
                 _handler: RawIrqHandler,
                 _data: core::ptr::NonNull<()>,

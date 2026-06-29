@@ -20,6 +20,10 @@ impl PlatformDevice {
         Self { descriptor }
     }
 
+    pub fn descriptor(&self) -> &Descriptor {
+        &self.descriptor
+    }
+
     /// Register a device to the driver manager.
     ///
     /// # Panics

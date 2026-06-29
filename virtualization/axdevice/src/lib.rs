@@ -26,23 +26,35 @@ extern crate alloc;
 #[macro_use]
 extern crate log;
 
+mod adapter;
 mod config;
 mod device;
 mod factory;
+mod fw_cfg;
+#[cfg(target_arch = "loongarch64")]
+mod loongarch_pch_pic;
 mod range_alloc;
 mod registration;
 
+#[cfg(target_arch = "aarch64")]
+pub use adapter::create_vtimer_devices;
 pub use axdevice_base::{
-    AccessWidth, BaseDeviceOps, BaseMmioDeviceOps, BasePortDeviceOps, BaseSysRegDeviceOps, Port,
-    SysRegAddr,
+    AccessWidth, BaseDeviceOps, BaseMmioDeviceOps, BasePortDeviceOps, BaseSysRegDeviceOps, Device,
+    MmioDeviceAdapter, Port, PortDeviceAdapter, SysRegAddr, SysRegDeviceAdapter,
 };
 pub use axvm_types::GuestPhysAddr;
 pub use config::AxVmDeviceConfig;
-pub use device::{AxEmuDevices, AxVmDevices};
+pub use device::AxVmDevices;
 pub use factory::{
     DeviceBuildContext, DeviceFactory, DeviceFactoryRegistry, IrqResolver,
     register_builtin_factories,
 };
+pub use fw_cfg::{
+    FwCfg, FwCfgInterruptConfig, FwCfgPciConfig, FwCfgPlatformConfig, FwCfgRamRegion,
+    FwCfgSerialConfig,
+};
+#[cfg(target_arch = "loongarch64")]
+pub use loongarch_pch_pic::{LoongArchPchPic, PchPicOutputEvent};
 pub use registration::{DeviceBundle, DeviceRegistration, PollableDeviceOps};
 #[cfg(target_arch = "x86_64")]
 pub use x86_vlapic::IoApicInterrupt;

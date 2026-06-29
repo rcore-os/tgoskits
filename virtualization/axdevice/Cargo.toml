@@ -1,6 +1,6 @@
 [package]
 name = "axdevice"
-version = "0.4.13"
+version = "0.5.0"
 description = "A reusable, OS-agnostic device abstraction layer designed for virtual machines."
 homepage = "https://github.com/arceos-hypervisor/axdevice"
 repository = "https://github.com/arceos-hypervisor/axdevice"
@@ -30,3 +30,12 @@ arm_vgic = { workspace = true, features = ["vgicv3"] }
 riscv_vplic = { workspace = true }
 [target.'cfg(target_arch = "x86_64")'.dependencies]
 x86_vlapic = { workspace = true }
+
+[[bench]]
+name = "lookup_AxVmDevices"
+harness = false
+
+[dev-dependencies]
+divan = "0.1.21"
+paste = "1.0"
+rand = { version = "0.10", features = ["std_rng"] }

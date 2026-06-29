@@ -107,7 +107,7 @@ fn validate_and_extract_cfm_param(rsp: &[u8], _expected_cfm_id: u16) -> Result<V
     }
 
     let msg = LmacMsg::from_le_bytes(rsp);
-    log::debug!(
+    log::info!(
         "[cmd_mgr] CFM received: msg_id=0x{:04x}, param_len={}",
         msg.id,
         msg.param_len

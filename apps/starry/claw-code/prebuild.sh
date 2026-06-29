@@ -11,6 +11,19 @@ WORKSPACE="${STARRY_WORKSPACE:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." &&
 ROOTFS_DIR="$WORKSPACE/tmp/axbuild/rootfs"
 OVERLAY="${STARRY_OVERLAY_DIR:-$WORKSPACE/tmp/axbuild/starry-app/claw-code/overlay}"
 
+rootfs_image_file() {
+    local path="$1"
+    if [ -d "$path" ]; then
+        local name
+        name="$(basename "$path")"
+        if [ -f "$path/$name" ]; then
+            printf '%s\n' "$path/$name"
+            return
+        fi
+    fi
+    printf '%s\n' "$path"
+}
+
 echo "=== 1. Build claw from source ==="
 if [ -f "$CLAW_BIN" ]; then
     echo "claw binary cached at $CLAW_BIN"
@@ -32,13 +45,19 @@ else
 fi
 
 echo "=== 2. Prepare rootfs ==="
-# The app framework may have created rootfs-x86_64-claw-code.img via fs::copy,
-# which can leave a stale lock preventing QEMU from opening it.  Delete the
-# target first, then copy the base alpine image afresh.
-ALPINE_IMG="$ROOTFS_DIR/rootfs-x86_64-alpine.img"
-CLAW_IMG="$ROOTFS_DIR/rootfs-x86_64-claw-code.img"
-rm -f "$CLAW_IMG"
-cp "$ALPINE_IMG" "$CLAW_IMG"
+# The app framework passes the canonical per-app image path through
+# STARRY_ROOTFS. Older cached rootfs storage may leave a directory at the
+# legacy tmp/axbuild/rootfs/*.img path, so resolve image-storage directories to
+# their contained image file instead of assuming flat files.
+BASE_ROOTFS="${STARRY_BASE_ROOTFS:-$ROOTFS_DIR/rootfs-${STARRY_ARCH:-x86_64}-alpine.img}"
+APP_ROOTFS="${STARRY_ROOTFS:-$ROOTFS_DIR/rootfs-${STARRY_ARCH:-x86_64}-claw-code.img}"
+ALPINE_IMG="$(rootfs_image_file "$BASE_ROOTFS")"
+CLAW_IMG="$(rootfs_image_file "$APP_ROOTFS")"
+if [ "$ALPINE_IMG" != "$CLAW_IMG" ]; then
+    mkdir -p "$(dirname "$CLAW_IMG")"
+    rm -rf "$CLAW_IMG"
+    cp "$ALPINE_IMG" "$CLAW_IMG"
+fi
 
 echo "=== 3. Inject claw into rootfs ==="
 inject_claw() {
@@ -48,7 +67,6 @@ inject_claw() {
     debugfs -w "$img" -R "write $CLAW_BIN /usr/bin/claw"
     debugfs -w "$img" -R "sif /usr/bin/claw mode 0100755"
 }
-inject_claw "$ALPINE_IMG"
 inject_claw "$CLAW_IMG"
 
 echo "Injected claw into rootfs"

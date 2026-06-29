@@ -25,8 +25,7 @@
 `Cargo.toml` 里的 feature 设计直接决定镜像长什么样：
 
 - `qemu`：静态 QEMU 平台 feature，主要用于 x86_64/loongarch64 等静态平台构建；AArch64 与 RISC-V QEMU 默认通过 `plat-dyn` 和显式驱动 feature 运行。
-- `smp`：启用 `ax-feat/smp`，并在 VisionFive2 平台上联动开启 SMP。
-- `vf2`：引入可选依赖 `ax-plat-riscv64-visionfive2`，并额外打开 `ax-feat/driver-sdmmc`。
+- `smp`：启用 `ax-feat/smp`，并向动态平台或静态平台依赖传递 SMP 能力。
 
 这意味着 `starryos` 的主要复杂度不在运行时逻辑，而在于“生成哪一类镜像”。
 
@@ -104,13 +103,11 @@ cargo xtask starry run --arch riscv64 --package starryos
 graph LR
     ax-feat["ax-feat"] --> starryos["starryos"]
     kernel["starry-kernel"] --> starryos
-    vf2["ax-plat-riscv64-visionfive2 (optional)"] --> starryos
 ```
 
 ### 直接依赖
 - `ax-feat`：把底层 ArceOS 运行时、驱动和平台 feature 接到镜像入口包上。
 - `starry-kernel`：真正的内核实现，`starryos` 只在 `main()` 里调用其入口。
-- `ax-plat-riscv64-visionfive2`：仅在 `vf2` feature 下引入，用于板级适配。
 
 ### 3.2 关键运行时外部条件
 - rootfs / `rootfs-<arch>.img`：由 `cargo xtask starry rootfs` 或 `run` 路径自动准备。
@@ -146,7 +143,7 @@ cargo xtask starry run --arch riscv64 --package starryos
 
 ### 5.2 建议重点验证的场景
 - 默认命令线是否仍能进入交互 shell。
-- `qemu` / `smp` / `vf2` feature 组合是否仍能成功构建。
+- `qemu` / `smp` / `plat-dyn` feature 组合是否仍能成功构建。
 - `.axconfig.toml` 修改后平台是否仍能正常 bring-up。
 - rootfs 自动准备、磁盘挂载和标准输入输出是否正常。
 

@@ -1,6 +1,6 @@
 [package]
 name = "starry-kernel"
-version = "0.6.3"
+version = "0.6.5"
 edition.workspace = true
 description = "A Linux-compatible OS kernel built on ArceOS unikernel"
 authors = [
@@ -79,7 +79,7 @@ ax-lazyinit.workspace = true
 ax-log.workspace = true
 ax-mm.workspace = true
 ax-net = { workspace = true }
-ax-driver = { workspace = true, features = ["usb"] }
+ax-driver = { workspace = true, features = ["serial", "usb"] }
 axklib = { workspace = true, optional = true }
 axplat-dyn = { workspace = true, optional = true }
 ax-runtime.workspace = true
@@ -89,6 +89,7 @@ ax-dma = { workspace = true, optional = true }
 sg2002-tpu = { workspace = true, optional = true }
 k230-kpu = { workspace = true, optional = true }
 crab-usb.workspace = true
+usb-serial.workspace = true
 rdrive.workspace = true
 
 axbacktrace = { workspace = true }

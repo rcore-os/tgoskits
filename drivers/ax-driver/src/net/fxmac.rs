@@ -1,11 +1,14 @@
 use alloc::{boxed::Box, collections::VecDeque, sync::Arc, vec, vec::Vec};
-use core::{alloc::Layout, cmp, ptr::NonNull};
+use core::{alloc::Layout, cmp};
 
+use ax_kspin::SpinRaw as Mutex;
 use dma_api::{DmaAddr, DmaAllocHandle, DmaConstraints, DmaOp};
 use fxmac_rs::{FXmac, FXmacGetMacAddress, FXmacLwipPortTx, FXmacRecvHandler, xmac_init};
 use rd_net::{DmaBuffer, Event, IRxQueue, ITxQueue, NetError, QueueConfig};
 use rdrive::{DriverGeneric, PlatformDevice};
 
+#[cfg(plat_dyn)]
+use crate::binding_info_from_fdt;
 use crate::net::PlatformDeviceNet;
 
 pub const DEVICE_NAME: &str = "fxmac";
@@ -18,6 +21,28 @@ const DMA_ALIGN: usize = 0x1000;
 const DMA_MASK: u64 = u64::MAX;
 const PAGE_SIZE: usize = 0x1000;
 
+#[cfg(plat_dyn)]
+crate::model_register!(
+    name: "FXMAC FDT Network",
+    level: ProbeLevel::PostKernel,
+    priority: ProbePriority::DEFAULT,
+    probe_kinds: &[ProbeKind::Fdt {
+        compatibles: &[DRIVER_NAME],
+        on_probe: probe_fdt,
+    }],
+);
+
+#[cfg(plat_dyn)]
+fn probe_fdt(probe: rdrive::register::ProbeFdt<'_>) -> Result<(), rdrive::probe::OnProbeError> {
+    let info = binding_info_from_fdt(probe.info())?;
+    let dev = FxmacNet::new();
+    probe
+        .into_platform_device()
+        .register_net_with_info(DRIVER_NAME, dev, info);
+    log::info!("registered FXmac FDT network device");
+    Ok(())
+}
+
 pub fn register(plat_dev: PlatformDevice) {
     let dev = FxmacNet::new();
     plat_dev.register_net(DRIVER_NAME, dev);
@@ -25,7 +50,7 @@ pub fn register(plat_dev: PlatformDevice) {
 }
 
 struct FxmacNet {
-    inner: Arc<spin::Mutex<FxmacInner>>,
+    inner: Arc<Mutex<FxmacInner>>,
     tx_created: bool,
     rx_created: bool,
     irq_enabled: bool,
@@ -36,8 +61,9 @@ impl FxmacNet {
         let mut hwaddr = [0; 6];
         FXmacGetMacAddress(&mut hwaddr, 0);
         let device = xmac_init(&hwaddr);
+        device.disable_irq();
         Self {
-            inner: Arc::new(spin::Mutex::new(FxmacInner {
+            inner: Arc::new(Mutex::new(FxmacInner {
                 device,
                 hwaddr,
                 rx_buffers: VecDeque::with_capacity(QUEUE_SIZE),
@@ -83,10 +109,14 @@ impl rd_net::Interface for FxmacNet {
     }
 
     fn enable_irq(&mut self) {
+        let mut inner = self.inner.lock();
+        inner.device.enable_irq();
         self.irq_enabled = true;
     }
 
     fn disable_irq(&mut self) {
+        let mut inner = self.inner.lock();
+        inner.device.disable_irq();
         self.irq_enabled = false;
     }
 
@@ -95,6 +125,8 @@ impl rd_net::Interface for FxmacNet {
     }
 
     fn handle_irq(&mut self) -> Event {
+        let mut inner = self.inner.lock();
+        inner.device.handle_irq();
         let mut event = Event::none();
         event.tx_queue.insert(QUEUE_ID);
         event.rx_queue.insert(QUEUE_ID);
@@ -130,7 +162,7 @@ impl From<DmaBuffer> for RuntimeNetBuffer {
 }
 
 struct FxmacTxQueue {
-    inner: Arc<spin::Mutex<FxmacInner>>,
+    inner: Arc<Mutex<FxmacInner>>,
 }
 
 impl ITxQueue for FxmacTxQueue {
@@ -159,7 +191,7 @@ impl ITxQueue for FxmacTxQueue {
 }
 
 struct FxmacRxQueue {
-    inner: Arc<spin::Mutex<FxmacInner>>,
+    inner: Arc<Mutex<FxmacInner>>,
 }
 
 impl IRxQueue for FxmacRxQueue {
@@ -255,28 +287,11 @@ impl fxmac_rs::KernelFunc for FxmacKernelFunc {
             log::error!("FXmac DMA free layout is invalid: {size} bytes");
             return;
         };
-        let Some(vaddr) = NonNull::new(vaddr as *mut u8) else {
+        let Some(vaddr) = core::ptr::NonNull::new(vaddr as *mut u8) else {
             return;
         };
         let paddr = axklib::mem::virt_to_phys((vaddr.as_ptr() as usize).into()).as_usize();
         let handle = unsafe { DmaAllocHandle::new(vaddr, DmaAddr::from(paddr as u64), layout) };
         unsafe { axklib::dma::op().dealloc_coherent(handle) };
-    }
-
-    fn dma_request_irq(irq: usize, handler: fn(usize)) {
-        unsafe fn raw_irq_handler(
-            ctx: axklib::irq::IrqContext,
-            data: NonNull<()>,
-        ) -> axklib::irq::IrqReturn {
-            let handler = unsafe { *data.cast::<fn(usize)>().as_ref() };
-            handler(ctx.irq.0);
-            axklib::irq::IrqReturn::Handled
-        }
-
-        let data = Box::leak(Box::new(handler));
-        let data = NonNull::from(data).cast();
-        if let Err(err) = axklib::irq::request_shared(irq, raw_irq_handler, data) {
-            log::warn!("failed to request FXmac irq {irq}: {err:?}");
-        }
     }
 }

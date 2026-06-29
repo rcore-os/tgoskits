@@ -48,7 +48,8 @@ pub mod smp;
 pub mod timer;
 
 pub use acpi::rsdp_addr_phys;
-pub use fdt::{fdt_addr, fdt_addr_phys};
+pub use cmdline::cmdline;
+pub use fdt::{fdt_addr, fdt_addr_phys, platform_name};
 pub use page_table_generic::*;
 pub use somehal_macros::{entry, someboot_secondary_entry as secondary_entry};
 
@@ -86,6 +87,11 @@ pub trait ArchTrait {
     fn virt_to_phys(vaddr: *const u8) -> usize;
 
     fn kernel_space() -> core::ops::Range<usize>;
+    fn is_kernel_relocated_at(addr: usize) -> bool {
+        (crate::consts::VM_LOAD_ADDRESS..usize::MAX).contains(&addr)
+    }
+
+    fn is_mmu_enabled() -> bool;
 
     fn kernel_page_table() -> PageTableInfo;
     fn set_kernel_page_table(val: PageTableInfo);
@@ -95,6 +101,9 @@ pub trait ArchTrait {
     fn set_user_page_table(val: PageTableInfo);
 
     fn shutdown() -> !;
+    fn reset() -> ! {
+        Self::shutdown()
+    }
     fn secondary_entry_fn_address() -> *const ();
     fn cpu_on(hartid: usize, entry: usize, arg: usize) -> Result<(), CpuOnError>;
 
@@ -139,6 +148,11 @@ pub fn post_allocator() {
     smp::init_percpu();
     debug!("Setup after allocator");
     arch::Arch::post_allocator();
+}
+
+/// Returns boot arguments captured from FDT, UEFI load options, or built into the image.
+pub fn bootargs() -> Option<&'static str> {
+    cmdline::cmdline()
 }
 
 /// Get the current kernel page table physical address and ASID

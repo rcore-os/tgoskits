@@ -160,7 +160,7 @@ pub fn ax_dns_query(domain_name: &str) -> AxResult<alloc::vec::Vec<IpAddr>> {
 }
 
 pub fn ax_poll_interfaces() -> AxResult {
-    ax_net::poll_interfaces();
+    ax_net::request_poll();
     Ok(())
 }
 

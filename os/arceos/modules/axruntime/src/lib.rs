@@ -67,10 +67,24 @@ mod wifi_glue;
 
 pub use ax_hal as hal;
 
+pub(crate) mod build_info {
+    include!(concat!(env!("OUT_DIR"), "/build_info.rs"));
+}
+
 #[cfg(feature = "smp")]
 pub use self::mp::rust_main_secondary;
 
 extern crate alloc;
+
+#[cfg(any(feature = "fs", all(feature = "smp", not(feature = "plat-dyn"))))]
+pub(crate) fn runtime_default_task_stack_size() -> usize {
+    build_info::TASK_STACK_SIZE
+}
+
+#[cfg(feature = "irq")]
+fn ticks_per_sec() -> u64 {
+    build_info::TICKS_PER_SEC as u64
+}
 
 const LOGO: &str = r#"
        d8888                            .d88888b.   .d8888b.
@@ -188,10 +202,10 @@ pub fn rust_main(cpu_id: usize, arg: usize) -> ! {
             backtrace = {}
             smp = {}
         "},
-        ax_config::ARCH,
-        ax_config::PLATFORM,
-        option_env!("AX_TARGET").unwrap_or(""),
-        option_env!("AX_MODE").unwrap_or(""),
+        build_info::ARCH,
+        hal::platform_name(),
+        build_info::TARGET,
+        build_info::MODE,
         log_level,
         axbacktrace::is_enabled(),
         ax_hal::cpu_num()
@@ -436,8 +450,8 @@ pub(crate) fn init_percpu_irq(cpu_id: usize) {
         )
         .expect("failed to register timer IRQ handler");
 
-        #[cfg(feature = "ipi")]
-        ax_hal::irq::request_percpu_irq(ax_hal::irq::IPI_IRQ, cpus, ipi_irq_handler, unit_data())
+        #[cfg(any(feature = "ipi", feature = "wake-ipi"))]
+        ax_hal::irq::request_percpu_irq(ax_hal::irq::ipi_irq(), cpus, ipi_irq_handler, unit_data())
             .expect("failed to register IPI IRQ handler");
     }
 
@@ -454,7 +468,9 @@ unsafe fn ax_ipi_run_on_cpu_sync(
 }
 
 #[cfg(feature = "irq")]
-const PERIODIC_INTERVAL_NANOS: u64 = ax_hal::time::NANOS_PER_SEC / ax_config::TICKS_PER_SEC as u64;
+fn periodic_interval_nanos() -> u64 {
+    ax_hal::time::NANOS_PER_SEC / ticks_per_sec()
+}
 
 #[cfg(feature = "irq")]
 #[ax_percpu::def_percpu]
@@ -466,7 +482,7 @@ fn init_timer() {
     let now_ns = ax_hal::time::monotonic_time_nanos();
     unsafe {
         NEXT_PERIODIC_DEADLINE_NANOS
-            .write_current_raw(now_ns.saturating_add(PERIODIC_INTERVAL_NANOS));
+            .write_current_raw(now_ns.saturating_add(periodic_interval_nanos()));
     }
     program_next_timer();
 }
@@ -477,7 +493,7 @@ fn advance_periodic_timer(now_ns: u64) -> bool {
     if deadline == 0 {
         unsafe {
             NEXT_PERIODIC_DEADLINE_NANOS
-                .write_current_raw(now_ns.saturating_add(PERIODIC_INTERVAL_NANOS));
+                .write_current_raw(now_ns.saturating_add(periodic_interval_nanos()));
         }
         return false;
     }
@@ -486,7 +502,7 @@ fn advance_periodic_timer(now_ns: u64) -> bool {
     }
 
     while deadline <= now_ns {
-        deadline = deadline.saturating_add(PERIODIC_INTERVAL_NANOS);
+        deadline = deadline.saturating_add(periodic_interval_nanos());
         if deadline == u64::MAX {
             break;
         }
@@ -500,7 +516,7 @@ fn program_next_timer() {
     let mut deadline = unsafe { NEXT_PERIODIC_DEADLINE_NANOS.read_current_raw() };
     if deadline == 0 {
         let now_ns = ax_hal::time::monotonic_time_nanos();
-        deadline = now_ns.saturating_add(PERIODIC_INTERVAL_NANOS);
+        deadline = now_ns.saturating_add(periodic_interval_nanos());
         unsafe { NEXT_PERIODIC_DEADLINE_NANOS.write_current_raw(deadline) };
     }
     #[cfg(feature = "multitask")]
@@ -535,6 +551,14 @@ unsafe fn ipi_irq_handler(
     _data: core::ptr::NonNull<()>,
 ) -> ax_hal::irq::IrqReturn {
     ax_ipi::ipi_handler();
+    ax_hal::irq::IrqReturn::Handled
+}
+
+#[cfg(all(feature = "irq", feature = "wake-ipi", not(feature = "ipi")))]
+unsafe fn ipi_irq_handler(
+    _ctx: ax_hal::irq::IrqContext,
+    _data: core::ptr::NonNull<()>,
+) -> ax_hal::irq::IrqReturn {
     ax_hal::irq::IrqReturn::Handled
 }
 

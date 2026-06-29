@@ -17,6 +17,7 @@ pub mod context;
 mod firmware;
 pub mod image;
 mod rootfs;
+mod spin_lint;
 pub mod starry;
 mod support;
 mod sync_lint;
@@ -56,6 +57,8 @@ enum Commands {
     Clippy(ClippyArgs),
     /// Run high-confidence atomic ordering checks for suspicious `Relaxed` synchronization
     SyncLint(SyncLintArgs),
+    /// Verify that no external `spin` package is resolved
+    SpinLint,
     /// Remote board management via ostool-server
     Board {
         #[command(subcommand)]
@@ -108,6 +111,7 @@ async fn run_root_cli(cli: Cli) -> anyhow::Result<()> {
             clippy::run_workspace_clippy_command(&args)
         }
         Commands::SyncLint(args) => sync_lint::run_sync_lint_command(&args),
+        Commands::SpinLint => spin_lint::run_spin_lint_command(),
         Commands::Board { command } => board::execute(command).await,
         Commands::Config { command } => config::execute(command),
         Commands::Backtrace { command } => backtrace::execute(command),

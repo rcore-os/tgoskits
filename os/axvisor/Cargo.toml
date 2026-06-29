@@ -2,7 +2,7 @@
 name = "axvisor"
 authors = ["Keyang Hu <keyang.hu@qq.com>", "周睿 <zrufo747@outlook.com>"]
 edition.workspace = true
-version = "0.5.13"
+version = "0.5.15"
 description = "A lightweight type-1 hypervisor based on ArceOS"
 repository = "https://github.com/arceos-hypervisor/axvisor"
 homepage = "https://github.com/arceos-hypervisor/axvisor"
@@ -51,6 +51,7 @@ sdmmc = [
 rockchip-pm = ["ax-driver/rockchip-pm"]
 serial = []
 stack-protector = ["ax-std/stack-protector"]
+plat-dyn = ["dep:axplat-dyn"]
 
 [dependencies]
 spin = { workspace = true }
@@ -70,10 +71,12 @@ ax-hal = { workspace = true, features = ["paging", "irq", "smp", "hv", "axvisor-
 # ax-runtime = { version = "=0.3.0-preview.1", features = ["alloc", "irq", "paging", "smp", "multitask"] }
 axvm = { workspace = true, default-features = false }
 axvmconfig = { workspace = true, default-features = false }
+axdevice = { workspace = true }
 # System independent crates provided by ArceOS
 ax-errno = { workspace = true }
 ax-memory-addr = { workspace = true }
 ax-driver.workspace = true
+axplat-dyn = { workspace = true, optional = true }
 
 # xtask dependencies (only used on host platforms)
 [target.'cfg(any(windows, all(unix, not(target_env = "musl"))))'.dependencies]

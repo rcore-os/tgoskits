@@ -19,11 +19,16 @@ use ax_sync::{LockdepMutexExt, Mutex};
 
 use crate::mm::ProcessVmStat;
 
+mod accounting;
 mod backend;
 
-pub use self::backend::*;
+pub use self::{
+    accounting::{CloneMapAccounting, MemoryAccounting, RssAccountingGuard},
+    backend::*,
+};
 
 type MovedPage = (VirtAddr, VirtAddr, PhysAddr, MappingFlags, PageSize, bool);
+const CLONED_ADDR_SPACE_LOCK_SUBCLASS: u32 = 1;
 
 fn rollback_moved_pages(cursor: &mut PageTableCursor, moved_pages: &[MovedPage]) {
     for &(src_va, dst_va, paddr, flags, page_size, dst_newly_mapped) in moved_pages.iter().rev() {
@@ -52,6 +57,7 @@ pub struct AddrSpace {
     /// All VmX counters for this address space.  Maintained automatically by
     /// `map`, `unmap`, `clear`, and `try_clone`; never touch from outside mm/.
     pub vm_stat: ProcessVmStat,
+    rss: MemoryAccounting,
 }
 
 impl AddrSpace {
@@ -98,7 +104,12 @@ impl AddrSpace {
             pt: PageTable::try_new().map_err(|_| AxError::NoMemory)?,
             process_slots: AtomicUsize::new(0),
             vm_stat: ProcessVmStat::new(),
+            rss: MemoryAccounting::new(),
         })
+    }
+
+    pub(crate) fn rss(&self) -> &MemoryAccounting {
+        &self.rss
     }
 
     fn validate_region(&self, start: VirtAddr, size: usize) -> AxResult {
@@ -153,6 +164,7 @@ impl AddrSpace {
             ax_bail!(InvalidInput, "address is not aligned");
         }
 
+        let _rss = RssAccountingGuard::enter(&self.rss);
         let offset = start_vaddr.as_usize() as isize - start_paddr.as_usize() as isize;
         let area = MemoryArea::new(
             start_vaddr,
@@ -175,8 +187,11 @@ impl AddrSpace {
     ) -> AxResult {
         self.validate_region(start, size)?;
 
-        let area = MemoryArea::new(start, size, flags, backend);
-        self.areas.map(area, &mut self.pt, false)?;
+        {
+            let _rss = RssAccountingGuard::enter(&self.rss);
+            let area = MemoryArea::new(start, size, flags, backend);
+            self.areas.map(area, &mut self.pt, false)?;
+        }
         self.vm_stat.on_map((size / PAGE_SIZE_4K) as u64);
         if populate {
             self.populate_area(start, size, flags)?;
@@ -203,9 +218,13 @@ impl AddrSpace {
                 };
                 let range = VirtAddrRange::new(start, area.end().min(end));
                 let flags = area.flags();
-                let (_, callback) =
-                    area.backend()
-                        .populate(range, flags, access_flags, &mut self.pt.cursor())?;
+                let (_, callback) = area.backend().populate(
+                    range,
+                    flags,
+                    access_flags,
+                    Some(&self.rss),
+                    &mut self.pt.cursor(),
+                )?;
                 (area.end(), callback)
             };
             // Run the eviction cleanup the populate deferred (unmap + TLB flush
@@ -233,26 +252,10 @@ impl AddrSpace {
 
     /// Discards the physical pages backing `[start, start+size)` while keeping
     /// the VMA metadata intact (Linux `MADV_DONTNEED` / `MADV_FREE` semantics).
-    ///
-    /// For every anonymous private (`CowBackend`) area overlapping the range,
-    /// the intersection (clamped *inward* to the backend's page size) is handed
-    /// to the backend's existing `unmap`, which clears the PTEs and decrements
-    /// the `FRAME_TABLE` refcounts so freed frames return to the global
-    /// allocator. The `MemoryArea` is NOT removed, so the next access re-faults
-    /// and `CowBackend::populate` re-allocates a fresh zero page. Without this,
-    /// Go's runtime `madvise(MADV_DONTNEED)` is a no-op and committed frames
-    /// accumulate until OOM (etcd/consul/minio/prometheus/grafana on starry).
-    ///
-    /// Non-anonymous / non-CoW backends (file-backed, MAP_SHARED, linear device
-    /// memory) are skipped: their frames are not owned per-VMA and dropping
-    /// their PTEs has no reclaim benefit while risking an un-repopulatable hole.
     pub fn discard_range(&mut self, start: VirtAddr, size: usize) -> AxResult {
         self.validate_region(start, size)?;
         let end = start + size;
 
-        // Collect (clamped, page-aligned) fragments + backend clones first, so
-        // the immutable `self.areas` borrow is released before we take the
-        // mutable page-table cursor (mirrors `areas_in_range`).
         let mut frags: alloc::vec::Vec<(VirtAddrRange, Backend)> = alloc::vec::Vec::new();
         for area in self.areas.iter() {
             if area.start() >= end {
@@ -261,14 +264,11 @@ impl AddrSpace {
             if area.end() <= start {
                 continue;
             }
-            // Only anonymous private mappings (Go's heap). See doc comment.
             let backend = match area.backend() {
                 Backend::Cow(cow) if cow.is_anonymous() => area.backend().clone(),
                 _ => continue,
             };
             let page = backend.page_size();
-            // Clamp inward to whole backend-sized pages fully inside the range
-            // (`pages_in`/`DynPageIter` require both ends aligned, else EINVAL).
             let frag_start = area.start().max(start).align_up(page);
             let frag_end = area.end().min(end).align_down(page);
             if frag_start >= frag_end {
@@ -277,9 +277,10 @@ impl AddrSpace {
             frags.push((VirtAddrRange::new(frag_start, frag_end), backend));
         }
 
+        let _rss = RssAccountingGuard::enter(&self.rss);
         for (range, backend) in frags {
             let mut cursor = self.pt.cursor();
-            BackendOps::unmap(&backend, range, &mut cursor)?;
+            BackendOps::unmap(&backend, range, Some(&self.rss), &mut cursor)?;
         }
 
         Ok(())
@@ -305,6 +306,7 @@ impl AddrSpace {
             })
             .sum();
 
+        let _rss = RssAccountingGuard::enter(&self.rss);
         crate::syscall::memfd_on_aspace_unmap_range(self, start, size);
         self.areas.unmap(start, size, &mut self.pt)?;
         self.vm_stat.on_unmap(removed_pages);
@@ -351,6 +353,9 @@ impl AddrSpace {
     /// Relocates page table entries from `[src, src+size)` to `[dst, dst+size)`.
     /// Pages already mapped at `dst` (shared backends) are skipped.
     /// Returns an error if any page-table update fails.
+    ///
+    /// Uses direct PTE map/unmap (not [`BackendOps::unmap`]) so Cow RSS charges
+    /// migrate via [`MemoryAccounting::move_charge`] instead of remove+record.
     pub fn move_pages(&mut self, src: VirtAddr, dst: VirtAddr, size: usize) -> AxResult {
         let mut cursor = self.pt.cursor();
         let mut mapped_pages = alloc::vec::Vec::new();
@@ -383,6 +388,7 @@ impl AddrSpace {
                 rollback_moved_pages(&mut cursor, &moved_pages);
                 return Err(err.into());
             }
+            self.rss.move_charge(src_va, dst_va)?;
             moved_pages.push((src_va, dst_va, paddr, flags, page_size, dst_newly_mapped));
         }
 
@@ -402,6 +408,7 @@ impl AddrSpace {
         {
             ax_bail!(NoMemory, "extension exceeds address space");
         }
+        let _rss = RssAccountingGuard::enter(&self.rss);
         self.areas
             .extend_area(addr, additional_size, &mut self.pt)?;
         self.vm_stat.on_map((additional_size / PAGE_SIZE_4K) as u64);
@@ -460,6 +467,19 @@ impl AddrSpace {
         })
     }
 
+    /// Synchronizes instruction fetch after modifying executable memory through this address space.
+    pub fn sync_modified_text(&self, start: VirtAddr, size: usize) -> AxResult {
+        if size == 0 {
+            return Ok(());
+        }
+
+        self.process_area_data(start, size, |dst, _offset, sync_size| {
+            ax_runtime::hal::cache::clean_dcache_to_pou(dst, sync_size);
+        })?;
+        ax_runtime::hal::cache::flush_icache_all();
+        Ok(())
+    }
+
     /// Updates mapping within the specified virtual address range.
     ///
     /// Returns an error if the address range is out of the address space or not
@@ -469,6 +489,7 @@ impl AddrSpace {
 
         let touched_memfds =
             crate::syscall::memfd_collect_metas_touching_mprotect_range(self, start, size);
+        let _rss = RssAccountingGuard::enter(&self.rss);
         self.areas
             .protect(start, size, |_| Some(flags), &mut self.pt)?;
         crate::syscall::memfd_resync_shared_writable_counts_after_mprotect(self, &touched_memfds);
@@ -479,6 +500,7 @@ impl AddrSpace {
     /// Removes all mappings in the address space.
     pub fn clear(&mut self) {
         crate::syscall::memfd_release_all_shared_writable_counts_for_aspace(self);
+        let _rss = RssAccountingGuard::enter(&self.rss);
         self.areas.clear(&mut self.pt).unwrap();
         self.vm_stat.on_clear();
     }
@@ -532,24 +554,11 @@ impl AddrSpace {
             let flags = area.flags();
             if flags.contains(access_flags) {
                 let page_size = area.backend().page_size();
-                // Readahead: populate a window FORWARD from the faulting page
-                // (clamped to this area), so a large file-backed mapping loads
-                // via the backend's batched read instead of one fault+read per
-                // page. The backend skips already-mapped pages, so overlapping
-                // windows from successive faults are harmless. Only base 4K pages
-                // get the window; huge pages populate exactly one.
-                let fault_page = vaddr.align_down(page_size);
-                let ps = page_size as usize;
-                const READAHEAD_PAGES: usize = 32;
-                let win_end = if page_size == PageSize::Size4K {
-                    (fault_page + READAHEAD_PAGES * ps).min(area.end())
-                } else {
-                    fault_page + ps
-                };
                 let populate_result = area.backend().populate(
-                    VirtAddrRange::new(fault_page, win_end),
+                    VirtAddrRange::from_start_size(vaddr.align_down(page_size), page_size as _),
                     flags,
                     access_flags,
+                    Some(&self.rss),
                     &mut self.pt.cursor(),
                 );
                 return match populate_result {
@@ -587,7 +596,13 @@ impl AddrSpace {
         let new_aspace = Arc::new(Mutex::new(Self::new_empty(self.base(), self.size())?));
         let new_aspace_clone = new_aspace.clone();
 
-        let mut guard = new_aspace.lock_nested(1);
+        // The caller holds the source AddrSpace lock while this fresh AddrSpace
+        // is being populated. The new lock is not published yet, so this is a
+        // structured source -> cloned-address-space nesting.
+        let mut guard = new_aspace.lock_nested(CLONED_ADDR_SPACE_LOCK_SUBCLASS);
+        let child_rss = guard.rss() as *const MemoryAccounting;
+        let child_acct = unsafe { &*child_rss };
+        let parent_acct = &self.rss;
 
         let mut self_modify = self.pt.cursor();
         for area in self.areas.iter() {
@@ -597,12 +612,18 @@ impl AddrSpace {
                 &mut self_modify,
                 &mut guard.pt.cursor(),
                 &new_aspace_clone,
+                CloneMapAccounting {
+                    parent: Some(parent_acct),
+                    child: Some(child_acct),
+                },
             )?;
 
             let new_area = MemoryArea::new(area.start(), area.size(), area.flags(), new_backend);
             let start = new_area.start();
             {
                 let aspace = guard.deref_mut();
+                let rss_ptr = core::ptr::addr_of!(aspace.rss);
+                let _rss = RssAccountingGuard::enter(unsafe { &*rss_ptr });
                 aspace.areas.map(new_area, &mut aspace.pt, false)?;
             }
             crate::syscall::memfd_on_after_map(&guard, start);
@@ -612,6 +633,12 @@ impl AddrSpace {
         // and its starting watermarks inherit the parent's peaks (Linux fork
         // semantics: child mm->hiwater_vm = parent mm->total_vm at fork time).
         guard.vm_stat.seed_from(&self.vm_stat);
+
+        MemoryAccounting::reconcile_fork_charges_from_parent(
+            child_acct,
+            parent_acct,
+            &mut guard.pt.cursor(),
+        )?;
         drop(guard);
 
         Ok(new_aspace)

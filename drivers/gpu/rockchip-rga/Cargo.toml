@@ -7,7 +7,7 @@ keywords = ["rk3588", "rga", "graphics"]
 license.workspace = true
 name = "rockchip-rga"
 repository.workspace = true
-version = "0.1.0"
+version = "0.1.2"
 
 [dependencies]
 dma-api.workspace = true

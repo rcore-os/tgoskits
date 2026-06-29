@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.2](https://github.com/rcore-os/tgoskits/compare/ax-runtime-v0.8.1...ax-runtime-v0.8.2) - 2026-06-27
+
+### Added
+
+- *(ax-runtime)* generate banner build info ([#1373](https://github.com/rcore-os/tgoskits/pull/1373))
+
+### Other
+
+- *(platform)* remove ax-config from dynamic runtime path ([#1387](https://github.com/rcore-os/tgoskits/pull/1387))
+- *(serial)* align IRQ model with dev ([#1265](https://github.com/rcore-os/tgoskits/pull/1265))
+
+## [0.8.1](https://github.com/rcore-os/tgoskits/compare/ax-runtime-v0.8.0...ax-runtime-v0.8.1) - 2026-06-23
+
+### Fixed
+
+- *(platform)* support AArch64 HVF timer boot ([#1334](https://github.com/rcore-os/tgoskits/pull/1334))
+
+### Other
+
+- *(ax-net)* add locking and concurrency documentation and remove deprecated interfaces ([#1340](https://github.com/rcore-os/tgoskits/pull/1340))
+
 ## [0.8.0](https://github.com/rcore-os/tgoskits/compare/ax-runtime-v0.7.0...ax-runtime-v0.8.0) - 2026-06-22
 
 ### Added

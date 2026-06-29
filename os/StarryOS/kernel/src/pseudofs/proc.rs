@@ -17,6 +17,8 @@ use core::{
 
 use ax_lazyinit::LazyInit;
 use ax_memory_addr::{MemoryAddr, VirtAddr};
+#[cfg(target_arch = "aarch64")]
+use ax_runtime::hal::pmu;
 use ax_runtime::hal::{
     paging::MappingFlags,
     time::{monotonic_time, wall_time},
@@ -171,13 +173,23 @@ fn render_cpu_entry(buf: &mut String, idx: usize) {
 
 #[cfg(target_arch = "aarch64")]
 fn render_cpu_entry(buf: &mut String, idx: usize) {
+    // Decode MIDR_EL1 so /proc/cpuinfo reflects the real core (perf and other
+    // tools key off implementer/part to identify the microarchitecture). On
+    // RK3588 this yields A76 (0x41/0xd0b) and A55 (0x41/0xd05); under QEMU
+    // cortex-a53 it reads 0x41/0xd03.
+    let midr = pmu::cpu_id_raw().unwrap_or(0);
+    let implementer = (midr >> 24) & 0xff;
+    let variant = (midr >> 20) & 0xf;
+    let part = (midr >> 4) & 0xfff;
+    let revision = midr & 0xf;
+
     let _ = writeln!(buf, "processor\t: {idx}");
     let _ = writeln!(buf, "BogoMIPS\t: 100.00");
-    let _ = writeln!(buf, "CPU implementer\t: 0x00");
+    let _ = writeln!(buf, "CPU implementer\t: {implementer:#04x}");
     let _ = writeln!(buf, "CPU architecture: 8");
-    let _ = writeln!(buf, "CPU variant\t: 0x0");
-    let _ = writeln!(buf, "CPU part\t: 0x000");
-    let _ = writeln!(buf, "CPU revision\t: 0");
+    let _ = writeln!(buf, "CPU variant\t: {variant:#x}");
+    let _ = writeln!(buf, "CPU part\t: {part:#05x}");
+    let _ = writeln!(buf, "CPU revision\t: {revision}");
     let _ = writeln!(buf);
 }
 
@@ -361,11 +373,15 @@ impl SimpleDirOps for ProcessTaskDir {
             return Err(VfsError::NotFound);
         }
 
+        let proc_data = get_process_data(process.pid()).map_err(|_| VfsError::NotFound)?;
+
         Ok(NodeOpsMux::Dir(SimpleDir::new_maker(
             self.fs.clone(),
             Arc::new(ThreadDir {
                 fs: self.fs.clone(),
                 task: Arc::downgrade(&task),
+                proc_data,
+                path_pid: process.pid(),
                 procfs_pid: None,
             }),
         )))
@@ -376,24 +392,37 @@ impl SimpleDirOps for ProcessTaskDir {
     }
 }
 
-fn task_status(task: &AxTaskRef) -> String {
+/// Render `/proc/[pid]/status` from a live task and authoritative process lookup.
+///
+/// `path_pid` is the numeric directory name (`/proc/<path_pid>/status`), used for
+/// memory counters so cross-process reads do not depend on a possibly stale task
+/// weak reference after pid reuse.
+fn render_thread_status(
+    task: &WeakAxTaskRef,
+    proc_data: &Arc<ProcessData>,
+    path_pid: Pid,
+    procfs_pid: Option<Pid>,
+) -> VfsResult<String> {
+    let task = task.upgrade().ok_or(VfsError::NotFound)?;
     let thread = task.as_thread();
+    let aspace_arc = proc_data.aspace();
+    let mem = ProcessMemStats::collect(&aspace_arc.lock());
     let cred = thread.cred();
     let name = task.name();
-    let num_threads = thread.proc_data.proc.threads().len() as u32;
-    let mem = ProcessMemStats::collect(&thread.proc_data.aspace().lock());
-    let tracer_pid = thread.proc_data.ptrace_tracer_pid().unwrap_or(0);
-    let ppid = thread
-        .proc_data
-        .proc
-        .parent()
-        .map_or(0, |parent| parent.pid());
-    render_task_status(
+    let num_threads = proc_data.proc.threads().len() as u32;
+    let tracer_pid = proc_data.ptrace_tracer_pid().unwrap_or(0);
+    let ppid = proc_data.proc.parent().map_or(0, |parent| parent.pid());
+    let (tgid, pid) = if let Some(pid) = procfs_pid {
+        (pid, pid as u64)
+    } else {
+        (path_pid, thread.tid() as u64)
+    };
+    Ok(render_task_status(
         TaskStatusBase {
             name: &name,
-            state: task_status_state(task),
-            tgid: thread.proc_data.proc.pid(),
-            pid: thread.tid() as u64,
+            state: task_status_state(&task),
+            tgid,
+            pid,
             ppid,
             tracer_pid,
             cred: &cred,
@@ -402,7 +431,7 @@ fn task_status(task: &AxTaskRef) -> String {
         task.cpumask(),
         ax_runtime::hal::cpu_num(),
         &mem,
-    )
+    ))
 }
 
 fn task_status_state(task: &AxTaskRef) -> &'static str {
@@ -688,6 +717,10 @@ impl SimpleDirOps for NsDir {
 struct ThreadDir {
     fs: Arc<SimpleFs>,
     task: WeakAxTaskRef,
+    /// Authoritative process state for memory counters (`path_pid` lookup).
+    proc_data: Arc<ProcessData>,
+    /// Numeric `/proc/<pid>` component used for live [`ProcessData`] lookup.
+    path_pid: Pid,
     procfs_pid: Option<Pid>,
 }
 
@@ -779,21 +812,45 @@ fn render_thread_maps(task: &WeakAxTaskRef) -> VfsResult<String> {
 /// AccessDenied / ZombieProcess / NotImplementedError are swallowed by
 /// `Process.as_dict()`), crashing any `process_iter` (glances / top-likes).
 ///
-/// `size` (VSS) is summed exactly from the mapped areas. `resident` (RSS) is
-/// currently the VSS upper bound (see `mm/stats.rs` `FIXME(plan2-rss)`); Plan2
-/// will report real resident pages. `shared` is the virtual size of shared
-/// backends (not Linux mapcount sharing). `lib`/`dirty` are 0 (Linux also
-/// reports 0 for `lib`/`dirty` since 2.6); `text` and `data` are derived from
-/// the areas' executable / writable flags.
-fn render_thread_statm(task: &WeakAxTaskRef) -> VfsResult<String> {
-    let task = match task.upgrade() {
+/// `size` (VSS) is summed exactly from the mapped areas. `resident` (RSS) comes
+/// from incremental address-space counters. `shared` is resident file + shmem
+/// pages (Linux `MM_FILEPAGES + MM_SHMEMPAGES`), not VSS or mapcount. `lib`/
+/// `dirty` are 0 (Linux also reports 0 for `lib`/`dirty` since 2.6); `text` and
+/// `data` are derived from the areas' executable / writable flags.
+fn render_thread_statm(
+    task: &WeakAxTaskRef,
+    proc_data: &Arc<ProcessData>,
+    _path_pid: Pid,
+) -> VfsResult<String> {
+    let _task = match task.upgrade() {
         Some(t) => t,
         None => return Ok("0 0 0 0 0 0 0\n".into()),
     };
-
-    let aspace_arc = task.as_thread().proc_data.aspace();
+    let aspace_arc = proc_data.aspace();
     let mm = aspace_arc.lock();
     Ok(ProcessMemStats::collect(&mm).format_statm())
+}
+
+fn render_thread_stat(
+    task: &WeakAxTaskRef,
+    proc_data: &Arc<ProcessData>,
+    _path_pid: Pid,
+    procfs_pid: Option<Pid>,
+) -> VfsResult<Vec<u8>> {
+    let task = task.upgrade().ok_or(VfsError::NotFound)?;
+    let mut stat = TaskStat::from_thread(&task)?;
+    let aspace_arc = proc_data.aspace();
+    let mem = ProcessMemStats::collect(&aspace_arc.lock());
+    stat.vsize = mem.vsize_bytes();
+    stat.rss = mem.rss_pages();
+    stat.start_code = mem.start_code;
+    stat.end_code = mem.end_code;
+    stat.start_stack = mem.start_stack;
+    stat.start_brk = proc_data.get_heap_top() as u64;
+    if let Some(pid) = procfs_pid {
+        stat.pid = pid;
+    }
+    Ok(format!("{stat}").into_bytes())
 }
 
 fn render_thread_auxv(task: &AxTaskRef) -> Vec<u8> {
@@ -869,7 +926,7 @@ impl DirectRwFsFileOps for ProcMemFile {
         let aspace = self.proc_data.aspace();
         let aspace = aspace.lock();
         aspace.write(VirtAddr::from_usize(addr), buf)?;
-        ax_runtime::hal::cpu::asm::flush_icache_all();
+        ax_runtime::hal::cache::flush_icache_all();
         Ok(buf.len())
     }
 }
@@ -907,52 +964,31 @@ impl SimpleDirOps for ThreadDir {
         let task = self.task.upgrade().ok_or(VfsError::NotFound)?;
         Ok(match name {
             "stat" => {
+                let task = self.task.clone();
+                let proc_data = self.proc_data.clone();
+                let path_pid = self.path_pid;
                 let procfs_pid = self.procfs_pid;
                 SimpleFile::new_regular(fs, move || {
-                    let mut stat = TaskStat::from_thread(&task)?;
-                    if let Some(pid) = procfs_pid {
-                        stat.pid = pid;
-                    }
-                    Ok(format!("{stat}").into_bytes())
+                    render_thread_stat(&task, &proc_data, path_pid, procfs_pid)
                 })
                 .into()
             }
             "statm" => {
                 let task = self.task.clone();
-                SimpleFile::new_regular(fs, move || render_thread_statm(&task)).into()
+                let proc_data = self.proc_data.clone();
+                let path_pid = self.path_pid;
+                SimpleFile::new_regular(fs, move || {
+                    render_thread_statm(&task, &proc_data, path_pid)
+                })
+                .into()
             }
             "status" => {
+                let task = self.task.clone();
+                let proc_data = self.proc_data.clone();
+                let path_pid = self.path_pid;
                 let procfs_pid = self.procfs_pid;
                 SimpleFile::new_regular(fs, move || {
-                    if let Some(pid) = procfs_pid {
-                        let thread = task.as_thread();
-                        let cred = thread.cred();
-                        let name = task.name();
-                        let num_threads = thread.proc_data.proc.threads().len() as u32;
-                        let mem = ProcessMemStats::collect(&thread.proc_data.aspace().lock());
-                        let ppid = thread
-                            .proc_data
-                            .proc
-                            .parent()
-                            .map_or(0, |parent| parent.pid());
-                        Ok(render_task_status(
-                            TaskStatusBase {
-                                name: &name,
-                                state: task_status_state(&task),
-                                tgid: pid,
-                                pid: pid as u64,
-                                ppid,
-                                tracer_pid: thread.proc_data.ptrace_tracer_pid().unwrap_or(0),
-                                cred: &cred,
-                                num_threads,
-                            },
-                            task.cpumask(),
-                            ax_runtime::hal::cpu_num(),
-                            &mem,
-                        ))
-                    } else {
-                        Ok(task_status(&task))
-                    }
+                    render_thread_status(&task, &proc_data, path_pid, procfs_pid)
                 })
                 .into()
             }
@@ -1224,27 +1260,36 @@ impl SimpleDirOps for ProcFsHandler {
     }
 
     fn lookup_child(&self, name: &str) -> VfsResult<NodeOpsMux> {
-        let (task, procfs_pid) = if name == "self" {
-            (current().clone(), None)
+        let (task, path_pid, procfs_pid, proc_data) = if name == "self" {
+            let task = current().clone();
+            let path_pid = task.as_thread().proc_data.proc.pid();
+            let proc_data = procfs_lookup_process(path_pid).map_err(|_| VfsError::NotFound)?;
+            (task, path_pid, None, proc_data)
         } else {
             let pid = name.parse::<u32>().map_err(|_| VfsError::NotFound)?;
-            let proc_data = procfs_lookup_process(pid)?;
-            let tid = proc_data
-                .proc
-                .threads()
-                .into_iter()
-                .next()
-                .ok_or(VfsError::NotFound)?;
-            let task = get_task(tid).map_err(|_| VfsError::NotFound)?;
+            let proc_data = procfs_lookup_process(pid).map_err(|_| VfsError::NotFound)?;
+            let task = if let Ok(task) = get_task(pid) {
+                task
+            } else {
+                let tid = proc_data
+                    .proc
+                    .threads()
+                    .into_iter()
+                    .next()
+                    .ok_or(VfsError::NotFound)?;
+                get_task(tid).map_err(|_| VfsError::NotFound)?
+            };
             let procfs_pid =
                 (procfs_visible_pid(&proc_data.proc) != proc_data.proc.pid()).then_some(pid);
-            (task, procfs_pid)
+            (task, pid, procfs_pid, proc_data)
         };
         let node = NodeOpsMux::Dir(SimpleDir::new_maker(
             self.0.clone(),
             Arc::new(ThreadDir {
                 fs: self.0.clone(),
                 task: Arc::downgrade(&task),
+                proc_data,
+                path_pid,
                 procfs_pid,
             }),
         ));
@@ -1361,11 +1406,6 @@ fn builder(fs: Arc<SimpleFs>) -> DirMaker {
                 "pid_max",
                 SimpleFile::new_regular(fs.clone(), || Ok("32768\n")),
             );
-            // Linux exposes the kernel release/type here. Apps + libraries read
-            // these at init for feature detection (e.g. modernc.org/fileutil,
-            // pulled in by juicefs's sqlite meta store, panics on open() of a
-            // missing osrelease). Report a recent release so apps take modern
-            // paths starry supports; ostype is always "Linux".
             kernel.add(
                 "osrelease",
                 SimpleFile::new_regular(fs.clone(), || Ok("6.6.0-starry\n")),
@@ -1373,6 +1413,25 @@ fn builder(fs: Arc<SimpleFs>) -> DirMaker {
             kernel.add(
                 "ostype",
                 SimpleFile::new_regular(fs.clone(), || Ok("Linux\n")),
+            );
+
+            // perf knobs the upstream Linux `perf` tool probes at startup.
+            // `perf_event_paranoid` gates how much unprivileged users may
+            // measure; -1 is the most permissive setting (kernel/CPU/tracepoint
+            // events all allowed) so perf can profile freely here.
+            kernel.add(
+                "perf_event_paranoid",
+                SimpleFile::new_regular(fs.clone(), || Ok("-1\n")),
+            );
+            // Per-user locked pages for the perf ring buffer; Linux default.
+            kernel.add(
+                "perf_event_mlock_kb",
+                SimpleFile::new_regular(fs.clone(), || Ok("516\n")),
+            );
+            // Upper bound perf uses to clamp the requested sample frequency (-F).
+            kernel.add(
+                "perf_event_max_sample_rate",
+                SimpleFile::new_regular(fs.clone(), || Ok("100000\n")),
             );
 
             SimpleDir::new_maker(fs.clone(), Arc::new(kernel))

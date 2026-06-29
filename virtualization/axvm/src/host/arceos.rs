@@ -2,7 +2,11 @@
 
 extern crate alloc;
 
-#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+#[cfg(any(
+    target_arch = "x86_64",
+    target_arch = "aarch64",
+    target_arch = "loongarch64"
+))]
 use alloc::boxed::Box;
 use core::{
     sync::atomic::{AtomicUsize, Ordering},
@@ -24,6 +28,8 @@ use crate::host::{HostCpu, HostMemory, HostPlatform, HostTime};
 
 /// Private default host adapter used by [`crate::AxvmRuntime`].
 pub(crate) struct ArceOsHost;
+
+const CPU_ENABLE_WAIT_TIMEOUT: Duration = Duration::from_secs(5);
 
 static ARCEOS_HOST: ArceOsHost = ArceOsHost;
 
@@ -84,11 +90,16 @@ impl HostTime for ArceOsHost {
         modules::ax_hal::time::monotonic_time()
     }
 
+    #[cfg(not(target_arch = "loongarch64"))]
     fn set_oneshot_timer(&self, deadline_ns: u64) {
         modules::ax_hal::time::set_oneshot_timer(deadline_ns);
     }
 
-    #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+    #[cfg(any(
+        target_arch = "x86_64",
+        target_arch = "aarch64",
+        target_arch = "loongarch64"
+    ))]
     fn register_timer(
         &self,
         deadline_ns: u64,
@@ -97,7 +108,7 @@ impl HostTime for ArceOsHost {
         crate::timer::register_timer(deadline_ns, callback)
     }
 
-    #[cfg(target_arch = "x86_64")]
+    #[cfg(any(target_arch = "x86_64", target_arch = "loongarch64"))]
     fn cancel_timer(&self, token: Self::CancelToken) {
         crate::timer::cancel_timer(token);
     }
@@ -118,6 +129,32 @@ pub(crate) fn dispatch_host_irq(vector: usize) {
     modules::ax_hal::irq::handle_irq(vector);
 }
 
+#[cfg(target_arch = "loongarch64")]
+pub(crate) fn set_irq_enabled(raw_irq: usize, enabled: bool) {
+    let gsi = match u32::try_from(raw_irq) {
+        Ok(gsi) => gsi,
+        Err(_) => {
+            warn!("failed to resolve LoongArch passthrough IRQ {raw_irq}: out of GSI range");
+            return;
+        }
+    };
+    let irq = match modules::ax_hal::irq::resolve_irq_source(
+        modules::ax_hal::irq::IrqSource::AcpiGsi(gsi),
+    ) {
+        Ok(irq) => irq,
+        Err(err) => {
+            warn!("failed to resolve LoongArch passthrough IRQ {raw_irq}: {err:?}");
+            return;
+        }
+    };
+    if let Err(err) = modules::ax_hal::irq::set_enable(irq, enabled) {
+        warn!(
+            "failed to set LoongArch passthrough IRQ {raw_irq} ({irq:?}) enabled={enabled}: \
+             {err:?}"
+        );
+    }
+}
+
 impl HostCpu for ArceOsHost {
     type CpuMask = api::task::AxCpuMask;
 
@@ -127,10 +164,6 @@ impl HostCpu for ArceOsHost {
 
     fn this_cpu_id(&self) -> usize {
         modules::ax_hal::percpu::this_cpu_id()
-    }
-
-    fn bind_current_to_cpu(&self, cpu_id: usize) -> AxResult {
-        api::task::ax_set_current_affinity(Self::CpuMask::one_shot(cpu_id))
     }
 }
 
@@ -171,8 +204,19 @@ pub(crate) fn send_ipi(cpu_id: usize) {
         return;
     }
     modules::ax_hal::irq::send_ipi(
-        modules::ax_hal::irq::IPI_IRQ,
+        modules::ax_hal::irq::ipi_irq(),
         modules::ax_hal::irq::IpiTarget::Other { cpu_id },
+    );
+}
+
+fn send_ipi_to_all_except_current(cpu_num: usize) {
+    if cpu_num <= 1 {
+        return;
+    }
+    let cpu_id = modules::ax_hal::percpu::this_cpu_id();
+    modules::ax_hal::irq::send_ipi(
+        modules::ax_hal::irq::ipi_irq(),
+        modules::ax_hal::irq::IpiTarget::AllExceptCurrent { cpu_id, cpu_num },
     );
 }
 
@@ -183,17 +227,39 @@ pub(crate) type ArceOsIrqError = modules::ax_hal::irq::IrqError;
 #[cfg(target_arch = "x86_64")]
 pub(crate) type ArceOsIrqHandle = modules::ax_hal::irq::IrqHandle;
 #[cfg(target_arch = "x86_64")]
+pub(crate) type ArceOsIrqId = modules::ax_hal::irq::IrqId;
+#[cfg(target_arch = "x86_64")]
 pub(crate) type ArceOsIrqReturn = modules::ax_hal::irq::IrqReturn;
+#[cfg(target_arch = "x86_64")]
+pub(crate) type ArceOsIrqSource = modules::ax_hal::irq::IrqSource;
 #[cfg(target_arch = "x86_64")]
 pub(crate) type ArceOsRawIrqHandler = modules::ax_hal::irq::RawIrqHandler;
 
 #[cfg(target_arch = "x86_64")]
 pub(crate) fn request_shared_irq(
-    irq: usize,
+    irq: ArceOsIrqId,
     handler: ArceOsRawIrqHandler,
     data: core::ptr::NonNull<()>,
 ) -> Result<ArceOsIrqHandle, ArceOsIrqError> {
     modules::ax_hal::irq::request_shared_irq(irq, handler, data)
+}
+
+#[cfg(target_arch = "x86_64")]
+pub(crate) fn make_irq_id(domain: u16, hwirq: u32) -> ArceOsIrqId {
+    modules::ax_hal::irq::IrqId::new(
+        modules::ax_hal::irq::IrqDomainId(domain),
+        modules::ax_hal::irq::HwIrq(hwirq),
+    )
+}
+
+#[cfg(all(target_arch = "x86_64", not(test)))]
+pub(crate) fn set_irq_enable(irq: ArceOsIrqId, enabled: bool) -> Result<(), ArceOsIrqError> {
+    modules::ax_hal::irq::set_enable(irq, enabled)
+}
+
+#[cfg(target_arch = "x86_64")]
+pub(crate) fn resolve_irq_source(source: ArceOsIrqSource) -> Result<ArceOsIrqId, ArceOsIrqError> {
+    modules::ax_hal::irq::resolve_irq_source(source)
 }
 
 #[cfg(any(
@@ -214,7 +280,10 @@ pub(crate) fn phys_to_virt(paddr: ax_memory_addr::PhysAddr) -> ax_memory_addr::V
     modules::ax_hal::mem::phys_to_virt(paddr)
 }
 
-#[cfg(all(any(feature = "fs", feature = "host-fs"), target_arch = "x86_64"))]
+#[cfg(all(
+    any(feature = "fs", feature = "host-fs"),
+    any(target_arch = "x86_64", target_arch = "loongarch64")
+))]
 pub(crate) fn shutdown_host_filesystems() -> AxResult {
     modules::ax_fs_ng::shutdown_filesystems()
 }
@@ -250,7 +319,9 @@ impl HostPlatform for ArceOsHost {
     fn enable_virtualization_on_current_cpu(&self) -> AxResult {
         crate::timer::init_percpu();
         crate::percpu::init_current_cpu()?;
-        crate::percpu::enable_current_cpu()
+        crate::percpu::enable_current_cpu()?;
+        crate::percpu::mark_cpu_enabled(self.this_cpu_id());
+        Ok(())
     }
 
     fn enable_virtualization_on_all_cpus(&self) -> AxResult {
@@ -258,27 +329,62 @@ impl HostPlatform for ArceOsHost {
 
         info!("Enabling hardware virtualization support on all cores...");
         CORES.store(0, Ordering::Release);
+        crate::percpu::reset_enabled_cpu_mask();
 
         let cpu_count = self.cpu_count();
+        let current_cpu = self.this_cpu_id();
+        info!("Core {current_cpu} is initializing hardware virtualization support...");
+        self.enable_virtualization_on_current_cpu()?;
+        info!("Hardware virtualization support enabled on core {current_cpu}");
+        CORES.store(1, Ordering::Release);
+
         for cpu_id in 0..cpu_count {
-            thread::spawn(move || {
-                let host = arceos_host();
-                info!("Core {cpu_id} is initializing hardware virtualization support...");
-                host.bind_current_to_cpu(cpu_id)
-                    .expect("failed to initialize CPU affinity");
-                host.enable_virtualization_on_current_cpu()
-                    .expect("failed to enable hardware virtualization");
-                info!("Hardware virtualization support enabled on core {cpu_id}");
-                let _ = CORES.fetch_add(1, Ordering::Release);
-            });
+            if cpu_id == current_cpu {
+                continue;
+            }
+            let task = modules::ax_task::TaskInner::new(
+                move || {
+                    let host = arceos_host();
+                    info!("Core {cpu_id} is initializing hardware virtualization support...");
+                    host.enable_virtualization_on_current_cpu()
+                        .expect("failed to enable hardware virtualization");
+                    info!("Hardware virtualization support enabled on core {cpu_id}");
+                    let _ = CORES.fetch_add(1, Ordering::Release);
+                },
+                alloc::format!("axvm-hv-init-{cpu_id}"),
+                modules::ax_config::TASK_STACK_SIZE,
+            );
+            task.set_cpumask(<Self as HostCpu>::CpuMask::one_shot(cpu_id));
+            modules::ax_task::spawn_task(task);
+            if cpu_id != self.this_cpu_id() {
+                send_ipi(cpu_id);
+            }
         }
 
         info!("Waiting for all cores to enable hardware virtualization...");
+        let start = self.monotonic_time();
+        let mut wait_rounds = 0usize;
         while CORES.load(Ordering::Acquire) != cpu_count {
             thread::yield_now();
+            wait_rounds = wait_rounds.wrapping_add(1);
+            if wait_rounds.is_multiple_of(256) {
+                send_ipi_to_all_except_current(cpu_count);
+            }
+            if self.monotonic_time().saturating_sub(start) >= CPU_ENABLE_WAIT_TIMEOUT {
+                break;
+            }
         }
         crate::arch::register_platform_irq_injector();
-        info!("All cores have enabled hardware virtualization support.");
+        let enabled_count = CORES.load(Ordering::Acquire);
+        if enabled_count == cpu_count {
+            info!("All cores have enabled hardware virtualization support.");
+        } else {
+            warn!(
+                "Only {enabled_count}/{cpu_count} cores enabled hardware virtualization before \
+                 timeout; continuing with host CPU mask {:#x}",
+                crate::percpu::enabled_cpu_mask()
+            );
+        }
         Ok(())
     }
 }

@@ -152,13 +152,10 @@ fn add_to_fd(result: OpenResult, flags: u32) -> AxResult<i32> {
                         .session()
                         .terminal()
                         .ok_or(AxError::NotFound)?;
-                    let path = if term.is::<tty::NTtyDriver>() {
-                        "/dev/console".to_string()
-                    } else if let Some(pts) = term.downcast_ref::<tty::PtyDriver>() {
-                        format!("/dev/pts/{}", pts.pty_number())
-                    } else {
-                        panic!("unknown terminal type")
-                    };
+                    let path = tty::terminal_device_path(term.as_ref()).ok_or_else(|| {
+                        warn!("unknown controlling terminal type for /dev/tty");
+                        AxError::BadState
+                    })?;
                     let loc = FS_CONTEXT.lock().resolve(&path)?;
                     file = ax_fs_ng::vfs::File::new(FileBackend::Direct(loc), file.flags());
                 }
@@ -377,7 +374,7 @@ pub fn sys_close_range(first: i32, last: i32, flags: u32) -> AxResult<isize> {
     if flags.contains(CloseRangeFlags::UNSHARE) {
         let curr = current();
         let proc_data = &curr.as_thread().proc_data;
-        let new_files = Arc::new(spin::RwLock::new(FD_TABLE.read().clone()));
+        let new_files = Arc::new(ax_kspin::SpinRwLock::new(FD_TABLE.read().clone()));
         proc_data.with_current_scope_mut(|scope| {
             *FD_TABLE.scope_mut(scope).deref_mut() = new_files;
         });

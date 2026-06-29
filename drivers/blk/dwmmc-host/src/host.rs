@@ -9,9 +9,10 @@
 //!
 //! [`SdioHost`]: sdmmc_protocol::sdio::SdioHost
 
+use alloc::sync::Arc;
 use core::{
     ptr::NonNull,
-    sync::atomic::{AtomicBool, AtomicU32, Ordering},
+    sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering},
 };
 
 use dma_api::DeviceDma;
@@ -56,47 +57,143 @@ pub(crate) struct PendingData {
 /// valid, exclusively-owned MMIO base for a DW_mshc-compatible
 /// register block. Concurrent access to the same controller from
 /// multiple `DwMmc` instances is undefined.
+const IRQ_GENERATION_SHIFT: u64 = 32;
+const IRQ_STATUS_MASK: u64 = u32::MAX as u64;
+
 pub(crate) struct IrqState {
-    pending_status: AtomicU32,
+    mailbox: AtomicU64,
+    next_generation: AtomicU32,
 }
 
 impl IrqState {
     const fn new() -> Self {
         Self {
-            pending_status: AtomicU32::new(0),
+            mailbox: AtomicU64::new(0),
+            next_generation: AtomicU32::new(0),
         }
     }
 
-    pub(crate) fn cache(&self, status: u32) {
-        if status != 0 {
-            self.pending_status.fetch_or(status, Ordering::AcqRel);
+    pub(crate) fn begin_request(&self) {
+        let generation = self.next_generation();
+        self.mailbox
+            .store(pack_mailbox(generation, 0), Ordering::Release);
+    }
+
+    pub(crate) fn end_request(&self) {
+        self.mailbox.store(0, Ordering::Release);
+    }
+
+    pub(crate) fn cache_if_current(&self, generation: u32, status: u32) {
+        if generation == 0 || status == 0 {
+            return;
         }
+        let mut cur = self.mailbox.load(Ordering::Acquire);
+        loop {
+            if mailbox_generation(cur) != generation {
+                return;
+            }
+            let next = pack_mailbox(generation, mailbox_status(cur) | status);
+            match self
+                .mailbox
+                .compare_exchange_weak(cur, next, Ordering::AcqRel, Ordering::Acquire)
+            {
+                Ok(_) => return,
+                Err(observed) => cur = observed,
+            }
+        }
+    }
+
+    pub(crate) fn generation(&self) -> u32 {
+        mailbox_generation(self.mailbox.load(Ordering::Acquire))
     }
 
     pub(crate) fn take(&self, mask: u32) -> u32 {
-        take_cached_bits(&self.pending_status, mask)
+        let mut cur = self.mailbox.load(Ordering::Acquire);
+        loop {
+            let status = mailbox_status(cur);
+            let taken = status & mask;
+            if taken == 0 {
+                return 0;
+            }
+            let next = pack_mailbox(mailbox_generation(cur), status & !mask);
+            match self
+                .mailbox
+                .compare_exchange_weak(cur, next, Ordering::AcqRel, Ordering::Acquire)
+            {
+                Ok(_) => return taken,
+                Err(observed) => cur = observed,
+            }
+        }
     }
 
     pub(crate) fn clear(&self, mask: u32) {
-        self.pending_status.fetch_and(!mask, Ordering::AcqRel);
+        let mut cur = self.mailbox.load(Ordering::Acquire);
+        loop {
+            let next = pack_mailbox(mailbox_generation(cur), mailbox_status(cur) & !mask);
+            match self
+                .mailbox
+                .compare_exchange_weak(cur, next, Ordering::AcqRel, Ordering::Acquire)
+            {
+                Ok(_) => return,
+                Err(observed) => cur = observed,
+            }
+        }
     }
 
     #[cfg(test)]
     pub(crate) fn pending(&self) -> u32 {
-        self.pending_status.load(Ordering::Acquire)
+        mailbox_status(self.mailbox.load(Ordering::Acquire))
+    }
+
+    fn next_generation(&self) -> u32 {
+        let mut cur = self.next_generation.load(Ordering::Acquire);
+        loop {
+            let mut next = cur.wrapping_add(1);
+            if next == 0 {
+                next = 1;
+            }
+            match self.next_generation.compare_exchange_weak(
+                cur,
+                next,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => return next,
+                Err(observed) => cur = observed,
+            }
+        }
     }
 }
 
-fn take_cached_bits(cache: &AtomicU32, mask: u32) -> u32 {
-    let mut cur = cache.load(Ordering::Acquire);
-    loop {
-        let taken = cur & mask;
-        if taken == 0 {
-            return 0;
-        }
-        match cache.compare_exchange_weak(cur, cur & !mask, Ordering::AcqRel, Ordering::Acquire) {
-            Ok(_) => return taken,
-            Err(next) => cur = next,
+fn pack_mailbox(generation: u32, status: u32) -> u64 {
+    ((generation as u64) << IRQ_GENERATION_SHIFT) | status as u64
+}
+
+fn mailbox_generation(value: u64) -> u32 {
+    (value >> IRQ_GENERATION_SHIFT) as u32
+}
+
+fn mailbox_status(value: u64) -> u32 {
+    (value & IRQ_STATUS_MASK) as u32
+}
+
+pub(crate) struct IrqCore {
+    pub(crate) regs: VolatilePtr<'static, RegisterBlock>,
+    pub(crate) state: IrqState,
+}
+
+// SAFETY: `IrqCore` is shared only between the task-side host and the IRQ
+// top-half. Both access the register block with volatile operations and share
+// interrupt status through atomics.
+unsafe impl Send for IrqCore {}
+// SAFETY: See the `Send` impl.
+unsafe impl Sync for IrqCore {}
+
+impl IrqCore {
+    fn new(regs: VolatilePtr<'static, RegisterBlock>) -> Self {
+        Self {
+            regs,
+            state: IrqState::new(),
         }
     }
 }
@@ -112,8 +209,11 @@ pub struct DwMmc {
     pub(crate) data_cmd_index: u8,
     pub(crate) dma: Option<DeviceDma>,
     pub(crate) dma_mask: u64,
-    pub(crate) irq_state: IrqState,
+    pub(crate) dma_poisoned: bool,
+    pub(crate) irq: Arc<IrqCore>,
     pub(crate) completion_irq_enabled: AtomicBool,
+    pub(crate) host2_next_id: u64,
+    pub(crate) host2_active_id: Option<u64>,
 }
 
 impl DwMmc {
@@ -151,8 +251,11 @@ impl DwMmc {
             data_cmd_index: 0,
             dma: None,
             dma_mask: u32::MAX as u64,
-            irq_state: IrqState::new(),
+            dma_poisoned: false,
+            irq: Arc::new(IrqCore::new(regs)),
             completion_irq_enabled: AtomicBool::new(false),
+            host2_next_id: 0,
+            host2_active_id: None,
         }
     }
 
@@ -227,6 +330,18 @@ impl DwMmc {
         self.dma = Some(dma);
     }
 
+    pub(crate) fn check_not_poisoned(&self) -> Result<(), Error> {
+        if self.dma_poisoned {
+            Err(Error::BusError(ErrorContext::new(Phase::DataRead)))
+        } else {
+            Ok(())
+        }
+    }
+
+    pub(crate) fn poison_dma(&mut self) {
+        self.dma_poisoned = true;
+    }
+
     /// Bring the controller to a known state and arm it for card
     /// identification at 400 kHz.
     ///
@@ -263,7 +378,7 @@ impl DwMmc {
         // Mask every interrupt; clear any leftover raw status.
         self.regs.intmask().write(0);
         self.clear_all_int_status();
-        self.irq_state.clear(u32::MAX);
+        self.irq.state.clear(u32::MAX);
         self.completion_irq_enabled.store(false, Ordering::Release);
 
         // Default to 1-bit bus until the protocol layer asks for wider.
@@ -273,6 +388,16 @@ impl DwMmc {
         // Program the divider for 400 kHz (the SD spec ID-mode rate).
         self.program_clock(400_000)?;
 
+        self.dma_poisoned = false;
+        Ok(())
+    }
+
+    pub(crate) fn reset_and_init_preserving_irq(&mut self) -> Result<(), Error> {
+        let was_irq_enabled = self.completion_irq_enabled();
+        self.reset_and_init()?;
+        if was_irq_enabled {
+            self.enable_completion_irq();
+        }
         Ok(())
     }
 

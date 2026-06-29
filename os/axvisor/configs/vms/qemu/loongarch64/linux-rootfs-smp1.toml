@@ -1,0 +1,68 @@
+# Vm base info configs
+#
+[base]
+# Guest vm id.
+id = 1
+# Guest vm name.
+name = "linux-loongarch64-qemu-rootfs"
+# Virtualization type.
+vm_type = 1
+# The number of virtual CPUs.
+cpu_num = 1
+# Guest vm physical cpu ids.
+phys_cpu_ids = [0]
+
+#
+# Vm kernel configs
+#
+[kernel]
+# UEFI guest starts from firmware; Linux is provided to firmware through fw_cfg.
+entry_point = 0x1c00_0000
+# The location of image: "memory" | "fs".
+image_location = "fs"
+# The file path of the kernel image.
+kernel_path = "/guest/linux/linux-qemu"
+# Fallback load address for non-firmware boot paths.
+kernel_load_addr = 0x0020_0000
+# Boot Linux through guest UEFI/ACPI, matching the LoongArch QEMU virt platform.
+enable_bios = true
+boot_protocol = "uefi"
+uefi_firmware_path = "/tmp/ostool/ovmf/loongarch64/code.fd"
+bios_load_addr = 0x1c00_0000
+# Kernel command line. Rootfs mode intentionally uses virtio-blk /dev/vda.
+cmdline = "root=/dev/vda rootfstype=ext4 rootwait rw console=ttyS0,115200 earlycon=uart8250,mmio,0x1fe001e0,115200 nokaslr loglevel=8 ignore_loglevel swiotlb=1024 pci=nomsi initcall_blacklist=raid6_select_algo,ixgbe_init_module,i8042_init,inet6_init"
+
+# Memory regions with format (`base_paddr`, `size`, `flags`, `map_type`).
+# For `map_type`, 0 means `MAP_ALLOC`, 1 means `MAP_IDENTICAL`, 2 means `MAP_RESERVED`.
+memory_regions = [
+  [0x0000_0000, 0x1000_0000, 0x7, 2],
+  [0x8000_0000, 0x2400_0000, 0x7, 1],
+  [0x1c00_0000, 0x0100_0000, 0x7, 0],
+]
+
+#
+# Device specifications
+#
+[devices]
+# The interrupt mode.
+interrupt_mode = "passthrough"
+
+# Pass-through devices.
+passthrough_devices = [
+  ["/"],
+]
+
+# Passthrough addresses.
+# Base-GPA  Length.
+passthrough_addresses = [
+]
+
+# Devices that are not desired to be passed through to the guest
+excluded_devices = [
+]
+
+# Emu_devices.
+emu_devices = [
+  ["fw_cfg", 0x1e02_0000, 0x18, 0, 0x3, []],
+  ["ls7a_pch_pic", 0x1000_0000, 0x1000, 0, 0x25, []],
+]

@@ -1,7 +1,7 @@
 use alloc::{boxed::Box, string::String};
 use core::sync::atomic::{AtomicBool, Ordering};
 
-use spin::RwLock;
+use ax_kspin::SpinRwLock as RwLock;
 
 pub trait BlockTaskOps: Send + Sync {
     fn current_task_id(&self) -> Option<u64>;
@@ -36,27 +36,28 @@ pub fn set_task_ops(ops: &'static dyn BlockTaskOps) {
     TASK_READY.store(true, Ordering::Release);
 }
 
+fn task_ops() -> Option<&'static dyn BlockTaskOps> {
+    TASK_OPS.read().as_ref().copied()
+}
+
 pub fn current_task_id() -> Option<u64> {
-    TASK_OPS
-        .read()
-        .as_ref()
-        .and_then(|ops| ops.current_task_id())
+    task_ops().and_then(|ops| ops.current_task_id())
 }
 
 pub fn task_yield() {
-    if let Some(ops) = TASK_OPS.read().as_ref() {
+    if let Some(ops) = task_ops() {
         ops.task_yield();
     }
 }
 
 pub fn task_wait() {
-    if let Some(ops) = TASK_OPS.read().as_ref() {
+    if let Some(ops) = task_ops() {
         ops.task_wait();
     }
 }
 
 pub fn task_wait_until(condition: impl Fn() -> bool) {
-    if let Some(ops) = TASK_OPS.read().as_ref() {
+    if let Some(ops) = task_ops() {
         ops.task_wait_until(&condition);
     } else {
         while !condition() {
@@ -66,31 +67,31 @@ pub fn task_wait_until(condition: impl Fn() -> bool) {
 }
 
 pub fn wake_task(task_id: u64) {
-    if let Some(ops) = TASK_OPS.read().as_ref() {
+    if let Some(ops) = task_ops() {
         ops.wake_task(task_id);
     }
 }
 
 pub fn notify_waiters() {
-    if let Some(ops) = TASK_OPS.read().as_ref() {
+    if let Some(ops) = task_ops() {
         ops.notify_waiters();
     }
 }
 
 pub fn notify_drain() {
-    if let Some(ops) = TASK_OPS.read().as_ref() {
+    if let Some(ops) = task_ops() {
         ops.notify_drain();
     }
 }
 
 pub fn notify_drain_from_irq() {
-    if let Some(ops) = TASK_OPS.read().as_ref() {
+    if let Some(ops) = task_ops() {
         ops.notify_drain_from_irq();
     }
 }
 
 pub fn wait_for_drain_notification() {
-    if let Some(ops) = TASK_OPS.read().as_ref() {
+    if let Some(ops) = task_ops() {
         ops.wait_for_drain_notification();
     } else {
         core::hint::spin_loop();
@@ -98,7 +99,7 @@ pub fn wait_for_drain_notification() {
 }
 
 pub fn spawn_task(name: String, f: Box<dyn FnOnce() + Send + 'static>) {
-    if let Some(ops) = TASK_OPS.read().as_ref() {
+    if let Some(ops) = task_ops() {
         ops.spawn(name, f);
     }
 }

@@ -4,9 +4,13 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use quote::{format_ident, quote};
+
 const LINKER_SCRIPT_NAME: &str = "axplat.x";
 const LINKER_TEMPLATE_NAME: &str = "axplat.lds.S";
 const SELECTED_PLATFORM_NAME: &str = "selected_platform.rs";
+const BUILD_INFO_NAME: &str = "build_info.rs";
+const DEFAULT_CPU_CAPACITY: usize = 16;
 
 struct PlatformFeature {
     feature: &'static str,
@@ -26,11 +30,6 @@ const PLATFORM_FEATURES: &[PlatformFeature] = &[
         crate_name: "ax_plat_riscv64_sg2002",
     },
     PlatformFeature {
-        feature: "riscv64-visionfive2",
-        target_arch: Some("riscv64"),
-        crate_name: "ax_plat_riscv64_visionfive2",
-    },
-    PlatformFeature {
         feature: "loongarch64-qemu-virt",
         target_arch: Some("loongarch64"),
         crate_name: "ax_plat_loongarch64_qemu_virt",
@@ -43,6 +42,7 @@ fn main() {
     println!("cargo:rustc-check-cfg=cfg(plat_dyn)");
     println!("cargo:rerun-if-changed={LINKER_TEMPLATE_NAME}");
     println!("cargo:rerun-if-env-changed=AX_CONFIG_PATH");
+    println!("cargo:rerun-if-env-changed=SMP");
     println!("cargo:rerun-if-env-changed={}", feature_env("host-test"));
     println!("cargo:rerun-if-env-changed={}", feature_env("myplat"));
     println!("cargo:rerun-if-env-changed={}", feature_env("defplat"));
@@ -57,12 +57,13 @@ fn main() {
     let selected_platform = check_platform_features(&arch);
     gen_selected_platform(&arch, selected_platform).unwrap();
 
-    let config = load_linker_config().unwrap();
-
     let platform_linker_is_external = selected_platform
         .is_some_and(|platform| matches!(platform.feature, "plat-dyn" | "loongarch64-qemu-virt"));
 
-    if config.platform != "dummy" && !platform_linker_is_external {
+    let config = load_linker_config(platform_linker_is_external).unwrap();
+    gen_build_info(config.max_cpu_num).unwrap();
+
+    if !config.is_dummy && !platform_linker_is_external {
         gen_linker_script(&arch, &config).unwrap();
     }
 }
@@ -139,11 +140,21 @@ fn gen_selected_platform(arch: &str, platform: Option<&PlatformFeature>) -> Resu
         println!("cargo:rustc-cfg=plat_dyn");
     }
 
-    let content = crate_name
-        .map(|crate_name| format!("extern crate {crate_name} as _;\n"))
-        .unwrap_or_default();
+    let content = selected_platform_source(crate_name);
     let out_dir = PathBuf::from(std::env::var("OUT_DIR").unwrap());
     fs::write(out_dir.join(SELECTED_PLATFORM_NAME), content)
+}
+
+fn selected_platform_source(crate_name: Option<&str>) -> String {
+    crate_name
+        .map(|crate_name| {
+            let crate_ident = format_ident!("{crate_name}");
+            quote! {
+                extern crate #crate_ident as _;
+            }
+            .to_string()
+        })
+        .unwrap_or_default()
 }
 
 fn feature_enabled(feature: &str) -> bool {
@@ -159,36 +170,51 @@ fn feature_env(feature: &str) -> String {
 
 #[derive(Debug)]
 struct LinkerConfig {
-    platform: String,
+    is_dummy: bool,
     kernel_base_vaddr: usize,
     max_cpu_num: usize,
     kernel_base_paddr: usize,
 }
 
-fn load_linker_config() -> Result<LinkerConfig> {
+fn load_linker_config(platform_linker_is_external: bool) -> Result<LinkerConfig> {
     match env::var("AX_CONFIG_PATH") {
         Ok(path) => {
             println!("cargo:rerun-if-changed={path}");
             read_linker_config(Path::new(&path))
         }
-        Err(_) => Ok(LinkerConfig {
-            platform: ax_config::PLATFORM.to_string(),
-            kernel_base_vaddr: ax_config::plat::KERNEL_BASE_VADDR,
-            max_cpu_num: ax_config::plat::MAX_CPU_NUM,
-            kernel_base_paddr: ax_config::plat::KERNEL_BASE_PADDR,
-        }),
+        Err(_) if platform_linker_is_external => Ok(external_linker_config()?),
+        Err(_) => Ok(dummy_linker_config()),
     }
 }
 
 fn read_linker_config(path: &Path) -> Result<LinkerConfig> {
     let content = fs::read_to_string(path)?;
     let value: toml::Value = toml::from_str(&content).map_err(invalid_data)?;
+    let platform = get_string(&value, &["platform"])?;
     Ok(LinkerConfig {
-        platform: get_string(&value, &["platform"])?,
+        is_dummy: platform == "dummy",
         kernel_base_vaddr: get_usize(&value, &["plat", "kernel-base-vaddr"])?,
         max_cpu_num: get_usize(&value, &["plat", "max-cpu-num"])?,
         kernel_base_paddr: get_usize(&value, &["plat", "kernel-base-paddr"])?,
     })
+}
+
+fn external_linker_config() -> Result<LinkerConfig> {
+    Ok(LinkerConfig {
+        is_dummy: false,
+        kernel_base_vaddr: 0,
+        max_cpu_num: read_cpu_capacity_env()?,
+        kernel_base_paddr: 0,
+    })
+}
+
+fn dummy_linker_config() -> LinkerConfig {
+    LinkerConfig {
+        is_dummy: true,
+        kernel_base_vaddr: 0,
+        max_cpu_num: 1,
+        kernel_base_paddr: 0,
+    }
 }
 
 fn get_string(value: &toml::Value, keys: &[&str]) -> Result<String> {
@@ -240,6 +266,30 @@ fn invalid_data(error: impl std::fmt::Display) -> Error {
     Error::new(ErrorKind::InvalidData, error.to_string())
 }
 
+fn read_cpu_capacity_env() -> Result<usize> {
+    match env::var("SMP") {
+        Ok(value) => parse_usize(&value)
+            .map_err(|err| invalid_data(format!("failed to parse SMP value `{value}`: {err}"))),
+        Err(_) => Ok(DEFAULT_CPU_CAPACITY),
+    }
+}
+
+fn gen_build_info(cpu_capacity: usize) -> Result<()> {
+    let out_dir = PathBuf::from(std::env::var("OUT_DIR").unwrap());
+    fs::write(
+        out_dir.join(BUILD_INFO_NAME),
+        build_info_source(cpu_capacity),
+    )
+}
+
+fn build_info_source(cpu_capacity: usize) -> String {
+    quote! {
+        #[cfg(feature = "smp")]
+        pub const CPU_CAPACITY: usize = #cpu_capacity;
+    }
+    .to_string()
+}
+
 fn gen_linker_script(arch: &str, config: &LinkerConfig) -> Result<()> {
     let output_arch = if arch == "x86_64" {
         "i386:x86-64"
@@ -271,4 +321,39 @@ fn gen_linker_script(arch: &str, config: &LinkerConfig) -> Result<()> {
     println!("cargo:rustc-link-search={}", out_dir.display());
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn semantic_source(source: &str) -> String {
+        source
+            .chars()
+            .filter(|character| !character.is_whitespace())
+            .collect()
+    }
+
+    #[test]
+    fn selected_platform_source_handles_crate_names_with_underscores() {
+        assert_eq!(
+            semantic_source(&selected_platform_source(Some(
+                "ax_plat_loongarch64_qemu_virt"
+            ))),
+            semantic_source("extern crate ax_plat_loongarch64_qemu_virt as _;")
+        );
+    }
+
+    #[test]
+    fn selected_platform_source_is_empty_without_platform() {
+        assert!(selected_platform_source(None).is_empty());
+    }
+
+    #[test]
+    fn build_info_source_generates_smp_cpu_capacity() {
+        assert_eq!(
+            semantic_source(&build_info_source(16)),
+            semantic_source("#[cfg(feature = \"smp\")] pub const CPU_CAPACITY: usize = 16usize;")
+        );
+    }
 }

@@ -1,6 +1,6 @@
 use alloc::collections::VecDeque;
 
-use ax_kernel_guard::{NoOp, NoPreemptIrqSave};
+use ax_kernel_guard::NoPreemptIrqSave;
 use ax_kspin::{SpinNoIrq, SpinNoIrqGuard};
 
 use crate::{AxTaskRef, CurrentTask, current_run_queue, select_wake_run_queue};
@@ -182,22 +182,22 @@ impl WaitQueue {
     /// If `resched` is true, the current task will be preempted when the
     /// preemption is enabled.
     pub fn notify_one(&self, resched: bool) -> bool {
-        let mut wq = self.queue.lock();
-        if let Some(task) = wq.pop_front() {
+        let task = self.pop_front();
+        if let Some(task) = task {
             unblock_one_task(task, resched);
-            true
-        } else {
-            false
+            return true;
         }
+        false
     }
 
     /// Wakes up one task from IRQ context.
     ///
     /// This method is intended for low-level deferred notification paths. It
-    /// does not request an immediate reschedule and it must not be used as a
+    /// only unblocks the worker and marks the current task for rescheduling
+    /// after IRQ/preemption guards are released; it must not be used as a
     /// substitute for publishing the condition that the waiter will observe.
     pub fn notify_one_from_irq(&self) -> bool {
-        self.notify_one(false)
+        self.notify_one(true)
     }
 
     /// Wakes up one task in the wait queue and runs a callback on it.
@@ -214,15 +214,26 @@ impl WaitQueue {
     where
         F: Fn(u64),
     {
-        let mut wq = self.queue.lock();
-        if let Some(task) = wq.pop_front() {
-            func(task.id().as_u64());
+        let task = {
+            let mut wq = self.queue.lock();
+            match wq.pop_front() {
+                Some(task) => {
+                    func(task.id().as_u64());
+                    task.set_in_wait_queue(false);
+                    Some(task)
+                }
+                None => {
+                    func(0);
+                    None
+                }
+            }
+        };
+
+        if let Some(task) = task {
             unblock_one_task(task, resched);
-            true
-        } else {
-            func(0);
-            false
+            return true;
         }
+        false
     }
 
     /// Wakes all tasks in the wait queue.
@@ -237,20 +248,24 @@ impl WaitQueue {
     /// Wakes all tasks from IRQ context.
     ///
     /// This method is intended for low-level deferred notification paths. It
-    /// does not request an immediate reschedule and it must not be used as a
-    /// substitute for publishing the condition that waiters will observe.
+    /// only unblocks workers and marks the current task for rescheduling after
+    /// IRQ/preemption guards are released; it must not be used as a substitute
+    /// for publishing the condition that waiters will observe.
     pub fn notify_all_from_irq(&self) {
         while self.notify_one_from_irq() {
             // loop until the wait queue is empty
         }
     }
+
+    fn pop_front(&self) -> Option<AxTaskRef> {
+        let mut wq = self.queue.lock();
+        let task = wq.pop_front()?;
+        task.set_in_wait_queue(false);
+        Some(task)
+    }
 }
 
 fn unblock_one_task(task: AxTaskRef, resched: bool) {
-    // Mark task as not in wait queue.
-    task.set_in_wait_queue(false);
     // Select run queue by the CPU set of the task.
-    // Use `NoOp` kernel guard here because the function is called with holding the
-    // lock of wait queue, where the irq and preemption are disabled.
-    select_wake_run_queue::<NoOp>(&task).unblock_task(task, resched)
+    select_wake_run_queue::<NoPreemptIrqSave>(&task).unblock_task(task, resched)
 }

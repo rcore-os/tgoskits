@@ -83,3 +83,32 @@ macro_rules! def_test_sched {
 def_test_sched!(fifo, FifoScheduler::<usize>, FifoTask::<usize>);
 def_test_sched!(rr, RRScheduler::<usize, 5>, RRTask::<usize, 5>);
 def_test_sched!(cfs, CFScheduler::<usize>, CFSTask::<usize>);
+
+#[test]
+fn rr_preempt_preserves_slice_but_forced_reschedule_rotates() {
+    use alloc::sync::Arc;
+
+    use crate::{BaseScheduler, RRScheduler, RRTask};
+
+    let mut scheduler = RRScheduler::<usize, 5>::new();
+    let current = Arc::new(RRTask::<usize, 5>::new(0));
+    let remote = Arc::new(RRTask::<usize, 5>::new(1));
+    scheduler.add_task(remote.clone());
+    scheduler.put_prev_task(current.clone(), true);
+    assert_eq!(
+        *scheduler.pick_next_task().unwrap().inner(),
+        0,
+        "ordinary RR preemption preserves the current task's remaining slice",
+    );
+
+    let mut scheduler = RRScheduler::<usize, 5>::new();
+    let current = Arc::new(RRTask::<usize, 5>::new(0));
+    let remote = Arc::new(RRTask::<usize, 5>::new(1));
+    scheduler.add_task(remote);
+    scheduler.put_prev_task(current, false);
+    assert_eq!(
+        *scheduler.pick_next_task().unwrap().inner(),
+        1,
+        "forced remote reschedule must rotate the current task behind queued work",
+    );
+}

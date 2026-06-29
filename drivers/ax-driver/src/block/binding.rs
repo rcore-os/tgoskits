@@ -11,16 +11,17 @@ use core::sync::atomic::{AtomicU64, Ordering};
 
 use ax_errno::{AxError, AxResult};
 use ax_kspin::SpinNoIrq;
-use dma_api::{ContiguousArray, DeviceDma, DmaDirection};
+use dma_api::{ContiguousArray, CpuDmaBuffer, DeviceDma, DmaDirection};
 use log::{error, warn};
 use rdif_block::{
-    BlkError, Buffer, IQueue, Interface, QueueInfo, Request, RequestFlags, RequestId, RequestOp,
-    RequestStatus, TransferChunk, TransferPlan, TransferPlanner, TransferRuntimeCaps,
+    BlkError, Buffer, CompletedRequest, IQueue, Interface, OwnedRequest, QueueHandle, QueueInfo,
+    Request, RequestFlags, RequestId, RequestOp, RequestPoll, RequestStatus, TransferChunk,
+    TransferPlan, TransferPlanner, TransferRuntimeCaps,
 };
 use rdrive::{Device, probe::OnProbeError};
 
 use crate::{
-    BindingInfo, binding_info_from_acpi, binding_info_from_fdt,
+    BindingInfo, BindingIrq, binding_info_from_acpi, binding_info_from_fdt,
     registration::{BoundDevice, register_bound_device},
 };
 #[cfg(feature = "pci")]
@@ -37,10 +38,15 @@ pub struct Block {
 }
 
 struct BlockQueues {
-    queue: Box<dyn IQueue>,
+    queue: RuntimeQueue,
     pool: BlockBufferPool,
     #[cfg(feature = "irq")]
     irq_events: Arc<BlockIrqEvents>,
+}
+
+enum RuntimeQueue {
+    Legacy(Box<dyn IQueue>),
+    Owned(QueueHandle),
 }
 
 struct BlockBufferPool {
@@ -62,7 +68,7 @@ pub struct PlatformBlockDevice {
 /// objects directly, installing IRQ handlers according to the OS policy.
 pub struct RdifBlockDevice {
     name: String,
-    irq_num: Option<usize>,
+    irq: Option<BindingIrq>,
     interface: Box<dyn Interface>,
 }
 
@@ -187,6 +193,10 @@ impl Block {
         self.irq_enabled
     }
 
+    pub fn irq(&self) -> Option<&BindingIrq> {
+        self.info.irq()
+    }
+
     #[cfg(feature = "irq")]
     pub fn take_irq_handler(&mut self) -> Option<(usize, BlockIrqHandler)> {
         let irq = self.info.irq_num()?;
@@ -210,6 +220,25 @@ impl Block {
 
     pub fn flush(&mut self) -> AxResult {
         let mut queues = self.queues.lock();
+        if queues.queue.is_owned() {
+            let request_id = match queues
+                .queue
+                .owned_mut()
+                .ok_or(AxError::BadState)?
+                .submit_request(OwnedRequest {
+                    op: RequestOp::Flush,
+                    lba: 0,
+                    block_count: 0,
+                    data: None,
+                    flags: RequestFlags::NONE,
+                }) {
+                Ok(request_id) => request_id,
+                Err(err) if err.error == BlkError::NotSupported => return Ok(()),
+                Err(err) => return Err(map_blk_err_to_ax_err(err.error)),
+            };
+            return queues.poll_owned_until_complete(request_id).map(|_| ());
+        }
+
         let mut segments = [];
         let request = Request {
             op: RequestOp::Flush,
@@ -218,7 +247,12 @@ impl Block {
             segments: &mut segments,
             flags: RequestFlags::NONE,
         };
-        let request_id = match queues.queue.submit_request(request) {
+        let request_id = match queues
+            .queue
+            .legacy_mut()
+            .ok_or(AxError::BadState)?
+            .submit_request(request)
+        {
             Ok(request_id) => request_id,
             Err(BlkError::NotSupported) => return Ok(()),
             Err(err) => return Err(map_blk_err_to_ax_err(err)),
@@ -235,21 +269,34 @@ impl Block {
         for chunk in plan {
             let block_buf =
                 &mut buf[chunk.byte_offset..chunk.byte_offset.saturating_add(chunk.byte_len)];
-            let mut dma_buffer = queues.pool.alloc(DmaDirection::FromDevice)?;
-            dma_buffer.prepare_for_device(0, block_buf.len());
-            let mut segments = segments_from_dma(&mut dma_buffer, chunk)?;
-            let request_id = queues
-                .queue
-                .submit_request(Request {
+            if queues.queue.is_owned() {
+                let dma_buffer = queues
+                    .pool
+                    .alloc_owned(DmaDirection::FromDevice, block_buf.len())?;
+                let request_id = queues.submit_owned_request(OwnedRequest {
+                    op: RequestOp::Read,
+                    lba: chunk.lba,
+                    block_count: chunk.block_count,
+                    data: Some(dma_buffer.prepare_for_device()),
+                    flags: RequestFlags::NONE,
+                })?;
+                let completed = queues.poll_owned_until_complete(request_id)?;
+                let completed_dma = completed.data.ok_or(AxError::BadState)?;
+                completed_dma.copy_from_device_to_slice(block_buf);
+            } else {
+                let mut dma_buffer = queues.pool.alloc(DmaDirection::FromDevice)?;
+                dma_buffer.prepare_for_device(0, block_buf.len());
+                let mut segments = segments_from_dma(&mut dma_buffer, chunk)?;
+                let request_id = queues.submit_legacy_request(Request {
                     op: RequestOp::Read,
                     lba: chunk.lba,
                     block_count: chunk.block_count,
                     segments: &mut segments,
                     flags: RequestFlags::NONE,
-                })
-                .map_err(map_blk_err_to_ax_err)?;
-            queues.poll_until_complete(request_id)?;
-            dma_buffer.copy_from_device_to_slice(block_buf);
+                })?;
+                queues.poll_until_complete(request_id)?;
+                dma_buffer.copy_from_device_to_slice(block_buf);
+            }
         }
         Ok(())
     }
@@ -263,20 +310,33 @@ impl Block {
         for chunk in plan {
             let block_buf =
                 &buf[chunk.byte_offset..chunk.byte_offset.saturating_add(chunk.byte_len)];
-            let mut dma_buffer = queues.pool.alloc(DmaDirection::ToDevice)?;
-            dma_buffer.copy_to_device_from_slice(block_buf);
-            let mut segments = segments_from_dma(&mut dma_buffer, chunk)?;
-            let request_id = queues
-                .queue
-                .submit_request(Request {
+            if queues.queue.is_owned() {
+                let mut dma_buffer = queues
+                    .pool
+                    .alloc_owned(DmaDirection::ToDevice, block_buf.len())?;
+                dma_buffer.copy_to_device_from_slice(block_buf);
+                let request_id = queues.submit_owned_request(OwnedRequest {
+                    op: RequestOp::Write,
+                    lba: chunk.lba,
+                    block_count: chunk.block_count,
+                    data: Some(dma_buffer.prepare_for_device()),
+                    flags: RequestFlags::NONE,
+                })?;
+                let completed = queues.poll_owned_until_complete(request_id)?;
+                drop(completed.data);
+            } else {
+                let mut dma_buffer = queues.pool.alloc(DmaDirection::ToDevice)?;
+                dma_buffer.copy_to_device_from_slice(block_buf);
+                let mut segments = segments_from_dma(&mut dma_buffer, chunk)?;
+                let request_id = queues.submit_legacy_request(Request {
                     op: RequestOp::Write,
                     lba: chunk.lba,
                     block_count: chunk.block_count,
                     segments: &mut segments,
                     flags: RequestFlags::NONE,
-                })
-                .map_err(map_blk_err_to_ax_err)?;
-            queues.poll_until_complete(request_id)?;
+                })?;
+                queues.poll_until_complete(request_id)?;
+            }
         }
         Ok(())
     }
@@ -287,8 +347,16 @@ impl RdifBlockDevice {
         &self.name
     }
 
-    pub const fn irq_num(&self) -> Option<usize> {
-        self.irq_num
+    pub fn irq(&self) -> Option<&BindingIrq> {
+        self.irq.as_ref()
+    }
+
+    pub fn irq_cloned(&self) -> Option<BindingIrq> {
+        self.irq.clone()
+    }
+
+    pub fn irq_num(&self) -> Option<usize> {
+        self.irq.as_ref().and_then(BindingIrq::legacy_num)
     }
 
     pub fn interface(&self) -> &dyn Interface {
@@ -313,7 +381,7 @@ impl RdifBlockDevice {
 
     #[cfg(feature = "irq")]
     pub fn take_irq_handler(&mut self, source_id: usize) -> Option<(usize, BlockIrqHandler)> {
-        let irq_num = self.irq_num?;
+        let irq_num = self.irq_num()?;
         self.interface
             .take_irq_handler(source_id)
             .map(BlockIrqHandler::new_raw)
@@ -328,7 +396,7 @@ impl RdifBlockDevice {
 
 impl BlockQueues {
     fn new(
-        queue: Box<dyn IQueue>,
+        queue: RuntimeQueue,
         #[cfg(feature = "irq")] irq_events: Arc<BlockIrqEvents>,
     ) -> AxResult<Self> {
         let info = queue.info();
@@ -341,7 +409,11 @@ impl BlockQueues {
         Ok(Self {
             queue,
             pool: BlockBufferPool {
-                dma: DeviceDma::new(info.limits.dma_mask, axklib::dma::op()),
+                dma: DeviceDma::new(
+                    info.limits.dma_domain,
+                    info.limits.dma_mask,
+                    axklib::dma::op(),
+                ),
                 planner,
                 size: layout.size(),
                 align: layout.align(),
@@ -351,19 +423,63 @@ impl BlockQueues {
         })
     }
 
+    fn submit_legacy_request(&mut self, request: Request<'_>) -> AxResult<RequestId> {
+        self.queue
+            .legacy_mut()
+            .ok_or(AxError::BadState)?
+            .submit_request(request)
+            .map_err(map_blk_err_to_ax_err)
+    }
+
+    fn submit_owned_request(&mut self, request: OwnedRequest) -> AxResult<RequestId> {
+        self.queue
+            .owned_mut()
+            .ok_or(AxError::BadState)?
+            .submit_request(request)
+            .map_err(|err| map_blk_err_to_ax_err(err.error))
+    }
+
     fn poll_until_complete(&mut self, request: RequestId) -> AxResult {
         loop {
-            match self
+            let status = self
                 .queue
+                .legacy_mut()
+                .ok_or(AxError::BadState)?
                 .poll_request(request)
-                .map_err(map_blk_err_to_ax_err)?
-            {
+                .map_err(map_blk_err_to_ax_err)?;
+            match status {
                 RequestStatus::Complete => {
                     #[cfg(feature = "irq")]
                     let _ = self.irq_events.take_queue(self.queue.id());
                     return Ok(());
                 }
                 RequestStatus::Pending => {
+                    #[cfg(feature = "irq")]
+                    if self.irq_events.take_queue(self.queue.id()) {
+                        continue;
+                    }
+                    core::hint::spin_loop();
+                }
+            }
+        }
+    }
+
+    fn poll_owned_until_complete(&mut self, request: RequestId) -> AxResult<CompletedRequest> {
+        loop {
+            let status = self
+                .queue
+                .owned_mut()
+                .ok_or(AxError::BadState)?
+                .poll_request(request)
+                .map_err(|err| map_blk_err_to_ax_err(err.into()))?;
+            match status {
+                RequestPoll::Ready(completed) => {
+                    #[cfg(feature = "irq")]
+                    let _ = self.irq_events.take_queue(self.queue.id());
+                    completed.result.map_err(map_blk_err_to_ax_err)?;
+                    return Ok(completed);
+                }
+                RequestPoll::Pending => {
                     #[cfg(feature = "irq")]
                     if self.irq_events.take_queue(self.queue.id()) {
                         continue;
@@ -382,6 +498,52 @@ impl BlockBufferPool {
             .map_err(BlkError::from)
             .map_err(map_blk_err_to_ax_err)
     }
+
+    fn alloc_owned(&self, direction: DmaDirection, len: usize) -> AxResult<CpuDmaBuffer> {
+        CpuDmaBuffer::new_zero(
+            &self.dma,
+            core::num::NonZeroUsize::new(len).ok_or(AxError::BadState)?,
+            self.align,
+            direction,
+        )
+        .map_err(BlkError::from)
+        .map_err(map_blk_err_to_ax_err)
+    }
+}
+
+impl RuntimeQueue {
+    #[cfg(feature = "irq")]
+    fn id(&self) -> usize {
+        match self {
+            Self::Legacy(queue) => queue.id(),
+            Self::Owned(queue) => queue.id(),
+        }
+    }
+
+    fn info(&self) -> QueueInfo {
+        match self {
+            Self::Legacy(queue) => queue.info(),
+            Self::Owned(queue) => queue.info(),
+        }
+    }
+
+    fn is_owned(&self) -> bool {
+        matches!(self, Self::Owned(_))
+    }
+
+    fn legacy_mut(&mut self) -> Option<&mut dyn IQueue> {
+        match self {
+            Self::Legacy(queue) => Some(&mut **queue),
+            Self::Owned(_) => None,
+        }
+    }
+
+    fn owned_mut(&mut self) -> Option<&mut QueueHandle> {
+        match self {
+            Self::Legacy(_) => None,
+            Self::Owned(queue) => Some(queue),
+        }
+    }
 }
 
 impl TryFrom<Device<PlatformBlockDevice>> for Block {
@@ -393,7 +555,11 @@ impl TryFrom<Device<PlatformBlockDevice>> for Block {
         let info = dev.info.clone();
         let irq = info.irq_num();
         let mut interface = dev.interface.take().ok_or(AxError::BadState)?;
-        let queue = interface.create_queue().ok_or(AxError::BadState)?;
+        let queue = interface
+            .create_owned_queue()
+            .map(RuntimeQueue::Owned)
+            .or_else(|| interface.create_queue().map(RuntimeQueue::Legacy))
+            .ok_or(AxError::BadState)?;
         #[cfg(feature = "irq")]
         let irq_events = Arc::new(BlockIrqEvents::default());
         let queues = BlockQueues::new(
@@ -441,11 +607,11 @@ impl TryFrom<Device<PlatformBlockDevice>> for RdifBlockDevice {
     fn try_from(base: Device<PlatformBlockDevice>) -> Result<Self, Self::Error> {
         let mut dev = base.lock().map_err(|_| AxError::BadState)?;
         let name = dev.name.clone();
-        let irq_num = dev.irq_num();
+        let irq = dev.info.irq_cloned();
         let interface = dev.interface.take().ok_or(AxError::BadState)?;
         Ok(Self {
             name,
-            irq_num,
+            irq,
             interface,
         })
     }
@@ -662,7 +828,10 @@ mod tests {
     use dma_api::{
         DeviceDma, DmaAllocHandle, DmaConstraints, DmaDirection, DmaError, DmaMapHandle, DmaOp,
     };
-    use rdif_block::{DeviceInfo, DriverGeneric, QueueLimits, validate_request};
+    use rdif_block::{
+        DeviceInfo, DriverGeneric, IQueueOwned, PollError, QueueLimits, SubmitError,
+        validate_request,
+    };
 
     use super::*;
 
@@ -832,7 +1001,7 @@ mod tests {
         let device = PlatformBlockDevice::new(
             "test-block".into(),
             Box::new(TestInterface),
-            BindingInfo::with_irq(Some(irq)),
+            BindingInfo::with_irq(Some(irq)).unwrap(),
         );
 
         assert_eq!(BoundDevice::binding_info(&device).irq_num(), Some(irq));
@@ -897,6 +1066,97 @@ mod tests {
         }
     }
 
+    struct OwnedRecordingQueue {
+        info: QueueInfo,
+        log: &'static RequestLog,
+        pending: Option<CompletedRequest>,
+    }
+
+    impl OwnedRecordingQueue {
+        fn new(log: &'static RequestLog, limits: QueueLimits) -> Self {
+            Self {
+                info: QueueInfo {
+                    id: 0,
+                    device: DeviceInfo {
+                        name: Some("owned-recording-block"),
+                        ..DeviceInfo::new(64, 512)
+                    },
+                    limits,
+                },
+                log,
+                pending: None,
+            }
+        }
+    }
+
+    impl IQueueOwned for OwnedRecordingQueue {
+        fn id(&self) -> usize {
+            self.info.id
+        }
+
+        fn info(&self) -> QueueInfo {
+            self.info
+        }
+
+        fn submit_request(&mut self, request: OwnedRequest) -> Result<RequestId, SubmitError> {
+            if let Err(err) = rdif_block::validate_owned_request(self.info, &request) {
+                return Err(SubmitError::new(err, request));
+            }
+            let id = RequestId::new(self.log.snapshot().len());
+            let op = request.op;
+            let lba = request.lba;
+            let block_count = request.block_count;
+            let flags = request.flags;
+            let data_len = request.data_len();
+            let mut completed_data = request.data.map(|data| data.into_cpu_buffer());
+            if op == RequestOp::Read {
+                let Some(buffer) = completed_data.as_mut() else {
+                    return Err(SubmitError::new(
+                        BlkError::InvalidRequest,
+                        OwnedRequest {
+                            op,
+                            lba,
+                            block_count,
+                            data: None,
+                            flags,
+                        },
+                    ));
+                };
+                unsafe {
+                    buffer.as_mut_slice_cpu().fill(block_count as u8);
+                }
+            }
+            self.log.push(SubmittedRequest {
+                op,
+                lba,
+                block_count,
+                data_len,
+                segment_lengths: alloc::vec![data_len],
+            });
+            let completed_data = completed_data.map(|buffer| {
+                let in_flight = unsafe { buffer.prepare_for_device().into_in_flight() };
+                unsafe { in_flight.complete_after_quiesce() }
+            });
+            self.pending = Some(CompletedRequest::new(id, Ok(()), completed_data));
+            Ok(id)
+        }
+
+        fn poll_request(&mut self, _request: RequestId) -> Result<RequestPoll, PollError> {
+            Ok(self
+                .pending
+                .take()
+                .map(RequestPoll::Ready)
+                .unwrap_or(RequestPoll::Pending))
+        }
+
+        fn cancel_request(&mut self, _request: RequestId) -> Result<RequestPoll, PollError> {
+            self.pending
+                .take()
+                .map(RequestPoll::Ready)
+                .ok_or(PollError::UnknownRequest)
+        }
+    }
+
     // SAFETY: The queue records request metadata synchronously and never
     // accesses request segments after `submit_request` returns.
     unsafe impl IQueue for RecordingQueue {
@@ -940,9 +1200,9 @@ mod tests {
             irq_handler: None,
             interface: Box::new(TestInterface),
             queues: SpinNoIrq::new(BlockQueues {
-                queue,
+                queue: RuntimeQueue::Legacy(queue),
                 pool: BlockBufferPool {
-                    dma: DeviceDma::new(u64::MAX, dma),
+                    dma: DeviceDma::new_legacy(u64::MAX, dma),
                     planner,
                     size: layout.size(),
                     align: layout.align(),
@@ -970,6 +1230,7 @@ mod tests {
         let log = Box::leak(Box::<RequestLog>::default());
         let limits = QueueLimits {
             dma_mask: u64::MAX,
+            dma_domain: dma_api::DmaDomainId::legacy_global(),
             dma_alignment: 4096,
             max_inflight: 1,
             max_blocks_per_request: 8,
@@ -1019,6 +1280,7 @@ mod tests {
         let log = Box::leak(Box::<RequestLog>::default());
         let limits = QueueLimits {
             dma_mask: u64::MAX,
+            dma_domain: dma_api::DmaDomainId::legacy_global(),
             dma_alignment: 4096,
             max_inflight: 1,
             max_blocks_per_request: 8,
@@ -1071,6 +1333,70 @@ mod tests {
     }
 
     #[test]
+    fn owned_queue_read_returns_completed_dma_to_caller_buffer() {
+        let dma = Box::leak(Box::<TrackingDma>::default());
+        let log = Box::leak(Box::<RequestLog>::default());
+        let limits = QueueLimits {
+            dma_mask: u64::MAX,
+            dma_domain: dma_api::DmaDomainId::legacy_global(),
+            dma_alignment: 4096,
+            max_inflight: 1,
+            max_blocks_per_request: 8,
+            max_segments: 1,
+            max_segment_size: 4096,
+            supported_flags: RequestFlags::NONE,
+            supports_flush: false,
+            supports_discard: false,
+            supports_write_zeroes: false,
+        };
+        let queue = QueueHandle::new(Box::new(OwnedRecordingQueue::new(log, limits)));
+        let info = queue.info();
+        let planner = block_transfer_planner(info).unwrap();
+        let layout = block_buffer_layout(info, planner.chunk_size()).unwrap();
+        let mut queues = BlockQueues {
+            queue: RuntimeQueue::Owned(queue),
+            pool: BlockBufferPool {
+                dma: DeviceDma::new_legacy(u64::MAX, dma),
+                planner,
+                size: layout.size(),
+                align: layout.align(),
+            },
+            #[cfg(feature = "irq")]
+            irq_events: Arc::new(BlockIrqEvents::default()),
+        };
+        let mut buf = [0_u8; 4096];
+
+        let dma_buffer = queues
+            .pool
+            .alloc_owned(DmaDirection::FromDevice, buf.len())
+            .unwrap();
+        let request_id = queues
+            .submit_owned_request(OwnedRequest {
+                op: RequestOp::Read,
+                lba: 4,
+                block_count: 8,
+                data: Some(dma_buffer.prepare_for_device()),
+                flags: RequestFlags::NONE,
+            })
+            .unwrap();
+        let completed = queues.poll_owned_until_complete(request_id).unwrap();
+        let completed_dma = completed.data.unwrap();
+        completed_dma.copy_from_device_to_slice(&mut buf);
+
+        assert_eq!(buf, [8; 4096]);
+        assert_eq!(
+            log.snapshot(),
+            [SubmittedRequest {
+                op: RequestOp::Read,
+                lba: 4,
+                block_count: 8,
+                data_len: 4096,
+                segment_lengths: alloc::vec![4096],
+            }]
+        );
+    }
+
+    #[test]
     fn block_transfer_planner_caps_large_finite_segments() {
         let info = QueueInfo {
             id: 0,
@@ -1080,6 +1406,7 @@ mod tests {
             },
             limits: QueueLimits {
                 dma_mask: u64::MAX,
+                dma_domain: dma_api::DmaDomainId::legacy_global(),
                 dma_alignment: 4096,
                 max_inflight: 1,
                 max_blocks_per_request: 4096,
@@ -1122,6 +1449,7 @@ mod tests {
             },
             limits: QueueLimits {
                 dma_mask: u64::MAX,
+                dma_domain: dma_api::DmaDomainId::legacy_global(),
                 dma_alignment: 4096,
                 max_inflight: 1,
                 max_blocks_per_request: u32::MAX,
@@ -1146,6 +1474,7 @@ mod tests {
         let log = Box::leak(Box::<RequestLog>::default());
         let limits = QueueLimits {
             dma_mask: u64::MAX,
+            dma_domain: dma_api::DmaDomainId::legacy_global(),
             dma_alignment: 4096,
             max_inflight: 1,
             max_blocks_per_request: 8,

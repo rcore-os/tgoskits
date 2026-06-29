@@ -7,7 +7,7 @@ keywords = ["os", "usb", "xhci", "driver"]
 license.workspace = true
 name = "crab-usb"
 repository.workspace = true
-version = "0.9.7"
+version = "0.9.9"
 
 [features]
 aggressive_usb_reset = []
@@ -16,6 +16,7 @@ libusb = ["umod"]
 umod = ["libusb1-sys"]
 
 [dependencies]
+ax-kspin = { workspace = true }
 bitflags = "2.8"
 crossbeam = {version = "0.8", features = ["alloc"], default-features = false}
 crossbeam-skiplist = {version = "0.1", features = [
@@ -31,7 +32,6 @@ log = "0.4"
 mbarrier = "0.1"
 nb = "1.1"
 num_enum = {version = "0.7", default-features = false}
-spin = { workspace = true }
 thiserror = {workspace = true}
 tock-registers.workspace = true
 trait-ffi = "0.2.4"

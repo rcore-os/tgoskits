@@ -20,24 +20,16 @@ use rdrive::{
     probe::OnProbeError,
     register::{FdtInfo, ProbeFdt},
 };
-use sdhci_host::Sdhci;
+use sdhci_host::{Sdhci, rdif as sdhci_rdif};
 use sdmmc_protocol::{
     Error, OperationPoll,
     error::Phase,
-    sdio::{CardInfo, CardInitPreference, SdioInitScratch, SdioSdmmc},
+    sdio::{CardInfo, CardInitPreference, SdioHost2Adapter, SdioInitScratch, SdioSdmmc},
 };
 
-use crate::{
-    block::{
-        ProbeFdtBlock, SharedDriver,
-        sdmmc::{SdmmcBlockConfig, SdmmcBlockDevice},
-    },
-    mmio::iomap,
-};
+use crate::{block::ProbeFdtBlock, mmio::iomap};
 
-const SDHCI_POWER_330: u8 = 0x0e;
-
-type K230Sdhci = SdioSdmmc<Sdhci>;
+type K230Sdhci = SdioSdmmc<SdioHost2Adapter<Sdhci>>;
 
 crate::model_register!(
     name: "K230 SDHCI",
@@ -73,15 +65,11 @@ fn probe(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
     let mmio_base = iomap(base_reg.address as usize, mmio_size as usize)?;
 
     let mut host = unsafe { Sdhci::new(mmio_base) };
-    info!("k230-sdhci: reset controller");
-    host.reset_all()
-        .map_err(|e| init_error(base_reg.address, mmio_size, e))?;
-    host.set_power(SDHCI_POWER_330);
-    host.enable_interrupts();
-    host.set_dma(axklib::dma::device_with_mask(u32::MAX as u64));
+    let dma = axklib::dma::device_with_mask(u32::MAX as u64);
+    host.set_dma(dma.clone());
 
-    info!("k230-sdhci: initialize card");
-    let mut card = SdioSdmmc::new(host);
+    info!("k230-sdhci: initialize card through native host2 bus ops");
+    let mut card = SdioSdmmc::new_host2(host);
     let card_info = poll_card_init(&mut card, card_init_preference(info))
         .map_err(|e| card_init_error(base_reg.address, mmio_size, e))?;
     info!(
@@ -96,10 +84,14 @@ fn probe(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
         card_info.ext_csd.is_some()
     );
 
-    let raw = SharedDriver::new(card);
-    let dev = SdmmcBlockDevice::new(
-        raw,
-        SdmmcBlockConfig::dma("k230-sdhci", card_info.capacity_blocks.unwrap_or(0), false),
+    let dev = sdhci_rdif::device(
+        card,
+        sdhci_rdif::dma_config(
+            "k230-sdhci",
+            card_info.capacity_blocks.unwrap_or(0),
+            false,
+            dma,
+        ),
     );
     let irq = probe.register_block(dev)?;
     info!("k230-sdhci block device registered irq={:?}", irq);

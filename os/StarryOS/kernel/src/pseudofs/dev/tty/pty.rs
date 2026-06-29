@@ -46,12 +46,17 @@ impl PtyWriter {
 
 impl TtyWrite for PtyWriter {
     fn write(&self, buf: &[u8]) {
-        let read = self.0.lock().push_slice(buf);
-        // PTY bytes are committed before waking the peer reader.
-        unsafe { self.1.wake(IoEvents::IN) };
+        let read = self.try_write(buf);
         if read < buf.len() {
             warn!("Discarding {} bytes written to pty", buf.len() - read);
         }
+    }
+
+    fn try_write(&self, buf: &[u8]) -> usize {
+        let read = self.0.lock().push_slice(buf);
+        // PTY bytes are committed before waking the peer reader.
+        unsafe { self.1.wake(IoEvents::IN) };
+        read
     }
 }
 
@@ -77,7 +82,10 @@ pub(crate) fn create_pty_pair() -> (Arc<PtyDriver>, Arc<PtyDriver>) {
         TtyConfig {
             reader: PtyReader::new(master_to_slave),
             writer: PtyWriter::new(slave_to_master, poll_rx_master),
-            process_mode: ProcessMode::InterruptDriven(poll_rx_slave),
+            process_mode: ProcessMode::InterruptDriven {
+                input: poll_rx_slave,
+                output: None,
+            },
         },
     );
 

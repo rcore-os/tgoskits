@@ -7,6 +7,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.5](https://github.com/rcore-os/tgoskits/compare/starry-kernel-v0.6.4...starry-kernel-v0.6.5) - 2026-06-27
+
+### Added
+
+- *(starry-kernel)* add USB serial tty support
+
+### Fixed
+
+- *(locking)* remove spin mutex usage from kernel paths ([#1380](https://github.com/rcore-os/tgoskits/pull/1380))
+- *(rknpu)* honor GEM cache flags for mmap ([#1364](https://github.com/rcore-os/tgoskits/pull/1364))
+- *(starry-kernel)* Cow RSS per-VA charge tracking, and /proc memory stats improvements ([#1173](https://github.com/rcore-os/tgoskits/pull/1173))
+- *(starry-kernel)* align socket QoS options with Linux ([#1319](https://github.com/rcore-os/tgoskits/pull/1319))
+- *(axcpu)* deliver x86_64 #DE (divide error) as SIGFPE/FPE_INTDIV ([#1367](https://github.com/rcore-os/tgoskits/pull/1367))
+
+### Other
+
+- Merge pull request #1378 from rcore-os/feat/starry-usb-serial-tty
+- *(starry-kernel)* move USB serial logic into driver crate
+- *(serial)* align IRQ model with dev ([#1265](https://github.com/rcore-os/tgoskits/pull/1265))
+- # feat(starry): implement PRIME dma-buf for card0 + add ffplay Wayland integration test ([#1268](https://github.com/rcore-os/tgoskits/pull/1268))
+
+## [0.6.4](https://github.com/rcore-os/tgoskits/compare/starry-kernel-v0.6.3...starry-kernel-v0.6.4) - 2026-06-23
+
+### Added
+
+- *(starry)* support reboot syscall ([#1358](https://github.com/rcore-os/tgoskits/pull/1358))
+
+### Fixed
+
+- *(starry)* non-blocking tty serial read respects O_NONBLOCK
+
+### Other
+
+- *(starry-kernel)* consolidate rknpu DRM ioctl helpers into drm.rs ([#1351](https://github.com/rcore-os/tgoskits/pull/1351))
+- *(ax-net)* add locking and concurrency documentation and remove deprecated interfaces ([#1340](https://github.com/rcore-os/tgoskits/pull/1340))
+- Tpu kworker clean ([#1352](https://github.com/rcore-os/tgoskits/pull/1352))
+
 ## [0.6.3](https://github.com/rcore-os/tgoskits/compare/starry-kernel-v0.6.2...starry-kernel-v0.6.3) - 2026-06-22
 
 ### Added

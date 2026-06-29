@@ -1,8 +1,4 @@
-//! Process memory statistics derived from VMA metadata.
-//!
-//! Plan1 collects virtual-size metrics by iterating mapped areas without a
-//! page-table walk. Real RSS accounting (populate/unmap counters or PTE walk)
-//! is deferred to Plan2; until then see the `FIXME(plan2-rss)` in [`Self::collect`].
+//! Process memory statistics derived from VMA metadata and RSS accounting.
 
 use alloc::{format, string::String};
 
@@ -27,26 +23,21 @@ pub struct ProcessMemStats {
     pub stack_pages: u64,
     /// File-backed executable VMA pages (VmExe approximation).
     pub exe_pages: u64,
-    /// Virtual page count of mappings whose backend reports `shared == true`.
-    ///
-    /// This feeds `/proc/[pid]/statm` field 3 (`shared`). It is **not** Linux
-    /// resident shared memory (no mapcount/PTE walk): it only sums the virtual
-    /// size of MAP_SHARED / memfd-shared / `SharedBackend` VMAs, matching the
-    /// coarse Linux approximation where `statm shared` counts file+shmem
-    /// resident pages rather than true proportional sharing.
+    /// Virtual page count of mappings whose backend reports `shared == true` (VSS).
     pub shared_vss_pages: u64,
     /// Resident set size in pages (`statm resident`, `stat` field 24, VmRSS).
-    ///
-    /// Invariant: `resident_pages <= vss_pages`. Plan2 should populate this from
-    /// incremental counters or a PTE walk; Plan1 temporarily mirrors VSS (see
-    /// `collect()` FIXME).
     pub resident_pages: u64,
     /// Peak virtual address space in pages (VmPeak). Sourced from the
     /// per-process atomic watermark updated on every successful map.
     pub peak_pages: u64,
-    /// Peak resident set size in pages (VmHWM). Sourced from the
-    /// per-process atomic watermark updated on every successful map.
-    pub hwm_pages: u64,
+    /// Resident anonymous pages (from address-space RSS counters).
+    pub rss_anon_pages: u64,
+    /// Resident file-backed pages.
+    pub rss_file_pages: u64,
+    /// Resident shared-memory pages.
+    pub rss_shmem_pages: u64,
+    /// High-water RSS in pages (Linux `hiwater_rss`, read-side max with current).
+    pub hiwater_rss_pages: u64,
     /// Lowest executable mapping start (stat `start_code`).
     pub start_code: u64,
     /// Highest executable mapping end (stat `end_code`).
@@ -138,8 +129,8 @@ fn accumulate_vma(
 impl ProcessMemStats {
     /// Collect memory statistics by iterating the address-space VMA list.
     ///
-    /// Current VSS / VMA breakdown comes from a VMA walk; watermarks are
-    /// read directly from [`AddrSpace::vm_stat`] in O(1).
+    /// Current VSS / VMA breakdown comes from a VMA walk; VmPeak from
+    /// [`AddrSpace::vm_stat`]; resident RSS from [`AddrSpace::rss`].
     pub fn collect(aspace: &AddrSpace) -> Self {
         let mut stats = Self::default();
         for area in aspace.areas() {
@@ -165,13 +156,25 @@ impl ProcessMemStats {
                 file_info.shared,
             );
         }
-        // FIXME(plan2-rss): replace with real RSS from mm counters or PTE walk.
-        stats.resident_pages = stats.vss_pages;
-        // Watermarks come from the O(1) atomic counters in vm_stat; the
-        // .max(current) floor handles the first collect after a fresh fork
-        // before any new mapping has updated the child's watermarks.
+        stats.resident_pages = aspace.rss().rss_total_pages();
+        aspace.rss().sync_rss_atomics_from_charges();
+        let (charged_anon, charged_file, charged_shmem) = aspace.rss().snapshot_resident_charges();
+        let atomic_file = aspace.rss().rss_file_pages();
+        let atomic_shmem = aspace.rss().rss_shmem_pages();
+        // Cow pages are authoritative in the charge map; File-backend page-cache
+        // pages only bump atomics.
+        let file_only = atomic_file.saturating_sub(charged_file);
+        let shmem_only = atomic_shmem.saturating_sub(charged_shmem);
+        stats.rss_anon_pages = charged_anon;
+        stats.rss_file_pages = charged_file.saturating_add(file_only);
+        stats.rss_shmem_pages = charged_shmem.saturating_add(shmem_only);
+        stats.resident_pages = stats
+            .rss_anon_pages
+            .saturating_add(stats.rss_file_pages)
+            .saturating_add(stats.rss_shmem_pages)
+            .max(stats.resident_pages);
+        stats.hiwater_rss_pages = aspace.rss().hiwater_rss_pages();
         stats.peak_pages = aspace.vm_stat.peak_vss_pages().max(stats.vss_pages);
-        stats.hwm_pages = aspace.vm_stat.peak_rss_pages().max(stats.resident_pages);
         stats
     }
 
@@ -186,14 +189,14 @@ impl ProcessMemStats {
     }
 
     /// Render `/proc/[pid]/statm` (size resident shared text lib data dirty).
+    ///
+    /// `shared` is Linux-like: resident file + shmem pages (`MM_FILEPAGES +
+    /// MM_SHMEMPAGES`), not VSS or mapcount.
     pub fn format_statm(&self) -> String {
+        let shared_rss = self.rss_file_pages + self.rss_shmem_pages;
         format!(
             "{} {} {} {} 0 {} 0\n",
-            self.vss_pages,
-            self.resident_pages,
-            self.shared_vss_pages,
-            self.text_pages,
-            self.data_pages,
+            self.vss_pages, self.resident_pages, shared_rss, self.text_pages, self.data_pages,
         )
     }
 
@@ -202,16 +205,20 @@ impl ProcessMemStats {
         let page_kb = PAGE_SIZE_4K as u64 / 1024;
         let peak_kb = self.peak_pages * page_kb;
         let vss_kb = self.vss_pages * page_kb;
-        let hwm_kb = self.hwm_pages * page_kb;
+        let hwm_kb = self.hiwater_rss_pages * page_kb;
         let resident_kb = self.resident_pages * page_kb;
+        let anon_kb = self.rss_anon_pages * page_kb;
+        let file_kb = self.rss_file_pages * page_kb;
+        let shmem_kb = self.rss_shmem_pages * page_kb;
         let data_kb = self.data_pages * page_kb;
         let stack_kb = self.stack_pages * page_kb;
         let exe_kb = self.exe_pages * page_kb;
         format!(
             "VmPeak:\t{peak_kb} kB\nVmSize:\t{vss_kb} kB\nVmLck:\t0 kB\nVmPin:\t0 \
-             kB\nVmHWM:\t{hwm_kb} kB\nVmRSS:\t{resident_kb} kB\nRssAnon:\t0 kB\nRssFile:\t0 \
-             kB\nRssShmem:\t0 kB\nVmData:\t{data_kb} kB\nVmStk:\t{stack_kb} kB\nVmExe:\t{exe_kb} \
-             kB\nVmLib:\t0 kB\nVmPTE:\t0 kB\nVmSwap:\t0 kB\n"
+             kB\nVmHWM:\t{hwm_kb} kB\nVmRSS:\t{resident_kb} kB\nRssAnon:\t{anon_kb} \
+             kB\nRssFile:\t{file_kb} kB\nRssShmem:\t{shmem_kb} kB\nVmData:\t{data_kb} \
+             kB\nVmStk:\t{stack_kb} kB\nVmExe:\t{exe_kb} kB\nVmLib:\t0 kB\nVmPTE:\t0 \
+             kB\nVmSwap:\t0 kB\n"
         )
     }
 }
@@ -314,10 +321,14 @@ mod tests {
             stack_pages: 20,
             exe_pages: 8,
             shared_vss_pages: 5,
-            resident_pages: 100,
+            resident_pages: 30,
+            rss_anon_pages: 20,
+            rss_file_pages: 7,
+            rss_shmem_pages: 3,
+            hiwater_rss_pages: 30,
             ..Default::default()
         };
-        assert_eq!(stats.format_statm(), "100 100 5 10 0 40 0\n");
+        assert_eq!(stats.format_statm(), "100 30 10 10 0 40 0\n");
     }
 
     #[test]
@@ -327,16 +338,22 @@ mod tests {
             data_pages: 64,
             stack_pages: 32,
             exe_pages: 16,
-            resident_pages: 256,
+            resident_pages: 48,
             peak_pages: 512,
-            hwm_pages: 256,
+            rss_anon_pages: 40,
+            rss_file_pages: 4,
+            rss_shmem_pages: 4,
+            hiwater_rss_pages: 48,
             ..Default::default()
         };
         let lines = stats.format_status_vm_lines();
         assert!(lines.contains("VmPeak:\t2048 kB\n"));
         assert!(lines.contains("VmSize:\t1024 kB\n"));
-        assert!(lines.contains("VmHWM:\t1024 kB\n"));
-        assert!(lines.contains("VmRSS:\t1024 kB\n"));
+        assert!(lines.contains("VmHWM:\t192 kB\n"));
+        assert!(lines.contains("VmRSS:\t192 kB\n"));
+        assert!(lines.contains("RssAnon:\t160 kB\n"));
+        assert!(lines.contains("RssFile:\t16 kB\n"));
+        assert!(lines.contains("RssShmem:\t16 kB\n"));
         assert!(lines.contains("VmData:\t256 kB\n"));
         assert!(lines.contains("VmStk:\t128 kB\n"));
         assert!(lines.contains("VmExe:\t64 kB\n"));

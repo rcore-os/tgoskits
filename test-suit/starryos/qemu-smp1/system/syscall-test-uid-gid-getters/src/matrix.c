@@ -218,7 +218,11 @@ static uint32_t expected_0arg(getter_kind_t g, cred_state_t s,
 
 static int waitpid_safely(pid_t pid, int *st)
 {
-    return waitpid(pid, st, 0) == pid ? 0 : -1;
+    pid_t r;
+    do {
+        r = waitpid(pid, st, 0);
+    } while (r < 0 && errno == EINTR);
+    return r == pid ? 0 : -1;
 }
 
 /* ── 矩阵 1: 0-arg getter (4 syscall × 8 state × 2 mode = 64 case) ── */

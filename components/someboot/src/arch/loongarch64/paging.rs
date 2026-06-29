@@ -243,7 +243,6 @@ pub fn enable_mmu_secondary(cpu_meta_paddr: usize) -> ! {
     unsafe {
         core::arch::asm!("csrwr {}, {}", in(reg) crmd_bits, const 0x0);
     }
-    crate::mem::mmu::set_mmu_enabled();
     jump_to_secondary_entry(cpu_meta_paddr, meta.stack_top_virt, meta.entry_virt)
 }
 

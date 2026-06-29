@@ -1,6 +1,6 @@
 [package]
 name = "ax-plat-loongarch64-qemu-virt"
-version = "0.5.15"
+version = "0.5.17"
 repository = "https://github.com/rcore-os/tgoskits"
 description = "Implementation of `axplat` hardware abstraction layer for QEMU LoongArch virtual machine."
 keywords = ["arceos", "os", "hal", "embedded", "loongarch"]
@@ -11,6 +11,7 @@ license = "Apache-2.0"
 
 [features]
 fp-simd = ["ax-cpu/fp-simd"]
+hypervisor = ["irq", "smp"]
 irq = ["ax-plat/irq"]
 paging = []
 rtc = ["dep:chrono"]

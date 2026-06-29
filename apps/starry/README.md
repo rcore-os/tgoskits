@@ -33,6 +33,21 @@ Example:
 cargo xtask starry app board -t orangepi-5-plus-uvc
 ```
 
+## Resource Monitor
+
+The `resource-monitor` case provides an offline user-space collector and a static
+viewer for StarryOS application experiments. It samples existing `/proc` files
+into CSV/JSONL logs and replays StarryOS/Linux runs locally in the browser; it
+does not add kernel counters, drivers, online telemetry, or robot workload
+control.
+
+```bash
+cd apps/starry/resource-monitor/offline-viewer
+python3 -m http.server 8000
+```
+
+See `resource-monitor/README.md` for the demo usage, log export flow, and file format.
+
 ## PicoClaw CLI
 
 The `picoclaw-cli` case is an opt-in StarryOS x86_64 QEMU workflow for checking
@@ -71,6 +86,35 @@ PATH="$PWD/target/qemu-k230-docker-build:$PATH" \
 See `k230-kpu-nncase/README.md` and `docs/k230-kpu-nncase-runtime.md` for the
 asset preparation flow.
 
+## macOS AArch64 Self-Build
+
+The `macos-selfbuild` case is an Apple Silicon macOS workflow that boots an
+AArch64 StarryOS SMP kernel with QEMU HVF, enters the StarryOS guest userland,
+and runs guest `cargo build` to build StarryOS again.
+
+```bash
+apps/starry/macos-selfbuild/full_self_build.sh
+qemu-system-aarch64 \
+  -snapshot \
+  -machine virt,gic-version=3 \
+  -nographic \
+  -cpu cortex-a53 \
+  -m 512M \
+  -smp 1 \
+  -device virtio-blk-pci,drive=disk0 \
+  -drive id=disk0,if=none,format=raw,file=tmp/axbuild/rootfs/rootfs-aarch64-alpine.img/rootfs-aarch64-alpine.img,file.locking=off \
+  -kernel target/starry-macos-selfbuild/uploaded/starryos-aarch64-unknown-none-softfloat.bin \
+  -netdev user,id=net0
+```
+
+`full_self_build.sh` is the default full entrypoint. It prepares host tools,
+uses `cargo xtask starry app qemu -t macos-selfbuild --arch aarch64` for the
+seed kernel build, rootfs preparation, overlay injection, and QEMU/HVF run, then
+extracts the guest-built kernel into `target/starry-macos-selfbuild/uploaded/`.
+See `macos-selfbuild/README.md` and `macos-selfbuild/README_CN.md` for the script
+roles, M3 validation environment, per-stage timing, rootfs path, PASS markers,
+and direct QEMU boot verification of the self-built kernel.
+
 ## Redis
 
 The `redis` case is a QEMU app workflow that installs Redis into a temporary
@@ -83,6 +127,21 @@ cargo xtask starry app run -t redis --arch riscv64
 
 Stress configs are available through explicit QEMU config variants; see
 `redis/README.md`.
+
+## Apache
+
+The `apache` case is a QEMU app workflow that runs Apache httpd smoke checks
+and manual phase reruns. Before marking any StarryOS tracker item passed, run
+the same script or equivalent commands in Linux Alpine as the behavior oracle.
+
+```bash
+cargo xtask starry app qemu -t apache --arch riscv64
+```
+
+`apps/starry/apache` is organized into `runner/`, `smoke/`, `phase/`,
+`qemu/phase/`, `qemu/all/`, and `qemu/debug/`. The default app entry is
+smoke-only. Manual phase reruns live under `qemu/phase/`; issue-focused probes
+live under `qemu/debug/`.
 
 ## GDB Smoke
 

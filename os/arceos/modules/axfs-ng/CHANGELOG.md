@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0](https://github.com/rcore-os/tgoskits/compare/ax-fs-ng-v0.5.21...ax-fs-ng-v0.6.0) - 2026-06-27
+
+### Fixed
+
+- *(locking)* remove spin mutex usage from kernel paths ([#1380](https://github.com/rcore-os/tgoskits/pull/1380))
+- *(lockdep)* resolve Starry lock order regressions ([#1375](https://github.com/rcore-os/tgoskits/pull/1375))
+
+### Other
+
+- Merge pull request #1336 from sdio-host2-physical-model
+
+## [0.5.21](https://github.com/rcore-os/tgoskits/compare/ax-fs-ng-v0.5.20...ax-fs-ng-v0.5.21) - 2026-06-23
+
+### Other
+
+- updated the following local packages: ax-kspin, dma-api, rsext4, rdif-block, ax-sync
+
 ## [0.5.20](https://github.com/rcore-os/tgoskits/compare/ax-fs-ng-v0.5.19...ax-fs-ng-v0.5.20) - 2026-06-22
 
 ### Other

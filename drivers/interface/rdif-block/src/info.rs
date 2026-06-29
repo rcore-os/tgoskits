@@ -1,3 +1,5 @@
+use dma_api::DmaDomainId;
+
 use crate::request::RequestFlags;
 
 #[derive(Debug, Clone, Copy)]
@@ -26,6 +28,7 @@ impl DeviceInfo {
 #[derive(Debug, Clone, Copy)]
 pub struct QueueLimits {
     pub dma_mask: u64,
+    pub dma_domain: DmaDomainId,
     pub dma_alignment: usize,
     pub max_inflight: usize,
     pub max_blocks_per_request: u32,
@@ -41,6 +44,7 @@ impl QueueLimits {
     pub const fn simple(logical_block_size: usize, dma_mask: u64) -> Self {
         Self {
             dma_mask,
+            dma_domain: DmaDomainId::legacy_global(),
             dma_alignment: logical_block_size,
             max_inflight: 1,
             max_blocks_per_request: 1,

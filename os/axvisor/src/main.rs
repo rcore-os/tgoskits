@@ -41,6 +41,8 @@ mod config;
     target_arch = "riscv64"
 ))]
 mod fdt;
+#[cfg(target_arch = "loongarch64")]
+mod guest_platform;
 mod images;
 mod manager;
 mod shell;

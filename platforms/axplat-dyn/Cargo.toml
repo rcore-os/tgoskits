@@ -1,6 +1,6 @@
 [package]
 name = "axplat-dyn"
-version = "0.7.4"
+version = "0.7.6"
 authors = ["周睿 <zrufo747@outlook.com>"]
 categories.workspace = true
 description = "A dynamic platform module for ArceOS, providing runtime platform detection and configuration"
@@ -22,7 +22,6 @@ thead-mae = ["somehal/thead-mae", "ax-cpu/xuantie-c9xx"]
 
 [dependencies]
 anyhow = { version = "1", default-features = false }
-ax-config-macros = { workspace = true }
 ax-cpu.workspace = true
 ax-driver = { workspace = true, features = ["plat-dyn"] }
 ax-errno.workspace = true

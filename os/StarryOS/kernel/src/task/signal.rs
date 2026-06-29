@@ -15,8 +15,8 @@ use starry_signal::{SignalInfo, SignalOSAction, SignalSet, Signo};
 use starry_vm::vm_read_slice;
 
 use super::{
-    AsThread, ProcessData, SYSCALL_INSN_LEN, Thread, do_exit, get_process_data, get_process_group,
-    get_task, is_zombie_pid,
+    AsThread, ProcessData, Thread, do_exit, get_process_data, get_process_group, get_task,
+    is_zombie_pid,
 };
 
 /// Information needed to restart a syscall if SA_RESTART applies.
@@ -324,7 +324,7 @@ pub fn check_signals(
                     && (uctx.retval() as isize) == -(ax_errno::LinuxError::EINTR.code() as isize)
                     && restartable
                 {
-                    let new_ip = uctx.ip() - SYSCALL_INSN_LEN;
+                    let new_ip = uctx.ip() - uctx.syscall_insn_len();
                     uctx.set_ip(new_ip);
                     uctx.set_arg0(info.saved_a0);
                     // On x86_64, rax holds both the syscall number and the return

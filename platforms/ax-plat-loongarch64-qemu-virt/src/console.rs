@@ -1,8 +1,10 @@
 use ax_kspin::SpinNoIrq;
 use ax_lazyinit::LazyInit;
-use ax_plat::console::ConsoleIf;
 #[cfg(feature = "irq")]
 use ax_plat::console::ConsoleIrqEvent;
+use ax_plat::console::{ConsoleDeviceIdError, ConsoleDeviceIdResult, ConsoleIf};
+#[cfg(feature = "irq")]
+use ax_plat::irq::{IrqId, IrqNumber};
 #[cfg(feature = "irq")]
 use uart_16550::spec::registers::InterruptType;
 use uart_16550::{Config, Uart16550, backend::MmioBackend, spec::registers::IER};
@@ -63,10 +65,18 @@ impl ConsoleIf for ConsoleIfImpl {
         uart.try_receive_bytes(bytes)
     }
 
+    fn device_id() -> ConsoleDeviceIdResult {
+        Err(ConsoleDeviceIdError::NotSpecified)
+    }
+
+    fn claim_runtime_output() {}
+
     /// Returns the IRQ number for the console, if applicable.
     #[cfg(feature = "irq")]
-    fn irq_num() -> Option<usize> {
-        Some(crate::config::devices::UART_IRQ)
+    fn irq_num() -> Option<IrqId> {
+        Some(
+            IrqNumber(crate::config::devices::UART_IRQ).expect("UART IRQ exceeds legacy IRQ width"),
+        )
     }
 
     #[cfg(feature = "irq")]

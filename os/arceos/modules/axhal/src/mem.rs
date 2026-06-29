@@ -1,5 +1,6 @@
 //! Physical memory management.
 
+use ax_memory_addr::MemoryAddr;
 pub use ax_memory_addr::{PAGE_SIZE_4K, PhysAddr, PhysAddrRange, VirtAddr, VirtAddrRange, pa, va};
 pub use ax_plat::mem::{
     MemRegionFlags, PhysMemRegion, kernel_aspace, mmio_ranges, phys_ram_ranges, phys_to_virt,
@@ -102,7 +103,16 @@ static ALL_MEM_REGIONS: LazyLock<Vec<PhysMemRegion, MAX_REGIONS>> = LazyLock::ne
     // Remove all reserved ranges from RAM ranges, and push the remaining as free memory
     reserved_ranges.sort_unstable_by_key(|&(start, _size)| start);
     ranges_difference(phys_ram_ranges(), &reserved_ranges, |(start, size)| {
-        push(PhysMemRegion::new_ram(start, size, "free memory"));
+        let end = start + size;
+        let aligned_start = PhysAddr::from_usize(start).align_up_4k().as_usize();
+        let aligned_end = PhysAddr::from_usize(end).align_down_4k().as_usize();
+        if aligned_start < aligned_end {
+            push(PhysMemRegion::new_ram(
+                aligned_start,
+                aligned_end - aligned_start,
+                "free memory",
+            ));
+        }
     })
     .inspect_err(|(a, b)| error!("Reserved memory region {a:#x?} overlaps with {b:#x?}"))
     .unwrap();

@@ -26,8 +26,8 @@ type CachedFileKey = (usize, u64);
 type InodeCacheIndex = BTreeMap<CachedFileKey, Weak<CachedFileShared>>;
 
 #[cfg(feature = "ext4")]
-static CACHED_FILE_BY_INODE: spin::LazyLock<spin::Mutex<InodeCacheIndex>> =
-    spin::LazyLock::new(|| spin::Mutex::new(BTreeMap::new()));
+static CACHED_FILE_BY_INODE: spin::LazyLock<Mutex<InodeCacheIndex>> =
+    spin::LazyLock::new(|| Mutex::new(BTreeMap::new()));
 
 /// Eviction listener callback. Returns `true` if the listener successfully
 /// invalidated all mappings for the evicted page.
@@ -405,8 +405,8 @@ impl Drop for ReclaimGuard {
 }
 
 #[cfg(feature = "vfs")]
-static GLOBAL_CACHED_FILES: spin::RwLock<alloc::vec::Vec<Arc<CachedFileShared>>> =
-    spin::RwLock::new(alloc::vec::Vec::new());
+static GLOBAL_CACHED_FILES: ax_kspin::SpinRwLock<alloc::vec::Vec<Arc<CachedFileShared>>> =
+    ax_kspin::SpinRwLock::new(alloc::vec::Vec::new());
 
 #[cfg(feature = "vfs")]
 static RECLAIM_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
@@ -731,7 +731,6 @@ impl CachedFile {
 
     /// Reads data from the file at `offset` into `dst`.
     pub fn read_at(&self, mut dst: impl Write + IoBufMut, offset: u64) -> VfsResult<usize> {
-        let _io = self.shared.io_lock.lock();
         let len = self.shared.len();
         let end = offset.saturating_add(dst.remaining_mut() as u64).min(len);
         if end <= offset {
@@ -749,12 +748,16 @@ impl CachedFile {
             let chunk_len = (end - page_start).min(PAGE_SIZE as u64) as usize - page_offset;
 
             {
+                let _io = self.shared.io_lock.lock();
                 let mut guard = self.shared.page_cache.lock();
                 let page = self.page_or_insert(file, &mut guard, pn, true)?.0;
                 scratch.data()[..chunk_len]
                     .copy_from_slice(&page.data()[page_offset..page_offset + chunk_len]);
             }
 
+            // `dst` may point at user memory. Copy after releasing cached-file
+            // locks so a user page fault can take AddrSpace without creating a
+            // cached-I/O -> AddrSpace lock order.
             dst.write_all(&scratch.data()[..chunk_len])?;
             read += chunk_len;
             current += chunk_len as u64;

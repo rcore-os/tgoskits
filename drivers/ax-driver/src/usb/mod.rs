@@ -7,7 +7,7 @@ use dma_api::{DmaAllocHandle, DmaConstraints, DmaDirection, DmaError, DmaMapHand
 use rdrive::{DriverGeneric, probe::OnProbeError};
 
 use crate::{
-    BindingInfo, binding_info_from_acpi, binding_info_from_fdt,
+    BindingInfo, BindingIrq, binding_info_from_acpi, binding_info_from_fdt,
     registration::{BoundDevice, register_bound_device},
 };
 #[cfg(feature = "pci")]
@@ -160,6 +160,14 @@ impl PlatformUsbHost {
 
     pub fn irq_num(&self) -> Option<usize> {
         self.info.irq_num()
+    }
+
+    pub fn irq(&self) -> Option<&BindingIrq> {
+        self.info.irq()
+    }
+
+    pub fn irq_cloned(&self) -> Option<BindingIrq> {
+        self.info.irq_cloned()
     }
 
     pub fn binding_info(&self) -> &BindingInfo {

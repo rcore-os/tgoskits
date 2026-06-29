@@ -22,26 +22,23 @@ use rdrive::{
     probe::OnProbeError,
     register::{FdtInfo, ProbeFdt},
 };
-use sdhci_host::{HostClock, Sdhci};
+use sdhci_host::{HostClock, Sdhci, rdif as sdhci_rdif};
 use sdmmc_protocol::{
     Error, OperationPoll,
     error::{ErrorContext, Phase},
-    sdio::{CardInfo, CardInitPreference, SdioInitScratch, SdioSdmmc},
+    sdio::{CardInfo, CardInitPreference, SdioHost2Adapter, SdioInitScratch, SdioSdmmc},
 };
 use spin::Once;
 
-use crate::{
-    block::{
-        ProbeFdtBlock, SharedDriver,
-        sdmmc::{SdmmcBlockConfig, SdmmcBlockDevice},
-    },
-    mmio::iomap,
-};
+use crate::{block::ProbeFdtBlock, mmio::iomap};
 
-const SDHCI_POWER_330: u8 = 0x0e;
+// RK3588 DWCMSHC follows Linux's normal SDHCI completion path: command/data
+// status is acknowledged in the hard IRQ and task context advances the RDIF
+// submit/poll queue.
+const ROCKCHIP_SDHCI_IRQ_DRIVEN: bool = true;
 static SDHCI_CLOCK: RockchipSdhciClock = RockchipSdhciClock;
 
-type RockchipSdhci = SdioSdmmc<Sdhci>;
+type RockchipSdhci = SdioSdmmc<SdioHost2Adapter<Sdhci>>;
 
 struct RockchipSdhciClock;
 
@@ -93,15 +90,11 @@ fn probe(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
     } else {
         warn!("rockchip-sdhci: no core clock found; using SDHCI internal clock divider");
     }
-    info!("rockchip-sdhci: reset controller");
-    host.reset_all()
-        .map_err(|e| init_error(base_reg.address, mmio_size, e))?;
-    host.set_power(SDHCI_POWER_330);
-    host.enable_interrupts();
-    host.set_dma(axklib::dma::device_with_mask(u32::MAX as u64));
+    let dma = axklib::dma::device_with_mask(u32::MAX as u64);
+    host.set_dma(dma.clone());
 
-    info!("rockchip-sdhci: initialize card");
-    let mut card = SdioSdmmc::new(host);
+    info!("rockchip-sdhci: initialize card through native host2 bus ops");
+    let mut card = SdioSdmmc::new_host2(host);
     let card_info = poll_card_init_mmc(&mut card)
         .map_err(|e| card_init_error(base_reg.address, mmio_size, e))?;
     info!(
@@ -116,18 +109,25 @@ fn probe(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
         card_info.ext_csd.is_some()
     );
 
-    let raw = SharedDriver::new(card);
-    let dev = SdmmcBlockDevice::new(
-        raw,
-        SdmmcBlockConfig::dma(
-            "rockchip-sdhci",
-            card_info.capacity_blocks.unwrap_or(0),
-            true,
-        ),
+    let dev = sdhci_rdif::device(
+        card,
+        rockchip_sdhci_rdif_config(card_info.capacity_blocks.unwrap_or(0), dma),
     );
     let irq = probe.register_block(dev)?;
     info!("rockchip-sdhci block device registered irq={:?}", irq);
     Ok(())
+}
+
+fn rockchip_sdhci_rdif_config(
+    capacity_blocks: u64,
+    dma: dma_api::DeviceDma,
+) -> sdhci_rdif::BlockConfig {
+    sdhci_rdif::dma_config(
+        "rockchip-sdhci",
+        capacity_blocks,
+        ROCKCHIP_SDHCI_IRQ_DRIVEN,
+        dma,
+    )
 }
 
 fn poll_card_init_mmc(card: &mut RockchipSdhci) -> Result<CardInfo, Error> {
@@ -234,4 +234,74 @@ static CLK_DEV: Once<ClkDev> = Once::new();
 struct ClkDev {
     inner: Device<rdif_clk::Clk>,
     id: ClockId,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rk3588_block_io_uses_adma_config_with_irq_completion() {
+        let config = rockchip_sdhci_rdif_config(8, test_dma());
+
+        assert_eq!(config.name, "rockchip-sdhci");
+        assert_eq!(config.capacity_blocks, 8);
+        assert!(config.uses_dma());
+        assert!(config.irq_driven);
+    }
+
+    #[test]
+    fn rk3588_adma_queue_limits_expose_sdhci_window() {
+        let config = rockchip_sdhci_rdif_config(8, test_dma());
+        let limits = sdmmc_protocol::rdif::queue_limits(&config, config.dma_mask);
+
+        assert_eq!(limits.max_blocks_per_request, sdhci_host::ADMA2_MAX_BLOCKS);
+        assert_eq!(limits.max_segment_size, sdhci_host::ADMA2_MAX_TRANSFER_SIZE);
+        assert_eq!(limits.max_segments, 1);
+    }
+
+    fn test_dma() -> dma_api::DeviceDma {
+        dma_api::DeviceDma::new_legacy(u32::MAX as u64, &TEST_DMA)
+    }
+
+    struct TestDma;
+    static TEST_DMA: TestDma = TestDma;
+
+    impl dma_api::DmaOp for TestDma {
+        fn page_size(&self) -> usize {
+            sdmmc_protocol::rdif::BLOCK_SIZE
+        }
+
+        unsafe fn alloc_contiguous(
+            &self,
+            _constraints: dma_api::DmaConstraints,
+            _layout: core::alloc::Layout,
+        ) -> Option<dma_api::DmaAllocHandle> {
+            None
+        }
+
+        unsafe fn dealloc_contiguous(&self, _handle: dma_api::DmaAllocHandle) {}
+
+        unsafe fn alloc_coherent(
+            &self,
+            _constraints: dma_api::DmaConstraints,
+            _layout: core::alloc::Layout,
+        ) -> Option<dma_api::DmaAllocHandle> {
+            None
+        }
+
+        unsafe fn dealloc_coherent(&self, _handle: dma_api::DmaAllocHandle) {}
+
+        unsafe fn map_streaming(
+            &self,
+            _constraints: dma_api::DmaConstraints,
+            _addr: core::ptr::NonNull<u8>,
+            _size: core::num::NonZeroUsize,
+            _direction: dma_api::DmaDirection,
+        ) -> Result<dma_api::DmaMapHandle, dma_api::DmaError> {
+            Err(dma_api::DmaError::NoMemory)
+        }
+
+        unsafe fn unmap_streaming(&self, _handle: dma_api::DmaMapHandle) {}
+    }
 }

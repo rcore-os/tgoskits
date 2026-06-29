@@ -385,6 +385,11 @@ impl CloneArgs {
                 return Err(err.into());
             }
         }
+        // perf: clone any `attr.inherit` event from the parent onto the child so
+        // `perf record` follows it. Done before the child is scheduled (it is not
+        // yet spawned) so the counter is present the first time the child runs.
+        #[cfg(target_arch = "aarch64")]
+        crate::perf::task::on_clone_inherit(curr_thread, &thr);
         *new_task.task_ext_mut() = Some(AxTaskExt::from_impl(thr));
 
         // vfork(2) and clone(CLONE_VFORK) must sleep the parent until the child
@@ -452,6 +457,16 @@ impl CloneArgs {
         // Fire before any potential vfork-wait so observers see the fork edge
         // even when the parent blocks below.
         trace_sched_process_fork(curr.id().as_u64(), tid as u64);
+
+        // perf side-band: tell any `attr.task` event watching the parent that it
+        // forked a child (PERF_RECORD_FORK), so `perf record` can account it.
+        // Emitted before any vfork-wait below, in the parent's context.
+        #[cfg(target_arch = "aarch64")]
+        crate::perf::task::on_clone_sideband(
+            curr.as_thread(),
+            new_proc_data.proc.pid(),
+            tid as u32,
+        );
 
         // Block the parent until the child exec's or exits.
         if needs_vfork_block {

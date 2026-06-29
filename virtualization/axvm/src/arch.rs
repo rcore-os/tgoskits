@@ -179,21 +179,16 @@ mod riscv64 {
     }
 }
 
-#[cfg(target_arch = "riscv64")]
-pub(crate) fn register_platform_irq_injector() {
-    riscv64::register_platform_irq_injector();
-}
-
-#[cfg(not(target_arch = "riscv64"))]
-pub(crate) fn register_platform_irq_injector() {}
-
 #[cfg(target_arch = "loongarch64")]
 mod loongarch64 {
+    use alloc::boxed::Box;
+    use core::time::Duration;
+
     use ax_crate_interface::impl_interface;
     use ax_memory_addr::{PhysAddr, VirtAddr};
     use loongarch_vcpu::host::LoongArchVcpuHostIf;
 
-    use crate::host::{HostMemory, default_host};
+    use crate::host::{HostMemory, HostTime, default_host};
 
     struct LoongArchVcpuHostIfImpl;
 
@@ -202,8 +197,72 @@ mod loongarch64 {
         fn virt_to_phys(vaddr: VirtAddr) -> PhysAddr {
             default_host().virt_to_phys(vaddr)
         }
+
+        fn current_time_nanos() -> u64 {
+            default_host().monotonic_time().as_nanos() as u64
+        }
+
+        fn ticks_to_nanos(ticks: u64) -> u64 {
+            ax_std::os::arceos::modules::ax_hal::time::ticks_to_nanos(ticks)
+        }
+
+        fn register_timer(
+            deadline: Duration,
+            callback: Box<dyn FnOnce(Duration) + Send + 'static>,
+        ) -> usize {
+            default_host().register_timer(deadline.as_nanos() as u64, callback)
+        }
+
+        fn cancel_timer(token: usize) {
+            default_host().cancel_timer(token);
+        }
+
+        fn inject_interrupt(vm_id: usize, vcpu_id: usize, vector: usize) {
+            if let Err(err) = crate::runtime::vcpus::queue_interrupt(vm_id, vcpu_id, vector) {
+                warn!(
+                    "failed to queue LoongArch interrupt {vector:#x} for VM[{vm_id}] \
+                     VCpu[{vcpu_id}]: {err:?}"
+                );
+            }
+        }
+
+        fn inject_external_interrupt(
+            vm_id: usize,
+            vcpu_id: usize,
+            vector: usize,
+            physical_irq: usize,
+        ) {
+            if let Err(err) = crate::runtime::vcpus::queue_external_interrupt(
+                vm_id,
+                vcpu_id,
+                vector,
+                physical_irq,
+            ) {
+                warn!(
+                    "failed to queue LoongArch external interrupt vector={vector:#x}, \
+                     physical_irq={physical_irq:#x} for VM[{vm_id}] VCpu[{vcpu_id}]: {err:?}"
+                );
+            }
+        }
+    }
+
+    pub(crate) fn register_platform_irq_injector() {
+        crate::runtime::loongarch_irq::register_platform_irq_injector();
     }
 }
+
+#[cfg(target_arch = "riscv64")]
+pub(crate) fn register_platform_irq_injector() {
+    riscv64::register_platform_irq_injector();
+}
+
+#[cfg(target_arch = "loongarch64")]
+pub(crate) fn register_platform_irq_injector() {
+    loongarch64::register_platform_irq_injector();
+}
+
+#[cfg(not(any(target_arch = "riscv64", target_arch = "loongarch64")))]
+pub(crate) fn register_platform_irq_injector() {}
 
 #[cfg(target_arch = "aarch64")]
 mod aarch64 {

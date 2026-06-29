@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.0](https://github.com/rcore-os/tgoskits/compare/ax-net-v0.9.0...ax-net-v0.10.0) - 2026-06-27
+
+### Fixed
+
+- *(starry-kernel)* align socket QoS options with Linux ([#1319](https://github.com/rcore-os/tgoskits/pull/1319))
+
+## [0.9.0](https://github.com/rcore-os/tgoskits/compare/ax-net-v0.8.0...ax-net-v0.9.0) - 2026-06-23
+
+### Other
+
+- *(ax-net)* add locking and concurrency documentation and remove deprecated interfaces ([#1340](https://github.com/rcore-os/tgoskits/pull/1340))
+
 ## [0.8.0](https://github.com/rcore-os/tgoskits/compare/ax-net-v0.7.3...ax-net-v0.8.0) - 2026-06-22
 
 ### Added

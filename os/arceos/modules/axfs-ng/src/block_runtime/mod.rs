@@ -14,11 +14,13 @@ mod tests {
     };
 
     use ax_errno::AxError;
+    use ax_kspin::SpinRaw as SpinNoIrq;
+    use dma_api::{DeviceDma, DmaDomainId};
     use rdif_block::{
-        BlkError, CompletionHint, DeviceInfo, DriverGeneric, IQueue, Interface, QueueInfo,
-        QueueLimits, Request, RequestId, RequestOp, RequestStatus,
+        BlkError, CompletionHint, DeviceInfo, DriverGeneric, IQueue, IQueueOwned, Interface,
+        OwnedRequest, PollError, QueueHandle, QueueInfo, QueueLimits, Request, RequestId,
+        RequestOp, RequestPoll, RequestStatus, SubmitError,
     };
-    use spin::Mutex as SpinNoIrq;
 
     use super::*;
     use crate::os::{BlockTaskOps, install_dma_op, set_task_ops};
@@ -741,19 +743,13 @@ mod tests {
         )
         .unwrap();
         let chunk = planner.plan(0, 512).unwrap().next().unwrap();
-        let guard = DmaBufferGuard::new(
-            &VEC_DMA_OP,
-            u64::MAX,
-            512,
-            1,
-            dma_api::DmaDirection::FromDevice,
-            chunk,
-            None,
-        )
-        .unwrap();
+        let dma = DeviceDma::new(DmaDomainId::legacy_global(), u64::MAX, &VEC_DMA_OP);
+        let guard =
+            DmaBufferGuard::new(&dma, 512, 1, dma_api::DmaDirection::FromDevice, chunk, None)
+                .unwrap();
         let key = pending
             .lock()
-            .insert_submitted(0, RequestId::new(4), Some(guard))
+            .insert_submitted(0, RequestId::new(4), Some(RuntimeDmaBuffer::Legacy(guard)))
             .unwrap();
         pending.lock().abandon(key);
         assert_eq!(
@@ -1054,6 +1050,7 @@ mod tests {
     struct MockInterface {
         name: &'static str,
         queue: Option<Box<dyn IQueue>>,
+        owned_queue: Option<QueueHandle>,
         info: QueueInfo,
     }
 
@@ -1063,6 +1060,17 @@ mod tests {
             Self {
                 name: "mock-rdif",
                 queue: Some(Box::new(queue)),
+                owned_queue: None,
+                info,
+            }
+        }
+
+        fn new_with_owned(legacy: MockQueue, owned: MockOwnedQueue) -> Self {
+            let info = legacy.info();
+            Self {
+                name: "mock-rdif",
+                queue: Some(Box::new(legacy)),
+                owned_queue: Some(QueueHandle::new(Box::new(owned))),
                 info,
             }
         }
@@ -1085,6 +1093,120 @@ mod tests {
 
         fn create_queue(&mut self) -> Option<Box<dyn IQueue>> {
             self.queue.take()
+        }
+
+        fn create_owned_queue(&mut self) -> Option<QueueHandle> {
+            self.owned_queue.take()
+        }
+    }
+
+    struct MockOwnedQueue {
+        info: QueueInfo,
+        next: usize,
+        storage: Vec<u8>,
+        requests: BTreeMap<RequestId, MockOwnedRequest>,
+        submitted: Arc<AtomicUsize>,
+    }
+
+    struct MockOwnedRequest {
+        data: Option<dma_api::InFlightDma>,
+        pending_polls_remaining: usize,
+    }
+
+    impl MockOwnedQueue {
+        fn new(submitted: Arc<AtomicUsize>) -> Self {
+            Self {
+                info: QueueInfo {
+                    id: 0,
+                    device: DeviceInfo::new(16, 512),
+                    limits: QueueLimits {
+                        max_inflight: 8,
+                        max_blocks_per_request: 2,
+                        max_segments: 1,
+                        max_segment_size: 1024,
+                        ..QueueLimits::simple(512, u64::MAX)
+                    },
+                },
+                next: 1,
+                storage: (0..16 * 512).map(|idx| (idx / 512) as u8).collect(),
+                requests: BTreeMap::new(),
+                submitted,
+            }
+        }
+    }
+
+    impl IQueueOwned for MockOwnedQueue {
+        fn id(&self) -> usize {
+            self.info.id
+        }
+
+        fn info(&self) -> QueueInfo {
+            self.info
+        }
+
+        fn submit_request(&mut self, request: OwnedRequest) -> Result<RequestId, SubmitError> {
+            if let Err(err) = rdif_block::validate_owned_request(self.info, &request) {
+                return Err(SubmitError::new(err, request));
+            }
+            self.submitted.fetch_add(1, Ordering::AcqRel);
+            let id = RequestId::new(self.next);
+            self.next += 1;
+            let data = if let Some(data) = request.data {
+                let mut buffer = data.into_cpu_buffer();
+                match request.op {
+                    RequestOp::Read => {
+                        let start = request.lba as usize * self.info.device.logical_block_size;
+                        let end = start
+                            + request.block_count as usize * self.info.device.logical_block_size;
+                        unsafe {
+                            buffer.as_mut_slice_cpu()[..end - start]
+                                .copy_from_slice(&self.storage[start..end]);
+                        }
+                    }
+                    RequestOp::Write => {
+                        let start = request.lba as usize * self.info.device.logical_block_size;
+                        let end = start
+                            + request.block_count as usize * self.info.device.logical_block_size;
+                        self.storage[start..end].copy_from_slice(buffer.as_slice_cpu());
+                    }
+                    _ => {}
+                }
+                Some(unsafe { buffer.prepare_for_device().into_in_flight() })
+            } else {
+                None
+            };
+            self.requests.insert(
+                id,
+                MockOwnedRequest {
+                    data,
+                    pending_polls_remaining: 1,
+                },
+            );
+            Ok(id)
+        }
+
+        fn poll_request(&mut self, request: RequestId) -> Result<RequestPoll, PollError> {
+            let req = self
+                .requests
+                .get_mut(&request)
+                .ok_or(PollError::UnknownRequest)?;
+            if req.pending_polls_remaining > 0 {
+                req.pending_polls_remaining -= 1;
+                return Ok(RequestPoll::Pending);
+            }
+            let req = self.requests.remove(&request).unwrap();
+            let data = req
+                .data
+                .map(|data| unsafe { data.complete_after_quiesce() });
+            Ok(RequestPoll::Ready(rdif_block::CompletedRequest::new(
+                request,
+                Ok(()),
+                data,
+            )))
+        }
+
+        fn cancel_request(&mut self, request: RequestId) -> Result<RequestPoll, PollError> {
+            self.poll_request(request)
         }
     }
 
@@ -1127,6 +1249,30 @@ mod tests {
         runtime.devices()[0].read_blocks(7, &mut buf).unwrap();
 
         assert_eq!(buf[0], 7);
+    }
+
+    #[test]
+    fn runtime_prefers_owned_queue_from_rdif_interface() {
+        let _guard = test_task_guard();
+        install_test_task_ops();
+        let legacy_submits = Arc::new(AtomicUsize::new(0));
+        let owned_submits = Arc::new(AtomicUsize::new(0));
+        let runtime = BlockRuntime::from_rdif_devices([RdifBlockDevice::new(
+            "mock-rdif",
+            None,
+            Box::new(MockInterface::new_with_owned(
+                MockQueue::with_submit_counter(0, legacy_submits.clone()),
+                MockOwnedQueue::new(owned_submits.clone()),
+            )),
+        )]);
+        assert_eq!(runtime.devices().len(), 1);
+
+        let mut buf = alloc::vec![0u8; 512];
+        runtime.devices()[0].read_blocks(7, &mut buf).unwrap();
+
+        assert_eq!(buf[0], 7);
+        assert_eq!(legacy_submits.load(Ordering::Acquire), 0);
+        assert_eq!(owned_submits.load(Ordering::Acquire), 1);
     }
 
     #[test]
@@ -1443,6 +1589,32 @@ mod tests {
     }
 
     #[test]
+    fn irq_event_before_pending_insert_is_not_dropped() {
+        let _guard = test_task_guard();
+        let bridge = Arc::new(BlockIrqBridge::new());
+        let device = BlockDeviceHandle::new(
+            "mock",
+            [Box::new(MockQueue::with_id(0)) as Box<dyn IQueue>],
+            bridge,
+            irq_driven_config(),
+        )
+        .unwrap();
+
+        let action = BlockIrqAction::new(Box::new(QueueEventIrqHandler), device.clone(), 0);
+        assert_eq!(action.run(), crate::os::BlockIrqOutcome::Handled);
+        let events = device.bridge().take_events();
+        assert_eq!(events.queue_bits, 1);
+    }
+
+    struct QueueEventIrqHandler;
+
+    impl rdif_block::IrqHandler for QueueEventIrqHandler {
+        fn handle_irq(&self) -> rdif_block::Event {
+            rdif_block::Event::from_queue_bits(1)
+        }
+    }
+
+    #[test]
     fn irq_bridge_hint_overflow_falls_back_to_queue_ready_bit() {
         let bridge = BlockIrqBridge::new();
         for id in 0..rdif_block::MAX_COMPLETION_HINTS {
@@ -1510,6 +1682,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "ext4")]
     fn block_device_flush_retries_without_returning_wouldblock() {
         let _guard = test_task_guard();
         let mut queue = MockQueue::with_retry_submits(1);

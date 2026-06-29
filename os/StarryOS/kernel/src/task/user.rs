@@ -1,7 +1,7 @@
-use ax_runtime::hal::cpu::uspace::{ExceptionInfo, ExceptionKind, ReturnReason, UserContext};
+use ax_runtime::hal::cpu::uspace::{ExceptionKind, ReturnReason, UserContext};
 use ax_task::TaskInner;
 use starry_process::Pid;
-use starry_signal::{SEGV_ACCERR, SEGV_MAPERR, SignalInfo, Signo};
+use starry_signal::{FPE_INTDIV, SEGV_ACCERR, SEGV_MAPERR, SignalInfo, Signo};
 use starry_vm::{VmMutPtr, VmPtr};
 use syscalls::Sysno;
 
@@ -171,12 +171,19 @@ pub fn new_user_task(name: &str, mut uctx: UserContext, set_child_tid: usize) ->
                                         target_arch = "aarch64",
                                         target_arch = "loongarch64"
                                     ))]
-                                    let _ = crate::syscall::ptrace_restore_singlestep_insn(
-                                        &thr.proc_data,
-                                        thr.tid(),
-                                        addr,
-                                        insn,
-                                    );
+                                    {
+                                        let restored =
+                                            crate::syscall::ptrace_restore_singlestep_insn(
+                                                &thr.proc_data,
+                                                thr.tid(),
+                                                addr,
+                                                insn,
+                                            );
+                                        if restored {
+                                            thr.proc_data
+                                                .set_ptrace_singlestep_for(thr.tid(), false);
+                                        }
+                                    }
                                     #[cfg(not(any(
                                         target_arch = "riscv64",
                                         target_arch = "aarch64",
@@ -213,7 +220,7 @@ pub fn new_user_task(name: &str, mut uctx: UserContext, set_child_tid: usize) ->
                             // when delivering a TF-induced #DB, but QEMU may
                             // not always honour this.  Clearing explicitly
                             // prevents an unwanted extra single-step on resume.
-                            uctx.rflags &= !(1u64 << 8);
+                            let _ = uctx.clear_single_step_after_debug();
                             thr.proc_data.set_ptrace_singlestep_for(thr.tid(), false);
                             if let Some(_resume_sig) =
                                 ptrace_stop_current(thr, Signo::SIGTRAP, &mut uctx)
@@ -221,26 +228,27 @@ pub fn new_user_task(name: &str, mut uctx: UserContext, set_child_tid: usize) ->
                                 break 'exc;
                             }
                         }
+                        let syndrome = exc_info.syndrome();
                         warn!(
                             "user exception: ip={:#x}, fault_addr={:#x}, kind={:?}, esr={:#x}, \
                              ec={:#x}, iss={:#x}, info={:?}",
                             uctx.ip(),
-                            exception_fault_addr(&exc_info),
+                            exc_info.fault_addr().unwrap_or(0),
                             kind,
-                            exception_esr_value(&exc_info),
-                            exception_ec_value(&exc_info),
-                            exception_iss_value(&exc_info),
+                            syndrome.raw,
+                            syndrome.class,
+                            syndrome.iss,
                             exc_info
                         );
-                        let signo = match kind {
+                        let sig_info = match kind {
                             ExceptionKind::Misaligned => {
                                 #[cfg(target_arch = "loongarch64")]
                                 if unsafe { uctx.emulate_unaligned() }.is_ok() {
                                     break 'exc;
                                 }
-                                Signo::SIGBUS
+                                SignalInfo::new_kernel(Signo::SIGBUS)
                             }
-                            ExceptionKind::Breakpoint => Signo::SIGTRAP,
+                            ExceptionKind::Breakpoint => SignalInfo::new_kernel(Signo::SIGTRAP),
                             ExceptionKind::IllegalInstruction => {
                                 // AArch64 EL0 reads of ID_AA64*_EL1 (CPU feature
                                 // detection, e.g. the Go runtime) trap as EC=0 /
@@ -250,12 +258,24 @@ pub fn new_user_task(name: &str, mut uctx: UserContext, set_child_tid: usize) ->
                                 if unsafe { uctx.emulate_mrs_id_reg() } {
                                     break 'exc;
                                 }
-                                Signo::SIGILL
+                                SignalInfo::new_kernel(Signo::SIGILL)
                             }
-                            _ => Signo::SIGTRAP,
+                            // x86 `#DE`: integer divide-by-zero or the
+                            // `INT_MIN / -1` overflow. POSIX/Linux deliver SIGFPE
+                            // with si_code FPE_INTDIV and si_addr = faulting PC.
+                            // The HotSpot JVM's x86 interpreter/JIT emit a bare
+                            // `idiv` and rely on exactly this signal to raise a
+                            // Java ArithmeticException; routing it through the old
+                            // `_ => SIGTRAP` fall-through made the JVM abort mid
+                            // javac compilation. (Other arches do not trap on
+                            // integer divide-by-zero, so they never reach here.)
+                            ExceptionKind::ArithmeticError => {
+                                SignalInfo::new_fault(Signo::SIGFPE, FPE_INTDIV, uctx.ip())
+                            }
+                            _ => SignalInfo::new_kernel(Signo::SIGTRAP),
                         };
-                        raise_signal_fatal(SignalInfo::new_kernel(signo), &uctx)
-                            .expect("Failed to send SIGTRAP");
+                        raise_signal_fatal(sig_info, &uctx)
+                            .expect("Failed to send fatal exception signal");
                     }
                     r => {
                         warn!("Unexpected return reason: {r:?}");
@@ -305,84 +325,4 @@ fn ptrace_exit_event_code(sysno: usize, arg0: usize) -> Option<i32> {
         Some(Sysno::exit | Sysno::exit_group) => Some((arg0 as i32) << 8),
         _ => None,
     }
-}
-
-#[cfg(target_arch = "aarch64")]
-fn exception_fault_addr(exc_info: &ExceptionInfo) -> usize {
-    exc_info.far
-}
-
-#[cfg(target_arch = "aarch64")]
-fn exception_esr_value(exc_info: &ExceptionInfo) -> u64 {
-    exc_info.esr_value()
-}
-
-#[cfg(target_arch = "aarch64")]
-fn exception_ec_value(exc_info: &ExceptionInfo) -> u64 {
-    exc_info.ec_value()
-}
-
-#[cfg(target_arch = "aarch64")]
-fn exception_iss_value(exc_info: &ExceptionInfo) -> u64 {
-    exc_info.iss_value()
-}
-
-#[cfg(target_arch = "riscv64")]
-fn exception_fault_addr(exc_info: &ExceptionInfo) -> usize {
-    exc_info.stval
-}
-
-#[cfg(target_arch = "riscv64")]
-fn exception_esr_value(_exc_info: &ExceptionInfo) -> u64 {
-    0
-}
-
-#[cfg(target_arch = "riscv64")]
-fn exception_ec_value(_exc_info: &ExceptionInfo) -> u64 {
-    0
-}
-
-#[cfg(target_arch = "riscv64")]
-fn exception_iss_value(_exc_info: &ExceptionInfo) -> u64 {
-    0
-}
-
-#[cfg(target_arch = "loongarch64")]
-fn exception_fault_addr(exc_info: &ExceptionInfo) -> usize {
-    exc_info.badv
-}
-
-#[cfg(target_arch = "loongarch64")]
-fn exception_esr_value(_exc_info: &ExceptionInfo) -> u64 {
-    0
-}
-
-#[cfg(target_arch = "loongarch64")]
-fn exception_ec_value(_exc_info: &ExceptionInfo) -> u64 {
-    _exc_info.ecode as u64
-}
-
-#[cfg(target_arch = "loongarch64")]
-fn exception_iss_value(_exc_info: &ExceptionInfo) -> u64 {
-    _exc_info.esubcode as u64
-}
-
-#[cfg(target_arch = "x86_64")]
-fn exception_fault_addr(exc_info: &ExceptionInfo) -> usize {
-    exc_info.cr2
-}
-
-#[cfg(target_arch = "x86_64")]
-fn exception_esr_value(_exc_info: &ExceptionInfo) -> u64 {
-    0
-}
-
-#[cfg(target_arch = "x86_64")]
-fn exception_ec_value(_exc_info: &ExceptionInfo) -> u64 {
-    0
-}
-
-#[cfg(target_arch = "x86_64")]
-fn exception_iss_value(_exc_info: &ExceptionInfo) -> u64 {
-    0
 }

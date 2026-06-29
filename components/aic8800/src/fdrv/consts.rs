@@ -50,6 +50,19 @@ pub const INTR_CONFIG_VALUE: u8 = 0x07;
 /// 堆栈起始参数
 pub const STACK_START_PARAM: [u8; 4] = [0x01, 0x00, 0x00, 0x00];
 
+/// AP 模式下注册表(registered_stas)的容量上限。防止异常情况下(如持续收到
+/// 不同 MAC 的 AssocReq 而无对应 deauth)注册表无界增长。当前固件 SoftAP 实际
+/// 关联数远低于此值。
+pub const MAX_REGISTERED_STAS: usize = 16;
+
+/// AP 控制端口(authorize)打开命令的最大重试次数。开放网络关联后必须显式授权,
+/// 否则固件丢弃该 STA 的所有数据帧(DHCP/ARP/IP)。单核协作调度下该命令可能
+/// 概率性超时,AP worker 周期对账据此重试,到上限仍失败则放弃(STA 多半已离线)。
+pub const CONTROL_PORT_MAX_RETRY: u8 = 20;
+
+/// AP worker 控制端口对账的周期(毫秒)。仅在存在未授权 STA 时才周期性自唤醒。
+pub const CONTROL_PORT_RECONCILE_MS: u64 = 50;
+
 // ============================================================
 // 协议头部常量
 // ============================================================
