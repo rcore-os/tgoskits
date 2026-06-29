@@ -251,18 +251,14 @@ mod capture {
         pub(crate) fn finish(mut self) -> anyhow::Result<()> {
             self.restore();
             if let Some(reader) = self.reader.take() {
-                reader
-                    .join()
-                    .map_err(|payload| {
-                        let msg = payload
-                            .downcast_ref::<&'static str>()
-                            .map(|s| s.to_string())
-                            .or_else(|| {
-                                payload.downcast_ref::<String>().map(|s| s.clone())
-                            })
-                            .unwrap_or_else(|| "<non-string panic payload>".to_string());
-                        anyhow::anyhow!("axtest coverage capture thread panicked: {msg}")
-                    })??;
+                reader.join().map_err(|payload| {
+                    let msg = payload
+                        .downcast_ref::<&'static str>()
+                        .map(|s| s.to_string())
+                        .or_else(|| payload.downcast_ref::<String>().map(|s| s.clone()))
+                        .unwrap_or_else(|| "<non-string panic payload>".to_string());
+                    anyhow::anyhow!("axtest coverage capture thread panicked: {msg}")
+                })??;
             }
             let state = self.state.lock().unwrap();
             if let Some(error) = &state.error {
