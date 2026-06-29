@@ -6,7 +6,7 @@ use core::{
 };
 
 use ax_errno::{AxError, AxResult, LinuxError};
-use ax_kspin::SpinNoIrq as Mutex;
+use ax_kspin::{SpinNoIrq as Mutex, SpinRwLock as RwLock};
 use ax_sync::Mutex as BlockingMutex;
 use ax_task::IrqNotify;
 use crab_usb::{
@@ -20,7 +20,6 @@ use crab_usb::{
 };
 use event_listener::Event as NotifyEvent;
 use rdrive::DeviceId as RDriveDeviceId;
-use spin::RwLock;
 use starry_vm::{VmMutPtr, vm_load, vm_write_slice};
 
 use super::{

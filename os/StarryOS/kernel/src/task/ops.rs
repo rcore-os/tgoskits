@@ -6,11 +6,11 @@ use alloc::{
 use core::ffi::c_long;
 
 use ax_errno::{AxError, AxResult};
+use ax_kspin::SpinRwLock as RwLock;
 use ax_runtime::hal::time::TimeValue;
 use ax_task::{AxTaskRef, TaskInner, WeakAxTaskRef, current};
 use bytemuck::AnyBitPattern;
 use linux_raw_sys::general::ROBUST_LIST_LIMIT;
-use spin::RwLock;
 use starry_process::{Pid, Process, ProcessGroup, Session};
 use starry_signal::{SignalInfo, Signo};
 use starry_vm::{VmMutPtr, VmPtr};

@@ -19,6 +19,7 @@ use core::{
 };
 
 use ax_errno::AxResult;
+use ax_kspin::SpinRwLock as RwLock;
 use ax_runtime::hal::{cpu::uspace::UserContext, time::TimeValue};
 use ax_sync::{Mutex, spin::SpinNoIrq};
 use ax_task::{TaskExt, TaskInner};
@@ -26,7 +27,6 @@ use axpoll::{IoEvents, PollSet};
 use extern_trait::extern_trait;
 use kernel_elf_parser::AuxEntry;
 use scope_local::{ActiveScope, Scope};
-use spin::RwLock;
 use starry_process::{Pid, Process};
 use starry_signal::{
     SignalInfo, SignalSet, Signo,

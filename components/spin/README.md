@@ -19,10 +19,9 @@ spinlocks. If you have access to `std`, it's likely that the primitives in
 
 ## Features
 
-- `Mutex`, `RwLock`, `Once`, `LazyLock` and `Barrier` equivalents
+- `Once` and `LazyLock` equivalents
 - Support for `no_std` environments
 - [`lock_api`](https://crates.io/crates/lock_api) compatibility
-- Upgradeable `RwLock` guards
 - Guards can be sent and shared between threads
 - Guard leaking
 - Ticket locks
@@ -40,14 +39,13 @@ spin = "x.y"
 
 This vendored copy is intentionally reduced during the TGOSKits spin migration.
 `spin::Mutex`, `spin::mutex`, `spin::Barrier`, and the mutex-related feature
-flags have been removed. New mutex users should choose a project-local lock such
-as `ax_kspin` or `ax_sync` according to their context semantics.
+flags have been removed. `spin::RwLock`, `spin::rwlock`, and the `rwlock`
+feature have also been removed. New lock users should choose a project-local
+lock such as `ax_kspin` or `ax_sync` according to their context semantics.
 
 ## Feature flags
 
 The crate comes with a few feature flags that you may wish to use.
-
-- `rwlock` enables the `RwLock` type.
 
 - `once` enables the `Once` type.
 

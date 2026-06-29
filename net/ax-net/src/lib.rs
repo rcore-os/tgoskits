@@ -189,7 +189,7 @@ pub fn init_network(mut net_devs: EthernetDeviceList, config: NetworkConfig) {
 
     validate_config(&config);
 
-    let routes: SharedRouteTable = Arc::new(spin::RwLock::new(RouteTable::new()));
+    let routes: SharedRouteTable = Arc::new(ax_kspin::SpinRwLock::new(RouteTable::new()));
     let mut router = Router::new(routes.clone());
     let mut interfaces = Vec::new();
     let mut dns = Vec::new();
@@ -885,7 +885,7 @@ pub(crate) mod test_support {
         static INIT: Once = Once::new();
 
         INIT.call_once(|| {
-            let routes: SharedRouteTable = Arc::new(spin::RwLock::new(RouteTable::new()));
+            let routes: SharedRouteTable = Arc::new(ax_kspin::SpinRwLock::new(RouteTable::new()));
             let mut router = Router::new(routes.clone());
             let local_dev = router.add_device(LOCAL_IF, Box::new(LoopbackDevice::new()));
             let peer_dev = router.add_device(PEER_IF, Box::new(LoopbackDevice::new()));
