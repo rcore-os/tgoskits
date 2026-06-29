@@ -43,7 +43,7 @@
 
 use core::{ptr::NonNull, sync::atomic::Ordering};
 
-use ax_hal::irq::{IrqContext, IrqReturn};
+use ax_hal::irq::{HwIrq, IrqContext, IrqId, IrqReturn};
 use ax_kernel_guard::NoPreemptIrqSave;
 use ax_task::IrqNotify;
 use kbpf_basic::linux_bpf::perf_event_mmap_page;
@@ -55,7 +55,11 @@ use kbpf_basic::linux_bpf::perf_event_mmap_page;
 /// `interrupts` property of the FDT `arm,armv8-pmuv3` node, which is a deferred
 /// follow-up. On the RK3588 (and the QEMU `virt` machine) the PMU PPI is INTID
 /// 23, matching this constant.
-const PMU_IRQ: usize = 23;
+const PMU_IRQ: HwIrq = HwIrq(23);
+
+fn pmu_irq() -> Result<IrqId, ax_hal::irq::IrqError> {
+    ax_hal::irq::resolve_percpu_irq(PMU_IRQ)
+}
 
 /// Maximum programmable counter index (matches [`ax_cpu::pmu::counter`] /
 /// [`ax_cpu::pmu::overflow`]); the registry is sized one past this for indexing.
@@ -257,6 +261,14 @@ pub fn unregister(n: usize) {
 /// under smp1 the PMU PPI would otherwise stay masked and the overflow IRQ would
 /// never fire on cpu0.
 pub fn ensure_pmu_irq_registered() {
+    let pmu_irq = match pmu_irq() {
+        Ok(irq) => irq,
+        Err(err) => {
+            warn!("perf sampling: failed to resolve PMU overflow IRQ: {err:?}");
+            return;
+        }
+    };
+
     if REGISTERED
         .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
         .is_ok()
@@ -264,7 +276,7 @@ pub fn ensure_pmu_irq_registered() {
         let cpus = ax_hal::irq::CpuMask::first_n(ax_hal::cpu_num());
         // Mirror the timer's unit-data pattern: the handler does not use `data`.
         if let Err(err) = ax_hal::irq::request_percpu_irq(
-            PMU_IRQ,
+            pmu_irq,
             cpus,
             pmu_overflow_handler,
             NonNull::dangling(),
@@ -278,7 +290,9 @@ pub fn ensure_pmu_irq_registered() {
     // Enable the PMU PPI on the core this sampling event runs on. Required even
     // when the action was registered by an earlier event: the per-core line is
     // not auto-enabled for runtime-registered PPIs.
-    ax_hal::irq::set_enable(PMU_IRQ, true);
+    if let Err(err) = ax_hal::irq::set_enable(pmu_irq, true) {
+        warn!("perf sampling: failed to enable PMU overflow IRQ {pmu_irq:?}: {err:?}");
+    }
 }
 
 /// PMU overflow IRQ handler (hard-IRQ context).
