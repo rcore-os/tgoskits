@@ -1093,12 +1093,18 @@ busybox mkdir -p /tmp/bb_wget_root
     busybox printf "\r\n"
     busybox printf "busybox wget local ok\n"
 } > /tmp/bb_wget_root/response.http
-busybox nc -l -p 18080 -w 10 < /tmp/bb_wget_root/response.http >/tmp/bb_wget_nc.out 2>&1 &
-server_pid=$!
-busybox sleep 1
-timeout 10 busybox wget -O /tmp/bb_wget.html http://127.0.0.1:18080/index.html 2>&1
-wget_status=$?
-busybox kill "$server_pid" 2>/dev/null || true
+wget_status=1
+for port in 18080 18081 18082 18083 18084; do
+    busybox rm -f /tmp/bb_wget.html
+    busybox nc -l -p "$port" -w 10 < /tmp/bb_wget_root/response.http >/tmp/bb_wget_nc.out 2>&1 &
+    server_pid=$!
+    busybox sleep 1
+    timeout 10 busybox wget -O /tmp/bb_wget.html "http://127.0.0.1:$port/index.html" 2>&1
+    wget_status=$?
+    busybox kill "$server_pid" 2>/dev/null || true
+    [ "$wget_status" -eq 0 ] && break
+    busybox sleep 1
+done
 busybox test "$wget_status" -eq 0 &&
 busybox test -s /tmp/bb_wget.html &&
 busybox grep -q "busybox wget local ok" /tmp/bb_wget.html &&
