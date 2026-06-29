@@ -383,11 +383,32 @@ fn patch_starry_cargo_config_removes_qemu_for_dynamic_platforms() {
 }
 
 #[test]
-fn aarch64_qemu_virt_is_not_a_default_static_starry_platform() {
-    assert_eq!(
-        default_starry_qemu_platform_feature("ax-hal/aarch64-qemu-virt"),
-        None
+fn patch_starry_cargo_config_keeps_loongarch64_dynamic_platform_dynamic() {
+    let request = request(
+        PathBuf::from("/tmp/.build.toml"),
+        "loongarch64",
+        "loongarch64-unknown-none-softfloat",
     );
+    let build_info = StarryBuildInfo {
+        env: HashMap::new(),
+        features: vec!["ax-hal/plat-dyn".to_string(), "axplat-dyn/efi".to_string()],
+        log: LogLevel::Info,
+        max_cpu_num: None,
+        axconfig_overrides: Vec::new(),
+        plat_dyn: true,
+    };
+    let mut cargo = build_info.into_base_cargo_config_with_log(
+        STARRY_PACKAGE.to_string(),
+        request.target.clone(),
+        vec![],
+    );
+    let metadata = crate::build::workspace_metadata().unwrap();
+    patch_starry_cargo_config(&mut cargo, &request, &metadata).unwrap();
+
+    assert!(!cargo.features.contains(&"qemu".to_string()));
+    assert!(cargo.features.contains(&"ax-hal/plat-dyn".to_string()));
+    assert!(cargo.features.contains(&"axplat-dyn/efi".to_string()));
+    assert!(!cargo.env.contains_key("AX_PLATFORM"));
 }
 
 #[test]
@@ -402,6 +423,14 @@ fn aarch64_has_no_static_starry_default_platform() {
 fn riscv64_has_no_starry_default_platform() {
     assert_eq!(
         crate::context::starry_default_platform_for_arch_checked("riscv64").unwrap(),
+        None
+    );
+}
+
+#[test]
+fn loongarch64_has_no_starry_default_platform() {
+    assert_eq!(
+        crate::context::starry_default_platform_for_arch_checked("loongarch64").unwrap(),
         None
     );
 }

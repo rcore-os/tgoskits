@@ -303,9 +303,7 @@ dependencies = [
 name = "arceos-helloworld-myplat"
 version = "0.3.1"
 dependencies = [
- "ax-plat-loongarch64-qemu-virt",
  "ax-std",
- "cfg-if",
 ]
 
 [[package]]
@@ -810,7 +808,6 @@ dependencies = [
  "ax-page-table-multiarch",
  "ax-percpu",
  "ax-plat",
- "ax-plat-loongarch64-qemu-virt",
  "ax-plat-riscv64-sg2002",
  "axplat-dyn",
  "cfg-if",
@@ -1033,27 +1030,6 @@ dependencies = [
  "rdif-intc",
  "rdrive",
  "spin",
-]
-
-[[package]]
-name = "ax-plat-loongarch64-qemu-virt"
-version = "0.5.17"
-dependencies = [
- "ax-config-macros",
- "ax-cpu",
- "ax-driver",
- "ax-kspin",
- "ax-lazyinit",
- "ax-page-table-entry",
- "ax-plat",
- "axklib",
- "chrono",
- "fdt-raw",
- "log",
- "loongArch64",
- "mmio-api",
- "toml 1.1.2+spec-1.1.0",
- "uart_16550",
 ]
 
 [[package]]
@@ -8701,15 +8677,6 @@ name = "typenum"
 version = "1.20.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b6f5e870be6c3b371b77fe0ee0bafb859fa4964b4404c27de1d380043c4dda20"
-
-[[package]]
-name = "uart_16550"
-version = "0.5.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "71cceed8939ba6ebde9d1e8a603b3c7f1a239a3db22e1ff465ed71ddca7a7d66"
-dependencies = [
- "bitflags 2.13.0",
-]
 
 [[package]]
 name = "uboot-shell"

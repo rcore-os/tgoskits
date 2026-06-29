@@ -605,7 +605,7 @@ fn uses_default_qemu_platform(features: &[String]) -> bool {
         matches!(
             feature.as_str(),
             "defplat" | "ax-feat/defplat" | "ax-std/defplat"
-        ) || default_starry_qemu_platform_feature(feature).is_some()
+        )
     });
     let has_dynamic = uses_dynamic_platform(features);
     let has_custom = features.iter().any(|feature| {
@@ -616,13 +616,6 @@ fn uses_default_qemu_platform(features: &[String]) -> bool {
     });
 
     has_static_platform && !has_dynamic && !has_custom
-}
-
-fn default_starry_qemu_platform_feature(feature: &str) -> Option<&str> {
-    match feature.strip_prefix("ax-hal/")? {
-        "loongarch64-qemu-virt" => Some(feature),
-        _ => None,
-    }
 }
 
 fn ensure_starry_bin_arg(

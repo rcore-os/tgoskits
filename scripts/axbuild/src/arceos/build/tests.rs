@@ -435,11 +435,6 @@ log = "Warn"
 
     assert!(cargo.features.contains(&"ax-std/plat-dyn".to_string()));
     assert!(
-        !cargo
-            .features
-            .contains(&"ax-std/loongarch64-qemu-virt".to_string())
-    );
-    assert!(
         cargo
             .target
             .ends_with("scripts/targets/std/pie/loongarch64-unknown-linux-musl.json")
@@ -514,13 +509,14 @@ fn c_app_cargo_config_uses_builtin_bare_target_without_json_spec() {
     let request = request(
         "arceos-helloworld",
         "loongarch64-unknown-none-softfloat",
-        Some(false),
+        None,
         build_config,
     );
     let cargo = load_c_app_cargo_config(&request).unwrap();
 
     assert_eq!(cargo.target, "loongarch64-unknown-none-softfloat");
     assert!(!cargo.env.contains_key("CARGO_UNSTABLE_JSON_TARGET_SPEC"));
+    assert!(cargo.features.contains(&"ax-std/plat-dyn".to_string()));
     assert!(
         cargo
             .args
