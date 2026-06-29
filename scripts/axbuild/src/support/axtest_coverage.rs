@@ -336,7 +336,7 @@ mod capture {
                     )
                 })?;
             let command = format!(
-                "memsave 0x{addr:x} {size} {}\n",
+                "memsave 0x{addr:x} {size} \"{}\"\n",
                 self.profraw_path.display()
             );
             stream
