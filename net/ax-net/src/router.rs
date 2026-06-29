@@ -45,6 +45,7 @@ use alloc::{
 use core::{
     sync::atomic::{AtomicBool, AtomicUsize, Ordering},
     task::Waker,
+    time::Duration,
 };
 
 use ax_hal::time::{NANOS_PER_MICROS, monotonic_time_nanos};
@@ -73,6 +74,7 @@ use crate::{
 };
 
 const DEVICE_RX_WORKER_BATCH: usize = 16;
+const DEVICE_RX_IDLE_POLL_INTERVAL: Duration = Duration::from_millis(10);
 
 #[derive(Debug)]
 pub struct Rule {
@@ -922,7 +924,9 @@ fn device_rx_worker(device: Arc<DeviceHandle>) {
 
         if !received {
             register_device_poll(&device, &device.rx_waker);
-            device.rx_wake.wait_until(|| device.take_rx_ready());
+            device
+                .rx_wake
+                .wait_timeout_until(DEVICE_RX_IDLE_POLL_INTERVAL, || device.take_rx_ready());
         }
     }
 }
@@ -1091,6 +1095,12 @@ mod tests {
         device.rx_waker.wake_by_ref();
         assert!(device.take_rx_ready());
         assert!(!device.take_rx_ready());
+    }
+
+    #[test]
+    fn rx_worker_idle_poll_interval_keeps_polling_devices_active() {
+        assert!(DEVICE_RX_IDLE_POLL_INTERVAL > core::time::Duration::ZERO);
+        assert!(DEVICE_RX_IDLE_POLL_INTERVAL <= core::time::Duration::from_millis(10));
     }
 
     #[test]
