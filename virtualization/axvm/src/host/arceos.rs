@@ -130,8 +130,29 @@ pub(crate) fn dispatch_host_irq(vector: usize) {
 }
 
 #[cfg(target_arch = "loongarch64")]
-pub(crate) fn set_irq_enabled(irq: usize, enabled: bool) {
-    modules::ax_hal::irq::set_enable(irq, enabled);
+pub(crate) fn set_irq_enabled(raw_irq: usize, enabled: bool) {
+    let gsi = match u32::try_from(raw_irq) {
+        Ok(gsi) => gsi,
+        Err(_) => {
+            warn!("failed to resolve LoongArch passthrough IRQ {raw_irq}: out of GSI range");
+            return;
+        }
+    };
+    let irq = match modules::ax_hal::irq::resolve_irq_source(
+        modules::ax_hal::irq::IrqSource::AcpiGsi(gsi),
+    ) {
+        Ok(irq) => irq,
+        Err(err) => {
+            warn!("failed to resolve LoongArch passthrough IRQ {raw_irq}: {err:?}");
+            return;
+        }
+    };
+    if let Err(err) = modules::ax_hal::irq::set_enable(irq, enabled) {
+        warn!(
+            "failed to set LoongArch passthrough IRQ {raw_irq} ({irq:?}) enabled={enabled}: \
+             {err:?}"
+        );
+    }
 }
 
 impl HostCpu for ArceOsHost {
