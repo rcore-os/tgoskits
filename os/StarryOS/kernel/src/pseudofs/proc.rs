@@ -17,6 +17,8 @@ use core::{
 
 use ax_lazyinit::LazyInit;
 use ax_memory_addr::{MemoryAddr, VirtAddr};
+#[cfg(target_arch = "aarch64")]
+use ax_runtime::hal::pmu;
 use ax_runtime::hal::{
     paging::MappingFlags,
     time::{monotonic_time, wall_time},
@@ -175,7 +177,7 @@ fn render_cpu_entry(buf: &mut String, idx: usize) {
     // tools key off implementer/part to identify the microarchitecture). On
     // RK3588 this yields A76 (0x41/0xd0b) and A55 (0x41/0xd05); under QEMU
     // cortex-a53 it reads 0x41/0xd03.
-    let midr = ax_cpu::pmu::read_midr_el1();
+    let midr = pmu::cpu_id_raw().unwrap_or(0);
     let implementer = (midr >> 24) & 0xff;
     let variant = (midr >> 20) & 0xf;
     let part = (midr >> 4) & 0xfff;
@@ -924,7 +926,7 @@ impl DirectRwFsFileOps for ProcMemFile {
         let aspace = self.proc_data.aspace();
         let aspace = aspace.lock();
         aspace.write(VirtAddr::from_usize(addr), buf)?;
-        ax_runtime::hal::cpu::asm::flush_icache_all();
+        ax_runtime::hal::cache::flush_icache_all();
         Ok(buf.len())
     }
 }

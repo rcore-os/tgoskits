@@ -11,7 +11,7 @@ pub mod hw;
 pub mod kprobe;
 pub mod raw_tracepoint;
 /// PMU overflow-IRQ sampling backend (M2). ARM PMUv3 only; the counting and
-/// tracing paths are arch-agnostic, but sampling depends on `ax_cpu::pmu`.
+/// tracing paths are arch-agnostic, but sampling depends on CPU PMU registers.
 #[cfg(target_arch = "aarch64")]
 pub mod sampling;
 /// Side-band records (`PERF_RECORD_COMM`/`MMAP2`/`FORK`/`EXIT`) for `perf report`
@@ -20,7 +20,8 @@ pub mod sampling;
 #[cfg(target_arch = "aarch64")]
 pub mod sideband;
 /// Per-task hardware-PMU counting (`perf stat -- cmd`, M3). ARM PMUv3 only; the
-/// scheduler hooks call into `ax_cpu::pmu`, so it is gated like `sampling`.
+/// scheduler hooks call into CPU PMU register helpers, so it is gated like
+/// `sampling`.
 #[cfg(target_arch = "aarch64")]
 pub mod task;
 pub mod tracepoint;
@@ -39,7 +40,7 @@ use ax_io::{Read, Write};
 use ax_kspin::{SpinNoPreempt, SpinNoPreemptGuard};
 use ax_lazyinit::LazyInit;
 use ax_memory_addr::{PAGE_SIZE_4K, PhysAddr, PhysAddrRange, VirtAddr, VirtAddrRange};
-use ax_runtime::hal::paging::MappingFlags;
+use ax_runtime::hal::{paging::MappingFlags, pmu};
 use axpoll::Pollable;
 pub use bpf::BpfPerfEventWrapper;
 use hashbrown::HashMap;
@@ -71,14 +72,7 @@ static NEXT_PERF_EVENT_ID: AtomicU64 = AtomicU64::new(1);
 /// `#[cfg(target_arch = "aarch64")]` gate so the pseudo-fs call sites stay arch
 /// agnostic (and compile under multi-target clippy).
 pub fn read_midr_el1() -> u64 {
-    #[cfg(target_arch = "aarch64")]
-    {
-        ax_cpu::pmu::read_midr_el1()
-    }
-    #[cfg(not(target_arch = "aarch64"))]
-    {
-        0
-    }
+    pmu::cpu_id_raw().unwrap_or(0)
 }
 
 /// `ioctl` type byte for the perf-event ioctls (`'$'`).

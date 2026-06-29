@@ -423,7 +423,7 @@ impl SimpleDirOps for EventSourceDevicesDir {
         // The ARM PMUv3 CPU PMU is a hardware (counting/sampling) event source,
         // distinct from the tracing sources above. It is always listed on
         // aarch64 — the device is a static description of the architectural PMU,
-        // so it is advertised regardless of `ax_cpu::pmu::probe()` (which a
+        // so it is advertised regardless of `ax_hal::pmu::info()` (which a
         // `perf_event_open` against the type still consults and may reject).
         #[cfg(target_arch = "aarch64")]
         let pmu = core::iter::once(Cow::Borrowed(ARMV8_PMUV3_DEVICE));

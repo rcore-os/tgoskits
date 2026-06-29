@@ -1,4 +1,4 @@
-use ax_runtime::hal::cpu::uspace::{ExceptionInfo, ExceptionKind, ReturnReason, UserContext};
+use ax_runtime::hal::cpu::uspace::{ExceptionKind, ReturnReason, UserContext};
 use ax_task::TaskInner;
 use starry_process::Pid;
 use starry_signal::{FPE_INTDIV, SEGV_ACCERR, SEGV_MAPERR, SignalInfo, Signo};
@@ -220,7 +220,7 @@ pub fn new_user_task(name: &str, mut uctx: UserContext, set_child_tid: usize) ->
                             // when delivering a TF-induced #DB, but QEMU may
                             // not always honour this.  Clearing explicitly
                             // prevents an unwanted extra single-step on resume.
-                            uctx.rflags &= !(1u64 << 8);
+                            let _ = uctx.clear_single_step_after_debug();
                             thr.proc_data.set_ptrace_singlestep_for(thr.tid(), false);
                             if let Some(_resume_sig) =
                                 ptrace_stop_current(thr, Signo::SIGTRAP, &mut uctx)
@@ -228,15 +228,16 @@ pub fn new_user_task(name: &str, mut uctx: UserContext, set_child_tid: usize) ->
                                 break 'exc;
                             }
                         }
+                        let syndrome = exc_info.syndrome();
                         warn!(
                             "user exception: ip={:#x}, fault_addr={:#x}, kind={:?}, esr={:#x}, \
                              ec={:#x}, iss={:#x}, info={:?}",
                             uctx.ip(),
-                            exception_fault_addr(&exc_info),
+                            exc_info.fault_addr().unwrap_or(0),
                             kind,
-                            exception_esr_value(&exc_info),
-                            exception_ec_value(&exc_info),
-                            exception_iss_value(&exc_info),
+                            syndrome.raw,
+                            syndrome.class,
+                            syndrome.iss,
                             exc_info
                         );
                         let sig_info = match kind {
@@ -324,84 +325,4 @@ fn ptrace_exit_event_code(sysno: usize, arg0: usize) -> Option<i32> {
         Some(Sysno::exit | Sysno::exit_group) => Some((arg0 as i32) << 8),
         _ => None,
     }
-}
-
-#[cfg(target_arch = "aarch64")]
-fn exception_fault_addr(exc_info: &ExceptionInfo) -> usize {
-    exc_info.far
-}
-
-#[cfg(target_arch = "aarch64")]
-fn exception_esr_value(exc_info: &ExceptionInfo) -> u64 {
-    exc_info.esr_value()
-}
-
-#[cfg(target_arch = "aarch64")]
-fn exception_ec_value(exc_info: &ExceptionInfo) -> u64 {
-    exc_info.ec_value()
-}
-
-#[cfg(target_arch = "aarch64")]
-fn exception_iss_value(exc_info: &ExceptionInfo) -> u64 {
-    exc_info.iss_value()
-}
-
-#[cfg(target_arch = "riscv64")]
-fn exception_fault_addr(exc_info: &ExceptionInfo) -> usize {
-    exc_info.stval
-}
-
-#[cfg(target_arch = "riscv64")]
-fn exception_esr_value(_exc_info: &ExceptionInfo) -> u64 {
-    0
-}
-
-#[cfg(target_arch = "riscv64")]
-fn exception_ec_value(_exc_info: &ExceptionInfo) -> u64 {
-    0
-}
-
-#[cfg(target_arch = "riscv64")]
-fn exception_iss_value(_exc_info: &ExceptionInfo) -> u64 {
-    0
-}
-
-#[cfg(target_arch = "loongarch64")]
-fn exception_fault_addr(exc_info: &ExceptionInfo) -> usize {
-    exc_info.badv
-}
-
-#[cfg(target_arch = "loongarch64")]
-fn exception_esr_value(_exc_info: &ExceptionInfo) -> u64 {
-    0
-}
-
-#[cfg(target_arch = "loongarch64")]
-fn exception_ec_value(_exc_info: &ExceptionInfo) -> u64 {
-    _exc_info.ecode as u64
-}
-
-#[cfg(target_arch = "loongarch64")]
-fn exception_iss_value(_exc_info: &ExceptionInfo) -> u64 {
-    _exc_info.esubcode as u64
-}
-
-#[cfg(target_arch = "x86_64")]
-fn exception_fault_addr(exc_info: &ExceptionInfo) -> usize {
-    exc_info.cr2
-}
-
-#[cfg(target_arch = "x86_64")]
-fn exception_esr_value(_exc_info: &ExceptionInfo) -> u64 {
-    0
-}
-
-#[cfg(target_arch = "x86_64")]
-fn exception_ec_value(_exc_info: &ExceptionInfo) -> u64 {
-    0
-}
-
-#[cfg(target_arch = "x86_64")]
-fn exception_iss_value(_exc_info: &ExceptionInfo) -> u64 {
-    0
 }

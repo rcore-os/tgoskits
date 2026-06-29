@@ -948,7 +948,7 @@ fn ptrace_write_word(tracee: &ProcessData, addr: usize, data: usize) -> AxResult
     let mut aspace = aspace.lock();
     ptrace_populate_remote_range(&mut aspace, addr, size_of::<usize>(), MappingFlags::WRITE)?;
     aspace.write(VirtAddr::from_usize(addr), &data.to_ne_bytes())?;
-    ax_runtime::hal::cpu::asm::flush_icache_all();
+    ax_runtime::hal::cache::flush_icache_all();
     Ok(())
 }
 
@@ -1121,7 +1121,7 @@ fn remote_write(tracee: &ProcessData, addr: usize, data: &[u8]) -> AxResult {
     let mut aspace = aspace.lock();
     ptrace_populate_remote_range(&mut aspace, addr, data.len(), MappingFlags::WRITE)?;
     aspace.write(VirtAddr::from_usize(addr), data)?;
-    ax_runtime::hal::cpu::asm::flush_icache_all();
+    ax_runtime::hal::cache::flush_icache_all();
     Ok(())
 }
 
@@ -1217,7 +1217,7 @@ pub fn ptrace_setup_singlestep(
     };
     if orig_insn == EBREAK_INSN {
         tracee.set_ptrace_ss_saved_insn_for(tid, None);
-        ax_runtime::hal::cpu::asm::flush_icache_all();
+        ax_runtime::hal::cache::flush_icache_all();
         return;
     }
 
@@ -1226,7 +1226,7 @@ pub fn ptrace_setup_singlestep(
         return;
     }
     tracee.set_ptrace_ss_saved_insn_for(tid, Some((next_insn_addr, orig_insn as usize)));
-    ax_runtime::hal::cpu::asm::flush_icache_all();
+    ax_runtime::hal::cache::flush_icache_all();
 }
 
 #[cfg(target_arch = "aarch64")]
@@ -1261,7 +1261,7 @@ pub fn ptrace_setup_singlestep(
     };
     if orig_insn == AARCH64_BRK_INSN {
         tracee.set_ptrace_ss_saved_insn_for(tid, None);
-        ax_runtime::hal::cpu::asm::flush_icache_all();
+        ax_runtime::hal::cache::flush_icache_all();
         return;
     }
 
@@ -1270,7 +1270,7 @@ pub fn ptrace_setup_singlestep(
         return;
     }
     tracee.set_ptrace_ss_saved_insn_for(tid, Some((next_insn_addr, orig_insn as usize)));
-    ax_runtime::hal::cpu::asm::flush_icache_all();
+    ax_runtime::hal::cache::flush_icache_all();
 }
 
 #[cfg(target_arch = "loongarch64")]
@@ -1305,7 +1305,7 @@ pub fn ptrace_setup_singlestep(
     };
     if orig_insn == LOONGARCH_BREAK_INSN {
         tracee.set_ptrace_ss_saved_insn_for(tid, None);
-        ax_runtime::hal::cpu::asm::flush_icache_all();
+        ax_runtime::hal::cache::flush_icache_all();
         return;
     }
 
@@ -1314,7 +1314,7 @@ pub fn ptrace_setup_singlestep(
         return;
     }
     tracee.set_ptrace_ss_saved_insn_for(tid, Some((next_insn_addr, orig_insn as usize)));
-    ax_runtime::hal::cpu::asm::flush_icache_all();
+    ax_runtime::hal::cache::flush_icache_all();
 }
 
 #[cfg(target_arch = "riscv64")]
@@ -1327,7 +1327,7 @@ pub fn ptrace_restore_singlestep_insn(
     let aspace = tracee.aspace();
     let mut aspace = aspace.lock();
     let restored = ptrace_write_u16_unlocked(&mut aspace, addr, insn as u16).is_ok();
-    ax_runtime::hal::cpu::asm::flush_icache_all();
+    ax_runtime::hal::cache::flush_icache_all();
     if !restored {
         tracee.set_ptrace_ss_saved_insn_for(tid, Some((addr, insn)));
     }
@@ -1344,7 +1344,7 @@ pub fn ptrace_restore_singlestep_insn(
     let aspace = tracee.aspace();
     let mut aspace = aspace.lock();
     let restored = ptrace_write_u32_unlocked(&mut aspace, addr, insn as u32).is_ok();
-    ax_runtime::hal::cpu::asm::flush_icache_all();
+    ax_runtime::hal::cache::flush_icache_all();
     if !restored {
         tracee.set_ptrace_ss_saved_insn_for(tid, Some((addr, insn)));
     }
