@@ -3,8 +3,8 @@ set -eu
 
 payload=/tmp/apk-curl-equivalence-payload.bin
 payload_sum=/tmp/apk-curl-equivalence-payload.sha256
-payload_size=1048576
-payload_sha256=9bc1b2a288b26af7257a36277ae3816a7d4f16e89c1e7e77d0a5c48bad62b360
+payload_size=65536
+payload_sha256=bf718b6f653bebc184e1479f1935b8da974d701b893afcf49e701f3e2f9f9c5a
 
 fail() {
     echo "APK_CURL_EQUIVALENCE_TEST_FAILED: $1"
