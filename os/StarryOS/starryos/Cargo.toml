@@ -51,7 +51,6 @@ plat-dyn = ["dep:axplat-dyn", "starry-kernel/plat-dyn"]
 dma-heap = ["starry-kernel/dma-heap"]
 rknpu = ["ax-driver/rknpu", "starry-kernel/rknpu"]
 rga = ["ax-driver/rga", "starry-kernel/rga"]
-rga-selftest = ["rga", "starry-kernel/rga-selftest"]
 std-compat = ["starry-kernel/std-compat"]
 stack-protector = ["ax-std/stack-protector", "starry-kernel/stack-protector"]
 

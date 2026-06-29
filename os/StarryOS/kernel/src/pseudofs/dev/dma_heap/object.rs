@@ -66,25 +66,6 @@ impl DmaBufObject {
         PhysAddrRange::from_start_size(PhysAddr::from(self.phys_addr() as usize), self.len())
     }
 
-    /// CPU view of the buffer (used by the RGA selftest to verify hardware output).
-    #[cfg(feature = "rga-selftest")]
-    pub fn cpu_bytes(&self) -> &[u8] {
-        self.inner.as_slice_cpu()
-    }
-
-    /// Mutable CPU view, for pre-seeding the buffer before a device write (e.g. the RGA selftest
-    /// poisons the destination with a sentinel so it can tell "engine wrote nothing" from "wrote
-    /// zeros"). A real dma-buf is CPU-writable via mmap; this is the in-kernel equivalent. Requires
-    /// `&mut self` (use `Arc::get_mut` on a freshly-allocated, not-yet-shared buffer).
-    ///
-    /// # Safety
-    /// Caller must not retain the slice across a device submission, and must
-    /// `sync_for_device()` afterwards so the device sees the writes (the backing is CACHED).
-    #[cfg(feature = "rga-selftest")]
-    pub unsafe fn cpu_bytes_mut(&mut self) -> &mut [u8] {
-        unsafe { self.inner.as_mut_slice_cpu() }
-    }
-
     /// Hand ownership to the device before it accesses the buffer: cleans (flushes) dirty CPU cache
     /// lines to DRAM. The contiguous DMA backing is CACHED on aarch64 (NOT uncached — only the
     /// `alloc_coherent` path is uncached), and the allocation is zero-initialised via the CPU, so

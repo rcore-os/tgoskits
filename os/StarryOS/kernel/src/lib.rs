@@ -27,8 +27,6 @@ pub mod kprobe;
 mod mm;
 mod perf;
 mod pseudofs;
-#[cfg(feature = "rga-selftest")]
-pub mod rga_selftest;
 mod stop_machine;
 mod syscall;
 mod task;
