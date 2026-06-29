@@ -6,6 +6,7 @@ use alloc::{borrow::Cow, sync::Arc};
 
 use ax_errno::{AxError, AxResult};
 use axpoll::{IoEvents, Pollable};
+use linux_raw_sys::general::O_RDWR;
 use starry_vm::VmPtr;
 
 use super::{object::DmaBufObject, uapi};
@@ -74,6 +75,16 @@ impl FileLike for DmaBufFile {
             size: self.buf.len() as u64,
             ..Default::default()
         })
+    }
+
+    /// A dma-buf is read-write. The default `open_flags()` returns `0`
+    /// (`O_RDONLY`), which makes `fcntl(fd, F_GETFL) & O_RDWR == 0`; consumers
+    /// that derive `mmap` protection from that flag (e.g. librockchip_mpp's
+    /// dma-heap allocator) then map the buffer `PROT_READ`-only, so the first CPU
+    /// write to a decoded frame faults. Reporting `O_RDWR` matches how the fd is
+    /// allocated (`fd_flags = O_RDWR`) and how Linux behaves.
+    fn open_flags(&self) -> u32 {
+        O_RDWR
     }
 
     fn ioctl(&self, cmd: u32, arg: usize) -> AxResult<usize> {
