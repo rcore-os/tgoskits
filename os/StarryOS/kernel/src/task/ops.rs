@@ -546,6 +546,13 @@ pub fn do_exit(exit_code: i32, group_exit: bool) {
         }
     }
 
+    // Free any per-task perf HW counters attached to this thread before the fd
+    // table is torn down, so the PMU slots are released even if a perf fd
+    // outlives the task (its own `Drop::free_hw` is idempotent). Runs for every
+    // exiting thread, not just the last in the group.
+    #[cfg(target_arch = "aarch64")]
+    crate::perf::task::on_task_exit(thr);
+
     // Robust futex ownership must be released before clone-child-tid wakes a
     // pthread joiner; otherwise userspace can observe thread exit before the
     // OWNER_DIED handoff has been written.

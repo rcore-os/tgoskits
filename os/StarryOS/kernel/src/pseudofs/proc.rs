@@ -171,13 +171,23 @@ fn render_cpu_entry(buf: &mut String, idx: usize) {
 
 #[cfg(target_arch = "aarch64")]
 fn render_cpu_entry(buf: &mut String, idx: usize) {
+    // Decode MIDR_EL1 so /proc/cpuinfo reflects the real core (perf and other
+    // tools key off implementer/part to identify the microarchitecture). On
+    // RK3588 this yields A76 (0x41/0xd0b) and A55 (0x41/0xd05); under QEMU
+    // cortex-a53 it reads 0x41/0xd03.
+    let midr = ax_cpu::pmu::read_midr_el1();
+    let implementer = (midr >> 24) & 0xff;
+    let variant = (midr >> 20) & 0xf;
+    let part = (midr >> 4) & 0xfff;
+    let revision = midr & 0xf;
+
     let _ = writeln!(buf, "processor\t: {idx}");
     let _ = writeln!(buf, "BogoMIPS\t: 100.00");
-    let _ = writeln!(buf, "CPU implementer\t: 0x00");
+    let _ = writeln!(buf, "CPU implementer\t: {implementer:#04x}");
     let _ = writeln!(buf, "CPU architecture: 8");
-    let _ = writeln!(buf, "CPU variant\t: 0x0");
-    let _ = writeln!(buf, "CPU part\t: 0x000");
-    let _ = writeln!(buf, "CPU revision\t: 0");
+    let _ = writeln!(buf, "CPU variant\t: {variant:#x}");
+    let _ = writeln!(buf, "CPU part\t: {part:#05x}");
+    let _ = writeln!(buf, "CPU revision\t: {revision}");
     let _ = writeln!(buf);
 }
 
@@ -1401,6 +1411,25 @@ fn builder(fs: Arc<SimpleFs>) -> DirMaker {
             kernel.add(
                 "ostype",
                 SimpleFile::new_regular(fs.clone(), || Ok("Linux\n")),
+            );
+
+            // perf knobs the upstream Linux `perf` tool probes at startup.
+            // `perf_event_paranoid` gates how much unprivileged users may
+            // measure; -1 is the most permissive setting (kernel/CPU/tracepoint
+            // events all allowed) so perf can profile freely here.
+            kernel.add(
+                "perf_event_paranoid",
+                SimpleFile::new_regular(fs.clone(), || Ok("-1\n")),
+            );
+            // Per-user locked pages for the perf ring buffer; Linux default.
+            kernel.add(
+                "perf_event_mlock_kb",
+                SimpleFile::new_regular(fs.clone(), || Ok("516\n")),
+            );
+            // Upper bound perf uses to clamp the requested sample frequency (-F).
+            kernel.add(
+                "perf_event_max_sample_rate",
+                SimpleFile::new_regular(fs.clone(), || Ok("100000\n")),
             );
 
             SimpleDir::new_maker(fs.clone(), Arc::new(kernel))

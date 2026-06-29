@@ -1,0 +1,8 @@
+cmake_minimum_required(VERSION 3.20)
+project(perf-hw-sideband C)
+set(CMAKE_C_STANDARD 11)
+set(CMAKE_C_STANDARD_REQUIRED ON)
+set(CMAKE_C_EXTENSIONS OFF)
+add_executable(perf-hw-sideband src/perf_hw_sideband.c)
+target_compile_options(perf-hw-sideband PRIVATE -Wall -Wextra -Werror)
+install(TARGETS perf-hw-sideband RUNTIME DESTINATION usr/bin/starry-test-suit)

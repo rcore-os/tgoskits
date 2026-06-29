@@ -2,6 +2,7 @@ mod context;
 
 pub mod asm;
 pub mod init;
+pub mod pmu;
 
 mod trap;
 
