@@ -528,7 +528,11 @@ impl<G: BaseGuard> AxRunQueueRef<'_, G> {
     /// This function does nothing if the task is not in [`TaskState::Blocked`],
     /// which means the task is already unblocked by other cores.
     pub fn unblock_task(&mut self, task: AxTaskRef, resched: bool) {
-        let task_id_name = task.id_name();
+        let task_id_name = if log::log_enabled!(log::Level::Debug) {
+            Some(task.id_name())
+        } else {
+            None
+        };
         // Try to change the state of the task from `Blocked` to `Ready`,
         // if successful, the task will be put into this run queue,
         // otherwise, the task is already unblocked by other cores.
@@ -540,7 +544,9 @@ impl<G: BaseGuard> AxRunQueueRef<'_, G> {
         {
             // Since now, the task to be unblocked is in the `Ready` state.
             let cpu_id = self.inner.cpu_id;
-            debug!("task unblock: {task_id_name} on run_queue {cpu_id}");
+            if let Some(task_id_name) = task_id_name {
+                debug!("task unblock: {task_id_name} on run_queue {cpu_id}");
+            }
             // Note: when the task is unblocked on another CPU's run queue,
             // we just ignore the `resched` flag.
             if resched && cpu_id == this_cpu_id() {
@@ -560,13 +566,19 @@ impl<G: BaseGuard> CurrentRunQueueRef<'_, G> {
     /// See [`AxRunQueueRef::unblock_task`] for the state-transition details.
     #[cfg(feature = "irq")]
     pub(crate) fn unblock_task(&mut self, task: AxTaskRef, resched: bool) {
-        let task_id_name = task.id_name();
+        let task_id_name = if log::log_enabled!(log::Level::Debug) {
+            Some(task.id_name())
+        } else {
+            None
+        };
         if self
             .inner
             .put_task_with_state(task, TaskState::Blocked, resched)
         {
             let cpu_id = self.inner.cpu_id;
-            debug!("task unblock: {task_id_name} on run_queue {cpu_id}");
+            if let Some(task_id_name) = task_id_name {
+                debug!("task unblock: {task_id_name} on run_queue {cpu_id}");
+            }
             if resched {
                 #[cfg(feature = "preempt")]
                 crate::current().set_preempt_pending(true);
