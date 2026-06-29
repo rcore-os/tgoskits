@@ -12,7 +12,11 @@ use rd_net::{DmaBuffer, Event, IRxQueue, ITxQueue, NetError, QueueConfig};
 use rdrive::{DriverGeneric, PlatformDevice, probe::OnProbeError};
 #[cfg(all(feature = "pci", any(plat_static, plat_dyn)))]
 use virtio_drivers::transport::DeviceType;
-use virtio_drivers::{Error as VirtIoError, device::net::VirtIONetRaw, transport::Transport};
+use virtio_drivers::{
+    Error as VirtIoError,
+    device::net::VirtIONetRaw,
+    transport::{InterruptStatus, Transport},
+};
 
 #[cfg(all(feature = "pci", any(plat_static, plat_dyn)))]
 use crate::{PciIrqRequirement, binding_info_from_pci};
@@ -148,14 +152,21 @@ impl<T: VirtIoTransport> VirtioNetInnerCell<T> {
     }
 
     fn handle_irq(&self) -> Event {
-        if self
+        let queue_interrupt = self
             .try_with_irq(|inner| {
                 self.irq_ack_pending.store(false, Ordering::Release);
-                let _ = inner.raw.ack_interrupt();
+                inner
+                    .raw
+                    .ack_interrupt()
+                    .contains(InterruptStatus::QUEUE_INTERRUPT)
             })
-            .is_none()
-        {
-            self.irq_ack_pending.store(true, Ordering::Release);
+            .unwrap_or_else(|| {
+                self.irq_ack_pending.store(true, Ordering::Release);
+                true
+            });
+
+        if !queue_interrupt {
+            return Event::none();
         }
 
         let mut event = Event::none();
