@@ -471,8 +471,14 @@ fn poll_until_idle() {
 ///
 /// This is the lightweight entry used by socket and device paths.
 pub fn request_poll() {
-    if !NET_POLL_REQUESTED.swap(true, Ordering::AcqRel) {
+    publish_poll_request(&NET_POLL_REQUESTED, || {
         NET_POLL_WAKE.notify_one(true);
+    });
+}
+
+fn publish_poll_request(requested: &AtomicBool, wake: impl FnOnce()) {
+    if !requested.swap(true, Ordering::AcqRel) {
+        wake();
     }
 }
 
@@ -722,8 +728,8 @@ fn net_poll_worker() {
                 || NET_IRQ_NOTIFY.is_pending()
                 || DEFERRED_POLL_WAKE_PENDING.load(Ordering::Acquire)
         });
-        if !timed_out && NET_POLL_REQUESTED.load(Ordering::Acquire) {
-            NET_POLL_REQUESTED.store(false, Ordering::Release);
+        if !timed_out {
+            take_poll_request(&NET_POLL_REQUESTED, || {});
         }
         if NET_IRQ_NOTIFY.drain() {
             get_service().wake_all_devices();
@@ -731,6 +737,35 @@ fn net_poll_worker() {
         drain_deferred_poll_wakes();
         poll_until_idle();
         drain_deferred_poll_wakes();
+    }
+}
+
+fn take_poll_request(requested: &AtomicBool, after_observe: impl FnOnce()) -> bool {
+    if requested.swap(false, Ordering::AcqRel) {
+        after_observe();
+        true
+    } else {
+        false
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use core::sync::atomic::{AtomicBool, Ordering};
+
+    use super::{publish_poll_request, take_poll_request};
+
+    #[test]
+    fn poll_request_after_worker_drain_stays_pending() {
+        let requested = AtomicBool::new(true);
+        let mut wakes = 0;
+
+        assert!(take_poll_request(&requested, || {
+            publish_poll_request(&requested, || wakes += 1);
+        }));
+
+        assert!(requested.load(Ordering::Acquire));
+        assert_eq!(wakes, 1);
     }
 }
 
