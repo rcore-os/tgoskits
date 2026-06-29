@@ -85,4 +85,5 @@ ax-plat-riscv64-sg2002 = { workspace = true, optional = true }
 ax-plat-loongarch64-qemu-virt = { workspace = true, optional = true }
 
 [build-dependencies]
+quote = "1.0"
 toml.workspace = true

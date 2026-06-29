@@ -45,7 +45,7 @@ use std::{
 };
 
 use anyhow::Context;
-use quote::{ToTokens, quote};
+use quote::quote;
 use syn::LitStr;
 use toml::Table;
 
@@ -109,6 +109,14 @@ fn open_output_file() -> fs::File {
         .truncate(true)
         .open(output_file)
         .expect("failed to open generated vm_configs.rs")
+}
+
+fn write_tokens(out_file: &mut fs::File, tokens: proc_macro2::TokenStream) -> anyhow::Result<()> {
+    let syntax_tree = syn::parse2(tokens)?;
+    let formatted = prettyplease::unparse(&syntax_tree);
+    out_file.write_all(formatted.as_bytes())?;
+
+    Ok(())
 }
 
 // Convert relative path to absolute path
@@ -309,9 +317,7 @@ fn generate_guest_img_loading_functions(
             ]
         }
     };
-    let syntax_tree = syn::parse2(output)?;
-    let formatted = prettyplease::unparse(&syntax_tree);
-    out_file.write_all(formatted.as_bytes())?;
+    write_tokens(out_file, output)?;
 
     Ok(())
 }
@@ -393,32 +399,38 @@ fn main() -> anyhow::Result<()> {
         );
     }
 
-    writeln!(
-        output_file,
-        "pub fn static_vm_configs() -> Vec<&'static str> {{"
-    )?;
-
     match config_files {
         Ok(config_files) => {
-            if config_files.is_empty() {
-                writeln!(output_file, "    default_static_vm_configs()")?;
-            } else {
-                writeln!(output_file, "    vec![")?;
-                for config_file in &config_files {
-                    let content = LitStr::new(&config_file.content, proc_macro2::Span::call_site());
-                    writeln!(output_file, "        {},", content.to_token_stream())?;
+            let output = if config_files.is_empty() {
+                quote! {
+                    pub fn static_vm_configs() -> Vec<&'static str> {
+                        default_static_vm_configs()
+                    }
                 }
-                writeln!(output_file, "    ]")?;
-            }
-            writeln!(output_file, "}}\n")?;
+            } else {
+                let configs = config_files.iter().map(|config_file| {
+                    LitStr::new(&config_file.content, proc_macro2::Span::call_site())
+                });
+                quote! {
+                    pub fn static_vm_configs() -> Vec<&'static str> {
+                        vec![#(#configs),*]
+                    }
+                }
+            };
+            write_tokens(&mut output_file, output)?;
 
             // generate "load kernel and dtb images function"
             generate_firmware_img_loading_functions(&mut output_file, &config_files)?;
             generate_guest_img_loading_functions(&mut output_file, config_files)?;
         }
         Err(error) => {
-            writeln!(output_file, "    compile_error!(\"{error}\")")?;
-            writeln!(output_file, "}}\n")?;
+            let error = LitStr::new(&error, proc_macro2::Span::call_site());
+            let output = quote! {
+                pub fn static_vm_configs() -> Vec<&'static str> {
+                    compile_error!(#error)
+                }
+            };
+            write_tokens(&mut output_file, output)?;
         }
     }
     Ok(())
