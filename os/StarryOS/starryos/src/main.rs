@@ -46,6 +46,7 @@ fn main() {
     }
 }
 
+#[cfg(axtest)]
 fn wait_for_coverage_extraction() {
     // Give the host enough time to read the profraw via the QEMU monitor
     // before we proceed to system_off. CI runs QEMU without KVM, where a

@@ -30,14 +30,14 @@ fn main() {
     }
 }
 
+#[cfg(feature = "ax-std")]
 fn wait_for_coverage_extraction() {
     // Give the host enough time to read the profraw via the QEMU monitor
     // before we proceed to system_off. CI runs QEMU without KVM, where a
     // ~30 MB memsave takes well under a second; 5 s is a comfortable cap.
-    use ax_std::time::{Duration, Instant};
-    const WAIT: Duration = Duration::from_secs(5);
-    let start = Instant::now();
-    while start.elapsed() < WAIT {
+    const WAIT_NANOS: u64 = 5_000_000_000;
+    let start = ax_hal::time::wall_time_nanos();
+    while ax_hal::time::wall_time_nanos().saturating_sub(start) < WAIT_NANOS {
         core::hint::spin_loop();
     }
 }
