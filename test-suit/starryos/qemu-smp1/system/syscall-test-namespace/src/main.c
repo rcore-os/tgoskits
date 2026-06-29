@@ -1,17 +1,21 @@
 /*
- * test-namespace — verify UTS, PID and USER namespace semantics.
+ * test-namespace — verify UTS, PID, mount and USER namespace semantics.
  *
  * Scenarios exercised:
  *   1. unshare(CLONE_NEWUTS) + sethostname does not affect the parent.
  *   2. clone(CLONE_NEWPID)  -> child getpid() returns the local PID.
- *   3. unshare(CLONE_NEWUSER) -> getuid() returns 65534 (nobody).
+ *   3. unshare(CLONE_NEWNS) isolates mount and umount operations.
+ *   4. unshare(CLONE_NEWUSER) -> getuid() returns 65534 (nobody).
  */
 
 #include "test_framework.h"
 
 #include <errno.h>
+#include <fcntl.h>
 #include <sched.h>
 #include <string.h>
+#include <sys/mount.h>
+#include <sys/stat.h>
 #include <sys/syscall.h>
 #include <sys/types.h>
 #include <sys/wait.h>
@@ -183,13 +187,246 @@ static void run_user_namespace_test(void)
           "getgid() == 65534 after unshare(CLONE_NEWUSER)");
 }
 
+static void run_mount_namespace_test(void)
+{
+    const char *target = "/tmp/test-mount-namespace";
+    const char *child_file = "/tmp/test-mount-namespace/child-only";
+    const char *parent_file = "/tmp/test-mount-namespace/parent-only";
+    int child_ready[2];
+    int parent_ready[2];
+    int original_ns = open("/proc/self/ns/mnt", O_RDONLY);
+
+    CHECK_ERR(clone3_child(CLONE_NEWNS | CLONE_FS), EINVAL,
+              "clone3 rejects CLONE_NEWNS | CLONE_FS");
+    CHECK(original_ns >= 0, "open original mount namespace fd");
+    unlink(child_file);
+    unlink(parent_file);
+    if (mkdir(target, 0755) != 0)
+        CHECK(errno == EEXIST, "create mount namespace test directory");
+    CHECK_RET(pipe(child_ready), 0, "create child-ready pipe");
+    CHECK_RET(pipe(parent_ready), 0, "create parent-ready pipe");
+
+    pid_t child = fork();
+    CHECK(child >= 0, "fork for mount namespace test");
+    if (child == 0)
+    {
+        close(child_ready[0]);
+        close(parent_ready[1]);
+
+        CHECK_RET(unshare(CLONE_NEWNS), 0, "child unshare(CLONE_NEWNS)");
+        CHECK_RET(mount("none", target, "tmpfs", 0, NULL), 0,
+                  "child mounts private tmpfs");
+
+        int fd = open(child_file, O_CREAT | O_WRONLY, 0644);
+        CHECK(fd >= 0, "child creates file in private mount");
+        if (fd >= 0)
+            close(fd);
+
+        char byte = 'C';
+        CHECK(write(child_ready[1], &byte, 1) == 1,
+              "child signals private mount ready");
+        CHECK(read(parent_ready[0], &byte, 1) == 1,
+              "child waits for parent visibility check");
+
+        errno = 0;
+        CHECK(access(parent_file, F_OK) == -1 && errno == ENOENT,
+              "child private mount hides parent underlying file");
+        CHECK_RET(umount(target), 0, "child unmounts private tmpfs");
+
+        close(child_ready[1]);
+        close(parent_ready[0]);
+        _exit(__fail > 0 ? 1 : 0);
+    }
+
+    close(child_ready[1]);
+    close(parent_ready[0]);
+
+    char byte;
+    CHECK(read(child_ready[0], &byte, 1) == 1,
+          "parent waits for child private mount");
+    errno = 0;
+    CHECK(access(child_file, F_OK) == -1 && errno == ENOENT,
+          "child mount is not visible in parent namespace");
+
+    char child_ns_path[64];
+    snprintf(child_ns_path, sizeof(child_ns_path), "/proc/%d/ns/mnt", child);
+    int child_ns = open(child_ns_path, O_RDONLY);
+    CHECK(child_ns >= 0, "open child mount namespace fd");
+    if (child_ns >= 0 && original_ns >= 0)
+    {
+        CHECK_RET(setns(child_ns, CLONE_NEWNS), 0,
+                  "parent joins child mount namespace");
+        CHECK(access(child_file, F_OK) == 0,
+              "setns exposes child private mount");
+        CHECK_RET(setns(original_ns, CLONE_NEWNS), 0,
+                  "parent restores original mount namespace");
+        errno = 0;
+        CHECK(access(child_file, F_OK) == -1 && errno == ENOENT,
+              "restored namespace hides child private mount");
+    }
+    if (child_ns >= 0)
+        close(child_ns);
+
+    int fd = open(parent_file, O_CREAT | O_WRONLY, 0644);
+    CHECK(fd >= 0, "parent creates file below underlying mountpoint");
+    if (fd >= 0)
+        close(fd);
+    byte = 'P';
+    CHECK(write(parent_ready[1], &byte, 1) == 1,
+          "parent releases child");
+
+    int status;
+    waitpid(child, &status, 0);
+    CHECK(WIFEXITED(status) && WEXITSTATUS(status) == 0,
+          "mount namespace child exited 0");
+    CHECK(access(parent_file, F_OK) == 0,
+          "parent underlying file remains after child umount");
+
+    close(child_ready[0]);
+    close(parent_ready[1]);
+    if (original_ns >= 0)
+        close(original_ns);
+    unlink(parent_file);
+    rmdir(target);
+}
+
+static void run_mount_propagation_test(void)
+{
+    const char *base = "/tmp/test-mount-propagation";
+    const char *parent_mount = "/tmp/test-mount-propagation/from-parent";
+    const char *child_mount = "/tmp/test-mount-propagation/from-child";
+    const char *down_mount = "/tmp/test-mount-propagation/down-only";
+    const char *up_mount = "/tmp/test-mount-propagation/up-blocked";
+    int parent_to_child[2];
+    int child_to_parent[2];
+    char byte;
+
+    mkdir(base, 0755);
+    CHECK_RET(mount("none", base, "tmpfs", 0, NULL), 0,
+              "mount propagation test root");
+    mkdir(parent_mount, 0755);
+    mkdir(child_mount, 0755);
+    mkdir(down_mount, 0755);
+    mkdir(up_mount, 0755);
+    CHECK_RET(mount("none", base, "tmpfs", MS_SHARED, NULL), 0,
+              "mark propagation root shared");
+    CHECK_RET(pipe(parent_to_child), 0, "create propagation command pipe");
+    CHECK_RET(pipe(child_to_parent), 0, "create propagation reply pipe");
+
+    pid_t child = fork();
+    CHECK(child >= 0, "fork for mount propagation test");
+    if (child == 0)
+    {
+        close(parent_to_child[1]);
+        close(child_to_parent[0]);
+        CHECK_RET(unshare(CLONE_NEWNS), 0,
+                  "child unshares shared mount namespace");
+        byte = 'R';
+        write(child_to_parent[1], &byte, 1);
+
+        read(parent_to_child[0], &byte, 1);
+        CHECK(access("/tmp/test-mount-propagation/from-parent/marker", F_OK) == 0,
+              "shared mount propagates parent to child namespace");
+        CHECK_RET(mount("none", child_mount, "tmpfs", 0, NULL), 0,
+                  "child creates reverse shared propagation mount");
+        int fd = open("/tmp/test-mount-propagation/from-child/marker",
+                      O_CREAT | O_WRONLY, 0644);
+        CHECK(fd >= 0, "child writes reverse propagation marker");
+        if (fd >= 0)
+            close(fd);
+        byte = 'S';
+        write(child_to_parent[1], &byte, 1);
+
+        read(parent_to_child[0], &byte, 1);
+        CHECK_RET(mount("none", base, "tmpfs", MS_SLAVE, NULL), 0,
+                  "child converts shared root to slave");
+        byte = 'L';
+        write(child_to_parent[1], &byte, 1);
+
+        read(parent_to_child[0], &byte, 1);
+        CHECK(access("/tmp/test-mount-propagation/down-only/marker", F_OK) == 0,
+              "slave receives mount from master namespace");
+        CHECK_RET(mount("none", up_mount, "tmpfs", 0, NULL), 0,
+                  "child mounts below slave root");
+        fd = open("/tmp/test-mount-propagation/up-blocked/marker",
+                  O_CREAT | O_WRONLY, 0644);
+        CHECK(fd >= 0, "child writes marker below slave root");
+        if (fd >= 0)
+            close(fd);
+        byte = 'U';
+        write(child_to_parent[1], &byte, 1);
+
+        read(parent_to_child[0], &byte, 1);
+        CHECK_RET(umount(up_mount), 0, "child unmounts non-propagated slave child");
+        close(parent_to_child[0]);
+        close(child_to_parent[1]);
+        _exit(__fail > 0 ? 1 : 0);
+    }
+
+    close(parent_to_child[0]);
+    close(child_to_parent[1]);
+    read(child_to_parent[0], &byte, 1);
+
+    CHECK_RET(mount("none", parent_mount, "tmpfs", 0, NULL), 0,
+              "parent mounts below shared root");
+    int fd = open("/tmp/test-mount-propagation/from-parent/marker",
+                  O_CREAT | O_WRONLY, 0644);
+    CHECK(fd >= 0, "parent writes shared propagation marker");
+    if (fd >= 0)
+        close(fd);
+    byte = 'P';
+    write(parent_to_child[1], &byte, 1);
+
+    read(child_to_parent[0], &byte, 1);
+    CHECK(access("/tmp/test-mount-propagation/from-child/marker", F_OK) == 0,
+          "shared mount propagates child back to parent namespace");
+    byte = 'C';
+    write(parent_to_child[1], &byte, 1);
+
+    read(child_to_parent[0], &byte, 1);
+    CHECK_RET(mount("none", down_mount, "tmpfs", 0, NULL), 0,
+              "parent mounts event for slave namespace");
+    fd = open("/tmp/test-mount-propagation/down-only/marker",
+              O_CREAT | O_WRONLY, 0644);
+    CHECK(fd >= 0, "parent writes slave propagation marker");
+    if (fd >= 0)
+        close(fd);
+    byte = 'D';
+    write(parent_to_child[1], &byte, 1);
+
+    read(child_to_parent[0], &byte, 1);
+    errno = 0;
+    CHECK(access("/tmp/test-mount-propagation/up-blocked/marker", F_OK) == -1
+              && errno == ENOENT,
+          "slave mount does not propagate back to master namespace");
+    byte = 'X';
+    write(parent_to_child[1], &byte, 1);
+
+    int status;
+    waitpid(child, &status, 0);
+    CHECK(WIFEXITED(status) && WEXITSTATUS(status) == 0,
+          "mount propagation child exited 0");
+
+    CHECK_RET(umount(down_mount), 0, "unmount slave propagation mount");
+    CHECK_RET(umount(child_mount), 0, "unmount reverse shared mount");
+    CHECK_RET(umount(parent_mount), 0, "unmount parent shared mount");
+    CHECK_RET(mount("none", base, "tmpfs", MS_PRIVATE | MS_REC, NULL), 0,
+              "make propagation tree recursively private");
+    CHECK_RET(umount(base), 0, "unmount propagation test root");
+    close(parent_to_child[1]);
+    close(child_to_parent[0]);
+    rmdir(base);
+}
+
 int main(void)
 {
     setvbuf(stdout, NULL, _IONBF, 0);
-    TEST_START("namespace (UTS / PID / USER isolation)");
+    TEST_START("namespace (UTS / PID / mount / USER isolation)");
 
     run_uts_namespace_test();
     run_pid_namespace_test();
+    run_mount_namespace_test();
+    run_mount_propagation_test();
     run_user_namespace_test();
 
     TEST_DONE();

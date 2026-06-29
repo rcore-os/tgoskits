@@ -22,7 +22,10 @@ use linux_raw_sys::{
 use starry_vm::{VmPtr, vm_write_slice};
 
 use crate::{
-    file::{Directory, FD_TABLE, FileLike, fd_is_path, get_file_like, resolve_at, with_fs},
+    file::{
+        Directory, FD_TABLE, FileLike, ResolveAtResult, fd_is_path, get_file_like, resolve_at,
+        with_fs,
+    },
     mm::vm_load_string,
     task::AsThread,
     time::TimeValueLike,
@@ -474,6 +477,25 @@ pub fn sys_readlinkat(
 
     debug!("sys_readlinkat <= dirfd: {dirfd}, path: {path:?}");
 
+    // Linux reports EINVAL when readlinkat(2) is given a pathname with a
+    // trailing slash: the final component is required to be treated as a
+    // directory, so it is not a symbolic link for readlink purposes. This is
+    // distinct from the ENOTDIR produced while walking an intermediate
+    // symlink and is used by securejoin/runc when probing procfs magic links.
+    if path.len() > 1 && path.ends_with('/') {
+        return Err(AxError::InvalidInput);
+    }
+
+    if path.is_empty() {
+        let entry = resolve_at(dirfd, None, AT_EMPTY_PATH)?
+            .into_file()
+            .ok_or(AxError::InvalidInput)?;
+        let link = entry.read_link()?;
+        let read = size.min(link.len());
+        vm_write_slice(buf, &link.as_bytes()[..read])?;
+        return Ok(read as isize);
+    }
+
     with_fs(dirfd, |fs| {
         let entry = fs.resolve_no_follow(path)?;
         let link = entry.read_link()?;
@@ -511,9 +533,25 @@ pub fn sys_fchownat(
     }
 
     let path = path.nullable().map(vm_load_string).transpose()?;
-    let loc = resolve_at(dirfd, path.as_deref(), flags)?
-        .into_file()
-        .ok_or(AxError::BadFileDescriptor)?;
+    let resolved = resolve_at(dirfd, path.as_deref(), flags)?;
+    let loc = match resolved {
+        ResolveAtResult::File(loc) => loc,
+        ResolveAtResult::Other(ref f) => {
+            let p = f.path();
+            // Special fd types that are not backed by filesystem objects
+            // (pipes, anon_inodes, etc.). fchown on these is valid on Linux;
+            // for now we treat it as a no-op since the caller is root.
+            if p.starts_with("pipe:[") || p.starts_with("anon_inode:") {
+                return Ok(0);
+            }
+            if p.is_empty() || p == "<error>" {
+                return Err(AxError::BadFileDescriptor);
+            }
+            // Fallback: resolve via the absolute path for filesystem-backed
+            // fds that don't downcast to File/Directory.
+            with_fs(AT_FDCWD, |fs| fs.resolve(p.as_ref()))?
+        }
+    };
     let meta = loc.metadata()?;
 
     let cred = current().as_thread().cred();
@@ -575,10 +613,24 @@ pub fn sys_chmod(path: *const c_char, mode: u32) -> AxResult<isize> {
 }
 
 pub fn sys_fchmod(fd: i32, mode: u32) -> AxResult<isize> {
-    sys_fchmodat(fd, core::ptr::null(), mode, AT_EMPTY_PATH)
+    sys_fchmodat_impl(fd, core::ptr::null(), mode, AT_EMPTY_PATH, false)
 }
 
 pub fn sys_fchmodat(dirfd: i32, path: *const c_char, mode: u32, flags: u32) -> AxResult<isize> {
+    sys_fchmodat_impl(dirfd, path, mode, flags, false)
+}
+
+pub fn sys_fchmodat2(dirfd: i32, path: *const c_char, mode: u32, flags: u32) -> AxResult<isize> {
+    sys_fchmodat_impl(dirfd, path, mode, flags, true)
+}
+
+fn sys_fchmodat_impl(
+    dirfd: i32,
+    path: *const c_char,
+    mode: u32,
+    flags: u32,
+    allow_path_fd: bool,
+) -> AxResult<isize> {
     const FCHMODAT_VALID_FLAGS: u32 = AT_EMPTY_PATH | AT_SYMLINK_NOFOLLOW;
     if flags & !FCHMODAT_VALID_FLAGS != 0 {
         return Err(AxError::InvalidInput);
@@ -591,15 +643,19 @@ pub fn sys_fchmodat(dirfd: i32, path: *const c_char, mode: u32, flags: u32) -> A
     // error EBADF." Fixes bug-open-path-fchmod-bypass.
     //
     // Three paths reach fchmod on a PATH fd; all three must be rejected to
-    // match Linux:
+    // match Linux's fchmod/fchmodat behavior:
     //   (1) Direct: SYS_fchmod(fd) — implemented as fchmodat(fd, NULL,
     //       mode, AT_EMPTY_PATH).
     //   (2) musl libc fallback: when (1) returns EBADF, musl re-tries
     //       fchmodat(AT_FDCWD, "/proc/self/fd/<n>", mode, 0). Linux's procfs
     //       propagates the PATH-handle restriction through the symlink.
     //   (3) (theoretical) Direct user use of /proc/self/fd/<n>.
+    //
+    // fchmodat2(AT_EMPTY_PATH), however, explicitly accepts an O_PATH fd
+    // (Linux 6.6+). runc uses this form when updating newly-created device
+    // nodes.
     let path_is_empty = path.as_deref().is_none_or(|s| s.is_empty());
-    if path_is_empty && flags & AT_EMPTY_PATH != 0 && fd_is_path(dirfd) {
+    if !allow_path_fd && path_is_empty && flags & AT_EMPTY_PATH != 0 && fd_is_path(dirfd) {
         return Err(AxError::BadFileDescriptor); // (1)
     }
     if let Some(p) = path.as_deref()

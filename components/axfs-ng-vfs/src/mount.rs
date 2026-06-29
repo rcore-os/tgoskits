@@ -1,12 +1,13 @@
 use alloc::{
     borrow::{Cow, ToOwned},
-    string::String,
+    string::{String, ToString},
     sync::{Arc, Weak},
     vec,
     vec::Vec,
 };
 use core::{
     any::Any,
+    fmt::Write,
     iter, mem,
     sync::atomic::{AtomicBool, AtomicU64, Ordering},
     task::Context,
@@ -15,7 +16,6 @@ use core::{
 
 use hashbrown::HashMap;
 use inherit_methods_macro::inherit_methods;
-use log::warn;
 
 use crate::{
     DeviceId, DirEntry, DirEntrySink, DirNode, DirNodeOps, Filesystem, FilesystemOps, FsIoEvents,
@@ -26,6 +26,7 @@ use crate::{
 
 static DEVICE_COUNTER: AtomicU64 = AtomicU64::new(1);
 static SYNTHETIC_MOUNT_INODE_COUNTER: AtomicU64 = AtomicU64::new(1_u64 << 63);
+static PROPAGATION_GROUP_COUNTER: AtomicU64 = AtomicU64::new(1);
 
 struct SyntheticMountDir {
     parent: DirEntry,
@@ -139,22 +140,43 @@ impl DirNodeOps for SyntheticMountDir {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum PropagationType {
-    Private,
-    Shared,
-    Slave,
-    Unbindable,
+#[derive(Debug, Clone, Copy, Default)]
+struct PropagationState {
+    shared_group: Option<u64>,
+    slave: bool,
+    unbindable: bool,
+}
+
+#[derive(Debug, Clone)]
+struct MountLocation {
+    mountpoint: Weak<Mountpoint>,
+    entry: DirEntry,
+}
+
+impl MountLocation {
+    fn new(location: &Location) -> Self {
+        Self {
+            mountpoint: Arc::downgrade(location.mountpoint()),
+            entry: location.entry.clone(),
+        }
+    }
+
+    fn upgrade(&self) -> Option<Location> {
+        Some(Location::new(
+            self.mountpoint.upgrade()?,
+            self.entry.clone(),
+        ))
+    }
 }
 
 #[derive(Debug)]
 pub struct Mountpoint {
     /// Root dir entry in the mountpoint.
     root: DirEntry,
-    /// Location in the parent mountpoint. `None` for the global root mount.
-    location: Mutex<Option<Location>>,
+    /// Location in the parent mountpoint. `None` for a namespace root mount.
+    location: Mutex<Option<MountLocation>>,
     /// Children of the mountpoint.
-    children: Mutex<HashMap<ReferenceKey, Weak<Self>>>,
+    children: Mutex<HashMap<ReferenceKey, Arc<Self>>>,
     /// Device ID
     device: u64,
     /// Read-only flag for this mountpoint.
@@ -162,7 +184,7 @@ pub struct Mountpoint {
     /// Expire mark for umount2(MNT_EXPIRE).
     expired: AtomicBool,
     /// Mount propagation type.
-    propagation: Mutex<PropagationType>,
+    propagation: Mutex<PropagationState>,
     /// Other shared peers in the same propagation group.
     peers: Mutex<Vec<Weak<Self>>>,
     /// Slave mounts that receive propagation events from this shared mount.
@@ -179,12 +201,12 @@ impl Mountpoint {
     ) -> Arc<Self> {
         Arc::new(Self {
             root,
-            location: Mutex::new(location_in_parent),
+            location: Mutex::new(location_in_parent.as_ref().map(MountLocation::new)),
             children: Mutex::new(HashMap::default()),
             device,
             readonly: AtomicBool::new(false),
             expired: AtomicBool::new(false),
-            propagation: Mutex::new(PropagationType::Private),
+            propagation: Mutex::new(PropagationState::default()),
             peers: Mutex::default(),
             slaves: Mutex::default(),
             masters: Mutex::default(),
@@ -205,7 +227,37 @@ impl Mountpoint {
         Self::new(fs, None)
     }
 
-    fn bind(source: &Location, location_in_parent: Location, recursive: bool) -> Arc<Self> {
+    fn bind(
+        source: &Location,
+        location_in_parent: Location,
+        recursive: bool,
+    ) -> VfsResult<Arc<Self>> {
+        fn clone_bound_subtree(source: &Arc<Mountpoint>, location: Location) -> Arc<Mountpoint> {
+            let cloned =
+                Mountpoint::new_with_root(source.root.clone(), Some(location), source.device);
+            cloned
+                .readonly
+                .store(source.is_readonly(), Ordering::Release);
+
+            let children = source.children.lock().values().cloned().collect::<Vec<_>>();
+            for child in children {
+                if child.is_unbindable() {
+                    continue;
+                }
+                let Some(source_location) = child.location() else {
+                    continue;
+                };
+                let cloned_location = Location::new(cloned.clone(), source_location.entry.clone());
+                let cloned_child = clone_bound_subtree(&child, cloned_location);
+                cloned
+                    .children
+                    .lock()
+                    .insert(source_location.entry.key(), cloned_child);
+            }
+            cloned.inherit_propagation(source);
+            cloned
+        }
+
         let result = Self::new_with_root(
             source.entry.clone(),
             Some(location_in_parent),
@@ -215,29 +267,164 @@ impl Mountpoint {
             .readonly
             .store(source.mountpoint.is_readonly(), Ordering::Release);
         if recursive {
-            let mut children_to_bind: Vec<_> = source
+            let children_to_bind = source
                 .mountpoint
                 .children
                 .lock()
-                .iter()
-                .map(|(key, child)| (key.clone(), child.clone()))
-                .collect();
-            children_to_bind
-                .retain(|(_, child)| child.upgrade().is_none_or(|child| !child.is_unbindable()));
-            let result_children: HashMap<ReferenceKey, Weak<Self>> =
-                children_to_bind.into_iter().collect();
-            *result.children.lock() = result_children;
+                .values()
+                .cloned()
+                .collect::<Vec<_>>();
+            for child in children_to_bind {
+                if child.is_unbindable() {
+                    continue;
+                }
+                let Some(source_location) = child.location() else {
+                    continue;
+                };
+                if !source.entry.ptr_eq(&source_location.entry)
+                    && !source.entry.is_ancestor_of(&source_location.entry)?
+                {
+                    continue;
+                }
+                let cloned_location = Location::new(result.clone(), source_location.entry.clone());
+                let cloned_child = clone_bound_subtree(&child, cloned_location);
+                result
+                    .children
+                    .lock()
+                    .insert(source_location.entry.key(), cloned_child);
+            }
         }
-        result
+        Ok(result)
     }
 
     pub fn root_location(self: &Arc<Self>) -> Location {
         Location::new(self.clone(), self.root.clone())
     }
 
+    /// Clone this mount tree for a new mount namespace.
+    ///
+    /// Filesystems and dentries remain shared, while every mount node and all
+    /// parent/child topology are copied.  This is the equivalent of Linux
+    /// `copy_tree()` used by `copy_mnt_ns()`.
+    pub fn clone_tree_and_remap(
+        self: &Arc<Self>,
+        locations: &[Location],
+    ) -> VfsResult<(Arc<Self>, Vec<Location>)> {
+        fn clone_subtree(
+            source: &Arc<Mountpoint>,
+            location: Option<Location>,
+            mounts: &mut HashMap<usize, Arc<Mountpoint>>,
+            pairs: &mut Vec<(Arc<Mountpoint>, Arc<Mountpoint>)>,
+        ) -> Arc<Mountpoint> {
+            let cloned = Mountpoint::new_with_root(source.root.clone(), location, source.device);
+            cloned
+                .readonly
+                .store(source.is_readonly(), Ordering::Release);
+            mounts.insert(Arc::as_ptr(source) as usize, cloned.clone());
+            pairs.push((source.clone(), cloned.clone()));
+
+            let children = source.children.lock().values().cloned().collect::<Vec<_>>();
+            for child in children {
+                let Some(source_location) = child.location() else {
+                    continue;
+                };
+                let cloned_location = Location::new(cloned.clone(), source_location.entry.clone());
+                let cloned_child = clone_subtree(&child, Some(cloned_location), mounts, pairs);
+                cloned
+                    .children
+                    .lock()
+                    .insert(source_location.entry.key(), cloned_child);
+            }
+            cloned
+        }
+
+        let mut mounts = HashMap::default();
+        let mut pairs = Vec::new();
+        let root = clone_subtree(self, None, &mut mounts, &mut pairs);
+        for (source, cloned) in pairs {
+            cloned.inherit_propagation(&source);
+        }
+        let remapped = locations
+            .iter()
+            .map(|location| {
+                let key = Arc::as_ptr(location.mountpoint()) as usize;
+                let mountpoint = mounts.get(&key).ok_or(VfsError::InvalidInput)?.clone();
+                Ok(Location::new(mountpoint, location.entry.clone()))
+            })
+            .collect::<VfsResult<Vec<_>>>()?;
+        Ok((root, remapped))
+    }
+
+    /// Render the mount tree using the Linux `/proc/[pid]/mountinfo` format.
+    ///
+    /// Mount IDs are generated for the snapshot and only need to remain
+    /// internally consistent for the duration of this read.
+    pub fn render_mountinfo(self: &Arc<Self>) -> VfsResult<String> {
+        fn escape_path(path: &str) -> String {
+            path.replace('\\', "\\134")
+                .replace(' ', "\\040")
+                .replace('\t', "\\011")
+                .replace('\n', "\\012")
+        }
+
+        fn collect(
+            mountpoint: &Arc<Mountpoint>,
+            parent_id: u64,
+            mount_id: u64,
+            output: &mut String,
+            next_id: &mut u64,
+        ) -> VfsResult<()> {
+            let mount_path = mountpoint.location().map_or_else(
+                || Ok("/".to_owned()),
+                |location| location.absolute_path().map(|path| path.to_string()),
+            )?;
+            let fs_type = mountpoint.root.filesystem().name();
+            let options = if mountpoint.is_readonly() { "ro" } else { "rw" };
+            let mut optional = String::new();
+            if let Some(group) = mountpoint.shared_group() {
+                write!(optional, " shared:{group}").map_err(|_| VfsError::InvalidInput)?;
+            }
+            if let Some(group) = mountpoint.master_group() {
+                write!(optional, " master:{group}").map_err(|_| VfsError::InvalidInput)?;
+            }
+            writeln!(
+                output,
+                "{mount_id} {parent_id} 0:{} / {} {options},relatime{optional} - {fs_type} \
+                 {fs_type} {options}",
+                mountpoint.device(),
+                escape_path(&mount_path),
+            )
+            .map_err(|_| VfsError::InvalidInput)?;
+
+            let mut children = mountpoint
+                .children
+                .lock()
+                .values()
+                .cloned()
+                .collect::<Vec<_>>();
+            children.sort_by_cached_key(|child| {
+                child
+                    .location()
+                    .and_then(|location| location.absolute_path().ok())
+                    .unwrap_or_default()
+            });
+            for child in children {
+                let child_id = *next_id;
+                *next_id = next_id.saturating_add(1);
+                collect(&child, mount_id, child_id, output, next_id)?;
+            }
+            Ok(())
+        }
+
+        let mut output = String::new();
+        let mut next_id = 2;
+        collect(self, 0, 1, &mut output, &mut next_id)?;
+        Ok(output)
+    }
+
     /// Returns the location in the parent mountpoint.
     pub fn location(&self) -> Option<Location> {
-        self.location.lock().clone()
+        self.location.lock().as_ref()?.upgrade()
     }
 
     pub fn is_root(&self) -> bool {
@@ -245,7 +432,7 @@ impl Mountpoint {
     }
 
     /// Pivot the mount tree: the old root (`self`) is detached and re-attached
-    /// at `put_old` under `new_root_mp`, which becomes the global root.
+    /// at `put_old` under `new_root_mp`, which becomes the namespace root.
     ///
     /// This implements the mount-tree portion of Linux `pivot_root(2)`.
     pub fn pivot_mount(
@@ -268,21 +455,20 @@ impl Mountpoint {
         {
             let mut new_root_loc = new_root_mp.location.lock();
             if let Some(ref old_loc) = *new_root_loc {
-                self.children.lock().remove(&old_loc.entry.key());
-                *old_loc.entry.as_dir()?.mountpoint.lock() = None;
+                let parent = old_loc.mountpoint.upgrade().ok_or(VfsError::InvalidInput)?;
+                parent.children.lock().remove(&old_loc.entry.key());
             }
-            // new_root becomes the global root.
+            // new_root becomes the namespace root.
             *new_root_loc = None;
         }
 
         // 2. Attach old root at put_old under new_root.
         {
-            *put_old.entry.as_dir()?.mountpoint.lock() = Some(self.clone());
             new_root_mp
                 .children
                 .lock()
-                .insert(put_old.entry.key(), Arc::downgrade(self));
-            *self.location.lock() = Some(put_old.clone());
+                .insert(put_old.entry.key(), self.clone());
+            *self.location.lock() = Some(MountLocation::new(put_old));
         }
 
         Ok(())
@@ -296,10 +482,17 @@ impl Mountpoint {
     /// return `mnt2` for `mnt1.effective_mountpoint()`.
     pub(crate) fn effective_mountpoint(self: &Arc<Self>) -> Arc<Mountpoint> {
         let mut mountpoint = self.clone();
-        while let Some(mount) = mountpoint.root.as_dir().unwrap().mountpoint() {
-            mountpoint = mount;
+        loop {
+            let next = mountpoint
+                .children
+                .lock()
+                .get(&mountpoint.root.key())
+                .cloned();
+            let Some(next) = next else {
+                return mountpoint;
+            };
+            mountpoint = next;
         }
-        mountpoint
     }
 
     pub fn device(self: &Arc<Self>) -> u64 {
@@ -322,20 +515,32 @@ impl Mountpoint {
         self.expired.store(false, Ordering::Release);
     }
 
-    fn propagation(&self) -> PropagationType {
+    fn propagation(&self) -> PropagationState {
         *self.propagation.lock()
     }
 
     pub fn is_shared(&self) -> bool {
-        self.propagation() == PropagationType::Shared
+        self.propagation().shared_group.is_some()
     }
 
     pub fn is_slave(&self) -> bool {
-        self.propagation() == PropagationType::Slave
+        self.propagation().slave
     }
 
     pub fn is_unbindable(&self) -> bool {
-        self.propagation() == PropagationType::Unbindable
+        self.propagation().unbindable
+    }
+
+    pub fn shared_group(&self) -> Option<u64> {
+        self.propagation().shared_group
+    }
+
+    pub fn master_group(&self) -> Option<u64> {
+        self.masters
+            .lock()
+            .iter()
+            .filter_map(Weak::upgrade)
+            .find_map(|master| master.shared_group())
     }
 
     fn remove_from_shared_group(self: &Arc<Self>) {
@@ -368,15 +573,18 @@ impl Mountpoint {
     }
 
     pub fn set_shared(self: &Arc<Self>) {
-        self.remove_from_shared_group();
-        self.remove_from_masters();
-        *self.propagation.lock() = PropagationType::Shared;
+        let mut propagation = self.propagation.lock();
+        propagation.unbindable = false;
+        if propagation.shared_group.is_none() {
+            propagation.shared_group =
+                Some(PROPAGATION_GROUP_COUNTER.fetch_add(1, Ordering::Relaxed));
+        }
     }
 
     pub fn set_private(self: &Arc<Self>) {
         self.remove_from_shared_group();
         self.remove_from_masters();
-        *self.propagation.lock() = PropagationType::Private;
+        *self.propagation.lock() = PropagationState::default();
     }
 
     pub fn set_slave(self: &Arc<Self>) {
@@ -387,7 +595,11 @@ impl Mountpoint {
 
         self.remove_from_shared_group();
         self.remove_from_masters();
-        *self.propagation.lock() = PropagationType::Slave;
+        let mut propagation = self.propagation.lock();
+        propagation.shared_group = None;
+        propagation.unbindable = false;
+        propagation.slave = !masters.is_empty();
+        drop(propagation);
         for master in masters {
             master.slaves.lock().push(Arc::downgrade(self));
             self.masters.lock().push(Arc::downgrade(&master));
@@ -396,14 +608,80 @@ impl Mountpoint {
 
     pub fn set_unbindable(self: &Arc<Self>) {
         self.set_private();
-        *self.propagation.lock() = PropagationType::Unbindable;
+        self.propagation.lock().unbindable = true;
+    }
+
+    fn subtree(self: &Arc<Self>) -> Vec<Arc<Self>> {
+        fn collect(mountpoint: &Arc<Mountpoint>, output: &mut Vec<Arc<Mountpoint>>) {
+            output.push(mountpoint.clone());
+            let children = mountpoint
+                .children
+                .lock()
+                .values()
+                .cloned()
+                .collect::<Vec<_>>();
+            for child in children {
+                collect(&child, output);
+            }
+        }
+
+        let mut output = Vec::new();
+        collect(self, &mut output);
+        output
+    }
+
+    pub fn set_shared_recursive(self: &Arc<Self>, recursive: bool) {
+        if recursive {
+            for mountpoint in self.subtree() {
+                mountpoint.set_shared();
+            }
+        } else {
+            self.set_shared();
+        }
+    }
+
+    pub fn set_private_recursive(self: &Arc<Self>, recursive: bool) {
+        if recursive {
+            for mountpoint in self.subtree() {
+                mountpoint.set_private();
+            }
+        } else {
+            self.set_private();
+        }
+    }
+
+    pub fn set_slave_recursive(self: &Arc<Self>, recursive: bool) {
+        if recursive {
+            for mountpoint in self.subtree() {
+                mountpoint.set_slave();
+            }
+        } else {
+            self.set_slave();
+        }
+    }
+
+    pub fn set_unbindable_recursive(self: &Arc<Self>, recursive: bool) {
+        if recursive {
+            for mountpoint in self.subtree() {
+                mountpoint.set_unbindable();
+            }
+        } else {
+            self.set_unbindable();
+        }
     }
 
     pub fn join_shared_group(self: &Arc<Self>, source: &Arc<Self>) {
         let mut group = vec![source.clone()];
         group.extend(source.peers.lock().iter().filter_map(Weak::upgrade));
 
-        self.set_shared();
+        self.remove_from_shared_group();
+        {
+            let mut propagation = self.propagation.lock();
+            propagation.unbindable = false;
+            propagation.shared_group = source
+                .shared_group()
+                .or_else(|| Some(PROPAGATION_GROUP_COUNTER.fetch_add(1, Ordering::Relaxed)));
+        }
         for member in group {
             if Arc::ptr_eq(&member, self) {
                 continue;
@@ -413,12 +691,131 @@ impl Mountpoint {
         }
     }
 
+    fn inherit_slave_relationship(self: &Arc<Self>, source: &Arc<Self>) {
+        self.remove_from_masters();
+        let masters = source
+            .masters
+            .lock()
+            .iter()
+            .filter_map(Weak::upgrade)
+            .collect::<Vec<_>>();
+        self.propagation.lock().slave = !masters.is_empty();
+        for master in masters {
+            master.slaves.lock().push(Arc::downgrade(self));
+            self.masters.lock().push(Arc::downgrade(&master));
+        }
+    }
+
+    fn inherit_propagation(self: &Arc<Self>, source: &Arc<Self>) {
+        if source.is_unbindable() {
+            self.set_unbindable();
+            return;
+        }
+        if source.is_slave() {
+            self.inherit_slave_relationship(source);
+        }
+        if source.is_shared() {
+            self.join_shared_group(source);
+        }
+    }
+
+    fn become_slave_of(self: &Arc<Self>, master: &Arc<Self>) {
+        self.set_private();
+        let mut masters = vec![master.clone()];
+        masters.extend(master.peers.lock().iter().filter_map(Weak::upgrade));
+        self.propagation.lock().slave = !masters.is_empty();
+        for member in masters {
+            member.slaves.lock().push(Arc::downgrade(self));
+            self.masters.lock().push(Arc::downgrade(&member));
+        }
+    }
+
+    fn propagation_targets(self: &Arc<Self>) -> Vec<(Arc<Self>, bool)> {
+        fn add_slave_tree(mountpoint: &Arc<Mountpoint>, output: &mut Vec<(Arc<Mountpoint>, bool)>) {
+            let slaves = mountpoint
+                .slaves
+                .lock()
+                .iter()
+                .filter_map(Weak::upgrade)
+                .collect::<Vec<_>>();
+            for slave in slaves {
+                if output.iter().any(|(item, _)| Arc::ptr_eq(item, &slave)) {
+                    continue;
+                }
+                output.push((slave.clone(), true));
+                add_slave_tree(&slave, output);
+                let peers = slave
+                    .peers
+                    .lock()
+                    .iter()
+                    .filter_map(Weak::upgrade)
+                    .collect::<Vec<_>>();
+                for peer in peers {
+                    if !output.iter().any(|(item, _)| Arc::ptr_eq(item, &peer)) {
+                        output.push((peer.clone(), true));
+                        add_slave_tree(&peer, output);
+                    }
+                }
+            }
+        }
+
+        let peers = self
+            .peers
+            .lock()
+            .iter()
+            .filter_map(Weak::upgrade)
+            .collect::<Vec<_>>();
+        let mut output = peers
+            .iter()
+            .cloned()
+            .map(|peer| (peer, false))
+            .collect::<Vec<_>>();
+        add_slave_tree(self, &mut output);
+        for peer in peers {
+            add_slave_tree(&peer, &mut output);
+        }
+        output
+    }
+
+    fn clone_propagated_subtree(
+        source: &Arc<Self>,
+        location: Location,
+        as_slave: bool,
+    ) -> Arc<Self> {
+        let cloned = Self::new_with_root(source.root.clone(), Some(location), source.device);
+        cloned
+            .readonly
+            .store(source.is_readonly(), Ordering::Release);
+
+        let children = source.children.lock().values().cloned().collect::<Vec<_>>();
+        for child in children {
+            let Some(source_location) = child.location() else {
+                continue;
+            };
+            let cloned_location = Location::new(cloned.clone(), source_location.entry.clone());
+            let cloned_child = Self::clone_propagated_subtree(&child, cloned_location, as_slave);
+            cloned
+                .children
+                .lock()
+                .insert(source_location.entry.key(), cloned_child);
+        }
+
+        if as_slave && source.is_shared() {
+            cloned.become_slave_of(source);
+        } else if source.is_shared() {
+            cloned.join_shared_group(source);
+        } else {
+            cloned.inherit_propagation(source);
+        }
+        cloned
+    }
+
     fn attach_child(parent: &Arc<Self>, location: Location, child: &Arc<Self>) -> VfsResult<()> {
-        *location.entry.as_dir()?.mountpoint.lock() = Some(child.clone());
+        location.check_is_dir()?;
         parent
             .children
             .lock()
-            .insert(location.entry.key(), Arc::downgrade(child));
+            .insert(location.entry.key(), child.clone());
         Ok(())
     }
 
@@ -427,18 +824,9 @@ impl Mountpoint {
         source_location: &Location,
         child: &Arc<Self>,
     ) -> VfsResult<()> {
-        let peers: Vec<_> = source_parent
-            .peers
-            .lock()
-            .iter()
-            .filter_map(Weak::upgrade)
-            .collect();
-        let slaves: Vec<_> = source_parent
-            .slaves
-            .lock()
-            .iter()
-            .filter_map(Weak::upgrade)
-            .collect();
+        if !child.is_shared() {
+            child.set_shared();
+        }
         let mut path_components = vec![];
         let mut current = source_location.clone();
         while !current.is_root_of_mount() {
@@ -447,31 +835,27 @@ impl Mountpoint {
         }
         path_components.reverse();
 
-        for target_parent in peers.into_iter().chain(slaves) {
+        for (target_parent, as_slave) in source_parent.propagation_targets() {
             let mut location = target_parent.root_location();
             for component in &path_components {
                 location = location.lookup_no_follow(component)?;
             }
-            let inserted_key = location.entry.key();
-            Self::attach_child(&target_parent, location, child)?;
-            let mut resolved = target_parent.root_location();
-            for component in &path_components {
-                resolved = resolved.lookup_no_follow(component)?;
+            if location.is_mountpoint() {
+                return Err(VfsError::ResourceBusy);
             }
-            if !Arc::ptr_eq(resolved.mountpoint(), child) {
-                warn!(
-                    "mount propagation mismatch path={:?} inserted_key={:?} resolved_key={:?} \
-                     resolved_is_root={} resolved_mp_device={} replicated_device={}",
-                    path_components,
-                    inserted_key,
-                    resolved.entry.key(),
-                    resolved.is_root_of_mount(),
-                    resolved.mountpoint().device(),
-                    child.device(),
-                );
-            }
+            let replicated = Self::clone_propagated_subtree(child, location.clone(), as_slave);
+            Self::attach_child(&target_parent, location, &replicated)?;
         }
         Ok(())
+    }
+
+    fn propagate_unmount(source_parent: &Arc<Self>, source_location: &Location) {
+        let key = source_location.entry.key();
+        for (target_parent, _) in source_parent.propagation_targets() {
+            if let Some(propagated) = target_parent.children.lock().remove(&key) {
+                *propagated.location.lock() = None;
+            }
+        }
     }
 
     pub fn move_to(self: &Arc<Self>, new_location: &Location) -> VfsResult<()> {
@@ -491,25 +875,23 @@ impl Mountpoint {
             current = location.parent();
         }
 
-        let Some(old_location) = self.location.lock().clone() else {
+        let Some(old_location) = self.location() else {
             return Err(VfsError::InvalidInput);
         };
 
-        *old_location.entry.as_dir()?.mountpoint.lock() = None;
         old_location
             .mountpoint
             .children
             .lock()
             .remove(&old_location.entry.key());
 
-        *new_location.entry.as_dir()?.mountpoint.lock() = Some(self.clone());
         new_location
             .mountpoint
             .children
             .lock()
-            .insert(new_location.entry.key(), Arc::downgrade(self));
+            .insert(new_location.entry.key(), self.clone());
 
-        *self.location.lock() = Some(new_location.clone());
+        *self.location.lock() = Some(MountLocation::new(new_location));
         Ok(())
     }
 
@@ -517,15 +899,18 @@ impl Mountpoint {
         if self.is_root() {
             return Err(VfsError::InvalidInput);
         }
-        let Some(location) = self.location.lock().clone() else {
+        let Some(location) = self.location() else {
             return Err(VfsError::InvalidInput);
         };
+        if location.mountpoint.is_shared() {
+            Self::propagate_unmount(location.mountpoint(), &location);
+        }
         location
             .mountpoint
             .children
             .lock()
             .remove(&location.entry.key());
-        *location.entry.as_dir()?.mountpoint.lock() = None;
+        *self.location.lock() = None;
         Ok(())
     }
 }
@@ -553,8 +938,6 @@ impl Location {
 
     pub fn node_type(&self) -> NodeType;
 
-    pub fn is_root_of_mount(&self) -> bool;
-
     pub fn read_link(&self) -> VfsResult<String>;
 
     pub fn ioctl(&self, cmd: u32, arg: usize) -> VfsResult<usize>;
@@ -575,6 +958,26 @@ impl Location {
 
     pub fn mountpoint(&self) -> &Arc<Mountpoint> {
         &self.mountpoint
+    }
+
+    pub fn is_root_of_mount(&self) -> bool {
+        self.entry.ptr_eq(&self.mountpoint.root)
+    }
+
+    pub fn namespace_root_mountpoint(&self) -> Arc<Mountpoint> {
+        let mut root = self.mountpoint.clone();
+        while let Some(parent) = root
+            .location()
+            .map(|location| location.mountpoint().clone())
+        {
+            root = parent;
+        }
+        root
+    }
+
+    /// Render the mount tree containing this location.
+    pub fn render_mountinfo(&self) -> VfsResult<String> {
+        self.namespace_root_mountpoint().render_mountinfo()
     }
 
     pub fn is_readonly(&self) -> bool {
@@ -601,8 +1004,7 @@ impl Location {
     pub fn name(&self) -> Cow<'_, str> {
         if self.is_root_of_mount() {
             self.mountpoint
-                .location
-                .lock()
+                .location()
                 .as_ref()
                 .map_or(Cow::Borrowed(""), |loc| Cow::Owned(loc.name().into_owned()))
         } else {
@@ -618,7 +1020,7 @@ impl Location {
     }
 
     pub fn is_root(&self) -> bool {
-        self.mountpoint.is_root() && self.entry.is_root_of_mount()
+        self.mountpoint.is_root() && self.is_root_of_mount()
     }
 
     pub fn check_is_dir(&self) -> VfsResult<()> {
@@ -639,11 +1041,17 @@ impl Location {
         let mut components = vec![];
         let mut cur = self.clone();
         loop {
-            cur.entry.collect_absolute_path(&mut components);
-            cur = match cur.mountpoint.location() {
-                Some(loc) => loc,
-                None => break,
+            let mut entry = cur.entry.clone();
+            while !entry.ptr_eq(&cur.mountpoint.root) {
+                if !entry.name().is_empty() {
+                    components.push(entry.name().to_owned());
+                }
+                entry = entry.parent().ok_or(VfsError::InvalidInput)?;
             }
+            let Some(location) = cur.mountpoint.location() else {
+                break;
+            };
+            cur = location;
         }
         Ok(iter::once("/")
             .chain(components.iter().map(String::as_str).rev())
@@ -655,7 +1063,10 @@ impl Location {
     }
 
     pub fn is_mountpoint(&self) -> bool {
-        self.entry.as_dir().is_ok_and(|it| it.is_mountpoint())
+        self.mountpoint
+            .children
+            .lock()
+            .contains_key(&self.entry.key())
     }
 
     /// See [`Mountpoint::effective_mountpoint`].
@@ -665,7 +1076,7 @@ impl Location {
             .children
             .lock()
             .get(&self.entry.key())
-            .and_then(Weak::upgrade)
+            .cloned()
         else {
             return self;
         };
@@ -810,17 +1221,19 @@ impl Location {
     pub fn mount(&self, fs: &Filesystem) -> VfsResult<Arc<Mountpoint>> {
         let result = Mountpoint::new(fs, Some(self.clone()));
         let should_propagate = self.mountpoint.is_shared();
+        self.check_is_dir()?;
+        if self
+            .mountpoint
+            .children
+            .lock()
+            .contains_key(&self.entry.key())
         {
-            let mut mountpoint = self.entry.as_dir()?.mountpoint.lock();
-            if mountpoint.is_some() {
-                return Err(VfsError::ResourceBusy);
-            }
-            *mountpoint = Some(result.clone());
+            return Err(VfsError::ResourceBusy);
         }
         self.mountpoint
             .children
             .lock()
-            .insert(self.entry.key(), Arc::downgrade(&result));
+            .insert(self.entry.key(), result.clone());
         if should_propagate {
             Mountpoint::propagate_new_child(self.mountpoint(), self, &result)?;
         }
@@ -833,25 +1246,22 @@ impl Location {
             return Err(VfsError::InvalidInput);
         }
 
-        let target_dir = self.entry.as_dir()?;
-        let result = Mountpoint::bind(source, self.clone(), recursive);
-        if source_mountpoint.is_shared() {
-            result.join_shared_group(&source_mountpoint);
-        } else if source_mountpoint.is_slave() {
-            result.set_slave();
-        }
+        self.check_is_dir()?;
+        let result = Mountpoint::bind(source, self.clone(), recursive)?;
+        result.inherit_propagation(&source_mountpoint);
+        if self
+            .mountpoint
+            .children
+            .lock()
+            .contains_key(&self.entry.key())
         {
-            let mut mountpoint = target_dir.mountpoint.lock();
-            if mountpoint.is_some() {
-                result.set_private();
-                return Err(VfsError::ResourceBusy);
-            }
-            *mountpoint = Some(result.clone());
+            result.set_private();
+            return Err(VfsError::ResourceBusy);
         }
         self.mountpoint
             .children
             .lock()
-            .insert(self.entry.key(), Arc::downgrade(&result));
+            .insert(self.entry.key(), result.clone());
         Ok(result)
     }
 
@@ -880,14 +1290,17 @@ impl Location {
         self.mountpoint.clear_expired();
 
         self.entry.as_dir()?.forget();
-        if let Some(parent_loc) = self.mountpoint.location.lock().as_ref() {
+        if let Some(parent_loc) = self.mountpoint.location() {
+            if parent_loc.mountpoint.is_shared() {
+                Mountpoint::propagate_unmount(parent_loc.mountpoint(), &parent_loc);
+            }
             parent_loc
                 .mountpoint
                 .children
                 .lock()
                 .remove(&parent_loc.entry.key());
-            *parent_loc.entry.as_dir()?.mountpoint.lock() = None;
         }
+        *self.mountpoint.location.lock() = None;
         Ok(())
     }
 
@@ -904,9 +1317,7 @@ impl Location {
         }
         let children = mem::take(&mut *self.mountpoint.children.lock());
         for (_, child) in children {
-            if let Some(child) = child.upgrade() {
-                child.root_location().unmount_all()?;
-            }
+            child.root_location().unmount_all()?;
         }
         self.unmount()
     }

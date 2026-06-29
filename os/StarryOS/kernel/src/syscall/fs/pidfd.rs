@@ -11,8 +11,8 @@ use crate::{
     file::{FD_TABLE, FileLike, PidFd, add_file_like},
     syscall::signal::check_kill_permission,
     task::{
-        AsThread, get_process_data, get_task, send_signal_to_process, send_signal_to_process_group,
-        send_signal_to_thread,
+        AsThread, get_process, get_process_data, get_task, is_zombie_pid, send_signal_to_process,
+        send_signal_to_process_group, send_signal_to_thread,
     },
 };
 
@@ -128,8 +128,14 @@ pub fn sys_pidfd_send_signal(
     }
 
     let pidfd_obj = PidFd::from_fd(pidfd)?;
-    let proc_data = pidfd_obj.process_data()?;
-    let target_pid = proc_data.proc.pid();
+    let proc_data = match pidfd_obj.process_data_signal_target() {
+        Ok(proc_data) => Some(proc_data),
+        Err(_) if !pidfd_obj.is_thread() && is_zombie_pid(pidfd_obj.pid()) => None,
+        Err(err) => return Err(err),
+    };
+    let target_pid = proc_data
+        .as_ref()
+        .map_or_else(|| pidfd_obj.pid(), |proc_data| proc_data.proc.pid());
 
     let scope = if flags.contains(PidFdSignalFlags::THREAD)
         || (flags.is_empty() && pidfd_obj.is_thread())
@@ -171,7 +177,11 @@ pub fn sys_pidfd_send_signal(
             send_signal_to_process(target_pid, kinfo)?;
         }
         PidFdSignalScope::ProcessGroup => {
-            let pgid = proc_data.proc.group().pgid();
+            let pgid = if let Some(proc_data) = &proc_data {
+                proc_data.proc.group().pgid()
+            } else {
+                get_process(target_pid)?.group().pgid()
+            };
             check_kill_permission(pgid)?;
             send_signal_to_process_group(pgid, kinfo)?;
         }

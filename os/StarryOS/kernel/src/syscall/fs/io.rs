@@ -691,10 +691,34 @@ impl SendFile {
             }
         }
     }
+
+    fn rewind_read(&mut self, count: usize) -> AxResult<()> {
+        if count == 0 {
+            return Ok(());
+        }
+        match self {
+            SendFile::Direct(file) => {
+                if let Ok(file) = file.clone().downcast_arc::<File>() {
+                    file.inner().seek(SeekFrom::Current(-(count as i64)))?;
+                } else if let Ok(memfd) = file.clone().downcast_arc::<crate::file::memfd::Memfd>() {
+                    memfd
+                        .inner()
+                        .inner()
+                        .seek(SeekFrom::Current(-(count as i64)))?;
+                }
+            }
+            SendFile::Offset(..) => {}
+            SendFile::OffsetMemfd(_, offset) => {
+                let pos = offset.vm_read()?;
+                offset.vm_write(pos - count as u64)?;
+            }
+        }
+        Ok(())
+    }
 }
 
 fn do_send(mut src: SendFile, mut dst: SendFile, len: usize) -> AxResult<usize> {
-    let mut buf = vec![0; 0x1000];
+    let mut buf = vec![0; 0x10000];
     let mut total_written = 0;
     let mut remaining = len;
 
@@ -705,7 +729,7 @@ fn do_send(mut src: SendFile, mut dst: SendFile, len: usize) -> AxResult<usize> 
         let to_read = buf.len().min(remaining);
         let bytes_read = match src.read(&mut buf[..to_read]) {
             Ok(n) => n,
-            Err(AxError::WouldBlock) if total_written > 0 => break,
+            Err(AxError::WouldBlock | AxError::Interrupted) if total_written > 0 => break,
             Err(e) => return Err(e),
         };
         if bytes_read == 0 {
@@ -718,15 +742,34 @@ fn do_send(mut src: SendFile, mut dst: SendFile, len: usize) -> AxResult<usize> 
             // managed to transfer so far rather than propagating EAGAIN.
             // Linux sendfile(2) semantics: return the count of bytes written
             // when a short write happens, NOT -EAGAIN.
-            Err(AxError::WouldBlock) if total_written > 0 => break,
-            Err(e) => return Err(e),
+            Err(AxError::WouldBlock | AxError::Interrupted) if total_written > 0 => {
+                src.rewind_read(bytes_read)?;
+                break;
+            }
+            Err(e) => {
+                src.rewind_read(bytes_read)?;
+                return Err(e);
+            }
         };
+        if bytes_written == 0 {
+            src.rewind_read(bytes_read)?;
+            // A non-empty write that makes no progress must not spin forever.
+            // Linux does not report a successful zero-byte sendfile transfer
+            // here unless the input is already at EOF, which was ruled out by
+            // the successful read above.
+            return if total_written > 0 {
+                Ok(total_written)
+            } else {
+                Err(AxError::Io)
+            };
+        }
         // Advance source offset by bytes actually transferred (partial dst.write
         // must not skip unread source data).
         if let SendFile::Offset(_, user, pos) = &mut src {
             *pos += bytes_written as u64;
             user.vm_write(*pos)?;
         }
+        src.rewind_read(bytes_read - bytes_written)?;
         total_written += bytes_written;
         remaining -= bytes_written;
 

@@ -24,7 +24,7 @@ use starry_vm::vm_load_until_nul;
 
 use crate::{
     config::USER_HEAP_BASE,
-    file::{FD_TABLE, ResolveAtResult, memfd::Memfd, resolve_at},
+    file::{FD_TABLE, ResolveAtResult, get_file_like, memfd::Memfd, resolve_at},
     mm::{copy_from_kernel, load_user_app, new_user_aspace_empty, vm_load_string},
     task::{AsThread, rebind_task_tid, zap_thread},
 };
@@ -36,7 +36,22 @@ pub fn sys_execve(
     envp: *const *const c_char,
 ) -> AxResult<isize> {
     let path = vm_load_string(path)?;
-    let loc = FS_CONTEXT.lock().resolve(&path)?;
+    // `/proc/self/fd/<n>` entries are Linux "magic links": following one
+    // refers to the open file itself rather than resolving the text returned
+    // by readlink(2). A memfd's display target (`/memfd:<name>`) has no
+    // directory entry, so resolve it directly from the descriptor for exec.
+    let memfd_loc = path
+        .strip_prefix("/proc/self/fd/")
+        .and_then(|fd| fd.parse::<c_int>().ok())
+        .and_then(|fd| get_file_like(fd).ok())
+        .and_then(|file| {
+            file.downcast_ref::<Memfd>()
+                .map(|memfd| memfd.inner().inner().location().clone())
+        });
+    let loc = match memfd_loc {
+        Some(loc) => loc,
+        None => FS_CONTEXT.lock().resolve(&path)?,
+    };
     do_execve(uctx, loc, path, argv, envp)
 }
 

@@ -638,7 +638,7 @@ struct NsDir {
 impl SimpleDirOps for NsDir {
     fn child_names<'a>(&'a self) -> Box<dyn Iterator<Item = Cow<'a, str>> + 'a> {
         Box::new(
-            ["uts", "ipc", "mnt", "pid", "net", "user"]
+            ["uts", "ipc", "mnt", "pid", "net", "user", "cgroup"]
                 .into_iter()
                 .map(Cow::Borrowed),
         )
@@ -669,7 +669,11 @@ impl SimpleDirOps for NsDir {
                 let ns_id = nsproxy.ipc_ns.lock().ns_id;
                 format!("ipc:[{}]\n", ns_id)
             }
-            "mnt" => "mnt:[root]\n".to_string(),
+            "mnt" => {
+                let nsproxy = proc_data.nsproxy.lock();
+                let ns_id = nsproxy.mnt_ns.lock().ns_id;
+                format!("mnt:[{}]\n", ns_id)
+            }
             "pid" => {
                 let nsproxy = proc_data.nsproxy.lock();
                 let level = nsproxy.pid_ns.lock().level;
@@ -689,6 +693,7 @@ impl SimpleDirOps for NsDir {
                     format!("user:[{}]\n", inner.owner_uid)
                 }
             }
+            "cgroup" => "cgroup:[root]\n".to_string(),
             _ => return Err(VfsError::NotFound),
         };
 
@@ -932,6 +937,7 @@ impl SimpleDirOps for ThreadDir {
                 "mem",
                 "auxv",
                 "mounts",
+                "mountinfo",
                 "cmdline",
                 "comm",
                 "exe",
@@ -1030,6 +1036,18 @@ impl SimpleDirOps for ThreadDir {
                 Ok("proc /proc proc rw,nosuid,nodev,noexec,relatime 0 0\n")
             })
             .into(),
+            "mountinfo" => {
+                let proc_data = task.as_thread().proc_data.clone();
+                SimpleFile::new_regular(fs, move || {
+                    let scope = proc_data.scope.read();
+                    ax_fs_ng::vfs::FS_CONTEXT
+                        .scope(&scope)
+                        .lock()
+                        .root_dir()
+                        .render_mountinfo()
+                })
+                .into()
+            }
             "cmdline" => SimpleFile::new_regular(fs, move || {
                 let cmdline = task.as_thread().proc_data.cmdline.read();
                 let mut buf = Vec::new();
@@ -1216,7 +1234,10 @@ impl SimpleDirOps for ThreadDir {
                 }),
             )
             .into(),
-            "cgroup" => SimpleFile::new_regular(fs, move || Ok("0::/\n")).into(),
+            "cgroup" => {
+                let pid = task.as_thread().proc_data.proc.pid();
+                SimpleFile::new_regular(fs, move || crate::cgroup::proc_cgroup_text(pid)).into()
+            }
             "ns" => SimpleDir::new_maker(
                 fs.clone(),
                 Arc::new(NsDir {
@@ -1289,7 +1310,7 @@ impl SimpleDirOps for ProcFsHandler {
     }
 }
 
-fn builder(fs: Arc<SimpleFs>) -> DirMaker {
+fn builder(fs: Arc<SimpleFs>, root_ino: u64) -> DirMaker {
     let mut root = DirMapping::new();
     root.add(
         "mounts",
@@ -1481,13 +1502,10 @@ fn builder(fs: Arc<SimpleFs>) -> DirMaker {
 
     static ALL_SYMS: LazyInit<String> = LazyInit::new();
 
-    let ksym = read_kallsyms();
-    KALLSYMS.init_once(ksym);
+    KALLSYMS.call_once(read_kallsyms);
 
     root.add("kallsyms", {
-        if !ALL_SYMS.is_inited() {
-            ALL_SYMS.init_once(KALLSYMS.dump_all_symbols());
-        }
+        ALL_SYMS.call_once(|| KALLSYMS.dump_all_symbols());
         let seq_obj = SeqObject::new(|| Ok(ALL_SYMS.as_str()));
         SpecialFsFile::new_regular_with_perm(
             fs.clone(),
@@ -1497,7 +1515,7 @@ fn builder(fs: Arc<SimpleFs>) -> DirMaker {
     });
 
     let proc_dir = ProcFsHandler(fs.clone());
-    SimpleDir::new_maker(fs, Arc::new(proc_dir.chain(root)))
+    SimpleDir::new_maker_with_inode(fs, Arc::new(proc_dir.chain(root)), root_ino)
 }
 
 pub struct SeqWriter<W: core::fmt::Write> {

@@ -706,6 +706,12 @@ static void test_fstatfs_happy(void)
     CHECK_RET(fstatfs(fd, &sb), 0, "fstatfs(fd)");
     CHECK(sb.f_bsize > 0, "fstatfs f_bsize > 0");
     close(fd);
+
+    fd = open(BASE, O_RDONLY | O_DIRECTORY);
+    CHECK(fd >= 0, "open directory for fstatfs");
+    CHECK_RET(fstatfs(fd, &sb), 0, "fstatfs(directory fd)");
+    CHECK(sb.f_bsize > 0, "directory fstatfs f_bsize > 0");
+    close(fd);
 }
 
 static void test_statfs_enoent(void)

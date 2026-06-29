@@ -16,6 +16,9 @@
 #include <unistd.h>
 
 #define KERNEL_SIGSET_SIZE 8
+#ifndef SYS_epoll_pwait2
+#define SYS_epoll_pwait2 441
+#endif
 
 static void on_sigusr1(int signo)
 {

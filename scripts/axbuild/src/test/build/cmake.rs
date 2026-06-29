@@ -87,12 +87,16 @@ pub(super) fn grouped_c_root_project_selected_subcase_define(
         return None;
     }
 
-    let mut names = selected_subcases
+    Some(grouped_c_subcase_list(selected_subcases).replace(',', ";"))
+}
+
+pub(super) fn grouped_c_subcase_list(subcases: &[&TestQemuSubcase]) -> String {
+    let mut names = subcases
         .iter()
         .map(|subcase| subcase.name.as_str())
         .collect::<Vec<_>>();
     names.sort_unstable();
-    Some(names.join(";"))
+    names.join(",")
 }
 
 pub(super) fn build_cmake_build_command(

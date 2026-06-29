@@ -438,6 +438,10 @@ impl<G: BaseGuard> AxRunQueueRef<'_, G> {
         #[cfg(feature = "smp")]
         task.set_cpu_id(cpu_id as _);
         self.inner.scheduler.lock().add_task(task);
+        if cpu_id == this_cpu_id() {
+            #[cfg(feature = "preempt")]
+            crate::current().set_preempt_pending(true);
+        }
         #[cfg(all(feature = "smp", feature = "ipi"))]
         kick_remote_cpu(cpu_id);
     }

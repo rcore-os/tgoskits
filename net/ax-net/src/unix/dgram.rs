@@ -72,6 +72,8 @@ impl Bind {
 pub struct DgramTransport {
     /// Receiver installed when the socket is bound or paired.
     data_rx: Mutex<Option<(async_channel::Receiver<Packet>, Arc<PollSet>)>>,
+    /// Datagram retained by `MSG_PEEK` until a consuming receive.
+    peeked: Mutex<Option<Packet>>,
     /// Direct peer channel for connected datagram sockets.
     connected: RwLock<Option<Channel>>,
     /// Address reported as sender on outgoing datagrams.
@@ -88,6 +90,7 @@ impl DgramTransport {
     pub fn new(pid: u32) -> Self {
         DgramTransport {
             data_rx: Mutex::new(None),
+            peeked: Mutex::new(None),
             connected: RwLock::new(None),
             local_addr: RwLock::new(UnixSocketAddr::Unnamed),
             poll_state: Arc::default(),
@@ -103,6 +106,7 @@ impl DgramTransport {
     ) -> Self {
         DgramTransport {
             data_rx: Mutex::new(Some(data_rx)),
+            peeked: Mutex::new(None),
             connected: RwLock::new(Some(connected)),
             local_addr: RwLock::new(UnixSocketAddr::Unnamed),
             poll_state: Arc::default(),
@@ -265,18 +269,46 @@ impl TransportOps for DgramTransport {
     fn recv(&self, mut dst: impl Write, mut options: RecvOptions) -> AxResult<usize> {
         let extra_nb = options.flags.contains(RecvFlags::DONTWAIT);
         self.general.recv_poller_with(self, extra_nb, move || {
+            let mut peeked = self.peeked.lock();
             let mut guard = self.data_rx.lock();
             let Some((rx, _)) = guard.as_mut() else {
                 return Err(AxError::NotConnected);
             };
 
-            let Packet { data, cmsg, sender } = match rx.try_recv() {
-                Ok(packet) => packet,
-                Err(TryRecvError::Empty) => {
-                    return Err(AxError::WouldBlock);
+            if options.flags.contains(RecvFlags::PEEK) {
+                if peeked.is_none() {
+                    *peeked = Some(match rx.try_recv() {
+                        Ok(packet) => packet,
+                        Err(TryRecvError::Empty) => return Err(AxError::WouldBlock),
+                        Err(TryRecvError::Closed) => return Ok(0),
+                    });
                 }
-                Err(TryRecvError::Closed) => {
-                    return Ok(0);
+                let packet = peeked.as_ref().unwrap();
+                let count = dst.write(&packet.data)?;
+                if count < packet.data.len() {
+                    warn!(
+                        "UDP message truncated: {} -> {} bytes",
+                        packet.data.len(),
+                        count
+                    );
+                }
+                if let Some(from) = options.from.as_mut() {
+                    **from = SocketAddrEx::Unix(packet.sender.clone());
+                }
+                return Ok(if options.flags.contains(RecvFlags::TRUNCATE) {
+                    packet.data.len()
+                } else {
+                    count
+                });
+            }
+
+            let Packet { data, cmsg, sender } = if let Some(packet) = peeked.take() {
+                packet
+            } else {
+                match rx.try_recv() {
+                    Ok(packet) => packet,
+                    Err(TryRecvError::Empty) => return Err(AxError::WouldBlock),
+                    Err(TryRecvError::Closed) => return Ok(0),
                 }
             };
             let count = dst.write(&data)?;
@@ -303,8 +335,9 @@ impl TransportOps for DgramTransport {
 impl Pollable for DgramTransport {
     fn poll(&self) -> IoEvents {
         let mut events = IoEvents::OUT;
+        let has_peeked = self.peeked.lock().is_some();
         if let Some((rx, _)) = self.data_rx.lock().as_ref() {
-            events.set(IoEvents::IN, !rx.is_empty());
+            events.set(IoEvents::IN, has_peeked || !rx.is_empty());
         }
         events
     }

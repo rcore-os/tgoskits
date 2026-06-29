@@ -10,7 +10,7 @@ mod file;
 mod fs;
 pub(crate) mod overlay;
 pub(crate) mod proc;
-mod sysfs;
+pub(crate) mod sysfs;
 mod tmp;
 pub(crate) mod usbfs;
 

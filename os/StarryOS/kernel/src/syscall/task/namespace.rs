@@ -1,16 +1,30 @@
 use ax_errno::{AxError, AxResult};
+use ax_fs_ng::vfs::{FS_CONTEXT, FsContext, new_fs_context_handle};
 use ax_task::current;
 use linux_raw_sys::general::{
-    CLONE_NEWIPC, CLONE_NEWNET, CLONE_NEWNS, CLONE_NEWPID, CLONE_NEWUSER, CLONE_NEWUTS,
+    CLONE_FS, CLONE_NEWCGROUP, CLONE_NEWIPC, CLONE_NEWNET, CLONE_NEWNS, CLONE_NEWPID,
+    CLONE_NEWUSER, CLONE_NEWUTS,
 };
 
 use crate::{
     file::{NsFd, PidFd, get_file_like},
-    task::AsThread,
+    task::{AsThread, ProcessData},
 };
 
-const SUPPORTED_NS_FLAGS: u32 =
-    CLONE_NEWUTS | CLONE_NEWPID | CLONE_NEWNS | CLONE_NEWNET | CLONE_NEWIPC | CLONE_NEWUSER;
+const SUPPORTED_NS_FLAGS: u32 = CLONE_NEWUTS
+    | CLONE_NEWPID
+    | CLONE_NEWNS
+    | CLONE_NEWNET
+    | CLONE_NEWIPC
+    | CLONE_NEWUSER
+    | CLONE_NEWCGROUP
+    | CLONE_FS;
+
+fn install_fs_context(proc_data: &ProcessData, fs_context: FsContext) {
+    proc_data.with_current_scope_mut(|scope| {
+        *FS_CONTEXT.scope_mut(scope) = new_fs_context_handle(fs_context);
+    });
+}
 
 /// unshare(2) — disassociate parts of the process execution context.
 pub fn sys_unshare(flags: u32) -> AxResult<isize> {
@@ -21,6 +35,22 @@ pub fn sys_unshare(flags: u32) -> AxResult<isize> {
 
     let curr = current();
     let proc_data = &curr.as_thread().proc_data;
+    let new_fs_context = if flags & CLONE_NEWNS != 0 {
+        if proc_data.proc.threads().len() > 1 {
+            return Err(AxError::InvalidInput);
+        }
+        let fs_context = FS_CONTEXT.lock().unshare_mount_namespace()?;
+        Some(fs_context)
+    } else if flags & CLONE_FS != 0 {
+        // Linux gives the calling thread a private fs_struct. Starry's
+        // filesystem context is currently process-scoped, so install a cloned
+        // handle for the process. This still breaks sharing with processes
+        // created using CLONE_FS and is sufficient for runc's locked mount
+        // remapping thread, whose peers do not mutate root/cwd concurrently.
+        Some(FS_CONTEXT.lock().clone())
+    } else {
+        None
+    };
     let mut nsproxy = proc_data.nsproxy.lock();
 
     if flags & CLONE_NEWUTS != 0 {
@@ -40,6 +70,13 @@ pub fn sys_unshare(flags: u32) -> AxResult<isize> {
     }
     if flags & CLONE_NEWUSER != 0 {
         nsproxy.unshare_user();
+    }
+    // The mock cgroup v2 hierarchy is global. Accept CLONE_NEWCGROUP so
+    // container runtimes can proceed, but keep sharing that hierarchy.
+    drop(nsproxy);
+
+    if let Some(fs_context) = new_fs_context {
+        install_fs_context(proc_data, fs_context);
     }
 
     Ok(0)
@@ -111,12 +148,26 @@ fn setns_via_nsfd(nsfd: &NsFd, nstype: u32) -> AxResult<isize> {
         }
     }
 
+    if let NsFd::Mnt {
+        namespace,
+        fs_context,
+    } = nsfd
+    {
+        proc_data.nsproxy.lock().set_ns_mnt(namespace.clone());
+        install_fs_context(proc_data, fs_context.clone());
+        debug!(
+            "sys_setns: successfully joined namespace type {:#x}",
+            fd_type
+        );
+        return Ok(0);
+    }
+
     let mut nsproxy = proc_data.nsproxy.lock();
 
     match nsfd {
         NsFd::Uts(ns) => nsproxy.set_ns_uts(ns.clone()),
         NsFd::Ipc(ns) => nsproxy.set_ns_ipc(ns.clone()),
-        NsFd::Mnt(ns) => nsproxy.set_ns_mnt(ns.clone()),
+        NsFd::Mnt { .. } => unreachable!(),
         NsFd::Pid(ns) => nsproxy.set_ns_pid(ns.clone()),
         NsFd::Net(ns) => nsproxy.set_ns_net(ns.clone()),
         NsFd::User(ns) => {
@@ -132,6 +183,7 @@ fn setns_via_nsfd(nsfd: &NsFd, nstype: u32) -> AxResult<isize> {
             }
             nsproxy.set_ns_user(ns.clone());
         }
+        NsFd::Cgroup => {}
     }
 
     debug!(
@@ -157,7 +209,14 @@ fn setns_via_pidfd(pidfd: &PidFd, nstype: u32) -> AxResult<isize> {
     }
 
     let target_proc = pidfd.process_data()?;
+    let target_fs_context = if nstype & CLONE_NEWNS != 0 {
+        let scope = target_proc.scope.read();
+        Some(FS_CONTEXT.scope(&scope).lock().clone())
+    } else {
+        None
+    };
     let target_nsproxy = target_proc.nsproxy.lock();
+    let target_mnt_ns = (nstype & CLONE_NEWNS != 0).then(|| target_nsproxy.mnt_ns.clone());
 
     let curr = current();
     let thread = curr.as_thread();
@@ -179,7 +238,6 @@ fn setns_via_pidfd(pidfd: &PidFd, nstype: u32) -> AxResult<isize> {
         );
         return Err(AxError::OperationNotPermitted);
     }
-
     let mut nsproxy = proc_data.nsproxy.lock();
 
     if nstype & CLONE_NEWUTS != 0 {
@@ -189,7 +247,7 @@ fn setns_via_pidfd(pidfd: &PidFd, nstype: u32) -> AxResult<isize> {
         nsproxy.set_ns_ipc(target_nsproxy.ipc_ns.clone());
     }
     if nstype & CLONE_NEWNS != 0 {
-        nsproxy.set_ns_mnt(target_nsproxy.mnt_ns.clone());
+        nsproxy.set_ns_mnt(target_mnt_ns.expect("mount namespace snapshot must exist"));
     }
     if nstype & CLONE_NEWPID != 0 {
         nsproxy.set_ns_pid(target_nsproxy.pid_ns.clone());
@@ -199,6 +257,13 @@ fn setns_via_pidfd(pidfd: &PidFd, nstype: u32) -> AxResult<isize> {
     }
     if nstype & CLONE_NEWUSER != 0 {
         nsproxy.set_ns_user(target_nsproxy.user_ns.clone());
+    }
+    // CLONE_NEWCGROUP is a compatibility no-op over the global mock hierarchy.
+    drop(nsproxy);
+    drop(target_nsproxy);
+
+    if let Some(fs_context) = target_fs_context {
+        install_fs_context(proc_data, fs_context);
     }
 
     debug!(

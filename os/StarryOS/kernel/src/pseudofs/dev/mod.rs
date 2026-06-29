@@ -201,7 +201,7 @@ impl DeviceOps for CpuDmaLatency {
     }
 }
 
-fn builder(fs: Arc<SimpleFs>) -> DirMaker {
+fn builder(fs: Arc<SimpleFs>, root_ino: u64) -> DirMaker {
     let mut root = DirMapping::new();
     root.add(
         "null",
@@ -549,5 +549,5 @@ fn builder(fs: Arc<SimpleFs>) -> DirMaker {
         );
     }
 
-    SimpleDir::new_maker(fs, Arc::new(root))
+    SimpleDir::new_maker_with_inode(fs, Arc::new(root), root_ino)
 }

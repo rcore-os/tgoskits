@@ -33,11 +33,11 @@ impl TryFrom<Clone3Args> for CloneArgs {
         if args.set_tid != 0 || args.set_tid_size != 0 {
             warn!("sys_clone3: set_tid/set_tid_size not supported, ignoring");
         }
-        if args.cgroup != 0 {
-            warn!("sys_clone3: cgroup parameter not supported, ignoring");
-        }
-
         let flags = CloneFlags::from_bits_truncate(args.flags);
+        if args.cgroup != 0 || flags.contains(CloneFlags::INTO_CGROUP) {
+            warn!("sys_clone3: CLONE_INTO_CGROUP is not supported");
+            return Err(AxError::OperationNotSupported);
+        }
 
         if args.exit_signal > 0 && flags.intersects(CloneFlags::THREAD | CloneFlags::PARENT) {
             return Err(AxError::InvalidInput);

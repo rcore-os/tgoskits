@@ -308,6 +308,16 @@ pub fn new_user_task(name: &str, mut uctx: UserContext, set_child_tid: usize) ->
                     while check_signals(thr, &mut uctx, None, pending_restart) {
                         pending_restart = None;
                     }
+                    // A default-ignored signal (for example SIGURG) may wake
+                    // an interruptible blocking syscall, but it must not be
+                    // observable as EINTR. `check_signals` consumes ignored
+                    // signals internally and returns false, leaving the
+                    // single-shot restart decision unused.
+                    if let Some(info) = pending_restart
+                        && (uctx.retval() as isize) == eintr_code
+                    {
+                        info.restart(&mut uctx);
+                    }
                 }
 
                 set_timer_state(&curr, TimerState::User);

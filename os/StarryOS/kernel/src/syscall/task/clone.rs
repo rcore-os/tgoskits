@@ -122,13 +122,8 @@ pub struct CloneArgs {
 
 impl CloneArgs {
     fn validate(&self) -> AxResult<()> {
-        let Self {
-            flags, exit_signal, ..
-        } = self;
+        let Self { flags, .. } = self;
 
-        if *exit_signal > 0 && flags.intersects(CloneFlags::THREAD | CloneFlags::PARENT) {
-            return Err(AxError::InvalidInput);
-        }
         if flags.contains(CloneFlags::THREAD)
             && !flags.contains(CloneFlags::VM | CloneFlags::SIGHAND)
         {
@@ -143,10 +138,9 @@ impl CloneArgs {
         if flags.contains(CloneFlags::PIDFD | CloneFlags::DETACHED) {
             return Err(AxError::InvalidInput);
         }
-
-        // CLONE_NEWCGROUP is not yet implemented.
-        if flags.contains(CloneFlags::NEWCGROUP) {
-            error!("sys_clone/sys_clone3: unsupported namespace flag CLONE_NEWCGROUP");
+        if flags.contains(CloneFlags::NEWNS)
+            && flags.intersects(CloneFlags::FS | CloneFlags::THREAD)
+        {
             return Err(AxError::InvalidInput);
         }
 
@@ -336,7 +330,10 @@ impl CloneArgs {
                         .clone_from(&FD_TABLE.read());
                 }
 
-                if flags.contains(CloneFlags::FS) {
+                if flags.contains(CloneFlags::NEWNS) {
+                    let fs_context = FS_CONTEXT.lock().unshare_mount_namespace()?;
+                    *FS_CONTEXT.scope_mut(&mut scope).lock() = fs_context;
+                } else if flags.contains(CloneFlags::FS) {
                     FS_CONTEXT.scope_mut(&mut scope).clone_from(&FS_CONTEXT);
                 } else {
                     let fs_context = FS_CONTEXT.lock().clone();

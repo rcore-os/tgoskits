@@ -340,6 +340,7 @@ pub(super) fn prepare_grouped_c_subcases_sync(
     let qemu_runner = find_host_binary_candidates(qemu_user_binary_names(arch)?)?;
     timing_stage.finish();
 
+    let selected_subcase_list = grouped_c_subcase_list(subcases);
     let root_prebuild_script = case.case_dir.join(CASE_PREBUILD_SCRIPT_NAME);
     if root_prebuild_script.is_file() {
         let timing_stage = timing::TimingStage::new(
@@ -358,6 +359,9 @@ pub(super) fn prepare_grouped_c_subcases_sync(
             layout,
             &prebuild_env,
         )?;
+        command
+            .env("STARRY_TEST_ARCH", arch)
+            .env("STARRY_GROUPED_C_SUBCASES", &selected_subcase_list);
         let result = command
             .exec()
             .context("failed to run grouped C root prebuild.sh");

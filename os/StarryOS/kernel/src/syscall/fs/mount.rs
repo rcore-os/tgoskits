@@ -1,11 +1,13 @@
 use alloc::{string::String, sync::Arc, vec::Vec};
-use core::ffi::{c_char, c_void};
+use core::ffi::{c_char, c_int, c_void};
 
 use ax_errno::{AxError, AxResult, LinuxError};
-use ax_fs_ng::vfs::{FS_CONTEXT, is_mount_busy as fs_is_mount_busy};
+use ax_fs_ng::vfs::{FS_CONTEXT, FsContext, is_mount_busy as fs_is_mount_busy};
+use axfs_ng_vfs::Location;
+use linux_raw_sys::general::AT_EMPTY_PATH;
 
 use crate::{
-    file::{Directory, FD_TABLE, File, FileLike},
+    file::{Directory, FD_TABLE, File, FileLike, resolve_at},
     mm::vm_load_string,
     pseudofs::{MemoryFs, overlay::OverlayOptions},
     task::{AsThread, tasks},
@@ -29,6 +31,33 @@ const MS_SHARED: i32 = 1 << 20;
 
 const PROPAGATION_FLAGS: i32 = MS_SHARED | MS_PRIVATE | MS_SLAVE | MS_UNBINDABLE;
 const VALID_UMOUNT_FLAGS: i32 = MNT_FORCE | MNT_DETACH | MNT_EXPIRE | UMOUNT_NOFOLLOW;
+
+fn parse_current_procfd(path: &str) -> Option<c_int> {
+    let fd = if let Some(fd) = path.strip_prefix("/proc/self/fd/") {
+        fd
+    } else {
+        let task = path.strip_prefix("/proc/self/task/")?;
+        let (tid, fd) = task.split_once("/fd/")?;
+        if tid.is_empty() || !tid.bytes().all(|byte| byte.is_ascii_digit()) {
+            return None;
+        }
+        fd
+    };
+    if fd.is_empty() || !fd.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    fd.parse().ok()
+}
+
+fn resolve_mount_path(ctx: &FsContext, path: &str) -> AxResult<Location> {
+    if let Some(fd) = parse_current_procfd(path) {
+        let location = resolve_at(fd, None, AT_EMPTY_PATH)?
+            .into_file()
+            .ok_or(AxError::NotFound)?;
+        return Ok(location);
+    }
+    ctx.resolve(path)
+}
 
 fn parse_overlay_options(
     data: *const c_void,
@@ -115,6 +144,16 @@ pub fn sys_mount(
     flags: i32,
     data: *const c_void,
 ) -> AxResult<isize> {
+    sys_mount_impl(source, target, fs_type, flags, data)
+}
+
+fn sys_mount_impl(
+    source: *const c_char,
+    target: *const c_char,
+    fs_type: *const c_char,
+    flags: i32,
+    data: *const c_void,
+) -> AxResult<isize> {
     let source = vm_load_string(source)?;
     let target = vm_load_string(target)?;
     let fs_type = if fs_type.is_null() {
@@ -136,23 +175,26 @@ pub fn sys_mount(
             return Err(AxError::InvalidInput);
         }
 
-        let target = FS_CONTEXT.lock().resolve(target)?;
+        let ctx = FS_CONTEXT.lock();
+        let target = resolve_mount_path(&ctx, &target)?;
         if !target.is_root_of_mount() {
             return Err(AxError::InvalidInput);
         }
         let mountpoint = target.mountpoint().clone();
+        let recursive = flags & MS_REC != 0;
         match propagation {
-            MS_SHARED => mountpoint.set_shared(),
-            MS_PRIVATE => mountpoint.set_private(),
-            MS_SLAVE => mountpoint.set_slave(),
-            MS_UNBINDABLE => mountpoint.set_unbindable(),
+            MS_SHARED => mountpoint.set_shared_recursive(recursive),
+            MS_PRIVATE => mountpoint.set_private_recursive(recursive),
+            MS_SLAVE => mountpoint.set_slave_recursive(recursive),
+            MS_UNBINDABLE => mountpoint.set_unbindable_recursive(recursive),
             _ => {}
         }
         return Ok(0);
     }
 
     if (flags & MS_REMOUNT) != 0 {
-        let target = FS_CONTEXT.lock().resolve(target)?;
+        let ctx = FS_CONTEXT.lock();
+        let target = resolve_mount_path(&ctx, &target)?;
         if !target.is_root_of_mount() {
             return Err(AxError::InvalidInput);
         }
@@ -164,16 +206,16 @@ pub fn sys_mount(
 
     if (flags & MS_MOVE) != 0 {
         let ctx = FS_CONTEXT.lock();
-        let source = ctx.resolve(source)?;
-        let target = ctx.resolve(target)?;
+        let source = resolve_mount_path(&ctx, &source)?;
+        let target = resolve_mount_path(&ctx, &target)?;
         source.move_mount(&target)?;
         return Ok(0);
     }
 
     if (flags & MS_BIND) != 0 {
         let ctx = FS_CONTEXT.lock();
-        let source = ctx.resolve(source)?;
-        let target = ctx.resolve(target)?;
+        let source = resolve_mount_path(&ctx, &source)?;
+        let target = resolve_mount_path(&ctx, &target)?;
         let mp = target.bind_mount(&source, (flags & MS_REC) != 0)?;
         if (flags & MS_RDONLY) != 0 {
             mp.set_readonly(true);
@@ -182,9 +224,37 @@ pub fn sys_mount(
     }
 
     match fs_type.as_str() {
-        "proc" | "sysfs" | "devtmpfs" | "devpts" | "tmpfs" => {
+        "proc" => {
+            let fs = crate::pseudofs::proc::new_procfs();
+            let ctx = FS_CONTEXT.lock();
+            let target = resolve_mount_path(&ctx, &target)?;
+            let mp = target.mount(&fs)?;
+            if (flags & MS_RDONLY) != 0 {
+                mp.set_readonly(true);
+            }
+        }
+        "sysfs" => {
+            let fs = crate::pseudofs::sysfs::new_sysfs();
+            let ctx = FS_CONTEXT.lock();
+            let target = resolve_mount_path(&ctx, &target)?;
+            let mp = target.mount(&fs)?;
+            if (flags & MS_RDONLY) != 0 {
+                mp.set_readonly(true);
+            }
+        }
+        "devtmpfs" => {
+            let fs = crate::pseudofs::dev::new_devfs();
+            let ctx = FS_CONTEXT.lock();
+            let target = resolve_mount_path(&ctx, &target)?;
+            let mp = target.mount(&fs)?;
+            if (flags & MS_RDONLY) != 0 {
+                mp.set_readonly(true);
+            }
+        }
+        "devpts" | "tmpfs" => {
             let fs = MemoryFs::new();
-            let target = FS_CONTEXT.lock().resolve(target)?;
+            let ctx = FS_CONTEXT.lock();
+            let target = resolve_mount_path(&ctx, &target)?;
             let mp = target.mount(&fs)?;
             if (flags & MS_RDONLY) != 0 {
                 mp.set_readonly(true);
@@ -192,7 +262,8 @@ pub fn sys_mount(
         }
         "cgroup2" => {
             let fs = crate::pseudofs::cgroup::new_cgroup2fs();
-            let target = FS_CONTEXT.lock().resolve(target)?;
+            let ctx = FS_CONTEXT.lock();
+            let target = resolve_mount_path(&ctx, &target)?;
             let mp = target.mount(&fs)?;
             if (flags & MS_RDONLY) != 0 {
                 mp.set_readonly(true);
@@ -217,7 +288,7 @@ pub fn sys_mount(
                 upper_dir,
                 work_dir,
             })?;
-            let target = ctx.resolve(target)?;
+            let target = resolve_mount_path(&ctx, &target)?;
             let mp = target.mount(&fs)?;
             if readonly || (flags & MS_RDONLY) != 0 {
                 mp.set_readonly(true);
@@ -404,23 +475,12 @@ pub fn sys_pivot_root(new_root: *const c_char, put_old: *const c_char) -> AxResu
         return Err(AxError::InvalidInput);
     }
 
-    // Capture the old root Location BEFORE the pivot, so that we can
-    // propagate the change to every other task afterwards (Linux
-    // chroot_fs_refs semantics).  We save the full Location (mountpoint +
-    // dentry) rather than just the mountpoint, so that tasks chroot'd
-    // into a subdirectory of the old root are not incorrectly updated.
-    let old_root = ctx.root_dir().clone();
-
-    // Perform pivot: swap the root mount (updates this task's FsContext).
+    // The filesystem context is process-scoped in Starry, so updating this
+    // context also updates every thread in the calling process. Do not walk
+    // other processes: a container init process may have cloned its mount
+    // namespace from runc, and changing the parent's root would make its state
+    // directory disappear behind the container root.
     ctx.pivot_root(new_root_loc, put_old_loc)?;
-
-    let new_root_loc = ctx.root_dir().clone();
-    drop(ctx); // Release this task's lock before touching others.
-
-    // Propagate root / cwd to all other tasks whose root_dir or current_dir
-    // exactly matches the old root Location — mirroring Linux
-    // chroot_fs_refs() in fs/namespace.c.
-    ax_fs_ng::vfs::FsContext::propagate_pivot_root(&old_root, &new_root_loc);
 
     Ok(0)
 }

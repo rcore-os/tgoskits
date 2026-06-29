@@ -19,6 +19,7 @@
 #include "test_framework.h"
 
 #include <fcntl.h>
+#include <stdio.h>
 #include <sys/resource.h>
 #include <sys/syscall.h>
 #include <sys/types.h>
@@ -299,6 +300,37 @@ static void test_execveat_memfd_sealed_exec(void)
     close(mfd);
 }
 
+static void test_execve_proc_self_fd_memfd(void)
+{
+    int mfd = (int)syscall(SYS_memfd_create, "execve-procfd-test",
+                           MFD_ALLOW_SEALING);
+    CHECK(mfd >= 0, "memfd_create for execve /proc/self/fd");
+    if (mfd < 0) {
+        return;
+    }
+
+    CHECK(copy_file_into(mfd, "/bin/sh") == 0, "stage /bin/sh for procfd exec");
+    CHECK(fcntl(mfd, F_ADD_SEALS, F_SEAL_WRITE) == 0,
+          "seal procfd memfd before exec");
+
+    pid_t pid = fork();
+    CHECK(pid >= 0, "fork before execve /proc/self/fd succeeds");
+    if (pid == 0) {
+        char path[64];
+        snprintf(path, sizeof(path), "/proc/self/fd/%d", mfd);
+        execve(path, SH_ARGV, environ);
+        _exit(126);
+    }
+    if (pid > 0) {
+        int status = 0;
+        CHECK(waitpid(pid, &status, 0) == pid,
+              "waitpid collects procfd exec child");
+        check_execveat_ran(status,
+                           "execve follows /proc/self/fd memfd magic link");
+    }
+    close(mfd);
+}
+
 static void test_execveat_error_returns(void)
 {
     /* 0x4 is outside the accepted AT_EMPTY_PATH|AT_SYMLINK_NOFOLLOW set. */
@@ -336,6 +368,7 @@ int main(void)
     test_execveat_relative_path_via_fdcwd();
     test_execveat_at_empty_path_executes_fd();
     test_execveat_memfd_sealed_exec();
+    test_execve_proc_self_fd_memfd();
     test_execveat_error_returns();
     test_execveat_non_directory_dirfd_enotdir();
 

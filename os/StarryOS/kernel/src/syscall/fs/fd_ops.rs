@@ -75,45 +75,36 @@ fn flags_to_options(flags: c_int, mode: __kernel_mode_t, (uid, gid): (u32, u32))
 }
 
 fn add_to_fd(result: OpenResult, flags: u32) -> AxResult<i32> {
-    // FIFO + O_NONBLOCK + O_WRONLY (no reader) → ENXIO.
-    //
-    // man 2 open §"ENXIO" 第 1 variant：
-    //   "O_NONBLOCK | O_WRONLY is set, the named file is a FIFO, and no
-    //    process has the FIFO open for reading."
-    //
-    // TODO: 当前实现假设「FIFO 始终无 reader」(conservative assumption)。
-    //
-    //   原因 / 妥协：starry 的 vfs 目前不为 FIFO 节点维护 reader/writer
-    //   count（实现完整 FIFO IPC state machine 超出 open/openat 修复
-    //   范围 — 是独立的 IPC 子系统功能补全）。
-    //
-    //   假设的理由：在测试环境里，bug-open-fifo-wronly-no-reader-no-enxio
-    //   只覆盖「无 reader」这一确定状态。对此状态本实现行为正确（返 ENXIO）。
-    //   若 FIFO 真存在 reader 进程并已 open(FIFO, O_RDONLY)，本实现仍会返
-    //   ENXIO —— 此时与 Linux 行为不符（Linux 应返 fd>=0）。
-    //
-    //   完整修复（待独立 PR）：FIFO node 加 reader_count / writer_count 字段
-    //   （AtomicU32 + 同步原语），open(FIFO) 路径根据 access mode 增减计数，
-    //   close 时递减，本检查改为：
-    //     if let Some(fifo) = inner.downcast_ref::<Fifo>() {
-    //         if fifo.reader_count() == 0 { return Err(...ENXIO...); }
-    //     }
-    //   同时阻塞模式（非 NONBLOCK）的 WRONLY 应等待 reader 到来（更复杂）。
-    //   该完整修复需联动 axfs-ng-vfs::Fifo 节点定义（目前无独立类型，FIFO 走通用
-    //   File backend 即不区分 reader / writer），属 IPC 子系统专项。
-    //
-    // Fixes bug-open-fifo-wronly-no-reader-no-enxio (no-reader case only).
-    if flags & O_NONBLOCK != 0
-        && flags & 0b11 == O_WRONLY
-        && let OpenResult::File(ref f) = result
-        && let Ok(meta) = f.location().metadata()
-        && meta.node_type == NodeType::Fifo
-    {
-        return Err(AxError::NoSuchDeviceOrAddress);
-    }
-
     let f: Arc<dyn FileLike> = match result {
         OpenResult::File(mut file) => {
+            if flags & O_PATH == 0
+                && let Ok(meta) = file.location().metadata()
+                && meta.node_type == NodeType::Fifo
+            {
+                let key = (meta.device, meta.inode);
+                let access_mode = flags & 0b11;
+                let readable = access_mode != O_WRONLY;
+                let writable = access_mode != O_RDONLY;
+                // FIFO + O_NONBLOCK + O_WRONLY + no reader → ENXIO.
+                //
+                // Unlike the old conservative gate, this uses the shared
+                // pathname-backed FIFO state: once a reader has opened the
+                // FIFO, a nonblocking writer succeeds; O_RDWR opens both ends
+                // on the same fd and therefore never triggers this no-reader
+                // ENXIO path.
+                if flags & O_NONBLOCK != 0
+                    && access_mode == O_WRONLY
+                    && Pipe::named_reader_count(key) == 0
+                {
+                    return Err(AxError::NoSuchDeviceOrAddress);
+                }
+                let pipe = Pipe::open_named(key, readable, writable);
+                if flags & O_NONBLOCK != 0 {
+                    pipe.set_nonblocking(true)?;
+                }
+                return pipe.add_to_fd_table(flags & O_CLOEXEC != 0);
+            }
+
             // /dev/xx handling
             if let Ok(device) = file.location().entry().downcast::<Device>() {
                 // Block device exclusive open (O_EXCL without O_CREAT).
@@ -202,15 +193,25 @@ fn try_open_nsfd(path: &str, flags: u32) -> Option<AxResult<i32>> {
         Err(_) => return Some(Err(AxError::NotFound)),
     };
 
+    let mnt_fs_context = if ns_type_str == "mnt" {
+        let scope = proc_data.scope.read();
+        Some(FS_CONTEXT.scope(&scope).lock().clone())
+    } else {
+        None
+    };
     let nsproxy = proc_data.nsproxy.lock();
 
     let nsfd: NsFd = match ns_type_str {
         "uts" => NsFd::Uts(nsproxy.uts_ns.clone()),
         "ipc" => NsFd::Ipc(nsproxy.ipc_ns.clone()),
-        "mnt" => NsFd::Mnt(nsproxy.mnt_ns.clone()),
+        "mnt" => NsFd::Mnt {
+            namespace: nsproxy.mnt_ns.clone(),
+            fs_context: mnt_fs_context.expect("mount filesystem context must exist"),
+        },
         "pid" => NsFd::Pid(nsproxy.pid_ns.clone()),
         "net" => NsFd::Net(nsproxy.net_ns.clone()),
         "user" => NsFd::User(nsproxy.user_ns.clone()),
+        "cgroup" => NsFd::Cgroup,
         _ => return Some(Err(AxError::NotFound)),
     };
 
@@ -218,6 +219,68 @@ fn try_open_nsfd(path: &str, flags: u32) -> Option<AxResult<i32>> {
 
     let fd = nsfd.add_to_fd_table(flags & O_CLOEXEC != 0);
     Some(fd)
+}
+
+/// Follow a `/proc/self[/task/<tid>]/fd/<fd>` magic link to the open file
+/// object itself. Procfs fd entries are not ordinary textual symlinks on
+/// Linux: their target remains usable even when its displayed pathname is no
+/// longer reachable in the caller's current mount namespace.
+fn try_open_procfd_magic(dirfd: c_int, path: &str, flags: u32) -> Option<AxResult<i32>> {
+    if flags & O_NOFOLLOW != 0 {
+        return None;
+    }
+
+    let target_fd = if !path.contains('/') {
+        let dir = get_file_like(dirfd).ok()?;
+        let dir_path = dir.path();
+        dir_path
+            .strip_prefix("/proc/")
+            .filter(|rest| rest.contains("/fd") && dir_path.ends_with("/fd"))
+            .and_then(|_| path.parse::<c_int>().ok())
+    } else {
+        let rest = path.strip_prefix("/proc/self/")?;
+        let fd = if let Some(fd) = rest.strip_prefix("fd/") {
+            fd
+        } else {
+            let (_, fd) = rest.split_once("/fd/")?;
+            fd
+        };
+        (!fd.contains('/'))
+            .then(|| fd.parse::<c_int>().ok())
+            .flatten()
+    }?;
+
+    let file = match get_file_like(target_fd) {
+        Ok(file) => file,
+        Err(err) => return Some(Err(err)),
+    };
+    if flags & O_DIRECTORY != 0 && file.downcast_ref::<Directory>().is_none() {
+        return Some(Err(AxError::NotADirectory));
+    }
+
+    // Opening a procfs fd magic link creates a new open file description
+    // using the flags supplied to this open(2); it is not equivalent to
+    // dup(2). In particular, runtimes commonly open a path with O_PATH,
+    // validate it, then reopen /proc/self/fd/N for actual I/O.
+    let location = if let Some(file) = file.downcast_ref::<File>() {
+        Some(file.inner().location().clone())
+    } else {
+        file.downcast_ref::<Directory>()
+            .map(|dir| dir.inner().clone())
+    };
+    if let Some(location) = location {
+        let cred = current().as_thread().cred();
+        let options = flags_to_options(flags as c_int, 0, (cred.fsuid, cred.fsgid));
+        return Some(
+            options
+                .open_loc(location)
+                .and_then(|result| add_to_fd(result, flags)),
+        );
+    }
+
+    // Anonymous objects such as pipes have no pathname-backed inode to
+    // reopen, so retain the existing descriptor-sharing behavior for them.
+    Some(add_file_like(file, flags & O_CLOEXEC != 0))
 }
 
 ktracepoint::define_event_trace!(
@@ -319,6 +382,9 @@ pub fn sys_openat(
     // Intercept /proc/<pid>/ns/<type> opens: create an NsFd instead of
     // a regular file descriptor so that setns(2) receives a valid target.
     if let Some(result) = try_open_nsfd(&path, uflags) {
+        return result.map(|fd| fd as isize);
+    }
+    if let Some(result) = try_open_procfd_magic(dirfd, &path, uflags) {
         return result.map(|fd| fd as isize);
     }
 

@@ -156,7 +156,6 @@ impl ProcessMemStats {
                 file_info.shared,
             );
         }
-        stats.resident_pages = aspace.rss().rss_total_pages();
         aspace.rss().sync_rss_atomics_from_charges();
         let (charged_anon, charged_file, charged_shmem) = aspace.rss().snapshot_resident_charges();
         let atomic_file = aspace.rss().rss_file_pages();
@@ -171,8 +170,7 @@ impl ProcessMemStats {
         stats.resident_pages = stats
             .rss_anon_pages
             .saturating_add(stats.rss_file_pages)
-            .saturating_add(stats.rss_shmem_pages)
-            .max(stats.resident_pages);
+            .saturating_add(stats.rss_shmem_pages);
         stats.hiwater_rss_pages = aspace.rss().hiwater_rss_pages();
         stats.peak_pages = aspace.vm_stat.peak_vss_pages().max(stats.vss_pages);
         stats
