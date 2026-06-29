@@ -1,10 +1,8 @@
 use alloc::{boxed::Box, string::String, vec::Vec};
-#[cfg(feature = "irq")]
-use core::ptr::NonNull;
 
 use ax_alloc::UsageKind;
 use ax_fs_ng::{
-    block::runtime::{BlockIrqAction, RdifBlockDevice},
+    block::runtime::RdifBlockDevice,
     os::{
         BlockIrqOutcome, BlockIrqRegistrar, BlockIrqRegistration, BlockTaskOps, BlockTimeProvider,
         FsPage, FsPageProvider,
@@ -95,27 +93,11 @@ struct RuntimeBlockIrqRegistrar;
 
 #[cfg(feature = "irq")]
 struct RuntimeBlockIrqRegistration {
-    _inner: crate::irq::HandlerRegistration<RuntimeBlockIrqState>,
+    _inner: crate::irq::Registration,
 }
 
 #[cfg(feature = "irq")]
 impl BlockIrqRegistration for RuntimeBlockIrqRegistration {}
-
-#[cfg(feature = "irq")]
-struct RuntimeBlockIrqState {
-    action: BlockIrqAction,
-}
-
-#[cfg(feature = "irq")]
-unsafe fn handle_block_irq(
-    _ctx: ax_hal::irq::IrqContext,
-    data: NonNull<()>,
-) -> ax_hal::irq::IrqReturn {
-    let state = unsafe { data.cast::<RuntimeBlockIrqState>().as_ref() };
-    match state.action.run() {
-        BlockIrqOutcome::Handled => ax_hal::irq::IrqReturn::Handled,
-    }
-}
 
 #[cfg(feature = "irq")]
 fn map_block_irq_error(err: ax_hal::irq::IrqError) -> ax_errno::AxError {
@@ -142,12 +124,17 @@ impl BlockIrqRegistrar for RuntimeBlockIrqRegistrar {
         &self,
         name: String,
         irq: irq_framework::IrqId,
-        action: BlockIrqAction,
+        mut action: Box<dyn FnMut(ax_hal::irq::IrqContext) -> BlockIrqOutcome + Send + 'static>,
     ) -> ax_errno::AxResult<Box<dyn BlockIrqRegistration>> {
-        let state = RuntimeBlockIrqState { action };
-        crate::irq::HandlerRegistration::register_shared(name, irq, state, handle_block_irq)
-            .map(|inner| Box::new(RuntimeBlockIrqRegistration { _inner: inner }) as _)
-            .map_err(map_block_irq_error)
+        crate::irq::Registration::register_boxed_shared(
+            name,
+            irq,
+            Box::new(move |ctx| match action(ctx) {
+                BlockIrqOutcome::Handled => ax_hal::irq::IrqReturn::Handled,
+            }),
+        )
+        .map(|inner| Box::new(RuntimeBlockIrqRegistration { _inner: inner }) as _)
+        .map_err(map_block_irq_error)
     }
 }
 

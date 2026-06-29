@@ -182,7 +182,7 @@ struct RamIrqHandler {
 }
 
 impl IrqHandler for RamIrqHandler {
-    fn handle_irq(&self) -> Event {
+    fn handle_irq(&mut self) -> Event {
         if !self.irq.enabled.load(Ordering::Acquire) {
             return Event::none();
         }

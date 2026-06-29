@@ -257,7 +257,7 @@ struct NvmeBlockIrqHandler {
 }
 
 impl IrqHandler for NvmeBlockIrqHandler {
-    fn handle_irq(&self) -> Event {
+    fn handle_irq(&mut self) -> Event {
         if !self.owner.irq_enabled.load(Ordering::Acquire) {
             return Event::none();
         }
