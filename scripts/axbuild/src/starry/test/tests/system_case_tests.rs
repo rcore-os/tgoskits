@@ -213,6 +213,23 @@ fn tty_console_input_burst_uses_injected_guest_script() {
 }
 
 #[test]
+fn loongarch64_smp4_affinity_pid_is_arch_filtered() {
+    let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let cmake_path = workspace_root
+        .join("test-suit/starryos/qemu-smp4/system/affinity-bug-sched-affinity-pid/CMakeLists.txt");
+    let cmake = fs::read_to_string(&cmake_path)
+        .unwrap_or_else(|err| panic!("failed to read {}: {err}", cmake_path.display()));
+
+    assert!(
+        cmake.contains("starry_arch_filtered_executable")
+            && cmake.contains("bug-sched-affinity-pid skipped on loongarch64 qemu-smp4"),
+        "{} must skip the flaky LoongArch qemu-smp4 affinity pid probe instead of letting it \
+         consume the grouped QEMU timeout",
+        cmake_path.display()
+    );
+}
+
+#[test]
 fn zombie_bugfix_commands_are_in_system_grouped_qemu_case() {
     let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     let system_dir = workspace_root.join("test-suit/starryos/qemu-smp1/system");
