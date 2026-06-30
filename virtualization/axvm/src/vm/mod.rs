@@ -23,7 +23,7 @@ use core::{
 use ax_cpumask::CpuMask;
 use ax_kspin::SpinNoIrq as Mutex;
 use ax_memory_addr::align_up_4k;
-use axaddrspace::{AddrSpace, NestedPageTableOps};
+use axaddrspace::AddrSpace;
 use axdevice::{AxVmDevices, DeviceManagerError, FwCfg, FwCfgPlatformConfig, VirtioNet};
 use axdevice_base::AccessWidth;
 use axvm_types::{
@@ -852,7 +852,7 @@ impl AxVM {
         if frames.is_empty() {
             return Ok(());
         }
-        let _ = self.inject_interrupt_to_vcpu(CpuMask::one_shot(0), vnet.irq());
+        self.inject_device_irq(vnet.irq());
         for frame in &frames {
             for vm in crate::get_vm_list() {
                 if vm.id() != self.id() {
@@ -888,10 +888,21 @@ impl AxVM {
                 frame,
             )?;
             if injected {
-                let _ = self.inject_interrupt_to_vcpu(CpuMask::one_shot(0), vnet.irq());
+                self.inject_device_irq(vnet.irq());
             }
         }
         Ok(())
+    }
+
+    /// Delivers an emulated-device IRQ using the mechanism selected by this VM's
+    /// interrupt mode.
+    fn inject_device_irq(&self, irq: usize) {
+        #[cfg(target_arch = "aarch64")]
+        if self.interrupt_mode() == VMInterruptMode::Passthrough {
+            crate::arch::pend_physical_spi(irq);
+            return;
+        }
+        let _ = self.inject_interrupt_to_vcpu(CpuMask::one_shot(0), irq);
     }
 
     pub(crate) fn handle_nested_page_fault(

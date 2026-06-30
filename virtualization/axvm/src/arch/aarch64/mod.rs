@@ -39,6 +39,7 @@ mod vm;
 
 pub use capabilities::{host_fdt_bootarg, host_phys_to_virt};
 use cpu_up::{CpuUpExit, CpuUpOps};
+pub(crate) use gic::pend_physical_spi;
 pub use images::ImageLoader;
 use ipi::SendIpiExit;
 use sysreg::{SysRegReadExit, SysRegWriteExit};

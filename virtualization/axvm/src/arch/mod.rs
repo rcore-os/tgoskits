@@ -21,6 +21,8 @@ pub(crate) use aarch64::Aarch64Arch as CurrentArch;
 pub use aarch64::ImageLoader;
 #[cfg(target_arch = "aarch64")]
 pub(crate) use aarch64::fdt;
+#[cfg(target_arch = "aarch64")]
+pub(crate) use aarch64::pend_physical_spi;
 #[cfg(target_arch = "loongarch64")]
 pub(crate) use loongarch64::LoongArch64Arch as CurrentArch;
 #[cfg(target_arch = "loongarch64")]

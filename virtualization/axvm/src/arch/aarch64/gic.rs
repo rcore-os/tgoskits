@@ -91,6 +91,35 @@ fn inject_interrupt_gic_v3(vector: usize) {
     debug!("Virtual interrupt {vector} injected successfully in LR{free_lr}");
 }
 
+/// Pends a *physical* SPI on the host GIC.
+///
+/// A guest running in passthrough interrupt mode uses the physical GIC CPU
+/// interface directly (HCR_EL2.IMO is clear) and never consults the virtual
+/// List Registers, so a software-injected *virtual* interrupt is invisible to
+/// it. To deliver an emulated-device interrupt (e.g. virtio-net) to such a
+/// guest we instead set the corresponding physical SPI pending: the guest has
+/// already enabled and routed that SPI in the (passed-through) physical GICD,
+/// so the hardware delivers it to the guest's EL1.
+pub(crate) fn pend_physical_spi(intid: usize) {
+    use arm_gic_driver::IntId;
+    let id = if intid >= 32 {
+        IntId::spi((intid - 32) as u32)
+    } else {
+        unsafe { IntId::raw(intid as u32) }
+    };
+    with_gic(|gic| {
+        if let Some(gic) = gic.typed_mut::<arm_gic_driver::v3::Gic>() {
+            gic.set_pending(id, true);
+            return;
+        }
+        if let Some(gic) = gic.typed_mut::<arm_gic_driver::v2::Gic>() {
+            gic.set_pending(id, true);
+            return;
+        }
+        panic!("no GIC driver found");
+    });
+}
+
 pub(crate) fn read_gicd_iidr() -> u32 {
     with_gic(|gic| {
         if let Some(gic) = gic.typed_mut::<arm_gic_driver::v2::Gic>() {
