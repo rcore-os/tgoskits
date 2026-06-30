@@ -24,6 +24,7 @@ display = ["dep:ax-errno", "dep:rdif-display"]
 input = ["dep:ax-errno", "dep:rdif-input"]
 vsock = ["dep:ax-errno", "dep:rdif-vsock"]
 rtc = ["plat-dyn"]
+pinctrl = ["dep:rdif-pinctrl", "rdif-pinctrl/fdt"]
 
 virtio-core = ["dep:ax-alloc", "dep:virtio-drivers", "virtio-drivers/alloc"]
 virtio = ["virtio-core"]
@@ -116,7 +117,7 @@ rk3588-pcie = [
     "rockchip-pm",
     "dep:rk3588-pci",
 ]
-rockchip-soc = ["plat-dyn", "dep:rdif-clk", "dep:rockchip-soc"]
+rockchip-soc = ["plat-dyn", "pinctrl", "dep:rdif-clk", "dep:rockchip-soc"]
 rockchip-pm = ["rockchip-soc", "dep:rockchip-pm"]
 list-pci-devices = ["pci"]
 pci-list-devices = ["list-pci-devices"]
@@ -153,6 +154,7 @@ rdif-input = { workspace = true, optional = true }
 rdif-serial = { workspace = true, optional = true }
 rdif-intc.workspace = true
 rdif-pcie = { workspace = true, optional = true }
+rdif-pinctrl = { workspace = true, optional = true }
 rdif-vsock = { workspace = true, optional = true }
 realtek-rtl8125 = { workspace = true, optional = true }
 rdrive.workspace = true

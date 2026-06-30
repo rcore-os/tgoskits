@@ -21,6 +21,7 @@ use core::{ptr::NonNull, time::Duration};
 
 use fdt_edit::Node;
 use log::{info, warn};
+use rdif_pinctrl::PinctrlDevice;
 use rdrive::{
     probe::OnProbeError,
     register::{FdtInfo, ProbeFdt},
@@ -233,10 +234,13 @@ fn probe(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
 
 fn apply_rockchip_sdhci_resources(info: &FdtInfo<'_>) -> Result<(), OnProbeError> {
     apply_assigned_clocks(info, "SDHCI")?;
-    if let Some(pinctrl) = rdrive::get_one::<RockchipPinCtrl>() {
+    if let Some(pinctrl) = rdrive::get_one::<PinctrlDevice>() {
         let mut pinctrl = pinctrl
             .lock()
-            .map_err(|err| OnProbeError::other(format!("failed to lock RockchipPinCtrl: {err}")))?;
+            .map_err(|err| OnProbeError::other(format!("failed to lock PinctrlDevice: {err}")))?;
+        let pinctrl = pinctrl
+            .typed_mut::<RockchipPinCtrl>()
+            .ok_or_else(|| OnProbeError::other("PinctrlDevice is not backed by RockchipPinCtrl"))?;
         let configured = pinctrl.apply_default_pinctrl(info.node)?;
         if configured.is_empty() {
             let fallback = rk3588_emmc_pinctrl_symbol_paths();

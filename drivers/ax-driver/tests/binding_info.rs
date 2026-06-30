@@ -17,7 +17,7 @@ use {
         impl_trait,
     },
     core::time::Duration,
-    fdt_edit::{Fdt, Node, Property},
+    fdt_edit::{Fdt, Node, Phandle, Property},
     rdrive::{
         DriverGeneric, Platform, PlatformDevice,
         probe::{
@@ -201,7 +201,8 @@ fn fdt_binding_info_carries_first_irq_specifier_without_setup() {
         panic!("expected captured FDT interrupt binding");
     };
     assert_eq!(spec.cells, vec![0, 42, 4]);
-    assert_ne!(u64::from(spec.controller), 0);
+    let controller = rdrive::fdt_phandle_to_device_id(Phandle::from(1)).unwrap();
+    assert_eq!(spec.controller, controller);
     assert_eq!(*SETUP_SPECIFIER.lock().unwrap(), None);
 }
 

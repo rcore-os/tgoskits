@@ -226,6 +226,7 @@ rdif-eth = { version = "0.3.5", path = "drivers/interface/rdif-eth" }
 rdif-input = { version = "0.2.0", path = "drivers/interface/rdif-input" }
 rdif-intc = { version = "0.14.3", path = "drivers/interface/rdif-intc" }
 rdif-pcie = { version = "0.2.5", path = "drivers/interface/rdif-pcie" }
+rdif-pinctrl = { version = "0.1.0", path = "drivers/interface/rdif-pinctrl" }
 rdif-power = { version = "0.7.3", path = "drivers/interface/rdif-power" }
 rdif-serial = { version = "0.9.0", path = "drivers/interface/rdif-serial" }
 rdif-systick = { version = "0.6.3", path = "drivers/interface/rdif-systick" }

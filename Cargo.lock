@@ -708,6 +708,7 @@ dependencies = [
  "rdif-input",
  "rdif-intc",
  "rdif-pcie",
+ "rdif-pinctrl",
  "rdif-serial",
  "rdif-vsock",
  "rdrive",
@@ -6359,6 +6360,15 @@ dependencies = [
  "pci_types",
  "rdif-base",
  "serde",
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "rdif-pinctrl"
+version = "0.1.0"
+dependencies = [
+ "fdt-edit",
+ "rdif-base",
  "thiserror 2.0.18",
 ]
 
