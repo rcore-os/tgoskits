@@ -40,7 +40,7 @@ _target_for_arch() {
         x86_64)    echo "x86_64-unknown-none" ;;
         aarch64)   echo "aarch64-unknown-none-softfloat" ;;
         loongarch64) echo "loongarch64-unknown-none-softfloat" ;;
-        *)         echo "riscv64gc-unknown-none-elf" ;;
+        *)         echo "[prebuild] ERROR: unsupported arch: ${1:-}" >&2; exit 1 ;;
     esac
 }
 target="${SELF_COMPILE_TARGET:-$(_target_for_arch "$arch")}"

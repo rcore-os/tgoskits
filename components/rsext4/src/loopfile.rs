@@ -267,8 +267,10 @@ pub fn get_file_inode<B: BlockDevice>(
                         }
                     }
                     Err(e) => {
-                        // Do not silently treat a resolve failure as "not found":
-                        // surface a corrupt extent tree / I/O error instead of a miss.
+                        // Best-effort fallback: a resolve failure here is logged
+                        // and treated as a miss (the normal lookup already failed).
+                        // Not escalated to a hard error — only a corrupt inode
+                        // number found within the scan (above) is fatal.
                         warn!(
                             "get_file_inode: direct block-scan resolve failed, treating as miss: \
                              name={} path={} err={:?}",
