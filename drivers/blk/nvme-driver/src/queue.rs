@@ -344,6 +344,10 @@ impl NvmeQueue {
         Some(complete)
     }
 
+    pub(crate) fn has_completion(&self) -> bool {
+        self.with_cq(|cq| cq.complete().is_some())
+    }
+
     pub(crate) fn depth(&self) -> usize {
         self.sq_len().min(self.cq_len())
     }

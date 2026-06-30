@@ -444,8 +444,7 @@ impl NvmeQueueCore {
     }
 
     fn drain_irq_completions(&self) -> bool {
-        self.try_with_cq_claim(|queue| self.drain_hardware_completions_to_vec(queue))
-            .map(|completions| self.cache_completions(completions))
+        self.try_with_cq_claim(HardwareQueue::has_completion)
             .unwrap_or(true)
     }
 
@@ -1050,15 +1049,30 @@ mod tests {
         (0..count)
             .map(|_| RequestSlot {
                 state: SlotState::Free,
+                generation: Default::default(),
                 prp_list: None,
             })
             .collect()
+    }
+
+    #[test]
+    fn stale_cached_completion_does_not_complete_reused_slot() {
+        let cache = CompletionCache::new(2);
+        let mut slots = test_slots(2);
+        slots[1].state = SlotState::Pending;
+        slots[1].generation = rdif_block::RequestGeneration::new(7);
+
+        cache.extend(alloc::vec![CachedCompletion::success(1)]);
+
+        assert_eq!(cache.drain_into_slots(0, &mut slots), 0);
+        assert_eq!(slots[1].state, SlotState::Pending);
     }
 
     impl CachedCompletion {
         const fn success(cid: usize) -> Self {
             Self {
                 cid,
+                generation: rdif_block::RequestGeneration::new(1),
                 status: CompletionStatus {
                     success: true,
                     raw_status: 0,
@@ -1070,6 +1084,7 @@ mod tests {
         const fn failed(cid: usize, raw_status: u16) -> Self {
             Self {
                 cid,
+                generation: rdif_block::RequestGeneration::new(1),
                 status: CompletionStatus {
                     success: false,
                     raw_status,
