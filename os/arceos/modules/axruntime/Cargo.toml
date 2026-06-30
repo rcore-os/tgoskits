@@ -21,6 +21,7 @@ wake-ipi = ["irq", "ax-hal/ipi"]
 irq = [
   "ax-hal/irq",
   "ax-task?/irq",
+  "dep:ax-kspin",
   "dep:ax-percpu",
   "dep:axklib",
   "ax-driver/irq",
@@ -90,6 +91,7 @@ axfs-ng-vfs = {workspace = true, optional = true}
 ax-hal = {workspace = true}
 ax-input = {workspace = true, optional = true}
 ax-ipi = {workspace = true, optional = true}
+ax-kspin = {workspace = true, optional = true}
 ax-lazyinit = {workspace = true}
 ax-log = {workspace = true}
 ax-memory-addr = {workspace = true}
