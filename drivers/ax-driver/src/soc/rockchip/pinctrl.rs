@@ -20,6 +20,7 @@ use crate::mmio::iomap;
 
 mod rdif_glue;
 
+use rdif_glue::ROCKCHIP_PIN_CONFIG_DRIVE_RAW;
 pub use rdif_glue::RockchipFdtPinctrlParser;
 
 const DRIVER_NAME: &str = "rk3588-pinctrl";
@@ -235,7 +236,9 @@ impl RdifPinctrl for RockchipPinCtrl {
                     .set_config(config)
                     .map_err(|_| RdifPinctrlError::InvalidConfig)
             }
-            rdif_pinctrl::PinConfig::DriveStrengthUa(value) => {
+            rdif_pinctrl::PinConfig::Vendor { param, value }
+                if param == ROCKCHIP_PIN_CONFIG_DRIVE_RAW =>
+            {
                 let mut config = self.current_or_default_config(pin);
                 config.drive = Some(value);
                 self.inner
@@ -257,6 +260,7 @@ impl RdifPinctrl for RockchipPinCtrl {
                 .write_gpio(pin, value)
                 .map_err(|_| RdifPinctrlError::InvalidConfig),
             rdif_pinctrl::PinConfig::InputEnable(false)
+            | rdif_pinctrl::PinConfig::DriveStrengthUa(_)
             | rdif_pinctrl::PinConfig::OutputEnable(false)
             | rdif_pinctrl::PinConfig::SlewRate(_)
             | rdif_pinctrl::PinConfig::DebounceUs(_)

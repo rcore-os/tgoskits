@@ -14,6 +14,8 @@ use super::{GPIO_BANK_COUNT, GPIO_LINES_PER_BANK};
 
 pub struct RockchipFdtPinctrlParser;
 
+pub(super) const ROCKCHIP_PIN_CONFIG_DRIVE_RAW: u32 = 1;
+
 impl FdtPinctrlParser for RockchipFdtPinctrlParser {
     fn parse_pinctrl_node(
         &self,
@@ -152,7 +154,10 @@ fn append_rockchip_node_to_state(
         if let Some(drive) = config.drive {
             state.push_config(ConfigSetting::pin(
                 RdifPinId::new(raw_pin),
-                RdifPinConfig::DriveStrengthUa(drive),
+                RdifPinConfig::Vendor {
+                    param: ROCKCHIP_PIN_CONFIG_DRIVE_RAW,
+                    value: drive,
+                },
             ));
         }
     }
@@ -368,7 +373,10 @@ mod tests {
         )));
         assert!(state.configs().contains(&ConfigSetting::pin(
             RdifPinId::new(34),
-            RdifPinConfig::DriveStrengthUa(8000)
+            RdifPinConfig::Vendor {
+                param: ROCKCHIP_PIN_CONFIG_DRIVE_RAW,
+                value: 8000,
+            }
         )));
     }
 

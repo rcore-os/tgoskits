@@ -183,8 +183,8 @@ impl FdtPinctrl {
         }
 
         let pin = Self::pin_from_gpio_ranges(interface, line)?;
-        interface.apply_config(&ConfigSetting::pin(pin, PinConfig::OutputEnable(true)))?;
-        interface.apply_config(&ConfigSetting::pin(pin, PinConfig::OutputValue(value)))
+        interface.apply_config(&ConfigSetting::pin(pin, PinConfig::OutputValue(value)))?;
+        interface.apply_config(&ConfigSetting::pin(pin, PinConfig::OutputEnable(true)))
     }
 
     fn pin_from_gpio_ranges(
@@ -518,6 +518,43 @@ mod tests {
             PinId::new(37),
             PinConfig::OutputValue(true)
         )));
+    }
+
+    #[test]
+    fn fixed_regulator_sets_output_latch_before_enabling_output() {
+        let mut fdt = Fdt::new();
+        let root = fdt.root_id();
+        fdt.add_node(
+            root,
+            node_with_props("gpio1@0", &[prop_u32s("phandle", &[20])]),
+        );
+        let regulator = fdt.add_node(
+            root,
+            node_with_props("vbus-regulator", &[prop_u32s("gpios", &[20, 5, 0])]),
+        );
+        let mut recorder = Recorder::new();
+
+        FdtPinctrl::apply_fixed_regulator(
+            &mut recorder,
+            &fdt,
+            fdt.node(regulator).unwrap(),
+            &TestParser,
+            "dwc-xhci-vbus",
+        )
+        .unwrap();
+
+        let pin = PinId::new(37);
+        let configs = recorder
+            .configs
+            .iter()
+            .filter(|setting| setting.target == crate::ConfigTarget::Pin(pin))
+            .map(|setting| setting.config)
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            configs,
+            vec![PinConfig::OutputValue(true), PinConfig::OutputEnable(true)]
+        );
     }
 
     #[test]
