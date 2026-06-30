@@ -108,7 +108,6 @@ push 到 `main` / `dev` 时强制运行 CI 检查。若非 `main` / `dev` 分支
 | Test axvisor x86_64 svm hosted | `ubuntu-latest` | 否 | 无 | AMD SVM 虚拟化冒烟测试；Intel CPU 时自动跳过 |
 | Test axvisor self-hosted board orangepi-5-plus-linux | `self-hosted linux board` | 否 | 无 | `cargo xtask axvisor test board --board orangepi-5-plus-linux`；物理板卡；仅 `rcore-os` 仓库触发 |
 | Test starry self-hosted board orangepi-5-plus | `self-hosted linux board` | 否 | 无 | `cargo xtask starry test board --board orangepi-5-plus`；物理板卡；仅 `rcore-os` 仓库触发 |
-| Test starry self-hosted board licheerv-nano-sg2002 | `self-hosted linux board` | 否 | 无 | `cargo xtask starry test board --board licheerv-nano-sg2002`；LicheeRV-Nano-SG2002 物理板卡；仅 `rcore-os` 仓库触发 |
 
 StarryOS stress 测试条目保留在 workflow 中，但当前处于注释状态。启用后仅用于 target 为 `main` 的 PR。
 
