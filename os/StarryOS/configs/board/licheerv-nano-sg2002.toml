@@ -6,5 +6,5 @@ features = [
   "ax-driver/cvsd",
   "ax-driver/serial",
 ]
-log = "Warn"
+log = "Error"
 target = "riscv64gc-unknown-none-elf"

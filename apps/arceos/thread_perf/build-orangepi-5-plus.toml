@@ -3,6 +3,6 @@ target = "aarch64-unknown-none-softfloat"
 features = [
     "orangepi-5-plus",
 ]
-log = "Warn"
+log = "Error"
 max_cpu_num = 1
 plat_dyn = true
