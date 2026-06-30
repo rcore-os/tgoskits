@@ -5,7 +5,7 @@ use cargo_metadata::Metadata;
 
 use super::{
     AXSTD_STD_DEFAULT_FEATURE, AXSTD_STD_PACKAGE, DEFAULT_FEATURE,
-    check::{ClippyCheck, ClippyCheckKind},
+    check::{ClippyCheck, ClippyCheckKind, ClippyDepsMode},
     env::{clippy_axconfig_override, clippy_env, feature_axconfig_overrides, feature_clippy_env},
     selection::SelectedClippyPackage,
     targets::{docs_rs_targets, feature_supported_on_clippy_target},
@@ -47,6 +47,10 @@ pub(super) fn expand_clippy_checks(
                 env: env.clone(),
                 axconfig_override: None,
             });
+
+            if matches!(selected.deps_mode, ClippyDepsMode::WithDeps) {
+                continue;
+            }
 
             for feature in &features {
                 if !feature_supported_on_clippy_target(package, feature, target.as_deref()) {
