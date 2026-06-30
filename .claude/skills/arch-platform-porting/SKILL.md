@@ -25,6 +25,9 @@ Current Axvisor LoongArch QEMU bring-up uses the dynamic UEFI platform path. The
 - **RISC-V per-CPU register contract**: `ax-percpu` reserves `x3`/`gp` as the per-CPU base, so every RISC-V kernel target spec must pass `--no-relax` to the linker. Do not enable global-pointer relaxation or define `__global_pointer$` unless the per-CPU register design changes at the same time.
 - **Build system**: wire arch/target mapping in `scripts/axbuild`, dynamic platform defaults, feature propagation, kernel format conversion, UEFI/to-bin behavior, rootfs handling, and per-OS test discovery.
 - **QEMU and firmware**: verify QEMU binary, machine type, CPU, SMP count, pflash/OVMF files, serial console, disk/rootfs device, `-snapshot`, debug flags, timeout, and success/fail regexes.
+  Guest FDT runtime patching must apply `kernel.cmdline` as the per-VM `/chosen/bootargs`
+  override after selecting the guest tree, while retaining host bootargs as the fallback.
+  Keep this policy in the shared AxVM FDT layer so Axvisor applications do not duplicate it.
   QEMU `uefi`, `to_bin`, acceleration, CPU feature, and device choices are part of each
   `qemu-*.toml` contract; axbuild must not infer or overwrite them from the target architecture
   or host `/dev/kvm` availability.

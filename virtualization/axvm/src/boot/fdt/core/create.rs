@@ -214,7 +214,7 @@ pub fn patch_guest_fdt_for_runtime(
         || initrd_start_size.is_some()
         || tree.inner().get_by_path_id("/chosen").is_some()
     {
-        tree.patch_chosen(initrd_start_size)?;
+        tree.patch_chosen(initrd_start_size, crate_config.kernel.cmdline.as_deref())?;
     }
     Ok(tree.finish())
 }
