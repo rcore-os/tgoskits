@@ -76,8 +76,9 @@
 - **P2 RX + P3 软件 L2 交换机**：✅ 代码实现，**2-VM 互通受环境 flakiness 阻塞，未取得 ping 回复证据**。`deliver_rx`（写对端 RX virtqueue + 注 IRQ）+ 广播泛洪（`drive_virtio_net_tx` 对 `get_vm_list()` 每个其他 VM 调 `deliver_rx_frame`）。
   - **2-VM 尝试**（避开两 Linux 共享 disk0 冲突）：用 **initramfs/ramdisk 启动**（每 VM 自己内存一份 rootfs，`root=/dev/ram0 rdinit=/init rootwait`，自定义 busybox initramfs + MAC→IP 的 /init），两 VM 各一 virtio-net（slot 0x0a001000/0x0a002000，MAC ..01/..02，碰 disk0 同页问题已避开）。配置 `tmp/m2/vm-rd{1,2}.toml` + `qemu-rd.toml` + `tmp/m2/initrd/init`。
   - **观察**：一次运行中 VM1 成功 `INIT-RUNNING`(eth0 在)+ ping 10.0.0.2（TX 帧经 process_tx 抽出并泛洪），但**对端 VM2 的 /init 未运行**（ramdisk 引导 flakiness：内核到 `Freeing initrd memory` 后有时不 exec /init），eth0 未 up → 无 RX buffer → `deliver_rx` 返回 false（无投递）→ ping 无回复。
-  - **两个待解问题**：① **ramdisk 引导 flakiness**（同配置有时到 /init 有时卡在 freeing initrd，单/双 VM 都见过）——需排查（可能 AxVisor ramdisk 加载/FDT initrd range 或内存时序）；② RX 投递依赖对端 guest 已 up 并 post 了 RX buffer。控制台输出坑（ramdisk /init 须在 mount devtmpfs 后 `exec >/dev/console 2>&1` 才可见）已解。
-  - 注：内存须用 **MAP_ALLOC(map_type=0)** 而非 MAP_IDENTICAL，否则两 VM 同 GPA 映射同一宿主内存互相踩。
+  - **RX 写入路径已验证（内置测试 peer + 单 reliable VM）**：用 AxVisor 内置 ARP/ICMP 应答 peer + 单个磁盘启动的可靠 Linux guest，guest ping 时 `process_tx` 抽出 ARP（TX 验证），`deliver_rx` 把应答帧写入 guest 的 RX virtqueue 并更新 used ring、返回 `injected=true`（**RX virtqueue 写入 + used 环更新机制验证通过**，与 TX used 环逻辑一致）。修了 RX 头 `num_buffers=1`（VERSION_1 下必需）。
+  - **最后一公里：RX 中断未送达 guest**。尽管 `deliver_rx` 写好帧并 `inject_interrupt_to_vcpu`，guest 仍反复发 ARP（未解析）、不发 ICMP → 说明 guest 没收到 RX 中断、没去轮询 RX used 环。试过 irq=24(SPI号) 和 56(INTID=32+SPI) 均无效。根因待查：① 精确 INTID（须从生成的 guest FDT 的 `virtio_mmio@a001000` 的 `interrupts` 读，QEMU virt slot8 推测 SPI24→INTID56）；② **`interrupt_mode="passthrough"` 下软件注入 SPI 是否生效**（passthrough 可能只透传物理中断；可能需 emulated GIC 模式）；③ vGIC LR 注入路径。**这是 task2 数据通路打通的最后一步**——virtqueue TX/RX 逻辑均已实现并部分验证，仅差 RX 中断送达。
+  - **两个并行待解**：① ramdisk 引导 flakiness（同配置有时到 /init 有时卡在 freeing initrd）；② 多 VM 内存须 **MAP_ALLOC(map_type=0)** 否则同 GPA 踩内存（已解）。控制台输出坑（ramdisk /init 须 mount devtmpfs 后 `exec >/dev/console 2>&1`）已解。
 - **P4 客户机驱动接通**：Linux 侧 virtio-net 驱动自动识别（已内建），配 IP；Zephyr 侧需带 virtio-net + lwIP/BSD socket 的镜像（见前置 C）。
 - **P5 应用层协议 + 可靠性 + 自动化测试**（M7/M8）：见任务二后续。
 

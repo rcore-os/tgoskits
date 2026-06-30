@@ -235,6 +235,9 @@ impl VirtioNet {
         let head = rd_u16(read, q.driver + 4 + slot * 2)?;
 
         let mut payload = vec![0u8; VIRTIO_NET_HDR_LEN];
+        // virtio_net_hdr_v1.num_buffers (offset 10, LE u16) = 1: this RX packet
+        // occupies a single descriptor chain. Required under VIRTIO_F_VERSION_1.
+        payload[10] = 1;
         payload.extend_from_slice(frame);
         let mut written = 0usize;
         let mut idx = head;
