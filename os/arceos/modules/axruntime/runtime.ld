@@ -43,14 +43,15 @@ SECTIONS {
         __stop___llvm_prf_bits = .;
 
         . = ALIGN(0x10);
-        __start___llvm_prf_names = .;
-        KEEP(*(__llvm_prf_names))
-        __stop___llvm_prf_names = .;
-
-        . = ALIGN(0x10);
         __start___llvm_prf_vnds = .;
         KEEP(*(__llvm_prf_vnds))
         __stop___llvm_prf_vnds = .;
+    }
+
+    __llvm_prf_names : AT(ADDR(__llvm_prf_names) - AX_LINKER_LOAD_OFFSET) ALIGN(0x10) {
+        __start___llvm_prf_names = .;
+        KEEP(*(__llvm_prf_names))
+        __stop___llvm_prf_names = .;
     }
 
     scope_local : AT(ADDR(scope_local) - AX_LINKER_LOAD_OFFSET) {
