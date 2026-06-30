@@ -1,10 +1,14 @@
-use core::sync::atomic::{AtomicUsize, Ordering};
+use core::{
+    future::poll_fn,
+    sync::atomic::{AtomicUsize, Ordering},
+    task::{Context, Poll, Waker},
+};
 #[cfg(feature = "irq")]
 use std::sync::{Arc, Barrier};
 use std::{
     panic::{AssertUnwindSafe, catch_unwind, resume_unwind},
     sync::{OnceLock, mpsc},
-    task::Context,
+    task::Wake,
     thread,
 };
 
@@ -16,6 +20,36 @@ use axpoll::{IoEvents, Pollable};
 #[cfg(feature = "irq")]
 use crate::IrqNotify;
 use crate::{WaitQueue, api as ax_task, current};
+
+struct WakeCounter {
+    count: AtomicUsize,
+}
+
+impl WakeCounter {
+    fn new() -> Arc<Self> {
+        Arc::new(Self {
+            count: AtomicUsize::new(0),
+        })
+    }
+
+    fn count(&self) -> usize {
+        self.count.load(Ordering::Acquire)
+    }
+
+    fn waker(self: &Arc<Self>) -> Waker {
+        Waker::from(self.clone())
+    }
+}
+
+impl Wake for WakeCounter {
+    fn wake(self: Arc<Self>) {
+        self.count.fetch_add(1, Ordering::AcqRel);
+    }
+
+    fn wake_by_ref(self: &Arc<Self>) {
+        self.count.fetch_add(1, Ordering::AcqRel);
+    }
+}
 
 type TestResult = Result<(), Box<dyn core::any::Any + Send>>;
 type TestJob = (Box<dyn FnOnce() + Send + 'static>, mpsc::Sender<TestResult>);
@@ -204,6 +238,110 @@ fn poll_io_nonblocking_wouldblock_wins_over_pending_interrupt() {
         assert_eq!(pollable.register_count(), 1);
         assert_eq!(curr.take_interrupt(), true);
     });
+}
+
+#[test]
+fn runtime_event_publish_before_poll_is_observed() {
+    let event = crate::local::RuntimeEvent::new();
+    let seq = event.publish(0x1);
+    let counter = WakeCounter::new();
+    let waker = counter.waker();
+    let mut cx = Context::from_waker(&waker);
+    let observed = crate::local::RuntimeEventSeq::new();
+
+    assert_eq!(seq.get(), 1);
+    assert_eq!(event.poll_changed(&observed, &mut cx), Poll::Ready(1));
+    assert_eq!(observed.get(), 1);
+    assert_eq!(event.take_bits(), 0x1);
+    assert_eq!(counter.count(), 0);
+}
+
+#[test]
+fn runtime_event_publish_after_register_wakes_waiter() {
+    let event = crate::local::RuntimeEvent::new();
+    let observed = crate::local::RuntimeEventSeq::new();
+    observed.update(event.seq());
+    let counter = WakeCounter::new();
+    let waker = counter.waker();
+    let mut cx = Context::from_waker(&waker);
+
+    assert_eq!(event.poll_changed(&observed, &mut cx), Poll::Pending);
+    event.publish(0x2);
+
+    assert_eq!(counter.count(), 1);
+    assert_eq!(event.poll_changed(&observed, &mut cx), Poll::Ready(1));
+    assert_eq!(event.take_bits(), 0x2);
+}
+
+#[test]
+fn runtime_event_wait_changed_observes_publish_before_wait() {
+    run_in_test_scheduler(|| {
+        let event = crate::local::RuntimeEvent::new();
+        let observed = crate::local::RuntimeEventSeq::new();
+
+        event.publish_from_irq(0x4);
+        let seq = event.wait_changed(&observed);
+
+        assert_eq!(seq.get(), 1);
+        assert_eq!(observed.get(), 1);
+        assert_eq!(event.take_bits(), 0x4);
+    });
+}
+
+#[test]
+fn local_executor_defers_irq_wakers_until_task_context() {
+    let event = Arc::new(crate::local::RuntimeEvent::new());
+    let executor = crate::local::LocalExecutor::new();
+    let spawner = executor.spawner();
+    let ran = Arc::new(AtomicUsize::new(0));
+
+    let task_event = event.clone();
+    let task_ran = ran.clone();
+    spawner
+        .spawn_local(async move {
+            let observed = crate::local::RuntimeEventSeq::new();
+            poll_fn(|cx| task_event.poll_changed(&observed, cx)).await;
+            task_ran.fetch_add(1, Ordering::AcqRel);
+        })
+        .expect("local spawn should fit in executor queue");
+
+    executor.run_until_idle();
+    assert_eq!(ran.load(Ordering::Acquire), 0);
+
+    event.publish_from_irq(0x4);
+    executor.run_until_idle();
+    assert_eq!(ran.load(Ordering::Acquire), 0);
+
+    event.wake_waiters_deferred();
+    executor.run_until_idle();
+    assert_eq!(ran.load(Ordering::Acquire), 1);
+}
+
+#[test]
+fn local_executor_repolls_after_irq_runtime_event() {
+    let event = Arc::new(crate::local::RuntimeEvent::new());
+    let executor = crate::local::LocalExecutor::new();
+    let spawner = executor.spawner();
+    let ran = Arc::new(AtomicUsize::new(0));
+
+    let task_event = event.clone();
+    let task_ran = ran.clone();
+    spawner
+        .spawn_local(async move {
+            let observed = crate::local::RuntimeEventSeq::new();
+            poll_fn(|cx| task_event.poll_changed(&observed, cx)).await;
+            task_ran.fetch_add(1, Ordering::AcqRel);
+        })
+        .expect("local spawn should fit in executor queue");
+
+    executor.run_until_idle();
+    assert_eq!(ran.load(Ordering::Acquire), 0);
+
+    event.publish_from_irq(0x8);
+    executor.run_until_event(&event, || event.has_unseen_events());
+
+    assert_eq!(ran.load(Ordering::Acquire), 1);
+    assert_eq!(event.take_bits(), 0x8);
 }
 
 #[test]

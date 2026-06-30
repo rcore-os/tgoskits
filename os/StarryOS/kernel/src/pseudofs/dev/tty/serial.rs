@@ -1,6 +1,6 @@
 use alloc::{format, string::String, sync::Arc, vec, vec::Vec};
 use core::{
-    sync::atomic::{AtomicBool, AtomicU32, Ordering},
+    sync::atomic::{AtomicBool, AtomicU64, Ordering},
     time::Duration,
 };
 
@@ -16,7 +16,7 @@ use ax_runtime::hal::{
     irq::{AutoEnable, CpuId, IrqAffinity, IrqHandle, IrqId, IrqRequest, ShareMode},
 };
 use ax_sync::Mutex;
-use ax_task::IrqNotify;
+use ax_task::{IrqNotify, local::RuntimeEvent};
 use axpoll::{IoEvents, PollSet};
 use bitflags::bitflags;
 use rdrive::DeviceId as RDriveDeviceId;
@@ -45,6 +45,7 @@ bitflags! {
         const RX_READY = 1 << 0;
         const TX_SPACE = 1 << 1;
         const HANGUP   = 1 << 2;
+        const RESERVICE = 1 << 3;
     }
 }
 
@@ -90,15 +91,19 @@ struct SerialBackend {
 }
 
 struct SerialEvents {
-    pending: AtomicU32,
-    notify: IrqNotify,
+    event: RuntimeEvent,
+    pending_hint: AtomicBool,
+    rx_seq: AtomicU64,
+    tx_seq: AtomicU64,
 }
 
 impl SerialEvents {
     const fn new() -> Self {
         Self {
-            pending: AtomicU32::new(0),
-            notify: IrqNotify::new(),
+            event: RuntimeEvent::new(),
+            pending_hint: AtomicBool::new(false),
+            rx_seq: AtomicU64::new(0),
+            tx_seq: AtomicU64::new(0),
         }
     }
 
@@ -106,24 +111,63 @@ impl SerialEvents {
         if events.is_empty() {
             return;
         }
-        self.pending.fetch_or(events.bits(), Ordering::Release);
-        self.notify.notify_irq();
+        self.pending_hint.store(true, Ordering::Release);
+        self.event.publish_from_irq(u64::from(events.bits()));
     }
 
     fn publish(&self, events: SerialEventBits) {
         if events.is_empty() {
             return;
         }
-        self.pending.fetch_or(events.bits(), Ordering::Release);
-        self.notify.notify();
+        self.pending_hint.store(true, Ordering::Release);
+        self.event.publish(u64::from(events.bits()));
     }
 
     fn wait(&self) {
-        self.notify.wait();
+        self.event
+            .wait_until(|| self.pending_hint.load(Ordering::Acquire));
     }
 
     fn take(&self) -> SerialEventBits {
-        SerialEventBits::from_bits_retain(self.pending.swap(0, Ordering::AcqRel))
+        self.pending_hint.store(false, Ordering::Release);
+        let bits = self.event.take_bits();
+        SerialEventBits::from_bits_retain(bits as u32)
+    }
+
+    fn wake_waiters_deferred(&self) {
+        self.event.wake_waiters_deferred();
+    }
+
+    fn observe_rx_seq(&self, seq: u64) -> bool {
+        let mut current = self.rx_seq.load(Ordering::Acquire);
+        while seq > current {
+            match self.rx_seq.compare_exchange_weak(
+                current,
+                seq,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => return true,
+                Err(next) => current = next,
+            }
+        }
+        false
+    }
+
+    fn observe_tx_seq(&self, seq: u64) -> bool {
+        let mut current = self.tx_seq.load(Ordering::Acquire);
+        while seq > current {
+            match self.tx_seq.compare_exchange_weak(
+                current,
+                seq,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => return true,
+                Err(next) => current = next,
+            }
+        }
+        false
     }
 }
 
@@ -540,6 +584,7 @@ fn spawn_serial_event_worker(backend: Arc<SerialBackend>) {
                 if pending.is_empty() {
                     break;
                 }
+                backend.events.wake_waiters_deferred();
                 if pending.contains(SerialEventBits::RX_READY) {
                     unsafe { backend.input_source.wake(IoEvents::IN) };
                 }
@@ -547,6 +592,10 @@ fn spawn_serial_event_worker(backend: Arc<SerialBackend>) {
                     backend.tx_notify.notify();
                     unsafe { backend.output_source.wake(IoEvents::OUT) };
                     let outcome = backend.service_on_owner(SerialSoftWork::TX_KICK);
+                    publish_serial_outcome(&backend, outcome, false);
+                }
+                if pending.contains(SerialEventBits::RESERVICE) {
+                    let outcome = backend.service_on_owner(SerialSoftWork::RESERVICE);
                     publish_serial_outcome(&backend, outcome, false);
                 }
             }
@@ -561,11 +610,17 @@ fn publish_serial_outcome(
     from_irq: bool,
 ) -> SerialEventBits {
     let mut events = SerialEventBits::empty();
-    if outcome.rx_pushed > 0 {
+    if outcome.rx_pushed > 0 || backend.events.observe_rx_seq(outcome.snapshot.rx_seq) {
         events |= SerialEventBits::RX_READY;
     }
-    if outcome.tx_wakeup {
+    if outcome.tx_wakeup || backend.events.observe_tx_seq(outcome.snapshot.tx_seq) {
         events |= SerialEventBits::TX_SPACE;
+    }
+    if outcome.snapshot.hangup {
+        events |= SerialEventBits::HANGUP;
+    }
+    if outcome.budget_exhausted || outcome.snapshot.service_needed {
+        events |= SerialEventBits::RESERVICE;
     }
 
     if from_irq {

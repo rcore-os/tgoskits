@@ -1,4 +1,4 @@
-use rdif_block::{BlkError, CompletionHint, RequestId};
+use rdif_block::{BlkError, CompletionHint, RequestId, RequestToken};
 
 use super::{DrainEvents, PendingTable, PollClaim, PollProgress, RequestKey, RuntimeDmaBuffer};
 use crate::os::{sync::IrqMutex as SpinNoIrq, wake_task};
@@ -115,6 +115,9 @@ impl<'a, P: RequestPoller> CompletionDrain<'a, P> {
                 queue_id,
                 request_id,
             } => self.poll_matching_driver_requests(queue_id, &[request_id]),
+            CompletionHint::Token { queue_id, token } => {
+                self.poll_matching_driver_token(queue_id, token)
+            }
             CompletionHint::Batch { queue_id, ids } => {
                 let ids = ids.iter().collect::<alloc::vec::Vec<_>>();
                 self.poll_matching_driver_requests(queue_id, &ids)
@@ -149,6 +152,14 @@ impl<'a, P: RequestPoller> CompletionDrain<'a, P> {
         ids: &[RequestId],
     ) -> alloc::vec::Vec<RequestKey> {
         self.pending.lock().matching_driver_keys(queue_id, ids)
+    }
+
+    fn poll_matching_driver_token(&mut self, queue_id: usize, token: RequestToken) -> usize {
+        let keys = self
+            .pending
+            .lock()
+            .matching_driver_token_keys(queue_id, token);
+        self.poll_batch(&keys)
     }
 
     fn poll_batch(&mut self, keys: &[RequestKey]) -> usize {

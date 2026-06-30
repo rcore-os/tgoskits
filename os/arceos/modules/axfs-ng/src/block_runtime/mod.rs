@@ -383,7 +383,9 @@ mod tests {
     #[test]
     fn request_completes_before_wait_token_registration() {
         let mut table = PendingTable::new();
-        table.insert_submitted(0, RequestId::new(1), None).unwrap();
+        table
+            .insert_submitted(0, RequestId::new(1), None, None)
+            .unwrap();
         assert!(table.complete(key(1), Ok(())).is_none());
 
         assert_eq!(table.register_waiter_task(key(1), 7), Some(Ok(())));
@@ -396,7 +398,9 @@ mod tests {
     #[test]
     fn request_completes_after_waiter_task_registration() {
         let mut table = PendingTable::new();
-        let key = table.insert_submitted(0, RequestId::new(2), None).unwrap();
+        let key = table
+            .insert_submitted(0, RequestId::new(2), None, None)
+            .unwrap();
         assert_eq!(table.register_waiter_task(key, 7), None);
 
         let wake = table.complete(key, Ok(())).unwrap();
@@ -410,9 +414,13 @@ mod tests {
     #[test]
     fn runtime_request_key_survives_driver_request_id_reuse() {
         let mut table = PendingTable::new();
-        let first = table.insert_submitted(0, RequestId::new(1), None).unwrap();
+        let first = table
+            .insert_submitted(0, RequestId::new(1), None, None)
+            .unwrap();
         assert!(table.complete(first, Ok(())).is_none());
-        let second = table.insert_submitted(0, RequestId::new(1), None).unwrap();
+        let second = table
+            .insert_submitted(0, RequestId::new(1), None, None)
+            .unwrap();
 
         assert_ne!(first, second);
         assert_eq!(
@@ -426,10 +434,12 @@ mod tests {
     #[test]
     fn pending_table_rejects_inflight_driver_request_id_reuse() {
         let mut table = PendingTable::new();
-        table.insert_submitted(0, RequestId::new(1), None).unwrap();
+        table
+            .insert_submitted(0, RequestId::new(1), None, None)
+            .unwrap();
 
         assert_eq!(
-            table.insert_submitted(0, RequestId::new(1), None),
+            table.insert_submitted(0, RequestId::new(1), None, None),
             Err(BlkError::InvalidRequest)
         );
     }
@@ -439,11 +449,11 @@ mod tests {
         let pending = SpinNoIrq::new(PendingTable::new());
         pending
             .lock()
-            .insert_submitted(0, RequestId::new(1), None)
+            .insert_submitted(0, RequestId::new(1), None, None)
             .unwrap();
         pending
             .lock()
-            .insert_submitted(0, RequestId::new(2), None)
+            .insert_submitted(0, RequestId::new(2), None, None)
             .unwrap();
         pending.lock().register_waiter_task(key(1), 1);
         pending.lock().register_waiter_task(key(2), 2);
@@ -460,15 +470,54 @@ mod tests {
     }
 
     #[test]
+    fn token_hint_wakes_only_matching_generation() {
+        let pending = SpinNoIrq::new(PendingTable::new());
+        let stale =
+            rdif_block::RequestToken::new(RequestId::new(1), rdif_block::RequestGeneration::new(1));
+        let current =
+            rdif_block::RequestToken::new(RequestId::new(1), rdif_block::RequestGeneration::new(2));
+        let key = pending
+            .lock()
+            .insert_submitted(0, RequestId::new(1), Some(current), None)
+            .unwrap();
+        pending.lock().register_waiter_task(key, 1);
+
+        let mut poller = Poller::default();
+        poller.complete(driver_key(1));
+        let mut drain = CompletionDrain::new(&pending, &mut poller);
+
+        assert_eq!(
+            drain.drain_hint(CompletionHint::Token {
+                queue_id: 0,
+                token: stale,
+            }),
+            0
+        );
+        assert_eq!(pending.lock().result(key), None);
+
+        assert_eq!(
+            drain.drain_hint(CompletionHint::Token {
+                queue_id: 0,
+                token: current,
+            }),
+            1
+        );
+        assert_eq!(
+            pending.lock().take_completed(key).map(|(result, _)| result),
+            Some(Ok(()))
+        );
+    }
+
+    #[test]
     fn queue_hint_scans_all_pending_requests_on_queue() {
         let pending = SpinNoIrq::new(PendingTable::new());
         pending
             .lock()
-            .insert_submitted(0, RequestId::new(1), None)
+            .insert_submitted(0, RequestId::new(1), None, None)
             .unwrap();
         pending
             .lock()
-            .insert_submitted(0, RequestId::new(2), None)
+            .insert_submitted(0, RequestId::new(2), None, None)
             .unwrap();
         pending.lock().register_waiter_task(key(1), 1);
         pending.lock().register_waiter_task(key(2), 2);
@@ -485,11 +534,11 @@ mod tests {
         let pending = SpinNoIrq::new(PendingTable::new());
         pending
             .lock()
-            .insert_submitted(0, RequestId::new(1), None)
+            .insert_submitted(0, RequestId::new(1), None, None)
             .unwrap();
         pending
             .lock()
-            .insert_submitted(0, RequestId::new(2), None)
+            .insert_submitted(0, RequestId::new(2), None, None)
             .unwrap();
         pending.lock().register_waiter_task(key(1), 1);
         pending.lock().register_waiter_task(key(2), 2);
@@ -511,15 +560,15 @@ mod tests {
         let pending = SpinNoIrq::new(PendingTable::new());
         pending
             .lock()
-            .insert_submitted(0, RequestId::new(1), None)
+            .insert_submitted(0, RequestId::new(1), None, None)
             .unwrap();
         pending
             .lock()
-            .insert_submitted(0, RequestId::new(2), None)
+            .insert_submitted(0, RequestId::new(2), None, None)
             .unwrap();
         pending
             .lock()
-            .insert_submitted(0, RequestId::new(3), None)
+            .insert_submitted(0, RequestId::new(3), None, None)
             .unwrap();
         pending.lock().register_waiter_task(key(1), 1);
         pending.lock().register_waiter_task(key(2), 2);
@@ -548,7 +597,7 @@ mod tests {
         let pending = SpinNoIrq::new(PendingTable::new());
         let key = pending
             .lock()
-            .insert_submitted(0, RequestId::new(1), None)
+            .insert_submitted(0, RequestId::new(1), None, None)
             .unwrap();
         pending.lock().register_waiter_task(key, 4);
 
@@ -572,11 +621,11 @@ mod tests {
         let pending = SpinNoIrq::new(PendingTable::new());
         pending
             .lock()
-            .insert_submitted(0, RequestId::new(1), None)
+            .insert_submitted(0, RequestId::new(1), None, None)
             .unwrap();
         pending
             .lock()
-            .insert_submitted(1, RequestId::new(7), None)
+            .insert_submitted(1, RequestId::new(7), None, None)
             .unwrap();
         pending.lock().register_waiter_task(key(1), 1);
         pending.lock().register_waiter_task(key(2), 2);
@@ -589,6 +638,7 @@ mod tests {
 
         assert_eq!(
             drain.drain_events(DrainEvents {
+                seq: 1,
                 queue_bits: 0b11,
                 hints: rdif_block::CompletionList::new(),
             }),
@@ -603,7 +653,7 @@ mod tests {
         let pending = SpinNoIrq::new(PendingTable::new());
         pending
             .lock()
-            .insert_submitted(0, RequestId::new(1), None)
+            .insert_submitted(0, RequestId::new(1), None, None)
             .unwrap();
         assert!(pending.lock().complete(key(1), Ok(())).is_none());
 
@@ -627,7 +677,7 @@ mod tests {
         let pending = SpinNoIrq::new(PendingTable::new());
         pending
             .lock()
-            .insert_submitted(0, RequestId::new(1), None)
+            .insert_submitted(0, RequestId::new(1), None, None)
             .unwrap();
         assert!(pending.lock().complete(key(1), Ok(())).is_none());
 
@@ -655,7 +705,9 @@ mod tests {
     #[test]
     fn pending_table_allows_only_one_active_poll_per_request() {
         let mut table = PendingTable::new();
-        table.insert_submitted(0, RequestId::new(1), None).unwrap();
+        table
+            .insert_submitted(0, RequestId::new(1), None, None)
+            .unwrap();
 
         assert_eq!(table.begin_poll(key(1)), PollClaim::Claimed);
         assert_eq!(table.begin_poll(key(1)), PollClaim::AlreadyPolling);
@@ -667,7 +719,9 @@ mod tests {
     #[test]
     fn completed_request_cannot_reenter_poll_after_submit_side_completion() {
         let mut table = PendingTable::new();
-        table.insert_submitted(0, RequestId::new(1), None).unwrap();
+        table
+            .insert_submitted(0, RequestId::new(1), None, None)
+            .unwrap();
 
         assert_eq!(table.begin_poll(key(1)), PollClaim::Claimed);
         assert!(table.complete(key(1), Ok(())).is_none());
@@ -715,7 +769,7 @@ mod tests {
         let pending = SpinNoIrq::new(PendingTable::new());
         let key = pending
             .lock()
-            .insert_submitted(0, RequestId::new(1), None)
+            .insert_submitted(0, RequestId::new(1), None, None)
             .unwrap();
         pending.lock().register_waiter_task(key, 1);
 
@@ -745,7 +799,7 @@ mod tests {
         let pending = SpinNoIrq::new(PendingTable::new());
         let key = pending
             .lock()
-            .insert_submitted(0, RequestId::new(3), None)
+            .insert_submitted(0, RequestId::new(3), None, None)
             .unwrap();
         pending.lock().register_waiter_task(key, 1);
 
@@ -784,7 +838,12 @@ mod tests {
                 .unwrap();
         let key = pending
             .lock()
-            .insert_submitted(0, RequestId::new(4), Some(RuntimeDmaBuffer::Legacy(guard)))
+            .insert_submitted(
+                0,
+                RequestId::new(4),
+                None,
+                Some(RuntimeDmaBuffer::Legacy(guard)),
+            )
             .unwrap();
         pending.lock().abandon(key);
         assert_eq!(

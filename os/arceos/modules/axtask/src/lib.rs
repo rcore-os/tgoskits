@@ -78,6 +78,8 @@ cfg_if::cfg_if! {
         mod sched_tracepoint;
         #[cfg(feature = "irq")]
         mod irq_notify;
+        #[cfg(feature = "irq")]
+        pub mod local;
         mod wait_queue;
 
         #[cfg(feature = "irq")]

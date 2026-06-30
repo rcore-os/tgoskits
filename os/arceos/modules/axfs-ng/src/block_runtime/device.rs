@@ -10,7 +10,7 @@ use irq_framework::IrqId;
 use rdif_block::{
     BlkError, CompletionHint, CompletionSink as RdifCompletionSink, DeviceInfo, IQueue,
     OwnedRequest, QueueHandle, QueueInfo, Request, RequestFlags, RequestId, RequestOp,
-    RequestPoll as OwnedRequestPoll, RequestStatus, TransferChunk, TransferPlanner,
+    RequestPoll as OwnedRequestPoll, RequestStatus, RequestToken, TransferChunk, TransferPlanner,
     TransferRuntimeCaps, validate_request,
 };
 
@@ -200,6 +200,13 @@ impl RuntimeQueue {
         match self {
             Self::Legacy(queue) => queue.info(),
             Self::Owned(queue) => queue.info(),
+        }
+    }
+
+    fn request_token(&self, request: RequestId) -> Option<RequestToken> {
+        match self {
+            Self::Legacy(queue) => queue.request_token(request),
+            Self::Owned(queue) => queue.request_token(request),
         }
     }
 }
@@ -608,10 +615,11 @@ impl BlockDeviceHandle {
             let info = queue.info;
             match submit_flush_request(&mut queue, info) {
                 Ok(request_id) => {
+                    let token = queue.queue.request_token(request_id);
                     let key = self
                         .pending
                         .lock()
-                        .insert_submitted(info.id, request_id, None)
+                        .insert_submitted(info.id, request_id, token, None)
                         .map_err(map_blk_err_to_ax_err)?;
                     drop(queue);
                     self.wake_drain_after_irq_submit();
@@ -939,7 +947,8 @@ impl BlockDeviceHandle {
                 self.poison_driver_contract_violation();
                 return Err(BlkError::InvalidRequest);
             }
-            pending.insert_submitted(info.id, request_id, buffer)?
+            let token = queue.queue.request_token(request_id);
+            pending.insert_submitted(info.id, request_id, token, buffer)?
         };
         Ok(WindowEntry {
             key,

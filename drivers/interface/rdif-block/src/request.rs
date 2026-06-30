@@ -24,6 +24,47 @@ impl From<RequestId> for usize {
     }
 }
 
+#[repr(transparent)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct RequestGeneration(u64);
+
+impl RequestGeneration {
+    pub const fn new(generation: u64) -> Self {
+        Self(generation)
+    }
+
+    pub const fn get(self) -> u64 {
+        self.0
+    }
+
+    pub const fn next(self) -> Self {
+        Self(self.0.wrapping_add(1))
+    }
+}
+
+impl Default for RequestGeneration {
+    fn default() -> Self {
+        Self(1)
+    }
+}
+
+/// Stable identity for one submitted request lifetime.
+///
+/// `RequestId` may be reused by queue implementations after completion. A
+/// token combines the driver-visible ID with a generation so completion caches
+/// can reject stale observations from an older lifetime of the same ID.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct RequestToken {
+    pub id: RequestId,
+    pub generation: RequestGeneration,
+}
+
+impl RequestToken {
+    pub const fn new(id: RequestId, generation: RequestGeneration) -> Self {
+        Self { id, generation }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RequestStatus {
     Pending,

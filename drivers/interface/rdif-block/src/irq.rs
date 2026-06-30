@@ -1,6 +1,6 @@
 use alloc::vec::Vec;
 
-use crate::RequestId;
+use crate::{RequestId, RequestToken};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct IrqSourceInfo {
@@ -86,6 +86,10 @@ pub enum CompletionHint {
         queue_id: usize,
         request_id: RequestId,
     },
+    Token {
+        queue_id: usize,
+        token: RequestToken,
+    },
     Batch {
         queue_id: usize,
         ids: CompletionIds,
@@ -97,6 +101,7 @@ impl CompletionHint {
         match self {
             Self::Queue { queue_id }
             | Self::Request { queue_id, .. }
+            | Self::Token { queue_id, .. }
             | Self::Batch { queue_id, .. } => queue_id,
         }
     }
@@ -229,6 +234,15 @@ impl Event {
         }
     }
 
+    pub fn push_token(&mut self, queue_id: usize, token: RequestToken) {
+        if !self
+            .completions
+            .push(CompletionHint::Token { queue_id, token })
+        {
+            self.queues.insert(queue_id);
+        }
+    }
+
     pub fn push_hint(&mut self, hint: CompletionHint) {
         if let CompletionHint::Queue { queue_id } = hint {
             self.queues.insert(queue_id);
@@ -262,9 +276,13 @@ mod tests {
         let mut event = Event::none();
         event.push_queue(3);
         event.push_request(3, RequestId::new(7));
+        event.push_token(
+            3,
+            crate::RequestToken::new(RequestId::new(8), crate::RequestGeneration::new(2)),
+        );
 
         assert!(event.queues.contains(3));
-        assert_eq!(event.completions.len(), 2);
+        assert_eq!(event.completions.len(), 3);
     }
 
     #[test]

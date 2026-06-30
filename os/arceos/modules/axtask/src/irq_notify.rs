@@ -66,4 +66,15 @@ impl IrqNotify {
     pub fn wait(&self) {
         self.wait.wait_until(|| self.drain());
     }
+
+    /// Blocks until `condition` becomes true or at least one pending notification
+    /// is available, then drains the notification bit.
+    #[track_caller]
+    pub fn wait_until(&self, condition: impl Fn() -> bool) {
+        self.wait.wait_until(|| {
+            let ready = condition();
+            let notified = self.drain();
+            ready || notified
+        });
+    }
 }

@@ -2,12 +2,12 @@ use alloc::{boxed::Box, sync::Arc};
 use core::{
     cell::{Cell, UnsafeCell},
     marker::PhantomData,
-    sync::atomic::{AtomicBool, AtomicUsize, Ordering},
+    sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
 };
 
 use crate::{
     Config, ConfigError, InterruptMask, IrqSource, RawUart, RxFlag, RxItem, SerialCounters,
-    SerialIrqOutcome, SpscRing,
+    SerialEventSnapshot, SerialIrqOutcome, SpscRing,
 };
 
 pub const DEFAULT_TX_CAP: usize = 4097;
@@ -273,6 +273,7 @@ pub struct SerialPort<const TX: usize = DEFAULT_TX_CAP, const RX: usize = DEFAUL
     core: Arc<OwnerCell<CoreInner<DynRawUart>>>,
     tx: Arc<TxState<TX>>,
     rx: Arc<RxState<RX>>,
+    events: Arc<SerialEventState>,
     counters: Arc<SerialCountersAtomic>,
 }
 
@@ -281,7 +282,86 @@ pub struct SerialIrqHandler<const TX: usize = DEFAULT_TX_CAP, const RX: usize = 
     core: Arc<OwnerCell<CoreInner<DynRawUart>>>,
     tx: Arc<TxState<TX>>,
     rx: Arc<RxState<RX>>,
+    events: Arc<SerialEventState>,
     counters: Arc<SerialCountersAtomic>,
+}
+
+struct SerialEventState {
+    rx_seq: AtomicU64,
+    tx_seq: AtomicU64,
+    budget_exhausted: AtomicBool,
+    error: AtomicBool,
+    hangup: AtomicBool,
+    service_needed: AtomicBool,
+}
+
+impl SerialEventState {
+    fn new() -> Self {
+        Self {
+            rx_seq: AtomicU64::new(0),
+            tx_seq: AtomicU64::new(0),
+            budget_exhausted: AtomicBool::new(false),
+            error: AtomicBool::new(false),
+            hangup: AtomicBool::new(false),
+            service_needed: AtomicBool::new(false),
+        }
+    }
+
+    fn publish_rx_ready(&self, count: usize) {
+        if count == 0 {
+            return;
+        }
+        self.rx_seq.fetch_add(count as u64, Ordering::AcqRel);
+    }
+
+    fn publish_tx_space(&self, count: usize) {
+        if count == 0 {
+            return;
+        }
+        self.tx_seq.fetch_add(count as u64, Ordering::AcqRel);
+    }
+
+    fn publish_error(&self) {
+        self.error.store(true, Ordering::Release);
+        self.rx_seq.fetch_add(1, Ordering::AcqRel);
+    }
+
+    fn publish_service_needed(&self) {
+        self.budget_exhausted.store(true, Ordering::Release);
+        self.service_needed.store(true, Ordering::Release);
+        self.rx_seq.fetch_add(1, Ordering::AcqRel);
+    }
+
+    fn clear_service_needed(&self) {
+        self.budget_exhausted.store(false, Ordering::Release);
+        self.service_needed.store(false, Ordering::Release);
+    }
+
+    fn finish_outcome<const TX: usize, const RX: usize>(
+        &self,
+        out: &mut SerialIrqOutcome,
+        tx: &TxState<TX>,
+        rx: &RxState<RX>,
+    ) {
+        out.snapshot = self.snapshot(tx, rx);
+    }
+
+    fn snapshot<const TX: usize, const RX: usize>(
+        &self,
+        tx: &TxState<TX>,
+        rx: &RxState<RX>,
+    ) -> SerialEventSnapshot {
+        SerialEventSnapshot {
+            rx_seq: self.rx_seq.load(Ordering::Acquire),
+            tx_seq: self.tx_seq.load(Ordering::Acquire),
+            rx_ready: !rx.ring.is_empty(),
+            tx_space: tx.write_room() > 0,
+            budget_exhausted: self.budget_exhausted.load(Ordering::Acquire),
+            error: self.error.load(Ordering::Acquire),
+            hangup: self.hangup.load(Ordering::Acquire),
+            service_needed: self.service_needed.load(Ordering::Acquire),
+        }
+    }
 }
 
 impl<const TX: usize, const RX: usize> SerialPort<TX, RX> {
@@ -293,12 +373,14 @@ impl<const TX: usize, const RX: usize> SerialPort<TX, RX> {
         let core = Arc::new(OwnerCell::new(CoreInner::new(raw)));
         let tx = Arc::new(TxState::new());
         let rx = Arc::new(RxState::new());
+        let events = Arc::new(SerialEventState::new());
         let counters = Arc::new(SerialCountersAtomic::new());
         let port = Arc::new(Self {
             owner,
             core: core.clone(),
             tx: tx.clone(),
             rx: rx.clone(),
+            events: events.clone(),
             counters: counters.clone(),
         });
         let irq = SerialIrqHandler {
@@ -306,6 +388,7 @@ impl<const TX: usize, const RX: usize> SerialPort<TX, RX> {
             core: core.clone(),
             tx: tx.clone(),
             rx: rx.clone(),
+            events,
             counters,
         };
         SerialParts {
@@ -415,6 +498,7 @@ impl<const TX: usize, const RX: usize> SerialIrqHandler<TX, RX> {
     fn handle_locked(&self, core: &mut CoreInner<DynRawUart>) -> SerialIrqOutcome {
         let mut out = SerialIrqOutcome::default();
         if core.state != PortState::Running {
+            self.events.finish_outcome(&mut out, &self.tx, &self.rx);
             return out;
         }
 
@@ -440,11 +524,13 @@ impl<const TX: usize, const RX: usize> SerialIrqHandler<TX, RX> {
                 let service = self.service_rx(core, rx_budget);
                 rx_budget = rx_budget.saturating_sub(service.consumed);
                 out.rx_pushed += service.published;
+                self.events.publish_rx_ready(service.published);
             }
 
             if snapshot.sources.contains(IrqSource::TX_SPACE) {
                 let sent = self.service_tx(core, tx_budget, &mut out);
                 tx_budget = tx_budget.saturating_sub(sent);
+                self.events.publish_tx_space(sent);
             }
 
             if snapshot.sources.contains(IrqSource::MODEM_STATUS) {
@@ -457,12 +543,14 @@ impl<const TX: usize, const RX: usize> SerialIrqHandler<TX, RX> {
 
             if rx_budget == 0 || tx_budget == 0 {
                 out.budget_exhausted = true;
+                self.events.publish_service_needed();
                 self.counters
                     .irq_budget_exhausted
                     .fetch_add(1, Ordering::Relaxed);
                 break;
             }
         }
+        self.events.finish_outcome(&mut out, &self.tx, &self.rx);
         out
     }
 
@@ -477,14 +565,17 @@ impl<const TX: usize, const RX: usize> SerialIrqHandler<TX, RX> {
             match sample.flag {
                 RxFlag::Normal => {}
                 RxFlag::Break => {
+                    self.events.publish_error();
                     self.counters.rx_breaks.fetch_add(1, Ordering::Relaxed);
                 }
                 RxFlag::Parity => {
+                    self.events.publish_error();
                     self.counters
                         .rx_parity_errors
                         .fetch_add(1, Ordering::Relaxed);
                 }
                 RxFlag::Framing => {
+                    self.events.publish_error();
                     self.counters
                         .rx_framing_errors
                         .fetch_add(1, Ordering::Relaxed);
@@ -506,6 +597,7 @@ impl<const TX: usize, const RX: usize> SerialIrqHandler<TX, RX> {
             }
 
             if sample.overrun {
+                self.events.publish_error();
                 self.rx.overrun.fetch_add(1, Ordering::Relaxed);
                 self.counters
                     .rx_fifo_overruns
@@ -571,17 +663,33 @@ impl<const TX: usize, const RX: usize> SerialPort<TX, RX> {
     ) -> SerialIrqOutcome {
         let mut out = SerialIrqOutcome::default();
         if core.state != PortState::Running {
+            self.events.finish_outcome(&mut out, &self.tx, &self.rx);
             return out;
         }
 
         if work.contains(SerialSoftWork::TX_KICK) {
-            self.service_tx(core, TX_KICK_BUDGET, &mut out);
+            let sent = self.service_tx(core, TX_KICK_BUDGET, &mut out);
+            self.events.publish_tx_space(sent);
         }
         if work.contains(SerialSoftWork::RESERVICE) {
             let rx = self.service_rx(core, RX_IRQ_BUDGET);
             out.rx_pushed += rx.published;
-            self.service_tx(core, TX_IRQ_BUDGET, &mut out);
+            self.events.publish_rx_ready(rx.published);
+            if rx.consumed == RX_IRQ_BUDGET {
+                out.budget_exhausted = true;
+                self.events.publish_service_needed();
+            }
+            let sent = self.service_tx(core, TX_IRQ_BUDGET, &mut out);
+            self.events.publish_tx_space(sent);
+            if sent == TX_IRQ_BUDGET {
+                out.budget_exhausted = true;
+                self.events.publish_service_needed();
+            }
+            if !out.budget_exhausted {
+                self.events.clear_service_needed();
+            }
         }
+        self.events.finish_outcome(&mut out, &self.tx, &self.rx);
         out
     }
 
@@ -596,14 +704,17 @@ impl<const TX: usize, const RX: usize> SerialPort<TX, RX> {
             match sample.flag {
                 RxFlag::Normal => {}
                 RxFlag::Break => {
+                    self.events.publish_error();
                     self.counters.rx_breaks.fetch_add(1, Ordering::Relaxed);
                 }
                 RxFlag::Parity => {
+                    self.events.publish_error();
                     self.counters
                         .rx_parity_errors
                         .fetch_add(1, Ordering::Relaxed);
                 }
                 RxFlag::Framing => {
+                    self.events.publish_error();
                     self.counters
                         .rx_framing_errors
                         .fetch_add(1, Ordering::Relaxed);
@@ -625,6 +736,7 @@ impl<const TX: usize, const RX: usize> SerialPort<TX, RX> {
             }
 
             if sample.overrun {
+                self.events.publish_error();
                 self.rx.overrun.fetch_add(1, Ordering::Relaxed);
                 self.counters
                     .rx_fifo_overruns
@@ -1021,5 +1133,26 @@ mod tests {
         assert!(outcome.claimed);
         assert_eq!(outcome.rx_pushed, 2);
         assert!(!outcome.budget_exhausted);
+    }
+
+    #[test]
+    fn rx_budget_exhaustion_publishes_service_needed_snapshot() {
+        let mut uart = MockUart::new().irq(IrqSource::RX_DATA);
+        for index in 0..=RX_IRQ_BUDGET {
+            uart = uart.rx_byte(index as u8);
+        }
+        let parts = SerialPort::<8, 512>::split(uart, OwnerId(0));
+        parts.port.startup(lease(), &Config::new()).unwrap();
+
+        let mut irq = parts.irq;
+        let outcome = irq.handle(lease());
+
+        assert!(outcome.claimed);
+        assert_eq!(outcome.rx_pushed, RX_IRQ_BUDGET);
+        assert!(outcome.budget_exhausted);
+        assert!(outcome.snapshot.rx_ready);
+        assert!(outcome.snapshot.service_needed);
+        assert!(outcome.snapshot.budget_exhausted);
+        assert!(outcome.snapshot.rx_seq > 0);
     }
 }

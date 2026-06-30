@@ -89,10 +89,23 @@ pub struct SerialCounters {
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SerialEventSnapshot {
+    pub rx_seq: u64,
+    pub tx_seq: u64,
+    pub rx_ready: bool,
+    pub tx_space: bool,
+    pub budget_exhausted: bool,
+    pub error: bool,
+    pub hangup: bool,
+    pub service_needed: bool,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct SerialIrqOutcome {
     pub claimed: bool,
     pub rx_pushed: usize,
     pub tx_sent: usize,
     pub tx_wakeup: bool,
     pub budget_exhausted: bool,
+    pub snapshot: SerialEventSnapshot,
 }
