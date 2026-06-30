@@ -252,7 +252,8 @@ See docs/starryos-self-compilation.md for details."
     fi
 fi
 
-[ -f "$ROOTFS_IMG" ] || error "Rootfs image not found: $ROOTFS_IMG"
+[ -f "$ROOTFS_IMG" ] || error "Rootfs image not found: $ROOTFS_IMG
+See docs/starryos-self-compilation.md for how to obtain the rootfs for this arch."
 
 info "Architecture: $ARCH | Target: $SELF_COMPILE_TARGET | SMP: $SMP"
 

@@ -442,7 +442,7 @@ CONFIG_EOF
 # Fetch the FULL closure of the committed Cargo.lock with `--locked`, against
 # the unfiltered workspace.  The cache must be a superset of whatever the guest
 # resolves: the full-closure fetch is a superset of whatever the guest
-# resolves.  riscv64/aarch64 guests run filter-workspace.sh at build time;
+# resolves.  The riscv64 guest builds `cargo build -p starryos` (a subset);
 # x86_64 builds via xtask against the full workspace — either way the
 # full --locked fetch covers all needed crates.
 #
