@@ -165,7 +165,7 @@ mod riscv64 {
         };
 
         let Some(injected) = crate::manager::with_vm(vm_id, |vm| {
-            if let Err(err) = vm.interrupt_fabric().pulse(irq_id) {
+            if let Err(err) = vm.pulse_interrupt(irq_id) {
                 warn!("failed to inject RISC-V virtual IRQ {irq_id}: {err:?}");
                 return false;
             }

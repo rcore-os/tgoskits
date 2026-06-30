@@ -12,180 +12,20 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use alloc::{collections::BTreeMap, format, sync::Arc, vec::Vec};
-use core::sync::atomic::{AtomicUsize, Ordering};
+use alloc::format;
 
 use ax_errno::{AxResult, ax_err_type};
-use ax_kspin::SpinNoIrq as Mutex;
 #[cfg(target_arch = "riscv64")]
 use riscv_vcpu::GprIndex as RiscvGprIndex;
 
 use crate::{
-    AsVCpuTask, AxVCpuExitReason, CpuMask, GuestPhysAddr, VCpuState, VCpuTask,
+    AsVCpuTask, AxVCpuExitReason, CpuMask, GuestPhysAddr, StopReason, VCpuState, VCpuTask,
+    VmStatus,
     runtime::{VCpuRef, VMRef, sub_running_vm_count},
+    vm::{PendingInterrupt, VmRuntimeHandle},
 };
 
 const KERNEL_STACK_SIZE: usize = 0x40000; // 256 KiB
-
-#[derive(Clone, Copy, Debug)]
-enum PendingInterrupt {
-    Normal(usize),
-    #[cfg(target_arch = "loongarch64")]
-    LoongArchExternal {
-        vector: usize,
-        physical_irq: usize,
-    },
-}
-
-/// A global map that holds the vCPU task state for each VM.
-static VM_VCPU_TASKS: Mutex<BTreeMap<usize, Arc<VMVCpus>>> = Mutex::new(BTreeMap::new());
-fn get_vm_vcpus(vm_id: usize) -> Option<Arc<VMVCpus>> {
-    VM_VCPU_TASKS.lock().get(&vm_id).cloned()
-}
-
-/// A structure representing the VCpus of a specific VM, including a wait queue
-/// and a list of tasks associated with the VCpus.
-pub struct VMVCpus {
-    // The ID of the VM to which these VCpus belong.
-    _vm_id: usize,
-    // A wait queue to manage task scheduling for the VCpus.
-    wait_queue: crate::WaitQueue,
-    // A map of tasks associated with the VCpus of this VM, keyed by vCPU ID.
-    vcpu_task_list: Mutex<BTreeMap<usize, crate::AxTaskRef>>,
-    // Pending virtual interrupts that must be injected by the owning vCPU task.
-    pending_interrupts: Mutex<BTreeMap<usize, Vec<PendingInterrupt>>>,
-    /// The number of currently running or halting VCpus. Used to track when the VM is fully
-    /// shutdown.
-    ///
-    /// This number is incremented when a VCpu starts running and decremented when it exits because
-    /// of the VM being shutdown.
-    running_halting_vcpu_count: AtomicUsize,
-}
-
-impl VMVCpus {
-    /// Creates a new `VMVCpus` instance for the given VM.
-    ///
-    /// # Arguments
-    ///
-    /// * `vm` - A reference to the VM for which the VCpus are being created.
-    ///
-    /// # Returns
-    ///
-    /// A new `VMVCpus` instance with an empty task list and a fresh wait queue.
-    fn new(vm: VMRef) -> Self {
-        Self {
-            _vm_id: vm.id(),
-            wait_queue: crate::WaitQueue::new(),
-            vcpu_task_list: Mutex::new(BTreeMap::new()),
-            pending_interrupts: Mutex::new(BTreeMap::new()),
-            running_halting_vcpu_count: AtomicUsize::new(0),
-        }
-    }
-
-    /// Adds a VCpu task to the list of VCpu tasks for this VM.
-    ///
-    /// # Arguments
-    ///
-    /// * `vcpu_task` - A reference to the task associated with a VCpu that is to be added.
-    fn add_vcpu_task(&self, vcpu_id: usize, vcpu_task: crate::AxTaskRef) {
-        self.vcpu_task_list.lock().insert(vcpu_id, vcpu_task);
-        self.pending_interrupts.lock().entry(vcpu_id).or_default();
-    }
-
-    fn queue_interrupt(&self, vcpu_id: usize, vector: usize) -> AxResult<usize> {
-        let task = self
-            .vcpu_task_list
-            .lock()
-            .get(&vcpu_id)
-            .cloned()
-            .ok_or_else(|| ax_err_type!(NotFound, format!("vCPU {vcpu_id} task not found")))?;
-        let mut pending = self.pending_interrupts.lock();
-        pending
-            .entry(vcpu_id)
-            .or_default()
-            .push(PendingInterrupt::Normal(vector));
-        Ok(task.cpu_id() as usize)
-    }
-
-    #[cfg(target_arch = "loongarch64")]
-    fn queue_external_interrupt(
-        &self,
-        vcpu_id: usize,
-        vector: usize,
-        physical_irq: usize,
-    ) -> AxResult<usize> {
-        let task = self
-            .vcpu_task_list
-            .lock()
-            .get(&vcpu_id)
-            .cloned()
-            .ok_or_else(|| ax_err_type!(NotFound, format!("vCPU {vcpu_id} task not found")))?;
-        let mut pending = self.pending_interrupts.lock();
-        pending
-            .entry(vcpu_id)
-            .or_default()
-            .push(PendingInterrupt::LoongArchExternal {
-                vector,
-                physical_irq,
-            });
-        Ok(task.cpu_id() as usize)
-    }
-
-    fn drain_pending_interrupts(&self, vcpu_id: usize) -> Vec<PendingInterrupt> {
-        let mut pending = self.pending_interrupts.lock();
-        pending
-            .get_mut(&vcpu_id)
-            .map(core::mem::take)
-            .unwrap_or_default()
-    }
-
-    /// Blocks the current thread on the wait queue associated with the VCpus of this VM.
-    fn wait(&self) {
-        self.wait_queue.wait()
-    }
-
-    /// Blocks the current thread on the wait queue associated with the VCpus of this VM
-    /// until the provided condition is met.
-    fn wait_until<F>(&self, condition: F)
-    where
-        F: Fn() -> bool,
-    {
-        self.wait_queue.wait_until(condition)
-    }
-
-    #[allow(dead_code)]
-    fn notify_one(&self) {
-        // FIXME: `WaitQueue::len` is removed
-        // info!("Current wait queue length: {}", self.wait_queue.len());
-        self.wait_queue.notify_one(false);
-    }
-
-    /// Notify all waiting vCPU threads to wake up.
-    /// This is useful when shutting down a VM to ensure all vCPUs can check the shutdown flag.
-    fn notify_all(&self) {
-        self.wait_queue.notify_all(false);
-    }
-
-    /// Increments the count of running or halting VCpus by one.
-    fn mark_vcpu_running(&self) {
-        self.running_halting_vcpu_count
-            .fetch_add(1, Ordering::Relaxed);
-        // Relaxed is enough here, as we only need to ensure that the count is incremented and
-        // decremented correctly, and there is no other data synchronization needed.
-    }
-
-    /// Decrements the count of running or halting VCpus by one. Returns true if this was the last
-    /// VCpu to exit.
-    fn mark_vcpu_exiting(&self) -> bool {
-        self.running_halting_vcpu_count.fetch_update(
-            Ordering::Relaxed,
-            Ordering::Relaxed,
-            |count| count.checked_sub(1),
-        ) == Ok(1)
-        // Relaxed is enough here, as we only need to ensure that the count is incremented and
-        // decremented correctly, and there is no other data synchronization needed.
-    }
-}
 
 /// Blocks the current thread until it is explicitly woken up, using the wait queue
 /// associated with the VCpus of the specified VM.
@@ -193,7 +33,7 @@ impl VMVCpus {
 /// # Arguments
 ///
 /// * `vm_id` - The ID of the VM whose VCpu wait queue is used to block the current thread.
-fn wait(vm_vcpus: &VMVCpus) {
+fn wait(vm_vcpus: &VmRuntimeHandle) {
     vm_vcpus.wait();
 }
 
@@ -204,7 +44,7 @@ fn wait(vm_vcpus: &VMVCpus) {
 ///
 /// * `vm_id` - The ID of the VM whose VCpu wait queue is used to block the current thread.
 /// * `condition` - A closure that returns a boolean value indicating whether the condition is met.
-fn wait_for<F>(vm_vcpus: &VMVCpus, condition: F)
+fn wait_for<F>(vm_vcpus: &VmRuntimeHandle, condition: F)
 where
     F: Fn() -> bool,
 {
@@ -219,10 +59,15 @@ where
 /// * `vm_id` - The ID of the VM whose VCpus are to be notified.
 pub(crate) fn notify_primary_vcpu(vm_id: usize) {
     // Generally, the primary VCpu is the first and **only** VCpu in the list.
-    if let Some(vm_vcpus) = get_vm_vcpus(vm_id) {
-        vm_vcpus.notify_one();
-    } else {
-        warn!("VM[{vm_id}] vCPU resources not found");
+    let Some(vm) = crate::get_vm_by_id(vm_id) else {
+        warn!("VM[{vm_id}] not found while notifying primary vCPU");
+        return;
+    };
+    if let Err(err) = vm.with_runtime(|runtime| {
+        runtime.notify_one();
+        Ok(())
+    }) {
+        warn!("VM[{vm_id}] vCPU runtime not found: {err:?}");
     }
 }
 
@@ -233,28 +78,29 @@ pub(crate) fn notify_primary_vcpu(vm_id: usize) {
 ///
 /// * `vm_id` - The ID of the VM whose VCpus should be notified.
 pub(crate) fn notify_all_vcpus(vm_id: usize) {
-    if let Some(vm_vcpus) = get_vm_vcpus(vm_id) {
-        vm_vcpus.notify_all();
+    if let Some(vm) = crate::get_vm_by_id(vm_id) {
+        let _ = vm.with_runtime(|runtime| {
+            runtime.notify_all();
+            Ok(())
+        });
     }
 }
 
 pub(crate) fn queue_interrupt(vm_id: usize, vcpu_id: usize, vector: usize) -> AxResult {
     let vm = crate::get_vm_by_id(vm_id)
         .ok_or_else(|| ax_err_type!(NotFound, format!("VM[{vm_id}] not found")))?;
-    if matches!(
-        vm.vm_status(),
-        crate::VMStatus::Stopping | crate::VMStatus::Stopped
-    ) {
+    if !matches!(vm.status(), VmStatus::Running | VmStatus::Paused) {
         return Err(ax_err_type!(
             BadState,
             format!("VM[{vm_id}] is not accepting interrupts")
         ));
     }
 
-    let vm_vcpus = get_vm_vcpus(vm_id)
-        .ok_or_else(|| ax_err_type!(NotFound, format!("VM[{vm_id}] vCPU resources not found")))?;
-    let cpu_id = vm_vcpus.queue_interrupt(vcpu_id, vector)?;
-    vm_vcpus.notify_all();
+    let cpu_id = vm.with_runtime(|runtime| runtime.queue_interrupt(vcpu_id, vector))?;
+    vm.with_runtime(|runtime| {
+        runtime.notify_all();
+        Ok(())
+    })?;
     crate::host::task::send_ipi(cpu_id);
     Ok(())
 }
@@ -268,31 +114,35 @@ pub(crate) fn queue_external_interrupt(
 ) -> AxResult {
     let vm = crate::get_vm_by_id(vm_id)
         .ok_or_else(|| ax_err_type!(NotFound, format!("VM[{vm_id}] not found")))?;
-    if matches!(
-        vm.vm_status(),
-        crate::VMStatus::Stopping | crate::VMStatus::Stopped
-    ) {
+    if !matches!(vm.status(), VmStatus::Running | VmStatus::Paused) {
         return Err(ax_err_type!(
             BadState,
             format!("VM[{vm_id}] is not accepting interrupts")
         ));
     }
 
-    let vm_vcpus = get_vm_vcpus(vm_id)
-        .ok_or_else(|| ax_err_type!(NotFound, format!("VM[{vm_id}] vCPU resources not found")))?;
-    let cpu_id = vm_vcpus.queue_external_interrupt(vcpu_id, vector, physical_irq)?;
-    vm_vcpus.notify_all();
+    let cpu_id =
+        vm.with_runtime(|runtime| runtime.queue_external_interrupt(vcpu_id, vector, physical_irq))?;
+    vm.with_runtime(|runtime| {
+        runtime.notify_all();
+        Ok(())
+    })?;
     crate::host::task::send_ipi(cpu_id);
     Ok(())
 }
 
 pub(crate) fn inject_pending_interrupts(vm_id: usize, vcpu_id: usize, vcpu: &VCpuRef) {
-    let Some(vm_vcpus) = get_vm_vcpus(vm_id) else {
-        warn!("VM[{vm_id}] vCPU resources not found, cannot drain VCpu[{vcpu_id}] interrupts");
+    let Some(vm) = crate::get_vm_by_id(vm_id) else {
+        warn!("VM[{vm_id}] not found, cannot drain VCpu[{vcpu_id}] interrupts");
+        return;
+    };
+    let Ok(interrupts) = vm.with_runtime(|runtime| Ok(runtime.drain_pending_interrupts(vcpu_id)))
+    else {
+        warn!("VM[{vm_id}] vCPU runtime not found, cannot drain VCpu[{vcpu_id}] interrupts");
         return;
     };
 
-    for interrupt in vm_vcpus.drain_pending_interrupts(vcpu_id) {
+    for interrupt in interrupts {
         match interrupt {
             PendingInterrupt::Normal(vector) => {
                 trace!("Injecting queued interrupt {vector:#x} into VM[{vm_id}] VCpu[{vcpu_id}]");
@@ -390,43 +240,22 @@ fn ipi_targets(
 /// This should be called after all VCpu threads have exited to avoid resource leaks.
 /// It will join all VCpu tasks to ensure they are fully cleaned up.
 pub(crate) fn cleanup_vm_vcpus(vm_id: usize) {
-    if let Some(vm_vcpus) = VM_VCPU_TASKS.lock().remove(&vm_id) {
-        // Take task references out before joining so we never block while
-        // holding the per-VM task-list lock.
-        let tasks: Vec<_> = vm_vcpus.vcpu_task_list.lock().values().cloned().collect();
-        let task_count = tasks.len();
-
-        info!("VM[{}] Joining {} VCpu tasks...", vm_id, task_count);
-
-        // Join all VCpu tasks to ensure they have fully exited and cleaned up
-        for (idx, task) in tasks.iter().enumerate() {
-            debug!(
-                "VM[{}] Joining VCpu task[{}]: {}",
-                vm_id,
-                idx,
-                task.id_name()
-            );
-            let exit_code = task.join();
-            debug!(
-                "VM[{}] VCpu task[{}] exited with code: {}",
-                vm_id, idx, exit_code
-            );
-        }
-
-        info!(
-            "VM[{}] VCpu resources cleaned up, {} VCpu tasks joined successfully",
-            vm_id, task_count
-        );
-    } else {
-        warn!("VM[{}] VCpu resources not found in queue", vm_id);
+    if let Some(vm) = crate::get_vm_by_id(vm_id)
+        && let Err(err) = vm.with_runtime(|runtime| {
+            runtime.join_all_vcpu_tasks(vm_id);
+            Ok(())
+        })
+    {
+        warn!("VM[{vm_id}] vCPU runtime cleanup skipped: {err:?}");
     }
 }
 
 /// Marks the VCpu of the specified VM as running.
-fn mark_vcpu_running(vm_id: usize) {
-    if let Some(vm_vcpus) = get_vm_vcpus(vm_id) {
-        vm_vcpus.mark_vcpu_running();
-    }
+fn mark_vcpu_running(vm: &VMRef) {
+    let _ = vm.with_runtime(|runtime| {
+        runtime.mark_vcpu_running();
+        Ok(())
+    });
 }
 
 /// Boot target VCpu on the specified VM.
@@ -465,66 +294,19 @@ fn vcpu_on(vm: VMRef, vcpu_id: usize, entry_point: GuestPhysAddr, arg: usize) ->
         vcpu.set_gpr(RiscvGprIndex::A1 as usize, arg);
     }
 
-    let vm_vcpus = get_vm_vcpus(vm.id()).ok_or_else(|| {
-        ax_err_type!(
-            NotFound,
-            format!("VM[{}] vCPU resources not found", vm.id())
-        )
-    })?;
     let vcpu_task = alloc_vcpu_task(&vm, vcpu);
-    vm_vcpus.add_vcpu_task(vcpu_id, vcpu_task);
+    vm.with_runtime(|runtime| {
+        runtime.add_vcpu_task(vcpu_id, vcpu_task);
+        Ok(())
+    })?;
     Ok(())
 }
 
-/// Sets up the primary VCpu for the given VM,
-/// generally the first VCpu in the VCpu list,
-/// and initializing their respective wait queues and task lists.
-/// VM's secondary VCpus are not started at this point.
-///
-/// # Arguments
-///
-/// * `vm` - A reference to the VM for which the VCpus are being set up.
-pub fn setup_vm_primary_vcpu(vm: VMRef) {
-    info!("Initializing VM[{}]'s {} vcpus", vm.id(), vm.vcpu_num());
-    let vm_id = vm.id();
-    let primary_vcpu_id = 0;
-
-    let Some(primary_vcpu) = vm.vcpu_list().get(primary_vcpu_id).cloned() else {
-        warn!("VM[{vm_id}] has no primary vCPU");
-        return;
-    };
-    let vm_vcpus = Arc::new(VMVCpus::new(vm.clone()));
-    {
-        let mut vm_vcpu_tasks = VM_VCPU_TASKS.lock();
-        if vm_vcpu_tasks.contains_key(&vm_id) {
-            debug!("VM[{vm_id}] vCPU resources already exist");
-            return;
-        }
-        vm_vcpu_tasks.insert(vm_id, vm_vcpus.clone());
-    }
-
-    let primary_vcpu_task = alloc_vcpu_task(&vm, primary_vcpu);
-    vm_vcpus.add_vcpu_task(0, primary_vcpu_task);
+pub(crate) fn alloc_vcpu_task(vm: &VMRef, vcpu: VCpuRef) -> crate::AxTaskRef {
+    crate::host::task::spawn_task(build_vcpu_task(vm, vcpu))
 }
 
-/// Allocates arceos task for vcpu, set the task's entry function to [`vcpu_run()`],
-/// also initializes the CPU mask if the VCpu has a dedicated physical CPU set.
-///
-/// # Arguments
-///
-/// * `vm` - A reference to the VM for which the VCpu task is being allocated.
-/// * `vcpu` - A reference to the VCpu for which the task is being allocated.
-///
-/// # Returns
-///
-/// A reference to the task that has been allocated for the VCpu.
-///
-/// # Note
-///
-/// * The task associated with the VCpu is created with a kernel stack size of 256 KiB.
-/// * The task is created in blocked state and added to the wait queue directly,
-///   instead of being added to the ready queue. It will be woken up by notify_primary_vcpu().
-fn alloc_vcpu_task(vm: &VMRef, vcpu: VCpuRef) -> crate::AxTaskRef {
+pub(crate) fn build_vcpu_task(vm: &VMRef, vcpu: VCpuRef) -> crate::TaskInner {
     info!("Spawning task for VM[{}] VCpu[{}]", vm.id(), vcpu.id());
     let mut vcpu_task = crate::TaskInner::new(
         vcpu_run,
@@ -547,7 +329,7 @@ fn alloc_vcpu_task(vm: &VMRef, vcpu: VCpuRef) -> crate::AxTaskRef {
         vcpu_task.id_name(),
         vcpu_task.cpumask()
     );
-    crate::host::task::spawn_task(vcpu_task)
+    vcpu_task
 }
 
 fn vcpu_task_cpu_mask(vm_id: usize, vcpu_id: usize, requested_mask: usize) -> usize {
@@ -591,18 +373,18 @@ fn vcpu_run() {
     let vcpu = curr.as_vcpu_task().vcpu.clone();
     let vm_id = vm.id();
     let vcpu_id = vcpu.id();
-    let Some(vm_vcpus) = get_vm_vcpus(vm_id) else {
-        warn!("VM[{vm_id}] vCPU resources not found, VCpu[{vcpu_id}] exiting");
+    let Ok(runtime) = vm.with_runtime(|runtime| Ok(runtime.clone())) else {
+        warn!("VM[{vm_id}] vCPU runtime not found, VCpu[{vcpu_id}] exiting");
         return;
     };
 
     info!("VM[{}] VCpu[{}] waiting for running", vm.id(), vcpu.id());
-    wait_for(&vm_vcpus, || vm.running());
+    wait_for(&runtime, || vm.running());
 
     info!("VM[{}] VCpu[{}] running...", vm.id(), vcpu.id());
     #[cfg(target_arch = "x86_64")]
     super::x86_irq::enable_ioapic_irq_forwarding(&vm, &vcpu);
-    mark_vcpu_running(vm_id);
+    mark_vcpu_running(&vm);
 
     loop {
         inject_pending_interrupts(vm_id, vcpu_id, &vcpu);
@@ -679,7 +461,7 @@ fn vcpu_run() {
                     #[cfg(target_arch = "x86_64")]
                     continue;
                     #[cfg(not(target_arch = "x86_64"))]
-                    wait(&vm_vcpus)
+                    wait(&runtime)
                 }
                 AxVCpuExitReason::Idle => {
                     trace!("VM[{vm_id}] run VCpu[{vcpu_id}] Idle");
@@ -709,7 +491,7 @@ fn vcpu_run() {
                 AxVCpuExitReason::Nothing => {}
                 AxVCpuExitReason::CpuDown { _state } => {
                     warn!("VM[{vm_id}] run VCpu[{vcpu_id}] CpuDown state {_state:#x}");
-                    wait(&vm_vcpus)
+                    wait(&runtime)
                 }
                 AxVCpuExitReason::CpuUp {
                     target_cpu,
@@ -750,7 +532,7 @@ fn vcpu_run() {
                 }
                 AxVCpuExitReason::SystemDown => {
                     warn!("VM[{vm_id}] run VCpu[{vcpu_id}] SystemDown");
-                    if let Err(err) = vm.shutdown() {
+                    if let Err(err) = vm.stop(StopReason::SystemDown) {
                         warn!("VM[{vm_id}] shutdown failed: {err:?}");
                     }
                     // Notify all vCPUs to wake up to check the shutdown flag
@@ -804,7 +586,7 @@ fn vcpu_run() {
             },
             Err(err) => {
                 error!("VM[{vm_id}] run VCpu[{vcpu_id}] get error {err:?}");
-                if let Err(err) = vm.shutdown() {
+                if let Err(err) = vm.stop(StopReason::Fault(format!("{err:?}"))) {
                     warn!("VM[{vm_id}] shutdown failed after vCPU error: {err:?}");
                 }
                 // Notify all vCPUs to wake up to check the shutdown flag
@@ -818,7 +600,7 @@ fn vcpu_run() {
                 "VM[{}] VCpu[{}] is suspended, waiting for resume...",
                 vm_id, vcpu_id
             );
-            wait_for(&vm_vcpus, || !vm.suspending());
+            wait_for(&runtime, || !vm.suspending());
             info!("VM[{}] VCpu[{}] resumed from suspend", vm_id, vcpu_id);
             continue;
         }
@@ -830,11 +612,12 @@ fn vcpu_run() {
                 vm_id, vcpu_id
             );
 
-            if vm_vcpus.mark_vcpu_exiting() {
+            if runtime.mark_vcpu_exiting() {
                 info!("VM[{vm_id}] VCpu[{vcpu_id}] last VCpu exiting, decreasing running VM count");
 
-                // Transition from Stopping to Stopped
-                vm.set_vm_status(crate::VMStatus::Stopped);
+                if let Err(err) = vm.finish_stop() {
+                    warn!("VM[{vm_id}] finish stop failed: {err:?}");
+                }
                 info!("VM[{}] state changed to Stopped", vm_id);
 
                 #[cfg(target_arch = "x86_64")]

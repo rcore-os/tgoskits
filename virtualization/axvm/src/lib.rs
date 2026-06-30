@@ -27,6 +27,7 @@ mod arch;
 mod cache;
 mod host;
 pub mod irq;
+pub mod lifecycle;
 mod manager;
 mod percpu;
 mod runtime;
@@ -47,6 +48,7 @@ pub(crate) use host::{
     task::{AxTaskExt, AxTaskRef, TaskInner, WaitQueue, WaitQueueHandle as HostWaitQueueHandle},
 };
 pub use irq::InterruptFabric;
+pub use lifecycle::{StopReason, VmLifecycleError, VmStatus};
 pub use manager::{
     AxvmRuntime, current_vcpu_id, current_vm_id, get_vm_by_id, get_vm_list,
     inject_current_vcpu_interrupt, register_vm,
@@ -57,7 +59,7 @@ pub use runtime::loongarch_irq::{
     unregister_guest_irq_routes as unregister_loongarch_guest_irq_routes,
 };
 pub use task::{AsVCpuTask, VCpuTask};
-pub use vm::{AxVCpuRef, AxVM, AxVMRef, FwCfgDeviceConfig, VMMemoryRegion, VMStatus};
+pub use vm::{AxVCpuRef, AxVM, AxVMRef, FwCfgDeviceConfig, VMMemoryRegion};
 
 /// The architecture-independent per-CPU type.
 pub type AxVMPerCpu = axvcpu::AxPerCpu<vcpu::AxVMArchPerCpuImpl>;

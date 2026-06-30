@@ -145,6 +145,16 @@ impl AxVMConfig {
         }
     }
 
+    #[cfg(test)]
+    pub(crate) fn default_for_test(id: usize, name: &str) -> Self {
+        Self::new(AxVMConfigParams {
+            id,
+            name: String::from(name),
+            phys_cpu_ls: PhysCpuList::new(1, None, None),
+            ..Default::default()
+        })
+    }
+
     /// Returns VM id.
     pub fn id(&self) -> usize {
         self.id

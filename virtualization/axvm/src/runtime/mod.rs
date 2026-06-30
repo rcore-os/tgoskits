@@ -27,6 +27,8 @@ use ax_errno::{AxResult, ax_err, ax_err_type};
 #[cfg(target_arch = "x86_64")]
 use axvcpu::InterruptTriggerMode;
 
+use crate::{StopReason, VmStatus};
+
 /// The instantiated VM ref type (by `Arc`).
 pub type VMRef = crate::AxVMRef;
 /// The instantiated VCpu ref type (by `Arc`).
@@ -40,17 +42,13 @@ static RUNNING_VM_COUNT: AtomicUsize = AtomicUsize::new(0);
 /// Initialize runtime state for already registered VMs.
 pub fn init() {
     info!("Initializing VMM...");
-    info!("Setting up vcpus...");
-    for vm in crate::get_vm_list() {
-        vcpus::setup_vm_primary_vcpu(vm);
-    }
 }
 
 /// Start the VMM.
 pub fn start() {
     info!("VMM starting, booting VMs...");
     for vm in crate::get_vm_list() {
-        match vm.boot() {
+        match vm.start() {
             Ok(_) => {
                 RUNNING_VM_COUNT.fetch_add(1, Ordering::Release);
                 vcpus::notify_primary_vcpu(vm.id());
@@ -76,15 +74,25 @@ pub fn sub_running_vm_count(count: usize) {
     RUNNING_VM_COUNT.fetch_sub(count, Ordering::Release);
 }
 
+fn reset_starts_counted_runtime(previous_status: VmStatus) -> bool {
+    matches!(
+        previous_status,
+        VmStatus::Ready
+            | VmStatus::Running
+            | VmStatus::Paused
+            | VmStatus::Stopping
+            | VmStatus::Stopped
+    )
+}
+
 pub fn start_vm(vm_id: usize) -> AxResult {
     let vm = crate::get_vm_by_id(vm_id).ok_or_else(|| ax_err_type!(NotFound, "VM not found"))?;
-    let status = vm.vm_status();
-    if !matches!(status, crate::VMStatus::Loaded | crate::VMStatus::Stopped) {
+    let status = vm.status();
+    if !matches!(status, VmStatus::Ready | VmStatus::Stopped) {
         return ax_err!(BadState, "VM cannot be started from its current state");
     }
 
-    vcpus::setup_vm_primary_vcpu(vm.clone());
-    vm.boot()?;
+    vm.start()?;
     add_running_vm_count(1);
     vcpus::notify_primary_vcpu(vm_id);
     Ok(())
@@ -92,15 +100,26 @@ pub fn start_vm(vm_id: usize) -> AxResult {
 
 pub fn stop_vm(vm_id: usize) -> AxResult {
     let vm = crate::get_vm_by_id(vm_id).ok_or_else(|| ax_err_type!(NotFound, "VM not found"))?;
-    vm.shutdown()?;
+    vm.stop(StopReason::Forced)?;
     vcpus::notify_all_vcpus(vm_id);
     Ok(())
 }
 
 pub fn resume_vm(vm_id: usize) -> AxResult {
     let vm = crate::get_vm_by_id(vm_id).ok_or_else(|| ax_err_type!(NotFound, "VM not found"))?;
-    vm.set_vm_status(crate::VMStatus::Running);
+    vm.resume()?;
     vcpus::notify_all_vcpus(vm_id);
+    Ok(())
+}
+
+pub fn reset_vm(vm_id: usize) -> AxResult {
+    let vm = crate::get_vm_by_id(vm_id).ok_or_else(|| ax_err_type!(NotFound, "VM not found"))?;
+    let previous_status = vm.status();
+    vm.reset()?;
+    if reset_starts_counted_runtime(previous_status) {
+        add_running_vm_count(1);
+    }
+    vcpus::notify_primary_vcpu(vm_id);
     Ok(())
 }
 
@@ -131,6 +150,27 @@ pub(crate) fn register_x86_ioapic_irq_forwarding_route_with_trigger(
     trigger: InterruptTriggerMode,
 ) {
     x86_irq::register_ioapic_irq_forwarding_route_with_trigger(guest_gsi, host_irq, trigger);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reset_counts_replacement_runtime_for_every_restartable_state() {
+        for status in [
+            VmStatus::Ready,
+            VmStatus::Running,
+            VmStatus::Paused,
+            VmStatus::Stopping,
+            VmStatus::Stopped,
+        ] {
+            assert!(
+                reset_starts_counted_runtime(status),
+                "reset from {status:?} starts a fresh running runtime"
+            );
+        }
+    }
 }
 
 /// Register a callback to activate one x86 guest IOAPIC GSI after the guest has

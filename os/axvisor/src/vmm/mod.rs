@@ -54,17 +54,12 @@ static RUNNING_VM_COUNT: AtomicUsize = AtomicUsize::new(0);
 
 /// Initialize the VMM.
 ///
-/// This function creates the VM structures and sets up the primary VCpu for each VM.
+/// This function creates the VM structures. Runtime vCPU tasks are now created
+/// by the VM lifecycle state machine when a VM starts.
 pub fn init() {
     info!("Initializing VMM...");
     // Initialize guest VM according to config file.
     config::init_guest_vms();
-
-    // Setup vCPUs, spawn an ax-task for the primary vCPU.
-    info!("Setting up vcpus...");
-    for vm in vm_list::get_vm_list() {
-        vcpus::setup_vm_primary_vcpu(vm);
-    }
 
     #[cfg(all(feature = "fs", target_arch = "x86_64"))]
     release_host_filesystem_for_guest_passthrough().expect(
@@ -93,7 +88,7 @@ fn release_host_filesystem_for_guest_passthrough() -> AxResult {
 pub fn start() {
     info!("VMM starting, booting VMs...");
     for vm in vm_list::get_vm_list() {
-        match vm.boot() {
+        match vm.start() {
             Ok(_) => {
                 vcpus::notify_primary_vcpu(vm.id());
                 RUNNING_VM_COUNT.fetch_add(1, Ordering::Release);

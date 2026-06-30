@@ -196,10 +196,9 @@ pub fn init_guest_vm(raw_cfg: &str) -> AxResult<usize> {
     let mut loader = ImageLoader::new(main_mem, vm_create_config, vm.clone());
     loader.load()?;
 
-    vm.init()
+    vm.prepare()
         .map_err(|e| ax_err_type!(InvalidData, format!("VM[{}] setup failed: {e:?}", vm.id())))?;
 
-    vm.set_vm_status(axvm::VMStatus::Loaded);
     if !axvm::register_vm(vm) {
         return Err(ax_err_type!(
             AlreadyExists,

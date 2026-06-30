@@ -188,6 +188,10 @@ pub(crate) fn spawn_task(task: ArceOsTaskInner) -> ArceOsAxTaskRef {
     modules::ax_task::spawn_task(task)
 }
 
+pub(crate) fn yield_now() {
+    thread::yield_now();
+}
+
 pub(crate) fn wait_queue_wait_until(
     queue: &api::task::AxWaitQueueHandle,
     condition: impl Fn() -> bool,
