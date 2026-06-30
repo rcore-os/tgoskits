@@ -2,7 +2,7 @@ use alloc::{collections::VecDeque, format, string::ToString, sync::Arc, vec, vec
 use core::{
     any::Any,
     ptr::NonNull,
-    sync::atomic::{AtomicU32, AtomicU64, Ordering},
+    sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering},
     task::Context,
     time::Duration,
 };
@@ -132,6 +132,10 @@ pub struct EventDev {
     /// When this is recent, IRQ delivery is considered healthy and the
     /// polling fallback stays at low frequency even with active waiters.
     last_irq_event: AtomicU64,
+    /// Set when userspace is actively waiting for events. The polling fallback
+    /// only drains the hardware queue while this is set, then idles again after
+    /// a short empty window.
+    polling_requested: AtomicBool,
     ev_bits: Bitmap<{ EventType::COUNT as usize }>,
     /// Cached `EVIOCGPROP` bitmap. Computed once at probe from the driver's
     /// raw bits with a synthesized `INPUT_PROP_POINTER` for absolute or
@@ -194,6 +198,7 @@ impl EventDev {
             irq,
             irq_handle: spin::Once::new(),
             last_irq_event: AtomicU64::new(0),
+            polling_requested: AtomicBool::new(false),
             ev_bits,
             prop_bits,
             abs_bits,
@@ -235,10 +240,6 @@ impl EventDev {
     }
 
     fn register_irq(self: &Arc<Self>) {
-        // Always start a polling fallback.  IRQ handlers may fail to fire
-        // (e.g. INTx routed but not delivered, MSI-X not negotiated, etc.)
-        // and libinput blocks on epoll_wait forever.  The polling task
-        // ensures events always reach userspace.
         self.start_polling();
 
         let Some(irq) = self.irq else {
@@ -267,19 +268,30 @@ impl EventDev {
         }
     }
 
+    fn request_polling(&self) {
+        self.polling_requested.store(true, Ordering::Release);
+    }
+
     /// Spawn a background polling task that periodically drains input events
     /// from the device.  Used as a fallback when IRQ delivery is unreliable
     /// (e.g. MSI-X enabled but only INTx is resolved, or INTx routing fails).
     ///
-    /// - IRQ alive → 200 ms idle (IRQ is the primary path).
-    /// - IRQ stale, events found → 10 ms active (polling takes over).
-    /// - IRQ stale, 20 consecutive empty drains → backoff to 200 ms.
+    /// The task is demand-driven: it only actively polls after userspace has
+    /// attempted to read or wait for evdev input.  This keeps non-input system
+    /// tests from continuously touching virtio-input queues while preserving a
+    /// wakeup path for libinput when the platform IRQ path is broken.
     fn start_polling(self: &Arc<Self>) {
         let dev = self.clone();
         ax_task::spawn_with_name(
             move || {
                 let mut empty_count = 0u32;
                 loop {
+                    if !dev.polling_requested.load(Ordering::Acquire) {
+                        empty_count = 0;
+                        ax_task::sleep(Duration::from_millis(200));
+                        continue;
+                    }
+
                     let now = monotonic_time_nanos();
                     let irq = dev.last_irq_event.load(Ordering::Acquire);
                     let irq_alive = now.wrapping_sub(irq) <= IRQ_ALIVE_NS;
@@ -299,8 +311,12 @@ impl EventDev {
                         ax_task::sleep(Duration::from_millis(10));
                     } else {
                         empty_count = empty_count.saturating_add(1);
-                        let delay = if empty_count > 20 { 200 } else { 10 };
-                        ax_task::sleep(Duration::from_millis(delay));
+                        if empty_count > 20 {
+                            dev.polling_requested.store(false, Ordering::Release);
+                            ax_task::sleep(Duration::from_millis(200));
+                        } else {
+                            ax_task::sleep(Duration::from_millis(10));
+                        }
                     }
                 }
             },
@@ -396,6 +412,7 @@ impl DeviceOps for EventDev {
         if buf.len() < size_of::<InputEvent>() {
             return Err(AxError::InvalidInput);
         }
+        self.request_polling();
         let mut read = 0;
         let mut inner = self.inner.lock();
         // Drain the driver queue once up front so a single read() syscall
@@ -578,6 +595,7 @@ impl DeviceOps for EventDev {
 
 impl Pollable for EventDev {
     fn poll(&self) -> IoEvents {
+        self.request_polling();
         let mut events = IoEvents::empty();
         events.set(IoEvents::IN, self.inner.lock().has_event());
         events
@@ -587,6 +605,7 @@ impl Pollable for EventDev {
         if !events.contains(IoEvents::IN) {
             return;
         }
+        self.request_polling();
         unsafe { self.waiters.register(context.waker(), IoEvents::IN) };
         if self.inner.lock().has_event() {
             context.waker().wake_by_ref();
