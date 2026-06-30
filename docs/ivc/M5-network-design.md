@@ -1,5 +1,8 @@
 # 任务二 · M5 客户机间网络底座设计与可行性（QEMU aarch64）
 
+> **✅✅✅ 双向互通已达成（2026-06-30）**：两个真实 Linux guest 经"模拟 virtio-net + AxVisor 软件 L2 交换机"**双向 ICMP ping 成功**：VM1(10.0.0.1) 10 发 10 收 0% 丢包、VM2(10.0.0.2) 10 发 ~9-10 收，两向都有真实 `64 bytes from ...`（RTT 1–12ms）。关键三件套：① **physical-SPI pend 中断送达**（commit 30f17c2ee）；② **per-VM disk 隔离**（excluded_devices 排除别 VM 的 virtio_mmio 盘槽，宿主 root=/dev/vdc）；③ **gppt GIC 部分透传**（每 VM 虚拟 GICD/GICR，解决两 guest 抢同一物理 GIC 导致的引导不稳定，同时保留物理 CPU 接口使 physical-SPI pend 仍有效）。emu virtio-net 的 INTID 必须 = 48+槽号（VM1 槽8=56、VM2 槽16=64）。证据 `tmp/m2/BIDIRECTIONAL-PING-SUCCESS.log`，复现配置 `tmp/m2/vm-disk{1,2}.toml`+`qemu-3disk.toml`+`netping.sh`。这是 task2 连通性的核心达成；剩应用层协议/可靠性/自动化测试 + Zephyr 端点(需 SDK)。
+
+
 > 任务二（客户机间 IP 通信）的设计/可行性里程碑（M5）。基于对 `axdevice` 设备模拟框架的实地勘察，给出 virtio-net 设备模型 + 软件 L2 交换机的实现路径、三大硬前置、风险与分阶段计划。
 > 日期：2026-06-30。状态：设计完成，实现未开始。
 
