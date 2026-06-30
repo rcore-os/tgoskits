@@ -18,7 +18,10 @@ pub fn input_device_count() -> u32 {
 }
 
 use ax_errno::{AxError, AxResult};
-use ax_input::{ErasedInputDevice, Event, EventType, InputDevice, InputDeviceId, InputError};
+use ax_input::{
+    ErasedInputDevice, Event, EventType, InputDevice, InputDeviceId, InputError,
+    input_polling_fallback_should_drain,
+};
 use ax_runtime::hal::{
     irq::IrqId,
     time::{monotonic_time_nanos, wall_time},
@@ -286,17 +289,16 @@ impl EventDev {
             move || {
                 let mut empty_count = 0u32;
                 loop {
-                    if !dev.polling_requested.load(Ordering::Acquire) {
-                        empty_count = 0;
-                        ax_task::sleep(Duration::from_millis(200));
-                        continue;
-                    }
-
+                    let polling_requested = dev.polling_requested.load(Ordering::Acquire);
                     let now = monotonic_time_nanos();
                     let irq = dev.last_irq_event.load(Ordering::Acquire);
-                    let irq_alive = now.wrapping_sub(irq) <= IRQ_ALIVE_NS;
 
-                    if irq_alive {
+                    if !input_polling_fallback_should_drain(
+                        polling_requested,
+                        now,
+                        irq,
+                        IRQ_ALIVE_NS,
+                    ) {
                         empty_count = 0;
                         ax_task::sleep(Duration::from_millis(200));
                         continue;
