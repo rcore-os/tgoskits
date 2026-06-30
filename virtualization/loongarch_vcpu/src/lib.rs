@@ -1,16 +1,22 @@
 #![no_std]
 #![allow(unsafe_op_in_unsafe_fn)]
 
+extern crate alloc;
+
 mod context_frame;
 mod exception;
 pub mod host;
+mod mmio;
 mod pcpu;
 mod registers;
 mod vcpu;
 
 pub use self::{
     context_frame::LoongArchContextFrame,
-    exception::{TrapKind, handle_exception_irq, handle_exception_sync},
+    exception::{
+        LoongArchIocsrState, LoongArchIocsrStateRef, TrapKind, handle_exception_irq,
+        handle_exception_sync,
+    },
     pcpu::LoongArchPerCpu,
     registers::inject_interrupt,
     vcpu::{LoongArchVCpu, LoongArchVCpuCreateConfig, LoongArchVCpuSetupConfig},

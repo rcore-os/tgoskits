@@ -581,8 +581,7 @@ where
                 flush_tlb_range(aligned_addr, aligned_length);
                 action(addr.as_mut_ptr());
 
-                #[cfg(target_arch = "aarch64")]
-                ax_runtime::hal::cpu::asm::clean_dcache_range_to_pou(addr, len);
+                ax_runtime::hal::cache::clean_dcache_to_pou(addr, len);
 
                 guard.protect(aligned_addr, aligned_length, original_flags)?;
                 return Ok(());
@@ -616,53 +615,13 @@ pub fn write_kernel_text(addr: VirtAddr, data: &[u8]) -> AxResult<()> {
 }
 
 pub fn flush_tlb_range(start: VirtAddr, size: usize) {
-    for offset in (0..size).step_by(PAGE_SIZE_4K) {
-        ax_runtime::hal::cpu::asm::flush_tlb(Some(start + offset));
-    }
+    ax_runtime::hal::cache::flush_tlb_range(start, size);
 }
 
 pub fn flush_tlb_range_sync(start: VirtAddr, size: usize) {
-    #[cfg(feature = "ipi")]
-    {
-        flush_tlb_range_remote(start, size);
-    }
-    #[cfg(not(feature = "ipi"))]
-    {
-        flush_tlb_range(start, size);
-    }
-}
-
-#[cfg(feature = "ipi")]
-fn flush_tlb_range_remote(start: VirtAddr, size: usize) {
-    let _guard = ax_kernel_guard::NoPreempt::new();
-    let current_cpu = ax_runtime::hal::percpu::this_cpu_id();
-    let start = start.as_usize();
-    let arg = FlushRangeArg { start, size };
-    let arg_ptr = &arg as *const FlushRangeArg as *mut ();
-
-    for cpu_id in 0..ax_runtime::hal::cpu_num() {
-        if cpu_id == current_cpu || !ax_ipi::wait_until_cpu_ready(cpu_id) {
-            continue;
-        }
-        let _ = unsafe { ax_ipi::run_on_cpu_sync_raw(cpu_id, flush_tlb_range_thunk, arg_ptr) };
-    }
-    flush_tlb_range(VirtAddr::from(start), size);
-}
-
-#[cfg(feature = "ipi")]
-struct FlushRangeArg {
-    start: usize,
-    size: usize,
-}
-
-#[cfg(feature = "ipi")]
-unsafe fn flush_tlb_range_thunk(arg: *mut ()) {
-    let arg = unsafe { &*(arg as *const FlushRangeArg) };
-    flush_tlb_range(VirtAddr::from(arg.start), arg.size);
+    ax_runtime::hal::cache::flush_tlb_range_all_cpus(start, size);
 }
 
 fn sync_modified_kernel_text(start: VirtAddr, size: usize) {
-    flush_tlb_range(start, size);
-
-    ax_runtime::hal::cpu::asm::flush_icache_all();
+    ax_runtime::hal::cache::sync_kernel_text(start, size);
 }

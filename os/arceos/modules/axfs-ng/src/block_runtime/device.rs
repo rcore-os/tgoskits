@@ -3,6 +3,7 @@ use core::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 
 use ax_errno::{AxError, AxResult};
 use dma_api::{DeviceDma, DmaDirection, DmaDomainId};
+use irq_framework::IrqId;
 use rdif_block::{
     BlkError, CompletionHint, CompletionSink as RdifCompletionSink, DeviceInfo, IQueue,
     OwnedRequest, QueueHandle, QueueInfo, Request, RequestFlags, RequestId, RequestOp,
@@ -265,19 +266,19 @@ impl Default for BlockRuntime {
 
 pub struct RdifBlockDevice {
     name: String,
-    irq_num: Option<usize>,
+    irq: Option<IrqId>,
     interface: Box<dyn rdif_block::Interface>,
 }
 
 impl RdifBlockDevice {
     pub fn new(
         name: impl Into<String>,
-        irq_num: Option<usize>,
+        irq: Option<IrqId>,
         interface: Box<dyn rdif_block::Interface>,
     ) -> Self {
         Self {
             name: name.into(),
-            irq_num,
+            irq,
             interface,
         }
     }
@@ -286,8 +287,8 @@ impl RdifBlockDevice {
         &self.name
     }
 
-    pub const fn irq_num(&self) -> Option<usize> {
-        self.irq_num
+    pub const fn irq(&self) -> Option<IrqId> {
+        self.irq
     }
 
     pub fn interface(&self) -> &dyn rdif_block::Interface {
@@ -313,11 +314,11 @@ impl RdifBlockDevice {
     pub fn take_irq_handler(
         &mut self,
         source_id: usize,
-    ) -> Option<(usize, Box<dyn rdif_block::IrqHandler>)> {
-        let irq_num = self.irq_num?;
+    ) -> Option<(IrqId, Box<dyn rdif_block::IrqHandler>)> {
+        let irq = self.irq?;
         self.interface
             .take_irq_handler(source_id)
-            .map(|handler| (irq_num, handler))
+            .map(|handler| (irq, handler))
     }
 }
 
@@ -342,7 +343,7 @@ impl BlockIrqAction {
 
     pub fn run(&self) -> BlockIrqOutcome {
         let event = self.handler.handle_irq();
-        if self.device.record_driver_event_for_pending(event) {
+        if self.device.record_driver_event(event) {
             self.device.drain_wake.wake_drain_from_irq();
             BlockIrqOutcome::Handled
         } else {
@@ -502,10 +503,6 @@ impl BlockDeviceHandle {
 
     pub fn record_driver_event(&self, event: rdif_block::Event) -> bool {
         self.record_translated_event(event, false)
-    }
-
-    pub fn record_driver_event_for_pending(&self, event: rdif_block::Event) -> bool {
-        self.record_translated_event(event, true)
     }
 
     #[cfg(test)]
@@ -1457,9 +1454,6 @@ fn build_rdif_block_device(
         Err((err, registrations)) => {
             block.disable_irq();
             drop(registrations);
-            if name == "nvme" {
-                return Err(err);
-            }
             warn!("rdif filesystem block device {name} falls back to polling without IRQ: {err:?}");
             Vec::new()
         }
@@ -1488,7 +1482,7 @@ fn register_rdif_irq_handlers(
 
     let mut registrations = Vec::new();
     for source in irq_sources {
-        let Some((irq_num, handler)) = block.take_irq_handler(source.id) else {
+        let Some((irq, handler)) = block.take_irq_handler(source.id) else {
             warn!(
                 "rdif filesystem block device {} has IRQ source {} but no handler",
                 block.name(),
@@ -1497,16 +1491,15 @@ fn register_rdif_irq_handlers(
             return Err((AxError::Unsupported, registrations));
         };
         let action = BlockIrqAction::new(handler, device.clone(), device_index);
-        match register_shared_block_irq(format!("{}/{}", device.name(), source.id), irq_num, action)
-        {
+        match register_shared_block_irq(format!("{}/{}", device.name(), source.id), irq, action) {
             Ok(registration) => registrations.push(registration),
             Err(err) => {
                 warn!(
-                    "rdif filesystem block device {} failed to register IRQ source {} on irq {}: \
-                     {err:?}",
+                    "rdif filesystem block device {} failed to register IRQ source {} on irq \
+                     {:?}: {err:?}",
                     block.name(),
                     source.id,
-                    irq_num
+                    irq
                 );
                 return Err((err, registrations));
             }

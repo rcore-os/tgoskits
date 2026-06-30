@@ -21,7 +21,7 @@ use ax_memory_addr::PhysAddr;
 use axdevice_base::{AccessWidth, BaseDeviceOps};
 use axvm_types::{GuestPhysAddr, GuestPhysAddrRange, HostPhysAddr};
 use log::{debug, trace, warn};
-use spin::{Mutex, Once};
+use spin::Once;
 
 use super::{
     registers::*,
@@ -483,11 +483,11 @@ impl Cmdq {
     }
 }
 
-static CMDQ: Once<Mutex<Cmdq>> = Once::new();
+static CMDQ: Once<SpinNoIrq<Cmdq>> = Once::new();
 
-fn get_cmdq(host_gits_base: HostPhysAddr) -> &'static Mutex<Cmdq> {
+fn get_cmdq(host_gits_base: HostPhysAddr) -> &'static SpinNoIrq<Cmdq> {
     if !CMDQ.is_completed() {
-        CMDQ.call_once(|| Mutex::new(Cmdq::new(host_gits_base)));
+        CMDQ.call_once(|| SpinNoIrq::new(Cmdq::new(host_gits_base)));
     }
 
     CMDQ.get().unwrap()

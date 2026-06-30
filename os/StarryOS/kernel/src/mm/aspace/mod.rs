@@ -467,6 +467,19 @@ impl AddrSpace {
         })
     }
 
+    /// Synchronizes instruction fetch after modifying executable memory through this address space.
+    pub fn sync_modified_text(&self, start: VirtAddr, size: usize) -> AxResult {
+        if size == 0 {
+            return Ok(());
+        }
+
+        self.process_area_data(start, size, |dst, _offset, sync_size| {
+            ax_runtime::hal::cache::clean_dcache_to_pou(dst, sync_size);
+        })?;
+        ax_runtime::hal::cache::flush_icache_all();
+        Ok(())
+    }
+
     /// Updates mapping within the specified virtual address range.
     ///
     /// Returns an error if the address range is out of the address space or not

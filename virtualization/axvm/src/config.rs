@@ -18,7 +18,7 @@ use alloc::{string::String, vec::Vec};
 
 pub use axvm_types::{
     EmulatedDeviceConfig, GuestPhysAddr, PassThroughAddressConfig, PassThroughDeviceConfig,
-    VMBootProtocol, VMInterruptMode, VMType, VmMemConfig, VmMemMappingType,
+    PassThroughPortConfig, VMBootProtocol, VMInterruptMode, VMType, VmMemConfig, VmMemMappingType,
 };
 
 use crate::VMMemoryRegion;
@@ -32,6 +32,15 @@ pub struct AxVCpuConfig {
     pub bsp_entry: GuestPhysAddr,
     /// The entry address in GPA for the Application Processor (AP).
     pub ap_entry: GuestPhysAddr,
+    /// LoongArch Linux EFI-style boot arguments (a0, a1, a2).
+    #[cfg(target_arch = "loongarch64")]
+    pub boot_args: [usize; 3],
+    /// LoongArch Linux boot stack top.
+    #[cfg(target_arch = "loongarch64")]
+    pub boot_stack_top: usize,
+    /// Whether the LoongArch guest should be entered like firmware after CPU reset.
+    #[cfg(target_arch = "loongarch64")]
+    pub firmware_boot: bool,
 }
 
 /// Ramdisk image information.
@@ -74,6 +83,7 @@ pub struct AxVMConfig {
     pass_through_devices: Vec<PassThroughDeviceConfig>,
     excluded_devices: Vec<Vec<String>>,
     pass_through_addresses: Vec<PassThroughAddressConfig>,
+    pass_through_ports: Vec<PassThroughPortConfig>,
     // TODO: improve interrupt passthrough
     spi_list: Vec<u32>,
     interrupt_mode: VMInterruptMode,
@@ -92,6 +102,7 @@ pub struct AxVMConfigParams {
     pub pass_through_devices: Vec<PassThroughDeviceConfig>,
     pub excluded_devices: Vec<Vec<String>>,
     pub pass_through_addresses: Vec<PassThroughAddressConfig>,
+    pub pass_through_ports: Vec<PassThroughPortConfig>,
     pub interrupt_mode: VMInterruptMode,
 }
 
@@ -100,6 +111,10 @@ pub fn adjusted_kernel_load_gpa(
     boot_protocol: VMBootProtocol,
     bios_load_gpa: Option<GuestPhysAddr>,
 ) -> Option<GuestPhysAddr> {
+    if boot_protocol == VMBootProtocol::Uefi {
+        return None;
+    }
+
     if !main_memory.is_identical() {
         return None;
     }
@@ -124,6 +139,7 @@ impl AxVMConfig {
             pass_through_devices: params.pass_through_devices,
             excluded_devices: params.excluded_devices,
             pass_through_addresses: params.pass_through_addresses,
+            pass_through_ports: params.pass_through_ports,
             spi_list: Vec::new(),
             interrupt_mode: params.interrupt_mode,
         }
@@ -142,6 +158,16 @@ impl AxVMConfig {
     /// Returns configurations related to VM image load addresses.
     pub fn image_config(&self) -> &VMImageConfig {
         &self.image_config
+    }
+
+    /// Clears the configured DTB load address when no guest DTB is available.
+    pub fn clear_dtb_load_gpa(&mut self) {
+        self.image_config.dtb_load_gpa = None;
+    }
+
+    /// Sets the DTB load address used as an architecture boot argument.
+    pub fn set_dtb_load_gpa(&mut self, dtb_load_gpa: GuestPhysAddr) {
+        self.image_config.dtb_load_gpa = Some(dtb_load_gpa);
     }
 
     /// Returns whether VM images are loaded from the host filesystem.
@@ -174,6 +200,11 @@ impl AxVMConfig {
     /// Returns the list of passthrough address configurations.
     pub fn pass_through_addresses(&self) -> &Vec<PassThroughAddressConfig> {
         &self.pass_through_addresses
+    }
+
+    /// Returns the list of passthrough host I/O port configurations.
+    pub fn pass_through_ports(&self) -> &Vec<PassThroughPortConfig> {
+        &self.pass_through_ports
     }
     // /// Returns configurations related to VM memory regions.
     // pub fn memory_regions(&self) -> Vec<VmMemConfig> {
@@ -209,7 +240,7 @@ impl AxVMConfig {
 
     /// Removes passthrough device from the VM configuration.
     pub fn remove_pass_through_device(&mut self, device: PassThroughDeviceConfig) {
-        self.pass_through_devices.retain(|d| d == &device);
+        self.pass_through_devices.retain(|d| d != &device);
     }
 
     /// Clears all passthrough devices from the VM configuration.

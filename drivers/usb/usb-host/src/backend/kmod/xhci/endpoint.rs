@@ -1,8 +1,8 @@
 use alloc::{collections::BTreeMap, sync::Arc, vec, vec::Vec};
 
+use ax_kspin::SpinRaw as Mutex;
 use dma_api::DmaDirection;
 use mbarrier::mb;
-use spin::Mutex;
 use usb_if::{
     descriptor::{self, EndpointDescriptor},
     endpoint::{RequestId, TransferCompletion, TransferRequest},

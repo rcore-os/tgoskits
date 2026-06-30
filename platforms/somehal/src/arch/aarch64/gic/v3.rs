@@ -2,7 +2,8 @@ use alloc::{collections::BTreeMap, format};
 use core::cell::UnsafeCell;
 
 use aarch64_cpu::registers::ID_AA64PFR0_EL1;
-use arm_gic_driver::v3::*;
+use arm_gic_driver::{checked_intid, v3::*};
+use irq_framework::IrqId;
 use kernutil::StaticCell;
 use rdrive::{module_driver, probe::OnProbeError, register::ProbeFdt};
 
@@ -40,13 +41,6 @@ impl CpuInterfaceSlot {
         unsafe { &*self.inner.get() }.as_ref().unwrap_or_else(|| {
             panic!("GICv3 CPU interface for CPU index {cpu_idx} is not initialized")
         })
-    }
-}
-
-pub fn with_gic(f: impl FnOnce(&mut Gic)) {
-    let mut gic = super::get_gicd().lock().unwrap();
-    if let Some(gic) = gic.typed_mut::<Gic>() {
-        f(gic);
     }
 }
 
@@ -91,7 +85,12 @@ fn probe_gic(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
         crate::cpu::current_cpu_idx().unwrap_or_else(someboot::smp::early_current_cpu_idx);
     init_cpu_interface(&gic, cpu_idx);
 
-    dev.register(rdif_intc::Intc::new(gic));
+    let domain = crate::irq::alloc_irq_domain(
+        dev.descriptor.device_id(),
+        crate::irq::IrqDomainKind::AArch64Gic,
+    )
+    .map_err(|err| OnProbeError::other(format!("failed to register GICv3 domain: {err:?}")))?;
+    dev.register(rdif_intc::Intc::new(domain, gic));
 
     Ok(())
 }
@@ -135,16 +134,26 @@ pub fn begin_irq() -> Option<ActiveIrq> {
     })
 }
 
-pub fn irq_set_enable(raw: usize, enable: bool) {
-    with_gic(|gic| {
-        gic.set_irq_enable(unsafe { IntId::raw(raw as _) }, enable);
-    });
+pub fn irq_set_enable(irq: IrqId, enable: bool) -> Result<(), crate::irq::IrqError> {
+    if irq.hwirq.0 < 32 {
+        let intid = checked_private_intid(irq.hwirq.0)?;
+        current_cpu_interface().set_irq_enable(intid, enable);
+        return Ok(());
+    }
+
+    super::with_gic_domain::<Gic, _>(irq.domain, |gic| {
+        let intid = checked_runtime_intid(irq.hwirq.0, gic.max_intid())?;
+        gic.set_irq_enable(intid, enable);
+        Ok(())
+    })?
 }
 
-pub fn irq_set_affinity(raw: usize, affinity: crate::irq::IrqAffinity) -> Result<(), &'static str> {
-    let intid = unsafe { IntId::raw(raw as _) };
-    if intid.is_private() {
-        return Err("GICv3 private IRQ affinity cannot be changed");
+pub fn irq_set_affinity(
+    irq: IrqId,
+    affinity: crate::irq::IrqAffinity,
+) -> Result<(), crate::irq::IrqError> {
+    if irq.hwirq.0 < 32 {
+        return Err(crate::irq::IrqError::Unsupported);
     }
     let target = match affinity {
         crate::irq::IrqAffinity::Any => None,
@@ -152,8 +161,20 @@ pub fn irq_set_affinity(raw: usize, affinity: crate::irq::IrqAffinity) -> Result
             Some(affinity_from_mpidr(super::hardware_cpu_id(cpu_id)))
         }
     };
-    with_gic(|gic| gic.set_target_cpu(intid, target));
+    super::with_gic_domain::<Gic, _>(irq.domain, |gic| {
+        let intid = checked_runtime_intid(irq.hwirq.0, gic.max_intid())?;
+        gic.set_target_cpu(intid, target);
+        Ok::<(), crate::irq::IrqError>(())
+    })??;
     Ok(())
+}
+
+fn checked_private_intid(raw: u32) -> Result<IntId, crate::irq::IrqError> {
+    checked_runtime_intid(raw, 32)
+}
+
+fn checked_runtime_intid(raw: u32, max_intid: u32) -> Result<IntId, crate::irq::IrqError> {
+    checked_intid(raw, max_intid).map_err(|_| crate::irq::IrqError::InvalidIrq)
 }
 
 pub fn send_ipi(raw: usize, target: crate::irq::IpiTarget) {
@@ -173,7 +194,9 @@ fn affinity_from_mpidr(mpidr: usize) -> Affinity {
 }
 
 pub fn init_cpu(cpu_idx: usize) {
-    with_gic(|gic| init_cpu_interface(gic, cpu_idx));
+    if let Err(err) = super::with_primary_gic::<Gic, _>(|gic| init_cpu_interface(gic, cpu_idx)) {
+        warn!("failed to initialize GICv3 CPU interface for CPU {cpu_idx}: {err:?}");
+    }
 
     debug!("GICCv3 initialized");
 }
@@ -198,10 +221,10 @@ fn init_cpu_interface(gic: &Gic, cpu_idx: usize) {
 }
 
 fn current_cpu_interface() -> &'static CpuInterface {
-    let cpu_idx = crate::cpu::current_cpu_idx()
-        .unwrap_or_else(|| panic!("current logical CPU index is not available for GICv3 SGI"));
-    // SAFETY: send_ipi is only valid after the current CPU has completed
-    // interrupt-controller initialization and stored its CpuInterface.
+    let cpu_idx = someboot::smp::early_current_cpu_idx();
+    // SAFETY: GICv3 private IRQ operations can run before the OS per-CPU
+    // register is initialized, so use the architecture CPU-id convention that
+    // someboot also uses to enter this secondary CPU.
     unsafe { cpu_interface_slot(cpu_idx).get(cpu_idx) }
 }
 

@@ -52,7 +52,7 @@ pub async fn poll_io<P: Pollable, F: FnMut() -> AxResult<T>, T>(
     .await
 }
 
-/// Registers a waker for the given IRQ number.
+/// Registers a waker for the given domain-scoped IRQ id.
 ///
 /// This is a generic bridge for IRQ-driven async wakeups. Calling
 /// `PollSet::wake` directly from an IRQ hook is unsafe: it takes a
@@ -68,7 +68,7 @@ pub async fn poll_io<P: Pollable, F: FnMut() -> AxResult<T>, T>(
 /// task. The drain task runs in normal task context and is the only
 /// place that ever calls `PollSet::wake`.
 #[cfg(feature = "irq")]
-pub fn register_irq_waker(irq: usize, waker: &core::task::Waker) {
+pub fn register_irq_waker(irq: ax_hal::irq::IrqId, waker: &core::task::Waker) -> AxResult<()> {
     use alloc::{collections::BTreeMap, sync::Arc};
     use core::{
         ptr::NonNull,
@@ -82,7 +82,8 @@ pub fn register_irq_waker(irq: usize, waker: &core::task::Waker) {
 
     static IRQ_NOTIFY: IrqNotify = IrqNotify::new();
     static DRAIN_SPAWNED: AtomicBool = AtomicBool::new(false);
-    static IRQ_STATE: SpinNoIrq<BTreeMap<usize, IrqPollState>> = SpinNoIrq::new(BTreeMap::new());
+    static IRQ_STATE: SpinNoIrq<BTreeMap<ax_hal::irq::IrqId, IrqPollState>> =
+        SpinNoIrq::new(BTreeMap::new());
 
     struct IrqPollState {
         pending: bool,
@@ -97,11 +98,13 @@ pub fn register_irq_waker(irq: usize, waker: &core::task::Waker) {
         // Runs in IRQ context with interrupts off. Only mark an already
         // registered slot and notify the drain task. The map entry is created
         // during task-context registration, so this path does not allocate.
-        if let Some(state) = IRQ_STATE.lock().get_mut(&ctx.irq.0) {
+        if let Some(state) = IRQ_STATE.lock().get_mut(&ctx.irq) {
             state.pending = true;
             IRQ_NOTIFY.notify_irq();
+            ax_hal::irq::IrqReturn::Handled
+        } else {
+            ax_hal::irq::IrqReturn::Unhandled
         }
-        ax_hal::irq::IrqReturn::Handled
     }
 
     fn ensure_drain_spawned() {
@@ -160,8 +163,15 @@ pub fn register_irq_waker(irq: usize, waker: &core::task::Waker) {
 
     if should_install {
         ax_hal::irq::request_shared_irq(irq, irq_waker_handler, NonNull::dangling())
-            .expect("axtask IRQ-waker bridge could not install shared IRQ action");
+            .map_err(|_| AxError::Unsupported)?;
     }
 
-    ax_hal::irq::set_enable(irq, true);
+    ax_hal::irq::set_enable(irq, true).map_err(|_| AxError::Unsupported)
+}
+
+/// Registers a waker for a temporary legacy numeric IRQ.
+#[cfg(feature = "irq")]
+pub fn register_legacy_irq_waker(irq: usize, waker: &core::task::Waker) -> AxResult<()> {
+    let irq = ax_hal::irq::try_legacy_irq(irq).map_err(|_| AxError::InvalidInput)?;
+    register_irq_waker(irq, waker)
 }

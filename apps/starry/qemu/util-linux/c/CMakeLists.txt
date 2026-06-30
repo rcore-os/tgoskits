@@ -18,7 +18,7 @@ set(EXT4_TEST_IMG "${CMAKE_CURRENT_BINARY_DIR}/test-ext4.img")
 add_custom_command(
     OUTPUT "${EXT4_TEST_IMG}"
     COMMAND dd if=/dev/zero of="${EXT4_TEST_IMG}" bs=1M count=4 2>/dev/null
-    COMMAND mkfs.ext4 -F -b 4096 -I 256 -O "^metadata_csum,^64bit,^orphan_file,^has_journal,^flex_bg" "${EXT4_TEST_IMG}" >/dev/null 2>&1
+    COMMAND mkfs.ext4 -F -b 4096 -I 256 -O "^metadata_csum,^64bit,^has_journal,^flex_bg" "${EXT4_TEST_IMG}" >/dev/null 2>&1
     COMMENT "Creating ext4 test image"
 )
 add_custom_target(ext4-img ALL DEPENDS "${EXT4_TEST_IMG}")

@@ -84,6 +84,7 @@ fn release_host_filesystem_for_guest_passthrough() -> AxResult {
     }
 
     ax_fs_ng::shutdown_filesystems()?;
+    crate::config::prepare_x86_host_fs_passthrough_devices();
     info!("Host filesystem cleanly unmounted before guest passthrough devices start");
     Ok(())
 }

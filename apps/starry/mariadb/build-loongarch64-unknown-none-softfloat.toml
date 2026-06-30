@@ -2,13 +2,11 @@ target = "loongarch64-unknown-none-softfloat"
 axconfig_overrides = ["plat.phys-memory-size=0x4000_0000"]
 log = "Warn"
 features = [
-  "ax-hal/loongarch64-qemu-virt",
-  "qemu",
-  "ax-driver/plat-static",
+  "ax-hal/plat-dyn",
+  "axplat-dyn/efi",
   "ax-driver/virtio-blk",
   "ax-driver/virtio-net",
   "ax-driver/virtio-gpu",
   "ax-driver/virtio-input",
   "ax-driver/virtio-socket",
 ]
-plat_dyn = false

@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.0](https://github.com/rcore-os/tgoskits/compare/ax-driver-v0.8.2...ax-driver-v0.9.0) - 2026-06-27
+
+### Added
+
+- *(rdif-block)* add owned DMA queue primitives
+- *(ax-driver)* add VisionFive2 dynamic rtc and mmc ([#1353](https://github.com/rcore-os/tgoskits/pull/1353))
+
+### Fixed
+
+- *(locking)* remove spin mutex usage from kernel paths ([#1380](https://github.com/rcore-os/tgoskits/pull/1380))
+- *(ax-driver)* serialize virtio-net queue access ([#1392](https://github.com/rcore-os/tgoskits/pull/1392))
+- *(rknpu)* honor GEM cache flags for mmap ([#1364](https://github.com/rcore-os/tgoskits/pull/1364))
+
+### Other
+
+- *(ax-driver)* use native SDMMC RDIF devices
+- *(serial)* align IRQ model with dev ([#1265](https://github.com/rcore-os/tgoskits/pull/1265))
+
 ## [0.8.2](https://github.com/rcore-os/tgoskits/compare/ax-driver-v0.8.1...ax-driver-v0.8.2) - 2026-06-23
 
 ### Other

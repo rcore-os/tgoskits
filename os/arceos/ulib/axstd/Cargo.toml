@@ -1,6 +1,6 @@
 [package]
 name = "ax-std"
-version = "0.5.21"
+version = "0.5.22"
 repository = "https://github.com/rcore-os/tgoskits"
 edition.workspace = true
 authors = [
@@ -39,6 +39,7 @@ hv = ["ax-feat/hv"]
 # Interrupts
 irq = ["ax-api/irq", "ax-feat/irq", "ax-posix-api/irq"]
 ipi = ["ax-api/ipi", "ax-feat/ipi"]
+wake-ipi = ["ax-feat/wake-ipi"]
 
 # Custom or default platforms
 ext-ld = ["ax-feat/ext-ld"]
@@ -46,7 +47,6 @@ myplat = ["alloc", "tls", "fd", "ax-feat/myplat"]
 defplat = ["alloc", "tls", "fd", "ax-feat/defplat"]
 plat-dyn = ["alloc", "tls", "fd", "ax-feat/plat-dyn"]
 aarch64-qemu-virt = ["alloc", "tls", "fd"]
-loongarch64-qemu-virt = ["alloc", "tls", "fd", "ax-hal/loongarch64-qemu-virt"]
 
 # Memory
 alloc = ["ax-api/alloc", "ax-feat/alloc", "ax-io/alloc", "ax-posix-api/alloc"]

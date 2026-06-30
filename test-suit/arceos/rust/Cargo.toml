@@ -35,6 +35,7 @@ lockdep-detect = [
     "ax-std",
     "dep:ax-kspin",
     "dep:axfs-ng-vfs",
+    "axfs-ng-vfs/lockdep",
     "ax-std/alloc",
     "ax-std/multitask",
     "ax-std/lockdep",

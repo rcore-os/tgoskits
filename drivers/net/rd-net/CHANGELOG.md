@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.7](https://github.com/rcore-os/tgoskits/compare/rd-net-v0.1.6...rd-net-v0.1.7) - 2026-06-27
+
+### Added
+
+- *(rdif-block)* add owned DMA queue primitives
+
 ## [0.1.6](https://github.com/rcore-os/tgoskits/compare/rd-net-v0.1.5...rd-net-v0.1.6) - 2026-06-23
 
 ### Other

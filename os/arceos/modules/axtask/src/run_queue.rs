@@ -183,15 +183,45 @@ pub(crate) fn clear_remote_reschedule_pending_for_current_cpu() {
     REMOTE_RESCHEDULE_PENDING.store(false, Ordering::Release);
 }
 
+#[cfg(all(feature = "smp", feature = "ipi"))]
+fn request_remote_reschedule_if_not_pending<F>(pending: &AtomicBool, request: F)
+where
+    F: FnOnce(),
+{
+    if !pending.swap(true, Ordering::AcqRel) {
+        request();
+    }
+}
+
+#[cfg(all(feature = "smp", feature = "ipi"))]
+fn force_remote_reschedule_request<F>(pending: &AtomicBool, request: F)
+where
+    F: FnOnce(),
+{
+    pending.store(true, Ordering::Release);
+    request();
+}
+
 #[cfg(all(
     feature = "smp",
     feature = "ipi",
     not(all(test, feature = "host-test"))
 ))]
 fn request_remote_reschedule(cpu_id: usize) {
-    if !REMOTE_RESCHEDULE_PENDING[cpu_id].swap(true, Ordering::AcqRel) {
+    request_remote_reschedule_if_not_pending(&REMOTE_RESCHEDULE_PENDING[cpu_id], || {
         ax_ipi::run_on_cpu(cpu_id, request_current_reschedule);
-    }
+    });
+}
+
+#[cfg(all(
+    feature = "smp",
+    feature = "ipi",
+    not(all(test, feature = "host-test"))
+))]
+fn force_remote_reschedule(cpu_id: usize) {
+    force_remote_reschedule_request(&REMOTE_RESCHEDULE_PENDING[cpu_id], || {
+        ax_ipi::run_on_cpu(cpu_id, request_current_reschedule);
+    });
 }
 
 #[cfg(all(test, feature = "smp", feature = "ipi", feature = "host-test"))]
@@ -199,9 +229,17 @@ fn request_remote_reschedule(cpu_id: usize) {
     let _ = cpu_id;
     // Host tests run with one dummy CPU and a no-op send_ipi(), so record the
     // scheduler-visible request that a real ax-ipi callback would carry.
-    if !REMOTE_RESCHEDULE_PENDING.swap(true, Ordering::AcqRel) {
+    request_remote_reschedule_if_not_pending(&REMOTE_RESCHEDULE_PENDING, || {
         REMOTE_RESCHEDULE_REQUESTS.fetch_add(1, Ordering::Release);
-    }
+    });
+}
+
+#[cfg(all(test, feature = "smp", feature = "ipi", feature = "host-test"))]
+fn force_remote_reschedule(cpu_id: usize) {
+    let _ = cpu_id;
+    force_remote_reschedule_request(&REMOTE_RESCHEDULE_PENDING, || {
+        REMOTE_RESCHEDULE_REQUESTS.fetch_add(1, Ordering::Release);
+    });
 }
 
 #[cfg(all(feature = "smp", feature = "ipi"))]
@@ -214,9 +252,16 @@ fn kick_remote_cpu(cpu_id: usize) {
     }
 }
 
+#[cfg(all(feature = "smp", feature = "ipi"))]
+fn force_kick_remote_cpu(cpu_id: usize) {
+    if cpu_id != this_cpu_id() {
+        force_remote_reschedule(cpu_id);
+    }
+}
+
 #[cfg(all(test, feature = "smp", feature = "ipi", feature = "host-test"))]
 mod tests {
-    use core::sync::atomic::Ordering;
+    use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
     // Host-test mode collapses per-CPU state into process-global statics, so
     // keep the shared pending/count assertions in one test.
@@ -290,6 +335,42 @@ mod tests {
 
         super::REMOTE_RESCHEDULE_PENDING.store(false, Ordering::Release);
         super::REMOTE_RESCHEDULE_REQUESTS.store(0, Ordering::Release);
+    }
+
+    #[test]
+    fn forced_remote_reschedule_bypasses_stale_pending() {
+        let pending = AtomicBool::new(true);
+        let requests = AtomicUsize::new(0);
+
+        super::force_remote_reschedule_request(&pending, || {
+            requests.fetch_add(1, Ordering::Release);
+        });
+
+        assert_eq!(
+            requests.load(Ordering::Acquire),
+            1,
+            "forced remote kicks must bypass stale pending coalescing",
+        );
+
+        super::request_remote_reschedule_if_not_pending(&pending, || {
+            requests.fetch_add(1, Ordering::Release);
+        });
+
+        assert_eq!(
+            requests.load(Ordering::Acquire),
+            1,
+            "ordinary remote kicks should still coalesce stale pending requests",
+        );
+
+        super::force_remote_reschedule_request(&pending, || {
+            requests.fetch_add(1, Ordering::Release);
+        });
+
+        assert_eq!(
+            requests.load(Ordering::Acquire),
+            2,
+            "forced remote kicks must not coalesce required migration reschedules",
+        );
     }
 }
 
@@ -447,7 +528,11 @@ impl<G: BaseGuard> AxRunQueueRef<'_, G> {
     /// This function does nothing if the task is not in [`TaskState::Blocked`],
     /// which means the task is already unblocked by other cores.
     pub fn unblock_task(&mut self, task: AxTaskRef, resched: bool) {
-        let task_id_name = task.id_name();
+        let task_id_name = if log::log_enabled!(log::Level::Debug) {
+            Some(task.id_name())
+        } else {
+            None
+        };
         // Try to change the state of the task from `Blocked` to `Ready`,
         // if successful, the task will be put into this run queue,
         // otherwise, the task is already unblocked by other cores.
@@ -459,7 +544,9 @@ impl<G: BaseGuard> AxRunQueueRef<'_, G> {
         {
             // Since now, the task to be unblocked is in the `Ready` state.
             let cpu_id = self.inner.cpu_id;
-            debug!("task unblock: {task_id_name} on run_queue {cpu_id}");
+            if let Some(task_id_name) = task_id_name {
+                debug!("task unblock: {task_id_name} on run_queue {cpu_id}");
+            }
             // Note: when the task is unblocked on another CPU's run queue,
             // we just ignore the `resched` flag.
             if resched && cpu_id == this_cpu_id() {
@@ -479,13 +566,19 @@ impl<G: BaseGuard> CurrentRunQueueRef<'_, G> {
     /// See [`AxRunQueueRef::unblock_task`] for the state-transition details.
     #[cfg(feature = "irq")]
     pub(crate) fn unblock_task(&mut self, task: AxTaskRef, resched: bool) {
-        let task_id_name = task.id_name();
+        let task_id_name = if log::log_enabled!(log::Level::Debug) {
+            Some(task.id_name())
+        } else {
+            None
+        };
         if self
             .inner
             .put_task_with_state(task, TaskState::Blocked, resched)
         {
             let cpu_id = self.inner.cpu_id;
-            debug!("task unblock: {task_id_name} on run_queue {cpu_id}");
+            if let Some(task_id_name) = task_id_name {
+                debug!("task unblock: {task_id_name} on run_queue {cpu_id}");
+            }
             if resched {
                 #[cfg(feature = "preempt")]
                 crate::current().set_preempt_pending(true);
@@ -778,6 +871,10 @@ impl AxRunQueue {
         // If the task's state matches `current_state`, set its state to `Ready` and
         // put it back to the run queue (except idle task).
         if task.transition_state(current_state, TaskState::Ready) && !task.is_idle() {
+            #[cfg(feature = "smp")]
+            let waking_current_task = current_state == TaskState::Blocked
+                && self.cpu_id == this_cpu_id()
+                && crate::current().ptr_eq(&task);
             // If the task is blocked, wait for the task to finish its scheduling process.
             // See `unblock_task()` for details.
             if current_state == TaskState::Blocked {
@@ -792,9 +889,16 @@ impl AxRunQueue {
                 //    because the task may have been woken up by other cores.
                 // 2. This can be placed in the front of `switch_to()`
                 #[cfg(feature = "smp")]
-                while task.on_cpu() {
-                    // Wait for the task to finish its scheduling process.
-                    core::hint::spin_loop();
+                {
+                    // A scheduler tracepoint or other IRQ-safe notification can wake the
+                    // task that is currently being switched out on this CPU. Waiting for
+                    // `on_cpu` there would wait for the very switch we are still inside.
+                    if !waking_current_task {
+                        while task.on_cpu() {
+                            // Wait for the task to finish its scheduling process.
+                            core::hint::spin_loop();
+                        }
+                    }
                 }
             }
             // TODO: priority
@@ -959,7 +1063,9 @@ pub(crate) fn migrate_entry(migrated_task: AxTaskRef) {
         .lock()
         .put_prev_task(migrated_task, false);
     #[cfg(all(feature = "smp", feature = "ipi"))]
-    kick_remote_cpu(cpu_id);
+    // Current-task migration cannot make progress until the target CPU runs
+    // the migrated task, so do not let a stale coalescing bit suppress this IPI.
+    force_kick_remote_cpu(cpu_id);
 }
 
 /// Clear the `on_cpu` field of previous task running on this CPU.

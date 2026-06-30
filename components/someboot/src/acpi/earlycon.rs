@@ -8,17 +8,21 @@ use crate::{
     mem::_fixmap_io,
 };
 
-pub(crate) fn acpi_setup_earlycon() -> Result<(), AcpiError> {
+pub(crate) fn acpi_setup_earlycon() -> Result<bool, AcpiError> {
+    setup_earlycon_from_spcr()
+}
+
+pub(crate) fn setup_earlycon_from_spcr() -> Result<bool, AcpiError> {
     let tb = crate::acpi::tables()?;
 
     for spsr in tb.find_tables::<Spcr>() {
         if deal_with_spsr(&spsr).is_some() {
             println!("Early console setup complete.");
-            break;
+            return Ok(true);
         }
     }
 
-    Ok(())
+    Ok(false)
 }
 
 fn deal_with_spsr(spsr: &PhysicalMapping<impl Handler, Spcr>) -> Option<()> {

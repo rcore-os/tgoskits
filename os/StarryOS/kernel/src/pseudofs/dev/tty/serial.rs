@@ -9,7 +9,7 @@ use ax_errno::{AxError, AxResult};
 use ax_kspin::SpinNoIrq;
 use ax_runtime::hal::{
     console::{ConsoleDeviceIdError, ConsoleDeviceIdResult},
-    irq::{AutoEnable, CpuId, IrqAffinity, IrqHandle, IrqRequest, ShareMode},
+    irq::{AutoEnable, CpuId, IrqAffinity, IrqHandle, IrqId, IrqRequest, ShareMode},
 };
 use ax_sync::Mutex;
 use ax_task::IrqNotify;
@@ -74,7 +74,7 @@ struct SerialBackend {
     port: Arc<SerialPort>,
     tx: SpinNoIrq<TxQueue>,
     rx: SpinNoIrq<RxQueue>,
-    irq_num: usize,
+    irq: IrqId,
     irq_handle: SpinNoIrq<Option<IrqHandle>>,
     started: AtomicBool,
     start_lock: Mutex<()>,
@@ -283,9 +283,16 @@ fn new_serial_tty(number: usize, serial: SerialDevice) -> AxResult<SerialTtyEntr
         info,
         runtime,
     } = serial;
-    let Some(irq_num) = info.irq_num else {
+    let Some(irq_binding) = info.irq.clone() else {
         return Err(AxError::Unsupported);
     };
+    let irq_id = ax_runtime::irq::resolve_binding_irq(irq_binding).map_err(|err| {
+        warn!(
+            "Failed to resolve {} IRQ binding for {}: {err:?}",
+            tty_name, info.fdt_path
+        );
+        AxError::Unsupported
+    })?;
     let port = runtime.port;
     let tx = runtime.tx;
     let rx = runtime.rx;
@@ -300,7 +307,7 @@ fn new_serial_tty(number: usize, serial: SerialDevice) -> AxResult<SerialTtyEntr
         port,
         tx: SpinNoIrq::new(tx),
         rx: SpinNoIrq::new(rx),
-        irq_num,
+        irq: irq_id,
         irq_handle: SpinNoIrq::new(None),
         started: AtomicBool::new(false),
         start_lock: Mutex::new(()),
@@ -331,7 +338,7 @@ fn new_serial_tty(number: usize, serial: SerialDevice) -> AxResult<SerialTtyEntr
     );
     info!(
         "{} registered: path={}, alias={:?}, paddr={:#x}, mapped={:#x}, irq={:?}, mode=interrupt",
-        tty_name, info.fdt_path, info.alias_index, info.paddr, info.mapped_base, irq_num
+        tty_name, info.fdt_path, info.alias_index, info.paddr, info.mapped_base, irq_id
     );
     Ok(SerialTtyEntry {
         number,
@@ -358,15 +365,15 @@ impl SerialBackend {
         .share_mode(ShareMode::Shared)
         .affinity(IrqAffinity::Fixed(CpuId(self.owner.0)))
         .auto_enable(AutoEnable::No);
-        match ax_runtime::hal::irq::request_irq(self.irq_num, request) {
+        match ax_runtime::hal::irq::request_irq(self.irq, request) {
             Ok(handle) => {
                 *self.irq_handle.lock() = Some(handle);
                 Ok(())
             }
             Err(err) => {
                 warn!(
-                    "Failed to register {} IRQ handler for irq {}: {err:?}",
-                    self.tty_name, self.irq_num
+                    "Failed to register {} IRQ handler for irq {:?}: {err:?}",
+                    self.tty_name, self.irq
                 );
                 Err(AxError::Unsupported)
             }
@@ -399,8 +406,8 @@ impl SerialBackend {
         if let Err(err) = ax_runtime::hal::irq::enable_irq(handle) {
             self.shutdown_port();
             warn!(
-                "Failed to enable {} IRQ handler for irq {}: {err:?}",
-                self.tty_name, self.irq_num
+                "Failed to enable {} IRQ handler for irq {:?}: {err:?}",
+                self.tty_name, self.irq
             );
             return false;
         }

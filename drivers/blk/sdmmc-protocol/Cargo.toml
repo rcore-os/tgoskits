@@ -1,6 +1,6 @@
 [package]
 name = "sdmmc-protocol"
-version = "0.1.3"
+version = "0.2.0"
 edition = "2024"
 license = "Apache-2.0"
 description = "no_std SD/MMC protocol building blocks for embedded systems"

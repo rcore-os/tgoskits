@@ -1,0 +1,8 @@
+cmake_minimum_required(VERSION 3.20)
+project(perf-hw-ring-merge C)
+set(CMAKE_C_STANDARD 11)
+set(CMAKE_C_STANDARD_REQUIRED ON)
+set(CMAKE_C_EXTENSIONS OFF)
+add_executable(perf-hw-ring-merge src/perf_hw_ring_merge.c)
+target_compile_options(perf-hw-ring-merge PRIVATE -Wall -Wextra -Werror)
+install(TARGETS perf-hw-ring-merge RUNTIME DESTINATION usr/bin/starry-test-suit)

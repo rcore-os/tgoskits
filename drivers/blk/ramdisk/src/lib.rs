@@ -5,12 +5,12 @@ extern crate alloc;
 use alloc::{boxed::Box, sync::Arc, vec::Vec};
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
+use ax_kspin::SpinRaw as Mutex;
 use rdif_block::{
     BlkError, DeviceInfo, DriverGeneric, Event, IQueue, IdList, Interface, IrqHandler,
     IrqSourceInfo, IrqSourceList, QueueInfo, QueueLimits, Request, RequestId, RequestOp,
     RequestStatus, validate_request,
 };
-use spin::Mutex;
 
 const PREFERRED_TRANSFER_SIZE: usize = 16 * 1024;
 

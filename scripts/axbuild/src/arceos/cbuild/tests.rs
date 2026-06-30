@@ -24,7 +24,7 @@ fn c_config_features_skips_nested_cargo_only_features() {
         "ax-feat/paging",
         "ax-driver/plat-static",
         "ax-driver/virtio-net",
-        "ax-hal/loongarch64-qemu-virt",
+        "ax-hal/riscv64-sg2002",
         "some-crate/feature",
     ]));
 
@@ -94,14 +94,14 @@ fn c_compiler_features_keep_case_defines_for_cflags() {
 fn map_c_app_features_preserves_driver_features() {
     let features = map_c_app_features(
         &strings(&["net", "ax-driver/plat-static", "ax-driver/virtio-net"]),
-        &strings(&["ax-hal/loongarch64-qemu-virt"]),
+        &strings(&["ax-hal/riscv64-sg2002"]),
     );
 
     assert!(features.contains(&"net".to_string()));
     assert!(features.contains(&"fd".to_string()));
     assert!(features.contains(&"ax-driver/plat-static".to_string()));
     assert!(features.contains(&"ax-driver/virtio-net".to_string()));
-    assert!(features.contains(&"ax-hal/loongarch64-qemu-virt".to_string()));
+    assert!(features.contains(&"ax-hal/riscv64-sg2002".to_string()));
 }
 
 #[test]
@@ -210,35 +210,37 @@ fn final_linker_script_comes_from_axruntime_build_out_dir() {
 fn linker_search_dirs_use_current_platform_script_owner() {
     let root = tempfile::tempdir().unwrap();
     let target_dir = root.path().join("target");
-    let target = "x86_64-unknown-none";
+    let target = "loongarch64-unknown-none-softfloat";
     let mode = "release";
     let build_dir = target_dir.join(target).join(mode).join("build");
-    let axhal_out = build_dir.join("ax-hal-abc/out");
-    let loong_out = build_dir.join("ax-plat-loongarch64-qemu-virt-abc/out");
-    let stale_loong_out = build_dir.join("ax-plat-loongarch64-qemu-virt-old/out");
     let runtime_out = build_dir.join("ax-runtime-def/out");
-    let unrelated_out = build_dir.join("unrelated-ghi/out");
-    fs::create_dir_all(&axhal_out).unwrap();
-    fs::create_dir_all(&loong_out).unwrap();
-    fs::create_dir_all(&stale_loong_out).unwrap();
+    let axplat_out = build_dir.join("axplat-dyn-def/out");
+    let somehal_out = build_dir.join("somehal-ghi/out");
+    let someboot_out = build_dir.join("someboot-jkl/out");
     fs::create_dir_all(&runtime_out).unwrap();
-    fs::create_dir_all(&unrelated_out).unwrap();
-    fs::write(axhal_out.join("axplat.x"), "").unwrap();
-    fs::write(loong_out.join("axplat.x"), "").unwrap();
-    fs::write(stale_loong_out.join("axplat.x"), "").unwrap();
+    fs::create_dir_all(&axplat_out).unwrap();
+    fs::create_dir_all(&somehal_out).unwrap();
+    fs::create_dir_all(&someboot_out).unwrap();
     fs::write(runtime_out.join(ARCEOS_LINKER_SCRIPT), "").unwrap();
-    fs::write(unrelated_out.join("note.txt"), "").unwrap();
+    fs::write(axplat_out.join("axplat.x"), "").unwrap();
+    fs::write(somehal_out.join("link.x"), "").unwrap();
+    fs::write(someboot_out.join("someboot.x"), "").unwrap();
 
-    let dirs = find_linker_search_dirs(
+    let link_scripts = find_link_scripts(
         &target_dir,
         target,
         mode,
-        "loongarch64-qemu-virt",
-        &strings(&["ax-hal/loongarch64-qemu-virt"]),
+        "plat-dyn",
+        &strings(&["plat-dyn"]),
     )
     .unwrap();
 
-    assert_eq!(dirs, vec![loong_out, runtime_out]);
+    assert_eq!(link_scripts.script, runtime_out.join(ARCEOS_LINKER_SCRIPT));
+    assert!(link_scripts.pie);
+    assert!(link_scripts.search_dirs.contains(&runtime_out));
+    assert!(link_scripts.search_dirs.contains(&axplat_out));
+    assert!(link_scripts.search_dirs.contains(&somehal_out));
+    assert!(link_scripts.search_dirs.contains(&someboot_out));
 }
 
 #[test]

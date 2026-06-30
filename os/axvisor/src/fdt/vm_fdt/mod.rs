@@ -1,6 +1,8 @@
 mod writer;
 
-pub use writer::{FdtWriter, FdtWriterNode};
+pub use writer::FdtWriter;
+#[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
+pub use writer::FdtWriterNode;
 
 /// Magic number used in the FDT header.
 pub const FDT_MAGIC: u32 = 0xd00dfeed;

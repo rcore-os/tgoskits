@@ -374,7 +374,7 @@ pub fn sys_close_range(first: i32, last: i32, flags: u32) -> AxResult<isize> {
     if flags.contains(CloseRangeFlags::UNSHARE) {
         let curr = current();
         let proc_data = &curr.as_thread().proc_data;
-        let new_files = Arc::new(spin::RwLock::new(FD_TABLE.read().clone()));
+        let new_files = Arc::new(ax_kspin::SpinRwLock::new(FD_TABLE.read().clone()));
         proc_data.with_current_scope_mut(|scope| {
             *FD_TABLE.scope_mut(scope).deref_mut() = new_files;
         });

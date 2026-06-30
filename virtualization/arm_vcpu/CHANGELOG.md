@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.14](https://github.com/rcore-os/tgoskits/compare/arm_vcpu-v0.5.13...arm_vcpu-v0.5.14) - 2026-06-27
+
+### Other
+
+- updated the following local packages: axvcpu
+
 ## [0.5.13](https://github.com/rcore-os/tgoskits/compare/arm_vcpu-v0.5.12...arm_vcpu-v0.5.13) - 2026-06-23
 
 ### Other

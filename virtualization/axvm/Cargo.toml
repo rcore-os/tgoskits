@@ -1,7 +1,7 @@
 [package]
 name = "axvm"
 authors = ["aarkegz <aarkegz@gmail.com>"]
-version = "0.5.16"
+version = "0.5.17"
 edition.workspace = true
 categories = ["virtualization", "no-std"]
 description = "Virtual Machine resource management crate for ArceOS's hypervisor variant."
@@ -44,9 +44,11 @@ ax-std = { workspace = true, features = [
     "task-ext",
     "smp",
     "hv",
+    "wake-ipi",
 ] }
 ax-hal = { workspace = true, features = ["ipi"] }
 ax-timer-list = { workspace = true }
+irq-framework = { workspace = true }
 # System dependent modules provided by ArceOS-Hypervisor.
 axvcpu = { workspace = true }
 axaddrspace = { workspace = true }
@@ -62,6 +64,7 @@ axplat-dyn = { workspace = true, optional = true, default-features = false }
 riscv_vcpu = { workspace = true }
 riscv_vplic = { workspace = true }
 [target.'cfg(target_arch = "loongarch64")'.dependencies]
+ax-plat = { workspace = true }
 loongarch_vcpu = { workspace = true }
 [target.'cfg(target_arch = "aarch64")'.dependencies]
 aarch64-cpu-ext = "0.1"

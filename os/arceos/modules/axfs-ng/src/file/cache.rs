@@ -26,8 +26,8 @@ type CachedFileKey = (usize, u64);
 type InodeCacheIndex = BTreeMap<CachedFileKey, Weak<CachedFileShared>>;
 
 #[cfg(feature = "ext4")]
-static CACHED_FILE_BY_INODE: spin::LazyLock<spin::Mutex<InodeCacheIndex>> =
-    spin::LazyLock::new(|| spin::Mutex::new(BTreeMap::new()));
+static CACHED_FILE_BY_INODE: spin::LazyLock<Mutex<InodeCacheIndex>> =
+    spin::LazyLock::new(|| Mutex::new(BTreeMap::new()));
 
 /// Eviction listener callback. Returns `true` if the listener successfully
 /// invalidated all mappings for the evicted page.
@@ -405,8 +405,8 @@ impl Drop for ReclaimGuard {
 }
 
 #[cfg(feature = "vfs")]
-static GLOBAL_CACHED_FILES: spin::RwLock<alloc::vec::Vec<Arc<CachedFileShared>>> =
-    spin::RwLock::new(alloc::vec::Vec::new());
+static GLOBAL_CACHED_FILES: ax_kspin::SpinRwLock<alloc::vec::Vec<Arc<CachedFileShared>>> =
+    ax_kspin::SpinRwLock::new(alloc::vec::Vec::new());
 
 #[cfg(feature = "vfs")]
 static RECLAIM_IN_PROGRESS: AtomicBool = AtomicBool::new(false);

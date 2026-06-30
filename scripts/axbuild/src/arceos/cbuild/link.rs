@@ -95,7 +95,7 @@ pub(super) fn find_linker_search_dirs(
     target_dir: &Path,
     target: &str,
     mode: &str,
-    platform: &str,
+    _platform: &str,
     features: &[String],
 ) -> anyhow::Result<Vec<PathBuf>> {
     let build_dir = target_dir.join(target).join(mode).join("build");
@@ -104,7 +104,7 @@ pub(super) fn find_linker_search_dirs(
     dirs.insert(runtime_out);
     let platform_out = latest_out_dir_with_script(
         &build_dir,
-        platform_linker_owner_prefix(platform, features),
+        platform_linker_owner_prefix(features),
         "axplat.x",
     )?;
     dirs.insert(platform_out);
@@ -189,15 +189,12 @@ fn latest_out_dir_with_script(
         })
 }
 
-fn platform_linker_owner_prefix(platform: &str, features: &[String]) -> &'static str {
+fn platform_linker_owner_prefix(features: &[String]) -> &'static str {
     if has_feature(features, "plat-dyn") {
         return "axplat-dyn-";
     }
 
-    match platform {
-        "loongarch64-qemu-virt" => "ax-plat-loongarch64-qemu-virt-",
-        _ => "ax-hal-",
-    }
+    "ax-hal-"
 }
 
 pub(super) fn link_c_app(

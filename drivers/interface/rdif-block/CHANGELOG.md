@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.0](https://github.com/rcore-os/tgoskits/compare/rdif-block-v0.9.1...rdif-block-v0.10.0) - 2026-06-27
+
+### Added
+
+- *(rdif-block)* add owned DMA queue primitives
+
+### Fixed
+
+- *(locking)* remove spin mutex usage from kernel paths ([#1380](https://github.com/rcore-os/tgoskits/pull/1380))
+
 ## [0.9.1](https://github.com/rcore-os/tgoskits/compare/rdif-block-v0.9.0...rdif-block-v0.9.1) - 2026-06-23
 
 ### Other

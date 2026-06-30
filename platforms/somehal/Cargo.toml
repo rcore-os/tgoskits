@@ -7,7 +7,7 @@ keywords.workspace = true
 license.workspace = true
 name = "somehal"
 repository.workspace = true
-version = "0.7.2"
+version = "0.7.3"
 
 [features]
 efi = ["someboot/efi"]
@@ -19,6 +19,8 @@ uspace = ["mmu", "someboot/uspace"]
 
 [dependencies]
 anyhow = {workspace = true}
+ax-kspin = { workspace = true }
+irq-framework = { workspace = true }
 page-table-generic = {workspace = true}
 rdif-intc.workspace = true
 rdrive = {workspace = true}

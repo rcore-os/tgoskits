@@ -4,6 +4,8 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use quote::quote;
+
 const BUILD_INFO_NAME: &str = "build_info.rs";
 const DEFAULT_CPU_CAPACITY: usize = 16;
 
@@ -15,8 +17,15 @@ fn main() -> Result<()> {
     let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
     fs::write(
         out_dir.join(BUILD_INFO_NAME),
-        format!("pub const CPU_CAPACITY: usize = {cpu_capacity};\n"),
+        build_info_source(cpu_capacity),
     )
+}
+
+fn build_info_source(cpu_capacity: usize) -> String {
+    quote! {
+        pub const CPU_CAPACITY: usize = #cpu_capacity;
+    }
+    .to_string()
 }
 
 fn read_cpu_capacity() -> Result<usize> {
@@ -81,4 +90,24 @@ fn parse_usize(value: &str) -> std::result::Result<usize, std::num::ParseIntErro
 
 fn invalid_data(error: impl std::fmt::Display) -> Error {
     Error::new(ErrorKind::InvalidData, error.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn semantic_source(source: &str) -> String {
+        source
+            .chars()
+            .filter(|character| !character.is_whitespace())
+            .collect()
+    }
+
+    #[test]
+    fn build_info_source_generates_cpu_capacity() {
+        assert_eq!(
+            semantic_source(&build_info_source(DEFAULT_CPU_CAPACITY)),
+            semantic_source("pub const CPU_CAPACITY: usize = 16usize;")
+        );
+    }
 }

@@ -4,6 +4,8 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use quote::{format_ident, quote};
+
 const LINKER_SCRIPT_NAME: &str = "axplat.x";
 const LINKER_TEMPLATE_NAME: &str = "axplat.lds.S";
 const SELECTED_PLATFORM_NAME: &str = "selected_platform.rs";
@@ -27,14 +29,7 @@ const PLATFORM_FEATURES: &[PlatformFeature] = &[
         target_arch: Some("riscv64"),
         crate_name: "ax_plat_riscv64_sg2002",
     },
-    PlatformFeature {
-        feature: "loongarch64-qemu-virt",
-        target_arch: Some("loongarch64"),
-        crate_name: "ax_plat_loongarch64_qemu_virt",
-    },
 ];
-
-const DEFAULT_PLATFORMS: &[(&str, &str)] = &[("loongarch64", "ax_plat_loongarch64_qemu_virt")];
 
 fn main() {
     println!("cargo:rustc-check-cfg=cfg(plat_dyn)");
@@ -55,8 +50,8 @@ fn main() {
     let selected_platform = check_platform_features(&arch);
     gen_selected_platform(&arch, selected_platform).unwrap();
 
-    let platform_linker_is_external = selected_platform
-        .is_some_and(|platform| matches!(platform.feature, "plat-dyn" | "loongarch64-qemu-virt"));
+    let platform_linker_is_external =
+        selected_platform.is_some_and(|platform| platform.feature == "plat-dyn");
 
     let config = load_linker_config(platform_linker_is_external).unwrap();
     gen_build_info(config.max_cpu_num).unwrap();
@@ -126,10 +121,6 @@ fn gen_selected_platform(arch: &str, platform: Option<&PlatformFeature>) -> Resu
                 .is_some_and(|target_arch| target_arch == arch)
                 .then_some(platform.crate_name)
         }
-    } else if feature_enabled("defplat") && !feature_enabled("myplat") {
-        DEFAULT_PLATFORMS
-            .iter()
-            .find_map(|(target_arch, crate_name)| (*target_arch == arch).then_some(*crate_name))
     } else {
         None
     };
@@ -138,11 +129,21 @@ fn gen_selected_platform(arch: &str, platform: Option<&PlatformFeature>) -> Resu
         println!("cargo:rustc-cfg=plat_dyn");
     }
 
-    let content = crate_name
-        .map(|crate_name| format!("extern crate {crate_name} as _;\n"))
-        .unwrap_or_default();
+    let content = selected_platform_source(crate_name);
     let out_dir = PathBuf::from(std::env::var("OUT_DIR").unwrap());
     fs::write(out_dir.join(SELECTED_PLATFORM_NAME), content)
+}
+
+fn selected_platform_source(crate_name: Option<&str>) -> String {
+    crate_name
+        .map(|crate_name| {
+            let crate_ident = format_ident!("{crate_name}");
+            quote! {
+                extern crate #crate_ident as _;
+            }
+            .to_string()
+        })
+        .unwrap_or_default()
 }
 
 fn feature_enabled(feature: &str) -> bool {
@@ -266,8 +267,16 @@ fn gen_build_info(cpu_capacity: usize) -> Result<()> {
     let out_dir = PathBuf::from(std::env::var("OUT_DIR").unwrap());
     fs::write(
         out_dir.join(BUILD_INFO_NAME),
-        format!("#[cfg(feature = \"smp\")]\npub const CPU_CAPACITY: usize = {cpu_capacity};\n"),
+        build_info_source(cpu_capacity),
     )
+}
+
+fn build_info_source(cpu_capacity: usize) -> String {
+    quote! {
+        #[cfg(feature = "smp")]
+        pub const CPU_CAPACITY: usize = #cpu_capacity;
+    }
+    .to_string()
 }
 
 fn gen_linker_script(arch: &str, config: &LinkerConfig) -> Result<()> {
@@ -301,4 +310,39 @@ fn gen_linker_script(arch: &str, config: &LinkerConfig) -> Result<()> {
     println!("cargo:rustc-link-search={}", out_dir.display());
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn semantic_source(source: &str) -> String {
+        source
+            .chars()
+            .filter(|character| !character.is_whitespace())
+            .collect()
+    }
+
+    #[test]
+    fn selected_platform_source_handles_crate_names_with_underscores() {
+        assert_eq!(
+            semantic_source(&selected_platform_source(Some(
+                "ax_plat_loongarch64_qemu_virt"
+            ))),
+            semantic_source("extern crate ax_plat_loongarch64_qemu_virt as _;")
+        );
+    }
+
+    #[test]
+    fn selected_platform_source_is_empty_without_platform() {
+        assert!(selected_platform_source(None).is_empty());
+    }
+
+    #[test]
+    fn build_info_source_generates_smp_cpu_capacity() {
+        assert_eq!(
+            semantic_source(&build_info_source(16)),
+            semantic_source("#[cfg(feature = \"smp\")] pub const CPU_CAPACITY: usize = 16usize;")
+        );
+    }
 }

@@ -51,8 +51,13 @@ pub use manager::{
     AxvmRuntime, current_vcpu_id, current_vm_id, get_vm_by_id, get_vm_list,
     inject_current_vcpu_interrupt, register_vm,
 };
+#[cfg(target_arch = "loongarch64")]
+pub use runtime::loongarch_irq::{
+    register_guest_irq_route as register_loongarch_guest_irq_route,
+    unregister_guest_irq_routes as unregister_loongarch_guest_irq_routes,
+};
 pub use task::{AsVCpuTask, VCpuTask};
-pub use vm::{AxVCpuRef, AxVM, AxVMRef, VMMemoryRegion, VMStatus};
+pub use vm::{AxVCpuRef, AxVM, AxVMRef, FwCfgDeviceConfig, VMMemoryRegion, VMStatus};
 
 /// The architecture-independent per-CPU type.
 pub type AxVMPerCpu = axvcpu::AxPerCpu<vcpu::AxVMArchPerCpuImpl>;
@@ -88,7 +93,34 @@ pub fn host_phys_to_virt(paddr: ax_memory_addr::PhysAddr) -> ax_memory_addr::Vir
 }
 
 /// Shut down ArceOS filesystems so guest passthrough can take ownership.
-#[cfg(all(any(feature = "fs", feature = "host-fs"), target_arch = "x86_64"))]
+#[cfg(all(
+    any(feature = "fs", feature = "host-fs"),
+    any(target_arch = "x86_64", target_arch = "loongarch64")
+))]
 pub fn shutdown_host_filesystems() -> ax_errno::AxResult {
     host::arceos::shutdown_host_filesystems()
+}
+
+/// Register a native host IRQ as the source for one x86 guest IOAPIC GSI.
+#[cfg(target_arch = "x86_64")]
+pub fn register_x86_ioapic_irq_forwarding_route(guest_gsi: usize, host_irq: irq_framework::IrqId) {
+    runtime::register_x86_ioapic_irq_forwarding_route(guest_gsi, host_irq);
+}
+
+/// Register a native host IRQ and trigger mode as the source for one x86 guest
+/// IOAPIC GSI.
+#[cfg(target_arch = "x86_64")]
+pub fn register_x86_ioapic_irq_forwarding_route_with_trigger(
+    guest_gsi: usize,
+    host_irq: irq_framework::IrqId,
+    trigger: InterruptTriggerMode,
+) {
+    runtime::register_x86_ioapic_irq_forwarding_route_with_trigger(guest_gsi, host_irq, trigger);
+}
+
+/// Register a callback to activate one x86 guest IOAPIC GSI after the guest has
+/// programmed a usable virtual IOAPIC route for it.
+#[cfg(target_arch = "x86_64")]
+pub fn register_x86_ioapic_irq_forwarding_activator(guest_gsi: usize, activator: fn()) {
+    runtime::register_x86_ioapic_irq_forwarding_activator(guest_gsi, activator);
 }

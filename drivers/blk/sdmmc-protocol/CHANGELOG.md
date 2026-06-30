@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0](https://github.com/rcore-os/tgoskits/compare/sdmmc-protocol-v0.1.3...sdmmc-protocol-v0.2.0) - 2026-06-27
+
+### Added
+
+- *(sdmmc)* implement native host2 RDIF path
+
 ## [0.1.3](https://github.com/rcore-os/tgoskits/compare/sdmmc-protocol-v0.1.2...sdmmc-protocol-v0.1.3) - 2026-06-22
 
 ### Other

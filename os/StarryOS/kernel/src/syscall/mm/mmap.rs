@@ -523,6 +523,35 @@ pub fn sys_mmap(
     aspace.map(start, length, mapping_flags, populate, backend)?;
     drop(aspace);
 
+    // perf side-band: an executable, file-backed mapping is (almost always) a
+    // shared library the dynamic loader just mapped. Emit a PERF_RECORD_MMAP2 to
+    // any per-task perf event monitoring this task so `perf report` can symbolize
+    // its samples. The perf ring itself is mapped PROT_READ|WRITE (no EXEC), so it
+    // is naturally excluded; anonymous executable maps (no file) too.
+    #[cfg(target_arch = "aarch64")]
+    if permission_flags.contains(MmapProt::EXEC)
+        && let Some(ref file) = file
+    {
+        let mut prot = 0u32;
+        if permission_flags.contains(MmapProt::READ) {
+            prot |= 1;
+        }
+        if permission_flags.contains(MmapProt::WRITE) {
+            prot |= 2;
+        }
+        prot |= 4; // PROT_EXEC
+        let path = file.path();
+        crate::perf::task::on_mmap_sideband(
+            curr.as_thread(),
+            start.as_usize(),
+            length,
+            offset,
+            prot,
+            matches!(map_type, MmapFlags::SHARED),
+            &path,
+        );
+    }
+
     Ok(start.as_usize() as _)
 }
 

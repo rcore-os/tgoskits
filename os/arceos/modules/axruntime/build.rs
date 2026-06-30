@@ -4,6 +4,8 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use quote::quote;
+
 const LINKER_TEMPLATE_NAME: &str = "runtime.ld";
 const FINAL_LINKER_SCRIPT_NAME: &str = "linker.x";
 const EXT_LINKER_SCRIPT_NAME: &str = "runtime.x";
@@ -45,16 +47,25 @@ fn build_info_source() -> Result<String> {
 }
 
 fn build_info_source_from(arch: &str, target: &str, mode: &str, config: RuntimeConfig) -> String {
-    format!(
-        "pub const ARCH: &str = {arch:?};\npub const TARGET: &str = {target:?};\npub const MODE: \
-         &str = {mode:?};\n#[cfg(feature = \"smp\")]\npub const CPU_CAPACITY: usize = \
-         {cpu_capacity};\n#[cfg(any(feature = \"fs\", all(feature = \"smp\", not(feature = \
-         \"plat-dyn\"))))]\npub const TASK_STACK_SIZE: usize = {task_stack_size};\n#[cfg(feature \
-         = \"irq\")]\npub const TICKS_PER_SEC: usize = {ticks_per_sec};\n",
-        cpu_capacity = config.cpu_capacity,
-        task_stack_size = config.task_stack_size,
-        ticks_per_sec = config.ticks_per_sec,
-    )
+    let cpu_capacity = config.cpu_capacity;
+    let task_stack_size = config.task_stack_size;
+    let ticks_per_sec = config.ticks_per_sec;
+
+    quote! {
+        pub const ARCH: &str = #arch;
+        pub const TARGET: &str = #target;
+        pub const MODE: &str = #mode;
+
+        #[cfg(feature = "smp")]
+        pub const CPU_CAPACITY: usize = #cpu_capacity;
+
+        #[cfg(any(feature = "fs", all(feature = "smp", not(feature = "plat-dyn"))))]
+        pub const TASK_STACK_SIZE: usize = #task_stack_size;
+
+        #[cfg(feature = "irq")]
+        pub const TICKS_PER_SEC: usize = #ticks_per_sec;
+    }
+    .to_string()
 }
 
 #[derive(Clone, Copy)]
@@ -168,10 +179,17 @@ fn env_truthy(key: &str) -> bool {
 mod tests {
     use super::*;
 
+    fn semantic_source(source: &str) -> String {
+        source
+            .chars()
+            .filter(|character| !character.is_whitespace())
+            .collect()
+    }
+
     #[test]
     fn build_info_source_generates_banner_constants() {
         assert_eq!(
-            build_info_source_from(
+            semantic_source(&build_info_source_from(
                 "riscv64",
                 "riscv64gc-unknown-none-elf",
                 "release",
@@ -180,19 +198,19 @@ mod tests {
                     task_stack_size: DEFAULT_TASK_STACK_SIZE,
                     ticks_per_sec: DEFAULT_TICKS_PER_SEC,
                 },
-            ),
-            concat!(
+            )),
+            semantic_source(concat!(
                 "pub const ARCH: &str = \"riscv64\";\n",
                 "pub const TARGET: &str = \"riscv64gc-unknown-none-elf\";\n",
                 "pub const MODE: &str = \"release\";\n",
                 "#[cfg(feature = \"smp\")]\n",
-                "pub const CPU_CAPACITY: usize = 16;\n",
+                "pub const CPU_CAPACITY: usize = 16usize;\n",
                 "#[cfg(any(feature = \"fs\", all(feature = \"smp\", not(feature = \
                  \"plat-dyn\"))))]\n",
-                "pub const TASK_STACK_SIZE: usize = 262144;\n",
+                "pub const TASK_STACK_SIZE: usize = 262144usize;\n",
                 "#[cfg(feature = \"irq\")]\n",
-                "pub const TICKS_PER_SEC: usize = 100;\n",
-            )
+                "pub const TICKS_PER_SEC: usize = 100usize;\n",
+            ))
         );
     }
 }

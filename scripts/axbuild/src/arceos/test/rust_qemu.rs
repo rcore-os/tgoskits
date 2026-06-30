@@ -141,10 +141,10 @@ fn apply_rust_qemu_feature_overrides(
             ];
             qemu.timeout = Some(qemu.timeout.unwrap_or(30).min(30));
         }
-        Some(ARCEOS_RUST_LOCKDEP_DETECT_FEATURE) => {
+        Some(feature) if is_lockdep_detect_feature(feature) => {
             qemu.success_regex = vec!["lockdep: lock order inversion detected".to_string()];
             qemu.fail_regex =
-                vec!["lockdep did not report an expected lock order inversion".to_string()];
+                vec![r"lockdep did not report an expected .*lock order inversion".to_string()];
             qemu.timeout = Some(qemu.timeout.unwrap_or(30).min(30));
         }
         Some(ARCEOS_RUST_STACK_GUARD_PAGE_FEATURE) => {
@@ -162,6 +162,10 @@ fn apply_rust_qemu_feature_overrides(
         }
         _ => {}
     }
+}
+
+fn is_lockdep_detect_feature(feature: &str) -> bool {
+    matches!(feature, ARCEOS_RUST_LOCKDEP_DETECT_FEATURE)
 }
 
 fn add_cargo_feature(cargo: &mut Cargo, feature: &str) {
@@ -495,7 +499,7 @@ BT 0 ip=0x1 fp=0x2
         );
         assert_eq!(
             qemu.fail_regex,
-            vec!["lockdep did not report an expected lock order inversion"]
+            vec![r"lockdep did not report an expected .*lock order inversion"]
         );
         assert_eq!(qemu.timeout, Some(30));
     }

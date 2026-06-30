@@ -247,6 +247,22 @@ vm_configs = []
 }
 
 #[test]
+fn load_target_from_plain_build_config_returns_none() {
+    let root = tempdir().unwrap();
+    let path = root.path().join(".build.toml");
+    fs::write(
+        &path,
+        r#"
+features = ["fs"]
+log = "Info"
+"#,
+    )
+    .unwrap();
+
+    assert_eq!(load_target_from_build_config(&path).unwrap(), None);
+}
+
+#[test]
 fn load_target_from_build_config_rejects_removed_std_field() {
     let root = tempdir().unwrap();
     let path = root.path().join("qemu-aarch64.toml");
@@ -333,6 +349,7 @@ vm_configs = []
     assert!(cargo.features.contains(&"ept-level-4".to_string()));
     assert!(cargo.features.contains(&"fs".to_string()));
     assert!(cargo.features.contains(&"vmx".to_string()));
+    assert!(cargo.features.contains(&"plat-dyn".to_string()));
     assert!(cargo.features.contains(&"ax-std/plat-dyn".to_string()));
     assert!(cargo.features.contains(&"axvm/plat-dyn".to_string()));
     assert!(cargo.features.contains(&"ax-driver/plat-dyn".to_string()));
@@ -598,15 +615,14 @@ log = "Info"
 }
 
 #[test]
-fn load_cargo_config_keeps_loongarch_axvisor_as_elf() {
+fn load_cargo_config_keeps_loongarch_dynamic_axvisor_as_elf() {
     let root = tempdir().unwrap();
     let config_path = root.path().join(".build.toml");
     fs::write(
         &config_path,
         r#"
-features = ["ept-level-4"]
+features = ["axplat-dyn/efi", "ept-level-4"]
 log = "Info"
-plat_dyn = false
 "#,
     )
     .unwrap();
@@ -616,7 +632,7 @@ plat_dyn = false
         axvisor_dir: root.path().join("os/axvisor"),
         arch: "loongarch64".to_string(),
         target: "loongarch64-unknown-none-softfloat".to_string(),
-        plat_dyn: None,
+        plat_dyn: Some(true),
         smp: None,
         debug: false,
         build_info_path: config_path,
@@ -627,9 +643,11 @@ plat_dyn = false
     .unwrap();
 
     assert!(!cargo.to_bin);
+    assert!(cargo.features.contains(&"ax-std/plat-dyn".to_string()));
+    assert!(cargo.features.contains(&"axplat-dyn/efi".to_string()));
     assert!(
         cargo
             .target
-            .ends_with("scripts/targets/std/loongarch64-unknown-linux-musl.json")
+            .ends_with("scripts/targets/std/pie/loongarch64-unknown-linux-musl.json")
     );
 }
