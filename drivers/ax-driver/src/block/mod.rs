@@ -11,6 +11,8 @@ pub mod bcm2835;
 pub mod cvsd;
 #[cfg(feature = "k230-sdhci")]
 pub mod k230_sdhci;
+#[cfg(feature = "ls2k1000-ahci")]
+pub mod ls2k1000_ahci;
 #[cfg(feature = "nvme")]
 pub mod nvme;
 #[cfg(feature = "phytium-mci")]
