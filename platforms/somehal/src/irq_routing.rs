@@ -1,3 +1,5 @@
+#![cfg(any(test, target_arch = "loongarch64"))]
+
 use alloc::vec::Vec;
 
 use rdif_intc::{AcpiGsiController, AcpiGsiRoute};
@@ -8,7 +10,7 @@ use crate::irq::{HwIrq, IrqError, IrqId};
 pub(super) enum RawIrq {
     Timer,
     Ipi,
-    EioIntc,
+    External,
     Unknown,
 }
 
@@ -16,14 +18,14 @@ pub(super) const fn classify_cpu_irq(
     raw: usize,
     timer_irq: usize,
     ipi_irq: usize,
-    eiointc_irq: usize,
+    external_irq: usize,
 ) -> RawIrq {
     if raw == timer_irq {
         RawIrq::Timer
     } else if raw == ipi_irq {
         RawIrq::Ipi
-    } else if raw == eiointc_irq {
-        RawIrq::EioIntc
+    } else if raw == external_irq {
+        RawIrq::External
     } else {
         RawIrq::Unknown
     }
@@ -61,20 +63,23 @@ struct RouteEntry {
     irq: IrqId,
 }
 
-pub(super) struct PchPicRoutes {
+pub(super) struct AcpiControllerRoutes {
+    controller: AcpiGsiController,
     controller_address: u64,
     base_vector: usize,
     vector_count: usize,
     routes: Vec<RouteEntry>,
 }
 
-impl PchPicRoutes {
+impl AcpiControllerRoutes {
     pub(super) const fn new(
+        controller: AcpiGsiController,
         controller_address: u64,
         base_vector: usize,
         vector_count: usize,
     ) -> Self {
         Self {
+            controller,
             controller_address,
             base_vector,
             vector_count,
@@ -96,7 +101,7 @@ impl PchPicRoutes {
     }
 
     pub(super) fn supports_acpi_gsi(&self, route: &AcpiGsiRoute) -> bool {
-        route.controller == AcpiGsiController::PchPic
+        route.controller == self.controller
             && route.controller_address == self.controller_address
             && usize::from(route.controller_input) < self.vector_count
     }
@@ -138,14 +143,14 @@ impl PchPicRoutes {
     }
 }
 
-#[cfg(all(test, any(unix, windows)))]
+#[cfg(test)]
 mod tests {
     use rdif_intc::{AcpiGsiController, AcpiGsiRoute, AcpiIrqPolarity, AcpiIrqTrigger};
 
     use super::*;
     use crate::irq::{HwIrq, IrqDomainId, IrqError, IrqId};
 
-    fn pch_route(gsi: u32, input: u8) -> AcpiGsiRoute {
+    fn acpi_route(gsi: u32, input: u8) -> AcpiGsiRoute {
         AcpiGsiRoute {
             gsi,
             vector: rdrive::probe::acpi::PCI_INTX_VECTOR_BASE + gsi as usize,
@@ -159,9 +164,9 @@ mod tests {
     }
 
     #[test]
-    fn pch_pic_reverse_route_uses_controller_input_not_acpi_vector() {
-        let mut routes = PchPicRoutes::new(0x1000_0000, 0, 64);
-        let route = pch_route(82, 18);
+    fn acpi_controller_reverse_route_uses_controller_input_not_acpi_vector() {
+        let mut routes = AcpiControllerRoutes::new(AcpiGsiController::PchPic, 0x1000_0000, 0, 64);
+        let route = acpi_route(82, 18);
         let irq = IrqId::new(IrqDomainId(42), HwIrq(18));
 
         routes.remember_route(&route, irq).unwrap();
@@ -175,9 +180,9 @@ mod tests {
     }
 
     #[test]
-    fn pch_pic_acpi_route_keeps_hardware_vector_as_base_plus_input() {
-        let mut routes = PchPicRoutes::new(0x1000_0000, 0, 64);
-        let route = pch_route(82, 18);
+    fn acpi_controller_acpi_route_keeps_hardware_vector_as_base_plus_input() {
+        let mut routes = AcpiControllerRoutes::new(AcpiGsiController::PchPic, 0x1000_0000, 0, 64);
+        let route = acpi_route(82, 18);
         let irq = IrqId::new(IrqDomainId(42), HwIrq(18));
 
         routes.remember_route(&route, irq).unwrap();
@@ -189,9 +194,9 @@ mod tests {
     }
 
     #[test]
-    fn pch_pic_route_rejects_unsupported_controller_and_collision() {
-        let mut routes = PchPicRoutes::new(0x1000_0000, 0, 64);
-        let route = pch_route(82, 18);
+    fn acpi_controller_route_rejects_unsupported_controller_and_collision() {
+        let mut routes = AcpiControllerRoutes::new(AcpiGsiController::PchPic, 0x1000_0000, 0, 64);
+        let route = acpi_route(82, 18);
         let irq = IrqId::new(IrqDomainId(42), HwIrq(18));
 
         routes.remember_route(&route, irq).unwrap();
@@ -225,10 +230,10 @@ mod tests {
     }
 
     #[test]
-    fn loongarch_cpu_irq_classifier_keeps_unknown_lines_local_only() {
+    fn cpu_irq_classifier_keeps_unknown_lines_local_only() {
         assert_eq!(classify_cpu_irq(11, 11, 12, 3), RawIrq::Timer);
         assert_eq!(classify_cpu_irq(12, 11, 12, 3), RawIrq::Ipi);
-        assert_eq!(classify_cpu_irq(3, 11, 12, 3), RawIrq::EioIntc);
+        assert_eq!(classify_cpu_irq(3, 11, 12, 3), RawIrq::External);
         assert_eq!(classify_cpu_irq(7, 11, 12, 3), RawIrq::Unknown);
 
         assert!(cpu_local_hwirq_is_runtime_irq(11, 11, 12, 3));

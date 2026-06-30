@@ -1,15 +1,12 @@
-use rdif_intc::{AcpiIrqPolarity, AcpiIrqTrigger, Interface};
+use rdif_intc::{AcpiGsiController, AcpiIrqPolarity, AcpiIrqTrigger, Interface};
 use rdrive::{
     DriverGeneric, PlatformDevice, module_driver,
     probe::{OnProbeError, acpi::AcpiPchPic},
     register::{ProbeAcpi, ProbeFdt},
 };
 
-use super::{
-    irq_common::{PCH_PIC_VECTOR_COUNT, fdt_first_cell_vector, pch_pic_reg_bit},
-    routing::PchPicRoutes,
-};
-use crate::{common::ioremap, setup::MmioRaw};
+use super::irq_common::{PCH_PIC_VECTOR_COUNT, fdt_first_cell_vector, pch_pic_reg_bit};
+use crate::{common::ioremap, irq_routing::AcpiControllerRoutes, setup::MmioRaw};
 
 const DEFAULT_PCH_PIC_SIZE: usize = 0x400;
 
@@ -203,7 +200,7 @@ fn pch_pic_controller_for_route(
 
 struct PchPic {
     mmio: MmioRaw,
-    routes: PchPicRoutes,
+    routes: AcpiControllerRoutes,
 }
 
 impl PchPic {
@@ -211,7 +208,12 @@ impl PchPic {
         let controller_address = mmio.phys_addr().as_usize() as u64;
         Self {
             mmio,
-            routes: PchPicRoutes::new(controller_address, base_vector, vector_count),
+            routes: AcpiControllerRoutes::new(
+                AcpiGsiController::PchPic,
+                controller_address,
+                base_vector,
+                vector_count,
+            ),
         }
     }
 

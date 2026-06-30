@@ -14,6 +14,7 @@ pub(crate) mod common;
 pub mod cpu;
 mod driver;
 pub mod irq;
+mod irq_routing;
 pub mod platform;
 pub mod rtc;
 pub mod setup;
@@ -44,10 +45,6 @@ pub mod arch;
 #[cfg(target_arch = "riscv64")]
 #[path = "arch/riscv64/mod.rs"]
 pub mod arch;
-
-#[cfg(all(test, any(unix, windows), not(target_arch = "loongarch64")))]
-#[path = "arch/loongarch64/routing.rs"]
-mod loongarch64_irq_routing;
 
 pub fn init(kernel: &'static dyn KernelOp) {
     setup::set_kernel_op(kernel);

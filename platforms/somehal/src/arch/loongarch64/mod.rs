@@ -9,9 +9,8 @@ use crate::{
 mod eiointc;
 mod irq_common;
 mod pch_pic;
-mod routing;
 
-use routing::{
+use crate::irq_routing::{
     ExternalVectorResolveFailure, RawIrq, classify_cpu_irq, cpu_local_hwirq_is_runtime_irq,
     external_vector_failure_policy,
 };
@@ -193,7 +192,7 @@ impl PlatOp for Plat {
                 let _status = ack_pending_ipi();
                 Some(ActiveIrq::new(cpu_local_irq(raw), Completion::None))
             }
-            RawIrq::EioIntc => {
+            RawIrq::External => {
                 let Some(external) = eiointc::claim_irq() else {
                     debug!("Spurious LoongArch EIOINTC interrupt");
                     return None;
