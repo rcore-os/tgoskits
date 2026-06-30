@@ -431,11 +431,7 @@ fn ax_hal_platform_features_are_filtered_by_target_arch() {
     let checks = expand(&[pkg(
         "ax-hal",
         "ax-hal 0.1.0 (path+file:///tmp/ax-hal)",
-        &[
-            ("irq", &[]),
-            ("loongarch64-qemu-virt", &[]),
-            ("riscv64-sg2002", &[]),
-        ],
+        &[("irq", &[]), ("plat-dyn", &[]), ("riscv64-sg2002", &[])],
         Some(&["loongarch64-unknown-none", "riscv64gc-unknown-none-elf"]),
     )]);
 
@@ -452,11 +448,11 @@ fn ax_hal_platform_features_are_filtered_by_target_arch() {
     ));
     assert!(has_feature_on_target("irq", "riscv64gc-unknown-none-elf"));
     assert!(has_feature_on_target(
-        "loongarch64-qemu-virt",
+        "plat-dyn",
         "loongarch64-unknown-none-softfloat"
     ));
-    assert!(!has_feature_on_target(
-        "loongarch64-qemu-virt",
+    assert!(has_feature_on_target(
+        "plat-dyn",
         "riscv64gc-unknown-none-elf"
     ));
     assert!(has_feature_on_target(
@@ -496,7 +492,7 @@ fn ax_hal_platform_feature_forwards_are_filtered_by_target_arch() {
         "platform-forwarder 0.1.0 (path+file:///tmp/platform-forwarder)",
         &[
             ("irq", &["ax-hal/irq"]),
-            ("loongarch64-qemu-virt", &["ax-hal/loongarch64-qemu-virt"]),
+            ("plat-dyn", &["ax-hal/plat-dyn"]),
             ("riscv64-sg2002", &["ax-hal/riscv64-sg2002"]),
         ],
         Some(&["loongarch64-unknown-none", "riscv64gc-unknown-none-elf"]),
@@ -515,11 +511,11 @@ fn ax_hal_platform_feature_forwards_are_filtered_by_target_arch() {
     ));
     assert!(has_feature_on_target("irq", "riscv64gc-unknown-none-elf"));
     assert!(has_feature_on_target(
-        "loongarch64-qemu-virt",
+        "plat-dyn",
         "loongarch64-unknown-none-softfloat"
     ));
-    assert!(!has_feature_on_target(
-        "loongarch64-qemu-virt",
+    assert!(has_feature_on_target(
+        "plat-dyn",
         "riscv64gc-unknown-none-elf"
     ));
     assert!(has_feature_on_target(

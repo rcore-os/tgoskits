@@ -871,6 +871,10 @@ impl AxRunQueue {
         // If the task's state matches `current_state`, set its state to `Ready` and
         // put it back to the run queue (except idle task).
         if task.transition_state(current_state, TaskState::Ready) && !task.is_idle() {
+            #[cfg(feature = "smp")]
+            let waking_current_task = current_state == TaskState::Blocked
+                && self.cpu_id == this_cpu_id()
+                && crate::current().ptr_eq(&task);
             // If the task is blocked, wait for the task to finish its scheduling process.
             // See `unblock_task()` for details.
             if current_state == TaskState::Blocked {
@@ -885,9 +889,16 @@ impl AxRunQueue {
                 //    because the task may have been woken up by other cores.
                 // 2. This can be placed in the front of `switch_to()`
                 #[cfg(feature = "smp")]
-                while task.on_cpu() {
-                    // Wait for the task to finish its scheduling process.
-                    core::hint::spin_loop();
+                {
+                    // A scheduler tracepoint or other IRQ-safe notification can wake the
+                    // task that is currently being switched out on this CPU. Waiting for
+                    // `on_cpu` there would wait for the very switch we are still inside.
+                    if !waking_current_task {
+                        while task.on_cpu() {
+                            // Wait for the task to finish its scheduling process.
+                            core::hint::spin_loop();
+                        }
+                    }
                 }
             }
             // TODO: priority

@@ -39,6 +39,29 @@ first_glob() {
     return 0
 }
 
+qemu_runner_candidates() {
+    case "$arch" in
+        aarch64)     printf '%s\n' qemu-aarch64-static qemu-aarch64 ;;
+        riscv64)     printf '%s\n' qemu-riscv64-static qemu-riscv64 ;;
+        x86_64)      printf '%s\n' qemu-x86_64-static qemu-x86_64 ;;
+        loongarch64) printf '%s\n' qemu-loongarch64-static qemu-loongarch64 ;;
+        *)           echo "error: unsupported arch: $arch" >&2; exit 1 ;;
+    esac
+}
+
+find_qemu_runner() {
+    local candidate
+    while IFS= read -r candidate; do
+        if command -v "$candidate" >/dev/null 2>&1; then
+            command -v "$candidate"
+            return 0
+        fi
+    done < <(qemu_runner_candidates)
+
+    echo "error: missing qemu-user runner for arch $arch; tried: $(qemu_runner_candidates | paste -sd ', ' -)" >&2
+    exit 1
+}
+
 ensure_host_packages() {
     local missing=()
 
@@ -46,13 +69,6 @@ ensure_host_packages() {
     command -v install >/dev/null 2>&1 || missing+=(coreutils)
     command -v readelf >/dev/null 2>&1 || missing+=(binutils)
     command -v tar >/dev/null 2>&1 || missing+=(tar)
-
-    case "$arch" in
-        aarch64)     command -v qemu-aarch64-static >/dev/null 2>&1 || missing+=(qemu-user-static) ;;
-        riscv64)     command -v qemu-riscv64-static >/dev/null 2>&1 || missing+=(qemu-user-static) ;;
-        x86_64)      command -v qemu-x86_64-static >/dev/null 2>&1 || missing+=(qemu-user-static) ;;
-        loongarch64) command -v qemu-loongarch64-static >/dev/null 2>&1 || missing+=(qemu-user-static) ;;
-    esac
 
     if [[ ${#missing[@]} -eq 0 ]]; then
         return
@@ -74,18 +90,7 @@ extract_base_rootfs() {
 
 install_python_packages() {
     local qemu_runner
-    case "$arch" in
-        aarch64)     qemu_runner="qemu-aarch64-static" ;;
-        riscv64)     qemu_runner="qemu-riscv64-static" ;;
-        x86_64)      qemu_runner="qemu-x86_64-static" ;;
-        loongarch64) qemu_runner="qemu-loongarch64-static" ;;
-        *)           echo "error: unsupported arch: $arch" >&2; exit 1 ;;
-    esac
-
-    if ! command -v "$qemu_runner" >/dev/null 2>&1; then
-        echo "error: $qemu_runner not found" >&2
-        exit 1
-    fi
+    qemu_runner="$(find_qemu_runner)"
 
     # Copy host DNS config so apk can resolve hostnames inside qemu-user.
     if [[ -f /etc/resolv.conf ]]; then

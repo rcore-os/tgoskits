@@ -10,14 +10,9 @@ publish = false
 [features]
 default = []
 arceos = ["dep:ax-std"]
-loongarch64-qemu-virt = ["dep:ax-plat-loongarch64-qemu-virt"]
 
 [dependencies]
-cfg-if.workspace = true
 ax-std = { workspace = true, optional = true }
-
-[target.'cfg(target_arch = "loongarch64")'.dependencies]
-ax-plat-loongarch64-qemu-virt = { workspace = true, optional = true }
 
 [package.metadata.axstd]
 features = ["log-level-debug"]

@@ -29,14 +29,7 @@ const PLATFORM_FEATURES: &[PlatformFeature] = &[
         target_arch: Some("riscv64"),
         crate_name: "ax_plat_riscv64_sg2002",
     },
-    PlatformFeature {
-        feature: "loongarch64-qemu-virt",
-        target_arch: Some("loongarch64"),
-        crate_name: "ax_plat_loongarch64_qemu_virt",
-    },
 ];
-
-const DEFAULT_PLATFORMS: &[(&str, &str)] = &[("loongarch64", "ax_plat_loongarch64_qemu_virt")];
 
 fn main() {
     println!("cargo:rustc-check-cfg=cfg(plat_dyn)");
@@ -57,8 +50,8 @@ fn main() {
     let selected_platform = check_platform_features(&arch);
     gen_selected_platform(&arch, selected_platform).unwrap();
 
-    let platform_linker_is_external = selected_platform
-        .is_some_and(|platform| matches!(platform.feature, "plat-dyn" | "loongarch64-qemu-virt"));
+    let platform_linker_is_external =
+        selected_platform.is_some_and(|platform| platform.feature == "plat-dyn");
 
     let config = load_linker_config(platform_linker_is_external).unwrap();
     gen_build_info(config.max_cpu_num).unwrap();
@@ -128,10 +121,6 @@ fn gen_selected_platform(arch: &str, platform: Option<&PlatformFeature>) -> Resu
                 .is_some_and(|target_arch| target_arch == arch)
                 .then_some(platform.crate_name)
         }
-    } else if feature_enabled("defplat") && !feature_enabled("myplat") {
-        DEFAULT_PLATFORMS
-            .iter()
-            .find_map(|(target_arch, crate_name)| (*target_arch == arch).then_some(*crate_name))
     } else {
         None
     };

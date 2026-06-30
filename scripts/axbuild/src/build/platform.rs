@@ -340,7 +340,7 @@ pub(super) fn ax_hal_platform_feature_name<'a>(
 }
 
 pub(super) fn is_known_ax_hal_platform_feature(platform: &str) -> bool {
-    matches!(platform, "riscv64-sg2002" | "loongarch64-qemu-virt")
+    matches!(platform, "riscv64-sg2002")
 }
 
 pub(super) fn has_ax_hal_platform_feature(
@@ -370,16 +370,9 @@ pub(super) fn default_ax_hal_platform_feature(
         return Ok(format!("ax-hal/{platform}"));
     }
 
-    Ok(match arch {
-        "x86_64" | "aarch64" | "riscv64" => {
-            return Err(anyhow!(
-                "no static default ax-hal platform for arch `{arch}`"
-            ));
-        }
-        "loongarch64" => "ax-hal/loongarch64-qemu-virt",
-        _ => unreachable!("unsupported arch"),
-    }
-    .to_string())
+    Err(anyhow!(
+        "no static default ax-hal platform for arch `{arch}`"
+    ))
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]

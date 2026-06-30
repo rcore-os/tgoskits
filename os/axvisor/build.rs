@@ -52,7 +52,7 @@ use toml::Table;
 fn fallback_platform_for_arch(arch: &str) -> &'static str {
     match arch {
         "aarch64" => "aarch64-generic",
-        "loongarch64" => "loongarch64-qemu-virt",
+        "loongarch64" => "loongarch64-plat-dyn",
         "x86_64" => "dummy",
         "riscv64" => "riscv64-plat-dyn",
         _ => "dummy",
