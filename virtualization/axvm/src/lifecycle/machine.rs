@@ -28,6 +28,7 @@ pub enum Machine<R, H = ()> {
     },
     Stopped {
         resources: Option<R>,
+        runtime: Option<H>,
         reason: StopReason,
     },
     Destroying,
@@ -140,11 +141,7 @@ impl<R, H> Machine<R, H> {
     {
         let old = core::mem::replace(self, Machine::Switching);
         match old {
-            Machine::Ready(mut resources)
-            | Machine::Stopped {
-                resources: Some(mut resources),
-                ..
-            } => match f(&mut resources) {
+            Machine::Ready(mut resources) => match f(&mut resources) {
                 Ok(runtime) => {
                     *self = Machine::Running { resources, runtime };
                     Ok(())
@@ -154,6 +151,40 @@ impl<R, H> Machine<R, H> {
                     Err(err)
                 }
             },
+            Machine::Stopped {
+                resources: Some(mut resources),
+                runtime: None,
+                reason,
+            } => match f(&mut resources) {
+                Ok(runtime) => {
+                    *self = Machine::Running { resources, runtime };
+                    Ok(())
+                }
+                Err(err) => {
+                    *self = Machine::Stopped {
+                        resources: Some(resources),
+                        runtime: None,
+                        reason,
+                    };
+                    Err(err)
+                }
+            },
+            Machine::Stopped {
+                resources,
+                runtime: Some(runtime),
+                reason,
+            } => {
+                *self = Machine::Stopped {
+                    resources,
+                    runtime: Some(runtime),
+                    reason,
+                };
+                Err(VmLifecycleError::invalid_transition(
+                    VmStatus::Stopped,
+                    VmStatus::Running,
+                    "start",
+                ))
+            }
             other => {
                 let from = other.status();
                 *self = other;
@@ -216,20 +247,47 @@ impl<R, H> Machine<R, H> {
                     *self = Machine::Failed(err.to_string());
                     return Err(err);
                 }
-                *self = Machine::Stopped { resources, reason };
+                *self = Machine::Stopped {
+                    resources,
+                    runtime: None,
+                    reason,
+                };
                 Ok(())
             }
-            Machine::Running { resources, .. } | Machine::Paused { resources, .. } => {
-                let mut resources = Some(resources);
-                if let Err(err) = f(resources.as_mut(), &reason) {
-                    *self = Machine::Failed(err.to_string());
-                    return Err(err);
-                }
-                *self = Machine::Stopped { resources, reason };
-                Ok(())
+            Machine::Running { resources, runtime } => {
+                *self = Machine::Running { resources, runtime };
+                Err(VmLifecycleError::invalid_transition(
+                    VmStatus::Running,
+                    VmStatus::Stopped,
+                    "stop",
+                ))
             }
-            Machine::Stopped { resources, reason } => {
-                *self = Machine::Stopped { resources, reason };
+            Machine::Pausing { resources, runtime } => {
+                *self = Machine::Pausing { resources, runtime };
+                Err(VmLifecycleError::invalid_transition(
+                    VmStatus::Pausing,
+                    VmStatus::Stopped,
+                    "stop",
+                ))
+            }
+            Machine::Paused { resources, runtime } => {
+                *self = Machine::Paused { resources, runtime };
+                Err(VmLifecycleError::invalid_transition(
+                    VmStatus::Paused,
+                    VmStatus::Stopped,
+                    "stop",
+                ))
+            }
+            Machine::Stopped {
+                resources,
+                runtime,
+                reason,
+            } => {
+                *self = Machine::Stopped {
+                    resources,
+                    runtime,
+                    reason,
+                };
                 Ok(())
             }
             other => {
@@ -254,11 +312,16 @@ impl<R, H> Machine<R, H> {
                 f(Some(&mut resources), &reason)?;
                 *self = Machine::Stopped {
                     resources: Some(resources),
+                    runtime: None,
                     reason,
                 };
                 Ok(())
             }
             Machine::Running {
+                mut resources,
+                runtime,
+            }
+            | Machine::Pausing {
                 mut resources,
                 runtime,
             }
@@ -286,8 +349,16 @@ impl<R, H> Machine<R, H> {
                 };
                 Ok(())
             }
-            Machine::Stopped { resources, reason } => {
-                *self = Machine::Stopped { resources, reason };
+            Machine::Stopped {
+                resources,
+                runtime,
+                reason,
+            } => {
+                *self = Machine::Stopped {
+                    resources,
+                    runtime,
+                    reason,
+                };
                 Ok(())
             }
             other => {
@@ -306,13 +377,27 @@ impl<R, H> Machine<R, H> {
         let old = core::mem::replace(self, Machine::Switching);
         match old {
             Machine::Stopping {
-                resources, reason, ..
+                resources,
+                runtime,
+                reason,
             } => {
-                *self = Machine::Stopped { resources, reason };
+                *self = Machine::Stopped {
+                    resources,
+                    runtime,
+                    reason,
+                };
                 Ok(())
             }
-            Machine::Stopped { resources, reason } => {
-                *self = Machine::Stopped { resources, reason };
+            Machine::Stopped {
+                resources,
+                runtime,
+                reason,
+            } => {
+                *self = Machine::Stopped {
+                    resources,
+                    runtime,
+                    reason,
+                };
                 Ok(())
             }
             other => {
@@ -327,17 +412,27 @@ impl<R, H> Machine<R, H> {
         }
     }
 
+    pub fn take_stopped_runtime(&mut self) -> Option<H> {
+        match self {
+            Machine::Stopped { runtime, .. } => runtime.take(),
+            _ => None,
+        }
+    }
+
     pub fn reset_with<F>(&mut self, f: F) -> VmLifecycleResult
     where
         F: FnOnce(&mut R) -> VmLifecycleResult,
     {
         let old = core::mem::replace(self, Machine::Switching);
         match old {
-            Machine::Ready(mut resources)
-            | Machine::Running { mut resources, .. }
-            | Machine::Paused { mut resources, .. }
-            | Machine::Stopped {
+            Machine::Ready(mut resources) => {
+                f(&mut resources)?;
+                *self = Machine::Ready(resources);
+                Ok(())
+            }
+            Machine::Stopped {
                 resources: Some(mut resources),
+                runtime: None,
                 ..
             } => {
                 f(&mut resources)?;
@@ -345,12 +440,52 @@ impl<R, H> Machine<R, H> {
                 Ok(())
             }
             Machine::Stopping {
-                resources: Some(mut resources),
-                ..
+                resources,
+                runtime,
+                reason,
             } => {
-                f(&mut resources)?;
-                *self = Machine::Ready(resources);
-                Ok(())
+                *self = Machine::Stopping {
+                    resources,
+                    runtime,
+                    reason,
+                };
+                Err(VmLifecycleError::invalid_transition(
+                    VmStatus::Stopping,
+                    VmStatus::Ready,
+                    "reset",
+                ))
+            }
+            Machine::Running { resources, runtime } => {
+                *self = Machine::Running { resources, runtime };
+                Err(VmLifecycleError::invalid_transition(
+                    VmStatus::Running,
+                    VmStatus::Ready,
+                    "reset",
+                ))
+            }
+            Machine::Paused { resources, runtime } => {
+                *self = Machine::Paused { resources, runtime };
+                Err(VmLifecycleError::invalid_transition(
+                    VmStatus::Paused,
+                    VmStatus::Ready,
+                    "reset",
+                ))
+            }
+            Machine::Stopped {
+                resources,
+                runtime: Some(runtime),
+                reason,
+            } => {
+                *self = Machine::Stopped {
+                    resources,
+                    runtime: Some(runtime),
+                    reason,
+                };
+                Err(VmLifecycleError::invalid_transition(
+                    VmStatus::Stopped,
+                    VmStatus::Ready,
+                    "reset",
+                ))
             }
             other => {
                 let from = other.status();
@@ -379,14 +514,67 @@ impl<R, H> Machine<R, H> {
                 *self = Machine::Destroyed;
                 Ok(())
             }
-            Machine::Running { resources, .. }
-            | Machine::Pausing { resources, .. }
-            | Machine::Paused { resources, .. } => {
-                f(Some(resources))?;
-                *self = Machine::Destroyed;
-                Ok(())
+            Machine::Running { resources, runtime } => {
+                *self = Machine::Running { resources, runtime };
+                Err(VmLifecycleError::invalid_transition(
+                    VmStatus::Running,
+                    VmStatus::Destroyed,
+                    "destroy",
+                ))
             }
-            Machine::Stopping { resources, .. } | Machine::Stopped { resources, .. } => {
+            Machine::Pausing { resources, runtime } => {
+                *self = Machine::Pausing { resources, runtime };
+                Err(VmLifecycleError::invalid_transition(
+                    VmStatus::Pausing,
+                    VmStatus::Destroyed,
+                    "destroy",
+                ))
+            }
+            Machine::Paused { resources, runtime } => {
+                *self = Machine::Paused { resources, runtime };
+                Err(VmLifecycleError::invalid_transition(
+                    VmStatus::Paused,
+                    VmStatus::Destroyed,
+                    "destroy",
+                ))
+            }
+            Machine::Stopping {
+                resources,
+                runtime,
+                reason,
+            } => {
+                *self = Machine::Stopping {
+                    resources,
+                    runtime,
+                    reason,
+                };
+                Err(VmLifecycleError::invalid_transition(
+                    VmStatus::Stopping,
+                    VmStatus::Destroyed,
+                    "destroy",
+                ))
+            }
+            Machine::Stopped {
+                resources,
+                runtime: Some(runtime),
+                reason,
+            } => {
+                *self = Machine::Stopped {
+                    resources,
+                    runtime: Some(runtime),
+                    reason,
+                };
+                Err(VmLifecycleError::invalid_transition(
+                    VmStatus::Stopped,
+                    VmStatus::Destroyed,
+                    "destroy",
+                ))
+            }
+            Machine::Stopped {
+                resources,
+                runtime: None,
+                ..
+            } => {
                 f(resources)?;
                 *self = Machine::Destroyed;
                 Ok(())
@@ -431,11 +619,13 @@ mod tests {
         assert_eq!(machine.status(), VmStatus::Running);
 
         machine
-            .stop_with(StopReason::Clean, |resources, _| {
+            .request_stop_with(StopReason::Clean, |resources, _| {
                 *resources.unwrap() += 1;
                 Ok(())
             })
             .unwrap();
+        machine.finish_stop().unwrap();
+        assert_eq!(machine.take_stopped_runtime(), Some(()));
         assert_eq!(machine.status(), VmStatus::Stopped);
 
         machine
@@ -479,6 +669,11 @@ mod tests {
         let mut machine = Machine::Ready(7usize);
         machine.start_with(|resources| Ok(*resources + 1)).unwrap();
         assert_eq!(machine.status(), VmStatus::Running);
+        machine
+            .request_stop_with(StopReason::Forced, |_, _| Ok(()))
+            .unwrap();
+        machine.finish_stop().unwrap();
+        assert_eq!(machine.take_stopped_runtime(), Some(8));
 
         machine
             .reset_with(|resources| {
@@ -490,5 +685,70 @@ mod tests {
         assert_eq!(machine.status(), VmStatus::Ready);
         assert_eq!(machine.resources(), Some(&17));
         assert!(machine.runtime().is_none());
+    }
+
+    #[test]
+    fn lifecycle_rejects_reset_while_runtime_is_live() {
+        let mut machine = Machine::Ready(7usize);
+        machine.start_with(|resources| Ok(*resources + 1)).unwrap();
+
+        let err = machine.reset_with(|_| Ok(())).unwrap_err();
+
+        assert!(matches!(
+            err,
+            VmLifecycleError::InvalidTransition {
+                from: VmStatus::Running,
+                to: VmStatus::Ready,
+                op: "reset"
+            }
+        ));
+        assert_eq!(machine.status(), VmStatus::Running);
+        assert_eq!(machine.resources(), Some(&7));
+        assert_eq!(machine.runtime(), Some(&8));
+    }
+
+    #[test]
+    fn lifecycle_rejects_destroy_while_runtime_is_live() {
+        let mut machine = Machine::Ready(7usize);
+        machine.start_with(|resources| Ok(*resources + 1)).unwrap();
+
+        let err = machine.destroy_with(|_| Ok(())).unwrap_err();
+
+        assert!(matches!(
+            err,
+            VmLifecycleError::InvalidTransition {
+                from: VmStatus::Running,
+                to: VmStatus::Destroyed,
+                op: "destroy"
+            }
+        ));
+        assert_eq!(machine.status(), VmStatus::Running);
+        assert_eq!(machine.resources(), Some(&7));
+        assert_eq!(machine.runtime(), Some(&8));
+    }
+
+    #[test]
+    fn lifecycle_requires_runtime_cleanup_before_restarting_stopped_vm() {
+        let mut machine = Machine::Ready(7usize);
+        machine.start_with(|resources| Ok(*resources + 1)).unwrap();
+        machine
+            .request_stop_with(StopReason::Forced, |_, _| Ok(()))
+            .unwrap();
+        machine.finish_stop().unwrap();
+
+        let err = machine.start_with(|_| Ok(9usize)).unwrap_err();
+
+        assert!(matches!(
+            err,
+            VmLifecycleError::InvalidTransition {
+                from: VmStatus::Stopped,
+                to: VmStatus::Running,
+                op: "start"
+            }
+        ));
+        assert_eq!(machine.status(), VmStatus::Stopped);
+        assert_eq!(machine.resources(), Some(&7));
+        assert!(machine.runtime().is_none());
+        assert_eq!(machine.take_stopped_runtime(), Some(8));
     }
 }

@@ -74,6 +74,17 @@ pub fn sub_running_vm_count(count: usize) {
     RUNNING_VM_COUNT.fetch_sub(count, Ordering::Release);
 }
 
+fn reset_starts_counted_runtime(previous_status: VmStatus) -> bool {
+    matches!(
+        previous_status,
+        VmStatus::Ready
+            | VmStatus::Running
+            | VmStatus::Paused
+            | VmStatus::Stopping
+            | VmStatus::Stopped
+    )
+}
+
 pub fn start_vm(vm_id: usize) -> AxResult {
     let vm = crate::get_vm_by_id(vm_id).ok_or_else(|| ax_err_type!(NotFound, "VM not found"))?;
     let status = vm.status();
@@ -103,9 +114,9 @@ pub fn resume_vm(vm_id: usize) -> AxResult {
 
 pub fn reset_vm(vm_id: usize) -> AxResult {
     let vm = crate::get_vm_by_id(vm_id).ok_or_else(|| ax_err_type!(NotFound, "VM not found"))?;
-    let was_running = vm.running();
+    let previous_status = vm.status();
     vm.reset()?;
-    if !was_running {
+    if reset_starts_counted_runtime(previous_status) {
         add_running_vm_count(1);
     }
     vcpus::notify_primary_vcpu(vm_id);
@@ -139,6 +150,27 @@ pub(crate) fn register_x86_ioapic_irq_forwarding_route_with_trigger(
     trigger: InterruptTriggerMode,
 ) {
     x86_irq::register_ioapic_irq_forwarding_route_with_trigger(guest_gsi, host_irq, trigger);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reset_counts_replacement_runtime_for_every_restartable_state() {
+        for status in [
+            VmStatus::Ready,
+            VmStatus::Running,
+            VmStatus::Paused,
+            VmStatus::Stopping,
+            VmStatus::Stopped,
+        ] {
+            assert!(
+                reset_starts_counted_runtime(status),
+                "reset from {status:?} starts a fresh running runtime"
+            );
+        }
+    }
 }
 
 /// Register a callback to activate one x86 guest IOAPIC GSI after the guest has

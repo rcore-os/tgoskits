@@ -203,7 +203,14 @@ impl VmRuntimeHandle {
     }
 
     pub(crate) fn join_all_vcpu_tasks(&self, vm_id: usize) {
-        let tasks: Vec<_> = self.vcpu_task_list.lock().values().cloned().collect();
+        let current = crate::host::task::current_task();
+        let tasks: Vec<_> = self
+            .vcpu_task_list
+            .lock()
+            .values()
+            .filter(|task| !current.ptr_eq(task))
+            .cloned()
+            .collect();
         let task_count = tasks.len();
         info!("VM[{vm_id}] Joining {task_count} VCpu tasks...");
         for (idx, task) in tasks.iter().enumerate() {
@@ -748,6 +755,10 @@ impl AxVM {
         f(runtime)
     }
 
+    fn take_stopped_runtime(&self) -> Option<Arc<VmRuntimeHandle>> {
+        self.machine.lock().take_stopped_runtime()
+    }
+
     /// Retrieves the vCPU corresponding to the given vcpu_id for the VM.
     /// Returns None if the vCPU does not exist.
     #[inline]
@@ -828,6 +839,9 @@ impl AxVM {
     pub fn start(self: &Arc<Self>) -> AxResult {
         self.ensure_resources_ready()?;
         if self.status() == VmStatus::Stopped {
+            if let Some(runtime) = self.take_stopped_runtime() {
+                runtime.join_all_vcpu_tasks(self.id());
+            }
             self.prepare()?;
         }
         info!("Starting VM[{}]", self.id());
@@ -932,13 +946,10 @@ impl AxVM {
         )
     }
 
-    /// Resets the VM by discarding runtime-only state, rebuilding vCPUs/devices,
-    /// and starting from a fresh `Running` state.
-    pub fn reset(self: &Arc<Self>) -> AxResult {
-        info!("Resetting VM[{}]", self.id());
+    fn stop_and_join_runtime(&self, reason: StopReason) -> AxResult {
         match self.status() {
             VmStatus::Running | VmStatus::Paused => {
-                self.stop(StopReason::Forced)?;
+                self.stop(reason)?;
                 if let Ok(()) = self.with_runtime(|runtime| {
                     runtime.notify_all();
                     Ok(())
@@ -956,10 +967,22 @@ impl AxVM {
             status => {
                 return ax_err!(
                     BadState,
-                    format!("VM[{}] cannot reset from {status:?}", self.id())
+                    format!("VM[{}] cannot quiesce runtime from {status:?}", self.id())
                 );
             }
         }
+
+        if let Some(runtime) = self.take_stopped_runtime() {
+            runtime.join_all_vcpu_tasks(self.id());
+        }
+        Ok(())
+    }
+
+    /// Resets the VM by discarding runtime-only state, rebuilding vCPUs/devices,
+    /// and starting from a fresh `Running` state.
+    pub fn reset(self: &Arc<Self>) -> AxResult {
+        info!("Resetting VM[{}]", self.id());
+        self.stop_and_join_runtime(StopReason::Forced)?;
 
         self.machine
             .lock()
@@ -1650,6 +1673,20 @@ impl AxVM {
     /// Destroys the VM and releases all lifecycle-owned resources.
     pub fn destroy(&self) -> AxResult {
         let vm_id = self.id();
+        match self.status() {
+            VmStatus::Running | VmStatus::Paused | VmStatus::Stopping => {
+                self.stop_and_join_runtime(StopReason::Forced)?;
+            }
+            VmStatus::Ready | VmStatus::Stopped | VmStatus::Uninit | VmStatus::Failed => {
+                if let Some(runtime) = self.take_stopped_runtime() {
+                    runtime.join_all_vcpu_tasks(vm_id);
+                }
+            }
+            VmStatus::Destroyed | VmStatus::Destroying => {}
+            VmStatus::Pausing => {
+                self.stop_and_join_runtime(StopReason::Forced)?;
+            }
+        }
         self.machine
             .lock()
             .destroy_with(|resources| {
