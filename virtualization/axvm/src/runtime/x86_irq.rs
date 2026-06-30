@@ -97,11 +97,14 @@ pub fn inject_due_pit_irq0(vm: &VMRef, vcpu: &VCpuRef) {
     }
 
     let now_ns = crate::host::arceos::monotonic_time_nanos();
-    if !vm.get_devices().x86_pit_consume_irq0_if_due(now_ns) {
+    let Ok(devices) = vm.get_devices() else {
+        return;
+    };
+    if !devices.x86_pit_consume_irq0_if_due(now_ns) {
         return;
     }
 
-    let Some(irq) = vm.get_devices().x86_ioapic_assert_gsi(PIT_TIMER_GSI) else {
+    let Some(irq) = devices.x86_ioapic_assert_gsi(PIT_TIMER_GSI) else {
         trace!("x86 PIT IRQ0 due but vIOAPIC GSI0 is not ready");
         return;
     };
@@ -122,11 +125,14 @@ pub fn inject_pending_serial_irq(vm: &VMRef, vcpu: &VCpuRef) {
         return;
     }
 
-    if !vm.get_devices().x86_serial_poll_irq() {
+    let Ok(devices) = vm.get_devices() else {
+        return;
+    };
+    if !devices.x86_serial_poll_irq() {
         return;
     }
 
-    let Some(irq) = vm.get_devices().x86_ioapic_assert_gsi(COM1_GSI) else {
+    let Some(irq) = devices.x86_ioapic_assert_gsi(COM1_GSI) else {
         trace!("x86 COM1 RX pending but vIOAPIC GSI4 is not ready");
         return;
     };
@@ -148,7 +154,10 @@ pub fn inject_pending_ioapic_irq_after_eoi(vm: &VMRef, vcpu: &VCpuRef, vector: u
         return;
     }
 
-    let Some(eoi) = vm.get_devices().x86_ioapic_end_of_interrupt(vector) else {
+    let Ok(devices) = vm.get_devices() else {
+        return;
+    };
+    let Some(eoi) = devices.x86_ioapic_end_of_interrupt(vector) else {
         return;
     };
     let pending = eoi.pending;
@@ -300,7 +309,10 @@ pub fn activate_ready_ioapic_forwarding_routes(vm: &VMRef) {
             continue;
         }
 
-        if vm.get_devices().x86_ioapic_vector_for_gsi(gsi).is_none() {
+        let Ok(devices) = vm.get_devices() else {
+            return;
+        };
+        if devices.x86_ioapic_vector_for_gsi(gsi).is_none() {
             continue;
         }
 
@@ -413,12 +425,11 @@ fn forward_passthrough_gsi(
         return true;
     }
 
-    let Some(guest_irq) = vm.get_devices().x86_ioapic_assert_gsi(guest_gsi) else {
-        if vm
-            .get_devices()
-            .x86_ioapic_vector_for_gsi(guest_gsi)
-            .is_some()
-        {
+    let Ok(devices) = vm.get_devices() else {
+        return false;
+    };
+    let Some(guest_irq) = devices.x86_ioapic_assert_gsi(guest_gsi) else {
+        if devices.x86_ioapic_vector_for_gsi(guest_gsi).is_some() {
             trace!(
                 "x86 passthrough IRQ for guest GSI {guest_gsi} is deferred by guest vIOAPIC state"
             );
