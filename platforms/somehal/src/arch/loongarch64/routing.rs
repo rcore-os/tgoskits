@@ -42,6 +42,20 @@ pub(super) const fn cpu_local_hwirq_is_runtime_irq(
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum ExternalVectorResolveFailure {
+    KeepPending,
+    Complete,
+}
+
+pub(super) const fn external_vector_failure_policy(err: IrqError) -> ExternalVectorResolveFailure {
+    if matches!(err, IrqError::Busy) {
+        ExternalVectorResolveFailure::KeepPending
+    } else {
+        ExternalVectorResolveFailure::Complete
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct RouteEntry {
     input: usize,
     irq: IrqId,
@@ -221,5 +235,21 @@ mod tests {
         assert!(cpu_local_hwirq_is_runtime_irq(12, 11, 12, 3));
         assert!(!cpu_local_hwirq_is_runtime_irq(3, 11, 12, 3));
         assert!(!cpu_local_hwirq_is_runtime_irq(7, 11, 12, 3));
+    }
+
+    #[test]
+    fn busy_external_vector_resolution_keeps_interrupt_pending() {
+        assert_eq!(
+            external_vector_failure_policy(IrqError::Busy),
+            ExternalVectorResolveFailure::KeepPending
+        );
+        assert_eq!(
+            external_vector_failure_policy(IrqError::Unsupported),
+            ExternalVectorResolveFailure::Complete
+        );
+        assert_eq!(
+            external_vector_failure_policy(IrqError::Controller),
+            ExternalVectorResolveFailure::Complete
+        );
     }
 }

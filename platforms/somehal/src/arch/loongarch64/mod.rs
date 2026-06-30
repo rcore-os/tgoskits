@@ -11,7 +11,10 @@ mod irq_common;
 mod pch_pic;
 mod routing;
 
-use routing::{RawIrq, classify_cpu_irq, cpu_local_hwirq_is_runtime_irq};
+use routing::{
+    ExternalVectorResolveFailure, RawIrq, classify_cpu_irq, cpu_local_hwirq_is_runtime_irq,
+    external_vector_failure_policy,
+};
 
 pub struct Plat;
 
@@ -200,7 +203,11 @@ impl PlatOp for Plat {
                     Ok(None) => eiointc_irq(external),
                     Err(err) => {
                         warn!("failed to resolve LoongArch external vector {external}: {err:?}");
-                        eiointc::complete_irq(external);
+                        if external_vector_failure_policy(err)
+                            == ExternalVectorResolveFailure::Complete
+                        {
+                            eiointc::complete_irq(external);
+                        }
                         return None;
                     }
                 };
