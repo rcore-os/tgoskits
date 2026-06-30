@@ -70,7 +70,7 @@ while [[ $# -gt 0 ]]; do
             echo ""
             echo "Options:"
             echo "  --arch <arch>   Target architecture (default: riscv64)"
-            echo "  --smp <N>       QEMU CPUs and cargo build jobs (default: 4)"
+            echo "  --smp <N>       Cargo build jobs (default: 4)"
             echo "  --jobs <N>      Cargo build jobs (default: same as --smp)"
             echo "  --commit <SHA>  Expected source commit for identity verification"
             echo "  --ref <REF>     Expected git ref (informational, no strict check)"
@@ -100,8 +100,7 @@ case "$ARCH" in
         ROOTFS_IMG="tmp/selfhost/rootfs-x86_64-selfhost-working.img"
         ;;
     aarch64)
-        SELF_COMPILE_TARGET="aarch64-unknown-none-softfloat"
-        ROOTFS_IMG="tmp/axbuild/rootfs/rootfs-aarch64-debian-selfhost.img"
+        error "aarch64 self-compile is not yet supported: no qemu-aarch64.toml exists in selfhost-full-kernel/ or selfhost-bootstrap/."
         ;;
     *)
         error "Unsupported arch: $ARCH (valid: riscv64, x86_64, aarch64)"
@@ -194,11 +193,10 @@ Run: cargo xtask starry rootfs --arch x86_64"
     # blueprint exists, re-run without --bootstrap to self-compile.
     #
     # A downloadable pre-built blueprint is planned (tgosimages release) but is
-    # not yet published; the download URL and SHA-256 are recorded here for when
-    # the release becomes available:
+    # not yet published.  When the release is available, uncomment and update:
     #
-    #   SELFHOST_URL="https://github.com/rcore-os/tgosimages/releases/download/selfhost-rootfs/rootfs-x86_64-selfhost.img.xz"
-    #   SELFHOST_SHA256="b17c330958c8970c9db4faec7306182101a0bf34f2b850c80781d63321f49eb8"
+    #   SELFHOST_URL="<tgosimages release asset URL>"
+    #   SELFHOST_SHA256="<SHA-256 of the .xz compressed image>"
     #
     # See docs/starryos-self-compilation.md.
 
@@ -222,7 +220,7 @@ See docs/starryos-self-compilation.md for details."
     # follow-up self-compile needs network access (or a warmed-cache rootfs
     # from the maintainer tool).  See docs/starryos-self-compilation.md.
     if [ "$BOOTSTRAP" = "true" ]; then
-        printf "[self-compile] Selfhost blueprint provisioned (no host sudo): %s\n" "$SELFHOST_BLUEPRINT"
+        info "Selfhost blueprint provisioned (no host sudo): $SELFHOST_BLUEPRINT"
         info "Provisioning complete.  To self-compile, re-run without --bootstrap."
         info "Note: the follow-up self-compile needs network access (the bootstrap"
         info "rootfs does not include a warmed offline dependency cache)."

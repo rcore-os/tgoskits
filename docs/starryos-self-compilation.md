@@ -19,7 +19,7 @@
 Host (Linux)
   └─ scripts/self-compile.sh --arch <arch>
       ├─ cargo xtask starry build        (种子内核)
-      ├─ cp rootfs → 临时工作副本        (蓝本永不污染)
+      ├─ cp rootfs → 临时工作副本        (x86_64 特有，蓝本永不污染)
       ├─ apps/starry/selfhost/selfhost-full-kernel/prebuild.sh  (生成所有 overlay 文件)
       ├─ debugfs -w → rm + write         (幂等 overlay 注入)
       └─ cargo xtask starry app qemu -t selfhost/selfhost-full-kernel (16G, OVMF UEFI)
@@ -104,15 +104,15 @@ riscv64 不受影响：其 `build-riscv64gc-unknown-none-elf.toml` 显式 `plat_
 Sysno::fsopen | Sysno::fspick | Sysno::open_tree => Err(AxError::Unsupported),
 ```
 
-**状态**: 自编译脚本中原先尝试挂载 tmpfs（registry 1500M + workspace 100M）作为 ext4 缓存一致性 workaround，但两个挂载始终失败（tmpfs 在 StarryOS 中不可用）。tmpfs 挂载代码已移除——缓存一致性问题的真正根因已通过 journal coherence 修复解决（见 §8 bug #7）。
+**状态**: 自编译脚本中原先尝试挂载 tmpfs（registry 1500M + workspace 100M）作为 ext4 缓存一致性 workaround，但两个挂载始终失败（tmpfs 在 StarryOS 中不可用）。x86_64 的 tmpfs 挂载代码已移除——缓存一致性问题的真正根因已通过 journal coherence 修复解决（见 §8 bug #7）。riscv64 仍使用 tmpfs 用于 `/tmp`。
 
 ### 3. 链接器 `_ex_table_end` 未定义
 
 **现象**: 所有 crate 编译通过，但最终链接失败: `undefined symbol: _ex_table_end`。
 
-**根因**: 自编译环境中 `.cargo/config.toml` 未传递 `-Tlinker.x`。`ext_linker.ld` 使用 `INSERT AFTER .data;` 期望 `linker.x` 先定义 `.data` 段（含 `_ex_table_end`），但缺少 linker.x 时符号未定义。
+**根因**: 自编译环境中 `.cargo/config.toml` 未传递 `-Tlinker.x`。`linker.ld` 使用 `INSERT AFTER .data;` 期望 `linker.x` 先定义 `.data` 段（含 `_ex_table_end`），但缺少 linker.x 时符号未定义。
 
-**修复** (`os/StarryOS/starryos/ext_linker.ld`):
+**修复** (`os/StarryOS/starryos/linker.ld`):
 ```ld
 PROVIDE(_ex_table_start = 0);
 PROVIDE(_ex_table_end = 0);
@@ -256,7 +256,8 @@ scripts/
 └── filter-workspace.sh      # 架构过滤：从 Cargo.toml 移除不兼容的 workspace members
 
 apps/starry/selfhost/
-├── build-x86_64-unknown-none.toml   # x86_64 bare-metal build config（axplat-dyn/efi）
+├── build-x86_64-unknown-none.toml          # x86_64 bare-metal build config（axplat-dyn/efi）
+├── build-riscv64gc-unknown-none-elf.toml   # riscv64 bare-metal build config
 ├── selfhost-bootstrap/
 │   ├── prebuild.sh                  # overlay: provisions the full toolchain (apk, Rust, kallsyms, source, firmware, musl symlinks); NO host sudo
 │   └── qemu-x86_64.toml             # QEMU config (16G, smp 4, shell_prefix/shell_init_cmd, 2h timeout)
@@ -288,13 +289,13 @@ apps/starry/selfhost/
 
 1. **`phys-memory-size` 硬编码 8GB (riscv64)**: 动态 RAM 检测因启动阶段地址空间不一致无法实现。x86_64 使用 axplat-dyn + somehal 动态检测，无需硬编码。
 2. **自编译测试不在标准 CI 中运行**: 需要 selfhost rootfs 镜像（制备后 ~8-12GB），CI 环境无法承载，仅支持本地手动测试。
-3. **QEMU 内存配置**: riscv64 使用 `-m 8G`，x86_64 使用 `-m 16G`（qemu-x86_64.toml 中配置）。
+3. **QEMU 内存配置**: riscv64 使用 `-m 12G`，x86_64 使用 `-m 16G`（qemu-x86_64.toml 中配置）。
 4. **aarch64 引导已验证**: rootfs 准备 + 种子内核引导 + shell 可用均通过，完整编译因 TCG 模拟性能限制（预计 4-8h）未运行。需动态平台默认配置 + PIE 目标（`--config test-suit/starryos/qemu-smp1/build-aarch64-unknown-none-softfloat.toml`）。
 5. **页面回收仅支持干净页**: 脏页在极端压力下作为最后手段回收（记录 warning），缺少脏页写回机制。
 
 ## 环境要求
 
-- **QEMU**: riscv64 (TCG) / x86_64 (KVM) / aarch64 (TCG)，内存按 arch 配置（riscv64: 8G, x86_64: 16G）
+- **QEMU**: riscv64 (TCG) / x86_64 (KVM) / aarch64 (TCG)，内存按 arch 配置（riscv64: 12G, x86_64: 16G）
 - **内核**: StarryOS (dev 分支)
 - **根文件系统**: Debian 或 Alpine (per-arch), ext4, rustc nightly-2026-05-28
 - **Host 依赖**: `qemu-system-*`, `debugfs`（来自 e2fsprogs），x86_64 额外需要 `objcopy`（binutils）和 OVMF firmware（edk2-ovmf）。`self-compile.sh` 与 `run-selfbuilt-kernel.sh` 无需 sudo；rootfs blueprint 制备由维护者通过 `prepare-selfhost-rootfs.sh` 完成（该脚本需 sudo 和 systemd-nspawn）。

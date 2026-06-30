@@ -48,7 +48,10 @@ if ls "$repo_root"/components/aic8800/firmware/*.bin >/dev/null 2>&1; then
     cp "$repo_root"/components/aic8800/firmware/*.bin "$overlay_dir/opt/firmware-blobs/"
     info "Staged $(ls "$overlay_dir"/opt/firmware-blobs/*.bin | wc -l) AIC8800 firmware blob(s)."
 else
-    info "WARNING: AIC8800 firmware blobs not found on host."
+    printf "[prebuild:bootstrap] ERROR: AIC8800 firmware blobs not found at %s/components/aic8800/firmware/\n" "$repo_root" >&2
+    printf "The bootstrap inner script requires these blobs and will fail ~15 min into QEMU.\n" >&2
+    printf "Obtain the firmware files and place them at that path, then re-run.\n" >&2
+    exit 1
 fi
 
 # ── In-guest provisioning inner script (Alpine /bin/sh) ─────────────────────────
