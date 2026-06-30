@@ -145,9 +145,9 @@ pub struct IrqHandlerHandle {
 }
 
 impl IrqHandler for IrqHandlerHandle {
-    fn handle_irq(&self) -> crate::Event {
+    fn handle_irq(&mut self) -> crate::Event {
         self.handler
-            .as_ref()
+            .as_mut()
             .expect("IRQ handler handle must contain handler")
             .handle_irq()
     }
@@ -215,10 +215,13 @@ mod tests {
     use super::*;
     use crate::{DeviceInfo, Event, QueueLimits, RequestOp};
 
-    struct NoopIrq;
+    struct NoopIrq {
+        calls: usize,
+    }
 
     impl IrqHandler for NoopIrq {
-        fn handle_irq(&self) -> Event {
+        fn handle_irq(&mut self) -> Event {
+            self.calls += 1;
             let mut event = Event::none();
             event.queues.insert(1);
             event
@@ -260,8 +263,10 @@ mod tests {
         assert_queue::<Queue>();
         assert_irq_handler::<NoopIrq>();
 
-        let event = NoopIrq.handle_irq();
+        let mut irq = NoopIrq { calls: 0 };
+        let event = irq.handle_irq();
         assert!(event.queues.contains(1));
+        assert_eq!(irq.calls, 1);
     }
 
     #[derive(Default)]
@@ -332,8 +337,8 @@ mod tests {
 
     #[test]
     fn irq_handler_slot_returns_handler_on_drop() {
-        let slot = IrqHandlerSlot::new(Box::new(NoopIrq));
-        let handler = slot.take().unwrap();
+        let slot = IrqHandlerSlot::new(Box::new(NoopIrq { calls: 0 }));
+        let mut handler = slot.take().unwrap();
 
         assert!(slot.take().is_none());
         assert!(handler.handle_irq().queues.contains(1));

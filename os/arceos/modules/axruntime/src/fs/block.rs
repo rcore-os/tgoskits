@@ -4,7 +4,7 @@ use core::ptr::NonNull;
 
 use ax_alloc::UsageKind;
 use ax_fs_ng::{
-    block::runtime::{BlockIrqAction, RdifBlockDevice},
+    block::runtime::RdifBlockDevice,
     os::{
         BlockIrqOutcome, BlockIrqRegistrar, BlockIrqRegistration, BlockTaskOps, BlockTimeProvider,
         FsPage, FsPageProvider,
@@ -103,16 +103,18 @@ impl BlockIrqRegistration for RuntimeBlockIrqRegistration {}
 
 #[cfg(feature = "irq")]
 struct RuntimeBlockIrqState {
-    action: BlockIrqAction,
+    action: ax_kspin::SpinNoIrq<
+        Box<dyn FnMut(ax_hal::irq::IrqContext) -> BlockIrqOutcome + Send + 'static>,
+    >,
 }
 
 #[cfg(feature = "irq")]
 unsafe fn handle_block_irq(
-    _ctx: ax_hal::irq::IrqContext,
+    ctx: ax_hal::irq::IrqContext,
     data: NonNull<()>,
 ) -> ax_hal::irq::IrqReturn {
     let state = unsafe { data.cast::<RuntimeBlockIrqState>().as_ref() };
-    match state.action.run() {
+    match state.action.lock()(ctx) {
         BlockIrqOutcome::Handled => ax_hal::irq::IrqReturn::Handled,
     }
 }
@@ -142,9 +144,11 @@ impl BlockIrqRegistrar for RuntimeBlockIrqRegistrar {
         &self,
         name: String,
         irq: irq_framework::IrqId,
-        action: BlockIrqAction,
+        action: Box<dyn FnMut(ax_hal::irq::IrqContext) -> BlockIrqOutcome + Send + 'static>,
     ) -> ax_errno::AxResult<Box<dyn BlockIrqRegistration>> {
-        let state = RuntimeBlockIrqState { action };
+        let state = RuntimeBlockIrqState {
+            action: ax_kspin::SpinNoIrq::new(action),
+        };
         crate::irq::HandlerRegistration::register_shared(name, irq, state, handle_block_irq)
             .map(|inner| Box::new(RuntimeBlockIrqRegistration { _inner: inner }) as _)
             .map_err(map_block_irq_error)

@@ -154,9 +154,13 @@ fn get_run_queue(index: usize) -> &'static mut AxRunQueue {
 #[cfg_attr(all(test, feature = "host-test"), allow(dead_code))]
 fn request_current_reschedule() {
     clear_remote_reschedule_pending_for_current_cpu();
-    #[cfg(feature = "preempt")]
+    #[cfg(all(feature = "preempt", feature = "host-test"))]
     if let Some(curr) = crate::current_may_uninit() {
         curr.set_force_resched_pending(true);
+    }
+    #[cfg(all(feature = "preempt", not(feature = "host-test")))]
+    if crate::current_may_uninit().is_some() {
+        CurrentRunQueueRef::<ax_kernel_guard::NoOp>::force_resched_from_irq();
     }
 }
 
@@ -680,10 +684,15 @@ impl<G: BaseGuard> CurrentRunQueueRef<'_, G> {
 
     #[cfg(feature = "preempt")]
     pub fn force_resched(&mut self) {
+        self.force_resched_with_preempt_count(1);
+    }
+
+    #[cfg(feature = "preempt")]
+    fn force_resched_with_preempt_count(&mut self, current_disable_count: usize) {
         let curr = &self.current_task;
         assert!(curr.is_running());
 
-        let can_preempt = curr.can_preempt(1);
+        let can_preempt = curr.can_preempt(current_disable_count);
         trace!(
             "current task is forced to reschedule: {}, allow={}",
             curr.id_name(),
@@ -702,6 +711,17 @@ impl<G: BaseGuard> CurrentRunQueueRef<'_, G> {
         } else {
             curr.set_force_resched_pending(true);
         }
+    }
+
+    #[cfg(all(
+        feature = "smp",
+        feature = "ipi",
+        feature = "preempt",
+        not(feature = "host-test")
+    ))]
+    fn force_resched_from_irq() {
+        let mut rq = current_run_queue::<ax_kernel_guard::NoOp>();
+        rq.force_resched_with_preempt_count(0);
     }
 
     /// Exit the current task with the specified exit code.

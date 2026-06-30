@@ -1107,6 +1107,7 @@ dependencies = [
  "ax-hal",
  "ax-input",
  "ax-ipi",
+ "ax-kspin",
  "ax-lazyinit",
  "ax-log",
  "ax-memory-addr",

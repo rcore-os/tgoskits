@@ -118,7 +118,7 @@ impl BlockIrqHandler {
         }
     }
 
-    pub fn handle(&self) -> rdif_block::Event {
+    pub fn handle(&mut self) -> rdif_block::Event {
         let event = self.handler.handle_irq();
         if let Some(events) = &self.events {
             events.record(event);

@@ -14,7 +14,6 @@ mod tests {
     };
 
     use ax_errno::AxError;
-    use ax_kspin::SpinRaw as SpinNoIrq;
     use dma_api::{DeviceDma, DmaDomainId};
     use rdif_block::{
         BlkError, CompletionHint, DeviceInfo, DriverGeneric, IQueue, IQueueOwned, Interface,
@@ -23,7 +22,7 @@ mod tests {
     };
 
     use super::*;
-    use crate::os::{BlockTaskOps, install_dma_op, set_task_ops};
+    use crate::os::{BlockTaskOps, install_dma_op, set_task_ops, sync::IrqMutex as SpinNoIrq};
 
     static TEST_TASK_OPS: TestTaskOps = TestTaskOps;
     static NEXT_TEST_TASK_ID: AtomicU64 = AtomicU64::new(1_000_000);
@@ -134,7 +133,9 @@ mod tests {
     }
 
     fn test_task_guard() -> std::sync::MutexGuard<'static, ()> {
-        TEST_TASK_LOCK.lock().unwrap()
+        let guard = TEST_TASK_LOCK.lock().unwrap();
+        clear_test_tasks();
+        guard
     }
 
     struct TestTaskGuard {
@@ -181,6 +182,12 @@ mod tests {
 
     fn test_tasks() -> &'static StdMutex<HashMap<u64, StdArc<TestTaskState>>> {
         TEST_TASKS.get_or_init(|| StdMutex::new(HashMap::new()))
+    }
+
+    fn clear_test_tasks() {
+        if let Some(tasks) = TEST_TASKS.get() {
+            tasks.lock().unwrap().clear();
+        }
     }
 
     struct ChannelDrainWake {
@@ -265,12 +272,13 @@ mod tests {
             &mut self,
             queue_id: usize,
             request_id: RequestId,
-        ) -> Result<RequestStatus, BlkError> {
+        ) -> Result<PollOutcome, BlkError> {
             let key = (queue_id, request_id);
             self.polled.push(key);
             self.completions
                 .remove(&key)
                 .unwrap_or(Ok(RequestStatus::Pending))
+                .map(poll_outcome_from_status)
         }
     }
 
@@ -304,9 +312,9 @@ mod tests {
             &mut self,
             _queue_id: usize,
             _request_id: RequestId,
-        ) -> Result<RequestStatus, BlkError> {
+        ) -> Result<PollOutcome, BlkError> {
             self.single_polls += 1;
-            Ok(RequestStatus::Pending)
+            Ok(PollOutcome::Pending)
         }
 
         fn poll_completions(
@@ -661,17 +669,24 @@ mod tests {
             &mut self,
             _queue_id: usize,
             _request_id: RequestId,
-        ) -> Result<RequestStatus, BlkError> {
+        ) -> Result<PollOutcome, BlkError> {
             self.polls += 1;
             if self.polls == 1 {
                 assert_eq!(
                     self.pending.lock().begin_poll(self.key),
                     PollClaim::AlreadyPolling
                 );
-                Ok(RequestStatus::Pending)
+                Ok(PollOutcome::Pending)
             } else {
-                Ok(RequestStatus::Complete)
+                Ok(PollOutcome::complete(Ok(())))
             }
+        }
+    }
+
+    fn poll_outcome_from_status(status: RequestStatus) -> PollOutcome {
+        match status {
+            RequestStatus::Pending => PollOutcome::Pending,
+            RequestStatus::Complete => PollOutcome::complete(Ok(())),
         }
     }
 
@@ -1600,7 +1615,7 @@ mod tests {
         )
         .unwrap();
 
-        let action = BlockIrqAction::new(Box::new(QueueEventIrqHandler), device.clone(), 0);
+        let mut action = BlockIrqAction::new(Box::new(QueueEventIrqHandler), device.clone(), 0);
         assert_eq!(action.run(), crate::os::BlockIrqOutcome::Handled);
         let events = device.bridge().take_events();
         assert_eq!(events.queue_bits, 1);
@@ -1609,7 +1624,7 @@ mod tests {
     struct QueueEventIrqHandler;
 
     impl rdif_block::IrqHandler for QueueEventIrqHandler {
-        fn handle_irq(&self) -> rdif_block::Event {
+        fn handle_irq(&mut self) -> rdif_block::Event {
             rdif_block::Event::from_queue_bits(1)
         }
     }
