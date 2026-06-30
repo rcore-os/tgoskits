@@ -260,9 +260,14 @@ pub(crate) fn sync_host_with(
     devices: &[UsbDevice],
     stop_if_fail: bool,
 ) -> Result<(), ProbeError> {
-    USB.call_once(|| Mutex::new(System::new()))
+    let removed = USB
+        .call_once(|| Mutex::new(System::new()))
         .lock()
-        .sync_host(host, registers, devices, stop_if_fail)
+        .drain_stale_bindings(host, registers, devices);
+    for binding in removed {
+        remove_binding_effects(binding);
+    }
+    probe_host_with(host, registers, devices, stop_if_fail)
 }
 
 pub(crate) fn probe_host_with(
@@ -271,13 +276,15 @@ pub(crate) fn probe_host_with(
     devices: &[UsbDevice],
     stop_if_fail: bool,
 ) -> Result<(), ProbeError> {
-    USB.call_once(|| Mutex::new(System::new()))
-        .lock()
-        .probe_host(host, registers, devices, stop_if_fail)
+    let usb = USB.call_once(|| Mutex::new(System::new()));
+    for device in devices.iter().filter(|device| device.key().host == host) {
+        probe_one(usb, device, registers, stop_if_fail)?;
+    }
+    Ok(())
 }
 
 struct System {
-    bindings: BTreeMap<UsbProbeTarget, UsbBinding>,
+    bindings: BTreeMap<UsbProbeTarget, UsbBindingState>,
 }
 
 impl System {
@@ -287,117 +294,157 @@ impl System {
         }
     }
 
-    fn sync_host(
+    fn drain_stale_bindings(
         &mut self,
         host: DeviceId,
         registers: &[DriverRegister],
         devices: &[UsbDevice],
-        stop_if_fail: bool,
-    ) -> Result<(), ProbeError> {
+    ) -> Vec<UsbBinding> {
         let current = matching_targets(registers, devices);
         let stale = self
             .bindings
             .iter()
-            .filter(|(target, binding)| {
+            .filter(|(target, state)| {
                 target.device.host == host
                     && !current.contains(&UsbProbeMatch {
                         target: **target,
-                        identity: binding.identity,
+                        identity: state.identity(),
                     })
             })
             .map(|(target, _)| *target)
             .collect::<Vec<_>>();
-        for target in stale {
-            self.remove_binding(target);
-        }
-        for device in devices.iter().filter(|device| device.key().host == host) {
-            self.probe_one(device, registers, stop_if_fail)?;
-        }
-        Ok(())
+        stale
+            .into_iter()
+            .filter_map(|target| self.take_binding(target))
+            .collect()
     }
 
-    fn probe_host(
-        &mut self,
-        host: DeviceId,
-        registers: &[DriverRegister],
-        devices: &[UsbDevice],
-        stop_if_fail: bool,
-    ) -> Result<(), ProbeError> {
-        for device in devices.iter().filter(|device| device.key().host == host) {
-            self.probe_one(device, registers, stop_if_fail)?;
+    fn start_probe(&mut self, target: UsbProbeTarget, identity: UsbProbeIdentity) -> bool {
+        if self.bindings.contains_key(&target) {
+            return false;
         }
-        Ok(())
+        self.bindings
+            .insert(target, UsbBindingState::Probing(identity));
+        true
     }
 
-    fn probe_one(
+    fn finish_probe_success(
         &mut self,
-        device: &UsbDevice,
-        registers: &[DriverRegister],
-        stop_if_fail: bool,
-    ) -> Result<(), ProbeError> {
-        for register in registers {
-            for probe in register.probe_kinds {
-                let ProbeKind::Usb {
-                    ids,
-                    classes,
-                    on_probe,
-                    on_remove,
-                } = probe
-                else {
+        target: UsbProbeTarget,
+        binding: UsbBinding,
+    ) -> Result<(), UsbBinding> {
+        let identity = binding.identity;
+        match self.bindings.get(&target) {
+            Some(UsbBindingState::Probing(probing)) if *probing == identity => {
+                self.bindings
+                    .insert(target, UsbBindingState::Bound(binding));
+                Ok(())
+            }
+            _ => Err(binding),
+        }
+    }
+
+    fn finish_probe_failure(&mut self, target: UsbProbeTarget, identity: UsbProbeIdentity) {
+        if matches!(
+            self.bindings.get(&target),
+            Some(UsbBindingState::Probing(probing)) if *probing == identity
+        ) {
+            self.bindings.remove(&target);
+        }
+    }
+
+    fn take_binding(&mut self, target: UsbProbeTarget) -> Option<UsbBinding> {
+        match self.bindings.remove(&target)? {
+            UsbBindingState::Bound(binding) => Some(binding),
+            UsbBindingState::Probing(_) => None,
+        }
+    }
+}
+
+fn probe_one(
+    usb: &Mutex<System>,
+    device: &UsbDevice,
+    registers: &[DriverRegister],
+    stop_if_fail: bool,
+) -> Result<(), ProbeError> {
+    for register in registers {
+        for probe in register.probe_kinds {
+            let ProbeKind::Usb {
+                ids,
+                classes,
+                on_probe,
+                on_remove,
+            } = probe
+            else {
+                continue;
+            };
+            let identity = UsbProbeIdentity::new(register.name, *on_probe);
+
+            for info in matching_infos(device, ids, classes) {
+                let target = UsbProbeTarget::from_info(info);
+                if !usb.lock().start_probe(target, identity) {
                     continue;
+                }
+
+                let mut descriptor = Descriptor::new();
+                descriptor.name = register.name;
+                let device_id = descriptor.device_id();
+                let remove_info = UsbRemove {
+                    key: info.key(),
+                    device_id,
+                    bus_num: info.bus_num(),
+                    device_num: info.device_num(),
+                    interface: info.interface(),
                 };
-
-                for info in matching_infos(device, ids, classes) {
-                    let target = UsbProbeTarget::from_info(info);
-                    if self.bindings.contains_key(&target) {
-                        continue;
+                let res = (on_probe)(ProbeUsb::new(info, PlatformDevice::new(descriptor)));
+                match res {
+                    Ok(()) => {
+                        let binding = UsbBinding {
+                            identity,
+                            remove: *on_remove,
+                            info: remove_info,
+                        };
+                        if let Err(binding) = usb.lock().finish_probe_success(target, binding) {
+                            remove_binding_effects(binding);
+                        }
                     }
-
-                    let mut descriptor = Descriptor::new();
-                    descriptor.name = register.name;
-                    let device_id = descriptor.device_id();
-                    let res = (on_probe)(ProbeUsb::new(info, PlatformDevice::new(descriptor)));
-                    match res {
-                        Ok(()) => {
-                            self.bindings.insert(
-                                target,
-                                UsbBinding {
-                                    identity: UsbProbeIdentity::new(register.name, *on_probe),
-                                    remove: *on_remove,
-                                    info: UsbRemove {
-                                        key: info.key(),
-                                        device_id,
-                                        bus_num: info.bus_num(),
-                                        device_num: info.device_num(),
-                                        interface: info.interface(),
-                                    },
-                                },
-                            );
+                    Err(OnProbeError::NotMatch) => {
+                        usb.lock().finish_probe_failure(target, identity);
+                    }
+                    Err(err) => {
+                        usb.lock().finish_probe_failure(target, identity);
+                        if stop_if_fail {
+                            return Err(err.into());
                         }
-                        Err(OnProbeError::NotMatch) => {}
-                        Err(err) => {
-                            if stop_if_fail {
-                                return Err(err.into());
-                            }
-                            warn!("Probe failed for [{}]: {}", register.name, err);
-                        }
+                        warn!("Probe failed for [{}]: {}", register.name, err);
                     }
                 }
             }
         }
-        Ok(())
     }
+    Ok(())
+}
 
-    fn remove_binding(&mut self, target: UsbProbeTarget) {
-        let Some(binding) = self.bindings.remove(&target) else {
-            return;
-        };
-        if let Some(remove) = binding.remove {
-            remove(binding.info);
+fn remove_binding_effects(binding: UsbBinding) {
+    if let Some(remove) = binding.remove {
+        remove(binding.info);
+    }
+    crate::edit(|manager| {
+        manager.dev_container.remove(binding.info.device_id());
+    });
+}
+
+enum UsbBindingState {
+    Probing(UsbProbeIdentity),
+    Bound(UsbBinding),
+}
+
+impl UsbBindingState {
+    const fn identity(&self) -> UsbProbeIdentity {
+        match self {
+            Self::Probing(identity) => *identity,
+            Self::Bound(binding) => binding.identity,
         }
-        crate::edit(|manager| {
-            manager.dev_container.remove(binding.info.device_id());
-        });
     }
 }
 
