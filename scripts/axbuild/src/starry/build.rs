@@ -47,10 +47,11 @@ pub(crate) fn resolve_build_info_path(
 }
 
 pub(crate) fn load_target_from_build_config(path: &Path) -> anyhow::Result<Option<String>> {
-    let content = std::fs::read_to_string(path)
-        .map_err(|e| anyhow!("failed to read Starry build config {}: {e}", path.display()))?;
-    crate::build::reject_removed_std_field(path, &content)?;
-    crate::build::reject_arceos_app_c_field(path, &content)?;
+    let content = crate::build::read_toml_with_rejector(
+        path,
+        "Starry build config",
+        reject_unsupported_starry_fields,
+    )?;
 
     if let Ok(board_file) = toml::from_str::<board::StarryBoardFile>(&content) {
         return Ok(Some(board_file.target));
@@ -62,6 +63,12 @@ pub(crate) fn load_target_from_build_config(path: &Path) -> anyhow::Result<Optio
     Err(anyhow!("invalid Starry build config {}", path.display()))
 }
 
+fn reject_unsupported_starry_fields(path: &Path, content: &str) -> anyhow::Result<()> {
+    crate::build::reject_removed_std_field(path, content)?;
+    crate::build::reject_arceos_app_c_field(path, content)?;
+    Ok(())
+}
+
 #[cfg(test)]
 pub(crate) fn load_build_info(request: &ResolvedStarryRequest) -> anyhow::Result<StarryBuildInfo> {
     let makefile_features = crate::build::makefile_features_from_env();
@@ -71,15 +78,11 @@ pub(crate) fn load_build_info(request: &ResolvedStarryRequest) -> anyhow::Result
         crate::build::ensure_build_info(&request.build_info_path, || {
             default_starry_build_info_for_target(&request.target)
         })?;
-        let content = std::fs::read_to_string(&request.build_info_path)?;
-        crate::build::reject_arceos_app_c_field(&request.build_info_path, &content)?;
-        let build_info: StarryBuildInfo = toml::from_str(&content).with_context(|| {
-            format!(
-                "failed to parse build info {}",
-                request.build_info_path.display()
-            )
-        })?;
-        build_info
+        crate::build::load_toml_with_rejector(
+            &request.build_info_path,
+            "build info",
+            crate::build::reject_arceos_app_c_field,
+        )?
     };
 
     crate::build::apply_makefile_features(&mut build_info, &request.package, &makefile_features);
@@ -101,15 +104,11 @@ pub(crate) fn load_cargo_config(request: &ResolvedStarryRequest) -> anyhow::Resu
         crate::build::ensure_build_info(&request.build_info_path, || {
             default_starry_build_info_for_target(&request.target)
         })?;
-        let content = std::fs::read_to_string(&request.build_info_path)?;
-        crate::build::reject_arceos_app_c_field(&request.build_info_path, &content)?;
-        let build_info: StarryBuildInfo = toml::from_str(&content).with_context(|| {
-            format!(
-                "failed to parse build info {}",
-                request.build_info_path.display()
-            )
-        })?;
-        build_info
+        crate::build::load_toml_with_rejector(
+            &request.build_info_path,
+            "build info",
+            crate::build::reject_arceos_app_c_field,
+        )?
     };
     crate::build::apply_makefile_features_with_metadata(
         &mut build_info,

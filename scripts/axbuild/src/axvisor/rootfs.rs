@@ -13,9 +13,20 @@ use std::{
 
 use anyhow::{Context, anyhow};
 use ostool::{build::config::Cargo, run::qemu::QemuConfig};
+use serde::Deserialize;
 
 use super::{Axvisor, build};
 use crate::{context::ResolvedAxvisorRequest, rootfs, test::qemu as qemu_test};
+
+#[derive(Deserialize)]
+struct VmRootfsProbe {
+    kernel: Option<VmKernelRootfsProbe>,
+}
+
+#[derive(Deserialize)]
+struct VmKernelRootfsProbe {
+    kernel_path: Option<String>,
+}
 
 pub(super) async fn qemu(axvisor: &mut Axvisor, args: super::ArgsQemu) -> anyhow::Result<()> {
     let mut request = axvisor.prepare_request(
@@ -235,16 +246,12 @@ pub(crate) fn infer_rootfs_path(vmconfigs: &[PathBuf]) -> anyhow::Result<Option<
     for vmconfig in vmconfigs {
         let content = fs::read_to_string(vmconfig)
             .map_err(|e| anyhow!("failed to read vm config {}: {e}", vmconfig.display()))?;
-        let value: toml::Value = toml::from_str(&content)
+        let probe: VmRootfsProbe = toml::from_str(&content)
             .map_err(|e| anyhow!("failed to parse vm config {}: {e}", vmconfig.display()))?;
-        let Some(kernel_path) = value
-            .get("kernel")
-            .and_then(|kernel| kernel.get("kernel_path"))
-            .and_then(|path| path.as_str())
-        else {
+        let Some(kernel_path) = probe.kernel.and_then(|kernel| kernel.kernel_path) else {
             continue;
         };
-        let rootfs_path = Path::new(kernel_path)
+        let rootfs_path = Path::new(&kernel_path)
             .parent()
             .map(|dir| dir.join("rootfs.img"));
         if let Some(rootfs_path) = rootfs_path
@@ -315,6 +322,43 @@ kernel_path = "{}"
             infer_rootfs_path(&[vmconfig]).unwrap(),
             Some(image_dir.join("rootfs.img"))
         );
+    }
+
+    #[test]
+    fn infer_rootfs_path_skips_vmconfig_without_kernel_path() {
+        let root = tempdir().unwrap();
+        let vmconfig = root.path().join("vm.toml");
+        fs::write(
+            &vmconfig,
+            r#"
+[kernel]
+cmdline = "console=ttyS0"
+"#,
+        )
+        .unwrap();
+
+        assert_eq!(infer_rootfs_path(&[vmconfig]).unwrap(), None);
+    }
+
+    #[test]
+    fn infer_rootfs_path_skips_nonexistent_kernel_sibling_rootfs() {
+        let root = tempdir().unwrap();
+        let image_dir = root.path().join("image");
+        fs::create_dir_all(&image_dir).unwrap();
+        let vmconfig = root.path().join("vm.toml");
+        fs::write(
+            &vmconfig,
+            format!(
+                r#"
+[kernel]
+kernel_path = "{}"
+"#,
+                image_dir.join("qemu-aarch64").display()
+            ),
+        )
+        .unwrap();
+
+        assert_eq!(infer_rootfs_path(&[vmconfig]).unwrap(), None);
     }
 
     #[test]

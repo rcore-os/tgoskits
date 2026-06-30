@@ -218,6 +218,22 @@ log = "Info"
 }
 
 #[test]
+fn load_target_from_plain_build_config_returns_none() {
+    let root = tempdir().unwrap();
+    let path = root.path().join(".build-target.toml");
+    fs::write(
+        &path,
+        r#"
+features = ["net"]
+log = "Info"
+"#,
+    )
+    .unwrap();
+
+    assert_eq!(load_target_from_build_config(&path).unwrap(), None);
+}
+
+#[test]
 fn load_build_info_prefers_request_override_without_writing_file() {
     let root = tempdir().unwrap();
     let path = root.path().join(".build-target.toml");
