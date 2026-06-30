@@ -252,7 +252,7 @@ mod capture {
                     let msg = payload
                         .downcast_ref::<&'static str>()
                         .map(|s| s.to_string())
-                        .or_else(|| payload.downcast_ref::<String>().map(|s| s.clone()))
+                        .or_else(|| payload.downcast_ref::<String>().cloned())
                         .unwrap_or_else(|| "<non-string panic payload>".to_string());
                     anyhow::anyhow!("axtest coverage capture thread panicked: {msg}")
                 })??;
