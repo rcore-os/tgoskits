@@ -59,9 +59,15 @@ fn bug_ext4_dir_ops_is_in_system_grouped_qemu_case() {
 fn starry_system_grouped_qemu_configs_report_subcase_timing() {
     let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
 
-    for group in ["qemu-smp1", "qemu-smp4"] {
+    for (group, arches) in [
+        (
+            "qemu-smp1",
+            &["aarch64", "loongarch64", "riscv64", "x86_64"][..],
+        ),
+        ("qemu-smp4", &["aarch64", "loongarch64", "x86_64"][..]),
+    ] {
         let system_dir = workspace_root.join(format!("test-suit/starryos/{group}/system"));
-        for arch in ["aarch64", "loongarch64", "riscv64", "x86_64"] {
+        for arch in arches {
             let path = system_dir.join(format!("qemu-{arch}.toml"));
             let content = fs::read_to_string(&path).unwrap();
             let config: toml::Value = toml::from_str(&content).unwrap();
@@ -213,20 +219,57 @@ fn tty_console_input_burst_uses_injected_guest_script() {
 }
 
 #[test]
-fn loongarch64_smp4_affinity_pid_is_arch_filtered() {
+fn riscv64_smp4_system_case_is_disabled() {
     let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-    let cmake_path = workspace_root
-        .join("test-suit/starryos/qemu-smp4/system/affinity-bug-sched-affinity-pid/CMakeLists.txt");
-    let cmake = fs::read_to_string(&cmake_path)
-        .unwrap_or_else(|err| panic!("failed to read {}: {err}", cmake_path.display()));
+    let smp1_config = workspace_root.join("test-suit/starryos/qemu-smp1/system/qemu-riscv64.toml");
+    let smp4_config = workspace_root.join("test-suit/starryos/qemu-smp4/system/qemu-riscv64.toml");
 
     assert!(
-        cmake.contains("starry_arch_filtered_executable")
-            && cmake.contains("bug-sched-affinity-pid skipped on loongarch64 qemu-smp4"),
-        "{} must skip the flaky LoongArch qemu-smp4 affinity pid probe instead of letting it \
-         consume the grouped QEMU timeout",
-        cmake_path.display()
+        smp1_config.is_file(),
+        "{} must keep riscv64 system smoke coverage",
+        smp1_config.display()
     );
+    assert!(
+        !smp4_config.exists(),
+        "{} must remain disabled until riscv64 qemu-smp4 system probes stop consuming the grouped \
+         QEMU timeout in CI",
+        smp4_config.display()
+    );
+}
+
+#[test]
+fn smp4_affinity_flaky_arches_are_filtered() {
+    let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let cases = [
+        (
+            "affinity-bug-sched-affinity-migrate",
+            "^(aarch64|x86_64)",
+            "bug-sched-affinity-migrate skipped on loongarch64/riscv64 qemu-smp4",
+        ),
+        (
+            "affinity-bug-sched-affinity-pid",
+            "^(aarch64|x86_64)",
+            "bug-sched-affinity-pid skipped on loongarch64/riscv64 qemu-smp4",
+        ),
+    ];
+
+    for (case, arch_regex, skip_message) in cases {
+        let cmake_path = workspace_root
+            .join("test-suit/starryos/qemu-smp4/system")
+            .join(case)
+            .join("CMakeLists.txt");
+        let cmake = fs::read_to_string(&cmake_path)
+            .unwrap_or_else(|err| panic!("failed to read {}: {err}", cmake_path.display()));
+
+        assert!(
+            cmake.contains("starry_arch_filtered_executable")
+                && cmake.contains(arch_regex)
+                && cmake.contains(skip_message),
+            "{} must skip flaky qemu-smp4 affinity probes instead of letting them consume the \
+             grouped QEMU timeout",
+            cmake_path.display()
+        );
+    }
 }
 
 #[test]
