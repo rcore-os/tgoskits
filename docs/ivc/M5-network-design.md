@@ -48,7 +48,24 @@
 ## 4. 实现路径（分阶段）
 
 > **进度（2026-06-30）**：P1 设备后端骨架**已实现并编译/clippy/fmt 通过**——`virtualization/axdevice/src/virtio_net.rs`（`VirtioNet` 实现 `BaseMmioDeviceOps<GuestPhysAddrRange>`，virtio-mmio v2 寄存器状态机：magic/version/deviceid=1/vendor、特性协商 advertise `VIRTIO_NET_F_MAC`+`VIRTIO_F_VERSION_1`、QueueSel/Num/Ready/Desc/Driver/Device 地址、Status、InterruptStatus/ACK、net config MAC[6]）；在 `device.rs::init()` 的 `EmulatedDeviceType::VirtioNet` 臂注册（`MmioDeviceAdapter::from_arc`，MAC=52:54:00:00:00:NN，NN 取 cfg_list[0]）；`is_legacy_fallback` 与 `lib.rs mod virtio_net` 已加。**QueueNotify 暂只接受不处理 virtqueue（P2/P3 再做）。**
-> **剩余 P1 阻塞（让 Linux 真正看到 eth0）**：AxVisor 的 guest FDT 生成**不发射 virtio-mmio 节点**（`os/axvisor/src/fdt/parser.rs` 仅做 emu_devices 地址重叠检查，无节点创建）。需在 FDT 生成处加 `virtio_mmio@<base> { compatible="virtio,mmio"; reg=<base size>; interrupts=<...>; }`，guest Linux 才能探测。这是 P1 的下一步。
+> **剩余 P1 集成（让 Linux 真正看到 eth0）——已完整追踪路径**：
+> 1. **MMIO 路由已确认可行**：guest MMIO 陷出经 `axvm/src/vm.rs` 的 `handle_mmio_read/handle_mmio_write` 按地址查 `AxVmDevices` 的 mmio_index 分发到设备的 `handle_read/handle_write`。我的 VirtioNet 注册了 `address_range [base,base+0x200)`，**只要该区域陷入就会收到访问**。
+> 2. **需让该区域陷入**：emu 设备区域必须在 guest stage-2 **不映射**（成为洞）才会 fault→路由到 emu 设备。当前 guest `passthrough ["/"]` 会把整树（含 QEMU virt 的 virtio-mmio 槽 0x0a00_0000）映射过去 → 不 fault。需通过 emu_devices 注册 + `excluded_devices`/`passthrough_addresses` 把 virtio-net 的 base 从 passthrough 排除，使其陷入。
+> 3. **需 FDT `virtio_mmio` 节点**：guest FDT 生成（`fdt/create.rs`，基于拷贝/变换宿主 FDT）。若把 virtio-net 放在 **QEMU virt 已有的 virtio-mmio 槽地址**（如 0x0a00_0000），宿主 FDT 已含该节点 → 拷到 guest 即可，**无需新增节点**；否则需在 create.rs 加 `virtio_mmio@<base>{compatible="virtio,mmio";reg;interrupts}`。
+> 4. **需 IRQ 注入**（RX 时）：alloc_irq 由 emu_devices 指定，RX 入队后注入。
+> → P1 收尾 = 选一个 virtio-mmio 槽地址做 emu_device + 从 passthrough 排除 + 确认 FDT 节点 + boot 看 Linux dmesg 的 `virtio_net`/`eth0`。属于多步集成 + 多轮 boot 调试。
+>
+> **可执行配方（下次一次跑通的起点）**：QEMU virt aarch64 的 virtio-mmio 槽位于 `0x0a00_0000`，每槽 `0x200`，IRQ 为 SPI（精确 INTID 从宿主 FDT 的 `virtio_mmio@a000000` 的 `interrupts` 读，通常 SPI 16 → INTID 48）。
+> 1. **emu_devices 条目**（VirtioNet 类型 = `0xE2` = 226，cfg_list[0]=MAC 末字节，每 VM 不同）：
+>    ```toml
+>    # name, base_ipa, ipa_len, alloc_irq, emu_type, emu_config
+>    emu_devices = [ ["virtio-net", 0x0a00_0000, 0x200, <SPI_INTID>, 0xE2, [1]] ]
+>    ```
+> 2. **从 passthrough 排除该槽**，使其陷入：在 `excluded_devices` 加 virtio-mmio 节点（如 `["/virtio_mmio@a000000"]`），或用 `passthrough_addresses` 显式列出不含 0x0a00_0000 的范围。
+> 3. **FDT 节点**：该地址宿主 FDT 已有 `virtio_mmio@a000000` 节点，guest FDT 会拷到 → 无需改 create.rs（先验证；若 excluded 把节点也删了，则需在 create.rs 重新发射该节点）。
+> 4. **验证**：`cargo xtask axvisor qemu --arch aarch64 --vmconfigs <带该 emu_devices 的 linux 配置>`，看 guest `dmesg | grep virtio` 出现 `virtio_net virtio0 ...` 与 `eth0`。
+> 5. 若仅 P1（无 virtqueue 处理），`eth0` 应能创建但无流量；P2 再做 virtqueue 收发 + P3 软交换机互通。
+> **风险点**：emu 与 passthrough 的优先级/区域重叠、IRQ INTID 取值、excluded 是否连带删了 FDT 节点——都需 boot 实测确认。
 
 - **P1 设备侧 virtqueue + virtio-mmio 寄存器状态机**：✅ 寄存器状态机已实现。待办：split virtqueue（desc/avail/used）解析 + 经 stage-2 访问 guest 物理内存收发缓冲（P2）；guest FDT virtio-mmio 节点发射（让 Linux 探测）。
 - **P2 VirtioNetDevice + 工厂注册**：`impl BaseMmioDeviceOps`；`VirtioNetFactory: DeviceFactory { device_type()=VirtioNet }`；在 `register_builtin_factories` 注册；TX 路径把帧交给交换机，RX 路径把帧入队 + 注入 IRQ。
