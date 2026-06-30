@@ -88,8 +88,11 @@ const DEVICE_FEATURES: u64 = VIRTIO_NET_F_MAC | VIRTIO_F_VERSION_1;
 const QUEUE_NUM_MAX: u32 = 256;
 /// receiveq(0) + transmitq(1).
 const NUM_QUEUES: usize = 2;
-/// MMIO window size: registers + net config space.
-pub const VIRTIO_NET_MMIO_SIZE: usize = 0x200;
+/// MMIO window size. Covers the full 4 KiB page so that, when the page is carved
+/// out of the passthrough map to make this device trap, the neighbouring (empty)
+/// virtio-mmio slots in the same page also route here and read back 0 (no device)
+/// instead of faulting.
+pub const VIRTIO_NET_MMIO_SIZE: usize = 0x1000;
 
 #[derive(Clone, Copy, Default)]
 struct QueueState {
