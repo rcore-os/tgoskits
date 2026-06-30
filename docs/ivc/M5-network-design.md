@@ -69,10 +69,11 @@
 
 - **P1 设备侧 virtio-mmio 寄存器状态机**：✅ 代码实现（`VirtioNet` 寄存器状态机 + 注册）。
   - ⚠️ **更正（2026-06-30）：先前"P1 已端到端验证 eth0"是误判**。加 MMIO trap 打点后证实：guest 对 `0x0a000000` 的访问**根本不陷入 AxVisor**（0 次 trap）；先前看到的 `eth0`（MAC `52:54:00:12:34:56` = QEMU 默认 NIC MAC）是 **QEMU 自动添加的默认用户态网卡**，不是本模拟设备。加 `-net none` 后 `eth0` 消失、`/sys/class/net` 只剩 `lo`/`sit0`，且本设备仍 0 次 trap。
-  - **真实阻塞（根因）**：AxVisor 把 `emu_devices` 的 MMIO 区域当 **passthrough 映射**（被 `passthrough ["/"]` 覆盖），不陷入到 emu 设备；而把该节点加入 `excluded_devices` 又会连带从 guest FDT 删除该节点 → Linux 不再 probe。要让本设备工作，需在 AxVisor 地址空间/FDT 层让 **emu_devices 区域不映射（陷入）同时保留其 FDT 节点**——这是更深的 AxVisor 集成改动（emu 与 passthrough 的交互），非配置可解。
-  - 设备后端 + P2/P3 数据通路代码已实现并编译/clippy/fmt 通过，但**在该路由问题解决前无法被实际驱动**。
-- **P2 virtqueue 数据通路**：✅ 代码实现（未能运行验证，受 P1 路由阻塞）。`VirtioNet::process_tx/deliver_rx`（split virtqueue：desc/avail/used 解析、frame 收发、used 标记）；`vm.rs::handle_mmio_write` 在 TX QueueNotify 时 `drive_virtio_net_tx`（用 `read_from_guest/write_to_guest` 闭包，仿 fw_cfg.process_dma），注入 TX 完成中断。
-- **P3 软件 L2 交换机**：✅ 代码实现（未能运行验证）。广播泛洪：`drive_virtio_net_tx` 对 `get_vm_list()` 每个其他 VM 调 `deliver_rx_frame`（写对端 RX virtqueue + `inject_interrupt_to_vcpu`）。MAC 学习留后续。
+  - **根因 + 修复（commit `aff2d202e`）**：AxVisor 把 `emu_devices` 的 MMIO 区域当 **passthrough 映射**（`vm.rs` 的 `pt_dev_region` identity-map），不陷入 emu。修复：在建 stage-2 映射前用 `carve_out()` 把每个 emu_devices 的 4K 对齐范围**从 passthrough 映射里挖掉**（FDT 节点仍发射）→ 该页陷入并路由到 emu 设备。
+  - **子页粒度坑（已解）**：emu 设备 0x200 < 4K 页；① 设备 MMIO 窗口扩到整页 `0x1000`，同页内空 virtio-mmio 槽也路由到本设备并读回 0（否则空槽 trap → `mmio read: NotFound` → VM 崩）；② 设备须放在**不与 guest virtio-blk(0x0a000000) 同页的空闲槽**（用 `0x0a001000`，否则挖掉会连带 unmap 磁盘 → 引导挂起）。
+  - ✅✅ **P1 真正端到端验证（2026-06-30）**：`-net none` 排除 QEMU 默认 NIC 后，Linux guest 的 `virtio_net` 驱动绑定本模拟设备，`eth0` 拿到**设备 advertise 的 MAC `52:54:00:00:00:01`**（证明 `VIRTIO_NET_F_MAC` 协商 + config 读取正确），磁盘仍正常（ext4 挂载）。配置 `tmp/m2/vm-linux-vnet3.toml` + `qemu-vnet2.toml`。
+- **P2 virtqueue TX 数据通路**：✅✅ **已运行验证**。`VirtioNet::process_tx`（split virtqueue desc/avail/used 解析）在 guest `ip link up`+`ping` 后正确从 TX virtqueue 抽出真实以太帧：广播 ARP（`ff:ff:..` 目的、`0806`）来自设备 MAC、IPv6 组播（`33:33:..`、`86dd`），共 9 帧/3 ARP。`vm.rs::handle_mmio_write` 在 TX QueueNotify 时 `drive_virtio_net_tx`（`read_from_guest/write_to_guest` 闭包）+ TX 完成中断。
+- **P2 RX + P3 软件 L2 交换机**：✅ 代码实现，**待 2-VM 验证**。`deliver_rx`（写对端 RX virtqueue + 注 IRQ）+ 广播泛洪（`drive_virtio_net_tx` 对 `get_vm_list()` 每个其他 VM 调 `deliver_rx_frame`）。单 VM 下泛洪无对端（ping 100% loss，符合预期）。需第二个带 virtio-net 的 guest 才能验证 RX/互通。
 - **P4 客户机驱动接通**：Linux 侧 virtio-net 驱动自动识别（已内建），配 IP；Zephyr 侧需带 virtio-net + lwIP/BSD socket 的镜像（见前置 C）。
 - **P5 应用层协议 + 可靠性 + 自动化测试**（M7/M8）：见任务二后续。
 
