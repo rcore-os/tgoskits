@@ -3,8 +3,10 @@
 mod card0;
 #[cfg(feature = "rknpu")]
 mod card1;
-#[cfg(feature = "rknpu")]
+#[cfg(all(feature = "rknpu", not(feature = "jpeg")))]
 mod dma_heap;
+#[cfg(feature = "jpeg")]
+mod dmaheap;
 mod drm;
 #[cfg(feature = "input")]
 pub mod event;
@@ -440,9 +442,12 @@ fn builder(fs: Arc<SimpleFs>) -> DirMaker {
         }
     }
 
-    // /dev/mpp_service — Rockchip MPP-compatible JPEG decoder node.
+    // /dev/mpp_service — Rockchip MPP-compatible JPEG decoder node, plus the
+    // /dev/dma_heap contiguous allocator MPP allocates its buffers from.
+    // Registered unconditionally under `jpeg`; the node itself reports an error
+    // if the hardware was not probed.
     #[cfg(feature = "jpeg")]
-    if ax_driver::jpeg::is_available() {
+    {
         root.add(
             "mpp_service",
             Device::new(
@@ -451,6 +456,23 @@ fn builder(fs: Arc<SimpleFs>) -> DirMaker {
                 mpp_service::MPP_SERVICE_DEVICE_ID,
                 Arc::new(mpp_service::MppService::new()),
             ),
+        );
+
+        let mut dma_heap_dir = DirMapping::new();
+        for name in dmaheap::HEAP_NAMES {
+            dma_heap_dir.add(
+                *name,
+                Device::new(
+                    fs.clone(),
+                    NodeType::CharacterDevice,
+                    dmaheap::DMA_HEAP_DEVICE_ID,
+                    Arc::new(dmaheap::DmaHeap),
+                ),
+            );
+        }
+        root.add(
+            "dma_heap",
+            SimpleDir::new_maker(fs.clone(), Arc::new(dma_heap_dir)),
         );
     }
 
@@ -494,21 +516,26 @@ fn builder(fs: Arc<SimpleFs>) -> DirMaker {
 
     #[cfg(feature = "rknpu")]
     {
-        // DMA heap devices (rknpu only)
-        let mut dma_heap_dir = DirMapping::new();
-        dma_heap_dir.add(
-            "system",
-            Device::new(
-                fs.clone(),
-                NodeType::CharacterDevice,
-                dma_heap::DMA_HEAP_SYSTEM_DEVICE_ID,
-                Arc::new(dma_heap::DmaHeapSystem::new()),
-            ),
-        );
-        root.add(
-            "dma_heap",
-            SimpleDir::new_maker(fs.clone(), Arc::new(dma_heap_dir)),
-        );
+        // DMA heap (rknpu stub). When the `jpeg` feature is on, a real
+        // contiguous dma-heap is registered instead (see below), so skip the
+        // stub to avoid a duplicate `/dev/dma_heap`.
+        #[cfg(not(feature = "jpeg"))]
+        {
+            let mut dma_heap_dir = DirMapping::new();
+            dma_heap_dir.add(
+                "system",
+                Device::new(
+                    fs.clone(),
+                    NodeType::CharacterDevice,
+                    dma_heap::DMA_HEAP_SYSTEM_DEVICE_ID,
+                    Arc::new(dma_heap::DmaHeapSystem::new()),
+                ),
+            );
+            root.add(
+                "dma_heap",
+                SimpleDir::new_maker(fs.clone(), Arc::new(dma_heap_dir)),
+            );
+        }
 
         // RockChip-specific NPU companion card (DRM card1).
         dri_dir.add(

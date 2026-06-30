@@ -1,3 +1,5 @@
+#[cfg(feature = "jpeg")]
+pub mod dmabuf;
 pub mod epoll;
 pub mod event;
 mod fs;

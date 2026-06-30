@@ -9,16 +9,20 @@
 //!
 //! The wire ABI + register assembly live in `rockchip-jpeg`'s `mpp` module
 //! (host-tested); this node only does `copy_from_user`/`copy_to_user`, dma-buf-fd
-//! → physical-address resolution (via ion), and the hardware run.
+//! → physical-address resolution (via the /dev/dma_heap DmaBufFile), and the
+//! hardware run.
 
-use core::{any::Any, mem::size_of};
+use core::{any::Any, ffi::c_int, mem::size_of};
 
 use ax_driver::jpeg::{self, mpp, registers};
-use ax_kspin::SpinNoIrq as Mutex;
 use ax_runtime::hal::cpu::asm::user_copy;
+use ax_sync::Mutex;
 use axfs_ng_vfs::{DeviceId, VfsError, VfsResult};
 
-use crate::pseudofs::DeviceOps;
+use crate::{
+    file::{dmabuf::DmaBufFile, get_file_like},
+    pseudofs::DeviceOps,
+};
 
 fn copy_from_user(dst: *mut u8, src: *const u8, size: usize) -> VfsResult<()> {
     if unsafe { user_copy(dst, src, size) } != 0 {
@@ -84,7 +88,9 @@ impl DeviceOps for MppService {
     }
 
     fn ioctl(&self, cmd: u32, arg: usize) -> VfsResult<usize> {
-        if cmd != mpp::MPP_IOC_CFG_V1 && cmd != mpp::MPP_IOC_CFG_V2 {
+        // Only the V1 request layout is implemented; V2 uses a different record
+        // and must not be parsed as V1.
+        if cmd != mpp::MPP_IOC_CFG_V1 {
             return Err(VfsError::NotATty);
         }
         if arg == 0 {
@@ -203,16 +209,14 @@ fn run_decode(state: &mut TaskState) -> VfsResult<()> {
 }
 
 /// Resolve a dma-buf fd (as MPP places it in an address register) to the
-/// physical base of its contiguous buffer.
-///
-/// Phase 2c: wire this to a contiguous dma-heap that MPP allocates from. The
-/// sg2002 `ion` allocator is generic over `ax_dma` and is the intended source,
-/// but it is currently gated behind the riscv-only `sg2002` feature; decoupling
-/// it (so an aarch64 RK3588 build can use it) is the remaining buffer-source
-/// work. Until then the node speaks the full ABI but cannot translate buffers.
+/// physical base of its contiguous buffer. MPP allocates these from our
+/// `/dev/dma_heap` ([`DmaBufFile`]).
 fn resolve_fd(fd: u32) -> Option<u32> {
-    let _ = fd;
-    None
+    let file = get_file_like(fd as c_int).ok()?;
+    let buf = file.downcast_arc::<DmaBufFile>().ok()?;
+    // The decoder is 32-bit (device_with_mask(u32::MAX)); reject buffers above
+    // 4 GiB rather than silently truncating the address.
+    u32::try_from(buf.phys_base()).ok()
 }
 
 fn map_jpeg_err(err: jpeg::Error) -> VfsError {
