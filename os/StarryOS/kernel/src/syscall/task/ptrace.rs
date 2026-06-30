@@ -1182,6 +1182,7 @@ pub fn ptrace_setup_singlestep(
     let saved = tracee.take_ptrace_ss_saved_insn_for(tid);
     if let Some((saved_addr, saved_insn)) = saved {
         let _ = ptrace_write_u16_unlocked(&mut aspace, saved_addr, saved_insn as u16);
+        let _ = aspace.sync_modified_text(VirtAddr::from_usize(saved_addr), size_of::<u16>());
     }
 
     let first_half = match ptrace_read_u16_unlocked(&mut aspace, pc) {
@@ -1217,7 +1218,7 @@ pub fn ptrace_setup_singlestep(
     };
     if orig_insn == EBREAK_INSN {
         tracee.set_ptrace_ss_saved_insn_for(tid, None);
-        ax_runtime::hal::cache::flush_icache_all();
+        let _ = aspace.sync_modified_text(VirtAddr::from_usize(next_insn_addr), size_of::<u16>());
         return;
     }
 
@@ -1226,7 +1227,7 @@ pub fn ptrace_setup_singlestep(
         return;
     }
     tracee.set_ptrace_ss_saved_insn_for(tid, Some((next_insn_addr, orig_insn as usize)));
-    ax_runtime::hal::cache::flush_icache_all();
+    let _ = aspace.sync_modified_text(VirtAddr::from_usize(next_insn_addr), size_of::<u16>());
 }
 
 #[cfg(target_arch = "aarch64")]
@@ -1328,11 +1329,13 @@ pub fn ptrace_restore_singlestep_insn(
     let aspace = tracee.aspace();
     let mut aspace = aspace.lock();
     let restored = ptrace_write_u16_unlocked(&mut aspace, addr, insn as u16).is_ok();
-    ax_runtime::hal::cache::flush_icache_all();
-    if !restored {
+    let synced = aspace
+        .sync_modified_text(VirtAddr::from_usize(addr), size_of::<u16>())
+        .is_ok();
+    if !(restored && synced) {
         tracee.set_ptrace_ss_saved_insn_for(tid, Some((addr, insn)));
     }
-    restored
+    restored && synced
 }
 
 #[cfg(any(target_arch = "aarch64", target_arch = "loongarch64"))]
