@@ -67,13 +67,12 @@
 > 5. 若仅 P1（无 virtqueue 处理），`eth0` 应能创建但无流量；P2 再做 virtqueue 收发 + P3 软交换机互通。
 > **风险点**：emu 与 passthrough 的优先级/区域重叠、IRQ INTID 取值、excluded 是否连带删了 FDT 节点——都需 boot 实测确认。
 
-- **P1 设备侧 virtio-mmio 寄存器状态机**：✅✅ **已端到端验证（2026-06-30）**——Linux guest 成功枚举模拟 virtio-net 并创建 `eth0`：
-  - 配置：仅在 linux vmconfig 的 `emu_devices` 加 `["virtio-net", 0x0a000000, 0x200, 16, 0xE2, [1]]`（无需改 FDT、无需从 passthrough 排除——QEMU virt 宿主 FDT 已有 `virtio_mmio@a000000` 节点，MMIO 陷出按地址路由到 emu 设备）。
-  - 证据：AxVisor `virtio-net 'virtio-net' initialized at GPA 0xa000000`；guest `/sys/bus/virtio/devices` 新增 `virtio1`；`/sys/class/net` 出现 `eth0`（`<BROADCAST,MULTICAST>`，state DOWN，无流量——QueueNotify 未处理，符合预期）。
-  - **待修（P2 项）**：eth0 MAC 为驱动随机生成（52:54:00:12:34:56）而非设备 advertise 的 52:54:00:00:00:01 → `VIRTIO_NET_F_MAC` 特性协商/config 读取需修正。
-  - 复现配置/脚本：`tmp/m2/vm-linux-vnet.toml`、`tmp/m2/netprobe.sh`、`tmp/m2/qemu-netprobe.toml`。
-- **P2 VirtioNetDevice + 工厂注册**：`impl BaseMmioDeviceOps`；`VirtioNetFactory: DeviceFactory { device_type()=VirtioNet }`；在 `register_builtin_factories` 注册；TX 路径把帧交给交换机，RX 路径把帧入队 + 注入 IRQ。
-- **P3 软件 L2 交换机**：全局表（VM/端口 ↔ MAC），转发逻辑，线程/poll 驱动。先做两端点直连，再加 MAC 学习。
+- **P1 设备侧 virtio-mmio 寄存器状态机**：✅ 代码实现（`VirtioNet` 寄存器状态机 + 注册）。
+  - ⚠️ **更正（2026-06-30）：先前"P1 已端到端验证 eth0"是误判**。加 MMIO trap 打点后证实：guest 对 `0x0a000000` 的访问**根本不陷入 AxVisor**（0 次 trap）；先前看到的 `eth0`（MAC `52:54:00:12:34:56` = QEMU 默认 NIC MAC）是 **QEMU 自动添加的默认用户态网卡**，不是本模拟设备。加 `-net none` 后 `eth0` 消失、`/sys/class/net` 只剩 `lo`/`sit0`，且本设备仍 0 次 trap。
+  - **真实阻塞（根因）**：AxVisor 把 `emu_devices` 的 MMIO 区域当 **passthrough 映射**（被 `passthrough ["/"]` 覆盖），不陷入到 emu 设备；而把该节点加入 `excluded_devices` 又会连带从 guest FDT 删除该节点 → Linux 不再 probe。要让本设备工作，需在 AxVisor 地址空间/FDT 层让 **emu_devices 区域不映射（陷入）同时保留其 FDT 节点**——这是更深的 AxVisor 集成改动（emu 与 passthrough 的交互），非配置可解。
+  - 设备后端 + P2/P3 数据通路代码已实现并编译/clippy/fmt 通过，但**在该路由问题解决前无法被实际驱动**。
+- **P2 virtqueue 数据通路**：✅ 代码实现（未能运行验证，受 P1 路由阻塞）。`VirtioNet::process_tx/deliver_rx`（split virtqueue：desc/avail/used 解析、frame 收发、used 标记）；`vm.rs::handle_mmio_write` 在 TX QueueNotify 时 `drive_virtio_net_tx`（用 `read_from_guest/write_to_guest` 闭包，仿 fw_cfg.process_dma），注入 TX 完成中断。
+- **P3 软件 L2 交换机**：✅ 代码实现（未能运行验证）。广播泛洪：`drive_virtio_net_tx` 对 `get_vm_list()` 每个其他 VM 调 `deliver_rx_frame`（写对端 RX virtqueue + `inject_interrupt_to_vcpu`）。MAC 学习留后续。
 - **P4 客户机驱动接通**：Linux 侧 virtio-net 驱动自动识别（已内建），配 IP；Zephyr 侧需带 virtio-net + lwIP/BSD socket 的镜像（见前置 C）。
 - **P5 应用层协议 + 可靠性 + 自动化测试**（M7/M8）：见任务二后续。
 
