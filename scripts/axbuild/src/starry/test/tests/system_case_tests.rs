@@ -156,10 +156,60 @@ fn signal_interrupt_eintr_subcase_bounds_child_wait() {
         source_path.display()
     );
     assert!(
+        source.contains("read_ready_byte(")
+            && source.contains("errno == EINTR")
+            && source.contains("parent read child ready pipe"),
+        "{} must retry the parent ready-pipe read on EINTR and report why it failed",
+        source_path.display()
+    );
+    assert!(
         !source.contains("waitpid(child, &status, 0)"),
         "{} must not let a stuck child consume the whole grouped QEMU timeout",
         source_path.display()
     );
+}
+
+#[test]
+fn tty_console_input_burst_uses_injected_guest_script() {
+    let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let case_dir = workspace_root.join("test-suit/starryos/qemu-smp1/tty-console-input-burst");
+    let script_path = case_dir.join("sh/tty-input-burst.sh");
+    assert!(
+        script_path.is_file(),
+        "{} must inject the burst script through the rootfs instead of pasting it over the console",
+        script_path.display()
+    );
+
+    let script = fs::read_to_string(&script_path)
+        .unwrap_or_else(|err| panic!("failed to read {}: {err}", script_path.display()));
+    assert!(
+        script.contains("while [ \"$i\" -lt 120 ]")
+            && script.contains("STARRY_TTY_INPUT_BURST_PASSED"),
+        "{} must preserve the burst payload checks and success marker",
+        script_path.display()
+    );
+
+    for arch in ["aarch64", "loongarch64", "riscv64", "x86_64"] {
+        let path = case_dir.join(format!("qemu-{arch}.toml"));
+        let content = fs::read_to_string(&path).unwrap();
+        let config: toml::Value = toml::from_str(&content).unwrap();
+        let command = config
+            .get("shell_init_cmd")
+            .and_then(toml::Value::as_str)
+            .unwrap_or_default();
+
+        assert_eq!(
+            command,
+            "/usr/bin/tty-input-burst.sh",
+            "{} must only send a short command through the console",
+            path.display()
+        );
+        assert!(
+            !content.contains("cat > /tmp/tty-input-burst.sh"),
+            "{} must not paste a long heredoc through the console",
+            path.display()
+        );
+    }
 }
 
 #[test]
