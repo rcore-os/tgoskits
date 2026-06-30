@@ -67,6 +67,25 @@ pub fn shutdown() -> ! {
     }
 }
 
+// Reset the system through PSCI.
+pub fn reset() -> ! {
+    if !METHOD.is_init() {
+        loop {
+            wfi();
+        }
+    }
+
+    if let Err(e) = match *METHOD {
+        Method::Smc => psci::system_reset::<Smc>(),
+        Method::Hvc => psci::system_reset::<Hvc>(),
+    } {
+        println!("Failed to reset: {e}");
+    }
+    loop {
+        wfi();
+    }
+}
+
 pub(crate) fn cpu_on(
     cpu_id: u64,
     entry: u64,

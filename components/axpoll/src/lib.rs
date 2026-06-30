@@ -14,7 +14,7 @@ use core::{
 use ax_kspin::SpinNoIrq;
 use bitflags::bitflags;
 use linux_raw_sys::general::*;
-use spin::LazyLock;
+use spin::Once;
 
 bitflags! {
     /// I/O events.
@@ -152,7 +152,7 @@ impl Drop for Inner {
 }
 
 /// A data structure for waking up tasks that are waiting for I/O events.
-pub struct PollSet(LazyLock<SpinNoIrq<Inner>>);
+pub struct PollSet(Once<SpinNoIrq<Inner>>);
 
 impl Default for PollSet {
     fn default() -> Self {
@@ -163,7 +163,7 @@ impl Default for PollSet {
 impl PollSet {
     /// Creates a new empty [`PollSet`].
     pub const fn new() -> Self {
-        Self(LazyLock::new(|| SpinNoIrq::new(Inner::new())))
+        Self(Once::new())
     }
 
     /// Registers a waker for the requested I/O events.
@@ -174,7 +174,12 @@ impl PollSet {
     /// from hard IRQ, NMI, or trap callbacks, and must not hold locks that may
     /// be re-entered by the registered waker or by poll wakeup paths.
     pub unsafe fn register(&self, waker: &Waker, interests: IoEvents) {
-        let replaced = { self.0.lock().register(waker, interests) };
+        let replaced = {
+            self.0
+                .call_once(|| SpinNoIrq::new(Inner::new()))
+                .lock()
+                .register(waker, interests)
+        };
         if let Some(entry) = replaced {
             entry.wake();
         }
@@ -190,15 +195,58 @@ impl PollSet {
     /// must not hold locks that may be re-entered by waker execution or poll
     /// wakeup paths.
     pub unsafe fn wake(&self, ready: IoEvents) -> usize {
+        let Some(inner) = self.0.get() else {
+            return 0;
+        };
         let mut ready_entries = Vec::with_capacity(POLL_SET_CAPACITY);
         {
-            self.0.lock().drain_ready(ready, &mut ready_entries);
+            inner.lock().drain_ready(ready, &mut ready_entries);
         }
         let woke = ready_entries.len();
         for entry in ready_entries {
             entry.wake();
         }
         woke
+    }
+
+    /// Wakes up registered wakers whose interests intersect `ready` from IRQ context.
+    ///
+    /// Unlike [`wake`](Self::wake), this does not allocate a replacement
+    /// waiter buffer. It drains the already-initialized entries in place, so
+    /// device IRQ handlers can acknowledge the device and then wake matching
+    /// poll waiters without allocating in hard IRQ context.
+    pub fn wake_from_irq(&self, ready: IoEvents) -> usize {
+        let Some(inner) = self.0.get() else {
+            return 0;
+        };
+        let mut ready_entries = [const { MaybeUninit::<Entry>::uninit() }; POLL_SET_CAPACITY];
+        let ready_len = {
+            let mut inner = inner.lock();
+            let len = inner.len();
+            if len == 0 {
+                return 0;
+            }
+
+            let mut ready_len = 0;
+            let mut keep_len = 0;
+            for i in 0..len {
+                let entry = unsafe { inner.entries[i].assume_init_read() };
+                if entry.interests.intersects(ready) {
+                    ready_entries[ready_len].write(entry);
+                    ready_len += 1;
+                } else {
+                    inner.entries[keep_len].write(entry);
+                    keep_len += 1;
+                }
+            }
+            inner.cursor = keep_len;
+            ready_len
+        };
+
+        for entry in ready_entries.iter_mut().take(ready_len) {
+            unsafe { entry.assume_init_read() }.wake();
+        }
+        ready_len
     }
 }
 

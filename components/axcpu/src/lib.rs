@@ -13,6 +13,8 @@ extern crate ax_memory_addr;
 #[macro_use]
 pub mod trap;
 
+pub mod cap;
+
 #[cfg(feature = "exception-table")]
 mod exception_table;
 #[cfg(feature = "uspace")]

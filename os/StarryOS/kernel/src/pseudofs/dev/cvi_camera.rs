@@ -12,10 +12,14 @@ use sg200x_bsp::{
     pinmux::{FMUX_SD1_D1, FMUX_SD1_D2, Pinmux},
     soc::{FMUX_BASE, IOBLK_BASE, IOBLK_GRTC_BASE},
 };
+use some_serial::InterruptMask;
 use starry_vm::{VmMutPtr, vm_write_slice};
 use tock_registers::interfaces::Writeable;
 
-use crate::pseudofs::{DeviceOps, dev::irq_byte_ring::ByteRing};
+use crate::pseudofs::{
+    DeviceOps,
+    dev::{IrqRegistration, irq_byte_ring::ByteRing, request_shared_disabled},
+};
 
 pub const CMD_INIT: u8 = 0x01;
 pub const CMD_GET_CAMERA_INFO: u8 = 0x02;
@@ -40,11 +44,23 @@ unsafe fn cvi_camera_raw_irq_handler(
     let mut uart3 = some_serial::ns16550::dw_apb::DwApbUart::new(
         phys_to_virt(PhysAddr::from(UART3_ADDR)).as_usize(),
     );
+    let _ = uart3.handle_irq();
+    let mut scratch = [0u8; 64];
     let mut buf = CAMERA_UART_BUF.lock();
-    while let Some(c) = uart3.getchar() {
-        let _ = buf.push_back(c);
+    loop {
+        let n = match uart3.try_read(&mut scratch) {
+            Ok(n) => n,
+            Err(err) => err.bytes_transferred,
+        };
+        if n == 0 {
+            break;
+        }
+        for &byte in &scratch[..n] {
+            let _ = buf.push_back(byte);
+        }
     }
-    uart3.set_ier(true);
+    let mask = uart3.get_irq_mask();
+    uart3.set_irq_mask(mask | InterruptMask::RX_AVAILABLE);
     ax_runtime::hal::irq::IrqReturn::Handled
 }
 
@@ -324,6 +340,17 @@ impl<T: UartTransport> CameraProtocol<T> {
 
 const UART3_ADDR: usize = 0x04170000;
 static CAMERA_UART_BUF: Mutex<ByteRing<CAMERA_UART_BUF_CAP>> = Mutex::new(ByteRing::new());
+const CAMERA_UART_IRQ: usize = 47;
+
+fn camera_uart_irq() -> Result<ax_runtime::hal::irq::IrqId, ax_runtime::hal::irq::IrqError> {
+    Ok(ax_runtime::hal::irq::IrqId::new(
+        ax_runtime::hal::irq::RISCV_PLIC_DOMAIN,
+        ax_runtime::hal::irq::HwIrq(
+            u32::try_from(CAMERA_UART_IRQ)
+                .map_err(|_| ax_runtime::hal::irq::IrqError::InvalidIrq)?,
+        ),
+    ))
+}
 
 struct Uart3;
 
@@ -332,13 +359,20 @@ impl UartTransport for Uart3 {
         let mut uart3 = some_serial::ns16550::dw_apb::DwApbUart::new(
             phys_to_virt(PhysAddr::from(UART3_ADDR)).as_usize(),
         );
-        data.iter().for_each(|x| uart3.putchar(*x));
+        let mut written = 0;
+        while written < data.len() {
+            let n = uart3.try_write(&data[written..]);
+            if n == 0 {
+                core::hint::spin_loop();
+                continue;
+            }
+            written += n;
+        }
         Ok(())
     }
 
     fn read_bytes(&mut self, buf: &mut [u8], _timeout_ms: u64) -> Result<usize, CameraError> {
         sleep(Duration::from_millis(3));
-        ax_runtime::hal::irq::set_enable(47, false);
         let n = {
             let mut cache_buf = CAMERA_UART_BUF.lock();
             let n = cache_buf.len().min(buf.len());
@@ -347,10 +381,6 @@ impl UartTransport for Uart3 {
             }
             n
         };
-        // Always re-enable the IRQ before returning, otherwise the ESP32's
-        // reply traffic stops landing in CAMERA_UART_BUF and every subsequent
-        // poll sees an empty queue forever.
-        ax_runtime::hal::irq::set_enable(47, true);
         if n == 0 {
             sleep(Duration::from_millis(1));
         }
@@ -360,6 +390,7 @@ impl UartTransport for Uart3 {
 
 pub struct CviCamera {
     inner: Mutex<CameraProtocol<Uart3>>,
+    _irq_registration: Option<IrqRegistration>,
 }
 
 #[repr(u8)]
@@ -387,16 +418,29 @@ impl CviCamera {
             phys_to_virt(PhysAddr::from(UART3_ADDR)).as_usize(),
         );
         uart3.init_with_baud_clk(1_500_000, some_serial::ns16550::dw_apb::SG2002_UART_CLOCK);
-        uart3.set_ier(true);
-        let _ = ax_runtime::hal::irq::request_shared_irq(
-            47,
-            cvi_camera_raw_irq_handler,
-            NonNull::dangling(),
-        )
-        .map_err(|err| warn!("failed to request cvi camera IRQ: {err:?}"));
-        ax_runtime::hal::irq::set_enable(47, true);
+        uart3.set_irq_mask(InterruptMask::empty());
+        let mut irq_registration = None;
+        match camera_uart_irq() {
+            Ok(irq) => {
+                match request_shared_disabled(irq, cvi_camera_raw_irq_handler, NonNull::dangling())
+                {
+                    Ok(registration) => {
+                        uart3.set_irq_mask(InterruptMask::RX_AVAILABLE);
+                        if let Err(err) = registration.enable() {
+                            warn!("failed to enable cvi camera IRQ: {err:?}");
+                            uart3.set_irq_mask(InterruptMask::empty());
+                        } else {
+                            irq_registration = Some(registration);
+                        }
+                    }
+                    Err(err) => warn!("failed to request cvi camera IRQ: {err:?}"),
+                }
+            }
+            Err(err) => warn!("failed to resolve cvi camera IRQ: {err:?}"),
+        }
         Self {
             inner: Mutex::new(CameraProtocol::new_default(Uart3)),
+            _irq_registration: irq_registration,
         }
     }
 }

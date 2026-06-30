@@ -186,6 +186,10 @@ pub enum AxVCpuExitReason {
     /// waiting for interrupts or other events to wake it up.
     Halt,
 
+    /// The guest VCpu reached an idle instruction that should yield host time
+    /// without blocking the vCPU task indefinitely.
+    Idle,
+
     /// Request to bring up a secondary CPU core.
     ///
     /// This exit reason is used during the multi-core VM boot process when

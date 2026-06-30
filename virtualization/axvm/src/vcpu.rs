@@ -54,6 +54,5 @@ cfg_if::cfg_if! {
         pub use arm_vcpu::Aarch64VCpuSetupConfig as AxVCpuSetupConfig;
         pub use arm_vcpu::max_guest_page_table_levels;
 
-        pub use arm_vgic::vtimer::get_sysreg_device;
     }
 }

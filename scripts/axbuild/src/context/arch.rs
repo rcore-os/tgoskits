@@ -67,7 +67,7 @@ const ARCH_SPECS: &[ArchSpec] = &[
         arch: "loongarch64",
         target: "loongarch64-unknown-none-softfloat",
         default_rootfs_image: "rootfs-loongarch64-alpine.img",
-        starry_default_platform: Some("loongarch64-qemu-virt"),
+        starry_default_platform: None,
         cross_compile: CrossCompileSpec {
             llvm_target: "loongarch64-linux-musl",
             cmake_system_processor: "loongarch64",

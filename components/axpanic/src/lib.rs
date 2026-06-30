@@ -14,6 +14,9 @@
 
 #![no_std]
 
+#[cfg(test)]
+extern crate std;
+
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 const PANIC_CPU_INVALID: usize = usize::MAX;
@@ -88,4 +91,56 @@ pub fn oops_in_progress() -> bool {
 /// Marks the current scope as running inside an oops/panic-like path.
 pub fn enter_oops() -> OopsGuard {
     OopsGuard::new()
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Mutex;
+
+    use super::*;
+
+    static TEST_LOCK: Mutex<()> = Mutex::new(());
+
+    fn reset_state() {
+        PANIC_CPU.store(PANIC_CPU_INVALID, Ordering::Release);
+        PANIC_BACKTRACE_USED.store(false, Ordering::Release);
+        OOPS_IN_PROGRESS.store(0, Ordering::Release);
+    }
+
+    #[test]
+    fn panic_owner_disposition() {
+        let _guard = TEST_LOCK.lock().unwrap();
+        reset_state();
+
+        assert_eq!(enter_panic(0), PanicDisposition::Primary);
+        assert_eq!(enter_panic(0), PanicDisposition::Recursive);
+        assert_eq!(enter_panic(1), PanicDisposition::Concurrent);
+    }
+
+    #[test]
+    fn panic_backtrace_claimed_once() {
+        let _guard = TEST_LOCK.lock().unwrap();
+        reset_state();
+
+        assert!(should_emit_panic_backtrace());
+        assert!(!should_emit_panic_backtrace());
+    }
+
+    #[test]
+    fn oops_guard_tracks_nested_scopes() {
+        let _guard = TEST_LOCK.lock().unwrap();
+        reset_state();
+
+        assert!(!oops_in_progress());
+        {
+            let _outer = enter_oops();
+            assert!(oops_in_progress());
+            {
+                let _inner = enter_oops();
+                assert!(oops_in_progress());
+            }
+            assert!(oops_in_progress());
+        }
+        assert!(!oops_in_progress());
+    }
 }

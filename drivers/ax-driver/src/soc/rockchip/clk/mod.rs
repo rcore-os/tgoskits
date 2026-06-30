@@ -54,6 +54,12 @@ impl DriverGeneric for ClkDrv {
 impl rdif_clk::Interface for ClkDrv {
     fn perper_enable(&mut self) {}
 
+    fn enable(&mut self, id: rdif_clk::ClockId) -> Result<(), KError> {
+        self.inner
+            .clk_enable(clock_id(id))
+            .map_err(|_| KError::InvalidArg { name: "clock_id" })
+    }
+
     fn get_rate(&self, id: rdif_clk::ClockId) -> Result<u64, KError> {
         self.inner
             .clk_get_rate(clock_id(id))

@@ -6,15 +6,14 @@
  * loongarch64 qemu-virt 物理内存(RAM)探测回归测试。
  *
  * 触发背景 (为什么写这个测例):
- *   platforms/ax-plat-loongarch64-qemu-virt 此前把物理内存大小硬编码为常量
- *   PHYS_MEMORY_SIZE (512 MiB),无视 QEMU 启动时 `-m` 指定的实际内存。于是无论
+ *   LoongArch QEMU 平台曾把物理内存大小硬编码为常量 PHYS_MEMORY_SIZE
+ *   (512 MiB),无视 QEMU 启动时 `-m` 指定的实际内存。于是无论
  *   `-m 2G` 还是 `-m 512M`,guest 内核都只认 512 MiB,导致较大内存的应用
  *   (JVM / 数据库 / 重型 server) 在 loong 上 OOM。
  *
- * 修复 (platforms/ax-plat-loongarch64-qemu-virt/src/{boot.rs,mem.rs}):
- *   _start 把 QEMU 传入的 FDT 指针 ($a0..$a3) 存下,MMU 建立后用 fdt-raw 解析
- *   设备树 /memory 节点,按真实 RAM 大小初始化分配器;解析失败时回退到 512 MiB
- *   常量,保证 boot 永不回归。
+ * 修复:
+ *   平台初始化从固件/FDT 发现真实 RAM 大小,按 /memory 节点或等价固件内存表
+ *   初始化分配器;解析失败时才回退到保守默认值,保证 boot 永不回归。
  *
  * 本测例 (smp1/system 组,loong qemu-loongarch64.toml 已设 `-m 2G`):
  *   - 读 /proc/meminfo 的 MemTotal。

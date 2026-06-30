@@ -56,7 +56,7 @@
 //! waker.wake();  // WRONG: potential self-deadlock
 //! ```
 
-use alloc::{boxed::Box, format, string::String, vec, vec::Vec};
+use alloc::{boxed::Box, format, string::String, sync::Arc, vec, vec::Vec};
 use core::{
     pin::Pin,
     task::{Context, Waker},
@@ -64,6 +64,7 @@ use core::{
 
 use ax_errno::{AxResult, ax_err_type};
 use ax_hal::time::{NANOS_PER_MICROS, TimeValue, monotonic_time_nanos, wall_time_nanos};
+use ax_kspin::SpinRwLock as RwLock;
 use ax_task::future::sleep_until;
 use smoltcp::{
     iface::{Interface, PollResult, SocketSet},
@@ -78,23 +79,20 @@ use smoltcp::{
 
 use crate::{
     SOCKET_SET,
+    addr::mask_from_prefix,
     config::{
         DeviceBinding, DnsServerEntry, DnsSource, InterfaceFlags, InterfaceId, InterfaceInfo,
         InterfaceKind, Ipv4InterfaceConfig, RouteInfo,
     },
     consts::STANDARD_MTU,
     device::{ArpEntry, EthernetDevice},
-    dhcp_server::DhcpServer,
+    dhcp_server::{DhcpServer, parse_dhcp_packet},
     router::{RouteDecision, Router, SharedRouteTable},
 };
 
 fn now() -> Instant {
     Instant::from_micros_const((monotonic_time_nanos() / NANOS_PER_MICROS) as i64)
 }
-
-use alloc::sync::Arc;
-
-use spin::RwLock;
 
 struct ControlState {
     interfaces: Vec<NetInterface>,
@@ -174,7 +172,6 @@ impl NetControl {
     }
 
     pub fn default_routes(&self) -> Vec<RouteInfo> {
-        let _state = self.state.read();
         self.routes.read().default_routes()
     }
 
@@ -311,9 +308,16 @@ pub struct Service {
     pub iface: Interface,
     router: Router,
     control: Arc<NetControl>,
-    timeout: Option<Pin<Box<dyn Future<Output = ()> + Send>>>,
+    timeouts: Vec<TimeoutRegistration>,
     dhcp: Vec<DhcpState>,
     dhcp_server: Option<DhcpServer>,
+    dhcp_events: Vec<DhcpEvent>,
+    dhcp_server_replies: Vec<(usize, Vec<u8>)>,
+}
+
+struct TimeoutRegistration {
+    deadline: Instant,
+    _future: Pin<Box<dyn Future<Output = ()> + Send>>,
 }
 
 #[derive(Clone)]
@@ -421,72 +425,53 @@ impl DhcpState {
             return None;
         }
 
-        let ipv4_packet = Ipv4Packet::new_checked(packet).ok()?;
-        let ipv4_repr = Ipv4Repr::parse(&ipv4_packet, &ChecksumCapabilities::default()).ok()?;
-        if ipv4_repr.next_header != IpProtocol::Udp {
+        let parsed = parse_dhcp_packet(packet)?;
+        if parsed.udp.src_port != DHCP_SERVER_PORT || parsed.udp.dst_port != DHCP_CLIENT_PORT {
             return None;
         }
 
-        let udp_packet = UdpPacket::new_checked(ipv4_packet.payload()).ok()?;
-        let udp_repr = UdpRepr::parse(
-            &udp_packet,
-            &IpAddress::Ipv4(ipv4_repr.src_addr),
-            &IpAddress::Ipv4(ipv4_repr.dst_addr),
-            &ChecksumCapabilities::default(),
-        )
-        .ok()?;
-        if udp_repr.src_port != DHCP_SERVER_PORT || udp_repr.dst_port != DHCP_CLIENT_PORT {
-            return None;
-        }
-
-        let dhcp_packet = DhcpPacket::new_checked(udp_packet.payload()).ok()?;
-        let dhcp_repr = DhcpRepr::parse(&dhcp_packet).ok()?;
-        if dhcp_repr.client_hardware_address != self.mac
-            || dhcp_repr.transaction_id != self.transaction_id
+        if parsed.client_hardware_address != self.mac
+            || parsed.transaction_id != self.transaction_id
         {
             return None;
         }
 
-        match (self.phase, dhcp_repr.message_type) {
+        match (self.phase, parsed.message_type) {
             (DhcpPhase::Discovering, DhcpMessageType::Offer) => {
-                if !is_unicast_ipv4(dhcp_repr.your_ip) {
+                if !is_unicast_ipv4(parsed.your_ip) {
                     return None;
                 }
-                self.offered_address = Some(dhcp_repr.your_ip);
-                self.server_identifier = dhcp_repr.server_identifier.or(Some(ipv4_repr.src_addr));
+                self.offered_address = Some(parsed.your_ip);
+                self.server_identifier = parsed.server_identifier.or(Some(parsed.src_addr));
                 self.phase = DhcpPhase::Requesting;
                 self.retry = 0;
                 self.retry_at = timestamp;
                 info!(
                     "{}: DHCP offered address {} from {}",
                     self.ifname,
-                    dhcp_repr.your_ip,
-                    self.server_identifier.unwrap_or(ipv4_repr.src_addr)
+                    parsed.your_ip,
+                    self.server_identifier.unwrap_or(parsed.src_addr)
                 );
                 None
             }
             (DhcpPhase::Requesting, DhcpMessageType::Ack)
             | (DhcpPhase::Bound, DhcpMessageType::Ack) => {
-                let subnet_mask = dhcp_repr.subnet_mask?;
+                let subnet_mask = parsed.subnet_mask?;
                 let prefix_len = IpAddress::Ipv4(subnet_mask).prefix_len()?;
-                if !is_unicast_ipv4(dhcp_repr.your_ip) {
+                if !is_unicast_ipv4(parsed.your_ip) {
                     return None;
                 }
                 self.phase = DhcpPhase::Bound;
                 self.retry = 0;
-                let address = Ipv4Cidr::new(dhcp_repr.your_ip, prefix_len);
+                let address = Ipv4Cidr::new(parsed.your_ip, prefix_len);
                 Some(DhcpEvent::Configured {
                     interface_id: self.interface_id,
                     dev: self.dev,
                     ifname: self.ifname.clone(),
                     metric: self.metric,
                     address,
-                    router: dhcp_repr.router,
-                    dns_servers: dhcp_repr
-                        .dns_servers
-                        .as_ref()
-                        .map(|servers| servers.iter().copied().collect())
-                        .unwrap_or_default(),
+                    router: parsed.router,
+                    dns_servers: parsed.dns_servers,
                 })
             }
             (_, DhcpMessageType::Nak) => {
@@ -556,9 +541,11 @@ impl Service {
             iface,
             router,
             control,
-            timeout: None,
+            timeouts: Vec::new(),
             dhcp: Vec::new(),
             dhcp_server: None,
+            dhcp_events: Vec::new(),
+            dhcp_server_replies: Vec::new(),
         }
     }
 
@@ -736,8 +723,10 @@ impl Service {
 
     pub fn poll(&mut self, sockets: &mut SocketSet) -> bool {
         let timestamp = now();
-        let mut dhcp_events = Vec::new();
-        let mut dhcp_server_replies = Vec::new();
+        let mut dhcp_events = core::mem::take(&mut self.dhcp_events);
+        let mut dhcp_server_replies = core::mem::take(&mut self.dhcp_server_replies);
+        dhcp_events.clear();
+        dhcp_server_replies.clear();
         let router_rx_pending;
 
         {
@@ -758,23 +747,26 @@ impl Service {
                     }
                 });
         }
-        for event in dhcp_events {
+        for event in dhcp_events.drain(..) {
             self.handle_dhcp_event(event);
         }
         let mut dhcp_server_sent = false;
-        for (dev, reply) in dhcp_server_replies {
+        for (dev, reply) in &dhcp_server_replies {
             dhcp_server_sent |= self.router.send_on_device(
-                dev,
+                *dev,
                 IpAddress::Ipv4(Ipv4Address::BROADCAST),
-                &reply,
+                reply,
                 timestamp,
             );
         }
+        dhcp_server_replies.clear();
+        self.dhcp_events = dhcp_events;
+        self.dhcp_server_replies = dhcp_server_replies;
         let socket_state_changed =
             self.iface.poll(timestamp, &mut self.router, sockets) == PollResult::SocketStateChanged;
         let dhcp_poll_next = self.poll_dhcp(timestamp);
 
-        // Reap orphaned TCP sockets using the SocketSet already held by poll_once().
+        // Reap orphaned TCP sockets using the SocketSet already held by poll_until_idle().
         crate::orphan::reap_orphans(timestamp, sockets);
 
         self.router.dispatch(timestamp, sockets)
@@ -925,10 +917,6 @@ impl Service {
         self.router.arp_entries(now())
     }
 
-    pub fn eth0_ipv4_config(&self) -> Option<Ipv4InterfaceConfig> {
-        self.control.ipv4_config("eth0")
-    }
-
     pub fn wake_all_devices(&self) {
         self.router.wake_all_devices();
     }
@@ -939,9 +927,6 @@ impl Service {
         if let Some(t) = next {
             let next = TimeValue::from_micros(t.total_micros() as _);
 
-            // drop old timeout future
-            self.timeout = None;
-
             let mut fut = Box::pin(sleep_until(next));
             let mut cx = Context::from_waker(waker);
 
@@ -949,7 +934,12 @@ impl Service {
                 waker.wake_by_ref();
                 return;
             } else {
-                self.timeout = Some(fut);
+                let now = now();
+                self.timeouts.retain(|timeout| timeout.deadline > now);
+                self.timeouts.push(TimeoutRegistration {
+                    deadline: t,
+                    _future: fut,
+                });
             }
         }
 
@@ -989,17 +979,6 @@ fn dhcp_transaction_id(mac: EthernetAddress) -> u32 {
 
 fn is_unicast_ipv4(addr: Ipv4Address) -> bool {
     addr != Ipv4Address::UNSPECIFIED && addr != Ipv4Address::BROADCAST && !addr.is_multicast()
-}
-
-/// 由前缀长度构造 IPv4 子网掩码(与 lib.rs 的 `prefix_to_mask` 等价,
-/// 这里独立提供以免暴露跨模块的私有函数)。
-fn mask_from_prefix(prefix_len: u8) -> Ipv4Address {
-    let bits: u32 = if prefix_len == 0 {
-        0
-    } else {
-        u32::MAX << (32 - prefix_len.min(32) as u32)
-    };
-    Ipv4Address::from_bits(bits)
 }
 
 fn build_dhcp_packet(
@@ -1076,7 +1055,7 @@ mod tests {
 
     #[test]
     fn dhcp_configured_is_true_once_any_interface_has_address() {
-        let routes = Arc::new(spin::RwLock::new(RouteTable::new()));
+        let routes = Arc::new(ax_kspin::SpinRwLock::new(RouteTable::new()));
         let mut router = Router::new(routes.clone());
         let dev0 = router.add_device(InterfaceId::new(2), Box::new(LoopbackDevice::new()));
         let dev1 = router.add_device(InterfaceId::new(3), Box::new(LoopbackDevice::new()));
@@ -1105,7 +1084,7 @@ mod tests {
 
     #[test]
     fn interface_address_table_handles_loopback_and_two_ethernet_addresses() {
-        let routes = Arc::new(spin::RwLock::new(RouteTable::new()));
+        let routes = Arc::new(ax_kspin::SpinRwLock::new(RouteTable::new()));
         let router = Router::new(routes.clone());
         let control = Arc::new(NetControl::new(Vec::new(), routes, Vec::new()));
         let mut service = Service::new(router, control);

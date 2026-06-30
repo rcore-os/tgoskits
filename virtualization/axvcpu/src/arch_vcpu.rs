@@ -13,6 +13,7 @@
 // limitations under the License.
 
 use ax_errno::AxResult;
+use ax_page_table_entry::MappingFlags;
 use axvm_types::{GuestPhysAddr, HostPhysAddr, InterruptTriggerMode, VCpuId, VMId};
 
 use crate::exit::AxVCpuExitReason;
@@ -76,6 +77,15 @@ pub trait AxArchVCpu: Sized {
 
     /// Sets the value of a general-purpose register.
     fn set_gpr(&mut self, reg: usize, val: usize);
+
+    /// Decodes the last architecture-specific memory fault as MMIO when possible.
+    fn decode_mmio_fault(
+        &mut self,
+        _fault_addr: GuestPhysAddr,
+        _access_flags: MappingFlags,
+    ) -> Option<AxVCpuExitReason> {
+        None
+    }
 
     /// Inject an interrupt to the VCpu.
     ///

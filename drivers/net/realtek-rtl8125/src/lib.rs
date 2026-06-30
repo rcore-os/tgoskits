@@ -4,6 +4,7 @@ extern crate alloc;
 
 use alloc::{boxed::Box, collections::VecDeque, sync::Arc};
 
+use ax_kspin::SpinRaw as Mutex;
 use descriptor::{RING_END, RxDesc, TxDesc};
 use dma_api::{DeviceDma, DmaOp};
 use log::info;
@@ -11,7 +12,6 @@ use mmio_api::{Mmio, MmioAddr, MmioOp};
 use queue::{QueueStart, QueueStartState, Rtl8125RxQueue, Rtl8125TxQueue};
 use rdif_eth::{Event, IRxQueue, ITxQueue, Interface};
 use registers::*;
-use spin::Mutex;
 
 mod descriptor;
 mod hw;
@@ -112,7 +112,7 @@ impl Rtl8125 {
         mmio_api::init(mmio_op);
         let mmio = mmio_api::ioremap(bar_addr.into(), bar_size.max(RTL8125_REGS_SIZE))?;
         let regs = Regs::new(mmio.as_nonnull_ptr());
-        let dma = DeviceDma::new(dma_mask, dma_op);
+        let dma = DeviceDma::new_legacy(dma_mask, dma_op);
         let xid = rtl8125_xid(regs);
         let chip = chip_version(xid);
 
@@ -308,25 +308,43 @@ impl Interface for Rtl8125 {
     }
 
     fn handle_irq(&mut self) -> Event {
-        let status = self.regs.read_interrupt_status();
-        if status == 0 || status == u32::MAX {
-            return Event::none();
-        }
-
-        self.ack_events(status);
-
-        let mut event = Event::none();
-        if irq_has_tx_event(status) {
-            event.tx_queue.insert(QUEUE_ID0);
-        }
-        if irq_has_rx_event(status) {
-            event.rx_queue.insert(QUEUE_ID0);
-        }
-        if irq_has_link_change(status) {
-            info!("RTL8125 irq link change: status={:?}", self.status());
-        }
-        event
+        rtl8125_irq_event(self.regs)
     }
+
+    fn take_irq_handler(&mut self) -> Option<rdif_eth::BIrqHandler> {
+        Some(Box::new(Rtl8125IrqHandler { regs: self.regs }))
+    }
+}
+
+struct Rtl8125IrqHandler {
+    regs: Regs,
+}
+
+impl rdif_eth::IrqHandler for Rtl8125IrqHandler {
+    fn handle_irq(&mut self) -> Event {
+        rtl8125_irq_event(self.regs)
+    }
+}
+
+fn rtl8125_irq_event(regs: Regs) -> Event {
+    let status = regs.read_interrupt_status();
+    if status == 0 || status == u32::MAX {
+        return Event::none();
+    }
+
+    regs.write_interrupt_status(status);
+
+    let mut event = Event::none();
+    if irq_has_tx_event(status) {
+        event.tx_queue.insert(QUEUE_ID0);
+    }
+    if irq_has_rx_event(status) {
+        event.rx_queue.insert(QUEUE_ID0);
+    }
+    if irq_has_link_change(status) {
+        info!("RTL8125 irq link change: status={:?}", read_status(regs));
+    }
+    event
 }
 
 fn rtl8125_xid(regs: Regs) -> u16 {

@@ -14,12 +14,16 @@ use super::{
 /// 参数分别为当前任务序列号和触发中断时观察到的 BD 命令 ID。
 pub type TiuIrqCallback = fn(seq_no: u32, bd_cmd_id: u32);
 
-/// 轮询等待时的延时函数（由 OS glue 注入）。
+/// 阻塞等待 TDMA 中断的函数（由 OS glue 注入）。
 ///
-/// 参数为需要等待的微秒数。driver core 自身没有时间源，等待 TDMA 完成
-/// 时需要一个真实计时的延时原语；OS glue 应注入一个按给定微秒数延时的
-/// 实现（如 `busy_wait`）。未注入时 core 退化为 `spin_loop` 自旋。
-pub type DelayFn = fn(usecs: u64);
+/// driver core 自身没有调度能力，等待 TDMA 完成时需要一个能让出 CPU 的
+/// 阻塞原语；OS glue 应注入一个实现：在给定超时（微秒）内等待硬件中断到达，
+/// 期间睡眠让出 CPU（如基于 `WaitQueue`）。返回 `true` 表示中断已到达，
+/// `false` 表示超时。未注入时 core 退化为忙等自旋。
+///
+/// 设计动机见 plan：SG2002 默认单核（`max-cpu-num = 1`），worker 线程
+/// 必须在等待硬件期间真正睡眠让出 CPU，否则相机前处理与 TPU 推理无法重叠。
+pub type WaitIrqFn = fn(timeout_us: u64) -> bool;
 
 /// TPU 寄存器备份信息 (用于挂起/恢复)
 #[derive(Debug, Clone, Copy, Default)]

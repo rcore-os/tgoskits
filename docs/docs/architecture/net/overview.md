@@ -25,7 +25,7 @@ TGOSKits 的网络能力收敛在 `net/ax-net`。它是 ArceOS、StarryOS 和 Ax
 | [orphan.rs](net/ax-net/src/orphan.rs) | TCP orphan socket 回收（RFC 793 TIME_WAIT） | `add_orphan`, `reap_orphans` |
 | [dhcp_server.rs](net/ax-net/src/dhcp_server.rs) | 最简 DHCP 服务器（SoftAP 模式） | `DhcpServer` |
 | [unix/](net/ax-net/src/unix/) | Unix domain socket | `UnixSocket`, `Transport` |
-| [vsock/](net/ax-net/src/vsock/) | 可选 vsock 支持（`vsock` feature） | `VsockSocket`, `VsockTransport` |
+| [vsock/](net/ax-net/src/vsock/) | 可选 vsock 支持（`vsock` feature） | `VsockSocket`, `VsockStreamTransport` |
 | [device/](net/ax-net/src/device/) | loopback、Ethernet、rd-net、vsock 设备适配 | `Device`, `EthernetDevice`, `RdNetDriver` |
 | [consts.rs](net/ax-net/src/consts.rs) | 缓冲区大小等常量 | `STANDARD_MTU`, `SOCKET_BUFFER_SIZE` |
 
@@ -47,7 +47,7 @@ TGOSKits 的网络能力收敛在 `net/ax-net`。它是 ArceOS、StarryOS 和 Ax
 | Loopback | 零状态 `LoopbackDevice` + `Router::dispatch()` 快速路径 inline 注入 `rx_buffer`，不经设备 worker 和队列分配 | 完整 |
 | TCP orphan 回收 | `orphan.rs`：Drop 后保留 smoltcp socket 直到 FIN/TIME_WAIT 完成，RFC 793 合规 | 完整 |
 | DHCP 服务器（SoftAP） | `dhcp_server.rs`：最简单客户端 DHCP 服务器，Discover→Offer、Request→Ack | 完整 |
-| OOB RX（SDIO Wi-Fi） | `EthernetDevice::new_oob_rx()` + `notify_oob_rx()` + 独立 poll task | 完整 |
+| OOB RX（SDIO Wi-Fi） | `EthernetDevice::new_oob_rx()` + `wake_net_task_irq()` + 独立 poll task | 完整 |
 | 动态设备注册 | `register_device_with_config()` 运行时添加静态 IP 设备（Wi-Fi AP） | 完整 |
 
 ## 设计原则
@@ -72,6 +72,7 @@ TGOSKits 的网络能力收敛在 `net/ax-net`。它是 ArceOS、StarryOS 和 Ax
 | `{ifname}-oob-poll` | OOB RX 设备（如 SDIO Wi-Fi）的专用 poll task | `OOB_RX_SIGNAL.wait()` |
 
 `NET_POLL_DEVICE_WAKER` 是全局设备 readiness waker。Router 会把它注册给所有允许触发全局协议栈推进的设备；设备 RX/IRQ/OOB 路径只唤醒 worker 和设置 poll 请求，不直接进入 smoltcp `Interface::poll()`。
+完整锁类型、锁顺序和禁止模式见[锁与并发](locks.md)。
 
 ### 全局锁顺序
 
@@ -90,6 +91,7 @@ SERVICE (Mutex<Service>)
 - `NET_CONTROL.state` 是独立 RwLock，接口查询（只读）可以在不持有 `SERVICE` 的情况下进行。
 - `ListenTable` 条目锁在 `SOCKET_SET` 锁内获取，保证 accept/snoop 的一致性。
 - 设备锁（`DeviceHandle.inner`）主要由 `{ifname}-rx` / `{ifname}-tx` worker 独立获取。worker 不应在持有设备锁时反向进入 `SERVICE` 或 `SOCKET_SET`，避免设备路径与协议核心互相阻塞。
+更细的控制面、Router、socket、Unix 和 vsock 锁划分见[锁与并发](locks.md)。
 
 ## 核心方案
 

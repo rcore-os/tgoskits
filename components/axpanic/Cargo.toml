@@ -1,6 +1,6 @@
 [package]
 name = "axpanic"
-version = "0.1.0"
+version = "0.1.1"
 repository = "https://github.com/rcore-os/tgoskits"
 edition.workspace = true
 authors = ["Yuekai Jia <equation618@gmail.com>"]

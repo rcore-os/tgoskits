@@ -1,0 +1,10 @@
+cmake_minimum_required(VERSION 3.20)
+project(test-vmpeak-hwm C)
+set(CMAKE_C_STANDARD 11)
+set(CMAKE_C_STANDARD_REQUIRED ON)
+set(CMAKE_C_EXTENSIONS OFF)
+
+add_executable(test-vmpeak-hwm src/main.c)
+target_include_directories(test-vmpeak-hwm PRIVATE src ${CMAKE_CURRENT_SOURCE_DIR}/../common)
+target_compile_options(test-vmpeak-hwm PRIVATE -Wall -Wextra -Werror)
+install(TARGETS test-vmpeak-hwm RUNTIME DESTINATION usr/bin/starry-test-suit)

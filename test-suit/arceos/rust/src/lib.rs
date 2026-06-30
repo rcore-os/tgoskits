@@ -39,7 +39,7 @@ pub mod exception;
 pub mod fs;
 #[cfg(all(
     feature = "ax-std",
-    any(feature = "lockdep-baseline", feature = "lockdep-detect")
+    any(feature = "lockdep-baseline", feature = "lockdep-detect",)
 ))]
 pub mod lockdep;
 #[cfg(all(feature = "memtest", feature = "ax-std"))]

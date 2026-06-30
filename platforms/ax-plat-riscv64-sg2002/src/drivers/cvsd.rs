@@ -7,7 +7,7 @@ use core::{
 use ax_driver::{PlatformDevice, block::PlatformDeviceBlock, probe::OnProbeError};
 use rdif_block::{
     BlkError, DeviceInfo, DriverGeneric, IQueue, Interface, QueueInfo, QueueLimits, Request,
-    RequestFlags, RequestId, RequestOp, RequestStatus, validate_request,
+    RequestId, RequestOp, RequestStatus, validate_request,
 };
 use sg200x_bsp::sdmmc::Sdmmc;
 
@@ -220,16 +220,8 @@ impl Interface for CvsdBlock {
 
     fn queue_limits(&self) -> QueueLimits {
         QueueLimits {
-            dma_mask: u64::MAX,
             dma_alignment: 0x1000,
-            max_inflight: 1,
-            max_blocks_per_request: 1,
-            max_segments: 1,
-            max_segment_size: BLOCK_SIZE,
-            supported_flags: RequestFlags::NONE,
-            supports_flush: false,
-            supports_discard: false,
-            supports_write_zeroes: false,
+            ..QueueLimits::simple(BLOCK_SIZE, u64::MAX)
         }
     }
 
@@ -268,16 +260,8 @@ unsafe impl IQueue for CvsdQueue {
                 )
             },
             limits: QueueLimits {
-                dma_mask: u64::MAX,
                 dma_alignment: 0x1000,
-                max_inflight: 1,
-                max_blocks_per_request: 1,
-                max_segments: 1,
-                max_segment_size: BLOCK_SIZE,
-                supported_flags: RequestFlags::NONE,
-                supports_flush: false,
-                supports_discard: false,
-                supports_write_zeroes: false,
+                ..QueueLimits::simple(BLOCK_SIZE, u64::MAX)
             },
         }
     }

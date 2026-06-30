@@ -42,12 +42,12 @@ pub struct DmaConstraints {
 }
 ```
 
-`DeviceDma::new(dma_mask, op)` is shorthand for
+`DeviceDma::new_legacy(dma_mask, op)` is shorthand for
 `DmaConstraints::new(dma_mask)`. Use `with_constraints` when a specific queue
 or transfer has stronger alignment, boundary, or segment-size requirements.
 
 Backends must never hand a driver a DMA address outside the requested mask. For
-example, a device created with `DeviceDma::new(u32::MAX as u64, op)` must only
+example, a device created with `DeviceDma::new_legacy(u32::MAX as u64, op)` must only
 return 32-bit reachable DMA addresses. Streaming mappings may use a fast path
 when the original buffer already satisfies the constraints; otherwise they
 should allocate an in-mask bounce buffer.

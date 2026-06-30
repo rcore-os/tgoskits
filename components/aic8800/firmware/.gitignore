@@ -1,5 +1,10 @@
-# AIC8800 firmware blobs are fetched on demand by the xtask build tooling
-# (see scripts/axbuild/src/firmware.rs) and integrity-checked against pinned
-# SHA-256 digests. They are intentionally not vendored into version control.
+# AIC8800 firmware blobs are fetched on demand at build time (see build.rs and
+# scripts/axbuild/src/firmware.rs), integrity-checked against pinned SHA-256
+# digests, and provisioned into OUT_DIR. They are never vendored into version
+# control.
+#
+# (The AIC8800DC RF config tables — ldpc/agc/txgain — are not firmware images
+# and have no upstream mirror; they live as Rust byte arrays in
+# src/fw/firmware/dc_rf_cfg.rs, not as .bin files here.)
 *.bin
 *.ini

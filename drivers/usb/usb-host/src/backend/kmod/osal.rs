@@ -12,7 +12,7 @@ pub(crate) struct Kernel {
 impl Kernel {
     pub fn new(dma_mask: u64, osal: &'static dyn KernelOp) -> Self {
         Self {
-            dma: DeviceDma::new(dma_mask, osal),
+            dma: DeviceDma::new_legacy(dma_mask, osal),
             osal,
         }
     }

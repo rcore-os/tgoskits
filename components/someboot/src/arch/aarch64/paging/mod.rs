@@ -30,10 +30,11 @@ pub fn enable_mmu() -> ! {
     let v_sp = meta.stack_top_virt;
     let v_entry = __kimage_va(mmu_entry_phys) as usize;
 
-    println!("Enabling MMU...");
+    // Do not touch the debug UART in this final pre-relocation window. Some
+    // boards can leave the early UART TX FIFO full here, and any console access
+    // after SCTLR.M is set can observe hardware MMU state before the kernel has
+    // actually jumped to the relocated virtual entry.
     setup_sctlr();
-    println!("MMU enabled, jumping to {v_entry:#x}, sp={v_sp:#x}");
-    crate::mem::mmu::set_mmu_enabled();
 
     super::relocate::reset();
     dsb(barrier::SY);

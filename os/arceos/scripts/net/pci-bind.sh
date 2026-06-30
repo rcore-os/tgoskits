@@ -3,7 +3,7 @@
 # Bind a PCI device to the `vfio-pci` driver for PCI passthrough.
 #
 # Bind: sudo ./pci-bind.sh vfio-pci 02:00.0
-# Unbind: sudo ./pci-bind.sh ixgbe 02:00.0
+# Unbind: sudo ./pci-bind.sh <host-driver> 02:00.0
 
 new_drv=$1
 bdf=$2

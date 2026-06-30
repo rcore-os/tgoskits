@@ -6,7 +6,7 @@ set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 set(CMAKE_C_EXTENSIONS OFF)
 
-starry_arch_filtered_executable(test-ptrace-gdb "riscv64|aarch64|loongarch64" "test-ptrace-gdb skipped on unsupported architecture" src/main.c)
+starry_arch_filtered_executable(test-ptrace-gdb "x86_64|riscv64|aarch64|loongarch64" "test-ptrace-gdb skipped on unsupported architecture" src/main.c)
 target_compile_options(test-ptrace-gdb PRIVATE -Wall -Wextra -Werror)
 
 install(TARGETS test-ptrace-gdb RUNTIME DESTINATION usr/bin/starry-test-suit)

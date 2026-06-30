@@ -4,7 +4,9 @@ use core::{
     sync::atomic::{AtomicBool, AtomicUsize, Ordering},
 };
 
-use x86::msr::{IA32_APIC_BASE, rdmsr};
+use x86::msr::{
+    IA32_APIC_BASE, IA32_X2APIC_APICID, IA32_X2APIC_ESR, IA32_X2APIC_ICR, rdmsr, wrmsr,
+};
 
 use crate::{mem::phys_to_virt, power::CpuOnError, smp::PerCpuMeta};
 
@@ -16,6 +18,9 @@ const AP_START_TIMEOUT_US: u64 = 500_000;
 const LAPIC_REG_ESR: u32 = 0x280;
 const LAPIC_REG_ICR_LOW: u32 = 0x300;
 const LAPIC_REG_ICR_HIGH: u32 = 0x310;
+const ICR_DELIVERY_PENDING: u32 = 1 << 12;
+const IPI_DELIVERY_WAIT_SPINS: usize = 1_000_000;
+const IA32_APIC_BASE_X2APIC_ENABLE: u64 = 1 << 10;
 
 // INIT IPI (level-triggered): assert then deassert.
 const ICR_INIT_ASSERT: u32 = 0x0000_c500;
@@ -25,6 +30,12 @@ const ICR_STARTUP_BASE: u32 = 0x0000_4600;
 
 static START_LOCK: AtomicBool = AtomicBool::new(false);
 static AP_BOOTED_ID: AtomicUsize = AtomicUsize::new(usize::MAX);
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ApicMode {
+    XApic,
+    X2Apic,
+}
 
 global_asm!(
     r#"
@@ -136,17 +147,20 @@ pub(crate) fn notify_ap_started(apic_id: usize) {
 }
 
 fn current_apic_id() -> usize {
-    x86::cpuid::CpuId::new()
-        .get_feature_info()
-        .map(|info| info.initial_local_apic_id() as usize)
-        .unwrap_or(0)
+    match current_apic_mode() {
+        ApicMode::X2Apic => unsafe { rdmsr(IA32_X2APIC_APICID) as usize },
+        ApicMode::XApic => x86::cpuid::CpuId::new()
+            .get_feature_info()
+            .map(|info| info.initial_local_apic_id() as usize)
+            .unwrap_or(0),
+    }
 }
 
 pub(crate) fn cpu_on(apic_id: usize, entry: usize, arg: usize) -> Result<(), CpuOnError> {
     if apic_id == current_apic_id() {
         return Err(CpuOnError::AlreadyOn);
     }
-    let apic_id = u8::try_from(apic_id).map_err(|_| CpuOnError::InvalidParameters)?;
+    let apic_id = u32::try_from(apic_id).map_err(|_| CpuOnError::InvalidParameters)?;
     let meta = unsafe { &*(phys_to_virt(arg) as *const PerCpuMeta) };
     if meta.boot_table_paddr > u32::MAX as usize {
         return Err(CpuOnError::Other(anyhow::anyhow!(
@@ -165,21 +179,13 @@ pub(crate) fn cpu_on(apic_id: usize, entry: usize, arg: usize) -> Result<(), Cpu
         entry_virt as u64,
     );
 
-    unsafe {
-        send_ipi(apic_id, ICR_INIT_ASSERT);
-    }
+    send_ipi(apic_id, ICR_INIT_ASSERT)?;
     delay_us(10_000);
-    unsafe {
-        send_ipi(apic_id, ICR_INIT_DEASSERT);
-    }
+    send_ipi(apic_id, ICR_INIT_DEASSERT)?;
     delay_us(200);
-    unsafe {
-        send_ipi(apic_id, ICR_STARTUP_BASE | AP_TRAMPOLINE_VECTOR as u32);
-    }
+    send_ipi(apic_id, ICR_STARTUP_BASE | AP_TRAMPOLINE_VECTOR as u32)?;
     delay_us(200);
-    unsafe {
-        send_ipi(apic_id, ICR_STARTUP_BASE | AP_TRAMPOLINE_VECTOR as u32);
-    }
+    send_ipi(apic_id, ICR_STARTUP_BASE | AP_TRAMPOLINE_VECTOR as u32)?;
 
     let start = super::trap::ticks_now();
     let timeout_ticks = us_to_tsc_ticks(AP_START_TIMEOUT_US);
@@ -294,16 +300,72 @@ unsafe fn lapic_read(offset: u32) -> u32 {
     unsafe { ptr.read_volatile() }
 }
 
-unsafe fn send_ipi(apic_id: u8, icr_low: u32) {
+fn current_apic_mode() -> ApicMode {
+    let base = unsafe { rdmsr(IA32_APIC_BASE) };
+    if base & IA32_APIC_BASE_X2APIC_ENABLE != 0 {
+        ApicMode::X2Apic
+    } else {
+        ApicMode::XApic
+    }
+}
+
+fn xapic_destination(apic_id: u32) -> Result<u32, CpuOnError> {
+    let dest = u8::try_from(apic_id).map_err(|_| CpuOnError::InvalidParameters)?;
+    Ok(u32::from(dest) << 24)
+}
+
+fn x2apic_icr(apic_id: u32, icr_low: u32) -> u64 {
+    (u64::from(apic_id) << 32) | u64::from(icr_low)
+}
+
+fn send_ipi(apic_id: u32, icr_low: u32) -> Result<(), CpuOnError> {
+    match current_apic_mode() {
+        ApicMode::X2Apic => send_x2apic_ipi(x2apic_icr(apic_id, icr_low)),
+        ApicMode::XApic => send_xapic_ipi(xapic_destination(apic_id)?, icr_low),
+    }
+}
+
+fn send_xapic_ipi(destination: u32, icr_low: u32) -> Result<(), CpuOnError> {
     unsafe {
         lapic_write(LAPIC_REG_ESR, 0);
         lapic_write(LAPIC_REG_ESR, 0);
-        lapic_write(LAPIC_REG_ICR_HIGH, (apic_id as u32) << 24);
+        lapic_write(LAPIC_REG_ICR_HIGH, destination);
         lapic_write(LAPIC_REG_ICR_LOW, icr_low);
-        while lapic_read(LAPIC_REG_ICR_LOW) & (1 << 12) != 0 {
-            spin_loop();
-        }
     }
+    wait_xapic_delivery()
+}
+
+fn send_x2apic_ipi(icr: u64) -> Result<(), CpuOnError> {
+    unsafe {
+        wrmsr(IA32_X2APIC_ESR, 0);
+        wrmsr(IA32_X2APIC_ESR, 0);
+        wrmsr(IA32_X2APIC_ICR, icr);
+    }
+    wait_x2apic_delivery()
+}
+
+fn wait_xapic_delivery() -> Result<(), CpuOnError> {
+    for _ in 0..IPI_DELIVERY_WAIT_SPINS {
+        if unsafe { lapic_read(LAPIC_REG_ICR_LOW) } & ICR_DELIVERY_PENDING == 0 {
+            return Ok(());
+        }
+        spin_loop();
+    }
+    Err(CpuOnError::Other(anyhow::anyhow!(
+        "timeout waiting xAPIC IPI delivery"
+    )))
+}
+
+fn wait_x2apic_delivery() -> Result<(), CpuOnError> {
+    for _ in 0..IPI_DELIVERY_WAIT_SPINS {
+        if unsafe { rdmsr(IA32_X2APIC_ICR) } & u64::from(ICR_DELIVERY_PENDING) == 0 {
+            return Ok(());
+        }
+        spin_loop();
+    }
+    Err(CpuOnError::Other(anyhow::anyhow!(
+        "timeout waiting x2APIC IPI delivery"
+    )))
 }
 
 struct StartupGuard;
@@ -323,5 +385,27 @@ impl StartupGuard {
 impl Drop for StartupGuard {
     fn drop(&mut self) {
         START_LOCK.store(false, Ordering::Release);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn xapic_destination_rejects_high_apic_ids_without_truncation() {
+        assert!(matches!(xapic_destination(0xff), Ok(0xff00_0000)));
+        assert!(matches!(
+            xapic_destination(0x100),
+            Err(CpuOnError::InvalidParameters)
+        ));
+    }
+
+    #[test]
+    fn x2apic_icr_encodes_full_destination_id() {
+        let icr = x2apic_icr(0x1234_5678, ICR_STARTUP_BASE | AP_TRAMPOLINE_VECTOR as u32);
+
+        assert_eq!(icr >> 32, 0x1234_5678);
+        assert_eq!(icr as u32, ICR_STARTUP_BASE | AP_TRAMPOLINE_VECTOR as u32);
     }
 }

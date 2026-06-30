@@ -4,19 +4,19 @@
 backend for [`sdmmc-protocol`](../sdmmc-protocol).
 
 This crate plugs the IP block known as `DWC_mobile_storage` / `dw_mshc` /
-`dw_mmc` (Linux) into the `SdioHost` trait so
-`sdmmc_protocol::sdio::SdioSdmmc` can drive real hardware. The same core
+`dw_mmc` (Linux) into the physical `sdio_host2::SdioHost` trait so
+`sdmmc_protocol::sdio::SdioSdmmc::new_host2` can drive real hardware. The same core
 appears in Rockchip RK33xx/RK35xx, Allwinner A-series, StarFive JH7110,
 and a long tail of mid-range SoCs.
 
-This crate implements `sdmmc_protocol::sdio::SdioHost` for the controller while
+This crate implements `sdio_host2::SdioHost` for the controller while
 leaving MMIO mapping, SoC clocks, resets, pinmux, power rails, IRQ routing, and
 DMA cache policy to platform glue.
 
 ## Status
 
 - Compiles as a `no_std` controller backend.
-- Intended for use through `sdmmc_protocol::sdio::SdioSdmmc`.
+- Intended for use through `sdmmc_protocol::sdio::SdioSdmmc::new_host2`.
 - Board-specific clock, power, pinmux, and tuning policy must be supplied by
   the caller.
 - Real hardware bring-up still depends on the surrounding SoC integration.
@@ -58,9 +58,10 @@ use dwmmc_host::DwMmc;
 let mmio = NonNull::new(0xFE2B_0000 as *mut u8).unwrap();
 let mut host = unsafe { DwMmc::new(mmio) };
 host.set_reference_clock(50_000_000);
-host.reset_and_init().expect("controller reset");
+// Optional DMA capability can be installed here before the protocol layer owns
+// the host.
 
-let mut card = SdioSdmmc::new(host);
+let mut card = SdioSdmmc::new_host2(host);
 let mut scratch = SdioInitScratch::new();
 let mut request = card.submit_init(&mut scratch)?;
 while let OperationPoll::Pending = card.poll_init_request(&mut request)? {
@@ -83,14 +84,21 @@ the driver.
    to 400 kHz for ID mode.
 3. Pass that rate to `DwMmc::set_reference_clock` so the divider
    programmed by `set_clock` lands on the right frequency.
-4. `host.reset_and_init()?` — clears the controller / FIFO / DMA
-   state and arms a 400 kHz ID-mode clock.
-5. Build `SdioSdmmc::new(host)`, submit initialization with
-   `submit_init`, and drive it with `poll_init_request`. The
-   protocol layer will ramp the clock up via `set_clock`; platform/runtime
-   code chooses whether pending work spins, yields, or waits for an IRQ.
+4. Install optional capabilities such as `DwMmc::set_dma` before handing the
+   host to the protocol layer.
+5. Build `SdioSdmmc::new_host2(host)`, submit initialization with
+   `submit_init`, and drive it with `poll_init_request`. The protocol layer
+   starts with native `sdio-host2` bus operations for `ResetAll`, `PowerOn`,
+   initial voltage, 1-bit bus width, and 400 kHz identification clock before
+   issuing SD/MMC commands, then ramps the clock up via later bus ops.
+   Platform/runtime code chooses whether pending work spins, yields, or waits
+   for an IRQ.
 6. Add board-specific tuning before relying on SDR50, SDR104, DDR50, or HS200
    modes.
+
+The lower-level blocking helper `DwMmc::reset_and_init` remains useful for
+diagnostics, but normal card initialization should let `SdioSdmmc::new_host2`
+drive reset, power, and clock setup through submit/poll bus operations.
 
 ### FIFO offset
 

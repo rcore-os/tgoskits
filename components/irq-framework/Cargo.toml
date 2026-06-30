@@ -1,6 +1,6 @@
 [package]
 name = "irq-framework"
-version = "0.1.1"
+version = "0.2.0"
 edition.workspace = true
 authors = ["RCore Team <yuchen@tsinghua.edu.cn>"]
 description = "A no_std dynamic IRQ registration and dispatch framework"

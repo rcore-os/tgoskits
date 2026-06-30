@@ -33,6 +33,20 @@ pub static FW_8801_PATCH_TBL: &[u8] = &[];
 pub static FW_DC: &[u8] = include_bytes!(fw_path!("fmacfw_patch_8800dc_u02.bin"));
 pub static FW_DC_PATCH: &[u8] = include_bytes!(fw_path!("fw_patch_8800dc_u02.bin"));
 pub static FW_DC_PATCH_TBL: &[u8] = include_bytes!(fw_path!("fw_patch_table_8800dc_u02.bin"));
+/// AIC8800DC WiFi 补丁表 (fmacfw_patch_tbl, 不同于上面的 BT patch table)
+/// patch_config 阶段用它做代码跳转表 (aicwf_patch_table_load)
+pub static FW_DC_FMAC_PATCH_TBL: &[u8] =
+    include_bytes!(fw_path!("fmacfw_patch_tbl_8800dc_u02.bin"));
+/// AIC8800DC-H (sub_id==2) 专属 patch 固件 + 跳转表 (纯 WiFi, CONFIG_SDIO_BT=n)
+pub static FW_DC_H_PATCH: &[u8] = include_bytes!(fw_path!("fmacfw_patch_8800dc_h_u02.bin"));
+pub static FW_DC_H_FMAC_PATCH_TBL: &[u8] =
+    include_bytes!(fw_path!("fmacfw_patch_tbl_8800dc_h_u02.bin"));
+/// AIC8800DC-H DPD 校准固件 (上传 0x130000, FNCALL 跑起来初始化 RF/misc RAM)
+pub static FW_DC_H_CALIB: &[u8] = include_bytes!(fw_path!("fmacfw_calib_8800dc_h_u02.bin"));
+/// AIC8800DC RF 配置 blob (patch_config 阶段上传到固件指定的 RAM 地址)。
+/// 这些不是固件镜像,而是 vendor BSP 源码 `aic8800dc_compat.c` 的 u32 数组,
+/// 无上游下载源,故内联为 Rust 字节数组(见 `dc_rf_cfg`),不再 vendor .bin。
+pub use super::dc_rf_cfg::{FW_DC_AGC_CFG, FW_DC_LDPC_CFG, FW_DC_TXGAIN_MAP, FW_DC_TXGAIN_MAP_H};
 
 // ============================================================
 // AIC8800D80 固件

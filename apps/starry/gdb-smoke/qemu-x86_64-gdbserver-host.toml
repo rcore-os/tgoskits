@@ -1,0 +1,27 @@
+args = [
+    "-nographic",
+    "-m", "512M",
+    "-cpu", "max",
+    "-device", "virtio-blk-pci,drive=disk0",
+    "-drive", "id=disk0,if=none,format=raw,file=${workspace}/tmp/axbuild/rootfs/rootfs-x86_64-alpine.img",
+    "-device", "virtio-net-pci,netdev=net0",
+    "-netdev", "user,id=net0,hostfwd=tcp::1234-:1234",
+]
+uefi = false
+to_bin = false
+shell_prefix = "root@starry:"
+shell_init_cmd = "gdbserver 0.0.0.0:1234 /usr/bin/gdbserver-smoke-target; echo __HOST_REMOTE_GDBSERVER_DONE__"
+success_regex = [
+    "(?m)^__HOST_REMOTE_GDBSERVER_DONE__$",
+]
+fail_regex = [
+    '(?i)\bpanic(?:ked)?\b',
+    '(?m)FAIL',
+    'gdbserver: not found',
+    'Cannot insert breakpoint',
+    'Remote communication error',
+    'ptrace: Function not implemented',
+    'Program received signal SIGSEGV',
+    '(?i)Segmentation fault',
+]
+timeout = 240

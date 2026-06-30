@@ -90,9 +90,9 @@ pub mod usb;
 #[cfg(virtio_dev)]
 pub mod virtio;
 
-pub use binding_info::BindingInfo;
 #[cfg(feature = "pci")]
 pub use binding_info::PciIrqRequirement;
+pub use binding_info::{BindingInfo, BindingIrq, BindingIrqSource, FdtIrqSpec};
 #[cfg(feature = "pci")]
 pub use binding_resolver::binding_info_from_pci;
 pub use binding_resolver::{

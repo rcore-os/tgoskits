@@ -347,6 +347,7 @@ pub const UART_IIR_RDI: u8 = 0x04; // Received Data Available Interrupt
 pub const UART_IIR_CTI: u8 = 0x0C; // Character Timeout Indicator
 pub const UART_IIR_THRI: u8 = 0x02; // Transmitter Holding Register Empty Interrupt
 pub const UART_IIR_MSI: u8 = 0x00; // Modem Status Interrupt
+pub const UART_IIR_BUSY: u8 = 0x07; // DesignWare APB Busy Detect Interrupt
 pub const UART_IIR_FIFO_ENABLE: u8 = 0xC0; // FIFO Enable bits
 pub const UART_IIR_FIFO_MASK: u8 = 0xC0; // FIFO bits mask
 

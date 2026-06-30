@@ -1,0 +1,13 @@
+board_type = "ROC-RK3568-PC"
+shell_prefix = "root@starry:/root #"
+success_regex = [
+  '(?m)^block-rw-bench: done cases=3 status=ok$',
+]
+fail_regex = [
+  '(?i)\bpanic(?:ked)?\b',
+  '(?m)^block-rw-bench: error: .*$',
+  '(?m)^block-rw-bench: .*verify=(?:fail|mismatch).*$',
+  '(?i)(block-rw-bench|sh): .*not found',
+  '(?i)\bI/O error\b',
+]
+timeout = 1200

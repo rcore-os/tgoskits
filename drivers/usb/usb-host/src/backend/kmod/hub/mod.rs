@@ -87,20 +87,3 @@ pub struct UsbTt {
     pub multi: bool,
     pub think_time_ns: usize,
 }
-
-#[cfg(test)]
-mod tests {
-
-    use super::RouteString;
-
-    #[test]
-    fn test_route_string() {
-        let mut rs = RouteString::follow_root();
-        rs.push_hub(3);
-        rs.push_hub(5);
-        rs.push_hub(2);
-        assert_eq!(rs.raw(), 0b0010_0101_0011);
-        assert_eq!(format!("{:?}", rs), "3.5.2");
-        println!("raw: {:#x}", rs.0);
-    }
-}

@@ -20,19 +20,35 @@ base_rootfs="${STARRY_ROOTFS:?prebuild: STARRY_ROOTFS required}"
 staging_root="${STARRY_STAGING_ROOT:?prebuild: STARRY_STAGING_ROOT required}"
 overlay_dir="${STARRY_OVERLAY_DIR:?prebuild: STARRY_OVERLAY_DIR required}"
 
-case "$arch" in
-    aarch64)     qemu_runner="qemu-aarch64-static" ;;
-    riscv64)     qemu_runner="qemu-riscv64-static" ;;
-    x86_64)      qemu_runner="qemu-x86_64-static" ;;
-    loongarch64) qemu_runner="qemu-loongarch64-static" ;;
-    *) echo "prebuild: unsupported arch: $arch" >&2; exit 1 ;;
-esac
+qemu_runner_candidates() {
+    case "$arch" in
+        aarch64)     printf '%s\n' qemu-aarch64-static qemu-aarch64 ;;
+        riscv64)     printf '%s\n' qemu-riscv64-static qemu-riscv64 ;;
+        x86_64)      printf '%s\n' qemu-x86_64-static qemu-x86_64 ;;
+        loongarch64) printf '%s\n' qemu-loongarch64-static qemu-loongarch64 ;;
+        *) echo "prebuild: unsupported arch: $arch" >&2; exit 1 ;;
+    esac
+}
+
+find_qemu_runner() {
+    local candidate
+    while IFS= read -r candidate; do
+        if command -v "$candidate" >/dev/null 2>&1; then
+            command -v "$candidate"
+            return 0
+        fi
+    done < <(qemu_runner_candidates)
+
+    echo "prebuild: missing qemu-user runner for arch $arch; tried: $(qemu_runner_candidates | paste -sd ', ' -)" >&2
+    exit 1
+}
+
+qemu_runner="$(find_qemu_runner)"
 
 ensure_host_tools() {
     local missing=()
     command -v debugfs    >/dev/null 2>&1 || missing+=(e2fsprogs)
     command -v readelf    >/dev/null 2>&1 || missing+=(binutils)
-    command -v "$qemu_runner" >/dev/null 2>&1 || missing+=(qemu-user-static)
     if [[ ${#missing[@]} -gt 0 ]]; then
         if command -v apt-get >/dev/null 2>&1; then
             echo "prebuild: installing host tools: ${missing[*]}"
@@ -48,6 +64,14 @@ extract_base_rootfs() {
     rm -rf "$staging_root"; mkdir -p "$staging_root"
     debugfs -R "rdump / $staging_root" "$base_rootfs" >/dev/null 2>&1
     [[ -x "$staging_root/sbin/apk" ]] || { echo "prebuild: base rootfs has no apk" >&2; exit 2; }
+}
+
+python_version_dir() {
+    local dir
+    for dir in "$staging_root"/usr/lib/python3.*; do
+        [[ -d "$dir" ]] || continue
+        basename "$dir"
+    done | grep -E '^python3\.[0-9]+$' | sort -V | tail -1
 }
 
 install_python() {
@@ -71,7 +95,7 @@ install_python() {
     # Hard version gate: the carpet must run on a real 3.14 interpreter, not an
     # older python that would merely skip the 3.14-gated checks.
     local pyver
-    pyver="$(ls -d "$staging_root"/usr/lib/python3.* 2>/dev/null | grep -oE 'python3\.[0-9]+' | head -1)"
+    pyver="$(python_version_dir || true)"
     case "$pyver" in
         python3.14|python3.1[5-9]|python3.2[0-9]) echo "prebuild: provisioned $pyver" ;;
         *) echo "prebuild: need CPython >= 3.14 but got '$pyver' (base rootfs repos must point at Alpine edge)" >&2; exit 3 ;;
@@ -106,7 +130,7 @@ copy_so_closure() {
 
 populate_overlay() {
     local pyver
-    pyver="$(ls -d "$staging_root"/usr/lib/python3.* 2>/dev/null | grep -oE 'python3\.[0-9]+' | head -1)"
+    pyver="$(python_version_dir || true)"
     copy_to_overlay /usr/bin/python3 0755
     copy_so_closure /usr/bin/python3
     # lib-dynload C-extension modules carry their own .so deps

@@ -1,6 +1,9 @@
 use core::{alloc::Layout, marker::PhantomData, ptr::NonNull};
 
-use crate::{DeviceDma, DmaAddr, DmaDirection, DmaError, DmaPod, common::DmaAllocation};
+use crate::{
+    DeviceDma, DmaAddr, DmaDirection, DmaDomainId, DmaError, DmaPod,
+    common::{AllocationKind, DmaAllocation},
+};
 
 pub struct CoherentArray<T: DmaPod> {
     data: DmaAllocation,
@@ -136,6 +139,17 @@ impl<T: DmaPod> ContiguousArray<T> {
 
     pub fn bytes_len(&self) -> usize {
         self.data.handle.size()
+    }
+
+    pub fn domain_id(&self) -> DmaDomainId {
+        self.data.device.domain_id()
+    }
+
+    pub fn direction(&self) -> DmaDirection {
+        match self.data.kind {
+            AllocationKind::Contiguous { direction } => direction,
+            AllocationKind::Coherent => unreachable!("ContiguousArray cannot hold coherent DMA"),
+        }
     }
 
     pub fn read_cpu(&self, index: usize) -> Option<T> {

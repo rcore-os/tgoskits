@@ -1,4 +1,5 @@
 use ax_errno::{AxError, AxResult};
+use ax_memory_addr::PAGE_SIZE_4K;
 use ax_runtime::hal::time::TimeValue;
 use ax_task::current;
 use linux_raw_sys::general::{__kernel_old_timeval, RLIM_NLIMITS, rlimit64, rusage};
@@ -59,17 +60,25 @@ pub fn sys_prlimit64(
 struct Rusage {
     utime: TimeValue,
     stime: TimeValue,
+    max_rss_kb: u64,
 }
 
 impl Rusage {
     fn from_thread(thread: &Thread) -> Self {
         let (utime, stime) = thread.time.borrow().output();
-        Self { utime, stime }
+        let max_rss_kb = thread.proc_data.aspace().lock().rss().hiwater_rss_pages()
+            * (PAGE_SIZE_4K as u64 / 1024);
+        Self {
+            utime,
+            stime,
+            max_rss_kb,
+        }
     }
 
     fn collate(mut self, other: Rusage) -> Self {
         self.utime += other.utime;
         self.stime += other.stime;
+        self.max_rss_kb = self.max_rss_kb.max(other.max_rss_kb);
         self
     }
 }
@@ -80,6 +89,7 @@ impl From<Rusage> for rusage {
         let mut usage: rusage = unsafe { core::mem::zeroed() };
         usage.ru_utime = __kernel_old_timeval::from_time_value(value.utime);
         usage.ru_stime = __kernel_old_timeval::from_time_value(value.stime);
+        usage.ru_maxrss = value.max_rss_kb as _;
         usage
     }
 }

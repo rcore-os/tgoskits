@@ -25,7 +25,7 @@ cargo xtask <cmd>  →  cargo run -p tg-xtask -- <cmd>  →  axbuild::run()
 | `cargo xtask board ...` | `cargo board ...` | 板卡管理快捷入口 |
 | `cargo xtask ...` | `cargo xtask ...` | 其他命令无额外别名 |
 
-以下文档统一使用 `cargo xtask` 前缀，实际使用时可替换为对应的别名。例如：
+本文大多数通用命令仍展示 `cargo xtask` 前缀；StarryOS 快速上手和板卡配置流程优先展示 `cargo starry` 别名。实际使用时两种写法可以互换。例如：
 
 ```bash
 # 以下两条命令等价
@@ -82,7 +82,7 @@ cargo xtask arceos <subcommand> [options]
 
 **测试参数**：`--test-group`、`--test-case`、`--list`
 
-`--plat-dyn` 控制是否使用动态平台加载（仅 aarch64 支持），`--smp` 设置对称多处理器核数。ArceOS 测试支持 Rust 和 C 两类用例，通过 `--test-group` 选择测试组。
+`--plat-dyn` 控制是否使用动态平台加载（支持 aarch64、x86_64、riscv64 和 loongarch64 QEMU 路径），`--smp` 设置对称多处理器核数。ArceOS 测试支持 Rust 和 C 两类用例，通过 `--test-group` 选择测试组。
 
 ---
 
@@ -107,12 +107,22 @@ cargo xtask starry <subcommand> [options]
 | `app list` | 列出 `apps/starry/` 下发现的可运行应用 |
 | `app run` | 构建并运行 `apps/starry/` 下发现的应用 |
 | `app board` | 在远程板卡上运行应用 |
-| `quick-start` | 常见平台便捷入口 |
+| `quick-start` | 旧版常见平台便捷入口，后续会废弃 |
 | `rootfs` | 下载 rootfs 到 target 目录 |
 | `defconfig` | 生成默认板卡配置 |
 | `config ls` | 列出可用板卡名称 |
 
-`quick-start` 提供常见 QEMU 平台和 Orange Pi 5 Plus 的简化工作流，每个平台包含 `build` 和 `run` 两阶段：
+推荐的 StarryOS 配置流程是先查看支持的板卡名称，再选择默认配置，后续直接执行常规子命令：
+
+```bash
+cargo starry config ls
+cargo starry defconfig <board>
+cargo starry build
+```
+
+`cargo starry defconfig <board>` 会把对应板卡配置复制到默认构建配置位置，并更新 StarryOS 命令快照。之后 `cargo starry build`、`cargo starry qemu`、`cargo starry uboot`、`cargo starry board` 等命令会沿用该配置。`quick-start` 是旧版便捷入口，保留用于兼容已有脚本，后续会废弃；新文档和新流程不再推荐使用它。
+
+旧版 `quick-start` 每个平台包含 `build` 和 `run` 两阶段：
 
 | 子命令 | 说明 |
 |--------|------|
@@ -168,6 +178,8 @@ cargo xtask axvisor <subcommand> [options]
 | `test board` | 板级测试 |
 | `image ls` | 列出可用的 Guest 镜像 |
 | `image pull` | 拉取并解压 Guest 镜像 |
+| `image resize` | 扩容 ext rootfs 镜像 |
+| `image check` | 输出并可选校验本地镜像 SHA-256 |
 | `defconfig` | 生成默认板卡配置 |
 | `config ls` | 列出可用板卡名称 |
 
@@ -195,6 +207,8 @@ Axvisor 的 `image` 子命令管理 Guest 虚拟机镜像。镜像名称格式�
 |--------|------|
 | `image ls [-v] [PATTERN]` | 列出可用的 Guest 镜像，`-v` 显示详细信息，支持 glob 模式过滤 |
 | `image pull <IMAGE> [-o DIR] [--no-extract]` | 拉取 Guest 镜像到本地存储，默认自动解压 |
+| `image resize <IMAGE> --size-mib <MIB> [-o OUTPUT]` | 扩容 ext rootfs 镜像，`-o` 存在时先复制再扩容 |
+| `image check <IMAGE> [--sha256 <HASH>]` | 输出本地镜像 SHA-256，并可选校验期望值 |
 
 全局选项：`-S/--local-storage`（本地存储路径）、`-R/--registry`（镜像仓库地址）、`-N/--no-auto-sync`（禁用自动同步）、`--auto-sync-threshold`（自动同步阈值）
 

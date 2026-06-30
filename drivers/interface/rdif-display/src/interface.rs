@@ -2,12 +2,16 @@ use crate::{DisplayError, DisplayInfo, DriverGeneric, FrameBuffer};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Event {
+    pub handled: bool,
     pub changed: bool,
 }
 
 impl Event {
     pub const fn none() -> Self {
-        Self { changed: false }
+        Self {
+            handled: false,
+            changed: false,
+        }
     }
 }
 
@@ -15,6 +19,10 @@ pub trait Interface: DriverGeneric {
     fn info(&self) -> DisplayInfo;
 
     fn framebuffer(&mut self) -> Result<FrameBuffer<'_>, DisplayError>;
+
+    fn irq_num(&self) -> Option<usize> {
+        None
+    }
 
     fn need_flush(&self) -> bool {
         false

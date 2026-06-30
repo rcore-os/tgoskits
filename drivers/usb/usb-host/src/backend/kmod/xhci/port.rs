@@ -6,7 +6,7 @@ use alloc::boxed::Box;
 use alloc::sync::Arc;
 use core::time::Duration;
 use futures::future::LocalBoxFuture;
-use spin::RwLock;
+use ax_kspin::SpinRwLock as RwLock;
 
 use usb_if::host::hub::{DeviceSpeed, PortStatus, PortStatusChange};
 

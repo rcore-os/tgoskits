@@ -163,8 +163,6 @@ OUT_DIR ?= $(APP)
 LD_SCRIPT ?= $(shell find "$(TARGET_DIR)/$(TARGET)/$(MODE)/build" -path '*/ax-runtime-*/out/linker.x' -printf '%T@ %p\n' 2>/dev/null | sort -rn | sed -n '1s/^[^ ]* //p')
 ifeq ($(PLAT_DYN), y)
   AXPLAT_OWNER_PREFIX := axplat-dyn-
-else ifeq ($(PLAT_NAME), loongarch64-qemu-virt)
-  AXPLAT_OWNER_PREFIX := ax-plat-loongarch64-qemu-virt-
 else
   AXPLAT_OWNER_PREFIX := ax-hal-
 endif

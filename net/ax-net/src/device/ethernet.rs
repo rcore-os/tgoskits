@@ -26,6 +26,7 @@ use core::ptr::NonNull;
 use ax_sync::spin::SpinNoIrq;
 use axpoll::PollSet;
 use hashbrown::HashMap;
+use irq_framework::IrqId;
 use smoltcp::{
     storage::{PacketBuffer, PacketMetadata},
     time::{Duration, Instant},
@@ -38,7 +39,7 @@ use smoltcp::{
 use crate::{
     config::InterfaceId,
     consts::{ETHERNET_MAX_PENDING_PACKETS, STANDARD_MTU},
-    device::{ArpEntry, Device, EthernetDriver, NetDeviceError, NetIrqEvents},
+    device::{ArpEntry, Device, EthernetDriver, EthernetIrqHandler, NetDeviceError, NetIrqEvents},
 };
 
 const EMPTY_MAC: EthernetAddress = EthernetAddress([0; 6]);
@@ -46,34 +47,29 @@ const EMPTY_MAC: EthernetAddress = EthernetAddress([0; 6]);
 pub trait EthernetIrqRegistration: Send + Sync {}
 
 /// Opaque action installed into a platform IRQ registrar.
-#[derive(Clone, Copy)]
 pub struct EthernetIrqAction {
-    data: NonNull<()>,
-    handler: unsafe fn(NonNull<()>) -> EthernetIrqOutcome,
+    handler: Box<dyn FnMut() -> EthernetIrqOutcome + Send>,
 }
 
 impl EthernetIrqAction {
-    pub const fn new(
-        data: NonNull<()>,
-        handler: unsafe fn(NonNull<()>) -> EthernetIrqOutcome,
-    ) -> Self {
-        Self { data, handler }
+    pub fn new(data: NonNull<()>, handler: unsafe fn(NonNull<()>) -> EthernetIrqOutcome) -> Self {
+        let data = data.as_ptr() as usize;
+        Self::new_boxed(Box::new(move || {
+            let data = NonNull::new(data as *mut ())
+                .expect("ethernet irq action data pointer must be non-null");
+            unsafe { handler(data) }
+        }))
+    }
+
+    pub fn new_boxed(handler: Box<dyn FnMut() -> EthernetIrqOutcome + Send>) -> Self {
+        Self { handler }
     }
 
     /// Runs the IRQ action.
-    ///
-    /// # Safety
-    ///
-    /// The caller must ensure `data` still points to the Ethernet IRQ state
-    /// expected by `handler`, and that the associated registration is still
-    /// alive while the handler runs.
-    pub unsafe fn run(self) -> EthernetIrqOutcome {
-        unsafe { (self.handler)(self.data) }
+    pub fn run(&mut self) -> EthernetIrqOutcome {
+        (self.handler)()
     }
 }
-
-unsafe impl Send for EthernetIrqAction {}
-unsafe impl Sync for EthernetIrqAction {}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum EthernetIrqOutcome {
@@ -88,7 +84,7 @@ pub trait EthernetIrqRegistrar: Send + Sync {
     fn register_shared(
         &self,
         name: &str,
-        irq: usize,
+        irq: IrqId,
         action: EthernetIrqAction,
     ) -> Result<Box<dyn EthernetIrqRegistration>, EthernetIrqRegistrationError>;
 }
@@ -121,12 +117,12 @@ struct PendingNeighbor {
 }
 
 struct EthernetIrqState {
-    irq: Option<usize>,
+    irq: Option<IrqId>,
     irq_registration: spin::Once<Box<dyn EthernetIrqRegistration>>,
     /// RX readiness is delivered out-of-band (outside the ethernet IRQ
     /// framework) via the device readiness poll set, e.g. an SDIO Wi-Fi chip
     /// that owns its own card interrupt and pokes the stack through
-    /// `notify_oob_rx`.
+    /// `wake_net_task_irq`.
     oob_rx: bool,
     driver: SpinNoIrq<Box<dyn EthernetDriver>>,
     poll_ready: Arc<PollSet>,
@@ -150,7 +146,14 @@ pub struct EthernetDevice {
 
 unsafe fn handle_ethernet_irq(data: NonNull<()>) -> EthernetIrqOutcome {
     let state = unsafe { data.cast::<EthernetIrqState>().as_ref() };
-    let events = state.handle_irq();
+    ethernet_irq_outcome(state.handle_irq())
+}
+
+fn handle_owned_ethernet_irq(handler: &mut dyn EthernetIrqHandler) -> EthernetIrqOutcome {
+    ethernet_irq_outcome(handler.handle_irq())
+}
+
+fn ethernet_irq_outcome(events: NetIrqEvents) -> EthernetIrqOutcome {
     if events.intersects(NetIrqEvents::RX_READY | NetIrqEvents::RX_ERROR | NetIrqEvents::TX_DONE) {
         crate::wake_net_task_irq();
         return EthernetIrqOutcome::Wake;
@@ -183,11 +186,13 @@ impl EthernetDevice {
 
     fn new_inner(
         name: String,
-        inner: Box<dyn EthernetDriver>,
+        mut inner: Box<dyn EthernetDriver>,
         ip: Option<Ipv4Cidr>,
         oob_rx: bool,
     ) -> Self {
-        let irq = inner.irq_num();
+        let irq = inner.irq_id();
+        let registrar = irq.and_then(|_| ETHERNET_IRQ_REGISTRAR.get().copied());
+        let irq_handler = registrar.and_then(|_| inner.take_irq_handler());
         let mut inner = Arc::new(EthernetIrqState {
             irq,
             irq_registration: spin::Once::new(),
@@ -204,9 +209,16 @@ impl EthernetDevice {
             ],
         );
         if let Some(irq) = inner.irq {
-            let data = NonNull::from(Arc::get_mut(&mut inner).expect("new Arc is unique")).cast();
-            if let Some(registrar) = ETHERNET_IRQ_REGISTRAR.get().copied() {
-                let action = EthernetIrqAction::new(data, handle_ethernet_irq);
+            if let Some(registrar) = registrar {
+                let action = if let Some(mut irq_handler) = irq_handler {
+                    EthernetIrqAction::new_boxed(Box::new(move || {
+                        handle_owned_ethernet_irq(&mut *irq_handler)
+                    }))
+                } else {
+                    let data =
+                        NonNull::from(Arc::get_mut(&mut inner).expect("new Arc is unique")).cast();
+                    EthernetIrqAction::new(data, handle_ethernet_irq)
+                };
                 match registrar.register_shared(&name, irq, action) {
                     Ok(registration) => {
                         inner.irq_registration.call_once(|| registration);
@@ -214,15 +226,14 @@ impl EthernetDevice {
                     }
                     Err(err) => {
                         warn!(
-                            "failed to register ethernet irq handler for {name} irq {}: {err:?}",
-                            irq
+                            "failed to register ethernet irq handler for {name} irq {irq:?}: \
+                             {err:?}"
                         );
                     }
                 }
             } else {
                 warn!(
-                    "ethernet irq registrar is not installed for {name} irq {}; use polling",
-                    irq
+                    "ethernet irq registrar is not installed for {name} irq {irq:?}; use polling"
                 );
             }
         }

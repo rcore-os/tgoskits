@@ -29,6 +29,55 @@ use crate::config::InterfaceId;
 /// Lease duration advertised in Offer/Ack replies, in seconds.
 const LEASE_SECS: u32 = 86400;
 
+/// Parsed DHCP-over-IPv4/UDP packet.
+pub(crate) struct ParsedDhcp {
+    pub(crate) src_addr: Ipv4Address,
+    pub(crate) udp: UdpRepr,
+    pub(crate) message_type: DhcpMessageType,
+    pub(crate) transaction_id: u32,
+    pub(crate) client_hardware_address: EthernetAddress,
+    pub(crate) your_ip: Ipv4Address,
+    pub(crate) server_identifier: Option<Ipv4Address>,
+    pub(crate) subnet_mask: Option<Ipv4Address>,
+    pub(crate) router: Option<Ipv4Address>,
+    pub(crate) dns_servers: Vec<Ipv4Address>,
+}
+
+/// Parses an IPv4 UDP DHCP packet, leaving direction checks to the caller.
+pub(crate) fn parse_dhcp_packet(packet: &[u8]) -> Option<ParsedDhcp> {
+    let ipv4_packet = Ipv4Packet::new_checked(packet).ok()?;
+    let ipv4_repr = Ipv4Repr::parse(&ipv4_packet, &ChecksumCapabilities::default()).ok()?;
+    if ipv4_repr.next_header != IpProtocol::Udp {
+        return None;
+    }
+
+    let udp_packet = UdpPacket::new_checked(ipv4_packet.payload()).ok()?;
+    let udp = UdpRepr::parse(
+        &udp_packet,
+        &IpAddress::Ipv4(ipv4_repr.src_addr),
+        &IpAddress::Ipv4(ipv4_repr.dst_addr),
+        &ChecksumCapabilities::default(),
+    )
+    .ok()?;
+    let dhcp_packet = DhcpPacket::new_checked(udp_packet.payload()).ok()?;
+    let dhcp = DhcpRepr::parse(&dhcp_packet).ok()?;
+    Some(ParsedDhcp {
+        src_addr: ipv4_repr.src_addr,
+        udp,
+        message_type: dhcp.message_type,
+        transaction_id: dhcp.transaction_id,
+        client_hardware_address: dhcp.client_hardware_address,
+        your_ip: dhcp.your_ip,
+        server_identifier: dhcp.server_identifier,
+        subnet_mask: dhcp.subnet_mask,
+        router: dhcp.router,
+        dns_servers: dhcp
+            .dns_servers
+            .map(|servers| servers.iter().copied().collect())
+            .unwrap_or_default(),
+    })
+}
+
 /// Minimal DHCP server configuration and one-client lease state.
 pub struct DhcpServer {
     /// Server address, also advertised as router and server identifier.
@@ -73,32 +122,16 @@ impl DhcpServer {
             return None;
         }
 
-        let ipv4_packet = Ipv4Packet::new_checked(packet).ok()?;
-        let ipv4_repr = Ipv4Repr::parse(&ipv4_packet, &ChecksumCapabilities::default()).ok()?;
-        if ipv4_repr.next_header != IpProtocol::Udp {
-            return None;
-        }
-
-        let udp_packet = UdpPacket::new_checked(ipv4_packet.payload()).ok()?;
-        let udp_repr = UdpRepr::parse(
-            &udp_packet,
-            &IpAddress::Ipv4(ipv4_repr.src_addr),
-            &IpAddress::Ipv4(ipv4_repr.dst_addr),
-            &ChecksumCapabilities::default(),
-        )
-        .ok()?;
+        let parsed = parse_dhcp_packet(packet)?;
         // Client -> server uses UDP src=68, dst=67.
-        if udp_repr.src_port != DHCP_CLIENT_PORT || udp_repr.dst_port != DHCP_SERVER_PORT {
+        if parsed.udp.src_port != DHCP_CLIENT_PORT || parsed.udp.dst_port != DHCP_SERVER_PORT {
             return None;
         }
 
-        let dhcp_packet = DhcpPacket::new_checked(udp_packet.payload()).ok()?;
-        let dhcp_repr = DhcpRepr::parse(&dhcp_packet).ok()?;
+        let client_mac = parsed.client_hardware_address;
+        let xid = parsed.transaction_id;
 
-        let client_mac = dhcp_repr.client_hardware_address;
-        let xid = dhcp_repr.transaction_id;
-
-        let reply_type = match dhcp_repr.message_type {
+        let reply_type = match parsed.message_type {
             DhcpMessageType::Discover => {
                 info!(
                     "[dhcp-srv] Discover from {client_mac} -> Offer {}",

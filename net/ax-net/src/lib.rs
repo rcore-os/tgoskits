@@ -37,11 +37,13 @@ extern crate alloc;
 #[cfg(test)]
 extern crate std;
 
+mod addr;
 mod config;
 mod consts;
 mod device;
 mod dhcp_server;
 mod general;
+mod ip_tos;
 mod listen_table;
 /// Socket option types and the [`Configurable`](options::Configurable) trait.
 pub mod options;
@@ -49,6 +51,7 @@ mod orphan;
 /// Raw socket implementation.
 pub mod raw;
 mod router;
+mod rx_meta;
 mod service;
 mod socket;
 pub(crate) mod state;
@@ -85,6 +88,14 @@ use spin::{LazyLock, Once};
 
 #[cfg(feature = "vsock")]
 pub use self::device::{VsockDevice, VsockDeviceList};
+use self::{
+    addr::mask_from_prefix,
+    device::{EthernetDevice, LoopbackDevice},
+    listen_table::ListenTable,
+    router::{RouteTable, Router, Rule, SharedRouteTable},
+    service::{NetControl, NetInterface, Service},
+    wrapper::SocketSetWrapper,
+};
 pub use self::{
     config::{
         DeviceBinding, InterfaceConfig, InterfaceFlags, InterfaceId, InterfaceInfo, InterfaceKind,
@@ -97,16 +108,9 @@ pub use self::{
         set_ethernet_irq_registrar,
     },
     socket::{
-        CMsgData, RecvFlags, RecvOptions, SendFlags, SendOptions, Shutdown, Socket, SocketAddrEx,
-        SocketOps,
+        CMsgData, IpCmsg, RecvFlags, RecvOptions, SendFlags, SendOptions, Shutdown, Socket,
+        SocketAddrEx, SocketOps,
     },
-};
-use self::{
-    device::{EthernetDevice, LoopbackDevice},
-    listen_table::ListenTable,
-    router::{RouteTable, Router, Rule, SharedRouteTable},
-    service::{NetControl, NetInterface, Service},
-    wrapper::SocketSetWrapper,
 };
 
 static LISTEN_TABLE: LazyLock<ListenTable> = LazyLock::new(ListenTable::new);
@@ -120,10 +124,28 @@ static NET_POLL_REQUESTED: AtomicBool = AtomicBool::new(false);
 static NET_POLL_WAKE: WaitQueue = WaitQueue::new();
 static NET_POLL_DEVICE_WAKER: LazyLock<Waker> =
     LazyLock::new(|| Waker::from(Arc::new(NetPollWake)));
-type DeferredPollWake = (Arc<PollSet>, IoEvents);
+type DeferredPollEntry = (Arc<PollSet>, IoEvents);
 static DEFERRED_POLL_WAKE_PENDING: AtomicBool = AtomicBool::new(false);
-static DEFERRED_POLL_WAKES: LazyLock<Mutex<Vec<DeferredPollWake>>> =
+static DEFERRED_POLL_WAKES: LazyLock<Mutex<Vec<DeferredPollEntry>>> =
     LazyLock::new(|| Mutex::new(Vec::new()));
+
+pub(crate) struct DeferPollWake {
+    pub(crate) poll: Arc<PollSet>,
+    pub(crate) ready: IoEvents,
+}
+
+impl Wake for DeferPollWake {
+    fn wake(self: Arc<Self>) {
+        self.wake_by_ref();
+    }
+
+    fn wake_by_ref(self: &Arc<Self>) {
+        // smoltcp invokes socket wakers from the net poll task context after
+        // updating readiness. The socket set may still be locked there, so
+        // defer the actual PollSet wake to the net worker outer loop.
+        defer_poll_wake(self.poll.clone(), self.ready);
+    }
+}
 
 /// Registry of wireless control-plane handles, keyed by interface name.
 ///
@@ -165,67 +187,14 @@ pub fn init_network(mut net_devs: EthernetDeviceList, config: NetworkConfig) {
 
     info!("Initialize network subsystem...");
 
-    for cfg in &config.interfaces {
-        if cfg.name == "lo" {
-            panic!("interface name 'lo' is reserved");
-        }
-        if cfg.dhcp && cfg.static_ip.is_some() {
-            panic!(
-                "interface {} has both DHCP and static IP configured",
-                cfg.name
-            );
-        }
-        if let Some(static_cfg) = &cfg.static_ip {
-            if static_cfg.ip.is_unspecified() {
-                panic!("Invalid static IP for {}: unspecified address", cfg.name);
-            }
-            if static_cfg.prefix_len > 32 {
-                panic!("Invalid static IP for {}: prefix length > 32", cfg.name);
-            }
-        }
-        for (i, dns) in cfg.dns_servers.iter().enumerate() {
-            if dns.is_unspecified() {
-                panic!(
-                    "Invalid DNS server for {} at index {}: unspecified address",
-                    cfg.name, i
-                );
-            }
-        }
-    }
-    for (i, dns) in config.default_dns_servers.iter().enumerate() {
-        if dns.is_unspecified() {
-            panic!("Invalid DNS server at index {}: unspecified address", i);
-        }
-    }
+    validate_config(&config);
 
-    let routes: SharedRouteTable = Arc::new(spin::RwLock::new(RouteTable::new()));
+    let routes: SharedRouteTable = Arc::new(ax_kspin::SpinRwLock::new(RouteTable::new()));
     let mut router = Router::new(routes.clone());
     let mut interfaces = Vec::new();
     let mut dns = Vec::new();
 
-    let lo_id = InterfaceId::LOOPBACK;
-    let lo_dev = router.add_device(lo_id, Box::new(LoopbackDevice::new()));
-
-    let lo_ip = Ipv4Cidr::new(Ipv4Address::new(127, 0, 0, 1), 8);
-    router.add_rule(Rule::new(
-        lo_ip.into(),
-        None,
-        lo_dev,
-        lo_id,
-        lo_ip.address().into(),
-        0,
-    ));
-    interfaces.push(NetInterface {
-        id: lo_id,
-        name: "lo".to_owned(),
-        kind: InterfaceKind::Loopback,
-        mac: None,
-        ipv4: Some(lo_ip),
-        gateway: None,
-        mtu: consts::STANDARD_MTU,
-        metric: 0,
-        flags: InterfaceFlags::UP | InterfaceFlags::RUNNING | InterfaceFlags::LOOPBACK,
-    });
+    let lo_ip = register_loopback(&mut router, &mut interfaces);
 
     if net_devs.is_empty() {
         warn!("  No network device found!");
@@ -314,27 +283,9 @@ pub fn init_network(mut net_devs: EthernetDeviceList, config: NetworkConfig) {
         });
     }
 
-    for (i, used) in used_configs.iter().enumerate() {
-        if !used {
-            panic!(
-                "interface config {} did not match any device",
-                config.interfaces[i].name
-            );
-        }
-    }
+    ensure_all_interface_configs_used(&config, &used_configs);
 
-    dns.extend(
-        config
-            .default_dns_servers
-            .iter()
-            .copied()
-            .map(|server| config::DnsServerEntry {
-                server: Ipv4Address::from(server.octets()),
-                interface_id: lo_id,
-                metric: u32::MAX,
-                source: config::DnsSource::Fallback,
-            }),
-    );
+    add_default_dns_servers(&config, &mut dns);
 
     for name in router.device_names() {
         info!("Device: {}", name);
@@ -361,6 +312,94 @@ pub fn init_network(mut net_devs: EthernetDeviceList, config: NetworkConfig) {
     if dhcp_enabled {
         wait_for_dhcp_bootstrap();
     }
+}
+
+fn validate_config(config: &NetworkConfig) {
+    for cfg in &config.interfaces {
+        if cfg.name == "lo" {
+            panic!("interface name 'lo' is reserved");
+        }
+        if cfg.dhcp && cfg.static_ip.is_some() {
+            panic!(
+                "interface {} has both DHCP and static IP configured",
+                cfg.name
+            );
+        }
+        if let Some(static_cfg) = &cfg.static_ip {
+            if static_cfg.ip.is_unspecified() {
+                panic!("Invalid static IP for {}: unspecified address", cfg.name);
+            }
+            if static_cfg.prefix_len > 32 {
+                panic!("Invalid static IP for {}: prefix length > 32", cfg.name);
+            }
+        }
+        for (i, dns) in cfg.dns_servers.iter().enumerate() {
+            if dns.is_unspecified() {
+                panic!(
+                    "Invalid DNS server for {} at index {}: unspecified address",
+                    cfg.name, i
+                );
+            }
+        }
+    }
+    for (i, dns) in config.default_dns_servers.iter().enumerate() {
+        if dns.is_unspecified() {
+            panic!("Invalid DNS server at index {}: unspecified address", i);
+        }
+    }
+}
+
+fn register_loopback(router: &mut Router, interfaces: &mut Vec<NetInterface>) -> Ipv4Cidr {
+    let lo_id = InterfaceId::LOOPBACK;
+    let lo_dev = router.add_device(lo_id, Box::new(LoopbackDevice::new()));
+
+    let lo_ip = Ipv4Cidr::new(Ipv4Address::new(127, 0, 0, 1), 8);
+    router.add_rule(Rule::new(
+        lo_ip.into(),
+        None,
+        lo_dev,
+        lo_id,
+        lo_ip.address().into(),
+        0,
+    ));
+    interfaces.push(NetInterface {
+        id: lo_id,
+        name: "lo".to_owned(),
+        kind: InterfaceKind::Loopback,
+        mac: None,
+        ipv4: Some(lo_ip),
+        gateway: None,
+        mtu: consts::STANDARD_MTU,
+        metric: 0,
+        flags: InterfaceFlags::UP | InterfaceFlags::RUNNING | InterfaceFlags::LOOPBACK,
+    });
+    lo_ip
+}
+
+fn ensure_all_interface_configs_used(config: &NetworkConfig, used_configs: &[bool]) {
+    for (i, used) in used_configs.iter().enumerate() {
+        if !used {
+            panic!(
+                "interface config {} did not match any device",
+                config.interfaces[i].name
+            );
+        }
+    }
+}
+
+fn add_default_dns_servers(config: &NetworkConfig, dns: &mut Vec<config::DnsServerEntry>) {
+    dns.extend(
+        config
+            .default_dns_servers
+            .iter()
+            .copied()
+            .map(|server| config::DnsServerEntry {
+                server: Ipv4Address::from(server.octets()),
+                interface_id: InterfaceId::LOOPBACK,
+                metric: u32::MAX,
+                source: config::DnsSource::Fallback,
+            }),
+    );
 }
 
 fn find_interface_config(
@@ -408,10 +447,6 @@ pub fn init_vsock(mut vsock_devs: device::VsockDeviceList) {
     }
 }
 
-fn poll_once() -> bool {
-    get_service().poll(&mut SOCKET_SET.inner.lock())
-}
-
 fn poll_until_idle() {
     POLL_AGAIN.store(true, Ordering::Release);
     loop {
@@ -423,7 +458,7 @@ fn poll_until_idle() {
         }
 
         while POLL_AGAIN.swap(false, Ordering::AcqRel) {
-            while poll_once() {}
+            while get_service().poll(&mut SOCKET_SET.inner.lock()) {}
         }
         POLLING_INTERFACES.store(false, Ordering::Release);
         if !POLL_AGAIN.load(Ordering::Acquire) {
@@ -432,26 +467,26 @@ fn poll_until_idle() {
     }
 }
 
-/// Request network polling from the dedicated net-poll worker.
-///
-/// This function is retained as a public trigger/debug entry. It no longer
-/// synchronously drives the whole protocol stack from the caller's context.
-pub fn poll_interfaces() {
-    request_poll();
-}
-
 /// Request network polling.
 ///
 /// This is the lightweight entry used by socket and device paths.
 pub fn request_poll() {
-    NET_POLL_REQUESTED.store(true, Ordering::Release);
-    NET_POLL_WAKE.notify_one(true);
+    publish_poll_request(&NET_POLL_REQUESTED, || {
+        NET_POLL_WAKE.notify_one(true);
+    });
+}
+
+fn publish_poll_request(requested: &AtomicBool, wake: impl FnOnce()) {
+    if !requested.swap(true, Ordering::AcqRel) {
+        wake();
+    }
 }
 
 pub(crate) fn defer_poll_wake(poll: Arc<PollSet>, ready: IoEvents) {
     DEFERRED_POLL_WAKES.lock().push((poll, ready));
-    DEFERRED_POLL_WAKE_PENDING.store(true, Ordering::Release);
-    NET_POLL_WAKE.notify_one(true);
+    if !DEFERRED_POLL_WAKE_PENDING.swap(true, Ordering::AcqRel) {
+        NET_POLL_WAKE.notify_one(true);
+    }
 }
 
 fn drain_deferred_poll_wakes() {
@@ -521,13 +556,13 @@ pub struct NetConfig {
 
 /// Registers an extra Ethernet device with a static IPv4 address.
 ///
-/// If `dedicated_poll` is set, RX readiness is driven by [`notify_oob_rx`]
+/// If `dedicated_poll` is set, RX readiness is driven by [`wake_net_task_irq`]
 /// instead of the shared Ethernet IRQ framework.
 pub fn register_device_with_config(dev: Box<dyn EthernetDriver>, config: NetConfig) {
     let mac = EthernetAddress(dev.mac_address());
-    let server_ip = Ipv4Address::new(config.ip[0], config.ip[1], config.ip[2], config.ip[3]);
+    let server_ip = Ipv4Address::from(config.ip);
     let cidr = Ipv4Cidr::new(server_ip, config.prefix_len);
-    // A dedicated-poll device gets RX out-of-band (via `notify_oob_rx` and the
+    // A dedicated-poll device gets RX out-of-band (via `wake_net_task_irq` and the
     // shared net poll task), so its socket wakers must be armed even though it
     // has no ethernet IRQ registration.
     let eth_dev = if config.dedicated_poll {
@@ -537,13 +572,9 @@ pub fn register_device_with_config(dev: Box<dyn EthernetDriver>, config: NetConf
     };
     let dev_idx = get_service().register_static_device(config.name.clone(), eth_dev, mac, cidr);
     if let Some(client_ip) = config.dhcp_server_client_ip {
-        let client_ip = Ipv4Address::new(client_ip[0], client_ip[1], client_ip[2], client_ip[3]);
-        get_service().enable_dhcp_server(
-            dev_idx,
-            server_ip,
-            client_ip,
-            prefix_to_mask(config.prefix_len),
-        );
+        let client_ip = Ipv4Address::from(client_ip);
+        let subnet_mask = mask_from_prefix(config.prefix_len);
+        get_service().enable_dhcp_server(dev_idx, server_ip, client_ip, subnet_mask);
     }
 
     info!("{}: up, mac {mac}, ip {cidr}", config.name);
@@ -603,11 +634,14 @@ pub fn reconfigure_wifi(name: &str, mode: WifiMode<'_>) -> AxResult<()> {
     //    (possibly new) MAC. The registry lock is released before touching the
     //    stack service to avoid holding two locks across the blocking path.
     let mac = {
-        let controls = WIFI_CONTROLS.lock();
-        let (_, handle) = controls
-            .iter()
-            .find(|(n, _)| n == name)
-            .ok_or(AxError::NoSuchDevice)?;
+        let handle = {
+            let controls = WIFI_CONTROLS.lock();
+            controls
+                .iter()
+                .find(|(n, _)| n == name)
+                .map(|(_, handle)| handle.clone())
+                .ok_or(AxError::NoSuchDevice)?
+        };
         let ctrl = handle.wifi_control().ok_or(AxError::NoSuchDevice)?;
         match &mode {
             WifiMode::Station { ssid, password } => ctrl
@@ -632,15 +666,15 @@ pub fn reconfigure_wifi(name: &str, mode: WifiMode<'_>) -> AxResult<()> {
                 dhcp_client_ip,
                 ..
             } => {
-                let server_ip = Ipv4Address::new(ip[0], ip[1], ip[2], ip[3]);
-                let client_ip = dhcp_client_ip.map(|c| Ipv4Address::new(c[0], c[1], c[2], c[3]));
+                let server_ip = Ipv4Address::from(ip);
+                let client_ip = dhcp_client_ip.map(Ipv4Address::from);
                 service.reconfigure_as_ap(dev, server_ip, prefix_len, client_ip);
             }
         }
     }
 
     // Kick a poll so the new addressing takes effect immediately.
-    poll_interfaces();
+    request_poll();
     info!("{name}: wifi mode switch complete");
     Ok(())
 }
@@ -648,35 +682,11 @@ pub fn reconfigure_wifi(name: &str, mode: WifiMode<'_>) -> AxResult<()> {
 /// Wakes the net poll task from a hard IRQ callback.
 ///
 /// The IRQ path must only publish small pending state and call this wrapper.
-/// The deferred net task performs `poll_interfaces()` and wakes socket waiters
-/// from ordinary task context.
+/// The deferred net task requests polling and wakes socket waiters from ordinary
+/// task context.
 pub fn wake_net_task_irq() {
     NET_IRQ_NOTIFY.notify_irq();
     NET_POLL_WAKE.notify_one_from_irq();
-}
-
-/// Wakes the out-of-band RX poll task; intended as a device RX-data callback.
-///
-/// A device whose RX path sits outside the ethernet IRQ framework (e.g. an SDIO
-/// chip owning its own card interrupt) registers this as its RX callback. It
-/// only signals here; the dedicated poll task does the actual stack polling, so
-/// the device's RX thread is never blocked on the stack.
-pub fn notify_oob_rx() {
-    wake_net_task_irq();
-}
-
-/// Convenience helper for retrieving `eth0` IPv4 configuration.
-pub fn eth0_ipv4_config() -> Option<Ipv4InterfaceConfig> {
-    get_service().eth0_ipv4_config()
-}
-
-fn prefix_to_mask(prefix_len: u8) -> Ipv4Address {
-    let bits = if prefix_len == 0 {
-        0
-    } else {
-        u32::MAX << (32 - prefix_len.min(32) as u32)
-    };
-    Ipv4Address::from_bits(bits)
 }
 
 fn next_poll_delay() -> Duration {
@@ -718,15 +728,67 @@ fn net_poll_worker() {
                 || NET_IRQ_NOTIFY.is_pending()
                 || DEFERRED_POLL_WAKE_PENDING.load(Ordering::Acquire)
         });
-        if !timed_out && NET_POLL_REQUESTED.load(Ordering::Acquire) {
-            NET_POLL_REQUESTED.store(false, Ordering::Release);
+        if !timed_out {
+            take_poll_request(&NET_POLL_REQUESTED, || {});
         }
-        if NET_IRQ_NOTIFY.drain() {
+        let irq_pending = NET_IRQ_NOTIFY.drain();
+        if device_poll_fallback_due(timed_out, irq_pending, delay) {
             get_service().wake_all_devices();
         }
         drain_deferred_poll_wakes();
         poll_until_idle();
         drain_deferred_poll_wakes();
+    }
+}
+
+fn device_poll_fallback_due(timed_out: bool, irq_pending: bool, delay: Duration) -> bool {
+    irq_pending || (timed_out && delay > Duration::ZERO)
+}
+
+fn take_poll_request(requested: &AtomicBool, after_observe: impl FnOnce()) -> bool {
+    if requested.swap(false, Ordering::AcqRel) {
+        after_observe();
+        true
+    } else {
+        false
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use core::{
+        sync::atomic::{AtomicBool, Ordering},
+        time::Duration,
+    };
+
+    use super::{device_poll_fallback_due, publish_poll_request, take_poll_request};
+
+    #[test]
+    fn poll_request_after_worker_drain_stays_pending() {
+        let requested = AtomicBool::new(true);
+        let mut wakes = 0;
+
+        assert!(take_poll_request(&requested, || {
+            publish_poll_request(&requested, || wakes += 1);
+        }));
+
+        assert!(requested.load(Ordering::Acquire));
+        assert_eq!(wakes, 1);
+    }
+
+    #[test]
+    fn poll_timeout_wakes_devices_as_polling_fallback() {
+        assert!(device_poll_fallback_due(
+            true,
+            false,
+            Duration::from_millis(100)
+        ));
+    }
+
+    #[test]
+    fn immediate_socket_poll_does_not_force_device_fallback() {
+        assert!(!device_poll_fallback_due(true, false, Duration::ZERO));
+        assert!(device_poll_fallback_due(false, true, Duration::ZERO));
     }
 }
 
@@ -849,15 +911,6 @@ fn wait_for_dhcp_bootstrap() {
     warn!("DHCP bootstrap timed out");
 }
 
-pub(crate) fn endpoint_from_ip_endpoint(
-    endpoint: smoltcp::wire::IpEndpoint,
-) -> smoltcp::wire::IpListenEndpoint {
-    smoltcp::wire::IpListenEndpoint {
-        addr: Some(endpoint.addr),
-        port: endpoint.port,
-    }
-}
-
 #[cfg(test)]
 pub(crate) mod test_support {
     use alloc::{boxed::Box, sync::Arc, vec, vec::Vec};
@@ -890,7 +943,7 @@ pub(crate) mod test_support {
         static INIT: Once = Once::new();
 
         INIT.call_once(|| {
-            let routes: SharedRouteTable = Arc::new(spin::RwLock::new(RouteTable::new()));
+            let routes: SharedRouteTable = Arc::new(ax_kspin::SpinRwLock::new(RouteTable::new()));
             let mut router = Router::new(routes.clone());
             let local_dev = router.add_device(LOCAL_IF, Box::new(LoopbackDevice::new()));
             let peer_dev = router.add_device(PEER_IF, Box::new(LoopbackDevice::new()));

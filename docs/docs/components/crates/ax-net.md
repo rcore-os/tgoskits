@@ -28,7 +28,7 @@
 
 - `init_network(net_devs)`：由 `ax-runtime` 调用，接入 Ethernet 设备、loopback、router、smoltcp service，并完成静态网络或 DHCP 初始化。
 - `init_vsock(vsock_devs)`：在 `vsock` feature 下启用，由 `ax-runtime` 调用。
-- `poll_interfaces()`：推动收包、发包、协议状态机和 readiness 更新。
+- `request_poll()`：唤醒 net-poll worker 推动收包、发包、协议状态机和 readiness 更新。
 
 socket 入口：
 

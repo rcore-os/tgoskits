@@ -93,8 +93,8 @@ pg_sql_quiet() {
 }
 
 start_postgres() {
-    su -s /bin/sh postgres -c "$PG/pg_ctl -D $PGDATA -l $LOG start -w -t 120 -o '-c max_connections=10 -c shared_buffers=16MB -c unix_socket_directories=$PGRUN -c fsync=off'" >>"$LOG" 2>&1
-    postgres_pid="$(cat "$PGDATA/postmaster.pid" 2>/dev/null | head -1)" || true
+    su -s /bin/sh postgres -c "$PG/postgres -D $PGDATA -c max_connections=10 -c shared_buffers=16MB -c unix_socket_directories=$PGRUN -c fsync=off >>$LOG 2>&1 & echo \$!" >/tmp/postgres.pid
+    postgres_pid="$(cat /tmp/postgres.pid 2>/dev/null)" || true
     if [ -z "$postgres_pid" ] || ! kill -0 "$postgres_pid" >/dev/null 2>&1; then
         echo "postgres failed to start" >&2
         return 1

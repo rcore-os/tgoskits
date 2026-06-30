@@ -12,7 +12,7 @@ pub mod tdma;
 pub mod tiu;
 pub mod types;
 
-pub use device::{Sg2002Tpu, TpuKernelWork, TpuState, TpuSubmitPath, TpuTaskNode};
+pub use device::{Sg2002Tpu, TpuState, TpuSubmitPath};
 pub use platform::TiuIrqCallback;
 
 /// TDMA 物理基地址

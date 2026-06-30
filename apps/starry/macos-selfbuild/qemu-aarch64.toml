@@ -1,0 +1,37 @@
+# Apple Silicon macOS HVF self-build QEMU config. The rootfs is selected and
+# patched by the Starry app runner; this config only carries the machine shape
+# for the xtask app case.
+args = [
+    "-nographic",
+    "-accel",
+    "hvf",
+    "-machine",
+    "virt,gic-version=3",
+    "-cpu",
+    "host",
+    "-device",
+    "virtio-net-pci,netdev=net0",
+    "-netdev",
+    "user,id=net0,net=10.0.2.0/24,dhcpstart=10.0.2.15",
+    "-m",
+    "8192M",
+    "-smp",
+    "4",
+]
+uefi = false
+to_bin = true
+snapshot = false
+shell_prefix = "root@starry:"
+shell_init_cmd = "/bin/sh /opt/starry-macos-run.sh"
+success_regex = ["(?m)^===STARRY-MACOS-SELFBUILD-PASS jobs=[0-9]+ elapsed=[0-9]+===$"]
+fail_regex = [
+    "(?i)\\bpanicked at\\b",
+    "(?i)\\bkernel panic\\b",
+    "(?i)\\bpanic:\\s",
+    "(?i)\\bunhandled trap\\b",
+    "(?i)\\btrap frame\\b",
+    "(?i)fatal",
+    "(?i)segmentation fault",
+    "(?m)^===STARRY-MACOS-SELFBUILD-FAIL",
+]
+timeout = 7200

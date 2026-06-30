@@ -1,0 +1,8 @@
+cmake_minimum_required(VERSION 3.20)
+project(perf-hw-record-ioctl C)
+set(CMAKE_C_STANDARD 11)
+set(CMAKE_C_STANDARD_REQUIRED ON)
+set(CMAKE_C_EXTENSIONS OFF)
+add_executable(perf-hw-record-ioctl src/perf_hw_record_ioctl.c)
+target_compile_options(perf-hw-record-ioctl PRIVATE -Wall -Wextra -Werror)
+install(TARGETS perf-hw-record-ioctl RUNTIME DESTINATION usr/bin/starry-test-suit)

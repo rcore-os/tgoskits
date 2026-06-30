@@ -5,7 +5,7 @@ edition.workspace = true
 license.workspace = true
 name = "ax-runtime"
 repository = "https://github.com/rcore-os/tgoskits"
-version = "0.7.0"
+version = "0.8.2"
 
 [features]
 default = []
@@ -14,9 +14,14 @@ dma = ["paging"]
 ext-ld = []
 std-compat = []
 ipi = ["dep:ax-ipi"]
+# Register a lightweight IPI IRQ handler that only acknowledges SGIs so idle
+# CPUs can wake and re-enter the scheduler. This intentionally does not enable
+# the ax-ipi callback queue.
+wake-ipi = ["irq", "ax-hal/ipi"]
 irq = [
   "ax-hal/irq",
   "ax-task?/irq",
+  "dep:ax-kspin",
   "dep:ax-percpu",
   "dep:axklib",
   "ax-driver/irq",
@@ -32,6 +37,7 @@ tls = ["ax-hal/tls", "ax-task?/tls"]
 plat-dyn = [
   "ax-driver/plat-dyn",
   "ax-hal/plat-dyn",
+  "dep:rdif-intc",
   "paging",
   "irq",
   "rtc",
@@ -75,7 +81,6 @@ vsock = ["net", "ax-net/vsock", "ax-driver/vsock"]
 aic8800 = {workspace = true, optional = true}
 sdhci-cv1800 = {workspace = true, optional = true}
 ax-alloc = {workspace = true}
-ax-config = {workspace = true}
 ax-crate-interface = {workspace = true}
 ax-ctor-bare = {workspace = true}
 ax-display = {workspace = true, optional = true}
@@ -86,6 +91,7 @@ axfs-ng-vfs = {workspace = true, optional = true}
 ax-hal = {workspace = true}
 ax-input = {workspace = true, optional = true}
 ax-ipi = {workspace = true, optional = true}
+ax-kspin = {workspace = true, optional = true}
 ax-lazyinit = {workspace = true}
 ax-log = {workspace = true}
 ax-memory-addr = {workspace = true}
@@ -101,7 +107,13 @@ cfg-if = {workspace = true}
 chrono = {version = "0.4", default-features = false}
 dma-api = { workspace = true, optional = true }
 indoc = "2"
+irq-framework = { workspace = true }
 rdif-block = { workspace = true, optional = true }
+rdif-intc = { workspace = true, optional = true }
 rd-net = { workspace = true, optional = true }
 rdrive.workspace = true
 spin = {workspace = true, optional = true}
+
+[build-dependencies]
+quote = "1.0"
+toml.workspace = true

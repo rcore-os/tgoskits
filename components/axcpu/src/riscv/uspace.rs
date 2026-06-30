@@ -13,7 +13,7 @@ use riscv::{
     register::{scause, sstatus::Sstatus, stval},
 };
 
-pub use crate::uspace_common::{ExceptionKind, ReturnReason};
+pub use crate::uspace_common::{ExceptionKind, ExceptionSyndrome, ReturnReason};
 use crate::{GeneralRegisters, TrapFrame, trap::PageFaultFlags};
 
 /// Context to enter user space.
@@ -63,6 +63,19 @@ impl UserContext {
         if matches!(self.0.sstatus.fs(), FS::Off) {
             self.0.sstatus.set_fs(FS::Initial);
         }
+    }
+
+    /// Clears any architecture single-step state after a debug exception.
+    ///
+    /// RISC-V single-step is currently emulated by temporarily patching an
+    /// `ebreak`, so there is no saved CPU flag to clear here.
+    pub const fn clear_single_step_after_debug(&mut self) -> bool {
+        false
+    }
+
+    /// Returns the syscall instruction length in bytes.
+    pub const fn syscall_insn_len(&self) -> usize {
+        4
     }
 
     /// Enter user space.
@@ -158,6 +171,20 @@ pub struct ExceptionInfo {
 }
 
 impl ExceptionInfo {
+    /// Returns the faulting virtual address when the CPU records one.
+    pub const fn fault_addr(&self) -> Option<usize> {
+        Some(self.stval)
+    }
+
+    /// Returns architecture-neutral syndrome information for this exception.
+    pub const fn syndrome(&self) -> ExceptionSyndrome {
+        ExceptionSyndrome {
+            raw: 0,
+            class: self.e as u64,
+            iss: 0,
+        }
+    }
+
     /// Returns a generalized kind of this exception.
     pub fn kind(&self) -> ExceptionKind {
         match self.e {

@@ -1,0 +1,173 @@
+#!/usr/bin/env bash
+# prebuild.sh — provision a CPython 3.14 environment with a set of web frameworks
+# (Django / FastAPI / uvicorn / Pydantic / GraphQL-core / Strawberry) and stage the
+# framework carpet suite.
+#
+# Portable model (mirrors the merged python-lang app): extract the base Alpine rootfs to a
+# staging tree, `apk add python3 + the framework apks` INTO it via qemu-user-static (so it
+# works for every target arch on an x86 build host — apk resolves each package, incl. the
+# native pydantic-core, for the TARGET arch), unzip the strawberry-graphql py3-none-any wheel
+# into site-packages, then copy the python3 binary, its runtime shared-library closure, the
+# full standard library + site-packages, and the carpet modules into the app overlay. No
+# host-absolute paths, no prebuilt images — the only inputs are the registered base rootfs,
+# the framework apk repos (Alpine edge), and the app's own python/ + assets/ sources.
+#
+# Env from the app runner: STARRY_ARCH, STARRY_ROOTFS (base alpine working copy),
+# STARRY_STAGING_ROOT (scratch extraction tree), STARRY_OVERLAY_DIR, STARRY_APP_DIR.
+set -euo pipefail
+
+app_dir="${STARRY_APP_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"
+arch="${STARRY_ARCH:?prebuild: STARRY_ARCH required}"
+base_rootfs="${STARRY_ROOTFS:?prebuild: STARRY_ROOTFS required}"
+staging_root="${STARRY_STAGING_ROOT:?prebuild: STARRY_STAGING_ROOT required}"
+overlay_dir="${STARRY_OVERLAY_DIR:?prebuild: STARRY_OVERLAY_DIR required}"
+ASSETS="$app_dir/assets"
+
+case "$arch" in
+    aarch64)     qemu_runner="qemu-aarch64-static" ;;
+    riscv64)     qemu_runner="qemu-riscv64-static" ;;
+    x86_64)      qemu_runner="qemu-x86_64-static" ;;
+    loongarch64) qemu_runner="qemu-loongarch64-static" ;;
+    *) echo "prebuild: unsupported arch: $arch" >&2; exit 1 ;;
+esac
+
+ensure_host_tools() {
+    local missing=()
+    command -v debugfs    >/dev/null 2>&1 || missing+=(e2fsprogs)
+    command -v readelf    >/dev/null 2>&1 || missing+=(binutils)
+    command -v "$qemu_runner" >/dev/null 2>&1 || missing+=(qemu-user-static)
+    if [[ ${#missing[@]} -gt 0 ]]; then
+        if command -v apt-get >/dev/null 2>&1; then
+            echo "prebuild: installing host tools: ${missing[*]}"
+            apt-get update && apt-get install -y --no-install-recommends "${missing[@]}"
+        else
+            echo "prebuild: missing host tools and no apt-get: ${missing[*]}" >&2
+            exit 1
+        fi
+    fi
+}
+
+extract_base_rootfs() {
+    rm -rf "$staging_root"; mkdir -p "$staging_root"
+    debugfs -R "rdump / $staging_root" "$base_rootfs" >/dev/null 2>&1
+    [[ -x "$staging_root/sbin/apk" ]] || { echo "prebuild: base rootfs has no apk" >&2; exit 2; }
+}
+
+normalize_symlinks() {
+    # qemu-user resolves ABSOLUTE symlink targets against the HOST root, so an alpine
+    # `usr/lib/libz.so.1 -> /usr/lib/libz.so.1.3.2` dangles on a non-alpine build host and apk
+    # fails to load its libz/libssl/libcrypto closure ("symbol not found"). Rewrite every absolute
+    # symlink under the staging lib dirs to a relative target that resolves inside the staging tree.
+    local link tgt rel
+    while IFS= read -r link; do
+        tgt="$(readlink "$link")"
+        [[ "$tgt" == /* ]] || continue
+        rel="$(realpath -m --relative-to="$(dirname "$link")" "$staging_root$tgt")"
+        ln -sf "$rel" "$link"
+    done < <(find "$staging_root/lib" "$staging_root/usr/lib" -type l 2>/dev/null)
+}
+
+install_python() {
+    normalize_symlinks
+    # apk can resolve hostnames inside qemu-user with the host's DNS config.
+    [[ -f /etc/resolv.conf ]] && cp -f /etc/resolv.conf "$staging_root/etc/resolv.conf" || true
+    # CPython 3.14 lives on Alpine edge; the stable base repos only carry 3.12.
+    # Point apk at edge (main+community) so `apk add python3` resolves 3.14.x and
+    # pulls its matching musl/openssl/... closure (copied into the overlay below).
+    local edge="https://dl-cdn.alpinelinux.org/alpine"
+    printf '%s/edge/main\n%s/edge/community\n' "$edge" "$edge" > "$staging_root/etc/apk/repositories"
+    echo "prebuild: apk add python3 (CPython 3.14, pure language + stdlib) from Alpine edge via $qemu_runner..."
+    QEMU_LD_PREFIX="$staging_root" \
+    LD_LIBRARY_PATH="$staging_root/lib:$staging_root/usr/lib" \
+        "$qemu_runner" -L "$staging_root" \
+            "$staging_root/sbin/apk" \
+            --root "$staging_root" \
+            --repositories-file "$staging_root/etc/apk/repositories" \
+            --keys-dir "$staging_root/etc/apk/keys" \
+            --update-cache --no-progress --no-scripts \
+            add python3 py3-django py3-fastapi uvicorn py3-pydantic py3-graphql-core py3-asgiref py3-dateutil py3-packaging
+    # Hard version gate: the carpet must run on a real 3.14 interpreter, not an
+    # older python that would merely skip the 3.14-gated checks.
+    local pyver
+    pyver="$(ls -d "$staging_root"/usr/lib/python3.* 2>/dev/null | grep -oE 'python3\.[0-9]+' | head -1)"
+    case "$pyver" in
+        python3.14|python3.1[5-9]|python3.2[0-9]) echo "prebuild: provisioned $pyver" ;;
+        *) echo "prebuild: need CPython >= 3.14 but got '$pyver' (base rootfs repos must point at Alpine edge)" >&2; exit 3 ;;
+    esac
+}
+
+copy_to_overlay() {  # guest-path mode
+    local src="$staging_root$1" dst="$overlay_dir$1"
+    [[ -e "$src" ]] || { echo "prebuild: missing $1 after install" >&2; exit 4; }
+    [[ -L "$src" ]] && src="$(readlink -f "$src")"
+    install -Dm"$2" "$src" "$dst"
+}
+
+# recursively copy the shared-library closure of an ELF into the overlay
+copy_so_closure() {
+    local pending=("$@") seen=" " gp lib d
+    while [[ ${#pending[@]} -gt 0 ]]; do
+        gp="${pending[0]}"; pending=("${pending[@]:1}")
+        [[ "$seen" == *" $gp "* ]] && continue
+        seen+="$gp "
+        while IFS= read -r lib; do
+            for d in lib usr/lib usr/local/lib; do
+                if [[ -e "$staging_root/$d/$lib" ]]; then
+                    copy_to_overlay "/$d/$lib" 0644
+                    pending+=("/$d/$lib")
+                    break
+                fi
+            done
+        done < <(readelf -d "$staging_root$gp" 2>/dev/null | sed -n 's/.*Shared library: \[\(.*\)\].*/\1/p')
+    done
+}
+
+populate_overlay() {
+    local pyver
+    pyver="$(ls -d "$staging_root"/usr/lib/python3.* 2>/dev/null | grep -oE 'python3\.[0-9]+' | head -1)"
+    copy_to_overlay /usr/bin/python3 0755
+    copy_so_closure /usr/bin/python3
+    # lib-dynload C-extension modules carry their own .so deps
+    if [[ -d "$staging_root/usr/lib/$pyver/lib-dynload" ]]; then
+        for so in "$staging_root/usr/lib/$pyver/lib-dynload"/*.so; do
+            [[ -e "$so" ]] && copy_so_closure "/usr/lib/$pyver/lib-dynload/$(basename "$so")"
+        done
+    fi
+    # The framework apks (py3-django / py3-fastapi / uvicorn / py3-pydantic + pydantic-core
+    # native / py3-starlette / py3-graphql-core / py3-asgiref + deps) landed in site-packages
+    # of the staging tree; the cp -a below carries them into the overlay. strawberry-graphql has
+    # no apk — unzip its arch-independent py3-none-any wheel straight into site-packages.
+    # strawberry-graphql + its PyPI-only deps (cross-web) have no apk — unzip the bundled
+    # arch-independent py3-none-any wheels straight into site-packages.
+    local sp="$staging_root/usr/lib/$pyver/site-packages" whl
+    for whl in "$ASSETS"/*.whl; do
+        [[ -f "$whl" ]] || continue
+        ( cd "$sp" && unzip -oq "$whl" -x '*.dist-info/RECORD' )
+        echo "prebuild: unzipped $(basename "$whl") into site-packages"
+    done
+    mkdir -p "$overlay_dir/usr/lib/$pyver"
+    cp -a "$staging_root/usr/lib/$pyver/." "$overlay_dir/usr/lib/$pyver/"
+    ln -sf python3 "$overlay_dir/usr/bin/python" 2>/dev/null || true
+
+    # site-packages C-extensions (pydantic_core etc.) carry their own .so deps — pull the closure
+    # so the runtime loader finds them in the overlay.
+    if [[ -d "$sp" ]]; then
+        while IFS= read -r so; do
+            copy_so_closure "/usr/lib/$pyver/site-packages/${so#"$sp"/}"
+        done < <(find "$sp" -name '*.so' 2>/dev/null)
+    fi
+
+    # stage the carpet suite (run later as `python3 /usr/bin/<file>`)
+    local n=0
+    for f in "$app_dir"/python/*.py; do
+        [[ -f "$f" ]] || continue
+        install -Dm0644 "$f" "$overlay_dir/usr/bin/$(basename "$f")"
+        n=$((n + 1))
+    done
+    echo "prebuild: staged $n python module(s); $pyver overlay ready for $arch"
+}
+
+ensure_host_tools
+extract_base_rootfs
+install_python
+populate_overlay

@@ -1,0 +1,11 @@
+SYN: rd1_xor_acc=4
+SYN: rd2_xor_acc=10
+SYN: rd3_xor_acc=244
+SYN: phase=1 busy=1
+SYN: phase=2 busy=1
+SYN: phase=3 busy=1
+SYN: phase=0 busy=0
+SYN: phase=0 busy=0
+SYN: phase=0 busy=0
+SYN: zero_flag=1
+SYN_DONE

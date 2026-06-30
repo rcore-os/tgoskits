@@ -44,6 +44,12 @@ fn pad_cmd_frame(cmd: &mut Vec<u8>) -> usize {
 /// 启动 wifi-tx 线程
 pub fn start(bus: Arc<WifiBus>) {
     log::debug!("[wifi-tx] thread starting");
+    // TX poll kicker 仅 DC/DW 启用:它兜底 PollSet 无 sticky 导致的唤醒丢失,是
+    // DC 双管道 + 控制端口对账场景下的需要。D80/8801 走 upstream/dev 的纯事件
+    // 驱动路径,不启动 kicker,避免额外周期任务干扰已验证的调度。
+    if bus.transport.is_dual_pipe() {
+        start_tx_poll_kicker(bus.clone());
+    }
     crate::runtime::runtime().spawn_poll_task(
         "wifi-tx",
         alloc::boxed::Box::new(move |cx| {
@@ -70,6 +76,37 @@ pub fn start(bus: Arc<WifiBus>) {
                 bus.cmd.rsp_pollset.wake();
             }
 
+            Poll::Pending
+        }),
+    );
+}
+
+/// 周期性唤醒 wifi-tx 线程的兜底任务。
+///
+/// 背景:wifi-tx 是边沿触发的 poll 任务,且先 tx_process 再 register waker
+/// (tx.rs:57/60)。PollSet 无 sticky 位(pollset.rs),若 `wake_pollset.wake()`
+/// 触发时 TX 的 waker 恰不在 set 里(例如 TX 正在 tx_process 内的 yield 点),
+/// 这次唤醒会永久丢失;叠加 `pending_flag` 队头阻塞(process_data_tx 见 pending
+/// CMD 即 break),一次丢失的 CMD 唤醒会冻结整条 TX 数秒,直到下一次偶然命中
+/// 注册窗口的 wake——这正是控制端口命令时好时坏超时的根因。
+///
+/// RX 线程早有对称的 10ms kicker(start_rx_poll_kicker)解决同类问题;此处为
+/// TX 补上,确保任何丢失的唤醒最多被延迟 ~10ms 即被救醒。
+fn start_tx_poll_kicker(bus: Arc<WifiBus>) {
+    crate::runtime::runtime().spawn_poll_task(
+        "wifi-tx-kick",
+        alloc::boxed::Box::new(move |cx| {
+            if *bus.state.lock() == BusState::Down {
+                return Poll::Ready(());
+            }
+            // 仅在确有待发工作时才唤醒 TX,避免空转。
+            if has_pending_work(&bus) {
+                bus.tx.wake_pollset.wake();
+            }
+            // 阻塞 sleep:本任务独占一个 ax_task 线程,只拖慢自己。
+            crate::runtime::runtime().sleep_ms(10);
+            // 自唤醒,形成 10ms 周期循环。
+            cx.waker().wake_by_ref();
             Poll::Pending
         }),
     );
@@ -150,7 +187,7 @@ fn perform_cmd_flow_control_and_send(
     let fc_ok = transport.wait_flow_ctrl_for_size(send_len, 10);
 
     let did_work = if fc_ok {
-        match transport.write_fifo(1, transport.wr_fifo_addr(), cmd) {
+        match transport.write_fifo(transport.cmd_func(), transport.wr_fifo_addr(), cmd) {
             Ok(()) => true,
             Err(e) => {
                 log::error!("[wifi-tx] CMD write_fifo failed: {:?}", e);
@@ -247,17 +284,24 @@ fn send_single_data_frame(
 
     // 管理帧(raw 802.11)走独立构造路径
     if frame.is_mgmt {
-        let buf = match build_mgmt_frame(&frame.data, vif_idx, transport.is_v3()) {
+        let buf = match build_mgmt_frame(
+            &frame.data,
+            vif_idx,
+            transport.is_v3(),
+            transport.cmd_func() == 2,
+        ) {
             Ok(b) => b,
             Err(_) => return false,
         };
-        if let Err(e) = transport.write_fifo(1, transport.wr_fifo_addr(), &buf) {
+        if let Err(e) = transport.write_fifo(transport.data_func(), transport.wr_fifo_addr(), &buf)
+        {
             log::error!("[wifi-tx] MGMT write_fifo failed: {:?}", e);
             return false;
         }
         log::debug!(
-            "[wifi-tx] MGMT frame sent ({} bytes 802.11)",
-            frame.data.len()
+            "[wifi-tx] MGMT frame sent OK ({} bytes 802.11, vif={})",
+            frame.data.len(),
+            vif_idx
         );
         return true;
     }
@@ -289,7 +333,7 @@ fn send_single_data_frame(
         eth_frame.len()
     );
 
-    if let Err(e) = transport.write_fifo(1, transport.wr_fifo_addr(), &buf) {
+    if let Err(e) = transport.write_fifo(transport.data_func(), transport.wr_fifo_addr(), &buf) {
         log::error!("[wifi-tx] DATA write_fifo failed: {:?}", e);
         return false;
     }
@@ -339,6 +383,8 @@ fn build_data_frame(
     // 填充 SDIO header
     buf[0] = (sdio_hdr_len & 0xFF) as u8;
     buf[1] = ((sdio_hdr_len >> 8) & 0x0F) as u8;
+    // TX 数据路径 byte[2] = SDIO_TYPE_DATA(0x01):vendor aicwf_sdio.c TX 永远写 0x01,
+    // 与 upstream/dev 一致。写 0x00 会被固件 ingress 误判丢弃。
     buf[2] = SDIO_TYPE_DATA;
     buf[3] = if is_v3 {
         crc8_ponl_107(&buf[0..3])
@@ -406,6 +452,7 @@ fn build_mgmt_frame(
     mgmt_frame: &[u8],
     vif_idx: u8,
     is_v3: bool,
+    dual_pipe: bool,
 ) -> Result<Vec<u8>, DataFrameBuildError> {
     const SDIO_HEADER_LEN: usize = 4;
     const HOSTDESC_SIZE: usize = 28;
@@ -432,6 +479,7 @@ fn build_mgmt_frame(
     // SDIO header
     buf[0] = (sdio_hdr_len & 0xFF) as u8;
     buf[1] = ((sdio_hdr_len >> 8) & 0x0F) as u8;
+    // 同数据路径:TX byte[2] = SDIO_TYPE_DATA(0x01),与 upstream/dev 一致。
     buf[2] = SDIO_TYPE_DATA;
     buf[3] = if is_v3 {
         crc8_ponl_107(&buf[0..3])
@@ -444,11 +492,14 @@ fn build_mgmt_frame(
         let hd = &mut buf[SDIO_HEADER_LEN..SDIO_HEADER_LEN + HOSTDESC_SIZE];
         hd[0..2].copy_from_slice(&(payload_len as u16).to_le_bytes());
         // flags_ext [2..4] = 0
-        // hostid [4..8]: bit31 请求 TX CFM
-        hd[4..8].copy_from_slice(&0x8000_0001u32.to_le_bytes());
+        // hostid [4..8]: Auth(FC=0xb0) 不在需要 CFM 的列表,vendor 填 0
+        hd[4..8].copy_from_slice(&0u32.to_le_bytes());
         // eth_dest/eth_src/ethertype 对管理帧无意义，置 0
         hd[20..22].copy_from_slice(&0u16.to_le_bytes()); // ethertype = 0
-        hd[22] = 0; // ac
+        // ac:DC/DW 实测需把 host 注入的管理帧路由到 VO 硬件队列(=3),ac=0 会落到
+        // BK 队列导致 AP 注入的管理帧不被发出。8801/D80 沿用 vendor 的 ac=0(BK),
+        // 与 upstream/dev 一致,避免回归。
+        hd[22] = if dual_pipe { 3 } else { 0 }; // ac: VO(DC) / BK(其余)
         hd[23] = 0xFF; // tid = 0xFF (非 QoS)
         hd[24] = vif_idx;
         hd[25] = 0xFF; // staid = 0xFF (未关联 STA)

@@ -35,6 +35,13 @@ struct drm_mode_map_dumb {
 struct drm_mode_destroy_dumb {
     uint32_t handle;
 };
+struct drm_clip_rect {
+    uint16_t x1, y1, x2, y2;
+};
+struct drm_mode_dirtyfb {
+    uint32_t fb_id, flags, color, num_clips;
+    uint64_t clips_ptr;
+};
 struct drm_mode_fb_cmd2 {
     uint32_t fb_id, width, height, pixel_format, flags;
     uint32_t handles[4], pitches[4], offsets[4];
@@ -81,6 +88,7 @@ struct drm_mode_create_blob {
 #define DRM_IOCTL_MODE_GETRESOURCES      _IOWR('d', 0xA0, struct drm_mode_card_res)
 #define DRM_IOCTL_MODE_GETCONNECTOR      _IOWR('d', 0xA7, struct drm_mode_get_connector)
 #define DRM_IOCTL_MODE_GETPROPERTY       _IOWR('d', 0xAA, struct drm_mode_get_property)
+#define DRM_IOCTL_MODE_DIRTYFB           _IOWR('d', 0xB1, struct drm_mode_dirtyfb)
 #define DRM_IOCTL_MODE_CREATE_DUMB       _IOWR('d', 0xB2, struct drm_mode_create_dumb)
 #define DRM_IOCTL_MODE_MAP_DUMB          _IOWR('d', 0xB3, struct drm_mode_map_dumb)
 #define DRM_IOCTL_MODE_DESTROY_DUMB      _IOWR('d', 0xB4, struct drm_mode_destroy_dumb)
@@ -250,6 +258,20 @@ int main(void) {
         .prop_values_ptr = (uint64_t)(uintptr_t)values,
     };
     CHECK_RET(ioctl(fd, DRM_IOCTL_MODE_ATOMIC, &atom), 0, "atomic commit fb1");
+
+    struct drm_clip_rect clip = {
+        .x1 = 0,
+        .y1 = 0,
+        .x2 = w < 32 ? (uint16_t)w : 32,
+        .y2 = h < 32 ? (uint16_t)h : 32,
+    };
+    struct drm_mode_dirtyfb dirty = {
+        .fb_id = fb1.fb_id,
+        .num_clips = 1,
+        .clips_ptr = (uint64_t)(uintptr_t)&clip,
+    };
+    CHECK_RET(ioctl(fd, DRM_IOCTL_MODE_DIRTYFB, &dirty), 0,
+              "DIRTYFB accepts valid clipped framebuffer damage");
 
     /* 翻到 fb2 — 这是双缓冲翻页的核心路径 */
     values[3] = fb2.fb_id;

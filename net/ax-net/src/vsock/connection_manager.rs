@@ -548,40 +548,7 @@ impl VsockConnectionManager {
         }
         Ok(())
     }
-
-    /// statistics
-    #[allow(dead_code)]
-    pub fn get_stats(&self) -> VsockStats {
-        VsockStats {
-            total_connections: self.connections.len(),
-            listening_ports: self.listen_queues.len(),
-            total_rx_bytes: self.connections.values().map(|c| c.lock().rx_bytes).sum(),
-            total_tx_bytes: self.connections.values().map(|c| c.lock().tx_bytes).sum(),
-            total_dropped_bytes: self
-                .connections
-                .values()
-                .map(|c| c.lock().dropped_bytes)
-                .sum(),
-        }
-    }
-}
-
-/// Vsock statistics
-#[allow(dead_code)]
-#[derive(Debug, Clone)]
-pub struct VsockStats {
-    pub total_connections: usize,
-    pub listening_ports: usize,
-    pub total_rx_bytes: usize,
-    pub total_tx_bytes: usize,
-    pub total_dropped_bytes: usize,
 }
 
 pub static VSOCK_CONN_MANAGER: Mutex<VsockConnectionManager> =
     Mutex::new(VsockConnectionManager::new());
-
-/// for debug
-#[allow(dead_code)]
-pub fn get_vsock_stats() -> VsockStats {
-    VSOCK_CONN_MANAGER.lock().get_stats()
-}

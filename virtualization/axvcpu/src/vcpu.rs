@@ -198,7 +198,7 @@ impl<A: AxArchVCpu> AxVCpu<A> {
 
     /// Execute a block with the state of the VCpu transitioned from `from` to `to`. If the current state is not `from`, return an error.
     ///
-    /// The state will be set to [`VCpuState::Invalid`] if an error occurs (including the case that the current state is not `from`).
+    /// The state will be set to [`VCpuState::Invalid`] if the transition body returns an error.
     ///
     /// The state will be set to `to` if the block is executed successfully.
     pub fn with_state_transition<F, T>(&self, from: VCpuState, to: VCpuState, f: F) -> AxResult<T>
@@ -206,10 +206,9 @@ impl<A: AxArchVCpu> AxVCpu<A> {
         F: FnOnce() -> AxResult<T>,
     {
         {
-            let mut inner_mut = self.inner_mut.lock();
+            let inner_mut = self.inner_mut.lock();
             if inner_mut.state != from {
                 let current_state = inner_mut.state;
-                inner_mut.state = VCpuState::Invalid;
                 return ax_err!(
                     BadState,
                     format!("VCpu state is not {from:?}, but {current_state:?}")

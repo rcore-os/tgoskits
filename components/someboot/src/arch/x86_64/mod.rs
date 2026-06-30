@@ -19,7 +19,7 @@ pub use relocate::relocate;
 
 use crate::{
     ArchTrait, DCacheOp,
-    mem::{PageTableInfo, mmu},
+    mem::{self, PageTableInfo},
     power::CpuOnError,
 };
 
@@ -30,7 +30,7 @@ impl ArchTrait for Arch {
     type Console = console::Console;
 
     fn _va(paddr: usize) -> *mut u8 {
-        if mmu::is_mmu_enabled() {
+        if mem::mmu::is_kernel_relocated() {
             paddr.wrapping_add(addrspace::PHYS_VIRT_OFFSET) as *mut u8
         } else {
             paddr as *mut u8
@@ -90,6 +90,10 @@ impl ArchTrait for Arch {
         addrspace::KERNEL_SPACE_BASE..usize::MAX
     }
 
+    fn is_mmu_enabled() -> bool {
+        unsafe { x86::controlregs::cr0().contains(x86::controlregs::Cr0::CR0_ENABLE_PAGING) }
+    }
+
     fn kernel_page_table() -> PageTableInfo {
         paging::current_table()
     }
@@ -112,6 +116,17 @@ impl ArchTrait for Arch {
             // QEMU ACPI poweroff ports (q35/i440fx).
             x86::io::outw(0x604, 0x2000);
             x86::io::outw(0xb004, 0x2000);
+        }
+
+        loop {
+            unsafe { x86::halt() };
+        }
+    }
+
+    fn reset() -> ! {
+        unsafe {
+            x86::irq::disable();
+            x86::io::outb(0x64, 0xfe);
         }
 
         loop {

@@ -626,6 +626,16 @@ impl Cru {
     ///
     /// 如果时钟 ID 不支持，返回 `ClockError::UnsupportedClock`
     pub(crate) fn mmc_get_rate(&self, id: ClkId) -> ClockResult<u64> {
+        match id {
+            HCLK_EMMC | ACLK_EMMC | HCLK_NVM_ROOT | ACLK_NVM_ROOT => return Ok(self.gpll_hz),
+            TMCLK_EMMC => return Ok(24 * MHZ),
+            HCLK_SDIO | HCLK_SFC | HCLK_SFC_XIP => return Ok(self.gpll_hz),
+            SCLK_SDIO_DRV | SCLK_SDIO_SAMPLE | SCLK_SDMMC_DRV | SCLK_SDMMC_SAMPLE => {
+                return Ok(self.gpll_hz);
+            }
+            _ => {}
+        }
+
         // 根据时钟 ID 确定寄存器和位域
         let (con_reg, sel_shift, sel_mask, div_shift, div_mask, _parent_sources): (
             u32,
@@ -739,6 +749,16 @@ impl Cru {
     ///
     /// 如果时钟 ID 不支持或无法设置目标频率，返回错误
     pub(crate) fn mmc_set_rate(&mut self, id: ClkId, rate_hz: u64) -> ClockResult<u64> {
+        match id {
+            HCLK_EMMC | ACLK_EMMC | HCLK_NVM_ROOT | ACLK_NVM_ROOT | HCLK_SDIO | HCLK_SFC
+            | HCLK_SFC_XIP => return Ok(self.gpll_hz),
+            TMCLK_EMMC => return Ok(24 * MHZ),
+            SCLK_SDIO_DRV | SCLK_SDIO_SAMPLE | SCLK_SDMMC_DRV | SCLK_SDMMC_SAMPLE => {
+                return Ok(rate_hz);
+            }
+            _ => {}
+        }
+
         // 根据时钟 ID 确定寄存器和位域，以及可用的时钟源
         let (con_reg, sel_shift, sel_mask, div_shift, div_mask, parent_sources): (
             u32,

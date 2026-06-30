@@ -53,13 +53,13 @@ for bin in /usr/bin/starry-test-suit/*; do
 done
 echo "STARRY_SYSTEM_TEST_TIMING_BEGIN"
 if [ -s "$timing_file" ]; then
-    sort -nr "$timing_file" | head -n 20 | while read -r elapsed_s status bin; do
+    while read -r elapsed_s status bin; do
         if [ "$status" = passed ]; then
             printf 'STARRY_SYSTEM_TEST_TIMING: elapsed_s=%s status=passed bin=%s\n' "$elapsed_s" "$bin"
         else
             printf 'STARRY_SYSTEM_TEST_TIMING: elapsed_s=%s status=failed bin=%s\n' "$elapsed_s" "$bin"
         fi
-    done
+    done < "$timing_file"
 fi
 echo "STARRY_SYSTEM_TEST_TIMING_END"
 rm -f "$timing_file"

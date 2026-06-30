@@ -1159,4 +1159,5 @@ pub fn send_sgi(sgi_id: IntId, target: SGITarget) {
             ICC_SGI1R_EL1.write(value);
         }
     }
+    barrier::isb(barrier::SY);
 }

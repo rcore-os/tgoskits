@@ -37,7 +37,7 @@ pub trait TimeIf {
 
     /// Returns the IRQ number for the timer interrupt.
     #[cfg(feature = "irq")]
-    fn irq_num() -> usize;
+    fn irq_num() -> irq_framework::IrqId;
 
     /// Set a one-shot timer.
     ///

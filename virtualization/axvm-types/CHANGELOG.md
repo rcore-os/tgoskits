@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.13](https://github.com/rcore-os/tgoskits/compare/axvm-types-v0.5.12...axvm-types-v0.5.13) - 2026-06-22
+
+### Other
+
+- Issue 595 device foundation ([#1258](https://github.com/rcore-os/tgoskits/pull/1258))
+
 ## [0.5.12](https://github.com/rcore-os/tgoskits/compare/axvm-types-v0.5.11...axvm-types-v0.5.12) - 2026-06-09
 
 ### Other

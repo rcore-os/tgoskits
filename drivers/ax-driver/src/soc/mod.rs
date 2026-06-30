@@ -21,8 +21,8 @@ mod sg2002;
 
 #[cfg(feature = "rockchip-soc")]
 pub use rockchip::{
-    RockchipPinCtrl, rk3588_enable_clock, rk3588_enable_power_domain, rk3588_reset_assert,
-    rk3588_reset_deassert, rk3588_set_clock_rate,
+    RockchipFdtPinctrlParser, RockchipPinCtrl, rk3588_enable_clock, rk3588_enable_power_domain,
+    rk3588_reset_assert, rk3588_reset_deassert, rk3588_set_clock_rate,
 };
 
 #[cfg(not(feature = "rockchip-soc"))]
@@ -50,6 +50,9 @@ pub fn rk3588_enable_power_domain(domain: usize) -> Result<(), alloc::string::St
 pub struct RockchipPinCtrl;
 
 #[cfg(not(feature = "rockchip-soc"))]
+pub struct RockchipFdtPinctrlParser;
+
+#[cfg(not(feature = "rockchip-soc"))]
 impl rdrive::DriverGeneric for RockchipPinCtrl {
     fn name(&self) -> &str {
         "rk3588-pinctrl-unavailable"
@@ -58,6 +61,16 @@ impl rdrive::DriverGeneric for RockchipPinCtrl {
 
 #[cfg(not(feature = "rockchip-soc"))]
 impl RockchipPinCtrl {
+    pub fn apply_default_pinctrl(
+        &mut self,
+        node: fdt_edit::NodeType<'_>,
+    ) -> Result<alloc::vec::Vec<()>, rdrive::probe::OnProbeError> {
+        Err(rdrive::probe::OnProbeError::other(alloc::format!(
+            "RK3588 pinctrl support is not enabled for node {}",
+            node.name()
+        )))
+    }
+
     pub fn enable_fixed_regulator(
         &mut self,
         phandle: fdt_edit::Phandle,

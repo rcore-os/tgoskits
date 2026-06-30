@@ -330,7 +330,7 @@ fn add_memory_node(
         new_value.push((size >> 32) as u32);
         new_value.push((size & 0xFFFFFFFF) as u32);
     }
-    info!("Adding memory node with value: {new_value:x?}");
+    debug!("Adding memory node with value: {new_value:x?}");
     new_fdt
         .property_array_u32("reg", new_value.as_ref())
         .map_err(fdt_write_err)?;
@@ -664,11 +664,12 @@ pub(crate) fn calculate_dtb_load_addr(vm: AxVMRef, fdt_size: usize) -> AxResult<
         })?;
 
     let dtb_addr = vm.with_config(|config| {
-        let dtb_addr = if let Some(addr) = config.image_config.dtb_load_gpa
-            && !main_memory.is_identical()
-        {
+        let use_configured_dtb_addr =
+            config.image_config.dtb_load_gpa.is_some() && !main_memory.is_identical();
+
+        let dtb_addr = if use_configured_dtb_addr {
             // If dtb_load_gpa is already set, use the original value
-            addr
+            config.image_config.dtb_load_gpa.unwrap()
         } else {
             // If dtb_load_gpa is None, calculate based on memory size and FDT size
             let main_memory_size = main_memory.size().min(512 * MB);

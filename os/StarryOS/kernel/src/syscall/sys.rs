@@ -1,7 +1,7 @@
 use alloc::{sync::Arc, vec, vec::Vec};
 use core::{ffi::c_char, mem::MaybeUninit};
 
-use ax_errno::{AxError, AxResult};
+use ax_errno::{AxError, AxResult, LinuxError};
 use ax_fs_ng::vfs::FS_CONTEXT;
 use ax_sync::Mutex;
 use ax_task::current;
@@ -55,6 +55,17 @@ const SECCOMP_RET_KILL_THREAD: u32 = 0x0000_0000;
 const SECCOMP_RET_ERRNO: u32 = 0x0005_0000;
 const SECCOMP_RET_LOG: u32 = 0x7ffc_0000;
 const SECCOMP_RET_ALLOW: u32 = 0x7fff_0000;
+const LINUX_REBOOT_MAGIC1: u32 = 0xfee1_dead;
+const LINUX_REBOOT_MAGIC2: u32 = 0x2812_1969;
+const LINUX_REBOOT_MAGIC2A: u32 = 0x0512_1996;
+const LINUX_REBOOT_MAGIC2B: u32 = 0x1604_1998;
+const LINUX_REBOOT_MAGIC2C: u32 = 0x2011_2000;
+const LINUX_REBOOT_CMD_RESTART: u32 = 0x0123_4567;
+const LINUX_REBOOT_CMD_RESTART2: u32 = 0xa1b2_c3d4;
+const LINUX_REBOOT_CMD_CAD_ON: u32 = 0x89ab_cdef;
+const LINUX_REBOOT_CMD_CAD_OFF: u32 = 0x0000_0000;
+const LINUX_REBOOT_CMD_HALT: u32 = 0xcdef_0123;
+const LINUX_REBOOT_CMD_POWER_OFF: u32 = 0x4321_fedc;
 
 struct SyslogState {
     buffer: HeapRb<u8>,
@@ -114,6 +125,37 @@ impl SyslogState {
 
 static SYSLOG_STATE: spin::LazyLock<Mutex<SyslogState>> =
     spin::LazyLock::new(|| Mutex::new(SyslogState::new()));
+
+pub fn sys_reboot(magic: u32, magic2: u32, cmd: u32, _arg: usize) -> AxResult<isize> {
+    if !current().as_thread().cred().has_cap_sys_boot() {
+        return Err(AxError::from(LinuxError::EPERM));
+    }
+
+    if magic != LINUX_REBOOT_MAGIC1
+        || !matches!(
+            magic2,
+            LINUX_REBOOT_MAGIC2
+                | LINUX_REBOOT_MAGIC2A
+                | LINUX_REBOOT_MAGIC2B
+                | LINUX_REBOOT_MAGIC2C
+        )
+    {
+        return Err(AxError::from(LinuxError::EINVAL));
+    }
+
+    match cmd {
+        LINUX_REBOOT_CMD_CAD_ON | LINUX_REBOOT_CMD_CAD_OFF => Ok(0),
+        LINUX_REBOOT_CMD_RESTART | LINUX_REBOOT_CMD_RESTART2 => {
+            let _ = ax_fs_ng::shutdown_filesystems();
+            ax_runtime::hal::power::system_reset()
+        }
+        LINUX_REBOOT_CMD_HALT | LINUX_REBOOT_CMD_POWER_OFF => {
+            let _ = ax_fs_ng::shutdown_filesystems();
+            ax_runtime::hal::power::system_off()
+        }
+        _ => Err(AxError::from(LinuxError::EINVAL)),
+    }
+}
 
 /// Mirror of Linux kernel `uid_valid()` / `make_kuid()` rejection: any caller-
 /// supplied UID/GID of `(uid_t)-1` (`u32::MAX`) is invalid outside the NOCHG
@@ -908,8 +950,22 @@ pub fn sys_seccomp(op: u32, flags: u32, args: *const ()) -> AxResult<isize> {
 }
 
 #[cfg(target_arch = "riscv64")]
-pub fn sys_riscv_flush_icache() -> AxResult<isize> {
-    riscv::asm::fence_i();
+const SYS_RISCV_FLUSH_ICACHE_LOCAL: usize = 1;
+
+#[cfg(target_arch = "riscv64")]
+pub fn sys_riscv_flush_icache(start: usize, end: usize, flags: usize) -> AxResult<isize> {
+    if flags & !SYS_RISCV_FLUSH_ICACHE_LOCAL != 0 {
+        return Err(AxError::InvalidInput);
+    }
+    if end < start {
+        return Err(AxError::InvalidInput);
+    }
+
+    if flags & SYS_RISCV_FLUSH_ICACHE_LOCAL != 0 {
+        ax_runtime::hal::cache::flush_icache_all();
+    } else {
+        ax_runtime::hal::cache::flush_icache_all_cpus();
+    }
     Ok(0)
 }
 
@@ -920,23 +976,6 @@ struct RiscvHwprobe {
     key: i64,
     value: u64,
 }
-
-#[cfg(target_arch = "riscv64")]
-const RISCV_HWPROBE_KEY_BASE_BEHAVIOR: i64 = 3;
-#[cfg(target_arch = "riscv64")]
-const RISCV_HWPROBE_BASE_BEHAVIOR_IMA: u64 = 1 << 0;
-#[cfg(target_arch = "riscv64")]
-const RISCV_HWPROBE_KEY_IMA_EXT_0: i64 = 4;
-#[cfg(target_arch = "riscv64")]
-const RISCV_HWPROBE_IMA_FD: u64 = 1 << 0;
-#[cfg(target_arch = "riscv64")]
-const RISCV_HWPROBE_IMA_C: u64 = 1 << 1;
-#[cfg(target_arch = "riscv64")]
-const RISCV_HWPROBE_KEY_CPUPERF_0: i64 = 5;
-#[cfg(target_arch = "riscv64")]
-const RISCV_HWPROBE_KEY_MISALIGNED_SCALAR_PERF: i64 = 9;
-#[cfg(target_arch = "riscv64")]
-const RISCV_HWPROBE_KEY_MISALIGNED_VECTOR_PERF: i64 = 10;
 
 #[cfg(target_arch = "riscv64")]
 pub fn sys_riscv_hwprobe(
@@ -958,20 +997,11 @@ pub fn sys_riscv_hwprobe(
 
     let pairs = UserPtr::<RiscvHwprobe>::from(pairs.cast()).get_as_mut_slice(pair_count)?;
     for pair in pairs {
-        match pair.key {
-            RISCV_HWPROBE_KEY_BASE_BEHAVIOR => pair.value = RISCV_HWPROBE_BASE_BEHAVIOR_IMA,
-            RISCV_HWPROBE_KEY_IMA_EXT_0 => {
-                pair.value = RISCV_HWPROBE_IMA_FD | RISCV_HWPROBE_IMA_C;
-            }
-            RISCV_HWPROBE_KEY_CPUPERF_0
-            | RISCV_HWPROBE_KEY_MISALIGNED_SCALAR_PERF
-            | RISCV_HWPROBE_KEY_MISALIGNED_VECTOR_PERF => {
-                pair.value = 0;
-            }
-            _ => {
-                pair.key = -1;
-                pair.value = 0;
-            }
+        if let Some(value) = ax_runtime::hal::cpu::cap::riscv_hwprobe(pair.key) {
+            pair.value = value;
+        } else {
+            pair.key = -1;
+            pair.value = 0;
         }
     }
 

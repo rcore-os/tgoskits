@@ -12,7 +12,7 @@
 - 目录角色：ArceOS 示例程序
 - crate 形态：二进制 crate
 - 工作区位置：子工作区 `os/arceos`
-- feature 视角：主要通过 `loongarch64-qemu-virt` 控制编译期静态平台装配；x86_64、AArch64 和 RISC-V QEMU 默认测试路径走动态平台。
+- feature 视角：这是保留给旧静态平台路径的示例；当前 LoongArch QEMU 默认测试路径和 x86_64、AArch64、RISC-V QEMU 一样走动态平台。
 - 关键数据结构：该 crate 暴露的数据结构较少，关键复杂度主要体现在模块协作、trait 约束或初始化时序。
 
 ### 模块结构
@@ -31,12 +31,10 @@
 ```mermaid
 graph LR
     current["arceos-helloworld-myplat"]
-    current --> ax_plat_loongarch64_qemu_virt["ax-plat-loongarch64-qemu-virt"]
-    current --> ax-std["ax-std"]
+    current --> ax_std["ax-std"]
 ```
 
 ### 直接依赖
-- `ax-plat-loongarch64-qemu-virt`
 - `ax-std`
 
 ### 间接依赖
@@ -60,7 +58,7 @@ graph LR
 - 当前未发现更多间接消费者，或该 crate 主要作为终端入口使用。
 
 ### 外部依赖
-- `cfg-if`
+- 当前未声明额外外部依赖。
 
 ## 开发指南
 ### 接入方式

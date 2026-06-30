@@ -31,6 +31,17 @@ The `aic8800` crate embeds the following blobs via `include_bytes!`
 | `fmacfw_patch_8800dc_u02.bin` | `aic8800DC/fmacfw_patch_8800dc_u02.bin` |
 | `fw_patch_8800dc_u02.bin` | `aic8800DC/fw_patch_8800dc_u02.bin` |
 | `fw_patch_table_8800dc_u02.bin` | `aic8800DC/fw_patch_table_8800dc_u02.bin` |
+| `fmacfw_patch_8800dc_h_u02.bin` | `aic8800DC/fmacfw_patch_8800dc_h_u02.bin` |
+| `fmacfw_patch_tbl_8800dc_h_u02.bin` | `aic8800DC/fmacfw_patch_tbl_8800dc_h_u02.bin` |
+| `fmacfw_calib_8800dc_h_u02.bin` | `aic8800DC/fmacfw_calib_8800dc_h_u02.bin` |
 | `fmacfw_8800d80_u02.bin` | `aic8800_and_aic8800D80/fmacfw_8800d80_u02.bin` |
 | `fw_patch_8800d80_u02.bin` | `aic8800_and_aic8800D80/fw_patch_8800d80_u02.bin` |
 | `fw_patch_table_8800d80_u02.bin` | `aic8800_and_aic8800D80/fw_patch_table_8800d80_u02.bin` |
+
+## AIC8800DC RF config tables
+
+The AIC8800DC LDPC / AGC / TX-gain tables (`FW_DC_LDPC_CFG`, `FW_DC_AGC_CFG`,
+`FW_DC_TXGAIN_MAP`, `FW_DC_TXGAIN_MAP_H`) are **not** firmware images and have no
+upstream firmware mirror — they are little-endian `u32` arrays from the vendor
+BSP source `aic8800dc_compat.c`, inlined as Rust byte arrays in
+`src/fw/firmware/dc_rf_cfg.rs`, so no `.bin` blob is kept here for them.

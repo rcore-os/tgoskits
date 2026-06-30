@@ -264,11 +264,32 @@ fn copy_template(src: &Path, dst: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
+fn copy_build_template(src: &Path, dst: &Path) -> anyhow::Result<()> {
+    copy_template(src, dst)?;
+    copy_companion_its(src, dst)
+}
+
+fn copy_companion_its(src: &Path, dst: &Path) -> anyhow::Result<()> {
+    let src_its = src.with_extension("its");
+    if !src_its.exists() {
+        return Ok(());
+    }
+    let dst_its = dst.with_extension("its");
+    fs::copy(&src_its, &dst_its).with_context(|| {
+        format!(
+            "failed to copy {} to {}",
+            src_its.display(),
+            dst_its.display()
+        )
+    })?;
+    Ok(())
+}
+
 pub fn refresh_qemu_build_config(
     workspace_root: &Path,
     platform: QuickQemuPlatform,
 ) -> anyhow::Result<()> {
-    copy_template(
+    copy_build_template(
         &qemu_build_config_path(workspace_root, platform),
         &tmp_qemu_build_config_path(workspace_root, platform),
     )?;
@@ -287,7 +308,7 @@ pub fn ensure_qemu_build_config(
 }
 
 pub fn refresh_orangepi_configs(workspace_root: &Path) -> anyhow::Result<()> {
-    copy_template(
+    copy_build_template(
         &orangepi_build_config_path(workspace_root),
         &tmp_orangepi_build_config_path(workspace_root),
     )?;
@@ -299,7 +320,7 @@ pub fn refresh_orangepi_configs(workspace_root: &Path) -> anyhow::Result<()> {
 }
 
 pub fn refresh_sg2002_config(workspace_root: &Path) -> anyhow::Result<()> {
-    copy_template(
+    copy_build_template(
         &sg2002_build_config_path(workspace_root),
         &tmp_sg2002_build_config_path(workspace_root),
     )?;
@@ -313,7 +334,7 @@ pub fn refresh_sg2002_config(workspace_root: &Path) -> anyhow::Result<()> {
 pub fn ensure_sg2002_config(workspace_root: &Path) -> anyhow::Result<()> {
     let build_cfg = tmp_sg2002_build_config_path(workspace_root);
     if !build_cfg.exists() {
-        copy_template(&sg2002_build_config_path(workspace_root), &build_cfg)?;
+        copy_build_template(&sg2002_build_config_path(workspace_root), &build_cfg)?;
     }
     let run_cfg = tmp_sg2002_uboot_config_path(workspace_root);
     if !run_cfg.exists() {
@@ -326,7 +347,7 @@ pub fn ensure_orangepi_configs(workspace_root: &Path) -> anyhow::Result<()> {
     let build_cfg = tmp_orangepi_build_config_path(workspace_root);
     let run_cfg = tmp_orangepi_uboot_config_path(workspace_root);
     if !build_cfg.exists() {
-        copy_template(&orangepi_build_config_path(workspace_root), &build_cfg)?;
+        copy_build_template(&orangepi_build_config_path(workspace_root), &build_cfg)?;
     }
     if !run_cfg.exists() {
         copy_template(&orangepi_uboot_config_path(workspace_root), &run_cfg)?;
@@ -477,6 +498,17 @@ mod tests {
         .unwrap();
     }
 
+    fn write_sg2002_build_template(root: &Path) {
+        let path = sg2002_build_config_path(root);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(
+            &path,
+            "target = \"riscv64gc-unknown-none-elf\"\nfeatures = [\"sg2002\"]\nlog = \"Info\"\n",
+        )
+        .unwrap();
+        fs::write(path.with_extension("its"), "ITS_TEMPLATE").unwrap();
+    }
+
     #[test]
     fn prepare_orangepi_uboot_config_keeps_existing_tmp_without_overrides() {
         let root = tempdir().unwrap();
@@ -555,5 +587,35 @@ mod tests {
         assert_eq!(value["kernel_load_addr"].as_str(), Some("0x80200000"));
         assert_eq!(value["fit_load_addr"].as_str(), Some("0x82200000"));
         assert_eq!(value["dtb_file"].as_str(), Some("sg2002.dtb"));
+    }
+
+    #[test]
+    fn refresh_sg2002_config_copies_companion_its() {
+        let root = tempdir().unwrap();
+        write_sg2002_build_template(root.path());
+        write_sg2002_uboot_template(root.path());
+
+        refresh_sg2002_config(root.path()).unwrap();
+
+        assert_eq!(
+            fs::read_to_string(tmp_sg2002_build_config_path(root.path()).with_extension("its"))
+                .unwrap(),
+            "ITS_TEMPLATE"
+        );
+    }
+
+    #[test]
+    fn ensure_sg2002_config_copies_companion_its_for_missing_tmp_build_config() {
+        let root = tempdir().unwrap();
+        write_sg2002_build_template(root.path());
+        write_sg2002_uboot_template(root.path());
+
+        ensure_sg2002_config(root.path()).unwrap();
+
+        assert_eq!(
+            fs::read_to_string(tmp_sg2002_build_config_path(root.path()).with_extension("its"))
+                .unwrap(),
+            "ITS_TEMPLATE"
+        );
     }
 }

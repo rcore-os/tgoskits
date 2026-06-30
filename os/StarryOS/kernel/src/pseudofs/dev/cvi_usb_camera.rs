@@ -1,12 +1,8 @@
 use core::{any::Any, time::Duration};
 
-use ax_config::plat::PHYS_VIRT_OFFSET;
 use ax_errno::AxError;
 use ax_memory_addr::{PhysAddr, VirtAddr};
-use ax_runtime::hal::{
-    mem::{phys_to_virt, virt_to_phys},
-    time::busy_wait,
-};
+use ax_runtime::hal::{mem::virt_to_phys, time::busy_wait};
 use ax_sync::Mutex;
 use axfs_ng_vfs::{NodeFlags, VfsResult};
 use sg200x_bsp::{
@@ -32,6 +28,24 @@ const IOBLK_G1_USB_VBUS_DET_OFF: usize = 0x020;
 
 const VBUS_GPIO_PIN: u8 = 6;
 const VBUS_GPIO_ACTIVE_HIGH: bool = true;
+
+/// MMIO span of the TOP control block. The PHY ID-pad reset register lives at
+/// `TOP_BASE + 0x3000`, so a single 4K page is not enough — map four pages.
+const TOP_MMIO_SIZE: usize = 0x4000;
+/// MMIO span for the single-page register blocks (CLKGEN, FMUX, IOBLK, GRTC,
+/// GPIO, DWC2 controller, USB2 PHY). Each block's registers fit within one 4K
+/// page; FMUX/IOBLK share a page so their mappings coincide (idempotent).
+const REG_MMIO_SIZE: usize = 0x1000;
+
+/// Map a physical MMIO region into the kernel address space and return its
+/// virtual base. Unlike `phys_to_virt`, this works on dynamic platforms where
+/// `PHYS_VIRT_OFFSET == 0` and there is no static linear MMIO window — `iomap`
+/// installs a real device mapping and is idempotent for already-mapped pages.
+fn iomap_usize(paddr: usize, size: usize) -> usize {
+    ax_mm::iomap(PhysAddr::from_usize(paddr), size)
+        .unwrap_or_else(|err| panic!("failed to iomap MMIO at {paddr:#x}+{size:#x}: {err:?}"))
+        .as_usize()
+}
 
 const CAMERA_FORMAT_MJPEG: u8 = 1;
 const MIN_VALID_JPEG_BYTES: usize = 4096;
@@ -70,7 +84,7 @@ fn ep0_dma_virt_to_phys(p: *const u8) -> u32 {
 }
 
 unsafe fn enable_usb_clocks_cv181x() {
-    let b = phys_to_virt(PhysAddr::from_usize(CLKGEN_BASE)).as_usize();
+    let b = iomap_usize(CLKGEN_BASE, REG_MMIO_SIZE);
     let en1 = (b + 0x004) as *mut u32;
     let en2 = (b + 0x008) as *mut u32;
     let byp0 = (b + 0x030) as *mut u32;
@@ -86,7 +100,7 @@ unsafe fn enable_usb_clocks_cv181x() {
 
 /// PHY ID pad toggle workaround: switch to device mode first, then host mode.
 unsafe fn cvitek_usb_top_host_bringup() {
-    let top = phys_to_virt(PhysAddr::from_usize(TOP_BASE)).as_usize();
+    let top = iomap_usize(TOP_BASE, TOP_MMIO_SIZE);
     let rst = (top + 0x3000) as *mut u32;
     unsafe {
         let v = core::ptr::read_volatile(rst);
@@ -110,19 +124,15 @@ unsafe fn cvitek_usb_top_host_bringup() {
 }
 
 fn pinmux_usb_vbus_det_gpio_output_prep() {
-    let pinmux = unsafe {
-        Pinmux::new(
-            FMUX_BASE + PHYS_VIRT_OFFSET,
-            IOBLK_BASE + PHYS_VIRT_OFFSET,
-            IOBLK_GRTC_BASE + PHYS_VIRT_OFFSET,
-        )
-    };
+    let fmux_vaddr = iomap_usize(FMUX_BASE, REG_MMIO_SIZE);
+    let ioblk_vaddr = iomap_usize(IOBLK_BASE, REG_MMIO_SIZE);
+    let ioblk_grtc_vaddr = iomap_usize(IOBLK_GRTC_BASE, REG_MMIO_SIZE);
+    let pinmux = unsafe { Pinmux::new(fmux_vaddr, ioblk_vaddr, ioblk_grtc_vaddr) };
     pinmux
         .fmux()
         .usb_vbus_det
         .write(FMUX_USB_VBUS_DET::FSEL::XGPIOB_6);
-    let iob = phys_to_virt(PhysAddr::from_usize(IOBLK_BASE)).as_usize();
-    let r = (iob + IOBLK_G1_USB_VBUS_DET_OFF) as *mut u32;
+    let r = (ioblk_vaddr + IOBLK_G1_USB_VBUS_DET_OFF) as *mut u32;
     unsafe {
         let v = core::ptr::read_volatile(r);
         core::ptr::write_volatile(r, v | (7 << 5));
@@ -130,7 +140,7 @@ fn pinmux_usb_vbus_det_gpio_output_prep() {
 }
 
 fn enable_usb_vbus_gpio() {
-    let gpio = unsafe { GPIO::new(GPIO1_BASE + PHYS_VIRT_OFFSET) };
+    let gpio = unsafe { GPIO::new(iomap_usize(GPIO1_BASE, REG_MMIO_SIZE)) };
     gpio.pin(VBUS_GPIO_PIN).set_direction(Direction::Output);
     gpio.pin(VBUS_GPIO_PIN).set(VBUS_GPIO_ACTIVE_HIGH);
 }
@@ -151,8 +161,8 @@ fn init_usb_camera() -> Result<UsbCameraSession, &'static str> {
     enable_usb_vbus_gpio();
     ax_task::sleep(Duration::from_micros(2_000_000));
 
-    usb::set_dwc2_base_virt(DWC2_BASE + PHYS_VIRT_OFFSET);
-    usb::set_cv182x_phy_base_virt(CV182X_USB2_PHY_BASE + PHYS_VIRT_OFFSET);
+    usb::set_dwc2_base_virt(iomap_usize(DWC2_BASE, REG_MMIO_SIZE));
+    usb::set_cv182x_phy_base_virt(iomap_usize(CV182X_USB2_PHY_BASE, REG_MMIO_SIZE));
     usb::set_usb_dma_to_phys_fn(Some(ep0_dma_virt_to_phys));
 
     unsafe {

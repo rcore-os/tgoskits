@@ -2,7 +2,10 @@ use core::{num::NonZeroU32, ptr::NonNull};
 
 use ax_kspin::SpinNoIrq;
 use ax_plat::{
-    irq::{IpiTarget, IrqIf, dispatch_irq},
+    irq::{
+        CPU_LOCAL_IRQ_DOMAIN, HwIrq, IpiTarget, IrqDomainId, IrqError, IrqId, IrqIf, IrqSource,
+        RISCV_PLIC_DOMAIN, TrapVector, dispatch_irq,
+    },
     percpu::this_cpu_id,
 };
 use ax_riscv_plic::Plic;
@@ -24,6 +27,12 @@ pub(super) const S_TIMER: usize = INTC_IRQ_BASE + 5;
 /// Supervisor external interrupt in `scause`
 pub(super) const S_EXT: usize = INTC_IRQ_BASE + 9;
 
+const PLIC_DOMAIN: IrqDomainId = RISCV_PLIC_DOMAIN;
+
+fn cpu_local_irq(cause: usize) -> IrqId {
+    IrqId::new(CPU_LOCAL_IRQ_DOMAIN, HwIrq((cause & !INTC_IRQ_BASE) as u32))
+}
+
 static PLIC: SpinNoIrq<Plic> = SpinNoIrq::new(unsafe {
     Plic::new(NonNull::new((PHYS_VIRT_OFFSET + PLIC_PADDR) as *mut _).unwrap())
 });
@@ -34,13 +43,13 @@ fn this_context() -> usize {
 }
 
 pub(super) fn init_percpu() {
+    PLIC.lock().reset_context(this_context());
     // enable soft interrupts, timer interrupts, and external interrupts
     unsafe {
         sie::set_ssoft();
         sie::set_stimer();
         sie::set_sext();
     }
-    PLIC.lock().init_by_context(this_context());
 }
 
 macro_rules! with_cause {
@@ -73,53 +82,65 @@ struct IrqIfImpl;
 #[impl_plat_interface]
 impl IrqIf for IrqIfImpl {
     /// Enables or disables the given IRQ.
-    fn set_enable(irq: usize, enabled: bool) {
-        with_cause!(
-            irq,
-            @S_TIMER => {
-                unsafe {
+    fn set_enable(irq: IrqId, enabled: bool) -> Result<(), IrqError> {
+        if irq.domain == CPU_LOCAL_IRQ_DOMAIN {
+            match irq.hwirq.0 as usize {
+                5 => unsafe {
                     if enabled {
                         sie::set_stimer();
                     } else {
                         sie::clear_stimer();
                     }
-                }
-            },
-            @S_SOFT => {},
-            @S_EXT => {},
-            @EX_IRQ => {
-                let Some(irq) = NonZeroU32::new(irq as _) else {
-                    return;
-                };
-                trace!("PLIC set enable: {irq} {enabled}");
-                let mut plic = PLIC.lock();
-                if enabled {
-                    plic.set_priority(irq, 6);
-                    plic.enable(irq, this_context());
-                } else {
-                    plic.disable(irq, this_context());
-                }
+                    Ok(())
+                },
+                1 => Ok(()),
+                _ => Err(IrqError::InvalidIrq),
             }
-        );
+        } else if irq.domain == PLIC_DOMAIN {
+            let Some(irq) = NonZeroU32::new(irq.hwirq.0) else {
+                return Err(IrqError::InvalidIrq);
+            };
+            trace!("PLIC set enable: {irq} {enabled}");
+            let mut plic = PLIC.lock();
+            if enabled {
+                plic.set_priority(irq, 6);
+                plic.enable(irq, this_context());
+            } else {
+                plic.disable(irq, this_context());
+            }
+            Ok(())
+        } else {
+            Err(IrqError::InvalidIrq)
+        }
+    }
+
+    fn set_affinity(
+        _irq: IrqId,
+        _affinity: ax_plat::irq::IrqAffinity,
+    ) -> Result<(), ax_plat::irq::IrqError> {
+        Err(ax_plat::irq::IrqError::Unsupported)
     }
 
     /// Handles the IRQ.
-    fn handle(irq: usize) -> Option<usize> {
+    fn handle(vector: TrapVector) -> Option<IrqId> {
+        let irq = vector.0;
         with_cause!(
             irq,
             @S_TIMER => {
                 trace!("IRQ: timer");
-                if !dispatch_irq(irq).handled {
+                let irq_id = cpu_local_irq(irq);
+                if !dispatch_irq(irq_id).handled {
                     warn!("Unhandled IRQ: timer");
                 }
-                Some(irq)
+                Some(irq_id)
             },
             @S_SOFT => {
                 trace!("IRQ: IPI");
-                if !dispatch_irq(irq).handled {
+                let irq_id = cpu_local_irq(irq);
+                if !dispatch_irq(irq_id).handled {
                     warn!("Unhandled IRQ: IPI");
                 }
-                Some(irq)
+                Some(irq_id)
             },
             @S_EXT => {
                 let mut plic = PLIC.lock();
@@ -129,11 +150,12 @@ impl IrqIf for IrqIfImpl {
                 };
                 trace!("IRQ: external {irq}");
                 drop(plic);
-                if !dispatch_irq(irq.get() as usize).handled {
+                let irq_id = IrqId::new(PLIC_DOMAIN, HwIrq(irq.get()));
+                if !dispatch_irq(irq_id).handled {
                     debug!("Unhandled external IRQ {irq}");
                 }
                 PLIC.lock().complete(this_context(), irq);
-                Some(irq.get() as usize)
+                Some(irq_id)
             },
             @EX_IRQ => {
                 unreachable!("Device-side IRQs should be handled by triggering the External Interrupt.");
@@ -142,7 +164,7 @@ impl IrqIf for IrqIfImpl {
     }
 
     /// Sends an inter-processor interrupt (IPI) to the specified target CPU or all CPUs.
-    fn send_ipi(_irq_num: usize, target: IpiTarget) {
+    fn send_ipi(_irq_num: IrqId, target: IpiTarget) {
         match target {
             IpiTarget::Current { cpu_id } => {
                 let res = sbi_rt::send_ipi(HartMask::from_mask_base(1 << cpu_id, 0));
@@ -167,5 +189,23 @@ impl IrqIf for IrqIfImpl {
                 }
             }
         }
+    }
+
+    fn ipi_irq() -> IrqId {
+        cpu_local_irq(S_SOFT)
+    }
+
+    fn resolve_source(source: IrqSource) -> Result<IrqId, IrqError> {
+        match source {
+            IrqSource::ControllerLine { domain, hwirq } if domain == PLIC_DOMAIN => {
+                Ok(IrqId::new(domain, hwirq))
+            }
+            IrqSource::ControllerLine { .. } => Err(IrqError::InvalidIrq),
+            IrqSource::AcpiGsi(_) | IrqSource::AcpiGsiRoute(_) => Err(IrqError::Unsupported),
+        }
+    }
+
+    fn resolve_percpu(hwirq: HwIrq) -> Result<IrqId, IrqError> {
+        Ok(IrqId::new(CPU_LOCAL_IRQ_DOMAIN, hwirq))
     }
 }

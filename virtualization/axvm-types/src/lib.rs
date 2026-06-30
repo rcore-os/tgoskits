@@ -185,6 +185,16 @@ pub struct PassThroughAddressConfig {
     pub length: usize,
 }
 
+/// A part of `AxVMConfig`, which represents a host I/O port range passed through
+/// to a virtual machine.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct PassThroughPortConfig {
+    /// The first host I/O port number.
+    pub base: u16,
+    /// The number of ports in this range.
+    pub length: u16,
+}
+
 /// Describes how a guest VM should enter its boot image.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub enum VMBootProtocol {
@@ -232,6 +242,8 @@ pub enum EmulatedDeviceType {
     InterruptController = 0x1,
     /// Console (serial) device.
     Console             = 0x2,
+    /// QEMU fw_cfg MMIO device.
+    FwCfg               = 0x3,
     /// An emulated device that provides Inter-VM Communication (IVC) channel.
     ///
     /// This device is used for communication between different VMs,
@@ -253,6 +265,8 @@ pub enum EmulatedDeviceType {
     X86IoApic           = 0x23,
     /// x86 virtual PIT/8254 timer device.
     X86Pit              = 0x24,
+    /// LoongArch virtual PCH-PIC device.
+    LoongArchPchPic     = 0x25,
 
     // 0x30: PPPT (PLIC Partial Passthrough) devices.
     /// RISC-V PLIC Partial Passthrough Global device.
@@ -280,6 +294,7 @@ impl Display for EmulatedDeviceType {
     fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
         match self {
             EmulatedDeviceType::Console => write!(f, "console"),
+            EmulatedDeviceType::FwCfg => write!(f, "fw_cfg"),
             EmulatedDeviceType::InterruptController => write!(f, "interrupt controller"),
             EmulatedDeviceType::GPPTRedistributor => {
                 write!(f, "gic partial passthrough redistributor")
@@ -288,6 +303,7 @@ impl Display for EmulatedDeviceType {
             EmulatedDeviceType::GPPTITS => write!(f, "gic partial passthrough its"),
             EmulatedDeviceType::X86IoApic => write!(f, "x86 io apic"),
             EmulatedDeviceType::X86Pit => write!(f, "x86 pit"),
+            EmulatedDeviceType::LoongArchPchPic => write!(f, "loongarch pch pic"),
             EmulatedDeviceType::PPPTGlobal => write!(f, "plic partial passthrough global"),
             // EmulatedDeviceType::IOMMU => write!(f, "iommu"),
             // EmulatedDeviceType::ICCSRE => write!(f, "interrupt icc sre"),
@@ -304,16 +320,18 @@ impl Display for EmulatedDeviceType {
 
 impl EmulatedDeviceType {
     /// All known emulated device types.
-    pub const ALL: [Self; 13] = [
+    pub const ALL: [Self; 15] = [
         EmulatedDeviceType::Dummy,
         EmulatedDeviceType::InterruptController,
         EmulatedDeviceType::Console,
+        EmulatedDeviceType::FwCfg,
         EmulatedDeviceType::IVCChannel,
         EmulatedDeviceType::GPPTRedistributor,
         EmulatedDeviceType::GPPTDistributor,
         EmulatedDeviceType::GPPTITS,
         EmulatedDeviceType::X86IoApic,
         EmulatedDeviceType::X86Pit,
+        EmulatedDeviceType::LoongArchPchPic,
         EmulatedDeviceType::PPPTGlobal,
         EmulatedDeviceType::VirtioBlk,
         EmulatedDeviceType::VirtioNet,
@@ -348,12 +366,14 @@ impl EmulatedDeviceType {
             0x0 => Some(EmulatedDeviceType::Dummy),
             0x1 => Some(EmulatedDeviceType::InterruptController),
             0x2 => Some(EmulatedDeviceType::Console),
+            0x3 => Some(EmulatedDeviceType::FwCfg),
             0xA => Some(EmulatedDeviceType::IVCChannel),
             0x20 => Some(EmulatedDeviceType::GPPTRedistributor),
             0x21 => Some(EmulatedDeviceType::GPPTDistributor),
             0x22 => Some(EmulatedDeviceType::GPPTITS),
             0x23 => Some(EmulatedDeviceType::X86IoApic),
             0x24 => Some(EmulatedDeviceType::X86Pit),
+            0x25 => Some(EmulatedDeviceType::LoongArchPchPic),
             0x30 => Some(EmulatedDeviceType::PPPTGlobal),
             0xE1 => Some(EmulatedDeviceType::VirtioBlk),
             0xE2 => Some(EmulatedDeviceType::VirtioNet),

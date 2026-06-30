@@ -50,4 +50,3 @@ k230 = [
 plat-dyn = ["dep:axplat-dyn", "starry-kernel/plat-dyn"]
 
 rknpu = ["ax-driver/rknpu", "starry-kernel/rknpu"]
-vf2 = ["ax-hal/riscv64-visionfive2"]

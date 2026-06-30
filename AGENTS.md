@@ -10,6 +10,8 @@
 - Use `cross-kernel-driver` when the user wants to create, refactor, review, or optimize portable Rust driver crates under `drivers/` by device type, separate Driver Core / Capability Boundary / OS Glue / Runtime layers, handle MMIO/iomap with `mmio-api`, handle DMA with `dma-api`, design IRQ event or queue contracts, or audit OS API coupling in driver code.
 - `review-open-prs`: project-local skill at `.claude/skills/review-open-prs/SKILL.md`
 - Use `review-open-prs` when the user wants to audit all open GitHub PRs, review non-self PRs, re-review PRs updated after their last review, use subagents/worktrees for PR review, compare changes with POSIX/Linux/RFC/VirtIO semantics, run local validation, and submit approve or request-changes reviews.
+- `resolve-github-issue`: project-local skill at `.claude/skills/resolve-github-issue/SKILL.md`
+- Use `resolve-github-issue` when the user wants to inspect the latest or a specified GitHub issue, analyze and fix the root cause instead of loosening tests, use subagents for issue investigation or patch review, add deterministic regression coverage, validate the original failing command, submit a PR, or include `Fixes #<issue>` so merging closes the issue.
 - `review-single-pr`: project-local skill at `.claude/skills/review-single-pr/SKILL.md`
 - Use `review-single-pr` when the user names one PR number or URL and wants a focused review, re-review, duplicate or overlapping open-PR analysis, Starry app-support test placement checks, merge-conflict handling for otherwise approvable PRs, Linux/POSIX/RFC/VirtIO comparison, local validation, Chinese inline review comments, approval, request-changes submission, or post-review reviewer assignment.
 - `reassign-pr-reviewers`: project-local skill at `.claude/skills/reassign-pr-reviewers/SKILL.md`
@@ -29,6 +31,7 @@
 - After modifying a crate, ensure that crate passes clippy. Prefer `cargo xtask clippy --package <crate>` for targeted verification.
 - Do not silence clippy warnings with `allow` as a shortcut; prefer fixing the root cause unless the user explicitly asks otherwise.
 - Run `cargo fmt` after code edits.
+- When fixing a bug, first add a deterministic regression test that necessarily fails on the buggy implementation, verify the failure, then implement or restore the fix and verify the same test passes. Do not rely only on post-fix validation, probabilistic reproducers, or relaxed tests.
 - For ArceOS, StarryOS, and Axvisor builds/tests/runs, prefer the `cargo xtask` command family instead of raw `cargo build`, `cargo test`, or `cargo run`.
 - If `cargo xtask` cannot satisfy a special configuration, inspect the `xtask` flow first and only then fall back to native Cargo commands with manually matched arguments.
 - When resolving rebase or merge conflicts, do not manually merge conflicted `Cargo.lock` contents. Resolve all other conflicts first, then regenerate `Cargo.lock` with Cargo and verify the generated lockfile.

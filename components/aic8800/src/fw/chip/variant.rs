@@ -16,6 +16,8 @@ pub const ROM_FMAC_FW_ADDR: u32 = 0x0001_0000;
 pub const RAM_FMAC_FW_PATCH_ADDR: u32 = 0x0019_0000;
 /// ROM FMAC 固件补丁地址 (AIC8800DC)
 pub const ROM_FMAC_PATCH_ADDR: u32 = 0x0018_0000;
+/// ROM FMAC 校准固件加载地址 (AIC8800DC DPD calib)
+pub const ROM_FMAC_CALIB_ADDR: u32 = 0x0013_0000;
 
 // ============================================================
 // 固件上传常量

@@ -15,7 +15,7 @@
 //! stack owners.
 
 use core::{
-    sync::atomic::{AtomicBool, AtomicI32, AtomicU32, AtomicU64, Ordering},
+    sync::atomic::{AtomicBool, AtomicI32, AtomicU8, AtomicU32, AtomicU64, Ordering},
     task::Waker,
     time::Duration,
 };
@@ -29,6 +29,9 @@ use crate::{
     get_service, interface_by_id,
     options::{Configurable, GetSocketOption, SetSocketOption},
 };
+
+const SO_PRIORITY_UNPRIVILEGED_MAX: i32 = 6;
+const IP_TOS_ECN_MASK: u8 = 0x03;
 
 /// General options for all sockets.
 pub(crate) struct GeneralOptions {
@@ -44,6 +47,16 @@ pub(crate) struct GeneralOptions {
 
     /// Bound interface id encoded as zero for "not bound".
     bound_if: AtomicU32,
+
+    /// IP_TOS value used by protocol sockets when marking outgoing packets.
+    ip_tos: AtomicU8,
+    /// Whether recvmsg should report IPv4 TOS as IP_TOS ancillary data.
+    recv_tos: AtomicBool,
+    /// Whether recvmsg should report IPv6 traffic class as IPV6_TCLASS ancillary data.
+    recv_traffic_class: AtomicBool,
+    /// SO_PRIORITY value. ax-net stores it for Linux compatibility; packet
+    /// queue scheduling is not modeled yet.
+    priority: AtomicI32,
 
     /// Socket type: SOCK_STREAM (1), SOCK_DGRAM (2), SOCK_RAW (3).
     socket_type: AtomicI32,
@@ -66,6 +79,11 @@ impl GeneralOptions {
             recv_timeout_nanos: AtomicU64::new(0),
 
             bound_if: AtomicU32::new(0),
+
+            ip_tos: AtomicU8::new(0),
+            recv_tos: AtomicBool::new(false),
+            recv_traffic_class: AtomicBool::new(false),
+            priority: AtomicI32::new(0),
 
             socket_type: AtomicI32::new(socket_type),
             domain,
@@ -109,6 +127,50 @@ impl GeneralOptions {
         DeviceBinding {
             bound_if: (raw != 0).then_some(InterfaceId::new(raw)),
         }
+    }
+
+    /// Returns the IPv4 TOS / IPv6 traffic-class byte configured on this socket.
+    pub fn ip_tos(&self) -> u8 {
+        self.ip_tos.load(Ordering::Relaxed)
+    }
+
+    /// Updates the IPv4 TOS / IPv6 traffic-class byte configured on this socket.
+    pub fn set_ip_tos(&self, tos: u8) {
+        self.ip_tos.store(tos & !IP_TOS_ECN_MASK, Ordering::Relaxed);
+    }
+
+    /// Returns whether IPv4 TOS ancillary data is enabled for receive calls.
+    pub fn recv_tos(&self) -> bool {
+        self.recv_tos.load(Ordering::Relaxed)
+    }
+
+    /// Updates whether IPv4 TOS ancillary data is enabled for receive calls.
+    pub fn set_recv_tos(&self, enabled: bool) {
+        self.recv_tos.store(enabled, Ordering::Relaxed);
+    }
+
+    /// Returns whether IPv6 traffic-class ancillary data is enabled for receive calls.
+    pub fn recv_traffic_class(&self) -> bool {
+        self.recv_traffic_class.load(Ordering::Relaxed)
+    }
+
+    /// Updates whether IPv6 traffic-class ancillary data is enabled for receive calls.
+    pub fn set_recv_traffic_class(&self, enabled: bool) {
+        self.recv_traffic_class.store(enabled, Ordering::Relaxed);
+    }
+
+    /// Returns the Linux SO_PRIORITY value configured on this socket.
+    pub fn priority(&self) -> i32 {
+        self.priority.load(Ordering::Relaxed)
+    }
+
+    /// Updates SO_PRIORITY using Linux's ordinary unprivileged range.
+    pub fn set_priority(&self, priority: i32) -> AxResult<()> {
+        if !(0..=SO_PRIORITY_UNPRIVILEGED_MAX).contains(&priority) {
+            return Err(AxError::from(LinuxError::EPERM));
+        }
+        self.priority.store(priority, Ordering::Relaxed);
+        Ok(())
     }
 
     /// Registers a waker with the service/device path for the bound interface.
@@ -197,6 +259,18 @@ impl Configurable for GeneralOptions {
             O::RecvErr(val) => {
                 **val = false;
             }
+            O::IpTos(tos) => {
+                **tos = self.ip_tos.load(Ordering::Relaxed);
+            }
+            O::RecvTos(enabled) => {
+                **enabled = self.recv_tos();
+            }
+            O::RecvTrafficClass(enabled) => {
+                **enabled = self.recv_traffic_class();
+            }
+            O::Priority(priority) => {
+                **priority = self.priority();
+            }
             O::SocketType(t) => {
                 **t = self.socket_type.load(Ordering::Relaxed);
             }
@@ -248,6 +322,18 @@ impl Configurable for GeneralOptions {
             O::RecvErr(_) => {
                 // TODO: Retrieve ICMP errors via errqueue
             }
+            O::IpTos(tos) => {
+                self.set_ip_tos(*tos);
+            }
+            O::RecvTos(enabled) => {
+                self.set_recv_tos(*enabled);
+            }
+            O::RecvTrafficClass(enabled) => {
+                self.set_recv_traffic_class(*enabled);
+            }
+            O::Priority(priority) => {
+                self.set_priority(*priority)?;
+            }
             O::SocketType(_) | O::SocketProtocol(_) | O::SocketDomain(_) => {
                 // Read-only options
                 return Err(AxError::from(LinuxError::ENOPROTOOPT));
@@ -280,5 +366,55 @@ mod tests {
 
         options.set_device_binding(DeviceBinding { bound_if: None });
         assert_eq!(options.device_binding(), DeviceBinding { bound_if: None });
+    }
+
+    #[test]
+    fn socket_priority_matches_unprivileged_linux_range() {
+        let options = GeneralOptions::new(1, 2, 6);
+
+        assert_eq!(options.priority(), 0);
+        options.set_priority(6).unwrap();
+        assert_eq!(options.priority(), 6);
+
+        assert_eq!(
+            options.set_priority(7).unwrap_err(),
+            AxError::from(LinuxError::EPERM)
+        );
+        assert_eq!(
+            options.set_priority(-1).unwrap_err(),
+            AxError::from(LinuxError::EPERM)
+        );
+        assert_eq!(options.priority(), 6);
+    }
+
+    #[test]
+    fn ip_tos_storage_masks_user_controlled_ecn_bits() {
+        let options = GeneralOptions::new(1, 2, 6);
+
+        options.set_ip_tos(0x2e);
+        assert_eq!(options.ip_tos(), 0x2c);
+
+        options.set_ip_tos(0xff);
+        assert_eq!(options.ip_tos(), 0xfc);
+    }
+
+    #[test]
+    fn receive_qos_metadata_toggles_are_independent() {
+        let options = GeneralOptions::new(2, 2, 17);
+
+        assert!(!options.recv_tos());
+        assert!(!options.recv_traffic_class());
+
+        options.set_recv_tos(true);
+        assert!(options.recv_tos());
+        assert!(!options.recv_traffic_class());
+
+        options.set_recv_traffic_class(true);
+        assert!(options.recv_tos());
+        assert!(options.recv_traffic_class());
+
+        options.set_recv_tos(false);
+        assert!(!options.recv_tos());
+        assert!(options.recv_traffic_class());
     }
 }

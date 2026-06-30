@@ -12,10 +12,10 @@ pub mod size_class;
 
 use core::{alloc::Layout, ptr::NonNull};
 
+use ax_kspin::SpinRaw as SpinMutex;
 use cache::{CacheDeallocResult, SlabCache};
 pub use page::SlabPageHeader;
 pub use size_class::SizeClass;
-use spin::Mutex as SpinMutex;
 
 use crate::error::{AllocError, AllocResult};
 

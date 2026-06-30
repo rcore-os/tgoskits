@@ -13,15 +13,6 @@ impl<const N: usize> ByteRing<N> {
         }
     }
 
-    pub(super) fn clear(&mut self) {
-        self.head = 0;
-        self.len = 0;
-    }
-
-    pub(super) fn is_empty(&self) -> bool {
-        self.len == 0
-    }
-
     pub(super) fn len(&self) -> usize {
         self.len
     }
@@ -73,6 +64,6 @@ mod tests {
         let mut out = [0; 4];
         assert_eq!(ring.drain_into(&mut out), 3);
         assert_eq!(&out[..3], &[1, 2, 3]);
-        assert!(ring.is_empty());
+        assert_eq!(ring.len(), 0);
     }
 }

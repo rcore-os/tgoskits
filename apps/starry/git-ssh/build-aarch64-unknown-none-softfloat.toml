@@ -1,0 +1,10 @@
+target = "aarch64-unknown-none-softfloat"
+log = "Warn"
+features = [
+  "qemu",
+  "ax-driver/virtio-blk",
+  "ax-driver/virtio-net",
+  "ax-driver/virtio-gpu",
+  "ax-driver/virtio-input",
+  "ax-driver/virtio-socket",
+]

@@ -2,13 +2,15 @@ use alloc::{boxed::Box, string::String};
 use core::sync::atomic::{AtomicBool, Ordering};
 
 use ax_errno::AxResult;
-use spin::RwLock;
+use ax_kspin::SpinRwLock as RwLock;
+use irq_framework::{IrqContext, IrqId};
 
 use crate::block::runtime::BlockIrqAction;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum BlockIrqOutcome {
     Handled,
+    Wake,
 }
 
 pub trait BlockIrqRegistration: Send + Sync {}
@@ -17,8 +19,8 @@ pub trait BlockIrqRegistrar: Send + Sync {
     fn register_shared(
         &self,
         name: String,
-        irq: usize,
-        action: BlockIrqAction,
+        irq: IrqId,
+        action: Box<dyn FnMut(IrqContext) -> BlockIrqOutcome + Send + 'static>,
     ) -> AxResult<Box<dyn BlockIrqRegistration>>;
 }
 
@@ -32,14 +34,16 @@ pub fn set_irq_registrar(registrar: &'static dyn BlockIrqRegistrar) {
 
 pub fn register_shared_block_irq(
     name: String,
-    irq: usize,
+    irq: IrqId,
     action: BlockIrqAction,
 ) -> AxResult<Box<dyn BlockIrqRegistration>> {
-    IRQ_REGISTRAR
+    let registrar = IRQ_REGISTRAR
         .read()
         .as_ref()
-        .ok_or(ax_errno::AxError::BadState)?
-        .register_shared(name, irq, action)
+        .copied()
+        .ok_or(ax_errno::AxError::BadState)?;
+    let mut action = action;
+    registrar.register_shared(name, irq, Box::new(move |_ctx| action.run()))
 }
 
 pub fn has_irq_registrar() -> bool {

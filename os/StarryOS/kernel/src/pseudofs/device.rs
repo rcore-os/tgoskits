@@ -31,6 +31,12 @@ pub enum DeviceMmap {
     /// [`LinearBackend`] so userspace can't observe freed memory if
     /// the device drops the buffer before munmap.
     Physical(PhysAddrRange, Option<Arc<dyn Any + Send + Sync>>),
+    /// Maps to cacheable physical RAM.
+    ///
+    /// This is for DMA buffers that are normal memory and whose driver/runtime
+    /// performs explicit cache maintenance around device access.
+    #[cfg(feature = "rknpu")]
+    PhysicalCached(PhysAddrRange, Option<Arc<dyn Any + Send + Sync>>),
     /// Maps to an already offset-resolved physical address range.
     ///
     /// This is for file descriptors whose mmap offset is a selector rather than

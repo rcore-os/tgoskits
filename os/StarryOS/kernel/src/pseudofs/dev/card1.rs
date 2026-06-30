@@ -2,13 +2,15 @@ use alloc::borrow::Cow;
 use core::{
     any::Any,
     convert::TryFrom,
-    ffi::{CStr, c_char, c_ulong},
+    ffi::CStr,
     mem,
     sync::atomic::{AtomicUsize, Ordering},
     task::Context,
 };
 
-use ax_driver::rknpu::{self, RknpuAction, RknpuMemCreate, RknpuMemMap, RknpuMemSync, RknpuSubmit};
+use ax_driver::rknpu::{
+    self, GemCachePolicy, RknpuAction, RknpuMemCreate, RknpuMemMap, RknpuMemSync, RknpuSubmit,
+};
 use ax_errno::{AxError, AxResult};
 use ax_memory_addr::PhysAddrRange;
 use ax_runtime::hal::{cpu::asm::user_copy, mem::virt_to_phys, time::monotonic_time_nanos};
@@ -16,12 +18,12 @@ use axfs_ng_vfs::{DeviceId, NodeFlags, VfsError, VfsResult};
 use axpoll::{IoEvents, Pollable};
 use linux_raw_sys::general::O_CLOEXEC;
 
-use super::rknpu_drm::DrmVersion;
+use super::drm::{DrmUnique, DrmVersion};
 use crate::{
     file::FileLike,
     pseudofs::{
         DeviceOps,
-        dev::rknpu_drm::{io_size, ioctl_nr, is_driver_ioctl},
+        dev::drm::{io_size, ioctl_nr, is_driver_ioctl},
         device::DeviceMmap,
     },
 };
@@ -58,17 +60,6 @@ static RKNPU_ACTION_LOG_COUNT: AtomicUsize = AtomicUsize::new(0);
 static RKNPU_MEM_CREATE_LOG_COUNT: AtomicUsize = AtomicUsize::new(0);
 static RKNPU_MEM_SYNC_LOG_COUNT: AtomicUsize = AtomicUsize::new(0);
 static RKNPU_SUBMIT_LOG_COUNT: AtomicUsize = AtomicUsize::new(0);
-
-/// DRM_IOCTL_VERSION ioctl argument type
-#[repr(C)]
-#[derive(Debug, Clone, Copy, Default)]
-pub struct DrmUnique {
-    /// Length of unique string identifier
-    pub unique_len: c_ulong,
-    /// Pointer to user-space buffer holding unique name for driver
-    /// instantiation
-    pub unique: *mut c_char,
-}
 
 /// RKNPU command types
 #[repr(u32)]
@@ -232,17 +223,32 @@ impl DeviceOps for Card1 {
             warn!("card1: mmap could not resolve handle {handle}");
             return DeviceMmap::None;
         };
-        DeviceMmap::Physical(exported.range, None)
+        exported.device_mmap_kind()
     }
 }
 
 struct ExportedGemBuffer {
     range: PhysAddrRange,
+    cache_policy: GemCachePolicy,
 }
 
 impl ExportedGemBuffer {
-    fn new(range: PhysAddrRange) -> Self {
-        Self { range }
+    fn new(range: PhysAddrRange, cache_policy: GemCachePolicy) -> Self {
+        Self {
+            range,
+            cache_policy,
+        }
+    }
+
+    fn device_mmap_kind(&self) -> DeviceMmap {
+        match self.cache_policy {
+            GemCachePolicy::Cacheable => DeviceMmap::PhysicalCached(self.range, None),
+            // Starry does not expose a write-combine PTE mode yet; keep it
+            // non-cacheable instead of accidentally upgrading it to cached.
+            GemCachePolicy::NonCacheable | GemCachePolicy::WriteCombine => {
+                DeviceMmap::Physical(self.range, None)
+            }
+        }
     }
 }
 
@@ -252,7 +258,7 @@ impl FileLike for ExportedGemBuffer {
     }
 
     fn device_mmap(&self, _offset: u64, _length: u64) -> AxResult<DeviceMmap> {
-        Ok(DeviceMmap::Physical(self.range, None))
+        Ok(self.device_mmap_kind())
     }
 }
 
@@ -277,13 +283,14 @@ fn map_handle_from_offset(offset: u64) -> Option<u32> {
 }
 
 fn exported_gem_buffer(handle: u32) -> AxResult<ExportedGemBuffer> {
-    let (obj_addr, size) = rknpu::obj_addr_and_size(handle)
+    let info = rknpu::buffer_info(handle)
         .map_err(map_rknpu_err)
         .map_err(|_| AxError::NotFound)?;
-    let paddr = virt_to_phys(obj_addr.into());
-    Ok(ExportedGemBuffer::new(PhysAddrRange::from_start_size(
-        paddr, size,
-    )))
+    let paddr = virt_to_phys(info.obj_addr.into());
+    Ok(ExportedGemBuffer::new(
+        PhysAddrRange::from_start_size(paddr, info.size),
+        info.cache_policy,
+    ))
 }
 
 fn map_rknpu_err(err: rknpu::Error) -> VfsError {
@@ -641,7 +648,7 @@ fn drm_prime_handle_to_fd_ioctl(data: &mut [u8]) -> VfsResult<usize> {
 /// similar to the Linux kernel implementation with proper error handling.
 unsafe fn drm_copy_field(
     buf: *mut u8,
-    buf_len: &mut c_ulong,
+    buf_len: &mut usize,
     value: *const u8,
 ) -> Result<(), VfsError> {
     // Handle NULL value case - same as kernel's WARN_ONCE check
@@ -705,7 +712,27 @@ mod tests {
     #[test]
     fn exported_buffer_reports_physical_device_mmap() {
         let range = PhysAddrRange::from_start_size(0x1234_5000.into(), 0x4000);
-        let exported = ExportedGemBuffer::new(range);
+        let exported = ExportedGemBuffer::new(range, GemCachePolicy::Cacheable);
+
+        assert!(
+            matches!(exported.device_mmap(0, 0).unwrap(), DeviceMmap::PhysicalCached(actual, None) if actual == range)
+        );
+    }
+
+    #[test]
+    fn exported_buffer_defaults_to_uncached_device_mmap() {
+        let range = PhysAddrRange::from_start_size(0x1234_5000.into(), 0x4000);
+        let exported = ExportedGemBuffer::new(range, GemCachePolicy::NonCacheable);
+
+        assert!(
+            matches!(exported.device_mmap(0, 0).unwrap(), DeviceMmap::Physical(actual, None) if actual == range)
+        );
+    }
+
+    #[test]
+    fn exported_buffer_maps_write_combine_as_uncached_without_wc_pte_support() {
+        let range = PhysAddrRange::from_start_size(0x1234_5000.into(), 0x4000);
+        let exported = ExportedGemBuffer::new(range, GemCachePolicy::WriteCombine);
 
         assert!(
             matches!(exported.device_mmap(0, 0).unwrap(), DeviceMmap::Physical(actual, None) if actual == range)
@@ -727,7 +754,7 @@ pub fn drm_version(data: &mut [u8]) -> VfsResult<()> {
     unsafe {
         // Copy driver name
         let ret = drm_copy_field(
-            data.name.cast(),
+            data.name as *mut u8,
             &mut data.name_len,
             DRM1_NAME.as_ptr().cast(),
         );
@@ -740,7 +767,7 @@ pub fn drm_version(data: &mut [u8]) -> VfsResult<()> {
         let ret = drm_copy_field(
             data.date as *mut u8,
             &mut data.date_len,
-            DRM1_DATE.as_ptr() as *const u8,
+            DRM1_DATE.as_ptr().cast(),
         );
         if let Err(e) = ret {
             warn!("[drm_version] Failed to copy driver date: {:?}", e);
@@ -749,7 +776,7 @@ pub fn drm_version(data: &mut [u8]) -> VfsResult<()> {
 
         // Copy driver description
         let ret = drm_copy_field(
-            data.desc.cast(),
+            data.desc as *mut u8,
             &mut data.desc_len,
             DRM1_DESC.as_ptr().cast(),
         );

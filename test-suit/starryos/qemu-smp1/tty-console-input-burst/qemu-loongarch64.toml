@@ -1,0 +1,36 @@
+args = [
+    "-machine",
+    "virt",
+    "-cpu",
+    "la464",
+    "-nographic",
+    "-m",
+    "2G",
+    "-device",
+    "nvme,serial=deadbeef,drive=nvm",
+    "-drive",
+    "id=nvm,if=none,format=raw,file=${workspace}/tmp/axbuild/rootfs/rootfs-loongarch64-alpine.img",
+    "-device",
+    "virtio-net-pci,netdev=net0",
+    "-netdev",
+    "user,id=net0",
+    "-device",
+    "virtio-gpu-pci",
+    "-device",
+    "virtio-keyboard-pci",
+    "-device",
+    "virtio-tablet-pci",
+]
+uefi = false
+to_bin = true
+shell_prefix = "root@starry:"
+shell_init_cmd = "/usr/bin/tty-input-burst.sh"
+success_regex = ["(?m)^STARRY_TTY_INPUT_BURST_PASSED\\s*$"]
+fail_regex = [
+    "(?i)panic",
+    "(?m)^lockdep fatal violation\\s*$",
+    "/dev/console has no serial TTY binding",
+    "Failed to bind console tty",
+    "(?m)^STARRY_TTY_INPUT_BURST_FAILED",
+]
+timeout = 300

@@ -49,9 +49,6 @@
 //!         // Your implementation
 //!     }
 //!
-//!     fn dma_request_irq(irq: usize, handler: fn(usize)) {
-//!         // Your implementation
-//!     }
 //! }
 //!
 //! // Initialize the driver
@@ -137,7 +134,7 @@ pub use fxmac::*;
 // Re-exports for DMA operations
 pub use fxmac_dma::*;
 // Re-exports for interrupt handling
-pub use fxmac_intr::{FXmacIntrHandler, xmac_intr_handler};
+pub use fxmac_intr::FXmacIntrHandler;
 // Re-exports for PHY interface
 pub use fxmac_phy::{FXmacPhyInit, FXmacPhyRead, FXmacPhyWrite};
 
@@ -145,7 +142,7 @@ pub use fxmac_phy::{FXmacPhyInit, FXmacPhyRead, FXmacPhyWrite};
 ///
 /// This trait defines the platform-specific functions that must be implemented
 /// by the host system to support the FXMAC driver. These functions handle
-/// address translation, DMA memory management, and interrupt registration.
+/// address translation and DMA memory management.
 ///
 /// # Implementation Requirements
 ///
@@ -180,10 +177,6 @@ pub use fxmac_phy::{FXmacPhyInit, FXmacPhyRead, FXmacPhyWrite};
 ///         allocator.free_dma(vaddr, pages)
 ///     }
 ///
-///     fn dma_request_irq(irq: usize, handler: fn(usize)) {
-///         // Register interrupt handler for the specified IRQ
-///         interrupt_controller.register(irq, handler)
-///     }
 /// }
 /// ```
 #[ax_crate_interface::def_interface]
@@ -240,17 +233,6 @@ pub trait KernelFunc {
     /// * `vaddr` - The virtual address of the memory region to free.
     /// * `pages` - The number of pages to free.
     fn dma_free_coherent(vaddr: usize, pages: usize);
-
-    /// Registers an interrupt handler for DMA/network interrupts.
-    ///
-    /// This function should configure the interrupt controller to route
-    /// the specified IRQ to the provided handler function.
-    ///
-    /// # Arguments
-    ///
-    /// * `irq` - The IRQ number to register.
-    /// * `handler` - The interrupt handler function to call when the IRQ fires.
-    fn dma_request_irq(irq: usize, handler: fn(usize));
 }
 
 #[cfg(test)]

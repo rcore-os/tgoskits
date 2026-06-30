@@ -96,6 +96,8 @@ pub enum Error {
     Crc(ErrorContext),
     /// Card is not responding or not inserted.
     NoCard,
+    /// Host/controller currently has another active request.
+    Busy,
     /// Command index is not supported on this transport.
     UnsupportedCommand,
     /// Bad response received during the wrapped phase.
@@ -226,6 +228,7 @@ impl fmt::Display for Error {
             Self::Timeout(ctx) => write!(f, "timeout during {ctx}"),
             Self::Crc(ctx) => write!(f, "CRC mismatch during {ctx}"),
             Self::NoCard => f.write_str("no card present"),
+            Self::Busy => f.write_str("host controller is busy"),
             Self::UnsupportedCommand => f.write_str("command not supported by transport"),
             Self::BadResponse(ctx) => write!(f, "bad response during {ctx}"),
             Self::CardError(err) => write!(f, "card reported {err}"),

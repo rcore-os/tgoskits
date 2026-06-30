@@ -203,6 +203,21 @@ impl Process {
         self.tg.lock().group_exited
     }
 
+    /// Starts a process-wide exit if one is not already in progress.
+    ///
+    /// Returns a snapshot of the thread group at the point where the group-exit
+    /// state was first published. Later exiting threads must not overwrite the
+    /// recorded process exit code.
+    pub fn start_group_exit(&self, exit_code: i32) -> Option<Vec<Pid>> {
+        let mut tg = self.tg.lock();
+        if tg.group_exited {
+            return None;
+        }
+        tg.group_exited = true;
+        tg.exit_code = exit_code;
+        Some(tg.threads.iter().cloned().collect())
+    }
+
     /// Marks the [`Process`] as group exited.
     pub fn group_exit(&self) {
         self.tg.lock().group_exited = true;

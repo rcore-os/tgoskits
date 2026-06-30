@@ -94,6 +94,7 @@
 #define ARCH_RISCV 0
 #define ARCH_AARCH64 0
 #define ARCH_LOONGARCH 0
+#define ARCH_X86_64 0
 
 #if defined(__riscv)
 #undef ARCH_RISCV
@@ -207,6 +208,64 @@ typedef struct loongarch_user_fpregs arch_user_fpregs;
 #define PTRACE_GDB_REG_A7(r) ((r)->regs[11])
 #define PTRACE_GDB_REG_S0(r) ((r)->regs[23])
 
+#elif defined(__x86_64__)
+#undef ARCH_X86_64
+#define ARCH_X86_64 1
+struct x86_64_user_regs {
+    uint64_t r15;
+    uint64_t r14;
+    uint64_t r13;
+    uint64_t r12;
+    uint64_t rbp;
+    uint64_t rbx;
+    uint64_t r11;
+    uint64_t r10;
+    uint64_t r9;
+    uint64_t r8;
+    uint64_t rax;
+    uint64_t rcx;
+    uint64_t rdx;
+    uint64_t rsi;
+    uint64_t rdi;
+    uint64_t orig_rax;
+    uint64_t rip;
+    uint64_t cs;
+    uint64_t eflags;
+    uint64_t rsp;
+    uint64_t ss;
+    uint64_t fs_base;
+    uint64_t gs_base;
+    uint64_t ds;
+    uint64_t es;
+    uint64_t fs;
+    uint64_t gs;
+};
+typedef struct x86_64_user_regs arch_user_regs;
+
+struct x86_64_user_fpregs {
+    uint16_t fcw;
+    uint16_t fsw;
+    uint16_t ftw;
+    uint16_t fop;
+    uint64_t fip;
+    uint64_t fdp;
+    uint32_t mxcsr;
+    uint32_t mxcsr_mask;
+    uint64_t st[16];
+    uint64_t xmm[32];
+    uint64_t padding[12];
+};
+typedef struct x86_64_user_fpregs arch_user_fpregs;
+
+#define PTRACE_GDB_REG_PC(r) ((r)->rip)
+#define PTRACE_GDB_REG_SP(r) ((r)->rsp)
+#define PTRACE_GDB_REG_A0(r) ((r)->rax)
+#define PTRACE_GDB_REG_A1(r) ((r)->rdi)
+#define PTRACE_GDB_REG_A2(r) ((r)->rdx)
+#define PTRACE_GDB_REG_A3(r) ((r)->rcx)
+#define PTRACE_GDB_REG_A7(r) ((r)->orig_rax)
+#define PTRACE_GDB_REG_S0(r) ((r)->rbp)
+
 #else
 #error "test-ptrace-gdb needs an architecture register layout"
 #endif
@@ -219,6 +278,8 @@ static void fpregs_set_f0(arch_user_fpregs *regs, unsigned long value)
     regs->vregs[0] = (__uint128_t)value;
 #elif ARCH_LOONGARCH
     regs->fpr[0] = value;
+#elif ARCH_X86_64
+    regs->xmm[0] = value;
 #endif
 }
 
@@ -230,6 +291,8 @@ static void fpregs_set_f1(arch_user_fpregs *regs, unsigned long value)
     regs->vregs[1] = (__uint128_t)value;
 #elif ARCH_LOONGARCH
     regs->fpr[1] = value;
+#elif ARCH_X86_64
+    regs->xmm[2] = value;
 #endif
 }
 
@@ -241,6 +304,8 @@ static unsigned long fpregs_get_f0(const arch_user_fpregs *regs)
     return (unsigned long)regs->vregs[0];
 #elif ARCH_LOONGARCH
     return regs->fpr[0];
+#elif ARCH_X86_64
+    return regs->xmm[0];
 #endif
 }
 
@@ -252,6 +317,8 @@ static unsigned long fpregs_get_f1(const arch_user_fpregs *regs)
     return (unsigned long)regs->vregs[1];
 #elif ARCH_LOONGARCH
     return regs->fpr[1];
+#elif ARCH_X86_64
+    return regs->xmm[2];
 #endif
 }
 
@@ -264,6 +331,8 @@ static unsigned long read_f0_bits(void)
     __asm__ volatile("fmov %0, d0" : "=r"(f0_bits));
 #elif ARCH_LOONGARCH
     __asm__ volatile("movfr2gr.d %0, $f0" : "=r"(f0_bits));
+#elif ARCH_X86_64
+    __asm__ volatile("movq %%xmm0, %0" : "=r"(f0_bits));
 #endif
     return f0_bits;
 }
@@ -550,6 +619,13 @@ __attribute__((naked, noinline, aligned(4))) static void ss_jirl_landing(void)
     __asm__ volatile(
         "addi.d $a2, $zero, 666\n"
         "break 0\n");
+}
+#elif ARCH_X86_64
+__attribute__((naked, noinline, aligned(4))) static void ss_step_target(void)
+{
+    __asm__ volatile(
+        "mov $123, %rax\n"
+        "int3\n");
 }
 #endif
 
@@ -1323,6 +1399,9 @@ __attribute__((naked, noinline, aligned(4))) static void setregs_pc_landing(void
 #elif ARCH_LOONGARCH
         "addi.d $a2, $zero, 77\n"
         "break 0\n"
+#elif ARCH_X86_64
+        "mov $77, %rdx\n"
+        "int3\n"
 #else
         "mov x2, #77\n"
         "brk #0\n"
@@ -1631,6 +1710,9 @@ __attribute__((naked, noinline, aligned(4))) static void legacy_setregs_landing(
 #elif ARCH_LOONGARCH
         "addi.d $a2, $zero, 88\n"
         "break 0\n"
+#elif ARCH_X86_64
+        "mov $88, %rdx\n"
+        "int3\n"
 #else
         "mov x2, #88\n"
         "brk #0\n"
@@ -1695,7 +1777,7 @@ static int test_legacy_regsets(void)
     }
     waitpid(pid, &status, 0);
 
-#if !(ARCH_RISCV || ARCH_LOONGARCH)
+#if !(ARCH_RISCV || ARCH_LOONGARCH || ARCH_X86_64)
     printf("  ok: legacy GETREGS/SETREGS work; legacy FPREGS skipped on this arch\n");
     return 0;
 #else
@@ -1956,6 +2038,26 @@ static long raw_clone_thread(void *stack_top)
         : "r"(a1), "r"(a2), "r"(a3), "r"(a4), "r"(a7)
         : "memory");
     return a0;
+#elif ARCH_X86_64
+    register long rax __asm__("rax") = SYS_clone;
+    register long rdi __asm__("rdi") =
+        CLONE_VM | CLONE_FS | CLONE_FILES | CLONE_SIGHAND | CLONE_THREAD;
+    register long rsi __asm__("rsi") = (long)stack_top;
+    register long rdx __asm__("rdx") = 0;
+    register long r10 __asm__("r10") = 0;
+    register long r8 __asm__("r8") = 0;
+    __asm__ volatile(
+        "syscall\n"
+        "test %%rax, %%rax\n"
+        "jnz 1f\n"
+        "mov $60, %%rax\n"
+        "xor %%rdi, %%rdi\n"
+        "syscall\n"
+        "1:\n"
+        : "+r"(rax)
+        : "r"(rdi), "r"(rsi), "r"(rdx), "r"(r10), "r"(r8)
+        : "rcx", "r11", "memory");
+    return rax;
 #else
 #error "raw_clone_thread needs an architecture syscall sequence"
 #endif
@@ -1963,11 +2065,30 @@ static long raw_clone_thread(void *stack_top)
 
 static pid_t raw_clone_vfork_child_exit(void)
 {
+#if ARCH_X86_64
+    long rax = SYS_clone;
+    __asm__ volatile(
+        "xor %%r10d, %%r10d\n"
+        "xor %%r8d, %%r8d\n"
+        "xor %%r9d, %%r9d\n"
+        "syscall\n"
+        "test %%rax, %%rax\n"
+        "jnz 1f\n"
+        "mov $60, %%rax\n"
+        "xor %%rdi, %%rdi\n"
+        "syscall\n"
+        "1:\n"
+        : "+a"(rax)
+        : "D"((long)(CLONE_VM | CLONE_VFORK | SIGCHLD)), "S"(0L), "d"(0L)
+        : "rcx", "r8", "r9", "r10", "r11", "memory");
+    return (pid_t)rax;
+#else
     long ret = syscall(SYS_clone, CLONE_VM | CLONE_VFORK | SIGCHLD, 0, 0, 0, 0);
     if (ret == 0) {
         _exit(0);
     }
     return (pid_t)ret;
+#endif
 }
 
 static int test_traceclone_thread_event(void)

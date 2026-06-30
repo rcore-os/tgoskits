@@ -258,3 +258,72 @@ impl LowerHex for PortRange {
         write!(f, "{:#x}..={:#x}", self.start.0, self.end.0)
     }
 }
+
+// ---------------------------------------------------------------------------
+// Unified bus-access types
+// ---------------------------------------------------------------------------
+
+/// The kind of bus a device is connected to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BusKind {
+    /// Memory-mapped I/O bus.
+    Mmio,
+    /// Port I/O bus (x86 only).
+    Port,
+    /// System register bus (ARM only).
+    SysReg,
+}
+
+/// An access issued by a vCPU to a device on a bus.
+#[derive(Debug, Clone, Copy)]
+pub struct BusAccess {
+    /// The kind of bus being accessed.
+    pub kind: BusKind,
+    /// `true` if this is a read access; `false` for write.
+    pub is_read: bool,
+    /// The address being accessed.
+    pub addr: u64,
+    /// The width of the access.
+    pub width: AccessWidth,
+    /// The data to write (ignored for reads).
+    pub data: u64,
+}
+
+/// The result of a bus access dispatched to a device.
+#[derive(Debug, Clone, Copy)]
+pub enum BusResponse {
+    /// A read response with the value.
+    Read {
+        /// The value read from the device.
+        value: u64,
+    },
+    /// A write acknowledgment.
+    Write,
+}
+
+/// Errors that can occur during device access handling.
+#[derive(Debug, Clone)]
+pub enum DeviceError {
+    /// No device found at the requested address.
+    NotFound,
+    /// The access width does not match what the register expects.
+    InvalidWidth {
+        /// The width the register expects.
+        expected: AccessWidth,
+        /// The width that was used.
+        actual: AccessWidth,
+    },
+    /// Attempted to write to a read-only register.
+    ReadOnly,
+    /// Attempted to read from a write-only register.
+    WriteOnly,
+    /// The address is outside the device's range.
+    OutOfRange {
+        /// The address that was accessed.
+        addr: u64,
+    },
+    /// The requested functionality is not yet implemented.
+    Unimplemented,
+    /// An internal error occurred in the device implementation.
+    Internal,
+}

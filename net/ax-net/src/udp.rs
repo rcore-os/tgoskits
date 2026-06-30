@@ -24,7 +24,7 @@
 //! UDP send/recv operations request the shared net-poll worker after socket
 //! state changes. They do not run the interface poll loop directly.
 
-use alloc::{vec, vec::Vec};
+use alloc::{boxed::Box, vec, vec::Vec};
 use core::{
     net::{IpAddr, Ipv4Addr, SocketAddr},
     task::Context,
@@ -32,6 +32,7 @@ use core::{
 
 use ax_errno::{AxError, AxResult, ax_bail, ax_err_type};
 use ax_io::prelude::*;
+use ax_kspin::SpinRwLock as RwLock;
 use ax_sync::Mutex;
 use axpoll::{IoEvents, Pollable};
 use smoltcp::{
@@ -39,18 +40,21 @@ use smoltcp::{
     phy::PacketMeta,
     socket::udp::{self as smol, UdpMetadata},
     storage::PacketMetadata,
-    wire::{IpAddress, IpEndpoint, IpListenEndpoint},
+    wire::{IpAddress, IpEndpoint, IpListenEndpoint, IpProtocol},
 };
-use spin::RwLock;
 
 use crate::{
-    RecvFlags, RecvOptions, SOCKET_SET, SendFlags, SendOptions, Shutdown, SocketAddrEx, SocketOps,
+    IpCmsg, RecvFlags, RecvOptions, SOCKET_SET, SendFlags, SendOptions, Shutdown, SocketAddrEx,
+    SocketOps,
+    addr::allocate_ephemeral_port,
     config::{DeviceBinding, InterfaceId},
     consts::{UDP_RX_BUF_LEN, UDP_TX_BUF_LEN},
     general::GeneralOptions,
     get_control, interface_by_id,
+    ip_tos::{EgressIpTosKey, clear_egress_ip_tos, set_egress_ip_tos},
     options::{Configurable, GetSocketOption, SetSocketOption},
     request_poll,
+    rx_meta::{ReceivedTrafficClass, received_traffic_class},
 };
 
 /// Buffered state for MSG_MORE corking: captures the target endpoint
@@ -61,15 +65,6 @@ struct CorkState {
     buf: Vec<u8>,
     remote: IpEndpoint,
     source: IpAddress,
-}
-
-/// Allocates a smoltcp UDP socket with ax-net's default packet buffers.
-pub(crate) fn new_udp_socket() -> smol::Socket<'static> {
-    // TODO(mivik): buffer size
-    smol::Socket::new(
-        smol::PacketBuffer::new(vec![PacketMetadata::EMPTY; 256], vec![0; UDP_RX_BUF_LEN]),
-        smol::PacketBuffer::new(vec![PacketMetadata::EMPTY; 256], vec![0; UDP_TX_BUF_LEN]),
-    )
 }
 
 /// A UDP socket that provides POSIX-like APIs.
@@ -83,6 +78,8 @@ pub struct UdpSocket {
 
     /// Shared socket options and blocking helpers.
     general: GeneralOptions,
+    /// Egress IP_TOS policies registered for recently used UDP destinations.
+    tos_keys: Mutex<Vec<EgressIpTosKey>>,
     /// MSG_MORE corking state: captures endpoint at first MSG_MORE
     /// so the merged datagram always goes to the correct peer.
     cork: Mutex<Option<CorkState>>,
@@ -90,17 +87,17 @@ pub struct UdpSocket {
 
 impl UdpSocket {
     /// Creates a new UDP socket.
-    #[allow(clippy::new_without_default)]
     pub fn new() -> Self {
-        let socket = new_udp_socket();
-        let handle = SOCKET_SET.add(socket);
-
         Self {
-            handle,
+            handle: SOCKET_SET.add(smol::Socket::new(
+                smol::PacketBuffer::new(vec![PacketMetadata::EMPTY; 256], vec![0; UDP_RX_BUF_LEN]),
+                smol::PacketBuffer::new(vec![PacketMetadata::EMPTY; 256], vec![0; UDP_TX_BUF_LEN]),
+            )),
             local_addr: RwLock::new(None),
             peer_addr: RwLock::new(None),
 
             general: GeneralOptions::new(2, 2, 17), // SOCK_DGRAM
+            tos_keys: Mutex::new(Vec::new()),
             cork: Mutex::new(None),
         }
     }
@@ -135,6 +132,67 @@ impl UdpSocket {
             .select_route_with_binding(remote, self.general.device_binding())?
             .source)
     }
+
+    fn send_source_for_remote(&self, remote: &IpAddress) -> AxResult<IpAddress> {
+        if let Some(local_ep) = *self.local_addr.read()
+            && !local_ep.addr.is_unspecified()
+        {
+            Ok(local_ep.addr)
+        } else {
+            self.source_for_remote(remote)
+        }
+    }
+
+    fn source_and_binding_update_for_remote(
+        &self,
+        remote: &IpAddress,
+    ) -> AxResult<(IpAddress, bool)> {
+        if let Some(local_ep) = *self.local_addr.read()
+            && !local_ep.addr.is_unspecified()
+        {
+            Ok((local_ep.addr, false))
+        } else {
+            Ok((self.source_for_remote(remote)?, true))
+        }
+    }
+
+    fn track_egress_ip_tos(&self, local_addr: Option<IpAddress>, remote: IpEndpoint) {
+        let tos = self.general.ip_tos();
+        if tos == 0 {
+            return;
+        }
+        let Some(local_addr) = local_addr else {
+            return;
+        };
+        let Some(local) = self.local_addr.read().map(|endpoint| IpEndpoint {
+            addr: local_addr,
+            port: endpoint.port,
+        }) else {
+            return;
+        };
+        let Some(key) = EgressIpTosKey::exact(IpProtocol::Udp, local, remote) else {
+            return;
+        };
+
+        let mut keys = self.tos_keys.lock();
+        if !keys.contains(&key) {
+            keys.push(key);
+        }
+        set_egress_ip_tos(key, tos);
+    }
+
+    fn sync_tracked_egress_ip_tos(&self) {
+        let tos = self.general.ip_tos();
+        for key in self.tos_keys.lock().iter().copied() {
+            set_egress_ip_tos(key, tos);
+        }
+    }
+
+    fn clear_tracked_egress_ip_tos(&self) {
+        for key in self.tos_keys.lock().drain(..) {
+            clear_egress_ip_tos(key);
+        }
+    }
 }
 
 impl Configurable for UdpSocket {
@@ -163,6 +221,12 @@ impl Configurable for UdpSocket {
 
     fn set_option_inner(&self, option: SetSocketOption) -> AxResult<bool> {
         use SetSocketOption as O;
+
+        if let O::IpTos(tos) = option {
+            self.general.set_ip_tos(*tos);
+            self.sync_tracked_egress_ip_tos();
+            return Ok(true);
+        }
 
         if self.general.set_option_inner(option)? {
             return Ok(true);
@@ -233,20 +297,9 @@ impl SocketOps for UdpSocket {
         }
 
         let remote_addr = IpEndpoint::from(remote_addr);
-        let local = self.local_addr.read();
-
-        // Determine source address and device binding based on bind state
-        let (src, should_update_binding) = if let Some(local_ep) = *local {
-            if local_ep.addr.is_unspecified() {
-                // Bound to 0.0.0.0, use route decision
-                (self.source_for_remote(&remote_addr.addr)?, true)
-            } else {
-                // Bound to specific IP, use that address and keep interface
-                (local_ep.addr, false)
-            }
-        } else {
-            (self.source_for_remote(&remote_addr.addr)?, true)
-        };
+        let local_port = self.local_addr.read().map_or(0, |endpoint| endpoint.port);
+        let (src, should_update_binding) =
+            self.source_and_binding_update_for_remote(&remote_addr.addr)?;
 
         *guard = Some((remote_addr, src));
 
@@ -254,7 +307,7 @@ impl SocketOps for UdpSocket {
             self.general
                 .set_device_binding(get_control().local_binding_for(&IpListenEndpoint {
                     addr: Some(src),
-                    port: (*local).map_or(0, |endpoint| endpoint.port),
+                    port: local_port,
                 })?);
         }
 
@@ -285,16 +338,7 @@ impl SocketOps for UdpSocket {
             let (remote_addr, source_addr) = match options.to {
                 Some(addr) => {
                     let addr = IpEndpoint::from(addr.into_ip()?);
-                    // Use bound address if bound to specific IP
-                    let src = if let Some(local_ep) = *self.local_addr.read() {
-                        if local_ep.addr.is_unspecified() {
-                            self.source_for_remote(&addr.addr)?
-                        } else {
-                            local_ep.addr
-                        }
-                    } else {
-                        self.source_for_remote(&addr.addr)?
-                    };
+                    let src = self.send_source_for_remote(&addr.addr)?;
                     (addr, src)
                 }
                 None => match self.remote_endpoint() {
@@ -335,16 +379,7 @@ impl SocketOps for UdpSocket {
         let resolved = match options.to {
             Some(addr) => {
                 let addr = IpEndpoint::from(addr.into_ip()?);
-                // Use bound address if bound to specific IP, otherwise route decision
-                let src = if let Some(local_ep) = *self.local_addr.read() {
-                    if local_ep.addr.is_unspecified() {
-                        self.source_for_remote(&addr.addr)?
-                    } else {
-                        local_ep.addr
-                    }
-                } else {
-                    self.source_for_remote(&addr.addr)?
-                };
+                let src = self.send_source_for_remote(&addr.addr)?;
                 Some((addr, src))
             }
             None => self.remote_endpoint().ok(),
@@ -384,6 +419,7 @@ impl SocketOps for UdpSocket {
                 } else if !socket.can_send() {
                     Err(AxError::WouldBlock)
                 } else {
+                    self.track_egress_ip_tos(local_addr, endpoint);
                     // UDP allows zero-length payloads (IP header + UDP header only).
                     if payload_len == 0 {
                         socket
@@ -497,6 +533,27 @@ impl SocketOps for UdpSocket {
                                 }
                             }
 
+                            if let Some(cmsg) = options.cmsg.as_deref_mut()
+                                && let Some(traffic_class) = received_traffic_class(meta.meta)
+                            {
+                                match traffic_class {
+                                    ReceivedTrafficClass::Ipv4(tos)
+                                        if self.general.recv_traffic_class() =>
+                                    {
+                                        cmsg.push(Box::new(IpCmsg::Ipv6TrafficClass(tos)));
+                                    }
+                                    ReceivedTrafficClass::Ipv4(tos) if self.general.recv_tos() => {
+                                        cmsg.push(Box::new(IpCmsg::Ipv4Tos(tos)));
+                                    }
+                                    ReceivedTrafficClass::Ipv6(tclass)
+                                        if self.general.recv_traffic_class() =>
+                                    {
+                                        cmsg.push(Box::new(IpCmsg::Ipv6TrafficClass(tclass)));
+                                    }
+                                    _ => {}
+                                }
+                            }
+
                             Ok(if options.flags.contains(RecvFlags::TRUNCATE) {
                                 src.len()
                             } else {
@@ -571,33 +628,24 @@ impl Pollable for UdpSocket {
     }
 }
 
+impl Default for UdpSocket {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Drop for UdpSocket {
     fn drop(&mut self) {
         self.shutdown(Shutdown::Both).ok();
+        self.clear_tracked_egress_ip_tos();
         SOCKET_SET.remove(self.handle);
     }
 }
 
 fn get_ephemeral_port() -> AxResult<u16> {
-    const PORT_START: u16 = 0xc000;
-    const PORT_END: u16 = 0xffff;
-    static CURR: Mutex<u16> = Mutex::new(PORT_START);
-    let mut curr = CURR.lock();
-
-    let mut tries = 0;
-    while tries <= PORT_END - PORT_START {
-        let port = *curr;
-        if *curr == PORT_END {
-            *curr = PORT_START;
-        } else {
-            *curr += 1;
-        }
-        if SOCKET_SET.udp_port_available(IpAddress::Ipv4(Ipv4Addr::UNSPECIFIED), port) {
-            return Ok(port);
-        }
-        tries += 1;
-    }
-    ax_bail!(AddrInUse, "no available ports")
+    allocate_ephemeral_port(|port| {
+        SOCKET_SET.udp_port_available(IpAddress::Ipv4(Ipv4Addr::UNSPECIFIED), port)
+    })
 }
 
 #[cfg(test)]

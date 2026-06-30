@@ -240,6 +240,16 @@ clk_gate_table!(
     ACLK_NPU0 => (30, 6),
     HCLK_NPU0 => (30, 8),
     // ========================================================================
+    // NVM/eMMC 时钟门控
+    // ========================================================================
+    HCLK_NVM_ROOT => (31, 0),
+    ACLK_NVM_ROOT => (31, 1),
+    HCLK_EMMC => (31, 4),
+    ACLK_EMMC => (31, 5),
+    CCLK_EMMC => (31, 6),
+    BCLK_EMMC => (31, 7),
+    TMCLK_EMMC => (31, 8),
+    // ========================================================================
     // PCIe/PHP 时钟门控
     // ========================================================================
     ACLK_PCIE_ROOT => (32, 6),
@@ -420,14 +430,15 @@ mod tests {
         // NPU: 22
         // PCIe/PHP: 57
         // USB: 21 main/php gates + 2 PMU composite gates
-        // 总计: 166
+        // NVM/eMMC: 7
+        // 总计: 173
         assert_eq!(
             CLK_GATE_TABLE.len()
                 + CLK_PMU_GATE_TABLE.len()
                 + CLK_PHP_GATE_TABLE.len()
                 + CLK_COMPOSITE_TABLE.len()
                 + CLK_PMU_COMPOSITE_TABLE.len(),
-            166
+            173
         );
     }
 
@@ -552,6 +563,38 @@ mod tests {
         assert_eq!(usbdpphy_ref.bank, GateBank::Pmu);
         assert_eq!(usbdpphy_ref.reg_idx, 4);
         assert_eq!(usbdpphy_ref.bit, 3);
+    }
+
+    #[test]
+    fn test_emmc_gates_match_orangepi_6_1() {
+        let hclk_nvm = find_gate(HCLK_NVM_ROOT);
+        assert_eq!(hclk_nvm.bank, GateBank::Main);
+        assert_eq!(hclk_nvm.reg_idx, 31);
+        assert_eq!(hclk_nvm.bit, 0);
+
+        let aclk_nvm = find_gate(ACLK_NVM_ROOT);
+        assert_eq!(aclk_nvm.reg_idx, 31);
+        assert_eq!(aclk_nvm.bit, 1);
+
+        let hclk_emmc = find_gate(HCLK_EMMC);
+        assert_eq!(hclk_emmc.reg_idx, 31);
+        assert_eq!(hclk_emmc.bit, 4);
+
+        let aclk_emmc = find_gate(ACLK_EMMC);
+        assert_eq!(aclk_emmc.reg_idx, 31);
+        assert_eq!(aclk_emmc.bit, 5);
+
+        let cclk_emmc = find_gate(CCLK_EMMC);
+        assert_eq!(cclk_emmc.reg_idx, 31);
+        assert_eq!(cclk_emmc.bit, 6);
+
+        let bclk_emmc = find_gate(BCLK_EMMC);
+        assert_eq!(bclk_emmc.reg_idx, 31);
+        assert_eq!(bclk_emmc.bit, 7);
+
+        let tmclk_emmc = find_gate(TMCLK_EMMC);
+        assert_eq!(tmclk_emmc.reg_idx, 31);
+        assert_eq!(tmclk_emmc.bit, 8);
     }
 
     #[test]

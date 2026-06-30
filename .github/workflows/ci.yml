@@ -155,8 +155,10 @@ jobs:
               - "Cargo.toml"
               - "Cargo.lock"
               - "rust-toolchain.toml"
+              - "bootloader/axloader/**"
               - "components/**"
               - "drivers/**"
+              - "net/**"
               - "os/**"
               - "platforms/**"
               - "virtualization/**"
@@ -305,6 +307,13 @@ jobs:
             container_image: base
             fetch_depth: full
             upload_xtask_bin_artifact: true
+          - name: Run spin-lint
+            use_container: true
+            runs_on: '["ubuntu-latest"]'
+            command: cargo xtask spin-lint
+            cache_key: ""
+            container_image: base
+            fetch_depth: "1"
     uses: ./.github/workflows/reusable-command.yml
     with:
       runs_on: >-
@@ -359,9 +368,10 @@ jobs:
             runs_on: '["self-hosted","linux","qcs"]'
             self_hosted_owner: rcore-os
             command: cargo xtask clippy --since "${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}"
-            cache_key: ""
+            cache_key: clippy
             container_image: base
             fetch_depth: full
+            download_xtask_bin_artifact: true
             limit_to_owner: ""
             main_pr_only: false
           - name: Test with std
@@ -563,6 +573,7 @@ jobs:
           - name: Test axvisor self-hosted x86_64
             use_container: false
             runs_on: '["self-hosted","linux","intel","kvm"]'
+            require_kvm: true
             command: cargo xtask axvisor test qemu --arch x86_64 --test-case smoke-vmx
             cache_key: ""
             container_image: ""
@@ -571,6 +582,7 @@ jobs:
           - name: Test axvisor self-hosted x86_64 UEFI
             use_container: false
             runs_on: '["self-hosted","linux","intel","kvm"]'
+            require_kvm: true
             timeout_minutes: 20
             command: |
               sudo apt-get update
@@ -604,6 +616,7 @@ jobs:
           - name: Test axloader HTTP smoke
             use_container: false
             runs_on: '["self-hosted","linux","intel","kvm"]'
+            require_kvm: true
             timeout_minutes: 20
             command: |
               rustup target add x86_64-unknown-uefi
@@ -624,8 +637,8 @@ jobs:
                 echo "ERROR: installed OVMF firmware image was not found under /usr/share." >&2
                 exit 1
               fi
-              export AXVISOR_X86_64_UEFI_FIRMWARE="${UEFI_FIRMWARE}"
-              cargo axvisor loader test --target x86_64-unknown-uefi --http-smoke
+              export AXLOADER_X86_64_UEFI_FIRMWARE="${UEFI_FIRMWARE}"
+              cargo axloader test qemu --target x86_64-unknown-uefi
             cache_key: ""
             container_image: ""
             limit_to_owner: rcore-os
@@ -701,6 +714,22 @@ jobs:
             container_image: ""
             limit_to_owner: rcore-os
             main_pr_only: false
+          - name: Test starry self-hosted board aka-00-sg2002
+            use_container: false
+            runs_on: '["self-hosted","linux","board"]'
+            command: cargo xtask starry test board --board aka-00-sg2002
+            cache_key: ""
+            container_image: ""
+            limit_to_owner: rcore-os
+            main_pr_only: false
+          - name: Test starry self-hosted board visionfive2
+            use_container: false
+            runs_on: '["self-hosted","linux","board"]'
+            command: cargo xtask starry test board --board visionfive2
+            cache_key: ""
+            container_image: ""
+            limit_to_owner: rcore-os
+            main_pr_only: false
     uses: ./.github/workflows/reusable-command.yml
     with:
       runs_on: >-
@@ -743,6 +772,7 @@ jobs:
           || (matrix.fetch_depth == 'full' && '0' || '1')
         }}
       timeout_minutes: ${{ matrix.timeout_minutes || 360 }}
+      require_kvm: ${{ matrix.require_kvm || false }}
       download_xtask_bin_artifact: >-
         ${{
           matrix.download_xtask_bin_artifact

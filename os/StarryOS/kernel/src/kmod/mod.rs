@@ -32,7 +32,6 @@ use ax_kspin::SpinNoPreempt;
 #[cfg(not(target_arch = "loongarch64"))]
 use ax_memory_addr::{MemoryAddr, VirtAddrRange};
 use ax_memory_addr::{PAGE_SIZE_4K, VirtAddr};
-use ax_runtime::hal::cpu::asm::{flush_icache_all, flush_tlb};
 #[cfg(not(target_arch = "loongarch64"))]
 use ax_runtime::hal::paging::MappingFlags;
 use kmod_loader::{KernelModuleHelper, ModuleLoader, ModuleOwner, SectionMemOps};
@@ -99,7 +98,7 @@ impl SectionMemOps for KmodMemSection {
                 // symbols. DMW translations do not consult the page table, so
                 // there are no PTE permissions to update here.
                 if perms.contains(kmod_loader::SectionPerm::EXECUTE) {
-                    flush_icache_all();
+                    ax_runtime::hal::cache::flush_icache_all();
                 }
                 true
             }
@@ -132,7 +131,7 @@ impl Drop for KmodMemSection {
                     self.num_pages,
                     UsageKind::VirtMem,
                 );
-                flush_icache_all();
+                ax_runtime::hal::cache::flush_icache_all();
             }
         }
     }
@@ -243,8 +242,7 @@ impl KernelModuleHelper for KmodHelper {
         // otherwise fetch stale instructions — or fault — from the new code
         // pages, so the instruction cache must be invalidated in addition to
         // the TLB. Mirrors `mm::access::sync_modified_kernel_text`.
-        flush_tlb(None);
-        flush_icache_all();
+        ax_runtime::hal::cache::sync_kernel_text(VirtAddr::from_usize(_addr), _size);
     }
 }
 

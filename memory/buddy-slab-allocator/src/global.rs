@@ -8,7 +8,7 @@ use core::{
     sync::atomic::{AtomicBool, Ordering},
 };
 
-use spin::Mutex as SpinMutex;
+use ax_kspin::SpinRaw as SpinMutex;
 
 use crate::{
     align_up,

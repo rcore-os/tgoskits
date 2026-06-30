@@ -23,7 +23,6 @@ pub fn enable_mmu() -> ! {
     println!("Enabling MMU...");
 
     super::write_satp(crate::mem::mmu::boot_table_addr());
-    crate::mem::mmu::set_mmu_enabled();
 
     println!("MMU enabled, jumping to {v_entry:#x}, sp={v_sp:#x}");
 
@@ -44,7 +43,6 @@ pub fn enable_mmu_secondary(cpu_meta_paddr: usize) -> ! {
     let v_entry = meta.entry_virt;
 
     super::write_satp(meta.boot_table_paddr);
-    crate::mem::mmu::set_mmu_enabled();
 
     unsafe {
         asm!(

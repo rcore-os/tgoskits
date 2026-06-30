@@ -25,5 +25,5 @@ fail_regex = [
 success_regex = ["Welcome to AxVisor Shell!", "axvisor:\\$"]
 shell_prefix = "axvisor:$"
 shell_init_cmd = ""
-to_bin = false
-uefi = false
+to_bin = true
+uefi = true

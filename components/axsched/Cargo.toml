@@ -1,6 +1,6 @@
 [package]
 name = "ax-sched"
-version = "0.5.7"
+version = "0.5.8"
 repository = "https://github.com/rcore-os/tgoskits"
 edition.workspace = true
 authors = [

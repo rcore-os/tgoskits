@@ -6,7 +6,10 @@ use ax_memory_addr::{MemoryAddr, PhysAddr, VirtAddr, VirtAddrRange};
 use ax_runtime::hal::paging::{MappingFlags, PageSize, PageTableCursor, PagingError};
 use ax_sync::Mutex;
 
-use super::{AddrSpace, Backend, BackendOps, alloc_frame, dealloc_frame, divide_page, pages_in};
+use super::{
+    AddrSpace, Backend, BackendOps, CloneMapAccounting, MemoryAccounting, RssKind, alloc_frame,
+    dealloc_frame, divide_page, pages_in,
+};
 
 enum SharedPagesOwner {
     Allocated,
@@ -110,21 +113,41 @@ impl BackendOps for SharedBackend {
         self.pages.size
     }
 
-    fn map(&self, range: VirtAddrRange, flags: MappingFlags, pt: &mut PageTableCursor) -> AxResult {
+    fn map(
+        &self,
+        range: VirtAddrRange,
+        flags: MappingFlags,
+        acct: Option<&MemoryAccounting>,
+        pt: &mut PageTableCursor,
+    ) -> AxResult {
         debug!("Shared::map: {:?} {:?}", range, flags);
         for (vaddr, paddr) in
             pages_in(range, self.pages.size)?.zip(self.pages_starting_from(range.start))
         {
+            let newly_mapped = pt.query(vaddr).is_err();
             pt.map(vaddr, *paddr, self.pages.size, flags)?;
+            if newly_mapped && let Some(acct) = acct {
+                acct.inc(RssKind::Shmem, 1);
+            }
         }
         Ok(())
     }
 
-    fn unmap(&self, range: VirtAddrRange, pt: &mut PageTableCursor) -> AxResult {
+    fn unmap(
+        &self,
+        range: VirtAddrRange,
+        acct: Option<&MemoryAccounting>,
+        pt: &mut PageTableCursor,
+    ) -> AxResult {
         debug!("Shared::unmap: {:?}", range);
         for vaddr in pages_in(range, self.pages.size)? {
             match pt.unmap(vaddr) {
-                Ok((_, _, page_size)) => debug_assert_eq!(page_size, self.pages.size),
+                Ok((_, _, page_size)) => {
+                    debug_assert_eq!(page_size, self.pages.size);
+                    if let Some(acct) = acct {
+                        acct.dec(RssKind::Shmem, 1);
+                    }
+                }
                 Err(PagingError::NotMapped) => {}
                 Err(err) => return Err(err.into()),
             }
@@ -139,6 +162,7 @@ impl BackendOps for SharedBackend {
         _old_pt: &mut PageTableCursor,
         _new_pt: &mut PageTableCursor,
         _new_aspace: &Arc<Mutex<AddrSpace>>,
+        _acct: CloneMapAccounting<'_>,
     ) -> AxResult<Backend> {
         Ok(Backend::Shared(self.clone()))
     }

@@ -32,6 +32,10 @@ pub fn boot_stack_bounds(cpu_idx: usize) -> (VirtAddr, usize) {
     (VirtAddr::from(meta.stack_top_virt - stack_size), stack_size)
 }
 
+pub fn bootargs() -> Option<&'static str> {
+    somehal::bootargs()
+}
+
 pub struct Kernel;
 
 impl KernelOp for Kernel {

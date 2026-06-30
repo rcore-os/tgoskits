@@ -3,9 +3,10 @@
 
 use clap::{Args, Parser, Subcommand};
 
-use crate::{arceos::ArceOS, axvisor::Axvisor, starry::Starry};
+use crate::{arceos::ArceOS, axloader::Axloader, axvisor::Axvisor, starry::Starry};
 
 pub mod arceos;
+pub mod axloader;
 pub mod axvisor;
 mod backtrace;
 mod board;
@@ -16,6 +17,7 @@ pub mod context;
 mod firmware;
 pub mod image;
 mod rootfs;
+mod spin_lint;
 pub mod starry;
 mod support;
 mod sync_lint;
@@ -55,6 +57,8 @@ enum Commands {
     Clippy(ClippyArgs),
     /// Run high-confidence atomic ordering checks for suspicious `Relaxed` synchronization
     SyncLint(SyncLintArgs),
+    /// Verify that no external `spin` package is resolved
+    SpinLint,
     /// Remote board management via ostool-server
     Board {
         #[command(subcommand)]
@@ -76,6 +80,11 @@ enum Commands {
     Axvisor {
         #[command(subcommand)]
         command: axvisor::Command,
+    },
+    /// Axloader host-side commands
+    Axloader {
+        #[command(subcommand)]
+        command: axloader::Command,
     },
     /// ArceOS build commands
     Arceos {
@@ -102,11 +111,13 @@ async fn run_root_cli(cli: Cli) -> anyhow::Result<()> {
             clippy::run_workspace_clippy_command(&args)
         }
         Commands::SyncLint(args) => sync_lint::run_sync_lint_command(&args),
+        Commands::SpinLint => spin_lint::run_spin_lint_command(),
         Commands::Board { command } => board::execute(command).await,
         Commands::Config { command } => config::execute(command),
         Commands::Backtrace { command } => backtrace::execute(command),
         Commands::Image(args) => image::run(args).await,
         Commands::Axvisor { command } => Axvisor::new()?.execute(command).await,
+        Commands::Axloader { command } => Axloader::new()?.execute(command).await,
         Commands::Arceos { command } => ArceOS::new()?.execute(command).await,
         Commands::Starry { command } => {
             ensure_aic8800_firmware().await?;

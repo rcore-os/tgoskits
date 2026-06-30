@@ -1,8 +1,8 @@
 //! Minimal waker set for cross-thread task wakeups.
 //!
 //! Vendored from the `axpoll` crate's `PollSet`, trimmed to the subset the
-//! Wi-Fi driver uses (register / wake) and reworked to use a plain spinlock so
-//! the driver core does not depend on any OS-specific synchronization crate.
+//! Wi-Fi driver uses (register / wake) and reworked to use a plain non-IRQ
+//! spinlock.
 //!
 //! Safety note: this lock is **not** IRQ-masking. It must only ever be locked
 //! from task/thread context, never from an interrupt handler. The one wakeup
@@ -12,7 +12,7 @@
 use alloc::boxed::Box;
 use core::{mem::MaybeUninit, task::Waker};
 
-use spin::Mutex;
+use ax_kspin::SpinRaw as Mutex;
 
 const POLL_SET_CAPACITY: usize = 64;
 

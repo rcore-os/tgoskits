@@ -31,7 +31,14 @@ const LAPIC_LVT_TIMER_TSC_DEADLINE: u32 = 1 << 18;
 const LAPIC_SVR_ENABLE: u32 = 1 << 8;
 const LAPIC_BASE_MASK: u64 = 0xffff_f000;
 const IA32_APIC_BASE_ENABLE: u64 = 1 << 11;
+const IA32_APIC_BASE_X2APIC_ENABLE: u64 = 1 << 10;
 const LAPIC_TIMER_DIVIDE_BY_16: u32 = 0b0011;
+const IA32_X2APIC_EOI: u32 = 0x80b;
+const IA32_X2APIC_SIVR: u32 = 0x80f;
+const IA32_X2APIC_LVT_TIMER: u32 = 0x832;
+const IA32_X2APIC_INIT_COUNT: u32 = 0x838;
+const IA32_X2APIC_CUR_COUNT: u32 = 0x839;
+const IA32_X2APIC_DIV_CONF: u32 = 0x83e;
 const PIT_CHANNEL2_PORT: u16 = 0x42;
 const PIT_COMMAND_PORT: u16 = 0x43;
 const PIT_CONTROL_PORT: u16 = 0x61;
@@ -51,6 +58,12 @@ static HAS_TSC_DEADLINE: AtomicBool = AtomicBool::new(false);
 static LAPIC_READY: AtomicBool = AtomicBool::new(false);
 static TSC_INFO_STATE: AtomicU8 = AtomicU8::new(0);
 static IDT_STATE: AtomicU8 = AtomicU8::new(0);
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ApicMode {
+    XApic,
+    X2Apic,
+}
 
 #[derive(Clone, Copy, Debug)]
 #[repr(C)]
@@ -338,6 +351,9 @@ fn load_idt() {
 fn init_lapic() {
     let mut base = unsafe { rdmsr(msr::IA32_APIC_BASE) };
     base |= IA32_APIC_BASE_ENABLE;
+    if cpu_has_x2apic() {
+        base |= IA32_APIC_BASE_X2APIC_ENABLE;
+    }
     unsafe {
         wrmsr(msr::IA32_APIC_BASE, base);
     }
@@ -423,14 +439,53 @@ fn ticks_to_apic_counts(ticks: u64) -> u32 {
 }
 
 fn read_lapic_reg(offset: u32) -> u32 {
-    let ptr = lapic_ptr(offset);
-    unsafe { ptr.read_volatile() }
+    match current_apic_mode() {
+        ApicMode::X2Apic => unsafe { rdmsr(x2apic_msr(offset)) as u32 },
+        ApicMode::XApic => {
+            let ptr = lapic_ptr(offset);
+            unsafe { ptr.read_volatile() }
+        }
+    }
 }
 
 fn write_lapic_reg(offset: u32, value: u32) {
-    let ptr = lapic_ptr(offset);
-    unsafe {
-        ptr.write_volatile(value);
+    match current_apic_mode() {
+        ApicMode::X2Apic => unsafe {
+            wrmsr(x2apic_msr(offset), u64::from(value));
+        },
+        ApicMode::XApic => {
+            let ptr = lapic_ptr(offset);
+            unsafe {
+                ptr.write_volatile(value);
+            }
+        }
+    }
+}
+
+fn cpu_has_x2apic() -> bool {
+    CpuId::new()
+        .get_feature_info()
+        .is_some_and(|info| info.has_x2apic())
+}
+
+fn current_apic_mode() -> ApicMode {
+    let base = unsafe { rdmsr(msr::IA32_APIC_BASE) };
+    if base & IA32_APIC_BASE_X2APIC_ENABLE != 0 {
+        ApicMode::X2Apic
+    } else {
+        ApicMode::XApic
+    }
+}
+
+fn x2apic_msr(offset: u32) -> u32 {
+    match offset {
+        LAPIC_REG_EOI => IA32_X2APIC_EOI,
+        LAPIC_REG_SVR => IA32_X2APIC_SIVR,
+        LAPIC_REG_LVT_TIMER => IA32_X2APIC_LVT_TIMER,
+        LAPIC_REG_TIMER_INIT_COUNT => IA32_X2APIC_INIT_COUNT,
+        LAPIC_REG_TIMER_CUR_COUNT => IA32_X2APIC_CUR_COUNT,
+        LAPIC_REG_TIMER_DIV => IA32_X2APIC_DIV_CONF,
+        _ => panic!("unsupported x2APIC register offset {offset:#x}"),
     }
 }
 

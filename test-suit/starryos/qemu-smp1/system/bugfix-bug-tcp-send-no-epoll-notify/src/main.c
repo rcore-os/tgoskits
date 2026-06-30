@@ -20,6 +20,40 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
+static ssize_t write_all(int fd, const void *buf, size_t len)
+{
+    const unsigned char *cursor = buf;
+    size_t left = len;
+
+    while (left > 0) {
+        ssize_t n = write(fd, cursor, left);
+        if (n < 0) {
+            if (errno == EINTR) {
+                continue;
+            }
+            return n;
+        }
+        if (n == 0) {
+            return (ssize_t)(len - left);
+        }
+        cursor += (size_t)n;
+        left -= (size_t)n;
+    }
+    return (ssize_t)len;
+}
+
+static int epoll_wait_retry(int epfd, struct epoll_event *events, int maxevents,
+                            int timeout_ms)
+{
+    for (;;) {
+        int n = epoll_wait(epfd, events, maxevents, timeout_ms);
+        if (n < 0 && errno == EINTR) {
+            continue;
+        }
+        return n;
+    }
+}
+
 int main(void) {
     /* --- create a connected loopback TCP pair --- */
     int listen_fd = socket(AF_INET, SOCK_STREAM, 0);
@@ -87,7 +121,7 @@ int main(void) {
     }
 
     /* --- server writes data --- */
-    if (write(server_fd, "hello", 5) < 0) {
+    if (write_all(server_fd, "hello", 5) != 5) {
         fprintf(stderr, "write: %s\n", strerror(errno));
         return 1;
     }
@@ -95,7 +129,7 @@ int main(void) {
     /* --- epoll_wait must return EPOLLIN on client_fd ---
      * Generous 1s timeout to avoid flakiness on slow QEMU boot. */
     struct epoll_event events[4];
-    int n = epoll_wait(epfd, events, 4, 1000);
+    int n = epoll_wait_retry(epfd, events, 4, 1000);
 
     close(epfd);
     close(client_fd);

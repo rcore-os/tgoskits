@@ -40,7 +40,7 @@ flowchart TB
         Query["interfaces() / default_routes() / arp_entries()"]
         DnsApi["dns_servers() / dns_query()"]
         Sockets["TcpSocket / UdpSocket / RawSocket / UnixSocket / VsockSocket"]
-        PollApi["request_poll() / poll_interfaces()"]
+        PollApi["request_poll()"]
     end
 
     subgraph Control["Control plane"]
@@ -108,6 +108,7 @@ flowchart TB
 | Single protocol core | 一个 smoltcp `Interface`、全局 `SocketSet`、socket backend、DHCP、orphan 回收、poll 调度 | [service.rs](net/ax-net/src/service.rs), [wrapper.rs](net/ax-net/src/wrapper.rs), [tcp.rs](net/ax-net/src/tcp.rs), [udp.rs](net/ax-net/src/udp.rs), [listen_table.rs](net/ax-net/src/listen_table.rs), [orphan.rs](net/ax-net/src/orphan.rs) | 本文、[Socket 系统](sockets.md) |
 | Multi-device Router | smoltcp `Device` 适配、TX 路由、RX 汇聚、loopback 快速路径 | [router.rs](net/ax-net/src/router.rs) | [多设备实现](devices.md) |
 | Device layer | Ethernet 封装/解封装、ARP、IRQ/OOB RX、rd-net 适配 | [device/](net/ax-net/src/device/) | [多设备实现](devices.md) |
+| Locking and concurrency | 全局锁顺序、设备/协议核心解耦、原子状态和 waker 协调 | [lib.rs](net/ax-net/src/lib.rs), [service.rs](net/ax-net/src/service.rs), [router.rs](net/ax-net/src/router.rs) | [锁与并发](locks.md) |
 | Configuration | 静态网络配置、DHCP、MTU、缓冲区、feature | [config.rs](net/ax-net/src/config.rs), [consts.rs](net/ax-net/src/consts.rs), `Cargo.toml` | [配置参考](configuration.md) |
 | Integration and tests | OS 集成、启动流程、测试范围 | `ax-runtime`, `starry-kernel`, `ax-api` | [集成](integration.md), [测试](testing.md) |
 
@@ -132,7 +133,7 @@ Public API 是上层 OS 模块进入 `ax-net` 的边界，主要定义在 [lib.r
 | 接口查询 | `interfaces()`、`interface_by_name()`、`ipv4_config()`、`default_routes()`、`arp_entries()` | 从控制面或设备层返回只读快照 |
 | DNS | `dns_servers()`、`dns_query()`、`dns_query_timeout()` | 读取 DNS registry，并通过临时 smoltcp DNS socket 查询 |
 | Socket facade | `TcpSocket`、`UdpSocket`、`RawSocket`、`UnixSocket`、`VsockSocket` | 为 syscall/POSIX 层提供统一 socket backend |
-| Poll 触发 | `request_poll()`、`poll_interfaces()` | 唤醒专用 net-poll worker，避免应用线程同步驱动协议栈 |
+| Poll 触发 | `request_poll()` | 唤醒专用 net-poll worker，避免应用线程同步驱动协议栈 |
 | Socket options | `GetSocketOption`、`SetSocketOption`、`Configurable` | 覆盖通用 `SO_*`、`TCP_*`、`IP_*` 选项 |
 
 Public API 的职责是做边界收敛：上层不需要知道某个 socket 是否由 smoltcp、Unix transport 或 vsock transport 实现，也不需要直接操作 `Service`、`Router` 或 `SocketSet`。具体 API 列表见 [API 参考](api.md)。

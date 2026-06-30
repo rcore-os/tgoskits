@@ -32,7 +32,7 @@ use crate::{
     general::GeneralOptions,
     options::{Configurable, GetSocketOption, SetSocketOption},
     state::*,
-    vsock::{VsockAddr, VsockConnId, VsockTransport, VsockTransportOps},
+    vsock::{VsockAddr, VsockConnId},
 };
 
 /// Stream transport for vsock sockets.
@@ -80,8 +80,8 @@ impl Configurable for VsockStreamTransport {
     }
 }
 
-impl VsockTransportOps for VsockStreamTransport {
-    fn bind(&self, mut local_addr: VsockAddr) -> AxResult<()> {
+impl VsockStreamTransport {
+    pub(super) fn bind(&self, mut local_addr: VsockAddr) -> AxResult<()> {
         self.state
             .lock(State::Idle)
             .map_err(|_| ax_err_type!(InvalidInput, "already bound"))?
@@ -102,7 +102,7 @@ impl VsockTransportOps for VsockStreamTransport {
         Ok(())
     }
 
-    fn listen(&self) -> AxResult<()> {
+    pub(super) fn listen(&self) -> AxResult<()> {
         let guard = self
             .state
             .lock(State::Idle)
@@ -122,7 +122,7 @@ impl VsockTransportOps for VsockStreamTransport {
         })
     }
 
-    fn accept(&self) -> AxResult<(VsockTransport, VsockAddr)> {
+    pub(super) fn accept(&self) -> AxResult<(VsockStreamTransport, VsockAddr)> {
         if self.state.get() != State::Listening {
             ax_bail!(InvalidInput, "not listening");
         }
@@ -149,11 +149,11 @@ impl VsockTransportOps for VsockStreamTransport {
                 general: GeneralOptions::new(1, 40, 0), // SOCK_STREAM
             };
 
-            Ok((VsockTransport::Stream(new_transport), peer_addr))
+            Ok((new_transport, peer_addr))
         })
     }
 
-    fn connect(&self, peer_addr: VsockAddr) -> AxResult<()> {
+    pub(super) fn connect(&self, peer_addr: VsockAddr) -> AxResult<()> {
         let guard = self.state.lock(State::Idle).map_err(|state| match state {
             State::Idle => unreachable!(),
             State::Listening => ax_err_type!(InvalidInput, "already listening"),
@@ -224,7 +224,11 @@ impl VsockTransportOps for VsockStreamTransport {
         })
     }
 
-    fn send(&self, mut src: impl Read + IoBuf, _options: SendOptions) -> AxResult<usize> {
+    pub(super) fn send(
+        &self,
+        mut src: impl Read + IoBuf,
+        _options: SendOptions,
+    ) -> AxResult<usize> {
         let conn = self.get_connection()?;
         let conn_guard = conn.lock();
 
@@ -245,7 +249,7 @@ impl VsockTransportOps for VsockStreamTransport {
         result
     }
 
-    fn recv(&self, mut dst: impl Write, options: RecvOptions) -> AxResult<usize> {
+    pub(super) fn recv(&self, mut dst: impl Write, options: RecvOptions) -> AxResult<usize> {
         let conn = self.get_connection()?;
         let extra_nb = options.flags.contains(RecvFlags::DONTWAIT);
 
@@ -292,7 +296,7 @@ impl VsockTransportOps for VsockStreamTransport {
         })
     }
 
-    fn shutdown(&self, how: Shutdown) -> AxResult<()> {
+    pub(super) fn shutdown(&self, how: Shutdown) -> AxResult<()> {
         let conn = self.get_connection()?;
         let mut conn = conn.lock();
 
@@ -315,14 +319,14 @@ impl VsockTransportOps for VsockStreamTransport {
         Ok(())
     }
 
-    fn local_addr(&self) -> AxResult<Option<VsockAddr>> {
+    pub(super) fn local_addr(&self) -> AxResult<Option<VsockAddr>> {
         Ok(self
             .get_connection()
             .ok()
             .map(|conn| conn.lock().local_addr()))
     }
 
-    fn peer_addr(&self) -> AxResult<Option<VsockAddr>> {
+    pub(super) fn peer_addr(&self) -> AxResult<Option<VsockAddr>> {
         Ok(self
             .get_connection()
             .ok()

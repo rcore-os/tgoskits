@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.23.2](https://github.com/rcore-os/tgoskits/compare/rdrive-v0.23.1...rdrive-v0.23.2) - 2026-06-27
+
+### Fixed
+
+- *(locking)* remove spin mutex usage from kernel paths ([#1380](https://github.com/rcore-os/tgoskits/pull/1380))
+
+### Other
+
+- *(serial)* align IRQ model with dev ([#1265](https://github.com/rcore-os/tgoskits/pull/1265))
+
+## [0.23.1](https://github.com/rcore-os/tgoskits/compare/rdrive-v0.23.0...rdrive-v0.23.1) - 2026-06-22
+
+### Added
+
+- *(starry)* add Wayland app case ([#1160](https://github.com/rcore-os/tgoskits/pull/1160))
+- *(ax-net)* add multi-interface support with per-interface routing, DNS, and SO_BINDTODEVICE ([#1244](https://github.com/rcore-os/tgoskits/pull/1244))
+
 ## [0.23.0](https://github.com/rcore-os/tgoskits/compare/rdrive-v0.22.0...rdrive-v0.23.0) - 2026-06-12
 
 ### Added

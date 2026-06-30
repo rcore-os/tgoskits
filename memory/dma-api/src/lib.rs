@@ -11,6 +11,7 @@ mod array;
 mod common;
 mod dbox;
 mod def;
+mod owned;
 mod pool;
 mod streaming;
 
@@ -18,6 +19,7 @@ pub use array::*;
 pub use dbox::*;
 pub use def::*;
 pub use op::DmaOp;
+pub use owned::*;
 pub use pool::*;
 pub use streaming::*;
 
@@ -25,20 +27,27 @@ pub use streaming::*;
 pub struct DeviceDma {
     op: &'static dyn DmaOp,
     constraints: DmaConstraints,
+    domain: DmaDomainId,
 }
 
 impl DeviceDma {
-    pub fn new(dma_mask: u64, op: &'static dyn DmaOp) -> Self {
+    pub fn new(domain: DmaDomainId, dma_mask: u64, op: &'static dyn DmaOp) -> Self {
         Self {
             constraints: DmaConstraints::new(dma_mask),
+            domain,
             op,
         }
+    }
+
+    pub fn new_legacy(dma_mask: u64, op: &'static dyn DmaOp) -> Self {
+        Self::new(DmaDomainId::legacy_global(), dma_mask, op)
     }
 
     pub fn with_constraints(&self, constraints: DmaConstraints) -> Self {
         Self {
             op: self.op,
             constraints,
+            domain: self.domain,
         }
     }
 
@@ -48,6 +57,10 @@ impl DeviceDma {
 
     pub fn dma_mask(&self) -> u64 {
         self.constraints.addr_mask
+    }
+
+    pub fn domain_id(&self) -> DmaDomainId {
+        self.domain
     }
 
     pub fn flush(&self, addr: NonNull<u8>, size: usize) {

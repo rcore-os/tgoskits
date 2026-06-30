@@ -1,8 +1,10 @@
 use ax_kspin::SpinNoIrq;
 use ax_lazyinit::LazyInit;
-use ax_plat::console::ConsoleIf;
 #[cfg(feature = "irq")]
 use ax_plat::console::ConsoleIrqEvent;
+use ax_plat::console::{ConsoleDeviceIdError, ConsoleDeviceIdResult, ConsoleIf};
+#[cfg(feature = "irq")]
+use ax_plat::irq::IrqId;
 use some_serial::ns16550::dw_apb::{DwApbUart, SG2002_UART_CLOCK};
 
 use crate::config::{devices::UART_PADDR, plat::PHYS_VIRT_OFFSET};
@@ -24,14 +26,14 @@ struct ConsoleIfImpl;
 impl ConsoleIf for ConsoleIfImpl {
     /// Writes bytes to the console from input u8 slice.
     fn write_bytes(bytes: &[u8]) {
+        let mut uart = UART.lock();
         for &c in bytes {
-            let mut uart = UART.lock();
             match c {
                 b'\n' => {
-                    uart.putchar(b'\r');
-                    uart.putchar(b'\n');
+                    write_byte(&mut uart, b'\r');
+                    write_byte(&mut uart, b'\n');
                 }
-                c => uart.putchar(c),
+                c => write_byte(&mut uart, c),
             }
         }
     }
@@ -40,18 +42,19 @@ impl ConsoleIf for ConsoleIfImpl {
     /// Returns the number of bytes read.
     fn read_bytes(bytes: &mut [u8]) -> usize {
         let mut uart = UART.lock();
-        for (i, byte) in bytes.iter_mut().enumerate() {
-            match uart.getchar() {
-                Some(c) => *byte = c,
-                None => return i,
-            }
-        }
-        bytes.len()
+        uart.try_read(bytes)
+            .unwrap_or_else(|err| err.bytes_transferred)
     }
+
+    fn device_id() -> ConsoleDeviceIdResult {
+        Err(ConsoleDeviceIdError::NotSpecified)
+    }
+
+    fn claim_runtime_output() {}
 
     /// Returns the IRQ number for the console, if applicable.
     #[cfg(feature = "irq")]
-    fn irq_num() -> Option<usize> {
+    fn irq_num() -> Option<IrqId> {
         // Some(crate::config::devices::UART_IRQ)
         None
     }
@@ -62,5 +65,11 @@ impl ConsoleIf for ConsoleIfImpl {
     #[cfg(feature = "irq")]
     fn handle_irq() -> ConsoleIrqEvent {
         ConsoleIrqEvent::empty()
+    }
+}
+
+fn write_byte(uart: &mut DwApbUart, byte: u8) {
+    while uart.try_write(&[byte]) == 0 {
+        core::hint::spin_loop();
     }
 }

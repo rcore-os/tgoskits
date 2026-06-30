@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.0](https://github.com/rcore-os/tgoskits/compare/dma-api-v0.8.2...dma-api-v0.9.0) - 2026-06-27
+
+### Added
+
+- *(rdif-block)* add owned DMA queue primitives
+
+## [0.8.2](https://github.com/rcore-os/tgoskits/compare/dma-api-v0.8.1...dma-api-v0.8.2) - 2026-06-23
+
+### Other
+
+- updated the following local packages: ax-kspin
+
 ## [0.8.1](https://github.com/rcore-os/tgoskits/compare/dma-api-v0.8.0...dma-api-v0.8.1) - 2026-06-09
 
 ### Other

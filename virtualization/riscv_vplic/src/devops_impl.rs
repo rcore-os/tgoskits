@@ -2,18 +2,74 @@
 //!
 //! Implements the `BaseDeviceOps` trait for MMIO read/write handling.
 
-use ax_errno::AxResult;
+use ax_errno::{AxResult, ax_err};
 use axdevice_base::{AccessWidth, BaseDeviceOps, DeviceAddrRange, EmuDeviceType};
 use axvm_types::{GuestPhysAddrRange, HostPhysAddr};
 use bitmaps::Bitmap;
 
 use crate::{consts::*, utils::*, vplic::VPlicGlobal};
 
+#[cfg(target_arch = "riscv64")]
 const VCAUSE_INTERRUPT_BIT: usize = 1usize << (usize::BITS - 1);
+#[cfg(target_arch = "riscv64")]
 const VCAUSE_VS_TIMER: usize = VCAUSE_INTERRUPT_BIT | 5;
 const PLIC_PENDING_WORDS: usize = PLIC_NUM_SOURCES / 32;
 
 impl VPlicGlobal {
+    fn validate_irq_id(irq_id: usize) -> AxResult {
+        if irq_id == 0 || irq_id >= PLIC_NUM_SOURCES {
+            return ax_err!(
+                InvalidInput,
+                format_args!(
+                    "invalid PLIC source ID {irq_id}; valid source IDs are 1..{}",
+                    PLIC_NUM_SOURCES - 1
+                )
+            );
+        }
+        Ok(())
+    }
+
+    fn validate_assigned_irq(&self, irq_id: usize) -> AxResult {
+        Self::validate_irq_id(irq_id)?;
+
+        let assigned_irqs = self.assigned_irqs.lock();
+        if !assigned_irqs.is_empty() && !assigned_irqs.get(irq_id) {
+            return ax_err!(
+                PermissionDenied,
+                format_args!("PLIC source ID {irq_id} is not assigned to this virtual PLIC")
+            );
+        }
+        Ok(())
+    }
+
+    fn update_pending_irq(&self, irq_id: usize, pending: bool) -> AxResult {
+        self.validate_assigned_irq(irq_id)?;
+        self.pending_irqs.lock().set(irq_id, pending);
+        Ok(())
+    }
+
+    /// Marks one interrupt source as pending.
+    ///
+    /// Source ID 0 and IDs outside the PLIC source range are rejected. An
+    /// empty assignment bitmap preserves the existing unrestricted behavior;
+    /// once assignments are populated, only assigned sources are accepted.
+    pub fn set_pending(&self, irq_id: usize) -> AxResult {
+        self.update_pending_irq(irq_id, true)?;
+        self.sync_all_guest_contexts_vseip()
+    }
+
+    /// Clears the pending state of one interrupt source.
+    pub fn clear_pending(&self, irq_id: usize) -> AxResult {
+        self.update_pending_irq(irq_id, false)?;
+        self.sync_all_guest_contexts_vseip()
+    }
+
+    /// Returns whether one interrupt source is pending.
+    pub fn is_pending(&self, irq_id: usize) -> AxResult<bool> {
+        self.validate_assigned_irq(irq_id)?;
+        Ok(self.pending_irqs.lock().get(irq_id))
+    }
+
     /// Reads the priority of an interrupt source from the host PLIC.
     fn irq_priority(&self, irq_id: usize) -> AxResult<u32> {
         let addr = HostPhysAddr::from_usize(
@@ -23,6 +79,7 @@ impl VPlicGlobal {
     }
 
     /// Reads the priority threshold configured for a PLIC context.
+    #[cfg(target_arch = "riscv64")]
     fn context_threshold(&self, context_id: usize) -> AxResult<u32> {
         let addr = HostPhysAddr::from_usize(
             self.host_plic_addr.as_usize()
@@ -91,6 +148,7 @@ impl VPlicGlobal {
     }
 
     /// Returns the next IRQ that should assert VSEIP for this context.
+    #[cfg(target_arch = "riscv64")]
     fn next_deliverable_irq(&self, context_id: usize) -> AxResult<Option<usize>> {
         let threshold = self.context_threshold(context_id)?;
         let candidate_irqs = self.pending_inactive_irqs();
@@ -128,6 +186,7 @@ impl VPlicGlobal {
     }
 
     /// Recomputes whether VSEIP should remain asserted for one context.
+    #[cfg(target_arch = "riscv64")]
     fn sync_vseip(&self, context_id: usize) -> AxResult<()> {
         // VSEIP should track whether this context still has a deliverable
         // external interrupt, not merely whether some pending bit is set.
@@ -147,6 +206,11 @@ impl VPlicGlobal {
                 riscv_h::register::hvip::clear_vseip();
             }
         }
+        Ok(())
+    }
+
+    #[cfg(not(target_arch = "riscv64"))]
+    fn sync_vseip(&self, _context_id: usize) -> AxResult<()> {
         Ok(())
     }
 
@@ -271,19 +335,16 @@ impl BaseDeviceOps<GuestPhysAddrRange> for VPlicGlobal {
                 }
                 let val = val as u32;
                 let mut bit_mask: u32 = 1;
-                let mut pending_irqs = self.pending_irqs.lock();
                 for i in 0..32 {
                     if (val & bit_mask) != 0 {
                         let irq_id = reg_index * 32 + i;
                         if irq_id != 0 {
-                            // Set the pending bit.
-                            pending_irqs.set(irq_id, true);
+                            self.update_pending_irq(irq_id, true)?;
                         }
                     }
                     bit_mask <<= 1;
                 }
 
-                drop(pending_irqs);
                 self.sync_all_guest_contexts_vseip()
             }
             // enable
@@ -332,6 +393,7 @@ impl BaseDeviceOps<GuestPhysAddrRange> for VPlicGlobal {
                 }
                 let mut active_irqs = self.active_irqs.lock();
                 if !active_irqs.get(irq_id) {
+                    drop(active_irqs);
                     return self.sync_vseip(context_id);
                 }
 

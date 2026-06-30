@@ -1,5 +1,7 @@
 use alloc::{boxed::Box, string::String};
 
+use irq_framework::IrqId;
+
 use crate::{AbsInfo, Event, EventType, InputDeviceId};
 
 pub type InputResult<T = ()> = Result<T, InputError>;
@@ -16,6 +18,21 @@ pub enum InputError {
     Unsupported,
 }
 
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub struct InputIrqEvent {
+    pub handled: bool,
+    pub input_ready: bool,
+}
+
+impl InputIrqEvent {
+    pub const fn none() -> Self {
+        Self {
+            handled: false,
+            input_ready: false,
+        }
+    }
+}
+
 /// Domain boundary consumed by evdev and upper input services.
 pub trait InputDevice: Send {
     fn name(&self) -> &str;
@@ -26,7 +43,7 @@ pub trait InputDevice: Send {
 
     fn unique_id(&self) -> &str;
 
-    fn irq_num(&self) -> Option<usize> {
+    fn irq_id(&self) -> Option<IrqId> {
         None
     }
 
@@ -40,6 +57,18 @@ pub trait InputDevice: Send {
 
     fn get_abs_info(&mut self, _axis: u8) -> InputResult<AbsInfo> {
         Err(InputError::Unsupported)
+    }
+
+    fn enable_irq(&mut self) {}
+
+    fn disable_irq(&mut self) {}
+
+    fn is_irq_enabled(&self) -> bool {
+        false
+    }
+
+    fn handle_irq(&mut self) -> InputIrqEvent {
+        InputIrqEvent::none()
     }
 }
 
@@ -79,8 +108,8 @@ impl InputDevice for ErasedInputDevice {
         self.inner.unique_id()
     }
 
-    fn irq_num(&self) -> Option<usize> {
-        self.inner.irq_num()
+    fn irq_id(&self) -> Option<IrqId> {
+        self.inner.irq_id()
     }
 
     fn get_event_bits(&mut self, ty: EventType, out: &mut [u8]) -> InputResult<bool> {
@@ -97,5 +126,21 @@ impl InputDevice for ErasedInputDevice {
 
     fn get_abs_info(&mut self, axis: u8) -> InputResult<AbsInfo> {
         self.inner.get_abs_info(axis)
+    }
+
+    fn enable_irq(&mut self) {
+        self.inner.enable_irq();
+    }
+
+    fn disable_irq(&mut self) {
+        self.inner.disable_irq();
+    }
+
+    fn is_irq_enabled(&self) -> bool {
+        self.inner.is_irq_enabled()
+    }
+
+    fn handle_irq(&mut self) -> InputIrqEvent {
+        self.inner.handle_irq()
     }
 }

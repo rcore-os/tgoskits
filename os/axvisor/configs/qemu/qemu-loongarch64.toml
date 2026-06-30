@@ -8,8 +8,6 @@ args = [
   "-smp",
   "1",
   "-nographic",
-  "-serial",
-  "mon:stdio",
   "-no-reboot",
   "-device",
   "virtio-blk-pci,drive=disk0",
@@ -18,5 +16,5 @@ args = [
 ]
 fail_regex = []
 success_regex = []
-to_bin = false
-uefi = false
+to_bin = true
+uefi = true

@@ -7,6 +7,11 @@
 /// boot protocol. The current implementation falls back to FDT
 /// `/chosen/bootargs`.
 pub fn bootargs() -> Option<&'static str> {
+    #[cfg(plat_dyn)]
+    if let Some(bootargs) = axplat_dyn::bootargs() {
+        return Some(bootargs);
+    }
+
     crate::dtb::get_chosen_bootargs()
 }
 

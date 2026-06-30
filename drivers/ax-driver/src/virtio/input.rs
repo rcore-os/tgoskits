@@ -2,14 +2,14 @@ extern crate alloc;
 
 use alloc::{borrow::ToOwned, format, string::String};
 
-use rdif_input::{AbsInfo, EventType, InputDeviceId, InputError, InputEvent};
+use rdif_input::{AbsInfo, Event, EventType, InputDeviceId, InputError, InputEvent};
 use rdrive::{DriverGeneric, PlatformDevice, probe::OnProbeError};
 #[cfg(all(feature = "pci", any(plat_static, plat_dyn)))]
 use virtio_drivers::transport::DeviceType;
 use virtio_drivers::{
     Error as VirtIoError,
     device::input::{InputConfigSelect, VirtIOInput},
-    transport::Transport,
+    transport::{InterruptStatus, Transport},
 };
 
 use crate::{BindingInfo, input::PlatformDeviceInput, virtio::VirtIoHalImpl};
@@ -60,6 +60,7 @@ struct VirtIoInputDevice<T: Transport + 'static> {
     name: String,
     physical_location: String,
     unique_id: String,
+    irq_enabled: bool,
 }
 
 unsafe impl<T: Transport + 'static> Send for VirtIoInputDevice<T> {}
@@ -83,12 +84,19 @@ impl<T: Transport + 'static> VirtIoInputDevice<T> {
             "virtio-{:04x}-{:04x}-{:04x}-{:04x}-{}",
             device_id.bus_type, device_id.vendor, device_id.product, device_id.version, name
         );
+        // Creating the event queue can raise an interrupt before the
+        // OS-specific evdev layer has installed its shared IRQ action.
+        // Acknowledge only the transport ISR here; queued input events remain
+        // in the virtqueue for the first reader to drain.
+        let _ = raw.ack_interrupt();
+
         Ok(Self {
             raw,
             device_id,
             name,
             physical_location,
             unique_id,
+            irq_enabled: false,
         })
     }
 }
@@ -146,6 +154,33 @@ impl<T: Transport + 'static> rdif_input::Interface for VirtIoInputDevice<T> {
             res: info.res as i32,
         })
     }
+
+    fn enable_irq(&mut self) {
+        self.irq_enabled = true;
+    }
+
+    fn disable_irq(&mut self) {
+        self.irq_enabled = false;
+    }
+
+    fn is_irq_enabled(&self) -> bool {
+        self.irq_enabled
+    }
+
+    fn handle_irq(&mut self) -> Event {
+        let status = self.raw.ack_interrupt();
+        input_irq_event(self.irq_enabled, status)
+    }
+}
+
+fn input_irq_event(irq_enabled: bool, status: InterruptStatus) -> Event {
+    if !irq_enabled {
+        return Event::none();
+    }
+    Event {
+        handled: !status.is_empty(),
+        input_ready: status.contains(InterruptStatus::QUEUE_INTERRUPT),
+    }
 }
 
 fn map_input_err(err: VirtIoError) -> InputError {
@@ -153,5 +188,48 @@ fn map_input_err(err: VirtIoError) -> InputError {
         VirtIoError::Unsupported => InputError::NotSupported,
         VirtIoError::NotReady => InputError::Again,
         _ => InputError::Other(alloc::boxed::Box::new(err)),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn input_irq_is_ignored_until_driver_enables_it() {
+        let status =
+            InterruptStatus::QUEUE_INTERRUPT | InterruptStatus::DEVICE_CONFIGURATION_INTERRUPT;
+
+        assert_eq!(input_irq_event(false, status), Event::none());
+    }
+
+    #[test]
+    fn input_irq_queue_interrupt_makes_input_ready() {
+        assert_eq!(
+            input_irq_event(true, InterruptStatus::QUEUE_INTERRUPT),
+            Event {
+                handled: true,
+                input_ready: true,
+            }
+        );
+    }
+
+    #[test]
+    fn input_irq_configuration_interrupt_is_claimed_without_input_ready() {
+        assert_eq!(
+            input_irq_event(true, InterruptStatus::DEVICE_CONFIGURATION_INTERRUPT),
+            Event {
+                handled: true,
+                input_ready: false,
+            }
+        );
+    }
+
+    #[test]
+    fn input_irq_empty_status_is_not_claimed() {
+        assert_eq!(
+            input_irq_event(true, InterruptStatus::empty()),
+            Event::none()
+        );
     }
 }

@@ -334,6 +334,12 @@ pub fn sys_umount2(target: *const c_char, flags: i32) -> AxResult<isize> {
         return Err(AxError::from(LinuxError::EBUSY));
     }
 
+    // Flush closed-file page cache entries before the filesystem itself is
+    // flushed by `Location::unmount()`. Otherwise data written through a file
+    // descriptor that has already been closed can remain only in axfs-ng's
+    // global cached-file list and miss the unmount writeback.
+    ax_fs_ng::file::sync_all_cached_files(false)?;
+
     // Retrieve the writeback callback (if any) before unmount tears down
     // the mount.  For ext4-on-loop mounts this flushes the block device
     // cache to the backing file after the filesystem is unmounted; for

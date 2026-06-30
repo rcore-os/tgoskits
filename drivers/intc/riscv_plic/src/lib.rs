@@ -95,6 +95,31 @@ impl Plic {
         self.irq_handler().init_by_context(ctx);
     }
 
+    /// Reset the PLIC context to a kernel-owned baseline.
+    ///
+    /// Firmware or a previous boot stage may leave interrupt source enable bits
+    /// set. Clear them before enabling supervisor external interrupts so stale
+    /// device IRQs cannot fire before their OS handlers are registered.
+    pub fn reset_context(&mut self, ctx: usize) {
+        self.irq_handler().reset_context(ctx);
+    }
+
+    /// Disable all interrupt sources by clearing their priorities.
+    pub fn disable_all_sources(&mut self, sources: usize) {
+        let sources = sources.min(SOURCE_NUM - 1);
+        for source in 1..=sources {
+            let source = NonZeroU32::new(source as u32).expect("source starts at one");
+            self.set_priority(source, 0);
+        }
+    }
+
+    /// Disable every interrupt source in the given context.
+    pub fn disable_context_sources(&mut self, ctx: usize) {
+        for enable in &self.regs().interrupt_enable[ctx] {
+            enable.set(0);
+        }
+    }
+
     const fn regs(&self) -> &PLICRegs {
         unsafe { self.base.as_ref() }
     }
@@ -224,6 +249,14 @@ impl PlicIrqHandler {
     /// Initialize the PLIC by context, setting the priority threshold to 0.
     pub fn init_by_context(&self, ctx: usize) {
         self.regs().contexts[ctx].priority_threshold.set(0);
+    }
+
+    /// Reset the PLIC context to a kernel-owned baseline.
+    pub fn reset_context(&self, ctx: usize) {
+        for enable in self.regs().interrupt_enable[ctx].iter() {
+            enable.set(0);
+        }
+        self.init_by_context(ctx);
     }
 
     /// Claim an interrupt in `context`, returning its source.

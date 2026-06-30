@@ -39,9 +39,8 @@ pub(crate) fn push_existing_vm(vm: AxVMRef) -> bool {
 
 /// Remove a VM from the process-wide AxVM runtime registry.
 pub(crate) fn remove_existing_vm(vm_id: VMId) -> Option<AxVMRef> {
-    let vm = VM_REGISTRY.lock().remove(&vm_id)?;
     crate::runtime::vcpus::cleanup_vm_vcpus(vm_id);
-    Some(vm)
+    VM_REGISTRY.lock().remove(&vm_id)
 }
 
 /// Return a VM from the process-wide AxVM runtime registry.
@@ -80,6 +79,22 @@ pub(crate) fn active_vcpu_mask(vm_id: VMId) -> Option<usize> {
 /// Inject a virtual interrupt into a VM's vCPU.
 #[cfg(target_arch = "x86_64")]
 pub(crate) fn inject_interrupt(vm_id: VMId, vcpu_id: usize, vector: usize) -> AxResult {
+    crate::runtime::vcpus::queue_interrupt(vm_id, vcpu_id, vector)
+}
+
+/// Inject a virtual interrupt into a VM's vCPU.
+#[cfg(target_arch = "loongarch64")]
+pub(crate) fn inject_vm_vcpu_interrupt(vm_id: VMId, vcpu_id: usize, vector: usize) -> AxResult {
+    use crate::AsVCpuTask;
+
+    let current = crate::host::task::current_task();
+    if let Some(task) = current.try_as_vcpu_task()
+        && task.vm().id() == vm_id
+        && task.vcpu.id() == vcpu_id
+    {
+        return task.vcpu.inject_interrupt(vector);
+    }
+
     crate::runtime::vcpus::queue_interrupt(vm_id, vcpu_id, vector)
 }
 
@@ -139,6 +154,11 @@ impl AxvmRuntime {
     /// Resume a VM selected from the runtime registry.
     pub fn resume_vm(vm_id: VMId) -> AxResult {
         crate::runtime::resume_vm(vm_id)
+    }
+
+    /// Reset a VM selected from the runtime registry.
+    pub fn reset_vm(vm_id: VMId) -> AxResult {
+        crate::runtime::reset_vm(vm_id)
     }
 
     /// Remove a VM selected from the runtime registry.

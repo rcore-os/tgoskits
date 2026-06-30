@@ -14,7 +14,10 @@ use ax_sync::Mutex;
 use axfs_ng_vfs::Location;
 use weak_map::StrongRef;
 
-use super::{AddrSpace, Backend, BackendFileInfo, BackendOps, PopulateCallback, pages_in};
+use super::{
+    AddrSpace, Backend, BackendFileInfo, BackendOps, CloneMapAccounting, MemoryAccounting,
+    PopulateCallback, RssKind, pages_in,
+};
 use crate::mm::flush_tlb_range_sync;
 
 #[doc(hidden)]
@@ -99,12 +102,24 @@ impl FileBackendInner {
             return;
         }
 
-        let pt = aspace.page_table_mut();
-        match pt.cursor().unmap(vaddr) {
-            Ok(_) | Err(PagingError::NotMapped) => {}
-            Err(err) => {
-                warn!("Failed to unmap page {:?}: {:?}", vaddr, err);
+        let kind = if self.shared {
+            RssKind::Shmem
+        } else {
+            RssKind::File
+        };
+        let unmapped = {
+            let pt = aspace.page_table_mut();
+            match pt.cursor().unmap(vaddr) {
+                Ok(_) => true,
+                Err(PagingError::NotMapped) => false,
+                Err(err) => {
+                    warn!("Failed to unmap page {:?}: {:?}", vaddr, err);
+                    false
+                }
             }
+        };
+        if unmapped {
+            aspace.rss().dec(kind, 1);
         }
     }
 
@@ -204,6 +219,14 @@ impl FileBackend {
         self.0.shared
     }
 
+    fn rss_kind(&self) -> RssKind {
+        if self.0.shared {
+            RssKind::Shmem
+        } else {
+            RssKind::File
+        }
+    }
+
     pub fn cache(&self) -> &CachedFile {
         &self.0.cache
     }
@@ -262,15 +285,27 @@ impl BackendOps for FileBackend {
         &self,
         _range: VirtAddrRange,
         flags: MappingFlags,
+        _acct: Option<&MemoryAccounting>,
         _pt: &mut PageTableCursor,
     ) -> AxResult {
         self.check_flags(flags)
     }
 
-    fn unmap(&self, range: VirtAddrRange, pt: &mut PageTableCursor) -> AxResult {
+    fn unmap(
+        &self,
+        range: VirtAddrRange,
+        acct: Option<&MemoryAccounting>,
+        pt: &mut PageTableCursor,
+    ) -> AxResult {
+        let kind = self.rss_kind();
         for addr in pages_in(range, PageSize::Size4K)? {
             match pt.unmap(addr) {
-                Ok(_) | Err(PagingError::NotMapped) => {}
+                Ok(_) => {
+                    if let Some(acct) = acct {
+                        acct.dec(kind, 1);
+                    }
+                }
+                Err(PagingError::NotMapped) => {}
                 Err(err) => {
                     warn!("Failed to unmap page {:?}: {:?}", addr, err);
                     return Err(err.into());
@@ -294,21 +329,17 @@ impl BackendOps for FileBackend {
         range: VirtAddrRange,
         flags: MappingFlags,
         access_flags: MappingFlags,
+        acct: Option<&MemoryAccounting>,
         pt: &mut PageTableCursor,
     ) -> AxResult<(usize, Option<PopulateCallback>)> {
         let mut pages = 0;
         let mut to_be_evicted = Vec::new();
+        let kind = self.rss_kind();
         let file_data = self.0.file_data.lock();
         let start_page =
             ((range.start - file_data.start) / PAGE_SIZE_4K) as u32 + file_data.offset_page;
-        // Pages whose file offset is at or beyond EOF must not be eagerly backed
-        // by a physical frame: a shared file mapping reads as SIGBUS past the last
-        // file page (Linux semantics). Without this bound an eager populate over a
-        // sparse mapping far larger than the file (e.g. bbolt's multi-GB
-        // `InitialMmapSize` over a tiny etcd db) allocates a frame for every page
-        // in the mapping and exhausts RAM. `div_ceil` keeps the final partial page;
-        // its tail beyond EOF is zeroed by `page_or_insert` (which now clears the
-        // short-read remainder of the page rather than leaving stale frame contents).
+        // Pages at or beyond EOF must not be eagerly backed (Linux SIGBUS past EOF;
+        // without this bound MAP_POPULATE over a sparse mapping exhausts RAM).
         let eof_page = self
             .0
             .cache
@@ -318,11 +349,6 @@ impl BackendOps for FileBackend {
         for (i, addr) in pages_in(range, PageSize::Size4K)?.enumerate() {
             let pn = start_page + i as u32;
             if (pn as u64) >= eof_page {
-                // Beyond EOF: leave unmapped so a real access faults instead of
-                // reading an eagerly-preallocated zero page. Linux delivers SIGBUS
-                // for such an access; StarryOS currently raises SIGSEGV for any
-                // unbacked fault (a dedicated Bus path is a separate fault-handler
-                // gap). Either way the page is not pre-backed — that is the OOM fix.
                 continue;
             }
             match pt.query(addr) {
@@ -366,6 +392,9 @@ impl BackendOps for FileBackend {
                             PageSize::Size4K,
                             map_flags,
                         )?;
+                        if let Some(acct) = acct {
+                            acct.inc(kind, 1);
+                        }
                         pages += 1;
                         Ok(())
                     })?;
@@ -421,6 +450,7 @@ impl BackendOps for FileBackend {
         _old_pt: &mut PageTableCursor,
         _new_pt: &mut PageTableCursor,
         new_aspace: &Arc<Mutex<AddrSpace>>,
+        _acct: CloneMapAccounting<'_>,
     ) -> AxResult<Backend> {
         let start = self.0.file_data.lock().start;
         Ok(Backend::File(self.with_start(start, new_aspace)))

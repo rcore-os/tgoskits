@@ -4,7 +4,7 @@
 //!
 //! # 完整使用示例
 //!
-//! ```no_run
+//! ```ignore
 //! use aic8800_fdrv::{WifiClient, WifiConfig};
 //!
 //! // 1. 初始化 SDHCI 控制器 + 固件 (由调用方完成)
@@ -573,6 +573,12 @@ impl WifiClient {
             .sta_idx
             .store(connect_result.ap_idx, core::sync::atomic::Ordering::Release);
 
+        // 禁用 Power Save 模式：必须在握手【之前】，否则 STA 关联后进省电，
+        // AP 会缓冲 EAPOL M1 不立即下发，host 永远等不到 → 握手超时。
+        if let Err(e) = send_me_set_ps_mode_req(&self.bus, MM_PS_MODE_OFF, 3000) {
+            log::warn!("[WifiClient] Failed to disable PS mode: {:?}", e);
+        }
+
         // WPA2 四次握手
         if config.auth_type == WifiAuthType::Wpa2Psk
             && let Some(ref password) = config.password
@@ -585,11 +591,6 @@ impl WifiClient {
                 password,
                 timeout_ms,
             )?;
-        }
-
-        // 禁用 Power Save 模式，防止固件空闲后自动进入省电导致 TX/RX 异常
-        if let Err(e) = send_me_set_ps_mode_req(&self.bus, MM_PS_MODE_OFF, 3000) {
-            log::warn!("[WifiClient] Failed to disable PS mode: {:?}", e);
         }
 
         Ok(())

@@ -66,3 +66,8 @@ loongarch64-axvisor-guest-tests.md
 
 # GitHub page snapshots accidentally saved into the repo
 *rcore-os_tgoskits*.html
+
+# Resource monitor local artifacts
+/logs/offline-monitor/
+/images/linux-qemu/
+offline-monitor-analysis*.html

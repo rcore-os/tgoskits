@@ -503,23 +503,23 @@ mod tests {
 
         // 测试 USB3OTG_CFG 位字段
         let value =
-            USB3OTG_CFG::PIPE_ENABLE::Enable.value + USB3OTG_CFG::U3_PORT_DISABLE::Disable.value;
+            USB3OTG_CFG::PIPE_ENABLE::Enable.value + USB3OTG_CFG::U3_PORT_DISABLE::Enable.value;
         assert_eq!(value, (1 << 15) | (0 << 8));
     }
 
     #[test]
     fn test_enable_u3_port_value() {
-        // 0x0188 = bit 15 = 1, bit 8 = 0
-        let expected: u32 = 0x0188;
+        // bit 15 = PIPE_ENABLE, bit 8 = 0 keeps the U3 port enabled.
+        let expected: u32 = 0x8000;
         let value =
-            USB3OTG_CFG::PIPE_ENABLE::Enable.value + USB3OTG_CFG::U3_PORT_DISABLE::Disable.value;
+            USB3OTG_CFG::PIPE_ENABLE::Enable.value + USB3OTG_CFG::U3_PORT_DISABLE::Enable.value;
         assert_eq!(value, expected);
     }
 
     #[test]
     fn test_disable_u3_port_value() {
-        // 0x1100 = bit 15 = 1, bit 12 = 1
-        let expected: u32 = 0x1100;
+        // bit 15 = PIPE_ENABLE, bit 12 = PHY_DISABLE.
+        let expected: u32 = 0x9000;
         let value =
             USB3OTG_CFG::PIPE_ENABLE::Enable.value + USB3OTG_CFG::PHY_DISABLE::Disable.value;
         assert_eq!(value, expected);

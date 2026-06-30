@@ -13,6 +13,7 @@ qemu_runner=""
 linux_target=""
 lld_linker=""
 lld_linker_dir=""
+gcc_install_dir=""
 
 require_env() {
     local name="$1"
@@ -76,6 +77,10 @@ find_qemu_runner() {
             qemu_name=qemu-loongarch64
             linux_target=loongarch64-linux-musl
             ;;
+        x86_64)
+            qemu_name=qemu-x86_64
+            linux_target=x86_64-linux-musl
+            ;;
         *)
             echo "error: unsupported gdb-smoke arch: $arch" >&2
             exit 1
@@ -112,6 +117,14 @@ run_guest_apk_with_retry() {
     done
 }
 
+find_gcc_install_dir() {
+    gcc_install_dir="$(find "$staging_root/usr/lib/gcc" -name 'crtbeginT.o' -exec dirname {} \; 2>/dev/null | head -1)"
+    if [[ -z "$gcc_install_dir" ]]; then
+        echo "error: could not locate GCC crt objects in staging root" >&2
+        exit 1
+    fi
+}
+
 install_guest_packages() {
     local guest_apk="$staging_root/sbin/apk"
 
@@ -136,7 +149,7 @@ install_guest_packages() {
         --no-interactive \
         --force-no-chroot \
         --scripts=no \
-        add gdb gcc musl-dev
+        add gdb gcc musl-dev ncurses-terminfo-base
 }
 
 compile_target() {
@@ -149,6 +162,8 @@ compile_target() {
         --target="$linux_target" \
         --sysroot="$staging_root" \
         --gcc-toolchain="$staging_root/usr" \
+        -B"$gcc_install_dir" \
+        -L"$gcc_install_dir" \
         --ld-path="$lld_linker" \
         -static \
         "$@" \
@@ -221,6 +236,8 @@ populate_overlay() {
         "$app_dir/native/src/main.c" \
         /usr/bin/gdb-native-smoke-target \
         -Wall -Wextra -Werror -O0 -g
+    install -Dm0644 "$app_dir/native/src/main.c" \
+        "$overlay_dir/workspace/apps/starry/gdb-smoke/native/src/main.c"
     compile_target \
         "$app_dir/native-thread/src/main.c" \
         /usr/bin/gdb-native-thread-target \
@@ -246,6 +263,10 @@ populate_overlay() {
         mkdir -p "$overlay_dir/usr/share"
         cp -a "$staging_root/usr/share/gdb" "$overlay_dir/usr/share/"
     fi
+    if [[ -d "$staging_root/usr/share/terminfo" ]]; then
+        mkdir -p "$overlay_dir/usr/share"
+        cp -a "$staging_root/usr/share/terminfo" "$overlay_dir/usr/share/"
+    fi
     if [[ -d "$staging_root/usr/lib/python3.12" ]]; then
         mkdir -p "$overlay_dir/usr/lib"
         cp -a "$staging_root/usr/lib/python3.12" "$overlay_dir/usr/lib/"
@@ -253,6 +274,10 @@ populate_overlay() {
 
     install -Dm0755 "$app_dir/native/gdb-native-smoke.gdb" \
         "$overlay_dir/usr/bin/gdb-native-smoke.gdb"
+    install -Dm0755 "$app_dir/native/gdb-native-tui.sh" \
+        "$overlay_dir/usr/bin/gdb-native-tui.sh"
+    install -Dm0644 "$app_dir/native/gdb-native-tui.gdb" \
+        "$overlay_dir/usr/bin/gdb-native-tui.gdb"
     install -Dm0755 "$app_dir/native-thread/gdb-native-threads.gdb" \
         "$overlay_dir/usr/bin/gdb-native-threads.gdb"
     install -Dm0644 "$app_dir/gdbserver/gdbserver-smoke.gdb" \
@@ -272,4 +297,5 @@ ensure_host_packages
 extract_base_rootfs
 find_qemu_runner
 install_guest_packages
+find_gcc_install_dir
 populate_overlay

@@ -5,9 +5,13 @@ use aarch64_cpu::{
 use aarch64_cpu_ext::asm::tlb::*;
 use page_table_generic::VirtAddr;
 
-use crate::{arch::entry::el_entry, mem::PageTableInfo};
+use crate::{
+    arch::entry::{el_entry, eret_with_timer_mode_arg},
+    mem::PageTableInfo,
+    timer::ArchTimerMode,
+};
 
-pub fn switch_to_elx() {
+pub fn switch_to_elx() -> ! {
     unsafe extern "C" {
         fn __cpu0_stack_top();
     }
@@ -36,13 +40,12 @@ pub fn switch_to_elx() {
 
             ELR_EL3.set(el_entry as _);
             SP_EL2.set(sp as _);
-            barrier::isb(barrier::SY);
-            eret();
+            eret_with_timer_mode_arg(ArchTimerMode::El2HypPhys);
         }
     }
 
     // Call el_entry directly if we're already in EL2
-    el_entry();
+    el_entry(ArchTimerMode::El2HypPhys as usize);
 }
 
 pub fn switch_to_elx_secondary(cpu_meta_paddr: usize) -> ! {

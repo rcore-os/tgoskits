@@ -1,0 +1,8 @@
+cmake_minimum_required(VERSION 3.20)
+project(perf-hw-fork-exit C)
+set(CMAKE_C_STANDARD 11)
+set(CMAKE_C_STANDARD_REQUIRED ON)
+set(CMAKE_C_EXTENSIONS OFF)
+add_executable(perf-hw-fork-exit src/perf_hw_fork_exit.c)
+target_compile_options(perf-hw-fork-exit PRIVATE -Wall -Wextra -Werror)
+install(TARGETS perf-hw-fork-exit RUNTIME DESTINATION usr/bin/starry-test-suit)

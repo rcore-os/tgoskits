@@ -7,10 +7,10 @@ use ::xhci::{
     registers::doorbell,
     ring::trb::{command, event::CommandCompletion},
 };
+use ax_kspin::SpinRwLock as RwLock;
 use dma_api::DmaDirection;
 use futures::{FutureExt, future::BoxFuture};
 use mbarrier::mb;
-use spin::RwLock;
 use usb_if::err::{TransferError, USBError};
 
 use super::{

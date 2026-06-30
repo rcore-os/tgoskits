@@ -17,7 +17,7 @@ define default_platform_package
   $(if $(filter x86_64,$(ARCH)),$(error x86_64 no longer has a repo-owned static default platform; use cargo xtask for plat-dyn builds or pass MYPLAT/PLAT_CONFIG explicitly),\
     $(if $(filter aarch64,$(ARCH)),$(error AArch64 no longer has a repo-owned static default platform; use cargo xtask for plat-dyn builds or pass MYPLAT/PLAT_CONFIG explicitly),\
       $(if $(filter riscv64,$(ARCH)),$(error RISC-V QEMU no longer has a repo-owned static default platform; use cargo xtask for plat-dyn builds or pass MYPLAT/PLAT_CONFIG explicitly),\
-        $(if $(filter loongarch64,$(ARCH)),ax-plat-loongarch64-qemu-virt,\
+        $(if $(filter loongarch64,$(ARCH)),$(error LoongArch QEMU no longer has a repo-owned static default platform; use cargo xtask for plat-dyn builds or pass MYPLAT/PLAT_CONFIG explicitly),\
           $(error "ARCH" must be one of "x86_64", "riscv64", "aarch64" or "loongarch64")))))
 endef
 

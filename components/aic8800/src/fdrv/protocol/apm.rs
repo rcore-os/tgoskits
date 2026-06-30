@@ -287,3 +287,28 @@ pub fn send_me_sta_add_req(
     }
     Ok(sta_idx)
 }
+
+/// 发送 MM_STA_DEL_REQ:从固件 STA 表中删除一个已注册 STA(对应 vendor
+/// rwnx_send_mm_sta_del_req)。STA deauth/disassoc 后必须调用,否则固件继续占用
+/// 该 sta_idx 槽位,下一个 STA 会被分到更大的 idx——而本驱动下行数据帧用全局
+/// 单一 sta_idx 路由(hostdesc staid),非 0 槽位的下行无法送达,导致重连后
+/// ping/SSH 不通。vendor struct mm_sta_del_req { u8 sta_idx }。
+pub fn send_mm_sta_del_req(
+    bus: &Arc<WifiBus>,
+    sta_idx: u8,
+    timeout_ms: u64,
+) -> Result<(), CmdError> {
+    let param = [sta_idx];
+    let cfm = send_cmd(bus, MM_STA_DEL_REQ, TASK_MM, &param, timeout_ms)?;
+    // mm_sta_del_cfm: status@0
+    let status = cfm.first().copied().unwrap_or(0xFF);
+    log::info!(
+        "[apm] MM_STA_DEL_CFM: sta_idx={} status={}",
+        sta_idx,
+        status
+    );
+    if status != 0 {
+        return Err(CmdError::InvalidResponse);
+    }
+    Ok(())
+}

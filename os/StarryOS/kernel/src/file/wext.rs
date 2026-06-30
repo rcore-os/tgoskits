@@ -20,7 +20,7 @@ use alloc::{string::String, vec::Vec};
 use core::mem::MaybeUninit;
 
 use ax_errno::{AxError, AxResult};
-use spin::Mutex;
+use ax_kspin::SpinNoIrq as Mutex;
 use starry_vm::{vm_read_slice, vm_write_slice};
 
 // ---------------------------------------------------------------------------

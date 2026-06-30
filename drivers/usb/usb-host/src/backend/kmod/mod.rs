@@ -39,6 +39,7 @@ impl USBHost {
         let b = Core::new(backend);
         Self {
             backend: Box::new(b),
+            initialized: false,
         }
     }
 }

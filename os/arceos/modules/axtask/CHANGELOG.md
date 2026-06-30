@@ -7,6 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.23](https://github.com/rcore-os/tgoskits/compare/ax-task-v0.5.22...ax-task-v0.5.23) - 2026-06-27
+
+### Fixed
+
+- *(ax-task)* clear delivered remote reschedule requests ([#1381](https://github.com/rcore-os/tgoskits/pull/1381))
+
+### Other
+
+- *(platform)* remove ax-config from dynamic runtime path ([#1387](https://github.com/rcore-os/tgoskits/pull/1387))
+- *(serial)* align IRQ model with dev ([#1265](https://github.com/rcore-os/tgoskits/pull/1265))
+
+## [0.5.22](https://github.com/rcore-os/tgoskits/compare/ax-task-v0.5.21...ax-task-v0.5.22) - 2026-06-23
+
+### Other
+
+- updated the following local packages: ax-hal, ax-hal, ax-lockdep, ax-kspin, ax-alloc, axpoll, ax-ipi, ax-mm
+
+## [0.5.21](https://github.com/rcore-os/tgoskits/compare/ax-task-v0.5.20...ax-task-v0.5.21) - 2026-06-22
+
+### Added
+
+- *(poll)* add irq-safe deferred notifications ([#1278](https://github.com/rcore-os/tgoskits/pull/1278))
+
+### Fixed
+
+- *(ax-task)* prioritize ready poll_io before interrupt ([#1337](https://github.com/rcore-os/tgoskits/pull/1337))
+
+### Other
+
+- *(ax-runtime)* adapt submit-poll fs block irq registration ([#1228](https://github.com/rcore-os/tgoskits/pull/1228))
+
 ## [0.5.20](https://github.com/rcore-os/tgoskits/compare/ax-task-v0.5.19...ax-task-v0.5.20) - 2026-06-12
 
 ### Fixed

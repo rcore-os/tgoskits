@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.7](https://github.com/rcore-os/tgoskits/compare/rockchip-npu-v0.2.6...rockchip-npu-v0.2.7) - 2026-06-27
+
+### Added
+
+- *(rdif-block)* add owned DMA queue primitives
+
+### Fixed
+
+- *(rknpu)* honor GEM cache flags for mmap ([#1364](https://github.com/rcore-os/tgoskits/pull/1364))
+
+## [0.2.6](https://github.com/rcore-os/tgoskits/compare/rockchip-npu-v0.2.5...rockchip-npu-v0.2.6) - 2026-06-23
+
+### Other
+
+- updated the following local packages: dma-api
+
 ## [0.2.5](https://github.com/rcore-os/tgoskits/compare/rockchip-npu-v0.2.4...rockchip-npu-v0.2.5) - 2026-06-12
 
 ### Other

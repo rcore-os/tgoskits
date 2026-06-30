@@ -11,7 +11,7 @@ sidebar_label: "rdrive + rdif 驱动框架"
 
 ## 非目标与硬约束
 
-本轮只处理宿主侧物理设备，包括 ArceOS、StarryOS、Axvisor 在真实平台或 QEMU 平台上使用的块设备、网卡、中断控制器、时钟、显示、输入、vsock、PCIe、USB host 等设备。
+本轮只处理宿主侧物理设备，包括 ArceOS、StarryOS、Axvisor 在真实平台或 QEMU 平台上使用的块设备、网卡、中断控制器、pinctrl/GPIO、时钟、显示、输入、vsock、PCIe、USB host 等设备。
 
 架构硬约束如下：
 
@@ -56,7 +56,7 @@ flowchart TB
         RdifDisplay["rdif-display"]
         RdifInput["rdif-input"]
         RdifVsock["rdif-vsock"]
-        RdifPlatform["rdif-intc / pcie / clk / timer / serial"]
+        RdifPlatform["rdif-intc / pinctrl / pcie / clk / timer / serial"]
     end
 
     subgraph Services["领域 service"]
@@ -161,7 +161,7 @@ sequenceDiagram
 
 ## IRQ 解析与统一注册模型
 
-修改后的 IRQ 路径把平台中断解析收敛到 `ax-driver` probe / 注册阶段。FDT、ACPI、PCI、manual/static 注册都会先得到一个 `BindingInfo`，再经 `register_*_with_info` 注册到 `rdrive`。`BindingInfo` 是纯注册载荷，只公开已经解析好的 `Option<usize>` IRQ number，不再携带 FDT/ACPI/PCI IRQ source 描述，也不直接执行平台解析副作用；解析和 interrupt-controller setup 由 `ax-driver` 的 binding resolver / PCI resolver 完成。`rdrive` 只把 ACPI/FDT probe metadata 交给 resolver，不保存平台 IRQ route/source 记录。
+IRQ 路径使用 domain 化的 `IrqId` 作为运行时注册 key。FDT、ACPI、PCI、manual/static 注册都会先得到一个 `BindingInfo`，再经 `register_*_with_info` 注册到 `rdrive`。`BindingInfo` 可以携带已经解析好的 `IrqId`，也可以携带待平台解析的 firmware source，例如 `AcpiGsiRoute` 或 `FdtInterrupt`；运行时在真正注册 handler 前调用 `ax_hal::irq::resolve_irq_source(...)`，由平台 IRQ resolver 解析并执行 interrupt-controller setup。`rdrive` 只把 ACPI/FDT probe metadata 交给 resolver，不把平台 IRQ route/source 记录混进自己的设备 registry。
 
 ```mermaid
 sequenceDiagram
@@ -177,11 +177,8 @@ sequenceDiagram
 
     alt FDT device
         Probe->>Resolver: binding_info_from_fdt(FdtInfo)
-        Resolver->>Probe: read first interrupts() entry
-        Resolver->>Registry: get Intc by interrupt_parent phandle
-        Registry-->>Resolver: rdif_intc::Intc
-        Resolver->>Intc: setup_irq_by_fdt(specifier)
-        Intc-->>Resolver: irq number
+        Resolver->>Probe: read first interrupts() entry + interrupt-parent
+        Resolver-->>Binding: BindingIrq::fdt_interrupt_with_controller(parent, specifier)
     else ACPI device
         Probe->>Resolver: binding_info_from_acpi(AcpiInfo)
         Resolver->>Probe: read first AcpiGsiRoute
@@ -191,28 +188,28 @@ sequenceDiagram
         Intc-->>Resolver: irq number
     else PCI endpoint
         Probe->>Resolver: binding_info_from_pci(PciInfo, requirement)
-        Resolver->>Pci: resolve_intx_irq(PciInfo)
-        Pci->>Intc: setup_irq_by_acpi/_by_fdt(route)
-        Pci-->>Resolver: Option<usize>
+        Resolver->>Pci: resolve_intx_binding(PciInfo)
+        Pci-->>Resolver: Option<BindingIrq>
     else Manual / Static
-        Probe->>Binding: BindingInfo::empty() / with_irq(...)
+        Probe->>Binding: BindingInfo::empty() / with_irq_id(...) / with_irq(...)
     end
 
-    Resolver-->>Probe: BindingInfo(irq = Option usize)
+    Resolver-->>Probe: BindingInfo(irq = Option BindingIrq)
     Probe->>Registry: register_*_with_info(device, BindingInfo)
-    Registry-->>Probe: Option<usize>
-    Runtime->>Registry: get PlatformDevice
-    Registry-->>Runtime: device + irq_num()
-    Runtime->>Hal: request_shared_irq(irq, handler)
+    Runtime->>Registry: take PlatformDevice
+    Registry-->>Runtime: device + BindingIrq
+    Runtime->>Hal: resolve_irq_source(source)
+    Hal-->>Runtime: IrqId
+    Runtime->>Hal: request_shared_irq(IrqId, handler)
 ```
 
-这个边界让平台解析和中断控制器 setup 留在 `ax-driver` 侧：
+这个边界让平台 IRQ namespace 解析留在平台 resolver 侧：
 
-- FDT 设备读取第一个 `interrupts()` 项，通过 `interrupt_parent` phandle 找到 `rdif-intc`，并在 probe 时调用 `setup_irq_by_fdt()`。
-- ACPI 设备从 `AcpiInfo` 读取首个 `AcpiGsiRoute`，通过能匹配该 route 的 `rdif-intc` 调用 `setup_irq_by_acpi()`，把 trigger/polarity/vector 等控制器参数配置好后只返回数字 IRQ。
-- PCI 设备先在枚举阶段计算 INTx swizzle route，再由 `ax-driver::pci::resolve_intx_irq()` 按 ACPI route、FDT `interrupt-map`、已注册 legacy route、`interrupt_line` fallback 的顺序解析；ACPI/FDT 命中后仍交给对应 `rdif-intc` 完成 setup。
-- 无中断的设备注册为 `None`；声明了中断但无法解析的 FDT 设备返回 probe error；PCI required IRQ 最终无结果时返回 probe error，optional IRQ 允许注册为 `None`。
-- `ax-runtime`、`ax-hal`、`ax-net-ng`、StarryOS usbfs 等上层只消费 `Option<usize>` / `usize`，不再处理 FDT/ACPI/PCI IRQ source。
+- FDT 设备读取第一个 `interrupts()` 项并连同 `interrupt-parent` 保存为 `BindingIrq::fdt_interrupt_with_controller(...)`；generic driver probe 不调用 `rdif_intc::setup_irq_by_fdt()` 取得裸数字，避免把 GIC/PLIC/PCH 等控制器本地线号混进 legacy IRQ namespace。
+- ACPI PCI INTx route 保存为 `BindingIrq::acpi_gsi_route(...)`，保留 trigger、polarity、controller 和 input 等元数据；x86 IOAPIC 等平台 resolver 使用这些信息执行控制器 setup，而不是把 route flatten 成裸 GSI。
+- PCI 设备先在枚举阶段计算 INTx swizzle route，再由 `ax-driver::pci::resolve_intx_binding()` 按 ACPI route、FDT `interrupt-map`、已注册 legacy route、`interrupt_line` fallback 的顺序返回 `BindingIrq`。静态或未 domain 化平台仍可返回 legacy IRQ 作为兼容入口。
+- 无中断的设备注册为 `None`；PCI required IRQ 最终无结果时返回 probe error，optional IRQ 允许注册为 `None`。
+- `ax-runtime`、`ax-hal`、`ax-net-ng`、StarryOS usbfs 等上层以 `IrqId` 注册 handler。需要处理 firmware source 的地方应先经 `resolve_irq_source(...)`，不应自行做 `usize` 算术换算。
 
 网络 IRQ 的 runtime 适配也遵循同一方向。`ax-net-ng` 只暴露网络领域自己的 `EthernetIrqAction`、`EthernetIrqOutcome` 和注册错误类型，不再在公开 registrar trait 中泄漏 `ax-hal::irq::{RawIrqHandler, IrqContext, IrqReturn, IrqError}`。`ax-runtime` 持有 HAL IRQ registration，并把 HAL raw handler trampoline 适配到 `EthernetIrqAction`；因此网络 runtime 只描述“是否需要唤醒 poll 方”，HAL ABI 留在 ArceOS runtime 边界内。
 
@@ -227,7 +224,13 @@ sequenceDiagram
 | 显示 | `rdif-display` | `rd-display` | display service、Starry fb |
 | 输入 | `rdif-input` | `rd-input` | input service、Starry input |
 | vsock | `rdif-vsock` | `rd-vsock` | vsock service |
-| 平台设备 | `rdif-intc`、`rdif-pcie`、`rdif-clk`、`rdif-timer`、`rdif-systick`、`rdif-serial` | 按需 | HAL、Axvisor backend、平台 glue |
+| 平台设备 | `rdif-intc`、`rdif-pinctrl`、`rdif-pcie`、`rdif-clk`、`rdif-timer`、`rdif-systick`、`rdif-serial` | 按需 | HAL、Axvisor backend、平台 glue |
+
+`rdif-pinctrl` 是 pinctrl、GPIO、GPIO IRQ 的能力边界，分成三个独立 endpoint：`Interface`、`GpioBank`、`GpioIrqHandler`。`Interface` 只描述 pins/groups/functions/configs/states 这些 Linux pinctrl 模型中的稳定语义，但用 `PinId`、`GroupId`、`FunctionId`、`GpioLineId`、`MuxValue` 和 typed `PinConfig` 表达，不引入全局字符串 registry、packed `unsigned long` config、devm/module/debugfs 语义。`PinState` 应用顺序固定为先 mux 再 pin config。
+
+GPIO line 所有权通过 `GpioLineHandle` 表达。consumer 先向 `GpioBank` request line，后续 direction/read/write 必须带 handle，避免裸 `PinId` 被多个调用方重复配置。GPIO IRQ 与 GPIO control path 分离：`Interface::take_irq_handler(source_id)` 把 `Box<dyn GpioIrqHandler>` 所有权移交给 OS runtime，runtime 再把 handler move 进 IRQ registration closure；task/control path 不共享 handler。`GpioIrqHandler::handle_irq()` 只返回 pending line mask、edge/level/error/overflow 事件，不做 OS wakeup、任务调度、IRQ 注册或 GPIO consumer 回调。
+
+FDT/ACPI 解析不进入 `rdif-pinctrl` portable core。`rdrive` / `ax-driver` probe glue 负责把 FDT consumer node 的 `pinctrl-names` + `pinctrl-N`、SoC-specific `rockchip,pins`、`gpio-ranges`、`gpios` / `gpio` 等解析成 `PinState`、`MuxSetting`、`PinConfig` 或 `GpioLineId`。ACPI 第一版只暴露 `AcpiPinStateSpec` / `AcpiGpioLineSpec` 这类 typed metadata；仓库尚无 Linux-style ACPI pinctrl state parser 时，probe glue 必须返回明确的 `PinctrlError::UnsupportedFirmware(FirmwareKind::Acpi)`，不能静默 fallback。
 
 `rdif-block` 的块请求不暴露 Linux block layer 的 512B sector 公共单位，而使用真实设备的 `lba` / `block_count` / `logical_block_size`。OS glue 负责把上层 byte offset、FS block、Linux-like sector 或分区 region 转换成设备 LBA。接口保留 blk-mq 风格的结构能力：设备可报告 `QueueTopology`，OS 可创建一个或多个 queue，每个 queue 使用 queue-local `RequestId`/tag，经 `submit_request()` 提交、经 `poll_request()` 回收完成。
 
@@ -379,7 +382,7 @@ src/
 | 文件 | 当前问题 | 拆分方向 |
 | --- | --- | --- |
 | `platforms/axplat-dyn/src/drivers/pci/rk3588.rs` | 单文件超过 600 行 | RC init、ATU/window、MSI/IRQ、config space、FDT glue |
-| `platforms/axplat-dyn/src/drivers/blk/rockchip_sd.rs` | 单文件超过 600 行 | probe/FDT、clock/tuning、card init、rdif-block adapter |
+| `drivers/ax-driver/src/block/rockchip/sd/mod.rs` | 单文件超过 600 行 | probe/FDT、clock/tuning、card init、rdif-block adapter |
 | `platforms/axplat-dyn/src/drivers/blk/mod.rs` | 容器、adapter、IRQ、FDT decode 混杂 | registry、adapter、irq、probe |
 | `platforms/axplat-dyn/src/drivers/mod.rs` | 设备收集、iomap、DMA 混杂 | device collection、iomap、dma |
 

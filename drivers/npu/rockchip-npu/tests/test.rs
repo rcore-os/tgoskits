@@ -44,7 +44,7 @@ mod tests {
     // static IRQ_STATUS: AtomicU32 = AtomicU32::new(0);
 
     // fn dma_device() -> DeviceDma {
-    //     DeviceDma::new(u32::MAX as u64, kernel_dma_op())
+    //     DeviceDma::new_legacy(u32::MAX as u64, kernel_dma_op())
     // }
 
     // #[test]

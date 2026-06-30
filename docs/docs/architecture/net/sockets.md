@@ -303,11 +303,24 @@ fn udp_bind_available(binds: &HashMap<UdpBindKey, SocketHandle>, key: UdpBindKey
 TCP 除了 listen table，还需要记录“已经 bind 但还没有 listen/connect 完成”的端口所有权：
 
 ```rust
-static TCP_BOUND_PORTS: LazyLock<Mutex<HashMap<u16, Vec<Option<IpAddress>>>>> =
+static TCP_BOUND_PORTS: LazyLock<Mutex<HashMap<u16, HashSet<Option<IpAddress>>>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
 fn listen_addrs_conflict(a: Option<IpAddress>, b: Option<IpAddress>) -> bool {
     a.is_none() || b.is_none() || a == b
+}
+
+fn register_tcp_bound(endpoint: IpListenEndpoint) -> AxResult {
+    let mut bound_ports = TCP_BOUND_PORTS.lock();
+    let bound_addrs = bound_ports.entry(endpoint.port).or_default();
+    if bound_addrs
+        .iter()
+        .any(|&addr| listen_addrs_conflict(addr, endpoint.addr))
+    {
+        return Err(AxError::AddrInUse);
+    }
+    bound_addrs.insert(endpoint.addr);
+    Ok(())
 }
 ```
 
@@ -330,21 +343,22 @@ fn tcp_port_available(port: u16) -> bool {
 struct ListenTableEntryInner {
     listen_endpoint: IpListenEndpoint,
     backlog: usize,
-    syn_queue: VecDeque<PendingTcp>,
+    syn_queue: VecDeque<AcceptedTcp>,
     accept_poll: Arc<PollSet>,
 }
 
 pub struct ListenTable {
-    tcp: Box<[ListenTableEntry]>,
+    tcp: Mutex<HashMap<u16, ListenTableEntry>>,
 }
 ```
 
-`tcp` 是 65536 个端口 bucket，每个 bucket 存放该端口下的多个具体地址 listener。`listen()` 检查 wildcard/specific 冲突后插入 entry：
+`tcp` 按端口懒创建 listen bucket，每个 bucket 存放该端口下的多个具体地址 listener。`listen()` 检查 wildcard/specific 冲突后插入 entry：
 
 ```rust
 pub fn listen(&self, listen_endpoint: IpListenEndpoint, backlog: usize) -> AxResult {
     let port = listen_endpoint.port;
-    let mut entries = self.tcp[port as usize].lock();
+    let entries = self.listen_entry_or_create(port);
+    let mut entries = entries.lock();
     if entries
         .iter()
         .any(|entry| listen_addrs_conflict(entry.listen_endpoint.addr, listen_endpoint.addr))
@@ -368,7 +382,9 @@ pub fn accept(
     listen_endpoint: IpListenEndpoint,
     sockets: &mut SocketSet<'_>,
 ) -> AxResult<AcceptedTcp> {
-    let entries = self.listen_entry(listen_endpoint.port);
+    let Some(entries) = self.listen_entry(listen_endpoint.port) else {
+        return Err(AxError::InvalidInput);
+    };
     let mut table = entries.lock();
     let Some(entry) = table
         .iter_mut()
@@ -377,17 +393,17 @@ pub fn accept(
         return Err(AxError::InvalidInput);
     };
 
-    let syn_queue: &mut VecDeque<PendingTcp> = &mut entry.syn_queue;
+    let syn_queue: &mut VecDeque<AcceptedTcp> = &mut entry.syn_queue;
     let mut idx = 0;
     while idx < syn_queue.len() {
-        let handle = syn_queue[idx].accepted.handle;
+        let handle = syn_queue[idx].handle;
         if is_closed_without_data(sockets, handle) {
             syn_queue.swap_remove_front(idx);
             sockets.remove(handle);
             continue;
         }
         if is_acceptable(sockets, handle) {
-            return Ok(syn_queue.swap_remove_front(idx).unwrap().accepted);
+            return Ok(syn_queue.swap_remove_front(idx).unwrap());
         }
         idx += 1;
     }
@@ -598,19 +614,15 @@ Unix transport 支持 Linux 风格的 credentials 查询：
 
 ### Vsock Socket
 
-vsock 是可选 feature，不属于 IP 协议，也不通过 smoltcp poll。facade 只把 `SocketOps` 映射到 `VsockTransport`：
+vsock 是可选 feature，不属于 IP 协议，也不通过 smoltcp poll。facade 只把 `SocketOps` 映射到 stream transport：
 
 ```rust
-pub enum VsockTransport {
-    Stream(VsockStreamTransport),
-}
-
 pub struct VsockSocket {
-    transport: VsockTransport,
+    transport: VsockStreamTransport,
 }
 ```
 
-核心连接状态位于 `vsock::connection_manager`，设备事件由 vsock 设备层推进。transport enum 提供 stream variant，并为后续 datagram 扩展保留结构。
+核心连接状态位于 `vsock::connection_manager`，设备事件由 vsock 设备层推进。
 
 #### Vsock Connection Manager
 
@@ -646,7 +658,6 @@ vsock 设备层还有一个临时 RX buffer 和 pending event queue：
 
 - `VSOCK_RX_TMPBUF_SIZE = 4 KiB`：poll task 从 `rdif_vsock::Interface` 拉取事件时使用的临时接收缓冲。
 - `PENDING_EVENTS`：当事件暂时无法完整交付给 manager（例如目标连接 RX ring 空间不足）时保存事件，后续 poll 周期继续处理，避免直接丢弃设备事件。
-- `VsockStats` / `get_vsock_stats()`：导出 connection manager 的连接数、监听数和队列状态，用于诊断 vsock 连接泄漏或 accept backlog 问题。
 
 #### Vsock Poll Worker
 

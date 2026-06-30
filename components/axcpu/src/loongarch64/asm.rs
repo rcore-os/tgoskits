@@ -3,7 +3,11 @@
 use core::arch::asm;
 
 use ax_memory_addr::{PhysAddr, VirtAddr};
-use loongArch64::register::{crmd, ecfg, eentry, pgdh, pgdl};
+use loongArch64::register::{
+    crmd,
+    ecfg::{self, LineBasedInterrupt},
+    eentry, pgdh, pgdl,
+};
 
 /// Allows the current CPU to respond to interrupts.
 #[inline]
@@ -23,12 +27,30 @@ pub fn irqs_enabled() -> bool {
     crmd::read().ie()
 }
 
+/// Enables or disables the local timer interrupt line.
+#[inline]
+pub fn set_timer_irq_enabled(enabled: bool) {
+    set_local_irq_line_enabled(LineBasedInterrupt::TIMER, enabled)
+}
+
+/// Enables or disables a local interrupt line.
+#[inline]
+fn set_local_irq_line_enabled(line: LineBasedInterrupt, enabled: bool) {
+    let current = ecfg::read().lie();
+    let new_value = if enabled {
+        current | line
+    } else {
+        current & !line
+    };
+    ecfg::set_lie(new_value);
+}
+
 /// Relaxes the current CPU and waits for interrupts.
 ///
 /// It must be called with interrupts enabled, otherwise it will never return.
 #[inline]
 pub fn wait_for_irqs() {
-    unsafe { loongArch64::asm::idle() }
+    unsafe { asm!("idle 0", options(nomem, nostack)) }
 }
 
 /// Halt the current CPU.

@@ -18,18 +18,63 @@ use ax_errno::{AxError, AxResult};
 use ax_memory_addr::{PhysAddr, VirtAddr};
 use axdevice::{
     AxVmDeviceConfig, AxVmDevices, DeviceBuildContext, DeviceBundle, DeviceFactory,
-    DeviceFactoryRegistry, DeviceRegistration, IrqResolver, PollableDeviceOps,
-    register_builtin_factories,
+    DeviceFactoryRegistry, DeviceRegistration, IrqResolver, MmioDeviceAdapter, PollableDeviceOps,
+    PortDeviceAdapter, SysRegDeviceAdapter, register_builtin_factories,
 };
 use axdevice_base::{
-    AccessWidth, BaseDeviceOps, InterruptTriggerMode, IrqLine, Port, PortRange, SysRegAddr,
-    SysRegAddrRange,
+    AccessWidth, BaseDeviceOps, DeviceRegistry as _, InterruptTriggerMode, IrqLine, Port,
+    PortRange, RegistryError, SysRegAddr, SysRegAddrRange,
 };
 use axvm_types::{
     EmulatedDeviceConfig, EmulatedDeviceType, GuestPhysAddr, GuestPhysAddrRange, InterruptVector,
     VCpuId, VMId,
 };
 use x86_vlapic::host::X86VlapicHostIf;
+
+/// Registers a legacy MMIO device through the new DeviceManager API.
+fn register_mmio<T: BaseDeviceOps<GuestPhysAddrRange> + Send + Sync + 'static>(
+    devices: &mut AxVmDevices,
+    dev: Arc<T>,
+) -> AxResult {
+    devices
+        .register(MmioDeviceAdapter::from_arc(dev))
+        .map_err(|e| match e {
+            RegistryError::AddressConflict { .. } => AxError::AddrInUse,
+            RegistryError::InvalidResource { .. } => AxError::InvalidInput,
+            _ => AxError::InvalidInput,
+        })?;
+    Ok(())
+}
+
+/// Registers a legacy Port device through the new DeviceManager API.
+fn register_port<T: BaseDeviceOps<PortRange> + Send + Sync + 'static>(
+    devices: &mut AxVmDevices,
+    dev: Arc<T>,
+) -> AxResult {
+    devices
+        .register(PortDeviceAdapter::from_arc(dev))
+        .map_err(|e| match e {
+            RegistryError::AddressConflict { .. } => AxError::AddrInUse,
+            RegistryError::InvalidResource { .. } => AxError::InvalidInput,
+            _ => AxError::InvalidInput,
+        })?;
+    Ok(())
+}
+
+/// Registers a legacy SysReg device through the new DeviceManager API.
+fn register_sysreg<T: BaseDeviceOps<SysRegAddrRange> + Send + Sync + 'static>(
+    devices: &mut AxVmDevices,
+    dev: Arc<T>,
+) -> AxResult {
+    devices
+        .register(SysRegDeviceAdapter::from_arc(dev))
+        .map_err(|e| match e {
+            RegistryError::AddressConflict { .. } => AxError::AddrInUse,
+            RegistryError::InvalidResource { .. } => AxError::InvalidInput,
+            _ => AxError::InvalidInput,
+        })?;
+    Ok(())
+}
 
 struct MockMmioDevice {
     name: String,
@@ -240,7 +285,14 @@ impl DeviceFactory for MockMmioFactory {
             return Err(AxError::InvalidInput);
         }
 
-        Ok(DeviceRegistration::Mmio(mmio_device(&config.name, config.base_gpa, end)).into())
+        Ok(
+            DeviceRegistration::Device(MmioDeviceAdapter::from_arc(mmio_device(
+                &config.name,
+                config.base_gpa,
+                end,
+            )))
+            .into(),
+        )
     }
 }
 
@@ -253,7 +305,7 @@ fn test_mmio_dispatch_functionality() {
     let dev_size = 0x1000;
     let mock_dev = Arc::new(MockMmioDevice::new("TestDev", base_addr, dev_size));
 
-    devices.add_mmio_dev(mock_dev.clone()).unwrap();
+    register_mmio(&mut devices, mock_dev.clone()).unwrap();
 
     let write_offset = 0x40;
     let target_addr = GuestPhysAddr::from(base_addr + write_offset);
@@ -279,15 +331,14 @@ fn test_mmio_dispatch_functionality() {
 }
 
 #[test]
-#[should_panic(expected = "emu_device not found")]
-fn test_mmio_panic_on_missing_device() {
+fn test_mmio_missing_device_returns_error() {
     let config = AxVmDeviceConfig::new(vec![]);
     let devices = AxVmDevices::new(config).unwrap();
 
     let invalid_addr = GuestPhysAddr::from(0x9999_9999);
     let width = AccessWidth::try_from(4).unwrap();
 
-    let _ = devices.handle_mmio_read(invalid_addr, width);
+    assert!(devices.handle_mmio_read(invalid_addr, width).is_err());
 }
 
 #[test]
@@ -295,14 +346,14 @@ fn test_mmio_adjacent_ranges_are_allowed() {
     let mut devices = empty_devices();
 
     assert_eq!(
-        devices.add_mmio_dev(mmio_device("first", 0x1000, 0x2000)),
+        register_mmio(&mut devices, mmio_device("first", 0x1000, 0x2000)),
         Ok(())
     );
     assert_eq!(
-        devices.add_mmio_dev(mmio_device("adjacent", 0x2000, 0x3000)),
+        register_mmio(&mut devices, mmio_device("adjacent", 0x2000, 0x3000)),
         Ok(())
     );
-    assert_eq!(devices.iter_mmio_dev().count(), 2);
+    assert_eq!(devices.devices().count(), 2);
 }
 
 #[test]
@@ -310,29 +361,32 @@ fn test_mmio_duplicate_and_overlapping_ranges_are_rejected_without_modification(
     let mut devices = empty_devices();
     let existing = mmio_device("existing", 0x2000, 0x3000);
 
-    assert_eq!(devices.add_mmio_dev(existing.clone()), Ok(()));
-    assert_eq!(devices.add_mmio_dev(existing), Err(AxError::AlreadyExists));
+    assert_eq!(register_mmio(&mut devices, existing.clone()), Ok(()));
     assert_eq!(
-        devices.add_mmio_dev(mmio_device("same-range", 0x2000, 0x3000)),
-        Err(AxError::AlreadyExists)
-    );
-    assert_eq!(
-        devices.add_mmio_dev(mmio_device("partial-left", 0x1800, 0x2800)),
+        register_mmio(&mut devices, existing),
         Err(AxError::AddrInUse)
     );
     assert_eq!(
-        devices.add_mmio_dev(mmio_device("partial-right", 0x2800, 0x3800)),
+        register_mmio(&mut devices, mmio_device("same-range", 0x2000, 0x3000)),
         Err(AxError::AddrInUse)
     );
     assert_eq!(
-        devices.add_mmio_dev(mmio_device("contains", 0x1000, 0x4000)),
+        register_mmio(&mut devices, mmio_device("partial-left", 0x1800, 0x2800)),
         Err(AxError::AddrInUse)
     );
     assert_eq!(
-        devices.add_mmio_dev(mmio_device("contained", 0x2400, 0x2800)),
+        register_mmio(&mut devices, mmio_device("partial-right", 0x2800, 0x3800)),
         Err(AxError::AddrInUse)
     );
-    assert_eq!(devices.iter_mmio_dev().count(), 1);
+    assert_eq!(
+        register_mmio(&mut devices, mmio_device("contains", 0x1000, 0x4000)),
+        Err(AxError::AddrInUse)
+    );
+    assert_eq!(
+        register_mmio(&mut devices, mmio_device("contained", 0x2400, 0x2800)),
+        Err(AxError::AddrInUse)
+    );
+    assert_eq!(devices.devices().count(), 1);
 }
 
 #[test]
@@ -352,22 +406,23 @@ fn test_empty_and_wrapped_ranges_are_rejected() {
     let invalid_port = Arc::new(MockPortDevice::new(0x400, 0x3ff));
     let invalid_sysreg = Arc::new(MockSysRegDevice::new(0x101, 0x100));
 
-    assert_eq!(devices.add_mmio_dev(empty_mmio), Err(AxError::InvalidInput));
     assert_eq!(
-        devices.add_mmio_dev(wrapped_mmio),
+        register_mmio(&mut devices, empty_mmio),
         Err(AxError::InvalidInput)
     );
     assert_eq!(
-        devices.add_port_dev(invalid_port),
+        register_mmio(&mut devices, wrapped_mmio),
         Err(AxError::InvalidInput)
     );
     assert_eq!(
-        devices.add_sys_reg_dev(invalid_sysreg),
+        register_port(&mut devices, invalid_port),
         Err(AxError::InvalidInput)
     );
-    assert_eq!(devices.iter_mmio_dev().count(), 0);
-    assert_eq!(devices.iter_port_dev().count(), 0);
-    assert_eq!(devices.iter_sys_reg_dev().count(), 0);
+    assert_eq!(
+        register_sysreg(&mut devices, invalid_sysreg),
+        Err(AxError::InvalidInput)
+    );
+    assert_eq!(devices.devices().count(), 0);
 }
 
 #[test]
@@ -375,18 +430,18 @@ fn test_port_inclusive_endpoint_overlap_is_rejected() {
     let mut devices = empty_devices();
 
     assert_eq!(
-        devices.add_port_dev(Arc::new(MockPortDevice::new(0x3f8, 0x3ff))),
+        register_port(&mut devices, Arc::new(MockPortDevice::new(0x3f8, 0x3ff))),
         Ok(())
     );
     assert_eq!(
-        devices.add_port_dev(Arc::new(MockPortDevice::new(0x3ff, 0x400))),
+        register_port(&mut devices, Arc::new(MockPortDevice::new(0x3ff, 0x400))),
         Err(AxError::AddrInUse)
     );
     assert_eq!(
-        devices.add_port_dev(Arc::new(MockPortDevice::new(0x400, 0x400))),
+        register_port(&mut devices, Arc::new(MockPortDevice::new(0x400, 0x400))),
         Ok(())
     );
-    assert_eq!(devices.iter_port_dev().count(), 2);
+    assert_eq!(devices.devices().count(), 2);
 }
 
 #[test]
@@ -394,18 +449,18 @@ fn test_sysreg_inclusive_endpoint_overlap_is_rejected() {
     let mut devices = empty_devices();
 
     assert_eq!(
-        devices.add_sys_reg_dev(Arc::new(MockSysRegDevice::new(0x100, 0x110))),
+        register_sysreg(&mut devices, Arc::new(MockSysRegDevice::new(0x100, 0x110))),
         Ok(())
     );
     assert_eq!(
-        devices.add_sys_reg_dev(Arc::new(MockSysRegDevice::new(0x110, 0x120))),
+        register_sysreg(&mut devices, Arc::new(MockSysRegDevice::new(0x110, 0x120))),
         Err(AxError::AddrInUse)
     );
     assert_eq!(
-        devices.add_sys_reg_dev(Arc::new(MockSysRegDevice::new(0x111, 0x120))),
+        register_sysreg(&mut devices, Arc::new(MockSysRegDevice::new(0x111, 0x120))),
         Ok(())
     );
-    assert_eq!(devices.iter_sys_reg_dev().count(), 2);
+    assert_eq!(devices.devices().count(), 2);
 }
 
 #[test]
@@ -413,20 +468,21 @@ fn test_equal_address_values_on_different_buses_are_allowed() {
     let mut devices = empty_devices();
 
     assert_eq!(
-        devices.add_mmio_dev(mmio_device("mmio", 0x1000, 0x1001)),
+        register_mmio(&mut devices, mmio_device("mmio", 0x1000, 0x1001)),
         Ok(())
     );
     assert_eq!(
-        devices.add_port_dev(Arc::new(MockPortDevice::new(0x1000, 0x1000))),
+        register_port(&mut devices, Arc::new(MockPortDevice::new(0x1000, 0x1000))),
         Ok(())
     );
     assert_eq!(
-        devices.add_sys_reg_dev(Arc::new(MockSysRegDevice::new(0x1000, 0x1000))),
+        register_sysreg(
+            &mut devices,
+            Arc::new(MockSysRegDevice::new(0x1000, 0x1000))
+        ),
         Ok(())
     );
-    assert_eq!(devices.iter_mmio_dev().count(), 1);
-    assert_eq!(devices.iter_port_dev().count(), 1);
-    assert_eq!(devices.iter_sys_reg_dev().count(), 1);
+    assert_eq!(devices.devices().count(), 3);
 }
 
 #[test]
@@ -442,7 +498,7 @@ fn test_conflicting_device_config_returns_structured_error() {
 
     assert_eq!(
         AxVmDevices::new(AxVmDeviceConfig::new(vec![ioapic.clone(), ioapic])).err(),
-        Some(AxError::AlreadyExists)
+        Some(AxError::InvalidInput)
     );
 }
 
@@ -450,79 +506,60 @@ fn test_conflicting_device_config_returns_structured_error() {
 fn test_bundle_registers_mmio_and_port_together() {
     let mut devices = empty_devices();
     let mut bundle = DeviceBundle::new();
-    bundle.push(DeviceRegistration::Mmio(mmio_device(
-        "bundle-mmio",
-        0x4000,
-        0x5000,
+    bundle.push(DeviceRegistration::Device(MmioDeviceAdapter::from_arc(
+        mmio_device("bundle-mmio", 0x4000, 0x5000),
     )));
-    bundle.push(DeviceRegistration::Port(Arc::new(MockPortDevice::new(
-        0x500, 0x50f,
-    ))));
+    bundle.push(DeviceRegistration::Device(PortDeviceAdapter::from_arc(
+        Arc::new(MockPortDevice::new(0x500, 0x50f)),
+    )));
 
     assert_eq!(devices.register_bundle(bundle), Ok(()));
-    assert_eq!(devices.iter_mmio_dev().count(), 1);
-    assert_eq!(devices.iter_port_dev().count(), 1);
-    assert_eq!(devices.iter_sys_reg_dev().count(), 0);
+    assert_eq!(devices.devices().count(), 2);
 }
 
 #[test]
 fn test_bundle_internal_conflict_is_atomic() {
     let mut devices = empty_devices();
     let mut bundle = DeviceBundle::new();
-    bundle.push(DeviceRegistration::Mmio(mmio_device(
-        "bundle-first",
-        0x4000,
-        0x5000,
+    bundle.push(DeviceRegistration::Device(MmioDeviceAdapter::from_arc(
+        mmio_device("bundle-first", 0x4000, 0x5000),
     )));
-    bundle.push(DeviceRegistration::Mmio(mmio_device(
-        "bundle-overlap",
-        0x4800,
-        0x5800,
+    bundle.push(DeviceRegistration::Device(MmioDeviceAdapter::from_arc(
+        mmio_device("bundle-overlap", 0x4800, 0x5800),
     )));
-    bundle.push(DeviceRegistration::Port(Arc::new(MockPortDevice::new(
-        0x500, 0x50f,
-    ))));
+    bundle.push(DeviceRegistration::Device(PortDeviceAdapter::from_arc(
+        Arc::new(MockPortDevice::new(0x500, 0x50f)),
+    )));
 
-    assert_eq!(devices.register_bundle(bundle), Err(AxError::AddrInUse));
-    assert_eq!(devices.iter_mmio_dev().count(), 0);
-    assert_eq!(devices.iter_port_dev().count(), 0);
-    assert_eq!(devices.iter_sys_reg_dev().count(), 0);
+    assert_eq!(
+        devices.register_bundle(bundle).err(),
+        Some(AxError::AddrInUse)
+    );
+    assert_eq!(devices.devices().count(), 0);
 }
 
 #[test]
 fn test_bundle_existing_conflict_leaves_all_registries_unchanged() {
     let mut devices = empty_devices();
-    devices
-        .add_port_dev(Arc::new(MockPortDevice::new(0x3f8, 0x3ff)))
-        .unwrap();
+    register_port(&mut devices, Arc::new(MockPortDevice::new(0x3f8, 0x3ff))).unwrap();
 
-    let counts_before = (
-        devices.iter_mmio_dev().count(),
-        devices.iter_port_dev().count(),
-        devices.iter_sys_reg_dev().count(),
-    );
+    let count_before = devices.devices().count();
     let mut bundle = DeviceBundle::new();
-    bundle.push(DeviceRegistration::Mmio(mmio_device(
-        "bundle-mmio",
-        0x6000,
-        0x7000,
+    bundle.push(DeviceRegistration::Device(MmioDeviceAdapter::from_arc(
+        mmio_device("bundle-mmio", 0x6000, 0x7000),
     )));
-    bundle.push(DeviceRegistration::Port(Arc::new(MockPortDevice::new(
-        0x3ff, 0x400,
-    ))));
-    bundle.push(DeviceRegistration::SysReg(Arc::new(MockSysRegDevice::new(
-        0x200, 0x210,
-    ))));
+    bundle.push(DeviceRegistration::Device(PortDeviceAdapter::from_arc(
+        Arc::new(MockPortDevice::new(0x3ff, 0x400)),
+    )));
+    bundle.push(DeviceRegistration::Device(SysRegDeviceAdapter::from_arc(
+        Arc::new(MockSysRegDevice::new(0x200, 0x210)),
+    )));
 
-    assert_eq!(devices.register_bundle(bundle), Err(AxError::AddrInUse));
     assert_eq!(
-        (
-            devices.iter_mmio_dev().count(),
-            devices.iter_port_dev().count(),
-            devices.iter_sys_reg_dev().count(),
-        ),
-        counts_before
+        devices.register_bundle(bundle).err(),
+        Some(AxError::AddrInUse)
     );
+    assert_eq!(devices.devices().count(), count_before);
 }
 
 #[test]
@@ -530,7 +567,9 @@ fn test_pollable_and_mmio_capabilities_share_one_device() {
     let mut devices = empty_devices();
     let shared = Arc::new(MockMmioPollableDevice::new(0x8000, 0x9000));
     let mut bundle = DeviceBundle::new();
-    bundle.push(DeviceRegistration::Mmio(shared.clone()));
+    bundle.push(DeviceRegistration::Device(MmioDeviceAdapter::from_arc(
+        shared.clone(),
+    )));
     bundle.push(DeviceRegistration::Pollable(shared.clone()));
 
     assert_eq!(devices.register_bundle(bundle), Ok(()));
@@ -541,7 +580,7 @@ fn test_pollable_and_mmio_capabilities_share_one_device() {
         .poll(123_456)
         .unwrap();
 
-    assert_eq!(devices.iter_mmio_dev().count(), 1);
+    assert_eq!(devices.devices().count(), 1);
     assert_eq!(devices.iter_pollable_dev().count(), 1);
     assert_eq!(shared.polled_at(), vec![123_456]);
 }
@@ -555,11 +594,16 @@ fn test_duplicate_pollable_rejects_entire_bundle() {
         .unwrap();
 
     let mut bundle = DeviceBundle::new();
-    bundle.push(DeviceRegistration::Mmio(shared.clone()));
+    bundle.push(DeviceRegistration::Device(MmioDeviceAdapter::from_arc(
+        shared.clone(),
+    )));
     bundle.push(DeviceRegistration::Pollable(shared));
 
-    assert_eq!(devices.register_bundle(bundle), Err(AxError::AlreadyExists));
-    assert_eq!(devices.iter_mmio_dev().count(), 0);
+    assert_eq!(
+        devices.register_bundle(bundle).err(),
+        Some(AxError::AlreadyExists)
+    );
+    assert_eq!(devices.devices().count(), 0);
     assert_eq!(devices.iter_pollable_dev().count(), 1);
 }
 
@@ -629,7 +673,7 @@ fn test_factory_build_registers_new_device_type_without_legacy_branch() {
     )
     .unwrap();
 
-    assert_eq!(devices.iter_mmio_dev().count(), 1);
+    assert_eq!(devices.devices().count(), 1);
     assert_eq!(
         devices
             .handle_mmio_read(base.into(), AccessWidth::try_from(4).unwrap())
@@ -641,14 +685,8 @@ fn test_factory_build_registers_new_device_type_without_legacy_branch() {
 #[test]
 fn test_factory_validation_failure_leaves_devices_unchanged() {
     let mut devices = empty_devices();
-    devices
-        .add_port_dev(Arc::new(MockPortDevice::new(0x3f8, 0x3ff)))
-        .unwrap();
-    let counts_before = (
-        devices.iter_mmio_dev().count(),
-        devices.iter_port_dev().count(),
-        devices.iter_sys_reg_dev().count(),
-    );
+    register_port(&mut devices, Arc::new(MockPortDevice::new(0x3f8, 0x3ff))).unwrap();
+    let count_before = devices.devices().count();
     let mut factories = DeviceFactoryRegistry::new();
     factories.register(Arc::new(MockMmioFactory)).unwrap();
     let resolver = RejectingIrqResolver;
@@ -664,14 +702,7 @@ fn test_factory_validation_failure_leaves_devices_unchanged() {
         devices.register_factory_device(&invalid, &factories, &context),
         Err(AxError::InvalidInput)
     );
-    assert_eq!(
-        (
-            devices.iter_mmio_dev().count(),
-            devices.iter_port_dev().count(),
-            devices.iter_sys_reg_dev().count(),
-        ),
-        counts_before
-    );
+    assert_eq!(devices.devices().count(), count_before);
 }
 
 #[test]
@@ -692,9 +723,100 @@ fn test_builtin_meta_factory_builds_dummy_config() {
     )
     .unwrap();
 
-    assert_eq!(devices.iter_mmio_dev().count(), 0);
-    assert_eq!(devices.iter_port_dev().count(), 0);
-    assert_eq!(devices.iter_sys_reg_dev().count(), 0);
+    assert_eq!(devices.devices().count(), 0);
+}
+
+#[test]
+fn test_wrapped_native_mmio_resource_is_rejected() {
+    // Simulate a native Device whose resources() returns a zero-size
+    // MmioRange — this must be rejected as InvalidResource, not
+    // AddressConflict.
+    let mut devices = empty_devices();
+    let mut bundle = DeviceBundle::new();
+    bundle.push(DeviceRegistration::Device(MmioDeviceAdapter::from_arc(
+        mmio_device("zero-size", 0x1000, 0x1000),
+    )));
+    assert_eq!(
+        devices.register_bundle(bundle).err(),
+        Some(AxError::InvalidInput)
+    );
+    assert_eq!(devices.devices().count(), 0);
+}
+
+#[test]
+fn test_native_device_resource_overflow_rejected() {
+    use axdevice_base::{Device, DeviceError, InvalidResourceReason, RegistryError, Resource};
+
+    struct OverflowDevice;
+    impl Device for OverflowDevice {
+        fn name(&self) -> &str {
+            "overflow"
+        }
+        fn resources(&self) -> &[Resource] {
+            static R: [Resource; 1] = [Resource::MmioRange {
+                base: u64::MAX - 1,
+                size: 4,
+            }];
+            &R
+        }
+        fn handle(
+            &self,
+            _: &axdevice_base::BusAccess,
+        ) -> Result<axdevice_base::BusResponse, DeviceError> {
+            Err(DeviceError::NotFound)
+        }
+        fn as_any(&self) -> &dyn std::any::Any {
+            self
+        }
+    }
+
+    let mut devices = empty_devices();
+    let result = devices.register(Arc::new(OverflowDevice));
+    assert!(matches!(
+        result,
+        Err(RegistryError::InvalidResource {
+            reason: InvalidResourceReason::AddressOverflow,
+            ..
+        })
+    ));
+}
+
+#[test]
+fn test_native_device_port_resource_overflow_rejected() {
+    use axdevice_base::{Device, DeviceError, InvalidResourceReason, RegistryError, Resource};
+
+    struct OverflowPortDevice;
+    impl Device for OverflowPortDevice {
+        fn name(&self) -> &str {
+            "overflow-port"
+        }
+        fn resources(&self) -> &[Resource] {
+            static R: [Resource; 1] = [Resource::PortRange {
+                base: u16::MAX - 1,
+                size: 4,
+            }];
+            &R
+        }
+        fn handle(
+            &self,
+            _: &axdevice_base::BusAccess,
+        ) -> Result<axdevice_base::BusResponse, DeviceError> {
+            Err(DeviceError::NotFound)
+        }
+        fn as_any(&self) -> &dyn std::any::Any {
+            self
+        }
+    }
+
+    let mut devices = empty_devices();
+    let result = devices.register(Arc::new(OverflowPortDevice));
+    assert!(matches!(
+        result,
+        Err(RegistryError::InvalidResource {
+            reason: InvalidResourceReason::AddressOverflow,
+            ..
+        })
+    ));
 }
 
 #[test]
@@ -715,9 +837,33 @@ fn test_build_with_factories_preserves_legacy_ivc_config() {
     )
     .unwrap();
 
-    assert_eq!(devices.iter_mmio_dev().count(), 0);
-    assert_eq!(devices.iter_port_dev().count(), 0);
-    assert_eq!(devices.iter_sys_reg_dev().count(), 0);
+    assert_eq!(devices.devices().count(), 0);
+}
+
+#[test]
+fn test_sysreg_range_interior_address_dispatch() {
+    use axdevice_base::{AccessWidth, SysRegAddr};
+    let mut devices = empty_devices();
+    // Register a SysReg device covering 0x100..=0x110 (count = 0x11).
+    register_sysreg(&mut devices, Arc::new(MockSysRegDevice::new(0x100, 0x110))).unwrap();
+    // Exact start address should hit.
+    assert!(
+        devices
+            .handle_sys_reg_read(SysRegAddr::new(0x100), AccessWidth::Qword)
+            .is_ok()
+    );
+    // Interior address should also hit.
+    assert!(
+        devices
+            .handle_sys_reg_read(SysRegAddr::new(0x108), AccessWidth::Qword)
+            .is_ok()
+    );
+    // Address past the end should return an error.
+    assert!(
+        devices
+            .handle_sys_reg_read(SysRegAddr::new(0x111), AccessWidth::Qword)
+            .is_err()
+    );
 }
 
 // Mock implementation for x86_vlapic host callbacks when running

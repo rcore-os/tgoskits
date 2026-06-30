@@ -8,6 +8,12 @@ pub use ax_plat::time::{
 #[cfg(feature = "irq")]
 pub use ax_plat::time::{irq_num, set_oneshot_timer};
 
+#[cfg(feature = "irq")]
+pub fn enable_timer_irq() {
+    #[cfg(plat_dyn)]
+    axplat_dyn::enable_timer_irq();
+}
+
 pub fn try_init_epoch_offset(epoch_time_nanos: u64) -> bool {
     #[cfg(plat_dyn)]
     {

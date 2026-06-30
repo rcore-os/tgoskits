@@ -1,3 +1,4 @@
+use alloc::{sync::Arc, vec::Vec};
 use core::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, AtomicUsize, Ordering};
 
 use rdif_block::{CompletionHint, CompletionList, Event};
@@ -10,10 +11,69 @@ pub struct BlockIrqBridge {
     drain_ready: AtomicBool,
 }
 
+pub struct RuntimeEventLatch {
+    bridge: Arc<BlockIrqBridge>,
+    driver_queue_map: Vec<Option<usize>>,
+}
+
 #[derive(Clone, Copy, Debug)]
 pub struct DrainEvents {
     pub queue_bits: u64,
     pub hints: CompletionList,
+}
+
+impl RuntimeEventLatch {
+    pub fn new(
+        bridge: Arc<BlockIrqBridge>,
+        driver_queue_map: impl IntoIterator<Item = Option<usize>>,
+    ) -> Self {
+        Self {
+            bridge,
+            driver_queue_map: driver_queue_map.into_iter().collect(),
+        }
+    }
+
+    pub fn bridge(&self) -> Arc<BlockIrqBridge> {
+        self.bridge.clone()
+    }
+
+    pub fn record_driver_event(&self, event: Event) -> bool {
+        let mut translated = Event::none();
+        for driver_queue_id in event.queues.iter() {
+            if let Some(runtime_queue_id) = self.runtime_queue_id(driver_queue_id) {
+                translated.queues.insert(runtime_queue_id);
+            }
+        }
+        for hint in event.completions.iter() {
+            if let Some(hint) = self.translate_driver_hint(hint) {
+                translated.push_hint(hint);
+            }
+        }
+        if translated.is_empty() {
+            return false;
+        }
+        self.bridge.record_event(translated);
+        true
+    }
+
+    fn runtime_queue_id(&self, driver_queue_id: usize) -> Option<usize> {
+        self.driver_queue_map
+            .get(driver_queue_id)
+            .copied()
+            .flatten()
+    }
+
+    fn translate_driver_hint(&self, hint: CompletionHint) -> Option<CompletionHint> {
+        let queue_id = self.runtime_queue_id(hint.queue_id())?;
+        Some(match hint {
+            CompletionHint::Queue { .. } => CompletionHint::Queue { queue_id },
+            CompletionHint::Request { request_id, .. } => CompletionHint::Request {
+                queue_id,
+                request_id,
+            },
+            CompletionHint::Batch { ids, .. } => CompletionHint::Batch { queue_id, ids },
+        })
+    }
 }
 
 impl BlockIrqBridge {
@@ -196,5 +256,43 @@ impl AtomicHintSlot {
 
     fn is_occupied(&self) -> bool {
         self.state.load(Ordering::Acquire) != Self::EMPTY
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use alloc::sync::Arc;
+
+    use super::*;
+
+    #[test]
+    fn runtime_event_latch_translates_driver_queue_ids() {
+        let bridge = Arc::new(BlockIrqBridge::new());
+        let latch = RuntimeEventLatch::new(bridge.clone(), [None, Some(0), None, Some(1)]);
+
+        assert!(latch.record_driver_event(Event::from_queue_bits(1 << 3)));
+
+        let events = bridge.take_events();
+        assert_eq!(events.queue_bits, 1 << 1);
+    }
+
+    #[test]
+    fn runtime_event_latch_ignores_unknown_driver_queue_ids() {
+        let bridge = Arc::new(BlockIrqBridge::new());
+        let latch = RuntimeEventLatch::new(bridge.clone(), [Some(0)]);
+
+        assert!(!latch.record_driver_event(Event::from_queue_bits(1 << 4)));
+        assert!(!bridge.drain_ready());
+    }
+
+    #[test]
+    fn runtime_event_latch_keeps_event_without_pending_table() {
+        let bridge = Arc::new(BlockIrqBridge::new());
+        let latch = RuntimeEventLatch::new(bridge.clone(), [Some(0)]);
+
+        assert!(latch.record_driver_event(Event::from_queue_bits(1)));
+
+        let events = bridge.take_events();
+        assert_eq!(events.queue_bits, 1);
     }
 }

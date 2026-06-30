@@ -143,6 +143,19 @@ impl<'a, H: SdioHost> IpcTransport<'a, H> {
         )
     }
 
+    /// AIC8800DC/DW 使用独立的 SDIO function 2 (func_msg) 作为命令邮箱
+    fn is_dc(&self) -> bool {
+        matches!(self.chip, ChipVariant::Aic8800DC | ChipVariant::Aic8800DW)
+    }
+
+    /// 命令通道使用的 SDIO function 号
+    ///
+    /// - AIC8800DC/DW: function 2 (func_msg) — bootrom 命令邮箱独立于数据口
+    /// - AIC8801/D80/D80X2: function 1
+    fn cmd_func(&self) -> u8 {
+        if self.is_dc() { 2 } else { 1 }
+    }
+
     fn flow_ctrl_reg(&self) -> u32 {
         if self.is_v3() {
             SDIOWIFI_FLOW_CTRL_Q1_REG_V3
@@ -281,8 +294,10 @@ impl<'a, H: SdioHost> IpcTransport<'a, H> {
 
     /// 写入消息到 FIFO
     fn write_to_fifo(&mut self, send_len: usize) -> Result<(), SdioError> {
+        let func = self.cmd_func();
+        let addr = self.wr_fifo_addr();
         self.sdio_host
-            .write_fifo(1, self.wr_fifo_addr(), &self.tx_buf[..send_len])?;
+            .write_fifo(func, addr, &self.tx_buf[..send_len])?;
         Ok(())
     }
 
@@ -310,7 +325,8 @@ impl<'a, H: SdioHost> IpcTransport<'a, H> {
 
     /// 轮询 BLOCK_CNT_REG 等待响应数据
     fn poll_block_count(&mut self) -> Result<Option<usize>, SdioError> {
-        let raw_cnt = self.sdio_host.read_byte(1, self.block_cnt_reg())?;
+        let func = self.cmd_func();
+        let raw_cnt = self.sdio_host.read_byte(func, self.block_cnt_reg())?;
         // mask 掉 SDIO_OTHER_INTERRUPT (bit7)
         if raw_cnt & SDIO_OTHER_INTERRUPT_FLAG != 0 {
             log::warn!("IPC: SDIO_OTHER_INTERRUPT set, raw_cnt=0x{:02x}", raw_cnt);
@@ -325,8 +341,10 @@ impl<'a, H: SdioHost> IpcTransport<'a, H> {
 
     /// 从 FIFO 读取响应
     fn read_response_fifo(&mut self, read_len: usize) -> Result<(), SdioError> {
+        let func = self.cmd_func();
+        let addr = self.rd_fifo_addr();
         self.sdio_host
-            .read_fifo(1, self.rd_fifo_addr(), &mut self.rx_buf[..read_len])?;
+            .read_fifo(func, addr, &mut self.rx_buf[..read_len])?;
         Ok(())
     }
 
@@ -358,6 +376,16 @@ impl<'a, H: SdioHost> IpcTransport<'a, H> {
 
     /// 等待响应消息
     fn wait_for_response(&mut self, msg_id: u16, cfm_buf: &mut [u8]) -> Result<usize, SdioError> {
+        self.wait_for_response_to(msg_id, cfm_buf, RESPONSE_MAX_RETRY)
+    }
+
+    /// 等待响应消息 (可指定最大重试次数, 用于短超时探测)
+    fn wait_for_response_to(
+        &mut self,
+        msg_id: u16,
+        cfm_buf: &mut [u8],
+        max_retry: u32,
+    ) -> Result<usize, SdioError> {
         let mut retry = 0u32;
         let mut read_err_cnt = 0u32;
         let expected_id = msg_id + 1;
@@ -379,8 +407,7 @@ impl<'a, H: SdioHost> IpcTransport<'a, H> {
                 },
                 Ok(None) => {
                     retry += 1;
-                    if retry > RESPONSE_MAX_RETRY {
-                        log::error!("IPC: response timeout for msg_id=0x{:04x}", msg_id);
+                    if retry > max_retry {
                         return Err(SdioError::Timeout);
                     }
                     crate::runtime::runtime().sleep_ms(1);
@@ -404,7 +431,11 @@ impl<'a, H: SdioHost> IpcTransport<'a, H> {
         let id = msg_id.msg_id();
         let send_len = self.build_msg(id, payload);
 
-        self.wait_flow_control()?;
+        // AIC8800DC/DW 的命令路径不经过流控寄存器 (0x0A);
+        // 流控仅用于后续批量 data TX。直接写 func2 FIFO。
+        if !self.is_dc() {
+            self.wait_flow_control()?;
+        }
         self.write_to_fifo(send_len)?;
 
         if !wait_cfm {
@@ -412,6 +443,23 @@ impl<'a, H: SdioHost> IpcTransport<'a, H> {
         }
 
         self.wait_for_response(id, cfm_buf)
+    }
+
+    /// 发送消息并以短超时等待响应 (探测用, max_retry ms 后返回 Timeout 而非死等)
+    pub fn send_msg_short(
+        &mut self,
+        msg_id: DbgMsgId,
+        payload: &[u8],
+        cfm_buf: &mut [u8],
+        max_retry: u32,
+    ) -> Result<usize, SdioError> {
+        let id = msg_id.msg_id();
+        let send_len = self.build_msg(id, payload);
+        if !self.is_dc() {
+            self.wait_flow_control()?;
+        }
+        self.write_to_fifo(send_len)?;
+        self.wait_for_response_to(id, cfm_buf, max_retry)
     }
 }
 
@@ -443,6 +491,21 @@ pub fn ipc_mem_write<H: SdioHost>(
     payload[4..].copy_from_slice(&data.to_le_bytes()); // 后 4 字节为数据
     let mut cfm = [0u8; 8];
     transport.send_msg(DbgMsgId::MemWriteReq, &payload, true, &mut cfm)?;
+    Ok(())
+}
+
+/// 探测写: 短超时 (2s) 写 4 字节, 超时返回 Err 而非死等 100s。
+/// 用于诊断哪些地址可写而不被首个 hang 卡死。
+pub fn ipc_mem_write_probe<H: SdioHost>(
+    transport: &mut IpcTransport<H>,
+    addr: u32,
+    data: u32,
+) -> Result<(), SdioError> {
+    let mut payload = [0u8; 8];
+    payload[..4].copy_from_slice(&addr.to_le_bytes());
+    payload[4..].copy_from_slice(&data.to_le_bytes());
+    let mut cfm = [0u8; 8];
+    transport.send_msg_short(DbgMsgId::MemWriteReq, &payload, &mut cfm, 2000)?;
     Ok(())
 }
 

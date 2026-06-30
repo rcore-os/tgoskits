@@ -43,17 +43,19 @@ use alloc::{
     vec::Vec,
 };
 use core::{
-    sync::atomic::{AtomicUsize, Ordering},
+    sync::atomic::{AtomicBool, AtomicUsize, Ordering},
     task::Waker,
+    time::Duration,
 };
 
-use ax_hal::time::{NANOS_PER_MICROS, wall_time_nanos};
+use ax_hal::time::{NANOS_PER_MICROS, monotonic_time_nanos};
+use ax_kspin::SpinRwLock as RwLock;
 use ax_sync::Mutex;
 use ax_task::WaitQueue;
 use axpoll::IoEvents;
 use smoltcp::{
     iface::SocketSet,
-    phy::{DeviceCapabilities, Medium},
+    phy::{DeviceCapabilities, Medium, PacketMeta},
     storage::PacketMetadata,
     time::Instant,
     wire::{
@@ -61,14 +63,18 @@ use smoltcp::{
         TcpPacket,
     },
 };
-use spin::RwLock;
 
 use crate::{
     LISTEN_TABLE,
     config::{DeviceBinding, InterfaceId, RouteInfo},
     consts::{DEVICE_RX_QUEUE_SIZE, DEVICE_TX_QUEUE_SIZE, SOCKET_BUFFER_SIZE, STANDARD_MTU},
     device::{ArpEntry, Device},
+    ip_tos::apply_egress_ip_tos,
+    rx_meta::packet_meta_for_rx_packet,
 };
+
+const DEVICE_RX_WORKER_BATCH: usize = 16;
+const DEVICE_RX_IDLE_POLL_INTERVAL: Duration = Duration::from_millis(10);
 
 #[derive(Debug)]
 pub struct Rule {
@@ -120,10 +126,32 @@ impl Rule {
     }
 }
 
-type PacketBuffer = smoltcp::storage::PacketBuffer<'static, InterfaceId>;
+#[derive(Debug, Clone, Copy)]
+struct RxMetadata {
+    interface_id: InterfaceId,
+    packet_meta: PacketMeta,
+}
+
+type RouterPacketBuffer = smoltcp::storage::PacketBuffer<'static, RxMetadata>;
+type DevicePacketBuffer = smoltcp::storage::PacketBuffer<'static, InterfaceId>;
+
 // TX metadata is created before route lookup; dispatch() selects the real
 // egress interface from the packet destination and route table.
 const TX_INTERFACE_PLACEHOLDER: InterfaceId = InterfaceId::new(0);
+
+fn rx_metadata(interface_id: InterfaceId, packet: &[u8]) -> RxMetadata {
+    RxMetadata {
+        interface_id,
+        packet_meta: packet_meta_for_rx_packet(packet),
+    }
+}
+
+fn tx_metadata() -> RxMetadata {
+    RxMetadata {
+        interface_id: TX_INTERFACE_PLACEHOLDER,
+        packet_meta: PacketMeta::default(),
+    }
+}
 
 /// Bounded FIFO used between the protocol core and per-device workers.
 struct BoundedPacketQueue<T> {
@@ -227,6 +255,10 @@ struct DeviceHandle {
     tx_wake: Arc<WaitQueue>,
     /// Waker registered into the concrete device.
     rx_waker: Waker,
+    /// Sticky readiness bit for RX wakeups. `WaitQueue` notifications are not
+    /// sticky, so a device wake that races with the worker entering `wait()`
+    /// must be preserved here until the worker observes it.
+    rx_ready: AtomicBool,
 }
 
 impl DeviceHandle {
@@ -247,7 +279,17 @@ impl DeviceHandle {
             rx_waker: Waker::from(Arc::new(DeviceRxWake {
                 device: weak.clone(),
             })),
+            rx_ready: AtomicBool::new(false),
         })
+    }
+
+    fn wake_rx(&self) {
+        self.rx_ready.store(true, Ordering::Release);
+        self.rx_wake.notify_one(true);
+    }
+
+    fn take_rx_ready(&self) -> bool {
+        self.rx_ready.swap(false, Ordering::AcqRel)
     }
 
     fn enqueue_tx(&self, next_hop: IpAddress, packet: &[u8]) -> bool {
@@ -302,13 +344,13 @@ impl Wake for DeviceRxWake {
 
     fn wake_by_ref(self: &Arc<Self>) {
         if let Some(device) = self.device.upgrade() {
-            device.rx_wake.notify_one(true);
+            device.wake_rx();
         }
     }
 }
 
 fn now() -> Instant {
-    Instant::from_micros_const((wall_time_nanos() / NANOS_PER_MICROS) as i64)
+    Instant::from_micros_const((monotonic_time_nanos() / NANOS_PER_MICROS) as i64)
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -437,8 +479,8 @@ pub(crate) type SharedRouteTable = Arc<RwLock<RouteTable>>;
 
 /// Virtual smoltcp device that multiplexes all concrete devices.
 pub struct Router {
-    rx_buffer: PacketBuffer,
-    tx_buffer: PacketBuffer,
+    rx_buffer: RouterPacketBuffer,
+    tx_buffer: RouterPacketBuffer,
     queues: Arc<RouterQueues>,
     devices: Vec<Arc<DeviceHandle>>,
     table: SharedRouteTable,
@@ -446,11 +488,11 @@ pub struct Router {
 impl Router {
     /// Creates the virtual multi-device endpoint used by smoltcp.
     pub fn new(table: SharedRouteTable) -> Self {
-        let rx_buffer = PacketBuffer::new(
+        let rx_buffer = RouterPacketBuffer::new(
             vec![PacketMetadata::EMPTY; SOCKET_BUFFER_SIZE],
             vec![0u8; STANDARD_MTU * SOCKET_BUFFER_SIZE],
         );
-        let tx_buffer = PacketBuffer::new(
+        let tx_buffer = RouterPacketBuffer::new(
             vec![PacketMetadata::EMPTY; SOCKET_BUFFER_SIZE],
             vec![0u8; STANDARD_MTU * SOCKET_BUFFER_SIZE],
         );
@@ -609,7 +651,10 @@ impl Router {
             let bytes = packet.bytes.as_slice();
             snoop_tcp_packet(bytes, sockets);
             snoop(packet.interface_id, bytes);
-            let Ok(dst) = self.rx_buffer.enqueue(bytes.len(), packet.interface_id) else {
+            let Ok(dst) = self
+                .rx_buffer
+                .enqueue(bytes.len(), rx_metadata(packet.interface_id, bytes))
+            else {
                 warn!("Router RX buffer is full, dropping packet");
                 break;
             };
@@ -655,7 +700,7 @@ impl Router {
     pub fn wake_all_devices(&self) {
         for device in &self.devices {
             wake_device_poll(device);
-            device.rx_wake.notify_one(true);
+            device.wake_rx();
         }
     }
 
@@ -672,7 +717,15 @@ impl Router {
     /// Routes smoltcp-emitted TX packets to loopback or device workers.
     pub fn dispatch(&mut self, _timestamp: Instant, sockets: &mut SocketSet<'_>) -> bool {
         let mut poll_next = false;
-        while let Ok((_, packet)) = self.tx_buffer.dequeue() {
+        let Router {
+            rx_buffer,
+            tx_buffer,
+            devices,
+            table,
+            ..
+        } = self;
+        while let Ok((_, packet)) = tx_buffer.dequeue() {
+            apply_egress_ip_tos(packet);
             match IpVersion::of_packet(packet).expect("got invalid IP packet") {
                 IpVersion::Ipv4 => {
                     let packet = smoltcp::wire::Ipv4Packet::new_checked(packet)
@@ -680,39 +733,18 @@ impl Router {
                     let src_addr = IpAddress::Ipv4(packet.src_addr());
                     let dst_addr = IpAddress::Ipv4(packet.dst_addr());
                     if packet.dst_addr().is_broadcast() {
-                        let buf = packet.into_inner();
-                        // Broadcast only to Ethernet devices (not loopback)
-                        for dev in &self.devices {
-                            if dev.interface_id != InterfaceId::LOOPBACK {
-                                poll_next |= dev.enqueue_tx(dst_addr, buf);
-                            }
-                        }
+                        poll_next |=
+                            dispatch_link_local_fanout(devices, dst_addr, packet.into_inner());
                     } else {
-                        let routes = self.table.read();
-                        let Some(route) = routes.select_route_for_source(&dst_addr, &src_addr)
-                        else {
-                            warn!(
-                                "No route found for source {} destination {}",
-                                src_addr, dst_addr
-                            );
-                            continue;
-                        };
-
-                        let dev = &self.devices[route.dev];
-                        if dev.interface_id == InterfaceId::LOOPBACK {
-                            // Loopback packets are copied directly from the TX
-                            // buffer into the RX buffer. This avoids the
-                            // per-device worker and shared RX queue used by
-                            // real devices.
-                            poll_next |= inject_loopback_rx_direct(
-                                &mut self.rx_buffer,
-                                dst_addr,
-                                packet.into_inner(),
-                                sockets,
-                            );
-                        } else {
-                            poll_next |= dev.enqueue_tx(route.next_hop, packet.into_inner());
-                        }
+                        poll_next |= dispatch_unicast_packet(
+                            rx_buffer,
+                            devices,
+                            table,
+                            src_addr,
+                            dst_addr,
+                            packet.into_inner(),
+                            sockets,
+                        );
                     }
                 }
                 IpVersion::Ipv6 => {
@@ -721,35 +753,18 @@ impl Router {
                     let src_addr = IpAddress::Ipv6(packet.src_addr());
                     let dst_addr = IpAddress::Ipv6(packet.dst_addr());
                     if packet.dst_addr().is_multicast() {
-                        let buf = packet.into_inner();
-                        // Multicast only to Ethernet devices (not loopback)
-                        for dev in &self.devices {
-                            if dev.interface_id != InterfaceId::LOOPBACK {
-                                poll_next |= dev.enqueue_tx(dst_addr, buf);
-                            }
-                        }
+                        poll_next |=
+                            dispatch_link_local_fanout(devices, dst_addr, packet.into_inner());
                     } else {
-                        let routes = self.table.read();
-                        let Some(route) = routes.select_route_for_source(&dst_addr, &src_addr)
-                        else {
-                            warn!(
-                                "No route found for source {} destination {}",
-                                src_addr, dst_addr
-                            );
-                            continue;
-                        };
-
-                        let dev = &self.devices[route.dev];
-                        if dev.interface_id == InterfaceId::LOOPBACK {
-                            poll_next |= inject_loopback_rx_direct(
-                                &mut self.rx_buffer,
-                                dst_addr,
-                                packet.into_inner(),
-                                sockets,
-                            );
-                        } else {
-                            poll_next |= dev.enqueue_tx(route.next_hop, packet.into_inner());
-                        }
+                        poll_next |= dispatch_unicast_packet(
+                            rx_buffer,
+                            devices,
+                            table,
+                            src_addr,
+                            dst_addr,
+                            packet.into_inner(),
+                            sockets,
+                        );
                     }
                 }
             }
@@ -758,15 +773,58 @@ impl Router {
     }
 }
 
+fn dispatch_link_local_fanout(
+    devices: &[Arc<DeviceHandle>],
+    dst_addr: IpAddress,
+    packet: &[u8],
+) -> bool {
+    let mut poll_next = false;
+    for dev in devices {
+        if dev.interface_id != InterfaceId::LOOPBACK {
+            poll_next |= dev.enqueue_tx(dst_addr, packet);
+        }
+    }
+    poll_next
+}
+
+fn dispatch_unicast_packet(
+    rx_buffer: &mut RouterPacketBuffer,
+    devices: &[Arc<DeviceHandle>],
+    table: &SharedRouteTable,
+    src_addr: IpAddress,
+    dst_addr: IpAddress,
+    packet: &[u8],
+    sockets: &mut SocketSet<'_>,
+) -> bool {
+    let routes = table.read();
+    let Some(route) = routes.select_route_for_source(&dst_addr, &src_addr) else {
+        warn!(
+            "No route found for source {} destination {}",
+            src_addr, dst_addr
+        );
+        return false;
+    };
+
+    let dev = &devices[route.dev];
+    if dev.interface_id == InterfaceId::LOOPBACK {
+        // Loopback packets are copied directly from the TX buffer into the RX
+        // buffer, bypassing per-device workers and the shared RX queue.
+        inject_loopback_rx_direct(rx_buffer, dst_addr, packet, sockets)
+    } else {
+        dev.enqueue_tx(route.next_hop, packet)
+    }
+}
+
 /// Injects a loopback packet directly into the smoltcp-facing RX buffer.
 fn inject_loopback_rx_direct(
-    rx_buffer: &mut PacketBuffer,
+    rx_buffer: &mut RouterPacketBuffer,
     dst_addr: IpAddress,
     packet: &[u8],
     sockets: &mut SocketSet<'_>,
 ) -> bool {
     snoop_tcp_packet(packet, sockets);
-    let Ok(dst) = rx_buffer.enqueue(packet.len(), InterfaceId::LOOPBACK) else {
+    let Ok(dst) = rx_buffer.enqueue(packet.len(), rx_metadata(InterfaceId::LOOPBACK, packet))
+    else {
         warn!("Loopback: RX buffer full, dropping packet to {}", dst_addr);
         return false;
     };
@@ -822,14 +880,17 @@ fn device_tx_worker(device: Arc<DeviceHandle>) {
 
 /// Dedicated worker that polls one device and forwards packets to router RX.
 fn device_rx_worker(device: Arc<DeviceHandle>) {
-    let mut rx_buffer = PacketBuffer::new(vec![PacketMetadata::EMPTY; 1], vec![0u8; STANDARD_MTU]);
+    let mut rx_buffer = DevicePacketBuffer::new(
+        vec![PacketMetadata::EMPTY; DEVICE_RX_WORKER_BATCH],
+        vec![0u8; STANDARD_MTU * DEVICE_RX_WORKER_BATCH],
+    );
 
     loop {
         let mut received = false;
         {
             let mut device_inner = device.inner.lock();
             let mut snoop = |_packet: &[u8]| {};
-            while rx_buffer.is_empty()
+            while !rx_buffer.is_full()
                 && device_inner.recv(device.interface_id, &mut rx_buffer, now(), &mut snoop)
             {
                 received = true;
@@ -863,13 +924,15 @@ fn device_rx_worker(device: Arc<DeviceHandle>) {
 
         if !received {
             register_device_poll(&device, &device.rx_waker);
-            device.rx_wake.wait();
+            device
+                .rx_wake
+                .wait_timeout_until(DEVICE_RX_IDLE_POLL_INTERVAL, || device.take_rx_ready());
         }
     }
 }
 
 /// smoltcp TX token backed by the router's temporary TX buffer.
-pub struct TxToken<'a>(&'a mut PacketBuffer);
+pub struct TxToken<'a>(&'a mut RouterPacketBuffer);
 
 impl smoltcp::phy::TxToken for TxToken<'_> {
     fn consume<R, F>(self, len: usize, f: F) -> R
@@ -880,18 +943,20 @@ impl smoltcp::phy::TxToken for TxToken<'_> {
         // packet and selects the actual egress interface from the route table.
         f(self
             .0
-            .enqueue(len, TX_INTERFACE_PLACEHOLDER)
+            .enqueue(len, tx_metadata())
             .expect("This was checked before creating the TxToken"))
     }
 }
 
 /// Detects passive TCP opens before smoltcp consumes the incoming packet.
 fn snoop_tcp_packet(buf: &[u8], sockets: &mut SocketSet<'_>) {
-    let (protocol, src_addr, dst_addr, payload) = match IpVersion::of_packet(buf).unwrap() {
+    let (src_addr, dst_addr, payload) = match IpVersion::of_packet(buf).unwrap() {
         IpVersion::Ipv4 => {
             let packet = Ipv4Packet::new_unchecked(buf);
+            if packet.next_header() != IpProtocol::Tcp {
+                return;
+            }
             (
-                packet.next_header(),
                 IpAddress::Ipv4(packet.src_addr()),
                 IpAddress::Ipv4(packet.dst_addr()),
                 packet.payload(),
@@ -899,28 +964,29 @@ fn snoop_tcp_packet(buf: &[u8], sockets: &mut SocketSet<'_>) {
         }
         IpVersion::Ipv6 => {
             let packet = Ipv6Packet::new_unchecked(buf);
+            if packet.next_header() != IpProtocol::Tcp {
+                return;
+            }
             (
-                packet.next_header(),
                 IpAddress::Ipv6(packet.src_addr()),
                 IpAddress::Ipv6(packet.dst_addr()),
                 packet.payload(),
             )
         }
     };
-    if protocol == IpProtocol::Tcp {
-        let tcp_packet = TcpPacket::new_unchecked(payload);
-        let src_addr = (src_addr, tcp_packet.src_port()).into();
-        let dst_addr = (dst_addr, tcp_packet.dst_port()).into();
-        let is_first = tcp_packet.syn() && !tcp_packet.ack();
-        if is_first {
-            LISTEN_TABLE.incoming_tcp_packet(src_addr, dst_addr, sockets);
-        }
+    let tcp_packet = TcpPacket::new_unchecked(payload);
+    let src_addr = (src_addr, tcp_packet.src_port()).into();
+    let dst_addr = (dst_addr, tcp_packet.dst_port()).into();
+    let is_first = tcp_packet.syn() && !tcp_packet.ack();
+    if is_first {
+        LISTEN_TABLE.incoming_tcp_packet(src_addr, dst_addr, sockets);
     }
 }
 
 /// smoltcp RX token for one packet queued by the router.
 pub struct RxToken<'a> {
     interface_id: InterfaceId,
+    packet_meta: PacketMeta,
     packet: &'a [u8],
 }
 
@@ -931,6 +997,10 @@ impl<'a> smoltcp::phy::RxToken for RxToken<'a> {
     {
         let _ingress_if = self.interface_id;
         f(self.packet)
+    }
+
+    fn meta(&self) -> PacketMeta {
+        self.packet_meta
     }
 }
 
@@ -944,9 +1014,10 @@ impl smoltcp::phy::Device for Router {
         } else {
             Some((
                 {
-                    let (interface_id, packet) = self.rx_buffer.dequeue().unwrap();
+                    let (metadata, packet) = self.rx_buffer.dequeue().unwrap();
                     RxToken {
-                        interface_id,
+                        interface_id: metadata.interface_id,
+                        packet_meta: metadata.packet_meta,
                         packet,
                     }
                 },
@@ -974,6 +1045,8 @@ impl smoltcp::phy::Device for Router {
 
 #[cfg(test)]
 mod tests {
+    use smoltcp::storage::PacketBuffer;
+
     use super::*;
 
     const IF0: InterfaceId = InterfaceId::new(2);
@@ -981,8 +1054,53 @@ mod tests {
     const SRC0: IpAddress = IpAddress::Ipv4(Ipv4Address::new(10, 0, 0, 2));
     const SRC1: IpAddress = IpAddress::Ipv4(Ipv4Address::new(10, 0, 1, 2));
 
+    struct EmptyDevice;
+
+    impl Device for EmptyDevice {
+        fn name(&self) -> &str {
+            "empty"
+        }
+
+        fn recv(
+            &mut self,
+            _interface_id: InterfaceId,
+            _buffer: &mut PacketBuffer<InterfaceId>,
+            _timestamp: Instant,
+            _snoop: &mut dyn FnMut(&[u8]),
+        ) -> bool {
+            false
+        }
+
+        fn send(&mut self, _next_hop: IpAddress, _packet: &[u8], _timestamp: Instant) -> bool {
+            false
+        }
+    }
+
+    fn test_device_handle(device: Box<dyn Device>) -> Arc<DeviceHandle> {
+        let queues = Arc::new(RouterQueues {
+            rx: Arc::new(BoundedPacketQueue::new(1)),
+        });
+        DeviceHandle::new(IF0, device, &queues)
+    }
+
     fn ipv4_cidr(addr: Ipv4Address, prefix_len: u8) -> IpCidr {
         Ipv4Cidr::new(addr, prefix_len).into()
+    }
+
+    #[test]
+    fn rx_worker_wake_is_sticky_until_observed() {
+        let device = test_device_handle(Box::new(EmptyDevice));
+
+        assert!(!device.take_rx_ready());
+        device.rx_waker.wake_by_ref();
+        assert!(device.take_rx_ready());
+        assert!(!device.take_rx_ready());
+    }
+
+    #[test]
+    fn rx_worker_idle_poll_interval_keeps_polling_devices_active() {
+        assert!(DEVICE_RX_IDLE_POLL_INTERVAL > core::time::Duration::ZERO);
+        assert!(DEVICE_RX_IDLE_POLL_INTERVAL <= core::time::Duration::from_millis(10));
     }
 
     #[test]

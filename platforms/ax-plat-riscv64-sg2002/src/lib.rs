@@ -1,6 +1,9 @@
 #![no_std]
-#![feature(used_with_arg)]
 #![cfg(any(target_arch = "riscv32", target_arch = "riscv64"))]
+#![cfg_attr(
+    any(target_arch = "riscv32", target_arch = "riscv64"),
+    feature(used_with_arg)
+)]
 
 extern crate alloc;
 
@@ -16,6 +19,7 @@ mod init;
 #[cfg(feature = "irq")]
 mod irq;
 mod mem;
+mod platform;
 mod power;
 mod time;
 

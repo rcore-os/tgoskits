@@ -22,6 +22,15 @@ const IO_APIC_VERSION: u8 = 0x11;
 const BUS_ID_PCI: u8 = 0;
 const BUS_ID_ISA: u8 = 1;
 
+pub const QEMU_PASSTHROUGH_BLOCK_DEVICE: u8 = 3;
+pub const QEMU_PASSTHROUGH_BLOCK_FUNCTION: u8 = 0;
+pub const QEMU_PASSTHROUGH_BLOCK_PIN: u8 = 1;
+
+const MP_IRQ_FLAGS_CONFORMING: u16 = 0;
+const MP_IRQ_FLAGS_ACTIVE_LOW: u16 = 0x3;
+const MP_IRQ_FLAGS_LEVEL_TRIGGERED: u16 = 0xc;
+const PCI_INTX_IRQ_FLAGS: u16 = MP_IRQ_FLAGS_ACTIVE_LOW | MP_IRQ_FLAGS_LEVEL_TRIGGERED;
+
 /// Returns the reserved guest physical range occupied by the MP table.
 pub const fn reserved_range() -> X86LinuxRange {
     X86LinuxRange::new(MP_TABLE_GPA, MP_TABLE_SIZE)
@@ -124,7 +133,13 @@ fn push_isa_interrupt_entries(entries: &mut Vec<Vec<u8>>) {
     // Keep legacy ISA IRQs identity-routed to the IOAPIC. IRQ0 is timer and
     // IRQ4 is COM1; both are useful during early Linux bring-up diagnostics.
     for irq in 0u8..16 {
-        entries.push(interrupt_entry(0, BUS_ID_ISA, irq, irq));
+        entries.push(interrupt_entry(
+            0,
+            MP_IRQ_FLAGS_CONFORMING,
+            BUS_ID_ISA,
+            irq,
+            irq,
+        ));
     }
 }
 
@@ -136,26 +151,34 @@ fn push_pci_interrupt_entries(entries: &mut Vec<Vec<u8>>) {
         for pin in 0u8..4 {
             let source_irq = (dev << 2) | pin;
             let intin = pci_intx_gsi(dev, pin);
-            entries.push(interrupt_entry(0, BUS_ID_PCI, source_irq, intin));
+            entries.push(interrupt_entry(
+                0,
+                PCI_INTX_IRQ_FLAGS,
+                BUS_ID_PCI,
+                source_irq,
+                intin,
+            ));
         }
     }
 }
 
 const fn pci_intx_gsi(dev: u8, pin: u8) -> u8 {
-    // The current x86 smoke setup passes the outer q35 00:03.0 virtio-blk
-    // device through to the guest. QEMU routes that device's INTA# to host
-    // IOAPIC GSI 18, and Axvisor forwards host IOAPIC GSIs by number. Keep the
-    // guest MP table on the same line until a PCI IRQ router derives this from
-    // platform/device topology.
-    if dev == 3 && pin == 0 {
-        18
-    } else {
-        16 + ((dev + pin) & 3)
-    }
+    // Match q35 PCI INTx swizzling in the guest MP table. The host IRQ can be
+    // a different ACPI route; Axvisor registers that native host IRQ against
+    // this guest GSI explicitly.
+    16 + ((dev + pin) & 3)
+}
+
+pub const fn qemu_passthrough_block_gsi() -> usize {
+    pci_intx_gsi(
+        QEMU_PASSTHROUGH_BLOCK_DEVICE,
+        QEMU_PASSTHROUGH_BLOCK_PIN - 1,
+    ) as usize
 }
 
 fn interrupt_entry(
     interrupt_type: u8,
+    flags: u16,
     source_bus_id: u8,
     source_bus_irq: u8,
     dest_io_apic_intin: u8,
@@ -163,7 +186,7 @@ fn interrupt_entry(
     let mut entry = Vec::with_capacity(8);
     entry.push(3);
     entry.push(interrupt_type);
-    entry.extend_from_slice(&0u16.to_le_bytes());
+    entry.extend_from_slice(&flags.to_le_bytes());
     entry.push(source_bus_id);
     entry.push(source_bus_irq);
     entry.push(IO_APIC_ID);
@@ -198,5 +221,27 @@ mod tests {
             u32::from_le_bytes([fp[4], fp[5], fp[6], fp[7]]) as usize,
             MP_CONFIG_GPA
         );
+    }
+
+    #[test]
+    fn pci_intx_entries_are_low_active_level_triggered() {
+        let source_irq = (QEMU_PASSTHROUGH_BLOCK_DEVICE << 2) | (QEMU_PASSTHROUGH_BLOCK_PIN - 1);
+        let entry = interrupt_entry(
+            0,
+            PCI_INTX_IRQ_FLAGS,
+            BUS_ID_PCI,
+            source_irq,
+            qemu_passthrough_block_gsi() as u8,
+        );
+
+        assert_eq!(u16::from_le_bytes([entry[2], entry[3]]), 0x0f);
+        assert_eq!(entry[4], BUS_ID_PCI);
+        assert_eq!(entry[5], source_irq);
+        assert_eq!(entry[7], qemu_passthrough_block_gsi() as u8);
+    }
+
+    #[test]
+    fn q35_dev3_inta_uses_swizzled_gsi19() {
+        assert_eq!(pci_intx_gsi(3, 0), 19);
     }
 }

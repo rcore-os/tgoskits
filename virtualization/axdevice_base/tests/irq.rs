@@ -60,6 +60,9 @@ impl IrqSink for MockIrqSink {
         self.events.lock().unwrap().push(IrqEvent::Pulse(line));
         Ok(())
     }
+
+    // eoi is intentionally absent — MockIrqSink only implements the upstream
+    // IrqSink trait (set_level + pulse).
 }
 
 #[test]
