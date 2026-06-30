@@ -1,8 +1,0 @@
-target = "x86_64-unknown-none"
-features = ["ax-driver/nvme"]
-log = "Info"
-max_cpu_num = 1
-
-[env]
-AXTEST = "y"
-AXTEST_COVERAGE = "y"

@@ -27,32 +27,10 @@ SECTIONS {
         KEEP(*(SORT(.axtest_mod_hooks)))
         __axtest_mod_hooks_end = .;
 
-        . = ALIGN(0x10);
-        __start___llvm_prf_data = .;
-        KEEP(*(__llvm_prf_data))
-        __stop___llvm_prf_data = .;
-
-        . = ALIGN(0x10);
-        __start___llvm_prf_cnts = .;
-        KEEP(*(__llvm_prf_cnts))
-        __stop___llvm_prf_cnts = .;
-
-        . = ALIGN(0x10);
-        __start___llvm_prf_bits = .;
-        KEEP(*(__llvm_prf_bits))
-        __stop___llvm_prf_bits = .;
-
-        . = ALIGN(0x10);
-        __start___llvm_prf_vnds = .;
-        KEEP(*(__llvm_prf_vnds))
-        __stop___llvm_prf_vnds = .;
+%AXTEST_COVERAGE_RUNTIME_SECTIONS%
     }
 
-    __llvm_prf_names : AT(ADDR(__llvm_prf_names) - AX_LINKER_LOAD_OFFSET) ALIGN(0x10) {
-        __start___llvm_prf_names = .;
-        KEEP(*(__llvm_prf_names))
-        __stop___llvm_prf_names = .;
-    }
+%AXTEST_COVERAGE_OUTPUT_SECTIONS%
 
     scope_local : AT(ADDR(scope_local) - AX_LINKER_LOAD_OFFSET) {
         KEEP(*(scope_local))

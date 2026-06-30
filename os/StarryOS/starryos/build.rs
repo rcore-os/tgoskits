@@ -1,6 +1,5 @@
 fn main() {
     println!("cargo:rerun-if-changed=linker.ld");
-    println!("cargo::rustc-check-cfg=cfg(axtest)");
 
     let out_dir = std::env::var("OUT_DIR").unwrap();
     let linker = format!("{out_dir}/linker.x");
