@@ -35,6 +35,7 @@ use x86_vlapic::{IoApicEoi, IoApicInterrupt};
 use crate::{
     AxVmDeviceConfig, DeviceBuildContext, DeviceBundle, DeviceFactoryRegistry, DeviceManagerError,
     DeviceManagerResult, FwCfg, PollableDeviceOps, range_alloc::RangeAllocator,
+    virtio_net::VirtioNet,
 };
 #[cfg(target_arch = "loongarch64")]
 use crate::{LoongArchPchPic, PchPicOutputEvent};
@@ -177,6 +178,7 @@ impl AxVmDevices {
                 | EmulatedDeviceType::X86IoApic
                 | EmulatedDeviceType::X86Pit
                 | EmulatedDeviceType::PPPTGlobal
+                | EmulatedDeviceType::VirtioNet
         )
     }
 
@@ -423,6 +425,21 @@ impl AxVmDevices {
                     } else {
                         warn!("IVCChannel already initialized, ignoring additional config");
                     }
+                }
+                EmulatedDeviceType::VirtioNet => {
+                    // MAC: 52:54:00:00:00:NN, where NN comes from cfg_list[0] (per-VM unique).
+                    let nn = config.cfg_list.first().copied().unwrap_or(1) as u8;
+                    let mac = [0x52, 0x54, 0x00, 0x00, 0x00, nn];
+                    let base: GuestPhysAddr = config.base_gpa.into();
+                    #[allow(clippy::arc_with_non_send_sync)]
+                    this.register(
+                        MmioDeviceAdapter::from_arc(Arc::new(VirtioNet::new(base, mac)))
+                            as Arc<dyn Device>,
+                    )?;
+                    info!(
+                        "virtio-net '{}' initialized at GPA {:#x} (MAC 52:54:00:00:00:{:02x})",
+                        config.name, config.base_gpa, nn
+                    );
                 }
                 _ => {
                     warn!(

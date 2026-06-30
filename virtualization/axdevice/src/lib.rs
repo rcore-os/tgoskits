@@ -36,6 +36,7 @@ mod fw_cfg;
 mod loongarch_pch_pic;
 mod range_alloc;
 mod registration;
+mod virtio_net;
 #[cfg(target_arch = "x86_64")]
 mod x86;
 
