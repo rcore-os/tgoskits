@@ -12,24 +12,19 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use alloc::{format, string::ToString};
+use alloc::format;
 use core::{ptr::NonNull, time::Duration};
 
 use log::{info, warn};
-use rdif_clk::ClockId;
-use rdrive::{
-    Device,
-    probe::OnProbeError,
-    register::{FdtInfo, ProbeFdt},
-};
+use rdrive::{probe::OnProbeError, register::ProbeFdt};
 use sdhci_host::{HostClock, HostResetHook, Sdhci, rdif as sdhci_rdif};
 use sdmmc_protocol::{
     Error, OperationPoll,
     error::{ErrorContext, Phase},
     sdio::{CardInfo, CardInitPreference, SdioHost2Adapter, SdioInitScratch, SdioSdmmc},
 };
-use spin::Once;
 
+use super::clock::RockchipClockOps;
 use crate::{block::ProbeFdtBlock, mmio::iomap};
 
 // RK3568 DWCMSHC uses the same SDHCI completion interrupt path as RK3588:
@@ -83,17 +78,23 @@ const PHY_SMPLDL_CNFG_BYPASS_EN: u8 = 1 << 1;
 const PHY_DLL_CTRL_ENABLE: u8 = 0x1;
 const PHY_DLL_CNFG2_JUMPSTEP: u8 = 0x0a;
 
-static SDHCI_CLOCK: RockchipSdhciClock = RockchipSdhciClock;
 static SDHCI_RESET_HOOK: RockchipSdhciResetHook = RockchipSdhciResetHook;
 
 type RockchipSdhci = SdioSdmmc<SdioHost2Adapter<Sdhci>>;
 
-struct RockchipSdhciClock;
+struct RockchipSdhciClock {
+    clock: RockchipClockOps,
+}
 struct RockchipSdhciResetHook;
 
 impl HostClock for RockchipSdhciClock {
     fn set_clock(&self, target_hz: u32) -> Result<(), Error> {
-        set_sdhci_clock(target_hz)
+        self.clock
+            .set_rate(u64::from(target_hz))
+            .map_err(|_| clock_error())?;
+        let rate = self.clock.rate().map_err(|_| clock_error())?;
+        info!("rockchip-rk3568-sdhci: core clock set to {} Hz", rate);
+        Ok(())
     }
 }
 
@@ -136,12 +137,10 @@ fn probe(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
     );
     let mmio_base = iomap(base_reg.address as usize, mmio_size as usize)?;
 
-    init_core_clock(info)?;
-
     let mut host = unsafe { Sdhci::new(mmio_base) };
-    if CLK_DEV.is_completed() {
+    if let Some(clock) = RockchipClockOps::named(info, "core")? {
         info!("rockchip-rk3568-sdhci: using external CRU clock");
-        host.set_external_clock(&SDHCI_CLOCK);
+        host.set_external_clock(RockchipSdhciClock { clock });
     } else {
         warn!("rockchip-rk3568-sdhci: no core clock found; using SDHCI internal clock divider");
     }
@@ -153,6 +152,8 @@ fn probe(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
     let mut card = SdioSdmmc::new_host2(host);
     let card_info = poll_card_init_mmc(&mut card)
         .map_err(|e| card_init_error(base_reg.address, mmio_size, e))?;
+    card.host_mut()
+        .with_host_mut(|host| host.clear_external_clock());
     info!(
         "SDHCI card: kind={:?} high_capacity={} rca={} ocr={:#010x} capacity_blocks={:?} cid={} \
          ext_csd={}",
@@ -328,57 +329,8 @@ fn is_absent_card_init_error(err: Error) -> bool {
     }
 }
 
-fn init_core_clock(info: &FdtInfo<'_>) -> Result<(), OnProbeError> {
-    for clk in info.node.clocks() {
-        info!(
-            "rockchip-sdhci clock: phandle <{}>, name: {:?}, cells: {}",
-            clk.phandle, clk.name, clk.cells
-        );
-        if clk.name == Some("core".to_string()) {
-            let device_id = info.phandle_to_device_id(clk.phandle).ok_or_else(|| {
-                OnProbeError::other(format!(
-                    "[{}] core clock phandle {} has no device id",
-                    info.node.name(),
-                    clk.phandle
-                ))
-            })?;
-            let clk_dev = rdrive::get::<rdif_clk::Clk>(device_id).map_err(|_| {
-                OnProbeError::other(format!(
-                    "[{}] core clock device {:?} is not registered",
-                    info.node.name(),
-                    device_id
-                ))
-            })?;
-            CLK_DEV.call_once(|| ClkDev {
-                inner: clk_dev,
-                id: (clk.select().unwrap_or(0) as usize).into(),
-            });
-            return Ok(());
-        }
-    }
-    Ok(())
-}
-
-fn set_sdhci_clock(target_hz: u32) -> Result<(), Error> {
-    let clk = CLK_DEV.wait();
-    let mut clk_dev = clk.inner.lock().map_err(|_| clock_error())?;
-    clk_dev
-        .set_rate(clk.id, target_hz as u64)
-        .map_err(|_| clock_error())?;
-    let rate = clk_dev.get_rate(clk.id).map_err(|_| clock_error())?;
-    info!("rockchip-rk3568-sdhci: core clock set to {} Hz", rate);
-    Ok(())
-}
-
 fn clock_error() -> Error {
     Error::BusError(ErrorContext::new(Phase::Init))
-}
-
-static CLK_DEV: Once<ClkDev> = Once::new();
-
-struct ClkDev {
-    inner: Device<rdif_clk::Clk>,
-    id: ClockId,
 }
 
 #[cfg(test)]

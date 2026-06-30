@@ -67,6 +67,7 @@ rga = ["plat-dyn", "dep:rockchip-rga"]
 rockchip-sdhci = [
     "block",
     "plat-dyn",
+    "rockchip-pm",
     "rockchip-soc",
     "dep:ax-kspin",
     "dep:rdif-clk",
@@ -92,6 +93,7 @@ k230-sdhci = [
 rockchip-dwmmc = [
     "block",
     "plat-dyn",
+    "rockchip-pm",
     "rockchip-soc",
     "dep:arm-scmi-rs",
     "dep:ax-kspin",

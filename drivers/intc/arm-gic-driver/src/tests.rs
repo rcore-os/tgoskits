@@ -2,7 +2,7 @@ extern crate std;
 
 #[cfg(target_arch = "aarch64")]
 use crate::version::v3::{LPI, RedistributorV3, RedistributorV4, SGI};
-use crate::{CheckedIntIdError, IntId, checked_intid};
+use crate::{CheckedIntIdError, IntId, checked_intid, define::Trigger, fdt_parse_irq_config};
 
 #[cfg(target_arch = "aarch64")]
 #[test]
@@ -49,4 +49,16 @@ fn checked_intid_rejects_special_and_out_of_range_intids() {
     assert_eq!(checked_intid(1019, 1020).unwrap().to_u32(), 1019);
     assert_eq!(checked_intid(1020, 1024), Err(CheckedIntIdError));
     assert_eq!(checked_intid(4096, 1024), Err(CheckedIntIdError));
+}
+
+#[test]
+fn fdt_spi_level_high_uses_gic_intid_numbering() {
+    const GIC_SPI: u32 = 0;
+    const RK3588_SDMMC_SPI: u32 = 203;
+    const IRQ_TYPE_LEVEL_HIGH: u32 = 4;
+
+    let config = fdt_parse_irq_config(&[GIC_SPI, RK3588_SDMMC_SPI, IRQ_TYPE_LEVEL_HIGH]).unwrap();
+
+    assert_eq!(config.id.to_u32(), 235);
+    assert_eq!(config.trigger, Trigger::Level);
 }

@@ -1,5 +1,8 @@
 use alloc::{boxed::Box, format, string::String, sync::Arc, vec::Vec};
-use core::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use core::{
+    sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
+    time::Duration,
+};
 
 use ax_errno::{AxError, AxResult};
 use dma_api::{DeviceDma, DmaDirection, DmaDomainId};
@@ -19,12 +22,13 @@ use super::{
 use crate::os::{
     BlockIrqOutcome, BlockIrqRegistration, current_task_id, dma_op, notify_drain,
     notify_drain_from_irq, notify_waiters, register_shared_block_irq, spawn_task,
-    sync::IrqMutex as SpinNoIrq, task_wait_until, task_yield, wait_for_drain_notification,
+    sync::IrqMutex as SpinNoIrq, task_wait_timeout, task_yield, wait_for_drain_notification,
     wake_task,
 };
 
 const DEFAULT_MAX_TRANSFER_BYTES: usize = 1024 * 1024;
 const DEFAULT_SUBMIT_WINDOW: usize = 32;
+const IRQ_COMPLETION_REPOLL_TIMEOUT: Duration = Duration::from_millis(1);
 
 fn runtime_device_dma(domain: DmaDomainId, dma_mask: u64) -> Result<DeviceDma, BlkError> {
     let dma_op = dma_op().ok_or(BlkError::Io)?;
@@ -339,7 +343,7 @@ impl BlockIrqAction {
         let event = self.handler.handle_irq();
         if self.device.record_driver_event(event) {
             self.device.drain_wake.wake_drain_from_irq();
-            BlockIrqOutcome::Handled
+            BlockIrqOutcome::Wake
         } else {
             BlockIrqOutcome::Handled
         }
@@ -529,6 +533,12 @@ impl BlockDeviceHandle {
         CompletionDrain::new(&self.pending, &mut poller).drain_events(events)
     }
 
+    fn wake_drain_after_irq_submit(&self) {
+        if self.completion_mode() == BlockCompletionMode::IrqDriven {
+            self.drain_wake.wake_drain();
+        }
+    }
+
     #[cfg(feature = "ext4")]
     fn poll_one(&self, key: RequestKey) -> bool {
         let mut poller = DeviceRequestPoller { device: self };
@@ -540,10 +550,10 @@ impl BlockDeviceHandle {
         if let Some(queue_id) = queue_id {
             self.wake_queue_progress(queue_id);
         }
+        notify_waiters();
         if let Some(task_id) = task_id {
             wake_task(task_id);
         }
-        notify_waiters();
     }
 
     fn queue_id_for_key(&self, key: RequestKey) -> Option<usize> {
@@ -567,10 +577,10 @@ impl BlockDeviceHandle {
             }
             matching
         };
+        notify_waiters();
         for task_id in waiters {
             wake_task(task_id);
         }
-        notify_waiters();
     }
 
     pub(crate) fn read_blocks(&self, block_id: u64, buf: &mut [u8]) -> AxResult {
@@ -604,6 +614,7 @@ impl BlockDeviceHandle {
                         .insert_submitted(info.id, request_id, None)
                         .map_err(map_blk_err_to_ax_err)?;
                     drop(queue);
+                    self.wake_drain_after_irq_submit();
                     return self.wait_for_completion(key, None);
                 }
                 Err(BlkError::Retry) => {
@@ -703,7 +714,11 @@ impl BlockDeviceHandle {
                 let mut queue = self.queues[active_queue.index].lock();
                 let info = queue.info;
                 match self.submit_chunk(&mut queue, info, op, direction, chunk, write_src) {
-                    Ok(entry) => active.push(entry),
+                    Ok(entry) => {
+                        drop(queue);
+                        self.wake_drain_after_irq_submit();
+                        active.push(entry);
+                    }
                     Err(BlkError::Retry) => {
                         deferred_chunk = Some((active_queue.index, chunk));
                         next_byte_offset = next_byte_offset.min(chunk.byte_offset);
@@ -1030,13 +1045,8 @@ impl BlockDeviceHandle {
         if self.completion_mode() == BlockCompletionMode::Polling {
             return self.polling_wait_for_any_key(&keys);
         }
-        if task_id != 0 {
-            task_wait_until(|| {
-                keys.iter()
-                    .any(|&key| self.pending.lock().result(key).is_some())
-            });
-        } else {
-            core::hint::spin_loop();
+        if self.irq_wait_or_timeout(task_id) {
+            let _ = self.poll_batch(&keys);
         }
         Ok(())
     }
@@ -1059,12 +1069,21 @@ impl BlockDeviceHandle {
             self.remove_queue_progress_waiter(queue_id, task_id);
             return Ok(self.polling_wait_for_queue_empty(queue_id));
         }
-        if task_id != 0 {
-            task_wait_until(|| self.pending.lock().keys_for_queue(queue_id).is_empty());
-        } else {
-            core::hint::spin_loop();
+        loop {
+            let timed_out = self.irq_wait_or_timeout(task_id);
+            let keys = self.pending.lock().keys_for_queue(queue_id);
+            if keys.is_empty() {
+                self.remove_queue_progress_waiter(queue_id, task_id);
+                return Ok(true);
+            }
+            if timed_out {
+                let _ = self.poll_batch(&keys);
+                if self.pending.lock().keys_for_queue(queue_id).is_empty() {
+                    self.remove_queue_progress_waiter(queue_id, task_id);
+                    return Ok(true);
+                }
+            }
         }
-        Ok(true)
     }
 
     fn remove_queue_progress_waiter(&self, queue_id: usize, task_id: u64) {
@@ -1089,6 +1108,15 @@ impl BlockDeviceHandle {
                 return Ok(());
             }
             core::hint::spin_loop();
+        }
+    }
+
+    fn irq_wait_or_timeout(&self, task_id: u64) -> bool {
+        if task_id != 0 {
+            task_wait_timeout(IRQ_COMPLETION_REPOLL_TIMEOUT)
+        } else {
+            core::hint::spin_loop();
+            true
         }
     }
 
@@ -1127,16 +1155,8 @@ impl BlockDeviceHandle {
                         self.polling_wait_for_any_key(&[key])?;
                         continue;
                     }
-                    if task_id != 0 {
-                        task_wait_until(|| {
-                            self.pending
-                                .lock()
-                                .request(key)
-                                .and_then(|request| request.result())
-                                .is_some()
-                        });
-                    } else {
-                        core::hint::spin_loop();
+                    if self.irq_wait_or_timeout(task_id) {
+                        let _ = self.poll_one(key);
                     }
                 }
             }
@@ -1431,10 +1451,10 @@ impl RequestPoller for DeviceRequestPoller<'_> {
 
     fn completed_request(&mut self, queue_id: usize, task_id: Option<u64>) {
         self.device.wake_queue_progress(queue_id);
+        notify_waiters();
         if let Some(task_id) = task_id {
             wake_task(task_id);
         }
-        notify_waiters();
     }
 }
 

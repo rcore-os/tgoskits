@@ -8,7 +8,7 @@ use dma_api::DeviceDma;
 use mmio_api::MmioRaw;
 use sdmmc_protocol::{
     error::{Error, ErrorContext, Phase},
-    sdio::{BusWidth, SignalVoltage},
+    sdio::{BusWidth, SdioIrqHandle, SignalVoltage},
 };
 use volatile::VolatilePtr;
 
@@ -420,16 +420,14 @@ impl PhytiumMci {
         self.completion_irq_enabled.load(Ordering::Acquire)
     }
 
-    pub fn irq_handle(&self) -> PhytiumMciIrqHandle {
+    pub fn irq_endpoint(&mut self) -> PhytiumMciIrqHandle {
         PhytiumMciIrqHandle {
             irq: self.irq.clone(),
         }
     }
 
-    pub fn handle_irq(&self) -> Event {
-        use sdmmc_protocol::sdio::SdioIrqHandle;
-
-        self.irq_handle().handle_irq()
+    pub fn handle_irq(&mut self) -> Event {
+        handle_irq_core(&self.irq)
     }
 
     pub(crate) fn event_from_raw_irq(raw: u32, idsts: u32) -> Event {
@@ -553,23 +551,27 @@ impl PhytiumMci {
     }
 }
 
-impl sdmmc_protocol::sdio::SdioIrqHandle for PhytiumMciIrqHandle {
+impl SdioIrqHandle for PhytiumMciIrqHandle {
     type Event = Event;
 
-    fn handle_irq(&self) -> Self::Event {
-        let generation = self.irq.state.generation();
-        let raw = self.irq.regs.rintsts().read().into_bits();
-        let idsts = self.irq.regs.idsts().read();
-        if raw != 0 {
-            self.irq.regs.rintsts().write(RIntSts::from_bits(raw));
-        }
-        if idsts != 0 {
-            self.irq.regs.idsts().write(idsts);
-        }
-        self.irq.state.cache_if_current(generation, raw, idsts);
-
-        PhytiumMci::event_from_raw_irq(raw, idsts)
+    fn handle_irq(&mut self) -> Self::Event {
+        handle_irq_core(&self.irq)
     }
+}
+
+fn handle_irq_core(irq: &IrqCore) -> Event {
+    let generation = irq.state.generation();
+    let raw = irq.regs.rintsts().read().into_bits();
+    let idsts = irq.regs.idsts().read();
+    if raw != 0 {
+        irq.regs.rintsts().write(RIntSts::from_bits(raw));
+    }
+    if idsts != 0 {
+        irq.regs.idsts().write(idsts);
+    }
+    irq.state.cache_if_current(generation, raw, idsts);
+
+    PhytiumMci::event_from_raw_irq(raw, idsts)
 }
 
 pub(crate) fn uhs_bits_after_voltage(bits: Uhs, voltage: SignalVoltage) -> Result<Uhs, Error> {
@@ -612,7 +614,7 @@ mod tests {
     fn handle_irq_wakes_on_idmac_receive_done() {
         let mut mmio = [0u32; 256];
         let base = NonNull::new(mmio.as_mut_ptr().cast()).unwrap();
-        let host = unsafe { PhytiumMci::new(base) };
+        let mut host = unsafe { PhytiumMci::new(base) };
         host.irq.state.begin_request();
         let old_generation = host.irq.state.generation();
         const IDSTS_WORD: usize = 36;

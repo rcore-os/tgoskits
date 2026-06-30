@@ -211,6 +211,10 @@ clk_id_group!(
 clk_id_group!(
     HCLK_SDIO = 409,
     CCLK_SRC_SDIO = 410,
+    SCLK_SDIO_DRV = 704,
+    SCLK_SDIO_SAMPLE = 705,
+    SCLK_SDMMC_DRV = 706,
+    SCLK_SDMMC_SAMPLE = 707,
     HCLK_EMMC = 312,
     ACLK_EMMC = 313,
     CCLK_EMMC = 314,
@@ -219,6 +223,8 @@ clk_id_group!(
     SCLK_SFC = 317,
     HCLK_SFC = 318,
     HCLK_SFC_XIP = 319,
+    HCLK_NVM_ROOT = 320,
+    ACLK_NVM_ROOT = 321,
 );
 
 // =============================================================================
@@ -426,8 +432,25 @@ pub fn is_adc_clk(clk_id: ClkId) -> bool {
 
 /// 判断时钟 ID 是否为 MMC/EMMC/SDIO/SFC
 pub fn is_mmc_clk(clk_id: ClkId) -> bool {
-    // CCLK_EMMC, BCLK_EMMC, CCLK_SRC_SDIO, SCLK_SFC
-    matches!(clk_id, CCLK_EMMC | BCLK_EMMC | CCLK_SRC_SDIO | SCLK_SFC)
+    matches!(
+        clk_id,
+        HCLK_SDIO
+            | HCLK_EMMC
+            | ACLK_EMMC
+            | CCLK_EMMC
+            | BCLK_EMMC
+            | TMCLK_EMMC
+            | SCLK_SFC
+            | HCLK_SFC
+            | HCLK_SFC_XIP
+            | HCLK_NVM_ROOT
+            | ACLK_NVM_ROOT
+            | CCLK_SRC_SDIO
+            | SCLK_SDIO_DRV
+            | SCLK_SDIO_SAMPLE
+            | SCLK_SDMMC_DRV
+            | SCLK_SDMMC_SAMPLE
+    )
 }
 
 /// 判断时钟 ID 是否为 NPU
