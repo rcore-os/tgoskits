@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use alloc::{format, sync::Arc};
+use alloc::format;
 use core::alloc::Layout;
 #[cfg(all(
     feature = "fs",
@@ -86,26 +86,11 @@ pub mod vmcfg {
     include!(concat!(env!("OUT_DIR"), "/vm_configs.rs"));
 }
 
-pub fn get_vm_dtb_arc(_vm_cfg: &AxVMConfig) -> Option<Arc<[u8]>> {
-    #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
-    {
-        let cache_lock = dtb_cache().lock();
-        if let Some(dtb) = cache_lock.get(&_vm_cfg.id()) {
-            return Some(Arc::from(dtb.as_slice()));
-        }
-    }
-    None
-}
-
 pub fn init_guest_vms() {
-    // Initialize the DTB cache in the fdt module
-    #[cfg(any(
-        target_arch = "aarch64",
-        target_arch = "loongarch64",
-        target_arch = "riscv64"
-    ))]
+    // Initialize LoongArch firmware resources before guest configs are materialized.
+    #[cfg(target_arch = "loongarch64")]
     {
-        init_dtb_cache();
+        init_guest_boot_resources();
     }
 
     // First try to get configs from filesystem if fs feature is enabled
@@ -154,11 +139,9 @@ pub fn init_guest_vm(raw_cfg: &str) -> AxResult<usize> {
     let mut vm_config = build_axvm_config(&vm_create_config);
 
     // Handle FDT-related operations for architectures that boot guests with DTB.
-    #[cfg(any(
-        target_arch = "aarch64",
-        target_arch = "loongarch64",
-        target_arch = "riscv64"
-    ))]
+    #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
+    let guest_dtb = handle_fdt_operations(&mut vm_config, &mut vm_create_config)?;
+    #[cfg(target_arch = "loongarch64")]
     handle_fdt_operations(&mut vm_config, &mut vm_create_config)?;
 
     #[cfg(target_arch = "x86_64")]
@@ -193,6 +176,9 @@ pub fn init_guest_vm(raw_cfg: &str) -> AxResult<usize> {
     // Load corresponding images for VM.
     info!("VM[{}] created success, loading images...", vm.id());
 
+    #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
+    let mut loader = ImageLoader::new(main_mem, vm_create_config, vm.clone(), guest_dtb);
+    #[cfg(not(any(target_arch = "aarch64", target_arch = "riscv64")))]
     let mut loader = ImageLoader::new(main_mem, vm_create_config, vm.clone());
     loader.load()?;
 
@@ -255,7 +241,9 @@ pub(crate) fn build_axvm_config(cfg: &AxVMCrateConfig) -> AxVMConfig {
         pass_through_devices: cfg.devices.passthrough_devices.clone(),
         excluded_devices: cfg.devices.excluded_devices.clone(),
         pass_through_addresses: cfg.devices.passthrough_addresses.clone(),
+        reserved_address_ranges: Vec::new(),
         pass_through_ports: cfg.devices.passthrough_ports.clone(),
+        address_space_policy: cfg.devices.address_space_policy,
         interrupt_mode: cfg.devices.interrupt_mode,
     })
 }
@@ -415,12 +403,6 @@ fn x86_intx_forwarding_trigger(binding: &ax_driver::BindingIrq) -> InterruptTrig
         }
         _ => InterruptTriggerMode::LevelTriggered,
     }
-}
-
-#[cfg(all(feature = "fs", target_arch = "x86_64"))]
-fn resolve_device_irq(raw_irq: usize) -> ax_hal::irq::IrqId {
-    ax_hal::irq::try_legacy_irq(raw_irq)
-        .unwrap_or_else(|_| panic!("legacy device IRQ {raw_irq} exceeds platform IRQ id width"))
 }
 
 fn config_guest_address(vm: &AxVMRef, main_memory: &VMMemoryRegion, boot_protocol: VMBootProtocol) {

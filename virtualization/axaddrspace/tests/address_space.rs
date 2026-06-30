@@ -102,6 +102,37 @@ fn test_map_linear() {
 
 #[test]
 #[axin(decorator(mock_hal_test))]
+fn test_map_linear_allows_hpa_above_gpa() {
+    let (mut addr_space, _base, _size) = setup_test_addr_space();
+    let vaddr = GuestPhysAddr::from_usize(0x18000);
+    let paddr = PhysAddr::from_usize(0x1c000);
+    let map_linear_size = 0x4000;
+    let flags = MappingFlags::READ | MappingFlags::WRITE;
+
+    addr_space
+        .map_linear(vaddr, paddr, map_linear_size, flags)
+        .unwrap();
+
+    assert_eq!(addr_space.translate(vaddr).unwrap(), paddr);
+    assert_eq!(
+        addr_space.translate(vaddr + 0x3000).unwrap(),
+        paddr + 0x3000
+    );
+}
+
+#[test]
+#[axin(decorator(mock_hal_test))]
+fn test_map_linear_rejects_physical_range_overflow() {
+    let (mut addr_space, _base, _size) = setup_test_addr_space();
+    let vaddr = GuestPhysAddr::from_usize(0x18000);
+    let paddr = PhysAddr::from_usize(usize::MAX - 0xfff);
+    let flags = MappingFlags::READ | MappingFlags::WRITE;
+
+    assert!(addr_space.map_linear(vaddr, paddr, 0x2000, flags).is_err());
+}
+
+#[test]
+#[axin(decorator(mock_hal_test))]
 fn test_map_alloc_populate() {
     let (mut addr_space, _base, _size) = setup_test_addr_space();
     let vaddr = GuestPhysAddr::from_usize(0x10000);

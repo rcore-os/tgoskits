@@ -35,11 +35,12 @@ pub enum Backend<H: PagingHandler> {
     /// Linear mapping backend.
     ///
     /// The offset between the virtual address and the physical address is
-    /// constant, which is specified by `pa_va_offset`. For example, the virtual
-    /// address `vaddr` is mapped to the physical address `vaddr - pa_va_offset`.
+    /// constant, which is specified by `pa_to_va_delta`. For example, the
+    /// virtual address `vaddr` is mapped to the physical address
+    /// `(vaddr as i128 - pa_to_va_delta) as usize`.
     Linear {
         /// `vaddr - paddr`.
-        pa_va_offset: usize,
+        pa_to_va_delta: i128,
     },
     /// Allocation mapping backend.
     ///
@@ -58,7 +59,7 @@ pub enum Backend<H: PagingHandler> {
 impl<H: PagingHandler> Clone for Backend<H> {
     fn clone(&self) -> Self {
         match *self {
-            Self::Linear { pa_va_offset } => Self::Linear { pa_va_offset },
+            Self::Linear { pa_to_va_delta } => Self::Linear { pa_to_va_delta },
             Self::Alloc { populate, .. } => Self::Alloc {
                 populate,
                 _phantom: core::marker::PhantomData,
@@ -80,14 +81,16 @@ impl<H: PagingHandler> MappingBackend for Backend<H> {
         pt: &mut PageTable<H>,
     ) -> bool {
         match *self {
-            Self::Linear { pa_va_offset } => self.map_linear(start, size, flags, pt, pa_va_offset),
+            Self::Linear { pa_to_va_delta } => {
+                self.map_linear(start, size, flags, pt, pa_to_va_delta)
+            }
             Self::Alloc { populate, .. } => self.map_alloc(start, size, flags, pt, populate),
         }
     }
 
     fn unmap(&self, start: GuestPhysAddr, size: usize, pt: &mut PageTable<H>) -> bool {
         match *self {
-            Self::Linear { pa_va_offset } => self.unmap_linear(start, size, pt, pa_va_offset),
+            Self::Linear { pa_to_va_delta } => self.unmap_linear(start, size, pt, pa_to_va_delta),
             Self::Alloc { populate, .. } => self.unmap_alloc(start, size, pt, populate),
         }
     }

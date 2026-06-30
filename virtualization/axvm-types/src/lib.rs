@@ -118,6 +118,20 @@ impl From<VMType> for usize {
     }
 }
 
+/// Guest physical address space population policy.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum AddressSpacePolicy {
+    /// Start from an empty guest physical address space and map only explicit
+    /// guest memory, boot-description regions, and explicitly configured
+    /// passthrough resources.
+    #[default]
+    Virtualized,
+    /// Start from a host-physical identity passthrough address space, then
+    /// punch holes for guest memory, boot-description regions, emulated
+    /// devices, and reserved ranges.
+    Passthrough,
+}
+
 /// The type of memory mapping used for VM memory regions.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 #[repr(u8)]
@@ -179,6 +193,15 @@ pub struct PassThroughDeviceConfig {
 /// A part of `AxVMConfig`, which represents the configuration of a pass-through address for a virtual machine.
 #[derive(Debug, Default, Clone, PartialEq)]
 pub struct PassThroughAddressConfig {
+    /// The base GPA (Guest Physical Address).
+    pub base_gpa: usize,
+    /// The address length.
+    pub length: usize,
+}
+
+/// A guest physical address range reserved from default passthrough mapping.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct ReservedAddressConfig {
     /// The base GPA (Guest Physical Address).
     pub base_gpa: usize,
     /// The address length.

@@ -161,7 +161,8 @@ pub fn load_firmware_fdt(vm: &AxVMRef, config: &AxVMCrateConfig) -> AxResult {
         &fdt,
         GuestPhysAddr::from(UEFI_FIRMWARE_FDT_BASE),
         vm.clone(),
-    )
+    )?;
+    vm.set_guest_device_tree(GuestPhysAddr::from(UEFI_FIRMWARE_FDT_BASE), fdt)
 }
 
 pub fn fw_cfg_platform_config(vm: &AxVMRef, config: &AxVMCrateConfig) -> FwCfgPlatformConfig {

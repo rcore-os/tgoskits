@@ -58,7 +58,7 @@ fn should_skip_guest_cpu_prop(prop_name: &str) -> bool {
 ///
 /// # Return Value
 /// Returns the generated DTB data
-pub fn crate_guest_fdt(
+pub fn create_guest_fdt(
     fdt: &Fdt,
     passthrough_device_names: &[String],
     crate_config: &AxVMCrateConfig,
@@ -525,7 +525,8 @@ pub fn update_fdt(
         new_fdt_bytes.len()
     );
     // Load the updated FDT into VM
-    load_vm_image_from_memory(&new_fdt_bytes, dest_addr, vm_clone)?;
+    load_vm_image_from_memory(&new_fdt_bytes, dest_addr, vm_clone.clone())?;
+    vm_clone.set_guest_device_tree(dest_addr, new_fdt_bytes)?;
     Ok(())
 }
 
@@ -536,14 +537,10 @@ pub fn update_fdt(
     vm: AxVMRef,
     crate_config: &AxVMCrateConfig,
 ) -> AxResult {
-    // Fix up the cached DTB against the runtime layout before boot.
+    // Fix up the guest DTB against the runtime layout before boot.
     let fdt_bytes = unsafe { core::slice::from_raw_parts(fdt_src.as_ptr(), dtb_size) };
-    let fdt = Fdt::from_bytes(fdt_bytes).map_err(|e| {
-        ax_err_type!(
-            InvalidData,
-            format!("Failed to parse cached guest FDT: {e:#?}")
-        )
-    })?;
+    let fdt = Fdt::from_bytes(fdt_bytes)
+        .map_err(|e| ax_err_type!(InvalidData, format!("Failed to parse guest FDT: {e:#?}")))?;
     // Keep boot metadata such as /chosen from the host FDT when it is available.
     let host_fdt_bytes = super::try_get_host_fdt();
     let host_fdt = host_fdt_bytes
@@ -561,7 +558,8 @@ pub fn update_fdt(
     // Recompute the DTB load address from the runtime memory layout.
     let dest_addr = calculate_dtb_load_addr(vm.clone(), new_fdt_bytes.len())?;
 
-    load_vm_image_from_memory(&new_fdt_bytes, dest_addr, vm)
+    load_vm_image_from_memory(&new_fdt_bytes, dest_addr, vm.clone())?;
+    vm.set_guest_device_tree(dest_addr, new_fdt_bytes)
 }
 
 #[cfg(test)]

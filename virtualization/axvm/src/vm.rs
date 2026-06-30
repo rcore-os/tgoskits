@@ -21,17 +21,17 @@ use core::{
 use ax_cpumask::CpuMask;
 use ax_errno::{AxError, AxResult, ax_err, ax_err_type};
 use ax_kspin::SpinNoIrq as Mutex;
-use ax_memory_addr::{align_down_4k, align_up_4k};
+use ax_memory_addr::align_up_4k;
 use axaddrspace::{AddrSpace, MappingFlags};
 use axdevice::{
     AxVmDeviceConfig, AxVmDevices, DeviceBuildContext, DeviceFactoryRegistry, FwCfg,
     FwCfgPlatformConfig, register_builtin_factories,
 };
-use axdevice_base::AccessWidth;
 #[cfg(target_arch = "aarch64")]
 use axdevice_base::DeviceRegistry as _;
 #[cfg(target_arch = "x86_64")]
 use axdevice_base::DeviceRegistry as _;
+use axdevice_base::{AccessWidth, Resource};
 #[cfg(target_arch = "x86_64")]
 use axdevice_base::{BaseDeviceOps, PortDeviceAdapter};
 use axvcpu::{AxArchVCpu, AxVCpu, AxVCpuExitReason, VCpuState};
@@ -44,9 +44,11 @@ use x86_vcpu::{X86_APIC_ACCESS_GPA, x86_apic_access_page_addr};
 #[cfg(not(target_arch = "x86_64"))]
 use crate::vcpu::AxVCpuCreateConfig;
 use crate::{
+    boot::{GuestBootDescription, GuestFdtBuilder},
     config::{AxVMConfig, PhysCpuList, VMInterruptMode},
     host::paging::{HostPagingHandler, virt_to_phys},
     irq::InterruptFabric,
+    layout::{GuestOwnedRegion, VmAddressLayout, VmRegionKind, build_address_layout},
     lifecycle::{Machine, StopReason, VmLifecycleError, VmStatus},
     vcpu::AxArchVCpuImpl,
 };
@@ -79,6 +81,31 @@ fn sign_extend_value(value: usize, width: AccessWidth) -> usize {
     }
 }
 
+fn write_guest_bytes_to_chunks(chunks: &mut [&mut [u8]], data: &[u8]) -> AxResult {
+    if data.is_empty() {
+        return Ok(());
+    }
+
+    let mut copied = 0;
+    for chunk in chunks {
+        let len = (data.len() - copied).min(chunk.len());
+        if len == 0 {
+            continue;
+        }
+        chunk[..len].copy_from_slice(&data[copied..copied + len]);
+        crate::clean_dcache_range((chunk.as_ptr() as usize).into(), len);
+        copied += len;
+        if copied == data.len() {
+            return Ok(());
+        }
+    }
+
+    ax_err!(
+        InvalidInput,
+        "Insufficient guest memory to write the requested buffer"
+    )
+}
+
 pub(crate) struct AxVMResources {
     // Todo: use more efficient lock.
     address_space: AddrSpace<HostPagingHandler>,
@@ -88,6 +115,8 @@ pub(crate) struct AxVMResources {
     vcpu_list: Option<Box<[AxVCpuRef]>>,
     devices: Option<Arc<AxVmDevices>>,
     interrupt_fabric: Option<InterruptFabric>,
+    address_layout: Option<VmAddressLayout>,
+    boot_description: GuestBootDescription,
 }
 
 unsafe impl Send for AxVMResources {}
@@ -241,6 +270,8 @@ impl AxVMResources {
             vcpu_list: None,
             devices: None,
             interrupt_fabric: None,
+            address_layout: None,
+            boot_description: GuestBootDescription::none(),
         })
     }
 
@@ -279,6 +310,7 @@ impl AxVMResources {
         self.vcpu_list = None;
         self.devices = None;
         self.interrupt_fabric = None;
+        self.address_layout = None;
         Ok(())
     }
 }
@@ -498,73 +530,6 @@ impl AxVM {
             )?));
         }
 
-        let mut pt_dev_region = Vec::new();
-        for pt_device in resources.config.pass_through_devices() {
-            trace!(
-                "PT dev {:?} region: [{:#x}~{:#x}] -> [{:#x}~{:#x}]",
-                pt_device.name,
-                pt_device.base_gpa,
-                pt_device.base_gpa + pt_device.length,
-                pt_device.base_hpa,
-                pt_device.base_hpa + pt_device.length
-            );
-            // Align the base address and length to 4K boundaries.
-            pt_dev_region.push((
-                align_down_4k(pt_device.base_gpa),
-                align_up_4k(pt_device.length),
-            ));
-        }
-
-        for pt_addr in resources.config.pass_through_addresses() {
-            debug!(
-                "PT addr region: [{:#x}~{:#x}]",
-                pt_addr.base_gpa,
-                pt_addr.base_gpa + pt_addr.length,
-            );
-            // Align the base address and length to 4K boundaries.
-            pt_dev_region.push((align_down_4k(pt_addr.base_gpa), align_up_4k(pt_addr.length)));
-        }
-
-        pt_dev_region.sort_by_key(|(gpa, _)| *gpa);
-
-        // Merge overlapping regions.
-        let pt_dev_region =
-            pt_dev_region
-                .into_iter()
-                .fold(Vec::<(usize, usize)>::new(), |mut acc, (gpa, len)| {
-                    if let Some(last) = acc.last_mut() {
-                        if last.0 + last.1 >= gpa {
-                            // Merge with the last region.
-                            last.1 = (last.0 + last.1).max(gpa + len) - last.0;
-                        } else {
-                            acc.push((gpa, len));
-                        }
-                    } else {
-                        acc.push((gpa, len));
-                    }
-                    acc
-                });
-
-        for (gpa, len) in &pt_dev_region {
-            resources.address_space.map_linear(
-                GuestPhysAddr::from(*gpa),
-                HostPhysAddr::from(*gpa),
-                *len,
-                MappingFlags::DEVICE
-                    | MappingFlags::READ
-                    | MappingFlags::WRITE
-                    | MappingFlags::USER,
-            )?;
-        }
-
-        #[cfg(all(target_arch = "x86_64", feature = "vmx"))]
-        resources.address_space.map_linear(
-            GuestPhysAddr::from(X86_APIC_ACCESS_GPA),
-            x86_apic_access_page_addr(),
-            ax_memory_addr::PAGE_SIZE_4K,
-            MappingFlags::DEVICE | MappingFlags::READ | MappingFlags::WRITE,
-        )?;
-
         let mut devices = {
             let build_context = DeviceBuildContext::new(&interrupt_fabric);
             axdevice::AxVmDevices::build_with_factories(
@@ -635,6 +600,56 @@ impl AxVM {
 
         self.add_special_emulated_devices(&mut devices)?;
 
+        if dtb_addr.is_some() && resources.boot_description.device_tree().is_none() {
+            return ax_err!(
+                InvalidInput,
+                "DTB load GPA is configured but no guest device tree bytes are registered"
+            );
+        }
+
+        let owned_regions = Self::guest_owned_regions(resources);
+        let emulated_resources = devices
+            .devices()
+            .flat_map(|device| device.resources().iter().cloned())
+            .collect::<Vec<Resource>>();
+        let address_layout = build_address_layout(
+            resources.config.address_space_policy(),
+            VM_ASPACE_BASE,
+            VM_ASPACE_SIZE,
+            resources.config.pass_through_devices(),
+            resources.config.pass_through_addresses(),
+            &owned_regions,
+            &emulated_resources,
+        )?;
+
+        for mapping in address_layout.mappings() {
+            debug!(
+                "VM[{}] stage2 {:?}: [{:#x}, {:#x}) -> [{:#x}, {:#x}) {:?}",
+                self.id(),
+                mapping.kind,
+                mapping.gpa.as_usize(),
+                mapping.gpa.as_usize() + mapping.size,
+                mapping.hpa.as_usize(),
+                mapping.hpa.as_usize() + mapping.size,
+                mapping.flags
+            );
+            resources.address_space.map_linear(
+                mapping.gpa,
+                mapping.hpa,
+                mapping.size,
+                mapping.flags,
+            )?;
+        }
+        resources.address_layout = Some(address_layout);
+
+        #[cfg(all(target_arch = "x86_64", feature = "vmx"))]
+        resources.address_space.map_linear(
+            GuestPhysAddr::from(X86_APIC_ACCESS_GPA),
+            x86_apic_access_page_addr(),
+            ax_memory_addr::PAGE_SIZE_4K,
+            MappingFlags::DEVICE | MappingFlags::READ | MappingFlags::WRITE,
+        )?;
+
         // Setup VCpus.
         for vcpu in &vcpu_list {
             #[cfg(target_arch = "aarch64")]
@@ -701,6 +716,43 @@ impl AxVM {
 
         info!("VM setup: id={}", self.id());
         Ok(())
+    }
+
+    fn guest_owned_regions(resources: &AxVMResources) -> Vec<GuestOwnedRegion> {
+        let mut regions = resources
+            .memory_regions
+            .iter()
+            .map(|region| {
+                GuestOwnedRegion::new(region.gpa.as_usize(), region.size(), VmRegionKind::Memory)
+            })
+            .collect::<Vec<_>>();
+
+        regions.extend(
+            resources
+                .boot_description
+                .occupied_ranges()
+                .map(|(base, length)| {
+                    GuestOwnedRegion::new(base, length, VmRegionKind::BootDescription)
+                }),
+        );
+        regions.extend(
+            resources
+                .config
+                .reserved_address_ranges()
+                .iter()
+                .map(|range| {
+                    GuestOwnedRegion::new(range.base_gpa, range.length, VmRegionKind::Reserved)
+                }),
+        );
+
+        #[cfg(all(target_arch = "x86_64", feature = "vmx"))]
+        regions.push(GuestOwnedRegion::new(
+            X86_APIC_ACCESS_GPA,
+            ax_memory_addr::PAGE_SIZE_4K,
+            VmRegionKind::Reserved,
+        ));
+
+        regions
     }
 
     fn ensure_resources_ready(&self) -> AxResult {
@@ -809,6 +861,17 @@ impl AxVM {
             .resources_mut()
             .expect("VM resources are not available for config access");
         f(&mut resources.config)
+    }
+
+    /// Stores a guest DTB as VM-owned boot-description state.
+    pub fn set_guest_device_tree(&self, load_gpa: GuestPhysAddr, bytes: Vec<u8>) -> AxResult {
+        self.with_resources_mut(|resources| {
+            resources.config.set_dtb_load_gpa(load_gpa);
+            resources
+                .boot_description
+                .set_device_tree(GuestFdtBuilder::from_bytes(bytes).build(load_gpa));
+            Ok(())
+        })
     }
 
     /// Returns guest VM image load region in `Vec<&'static mut [u8]>`,
@@ -1505,33 +1568,18 @@ impl AxVM {
 
     /// Writes an object of type `T` to the guest physical address.
     pub fn write_to_guest_of<T>(&self, gpa_ptr: GuestPhysAddr, data: &T) -> AxResult {
-        self.with_resources(|resources| {
-            match resources
-                .address_space
-                .translated_byte_buffer(gpa_ptr, core::mem::size_of::<T>())
-            {
-                Some(mut buffer) => {
-                    let bytes = unsafe {
-                        core::slice::from_raw_parts(
-                            data as *const T as *const u8,
-                            core::mem::size_of::<T>(),
-                        )
-                    };
-                    let mut copied_bytes = 0;
-                    for chunk in buffer.iter_mut() {
-                        let end = copied_bytes + chunk.len();
-                        chunk.copy_from_slice(&bytes[copied_bytes..end]);
-                        copied_bytes += chunk.len();
-                    }
-                    Ok(())
-                }
-                None => ax_err!(InvalidInput, "Failed to translate guest physical address"),
-            }
-        })
+        let bytes = unsafe {
+            core::slice::from_raw_parts(data as *const T as *const u8, core::mem::size_of::<T>())
+        };
+        self.write_to_guest(gpa_ptr, bytes)
     }
 
     /// Writes raw bytes into guest physical memory.
     pub fn write_to_guest(&self, gpa_ptr: GuestPhysAddr, data: &[u8]) -> AxResult {
+        if data.is_empty() {
+            return Ok(());
+        }
+
         self.with_resources(|resources| {
             let Some(mut chunks) = resources
                 .address_space
@@ -1540,21 +1588,7 @@ impl AxVM {
                 return ax_err!(InvalidInput, "Failed to translate guest physical address");
             };
 
-            let mut copied = 0;
-            for chunk in chunks.iter_mut() {
-                let len = (data.len() - copied).min(chunk.len());
-                chunk[..len].copy_from_slice(&data[copied..copied + len]);
-                crate::clean_dcache_range((chunk.as_ptr() as usize).into(), len);
-                copied += len;
-                if copied == data.len() {
-                    return Ok(());
-                }
-            }
-
-            ax_err!(
-                InvalidInput,
-                "Insufficient guest memory to write the requested buffer"
-            )
+            write_guest_bytes_to_chunks(chunks.as_mut_slice(), data)
         })
     }
 
@@ -1761,5 +1795,43 @@ impl Drop for AxVM {
         }
 
         info!("VM[{}] dropped", self.id());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn write_guest_bytes_to_chunks_writes_only_remaining_bytes() {
+        let mut first = [0u8; 2];
+        let mut second = [0u8; 4];
+        let mut chunks: [&mut [u8]; 2] = [&mut first, &mut second];
+
+        write_guest_bytes_to_chunks(&mut chunks, &[1, 2, 3]).unwrap();
+
+        assert_eq!(first, [1, 2]);
+        assert_eq!(second, [3, 0, 0, 0]);
+    }
+
+    #[test]
+    fn write_guest_bytes_to_chunks_rejects_insufficient_capacity() {
+        let mut only = [0u8; 2];
+        let mut chunks: [&mut [u8]; 1] = [&mut only];
+
+        let err = write_guest_bytes_to_chunks(&mut chunks, &[1, 2, 3]).unwrap_err();
+
+        assert_eq!(err, AxError::InvalidInput);
+        assert_eq!(only, [1, 2]);
+    }
+
+    #[test]
+    fn write_guest_bytes_to_chunks_accepts_empty_writes() {
+        let mut chunk = [7u8; 2];
+        let mut chunks: [&mut [u8]; 1] = [&mut chunk];
+
+        write_guest_bytes_to_chunks(&mut chunks, &[]).unwrap();
+
+        assert_eq!(chunk, [7, 7]);
     }
 }
