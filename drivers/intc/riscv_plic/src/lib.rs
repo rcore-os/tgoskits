@@ -104,6 +104,22 @@ impl Plic {
         self.irq_handler().reset_context(ctx);
     }
 
+    /// Disable all interrupt sources by clearing their priorities.
+    pub fn disable_all_sources(&mut self, sources: usize) {
+        let sources = sources.min(SOURCE_NUM - 1);
+        for source in 1..=sources {
+            let source = NonZeroU32::new(source as u32).expect("source starts at one");
+            self.set_priority(source, 0);
+        }
+    }
+
+    /// Disable every interrupt source in the given context.
+    pub fn disable_context_sources(&mut self, ctx: usize) {
+        for enable in &self.regs().interrupt_enable[ctx] {
+            enable.set(0);
+        }
+    }
+
     const fn regs(&self) -> &PLICRegs {
         unsafe { self.base.as_ref() }
     }

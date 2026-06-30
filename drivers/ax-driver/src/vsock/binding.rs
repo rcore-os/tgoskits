@@ -241,7 +241,7 @@ mod tests {
         let device = PlatformVsockDevice::new(
             "test-vsock".into(),
             Box::new(TestVsock),
-            BindingInfo::with_irq(Some(irq)),
+            BindingInfo::with_irq(Some(irq)).unwrap(),
         );
 
         assert_eq!(device.binding_info().irq_num(), Some(irq));

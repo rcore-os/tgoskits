@@ -45,14 +45,14 @@ use std::{
 };
 
 use anyhow::Context;
-use quote::{ToTokens, quote};
+use quote::quote;
 use syn::LitStr;
 use toml::Table;
 
 fn fallback_platform_for_arch(arch: &str) -> &'static str {
     match arch {
         "aarch64" => "aarch64-generic",
-        "loongarch64" => "loongarch64-qemu-virt",
+        "loongarch64" => "loongarch64-plat-dyn",
         "x86_64" => "dummy",
         "riscv64" => "riscv64-plat-dyn",
         _ => "dummy",
@@ -111,6 +111,14 @@ fn open_output_file() -> fs::File {
         .expect("failed to open generated vm_configs.rs")
 }
 
+fn write_tokens(out_file: &mut fs::File, tokens: proc_macro2::TokenStream) -> anyhow::Result<()> {
+    let syntax_tree = syn::parse2(tokens)?;
+    let formatted = prettyplease::unparse(&syntax_tree);
+    out_file.write_all(formatted.as_bytes())?;
+
+    Ok(())
+}
+
 // Convert relative path to absolute path
 fn convert_to_absolute(configs_path: impl AsRef<Path>, path: &str) -> PathBuf {
     let path = Path::new(path);
@@ -132,6 +140,11 @@ struct MemoryImage {
     pub dtb: Option<PathBuf>,
     pub bios: Option<PathBuf>,
     pub ramdisk: Option<PathBuf>,
+}
+
+struct FirmwareImage {
+    pub id: usize,
+    pub bios: PathBuf,
 }
 
 fn boot_firmware_path(kernel_config: &Table, enable_bios: bool) -> Option<&str> {
@@ -201,6 +214,20 @@ fn parse_config_file(config_file: &ConfigFile) -> Option<MemoryImage> {
         bios,
         ramdisk,
     })
+}
+
+fn parse_firmware_config_file(config_file: &ConfigFile) -> Option<FirmwareImage> {
+    let config = config_file.content.parse::<Table>().ok()?;
+    let id = config.get("base")?.as_table()?.get("id")?.as_integer()? as usize;
+    let kernel_config = config.get("kernel")?.as_table()?;
+    let enable_bios = kernel_config
+        .get("enable_bios")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let bios = boot_firmware_path(kernel_config, enable_bios)
+        .map(|v| convert_to_absolute(&config_file.path, v))?;
+
+    Some(FirmwareImage { id, bios })
 }
 
 /// Generate function to load guest images from config
@@ -290,6 +317,50 @@ fn generate_guest_img_loading_functions(
             ]
         }
     };
+    write_tokens(out_file, output)?;
+
+    Ok(())
+}
+
+fn generate_firmware_img_loading_functions(
+    out_file: &mut fs::File,
+    config_files: &[ConfigFile],
+) -> anyhow::Result<()> {
+    let mut firmware_images = vec![];
+
+    for config_file in config_files {
+        if let Some(files) = parse_firmware_config_file(config_file) {
+            let id = files.id;
+            let Ok(bios) = files.bios.canonicalize() else {
+                continue;
+            };
+            let bios = bios.display().to_string();
+
+            firmware_images.push(quote! {
+                FirmwareImage {
+                    id: #id,
+                    bios: include_bytes!(#bios),
+                }
+            });
+        }
+    }
+
+    let output = quote! {
+        /// One guest firmware image loaded from the build host.
+        pub struct FirmwareImage {
+            /// vm id in config file
+            pub id: usize,
+            /// boot firmware image
+            pub bios: &'static [u8],
+        }
+
+        /// Get firmware images from config file.
+        pub fn get_firmware_images() -> &'static [FirmwareImage] {
+            &[
+                #(#firmware_images),*
+            ]
+        }
+    };
     let syntax_tree = syn::parse2(output)?;
     let formatted = prettyplease::unparse(&syntax_tree);
     out_file.write_all(formatted.as_bytes())?;
@@ -328,31 +399,38 @@ fn main() -> anyhow::Result<()> {
         );
     }
 
-    writeln!(
-        output_file,
-        "pub fn static_vm_configs() -> Vec<&'static str> {{"
-    )?;
-
     match config_files {
         Ok(config_files) => {
-            if config_files.is_empty() {
-                writeln!(output_file, "    default_static_vm_configs()")?;
-            } else {
-                writeln!(output_file, "    vec![")?;
-                for config_file in &config_files {
-                    let content = LitStr::new(&config_file.content, proc_macro2::Span::call_site());
-                    writeln!(output_file, "        {},", content.to_token_stream())?;
+            let output = if config_files.is_empty() {
+                quote! {
+                    pub fn static_vm_configs() -> Vec<&'static str> {
+                        default_static_vm_configs()
+                    }
                 }
-                writeln!(output_file, "    ]")?;
-            }
-            writeln!(output_file, "}}\n")?;
+            } else {
+                let configs = config_files.iter().map(|config_file| {
+                    LitStr::new(&config_file.content, proc_macro2::Span::call_site())
+                });
+                quote! {
+                    pub fn static_vm_configs() -> Vec<&'static str> {
+                        vec![#(#configs),*]
+                    }
+                }
+            };
+            write_tokens(&mut output_file, output)?;
 
             // generate "load kernel and dtb images function"
+            generate_firmware_img_loading_functions(&mut output_file, &config_files)?;
             generate_guest_img_loading_functions(&mut output_file, config_files)?;
         }
         Err(error) => {
-            writeln!(output_file, "    compile_error!(\"{error}\")")?;
-            writeln!(output_file, "}}\n")?;
+            let error = LitStr::new(&error, proc_macro2::Span::call_site());
+            let output = quote! {
+                pub fn static_vm_configs() -> Vec<&'static str> {
+                    compile_error!(#error)
+                }
+            };
+            write_tokens(&mut output_file, output)?;
         }
     }
     Ok(())

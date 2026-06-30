@@ -22,14 +22,6 @@ use crate::{
     mm::aspace::{AddrSpace, Backend},
 };
 
-#[cfg(target_arch = "riscv64")]
-const RISCV_COMPAT_HWCAP_IMAFDC: usize = (1 << (b'I' - b'A'))
-    | (1 << (b'M' - b'A'))
-    | (1 << 0)
-    | (1 << (b'F' - b'A'))
-    | (1 << (b'D' - b'A'))
-    | (1 << (b'C' - b'A'));
-
 // RISC-V relocation types
 #[cfg(target_arch = "riscv64")]
 const R_RISCV_RELATIVE: u32 = 3;
@@ -541,48 +533,6 @@ impl ElfCacheEntry {
     }
 }
 
-/// The value reported in the `AT_HWCAP` auxiliary vector entry.
-///
-/// `AT_HWCAP` (auxv type 16) advertises architecture-dependent CPU capability
-/// bits to userspace. `getauxval(AT_HWCAP)` reads it, and feature-dispatching
-/// runtimes gate optional instruction sets on it.
-///
-/// Per-arch policy:
-/// - **loongarch64**: report the baseline the kernel actually provides. The
-///   platform enables LSX (128-bit vectors) and LASX (256-bit vectors) at boot
-///   via `EUEN.SXE`/`EUEN.ASXE`, and the task/signal save paths preserve all 256
-///   vector bits. Therefore we set `CPUCFG | LAM | UAL | FPU | LSX | LASX`.
-///   This matters for feature-dispatching libraries such as OpenSSL and numpy.
-/// - **riscv64**: report the baseline ISA bits expected by Linux-compatible
-///   user space (`IMAFDC`).
-/// - **x86_64 / aarch64**: 0. x86 uses CPUID; aarch64 ASIMD/NEON is mandatory.
-const fn hwcap_value() -> usize {
-    #[cfg(target_arch = "loongarch64")]
-    {
-        // Linux loongarch HWCAP bits (uapi/asm/hwcap.h):
-        const HWCAP_LOONGARCH_CPUCFG: usize = 1 << 0;
-        const HWCAP_LOONGARCH_LAM: usize = 1 << 1;
-        const HWCAP_LOONGARCH_UAL: usize = 1 << 2;
-        const HWCAP_LOONGARCH_FPU: usize = 1 << 3;
-        const HWCAP_LOONGARCH_LSX: usize = 1 << 4;
-        const HWCAP_LOONGARCH_LASX: usize = 1 << 5;
-        HWCAP_LOONGARCH_CPUCFG
-            | HWCAP_LOONGARCH_LAM
-            | HWCAP_LOONGARCH_UAL
-            | HWCAP_LOONGARCH_FPU
-            | HWCAP_LOONGARCH_LSX
-            | HWCAP_LOONGARCH_LASX
-    }
-    #[cfg(target_arch = "riscv64")]
-    {
-        RISCV_COMPAT_HWCAP_IMAFDC
-    }
-    #[cfg(not(any(target_arch = "loongarch64", target_arch = "riscv64")))]
-    {
-        0
-    }
-}
-
 struct ElfLoader(LRUCache<ElfCacheEntry, 32>);
 
 type LoadResult = Result<(VirtAddr, Vec<AuxEntry>), Vec<u8>>;
@@ -666,7 +616,10 @@ impl ElfLoader {
         let mut auxv = elf
             .aux_vector(PAGE_SIZE_4K, ldso.map(|elf| elf.base()))
             .collect::<Vec<_>>();
-        auxv.push(AuxEntry::new(AuxType::HWCAP, hwcap_value()));
+        auxv.push(AuxEntry::new(
+            AuxType::HWCAP,
+            ax_runtime::hal::cpu::cap::elf_hwcap(),
+        ));
         auxv.push(AuxEntry::new(AuxType::UID, 0));
         auxv.push(AuxEntry::new(AuxType::EUID, 0));
         auxv.push(AuxEntry::new(AuxType::GID, 0));

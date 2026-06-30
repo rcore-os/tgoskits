@@ -3,8 +3,12 @@ use anyhow::anyhow;
 use super::metadata::{platform_feature_names, platform_metadata_entries};
 use crate::context::arch_for_target_checked;
 
-const AXVISOR_PLAT_DYN_FEATURES: &[&str] =
-    &["axvm/plat-dyn", "ax-std/plat-dyn", "ax-driver/plat-dyn"];
+const AXVISOR_PLAT_DYN_FEATURES: &[&str] = &[
+    "plat-dyn",
+    "axvm/plat-dyn",
+    "ax-std/plat-dyn",
+    "ax-driver/plat-dyn",
+];
 const REMOVED_AXVISOR_PLATFORM_FEATURES: &[&str] = &["x86-qemu-q35"];
 
 pub(super) fn normalize_axvisor_feature_surface(

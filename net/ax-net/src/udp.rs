@@ -32,6 +32,7 @@ use core::{
 
 use ax_errno::{AxError, AxResult, ax_bail, ax_err_type};
 use ax_io::prelude::*;
+use ax_kspin::SpinRwLock as RwLock;
 use ax_sync::Mutex;
 use axpoll::{IoEvents, Pollable};
 use smoltcp::{
@@ -41,7 +42,6 @@ use smoltcp::{
     storage::PacketMetadata,
     wire::{IpAddress, IpEndpoint, IpListenEndpoint, IpProtocol},
 };
-use spin::RwLock;
 
 use crate::{
     IpCmsg, RecvFlags, RecvOptions, SOCKET_SET, SendFlags, SendOptions, Shutdown, SocketAddrEx,

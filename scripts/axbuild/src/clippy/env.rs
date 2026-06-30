@@ -5,13 +5,25 @@ use std::{
 
 use anyhow::Context;
 use cargo_metadata::{Metadata, Package};
-use serde_json::Value;
+use serde::Deserialize;
 
 use super::{
-    AX_CONFIG_PATH_ENV, AXBUILD_METADATA, AXCONFIG_FILE, AXSTD_STD_CLIPPY_TARGET,
-    AXSTD_STD_DEFAULT_FEATURE, AXSTD_STD_PACKAGE, CLIPPY_FEATURE_AXCONFIG_OVERRIDES_METADATA,
-    check::ClippyAxconfigOverride,
+    AX_CONFIG_PATH_ENV, AXCONFIG_FILE, AXSTD_STD_CLIPPY_TARGET, AXSTD_STD_DEFAULT_FEATURE,
+    AXSTD_STD_PACKAGE, check::ClippyAxconfigOverride,
 };
+
+#[derive(Debug, Default, Deserialize)]
+struct PackageAxbuildMetadata {
+    #[serde(default)]
+    axbuild: AxbuildMetadata,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+struct AxbuildMetadata {
+    #[serde(default)]
+    clippy_feature_axconfig_overrides: HashMap<String, Vec<String>>,
+}
 
 pub(super) fn clippy_env(package: &Package) -> Vec<(String, String)> {
     let Some(manifest_dir) = package.manifest_path.parent() else {
@@ -32,29 +44,9 @@ fn package_axconfig_path(package: &Package) -> Option<PathBuf> {
 }
 
 pub(super) fn feature_axconfig_overrides(package: &Package) -> HashMap<String, Vec<String>> {
-    let Some(overrides) = package
-        .metadata
-        .get(AXBUILD_METADATA)
-        .and_then(Value::as_object)
-        .and_then(|metadata| metadata.get(CLIPPY_FEATURE_AXCONFIG_OVERRIDES_METADATA))
-        .and_then(Value::as_object)
-    else {
-        return HashMap::new();
-    };
-
-    overrides
-        .iter()
-        .filter_map(|(feature, values)| {
-            let values = values
-                .as_array()?
-                .iter()
-                .map(Value::as_str)
-                .map(Option::unwrap_or_default)
-                .map(ToString::to_string)
-                .collect::<Vec<_>>();
-            Some((feature.clone(), values))
-        })
-        .collect()
+    serde_json::from_value::<PackageAxbuildMetadata>(package.metadata.clone())
+        .map(|metadata| metadata.axbuild.clippy_feature_axconfig_overrides)
+        .unwrap_or_default()
 }
 
 pub(super) fn clippy_axconfig_override(

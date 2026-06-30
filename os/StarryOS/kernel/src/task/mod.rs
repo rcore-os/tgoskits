@@ -21,6 +21,7 @@ use core::{
 };
 
 use ax_errno::AxResult;
+use ax_kspin::SpinRwLock as RwLock;
 use ax_runtime::hal::{cpu::uspace::UserContext, time::TimeValue};
 use ax_sync::{Mutex, spin::SpinNoIrq};
 use ax_task::{TaskExt, TaskInner, WaitChannel, WaitChannelGuard};
@@ -28,7 +29,6 @@ use axpoll::{IoEvents, PollSet};
 use extern_trait::extern_trait;
 use kernel_elf_parser::AuxEntry;
 use scope_local::{ActiveScope, Scope};
-use spin::RwLock;
 use starry_process::{Pid, Process};
 use starry_signal::{
     SignalInfo, SignalSet, Signo,
@@ -63,15 +63,6 @@ struct PtracePendingEvent {
     msg: usize,
 }
 use crate::mm::AddrSpace;
-
-/// Size of the syscall instruction for the current architecture.
-/// Used by SA_RESTART to back up the program counter.
-#[cfg(target_arch = "x86_64")]
-pub const SYSCALL_INSN_LEN: usize = 2;
-/// Size of the syscall instruction for the current architecture.
-/// Used by SA_RESTART to back up the program counter.
-#[cfg(not(target_arch = "x86_64"))]
-pub const SYSCALL_INSN_LEN: usize = 4;
 
 ///  A wrapper type that assumes the inner type is `Sync`.
 #[repr(transparent)]
@@ -205,6 +196,14 @@ pub struct Thread {
 
     /// Whether setgroups has been set to "deny" for this thread's user namespace.
     setgroups_deny: AtomicBool,
+
+    /// Per-task hardware-PMU counters attached to this thread by
+    /// `perf_event_open(pid > 0)`. Driven by the scheduler hooks
+    /// ([`crate::perf::task::perf_sched_in`] / `perf_sched_out`) under this
+    /// `SpinNoIrq` (the hooks run with IRQs disabled). Empty for the common case
+    /// where no per-task perf event targets this thread.
+    #[cfg(target_arch = "aarch64")]
+    pub(crate) perf_counters: SpinNoIrq<Vec<Arc<crate::perf::task::PerTaskCounter>>>,
 }
 
 impl Thread {
@@ -250,6 +249,9 @@ impl Thread {
             uid_map_written: AtomicBool::new(false),
             gid_map_written: AtomicBool::new(false),
             setgroups_deny: AtomicBool::new(false),
+
+            #[cfg(target_arch = "aarch64")]
+            perf_counters: SpinNoIrq::new(Vec::new()),
         })
     }
 
@@ -498,9 +500,18 @@ impl TaskExt for Box<Thread> {
         let scope = self.proc_data.scope.read();
         unsafe { ActiveScope::set(&scope) };
         core::mem::forget(scope);
+        // Program any per-task perf counters onto HW for this slice. Runs with
+        // IRQs disabled inside `switch_to`; the hook early-returns cheaply when
+        // no per-task perf event exists anywhere.
+        #[cfg(target_arch = "aarch64")]
+        crate::perf::task::perf_sched_in(self);
     }
 
     fn on_leave(&self) {
+        // Fold this slice's per-task perf counter deltas and stop the counters
+        // before the scope is torn down. Same hot-path constraints as on_enter.
+        #[cfg(target_arch = "aarch64")]
+        crate::perf::task::perf_sched_out(self);
         ActiveScope::set_global();
         unsafe { self.proc_data.scope.force_read_decrement() };
     }

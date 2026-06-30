@@ -158,6 +158,7 @@ jobs:
               - "bootloader/axloader/**"
               - "components/**"
               - "drivers/**"
+              - "net/**"
               - "os/**"
               - "platforms/**"
               - "virtualization/**"

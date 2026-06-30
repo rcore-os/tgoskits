@@ -6,11 +6,11 @@ use alloc::{
 use core::ffi::c_long;
 
 use ax_errno::{AxError, AxResult};
+use ax_kspin::SpinRwLock as RwLock;
 use ax_runtime::hal::time::TimeValue;
 use ax_task::{AxTaskRef, TaskInner, WeakAxTaskRef, current};
 use bytemuck::AnyBitPattern;
 use linux_raw_sys::general::ROBUST_LIST_LIMIT;
-use spin::RwLock;
 use starry_process::{Pid, Process, ProcessGroup, Session};
 use starry_signal::{SignalInfo, Signo};
 use starry_vm::{VmMutPtr, VmPtr};
@@ -545,6 +545,13 @@ pub fn do_exit(exit_code: i32, group_exit: bool) {
             let _ = zap_thread(tid);
         }
     }
+
+    // Free any per-task perf HW counters attached to this thread before the fd
+    // table is torn down, so the PMU slots are released even if a perf fd
+    // outlives the task (its own `Drop::free_hw` is idempotent). Runs for every
+    // exiting thread, not just the last in the group.
+    #[cfg(target_arch = "aarch64")]
+    crate::perf::task::on_task_exit(thr);
 
     // Robust futex ownership must be released before clone-child-tid wakes a
     // pthread joiner; otherwise userspace can observe thread exit before the

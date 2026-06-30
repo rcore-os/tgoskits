@@ -58,6 +58,42 @@ use crate::pseudofs::{Device, DeviceOps, DirMaker, DirMapping, SimpleDir, Simple
 
 const RANDOM_SEED: &[u8; 32] = b"0123456789abcdef0123456789abcdef";
 
+#[cfg(any(feature = "sg2002", feature = "k230-kpu"))]
+pub(super) struct IrqRegistration {
+    handle: ax_runtime::hal::irq::IrqHandle,
+}
+
+#[cfg(any(feature = "sg2002", feature = "k230-kpu"))]
+impl IrqRegistration {
+    pub(super) const fn new(handle: ax_runtime::hal::irq::IrqHandle) -> Self {
+        Self { handle }
+    }
+
+    pub(super) fn enable(&self) -> Result<(), ax_runtime::hal::irq::IrqError> {
+        ax_runtime::hal::irq::enable_irq(self.handle)
+    }
+}
+
+#[cfg(any(feature = "sg2002", feature = "k230-kpu"))]
+impl Drop for IrqRegistration {
+    fn drop(&mut self) {
+        let _ = ax_runtime::hal::irq::disable_irq(self.handle);
+        let _ = ax_runtime::hal::irq::free_irq(self.handle);
+    }
+}
+
+#[cfg(any(feature = "sg2002", feature = "k230-kpu"))]
+pub(super) fn request_shared_disabled(
+    irq: ax_runtime::hal::irq::IrqId,
+    handler: ax_runtime::hal::irq::RawIrqHandler,
+    data: core::ptr::NonNull<()>,
+) -> Result<IrqRegistration, ax_runtime::hal::irq::IrqError> {
+    let request = ax_runtime::hal::irq::IrqRequest::new(handler, data)
+        .share_mode(ax_runtime::hal::irq::ShareMode::Shared)
+        .auto_enable(ax_runtime::hal::irq::AutoEnable::No);
+    ax_runtime::hal::irq::request_irq(irq, request).map(IrqRegistration::new)
+}
+
 pub(crate) fn new_devfs() -> Filesystem {
     SimpleFs::new_with("devfs".into(), 0x01021994, builder)
 }

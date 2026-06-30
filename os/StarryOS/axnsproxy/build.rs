@@ -1,5 +1,7 @@
 use std::{env, fs, io, path::PathBuf};
 
+use quote::quote;
+
 const BUILD_INFO_NAME: &str = "build_info.rs";
 
 fn main() -> io::Result<()> {
@@ -15,6 +17,6 @@ fn main() -> io::Result<()> {
 
     fs::write(
         out_dir.join(BUILD_INFO_NAME),
-        format!("pub const ARCH: &str = {arch:?};\n"),
+        quote! { pub const ARCH: &str = #arch; }.to_string(),
     )
 }

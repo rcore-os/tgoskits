@@ -1,5 +1,5 @@
+use ax_kspin::SpinRwLock as RwLock;
 use rdif_base::custom_type;
-use spin::RwLock;
 
 custom_type!(#[doc="Process ID"],Pid, usize, "{:?}");
 

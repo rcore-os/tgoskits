@@ -111,6 +111,17 @@ pub struct LoongArchContextFrame {
     pub host_badi: usize,
     pub host_tlbrbadv: usize,
     pub host_tlbrera: usize,
+    pub host_pgdl: usize,
+    pub host_pgdh: usize,
+    pub host_pwcl: usize,
+    pub host_pwch: usize,
+    pub host_stlbps: usize,
+    pub host_tlbrentry: usize,
+    pub host_asid: usize,
+    pub host_eentry: usize,
+    pub host_ecfg: usize,
+    pub guest_tlbrentry: usize,
+    pub guest_eentry: usize,
 }
 
 impl LoongArchContextFrame {
@@ -122,12 +133,42 @@ impl LoongArchContextFrame {
         self.x[5] = val;
     }
 
+    pub fn set_a2(&mut self, val: usize) {
+        self.x[6] = val;
+    }
+
     pub fn set_gpr(&mut self, index: usize, val: usize) {
         match index {
             0 => {}
             1..=31 => self.x[index] = val,
             _ => panic!("invalid general-purpose register index {index}"),
         }
+    }
+
+    pub fn gpr(&self, index: usize) -> usize {
+        match index {
+            0 => 0,
+            1..=31 => self.x[index],
+            _ => panic!("invalid general-purpose register index {index}"),
+        }
+    }
+
+    pub fn guest_exception_pc(&self) -> usize {
+        if self.host_tlbrera & 0x1 != 0 {
+            self.host_tlbrera & !0x1
+        } else if self.host_era != 0 {
+            self.host_era
+        } else {
+            self.gcsr_era
+        }
+    }
+
+    pub fn advance_guest_pc(&mut self) {
+        let next_pc = self.guest_exception_pc().wrapping_add(4);
+        self.sepc = next_pc;
+        self.gcsr_era = next_pc;
+        self.host_era = next_pc;
+        self.host_tlbrera = next_pc;
     }
 
     pub fn get_a0(&self) -> usize {

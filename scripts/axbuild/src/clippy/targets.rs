@@ -1,9 +1,9 @@
 use std::collections::BTreeSet;
 
 use cargo_metadata::Package;
-use serde_json::Value;
+use serde::Deserialize;
 
-use super::{AX_HAL_PACKAGE, DOCS_METADATA, DOCS_RS_METADATA, RS_METADATA, TARGETS_METADATA};
+use super::AX_HAL_PACKAGE;
 
 const CLIPPY_TARGET_ALIASES: &[(&str, &str)] = &[
     (
@@ -19,34 +19,43 @@ const CLIPPY_TARGET_ALIASES: &[(&str, &str)] = &[
 
 const AX_HAL_PLATFORM_FEATURE_TARGET_ARCHES: &[(&str, &[&str])] = &[
     ("plat-dyn", &["aarch64", "loongarch64", "riscv64", "x86_64"]),
-    ("loongarch64-qemu-virt", &["loongarch64"]),
     ("riscv64-sg2002", &["riscv64"]),
 ];
 
+#[derive(Debug, Default, Deserialize)]
+struct PackageDocsMetadata {
+    #[serde(default, rename = "docs.rs")]
+    docs_rs: DocsRsMetadata,
+    #[serde(default)]
+    docs: NestedDocsMetadata,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct NestedDocsMetadata {
+    #[serde(default)]
+    rs: DocsRsMetadata,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct DocsRsMetadata {
+    #[serde(default)]
+    targets: Vec<String>,
+}
+
 pub(super) fn docs_rs_targets(package: &Package) -> Vec<String> {
-    let Some(docs_rs) = package
-        .metadata
-        .get(DOCS_RS_METADATA)
-        .and_then(Value::as_object)
-        .or_else(|| {
-            package
-                .metadata
-                .get(DOCS_METADATA)
-                .and_then(Value::as_object)
-                .and_then(|docs| docs.get(RS_METADATA))
-                .and_then(Value::as_object)
-        })
+    let Ok(metadata) = serde_json::from_value::<PackageDocsMetadata>(package.metadata.clone())
     else {
         return Vec::new();
     };
-
-    let Some(targets) = docs_rs.get(TARGETS_METADATA).and_then(Value::as_array) else {
-        return Vec::new();
+    let targets = if metadata.docs_rs.targets.is_empty() {
+        metadata.docs.rs.targets
+    } else {
+        metadata.docs_rs.targets
     };
 
     let mut unique_targets = BTreeSet::new();
-    for target in targets.iter().filter_map(Value::as_str) {
-        unique_targets.insert(normalize_clippy_target(target).to_string());
+    for target in targets {
+        unique_targets.insert(normalize_clippy_target(&target).to_string());
     }
 
     unique_targets.into_iter().collect()

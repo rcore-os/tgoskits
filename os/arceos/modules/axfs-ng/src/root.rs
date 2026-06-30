@@ -20,6 +20,8 @@ use crate::{
     },
 };
 
+const VOLUME_METADATA_READ_RETRIES: usize = 3;
+
 /// Root filesystem selector parsed from boot arguments.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct RootSpec {
@@ -128,18 +130,24 @@ impl<T: FsBlockDevice + ?Sized> BlockReader for VolumeReader<'_, T> {
     }
 
     fn read_block(&mut self, block: u64, buf: &mut [u8]) -> crate::volume::Result<()> {
-        match self.inner.read_block(block, buf) {
-            Ok(()) => Ok(()),
-            Err(_) => {
-                // Single retry: the SD card may have been left in a
-                // transient bad state (e.g. after a failed HighSpeed
-                // switch during init).  One re-read is often enough to
-                // recover without a full controller reset.
-                self.inner
-                    .read_block(block, buf)
-                    .map_err(|_| VolumeError::Reader)
+        for attempt in 0..=VOLUME_METADATA_READ_RETRIES {
+            if self.inner.read_block(block, buf).is_ok() {
+                return Ok(());
+            }
+
+            if attempt < VOLUME_METADATA_READ_RETRIES {
+                warn!(
+                    "  volume metadata read on block device {} block {} failed; retrying ({}/{})",
+                    self.inner.name(),
+                    block,
+                    attempt + 1,
+                    VOLUME_METADATA_READ_RETRIES
+                );
+                core::hint::spin_loop();
             }
         }
+
+        Err(VolumeError::Reader)
     }
 }
 
@@ -680,6 +688,7 @@ pub(crate) fn split_root_candidates<'a>(root: &'a str, out: &mut Vec<&'a str>) {
 mod tests {
     use core::{any::Any, time::Duration};
 
+    use ax_errno::{AxError, AxResult};
     use axfs_ng_vfs::{
         DeviceId, DirEntry, DirEntrySink, DirNode, DirNodeOps, FileNode, FileNodeOps, Filesystem,
         FilesystemOps, FsIoEvents, FsPollable, Metadata, MetadataUpdate, NodeFlags, NodeOps,
@@ -694,6 +703,11 @@ mod tests {
     use crate::block::runtime::{BlockIrqBridge, BlockRuntimeConfig, NoopDrainWake};
 
     struct TestQueue;
+    struct FlakyMetadataDevice {
+        remaining_failures: usize,
+        data: Vec<u8>,
+    }
+
     struct ReadonlyFs {
         root: std::sync::OnceLock<DirEntry>,
         userdata_kind: Option<NodeType>,
@@ -978,6 +992,45 @@ mod tests {
         }
     }
 
+    impl FlakyMetadataDevice {
+        fn new(remaining_failures: usize) -> Self {
+            let mut data = alloc::vec![0; 16 * 512];
+            data[510] = 0x55;
+            data[511] = 0xaa;
+            Self {
+                remaining_failures,
+                data,
+            }
+        }
+    }
+
+    impl FsBlockDevice for FlakyMetadataDevice {
+        fn name(&self) -> &str {
+            "flaky-metadata"
+        }
+
+        fn num_blocks(&self) -> u64 {
+            (self.data.len() / 512) as u64
+        }
+
+        fn block_size(&self) -> usize {
+            512
+        }
+
+        fn read_block(&mut self, block_id: u64, buf: &mut [u8]) -> AxResult {
+            if self.remaining_failures > 0 {
+                self.remaining_failures -= 1;
+                return Err(AxError::Io);
+            }
+
+            let start = block_id as usize * self.block_size();
+            let end = start + self.block_size();
+            let block = self.data.get(start..end).ok_or(AxError::InvalidInput)?;
+            buf.copy_from_slice(block);
+            Ok(())
+        }
+    }
+
     fn mbr_partition(
         index: usize,
         filesystem: Option<FilesystemKind>,
@@ -1024,6 +1077,27 @@ mod tests {
             part_uuid: None,
             bootable: false,
         }
+    }
+
+    #[test]
+    fn volume_reader_retries_transient_metadata_read_errors() {
+        let mut dev = FlakyMetadataDevice::new(1);
+        let mut reader = VolumeReader::new(&mut dev);
+        let volumes = scan_volumes(&mut reader, DiskId(0)).unwrap();
+
+        assert_eq!(volumes.len(), 1);
+        assert_eq!(volumes[0].table_kind, VolumeTableKind::Raw);
+        assert_eq!(dev.remaining_failures, 0);
+    }
+
+    #[test]
+    fn volume_reader_reports_persistent_metadata_read_errors() {
+        let mut dev = FlakyMetadataDevice::new(VOLUME_METADATA_READ_RETRIES + 1);
+        let mut reader = VolumeReader::new(&mut dev);
+        let err = scan_volumes(&mut reader, DiskId(0)).unwrap_err();
+
+        assert_eq!(err, VolumeError::Reader);
+        assert_eq!(dev.remaining_failures, 0);
     }
 
     #[test]

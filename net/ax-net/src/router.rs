@@ -43,11 +43,13 @@ use alloc::{
     vec::Vec,
 };
 use core::{
-    sync::atomic::{AtomicUsize, Ordering},
+    sync::atomic::{AtomicBool, AtomicUsize, Ordering},
     task::Waker,
+    time::Duration,
 };
 
 use ax_hal::time::{NANOS_PER_MICROS, monotonic_time_nanos};
+use ax_kspin::SpinRwLock as RwLock;
 use ax_sync::Mutex;
 use ax_task::WaitQueue;
 use axpoll::IoEvents;
@@ -61,7 +63,6 @@ use smoltcp::{
         TcpPacket,
     },
 };
-use spin::RwLock;
 
 use crate::{
     LISTEN_TABLE,
@@ -73,6 +74,7 @@ use crate::{
 };
 
 const DEVICE_RX_WORKER_BATCH: usize = 16;
+const DEVICE_RX_IDLE_POLL_INTERVAL: Duration = Duration::from_millis(10);
 
 #[derive(Debug)]
 pub struct Rule {
@@ -253,6 +255,10 @@ struct DeviceHandle {
     tx_wake: Arc<WaitQueue>,
     /// Waker registered into the concrete device.
     rx_waker: Waker,
+    /// Sticky readiness bit for RX wakeups. `WaitQueue` notifications are not
+    /// sticky, so a device wake that races with the worker entering `wait()`
+    /// must be preserved here until the worker observes it.
+    rx_ready: AtomicBool,
 }
 
 impl DeviceHandle {
@@ -273,7 +279,17 @@ impl DeviceHandle {
             rx_waker: Waker::from(Arc::new(DeviceRxWake {
                 device: weak.clone(),
             })),
+            rx_ready: AtomicBool::new(false),
         })
+    }
+
+    fn wake_rx(&self) {
+        self.rx_ready.store(true, Ordering::Release);
+        self.rx_wake.notify_one(true);
+    }
+
+    fn take_rx_ready(&self) -> bool {
+        self.rx_ready.swap(false, Ordering::AcqRel)
     }
 
     fn enqueue_tx(&self, next_hop: IpAddress, packet: &[u8]) -> bool {
@@ -328,7 +344,7 @@ impl Wake for DeviceRxWake {
 
     fn wake_by_ref(self: &Arc<Self>) {
         if let Some(device) = self.device.upgrade() {
-            device.rx_wake.notify_one(true);
+            device.wake_rx();
         }
     }
 }
@@ -684,7 +700,7 @@ impl Router {
     pub fn wake_all_devices(&self) {
         for device in &self.devices {
             wake_device_poll(device);
-            device.rx_wake.notify_one(true);
+            device.wake_rx();
         }
     }
 
@@ -908,7 +924,9 @@ fn device_rx_worker(device: Arc<DeviceHandle>) {
 
         if !received {
             register_device_poll(&device, &device.rx_waker);
-            device.rx_wake.wait();
+            device
+                .rx_wake
+                .wait_timeout_until(DEVICE_RX_IDLE_POLL_INTERVAL, || device.take_rx_ready());
         }
     }
 }
@@ -1027,6 +1045,8 @@ impl smoltcp::phy::Device for Router {
 
 #[cfg(test)]
 mod tests {
+    use smoltcp::storage::PacketBuffer;
+
     use super::*;
 
     const IF0: InterfaceId = InterfaceId::new(2);
@@ -1034,8 +1054,53 @@ mod tests {
     const SRC0: IpAddress = IpAddress::Ipv4(Ipv4Address::new(10, 0, 0, 2));
     const SRC1: IpAddress = IpAddress::Ipv4(Ipv4Address::new(10, 0, 1, 2));
 
+    struct EmptyDevice;
+
+    impl Device for EmptyDevice {
+        fn name(&self) -> &str {
+            "empty"
+        }
+
+        fn recv(
+            &mut self,
+            _interface_id: InterfaceId,
+            _buffer: &mut PacketBuffer<InterfaceId>,
+            _timestamp: Instant,
+            _snoop: &mut dyn FnMut(&[u8]),
+        ) -> bool {
+            false
+        }
+
+        fn send(&mut self, _next_hop: IpAddress, _packet: &[u8], _timestamp: Instant) -> bool {
+            false
+        }
+    }
+
+    fn test_device_handle(device: Box<dyn Device>) -> Arc<DeviceHandle> {
+        let queues = Arc::new(RouterQueues {
+            rx: Arc::new(BoundedPacketQueue::new(1)),
+        });
+        DeviceHandle::new(IF0, device, &queues)
+    }
+
     fn ipv4_cidr(addr: Ipv4Address, prefix_len: u8) -> IpCidr {
         Ipv4Cidr::new(addr, prefix_len).into()
+    }
+
+    #[test]
+    fn rx_worker_wake_is_sticky_until_observed() {
+        let device = test_device_handle(Box::new(EmptyDevice));
+
+        assert!(!device.take_rx_ready());
+        device.rx_waker.wake_by_ref();
+        assert!(device.take_rx_ready());
+        assert!(!device.take_rx_ready());
+    }
+
+    #[test]
+    fn rx_worker_idle_poll_interval_keeps_polling_devices_active() {
+        assert!(DEVICE_RX_IDLE_POLL_INTERVAL > core::time::Duration::ZERO);
+        assert!(DEVICE_RX_IDLE_POLL_INTERVAL <= core::time::Duration::from_millis(10));
     }
 
     #[test]

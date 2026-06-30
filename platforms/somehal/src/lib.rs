@@ -1,5 +1,5 @@
 #![no_std]
-#![no_main]
+#![cfg_attr(not(test), no_main)]
 #![allow(unused_features)]
 #![feature(used_with_arg)]
 
@@ -23,7 +23,7 @@ pub use page_table_generic::{PagingError, PagingResult};
 pub use platform::platform_name;
 pub use setup::KernelOp;
 pub use someboot::{
-    console, entry, fdt_addr, fdt_addr_phys, mem, power, rsdp_addr_phys, smp, timer,
+    bootargs, console, entry, fdt_addr, fdt_addr_phys, mem, power, rsdp_addr_phys, smp, timer,
 };
 pub use somehal_macros::somehal_secondary_entry as secondary_entry;
 

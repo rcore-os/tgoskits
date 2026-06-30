@@ -1589,6 +1589,32 @@ mod tests {
     }
 
     #[test]
+    fn irq_event_before_pending_insert_is_not_dropped() {
+        let _guard = test_task_guard();
+        let bridge = Arc::new(BlockIrqBridge::new());
+        let device = BlockDeviceHandle::new(
+            "mock",
+            [Box::new(MockQueue::with_id(0)) as Box<dyn IQueue>],
+            bridge,
+            irq_driven_config(),
+        )
+        .unwrap();
+
+        let action = BlockIrqAction::new(Box::new(QueueEventIrqHandler), device.clone(), 0);
+        assert_eq!(action.run(), crate::os::BlockIrqOutcome::Handled);
+        let events = device.bridge().take_events();
+        assert_eq!(events.queue_bits, 1);
+    }
+
+    struct QueueEventIrqHandler;
+
+    impl rdif_block::IrqHandler for QueueEventIrqHandler {
+        fn handle_irq(&self) -> rdif_block::Event {
+            rdif_block::Event::from_queue_bits(1)
+        }
+    }
+
+    #[test]
     fn irq_bridge_hint_overflow_falls_back_to_queue_ready_bit() {
         let bridge = BlockIrqBridge::new();
         for id in 0..rdif_block::MAX_COMPLETION_HINTS {
@@ -1656,6 +1682,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "ext4")]
     fn block_device_flush_retries_without_returning_wouldblock() {
         let _guard = test_task_guard();
         let mut queue = MockQueue::with_retry_submits(1);

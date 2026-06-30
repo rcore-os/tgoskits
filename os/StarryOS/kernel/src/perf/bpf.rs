@@ -23,7 +23,7 @@ use ax_memory_addr::{PAGE_SIZE_4K, PhysAddr};
 use ax_task::IrqNotify;
 use axpoll::{IoEvents, PollSet, Pollable};
 use kbpf_basic::{
-    linux_bpf::perf_event_sample_format,
+    linux_bpf::{perf_event_mmap_page, perf_event_sample_format},
     perf::{PerfProbeArgs, bpf::BpfPerfEvent},
 };
 use kprobe::PtRegs;
@@ -186,6 +186,15 @@ impl PerfEventOps for BpfPerfEventWrapper {
         self.inner
             .do_mmap(kvirt.as_usize(), len, 0)
             .map_err(|_| AxError::InvalidInput)?;
+        // kbpf_basic::RingPage::init sets the data-region geometry but leaves
+        // version at 0. perf checks `perf_event_mmap_page.version == 1` and
+        // rejects 0 (`perf_mmap__is_mmap_ok`), so we must set it here.
+        let header = kvirt.as_usize() as *mut perf_event_mmap_page;
+        // SAFETY: header points at the freshly allocated header page, no reader yet.
+        unsafe {
+            core::ptr::addr_of_mut!((*header).version).write(1);
+            core::ptr::addr_of_mut!((*header).compat_version).write(0);
+        }
         let pages = Arc::new(pages);
         // Keep only a `Weak`; hand the sole strong ref to the caller, which
         // threads it into `DeviceMmap::Physical`'s retainer so the user VMA

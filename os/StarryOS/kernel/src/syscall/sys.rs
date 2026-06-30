@@ -950,8 +950,22 @@ pub fn sys_seccomp(op: u32, flags: u32, args: *const ()) -> AxResult<isize> {
 }
 
 #[cfg(target_arch = "riscv64")]
-pub fn sys_riscv_flush_icache() -> AxResult<isize> {
-    riscv::asm::fence_i();
+const SYS_RISCV_FLUSH_ICACHE_LOCAL: usize = 1;
+
+#[cfg(target_arch = "riscv64")]
+pub fn sys_riscv_flush_icache(start: usize, end: usize, flags: usize) -> AxResult<isize> {
+    if flags & !SYS_RISCV_FLUSH_ICACHE_LOCAL != 0 {
+        return Err(AxError::InvalidInput);
+    }
+    if end < start {
+        return Err(AxError::InvalidInput);
+    }
+
+    if flags & SYS_RISCV_FLUSH_ICACHE_LOCAL != 0 {
+        ax_runtime::hal::cache::flush_icache_all();
+    } else {
+        ax_runtime::hal::cache::flush_icache_all_cpus();
+    }
     Ok(0)
 }
 
@@ -962,23 +976,6 @@ struct RiscvHwprobe {
     key: i64,
     value: u64,
 }
-
-#[cfg(target_arch = "riscv64")]
-const RISCV_HWPROBE_KEY_BASE_BEHAVIOR: i64 = 3;
-#[cfg(target_arch = "riscv64")]
-const RISCV_HWPROBE_BASE_BEHAVIOR_IMA: u64 = 1 << 0;
-#[cfg(target_arch = "riscv64")]
-const RISCV_HWPROBE_KEY_IMA_EXT_0: i64 = 4;
-#[cfg(target_arch = "riscv64")]
-const RISCV_HWPROBE_IMA_FD: u64 = 1 << 0;
-#[cfg(target_arch = "riscv64")]
-const RISCV_HWPROBE_IMA_C: u64 = 1 << 1;
-#[cfg(target_arch = "riscv64")]
-const RISCV_HWPROBE_KEY_CPUPERF_0: i64 = 5;
-#[cfg(target_arch = "riscv64")]
-const RISCV_HWPROBE_KEY_MISALIGNED_SCALAR_PERF: i64 = 9;
-#[cfg(target_arch = "riscv64")]
-const RISCV_HWPROBE_KEY_MISALIGNED_VECTOR_PERF: i64 = 10;
 
 #[cfg(target_arch = "riscv64")]
 pub fn sys_riscv_hwprobe(
@@ -1000,20 +997,11 @@ pub fn sys_riscv_hwprobe(
 
     let pairs = UserPtr::<RiscvHwprobe>::from(pairs.cast()).get_as_mut_slice(pair_count)?;
     for pair in pairs {
-        match pair.key {
-            RISCV_HWPROBE_KEY_BASE_BEHAVIOR => pair.value = RISCV_HWPROBE_BASE_BEHAVIOR_IMA,
-            RISCV_HWPROBE_KEY_IMA_EXT_0 => {
-                pair.value = RISCV_HWPROBE_IMA_FD | RISCV_HWPROBE_IMA_C;
-            }
-            RISCV_HWPROBE_KEY_CPUPERF_0
-            | RISCV_HWPROBE_KEY_MISALIGNED_SCALAR_PERF
-            | RISCV_HWPROBE_KEY_MISALIGNED_VECTOR_PERF => {
-                pair.value = 0;
-            }
-            _ => {
-                pair.key = -1;
-                pair.value = 0;
-            }
+        if let Some(value) = ax_runtime::hal::cpu::cap::riscv_hwprobe(pair.key) {
+            pair.value = value;
+        } else {
+            pair.key = -1;
+            pair.value = 0;
         }
     }
 

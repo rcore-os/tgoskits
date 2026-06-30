@@ -1,0 +1,8 @@
+cmake_minimum_required(VERSION 3.20)
+project(perf-hw-inherit C)
+set(CMAKE_C_STANDARD 11)
+set(CMAKE_C_STANDARD_REQUIRED ON)
+set(CMAKE_C_EXTENSIONS OFF)
+add_executable(perf-hw-inherit src/perf_hw_inherit.c)
+target_compile_options(perf-hw-inherit PRIVATE -Wall -Wextra -Werror)
+install(TARGETS perf-hw-inherit RUNTIME DESTINATION usr/bin/starry-test-suit)

@@ -32,8 +32,6 @@ mod tests {
     // Mock architecture implementation for testing
     #[derive(Debug)]
     struct MockArchVCpu {
-        vm_id: VMId,
-        vcpu_id: VCpuId,
         entry: Option<GuestPhysAddr>,
         ept_root: Option<HostPhysAddr>,
         is_setup: bool,
@@ -57,11 +55,9 @@ mod tests {
         type CreateConfig = MockCreateConfig;
         type SetupConfig = MockSetupConfig;
 
-        fn new(vm_id: VMId, vcpu_id: VCpuId, config: Self::CreateConfig) -> AxResult<Self> {
+        fn new(_vm_id: VMId, _vcpu_id: VCpuId, config: Self::CreateConfig) -> AxResult<Self> {
             config.call_log.borrow_mut().push("new".to_string());
             Ok(Self {
-                vm_id,
-                vcpu_id,
                 entry: None,
                 ept_root: None,
                 is_setup: false,
@@ -217,8 +213,16 @@ mod tests {
         assert!(result.is_ok());
         assert_eq!(vcpu.state(), VCpuState::Ready);
 
-        // Invalid transition should fail
+        // Mismatched `from` state should fail without changing the current state.
         let result = vcpu.transition_state(VCpuState::Running, VCpuState::Free);
+        assert!(result.is_err());
+        assert_eq!(vcpu.state(), VCpuState::Ready);
+
+        // A failed transition body should mark the VCpu as invalid.
+        let result: AxResult<()> =
+            vcpu.with_state_transition(VCpuState::Ready, VCpuState::Free, || {
+                Err(AxError::BadState)
+            });
         assert!(result.is_err());
         assert_eq!(vcpu.state(), VCpuState::Invalid);
     }
