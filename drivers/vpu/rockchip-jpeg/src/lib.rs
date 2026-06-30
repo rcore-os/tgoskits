@@ -4,9 +4,13 @@
 //! The crate is OS-independent (`#![no_std]`) and split into:
 //! - [`registers`]: the `RKDJPEG_SWREG*` register-file definitions.
 //! - [`status`]: pure decoding of the `SWREG1` interrupt/status word.
+//! - [`parser`]: a baseline JPEG header parser.
+//! - [`command`]: the 42-word register-array + 1280-byte quant/Huffman table
+//!   builder (reproduces the vendor MPP `hal_jpegd_rkv` programming).
+//! - [`mpp`]: the Rockchip MPP `/dev/mpp_service` wire ABI (session state machine).
 //!
-//! Higher layers (`command` register-array encoder, `parser` JPEG header parser,
-//! and the `JpuCore` MMIO/runtime) are added as the bring-up path is verified.
+//! [`JpuCore`] is the MMIO runtime (reset, program, poll, decode); [`RockchipJpeg`]
+//! is the probed device (engine + DMA capability + boot self-test).
 
 #![no_std]
 
@@ -15,6 +19,7 @@
 extern crate std;
 
 pub mod command;
+pub mod mpp;
 pub mod parser;
 pub mod registers;
 pub mod status;
@@ -114,11 +119,14 @@ impl<M: JpuMmio> JpuCore<M> {
         self.mmio.read32(offset(registers::REG_ID))
     }
 
-    /// Pulse soft-reset and wait for `soft_reset_rdy`, bounded by `timeout_us`.
+    /// Pulse soft-reset and wait for `soft_reset_rdy`, bounded by `timeout`.
+    ///
+    /// `clock` and `timeout` must share a unit (the runtime passes a nanosecond
+    /// monotonic clock with a nanosecond budget); the comparison is unit-agnostic.
     pub fn soft_reset<C: FnMut() -> u64>(
         &mut self,
         clock: &mut C,
-        timeout_us: u64,
+        timeout: u64,
     ) -> Result<(), JpuError> {
         self.mmio
             .write32(offset(registers::REG_INT), registers::INT_SOFTRESET);
@@ -127,7 +135,7 @@ impl<M: JpuMmio> JpuCore<M> {
             if self.mmio.read32(offset(registers::REG_INT)) & registers::INT_SOFTRESET_RDY != 0 {
                 return Ok(());
             }
-            if clock().wrapping_sub(start) >= timeout_us {
+            if clock().wrapping_sub(start) >= timeout {
                 return Err(JpuError::ResetTimeout);
             }
         }
@@ -144,11 +152,11 @@ impl<M: JpuMmio> JpuCore<M> {
             .write32(offset(registers::REG_INT), regs[registers::REG_INT]);
     }
 
-    /// Poll `SWREG1` until done or error, bounded by `timeout_us`.
+    /// Poll `SWREG1` until done or error, bounded by `timeout` (same unit as `clock`).
     pub fn poll_complete<C: FnMut() -> u64>(
         &self,
         clock: &mut C,
-        timeout_us: u64,
+        timeout: u64,
     ) -> Result<DecodeStatus, JpuError> {
         let start = clock();
         loop {
@@ -159,13 +167,17 @@ impl<M: JpuMmio> JpuCore<M> {
             if status.is_done() {
                 return Ok(status);
             }
-            if clock().wrapping_sub(start) >= timeout_us {
+            if clock().wrapping_sub(start) >= timeout {
                 return Err(JpuError::DecodeTimeout);
             }
         }
     }
 
-    /// Clear the `SWREG1` status bits (write-1-to-clear) after handling.
+    /// Clear the `SWREG1` completion state after handling a run.
+    ///
+    /// Read-modify-write: it writes back the currently-set write-1-to-clear status
+    /// bits (clearing them) while writing 0 to every control bit (`dec_e`,
+    /// `irq_dis`, `timeout_e`, `buf_empty_e`), which also disables the engine.
     pub fn clear_status(&mut self) {
         let v = self.mmio.read32(offset(registers::REG_INT));
         self.mmio.write32(
@@ -181,7 +193,7 @@ impl<M: JpuMmio> JpuCore<M> {
         info: &JpegInfo,
         addrs: DecodeAddrs,
         clock: &mut C,
-        timeout_us: u64,
+        timeout: u64,
     ) -> Result<DecodeStatus, JpuError> {
         let mut regs = command::build_reg_array(info);
         let hw_strm_offset = info.strm_offset - info.strm_offset % 16;
@@ -191,9 +203,69 @@ impl<M: JpuMmio> JpuCore<M> {
         regs[registers::REG_STRM_BASE] = addrs.stream_phys + hw_strm_offset;
         regs[registers::REG_DEC_OUT_BASE] = addrs.output_phys;
         self.program_and_start(&regs);
-        let status = self.poll_complete(clock, timeout_us)?;
+        // Always clear the status bits (W1C) — even on error/timeout — so stale
+        // done/error bits can't be observed by the next decode.
+        let result = self.poll_complete(clock, timeout);
         self.clear_status();
-        Ok(status)
+        // On error or timeout the engine may be wedged mid-transaction; soft-reset
+        // it (best-effort) so the next decode starts from a clean state.
+        if result.is_err() {
+            let _ = self.soft_reset(clock, timeout);
+        }
+        result
+    }
+
+    /// Run a pre-built register array (as supplied over the MPP ABI, with the
+    /// enable bit already in `SWREG1`): program, start, wait for done-or-error,
+    /// then copy the whole register file into `readback`. On timeout, `readback`
+    /// is still populated for diagnostics before the error is returned.
+    pub fn run_raw<C: FnMut() -> u64>(
+        &mut self,
+        regs: &[u32; registers::REG_COUNT],
+        readback: &mut [u32; registers::REG_COUNT],
+        clock: &mut C,
+        timeout: u64,
+    ) -> Result<DecodeStatus, JpuError> {
+        self.program_and_start(regs);
+        let result = self.poll_terminal(clock, timeout);
+        self.read_regs(readback);
+        // Always clear status (even on timeout) so stale bits don't leak.
+        self.clear_status();
+        // Recover a possibly-wedged engine after a timeout or a hardware error
+        // (`poll_terminal` returns a hardware error in `status`, not as `Err`).
+        let needs_reset = match &result {
+            Err(_) => true,
+            Ok(status) => status.error().is_some(),
+        };
+        if needs_reset {
+            let _ = self.soft_reset(clock, timeout);
+        }
+        result
+    }
+
+    /// Copy the full register file into `out`.
+    pub fn read_regs(&self, out: &mut [u32; registers::REG_COUNT]) {
+        for (i, slot) in out.iter_mut().enumerate() {
+            *slot = self.mmio.read32(offset(i));
+        }
+    }
+
+    /// Poll `SWREG1` until done OR error (returned as status); error only on timeout.
+    fn poll_terminal<C: FnMut() -> u64>(
+        &self,
+        clock: &mut C,
+        timeout: u64,
+    ) -> Result<DecodeStatus, JpuError> {
+        let start = clock();
+        loop {
+            let status = DecodeStatus::from_int(self.mmio.read32(offset(registers::REG_INT)));
+            if status.is_done() || status.error().is_some() {
+                return Ok(status);
+            }
+            if clock().wrapping_sub(start) >= timeout {
+                return Err(JpuError::DecodeTimeout);
+            }
+        }
     }
 }
 
@@ -240,7 +312,7 @@ impl RockchipJpeg {
         &mut self,
         jpeg: &[u8],
         clock: &mut C,
-        timeout_us: u64,
+        timeout: u64,
     ) -> Result<DecodeStatus, SelftestError> {
         let info = parser::parse(jpeg).map_err(SelftestError::Parse)?;
 
@@ -275,7 +347,7 @@ impl RockchipJpeg {
         // Buffers stay alive across the synchronous (poll-to-completion) decode.
         let status = self
             .core
-            .decode(&info, addrs, clock, timeout_us)
+            .decode(&info, addrs, clock, timeout)
             .map_err(SelftestError::Decode)?;
         drop((stream, table, output));
         Ok(status)
@@ -465,6 +537,65 @@ mod tests {
         assert_eq!(core.mmio.reg(REG_HUFFVAL_BASE), 0x1000_0000 + 704);
         assert_eq!(core.mmio.reg(REG_STRM_BASE), 0x2000_0000 + 32);
         assert_eq!(core.mmio.reg(REG_DEC_OUT_BASE), 0x3000_0000);
+    }
+
+    #[test]
+    fn run_raw_programs_polls_and_reads_back() {
+        let fake = FakeMmio::new(std::vec![INT_IRQ | INT_RDY_STA]);
+        let mut core = JpuCore::new(fake);
+        let mut clock = ticking_clock();
+        let mut regs = [0u32; REG_COUNT];
+        regs[REG_PIC_SIZE] = 0x002f_003f;
+        regs[REG_QTBL_BASE] = 0x1000_0000;
+        regs[REG_INT] = INT_DEC_E;
+        let mut readback = [0u32; REG_COUNT];
+        let st = core
+            .run_raw(&regs, &mut readback, &mut clock, 1000)
+            .unwrap();
+        assert!(st.is_success());
+        assert_eq!(readback[REG_PIC_SIZE], 0x002f_003f);
+        assert_eq!(readback[REG_QTBL_BASE], 0x1000_0000);
+        assert_eq!(readback[REG_INT], INT_IRQ | INT_RDY_STA);
+    }
+
+    #[test]
+    fn run_raw_reports_hw_error_via_status() {
+        let fake = FakeMmio::new(std::vec![INT_ERROR_STA]);
+        let mut core = JpuCore::new(fake);
+        let mut clock = ticking_clock();
+        let mut readback = [0u32; REG_COUNT];
+        let st = core
+            .run_raw(&[0u32; REG_COUNT], &mut readback, &mut clock, 1000)
+            .unwrap();
+        assert_eq!(st.error(), Some(DecodeError::StreamError));
+        assert_eq!(readback[REG_INT], INT_ERROR_STA);
+    }
+
+    #[test]
+    fn run_raw_times_out() {
+        let fake = FakeMmio::new(std::vec![0]);
+        let mut core = JpuCore::new(fake);
+        let mut clock = ticking_clock();
+        let mut readback = [0u32; REG_COUNT];
+        assert_eq!(
+            core.run_raw(&[0u32; REG_COUNT], &mut readback, &mut clock, 5),
+            Err(JpuError::DecodeTimeout)
+        );
+    }
+
+    #[test]
+    fn run_raw_soft_resets_engine_after_timeout() {
+        // After a timeout the recovery path pulses a soft-reset, so the final
+        // SWREG1 write is the soft-reset bit.
+        let fake = FakeMmio::new(std::vec![0]);
+        let mut core = JpuCore::new(fake);
+        let mut clock = ticking_clock();
+        let mut readback = [0u32; REG_COUNT];
+        assert_eq!(
+            core.run_raw(&[0u32; REG_COUNT], &mut readback, &mut clock, 5),
+            Err(JpuError::DecodeTimeout)
+        );
+        assert_eq!(core.mmio.reg(REG_INT), INT_SOFTRESET);
     }
 
     #[test]
