@@ -245,8 +245,9 @@ impl RgaDevice {
         let elem_size = core::mem::size_of::<librga_abi::RgaExternalBuffer>(); // 288
         let base = pool.buffers_ptr as usize;
 
-        // Write the handle back FIRST, then insert into table. If the write faults, no
-        // handle entry is leaked (the table was never touched for this element).
+        // For each element: insert the handle, then write it back to userspace and roll the
+        // insertion back if that write faults, so a bad user pointer can't strand an unreachable
+        // handle in the table for the fd's lifetime.
         for i in 0..pool.size as usize {
             let ptr = base + i * elem_size;
             let mut ext: librga_abi::RgaExternalBuffer = unsafe {
@@ -291,10 +292,14 @@ impl RgaDevice {
             let handle = self.alloc_handle(entry)?;
             ext.handle = handle;
 
-            // Write-back must succeed for userspace to know the handle; on fault the
-            // alloc_handle entry is already inserted (it's a permanent leak but the fault
-            // means the process is dying anyway — mirroring the kernel's behaviour).
-            (ptr as *mut librga_abi::RgaExternalBuffer).vm_write(ext)?;
+            // Write-back must succeed for userspace to learn (and later release) the handle. A
+            // fault here returns EFAULT and the process keeps running, so a stranded entry would
+            // leak for the fd's lifetime — roll the just-inserted handle back before propagating.
+            let res = (ptr as *mut librga_abi::RgaExternalBuffer).vm_write(ext);
+            if res.is_err() {
+                self.handle_table.lock().remove(&(current_id(), handle));
+            }
+            res?;
         }
         Ok(0)
     }
@@ -383,7 +388,13 @@ impl RgaDevice {
         requests.insert((tid, id), Vec::new());
         drop(requests);
         drop(next);
-        (arg as *mut u32).vm_write(id)?;
+        // Roll the inserted id back if the write-back faults: a bad user pointer returns EFAULT
+        // (the process keeps running) and must not strand a request the user never learns the id of.
+        let res = (arg as *mut u32).vm_write(id);
+        if res.is_err() {
+            self.requests.lock().remove(&(tid, id));
+        }
+        res?;
         Ok(0)
     }
 

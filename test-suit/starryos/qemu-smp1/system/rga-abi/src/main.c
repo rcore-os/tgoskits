@@ -7,6 +7,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <sys/ioctl.h>
+#include <sys/mman.h>
 #include <unistd.h>
 
 /* --- /dev/rga ioctls (MultiRGA v1.3.1 ABI). --- */
@@ -136,6 +137,34 @@ int main(void)
     errno = 0;
     int rc2 = ioctl(fd, RGA_IOC_RELEASE_BUFFER, &pool);
     CHECK(rc2 != 0, "double RELEASE_BUFFER fails (handle already freed)");
+
+    /* --- 7. Bad write-back pointers must fail cleanly and strand nothing. The kernel inserts the
+       handle/request into its table before writing it back to userspace, so a faulting write-back
+       must roll the entry back — a bad pointer returns EFAULT, it does not kill the process. Aim the
+       write-back at a read-only page: the kernel can read the input but the write-back faults. --- */
+    long pgsz = sysconf(_SC_PAGESIZE);
+    unsigned char *ro = mmap(0, pgsz, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    CHECK(ro != MAP_FAILED, "mmap scratch page");
+
+    /* IMPORT_BUFFER: a valid, readable rga_external_buffer on a now read-only page — the kernel
+       reads it (resolves the dma-buf, allocates a handle) but the handle write-back faults. */
+    struct rga_external_buffer *ro_ext = (struct rga_external_buffer *)ro;
+    memset(ro_ext, 0, sizeof(*ro_ext));
+    ro_ext->memory = (uint64_t)dfd;
+    ro_ext->type = RGA_DMA_BUFFER;
+    CHECK(mprotect(ro, pgsz, PROT_READ) == 0, "mprotect scratch page read-only");
+    struct rga_buffer_pool ro_pool = {.buffers_ptr = (uint64_t)(uintptr_t)ro_ext, .size = 1};
+    errno = 0;
+    CHECK(ioctl(fd, RGA_IOC_IMPORT_BUFFER, &ro_pool) != 0,
+          "IMPORT_BUFFER fails when the handle write-back faults");
+    CHECK(ro_ext->handle == 0, "no handle written back on a faulting IMPORT_BUFFER");
+
+    /* REQUEST_CREATE: the read-only page is the u32 id output, so the write-back faults. */
+    errno = 0;
+    CHECK(ioctl(fd, RGA_IOC_REQUEST_CREATE, ro) != 0,
+          "REQUEST_CREATE fails when the id write-back faults");
+
+    munmap(ro, pgsz);
 
     close(dfd);
     close(heap);
