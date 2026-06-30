@@ -162,7 +162,10 @@ impl<T: VirtIoTransport> VirtioNetInnerCell<T> {
             })
             .unwrap_or_else(|| {
                 self.irq_ack_pending.store(true, Ordering::Release);
-                true
+                // The task-side owner will acknowledge the transport before
+                // and after its queue operation. Without an IRQ status snapshot
+                // we must not publish a queue event from a shared interrupt.
+                false
             });
 
         if !queue_interrupt {
@@ -431,15 +434,19 @@ mod tests {
     }
 
     #[test]
-    fn skipped_irq_access_records_pending_ack() {
+    fn skipped_irq_access_records_pending_ack_without_queue_event() {
         let access_active = AtomicBool::new(false);
         let irq_ack_pending = AtomicBool::new(false);
         let task_guard = VirtioNetAccessGuard::enter_task(&access_active);
 
-        if VirtioNetAccessGuard::try_enter_irq(&access_active).is_none() {
+        let queue_interrupt = if VirtioNetAccessGuard::try_enter_irq(&access_active).is_none() {
             irq_ack_pending.store(true, Ordering::Release);
-        }
+            false
+        } else {
+            true
+        };
 
+        assert!(!queue_interrupt);
         assert!(irq_ack_pending.load(Ordering::Acquire));
         drop(task_guard);
         assert!(VirtioNetAccessGuard::try_enter_irq(&access_active).is_some());
