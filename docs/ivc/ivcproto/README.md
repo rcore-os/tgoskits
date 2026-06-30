@@ -67,11 +67,31 @@ checksums, ACK/timeout/retransmit, and dedup/reorder tolerance.
 
 In-guest, the server role has been confirmed running on the real network stack
 (`PROTO-SERVER listening on 0.0.0.0:5500 lossy=5`) after the guest brings up the
-emulated `eth0`. Running the full client<->server exchange across **two**
-simultaneous guests is currently gated only by AxVisor's unreliable
-simultaneous 2-VM boot (cooperative non-preemptive scheduler; see
-`../M5-network-design.md`), not by the protocol or the network path — the
-underlying bidirectional link itself is proven (see the captured ICMP run).
+emulated `eth0`, and **both guests have been observed booting together with the
+server reaching the listening state** (run `d3`: VM2 client + VM1 server both
+hit `IVCINIT` and `PROTO-SERVER listening`). Capturing the full client<->server
+exchange in one log is gated only by AxVisor's **unreliable simultaneous 2-VM
+boot** (cooperative non-preemptive scheduler — under contention one guest can
+starve the other's boot; observed both-boot ~3 times in ~80 runs, and even then
+the laggard's boot can take ~220 s). This is a scheduler limitation, not a
+protocol or network-path defect — the underlying bidirectional link is proven
+(captured ICMP run, `../M5-network-design.md`), and the client is now patient
+enough (900 CONTROL retries) to complete the exchange whenever a both-boot
+recurs. A robust one-command test additionally needs preemptive scheduling
+(M2 path B) or another mechanism to guarantee both guests boot.
+
+### How to run the two-guest test
+
+```
+# build the rootfs (static busybox + musl loader + ivcproto + guest-init)
+bash build-rootfs.sh                      # produces mini.img (and copy as needed)
+# or the full-alpine variant: extract alpine, add ivcproto, mkfs.ext4 -d
+# then boot two guests (VM1=server 10.0.0.1, VM2=client 10.0.0.2), host on a 3rd disk
+cargo xtask axvisor qemu --arch aarch64 \
+  --vmconfigs vm-disk1.toml --vmconfigs vm-disk2.toml \
+  --qemu-config qemu-aivc.toml --rootfs aivc.img
+# expect (on a both-boot): PROTO-CLIENT-RESULT sent=40 acked=40 ... / PROTO-SERVER-RESULT ...
+```
 
 ## Build
 
