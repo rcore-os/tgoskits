@@ -73,7 +73,11 @@
   - **子页粒度坑（已解）**：emu 设备 0x200 < 4K 页；① 设备 MMIO 窗口扩到整页 `0x1000`，同页内空 virtio-mmio 槽也路由到本设备并读回 0（否则空槽 trap → `mmio read: NotFound` → VM 崩）；② 设备须放在**不与 guest virtio-blk(0x0a000000) 同页的空闲槽**（用 `0x0a001000`，否则挖掉会连带 unmap 磁盘 → 引导挂起）。
   - ✅✅ **P1 真正端到端验证（2026-06-30）**：`-net none` 排除 QEMU 默认 NIC 后，Linux guest 的 `virtio_net` 驱动绑定本模拟设备，`eth0` 拿到**设备 advertise 的 MAC `52:54:00:00:00:01`**（证明 `VIRTIO_NET_F_MAC` 协商 + config 读取正确），磁盘仍正常（ext4 挂载）。配置 `tmp/m2/vm-linux-vnet3.toml` + `qemu-vnet2.toml`。
 - **P2 virtqueue TX 数据通路**：✅✅ **已运行验证**。`VirtioNet::process_tx`（split virtqueue desc/avail/used 解析）在 guest `ip link up`+`ping` 后正确从 TX virtqueue 抽出真实以太帧：广播 ARP（`ff:ff:..` 目的、`0806`）来自设备 MAC、IPv6 组播（`33:33:..`、`86dd`），共 9 帧/3 ARP。`vm.rs::handle_mmio_write` 在 TX QueueNotify 时 `drive_virtio_net_tx`（`read_from_guest/write_to_guest` 闭包）+ TX 完成中断。
-- **P2 RX + P3 软件 L2 交换机**：✅ 代码实现，**待 2-VM 验证**。`deliver_rx`（写对端 RX virtqueue + 注 IRQ）+ 广播泛洪（`drive_virtio_net_tx` 对 `get_vm_list()` 每个其他 VM 调 `deliver_rx_frame`）。单 VM 下泛洪无对端（ping 100% loss，符合预期）。需第二个带 virtio-net 的 guest 才能验证 RX/互通。
+- **P2 RX + P3 软件 L2 交换机**：✅ 代码实现，**2-VM 互通受环境 flakiness 阻塞，未取得 ping 回复证据**。`deliver_rx`（写对端 RX virtqueue + 注 IRQ）+ 广播泛洪（`drive_virtio_net_tx` 对 `get_vm_list()` 每个其他 VM 调 `deliver_rx_frame`）。
+  - **2-VM 尝试**（避开两 Linux 共享 disk0 冲突）：用 **initramfs/ramdisk 启动**（每 VM 自己内存一份 rootfs，`root=/dev/ram0 rdinit=/init rootwait`，自定义 busybox initramfs + MAC→IP 的 /init），两 VM 各一 virtio-net（slot 0x0a001000/0x0a002000，MAC ..01/..02，碰 disk0 同页问题已避开）。配置 `tmp/m2/vm-rd{1,2}.toml` + `qemu-rd.toml` + `tmp/m2/initrd/init`。
+  - **观察**：一次运行中 VM1 成功 `INIT-RUNNING`(eth0 在)+ ping 10.0.0.2（TX 帧经 process_tx 抽出并泛洪），但**对端 VM2 的 /init 未运行**（ramdisk 引导 flakiness：内核到 `Freeing initrd memory` 后有时不 exec /init），eth0 未 up → 无 RX buffer → `deliver_rx` 返回 false（无投递）→ ping 无回复。
+  - **两个待解问题**：① **ramdisk 引导 flakiness**（同配置有时到 /init 有时卡在 freeing initrd，单/双 VM 都见过）——需排查（可能 AxVisor ramdisk 加载/FDT initrd range 或内存时序）；② RX 投递依赖对端 guest 已 up 并 post 了 RX buffer。控制台输出坑（ramdisk /init 须在 mount devtmpfs 后 `exec >/dev/console 2>&1` 才可见）已解。
+  - 注：内存须用 **MAP_ALLOC(map_type=0)** 而非 MAP_IDENTICAL，否则两 VM 同 GPA 映射同一宿主内存互相踩。
 - **P4 客户机驱动接通**：Linux 侧 virtio-net 驱动自动识别（已内建），配 IP；Zephyr 侧需带 virtio-net + lwIP/BSD socket 的镜像（见前置 C）。
 - **P5 应用层协议 + 可靠性 + 自动化测试**（M7/M8）：见任务二后续。
 
