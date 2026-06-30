@@ -1,0 +1,32 @@
+/dts-v1/;
+
+/ {
+    description = "StarryOS for AKA-00-SG2002";
+    #address-cells = <1>;
+
+    images {
+        kernel {
+            description = "StarryOS kernel";
+            data = /incbin/("${kernel_bin}");
+            type = "kernel";
+            arch = "riscv";
+            os = "linux";
+            compression = "none";
+            load = <0x80200000>;
+            entry = <0x80200000>;
+
+            hash {
+                algo = "sha256";
+            };
+        };
+    };
+
+    configurations {
+        default = "config";
+
+        config {
+            description = "StarryOS SG2002";
+            kernel = "kernel";
+        };
+    };
+};
