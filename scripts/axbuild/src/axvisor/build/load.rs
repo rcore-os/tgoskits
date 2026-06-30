@@ -12,19 +12,11 @@ use crate::{
 };
 
 pub(crate) fn load_board_file(path: &Path) -> anyhow::Result<AxvisorBoardFile> {
-    let content = fs::read_to_string(path).map_err(|e| {
-        anyhow!(
-            "failed to read Axvisor board config {}: {e}",
-            path.display()
-        )
-    })?;
-    reject_unsupported_axvisor_fields(path, &content)?;
-    toml::from_str(&content).map_err(|e| {
-        anyhow!(
-            "failed to parse Axvisor board config {}: {e}",
-            path.display()
-        )
-    })
+    crate::build::load_toml_with_rejector(
+        path,
+        "Axvisor board config",
+        reject_unsupported_axvisor_fields,
+    )
 }
 
 pub(crate) fn resolve_build_info_path(
@@ -57,13 +49,11 @@ pub(crate) fn default_build_info_path(axvisor_dir: &Path, target: &str) -> PathB
 }
 
 pub(crate) fn load_target_from_build_config(path: &Path) -> anyhow::Result<Option<String>> {
-    let content = fs::read_to_string(path).map_err(|e| {
-        anyhow!(
-            "failed to read Axvisor build config {}: {e}",
-            path.display()
-        )
-    })?;
-    reject_unsupported_axvisor_fields(path, &content)?;
+    let content = crate::build::read_toml_with_rejector(
+        path,
+        "Axvisor build config",
+        reject_unsupported_axvisor_fields,
+    )?;
 
     if let Ok(board_file) = toml::from_str::<AxvisorBoardFile>(&content) {
         return Ok(Some(board_file.target));
@@ -84,13 +74,11 @@ pub(super) fn load_build_config(
         return load_or_create_missing_build_config(request);
     }
 
-    let content = fs::read_to_string(&request.build_info_path).map_err(|e| {
-        anyhow!(
-            "failed to read Axvisor build config {}: {e}",
-            request.build_info_path.display()
-        )
-    })?;
-    reject_unsupported_axvisor_fields(&request.build_info_path, &content)?;
+    let content = crate::build::read_toml_with_rejector(
+        &request.build_info_path,
+        "Axvisor build config",
+        reject_unsupported_axvisor_fields,
+    )?;
 
     if let Ok(board_config) = toml::from_str::<AxvisorBoardFile>(&content) {
         let mut loaded = board_config.into_loaded();

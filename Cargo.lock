@@ -303,9 +303,7 @@ dependencies = [
 name = "arceos-helloworld-myplat"
 version = "0.3.1"
 dependencies = [
- "ax-plat-loongarch64-qemu-virt",
  "ax-std",
- "cfg-if",
 ]
 
 [[package]]
@@ -704,9 +702,8 @@ dependencies = [
  "eth-intel",
  "fdt-edit",
  "fxmac_rs",
- "heapless 0.9.3",
+ "heapless",
  "irq-framework",
- "ixgbe-driver",
  "log",
  "mmio-api",
  "nvme-driver",
@@ -720,6 +717,7 @@ dependencies = [
  "rdif-input",
  "rdif-intc",
  "rdif-pcie",
+ "rdif-pinctrl",
  "rdif-serial",
  "rdif-vsock",
  "rdrive",
@@ -819,12 +817,11 @@ dependencies = [
  "ax-page-table-multiarch",
  "ax-percpu",
  "ax-plat",
- "ax-plat-loongarch64-qemu-virt",
  "ax-plat-riscv64-sg2002",
  "axplat-dyn",
  "cfg-if",
  "fdt-parser",
- "heapless 0.9.3",
+ "heapless",
  "log",
  "quote",
  "rdrive",
@@ -848,7 +845,7 @@ name = "ax-io"
 version = "0.6.0"
 dependencies = [
  "ax-errno 0.6.0",
- "heapless 0.9.3",
+ "heapless",
  "memchr",
 ]
 
@@ -976,7 +973,7 @@ dependencies = [
  "rd-net",
  "rdif-vsock",
  "ringbuf",
- "smoltcp 0.13.1",
+ "smoltcp",
  "spin",
 ]
 
@@ -1042,27 +1039,6 @@ dependencies = [
  "rdif-intc",
  "rdrive",
  "spin",
-]
-
-[[package]]
-name = "ax-plat-loongarch64-qemu-virt"
-version = "0.5.17"
-dependencies = [
- "ax-config-macros",
- "ax-cpu",
- "ax-driver",
- "ax-kspin",
- "ax-lazyinit",
- "ax-page-table-entry",
- "ax-plat",
- "axklib",
- "chrono",
- "fdt-raw",
- "log",
- "loongArch64",
- "mmio-api",
- "toml 1.1.2+spec-1.1.0",
- "uart_16550",
 ]
 
 [[package]]
@@ -1141,6 +1117,7 @@ dependencies = [
  "ax-hal",
  "ax-input",
  "ax-ipi",
+ "ax-kspin",
  "ax-lazyinit",
  "ax-log",
  "ax-memory-addr",
@@ -1452,7 +1429,7 @@ dependencies = [
  "ax-percpu",
  "ax-plat",
  "axklib",
- "heapless 0.9.3",
+ "heapless",
  "log",
  "rdrive",
  "somehal",
@@ -2323,12 +2300,6 @@ name = "core-foundation-sys"
 version = "0.8.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "773648b94d0e5d620f64f280777445740e61fe701025087ec8b57f45c791888b"
-
-[[package]]
-name = "core_detect"
-version = "1.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7f8f80099a98041a3d1622845c271458a2d73e688351bf3cb999266764b81d48"
 
 [[package]]
 name = "cpp_demangle"
@@ -3381,7 +3352,7 @@ version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "91e6747052012035c3473585be1d706207893d8db73101825d8a3f75effa9843"
 dependencies = [
- "heapless 0.9.3",
+ "heapless",
  "log",
  "thiserror 2.0.18",
 ]
@@ -3822,16 +3793,6 @@ dependencies = [
  "allocator-api2",
  "equivalent",
  "foldhash",
-]
-
-[[package]]
-name = "heapless"
-version = "0.8.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0bfb9eb618601c89945a70e254898da93b13be0388091d42117462b265bb3fad"
-dependencies = [
- "hash32",
- "stable_deref_trait",
 ]
 
 [[package]]
@@ -4377,19 +4338,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8f42a60cbdf9a97f5d2305f08a87dc4e09308d1276d28c869c684d7777685682"
 
 [[package]]
-name = "ixgbe-driver"
-version = "0.1.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "82fa50aa357d319c805280265b0fc279ac3ce19923a1767c8bfd9fe9d3185ada"
-dependencies = [
- "bit_field",
- "core_detect",
- "log",
- "smoltcp 0.12.0",
- "volatile 0.3.0",
-]
-
-[[package]]
 name = "jiff"
 version = "0.2.29"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4625,7 +4573,7 @@ dependencies = [
 name = "kernutil"
 version = "0.2.2"
 dependencies = [
- "heapless 0.9.3",
+ "heapless",
  "num-align",
  "ranges-ext",
 ]
@@ -5517,7 +5465,7 @@ version = "0.7.3"
 dependencies = [
  "bitflags 2.13.0",
  "env_logger",
- "heapless 0.9.3",
+ "heapless",
  "log",
  "num-align",
  "thiserror 2.0.18",
@@ -6180,7 +6128,7 @@ checksum = "63b8176103e19a2643978565ca18b50549f6101881c443590420e4dc998a3c69"
 name = "ranges-ext"
 version = "0.6.4"
 dependencies = [
- "heapless 0.9.3",
+ "heapless",
  "thiserror 2.0.18",
 ]
 
@@ -6425,6 +6373,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "rdif-pinctrl"
+version = "0.1.0"
+dependencies = [
+ "fdt-edit",
+ "rdif-base",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "rdif-power"
 version = "0.7.3"
 dependencies = [
@@ -6437,7 +6394,7 @@ version = "0.9.0"
 dependencies = [
  "bitflags 2.13.0",
  "futures",
- "heapless 0.9.3",
+ "heapless",
  "rdif-base",
  "thiserror 2.0.18",
 ]
@@ -7522,21 +7479,6 @@ dependencies = [
 
 [[package]]
 name = "smoltcp"
-version = "0.12.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "dad095989c1533c1c266d9b1e8d70a1329dd3723c3edac6d03bbd67e7bf6f4bb"
-dependencies = [
- "bitflags 1.3.2",
- "byteorder",
- "cfg-if",
- "defmt 0.3.100",
- "heapless 0.8.0",
- "log",
- "managed",
-]
-
-[[package]]
-name = "smoltcp"
 version = "0.13.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5f73d40463bba65efc9adc6370b56df76d563cc46e2482bba58351b4afb7535e"
@@ -7545,7 +7487,7 @@ dependencies = [
  "byteorder",
  "cfg-if",
  "defmt 0.3.100",
- "heapless 0.9.3",
+ "heapless",
  "log",
  "managed",
 ]
@@ -7566,7 +7508,7 @@ version = "0.7.0"
 dependencies = [
  "bitflags 2.13.0",
  "enum_dispatch",
- "heapless 0.9.3",
+ "heapless",
  "log",
  "rdif-serial",
  "thiserror 2.0.18",
@@ -7592,7 +7534,7 @@ dependencies = [
  "derive_more",
  "fdt-edit",
  "fdt-raw",
- "heapless 0.9.3",
+ "heapless",
  "kasm-aarch64",
  "kernutil",
  "log",
@@ -8711,15 +8653,6 @@ name = "typenum"
 version = "1.20.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b6f5e870be6c3b371b77fe0ee0bafb859fa4964b4404c27de1d380043c4dda20"
-
-[[package]]
-name = "uart_16550"
-version = "0.5.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "71cceed8939ba6ebde9d1e8a603b3c7f1a239a3db22e1ff465ed71ddca7a7d66"
-dependencies = [
- "bitflags 2.13.0",
-]
 
 [[package]]
 name = "uboot-shell"

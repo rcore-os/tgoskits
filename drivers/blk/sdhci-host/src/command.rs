@@ -373,11 +373,16 @@ impl Sdhci {
         let host1 = self.read_u8(REG_HOST_CONTROL1);
         let host2 = self.read_u16(REG_HOST_CONTROL2);
         let reset = self.read_u8(REG_SOFTWARE_RESET);
+        let normal_status_enable = self.read_u16(REG_NORMAL_INT_STATUS_ENABLE);
+        let error_status_enable = self.read_u16(REG_ERROR_INT_STATUS_ENABLE);
+        let normal_signal_enable = self.read_u16(REG_NORMAL_INT_SIGNAL_ENABLE);
+        let error_signal_enable = self.read_u16(REG_ERROR_INT_SIGNAL_ENABLE);
 
         if reason == "issued" {
             log::debug!(
                 "sdhci: {} CMD{} present={:#010x} normal={:#06x} error={:#06x} clock={:#06x} \
-                 power={:#04x} host1={:#04x} host2={:#06x} reset={:#04x}",
+                 power={:#04x} host1={:#04x} host2={:#06x} reset={:#04x} nisen={:#06x} \
+                 eisen={:#06x} nsigen={:#06x} esigen={:#06x}",
                 reason,
                 cmd_index,
                 present,
@@ -387,12 +392,17 @@ impl Sdhci {
                 power,
                 host1,
                 host2,
-                reset
+                reset,
+                normal_status_enable,
+                error_status_enable,
+                normal_signal_enable,
+                error_signal_enable
             );
         } else {
             log::info!(
                 "sdhci: {} CMD{} present={:#010x} normal={:#06x} error={:#06x} clock={:#06x} \
-                 power={:#04x} host1={:#04x} host2={:#06x} reset={:#04x}",
+                 power={:#04x} host1={:#04x} host2={:#06x} reset={:#04x} nisen={:#06x} \
+                 eisen={:#06x} nsigen={:#06x} esigen={:#06x}",
                 reason,
                 cmd_index,
                 present,
@@ -402,7 +412,11 @@ impl Sdhci {
                 power,
                 host1,
                 host2,
-                reset
+                reset,
+                normal_status_enable,
+                error_status_enable,
+                normal_signal_enable,
+                error_signal_enable
             );
         }
     }
@@ -709,10 +723,8 @@ mod tests {
         assert_ne!(host.irq.state.generation(), 0);
 
         host.write_u16(REG_NORMAL_INT_STATUS, NORMAL_INT_CMD_COMPLETE);
-        assert_eq!(
-            host.irq_handle().handle_irq(),
-            crate::Event::CommandComplete
-        );
+        let mut irq = host.irq_endpoint();
+        assert_eq!(irq.handle_irq(), crate::Event::CommandComplete);
         assert_ne!(
             host.irq.state.pending_normal() & NORMAL_INT_CMD_COMPLETE,
             0,

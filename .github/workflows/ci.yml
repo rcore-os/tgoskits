@@ -368,9 +368,10 @@ jobs:
             runs_on: '["self-hosted","linux","qcs"]'
             self_hosted_owner: rcore-os
             command: cargo xtask clippy --since "${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}"
-            cache_key: ""
+            cache_key: clippy
             container_image: base
             fetch_depth: full
+            download_xtask_bin_artifact: true
             limit_to_owner: ""
             main_pr_only: false
           - name: Test with std
@@ -709,6 +710,14 @@ jobs:
             use_container: false
             runs_on: '["self-hosted","linux","board"]'
             command: cargo xtask starry test board --board licheerv-nano-sg2002
+            cache_key: ""
+            container_image: ""
+            limit_to_owner: rcore-os
+            main_pr_only: false
+          - name: Test starry self-hosted board aka-00-sg2002
+            use_container: false
+            runs_on: '["self-hosted","linux","board"]'
+            command: cargo xtask starry test board --board aka-00-sg2002
             cache_key: ""
             container_image: ""
             limit_to_owner: rcore-os

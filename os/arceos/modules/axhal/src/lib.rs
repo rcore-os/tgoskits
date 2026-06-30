@@ -6,7 +6,7 @@
 //!
 //! Currently supported platforms (specify by cargo features):
 //!
-//! - `plat-dyn`: Runtime-discovered platform, including x86_64, AArch64 and RISC-V QEMU boards.
+//! - `plat-dyn`: Runtime-discovered platform, including x86_64, AArch64, RISC-V and LoongArch QEMU boards.
 //! - `dummy`: If none of the above platform is selected, the dummy platform
 //!   will be used. In this platform, most of the operations are no-op or
 //!   `unimplemented!()`. This platform is mainly used for [cargo test].

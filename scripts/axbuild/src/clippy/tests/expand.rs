@@ -243,6 +243,52 @@ fn incremental_selection_uses_natural_frontier_when_nothing_is_skipped() {
 }
 
 #[test]
+fn with_deps_incremental_frontier_expands_only_base_checks() {
+    let packages = vec![
+        pkg(
+            "alpha",
+            "alpha 0.1.0 (path+file:///tmp/alpha)",
+            &[("feat-a", &[])],
+            None,
+        ),
+        pkg(
+            "gamma",
+            "gamma 0.1.0 (path+file:///tmp/gamma)",
+            &[("feat-b", &[])],
+            None,
+        ),
+    ];
+    let metadata =
+        metadata_with_resolve(packages.clone(), &[("alpha", &[]), ("gamma", &["alpha"])]);
+    let selections = incremental_clippy_selections(
+        vec!["alpha".into()],
+        vec!["alpha".into(), "gamma".into()],
+        &metadata,
+        &packages,
+    )
+    .into_iter()
+    .map(|(name, deps_mode)| {
+        let package = packages
+            .iter()
+            .find(|package| package.name == name)
+            .cloned()
+            .unwrap();
+        crate::clippy::selection::SelectedClippyPackage { package, deps_mode }
+    })
+    .collect::<Vec<_>>();
+
+    let checks = crate::clippy::expand::expand_clippy_checks(&selections, &metadata).unwrap();
+
+    assert_eq!(
+        checks
+            .into_iter()
+            .map(|check| check.label())
+            .collect::<Vec<_>>(),
+        vec!["alpha (base)", "alpha (feature: feat-a)", "gamma (base)"]
+    );
+}
+
+#[test]
 fn incremental_selection_keeps_changed_unsupported_crate_for_shared_skip_handling() {
     // Editing an unsupported crate's own source (e.g. `axvisor`) keeps it in
     // the `changed` selection instead of dropping it here; the shared
@@ -431,11 +477,7 @@ fn ax_hal_platform_features_are_filtered_by_target_arch() {
     let checks = expand(&[pkg(
         "ax-hal",
         "ax-hal 0.1.0 (path+file:///tmp/ax-hal)",
-        &[
-            ("irq", &[]),
-            ("loongarch64-qemu-virt", &[]),
-            ("riscv64-sg2002", &[]),
-        ],
+        &[("irq", &[]), ("plat-dyn", &[]), ("riscv64-sg2002", &[])],
         Some(&["loongarch64-unknown-none", "riscv64gc-unknown-none-elf"]),
     )]);
 
@@ -452,11 +494,11 @@ fn ax_hal_platform_features_are_filtered_by_target_arch() {
     ));
     assert!(has_feature_on_target("irq", "riscv64gc-unknown-none-elf"));
     assert!(has_feature_on_target(
-        "loongarch64-qemu-virt",
+        "plat-dyn",
         "loongarch64-unknown-none-softfloat"
     ));
-    assert!(!has_feature_on_target(
-        "loongarch64-qemu-virt",
+    assert!(has_feature_on_target(
+        "plat-dyn",
         "riscv64gc-unknown-none-elf"
     ));
     assert!(has_feature_on_target(
@@ -496,7 +538,7 @@ fn ax_hal_platform_feature_forwards_are_filtered_by_target_arch() {
         "platform-forwarder 0.1.0 (path+file:///tmp/platform-forwarder)",
         &[
             ("irq", &["ax-hal/irq"]),
-            ("loongarch64-qemu-virt", &["ax-hal/loongarch64-qemu-virt"]),
+            ("plat-dyn", &["ax-hal/plat-dyn"]),
             ("riscv64-sg2002", &["ax-hal/riscv64-sg2002"]),
         ],
         Some(&["loongarch64-unknown-none", "riscv64gc-unknown-none-elf"]),
@@ -515,11 +557,11 @@ fn ax_hal_platform_feature_forwards_are_filtered_by_target_arch() {
     ));
     assert!(has_feature_on_target("irq", "riscv64gc-unknown-none-elf"));
     assert!(has_feature_on_target(
-        "loongarch64-qemu-virt",
+        "plat-dyn",
         "loongarch64-unknown-none-softfloat"
     ));
-    assert!(!has_feature_on_target(
-        "loongarch64-qemu-virt",
+    assert!(has_feature_on_target(
+        "plat-dyn",
         "riscv64gc-unknown-none-elf"
     ));
     assert!(has_feature_on_target(

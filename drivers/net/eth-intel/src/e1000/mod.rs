@@ -164,18 +164,35 @@ impl Interface for E1000 {
     }
 
     fn handle_irq(&mut self) -> Event {
-        let mut ev = Event::none();
-        let icr = self.regs.read(ICR);
-
-        if icr & (1 << 0) != 0 {
-            ev.tx_queue.insert(QUEUE_ID0);
-        }
-        if icr & (1 << 7) != 0 {
-            ev.rx_queue.insert(QUEUE_ID0);
-        }
-
-        ev
+        e1000_irq_event(self.regs.read(ICR))
     }
+
+    fn take_irq_handler(&mut self) -> Option<rdif_eth::BIrqHandler> {
+        Some(Box::new(E1000IrqHandler { regs: self.regs }))
+    }
+}
+
+struct E1000IrqHandler {
+    regs: Regs,
+}
+
+impl rdif_eth::IrqHandler for E1000IrqHandler {
+    fn handle_irq(&mut self) -> Event {
+        e1000_irq_event(self.regs.read(ICR))
+    }
+}
+
+fn e1000_irq_event(icr: u32) -> Event {
+    let mut ev = Event::none();
+
+    if icr & (1 << 0) != 0 {
+        ev.tx_queue.insert(QUEUE_ID0);
+    }
+    if icr & (1 << 7) != 0 {
+        ev.rx_queue.insert(QUEUE_ID0);
+    }
+
+    ev
 }
 
 struct E1000TxQueue {

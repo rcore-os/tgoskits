@@ -14,6 +14,7 @@ use fdt_edit::{Node, PciRange, Phandle, RegFixed};
 use log::{info, warn};
 use mmio_api::{MmioAddr, MmioRaw};
 use rdif_pcie::PcieController;
+use rdif_pinctrl::{FdtPinctrl, PinctrlDevice};
 use rdrive::{
     probe::{OnProbeError, fdt::NodeType},
     register::{FdtInfo, ProbeFdt},
@@ -31,7 +32,7 @@ use super::{
         log_resource_summary, program_memory_windows, prop_phandle, set_rk3588_bar_range,
     },
 };
-use crate::soc::{RockchipPinCtrl, rk3588_enable_power_domain};
+use crate::soc::{RockchipFdtPinctrlParser, rk3588_enable_power_domain};
 
 pub(super) const RK3588_GPIO_BASES: [u64; 5] = [
     0xfd8a_0000,
@@ -395,12 +396,27 @@ fn enable_vpcie3v3_supply(supply: Option<Phandle>) -> Result<(), OnProbeError> {
     let Some(supply) = supply else {
         return Ok(());
     };
-    let pinctrl = rdrive::get_one::<RockchipPinCtrl>()
-        .ok_or_else(|| OnProbeError::other("RockchipPinCtrl not found for PCIe regulator"))?;
+    let fdt = live_fdt()?;
+    let regulator = fdt.get_by_phandle(supply).ok_or_else(|| {
+        OnProbeError::other(format!("PCIe regulator phandle {supply:?} not found"))
+    })?;
+    let pinctrl = rdrive::get_one::<PinctrlDevice>()
+        .ok_or_else(|| OnProbeError::other("PinctrlDevice not found for PCIe regulator"))?;
     let mut pinctrl = pinctrl
         .lock()
-        .map_err(|err| OnProbeError::other(format!("failed to lock RockchipPinCtrl: {err}")))?;
-    pinctrl.enable_fixed_regulator(supply)
+        .map_err(|err| OnProbeError::other(format!("failed to lock PinctrlDevice: {err}")))?;
+    FdtPinctrl::apply_fixed_regulator(
+        &mut *pinctrl,
+        &fdt,
+        regulator.as_node(),
+        &RockchipFdtPinctrlParser,
+        "rk3588-pcie-regulator",
+    )
+    .map_err(|err| {
+        OnProbeError::other(format!(
+            "failed to enable PCIe regulator via pinctrl: {err}"
+        ))
+    })
 }
 
 fn parse_host_resources<'a>(

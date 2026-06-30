@@ -103,8 +103,9 @@ cp .hvconfig.prod.toml .hvconfig.toml && ./scripts/task.py run
 
 ```bash
 --plat aarch64-generic
---plat loongarch64-qemu-virt
 ```
+
+LoongArch QEMU 当前默认走动态平台，不再通过 `--plat loongarch64-qemu-virt` 选择静态平台 crate。迁移旧命令时，保留 LoongArch 架构选择即可，例如使用 `--arch loongarch64`，并让 ArceOS 侧走 `ax-hal/plat-dyn`、`ax-driver/plat-dyn`、`axplat-dyn` 与 UEFI/`efi` 启动链路。
 
 **架构特定的 QEMU 参数**：
 

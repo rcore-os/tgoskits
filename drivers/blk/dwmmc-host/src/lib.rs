@@ -61,6 +61,8 @@ extern crate alloc;
 use alloc::sync::Arc;
 use core::{marker::PhantomData, num::NonZeroUsize, ptr::NonNull};
 
+use log::warn;
+
 mod command;
 mod dma;
 mod host;
@@ -85,7 +87,7 @@ use sdmmc_protocol::{
 use crate::regs::RegisterBlockVolatileFieldAccess;
 pub use crate::{
     dma::{BlockRequest, BlockRequestSlot, IDMAC_DESC_ALIGN, IDMAC_DESC_SIZE, RequestId},
-    host::{DEFAULT_FIFO_OFFSET, DwMmc},
+    host::{CardDetect, DEFAULT_FIFO_OFFSET, DwMmc, HostClock},
 };
 
 /// Stable controller event extracted from DW_mshc raw interrupt status.
@@ -176,7 +178,7 @@ impl BusRequest {
 enum BusRequestState {
     ResetAll(DwMmcResetState),
     ResetDataLine { started: bool, polls: u32 },
-    PowerOn,
+    PowerOn(DwMmcResetState),
     PowerOff,
     SetClock(DwMmcClockState),
     SetBusWidth(BusWidth),
@@ -186,13 +188,18 @@ enum BusRequestState {
 enum DwMmcResetState {
     Start,
     WaitReset { polls: u32 },
-    InitClock(DwMmcClockState),
 }
 
 enum DwMmcClockState {
     Start {
         speed: Option<ClockSpeed>,
         target_hz: u32,
+        wait_prvdata_complete: bool,
+    },
+    ExternalSetClock {
+        speed: Option<ClockSpeed>,
+        target_hz: u32,
+        wait_prvdata_complete: bool,
     },
     WaitGate {
         polls: u32,
@@ -210,12 +217,11 @@ enum DwMmcClockState {
     },
 }
 
-const DWMMC_RESET_POLLS: u32 = 1_000_000;
-const DWMMC_CLOCK_POLLS: u32 = 1_000_000;
+const DWMMC_RESET_POLLS: u32 = host::DWMMC_HW_POLL_LIMIT;
+const DWMMC_CLOCK_POLLS: u32 = host::DWMMC_HW_POLL_LIMIT;
 
-/// Cloneable, sync-safe DWMMC IRQ top-half handle.
-#[derive(Clone)]
-pub struct DwMmcIrqHandle {
+/// Owned DWMMC IRQ top-half endpoint.
+pub struct DwMmcIrq {
     irq: Arc<host::IrqCore>,
 }
 
@@ -231,6 +237,9 @@ pub(crate) const DWMMC_INT_DATA_READ_TIMEOUT: u32 = 1 << 9;
 pub(crate) const DWMMC_INT_HOST_TIMEOUT: u32 = 1 << 10;
 pub(crate) const DWMMC_INT_FIFO_UNDER_OVER_RUN: u32 = 1 << 11;
 pub(crate) const DWMMC_INT_HARDWARE_LOCKED_WRITE: u32 = 1 << 12;
+const DWMMC_IDMAC_INT_TI: u32 = 1 << 0;
+const DWMMC_IDMAC_INT_RI: u32 = 1 << 1;
+const DWMMC_IDMAC_INT_NI: u32 = 1 << 8;
 pub(crate) const DWMMC_INT_START_BIT_ERROR: u32 = 1 << 13;
 pub(crate) const DWMMC_INT_END_BIT_ERROR: u32 = 1 << 15;
 pub(crate) const DWMMC_INT_ERROR_MASK: u32 = DWMMC_INT_RESPONSE_ERROR
@@ -326,6 +335,13 @@ impl ProtocolSdioHost for DwMmc {
 
     fn set_clock(&mut self, speed: ClockSpeed) -> Result<(), Error> {
         let target_hz = clock_hz_for_speed(speed);
+        if self.ext_clock.is_some() {
+            let clock = self.ext_clock.take().ok_or(Error::InvalidArgument)?;
+            let result = clock.set_clock(target_hz);
+            self.ext_clock = Some(clock);
+            let bus_hz = result?;
+            self.set_reference_clock(bus_hz);
+        }
         self.set_uhs_timing(speed);
         self.program_clock(target_hz)
     }
@@ -344,8 +360,8 @@ impl ProtocolSdioHost for DwMmc {
         Ok(())
     }
 
-    fn handle_irq(&mut self) -> Self::Event {
-        self.irq_handle().handle_irq()
+    fn completion_irq_enabled(&self) -> bool {
+        DwMmc::completion_irq_enabled(self)
     }
 
     fn submit_bus_op(&mut self, op: SdioBusOp) -> Result<Self::BusRequest, Error> {
@@ -358,14 +374,10 @@ impl ProtocolSdioHost for DwMmc {
 }
 
 impl SdioIrqHost for DwMmc {
-    type IrqHandle = DwMmcIrqHandle;
+    type IrqHandle = DwMmcIrq;
 
-    fn irq_handle(&self) -> Self::IrqHandle {
-        DwMmc::irq_handle(self)
-    }
-
-    fn completion_irq_enabled(&self) -> bool {
-        DwMmc::completion_irq_enabled(self)
+    fn irq_handle(&mut self) -> Self::IrqHandle {
+        DwMmc::irq_endpoint(self)
     }
 }
 
@@ -453,6 +465,12 @@ impl sdio_host2::SdioHost for DwMmc {
         if let Err(err) = self.check_not_poisoned() {
             return Err(sdio_host2::SubmitTransactionError::new(
                 map_protocol_error(err),
+                transaction,
+            ));
+        }
+        if !self.card_present() {
+            return Err(sdio_host2::SubmitTransactionError::new(
+                sdio_host2::Error::NoCard,
                 transaction,
             ));
         }
@@ -743,7 +761,7 @@ impl DwMmc {
                 started: false,
                 polls: 0,
             }),
-            sdio_host2::BusOp::PowerOn => Ok(BusRequestState::PowerOn),
+            sdio_host2::BusOp::PowerOn => Ok(BusRequestState::PowerOn(DwMmcResetState::Start)),
             sdio_host2::BusOp::PowerOff => Ok(BusRequestState::PowerOff),
             sdio_host2::BusOp::SetClock(speed) => {
                 let target_hz = clock_hz_for_speed(speed);
@@ -753,12 +771,14 @@ impl DwMmc {
                 Ok(BusRequestState::SetClock(DwMmcClockState::Start {
                     speed: Some(speed),
                     target_hz,
+                    wait_prvdata_complete: true,
                 }))
             }
             sdio_host2::BusOp::SetClockHz(sdio_host2::ClockHz(hz)) => {
                 Ok(BusRequestState::SetClock(DwMmcClockState::Start {
                     speed: None,
                     target_hz: hz,
+                    wait_prvdata_complete: true,
                 }))
             }
             sdio_host2::BusOp::SetBusWidth(width) => match width {
@@ -785,10 +805,7 @@ impl DwMmc {
             BusRequestState::ResetDataLine { started, polls } => {
                 self.poll_host2_fifo_reset(started, polls)
             }
-            BusRequestState::PowerOn => {
-                self.regs.pwren().write(1);
-                Ok(sdio_host2::RequestPoll::Ready(Ok(())))
-            }
+            BusRequestState::PowerOn(reset) => self.poll_host2_power_on(reset),
             BusRequestState::PowerOff => {
                 self.regs.pwren().write(0);
                 Ok(sdio_host2::RequestPoll::Ready(Ok(())))
@@ -836,13 +853,11 @@ impl DwMmc {
                         .store(false, core::sync::atomic::Ordering::Release);
                     self.regs.ctype().write(crate::regs::CType::new());
                     self.regs.uhs().write(crate::regs::UHS::new());
-                    *state = DwMmcResetState::InitClock(DwMmcClockState::Start {
-                        speed: None,
-                        target_hz: 400_000,
-                    });
-                    return Ok(sdio_host2::RequestPoll::Pending);
+                    self.program_linux_init_baseline();
+                    return Ok(sdio_host2::RequestPoll::Ready(Ok(())));
                 }
                 if *polls >= DWMMC_RESET_POLLS {
+                    self.log_host2_timeout("reset-all");
                     return Err(map_protocol_error(Error::Timeout(ErrorContext::new(
                         Phase::Init,
                     ))));
@@ -850,8 +865,17 @@ impl DwMmc {
                 *polls += 1;
                 Ok(sdio_host2::RequestPoll::Pending)
             }
-            DwMmcResetState::InitClock(clock) => self.poll_host2_clock(clock),
         }
+    }
+
+    fn poll_host2_power_on(
+        &mut self,
+        state: &mut DwMmcResetState,
+    ) -> Result<sdio_host2::RequestPoll<()>, sdio_host2::Error> {
+        if matches!(state, DwMmcResetState::Start) {
+            self.regs.pwren().write(1);
+        }
+        self.poll_host2_reset_all(state)
     }
 
     fn poll_host2_fifo_reset(
@@ -880,12 +904,47 @@ impl DwMmc {
         state: &mut DwMmcClockState,
     ) -> Result<sdio_host2::RequestPoll<()>, sdio_host2::Error> {
         match state {
-            DwMmcClockState::Start { speed, target_hz } => {
+            DwMmcClockState::Start {
+                speed,
+                target_hz,
+                wait_prvdata_complete,
+            } => {
+                if self.ext_clock.is_some() {
+                    *state = DwMmcClockState::ExternalSetClock {
+                        speed: *speed,
+                        target_hz: *target_hz,
+                        wait_prvdata_complete: *wait_prvdata_complete,
+                    };
+                    return Ok(sdio_host2::RequestPoll::Pending);
+                }
                 if let Some(speed) = *speed {
                     self.set_uhs_timing(speed);
                 }
                 self.regs.clkena().write(crate::regs::ClkEna::new());
-                self.start_update_clock(false);
+                self.regs.clksrc().write(0);
+                self.start_update_clock(false, *wait_prvdata_complete);
+                *state = DwMmcClockState::WaitGate {
+                    polls: 0,
+                    target_hz: *target_hz,
+                };
+                Ok(sdio_host2::RequestPoll::Pending)
+            }
+            DwMmcClockState::ExternalSetClock {
+                speed,
+                target_hz,
+                wait_prvdata_complete,
+            } => {
+                let clock = self.ext_clock.take().ok_or(sdio_host2::Error::Controller)?;
+                let result = clock.set_clock(*target_hz);
+                self.ext_clock = Some(clock);
+                let bus_hz = result.map_err(map_protocol_error)?;
+                self.set_reference_clock(bus_hz);
+                if let Some(speed) = *speed {
+                    self.set_uhs_timing(speed);
+                }
+                self.regs.clkena().write(crate::regs::ClkEna::new());
+                self.regs.clksrc().write(0);
+                self.start_update_clock(false, *wait_prvdata_complete);
                 *state = DwMmcClockState::WaitGate {
                     polls: 0,
                     target_hz: *target_hz,
@@ -905,7 +964,7 @@ impl DwMmc {
                 self.regs
                     .clkdiv()
                     .write(crate::regs::ClkDiv::new().with_clk_divider0(div));
-                self.start_update_clock(false);
+                self.start_update_clock(false, true);
                 *state = DwMmcClockState::WaitDivider { polls: 0 };
                 Ok(sdio_host2::RequestPoll::Pending)
             }
@@ -919,7 +978,7 @@ impl DwMmc {
                 self.regs
                     .clkena()
                     .write(crate::regs::ClkEna::new().with_cclk_enable(1));
-                self.start_update_clock(false);
+                self.start_update_clock(false, true);
                 *state = DwMmcClockState::WaitEnable { polls: 0 };
                 Ok(sdio_host2::RequestPoll::Pending)
             }
@@ -932,11 +991,12 @@ impl DwMmc {
         }
     }
 
-    fn start_update_clock(&self, voltage_switch: bool) {
+    fn start_update_clock(&self, voltage_switch: bool, wait_prvdata_complete: bool) {
         self.regs.cmd().write(
             crate::regs::Cmd::new()
                 .with_start_cmd(true)
-                .with_wait_prvdata_complete(true)
+                .with_use_hold_reg(false)
+                .with_wait_prvdata_complete(wait_prvdata_complete)
                 .with_update_clock_registers_only(true)
                 .with_volt_switch(voltage_switch),
         );
@@ -947,12 +1007,34 @@ impl DwMmc {
             return Ok(true);
         }
         if *polls >= DWMMC_CLOCK_POLLS {
+            self.log_host2_timeout("clock-update");
             return Err(map_protocol_error(Error::Timeout(ErrorContext::new(
                 Phase::Init,
             ))));
         }
         *polls += 1;
         Ok(false)
+    }
+
+    fn log_host2_timeout(&self, op: &str) {
+        warn!(
+            "dwmmc-host2: {op} timeout ctrl={:#010x} cmd={:#010x} status={:#010x} \
+             rintsts={:#010x} mintsts={:#010x} intmask={:#010x} clkena={:#010x} clksrc={:#010x} \
+             clkdiv={:#010x} ctype={:#010x} pwren={:#010x} fifoth={:#010x} tmout={:#010x}",
+            self.regs.ctrl().read().into_bits(),
+            self.regs.cmd().read().into_bits(),
+            self.regs.status().read().into_bits(),
+            self.regs.rintsts().read().into_bits(),
+            self.regs.mintsts().read(),
+            self.regs.intmask().read(),
+            self.regs.clkena().read().into_bits(),
+            self.regs.clksrc().read(),
+            self.regs.clkdiv().read().into_bits(),
+            self.regs.ctype().read().into_bits(),
+            self.regs.pwren().read(),
+            self.regs.fifoth().read(),
+            self.regs.tmout().read(),
+        );
     }
 
     fn check_host2_transaction_request(
@@ -1011,7 +1093,7 @@ impl DwMmc {
             BusRequestState::ResetDataLine { started, .. } if *started => {
                 self.reset_fifo().map_err(map_protocol_error)?;
             }
-            BusRequestState::PowerOn
+            BusRequestState::PowerOn(_)
             | BusRequestState::PowerOff
             | BusRequestState::SetBusWidth(_) => {}
             BusRequestState::ResetDataLine { .. } => {}
@@ -1071,6 +1153,9 @@ fn submit_read_with_dma_fifo_fallback(
     block_count: u32,
     slot: &mut BlockRequestSlot,
 ) -> Result<BlockRequest, Error> {
+    if !host.card_present() {
+        return Err(Error::NoCard);
+    }
     if should_try_dma(cmd, block_size, block_count, len, DataDirection::Read)
         && let Some(dma) = host.dma.clone()
     {
@@ -1108,6 +1193,9 @@ fn submit_write_with_dma_fifo_fallback(
     block_count: u32,
     slot: &mut BlockRequestSlot,
 ) -> Result<BlockRequest, Error> {
+    if !host.card_present() {
+        return Err(Error::NoCard);
+    }
     if should_try_dma(cmd, block_size, block_count, len, DataDirection::Write)
         && let Some(dma) = host.dma.clone()
     {
@@ -1226,34 +1314,45 @@ impl DwMmc {
         }
     }
 
-    pub fn irq_handle(&self) -> DwMmcIrqHandle {
-        DwMmcIrqHandle {
+    pub fn irq_endpoint(&mut self) -> DwMmcIrq {
+        DwMmcIrq {
             irq: self.irq.clone(),
         }
     }
 
     /// Read and acknowledge pending controller status, returning a stable
     /// event for OS glue to translate into wakeups or worker scheduling.
-    pub fn handle_irq(&self) -> Event {
-        self.irq_handle().handle_irq()
+    pub fn handle_irq(&mut self) -> Event {
+        handle_irq_core(&self.irq)
     }
 }
 
-impl SdioIrqHandle for DwMmcIrqHandle {
+impl SdioIrqHandle for DwMmcIrq {
     type Event = Event;
 
-    fn handle_irq(&self) -> Self::Event {
-        let generation = self.irq.state.generation();
-        let raw_status = self.irq.regs.mintsts().read();
-        if raw_status != 0 {
-            self.irq
-                .regs
-                .rintsts()
-                .write(crate::regs::RIntSts::from_bits(raw_status));
-        }
-        self.irq.state.cache_if_current(generation, raw_status);
-        event_from_raw_status(raw_status)
+    fn handle_irq(&mut self) -> Self::Event {
+        handle_irq_core(&self.irq)
     }
+}
+
+fn handle_irq_core(irq: &host::IrqCore) -> Event {
+    let generation = irq.state.generation();
+    let mut raw_status = irq.regs.mintsts().read();
+    if raw_status != 0 {
+        irq.regs
+            .rintsts()
+            .write(crate::regs::RIntSts::from_bits(raw_status));
+    }
+    let idmac_status = irq.regs.idsts().read();
+    if idmac_status & (DWMMC_IDMAC_INT_TI | DWMMC_IDMAC_INT_RI) != 0 {
+        irq.regs
+            .idsts()
+            .write(DWMMC_IDMAC_INT_TI | DWMMC_IDMAC_INT_RI);
+        irq.regs.idsts().write(DWMMC_IDMAC_INT_NI);
+        raw_status |= crate::DWMMC_INT_DATA_TRANSFER_OVER;
+    }
+    irq.state.cache_if_current(generation, raw_status);
+    event_from_raw_status(raw_status)
 }
 
 fn clock_hz_for_speed(speed: ClockSpeed) -> u32 {
@@ -1404,10 +1503,10 @@ mod tests {
     }
 
     #[test]
-    fn irq_handle_acks_and_caches_status_without_mutable_host() {
+    fn owned_irq_endpoint_acks_and_caches_status() {
         let mut mmio = [0u32; 256];
         let base = NonNull::new(mmio.as_mut_ptr().cast()).unwrap();
-        let host = unsafe { DwMmc::new(base) };
+        let mut host = unsafe { DwMmc::new(base) };
         host.irq.state.begin_request();
         let old_generation = host.irq.state.generation();
         let raw = crate::regs::RIntSts::new()
@@ -1418,9 +1517,9 @@ mod tests {
             mmio.as_mut_ptr().add(MINTSTS_WORD).write_volatile(raw);
         }
 
-        let handle = host.irq_handle().clone();
+        let mut irq = host.irq_endpoint();
 
-        assert_eq!(handle.handle_irq(), Event::TransferComplete);
+        assert_eq!(irq.handle_irq(), Event::TransferComplete);
         assert_eq!(host.irq.state.pending(), raw);
         unsafe {
             mmio.as_mut_ptr().add(MINTSTS_WORD).write_volatile(0);
@@ -1434,6 +1533,258 @@ mod tests {
             .state
             .cache_if_current(old_generation, crate::DWMMC_INT_DATA_TRANSFER_OVER);
         assert_eq!(host.irq.state.pending(), 0);
+    }
+
+    #[test]
+    fn idmac_irq_completion_is_cached_as_data_completion() {
+        let mut mmio = [0u32; 256];
+        let base = NonNull::new(mmio.as_mut_ptr().cast()).unwrap();
+        let mut host = unsafe { DwMmc::new(base) };
+        const IDSTS_WORD: usize = 35;
+        host.irq.state.begin_request();
+        unsafe {
+            mmio.as_mut_ptr()
+                .add(IDSTS_WORD)
+                .write_volatile(DWMMC_IDMAC_INT_TI);
+        }
+
+        let mut irq = host.irq_endpoint();
+
+        assert_eq!(irq.handle_irq(), Event::TransferComplete);
+        assert_eq!(host.irq.state.pending(), DWMMC_INT_DATA_TRANSFER_OVER);
+        let cleared = unsafe { mmio.as_ptr().add(IDSTS_WORD).read_volatile() };
+        assert_eq!(cleared, DWMMC_IDMAC_INT_NI);
+    }
+
+    #[test]
+    fn completion_irq_uses_dma_mask_until_fifo_path_requests_fifo_irqs() {
+        let mut mmio = [0u32; 256];
+        let base = NonNull::new(mmio.as_mut_ptr().cast()).unwrap();
+        let mut host = unsafe { DwMmc::new(base) };
+        const INTMASK_WORD: usize = 9;
+        let dma_mask = crate::DWMMC_INT_DATA_TRANSFER_OVER
+            | crate::DWMMC_INT_COMMAND_DONE
+            | crate::DWMMC_INT_ERROR_MASK;
+        let fifo_mask = dma_mask | crate::DWMMC_INT_RXDR | crate::DWMMC_INT_TXDR;
+
+        host.enable_completion_irq();
+
+        let intmask = unsafe { mmio.as_ptr().add(INTMASK_WORD).read_volatile() };
+        assert_eq!(intmask, dma_mask);
+
+        host.program_fifo_interrupt_mask();
+
+        let intmask = unsafe { mmio.as_ptr().add(INTMASK_WORD).read_volatile() };
+        assert_eq!(intmask, fifo_mask);
+    }
+
+    #[test]
+    fn clear_all_int_status_matches_linux_w1c_all_bits() {
+        let mut mmio = [0u32; 256];
+        let base = NonNull::new(mmio.as_mut_ptr().cast()).unwrap();
+        let host = unsafe { DwMmc::new(base) };
+        const RINTSTS_WORD: usize = 17;
+        unsafe {
+            mmio.as_mut_ptr()
+                .add(RINTSTS_WORD)
+                .write_volatile(crate::DWMMC_INT_COMMAND_DONE);
+        }
+
+        host.clear_all_int_status();
+
+        let written = unsafe { mmio.as_ptr().add(RINTSTS_WORD).read_volatile() };
+        assert_eq!(written, u32::MAX);
+    }
+
+    #[test]
+    fn host2_reset_programs_linux_baseline_without_clock_update() {
+        let mut mmio = [0u32; 256];
+        let base = NonNull::new(mmio.as_mut_ptr().cast()).unwrap();
+        let mut host = unsafe { DwMmc::new(base) };
+        let mut request = unsafe {
+            <DwMmc as sdio_host2::SdioHost>::submit_bus_op(&mut host, sdio_host2::BusOp::ResetAll)
+        }
+        .unwrap();
+        const CTRL_WORD: usize = 0;
+        const TMOUT_WORD: usize = 5;
+        const CMD_WORD: usize = 11;
+        const RINTSTS_WORD: usize = 17;
+        const FIFOTH_WORD: usize = 19;
+        const EXPECTED_FIFOTH: u32 = (0x2 << 28) | (0x7f << 16) | 0x80;
+
+        assert!(matches!(
+            <DwMmc as sdio_host2::SdioHost>::poll_bus_op(&mut host, &mut request).unwrap(),
+            sdio_host2::RequestPoll::Pending
+        ));
+        unsafe {
+            mmio.as_mut_ptr().add(CTRL_WORD).write_volatile(0);
+        }
+        assert!(matches!(
+            <DwMmc as sdio_host2::SdioHost>::poll_bus_op(&mut host, &mut request).unwrap(),
+            sdio_host2::RequestPoll::Ready(Ok(()))
+        ));
+
+        assert_eq!(
+            unsafe { mmio.as_ptr().add(RINTSTS_WORD).read_volatile() },
+            u32::MAX
+        );
+        assert_eq!(
+            unsafe { mmio.as_ptr().add(TMOUT_WORD).read_volatile() },
+            u32::MAX
+        );
+        assert_eq!(
+            unsafe { mmio.as_ptr().add(FIFOTH_WORD).read_volatile() },
+            EXPECTED_FIFOTH
+        );
+        assert_eq!(unsafe { mmio.as_ptr().add(CMD_WORD).read_volatile() }, 0);
+    }
+
+    #[test]
+    fn host2_power_on_resets_after_enabling_pwren() {
+        let mut mmio = [0u32; 256];
+        let base = NonNull::new(mmio.as_mut_ptr().cast()).unwrap();
+        let mut host = unsafe { DwMmc::new(base) };
+        let mut request = unsafe {
+            <DwMmc as sdio_host2::SdioHost>::submit_bus_op(&mut host, sdio_host2::BusOp::PowerOn)
+        }
+        .unwrap();
+        const CTRL_WORD: usize = 0;
+        const PWREN_WORD: usize = 1;
+        const TMOUT_WORD: usize = 5;
+        const RINTSTS_WORD: usize = 17;
+
+        assert!(matches!(
+            <DwMmc as sdio_host2::SdioHost>::poll_bus_op(&mut host, &mut request).unwrap(),
+            sdio_host2::RequestPoll::Pending
+        ));
+        assert_eq!(unsafe { mmio.as_ptr().add(PWREN_WORD).read_volatile() }, 1);
+        let ctrl =
+            crate::regs::Ctrl::from_bits(unsafe { mmio.as_ptr().add(CTRL_WORD).read_volatile() });
+        assert!(ctrl.controller_reset());
+        assert!(ctrl.fifo_reset());
+        assert!(ctrl.dma_reset());
+
+        unsafe {
+            mmio.as_mut_ptr().add(CTRL_WORD).write_volatile(0);
+        }
+        assert!(matches!(
+            <DwMmc as sdio_host2::SdioHost>::poll_bus_op(&mut host, &mut request).unwrap(),
+            sdio_host2::RequestPoll::Ready(Ok(()))
+        ));
+        assert_eq!(
+            unsafe { mmio.as_ptr().add(RINTSTS_WORD).read_volatile() },
+            u32::MAX
+        );
+        assert_eq!(
+            unsafe { mmio.as_ptr().add(TMOUT_WORD).read_volatile() },
+            u32::MAX
+        );
+    }
+
+    #[test]
+    fn absent_controller_card_detect_rejects_command_before_issue() {
+        let mut mmio = [0u32; 256];
+        let base = NonNull::new(mmio.as_mut_ptr().cast()).unwrap();
+        let mut host = unsafe { DwMmc::new(base) };
+        const CMD_WORD: usize = 11;
+        const CDETECT_WORD: usize = 20;
+        unsafe {
+            mmio.as_mut_ptr().add(CDETECT_WORD).write_volatile(1);
+        }
+
+        let err = host
+            .submit_command(&Command::new(8, 0x1aa, ResponseType::R7))
+            .expect_err("absent card must not issue a command");
+
+        assert_eq!(err, Error::NoCard);
+        assert_eq!(unsafe { mmio.as_ptr().add(CMD_WORD).read_volatile() }, 0);
+        assert!(matches!(host.command_state, command::CommandState::Idle));
+    }
+
+    #[test]
+    fn host2_set_clock_rewrites_clksrc_like_linux_setup_bus() {
+        let mut mmio = [0u32; 256];
+        let base = NonNull::new(mmio.as_mut_ptr().cast()).unwrap();
+        let mut host = unsafe { DwMmc::new(base) };
+        host.set_reference_clock(50_000_000);
+        const CLKSRC_WORD: usize = 3;
+        unsafe {
+            mmio.as_mut_ptr()
+                .add(CLKSRC_WORD)
+                .write_volatile(0xdead_beef);
+        }
+        let mut request = unsafe {
+            <DwMmc as sdio_host2::SdioHost>::submit_bus_op(
+                &mut host,
+                sdio_host2::BusOp::SetClock(sdio_host2::ClockSpeed::Identification),
+            )
+        }
+        .unwrap();
+
+        assert!(matches!(
+            <DwMmc as sdio_host2::SdioHost>::poll_bus_op(&mut host, &mut request).unwrap(),
+            sdio_host2::RequestPoll::Pending
+        ));
+
+        assert_eq!(unsafe { mmio.as_ptr().add(CLKSRC_WORD).read_volatile() }, 0);
+    }
+
+    #[test]
+    fn host2_external_clock_returned_bus_hz_feeds_dwmmc_divider() {
+        struct Clock;
+
+        impl HostClock for Clock {
+            fn set_clock(&self, target_hz: u32) -> Result<u32, Error> {
+                assert_eq!(target_hz, 400_000);
+                Ok(400_000)
+            }
+        }
+
+        let mut mmio = [0u32; 256];
+        let base = NonNull::new(mmio.as_mut_ptr().cast()).unwrap();
+        let mut host = unsafe { DwMmc::new(base) };
+        host.set_reference_clock(50_000_000);
+        host.set_external_clock(Clock);
+        let mut request = unsafe {
+            <DwMmc as sdio_host2::SdioHost>::submit_bus_op(
+                &mut host,
+                sdio_host2::BusOp::SetClock(sdio_host2::ClockSpeed::Identification),
+            )
+        }
+        .unwrap();
+        const CMD_WORD: usize = 11;
+        const CLKDIV_WORD: usize = 2;
+
+        assert!(matches!(
+            <DwMmc as sdio_host2::SdioHost>::poll_bus_op(&mut host, &mut request).unwrap(),
+            sdio_host2::RequestPoll::Pending
+        ));
+        assert_eq!(host.reference_clock(), 50_000_000);
+
+        assert!(matches!(
+            <DwMmc as sdio_host2::SdioHost>::poll_bus_op(&mut host, &mut request).unwrap(),
+            sdio_host2::RequestPoll::Pending
+        ));
+        assert_eq!(host.reference_clock(), 400_000);
+        unsafe {
+            mmio.as_mut_ptr().add(CMD_WORD).write_volatile(0);
+        }
+
+        assert!(matches!(
+            <DwMmc as sdio_host2::SdioHost>::poll_bus_op(&mut host, &mut request).unwrap(),
+            sdio_host2::RequestPoll::Pending
+        ));
+        assert_eq!(unsafe { mmio.as_ptr().add(CLKDIV_WORD).read_volatile() }, 0);
+    }
+
+    #[test]
+    fn rintsts_error_includes_host_timeout_and_fifo_overrun() {
+        assert!(crate::regs::RIntSts::new().with_host_timeout(true).error());
+        assert!(
+            crate::regs::RIntSts::new()
+                .with_fifo_under_over_run(true)
+                .error()
+        );
     }
 
     #[test]

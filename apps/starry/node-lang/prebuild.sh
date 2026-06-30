@@ -36,19 +36,35 @@ default_cache="$(cd "$app_dir/../../.." 2>/dev/null && pwd)/download/nodejs-apks
 apk_cache="${NODE_APK_CACHE:-${NODE_DL_ROOT:+$NODE_DL_ROOT/nodejs-apks}}"
 apk_cache="${apk_cache:-$default_cache}"
 
-case "$arch" in
-    aarch64)     qemu_runner="qemu-aarch64-static" ;;
-    riscv64)     qemu_runner="qemu-riscv64-static" ;;
-    x86_64)      qemu_runner="qemu-x86_64-static" ;;
-    loongarch64) qemu_runner="qemu-loongarch64-static" ;;
-    *) echo "prebuild: unsupported arch: $arch" >&2; exit 1 ;;
-esac
+qemu_runner_candidates() {
+    case "$arch" in
+        aarch64)     printf '%s\n' qemu-aarch64-static qemu-aarch64 ;;
+        riscv64)     printf '%s\n' qemu-riscv64-static qemu-riscv64 ;;
+        x86_64)      printf '%s\n' qemu-x86_64-static qemu-x86_64 ;;
+        loongarch64) printf '%s\n' qemu-loongarch64-static qemu-loongarch64 ;;
+        *) echo "prebuild: unsupported arch: $arch" >&2; exit 1 ;;
+    esac
+}
+
+find_qemu_runner() {
+    local candidate
+    while IFS= read -r candidate; do
+        if command -v "$candidate" >/dev/null 2>&1; then
+            command -v "$candidate"
+            return 0
+        fi
+    done < <(qemu_runner_candidates)
+
+    echo "prebuild: missing qemu-user runner for arch $arch; tried: $(qemu_runner_candidates | paste -sd ', ' -)" >&2
+    exit 1
+}
+
+qemu_runner="$(find_qemu_runner)"
 
 ensure_host_tools() {
     local missing=()
     command -v debugfs    >/dev/null 2>&1 || missing+=(e2fsprogs)
     command -v readelf    >/dev/null 2>&1 || missing+=(binutils)
-    command -v "$qemu_runner" >/dev/null 2>&1 || missing+=(qemu-user-static)
     if [[ ${#missing[@]} -gt 0 ]]; then
         if command -v apt-get >/dev/null 2>&1; then
             echo "prebuild: installing host tools: ${missing[*]}"

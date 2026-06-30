@@ -39,9 +39,8 @@ pub(crate) fn push_existing_vm(vm: AxVMRef) -> bool {
 
 /// Remove a VM from the process-wide AxVM runtime registry.
 pub(crate) fn remove_existing_vm(vm_id: VMId) -> Option<AxVMRef> {
-    let vm = VM_REGISTRY.lock().remove(&vm_id)?;
     crate::runtime::vcpus::cleanup_vm_vcpus(vm_id);
-    Some(vm)
+    VM_REGISTRY.lock().remove(&vm_id)
 }
 
 /// Return a VM from the process-wide AxVM runtime registry.
@@ -155,6 +154,11 @@ impl AxvmRuntime {
     /// Resume a VM selected from the runtime registry.
     pub fn resume_vm(vm_id: VMId) -> AxResult {
         crate::runtime::resume_vm(vm_id)
+    }
+
+    /// Reset a VM selected from the runtime registry.
+    pub fn reset_vm(vm_id: VMId) -> AxResult {
+        crate::runtime::reset_vm(vm_id)
     }
 
     /// Remove a VM selected from the runtime registry.

@@ -12,7 +12,11 @@ use rd_net::{DmaBuffer, Event, IRxQueue, ITxQueue, NetError, QueueConfig};
 use rdrive::{DriverGeneric, PlatformDevice, probe::OnProbeError};
 #[cfg(all(feature = "pci", any(plat_static, plat_dyn)))]
 use virtio_drivers::transport::DeviceType;
-use virtio_drivers::{Error as VirtIoError, device::net::VirtIONetRaw, transport::Transport};
+use virtio_drivers::{
+    Error as VirtIoError,
+    device::net::VirtIONetRaw,
+    transport::{InterruptStatus, Transport},
+};
 
 #[cfg(all(feature = "pci", any(plat_static, plat_dyn)))]
 use crate::{PciIrqRequirement, binding_info_from_pci};
@@ -100,24 +104,20 @@ impl<T: VirtIoTransport> rd_net::Interface for VirtIoNetDevice<T> {
     }
 
     fn handle_irq(&mut self) -> Event {
-        self.inner.with_irq(|inner| {
-            let _ = inner.raw.ack_interrupt();
+        self.inner.handle_irq()
+    }
 
-            let mut event = Event::none();
-            if inner.raw.poll_transmit().is_some() {
-                event.tx_queue.insert(0);
-            }
-            if inner.raw.poll_receive().is_some() {
-                event.rx_queue.insert(0);
-            }
-            event
-        })
+    fn take_irq_handler(&mut self) -> Option<rd_net::BIrqHandler> {
+        Some(Box::new(VirtioNetIrqHandler {
+            inner: Arc::clone(&self.inner),
+        }))
     }
 }
 
 struct VirtioNetInnerCell<T: VirtIoTransport> {
     inner: UnsafeCell<NetInner<T>>,
     access_active: AtomicBool,
+    irq_ack_pending: AtomicBool,
 }
 
 unsafe impl<T: VirtIoTransport> Send for VirtioNetInnerCell<T> {}
@@ -128,6 +128,7 @@ impl<T: VirtIoTransport> VirtioNetInnerCell<T> {
         Self {
             inner: UnsafeCell::new(inner),
             access_active: AtomicBool::new(false),
+            irq_ack_pending: AtomicBool::new(false),
         }
     }
 
@@ -136,14 +137,51 @@ impl<T: VirtIoTransport> VirtioNetInnerCell<T> {
         let _active = VirtioNetAccessGuard::enter_task(&self.access_active);
         // SAFETY: `access_active` serializes all mutable access to the shared
         // raw transport. Task-side callers also keep local IRQ/preemption off.
-        f(unsafe { &mut *self.inner.get() })
+        let inner = unsafe { &mut *self.inner.get() };
+        self.flush_pending_irq_ack(inner);
+        let ret = f(inner);
+        self.flush_pending_irq_ack(inner);
+        ret
     }
 
-    fn with_irq<R>(&self, f: impl FnOnce(&mut NetInner<T>) -> R) -> R {
-        let _active = VirtioNetAccessGuard::enter_irq(&self.access_active);
+    fn try_with_irq<R>(&self, f: impl FnOnce(&mut NetInner<T>) -> R) -> Option<R> {
+        let _active = VirtioNetAccessGuard::try_enter_irq(&self.access_active)?;
         // SAFETY: `access_active` serializes IRQ-side access with task-side
-        // queue operations while preserving interrupt acknowledgment.
-        f(unsafe { &mut *self.inner.get() })
+        // queue operations. IRQ context never waits for task-side access.
+        Some(f(unsafe { &mut *self.inner.get() }))
+    }
+
+    fn handle_irq(&self) -> Event {
+        let queue_interrupt = self
+            .try_with_irq(|inner| {
+                self.irq_ack_pending.store(false, Ordering::Release);
+                inner
+                    .raw
+                    .ack_interrupt()
+                    .contains(InterruptStatus::QUEUE_INTERRUPT)
+            })
+            .unwrap_or_else(|| {
+                self.irq_ack_pending.store(true, Ordering::Release);
+                // The task-side owner will acknowledge the transport before
+                // and after its queue operation. Without an IRQ status snapshot
+                // we must not publish a queue event from a shared interrupt.
+                false
+            });
+
+        if !queue_interrupt {
+            return Event::none();
+        }
+
+        let mut event = Event::none();
+        event.tx_queue.insert(0);
+        event.rx_queue.insert(0);
+        event
+    }
+
+    fn flush_pending_irq_ack(&self, inner: &mut NetInner<T>) {
+        if self.irq_ack_pending.swap(false, Ordering::AcqRel) {
+            let _ = inner.raw.ack_interrupt();
+        }
     }
 }
 
@@ -154,8 +192,11 @@ impl<'a> VirtioNetAccessGuard<'a> {
         Self::enter(active)
     }
 
-    fn enter_irq(active: &'a AtomicBool) -> Self {
-        Self::enter(active)
+    fn try_enter_irq(active: &'a AtomicBool) -> Option<Self> {
+        active
+            .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+            .is_ok()
+            .then_some(Self(active))
     }
 
     fn enter(active: &'a AtomicBool) -> Self {
@@ -166,6 +207,16 @@ impl<'a> VirtioNetAccessGuard<'a> {
             spin_loop();
         }
         Self(active)
+    }
+}
+
+struct VirtioNetIrqHandler<T: VirtIoTransport> {
+    inner: Arc<VirtioNetInnerCell<T>>,
+}
+
+impl<T: VirtIoTransport + 'static> rd_net::InterfaceIrqHandler for VirtioNetIrqHandler<T> {
+    fn handle_irq(&mut self) -> Event {
+        self.inner.handle_irq()
     }
 }
 
@@ -369,35 +420,37 @@ mod tests {
     extern crate std;
 
     use core::sync::atomic::{AtomicBool, Ordering};
-    use std::{
-        sync::{Arc, mpsc},
-        thread,
-        time::Duration,
-    };
 
     use super::VirtioNetAccessGuard;
 
     #[test]
-    fn irq_access_waits_for_task_access_to_finish() {
-        let active = Arc::new(AtomicBool::new(false));
-        let irq_entered = Arc::new(AtomicBool::new(false));
-        let (started_tx, started_rx) = mpsc::channel();
+    fn irq_access_returns_none_when_task_access_is_active() {
+        let active = AtomicBool::new(false);
         let task_guard = VirtioNetAccessGuard::enter_task(&active);
 
-        let irq_active = Arc::clone(&active);
-        let irq_entered_clone = Arc::clone(&irq_entered);
-        let irq_thread = thread::spawn(move || {
-            started_tx.send(()).unwrap();
-            let _irq_guard = VirtioNetAccessGuard::enter_irq(&irq_active);
-            irq_entered_clone.store(true, Ordering::Release);
-        });
-
-        started_rx.recv().unwrap();
-        thread::sleep(Duration::from_millis(20));
-        assert!(!irq_entered.load(Ordering::Acquire));
-
+        assert!(VirtioNetAccessGuard::try_enter_irq(&active).is_none());
         drop(task_guard);
-        irq_thread.join().unwrap();
-        assert!(irq_entered.load(Ordering::Acquire));
+        assert!(VirtioNetAccessGuard::try_enter_irq(&active).is_some());
+    }
+
+    #[test]
+    fn skipped_irq_access_records_pending_ack_without_queue_event() {
+        let access_active = AtomicBool::new(false);
+        let irq_ack_pending = AtomicBool::new(false);
+        let task_guard = VirtioNetAccessGuard::enter_task(&access_active);
+
+        let queue_interrupt = if VirtioNetAccessGuard::try_enter_irq(&access_active).is_none() {
+            irq_ack_pending.store(true, Ordering::Release);
+            false
+        } else {
+            true
+        };
+
+        assert!(!queue_interrupt);
+        assert!(irq_ack_pending.load(Ordering::Acquire));
+        drop(task_guard);
+        assert!(VirtioNetAccessGuard::try_enter_irq(&access_active).is_some());
+        assert!(irq_ack_pending.swap(false, Ordering::AcqRel));
+        assert!(!irq_ack_pending.load(Ordering::Acquire));
     }
 }

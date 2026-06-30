@@ -33,6 +33,26 @@ static void on_usr1(int signo)
     }
 }
 
+static int read_ready_byte(int fd, char *ready)
+{
+    for (;;) {
+        ssize_t n = read(fd, ready, 1);
+        if (n == 1) {
+            return 0;
+        }
+        if (n == 0) {
+            fprintf(stderr, "FAIL: parent read child ready pipe: EOF\n");
+            return -1;
+        }
+        if (errno == EINTR) {
+            continue;
+        }
+        fprintf(stderr, "FAIL: parent read child ready pipe: errno=%d (%s)\n",
+                errno, strerror(errno));
+        return -1;
+    }
+}
+
 static int child_run(int notify_fd, int block_fd)
 {
     /*
@@ -115,7 +135,7 @@ int main(void)
      * 只有收到子进程 ready 后，父进程才发送 SIGUSR1。
      */
     char ready = 0;
-    if (read(sync_pipe[0], &ready, 1) != 1 || ready != 'R') {
+    if (read_ready_byte(sync_pipe[0], &ready) != 0 || ready != 'R') {
         fprintf(stderr, "FAIL: parent failed to receive child ready signal\n");
         kill(child, SIGKILL);
         waitpid(child, NULL, 0);

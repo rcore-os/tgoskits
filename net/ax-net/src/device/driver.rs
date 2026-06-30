@@ -102,6 +102,15 @@ pub trait NetTxBuffer: Send {
     fn packet_len(&self) -> usize;
 }
 
+/// Owned IRQ endpoint consumed by the platform IRQ callback.
+///
+/// The endpoint is intentionally narrower than [`EthernetDriver`]: hard IRQ
+/// context may acknowledge/snapshot interrupt state and publish readiness bits,
+/// but RX/TX queue work remains serialized through the normal driver path.
+pub trait EthernetIrqHandler: Send + 'static {
+    fn handle_irq(&mut self) -> NetIrqEvents;
+}
+
 /// Minimal Ethernet driver contract consumed by [`EthernetDevice`].
 ///
 /// Drivers may own DMA rings, MMIO state, or virtual queues internally. ax-net
@@ -130,6 +139,11 @@ pub trait EthernetDriver: Send + Sync {
     fn recycle_rx_buffer(&mut self, rx_buf: &mut dyn NetRxBuffer) -> NetDeviceResult;
     /// Handles a device interrupt and reports wake-relevant events.
     fn handle_irq(&mut self) -> NetIrqEvents;
+    /// Detaches an owned IRQ endpoint for registration into the platform IRQ
+    /// callback. Drivers that return `None` stay on the compatibility path.
+    fn take_irq_handler(&mut self) -> Option<Box<dyn EthernetIrqHandler>> {
+        None
+    }
 }
 
 /// List of Ethernet drivers handed to network initialization.
@@ -181,6 +195,7 @@ pub struct RdNetDriver {
     name: String,
     mac: [u8; 6],
     irq: Option<IrqId>,
+    control: Net,
     irq_handler: Option<rd_net::IrqHandler>,
     state: SpinNoIrq<RdNetState>,
 }
@@ -197,6 +212,7 @@ impl RdNetDriver {
             name: name.into(),
             mac,
             irq,
+            control: net,
             irq_handler,
             state: SpinNoIrq::new(RdNetState {
                 tx_queue,
@@ -229,15 +245,11 @@ impl EthernetDriver for RdNetDriver {
     }
 
     fn enable_irq(&mut self) {
-        if let Some(handler) = &self.irq_handler {
-            handler.enable();
-        }
+        self.control.enable_irq();
     }
 
     fn disable_irq(&mut self) {
-        if let Some(handler) = &self.irq_handler {
-            handler.disable();
-        }
+        self.control.disable_irq();
     }
 
     fn mac_address(&self) -> [u8; 6] {
@@ -286,24 +298,43 @@ impl EthernetDriver for RdNetDriver {
     }
 
     fn handle_irq(&mut self) -> NetIrqEvents {
-        let Some(handler) = &self.irq_handler else {
+        let Some(handler) = &mut self.irq_handler else {
             return NetIrqEvents::SPURIOUS;
         };
 
-        let event = handler.handle_irq();
-        let mut events = NetIrqEvents::empty();
-        if event.rx_queue.iter().next().is_some() {
-            events |= NetIrqEvents::RX_READY;
-        }
-        if event.tx_queue.iter().next().is_some() {
-            events |= NetIrqEvents::TX_DONE;
-        }
+        map_rd_net_irq_event(handler.handle_irq())
+    }
 
-        if events.is_empty() {
-            NetIrqEvents::SPURIOUS
-        } else {
-            events
-        }
+    fn take_irq_handler(&mut self) -> Option<Box<dyn EthernetIrqHandler>> {
+        self.irq_handler
+            .take()
+            .map(|handler| Box::new(RdNetIrqHandler { handler }) as Box<dyn EthernetIrqHandler>)
+    }
+}
+
+struct RdNetIrqHandler {
+    handler: rd_net::IrqHandler,
+}
+
+impl EthernetIrqHandler for RdNetIrqHandler {
+    fn handle_irq(&mut self) -> NetIrqEvents {
+        map_rd_net_irq_event(self.handler.handle_irq())
+    }
+}
+
+fn map_rd_net_irq_event(event: rd_net::Event) -> NetIrqEvents {
+    let mut events = NetIrqEvents::empty();
+    if event.rx_queue.iter().next().is_some() {
+        events |= NetIrqEvents::RX_READY;
+    }
+    if event.tx_queue.iter().next().is_some() {
+        events |= NetIrqEvents::TX_DONE;
+    }
+
+    if events.is_empty() {
+        NetIrqEvents::SPURIOUS
+    } else {
+        events
     }
 }
 

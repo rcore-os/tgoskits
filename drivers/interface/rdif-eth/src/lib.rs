@@ -136,6 +136,22 @@ impl Event {
     }
 }
 
+/// Owned interrupt endpoint for a network device.
+///
+/// Drivers that can split their control/data-plane state from the IRQ
+/// top-half should return this through [`Interface::take_irq_handler`]. The
+/// handler is then moved into the platform IRQ callback, so hard IRQ context no
+/// longer needs to lock the complete network device object.
+pub trait IrqHandler: Send + 'static {
+    /// Acknowledge/snapshot the device IRQ source and publish queue-local event
+    /// bits. Packet copies, descriptor refills, DMA reclaim, and waker
+    /// execution must stay in task/deferred context.
+    fn handle_irq(&mut self) -> Event;
+}
+
+/// Boxed owned IRQ endpoint.
+pub type BIrqHandler = Box<dyn IrqHandler>;
+
 /// Core interface that network device drivers must implement.
 ///
 /// Provides device-level operations: queue creation, interrupt management,
@@ -164,6 +180,16 @@ pub trait Interface: DriverGeneric {
 
     /// Handle a device interrupt, returning which queues have events.
     fn handle_irq(&mut self) -> Event;
+
+    /// Detach an owned IRQ endpoint from the interface.
+    ///
+    /// The default returns `None` to keep older drivers on the compatibility
+    /// path, where [`Interface::handle_irq`] is still called through the shared
+    /// interface object. New or migrated drivers should return `Some` so hard
+    /// IRQ callbacks do not need to lock the whole device.
+    fn take_irq_handler(&mut self) -> Option<BIrqHandler> {
+        None
+    }
 
     /// Optional wireless control plane.
     ///

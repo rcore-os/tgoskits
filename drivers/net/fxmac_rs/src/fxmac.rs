@@ -48,6 +48,34 @@ pub const PAGE_SIZE: usize = 4096;
 /// Base address of FXMAC0 controller.
 pub(crate) const FXMAC_IOBASE: u64 = 0x3200c000;
 
+/// Snapshot of the controller interrupt status read by the IRQ endpoint.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct FXmacIrqStatus {
+    raw: u32,
+}
+
+impl FXmacIrqStatus {
+    pub const fn from_raw(raw: u32) -> Self {
+        Self { raw }
+    }
+
+    pub const fn raw(self) -> u32 {
+        self.raw
+    }
+
+    pub const fn is_empty(self) -> bool {
+        self.raw == 0
+    }
+
+    pub const fn tx_ready(self) -> bool {
+        (self.raw & (FXMAC_IXR_TXCOMPL_MASK | FXMAC_IXR_TX_ERR_MASK | FXMAC_IXR_TXUSED_MASK)) != 0
+    }
+
+    pub const fn rx_ready(self) -> bool {
+        (self.raw & (FXMAC_IXR_RXCOMPL_MASK | FXMAC_IXR_RX_ERR_MASK)) != 0
+    }
+}
+
 /// Main FXMAC Ethernet controller instance.
 ///
 /// This structure holds all state information for an FXMAC controller instance,
@@ -427,8 +455,14 @@ impl FXmac {
     }
 
     /// Handles a queue interrupt from the OS-registered IRQ callback.
-    pub fn handle_irq(&mut self) {
-        FXmacIntrHandler(self.irq_hwirq() as i32, self);
+    pub fn handle_irq(&mut self) -> FXmacIrqStatus {
+        let status = FXmacIrqStatus::from_raw(read_reg(
+            (self.config.base_address + FXMAC_ISR_OFFSET) as *const u32,
+        ));
+        if !status.is_empty() {
+            crate::fxmac_intr::FXmacIntrHandlerWithStatus(self.irq_hwirq() as i32, self, status);
+        }
+        status
     }
 
     /// Enables queue 0 interrupts after the OS has registered an IRQ handler.
@@ -500,6 +534,33 @@ pub fn FXmacStart(instance_p: &mut FXmac) {
 
     // Mark as started
     instance_p.is_started = FT_COMPONENT_IS_STARTED;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn irq_status_ignores_non_queue_interrupts() {
+        let empty = FXmacIrqStatus::from_raw(0);
+        assert!(!empty.tx_ready());
+        assert!(!empty.rx_ready());
+
+        let link_only = FXmacIrqStatus::from_raw(FXMAC_IXR_LINKCHANGE_MASK);
+        assert!(!link_only.tx_ready());
+        assert!(!link_only.rx_ready());
+    }
+
+    #[test]
+    fn irq_status_reports_queue_interrupts() {
+        let tx = FXmacIrqStatus::from_raw(FXMAC_IXR_TXCOMPL_MASK);
+        assert!(tx.tx_ready());
+        assert!(!tx.rx_ready());
+
+        let rx = FXmacIrqStatus::from_raw(FXMAC_IXR_RXCOMPL_MASK);
+        assert!(!rx.tx_ready());
+        assert!(rx.rx_ready());
+    }
 }
 
 /// Gracefully stops the Ethernet MAC.

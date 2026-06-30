@@ -53,7 +53,7 @@ For nontrivial driver design or refactoring, read `references/architecture.md` b
 
 Use `&mut self` APIs where exclusive access is the natural contract. Do not require callers to provide an OS lock as part of the portable abstraction. If only the IRQ callback should call a handler, make that visible in the type shape: move the handler into the callback and expose `handle(&mut self, ...)` instead of making the handler a clonable shared object.
 
-For block-device integration in ArceOS, expose portable block drivers through `rdif_block::Interface` and `rdif_block::IQueue`. Keep queue creation, DMA/wait policy, and IRQ registration in OS glue/runtime layers; the portable boundary should be submit/poll requests plus `handle_irq() -> Event`.
+For block-device integration in ArceOS, expose portable block drivers through `rdif_block::Interface` and `rdif_block::IQueue`. Keep queue creation, DMA/wait policy, and IRQ registration in OS glue/runtime layers; the portable boundary should be submit/poll requests plus an owned IRQ endpoint with `handle_irq(&mut self) -> Event`.
 
 Prefer small interfaces:
 

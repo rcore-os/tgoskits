@@ -1,8 +1,11 @@
+use std::path::PathBuf;
+
 use super::common::{expand, pkg_with_manifest_path, pkg_with_manifest_path_and_metadata};
 use crate::clippy::{
     AX_CONFIG_PATH_ENV, AXSTD_STD_CLIPPY_FEATURES, AXSTD_STD_CLIPPY_TARGET,
     AXSTD_STD_DEFAULT_FEATURE, AXSTD_STD_PACKAGE,
     check::{ClippyCheckKind, ClippyDepsMode},
+    env::feature_axconfig_overrides,
     expand::expand_clippy_checks,
     selection::SelectedClippyPackage,
 };
@@ -88,6 +91,27 @@ fn feature_axconfig_overrides_apply_only_to_that_feature_check() {
             ),
         ]
     );
+}
+
+#[test]
+fn malformed_feature_axconfig_overrides_are_ignored() {
+    let package = pkg_with_manifest_path_and_metadata(
+        "alpha",
+        "alpha 0.1.0 (path+file:///tmp/alpha)",
+        &[("cntv-timer", &[])],
+        Some(&["aarch64-unknown-none"]),
+        PathBuf::from("/tmp/alpha/Cargo.toml"),
+        serde_json::json!({
+            "axbuild": {
+                "clippy-feature-axconfig-overrides": {
+                    "cntv-timer": "devices.timer-irq=27",
+                    "gic-v3": [27, true]
+                }
+            }
+        }),
+    );
+
+    assert!(feature_axconfig_overrides(&package).is_empty());
 }
 
 #[test]

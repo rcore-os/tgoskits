@@ -14,8 +14,6 @@ args = [
     "virtio-net-pci,netdev=net0",
     "-netdev",
     "user,id=net0",
-    "-append",
-    "root=/dev/sda",
 ]
 uefi = false
 to_bin = true

@@ -1,19 +1,38 @@
 extern crate alloc;
 
-use alloc::{format, string::ToString, vec, vec::Vec};
+use alloc::{format, string::ToString, vec::Vec};
 use core::ptr::NonNull;
 
-use fdt_edit::{Fdt, Node, NodeType, Phandle, RegFixed};
-use log::{info, warn};
+use fdt_edit::{Fdt, NodeType, Phandle, RegFixed};
+use log::info;
+use rdif_pinctrl::{
+    Bias, ConfigSetting, ConfigTarget, FdtPinctrl, FdtPinctrlParser, FunctionId, GpioBankId,
+    GpioRange, GroupId, Interface as RdifPinctrl, MuxSetting, PinId as RdifPinId, PinState,
+    PinctrlDevice, PinctrlError as RdifPinctrlError, StateName,
+};
 use rdrive::{DriverGeneric, probe::OnProbeError, register::ProbeFdt};
 use rockchip_soc::{
-    BankId, GpioDirection, Iomux, PinConfig, PinCtrl, PinCtrlOp, PinId, Pull, SocType,
+    GpioDirection, Iomux, PinConfig as RockchipPinConfig, PinCtrl, PinCtrlOp,
+    PinId as RockchipPinId, Pull, SocType,
 };
 
 use crate::mmio::iomap;
 
+mod rdif_glue;
+
+use rdif_glue::ROCKCHIP_PIN_CONFIG_DRIVE_RAW;
+pub use rdif_glue::RockchipFdtPinctrlParser;
+
 const DRIVER_NAME: &str = "rk3588-pinctrl";
 const GPIO_BANK_COUNT: usize = 5;
+const GPIO_LINES_PER_BANK: u32 = 32;
+const ROCKCHIP_GPIO_RANGES: [GpioRange; GPIO_BANK_COUNT] = [
+    GpioRange::new(GpioBankId::new(0), 0, 0, GPIO_LINES_PER_BANK),
+    GpioRange::new(GpioBankId::new(1), 32, 0, GPIO_LINES_PER_BANK),
+    GpioRange::new(GpioBankId::new(2), 64, 0, GPIO_LINES_PER_BANK),
+    GpioRange::new(GpioBankId::new(3), 96, 0, GPIO_LINES_PER_BANK),
+    GpioRange::new(GpioBankId::new(4), 128, 0, GPIO_LINES_PER_BANK),
+];
 
 crate::model_register!(
     name: "Rockchip PinCtrl",
@@ -38,56 +57,45 @@ impl RockchipPinCtrl {
         Self { inner }
     }
 
+    pub fn apply_default_pinctrl(
+        &mut self,
+        node: NodeType<'_>,
+    ) -> Result<Vec<RockchipPinId>, OnProbeError> {
+        let node_name = node.name().to_string();
+        let Some(prop) = node.as_node().get_property("pinctrl-0") else {
+            info!("Rockchip node {node_name} has no default pinctrl");
+            return Ok(Vec::new());
+        };
+
+        let mut configured = Vec::new();
+        for phandle in prop.get_u32_iter().map(Phandle::from) {
+            configured.extend(self.apply_pinctrl_phandle(phandle)?);
+        }
+        info!(
+            "Rockchip node {node_name} applied {} default pinctrl pins",
+            configured.len()
+        );
+        Ok(configured)
+    }
+
     pub fn enable_fixed_regulator(&mut self, phandle: Phandle) -> Result<(), OnProbeError> {
         let fdt = live_fdt()?;
         let node = fdt.get_by_phandle(phandle).ok_or_else(|| {
             OnProbeError::other(format!("regulator phandle {phandle:?} not found"))
         })?;
         let node_name = node.name().to_string();
-        let active_value = fixed_regulator_active_value(node.as_node());
-        let gpio_active_low = gpio_active_low(node.as_node());
-        let drive_value = if gpio_active_low {
-            !active_value
-        } else {
-            active_value
-        };
-        let pins = if let Some(gpio) = parse_gpio_pin(&fdt, node.as_node(), "gpios")
-            .or_else(|| parse_gpio_pin(&fdt, node.as_node(), "gpio"))
-        {
-            vec![gpio?]
-        } else {
-            let pinctrls = node
-                .as_node()
-                .get_property("pinctrl-0")
-                .ok_or_else(|| OnProbeError::other(format!("[{node_name}] has no enable GPIO")))?
-                .get_u32_iter()
-                .map(Phandle::from)
-                .collect::<Vec<_>>();
-
-            let mut pins = Vec::new();
-            for pinctrl in pinctrls {
-                pins.extend(self.apply_pinctrl_phandle(pinctrl)?);
-            }
-            if pins.is_empty() {
-                return Err(OnProbeError::other(format!(
-                    "[{node_name}] pinctrl-0 did not configure any GPIO"
-                )));
-            }
-            pins
-        };
-
-        for pin in pins {
-            self.inner
-                .set_gpio_direction(pin, GpioDirection::Output(drive_value))
-                .map_err(|err| {
-                    OnProbeError::other(format!(
-                        "failed to set [{node_name}] GPIO {pin:?} direction: {err}"
-                    ))
-                })?;
-            self.inner.write_gpio(pin, drive_value).map_err(|err| {
-                OnProbeError::other(format!("failed to drive [{node_name}] GPIO {pin:?}: {err}"))
-            })?;
-        }
+        FdtPinctrl::apply_fixed_regulator(
+            self,
+            &fdt,
+            node.as_node(),
+            &RockchipFdtPinctrlParser,
+            "rockchip-fixed-regulator",
+        )
+        .map_err(|err| {
+            OnProbeError::other(format!(
+                "failed to apply fixed regulator [{node_name}] via RDIF pinctrl: {err}"
+            ))
+        })?;
 
         let startup_delay_us = node
             .as_node()
@@ -104,7 +112,18 @@ impl RockchipPinCtrl {
         Ok(())
     }
 
-    fn apply_pinctrl_phandle(&mut self, phandle: Phandle) -> Result<Vec<PinId>, OnProbeError> {
+    pub fn apply_pinctrl_path(&mut self, path: &str) -> Result<Vec<RockchipPinId>, OnProbeError> {
+        let fdt = live_fdt()?;
+        let node = fdt
+            .get_by_path(path)
+            .ok_or_else(|| OnProbeError::other(format!("pinctrl path {path} not found")))?;
+        self.apply_pinctrl_node(node)
+    }
+
+    fn apply_pinctrl_phandle(
+        &mut self,
+        phandle: Phandle,
+    ) -> Result<Vec<RockchipPinId>, OnProbeError> {
         let fdt = live_fdt()?;
         let node = fdt
             .get_by_phandle(phandle)
@@ -112,34 +131,26 @@ impl RockchipPinCtrl {
         self.apply_pinctrl_node(node)
     }
 
-    fn apply_pinctrl_node(&mut self, node: NodeType<'_>) -> Result<Vec<PinId>, OnProbeError> {
-        let pins = node
-            .as_node()
-            .get_property("rockchip,pins")
-            .ok_or_else(|| OnProbeError::other(format!("[{}] has no rockchip,pins", node.name())))?
-            .get_u32_iter()
-            .collect::<Vec<_>>();
-        if pins.len() % 4 != 0 {
-            return Err(OnProbeError::other(format!(
-                "[{}] has malformed rockchip,pins with {} cells",
-                node.name(),
-                pins.len()
-            )));
-        }
-
-        let mut configured = Vec::new();
-        for cells in pins.chunks(4) {
-            let config = pin_config_from_cells(cells)?;
-            let pin = config.id;
-            self.inner.set_config(config).map_err(|err| {
+    fn apply_pinctrl_node(
+        &mut self,
+        node: NodeType<'_>,
+    ) -> Result<Vec<RockchipPinId>, OnProbeError> {
+        let node_name = node.name().to_string();
+        let fdt = live_fdt()?;
+        let mut state = PinState::named(StateName::Named(node_name.clone()));
+        RockchipFdtPinctrlParser
+            .parse_pinctrl_node(&fdt, node, &mut state)
+            .map_err(|err| {
                 OnProbeError::other(format!(
-                    "failed to apply pinctrl [{}] pin {pin:?}: {err}",
-                    node.name()
+                    "failed to parse Rockchip pinctrl [{node_name}]: {err}"
                 ))
             })?;
-            configured.push(pin);
-        }
-
+        let configured = rockchip_pins_from_state(&state)?;
+        self.apply_state(&state).map_err(|err| {
+            OnProbeError::other(format!(
+                "failed to apply Rockchip pinctrl [{node_name}]: {err}"
+            ))
+        })?;
         Ok(configured)
     }
 }
@@ -147,6 +158,126 @@ impl RockchipPinCtrl {
 impl DriverGeneric for RockchipPinCtrl {
     fn name(&self) -> &str {
         DRIVER_NAME
+    }
+
+    fn raw_any(&self) -> Option<&dyn core::any::Any> {
+        Some(self)
+    }
+
+    fn raw_any_mut(&mut self) -> Option<&mut dyn core::any::Any> {
+        Some(self)
+    }
+}
+
+impl RdifPinctrl for RockchipPinCtrl {
+    fn gpio_ranges(&self) -> &[GpioRange] {
+        &ROCKCHIP_GPIO_RANGES
+    }
+
+    fn can_mux(&self, group: GroupId, function: FunctionId) -> bool {
+        rockchip_pin_id(group.raw()).is_ok() && function.raw() <= 0xff
+    }
+
+    fn validate_state(&self, state: &PinState) -> Result<(), RdifPinctrlError> {
+        for mux in state.muxes() {
+            if rockchip_pin_id(mux.group.raw()).is_err() {
+                return Err(RdifPinctrlError::InvalidGroup(mux.group));
+            }
+            if !self.can_mux(mux.group, mux.function) {
+                return Err(RdifPinctrlError::InvalidMux {
+                    group: mux.group,
+                    function: mux.function,
+                });
+            }
+        }
+
+        for config in state.configs() {
+            match config.target {
+                ConfigTarget::Pin(pin) => {
+                    if rockchip_pin_id(pin.raw()).is_err() {
+                        return Err(RdifPinctrlError::InvalidPin(pin));
+                    }
+                }
+                ConfigTarget::Group(group) => {
+                    if rockchip_pin_id(group.raw()).is_err() {
+                        return Err(RdifPinctrlError::InvalidGroup(group));
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn apply_mux(&mut self, setting: &MuxSetting) -> Result<(), RdifPinctrlError> {
+        let pin = rockchip_pin_id(setting.group.raw())?;
+        let mut config = self.inner.get_config(pin).unwrap_or(RockchipPinConfig {
+            id: pin,
+            mux: Iomux::from_bits_truncate(0),
+            pull: Pull::Disabled,
+            drive: None,
+        });
+        config.mux = Iomux::from_bits_truncate(setting.value.raw() as u8);
+        self.inner
+            .set_config(config)
+            .map_err(|_| RdifPinctrlError::InvalidConfig)
+    }
+
+    fn apply_config(&mut self, setting: &ConfigSetting) -> Result<(), RdifPinctrlError> {
+        let pin = match setting.target {
+            ConfigTarget::Pin(pin) => rockchip_pin_id(pin.raw())?,
+            ConfigTarget::Group(group) => rockchip_pin_id(group.raw())?,
+        };
+
+        match setting.config {
+            rdif_pinctrl::PinConfig::Bias(bias) => {
+                let mut config = self.current_or_default_config(pin);
+                config.pull = rockchip_pull_from_rdif_bias(bias);
+                self.inner
+                    .set_config(config)
+                    .map_err(|_| RdifPinctrlError::InvalidConfig)
+            }
+            rdif_pinctrl::PinConfig::Vendor { param, value }
+                if param == ROCKCHIP_PIN_CONFIG_DRIVE_RAW =>
+            {
+                let mut config = self.current_or_default_config(pin);
+                config.drive = Some(value);
+                self.inner
+                    .set_config(config)
+                    .map_err(|_| RdifPinctrlError::InvalidConfig)
+            }
+            rdif_pinctrl::PinConfig::InputEnable(true) => self
+                .inner
+                .set_gpio_direction(pin, GpioDirection::Input)
+                .map_err(|_| RdifPinctrlError::InvalidConfig),
+            rdif_pinctrl::PinConfig::OutputEnable(true) => {
+                let value = self.inner.read_gpio(pin).unwrap_or(false);
+                self.inner
+                    .set_gpio_direction(pin, GpioDirection::Output(value))
+                    .map_err(|_| RdifPinctrlError::InvalidConfig)
+            }
+            rdif_pinctrl::PinConfig::OutputValue(value) => self
+                .inner
+                .write_gpio(pin, value)
+                .map_err(|_| RdifPinctrlError::InvalidConfig),
+            rdif_pinctrl::PinConfig::InputEnable(false)
+            | rdif_pinctrl::PinConfig::DriveStrengthUa(_)
+            | rdif_pinctrl::PinConfig::OutputEnable(false)
+            | rdif_pinctrl::PinConfig::SlewRate(_)
+            | rdif_pinctrl::PinConfig::DebounceUs(_)
+            | rdif_pinctrl::PinConfig::LowPowerMode(_)
+            | rdif_pinctrl::PinConfig::Vendor { .. } => Err(RdifPinctrlError::NotSupported),
+        }
+    }
+}
+
+impl RockchipPinCtrl {
+    fn current_or_default_config(&self, pin: RockchipPinId) -> RockchipPinConfig {
+        self.inner.get_config(pin).unwrap_or(RockchipPinConfig {
+            id: pin,
+            mux: Iomux::from_bits_truncate(0),
+            pull: Pull::Disabled,
+            drive: None,
+        })
     }
 }
 
@@ -180,7 +311,7 @@ fn probe(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
     }
 
     let pinctrl = PinCtrl::new(SocType::Rk3588, ioc, &gpio_banks);
-    plat_dev.register(RockchipPinCtrl::new(pinctrl));
+    plat_dev.register(PinctrlDevice::new(RockchipPinCtrl::new(pinctrl)));
     info!("Rockchip RK3588 pinctrl registered successfully");
     Ok(())
 }
@@ -212,123 +343,32 @@ fn map_reg(reg: RegFixed) -> Result<NonNull<u8>, OnProbeError> {
     iomap(reg.address as usize, size)
 }
 
-fn fixed_regulator_active_value(node: &Node) -> bool {
-    node.get_property("enable-active-low").is_none()
+fn rockchip_pin_id(raw_pin: u32) -> Result<RockchipPinId, RdifPinctrlError> {
+    RockchipPinId::new(raw_pin).ok_or_else(|| RdifPinctrlError::InvalidPin(RdifPinId::new(raw_pin)))
 }
 
-fn gpio_active_low(node: &Node) -> bool {
-    node.get_property("gpios")
-        .or_else(|| node.get_property("gpio"))
-        .and_then(|prop| prop.get_u32_iter().nth(2))
-        .is_some_and(|flags| flags & 1 != 0)
-}
-
-fn parse_gpio_pin(fdt: &Fdt, node: &Node, prop_name: &str) -> Option<Result<PinId, OnProbeError>> {
-    let prop = node.get_property(prop_name)?;
-    Some((|| {
-        let mut cells = prop.get_u32_iter();
-        let phandle = Phandle::from(cells.next().ok_or_else(|| {
-            OnProbeError::other(format!("[{}] has malformed {prop_name}", node.name()))
-        })?);
-        let pin = cells.next().ok_or_else(|| {
-            OnProbeError::other(format!("[{}] has malformed {prop_name}", node.name()))
-        })?;
-        let gpio = fdt.get_by_phandle(phandle).ok_or_else(|| {
-            OnProbeError::other(format!(
-                "[{}] {prop_name} GPIO phandle {phandle:?} not found",
-                node.name()
-            ))
-        })?;
-        let bank = gpio_bank_index(gpio.as_node()).ok_or_else(|| {
-            OnProbeError::other(format!(
-                "[{}] cannot resolve GPIO bank for {prop_name} phandle {phandle:?}",
-                node.name()
-            ))
-        })?;
-        PinId::from_bank_pin(BankId::new(bank).unwrap_or(BankId::from(bank)), pin).ok_or_else(
-            || {
+fn rockchip_pins_from_state(state: &PinState) -> Result<Vec<RockchipPinId>, OnProbeError> {
+    state
+        .muxes()
+        .iter()
+        .map(|mux| {
+            rockchip_pin_id(mux.group.raw()).map_err(|err| {
                 OnProbeError::other(format!(
-                    "[{}] invalid GPIO bank {bank} pin {pin}",
-                    node.name()
+                    "Rockchip pinctrl state contains invalid pin {:?}: {err}",
+                    mux.group
                 ))
-            },
-        )
-    })())
+            })
+        })
+        .collect()
 }
 
-fn pin_config_from_cells(cells: &[u32]) -> Result<PinConfig, OnProbeError> {
-    let [bank, pin, mux, conf_phandle] = cells else {
-        return Err(OnProbeError::other("malformed rockchip,pins cells"));
-    };
-    let id = PinId::from_bank_pin(BankId::new(*bank).unwrap_or(BankId::from(*bank)), *pin)
-        .ok_or_else(|| OnProbeError::other(format!("invalid Rockchip pin {bank}:{pin}")))?;
-    let fdt = live_fdt()?;
-    let conf = fdt
-        .get_by_phandle(Phandle::from(*conf_phandle))
-        .ok_or_else(|| {
-            OnProbeError::other(format!("pinconf phandle {conf_phandle:?} not found"))
-        })?;
-    let mut pull = Pull::Disabled;
-    let mut drive = None;
-    for prop in conf.as_node().properties() {
-        match prop.name() {
-            "bias-disable" => pull = Pull::Disabled,
-            "bias-bus-hold" => pull = Pull::BusHold,
-            "bias-pull-up" => pull = Pull::PullUp,
-            "bias-pull-down" => pull = Pull::PullDown,
-            "bias-pull-pin-default" => pull = Pull::PullPinDefault,
-            "drive-strength" => drive = prop.get_u32(),
-            "phandle" => {}
-            name => warn!("Unknown pinconf property: {}", name),
-        }
-    }
-    Ok(PinConfig {
-        id,
-        mux: Iomux::from_bits_truncate(*mux as u8),
-        pull,
-        drive,
-    })
-}
-
-fn gpio_bank_index(node: &Node) -> Option<u32> {
-    let name = node.name();
-    if let Some(name) = name
-        .strip_prefix("gpio")
-        .filter(|name| !name.starts_with('@'))
-        && let Some(bank) = name
-            .chars()
-            .next()
-            .and_then(|ch| ch.to_digit(10))
-            .filter(|bank| *bank < GPIO_BANK_COUNT as u32)
-    {
-        return Some(bank);
-    }
-
-    let address = gpio_bank_address(node)?;
-    match address {
-        0xfd8a_0000 => Some(0),
-        0xfec2_0000 => Some(1),
-        0xfec3_0000 => Some(2),
-        0xfec4_0000 => Some(3),
-        0xfec5_0000 => Some(4),
-        _ => None,
-    }
-}
-
-fn gpio_bank_address(node: &Node) -> Option<u64> {
-    if let Some(address) = node
-        .name()
-        .split_once('@')
-        .and_then(|(_, unit)| u64::from_str_radix(unit, 16).ok())
-    {
-        return Some(address);
-    }
-
-    let reg = node.get_property("reg")?.get_u32_iter().collect::<Vec<_>>();
-    match reg.as_slice() {
-        [addr] => Some(u64::from(*addr)),
-        cells if cells.len() >= 2 => Some((u64::from(cells[0]) << 32) | u64::from(cells[1])),
-        _ => None,
+fn rockchip_pull_from_rdif_bias(bias: Bias) -> Pull {
+    match bias {
+        Bias::Disabled => Pull::Disabled,
+        Bias::BusHold => Pull::BusHold,
+        Bias::PullUp => Pull::PullUp,
+        Bias::PullDown => Pull::PullDown,
+        Bias::PullPinDefault => Pull::PullPinDefault,
     }
 }
 

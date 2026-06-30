@@ -20,7 +20,7 @@ impl IrqSourceInfo {
 
 pub type IrqSourceList = Vec<IrqSourceInfo>;
 
-pub trait IrqHandler: Send + Sync + 'static {
+pub trait IrqHandler: Send + 'static {
     /// Handle a device interrupt in hard IRQ context.
     ///
     /// Implementations must acknowledge or clear the device-side interrupt
@@ -33,7 +33,7 @@ pub trait IrqHandler: Send + Sync + 'static {
     /// block runtime pending table. Drivers that need to consume device queue
     /// state to clear the interrupt should cache those completions internally
     /// and return a queue-level event.
-    fn handle_irq(&self) -> Event;
+    fn handle_irq(&mut self) -> Event;
 }
 
 #[repr(transparent)]

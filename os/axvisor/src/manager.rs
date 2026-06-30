@@ -59,6 +59,11 @@ impl AxvmManager {
         AxvmRuntime::resume_vm(vm_id)
     }
 
+    /// Reset a VM by ID.
+    pub fn reset_vm(vm_id: VMId) -> AxResult {
+        AxvmRuntime::reset_vm(vm_id)
+    }
+
     /// Remove a VM by ID.
     pub fn remove_vm(vm_id: VMId) -> Option<AxVMRef> {
         #[cfg(target_arch = "loongarch64")]

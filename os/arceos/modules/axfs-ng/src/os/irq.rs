@@ -3,13 +3,14 @@ use core::sync::atomic::{AtomicBool, Ordering};
 
 use ax_errno::AxResult;
 use ax_kspin::SpinRwLock as RwLock;
-use irq_framework::IrqId;
+use irq_framework::{IrqContext, IrqId};
 
 use crate::block::runtime::BlockIrqAction;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum BlockIrqOutcome {
     Handled,
+    Wake,
 }
 
 pub trait BlockIrqRegistration: Send + Sync {}
@@ -19,7 +20,7 @@ pub trait BlockIrqRegistrar: Send + Sync {
         &self,
         name: String,
         irq: IrqId,
-        action: BlockIrqAction,
+        action: Box<dyn FnMut(IrqContext) -> BlockIrqOutcome + Send + 'static>,
     ) -> AxResult<Box<dyn BlockIrqRegistration>>;
 }
 
@@ -41,7 +42,8 @@ pub fn register_shared_block_irq(
         .as_ref()
         .copied()
         .ok_or(ax_errno::AxError::BadState)?;
-    registrar.register_shared(name, irq, action)
+    let mut action = action;
+    registrar.register_shared(name, irq, Box::new(move |_ctx| action.run()))
 }
 
 pub fn has_irq_registrar() -> bool {

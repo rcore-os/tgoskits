@@ -1,10 +1,8 @@
 use alloc::{boxed::Box, string::String, vec::Vec};
-#[cfg(feature = "irq")]
-use core::ptr::NonNull;
 
 use ax_alloc::UsageKind;
 use ax_fs_ng::{
-    block::runtime::{BlockIrqAction, RdifBlockDevice},
+    block::runtime::RdifBlockDevice,
     os::{
         BlockIrqOutcome, BlockIrqRegistrar, BlockIrqRegistration, BlockTaskOps, BlockTimeProvider,
         FsPage, FsPageProvider,
@@ -61,6 +59,10 @@ impl BlockTaskOps for RuntimeTaskOps {
         BLOCK_IO_WAIT_WQ.wait();
     }
 
+    fn task_wait_timeout(&self, dur: core::time::Duration) -> bool {
+        BLOCK_IO_WAIT_WQ.wait_timeout(dur)
+    }
+
     fn task_wait_until(&self, condition: &dyn Fn() -> bool) {
         BLOCK_IO_WAIT_WQ.wait_until(condition);
     }
@@ -95,29 +97,17 @@ struct RuntimeBlockIrqRegistrar;
 
 #[cfg(feature = "irq")]
 struct RuntimeBlockIrqRegistration {
-    _inner: crate::irq::HandlerRegistration<RuntimeBlockIrqState>,
+    _inner: crate::irq::Registration,
 }
+
+// SAFETY: The registration token is kept in the global block runtime only to
+// own the IRQ action lifetime. The move-only boxed callback state is owned by
+// the IRQ framework and is not exposed through this token.
+unsafe impl Sync for RuntimeBlockIrqRegistration {}
 
 #[cfg(feature = "irq")]
 impl BlockIrqRegistration for RuntimeBlockIrqRegistration {}
 
-#[cfg(feature = "irq")]
-struct RuntimeBlockIrqState {
-    action: BlockIrqAction,
-}
-
-#[cfg(feature = "irq")]
-unsafe fn handle_block_irq(
-    _ctx: ax_hal::irq::IrqContext,
-    data: NonNull<()>,
-) -> ax_hal::irq::IrqReturn {
-    let state = unsafe { data.cast::<RuntimeBlockIrqState>().as_ref() };
-    match state.action.run() {
-        BlockIrqOutcome::Handled => ax_hal::irq::IrqReturn::Handled,
-    }
-}
-
-#[cfg(feature = "irq")]
 fn map_block_irq_error(err: ax_hal::irq::IrqError) -> ax_errno::AxError {
     match err {
         ax_hal::irq::IrqError::InvalidIrq | ax_hal::irq::IrqError::InvalidCpu => {
@@ -142,12 +132,18 @@ impl BlockIrqRegistrar for RuntimeBlockIrqRegistrar {
         &self,
         name: String,
         irq: irq_framework::IrqId,
-        action: BlockIrqAction,
+        mut action: Box<dyn FnMut(ax_hal::irq::IrqContext) -> BlockIrqOutcome + Send + 'static>,
     ) -> ax_errno::AxResult<Box<dyn BlockIrqRegistration>> {
-        let state = RuntimeBlockIrqState { action };
-        crate::irq::HandlerRegistration::register_shared(name, irq, state, handle_block_irq)
-            .map(|inner| Box::new(RuntimeBlockIrqRegistration { _inner: inner }) as _)
-            .map_err(map_block_irq_error)
+        crate::irq::Registration::register_boxed_shared(
+            name,
+            irq,
+            Box::new(move |ctx| match action(ctx) {
+                BlockIrqOutcome::Handled => ax_hal::irq::IrqReturn::Handled,
+                BlockIrqOutcome::Wake => ax_hal::irq::IrqReturn::Wake,
+            }),
+        )
+        .map(|inner| Box::new(RuntimeBlockIrqRegistration { _inner: inner }) as _)
+        .map_err(map_block_irq_error)
     }
 }
 

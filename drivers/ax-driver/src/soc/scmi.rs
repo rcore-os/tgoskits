@@ -108,6 +108,32 @@ pub fn clock_rate(_phandle: Phandle, clock_id: u32) -> Option<u64> {
     }
 }
 
+pub fn enable_clock(_phandle: Phandle, clock_id: u32) -> Option<()> {
+    if !SCMI_REGISTERED.load(Ordering::Acquire) {
+        warn!(
+            "SCMI clock enable requested before SCMI registration: clock_id={:#x}",
+            clock_id
+        );
+        return None;
+    }
+    let mut guard = SCMI.lock();
+    let scmi = guard.as_mut()?;
+    let mut clock = scmi.protocol_clk_no_init();
+    match clock.clk_enable(clock_id) {
+        Ok(()) => {
+            info!("SCMI clock enabled: clock_id={:#x}", clock_id);
+            Some(())
+        }
+        Err(err) => {
+            warn!(
+                "SCMI clock enable failed: clock_id={:#x}, {:?}",
+                clock_id, err
+            );
+            None
+        }
+    }
+}
+
 pub fn set_clock_rate(_phandle: Phandle, clock_id: u32, rate: u64) -> Option<()> {
     if !SCMI_REGISTERED.load(Ordering::Acquire) {
         warn!(
