@@ -45,6 +45,10 @@ pub mod arch;
 #[path = "arch/riscv64/mod.rs"]
 pub mod arch;
 
+#[cfg(all(test, any(unix, windows), not(target_arch = "loongarch64")))]
+#[path = "arch/loongarch64/routing.rs"]
+mod loongarch64_irq_routing;
+
 pub fn init(kernel: &'static dyn KernelOp) {
     setup::set_kernel_op(kernel);
 }

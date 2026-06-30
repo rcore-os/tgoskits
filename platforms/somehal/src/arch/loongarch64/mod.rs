@@ -9,6 +9,9 @@ use crate::{
 mod eiointc;
 mod irq_common;
 mod pch_pic;
+mod routing;
+
+use routing::{RawIrq, classify_cpu_irq, cpu_local_hwirq_is_runtime_irq};
 
 pub struct Plat;
 
@@ -28,10 +31,18 @@ fn cpu_local_irq(raw: usize) -> IrqId {
     IrqId::new(CPU_LOCAL_IRQ_DOMAIN, HwIrq(raw as u32))
 }
 
-fn pch_pic_irq(input: usize) -> IrqId {
-    let domain = crate::irq::domain_by_kind_fast(crate::irq::IrqDomainKind::LoongArchPchPic)
-        .expect("LoongArch PCH-PIC IRQ domain is not registered");
-    IrqId::new(domain, HwIrq(input as u32))
+fn checked_cpu_local_irq(hwirq: HwIrq) -> Result<IrqId, IrqError> {
+    let raw = hwirq.0 as usize;
+    if cpu_local_hwirq_is_runtime_irq(
+        raw,
+        someboot::irq::systimer_irq().raw(),
+        IPI_IRQ,
+        EIOINTC_IRQ,
+    ) {
+        Ok(cpu_local_irq(raw))
+    } else {
+        Err(IrqError::InvalidIrq)
+    }
 }
 
 fn eiointc_irq(external: usize) -> IrqId {
@@ -67,10 +78,7 @@ fn resolve_acpi_gsi(gsi: u32) -> Result<IrqId, IrqError> {
 
 fn resolve_acpi_route(route: AcpiGsiRoute) -> Result<IrqId, IrqError> {
     match route.controller {
-        AcpiGsiController::PchPic => {
-            pch_pic::setup_acpi_route(&route).ok_or(IrqError::Unsupported)?;
-            Ok(pch_pic_irq(usize::from(route.controller_input)))
-        }
+        AcpiGsiController::PchPic => pch_pic::resolve_acpi_route(&route),
         AcpiGsiController::IoApic => Err(IrqError::Unsupported),
     }
 }
@@ -140,7 +148,11 @@ impl PlatOp for Plat {
         }
     }
 
-    fn send_ipi(_irq: IrqId, target: crate::irq::IpiTarget) {
+    fn send_ipi(irq: IrqId, target: crate::irq::IpiTarget) {
+        if irq != Self::ipi_irq() {
+            warn!("refuse to send non-runtime LoongArch IPI IRQ {irq:?}");
+            return;
+        }
         match target {
             crate::irq::IpiTarget::Current { cpu_id } | crate::irq::IpiTarget::Other { cpu_id } => {
                 Self::send_ipi_to_cpu(cpu_id);
@@ -160,8 +172,13 @@ impl PlatOp for Plat {
     }
 
     fn begin_irq(raw: usize) -> Option<Self::ActiveIrq> {
-        match raw {
-            raw if raw == someboot::irq::systimer_irq().raw() => {
+        match classify_cpu_irq(
+            raw,
+            someboot::irq::systimer_irq().raw(),
+            IPI_IRQ,
+            EIOINTC_IRQ,
+        ) {
+            RawIrq::Timer => {
                 // Clear the current timer interrupt before dispatching. The
                 // dispatch path reprograms the next one-shot timer; clearing
                 // afterwards can drop a newly-arrived timer edge and strand
@@ -169,23 +186,29 @@ impl PlatOp for Plat {
                 someboot::timer::ack();
                 Some(ActiveIrq::new(cpu_local_irq(raw), Completion::None))
             }
-            IPI_IRQ => {
+            RawIrq::Ipi => {
                 let _status = ack_pending_ipi();
                 Some(ActiveIrq::new(cpu_local_irq(raw), Completion::None))
             }
-            EIOINTC_IRQ => {
+            RawIrq::EioIntc => {
                 let Some(external) = eiointc::claim_irq() else {
                     debug!("Spurious LoongArch EIOINTC interrupt");
                     return None;
                 };
-                let irq = pch_pic::input_for_vector(external)
-                    .map(pch_pic_irq)
-                    .unwrap_or_else(|| eiointc_irq(external));
+                let irq = match pch_pic::irq_for_external_vector(external) {
+                    Ok(Some(irq)) => irq,
+                    Ok(None) => eiointc_irq(external),
+                    Err(err) => {
+                        warn!("failed to resolve LoongArch external vector {external}: {err:?}");
+                        eiointc::complete_irq(external);
+                        return None;
+                    }
+                };
                 Some(ActiveIrq::new(irq, Completion::EioIntc { irq: external }))
             }
-            external => {
-                let input = pch_pic::input_for_vector(external).unwrap_or(external);
-                Some(ActiveIrq::new(pch_pic_irq(input), Completion::None))
+            RawIrq::Unknown => {
+                warn!("unrouted LoongArch CPU interrupt line {raw}");
+                None
             }
         }
     }
@@ -207,9 +230,12 @@ impl PlatOp for Plat {
                 ) || crate::irq::domain_is_kind(
                     domain,
                     crate::irq::IrqDomainKind::LoongArchEioIntc,
-                ) || domain == CPU_LOCAL_IRQ_DOMAIN =>
+                ) =>
             {
                 Ok(IrqId::new(domain, hwirq))
+            }
+            IrqSource::ControllerLine { domain, hwirq } if domain == CPU_LOCAL_IRQ_DOMAIN => {
+                checked_cpu_local_irq(hwirq)
             }
             IrqSource::ControllerLine { .. } => Err(IrqError::InvalidIrq),
             IrqSource::AcpiGsi(gsi) => resolve_acpi_gsi(gsi),
@@ -224,6 +250,10 @@ impl PlatOp for Plat {
     fn secondary_init_systick() {}
 
     fn send_ipi_to_cpu(cpu_id: usize) {
+        if cpu_id > u16::MAX as usize {
+            warn!("refuse to send LoongArch IPI to out-of-range CPU id {cpu_id}");
+            return;
+        }
         iocsr_write_w(
             IOCSR_IPI_SEND,
             make_ipi_send_value(cpu_id, IPI_VECTOR, false),
