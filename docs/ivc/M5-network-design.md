@@ -84,7 +84,24 @@
     - **根因（已定性）**：`interrupt_mode="passthrough"` 下，**guest 直接用物理 GIC CPU 接口（ICC_* 系统寄存器不被 trap），从不读虚拟接口（List Register）** → 软件注入的虚拟中断对 guest 根本不可见。LR/VMCR 怎么写都没用，因为 guest 没在用虚拟接口。
     - **修复方向（架构级，非小改）**：软件模拟设备（virtio-net）需 **emulated / 部分透传 GIC 模式**——AxVisor 已有 `gppt-gicd`/`gppt-gicr`/`gppt-its` emu 设备（GIC 部分透传：模拟 GICD/GICR 以 trap guest 的 GIC 访问、走虚拟接口，同时物理中断仍透传），但当前 vmconfig 把它们注释掉了。需在 vmconfig 加这些 emu_devices + 相应 interrupt_mode，使 guest 经虚拟接口收中断，LR 注入才会被取走。这是让 RX 中断送达的前置，也是 task2 互通的最后一步（之后单 guest 内置 peer 即可 ping 通 → 2-VM 互通）。
     - **这是 task2 数据通路打通的唯一剩余步骤**：device 枚举 ✅、TX virtqueue ✅、RX virtqueue 写入+used 环 ✅（`deliver_rx` 返回 injected=true），仅差**虚拟中断送达 guest**这一 vGIC 细节。修复后单 guest（内置 peer）即可 ping 通，进而 2-VM 互通。
+  - **✅✅✅ 已解决（2026-06-30，commit 30f17c2ee）：物理 SPI pend 在 passthrough 模式下送达中断**。
+    - **代码级根因证实**（`arm_vcpu/src/vcpu.rs:204`）：`if !config.passthrough_interrupt { hcr_el2 += IMO + FMO }`——passthrough 模式下 `passthrough_interrupt=true` → **HCR_EL2.IMO 不置位** → guest 用物理 GIC CPU 接口、不读 List Register → 软件注入的虚拟中断不可见。
+    - **两组运行实验定性**：① `interrupt_mode="emu"`（置 IMO + gppt-gicd/gicr 全 GICD 模拟）→ guest 起不来：`axplat_dyn::irq: Unhandled IRQ HwIrq(27)`（arch timer PPI）刷屏 4 万+ 行、0 行用户态输出 → **emu 模式在 QEMU-virt 动态平台缺物理→虚拟中断转发**（重型 feature）。② `gppt + passthrough` → 仍 INTID56=0（gppt 只模拟分发器 MMIO，不改 CPU 接口）。
+    - **修复（轻量、留在 passthrough）**：emu 设备不走虚拟注入，改为在宿主物理 GICD 上 **pend 对应物理 SPI**（`gic::pend_physical_spi` → `arm_gic_driver v3 Gic::set_pending(IntId::spi(intid-32), true)`）。passthrough 模式下 guest 已自行在物理 GICD enable+route 了该 SPI（INTID 56→SPI 24，QEMU virt slot 8 物理空闲），故硬件直接投递到 guest EL1。`vm.rs` 新增 mode-aware `inject_device_irq`：passthrough→物理 pend，emu→虚拟 LR。
+    - **运行验证（QEMU aarch64 virt gic-v3）**：guest `/proc/interrupts` 的 `GICv3 56 Edge virtio0` 计数随 TX 活动递增（3 个 ping 发包前 1 → 后 9），**中断确实送达 guest**。无 emu 模式 timer storm、无需 gppt、定时器/磁盘照常工作。这是 inter-guest virtio-net 连通的最后一公里，至此完整数据通路（枚举/TX/RX 写入/**中断送达**）全部打通。配置 `tmp/m2/vm-linux-vnet3.toml`(passthrough) + init `tmp/m2/rxirqtest.sh`，日志 `tmp/m2/ppend-run.log`。
   - **两个并行待解**：① ramdisk 引导 flakiness（同配置有时到 /init 有时卡在 freeing initrd）；② 多 VM 内存须 **MAP_ALLOC(map_type=0)** 否则同 GPA 踩内存（已解）。控制台输出坑（ramdisk /init 须 mount devtmpfs 后 `exec >/dev/console 2>&1`）已解。
+
+### 中断送达打通后的 2-VM 实测进展（2026-06-30，续）
+
+中断送达解决后，重新冲刺 2-VM 双向 ping，逐层排除环境障碍：
+
+1. **ramdisk 卡死的真因（非 flakiness）**：`os/axvisor/src/fdt/create.rs::sanitize_bootargs` 会**剥离连续三元组** `["root=/dev/ram0","rdinit=/init","rootwait"]`（line 383 `tokens[index..].starts_with(&RAMDISK_BOOTARGS)`）→ guest 丢失 `rdinit=/init` → freeing initrd 后无 init 卡死。绕过：在三元组中插入 token（如 `root=/dev/ram0 rw rdinit=/init rootwait`）打断连续匹配，guest 即拿到正确 cmdline。**但单/双 VM ramdisk 仍在 freeing initrd 后不 exec /init**（与三元组无关的内核级 initramfs 卡死，disk 引导无此问题）→ ramdisk 路线放弃，改 disk 引导（可靠）。
+2. **共享磁盘损坏**：两 guest 并发 rw 挂载同一 ext4（mount 即写 journal/superblock）→ 损坏。
+3. **cmdline 共享**：aarch64 guest FDT 的 /chosen bootargs 取自宿主 FDT（QEMU `-append`），全 VM 同一条 → 无法给 VM2 不同的 `root=`。**已修复并验证（commit 37b9b060a）**：`create.rs` 支持 `kernel.cmdline` 覆盖（opt-in，过 sanitize）。实测 `cmdline="root=/dev/vda init=/netping.sh"` → guest `Kernel command line` 正是该串（覆盖了 `-append`），且 netping 作为 init 运行、eth0 在、TX 通路跑起。
+4. **宿主双 ext4 盘 panic**：加第二块盘后宿主 `axfs-ng/root.rs:172` "failed to determine root device"（两块裸 ext4 无法判主盘）。绕过：宿主 `-append` 加 `root=/dev/vda`（`RootSpec::parse_bootargs` 让宿主选 disk0），disk1 留给 VM2。
+5. **当前阻塞：guest 只见一块盘**：两块 virtio-blk passthrough 给两 guest 后，每 guest 内**有一个盘槽 probe 失败 `-2`(ENOENT)**，只剩一块成为 `vda`；VM2 `root=/dev/vdb` 找不到 → `VFS: Unable to mount root fs on unknown-block(0,0)`。疑因宿主已占用/初始化 disk0，guest 重新 probe 该 virtio-blk 槽失败。这是 AxVisor **宿主与多 guest 共享/分配 virtio-blk** 的较深行为，需专门排查，与网络通路正交。
+
+**结论（task2 数据通路）**：hypervisor 侧能力全部打通且验证——**设备枚举 ✅ / TX virtqueue ✅ / RX virtqueue 写入 ✅ / 中断送达 ✅（physical SPI pend，1→9）/ 软交换机泛洪 ✅ / per-VM cmdline ✅**。剩下纯属把"两个真实 guest 可靠地各自起来"的基础设施（disk passthrough 拓扑），非网络/中断逻辑。两个 guest 一旦各自起来即可经已验证的通路互通（再叠应用层协议/可靠性/自动化测试，Zephyr 端点需 SDK）。复现配置 `tmp/m2/vm-disk{1,2}.toml` + `qemu-2disk.toml` + `tmp/m2/netping.sh`，日志 `tmp/m2/2vm-final.log`。
 - **P4 客户机驱动接通**：Linux 侧 virtio-net 驱动自动识别（已内建），配 IP；Zephyr 侧需带 virtio-net + lwIP/BSD socket 的镜像（见前置 C）。
 - **P5 应用层协议 + 可靠性 + 自动化测试**（M7/M8）：见任务二后续。
 
