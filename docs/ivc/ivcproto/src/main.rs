@@ -187,9 +187,10 @@ fn run_client(peer: &str, count: u32) -> std::io::Result<()> {
     println!("PROTO-CLIENT -> {peer} count={count}");
 
     // CONTROL handshake (with its own retransmit) to confirm the server is up.
-    // Be patient: the peer guest may still be finishing boot / bringing up eth0.
+    // Be very patient: under the cooperative scheduler the peer guest's boot can
+    // be heavily contended and take a long time to reach "listening".
     let mut ready = false;
-    for _ in 0..150 {
+    for _ in 0..900 {
         let _ = sock.send(&encode(T_CONTROL, 0, b"hello"));
         let mut b = [0u8; 2048];
         if let Ok(n) = sock.recv(&mut b) {
