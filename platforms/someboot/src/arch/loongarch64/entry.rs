@@ -7,8 +7,13 @@ use crate::{
 static mut FW_ARG0: usize = 0;
 static mut FW_ARG1: usize = 0;
 static mut FW_ARG2: usize = 0;
+static mut FW_ARG3: usize = 0;
 
 const MAX_SECONDARY_BOOT_ARGS: usize = 256;
+const MAX_UBOOT_GO_ARGS: usize = 16;
+const MAX_UBOOT_GO_ARG_LEN: usize = 32;
+const UHI_FDT_ARG0: usize = usize::MAX - 1;
+const LS2K1000_DEFAULT_FDT_PADDR: usize = 0x0a00_0000;
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -46,9 +51,9 @@ pub(crate) fn set_secondary_boot_arg(hartid: usize, arg: usize) -> Result<(), Cp
 #[unsafe(no_mangle)]
 #[unsafe(naked)]
 pub unsafe extern "C" fn kernel_entry(
-    efi_boot: usize,
-    cmdline: *const u8,
-    systemtable: *const c_void,
+    _efi_boot: usize,
+    _cmdline: *const u8,
+    _systemtable: *const c_void,
 ) {
     naked_asm!(
     // SETUP_DMWINS
@@ -96,6 +101,8 @@ pub unsafe extern "C" fn kernel_entry(
 	st.d		$a1, $t0, 0
 	la.pcrel	$t0, {fw_arg2}
 	st.d		$a2, $t0, 0
+	la.pcrel	$t0, {fw_arg3}
+	st.d		$a3, $t0, 0
 ",
 
 "
@@ -122,6 +129,7 @@ pub unsafe extern "C" fn kernel_entry(
         fw_arg0 = sym FW_ARG0,
         fw_arg1 = sym FW_ARG1,
         fw_arg2 = sym FW_ARG2,
+        fw_arg3 = sym FW_ARG3,
         rust_main = sym rust_main,
     )
 }
@@ -134,6 +142,8 @@ fn rust_main() -> ! {
 
     if is_boot_from_uefi() {
         efi_entry();
+    } else {
+        setup_non_efi_fdt();
     }
 
     let kernel_code_start_lma = to_phys(sym_running_addr!(_head));
@@ -163,7 +173,106 @@ pub(crate) fn mmu_entry() -> ! {
 }
 
 fn is_boot_from_uefi() -> bool {
-    unsafe { FW_ARG0 == 1 }
+    // The LoongArch EFI wrapper calls `kernel_entry(1, null, system_table)`.
+    // U-Boot `go` may also pass `a0 == 1` as argc, so require the EFI-only
+    // null second argument before treating `a2` as an EFI system table.
+    unsafe { FW_ARG0 == 1 && FW_ARG1 == 0 && FW_ARG2 != 0 }
+}
+
+fn setup_non_efi_fdt() {
+    let fw_args = unsafe { [FW_ARG1, FW_ARG2, FW_ARG3] };
+
+    if unsafe { FW_ARG0 } == UHI_FDT_ARG0 && try_set_fdt_from_addr(fw_args[0]) {
+        return;
+    }
+
+    for addr in fw_args {
+        if try_set_fdt_from_addr(addr) {
+            return;
+        }
+    }
+
+    if is_uboot_go_call(unsafe { FW_ARG0 }, unsafe { FW_ARG1 })
+        && uboot_go_fdt_arg(unsafe { FW_ARG0 }, unsafe { FW_ARG1 })
+            .is_some_and(try_set_fdt_from_addr)
+    {
+        return;
+    }
+
+    try_set_fdt_from_addr(LS2K1000_DEFAULT_FDT_PADDR);
+}
+
+fn looks_like_uboot_go_argc(arg0: usize) -> bool {
+    (1..=MAX_UBOOT_GO_ARGS).contains(&arg0)
+}
+
+fn is_uboot_go_call(argc: usize, argv: usize) -> bool {
+    if !looks_like_uboot_go_argc(argc) || argv == 0 {
+        return false;
+    }
+
+    let argv = crate::mem::phys_to_virt(to_phys(argv)).cast::<usize>();
+    let entry_arg = unsafe { argv.read() };
+    parse_uboot_go_addr_arg(entry_arg).is_some()
+}
+
+fn uboot_go_fdt_arg(argc: usize, argv: usize) -> Option<usize> {
+    if argc < 2 || !is_uboot_go_call(argc, argv) {
+        return None;
+    }
+
+    let argv = crate::mem::phys_to_virt(to_phys(argv)).cast::<usize>();
+    for idx in 1..argc.min(MAX_UBOOT_GO_ARGS) {
+        let arg = unsafe { argv.add(idx).read() };
+        if let Some(addr) = parse_uboot_go_addr_arg(arg) {
+            return Some(addr);
+        }
+    }
+    None
+}
+
+fn parse_uboot_go_addr_arg(arg: usize) -> Option<usize> {
+    if arg == 0 {
+        return None;
+    }
+
+    let ptr = crate::mem::phys_to_virt(to_phys(arg)).cast_const();
+    let mut idx = 0;
+    if unsafe { ptr.read() } == b'0' && matches!(unsafe { ptr.add(1).read() }, b'x' | b'X') {
+        idx = 2;
+    }
+
+    let mut value = 0usize;
+    let mut has_digit = false;
+    while idx < MAX_UBOOT_GO_ARG_LEN {
+        let byte = unsafe { ptr.add(idx).read() };
+        if byte == 0 {
+            return has_digit.then_some(value);
+        }
+
+        let digit = match byte {
+            b'0'..=b'9' => byte - b'0',
+            b'a'..=b'f' => byte - b'a' + 10,
+            b'A'..=b'F' => byte - b'A' + 10,
+            _ => return None,
+        } as usize;
+
+        value = value.checked_mul(16)?.checked_add(digit)?;
+        has_digit = true;
+        idx += 1;
+    }
+
+    None
+}
+
+fn try_set_fdt_from_addr(addr: usize) -> bool {
+    let paddr = to_phys(addr);
+    if crate::fdt::set_fdt_addr_phys_if_valid(paddr) {
+        println!("FDT setup from non-UEFI boot source: {addr:#x} -> {paddr:#x}");
+        true
+    } else {
+        false
+    }
 }
 
 #[unsafe(naked)]

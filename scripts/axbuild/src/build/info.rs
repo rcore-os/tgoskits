@@ -362,21 +362,21 @@ impl BuildInfo {
 
     pub(crate) fn build_cargo_args(target: &str, extra_rustflags: &[String]) -> Vec<String> {
         let mut args = vec!["-Z".to_string(), "build-std=core,alloc".to_string()];
+        let target_key = Path::new(target)
+            .file_stem()
+            .and_then(|stem| stem.to_str())
+            .unwrap_or(target);
 
-        if !extra_rustflags.is_empty() {
-            let target_key = Path::new(target)
-                .file_stem()
-                .and_then(|stem| stem.to_str())
-                .unwrap_or(target);
+        let mut rustflags = extra_rustflags.to_vec();
+        if target_key.starts_with("loongarch64-") {
+            rustflags.push("-Ctarget-feature=-ual".to_string());
+        }
+
+        if !rustflags.is_empty() {
             args.push("--config".to_string());
-            let rustflags_toml = toml::Value::Array(
-                extra_rustflags
-                    .iter()
-                    .cloned()
-                    .map(toml::Value::String)
-                    .collect(),
-            )
-            .to_string();
+            let rustflags_toml =
+                toml::Value::Array(rustflags.into_iter().map(toml::Value::String).collect())
+                    .to_string();
             args.push(format!("target.{target_key}.rustflags={rustflags_toml}"));
         }
         args

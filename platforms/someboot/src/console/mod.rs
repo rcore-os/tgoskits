@@ -502,16 +502,17 @@ pub fn set_earlycon_by_cmdline() -> Result<(), &'static str> {
         }
     };
     unsafe {
-        DEBUG_BASE = config.base_addr.unwrap_or(0);
+        DEBUG_BASE = config
+            .base_addr
+            .map(crate::mem::firmware_addr_to_phys)
+            .unwrap_or(0);
         DEBUG_IS_MMIO = debug_is_mmio;
     }
     Ok(())
 }
 
 fn set_pl011(config: &EarlyconConfig) -> Result<(), &'static str> {
-    let base_addr = config
-        .base_addr
-        .ok_or("No base address specified for pl011 earlycon")?;
+    let base_addr = earlycon_base_addr(config, "No base address specified for pl011 earlycon")?;
     let base_addr =
         NonNull::new(_fixmap_io(base_addr)).ok_or("Invalid base address for pl011 earlycon")?;
 
@@ -523,9 +524,7 @@ fn set_pl011(config: &EarlyconConfig) -> Result<(), &'static str> {
 }
 
 fn set_16550_mmio(config: &EarlyconConfig) -> Result<(), &'static str> {
-    let base_addr = config
-        .base_addr
-        .ok_or("No base address specified for ns16550 earlycon")?;
+    let base_addr = earlycon_base_addr(config, "No base address specified for ns16550 earlycon")?;
     let base_addr =
         NonNull::new(_fixmap_io(base_addr)).ok_or("Invalid base address for ns16550 earlycon")?;
     let width = match config.io_type {
@@ -540,4 +539,12 @@ fn set_16550_mmio(config: &EarlyconConfig) -> Result<(), &'static str> {
     set_earlycon_serial(EarlySerial::new(EarlySerialRaw::Ns16550Mmio(serial)));
 
     Ok(())
+}
+
+fn earlycon_base_addr(
+    config: &EarlyconConfig,
+    missing: &'static str,
+) -> Result<usize, &'static str> {
+    let addr = config.base_addr.ok_or(missing)?;
+    Ok(crate::mem::firmware_addr_to_phys(addr))
 }

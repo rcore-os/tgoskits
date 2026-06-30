@@ -33,9 +33,10 @@ fn set_by_stdout() -> Option<()> {
     let stdout = split_stdout_options(chosen.stdout_path()?);
     let node = fdt.find_by_path(stdout)?;
     let reg = node.reg()?.next()?;
-    let address = fdt.translate_address(stdout, reg.address);
+    let address =
+        crate::mem::firmware_addr_to_phys(fdt.translate_address(stdout, reg.address) as _);
 
-    let addr = NonNull::new(_fixmap_io(address as usize))?;
+    let addr = NonNull::new(_fixmap_io(address))?;
     let clock = node
         .find_property("clock-frequency")
         .and_then(|prop| prop.as_u32())
@@ -75,7 +76,7 @@ fn set_by_stdout() -> Option<()> {
         return None;
     }
     unsafe {
-        DEBUG_BASE = address as usize;
+        DEBUG_BASE = address;
         DEBUG_IS_MMIO = true;
     }
     Some(())

@@ -30,6 +30,10 @@ use crate::{ArchTrait, DCacheOp, efi_stub, irq::IrqId, power::CpuOnError};
 const MIN_TICKS: usize = 4;
 const BOOT_TLS_SIZE: usize = 64 * 1024;
 
+pub(crate) const fn direct_map_to_phys(addr: usize) -> usize {
+    addrspace::to_phys(addr)
+}
+
 #[repr(C, align(16))]
 struct BootTls {
     bytes: [u8; BOOT_TLS_SIZE],

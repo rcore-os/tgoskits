@@ -11,6 +11,10 @@ use crate::mem::phys_to_virt;
 pub(crate) static mut FDT_ADDR: usize = 0;
 static FDT: StaticCell<fdt_edit::Fdt> = StaticCell::uninit();
 
+const FDT_MAGIC: u32 = 0xd00d_feed;
+const FDT_HEADER_SIZE: usize = 40;
+const MAX_FDT_SIZE: usize = 16 * 1024 * 1024;
+
 pub fn fdt_addr() -> Option<*mut u8> {
     let fdt_addr = unsafe { FDT_ADDR };
     if fdt_addr == 0 {
@@ -25,6 +29,23 @@ pub fn fdt_addr_phys() -> Option<usize> {
         return None;
     }
     Some(fdt_addr)
+}
+
+#[cfg(target_arch = "loongarch64")]
+pub(crate) fn set_fdt_addr_phys_if_valid(fdt_addr: usize) -> bool {
+    if fdt_addr == 0 || !fdt_addr.is_multiple_of(4) {
+        return false;
+    }
+
+    let ptr = phys_to_virt(fdt_addr);
+    if fdt_total_size(ptr.cast_const()).is_none() {
+        return false;
+    }
+
+    unsafe {
+        FDT_ADDR = fdt_addr;
+    }
+    true
 }
 
 fn fdt_base() -> Option<fdt_raw::Fdt<'static>> {
@@ -54,21 +75,66 @@ pub fn set_cmdline() -> Option<()> {
 }
 
 pub(crate) fn save_fdt() {
-    let Some(fdt) = fdt_base() else {
+    let Some(src) = fdt_addr() else {
         return;
     };
-
-    let size = fdt.header().totalsize as usize;
-    let slice = unsafe { core::slice::from_raw_parts(FDT_ADDR as *const u8, size) };
+    let Some(size) = fdt_total_size(src.cast_const()) else {
+        return;
+    };
+    let slice = unsafe { core::slice::from_raw_parts(src as *const u8, size) };
 
     let fdt_buff = unsafe {
         crate::mem::ram::alloc(core::alloc::Layout::from_size_align(size, 8).unwrap()).unwrap()
     };
 
     unsafe {
-        core::ptr::copy_nonoverlapping(slice.as_ptr(), fdt_buff as _, size);
+        core::ptr::copy_nonoverlapping(slice.as_ptr(), phys_to_virt(fdt_buff), size);
         FDT_ADDR = fdt_buff;
     }
+}
+
+fn fdt_total_size(ptr: *const u8) -> Option<usize> {
+    if ptr.is_null() {
+        return None;
+    }
+
+    let magic = unsafe { read_be_u32(ptr, 0) };
+    if magic != FDT_MAGIC {
+        return None;
+    }
+
+    let total_size = unsafe { read_be_u32(ptr, 4) } as usize;
+    if !(FDT_HEADER_SIZE..=MAX_FDT_SIZE).contains(&total_size) {
+        return None;
+    }
+
+    let off_dt_struct = unsafe { read_be_u32(ptr, 8) } as usize;
+    let off_dt_strings = unsafe { read_be_u32(ptr, 12) } as usize;
+    let off_mem_rsvmap = unsafe { read_be_u32(ptr, 16) } as usize;
+    if !valid_fdt_block_offset(off_dt_struct, total_size)
+        || !valid_fdt_block_offset(off_dt_strings, total_size)
+        || !valid_fdt_block_offset(off_mem_rsvmap, total_size)
+    {
+        return None;
+    }
+
+    Some(total_size)
+}
+
+fn valid_fdt_block_offset(offset: usize, total_size: usize) -> bool {
+    (FDT_HEADER_SIZE..total_size).contains(&offset) && offset.is_multiple_of(4)
+}
+
+unsafe fn read_be_u32(ptr: *const u8, offset: usize) -> u32 {
+    let bytes = unsafe {
+        [
+            core::ptr::read(ptr.add(offset)),
+            core::ptr::read(ptr.add(offset + 1)),
+            core::ptr::read(ptr.add(offset + 2)),
+            core::ptr::read(ptr.add(offset + 3)),
+        ]
+    };
+    u32::from_be_bytes(bytes)
 }
 
 fn cpu_nodes_from_fdt<'a>(fdt: fdt_raw::Fdt<'a>) -> impl Iterator<Item = fdt_raw::Node<'a>> + 'a {

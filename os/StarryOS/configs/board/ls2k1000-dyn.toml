@@ -1,0 +1,7 @@
+target = "loongarch64-unknown-none-softfloat"
+log = "Warn"
+features = [
+  "ax-hal/plat-dyn",
+  "starry-kernel/loongarch64-low-va",
+  "ax-driver/serial",
+]
