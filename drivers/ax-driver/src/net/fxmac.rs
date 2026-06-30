@@ -171,6 +171,7 @@ struct FxmacRxState {
 struct FxmacIrqState {
     rx_pending: AtomicBool,
     tx_pending: AtomicBool,
+    irq_ack_pending: AtomicBool,
 }
 
 impl FxmacIrqState {
@@ -178,15 +179,31 @@ impl FxmacIrqState {
         Self {
             rx_pending: AtomicBool::new(false),
             tx_pending: AtomicBool::new(false),
+            irq_ack_pending: AtomicBool::new(false),
         }
     }
 
-    fn publish_all(&self) -> Event {
-        self.rx_pending.store(true, Ordering::Release);
-        self.tx_pending.store(true, Ordering::Release);
+    fn mark_irq_ack_pending(&self) {
+        self.irq_ack_pending.store(true, Ordering::Release);
+    }
+
+    fn drain_pending_irq_ack(&self, hw: &mut FxmacHw) {
+        if self.irq_ack_pending.swap(false, Ordering::AcqRel) {
+            let status = hw.device.handle_irq();
+            let _ = self.publish(status.tx_ready(), status.rx_ready());
+        }
+    }
+
+    fn publish(&self, tx_ready: bool, rx_ready: bool) -> Event {
         let mut event = Event::none();
-        event.tx_queue.insert(QUEUE_ID);
-        event.rx_queue.insert(QUEUE_ID);
+        if tx_ready {
+            self.tx_pending.store(true, Ordering::Release);
+            event.tx_queue.insert(QUEUE_ID);
+        }
+        if rx_ready {
+            self.rx_pending.store(true, Ordering::Release);
+            event.rx_queue.insert(QUEUE_ID);
+        }
         event
     }
 
@@ -207,9 +224,11 @@ struct FxmacIrqHandler {
 impl rd_net::InterfaceIrqHandler for FxmacIrqHandler {
     fn handle_irq(&mut self) -> Event {
         if let Some(mut hw) = self.hw.try_lock() {
-            hw.device.handle_irq();
+            let status = hw.device.handle_irq();
+            return self.irq_state.publish(status.tx_ready(), status.rx_ready());
         }
-        self.irq_state.publish_all()
+        self.irq_state.mark_irq_ack_pending();
+        Event::none()
     }
 }
 
@@ -247,10 +266,14 @@ impl ITxQueue for FxmacTxQueue {
 
     fn submit(&mut self, buffer: DmaBuffer) -> Result<(), NetError> {
         let packet = unsafe { core::slice::from_raw_parts(buffer.virt.as_ptr(), buffer.len) };
-        let ret = FXmacLwipPortTx(self.hw.lock().device, vec![packet.to_vec()]);
+        let mut hw = self.hw.lock();
+        self.irq_state.drain_pending_irq_ack(&mut hw);
+        let ret = FXmacLwipPortTx(hw.device, vec![packet.to_vec()]);
+        self.irq_state.drain_pending_irq_ack(&mut hw);
         if ret < 0 {
             return Err(NetError::Retry);
         }
+        drop(hw);
         self.tx_state.lock().tx_done.push_back(buffer.bus_addr);
         Ok(())
     }
@@ -287,12 +310,16 @@ impl IRxQueue for FxmacRxQueue {
             return None;
         }
 
+        let mut hw = self.hw.lock();
+        self.irq_state.drain_pending_irq_ack(&mut hw);
         let rx_pending = self.irq_state.take_rx_pending();
         if (rx_pending || rx_state.rx_packets.is_empty())
-            && let Some(packets) = FXmacRecvHandler(self.hw.lock().device)
+            && let Some(packets) = FXmacRecvHandler(hw.device)
         {
             rx_state.rx_packets.extend(packets);
         }
+        self.irq_state.drain_pending_irq_ack(&mut hw);
+        drop(hw);
 
         let packet = rx_state.rx_packets.pop_front()?;
         let buffer = rx_state.rx_buffers.pop_front()?;
@@ -310,6 +337,39 @@ fn fxmac_queue_config() -> QueueConfig {
         align: DMA_ALIGN,
         buf_size: BUFFER_SIZE,
         ring_size: QUEUE_SIZE,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn irq_state_does_not_publish_empty_snapshot() {
+        let state = FxmacIrqState::new();
+        let event = state.publish(false, false);
+
+        assert!(!event.tx_queue.contains(QUEUE_ID));
+        assert!(!event.rx_queue.contains(QUEUE_ID));
+        assert!(!state.take_tx_pending());
+        assert!(!state.take_rx_pending());
+    }
+
+    #[test]
+    fn irq_state_publishes_only_reported_queues() {
+        let state = FxmacIrqState::new();
+
+        let tx_event = state.publish(true, false);
+        assert!(tx_event.tx_queue.contains(QUEUE_ID));
+        assert!(!tx_event.rx_queue.contains(QUEUE_ID));
+        assert!(state.take_tx_pending());
+        assert!(!state.take_rx_pending());
+
+        let rx_event = state.publish(false, true);
+        assert!(!rx_event.tx_queue.contains(QUEUE_ID));
+        assert!(rx_event.rx_queue.contains(QUEUE_ID));
+        assert!(!state.take_tx_pending());
+        assert!(state.take_rx_pending());
     }
 }
 
