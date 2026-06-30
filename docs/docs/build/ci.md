@@ -5,7 +5,7 @@ sidebar_label: "自动 CI 测试"
 
 # 自动 CI 测试
 
-本文档说明 `.github/workflows/ci.yml`、`.github/workflows/reusable-command.yml` 和容器镜像在 CI 中的职责，以及当前测试矩阵、缓存策略和 self-hosted runner 的使用方式。
+本文档说明 `.github/workflows/ci.yml`、`.github/workflows/ci-branch-push.yml`、`.github/workflows/reusable-command.yml` 和容器镜像在 CI 中的职责，以及当前测试矩阵、缓存策略和 self-hosted runner 的使用方式。
 
 TGOSKits 将大部分构建与运行依赖收敛到统一的 container 镜像，由 GitHub Actions 和本地开发流程共同消费。需要物理设备、虚拟化能力或专用机器环境的任务则运行在 self-hosted runner 上。
 
@@ -20,7 +20,7 @@ flowchart TB
         L2_D["reusable-command.yml"]
     end
     subgraph L3["CI 编排"]
-        L3_D["ci.yml · container-publish.yml"]
+        L3_D["ci-branch-push.yml · ci.yml · container-publish.yml"]
     end
     L1 --> L2 --> L3
 ```
@@ -29,17 +29,20 @@ flowchart TB
 |------|------|----------|
 | Container 镜像 | 固化工具链、QEMU、交叉编译器 | `container/Dockerfile`、`container/Dockerfile.axvisor-lvz` |
 | 可复用工作流 | 统一在 host 或 container 中执行命令 | `.github/workflows/reusable-command.yml` |
-| CI 编排 | 选择测试矩阵、决定何时发布镜像 | `.github/workflows/ci.yml`、`.github/workflows/container-publish.yml` |
+| CI 编排 | 选择测试矩阵、决定何时发布镜像，并路由非主线分支 push | `.github/workflows/ci.yml`、`.github/workflows/ci-branch-push.yml`、`.github/workflows/container-publish.yml` |
 
 ## 触发条件
 
 | 事件 | 说明 |
 |------|------|
-| `push` | 排除纯文档变更（`*.md`、`docs/**` 等），其余路径触发 CI |
+| `push` 到 `main` / `dev` | 排除纯文档变更（`*.md`、`docs/**` 等），其余路径直接触发完整 CI |
+| `push` 到其他分支 | 先进入 `ci-branch-push.yml`。若该分支已有 open PR，则只保留一个成功的 router 检查；否则由 router 触发完整 CI |
 | `pull_request` | 同上 |
-| `workflow_dispatch` | 手动触发，仅用于发布容器镜像（`base` / `axvisor-lvz` / `both`），不执行 CI 检查 |
+| `workflow_dispatch` | 默认用于发布容器镜像（`base` / `axvisor-lvz` / `both`）；router 也会用 `run_target=ci` 调度非 PR 分支的完整 CI |
 
 `dev` 分支的 `push` 和手动触发使用 `concurrency.queue: max` 串行排队运行，避免多个 dev CI 同时占用 runner。其他分支、`main` 分支、PR 以及非 `dev` 手动触发不会进入 dev 队列；新 run 会在最早的 `cancel_stale_runs` 阶段取消同一分支或同一 PR 上仍在 queued/running 的旧 CI run。
+
+非 `main` / `dev` 分支的 `push` 由轻量 router 先检查是否已有同名 open PR。已有 PR 时不会调度 `.github/workflows/ci.yml`，因此不会为重复 push 生成一组 skipped matrix check；PR 的 `pull_request` CI 负责验证同一提交。没有 open PR 时，router 使用 `workflow_dispatch` 调度完整 CI，并把 push 事件的 `before` SHA 传给后续差异检查。
 
 ## 执行流水线
 
@@ -57,6 +60,16 @@ cancel_stale_runs
         `-- publish_axvisor_lvz_container       依赖 base 成功后才运行
 ```
 
+非 `main` / `dev` 分支 push 会先经过 `ci-branch-push.yml`：
+
+```text
+branch push router
+  |
+  +-- [branch has open PR]  success summary only
+  |
+  `-- [no open PR]         workflow_dispatch(run_target=ci) -> ci.yml
+```
+
 `static_checks` 作为测试矩阵的前置门禁：格式检查或 sync-lint 不通过时，后续测试不会启动。`static_checks` 和 `test_checks` 都启用 `fail-fast: true`，任意矩阵项失败会取消同矩阵内其他任务，减少 runner 占用。
 
 ## 变更检测
@@ -65,11 +78,11 @@ cancel_stale_runs
 
 | 检测路径 | 触发任务 |
 |----------|----------|
-| `.cargo/`、`Cargo.toml`、`Cargo.lock`、`components/`、`drivers/`、`examples/`、`os/`、`platforms/`、`scripts/`、`test-suit/`、`xtask/` 等 | CI 检查 |
+| `.cargo/`、`.github/workflows/ci-branch-push.yml`、`.github/workflows/ci.yml`、`.github/workflows/reusable-command.yml`、`Cargo.toml`、`Cargo.lock`、`components/`、`drivers/`、`examples/`、`os/`、`platforms/`、`scripts/`、`test-suit/`、`xtask/` 等 | CI 检查 |
 | `container/Dockerfile`、`rust-toolchain.toml` | 发布基础容器镜像 |
 | `container/Dockerfile.axvisor-lvz`、`rust-toolchain.toml` | 发布 LVZ 扩展镜像 |
 
-push 到 `main` / `dev` 时强制运行 CI 检查。若非 `main` / `dev` 分支的 push 已存在 open PR，则跳过重复的 push CI，由 pull request CI 覆盖同一提交。
+push 到 `main` / `dev` 时强制运行 CI 检查。非 `main` / `dev` 分支没有 open PR 时由 router 调度完整 CI；已有 open PR 时只保留一个成功的 router 检查，由 pull request CI 覆盖同一提交。
 
 `detect_changes` 内部还负责输出跳过原因：
 

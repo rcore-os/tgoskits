@@ -2,6 +2,9 @@ name: CI
 
 on:
   push:
+    branches:
+      - main
+      - dev
     paths-ignore:
       - "**/*.md"
       - "**/*.rst"
@@ -19,15 +22,28 @@ on:
       - "**/doc/**"
   workflow_dispatch:
     inputs:
+      run_target:
+        description: Run CI checks or publish container images.
+        required: false
+        default: container
+        type: choice
+        options:
+          - container
+          - ci
       container_target:
         description: Container image(s) to publish manually.
-        required: true
+        required: false
         default: both
         type: choice
         options:
           - base
           - axvisor-lvz
           - both
+      since_sha:
+        description: Base commit for CI diff checks when run_target is ci.
+        required: false
+        default: ""
+        type: string
 
 permissions:
   contents: read
@@ -128,7 +144,7 @@ jobs:
       pull-requests: read
     outputs:
       ci_checks: ${{ steps.outputs.outputs.ci_checks }}
-      skip_duplicate_push_ci: ${{ steps.outputs.outputs.skip_duplicate_push_ci }}
+      since_ref: ${{ steps.outputs.outputs.since_ref }}
       base_container_publish: ${{ steps.outputs.outputs.base_container_publish }}
       axvisor_lvz_container_publish: ${{ steps.outputs.outputs.axvisor_lvz_container_publish }}
       base_container_image: ${{ steps.outputs.outputs.base_container_image }}
@@ -149,6 +165,7 @@ jobs:
           filters: |
             ci_checks:
               - ".cargo/**"
+              - ".github/workflows/ci-branch-push.yml"
               - ".github/workflows/container-publish.yml"
               - ".github/workflows/ci.yml"
               - ".github/workflows/reusable-command.yml"
@@ -178,58 +195,91 @@ jobs:
         env:
           EVENT_NAME: ${{ github.event_name }}
           REF_NAME: ${{ github.ref_name }}
+          RUN_TARGET: ${{ github.event.inputs.run_target || 'container' }}
           MANUAL_TARGET: ${{ github.event.inputs.container_target }}
+          SINCE_SHA: ${{ github.event.inputs.since_sha }}
+          PUSH_BEFORE_SHA: ${{ github.event.before || '' }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha || '' }}
           FILTER_CI_CHECKS: ${{ steps.filter.outputs.ci_checks }}
           FILTER_BASE_CONTAINER_PUBLISH: ${{ steps.filter.outputs.base_container_publish }}
           FILTER_AXVISOR_LVZ_CONTAINER_PUBLISH: ${{ steps.filter.outputs.axvisor_lvz_container_publish }}
-          GH_TOKEN: ${{ github.token }}
         run: |
           repository="$(printf '%s' "$GITHUB_REPOSITORY" | LC_ALL=C tr '[:upper:]' '[:lower:]')"
           base_container_image="ghcr.io/${repository}-container"
           axvisor_lvz_container_image="ghcr.io/${repository}-container-axvisor-lvz"
-          skip_duplicate_push_ci=false
 
-          if [ "$EVENT_NAME" = "push" ] \
-            && [ "$REF_NAME" != "main" ] \
-            && [ "$REF_NAME" != "dev" ]; then
-            open_pr_count="$(
-              gh pr list \
-                --repo "$GITHUB_REPOSITORY" \
-                --head "$REF_NAME" \
-                --state open \
-                --json number \
-                --jq 'length'
-            )"
+          is_empty_or_zero_sha() {
+            local value="$1"
+            [ -z "$value" ] || [ "$value" = "0000000000000000000000000000000000000000" ]
+          }
 
-            if [ "$open_pr_count" != "0" ]; then
-              skip_duplicate_push_ci=true
+          resolve_since_ref() {
+            if [ "$EVENT_NAME" = "pull_request" ]; then
+              printf '%s\n' "$PR_BASE_SHA"
+              return
             fi
-          fi
 
-          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            if [ "$EVENT_NAME" = "push" ]; then
+              if ! is_empty_or_zero_sha "$PUSH_BEFORE_SHA"; then
+                printf '%s\n' "$PUSH_BEFORE_SHA"
+                return
+              fi
+            elif [ "$EVENT_NAME" = "workflow_dispatch" ] && [ "$RUN_TARGET" = "ci" ]; then
+              if ! is_empty_or_zero_sha "$SINCE_SHA"; then
+                printf '%s\n' "$SINCE_SHA"
+                return
+              fi
+            fi
+
+            if git rev-parse --verify HEAD~1 >/dev/null 2>&1; then
+              git rev-parse HEAD~1
+              return
+            fi
+
+            git fetch --no-tags --depth=1 origin dev:refs/remotes/origin/dev >/dev/null 2>&1 || true
+            merge_base="$(git merge-base HEAD origin/dev 2>/dev/null || true)"
+            if [ -n "$merge_base" ]; then
+              printf '%s\n' "$merge_base"
+              return
+            fi
+
+            git rev-parse HEAD
+          }
+
+          since_ref="$(resolve_since_ref)"
+
+          if [ "$EVENT_NAME" = "workflow_dispatch" ] && [ "$RUN_TARGET" = "ci" ]; then
+            ci_checks=true
+            base_container_publish=false
+            axvisor_lvz_container_publish=false
+          elif [ "$EVENT_NAME" = "workflow_dispatch" ]; then
             ci_checks=false
-            case "$MANUAL_TARGET" in
-              base)
-                base_container_publish=true
-                axvisor_lvz_container_publish=false
-                ;;
-              axvisor-lvz)
-                base_container_publish=false
-                axvisor_lvz_container_publish=true
-                ;;
-              both)
-                base_container_publish=true
-                axvisor_lvz_container_publish=true
+            case "$RUN_TARGET" in
+              container)
+                case "$MANUAL_TARGET" in
+                  base)
+                    base_container_publish=true
+                    axvisor_lvz_container_publish=false
+                    ;;
+                  axvisor-lvz)
+                    base_container_publish=false
+                    axvisor_lvz_container_publish=true
+                    ;;
+                  both)
+                    base_container_publish=true
+                    axvisor_lvz_container_publish=true
+                    ;;
+                  *)
+                    echo "Unexpected container_target: $MANUAL_TARGET" >&2
+                    exit 1
+                    ;;
+                esac
                 ;;
               *)
-                echo "Unexpected container_target: $MANUAL_TARGET" >&2
+                echo "Unexpected run_target: $RUN_TARGET" >&2
                 exit 1
                 ;;
             esac
-          elif [ "$skip_duplicate_push_ci" = "true" ]; then
-            ci_checks=false
-            base_container_publish=false
-            axvisor_lvz_container_publish=false
           else
             if [ "$EVENT_NAME" = "push" ] && { [ "$REF_NAME" = "main" ] || [ "$REF_NAME" = "dev" ]; }; then
               ci_checks=true
@@ -242,7 +292,7 @@ jobs:
 
           {
             echo "ci_checks=${ci_checks}"
-            echo "skip_duplicate_push_ci=${skip_duplicate_push_ci}"
+            echo "since_ref=${since_ref}"
             echo "base_container_publish=${base_container_publish}"
             echo "axvisor_lvz_container_publish=${axvisor_lvz_container_publish}"
             echo "base_container_image=${base_container_image}"
@@ -253,15 +303,12 @@ jobs:
         if: steps.outputs.outputs.ci_checks != 'true'
         env:
           EVENT_NAME: ${{ github.event_name }}
-          SKIP_DUPLICATE_PUSH_CI: ${{ steps.outputs.outputs.skip_duplicate_push_ci }}
         run: |
           {
             echo "## CI checks skipped"
             echo ""
             if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
               echo "This manual run is scoped to container publishing, so static checks and follow-up CI checks were skipped."
-            elif [ "$SKIP_DUPLICATE_PUSH_CI" = "true" ]; then
-              echo "This branch already has an open pull request. The duplicate push CI was skipped; the pull_request CI run will validate the same commit."
             else
               echo "Changed files do not match the test-relevant path set, so static checks and follow-up CI checks were skipped."
             fi
@@ -271,6 +318,7 @@ jobs:
         if: >-
           ${{
             github.event_name == 'workflow_dispatch'
+            && (github.event.inputs.run_target || 'container') == 'container'
             && github.ref_name != 'main'
             && github.ref_name != 'dev'
           }}
@@ -302,7 +350,7 @@ jobs:
           - name: Run sync-lint
             use_container: true
             runs_on: '["ubuntu-latest"]'
-            command: cargo xtask sync-lint --since "${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}"
+            command: cargo xtask sync-lint --since "${{ needs.detect_changes.outputs.since_ref }}"
             cache_key: ""
             container_image: base
             fetch_depth: full
@@ -367,7 +415,7 @@ jobs:
             use_container: false
             runs_on: '["self-hosted","linux","qcs"]'
             self_hosted_owner: rcore-os
-            command: cargo xtask clippy --since "${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}"
+            command: cargo xtask clippy --since "${{ needs.detect_changes.outputs.since_ref }}"
             cache_key: ""
             container_image: base
             fetch_depth: full
