@@ -2,7 +2,7 @@ use alloc::{collections::VecDeque, format, string::ToString, sync::Arc, vec, vec
 use core::{
     any::Any,
     ptr::NonNull,
-    sync::atomic::{AtomicBool, AtomicU32, Ordering},
+    sync::atomic::{AtomicU32, AtomicU64, Ordering},
     task::Context,
     time::Duration,
 };
@@ -19,7 +19,7 @@ pub fn input_device_count() -> u32 {
 
 use ax_errno::{AxError, AxResult};
 use ax_input::{ErasedInputDevice, Event, EventType, InputDevice, InputDeviceId, InputError};
-use ax_runtime::hal::time::wall_time;
+use ax_runtime::hal::time::{monotonic_time_nanos, wall_time};
 use ax_sync::spin::SpinNoIrq as Mutex;
 use axfs_ng_vfs::{DeviceId, NodeFlags, NodeType, VfsResult};
 use axpoll::{IoEvents, PollSet, Pollable};
@@ -42,6 +42,10 @@ const KEY_CNT: usize = EventType::Key.bits_count();
 /// before userspace drains it. When the queue is full we follow Linux's
 /// behavior and drop the oldest entry rather than blocking the driver.
 const READ_AHEAD_CAP: usize = 256;
+
+/// If no IRQ event has been observed within this window, IRQ delivery is
+/// considered broken and the polling fallback runs actively.
+const IRQ_ALIVE_NS: u64 = 1_000_000_000; // 1 second
 
 struct Inner {
     device: ErasedInputDevice,
@@ -121,10 +125,10 @@ pub struct EventDev {
     /// IRQ line the underlying driver advertises, when available.
     irq: Option<usize>,
     irq_handle: spin::Once<ax_runtime::hal::irq::IrqHandle>,
-    /// Tracks whether any userspace process is blocked on `poll()`/`epoll`.
-    /// The polling fallback task only runs when this is `true`, avoiding
-    /// unnecessary CPU usage when no one is listening for input events.
-    has_waiters: AtomicBool,
+    /// Monotonic timestamp (ns) of the last successful IRQ drain.
+    /// When this is recent, IRQ delivery is considered healthy and the
+    /// polling fallback stays at low frequency even with active waiters.
+    last_irq_event: AtomicU64,
     ev_bits: Bitmap<{ EventType::COUNT as usize }>,
     /// Cached `EVIOCGPROP` bitmap. Computed once at probe from the driver's
     /// raw bits with a synthesized `INPUT_PROP_POINTER` for absolute or
@@ -186,7 +190,7 @@ impl EventDev {
             waiters: PollSet::new(),
             irq,
             irq_handle: spin::Once::new(),
-            has_waiters: AtomicBool::new(false),
+            last_irq_event: AtomicU64::new(0),
             ev_bits,
             prop_bits,
             abs_bits,
@@ -263,17 +267,22 @@ impl EventDev {
     /// Spawn a background polling task that periodically drains input events
     /// from the device.  Used as a fallback when IRQ delivery is unreliable
     /// (e.g. MSI-X enabled but only INTx is resolved, or INTx routing fails).
-    /// The task only runs when there are active waiters (`has_waiters` is
-    /// true), avoiding unnecessary CPU usage when no one is listening.
+    ///
+    /// - IRQ alive → 200 ms idle (IRQ is the primary path).
+    /// - IRQ stale, events found → 10 ms active (polling takes over).
+    /// - IRQ stale, 20 consecutive empty drains → backoff to 200 ms.
     fn start_polling(self: &Arc<Self>) {
         let dev = self.clone();
         ax_task::spawn_with_name(
             move || {
+                let mut empty_count = 0u32;
                 loop {
-                    // Only poll when someone is blocked on poll()/epoll.
-                    // When there are no waiters, sleep longer to reduce
-                    // CPU overhead.
-                    if !dev.has_waiters.load(Ordering::Acquire) {
+                    let now = monotonic_time_nanos();
+                    let irq = dev.last_irq_event.load(Ordering::Acquire);
+                    let irq_alive = now.wrapping_sub(irq) <= IRQ_ALIVE_NS;
+
+                    if irq_alive {
+                        empty_count = 0;
                         ax_task::sleep(Duration::from_millis(200));
                         continue;
                     }
@@ -282,9 +291,14 @@ impl EventDev {
                     let ready = inner.drain_into_queue();
                     drop(inner);
                     if ready {
+                        empty_count = 0;
                         unsafe { dev.waiters.wake(IoEvents::IN) };
+                        ax_task::sleep(Duration::from_millis(10));
+                    } else {
+                        empty_count = empty_count.saturating_add(1);
+                        let delay = if empty_count > 20 { 200 } else { 10 };
+                        ax_task::sleep(Duration::from_millis(delay));
                     }
-                    ax_task::sleep(Duration::from_millis(10)); // ~100 Hz
                 }
             },
             "evdev-poll".into(),
@@ -305,6 +319,9 @@ unsafe fn event_dev_irq_handler(
     let mut inner = event_dev.inner.lock();
     let event = inner.device.handle_irq();
     if event.input_ready && inner.drain_into_queue() {
+        event_dev
+            .last_irq_event
+            .store(monotonic_time_nanos(), Ordering::Release);
         drop(inner);
         event_dev.waiters.wake_from_irq(IoEvents::IN);
         return ax_runtime::hal::irq::IrqReturn::Wake;
@@ -567,9 +584,6 @@ impl Pollable for EventDev {
         if !events.contains(IoEvents::IN) {
             return;
         }
-        // Mark that someone is waiting for events, so the polling fallback
-        // task knows it should be active.
-        self.has_waiters.store(true, Ordering::Release);
         unsafe { self.waiters.register(context.waker(), IoEvents::IN) };
         if self.inner.lock().has_event() {
             context.waker().wake_by_ref();
