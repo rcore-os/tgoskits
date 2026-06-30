@@ -65,6 +65,8 @@ serial = [
 sg2002-placeholder = ["plat-dyn"]
 rknpu = ["plat-dyn", "rockchip-pm", "rockchip-soc", "dep:rockchip-npu"]
 rga = ["plat-dyn", "dep:rockchip-rga"]
+jpeg = ["plat-dyn", "rockchip-pm", "rockchip-soc", "dep:rockchip-jpeg"]
+jpu-selftest = ["jpeg"]
 rockchip-sdhci = [
     "block",
     "plat-dyn",
@@ -162,6 +164,7 @@ rdrive-macros.workspace = true
 rk3588-pci = { workspace = true, optional = true }
 rockchip-npu = { workspace = true, optional = true }
 rockchip-rga = { workspace = true, optional = true }
+rockchip-jpeg = { workspace = true, optional = true }
 rockchip-pm = { workspace = true, optional = true }
 rockchip-soc = { workspace = true, optional = true }
 phytium-mci-host = { workspace = true, optional = true }

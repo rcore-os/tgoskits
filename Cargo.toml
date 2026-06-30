@@ -236,6 +236,7 @@ rdif-vsock = { version = "0.1.2", path = "drivers/interface/rdif-vsock" }
 rk3588-pci = { version = "0.2.4", path = "drivers/pci/rk3588-pci" }
 rockchip-npu = { version = "0.2.7", path = "drivers/npu/rockchip-npu" }
 rockchip-rga = { version = "0.1.2", path = "drivers/gpu/rockchip-rga" }
+rockchip-jpeg = { version = "0.1.0", path = "drivers/vpu/rockchip-jpeg" }
 k230-kpu = { version = "0.1.0", path = "drivers/npu/k230-kpu" }
 realtek-rtl8125 = { version = "0.2.6", path = "drivers/net/realtek-rtl8125" }
 rockchip-pm = { version = "0.4.5", path = "drivers/soc/rockchip/rockchip-pm" }

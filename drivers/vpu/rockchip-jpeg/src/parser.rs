@@ -260,6 +260,10 @@ pub fn parse(data: &[u8]) -> Result<JpegInfo, ParseError> {
                 let (body, next) = read_segment(data, pos)?;
                 parse_sos(body, &mut info)?;
                 info.strm_offset = next as u32;
+                // There must be entropy-coded data after the scan header.
+                if info.strm_offset >= info.pkt_len {
+                    return Err(ParseError::Truncated);
+                }
                 return Ok(info);
             }
             // APPn, COM, JPG, DNL, and anything else with a length payload.
@@ -312,7 +316,8 @@ fn parse_dqt(body: &[u8], info: &mut JpegInfo) -> Result<(), ParseError> {
                 return Err(ParseError::BadSegment);
             }
             for k in 0..QUANT_LEN {
-                info.quant_tables[tq][k] = u16::from_be_bytes([body[i + 2 * k], body[i + 2 * k + 1]]);
+                info.quant_tables[tq][k] =
+                    u16::from_be_bytes([body[i + 2 * k], body[i + 2 * k + 1]]);
             }
             i += 2 * QUANT_LEN;
         }
@@ -579,9 +584,30 @@ mod tests {
 
     fn yuv420_comps() -> Vec<CompSpec> {
         std::vec![
-            CompSpec { id: 1, h: 2, v: 2, tq: 0, td: 0, ta: 0 },
-            CompSpec { id: 2, h: 1, v: 1, tq: 1, td: 1, ta: 1 },
-            CompSpec { id: 3, h: 1, v: 1, tq: 1, td: 1, ta: 1 },
+            CompSpec {
+                id: 1,
+                h: 2,
+                v: 2,
+                tq: 0,
+                td: 0,
+                ta: 0
+            },
+            CompSpec {
+                id: 2,
+                h: 1,
+                v: 1,
+                tq: 1,
+                td: 1,
+                ta: 1
+            },
+            CompSpec {
+                id: 3,
+                h: 1,
+                v: 1,
+                tq: 1,
+                td: 1,
+                ta: 1
+            },
         ]
     }
 
@@ -598,10 +624,14 @@ mod tests {
     fn parse_420() -> JpegInfo {
         let comps = yuv420_comps();
         let q = qtables();
-        let dc: Vec<(u8, [u8; 16], &[u8])> =
-            std::vec![(0, DC_LUMA_BITS, &DC_LUMA_VALS[..]), (1, DC_LUMA_BITS, &DC_LUMA_VALS[..])];
-        let ac: Vec<(u8, [u8; 16], &[u8])> =
-            std::vec![(0, AC_SMALL_BITS, &AC_SMALL_VALS[..]), (1, AC_SMALL_BITS, &AC_SMALL_VALS[..])];
+        let dc: Vec<(u8, [u8; 16], &[u8])> = std::vec![
+            (0, DC_LUMA_BITS, &DC_LUMA_VALS[..]),
+            (1, DC_LUMA_BITS, &DC_LUMA_VALS[..])
+        ];
+        let ac: Vec<(u8, [u8; 16], &[u8])> = std::vec![
+            (0, AC_SMALL_BITS, &AC_SMALL_VALS[..]),
+            (1, AC_SMALL_BITS, &AC_SMALL_VALS[..])
+        ];
         let (bytes, _off) = build_jpeg(0xC0, (64, 48), &comps, &q, &dc, &ac, None);
         parse(&bytes).expect("baseline 4:2:0 should parse")
     }
@@ -659,24 +689,37 @@ mod tests {
     fn computes_scan_offset_and_packet_length() {
         let comps = yuv420_comps();
         let q = qtables();
-        let dc: Vec<(u8, [u8; 16], &[u8])> =
-            std::vec![(0, DC_LUMA_BITS, &DC_LUMA_VALS[..]), (1, DC_LUMA_BITS, &DC_LUMA_VALS[..])];
-        let ac: Vec<(u8, [u8; 16], &[u8])> =
-            std::vec![(0, AC_SMALL_BITS, &AC_SMALL_VALS[..]), (1, AC_SMALL_BITS, &AC_SMALL_VALS[..])];
+        let dc: Vec<(u8, [u8; 16], &[u8])> = std::vec![
+            (0, DC_LUMA_BITS, &DC_LUMA_VALS[..]),
+            (1, DC_LUMA_BITS, &DC_LUMA_VALS[..])
+        ];
+        let ac: Vec<(u8, [u8; 16], &[u8])> = std::vec![
+            (0, AC_SMALL_BITS, &AC_SMALL_VALS[..]),
+            (1, AC_SMALL_BITS, &AC_SMALL_VALS[..])
+        ];
         let (bytes, off) = build_jpeg(0xC0, (64, 48), &comps, &q, &dc, &ac, None);
         let info = parse(&bytes).unwrap();
         assert_eq!(info.strm_offset, off);
         assert_eq!(info.pkt_len, bytes.len() as u32);
+
+        // Truncate right at the scan offset: SOS is the final segment with no
+        // entropy data, so the parser must reject it (would otherwise underflow
+        // the stream-length computation).
+        assert_eq!(parse(&bytes[..off as usize]), Err(ParseError::Truncated));
     }
 
     #[test]
     fn parses_restart_interval() {
         let comps = yuv420_comps();
         let q = qtables();
-        let dc: Vec<(u8, [u8; 16], &[u8])> =
-            std::vec![(0, DC_LUMA_BITS, &DC_LUMA_VALS[..]), (1, DC_LUMA_BITS, &DC_LUMA_VALS[..])];
-        let ac: Vec<(u8, [u8; 16], &[u8])> =
-            std::vec![(0, AC_SMALL_BITS, &AC_SMALL_VALS[..]), (1, AC_SMALL_BITS, &AC_SMALL_VALS[..])];
+        let dc: Vec<(u8, [u8; 16], &[u8])> = std::vec![
+            (0, DC_LUMA_BITS, &DC_LUMA_VALS[..]),
+            (1, DC_LUMA_BITS, &DC_LUMA_VALS[..])
+        ];
+        let ac: Vec<(u8, [u8; 16], &[u8])> = std::vec![
+            (0, AC_SMALL_BITS, &AC_SMALL_VALS[..]),
+            (1, AC_SMALL_BITS, &AC_SMALL_VALS[..])
+        ];
         let (bytes, _off) = build_jpeg(0xC0, (64, 48), &comps, &q, &dc, &ac, Some(8));
         let info = parse(&bytes).unwrap();
         assert_eq!(info.restart_interval, 8);
@@ -685,22 +728,54 @@ mod tests {
     #[test]
     fn derives_yuv422() {
         let comps = std::vec![
-            CompSpec { id: 1, h: 2, v: 1, tq: 0, td: 0, ta: 0 },
-            CompSpec { id: 2, h: 1, v: 1, tq: 1, td: 1, ta: 1 },
-            CompSpec { id: 3, h: 1, v: 1, tq: 1, td: 1, ta: 1 },
+            CompSpec {
+                id: 1,
+                h: 2,
+                v: 1,
+                tq: 0,
+                td: 0,
+                ta: 0
+            },
+            CompSpec {
+                id: 2,
+                h: 1,
+                v: 1,
+                tq: 1,
+                td: 1,
+                ta: 1
+            },
+            CompSpec {
+                id: 3,
+                h: 1,
+                v: 1,
+                tq: 1,
+                td: 1,
+                ta: 1
+            },
         ];
         let q = qtables();
-        let dc: Vec<(u8, [u8; 16], &[u8])> =
-            std::vec![(0, DC_LUMA_BITS, &DC_LUMA_VALS[..]), (1, DC_LUMA_BITS, &DC_LUMA_VALS[..])];
-        let ac: Vec<(u8, [u8; 16], &[u8])> =
-            std::vec![(0, AC_SMALL_BITS, &AC_SMALL_VALS[..]), (1, AC_SMALL_BITS, &AC_SMALL_VALS[..])];
+        let dc: Vec<(u8, [u8; 16], &[u8])> = std::vec![
+            (0, DC_LUMA_BITS, &DC_LUMA_VALS[..]),
+            (1, DC_LUMA_BITS, &DC_LUMA_VALS[..])
+        ];
+        let ac: Vec<(u8, [u8; 16], &[u8])> = std::vec![
+            (0, AC_SMALL_BITS, &AC_SMALL_VALS[..]),
+            (1, AC_SMALL_BITS, &AC_SMALL_VALS[..])
+        ];
         let (bytes, _off) = build_jpeg(0xC0, (64, 48), &comps, &q, &dc, &ac, None);
         assert_eq!(parse(&bytes).unwrap().yuv_mode, YuvMode::Yuv422);
     }
 
     #[test]
     fn derives_grayscale_yuv400() {
-        let comps = std::vec![CompSpec { id: 1, h: 1, v: 1, tq: 0, td: 0, ta: 0 }];
+        let comps = std::vec![CompSpec {
+            id: 1,
+            h: 1,
+            v: 1,
+            tq: 0,
+            td: 0,
+            ta: 0
+        }];
         let q: Vec<(u8, [u8; 64])> = std::vec![(0, [1u8; 64])];
         let dc: Vec<(u8, [u8; 16], &[u8])> = std::vec![(0, DC_LUMA_BITS, &DC_LUMA_VALS[..])];
         let ac: Vec<(u8, [u8; 16], &[u8])> = std::vec![(0, AC_SMALL_BITS, &AC_SMALL_VALS[..])];
@@ -714,10 +789,14 @@ mod tests {
     fn rejects_progressive() {
         let comps = yuv420_comps();
         let q = qtables();
-        let dc: Vec<(u8, [u8; 16], &[u8])> =
-            std::vec![(0, DC_LUMA_BITS, &DC_LUMA_VALS[..]), (1, DC_LUMA_BITS, &DC_LUMA_VALS[..])];
-        let ac: Vec<(u8, [u8; 16], &[u8])> =
-            std::vec![(0, AC_SMALL_BITS, &AC_SMALL_VALS[..]), (1, AC_SMALL_BITS, &AC_SMALL_VALS[..])];
+        let dc: Vec<(u8, [u8; 16], &[u8])> = std::vec![
+            (0, DC_LUMA_BITS, &DC_LUMA_VALS[..]),
+            (1, DC_LUMA_BITS, &DC_LUMA_VALS[..])
+        ];
+        let ac: Vec<(u8, [u8; 16], &[u8])> = std::vec![
+            (0, AC_SMALL_BITS, &AC_SMALL_VALS[..]),
+            (1, AC_SMALL_BITS, &AC_SMALL_VALS[..])
+        ];
         // 0xC2 = SOF2 (progressive).
         let (bytes, _off) = build_jpeg(0xC2, (64, 48), &comps, &q, &dc, &ac, None);
         assert_eq!(parse(&bytes), Err(ParseError::NotBaseline));
@@ -734,7 +813,14 @@ mod tests {
 
     #[test]
     fn grayscale_table_entries() {
-        let comps = std::vec![CompSpec { id: 1, h: 1, v: 1, tq: 0, td: 0, ta: 0 }];
+        let comps = std::vec![CompSpec {
+            id: 1,
+            h: 1,
+            v: 1,
+            tq: 0,
+            td: 0,
+            ta: 0
+        }];
         let q: Vec<(u8, [u8; 64])> = std::vec![(0, [1u8; 64])];
         let dc: Vec<(u8, [u8; 16], &[u8])> = std::vec![(0, DC_LUMA_BITS, &DC_LUMA_VALS[..])];
         let ac: Vec<(u8, [u8; 16], &[u8])> = std::vec![(0, AC_SMALL_BITS, &AC_SMALL_VALS[..])];
@@ -756,15 +842,40 @@ mod tests {
     fn yuv444_sets_fill_for_unaligned_size() {
         // width=20 -> (20 & 0xf)=4 in 1..=8 -> fill_right; height=20 -> fill_bottom.
         let comps = std::vec![
-            CompSpec { id: 1, h: 1, v: 1, tq: 0, td: 0, ta: 0 },
-            CompSpec { id: 2, h: 1, v: 1, tq: 1, td: 1, ta: 1 },
-            CompSpec { id: 3, h: 1, v: 1, tq: 1, td: 1, ta: 1 },
+            CompSpec {
+                id: 1,
+                h: 1,
+                v: 1,
+                tq: 0,
+                td: 0,
+                ta: 0
+            },
+            CompSpec {
+                id: 2,
+                h: 1,
+                v: 1,
+                tq: 1,
+                td: 1,
+                ta: 1
+            },
+            CompSpec {
+                id: 3,
+                h: 1,
+                v: 1,
+                tq: 1,
+                td: 1,
+                ta: 1
+            },
         ];
         let q = qtables();
-        let dc: Vec<(u8, [u8; 16], &[u8])> =
-            std::vec![(0, DC_LUMA_BITS, &DC_LUMA_VALS[..]), (1, DC_LUMA_BITS, &DC_LUMA_VALS[..])];
-        let ac: Vec<(u8, [u8; 16], &[u8])> =
-            std::vec![(0, AC_SMALL_BITS, &AC_SMALL_VALS[..]), (1, AC_SMALL_BITS, &AC_SMALL_VALS[..])];
+        let dc: Vec<(u8, [u8; 16], &[u8])> = std::vec![
+            (0, DC_LUMA_BITS, &DC_LUMA_VALS[..]),
+            (1, DC_LUMA_BITS, &DC_LUMA_VALS[..])
+        ];
+        let ac: Vec<(u8, [u8; 16], &[u8])> = std::vec![
+            (0, AC_SMALL_BITS, &AC_SMALL_VALS[..]),
+            (1, AC_SMALL_BITS, &AC_SMALL_VALS[..])
+        ];
         let (bytes, _off) = build_jpeg(0xC0, (20, 20), &comps, &q, &dc, &ac, None);
         let info = parse(&bytes).unwrap();
         assert_eq!(info.yuv_mode, YuvMode::Yuv444);
@@ -780,5 +891,19 @@ mod tests {
     #[test]
     fn rejects_truncated() {
         assert_eq!(parse(&[0xFF, 0xD8, 0xFF]), Err(ParseError::Truncated));
+    }
+
+    #[test]
+    fn parses_real_baseline_jpeg_asset() {
+        // The embedded self-test JPEG is a real 64x64 baseline 4:2:0 image
+        // (with APPn segments and a restart interval) produced by an encoder.
+        let info = parse(crate::SELFTEST_JPEG).expect("real baseline 4:2:0 JPEG should parse");
+        assert_eq!((info.width, info.height), (64, 64));
+        assert_eq!(info.nb_components, 3);
+        assert_eq!(info.yuv_mode, YuvMode::Yuv420);
+        assert!(info.restart_interval > 0);
+        assert_eq!(info.qtbl_entry, 2);
+        assert_eq!(info.htbl_entry, 0x0f);
+        assert!(info.strm_offset > 0 && (info.strm_offset as usize) < info.pkt_len as usize);
     }
 }

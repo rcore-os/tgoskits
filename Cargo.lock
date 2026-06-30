@@ -716,6 +716,7 @@ dependencies = [
  "realtek-rtl8125",
  "riscv_goldfish",
  "rk3588-pci",
+ "rockchip-jpeg",
  "rockchip-npu",
  "rockchip-pm",
  "rockchip-rga",

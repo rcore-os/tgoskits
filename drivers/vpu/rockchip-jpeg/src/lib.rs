@@ -21,9 +21,16 @@ pub mod status;
 
 use core::ptr::NonNull;
 
-use crate::parser::JpegInfo;
-use crate::registers::offset;
-use crate::status::{DecodeError, DecodeStatus};
+use dma_api::DeviceDma;
+
+use crate::{
+    parser::JpegInfo,
+    registers::offset,
+    status::{DecodeError, DecodeStatus},
+};
+
+/// A small embedded baseline 4:2:0 JPEG (64x64) for the boot-time self-test.
+pub const SELFTEST_JPEG: &[u8] = include_bytes!("selftest_baseline_420.jpg");
 
 /// 32-bit MMIO access to the JPEG decoder register file. Abstracted so the core
 /// can be exercised by host tests with a fake backend.
@@ -161,8 +168,10 @@ impl<M: JpuMmio> JpuCore<M> {
     /// Clear the `SWREG1` status bits (write-1-to-clear) after handling.
     pub fn clear_status(&mut self) {
         let v = self.mmio.read32(offset(registers::REG_INT));
-        self.mmio
-            .write32(offset(registers::REG_INT), v & registers::INT_STATUS_CLEAR_MASK);
+        self.mmio.write32(
+            offset(registers::REG_INT),
+            v & registers::INT_STATUS_CLEAR_MASK,
+        );
     }
 
     /// Build the register array for `info`, patch in the buffer addresses, start
@@ -188,10 +197,100 @@ impl<M: JpuMmio> JpuCore<M> {
     }
 }
 
+/// Errors from the JPEG decode self-test path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SelftestError {
+    /// The JPEG header could not be parsed.
+    Parse(parser::ParseError),
+    /// A DMA buffer allocation failed.
+    Alloc,
+    /// The hardware decode failed.
+    Decode(JpuError),
+}
+
+/// A probed RK3588 JPEG decoder device: the hardware engine plus a DMA
+/// capability for allocating contiguous decode buffers.
+pub struct RockchipJpeg {
+    core: JpuCore<RawMmio>,
+    dma: DeviceDma,
+}
+
+impl RockchipJpeg {
+    /// Build a device over the mapped register `base` and a DMA capability.
+    pub fn new(base: NonNull<u8>, dma: DeviceDma) -> Self {
+        Self {
+            core: JpuCore::new(RawMmio::new(base)),
+            dma,
+        }
+    }
+
+    /// Access the underlying hardware engine.
+    pub fn core(&mut self) -> &mut JpuCore<RawMmio> {
+        &mut self.core
+    }
+
+    /// Read the hardware ID register (upper half is `prod_num`).
+    pub fn read_id(&self) -> u32 {
+        self.core.read_id()
+    }
+
+    /// Decode a baseline JPEG into a freshly-allocated NV12 buffer using
+    /// contiguous (IOMMU-bypass) DMA buffers; returns the decode status.
+    pub fn decode_jpeg<C: FnMut() -> u64>(
+        &mut self,
+        jpeg: &[u8],
+        clock: &mut C,
+        timeout_us: u64,
+    ) -> Result<DecodeStatus, SelftestError> {
+        let info = parser::parse(jpeg).map_err(SelftestError::Parse)?;
+
+        let mut stream = self
+            .dma
+            .coherent_array_zero::<u8>(jpeg.len())
+            .map_err(|_| SelftestError::Alloc)?;
+        stream.copy_from_slice_cpu(jpeg);
+
+        let mut table_buf = [0u8; command::TABLE_SIZE];
+        command::build_table_buffer(&info, &mut table_buf);
+        let mut table = self
+            .dma
+            .coherent_array_zero::<u8>(command::TABLE_SIZE)
+            .map_err(|_| SelftestError::Alloc)?;
+        table.copy_from_slice_cpu(&table_buf);
+
+        let out_w = (info.width as usize + 15) & !15;
+        let out_h = (info.height as usize + 15) & !15;
+        let out_size = out_w * out_h * 3 / 2;
+        let output = self
+            .dma
+            .coherent_array_zero::<u8>(out_size)
+            .map_err(|_| SelftestError::Alloc)?;
+
+        let addrs = DecodeAddrs {
+            table_phys: table.dma_addr().as_u64() as u32,
+            stream_phys: stream.dma_addr().as_u64() as u32,
+            output_phys: output.dma_addr().as_u64() as u32,
+        };
+
+        // Buffers stay alive across the synchronous (poll-to-completion) decode.
+        let status = self
+            .core
+            .decode(&info, addrs, clock, timeout_us)
+            .map_err(SelftestError::Decode)?;
+        drop((stream, table, output));
+        Ok(status)
+    }
+}
+
+impl rdif_base::DriverGeneric for RockchipJpeg {
+    fn name(&self) -> &str {
+        "rockchip-jpeg"
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use core::cell::Cell;
-
     use std::vec::Vec;
 
     use super::*;
@@ -262,9 +361,30 @@ mod tests {
         info.htbl_entry = 0x0f;
         info.strm_offset = 44;
         info.pkt_len = 200;
-        info.components[0] = Component { id: 1, h: 2, v: 2, quant_index: 0, dc_index: 0, ac_index: 0 };
-        info.components[1] = Component { id: 2, h: 1, v: 1, quant_index: 1, dc_index: 1, ac_index: 1 };
-        info.components[2] = Component { id: 3, h: 1, v: 1, quant_index: 1, dc_index: 1, ac_index: 1 };
+        info.components[0] = Component {
+            id: 1,
+            h: 2,
+            v: 2,
+            quant_index: 0,
+            dc_index: 0,
+            ac_index: 0,
+        };
+        info.components[1] = Component {
+            id: 2,
+            h: 1,
+            v: 1,
+            quant_index: 1,
+            dc_index: 1,
+            ac_index: 1,
+        };
+        info.components[2] = Component {
+            id: 3,
+            h: 1,
+            v: 1,
+            quant_index: 1,
+            dc_index: 1,
+            ac_index: 1,
+        };
         info
     }
 
@@ -335,7 +455,9 @@ mod tests {
             stream_phys: 0x2000_0000,
             output_phys: 0x3000_0000,
         };
-        let st = core.decode(&fixture_420(), addrs, &mut clock, 1000).unwrap();
+        let st = core
+            .decode(&fixture_420(), addrs, &mut clock, 1000)
+            .unwrap();
         assert!(st.is_success());
         // Address registers patched (stream gets the 16-byte-floored offset of 44 -> 32).
         assert_eq!(core.mmio.reg(REG_QTBL_BASE), 0x1000_0000);

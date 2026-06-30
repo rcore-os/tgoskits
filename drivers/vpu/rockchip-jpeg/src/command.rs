@@ -6,8 +6,10 @@
 //! physical addresses. [`build_table_buffer`] writes the 1280-byte quantization
 //! + Huffman table buffer the hardware reads via `reg9/10/11`.
 
-use crate::parser::{JpegInfo, YuvMode};
-use crate::registers;
+use crate::{
+    parser::{JpegInfo, YuvMode},
+    registers,
+};
 
 /// Total table buffer size (quant + Huffman), bytes.
 pub const TABLE_SIZE: usize = 1280;
@@ -48,9 +50,14 @@ pub fn build_reg_array(info: &JpegInfo) -> [u32; registers::REG_COUNT] {
     let mut regs = [0u32; registers::REG_COUNT];
     let jpeg_mode = hw_jpeg_mode(info.yuv_mode);
 
-    // reg1: start the decoder, enable timeout + buffer-empty detection.
-    regs[registers::REG_INT] =
-        registers::INT_DEC_E | registers::INT_TIMEOUT_E | registers::INT_BUF_EMPTY_E;
+    // reg1: start the decoder, enable timeout + buffer-empty detection. The
+    // native decode path polls `SWREG1` for completion and registers no jpegd IRQ
+    // handler, so disable the decode-ready interrupt (`sw_dec_irq_dis`) rather than
+    // asserting an interrupt line nothing services.
+    regs[registers::REG_INT] = registers::INT_DEC_E
+        | registers::INT_IRQ_DIS
+        | registers::INT_TIMEOUT_E
+        | registers::INT_BUF_EMPTY_E;
 
     // reg2 (sys): native output (yuv_out_format=0), raster (dec_out_sequence=0),
     // no scaledown. 4:2:0 native always sets fill_down_e; else use parsed flags.
@@ -72,6 +79,9 @@ pub fn build_reg_array(info: &JpegInfo) -> [u32; registers::REG_COUNT] {
     // Table selectors (TBL_ENTRY_*), per hal_jpegd_rkv.
     let (qtables_sel, htables_sel) = if info.nb_components > 1 {
         let q = if info.qtbl_entry > 1 { 3 } else { 2 };
+        // `htbl_entry` is a 4-bit presence mask (DC0/AC0/DC1/AC1), so it never
+        // exceeds 0x0f and baseline always resolves to selector 2; the `3` arm is
+        // intentionally unreachable here (kept for parity with the qtable form).
         let h = if info.htbl_entry > 0x0f { 3 } else { 2 };
         (q, h)
     } else {
@@ -117,7 +127,10 @@ pub fn build_reg_array(info: &JpegInfo) -> [u32; registers::REG_COUNT] {
     };
     let (htbl_mincode_len, htbl_value_len) = match htables_sel {
         0 => (0, 0),
-        2 => ((info.nb_components as u32 - 1) * 6 - 1, htables_sel * 12 - 1),
+        2 => (
+            (info.nb_components as u32 - 1) * 6 - 1,
+            htables_sel * 12 - 1,
+        ),
         _ => (info.nb_components as u32 * 6 - 1, htables_sel * 12 - 1),
     };
     let y_hor_virstride_h = (y_hor_stride >> 16) & 1;
@@ -129,7 +142,8 @@ pub fn build_reg_array(info: &JpegInfo) -> [u32; registers::REG_COUNT] {
     // reg8: stream length (16-byte units, minus one) + start byte.
     let hw_strm_offset = info.strm_offset - info.strm_offset % 16;
     let start_byte = info.strm_offset % 16;
-    let stream_len = (align_up(info.pkt_len - hw_strm_offset, 16) - 1) >> 4;
+    let strm_bytes = info.pkt_len.saturating_sub(hw_strm_offset);
+    let stream_len = (align_up(strm_bytes, 16).saturating_sub(1)) >> 4;
     regs[registers::REG_STRM_LEN] = (start_byte & 0xf) | ((stream_len & 0x0fff_ffff) << 4);
 
     // reg14: stream error handling defaults (error_prc_mode=1, skip 0xffff/other marks).
@@ -324,8 +338,8 @@ mod tests {
     #[test]
     fn reg_array_control_and_geometry() {
         let regs = build_reg_array(&fixture_420());
-        // reg1: dec_e | dec_timeout_e | buf_empty_e
-        assert_eq!(regs[registers::REG_INT], 0x0000_000D);
+        // reg1: dec_e | dec_irq_dis | dec_timeout_e | buf_empty_e (polled path)
+        assert_eq!(regs[registers::REG_INT], 0x0000_000F);
         // reg2: fill_down_e (bit24) for 4:2:0; nothing else.
         assert_eq!(regs[registers::REG_SYS], 0x0100_0000);
         // reg3: (width-1) | (height-1)<<16
