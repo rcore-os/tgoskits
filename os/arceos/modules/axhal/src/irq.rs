@@ -15,6 +15,17 @@ pub use ax_plat::irq::{
 #[cfg(feature = "ipi")]
 pub use ax_plat::irq::{IpiTarget, send_ipi};
 
+/// Optional IRQ epilogue hook used by task runtimes to consume IRQ-safe wake
+/// queues before preemption is re-enabled.
+#[ax_crate_interface::def_interface]
+pub trait IrqEpilogueIf {
+    /// Runs after the platform IRQ dispatcher returns, still under
+    /// `NoPreempt`, before normal scheduling is allowed again.
+    fn drain_irq_wake_queue_current_cpu() -> usize {
+        0
+    }
+}
+
 /// Returns the platform IRQ id used for inter-processor interrupts.
 #[cfg(feature = "ipi")]
 pub fn ipi_irq() -> IrqId {
@@ -29,6 +40,7 @@ pub fn ipi_irq() -> IrqId {
 pub fn handle_irq(vector: usize) -> bool {
     let guard = ax_kernel_guard::NoPreempt::new();
     let handled = handle(TrapVector(vector)).is_some();
+    let _ = ax_crate_interface::call_interface!(IrqEpilogueIf::drain_irq_wake_queue_current_cpu);
 
     drop(guard); // rescheduling may occur when preemption is re-enabled.
     handled

@@ -344,6 +344,85 @@ fn local_executor_repolls_after_irq_runtime_event() {
     assert_eq!(event.take_bits(), 0x8);
 }
 
+#[cfg(feature = "irq")]
+#[test]
+fn local_executor_new_outside_task_context_does_not_panic() {
+    let executor = crate::local::LocalExecutor::new();
+    executor.run_until_idle();
+}
+
+#[cfg(feature = "irq")]
+#[test]
+fn runtime_event_publish_from_irq_with_wakes_host_task() {
+    run_in_test_scheduler(|| {
+        let event = crate::local::RuntimeEvent::new();
+        let waker = crate::current_irq_task_waker();
+
+        let (seq, wake) = event.publish_from_irq_with(0x20, &waker);
+
+        assert_eq!(seq.get(), 1);
+        assert!(wake.woke());
+        assert_eq!(event.take_bits(), 0x20);
+        assert_eq!(crate::drain_irq_wake_queue_current_cpu(), 0);
+    });
+}
+
+#[cfg(feature = "irq")]
+#[test]
+fn irq_task_waker_coalesces_and_preserves_bits() {
+    run_in_test_scheduler(|| {
+        let waker = crate::current_irq_task_waker();
+        let initial_seq = waker.seq();
+
+        let first = waker.wake_from_irq(0x1);
+        let second = waker.wake_from_irq(0x2);
+
+        assert!(first.woke());
+        assert!(!second.woke());
+        assert!(first.should_resched());
+        assert_eq!(waker.seq(), initial_seq + 2);
+        assert_eq!(waker.take_bits(), 0x3);
+        assert_eq!(crate::drain_irq_wake_queue_current_cpu(), 0);
+    });
+}
+
+#[cfg(feature = "irq")]
+#[test]
+fn irq_task_waker_wakes_blocked_future_task() {
+    run_in_test_scheduler(|| {
+        let task = crate::TaskInner::new(|| {}, "irq-wake-test".into(), RAW_TASK_STACK_SIZE);
+        let task = task.into_arc();
+        crate::register_task(&task);
+        task.set_state(crate::TaskState::Blocked);
+        let waker = crate::irq_wake::IrqTaskWaker::new(task.clone());
+
+        let result = waker.wake_from_irq(0x10);
+        assert!(result.should_resched());
+        assert_eq!(waker.take_bits(), 0x10);
+        assert_eq!(crate::drain_irq_wake_queue_current_cpu(), 1);
+        assert_eq!(task.state(), crate::TaskState::Ready);
+    });
+}
+
+#[cfg(feature = "irq")]
+#[test]
+fn irq_task_waker_is_invalid_after_logical_exit() {
+    run_in_test_scheduler(|| {
+        let task = crate::TaskInner::new(|| {}, "irq-wake-exit-test".into(), RAW_TASK_STACK_SIZE);
+        let task = task.into_arc();
+        crate::register_task(&task);
+        let waker = crate::irq_wake::IrqTaskWaker::new(task.clone());
+
+        task.notify_exit(0);
+
+        let result = waker.wake_from_irq(0x40);
+        assert!(!result.woke());
+        assert_eq!(waker.seq(), 0);
+        assert_eq!(waker.take_bits(), 0);
+        assert_eq!(crate::drain_irq_wake_queue_current_cpu(), 0);
+    });
+}
+
 #[test]
 fn test_sched_fifo() {
     run_in_test_scheduler(|| {

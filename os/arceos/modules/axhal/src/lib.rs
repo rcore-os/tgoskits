@@ -25,6 +25,7 @@
 //! [cargo test]: https://doc.rust-lang.org/cargo/guide/tests.html
 
 #![no_std]
+#![cfg_attr(feature = "irq", feature(linkage))]
 
 #[allow(unused_imports)]
 #[macro_use]

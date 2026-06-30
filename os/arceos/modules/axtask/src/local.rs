@@ -21,7 +21,7 @@ use core::{
 
 use ax_kspin::SpinNoIrq;
 
-use crate::{IrqNotify, WaitQueue};
+use crate::{IrqNotify, IrqTaskWaker, WaitQueue};
 
 /// Mutable sequence cursor for [`RuntimeEvent`].
 #[derive(Debug, Default)]
@@ -115,6 +115,21 @@ impl RuntimeEvent {
     /// Publishes event bits from hard IRQ context.
     pub fn publish_from_irq(&self, bits: u64) -> RuntimeEventValue {
         self.publish_inner(bits, true)
+    }
+
+    /// Publishes event bits from hard IRQ context and wakes a host task through
+    /// the IRQ-safe task wake path.
+    pub fn publish_from_irq_with(
+        &self,
+        bits: u64,
+        waker: &IrqTaskWaker,
+    ) -> (RuntimeEventValue, crate::IrqWakeResult) {
+        if bits != 0 {
+            self.bits.fetch_or(bits, Ordering::AcqRel);
+        }
+        let seq = RuntimeEventValue(self.seq.fetch_add(1, Ordering::AcqRel) + 1);
+        let wake = waker.wake_from_irq(bits);
+        (seq, wake)
     }
 
     fn publish_inner(&self, bits: u64, from_irq: bool) -> RuntimeEventValue {
@@ -267,12 +282,16 @@ impl Wake for LocalTask {
 struct LocalExecutorInner {
     ready: SpinNoIrq<VecDeque<Arc<LocalTask>>>,
     wait: WaitQueue,
+    host_waker: Option<IrqTaskWaker>,
     active: AtomicBool,
     task_count: AtomicUsize,
 }
 
 impl LocalExecutorInner {
     fn wake_host(&self) {
+        if let Some(waker) = &self.host_waker {
+            let _ = waker.wake(0);
+        }
         self.wait.notify_one(true);
     }
 
@@ -294,6 +313,7 @@ impl LocalExecutor {
             inner: Arc::new(LocalExecutorInner {
                 ready: SpinNoIrq::new(VecDeque::new()),
                 wait: WaitQueue::new(),
+                host_waker: crate::try_current_irq_task_waker(),
                 active: AtomicBool::new(false),
                 task_count: AtomicUsize::new(0),
             }),

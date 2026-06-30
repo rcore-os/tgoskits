@@ -113,6 +113,17 @@ pub struct TaskInner {
     interrupted: AtomicBool,
     interrupt_waker: AtomicWaker,
 
+    #[cfg(feature = "irq")]
+    irq_wake_pending: AtomicBool,
+    #[cfg(feature = "irq")]
+    irq_wake_seq: AtomicU64,
+    #[cfg(feature = "irq")]
+    irq_wake_bits: AtomicU64,
+    #[cfg(feature = "irq")]
+    irq_wake_generation: AtomicU64,
+    #[cfg(feature = "irq")]
+    irq_wake_next: core::sync::atomic::AtomicPtr<AxTask>,
+
     exit_code: AtomicI32,
     wait_for_exit: WaitQueue,
 
@@ -339,6 +350,83 @@ impl TaskInner {
         self.interrupted.store(true, Ordering::Release);
         self.interrupt_waker.wake();
     }
+
+    #[cfg(feature = "irq")]
+    #[inline]
+    pub(crate) fn irq_wake_generation(&self) -> u64 {
+        self.irq_wake_generation.load(Ordering::Acquire)
+    }
+
+    #[cfg(feature = "irq")]
+    #[inline]
+    pub(crate) fn irq_wake_generation_matches(&self, generation: u64) -> bool {
+        self.irq_wake_generation() == generation
+    }
+
+    #[cfg(feature = "irq")]
+    #[inline]
+    pub(crate) fn expire_irq_wakers(&self) {
+        self.irq_wake_generation.fetch_add(1, Ordering::AcqRel);
+        self.irq_wake_pending.store(false, Ordering::Release);
+        self.irq_wake_bits.store(0, Ordering::Release);
+    }
+
+    #[cfg(feature = "irq")]
+    #[inline]
+    pub(crate) fn publish_irq_wake_bits(&self, bits: u64) {
+        if bits != 0 {
+            self.irq_wake_bits.fetch_or(bits, Ordering::AcqRel);
+        }
+    }
+
+    #[cfg(feature = "irq")]
+    #[inline]
+    pub(crate) fn take_irq_wake_bits(&self) -> u64 {
+        self.irq_wake_bits.swap(0, Ordering::AcqRel)
+    }
+
+    #[cfg(feature = "irq")]
+    #[inline]
+    pub(crate) fn bump_irq_wake_seq(&self) -> u64 {
+        self.irq_wake_seq.fetch_add(1, Ordering::AcqRel) + 1
+    }
+
+    #[cfg(feature = "irq")]
+    #[inline]
+    pub(crate) fn irq_wake_seq(&self) -> u64 {
+        self.irq_wake_seq.load(Ordering::Acquire)
+    }
+
+    #[cfg(feature = "irq")]
+    #[inline]
+    pub(crate) fn mark_irq_wake_pending(&self) -> bool {
+        !self.irq_wake_pending.swap(true, Ordering::AcqRel)
+    }
+
+    #[cfg(feature = "irq")]
+    #[inline]
+    pub(crate) fn take_irq_wake_pending(&self) -> bool {
+        self.irq_wake_pending.swap(false, Ordering::AcqRel)
+    }
+
+    #[cfg(feature = "irq")]
+    #[inline]
+    pub(crate) fn set_irq_wake_next(&self, next: *mut AxTask) {
+        self.irq_wake_next.store(next, Ordering::Release);
+    }
+
+    #[cfg(feature = "irq")]
+    #[inline]
+    pub(crate) fn irq_wake_next(&self) -> *mut AxTask {
+        self.irq_wake_next.load(Ordering::Acquire)
+    }
+
+    #[cfg(feature = "irq")]
+    #[inline]
+    pub(crate) fn clear_irq_wake_link(&self) {
+        self.irq_wake_next
+            .store(core::ptr::null_mut(), Ordering::Release);
+    }
 }
 
 // private methods
@@ -369,6 +457,16 @@ impl TaskInner {
             preempt_disable_count: AtomicUsize::new(0),
             interrupted: AtomicBool::new(false),
             interrupt_waker: AtomicWaker::new(),
+            #[cfg(feature = "irq")]
+            irq_wake_pending: AtomicBool::new(false),
+            #[cfg(feature = "irq")]
+            irq_wake_seq: AtomicU64::new(0),
+            #[cfg(feature = "irq")]
+            irq_wake_bits: AtomicU64::new(0),
+            #[cfg(feature = "irq")]
+            irq_wake_generation: AtomicU64::new(1),
+            #[cfg(feature = "irq")]
+            irq_wake_next: core::sync::atomic::AtomicPtr::new(core::ptr::null_mut()),
             exit_code: AtomicI32::new(0),
             wait_for_exit: WaitQueue::new(),
             kstack,
@@ -572,6 +670,8 @@ impl TaskInner {
 
     /// Notify all tasks that join on this task.
     pub(crate) fn notify_exit(&self, exit_code: i32) {
+        #[cfg(feature = "irq")]
+        self.expire_irq_wakers();
         self.set_state(TaskState::Exited);
         self.exit_code.store(exit_code, Ordering::Release);
         self.wait_for_exit.notify_all(false);
@@ -637,6 +737,8 @@ impl fmt::Debug for TaskInner {
 
 impl Drop for TaskInner {
     fn drop(&mut self) {
+        #[cfg(feature = "irq")]
+        crate::irq_wake::expire_task_irq_wakers(self);
         debug!("task drop: {}", self.id_name());
     }
 }

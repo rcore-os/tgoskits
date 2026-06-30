@@ -79,6 +79,8 @@ cfg_if::cfg_if! {
         #[cfg(feature = "irq")]
         mod irq_notify;
         #[cfg(feature = "irq")]
+        mod irq_wake;
+        #[cfg(feature = "irq")]
         pub mod local;
         mod wait_queue;
 
@@ -92,6 +94,11 @@ cfg_if::cfg_if! {
         pub use self::api::*;
         #[cfg(feature = "irq")]
         pub use self::irq_notify::IrqNotify;
+        #[cfg(feature = "irq")]
+        pub use self::irq_wake::{
+            IrqTaskWaker, IrqWakeResult, current_irq_task_waker,
+            drain_irq_wake_queue_current_cpu, try_current_irq_task_waker,
+        };
         pub use self::api::{sleep, sleep_until, yield_now};
         #[cfg(feature = "tracepoint-hooks")]
         pub use self::sched_tracepoint::SchedTracepoint;

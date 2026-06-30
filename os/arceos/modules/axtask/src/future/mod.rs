@@ -5,14 +5,18 @@ use core::{
     fmt,
     future::poll_fn,
     pin::pin,
+    sync::atomic::{AtomicBool, Ordering},
     task::{Context, Poll, Waker},
 };
 
 use ax_errno::AxError;
 use ax_kernel_guard::NoPreemptIrqSave;
-use ax_kspin::SpinNoIrq;
 
-use crate::{AxTaskRef, WeakAxTaskRef, current, current_run_queue, select_wake_run_queue};
+#[cfg(feature = "irq")]
+use crate::IrqTaskWaker;
+use crate::{AxTaskRef, current, current_run_queue};
+#[cfg(not(feature = "irq"))]
+use crate::{WeakAxTaskRef, select_wake_run_queue};
 
 mod poll;
 pub use poll::*;
@@ -21,16 +25,41 @@ mod time;
 pub use time::*;
 
 struct AxWaker {
+    #[cfg(feature = "irq")]
+    task: IrqTaskWaker,
+    #[cfg(not(feature = "irq"))]
     task: WeakAxTaskRef,
-    woke: SpinNoIrq<bool>,
+    woke: AtomicBool,
 }
 
 impl AxWaker {
     fn new(task: &AxTaskRef) -> Arc<Self> {
         Arc::new(AxWaker {
+            #[cfg(feature = "irq")]
+            task: IrqTaskWaker::new(task.clone()),
+            #[cfg(not(feature = "irq"))]
             task: Arc::downgrade(task),
-            woke: SpinNoIrq::new(false),
+            woke: AtomicBool::new(false),
         })
+    }
+
+    fn take_woke(&self) -> bool {
+        self.woke.swap(false, Ordering::AcqRel)
+    }
+
+    #[cfg(feature = "irq")]
+    fn irq_seq(&self) -> u64 {
+        self.task.seq()
+    }
+
+    #[cfg(feature = "irq")]
+    fn should_repoll(&self, observed_irq_seq: u64) -> bool {
+        self.take_woke() || self.irq_seq() != observed_irq_seq
+    }
+
+    #[cfg(not(feature = "irq"))]
+    fn should_repoll(&self) -> bool {
+        self.take_woke()
     }
 }
 
@@ -40,9 +69,12 @@ impl Wake for AxWaker {
     }
 
     fn wake_by_ref(self: &Arc<Self>) {
+        self.woke.store(true, Ordering::Release);
+        #[cfg(feature = "irq")]
+        let _ = self.task.wake(0);
+        #[cfg(not(feature = "irq"))]
         if let Some(task) = self.task.upgrade() {
             let mut rq = select_wake_run_queue::<NoPreemptIrqSave>(&task);
-            *self.woke.lock() = true;
             rq.unblock_task(task, true);
         }
     }
@@ -69,6 +101,8 @@ pub fn block_on<F: IntoFuture>(f: F) -> F::Output {
     let mut cx = Context::from_waker(&waker);
 
     loop {
+        #[cfg(feature = "irq")]
+        let observed_irq_seq = axwaker.irq_seq();
         match fut.as_mut().poll(&mut cx) {
             Poll::Pending => {
                 // Before sleeping, check if a signal has arrived. If so,
@@ -82,15 +116,31 @@ pub fn block_on<F: IntoFuture>(f: F) -> F::Output {
                     continue;
                 }
 
+                #[cfg(feature = "irq")]
+                if axwaker.should_repoll(observed_irq_seq) {
+                    crate::yield_now();
+                    continue;
+                }
+                #[cfg(not(feature = "irq"))]
+                if axwaker.should_repoll() {
+                    crate::yield_now();
+                    continue;
+                }
+
                 let mut rq = current_run_queue::<NoPreemptIrqSave>();
-                let mut woke = axwaker.woke.lock();
-                if !*woke {
-                    rq.future_blocked_resched(woke);
-                } else {
-                    *woke = false;
-                    drop(woke);
+                #[cfg(feature = "irq")]
+                if axwaker.should_repoll(observed_irq_seq) {
                     drop(rq);
                     crate::yield_now();
+                } else {
+                    rq.future_blocked_resched(|| axwaker.should_repoll(observed_irq_seq));
+                }
+                #[cfg(not(feature = "irq"))]
+                if axwaker.should_repoll() {
+                    drop(rq);
+                    crate::yield_now();
+                } else {
+                    rq.future_blocked_resched(|| axwaker.should_repoll());
                 }
             }
             Poll::Ready(output) => break output,

@@ -115,6 +115,17 @@ impl ax_kspin::lockdep::KspinLockdepIf for KspinLockdepIfImpl {
     }
 }
 
+#[cfg(feature = "irq")]
+struct IrqEpilogueIfImpl;
+
+#[cfg(feature = "irq")]
+#[ax_crate_interface::impl_interface]
+impl ax_hal::irq::IrqEpilogueIf for IrqEpilogueIfImpl {
+    fn drain_irq_wake_queue_current_cpu() -> usize {
+        crate::drain_irq_wake_queue_current_cpu()
+    }
+}
+
 /// Gets the current task, or returns [`None`] if the current task is not
 /// initialized.
 pub fn current_may_uninit() -> Option<CurrentTask> {
