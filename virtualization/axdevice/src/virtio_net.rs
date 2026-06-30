@@ -7,10 +7,47 @@
 //! virtqueues and the inter-VM software switch are added in later phases (P2/P3);
 //! for now `QueueNotify` is accepted but no buffers are processed.
 
-use ax_errno::AxResult;
+use alloc::{vec, vec::Vec};
+
 use ax_kspin::SpinNoIrq as Mutex;
-use axdevice_base::{AccessWidth, BaseDeviceOps, EmuDeviceType};
+use axdevice_base::{AccessWidth, BaseDeviceOps, DeviceResult, EmuDeviceType};
 use axvm_types::{GuestPhysAddr, GuestPhysAddrRange};
+
+use crate::DeviceManagerResult;
+
+// Split-virtqueue layout constants (virtio 1.x, 2.6).
+const VRING_DESC_F_NEXT: u16 = 1;
+const VRING_DESC_F_WRITE: u16 = 2;
+const VIRTIO_NET_HDR_LEN: usize = 12; // virtio_net_hdr_v1 (VERSION_1)
+const RX_QUEUE: usize = 0; // receiveq
+const TX_QUEUE: usize = 1; // transmitq
+
+/// A closure that reads `buf.len()` bytes of guest physical memory at `gpa`.
+type GuestRead<'a> = &'a dyn Fn(GuestPhysAddr, &mut [u8]) -> DeviceManagerResult;
+/// A closure that writes `data` to guest physical memory at `gpa`.
+type GuestWrite<'a> = &'a dyn Fn(GuestPhysAddr, &[u8]) -> DeviceManagerResult;
+
+fn rd_u16(read: GuestRead, gpa: u64) -> DeviceManagerResult<u16> {
+    let mut b = [0u8; 2];
+    read(GuestPhysAddr::from_usize(gpa as usize), &mut b)?;
+    Ok(u16::from_le_bytes(b))
+}
+fn rd_u32(read: GuestRead, gpa: u64) -> DeviceManagerResult<u32> {
+    let mut b = [0u8; 4];
+    read(GuestPhysAddr::from_usize(gpa as usize), &mut b)?;
+    Ok(u32::from_le_bytes(b))
+}
+fn rd_u64(read: GuestRead, gpa: u64) -> DeviceManagerResult<u64> {
+    let mut b = [0u8; 8];
+    read(GuestPhysAddr::from_usize(gpa as usize), &mut b)?;
+    Ok(u64::from_le_bytes(b))
+}
+fn wr_u16(write: GuestWrite, gpa: u64, v: u16) -> DeviceManagerResult {
+    write(GuestPhysAddr::from_usize(gpa as usize), &v.to_le_bytes())
+}
+fn wr_u32(write: GuestWrite, gpa: u64, v: u32) -> DeviceManagerResult {
+    write(GuestPhysAddr::from_usize(gpa as usize), &v.to_le_bytes())
+}
 
 // virtio-mmio register offsets (see virtio spec 1.x, 4.2.2).
 const VIRTIO_MMIO_MAGIC_VALUE: usize = 0x000;
@@ -61,6 +98,8 @@ struct QueueState {
     desc: u64,
     driver: u64,
     device: u64,
+    /// Next avail-ring index this device has not yet consumed.
+    last_avail: u16,
 }
 
 struct VirtioNetState {
@@ -78,15 +117,17 @@ struct VirtioNetState {
 pub struct VirtioNet {
     base: GuestPhysAddr,
     size: usize,
+    irq: usize,
     state: Mutex<VirtioNetState>,
 }
 
 impl VirtioNet {
-    /// Creates a virtio-net device at `base` with the given `mac`.
-    pub fn new(base: GuestPhysAddr, mac: [u8; 6]) -> Self {
+    /// Creates a virtio-net device at `base` with the given `mac` and IRQ line.
+    pub fn new(base: GuestPhysAddr, mac: [u8; 6], irq: usize) -> Self {
         Self {
             base,
             size: VIRTIO_NET_MMIO_SIZE,
+            irq,
             state: Mutex::new(VirtioNetState {
                 device_features_sel: 0,
                 driver_features: [0; 2],
@@ -98,6 +139,130 @@ impl VirtioNet {
                 mac,
             }),
         }
+    }
+
+    /// The guest IRQ line this device injects on TX completion / RX arrival.
+    pub fn irq(&self) -> usize {
+        self.irq
+    }
+
+    /// The base guest-physical address of this device's MMIO window.
+    pub fn base(&self) -> GuestPhysAddr {
+        self.base
+    }
+
+    /// Returns whether the guest has notified the transmit queue at `offset`.
+    pub fn is_tx_notify(&self, offset: usize, val: u32) -> bool {
+        offset == VIRTIO_MMIO_QUEUE_NOTIFY && val as usize == TX_QUEUE
+    }
+
+    /// Drains the transmit virtqueue, returning the Ethernet frames the guest sent
+    /// (virtio-net header stripped). Marks the consumed descriptors used and raises
+    /// the device interrupt-status bit (the caller injects the IRQ).
+    pub fn process_tx(
+        &self,
+        read: GuestRead,
+        write: GuestWrite,
+    ) -> DeviceManagerResult<Vec<Vec<u8>>> {
+        let mut state = self.state.lock();
+        let q = state.queues[TX_QUEUE];
+        let mut frames = Vec::new();
+        if q.ready == 0 || q.num == 0 {
+            return Ok(frames);
+        }
+        let num = q.num as u16;
+        let avail_idx = rd_u16(read, q.driver + 2)?;
+        while state.queues[TX_QUEUE].last_avail != avail_idx {
+            let slot = (state.queues[TX_QUEUE].last_avail % num) as u64;
+            let head = rd_u16(read, q.driver + 4 + slot * 2)?;
+            let mut frame = Vec::new();
+            let mut idx = head;
+            loop {
+                let d = q.desc + (idx as u64) * 16;
+                let addr = rd_u64(read, d)?;
+                let len = rd_u32(read, d + 8)?;
+                let flags = rd_u16(read, d + 12)?;
+                let next = rd_u16(read, d + 14)?;
+                let mut buf = vec![0u8; len as usize];
+                read(GuestPhysAddr::from_usize(addr as usize), &mut buf)?;
+                frame.extend_from_slice(&buf);
+                if flags & VRING_DESC_F_NEXT != 0 {
+                    idx = next;
+                } else {
+                    break;
+                }
+            }
+            // mark the chain used
+            let used_idx = rd_u16(read, q.device + 2)?;
+            let uslot = (used_idx % num) as u64;
+            wr_u32(write, q.device + 4 + uslot * 8, head as u32)?;
+            wr_u32(write, q.device + 4 + uslot * 8 + 4, frame.len() as u32)?;
+            wr_u16(write, q.device + 2, used_idx.wrapping_add(1))?;
+            state.queues[TX_QUEUE].last_avail = state.queues[TX_QUEUE].last_avail.wrapping_add(1);
+            if frame.len() > VIRTIO_NET_HDR_LEN {
+                frames.push(frame[VIRTIO_NET_HDR_LEN..].to_vec());
+            }
+        }
+        if !frames.is_empty() {
+            state.interrupt_status |= 1;
+        }
+        Ok(frames)
+    }
+
+    /// Delivers one received Ethernet `frame` into the receive virtqueue (prepends a
+    /// zeroed virtio-net header). Returns `true` if a buffer was available and the
+    /// device interrupt should be injected; `false` drops the frame (no RX buffer).
+    pub fn deliver_rx(
+        &self,
+        read: GuestRead,
+        write: GuestWrite,
+        frame: &[u8],
+    ) -> DeviceManagerResult<bool> {
+        let mut state = self.state.lock();
+        let q = state.queues[RX_QUEUE];
+        if q.ready == 0 || q.num == 0 {
+            return Ok(false);
+        }
+        let num = q.num as u16;
+        let avail_idx = rd_u16(read, q.driver + 2)?;
+        if state.queues[RX_QUEUE].last_avail == avail_idx {
+            return Ok(false); // no RX buffer posted by the driver
+        }
+        let slot = (state.queues[RX_QUEUE].last_avail % num) as u64;
+        let head = rd_u16(read, q.driver + 4 + slot * 2)?;
+
+        let mut payload = vec![0u8; VIRTIO_NET_HDR_LEN];
+        payload.extend_from_slice(frame);
+        let mut written = 0usize;
+        let mut idx = head;
+        loop {
+            let d = q.desc + (idx as u64) * 16;
+            let addr = rd_u64(read, d)?;
+            let len = rd_u32(read, d + 8)? as usize;
+            let flags = rd_u16(read, d + 12)?;
+            let next = rd_u16(read, d + 14)?;
+            if flags & VRING_DESC_F_WRITE != 0 && written < payload.len() {
+                let n = core::cmp::min(len, payload.len() - written);
+                write(
+                    GuestPhysAddr::from_usize(addr as usize),
+                    &payload[written..written + n],
+                )?;
+                written += n;
+            }
+            if flags & VRING_DESC_F_NEXT != 0 {
+                idx = next;
+            } else {
+                break;
+            }
+        }
+        let used_idx = rd_u16(read, q.device + 2)?;
+        let uslot = (used_idx % num) as u64;
+        wr_u32(write, q.device + 4 + uslot * 8, head as u32)?;
+        wr_u32(write, q.device + 4 + uslot * 8 + 4, written as u32)?;
+        wr_u16(write, q.device + 2, used_idx.wrapping_add(1))?;
+        state.queues[RX_QUEUE].last_avail = state.queues[RX_QUEUE].last_avail.wrapping_add(1);
+        state.interrupt_status |= 1;
+        Ok(true)
     }
 
     fn read_reg(&self, offset: usize) -> u32 {
@@ -204,7 +369,7 @@ impl BaseDeviceOps<GuestPhysAddrRange> for VirtioNet {
         GuestPhysAddrRange::from_start_size(self.base, self.size)
     }
 
-    fn handle_read(&self, addr: GuestPhysAddr, width: AccessWidth) -> AxResult<usize> {
+    fn handle_read(&self, addr: GuestPhysAddr, width: AccessWidth) -> DeviceResult<usize> {
         let offset = addr.as_usize() - self.base.as_usize();
         let value = match width {
             AccessWidth::Byte => self.read_reg(offset) & 0xff,
@@ -215,7 +380,7 @@ impl BaseDeviceOps<GuestPhysAddrRange> for VirtioNet {
         Ok(value as usize)
     }
 
-    fn handle_write(&self, addr: GuestPhysAddr, width: AccessWidth, val: usize) -> AxResult {
+    fn handle_write(&self, addr: GuestPhysAddr, width: AccessWidth, val: usize) -> DeviceResult {
         let offset = addr.as_usize() - self.base.as_usize();
         let val = match width {
             AccessWidth::Byte => (val & 0xff) as u32,

@@ -95,6 +95,8 @@ pub struct AxVmDevices {
     fw_cfg: Option<Arc<FwCfg>>,
     /// IVC channel range allocator
     ivc_channel: Option<Mutex<RangeAllocator>>,
+    /// Emulated virtio-net devices — kept for virtqueue (TX/RX) routing.
+    virtio_nets: Vec<Arc<VirtioNet>>,
 }
 
 /// The implemention for AxVmDevices
@@ -117,7 +119,25 @@ impl AxVmDevices {
             loongarch_pch_pic: None,
             fw_cfg: None,
             ivc_channel: None,
+            virtio_nets: Vec::new(),
         }
+    }
+
+    /// Returns the virtio-net device whose MMIO window contains `addr`, if any.
+    pub fn virtio_net_for_addr(&self, addr: GuestPhysAddr) -> Option<Arc<VirtioNet>> {
+        self.virtio_nets
+            .iter()
+            .find(|v| {
+                let base = v.base().as_usize();
+                addr.as_usize() >= base
+                    && addr.as_usize() < base + crate::virtio_net::VIRTIO_NET_MMIO_SIZE
+            })
+            .cloned()
+    }
+
+    /// Returns this VM's emulated virtio-net devices.
+    pub fn virtio_nets(&self) -> &[Arc<VirtioNet>] {
+        &self.virtio_nets
     }
 
     /// According AxVmDeviceConfig to init the AxVmDevices
@@ -431,14 +451,14 @@ impl AxVmDevices {
                     let nn = config.cfg_list.first().copied().unwrap_or(1) as u8;
                     let mac = [0x52, 0x54, 0x00, 0x00, 0x00, nn];
                     let base: GuestPhysAddr = config.base_gpa.into();
+                    let vnet = Arc::new(VirtioNet::new(base, mac, config.irq_id));
+                    this.virtio_nets.push(vnet.clone());
                     #[allow(clippy::arc_with_non_send_sync)]
-                    this.register(
-                        MmioDeviceAdapter::from_arc(Arc::new(VirtioNet::new(base, mac)))
-                            as Arc<dyn Device>,
-                    )?;
+                    this.register(MmioDeviceAdapter::from_arc(vnet) as Arc<dyn Device>)?;
                     info!(
-                        "virtio-net '{}' initialized at GPA {:#x} (MAC 52:54:00:00:00:{:02x})",
-                        config.name, config.base_gpa, nn
+                        "virtio-net '{}' initialized at GPA {:#x} IRQ {} (MAC \
+                         52:54:00:00:00:{:02x})",
+                        config.name, config.base_gpa, config.irq_id, nn
                     );
                 }
                 _ => {

@@ -24,7 +24,7 @@ use ax_cpumask::CpuMask;
 use ax_kspin::SpinNoIrq as Mutex;
 use ax_memory_addr::align_up_4k;
 use axaddrspace::{AddrSpace, NestedPageTableOps};
-use axdevice::{AxVmDevices, DeviceManagerError, FwCfg, FwCfgPlatformConfig};
+use axdevice::{AxVmDevices, DeviceManagerError, FwCfg, FwCfgPlatformConfig, VirtioNet};
 use axdevice_base::AccessWidth;
 use axvm_types::{
     GuestPhysAddr, HostPhysAddr, HostVirtAddr, MappingFlags, NestedPagingConfig, VmVcpuState,
@@ -817,6 +817,80 @@ impl AxVM {
         }
 
         devices.handle_mmio_write(addr, width, data)?;
+
+        // virtio-net: a QUEUE_NOTIFY to the transmit queue drives frame TX + the switch.
+        if let Some(vnet) = devices.virtio_net_for_addr(addr) {
+            let offset = addr.as_usize() - vnet.base().as_usize();
+            if vnet.is_tx_notify(offset, data as u32) {
+                self.drive_virtio_net_tx(&vnet)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Drives the virtio-net transmit path: drain the TX virtqueue, raise the TX
+    /// completion interrupt, and flood each frame to every other VM (L2 broadcast switch).
+    fn drive_virtio_net_tx(&self, vnet: &Arc<VirtioNet>) -> AxVmResult {
+        let frames = vnet.process_tx(
+            &|gpa, buffer| {
+                self.read_from_guest(gpa, buffer).map_err(|error| {
+                    DeviceManagerError::UnexpectedResponse {
+                        operation: "read guest memory for virtio-net TX",
+                        detail: alloc::format!("{error}"),
+                    }
+                })
+            },
+            &|gpa, buffer| {
+                self.write_to_guest(gpa, buffer).map_err(|error| {
+                    DeviceManagerError::UnexpectedResponse {
+                        operation: "write guest memory for virtio-net TX",
+                        detail: alloc::format!("{error}"),
+                    }
+                })
+            },
+        )?;
+        if frames.is_empty() {
+            return Ok(());
+        }
+        let _ = self.inject_interrupt_to_vcpu(CpuMask::one_shot(0), vnet.irq());
+        for frame in &frames {
+            for vm in crate::get_vm_list() {
+                if vm.id() != self.id() {
+                    let _ = vm.deliver_rx_frame(frame);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Delivers an Ethernet frame into this VM's virtio-net receive queue(s).
+    pub(crate) fn deliver_rx_frame(&self, frame: &[u8]) -> AxVmResult {
+        let devices = self.get_devices()?;
+        let vnets: Vec<Arc<VirtioNet>> = devices.virtio_nets().to_vec();
+        for vnet in vnets {
+            let injected = vnet.deliver_rx(
+                &|gpa, buffer| {
+                    self.read_from_guest(gpa, buffer).map_err(|error| {
+                        DeviceManagerError::UnexpectedResponse {
+                            operation: "read guest memory for virtio-net RX",
+                            detail: alloc::format!("{error}"),
+                        }
+                    })
+                },
+                &|gpa, buffer| {
+                    self.write_to_guest(gpa, buffer).map_err(|error| {
+                        DeviceManagerError::UnexpectedResponse {
+                            operation: "write guest memory for virtio-net RX",
+                            detail: alloc::format!("{error}"),
+                        }
+                    })
+                },
+                frame,
+            )?;
+            if injected {
+                let _ = self.inject_interrupt_to_vcpu(CpuMask::one_shot(0), vnet.irq());
+            }
+        }
         Ok(())
     }
 
