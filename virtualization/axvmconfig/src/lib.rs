@@ -651,6 +651,14 @@ pub struct VMBaseConfig {
     ///
     ///   It will phrase an error if the number of vCpus is not equal to the length of `phys_cpu_sets` array.
     pub phys_cpu_sets: Option<Vec<usize>>,
+    /// Whether the physical CPUs assigned to this VM are dedicated (partition scheduling).
+    ///
+    /// When `true`, the pCPUs this VM's vCPUs are pinned to are treated as exclusive:
+    /// no other VM's vCPU task is allowed to run on them. This gives real-time VMs a
+    /// dedicated pCPU under the cooperative FIFO scheduler, removing cross-VM interference.
+    /// Defaults to `false` (shared scheduling, original behavior).
+    #[serde(default)]
+    pub dedicated_cpus: bool,
 }
 
 /// The configuration structure for the guest VM kernel.

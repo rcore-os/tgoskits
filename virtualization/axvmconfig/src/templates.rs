@@ -65,6 +65,7 @@ pub fn get_vm_config_template(params: VmTemplateParams) -> AxVMCrateConfig {
             // Assign sequential CPU IDs starting from 0
             phys_cpu_ids: Some((0..params.cpu_num).collect()),
             phys_cpu_sets: None,
+            dedicated_cpus: false,
         },
         // Kernel and boot configuration
         kernel: VMKernelConfig {

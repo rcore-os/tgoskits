@@ -239,10 +239,54 @@ pub(crate) fn build_vcpu_task(vm: &VMRef, vcpu: VCpuRef) -> crate::TaskInner {
         KERNEL_STACK_SIZE,
     );
 
-    if let Some(phys_cpu_set) = vcpu.phys_cpu_set() {
-        vcpu_task.set_cpumask(crate::host::task::cpu_mask_from_raw_bits(
-            vcpu_task_cpu_mask(vm.id(), vcpu.id(), phys_cpu_set),
-        ));
+    // Partition scheduling: pCPUs reserved by dedicated (real-time) VMs must not be used
+    // by any other VM's vCPU. A non-dedicated VM is constrained to avoid the reserved set;
+    // this also covers *unpinned* vCPUs (which would otherwise be free to run on a
+    // real-time VM's dedicated pCPU).
+    let reserved = if vm.cpus_dedicated() {
+        0
+    } else {
+        dedicated_pcpu_mask()
+    };
+
+    let base_mask = match vcpu.phys_cpu_set() {
+        Some(phys_cpu_set) => Some(vcpu_task_cpu_mask(vm.id(), vcpu.id(), phys_cpu_set)),
+        // Unpinned vCPU of a non-dedicated VM: pin it to the enabled pCPUs so the reserved
+        // ones can be excluded below. With no dedicated VMs this stays None (original behavior).
+        None if reserved != 0 => {
+            let enabled = crate::percpu::enabled_cpu_mask();
+            (enabled != 0).then_some(enabled)
+        }
+        None => None,
+    };
+
+    if let Some(mut mask) = base_mask {
+        if reserved != 0 {
+            let pruned = mask & !reserved;
+            if pruned != 0 {
+                if pruned != mask {
+                    info!(
+                        "VM[{}] VCpu[{}] cpumask {:#x} -> {:#x} (excluding dedicated pCPUs {:#x})",
+                        vm.id(),
+                        vcpu.id(),
+                        mask,
+                        pruned,
+                        reserved
+                    );
+                }
+                mask = pruned;
+            } else {
+                warn!(
+                    "VM[{}] VCpu[{}] cpumask {:#x} fully overlaps dedicated pCPUs {:#x}; keeping \
+                     original to avoid an unrunnable vCPU",
+                    vm.id(),
+                    vcpu.id(),
+                    mask,
+                    reserved
+                );
+            }
+        }
+        vcpu_task.set_cpumask(crate::host::task::cpu_mask_from_raw_bits(mask));
     }
 
     // Use Weak reference in TaskExt to avoid keeping VM alive
@@ -255,6 +299,24 @@ pub(crate) fn build_vcpu_task(vm: &VMRef, vcpu: VCpuRef) -> crate::TaskInner {
         vcpu_task.cpumask()
     );
     vcpu_task
+}
+
+/// Returns the union of physical-CPU bits reserved by all dedicated (partition-scheduled)
+/// VMs. Non-dedicated VMs' vCPU tasks are kept off these pCPUs so real-time VMs get an
+/// uncontended pCPU under the cooperative FIFO scheduler.
+fn dedicated_pcpu_mask() -> usize {
+    let mut reserved = 0usize;
+    for vm in crate::get_vm_list() {
+        if !vm.cpus_dedicated() {
+            continue;
+        }
+        for (_vcpu_id, affinity, _phys_id) in vm.get_vcpu_affinities_pcpu_ids() {
+            if let Some(mask) = affinity {
+                reserved |= mask;
+            }
+        }
+    }
+    reserved
 }
 
 fn vcpu_task_cpu_mask(vm_id: usize, vcpu_id: usize, requested_mask: usize) -> usize {

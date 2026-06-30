@@ -328,6 +328,8 @@ pub struct PhysCpuList {
     cpu_num: usize,
     phys_cpu_ids: Option<Vec<usize>>,
     phys_cpu_sets: Option<Vec<usize>>,
+    /// Whether the pCPUs assigned to this VM are dedicated (partition scheduling).
+    dedicated: bool,
 }
 
 impl PhysCpuList {
@@ -336,12 +338,19 @@ impl PhysCpuList {
         cpu_num: usize,
         phys_cpu_ids: Option<Vec<usize>>,
         phys_cpu_sets: Option<Vec<usize>>,
+        dedicated: bool,
     ) -> Self {
         Self {
             cpu_num,
             phys_cpu_ids,
             phys_cpu_sets,
+            dedicated,
         }
+    }
+
+    /// Returns whether this VM's pCPUs are dedicated (exclusive, partition scheduling).
+    pub fn dedicated(&self) -> bool {
+        self.dedicated
     }
 
     /// Returns vCpu id list and its corresponding pCpu affinity list, as well as its physical id.

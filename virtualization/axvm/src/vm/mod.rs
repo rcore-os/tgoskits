@@ -973,6 +973,15 @@ impl AxVM {
             .unwrap_or_default()
     }
 
+    /// Returns whether this VM's physical CPUs are dedicated (partition scheduling).
+    ///
+    /// When `true`, the pCPUs this VM's vCPUs are pinned to are reserved exclusively for
+    /// this VM; other VMs' vCPU tasks are kept off those pCPUs (see vCPU task allocation).
+    pub fn cpus_dedicated(&self) -> bool {
+        self.with_resources(|resources| Ok(resources.phys_cpu_ls.dedicated()))
+            .unwrap_or(false)
+    }
+
     /// Maps a region of host physical memory to guest physical memory.
     pub fn map_region(
         &self,

@@ -183,6 +183,7 @@ pub(crate) fn build_axvm_config(cfg: &AxVMCrateConfig) -> AxVMConfig {
             cfg.base.cpu_num,
             cfg.base.phys_cpu_ids.clone(),
             cfg.base.phys_cpu_sets.clone(),
+            cfg.base.dedicated_cpus,
         ),
         cpu_config: AxVCpuConfig {
             bsp_entry: GuestPhysAddr::from(cfg.kernel.entry_point),
