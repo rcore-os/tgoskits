@@ -22,6 +22,10 @@ use crate::{
 
 // RK3588 jpegd (VDPU720) constants, from the OrangePi-5-Plus device tree.
 const PD_VDPU: usize = 21;
+// Synthetic `ClkId` keys into the rockchip-soc gate table — NOT the DT binding
+// numbers. The canonical `ACLK/HCLK_JPEG_DECODER` = 421/422 are already taken by
+// the USB3OTG1 entries in that crate, so 436/437 are used as unique keys instead.
+// The actual hardware gate is the verified `CLKGATE_CON(45)` bit 2/3 in gate.rs.
 const CLK_ACLK_JPEG_DECODER: u32 = 436;
 const CLK_HCLK_JPEG_DECODER: u32 = 437;
 const RST_VIDEO_A: u64 = 722;
@@ -30,6 +34,7 @@ const RST_VIDEO_H: u64 = 723;
 // The per-block Rockchip IOMMU v2 sits 0x480 into the same register page.
 const IOMMU_OFFSET: usize = 0x480;
 const RK_MMU_DTE_ADDR: usize = 0x00;
+const RK_MMU_STATUS: usize = 0x04;
 const RK_MMU_COMMAND: usize = 0x08;
 const RK_MMU_INT_MASK: usize = 0x1c;
 const RK_MMU_CMD_DISABLE_PAGING: u32 = 1;
@@ -67,15 +72,21 @@ fn probe(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
     bypass_iommu(base);
 
     let dma = axklib::dma::device_with_mask(u32::MAX as u64);
-    let mut jpeg = RockchipJpeg::new(base, dma);
+    let jpeg = RockchipJpeg::new(base, dma);
 
     info!(
         "JPEG decoder probed: base={start_raw:#x} id={:#010x}",
         jpeg.read_id()
     );
 
+    // The self-test needs `&mut`; rebind as mutable only when that feature is on,
+    // so the normal build doesn't carry an unused `mut`.
     #[cfg(feature = "jpu-selftest")]
-    run_selftest(&mut jpeg);
+    let jpeg = {
+        let mut jpeg = jpeg;
+        run_selftest(&mut jpeg);
+        jpeg
+    };
 
     plat_dev.register(jpeg);
     info!("JPEG decoder registered");
@@ -112,6 +123,16 @@ fn bypass_iommu(base: NonNull<u8>) {
         mmu.add(RK_MMU_COMMAND)
             .cast::<u32>()
             .write_volatile(RK_MMU_CMD_FORCE_RESET);
+        // The force-reset is asynchronous — the block ignores register writes while
+        // it is in flight (like Linux `rk_iommu_force_reset`). Wait for it to settle
+        // (STATUS reads back 0) before reprogramming, bounded so a wedged block can
+        // never hang probe; the volatile read also orders the following writes.
+        for _ in 0..1000 {
+            if mmu.add(RK_MMU_STATUS).cast::<u32>().read_volatile() == 0 {
+                break;
+            }
+            core::hint::spin_loop();
+        }
         mmu.add(RK_MMU_DTE_ADDR).cast::<u32>().write_volatile(0);
         mmu.add(RK_MMU_COMMAND)
             .cast::<u32>()
@@ -145,4 +166,56 @@ fn page_aligned_region(start_raw: usize, size_raw: usize) -> (usize, usize, usiz
     let offset = start_raw - start;
     let end = (start_raw + size_raw + page_size - 1) & !(page_size - 1);
     (start, end - start, offset)
+}
+
+// --- Kernel-facing accessors for the /dev/mpp_service node (mirror rknpu) ---
+
+pub use rockchip_jpeg::{JpuError, mpp, registers};
+
+/// Errors surfaced to the `/dev/mpp_service` node.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Error {
+    /// No JPEG decoder device is registered.
+    NotFound,
+    /// The device is busy (locked by another caller).
+    Busy,
+    /// The decode timed out.
+    Timeout,
+    /// The hardware reported a decode error.
+    Decode,
+}
+
+/// Whether a JPEG decoder device has been probed and registered.
+pub fn is_available() -> bool {
+    rdrive::get_one::<RockchipJpeg>().is_some()
+}
+
+/// Read the hardware id register (`prod_num` in the upper half).
+pub fn read_id() -> Result<u32, Error> {
+    let dev = rdrive::get_one::<RockchipJpeg>()
+        .ok_or(Error::NotFound)?
+        .try_lock()
+        .map_err(|_| Error::Busy)?;
+    Ok(dev.read_id())
+}
+
+/// Program a resolved MPP register array, run the decode, and copy the register
+/// file back into `readback`. `timeout_ns` bounds the polled wait.
+pub fn run_raw(
+    regs: &[u32; registers::REG_COUNT],
+    readback: &mut [u32; registers::REG_COUNT],
+    timeout_ns: u64,
+) -> Result<(), Error> {
+    let mut dev = rdrive::get_one::<RockchipJpeg>()
+        .ok_or(Error::NotFound)?
+        .try_lock()
+        .map_err(|_| Error::Busy)?;
+    let mut clock = axklib::time::monotonic_nanos;
+    dev.core()
+        .run_raw(regs, readback, &mut clock, timeout_ns)
+        .map(|_| ())
+        .map_err(|e| match e {
+            JpuError::DecodeTimeout => Error::Timeout,
+            _ => Error::Decode,
+        })
 }

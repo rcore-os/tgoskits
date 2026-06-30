@@ -49,6 +49,7 @@ k230 = [
 plat-dyn = ["dep:axplat-dyn", "starry-kernel/plat-dyn"]
 
 rknpu = ["ax-driver/rknpu", "starry-kernel/rknpu"]
+jpeg = ["ax-driver/jpeg", "starry-kernel/jpeg"]
 std-compat = ["starry-kernel/std-compat"]
 stack-protector = ["ax-std/stack-protector", "starry-kernel/stack-protector"]
 

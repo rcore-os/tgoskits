@@ -19,6 +19,8 @@ mod log;
 mod r#loop;
 #[cfg(feature = "ext4")]
 mod loop_block;
+#[cfg(feature = "jpeg")]
+mod mpp_service;
 #[cfg(feature = "ext4")]
 pub use r#loop::LoopDevice;
 #[cfg(feature = "sg2002")]
@@ -436,6 +438,20 @@ fn builder(fs: Arc<SimpleFs>) -> DirMaker {
                 ),
             );
         }
+    }
+
+    // /dev/mpp_service — Rockchip MPP-compatible JPEG decoder node.
+    #[cfg(feature = "jpeg")]
+    if ax_driver::jpeg::is_available() {
+        root.add(
+            "mpp_service",
+            Device::new(
+                fs.clone(),
+                NodeType::CharacterDevice,
+                mpp_service::MPP_SERVICE_DEVICE_ID,
+                Arc::new(mpp_service::MppService::new()),
+            ),
+        );
     }
 
     // This is mounted to a tmpfs in `new_procfs`

@@ -59,6 +59,8 @@ pub mod cmd {
     pub const SET_REG_ADDR_OFFSET: u32 = 0x202;
     /// Submit + block until this task's interrupt; copy registers back.
     pub const POLL_HW_FINISH: u32 = 0x300;
+    /// Submit + wait on the hardware interrupt (non-blocking variant).
+    pub const POLL_HW_IRQ: u32 = 0x301;
     /// Reset the session.
     pub const RESET_SESSION: u32 = 0x400;
     /// Map a dma-buf fd to a device iova.
@@ -221,6 +223,16 @@ impl MppSession {
         self.client_type
     }
 
+    /// Clear per-task state (registers, address fixups, read window) after a
+    /// frame completes, keeping the bound client type for the next frame.
+    pub fn clear_task(&mut self) {
+        self.regs = [0; REG_COUNT];
+        self.have_regs = false;
+        self.read_first_word = 0;
+        self.read_word_count = 0;
+        self.offset_count = 0;
+    }
+
     /// Reset to the empty state (`RESET_SESSION`).
     pub fn reset(&mut self) {
         *self = Self::new();
@@ -327,6 +339,17 @@ mod tests {
     #[test]
     fn resolve_without_regs_errors() {
         let mut s = MppSession::new();
+        assert_eq!(s.resolve_addresses(|_| Some(0)), Err(MppError::NoRegisters));
+    }
+
+    #[test]
+    fn clear_task_keeps_client_but_drops_regs() {
+        let mut s = MppSession::new();
+        s.init_client_type(MPP_DEVICE_RKJPEGD).unwrap();
+        s.set_reg_write(&[5u32; REG_COUNT]);
+        s.clear_task();
+        assert_eq!(s.client_type(), Some(MPP_DEVICE_RKJPEGD));
+        assert_eq!(s.regs()[0], 0);
         assert_eq!(s.resolve_addresses(|_| Some(0)), Err(MppError::NoRegisters));
     }
 
