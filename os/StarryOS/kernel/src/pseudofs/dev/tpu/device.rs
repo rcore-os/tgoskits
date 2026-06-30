@@ -27,7 +27,6 @@
 
 use alloc::{collections::VecDeque, string::String, sync::Arc};
 use core::{
-    ptr::NonNull,
     sync::atomic::{AtomicBool, AtomicPtr, Ordering},
     time::Duration,
 };
@@ -114,7 +113,6 @@ const TPU_TDMA_IRQ: usize = 76;
 const TPU_WAIT_TIMEOUT: Duration = Duration::from_secs(10);
 
 fn register_tpu_irq(hw: &Arc<Sg2002Tpu>) -> Option<IrqRegistration> {
-    let data = unsafe { NonNull::new_unchecked(Arc::as_ptr(hw) as *mut ()) };
     let Ok(hwirq) = u32::try_from(TPU_TDMA_IRQ) else {
         warn!("[TPU] invalid tdma irq {}", TPU_TDMA_IRQ);
         return None;
@@ -123,7 +121,16 @@ fn register_tpu_irq(hw: &Arc<Sg2002Tpu>) -> Option<IrqRegistration> {
         ax_runtime::hal::irq::RISCV_PLIC_DOMAIN,
         ax_runtime::hal::irq::HwIrq(hwirq),
     );
-    let registration = match request_shared_disabled(irq, tpu_tdma_irq_handler, data) {
+    let hw = Arc::clone(hw);
+    let registration = match request_shared_disabled(irq, move |_| {
+        if hw.handle_irq() {
+            warn!("[TPU] tdma irq {} reports error status", TPU_TDMA_IRQ);
+        }
+        // 唤醒在 IRQ_WQ 上睡眠的 worker。中断上下文不重调度（resched=false），
+        // 对齐 kpu.rs 的做法；WaitQueue 由 SpinNoIrq 守护，IRQ 内 notify 安全。
+        IRQ_WQ.notify_all(false);
+        ax_runtime::hal::irq::IrqReturn::Handled
+    }) {
         Ok(registration) => registration,
         Err(err) => {
             warn!(
@@ -138,20 +145,6 @@ fn register_tpu_irq(hw: &Arc<Sg2002Tpu>) -> Option<IrqRegistration> {
         return None;
     }
     Some(registration)
-}
-
-unsafe fn tpu_tdma_irq_handler(
-    _ctx: ax_runtime::hal::irq::IrqContext,
-    data: NonNull<()>,
-) -> ax_runtime::hal::irq::IrqReturn {
-    let hw = unsafe { &*(data.as_ptr() as *const Sg2002Tpu) };
-    if hw.handle_irq() {
-        warn!("[TPU] tdma irq {} reports error status", TPU_TDMA_IRQ);
-    }
-    // 唤醒在 IRQ_WQ 上睡眠的 worker。中断上下文不重调度（resched=false），
-    // 对齐 kpu.rs 的做法；WaitQueue 由 SpinNoIrq 守护，IRQ 内 notify 安全。
-    IRQ_WQ.notify_all(false);
-    ax_runtime::hal::irq::IrqReturn::Handled
 }
 
 /// 注入给 driver core 的阻塞等待函数：在超时内睡眠等待 TDMA 中断到达。

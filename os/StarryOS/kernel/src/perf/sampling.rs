@@ -41,7 +41,7 @@
 //! the slot — *before* dropping that `Arc`. The handler therefore only ever
 //! dereferences a pointer whose target is still alive.
 
-use core::{ptr::NonNull, sync::atomic::Ordering};
+use core::sync::atomic::Ordering;
 
 use ax_hal::irq::{IrqContext, IrqId, IrqReturn};
 use ax_kernel_guard::NoPreemptIrqSave;
@@ -266,12 +266,7 @@ pub fn ensure_pmu_irq_registered() {
     {
         let cpus = ax_hal::irq::CpuMask::first_n(ax_hal::cpu_num());
         // Mirror the timer's unit-data pattern: the handler does not use `data`.
-        if let Err(err) = ax_hal::irq::request_percpu_irq(
-            pmu_irq,
-            cpus,
-            pmu_overflow_handler,
-            NonNull::dangling(),
-        ) {
+        if let Err(err) = ax_hal::irq::request_percpu_irq(pmu_irq, cpus, pmu_overflow_handler) {
             // Roll back so a later open can retry registration.
             REGISTERED.store(false, Ordering::Release);
             warn!("perf sampling: failed to register PMU overflow IRQ: {err:?}");
@@ -301,7 +296,7 @@ pub fn ensure_pmu_irq_registered() {
 ///
 /// Must only be invoked by the IRQ framework in hard-IRQ context on the core the
 /// overflow fired on. Performs no allocation and takes no sleeping locks.
-pub unsafe fn pmu_overflow_handler(_ctx: IrqContext, _data: NonNull<()>) -> IrqReturn {
+pub fn pmu_overflow_handler(_ctx: IrqContext) -> IrqReturn {
     // Capture the interrupted context before doing anything that could fault or
     // overwrite ELR_EL1 / SPSR_EL1.
     let ip = ax_cpu::pmu::interrupted_pc();

@@ -567,8 +567,8 @@ mod tests {
 
     #[cfg(plat_dyn)]
     use axklib::{
-        AxError, AxResult, IrqCpuMask, IrqHandle, IrqId, Klib, PhysAddr, RawIrqHandler, VirtAddr,
-        impl_trait,
+        AxError, AxResult, BoxedIrqHandler, ConcurrentBoxedIrqHandler, IrqCpuMask, IrqHandle,
+        IrqId, Klib, PhysAddr, VirtAddr, impl_trait,
     };
     use rdrive::probe::{
         OnProbeError,
@@ -630,26 +630,23 @@ mod tests {
             }
 
             fn irq_request_shared(
-            _irq: IrqId,
-                _handler: RawIrqHandler,
-                _data: core::ptr::NonNull<()>,
+                _irq: IrqId,
+                _handler: BoxedIrqHandler,
             ) -> AxResult<IrqHandle> {
                 Err(AxError::Unsupported)
             }
 
             fn irq_request_shared_disabled(
                 _irq: IrqId,
-                _handler: RawIrqHandler,
-                _data: core::ptr::NonNull<()>,
+                _handler: BoxedIrqHandler,
             ) -> AxResult<IrqHandle> {
                 Err(AxError::Unsupported)
             }
 
             fn irq_request_percpu(
-            _irq: IrqId,
+                _irq: IrqId,
                 _cpus: IrqCpuMask,
-                _handler: RawIrqHandler,
-                _data: core::ptr::NonNull<()>,
+                _handler: ConcurrentBoxedIrqHandler,
             ) -> AxResult<IrqHandle> {
                 Err(AxError::Unsupported)
             }

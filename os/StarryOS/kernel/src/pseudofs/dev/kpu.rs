@@ -1,7 +1,6 @@
 use core::{
     any::Any,
     mem::{MaybeUninit, size_of},
-    ptr::NonNull,
     sync::atomic::{AtomicU64, Ordering},
     time::Duration,
 };
@@ -441,7 +440,7 @@ impl KpuResource {
 }
 
 fn register_kpu_irq(irq: ax_runtime::hal::irq::IrqId) -> Option<IrqRegistration> {
-    let registration = match request_shared_disabled(irq, kpu_irq_handler, NonNull::dangling()) {
+    let registration = match request_shared_disabled(irq, kpu_irq_handler) {
         Ok(registration) => registration,
         Err(err) => {
             warn!("k230-kpu devfs: failed to register IRQ handler for irq {irq:?}: {err:?}");
@@ -455,10 +454,7 @@ fn register_kpu_irq(irq: ax_runtime::hal::irq::IrqId) -> Option<IrqRegistration>
     Some(registration)
 }
 
-unsafe fn kpu_irq_handler(
-    _ctx: ax_runtime::hal::irq::IrqContext,
-    _data: NonNull<()>,
-) -> ax_runtime::hal::irq::IrqReturn {
+fn kpu_irq_handler(_ctx: ax_runtime::hal::irq::IrqContext) -> ax_runtime::hal::irq::IrqReturn {
     KPU_IRQ_COUNT.fetch_add(1, Ordering::AcqRel);
     KPU_DONE_WQ.notify_all_from_irq();
     ax_runtime::hal::irq::IrqReturn::Handled
