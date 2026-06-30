@@ -38,6 +38,27 @@ impl RockchipPinCtrl {
         Self { inner }
     }
 
+    pub fn apply_default_pinctrl(
+        &mut self,
+        node: NodeType<'_>,
+    ) -> Result<Vec<PinId>, OnProbeError> {
+        let node_name = node.name().to_string();
+        let Some(prop) = node.as_node().get_property("pinctrl-0") else {
+            info!("Rockchip node {node_name} has no default pinctrl");
+            return Ok(Vec::new());
+        };
+
+        let mut configured = Vec::new();
+        for phandle in prop.get_u32_iter().map(Phandle::from) {
+            configured.extend(self.apply_pinctrl_phandle(phandle)?);
+        }
+        info!(
+            "Rockchip node {node_name} applied {} default pinctrl pins",
+            configured.len()
+        );
+        Ok(configured)
+    }
+
     pub fn enable_fixed_regulator(&mut self, phandle: Phandle) -> Result<(), OnProbeError> {
         let fdt = live_fdt()?;
         let node = fdt.get_by_phandle(phandle).ok_or_else(|| {
@@ -102,6 +123,14 @@ impl RockchipPinCtrl {
 
         info!("Rockchip fixed regulator {node_name} enabled via pinctrl");
         Ok(())
+    }
+
+    pub fn apply_pinctrl_path(&mut self, path: &str) -> Result<Vec<PinId>, OnProbeError> {
+        let fdt = live_fdt()?;
+        let node = fdt
+            .get_by_path(path)
+            .ok_or_else(|| OnProbeError::other(format!("pinctrl path {path} not found")))?;
+        self.apply_pinctrl_node(node)
     }
 
     fn apply_pinctrl_phandle(&mut self, phandle: Phandle) -> Result<Vec<PinId>, OnProbeError> {

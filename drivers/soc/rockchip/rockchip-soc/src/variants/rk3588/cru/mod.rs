@@ -271,6 +271,12 @@ impl Cru {
     /// cru.clk_enable(CLK_I2C1)?;
     /// ```
     pub fn clk_enable(&mut self, id: ClkId) -> ClockResult<()> {
+        if matches!(
+            id,
+            SCLK_SDIO_DRV | SCLK_SDIO_SAMPLE | SCLK_SDMMC_DRV | SCLK_SDMMC_SAMPLE
+        ) {
+            return Ok(());
+        }
         let Some(gate) = self.find_clk_gate(id) else {
             return self.pcie_root_ref_enable(id);
         };
@@ -307,6 +313,12 @@ impl Cru {
     /// cru.clk_disable(CLK_I2C1)?;
     /// ```
     pub fn clk_disable(&mut self, id: ClkId) -> ClockResult<()> {
+        if matches!(
+            id,
+            SCLK_SDIO_DRV | SCLK_SDIO_SAMPLE | SCLK_SDMMC_DRV | SCLK_SDMMC_SAMPLE
+        ) {
+            return Ok(());
+        }
         let Some(gate) = self.find_clk_gate(id) else {
             return self.pcie_root_ref_disable(id);
         };
@@ -335,6 +347,12 @@ impl Cru {
     ///
     /// 返回 true 表示时钟已使能，false 表示已禁止，None 表示不支持
     pub fn clk_is_enabled(&self, id: ClkId) -> ClockResult<bool> {
+        if matches!(
+            id,
+            SCLK_SDIO_DRV | SCLK_SDIO_SAMPLE | SCLK_SDMMC_DRV | SCLK_SDMMC_SAMPLE
+        ) {
+            return Ok(true);
+        }
         let Some(gate) = self.find_clk_gate(id) else {
             return self.pcie_root_ref_is_enabled(id);
         };

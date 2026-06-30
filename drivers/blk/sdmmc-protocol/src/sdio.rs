@@ -112,30 +112,26 @@ impl HostEvent for () {
 
 /// IRQ fast-path handle for a host controller.
 ///
-/// Implementations are intended to be cloned into OS IRQ registration code.
+/// Implementations are intended to be moved into OS IRQ registration code.
 /// `handle_irq()` must acknowledge or clear the hardware interrupt source and
 /// cache any status that task-side `poll_*` paths need to observe later.
 /// It must not complete block requests, copy DMA buffers, or call OS wake/task
 /// APIs.
-pub trait SdioIrqHandle: Clone + Send + Sync + 'static {
+pub trait SdioIrqHandle: Send + 'static {
     type Event: HostEvent + Default;
 
-    fn handle_irq(&self) -> Self::Event;
+    fn handle_irq(&mut self) -> Self::Event;
 }
 
 /// Optional IRQ-capable extension of [`SdioHost`].
 ///
 /// The normal data path remains the submit/poll methods on [`SdioHost`].
-/// IRQ support only gives OS glue a sync-safe top-half handle that clears the
+/// IRQ support only gives OS glue an owned top-half endpoint that clears the
 /// device-side source and records status for later task-context polling.
 pub trait SdioIrqHost: SdioHost {
     type IrqHandle: SdioIrqHandle<Event = Self::Event>;
 
-    fn irq_handle(&self) -> Self::IrqHandle;
-
-    fn completion_irq_enabled(&self) -> bool {
-        false
-    }
+    fn irq_handle(&mut self) -> Self::IrqHandle;
 }
 
 /// Queue identifier used by SD/MMC block adapters.
@@ -255,11 +251,8 @@ pub trait SdioHost {
         Ok(())
     }
 
-    /// Acknowledge pending host IRQ status and return a hardware event summary.
-    ///
-    /// This must not block or perform OS wakeups.
-    fn handle_irq(&mut self) -> Self::Event {
-        Self::Event::default()
+    fn completion_irq_enabled(&self) -> bool {
+        false
     }
 
     /// Register the task that should be woken when command or data progress is
@@ -348,8 +341,6 @@ pub trait SdioHost2Irq: sdio_host2::SdioHost {
     type Event: HostEvent + Default;
     type IrqHandle: SdioIrqHandle<Event = Self::Event>;
 
-    fn irq_handle(&self) -> Self::IrqHandle;
-
     fn completion_irq_enabled(&self) -> bool {
         false
     }
@@ -362,9 +353,7 @@ pub trait SdioHost2Irq: sdio_host2::SdioHost {
         Ok(())
     }
 
-    fn handle_irq(&mut self) -> Self::Event {
-        self.irq_handle().handle_irq()
-    }
+    fn irq_handle(&mut self) -> Self::IrqHandle;
 }
 
 impl<T> SdioHost2Irq for T
@@ -374,12 +363,8 @@ where
     type Event = <T as SdioHost>::Event;
     type IrqHandle = <T as SdioIrqHost>::IrqHandle;
 
-    fn irq_handle(&self) -> Self::IrqHandle {
-        SdioIrqHost::irq_handle(self)
-    }
-
     fn completion_irq_enabled(&self) -> bool {
-        SdioIrqHost::completion_irq_enabled(self)
+        SdioHost::completion_irq_enabled(self)
     }
 
     fn enable_completion_irq(&mut self) -> Result<(), Error> {
@@ -390,33 +375,8 @@ where
         SdioHost::disable_completion_irq(self)
     }
 
-    fn handle_irq(&mut self) -> Self::Event {
-        SdioHost::handle_irq(self)
-    }
-}
-
-pub struct NoopSdioHost2IrqHandle<E>(core::marker::PhantomData<fn() -> E>);
-
-impl<E> Default for NoopSdioHost2IrqHandle<E> {
-    fn default() -> Self {
-        Self(core::marker::PhantomData)
-    }
-}
-
-impl<E> Clone for NoopSdioHost2IrqHandle<E> {
-    fn clone(&self) -> Self {
-        Self(core::marker::PhantomData)
-    }
-}
-
-impl<E> SdioIrqHandle for NoopSdioHost2IrqHandle<E>
-where
-    E: HostEvent + Default + 'static,
-{
-    type Event = E;
-
-    fn handle_irq(&self) -> Self::Event {
-        E::default()
+    fn irq_handle(&mut self) -> Self::IrqHandle {
+        SdioIrqHost::irq_handle(self)
     }
 }
 
@@ -494,6 +454,10 @@ impl<H: SdioHost2Irq + 'static> SdioHost2Adapter<H> {
         self.core.with_ref(f)
     }
 
+    pub fn with_host_mut<R>(&self, f: impl FnOnce(&mut H) -> R) -> R {
+        self.core.with_mut(f)
+    }
+
     fn drain_bus_op(&mut self, request: &mut SdioHost2BusRequest<H>) -> Result<(), Error> {
         for _ in 0..SDIO_HOST2_COMPAT_POLL_LIMIT {
             match self.poll_bus_op(request)? {
@@ -518,8 +482,9 @@ where
 {
 }
 
-// SAFETY: Shared references only expose IRQ forwarding and `with_host`, both
-// mediated by `Host2Shared`. Request mutation still requires `&mut self`.
+// SAFETY: Shared references only expose `with_host`, mediated by
+// `Host2Shared`. Request mutation and IRQ endpoint extraction still require
+// `&mut self`.
 unsafe impl<H> Sync for SdioHost2Adapter<H>
 where
     H: SdioHost2Irq + Send + 'static,
@@ -585,6 +550,7 @@ impl<H: SdioHost2Irq + 'static> Drop for SdioHost2DataRequest<'_, H> {
 pub struct SdioHost2BusRequest<H: SdioHost2Irq + 'static> {
     core: Host2Shared<H>,
     inner: Option<H::BusRequest>,
+    op: sdio_host2::BusOp,
 }
 
 impl<H: SdioHost2Irq + 'static> SdioHost2BusRequest<H> {
@@ -620,6 +586,10 @@ impl<H: SdioHost2Irq + 'static> SdioHost for SdioHost2Adapter<H> {
         if self.command_request.is_some() {
             return Err(Error::Busy);
         }
+        debug!(
+            "sdio-host2 adapter: submit command CMD{} arg={:#010x} resp={:?}",
+            cmd.index, cmd.argument, cmd.response
+        );
         let request = self
             .core
             .with_mut(|host| unsafe {
@@ -643,8 +613,12 @@ impl<H: SdioHost2Irq + 'static> SdioHost for SdioHost2Adapter<H> {
             Ok(sdio_host2::RequestPoll::Ready(Ok(raw))) => {
                 crate::response::response_from_raw(raw).map(CommandResponsePoll::Complete)
             }
-            Ok(sdio_host2::RequestPoll::Ready(Err(err))) => Err(host2_error(err)),
+            Ok(sdio_host2::RequestPoll::Ready(Err(err))) => {
+                warn!("sdio-host2 adapter: command completed with error {:?}", err);
+                Err(host2_error(err))
+            }
             Err(err) => {
+                warn!("sdio-host2 adapter: command poll failed with {:?}", err);
                 self.command_request = Some(request);
                 Err(host2_poll_error(err))
             }
@@ -754,7 +728,7 @@ impl<H: SdioHost2Irq + 'static> SdioHost for SdioHost2Adapter<H> {
     }
 
     fn submit_bus_op(&mut self, op: SdioBusOp) -> Result<Self::BusRequest, Error> {
-        let op = match op {
+        let host_op = match op {
             SdioBusOp::ResetAll => sdio_host2::BusOp::ResetAll,
             SdioBusOp::PowerOn => sdio_host2::BusOp::PowerOn,
             SdioBusOp::PowerOff => sdio_host2::BusOp::PowerOff,
@@ -774,11 +748,12 @@ impl<H: SdioHost2Irq + 'static> SdioHost for SdioHost2Adapter<H> {
         };
         let inner = self
             .core
-            .with_mut(|host| unsafe { host.submit_bus_op(op) })
+            .with_mut(|host| unsafe { host.submit_bus_op(host_op) })
             .map_err(host2_error)?;
         Ok(SdioHost2BusRequest {
             core: self.core.clone(),
             inner: Some(inner),
+            op: host_op,
         })
     }
 
@@ -791,10 +766,20 @@ impl<H: SdioHost2Irq + 'static> SdioHost for SdioHost2Adapter<H> {
                 Ok(OperationPoll::Complete(()))
             }
             Ok(sdio_host2::RequestPoll::Ready(Err(err))) => {
+                warn!(
+                    "sdio-host2 adapter: bus op {:?} completed with error {:?}",
+                    request.op, err
+                );
                 request.inner = None;
                 Err(host2_error(err))
             }
-            Err(err) => Err(host2_poll_error(err)),
+            Err(err) => {
+                warn!(
+                    "sdio-host2 adapter: bus op {:?} poll failed with {:?}",
+                    request.op, err
+                );
+                Err(host2_poll_error(err))
+            }
         }
     }
 
@@ -806,12 +791,20 @@ impl<H: SdioHost2Irq + 'static> SdioHost for SdioHost2Adapter<H> {
         self.core.with_mut(|host| host.disable_completion_irq())
     }
 
-    fn handle_irq(&mut self) -> Self::Event {
-        self.core.with_mut(|host| host.handle_irq())
+    fn completion_irq_enabled(&self) -> bool {
+        self.core.with_ref(|host| host.completion_irq_enabled())
     }
 
     fn now_ms(&self) -> Option<u64> {
         self.core.with_ref(|host| host.now_ms())
+    }
+}
+
+impl<H: SdioHost2Irq + 'static> SdioIrqHost for SdioHost2Adapter<H> {
+    type IrqHandle = H::IrqHandle;
+
+    fn irq_handle(&mut self) -> Self::IrqHandle {
+        self.core.with_mut(|host| host.irq_handle())
     }
 }
 
@@ -868,18 +861,6 @@ fn recover_dma_buffer(transaction: sdio_host2::Transaction<'_>) -> Option<Prepar
     match transaction.data?.buffer {
         sdio_host2::DataBuffer::Dma(buffer) => Some(buffer),
         sdio_host2::DataBuffer::Read(_) | sdio_host2::DataBuffer::Write(_) => None,
-    }
-}
-
-impl<H: SdioHost2Irq + 'static> SdioIrqHost for SdioHost2Adapter<H> {
-    type IrqHandle = H::IrqHandle;
-
-    fn irq_handle(&self) -> Self::IrqHandle {
-        self.core.with_ref(|host| host.irq_handle())
-    }
-
-    fn completion_irq_enabled(&self) -> bool {
-        self.core.with_ref(|host| host.completion_irq_enabled())
     }
 }
 
@@ -1217,6 +1198,7 @@ pub struct SdioInitRequest<'a, H: SdioHost + 'a> {
     status_request: Option<SdioStatusRequest>,
     command_request: Option<SdioCommandRequest>,
     bus_request: Option<H::BusRequest>,
+    active_bus_op: Option<SdioBusOp>,
     current_bus_width: BusWidth,
     current_access_mode: Option<SdAccessMode>,
     sd_access_index: usize,
@@ -1249,6 +1231,7 @@ impl<'a, H: SdioHost + 'a> SdioInitRequest<'a, H> {
             status_request: None,
             command_request: None,
             bus_request: None,
+            active_bus_op: None,
             current_bus_width: BusWidth::Bit1,
             current_access_mode: None,
             sd_access_index: 0,
@@ -1280,6 +1263,7 @@ enum SdioInitState {
     PollResetVoltage,
     ResetBusWidth,
     ResetClock,
+    PostIdentificationClockDelay,
     SubmitCmd0,
     PollCmd0,
     PollCmd8,
@@ -1688,8 +1672,9 @@ impl<H: SdioHost> SdioSdmmc<H> {
         op: SdioBusOp,
         next: SdioInitState,
     ) -> Result<OperationPoll<CardInfo>, Error> {
-        debug!("sdio: submit bus op {:?}", op);
+        info!("sdio: submit bus op {:?}", op);
         request.bus_request = Some(self.host.submit_bus_op(op)?);
+        request.active_bus_op = Some(op);
         request.state = next;
         Ok(OperationPoll::Pending)
     }
@@ -1704,9 +1689,32 @@ impl<H: SdioHost> SdioSdmmc<H> {
                 request.bus_request = Some(bus_request);
                 Ok(OperationPoll::Pending)
             }
-            Ok(OperationPoll::Complete(())) => Ok(OperationPoll::Complete(())),
-            Err(err) => Err(err),
+            Ok(OperationPoll::Complete(())) => {
+                request.active_bus_op = None;
+                Ok(OperationPoll::Complete(()))
+            }
+            Err(err) => {
+                warn!(
+                    "sdio: init bus op {:?} failed in state {:?}: {:?}",
+                    request.active_bus_op, request.state, err
+                );
+                request.active_bus_op = None;
+                Err(err)
+            }
         }
+    }
+
+    fn submit_init_bus_op_direct<'a>(
+        &mut self,
+        request: &mut SdioInitRequest<'a, H>,
+        op: SdioBusOp,
+        next: SdioInitState,
+    ) -> Result<(), Error> {
+        info!("sdio: submit bus op {:?}", op);
+        request.bus_request = Some(self.host.submit_bus_op(op)?);
+        request.active_bus_op = Some(op);
+        request.state = next;
+        Ok(())
     }
 
     fn poll_init_bus_op_then<'a>(
@@ -1754,11 +1762,12 @@ impl<H: SdioHost> SdioSdmmc<H> {
 
         match request.state {
             SdioInitState::ResetHost => {
-                match self.host.submit_bus_op(SdioBusOp::ResetAll) {
-                    Ok(bus_request) => {
-                        request.bus_request = Some(bus_request);
-                        request.state = SdioInitState::PollResetHost;
-                    }
+                match self.submit_init_bus_op_direct(
+                    request,
+                    SdioBusOp::ResetAll,
+                    SdioInitState::PollResetHost,
+                ) {
+                    Ok(()) => {}
                     Err(Error::UnsupportedCommand) => {
                         debug!("sdio: host does not support reset bus op");
                         request.state = SdioInitState::PowerOn;
@@ -1775,11 +1784,12 @@ impl<H: SdioHost> SdioSdmmc<H> {
                 }
             },
             SdioInitState::PowerOn => {
-                match self.host.submit_bus_op(SdioBusOp::PowerOn) {
-                    Ok(bus_request) => {
-                        request.bus_request = Some(bus_request);
-                        request.state = SdioInitState::PollPowerOn;
-                    }
+                match self.submit_init_bus_op_direct(
+                    request,
+                    SdioBusOp::PowerOn,
+                    SdioInitState::PollPowerOn,
+                ) {
+                    Ok(()) => {}
                     Err(Error::UnsupportedCommand) => {
                         debug!("sdio: host does not support power-on bus op");
                         request.state = SdioInitState::ResetVoltage;
@@ -1792,18 +1802,17 @@ impl<H: SdioHost> SdioSdmmc<H> {
                 OperationPoll::Pending => Ok(OperationPoll::Pending),
                 OperationPoll::Complete(()) => {
                     request.state = SdioInitState::ResetVoltage;
+                    request.needs_pace = true;
                     Ok(OperationPoll::Pending)
                 }
             },
             SdioInitState::ResetVoltage => {
-                match self
-                    .host
-                    .submit_bus_op(SdioBusOp::SwitchVoltage(SignalVoltage::V330))
-                {
-                    Ok(bus_request) => {
-                        request.bus_request = Some(bus_request);
-                        request.state = SdioInitState::PollResetVoltage;
-                    }
+                match self.submit_init_bus_op_direct(
+                    request,
+                    SdioBusOp::SwitchVoltage(SignalVoltage::V330),
+                    SdioInitState::PollResetVoltage,
+                ) {
+                    Ok(()) => {}
                     Err(Error::UnsupportedCommand) => {
                         debug!("sdio: host does not support voltage reset");
                         request.state = SdioInitState::ResetBusWidth;
@@ -1832,12 +1841,17 @@ impl<H: SdioHost> SdioSdmmc<H> {
                     SdioInitState::SubmitCmd0,
                 )
             }),
-            SdioInitState::SubmitCmd0 => self.poll_init_bus_op_then(request, |driver, request| {
-                debug!("sdio: CMD0 reset");
-                driver.host.submit_command(&crate::cmd::CMD0)?;
-                request.state = SdioInitState::PollCmd0;
+            SdioInitState::SubmitCmd0 => self.poll_init_bus_op_then(request, |_driver, request| {
+                request.state = SdioInitState::PostIdentificationClockDelay;
+                request.needs_pace = true;
                 Ok(OperationPoll::Pending)
             }),
+            SdioInitState::PostIdentificationClockDelay => {
+                debug!("sdio: CMD0 reset");
+                self.host.submit_command(&crate::cmd::CMD0)?;
+                request.state = SdioInitState::PollCmd0;
+                Ok(OperationPoll::Pending)
+            }
             SdioInitState::PollCmd0 => match self.host.poll_command_response()? {
                 CommandResponsePoll::Pending => Ok(OperationPoll::Pending),
                 CommandResponsePoll::Complete(_) => {
@@ -3142,7 +3156,6 @@ mod tests {
 
         assert_eq!(host.enable_completion_irq(), Ok(()));
         assert_eq!(host.disable_completion_irq(), Ok(()));
-        assert_eq!(host.handle_irq(), ());
     }
 
     #[test]
@@ -3325,11 +3338,15 @@ mod tests {
         let mut request = driver.submit_init(&mut scratch).unwrap();
 
         assert!(driver.host.commands.is_empty());
-        for _ in 0..8 {
+        for _ in 0..16 {
             assert!(matches!(
                 driver.poll_init_request(&mut request).unwrap(),
                 OperationPoll::Pending
             ));
+            let _ = request.take_needs_pace();
+            if !driver.host.commands.is_empty() {
+                break;
+            }
         }
         assert_eq!(
             driver
@@ -3364,7 +3381,7 @@ mod tests {
         let mut scratch = SdioInitScratch::new();
         let mut request = driver.submit_init(&mut scratch).unwrap();
 
-        for _ in 0..9 {
+        for _ in 0..10 {
             assert!(matches!(
                 driver.poll_init_request(&mut request).unwrap(),
                 OperationPoll::Pending
@@ -3430,11 +3447,15 @@ mod tests {
             .submit_init_with_preference(CardInitPreference::MmcFirst, &mut scratch)
             .unwrap();
 
-        for _ in 0..9 {
+        for _ in 0..16 {
             assert!(matches!(
                 driver.poll_init_request(&mut request).unwrap(),
                 OperationPoll::Pending
             ));
+            let _ = request.take_needs_pace();
+            if driver.host.commands.iter().any(|cmd| cmd.index == 1) {
+                break;
+            }
         }
         assert_eq!(
             driver
@@ -3622,7 +3643,7 @@ mod tests {
     }
 
     #[test]
-    fn poll_init_request_skips_pace_hint_on_ready_path() {
+    fn poll_init_request_ready_path_only_uses_linux_power_on_pace_hints() {
         let replies = sd_init_replies();
         let host = MockHost::with_results(replies);
         let mut driver = SdioSdmmc::new(host);
@@ -3642,7 +3663,60 @@ mod tests {
         };
 
         assert_eq!(info.rca, 0x1234);
-        assert_eq!(pace_hints, 0);
+        assert_eq!(
+            pace_hints, 2,
+            "ready card path should only pace for Linux-style power stabilization, not for \
+             ACMD41/CMD1 retries"
+        );
+    }
+
+    #[test]
+    fn poll_init_request_paces_after_power_on_before_clocking_card() {
+        let host = MockHost::with_results(std::vec![Ok(ok_r1())]);
+        let mut driver = SdioSdmmc::new(host);
+        let mut scratch = SdioInitScratch::new();
+        let mut request = driver.submit_init(&mut scratch).unwrap();
+
+        for _ in 0..4 {
+            assert!(matches!(
+                driver.poll_init_request(&mut request).unwrap(),
+                OperationPoll::Pending
+            ));
+        }
+
+        assert!(
+            driver.host.commands.is_empty(),
+            "no card command should be issued before the post-power-on pace point"
+        );
+        assert!(
+            request.take_needs_pace(),
+            "init must wait after bus power-on before driving more commands, matching Linux \
+             mmc_power_up()"
+        );
+    }
+
+    #[test]
+    fn poll_init_request_paces_after_identification_clock_before_cmd0() {
+        let host = MockHost::with_results(std::vec![Ok(ok_r1())]);
+        let mut driver = SdioSdmmc::new(host);
+        let mut scratch = SdioInitScratch::new();
+        let mut request = driver.submit_init(&mut scratch).unwrap();
+
+        loop {
+            assert!(matches!(
+                driver.poll_init_request(&mut request).unwrap(),
+                OperationPoll::Pending
+            ));
+            let needs_pace = request.take_needs_pace();
+            if driver.host.last_clock == Some(ClockSpeed::Identification) && needs_pace {
+                break;
+            }
+        }
+
+        assert!(
+            driver.host.commands.is_empty(),
+            "CMD0 must wait until the post-identification-clock pace point has elapsed"
+        );
     }
 
     #[test]
@@ -3666,12 +3740,12 @@ mod tests {
         disable_speed_selection(&mut driver);
         let mut scratch = SdioInitScratch::new();
         let mut request = driver.submit_init(&mut scratch).unwrap();
-        let mut power_up_retries = 0;
+        let mut pace_hints = 0;
         let info = loop {
             match driver.poll_init_request(&mut request).unwrap() {
                 OperationPoll::Pending => {
                     if request.take_needs_pace() {
-                        power_up_retries += 1;
+                        pace_hints += 1;
                     }
                 }
                 OperationPoll::Complete(info) => break info,
@@ -3679,7 +3753,10 @@ mod tests {
         };
 
         assert_eq!(info.rca, 0x1234);
-        assert_eq!(power_up_retries, 1);
+        assert_eq!(
+            pace_hints, 3,
+            "two Linux-style power-up pace points plus one ACMD41 retry pace"
+        );
     }
 
     #[test]
@@ -4326,7 +4403,6 @@ mod tests {
         assert!(driver.host.commands.is_empty());
     }
 
-    #[derive(Clone)]
     struct MockIrqHandle {
         event: IrqTestEvent,
     }
@@ -4334,7 +4410,7 @@ mod tests {
     impl SdioIrqHandle for MockIrqHandle {
         type Event = IrqTestEvent;
 
-        fn handle_irq(&self) -> Self::Event {
+        fn handle_irq(&mut self) -> Self::Event {
             self.event
         }
     }
@@ -4370,13 +4446,12 @@ mod tests {
     }
 
     #[test]
-    fn irq_handle_is_cloneable_and_handles_with_shared_reference() {
-        let handle = MockIrqHandle {
+    fn irq_handle_is_move_only_and_handles_with_mutable_endpoint() {
+        let mut handle = MockIrqHandle {
             event: IrqTestEvent(HostEventKind::TransferComplete),
         };
-        let cloned = handle.clone();
 
-        assert_eq!(cloned.handle_irq().kind(), HostEventKind::TransferComplete);
+        assert_eq!(handle.handle_irq().kind(), HostEventKind::TransferComplete);
     }
 
     struct Host2Mock {
@@ -4391,6 +4466,7 @@ mod tests {
         bus_error: Option<sdio_host2::Error>,
         transaction_aborts: usize,
         bus_aborts: usize,
+        completion_irq_enabled: bool,
     }
 
     struct Host2TransactionRequest {
@@ -4514,11 +4590,33 @@ mod tests {
 
     impl SdioHost2Irq for Host2Mock {
         type Event = ();
-        type IrqHandle = NoopSdioHost2IrqHandle<()>;
+        type IrqHandle = Host2MockIrq;
 
-        fn irq_handle(&self) -> Self::IrqHandle {
-            NoopSdioHost2IrqHandle::default()
+        fn completion_irq_enabled(&self) -> bool {
+            self.completion_irq_enabled
         }
+
+        fn enable_completion_irq(&mut self) -> Result<(), Error> {
+            self.completion_irq_enabled = true;
+            Ok(())
+        }
+
+        fn disable_completion_irq(&mut self) -> Result<(), Error> {
+            self.completion_irq_enabled = false;
+            Ok(())
+        }
+
+        fn irq_handle(&mut self) -> Self::IrqHandle {
+            Host2MockIrq
+        }
+    }
+
+    struct Host2MockIrq;
+
+    impl SdioIrqHandle for Host2MockIrq {
+        type Event = ();
+
+        fn handle_irq(&mut self) -> Self::Event {}
     }
 
     impl Host2Mock {
@@ -4532,8 +4630,21 @@ mod tests {
                 bus_error: None,
                 transaction_aborts: 0,
                 bus_aborts: 0,
+                completion_irq_enabled: false,
             }
         }
+    }
+
+    #[test]
+    fn host2_adapter_reports_forwarded_completion_irq_state() {
+        let host = Host2Mock::new(sdio_host2::RawResponse::empty());
+        let mut adapter = SdioHost2Adapter::new(host);
+
+        assert!(!adapter.completion_irq_enabled());
+        adapter.enable_completion_irq().unwrap();
+        assert!(adapter.completion_irq_enabled());
+        adapter.disable_completion_irq().unwrap();
+        assert!(!adapter.completion_irq_enabled());
     }
 
     #[test]

@@ -17,12 +17,8 @@ pub mod nvme;
 pub mod phytium_mci;
 #[cfg(feature = "ramdisk")]
 pub mod ramdisk;
-#[cfg(feature = "rockchip-sdhci")]
+#[cfg(any(feature = "rockchip-dwmmc", feature = "rockchip-sdhci"))]
 mod rockchip;
-#[cfg(feature = "rockchip-sdhci")]
-pub mod rockchip_mmc;
-#[cfg(feature = "rockchip-dwmmc")]
-pub mod rockchip_sd;
 #[cfg(feature = "starfive-jh7110-dwmmc")]
 pub mod starfive_mmc;
 

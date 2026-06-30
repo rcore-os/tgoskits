@@ -8,7 +8,6 @@
 use alloc::{boxed::Box, sync::Arc, vec, vec::Vec};
 use core::{
     cell::UnsafeCell,
-    marker::PhantomData,
     num::NonZeroUsize,
     ptr::NonNull,
     sync::atomic::{AtomicBool, Ordering},
@@ -18,8 +17,8 @@ use log::warn;
 use rdif_block::dma_api::{CompletedDma, DeviceDma, PreparedDma};
 pub use rdif_block::{
     BInterface, BIrqHandler, BOwnedQueue, BQueue, BlkError, IQueue, IQueueOwned, Interface,
-    IrqHandlerHandle, IrqHandlerSlot, OwnedRequest, PollError, QueueHandle, Request, RequestId,
-    RequestPoll as OwnedRequestPoll, RequestStatus, SubmitError, dma_api,
+    OwnedRequest, PollError, QueueHandle, Request, RequestId, RequestPoll as OwnedRequestPoll,
+    RequestStatus, SubmitError, dma_api,
 };
 
 use crate::{
@@ -106,7 +105,7 @@ impl BlockConfig {
     }
 }
 
-pub trait BlockHost: SdioIrqHost + Send + Sync + 'static {
+pub trait BlockHost: SdioIrqHost + Send + 'static {
     type Request: Send + 'static;
     type Slot: Default + Send + 'static;
 
@@ -429,6 +428,7 @@ where
     H: BlockHost,
 {
     control: Arc<BlockControl<H>>,
+    irq_handler: Option<BIrqHandler>,
 }
 
 struct BlockControl<H>
@@ -439,28 +439,27 @@ where
     config: BlockConfig,
     irq_enabled: AtomicBool,
     queue_taken: AtomicBool,
-    irq_handler: rdif_block::IrqHandlerSlot,
 }
 
 impl<H> BlockDevice<H>
 where
     H: BlockHost,
 {
-    pub fn new(card: SdioSdmmc<H>, config: BlockConfig) -> Self {
+    pub fn new(mut card: SdioSdmmc<H>, config: BlockConfig) -> Self {
+        let irq_handler = config.irq_driven.then(|| {
+            Box::new(BlockIrqHandler::<H> {
+                irq: SdioIrqHost::irq_handle(card.host_mut()),
+            }) as BIrqHandler
+        });
         let raw = SharedCore::new(card);
-        let irq_handle = raw.with_mut(|raw| raw.host().irq_handle());
-        let irq_handler = rdif_block::IrqHandlerSlot::new(Box::new(BlockIrqHandler::<H> {
-            handle: irq_handle,
-            _marker: PhantomData,
-        }));
         Self {
             control: Arc::new(BlockControl {
                 raw,
                 config,
                 irq_enabled: AtomicBool::new(false),
                 queue_taken: AtomicBool::new(false),
-                irq_handler,
             }),
+            irq_handler,
         }
     }
 
@@ -574,10 +573,7 @@ where
         if !self.control.config.irq_driven || source_id != 0 {
             return None;
         }
-        self.control
-            .irq_handler
-            .take()
-            .map(|handler| Box::new(handler) as Box<dyn rdif_block::IrqHandler>)
+        self.irq_handler.take()
     }
 }
 
@@ -1153,8 +1149,7 @@ struct BlockIrqHandler<H>
 where
     H: BlockHost,
 {
-    handle: <H as SdioIrqHost>::IrqHandle,
-    _marker: PhantomData<H>,
+    irq: H::IrqHandle,
 }
 
 impl<H> rdif_block::IrqHandler for BlockIrqHandler<H>
@@ -1162,7 +1157,7 @@ where
     H: BlockHost,
 {
     fn handle_irq(&mut self) -> rdif_block::Event {
-        let host_event = self.handle.handle_irq();
+        let host_event = self.irq.handle_irq();
         let mut event = rdif_block::Event::none();
         if let Some(queue_id) = block_queue_ready_from_host_event(&host_event) {
             event.push_queue(queue_id);
@@ -1247,8 +1242,9 @@ struct SharedCoreGuard<'a, T> {
     inner: &'a SharedCoreInner<T>,
 }
 
-// SAFETY: `SharedCore` serializes all mutable access through a single atomic
-// borrow flag. IRQ top halves use host-specific cloneable handles instead.
+// SAFETY: `SharedCore` serializes queue/control access through a single atomic
+// borrow flag. Hard IRQ callbacks own a separate host IRQ endpoint and never
+// enter this shared card core.
 unsafe impl<T: Send> Send for SharedCoreInner<T> {}
 
 // SAFETY: See the `Send` impl.
@@ -1318,21 +1314,16 @@ mod tests {
     use crate::{
         CommandResponsePoll, DataCommandPoll, OperationPoll,
         cmd::Command,
-        sdio::{ClockSpeed, HostEvent, HostEventKind},
+        sdio::{ClockSpeed, HostEvent, HostEventKind, SdioIrqHandle},
     };
 
     fn block_control(config: BlockConfig) -> Arc<BlockControl<MockHost>> {
         let raw = SharedCore::new(SdioSdmmc::new(MockHost::default()));
-        let irq_handle = raw.with_mut(|raw| raw.host().irq_handle());
         Arc::new(BlockControl {
-            raw,
+            raw: raw.clone(),
             config,
             irq_enabled: AtomicBool::new(false),
             queue_taken: AtomicBool::new(false),
-            irq_handler: rdif_block::IrqHandlerSlot::new(Box::new(BlockIrqHandler::<MockHost> {
-                handle: irq_handle,
-                _marker: PhantomData,
-            })),
         })
     }
 
@@ -1363,12 +1354,26 @@ mod tests {
             SdioSdmmc::new(MockHost::default()),
             BlockConfig::fifo("mock-sd", 8, true),
         );
-        let handler = Interface::take_irq_handler(&mut device, 0).unwrap();
+        let mut handler = Interface::take_irq_handler(&mut device, 0).unwrap();
 
         let event = handler.handle_irq();
 
         assert!(event.queues.contains(0));
         assert!(!event.is_empty());
+    }
+
+    #[test]
+    fn irq_handler_does_not_enter_shared_card_core() {
+        let mut device = BlockDevice::new(
+            SdioSdmmc::new(MockHost::default()),
+            BlockConfig::fifo("mock-sd", 8, true),
+        );
+        let mut handler = Interface::take_irq_handler(&mut device, 0).unwrap();
+        let _guard = device.control.raw.inner.enter();
+
+        let event = handler.handle_irq();
+
+        assert!(event.queues.contains(0));
     }
 
     #[test]
@@ -1529,17 +1534,6 @@ mod tests {
         assert!(slot.active_id.is_none());
     }
 
-    #[derive(Clone, Default)]
-    struct MockIrqHandle;
-
-    impl SdioIrqHandle for MockIrqHandle {
-        type Event = MockEvent;
-
-        fn handle_irq(&self) -> Self::Event {
-            MockEvent(HostEventKind::TransferComplete)
-        }
-    }
-
     #[derive(Clone, Copy, Default)]
     struct MockEvent(HostEventKind);
 
@@ -1556,6 +1550,16 @@ mod tests {
         aborts: AtomicUsize,
         read_sizes: Vec<usize>,
         write_sizes: Vec<usize>,
+    }
+
+    struct MockIrqEndpoint;
+
+    impl SdioIrqHandle for MockIrqEndpoint {
+        type Event = MockEvent;
+
+        fn handle_irq(&mut self) -> Self::Event {
+            MockEvent(HostEventKind::TransferComplete)
+        }
     }
 
     #[derive(Default)]
@@ -1687,10 +1691,10 @@ mod tests {
 
     impl SdioHost2Irq for Host2BlockMock {
         type Event = MockEvent;
-        type IrqHandle = MockIrqHandle;
+        type IrqHandle = MockIrqEndpoint;
 
-        fn irq_handle(&self) -> Self::IrqHandle {
-            MockIrqHandle
+        fn irq_handle(&mut self) -> Self::IrqHandle {
+            MockIrqEndpoint
         }
     }
 
@@ -1762,17 +1766,17 @@ mod tests {
             self.irq_enabled.store(false, Ordering::Release);
             Ok(())
         }
-    }
-
-    impl SdioIrqHost for MockHost {
-        type IrqHandle = MockIrqHandle;
-
-        fn irq_handle(&self) -> Self::IrqHandle {
-            MockIrqHandle
-        }
 
         fn completion_irq_enabled(&self) -> bool {
             self.irq_enabled.load(Ordering::Acquire)
+        }
+    }
+
+    impl SdioIrqHost for MockHost {
+        type IrqHandle = MockIrqEndpoint;
+
+        fn irq_handle(&mut self) -> Self::IrqHandle {
+            MockIrqEndpoint
         }
     }
 

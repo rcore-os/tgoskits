@@ -4,6 +4,7 @@
 //! value, fires it, polls RINTSTS for completion, and decodes the four
 //! 32-bit response slots back into [`Response`].
 
+use log::warn;
 use sdmmc_protocol::{
     CommandPoll, CommandResponsePoll,
     cmd::{Command as ProtoCmd, DataDirection},
@@ -64,6 +65,9 @@ impl DwMmc {
         if !matches!(self.command_state, CommandState::Idle) {
             return Err(Error::UnsupportedCommand);
         }
+        if !self.card_present() {
+            return Err(Error::NoCard);
+        }
         let data = self.pending_data.take();
         self.prepare_irq_for_request();
         self.command_state = CommandState::WaitingInhibit {
@@ -83,6 +87,7 @@ impl DwMmc {
             CommandState::WaitingInhibit { cmd, data, polls } => {
                 if !self.command_can_issue(data.is_some()) {
                     if polls >= COMMAND_WAIT_POLLS {
+                        self.log_command_timeout("wait-inhibit", cmd);
                         let err =
                             Error::Timeout(ErrorContext::for_cmd(Phase::CommandSend, cmd.index));
                         self.command_state = CommandState::Failed { error: err };
@@ -101,6 +106,7 @@ impl DwMmc {
             CommandState::WaitingStart { cmd, polls } => {
                 if self.regs.cmd().read().start_cmd() {
                     if polls >= COMMAND_WAIT_POLLS {
+                        self.log_command_timeout("wait-start", cmd);
                         let err =
                             Error::Timeout(ErrorContext::for_cmd(Phase::CommandSend, cmd.index));
                         self.command_state = CommandState::Failed { error: err };
@@ -128,6 +134,7 @@ impl DwMmc {
         let status = crate::regs::RIntSts::from_bits(raw_status);
         if status.error() {
             let err = self.translate_int_error(status, Phase::ResponseWait, cmd.index);
+            self.log_command_error("interrupt-error", cmd, raw_status, err);
             self.command_state = CommandState::Failed { error: err };
             return Err(err);
         }
@@ -148,6 +155,7 @@ impl DwMmc {
         }
         if polls >= COMMAND_WAIT_POLLS {
             let err = Error::Timeout(ErrorContext::for_cmd(Phase::ResponseWait, cmd.index));
+            self.log_command_error("response-timeout", cmd, raw_status, err);
             self.command_state = CommandState::Failed { error: err };
             return Err(err);
         }
@@ -230,6 +238,60 @@ impl DwMmc {
         self.irq
             .state
             .clear(crate::DWMMC_INT_COMMAND_DONE | crate::DWMMC_INT_ERROR_MASK);
+    }
+
+    fn log_command_timeout(&self, stage: &str, cmd: ProtoCmd) {
+        warn!(
+            "dwmmc-command: {stage} timeout cmd={} arg={:#010x} resp={:?} cmdreg={:#010x} \
+             status={:#010x} rintsts={:#010x} mintsts={:#010x} intmask={:#010x} ctrl={:#010x} \
+             pwren={:#010x} cdetect={:#010x} clkena={:#010x} clksrc={:#010x} clkdiv={:#010x} \
+             ctype={:#010x} uhs={:#010x} rst={:#010x}",
+            cmd.index,
+            cmd.argument,
+            cmd.response,
+            self.regs.cmd().read().into_bits(),
+            self.regs.status().read().into_bits(),
+            self.regs.rintsts().read().into_bits(),
+            self.regs.mintsts().read(),
+            self.regs.intmask().read(),
+            self.regs.ctrl().read().into_bits(),
+            self.regs.pwren().read(),
+            self.regs.cdetect().read(),
+            self.regs.clkena().read().into_bits(),
+            self.regs.clksrc().read(),
+            self.regs.clkdiv().read().into_bits(),
+            self.regs.ctype().read().into_bits(),
+            self.regs.uhs().read().into_bits(),
+            self.regs.rst().read(),
+        );
+    }
+
+    fn log_command_error(&self, stage: &str, cmd: ProtoCmd, raw_status: u32, err: Error) {
+        warn!(
+            "dwmmc-command: {stage} cmd={} arg={:#010x} resp={:?} raw={:#010x} err={:?} \
+             cmdreg={:#010x} status={:#010x} rintsts={:#010x} mintsts={:#010x} intmask={:#010x} \
+             ctrl={:#010x} pwren={:#010x} cdetect={:#010x} clkena={:#010x} clksrc={:#010x} \
+             clkdiv={:#010x} ctype={:#010x} uhs={:#010x} rst={:#010x}",
+            cmd.index,
+            cmd.argument,
+            cmd.response,
+            raw_status,
+            err,
+            self.regs.cmd().read().into_bits(),
+            self.regs.status().read().into_bits(),
+            self.regs.rintsts().read().into_bits(),
+            self.regs.mintsts().read(),
+            self.regs.intmask().read(),
+            self.regs.ctrl().read().into_bits(),
+            self.regs.pwren().read(),
+            self.regs.cdetect().read(),
+            self.regs.clkena().read().into_bits(),
+            self.regs.clksrc().read(),
+            self.regs.clkdiv().read().into_bits(),
+            self.regs.ctype().read().into_bits(),
+            self.regs.uhs().read().into_bits(),
+            self.regs.rst().read(),
+        );
     }
 
     fn prepare_irq_for_request(&mut self) {

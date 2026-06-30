@@ -29,6 +29,21 @@ const DESC_DIC: u32 = 1 << 1;
 const BMOD_SWR: u32 = 1 << 0;
 const BMOD_FB: u32 = 1 << 1;
 const BMOD_DE: u32 = 1 << 7;
+const IDMAC_INT_TI: u32 = 1 << 0;
+const IDMAC_INT_RI: u32 = 1 << 1;
+const IDMAC_INT_FBE: u32 = 1 << 2;
+const IDMAC_INT_DU: u32 = 1 << 4;
+const IDMAC_INT_CES: u32 = 1 << 5;
+const IDMAC_INT_NI: u32 = 1 << 8;
+const IDMAC_INT_AI: u32 = 1 << 9;
+const IDMAC_INT_CLR: u32 = IDMAC_INT_AI
+    | IDMAC_INT_NI
+    | IDMAC_INT_CES
+    | IDMAC_INT_DU
+    | IDMAC_INT_FBE
+    | IDMAC_INT_RI
+    | IDMAC_INT_TI;
+const IDMAC_INT_ENABLE: u32 = IDMAC_INT_NI | IDMAC_INT_RI | IDMAC_INT_TI;
 
 const DMA_POLL_LIMIT: u32 = 8_000_000;
 pub const IDMAC_DESC_ALIGN: usize = 16;
@@ -275,7 +290,10 @@ pub struct IdmacDesc {
 
 impl IdmacDesc {
     pub fn chained(buffer_dma: u32, len: u32, next_desc_dma: u32, first: bool, last: bool) -> Self {
-        let mut des0 = DESC_OWN | DESC_CH | DESC_DIC;
+        let mut des0 = DESC_OWN;
+        if !last {
+            des0 |= DESC_CH | DESC_DIC;
+        }
         if first {
             des0 |= DESC_FS;
         }
@@ -425,85 +443,85 @@ impl DwMmc {
         id: RequestId,
         slot: &mut BlockRequestSlot,
     ) -> Result<DataCommandPoll, Error> {
-        let Some(active) = request.as_ref() else {
-            return Err(Error::InvalidArgument);
-        };
-        if active.id() != id {
-            return Err(Error::InvalidArgument);
-        }
-
-        if matches!(
-            active.inner,
-            BlockRequestKind::FifoRead { .. } | BlockRequestKind::FifoWrite { .. }
-        ) {
-            return self.poll_fifo_request(request, id, slot);
-        }
-
-        let (cmd_index, phase, stage) = match &active.inner {
-            BlockRequestKind::Read {
-                cmd_index,
-                phase,
-                stage,
-                ..
+        loop {
+            let Some(active) = request.as_ref() else {
+                return Err(Error::InvalidArgument);
+            };
+            if active.id() != id {
+                return Err(Error::InvalidArgument);
             }
-            | BlockRequestKind::Write {
-                cmd_index,
-                phase,
-                stage,
-                ..
-            } => (*cmd_index, *phase, *stage),
-            BlockRequestKind::FifoRead { .. } | BlockRequestKind::FifoWrite { .. } => {
-                unreachable!()
-            }
-        };
 
-        if stage == BlockRequestStage::Command {
-            match self.poll_command() {
-                Ok(CommandPoll::Pending) => return Ok(DataCommandPoll::Pending),
-                Ok(CommandPoll::Complete) => {
-                    let response = self.take_command_response()?;
-                    if let Some(active) = request.as_mut() {
-                        match &mut active.inner {
-                            BlockRequestKind::Read {
-                                stage,
-                                response: stored_response,
-                                ..
+            if matches!(
+                active.inner,
+                BlockRequestKind::FifoRead { .. } | BlockRequestKind::FifoWrite { .. }
+            ) {
+                return self.poll_fifo_request(request, id, slot);
+            }
+
+            let (cmd_index, phase, stage) = match &active.inner {
+                BlockRequestKind::Read {
+                    cmd_index,
+                    phase,
+                    stage,
+                    ..
+                }
+                | BlockRequestKind::Write {
+                    cmd_index,
+                    phase,
+                    stage,
+                    ..
+                } => (*cmd_index, *phase, *stage),
+                BlockRequestKind::FifoRead { .. } | BlockRequestKind::FifoWrite { .. } => {
+                    unreachable!()
+                }
+            };
+
+            match stage {
+                BlockRequestStage::Command => match self.poll_command() {
+                    Ok(CommandPoll::Pending) => return Ok(DataCommandPoll::Pending),
+                    Ok(CommandPoll::Complete) => {
+                        let response = self.take_command_response()?;
+                        if let Some(active) = request.as_mut() {
+                            match &mut active.inner {
+                                BlockRequestKind::Read {
+                                    stage,
+                                    response: stored_response,
+                                    ..
+                                }
+                                | BlockRequestKind::Write {
+                                    stage,
+                                    response: stored_response,
+                                    ..
+                                } => {
+                                    *stage = BlockRequestStage::Data;
+                                    *stored_response = Some(response);
+                                }
+                                BlockRequestKind::FifoRead { .. }
+                                | BlockRequestKind::FifoWrite { .. } => unreachable!(),
                             }
-                            | BlockRequestKind::Write {
-                                stage,
-                                response: stored_response,
-                                ..
-                            } => {
-                                *stage = BlockRequestStage::Data;
-                                *stored_response = Some(response);
-                            }
-                            BlockRequestKind::FifoRead { .. }
-                            | BlockRequestKind::FifoWrite { .. } => unreachable!(),
                         }
                     }
-                    return Ok(DataCommandPoll::Pending);
-                }
-                // Future CommandPoll variants: best-effort, treat as still pending.
-                Ok(_) => return Ok(DataCommandPoll::Pending),
-                Err(err) => {
-                    let _ = self.abort_block_request(request, id, slot, phase);
-                    return Err(err);
-                }
-            }
-        }
-
-        if stage == BlockRequestStage::Stop {
-            return self.poll_block_stop(request, id, slot, phase);
-        }
-
-        match self.poll_dma_complete(cmd_index, phase) {
-            Ok(BlockPoll::Pending) => Ok(DataCommandPoll::Pending),
-            Ok(BlockPoll::Complete) => self.finish_dma_data(request, id, slot),
-            // Future BlockPoll variants: best-effort, treat as still pending.
-            Ok(_) => Ok(DataCommandPoll::Pending),
-            Err(err) => {
-                let _ = self.abort_block_request(request, id, slot, phase);
-                Err(err)
+                    // Future CommandPoll variants: best-effort, treat as still pending.
+                    Ok(_) => return Ok(DataCommandPoll::Pending),
+                    Err(err) => {
+                        let _ = self.abort_block_request(request, id, slot, phase);
+                        return Err(err);
+                    }
+                },
+                BlockRequestStage::Data => match self.poll_dma_complete(cmd_index, phase) {
+                    Ok(BlockPoll::Pending) => return Ok(DataCommandPoll::Pending),
+                    Ok(BlockPoll::Complete) => match self.finish_dma_data(request, id, slot)? {
+                        DataCommandPoll::Pending => {}
+                        complete => return Ok(complete),
+                    },
+                    // Future BlockPoll variants: best-effort, treat as still pending.
+                    Ok(_) => return Ok(DataCommandPoll::Pending),
+                    Err(err) => {
+                        let _ = self.abort_block_request(request, id, slot, phase);
+                        return Err(err);
+                    }
+                },
+                BlockRequestStage::Stop => return self.poll_block_stop(request, id, slot, phase),
             }
         }
     }
@@ -827,6 +845,7 @@ impl DwMmc {
             block_count,
         });
         self.data_blocks_remaining = block_count;
+        self.program_fifo_interrupt_mask();
         self.submit_command(cmd)?;
         let inner = match direction {
             DataDirection::Read => BlockRequestKind::FifoRead {
@@ -916,6 +935,7 @@ impl DwMmc {
         });
 
         self.clear_all_int_status();
+        self.regs.idsts().write(IDMAC_INT_CLR);
         self.irq.state.clear(u32::MAX);
         self.program_data_phase(BLOCK_SIZE as u32, block_count);
         self.reset_dma_for_phase(phase)?;
@@ -926,6 +946,7 @@ impl DwMmc {
                 .with_dma_enable(true)
                 .with_int_enable(self.completion_irq_enabled())
         });
+        self.regs.idinten().write(IDMAC_INT_ENABLE);
         self.regs.bmod().write(BMOD_FB | BMOD_DE);
         self.regs.pldmnd().write(1);
 
@@ -1084,69 +1105,68 @@ impl DwMmc {
         id: RequestId,
         slot: &mut BlockRequestSlot,
     ) -> Result<DataCommandPoll, Error> {
-        let (cmd_index, phase, stage) = match request.as_ref().map(|request| &request.inner) {
-            Some(BlockRequestKind::FifoRead {
-                cmd_index,
-                phase,
-                stage,
-                ..
-            })
-            | Some(BlockRequestKind::FifoWrite {
-                cmd_index,
-                phase,
-                stage,
-                ..
-            }) => (*cmd_index, *phase, *stage),
-            _ => return Err(Error::InvalidArgument),
-        };
+        loop {
+            let (cmd_index, phase, stage) = match request.as_ref().map(|request| &request.inner) {
+                Some(BlockRequestKind::FifoRead {
+                    cmd_index,
+                    phase,
+                    stage,
+                    ..
+                })
+                | Some(BlockRequestKind::FifoWrite {
+                    cmd_index,
+                    phase,
+                    stage,
+                    ..
+                }) => (*cmd_index, *phase, *stage),
+                _ => return Err(Error::InvalidArgument),
+            };
 
-        if stage == BlockRequestStage::Command {
-            match self.poll_command() {
-                Ok(CommandPoll::Pending) => return Ok(DataCommandPoll::Pending),
-                Ok(CommandPoll::Complete) => {
-                    let response = self.take_command_response()?;
-                    if let Some(active) = request.as_mut() {
-                        match &mut active.inner {
-                            BlockRequestKind::FifoRead {
-                                response: stored_response,
-                                ..
+            match stage {
+                BlockRequestStage::Command => match self.poll_command() {
+                    Ok(CommandPoll::Pending) => return Ok(DataCommandPoll::Pending),
+                    Ok(CommandPoll::Complete) => {
+                        let response = self.take_command_response()?;
+                        if let Some(active) = request.as_mut() {
+                            match &mut active.inner {
+                                BlockRequestKind::FifoRead {
+                                    response: stored_response,
+                                    ..
+                                }
+                                | BlockRequestKind::FifoWrite {
+                                    response: stored_response,
+                                    ..
+                                } => *stored_response = Some(response),
+                                _ => return Err(Error::InvalidArgument),
                             }
-                            | BlockRequestKind::FifoWrite {
-                                response: stored_response,
-                                ..
-                            } => *stored_response = Some(response),
-                            _ => return Err(Error::InvalidArgument),
+                        }
+                        set_fifo_stage(request, BlockRequestStage::Data)?;
+                    }
+                    // Future CommandPoll variants: best-effort, treat as still pending.
+                    Ok(_) => return Ok(DataCommandPoll::Pending),
+                    Err(err) => {
+                        let _ = self.abort_block_request(request, id, slot, phase);
+                        return Err(err);
+                    }
+                },
+                BlockRequestStage::Data => {
+                    match self.poll_fifo_data_step(request, cmd_index, phase) {
+                        Ok(BlockPoll::Pending) => return Ok(DataCommandPoll::Pending),
+                        Ok(BlockPoll::Complete) => {
+                            match self.finish_fifo_data(request, id, slot)? {
+                                DataCommandPoll::Pending => {}
+                                complete => return Ok(complete),
+                            }
+                        }
+                        // Future BlockPoll variants: best-effort, treat as still pending.
+                        Ok(_) => return Ok(DataCommandPoll::Pending),
+                        Err(err) => {
+                            let _ = self.abort_block_request(request, id, slot, phase);
+                            return Err(err);
                         }
                     }
-                    set_fifo_stage(request, BlockRequestStage::Data)?;
-                    return Ok(DataCommandPoll::Pending);
                 }
-                // Future CommandPoll variants: best-effort, treat as still pending.
-                Ok(_) => return Ok(DataCommandPoll::Pending),
-                Err(err) => {
-                    let _ = self.abort_block_request(request, id, slot, phase);
-                    return Err(err);
-                }
-            }
-        }
-
-        let stage = match request.as_ref().map(|request| &request.inner) {
-            Some(BlockRequestKind::FifoRead { stage, .. })
-            | Some(BlockRequestKind::FifoWrite { stage, .. }) => *stage,
-            _ => return Err(Error::InvalidArgument),
-        };
-        if stage == BlockRequestStage::Stop {
-            return self.poll_block_stop(request, id, slot, phase);
-        }
-
-        match self.poll_fifo_data_step(request, cmd_index, phase) {
-            Ok(BlockPoll::Pending) => Ok(DataCommandPoll::Pending),
-            Ok(BlockPoll::Complete) => self.finish_fifo_data(request, id, slot),
-            // Future BlockPoll variants: best-effort, treat as still pending.
-            Ok(_) => Ok(DataCommandPoll::Pending),
-            Err(err) => {
-                let _ = self.abort_block_request(request, id, slot, phase);
-                Err(err)
+                BlockRequestStage::Stop => return self.poll_block_stop(request, id, slot, phase),
             }
         }
     }
@@ -1250,6 +1270,7 @@ impl DwMmc {
                 .with_dma_enable(false)
                 .with_int_enable(false)
         });
+        self.regs.idinten().write(0);
         self.regs.bmod().write(0);
     }
 
@@ -1330,6 +1351,8 @@ impl DwMmc {
         let clear = raw_status
             & (crate::DWMMC_INT_DATA_TRANSFER_OVER
                 | crate::DWMMC_INT_COMMAND_DONE
+                | crate::DWMMC_INT_RXDR
+                | crate::DWMMC_INT_TXDR
                 | crate::DWMMC_INT_ERROR_MASK);
         if clear != 0 {
             self.regs
@@ -1469,9 +1492,19 @@ mod tests {
     fn last_descriptor_sets_last_and_terminates_chain() {
         let desc = IdmacDesc::chained(0x1234_5200, 512, 0, false, true);
 
-        assert_eq!(desc.des0, DESC_OWN | DESC_CH | DESC_LD | DESC_DIC);
+        assert_eq!(desc.des0, DESC_OWN | DESC_LD);
         assert_eq!(desc.des1, 512);
         assert_eq!(desc.des2, 0x1234_5200);
+        assert_eq!(desc.des3, 0);
+    }
+
+    #[test]
+    fn single_descriptor_requests_completion_interrupt() {
+        let desc = IdmacDesc::chained(0x1234_5000, 512, 0, true, true);
+
+        assert_eq!(desc.des0, DESC_OWN | DESC_FS | DESC_LD);
+        assert_eq!(desc.des1, 512);
+        assert_eq!(desc.des2, 0x1234_5000);
         assert_eq!(desc.des3, 0);
     }
 
@@ -1524,5 +1557,69 @@ mod tests {
 
         assert_send::<BlockRequest>();
         assert_send::<BlockRequestSlot>();
+    }
+
+    #[test]
+    fn polling_data_irq_status_clears_fifo_request_bits() {
+        let mut mmio = [0u32; 256];
+        let base = NonNull::new(mmio.as_mut_ptr().cast()).unwrap();
+        let mut host = unsafe { DwMmc::new(base) };
+        const RINTSTS_WORD: usize = 17;
+        let raw = crate::regs::RIntSts::new()
+            .with_data_transfer_over(true)
+            .with_receive_fifo_data_request(true)
+            .with_transmit_fifo_data_request(true)
+            .into_bits();
+        unsafe {
+            mmio.as_mut_ptr().add(RINTSTS_WORD).write_volatile(raw);
+        }
+
+        assert_eq!(host.take_data_irq_status(), raw);
+
+        let cleared = unsafe { mmio.as_ptr().add(RINTSTS_WORD).read_volatile() };
+        assert_eq!(cleared, raw);
+    }
+
+    #[test]
+    fn irq_poll_consumes_cached_command_and_data_completion_in_one_pass() {
+        let mut mmio = [0u32; 256];
+        let base = NonNull::new(mmio.as_mut_ptr().cast()).unwrap();
+        let mut host = unsafe { DwMmc::new(base) };
+        let mut slot = BlockRequestSlot::default();
+        let id = slot
+            .start(BlockTransferMode::Fifo, BlockTransferDirection::Read)
+            .unwrap();
+        let mut buffer = [0u8; BLOCK_SIZE];
+        let cmd = cmd17(0);
+        host.enable_completion_irq();
+        host.data_cmd_index = cmd.index;
+        host.command_state = crate::command::CommandState::Issued { cmd, polls: 0 };
+        host.irq.state.begin_request();
+        let generation = host.irq.state.generation();
+        host.irq.state.cache_if_current(
+            generation,
+            crate::DWMMC_INT_COMMAND_DONE | crate::DWMMC_INT_DATA_TRANSFER_OVER,
+        );
+        let mut request = Some(BlockRequest {
+            inner: BlockRequestKind::FifoRead {
+                id,
+                buffer: NonNull::new(buffer.as_mut_ptr()).unwrap(),
+                len: buffer.len(),
+                block_size: BLOCK_SIZE,
+                offset: buffer.len(),
+                cmd_index: cmd.index,
+                phase: Phase::DataRead,
+                stage: BlockRequestStage::Command,
+                stop_after_complete: false,
+                response: None,
+            },
+        });
+
+        assert!(matches!(
+            host.poll_block_request(&mut request, id, &mut slot),
+            Ok(BlockPoll::Complete)
+        ));
+        assert!(request.is_none());
+        assert_eq!(host.irq.state.pending(), 0);
     }
 }

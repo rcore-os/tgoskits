@@ -4,8 +4,8 @@ use dma_api::DeviceDma;
 pub use protocol_rdif::{BlockConfig, BlockDevice, BlockQueue};
 pub use rdif_block::{
     BInterface, BIrqHandler, BOwnedQueue, BQueue, BlkError, IQueue, IQueueOwned, Interface,
-    IrqHandlerHandle, IrqHandlerSlot, OwnedRequest, PollError, QueueHandle, Request,
-    RequestId as RdifRequestId, RequestPoll as OwnedRequestPoll, RequestStatus, SubmitError,
+    OwnedRequest, PollError, QueueHandle, Request, RequestId as RdifRequestId,
+    RequestPoll as OwnedRequestPoll, RequestStatus, SubmitError,
 };
 use sdmmc_protocol::{
     rdif as protocol_rdif,

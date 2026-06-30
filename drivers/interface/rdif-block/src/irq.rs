@@ -20,7 +20,7 @@ impl IrqSourceInfo {
 
 pub type IrqSourceList = Vec<IrqSourceInfo>;
 
-pub trait IrqHandler: Send + Sync + 'static {
+pub trait IrqHandler: Send + 'static {
     /// Handle a device interrupt in hard IRQ context.
     ///
     /// Implementations must acknowledge or clear the device-side interrupt

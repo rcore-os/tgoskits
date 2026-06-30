@@ -376,7 +376,7 @@ src/
 | 文件 | 当前问题 | 拆分方向 |
 | --- | --- | --- |
 | `platforms/axplat-dyn/src/drivers/pci/rk3588.rs` | 单文件超过 600 行 | RC init、ATU/window、MSI/IRQ、config space、FDT glue |
-| `platforms/axplat-dyn/src/drivers/blk/rockchip_sd.rs` | 单文件超过 600 行 | probe/FDT、clock/tuning、card init、rdif-block adapter |
+| `drivers/ax-driver/src/block/rockchip/sd/mod.rs` | 单文件超过 600 行 | probe/FDT、clock/tuning、card init、rdif-block adapter |
 | `platforms/axplat-dyn/src/drivers/blk/mod.rs` | 容器、adapter、IRQ、FDT decode 混杂 | registry、adapter、irq、probe |
 | `platforms/axplat-dyn/src/drivers/mod.rs` | 设备收集、iomap、DMA 混杂 | device collection、iomap、dma |
 

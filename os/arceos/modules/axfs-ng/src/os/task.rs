@@ -1,13 +1,19 @@
 use alloc::{boxed::Box, string::String};
-use core::sync::atomic::{AtomicBool, Ordering};
+use core::{
+    sync::atomic::{AtomicBool, Ordering},
+    time::Duration,
+};
 
 use ax_kspin::SpinRwLock as RwLock;
 
 pub trait BlockTaskOps: Send + Sync {
     fn current_task_id(&self) -> Option<u64>;
     fn task_yield(&self);
-    fn task_wait(&self) {
+    fn task_wait(&self);
+    fn task_wait_timeout(&self, dur: Duration) -> bool {
+        let _ = dur;
         self.task_yield();
+        true
     }
     fn task_wait_until(&self, condition: &dyn Fn() -> bool) {
         while !condition() {
@@ -54,6 +60,10 @@ pub fn task_wait() {
     if let Some(ops) = task_ops() {
         ops.task_wait();
     }
+}
+
+pub fn task_wait_timeout(dur: Duration) -> bool {
+    task_ops().is_some_and(|ops| ops.task_wait_timeout(dur))
 }
 
 pub fn task_wait_until(condition: impl Fn() -> bool) {
