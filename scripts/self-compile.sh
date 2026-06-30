@@ -9,14 +9,14 @@
 #
 # Prerequisites:
 #   - Rootfs (run once to create the selfhost rootfs).  Two ways to produce it:
-#       (1) Maintainer tool (Debian, requires sudo, warms the offline cache):
+#       (1) --bootstrap (Alpine, no host sudo): provisions the full toolchain
+#           (musl, Rust nightly, kallsyms tools, source, firmware) inside QEMU
+#           and stops.  Does NOT warm the offline dependency cache, so the
+#           followed-up self-compile needs network or the maintainer-prepared
+#           rootfs below.
+#       (2) Maintainer tool (Debian, requires sudo, warms the offline cache):
 #             sudo ./scripts/prepare-selfhost-rootfs.sh --arch x86_64 --force
-#       (2) --bootstrap (Alpine, no host sudo): provisions the full toolchain
-#           (musl, Rust nightly, kallsyms tools, source, firmware) inside QEMU,
-#           but does NOT warm the offline dependency cache — so a self-contained
-#           offline self-compile on it will not complete.  See docs.
-#     The x86_64 self-compile then needs a warmed-cache rootfs (path 1 or a
-#     downloadable pre-built blueprint).
+#     A downloadable pre-built blueprint is planned but not yet available.
 #   - qemu-system-<arch>, debugfs (from e2fsprogs)
 #
 # Usage:
@@ -75,11 +75,11 @@ while [[ $# -gt 0 ]]; do
             echo "  --commit <SHA>  Expected source commit for identity verification"
             echo "  --ref <REF>     Expected git ref (informational, no strict check)"
             echo "  --log <level>   Log level: none, error, warn, info (default: info)"
-            echo "  --bootstrap     Provision a complete selfhost rootfs (musl, Rust,
-                    kallsyms, source, firmware) from the Alpine base via QEMU, no
-                    host sudo, then stop.  Does NOT warm the offline cache; to
-                    self-compile use a warmed-cache rootfs (prepare-selfhost-rootfs.sh
-                    or the downloadable blueprint) and run without --bootstrap."
+            echo "  --bootstrap     Provision a selfhost rootfs (musl, Rust, kallsyms,
+                        source, firmware) from the Alpine base inside QEMU, no
+                        host sudo, then stop.  After provisioning, re-run without
+                        --bootstrap to self-compile.  The bootstrapped rootfs
+                        needs network for the first build (no offline cache)."
             exit 0
             ;;
         *) error "Unknown argument: $1";;
@@ -187,67 +187,45 @@ Run: cargo xtask starry rootfs --arch x86_64"
         info "Bootstrap complete: $SELFHOST_BLUEPRINT ($(stat -c%s "$SELFHOST_BLUEPRINT") bytes)"
     fi
 
-    # ─── Downloadable blueprint (tgosimages release) ──────────────────────────
+    # ─── Blueprint provisioning guidance ────────────────────────────────────
     #
-    # If the blueprint is still missing after the bootstrap check above, attempt
-    # to download a pre-built image from the tgosimages release.  The download
-    # is compressed (xz) and verified by SHA-256.
-    # NOTE: this release is maintainer-hosted and is not yet published;
-    # once uploaded this becomes the recommended reviewer/CI path (no host sudo).
+    # When the selfhost blueprint is missing, the no-sudo path is --bootstrap
+    # (QEMU-based provisioning from the Alpine base, ~15-20 min).  Once the
+    # blueprint exists, re-run without --bootstrap to self-compile.
+    #
+    # A downloadable pre-built blueprint is planned (tgosimages release) but is
+    # not yet published; the download URL and SHA-256 are recorded here for when
+    # the release becomes available:
+    #
+    #   SELFHOST_URL="https://github.com/rcore-os/tgosimages/releases/download/selfhost-rootfs/rootfs-x86_64-selfhost.img.xz"
+    #   SELFHOST_SHA256="b17c330958c8970c9db4faec7306182101a0bf34f2b850c80781d63321f49eb8"
+    #
     # See docs/starryos-self-compilation.md.
-    if [ ! -f "$SELFHOST_BLUEPRINT" ]; then
-        SELFHOST_URL="https://github.com/rcore-os/tgosimages/releases/download/selfhost-rootfs/rootfs-x86_64-selfhost.img.xz"
-        SELFHOST_SHA256="b17c330958c8970c9db4faec7306182101a0bf34f2b850c80781d63321f49eb8"
-        SELFHOST_DL="${SELFHOST_BLUEPRINT}.xz"
-
-        info "Blueprint not found; attempting download from tgosimages release..."
-        if command -v curl >/dev/null 2>&1; then
-            curl -fL -o "$SELFHOST_DL" "$SELFHOST_URL" 2>&1 || true
-        elif command -v wget >/dev/null 2>&1; then
-            wget -q --show-progress -O "$SELFHOST_DL" "$SELFHOST_URL" 2>&1 || true
-        fi
-
-        if [ -f "$SELFHOST_DL" ] && [ -s "$SELFHOST_DL" ]; then
-            # Guard against a missing sha256sum: under `set -euo pipefail` the
-            # pipe would abort the script (exit 127) instead of failing closed.
-            if command -v sha256sum >/dev/null 2>&1; then
-                ACTUAL_SHA=$(sha256sum "$SELFHOST_DL" | cut -d' ' -f1)
-            else
-                ACTUAL_SHA=""
-            fi
-            if [ "${ACTUAL_SHA:-}" = "$SELFHOST_SHA256" ]; then
-                info "SHA-256 verified; decompressing..."
-                xz -d "$SELFHOST_DL" || error "Failed to decompress $SELFHOST_DL"
-                info "Blueprint downloaded and verified: $SELFHOST_BLUEPRINT ($(stat -c%s "$SELFHOST_BLUEPRINT") bytes)"
-            else
-                rm -f "$SELFHOST_DL"
-                warn "Downloaded blueprint SHA-256 mismatch (expected ${SELFHOST_SHA256}, got ${ACTUAL_SHA:-none})."
-                warn "The tgosimages release may need updating; falling back to local preparation."
-            fi
-        else
-            warn "Blueprint download failed or returned empty (URL: $SELFHOST_URL)."
-            warn "Falling back to local rootfs preparation."
-        fi
-    fi
 
     [ -f "$SELFHOST_BLUEPRINT" ] || error "Selfhost rootfs not found: $SELFHOST_BLUEPRINT
 
-The blueprint must be placed at this path before running self-compile.
-Options: download a pre-built image from the tgosimages release, or create
-one via prepare-selfhost-rootfs.sh (maintainer tool, requires sudo).
+No selfhost blueprint found.  To create one without host sudo, run:
+
+    ./scripts/self-compile.sh --arch x86_64 --bootstrap
+
+This provisions the full toolchain inside QEMU (~15-20 min) and stops.
+After provisioning, re-run without --bootstrap to self-compile.
+
+Alternatively, if you have sudo: sudo ./scripts/prepare-selfhost-rootfs.sh --arch x86_64 --force
+A downloadable pre-built blueprint is planned but not yet available.
 
 See docs/starryos-self-compilation.md for details."
 
     # --bootstrap is a PROVISION-ONLY step: it produces the selfhost blueprint
-    # (no host sudo) and stops here.  It does NOT warm the offline dependency
-    # cache, so a self-contained offline self-compile on a freshly bootstrapped
-    # rootfs will not complete; self-compile against a warmed-cache rootfs
-    # (prepare-selfhost-rootfs.sh or the downloadable blueprint) by re-running
-    # without --bootstrap.
+    # (no host sudo) and stops here.  The bootstrapped rootfs has the full
+    # toolchain but does NOT have a warmed offline dependency cache, so the
+    # follow-up self-compile needs network access (or a warmed-cache rootfs
+    # from the maintainer tool).  See docs/starryos-self-compilation.md.
     if [ "$BOOTSTRAP" = "true" ]; then
         printf "[self-compile] Selfhost blueprint provisioned (no host sudo): %s\n" "$SELFHOST_BLUEPRINT"
-        info "Provisioning complete.  To self-compile, re-run without --bootstrap against a"
-        info "warmed-cache rootfs (prepare-selfhost-rootfs.sh or the downloadable blueprint)."
+        info "Provisioning complete.  To self-compile, re-run without --bootstrap."
+        info "Note: the follow-up self-compile needs network access (the bootstrap"
+        info "rootfs does not include a warmed offline dependency cache)."
         exit 0
     fi
 
