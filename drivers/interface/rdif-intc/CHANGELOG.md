@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.15.0](https://github.com/rcore-os/tgoskits/compare/rdif-intc-v0.14.3...rdif-intc-v0.15.0) - 2026-07-01
+
+### Other
+
+- *(rdif-intc)* accept controller irq domains from callers
+
 ## [0.14.3](https://github.com/rcore-os/tgoskits/compare/rdif-intc-v0.14.2...rdif-intc-v0.14.3) - 2026-06-12
 
 ### Fixed

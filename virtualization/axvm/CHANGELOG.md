@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.18](https://github.com/rcore-os/tgoskits/compare/axvm-v0.5.17...axvm-v0.5.18) - 2026-07-01
+
+### Added
+
+- *(axvisor)* support LoongArch Linux guest on QEMU ([#1207](https://github.com/rcore-os/tgoskits/pull/1207))
+
+### Fixed
+
+- *(axvisor)* gate x86 host fs passthrough prepare
+- *(axvm)* resolve LoongArch passthrough IRQ ids
+- *(axvm)* use kspin for IOAPIC forwarding locks
+- *(axvm)* mask forwarded IOAPIC host lines
+- *(irq)* avoid hard irq controller locks
+
+### Other
+
+- *(axvm)* redesign guest address layout planning ([#1454](https://github.com/rcore-os/tgoskits/pull/1454))
+- *(irq-framework)* require boxed IRQ callbacks ([#1452](https://github.com/rcore-os/tgoskits/pull/1452))
+- *(axvm)* redesign VM lifecycle state machine ([#1447](https://github.com/rcore-os/tgoskits/pull/1447))
+- *(somehal)* modernize x86 qemu irq routing ([#1430](https://github.com/rcore-os/tgoskits/pull/1430))
+- *(axvm)* route host IRQs with domain metadata
+
 ## [0.5.17](https://github.com/rcore-os/tgoskits/compare/axvm-v0.5.16...axvm-v0.5.17) - 2026-06-27
 
 ### Other

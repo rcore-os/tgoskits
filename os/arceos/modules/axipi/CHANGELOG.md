@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.22](https://github.com/rcore-os/tgoskits/compare/ax-ipi-v0.5.21...ax-ipi-v0.5.22) - 2026-07-01
+
+### Other
+
+- *(somehal)* modernize x86 qemu irq routing ([#1430](https://github.com/rcore-os/tgoskits/pull/1430))
+- *(build)* generate build.rs Rust sources with quote ([#1422](https://github.com/rcore-os/tgoskits/pull/1422))
+
 ## [0.5.21](https://github.com/rcore-os/tgoskits/compare/ax-ipi-v0.5.20...ax-ipi-v0.5.21) - 2026-06-27
 
 ### Other

@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.20](https://github.com/rcore-os/tgoskits/compare/starryos-v0.5.19...starryos-v0.5.20) - 2026-07-01
+
+### Other
+
+- update Cargo.lock dependencies
+
 ## [0.5.19](https://github.com/rcore-os/tgoskits/compare/starryos-v0.5.18...starryos-v0.5.19) - 2026-06-27
 
 ### Other

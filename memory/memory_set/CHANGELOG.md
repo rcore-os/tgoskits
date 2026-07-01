@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.11](https://github.com/rcore-os/tgoskits/compare/ax-memory-set-v0.6.10...ax-memory-set-v0.6.11) - 2026-07-01
+
+### Other
+
+- updated the following local packages: ax-errno
+
 ## [0.6.10](https://github.com/rcore-os/tgoskits/compare/ax-memory-set-v0.6.9...ax-memory-set-v0.6.10) - 2026-06-03
 
 ### Other

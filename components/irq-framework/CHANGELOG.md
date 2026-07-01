@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0](https://github.com/rcore-os/tgoskits/compare/irq-framework-v0.2.0...irq-framework-v0.3.0) - 2026-07-01
+
+### Added
+
+- *(irq-framework)* use domain-scoped irq ids
+
+### Other
+
+- *(irq-framework)* require boxed IRQ callbacks ([#1452](https://github.com/rcore-os/tgoskits/pull/1452))
+- *(somehal)* modernize x86 qemu irq routing ([#1430](https://github.com/rcore-os/tgoskits/pull/1430))
+
 ## [0.2.0](https://github.com/rcore-os/tgoskits/compare/irq-framework-v0.1.1...irq-framework-v0.2.0) - 2026-06-27
 
 ### Other

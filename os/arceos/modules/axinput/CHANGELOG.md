@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0](https://github.com/rcore-os/tgoskits/compare/ax-input-v0.5.21...ax-input-v0.6.0) - 2026-07-01
+
+### Fixed
+
+- *(starry-kernel)* make evdev polling demand driven ([#1450](https://github.com/rcore-os/tgoskits/pull/1450))
+
+### Other
+
+- *(ax-runtime)* resolve device IRQ bindings to IrqId
+
 ## [0.5.21](https://github.com/rcore-os/tgoskits/compare/ax-input-v0.5.20...ax-input-v0.5.21) - 2026-06-27
 
 ### Other

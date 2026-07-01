@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.1](https://github.com/rcore-os/tgoskits/compare/ax-errno-v0.6.0...ax-errno-v0.6.1) - 2026-07-01
+
+### Other
+
+- *(build)* generate build.rs Rust sources with quote ([#1422](https://github.com/rcore-os/tgoskits/pull/1422))
+
 ## [0.6.0](https://github.com/rcore-os/tgoskits/compare/ax-errno-v0.5.0...ax-errno-v0.6.0) - 2026-05-22
 
 ### Fixed

@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.0](https://github.com/rcore-os/tgoskits/compare/ax-plat-v0.8.0...ax-plat-v0.9.0) - 2026-07-01
+
+### Added
+
+- *(irq-framework)* use domain-scoped irq ids
+- *(axvisor)* support LoongArch Linux guest on QEMU ([#1207](https://github.com/rcore-os/tgoskits/pull/1207))
+
+### Fixed
+
+- *(ax-hal)* route typed IPI ids through platform irq
+
+### Other
+
+- *(irq-framework)* require boxed IRQ callbacks ([#1452](https://github.com/rcore-os/tgoskits/pull/1452))
+
 ## [0.8.0](https://github.com/rcore-os/tgoskits/compare/ax-plat-v0.7.0...ax-plat-v0.8.0) - 2026-06-27
 
 ### Added

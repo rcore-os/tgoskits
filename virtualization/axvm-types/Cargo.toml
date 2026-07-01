@@ -1,6 +1,6 @@
 [package]
 name = "axvm-types"
-version = "0.5.13"
+version = "0.6.0"
 edition.workspace = true
 authors.workspace = true
 license.workspace = true

@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.0](https://github.com/rcore-os/tgoskits/compare/ax-driver-v0.9.0...ax-driver-v0.10.0) - 2026-07-01
+
+### Added
+
+- *(rdif-pinctrl)* add FDT pinctrl apply support ([#1433](https://github.com/rcore-os/tgoskits/pull/1433))
+
+### Fixed
+
+- *(ci)* prevent Starry qemu hangs in IRQ paths ([#1431](https://github.com/rcore-os/tgoskits/pull/1431))
+- *(irq)* close domain runtime review gaps
+
+### Other
+
+- *(irq-framework)* require boxed IRQ callbacks ([#1452](https://github.com/rcore-os/tgoskits/pull/1452))
+- *(rdif-block)* enable boxed sdmmc irq flow ([#1446](https://github.com/rcore-os/tgoskits/pull/1446))
+- *(net)* split IRQ handlers from NIC queues ([#1435](https://github.com/rcore-os/tgoskits/pull/1435))
+- *(ax-runtime)* resolve device IRQ bindings to IrqId
+
 ## [0.9.0](https://github.com/rcore-os/tgoskits/compare/ax-driver-v0.8.2...ax-driver-v0.9.0) - 2026-06-27
 
 ### Added

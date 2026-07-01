@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.24](https://github.com/rcore-os/tgoskits/compare/ax-task-v0.5.23...ax-task-v0.5.24) - 2026-07-01
+
+### Added
+
+- *(irq-framework)* use domain-scoped irq ids
+- *(kspin)* add lockdep-aware spin rwlock ([#1397](https://github.com/rcore-os/tgoskits/pull/1397))
+
+### Fixed
+
+- *(ci)* prevent Starry qemu hangs in IRQ paths ([#1431](https://github.com/rcore-os/tgoskits/pull/1431))
+- *(ax-task)* harden SMP wake and migration rescheduling ([#1426](https://github.com/rcore-os/tgoskits/pull/1426))
+- *(irq)* separate IRQ domains from trap vectors ([#1346](https://github.com/rcore-os/tgoskits/pull/1346))
+
+### Other
+
+- *(irq-framework)* require boxed IRQ callbacks ([#1452](https://github.com/rcore-os/tgoskits/pull/1452))
+- *(platforms)* remove LoongArch static platform ([#1428](https://github.com/rcore-os/tgoskits/pull/1428))
+- *(build)* generate build.rs Rust sources with quote ([#1422](https://github.com/rcore-os/tgoskits/pull/1422))
+- Revert "fix(irq): separate IRQ domains from trap vectors ([#1346](https://github.com/rcore-os/tgoskits/pull/1346))" ([#1424](https://github.com/rcore-os/tgoskits/pull/1424))
+
 ## [0.5.23](https://github.com/rcore-os/tgoskits/compare/ax-task-v0.5.22...ax-task-v0.5.23) - 2026-06-27
 
 ### Fixed

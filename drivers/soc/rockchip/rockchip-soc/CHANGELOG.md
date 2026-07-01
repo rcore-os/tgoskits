@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.5](https://github.com/rcore-os/tgoskits/compare/rockchip-soc-v0.3.4...rockchip-soc-v0.3.5) - 2026-07-01
+
+### Other
+
+- *(rdif-block)* enable boxed sdmmc irq flow ([#1446](https://github.com/rcore-os/tgoskits/pull/1446))
+
 ## [0.3.4](https://github.com/rcore-os/tgoskits/compare/rockchip-soc-v0.3.3...rockchip-soc-v0.3.4) - 2026-06-27
 
 ### Other

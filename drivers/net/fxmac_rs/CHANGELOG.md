@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0](https://github.com/rcore-os/tgoskits/compare/fxmac_rs-v0.5.1...fxmac_rs-v0.6.0) - 2026-07-01
+
+### Fixed
+
+- *(irq)* close domain runtime review gaps
+
+### Other
+
+- *(net)* split IRQ handlers from NIC queues ([#1435](https://github.com/rcore-os/tgoskits/pull/1435))
+
 ## [0.5.1](https://github.com/rcore-os/tgoskits/compare/fxmac_rs-v0.5.0...fxmac_rs-v0.5.1) - 2026-05-19
 
 ### Other

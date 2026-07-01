@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.17.7](https://github.com/rcore-os/tgoskits/compare/arm-gic-driver-v0.17.6...arm-gic-driver-v0.17.7) - 2026-07-01
+
+### Fixed
+
+- *(somehal)* validate GIC runtime INTIDs
+- *(irq)* close domain runtime review gaps
+
+### Other
+
+- *(rdif-block)* enable boxed sdmmc irq flow ([#1446](https://github.com/rcore-os/tgoskits/pull/1446))
+- *(rdif-intc)* accept controller irq domains from callers
+
 ## [0.17.6](https://github.com/rcore-os/tgoskits/compare/arm-gic-driver-v0.17.5...arm-gic-driver-v0.17.6) - 2026-06-23
 
 ### Fixed

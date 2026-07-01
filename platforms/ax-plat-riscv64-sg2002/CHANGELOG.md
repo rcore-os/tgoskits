@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.7](https://github.com/rcore-os/tgoskits/compare/ax-plat-riscv64-sg2002-v0.4.6...ax-plat-riscv64-sg2002-v0.4.7) - 2026-07-01
+
+### Added
+
+- *(somehal)* allocate interrupt controller domains
+
+### Fixed
+
+- *(ax-hal)* route typed IPI ids through platform irq
+
 ## [0.4.6](https://github.com/rcore-os/tgoskits/compare/ax-plat-riscv64-sg2002-v0.4.5...ax-plat-riscv64-sg2002-v0.4.6) - 2026-06-27
 
 ### Added

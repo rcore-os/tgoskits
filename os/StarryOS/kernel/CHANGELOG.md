@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.6](https://github.com/rcore-os/tgoskits/compare/starry-kernel-v0.6.5...starry-kernel-v0.6.6) - 2026-07-01
+
+### Added
+
+- *(starry)* ARM PMUv3 hardware-PMU perf support (perf stat / record / report) ([#1395](https://github.com/rcore-os/tgoskits/pull/1395))
+- *(kspin)* add lockdep-aware spin rwlock ([#1397](https://github.com/rcore-os/tgoskits/pull/1397))
+
+### Fixed
+
+- *(starry-kernel)* make evdev polling demand driven ([#1450](https://github.com/rcore-os/tgoskits/pull/1450))
+- *(starry-kernel)* sync riscv ptrace single-step text ([#1444](https://github.com/rcore-os/tgoskits/pull/1444))
+- *(starry-kernel)* resolve PMU IRQ through typed domain
+- *(irq)* close domain runtime review gaps
+- *(irq)* separate IRQ domains from trap vectors ([#1346](https://github.com/rcore-os/tgoskits/pull/1346))
+
+### Other
+
+- *(irq-framework)* require boxed IRQ callbacks ([#1452](https://github.com/rcore-os/tgoskits/pull/1452))
+- # feat(starry): add Qt6 calculator test + fix input event delivery ([#1396](https://github.com/rcore-os/tgoskits/pull/1396))
+- *(platforms)* remove LoongArch static platform ([#1428](https://github.com/rcore-os/tgoskits/pull/1428))
+- *(build)* generate build.rs Rust sources with quote ([#1422](https://github.com/rcore-os/tgoskits/pull/1422))
+- *(starry-kernel)* move arch runtime helpers into HAL ([#1427](https://github.com/rcore-os/tgoskits/pull/1427))
+- *(ax-runtime)* resolve device IRQ bindings to IrqId
+- Revert "fix(irq): separate IRQ domains from trap vectors ([#1346](https://github.com/rcore-os/tgoskits/pull/1346))" ([#1424](https://github.com/rcore-os/tgoskits/pull/1424))
+
 ## [0.6.5](https://github.com/rcore-os/tgoskits/compare/starry-kernel-v0.6.4...starry-kernel-v0.6.5) - 2026-06-27
 
 ### Added

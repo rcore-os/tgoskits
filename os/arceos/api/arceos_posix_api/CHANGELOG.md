@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.24](https://github.com/rcore-os/tgoskits/compare/ax-posix-api-v0.5.23...ax-posix-api-v0.5.24) - 2026-07-01
+
+### Added
+
+- *(kspin)* add lockdep-aware spin rwlock ([#1397](https://github.com/rcore-os/tgoskits/pull/1397))
+
 ## [0.5.23](https://github.com/rcore-os/tgoskits/compare/ax-posix-api-v0.5.22...ax-posix-api-v0.5.23) - 2026-06-27
 
 ### Other
