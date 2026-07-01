@@ -411,6 +411,11 @@ pub fn sys_openat2(
     if how_value.resolve & !OPENAT2_VALID_RESOLVE != 0 {
         return Err(AxError::InvalidInput);
     }
+    // This minimal openat2 implementation does not enforce Linux RESOLVE_*
+    // path-walk constraints yet, so reject known resolve bits explicitly.
+    if how_value.resolve != 0 {
+        return Err(AxError::OperationNotSupported);
+    }
 
     let flags: i32 = how_value
         .flags
