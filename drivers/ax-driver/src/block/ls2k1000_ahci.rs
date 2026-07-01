@@ -1,16 +1,17 @@
-use alloc::{boxed::Box, format};
+use alloc::{boxed::Box, format, vec};
 use core::{
     mem::size_of,
     ptr::{NonNull, addr_of_mut},
-    sync::atomic::{AtomicU32, AtomicUsize, Ordering},
+    sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering},
     time::Duration,
 };
 
 use axklib::time::busy_wait;
 use log::{info, trace, warn};
 use rdif_block::{
-    BlkError, DeviceInfo, DriverGeneric, IQueue, Interface, QueueInfo, QueueLimits, Request,
-    RequestFlags, RequestId, RequestOp, RequestStatus, Segment, validate_request,
+    BlkError, DeviceInfo, DriverGeneric, Event, IQueue, IdList, Interface, IrqHandler,
+    IrqSourceInfo, IrqSourceList, QueueInfo, QueueLimits, Request, RequestFlags, RequestId,
+    RequestOp, RequestStatus, Segment, validate_request,
 };
 use rdrive::{
     probe::OnProbeError,
@@ -20,6 +21,7 @@ use rdrive::{
 use super::PlatformDeviceBlock;
 #[cfg(not(target_arch = "loongarch64"))]
 use crate::mmio::iomap;
+use crate::{BindingInfo, binding_info_from_fdt};
 
 const REG_CAP: usize = 0x00;
 const REG_GHC: usize = 0x04;
@@ -32,6 +34,7 @@ const REG_BOHC: usize = 0x28;
 const HOST_CAP_SSS: u32 = 0x1 << 27;
 const HOST_CAP_MPS: u32 = 0x1 << 28;
 const HOST_CTL_RESET: u32 = 0x1 << 0;
+const HOST_CTL_IRQ_EN: u32 = 0x1 << 1;
 const HOST_CTL_AHCI_EN: u32 = 0x1 << 31;
 
 const PORT_BASE: usize = 0x100;
@@ -49,6 +52,29 @@ const PORT_SSTS: usize = 0x28;
 const PORT_SCTL: usize = 0x2c;
 const PORT_SERR: usize = 0x30;
 const PORT_CI: usize = 0x38;
+
+const PORT_IRQ_DHRS: u32 = 1 << 0;
+const PORT_IRQ_PSS: u32 = 1 << 1;
+const PORT_IRQ_DSS: u32 = 1 << 2;
+const PORT_IRQ_SDBS: u32 = 1 << 3;
+const PORT_IRQ_DPS: u32 = 1 << 5;
+const PORT_IRQ_PCS: u32 = 1 << 6;
+const PORT_IRQ_PRCS: u32 = 1 << 22;
+const PORT_IRQ_INFS: u32 = 1 << 26;
+const PORT_IRQ_IFS: u32 = 1 << 27;
+const PORT_IRQ_HBDS: u32 = 1 << 28;
+const PORT_IRQ_HBFS: u32 = 1 << 29;
+const PORT_IRQ_TFES: u32 = 1 << 30;
+const PORT_IRQ_COMPLETION: u32 =
+    PORT_IRQ_DHRS | PORT_IRQ_PSS | PORT_IRQ_DSS | PORT_IRQ_SDBS | PORT_IRQ_DPS;
+const PORT_IRQ_ERROR: u32 = PORT_IRQ_PCS
+    | PORT_IRQ_PRCS
+    | PORT_IRQ_INFS
+    | PORT_IRQ_IFS
+    | PORT_IRQ_HBDS
+    | PORT_IRQ_HBFS
+    | PORT_IRQ_TFES;
+const PORT_IRQ_ENABLE_MASK: u32 = PORT_IRQ_COMPLETION | PORT_IRQ_ERROR;
 
 const PORT_CMD_ICC_MASK: u32 = 0xf << 28;
 const PORT_CMD_ICC_ACTIVE: u32 = 0x1 << 28;
@@ -192,12 +218,18 @@ struct AhciBlock {
     port: AhciPort,
     capacity_blocks: u64,
     queue_created: bool,
+    irq_enabled: AtomicBool,
+    irq_handler_taken: bool,
 }
 
 struct AhciQueue {
     id: usize,
     port: AhciPort,
     capacity_blocks: u64,
+}
+
+struct AhciIrqHandler {
+    port: AhciPort,
 }
 
 #[derive(Debug)]
@@ -995,6 +1027,52 @@ impl AhciPort {
         trace!("AHCI port{} FLUSH done", self.index);
         Ok(())
     }
+
+    fn enable_irq(&self) {
+        write_port_reg_u32(self.index, PORT_IS, u32::MAX);
+        write_reg_u32(REG_IS, 1u32 << self.index);
+        write_port_reg_u32(self.index, PORT_IE, PORT_IRQ_ENABLE_MASK);
+
+        let ghc = read_reg_u32(REG_GHC);
+        write_reg_u32(REG_GHC, ghc | HOST_CTL_AHCI_EN | HOST_CTL_IRQ_EN);
+        trace!(
+            "AHCI port{} IRQ enabled: ghc={:#010x}, ie={:#010x}",
+            self.index,
+            read_reg_u32(REG_GHC),
+            read_port_reg_u32(self.index, PORT_IE),
+        );
+    }
+
+    fn disable_irq(&self) {
+        write_port_reg_u32(self.index, PORT_IE, 0);
+        write_port_reg_u32(self.index, PORT_IS, u32::MAX);
+        write_reg_u32(REG_IS, 1u32 << self.index);
+        trace!("AHCI port{} IRQ disabled", self.index);
+    }
+
+    fn irq_enabled(&self) -> bool {
+        read_reg_u32(REG_GHC) & HOST_CTL_IRQ_EN != 0
+            && read_port_reg_u32(self.index, PORT_IE) & PORT_IRQ_ENABLE_MASK != 0
+    }
+
+    fn handle_irq(&self) -> Event {
+        let port_bit = 1u32 << self.index;
+        let global_status = read_reg_u32(REG_IS);
+        let port_status = read_port_reg_u32(self.index, PORT_IS);
+
+        if port_status != 0 {
+            write_port_reg_u32(self.index, PORT_IS, port_status);
+        }
+        if global_status & port_bit != 0 {
+            write_reg_u32(REG_IS, port_bit);
+        }
+
+        let mut event = Event::none();
+        if port_status & PORT_IRQ_ENABLE_MASK != 0 {
+            event.push_queue(0);
+        }
+        event
+    }
 }
 
 impl AhciBlock {
@@ -1003,6 +1081,8 @@ impl AhciBlock {
             port,
             capacity_blocks,
             queue_created: false,
+            irq_enabled: AtomicBool::new(false),
+            irq_handler_taken: false,
         }
     }
 
@@ -1039,6 +1119,39 @@ impl Interface for AhciBlock {
             port: self.port,
             capacity_blocks: self.capacity_blocks,
         }))
+    }
+
+    fn enable_irq(&self) {
+        self.port.enable_irq();
+        self.irq_enabled
+            .store(self.port.irq_enabled(), Ordering::Release);
+    }
+
+    fn disable_irq(&self) {
+        self.port.disable_irq();
+        self.irq_enabled.store(false, Ordering::Release);
+    }
+
+    fn is_irq_enabled(&self) -> bool {
+        self.irq_enabled.load(Ordering::Acquire)
+    }
+
+    fn irq_sources(&self) -> IrqSourceList {
+        vec![IrqSourceInfo::legacy(IdList::from_bits(1))]
+    }
+
+    fn take_irq_handler(&mut self, source_id: usize) -> Option<Box<dyn IrqHandler>> {
+        if source_id != 0 || self.irq_handler_taken {
+            return None;
+        }
+        self.irq_handler_taken = true;
+        Some(Box::new(AhciIrqHandler { port: self.port }))
+    }
+}
+
+impl IrqHandler for AhciIrqHandler {
+    fn handle_irq(&mut self) -> Event {
+        self.port.handle_irq()
     }
 }
 
@@ -1156,12 +1269,24 @@ fn probe_fdt(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
     };
 
     let capacity_blocks = block.capacity_blocks;
-    plat_dev.register_block(block);
+    let binding_info = ahci_binding_info(&info);
+    let irq = binding_info.irq_num();
+    plat_dev.register_block_with_info(block, binding_info);
     info!(
         "registered {DEVICE_NAME} block device: blocks={capacity_blocks}, \
-         block_size={AHCI_SECTOR_SIZE}",
+         block_size={AHCI_SECTOR_SIZE}, irq={irq:?}",
     );
     Ok(())
+}
+
+fn ahci_binding_info(info: &FdtInfo<'_>) -> BindingInfo {
+    binding_info_from_fdt(info).unwrap_or_else(|err| {
+        warn!(
+            "{DEVICE_NAME}: failed to resolve FDT IRQ for {}; continuing without IRQ: {err:?}",
+            info.node.path(),
+        );
+        BindingInfo::empty()
+    })
 }
 
 fn map_ahci_mmio(paddr: usize, size: usize) -> Result<NonNull<u8>, OnProbeError> {
