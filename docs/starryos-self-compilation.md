@@ -257,7 +257,7 @@ apps/starry/selfhost/
 ├── build-x86_64-unknown-none.toml          # x86_64 bare-metal build config（axplat-dyn/efi）
 ├── build-riscv64gc-unknown-none-elf.toml   # riscv64 bare-metal build config
 ├── selfhost-bootstrap/
-│   ├── prebuild.sh                  # overlay: provisions the full toolchain (apk, Rust, kallsyms, source, firmware, musl symlinks); NO host sudo
+│   ├── prebuild.sh                  # overlay: provisions toolchain + firmware + cargo fetch cache warm-up; NO host sudo
 │   └── qemu-x86_64.toml             # QEMU config (16G, smp 4, shell_prefix/shell_init_cmd, 2h timeout)
 └── selfhost-full-kernel/
     ├── prebuild.sh                  # 生成所有 overlay（inner script, linker.x, axconfig）
