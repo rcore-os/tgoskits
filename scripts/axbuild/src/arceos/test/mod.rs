@@ -1,5 +1,6 @@
 mod args;
 mod assets;
+mod axtest_qemu;
 mod c_qemu;
 mod discovery;
 mod generic_qemu;
@@ -14,6 +15,7 @@ use crate::arceos::ArceOS;
 
 const ARCEOS_RUST_TEST_GROUP: &str = "rust";
 const ARCEOS_C_TEST_GROUP: &str = "c";
+const ARCEOS_AXTEST_GROUP: &str = "axtest";
 const ARCEOS_TEST_SUITE_OS: &str = "arceos";
 const ARCEOS_RUST_TEST_PACKAGE: &str = "arceos-test-suit";
 const ARCEOS_RUST_TEST_BUILD_GROUP: &str = "arceos-test-suit";

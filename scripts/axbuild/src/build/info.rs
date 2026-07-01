@@ -1,6 +1,6 @@
 use super::*;
 
-fn env_truthy(env: &HashMap<String, String>, key: &str) -> bool {
+pub(crate) fn env_truthy(env: &HashMap<String, String>, key: &str) -> bool {
     env.get(key).is_some_and(|value| {
         matches!(
             value.trim().to_ascii_lowercase().as_str(),
@@ -47,6 +47,15 @@ pub(crate) fn toolchain_rustflags_for_features(
         flags.push("-Zstack-protector=strong".to_string());
     }
     flags
+}
+
+pub(crate) fn append_encoded_rustflags(cargo: &mut Cargo, flags: &[&str]) {
+    const KEY: &str = "CARGO_ENCODED_RUSTFLAGS";
+    let value = cargo.env.entry(KEY.to_string()).or_default();
+    if !value.is_empty() {
+        value.push('\x1f');
+    }
+    value.push_str(&flags.join("\x1f"));
 }
 
 /// Whether the build config enables target backtrace support (frame pointers / unwind).

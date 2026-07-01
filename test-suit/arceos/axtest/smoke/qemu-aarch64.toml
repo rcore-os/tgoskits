@@ -1,0 +1,20 @@
+args = [
+    "-machine",
+    "virt,gic-version=3",
+    "-m",
+    "256M",
+    "-cpu",
+    "cortex-a72",
+    "-smp",
+    "1",
+    "-display",
+    "none",
+    "-serial",
+    "mon:stdio",
+]
+
+timeout = 60
+uefi = false
+to_bin = false
+success_regex = ["AXTEST_SUITE_OK"]
+fail_regex = ["(?i)\\bpanic(?:ked)?\\b", "AXTEST_SUITE_FAIL", "AXTEST_CASE status=fail"]

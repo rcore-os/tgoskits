@@ -1,0 +1,15 @@
+args = [
+    "-nographic",
+    "-m",
+    "512M",
+    "-device",
+    "nvme,serial=deadbeef,drive=nvm",
+    "-drive",
+    "id=nvm,if=none,format=raw,file=${workspace}/tmp/axbuild/rootfs/rootfs-x86_64-alpine.img",
+]
+
+uefi = false
+to_bin = false
+success_regex = ["AXTEST_SUITE_OK"]
+fail_regex = ["(?i)\\bpanic(?:ked)?\\b", "AXTEST_SUITE_FAIL", "AXTEST_CASE status=fail"]
+timeout = 120

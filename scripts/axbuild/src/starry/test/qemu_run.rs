@@ -17,10 +17,13 @@ use super::{
     start_qemu_case_host_http_server,
 };
 use crate::{
+    build::{append_encoded_rustflags, env_truthy},
     context::{ResolvedStarryRequest, SnapshotPersistence},
     starry::{Starry, board, build, rootfs},
     test::{case, qemu as qemu_test, timing},
 };
+
+const AXTEST_RUSTFLAGS: &[&str] = &["--cfg", "axtest", "--check-cfg", "cfg(axtest)"];
 
 impl Starry {
     pub(super) async fn test_qemu(&mut self, args: ArgsTestQemu) -> anyhow::Result<()> {
@@ -358,7 +361,13 @@ impl Starry {
         build_config_path: &Path,
     ) -> anyhow::Result<(ResolvedStarryRequest, Cargo)> {
         let request = Self::request_for_qemu_case_build_config(request, build_config_path);
-        let cargo = build::load_cargo_config(&request)?;
+        let mut cargo = build::load_cargo_config(&request)?;
+        if env_truthy(&cargo.env, "AXTEST") {
+            append_encoded_rustflags(&mut cargo, AXTEST_RUSTFLAGS);
+        }
+        if crate::support::axtest_coverage::enabled(&cargo) {
+            crate::support::axtest_coverage::prepare_cargo(&mut cargo);
+        }
 
         Ok((request, cargo))
     }

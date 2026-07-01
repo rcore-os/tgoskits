@@ -18,6 +18,9 @@ pub mod dyn_debug; // Re-export debug macros for use in other modules. It will o
 
 pub mod entry;
 
+#[cfg(feature = "axtest")]
+pub mod axtest_support;
+
 mod cgroup;
 mod config;
 mod ebpf;

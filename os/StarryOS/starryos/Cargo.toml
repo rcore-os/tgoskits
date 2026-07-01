@@ -51,10 +51,16 @@ plat-dyn = ["dep:axplat-dyn", "starry-kernel/plat-dyn"]
 rknpu = ["ax-driver/rknpu", "starry-kernel/rknpu"]
 std-compat = ["starry-kernel/std-compat"]
 stack-protector = ["ax-std/stack-protector", "starry-kernel/stack-protector"]
+axtest-kernel = ["dep:axtest", "starry-kernel/axtest"]
 
 [[bin]]
 name = "starryos"
 path = "src/main.rs"
+
+[[bin]]
+name = "starryos-axtest-kernel"
+path = "src/axtest_kernel.rs"
+required-features = ["axtest-kernel"]
 
 [[bin]]
 name = "xtask"
@@ -66,6 +72,7 @@ ax-std = { workspace = true, features = ["ext-ld", "fs", "multitask", "irq"] }
 ax-driver.workspace = true
 ax-hal.workspace = true
 axplat-dyn = { workspace = true, optional = true }
+axtest = { workspace = true, optional = true }
 starry-kernel = { workspace = true, features = ["dev-log", "ext4"] }
 
 [target.'cfg(any(windows, all(unix, not(target_env = "musl"))))'.dependencies]

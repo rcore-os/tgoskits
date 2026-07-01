@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use anyhow::bail;
 
 use super::{
-    ARCEOS_C_TEST_GROUP, ARCEOS_RUST_TEST_BUILD_GROUP, ARCEOS_RUST_TEST_GROUP,
+    ARCEOS_AXTEST_GROUP, ARCEOS_C_TEST_GROUP, ARCEOS_RUST_TEST_BUILD_GROUP, ARCEOS_RUST_TEST_GROUP,
     ARCEOS_RUST_TEST_PACKAGE, ARCEOS_TEST_SUITE_OS,
     args::ArgsTestQemu,
     assets::{
@@ -136,7 +136,10 @@ pub(super) fn selected_qemu_test_groups(
         None => {
             let mut flows = vec![QemuTestFlow::Rust, QemuTestFlow::C];
             for group in test_suite::discover_group_names(workspace_root, ARCEOS_TEST_SUITE_OS)? {
-                if group != ARCEOS_RUST_TEST_GROUP && group != ARCEOS_C_TEST_GROUP {
+                if group != ARCEOS_RUST_TEST_GROUP
+                    && group != ARCEOS_C_TEST_GROUP
+                    && group != ARCEOS_AXTEST_GROUP
+                {
                     flows.push(QemuTestFlow::Generic(group));
                 }
             }
@@ -144,6 +147,7 @@ pub(super) fn selected_qemu_test_groups(
         }
         Some(ARCEOS_RUST_TEST_GROUP) => Ok(vec![QemuTestFlow::Rust]),
         Some(ARCEOS_C_TEST_GROUP) => Ok(vec![QemuTestFlow::C]),
+        Some(ARCEOS_AXTEST_GROUP) => Ok(vec![QemuTestFlow::Axtest]),
         Some(group) => {
             let dir = test_suite::group_dir(workspace_root, ARCEOS_TEST_SUITE_OS, group);
             if dir.is_dir() {
