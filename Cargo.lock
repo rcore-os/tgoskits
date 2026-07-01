@@ -6426,6 +6426,7 @@ dependencies = [
  "pcie",
  "rdif-base",
  "rdif-pcie",
+ "rdif-pinctrl",
  "rdrive-macros",
  "spin",
  "thiserror 2.0.18",
