@@ -531,6 +531,19 @@ fn builder(fs: Arc<SimpleFs>) -> DirMaker {
 
     #[cfg(feature = "sg2002")]
     {
+        #[cfg(feature = "plat-dyn")]
+        if let Some(tpu) = tpu::TpuDevice::probe() {
+            root.add(
+                "cvi-tpu0",
+                Device::new(
+                    fs.clone(),
+                    NodeType::CharacterDevice,
+                    DeviceId::new(240, 0),
+                    Arc::new(tpu),
+                ),
+            );
+        }
+        #[cfg(not(feature = "plat-dyn"))]
         root.add(
             "cvi-tpu0",
             Device::new(

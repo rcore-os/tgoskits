@@ -34,6 +34,7 @@ vsock = ["ax-feat/vsock"]
 dynamic_debug = ["ipi"]
 sg2002 = [
     "dep:ax-dma",
+    "dep:axklib",
     "dep:sg2002-tpu",
     "dep:some-serial",
     "dep:sg200x-bsp",
