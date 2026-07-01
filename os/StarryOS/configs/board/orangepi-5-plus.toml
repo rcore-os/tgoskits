@@ -10,6 +10,7 @@ features = [
   "ax-driver/rockchip-sdhci",
   "ax-driver/rockchip-dwmmc",
   "rknpu",
+  "rk3588-pwm",
 ]
 log = "Info"
 max_cpu_num = 8

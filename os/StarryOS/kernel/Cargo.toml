@@ -23,6 +23,7 @@ ipi = ["ax-feat/ipi"]
 memtrack = ["ax-feat/backtrace", "ax-alloc/tracking"]
 rknpu = ["ax-driver/rknpu", "dep:ax-dma"]
 jpeg = ["ax-driver/jpeg", "dep:ax-dma"]
+rk3588-pwm = ["ax-driver/rockchip-soc", "dep:rdif-pinctrl"]
 std-compat = []
 k230-kpu = ["ax-feat/xuantie-c9xx", "dep:axklib", "dep:k230-kpu"]
 plat-dyn = [
@@ -101,6 +102,7 @@ ax-errno = { workspace = true }
 axnsproxy = { workspace = true }
 axfs-ng-vfs = { workspace = true }
 rdif-block = { workspace = true }
+rdif-pinctrl = { workspace = true, optional = true }
 ax-io = { workspace = true }
 axpoll = { workspace = true }
 bitflags = "2.10"

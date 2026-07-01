@@ -1,21 +1,17 @@
-use alloc::{borrow::Cow, boxed::Box, format, sync::Arc, vec::Vec};
+use alloc::{borrow::Cow, boxed::Box, format, sync::Arc, vec, vec::Vec};
 
 use ax_sync::Mutex;
-use axfs_ng_vfs::{VfsError, VfsResult};
-use sg200x_bsp::{
-    pwm::{Pwm, PwmChannel, PwmMode, PwmPolarity},
-    soc::PWM0_BASE,
-};
+use axfs_ng_vfs::{NodePermission, VfsError, VfsResult};
 use spin::LazyLock;
 
 use crate::pseudofs::{
-    DirMaker, NodeOpsMux, RwFile, SimpleDir, SimpleDirOps, SimpleFile, SimpleFileOperation,
-    SimpleFs,
+    DirMaker, DirectRwFsFileOps, NodeOpsMux, RwFile, SimpleDir, SimpleDirOps, SimpleFile,
+    SimpleFileOperation, SimpleFileOps, SimpleFs, SpecialFsFile,
 };
 
-const PWM_SYSFS_CHIPS: u8 = 4;
-const PWM_SYSFS_CHANNELS_PER_CHIP: u8 = 4;
-const PWM_PERIOD_NS: u64 = 1_000_000_000;
+const NANOS_PER_SECOND: u64 = 1_000_000_000;
+
+mod platform;
 
 /// Returns a [`DirMaker`] for `/sys/class/pwm`, to be embedded into the
 /// kernel-wide sysfs tree by [`crate::pseudofs::sysfs`]. The pwm subsystem
@@ -34,26 +30,31 @@ struct PwmChannelState {
 }
 
 struct PwmChipState {
-    pwm: Pwm,
-    channels: [PwmChannelState; PWM_SYSFS_CHANNELS_PER_CHIP as usize],
+    hw: platform::PwmHardware,
+    channels: Vec<PwmChannelState>,
 }
 
 struct PwmSysfsState {
     chips: Vec<PwmChipState>,
 }
 
+struct PwmAttrFile {
+    ops: Arc<dyn SimpleFileOps>,
+}
+
+// PWM hardware state is only accessed while holding `PWM_SYSFS_STATE`.
 unsafe impl Send for PwmSysfsState {}
-unsafe impl Sync for PwmSysfsState {}
 
 impl PwmSysfsState {
     fn new() -> Self {
-        let mut chips = Vec::with_capacity(PWM_SYSFS_CHIPS as usize);
-        for index in 0..PWM_SYSFS_CHIPS {
-            let pwm_addr = PWM0_BASE + index as usize * 0x1000 + ax_config::plat::PHYS_VIRT_OFFSET;
-            let pwm = unsafe { Pwm::new(pwm_addr) };
+        let mut chips = Vec::with_capacity(platform::pwm_chip_count() as usize);
+        for index in 0..platform::pwm_chip_count() {
             chips.push(PwmChipState {
-                pwm,
-                channels: [PwmChannelState::default(); PWM_SYSFS_CHANNELS_PER_CHIP as usize],
+                hw: platform::PwmHardware::new(index),
+                channels: vec![
+                    PwmChannelState::default();
+                    platform::pwm_channels_per_chip(index) as usize
+                ],
             });
         }
         Self { chips }
@@ -63,6 +64,39 @@ impl PwmSysfsState {
 static PWM_SYSFS_STATE: LazyLock<Mutex<PwmSysfsState>> =
     LazyLock::new(|| Mutex::new(PwmSysfsState::new()));
 
+impl PwmAttrFile {
+    fn new(ops: impl SimpleFileOps) -> Self {
+        Self { ops: Arc::new(ops) }
+    }
+}
+
+impl DirectRwFsFileOps for PwmAttrFile {
+    fn read_at(&self, buf: &mut [u8], offset: u64) -> VfsResult<usize> {
+        let data = self.ops.read_all()?;
+        if offset >= data.len() as u64 {
+            return Ok(0);
+        }
+        let data = &data[offset as usize..];
+        let read = data.len().min(buf.len());
+        buf[..read].copy_from_slice(&data[..read]);
+        Ok(read)
+    }
+
+    fn write_at(&self, buf: &[u8], offset: u64) -> VfsResult<usize> {
+        if offset != 0 {
+            return Err(VfsError::InvalidInput);
+        }
+        // Sysfs attribute writes replace the attribute value. Do this locally
+        // for PWM instead of changing the generic SimpleFile write contract.
+        self.ops.write_all(buf)?;
+        Ok(buf.len())
+    }
+}
+
+fn pwm_attr_file(fs: Arc<SimpleFs>, ops: impl SimpleFileOps) -> Arc<SpecialFsFile<PwmAttrFile>> {
+    SpecialFsFile::new_regular_with_perm(fs, PwmAttrFile::new(ops), NodePermission::default())
+}
+
 struct PwmClassDir {
     fs: Arc<SimpleFs>,
 }
@@ -70,8 +104,8 @@ struct PwmClassDir {
 impl SimpleDirOps for PwmClassDir {
     fn child_names<'a>(&'a self) -> Box<dyn Iterator<Item = Cow<'a, str>> + 'a> {
         Box::new(
-            (0..PWM_SYSFS_CHIPS)
-                .map(|index| Cow::Owned(format!("pwmchip{}", index * PWM_SYSFS_CHANNELS_PER_CHIP))),
+            (0..platform::pwm_chip_count())
+                .map(|index| Cow::Owned(format!("pwmchip{}", platform::pwmchip_number(index)))),
         )
     }
 
@@ -98,10 +132,11 @@ struct PwmChipDir {
 
 impl SimpleDirOps for PwmChipDir {
     fn child_names<'a>(&'a self) -> Box<dyn Iterator<Item = Cow<'a, str>> + 'a> {
-        let mut names = Vec::new();
-        names.push(Cow::Borrowed("export"));
-        names.push(Cow::Borrowed("unexport"));
-        names.push(Cow::Borrowed("npwm"));
+        let mut names = vec![
+            Cow::Borrowed("export"),
+            Cow::Borrowed("unexport"),
+            Cow::Borrowed("npwm"),
+        ];
         let state = PWM_SYSFS_STATE.lock();
         if let Some(chip) = state.chips.get(self.chip_index as usize) {
             for (index, channel) in chip.channels.iter().enumerate() {
@@ -115,7 +150,7 @@ impl SimpleDirOps for PwmChipDir {
 
     fn lookup_child(&self, name: &str) -> VfsResult<NodeOpsMux> {
         match name {
-            "export" => Ok(SimpleFile::new_regular(
+            "export" => Ok(pwm_attr_file(
                 self.fs.clone(),
                 RwFile::new({
                     let chip_index = self.chip_index;
@@ -133,7 +168,7 @@ impl SimpleDirOps for PwmChipDir {
                 }),
             )
             .into()),
-            "unexport" => Ok(SimpleFile::new_regular(
+            "unexport" => Ok(pwm_attr_file(
                 self.fs.clone(),
                 RwFile::new({
                     let chip_index = self.chip_index;
@@ -151,8 +186,17 @@ impl SimpleDirOps for PwmChipDir {
                 }),
             )
             .into()),
-            "npwm" => Ok(SimpleFile::new_regular(self.fs.clone(), || {
-                Ok(format!("{}\n", PWM_SYSFS_CHANNELS_PER_CHIP))
+            "npwm" => Ok(SimpleFile::new_regular(self.fs.clone(), {
+                let chip_index = self.chip_index;
+                move || {
+                    let state = PWM_SYSFS_STATE.lock();
+                    let channels = state
+                        .chips
+                        .get(chip_index as usize)
+                        .map(|chip| chip.channels.len())
+                        .unwrap_or(0);
+                    Ok(format!("{channels}\n"))
+                }
             })
             .into()),
             _ => {
@@ -203,7 +247,7 @@ impl SimpleDirOps for PwmChannelDir {
         let chip_index = self.chip_index;
         let channel_index = self.channel_index;
         let file = match name {
-            "period" => SimpleFile::new_regular(
+            "period" => pwm_attr_file(
                 self.fs.clone(),
                 RwFile::new(move |req| match req {
                     SimpleFileOperation::Read => Ok(Some(
@@ -218,7 +262,7 @@ impl SimpleDirOps for PwmChannelDir {
                     }
                 }),
             ),
-            "duty_cycle" => SimpleFile::new_regular(
+            "duty_cycle" => pwm_attr_file(
                 self.fs.clone(),
                 RwFile::new(move |req| match req {
                     SimpleFileOperation::Read => Ok(Some(
@@ -233,7 +277,7 @@ impl SimpleDirOps for PwmChannelDir {
                     }
                 }),
             ),
-            "enable" => SimpleFile::new_regular(
+            "enable" => pwm_attr_file(
                 self.fs.clone(),
                 RwFile::new(move |req| match req {
                     SimpleFileOperation::Read => Ok(Some(
@@ -260,24 +304,11 @@ impl SimpleDirOps for PwmChannelDir {
 
 fn parse_pwmchip_index(name: &str) -> Option<u8> {
     let value = name.strip_prefix("pwmchip")?.parse::<u8>().ok()?;
-    if value % PWM_SYSFS_CHANNELS_PER_CHIP != 0 {
-        return None;
-    }
-    let index = value / PWM_SYSFS_CHANNELS_PER_CHIP;
-    if index < PWM_SYSFS_CHIPS {
-        Some(index)
-    } else {
-        None
-    }
+    platform::pwmchip_index(value)
 }
 
 fn parse_pwm_local_index(name: &str) -> Option<u8> {
-    let value = name.strip_prefix("pwm")?.parse::<u8>().ok()?;
-    if value < PWM_SYSFS_CHANNELS_PER_CHIP {
-        Some(value)
-    } else {
-        None
-    }
+    name.strip_prefix("pwm")?.parse::<u8>().ok()
 }
 
 fn parse_u64(data: &[u8]) -> VfsResult<u64> {
@@ -295,15 +326,15 @@ fn parse_u8(data: &[u8]) -> VfsResult<u8> {
 }
 
 fn export_pwm_channel(chip_index: u8, channel: u8) -> VfsResult<()> {
-    if channel >= PWM_SYSFS_CHANNELS_PER_CHIP {
-        return Err(VfsError::InvalidInput);
-    }
     let mut state = PWM_SYSFS_STATE.lock();
     let chip = state
         .chips
         .get_mut(chip_index as usize)
         .ok_or(VfsError::InvalidInput)?;
-    let entry = &mut chip.channels[channel as usize];
+    let entry = chip
+        .channels
+        .get_mut(channel as usize)
+        .ok_or(VfsError::InvalidInput)?;
     if !entry.exported {
         *entry = PwmChannelState {
             exported: true,
@@ -314,21 +345,21 @@ fn export_pwm_channel(chip_index: u8, channel: u8) -> VfsResult<()> {
 }
 
 fn unexport_pwm_channel(chip_index: u8, channel: u8) -> VfsResult<()> {
-    if channel >= PWM_SYSFS_CHANNELS_PER_CHIP {
-        return Err(VfsError::InvalidInput);
-    }
     let mut state = PWM_SYSFS_STATE.lock();
     let chip = state
         .chips
         .get_mut(chip_index as usize)
         .ok_or(VfsError::InvalidInput)?;
-    let entry = &mut chip.channels[channel as usize];
-    if entry.enabled {
-        let ch = PwmChannel::from_u8(channel).ok_or(VfsError::InvalidInput)?;
-        chip.pwm.stop(ch);
-        chip.pwm.disable_output(ch);
+    {
+        let entry = chip
+            .channels
+            .get(channel as usize)
+            .ok_or(VfsError::InvalidInput)?;
+        if entry.enabled {
+            platform::disable_channel(&mut chip.hw, channel)?;
+        }
     }
-    *entry = PwmChannelState::default();
+    chip.channels[channel as usize] = PwmChannelState::default();
     Ok(())
 }
 
@@ -380,7 +411,11 @@ fn pwm_write_period(chip_index: u8, channel_index: u8, data: &[u8]) -> VfsResult
         e.period_ns = value;
         e.enabled
     };
-    pwm_apply_channel(chip, channel_index, enabled)
+    if let Err(err) = pwm_apply_channel(chip, channel_index, enabled) {
+        warn!("pwmchip{chip_index}/pwm{channel_index}: apply failed: {err:?}");
+        return Err(err);
+    }
+    Ok(())
 }
 
 fn pwm_write_duty(chip_index: u8, channel_index: u8, data: &[u8]) -> VfsResult<()> {
@@ -411,7 +446,6 @@ fn pwm_write_enable(chip_index: u8, channel_index: u8, data: &[u8]) -> VfsResult
         .chips
         .get_mut(chip_index as usize)
         .ok_or(VfsError::InvalidInput)?;
-    let channel = PwmChannel::from_u8(channel_index).ok_or(VfsError::InvalidInput)?;
     if value == 1 {
         let period_ns = chip
             .channels
@@ -422,13 +456,12 @@ fn pwm_write_enable(chip_index: u8, channel_index: u8, data: &[u8]) -> VfsResult
             return Err(VfsError::InvalidInput);
         }
         pwm_apply_channel(chip, channel_index, true)?;
-        chip.pwm.set_mode(channel, PwmMode::Continuous);
-        chip.pwm.enable_output(channel);
-        chip.pwm.start(channel);
         chip.channels[channel_index as usize].enabled = true;
     } else {
-        chip.pwm.stop(channel);
-        chip.pwm.disable_output(channel);
+        chip.channels
+            .get(channel_index as usize)
+            .ok_or(VfsError::InvalidInput)?;
+        platform::disable_channel(&mut chip.hw, channel_index)?;
         chip.channels[channel_index as usize].enabled = false;
     }
     Ok(())
@@ -445,19 +478,11 @@ fn pwm_apply_channel(chip: &mut PwmChipState, channel_index: u8, running: bool) 
     if entry.duty_ns > entry.period_ns {
         return Err(VfsError::InvalidInput);
     }
-    let frequency_hz = (PWM_PERIOD_NS / entry.period_ns) as u32;
-    if frequency_hz == 0 {
-        return Err(VfsError::InvalidInput);
-    }
-    let high_percent = (entry.duty_ns * 100 / entry.period_ns) as u8;
-    let low_percent = 100u8.saturating_sub(high_percent);
-    let channel = PwmChannel::from_u8(channel_index).ok_or(VfsError::InvalidInput)?;
-    let result = if running {
-        chip.pwm
-            .update_frequency_duty(channel, frequency_hz, low_percent)
-    } else {
-        chip.pwm
-            .configure_channel(channel, frequency_hz, low_percent, PwmPolarity::ActiveHigh)
-    };
-    result.map_err(|_| VfsError::InvalidInput)
+    platform::apply_channel(
+        &mut chip.hw,
+        channel_index,
+        entry.period_ns,
+        entry.duty_ns,
+        running,
+    )
 }

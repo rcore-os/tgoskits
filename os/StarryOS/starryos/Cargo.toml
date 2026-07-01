@@ -36,6 +36,7 @@ plat-dyn = ["dep:axplat-dyn", "starry-kernel/plat-dyn"]
 
 rknpu = ["ax-driver/rknpu", "starry-kernel/rknpu"]
 jpeg = ["ax-driver/jpeg", "starry-kernel/jpeg"]
+rk3588-pwm = ["starry-kernel/rk3588-pwm"]
 std-compat = ["starry-kernel/std-compat"]
 stack-protector = ["ax-std/stack-protector", "starry-kernel/stack-protector"]
 

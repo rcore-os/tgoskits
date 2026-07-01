@@ -7705,6 +7705,7 @@ dependencies = [
  "rand 0.10.1",
  "rbpf",
  "rdif-block",
+ "rdif-pinctrl",
  "rdrive",
  "ringbuf",
  "riscv",
