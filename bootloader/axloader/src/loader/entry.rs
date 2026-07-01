@@ -1,7 +1,7 @@
 use core::{mem, ptr::NonNull};
 
 use uefi::{
-    boot,
+    Status, boot,
     mem::memory_map::{MemoryMap, MemoryType},
 };
 
@@ -14,6 +14,7 @@ const OSTOOL_BOOT_INFO_MAX_RAM_REGIONS: usize = 32;
 pub enum JumpError {
     EntryAddressTooLarge,
     BootInfoAllocateFailed,
+    SystemTableUnavailable,
 }
 
 #[repr(C)]
@@ -71,6 +72,24 @@ pub fn exit_boot_services_and_jump(entry_point: u64) -> Result<(), JumpError> {
     unsafe { call_entry_point(entry_point, boot_info_ptr) }
 }
 
+#[cfg(target_arch = "x86_64")]
+pub fn jump_to_uefi_entry(entry_point: u64) -> Result<(), JumpError> {
+    let entry_point = usize::try_from(entry_point).map_err(|_| JumpError::EntryAddressTooLarge)?;
+    let system_table = uefi::table::system_table_raw().ok_or(JumpError::SystemTableUnavailable)?;
+    unsafe {
+        call_uefi_entry_point(
+            entry_point,
+            boot::image_handle(),
+            system_table.as_ptr().cast(),
+        )
+    }
+}
+
+#[cfg(not(target_arch = "x86_64"))]
+pub fn jump_to_uefi_entry(_entry_point: u64) -> Result<(), JumpError> {
+    Err(JumpError::SystemTableUnavailable)
+}
+
 fn allocate_boot_info() -> Result<NonNull<OstoolBootInfo>, JumpError> {
     let ptr = boot::allocate_pool(MemoryType::LOADER_DATA, mem::size_of::<OstoolBootInfo>())
         .map_err(|_| JumpError::BootInfoAllocateFailed)?;
@@ -101,4 +120,19 @@ unsafe fn call_entry_point(entry_point: usize, boot_info: usize) -> ! {
     // target address points to executable code with this signature.
     let entry: extern "C" fn(usize) -> ! = unsafe { core::mem::transmute(entry_point) };
     entry(boot_info)
+}
+
+#[cfg(target_arch = "x86_64")]
+unsafe fn call_uefi_entry_point(
+    entry_point: usize,
+    image_handle: uefi::Handle,
+    system_table: *const core::ffi::c_void,
+) -> Result<(), JumpError> {
+    // SAFETY: the address comes from the loaded kernel ELF symbol
+    // `__x86_64_efi_pe_entry`, whose ABI matches a UEFI PE entry point.
+    let entry: extern "efiapi" fn(uefi::Handle, *const core::ffi::c_void) -> Status =
+        unsafe { core::mem::transmute(entry_point) };
+    let status = entry(image_handle, system_table);
+    crate::logln!("uefi_entry_returned: {status:?}");
+    Ok(())
 }
