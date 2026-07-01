@@ -114,7 +114,7 @@ impl RuntimeEvent {
 
     /// Publishes event bits from hard IRQ context.
     pub fn publish_from_irq(&self, bits: u64) -> RuntimeEventValue {
-        self.publish_inner(bits, true)
+        self.publish_state(bits)
     }
 
     /// Publishes event bits from hard IRQ context and wakes a host task through
@@ -124,25 +124,26 @@ impl RuntimeEvent {
         bits: u64,
         waker: &IrqTaskWaker,
     ) -> (RuntimeEventValue, crate::IrqWakeResult) {
-        if bits != 0 {
-            self.bits.fetch_or(bits, Ordering::AcqRel);
-        }
-        let seq = RuntimeEventValue(self.seq.fetch_add(1, Ordering::AcqRel) + 1);
+        let seq = self.publish_state(bits);
         let wake = waker.wake_from_irq(bits);
         (seq, wake)
     }
 
-    fn publish_inner(&self, bits: u64, from_irq: bool) -> RuntimeEventValue {
+    fn publish_state(&self, bits: u64) -> RuntimeEventValue {
         if bits != 0 {
             self.bits.fetch_or(bits, Ordering::AcqRel);
         }
-        let seq = RuntimeEventValue(self.seq.fetch_add(1, Ordering::AcqRel) + 1);
-        if from_irq {
-            self.notify.notify_irq();
-        } else {
-            self.notify.notify();
-            self.wake_waiters();
-        }
+        RuntimeEventValue(self.seq.fetch_add(1, Ordering::AcqRel) + 1)
+    }
+
+    fn publish_inner(&self, bits: u64, from_irq: bool) -> RuntimeEventValue {
+        debug_assert!(
+            !from_irq,
+            "hard IRQ publishers must use publish_from_irq or publish_from_irq_with",
+        );
+        let seq = self.publish_state(bits);
+        self.notify.notify();
+        self.wake_waiters();
         seq
     }
 

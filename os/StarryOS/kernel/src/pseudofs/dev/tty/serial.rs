@@ -16,11 +16,11 @@ use ax_runtime::hal::{
     irq::{AutoEnable, CpuId, IrqAffinity, IrqHandle, IrqId, IrqRequest, ShareMode},
 };
 use ax_sync::Mutex;
-use ax_task::{IrqNotify, local::RuntimeEvent};
+use ax_task::{IrqNotify, IrqTaskWaker, local::RuntimeEvent};
 use axpoll::{IoEvents, PollSet};
 use bitflags::bitflags;
 use rdrive::DeviceId as RDriveDeviceId;
-use spin::LazyLock;
+use spin::{LazyLock, Once};
 use starry_process::Process;
 
 use super::{
@@ -92,6 +92,7 @@ struct SerialBackend {
 
 struct SerialEvents {
     event: RuntimeEvent,
+    irq_waker: Once<IrqTaskWaker>,
     pending_hint: AtomicBool,
     rx_seq: AtomicU64,
     tx_seq: AtomicU64,
@@ -101,10 +102,15 @@ impl SerialEvents {
     const fn new() -> Self {
         Self {
             event: RuntimeEvent::new(),
+            irq_waker: Once::new(),
             pending_hint: AtomicBool::new(false),
             rx_seq: AtomicU64::new(0),
             tx_seq: AtomicU64::new(0),
         }
+    }
+
+    fn init_irq_waker(&self, waker: IrqTaskWaker) {
+        self.irq_waker.call_once(|| waker);
     }
 
     fn publish_irq(&self, events: SerialEventBits) {
@@ -112,7 +118,12 @@ impl SerialEvents {
             return;
         }
         self.pending_hint.store(true, Ordering::Release);
-        self.event.publish_from_irq(u64::from(events.bits()));
+        let bits = u64::from(events.bits());
+        if let Some(waker) = self.irq_waker.get() {
+            let _ = self.event.publish_from_irq_with(bits, waker);
+        } else {
+            let _ = self.event.publish_from_irq(bits);
+        }
     }
 
     fn publish(&self, events: SerialEventBits) {
@@ -577,26 +588,31 @@ fn serial_config_from_termios(termios: &Termios2) -> Config {
 fn spawn_serial_event_worker(backend: Arc<SerialBackend>) {
     let task_name = format!("{}-event", backend.tty_name);
     ax_task::spawn_with_name(
-        move || loop {
-            backend.events.wait();
+        move || {
+            backend
+                .events
+                .init_irq_waker(ax_task::current_irq_task_waker());
             loop {
-                let pending = backend.events.take();
-                if pending.is_empty() {
-                    break;
-                }
-                backend.events.wake_waiters_deferred();
-                if pending.contains(SerialEventBits::RX_READY) {
-                    unsafe { backend.input_source.wake(IoEvents::IN) };
-                }
-                if pending.contains(SerialEventBits::TX_SPACE) {
-                    backend.tx_notify.notify();
-                    unsafe { backend.output_source.wake(IoEvents::OUT) };
-                    let outcome = backend.service_on_owner(SerialSoftWork::TX_KICK);
-                    publish_serial_outcome(&backend, outcome, false);
-                }
-                if pending.contains(SerialEventBits::RESERVICE) {
-                    let outcome = backend.service_on_owner(SerialSoftWork::RESERVICE);
-                    publish_serial_outcome(&backend, outcome, false);
+                backend.events.wait();
+                loop {
+                    let pending = backend.events.take();
+                    if pending.is_empty() {
+                        break;
+                    }
+                    backend.events.wake_waiters_deferred();
+                    if pending.contains(SerialEventBits::RX_READY) {
+                        unsafe { backend.input_source.wake(IoEvents::IN) };
+                    }
+                    if pending.contains(SerialEventBits::TX_SPACE) {
+                        backend.tx_notify.notify();
+                        unsafe { backend.output_source.wake(IoEvents::OUT) };
+                        let outcome = backend.service_on_owner(SerialSoftWork::TX_KICK);
+                        publish_serial_outcome(&backend, outcome, false);
+                    }
+                    if pending.contains(SerialEventBits::RESERVICE) {
+                        let outcome = backend.service_on_owner(SerialSoftWork::RESERVICE);
+                        publish_serial_outcome(&backend, outcome, false);
+                    }
                 }
             }
         },

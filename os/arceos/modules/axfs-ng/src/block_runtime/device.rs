@@ -239,14 +239,14 @@ impl QueueRuntime {
 
 pub struct BlockRuntime {
     devices: Vec<Arc<BlockDeviceHandle>>,
-    irq_registrations: Vec<Box<dyn BlockIrqRegistration>>,
+    irq_registrations: SpinNoIrq<Vec<Box<dyn BlockIrqRegistration>>>,
 }
 
 impl BlockRuntime {
     pub fn new() -> Self {
         Self {
             devices: Vec::new(),
-            irq_registrations: Vec::new(),
+            irq_registrations: SpinNoIrq::new(Vec::new()),
         }
     }
 
@@ -258,8 +258,8 @@ impl BlockRuntime {
         &self.devices
     }
 
-    pub fn push_irq_registration(&mut self, registration: Box<dyn BlockIrqRegistration>) {
-        self.irq_registrations.push(registration);
+    pub fn push_irq_registration(&self, registration: Box<dyn BlockIrqRegistration>) {
+        self.irq_registrations.lock().push(registration);
     }
 }
 
@@ -363,31 +363,75 @@ impl BlockIrqAction {
 
 impl BlockRuntime {
     pub fn from_rdif_devices(devices: impl IntoIterator<Item = RdifBlockDevice>) -> Self {
+        let (runtime, pending_irqs) = Self::from_rdif_devices_deferred(devices);
+        if !pending_irqs.is_empty() {
+            warn!(
+                "rdif filesystem block devices registered IRQ handlers without an installed drain \
+                 task; keeping completion mode polling"
+            );
+        }
+        drop(pending_irqs);
+        runtime
+    }
+
+    fn from_rdif_devices_deferred(
+        devices: impl IntoIterator<Item = RdifBlockDevice>,
+    ) -> (Self, Vec<DeferredRdifBlockIrq>) {
         let mut runtime = Self::new();
+        let mut pending_irqs = Vec::new();
         for block in devices {
             let device_index = runtime.devices.len();
             let drain_wake = Arc::new(RuntimeDrainWake { device_index });
             match build_rdif_block_device(block, device_index, drain_wake) {
                 Ok(registered) => {
-                    let (device, registrations) = registered;
-                    for registration in registrations {
-                        runtime.push_irq_registration(registration);
+                    let (device, pending_irq) = registered;
+                    if let Some(pending_irq) = pending_irq {
+                        pending_irqs.push(pending_irq);
                     }
                     runtime.push_device(device);
                 }
                 Err(err) => warn!("failed to register rdif filesystem block device: {err:?}"),
             }
         }
-        runtime
+        (runtime, pending_irqs)
     }
 
     pub fn install_from_rdif_devices(
         devices: impl IntoIterator<Item = RdifBlockDevice>,
     ) -> Arc<BlockRuntime> {
-        let runtime = Arc::new(Self::from_rdif_devices(devices));
+        let (runtime, pending_irqs) = Self::from_rdif_devices_deferred(devices);
+        let runtime = Arc::new(runtime);
         BLOCK_RUNTIME.call_once(|| runtime.clone());
         spawn_block_drain_task(runtime.clone());
+        for pending_irq in pending_irqs {
+            runtime.enable_deferred_rdif_irq(pending_irq);
+        }
         runtime
+    }
+
+    fn enable_deferred_rdif_irq(&self, pending: DeferredRdifBlockIrq) {
+        let DeferredRdifBlockIrq {
+            name,
+            block,
+            device,
+            registrations,
+        } = pending;
+
+        block.enable_irq();
+        if block.is_irq_enabled() {
+            device.set_completion_mode(BlockCompletionMode::IrqDriven);
+            for registration in registrations {
+                self.push_irq_registration(registration);
+            }
+            warn!("rdif filesystem block device {name} registered with IRQ-driven completion");
+        } else {
+            block.disable_irq();
+            drop(registrations);
+            warn!(
+                "rdif filesystem block device {name} registered IRQ handler but device did not \
+                 enable completion IRQ; falling back to polling"
+            );
+        }
     }
 }
 
@@ -1208,8 +1252,15 @@ impl BlockDeviceHandle {
 }
 
 type BlockIrqRegistrations = Vec<Box<dyn BlockIrqRegistration>>;
-type RegisteredRdifBlockDevice = (Arc<BlockDeviceHandle>, BlockIrqRegistrations);
+type RegisteredRdifBlockDevice = (Arc<BlockDeviceHandle>, Option<DeferredRdifBlockIrq>);
 type RegisterIrqResult = Result<BlockIrqRegistrations, (AxError, BlockIrqRegistrations)>;
+
+struct DeferredRdifBlockIrq {
+    name: String,
+    block: RdifBlockDevice,
+    device: Arc<BlockDeviceHandle>,
+    registrations: BlockIrqRegistrations,
+}
 
 fn build_rdif_block_device(
     mut block: RdifBlockDevice,
@@ -1239,19 +1290,7 @@ fn build_rdif_block_device(
     )
     .map_err(map_blk_err_to_ax_err)?;
 
-    let registrations = match register_rdif_irq_handlers(&mut block, device.clone(), device_index)
-        .and_then(|registrations| {
-            block.enable_irq();
-            if block.is_irq_enabled() {
-                Ok(registrations)
-            } else {
-                warn!(
-                    "rdif filesystem block device {name} registered IRQ handler but device did \
-                     not enable completion IRQ"
-                );
-                Err((AxError::Unsupported, registrations))
-            }
-        }) {
+    let registrations = match register_rdif_irq_handlers(&mut block, device.clone(), device_index) {
         Ok(registrations) => registrations,
         Err((err, registrations)) => {
             block.disable_irq();
@@ -1260,12 +1299,14 @@ fn build_rdif_block_device(
             Vec::new()
         }
     };
-    if !registrations.is_empty() {
-        device.set_completion_mode(BlockCompletionMode::IrqDriven);
-        warn!("rdif filesystem block device {name} registered with IRQ-driven completion");
-    }
+    let pending_irq = (!registrations.is_empty()).then_some(DeferredRdifBlockIrq {
+        name: name.clone(),
+        block,
+        device: device.clone(),
+        registrations,
+    });
     info!("registered rdif filesystem block device {name}");
-    Ok((device, registrations))
+    Ok((device, pending_irq))
 }
 
 fn register_rdif_irq_handlers(

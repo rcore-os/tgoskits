@@ -105,6 +105,9 @@ impl IrqTaskWaker {
             return IrqWakeResult::default();
         };
         queue.push(task);
+        #[cfg(all(test, feature = "host-test"))]
+        let local = true;
+        #[cfg(not(all(test, feature = "host-test")))]
         let local = target_cpu == this_cpu_id();
         #[cfg(all(feature = "smp", feature = "ipi"))]
         let remote = if !local {
@@ -146,7 +149,7 @@ pub fn try_current_irq_task_waker() -> Option<IrqTaskWaker> {
 pub fn drain_irq_wake_queue_current_cpu() -> usize {
     let _guard = NoPreemptIrqSave::new();
     #[cfg(all(feature = "smp", feature = "ipi"))]
-    crate::run_queue::clear_remote_reschedule_pending_for_current_cpu();
+    crate::run_queue::clear_remote_irq_wake_pending_for_current_cpu();
 
     let draining = unsafe { IRQ_WAKE_DRAINING.current_ref_raw() };
     if draining.swap(true, Ordering::AcqRel) {
@@ -199,12 +202,17 @@ pub(crate) fn expire_task_irq_wakers(task: &TaskInner) {
 }
 
 fn irq_wake_queue_for_cpu(cpu_id: usize) -> Option<&'static IrqWakeQueue> {
-    #[cfg(feature = "smp")]
+    #[cfg(all(test, feature = "host-test"))]
+    {
+        let _ = cpu_id;
+        unsafe { IRQ_WAKE_QUEUE.current_ref_raw() }.get()
+    }
+    #[cfg(all(feature = "smp", not(all(test, feature = "host-test"))))]
     {
         debug_assert!(cpu_id < crate::build_info::CPU_CAPACITY);
         unsafe { IRQ_WAKE_QUEUE.remote_ref_raw(cpu_id) }.get()
     }
-    #[cfg(not(feature = "smp"))]
+    #[cfg(all(not(feature = "smp"), not(all(test, feature = "host-test"))))]
     {
         let _ = cpu_id;
         unsafe { IRQ_WAKE_QUEUE.current_ref_raw() }.get()

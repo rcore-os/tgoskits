@@ -176,8 +176,19 @@ static REMOTE_RESCHEDULE_REQUESTS: core::sync::atomic::AtomicUsize =
 static REMOTE_RESCHEDULE_PENDING: [AtomicBool; crate::build_info::CPU_CAPACITY] =
     [const { AtomicBool::new(false) }; crate::build_info::CPU_CAPACITY];
 
+#[cfg(all(
+    feature = "smp",
+    feature = "ipi",
+    not(all(test, feature = "host-test"))
+))]
+static REMOTE_IRQ_WAKE_PENDING: [AtomicBool; crate::build_info::CPU_CAPACITY] =
+    [const { AtomicBool::new(false) }; crate::build_info::CPU_CAPACITY];
+
 #[cfg(all(test, feature = "smp", feature = "ipi", feature = "host-test"))]
 static REMOTE_RESCHEDULE_PENDING: AtomicBool = AtomicBool::new(false);
+
+#[cfg(all(test, feature = "smp", feature = "ipi", feature = "host-test"))]
+static REMOTE_IRQ_WAKE_PENDING: AtomicBool = AtomicBool::new(false);
 
 #[cfg(all(feature = "smp", feature = "ipi"))]
 pub(crate) fn clear_remote_reschedule_pending_for_current_cpu() {
@@ -185,6 +196,14 @@ pub(crate) fn clear_remote_reschedule_pending_for_current_cpu() {
     REMOTE_RESCHEDULE_PENDING[this_cpu_id()].store(false, Ordering::Release);
     #[cfg(all(test, feature = "host-test"))]
     REMOTE_RESCHEDULE_PENDING.store(false, Ordering::Release);
+}
+
+#[cfg(all(feature = "smp", feature = "ipi"))]
+pub(crate) fn clear_remote_irq_wake_pending_for_current_cpu() {
+    #[cfg(not(all(test, feature = "host-test")))]
+    REMOTE_IRQ_WAKE_PENDING[this_cpu_id()].store(false, Ordering::Release);
+    #[cfg(all(test, feature = "host-test"))]
+    REMOTE_IRQ_WAKE_PENDING.store(false, Ordering::Release);
 }
 
 #[cfg(all(feature = "smp", feature = "ipi"))]
@@ -234,7 +253,7 @@ fn force_remote_reschedule(cpu_id: usize) {
     not(all(test, feature = "host-test"))
 ))]
 fn request_remote_irq_wake(cpu_id: usize) {
-    request_remote_reschedule_if_not_pending(&REMOTE_RESCHEDULE_PENDING[cpu_id], || {
+    request_remote_reschedule_if_not_pending(&REMOTE_IRQ_WAKE_PENDING[cpu_id], || {
         ax_hal::irq::send_ipi(
             ax_hal::irq::ipi_irq(),
             ax_hal::irq::IpiTarget::Other { cpu_id },
@@ -263,7 +282,7 @@ fn force_remote_reschedule(cpu_id: usize) {
 #[cfg(all(test, feature = "smp", feature = "ipi", feature = "host-test"))]
 fn request_remote_irq_wake(cpu_id: usize) {
     let _ = cpu_id;
-    request_remote_reschedule_if_not_pending(&REMOTE_RESCHEDULE_PENDING, || {
+    request_remote_reschedule_if_not_pending(&REMOTE_IRQ_WAKE_PENDING, || {
         REMOTE_RESCHEDULE_REQUESTS.fetch_add(1, Ordering::Release);
     });
 }
@@ -304,6 +323,7 @@ mod tests {
 
         super::REMOTE_RESCHEDULE_REQUESTS.store(0, Ordering::Release);
         super::REMOTE_RESCHEDULE_PENDING.store(false, Ordering::Release);
+        super::REMOTE_IRQ_WAKE_PENDING.store(false, Ordering::Release);
 
         super::kick_remote_cpu(REMOTE_CPU);
 
@@ -367,6 +387,7 @@ mod tests {
         }
 
         super::REMOTE_RESCHEDULE_PENDING.store(false, Ordering::Release);
+        super::REMOTE_IRQ_WAKE_PENDING.store(false, Ordering::Release);
         super::REMOTE_RESCHEDULE_REQUESTS.store(0, Ordering::Release);
     }
 
@@ -404,6 +425,28 @@ mod tests {
             2,
             "forced remote kicks must not coalesce required migration reschedules",
         );
+    }
+
+    #[test]
+    fn remote_irq_wake_does_not_coalesce_scheduler_reschedule() {
+        const REMOTE_CPU: usize = 1;
+
+        super::REMOTE_RESCHEDULE_REQUESTS.store(0, Ordering::Release);
+        super::REMOTE_RESCHEDULE_PENDING.store(false, Ordering::Release);
+        super::REMOTE_IRQ_WAKE_PENDING.store(false, Ordering::Release);
+
+        super::kick_remote_cpu_for_irq_wake(REMOTE_CPU);
+        super::kick_remote_cpu(REMOTE_CPU);
+
+        assert_eq!(
+            super::REMOTE_RESCHEDULE_REQUESTS.load(Ordering::Acquire),
+            2,
+            "a pending IRQ-wake IPI must not suppress a scheduler-visible reschedule callback",
+        );
+
+        super::REMOTE_RESCHEDULE_PENDING.store(false, Ordering::Release);
+        super::REMOTE_IRQ_WAKE_PENDING.store(false, Ordering::Release);
+        super::REMOTE_RESCHEDULE_REQUESTS.store(0, Ordering::Release);
     }
 }
 

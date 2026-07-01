@@ -286,6 +286,7 @@ struct NvmeQueueCore {
     queue: UnsafeCell<HardwareQueue>,
     state: UnsafeCell<NvmeQueueState>,
     completion_cache: CompletionCache,
+    slot_generations: Vec<AtomicU64>,
     state_claimed: AtomicBool,
     cq_claimed: AtomicBool,
 }
@@ -361,6 +362,10 @@ impl NvmeQueueCore {
             generation: RequestGeneration::default(),
             prp_list: None,
         });
+        let mut slot_generations = Vec::with_capacity(depth + 1);
+        slot_generations.resize_with(depth + 1, || {
+            AtomicU64::new(RequestGeneration::default().get())
+        });
         let free_cids = (1..=depth).rev().collect();
 
         Arc::new(Self {
@@ -378,6 +383,7 @@ impl NvmeQueueCore {
                 free_prp_lists: prp_lists,
             }),
             completion_cache: CompletionCache::new(depth + 1),
+            slot_generations,
             state_claimed: AtomicBool::new(false),
             cq_claimed: AtomicBool::new(false),
         })
@@ -444,7 +450,7 @@ impl NvmeQueueCore {
     }
 
     fn drain_irq_completions(&self) -> bool {
-        self.try_with_cq_claim(HardwareQueue::has_completion)
+        self.try_with_cq_claim(|queue| self.drain_hardware_completions_to_cache(queue))
             .unwrap_or(true)
     }
 
@@ -461,6 +467,12 @@ impl NvmeQueueCore {
         true
     }
 
+    fn publish_slot_generation(&self, cid: usize, generation: RequestGeneration) {
+        if let Some(slot_generation) = self.slot_generations.get(cid) {
+            slot_generation.store(generation.get(), Ordering::Release);
+        }
+    }
+
     fn request_token_for(&self, request: RequestId) -> Option<RequestToken> {
         let cid = usize::from(request);
         self.with_claim(|state| {
@@ -470,18 +482,30 @@ impl NvmeQueueCore {
         })
     }
 
-    fn generation_for_cid(&self, cid: usize) -> Option<RequestGeneration> {
-        self.with_claim(|state| {
-            let slot = state.slots.get(cid)?;
-            matches!(slot.state, SlotState::Pending).then_some(slot.generation)
-        })
+    fn generation_snapshot_for_cid(&self, cid: usize) -> Option<RequestGeneration> {
+        self.slot_generations
+            .get(cid)
+            .map(|generation| RequestGeneration::new(generation.load(Ordering::Acquire)))
+    }
+
+    fn drain_hardware_completions_to_cache(&self, queue: &HardwareQueue) -> bool {
+        let mut completed = false;
+        while let Some(completion) = queue.poll_completion() {
+            completed = true;
+            let cid = usize::from(completion.command_id);
+            if let Some(generation) = self.generation_snapshot_for_cid(cid) {
+                self.completion_cache
+                    .record_irq_completion(completion, generation);
+            }
+        }
+        completed
     }
 
     fn drain_hardware_completions_to_vec(&self, queue: &HardwareQueue) -> Vec<CachedCompletion> {
         let mut completions = Vec::new();
         while let Some(completion) = queue.poll_completion() {
             let cid = usize::from(completion.command_id);
-            if let Some(generation) = self.generation_for_cid(cid) {
+            if let Some(generation) = self.generation_snapshot_for_cid(cid) {
                 completions.push(CachedCompletion::from_completion(completion, generation));
             }
         }
@@ -634,6 +658,10 @@ impl CompletionCache {
         entry.ready.store(true, Ordering::Release);
     }
 
+    fn record_irq_completion(&self, completion: NvmeCompletion, generation: RequestGeneration) {
+        self.record(CachedCompletion::from_completion(completion, generation));
+    }
+
     fn drain_into_slots(&self, queue_id: usize, slots: &mut [RequestSlot]) -> usize {
         let mut consumed = 0;
         for (cid, entry) in self.entries.iter().enumerate() {
@@ -645,6 +673,9 @@ impl CompletionCache {
             };
             let generation = RequestGeneration::new(entry.generation.load(Ordering::Relaxed));
             if slot.generation != generation {
+                continue;
+            }
+            if slot.state != SlotState::Pending {
                 continue;
             }
             let status = CompletionStatus {
@@ -717,6 +748,8 @@ unsafe impl IQueue for NvmeBlockQueue {
             state.consume_cached_completions(queue_id, &self.core.completion_cache);
 
             let cid = state.alloc_cid()?;
+            let generation = state.slots[cid].generation;
+            self.core.publish_slot_generation(cid, generation);
             let command = match state.build_command(namespace, page_size, cid, &request) {
                 Ok(command) => command,
                 Err(err) => {
@@ -1042,6 +1075,37 @@ mod tests {
 
         assert_eq!(cache.drain_into_slots(0, &mut slots), 1);
         assert_eq!(cache.drain_into_slots(0, &mut slots), 0);
+        assert_eq!(slots[1].state, SlotState::Complete);
+    }
+
+    #[test]
+    fn cached_completion_does_not_complete_free_slot() {
+        let cache = CompletionCache::new(2);
+        let mut slots = test_slots(2);
+
+        cache.extend(alloc::vec![CachedCompletion::success(1)]);
+
+        assert_eq!(cache.drain_into_slots(0, &mut slots), 0);
+        assert_eq!(slots[1].state, SlotState::Free);
+    }
+
+    #[test]
+    fn irq_cached_completion_is_visible_to_task_context() {
+        let cache = CompletionCache::new(2);
+        let mut slots = test_slots(2);
+        slots[1].state = SlotState::Pending;
+        slots[1].generation = rdif_block::RequestGeneration::new(7);
+
+        cache.record_irq_completion(
+            crate::queue::NvmeCompletion {
+                command_id: 1,
+                status: crate::queue::CompletionStatus(1),
+                ..Default::default()
+            },
+            rdif_block::RequestGeneration::new(7),
+        );
+
+        assert_eq!(cache.drain_into_slots(0, &mut slots), 1);
         assert_eq!(slots[1].state, SlotState::Complete);
     }
 

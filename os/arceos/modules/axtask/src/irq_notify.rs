@@ -12,6 +12,7 @@ use crate::WaitQueue;
 pub struct IrqNotify {
     pending: AtomicBool,
     wait: WaitQueue,
+    irq_waker: spin::Once<crate::IrqTaskWaker>,
 }
 
 impl Default for IrqNotify {
@@ -26,6 +27,7 @@ impl IrqNotify {
         Self {
             pending: AtomicBool::new(false),
             wait: WaitQueue::new(),
+            irq_waker: spin::Once::new(),
         }
     }
 
@@ -36,7 +38,9 @@ impl IrqNotify {
     /// coalesce into one pending bit until a worker drains it.
     pub fn notify_irq(&self) {
         self.pending.store(true, Ordering::Release);
-        self.wait.notify_one_from_irq();
+        if let Some(waker) = self.irq_waker.get() {
+            let _ = waker.wake_from_irq(0);
+        }
     }
 
     /// Publishes a pending notification from task context.
@@ -64,6 +68,7 @@ impl IrqNotify {
     /// Blocks until at least one pending notification is available, then drains it.
     #[track_caller]
     pub fn wait(&self) {
+        self.init_irq_waker();
         self.wait.wait_until(|| self.drain());
     }
 
@@ -71,10 +76,15 @@ impl IrqNotify {
     /// is available, then drains the notification bit.
     #[track_caller]
     pub fn wait_until(&self, condition: impl Fn() -> bool) {
+        self.init_irq_waker();
         self.wait.wait_until(|| {
             let ready = condition();
             let notified = self.drain();
             ready || notified
         });
+    }
+
+    fn init_irq_waker(&self) {
+        self.irq_waker.call_once(crate::current_irq_task_waker);
     }
 }

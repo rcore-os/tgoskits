@@ -1,4 +1,5 @@
 use alloc::{boxed::Box, string::String, vec::Vec};
+use core::sync::atomic::{AtomicBool, Ordering};
 
 use ax_alloc::UsageKind;
 use ax_fs_ng::{
@@ -40,7 +41,10 @@ static TIME_PROVIDER: RuntimeTimeProvider = RuntimeTimeProvider;
 static PAGE_PROVIDER: RuntimePageProvider = RuntimePageProvider;
 static TASK_OPS: RuntimeTaskOps = RuntimeTaskOps;
 static BLOCK_IO_WAIT_WQ: ax_task::WaitQueue = ax_task::WaitQueue::new();
-static BLOCK_DRAIN_NOTIFY: ax_task::IrqNotify = ax_task::IrqNotify::new();
+static BLOCK_DRAIN_NOTIFY_PENDING: AtomicBool = AtomicBool::new(false);
+static BLOCK_DRAIN_WAIT_WQ: ax_task::WaitQueue = ax_task::WaitQueue::new();
+#[cfg(feature = "irq")]
+static BLOCK_DRAIN_IRQ_WAKER: spin::Once<ax_task::IrqTaskWaker> = spin::Once::new();
 #[cfg(feature = "irq")]
 static IRQ_REGISTRAR: RuntimeBlockIrqRegistrar = RuntimeBlockIrqRegistrar;
 
@@ -76,15 +80,22 @@ impl BlockTaskOps for RuntimeTaskOps {
     }
 
     fn notify_drain(&self) {
-        BLOCK_DRAIN_NOTIFY.notify();
+        BLOCK_DRAIN_NOTIFY_PENDING.store(true, Ordering::Release);
+        BLOCK_DRAIN_WAIT_WQ.notify_one(true);
     }
 
     fn notify_drain_from_irq(&self) {
-        BLOCK_DRAIN_NOTIFY.notify_irq();
+        BLOCK_DRAIN_NOTIFY_PENDING.store(true, Ordering::Release);
+        #[cfg(feature = "irq")]
+        if let Some(waker) = BLOCK_DRAIN_IRQ_WAKER.get() {
+            let _ = waker.wake_from_irq(0);
+        }
     }
 
     fn wait_for_drain_notification(&self) {
-        BLOCK_DRAIN_NOTIFY.wait();
+        #[cfg(feature = "irq")]
+        BLOCK_DRAIN_IRQ_WAKER.call_once(ax_task::current_irq_task_waker);
+        BLOCK_DRAIN_WAIT_WQ.wait_until(|| BLOCK_DRAIN_NOTIFY_PENDING.swap(false, Ordering::AcqRel));
     }
 
     fn spawn(&self, name: String, f: Box<dyn FnOnce() + Send + 'static>) {
