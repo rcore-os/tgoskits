@@ -29,6 +29,8 @@ sidebar_label: "控制面"
 flowchart TB
     Config["NetworkConfig / InterfaceConfig"] --> Init["init_network()"]
     Dhcp["DHCP ACK / NAK"] --> Commit["commit_network_state()"]
+    DynDev["register_device_with_config()"] --> Commit
+    Wifi["reconfigure_wifi() STA/AP"] --> Commit
     Bind["bind(addr) / SO_BINDTODEVICE"] --> Binding["DeviceBinding"]
 
     Init --> Control["NetControl"]
@@ -52,13 +54,13 @@ flowchart TB
     Routes --> Dispatch["Router::dispatch()"]
 ```
 
-控制面状态的写入路径只有两个：`init_network()` 构造初始状态，`commit_interface_update()` 在 DHCP ACK/NAK 后原子替换某接口的地址、DNS 和路由规则。两条路径都在 `Service` 锁内执行，确保 smoltcp IP address list 与控制面状态一致更新。
+控制面状态有四类写入路径：`init_network()` 构造初始状态；DHCP ACK/NAK 通过 `commit_interface_update()` 原子替换某接口的地址、DNS 和路由规则；`register_device_with_config()` 运行期新增静态 IPv4 设备；`reconfigure_wifi()` 在 STA/AP 模式切换时更新对应接口 IPv4/DHCP 角色。除初始构造外，这些路径都在 `Service` 锁内同步更新 smoltcp IP address list、`NetControl` 快照和 `RouteTable`，避免数据面与查询面看到不一致状态。
 
 `SharedRouteTable`（`Arc<RwLock<RouteTable>>`）同时被 `NetControl`（查询侧）和 `Router`（TX dispatch 侧）持有，两者指向同一实例。控制面通过 `select_route_with_binding()` 提供 socket 级别的路由查询；`Router::dispatch()` 通过 `select_route_for_source()` 做实际发包时的出接口选择。两者共享同一套路由规则，但查询时机和过滤条件不同。
 
 ## 初始化流程
 
-`init_network()` 是控制面状态的唯一构造入口。它按固定顺序构建 loopback、Ethernet 接口、静态地址、DNS registry 和共享路由表，然后把所有状态提交给 `NetControl` 和 `Service`。
+`init_network()` 是启动阶段控制面状态的构造入口。它按固定顺序构建 loopback、Ethernet 接口、静态地址、DNS registry 和共享路由表，然后把所有状态提交给 `NetControl` 和 `Service`。运行期新增设备和 Wi-Fi 模式切换会在同一套 `NetControl`/`RouteTable` 上追加或替换状态。
 
 ```mermaid
 sequenceDiagram

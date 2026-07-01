@@ -133,7 +133,7 @@ RX 从真实设备到用户态 `recv()` 大致经过下面的内存边界：
 flowchart TB
     DriverRx["驱动 RX 内存<br/>rd-net RxQueue / NetRxBuffer"]
     EthRecv["EthernetDevice::recv()<br/>解析 Ethernet/ARP/IPv4"]
-    LocalBuf["RX worker 本地 PacketBuffer<br/>1 * STANDARD_MTU"]
+    LocalBuf["RX worker 本地 PacketBuffer<br/>16 * STANDARD_MTU"]
     SharedRx["shared RX queue<br/>RxPacket + QueuedPacket<br/>DEVICE_RX_QUEUE_SIZE"]
     RouterRx["Router.rx_buffer<br/>PacketBuffer InterfaceId<br/>SOCKET_BUFFER_SIZE"]
     SmolPoll["smoltcp Interface::poll()"]
@@ -184,10 +184,12 @@ rd_net::RxQueue::receive()
 
 ```rust
 let mut rx_buffer = PacketBuffer::new(
-    vec![PacketMetadata::EMPTY; 1],
-    vec![0u8; STANDARD_MTU],
+    vec![PacketMetadata::EMPTY; DEVICE_RX_WORKER_BATCH],
+    vec![0u8; STANDARD_MTU * DEVICE_RX_WORKER_BATCH],
 );
 ```
+
+`DEVICE_RX_WORKER_BATCH = 16`，所以单个 RX worker 一轮最多先从设备搬 16 个 packet 到本地 `PacketBuffer`，再逐个复制到共享 RX queue。这个 batch 只存在于 worker 栈/任务上下文，不是新的全局 backlog。
 
 随后把 packet 复制进共享 RX queue：
 

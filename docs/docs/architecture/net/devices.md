@@ -471,14 +471,17 @@ RX worker 持有设备锁调用 `Device::recv()`，然后把 packet 转成 `RxPa
 
 ```rust
 fn device_rx_worker(device: Arc<DeviceHandle>) {
-    let mut rx_buffer = PacketBuffer::new(vec![PacketMetadata::EMPTY; 1], vec![0u8; STANDARD_MTU]);
+    let mut rx_buffer = PacketBuffer::new(
+        vec![PacketMetadata::EMPTY; DEVICE_RX_WORKER_BATCH],
+        vec![0u8; STANDARD_MTU * DEVICE_RX_WORKER_BATCH],
+    );
 
     loop {
         let mut received = false;
         {
             let mut device_inner = device.inner.lock();
             let mut snoop = |_packet: &[u8]| {};
-            while rx_buffer.is_empty()
+            while !rx_buffer.is_full()
                 && device_inner.recv(device.interface_id, &mut rx_buffer, now(), &mut snoop)
             {
                 received = true;
@@ -563,8 +566,8 @@ Ethernet 设备在 IP packet 与真实 Ethernet frame 之间转换，并维护 A
 
 Ethernet 支持两种 RX readiness 模式：
 
-- IRQ 模式：`EthernetIrqRegistrar` 注册硬件 IRQ，IRQ 到来后 `handle_ethernet_irq()` 唤醒 `poll_ready`。
-- OOB RX 模式：用于 SDIO Wi-Fi 等设备，RX 就绪由设备外部线程调用 `wake_net_task_irq()`，再唤醒 `{ifname}-oob-poll` 和设备 worker。
+- IRQ 模式：`EthernetIrqRegistrar` 注册硬件 IRQ action，IRQ 到来后 action 持有驱动提供的 `EthernetIrqHandler` 调用 `handle_irq()`，`ethernet_irq_outcome()` 将 `RX_READY`/`RX_ERROR`/`TX_DONE` 转成 `wake_net_task_irq()`；随后 `net-poll` worker 通过 `wake_all_devices()` 唤醒设备 poll set 和 RX worker。
+- OOB RX 模式：用于 SDIO Wi-Fi 等设备，RX 就绪由设备外部线程调用 `wake_net_task_irq()`，唤醒 `net-poll` worker；`register_device_waker()` 同时把设备 readiness poll set 连接到设备 RX worker，使 `{ifname}-rx` worker 重新检查设备。
 
 `register_waker()` 只在存在 IRQ registration 或 OOB RX wake source 时注册：
 
@@ -576,7 +579,7 @@ fn register_waker(&self, waker: &Waker) {
 }
 ```
 
-纯 polling 设备如果没有 wake source，不能把 waker 挂在永远不会被唤醒的 `poll_ready` 上。
+实际源码通过 `Device::readiness_poll()` 返回 `Option<Arc<PollSet>>` 表达这个条件：只有已注册 IRQ handler 或 `oob_rx = true` 的设备才返回 poll set。纯 polling 设备如果没有 wake source，不能把 waker 挂在永远不会被唤醒的 `poll_ready` 上。
 
 ## Service Poll 集成
 
@@ -609,10 +612,13 @@ socket 和设备路径都只调用轻量 `request_poll()`：
 
 ```rust
 pub fn request_poll() {
-    NET_POLL_REQUESTED.store(true, Ordering::Release);
-    NET_POLL_WAKE.notify_one(true);
+    publish_poll_request(&NET_POLL_REQUESTED, || {
+        NET_POLL_WAKE.notify_one(true);
+    });
 }
 ```
+
+重复 `request_poll()` 会被 pending 标志合并，只有 `false -> true` 的第一次请求真正唤醒 worker。
 
 设备 readiness 通过两类 waker 分流：
 

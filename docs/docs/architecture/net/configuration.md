@@ -251,7 +251,7 @@ pub fn wake_net_task_irq();
 - `dhcp_server_client_ip` 存在时启用内置单客户端 DHCP server。
 - 调用 `request_poll()` 让 net-poll worker 看到新状态。
 
-`dedicated_poll = true` 时，驱动侧收到 out-of-band RX 事件后调用 `wake_net_task_irq()`。
+`dedicated_poll = true` 时，驱动侧收到 out-of-band RX 事件后调用 `wake_net_task_irq()`。源码不会创建专门的 OOB poll 线程；该调用发布 IRQ-like pending 状态并唤醒 `net-poll` worker，随后 Router 唤醒对应设备 RX worker 重新 poll 设备。
 
 ## 资源预算
 

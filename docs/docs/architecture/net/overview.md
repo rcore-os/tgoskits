@@ -50,8 +50,10 @@ TGOSKits 的网络能力收敛在 `net/ax-net`。它是 ArceOS、StarryOS 和 Ax
 | Loopback | 零状态 `LoopbackDevice` + `Router::dispatch()` 快速路径 inline 注入 `rx_buffer`，不经设备 worker 和队列分配 | 完整 |
 | TCP orphan 回收 | `orphan.rs`：Drop 后保留 smoltcp socket 直到 FIN/TIME_WAIT 完成，RFC 793 合规 | 完整 |
 | DHCP 服务器（SoftAP） | `dhcp_server.rs`：最简单的单客户端 DHCP 服务器，仅支持 Discover→Offer、Request→Ack 交换，不维护租约数据库、不做冲突检测，仅回复配置接口收到的 DHCP 包 | 基础完成 |
-| OOB RX（SDIO Wi-Fi） | `EthernetDevice::new_oob_rx()` + `wake_net_task_irq()` + 独立 poll task | 完整 |
+| OOB RX（SDIO Wi-Fi） | `EthernetDevice::new_oob_rx()` + `wake_net_task_irq()` + 现有 `net-poll`/设备 RX worker 唤醒链路 | 完整 |
 | 动态设备注册 | `register_device_with_config()` 运行时添加静态 IP 设备（Wi-Fi AP） | 完整 |
+| Wi-Fi STA/AP 重配 | `register_wifi_control()` 保存无线控制面句柄，`reconfigure_wifi()` 原子切换 STA DHCP 或 SoftAP 静态地址/DHCP server | 基础完成 |
+| QoS/TOS 兼容 | `IP_TOS` 发包时在 Router 边界改写 IP header；`IP_RECVTOS`/`IPV6_RECVTCLASS` 通过 smoltcp `PacketMeta` 返回 cmsg；`SO_PRIORITY` 仅保存兼容值 | 基础完成 |
 
 ## 设计原则
 
@@ -72,9 +74,8 @@ TGOSKits 的网络能力收敛在 `net/ax-net`。它是 ArceOS、StarryOS 和 Ax
 | `{ifname}-tx` worker | 每网卡一个，从 `DeviceHandle::tx_queue` 取包调用 driver send | `device.tx_wake.wait_until()` |
 | 调用者线程 | 应用/内核线程调用 socket API | `StateLock::lock()`、`block_on(poll_io())` |
 | `vsock-poll` worker | vsock 设备轮询，事件分发到 `VSOCK_CONN_MANAGER` | 自适应频率 sleep（100μs→10ms） |
-| `{ifname}-oob-poll` | OOB RX 设备（如 SDIO Wi-Fi）的专用 poll task | `OOB_RX_SIGNAL.wait()` |
 
-`NET_POLL_DEVICE_WAKER` 是全局设备 readiness waker。Router 会把它注册给所有允许触发全局协议栈推进的设备；设备 RX/IRQ/OOB 路径只唤醒 worker 和设置 poll 请求，不直接进入 smoltcp `Interface::poll()`。
+`NET_POLL_DEVICE_WAKER` 是全局设备 readiness waker。Router 会把它注册给所有有 wake source 的设备：IRQ 设备通过平台 IRQ action 唤醒，OOB RX 设备通过外部驱动调用 `wake_net_task_irq()` 唤醒。源码里没有单独的 `{ifname}-oob-poll` 线程；OOB RX 仍复用 `{ifname}-rx` worker 和 `net-poll` worker，不直接进入 smoltcp `Interface::poll()`。
 完整锁类型、锁顺序和禁止模式见[锁与并发](locks.md)。
 
 ### 全局锁顺序
