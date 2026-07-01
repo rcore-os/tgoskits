@@ -15,7 +15,7 @@ use starry_vm::{VmMutPtr, VmPtr};
 
 use crate::{
     file::{File, FileLike, resolve_at},
-    mm::{UserPtr, vm_load_string},
+    mm::{UserPtr, vm_load_path_string, vm_load_string},
     task::AsThread,
 };
 
@@ -68,7 +68,7 @@ pub fn sys_fstatat(
         return Err(AxError::InvalidInput);
     }
 
-    let path = path.nullable().map(vm_load_string).transpose()?;
+    let path = path.nullable().map(vm_load_path_string).transpose()?;
 
     debug!("sys_fstatat <= dirfd: {dirfd}, path: {path:?}, flags: {flags}");
 
@@ -154,7 +154,7 @@ pub fn sys_faccessat2(dirfd: c_int, path: *const c_char, mode: u32, flags: u32) 
         return Err(AxError::InvalidInput);
     }
 
-    let path = path.nullable().map(vm_load_string).transpose()?;
+    let path = path.nullable().map(vm_load_path_string).transpose()?;
     debug!("sys_faccessat2 <= dirfd: {dirfd}, path: {path:?}, mode: {mode}, flags: {flags}");
 
     let file = resolve_at(dirfd, path.as_deref(), flags)?;

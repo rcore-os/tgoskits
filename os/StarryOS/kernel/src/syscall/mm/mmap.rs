@@ -123,8 +123,9 @@ pub fn sys_mmap(
     let curr = current();
     let curr_aspace = curr.as_thread().proc_data.aspace();
     let mut aspace = curr_aspace.lock();
-    let permission_flags = MmapProt::from_bits_truncate(prot);
-    // TODO: check illegal flags for mmap
+    let Some(permission_flags) = MmapProt::from_bits(prot) else {
+        return Err(AxError::InvalidInput);
+    };
     let map_flags = match MmapFlags::from_bits(flags) {
         Some(flags) => flags,
         None => {
