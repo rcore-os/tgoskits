@@ -32,6 +32,7 @@
 - Do not silence clippy warnings with `allow` as a shortcut; prefer fixing the root cause unless the user explicitly asks otherwise.
 - Run `cargo fmt` after code edits.
 - When fixing a bug, first add a deterministic regression test that necessarily fails on the buggy implementation, verify the failure, then implement or restore the fix and verify the same test passes. Do not rely only on post-fix validation, probabilistic reproducers, or relaxed tests.
+- For self-hosted CI matrix entries in `.github/workflows/ci.yml`, keep `cache_key` as an empty string (`cache_key: ""`). Non-empty values enable the rust-cache step on self-hosted runners, which can remove Rust/Cargo state and break later jobs.
 - For ArceOS, StarryOS, and Axvisor builds/tests/runs, prefer the `cargo xtask` command family instead of raw `cargo build`, `cargo test`, or `cargo run`.
 - If `cargo xtask` cannot satisfy a special configuration, inspect the `xtask` flow first and only then fall back to native Cargo commands with manually matched arguments.
 - When resolving rebase or merge conflicts, do not manually merge conflicted `Cargo.lock` contents. Resolve all other conflicts first, then regenerate `Cargo.lock` with Cargo and verify the generated lockfile.

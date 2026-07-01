@@ -368,7 +368,7 @@ jobs:
             runs_on: '["self-hosted","linux","qcs"]'
             self_hosted_owner: rcore-os
             command: cargo xtask clippy --since "${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}"
-            cache_key: clippy
+            cache_key: ""
             container_image: base
             fetch_depth: full
             download_xtask_bin_artifact: true
