@@ -5,4 +5,5 @@ features = [
   "starry-kernel/loongarch64-low-va",
   "ax-driver/serial",
   "ax-driver/ls2k1000-ahci",
+  "ax-driver/ls2k1000-gmac",
 ]
