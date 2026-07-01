@@ -237,6 +237,11 @@ impl AxVMConfig {
         &self.memory_regions
     }
 
+    /// Replaces configurations related to VM memory regions.
+    pub fn set_memory_regions(&mut self, memory_regions: Vec<VmMemConfig>) {
+        self.memory_regions = memory_regions;
+    }
+
     /// Returns the policy used to adjust runtime boot image addresses.
     pub fn boot_policy(&self) -> GuestBootPolicy {
         self.boot_policy
@@ -413,5 +418,39 @@ impl PhysCpuList {
     /// Sets the CPU IDs exposed to the guest.
     pub fn set_guest_phys_cpu_ids(&mut self, phys_cpu_ids: Vec<usize>) {
         self.phys_cpu_ids = Some(phys_cpu_ids);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use alloc::vec;
+
+    use super::*;
+
+    fn memory_region(gpa: usize, size: usize, map_type: VmMemMappingType) -> VmMemConfig {
+        VmMemConfig {
+            gpa,
+            size,
+            flags: 0x7,
+            map_type,
+        }
+    }
+
+    #[test]
+    fn set_memory_regions_replaces_stale_snapshot_after_config_enrichment() {
+        let main_memory = memory_region(0x8000_0000, 0x200000, VmMemMappingType::MapIdentical);
+        let reserved_memory = memory_region(0x110000, 0x10000, VmMemMappingType::MapReserved);
+        let mut config = AxVMConfig::default_for_test(1, "linux");
+
+        config.set_memory_regions(vec![main_memory.clone()]);
+        assert_eq!(config.memory_regions().len(), 1);
+
+        config.set_memory_regions(vec![main_memory, reserved_memory]);
+
+        let regions = config.memory_regions();
+        assert_eq!(regions.len(), 2);
+        assert_eq!(regions[1].gpa, 0x110000);
+        assert_eq!(regions[1].size, 0x10000);
+        assert_eq!(regions[1].map_type, VmMemMappingType::MapReserved);
     }
 }

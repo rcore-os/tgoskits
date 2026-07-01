@@ -22,11 +22,13 @@ use core::sync::atomic::{AtomicBool, Ordering};
 use ax_errno::{AxResult, ax_err_type};
 #[cfg(all(feature = "fs", target_arch = "x86_64"))]
 use axvm::InterruptTriggerMode;
+#[cfg(any(target_arch = "x86_64", target_arch = "loongarch64"))]
+use axvm::config::VMBootProtocol;
 use axvm::{
     AxVM, GuestPhysAddr,
     config::{
         AxVCpuConfig, AxVMConfig, AxVMConfigParams, GuestBootPolicy, PhysCpuList, RamdiskInfo,
-        VMBootProtocol, VMImageConfig,
+        VMImageConfig,
     },
 };
 use axvmconfig::{AxVMCrateConfig, VMType};
@@ -143,6 +145,8 @@ pub fn init_guest_vm(raw_cfg: &str) -> AxResult<usize> {
     #[cfg(target_arch = "loongarch64")]
     handle_fdt_operations(&mut vm_config, &mut vm_create_config)?;
 
+    sync_axvm_config_from_crate_config(&mut vm_config, &vm_create_config);
+
     #[cfg(target_arch = "x86_64")]
     let skip_guest_address_adjustment = x86_linux_direct_boot_config(&vm_create_config);
     #[cfg(not(target_arch = "x86_64"))]
@@ -238,6 +242,10 @@ pub(crate) fn build_axvm_config(cfg: &AxVMCrateConfig) -> AxVMConfig {
         boot_policy: GuestBootPolicy::KeepConfigured,
         interrupt_mode: cfg.devices.interrupt_mode,
     })
+}
+
+fn sync_axvm_config_from_crate_config(vm_config: &mut AxVMConfig, cfg: &AxVMCrateConfig) {
+    vm_config.set_memory_regions(cfg.kernel.memory_regions.clone());
 }
 
 fn guest_boot_policy(
@@ -413,4 +421,45 @@ fn x86_intx_forwarding_trigger(binding: &ax_driver::BindingIrq) -> InterruptTrig
 #[cfg(target_arch = "x86_64")]
 fn x86_linux_direct_boot_config(config: &AxVMCrateConfig) -> bool {
     crate::images::is_x86_linux_image_config(config)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axvmconfig::{VmMemConfig, VmMemMappingType};
+
+    fn memory_region(gpa: usize, size: usize, map_type: VmMemMappingType) -> VmMemConfig {
+        VmMemConfig {
+            gpa,
+            size,
+            flags: 0x7,
+            map_type,
+        }
+    }
+
+    #[test]
+    fn sync_axvm_config_keeps_fdt_reserved_memory_regions() {
+        let mut crate_config = AxVMCrateConfig::default();
+        crate_config.kernel.memory_regions.push(memory_region(
+            0x8000_0000,
+            0x200000,
+            VmMemMappingType::MapIdentical,
+        ));
+        let mut vm_config = build_axvm_config(&crate_config);
+
+        crate_config.kernel.memory_regions.push(memory_region(
+            0x110000,
+            0x10000,
+            VmMemMappingType::MapReserved,
+        ));
+        assert_eq!(vm_config.memory_regions().len(), 1);
+
+        sync_axvm_config_from_crate_config(&mut vm_config, &crate_config);
+
+        let regions = vm_config.memory_regions();
+        assert_eq!(regions.len(), 2);
+        assert_eq!(regions[1].gpa, 0x110000);
+        assert_eq!(regions[1].size, 0x10000);
+        assert_eq!(regions[1].map_type, VmMemMappingType::MapReserved);
+    }
 }
