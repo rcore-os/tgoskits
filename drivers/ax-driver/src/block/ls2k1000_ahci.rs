@@ -1,7 +1,7 @@
 use alloc::{boxed::Box, format, vec};
 use core::{
     mem::size_of,
-    ptr::{NonNull, addr_of_mut},
+    ptr::addr_of_mut,
     sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering},
     time::Duration,
 };
@@ -19,9 +19,10 @@ use rdrive::{
 };
 
 use super::PlatformDeviceBlock;
-#[cfg(not(target_arch = "loongarch64"))]
-use crate::mmio::iomap;
-use crate::{BindingInfo, binding_info_from_fdt};
+use crate::{
+    BindingInfo, binding_info_from_fdt,
+    mmio::{firmware_addr_to_phys, iomap_firmware_device},
+};
 
 const REG_CAP: usize = 0x00;
 const REG_GHC: usize = 0x04;
@@ -1251,7 +1252,7 @@ fn probe_fdt(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
     let paddr = firmware_addr_to_phys(fw_addr);
     let size = reg.size.unwrap_or(DEFAULT_MMIO_SIZE as u64) as usize;
     let ports_implemented = ports_implemented(&info);
-    let mmio = map_ahci_mmio(paddr, size)?;
+    let mmio = iomap_firmware_device(DEVICE_NAME, fw_addr, size)?;
     let vaddr = mmio.as_ptr() as usize;
 
     AHCI_MMIO_BASE.store(mmio.as_ptr() as usize, Ordering::Release);
@@ -1289,28 +1290,6 @@ fn ahci_binding_info(info: &FdtInfo<'_>) -> BindingInfo {
     })
 }
 
-fn map_ahci_mmio(paddr: usize, size: usize) -> Result<NonNull<u8>, OnProbeError> {
-    if size == 0 {
-        return Err(OnProbeError::other(format!(
-            "{DEVICE_NAME} MMIO region has zero size"
-        )));
-    }
-
-    #[cfg(target_arch = "loongarch64")]
-    {
-        const LOONGARCH_UNCACHED_DMW_BASE: usize = 0x8000_0000_0000_0000;
-        let vaddr = LOONGARCH_UNCACHED_DMW_BASE | firmware_addr_to_phys(paddr);
-        NonNull::new(vaddr as *mut u8).ok_or_else(|| {
-            OnProbeError::other(format!("{DEVICE_NAME} MMIO address {vaddr:#x} is null"))
-        })
-    }
-
-    #[cfg(not(target_arch = "loongarch64"))]
-    {
-        iomap(paddr, size)
-    }
-}
-
 fn ports_implemented(info: &FdtInfo<'_>) -> u32 {
     info.node
         .as_node()
@@ -1318,17 +1297,4 @@ fn ports_implemented(info: &FdtInfo<'_>) -> u32 {
         .and_then(|prop| prop.get_u32_iter().next())
         .filter(|ports| *ports != 0)
         .unwrap_or(DEFAULT_PORTS_IMPLEMENTED)
-}
-
-fn firmware_addr_to_phys(addr: usize) -> usize {
-    #[cfg(target_arch = "loongarch64")]
-    {
-        const LOONGARCH_PADDR_MASK: usize = (1usize << 48) - 1;
-        addr & LOONGARCH_PADDR_MASK
-    }
-
-    #[cfg(not(target_arch = "loongarch64"))]
-    {
-        addr
-    }
 }

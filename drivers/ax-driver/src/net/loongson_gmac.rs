@@ -17,9 +17,13 @@ use rdrive::{
     register::{FdtInfo, ProbeFdt},
 };
 
-#[cfg(not(target_arch = "loongarch64"))]
-use crate::mmio::iomap;
-use crate::{BindingInfo, DriverGeneric, binding_info_from_fdt, net::PlatformDeviceNet};
+#[cfg(target_arch = "loongarch64")]
+use crate::mmio::loongarch_uncached_addr;
+use crate::{
+    BindingInfo, DriverGeneric, binding_info_from_fdt,
+    mmio::{firmware_addr_to_phys, iomap_firmware_device},
+    net::PlatformDeviceNet,
+};
 
 const DEVICE_NAME: &str = "ls2k1000-gmac0";
 const DEFAULT_MAC_ADDRESS: [u8; 6] = [0x62, 0x19, 0x1a, 0x02, 0xa8, 0x91];
@@ -1063,7 +1067,7 @@ fn probe_fdt(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
         return Err(OnProbeError::NotMatch);
     }
     let size = reg.size.unwrap_or(DEFAULT_MMIO_SIZE as u64) as usize;
-    let mmio = map_gmac_mmio(paddr, size)?;
+    let mmio = iomap_firmware_device(DEVICE_NAME, fw_addr, size)?;
     let vaddr = mmio.as_ptr() as usize;
     let mac_address = mac_address_from_fdt(&info);
     let phy_mode = phy_mode_from_fdt(&info);
@@ -1102,27 +1106,6 @@ fn gmac_binding_info(info: &FdtInfo<'_>) -> BindingInfo {
         );
         BindingInfo::empty()
     })
-}
-
-fn map_gmac_mmio(paddr: usize, size: usize) -> Result<NonNull<u8>, OnProbeError> {
-    if size == 0 {
-        return Err(OnProbeError::other(format!(
-            "{DEVICE_NAME} MMIO region has zero size"
-        )));
-    }
-
-    #[cfg(target_arch = "loongarch64")]
-    {
-        let vaddr = loongarch_uncached_base() | firmware_addr_to_phys(paddr);
-        NonNull::new(vaddr as *mut u8).ok_or_else(|| {
-            OnProbeError::other(format!("{DEVICE_NAME} MMIO address {vaddr:#x} is null"))
-        })
-    }
-
-    #[cfg(not(target_arch = "loongarch64"))]
-    {
-        iomap(paddr, size)
-    }
 }
 
 fn mac_address_from_fdt(info: &FdtInfo<'_>) -> [u8; 6] {
@@ -1242,7 +1225,7 @@ unsafe fn set_desc_status(desc: *mut DmaDesc, status: u32) {
 #[cfg(target_arch = "loongarch64")]
 fn uncached_alias<T>(ptr: *mut T) -> *mut T {
     let paddr = axklib::mem::virt_to_phys((ptr as usize).into()).as_usize();
-    (loongarch_uncached_base() | firmware_addr_to_phys(paddr)) as *mut T
+    loongarch_uncached_addr(paddr) as *mut T
 }
 
 #[cfg(not(target_arch = "loongarch64"))]
@@ -1295,24 +1278,6 @@ fn dma_barrier() {
 
     #[cfg(not(target_arch = "loongarch64"))]
     core::sync::atomic::compiler_fence(core::sync::atomic::Ordering::SeqCst);
-}
-
-fn firmware_addr_to_phys(addr: usize) -> usize {
-    #[cfg(target_arch = "loongarch64")]
-    {
-        const LOONGARCH_PADDR_MASK: usize = (1usize << 48) - 1;
-        addr & LOONGARCH_PADDR_MASK
-    }
-
-    #[cfg(not(target_arch = "loongarch64"))]
-    {
-        addr
-    }
-}
-
-#[cfg(target_arch = "loongarch64")]
-const fn loongarch_uncached_base() -> usize {
-    0x8000_0000_0000_0000
 }
 
 const _: () = {

@@ -7,6 +7,7 @@ use rdrive::{
 };
 
 use super::{fdt::FdtProbe, init_epoch_offset, loongson_decode::toy_to_unix_timestamp};
+use crate::mmio::{firmware_addr_to_phys, iomap_firmware_device};
 
 crate::model_register!(
     name: "loongson rtc",
@@ -116,7 +117,7 @@ fn map_loongson_fdt_reg(
     let fw_addr = base_reg.address as usize;
     let paddr = firmware_addr_to_phys(fw_addr);
     let size = base_reg.size.unwrap_or(0x1000) as usize;
-    let mmio = map_loongson_mmio(paddr, size)?;
+    let mmio = iomap_firmware_device("loongson rtc", fw_addr, size)?;
     log::info!(
         "probing loongson rtc: node={}, reg={fw_addr:#x}, paddr={paddr:#x}, vaddr={:#x}, \
          size={size:#x}",
@@ -124,46 +125,4 @@ fn map_loongson_fdt_reg(
         mmio.as_ptr() as usize,
     );
     Ok(mmio)
-}
-
-fn map_loongson_mmio(paddr: usize, size: usize) -> Result<core::ptr::NonNull<u8>, OnProbeError> {
-    if size == 0 {
-        return Err(OnProbeError::other(
-            "loongson rtc MMIO region has zero size",
-        ));
-    }
-
-    #[cfg(target_arch = "loongarch64")]
-    {
-        // LS2K1000 device registers must be accessed through the uncached DMW.
-        let vaddr = loongarch_uncached_base() | firmware_addr_to_phys(paddr);
-        core::ptr::NonNull::new(vaddr as *mut u8).ok_or_else(|| {
-            OnProbeError::other(alloc::format!(
-                "loongson rtc MMIO address {vaddr:#x} is null"
-            ))
-        })
-    }
-
-    #[cfg(not(target_arch = "loongarch64"))]
-    {
-        crate::mmio::iomap(paddr, size)
-    }
-}
-
-fn firmware_addr_to_phys(addr: usize) -> usize {
-    #[cfg(target_arch = "loongarch64")]
-    {
-        const LOONGARCH_PADDR_MASK: usize = (1usize << 48) - 1;
-        addr & LOONGARCH_PADDR_MASK
-    }
-
-    #[cfg(not(target_arch = "loongarch64"))]
-    {
-        addr
-    }
-}
-
-#[cfg(target_arch = "loongarch64")]
-const fn loongarch_uncached_base() -> usize {
-    0x8000_0000_0000_0000
 }
