@@ -13,6 +13,7 @@ use core::{any::Any, mem::size_of};
 
 use ax_runtime::hal::cpu::asm::user_copy;
 use axfs_ng_vfs::{DeviceId, VfsError, VfsResult};
+use linux_raw_sys::general::O_CLOEXEC;
 
 use crate::{
     file::{add_file_like, close_file_like, dmabuf::DmaBufFile},
@@ -79,8 +80,16 @@ impl DeviceOps for DmaHeap {
         let mut data = DmaHeapAllocData::default();
         copy_in(&mut data, arg)?;
 
+        // Linux dma-heap rejects a zero-length allocation with EINVAL.
+        if data.len == 0 {
+            return Err(VfsError::InvalidInput);
+        }
+
         let buf = DmaBufFile::alloc(data.len as usize)?;
-        let fd = add_file_like(Arc::new(buf), false)?;
+        // Honour O_CLOEXEC from fd_flags, matching the dma-heap UAPI (otherwise the
+        // fd would leak across exec).
+        let cloexec = data.fd_flags & O_CLOEXEC != 0;
+        let fd = add_file_like(Arc::new(buf), cloexec)?;
 
         data.fd = fd as u32;
         if let Err(e) = copy_out(&data, arg) {

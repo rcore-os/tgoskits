@@ -134,6 +134,12 @@ fn handle_request(state: &mut TaskState, req: &mpp::MppRequest) -> VfsResult<()>
         mpp::cmd::QUERY_HW_ID => {
             write_u32_to_user(data, jpeg::read_id().unwrap_or(0))?;
         }
+        mpp::cmd::QUERY_CMD_SUPPORT => {
+            // No command-support table is offered; write back 0 (rather than
+            // leaving the user buffer untouched) so MPP's capability probe reads a
+            // defined value and falls back to the old-kernel command path.
+            write_u32_to_user(data, 0)?;
+        }
         mpp::cmd::INIT_CLIENT_TYPE => {
             let mut client: u32 = 0;
             copy_from_user(

@@ -165,8 +165,9 @@ fn render_cpuinfo() -> String {
 /// Read a root-node device-tree property as its raw bytes (NUL-separated,
 /// NUL-terminated string list), exactly as Linux exposes under
 /// `/proc/device-tree/`. Returns `None` when the FDT is unavailable (non-FDT
-/// platform) or the property is missing/empty.
-#[cfg(feature = "plat-dyn")]
+/// platform) or the property is missing/empty. Only the JPU/MPP path consumes
+/// this, so it is gated on the `jpeg` feature.
+#[cfg(all(feature = "jpeg", feature = "plat-dyn"))]
 fn read_dt_root_property(name: &str) -> Option<Vec<u8>> {
     rdrive::with_fdt(|fdt| {
         let root = fdt.get_by_path("/")?;
@@ -184,22 +185,9 @@ fn read_dt_root_property(name: &str) -> Option<Vec<u8>> {
     })
 }
 
-#[cfg(not(feature = "plat-dyn"))]
+#[cfg(all(feature = "jpeg", not(feature = "plat-dyn")))]
 fn read_dt_root_property(_name: &str) -> Option<Vec<u8>> {
     None
-}
-
-/// Root device-tree `compatible` (`/proc/device-tree/compatible`). Falls back to
-/// a fixed RK3588 value so SoC-detecting userspace (librockchip_mpp's
-/// `read_soc_name`, which `strstr`s for the SoC name) still works when the FDT
-/// is unavailable.
-fn render_dt_compatible() -> Vec<u8> {
-    read_dt_root_property("compatible").unwrap_or_else(|| b"rockchip,rk3588\0".to_vec())
-}
-
-/// Root device-tree `model` (`/proc/device-tree/model`).
-fn render_dt_model() -> Vec<u8> {
-    read_dt_root_property("model").unwrap_or_else(|| b"Rockchip RK3588\0".to_vec())
 }
 
 #[cfg(target_arch = "riscv64")]
@@ -1540,22 +1528,28 @@ fn builder(fs: Arc<SimpleFs>) -> DirMaker {
     });
 
     // /proc/device-tree/{compatible,model} — minimal Open Firmware view from the
-    // live FDT. SoC-detecting userspace (e.g. librockchip_mpp's read_soc_name)
-    // opens /proc/device-tree/compatible and matches the SoC string; without it
-    // such libraries fail to identify the chip. A full FDT mirror is unnecessary
-    // (only MPP reads device-tree; librga/rknn probe via their own /dev nodes).
-    root.add("device-tree", {
-        let mut dt = DirMapping::new();
-        dt.add(
-            "compatible",
-            SimpleFile::new_regular(fs.clone(), || Ok(render_dt_compatible())),
-        );
-        dt.add(
-            "model",
-            SimpleFile::new_regular(fs.clone(), || Ok(render_dt_model())),
-        );
-        SimpleDir::new_maker(fs.clone(), Arc::new(dt))
-    });
+    // live FDT, so SoC-detecting userspace (e.g. librockchip_mpp's read_soc_name)
+    // can identify the chip. Built only for the JPU/MPP path (`jpeg` feature) and
+    // only when a real FDT actually provides the values; the raw bytes are exposed
+    // verbatim and never fabricated on non-FDT platforms. A full FDT mirror is
+    // unnecessary (only MPP reads device-tree; librga/rknn use their own nodes).
+    #[cfg(feature = "jpeg")]
+    if let Some(compatible) = read_dt_root_property("compatible") {
+        root.add("device-tree", {
+            let mut dt = DirMapping::new();
+            dt.add(
+                "compatible",
+                SimpleFile::new_regular(fs.clone(), move || Ok(compatible.clone())),
+            );
+            if let Some(model) = read_dt_root_property("model") {
+                dt.add(
+                    "model",
+                    SimpleFile::new_regular(fs.clone(), move || Ok(model.clone())),
+                );
+            }
+            SimpleDir::new_maker(fs.clone(), Arc::new(dt))
+        });
+    }
 
     root.add("dynamic_debug", {
         let mut dynamic_debug = DirMapping::new();
