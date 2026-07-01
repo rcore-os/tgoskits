@@ -187,13 +187,20 @@ impl WaitQueue {
         false
     }
 
-    /// Wakes up one task from IRQ context.
+    /// Wakes up one task for a deferred IRQ worker.
     ///
-    /// This method is intended for low-level deferred notification paths. It
-    /// only unblocks the worker and marks the current task for rescheduling
-    /// after IRQ/preemption guards are released; it must not be used as a
-    /// substitute for publishing the condition that the waiter will observe.
+    /// Despite the historical name, this is **not** a hard-IRQ-safe wake path:
+    /// it may take wait-queue, run-queue, and scheduler locks. Hard IRQ handlers
+    /// must publish device state and use [`IrqTaskWaker`](crate::IrqTaskWaker)
+    /// or another explicitly IRQ-safe primitive instead.
+    ///
+    /// This helper is only for deferred IRQ/task context after the hard IRQ
+    /// callback has returned.
     pub fn notify_one_from_irq(&self) -> bool {
+        debug_assert!(
+            !ax_hal::irq::in_irq_context(),
+            "WaitQueue::notify_one_from_irq is not hard-IRQ-context safe; use IrqTaskWaker",
+        );
         self.notify_one(true)
     }
 
@@ -242,13 +249,17 @@ impl WaitQueue {
         }
     }
 
-    /// Wakes all tasks from IRQ context.
+    /// Wakes all tasks for a deferred IRQ worker.
     ///
-    /// This method is intended for low-level deferred notification paths. It
-    /// only unblocks workers and marks the current task for rescheduling after
-    /// IRQ/preemption guards are released; it must not be used as a substitute
-    /// for publishing the condition that waiters will observe.
+    /// Despite the historical name, this is **not** a hard-IRQ-safe wake path:
+    /// it repeatedly calls [`notify_one_from_irq`](Self::notify_one_from_irq)
+    /// and therefore may take scheduler locks. Hard IRQ handlers must publish
+    /// state and wake an IRQ-safe task waker instead.
     pub fn notify_all_from_irq(&self) {
+        debug_assert!(
+            !ax_hal::irq::in_irq_context(),
+            "WaitQueue::notify_all_from_irq is not hard-IRQ-context safe; use IrqTaskWaker",
+        );
         while self.notify_one_from_irq() {
             // loop until the wait queue is empty
         }

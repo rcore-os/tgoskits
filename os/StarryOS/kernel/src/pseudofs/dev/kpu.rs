@@ -7,7 +7,7 @@ use core::{
 
 use ax_memory_addr::{PhysAddr, PhysAddrRange};
 use ax_runtime::hal::cpu::asm::user_copy;
-use ax_task::WaitQueue;
+use ax_task::{IrqNotify, WaitQueue};
 use axfs_ng_vfs::{DeviceId, NodeFlags, VfsError, VfsResult};
 use k230_kpu::{
     CommandRange, KPU_CFG_PADDR, KPU_CFG_SIZE, KPU_INFO_F_FAKE_OUTPUT, KPU_INFO_F_FDT,
@@ -29,6 +29,7 @@ const KPU_IRQ_WAIT_TIMEOUT: Duration = Duration::from_millis(100);
 // K230 exposes one KPU instance. If a future platform exposes more instances,
 // move this IRQ state into per-device storage.
 static KPU_IRQ_COUNT: AtomicU64 = AtomicU64::new(0);
+static KPU_IRQ_NOTIFY: IrqNotify = IrqNotify::new();
 static KPU_DONE_WQ: WaitQueue = WaitQueue::new();
 
 pub struct KpuDevice {
@@ -85,8 +86,10 @@ impl KpuDevice {
             return Ok(());
         }
         if self.irq_registration.is_some() {
+            KPU_IRQ_NOTIFY.arm_current_task();
             let timed_out =
                 KPU_DONE_WQ.wait_timeout_until(KPU_IRQ_WAIT_TIMEOUT, || self.hw.is_done());
+            let _ = KPU_IRQ_NOTIFY.drain();
             if !timed_out {
                 return Ok(());
             }
@@ -448,7 +451,7 @@ fn register_kpu_irq(irq: ax_runtime::hal::irq::IrqId) -> Option<IrqRegistration>
 
 fn kpu_irq_handler(_ctx: ax_runtime::hal::irq::IrqContext) -> ax_runtime::hal::irq::IrqReturn {
     KPU_IRQ_COUNT.fetch_add(1, Ordering::AcqRel);
-    KPU_DONE_WQ.notify_all_from_irq();
+    KPU_IRQ_NOTIFY.notify_irq();
     ax_runtime::hal::irq::IrqReturn::Handled
 }
 

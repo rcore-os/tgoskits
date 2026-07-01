@@ -11,9 +11,9 @@ use ax_hal::percpu::this_cpu_id;
 use ax_kernel_guard::NoPreemptIrqSave;
 use ax_lazyinit::LazyInit;
 
-#[cfg(all(feature = "smp", feature = "ipi"))]
+#[cfg(all(feature = "smp", any(feature = "ipi", feature = "irq-wake-ipi")))]
 use crate::run_queue::kick_remote_cpu_for_irq_wake;
-use crate::{AxTask, AxTaskRef, TaskInner, current, current_may_uninit};
+use crate::{AxTask, AxTaskRef, TaskInner, WeakAxTaskRef, current, current_may_uninit};
 
 #[ax_percpu::def_percpu]
 static IRQ_WAKE_QUEUE: LazyInit<IrqWakeQueue> = LazyInit::new();
@@ -54,7 +54,7 @@ impl IrqWakeResult {
 /// Cloneable IRQ-safe handle that wakes one kernel task.
 #[derive(Clone)]
 pub struct IrqTaskWaker {
-    task: AxTaskRef,
+    task: WeakAxTaskRef,
     task_id: u64,
     generation: u64,
 }
@@ -64,7 +64,7 @@ impl IrqTaskWaker {
         Self {
             task_id: task.id().as_u64(),
             generation: task.irq_wake_generation(),
-            task,
+            task: Arc::downgrade(&task),
         }
     }
 
@@ -73,19 +73,31 @@ impl IrqTaskWaker {
         self.task_id
     }
 
+    /// Returns the task generation captured by this waker.
+    pub const fn generation(&self) -> u64 {
+        self.generation
+    }
+
     /// Returns the current wake sequence.
     pub fn seq(&self) -> u64 {
-        self.task.irq_wake_seq()
+        self.task.upgrade().map_or(0, |task| task.irq_wake_seq())
     }
 
     /// Takes coalesced wake bits.
     pub fn take_bits(&self) -> u64 {
-        self.task.take_irq_wake_bits()
+        self.task
+            .upgrade()
+            .map_or(0, |task| task.take_irq_wake_bits())
     }
 
     /// Wakes the captured task from hard IRQ context.
     pub fn wake_from_irq(&self, bits: u64) -> IrqWakeResult {
-        let task = &self.task;
+        let Some(task) = self.task.upgrade() else {
+            return IrqWakeResult::default();
+        };
+        if task.id().as_u64() != self.task_id {
+            return IrqWakeResult::default();
+        }
         if !task.irq_wake_generation_matches(self.generation) {
             return IrqWakeResult::default();
         }
@@ -104,19 +116,19 @@ impl IrqTaskWaker {
             task.take_irq_wake_pending();
             return IrqWakeResult::default();
         };
-        queue.push(task);
+        queue.push(&task);
         #[cfg(all(test, feature = "host-test"))]
         let local = true;
         #[cfg(not(all(test, feature = "host-test")))]
         let local = target_cpu == this_cpu_id();
-        #[cfg(all(feature = "smp", feature = "ipi"))]
+        #[cfg(all(feature = "smp", any(feature = "ipi", feature = "irq-wake-ipi")))]
         let remote = if !local {
             kick_remote_cpu_for_irq_wake(target_cpu);
             true
         } else {
             false
         };
-        #[cfg(not(all(feature = "smp", feature = "ipi")))]
+        #[cfg(not(all(feature = "smp", any(feature = "ipi", feature = "irq-wake-ipi"))))]
         let remote = false;
         IrqWakeResult {
             woke: true,
@@ -148,7 +160,7 @@ pub fn try_current_irq_task_waker() -> Option<IrqTaskWaker> {
 /// Drains the current CPU's IRQ wake queue into the scheduler.
 pub fn drain_irq_wake_queue_current_cpu() -> usize {
     let _guard = NoPreemptIrqSave::new();
-    #[cfg(all(feature = "smp", feature = "ipi"))]
+    #[cfg(all(feature = "smp", any(feature = "ipi", feature = "irq-wake-ipi")))]
     crate::run_queue::clear_remote_irq_wake_pending_for_current_cpu();
 
     let draining = unsafe { IRQ_WAKE_DRAINING.current_ref_raw() };

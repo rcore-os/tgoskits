@@ -1,6 +1,16 @@
-use core::sync::atomic::{AtomicBool, Ordering};
+use alloc::{sync::Arc, vec::Vec};
+use core::{
+    ptr,
+    sync::atomic::{AtomicBool, AtomicPtr, Ordering},
+};
 
 use crate::WaitQueue;
+
+struct IrqNotifyWaiter {
+    task_id: u64,
+    generation: u64,
+    waker: crate::IrqTaskWaker,
+}
 
 /// IRQ-safe deferred notification primitive.
 ///
@@ -12,7 +22,8 @@ use crate::WaitQueue;
 pub struct IrqNotify {
     pending: AtomicBool,
     wait: WaitQueue,
-    irq_waker: spin::Once<crate::IrqTaskWaker>,
+    active_waiter: AtomicPtr<IrqNotifyWaiter>,
+    waiters: ax_kspin::SpinNoIrq<Vec<Arc<IrqNotifyWaiter>>>,
 }
 
 impl Default for IrqNotify {
@@ -27,7 +38,8 @@ impl IrqNotify {
         Self {
             pending: AtomicBool::new(false),
             wait: WaitQueue::new(),
-            irq_waker: spin::Once::new(),
+            active_waiter: AtomicPtr::new(ptr::null_mut()),
+            waiters: ax_kspin::SpinNoIrq::new(Vec::new()),
         }
     }
 
@@ -38,8 +50,12 @@ impl IrqNotify {
     /// coalesce into one pending bit until a worker drains it.
     pub fn notify_irq(&self) {
         self.pending.store(true, Ordering::Release);
-        if let Some(waker) = self.irq_waker.get() {
-            let _ = waker.wake_from_irq(0);
+        let waiter = self.active_waiter.load(Ordering::Acquire);
+        if !waiter.is_null() {
+            // SAFETY: waiter nodes are ref-counted and retained in `self.waiters`
+            // until the `IrqNotify` is dropped. IRQ producers must still follow
+            // the owning device's normal disable/synchronize-before-drop rule.
+            let _ = unsafe { &*waiter }.waker.wake_from_irq(0);
         }
     }
 
@@ -56,6 +72,15 @@ impl IrqNotify {
     /// Returns whether a notification is currently pending.
     pub fn is_pending(&self) -> bool {
         self.pending.load(Ordering::Acquire)
+    }
+
+    /// Arms the current task as the IRQ wake target without blocking.
+    ///
+    /// Use this when the actual sleep happens through another primitive, such as
+    /// a timeout wait queue whose predicate checks [`is_pending`](Self::is_pending).
+    #[track_caller]
+    pub fn arm_current_task(&self) {
+        self.init_irq_waker();
     }
 
     /// Drains the pending bit.
@@ -85,6 +110,31 @@ impl IrqNotify {
     }
 
     fn init_irq_waker(&self) {
-        self.irq_waker.call_once(crate::current_irq_task_waker);
+        self.arm_irq_waker(crate::current_irq_task_waker());
+    }
+
+    fn arm_irq_waker(&self, waker: crate::IrqTaskWaker) {
+        let task_id = waker.task_id();
+        let generation = waker.generation();
+        let mut waiters = self.waiters.lock();
+        let waiter = if let Some(index) = waiters
+            .iter()
+            .position(|waiter| waiter.task_id == task_id && waiter.generation == generation)
+        {
+            Arc::as_ptr(&waiters[index]) as *mut IrqNotifyWaiter
+        } else {
+            waiters.push(Arc::new(IrqNotifyWaiter {
+                task_id,
+                generation,
+                waker,
+            }));
+            Arc::as_ptr(waiters.last().expect("just pushed waiter")) as *mut IrqNotifyWaiter
+        };
+        self.active_waiter.store(waiter, Ordering::Release);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn arm_irq_waker_for_test(&self, waker: crate::IrqTaskWaker) {
+        self.arm_irq_waker(waker);
     }
 }

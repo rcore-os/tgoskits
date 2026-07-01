@@ -380,6 +380,25 @@ fn irq_task_waker_coalesces_and_preserves_bits() {
 }
 
 #[test]
+fn irq_task_waker_does_not_keep_task_alive() {
+    let task = crate::TaskInner::new(|| {}, "irq-wake-weak-test".into(), RAW_TASK_STACK_SIZE);
+    let task = task.into_arc();
+    assert_eq!(Arc::strong_count(&task), 1);
+
+    let waker = crate::irq_wake::IrqTaskWaker::new(task.clone());
+    assert_eq!(
+        Arc::strong_count(&task),
+        1,
+        "IRQ wakers must not keep exited tasks alive",
+    );
+    drop(task);
+
+    assert!(!waker.wake_from_irq(0x1).woke());
+    assert_eq!(waker.seq(), 0);
+    assert_eq!(waker.take_bits(), 0);
+}
+
+#[test]
 fn irq_task_waker_wakes_blocked_future_task() {
     run_in_test_scheduler(|| {
         let task = crate::TaskInner::new(|| {}, "irq-wake-test".into(), RAW_TASK_STACK_SIZE);
@@ -437,6 +456,35 @@ fn irq_task_waker_is_invalid_after_logical_exit() {
         assert_eq!(waker.seq(), 0);
         assert_eq!(waker.take_bits(), 0);
         assert_eq!(crate::drain_irq_wake_queue_current_cpu(), 0);
+    });
+}
+
+#[test]
+fn test_irq_notify_rebinds_after_first_waiter_exits() {
+    run_in_test_scheduler(|| {
+        let notify = IrqNotify::new();
+        let first =
+            crate::TaskInner::new(|| {}, "irq-notify-first-waiter".into(), RAW_TASK_STACK_SIZE);
+        let first = first.into_arc();
+        crate::register_task(&first);
+        let first_waker = crate::irq_wake::IrqTaskWaker::new(first.clone());
+        notify.arm_irq_waker_for_test(first_waker);
+        first.notify_exit(0);
+
+        let second = crate::TaskInner::new(
+            || {},
+            "irq-notify-second-waiter".into(),
+            RAW_TASK_STACK_SIZE,
+        );
+        let second = second.into_arc();
+        crate::register_task(&second);
+        second.set_state(crate::TaskState::Blocked);
+        let second_waker = crate::irq_wake::IrqTaskWaker::new(second.clone());
+        notify.arm_irq_waker_for_test(second_waker);
+
+        notify.notify_irq();
+        assert_eq!(crate::drain_irq_wake_queue_current_cpu(), 1);
+        assert_eq!(second.state(), crate::TaskState::Ready);
     });
 }
 

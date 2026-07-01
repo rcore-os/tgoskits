@@ -5,7 +5,7 @@ use core::mem::MaybeUninit;
 #[cfg(feature = "smp")]
 use core::ptr::NonNull;
 #[cfg(any(
-    all(feature = "smp", feature = "ipi"),
+    all(feature = "smp", any(feature = "ipi", feature = "irq-wake-ipi")),
     all(test, feature = "host-test", feature = "smp")
 ))]
 use core::sync::atomic::{AtomicBool, Ordering};
@@ -183,7 +183,12 @@ fn request_current_reschedule() {
     }
 }
 
-#[cfg(all(test, feature = "smp", feature = "ipi", feature = "host-test"))]
+#[cfg(all(
+    test,
+    feature = "smp",
+    any(feature = "ipi", feature = "irq-wake-ipi"),
+    feature = "host-test"
+))]
 static REMOTE_RESCHEDULE_REQUESTS: core::sync::atomic::AtomicUsize =
     core::sync::atomic::AtomicUsize::new(0);
 
@@ -197,7 +202,7 @@ static REMOTE_RESCHEDULE_PENDING: [AtomicBool; crate::build_info::CPU_CAPACITY] 
 
 #[cfg(all(
     feature = "smp",
-    feature = "ipi",
+    any(feature = "ipi", feature = "irq-wake-ipi"),
     not(all(test, feature = "host-test"))
 ))]
 static REMOTE_IRQ_WAKE_PENDING: [AtomicBool; crate::build_info::CPU_CAPACITY] =
@@ -206,7 +211,12 @@ static REMOTE_IRQ_WAKE_PENDING: [AtomicBool; crate::build_info::CPU_CAPACITY] =
 #[cfg(all(test, feature = "smp", feature = "ipi", feature = "host-test"))]
 static REMOTE_RESCHEDULE_PENDING: AtomicBool = AtomicBool::new(false);
 
-#[cfg(all(test, feature = "smp", feature = "ipi", feature = "host-test"))]
+#[cfg(all(
+    test,
+    feature = "smp",
+    any(feature = "ipi", feature = "irq-wake-ipi"),
+    feature = "host-test"
+))]
 static REMOTE_IRQ_WAKE_PENDING: AtomicBool = AtomicBool::new(false);
 
 #[cfg(all(feature = "smp", feature = "ipi"))]
@@ -217,7 +227,7 @@ pub(crate) fn clear_remote_reschedule_pending_for_current_cpu() {
     REMOTE_RESCHEDULE_PENDING.store(false, Ordering::Release);
 }
 
-#[cfg(all(feature = "smp", feature = "ipi"))]
+#[cfg(all(feature = "smp", any(feature = "ipi", feature = "irq-wake-ipi")))]
 pub(crate) fn clear_remote_irq_wake_pending_for_current_cpu() {
     #[cfg(not(all(test, feature = "host-test")))]
     REMOTE_IRQ_WAKE_PENDING[this_cpu_id()].store(false, Ordering::Release);
@@ -225,7 +235,7 @@ pub(crate) fn clear_remote_irq_wake_pending_for_current_cpu() {
     REMOTE_IRQ_WAKE_PENDING.store(false, Ordering::Release);
 }
 
-#[cfg(all(feature = "smp", feature = "ipi"))]
+#[cfg(all(feature = "smp", any(feature = "ipi", feature = "irq-wake-ipi")))]
 fn request_remote_reschedule_if_not_pending<F>(pending: &AtomicBool, request: F)
 where
     F: FnOnce(),
@@ -268,7 +278,7 @@ fn force_remote_reschedule(cpu_id: usize) {
 
 #[cfg(all(
     feature = "smp",
-    feature = "ipi",
+    any(feature = "ipi", feature = "irq-wake-ipi"),
     not(all(test, feature = "host-test"))
 ))]
 fn request_remote_irq_wake(cpu_id: usize) {
@@ -298,7 +308,12 @@ fn force_remote_reschedule(cpu_id: usize) {
     });
 }
 
-#[cfg(all(test, feature = "smp", feature = "ipi", feature = "host-test"))]
+#[cfg(all(
+    test,
+    feature = "smp",
+    any(feature = "ipi", feature = "irq-wake-ipi"),
+    feature = "host-test"
+))]
 fn request_remote_irq_wake(cpu_id: usize) {
     let _ = cpu_id;
     request_remote_reschedule_if_not_pending(&REMOTE_IRQ_WAKE_PENDING, || {
@@ -316,7 +331,7 @@ fn kick_remote_cpu(cpu_id: usize) {
     }
 }
 
-#[cfg(all(feature = "smp", feature = "ipi"))]
+#[cfg(all(feature = "smp", any(feature = "ipi", feature = "irq-wake-ipi")))]
 pub(crate) fn kick_remote_cpu_for_irq_wake(cpu_id: usize) {
     if cpu_id != this_cpu_id() {
         request_remote_irq_wake(cpu_id);

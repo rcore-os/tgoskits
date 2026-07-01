@@ -10,7 +10,13 @@ version = "0.5.24"
 [features]
 default = []
 
-ipi = ["ax-hal/ipi", "dep:ax-ipi"]
+# Full remote callback IPI support. This includes the lightweight IRQ-wake IPI
+# path plus the ax-ipi callback queue used by scheduler reschedule requests.
+ipi = ["irq-wake-ipi", "dep:ax-ipi"]
+# Lightweight hardware IPI support for hard-IRQ task wake. This wakes the target
+# CPU so its IRQ epilogue can drain the per-CPU IRQ wake queue, but does not
+# enable ax-ipi remote callback execution.
+irq-wake-ipi = ["ax-hal/ipi"]
 multitask = [
   "stack-canary",
   "dep:axpoll",

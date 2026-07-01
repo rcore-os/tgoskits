@@ -706,7 +706,6 @@ pub fn reconfigure_wifi(name: &str, mode: WifiMode<'_>) -> AxResult<()> {
 /// task context.
 pub fn wake_net_task_irq() {
     NET_IRQ_NOTIFY.notify_irq();
-    NET_POLL_WAKE.notify_one_from_irq();
 }
 
 fn next_poll_delay() -> Duration {
@@ -743,6 +742,7 @@ impl Wake for NetPollWake {
 fn net_poll_worker() {
     loop {
         let delay = next_poll_delay();
+        NET_IRQ_NOTIFY.arm_current_task();
         let timed_out = NET_POLL_WAKE.wait_timeout_until(delay, || {
             NET_POLL_REQUESTED.load(Ordering::Acquire)
                 || NET_IRQ_NOTIFY.is_pending()
