@@ -95,6 +95,163 @@ qemu_config = "configs/qemu.toml"
 }
 
 #[test]
+fn prepare_request_inherits_snapshot_config_when_no_explicit_selectors() {
+    let root = tempdir().unwrap();
+    let config_path = root.path().join("configs/board.toml");
+    fs::create_dir_all(config_path.parent().unwrap()).unwrap();
+    fs::write(
+        &config_path,
+        r#"
+package = "arceos-helloworld"
+target = "aarch64-unknown-none-softfloat"
+plat_dyn = true
+features = []
+log = "Info"
+max_cpu_num = 1
+"#,
+    )
+    .unwrap();
+    write_snapshot_text(
+        root.path(),
+        ARCEOS_SNAPSHOT_FILE,
+        r#"
+config = "configs/board.toml"
+
+[qemu]
+qemu_config = "configs/qemu.toml"
+"#,
+    )
+    .unwrap();
+
+    let app = test_app_context(root.path());
+
+    let (request, snapshot) =
+        prepare_arceos_request(&app, BuildCliArgs::default(), None, None).unwrap();
+
+    assert_eq!(request.package, "arceos-helloworld");
+    assert_eq!(request.arch, "aarch64");
+    assert_eq!(request.target, "aarch64-unknown-none-softfloat");
+    assert_eq!(request.build_info_path, config_path);
+    assert_eq!(
+        request.qemu_config,
+        Some(root.path().join("configs/qemu.toml"))
+    );
+    assert_eq!(snapshot.config, Some(PathBuf::from("configs/board.toml")));
+}
+
+#[test]
+fn prepare_request_explicit_config_uses_package_and_target_selectors() {
+    let root = tempdir().unwrap();
+    let config_path = root.path().join("configs/orangepi.toml");
+    fs::create_dir_all(config_path.parent().unwrap()).unwrap();
+    fs::write(
+        &config_path,
+        r#"
+package = "arceos-helloworld"
+target = "aarch64-unknown-none-softfloat"
+plat_dyn = true
+features = []
+log = "Info"
+"#,
+    )
+    .unwrap();
+    write_snapshot_text(
+        root.path(),
+        ARCEOS_SNAPSHOT_FILE,
+        r#"
+package = "from-snapshot"
+arch = "riscv64"
+target = "riscv64gc-unknown-none-elf"
+
+[qemu]
+qemu_config = "configs/qemu.toml"
+"#,
+    )
+    .unwrap();
+
+    let app = test_app_context(root.path());
+
+    let (request, snapshot) = prepare_arceos_request(
+        &app,
+        BuildCliArgs {
+            config: Some(config_path.clone()),
+            package: None,
+            arch: None,
+            target: None,
+            plat_dyn: None,
+            smp: None,
+            debug: false,
+        },
+        None,
+        None,
+    )
+    .unwrap();
+
+    assert_eq!(request.package, "arceos-helloworld");
+    assert_eq!(request.arch, "aarch64");
+    assert_eq!(request.target, "aarch64-unknown-none-softfloat");
+    assert_eq!(request.build_info_path, config_path);
+    assert_eq!(request.qemu_config, None);
+    assert_eq!(
+        snapshot.config,
+        Some(PathBuf::from("configs/orangepi.toml"))
+    );
+}
+
+#[test]
+fn prepare_request_explicit_package_does_not_inherit_snapshot_config() {
+    let root = tempdir().unwrap();
+    fs::create_dir_all(root.path().join("configs")).unwrap();
+    fs::write(
+        root.path().join("configs/orangepi.toml"),
+        r#"
+package = "arceos-helloworld"
+target = "aarch64-unknown-none-softfloat"
+plat_dyn = true
+"#,
+    )
+    .unwrap();
+    write_snapshot_text(
+        root.path(),
+        ARCEOS_SNAPSHOT_FILE,
+        r#"
+package = "from-snapshot"
+arch = "aarch64"
+target = "aarch64-unknown-none-softfloat"
+config = "configs/orangepi.toml"
+"#,
+    )
+    .unwrap();
+
+    let app = test_app_context(root.path());
+
+    let (request, snapshot) = prepare_arceos_request(
+        &app,
+        BuildCliArgs {
+            package: Some("arceos-helloworld".to_string()),
+            ..Default::default()
+        },
+        None,
+        None,
+    )
+    .unwrap();
+
+    assert_eq!(request.package, "arceos-helloworld");
+    assert_eq!(
+        request.build_info_path,
+        crate::arceos::build::default_build_info_path(
+            "arceos-helloworld",
+            "aarch64-unknown-none-softfloat",
+        )
+        .unwrap()
+    );
+    assert_ne!(
+        snapshot.config,
+        Some(PathBuf::from("configs/orangepi.toml"))
+    );
+}
+
+#[test]
 fn prepare_request_explicit_config_drops_snapshot_plat_dyn() {
     let root = tempdir().unwrap();
     write_snapshot_text(

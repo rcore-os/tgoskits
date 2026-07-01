@@ -4,7 +4,7 @@ use ostool::{build::config::Cargo, run::qemu::QemuConfig};
 
 use crate::{
     context::ResolvedBuildRequest,
-    test::{case::TestQemuCase, qemu as qemu_test},
+    test::{board as board_test, case::TestQemuCase, qemu as qemu_test},
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -31,6 +31,27 @@ pub(super) struct PreparedArceosRustQemuCase {
     pub(super) cargo: Cargo,
     pub(super) qemu: QemuConfig,
     pub(super) host_symbolize_success_regex: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ArceosBoardTestGroup {
+    pub(crate) name: String,
+    pub(crate) board_name: String,
+    pub(crate) package: String,
+    pub(crate) arch: String,
+    pub(crate) target: String,
+    pub(crate) build_config_path: PathBuf,
+    pub(crate) board_test_config_path: PathBuf,
+}
+
+impl board_test::BoardTestGroupInfo for ArceosBoardTestGroup {
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    fn board_name(&self) -> &str {
+        &self.board_name
+    }
 }
 
 impl qemu_test::BuildConfigRef for PreparedArceosRustQemuCase {
