@@ -21,7 +21,6 @@ use core::{ptr::NonNull, time::Duration};
 
 use fdt_edit::Node;
 use log::{info, warn};
-use rdif_pinctrl::PinctrlDevice;
 use rdrive::{
     probe::OnProbeError,
     register::{FdtInfo, ProbeFdt},
@@ -38,9 +37,7 @@ use super::clock::{RockchipClockOps, apply_assigned_clocks, enable_node_clocks};
 use crate::{
     block::ProbeFdtBlock,
     mmio::iomap,
-    soc::{
-        RockchipPinCtrl, rk3588_enable_power_domain, rk3588_reset_assert, rk3588_reset_deassert,
-    },
+    soc::{rk3588_enable_power_domain, rk3588_reset_assert, rk3588_reset_deassert},
 };
 
 // RK3588 DWCMSHC follows Linux's normal SDHCI completion path: command/data
@@ -49,13 +46,6 @@ use crate::{
 const ROCKCHIP_SDHCI_IRQ_DRIVEN: bool = true;
 const SDMMC_INIT_POLL_DELAY: Duration = Duration::from_micros(1);
 const SDMMC_INIT_RETRY_DELAY: Duration = Duration::from_millis(10);
-const RK3588_EMMC_PINCTRL_SYMBOLS: [&str; 5] = [
-    "emmc_rstnout",
-    "emmc_bus8",
-    "emmc_clk",
-    "emmc_cmd",
-    "emmc_data_strobe",
-];
 const DWCMSHC_P_VENDOR_AREA1: usize = 0xe8;
 const DWCMSHC_AREA1_MASK: u16 = 0x0fff;
 const DWCMSHC_HOST_CTRL3: usize = 0x08;
@@ -234,29 +224,6 @@ fn probe(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
 
 fn apply_rockchip_sdhci_resources(info: &FdtInfo<'_>) -> Result<(), OnProbeError> {
     apply_assigned_clocks(info, "SDHCI")?;
-    if let Some(pinctrl) = rdrive::get_one::<PinctrlDevice>() {
-        let mut pinctrl = pinctrl
-            .lock()
-            .map_err(|err| OnProbeError::other(format!("failed to lock PinctrlDevice: {err}")))?;
-        let pinctrl = pinctrl
-            .typed_mut::<RockchipPinCtrl>()
-            .ok_or_else(|| OnProbeError::other("PinctrlDevice is not backed by RockchipPinCtrl"))?;
-        let configured = pinctrl.apply_default_pinctrl(info.node)?;
-        if configured.is_empty() {
-            let fallback = rk3588_emmc_pinctrl_symbol_paths();
-            if !fallback.is_empty() {
-                let mut total = 0;
-                for path in &fallback {
-                    total += pinctrl.apply_pinctrl_path(path.as_str())?.len();
-                }
-                info!(
-                    "[{}] applied {} RK3588 eMMC symbol fallback pinctrl pins",
-                    info.node.name(),
-                    total
-                );
-            }
-        }
-    }
     enable_power_domains(parse_power_domains(info.node.as_node())?)?;
     let resets = parse_resets(info.node.as_node())?;
     if !resets.is_empty() {
@@ -264,27 +231,6 @@ fn apply_rockchip_sdhci_resources(info: &FdtInfo<'_>) -> Result<(), OnProbeError
     }
     enable_node_clocks(info, "SDHCI");
     Ok(())
-}
-
-fn rk3588_emmc_pinctrl_symbol_paths() -> Vec<String> {
-    rdrive::with_fdt(|fdt| {
-        fdt.get_by_path("/__symbols__")
-            .map(|symbols| rk3588_emmc_pinctrl_paths_from_symbols(symbols.as_node()))
-            .unwrap_or_default()
-    })
-    .unwrap_or_default()
-}
-
-fn rk3588_emmc_pinctrl_paths_from_symbols(symbols: &Node) -> Vec<String> {
-    RK3588_EMMC_PINCTRL_SYMBOLS
-        .into_iter()
-        .filter_map(|symbol| {
-            symbols
-                .get_property(symbol)?
-                .as_str()
-                .map(ToString::to_string)
-        })
-        .collect()
 }
 
 fn parse_power_domains(node: &Node) -> Result<Vec<usize>, OnProbeError> {
@@ -623,42 +569,6 @@ mod tests {
         let node = Node::new("mmc@fe2e0000");
 
         assert_eq!(parse_power_domains(&node).unwrap(), Vec::<usize>::new());
-    }
-
-    #[test]
-    fn emmc_symbol_fallback_reads_linux_pinctrl_paths_in_order() {
-        let mut symbols = Node::new("__symbols__");
-        symbols.add_property(fdt_edit::Property::new(
-            "emmc_cmd",
-            b"/pinctrl/emmc/emmc-cmd\0".to_vec(),
-        ));
-        symbols.add_property(fdt_edit::Property::new(
-            "emmc_rstnout",
-            b"/pinctrl/emmc/emmc-rstnout\0".to_vec(),
-        ));
-        symbols.add_property(fdt_edit::Property::new(
-            "emmc_clk",
-            b"/pinctrl/emmc/emmc-clk\0".to_vec(),
-        ));
-        symbols.add_property(fdt_edit::Property::new(
-            "emmc_bus8",
-            b"/pinctrl/emmc/emmc-bus8\0".to_vec(),
-        ));
-        symbols.add_property(fdt_edit::Property::new(
-            "emmc_data_strobe",
-            b"/pinctrl/emmc/emmc-data-strobe\0".to_vec(),
-        ));
-
-        assert_eq!(
-            rk3588_emmc_pinctrl_paths_from_symbols(&symbols),
-            vec![
-                String::from("/pinctrl/emmc/emmc-rstnout"),
-                String::from("/pinctrl/emmc/emmc-bus8"),
-                String::from("/pinctrl/emmc/emmc-clk"),
-                String::from("/pinctrl/emmc/emmc-cmd"),
-                String::from("/pinctrl/emmc/emmc-data-strobe"),
-            ]
-        );
     }
 
     #[test]

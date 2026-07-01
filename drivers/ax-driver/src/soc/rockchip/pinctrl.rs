@@ -6,9 +6,9 @@ use core::ptr::NonNull;
 use fdt_edit::{Fdt, NodeType, Phandle, RegFixed};
 use log::info;
 use rdif_pinctrl::{
-    Bias, ConfigSetting, ConfigTarget, FdtPinctrl, FdtPinctrlParser, FunctionId, GpioBankId,
-    GpioRange, GroupId, Interface as RdifPinctrl, MuxSetting, PinId as RdifPinId, PinState,
-    PinctrlDevice, PinctrlError as RdifPinctrlError, StateName,
+    Bias, ConfigSetting, ConfigTarget, FdtPinctrl, FunctionId, GpioBankId, GpioRange, GroupId,
+    Interface as RdifPinctrl, MuxSetting, PinId as RdifPinId, PinState, PinctrlDevice,
+    PinctrlError as RdifPinctrlError,
 };
 use rdrive::{DriverGeneric, probe::OnProbeError, register::ProbeFdt};
 use rockchip_soc::{
@@ -57,27 +57,6 @@ impl RockchipPinCtrl {
         Self { inner }
     }
 
-    pub fn apply_default_pinctrl(
-        &mut self,
-        node: NodeType<'_>,
-    ) -> Result<Vec<RockchipPinId>, OnProbeError> {
-        let node_name = node.name().to_string();
-        let Some(prop) = node.as_node().get_property("pinctrl-0") else {
-            info!("Rockchip node {node_name} has no default pinctrl");
-            return Ok(Vec::new());
-        };
-
-        let mut configured = Vec::new();
-        for phandle in prop.get_u32_iter().map(Phandle::from) {
-            configured.extend(self.apply_pinctrl_phandle(phandle)?);
-        }
-        info!(
-            "Rockchip node {node_name} applied {} default pinctrl pins",
-            configured.len()
-        );
-        Ok(configured)
-    }
-
     pub fn enable_fixed_regulator(&mut self, phandle: Phandle) -> Result<(), OnProbeError> {
         let fdt = live_fdt()?;
         let node = fdt.get_by_phandle(phandle).ok_or_else(|| {
@@ -110,48 +89,6 @@ impl RockchipPinCtrl {
 
         info!("Rockchip fixed regulator {node_name} enabled via pinctrl");
         Ok(())
-    }
-
-    pub fn apply_pinctrl_path(&mut self, path: &str) -> Result<Vec<RockchipPinId>, OnProbeError> {
-        let fdt = live_fdt()?;
-        let node = fdt
-            .get_by_path(path)
-            .ok_or_else(|| OnProbeError::other(format!("pinctrl path {path} not found")))?;
-        self.apply_pinctrl_node(node)
-    }
-
-    fn apply_pinctrl_phandle(
-        &mut self,
-        phandle: Phandle,
-    ) -> Result<Vec<RockchipPinId>, OnProbeError> {
-        let fdt = live_fdt()?;
-        let node = fdt
-            .get_by_phandle(phandle)
-            .ok_or_else(|| OnProbeError::other(format!("pinctrl phandle {phandle:?} not found")))?;
-        self.apply_pinctrl_node(node)
-    }
-
-    fn apply_pinctrl_node(
-        &mut self,
-        node: NodeType<'_>,
-    ) -> Result<Vec<RockchipPinId>, OnProbeError> {
-        let node_name = node.name().to_string();
-        let fdt = live_fdt()?;
-        let mut state = PinState::named(StateName::Named(node_name.clone()));
-        RockchipFdtPinctrlParser
-            .parse_pinctrl_node(&fdt, node, &mut state)
-            .map_err(|err| {
-                OnProbeError::other(format!(
-                    "failed to parse Rockchip pinctrl [{node_name}]: {err}"
-                ))
-            })?;
-        let configured = rockchip_pins_from_state(&state)?;
-        self.apply_state(&state).map_err(|err| {
-            OnProbeError::other(format!(
-                "failed to apply Rockchip pinctrl [{node_name}]: {err}"
-            ))
-        })?;
-        Ok(configured)
     }
 }
 
@@ -311,7 +248,10 @@ fn probe(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
     }
 
     let pinctrl = PinCtrl::new(SocType::Rk3588, ioc, &gpio_banks);
-    plat_dev.register(PinctrlDevice::new(RockchipPinCtrl::new(pinctrl)));
+    plat_dev.register(PinctrlDevice::with_fdt_parser(
+        RockchipPinCtrl::new(pinctrl),
+        RockchipFdtPinctrlParser,
+    ));
     info!("Rockchip RK3588 pinctrl registered successfully");
     Ok(())
 }
@@ -345,21 +285,6 @@ fn map_reg(reg: RegFixed) -> Result<NonNull<u8>, OnProbeError> {
 
 fn rockchip_pin_id(raw_pin: u32) -> Result<RockchipPinId, RdifPinctrlError> {
     RockchipPinId::new(raw_pin).ok_or_else(|| RdifPinctrlError::InvalidPin(RdifPinId::new(raw_pin)))
-}
-
-fn rockchip_pins_from_state(state: &PinState) -> Result<Vec<RockchipPinId>, OnProbeError> {
-    state
-        .muxes()
-        .iter()
-        .map(|mux| {
-            rockchip_pin_id(mux.group.raw()).map_err(|err| {
-                OnProbeError::other(format!(
-                    "Rockchip pinctrl state contains invalid pin {:?}: {err}",
-                    mux.group
-                ))
-            })
-        })
-        .collect()
 }
 
 fn rockchip_pull_from_rdif_bias(bias: Bias) -> Pull {

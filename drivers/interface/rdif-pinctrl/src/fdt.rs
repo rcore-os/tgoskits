@@ -211,7 +211,7 @@ mod tests {
         ConfigSetting, Direction, DriverGeneric, FdtPinctrl, FdtPinctrlParser, FunctionId,
         GpioBank, GpioBankId, GpioLineHandle, GpioLineId, GpioRange, GroupId, Interface,
         MuxSetting, MuxValue, PinConfig, PinDesc, PinFunction, PinGroup, PinId, PinState,
-        PinctrlError, StateName,
+        PinctrlDevice, PinctrlError, StateName,
     };
 
     struct TestParser;
@@ -479,6 +479,55 @@ mod tests {
         .unwrap();
 
         assert_eq!(recorder.calls, vec!["mux", "config"]);
+    }
+
+    #[test]
+    fn pinctrl_device_applies_fdt_default_state_with_registered_parser() {
+        let (fdt, consumer) = fdt_with_consumer(&["default"], &[10]);
+        let mut device = PinctrlDevice::with_fdt_parser(Recorder::new(), TestParser);
+
+        device
+            .apply_fdt_default_state(&fdt, fdt.node(consumer).unwrap())
+            .unwrap();
+
+        assert_eq!(
+            device.typed_ref::<Recorder>().unwrap().calls,
+            vec!["mux", "config"]
+        );
+    }
+
+    #[test]
+    fn pinctrl_device_skips_fdt_default_state_without_property_or_parser() {
+        let (fdt, consumer) = fdt_with_consumer(&["default"], &[10]);
+        let mut without_parser = PinctrlDevice::new(Recorder::new());
+        without_parser
+            .apply_fdt_default_state(&fdt, fdt.node(consumer).unwrap())
+            .unwrap();
+        assert!(
+            without_parser
+                .typed_ref::<Recorder>()
+                .unwrap()
+                .calls
+                .is_empty()
+        );
+
+        let mut fdt_without_pinctrl = Fdt::new();
+        let root = fdt_without_pinctrl.root_id();
+        let consumer_without_pinctrl = fdt_without_pinctrl.add_node(root, Node::new("consumer"));
+        let mut with_parser = PinctrlDevice::with_fdt_parser(Recorder::new(), TestParser);
+        with_parser
+            .apply_fdt_default_state(
+                &fdt_without_pinctrl,
+                fdt_without_pinctrl.node(consumer_without_pinctrl).unwrap(),
+            )
+            .unwrap();
+        assert!(
+            with_parser
+                .typed_ref::<Recorder>()
+                .unwrap()
+                .calls
+                .is_empty()
+        );
     }
 
     #[test]
