@@ -144,11 +144,12 @@ fn bypass_iommu(base: NonNull<u8>) {
 #[cfg(feature = "jpu-selftest")]
 fn run_selftest(jpeg: &mut RockchipJpeg) {
     let mut clock = axklib::time::monotonic_nanos;
-    match jpeg.decode_jpeg(
-        rockchip_jpeg::SELFTEST_JPEG,
-        &mut clock,
-        SELFTEST_TIMEOUT_NS,
-    ) {
+    let mut buf = [0u8; rockchip_jpeg::SELFTEST_JPEG_CAPACITY];
+    let Some(len) = rockchip_jpeg::write_selftest_jpeg(&mut buf) else {
+        info!("JPU_SELFTEST_FAIL: could not encode the self-test JPEG");
+        return;
+    };
+    match jpeg.decode_jpeg(&buf[..len], &mut clock, SELFTEST_TIMEOUT_NS) {
         Ok(status) if status.is_success() => {
             info!("JPU_SELFTEST_PASS reg1={:#010x}", status.raw())
         }

@@ -22,20 +22,19 @@ pub mod command;
 pub mod mpp;
 pub mod parser;
 pub mod registers;
+pub mod selftest;
 pub mod status;
 
 use core::ptr::NonNull;
 
 use dma_api::DeviceDma;
+pub use selftest::{SELFTEST_JPEG_CAPACITY, write_selftest_jpeg};
 
 use crate::{
     parser::JpegInfo,
     registers::offset,
     status::{DecodeError, DecodeStatus},
 };
-
-/// A small embedded baseline 4:2:0 JPEG (64x64) for the boot-time self-test.
-pub const SELFTEST_JPEG: &[u8] = include_bytes!("selftest_baseline_420.jpg");
 
 /// 32-bit MMIO access to the JPEG decoder register file. Abstracted so the core
 /// can be exercised by host tests with a fake backend.
