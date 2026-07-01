@@ -61,7 +61,7 @@ pub use runtime::loongarch_irq::{
     unregister_guest_irq_routes as unregister_loongarch_guest_irq_routes,
 };
 pub use task::{AsVCpuTask, VCpuTask};
-pub use vm::{AxVCpuRef, AxVM, AxVMRef, FwCfgDeviceConfig, VMMemoryRegion};
+pub use vm::{AxVCpuRef, AxVM, AxVMRef, FwCfgDeviceConfig, PreparedMemoryLayout, VMMemoryRegion};
 
 /// The architecture-independent per-CPU type.
 pub type AxVMPerCpu = axvcpu::AxPerCpu<vcpu::AxVMArchPerCpuImpl>;
