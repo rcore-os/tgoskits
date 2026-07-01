@@ -87,7 +87,14 @@ pub trait Device: Send + Sync {
 
     fn wake_rx(&self) {}
 
-    fn register_waker(&self, waker: &Waker);
+    /// Returns the device readiness poll set when the device has a wake source.
+    ///
+    /// The router uses this to register the global [`NET_POLL_DEVICE_WAKER`]
+    /// and to publish readiness to the per-device worker path. Pure-polling
+    /// devices should return `None`.
+    fn readiness_poll(&self) -> Option<Arc<PollSet>> {
+        None
+    }
 }
 ```
 
@@ -118,7 +125,9 @@ impl Device for LoopbackDevice {
         true
     }
 
-    fn register_waker(&self, _waker: &Waker) {}
+    fn readiness_poll(&self) -> Option<Arc<PollSet>> {
+        None
+    }
 }
 ```
 
@@ -211,6 +220,8 @@ struct DeviceHandle {
 ```
 
 RX queue 是所有设备共享的，因为 smoltcp 只能从一个 `Router.rx_buffer` 获取 packet；TX queue 是每设备独立的，因为 dispatch 已经决定了出接口。
+
+`Router::send_on_device()` 允许调用方绕过路由表直接向指定设备发送 packet（如 DHCP 广播包）。该路径只用于控制面的协议辅助（DHCP client/server），不暴露给 socket 路径。
 
 ### smoltcp Device 实现
 

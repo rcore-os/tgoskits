@@ -21,6 +21,10 @@ sidebar_label: "控制面"
 
 控制面是 `NetControl` 持有的只读状态层，通过 `spin::RwLock` 保护接口 registry、DNS registry 和共享路由表。它的查询接口（`interfaces()`、`select_route()`、`dns_servers()` 等）只持读锁、返回快照，不进入 `Service` 或 `SocketSet` 锁，也不接触设备收发队列。协议状态机推进、包收发和 socket payload 读写全部由数据面的 `Service::poll()` 和设备 worker 在独立的锁层级中完成。
 
+### 无线控制面句柄
+
+`WIFI_CONTROLS` 是一个全局 `Mutex<Vec<(String, rd_net::WifiControlHandle)>>`，存储无线设备的控制面句柄。当无线设备注册时，runtime 在 driver 的 `WifiControlHandle` 被消费进数据面 `EthernetDriver` 之前捕获一份，按接口名索引。这允许 StarryOS wireless-extensions ioctl 或类似的运行时管理接口通过名称找到对应设备的 `WifiControl`，在不需要持有 `Service` 或 `SocketSet` 锁的情况下完成模式切换。
+
 ```mermaid
 flowchart TB
     Config["NetworkConfig / InterfaceConfig"] --> Init["init_network()"]
@@ -810,6 +814,47 @@ pub fn register_static_device(
 ```
 
 这条路径说明控制面不是仅启动时静态表；它也能接收运行期新增接口，并把新接口加入 registry、route table 和 smoltcp address list。
+
+### Wi-Fi 模式切换
+
+`Service` 提供运行时 Wi-Fi 模式切换方法。`reconfigure_as_ap()` 将设备转为 SoftAP 模式并可选启用 DHCP 服务器：
+
+```rust
+pub fn reconfigure_as_ap(
+    &mut self,
+    dev: usize,
+    server_ip: Ipv4Address,
+    prefix_len: u8,
+    client_ip: Option<Ipv4Address>,
+) {
+    let cidr = Ipv4Cidr::new(server_ip, prefix_len);
+    // stop DHCP client if running
+    self.dhcp.retain(|state| state.dev != dev);
+    // atomically update smoltcp IP list, control plane, route table
+    self.commit_network_state(NetworkStateUpdate { /* ... */ });
+    // optionally enable minimal DHCP server
+    if let Some(client_ip) = client_ip {
+        self.dhcp_server = Some(DhcpServer::new(dev, interface.id, server_ip, client_ip, mask));
+    }
+}
+```
+
+`reconfigure_as_sta()` 反过来将设备转为 STA 模式并重启 DHCP client：
+
+```rust
+pub fn reconfigure_as_sta(&mut self, dev: usize, mac: EthernetAddress) {
+    // disable DHCP server if running
+    if self.dhcp_server.as_ref().is_some_and(|s| s.dev == dev) {
+        self.dhcp_server = None;
+    }
+    // clear old address
+    self.commit_network_state(NetworkStateUpdate { ipv4: None, ... });
+    // restart DHCP client
+    self.enable_dhcp(interface_id, dev, name, mac, metric);
+}
+```
+
+这两个方法都是 `Service` 持有锁时调用的，保证 smoltcp IP address list、`NetControl` 状态和 `RouteTable` 原子更新。
 
 ## 并发与锁
 

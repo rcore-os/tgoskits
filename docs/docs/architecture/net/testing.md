@@ -14,7 +14,7 @@ sidebar_label: "测试与限制"
 | crate 单元测试 | [net/ax-net/src](net/ax-net/src) 内各 `#[cfg(test)]` 模块 | 验证 `RouteTable`、`NetControl`/`Service`、TCP/UDP 设备绑定、UDP bind 表、TCP listen 表和通用 socket option |
 | StarryOS system 测试 | [test-suit/starryos/qemu-smp1/system](test-suit/starryos/qemu-smp1/system) | 验证 Linux socket syscall、ioctl、AF_PACKET、netlink、procfs 等 ABI |
 | dual-net 集成测试 | [apps/starry/qemu/dual-net](apps/starry/qemu/dual-net) | 验证两张 virtio-net、双 DHCP、接口绑定下载和并发数据面 |
-| xtask 结构自检 | [scripts/axbuild/src/starry/test.rs](scripts/axbuild/src/starry/test.rs) | 验证 `dual-net` app 配置必须包含双网卡、host HTTP fixture 和 guest probe |
+| xtask 结构自检 | [scripts/axbuild/src/starry/test/tests/asset_network_tests.rs](scripts/axbuild/src/starry/test/tests/asset_network_tests.rs) | 验证 `dual-net` app 配置必须包含双网卡、host HTTP fixture 和 guest probe |
 
 ## `ax-net` 单元测试
 
@@ -298,7 +298,7 @@ DUAL_NET_TEST_FAILED: ...
 
 ### xtask 结构自检
 
-[scripts/axbuild/src/starry/test.rs](scripts/axbuild/src/starry/test.rs) 中的 `dual_net_qemu_case_exercises_two_interfaces_and_parallel_fetches` 会静态检查 `dual-net` case 的结构：
+[scripts/axbuild/src/starry/test/tests/asset_network_tests.rs](scripts/axbuild/src/starry/test/tests/asset_network_tests.rs) 中的 `dual_net_qemu_case_exercises_two_interfaces_and_parallel_fetches` 会静态检查 `dual-net` case 的结构：
 
 - `c/dual-net-tests.sh`、`c/prebuild.sh`、`c/CMakeLists.txt` 必须存在。
 - riscv64 和 x86_64 都必须有 `qemu-*.toml`。

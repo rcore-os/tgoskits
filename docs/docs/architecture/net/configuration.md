@@ -52,12 +52,16 @@ vsock = ["dep:rdif-vsock"]
 - `medium-ip`
 - `proto-ipv4`
 - `proto-ipv6`
+- `packetmeta-id`（携带 RX 侧 ingress 元数据，供 `rx_meta` 模块传递接收侧 QoS）
 - `socket-raw`
 - `socket-icmp`
 - `socket-udp`
 - `socket-tcp`
 - `socket-dhcpv4`
 - `socket-dns`
+- `iface-max-addr-count-8`（允许 `Interface` 同时保存最多 8 个 IP 地址，支撑 loopback + 多 Ethernet 静态地址）
+
+此外 `Cargo.toml` 中注释保留了 `fragmentation-buffer-size` / `reassembly-buffer-size` 等分片/重组能力，但当前未启用。
 
 Router 对 smoltcp 暴露 `Medium::Ip`，Ethernet frame 处理在 `EthernetDevice` 中完成。
 
