@@ -18,6 +18,9 @@ use crate::{AxTask, AxTaskRef, TaskInner, WeakAxTaskRef, current, current_may_un
 #[ax_percpu::def_percpu]
 static IRQ_WAKE_QUEUE: LazyInit<IrqWakeQueue> = LazyInit::new();
 
+#[cfg(all(test, feature = "host-test"))]
+static HOST_TEST_IRQ_WAKE_QUEUE: spin::Once<IrqWakeQueue> = spin::Once::new();
+
 #[ax_percpu::def_percpu]
 static IRQ_WAKE_DRAINING: AtomicBool = AtomicBool::new(false);
 
@@ -207,6 +210,8 @@ pub(crate) fn init_irq_wake_queue_current_cpu() {
             queue.init_once(IrqWakeQueue::new());
         }
     });
+    #[cfg(all(test, feature = "host-test"))]
+    HOST_TEST_IRQ_WAKE_QUEUE.call_once(IrqWakeQueue::new);
 }
 
 pub(crate) fn expire_task_irq_wakers(task: &TaskInner) {
@@ -217,7 +222,7 @@ fn irq_wake_queue_for_cpu(cpu_id: usize) -> Option<&'static IrqWakeQueue> {
     #[cfg(all(test, feature = "host-test"))]
     {
         let _ = cpu_id;
-        unsafe { IRQ_WAKE_QUEUE.current_ref_raw() }.get()
+        HOST_TEST_IRQ_WAKE_QUEUE.get()
     }
     #[cfg(all(feature = "smp", not(all(test, feature = "host-test"))))]
     {

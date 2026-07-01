@@ -673,6 +673,20 @@ fn test_irq_notify_wakes_sleeping_deferred_worker() {
 }
 
 #[test]
+fn test_future_blocked_resched_aborts_when_event_arrives_before_sleep() {
+    run_in_test_scheduler(|| {
+        let checks = AtomicUsize::new(0);
+
+        crate::current_run_queue::<ax_kernel_guard::NoPreemptIrqSave>()
+            .future_blocked_resched(|| checks.fetch_add(1, Ordering::AcqRel) == 0);
+
+        assert_eq!(checks.load(Ordering::Acquire), 1);
+        assert_eq!(current().state(), crate::TaskState::Running);
+        assert!(!current().in_wait_queue());
+    });
+}
+
+#[test]
 fn test_irq_notify_wakes_after_concurrent_irq_callbacks() {
     run_in_test_scheduler(|| {
         const NUM_IRQ_THREADS: usize = 6;

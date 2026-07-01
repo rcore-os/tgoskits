@@ -4,7 +4,7 @@ use core::{
     sync::atomic::{AtomicBool, AtomicPtr, Ordering},
 };
 
-use crate::WaitQueue;
+use ax_kernel_guard::NoPreemptIrqSave;
 
 struct IrqNotifyWaiter {
     task_id: u64,
@@ -21,7 +21,6 @@ struct IrqNotifyWaiter {
 /// `axpoll` waiters.
 pub struct IrqNotify {
     pending: AtomicBool,
-    wait: WaitQueue,
     active_waiter: AtomicPtr<IrqNotifyWaiter>,
     waiters: ax_kspin::SpinNoIrq<Vec<Arc<IrqNotifyWaiter>>>,
 }
@@ -37,7 +36,6 @@ impl IrqNotify {
     pub const fn new() -> Self {
         Self {
             pending: AtomicBool::new(false),
-            wait: WaitQueue::new(),
             active_waiter: AtomicPtr::new(ptr::null_mut()),
             waiters: ax_kspin::SpinNoIrq::new(Vec::new()),
         }
@@ -50,6 +48,10 @@ impl IrqNotify {
     /// coalesce into one pending bit until a worker drains it.
     pub fn notify_irq(&self) {
         self.pending.store(true, Ordering::Release);
+        self.wake_active_from_irq();
+    }
+
+    fn wake_active_from_irq(&self) {
         let waiter = self.active_waiter.load(Ordering::Acquire);
         if !waiter.is_null() {
             // SAFETY: waiter nodes are ref-counted and retained in `self.waiters`
@@ -66,7 +68,15 @@ impl IrqNotify {
     /// behavior while still allowing the scheduler to observe a normal wake.
     pub fn notify(&self) {
         self.pending.store(true, Ordering::Release);
-        self.wait.notify_one(true);
+        self.wake_active();
+    }
+
+    fn wake_active(&self) {
+        let waiter = self.active_waiter.load(Ordering::Acquire);
+        if !waiter.is_null() {
+            // SAFETY: see `wake_active_from_irq`.
+            let _ = unsafe { &*waiter }.waker.wake(0);
+        }
     }
 
     /// Returns whether a notification is currently pending.
@@ -93,20 +103,28 @@ impl IrqNotify {
     /// Blocks until at least one pending notification is available, then drains it.
     #[track_caller]
     pub fn wait(&self) {
-        self.init_irq_waker();
-        self.wait.wait_until(|| self.drain());
+        self.wait_until(|| false);
     }
 
     /// Blocks until `condition` becomes true or at least one pending notification
     /// is available, then drains the notification bit.
     #[track_caller]
     pub fn wait_until(&self, condition: impl Fn() -> bool) {
+        crate::api::might_sleep();
         self.init_irq_waker();
-        self.wait.wait_until(|| {
-            let ready = condition();
-            let notified = self.drain();
-            ready || notified
-        });
+        loop {
+            if self.should_stop_waiting(&condition) {
+                return;
+            }
+            crate::current_run_queue::<NoPreemptIrqSave>()
+                .future_blocked_resched(|| self.should_stop_waiting(&condition));
+        }
+    }
+
+    fn should_stop_waiting(&self, condition: &impl Fn() -> bool) -> bool {
+        let ready = condition();
+        let notified = self.drain();
+        ready || notified
     }
 
     fn init_irq_waker(&self) {

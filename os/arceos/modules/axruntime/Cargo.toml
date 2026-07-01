@@ -17,7 +17,7 @@ ipi = ["dep:ax-ipi"]
 # Register a lightweight IPI IRQ handler that only acknowledges SGIs so idle
 # CPUs can wake and re-enter the scheduler. This intentionally does not enable
 # the ax-ipi callback queue.
-wake-ipi = ["ax-hal/ipi"]
+wake-ipi = ["ax-hal/ipi", "ax-task?/irq-wake-ipi"]
 multitask = ["ax-task/multitask"]
 paging = ["ax-hal/paging", "dep:ax-mm"]
 rtc = ["ax-hal/rtc", "ax-driver/rtc"]
