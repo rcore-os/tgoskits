@@ -17,7 +17,7 @@ flowchart TD
         C4["文件系统组件<br/>axfs_crates axfs-ng-vfs rsext4"]
         C5["平台组件<br/>axplat_crates percpu ..."]
         C6["Starry 组件<br/>starry-process starry-signal starry-vm"]
-        C7["虚拟化组件<br/>axvcpu axvm axvmconfig axvisor_api"]
+        C7["虚拟化组件<br/>axvm axvm-types axvmconfig arch_vcpu axvisor_api"]
         C8["基础工具<br/>axerrno axio kernel_guard kspin ..."]
     end
 
@@ -159,7 +159,7 @@ flowchart LR
 |----------|------|
 | `components/` → ArceOS modules | ArceOS 模块基于共享组件构建 |
 | `components/` → StarryOS kernel | Starry 专用组件（starry-process、starry-signal、starry-vm）独立于 ArceOS 模块 |
-| `components/` → Axvisor runtime | 虚拟化组件（axvm、axvcpu、axvisor_api）被 Axvisor 直接使用 |
+| `components/` → Axvisor runtime | 虚拟化组件（axvm、axvm-types、架构 vCPU 后端、axvisor_api）被 Axvisor 直接使用 |
 | ArceOS modules → StarryOS kernel | StarryOS 复用 ArceOS 的 HAL、调度、内存、驱动等基础能力 |
 | ArceOS modules → Axvisor runtime | Axvisor 复用 ArceOS 的 std、HAL、alloc、task、sync |
 | `platforms/` → 三个系统 | 平台实现通过 ax-hal 注入各系统 |

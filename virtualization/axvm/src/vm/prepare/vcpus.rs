@@ -6,6 +6,12 @@ use ax_errno::AxResult;
 #[cfg(target_arch = "x86_64")]
 use axvm_types::EmulatedDeviceType;
 use axvm_types::GuestPhysAddr;
+#[cfg(not(any(
+    target_arch = "aarch64",
+    target_arch = "loongarch64",
+    target_arch = "x86_64"
+)))]
+use axvm_types::VmArchVcpuOps;
 
 use super::super::{AxVCpuRef, AxVMResources, VCpu};
 #[cfg(any(target_arch = "aarch64", target_arch = "loongarch64"))]
@@ -115,7 +121,7 @@ impl PreparedVcpus {
                 target_arch = "x86_64"
             )))]
             #[allow(clippy::let_unit_value)]
-            let setup_config = <AxArchVCpuImpl as axvcpu::AxArchVCpu>::SetupConfig::default();
+            let setup_config = <AxArchVCpuImpl as VmArchVcpuOps>::SetupConfig::default();
             #[cfg(target_arch = "x86_64")]
             let setup_config = {
                 let mut config = crate::vcpu::AxVCpuSetupConfig {

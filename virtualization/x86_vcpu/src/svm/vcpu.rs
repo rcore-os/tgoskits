@@ -8,11 +8,10 @@ use core::{
 use ax_errno::{AxResult, ax_err, ax_err_type};
 use ax_memory_addr::AddrRange;
 use axdevice_base::{BaseDeviceOps, SysRegAddrRange};
-use axvcpu::{
-    AccessWidth, AxArchVCpu, AxVCpuExitReason, GuestPhysAddr, HostPhysAddr, MappingFlags,
-    NestedPageFaultInfo, Port, SysRegAddr, VCpuId, VMId,
+use axvm_types::{
+    AccessWidth, AxVCpuExitReason, GuestPhysAddr, GuestVirtAddr, HostPhysAddr, MappingFlags,
+    NestedPageFaultInfo, Port, SysRegAddr, VCpuId, VMId, VmArchVcpuOps,
 };
-use axvm_types::GuestVirtAddr;
 use bit_field::BitField;
 use tock_registers::interfaces::{ReadWriteable, Readable, Writeable};
 use x86::controlregs::Xcr0;
@@ -1478,7 +1477,7 @@ impl Debug for SvmVcpu {
     }
 }
 
-impl AxArchVCpu for SvmVcpu {
+impl VmArchVcpuOps for SvmVcpu {
     type CreateConfig = ();
     type SetupConfig = X86VCpuSetupConfig;
 
@@ -1654,7 +1653,7 @@ impl AxArchVCpu for SvmVcpu {
     fn inject_interrupt_with_trigger(
         &mut self,
         vector: usize,
-        trigger: axvcpu::InterruptTriggerMode,
+        trigger: axvm_types::InterruptTriggerMode,
     ) -> AxResult {
         if vector == 0 {
             warn!("interrupt queued in inject_interrupt_with_trigger: vector 0");
@@ -1663,7 +1662,7 @@ impl AxArchVCpu for SvmVcpu {
         self.queue_event_with_trigger(
             vector as u8,
             None,
-            trigger == axvcpu::InterruptTriggerMode::LevelTriggered,
+            trigger == axvm_types::InterruptTriggerMode::LevelTriggered,
         );
         Ok(())
     }
@@ -1681,7 +1680,7 @@ impl AxArchVCpu for SvmVcpu {
 mod tests {
     use core::mem::MaybeUninit;
 
-    use axvcpu::AxVCpuExitReason;
+    use axvm_types::AxVCpuExitReason;
     use tock_registers::interfaces::{Readable, Writeable};
     use x86_64::registers::rflags::RFlags;
 

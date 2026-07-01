@@ -14,7 +14,7 @@
 
 use aarch64_cpu::registers::*;
 use ax_errno::AxResult;
-use axvcpu::{AxArchVCpu, AxVCpuExitReason, GuestPhysAddr, HostPhysAddr, SysRegAddr};
+use axvm_types::{AxVCpuExitReason, GuestPhysAddr, HostPhysAddr, SysRegAddr, VmArchVcpuOps};
 
 use crate::{
     TrapFrame,
@@ -82,7 +82,7 @@ pub struct Aarch64VCpuSetupConfig {
     pub passthrough_timer: bool,
 }
 
-impl axvcpu::AxArchVCpu for Aarch64VCpu {
+impl axvm_types::VmArchVcpuOps for Aarch64VCpu {
     type CreateConfig = Aarch64VCpuCreateConfig;
 
     type SetupConfig = Aarch64VCpuSetupConfig;

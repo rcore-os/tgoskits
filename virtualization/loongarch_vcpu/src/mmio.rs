@@ -1,4 +1,4 @@
-use axvcpu::{AccessWidth, AxVCpuExitReason, GuestPhysAddr, MappingFlags};
+use axvm_types::{AccessWidth, AxVCpuExitReason, GuestPhysAddr, MappingFlags};
 
 use crate::context_frame::LoongArchContextFrame;
 

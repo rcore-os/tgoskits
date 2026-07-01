@@ -6,7 +6,7 @@
 > 版本：`0.2.2`
 > 文档依据：当前仓库源码、`Cargo.toml`、`README.md`、`trap.S`、`guest_mem.rs` 及其在 `axvm` 中的接入方式
 
-`riscv_vcpu` 是 Axvisor 在 RISC-V 架构上的 vCPU 后端实现。它围绕 RISC-V Hypervisor Extension 组织，负责完成四类核心工作：每核 H 扩展环境准备、vCPU 寄存器与 CSR 上下文保存恢复、客户机进入/退出虚拟化执行、以及把 SBI 调用、外部中断、timer 事件和 guest page fault 转译成统一的 `AxVCpuExitReason`。
+`riscv_vcpu` 是 Axvisor 在 RISC-V 架构上的 vCPU 后端实现。它围绕 RISC-V Hypervisor Extension 组织，负责完成四类核心工作：每核 H 扩展环境准备、vCPU 寄存器与 CSR 上下文保存恢复、客户机进入/退出虚拟化执行、以及把 SBI 调用、外部中断、timer 事件和 guest page fault 转译成 `axvm-types::VmExit` / 兼容名 `AxVCpuExitReason`。
 
 ## 架构设计
 
@@ -14,7 +14,7 @@
 
 该 crate 在虚拟化栈中的定位非常明确：
 
-- 向上实现 `axvcpu::AxArchVCpu` 与 `AxArchPerCpu`，供 `axvm` 统一驱动。
+- 向上实现 `axvm-types::VmArchVcpuOps` 与 `VmArchPerCpuOps`，供 `axvm` 统一驱动。
 - 向下直接操作 `riscv` / `riscv-h` CSR、`trap.S` 汇编入口以及 SBI 调用接口。
 - 向旁依赖 `axaddrspace`、`axvisor_api`、`riscv_vplic` 等组件完成地址、设备和中断协同。
 
@@ -229,7 +229,7 @@ flowchart TD
 | `riscv` / `riscv-h` | CSR 和 H 扩展寄存器访问 |
 | `riscv-decode` | guest page fault 指令解码 |
 | `rustsbi` / `sbi-rt` / `sbi-spec` | SBI 转发与调用语义 |
-| `axvcpu` | 通用 vCPU 抽象接口 |
+| `axvm-types` | 通用 vCPU/VM-exit 协议类型 |
 | `axaddrspace` | GPA/GVA 类型与访问宽度 |
 | `axvisor_api` | 访存和宿主地址转换辅助 |
 | `ax-errno` | 错误模型 |
@@ -247,7 +247,7 @@ flowchart TD
 graph TD
     A[riscv / riscv-h / riscv-decode] --> B[riscv_vcpu]
     C[rustsbi / sbi-rt / sbi-spec] --> B
-    D[axvcpu / axaddrspace / axvisor_api] --> B
+    D[axvm-types / axaddrspace / axvisor_api] --> B
     B --> E[axvm]
     E --> F[Axvisor]
     G[riscv_vplic] --> E

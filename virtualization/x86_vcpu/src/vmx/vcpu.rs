@@ -22,11 +22,10 @@ use core::{
 use ax_errno::{AxResult, ax_err, ax_err_type};
 use ax_memory_addr::AddrRange;
 use axdevice_base::{BaseDeviceOps, SysRegAddrRange};
-use axvcpu::{
-    AccessWidth, AxArchVCpu, AxVCpuExitReason, GuestPhysAddr, HostPhysAddr, MappingFlags,
-    NestedPageFaultInfo, Port, SysRegAddr, VCpuId, VMId,
+use axvm_types::{
+    AccessWidth, AxVCpuExitReason, GuestPhysAddr, GuestVirtAddr, HostPhysAddr, MappingFlags,
+    NestedPageFaultInfo, Port, SysRegAddr, VCpuId, VMId, VmArchVcpuOps,
 };
-use axvm_types::GuestVirtAddr;
 use bit_field::BitField;
 use raw_cpuid::CpuId;
 use x86::{
@@ -1623,7 +1622,7 @@ impl Debug for VmxVcpu {
     }
 }
 
-impl AxArchVCpu for VmxVcpu {
+impl VmArchVcpuOps for VmxVcpu {
     type CreateConfig = ();
 
     type SetupConfig = X86VCpuSetupConfig;
@@ -1819,7 +1818,7 @@ impl AxArchVCpu for VmxVcpu {
     fn inject_interrupt_with_trigger(
         &mut self,
         vector: usize,
-        trigger: axvcpu::InterruptTriggerMode,
+        trigger: axvm_types::InterruptTriggerMode,
     ) -> AxResult {
         if vector == 0 {
             warn!("interrupt queued in inject_interrupt_with_trigger: vector 0");
@@ -1828,7 +1827,7 @@ impl AxArchVCpu for VmxVcpu {
         self.queue_event_with_trigger(
             vector as u8,
             None,
-            trigger == axvcpu::InterruptTriggerMode::LevelTriggered,
+            trigger == axvm_types::InterruptTriggerMode::LevelTriggered,
         );
         Ok(())
     }
@@ -2046,7 +2045,7 @@ mod tests {
         #[test]
         fn test_access_width_operations() {
             // Test access width enumeration
-            use axvcpu::AccessWidth;
+            use axvm_types::AccessWidth;
 
             assert_eq!(AccessWidth::Byte as usize, 0);
             assert_eq!(AccessWidth::Word as usize, 1);
