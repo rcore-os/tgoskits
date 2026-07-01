@@ -18,8 +18,6 @@ mod fixed_regulator;
 mod rockchip;
 #[cfg(feature = "rockchip-dwmmc")]
 pub mod scmi;
-#[cfg(feature = "sg2002-placeholder")]
-mod sg2002;
 
 #[cfg(feature = "rockchip-soc")]
 pub use rockchip::{

@@ -99,7 +99,6 @@ tgoskits/
 │       └── xtask/             # Axvisor 专用构建任务
 ├── platforms/                  # 平台适配层
 │   ├── axplat-dyn/            # 动态平台支持
-│   ├── ax-plat-riscv64-sg2002/ # RISC-V SG2002 静态平台
 │   └── somehal/                # 动态平台底层运行时/固件桥接
 ├── drivers/                   # SoC 专用驱动（RK3588 时钟 / NPU / 电源管理）
 ├── test-suit/                 # 系统级测试套件

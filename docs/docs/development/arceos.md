@@ -370,10 +370,10 @@ C 应用覆盖由 `test-suit/arceos/c` 维护；`apps/arceos` 只保留 Rust std
 
 ### 5.1 平台 crate 结构
 
-以 `ax-plat-riscv64-sg2002` 为例：
+外部自定义平台通常以 `ax-plat-<arch>-<board>` 命名，例如 `ax-plat-riscv64-custom`：
 
 ```
-platforms/ax-plat-riscv64-sg2002/
+platforms/ax-plat-riscv64-custom/
 ├── Cargo.toml
 ├── axconfig.toml     # 平台配置（内存布局、SMP 数等）
 ├── build.rs          # 构建脚本
@@ -394,15 +394,9 @@ platforms/ax-plat-riscv64-sg2002/
 | `platforms/` | 工作区内 `ax-plat-*` 平台 crate |
 | `platforms/axplat-dyn/` | 动态平台加载（UEFI/FDT/ACPI 运行时平台事实与设备探测 glue） |
 
-已有平台：
+AArch64、RISC-V QEMU、x86_64 QEMU、LoongArch QEMU 和 SG2002 板卡默认由 `axplat-dyn` 通过 UEFI/设备树/ACPI 等运行时信息加载。仓库不再内置 SG2002 静态平台 crate。
 
-| 平台 | 架构 | 目标硬件 |
-|------|------|---------|
-| `ax-plat-riscv64-sg2002` | riscv64 | SG2002 板级平台 |
-
-AArch64、RISC-V QEMU、x86_64 QEMU 和 LoongArch QEMU 默认平台由 `axplat-dyn` 通过 UEFI/设备树/ACPI 等运行时信息加载，不再把 LoongArch QEMU 静态平台 crate 作为当前平台路径。
-
-旧 LoongArch QEMU 写法需要迁移：`ax-hal/loongarch64-qemu-virt` 改为 `ax-hal/plat-dyn`，`ax-driver/plat-static` 改为 `ax-driver/plat-dyn`，`plat_dyn = false` 改为省略或 `true`，命令行不要再写 `--plat loongarch64-qemu-virt`，直接使用 `--arch loongarch64`。动态路径会进入 `axplat-dyn` 和 UEFI/`efi` 启动链路。
+旧 LoongArch QEMU 写法需要迁移：`ax-hal/loongarch64-qemu-virt` 改为 `ax-hal/plat-dyn`，省略 `plat_dyn` 或设为 `true`，命令行不要再写 `--plat loongarch64-qemu-virt`，直接使用 `--arch loongarch64`。动态路径会进入 `axplat-dyn` 和 UEFI/`efi` 启动链路。
 
 ### 5.3 添加新平台
 

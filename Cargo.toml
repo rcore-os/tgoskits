@@ -50,7 +50,10 @@ members = [
     "components/timer_list",
     "components/axconfig-gen/axconfig-gen",
     "components/axconfig-gen/axconfig-macros",
-    "platforms/*",
+    "platforms/ax-plat",
+    "platforms/ax-plat-macros",
+    "platforms/axplat-dyn",
+    "platforms/somehal",
     "components/crate_interface/test_crates/*",
     "components/ctor_bare/ctor_bare",
     "components/ctor_bare/ctor_bare_macros",
@@ -172,7 +175,6 @@ ax-percpu = { version = "0.4.13", path = "components/percpu/percpu" }
 ax-percpu-macros = { version = "0.4.10", path = "components/percpu/percpu_macros" }
 ax-plat = { version = "0.8.0", path = "platforms/ax-plat" }
 ax-plat-macros = { version = "0.3.8", path = "platforms/ax-plat-macros" }
-ax-plat-riscv64-sg2002 = { version = "0.4.6", path = "platforms/ax-plat-riscv64-sg2002" }
 ax-posix-api = { version = "0.5.23", path = "os/arceos/api/arceos_posix_api" }
 ax-riscv-plic = { version = "0.4.8", path = "drivers/intc/riscv_plic" }
 ax-runtime = { version = "0.8.2", path = "os/arceos/modules/axruntime" }

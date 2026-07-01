@@ -808,7 +808,6 @@ dependencies = [
  "ax-page-table-multiarch",
  "ax-percpu",
  "ax-plat",
- "ax-plat-riscv64-sg2002",
  "axplat-dyn",
  "cfg-if",
  "fdt-parser",
@@ -1039,27 +1038,6 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.118",
-]
-
-[[package]]
-name = "ax-plat-riscv64-sg2002"
-version = "0.4.6"
-dependencies = [
- "ax-config-macros",
- "ax-cpu",
- "ax-driver",
- "ax-kspin",
- "ax-lazyinit",
- "ax-plat",
- "ax-riscv-plic",
- "axklib",
- "log",
- "rdif-block",
- "riscv",
- "sbi-rt",
- "sg200x-bsp",
- "some-serial",
- "spin",
 ]
 
 [[package]]

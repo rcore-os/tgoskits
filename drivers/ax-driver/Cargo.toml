@@ -13,7 +13,6 @@ name = "ax_driver"
 [features]
 default = []
 
-plat-static = []
 plat-dyn = ["dep:fdt-edit"]
 irq = []
 pci = ["dep:ax-kspin", "dep:pcie", "dep:rdif-pcie"]
@@ -62,7 +61,6 @@ serial = [
     "dep:rdif-serial",
     "dep:some-serial",
 ]
-sg2002-placeholder = ["plat-dyn"]
 rknpu = ["plat-dyn", "rockchip-pm", "rockchip-soc", "dep:rockchip-npu"]
 rga = ["plat-dyn", "dep:rockchip-rga"]
 rockchip-sdhci = [

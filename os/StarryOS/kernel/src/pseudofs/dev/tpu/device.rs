@@ -32,13 +32,12 @@ use core::{
 };
 
 use ax_kspin::SpinNoIrq;
-#[cfg(feature = "plat-dyn")]
 use ax_memory_addr::PhysAddr;
 use ax_task::WaitQueue;
 use sg2002_tpu::{
     ion::IonBuffer,
     tpu::{
-        Sg2002Tpu, TDMA_PHYS_BASE, TIU_PHYS_BASE,
+        Sg2002Tpu,
         error::TpuError,
         types::{
             CVITPU_DMABUF_FLUSH, CVITPU_DMABUF_FLUSH_FD, CVITPU_DMABUF_INVLD,
@@ -106,9 +105,7 @@ pub struct TpuDevice {
     irq_registration: Option<IrqRegistration>,
 }
 
-#[cfg(feature = "plat-dyn")]
 const TPU_COMPATIBLES: &[&str] = &["cvitek,tpu"];
-#[cfg(feature = "plat-dyn")]
 const TPU_TDMA_IRQ_NAME: &str = "tdma_irq";
 const TPU_DEFAULT_MMIO_SIZE: usize = 0x1000;
 
@@ -122,11 +119,9 @@ struct TpuResource {
     tiu_paddr: usize,
     tiu_size: usize,
     irq: Option<ax_runtime::hal::irq::IrqId>,
-    from_fdt: bool,
 }
 
 impl TpuResource {
-    #[cfg(feature = "plat-dyn")]
     fn probe() -> Option<Self> {
         let resource = Self::from_fdt();
         if resource.is_none() {
@@ -135,18 +130,6 @@ impl TpuResource {
         resource
     }
 
-    fn fallback(from_fdt: bool) -> Self {
-        Self {
-            tdma_paddr: TDMA_PHYS_BASE,
-            tdma_size: TPU_DEFAULT_MMIO_SIZE,
-            tiu_paddr: TIU_PHYS_BASE,
-            tiu_size: TPU_DEFAULT_MMIO_SIZE,
-            irq: fallback_irq(),
-            from_fdt,
-        }
-    }
-
-    #[cfg(feature = "plat-dyn")]
     fn from_fdt() -> Option<Self> {
         rdrive::with_fdt(|fdt| {
             fdt.find_compatible(TPU_COMPATIBLES)
@@ -156,7 +139,6 @@ impl TpuResource {
         .flatten()
     }
 
-    #[cfg(feature = "plat-dyn")]
     fn from_fdt_node(node: rdrive::probe::fdt::NodeType<'_>) -> Option<Self> {
         if matches!(
             node.as_node().status(),
@@ -182,12 +164,10 @@ impl TpuResource {
             tiu_paddr: tiu.address as usize,
             tiu_size: tiu.size.unwrap_or(TPU_DEFAULT_MMIO_SIZE as u64) as usize,
             irq,
-            from_fdt: true,
         })
     }
 }
 
-#[cfg(feature = "plat-dyn")]
 fn resolve_named_fdt_irq(
     node: &rdrive::probe::fdt::NodeType<'_>,
     name: &str,
@@ -200,7 +180,6 @@ fn resolve_named_fdt_irq(
     ax_runtime::irq::resolve_binding_irq(irq).map(Some)
 }
 
-#[cfg(feature = "plat-dyn")]
 fn map_tpu_mmio(resource: TpuResource) -> Option<(*mut u8, *mut u8)> {
     let tdma = match axklib::mem::iomap(PhysAddr::from(resource.tdma_paddr), resource.tdma_size) {
         Ok(vaddr) => vaddr.as_mut_ptr(),
@@ -223,25 +202,6 @@ fn map_tpu_mmio(resource: TpuResource) -> Option<(*mut u8, *mut u8)> {
         }
     };
     Some((tdma, tiu))
-}
-
-#[cfg(feature = "plat-dyn")]
-fn fallback_irq() -> Option<ax_runtime::hal::irq::IrqId> {
-    None
-}
-
-#[cfg(not(feature = "plat-dyn"))]
-fn fallback_irq() -> Option<ax_runtime::hal::irq::IrqId> {
-    plic_irq(76).ok()
-}
-
-#[cfg(not(feature = "plat-dyn"))]
-fn plic_irq(raw: usize) -> Result<ax_runtime::hal::irq::IrqId, ax_runtime::hal::irq::IrqError> {
-    let hwirq = u32::try_from(raw).map_err(|_| ax_runtime::hal::irq::IrqError::InvalidIrq)?;
-    Ok(ax_runtime::hal::irq::IrqId::new(
-        ax_runtime::hal::irq::RISCV_PLIC_DOMAIN,
-        ax_runtime::hal::irq::HwIrq(hwirq),
-    ))
 }
 
 fn register_tpu_irq(
@@ -336,7 +296,6 @@ fn tpu_worker(hw: Arc<Sg2002Tpu>) {
 }
 
 impl TpuDevice {
-    #[cfg(feature = "plat-dyn")]
     pub fn probe() -> Option<Self> {
         let resource = TpuResource::probe()?;
         let hw = {
@@ -344,26 +303,6 @@ impl TpuDevice {
             Arc::new(unsafe { Sg2002Tpu::from_vaddr(tdma, tiu) })
         };
         Some(Self::setup(hw, resource))
-    }
-
-    /// 创建 TPU 设备（使用默认物理地址）
-    ///
-    /// # Safety
-    /// 调用者必须确保偏移计算后的虚拟地址有效。
-    #[cfg(not(feature = "plat-dyn"))]
-    pub unsafe fn new() -> Self {
-        let hw = Arc::new(unsafe { Sg2002Tpu::new() });
-        Self::setup(hw, TpuResource::fallback(false))
-    }
-
-    /// 使用指定的虚拟地址创建 TPU 设备
-    ///
-    /// # Safety
-    /// 调用者必须确保虚拟地址有效。
-    #[allow(dead_code)]
-    pub unsafe fn from_vaddr(tdma_vaddr: *mut u8, tiu_vaddr: *mut u8) -> Self {
-        let hw = Arc::new(unsafe { Sg2002Tpu::from_vaddr(tdma_vaddr, tiu_vaddr) });
-        Self::setup(hw, TpuResource::fallback(false))
     }
 
     /// 公共初始化：注入等待函数、注册中断、启动 worker 线程。
@@ -375,14 +314,13 @@ impl TpuDevice {
         let irq_registration = register_tpu_irq(resource.irq, &hw);
         info!(
             "[TPU] resource tdma=[{:#x}, +{:#x}) tiu=[{:#x}, +{:#x}) irq={:?} irq_wait={} \
-             source={}",
+             source=fdt",
             resource.tdma_paddr,
             resource.tdma_size,
             resource.tiu_paddr,
             resource.tiu_size,
             resource.irq,
             irq_registration.is_some(),
-            if resource.from_fdt { "fdt" } else { "static" }
         );
 
         // 发布硬件指针供 tpu_wait_irq 读取中断标志，并启动唯一 worker 线程。

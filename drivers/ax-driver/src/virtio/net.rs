@@ -10,7 +10,7 @@ use core::{
 use ax_kernel_guard::NoPreemptIrqSave;
 use rd_net::{DmaBuffer, Event, IRxQueue, ITxQueue, NetError, QueueConfig};
 use rdrive::{DriverGeneric, PlatformDevice, probe::OnProbeError};
-#[cfg(all(feature = "pci", any(plat_static, plat_dyn)))]
+#[cfg(all(feature = "pci", plat_dyn))]
 use virtio_drivers::transport::DeviceType;
 use virtio_drivers::{
     Error as VirtIoError,
@@ -18,7 +18,7 @@ use virtio_drivers::{
     transport::{InterruptStatus, Transport},
 };
 
-#[cfg(all(feature = "pci", any(plat_static, plat_dyn)))]
+#[cfg(all(feature = "pci", plat_dyn))]
 use crate::{PciIrqRequirement, binding_info_from_pci};
 use crate::{
     net::PlatformDeviceNet,
@@ -28,7 +28,7 @@ use crate::{
 const QUEUE_SIZE: usize = 64;
 const BUFFER_SIZE: usize = 2048;
 
-#[cfg(all(feature = "pci", any(plat_static, plat_dyn)))]
+#[cfg(all(feature = "pci", plat_dyn))]
 crate::model_register!(
     name: "VirtIO Net",
     level: ProbeLevel::PostKernel,
@@ -366,7 +366,7 @@ struct RxInflight {
     len: usize,
 }
 
-#[cfg(all(feature = "pci", any(plat_static, plat_dyn)))]
+#[cfg(all(feature = "pci", plat_dyn))]
 fn probe_pci(mut probe: rdrive::probe::pci::ProbePci<'_>) -> Result<(), OnProbeError> {
     let transport = crate::pci::take_virtio_transport(probe.endpoint_mut(), DeviceType::Network)?;
     register_pci_transport(probe, transport)
@@ -382,7 +382,7 @@ pub fn register_transport<T: Transport + 'static>(
     Ok(())
 }
 
-#[cfg(all(feature = "pci", any(plat_static, plat_dyn)))]
+#[cfg(all(feature = "pci", plat_dyn))]
 fn register_pci_transport<T: Transport + 'static>(
     probe: rdrive::probe::pci::ProbePci<'_>,
     transport: T,
