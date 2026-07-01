@@ -95,15 +95,9 @@ impl IrqTaskWaker {
 
     /// Wakes the captured task from hard IRQ context.
     pub fn wake_from_irq(&self, bits: u64) -> IrqWakeResult {
-        let Some(task) = self.task.upgrade() else {
+        let Some(task) = self.valid_task() else {
             return IrqWakeResult::default();
         };
-        if task.id().as_u64() != self.task_id {
-            return IrqWakeResult::default();
-        }
-        if !task.irq_wake_generation_matches(self.generation) {
-            return IrqWakeResult::default();
-        }
         task.publish_irq_wake_bits(bits);
         task.bump_irq_wake_seq();
         if !task.mark_irq_wake_pending() {
@@ -142,11 +136,46 @@ impl IrqTaskWaker {
 
     /// Wakes the captured task from task context.
     pub fn wake(&self, bits: u64) -> IrqWakeResult {
-        let result = self.wake_from_irq(bits);
-        if result.local {
-            let _ = drain_irq_wake_queue_current_cpu();
+        let Some(task) = self.valid_task() else {
+            return IrqWakeResult::default();
+        };
+        task.publish_irq_wake_bits(bits);
+        task.bump_irq_wake_seq();
+
+        #[cfg(all(test, feature = "host-test"))]
+        let local = true;
+        #[cfg(not(all(test, feature = "host-test")))]
+        let local = task.cpu_id() as usize == this_cpu_id();
+
+        if current_may_uninit()
+            .as_ref()
+            .is_some_and(|current| current.ptr_eq(&task))
+            && task.transition_state(crate::TaskState::Blocked, crate::TaskState::Running)
+        {
+            return IrqWakeResult {
+                woke: true,
+                local,
+                remote: false,
+            };
         }
-        result
+
+        let woke = crate::run_queue::wake_task_from_irq_queue(task);
+        IrqWakeResult {
+            woke,
+            local,
+            remote: woke && !local,
+        }
+    }
+
+    fn valid_task(&self) -> Option<AxTaskRef> {
+        let task = self.task.upgrade()?;
+        if task.id().as_u64() != self.task_id {
+            return None;
+        }
+        if !task.irq_wake_generation_matches(self.generation) {
+            return None;
+        }
+        Some(task)
     }
 }
 

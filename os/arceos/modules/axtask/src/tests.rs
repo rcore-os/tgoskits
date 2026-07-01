@@ -431,6 +431,24 @@ fn irq_task_waker_wakes_blocked_future_task() {
     });
 }
 
+#[test]
+fn irq_task_waker_task_context_wake_bypasses_irq_queue() {
+    run_in_test_scheduler(|| {
+        let task =
+            crate::TaskInner::new(|| {}, "task-context-wake-test".into(), RAW_TASK_STACK_SIZE);
+        let task = task.into_arc();
+        crate::register_task(&task);
+        task.set_state(crate::TaskState::Blocked);
+        let waker = crate::irq_wake::IrqTaskWaker::new(task.clone());
+
+        let result = waker.wake(0x80);
+        assert!(result.woke());
+        assert_eq!(waker.take_bits(), 0x80);
+        assert_eq!(crate::drain_irq_wake_queue_current_cpu(), 0);
+        assert_eq!(task.state(), crate::TaskState::Ready);
+    });
+}
+
 #[cfg(all(feature = "smp", feature = "host-test"))]
 #[test]
 fn irq_task_waker_respects_affinity_changed_while_blocked() {
