@@ -8,6 +8,7 @@ use crate::{
 
 mod eiointc;
 mod irq_common;
+mod liointc;
 mod pch_pic;
 
 use crate::irq_routing::{
@@ -51,6 +52,12 @@ fn eiointc_irq(external: usize) -> IrqId {
     let domain = crate::irq::domain_by_kind_fast(crate::irq::IrqDomainKind::LoongArchEioIntc)
         .expect("LoongArch EIOINTC IRQ domain is not registered");
     IrqId::new(domain, HwIrq(external as u32))
+}
+
+fn is_loongarch_external_domain(domain: crate::irq::IrqDomainId) -> bool {
+    crate::irq::domain_is_kind(domain, crate::irq::IrqDomainKind::LoongArchPchPic)
+        || crate::irq::domain_is_kind(domain, crate::irq::IrqDomainKind::LoongArchEioIntc)
+        || crate::irq::domain_is_kind(domain, crate::irq::IrqDomainKind::LoongArchLioIntc)
 }
 
 fn make_ipi_send_value(cpu_id: usize, vector: u32, blocking: bool) -> u32 {
@@ -126,9 +133,7 @@ impl PlatOp for Plat {
             return Err(IrqError::InvalidIrq);
         }
 
-        if crate::irq::domain_is_kind(irq.domain, crate::irq::IrqDomainKind::LoongArchPchPic)
-            || crate::irq::domain_is_kind(irq.domain, crate::irq::IrqDomainKind::LoongArchEioIntc)
-        {
+        if is_loongarch_external_domain(irq.domain) {
             crate::irq::set_controller_irq_enabled(irq, enable)
         } else {
             Err(IrqError::InvalidIrq)
@@ -139,9 +144,7 @@ impl PlatOp for Plat {
         if irq.domain == CPU_LOCAL_IRQ_DOMAIN {
             return Err(IrqError::Unsupported);
         }
-        if !crate::irq::domain_is_kind(irq.domain, crate::irq::IrqDomainKind::LoongArchPchPic)
-            && !crate::irq::domain_is_kind(irq.domain, crate::irq::IrqDomainKind::LoongArchEioIntc)
-        {
+        if !is_loongarch_external_domain(irq.domain) {
             return Err(IrqError::InvalidIrq);
         }
         match affinity {
@@ -174,6 +177,19 @@ impl PlatOp for Plat {
     }
 
     fn begin_irq(raw: usize) -> Option<Self::ActiveIrq> {
+        if liointc::is_cascade_irq(raw) {
+            let Some(irq) = liointc::claim_irq() else {
+                debug!("Spurious LoongArch LIOINTC interrupt");
+                return None;
+            };
+            return Some(ActiveIrq::new(
+                irq,
+                Completion::LioIntc {
+                    irq: irq.hwirq.0 as usize,
+                },
+            ));
+        }
+
         match classify_cpu_irq(
             raw,
             someboot::irq::systimer_irq().raw(),
@@ -229,15 +245,7 @@ impl PlatOp for Plat {
 
     fn resolve_irq_source(source: IrqSource) -> Result<IrqId, IrqError> {
         match source {
-            IrqSource::ControllerLine { domain, hwirq }
-                if crate::irq::domain_is_kind(
-                    domain,
-                    crate::irq::IrqDomainKind::LoongArchPchPic,
-                ) || crate::irq::domain_is_kind(
-                    domain,
-                    crate::irq::IrqDomainKind::LoongArchEioIntc,
-                ) =>
-            {
+            IrqSource::ControllerLine { domain, hwirq } if is_loongarch_external_domain(domain) => {
                 Ok(IrqId::new(domain, hwirq))
             }
             IrqSource::ControllerLine { domain, hwirq } if domain == CPU_LOCAL_IRQ_DOMAIN => {
@@ -270,6 +278,7 @@ impl PlatOp for Plat {
 enum Completion {
     None,
     EioIntc { irq: usize },
+    LioIntc { irq: usize },
 }
 
 pub struct ActiveIrq {
@@ -292,6 +301,7 @@ impl Drop for ActiveIrq {
         match self.completion {
             Completion::None => {}
             Completion::EioIntc { irq } => eiointc::complete_irq(irq),
+            Completion::LioIntc { irq } => liointc::complete_irq(irq),
         }
     }
 }

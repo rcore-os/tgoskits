@@ -44,6 +44,7 @@ pub enum IrqDomainKind {
     RiscvPlic,
     LoongArchEioIntc,
     LoongArchPchPic,
+    LoongArchLioIntc,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -59,6 +60,7 @@ static AARCH64_GIC_DOMAIN_SLOT: AtomicU16 = AtomicU16::new(INVALID_IRQ_DOMAIN);
 static RISCV_PLIC_DOMAIN_SLOT: AtomicU16 = AtomicU16::new(INVALID_IRQ_DOMAIN);
 static LOONGARCH_EIOINTC_DOMAIN_SLOT: AtomicU16 = AtomicU16::new(INVALID_IRQ_DOMAIN);
 static LOONGARCH_PCH_PIC_DOMAIN_SLOT: AtomicU16 = AtomicU16::new(INVALID_IRQ_DOMAIN);
+static LOONGARCH_LIOINTC_DOMAIN_SLOT: AtomicU16 = AtomicU16::new(INVALID_IRQ_DOMAIN);
 
 pub fn alloc_irq_domain(owner: DeviceId, kind: IrqDomainKind) -> Result<IrqDomainId, IrqError> {
     register_irq_domain(owner, None, kind)
@@ -107,6 +109,7 @@ fn domain_slot(kind: IrqDomainKind) -> &'static AtomicU16 {
         IrqDomainKind::RiscvPlic => &RISCV_PLIC_DOMAIN_SLOT,
         IrqDomainKind::LoongArchEioIntc => &LOONGARCH_EIOINTC_DOMAIN_SLOT,
         IrqDomainKind::LoongArchPchPic => &LOONGARCH_PCH_PIC_DOMAIN_SLOT,
+        IrqDomainKind::LoongArchLioIntc => &LOONGARCH_LIOINTC_DOMAIN_SLOT,
     }
 }
 
@@ -300,6 +303,7 @@ mod tests {
             IrqDomainKind::RiscvPlic,
             IrqDomainKind::LoongArchEioIntc,
             IrqDomainKind::LoongArchPchPic,
+            IrqDomainKind::LoongArchLioIntc,
         ] {
             domain_slot(kind).store(INVALID_IRQ_DOMAIN, Ordering::Release);
         }
