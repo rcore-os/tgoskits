@@ -4,21 +4,18 @@
 # selfhost rootfs from the Alpine base entirely inside QEMU, with NO host sudo.
 #
 # What this DOES (verified): the Alpine guest (which has network) installs, under
-# StarryOS's Linux compat, everything needed to build StarryOS — mirroring the
-# privileged prepare-selfhost-rootfs.sh but unprivileged:
+# StarryOS's Linux compat, everything needed for a fully offline self-compile:
 #   1. Build toolchain (apk) + bash
 #   2. x86_64-linux-musl-{cc,gcc,ar} symlinks -> Alpine's native musl gcc/ar
 #   3. Full source tree (git archive, staged via overlay) -> /opt/starryos
-#   4. AIC8800 firmware blobs (gitignored; staged via overlay)
+#   4. AIC8800 firmware blobs (downloaded in-guest from pinned GitHub commit,
+#      SHA-256 verified — identical to xtask's ensure_aic8800_firmware)
 #   5. Rust nightly + rust-src + llvm-tools-preview + bare-metal target
 #   6. kallsyms tools (cargo-binutils -> rust-nm/rust-objcopy, ksym -> gen_ksym)
+#   7. Offline dependency cache warm-up (cargo fetch)
 #
-# Cache warm-up: after installing the toolchain, `cargo fetch` downloads all
-# workspace dependencies into CARGO_HOME.  This warms the offline cache so a
-# subsequent self-compile (which runs with --offline) finds every crate source
-# pre-fetched — no network needed during the actual build.  `cargo fetch` only
-# downloads sources (no compilation), so tmpfs/RAM pressure is minimal.  The
-# resulting rootfs IS self-compile-capable without host sudo.
+# After bootstrap, the rootfs IS fully self-compile-capable — no sudo,
+# no pre-baked image download, no host-side firmware prerequisite.
 #
 # Env vars (set by the axbuild app runner): STARRY_OVERLAY_DIR, STARRY_WORKSPACE,
 # STARRY_ARCH.
@@ -97,15 +94,38 @@ tar xf /opt/starryos-src.tar -C /opt/starryos || fail "source untar failed"
 [ -f /opt/starryos/Cargo.toml ] || fail "Cargo.toml missing after untar"
 [ -f /opt/.source-commit ] && cp /opt/.source-commit /opt/starryos/.source-commit 2>/dev/null || true
 
-# AIC8800 firmware blobs (optional for bootstrap — provisioning only).
-    # The full-kernel self-compile will re-check at build time.
-if ls /opt/firmware-blobs/*.bin >/dev/null 2>&1; then
-    mkdir -p /opt/starryos/components/aic8800/firmware
-    cp /opt/firmware-blobs/*.bin /opt/starryos/components/aic8800/firmware/
-    echo "[bootstrap] AIC8800 firmware staged."
-else
-    echo "[bootstrap] AIC8800 firmware blobs not staged — full self-compile will need them."
-fi
+# AIC8800 Wi-Fi firmware — download from the pinned upstream commit so the
+# subsequent offline self-compile finds the blobs xtask requires.
+echo "[bootstrap] Downloading AIC8800 firmware blobs..."
+FW_COMMIT=c56f910044cc854d6c553bcb9a644f3bca5a4c38
+FW_BASE="https://raw.githubusercontent.com/lxowalle/aic8800-sdio-firmware/$FW_COMMIT"
+mkdir -p /opt/starryos/components/aic8800/firmware
+
+# Each entry: "remote_subpath|local_name|sha256"
+FW_FILES="aic8800_and_aic8800D80/fmacfw.bin|fmacfw.bin|2c6e70726df10ef74d9b1a657c74fdcfaeb88855b96b2c9bc8e0e603ac7c4cc3
+aic8800_and_aic8800D80/fmacfw_patch.bin|fmacfw_patch.bin|6c8126ad655e9971f05ca03dc60fa82cb6d48c3b02cf3ba960137566ce2e28d5
+aic8800DC/fmacfw_patch_8800dc_u02.bin|fmacfw_patch_8800dc_u02.bin|69d3ac2038da3b8e652ed1ec5079598ceb6df51db7b87b1d33f6d3c820c86a6f
+aic8800DC/fw_patch_8800dc_u02.bin|fw_patch_8800dc_u02.bin|c4087b95e788785df0fc55aa92152d214323ee028c70ba0ebb23944d4070340b
+aic8800DC/fw_patch_table_8800dc_u02.bin|fw_patch_table_8800dc_u02.bin|e7eea12cc85fca5d8667182b4520b6a0929044c70c6d9e9a3d7ece8b16169688
+aic8800_and_aic8800D80/fmacfw_8800d80_u02.bin|fmacfw_8800d80_u02.bin|ffb49ede6004e58453f01489edf28b888b509529c3173554c98aa94fbb33507d
+aic8800_and_aic8800D80/fw_patch_8800d80_u02.bin|fw_patch_8800d80_u02.bin|f0e2f5bbc17bc327ca7f1574ff55370dfd863d931514347bb4abc18a74f6218f
+aic8800_and_aic8800D80/fw_patch_table_8800d80_u02.bin|fw_patch_table_8800d80_u02.bin|9decb77435b7e9713e33e32da483d683b7329ed93b672b2d1b134031d7da5f67"
+
+echo "$FW_FILES" | while IFS="|" read -r remote name expected; do
+    dest="/opt/starryos/components/aic8800/firmware/$name"
+    if [ -f "$dest" ] && echo "$expected  $dest" | sha256sum -c - >/dev/null 2>&1; then
+        echo "[bootstrap]   $name (cached)"
+        continue
+    fi
+    echo "[bootstrap]   fetching $name..."
+    curl -fsSL "$FW_BASE/$remote" -o "$dest" || fail "failed to download $name"
+    actual=$(sha256sum "$dest" | awk '{print $1}')
+    if [ "$actual" != "$expected" ]; then
+        fail "sha256 mismatch for $name: expected $expected, got $actual"
+    fi
+    echo "[bootstrap]   $name OK"
+done
+echo "[bootstrap] AIC8800 firmware ready."
 
 echo "[bootstrap] Installing Rust toolchain..."
 CHANNEL=$(awk -F'"' '/channel[[:space:]]*=/{print $2; exit}' /opt/starryos/rust-toolchain.toml 2>/dev/null) || true
