@@ -13,7 +13,6 @@
 // limitations under the License.
 
 use alloc::format;
-use core::alloc::Layout;
 #[cfg(all(
     feature = "fs",
     any(target_arch = "x86_64", target_arch = "loongarch64")
@@ -23,14 +22,16 @@ use core::sync::atomic::{AtomicBool, Ordering};
 use ax_errno::{AxResult, ax_err_type};
 #[cfg(all(feature = "fs", target_arch = "x86_64"))]
 use axvm::InterruptTriggerMode;
+#[cfg(any(target_arch = "x86_64", target_arch = "loongarch64"))]
+use axvm::config::VMBootProtocol;
 use axvm::{
-    AxVM, AxVMRef, GuestPhysAddr, VMMemoryRegion,
+    AxVM, GuestPhysAddr,
     config::{
-        AxVCpuConfig, AxVMConfig, AxVMConfigParams, PhysCpuList, RamdiskInfo, VMBootProtocol,
-        VMImageConfig, adjusted_kernel_load_gpa,
+        AxVCpuConfig, AxVMConfig, AxVMConfigParams, GuestBootPolicy, PhysCpuList, RamdiskInfo,
+        VMImageConfig,
     },
 };
-use axvmconfig::{AxVMCrateConfig, VMType, VmMemConfig, VmMemMappingType};
+use axvmconfig::{AxVMCrateConfig, VMType};
 
 #[cfg(any(
     target_arch = "aarch64",
@@ -144,10 +145,16 @@ pub fn init_guest_vm(raw_cfg: &str) -> AxResult<usize> {
     #[cfg(target_arch = "loongarch64")]
     handle_fdt_operations(&mut vm_config, &mut vm_create_config)?;
 
+    sync_axvm_config_from_crate_config(&mut vm_config, &vm_create_config);
+
     #[cfg(target_arch = "x86_64")]
     let skip_guest_address_adjustment = x86_linux_direct_boot_config(&vm_create_config);
     #[cfg(not(target_arch = "x86_64"))]
     let skip_guest_address_adjustment = false;
+    vm_config.set_boot_policy(guest_boot_policy(
+        &vm_create_config,
+        skip_guest_address_adjustment,
+    ));
 
     // info!("after parse_vm_interrupt, crate VM[{}] with config: {:#?}", vm_config.id(), vm_config);
     info!("Creating VM[{}] {:?}", vm_config.id(), vm_config.name());
@@ -157,21 +164,8 @@ pub fn init_guest_vm(raw_cfg: &str) -> AxResult<usize> {
         .map_err(|e| ax_err_type!(InvalidData, format!("Failed to create VM: {e:?}")))?;
     let vm_id = vm.id();
 
-    vm_alloc_memory_regions(&vm_create_config, &vm)?;
-
-    let main_mem = vm
-        .memory_regions()
-        .first()
-        .cloned()
-        .ok_or_else(|| ax_err_type!(InvalidData, "VM must have at least one memory region"))?;
-
-    if !skip_guest_address_adjustment {
-        config_guest_address(
-            &vm,
-            &main_mem,
-            vm_create_config.kernel.effective_boot_protocol(),
-        );
-    }
+    let memory_layout = vm.prepare_memory_layout()?;
+    let main_mem = memory_layout.main_memory().clone();
 
     // Load corresponding images for VM.
     info!("VM[{}] created success, loading images...", vm.id());
@@ -244,8 +238,27 @@ pub(crate) fn build_axvm_config(cfg: &AxVMCrateConfig) -> AxVMConfig {
         reserved_address_ranges: Vec::new(),
         pass_through_ports: cfg.devices.passthrough_ports.clone(),
         address_space_policy: cfg.devices.address_space_policy,
+        memory_regions: cfg.kernel.memory_regions.clone(),
+        boot_policy: GuestBootPolicy::KeepConfigured,
         interrupt_mode: cfg.devices.interrupt_mode,
     })
+}
+
+fn sync_axvm_config_from_crate_config(vm_config: &mut AxVMConfig, cfg: &AxVMCrateConfig) {
+    vm_config.set_memory_regions(cfg.kernel.memory_regions.clone());
+}
+
+fn guest_boot_policy(
+    cfg: &AxVMCrateConfig,
+    skip_guest_address_adjustment: bool,
+) -> GuestBootPolicy {
+    if skip_guest_address_adjustment {
+        GuestBootPolicy::KeepConfigured
+    } else {
+        GuestBootPolicy::AdjustKernelForBootProtocol {
+            protocol: cfg.kernel.effective_boot_protocol(),
+        }
+    }
 }
 
 fn configured_bios_load_gpa(cfg: &AxVMCrateConfig) -> Option<GuestPhysAddr> {
@@ -405,74 +418,48 @@ fn x86_intx_forwarding_trigger(binding: &ax_driver::BindingIrq) -> InterruptTrig
     }
 }
 
-fn config_guest_address(vm: &AxVMRef, main_memory: &VMMemoryRegion, boot_protocol: VMBootProtocol) {
-    vm.with_config(|config| {
-        if let Some(kernel_addr) = adjusted_kernel_load_gpa(
-            main_memory,
-            boot_protocol,
-            config.image_config.bios_load_gpa,
-        ) {
-            debug!(
-                "Adjusting kernel load address from {:#x} to {:#x}",
-                config.image_config.kernel_load_gpa, kernel_addr
-            );
-            config.relocate_kernel_image(kernel_addr);
-        }
-    });
-}
-
 #[cfg(target_arch = "x86_64")]
 fn x86_linux_direct_boot_config(config: &AxVMCrateConfig) -> bool {
     crate::images::is_x86_linux_image_config(config)
 }
 
-fn vm_alloc_memory_regions(vm_create_config: &AxVMCrateConfig, vm: &AxVMRef) -> AxResult {
-    const MB: usize = 1024 * 1024;
-    const ALIGN: usize = 2 * MB;
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axvmconfig::{VmMemConfig, VmMemMappingType};
 
-    let make_layout = |memory: &VmMemConfig| {
-        Layout::from_size_align(memory.size, ALIGN).map_err(|e| {
-            ax_err_type!(
-                InvalidInput,
-                format!("Invalid VM memory layout {:?}: {e:?}", memory)
-            )
-        })
-    };
-
-    for memory in &vm_create_config.kernel.memory_regions {
-        match memory.map_type {
-            VmMemMappingType::MapAlloc => {
-                vm.alloc_memory_region(make_layout(memory)?, Some(GuestPhysAddr::from(memory.gpa)))
-                    .map_err(|e| {
-                        ax_err_type!(
-                            NoMemory,
-                            format!("Failed to allocate memory region for VM: {e:?}")
-                        )
-                    })?;
-            }
-            VmMemMappingType::MapIdentical => {
-                vm.alloc_memory_region(make_layout(memory)?, None)
-                    .map_err(|e| {
-                        ax_err_type!(
-                            NoMemory,
-                            format!("Failed to allocate memory region for VM: {e:?}")
-                        )
-                    })?;
-            }
-            VmMemMappingType::MapReserved => {
-                debug!("VM[{}] map same region: {:#x?}", vm.id(), memory);
-                vm.map_reserved_memory_region(
-                    make_layout(memory)?,
-                    Some(GuestPhysAddr::from(memory.gpa)),
-                )
-                .map_err(|e| {
-                    ax_err_type!(
-                        NoMemory,
-                        format!("Failed to map memory region for VM: {e:?}")
-                    )
-                })?;
-            }
+    fn memory_region(gpa: usize, size: usize, map_type: VmMemMappingType) -> VmMemConfig {
+        VmMemConfig {
+            gpa,
+            size,
+            flags: 0x7,
+            map_type,
         }
     }
-    Ok(())
+
+    #[test]
+    fn sync_axvm_config_keeps_fdt_reserved_memory_regions() {
+        let mut crate_config = AxVMCrateConfig::default();
+        crate_config.kernel.memory_regions.push(memory_region(
+            0x8000_0000,
+            0x200000,
+            VmMemMappingType::MapIdentical,
+        ));
+        let mut vm_config = build_axvm_config(&crate_config);
+
+        crate_config.kernel.memory_regions.push(memory_region(
+            0x110000,
+            0x10000,
+            VmMemMappingType::MapReserved,
+        ));
+        assert_eq!(vm_config.memory_regions().len(), 1);
+
+        sync_axvm_config_from_crate_config(&mut vm_config, &crate_config);
+
+        let regions = vm_config.memory_regions();
+        assert_eq!(regions.len(), 2);
+        assert_eq!(regions[1].gpa, 0x110000);
+        assert_eq!(regions[1].size, 0x10000);
+        assert_eq!(regions[1].map_type, VmMemMappingType::MapReserved);
+    }
 }
