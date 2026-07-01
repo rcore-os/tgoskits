@@ -639,6 +639,57 @@ mod tests {
     }
 
     #[test]
+    fn pinctrl_device_applies_fdt_fixed_regulator_with_registered_parser() {
+        let mut fdt = Fdt::new();
+        let root = fdt.root_id();
+        fdt.add_node(
+            root,
+            node_with_props("gpio1@0", &[prop_u32s("phandle", &[20])]),
+        );
+        let regulator = fdt.add_node(
+            root,
+            node_with_props("vbus-regulator", &[prop_u32s("gpios", &[20, 5, 0])]),
+        );
+        let mut device = PinctrlDevice::with_fdt_parser(Recorder::new(), TestParser);
+
+        device
+            .apply_fdt_fixed_regulator(&fdt, fdt.node(regulator).unwrap(), "fixed-regulator")
+            .unwrap();
+
+        assert!(
+            device
+                .typed_ref::<Recorder>()
+                .unwrap()
+                .configs
+                .contains(&ConfigSetting::pin(
+                    PinId::new(37),
+                    PinConfig::OutputValue(true)
+                ))
+        );
+    }
+
+    #[test]
+    fn pinctrl_device_skips_fdt_fixed_regulator_without_parser() {
+        let mut fdt = Fdt::new();
+        let root = fdt.root_id();
+        fdt.add_node(
+            root,
+            node_with_props("gpio1@0", &[prop_u32s("phandle", &[20])]),
+        );
+        let regulator = fdt.add_node(
+            root,
+            node_with_props("vbus-regulator", &[prop_u32s("gpios", &[20, 5, 0])]),
+        );
+        let mut device = PinctrlDevice::new(Recorder::new());
+
+        device
+            .apply_fdt_fixed_regulator(&fdt, fdt.node(regulator).unwrap(), "fixed-regulator")
+            .unwrap();
+
+        assert!(device.typed_ref::<Recorder>().unwrap().configs.is_empty());
+    }
+
+    #[test]
     fn unsupported_firmware_reports_explicit_error() {
         assert_eq!(
             FdtPinctrl::unsupported_firmware(crate::FirmwareKind::Acpi),

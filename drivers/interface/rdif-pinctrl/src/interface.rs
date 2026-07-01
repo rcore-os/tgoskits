@@ -100,6 +100,23 @@ impl PinctrlDevice {
         };
         FdtPinctrl::apply_state_from_consumer(interface.as_mut(), fdt, node, 0, parser)
     }
+
+    #[cfg(feature = "fdt")]
+    pub fn apply_fdt_fixed_regulator(
+        &mut self,
+        fdt: &fdt_edit::Fdt,
+        regulator_node: &fdt_edit::Node,
+        owner: &str,
+    ) -> Result<(), PinctrlError> {
+        let Self {
+            interface,
+            fdt_parser,
+        } = self;
+        let Some(parser) = fdt_parser.as_deref() else {
+            return Ok(());
+        };
+        FdtPinctrl::apply_fixed_regulator(interface.as_mut(), fdt, regulator_node, parser, owner)
+    }
 }
 
 impl DriverGeneric for PinctrlDevice {
