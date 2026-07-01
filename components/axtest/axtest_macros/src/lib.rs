@@ -267,7 +267,6 @@ fn expand_axtest(attr: TokenStream, item: TokenStream) -> TokenStream {
     let expanded = if has_return_type {
         quote! {
             #[used]
-            #[cfg(axtest)]
             #[unsafe(link_section = ".axtest_array")]
             #[allow(non_upper_case_globals)]
             static #static_name: axtest::AxTestDescriptor = axtest::AxTestDescriptor::new(
@@ -294,7 +293,6 @@ fn expand_axtest(attr: TokenStream, item: TokenStream) -> TokenStream {
     } else {
         quote! {
             #[used]
-            #[cfg(axtest)]
             #[unsafe(link_section = ".axtest_array")]
             #[allow(non_upper_case_globals)]
             static #static_name: axtest::AxTestDescriptor = axtest::AxTestDescriptor::new(
