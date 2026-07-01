@@ -210,7 +210,10 @@ fn openat2_check_extra_bytes(how: *const OpenHow, size: usize) -> AxResult<()> {
         return Ok(());
     }
 
-    let extra = vm_load(unsafe { (how as *const u8).add(base_size) }, size - base_size)?;
+    let extra = vm_load(
+        unsafe { (how as *const u8).add(base_size) },
+        size - base_size,
+    )?;
     if extra.iter().any(|byte| *byte != 0) {
         return Err(AxError::ArgumentListTooLong);
     }
