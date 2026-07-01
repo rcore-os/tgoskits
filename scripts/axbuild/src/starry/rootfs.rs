@@ -145,6 +145,11 @@ pub(crate) async fn ensure_qemu_rootfs_ready(
     workspace_root: &Path,
     explicit_rootfs: Option<&Path>,
 ) -> anyhow::Result<()> {
+    if explicit_rootfs.is_none() {
+        super::app::ensure_shared_app_rootfs(workspace_root, &request.arch, &request.target)
+            .await?;
+        return Ok(());
+    }
     let rootfs_path = qemu_rootfs_path(request, workspace_root, explicit_rootfs)?;
     crate::image::storage::ensure_optional_managed_rootfs(
         workspace_root,
@@ -271,7 +276,16 @@ pub(crate) fn qemu_rootfs_path(
         return Ok(explicit.to_path_buf());
     }
 
-    crate::image::storage::default_rootfs_path(workspace_root, &request.arch)
+    Ok(shared_app_rootfs_path(workspace_root, &request.target))
+}
+
+pub(crate) fn shared_app_rootfs_path(workspace_root: &Path, target: &str) -> PathBuf {
+    workspace_root
+        .join("target")
+        .join(target)
+        .join("qemu-cases")
+        .join("starry-apps")
+        .join("rootfs.img")
 }
 
 /// Patches a QEMU config with a concrete Starry rootfs path.
@@ -304,10 +318,6 @@ mod tests {
 
     use super::*;
 
-    fn managed_rootfs_path(root: &Path, image_name: &str) -> PathBuf {
-        root.join(".tgos-images").join(image_name).join(image_name)
-    }
-
     fn write_test_image_config(root: &Path) {
         let config = crate::image::config::ImageConfig {
             local_storage: root.join(".tgos-images"),
@@ -322,7 +332,7 @@ mod tests {
     async fn patch_qemu_rootfs_includes_rootfs_and_network_defaults() {
         let root = tempdir().unwrap();
         write_test_image_config(root.path());
-        let rootfs = managed_rootfs_path(root.path(), "rootfs-x86_64-alpine.img");
+        let rootfs = shared_app_rootfs_path(root.path(), "x86_64-unknown-none");
 
         let request = ResolvedStarryRequest {
             package: "starryos".to_string(),
@@ -366,7 +376,7 @@ mod tests {
     async fn patch_qemu_rootfs_preserves_existing_base_args() {
         let root = tempdir().unwrap();
         write_test_image_config(root.path());
-        let rootfs = managed_rootfs_path(root.path(), "rootfs-riscv64-alpine.img");
+        let rootfs = shared_app_rootfs_path(root.path(), "riscv64gc-unknown-none-elf");
 
         let request = ResolvedStarryRequest {
             package: "starryos".to_string(),
@@ -424,7 +434,7 @@ mod tests {
     async fn patch_qemu_rootfs_for_dynamic_platform_replaces_drive_only() {
         let root = tempdir().unwrap();
         write_test_image_config(root.path());
-        let rootfs = managed_rootfs_path(root.path(), "rootfs-riscv64-alpine.img");
+        let rootfs = shared_app_rootfs_path(root.path(), "riscv64gc-unknown-none-elf");
 
         let request = ResolvedStarryRequest {
             package: "starryos".to_string(),

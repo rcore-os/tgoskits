@@ -596,13 +596,22 @@ impl Starry {
             &request.arch,
             &request.target,
             &test_case,
-            rootfs_path,
+            rootfs_path.clone(),
             asset_config,
         )
         .await?;
+        if prepared_assets.rootfs_path != rootfs_path {
+            std::fs::copy(&prepared_assets.rootfs_path, &rootfs_path).map_err(|err| {
+                anyhow::anyhow!(
+                    "failed to merge Starry app case rootfs {} into shared rootfs {}: {err}",
+                    prepared_assets.rootfs_path.display(),
+                    rootfs_path.display()
+                )
+            })?;
+        }
         rootfs::patch_rootfs(
             &mut qemu,
-            &prepared_assets.rootfs_path,
+            &rootfs_path,
             rootfs::RootfsPatchMode::EnsureDiskBootNet,
         );
         qemu.args.extend(prepared_assets.extra_qemu_args.clone());
@@ -622,7 +631,7 @@ impl Starry {
             test_case.qemu_config_path.display(),
             qemu::qemu_timeout_summary(&qemu)
         );
-        println!("  rootfs: {}", prepared_assets.rootfs_path.display());
+        println!("  rootfs: {}", rootfs_path.display());
 
         let _host_http_server = test_case
             .host_http_server

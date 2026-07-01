@@ -1,6 +1,6 @@
 target = "riscv64gc-unknown-none-elf"
 env = {}
-log = "Warn"
+log = "Error"
 features = [
   "ax-feat/rtc",
   "ax-feat/display",
@@ -8,5 +8,9 @@ features = [
   "ax-driver/virtio-blk",
   "ax-driver/virtio-gpu",
   "ax-driver/virtio-input",
+  "ax-driver/virtio-socket",
+  "ax-driver/virtio-net",
   "starry-kernel/input",
+  "starry-kernel/input",
+  "starry-kernel/vsock",
 ]

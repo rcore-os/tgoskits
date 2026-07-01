@@ -1415,11 +1415,21 @@ pub(crate) fn starry_case_asset_config() -> case::CaseAssetConfig {
 fn starry_guest_package_env(staging_root: &Path) -> anyhow::Result<Vec<(String, String)>> {
     let region = crate::starry::apk::apk_region_from_env()?;
     crate::starry::apk::rewrite_apk_repositories_for_region(staging_root, region)?;
+    prefer_plain_http_for_qemu_user_apk(staging_root)?;
     log_starry_apk_prebuild_context(staging_root, region)?;
     Ok(vec![(
         crate::starry::apk::STARRY_APK_REGION_VAR.to_string(),
         region.canonical_name().to_string(),
     )])
+}
+
+fn prefer_plain_http_for_qemu_user_apk(staging_root: &Path) -> anyhow::Result<()> {
+    let repositories_path = staging_root.join("etc/apk/repositories");
+    let repositories = fs::read_to_string(&repositories_path)
+        .with_context(|| format!("failed to read {}", repositories_path.display()))?;
+    let rewritten = repositories.replace("https://", "http://");
+    fs::write(&repositories_path, rewritten)
+        .with_context(|| format!("failed to write {}", repositories_path.display()))
 }
 
 fn log_starry_apk_prebuild_context(

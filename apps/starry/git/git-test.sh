@@ -3,8 +3,7 @@ export GIT_PAGER=cat
 export PAGER=cat
 export TERM=dumb
 
-echo "=== install git ==="
-apk add --no-progress git || { echo "GIT_TEST_FAILED"; exit 1; }
+command -v git >/dev/null 2>&1 || { echo "GIT_TEST_FAILED"; exit 1; }
 
 echo "=== test git workflow ===" &&
 mkdir -p /tmp/test-repo && cd /tmp/test-repo &&

@@ -15,7 +15,7 @@ use crate::{
     rootfs::inject,
     support::process::ProcessExt,
     test::{
-        case::{HostHttpServerConfig, TestQemuCase},
+        case::{self as qemu_case, HostHttpServerConfig, TestQemuCase},
         qemu as qemu_test,
     },
 };
@@ -653,6 +653,31 @@ fn arch_from_target_name(target: &str) -> Option<&str> {
     target.split_once('-').map(|(arch, _)| arch)
 }
 
+pub(crate) async fn ensure_shared_app_rootfs(
+    workspace_root: &Path,
+    arch: &str,
+    target: &str,
+) -> anyhow::Result<PathBuf> {
+    let base_rootfs = rootfs::ensure_rootfs_in_tmp_dir(workspace_root, arch, target).await?;
+    let layout = qemu_case::case_asset_layout(workspace_root, target, "starry-apps")?;
+    let rootfs_path = layout.work_dir.join("rootfs.img");
+    if let Some(parent) = rootfs_path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create {}", parent.display()))?;
+    }
+    if !rootfs_path.exists() {
+        fs::copy(&base_rootfs, &rootfs_path).with_context(|| {
+            format!(
+                "failed to copy shared app rootfs seed {} to {}",
+                base_rootfs.display(),
+                rootfs_path.display()
+            )
+        })?;
+    }
+    rootfs::ensure_apk_region_in_rootfs(&rootfs_path)?;
+    Ok(rootfs_path)
+}
+
 async fn prepare_qemu_app_rootfs(
     workspace_root: &Path,
     app: &StarryAppCase,
@@ -660,7 +685,7 @@ async fn prepare_qemu_app_rootfs(
     target: &str,
     configured_rootfs: Option<&Path>,
 ) -> anyhow::Result<PathBuf> {
-    let rootfs_path = match configured_rootfs {
+    let configured_rootfs_path = match configured_rootfs {
         Some(path) => path.to_path_buf(),
         None => crate::image::storage::default_rootfs_path(workspace_root, arch)?,
     };
@@ -673,33 +698,28 @@ async fn prepare_qemu_app_rootfs(
             )
             .await?;
             rootfs::ensure_apk_region_in_rootfs(configured)?;
-            return Ok(configured.to_path_buf());
         }
-        return rootfs::ensure_rootfs_in_tmp_dir(workspace_root, arch, target).await;
+        return ensure_shared_app_rootfs(workspace_root, arch, target).await;
     }
 
-    let default_rootfs = rootfs::ensure_rootfs_in_tmp_dir(workspace_root, arch, target).await?;
-    if let Some(parent) = rootfs_path.parent() {
-        fs::create_dir_all(parent)
-            .with_context(|| format!("failed to create {}", parent.display()))?;
+    if let Some(configured) = configured_rootfs {
+        crate::image::storage::ensure_optional_managed_rootfs(
+            workspace_root,
+            arch,
+            Some(configured),
+        )
+        .await?;
+        rootfs::ensure_apk_region_in_rootfs(configured)?;
     }
-    if !rootfs_path.exists() {
-        fs::copy(&default_rootfs, &rootfs_path).with_context(|| {
-            format!(
-                "failed to copy default rootfs {} to {}",
-                default_rootfs.display(),
-                rootfs_path.display()
-            )
-        })?;
-    }
+    let rootfs_path = ensure_shared_app_rootfs(workspace_root, arch, target).await?;
+    let layout = qemu_case::case_asset_layout(workspace_root, target, &app.name)?;
 
-    let layout_root = workspace_root
-        .join("tmp/axbuild/starry-app")
-        .join(&app.name);
+    let layout_root = layout.run_dir;
     let staging_root = layout_root.join("staging-root");
     let overlay_dir = layout_root.join("overlay");
 
     let prepare_result = (|| -> anyhow::Result<()> {
+        reset_dir(&layout_root)?;
         reset_dir(&staging_root)?;
         reset_dir(&overlay_dir)?;
 
@@ -713,6 +733,7 @@ async fn prepare_qemu_app_rootfs(
                 .env("STARRY_WORKSPACE", workspace_root)
                 .env("STARRY_ARCH", arch)
                 .env("STARRY_ROOTFS", &rootfs_path)
+                .env("STARRY_CONFIGURED_ROOTFS", &configured_rootfs_path)
                 .env("STARRY_STAGING_ROOT", &staging_root)
                 .env("STARRY_OVERLAY_DIR", &overlay_dir);
             command

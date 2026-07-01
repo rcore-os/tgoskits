@@ -15,6 +15,7 @@ use std::{
 };
 
 use anyhow::{Context, bail, ensure};
+use walkdir::WalkDir;
 
 use super::{
     case as case_assets,
@@ -126,6 +127,7 @@ pub(crate) fn prepare_c_case_assets_sync(
         ],
     );
     (config.prepare_staging_root)(&layout.staging_root)?;
+    normalize_staging_absolute_symlinks(&layout.staging_root)?;
     timing_stage.finish();
     let timing_stage = timing::TimingStage::new(
         "qemu-asset-c",
@@ -290,6 +292,7 @@ pub(crate) fn prepare_grouped_case_assets_sync(
         ],
     );
     (config.prepare_staging_root)(&layout.staging_root)?;
+    normalize_staging_absolute_symlinks(&layout.staging_root)?;
     timing_stage.finish();
     let timing_stage = timing::TimingStage::new(
         "qemu-asset-grouped",
@@ -907,6 +910,7 @@ pub(crate) fn prepare_python_case_assets_sync(
     // Extract rootfs into staging
     crate::rootfs::inject::extract_rootfs(case_rootfs, &layout.staging_root)?;
     (config.prepare_staging_root)(&layout.staging_root)?;
+    normalize_staging_absolute_symlinks(&layout.staging_root)?;
     write_musl_loader_search_path(arch, &layout.staging_root)?;
 
     // Prepare guest prebuild environment and install python3
@@ -1162,6 +1166,83 @@ fn prepare_guest_prebuild_env(
         qemu_runner,
         script_envs,
     })
+}
+
+#[cfg(unix)]
+fn normalize_staging_absolute_symlinks(staging_root: &Path) -> anyhow::Result<()> {
+    let entries = WalkDir::new(staging_root)
+        .follow_links(false)
+        .into_iter()
+        .collect::<Result<Vec<_>, _>>()
+        .with_context(|| format!("failed to walk {}", staging_root.display()))?;
+
+    for entry in entries {
+        if !entry.file_type().is_symlink() {
+            continue;
+        }
+
+        let link_path = entry.path();
+        let link_target = fs::read_link(link_path)
+            .with_context(|| format!("failed to read symlink {}", link_path.display()))?;
+        if !link_target.is_absolute() {
+            continue;
+        }
+
+        let staged_target =
+            staging_root.join(link_target.strip_prefix("/").unwrap_or(&link_target));
+        if fs::symlink_metadata(&staged_target).is_err() {
+            continue;
+        }
+
+        let link_parent = link_path.parent().unwrap_or(staging_root);
+        let relative_target = relative_path_inside_root(staging_root, link_parent, &staged_target)?;
+        fs::remove_file(link_path)
+            .with_context(|| format!("failed to replace symlink {}", link_path.display()))?;
+        std::os::unix::fs::symlink(&relative_target, link_path).with_context(|| {
+            format!(
+                "failed to rewrite symlink {} -> {}",
+                link_path.display(),
+                relative_target.display()
+            )
+        })?;
+    }
+
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn normalize_staging_absolute_symlinks(_staging_root: &Path) -> anyhow::Result<()> {
+    Ok(())
+}
+
+fn relative_path_inside_root(
+    root: &Path,
+    from_dir: &Path,
+    target: &Path,
+) -> anyhow::Result<PathBuf> {
+    let from = from_dir.strip_prefix(root).with_context(|| {
+        format!(
+            "path {} is not inside staging root {}",
+            from_dir.display(),
+            root.display()
+        )
+    })?;
+    let target = target.strip_prefix(root).with_context(|| {
+        format!(
+            "path {} is not inside staging root {}",
+            target.display(),
+            root.display()
+        )
+    })?;
+
+    let mut relative = PathBuf::new();
+    for component in from.components() {
+        if matches!(component, std::path::Component::Normal(_)) {
+            relative.push("..");
+        }
+    }
+    relative.push(target);
+    Ok(relative)
 }
 
 fn prepare_guest_package_env(
@@ -1839,6 +1920,7 @@ pub(crate) fn prepare_rust_case_assets_sync(
     // linker cannot handle (e.g. loongarch64).
     crate::rootfs::inject::extract_rootfs(case_rootfs, &layout.staging_root)?;
     (config.prepare_staging_root)(&layout.staging_root)?;
+    normalize_staging_absolute_symlinks(&layout.staging_root)?;
     write_musl_loader_search_path(arch, &layout.staging_root)?;
 
     // Build qemu-user wrappers for Alpine binutils. Rust's musl targets have a
@@ -1949,7 +2031,7 @@ pub(crate) fn prepare_rust_case_assets_sync(
 }
 
 fn rust_case_needs_guest_linker(arch: &str) -> bool {
-    matches!(arch, "loongarch64")
+    matches!(arch, "aarch64" | "loongarch64")
 }
 
 /// Reads the binary name from a `Cargo.toml`.

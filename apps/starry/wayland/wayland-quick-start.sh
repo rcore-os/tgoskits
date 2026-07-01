@@ -59,8 +59,3 @@ echo "WAYLAND_QUICK_START gtk4-demo pid=$gtk_pid"
 sleep 2
 ps | grep gtk4-demo | grep -v grep || fail "gtk4-demo process not found"
 echo "WAYLAND_QUICK_START_READY"
-
-# Keep the QEMU/VNC session alive for interaction even if gtk4-demo exits.
-while :; do
-    sleep 3600
-done

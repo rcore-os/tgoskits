@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-app_dir="${STARRY_APP_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+app_dir="${STARRY_APP_DIR:-${STARRY_CASE_DIR:-$(cd "$script_dir/.." && pwd)}}"
 workspace="${STARRY_WORKSPACE:-$(cd "$app_dir/../../.." && pwd)}"
 arch="${STARRY_ARCH:-}"
 rootfs="${STARRY_ROOTFS:-}"
 staging_root="${STARRY_STAGING_ROOT:-}"
-overlay_dir="${STARRY_OVERLAY_DIR:-}"
+overlay_dir="${STARRY_OVERLAY_DIR:-${STARRY_CASE_OVERLAY_DIR:-}}"
 
 require_env() {
     local name="$1"
@@ -31,11 +32,23 @@ copy_base_text_file_to_overlay() {
     local guest_path="$1"
     local target="$overlay_dir$guest_path"
     mkdir -p "$(dirname "$target")"
-    if ! debugfs -R "cat $guest_path" "$rootfs" >"$target" 2>/dev/null; then
-        rm -f "$target"
+    if [[ -n "$rootfs" ]] && debugfs -R "cat $guest_path" "$rootfs" >"$target" 2>/dev/null; then
+        chmod 0644 "$target"
         return
     fi
-    chmod 0644 "$target"
+    if [[ -f "$staging_root$guest_path" ]]; then
+        cp "$staging_root$guest_path" "$target"
+        chmod 0644 "$target"
+        return
+    fi
+    if [[ -L "$staging_root$guest_path" ]]; then
+        cp -P "$staging_root$guest_path" "$target"
+        chmod 0644 "$target" 2>/dev/null || true
+        return
+    fi
+    if [[ -n "$rootfs" ]]; then
+        rm -f "$target"
+    fi
 }
 
 qemu_runner_for_arch() {
@@ -283,13 +296,12 @@ install_wayland_packages_in_staging() {
         return 0
     fi
 
-    echo "WAYLAND_PREBUILD extracting rootfs for qemu-user APK install"
-    debugfs -R "rdump / $staging_root" "$rootfs"
-    normalize_staging_absolute_symlinks
-
-    if [[ -f /etc/resolv.conf ]]; then
-        cp /etc/resolv.conf "$staging_root/etc/resolv.conf"
+    if [[ ! -x "$staging_root/sbin/apk" ]]; then
+        require_env STARRY_ROOTFS "$rootfs"
+        echo "WAYLAND_PREBUILD extracting rootfs for qemu-user APK install"
+        debugfs -R "rdump / $staging_root" "$rootfs"
     fi
+    normalize_staging_absolute_symlinks
 
     echo "WAYLAND_PREBUILD installing Weston and GTK demo into staging rootfs"
     QEMU_LD_PREFIX="$staging_root" \
@@ -380,7 +392,6 @@ for guest_path in (
     "/lib/apk/db",
     "/etc/apk/world",
     "/etc/apk/repositories",
-    "/etc/resolv.conf",
 ):
     copy_path(guest_path, recursive=guest_path == "/lib/apk/db")
 PY
@@ -394,15 +405,19 @@ populate_overlay() {
     chmod 0755 "$overlay_dir/usr/bin/wayland-quick-start.sh"
 
     copy_base_text_file_to_overlay /etc/apk/repositories
-    copy_base_text_file_to_overlay /etc/resolv.conf
     prefetch_wayland_apks
     install_wayland_packages_in_staging
 }
 
 require_env STARRY_ARCH "$arch"
-require_env STARRY_ROOTFS "$rootfs"
-require_env STARRY_STAGING_ROOT "$staging_root"
 require_env STARRY_OVERLAY_DIR "$overlay_dir"
+
+if [[ -z "$staging_root" ]]; then
+    require_env STARRY_ROOTFS "$rootfs"
+    staging_root="$overlay_dir/.wayland-staging-root"
+    rm -rf "$staging_root"
+    mkdir -p "$staging_root"
+fi
 
 ensure_host_tools
 populate_overlay

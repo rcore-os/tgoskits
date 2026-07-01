@@ -14,6 +14,10 @@ args = [
     "virtio-blk-pci,drive=disk0",
     "-drive",
     "id=disk0,if=none,format=raw,file=${workspace}/tmp/axbuild/rootfs/rootfs-riscv64-alpine/rootfs-riscv64-alpine.img",
+    "-device",
+    "virtio-net-pci,netdev=net0",
+    "-netdev",
+    "user,id=net0,net=10.0.2.0/24,dhcpstart=10.0.2.15",
 ]
 uefi = false
 to_bin = true

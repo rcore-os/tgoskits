@@ -50,13 +50,36 @@ extract_base_rootfs() {
     [[ -x "$staging_root/sbin/apk" ]] || { echo "prebuild: base rootfs has no apk" >&2; exit 2; }
 }
 
+normalize_staging_absolute_symlinks() {
+    STAGING_ROOT="$staging_root" python3 <<'PY'
+import os
+
+staging_root = os.environ["STAGING_ROOT"]
+
+for root, _, names in os.walk(staging_root):
+    for name in names:
+        path = os.path.join(root, name)
+        if not os.path.islink(path):
+            continue
+        target = os.readlink(path)
+        if not target.startswith("/"):
+            continue
+        staged_target = os.path.join(staging_root, target.lstrip("/"))
+        if not os.path.exists(staged_target) and not os.path.islink(staged_target):
+            continue
+        relative_target = os.path.relpath(staged_target, os.path.dirname(path))
+        os.unlink(path)
+        os.symlink(relative_target, path)
+PY
+}
+
 install_python() {
     # apk can resolve hostnames inside qemu-user with the host's DNS config.
     [[ -f /etc/resolv.conf ]] && cp -f /etc/resolv.conf "$staging_root/etc/resolv.conf" || true
     # CPython 3.14 lives on Alpine edge; the stable base repos only carry 3.12.
     # Point apk at edge (main+community) so `apk add python3` resolves 3.14.x and
     # pulls its matching musl/openssl/... closure (copied into the overlay below).
-    local edge="https://dl-cdn.alpinelinux.org/alpine"
+    local edge="http://dl-cdn.alpinelinux.org/alpine"
     printf '%s/edge/main\n%s/edge/community\n' "$edge" "$edge" > "$staging_root/etc/apk/repositories"
     echo "prebuild: apk add python3 (CPython 3.14, pure language + stdlib) from Alpine edge via $qemu_runner..."
     QEMU_LD_PREFIX="$staging_root" \
@@ -131,5 +154,6 @@ populate_overlay() {
 
 ensure_host_tools
 extract_base_rootfs
+normalize_staging_absolute_symlinks
 install_python
 populate_overlay
