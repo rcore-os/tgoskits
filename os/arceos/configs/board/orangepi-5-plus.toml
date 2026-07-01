@@ -1,0 +1,6 @@
+package = "arceos-helloworld"
+target = "aarch64-unknown-none-softfloat"
+plat_dyn = true
+features = []
+log = "Info"
+max_cpu_num = 1
