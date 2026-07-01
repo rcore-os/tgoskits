@@ -706,14 +706,6 @@ jobs:
             container_image: ""
             limit_to_owner: rcore-os
             main_pr_only: false
-          - name: Test starry self-hosted board licheerv-nano-sg2002
-            use_container: false
-            runs_on: '["self-hosted","linux","board"]'
-            command: cargo xtask starry test board --board licheerv-nano-sg2002
-            cache_key: ""
-            container_image: ""
-            limit_to_owner: rcore-os
-            main_pr_only: false
           - name: Test starry self-hosted board aka-00-sg2002
             use_container: false
             runs_on: '["self-hosted","linux","board"]'
