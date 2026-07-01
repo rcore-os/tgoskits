@@ -1111,11 +1111,15 @@ impl AxRunQueue {
         );
 
         unsafe {
+            // `CurrentTask` is a borrowed Arc view over the per-CPU current-task
+            // pointer. `set_current()` consumes that per-CPU strong reference,
+            // so keep an explicit owner alive until this saved context resumes.
+            let _prev_task_keepalive = prev_task.clone();
             let prev_ctx_ptr = prev_task.ctx_mut_ptr();
             let next_ctx_ptr = next_task.ctx_mut_ptr();
 
             // Store a raw pointer to prev_task in PREV_TASK.
-            // Safety: prev_task is alive (Arc held on caller's stack) and will
+            // Safety: prev_task is alive (`_prev_task_keepalive`) and will
             // remain so through clear_prev_task_on_cpu() below.
             #[cfg(feature = "smp")]
             {

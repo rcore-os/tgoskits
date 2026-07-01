@@ -185,6 +185,9 @@ pub fn drain_irq_wake_queue_current_cpu() -> usize {
                 .as_ref()
                 .is_some_and(|current| current.ptr_eq(&task))
             {
+                if task.transition_state(crate::TaskState::Blocked, crate::TaskState::Running) {
+                    drained += 1;
+                }
                 continue;
             }
             if crate::run_queue::wake_task_from_irq_queue(task) {

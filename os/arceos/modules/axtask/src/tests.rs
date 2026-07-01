@@ -380,6 +380,22 @@ fn irq_task_waker_coalesces_and_preserves_bits() {
 }
 
 #[test]
+fn irq_task_waker_restores_current_task_blocked_before_resched() {
+    run_in_test_scheduler(|| {
+        let current = current().clone();
+        let waker = crate::current_irq_task_waker();
+
+        current.set_state(crate::TaskState::Blocked);
+        let result = waker.wake_from_irq(0x4);
+
+        assert!(result.woke());
+        assert_eq!(crate::drain_irq_wake_queue_current_cpu(), 1);
+        assert_eq!(current.state(), crate::TaskState::Running);
+        assert_eq!(waker.take_bits(), 0x4);
+    });
+}
+
+#[test]
 fn irq_task_waker_does_not_keep_task_alive() {
     let task = crate::TaskInner::new(|| {}, "irq-wake-weak-test".into(), RAW_TASK_STACK_SIZE);
     let task = task.into_arc();
