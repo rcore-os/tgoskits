@@ -9,8 +9,6 @@ mod drm;
 #[cfg(feature = "input")]
 pub mod event;
 mod fb;
-#[cfg(all(feature = "sg2002", not(feature = "plat-dyn")))]
-mod irq_byte_ring;
 mod kmsg;
 #[cfg(feature = "k230-kpu")]
 mod kpu;
@@ -25,19 +23,17 @@ pub use r#loop::LoopDevice;
 pub mod ion;
 #[cfg(feature = "memtrack")]
 mod memtrack;
+#[cfg(feature = "sg2002")]
+mod pinmux;
+#[cfg(feature = "sg2002")]
+pub(super) mod pwm;
 mod rtc;
 #[cfg(feature = "sg2002")]
 pub mod tpu;
 pub mod tty;
 
-#[cfg(all(feature = "sg2002", not(feature = "plat-dyn")))]
-mod cvi_camera;
 #[cfg(feature = "sg2002")]
 mod cvi_usb_camera;
-#[cfg(all(feature = "sg2002", not(feature = "plat-dyn")))]
-mod pinmux;
-#[cfg(all(feature = "sg2002", not(feature = "plat-dyn")))]
-pub(super) mod pwm;
 
 use alloc::{format, sync::Arc};
 use core::any::Any;
@@ -531,15 +527,17 @@ fn builder(fs: Arc<SimpleFs>) -> DirMaker {
 
     #[cfg(feature = "sg2002")]
     {
-        root.add(
-            "cvi-tpu0",
-            Device::new(
-                fs.clone(),
-                NodeType::CharacterDevice,
-                DeviceId::new(240, 0),
-                Arc::new(unsafe { tpu::TpuDevice::new() }),
-            ),
-        );
+        if let Some(tpu) = tpu::TpuDevice::probe() {
+            root.add(
+                "cvi-tpu0",
+                Device::new(
+                    fs.clone(),
+                    NodeType::CharacterDevice,
+                    DeviceId::new(240, 0),
+                    Arc::new(tpu),
+                ),
+            );
+        }
         let ion_device = Arc::new(ion::IonDevice::new());
         ION_DEVICE.call_once(|| ion_device.clone());
         root.add(
@@ -551,9 +549,15 @@ fn builder(fs: Arc<SimpleFs>) -> DirMaker {
                 ion_device,
             ),
         );
-    }
-    #[cfg(feature = "sg2002")]
-    {
+        root.add(
+            "pinmux",
+            Device::new(
+                fs.clone(),
+                NodeType::CharacterDevice,
+                DeviceId::new(1, 1),
+                Arc::new(pinmux::PinmuxDev),
+            ),
+        );
         root.add(
             "cvi-usb-camera0",
             Device::new(
@@ -564,27 +568,5 @@ fn builder(fs: Arc<SimpleFs>) -> DirMaker {
             ),
         );
     }
-    #[cfg(all(feature = "sg2002", not(feature = "plat-dyn")))]
-    {
-        root.add(
-            "cvi-camera0",
-            Device::new(
-                fs.clone(),
-                NodeType::CharacterDevice,
-                DeviceId::new(10, 201),
-                Arc::new(cvi_camera::CviCamera::new()),
-            ),
-        );
-        root.add(
-            "pinmux",
-            Device::new(
-                fs.clone(),
-                NodeType::CharacterDevice,
-                DeviceId::new(1, 1),
-                Arc::new(pinmux::PinmuxDev),
-            ),
-        );
-    }
-
     SimpleDir::new_maker(fs, Arc::new(root))
 }

@@ -79,7 +79,6 @@ pub mod serial;
 #[cfg(any(
     feature = "rockchip-soc",
     feature = "rockchip-pm",
-    feature = "sg2002-placeholder",
     feature = "rockchip-dwmmc"
 ))]
 pub mod soc;
@@ -95,6 +94,8 @@ pub use binding_info::PciIrqRequirement;
 pub use binding_info::{BindingInfo, BindingIrq, BindingIrqSource, FdtIrqSpec};
 #[cfg(feature = "pci")]
 pub use binding_resolver::binding_info_from_pci;
+#[cfg(feature = "plat-dyn")]
+pub use binding_resolver::binding_irq_from_named_fdt_interrupt;
 pub use binding_resolver::{
     binding_info_from_acpi, binding_info_from_acpi_route, binding_info_from_fdt,
 };

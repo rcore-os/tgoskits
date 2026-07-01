@@ -181,7 +181,11 @@ fn prepare_starry_request_explicit_config_target_overrides_snapshot_target() {
         &config,
         r#"
 target = "riscv64gc-unknown-none-elf"
-features = ["sg2002"]
+features = [
+    "plat-dyn",
+    "starry-kernel/sg2002",
+    "axplat-dyn/thead-mae",
+]
 log = "Info"
 "#,
     )

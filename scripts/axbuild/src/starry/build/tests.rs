@@ -539,25 +539,31 @@ fn render_uimage_its_template_replaces_build_placeholders() {
 }
 
 #[test]
-fn load_cargo_config_treats_sg2002_as_explicit_platform_feature() {
+fn load_cargo_config_keeps_sg2002_as_device_feature_without_static_platform_alias() {
     let mut request = request(
         PathBuf::from("/tmp/.build.toml"),
         "riscv64",
         "riscv64gc-unknown-none-elf",
     );
     request.build_info_override = Some(StarryBuildInfo {
-        features: vec!["sg2002".to_string()],
-        plat_dyn: false,
+        features: vec![
+            "plat-dyn".to_string(),
+            "starry-kernel/sg2002".to_string(),
+            "axplat-dyn/thead-mae".to_string(),
+        ],
+        plat_dyn: true,
         ..default_starry_build_info_for_target("riscv64gc-unknown-none-elf")
     });
 
     let cargo = load_cargo_config(&request).unwrap();
+    let removed_sg2002_platform = concat!("ax-hal/", "riscv64", "-sg2002");
 
-    assert!(cargo.features.contains(&"sg2002".to_string()));
+    assert!(cargo.features.contains(&"starry-kernel/sg2002".to_string()));
     assert!(
         cargo
             .features
-            .contains(&"ax-hal/riscv64-sg2002".to_string())
+            .iter()
+            .all(|feature| feature != removed_sg2002_platform)
     );
     assert!(
         !cargo
@@ -566,10 +572,7 @@ fn load_cargo_config_treats_sg2002_as_explicit_platform_feature() {
             .any(|feature| feature.starts_with("qemu"))
     );
     assert!(!cargo.features.contains(&"qemu".to_string()));
-    assert_eq!(
-        cargo.env.get("AX_PLATFORM").map(String::as_str),
-        Some("riscv64-sg2002")
-    );
+    assert_eq!(cargo.env.get("AX_PLATFORM"), None);
 }
 
 #[test]

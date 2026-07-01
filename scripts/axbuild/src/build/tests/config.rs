@@ -60,9 +60,15 @@ pub(super) fn declares_static_platform(content: &str) -> bool {
 }
 
 fn is_static_platform_feature(feature: &str) -> bool {
-    feature == "ax-driver/plat-static"
-        || ax_hal_platform_feature_name(feature, None)
-            .is_some_and(|platform| platform != "plat-dyn")
+    ax_hal_platform_feature_name(feature, None).is_some_and(|platform| platform != "plat-dyn")
+}
+
+#[test]
+fn declares_static_platform_ignores_removed_ax_driver_static_feature() {
+    let feature = concat!("ax-driver/", "plat", "-static");
+    let content = format!("features = [\"{feature}\"]\n");
+
+    assert!(!declares_static_platform(&content));
 }
 
 pub(super) fn checked_in_build_config_roots(workspace: &Path) -> [PathBuf; 4] {

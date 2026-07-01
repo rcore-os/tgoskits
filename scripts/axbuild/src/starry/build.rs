@@ -141,12 +141,6 @@ pub(crate) fn load_cargo_config(request: &ResolvedStarryRequest) -> anyhow::Resu
 }
 
 fn normalize_starry_platform_features(features: &mut Vec<String>) {
-    let has_sg2002 = features.iter().any(|feature| feature == "sg2002");
-
-    if has_sg2002 {
-        features.push("ax-hal/riscv64-sg2002".to_string());
-    }
-
     features.sort();
     features.dedup();
 }

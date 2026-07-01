@@ -92,7 +92,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Other
 
-- updated the following local packages: starry-kernel, axplat-riscv64-visionfive2, axbuild, ax-plat-riscv64-sg2002, axplat-dyn, ax-feat
+- updated the following local packages: starry-kernel, axplat-riscv64-visionfive2, axbuild, axplat-dyn, ax-feat
 
 ## [0.5.10](https://github.com/rcore-os/tgoskits/compare/starryos-v0.5.9...starryos-v0.5.10) - 2026-05-15
 

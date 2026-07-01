@@ -195,7 +195,7 @@ impl ax_plat::init::InitIf for InitIfImpl {
 
 ### 3.2 被谁依赖
 
-- 所有具体平台包：如 `ax-plat-riscv64-sg2002`；x86_64、AArch64、RISC-V QEMU 和 LoongArch QEMU 默认路径通过 `axplat-dyn` 运行时发现平台。
+- 外部自定义 `ax-plat-*` 平台包；x86_64、AArch64、RISC-V QEMU、LoongArch QEMU 和 SG2002 默认路径通过 `axplat-dyn` 运行时发现平台。
 - `ax-hal`：通过选择某个 `ax-plat-*` 平台包把平台实现纳入构建。
 - 上层 ArceOS/StarryOS/Axvisor 宿主侧内核：通常通过 `ax-hal` 间接消费，而不是直接依赖 `ax-plat`。
 
@@ -243,7 +243,7 @@ ax-plat = { workspace = true, features = ["irq", "smp"] }
 cargo build -p ax-plat --all-features
 ```
 
-真正的整机验证一般在平台包或 `ax-hal` 所在工程中完成，例如为某个内核选择 `riscv64-sg2002` 等静态目标平台；x86_64、AArch64、RISC-V QEMU 和 LoongArch QEMU 默认走动态平台路径。
+真正的整机验证一般在平台包或 `ax-hal` 所在工程中完成；仓库内置板卡默认走动态平台路径，外部自定义静态平台应在自己的平台包中验证。
 
 ### 4.3 常见注意事项
 

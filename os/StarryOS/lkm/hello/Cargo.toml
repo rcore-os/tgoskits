@@ -32,13 +32,6 @@ qemu = [
 ]
 smp = ["ax-feat/smp", "axplat-dyn?/smp", "ax-hal/smp"]
 
-sg2002 = ["ax-hal/riscv64-sg2002", "starry-kernel/sg2002"]
-sg2002-dyn = [
-  "plat-dyn",
-  "axplat-dyn/thead-mae",
-  "starry-kernel/sg2002",
-  "ax-driver/sg2002-placeholder",
-]
 k230 = [
   "plat-dyn",
   "starry-kernel/k230-kpu",

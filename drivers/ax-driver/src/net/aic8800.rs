@@ -197,6 +197,7 @@ fn probe(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
             "[wifi] failed to enable SDIO1 IRQ {irq:?}: {e:?}"
         )));
     }
+    info!("[wifi] SDIO1 IRQ {irq:?} registered and enabled");
 
     // Attach the board's SoftAP link policy to the device, then register it
     // through the ordinary net device path. The runtime reads the policy back

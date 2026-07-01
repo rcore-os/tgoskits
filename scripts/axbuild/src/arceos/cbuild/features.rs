@@ -1,6 +1,7 @@
 use std::collections::BTreeSet;
 
 const C_DEFINE_FEATURE_PREFIX: &str = "c-define:";
+const REMOVED_AX_DRIVER_PLAT_STATIC_FEATURE: &str = concat!("ax-driver/", "plat", "-static");
 
 pub(super) fn dynamic_pie_for_c_app(features: &[String]) -> bool {
     has_feature(features, "plat-dyn")
@@ -91,6 +92,9 @@ pub(super) fn map_c_app_features(
 
     let mut features = BTreeSet::new();
     for feature in base_features {
+        if removed_cargo_feature(feature) {
+            continue;
+        }
         let normalized = feature
             .strip_prefix("ax-feat/")
             .or_else(|| feature.strip_prefix("ax-std/"))
@@ -117,7 +121,7 @@ pub(super) fn map_c_app_features(
         }
     }
     for feature in case_features {
-        if feature.starts_with(C_DEFINE_FEATURE_PREFIX) {
+        if feature.starts_with(C_DEFINE_FEATURE_PREFIX) || removed_cargo_feature(feature) {
             continue;
         }
         let normalized = feature
@@ -147,4 +151,8 @@ pub(super) fn map_c_app_features(
         features.insert("smp".to_string());
     }
     features.into_iter().collect()
+}
+
+fn removed_cargo_feature(feature: &str) -> bool {
+    matches!(feature, REMOVED_AX_DRIVER_PLAT_STATIC_FEATURE)
 }
