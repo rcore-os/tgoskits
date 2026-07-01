@@ -23,6 +23,10 @@ pub use r#loop::LoopDevice;
 pub mod ion;
 #[cfg(feature = "memtrack")]
 mod memtrack;
+#[cfg(feature = "sg2002")]
+mod pinmux;
+#[cfg(feature = "sg2002")]
+pub(super) mod pwm;
 mod rtc;
 #[cfg(feature = "sg2002")]
 pub mod tpu;
@@ -545,9 +549,15 @@ fn builder(fs: Arc<SimpleFs>) -> DirMaker {
                 ion_device,
             ),
         );
-    }
-    #[cfg(feature = "sg2002")]
-    {
+        root.add(
+            "pinmux",
+            Device::new(
+                fs.clone(),
+                NodeType::CharacterDevice,
+                DeviceId::new(1, 1),
+                Arc::new(pinmux::PinmuxDev),
+            ),
+        );
         root.add(
             "cvi-usb-camera0",
             Device::new(

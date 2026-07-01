@@ -199,6 +199,9 @@ struct ClassDir {
 
 impl SimpleDirOps for ClassDir {
     fn child_names<'a>(&'a self) -> Box<dyn Iterator<Item = Cow<'a, str>> + 'a> {
+        #[cfg(feature = "sg2002")]
+        let names: &'static [&'static str] = &["drm", "graphics", "input", "pwm"];
+        #[cfg(not(feature = "sg2002"))]
         let names: &'static [&'static str] = &["drm", "graphics", "input"];
         Box::new(names.iter().copied().map(Cow::Borrowed))
     }
@@ -215,6 +218,8 @@ impl SimpleDirOps for ClassDir {
                 Arc::new(ClassSubsystemDir::new(fs, "graphics", &["fb0"])),
             ),
             "input" => SimpleDir::new_maker(fs.clone(), Arc::new(InputClassDir { fs })),
+            #[cfg(feature = "sg2002")]
+            "pwm" => crate::pseudofs::dev::pwm::pwm_class_dir_maker(fs),
             _ => return Err(VfsError::NotFound),
         }))
     }
