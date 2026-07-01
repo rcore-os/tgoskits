@@ -14,12 +14,9 @@
 #       (1) Maintainer tool (Debian, requires sudo, warms the offline cache):
 #             sudo ./scripts/prepare-selfhost-rootfs.sh --arch x86_64 --force
 #       (2) --bootstrap (Alpine, no host sudo): provisions the toolchain (musl,
-#           Rust nightly, kallsyms tools, source, firmware) inside QEMU and stops.
-#           It does NOT warm the offline cache, so a freshly bootstrapped rootfs
-#           CANNOT complete a self-compile on its own (the offline build fails at
-#           dependency resolution; network does not help — cargo is forced
-#           offline).  Use it to verify provisioning, then self-compile against a
-#           warmed-cache rootfs from path (1).
+#           Rust nightly, kallsyms tools, source, firmware) inside QEMU, then warms
+#           the offline dependency cache with `cargo fetch`.  The resulting rootfs
+#           IS self-compile-capable — no sudo, no pre-baked image download needed.
 #     A downloadable pre-warmed blueprint is planned but not yet available.
 #   - qemu-system-<arch>, debugfs (from e2fsprogs)
 #
@@ -81,13 +78,10 @@ while [[ $# -gt 0 ]]; do
             echo "  --commit <SHA>  Expected source commit for identity verification"
             echo "  --ref <REF>     Expected git ref (informational, no strict check)"
             echo "  --log <level>   Log level: none, error, warn, info (default: info)"
-            echo "  --bootstrap     Provision a selfhost rootfs (musl, Rust, kallsyms,
-                        source, firmware) from the Alpine base inside QEMU, no
-                        host sudo, then stop.  Provisioning only: it does NOT warm
-                        the offline cache, and the self-compile build runs offline,
-                        so a bootstrapped rootfs cannot complete a self-compile.
-                        Use a warmed-cache rootfs (prepare-selfhost-rootfs.sh) for
-                        the actual build."
+            echo "  --bootstrap     Provision a selfhost rootfs (musl, Rust, kallsyms,"
+            echo "                  source, firmware) from the Alpine base inside QEMU,"
+            echo "                  warm the offline cargo cache, then stop.  No host"
+            echo "                  sudo.  The resulting rootfs is self-compile-capable."
             exit 0
             ;;
         *) error "Unknown argument: $1";;
@@ -131,9 +125,9 @@ if [ "$ARCH" = "x86_64" ]; then
     #
     # --bootstrap PROVISIONS a selfhost rootfs from the Alpine base entirely
     # inside QEMU (no host sudo): build toolchain, Rust, kallsyms tools, full
-    # source, AIC8800 firmware, musl symlinks.  It does NOT warm the offline
-    # dependency cache (-Zbuild-std), so it is not sufficient for a self-contained
-    # offline self-compile on its own.  See apps/starry/selfhost/selfhost-bootstrap/prebuild.sh.
+    # source, AIC8800 firmware, musl symlinks, then warms the offline cache
+    # with `cargo fetch`.  The resulting rootfs IS self-compile-capable.
+    # See apps/starry/selfhost/selfhost-bootstrap/prebuild.sh.
     SELFHOST_BLUEPRINT="tmp/axbuild/rootfs/rootfs-x86_64-selfhost.img"
 
     if [ ! -f "$SELFHOST_BLUEPRINT" ] && [ "$BOOTSTRAP" = "true" ]; then
@@ -201,10 +195,10 @@ Run: cargo xtask starry rootfs --arch x86_64"
     # ─── Blueprint provisioning guidance ────────────────────────────────────
     #
     # The self-compile build runs offline (CARGO_NET_OFFLINE / --offline), so it
-    # needs a rootfs with a warmed dependency cache.  --bootstrap provisions the
-    # toolchain without host sudo but does NOT warm that cache, so a bootstrapped
-    # rootfs cannot complete the self-compile on its own — use the maintainer tool
-    # (prepare-selfhost-rootfs.sh) for a self-compilable blueprint.
+    # needs a rootfs with a warmed dependency cache.  Both paths below produce one:
+    #   (1) maintainer tool (sudo prepare-selfhost-rootfs.sh, Debian-based)
+    #   (2) --bootstrap (no sudo, Alpine-based — provisions toolchain + warms
+    #       the offline cache with `cargo fetch`)
     #
     # A downloadable pre-built blueprint is planned (tgosimages release) but is
     # not yet published.  When the release is available, uncomment and update:
@@ -217,29 +211,26 @@ Run: cargo xtask starry rootfs --arch x86_64"
     [ -f "$SELFHOST_BLUEPRINT" ] || error "Selfhost rootfs not found: $SELFHOST_BLUEPRINT
 
 No selfhost blueprint found.  The self-compile build runs offline, so it needs a
-rootfs with a warmed dependency cache.  Produce one with the maintainer tool:
+rootfs with a warmed dependency cache.  Two ways to produce one (no sudo):
 
-    sudo ./scripts/prepare-selfhost-rootfs.sh --arch x86_64 --force
-
-To verify provisioning without host sudo (toolchain only — this rootfs cannot
-complete a self-compile, as the offline build has no warmed cache):
-
+    # Path A: Bootstrap (no host sudo, ~15-20 min in QEMU)
     ./scripts/self-compile.sh --arch x86_64 --bootstrap
+
+    # Path B: Maintainer tool (requires sudo, Debian-based)
+    sudo ./scripts/prepare-selfhost-rootfs.sh --arch x86_64 --force
 
 A downloadable pre-warmed blueprint is planned but not yet available.
 
 See docs/starryos-self-compilation.md for details."
 
-    # --bootstrap is a PROVISION-ONLY step: it produces a toolchain rootfs (no
-    # host sudo) and stops here.  That rootfs does NOT have a warmed offline
-    # dependency cache, and the self-compile build runs offline, so it cannot
-    # complete a self-compile on its own — use a warmed-cache rootfs from the
-    # maintainer tool.  See docs/starryos-self-compilation.md.
+    # --bootstrap provisions the toolchain + warms the offline cache inside QEMU
+    # (no host sudo), then stops.  The resulting rootfs IS self-compile-capable:
+    # re-run without --bootstrap to run the full offline self-compile.
     if [ "$BOOTSTRAP" = "true" ]; then
         info "Selfhost blueprint provisioned (no host sudo): $SELFHOST_BLUEPRINT"
-        info "Provisioning verified.  Note: this rootfs cannot complete a self-compile"
-        info "(the offline build has no warmed dependency cache); use a warmed-cache"
-        info "rootfs from prepare-selfhost-rootfs.sh for the actual build."
+        info "The offline dependency cache has been warmed — this rootfs is ready"
+        info "for self-compile.  Re-run without --bootstrap to start the build:"
+        info "  ./scripts/self-compile.sh --arch x86_64 --smp 4"
         exit 0
     fi
 

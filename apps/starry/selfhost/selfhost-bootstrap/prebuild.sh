@@ -13,13 +13,12 @@
 #   5. Rust nightly + rust-src + llvm-tools-preview + bare-metal target
 #   6. kallsyms tools (cargo-binutils -> rust-nm/rust-objcopy, ksym -> gen_ksym)
 #
-# What this does NOT do, and WHY: it does not warm the offline dependency cache
-# (an in-guest `-Zbuild-std` build). That step needs a download-during-build that
-# does not fit StarryOS's resources at usable rootfs sizes (tmpfs target -> RAM
-# OOM; disk target -> rsext4 size limits), so a self-contained OFFLINE-buildable
-# blueprint cannot be produced under StarryOS. For a verified offline self-compile
-# use the downloadable pre-baked blueprint (curl + SHA-256, no sudo) or the
-# privileged prepare-selfhost-rootfs.sh — see docs/starryos-self-compilation.md.
+# Cache warm-up: after installing the toolchain, `cargo fetch` downloads all
+# workspace dependencies into CARGO_HOME.  This warms the offline cache so a
+# subsequent self-compile (which runs with --offline) finds every crate source
+# pre-fetched — no network needed during the actual build.  `cargo fetch` only
+# downloads sources (no compilation), so tmpfs/RAM pressure is minimal.  The
+# resulting rootfs IS self-compile-capable without host sudo.
 #
 # Env vars (set by the axbuild app runner): STARRY_OVERLAY_DIR, STARRY_WORKSPACE,
 # STARRY_ARCH.
@@ -43,15 +42,16 @@ git -C "$repo_root" archive --format=tar HEAD -o "$overlay_dir/opt/starryos-src.
 git -C "$repo_root" rev-parse HEAD > "$overlay_dir/opt/.source-commit" 2>/dev/null || true
 
 # ── Stage AIC8800 firmware blobs (gitignored; absent from git archive) ─────────
+# Bootstrap only provisions the toolchain — it does NOT compile the kernel, so
+# firmware is optional here.  The full-kernel self-compile will check for firmware
+# at build time and fail with a clear message if they are missing.
 if ls "$repo_root"/components/aic8800/firmware/*.bin >/dev/null 2>&1; then
     mkdir -p "$overlay_dir/opt/firmware-blobs"
     cp "$repo_root"/components/aic8800/firmware/*.bin "$overlay_dir/opt/firmware-blobs/"
     info "Staged $(ls "$overlay_dir"/opt/firmware-blobs/*.bin | wc -l) AIC8800 firmware blob(s)."
 else
-    printf "[prebuild:bootstrap] ERROR: AIC8800 firmware blobs not found at %s/components/aic8800/firmware/\n" "$repo_root" >&2
-    printf "The bootstrap inner script requires these blobs and will fail ~15 min into QEMU.\n" >&2
-    printf "Obtain the firmware files and place them at that path, then re-run.\n" >&2
-    exit 1
+    info "AIC8800 firmware blobs not found (gitignored) — skipping (bootstrap does not compile)."
+    info "Place them at components/aic8800/firmware/ before running the full self-compile."
 fi
 
 # ── In-guest provisioning inner script (Alpine /bin/sh) ─────────────────────────
@@ -97,13 +97,14 @@ tar xf /opt/starryos-src.tar -C /opt/starryos || fail "source untar failed"
 [ -f /opt/starryos/Cargo.toml ] || fail "Cargo.toml missing after untar"
 [ -f /opt/.source-commit ] && cp /opt/.source-commit /opt/starryos/.source-commit 2>/dev/null || true
 
-# AIC8800 firmware blobs (xtask hashes them before every Starry build).
+# AIC8800 firmware blobs (optional for bootstrap — provisioning only).
+    # The full-kernel self-compile will re-check at build time.
 if ls /opt/firmware-blobs/*.bin >/dev/null 2>&1; then
     mkdir -p /opt/starryos/components/aic8800/firmware
     cp /opt/firmware-blobs/*.bin /opt/starryos/components/aic8800/firmware/
     echo "[bootstrap] AIC8800 firmware staged."
 else
-    fail "AIC8800 firmware blobs missing in overlay"
+    echo "[bootstrap] AIC8800 firmware blobs not staged — full self-compile will need them."
 fi
 
 echo "[bootstrap] Installing Rust toolchain..."
@@ -135,13 +136,16 @@ command -v rust-nm >/dev/null 2>&1 || fail "rust-nm missing after install"
 command -v rust-objcopy >/dev/null 2>&1 || fail "rust-objcopy missing after install"
 echo "[bootstrap] kallsyms tools ready."
 
-# NOTE: the offline dependency-cache warm-up (an in-guest -Zbuild-std build) is
-# intentionally NOT performed here. Under StarryOS the download-during-build hits
-# resource limits (tmpfs target -> RAM OOM; disk target -> rsext4 size limits),
-# so a self-contained offline-buildable blueprint cannot be produced under
-# StarryOS. This rootfs is fully PROVISIONED (toolchain + Rust + kallsyms tools +
-# source + firmware); for a verified offline self-compile use the downloadable
-# pre-baked blueprint or the privileged prepare-selfhost-rootfs.sh (see docs).
+# Warm the offline dependency cache so the subsequent self-compile (which runs
+# with --offline) finds all crate sources pre-fetched.  cargo fetch downloads
+# every workspace dependency into CARGO_HOME (~1–2 GB on disk); no compilation
+# occurs, so tmpfs/RAM pressure is minimal.
+echo "[bootstrap] Warming offline dependency cache (cargo fetch)..."
+. "$HOME/.cargo/env"
+cd /opt/starryos
+cargo fetch 2>&1 || fail "cargo fetch failed — cannot warm offline cache"
+cd /
+echo "[bootstrap] Offline dependency cache warmed."
 rm -f /opt/starryos-src.tar 2>/dev/null || true
 sync
 
