@@ -222,12 +222,8 @@ struct Framebuffer {
     size: u64,
     /// Row stride (pitch) in bytes — from ADDFB2.pitches[0].
     stride: u32,
-    /// Framebuffer width in pixels — from ADDFB2.width.
-    width: u32,
     /// Framebuffer height in pixels — from ADDFB2.height.
     height: u32,
-    /// Pixel format (DRM_FORMAT_*) — from ADDFB2.pixel_format.
-    pixel_format: u32,
     /// Backing pages. Shared with the (now possibly removed) dumb
     /// buffer; refcount keeps them alive until both this fb and any
     /// user mappings have been dropped.
@@ -1184,7 +1180,7 @@ impl Card0 {
             return Err(VfsError::InvalidInput);
         }
         let fb_total = fb_stride as u64 * fb_height as u64;
-        if (size as u64) < fb_total {
+        if size < fb_total {
             warn!(
                 "ADDFB2: buffer size {} < fb_total {} ({}stride × {}height)",
                 size, fb_total, fb_stride, fb_height
@@ -1208,9 +1204,7 @@ impl Card0 {
             Framebuffer {
                 size,
                 stride: fb_stride,
-                width: fb_width,
                 height: fb_height,
-                pixel_format: fb_pixel_format,
                 pages,
             },
         );
