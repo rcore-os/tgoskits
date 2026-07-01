@@ -9,11 +9,7 @@ pub fn sys_sched_yield() -> c_int {
     #[cfg(feature = "multitask")]
     ax_task::yield_now();
     #[cfg(not(feature = "multitask"))]
-    if cfg!(feature = "irq") {
-        ax_hal::asm::wait_for_irqs();
-    } else {
-        core::hint::spin_loop();
-    }
+    ax_hal::asm::wait_for_irqs();
     0
 }
 

@@ -3,8 +3,7 @@
 //! This crate provides the platform-side glue that implements the small set
 //! of kernel helper functions defined in `axklib`. The implementation is
 //! intentionally minimal: it forwards memory mapping requests to `axmm`,
-//! delegates timing to `ax-hal`, and wires IRQ operations to `ax-hal` when the
-//! `irq` feature is enabled.
+//! delegates timing to `ax-hal`, and wires IRQ operations to `ax-hal`.
 //!
 //! The implementation uses the `impl_trait!` helper to generate the FFI
 //! shims expected by consumers. Documentation here focuses on the behavior
@@ -32,7 +31,6 @@ fn dma_coherent_range(addr: VirtAddr, size: usize) -> Option<(VirtAddr, usize)> 
     Some((start, end - start))
 }
 
-#[cfg(feature = "irq")]
 fn map_irq_error(err: IrqError) -> AxError {
     match err {
         IrqError::InvalidIrq | IrqError::InvalidCpu => AxError::InvalidInput,
@@ -203,119 +201,53 @@ impl_trait! {
         }
 
         /// Enable or disable the specified IRQ line.
-        ///
-        /// When the `irq` feature is enabled this forwards to
-        /// `ax_hal::irq::set_enable`. Platforms built without IRQ support
-        /// ignore this request because there is no interrupt controller
-        /// service to program.
-        fn irq_set_enable(_irq: IrqId, _enabled: bool) -> AxResult {
-            #[cfg(feature = "irq")]
-            {
-                ax_hal::irq::set_enable(_irq, _enabled).map_err(map_irq_error)
-            }
-            #[cfg(not(feature = "irq"))]
-            {
-                Err(AxError::Unsupported)
-            }
+        fn irq_set_enable(irq: IrqId, enabled: bool) -> AxResult {
+            ax_hal::irq::set_enable(irq, enabled).map_err(map_irq_error)
         }
 
-        fn irq_request_shared(
-            _irq: IrqId,
-            _handler: BoxedIrqHandler,
-        ) -> AxResult<IrqHandle> {
-            #[cfg(feature = "irq")]
-            {
-                ax_hal::irq::request_shared_irq(_irq, _handler).map_err(map_irq_error)
-            }
-            #[cfg(not(feature = "irq"))]
-            {
-                Err(AxError::Unsupported)
-            }
+        fn irq_request_shared(irq: IrqId, handler: BoxedIrqHandler) -> AxResult<IrqHandle> {
+            ax_hal::irq::request_shared_irq(irq, handler).map_err(map_irq_error)
         }
 
         fn irq_request_shared_disabled(
-            _irq: IrqId,
-            _handler: BoxedIrqHandler,
+            irq: IrqId,
+            handler: BoxedIrqHandler,
         ) -> AxResult<IrqHandle> {
-            #[cfg(feature = "irq")]
-            {
-                ax_hal::irq::request_irq(
-                    _irq,
-                    ax_hal::irq::IrqRequest::new(_handler)
-                        .share_mode(ax_hal::irq::ShareMode::Shared)
-                        .auto_enable(ax_hal::irq::AutoEnable::No),
-                )
-                .map_err(map_irq_error)
-            }
-            #[cfg(not(feature = "irq"))]
-            {
-                Err(AxError::Unsupported)
-            }
+            ax_hal::irq::request_irq(
+                irq,
+                ax_hal::irq::IrqRequest::new(handler)
+                    .share_mode(ax_hal::irq::ShareMode::Shared)
+                    .auto_enable(ax_hal::irq::AutoEnable::No),
+            )
+            .map_err(map_irq_error)
         }
 
         fn irq_request_percpu(
-            _irq: IrqId,
-            _cpus: IrqCpuMask,
-            _handler: ConcurrentBoxedIrqHandler,
+            irq: IrqId,
+            cpus: IrqCpuMask,
+            handler: ConcurrentBoxedIrqHandler,
         ) -> AxResult<IrqHandle> {
-            #[cfg(feature = "irq")]
-            {
-                ax_hal::irq::request_percpu_irq(_irq, _cpus, _handler)
-                    .map_err(map_irq_error)
-            }
-            #[cfg(not(feature = "irq"))]
-            {
-                Err(AxError::Unsupported)
-            }
+            ax_hal::irq::request_percpu_irq(irq, cpus, handler).map_err(map_irq_error)
         }
 
-        fn irq_free(_handle: IrqHandle) -> AxResult {
-            #[cfg(feature = "irq")]
-            {
-                ax_hal::irq::free_irq(_handle).map_err(map_irq_error)
-            }
-            #[cfg(not(feature = "irq"))]
-            {
-                Err(AxError::Unsupported)
-            }
+        fn irq_free(handle: IrqHandle) -> AxResult {
+            ax_hal::irq::free_irq(handle).map_err(map_irq_error)
         }
 
-        fn irq_enable(_handle: IrqHandle) -> AxResult {
-            #[cfg(feature = "irq")]
-            {
-                ax_hal::irq::enable_irq(_handle).map_err(map_irq_error)
-            }
-            #[cfg(not(feature = "irq"))]
-            {
-                Err(AxError::Unsupported)
-            }
+        fn irq_enable(handle: IrqHandle) -> AxResult {
+            ax_hal::irq::enable_irq(handle).map_err(map_irq_error)
         }
 
-        fn irq_disable(_handle: IrqHandle) -> AxResult {
-            #[cfg(feature = "irq")]
-            {
-                ax_hal::irq::disable_irq(_handle).map_err(map_irq_error)
-            }
-            #[cfg(not(feature = "irq"))]
-            {
-                Err(AxError::Unsupported)
-            }
+        fn irq_disable(handle: IrqHandle) -> AxResult {
+            ax_hal::irq::disable_irq(handle).map_err(map_irq_error)
         }
 
         unsafe fn irq_run_on_cpu_sync(
-            _cpu: IrqCpuId,
-            _f: unsafe fn(*mut ()),
-            _arg: *mut (),
+            cpu: IrqCpuId,
+            f: unsafe fn(*mut ()),
+            arg: *mut (),
         ) -> Result<(), IrqError> {
-            #[cfg(feature = "irq")]
-            {
-                unsafe { ax_hal::irq::run_on_cpu_sync(_cpu, _f, _arg) }
-            }
-            #[cfg(not(feature = "irq"))]
-            {
-                let _ = (_cpu, _f, _arg);
-                Err(IrqError::Unsupported)
-            }
+            unsafe { ax_hal::irq::run_on_cpu_sync(cpu, f, arg) }
         }
     }
 }

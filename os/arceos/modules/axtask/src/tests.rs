@@ -3,11 +3,9 @@ use core::{
     sync::atomic::{AtomicUsize, Ordering},
     task::{Context, Poll, Waker},
 };
-#[cfg(feature = "irq")]
-use std::sync::{Arc, Barrier};
 use std::{
     panic::{AssertUnwindSafe, catch_unwind, resume_unwind},
-    sync::{OnceLock, mpsc},
+    sync::{Arc, Barrier, OnceLock, mpsc},
     task::Wake,
     thread,
 };
@@ -17,9 +15,7 @@ use ax_errno::{AxError, AxResult};
 use ax_kernel_guard::NoPreempt;
 use axpoll::{IoEvents, Pollable};
 
-#[cfg(feature = "irq")]
-use crate::IrqNotify;
-use crate::{WaitQueue, api as ax_task, current};
+use crate::{IrqNotify, WaitQueue, api as ax_task, current};
 
 struct WakeCounter {
     count: AtomicUsize,
@@ -344,14 +340,12 @@ fn local_executor_repolls_after_irq_runtime_event() {
     assert_eq!(event.take_bits(), 0x8);
 }
 
-#[cfg(feature = "irq")]
 #[test]
 fn local_executor_new_outside_task_context_does_not_panic() {
     let executor = crate::local::LocalExecutor::new();
     executor.run_until_idle();
 }
 
-#[cfg(feature = "irq")]
 #[test]
 fn runtime_event_publish_from_irq_with_wakes_host_task() {
     run_in_test_scheduler(|| {
@@ -367,7 +361,6 @@ fn runtime_event_publish_from_irq_with_wakes_host_task() {
     });
 }
 
-#[cfg(feature = "irq")]
 #[test]
 fn irq_task_waker_coalesces_and_preserves_bits() {
     run_in_test_scheduler(|| {
@@ -386,7 +379,6 @@ fn irq_task_waker_coalesces_and_preserves_bits() {
     });
 }
 
-#[cfg(feature = "irq")]
 #[test]
 fn irq_task_waker_wakes_blocked_future_task() {
     run_in_test_scheduler(|| {
@@ -404,7 +396,32 @@ fn irq_task_waker_wakes_blocked_future_task() {
     });
 }
 
-#[cfg(feature = "irq")]
+#[cfg(all(feature = "smp", feature = "host-test"))]
+#[test]
+fn irq_task_waker_respects_affinity_changed_while_blocked() {
+    let _remote_wake_guard = crate::run_queue::remote_wake_test_guard();
+    run_in_test_scheduler(|| {
+        const REMOTE_CPU: usize = 1;
+
+        crate::run_queue::init_test_run_queue_for_cpu(REMOTE_CPU);
+
+        let task =
+            crate::TaskInner::new(|| {}, "irq-wake-affinity-test".into(), RAW_TASK_STACK_SIZE);
+        let task = task.into_arc();
+        crate::register_task(&task);
+        task.set_state(crate::TaskState::Blocked);
+        task.set_cpumask(crate::AxCpuMask::one_shot(REMOTE_CPU));
+        let waker = crate::irq_wake::IrqTaskWaker::new(task.clone());
+
+        let result = waker.wake_from_irq(0x20);
+        assert!(result.should_resched());
+        assert_eq!(crate::drain_irq_wake_queue_current_cpu(), 1);
+
+        assert_eq!(task.state(), crate::TaskState::Ready);
+        assert_eq!(task.cpu_id() as usize, REMOTE_CPU);
+    });
+}
+
 #[test]
 fn irq_task_waker_is_invalid_after_logical_exit() {
     run_in_test_scheduler(|| {
@@ -525,7 +542,6 @@ fn test_wait_queue() {
     });
 }
 
-#[cfg(feature = "irq")]
 #[test]
 fn test_irq_notify_coalesces_concurrent_irq_callbacks() {
     const NUM_IRQ_THREADS: usize = 8;
@@ -555,7 +571,6 @@ fn test_irq_notify_coalesces_concurrent_irq_callbacks() {
     assert!(!notify.drain());
 }
 
-#[cfg(feature = "irq")]
 #[test]
 fn test_irq_notify_wait_observes_notify_before_wait() {
     run_in_test_scheduler(|| {
@@ -569,7 +584,6 @@ fn test_irq_notify_wait_observes_notify_before_wait() {
     });
 }
 
-#[cfg(feature = "irq")]
 #[test]
 fn test_irq_notify_wakes_sleeping_deferred_worker() {
     run_in_test_scheduler(|| {
@@ -610,7 +624,6 @@ fn test_irq_notify_wakes_sleeping_deferred_worker() {
     });
 }
 
-#[cfg(feature = "irq")]
 #[test]
 fn test_irq_notify_wakes_after_concurrent_irq_callbacks() {
     run_in_test_scheduler(|| {
@@ -664,7 +677,6 @@ fn test_irq_notify_wakes_after_concurrent_irq_callbacks() {
     });
 }
 
-#[cfg(feature = "irq")]
 #[test]
 fn test_wait_queue_irq_notify_all_wakes_sleepers() {
     run_in_test_scheduler(|| {

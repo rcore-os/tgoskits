@@ -67,7 +67,6 @@ pub async fn poll_io<P: Pollable, F: FnMut() -> AxResult<T>, T>(
 /// already disabled in the holding paths) and re-queues the drain
 /// task. The drain task runs in normal task context and is the only
 /// place that ever calls `PollSet::wake`.
-#[cfg(feature = "irq")]
 pub fn register_irq_waker(irq: ax_hal::irq::IrqId, waker: &core::task::Waker) -> AxResult<()> {
     use alloc::{collections::BTreeMap, sync::Arc};
     use core::sync::atomic::{AtomicBool, Ordering};
@@ -164,7 +163,6 @@ pub fn register_irq_waker(irq: ax_hal::irq::IrqId, waker: &core::task::Waker) ->
 }
 
 /// Registers a waker for a temporary legacy numeric IRQ.
-#[cfg(feature = "irq")]
 pub fn register_legacy_irq_waker(irq: usize, waker: &core::task::Waker) -> AxResult<()> {
     let irq = ax_hal::irq::try_legacy_irq(irq).map_err(|_| AxError::InvalidInput)?;
     register_irq_waker(irq, waker)

@@ -100,7 +100,6 @@ pub struct TaskInner {
     /// A ticket ID used to identify the timer event.
     /// Set by `set_timer_ticket()` when creating a timer event in `set_alarm_wakeup()`,
     /// expired by setting it as zero in `timer_ticket_expired()`, which is called by `cancel_events()`.
-    #[cfg(feature = "irq")]
     timer_ticket_id: AtomicU64,
 
     #[cfg(feature = "preempt")]
@@ -113,15 +112,10 @@ pub struct TaskInner {
     interrupted: AtomicBool,
     interrupt_waker: AtomicWaker,
 
-    #[cfg(feature = "irq")]
     irq_wake_pending: AtomicBool,
-    #[cfg(feature = "irq")]
     irq_wake_seq: AtomicU64,
-    #[cfg(feature = "irq")]
     irq_wake_bits: AtomicU64,
-    #[cfg(feature = "irq")]
     irq_wake_generation: AtomicU64,
-    #[cfg(feature = "irq")]
     irq_wake_next: core::sync::atomic::AtomicPtr<AxTask>,
 
     exit_code: AtomicI32,
@@ -351,19 +345,16 @@ impl TaskInner {
         self.interrupt_waker.wake();
     }
 
-    #[cfg(feature = "irq")]
     #[inline]
     pub(crate) fn irq_wake_generation(&self) -> u64 {
         self.irq_wake_generation.load(Ordering::Acquire)
     }
 
-    #[cfg(feature = "irq")]
     #[inline]
     pub(crate) fn irq_wake_generation_matches(&self, generation: u64) -> bool {
         self.irq_wake_generation() == generation
     }
 
-    #[cfg(feature = "irq")]
     #[inline]
     pub(crate) fn expire_irq_wakers(&self) {
         self.irq_wake_generation.fetch_add(1, Ordering::AcqRel);
@@ -371,7 +362,6 @@ impl TaskInner {
         self.irq_wake_bits.store(0, Ordering::Release);
     }
 
-    #[cfg(feature = "irq")]
     #[inline]
     pub(crate) fn publish_irq_wake_bits(&self, bits: u64) {
         if bits != 0 {
@@ -379,49 +369,41 @@ impl TaskInner {
         }
     }
 
-    #[cfg(feature = "irq")]
     #[inline]
     pub(crate) fn take_irq_wake_bits(&self) -> u64 {
         self.irq_wake_bits.swap(0, Ordering::AcqRel)
     }
 
-    #[cfg(feature = "irq")]
     #[inline]
     pub(crate) fn bump_irq_wake_seq(&self) -> u64 {
         self.irq_wake_seq.fetch_add(1, Ordering::AcqRel) + 1
     }
 
-    #[cfg(feature = "irq")]
     #[inline]
     pub(crate) fn irq_wake_seq(&self) -> u64 {
         self.irq_wake_seq.load(Ordering::Acquire)
     }
 
-    #[cfg(feature = "irq")]
     #[inline]
     pub(crate) fn mark_irq_wake_pending(&self) -> bool {
         !self.irq_wake_pending.swap(true, Ordering::AcqRel)
     }
 
-    #[cfg(feature = "irq")]
     #[inline]
     pub(crate) fn take_irq_wake_pending(&self) -> bool {
         self.irq_wake_pending.swap(false, Ordering::AcqRel)
     }
 
-    #[cfg(feature = "irq")]
     #[inline]
     pub(crate) fn set_irq_wake_next(&self, next: *mut AxTask) {
         self.irq_wake_next.store(next, Ordering::Release);
     }
 
-    #[cfg(feature = "irq")]
     #[inline]
     pub(crate) fn irq_wake_next(&self) -> *mut AxTask {
         self.irq_wake_next.load(Ordering::Acquire)
     }
 
-    #[cfg(feature = "irq")]
     #[inline]
     pub(crate) fn clear_irq_wake_link(&self) {
         self.irq_wake_next
@@ -444,7 +426,6 @@ impl TaskInner {
             sched_policy: AtomicI32::new(0),
             sched_priority: AtomicI32::new(0),
             in_wait_queue: AtomicBool::new(false),
-            #[cfg(feature = "irq")]
             timer_ticket_id: AtomicU64::new(0),
             cpu_id: AtomicU32::new(0),
             #[cfg(feature = "smp")]
@@ -457,15 +438,10 @@ impl TaskInner {
             preempt_disable_count: AtomicUsize::new(0),
             interrupted: AtomicBool::new(false),
             interrupt_waker: AtomicWaker::new(),
-            #[cfg(feature = "irq")]
             irq_wake_pending: AtomicBool::new(false),
-            #[cfg(feature = "irq")]
             irq_wake_seq: AtomicU64::new(0),
-            #[cfg(feature = "irq")]
             irq_wake_bits: AtomicU64::new(0),
-            #[cfg(feature = "irq")]
             irq_wake_generation: AtomicU64::new(1),
-            #[cfg(feature = "irq")]
             irq_wake_next: core::sync::atomic::AtomicPtr::new(core::ptr::null_mut()),
             exit_code: AtomicI32::new(0),
             wait_for_exit: WaitQueue::new(),
@@ -561,14 +537,12 @@ impl TaskInner {
 
     /// Returns task's current timer ticket ID.
     #[inline]
-    #[cfg(feature = "irq")]
     pub(crate) fn timer_ticket(&self) -> u64 {
         self.timer_ticket_id.load(Ordering::Acquire)
     }
 
     /// Set the timer ticket ID.
     #[inline]
-    #[cfg(feature = "irq")]
     pub(crate) fn set_timer_ticket(&self, timer_ticket_id: u64) {
         // CAN NOT set timer_ticket_id to 0,
         // because 0 is used to indicate the timer event is expired.
@@ -580,7 +554,6 @@ impl TaskInner {
     /// Expire timer ticket ID by setting it to 0,
     /// it can be used to identify one timer event is triggered or expired.
     #[inline]
-    #[cfg(feature = "irq")]
     pub(crate) fn timer_ticket_expired(&self) {
         self.timer_ticket_id.store(0, Ordering::Release);
     }
@@ -670,7 +643,6 @@ impl TaskInner {
 
     /// Notify all tasks that join on this task.
     pub(crate) fn notify_exit(&self, exit_code: i32) {
-        #[cfg(feature = "irq")]
         self.expire_irq_wakers();
         self.set_state(TaskState::Exited);
         self.exit_code.store(exit_code, Ordering::Release);
@@ -737,7 +709,6 @@ impl fmt::Debug for TaskInner {
 
 impl Drop for TaskInner {
     fn drop(&mut self) {
-        #[cfg(feature = "irq")]
         crate::irq_wake::expire_task_irq_wakers(self);
         debug!("task drop: {}", self.id_name());
     }
@@ -1110,8 +1081,8 @@ extern "C" fn task_entry() -> ! {
         // Clear the prev task on CPU before running the task entry function.
         crate::run_queue::clear_prev_task_on_cpu();
     }
-    // Enable irq (if feature "irq" is enabled) before running the task entry function.
-    #[cfg(all(feature = "irq", not(feature = "host-test")))]
+    // Enable IRQs before running the task entry function.
+    #[cfg(not(feature = "host-test"))]
     ax_hal::asm::enable_irqs();
     let task = crate::current();
     if let Some(entry) = task.entry.take() {

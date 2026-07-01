@@ -5,8 +5,6 @@
 //! - CPU
 //!     - `smp`: Enable SMP (symmetric multiprocessing) support.
 //!     - `fp-simd`: Enable floating point and SIMD support.
-//! - Interrupts:
-//!     - `irq`: Enable interrupt handling support.
 //! - Memory
 //!     - `alloc`: Enable dynamic memory allocation.
 //!     - `tls`: Enable thread-local storage.

@@ -1,11 +1,10 @@
 //! Dummy implementation of platform-related interfaces defined in [`axplat`].
 
-#[cfg(feature = "irq")]
-use ax_plat::irq::{HwIrq, IpiTarget, IrqError, IrqId, IrqIf, IrqNumber, IrqSource, TrapVector};
 use ax_plat::{
     console::{ConsoleDeviceIdError, ConsoleDeviceIdResult, ConsoleIf},
     impl_plat_interface,
     init::InitIf,
+    irq::{HwIrq, IpiTarget, IrqError, IrqId, IrqIf, IrqNumber, IrqSource, TrapVector},
     mem::{MemIf, RawRange},
     power::PowerIf,
     time::TimeIf,
@@ -16,7 +15,6 @@ struct DummyConsole;
 struct DummyMem;
 struct DummyTime;
 struct DummyPower;
-#[cfg(feature = "irq")]
 struct DummyIrq;
 
 #[impl_plat_interface]
@@ -48,15 +46,12 @@ impl ConsoleIf for DummyConsole {
 
     fn claim_runtime_output() {}
 
-    #[cfg(feature = "irq")]
     fn irq_num() -> Option<IrqId> {
         None
     }
 
-    #[cfg(feature = "irq")]
     fn set_input_irq_enabled(_enabled: bool) {}
 
-    #[cfg(feature = "irq")]
     fn handle_irq() -> ax_plat::console::ConsoleIrqEvent {
         ax_plat::console::ConsoleIrqEvent::empty()
     }
@@ -107,12 +102,10 @@ impl TimeIf for DummyTime {
         0
     }
 
-    #[cfg(feature = "irq")]
     fn irq_num() -> IrqId {
         IrqNumber(0).expect("dummy legacy IRQ exceeds legacy IRQ width")
     }
 
-    #[cfg(feature = "irq")]
     fn set_oneshot_timer(_deadline_ns: u64) {}
 }
 
@@ -134,7 +127,6 @@ impl PowerIf for DummyPower {
     }
 }
 
-#[cfg(feature = "irq")]
 #[impl_plat_interface]
 impl IrqIf for DummyIrq {
     fn set_enable(_irq: IrqId, _enabled: bool) -> Result<(), IrqError> {

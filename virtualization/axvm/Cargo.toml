@@ -40,7 +40,6 @@ ax-percpu = { workspace = true, features = ["arm-el2"] }
 page-table-generic = { workspace = true }
 ax-std = { workspace = true, features = [
     "paging",
-    "irq",
     "multitask",
     "task-ext",
     "smp",

@@ -8,7 +8,7 @@ publish = false
 
 [features]
 default = []
-arceos = ["dep:ax-std", "ax-std/multitask", "ax-std/irq"]
+arceos = ["dep:ax-std", "ax-std/multitask"]
 
 [dependencies]
 ax-std = { workspace = true, optional = true }

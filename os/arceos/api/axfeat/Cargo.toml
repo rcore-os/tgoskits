@@ -22,9 +22,8 @@ uspace = ["ax-hal/uspace", "ax-task?/uspace"]
 hv = ["ax-hal/hv"]
 
 # Interrupts
-irq = ["ax-hal/irq", "ax-runtime/irq", "ax-task?/irq", "ax-driver?/irq"]
-ipi = ["irq", "dep:ax-ipi", "ax-hal/ipi", "ax-runtime/ipi", "ax-task?/ipi"]
-wake-ipi = ["irq", "ax-hal/ipi", "ax-runtime/wake-ipi"]
+ipi = ["dep:ax-ipi", "ax-hal/ipi", "ax-runtime/ipi", "ax-task?/ipi"]
+wake-ipi = ["ax-hal/ipi", "ax-runtime/wake-ipi"]
 
 ext-ld = ["ax-runtime/ext-ld"]
 
@@ -49,8 +48,8 @@ lockdep = [
 task-ext = ["ax-task/task-ext"]
 tracepoint-hooks = ["ax-task/tracepoint-hooks"]
 sched-fifo = ["ax-task/sched-fifo"]
-sched-rr = ["ax-task/sched-rr", "irq"]
-sched-cfs = ["ax-task/sched-cfs", "irq"]
+sched-rr = ["ax-task/sched-rr"]
+sched-cfs = ["ax-task/sched-cfs"]
 stack-guard-page = [
     "ipi",
     "multitask",
@@ -73,7 +72,6 @@ fs-times = ["fs", "ax-fs-ng/times"]
 # Networking
 net = [
     "paging",
-    "irq",
     "multitask",
     "dep:ax-net",
     "ax-runtime/net",
@@ -96,7 +94,7 @@ input = [
 ]
 
 # USB
-usb = ["irq", "ax-driver?/usb"]
+usb = ["ax-driver?/usb"]
 
 # Real Time Clock (RTC) Driver.
 rtc = ["ax-hal/rtc", "ax-runtime/rtc"]

@@ -56,7 +56,6 @@ axtest = []
 [dependencies]
 ax-feat = { workspace = true, features = [
     "fp-simd",
-    "irq",
     "uspace",
 
     "multitask",

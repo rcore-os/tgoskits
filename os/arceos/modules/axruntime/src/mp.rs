@@ -95,13 +95,11 @@ pub fn rust_main_secondary(cpu_id: usize) -> ! {
     // Bring up local IRQ/IPI delivery before publishing INITED_CPUS so the
     // primary cannot enter user-visible init while remote CPUs still lack SGI
     // handlers or pending per-CPU IRQ enables.
-    #[cfg(feature = "irq")]
     super::init_percpu_irq(cpu_id);
 
-    #[cfg(feature = "irq")]
     ax_hal::asm::enable_irqs();
 
-    #[cfg(all(feature = "irq", feature = "ipi"))]
+    #[cfg(feature = "ipi")]
     ax_ipi::mark_current_cpu_ready();
 
     info!("Secondary CPU {cpu_id:x} init OK.");

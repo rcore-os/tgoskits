@@ -9,9 +9,6 @@
 //! - `multitask`: Enable multi-task support. If it's enabled, complex task
 //!   management and scheduling is used, as well as more task-related APIs.
 //!   Otherwise, only a few APIs with naive implementation is available.
-//! - `irq`: Interrupts are enabled. If this feature is enabled, timer-based
-//!   APIs can be used, such as [`sleep`], [`sleep_until`], and
-//!   [`WaitQueue::wait_timeout`].
 //! - `preempt`: Enable preemptive scheduling.
 //! - `sched-fifo`: Use the [FIFO cooperative scheduler][1]. It also enables the
 //!   `multitask` feature if it is enabled. This feature is enabled by default,
@@ -76,15 +73,11 @@ cfg_if::cfg_if! {
         mod lockdep;
         #[cfg(feature = "tracepoint-hooks")]
         mod sched_tracepoint;
-        #[cfg(feature = "irq")]
         mod irq_notify;
-        #[cfg(feature = "irq")]
         mod irq_wake;
-        #[cfg(feature = "irq")]
         pub mod local;
         mod wait_queue;
 
-        #[cfg(feature = "irq")]
         mod timers;
 
         #[cfg(feature = "multitask")]
@@ -92,9 +85,7 @@ cfg_if::cfg_if! {
 
         #[cfg_attr(doc, doc(cfg(feature = "multitask")))]
         pub use self::api::*;
-        #[cfg(feature = "irq")]
         pub use self::irq_notify::IrqNotify;
-        #[cfg(feature = "irq")]
         pub use self::irq_wake::{
             IrqTaskWaker, IrqWakeResult, current_irq_task_waker,
             drain_irq_wake_queue_current_cpu, try_current_irq_task_waker,

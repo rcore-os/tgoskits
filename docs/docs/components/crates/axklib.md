@@ -56,10 +56,10 @@ flowchart TD
     F --> G["ax-hal::time::busy_wait"]
 
     H["axklib::irq::register/set_enable"] --> I["KlibImpl"]
-    I --> J["ax-hal::irq::* 或 unimplemented!()"]
+    I --> J["ax-hal::irq::*"]
 ```
 
-其中一个很重要的细节是：在 `ax-runtime` 当前实现里，如果没有打开 `irq` feature，`irq_set_enable()` 和 `irq_register()` 会直接 `unimplemented!()`。所以 `axklib` 本身提供的是接口承诺，不保证所有实现方在所有 feature 组合下都完整可用。
+其中一个很重要的细节是：IRQ helper 现在是默认接口。若底层平台没有真实中断控制器，`ax-hal::irq` 实现应返回 `Unsupported` 或 no-op，而不是通过 Cargo feature 隐藏整条调用路径。
 
 ## 核心功能
 ### 功能概览
@@ -131,7 +131,7 @@ axklib = { workspace = true }
 
 ### 集成测试
 - ArceOS 运行时实现能否满足驱动和动态平台代码的需求。
-- 在没有 `irq` feature 的组合下，调用方是否避免误用 IRQ helper。
+- 在平台返回 `Unsupported` 的组合下，调用方是否正确处理 IRQ helper 的失败返回。
 
 ### 覆盖率
 - 对 `axklib`，接口兼容性覆盖比单纯行覆盖更重要。

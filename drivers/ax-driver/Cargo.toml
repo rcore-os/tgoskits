@@ -13,7 +13,6 @@ name = "ax_driver"
 [features]
 default = []
 
-irq = []
 pci = ["dep:ax-kspin", "dep:pcie", "dep:rdif-pcie"]
 
 block = ["dep:ax-errno", "dep:ax-kspin", "dep:rdif-block"]

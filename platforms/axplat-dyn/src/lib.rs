@@ -15,7 +15,6 @@ mod console;
 pub mod drivers;
 mod generic_timer;
 mod init;
-#[cfg(feature = "irq")]
 mod irq;
 mod mem;
 mod platform;
@@ -24,13 +23,11 @@ mod power;
 pub use boot::{boot_stack_bounds, bootargs};
 pub use generic_timer::try_init_epoch_offset;
 
-#[cfg(feature = "irq")]
 pub fn enable_timer_irq() {
     somehal::timer::irq_enable();
 }
-#[cfg(feature = "irq")]
 pub fn ipi_irq() -> ax_plat::irq::IrqId {
     somehal::irq::ipi_irq()
 }
-#[cfg(all(feature = "irq", target_arch = "riscv64", feature = "hv"))]
+#[cfg(all(target_arch = "riscv64", feature = "hv"))]
 pub use irq::register_virtual_irq_injector;

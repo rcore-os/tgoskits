@@ -1,8 +1,6 @@
-#[cfg(feature = "irq")]
-use ax_plat::console::ConsoleIrqEvent;
-use ax_plat::console::{ConsoleDeviceIdError, ConsoleDeviceIdResult, ConsoleIf};
+use ax_plat::console::{ConsoleDeviceIdError, ConsoleDeviceIdResult, ConsoleIf, ConsoleIrqEvent};
 
-#[cfg(all(feature = "irq", target_arch = "x86_64"))]
+#[cfg(target_arch = "x86_64")]
 fn console_irq(raw: usize) -> Option<ax_plat::irq::IrqId> {
     if let Some(gsi) = raw.checked_sub(rdrive::probe::acpi::PCI_INTX_VECTOR_BASE) {
         ax_plat::irq::resolve_irq_source(ax_plat::irq::IrqSource::AcpiGsi(gsi as u32)).ok()
@@ -11,7 +9,7 @@ fn console_irq(raw: usize) -> Option<ax_plat::irq::IrqId> {
     }
 }
 
-#[cfg(all(feature = "irq", not(target_arch = "x86_64")))]
+#[cfg(not(target_arch = "x86_64"))]
 fn console_irq(raw: usize) -> Option<ax_plat::irq::IrqId> {
     Some(ax_plat::irq::IrqNumber(raw).expect("console IRQ exceeds legacy IRQ width"))
 }
@@ -66,17 +64,14 @@ impl ConsoleIf for ConsoleIfImpl {
     /// Returns the IRQ number for the console input interrupt.
     ///
     /// Returns `None` if input interrupt is not supported.
-    #[cfg(feature = "irq")]
     fn irq_num() -> Option<ax_plat::irq::IrqId> {
         somehal::console::irq_num().and_then(console_irq)
     }
 
-    #[cfg(feature = "irq")]
     fn set_input_irq_enabled(enabled: bool) {
         somehal::console::set_input_irq_enabled(enabled);
     }
 
-    #[cfg(feature = "irq")]
     fn handle_irq() -> ConsoleIrqEvent {
         let raw = somehal::console::handle_irq();
         let mut event = ConsoleIrqEvent::empty();
@@ -93,7 +88,7 @@ impl ConsoleIf for ConsoleIfImpl {
     }
 }
 
-#[cfg(all(test, feature = "irq", target_arch = "x86_64"))]
+#[cfg(all(test, target_arch = "x86_64"))]
 mod tests {
     #[test]
     fn x86_console_irq_without_acpi_route_falls_back_to_polling() {

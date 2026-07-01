@@ -45,7 +45,7 @@ An app declares the ArceOS-side features it needs behind its app-local
 ```toml
 [features]
 default = []
-arceos = ["dep:ax-std", "ax-std/fs", "ax-std/net", "ax-std/multitask", "ax-std/irq"]
+arceos = ["dep:ax-std", "ax-std/fs", "ax-std/net", "ax-std/multitask"]
 
 [dependencies]
 ax-std = { workspace = true, optional = true }
