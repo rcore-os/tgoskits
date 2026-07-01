@@ -22,9 +22,9 @@ use fdt_parser::{Fdt, FdtHeader, PciRange, PciSpace};
 #[cfg(target_arch = "aarch64")]
 use crate::fdt::create::update_cpu_node;
 use axvm::{MappingFlags, config::AxVMConfig};
-use axvmconfig::{AxVMCrateConfig, PassThroughDeviceConfig, VmMemConfig, VmMemMappingType};
-
-use crate::fdt::crate_guest_fdt_with_cache;
+use axvmconfig::{
+    AxVMCrateConfig, PassThroughDeviceConfig, ReservedAddressConfig, VmMemConfig, VmMemMappingType,
+};
 
 const PAGE_SIZE_4K: usize = 0x1000;
 
@@ -64,16 +64,17 @@ pub fn setup_guest_fdt_from_vmm(
     fdt_bytes: &[u8],
     vm_cfg: &mut AxVMConfig,
     crate_config: &AxVMCrateConfig,
-) -> AxResult {
+) -> AxResult<Vec<u8>> {
     let fdt = Fdt::from_bytes(fdt_bytes)
         .map_err(|e| ax_err_type!(InvalidData, format!("Failed to parse host FDT: {e:#?}")))?;
+
+    reserve_excluded_device_ranges(vm_cfg, crate_config, fdt_bytes)?;
 
     // Call the modified function and get the returned device name list
     let passthrough_device_names = super::device::find_all_passthrough_devices(vm_cfg, &fdt);
 
-    let dtb_data = super::create::crate_guest_fdt(&fdt, &passthrough_device_names, crate_config)?;
-    crate_guest_fdt_with_cache(dtb_data, crate_config);
-    Ok(())
+    let dtb_data = super::create::create_guest_fdt(&fdt, &passthrough_device_names, crate_config)?;
+    Ok(dtb_data)
 }
 
 fn is_reserved_memory_path(node_path: &str) -> bool {
@@ -160,6 +161,123 @@ fn reserved_memory_regions(crate_cfg: &AxVMCrateConfig) -> impl Iterator<Item = 
         .memory_regions
         .iter()
         .filter(|region| region.map_type == VmMemMappingType::MapReserved)
+}
+
+fn excluded_device_paths(crate_cfg: &AxVMCrateConfig) -> Vec<String> {
+    crate_cfg
+        .devices
+        .excluded_devices
+        .iter()
+        .flatten()
+        .cloned()
+        .collect()
+}
+
+fn is_excluded_node_path(node_path: &str, excluded_paths: &[String]) -> bool {
+    excluded_paths.iter().any(|excluded| {
+        node_path == excluded
+            || node_path
+                .strip_prefix(excluded)
+                .is_some_and(|suffix| suffix.starts_with('/'))
+    })
+}
+
+fn push_reserved_address_range(
+    ranges: &mut Vec<ReservedAddressConfig>,
+    node_path: &str,
+    base: usize,
+    size: usize,
+) {
+    let Some((base_gpa, length)) = align_reserved_region_4k(base, size) else {
+        return;
+    };
+
+    let mut merged = ReservedAddressConfig { base_gpa, length };
+    let mut index = 0;
+    while index < ranges.len() {
+        let existing = &ranges[index];
+        let merged_end = merged.base_gpa.saturating_add(merged.length);
+        let existing_end = existing.base_gpa.saturating_add(existing.length);
+        let overlaps_or_touches =
+            merged.base_gpa <= existing_end && existing.base_gpa <= merged_end;
+        if overlaps_or_touches {
+            let merged_base = merged.base_gpa.min(existing.base_gpa);
+            let merged_end = merged_end.max(existing_end);
+            merged = ReservedAddressConfig {
+                base_gpa: merged_base,
+                length: merged_end.saturating_sub(merged_base),
+            };
+            ranges.remove(index);
+        } else {
+            index += 1;
+        }
+    }
+
+    debug!(
+        "Reserving excluded device {} range [{:#x}~{:#x}] from passthrough mapping",
+        node_path,
+        merged.base_gpa,
+        merged.base_gpa.saturating_add(merged.length)
+    );
+    ranges.push(merged);
+}
+
+pub fn reserve_excluded_device_ranges(
+    vm_cfg: &mut AxVMConfig,
+    crate_cfg: &AxVMCrateConfig,
+    dtb: &[u8],
+) -> AxResult {
+    let excluded_paths = excluded_device_paths(crate_cfg);
+    if excluded_paths.is_empty() {
+        return Ok(());
+    }
+
+    let fdt = Fdt::from_bytes(dtb).map_err(|e| {
+        ax_err_type!(
+            InvalidData,
+            format!("Failed to parse DTB image while reading excluded devices: {e:#?}")
+        )
+    })?;
+    let all_nodes: Vec<_> = fdt.all_nodes().collect();
+    let all_paths = super::build_all_node_paths(&all_nodes);
+    let mut reserved_ranges = Vec::new();
+
+    for (node, node_path) in all_nodes.iter().zip(all_paths.iter()) {
+        if !is_excluded_node_path(node_path, &excluded_paths) {
+            continue;
+        }
+
+        if let Some(reg_iter) = node.reg() {
+            for reg in reg_iter {
+                push_reserved_address_range(
+                    &mut reserved_ranges,
+                    node_path,
+                    reg.address as usize,
+                    reg.size.unwrap_or(0),
+                );
+            }
+        }
+
+        if let Some(pci) = node.clone().into_pci()
+            && let Ok(pci_ranges) = pci.ranges()
+        {
+            for range in pci_ranges {
+                push_reserved_address_range(
+                    &mut reserved_ranges,
+                    node_path,
+                    range.cpu_address as usize,
+                    range.size as usize,
+                );
+            }
+        }
+    }
+
+    reserved_ranges.sort_by_key(|range| range.base_gpa);
+    for range in reserved_ranges {
+        vm_cfg.add_reserved_address_range(range);
+    }
+
+    Ok(())
 }
 
 fn is_memory_like_compatible(node: &fdt_parser::Node<'_>) -> bool {
@@ -308,7 +426,33 @@ pub fn parse_reserved_memory_regions(crate_cfg: &mut AxVMCrateConfig, dtb: &[u8]
 
 #[cfg(test)]
 mod tests {
-    use super::align_reserved_region_4k;
+    use super::{align_reserved_region_4k, reserve_excluded_device_ranges};
+    use crate::fdt::vm_fdt::FdtWriter;
+    use axvm::config::{AxVMConfig, AxVMConfigParams, PhysCpuList};
+    use axvm_types::AddressSpacePolicy;
+    use axvmconfig::{AxVMCrateConfig, VMDevicesConfig};
+
+    fn fdt_with_excluded_devices() -> Vec<u8> {
+        let mut writer = FdtWriter::new().unwrap();
+        let root = writer.begin_node("").unwrap();
+        writer.property_u32("#address-cells", 2).unwrap();
+        writer.property_u32("#size-cells", 2).unwrap();
+
+        let serial = writer.begin_node("serial@10001234").unwrap();
+        writer
+            .property_array_u32("reg", &[0, 0x1000_1234, 0, 0x100])
+            .unwrap();
+        writer.end_node(serial).unwrap();
+
+        let gpio = writer.begin_node("gpio@10002000").unwrap();
+        writer
+            .property_array_u32("reg", &[0, 0x1000_2000, 0, 0x1000])
+            .unwrap();
+        writer.end_node(gpio).unwrap();
+
+        writer.end_node(root).unwrap();
+        writer.finish().unwrap()
+    }
 
     #[test]
     fn align_reserved_region_keeps_aligned_range() {
@@ -371,6 +515,32 @@ mod tests {
         }];
 
         assert!(subtract_memory_region_overlap(0x2000, 0x1000, &existing).is_empty());
+    }
+
+    #[test]
+    fn excluded_device_ranges_become_reserved_vm_ranges() {
+        let dtb = fdt_with_excluded_devices();
+        let mut vm_cfg = AxVMConfig::new(AxVMConfigParams {
+            id: 0,
+            name: "test".to_string(),
+            phys_cpu_ls: PhysCpuList::new(1, None, None),
+            ..Default::default()
+        });
+        let crate_cfg = AxVMCrateConfig {
+            devices: VMDevicesConfig {
+                address_space_policy: AddressSpacePolicy::Passthrough,
+                excluded_devices: vec![vec!["/serial@10001234".to_string()]],
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        reserve_excluded_device_ranges(&mut vm_cfg, &crate_cfg, &dtb).unwrap();
+
+        let ranges = vm_cfg.reserved_address_ranges();
+        assert_eq!(ranges.len(), 1);
+        assert_eq!(ranges[0].base_gpa, 0x1000_1000);
+        assert_eq!(ranges[0].length, 0x1000);
     }
 }
 
@@ -764,11 +934,12 @@ pub fn update_provided_fdt(
     provided_dtb: &[u8],
     host_dtb: &[u8],
     crate_config: &AxVMCrateConfig,
-) -> AxResult {
+) -> AxResult<Vec<u8>> {
     #[cfg(any(target_arch = "loongarch64", target_arch = "riscv64"))]
     {
         let _ = host_dtb;
-        crate_guest_fdt_with_cache(provided_dtb.to_vec(), crate_config);
+        let _ = crate_config;
+        Ok(provided_dtb.to_vec())
     }
 
     #[cfg(target_arch = "aarch64")]
@@ -786,7 +957,6 @@ pub fn update_provided_fdt(
             )
         })?;
         let provided_dtb_data = update_cpu_node(&provided_fdt, &host_fdt, crate_config)?;
-        crate_guest_fdt_with_cache(provided_dtb_data, crate_config);
+        Ok(provided_dtb_data)
     }
-    Ok(())
 }

@@ -21,8 +21,13 @@ use crate::npt::NestedPageTable as PageTable;
 
 impl<H: PagingHandler> Backend<H> {
     /// Creates a new linear mapping backend.
-    pub const fn new_linear(pa_va_offset: usize) -> Self {
-        Self::Linear { pa_va_offset }
+    pub const fn new_linear(pa_to_va_delta: i128) -> Self {
+        Self::Linear { pa_to_va_delta }
+    }
+
+    fn linear_paddr(vaddr: GuestPhysAddr, pa_to_va_delta: i128) -> Option<PhysAddr> {
+        let paddr = (vaddr.as_usize() as i128).checked_sub(pa_to_va_delta)?;
+        usize::try_from(paddr).ok().map(PhysAddr::from)
     }
 
     pub(crate) fn map_linear(
@@ -31,9 +36,11 @@ impl<H: PagingHandler> Backend<H> {
         size: usize,
         flags: MappingFlags,
         pt: &mut PageTable<H>,
-        pa_va_offset: usize,
+        pa_to_va_delta: i128,
     ) -> bool {
-        let pa_start = PhysAddr::from(start.as_usize() - pa_va_offset);
+        let Some(pa_start) = Self::linear_paddr(start, pa_to_va_delta) else {
+            return false;
+        };
         debug!(
             "map_linear: [{:#x}, {:#x}) -> [{:#x}, {:#x}) {:?}",
             start,
@@ -45,7 +52,10 @@ impl<H: PagingHandler> Backend<H> {
         let allow_huge = true;
         pt.map_region(
             start,
-            |va| PhysAddr::from(va.as_usize() - pa_va_offset),
+            |va| {
+                Self::linear_paddr(va, pa_to_va_delta)
+                    .expect("linear mapping physical address underflow")
+            },
             size,
             flags,
             allow_huge,
@@ -58,7 +68,7 @@ impl<H: PagingHandler> Backend<H> {
         start: GuestPhysAddr,
         size: usize,
         pt: &mut PageTable<H>,
-        _pa_va_offset: usize,
+        _pa_to_va_delta: i128,
     ) -> bool {
         debug!("unmap_linear: [{:#x}, {:#x})", start, start + size);
         pt.unmap_region(start, size).is_ok()

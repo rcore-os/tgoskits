@@ -17,8 +17,9 @@
 use alloc::{string::String, vec::Vec};
 
 pub use axvm_types::{
-    EmulatedDeviceConfig, GuestPhysAddr, PassThroughAddressConfig, PassThroughDeviceConfig,
-    PassThroughPortConfig, VMBootProtocol, VMInterruptMode, VMType, VmMemConfig, VmMemMappingType,
+    AddressSpacePolicy, EmulatedDeviceConfig, GuestPhysAddr, PassThroughAddressConfig,
+    PassThroughDeviceConfig, PassThroughPortConfig, ReservedAddressConfig, VMBootProtocol,
+    VMInterruptMode, VMType, VmMemConfig, VmMemMappingType,
 };
 
 use crate::VMMemoryRegion;
@@ -83,7 +84,9 @@ pub struct AxVMConfig {
     pass_through_devices: Vec<PassThroughDeviceConfig>,
     excluded_devices: Vec<Vec<String>>,
     pass_through_addresses: Vec<PassThroughAddressConfig>,
+    reserved_address_ranges: Vec<ReservedAddressConfig>,
     pass_through_ports: Vec<PassThroughPortConfig>,
+    address_space_policy: AddressSpacePolicy,
     // TODO: improve interrupt passthrough
     spi_list: Vec<u32>,
     interrupt_mode: VMInterruptMode,
@@ -102,7 +105,9 @@ pub struct AxVMConfigParams {
     pub pass_through_devices: Vec<PassThroughDeviceConfig>,
     pub excluded_devices: Vec<Vec<String>>,
     pub pass_through_addresses: Vec<PassThroughAddressConfig>,
+    pub reserved_address_ranges: Vec<ReservedAddressConfig>,
     pub pass_through_ports: Vec<PassThroughPortConfig>,
+    pub address_space_policy: AddressSpacePolicy,
     pub interrupt_mode: VMInterruptMode,
 }
 
@@ -139,7 +144,9 @@ impl AxVMConfig {
             pass_through_devices: params.pass_through_devices,
             excluded_devices: params.excluded_devices,
             pass_through_addresses: params.pass_through_addresses,
+            reserved_address_ranges: params.reserved_address_ranges,
             pass_through_ports: params.pass_through_ports,
+            address_space_policy: params.address_space_policy,
             spi_list: Vec::new(),
             interrupt_mode: params.interrupt_mode,
         }
@@ -212,9 +219,24 @@ impl AxVMConfig {
         &self.pass_through_addresses
     }
 
+    /// Returns guest address ranges reserved from default passthrough mapping.
+    pub fn reserved_address_ranges(&self) -> &Vec<ReservedAddressConfig> {
+        &self.reserved_address_ranges
+    }
+
+    /// Adds a guest address range reserved from default passthrough mapping.
+    pub fn add_reserved_address_range(&mut self, range: ReservedAddressConfig) {
+        self.reserved_address_ranges.push(range);
+    }
+
     /// Returns the list of passthrough host I/O port configurations.
     pub fn pass_through_ports(&self) -> &Vec<PassThroughPortConfig> {
         &self.pass_through_ports
+    }
+
+    /// Returns the guest physical address space population policy.
+    pub fn address_space_policy(&self) -> AddressSpacePolicy {
+        self.address_space_policy
     }
     // /// Returns configurations related to VM memory regions.
     // pub fn memory_regions(&self) -> Vec<VmMemConfig> {

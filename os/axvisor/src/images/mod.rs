@@ -26,7 +26,9 @@ use byte_unit::Byte;
 
 use axvm::{AxVMRef, GuestPhysAddr, VMMemoryRegion};
 
-use crate::config::{get_vm_dtb_arc, vmcfg};
+use crate::config::vmcfg;
+#[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
+use crate::fdt::GuestDtbImage;
 
 mod linux;
 #[cfg(target_arch = "x86_64")]
@@ -86,11 +88,11 @@ fn with_memory_image<F, R>(config: &AxVMCrateConfig, func: F) -> Option<R>
 where
     F: FnOnce(&[u8]) -> R,
 {
-    let vm_imags = vmcfg::get_memory_images()
+    let vm_images = vmcfg::get_memory_images()
         .iter()
         .find(|&v| v.id == config.base.id)?;
 
-    Some(func(vm_imags.kernel))
+    Some(func(vm_images.kernel))
 }
 
 fn memory_images_for_vm(config: &AxVMCrateConfig) -> AxResult<&'static vmcfg::MemoryImage> {
@@ -117,23 +119,40 @@ pub struct ImageLoader {
     main_memory: VMMemoryRegion,
     vm: AxVMRef,
     config: AxVMCrateConfig,
+    #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
+    guest_dtb: Option<GuestDtbImage>,
     kernel_load_gpa: GuestPhysAddr,
     bios_load_gpa: Option<GuestPhysAddr>,
-    dtb_load_gpa: Option<GuestPhysAddr>,
     ramdisk_load_gpa: Option<GuestPhysAddr>,
 }
 
 impl ImageLoader {
-    pub fn new(main_memory: VMMemoryRegion, config: AxVMCrateConfig, vm: AxVMRef) -> Self {
+    pub fn new(
+        main_memory: VMMemoryRegion,
+        config: AxVMCrateConfig,
+        vm: AxVMRef,
+        #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))] guest_dtb: Option<
+            GuestDtbImage,
+        >,
+    ) -> Self {
         Self {
             main_memory,
             vm,
             config,
+            #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
+            guest_dtb,
             kernel_load_gpa: GuestPhysAddr::default(),
             bios_load_gpa: None,
-            dtb_load_gpa: None,
             ramdisk_load_gpa: None,
         }
+    }
+
+    #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
+    fn load_guest_dtb(&self, dtb: &GuestDtbImage) -> AxResult {
+        let bytes = dtb.as_bytes();
+        let dtb_src = core::ptr::NonNull::new(bytes.as_ptr() as *mut u8)
+            .ok_or_else(|| ax_err_type!(InvalidData, "Guest DTB pointer is null"))?;
+        crate::fdt::update_fdt(dtb_src, bytes.len(), self.vm.clone(), &self.config)
     }
 
     pub fn load(&mut self) -> AxResult {
@@ -148,7 +167,6 @@ impl ImageLoader {
 
         self.vm.with_config(|config| {
             self.kernel_load_gpa = config.image_config.kernel_load_gpa;
-            self.dtb_load_gpa = config.image_config.dtb_load_gpa;
             self.bios_load_gpa = config.image_config.bios_load_gpa;
             self.ramdisk_load_gpa = config.image_config.ramdisk.as_ref().map(|r| r.load_gpa);
         });
@@ -169,69 +187,44 @@ impl ImageLoader {
     fn load_vm_images_from_memory(&mut self) -> AxResult {
         debug!("Loading VM[{}] images from memory", self.config.base.id);
 
-        let vm_imags = memory_images_for_vm(&self.config)?;
+        let vm_images = memory_images_for_vm(&self.config)?;
 
         #[cfg(target_arch = "x86_64")]
         if should_direct_boot_x86_linux(&self.config)
-            && let Some(header) = detect_x86_linux_image(vm_imags.kernel)
+            && let Some(header) = detect_x86_linux_image(vm_images.kernel)
         {
             return self.load_x86_linux_images_from_memory(
                 header,
-                vm_imags.kernel,
-                vm_imags.ramdisk,
+                vm_images.kernel,
+                vm_images.ramdisk,
             );
         }
 
         #[cfg(target_arch = "loongarch64")]
         if self.loongarch_uefi_boot() {
             self.load_loongarch_uefi_firmware_dtb()?;
-            self.add_loongarch_uefi_fw_cfg_from_memory(vm_imags.kernel, vm_imags.ramdisk)?;
-            self.load_loongarch_uefi_firmware_from_memory(vm_imags.bios)?;
+            self.add_loongarch_uefi_fw_cfg_from_memory(vm_images.kernel, vm_images.ramdisk)?;
+            self.load_loongarch_uefi_firmware_from_memory(vm_images.bios)?;
             return Ok(());
         }
 
-        load_vm_image_from_memory(vm_imags.kernel, self.kernel_load_gpa, self.vm.clone())?;
+        load_vm_image_from_memory(vm_images.kernel, self.kernel_load_gpa, self.vm.clone())?;
 
         // Load Ramdisk image and record its size before regenerating the DTB.
-        if let Some(buffer) = vm_imags.ramdisk {
+        if let Some(buffer) = vm_images.ramdisk {
             self.load_ramdisk_from_memory(buffer)?;
         }
-        // Load DTB image
-        let vm_config = crate::config::build_axvm_config(&self.config);
-
-        if let Some(dtb_arc) = get_vm_dtb_arc(&vm_config) {
-            let _dtb_slice: &[u8] = &dtb_arc;
-            #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
-            {
-                if let Some(dtb_src) = core::ptr::NonNull::new(_dtb_slice.as_ptr() as *mut u8) {
-                    crate::fdt::update_fdt(
-                        dtb_src,
-                        _dtb_slice.len(),
-                        self.vm.clone(),
-                        &self.config,
-                    )?;
-                } else {
-                    return ax_err!(InvalidData, "Guest DTB pointer is null");
-                }
-            }
-        } else {
-            #[cfg(target_arch = "riscv64")]
-            if let Some(buffer) = vm_imags.dtb {
-                let dtb_load_gpa = self
-                    .dtb_load_gpa
-                    .ok_or_else(|| ax_err_type!(NotFound, "DTB load address is missing"))?;
-                load_vm_image_from_memory(buffer, dtb_load_gpa, self.vm.clone())?;
+        #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
+        {
+            // Load DTB image
+            if let Some(dtb) = &self.guest_dtb {
+                self.load_guest_dtb(dtb)?;
             } else {
-                info!("dtb_load_gpa not provided");
-            }
-
-            #[cfg(not(target_arch = "riscv64"))]
-            {
-                info!("dtb_load_gpa not provided");
+                info!("VM[{}] has no guest DTB image to load", self.config.base.id);
             }
         }
 
-        self.load_boot_image_from_memory(vm_imags.bios)?;
+        self.load_boot_image_from_memory(vm_images.bios)?;
 
         Ok(())
     }
@@ -720,6 +713,7 @@ pub fn load_vm_image_from_memory(
     }
 }
 
+#[cfg(target_arch = "loongarch64")]
 fn fill_vm_region(load_addr: GuestPhysAddr, size: usize, byte: u8, vm: AxVMRef) -> AxResult {
     let image_load_regions = vm.get_image_load_region(load_addr, size)?;
     let mut filled_size = 0;
@@ -836,20 +830,11 @@ pub mod fs {
         if let Some(ramdisk_path) = &loader.config.kernel.ramdisk_path {
             loader.load_ramdisk_from_filesystem(ramdisk_path)?;
         };
-        // Load DTB image if needed.
-        let vm_config = crate::config::build_axvm_config(&loader.config);
-        if let Some(dtb_arc) = get_vm_dtb_arc(&vm_config) {
-            let _dtb_slice: &[u8] = &dtb_arc;
-            #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
-            {
-                let dtb_src = core::ptr::NonNull::new(_dtb_slice.as_ptr() as *mut u8)
-                    .ok_or_else(|| ax_err_type!(InvalidData, "Guest DTB pointer is null"))?;
-                crate::fdt::update_fdt(
-                    dtb_src,
-                    _dtb_slice.len(),
-                    loader.vm.clone(),
-                    &loader.config,
-                )?;
+        #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
+        {
+            // Load DTB image if needed.
+            if let Some(dtb) = &loader.guest_dtb {
+                loader.load_guest_dtb(dtb)?;
             }
         }
 

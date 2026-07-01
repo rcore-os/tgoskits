@@ -26,8 +26,9 @@ use alloc::{string::String, vec::Vec};
 
 use ax_errno::AxResult;
 pub use axvm_types::{
-    EmulatedDeviceConfig, EmulatedDeviceType, PassThroughAddressConfig, PassThroughDeviceConfig,
-    PassThroughPortConfig, VMBootProtocol, VMInterruptMode, VMType, VmMemConfig, VmMemMappingType,
+    AddressSpacePolicy, EmulatedDeviceConfig, EmulatedDeviceType, PassThroughAddressConfig,
+    PassThroughDeviceConfig, PassThroughPortConfig, ReservedAddressConfig, VMBootProtocol,
+    VMInterruptMode, VMType, VmMemConfig, VmMemMappingType,
 };
 
 mod emu_device_type_serde {
@@ -53,6 +54,54 @@ mod emu_device_type_serde {
                 "unknown emulated device type value: {value}"
             ))),
         }
+    }
+}
+
+#[cfg_attr(all(feature = "std", any(windows, unix)), derive(schemars::JsonSchema))]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+enum AddressSpacePolicySerde {
+    #[serde(rename = "virtualized", alias = "virtual")]
+    #[default]
+    Virtualized,
+    #[serde(rename = "passthrough", alias = "pt")]
+    Passthrough,
+}
+
+impl From<AddressSpacePolicySerde> for AddressSpacePolicy {
+    fn from(value: AddressSpacePolicySerde) -> Self {
+        match value {
+            AddressSpacePolicySerde::Virtualized => Self::Virtualized,
+            AddressSpacePolicySerde::Passthrough => Self::Passthrough,
+        }
+    }
+}
+
+impl From<&AddressSpacePolicy> for AddressSpacePolicySerde {
+    fn from(value: &AddressSpacePolicy) -> Self {
+        match value {
+            AddressSpacePolicy::Virtualized => Self::Virtualized,
+            AddressSpacePolicy::Passthrough => Self::Passthrough,
+        }
+    }
+}
+
+mod address_space_policy_serde {
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+    use super::*;
+
+    pub fn serialize<S>(value: &AddressSpacePolicy, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        AddressSpacePolicySerde::from(value).serialize(serializer)
+    }
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<AddressSpacePolicy, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        Ok(AddressSpacePolicySerde::deserialize(deserializer)?.into())
     }
 }
 
@@ -736,6 +785,14 @@ const BUILD_TARGET_ARCH: &str = "unknown";
 #[cfg_attr(all(feature = "std", any(windows, unix)), derive(schemars::JsonSchema))]
 #[derive(Debug, Default, Clone, serde::Serialize, serde::Deserialize)]
 pub struct VMDevicesConfig {
+    /// Guest physical address space population policy.
+    #[serde(default)]
+    #[cfg_attr(
+        all(feature = "std", any(windows, unix)),
+        schemars(with = "AddressSpacePolicySerde")
+    )]
+    #[serde(with = "address_space_policy_serde")]
+    pub address_space_policy: AddressSpacePolicy,
     /// Emu device Information
     #[cfg_attr(
         all(feature = "std", any(windows, unix)),

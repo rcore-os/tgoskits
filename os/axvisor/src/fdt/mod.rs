@@ -31,15 +31,11 @@ pub(crate) mod vm_fdt;
 #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
 use alloc::format;
 #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
-use alloc::{collections::BTreeMap, vec::Vec};
+use alloc::vec::Vec;
 
 use ax_errno::AxResult;
 #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
 use ax_errno::ax_err_type;
-#[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
-use ax_kspin::SpinNoIrq as Mutex;
-#[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
-use ax_lazyinit::LazyInit;
 #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
 use fdt_parser::Fdt;
 // pub use print::print_fdt;
@@ -54,38 +50,30 @@ use axvm::config::AxVMConfig;
 use axvmconfig::{AxVMCrateConfig, VMBootProtocol};
 
 #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
-use crate::config::{get_vm_dtb_arc, vmcfg};
+use crate::config::vmcfg;
 
-// DTB cache for generated device trees
+/// Guest DTB artifact produced or patched by the monitor before AxVM owns it.
 #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
-static GENERATED_DTB_CACHE: LazyInit<Mutex<BTreeMap<usize, Vec<u8>>>> = LazyInit::new();
+#[derive(Debug, Clone)]
+pub(crate) struct GuestDtbImage {
+    bytes: Vec<u8>,
+}
 
-/// Initialize the DTB cache
 #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
-pub fn init_dtb_cache() {
-    GENERATED_DTB_CACHE.init_once(Mutex::new(BTreeMap::new()));
+impl GuestDtbImage {
+    pub(crate) fn new(bytes: Vec<u8>) -> Self {
+        Self { bytes }
+    }
+
+    pub(crate) fn as_bytes(&self) -> &[u8] {
+        &self.bytes
+    }
 }
 
 /// Initialize LoongArch guest firmware resource handling.
 #[cfg(target_arch = "loongarch64")]
-pub fn init_dtb_cache() {
+pub(crate) fn init_guest_boot_resources() {
     crate::guest_platform::loongarch64::init();
-}
-
-/// Get reference to the DTB cache
-#[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
-pub fn dtb_cache() -> &'static Mutex<BTreeMap<usize, Vec<u8>>> {
-    GENERATED_DTB_CACHE.get_or_init(|| Mutex::new(BTreeMap::new()))
-}
-
-/// Generate guest FDT cache the result
-/// # Return Value
-/// Returns the generated DTB data and stores it in the global cache
-#[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
-pub fn crate_guest_fdt_with_cache(dtb_data: Vec<u8>, crate_config: &AxVMCrateConfig) {
-    // Store data in global cache
-    let mut cache_lock = dtb_cache().lock();
-    cache_lock.insert(crate_config.base.id, dtb_data);
 }
 
 #[cfg(target_arch = "loongarch64")]
@@ -110,14 +98,15 @@ fn handle_uefi_fdt_operations(
     Ok(())
 }
 
-/// Handle all FDT-related operations for guest architectures that boot with DTB.
+/// Prepare LoongArch guest firmware FDT facts for UEFI boot.
 #[cfg(target_arch = "loongarch64")]
-pub fn handle_fdt_operations(
+pub(crate) fn handle_fdt_operations(
     vm_config: &mut AxVMConfig,
     vm_create_config: &mut AxVMCrateConfig,
 ) -> AxResult {
     if vm_create_config.kernel.effective_boot_protocol() == VMBootProtocol::Uefi {
-        return handle_uefi_fdt_operations(vm_config, vm_create_config);
+        handle_uefi_fdt_operations(vm_config, vm_create_config)?;
+        return Ok(());
     }
 
     ax_errno::ax_err!(
@@ -128,15 +117,17 @@ pub fn handle_fdt_operations(
 
 /// Handle all FDT-related operations for guest architectures that boot with DTB.
 #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
-pub fn handle_fdt_operations(
+pub(crate) fn handle_fdt_operations(
     vm_config: &mut AxVMConfig,
     vm_create_config: &mut AxVMCrateConfig,
-) -> AxResult {
+) -> AxResult<Option<GuestDtbImage>> {
     if vm_create_config.kernel.effective_boot_protocol() == VMBootProtocol::Uefi {
-        return handle_uefi_fdt_operations(vm_config, vm_create_config);
+        handle_uefi_fdt_operations(vm_config, vm_create_config)?;
+        return Ok(None);
     }
 
     let host_fdt_bytes = try_get_host_fdt();
+    let mut guest_dtb = None;
 
     if let Some(host_fdt_bytes) = host_fdt_bytes {
         let host_fdt = Fdt::from_bytes(host_fdt_bytes)
@@ -145,17 +136,31 @@ pub fn handle_fdt_operations(
 
         if let Some(provided_dtb) = get_developer_provided_dtb(vm_config, vm_create_config)? {
             info!("VM[{}] found DTB , parsing...", vm_config.id());
-            update_provided_fdt(&provided_dtb, host_fdt_bytes, vm_create_config)?;
+            reserve_excluded_device_ranges(vm_config, vm_create_config, &provided_dtb)?;
+            guest_dtb = Some(GuestDtbImage::new(update_provided_fdt(
+                &provided_dtb,
+                host_fdt_bytes,
+                vm_create_config,
+            )?));
         } else {
             info!(
                 "VM[{}] DTB not found, generating based on the configuration file.",
                 vm_config.id()
             );
-            setup_guest_fdt_from_vmm(host_fdt_bytes, vm_config, vm_create_config)?;
+            guest_dtb = Some(GuestDtbImage::new(setup_guest_fdt_from_vmm(
+                host_fdt_bytes,
+                vm_config,
+                vm_create_config,
+            )?));
         }
     } else if let Some(provided_dtb) = get_developer_provided_dtb(vm_config, vm_create_config)? {
         info!("VM[{}] found DTB , parsing...", vm_config.id());
-        update_provided_fdt(&provided_dtb, &[], vm_create_config)?;
+        reserve_excluded_device_ranges(vm_config, vm_create_config, &provided_dtb)?;
+        guest_dtb = Some(GuestDtbImage::new(update_provided_fdt(
+            &provided_dtb,
+            &[],
+            vm_create_config,
+        )?));
     } else {
         warn!(
             "VM[{}] no guest DTB provided; continuing without generated DTB",
@@ -164,8 +169,7 @@ pub fn handle_fdt_operations(
     }
 
     // Overlay VM config with the given DTB.
-    if let Some(dtb_arc) = get_vm_dtb_arc(vm_config) {
-        let dtb = dtb_arc.as_ref();
+    if let Some(dtb) = guest_dtb.as_ref().map(GuestDtbImage::as_bytes) {
         parse_reserved_memory_regions(vm_create_config, dtb)?;
         parse_passthrough_devices_address(vm_config, vm_create_config, dtb)?;
         #[cfg(target_arch = "aarch64")]
@@ -194,21 +198,21 @@ pub fn handle_fdt_operations(
         vm_config.clear_dtb_load_gpa();
         vm_create_config.kernel.dtb_load_addr = None;
     }
-    Ok(())
+    Ok(guest_dtb)
 }
 
 #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
-pub fn get_developer_provided_dtb(
+fn get_developer_provided_dtb(
     vm_cfg: &AxVMConfig,
     crate_config: &AxVMCrateConfig,
 ) -> AxResult<Option<Vec<u8>>> {
     match crate_config.kernel.image_location.as_deref() {
         Some("memory") => {
-            let vm_imags = vmcfg::get_memory_images()
+            let vm_images = vmcfg::get_memory_images()
                 .iter()
                 .find(|&v| v.id == vm_cfg.id());
 
-            if let Some(dtb) = vm_imags.and_then(|images| images.dtb) {
+            if let Some(dtb) = vm_images.and_then(|images| images.dtb) {
                 info!("DTB file in memory, size: 0x{:x}", dtb.len());
                 return Ok(Some(dtb.to_vec()));
             }
