@@ -24,6 +24,10 @@
 #define SYS_openat2 437
 #endif
 
+#ifndef STATX_BASIC_STATS
+#define STATX_BASIC_STATS 0x000007ffU
+#endif
+
 #ifndef RESOLVE_NO_XDEV
 #define RESOLVE_NO_XDEV        0x01
 #define RESOLVE_NO_MAGICLINKS  0x02
@@ -222,6 +226,9 @@ static void test_pathmax_min(void)
 {
     char *path = make_long_path();
     struct stat st;
+#ifdef SYS_statx
+    long statx_buf[64];
+#endif
 
     printf("[TEST] PATH_MAX minimal conformance\n");
     CHECK(path != NULL, "allocate PATH_MAX test path");
@@ -231,6 +238,12 @@ static void test_pathmax_min(void)
 
     errno = 0;
     expect_path_errno("stat long path -> ENAMETOOLONG", stat(path, &st), ENAMETOOLONG);
+#ifdef SYS_statx
+    errno = 0;
+    expect_path_errno("statx long path -> ENAMETOOLONG",
+                      syscall(SYS_statx, AT_FDCWD, path, 0, STATX_BASIC_STATS, statx_buf),
+                      ENAMETOOLONG);
+#endif
     errno = 0;
     expect_path_errno("access long path -> ENAMETOOLONG", access(path, F_OK), ENAMETOOLONG);
     errno = 0;
