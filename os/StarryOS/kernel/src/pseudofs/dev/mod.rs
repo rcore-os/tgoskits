@@ -85,10 +85,11 @@ impl Drop for IrqRegistration {
 #[cfg(any(feature = "sg2002", feature = "k230-kpu"))]
 pub(super) fn request_shared_disabled(
     irq: ax_runtime::hal::irq::IrqId,
-    handler: ax_runtime::hal::irq::RawIrqHandler,
-    data: core::ptr::NonNull<()>,
+    handler: impl FnMut(ax_runtime::hal::irq::IrqContext) -> ax_runtime::hal::irq::IrqReturn
+    + Send
+    + 'static,
 ) -> Result<IrqRegistration, ax_runtime::hal::irq::IrqError> {
-    let request = ax_runtime::hal::irq::IrqRequest::new(handler, data)
+    let request = ax_runtime::hal::irq::IrqRequest::new(handler)
         .share_mode(ax_runtime::hal::irq::ShareMode::Shared)
         .auto_enable(ax_runtime::hal::irq::AutoEnable::No);
     ax_runtime::hal::irq::request_irq(irq, request).map(IrqRegistration::new)

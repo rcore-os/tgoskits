@@ -1,5 +1,4 @@
-use alloc::{boxed::Box, string::String};
-use core::ptr::NonNull;
+use alloc::string::String;
 
 #[cfg(all(
     any(
@@ -20,7 +19,7 @@ use ax_hal::irq::CPU_LOCAL_IRQ_DOMAIN;
     feature = "plat-dyn"
 ))]
 use ax_hal::irq::HwIrq;
-use ax_hal::irq::{BoxedIrqHandler, IrqError, IrqHandle, IrqId, IrqSource, RawIrqHandler};
+use ax_hal::irq::{IrqContext, IrqError, IrqHandle, IrqId, IrqReturn, IrqSource};
 
 /// Resolves an explicitly legacy numeric IRQ without truncating it.
 pub fn resolve_legacy_irq(irq: usize) -> Result<IrqId, IrqError> {
@@ -131,32 +130,10 @@ impl Registration {
     pub fn register_shared(
         name: impl Into<String>,
         irq: IrqId,
-        handler: RawIrqHandler,
-        data: NonNull<()>,
+        handler: impl FnMut(IrqContext) -> IrqReturn + Send + 'static,
     ) -> Result<Self, IrqError> {
         let name = name.into();
-        match ax_hal::irq::request_shared_irq(irq, handler, data) {
-            Ok(handle) => {
-                info!("registered {name} irq {:?}", handle.irq());
-                Ok(Self {
-                    name,
-                    handle: Some(handle),
-                })
-            }
-            Err(err) => {
-                warn!("failed to register {name} irq handler for irq {irq:?}: {err:?}");
-                Err(err)
-            }
-        }
-    }
-
-    pub fn register_boxed_shared(
-        name: impl Into<String>,
-        irq: IrqId,
-        handler: BoxedIrqHandler,
-    ) -> Result<Self, IrqError> {
-        let name = name.into();
-        match ax_hal::irq::request_boxed_shared_irq(irq, handler) {
+        match ax_hal::irq::request_shared_irq(irq, handler) {
             Ok(handle) => {
                 info!("registered {name} irq {:?}", handle.irq());
                 Ok(Self {
@@ -184,36 +161,6 @@ impl Drop for Registration {
         if let Err(err) = ax_hal::irq::free_irq(handle) {
             warn!("failed to free {} irq handler: {err:?}", self.name);
         }
-    }
-}
-
-pub struct HandlerRegistration<T> {
-    _registration: Registration,
-    state: Box<T>,
-}
-
-impl<T> HandlerRegistration<T> {
-    pub fn register_shared(
-        name: impl Into<String>,
-        irq: IrqId,
-        state: T,
-        handler: RawIrqHandler,
-    ) -> Result<Self, IrqError> {
-        let mut state = Box::new(state);
-        let data = NonNull::from(state.as_mut()).cast();
-        let registration = Registration::register_shared(name, irq, handler, data)?;
-        Ok(Self {
-            _registration: registration,
-            state,
-        })
-    }
-
-    pub fn state(&self) -> &T {
-        &self.state
-    }
-
-    pub fn handle(&self) -> Option<IrqHandle> {
-        self._registration.handle()
     }
 }
 
@@ -249,15 +196,20 @@ impl ax_net::EthernetIrqRegistrar for RuntimeNetIrqRegistrar {
         name: &str,
         irq: IrqId,
         action: ax_net::EthernetIrqAction,
-    ) -> Result<Box<dyn ax_net::EthernetIrqRegistration>, ax_net::EthernetIrqRegistrationError>
-    {
+    ) -> Result<
+        alloc::boxed::Box<dyn ax_net::EthernetIrqRegistration>,
+        ax_net::EthernetIrqRegistrationError,
+    > {
         let mut action = action;
-        let handler = Box::new(move |_ctx| match action.run() {
+        let handler = move |_ctx| match action.run() {
             ax_net::EthernetIrqOutcome::Handled => ax_hal::irq::IrqReturn::Handled,
             ax_net::EthernetIrqOutcome::Wake => ax_hal::irq::IrqReturn::Wake,
-        });
-        Registration::register_boxed_shared(name, irq, handler)
-            .map(|registration| Box::new(registration) as Box<dyn ax_net::EthernetIrqRegistration>)
+        };
+        Registration::register_shared(name, irq, handler)
+            .map(|registration| {
+                alloc::boxed::Box::new(registration)
+                    as alloc::boxed::Box<dyn ax_net::EthernetIrqRegistration>
+            })
             .map_err(map_net_irq_error)
     }
 }

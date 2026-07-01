@@ -70,10 +70,7 @@ pub async fn poll_io<P: Pollable, F: FnMut() -> AxResult<T>, T>(
 #[cfg(feature = "irq")]
 pub fn register_irq_waker(irq: ax_hal::irq::IrqId, waker: &core::task::Waker) -> AxResult<()> {
     use alloc::{collections::BTreeMap, sync::Arc};
-    use core::{
-        ptr::NonNull,
-        sync::atomic::{AtomicBool, Ordering},
-    };
+    use core::sync::atomic::{AtomicBool, Ordering};
 
     use ax_kspin::SpinNoIrq;
     use axpoll::PollSet;
@@ -91,10 +88,7 @@ pub fn register_irq_waker(irq: ax_hal::irq::IrqId, waker: &core::task::Waker) ->
         poll: Arc<PollSet>,
     }
 
-    unsafe fn irq_waker_handler(
-        ctx: ax_hal::irq::IrqContext,
-        _data: NonNull<()>,
-    ) -> ax_hal::irq::IrqReturn {
+    fn irq_waker_handler(ctx: ax_hal::irq::IrqContext) -> ax_hal::irq::IrqReturn {
         // Runs in IRQ context with interrupts off. Only mark an already
         // registered slot and notify the drain task. The map entry is created
         // during task-context registration, so this path does not allocate.
@@ -162,7 +156,7 @@ pub fn register_irq_waker(irq: ax_hal::irq::IrqId, waker: &core::task::Waker) ->
     unsafe { poll.register(waker, axpoll::IoEvents::all()) };
 
     if should_install {
-        ax_hal::irq::request_shared_irq(irq, irq_waker_handler, NonNull::dangling())
+        ax_hal::irq::request_shared_irq(irq, irq_waker_handler)
             .map_err(|_| AxError::Unsupported)?;
     }
 

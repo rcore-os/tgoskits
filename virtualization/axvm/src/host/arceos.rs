@@ -237,15 +237,11 @@ pub(crate) type ArceOsIrqReturn = modules::ax_hal::irq::IrqReturn;
 #[cfg(target_arch = "x86_64")]
 pub(crate) type ArceOsIrqSource = modules::ax_hal::irq::IrqSource;
 #[cfg(target_arch = "x86_64")]
-pub(crate) type ArceOsRawIrqHandler = modules::ax_hal::irq::RawIrqHandler;
-
-#[cfg(target_arch = "x86_64")]
 pub(crate) fn request_shared_irq(
     irq: ArceOsIrqId,
-    handler: ArceOsRawIrqHandler,
-    data: core::ptr::NonNull<()>,
+    handler: impl FnMut(ArceOsIrqContext) -> ArceOsIrqReturn + Send + 'static,
 ) -> Result<ArceOsIrqHandle, ArceOsIrqError> {
-    modules::ax_hal::irq::request_shared_irq(irq, handler, data)
+    modules::ax_hal::irq::request_shared_irq(irq, handler)
 }
 
 #[cfg(target_arch = "x86_64")]

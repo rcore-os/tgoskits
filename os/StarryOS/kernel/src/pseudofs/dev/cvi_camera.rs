@@ -1,6 +1,6 @@
 #![allow(dead_code)]
 use alloc::vec::Vec;
-use core::{any::Any, ptr::NonNull, time::Duration};
+use core::{any::Any, time::Duration};
 
 use ax_errno::{AxError, LinuxError};
 use ax_kspin::SpinNoIrq as Mutex;
@@ -37,9 +37,8 @@ const SLIP_ESC: u8 = 0xDB;
 const SLIP_ESC_END: u8 = 0xDC;
 const SLIP_ESC_ESC: u8 = 0xDD;
 
-unsafe fn cvi_camera_raw_irq_handler(
+fn cvi_camera_irq_handler(
     _ctx: ax_runtime::hal::irq::IrqContext,
-    _data: NonNull<()>,
 ) -> ax_runtime::hal::irq::IrqReturn {
     let mut uart3 = some_serial::ns16550::dw_apb::DwApbUart::new(
         phys_to_virt(PhysAddr::from(UART3_ADDR)).as_usize(),
@@ -421,21 +420,18 @@ impl CviCamera {
         uart3.set_irq_mask(InterruptMask::empty());
         let mut irq_registration = None;
         match camera_uart_irq() {
-            Ok(irq) => {
-                match request_shared_disabled(irq, cvi_camera_raw_irq_handler, NonNull::dangling())
-                {
-                    Ok(registration) => {
-                        uart3.set_irq_mask(InterruptMask::RX_AVAILABLE);
-                        if let Err(err) = registration.enable() {
-                            warn!("failed to enable cvi camera IRQ: {err:?}");
-                            uart3.set_irq_mask(InterruptMask::empty());
-                        } else {
-                            irq_registration = Some(registration);
-                        }
+            Ok(irq) => match request_shared_disabled(irq, cvi_camera_irq_handler) {
+                Ok(registration) => {
+                    uart3.set_irq_mask(InterruptMask::RX_AVAILABLE);
+                    if let Err(err) = registration.enable() {
+                        warn!("failed to enable cvi camera IRQ: {err:?}");
+                        uart3.set_irq_mask(InterruptMask::empty());
+                    } else {
+                        irq_registration = Some(registration);
                     }
-                    Err(err) => warn!("failed to request cvi camera IRQ: {err:?}"),
                 }
-            }
+                Err(err) => warn!("failed to request cvi camera IRQ: {err:?}"),
+            },
             Err(err) => warn!("failed to resolve cvi camera IRQ: {err:?}"),
         }
         Self {

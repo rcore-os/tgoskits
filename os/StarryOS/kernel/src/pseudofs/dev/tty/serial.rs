@@ -1,4 +1,4 @@
-use alloc::{boxed::Box, format, string::String, sync::Arc, vec, vec::Vec};
+use alloc::{format, string::String, sync::Arc, vec, vec::Vec};
 use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 use ax_driver::serial::{
@@ -350,7 +350,7 @@ fn new_serial_tty(number: usize, serial: SerialDevice) -> AxResult<SerialTtyEntr
 impl SerialBackend {
     fn register_irq(self: &Arc<Self>, mut irq: SerialIrqHandler) -> AxResult<()> {
         let backend = self.clone();
-        let request = IrqRequest::new_boxed(Box::new(move |ctx| {
+        let request = IrqRequest::new(move |ctx| {
             let outcome = backend.handle_irq_on_owner(ctx.cpu, &mut irq);
             if !outcome.claimed {
                 return ax_runtime::hal::irq::IrqReturn::Unhandled;
@@ -361,7 +361,7 @@ impl SerialBackend {
             } else {
                 ax_runtime::hal::irq::IrqReturn::Wake
             }
-        }))
+        })
         .share_mode(ShareMode::Shared)
         .affinity(IrqAffinity::Fixed(CpuId(self.owner.0)))
         .auto_enable(AutoEnable::No);

@@ -134,14 +134,10 @@ impl BlockIrqRegistrar for RuntimeBlockIrqRegistrar {
         irq: irq_framework::IrqId,
         mut action: Box<dyn FnMut(ax_hal::irq::IrqContext) -> BlockIrqOutcome + Send + 'static>,
     ) -> ax_errno::AxResult<Box<dyn BlockIrqRegistration>> {
-        crate::irq::Registration::register_boxed_shared(
-            name,
-            irq,
-            Box::new(move |ctx| match action(ctx) {
-                BlockIrqOutcome::Handled => ax_hal::irq::IrqReturn::Handled,
-                BlockIrqOutcome::Wake => ax_hal::irq::IrqReturn::Wake,
-            }),
-        )
+        crate::irq::Registration::register_shared(name, irq, move |ctx| match action(ctx) {
+            BlockIrqOutcome::Handled => ax_hal::irq::IrqReturn::Handled,
+            BlockIrqOutcome::Wake => ax_hal::irq::IrqReturn::Wake,
+        })
         .map(|inner| Box::new(RuntimeBlockIrqRegistration { _inner: inner }) as _)
         .map_err(map_block_irq_error)
     }
