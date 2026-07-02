@@ -155,8 +155,11 @@ struct mmap_page {
     union {
         uint64_t capabilities;
         struct {
-            uint64_t cap_bit0 : 1, cap_user_rdpmc : 1, cap_user_time : 1,
-                cap_user_time_zero : 1, cap_____res : 60;
+            /* Linux ABI order: cap_user_rdpmc is bit 2, after cap_bit0 AND
+             * cap_bit0_is_deprecated (bit 1). Omitting the deprecated bit shifts
+             * cap_user_rdpmc to bit 1 and mis-reads the kernel's `1<<2` as 0. */
+            uint64_t cap_bit0 : 1, cap_bit0_is_deprecated : 1, cap_user_rdpmc : 1,
+                cap_user_time : 1, cap_user_time_zero : 1, cap_____res : 59;
         };
     };
     uint16_t pmc_width;
@@ -2092,17 +2095,22 @@ static void area_f_fidelity(void) {
             } else {
                 uint32_t idx = mp->index;
                 uint16_t w = mp->pmc_width;
+                int cap = mp->cap_user_rdpmc;
                 uint64_t r1 = read_pmccntr();
                 uint64_t r2 = read_pmccntr();
                 uint64_t b[3] = {0, 0, 0};
                 ioctl((int)fd, IOC_DISABLE, 0);
                 read((int)fd, b, sizeof(b));
-                if (idx == 32 && w == 64 && r2 >= r1 && r1 > 0) {
-                    PASS("RDPMC-2", "cycle index=32 width=64 pmccntr=%llu read=%llu",
+                /* The cycle-counter event opens under QEMU too, so asserting cap
+                 * here validates the capabilities bitfield offset on QEMU (RDPMC-1
+                 * only opens on real silicon). */
+                if (cap && idx == 32 && w == 64 && r2 >= r1 && r1 > 0) {
+                    PASS("RDPMC-2", "cycle cap=1 index=32 width=64 pmccntr=%llu "
+                                    "read=%llu",
                          (unsigned long long)r1, (unsigned long long)b[0]);
                 } else {
-                    FAIL("RDPMC-2", "index=%u width=%u pmccntr=%llu", idx, w,
-                         (unsigned long long)r1);
+                    FAIL("RDPMC-2", "cap=%d index=%u width=%u pmccntr=%llu", cap, idx,
+                         w, (unsigned long long)r1);
                 }
                 munmap(mp, pg);
             }
