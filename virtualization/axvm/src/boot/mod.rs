@@ -7,6 +7,7 @@ pub mod images;
 mod policy;
 
 #[cfg(any(
+    test,
     target_arch = "aarch64",
     target_arch = "loongarch64",
     target_arch = "riscv64"

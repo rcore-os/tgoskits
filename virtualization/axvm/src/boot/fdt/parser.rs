@@ -25,7 +25,7 @@ use ax_errno::{AxResult, ax_err_type};
 use axvmconfig::{
     AxVMCrateConfig, PassThroughDeviceConfig, ReservedAddressConfig, VmMemConfig, VmMemMappingType,
 };
-use fdt_parser::{Fdt, FdtHeader, PciRange, PciSpace};
+use fdt_edit::{Fdt, Node, NodeType, PciRange, PciSpace};
 
 #[cfg(target_arch = "aarch64")]
 use crate::boot::fdt::create::update_cpu_node;
@@ -34,7 +34,6 @@ use crate::{MappingFlags, config::AxVMConfig};
 const PAGE_SIZE_4K: usize = 0x1000;
 
 pub fn try_get_host_fdt() -> Option<&'static [u8]> {
-    const FDT_VALID_MAGIC: u32 = 0xd00d_feed;
     let bootarg: usize = crate::host_fdt_bootarg();
     if bootarg == 0 {
         warn!("Boot argument does not contain a host FDT pointer");
@@ -42,27 +41,9 @@ pub fn try_get_host_fdt() -> Option<&'static [u8]> {
     }
 
     let fdt_vaddr = crate::host_phys_to_virt(bootarg.into());
-    let header = unsafe {
-        core::slice::from_raw_parts(fdt_vaddr.as_ptr(), core::mem::size_of::<FdtHeader>())
-    };
-    let fdt_header = match FdtHeader::from_bytes(header) {
-        Ok(header) => header,
-        Err(e) => {
-            error!("Failed to parse host FDT header: {e:#?}");
-            return None;
-        }
-    };
-
-    if fdt_header.magic.get() != FDT_VALID_MAGIC {
-        error!(
-            "FDT magic is invalid, expected {:#x}, got {:#x}",
-            FDT_VALID_MAGIC,
-            fdt_header.magic.get()
-        );
-        return None;
-    }
-
-    Some(unsafe { core::slice::from_raw_parts(fdt_vaddr.as_ptr(), fdt_header.total_size()) })
+    super::tree::host_fdt_bytes_from_ptr(fdt_vaddr.as_ptr()).inspect(|bytes| {
+        trace!("Host FDT size: 0x{:x}", bytes.len());
+    })
 }
 
 pub fn setup_guest_fdt_from_vmm(
@@ -74,12 +55,8 @@ pub fn setup_guest_fdt_from_vmm(
         .map_err(|e| ax_err_type!(InvalidData, format!("Failed to parse host FDT: {e:#?}")))?;
 
     reserve_excluded_device_ranges(vm_cfg, crate_config, fdt_bytes)?;
-
-    // Call the modified function and get the returned device name list
     let passthrough_device_names = super::device::find_all_passthrough_devices(vm_cfg, &fdt);
-
-    let dtb_data = super::create::create_guest_fdt(&fdt, &passthrough_device_names, crate_config)?;
-    Ok(dtb_data)
+    super::create::create_guest_fdt(&fdt, &passthrough_device_names, crate_config)
 }
 
 fn is_reserved_memory_path(node_path: &str) -> bool {
@@ -203,9 +180,7 @@ fn push_reserved_address_range(
         let existing = &ranges[index];
         let merged_end = merged.base_gpa.saturating_add(merged.length);
         let existing_end = existing.base_gpa.saturating_add(existing.length);
-        let overlaps_or_touches =
-            merged.base_gpa <= existing_end && existing.base_gpa <= merged_end;
-        if overlaps_or_touches {
+        if merged.base_gpa <= existing_end && existing.base_gpa <= merged_end {
             let merged_base = merged.base_gpa.min(existing.base_gpa);
             let merged_end = merged_end.max(existing_end);
             merged = ReservedAddressConfig {
@@ -227,6 +202,19 @@ fn push_reserved_address_range(
     ranges.push(merged);
 }
 
+fn node_regs(fdt: &Fdt, node_id: usize) -> Vec<fdt_edit::RegFixed> {
+    fdt.view_typed(node_id)
+        .map(|node| node.regs())
+        .unwrap_or_default()
+}
+
+fn node_pci_ranges(fdt: &Fdt, node_id: usize) -> Vec<PciRange> {
+    match fdt.view_typed(node_id) {
+        Some(NodeType::Pci(pci)) => pci.ranges().unwrap_or_default(),
+        _ => Vec::new(),
+    }
+}
+
 pub fn reserve_excluded_device_ranges(
     vm_cfg: &mut AxVMConfig,
     crate_cfg: &AxVMCrateConfig,
@@ -243,37 +231,30 @@ pub fn reserve_excluded_device_ranges(
             format!("Failed to parse DTB image while reading excluded devices: {e:#?}")
         )
     })?;
-    let all_nodes: Vec<_> = fdt.all_nodes().collect();
-    let all_paths = super::build_all_node_paths(&all_nodes);
     let mut reserved_ranges = Vec::new();
 
-    for (node, node_path) in all_nodes.iter().zip(all_paths.iter()) {
-        if !is_excluded_node_path(node_path, &excluded_paths) {
+    for node_id in fdt.iter_node_ids() {
+        let node_path = fdt.path_of(node_id);
+        if !is_excluded_node_path(&node_path, &excluded_paths) {
             continue;
         }
 
-        if let Some(reg_iter) = node.reg() {
-            for reg in reg_iter {
-                push_reserved_address_range(
-                    &mut reserved_ranges,
-                    node_path,
-                    reg.address as usize,
-                    reg.size.unwrap_or(0),
-                );
-            }
+        for reg in node_regs(&fdt, node_id) {
+            push_reserved_address_range(
+                &mut reserved_ranges,
+                &node_path,
+                reg.address as usize,
+                reg.size.unwrap_or(0) as usize,
+            );
         }
 
-        if let Some(pci) = node.clone().into_pci()
-            && let Ok(pci_ranges) = pci.ranges()
-        {
-            for range in pci_ranges {
-                push_reserved_address_range(
-                    &mut reserved_ranges,
-                    node_path,
-                    range.cpu_address as usize,
-                    range.size as usize,
-                );
-            }
+        for range in node_pci_ranges(&fdt, node_id) {
+            push_reserved_address_range(
+                &mut reserved_ranges,
+                &node_path,
+                range.cpu_address as usize,
+                range.size as usize,
+            );
         }
     }
 
@@ -285,7 +266,7 @@ pub fn reserve_excluded_device_ranges(
     Ok(())
 }
 
-fn is_memory_like_compatible(node: &fdt_parser::Node<'_>) -> bool {
+fn is_memory_like_compatible(node: &Node) -> bool {
     node.compatibles().any(|compat| {
         compat == "mmio-sram"
             || compat.contains("shared-memory")
@@ -294,19 +275,16 @@ fn is_memory_like_compatible(node: &fdt_parser::Node<'_>) -> bool {
     })
 }
 
-fn is_partition_like_node(node: &fdt_parser::Node<'_>, node_path: &str) -> bool {
-    if node
-        .compatibles()
+fn is_partition_like_node(node: &Node, node_path: &str) -> bool {
+    node.compatibles()
         .any(|compat| compat == "fixed-partitions")
-    {
-        return true;
-    }
-
-    node_path.contains("/partitions/")
+        || node_path.contains("/partitions/")
 }
 
 fn should_skip_passthrough_node(
-    node: &fdt_parser::Node<'_>,
+    fdt: &Fdt,
+    node_id: usize,
+    node: &Node,
     node_path: &str,
     reserved_regions: &[VmMemConfig],
 ) -> bool {
@@ -314,13 +292,9 @@ fn should_skip_passthrough_node(
         return false;
     }
 
-    let Some(reg_iter) = node.reg() else {
-        return false;
-    };
-
-    for reg in reg_iter {
+    for reg in node_regs(fdt, node_id) {
         let gpa = reg.address as usize;
-        let size = reg.size.unwrap_or(0);
+        let size = reg.size.unwrap_or(0) as usize;
         if size == 0 {
             continue;
         }
@@ -352,70 +326,33 @@ pub fn parse_reserved_memory_regions(crate_cfg: &mut AxVMCrateConfig, dtb: &[u8]
             format!("Failed to parse DTB image while reading reserved memory: {e:#?}")
         )
     })?;
-    let all_nodes: Vec<_> = fdt.all_nodes().collect();
-    let all_paths = super::build_all_node_paths(&all_nodes);
     let default_flags = (MappingFlags::READ | MappingFlags::WRITE | MappingFlags::EXECUTE).bits();
 
     let mut added_count = 0usize;
-    for (index, node) in all_nodes.iter().enumerate() {
-        let node_path = &all_paths[index];
-        if !is_reserved_memory_path(node_path) {
+    for node_id in fdt.iter_node_ids() {
+        let node_path = fdt.path_of(node_id);
+        if !is_reserved_memory_path(&node_path) {
             continue;
         }
 
-        if let Some(reg_iter) = node.reg() {
-            for reg in reg_iter {
-                let original_gpa = reg.address as usize;
-                let original_size = reg.size.unwrap_or(0);
-                let Some((gpa, size)) = align_reserved_region_4k(original_gpa, original_size)
-                else {
-                    continue;
-                };
+        for reg in node_regs(&fdt, node_id) {
+            let original_gpa = reg.address as usize;
+            let original_size = reg.size.unwrap_or(0) as usize;
+            let Some((gpa, size)) = align_reserved_region_4k(original_gpa, original_size) else {
+                continue;
+            };
 
-                if gpa != original_gpa || size != original_size {
-                    debug!(
-                        "Aligning reserved-memory {} from [{:#x}~{:#x}] to [{:#x}~{:#x}]",
-                        node_path,
-                        original_gpa,
-                        original_gpa.saturating_add(original_size),
-                        gpa,
-                        gpa.saturating_add(size)
-                    );
-                }
+            let remaining_segments =
+                subtract_memory_region_overlap(gpa, size, &crate_cfg.kernel.memory_regions);
 
-                let remaining_segments =
-                    subtract_memory_region_overlap(gpa, size, &crate_cfg.kernel.memory_regions);
-
-                if remaining_segments.is_empty() {
-                    debug!(
-                        "Skipping reserved-memory {} [{:#x}~{:#x}] because it is fully covered by \
-                         existing memory_regions",
-                        node_path,
-                        gpa,
-                        gpa + size
-                    );
-                    continue;
-                }
-
-                if remaining_segments.len() != 1 || remaining_segments[0] != (gpa, size) {
-                    debug!(
-                        "Cropping reserved-memory {} [{:#x}~{:#x}] into {:?} to avoid overlaps",
-                        node_path,
-                        gpa,
-                        gpa + size,
-                        remaining_segments
-                    );
-                }
-
-                for (seg_gpa, seg_size) in remaining_segments {
-                    crate_cfg.kernel.memory_regions.push(VmMemConfig {
-                        gpa: seg_gpa,
-                        size: seg_size,
-                        flags: default_flags,
-                        map_type: VmMemMappingType::MapReserved,
-                    });
-                    added_count += 1;
-                }
+            for (seg_gpa, seg_size) in remaining_segments {
+                crate_cfg.kernel.memory_regions.push(VmMemConfig {
+                    gpa: seg_gpa,
+                    size: seg_size,
+                    flags: default_flags,
+                    map_type: VmMemMappingType::MapReserved,
+                });
+                added_count += 1;
             }
         }
     }
@@ -429,37 +366,328 @@ pub fn parse_reserved_memory_regions(crate_cfg: &mut AxVMCrateConfig, dtb: &[u8]
     Ok(())
 }
 
+pub fn set_phys_cpu_sets(
+    vm_cfg: &mut AxVMConfig,
+    fdt: &Fdt,
+    crate_config: &AxVMCrateConfig,
+) -> AxResult {
+    let phys_cpu_ids = crate_config
+        .base
+        .phys_cpu_ids
+        .as_ref()
+        .ok_or_else(|| ax_err_type!(InvalidInput, "phys_cpu_ids is missing"))?;
+
+    let cpu_nodes_info: Vec<_> = fdt
+        .iter_node_ids()
+        .filter_map(|node_id| {
+            let path = fdt.path_of(node_id);
+            let node_id_from_path = path
+                .strip_prefix("/cpus/cpu@")
+                .and_then(|id| id.split('/').next())
+                .and_then(|id| usize::from_str_radix(id, 16).ok())?;
+            let guest_cpu_id = node_regs(fdt, node_id).first()?.address as usize;
+            info!(
+                "CPU node: {}, node_id: 0x{:x}, guest_cpu_id: 0x{:x}",
+                path, node_id_from_path, guest_cpu_id
+            );
+            Some((node_id_from_path, guest_cpu_id))
+        })
+        .collect();
+    info!("Found {} host CPU nodes", cpu_nodes_info.len());
+
+    let mut new_phys_cpu_sets = Vec::new();
+    let mut guest_phys_cpu_ids = Vec::new();
+    for phys_cpu_id in phys_cpu_ids {
+        if let Some((cpu_index, (_, guest_cpu_id))) = cpu_nodes_info
+            .iter()
+            .enumerate()
+            .find(|(_, (node_id, _))| node_id == phys_cpu_id)
+        {
+            let cpu_mask = 1usize << cpu_index;
+            new_phys_cpu_sets.push(cpu_mask);
+            guest_phys_cpu_ids.push(*guest_cpu_id);
+        } else {
+            error!(
+                "vCPU {} with phys_cpu_id 0x{:x} not found in device tree!",
+                vm_cfg.id(),
+                phys_cpu_id
+            );
+        }
+    }
+
+    let phys_cpu_ls = vm_cfg.phys_cpu_ls_mut();
+    phys_cpu_ls.set_guest_cpu_sets(new_phys_cpu_sets);
+    phys_cpu_ls.set_guest_phys_cpu_ids(guest_phys_cpu_ids);
+    Ok(())
+}
+
+fn add_device_address_config(
+    vm_cfg: &mut AxVMConfig,
+    node_name: &str,
+    base_address: usize,
+    size: usize,
+    index: usize,
+    prefix: Option<&str>,
+) {
+    if size == 0 {
+        return;
+    }
+
+    let addr_end = base_address.saturating_add(size);
+    if let Some(emu_dev) = vm_cfg.emu_devices().iter().find(|emu_dev| {
+        let emu_start = emu_dev.base_gpa;
+        let emu_end = emu_dev.base_gpa.saturating_add(emu_dev.length);
+        base_address < emu_end && emu_start < addr_end
+    }) {
+        debug!(
+            "Skipping passthrough mapping for node {} [{:#x}~{:#x}] because it overlaps emulated \
+             device {} [{:#x}~{:#x}]",
+            node_name,
+            base_address,
+            addr_end,
+            emu_dev.name,
+            emu_dev.base_gpa,
+            emu_dev.base_gpa.saturating_add(emu_dev.length),
+        );
+        return;
+    }
+
+    let device_name = if index == 0 {
+        match prefix {
+            Some(p) => format!("{node_name}-{p}"),
+            None => node_name.to_string(),
+        }
+    } else {
+        match prefix {
+            Some(p) => format!("{node_name}-{p}-region{index}"),
+            None => format!("{node_name}-region{index}"),
+        }
+    };
+
+    vm_cfg.add_pass_through_device(PassThroughDeviceConfig {
+        name: device_name,
+        base_gpa: base_address,
+        base_hpa: base_address,
+        length: size,
+        irq_id: 0,
+    });
+}
+
+fn add_pci_ranges_config(vm_cfg: &mut AxVMConfig, node_name: &str, range: &PciRange, index: usize) {
+    let base_address = range.cpu_address as usize;
+    let size = range.size as usize;
+
+    if size == 0 {
+        return;
+    }
+
+    let prefix = match range.space {
+        PciSpace::IO => "io",
+        PciSpace::Memory32 => "mem32",
+        PciSpace::Memory64 => "mem64",
+    };
+
+    let device_name = if index == 0 {
+        format!("{node_name}-{prefix}")
+    } else {
+        format!("{node_name}-{prefix}-region{index}")
+    };
+
+    vm_cfg.add_pass_through_device(PassThroughDeviceConfig {
+        name: device_name,
+        base_gpa: base_address,
+        base_hpa: base_address,
+        length: size,
+        irq_id: 0,
+    });
+}
+
+pub fn parse_passthrough_devices_address(
+    vm_cfg: &mut AxVMConfig,
+    crate_cfg: &AxVMCrateConfig,
+    dtb: &[u8],
+) -> AxResult {
+    let devices = vm_cfg.pass_through_devices().to_vec();
+    if !devices.is_empty() && devices[0].length != 0 {
+        for (index, device) in devices.iter().enumerate() {
+            add_device_address_config(
+                vm_cfg,
+                &device.name,
+                device.base_gpa,
+                device.length,
+                index,
+                None,
+            );
+        }
+        return Ok(());
+    }
+
+    let fdt = Fdt::from_bytes(dtb).map_err(|e| {
+        ax_err_type!(
+            InvalidData,
+            format!("Failed to parse DTB image while reading passthrough devices: {e:#?}")
+        )
+    })?;
+
+    vm_cfg.clear_pass_through_devices();
+    let reserved_regions: Vec<VmMemConfig> = reserved_memory_regions(crate_cfg).cloned().collect();
+
+    for node_id in fdt.iter_node_ids() {
+        let Some(node) = fdt.node(node_id) else {
+            continue;
+        };
+        let node_path = fdt.path_of(node_id);
+
+        if node_path == "/"
+            || node.name().starts_with("memory")
+            || is_reserved_memory_path(&node_path)
+        {
+            continue;
+        }
+
+        if is_partition_like_node(node, &node_path)
+            || should_skip_passthrough_node(&fdt, node_id, node, &node_path, &reserved_regions)
+        {
+            continue;
+        }
+
+        let node_name = node.name().to_string();
+        if node_name.starts_with("pcie@") || node_name.contains("pci") {
+            for (index, range) in node_pci_ranges(&fdt, node_id).iter().enumerate() {
+                add_pci_ranges_config(vm_cfg, &node_name, range, index);
+            }
+
+            for (index, reg) in node_regs(&fdt, node_id).iter().enumerate() {
+                add_device_address_config(
+                    vm_cfg,
+                    &node_name,
+                    reg.address as usize,
+                    reg.size.unwrap_or(0) as usize,
+                    index,
+                    Some("ecam"),
+                );
+            }
+        } else {
+            for (index, reg) in node_regs(&fdt, node_id).iter().enumerate() {
+                add_device_address_config(
+                    vm_cfg,
+                    &node_name,
+                    reg.address as usize,
+                    reg.size.unwrap_or(0) as usize,
+                    index,
+                    None,
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
+#[cfg(target_arch = "aarch64")]
+pub fn parse_vm_interrupt(vm_cfg: &mut AxVMConfig, dtb: &[u8]) -> AxResult {
+    let fdt = Fdt::from_bytes(dtb).map_err(|e| {
+        ax_err_type!(
+            InvalidData,
+            format!("Failed to parse DTB image while reading interrupts: {e:#?}")
+        )
+    })?;
+
+    for node_id in fdt.iter_node_ids() {
+        let Some(node) = fdt.node(node_id) else {
+            continue;
+        };
+        let name = node.name();
+        if name.starts_with("memory")
+            || name.starts_with("interrupt-controller")
+            || name.starts_with("intc")
+            || name.starts_with("its")
+        {
+            continue;
+        }
+
+        let Some(view) = fdt.view_typed(node_id) else {
+            continue;
+        };
+        for interrupt in view.interrupts() {
+            if interrupt.specifier.first().copied() == Some(0)
+                && let Some(irq) = interrupt.specifier.get(1)
+            {
+                trace!("node: {name}, GIC_SPI interrupt id: 0x{irq:x}");
+                vm_cfg.add_pass_through_spi(*irq);
+            }
+        }
+    }
+
+    Ok(())
+}
+
+#[cfg(target_arch = "riscv64")]
+pub fn update_provided_fdt(
+    provided_dtb: &[u8],
+    _host_dtb: Option<&[u8]>,
+    _crate_config: &AxVMCrateConfig,
+) -> AxResult<Vec<u8>> {
+    Ok(provided_dtb.to_vec())
+}
+
+#[cfg(target_arch = "aarch64")]
+pub fn update_provided_fdt(
+    provided_dtb: &[u8],
+    host_dtb: Option<&[u8]>,
+    crate_config: &AxVMCrateConfig,
+) -> AxResult<Vec<u8>> {
+    let provided_fdt = Fdt::from_bytes(provided_dtb).map_err(|e| {
+        ax_err_type!(
+            InvalidData,
+            format!("Failed to parse provided DTB image: {e:#?}")
+        )
+    })?;
+    let host_fdt = host_dtb.map(Fdt::from_bytes).transpose().map_err(|e| {
+        ax_err_type!(
+            InvalidData,
+            format!("Failed to parse host DTB image: {e:#?}")
+        )
+    })?;
+    update_cpu_node(&provided_fdt, host_fdt.as_ref(), crate_config)
+}
+
 #[cfg(test)]
 mod tests {
     use axvm_types::AddressSpacePolicy;
     use axvmconfig::{AxVMCrateConfig, VMDevicesConfig};
+    use fdt_edit::{Fdt, Node};
+    use fdt_raw::RegInfo;
 
     use super::{align_reserved_region_4k, reserve_excluded_device_ranges};
-    use crate::{
-        boot::fdt::vm_fdt::FdtWriter,
-        config::{AxVMConfig, AxVMConfigParams, PhysCpuList},
-    };
+    use crate::config::{AxVMConfig, AxVMConfigParams, PhysCpuList};
+
+    fn prop_u32(name: &str, value: u32) -> fdt_edit::Property {
+        let mut prop = fdt_edit::Property::new(name, alloc::vec![]);
+        prop.set_u32_ls(&[value]);
+        prop
+    }
 
     fn fdt_with_excluded_devices() -> Vec<u8> {
-        let mut writer = FdtWriter::new().unwrap();
-        let root = writer.begin_node("").unwrap();
-        writer.property_u32("#address-cells", 2).unwrap();
-        writer.property_u32("#size-cells", 2).unwrap();
+        let mut fdt = Fdt::new();
+        let root = fdt.root_id();
+        fdt.node_mut(root)
+            .unwrap()
+            .set_property(prop_u32("#address-cells", 2));
+        fdt.node_mut(root)
+            .unwrap()
+            .set_property(prop_u32("#size-cells", 2));
 
-        let serial = writer.begin_node("serial@10001234").unwrap();
-        writer
-            .property_array_u32("reg", &[0, 0x1000_1234, 0, 0x100])
-            .unwrap();
-        writer.end_node(serial).unwrap();
+        for (name, base, size) in [
+            ("serial@10001234", 0x1000_1234, 0x100),
+            ("gpio@10002000", 0x1000_2000, 0x1000),
+        ] {
+            let node = fdt.add_node(root, Node::new(name));
+            fdt.view_typed_mut(node)
+                .unwrap()
+                .set_regs(&[RegInfo::new(base, Some(size))]);
+        }
 
-        let gpio = writer.begin_node("gpio@10002000").unwrap();
-        writer
-            .property_array_u32("reg", &[0, 0x1000_2000, 0, 0x1000])
-            .unwrap();
-        writer.end_node(gpio).unwrap();
-
-        writer.end_node(root).unwrap();
-        writer.finish().unwrap()
+        fdt.encode().as_ref().to_vec()
     }
 
     #[test]
@@ -493,7 +721,7 @@ mod tests {
         }];
 
         assert_eq!(
-            subtract_memory_region_overlap(0x1000, 0x1000, &existing),
+            super::subtract_memory_region_overlap(0x1000, 0x1000, &existing),
             vec![(0x1000, 0x1000)]
         );
     }
@@ -508,7 +736,7 @@ mod tests {
         }];
 
         assert_eq!(
-            subtract_memory_region_overlap(0x1000, 0x6000, &existing),
+            super::subtract_memory_region_overlap(0x1000, 0x6000, &existing),
             vec![(0x1000, 0x2000), (0x5000, 0x2000)]
         );
     }
@@ -522,7 +750,7 @@ mod tests {
             map_type: VmMemMappingType::MapReserved,
         }];
 
-        assert!(subtract_memory_region_overlap(0x2000, 0x1000, &existing).is_empty());
+        assert!(super::subtract_memory_region_overlap(0x2000, 0x1000, &existing).is_empty());
     }
 
     #[test]
@@ -549,422 +777,5 @@ mod tests {
         assert_eq!(ranges.len(), 1);
         assert_eq!(ranges[0].base_gpa, 0x1000_1000);
         assert_eq!(ranges[0].length, 0x1000);
-    }
-}
-
-pub fn set_phys_cpu_sets(
-    vm_cfg: &mut AxVMConfig,
-    fdt: &Fdt,
-    crate_config: &AxVMCrateConfig,
-) -> AxResult {
-    // Find and parse CPU information from host DTB
-    let host_cpus: Vec<_> = fdt.find_nodes("/cpus/cpu").collect();
-    info!("Found {} host CPU nodes", host_cpus.len());
-
-    let phys_cpu_ids = crate_config
-        .base
-        .phys_cpu_ids
-        .as_ref()
-        .ok_or_else(|| ax_err_type!(InvalidInput, "phys_cpu_ids is missing"))?;
-
-    let cpu_nodes_info: Vec<_> = host_cpus
-        .iter()
-        .filter_map(|cpu_node| {
-            let node_id = cpu_node
-                .name()
-                .strip_prefix("cpu@")
-                .and_then(|id| usize::from_str_radix(id, 16).ok())?;
-            let cpu_reg = cpu_node.reg().and_then(|mut reg| reg.next())?;
-            let guest_cpu_id = cpu_reg.address as usize;
-            info!(
-                "CPU node: {}, node_id: 0x{:x}, guest_cpu_id: 0x{:x}",
-                cpu_node.name(),
-                node_id,
-                guest_cpu_id
-            );
-            Some((node_id, guest_cpu_id))
-        })
-        .collect();
-
-    let mut new_phys_cpu_sets = Vec::new();
-    let mut guest_phys_cpu_ids = Vec::new();
-    for phys_cpu_id in phys_cpu_ids {
-        if let Some((cpu_index, (_, guest_cpu_id))) = cpu_nodes_info
-            .iter()
-            .enumerate()
-            .find(|(_, (node_id, _))| node_id == phys_cpu_id)
-        {
-            let cpu_mask = 1usize << cpu_index;
-            new_phys_cpu_sets.push(cpu_mask);
-            guest_phys_cpu_ids.push(*guest_cpu_id);
-            debug!(
-                "vCPU {} with phys_cpu_id 0x{:x} mapped to CPU index {} (mask: 0x{:x}), guest CPU \
-                 ID 0x{:x}",
-                vm_cfg.id(),
-                phys_cpu_id,
-                cpu_index,
-                cpu_mask,
-                guest_cpu_id
-            );
-        } else {
-            error!(
-                "vCPU {} with phys_cpu_id 0x{:x} not found in device tree!",
-                vm_cfg.id(),
-                phys_cpu_id
-            );
-        }
-    }
-
-    info!("Calculated phys_cpu_sets: {new_phys_cpu_sets:?}");
-    info!("Calculated guest phys_cpu_ids: {guest_phys_cpu_ids:?}");
-
-    let phys_cpu_ls = vm_cfg.phys_cpu_ls_mut();
-    phys_cpu_ls.set_guest_cpu_sets(new_phys_cpu_sets);
-    phys_cpu_ls.set_guest_phys_cpu_ids(guest_phys_cpu_ids);
-
-    debug!(
-        "vcpu_mappings: {:?}",
-        vm_cfg.phys_cpu_ls_mut().get_vcpu_affinities_pcpu_ids()
-    );
-    Ok(())
-}
-
-/// Add address mapping configuration for a device
-fn add_device_address_config(
-    vm_cfg: &mut AxVMConfig,
-    node_name: &str,
-    base_address: usize,
-    size: usize,
-    index: usize,
-    prefix: Option<&str>,
-) {
-    // Only process devices with address information
-    if size == 0 {
-        return;
-    }
-
-    let addr_end = base_address.saturating_add(size);
-    // Runtime DT parsing may discover the same device range that is already
-    // owned by an emulated device (for example the guest PLIC window). Do not
-    // add a passthrough mapping for such a range, otherwise the guest can
-    // bypass the emulation layer entirely.
-    if let Some(emu_dev) = vm_cfg.emu_devices().iter().find(|emu_dev| {
-        let emu_start = emu_dev.base_gpa;
-        let emu_end = emu_dev.base_gpa.saturating_add(emu_dev.length);
-        base_address < emu_end && emu_start < addr_end
-    }) {
-        debug!(
-            "Skipping passthrough mapping for node {} [{:#x}~{:#x}] because it overlaps emulated \
-             device {} [{:#x}~{:#x}]",
-            node_name,
-            base_address,
-            addr_end,
-            emu_dev.name,
-            emu_dev.base_gpa,
-            emu_dev.base_gpa.saturating_add(emu_dev.length),
-        );
-        return;
-    }
-
-    // Create a device configuration for each address segment
-    let device_name = if index == 0 {
-        match prefix {
-            Some(p) => format!("{node_name}-{p}"),
-            None => node_name.to_string(),
-        }
-    } else {
-        match prefix {
-            Some(p) => format!("{node_name}-{p}-region{index}"),
-            None => format!("{node_name}-region{index}"),
-        }
-    };
-
-    // Add new device configuration
-    let pt_dev = PassThroughDeviceConfig {
-        name: device_name,
-        base_gpa: base_address,
-        base_hpa: base_address,
-        length: size,
-        irq_id: 0,
-    };
-    vm_cfg.add_pass_through_device(pt_dev);
-}
-
-/// Add ranges property configuration for PCIe devices
-fn add_pci_ranges_config(vm_cfg: &mut AxVMConfig, node_name: &str, range: &PciRange, index: usize) {
-    let base_address = range.cpu_address as usize;
-    let size = range.size as usize;
-
-    // Only process devices with address information
-    if size == 0 {
-        return;
-    }
-
-    // Create a device configuration for each address segment
-    let prefix = match range.space {
-        PciSpace::Configuration => "config",
-        PciSpace::IO => "io",
-        PciSpace::Memory32 => "mem32",
-        PciSpace::Memory64 => "mem64",
-    };
-
-    let device_name = if index == 0 {
-        format!("{node_name}-{prefix}")
-    } else {
-        format!("{node_name}-{prefix}-region{index}")
-    };
-
-    // Add new device configuration
-    let pt_dev = PassThroughDeviceConfig {
-        name: device_name,
-        base_gpa: base_address,
-        base_hpa: base_address,
-        length: size,
-        irq_id: 0,
-    };
-    vm_cfg.add_pass_through_device(pt_dev);
-
-    trace!(
-        "Added PCIe passthrough device {}: base=0x{:x}, size=0x{:x}, space={:?}",
-        node_name, base_address, size, range.space
-    );
-}
-
-pub fn parse_passthrough_devices_address(
-    vm_cfg: &mut AxVMConfig,
-    crate_cfg: &AxVMCrateConfig,
-    dtb: &[u8],
-) -> AxResult {
-    let devices = vm_cfg.pass_through_devices().to_vec();
-    if !devices.is_empty() && devices[0].length != 0 {
-        for (index, device) in devices.iter().enumerate() {
-            add_device_address_config(
-                vm_cfg,
-                &device.name,
-                device.base_gpa,
-                device.length,
-                index,
-                None,
-            );
-        }
-    } else {
-        let fdt = Fdt::from_bytes(dtb).map_err(|e| {
-            ax_err_type!(
-                InvalidData,
-                format!("Failed to parse DTB image while reading passthrough devices: {e:#?}")
-            )
-        })?;
-
-        // Clear existing passthrough device configurations
-        vm_cfg.clear_pass_through_devices();
-
-        let all_nodes: Vec<_> = fdt.all_nodes().collect();
-        let all_paths = super::build_all_node_paths(&all_nodes);
-        let reserved_regions: Vec<VmMemConfig> =
-            reserved_memory_regions(crate_cfg).cloned().collect();
-
-        // Traverse all device tree nodes
-        for (index, node) in all_nodes.iter().enumerate() {
-            let node_path = &all_paths[index];
-
-            // Skip root node
-            if node.name() == "/"
-                || node.name().starts_with("memory")
-                || is_reserved_memory_path(node_path)
-            {
-                continue;
-            }
-
-            if is_partition_like_node(node, node_path) {
-                debug!(
-                    "Skipping partition-like node {} from passthrough parsing",
-                    node_path
-                );
-                continue;
-            }
-
-            if should_skip_passthrough_node(node, node_path, &reserved_regions) {
-                continue;
-            }
-
-            let node_name = node.name().to_string();
-
-            // Check if it's a PCIe device node
-            if node_name.starts_with("pcie@") || node_name.contains("pci") {
-                // Process PCIe device's ranges property
-                if let Some(pci) = node.clone().into_pci()
-                    && let Ok(ranges) = pci.ranges()
-                {
-                    for (index, range) in ranges.enumerate() {
-                        add_pci_ranges_config(vm_cfg, &node_name, &range, index);
-                    }
-                }
-
-                // Process PCIe device's reg property (ECAM space)
-                if let Some(reg_iter) = node.reg() {
-                    for (index, reg) in reg_iter.enumerate() {
-                        let base_address = reg.address as usize;
-                        let size = reg.size.unwrap_or(0);
-
-                        add_device_address_config(
-                            vm_cfg,
-                            &node_name,
-                            base_address,
-                            size,
-                            index,
-                            Some("ecam"),
-                        );
-                    }
-                }
-            } else {
-                // Get device's reg property (process regular devices)
-                if let Some(reg_iter) = node.reg() {
-                    // Process all address segments of the device
-                    for (index, reg) in reg_iter.enumerate() {
-                        // Get device's address and size information
-                        let base_address = reg.address as usize;
-                        let size = reg.size.unwrap_or(0);
-
-                        add_device_address_config(
-                            vm_cfg,
-                            &node_name,
-                            base_address,
-                            size,
-                            index,
-                            None,
-                        );
-                    }
-                }
-            }
-        }
-        trace!(
-            "All passthrough devices: {:#x?}",
-            vm_cfg.pass_through_devices()
-        );
-        debug!(
-            "Finished parsing passthrough devices, total: {}",
-            vm_cfg.pass_through_devices().len()
-        );
-    }
-    Ok(())
-}
-
-#[cfg(target_arch = "aarch64")]
-pub fn parse_vm_interrupt(vm_cfg: &mut AxVMConfig, dtb: &[u8]) -> AxResult {
-    const GIC_PHANDLE: usize = 1;
-    let fdt = Fdt::from_bytes(dtb).map_err(|e| {
-        ax_err_type!(
-            InvalidData,
-            format!("Failed to parse DTB image while reading interrupts: {e:#?}")
-        )
-    })?;
-
-    for node in fdt.all_nodes() {
-        let name = node.name();
-
-        if name.starts_with("memory") {
-            continue;
-        }
-        // Skip the interrupt controller, as we will use vGIC
-        // TODO: filter with compatible property and parse its phandle from DT; maybe needs a second pass?
-        else if name.starts_with("interrupt-controller")
-            || name.starts_with("intc")
-            || name.starts_with("its")
-        {
-            debug!("skipping node {name} to use vGIC");
-            continue;
-        }
-
-        // Collect all GIC_SPI interrupts and add them to vGIC
-        if let Some(interrupts) = node.interrupts() {
-            // TODO: skip non-GIC interrupt
-            if let Some(parent) = node.interrupt_parent() {
-                trace!("node: {}, intr parent: {}", name, parent.node.name());
-                if let Some(phandle) = parent.node.phandle() {
-                    if phandle.as_usize() != GIC_PHANDLE {
-                        debug!(
-                            "node: {}, intr parent: {}, phandle: 0x{:x} is not GIC!",
-                            name,
-                            parent.node.name(),
-                            phandle.as_usize()
-                        );
-                    }
-                } else {
-                    warn!(
-                        "node: {}, intr parent: {} no phandle!",
-                        name,
-                        parent.node.name(),
-                    );
-                }
-            } else {
-                warn!("node: {name} no interrupt parent!");
-            }
-
-            for interrupt in interrupts {
-                // <GIC_SPI/GIC_PPI, IRQn, trigger_mode>
-                for (k, v) in interrupt.enumerate() {
-                    match k {
-                        0 => {
-                            if v == 0 {
-                                trace!("node: {name}, GIC_SPI");
-                            } else {
-                                debug!("node: {name}, intr type: {v}, not GIC_SPI, not supported!");
-                                break;
-                            }
-                        }
-                        1 => {
-                            trace!("node: {name}, interrupt id: 0x{v:x}");
-                            vm_cfg.add_pass_through_spi(v);
-                        }
-                        2 => {
-                            trace!("node: {name}, interrupt mode: 0x{v:x}");
-                        }
-                        _ => {
-                            warn!("unknown interrupt property {k}:0x{v:x}")
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    // vm_cfg.add_pass_through_device(PassThroughDeviceConfig {
-    //     name: "Fake Node".to_string(),
-    //     base_gpa: 0x0,
-    //     base_hpa: 0x0,
-    //     length: 0x20_0000,
-    //     irq_id: 0,
-    // });
-    Ok(())
-}
-
-pub fn update_provided_fdt(
-    provided_dtb: &[u8],
-    host_dtb: &[u8],
-    crate_config: &AxVMCrateConfig,
-) -> AxResult<Vec<u8>> {
-    #[cfg(any(target_arch = "loongarch64", target_arch = "riscv64"))]
-    {
-        let _ = host_dtb;
-        let _ = crate_config;
-        Ok(provided_dtb.to_vec())
-    }
-
-    #[cfg(target_arch = "aarch64")]
-    {
-        let provided_fdt = Fdt::from_bytes(provided_dtb).map_err(|e| {
-            ax_err_type!(
-                InvalidData,
-                format!("Failed to parse provided DTB image: {e:#?}")
-            )
-        })?;
-        let host_fdt = Fdt::from_bytes(host_dtb).map_err(|e| {
-            ax_err_type!(
-                InvalidData,
-                format!("Failed to parse host DTB image: {e:#?}")
-            )
-        })?;
-        let provided_dtb_data = update_cpu_node(&provided_fdt, &host_fdt, crate_config)?;
-        Ok(provided_dtb_data)
     }
 }
