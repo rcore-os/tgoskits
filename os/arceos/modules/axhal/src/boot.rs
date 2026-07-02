@@ -7,6 +7,7 @@
 /// boot protocol. The current implementation falls back to FDT
 /// `/chosen/bootargs`.
 pub fn bootargs() -> Option<&'static str> {
+    #[cfg(not(any(test, feature = "host-test")))]
     if let Some(bootargs) = axplat_dyn::bootargs() {
         return Some(bootargs);
     }
