@@ -20,9 +20,16 @@ sidebar_label: "检查机制总览"
 当前原子上下文主要包括：
 
 - IRQ 已关闭。
+- 显式 IRQ context。
 - preempt 已禁用。
 
-如果在这类上下文中调用可能阻塞的路径，系统会 panic，并打印 IRQ 状态和 preempt 计数。
+如果在这类上下文中调用可能阻塞的路径，系统会 panic，并打印调用点、结构化原因、IRQ enabled 状态、显式 IRQ context、preempt 计数、CPU、任务 ID 和任务状态。启用 `lockdep` 时，还会打印当前 held-lock stack，包括 kind、`sleep_forbidden`、class、addr 和 acquire 位置。
+
+当前实现还没有完整覆盖所有“不能睡眠”的语义来源。特别是：
+
+- `SpinRaw` / `SpinRwLock<NoOp>` 这类 non-sleep lock 不一定改变 IRQ 或 preempt 状态；当前 lockdep build 已能在其他 atomic 条件触发时打印 held-lock stack，但还没有把 held non-sleep lock 本身作为直接触发条件。
+- 用户内存 fault、可能触发 reclaim 的分配、必须原子执行的 hook 入口还缺少独立语义注解。
+- preempt-disable 来源仍需后续阶段补充到诊断中。
 
 典型覆盖路径包括：
 
@@ -32,21 +39,31 @@ sidebar_label: "检查机制总览"
 - `WaitQueue::wait*`
 - `TaskInner::join`
 - `future::block_on`
-- `ax-sync::Mutex::lock` / `try_lock`
+- `ax-sync::Mutex::lock`
 - Starry 用户内存访问和 page fault slow path
+
+`ax-sync::Mutex::try_lock` 不属于覆盖路径。它是单次 CAS，不会阻塞或睡眠，因此保持可在原子上下文中调用，语义接近 Linux `mutex_trylock`。
 
 主要入口：
 
 - `os/arceos/modules/axtask/src/api.rs`
 - `os/arceos/modules/axtask/src/wait_queue.rs`
+- `os/arceos/modules/axtask/src/future/mod.rs`
 - `os/arceos/modules/axsync/src/mutex.rs`
+- `os/arceos/modules/axhal/src/irq.rs`
+- `platforms/ax-plat/src/irq.rs`
 - `os/StarryOS/kernel/src/mm/access.rs`
 
 后续改进方向：
 
-- 扩展覆盖更多可能睡眠的内核 API，特别是跨模块间接阻塞路径。
-- 改进 panic 信息，输出调用点、当前任务和持锁状态，降低定位成本。
-- 梳理确实必须绕过检查的内部调度路径，减少 `yield_now_unchecked` 这类例外入口的使用面。
+- 继续补 QEMU 级 IRQ handler 回归，验证显式 IRQ context 路径。
+- 继续实现 held non-sleep lock 的直接判定，特别是 `SpinRaw`、`SpinRwLock<NoOp>` 和后续项目内 non-sleep rwlock。
+- 继续改进 panic 信息，输出 preempt-disable 来源。
+- 增加 `might_fault()`、`might_alloc()`、`cant_sleep()` / non-block scope 等语义注解，减少跨模块间接阻塞路径的盲区。
+- 明确启动阶段 sleepability，区分早期启动限制和真实运行期 atomic sleep bug。
+- 补充针对性回归，覆盖 IRQ handler、持 non-sleep lock、faultable user copy、阻塞式分配和 `try_lock` 非阻塞语义。
+
+详细计划和逐项讨论状态见 [`might_sleep` 后续增强计划](./might-sleep-followups.md)。本文只保留机制级总览，避免与详细计划重复维护。
 
 ## 2. `sync-lint` 原子内存序静态检查
 
