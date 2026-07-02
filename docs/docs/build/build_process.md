@@ -1,11 +1,11 @@
 ---
-sidebar_position: 4
+sidebar_position: 13
 sidebar_label: "构建过程"
 ---
 
 # 构建过程
 
-从用户输入 `cargo xtask <os> build` 到编译产物的完整过程。构建过程分为八个阶段，依次完成上下文初始化、参数解析、架构映射、配置加载、Feature 解析、平台配置生成、Cargo 参数组装和最终编译执行。构建配置细节见 [配置](/docs/build/configuration)，底层执行见 [运行](/docs/build/run)。
+本文描述 [ArceOS](./arceos/overview)、[StarryOS](./starry/overview)、[Axvisor](./axvisor/overview) 三套子系统共享的构建流水线。各子系统的命令差异和特有行为见各自目录，本文只讲公共部分。构建配置细节见 [参数与配置](./configuration)，运行阶段见 [运行时环境](./runtime)。
 
 构建过程的核心目标是**将用户友好的高层参数（如 `--arch aarch64`、`--smp 4`）转换为 Cargo 能理解的底层编译参数（target triple、features、环境变量、链接器脚本等）**。三套子系统共享前四个阶段的逻辑，在 Feature 解析和 axconfig 生成阶段开始分化，最终都汇聚到统一的 ostool `cargo_build()` 调用。
 
@@ -34,7 +34,7 @@ flowchart TD
 - **阶段 4**：直接 TOML 反序列化已有 Build Info 文件（用户可手动编辑该文件调整配置）
 - **阶段 6**：axconfig 重新生成（每次构建都会重新生成，确保与平台包配置同步）
 
-三类配置文件的详细说明见 [参数与配置](/docs/build/configuration)，底层执行见 [运行](/docs/build/run)。
+三类配置文件的详细说明见 [参数与配置](./configuration)，底层执行见 [运行时环境](./runtime)。
 
 ## 1. 初始化 AppContext
 
@@ -89,7 +89,7 @@ clap 解析得到原始 CLI 结构体后，`prepare_*_request()` 函数加载 Sn
 
 ## 3. Arch / Target 解析
 
-由 `context/arch.rs` 的 `resolve_arch_and_target()` 维护统一映射表（详见 [配置](/docs/build/configuration#arch--target-映射)）。
+由 `context/arch.rs` 的 `resolve_arch_and_target()` 维护统一映射表（详见 [参数与配置](./configuration#arch--target-映射)）。
 
 此阶段将合并后的 `arch` 和 `target` 参数解析为确定值。解析优先级：用户显式指定 → Snapshot 回退 → 子系统默认值。当两者都未指定时，使用子系统默认值（ArceOS → aarch64，StarryOS → riscv64，Axvisor → aarch64）。
 
@@ -97,7 +97,7 @@ clap 解析得到原始 CLI 结构体后，`prepare_*_request()` 函数加载 Sn
 
 ## 4. Build Info 加载或创建
 
-构建配置存放在 `tmp/axbuild/config/<package>/build-<target>.toml`，由 `BuildInfo` 描述（详见 [配置](/docs/build/configuration#build-info)）。
+构建配置存放在 `tmp/axbuild/config/<package>/build-<target>.toml`，由 `BuildInfo` 描述（详见 [参数与配置](./configuration#build-info)）。
 
 ```mermaid
 flowchart TD

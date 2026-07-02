@@ -1,13 +1,13 @@
 ---
-sidebar_position: 5
+sidebar_position: 14
 sidebar_label: "运行时环境"
 ---
 
 # 运行时环境
 
-`cargo xtask <os> qemu/uboot/board` 在构建基础上增加运行环节。运行过程的核心是**将编译好的 OS 产物部署到目标环境（QEMU 虚拟机、U-Boot 引导或物理板卡）中执行**，并收集运行输出。`AppContext` 封装了五个执行方法，将底层编译和运行委托给 `ostool::Tool`。
+本文描述 [ArceOS](./arceos/overview)、[StarryOS](./starry/overview)、[Axvisor](./axvisor/overview) 三套子系统共享的运行环境（QEMU / U-Boot / 板卡）。各子系统的命令差异见各自目录，本文只讲公共部分。`cargo xtask <os> qemu/uboot/board` 在构建基础上增加运行环节。运行过程的核心是**将编译好的 OS 产物部署到目标环境（QEMU 虚拟机、U-Boot 引导或物理板卡）中执行**，并收集运行输出。`AppContext` 封装了五个执行方法，将底层编译和运行委托给 `ostool::Tool`。
 
-运行阶段与构建阶段共享同一个 `AppContext` 实例。当用户执行 `cargo xtask <os> qemu` 时，系统会先完成完整的构建流程（见 [构建](/docs/build)），然后将编译产物配置到目标运行环境中。三个运行目标（QEMU、U-Boot、Board）的差异主要体现在配置获取方式和运行时环境准备上。
+运行阶段与构建阶段共享同一个 `AppContext` 实例。当用户执行 `cargo xtask <os> qemu` 时，系统会先完成完整的构建流程（见 [构建过程](./build_process)），然后将编译产物配置到目标运行环境中。三个运行目标（QEMU、U-Boot、Board）的差异主要体现在配置获取方式和运行时环境准备上。板卡管理命令（`cargo xtask board`）见 [板卡管理](./board)。
 
 ## 执行方法
 

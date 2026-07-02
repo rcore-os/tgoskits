@@ -99,6 +99,40 @@ graph TD
 
 `image/` 统一管理 rootfs 和 Guest 镜像的注册表、拉取、校验和缓存（详见 [镜像管理](./image)），`rootfs/` 的下载逻辑已收敛到 `image/storage.rs`，`rootfs/` 自身仅保留 `inject`（内容注入）、`qemu`（参数补丁）、`runtime`（依赖同步）和 `resize`（扩容）四块。
 
+## 各模块详解
+
+axbuild 的每个 `cargo xtask <cmd>` 都对应一篇专门文档。完整的命令索引见 [命令索引](./commands)，下面按类别列出：
+
+**横切工具命令**（不绑定特定 OS）：
+
+| 模块 | 命令 | 文档 | 一句话职责 |
+|------|------|------|-----------|
+| `test/std.rs` | `cargo xtask test` | [Std 白名单测试](./test) | 对 `std_crates.csv` 白名单逐一跑 `cargo test` |
+| `clippy/` | `cargo xtask clippy` | [Clippy 检查](./clippy) | 按 feature × target 矩阵对 workspace 做 fail-fast clippy |
+| `sync_lint/` | `cargo xtask sync-lint` | [Sync Lint](./sync_lint) | 用 `syn` 识别可疑的 `Relaxed` 原子序同步模式 |
+| `spin_lint.rs` | `cargo xtask spin-lint` | [Spin Lint](./spin_lint) | 守护 vendored `spin` 迁移结果，禁止外部 `spin` 与 `spin::RwLock` |
+| `board.rs` | `cargo xtask board` | [板卡管理](./board) | 远程板卡分配、串口连接与服务器配置 |
+| `config.rs` | `cargo xtask config` | [Config 辅助命令](./config_cmd) | axconfig 平台包定位、配置读取/生成、Makefile 字段检查 |
+| `backtrace/` | `cargo xtask backtrace symbolize` | [Backtrace 符号化](./backtrace) | 把 guest 输出的原始 `ip` 地址块符号化为函数+文件:行号 |
+| `image/` | `cargo xtask image` | [镜像管理](./image) | TGOS rootfs/guest 镜像注册表、下载、校验、解压 |
+| `axloader/` | `cargo xtask axloader build/test` | [Axloader](./axloader) | 构建 UEFI bootloader 并用 QEMU + HTTP smoke 验证网络引导 |
+
+**OS 子系统命令**（`<os> build/qemu/uboot/board/test`）：
+
+| 子系统 | 命令 | 文档 |
+|--------|------|------|
+| ArceOS | `cargo xtask arceos` | [ArceOS](./arceos/overview) |
+| StarryOS | `cargo xtask starry` | [StarryOS](./starry/overview) |
+| Axvisor | `cargo xtask axvisor` | [Axvisor](./axvisor/overview) |
+
+三套 OS 子系统共享底层的构建/运行/测试框架，差异主要体现在 CLI 命令面、参数默认值和少量特有行为。**共享能力**抽成独立文档，各 OS 目录（`arceos/`、`starry/`、`axvisor/`）只描述各自的特有命令和行为并引用这些共享文档：
+
+| 共享能力 | 文档 |
+|----------|------|
+| 构建过程（八阶段流水线、Feature 解析、axconfig 生成） | [构建过程](./build_process) |
+| 运行时环境（QEMU / U-Boot / 板卡） | [运行时环境](./runtime) |
+| 测试框架（用例发现、分组构建、资产准备、结果判定） | [测试框架](./test_framework) |
+
 ## 三层架构
 
 三层架构将关注点清晰地分离：CLI 层提供用户友好的命令行接口；axbuild 层负责 OS 特有的流程编排（如 ArceOS 的 axconfig 生成、StarryOS 的 rootfs 管理、Axvisor 的 VM 配置注入）；ostool 层则封装了与外部工具（cargo、QEMU、ostool-server）的直接交互，处理环境变量设置、进程管理等底层细节。

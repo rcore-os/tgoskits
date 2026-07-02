@@ -1,5 +1,5 @@
 ---
-sidebar_position: 8
+sidebar_position: 20
 sidebar_label: "自动 CI 测试"
 ---
 
