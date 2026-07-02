@@ -577,6 +577,7 @@ fn control_file_id_to_usize(control_file: api_control::ControlFileId) -> AxResul
 
 fn vm_ioctl(control_file: api_control::ControlFileId, cmd: u32, arg: usize) -> AxResult<isize> {
     match cmd {
+        KVM_CHECK_EXTENSION => Ok(check_extension(arg) as isize),
         KVM_CREATE_VCPU => create_vcpu_file(control_file, arg),
         KVM_SET_USER_MEMORY_REGION => {
             let region = read_userspace_memory_region(arg)?;
