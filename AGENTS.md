@@ -25,6 +25,34 @@
 - `arch-platform-porting`: project-local skill at `.claude/skills/arch-platform-porting/SKILL.md`
 - Use `arch-platform-porting` when the user wants to add, adapt, debug, or review architecture/platform support for ArceOS, StarryOS, Axvisor, someboot, dynamic UEFI platform boot, SMP startup, QEMU boot configs, target JSON files, axbuild arch mapping, axcpu trap/context code, axplat-dyn, somehal, or LoongArch/x86/aarch64/riscv platform bring-up issues.
 
+## Rust Coding Standards
+
+- Use the pinned Rust 2024 nightly toolchain and the repository rustfmt configuration as the formatting source of truth; do not restate rustfmt-owned layout rules in prose.
+- Prefer `#![no_std]` for reusable kernel, component, memory, virtualization, and portable driver crates; add `alloc`, `std`, or feature-gated support only where the crate boundary requires it.
+- Keep crate and module boundaries aligned with TGOSKits layers: reusable logic belongs in `components/`, `drivers/`, `memory/`, or `virtualization/`; OS glue belongs near the consuming ArceOS, StarryOS, Axvisor, or platform layer.
+- Keep modules domain-focused. Use private implementation modules by default, expose only intentional public surfaces, and re-export stable entry points from `lib.rs` when that improves the public API.
+- Name items by their domain invariant, such as address space, IRQ line, VM, device, queue, request, page, frame, capability, or error condition. Avoid generic names like `data`, `info`, `mgr`, or `handle` when a stronger project concept is known.
+- Prefer small functions that perform one state transition, hardware operation, syscall step, validation step, or conversion. Split probe/map/register/enable flows into named phases when each phase has distinct invariants or failure handling.
+- Make mutation and side effects visible through `&mut`, returned values, typed state transitions, or clearly named APIs. Avoid boolean-heavy control flags when separate functions, enums, or configuration structs express the intent better.
+- Prefer typed IDs, newtypes, `repr(transparent)` wrappers, const constructors, operation enums, and bitflags over raw `usize`, strings, or loosely related parameters.
+- Separate plain data from behavior-owning objects. Configuration, descriptors, and wire-format data may expose fields; types that own invariants, resources, locks, or hardware state should keep representation private and expose intent-revealing methods.
+- Split large objects by reason to change and by owned invariant. Prefer separate types for immutable configuration, validated descriptors, mutable runtime state, queues, IRQ endpoints, capability handles, and OS adapters when those parts have different lifetimes or synchronization rules.
+- Use traits as small capability boundaries, not inheritance hierarchies. Expose the capability the consumer needs, and prefer extension traits, adapter types, or feature-gated APIs over growing a central trait for optional behavior.
+- Prefer composition over inheritance-shaped designs. Build larger services from named parts such as control ports, queues, backends, allocators, registries, and adapters; use concrete fields or generics for static composition and trait objects only at dynamic capability or plugin boundaries.
+- Do not force callers to reach through nested objects to perform work. Keep internal parts private when they are implementation details, and expose small methods that express the boundary action, state transition, or query the caller actually needs.
+- Keep driver cores independent from OS runtime glue. MMIO, DMA, IRQ, queue, wake, poll, and task-scheduling contracts should cross explicit capability boundaries such as `mmio-api`, `dma-api`, `rdif-*`, or runtime adapter layers.
+- Use workspace package names and `[workspace.dependencies]` where available. Prefer workspace metadata, disable default features for `no_std` dependencies unless required, and avoid ad hoc git/path/registry overrides.
+- Library and domain crates should expose typed errors that callers can match and translate. Prefer `thiserror` for nontrivial error enums when the dependency is acceptable; tiny or dependency-sensitive crates may implement `Display` and `core::error::Error` manually.
+- Host-side `bin` and tool crates should use `anyhow::Result`, `Context`, `anyhow!`, and `bail!` for top-level orchestration and human-facing error reports. Do not leak `anyhow::Error` into reusable library APIs; translate typed domain errors to `ax_errno::{AxError, AxResult}` at ArceOS or kernel integration boundaries.
+- Return explicit unsupported or error variants for unimplemented platform, firmware, hardware, guest, user-memory, filesystem, and network paths. Do not silently fall back, guess a default device/IRQ/address, or stringify structured metadata when callers need to make a decision.
+- Use `unwrap`, `expect`, and `panic` only in tests, impossible-state assertions, one-time initialization failures, or documented invariants. Recoverable runtime failures should return `Result` or `Option` with enough context for translation or retry.
+- Keep `unsafe` blocks as small as practical and place checked preconditions next to them. Every `unsafe fn` or `unsafe trait` needs a `# Safety` contract; every nontrivial `unsafe` block or `unsafe impl` should document pointer validity, aliasing, MMIO/DMA ownership, user-memory access, interrupt context, or lifetime assumptions.
+- For concurrency, choose repo primitives deliberately: sleepable locks for sleepable paths, IRQ-aware or non-sleeping locks for interrupt and scheduler-sensitive paths, and narrow critical sections. Document lock ordering when a module owns multiple locks, and avoid wake/notify callbacks while holding broad locks.
+- Use atomics with explicit publish/observe reasoning. Prefer Acquire/Release/AcqRel for synchronization; use `Relaxed` only for counters or proven non-synchronizing state, with the synchronization path documented where it is not obvious.
+- Comments should explain invariants, safety contracts, protocol steps, hardware quirks, concurrency ordering, or non-obvious tradeoffs; do not restate the code. Public APIs and shared code comments should be in English.
+- Remove duplicated knowledge, not every repeated line. Centralize protocol constants, layout rules, error conversions, and boundary invariants, but avoid premature abstractions that hide control flow or make call sites harder to audit.
+- Refactor in small verified steps. Keep behavior stable unless the change intentionally updates semantics, and pair risky refactors with the lowest-layer deterministic regression or validation that can catch a breakage.
+
 ## Other Requirements
 
 - When changing logic, run a relevant `cargo clippy` check after the code change.

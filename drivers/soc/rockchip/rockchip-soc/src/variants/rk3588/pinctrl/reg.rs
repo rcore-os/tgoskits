@@ -13,6 +13,24 @@ pub(crate) struct PinctrlReg {
 
 unsafe impl Send for PinctrlReg {}
 
+fn rk3588_pull_to_reg_value(pull: Pull) -> Option<u32> {
+    match pull {
+        Pull::Disabled => Some(0),
+        Pull::PullDown => Some(1),
+        Pull::PullUp => Some(3),
+        Pull::BusHold | Pull::PullPinDefault => None,
+    }
+}
+
+fn rk3588_reg_value_to_pull(value: u32) -> Option<Pull> {
+    match value {
+        0 | 2 => Some(Pull::Disabled),
+        1 => Some(Pull::PullDown),
+        3 => Some(Pull::PullUp),
+        _ => None,
+    }
+}
+
 impl PinctrlReg {
     /// 创建新的 pinctrl 实例
     ///
@@ -137,7 +155,8 @@ impl PinctrlReg {
         // Rockchip 写掩码机制
         // 每个 pull 配置占 2 位，掩码为 0x3
         let mask = 0x3u32 << bit_offset;
-        let value = (pull as u32) << bit_offset;
+        let value =
+            rk3588_pull_to_reg_value(pull).ok_or(PinctrlError::InvalidConfig)? << bit_offset;
 
         unsafe {
             let reg_ptr = self.ioc_base.as_ptr().add(reg_offset) as *mut u32;
@@ -272,15 +291,11 @@ impl PinctrlReg {
 
         debug!("get_pull: pull_value={}, mask={:#x}", pull_value, mask);
 
-        // 转换为 Pull 枚举
-        match pull_value {
-            0 => Ok(Pull::Disabled),
-            1 => Ok(Pull::PullUp),
-            2 => Ok(Pull::PullDown),
-            _ => {
-                log::warn!("Invalid pull value {} for pin {}", pull_value, pin.raw());
-                Err(PinctrlError::InvalidConfig)
-            }
+        if let Some(pull) = rk3588_reg_value_to_pull(pull_value) {
+            Ok(pull)
+        } else {
+            log::warn!("Invalid pull value {} for pin {}", pull_value, pin.raw());
+            Err(PinctrlError::InvalidConfig)
         }
     }
 
@@ -319,5 +334,24 @@ impl PinctrlReg {
         debug!("get_drive: drive_value={}, mask={:#x}", drive_value, mask);
 
         Ok(drive_value)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rk3588_pull_encoding_matches_linux_1v8_only_table() {
+        assert_eq!(rk3588_pull_to_reg_value(Pull::Disabled), Some(0));
+        assert_eq!(rk3588_pull_to_reg_value(Pull::PullDown), Some(1));
+        assert_eq!(rk3588_pull_to_reg_value(Pull::PullUp), Some(3));
+        assert_eq!(rk3588_pull_to_reg_value(Pull::BusHold), None);
+        assert_eq!(rk3588_pull_to_reg_value(Pull::PullPinDefault), None);
+
+        assert_eq!(rk3588_reg_value_to_pull(0), Some(Pull::Disabled));
+        assert_eq!(rk3588_reg_value_to_pull(1), Some(Pull::PullDown));
+        assert_eq!(rk3588_reg_value_to_pull(2), Some(Pull::Disabled));
+        assert_eq!(rk3588_reg_value_to_pull(3), Some(Pull::PullUp));
     }
 }

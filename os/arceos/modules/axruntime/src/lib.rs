@@ -313,31 +313,17 @@ pub fn rust_main(cpu_id: usize, arg: usize) -> ! {
 
     fs::init(ax_hal::boot::bootargs());
 
-    #[cfg(all(feature = "display", feature = "plat-dyn"))]
-    devices::init_dyn_display();
+    #[cfg(feature = "display")]
+    devices::init_display();
 
-    #[cfg(all(feature = "display", not(feature = "plat-dyn")))]
-    devices::init_static_display();
+    #[cfg(feature = "input")]
+    devices::init_input();
 
-    #[cfg(all(feature = "input", feature = "plat-dyn"))]
-    devices::init_dyn_input();
+    #[cfg(feature = "net")]
+    devices::init_net();
 
-    #[cfg(all(feature = "input", not(feature = "plat-dyn")))]
-    devices::init_static_input();
-
-    cfg_if::cfg_if! {
-        if #[cfg(all(feature = "net", feature = "plat-dyn"))] {
-            devices::init_dyn_net();
-        } else if #[cfg(all(feature = "net", not(feature = "plat-dyn")))] {
-            devices::init_static_net();
-        }
-    }
-
-    #[cfg(all(feature = "vsock", feature = "plat-dyn"))]
-    devices::init_dyn_vsock();
-
-    #[cfg(all(feature = "vsock", not(feature = "plat-dyn")))]
-    devices::init_static_vsock();
+    #[cfg(feature = "vsock")]
+    devices::init_vsock();
 
     #[cfg(feature = "smp")]
     self::mp::start_secondary_cpus(cpu_id);

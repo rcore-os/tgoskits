@@ -69,7 +69,6 @@ fs = [
     "ax-api/fs",
     "ax-feat/fs",
     "ax-posix-api/fs",
-    "ax-driver/plat-static",
     "ax-driver/virtio-blk",
     "fd",
 ]
@@ -81,7 +80,6 @@ net = [
     "ax-api/net",
     "ax-feat/net",
     "ax-posix-api/net",
-    "ax-driver/plat-static",
     "ax-driver/virtio-net",
     "fd",
 ]

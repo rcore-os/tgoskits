@@ -68,7 +68,7 @@ flowchart TD
 - **to_bin**：通用 ArceOS/Starry std 构建中，`default_to_bin_for_target()` 对 `x86_64-*` 和 `loongarch64-*` 返回 `false`，对 `aarch64-*`、`riscv64*` 返回 `true`；但 `default_to_bin_for_target_config()` 在动态平台模式下会让 `x86_64`/`loongarch64` 也生成 raw binary。Axvisor 另有覆盖：`aarch64`/`riscv64` 生成 bin，`x86_64`/`loongarch64` 保留 ELF。
 - **LoongArch QEMU**：运行 Axvisor loongarch64 时自动搜索 LVZ 版 QEMU（详见 [运行](./run#loongarch-特殊处理)）
 
-LoongArch QEMU 现在默认走动态平台，不再以静态平台 crate 作为当前平台路径。旧配置中的 `ax-hal/loongarch64-qemu-virt`、`ax-driver/plat-static`、`plat_dyn = false` 或 `--plat loongarch64-qemu-virt` 应迁移为动态平台写法：保留 `--arch loongarch64`，省略 `plat_dyn` 或设为 `true`，并使用 `ax-hal/plat-dyn`、`ax-driver/plat-dyn`、`axplat-dyn` 以及 UEFI/`efi` 启动链路。
+LoongArch QEMU 现在默认走动态平台，不再以静态平台 crate 作为当前平台路径。旧配置中的 `ax-hal/loongarch64-qemu-virt`、`plat_dyn = false` 或 `--plat loongarch64-qemu-virt` 应迁移为动态平台写法：保留 `--arch loongarch64`，省略 `plat_dyn` 或设为 `true`，并使用 `ax-hal/plat-dyn`、`ax-driver/plat-dyn`、`axplat-dyn` 以及 UEFI/`efi` 启动链路。
 
 ### 扩展字段
 
@@ -309,7 +309,7 @@ flowchart TD
 
 生成步骤：
 
-1. **定位平台包**：从目标包的 `Cargo.toml` 依赖中查找名称匹配 `ax-plat-*` 的平台包（如 `ax-plat-riscv64-sg2002`）
+1. **定位平台包**：从目标包的 `Cargo.toml` 依赖中查找名称匹配 `ax-plat-*` 的平台包（如外部自定义的 `ax-plat-riscv64-custom`）
 2. **查找配置规格**：在平台包的 `Cargo.toml` 同目录下查找 `axconfig.toml` 配置规格文件
 3. **合并生成**：调用 `ax_config_gen` 配置引擎，将全局 `defconfig.toml`（`os/arceos/configs/defconfig.toml`）与平台 `axconfig.toml` 合并，同时注入自动生成的字段和用户覆盖值
 4. **写入产物**：输出到 `tmp/axbuild/axconfig/<package>/<target>/.axconfig.toml`
@@ -330,7 +330,7 @@ flowchart TD
 | 字段 | 值 |
 |------|-----|
 | `arch` | 从 target triple 提取的架构名 |
-| `platforms` | 平台包名（如 `riscv64-sg2002`） |
+| `platforms` | 平台包名（如 `riscv64-custom`） |
 | `plat.max-cpu-num` | `--smp` 参数值（仅 `max_cpu_num > 1` 时注入） |
 
 ### 配置内容示例
@@ -339,7 +339,7 @@ flowchart TD
 
 ```toml
 arch = "riscv64"
-platform = "riscv64-sg2002"
+platform = "riscv64-custom"
 task-stack-size = 0x40000
 ticks-per-sec = 100
 
@@ -377,7 +377,7 @@ axbuild 在编译期和运行时使用多个环境变量，分布在配置、运
 | `SMP` | `BuildInfo.max_cpu_num` | 启动 CPU 核数 |
 | `AX_IP` / `AX_GW` | `BuildInfo.env` | QEMU slirp 网络 IP / 网关 |
 | `AX_CONFIG_PATH` | axbuild 生成 | `.axconfig.toml` 路径（仅 `plat_dyn = false`） |
-| `AX_PLATFORM` | 平台检测 | 平台名（如 `riscv64-sg2002`；动态平台构建通常不设置） |
+| `AX_PLATFORM` | 平台检测 | 平台名（如 `riscv64-custom`；动态平台构建通常不设置） |
 | `AX_ARCH` | arch 解析 | CPU 架构名 |
 | `AX_TARGET` | target 解析 | target triple |
 | `AXVISOR_VM_CONFIGS` | `--vmconfigs` | VM 配置文件列表（仅 Axvisor） |

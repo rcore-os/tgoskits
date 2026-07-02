@@ -13,8 +13,9 @@
 // limitations under the License.
 
 use ax_errno::{AxError, AxErrorKind, AxResult};
-use axvcpu::{AccessWidth, AxVCpuExitReason, GuestPhysAddr, HostPhysAddr, MappingFlags};
-use axvm_types::GuestVirtAddr;
+use axvm_types::{
+    AccessWidth, AxVCpuExitReason, GuestPhysAddr, GuestVirtAddr, HostPhysAddr, MappingFlags,
+};
 use riscv::register::{scause, sie, sstatus};
 use riscv_decode::{
     Instruction,
@@ -97,7 +98,7 @@ impl Default for RISCVVCpuSbi {
     }
 }
 
-impl axvcpu::AxArchVCpu for RISCVVCpu {
+impl axvm_types::VmArchVcpuOps for RISCVVCpu {
     type CreateConfig = RISCVVCpuCreateConfig;
 
     type SetupConfig = ();

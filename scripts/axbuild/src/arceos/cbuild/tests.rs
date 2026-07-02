@@ -22,9 +22,8 @@ fn c_config_features_skips_nested_cargo_only_features() {
     let features = c_config_features(&strings(&[
         "ax-libc/net",
         "ax-feat/paging",
-        "ax-driver/plat-static",
         "ax-driver/virtio-net",
-        "ax-hal/riscv64-sg2002",
+        "ax-hal/custom-board",
         "some-crate/feature",
     ]));
 
@@ -92,16 +91,16 @@ fn c_compiler_features_keep_case_defines_for_cflags() {
 
 #[test]
 fn map_c_app_features_preserves_driver_features() {
+    let removed_static_driver_feature = concat!("ax-driver/", "plat", "-static");
     let features = map_c_app_features(
-        &strings(&["net", "ax-driver/plat-static", "ax-driver/virtio-net"]),
-        &strings(&["ax-hal/riscv64-sg2002"]),
+        &strings(&["net", removed_static_driver_feature, "ax-driver/virtio-net"]),
+        &[],
     );
 
     assert!(features.contains(&"net".to_string()));
     assert!(features.contains(&"fd".to_string()));
-    assert!(features.contains(&"ax-driver/plat-static".to_string()));
+    assert!(!features.contains(&removed_static_driver_feature.to_string()));
     assert!(features.contains(&"ax-driver/virtio-net".to_string()));
-    assert!(features.contains(&"ax-hal/riscv64-sg2002".to_string()));
 }
 
 #[test]
@@ -261,8 +260,8 @@ fn linker_search_dirs_use_axhal_for_generic_static_platforms() {
         &target_dir,
         target,
         mode,
-        "riscv64-sg2002",
-        &strings(&["ax-hal/riscv64-sg2002"]),
+        "custom-board",
+        &strings(&["ax-hal/custom-board"]),
     )
     .unwrap();
 

@@ -8,7 +8,6 @@ https://github.com/arceos-hypervisor/axdevice,,virtualization/axdevice,Hyperviso
 https://github.com/arceos-hypervisor/axdevice_base,,virtualization/axdevice_base,Hypervisor,
 https://github.com/arceos-hypervisor/axhvc,,virtualization/axhvc,Hypervisor,
 https://github.com/arceos-hypervisor/axklib,,components/axklib,Hypervisor,
-https://github.com/arceos-hypervisor/axvcpu,,virtualization/axvcpu,Hypervisor,
 https://github.com/arceos-hypervisor/axvm,,virtualization/axvm,Hypervisor,
 https://github.com/arceos-hypervisor/axvmconfig,,virtualization/axvmconfig,Hypervisor,
 https://github.com/arceos-hypervisor/x86_vcpu,,virtualization/x86_vcpu,Hypervisor,

@@ -23,6 +23,7 @@ thiserror = { version = "2", default-features = false }
 pcie.workspace = true
 
 rdif-base = { workspace = true }
+rdif-pinctrl = { workspace = true, features = ["fdt"] }
 rdrive-macros.workspace = true
 rdif-pcie = { workspace = true }
 

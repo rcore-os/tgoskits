@@ -71,6 +71,8 @@ pub struct ArceosCommandSnapshot {
     pub plat_dyn: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub smp: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub config: Option<PathBuf>,
     #[serde(default, skip_serializing_if = "ArceosQemuSnapshot::is_empty")]
     pub qemu: ArceosQemuSnapshot,
     #[serde(default, skip_serializing_if = "ArceosUbootSnapshot::is_empty")]

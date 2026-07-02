@@ -41,6 +41,7 @@ fn snapshot_store_round_trips() {
         target: Some("target".into()),
         plat_dyn: Some(true),
         smp: None,
+        config: Some(PathBuf::from("configs/build.toml")),
         qemu: ArceosQemuSnapshot {
             qemu_config: Some(PathBuf::from("configs/qemu.toml")),
         },

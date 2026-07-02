@@ -2,12 +2,12 @@
 use ax_driver::PciIrqRequirement;
 #[cfg(feature = "plat-dyn")]
 use ax_driver::binding_info_from_acpi_route;
-#[cfg(feature = "plat-dyn")]
-use ax_driver::binding_info_from_fdt;
 #[cfg(feature = "pci")]
 use ax_driver::binding_info_from_pci;
 #[cfg(feature = "plat-dyn")]
 use ax_driver::{BindingIrq, BindingIrqSource};
+#[cfg(feature = "plat-dyn")]
+use ax_driver::{binding_info_from_fdt, binding_irq_from_named_fdt_interrupt};
 #[cfg(feature = "pci")]
 use rdrive::probe::pci::{PciAddress, PciInfo};
 #[cfg(feature = "plat-dyn")]
@@ -200,6 +200,53 @@ fn fdt_binding_info_carries_first_irq_specifier_without_setup() {
     assert_eq!(spec.cells, vec![0, 42, 4]);
     let controller = rdrive::fdt_phandle_to_device_id(Phandle::from(1)).unwrap();
     assert_eq!(spec.controller, controller);
+    assert_eq!(*SETUP_SPECIFIER.lock().unwrap(), None);
+}
+
+#[cfg(feature = "plat-dyn")]
+#[test]
+fn named_fdt_interrupt_binding_selects_matching_specifier() {
+    *CAPTURED_IRQ.lock().unwrap() = None;
+    *SETUP_SPECIFIER.lock().unwrap() = None;
+
+    let fdt_data = Box::leak(Box::new(minimal_irq_fdt().encode()));
+    let fdt_addr = NonNull::new(fdt_data.as_ref().as_ptr() as *mut u8).unwrap();
+
+    rdrive::init(Platform::Fdt { addr: fdt_addr }).unwrap();
+    rdrive::register_add(DriverRegister {
+        name: "binding-info-fdt-test-intc",
+        level: ProbeLevel::PostKernel,
+        priority: ProbePriority::INTC,
+        probe_kinds: TEST_INTC_PROBE_KINDS,
+    });
+    rdrive::register_add(DriverRegister {
+        name: "binding-info-fdt-test-device",
+        level: ProbeLevel::PostKernel,
+        priority: ProbePriority::DEFAULT,
+        probe_kinds: TEST_DEVICE_PROBE_KINDS,
+    });
+    rdrive::probe_all(true).unwrap();
+
+    let captured = CAPTURED_IRQ.lock().unwrap().clone();
+    let Some(Some(BindingIrq::Source(BindingIrqSource::FdtInterrupt(first)))) = captured else {
+        panic!("expected captured FDT interrupt binding");
+    };
+    assert_eq!(first.cells, vec![0, 42, 4]);
+
+    let irq = rdrive::with_fdt(|fdt| {
+        let node = fdt.find_compatible(&["test,binding-info"]).pop().unwrap();
+        binding_irq_from_named_fdt_interrupt(&node, "backup")
+    })
+    .unwrap()
+    .unwrap()
+    .unwrap();
+
+    let BindingIrq::Source(BindingIrqSource::FdtInterrupt(spec)) = irq else {
+        panic!("expected named FDT interrupt binding");
+    };
+    let controller = rdrive::fdt_phandle_to_device_id(Phandle::from(1)).unwrap();
+    assert_eq!(spec.controller, controller);
+    assert_eq!(spec.cells, vec![0, 43, 4]);
     assert_eq!(*SETUP_SPECIFIER.lock().unwrap(), None);
 }
 

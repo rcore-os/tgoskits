@@ -25,7 +25,7 @@ use core::sync::atomic::{AtomicUsize, Ordering};
 
 use ax_errno::{AxResult, ax_err, ax_err_type};
 #[cfg(target_arch = "x86_64")]
-use axvcpu::InterruptTriggerMode;
+use axvm_types::InterruptTriggerMode;
 
 use crate::{StopReason, VmStatus};
 

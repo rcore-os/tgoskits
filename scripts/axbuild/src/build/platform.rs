@@ -339,8 +339,8 @@ pub(super) fn ax_hal_platform_feature_name<'a>(
     }
 }
 
-pub(super) fn is_known_ax_hal_platform_feature(platform: &str) -> bool {
-    matches!(platform, "riscv64-sg2002")
+pub(super) fn is_known_ax_hal_platform_feature(_platform: &str) -> bool {
+    false
 }
 
 pub(super) fn has_ax_hal_platform_feature(

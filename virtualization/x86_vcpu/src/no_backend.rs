@@ -8,8 +8,8 @@
 // None of the methods are ever called at runtime in such configurations.
 
 use ax_errno::{AxResult, ax_err};
-use axvcpu::{
-    AxArchPerCpu, AxArchVCpu, AxVCpuExitReason, GuestPhysAddr, HostPhysAddr, VCpuId, VMId,
+use axvm_types::{
+    AxVCpuExitReason, GuestPhysAddr, HostPhysAddr, VCpuId, VMId, VmArchPerCpuOps, VmArchVcpuOps,
 };
 
 use crate::X86VCpuSetupConfig;
@@ -17,7 +17,7 @@ use crate::X86VCpuSetupConfig;
 /// Stub per-CPU state; never instantiated in no-backend builds.
 pub struct X86ArchPerCpuState;
 
-impl AxArchPerCpu for X86ArchPerCpuState {
+impl VmArchPerCpuOps for X86ArchPerCpuState {
     fn new(_cpu_id: usize) -> AxResult<Self> {
         ax_err!(Unsupported, "no hypervisor backend (vmx/svm) enabled")
     }
@@ -38,7 +38,7 @@ impl AxArchPerCpu for X86ArchPerCpuState {
 /// Stub vCPU; never instantiated in no-backend builds.
 pub struct X86ArchVCpu;
 
-impl AxArchVCpu for X86ArchVCpu {
+impl VmArchVcpuOps for X86ArchVCpu {
     type CreateConfig = ();
     type SetupConfig = X86VCpuSetupConfig;
 

@@ -123,7 +123,7 @@ pub(crate) struct X86RealModeEntryState {
 }
 
 #[cfg(any(feature = "vmx", feature = "svm", test))]
-pub(crate) fn x86_real_mode_entry_state(entry: axvcpu::GuestPhysAddr) -> X86RealModeEntryState {
+pub(crate) fn x86_real_mode_entry_state(entry: axvm_types::GuestPhysAddr) -> X86RealModeEntryState {
     if entry.as_usize() == X86_RESET_VECTOR_GPA {
         return X86RealModeEntryState {
             cs_selector: X86_RESET_CS_SELECTOR,
@@ -195,7 +195,7 @@ pub(crate) fn host_tsc_frequency_mhz() -> Option<u32> {
 
 #[cfg(test)]
 mod tests {
-    use axvcpu::GuestPhysAddr;
+    use axvm_types::GuestPhysAddr;
 
     use super::*;
 

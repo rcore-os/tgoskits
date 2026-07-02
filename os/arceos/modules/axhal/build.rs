@@ -18,18 +18,11 @@ struct PlatformFeature {
     crate_name: &'static str,
 }
 
-const PLATFORM_FEATURES: &[PlatformFeature] = &[
-    PlatformFeature {
-        feature: "plat-dyn",
-        target_arch: None,
-        crate_name: "axplat_dyn",
-    },
-    PlatformFeature {
-        feature: "riscv64-sg2002",
-        target_arch: Some("riscv64"),
-        crate_name: "ax_plat_riscv64_sg2002",
-    },
-];
+const PLATFORM_FEATURES: &[PlatformFeature] = &[PlatformFeature {
+    feature: "plat-dyn",
+    target_arch: None,
+    crate_name: "axplat_dyn",
+}];
 
 fn main() {
     println!("cargo:rustc-check-cfg=cfg(plat_dyn)");

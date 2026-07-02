@@ -23,35 +23,24 @@ use ax_errno::{AxError, AxResult, ax_err, ax_err_type};
 use ax_kspin::SpinNoIrq as Mutex;
 use ax_memory_addr::align_up_4k;
 use axaddrspace::{AddrSpace, MappingFlags};
-use axdevice::{
-    AxVmDeviceConfig, AxVmDevices, DeviceBuildContext, DeviceFactoryRegistry, FwCfg,
-    FwCfgPlatformConfig, register_builtin_factories,
-};
-#[cfg(target_arch = "aarch64")]
-use axdevice_base::DeviceRegistry as _;
-#[cfg(target_arch = "x86_64")]
-use axdevice_base::DeviceRegistry as _;
-use axdevice_base::{AccessWidth, Resource};
-#[cfg(target_arch = "x86_64")]
-use axdevice_base::{BaseDeviceOps, PortDeviceAdapter};
-use axvcpu::{AxArchVCpu, AxVCpu, AxVCpuExitReason, VCpuState};
-#[cfg(target_arch = "x86_64")]
-use axvm_types::EmulatedDeviceType;
-use axvm_types::{GuestPhysAddr, HostPhysAddr, HostVirtAddr};
-#[cfg(all(target_arch = "x86_64", feature = "vmx"))]
-use x86_vcpu::{X86_APIC_ACCESS_GPA, x86_apic_access_page_addr};
+use axdevice::{AxVmDevices, FwCfg, FwCfgPlatformConfig};
+use axdevice_base::AccessWidth;
+use axvm_types::{AxVCpuExitReason, GuestPhysAddr, HostPhysAddr, HostVirtAddr, VmArchVcpuOps};
 
-#[cfg(not(target_arch = "x86_64"))]
-use crate::vcpu::AxVCpuCreateConfig;
 use crate::{
     boot::{GuestBootDescription, GuestFdtBuilder},
     config::{AxVMConfig, PhysCpuList, VMInterruptMode},
     host::paging::{HostPagingHandler, virt_to_phys},
     irq::InterruptFabric,
-    layout::{GuestOwnedRegion, VmAddressLayout, VmRegionKind, build_address_layout},
+    layout::VmAddressLayout,
     lifecycle::{Machine, StopReason, VmLifecycleError, VmStatus},
-    vcpu::AxArchVCpuImpl,
+    vcpu::{AxArchVCpuImpl, AxVCpu, VCpuState},
 };
+
+pub(crate) mod boot;
+pub(crate) mod memory;
+mod prepare;
+pub use memory::PreparedMemoryLayout;
 
 const VM_ASPACE_BASE: usize = 0x0;
 const VM_ASPACE_SIZE: usize = 0x7fff_ffff_f000;
@@ -415,344 +404,6 @@ impl AxVM {
         let _ = self.ensure_resources_ready();
         self.with_resources(|resources| Ok(resources.config.interrupt_mode()))
             .unwrap_or(VMInterruptMode::NoIrq)
-    }
-
-    /// Sets up the VM before booting.
-    pub fn prepare(&self) -> AxResult {
-        self.ensure_resources_ready()?;
-        let mut factories = DeviceFactoryRegistry::new();
-        register_builtin_factories(&mut factories)?;
-        let interrupt_mode = self.interrupt_mode();
-        #[cfg(target_arch = "riscv64")]
-        let interrupt_fabric = {
-            let machine = self.machine.lock();
-            let resources = machine.resources().ok_or_else(|| {
-                ax_err_type!(
-                    BadState,
-                    "VM resources are not available for RISC-V IRQ setup"
-                )
-            })?;
-            crate::irq::riscv::configure(
-                &mut factories,
-                interrupt_mode,
-                resources.config.emu_devices(),
-            )?
-        };
-        #[cfg(not(target_arch = "riscv64"))]
-        let interrupt_fabric = InterruptFabric::new(interrupt_mode);
-
-        self.prepare_with_factories(&factories, interrupt_fabric)
-    }
-
-    /// Sets up the VM with explicit device factories and an interrupt fabric.
-    pub fn prepare_with_factories(
-        &self,
-        factories: &DeviceFactoryRegistry,
-        interrupt_fabric: InterruptFabric,
-    ) -> AxResult {
-        self.ensure_resources_ready()?;
-        let mut machine = self.machine.lock();
-        if !matches!(machine.status(), VmStatus::Ready | VmStatus::Stopped) {
-            return ax_err!(
-                BadState,
-                format!(
-                    "VM[{}] cannot prepare from {:?}",
-                    self.id(),
-                    machine.status()
-                )
-            );
-        }
-        let resources = machine
-            .resources_mut()
-            .ok_or_else(|| ax_err_type!(BadState, "VM resources are not available for prepare"))?;
-        if resources.vcpu_list.is_some()
-            || resources.devices.is_some()
-            || resources.interrupt_fabric.is_some()
-        {
-            resources.reset_transient_resources()?;
-        }
-        interrupt_fabric.validate_mode(resources.config.interrupt_mode())?;
-
-        let dtb_addr = resources.config.image_config().dtb_load_gpa;
-        let vcpu_id_pcpu_sets = resources.config.phys_cpu_ls.get_vcpu_affinities_pcpu_ids();
-        #[cfg(target_arch = "loongarch64")]
-        let loongarch_iocsr_state = {
-            let vcpu_state_count = vcpu_id_pcpu_sets
-                .iter()
-                .map(|(vcpu_id, ..)| *vcpu_id)
-                .max()
-                .map_or(0, |vcpu_id| vcpu_id + 1);
-            loongarch_vcpu::LoongArchIocsrState::new(vcpu_state_count)?
-        };
-
-        debug!("dtb_load_gpa: {dtb_addr:?}");
-        debug!("id: {}, VCpuIdPCpuSets: {vcpu_id_pcpu_sets:#x?}", self.id());
-
-        let mut vcpu_list = Vec::with_capacity(vcpu_id_pcpu_sets.len());
-        for (vcpu_id, phys_cpu_set, _pcpu_id) in vcpu_id_pcpu_sets {
-            #[cfg(target_arch = "aarch64")]
-            let arch_config = AxVCpuCreateConfig {
-                mpidr_el1: _pcpu_id as _,
-                dtb_addr: dtb_addr.unwrap_or_default().as_usize(),
-            };
-            #[cfg(target_arch = "riscv64")]
-            let arch_config = AxVCpuCreateConfig {
-                hart_id: vcpu_id as _,
-                dtb_addr: dtb_addr.unwrap_or_default().as_usize(),
-            };
-            #[cfg(target_arch = "loongarch64")]
-            let arch_config = AxVCpuCreateConfig {
-                cpu_id: vcpu_id,
-                dtb_addr: dtb_addr.unwrap_or_default().as_usize(),
-                boot_args: resources.config.cpu_config.boot_args,
-                boot_stack_top: resources.config.cpu_config.boot_stack_top,
-                firmware_boot: resources.config.cpu_config.firmware_boot,
-                iocsr_state: loongarch_iocsr_state.clone(),
-            };
-
-            // FIXME: VCpu is neither `Send` nor `Sync` by design, check whether
-            // 1. we should make it `Send` and `Sync`, or
-            // 2. we can guarantee that no cross-thread access is performed
-            #[allow(clippy::arc_with_non_send_sync)]
-            vcpu_list.push(Arc::new(VCpu::new(
-                self.id(),
-                vcpu_id,
-                0, // Currently not used.
-                phys_cpu_set,
-                #[cfg(target_arch = "aarch64")]
-                arch_config,
-                #[cfg(target_arch = "loongarch64")]
-                arch_config,
-                #[cfg(target_arch = "riscv64")]
-                arch_config,
-                #[cfg(target_arch = "x86_64")]
-                (),
-            )?));
-        }
-
-        let mut devices = {
-            let build_context = DeviceBuildContext::new(&interrupt_fabric);
-            axdevice::AxVmDevices::build_with_factories(
-                AxVmDeviceConfig {
-                    emu_configs: resources.config.emu_devices().to_vec(),
-                },
-                factories,
-                &build_context,
-            )?
-        };
-
-        #[cfg(target_arch = "x86_64")]
-        for port in resources.config.pass_through_ports() {
-            let passthrough = Arc::new(crate::host::x86_port::HostPortPassthrough::new(
-                port.base,
-                port.length,
-            )?);
-            let range = passthrough.address_range();
-            debug!(
-                "PT port region: [{:#x}~{:#x}]",
-                range.start.number(),
-                range.end.number(),
-            );
-            devices
-                .register(PortDeviceAdapter::from_arc(passthrough))
-                .map_err(|err| ax_err_type!(InvalidInput, format!("register PT port: {err:?}")))?;
-        }
-
-        #[cfg(target_arch = "aarch64")]
-        {
-            let passthrough = resources.config.interrupt_mode() == VMInterruptMode::Passthrough;
-            if passthrough {
-                let spis = resources.config.pass_through_spis();
-                let cpu_id = self.id() - 1; // FIXME: get the real CPU id.
-                let mut gicd_found = false;
-
-                for device in devices.devices() {
-                    if let Some(gicd) = device.as_any().downcast_ref::<arm_vgic::v3::vgicd::VGicD>()
-                    {
-                        debug!("VGicD found, assigning SPIs...");
-
-                        for spi in spis {
-                            gicd.assign_irq(*spi + 32, cpu_id, (0, 0, 0, cpu_id as _))
-                        }
-
-                        gicd_found = true;
-                        break;
-                    }
-                }
-
-                if !gicd_found {
-                    warn!("Failed to assign SPIs: No VGicD found in device list");
-                }
-            } else {
-                // non-passthrough mode, we need to set up the virtual timer.
-                #[cfg(target_arch = "aarch64")]
-                for dev in axdevice::create_vtimer_devices() {
-                    devices
-                        .register(Arc::from(dev) as Arc<dyn axdevice_base::Device>)
-                        .map_err(|e| {
-                            ax_err_type!(InvalidInput, format!("register vtimer: {e:?}"))
-                        })?;
-                }
-                #[cfg(not(target_arch = "aarch64"))]
-                let _ = (); // silence unused warning on non-aarch64
-            }
-        }
-
-        self.add_special_emulated_devices(&mut devices)?;
-
-        if dtb_addr.is_some() && resources.boot_description.device_tree().is_none() {
-            return ax_err!(
-                InvalidInput,
-                "DTB load GPA is configured but no guest device tree bytes are registered"
-            );
-        }
-
-        let owned_regions = Self::guest_owned_regions(resources);
-        let emulated_resources = devices
-            .devices()
-            .flat_map(|device| device.resources().iter().cloned())
-            .collect::<Vec<Resource>>();
-        let address_layout = build_address_layout(
-            resources.config.address_space_policy(),
-            VM_ASPACE_BASE,
-            VM_ASPACE_SIZE,
-            resources.config.pass_through_devices(),
-            resources.config.pass_through_addresses(),
-            &owned_regions,
-            &emulated_resources,
-        )?;
-
-        for mapping in address_layout.mappings() {
-            debug!(
-                "VM[{}] stage2 {:?}: [{:#x}, {:#x}) -> [{:#x}, {:#x}) {:?}",
-                self.id(),
-                mapping.kind,
-                mapping.gpa.as_usize(),
-                mapping.gpa.as_usize() + mapping.size,
-                mapping.hpa.as_usize(),
-                mapping.hpa.as_usize() + mapping.size,
-                mapping.flags
-            );
-            resources.address_space.map_linear(
-                mapping.gpa,
-                mapping.hpa,
-                mapping.size,
-                mapping.flags,
-            )?;
-        }
-        resources.address_layout = Some(address_layout);
-
-        #[cfg(all(target_arch = "x86_64", feature = "vmx"))]
-        resources.address_space.map_linear(
-            GuestPhysAddr::from(X86_APIC_ACCESS_GPA),
-            x86_apic_access_page_addr(),
-            ax_memory_addr::PAGE_SIZE_4K,
-            MappingFlags::DEVICE | MappingFlags::READ | MappingFlags::WRITE,
-        )?;
-
-        // Setup VCpus.
-        for vcpu in &vcpu_list {
-            #[cfg(target_arch = "aarch64")]
-            let setup_config = {
-                let passthrough = resources.config.interrupt_mode() == VMInterruptMode::Passthrough;
-                crate::vcpu::AxVCpuSetupConfig {
-                    passthrough_interrupt: passthrough,
-                    passthrough_timer: passthrough,
-                }
-            };
-            #[cfg(target_arch = "loongarch64")]
-            let setup_config = {
-                let passthrough = resources.config.interrupt_mode() == VMInterruptMode::Passthrough;
-                crate::vcpu::AxVCpuSetupConfig {
-                    passthrough_interrupt: passthrough,
-                    passthrough_timer: passthrough,
-                    boot_args: resources.config.cpu_config.boot_args,
-                    boot_stack_top: resources.config.cpu_config.boot_stack_top,
-                    firmware_boot: resources.config.cpu_config.firmware_boot,
-                }
-            };
-            #[cfg(not(any(
-                target_arch = "aarch64",
-                target_arch = "loongarch64",
-                target_arch = "x86_64"
-            )))]
-            #[allow(clippy::let_unit_value)]
-            let setup_config = <AxArchVCpuImpl as axvcpu::AxArchVCpu>::SetupConfig::default();
-            #[cfg(target_arch = "x86_64")]
-            let setup_config = {
-                let mut config = crate::vcpu::AxVCpuSetupConfig {
-                    emulate_com1: resources
-                        .config
-                        .emu_devices()
-                        .iter()
-                        .any(|dev| dev.emu_type == EmulatedDeviceType::Console),
-                    ..Default::default()
-                };
-                for port in resources.config.pass_through_ports() {
-                    config.add_passthrough_port_range(port.base, port.length)?;
-                }
-                config
-            };
-
-            let entry = if vcpu.id() == 0 {
-                resources.config.bsp_entry()
-            } else {
-                resources.config.ap_entry()
-            };
-
-            debug!("Setting up vCPU[{}] entry at {:#x}", vcpu.id(), entry);
-
-            vcpu.setup(
-                entry,
-                resources.address_space.page_table_root(),
-                setup_config,
-            )?;
-        }
-
-        resources.phys_cpu_ls = resources.config.phys_cpu_ls.clone();
-        resources.vcpu_list = Some(vcpu_list.into_boxed_slice());
-        resources.devices = Some(Arc::new(devices));
-        resources.interrupt_fabric = Some(interrupt_fabric);
-
-        info!("VM setup: id={}", self.id());
-        Ok(())
-    }
-
-    fn guest_owned_regions(resources: &AxVMResources) -> Vec<GuestOwnedRegion> {
-        let mut regions = resources
-            .memory_regions
-            .iter()
-            .map(|region| {
-                GuestOwnedRegion::new(region.gpa.as_usize(), region.size(), VmRegionKind::Memory)
-            })
-            .collect::<Vec<_>>();
-
-        regions.extend(
-            resources
-                .boot_description
-                .occupied_ranges()
-                .map(|(base, length)| {
-                    GuestOwnedRegion::new(base, length, VmRegionKind::BootDescription)
-                }),
-        );
-        regions.extend(
-            resources
-                .config
-                .reserved_address_ranges()
-                .iter()
-                .map(|range| {
-                    GuestOwnedRegion::new(range.base_gpa, range.length, VmRegionKind::Reserved)
-                }),
-        );
-
-        #[cfg(all(target_arch = "x86_64", feature = "vmx"))]
-        regions.push(GuestOwnedRegion::new(
-            X86_APIC_ACCESS_GPA,
-            ax_memory_addr::PAGE_SIZE_4K,
-            VmRegionKind::Reserved,
-        ));
-
-        regions
     }
 
     fn ensure_resources_ready(&self) -> AxResult {
@@ -1669,6 +1320,17 @@ impl AxVM {
     pub fn memory_regions(&self) -> Vec<VMMemoryRegion> {
         self.with_resources(|resources| Ok(resources.memory_regions.clone()))
             .unwrap_or_default()
+    }
+
+    /// Prepares all memory regions configured for this VM.
+    pub fn prepare_memory_layout(&self) -> AxResult<PreparedMemoryLayout> {
+        let memory_regions =
+            self.with_resources(|resources| Ok(resources.config.memory_regions().to_vec()))?;
+        let layout = memory::MemoryLayoutBuilder::new(self, &memory_regions).prepare()?;
+        let main_memory = layout.main_memory();
+        let boot_plan = boot::BootImagePlan::new(main_memory.gpa, main_memory.is_identical());
+        self.with_config(|config| boot_plan.apply_to_config(config));
+        Ok(layout)
     }
 
     /// Maps a reserved memory region for the VM.

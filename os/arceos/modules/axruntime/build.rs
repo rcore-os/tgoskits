@@ -10,6 +10,8 @@ const LINKER_TEMPLATE_NAME: &str = "runtime.ld";
 const FINAL_LINKER_SCRIPT_NAME: &str = "linker.x";
 const EXT_LINKER_SCRIPT_NAME: &str = "runtime.x";
 const BUILD_INFO_NAME: &str = "build_info.rs";
+const AXTEST_COVERAGE_RUNTIME_SECTIONS_PLACEHOLDER: &str = "%AXTEST_COVERAGE_RUNTIME_SECTIONS%";
+const AXTEST_COVERAGE_OUTPUT_SECTIONS_PLACEHOLDER: &str = "%AXTEST_COVERAGE_OUTPUT_SECTIONS%";
 const DEFAULT_CPU_CAPACITY: usize = 16;
 const DEFAULT_TASK_STACK_SIZE: usize = 0x40000;
 const DEFAULT_TICKS_PER_SEC: usize = 100;
@@ -20,9 +22,19 @@ fn main() -> Result<()> {
     println!("cargo:rerun-if-env-changed=AX_CONFIG_PATH");
     println!("cargo:rerun-if-env-changed=SMP");
     println!("cargo:rerun-if-env-changed=DWARF");
+    println!("cargo:rerun-if-env-changed=AXTEST_COVERAGE");
 
     let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
-    let ld_content = fs::read_to_string(LINKER_TEMPLATE_NAME)?.replace("%DWARF%", dwarf_sections());
+    let ld_content = fs::read_to_string(LINKER_TEMPLATE_NAME)?
+        .replace("%DWARF%", dwarf_sections())
+        .replace(
+            AXTEST_COVERAGE_RUNTIME_SECTIONS_PLACEHOLDER,
+            axtest_coverage_runtime_sections(),
+        )
+        .replace(
+            AXTEST_COVERAGE_OUTPUT_SECTIONS_PLACEHOLDER,
+            axtest_coverage_output_sections(),
+        );
     let linker_script_name = if env::var_os("CARGO_FEATURE_EXT_LD").is_some() {
         EXT_LINKER_SCRIPT_NAME
     } else {
@@ -35,6 +47,55 @@ fn main() -> Result<()> {
     println!("cargo:rustc-link-search={}", out_dir.display());
 
     Ok(())
+}
+
+fn axtest_coverage_enabled() -> bool {
+    env::var("AXTEST_COVERAGE").ok().is_some_and(|value| {
+        matches!(
+            value.trim().to_ascii_lowercase().as_str(),
+            "y" | "yes" | "1" | "true" | "on"
+        )
+    })
+}
+
+fn axtest_coverage_runtime_sections() -> &'static str {
+    if axtest_coverage_enabled() {
+        r#"
+        . = ALIGN(0x10);
+        __start___llvm_prf_data = .;
+        KEEP(*(__llvm_prf_data))
+        __stop___llvm_prf_data = .;
+
+        . = ALIGN(0x10);
+        __start___llvm_prf_cnts = .;
+        KEEP(*(__llvm_prf_cnts))
+        __stop___llvm_prf_cnts = .;
+
+        . = ALIGN(0x10);
+        __start___llvm_prf_bits = .;
+        KEEP(*(__llvm_prf_bits))
+        __stop___llvm_prf_bits = .;
+
+        . = ALIGN(0x10);
+        __start___llvm_prf_vnds = .;
+        KEEP(*(__llvm_prf_vnds))
+        __stop___llvm_prf_vnds = .;"#
+    } else {
+        ""
+    }
+}
+
+fn axtest_coverage_output_sections() -> &'static str {
+    if axtest_coverage_enabled() {
+        r#"    __llvm_prf_names : AT(ADDR(__llvm_prf_names) - AX_LINKER_LOAD_OFFSET) ALIGN(0x10) {
+        __start___llvm_prf_names = .;
+        KEEP(*(__llvm_prf_names))
+        __stop___llvm_prf_names = .;
+    }
+"#
+    } else {
+        ""
+    }
 }
 
 fn build_info_source() -> Result<String> {

@@ -42,9 +42,10 @@ pub mod config;
 
 pub use ax_cpumask::CpuMask;
 pub use ax_page_table_entry::MappingFlags;
-pub use axdevice_base::{AccessWidth, Port, SysRegAddr};
-pub use axvcpu::{AxVCpuExitReason, InterruptTriggerMode, VCpuState};
-pub use axvm_types::{GuestPhysAddr, HostPhysAddr, VMId};
+pub use axvm_types::{
+    AccessWidth, AxVCpuExitReason, GuestPhysAddr, HostPhysAddr, InterruptTriggerMode, Port,
+    SysRegAddr, VMId,
+};
 pub(crate) use host::{
     paging::HostPagingHandler,
     task::{AxTaskExt, AxTaskRef, TaskInner, WaitQueue, WaitQueueHandle as HostWaitQueueHandle},
@@ -61,10 +62,11 @@ pub use runtime::loongarch_irq::{
     unregister_guest_irq_routes as unregister_loongarch_guest_irq_routes,
 };
 pub use task::{AsVCpuTask, VCpuTask};
-pub use vm::{AxVCpuRef, AxVM, AxVMRef, FwCfgDeviceConfig, VMMemoryRegion};
+pub use vcpu::VCpuState;
+pub use vm::{AxVCpuRef, AxVM, AxVMRef, FwCfgDeviceConfig, PreparedMemoryLayout, VMMemoryRegion};
 
 /// The architecture-independent per-CPU type.
-pub type AxVMPerCpu = axvcpu::AxPerCpu<vcpu::AxVMArchPerCpuImpl>;
+pub type AxVMPerCpu = vcpu::AxPerCpu<vcpu::AxVMArchPerCpuImpl>;
 
 /// Check and dispatch pending AxVM timer events on the current CPU.
 pub fn check_timer_events() {

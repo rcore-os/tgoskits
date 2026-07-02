@@ -141,12 +141,6 @@ pub(crate) fn load_cargo_config(request: &ResolvedStarryRequest) -> anyhow::Resu
 }
 
 fn normalize_starry_platform_features(features: &mut Vec<String>) {
-    let has_sg2002 = features.iter().any(|feature| feature == "sg2002");
-
-    if has_sg2002 {
-        features.push("ax-hal/riscv64-sg2002".to_string());
-    }
-
     features.sort();
     features.dedup();
 }
@@ -161,6 +155,7 @@ fn patch_starry_cargo_config(
 
     cargo.package = request.package.clone();
     ensure_starry_bin_arg(&mut cargo.args, &request.package, metadata)?;
+    apply_starry_bin_override(cargo)?;
     remove_qemu_feature_for_dynamic_platform(cargo);
     if uses_default_qemu_platform {
         cargo.features.push("qemu".to_string());
@@ -615,6 +610,29 @@ fn uses_default_qemu_platform(features: &[String]) -> bool {
     });
 
     has_static_platform && !has_dynamic && !has_custom
+}
+
+fn apply_starry_bin_override(cargo: &mut Cargo) -> anyhow::Result<()> {
+    let Some(bin) = cargo.env.get("AXBUILD_STARRY_BIN").cloned() else {
+        return Ok(());
+    };
+    if bin.trim().is_empty() {
+        bail!("AXBUILD_STARRY_BIN must not be empty");
+    }
+
+    let mut args = Vec::with_capacity(cargo.args.len() + 2);
+    let mut iter = cargo.args.iter();
+    while let Some(arg) = iter.next() {
+        if arg == "--bin" {
+            let _ = iter.next();
+            continue;
+        }
+        args.push(arg.clone());
+    }
+    args.push("--bin".to_string());
+    args.push(bin);
+    cargo.args = args;
+    Ok(())
 }
 
 fn ensure_starry_bin_arg(

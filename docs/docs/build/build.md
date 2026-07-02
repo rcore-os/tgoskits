@@ -173,7 +173,7 @@ Feature 解析是构建过程中最复杂的阶段之一。它需要处理多个
 
 ```mermaid
 flowchart TD
-    A["plat_dyn = false"] --> B["从 Cargo.toml 找到平台依赖包<br/>(如 ax-plat-riscv64-sg2002)"]
+    A["plat_dyn = false"] --> B["从 Cargo.toml 找到平台依赖包<br/>(如 ax-plat-riscv64-custom)"]
     B --> C["定位平台包配置文件"]
     C --> D["调用配置引擎库"]
     D --> E["生成 .axconfig.toml<br/>到 tmp/axbuild/axconfig/"]
@@ -182,7 +182,7 @@ flowchart TD
 
 ArceOS 的平台配置（如内存布局、中断控制器地址、串口基地址等）由 `axbuild` 复用配置引擎库从平台包配置文件中合并生成 `.axconfig.toml`。动态平台模式是支持动态平台 target 的默认构建方式，配置可省略 `plat_dyn`；在静态模式下（`plat_dyn = false`），必须在编译前预生成并注入 `AX_CONFIG_PATH` 环境变量，使得 OS 源码中的配置宏能在编译期读取配置。
 
-LoongArch QEMU 已迁移到默认动态平台。旧写法 `ax-hal/loongarch64-qemu-virt`、`ax-driver/plat-static`、`plat_dyn = false` 或 `--plat loongarch64-qemu-virt` 不再表示当前推荐路径；应改为 `--arch loongarch64`，让构建注入 `ax-std/plat-dyn` 或 `ax-feat/plat-dyn`，并保持 `ax-hal/plat-dyn`、`ax-driver/plat-dyn`、`axplat-dyn` 和 UEFI/`efi` 启动链路一致。
+LoongArch QEMU 已迁移到默认动态平台。旧写法 `ax-hal/loongarch64-qemu-virt`、`plat_dyn = false` 或 `--plat loongarch64-qemu-virt` 不再表示当前推荐路径；应改为 `--arch loongarch64`，让构建注入 `ax-std/plat-dyn` 或 `ax-feat/plat-dyn`，并保持 `ax-hal/plat-dyn`、`ax-driver/plat-dyn`、`axplat-dyn` 和 UEFI/`efi` 启动链路一致。
 
 ### 6a. 平台包解析
 
@@ -190,7 +190,7 @@ LoongArch QEMU 已迁移到默认动态平台。旧写法 `ax-hal/loongarch64-qe
 
 | 目录 | 命名示例 | 包名格式 | 定位方式 |
 |------|---------|---------|---------|
-| `platforms/` | `ax-plat-riscv64-sg2002/` | `ax-plat-riscv64-sg2002` | Workspace member，通过 cargo metadata 直接定位 |
+| `platforms/` | `ax-plat-riscv64-custom/` | `ax-plat-riscv64-custom` | Workspace member 或外部依赖，通过 cargo metadata 定位 |
 
 `axbuild` 通过 `resolve_platform_package()` 按以下优先级确定平台包：
 
@@ -217,9 +217,9 @@ flowchart TD
 | `loongarch64` | 无静态默认平台；默认使用动态平台 |
 
 **平台包命名规则**：
-- 新命名格式 `ax-plat-{arch}-{board}`（如 `ax-plat-riscv64-sg2002`），是当前推荐格式
+- 新命名格式 `ax-plat-{arch}-{board}`（如 `ax-plat-riscv64-custom`），是当前推荐格式
 - 旧命名格式 `axplat-{arch}-{board}`，向后兼容
-- `linker_platform_name()` 去掉两种前缀后得到相同的平台名（用于 feature 匹配），例如 `ax-plat-riscv64-sg2002` 和 `axplat-riscv64-sg2002` 都映射为 `riscv64-sg2002`
+- `linker_platform_name()` 去掉两种前缀后得到相同的平台名（用于 feature 匹配），例如 `ax-plat-riscv64-custom` 和 `axplat-riscv64-custom` 都映射为 `riscv64-custom`
 
 ### 6b. 平台配置文件查找
 
@@ -227,7 +227,7 @@ flowchart TD
 
 ```mermaid
 flowchart TD
-    A["resolve_platform_config_path<br/>(包名: ax-plat-riscv64-sg2002)"] --> B["1. 在 workspace metadata 中查找<br/>→ 找到 Cargo.toml 所在目录<br/>→ 检查同目录下的 axconfig.toml"]
+    A["resolve_platform_config_path<br/>(包名: ax-plat-riscv64-custom)"] --> B["1. 在 workspace metadata 中查找<br/>→ 找到 Cargo.toml 所在目录<br/>→ 检查同目录下的 axconfig.toml"]
     B --> C{找到?}
     C -->|是| D["返回路径"]
     C -->|否| E["2. 在 deps metadata 中查找<br/>(同样逻辑)"]
@@ -238,14 +238,14 @@ flowchart TD
     H -->|是| D
     H -->|否| I["错误：无法解析平台配置"]
 ```
-**两级 metadata 查找**：第1步 `workspace metadata` 查找的是 workspace `Cargo.toml` 的 `[workspace.members]` 中声明的包。对 `platforms/` 下的平台包（如 `ax-plat-riscv64-sg2002`），其 `Cargo.toml`（如 `platforms/ax-plat-riscv64-sg2002/Cargo.toml`）旁即为 `axconfig.toml`。第2步 `deps metadata` 查找的是传递依赖中的包，覆盖平台包位于 workspace 外部或被间接依赖的场景。只有在两步都找不到时，才进入第3步的目录约定回退。
+**两级 metadata 查找**：第1步 `workspace metadata` 查找的是 workspace `Cargo.toml` 的 `[workspace.members]` 中声明的包。对 `platforms/` 下的平台包，其 `Cargo.toml` 旁即为 `axconfig.toml`。第2步 `deps metadata` 查找的是传递依赖中的包，覆盖平台包位于 workspace 外部或被间接依赖的场景。只有在两步都找不到时，才进入第3步的目录约定回退。
 
 **回退路径的包名 ↔ 目录名映射**：
 
 当通过 workspace/debug metadata 均找不到平台包的 `axconfig.toml` 时，`find_local_platform_config_path()` 执行包名到目录名的转换：
 
-- `ax-plat-riscv64-sg2002` → 去掉前缀 `ax-plat-` → `riscv64-sg2002` → 重新拼为 `axplat-riscv64-sg2002`
-- 最终路径：`platforms/ax-plat-riscv64-sg2002/axconfig.toml`
+- `ax-plat-riscv64-custom` → 去掉前缀 `ax-plat-` → `riscv64-custom` → 重新拼为 `axplat-riscv64-custom`
+- 最终路径：`platforms/ax-plat-riscv64-custom/axconfig.toml`
 
 这一映射确保平台包位于 `platforms/` 时，`axbuild` 能正确找到配置文件。平台名（`platform` 字段）优先从 `axconfig.toml` 中的 `platform` 键读取，读取失败时回退到 `linker_platform_name()` 从包名中提取。
 

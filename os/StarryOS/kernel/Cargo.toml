@@ -21,19 +21,23 @@ ext4 = ["ax-fs-ng/ext4"]
 input = ["dep:ax-input", "ax-feat/input"]
 ipi = ["ax-feat/ipi"]
 memtrack = ["ax-feat/backtrace", "ax-alloc/tracking"]
-rknpu = ["ax-driver/rknpu"]
+rknpu = ["ax-driver/rknpu", "dep:ax-dma"]
+jpeg = ["ax-driver/jpeg", "dep:ax-dma"]
 std-compat = []
 k230-kpu = ["ax-feat/xuantie-c9xx", "dep:axklib", "dep:k230-kpu"]
 plat-dyn = [
     "dep:axplat-dyn",
     "ax-feat/plat-dyn",
     "ax-feat/usb",
+    "ax-driver/plat-dyn",
     "ax-driver/usb",
 ]
 vsock = ["ax-feat/vsock"]
 dynamic_debug = ["ipi"]
 sg2002 = [
+    "plat-dyn",
     "dep:ax-dma",
+    "dep:axklib",
     "dep:sg2002-tpu",
     "dep:some-serial",
     "dep:sg200x-bsp",
@@ -48,8 +52,10 @@ sg2002-wifi = [
 ]
 stack-guard-page = ["ax-feat/stack-guard-page"]
 stack-protector = ["ax-feat/stack-protector"]
+axtest = ["dep:axtest"]
 
 [dependencies]
+axtest = { workspace = true, optional = true }
 ax-feat = { workspace = true, features = [
     "fp-simd",
     "irq",

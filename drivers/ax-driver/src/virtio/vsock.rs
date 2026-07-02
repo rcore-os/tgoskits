@@ -4,7 +4,7 @@ use alloc::format;
 
 use rdif_vsock::{VsockAddr as RdifVsockAddr, VsockConnId, VsockError, VsockEvent};
 use rdrive::{DriverGeneric, PlatformDevice, probe::OnProbeError};
-#[cfg(all(feature = "pci", any(plat_static, plat_dyn)))]
+#[cfg(all(feature = "pci", plat_dyn))]
 use virtio_drivers::transport::DeviceType;
 use virtio_drivers::{
     Error as VirtIoError,
@@ -16,12 +16,12 @@ use virtio_drivers::{
 };
 
 use crate::{BindingInfo, virtio::VirtIoHalImpl, vsock::PlatformDeviceVsock};
-#[cfg(all(feature = "pci", any(plat_static, plat_dyn)))]
+#[cfg(all(feature = "pci", plat_dyn))]
 use crate::{PciIrqRequirement, binding_info_from_pci};
 
 const DEFAULT_RX_BUFFER_CAPACITY: u32 = 32 * 1024;
 
-#[cfg(all(feature = "pci", any(plat_static, plat_dyn)))]
+#[cfg(all(feature = "pci", plat_dyn))]
 crate::model_register!(
     name: "VirtIO Socket",
     level: ProbeLevel::PostKernel,
@@ -31,7 +31,7 @@ crate::model_register!(
     }],
 );
 
-#[cfg(all(feature = "pci", any(plat_static, plat_dyn)))]
+#[cfg(all(feature = "pci", plat_dyn))]
 fn probe_pci(mut probe: rdrive::probe::pci::ProbePci<'_>) -> Result<(), OnProbeError> {
     let transport =
         crate::pci::take_virtio_transport_masked(probe.endpoint_mut(), DeviceType::Socket)?;

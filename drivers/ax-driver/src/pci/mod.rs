@@ -131,25 +131,6 @@ impl LegacyIrqRoute {
             && self.irqs.iter().eq(irq_list[..irq_count].iter())
     }
 
-    #[cfg(not(plat_dyn))]
-    fn binding_for(&self, info: PciInfo) -> Option<BindingIrq> {
-        let route = info.intx_route?;
-        if info.address.bus() < self.bus_start
-            || info.address.bus() > self.bus_end
-            || !(1..=PCI_INTX_LINES as u8).contains(&route.root_pin)
-        {
-            return None;
-        }
-
-        let irq_count = self.irqs.len();
-        let route_index = if irq_count == 1 {
-            0
-        } else {
-            (usize::from(route.root_device) + usize::from(route.root_pin) - 1) % irq_count
-        };
-        self.irqs.get(route_index).map(|irq| irq.binding.clone())
-    }
-
     #[cfg(plat_dyn)]
     fn native_binding_for(&self, info: PciInfo) -> Option<BindingIrq> {
         let route = info.intx_route?;
@@ -205,7 +186,7 @@ enum DynamicPciIrqSource {
     Fdt,
 }
 
-pub const fn has_static_endpoint_drivers() -> bool {
+pub const fn has_pci_endpoint_drivers() -> bool {
     cfg!(any(
         feature = "ahci",
         feature = "intel-net",
@@ -221,7 +202,7 @@ pub const fn has_static_endpoint_drivers() -> bool {
     ))
 }
 
-pub fn register_static_legacy_irq_routes(irqs: &[usize], ecam_size: usize) {
+pub fn register_ecam_legacy_irq_routes(irqs: &[usize], ecam_size: usize) {
     if irqs.is_empty() {
         return;
     }
@@ -278,7 +259,7 @@ pub fn register_ecam_controller_with_mmio_op(
     mem64: Option<PciMem64>,
     mmio_op: &'static dyn MmioOp,
 ) -> Result<(), OnProbeError> {
-    if !has_static_endpoint_drivers() {
+    if !has_pci_endpoint_drivers() {
         return Err(OnProbeError::NotMatch);
     }
 
@@ -316,13 +297,8 @@ pub fn resolve_intx_binding(info: PciInfo) -> Result<Option<BindingIrq>, OnProbe
 
     #[cfg(not(plat_dyn))]
     {
-        if let Some(irq) = legacy_binding_for_endpoint(info) {
-            return Ok(Some(irq));
-        }
-
-        interrupt_line_irq(info.interrupt_line)
-            .map(legacy_binding)
-            .transpose()
+        let _ = info;
+        Ok(None)
     }
 }
 
@@ -476,6 +452,7 @@ fn legacy_irq_result(raw: Option<usize>) -> Result<Option<BindingIrq>, OnProbeEr
     raw.map(legacy_binding).transpose()
 }
 
+#[cfg(any(plat_dyn, test))]
 fn legacy_binding(raw: usize) -> Result<BindingIrq, OnProbeError> {
     BindingIrq::try_legacy(raw).map_err(|_| {
         OnProbeError::other(format!(
@@ -510,14 +487,6 @@ pub fn legacy_irq_for_endpoint(info: PciInfo) -> Option<usize> {
         .find_map(|route| route.irq_for(info))
 }
 
-#[cfg(not(plat_dyn))]
-fn legacy_binding_for_endpoint(info: PciInfo) -> Option<BindingIrq> {
-    LEGACY_IRQ_ROUTES
-        .lock()
-        .iter()
-        .find_map(|route| route.binding_for(info))
-}
-
 #[cfg(plat_dyn)]
 fn native_legacy_binding_for_endpoint(info: PciInfo) -> Option<BindingIrq> {
     LEGACY_IRQ_ROUTES
@@ -539,10 +508,12 @@ pub fn legacy_irq_for_address(address: PciAddress) -> Option<usize> {
     })
 }
 
+#[cfg(any(plat_dyn, test))]
 pub(crate) const fn legacy_line_to_irq(line: u8) -> usize {
     legacy_line_to_irq_for_platform(line, cfg!(target_arch = "x86_64"), cfg!(plat_dyn))
 }
 
+#[cfg(any(plat_dyn, test))]
 fn interrupt_line_irq(line: u8) -> Option<usize> {
     if line == 0 || line == u8::MAX {
         return None;
@@ -550,6 +521,7 @@ fn interrupt_line_irq(line: u8) -> Option<usize> {
     Some(legacy_line_to_irq(line))
 }
 
+#[cfg(any(plat_dyn, test))]
 const fn legacy_line_to_irq_for_platform(line: u8, is_x86_64: bool, is_plat_dyn: bool) -> usize {
     let base = if is_x86_64 {
         if is_plat_dyn { 0x30 } else { 0x20 }
@@ -885,7 +857,7 @@ mod tests {
     }
 
     #[test]
-    fn resolve_intx_binding_static_fallback_keeps_legacy_irq_compatibility() {
+    fn resolve_intx_binding_without_dynamic_firmware_uses_legacy_irq_line() {
         let info = endpoint_with_intx_route();
         let controller = rdrive::DeviceId::new();
         let irq = resolve_intx_binding_with_resolvers(

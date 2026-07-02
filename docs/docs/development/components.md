@@ -39,7 +39,7 @@ flowchart TD
     ArceosApi["os/arceos/api/* + os/arceos/ulib/*"]
     ArceosApps["ArceOS examples + test-suit/arceos"]
     StarryKernel["os/StarryOS/kernel + components/starry-*"]
-    AxvisorRuntime["os/axvisor + virtualization/axvm/axvcpu/axdevice/*"]
+    AxvisorRuntime["os/axvisor + virtualization/axvm/axvm-types/axdevice/*"]
     PlatformCrates["components/axplat_crates/platforms/* + platform/*"]
 
     ReusableCrate --> ArceosModules
@@ -94,7 +94,7 @@ flowchart TD
 | ArceOS 内核服务：调度、HAL、驱动、网络、文件系统 | `os/arceos/modules/*`、`drivers/*`，以及相关 `memory/*` / `axplat_crates` | ArceOS，且可能波及 StarryOS / Axvisor |
 | ArceOS 的 feature 或应用接口 | `os/arceos/api/axfeat`、`os/arceos/ulib/axstd`、`os/arceos/ulib/axlibc` | ArceOS 应用与上层系统 |
 | StarryOS 的 Linux 兼容行为 | `components/starry-*`、`os/StarryOS/kernel/*` | StarryOS |
-| Hypervisor、vCPU、虚拟设备、VM 管理 | `virtualization/axvm`、`virtualization/axvcpu`、`virtualization/axdevice`、`virtualization/axvisor_api`、`os/axvisor/src/*` | Axvisor |
+| Hypervisor、vCPU、虚拟设备、VM 管理 | `virtualization/axvm`、`virtualization/axvm-types`、`virtualization/*_vcpu`、`virtualization/axdevice`、`virtualization/axvisor_api`、`os/axvisor/src/*` | Axvisor |
 | 平台、板级适配或 VM 启动配置 | `components/axplat_crates/platforms/*`、`platform/*`、`os/axvisor/configs/*` | 一到多个系统 |
 
 若不确定某个 crate 的维护者或来源仓库，可查看 `scripts/repo/repos.csv`，该文件记录了所有 subtree 组件的来源信息。
@@ -122,7 +122,7 @@ flowchart TD
 | `components/axerrno`、`components/kspin`、`components/ax-lazyinit` 这类基础 crate | `cargo test -p <crate>` | `cargo xtask arceos run --package arceos-helloworld --arch riscv64` |
 | `os/arceos/modules/*` | `cargo xtask arceos run --package arceos-helloworld --arch riscv64` | 需要功能时换成 `arceos-httpserver --net` 或 `arceos-shell --blk` |
 | `components/starry-*`、`os/StarryOS/kernel/*` | `cargo xtask starry run --arch riscv64 --package starryos` | `cargo starry test qemu --target riscv64` |
-| `virtualization/axvm`、`virtualization/axvcpu`、`virtualization/axdevice`、`os/axvisor/src/*` | `cd os/axvisor && cargo xtask build` | 准备好 Guest 后运行 `./scripts/setup_qemu.sh arceos`，再执行 `cargo xtask qemu --build-config ... --qemu-config ... --vmconfigs ...` |
+| `virtualization/axvm`、`virtualization/axvm-types`、`virtualization/*_vcpu`、`virtualization/axdevice`、`os/axvisor/src/*` | `cd os/axvisor && cargo xtask build` | 准备好 Guest 后运行 `./scripts/setup_qemu.sh arceos`，再执行 `cargo xtask qemu --build-config ... --qemu-config ... --vmconfigs ...` |
 
 ### 4.3 补充统一测试
 
@@ -324,7 +324,7 @@ cargo xtask starry run --arch riscv64 --package starryos
 
 ## 8. Axvisor 集成
 
-Axvisor 的组件化架构通常分为三层：复用 crate（如 `axvm`、`axvcpu`、`axdevice`、`axvisor_api`）、Hypervisor 运行时（`os/axvisor/src/*`）以及板级与 VM 配置（`os/axvisor/configs/board/*` 与 `os/axvisor/configs/vms/*`）。因此，进行 Axvisor 相关改动时需区分"代码"改动与"配置"改动，以及改动影响的是 Hypervisor 本身还是 Guest 启动参数。
+Axvisor 的组件化架构通常分为三层：复用 crate（如 `axvm`、`axvm-types`、`arm_vcpu`/`x86_vcpu`/`riscv_vcpu`/`loongarch_vcpu`、`axdevice`、`axvisor_api`）、Hypervisor 运行时（`os/axvisor/src/*`）以及板级与 VM 配置（`os/axvisor/configs/board/*` 与 `os/axvisor/configs/vms/*`）。因此，进行 Axvisor 相关改动时需区分"代码"改动与"配置"改动，以及改动影响的是 Hypervisor 本身还是 Guest 启动参数。
 
 最小验证路径通常为：
 

@@ -3,8 +3,8 @@ use ax_errno::AxResult;
 use ax_errno::ax_err;
 #[cfg(target_arch = "loongarch64")]
 use ax_memory_addr::VirtAddr;
-use axvcpu::{
-    AxArchVCpu, AxVCpuExitReason, GuestPhysAddr, HostPhysAddr, MappingFlags, VCpuId, VMId,
+use axvm_types::{
+    AxVCpuExitReason, GuestPhysAddr, HostPhysAddr, MappingFlags, VCpuId, VMId, VmArchVcpuOps,
 };
 #[cfg(target_arch = "loongarch64")]
 use loongArch64::register::prmd;
@@ -137,7 +137,7 @@ pub struct LoongArchVCpuSetupConfig {
     pub firmware_boot: bool,
 }
 
-impl AxArchVCpu for LoongArchVCpu {
+impl VmArchVcpuOps for LoongArchVCpu {
     type CreateConfig = LoongArchVCpuCreateConfig;
     type SetupConfig = LoongArchVCpuSetupConfig;
 

@@ -168,7 +168,6 @@ flowchart TB
 | `axklib` | 组件层 | `components/axklib` | 2 | 3 | [查看](crates/axklib) |
 | `axplat-dyn` | 平台层 | `platforms/axplat-dyn` | 11 | 2 | [查看](crates/axplat-dyn) |
 | `axpoll` | 组件层 | `components/axpoll` | 0 | 5 | [查看](crates/axpoll) |
-| `axvcpu` | 组件层 | `virtualization/axvcpu` | 5 | 5 | [查看](crates/axvcpu) |
 | `axvisor` | Axvisor 层 | `os/axvisor` | 27 | 0 | [查看](crates/axvisor) |
 | `axvisor_api` | 组件层 | `virtualization/axvisor_api` | 5 | 10 | [查看](crates/axvisor-api) |
 | `axvisor_api_proc` | 组件层 | `virtualization/axvisor_api_proc` | 0 | 1 | [查看](crates/axvisor-api-proc) |
