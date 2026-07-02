@@ -16,7 +16,9 @@ use ax_hal::{
 };
 use ax_kspin::SpinNoIrq;
 use ax_lazyinit::LazyInit;
-use ax_memory_addr::{MemoryAddr, PhysAddr, VirtAddr, VirtAddrRange};
+#[cfg(not(target_arch = "loongarch64"))]
+use ax_memory_addr::VirtAddrRange;
+use ax_memory_addr::{MemoryAddr, PhysAddr, VirtAddr};
 
 pub use self::{aspace::AddrSpace, backend::Backend};
 
@@ -114,6 +116,22 @@ pub fn init_memory_management_secondary() {
 
 /// Maps a physical memory region to virtual address space for device access.
 pub fn iomap(addr: PhysAddr, size: usize) -> AxResult<VirtAddr> {
+    iomap_arch(addr, size)
+}
+
+#[cfg(target_arch = "loongarch64")]
+fn iomap_arch(addr: PhysAddr, size: usize) -> AxResult<VirtAddr> {
+    if size == 0 {
+        return Err(AxError::InvalidInput);
+    }
+    // LoongArch DMW translations do not consult PTE attributes. MMIO must
+    // therefore use the uncached DMW alias instead of the cached direct map
+    // returned by phys_to_virt().
+    Ok(loongarch_uncached_dmw_addr(addr))
+}
+
+#[cfg(not(target_arch = "loongarch64"))]
+fn iomap_arch(addr: PhysAddr, size: usize) -> AxResult<VirtAddr> {
     let virt = phys_to_virt(addr);
 
     let virt_aligned = virt.align_down_4k();
@@ -137,8 +155,8 @@ pub fn iomap(addr: PhysAddr, size: usize) -> AxResult<VirtAddr> {
         virt_aligned
     } else {
         // On platforms where `phys_to_virt()` is a hardware direct map outside
-        // the page-table-backed kernel address space, such as LoongArch64 DMW,
-        // allocate a separate kernel VA and map the device with PTE attributes.
+        // the page-table-backed kernel address space, allocate a separate
+        // kernel VA and map the device with PTE attributes.
         let range = VirtAddrRange::new(tb.base(), tb.end());
         let mapped = tb
             .find_free_area(tb.base(), size_aligned, range)
@@ -148,4 +166,12 @@ pub fn iomap(addr: PhysAddr, size: usize) -> AxResult<VirtAddr> {
     };
 
     Ok(mapped + offset)
+}
+
+#[cfg(target_arch = "loongarch64")]
+fn loongarch_uncached_dmw_addr(addr: PhysAddr) -> VirtAddr {
+    const LOONGARCH_PADDR_MASK: usize = (1usize << 48) - 1;
+    const LOONGARCH_UNCACHED_DMW_BASE: usize = 0x8000_0000_0000_0000;
+
+    (LOONGARCH_UNCACHED_DMW_BASE | (addr.as_usize() & LOONGARCH_PADDR_MASK)).into()
 }

@@ -20,26 +20,7 @@ pub(crate) fn iomap_firmware_device(
     }
 
     let paddr = firmware_addr_to_phys(addr);
-
-    #[cfg(target_arch = "loongarch64")]
-    {
-        // TODO: move this LoongArch MMIO policy into the generic iomap path.
-        // Today ax_mm::iomap() may derive a cached DMW VA from phys_to_virt(),
-        // and DMW accesses do not observe the DEVICE PTE attributes it installs.
-        // Keep LS2K1000 FDT devices on the uncached DMW alias until iomap()
-        // returns either an uncached DMW address or a real non-DMW device mapping.
-        let vaddr = loongarch_uncached_addr(paddr);
-        NonNull::new(vaddr as *mut u8).ok_or_else(|| {
-            OnProbeError::other(alloc::format!(
-                "{device_name} MMIO address {vaddr:#x} is null"
-            ))
-        })
-    }
-
-    #[cfg(not(target_arch = "loongarch64"))]
-    {
-        iomap(paddr, size)
-    }
+    iomap(paddr, size)
 }
 
 pub(crate) fn firmware_addr_to_phys(addr: usize) -> usize {
@@ -57,6 +38,8 @@ pub(crate) fn firmware_addr_to_phys(addr: usize) -> usize {
 
 #[cfg(target_arch = "loongarch64")]
 pub(crate) fn loongarch_uncached_addr(addr: usize) -> usize {
+    // Used for DMA aliases that must bypass cache. Device MMIO should go
+    // through iomap(), whose LoongArch backend already returns uncached DMW.
     const LOONGARCH_UNCACHED_DMW_BASE: usize = 0x8000_0000_0000_0000;
     LOONGARCH_UNCACHED_DMW_BASE | firmware_addr_to_phys(addr)
 }

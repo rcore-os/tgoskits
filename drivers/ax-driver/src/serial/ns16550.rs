@@ -55,7 +55,11 @@ fn probe(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
         .ok_or_else(|| OnProbeError::other(format!("[{}] has no reg", info.node.name())))?;
 
     let mmio_size = base_reg.size.unwrap_or(0x1000);
-    let mmio_base = crate::mmio::iomap(base_reg.address as usize, mmio_size as usize)?;
+    let mmio_base = crate::mmio::iomap_firmware_device(
+        "NS16550 serial",
+        base_reg.address as usize,
+        mmio_size as usize,
+    )?;
     let node = info.node.as_node();
     let reg_width = prop_u32(node, "reg-io-width").unwrap_or(1) as usize;
     let reg_shift = prop_u32(node, "reg-shift").map(|shift| 1usize << shift);
