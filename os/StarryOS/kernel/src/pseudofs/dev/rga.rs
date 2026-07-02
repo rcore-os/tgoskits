@@ -11,7 +11,8 @@ use rockchip_rga::{RgaVersion, RockchipRga, backend::RgaStatus, librga_abi};
 use starry_vm::{VmMutPtr, VmPtr};
 
 use crate::{
-    pseudofs::{DeviceOps, dev::dma_heap},
+    file::dmabuf::{DmaBufFile, resolve_contiguous_dmabuf},
+    pseudofs::DeviceOps,
     task::AsThread,
 };
 
@@ -26,7 +27,7 @@ struct ImportedBuf {
     phys_addr: u64,
     /// `Some` when imported from a dma-buf fd (RGA_DMA_BUFFER); `None` when imported as a
     /// raw physical address (RGA_PHYSICAL_ADDRESS — caller guarantees lifetime).
-    obj: Option<Arc<dma_heap::DmaBufObject>>,
+    obj: Option<Arc<DmaBufFile>>,
 }
 
 /// `/dev/rga` character device with a handle table for the MultiRGA import API.
@@ -69,12 +70,12 @@ impl RgaDevice {
     }
 
     /// Resolve a buffer address, returning the phys addr and (for dma-buf-backed buffers) the
-    /// `Arc<DmaBufObject>` that must stay alive and be cache-synced for the operation's duration.
+    /// `Arc<DmaBufFile>` that must stay alive and be cache-synced for the operation's duration.
     fn resolve_buf(
         &self,
         raw: u64,
         handle_flag: bool,
-    ) -> VfsResult<(u64, Option<Arc<dma_heap::DmaBufObject>>)> {
+    ) -> VfsResult<(u64, Option<Arc<DmaBufFile>>)> {
         if raw == 0 {
             return Ok((0, None));
         }
@@ -91,9 +92,8 @@ impl RgaDevice {
             Ok((entry.phys_addr, entry.obj.clone()))
         } else {
             // Legacy path: raw value is a dma-buf fd.
-            let obj = dma_heap::resolve_dmabuf_fd(raw as c_int)
-                .map_err(|_| VfsError::BadFileDescriptor)?;
-            let phys = obj.phys_addr();
+            let obj = resolve_contiguous_dmabuf(raw as c_int).ok_or(VfsError::BadFileDescriptor)?;
+            let phys = obj.phys_base() as u64;
             Ok((phys, Some(obj)))
         }
     }
@@ -176,9 +176,8 @@ impl RgaDevice {
             .find(|c| c.config().version == RgaVersion::Rga2)
             .ok_or(VfsError::NoSuchDevice)?;
 
-        // DMA coherency — the dma-heap backing is CACHED on aarch64.
-        // Clean dirty CPU lines to DRAM before the engine reads src / writes dst, so
-        // stale cache lines cannot evict over engine output (validated on hardware).
+        // DMA coherency barrier: the shared dma-buf heap is coherent, but the sync calls keep
+        // the RGA path aligned with the Linux dma-buf ownership protocol.
         for o in [&src_keep, &src_uv_keep, &dst_keep, &dst_uv_keep]
             .into_iter()
             .flatten()
@@ -258,10 +257,10 @@ impl RgaDevice {
 
             let entry = match ext.r#type {
                 librga_abi::RGA_DMA_BUFFER => {
-                    let obj = dma_heap::resolve_dmabuf_fd(ext.memory as c_int)
-                        .map_err(|_| VfsError::BadFileDescriptor)?;
+                    let obj = resolve_contiguous_dmabuf(ext.memory as c_int)
+                        .ok_or(VfsError::BadFileDescriptor)?;
                     ImportedBuf {
-                        phys_addr: obj.phys_addr(),
+                        phys_addr: obj.phys_base() as u64,
                         obj: Some(obj),
                     }
                 }

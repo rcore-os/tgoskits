@@ -15,9 +15,25 @@ use ax_errno::{AxError, AxResult};
 use ax_memory_addr::{PAGE_SIZE_4K, PhysAddr, PhysAddrRange};
 use axpoll::{IoEvents, Pollable};
 use linux_raw_sys::general::O_RDWR;
+use starry_vm::VmPtr;
 
 use super::{FileLike, Kstat};
 use crate::pseudofs::DeviceMmap;
+
+/// `DMA_BUF_IOCTL_SYNC = _IOW('b', 0x0, struct dma_buf_sync)`.
+const DMA_BUF_IOCTL_SYNC: u32 = 0x4008_6200;
+const DMA_BUF_SYNC_READ: u64 = 1 << 0;
+const DMA_BUF_SYNC_WRITE: u64 = 2;
+const DMA_BUF_SYNC_RW: u64 = DMA_BUF_SYNC_READ | DMA_BUF_SYNC_WRITE;
+const DMA_BUF_SYNC_END: u64 = 1 << 2;
+const DMA_BUF_SYNC_VALID_FLAGS_MASK: u64 = DMA_BUF_SYNC_RW | DMA_BUF_SYNC_END;
+
+/// `struct dma_buf_sync` (linux/dma-buf.h).
+#[derive(Clone, Copy)]
+#[repr(C)]
+struct DmaBufSync {
+    flags: u64,
+}
 
 /// The owned contiguous allocation. Freed when the last reference (the fd's
 /// `DmaBufFile` and any mmap retainer) drops.
@@ -77,6 +93,17 @@ impl DmaBufFile {
     /// Physical base address.
     pub fn phys_base(&self) -> usize {
         self.alloc.dma.bus_addr.as_u64() as usize
+    }
+
+    /// Synchronize CPU writes before the device reads the buffer.
+    pub fn sync_for_device(&self) {
+        // `alloc_coherent_pages_dma32` returns coherent DMA memory in this runtime, so the
+        // synchronization ioctl is a compatibility barrier rather than an explicit cache op.
+    }
+
+    /// Synchronize device writes before the CPU reads the buffer.
+    pub fn sync_for_cpu(&self) {
+        // See `sync_for_device`.
     }
 
     /// Size of the allocation in bytes (page-rounded up from the request).
@@ -165,6 +192,24 @@ impl FileLike for DmaBufFile {
     /// through the mapping, so the dma-buf fd must report read-write access.
     fn open_flags(&self) -> u32 {
         O_RDWR
+    }
+
+    fn ioctl(&self, cmd: u32, arg: usize) -> AxResult<usize> {
+        match cmd {
+            DMA_BUF_IOCTL_SYNC => {
+                let sync = unsafe { (arg as *const DmaBufSync).vm_read_uninit()?.assume_init() };
+                if sync.flags & !DMA_BUF_SYNC_VALID_FLAGS_MASK != 0 {
+                    return Err(AxError::InvalidInput);
+                }
+                if sync.flags & DMA_BUF_SYNC_END == 0 {
+                    self.sync_for_cpu();
+                } else {
+                    self.sync_for_device();
+                }
+                Ok(0)
+            }
+            _ => Err(AxError::NotATty),
+        }
     }
 
     fn device_mmap(&self, _offset: u64, _length: u64) -> AxResult<DeviceMmap> {

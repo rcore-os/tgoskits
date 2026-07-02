@@ -5,10 +5,8 @@ mod card0;
 mod card1;
 // The real contiguous coherent dma-heap is shared by every accelerator that
 // exchanges buffers (JPU / NPU; RGA when its node lands).
-#[cfg(any(feature = "jpeg", feature = "rknpu"))]
+#[cfg(any(feature = "jpeg", feature = "rknpu", feature = "rga"))]
 mod dmaheap;
-#[cfg(feature = "dma-heap")]
-pub(crate) mod dma_heap;
 mod drm;
 #[cfg(feature = "input")]
 pub mod event;

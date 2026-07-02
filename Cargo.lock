@@ -7674,7 +7674,6 @@ dependencies = [
  "chrono",
  "crab-usb",
  "ddebug",
- "dma-api",
  "downcast-rs",
  "enum_dispatch",
  "event-listener",
