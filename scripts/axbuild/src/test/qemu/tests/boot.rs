@@ -46,6 +46,52 @@ fn dynamic_x86_64_std_cargo_uses_uefi_bin_qemu_boot() {
 }
 
 #[test]
+fn axvisor_x86_64_uses_dependency_dynamic_platform_boot_without_feature() {
+    let _guard = ENV_LOCK.lock().unwrap();
+    let _debug = TempEnvVar::unset(DYNAMIC_X86_64_QEMU_DEBUG_ENV);
+    let cargo = Cargo {
+        package: "axvisor".to_string(),
+        target: "scripts/targets/std/pie/x86_64-unknown-linux-musl.json".to_string(),
+        features: vec![],
+        to_bin: false,
+        ..Default::default()
+    };
+    let mut qemu = QemuConfig {
+        uefi: false,
+        to_bin: false,
+        ..Default::default()
+    };
+
+    apply_dynamic_platform_qemu_boot_with_kvm_probe(&mut qemu, &cargo, || false);
+
+    assert!(qemu.uefi);
+    assert!(qemu.to_bin);
+}
+
+#[test]
+fn axvisor_loongarch64_uses_dependency_dynamic_platform_boot_without_feature() {
+    let cargo = Cargo {
+        package: "axvisor".to_string(),
+        target: "scripts/targets/std/pie/loongarch64-unknown-linux-musl.json".to_string(),
+        features: vec![],
+        to_bin: false,
+        ..Default::default()
+    };
+    let mut qemu = QemuConfig {
+        uefi: false,
+        to_bin: false,
+        args: vec!["-snapshot".to_string()],
+        ..Default::default()
+    };
+
+    apply_dynamic_platform_qemu_boot_with_kvm_probe(&mut qemu, &cargo, || false);
+
+    assert!(qemu.uefi);
+    assert!(qemu.to_bin);
+    assert!(qemu.args.is_empty());
+}
+
+#[test]
 fn dynamic_x86_64_qemu_boot_converts_global_snapshot_to_drive_snapshots() {
     let _guard = ENV_LOCK.lock().unwrap();
     let _debug = TempEnvVar::unset(DYNAMIC_X86_64_QEMU_DEBUG_ENV);

@@ -144,21 +144,10 @@ vm_configs = []
     .unwrap();
 
     assert!(cargo.features.contains(&"ept-level-4".to_string()));
-    assert!(
-        !cargo
-            .features
-            .contains(&concat!("ax-driver/", "plat-dyn").to_string())
-    );
-    assert!(
-        !cargo
-            .features
-            .contains(&concat!("ax-std/", "plat-dyn").to_string())
-    );
-    assert!(
-        !cargo
-            .features
-            .contains(&concat!("axvm/", "plat-dyn").to_string())
-    );
+    assert!(!cargo.features.contains(&"plat-dyn".to_string()));
+    assert!(!cargo.features.contains(&"ax-driver/plat-dyn".to_string()));
+    assert!(!cargo.features.contains(&"ax-std/plat-dyn".to_string()));
+    assert!(!cargo.features.contains(&"axvm/plat-dyn".to_string()));
     assert!(!cargo.features.contains(&"dyn-plat".to_string()));
     assert!(path.exists());
 }
@@ -477,6 +466,37 @@ fn load_cargo_config_rejects_removed_sg2002_platform_feature() {
 }
 
 #[test]
+fn load_cargo_config_rejects_direct_axplat_dyn_feature() {
+    let root = tempdir().unwrap();
+    let config_path = root.path().join(".build.toml");
+    fs::write(
+        &config_path,
+        r#"
+features = ["axplat-dyn/efi", "ept-level-4"]
+log = "Info"
+"#,
+    )
+    .unwrap();
+
+    let err = load_cargo_config(&ResolvedAxvisorRequest {
+        package: AXVISOR_PACKAGE.to_string(),
+        axvisor_dir: root.path().join("os/axvisor"),
+        arch: "loongarch64".to_string(),
+        target: "loongarch64-unknown-none-softfloat".to_string(),
+        smp: None,
+        debug: false,
+        build_info_path: config_path,
+        qemu_config: None,
+        uboot_config: None,
+        vmconfigs: vec![],
+    })
+    .unwrap_err();
+
+    assert!(err.to_string().contains("dynamic platform features"));
+    assert!(err.to_string().contains("axplat-dyn/efi"));
+}
+
+#[test]
 fn load_cargo_config_uses_dynamic_x86_platform_from_board_config() {
     let root = tempdir().unwrap();
     let config_path = root.path().join(".build.toml");
@@ -503,6 +523,7 @@ log = "Info"
     })
     .unwrap();
 
+    assert!(!cargo.features.contains(&"plat-dyn".to_string()));
     assert!(!cargo.features.contains(&"ax-std/plat-dyn".to_string()));
     assert!(!cargo.features.contains(&"axvm/plat-dyn".to_string()));
     assert!(!cargo.features.contains(&"ax-driver/plat-dyn".to_string()));
@@ -544,6 +565,7 @@ log = "Info"
     })
     .unwrap();
 
+    assert!(!cargo.features.contains(&"plat-dyn".to_string()));
     assert!(!cargo.features.contains(&"ax-std/plat-dyn".to_string()));
     assert!(!cargo.features.contains(&"axvm/plat-dyn".to_string()));
     assert!(!cargo.features.contains(&"ax-driver/plat-dyn".to_string()));
@@ -596,7 +618,7 @@ fn load_cargo_config_keeps_loongarch_dynamic_axvisor_as_elf() {
     fs::write(
         &config_path,
         r#"
-features = ["axplat-dyn/efi", "ept-level-4"]
+features = ["ept-level-4"]
 log = "Info"
 "#,
     )
@@ -617,8 +639,11 @@ log = "Info"
     .unwrap();
 
     assert!(!cargo.to_bin);
+    assert!(!cargo.features.contains(&"plat-dyn".to_string()));
     assert!(!cargo.features.contains(&"ax-std/plat-dyn".to_string()));
-    assert!(cargo.features.contains(&"axplat-dyn/efi".to_string()));
+    assert!(!cargo.features.contains(&"axvm/plat-dyn".to_string()));
+    assert!(!cargo.features.contains(&"ax-driver/plat-dyn".to_string()));
+    assert!(!cargo.features.contains(&"axplat-dyn/efi".to_string()));
     assert!(
         cargo
             .target

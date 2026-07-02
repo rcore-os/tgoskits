@@ -42,8 +42,8 @@ pub(super) fn reject_unsupported_nested_platform_features(
         .find(|feature| is_removed_dynamic_platform_feature(feature))
     {
         return Err(anyhow!(
-            "Axvisor build configs enable dynamic platforms by default; remove dynamic platform \
-             features from `features`; found `{feature}`"
+            "Axvisor depends on an ax-std surface with dynamic platform support enabled; remove \
+             dynamic platform features from `features`; found `{feature}`"
         ));
     }
 
@@ -67,12 +67,13 @@ pub(super) fn is_removed_dynamic_platform_feature(feature: &str) -> bool {
         feature,
         "dyn-plat"
             | "plat-dyn"
+            | "axplat-dyn"
             | "ax-feat/plat-dyn"
             | "ax-hal/plat-dyn"
             | "ax-std/plat-dyn"
             | "axvm/plat-dyn"
             | "ax-driver/plat-dyn"
-    )
+    ) || feature.starts_with("axplat-dyn/")
 }
 
 fn removed_axvisor_platform_feature_name(feature: &str) -> Option<&str> {
