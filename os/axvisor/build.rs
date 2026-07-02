@@ -327,7 +327,7 @@ fn generate_firmware_img_loading_functions(
                     id: #id,
                     kernel: &[],
                     dtb: None,
-                    bios: include_bytes!(#bios),
+                    bios: Some(include_bytes!(#bios)),
                     ramdisk: None,
                 }
             });
