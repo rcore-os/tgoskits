@@ -394,7 +394,7 @@ platforms/ax-plat-riscv64-custom/
 
 AArch64、RISC-V QEMU、x86_64 QEMU、LoongArch QEMU 和 SG2002 板卡默认由 `axplat-dyn` 通过 UEFI/设备树/ACPI 等运行时信息加载。仓库不再内置 SG2002 静态平台 crate。
 
-旧 LoongArch QEMU 写法需要迁移：`ax-hal/loongarch64-qemu-virt` 改为 `ax-hal/plat-dyn`，命令行不要再写 `--plat loongarch64-qemu-virt`，直接使用 `--arch loongarch64`。动态路径会进入 `axplat-dyn` 和 UEFI/`efi` 启动链路。
+旧 LoongArch QEMU 写法需要迁移：移除 `ax-hal/loongarch64-qemu-virt`，命令行不要再写 `--plat loongarch64-qemu-virt`，直接使用 `--arch loongarch64`。动态路径会进入 `axplat-dyn` 和 UEFI/`efi` 启动链路。
 
 ### 5.3 添加新平台
 

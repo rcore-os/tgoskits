@@ -217,7 +217,7 @@ fn std_build_dynamic_x86_64_prepares_binary_artifact() {
             .ends_with("scripts/targets/std/pie/x86_64-unknown-linux-musl.json")
     );
     assert!(cargo.to_bin);
-    assert!(cargo.features.contains(&"ax-std/plat-dyn".to_string()));
+    assert!(!cargo.features.contains(&"ax-std/plat-dyn".to_string()));
     assert!(cargo.features.contains(&"ax-std/smp".to_string()));
     assert_eq!(
         cargo.env.get("AX_TARGET"),

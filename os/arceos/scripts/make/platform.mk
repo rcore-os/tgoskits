@@ -6,16 +6,16 @@ inspect_value = $(strip $(patsubst $(1)=%,%,$(filter $(1)=%,$(platform_info))))
 platform_package_aliases = $(strip $(1) $(patsubst axplat-%,ax-plat-%,$(1)) $(patsubst ax-plat-%,axplat-%,$(1)))
 
 define validate_config
-  $(if $(strip $(PLAT_PACKAGE)),,$(error static platform configuration is no longer supported; use cargo xtask for plat-dyn builds)) \
+  $(if $(strip $(PLAT_PACKAGE)),,$(error static platform configuration is no longer supported; use cargo xtask for dynamic platform builds)) \
   $(if $(filter $(EXPECTED_PLAT_PACKAGE),$(PLAT_PACKAGE)),,\
     $(error `PLAT_PACKAGE` field mismatch: expected $(EXPECTED_PLAT_PACKAGE), got $(PLAT_PACKAGE)))
 endef
 
 define default_platform_package
-  $(if $(filter x86_64,$(ARCH)),$(error x86_64 no longer has a repo-owned static default platform; use cargo xtask for plat-dyn builds or pass MYPLAT/PLAT_CONFIG explicitly),\
-    $(if $(filter aarch64,$(ARCH)),$(error AArch64 no longer has a repo-owned static default platform; use cargo xtask for plat-dyn builds or pass MYPLAT/PLAT_CONFIG explicitly),\
-      $(if $(filter riscv64,$(ARCH)),$(error RISC-V QEMU no longer has a repo-owned static default platform; use cargo xtask for plat-dyn builds or pass MYPLAT/PLAT_CONFIG explicitly),\
-        $(if $(filter loongarch64,$(ARCH)),$(error LoongArch QEMU no longer has a repo-owned static default platform; use cargo xtask for plat-dyn builds or pass MYPLAT/PLAT_CONFIG explicitly),\
+  $(if $(filter x86_64,$(ARCH)),$(error x86_64 no longer has a repo-owned static default platform; use cargo xtask for dynamic platform builds or pass MYPLAT/PLAT_CONFIG explicitly),\
+    $(if $(filter aarch64,$(ARCH)),$(error AArch64 no longer has a repo-owned static default platform; use cargo xtask for dynamic platform builds or pass MYPLAT/PLAT_CONFIG explicitly),\
+      $(if $(filter riscv64,$(ARCH)),$(error RISC-V QEMU no longer has a repo-owned static default platform; use cargo xtask for dynamic platform builds or pass MYPLAT/PLAT_CONFIG explicitly),\
+        $(if $(filter loongarch64,$(ARCH)),$(error LoongArch QEMU no longer has a repo-owned static default platform; use cargo xtask for dynamic platform builds or pass MYPLAT/PLAT_CONFIG explicitly),\
           $(error "ARCH" must be one of "x86_64", "riscv64", "aarch64" or "loongarch64")))))
 endef
 

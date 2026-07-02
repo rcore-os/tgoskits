@@ -99,13 +99,13 @@ cp .hvconfig.prod.toml .hvconfig.toml && ./scripts/task.py run
 
 #### --plat (平台)
 
-指定目标平台。旧的静态平台配置文件路径已经不再作为 ArceOS 动态平台构建链路的一部分；迁移旧命令时优先使用 `--arch` 与动态平台 feature。
+指定目标平台。旧的静态平台配置文件路径已经不再作为 ArceOS 动态平台构建链路的一部分；迁移旧命令时优先使用 `--arch`，不再手动选择平台 feature。
 
 ```bash
 --plat aarch64-generic
 ```
 
-LoongArch QEMU 当前默认走动态平台，不再通过 `--plat loongarch64-qemu-virt` 选择静态平台 crate。迁移旧命令时，保留 LoongArch 架构选择即可，例如使用 `--arch loongarch64`，并让 ArceOS 侧走 `ax-hal/plat-dyn`、`ax-driver/plat-dyn`、`axplat-dyn` 与 UEFI/`efi` 启动链路。
+LoongArch QEMU 当前默认走动态平台，不再通过 `--plat loongarch64-qemu-virt` 选择静态平台 crate。迁移旧命令时，保留 LoongArch 架构选择即可，例如使用 `--arch loongarch64`；构建链会固定走 `axplat-dyn` 与 UEFI/`efi` 启动链路。
 
 **架构特定的 QEMU 参数**：
 

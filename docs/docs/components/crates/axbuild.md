@@ -40,14 +40,11 @@ flowchart TD
 因此，`axbuild` 是把 BuildInfo 配置、feature 链和实际构建链连接起来的中枢。
 
 ### 1.3 feature 装配的真实策略
-`src/arceos/features.rs` 说明 `axbuild` 并不是简单把用户输入的 feature 原样透传给 Cargo，而是做了分层解析：
+`axbuild` 并不是简单把用户输入的 feature 原样透传给 Cargo，而是做了分层解析：
 
-- `resolve_ax_features()` 只保留模块级 feature，例如 `defplat`、`myplat`、`plat-dyn`
-- `resolve_lib_features()` 只保留库级 feature，例如 `fs`、`net`、`multitask`
-- `build_features()` 在 `ostool.rs` 中再根据应用实际直接依赖的是 `ax-std` 还是 `ax-feat`，决定拼接前缀：
-  - `ax-std/<feature>`
-  - `ax-feat/<feature>`
-  - `ax-libc/<feature>`
+- 旧别名和已移除的平台 feature 会先被归一化或过滤。
+- 普通能力 feature，例如 `fs`、`net`、`multitask`，会根据应用实际依赖选择 `ax-std/`、`ax-feat/` 或 `ax-libc/` 前缀。
+- `max_cpu_num > 1` 时才注入对应前缀的 `smp`。
 
 `detect_ax_feature_prefix_family()` 甚至会通过 `cargo metadata` 检查应用是否直接依赖 `ax-std` 或 `ax-feat`。这一步体现了 `axbuild` 对真实调用关系的感知，而不是纯字符串拼接。
 
@@ -55,12 +52,11 @@ flowchart TD
 `src/arceos/ostool.rs` 显式构造了目标构建所需的宿主环境变量：
 
 - `AX_ARCH`
-- `AX_PLATFORM`
 - `AX_LOG`
 - `AX_IP`
 - `AX_GW`
 
-同时还会按 `plat-dyn` 与否选择不同链接脚本参数。由此可以看到：
+同时还会根据 target 选择动态平台 target JSON 和链接脚本参数。由此可以看到：
 
 - `axbuild` 本身始终运行在宿主机
 - 它只负责告诉 Cargo 和下游工具“该怎样构建目标”
@@ -162,7 +158,7 @@ graph LR
 
 ### 5.2 已覆盖的重点
 - feature 解析与合并
-- `plat-dyn`、SMP、默认平台等配置推导
+- SMP、默认 target 和动态平台构建配置推导
 - QEMU 默认参数构造
 - `.qemu.toml` 生成条件
 - Axvisor 镜像规格解析

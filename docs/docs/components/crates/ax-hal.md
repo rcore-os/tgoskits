@@ -12,9 +12,9 @@
 ### 设计定位
 `ax-hal` 处在三层之间：
 
-- 向下连接 `ax-cpu` 与 `axplat-*`，分别承接 ISA 级抽象和板级/平台级实现。
+- 向下连接 `ax-cpu` 与 `axplat-dyn`，分别承接 ISA 级抽象和运行时平台事实。
 - 向上为 `ax-runtime`、`ax-mm`、`ax-task`、`ax-driver` 等模块提供统一 API。
-- 在 `plat-dyn`、`defplat`、`myplat` 等 feature 作用下，决定最终链接到哪一类平台实现。
+- 固定链接动态平台实现，并通过功能 feature 控制 IRQ、分页、TLS、SMP、用户态等能力。
 
 这意味着 `ax-hal` 的核心价值不是“算法复杂”，而是“边界清晰”与“初始化顺序正确”。它本质上是 ArceOS 运行时的硬件语义总入口。
 
@@ -131,8 +131,6 @@ ax-hal = { workspace = true }
 
 常见 feature 组合：
 
-- `defplat`：使用默认平台 crate。
-- `plat-dyn`：运行期平台探测/动态平台选择。
 - `irq`：中断与 timer tick 支持。
 - `paging`：页表与虚拟内存支持。
 - `tls`：内核态 TLS。

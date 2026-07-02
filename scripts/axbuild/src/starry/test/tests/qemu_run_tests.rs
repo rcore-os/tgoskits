@@ -282,7 +282,7 @@ fn qemu_group_build_context_uses_dynamic_group_platform_over_default_request() {
     let (_group_request, cargo) =
         Starry::qemu_group_build_context(&request, &build_config).unwrap();
 
-    assert!(cargo.features.contains(&"plat-dyn".to_string()));
+    assert!(!cargo.features.contains(&"plat-dyn".to_string()));
     assert!(!cargo.features.contains(&"ax-feat/plat-dyn".to_string()));
     assert!(
         !cargo

@@ -66,7 +66,7 @@ flowchart TD
 - **to_bin**：通用 ArceOS/Starry std 构建会生成 raw binary；Axvisor 另有覆盖：`aarch64`/`riscv64` 生成 bin，`x86_64`/`loongarch64` 保留 ELF。
 - **LoongArch QEMU**：运行 Axvisor loongarch64 时自动搜索 LVZ 版 QEMU（详见 [运行](./run#loongarch-特殊处理)）
 
-LoongArch QEMU 现在默认走动态平台，不再以静态平台 crate 作为当前平台路径。旧配置中的 `ax-hal/loongarch64-qemu-virt` 或 `--plat loongarch64-qemu-virt` 应迁移为动态平台写法：保留 `--arch loongarch64`，并使用 `ax-hal/plat-dyn`、`ax-driver/plat-dyn`、`axplat-dyn` 以及 UEFI/`efi` 启动链路。
+LoongArch QEMU 现在默认走动态平台，不再以静态平台 crate 作为当前平台路径。旧配置中的 `ax-hal/loongarch64-qemu-virt` 或 `--plat loongarch64-qemu-virt` 应迁移为动态平台写法：保留 `--arch loongarch64`，并按需保留 `axplat-dyn/efi` 等真实启动链或设备 feature。
 
 ### 扩展字段
 

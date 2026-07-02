@@ -235,6 +235,7 @@ impl BuildInfo {
             .features
             .iter()
             .map(|feature| normalize_std_feature(feature))
+            .filter(|feature| !is_removed_dynamic_platform_feature(feature))
             .collect();
         self.features.sort();
         self.features.dedup();
@@ -255,8 +256,6 @@ impl BuildInfo {
             self.features.push("smp".to_string());
         }
         self.features.push("smp".to_string());
-        self.features.push("plat-dyn".to_string());
-        self.features.push("ax-driver/plat-dyn".to_string());
 
         self.resolve_std_features();
     }
@@ -299,9 +298,6 @@ impl BuildInfo {
                     | "ax-feat/myplat"
             )
         });
-
-        self.features
-            .push(format!("{}plat-dyn", prefix_family.prefix()));
 
         if self.max_cpu_num.is_some_and(|max_cpu_num| max_cpu_num > 1) {
             self.features.push(format!("{}smp", prefix_family.prefix()));

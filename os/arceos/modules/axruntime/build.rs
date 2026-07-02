@@ -119,7 +119,7 @@ fn build_info_source_from(arch: &str, target: &str, mode: &str, config: RuntimeC
         #[cfg(feature = "smp")]
         pub const CPU_CAPACITY: usize = #cpu_capacity;
 
-        #[cfg(any(feature = "fs", all(feature = "smp", not(feature = "plat-dyn"))))]
+        #[cfg(feature = "fs")]
         pub const TASK_STACK_SIZE: usize = #task_stack_size;
 
         #[cfg(feature = "irq")]
@@ -221,8 +221,7 @@ mod tests {
                 "pub const MODE: &str = \"release\";\n",
                 "#[cfg(feature = \"smp\")]\n",
                 "pub const CPU_CAPACITY: usize = 16usize;\n",
-                "#[cfg(any(feature = \"fs\", all(feature = \"smp\", not(feature = \
-                 \"plat-dyn\"))))]\n",
+                "#[cfg(feature = \"fs\")]\n",
                 "pub const TASK_STACK_SIZE: usize = 262144usize;\n",
                 "#[cfg(feature = \"irq\")]\n",
                 "pub const TICKS_PER_SEC: usize = 100usize;\n",

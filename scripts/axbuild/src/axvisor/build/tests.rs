@@ -145,17 +145,17 @@ vm_configs = []
 
     assert!(cargo.features.contains(&"ept-level-4".to_string()));
     assert!(
-        cargo
+        !cargo
             .features
             .contains(&concat!("ax-driver/", "plat-dyn").to_string())
     );
     assert!(
-        cargo
+        !cargo
             .features
             .contains(&concat!("ax-std/", "plat-dyn").to_string())
     );
     assert!(
-        cargo
+        !cargo
             .features
             .contains(&concat!("axvm/", "plat-dyn").to_string())
     );
@@ -346,10 +346,10 @@ vm_configs = []
     assert!(cargo.features.contains(&"ept-level-4".to_string()));
     assert!(cargo.features.contains(&"fs".to_string()));
     assert!(cargo.features.contains(&"vmx".to_string()));
-    assert!(cargo.features.contains(&"plat-dyn".to_string()));
-    assert!(cargo.features.contains(&"ax-std/plat-dyn".to_string()));
-    assert!(cargo.features.contains(&"axvm/plat-dyn".to_string()));
-    assert!(cargo.features.contains(&"ax-driver/plat-dyn".to_string()));
+    assert!(!cargo.features.contains(&"plat-dyn".to_string()));
+    assert!(!cargo.features.contains(&"ax-std/plat-dyn".to_string()));
+    assert!(!cargo.features.contains(&"axvm/plat-dyn".to_string()));
+    assert!(!cargo.features.contains(&"ax-driver/plat-dyn".to_string()));
     assert!(!cargo.features.contains(&"ax-std/defplat".to_string()));
     assert!(!cargo.features.contains(&"ax-std/x86-pc".to_string()));
     assert!(!cargo.features.contains(&"ax-hal/x86-pc".to_string()));
@@ -383,9 +383,9 @@ log = "Info"
     })
     .unwrap();
 
-    assert!(cargo.features.contains(&"plat-dyn".to_string()));
-    assert!(cargo.features.contains(&"axvm/plat-dyn".to_string()));
-    assert!(cargo.features.contains(&"ax-driver/plat-dyn".to_string()));
+    assert!(!cargo.features.contains(&"plat-dyn".to_string()));
+    assert!(!cargo.features.contains(&"axvm/plat-dyn".to_string()));
+    assert!(!cargo.features.contains(&"ax-driver/plat-dyn".to_string()));
 }
 
 #[test]
@@ -503,9 +503,9 @@ log = "Info"
     })
     .unwrap();
 
-    assert!(cargo.features.contains(&"ax-std/plat-dyn".to_string()));
-    assert!(cargo.features.contains(&"axvm/plat-dyn".to_string()));
-    assert!(cargo.features.contains(&"ax-driver/plat-dyn".to_string()));
+    assert!(!cargo.features.contains(&"ax-std/plat-dyn".to_string()));
+    assert!(!cargo.features.contains(&"axvm/plat-dyn".to_string()));
+    assert!(!cargo.features.contains(&"ax-driver/plat-dyn".to_string()));
     assert!(!cargo.features.contains(&"dyn-plat".to_string()));
     assert!(!cargo.features.contains(&"ax-hal/x86-pc".to_string()));
     assert!(!cargo.features.contains(&"ax-hal/x86-qemu-q35".to_string()));
@@ -544,9 +544,9 @@ log = "Info"
     })
     .unwrap();
 
-    assert!(cargo.features.contains(&"ax-std/plat-dyn".to_string()));
-    assert!(cargo.features.contains(&"axvm/plat-dyn".to_string()));
-    assert!(cargo.features.contains(&"ax-driver/plat-dyn".to_string()));
+    assert!(!cargo.features.contains(&"ax-std/plat-dyn".to_string()));
+    assert!(!cargo.features.contains(&"axvm/plat-dyn".to_string()));
+    assert!(!cargo.features.contains(&"ax-driver/plat-dyn".to_string()));
     assert!(!cargo.features.contains(&"ax-hal/x86-qemu-q35".to_string()));
     assert!(!cargo.features.contains(&"ax-hal/x86-pc".to_string()));
 }
@@ -617,7 +617,7 @@ log = "Info"
     .unwrap();
 
     assert!(!cargo.to_bin);
-    assert!(cargo.features.contains(&"ax-std/plat-dyn".to_string()));
+    assert!(!cargo.features.contains(&"ax-std/plat-dyn".to_string()));
     assert!(cargo.features.contains(&"axplat-dyn/efi".to_string()));
     assert!(
         cargo

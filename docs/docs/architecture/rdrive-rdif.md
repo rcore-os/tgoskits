@@ -360,7 +360,7 @@ Feature 的职责从“选择 `ax-driver` 子模块和单个 Ax*Device 类型”
 | `virtio-socket` | 链接 `rdif-vsock` / `rd-vsock` probe |
 | `driver-*` | 链接具体硬件 driver core 和 OS glue probe |
 | `bus-*` | 链接总线枚举或控制器 probe，例如 PCIe |
-| `plat-dyn` | 选择 FDT 动态平台来源，不走 `ax_driver_*Ops` 回灌 |
+| 动态平台 | 通过 FDT/ACPI/somehal 平台事实发现设备，不走 `ax_driver_*Ops` 回灌 |
 
 MMIO 与 PCI feature 要分开表达，例如 `virtio-gpu-mmio` 与 `virtio-gpu-pci` 都是 probe module，而不是上层设备类型选择。
 

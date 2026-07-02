@@ -30,10 +30,6 @@ wake-ipi = ["irq", "ax-hal/ipi", "ax-runtime/wake-ipi"]
 ext-ld = ["ax-runtime/ext-ld"]
 myplat = ["ax-hal/myplat"]
 defplat = ["ax-hal/defplat"]
-plat-dyn = [
-    "paging",
-    "ax-runtime/plat-dyn",
-]
 
 # Memory
 alloc = ["ax-alloc"]

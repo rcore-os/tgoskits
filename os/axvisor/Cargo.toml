@@ -59,7 +59,6 @@ sdmmc = [
 rockchip-pm = ["ax-driver/rockchip-pm"]
 serial = []
 stack-protector = ["ax-std/stack-protector"]
-plat-dyn = ["dep:axplat-dyn"]
 
 [dependencies]
 spin = { workspace = true }
@@ -84,7 +83,7 @@ axdevice = { workspace = true }
 ax-errno = { workspace = true }
 ax-memory-addr = { workspace = true }
 ax-driver.workspace = true
-axplat-dyn = { workspace = true, optional = true }
+axplat-dyn.workspace = true
 
 [dev-dependencies]
 axtest.workspace = true

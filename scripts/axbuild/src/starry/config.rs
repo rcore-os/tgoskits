@@ -242,7 +242,6 @@ log = "Warn"
             r#"
 target = "riscv64gc-unknown-none-elf"
 features = [
-  "plat-dyn",
   "starry-kernel/sg2002",
   "axplat-dyn/thead-mae",
   "ax-driver/cvsd",

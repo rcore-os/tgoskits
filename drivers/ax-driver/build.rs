@@ -25,13 +25,9 @@ fn enable_cfg_flag(key: &str) {
 fn main() {
     let has_virtio_core = has_feature("virtio-core");
     let has_virtio_dev = has_any_feature(VIRTIO_DEV_FEATURES);
-    let has_plat_dyn = has_feature("plat-dyn");
     let target_arch = std::env::var("CARGO_CFG_TARGET_ARCH").unwrap_or_default();
     let target_has_cvsd = matches!(target_arch.as_str(), "riscv32" | "riscv64");
 
-    if has_plat_dyn {
-        enable_cfg_flag("plat_dyn");
-    }
     if has_virtio_core || has_virtio_dev {
         enable_cfg_flag("virtio_dev");
     }
@@ -39,7 +35,6 @@ fn main() {
         enable_cfg_flag("sync_block_dev");
     }
 
-    println!("cargo::rustc-check-cfg=cfg(plat_dyn)");
     println!("cargo::rustc-check-cfg=cfg(virtio_dev)");
     println!("cargo::rustc-check-cfg=cfg(sync_block_dev)");
 }

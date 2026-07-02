@@ -107,5 +107,5 @@ fn default_platform_feature_uses_dynamic_platform() {
         None,
     );
 
-    assert!(info.features.contains(&"ax-std/plat-dyn".to_string()));
+    assert!(!info.features.contains(&"ax-std/plat-dyn".to_string()));
 }

@@ -27,7 +27,7 @@ use timing::print_clippy_timing;
 pub(super) const DEFAULT_FEATURE: &str = "default";
 pub(super) const AXSTD_STD_PACKAGE: &str = "ax-std";
 pub(super) const AXSTD_STD_DEFAULT_FEATURE: &str = "default";
-pub(super) const AXSTD_STD_CLIPPY_FEATURES: &str = "std-compat,plat-dyn,fs,multitask,irq,net";
+pub(super) const AXSTD_STD_CLIPPY_FEATURES: &str = "std-compat,fs,multitask,irq,net";
 pub(super) const AXSTD_STD_CLIPPY_TARGET: &str = "x86_64-unknown-none";
 pub(super) const AX_HAL_PACKAGE: &str = "ax-hal";
 

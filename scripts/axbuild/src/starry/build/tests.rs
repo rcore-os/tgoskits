@@ -350,6 +350,7 @@ fn patch_starry_cargo_config_skips_qemu_for_dynamic_platforms() {
             .features
             .contains(&"ax-driver/rockchip-sdhci".to_string())
     );
+    assert!(!cargo.features.contains(&"plat-dyn".to_string()));
     assert!(!cargo.features.contains(&"qemu".to_string()));
     assert!(!cargo.env.contains_key("AX_PLATFORM"));
     assert_eq!(
@@ -380,6 +381,7 @@ fn patch_starry_cargo_config_removes_qemu_for_dynamic_platforms() {
     let metadata = crate::build::workspace_metadata().unwrap();
     patch_starry_cargo_config(&mut cargo, &request, &metadata).unwrap();
 
+    assert!(!cargo.features.contains(&"plat-dyn".to_string()));
     assert!(!cargo.features.contains(&"qemu".to_string()));
     assert!(!cargo.env.contains_key("AX_PLATFORM"));
 }
@@ -406,7 +408,7 @@ fn patch_starry_cargo_config_keeps_loongarch64_dynamic_platform_dynamic() {
     patch_starry_cargo_config(&mut cargo, &request, &metadata).unwrap();
 
     assert!(!cargo.features.contains(&"qemu".to_string()));
-    assert!(cargo.features.contains(&"ax-hal/plat-dyn".to_string()));
+    assert!(!cargo.features.contains(&"ax-hal/plat-dyn".to_string()));
     assert!(cargo.features.contains(&"axplat-dyn/efi".to_string()));
     assert!(!cargo.env.contains_key("AX_PLATFORM"));
 }
@@ -541,6 +543,7 @@ fn load_cargo_config_keeps_sg2002_as_device_feature_without_static_platform_alia
     let cargo = load_cargo_config(&request).unwrap();
     let removed_sg2002_platform = concat!("ax-hal/", "riscv64", "-sg2002");
 
+    assert!(!cargo.features.contains(&"plat-dyn".to_string()));
     assert!(cargo.features.contains(&"starry-kernel/sg2002".to_string()));
     assert!(
         cargo

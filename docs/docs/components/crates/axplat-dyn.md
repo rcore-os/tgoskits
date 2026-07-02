@@ -97,7 +97,7 @@ flowchart TD
 - `phys_to_virt()` / `virt_to_phys()` 直接转发到 `somehal::mem`
 - `kernel_aspace()` 来自 `somehal::mem::kernel_space()`
 
-此外，`_percpu_base_ptr()` 通过 `somehal::smp::percpu_data_ptr()` 向 `ax-percpu` crate 提供每核数据基址。这也解释了为什么 `ax-hal::mem` 在 `plat-dyn` 模式下不再额外注入一套传统平台包的内核保留区逻辑：此路径默认信任 `somehal` 给出的内存事实已经包含 `KImage` 和 `PerCpuData`。
+此外，`_percpu_base_ptr()` 通过 `somehal::smp::percpu_data_ptr()` 向 `ax-percpu` crate 提供每核数据基址。这也解释了为什么 `ax-hal::mem` 不再额外注入一套传统平台包的内核保留区逻辑：当前路径默认信任 `somehal` 给出的内存事实已经包含 `KImage` 和 `PerCpuData`。
 
 #### 时间、中断与电源
 
@@ -165,8 +165,8 @@ flowchart TD
 
 - 作为 `somehal` 到 `axplat` 的桥接层，提供统一的启动、内存、时间、中断和电源接口实现。
 - 通过 `build.rs + link.ld` 生成适配当前内核镜像的 `axplat.x` 链接脚本扩展。
-- 让 `ax-hal` 可通过 `plat-dyn` feature 接入这一动态平台路径。
-- 让 `ax-driver` 可通过 `dyn` feature 复用其设备探测与动态块设备封装。
+- 作为 `ax-hal` 的固定平台实现依赖接入这一动态平台路径。
+- 让 `ax-driver` 复用其设备探测与动态块设备封装。
 - 通过 `hv`、`uspace`、`smp`、`irq` feature 把能力向 `somehal` 和 `axplat` 两侧传播。
 
 ### 2.2 feature 行为
@@ -203,8 +203,8 @@ flowchart TD
 
 ### 主要消费者
 
-- `os/arceos/modules/axhal`：通过 `plat-dyn` feature 选择该平台路径。
-- `drivers/ax-driver`：通过 `dyn` feature 调用其动态设备探测入口。
+- `os/arceos/modules/axhal`：固定依赖该平台路径。
+- `drivers/ax-driver`：调用其动态设备探测入口。
 - 进一步依赖上述模块的 ArceOS 系统镜像，以及复用同一模块栈的其它内核工程。
 
 ### 3.3 依赖关系示意
@@ -215,8 +215,8 @@ graph TD
     C[axplat] --> B
     D[rdrive / rdif-block / dma-api / ax-driver] --> B
 
-    B --> E[ax-hal: plat-dyn]
-    B --> F[ax-driver: dyn]
+    B --> E[ax-hal]
+    B --> F[ax-driver]
 
     E --> G[ArceOS]
     F --> G
@@ -239,7 +239,7 @@ graph TD
 
 ### 4.2 接入主线
 
-1. 在上层内核构建中启用 `ax-hal` 的 `plat-dyn` feature；若需要动态设备探测，再启用 `ax-driver` 的 `dyn` 相关 feature。
+1. 上层内核构建固定经过 `ax-hal` → `axplat-dyn` 路径；若需要特定设备探测，再启用对应设备 feature。
 2. 确保目标是裸机环境，而不是 `unix`/`windows` 宿主机构建路径。
 3. 让 `somehal` 提供入口、FDT、内存图、控制台、时钟、中断和电源实现。
 4. 由 `boot.rs` 把控制流统一转到 `ax_plat::call_main()`，随后上层只通过 `axplat` 接口使用平台能力。

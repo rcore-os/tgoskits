@@ -471,7 +471,7 @@ fn ax_hal_platform_features_are_filtered_by_target_arch() {
     let checks = expand(&[pkg(
         "ax-hal",
         "ax-hal 0.1.0 (path+file:///tmp/ax-hal)",
-        &[("irq", &[]), ("plat-dyn", &[])],
+        &[("irq", &[])],
         Some(&["loongarch64-unknown-none", "riscv64gc-unknown-none-elf"]),
     )]);
 
@@ -487,14 +487,6 @@ fn ax_hal_platform_features_are_filtered_by_target_arch() {
         "loongarch64-unknown-none-softfloat"
     ));
     assert!(has_feature_on_target("irq", "riscv64gc-unknown-none-elf"));
-    assert!(has_feature_on_target(
-        "plat-dyn",
-        "loongarch64-unknown-none-softfloat"
-    ));
-    assert!(has_feature_on_target(
-        "plat-dyn",
-        "riscv64gc-unknown-none-elf"
-    ));
 }
 
 #[test]
@@ -502,15 +494,12 @@ fn ax_hal_target_only_features_are_skipped_for_host_clippy() {
     let checks = expand(&[pkg(
         "ax-hal",
         "ax-hal 0.1.0 (path+file:///tmp/ax-hal)",
-        &[("irq", &[]), ("plat-dyn", &[])],
+        &[("irq", &[])],
         None,
     )]);
 
     assert!(checks.iter().any(|check| {
         matches!(&check.kind, ClippyCheckKind::Feature(feature) if feature == "irq")
-    }));
-    assert!(!checks.iter().any(|check| {
-        matches!(&check.kind, ClippyCheckKind::Feature(feature) if feature == "plat-dyn")
     }));
 }
 
@@ -519,7 +508,7 @@ fn ax_hal_platform_feature_forwards_are_filtered_by_target_arch() {
     let checks = expand(&[pkg(
         "platform-forwarder",
         "platform-forwarder 0.1.0 (path+file:///tmp/platform-forwarder)",
-        &[("irq", &["ax-hal/irq"]), ("plat-dyn", &["ax-hal/plat-dyn"])],
+        &[("irq", &["ax-hal/irq"])],
         Some(&["loongarch64-unknown-none", "riscv64gc-unknown-none-elf"]),
     )]);
 
@@ -535,14 +524,6 @@ fn ax_hal_platform_feature_forwards_are_filtered_by_target_arch() {
         "loongarch64-unknown-none-softfloat"
     ));
     assert!(has_feature_on_target("irq", "riscv64gc-unknown-none-elf"));
-    assert!(has_feature_on_target(
-        "plat-dyn",
-        "loongarch64-unknown-none-softfloat"
-    ));
-    assert!(has_feature_on_target(
-        "plat-dyn",
-        "riscv64gc-unknown-none-elf"
-    ));
 }
 
 #[test]

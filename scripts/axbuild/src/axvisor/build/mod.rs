@@ -22,8 +22,8 @@ use ostool::build::config::Cargo;
 use self::{
     config::LoadedAxvisorBuildConfig,
     features::{
-        normalize_axvisor_feature_surface, normalize_axvisor_plat_dyn_features,
-        reject_unsupported_nested_platform_features,
+        normalize_axvisor_feature_surface, reject_unsupported_nested_platform_features,
+        remove_dynamic_platform_features,
     },
     load::load_build_config,
     metadata::platform_feature_names,
@@ -68,7 +68,7 @@ fn to_cargo_config(
             &config.target,
             metadata,
         )?;
-    normalize_axvisor_plat_dyn_features(&mut cargo.features);
+    remove_dynamic_platform_features(&mut cargo.features);
     patch_axvisor_cargo_config(&mut cargo, request, metadata, &config.vm_configs)?;
     Ok(cargo)
 }
@@ -89,7 +89,7 @@ fn patch_axvisor_cargo_config(
         .env
         .insert("AX_TARGET".to_string(), request.target.clone());
     normalize_axvisor_feature_surface(&mut cargo.features, &request.target, metadata)?;
-    normalize_axvisor_plat_dyn_features(&mut cargo.features);
+    remove_dynamic_platform_features(&mut cargo.features);
 
     let vmconfigs = if request.vmconfigs.is_empty() {
         config_vmconfigs

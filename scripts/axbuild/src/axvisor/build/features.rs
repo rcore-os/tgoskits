@@ -2,12 +2,6 @@ use anyhow::anyhow;
 
 use super::metadata::platform_feature_names;
 
-const AXVISOR_PLAT_DYN_FEATURES: &[&str] = &[
-    "plat-dyn",
-    "axvm/plat-dyn",
-    "ax-std/plat-dyn",
-    "ax-driver/plat-dyn",
-];
 const REMOVED_AXVISOR_PLATFORM_FEATURES: &[&str] = &["x86-qemu-q35", concat!("riscv64", "-sg2002")];
 
 pub(super) fn normalize_axvisor_feature_surface(
@@ -45,7 +39,7 @@ pub(super) fn reject_unsupported_nested_platform_features(
 
     if let Some(feature) = features
         .iter()
-        .find(|feature| is_axvisor_plat_dyn_feature(feature))
+        .find(|feature| is_removed_dynamic_platform_feature(feature))
     {
         return Err(anyhow!(
             "Axvisor build configs enable dynamic platforms by default; remove dynamic platform \
@@ -64,16 +58,11 @@ pub(super) fn reject_unsupported_nested_platform_features(
     Ok(())
 }
 
-pub(super) fn normalize_axvisor_plat_dyn_features(features: &mut Vec<String>) {
-    features.retain(|feature| !is_axvisor_plat_dyn_feature(feature));
-    features.extend(
-        AXVISOR_PLAT_DYN_FEATURES
-            .iter()
-            .map(|feature| (*feature).to_string()),
-    );
+pub(super) fn remove_dynamic_platform_features(features: &mut Vec<String>) {
+    features.retain(|feature| !is_removed_dynamic_platform_feature(feature));
 }
 
-pub(super) fn is_axvisor_plat_dyn_feature(feature: &str) -> bool {
+pub(super) fn is_removed_dynamic_platform_feature(feature: &str) -> bool {
     matches!(
         feature,
         "dyn-plat"

@@ -76,16 +76,16 @@ kernel symbols that must match the kernel ELF exactly.
 The Rust kmod feature set must be compatible with the kernel that will load it.
 In practice, the module's effective Starry/ArceOS feature requirements should
 be a subset of, or equal to, the kernel build's enabled capabilities; when in
-doubt, make the module package expose the same board/platform features as
+doubt, make the module package expose the same board and device features as
 `starryos` and forward them to the same crates.
 
-For example, if the kernel is built with a dynamic platform feature such as
-`plat-dyn`, the module package should also provide and forward `plat-dyn`:
+The dynamic platform path is mandatory and comes from the kernel build context.
+Modules should only forward optional capabilities they actually need, for
+example SMP:
 
 ```toml
 [features]
 default = []
-plat-dyn = ["dep:axplat-dyn", "starry-kernel/plat-dyn"]
 smp = ["ax-feat/smp", "axplat-dyn?/smp", "ax-hal/smp"]
 ```
 

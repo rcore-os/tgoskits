@@ -45,7 +45,6 @@ wake-ipi = ["ax-feat/wake-ipi"]
 ext-ld = ["ax-feat/ext-ld"]
 myplat = ["alloc", "tls", "fd", "ax-feat/myplat"]
 defplat = ["alloc", "tls", "fd", "ax-feat/defplat"]
-plat-dyn = ["alloc", "tls", "fd", "ax-feat/plat-dyn"]
 aarch64-qemu-virt = ["alloc", "tls", "fd"]
 
 # Memory

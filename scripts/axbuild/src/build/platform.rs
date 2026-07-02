@@ -41,6 +41,13 @@ pub(super) fn normalize_std_feature(feature: &str) -> String {
     }
 }
 
+pub(super) fn is_removed_dynamic_platform_feature(feature: &str) -> bool {
+    matches!(
+        feature,
+        "plat-dyn" | "ax-feat/plat-dyn" | "ax-std/plat-dyn" | "ax-driver/plat-dyn"
+    )
+}
+
 pub(super) fn is_axstd_std_check_feature(feature: &str) -> bool {
     matches!(feature, "ax-std" | "ax-feat")
         || feature.starts_with("ax-hal/")
@@ -69,7 +76,6 @@ pub(super) fn is_known_axstd_feature(feature: &str) -> bool {
             | "ipi"
             | "myplat"
             | "defplat"
-            | "plat-dyn"
             | "alloc"
             | "paging"
             | "dma"
@@ -166,6 +172,9 @@ pub(super) fn apply_std_makefile_features(
 ) {
     for feature in makefile_features {
         let mapped = normalize_std_feature(feature);
+        if is_removed_dynamic_platform_feature(&mapped) {
+            continue;
+        }
         if !build_info
             .features
             .iter()
@@ -270,7 +279,6 @@ pub(super) fn ax_hal_platform_feature_name<'a>(
 ) -> Option<&'a str> {
     let platform = feature.strip_prefix("ax-hal/")?;
     match platform {
-        "plat-dyn" => Some(platform),
         _ if metadata
             .map(|metadata| platform_package_by_name(metadata, platform).is_some())
             .unwrap_or_else(|| is_known_ax_hal_platform_feature(platform)) =>

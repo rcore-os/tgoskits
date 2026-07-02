@@ -28,7 +28,6 @@ fn std_build_nested_features_are_passed_through_not_enabled_on_app() {
         features,
         vec![
             "ax-std/dns".to_string(),
-            "ax-std/plat-dyn".to_string(),
             "ax-std/std-compat".to_string(),
             "ax-std/virtio-blk".to_string(),
             "ax-std/virtio-net".to_string(),
@@ -62,7 +61,6 @@ fn std_build_runtime_features_are_passed_through_after_normalization() {
         info.features,
         vec![
             "ax-std/dns".to_string(),
-            "ax-std/plat-dyn".to_string(),
             "ax-std/std-compat".to_string(),
             "dns".to_string()
         ]
@@ -101,7 +99,6 @@ fn std_build_cargo_config_builds_fake_lib_before_app() {
             "arceos".to_string(),
             "ax-std/dns".to_string(),
             "ax-std/fs".to_string(),
-            "ax-std/plat-dyn".to_string(),
             "ax-std/smp".to_string(),
             "ax-std/std-compat".to_string(),
         ]

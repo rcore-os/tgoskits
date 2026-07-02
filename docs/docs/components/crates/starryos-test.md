@@ -148,7 +148,7 @@ cargo xtask starry run --arch riscv64 --package starryos-test
 ### 5.2 建议重点验证的场景
 - `cargo starry test qemu` 是否仍能稳定进入成功正则。
 - rootfs 产物目录解析是否仍正确。
-- `qemu` / `smp` / `plat-dyn` 组合下是否仍能完成 bring-up。
+- `smp` 与设备 feature 组合下是否仍能完成 bring-up。
 - 若引入测试专属初始化脚本，是否与普通 `starryos` 入口形成清晰边界。
 
 ### 5.3 覆盖率要求

@@ -123,13 +123,9 @@ pub(crate) fn load_cargo_config(request: &ResolvedStarryRequest) -> anyhow::Resu
         &request.target,
         metadata,
     )?;
-    cargo.features.retain(|feature| {
-        !matches!(
-            feature.as_str(),
-            "ax-feat/plat-dyn" | "ax-std/plat-dyn" | "starry-kernel/plat-dyn"
-        )
-    });
-    cargo.features.push("plat-dyn".to_string());
+    cargo
+        .features
+        .retain(|feature| !is_removed_dynamic_platform_feature(feature));
     patch_starry_cargo_config(&mut cargo, request, metadata)?;
     Ok(cargo)
 }
@@ -150,6 +146,9 @@ fn patch_starry_cargo_config(
     cargo.package = request.package.clone();
     ensure_starry_bin_arg(&mut cargo.args, &request.package, metadata)?;
     apply_starry_bin_override(cargo)?;
+    cargo
+        .features
+        .retain(|feature| !is_removed_dynamic_platform_feature(feature));
     remove_qemu_feature_for_dynamic_platform(cargo);
     if uses_default_qemu_platform {
         cargo.features.push("qemu".to_string());
@@ -570,22 +569,18 @@ fn temp_file_path(path: &Path, suffix: &str) -> anyhow::Result<PathBuf> {
 }
 
 fn remove_qemu_feature_for_dynamic_platform(cargo: &mut Cargo) {
-    if uses_dynamic_platform(&cargo.features) {
-        cargo.features.retain(|feature| feature != "qemu");
-    }
+    cargo.features.retain(|feature| feature != "qemu");
 }
 
-fn uses_dynamic_platform(features: &[String]) -> bool {
-    features.iter().any(|feature| {
-        matches!(
-            feature.as_str(),
-            "plat-dyn"
-                | "ax-feat/plat-dyn"
-                | "ax-std/plat-dyn"
-                | "starry-kernel/plat-dyn"
-                | "ax-hal/plat-dyn"
-        )
-    })
+fn is_removed_dynamic_platform_feature(feature: &str) -> bool {
+    matches!(
+        feature,
+        "plat-dyn"
+            | "ax-feat/plat-dyn"
+            | "ax-std/plat-dyn"
+            | "starry-kernel/plat-dyn"
+            | "ax-hal/plat-dyn"
+    )
 }
 
 fn uses_default_qemu_platform(features: &[String]) -> bool {
@@ -595,7 +590,6 @@ fn uses_default_qemu_platform(features: &[String]) -> bool {
             "defplat" | "ax-feat/defplat" | "ax-std/defplat"
         )
     });
-    let has_dynamic = uses_dynamic_platform(features);
     let has_custom = features.iter().any(|feature| {
         matches!(
             feature.as_str(),
@@ -603,7 +597,7 @@ fn uses_default_qemu_platform(features: &[String]) -> bool {
         )
     });
 
-    has_static_platform && !has_dynamic && !has_custom
+    has_static_platform && !has_custom
 }
 
 fn apply_starry_bin_override(cargo: &mut Cargo) -> anyhow::Result<()> {

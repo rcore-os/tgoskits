@@ -24,7 +24,7 @@ flowchart TD
     E --> E1["文件不存在 → 默认模板<br/>写入 tmp/axbuild/config/&lt;pkg&gt;/build-&lt;target&gt;.toml"]
     E1 --> F["5. Feature 解析"]
     F --> G["6. 动态平台装配"]
-    G --> G1["注入 plat-dyn 相关 features<br/>选择 PIE target / axplat.x"]
+    G --> G1["选择动态平台 target / axplat.x<br/>过滤旧平台 feature"]
     G1 --> H["7. Cargo 配置组装"]
     H --> I["8. ostool 执行 (cargo build)"]
 ```
@@ -32,7 +32,7 @@ flowchart TD
 **后续构建**时，三类配置文件均已存在，流程简化为：
 - **阶段 2**：从已有 Snapshot 加载参数，与 CLI 合并
 - **阶段 4**：直接 TOML 反序列化已有 Build Info 文件（用户可手动编辑该文件调整配置）
-- **阶段 6**：动态平台 features 与 target 配置重新计算
+- **阶段 6**：动态平台 target、链接脚本与旧平台 feature 过滤重新计算
 
 三类配置文件的详细说明见 [参数与配置](/docs/build/configuration)，底层执行见 [运行](/docs/build/run)。
 
@@ -93,7 +93,7 @@ clap 解析得到原始 CLI 结构体后，`prepare_*_request()` 函数加载 Sn
 
 此阶段将合并后的 `arch` 和 `target` 参数解析为确定值。解析优先级：用户显式指定 → Snapshot 回退 → 子系统默认值。当两者都未指定时，使用子系统默认值（ArceOS → aarch64，StarryOS → riscv64，Axvisor → aarch64）。
 
-解析完成后，`ResolvedRequest` 中的 `arch` 和 `target` 字段即为确定值，后续所有阶段（Build Info 路径、feature 装配、Cargo target）均使用此结果。动态平台是唯一维护路径，后续 feature 装配会固定注入动态平台相关 feature。
+解析完成后，`ResolvedRequest` 中的 `arch` 和 `target` 字段即为确定值，后续所有阶段（Build Info 路径、feature 装配、Cargo target）均使用此结果。动态平台是唯一维护路径，后续构建装配会固定选择动态平台 target 和链接脚本。
 
 ## 4. Build Info 加载或创建
 
@@ -122,7 +122,7 @@ flowchart TD
 
 ## 5. Feature 解析
 
-Feature 解析阶段包含三个子步骤：遗留别名归一化、前缀族检测和平台/SMP feature 注入。
+Feature 解析阶段包含三个子步骤：遗留别名归一化、前缀族检测和 SMP feature 注入。
 
 ### 5a. 遗留别名归一化
 
@@ -137,7 +137,7 @@ Feature 解析阶段包含三个子步骤：遗留别名归一化、前缀族检
 
 归一化后如果 features 列表发生了变化，会自动排序去重。此步骤确保旧版配置文件无需手动迁移。
 
-### 5b. 前缀族检测与平台 feature 注入
+### 5b. 前缀族检测与 SMP feature 注入
 
 `BuildInfo::resolve_features()` 执行以下步骤：
 
@@ -148,14 +148,13 @@ flowchart TD
     B1 -->|是| B2["回退到已有 features 中的前缀<br/>最终默认 ax-std"]
     B1 -->|否| C["清理已存在的平台 feature<br/>(去掉 defplat/myplat/plat-dyn)"]
     B2 --> C
-    C --> E["注入 {prefix}/plat-dyn"]
-    E --> I{max_cpu_num > 1?}
+    C --> I{max_cpu_num > 1?}
     I -->|是| J["注入 {prefix}/smp"]
     I -->|否| K["排序并去重"]
     J --> K
 ```
 
-Feature 解析需要处理多个维度：feature 前缀族（通过分析包的 Cargo.toml 依赖关系确定使用 `ax-std` 还是 `ax-feat` 前缀）、动态平台 feature、以及 SMP 支持。
+Feature 解析需要处理多个维度：feature 前缀族（通过分析包的 Cargo.toml 依赖关系确定使用 `ax-std` 还是 `ax-feat` 前缀）、旧平台 feature 过滤、以及 SMP 支持。
 
 **前缀族检测**通过检查包的直接依赖来确定：如果包依赖 `ax-std` 则使用 `ax-std/` 前缀，依赖 `ax-feat` 则使用 `ax-feat/` 前缀。当检测失败（包不直接依赖两者）时，会回退到已有 features 列表中的前缀线索，最终默认使用 `ax-std`。
 
@@ -167,7 +166,7 @@ Feature 解析需要处理多个维度：feature 前缀族（通过分析包的 
 
 ```mermaid
 flowchart TD
-    A["target 支持动态平台"] --> B["注入 plat-dyn / ax-driver/plat-dyn"]
+    A["target 支持动态平台"] --> B["过滤旧平台 feature"]
     B --> C["选择 PIE target JSON"]
     C --> D["使用 axplat.x 链接脚本"]
     D --> E["Cargo 配置组装"]
@@ -175,7 +174,7 @@ flowchart TD
 
 动态平台下，硬件信息来自启动时的固件表、FDT/ACPI 和 `somehal`/`axplat-dyn` 运行时发现结果；`axbuild` 不再合并平台 `axconfig.toml`，也不再向 Cargo 注入 `AX_CONFIG_PATH`。
 
-LoongArch QEMU 已迁移到默认动态平台。旧写法 `ax-hal/loongarch64-qemu-virt` 或 `--plat loongarch64-qemu-virt` 不再表示当前推荐路径；应改为 `--arch loongarch64`，让构建注入 `ax-std/plat-dyn` 或 `ax-feat/plat-dyn`，并保持 `ax-hal/plat-dyn`、`ax-driver/plat-dyn`、`axplat-dyn` 和 UEFI/`efi` 启动链路一致。
+LoongArch QEMU 已迁移到默认动态平台。旧写法 `ax-hal/loongarch64-qemu-virt` 或 `--plat loongarch64-qemu-virt` 不再表示当前推荐路径；应改为 `--arch loongarch64`，并按需保留 `axplat-dyn/efi` 等真实启动链 feature。
 
 ## 7. Cargo 配置组装
 
@@ -196,12 +195,12 @@ Cargo {
 链接器参数由动态平台 target JSON 与 std linker wrapper 统一处理。
 
 各子系统的额外补丁：
-- **StarryOS**：注入 `AX_ARCH`、`AX_TARGET`、`AX_PLATFORM`
-- **Axvisor**：注入 `AX_ARCH`、`AX_TARGET`、`AXVISOR_VM_CONFIGS`；额外执行 Axvisor 独有的 `defplat` → `myplat` 归一化
+- **StarryOS**：注入 `AX_ARCH`、`AX_TARGET`
+- **Axvisor**：注入 `AX_ARCH`、`AX_TARGET`、`AXVISOR_VM_CONFIGS`；额外过滤旧平台 feature
 
-此阶段将前面所有阶段的输出（Build Info 中的 features 和环境变量、arch 解析的 target、动态平台 target 配置）组装为 ostool 能理解的 `Cargo` 配置结构体。动态平台使用 `Taxplat.x`，支持运行时平台注册和固件表发现。
+此阶段将前面所有阶段的输出（Build Info 中的 features 和环境变量、arch 解析的 target、动态平台 target 配置）组装为 ostool 能理解的 `Cargo` 配置结构体。动态平台使用 `axplat.x`，支持运行时平台注册和固件表发现。
 
-**Axvisor 平台 feature 归一化**：Axvisor 的 board 配置文件中可能声明 `ax-std/defplat`。`axbuild` 在 feature 解析阶段将其归一到当前动态平台路径，避免旧静态平台 feature 泄漏到最终 Cargo 配置。
+**Axvisor 平台 feature 过滤**：Axvisor 的旧 board 配置文件中可能声明静态平台或动态平台占位 feature。`axbuild` 在 feature 解析阶段过滤这些旧写法，避免平台模式 feature 泄漏到最终 Cargo 配置。
 
 ## 8. 执行
 

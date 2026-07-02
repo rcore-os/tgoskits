@@ -93,13 +93,12 @@ canary 覆盖范围包括：
 - 动态分配的普通任务栈。
 - 主 CPU 的 boot stack。
 - secondary CPU 的 boot/idle stack。
-- `plat-dyn` 场景下由平台提供的 secondary boot stack。
+- 由平台提供的 secondary boot stack。
 
 guard page 当前覆盖范围更窄，只覆盖 `TaskStack::alloc()` 创建并由 `ax-task`
 拥有生命周期的动态任务栈。它不覆盖 `TaskStack::borrowed()` 包装的
 boot/current 栈，也不覆盖未来可能引入的独立 IRQ stack、exception stack
-或 overflow stack。这个边界与 `plat-dyn` / 非 `plat-dyn` 无直接绑定：
-两种平台模式下，动态任务栈都覆盖，borrowed 栈都暂不覆盖。
+或 overflow stack。这个边界与动态平台无直接绑定：动态任务栈覆盖，borrowed 栈暂不覆盖。
 
 Linux 的栈保护包含两层不同机制。`STACK_END_MAGIC` 用于检查任务栈底是否
 被覆盖，作用与当前 `stack-canary` 接近；`CONFIG_STACKPROTECTOR` /
@@ -121,9 +120,8 @@ guard：x86_64、riscv64、aarch64 可结合各自 percpu / thread pointer /
 系统寄存器约定逐步设计；loongarch64 在 Linux 6.12 中也主要体现为全局
 `__stack_chk_guard` 路径，建议放在全局方案稳定后再单独评估。
 
-平台栈边界需要按平台类型区分。静态平台可以使用 linker script 中的
-`boot_stack` / `boot_stack_top` 符号作为主 CPU boot stack 的边界；
-`plat-dyn` 下这两个符号只是兼容占位，并不表示真实栈空间。`plat-dyn`
+平台栈边界需要来自平台事实。linker script 中的
+`boot_stack` / `boot_stack_top` 符号只是兼容占位，并不表示真实栈空间。动态平台
 的主 CPU 和 secondary CPU boot stack 都应通过平台提供的
 `boot_stack_bounds(cpu_id)` 获取，否则 stack canary 写入可能落到内核镜像
 映射边界之外，在真实板卡上触发 page fault。

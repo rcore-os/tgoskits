@@ -23,7 +23,7 @@ thead-mae = ["somehal/thead-mae", "ax-cpu/xuantie-c9xx"]
 [dependencies]
 anyhow = { version = "1", default-features = false }
 ax-cpu.workspace = true
-ax-driver = { workspace = true, features = ["plat-dyn"] }
+ax-driver.workspace = true
 ax-errno.workspace = true
 axklib = { workspace = true, features = ["buddy-slab"] }
 ax-plat.workspace = true

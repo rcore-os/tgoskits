@@ -45,7 +45,7 @@ fn resolves_dynamic_platform_features_and_args() {
     let mut build_info = ArceosBuildInfo::default();
     build_info.resolve_features("arceos-helloworld", "aarch64-unknown-none-softfloat");
 
-    assert!(build_info.features.contains(&"ax-std/plat-dyn".to_string()));
+    assert!(!build_info.features.contains(&"ax-std/plat-dyn".to_string()));
     assert!(!build_info.features.contains(&"ax-hal/plat-dyn".to_string()));
     assert!(!build_info.features.contains(&"ax-std/defplat".to_string()));
 
@@ -263,7 +263,7 @@ BACKTRACE = "y"
         .into_prepared_base_cargo_config_with_metadata(&request.package, &request.target, &metadata)
         .unwrap();
 
-    assert!(cargo.features.contains(&"ax-std/plat-dyn".to_string()));
+    assert!(!cargo.features.contains(&"ax-std/plat-dyn".to_string()));
     assert!(
         cargo
             .target
@@ -295,7 +295,7 @@ max_cpu_num = 4
         .into_prepared_base_cargo_config_with_metadata(&request.package, &request.target, &metadata)
         .unwrap();
 
-    assert!(cargo.features.contains(&"ax-std/plat-dyn".to_string()));
+    assert!(!cargo.features.contains(&"ax-std/plat-dyn".to_string()));
     assert!(
         !cargo
             .features
@@ -336,7 +336,7 @@ log = "Warn"
         .into_prepared_base_cargo_config_with_metadata(&request.package, &request.target, &metadata)
         .unwrap();
 
-    assert!(cargo.features.contains(&"ax-std/plat-dyn".to_string()));
+    assert!(!cargo.features.contains(&"ax-std/plat-dyn".to_string()));
     assert!(
         cargo
             .target
@@ -417,7 +417,7 @@ fn c_app_cargo_config_uses_builtin_bare_target_without_json_spec() {
 
     assert_eq!(cargo.target, "loongarch64-unknown-none-softfloat");
     assert!(!cargo.env.contains_key("CARGO_UNSTABLE_JSON_TARGET_SPEC"));
-    assert!(cargo.features.contains(&"ax-std/plat-dyn".to_string()));
+    assert!(!cargo.features.contains(&"ax-std/plat-dyn".to_string()));
     assert!(
         cargo
             .args
@@ -464,6 +464,6 @@ fn prepared_cargo_config_defaults_x86_64_to_dynamic_platform() {
             .target
             .ends_with("scripts/targets/std/pie/x86_64-unknown-linux-musl.json")
     );
-    assert!(cargo.features.contains(&"ax-std/plat-dyn".to_string()));
+    assert!(!cargo.features.contains(&"ax-std/plat-dyn".to_string()));
     assert!(!cargo.features.contains(&"ax-hal/x86-pc".to_string()));
 }

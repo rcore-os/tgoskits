@@ -24,10 +24,10 @@
 ### 1.2 feature 与装配关系
 `Cargo.toml` 里的 feature 设计直接决定镜像长什么样：
 
-- `qemu`：静态 QEMU 平台 feature，主要用于 x86_64/loongarch64 等静态平台构建；AArch64 与 RISC-V QEMU 默认通过 `plat-dyn` 和显式驱动 feature 运行。
-- `smp`：启用 `ax-feat/smp`，并向动态平台或静态平台依赖传递 SMP 能力。
+- `qemu`：历史兼容 feature，保留的是 QEMU 运行环境下常用的 IRQ、RTC、显示、输入和 vsock 能力组合；它不再表示静态 QEMU 平台入口，普通动态平台构建会过滤旧平台选择语义。
+- `smp`：启用 StarryOS/ArceOS 的多核能力，并向 `axplat-dyn` 传递 SMP 支持；CPU 拓扑和实际上线核心数仍来自动态平台运行时发现。
 
-这意味着 `starryos` 的主要复杂度不在运行时逻辑，而在于“生成哪一类镜像”。
+这意味着 `starryos` 的主要复杂度不在运行时逻辑，而在于“为哪一类运行环境装配镜像能力”。平台事实由动态平台路径在启动时发现，而不是通过 `qemu`/`smp` 选择静态平台 crate。
 
 ### 1.3 启动主线
 `src/main.rs` 的逻辑非常短，但它决定了系统如何进入第一个用户进程：
@@ -63,10 +63,10 @@ flowchart TD
 ### 1.5 包级配置文件的作用
 这个包目录下除了 `main.rs` 以外，还有两个重要配置文件：
 
-- build config：描述 feature、环境变量和动态平台行为；RISC-V/AArch64 QEMU 默认走动态平台。
+- build config：描述 feature、环境变量和动态平台启动链 feature；各架构 QEMU 构建统一走动态平台。
 - `.qemu.toml`：描述包级 QEMU 参数，当前不带 success/fail 正则。
 
-这与 `test-suit/starryos` 不同。`starryos` 是带着本地平台配置和运行配置一起存在的“镜像包”。
+这与 `test-suit/starryos` 不同。`starryos` 是带着本地构建配置和 QEMU 运行配置一起存在的“镜像包”。
 
 ### 1.6 与 `starry-kernel` 的边界
 `starryos` 不负责下面这些事情：
@@ -110,7 +110,7 @@ graph LR
 
 ### 3.2 关键运行时外部条件
 - rootfs / `rootfs-<arch>.img`：由 `cargo xtask starry rootfs` 或 `run` 路径自动准备。
-- 平台配置：由 axbuild BuildInfo、命令行覆盖和动态平台运行时发现共同决定。
+- 动态平台启动链：由 axbuild BuildInfo、命令行覆盖和 `axplat-dyn` 运行时发现共同决定。
 - QEMU 参数：由 `.qemu.toml` 和 xtask 运行参数共同决定。
 
 ## 开发指南
@@ -124,7 +124,7 @@ cargo xtask starry run --arch riscv64 --package starryos
 
 ### 4.2 适合在这个包里改什么
 1. 默认启动命令、登录 shell 和欢迎信息。
-2. 镜像 feature 组合与平台开关。
+2. 镜像 feature 组合与运行环境能力开关。
 3. 包级 build config / `.qemu.toml`。
 
 ### 4.3 不适合在这个包里改什么
@@ -142,8 +142,8 @@ cargo xtask starry run --arch riscv64 --package starryos
 
 ### 5.2 建议重点验证的场景
 - 默认命令线是否仍能进入交互 shell。
-- `qemu` / `smp` / `plat-dyn` feature 组合是否仍能成功构建。
-- BuildInfo 或动态平台 feature 修改后平台是否仍能正常 bring-up。
+- `smp` 与设备 feature 组合是否仍能成功构建。
+- BuildInfo、QEMU 运行配置或动态平台启动链 feature 修改后系统是否仍能正常 bring-up。
 - rootfs 自动准备、磁盘挂载和标准输入输出是否正常。
 
 ### 5.3 与 `starryos-test` 的关系

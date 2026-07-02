@@ -1,24 +1,17 @@
 extern crate alloc;
 
-use alloc::format;
-#[cfg(plat_dyn)]
-use alloc::vec::Vec;
+use alloc::{format, vec::Vec};
 
-#[cfg(plat_dyn)]
-use fdt_edit::{Fdt, PciInterruptMap};
-use fdt_edit::{NodeType, PciRange, PciSpace};
+use fdt_edit::{Fdt, NodeType, PciInterruptMap, PciRange, PciSpace};
 use log::{debug, trace, warn};
-#[cfg(plat_dyn)]
-use rdrive::probe::pci::{PciInfo, PciIntxRoute};
 use rdrive::{
     probe::{
         OnProbeError,
-        pci::{PciMem32, PciMem64, PcieController, new_driver_generic},
+        pci::{PciInfo, PciIntxRoute, PciMem32, PciMem64, PcieController, new_driver_generic},
     },
     register::{FdtInfo, ProbeFdt},
 };
 
-#[cfg(plat_dyn)]
 use crate::BindingIrq;
 
 #[cfg(feature = "rk3588-pcie")]
@@ -141,7 +134,6 @@ pub(super) fn register_fdt_legacy_irq(info: &FdtInfo<'_>, logical_bus_end: u8) {
     );
 }
 
-#[cfg(plat_dyn)]
 pub fn fdt_irq_for_endpoint(info: PciInfo) -> Result<Option<BindingIrq>, OnProbeError> {
     let Some(result) = rdrive::with_fdt(|fdt| resolve_pci_irq_from_fdt(fdt, info)) else {
         return Ok(None);
@@ -149,7 +141,6 @@ pub fn fdt_irq_for_endpoint(info: PciInfo) -> Result<Option<BindingIrq>, OnProbe
     result.map(Some)
 }
 
-#[cfg(plat_dyn)]
 fn resolve_pci_irq_from_fdt(fdt: &Fdt, info: PciInfo) -> Result<BindingIrq, OnProbeError> {
     let route = info.intx_route.ok_or_else(|| {
         OnProbeError::other(format!("PCI endpoint {} has no INTx route", info.address))
@@ -217,7 +208,6 @@ fn resolve_pci_irq_from_fdt(fdt: &Fdt, info: PciInfo) -> Result<BindingIrq, OnPr
     ))
 }
 
-#[cfg(plat_dyn)]
 fn pci_interrupt_map_entry(
     pci_host: fdt_edit::PciNodeView<'_>,
     bus: u8,
@@ -237,7 +227,6 @@ fn pci_interrupt_map_entry(
         .find(|entry| entry.child_address == child_address && entry.child_irq == child_irq)
 }
 
-#[cfg(plat_dyn)]
 fn encoded_pci_child_address(bus: u8, device: u8, function: u8) -> [u32; 3] {
     [
         ((u32::from(bus) & 0xff) << 16)
@@ -248,7 +237,6 @@ fn encoded_pci_child_address(bus: u8, device: u8, function: u8) -> [u32; 3] {
     ]
 }
 
-#[cfg(plat_dyn)]
 fn masked_cells(values: &[u32], len: usize, mask: &[u32], mask_offset: usize) -> Vec<u32> {
     let mut cells = Vec::with_capacity(len);
     for idx in 0..len {

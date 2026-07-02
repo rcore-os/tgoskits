@@ -1,6 +1,4 @@
-#[cfg(plat_dyn)]
-use rdrive::register::ProbeFdt;
-use rdrive::{PlatformDevice, probe::OnProbeError};
+use rdrive::{PlatformDevice, probe::OnProbeError, register::ProbeFdt};
 #[cfg(any(target_arch = "riscv32", target_arch = "riscv64"))]
 use {alloc::format, sg200x_bsp::sdmmc::Sdmmc};
 
@@ -11,7 +9,6 @@ use super::{SyncBlockOps, register_sync_block};
 const BLOCK_SIZE: usize = 512;
 pub const DEVICE_NAME: &str = "cvsd";
 
-#[cfg(plat_dyn)]
 crate::model_register!(
     name: "FDT CVSD",
     level: ProbeLevel::PostKernel,
@@ -22,7 +19,6 @@ crate::model_register!(
     }],
 );
 
-#[cfg(plat_dyn)]
 fn probe_fdt(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
     let (info, plat_dev) = probe.into_parts();
     let sdmmc =

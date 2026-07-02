@@ -12,7 +12,6 @@ pub fn binding_info_from_fdt(info: &FdtInfo<'_>) -> Result<BindingInfo, OnProbeE
     Ok(BindingInfo::with_binding_irq(resolve_fdt_irq(info)?))
 }
 
-#[cfg(feature = "plat-dyn")]
 pub fn binding_irq_from_named_fdt_interrupt(
     node: &rdrive::probe::fdt::NodeType<'_>,
     name: &str,
