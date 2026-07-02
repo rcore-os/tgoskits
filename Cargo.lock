@@ -744,17 +744,18 @@ dependencies = [
 
 [[package]]
 name = "ax-errno"
-version = "0.6.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "984a5bfdec820bd61a2cec72b0e3cf6359bc9d4aa1fdc7a4b13fc5d5a14cfa81"
+version = "0.6.1"
 dependencies = [
  "log",
+ "quote",
  "strum 0.27.2",
 ]
 
 [[package]]
 name = "ax-errno"
 version = "0.6.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0c022cf0479c114aaf55acd23dedad5f0c7e4011142231e60e7a91f47cc070e6"
 dependencies = [
  "log",
  "quote",
@@ -4537,7 +4538,7 @@ version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "939c71c68bfebd52de856c50f7650713e449fe8a83255e8cee53d8519500b5e0"
 dependencies = [
- "ax-errno 0.6.0",
+ "ax-errno 0.6.1 (registry+https://github.com/rust-lang/crates.io-index)",
  "bitflags 2.13.0",
  "int-enum",
  "lock_api",
@@ -4592,7 +4593,7 @@ version = "0.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a71b521b03673eb47aa8b7d70ff6709fabdc9243ee9e713cacc08f5b0ffae2c2"
 dependencies = [
- "ax-errno 0.6.0",
+ "ax-errno 0.6.1 (registry+https://github.com/rust-lang/crates.io-index)",
  "bitfield-struct 0.13.0",
  "bitflags 2.13.0",
  "cfg-if",
