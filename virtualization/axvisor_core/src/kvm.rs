@@ -60,6 +60,10 @@ pub const KVM_IRQFD: u32 = iow(KVMIO, 0x76, KVM_IRQFD_SIZE);
 pub const KVM_CREATE_PIT2: u32 = iow(KVMIO, 0x77, KVM_PIT_CONFIG_SIZE);
 /// Registers or unregisters an eventfd for guest I/O writes.
 pub const KVM_IOEVENTFD: u32 = iow(KVMIO, 0x79, KVM_IOEVENTFD_SIZE);
+/// Sets x86 VM clock data.
+pub const KVM_SET_CLOCK: u32 = iow(KVMIO, 0x7b, KVM_CLOCK_DATA_SIZE);
+/// Gets x86 VM clock data.
+pub const KVM_GET_CLOCK: u32 = ior(KVMIO, 0x7c, KVM_CLOCK_DATA_SIZE);
 /// Runs a vCPU until it exits to userspace.
 pub const KVM_RUN: u32 = ioc(KVMIO, 0x80);
 /// Gets x86 general-purpose register state.
@@ -76,6 +80,10 @@ pub const KVM_INTERRUPT: u32 = iow(KVMIO, 0x86, KVM_INTERRUPT_SIZE);
 pub const KVM_GET_MSRS: u32 = iowr(KVMIO, 0x88, KVM_MSRS_SIZE);
 /// Sets x86 MSR state.
 pub const KVM_SET_MSRS: u32 = iow(KVMIO, 0x89, KVM_MSRS_SIZE);
+/// Sets a vCPU signal mask.
+pub const KVM_SET_SIGNAL_MASK: u32 = iow(KVMIO, 0x8b, KVM_SIGNAL_MASK_SIZE);
+/// Gets x86 FPU state.
+pub const KVM_GET_FPU: u32 = ior(KVMIO, 0x8c, KVM_X86_FPU_SIZE);
 /// Sets x86 FPU state.
 pub const KVM_SET_FPU: u32 = iow(KVMIO, 0x8d, KVM_X86_FPU_SIZE);
 /// Gets x86 LAPIC state.
@@ -90,12 +98,42 @@ pub const KVM_GET_CPUID2: u32 = iowr(KVMIO, 0x91, KVM_CPUID2_SIZE);
 pub const KVM_GET_MP_STATE: u32 = ior(KVMIO, 0x98, KVM_MP_STATE_SIZE);
 /// Sets the vCPU MP state.
 pub const KVM_SET_MP_STATE: u32 = iow(KVMIO, 0x99, KVM_MP_STATE_SIZE);
+/// Gets x86 PIT state.
+pub const KVM_GET_PIT2: u32 = ior(KVMIO, 0x9f, KVM_PIT_STATE2_SIZE);
+/// Gets x86 vCPU event state.
+pub const KVM_GET_VCPU_EVENTS: u32 = ior(KVMIO, 0x9f, KVM_X86_VCPU_EVENTS_SIZE);
+/// Sets x86 PIT state.
+pub const KVM_SET_PIT2: u32 = iow(KVMIO, 0xa0, KVM_PIT_STATE2_SIZE);
+/// Sets x86 vCPU event state.
+pub const KVM_SET_VCPU_EVENTS: u32 = iow(KVMIO, 0xa0, KVM_X86_VCPU_EVENTS_SIZE);
+/// Gets x86 debug register state.
+pub const KVM_GET_DEBUGREGS: u32 = ior(KVMIO, 0xa1, KVM_X86_DEBUGREGS_SIZE);
+/// Sets x86 debug register state.
+pub const KVM_SET_DEBUGREGS: u32 = iow(KVMIO, 0xa2, KVM_X86_DEBUGREGS_SIZE);
+/// Sets x86 TSC frequency in kHz.
+pub const KVM_SET_TSC_KHZ: u32 = ioc(KVMIO, 0xa2);
+/// Gets x86 TSC frequency in kHz.
+pub const KVM_GET_TSC_KHZ: u32 = ioc(KVMIO, 0xa3);
+/// Enables a KVM capability on a VM or vCPU fd.
+pub const KVM_ENABLE_CAP: u32 = iow(KVMIO, 0xa3, KVM_ENABLE_CAP_SIZE);
+/// Gets x86 XSAVE state.
+pub const KVM_GET_XSAVE: u32 = ior(KVMIO, 0xa4, KVM_X86_XSAVE_SIZE);
+/// Sets x86 XSAVE state.
+pub const KVM_SET_XSAVE: u32 = iow(KVMIO, 0xa5, KVM_X86_XSAVE_SIZE);
+/// Gets x86 XCR state.
+pub const KVM_GET_XCRS: u32 = ior(KVMIO, 0xa6, KVM_X86_XCRS_SIZE);
+/// Sets x86 XCR state.
+pub const KVM_SET_XCRS: u32 = iow(KVMIO, 0xa7, KVM_X86_XCRS_SIZE);
 /// Gets one architecture-specific vCPU register.
 pub const KVM_GET_ONE_REG: u32 = iow(KVMIO, 0xab, KVM_ONE_REG_SIZE);
 /// Sets one architecture-specific vCPU register.
 pub const KVM_SET_ONE_REG: u32 = iow(KVMIO, 0xac, KVM_ONE_REG_SIZE);
+/// Stops x86 kvmclock updates.
+pub const KVM_KVMCLOCK_CTRL: u32 = ioc(KVMIO, 0xad);
 /// Gets the architecture-specific vCPU register IDs supported by this vCPU.
 pub const KVM_GET_REG_LIST: u32 = iowr(KVMIO, 0xb0, KVM_REG_LIST_SIZE);
+/// Gets x86 XSAVE state using the KVM_CAP_XSAVE2 ioctl number.
+pub const KVM_GET_XSAVE2: u32 = ior(KVMIO, 0xcf, KVM_X86_XSAVE_SIZE);
 
 pub const KVM_CAP_IRQCHIP: usize = 0;
 pub const KVM_CAP_USER_MEMORY: usize = 3;
@@ -133,6 +171,7 @@ const KVM_MSRS_SIZE: u32 = 8;
 const KVM_MSR_ENTRY_SIZE: usize = 16;
 const KVM_USERSPACE_MEMORY_REGION_SIZE: u32 = 32;
 const KVM_IOEVENTFD_SIZE: u32 = 64;
+const KVM_CLOCK_DATA_SIZE: u32 = 48;
 const KVM_IRQ_ROUTING_SIZE: u32 = 8;
 const KVM_IRQ_ROUTING_ENTRY_SIZE: usize = 48;
 const KVM_MAX_IRQ_ROUTES: usize = 4096;
@@ -143,7 +182,11 @@ const KVM_IRQFD_FLAG_DEASSIGN: u32 = 1 << 0;
 const KVM_IRQFD_FLAG_RESAMPLE: u32 = 1 << 1;
 const KVM_IRQFD_VALID_FLAGS: u32 = KVM_IRQFD_FLAG_DEASSIGN | KVM_IRQFD_FLAG_RESAMPLE;
 const KVM_PIT_CONFIG_SIZE: u32 = 64;
+const KVM_PIT_STATE2_SIZE: u32 = 112;
 const KVM_PIT_VALID_FLAGS: u32 = 1;
+const KVM_SIGNAL_MASK_SIZE: u32 = 4;
+const KVM_SIGNAL_MASK_MAX_LEN: usize = 128;
+const KVM_ENABLE_CAP_SIZE: u32 = 104;
 const KVM_INTERRUPT_SIZE: u32 = 4;
 const KVM_MP_STATE_SIZE: u32 = 4;
 const KVM_ONE_REG_SIZE: u32 = 16;
@@ -151,6 +194,10 @@ const KVM_REG_LIST_SIZE: u32 = 8;
 const KVM_X86_REGS_SIZE: u32 = 18 * 8;
 const KVM_X86_SREGS_SIZE: u32 = 312;
 const KVM_X86_FPU_SIZE: u32 = 416;
+const KVM_X86_VCPU_EVENTS_SIZE: u32 = 64;
+const KVM_X86_DEBUGREGS_SIZE: u32 = 128;
+const KVM_X86_XSAVE_SIZE: u32 = 4096;
+const KVM_X86_XCRS_SIZE: u32 = 392;
 const KVM_X86_LAPIC_STATE_SIZE: u32 = 1024;
 const KVM_MP_STATE_RUNNABLE: u32 = 0;
 const KVM_MP_STATE_STOPPED: u32 = 5;
@@ -230,6 +277,9 @@ struct VmFileState {
     irqfds: BTreeMap<IrqFdKey, IrqFd>,
     gsi_routes: BTreeMap<u32, GsiRoute>,
     vcpu_files: BTreeMap<u32, api_control::ControlFileId>,
+    clock: Vec<u8>,
+    pit2: Vec<u8>,
+    tsc_khz: u32,
     tss_addr: Option<usize>,
     irqchip_created: bool,
     pit2_created: bool,
@@ -247,6 +297,11 @@ struct VcpuFileState {
     cpuid: Vec<KvmCpuidEntry2>,
     msrs: BTreeMap<u32, u64>,
     fpu: Vec<u8>,
+    vcpu_events: Vec<u8>,
+    debugregs: Vec<u8>,
+    xsave: Vec<u8>,
+    xcrs: Vec<u8>,
+    signal_mask: Vec<u8>,
     lapic: Vec<u8>,
 }
 
@@ -348,6 +403,13 @@ struct KvmIrqFd {
     gsi: u32,
     flags: u32,
     resamplefd: u32,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct KvmEnableCap {
+    cap: u32,
+    flags: u32,
+    args: [u64; 4],
 }
 
 /// Registers the host-visible KVM-compatible control endpoint.
@@ -493,6 +555,9 @@ fn create_vm_file() -> AxResult<api_control::ControlFileId> {
             irqfds: BTreeMap::new(),
             gsi_routes: BTreeMap::new(),
             vcpu_files: BTreeMap::new(),
+            clock: vec![0; KVM_CLOCK_DATA_SIZE as usize],
+            pit2: vec![0; KVM_PIT_STATE2_SIZE as usize],
+            tsc_khz: 0,
             tss_addr: None,
             irqchip_created: false,
             pit2_created: false,
@@ -526,12 +591,33 @@ fn vm_ioctl(control_file: api_control::ControlFileId, cmd: u32, arg: usize) -> A
         KVM_SET_TSS_ADDR => set_tss_addr(control_file, arg),
         KVM_CREATE_IRQCHIP => create_irqchip(control_file),
         KVM_CREATE_PIT2 => create_pit2(control_file, arg),
+        KVM_GET_PIT2 => get_vm_blob(control_file, arg, |vm| &vm.pit2),
+        KVM_SET_PIT2 => set_vm_blob(
+            control_file,
+            arg,
+            KVM_PIT_STATE2_SIZE as usize,
+            |vm, bytes| {
+                vm.pit2 = bytes;
+            },
+        ),
+        KVM_GET_CLOCK => get_vm_blob(control_file, arg, |vm| &vm.clock),
+        KVM_SET_CLOCK => set_vm_blob(
+            control_file,
+            arg,
+            KVM_CLOCK_DATA_SIZE as usize,
+            |vm, bytes| {
+                vm.clock = bytes;
+            },
+        ),
+        KVM_GET_TSC_KHZ => get_tsc_khz(control_file),
+        KVM_SET_TSC_KHZ => set_tsc_khz(control_file, arg),
         KVM_SET_GSI_ROUTING => set_gsi_routing(control_file, arg),
         KVM_IRQFD => {
             let irqfd = read_irqfd(arg)?;
             update_irqfd(control_file, irqfd)?;
             Ok(0)
         }
+        KVM_ENABLE_CAP => enable_cap(arg),
         _ => {
             debug!("unsupported KVM VM ioctl cmd={cmd:#x} arg={arg:#x}");
             Err(AxError::Unsupported)
@@ -579,6 +665,126 @@ fn set_gsi_routing(control_file: api_control::ControlFileId, arg: usize) -> AxRe
     };
     vm.gsi_routing_count = routes.len() as u32;
     vm.gsi_routes = routes;
+    Ok(0)
+}
+
+fn get_vm_blob<F>(control_file: api_control::ControlFileId, arg: usize, get: F) -> AxResult<isize>
+where
+    F: FnOnce(&VmFileState) -> &Vec<u8>,
+{
+    let bytes = {
+        let control_files = CONTROL_FILES.lock();
+        let Some(ControlFileState::Vm(vm)) = control_files.get(&control_file) else {
+            return ax_err!(NotFound);
+        };
+        get(vm).clone()
+    };
+    api_control::copy_to_user(arg, &bytes)?;
+    Ok(0)
+}
+
+fn set_vm_blob<F>(
+    control_file: api_control::ControlFileId,
+    arg: usize,
+    len: usize,
+    set: F,
+) -> AxResult<isize>
+where
+    F: FnOnce(&mut VmFileState, Vec<u8>),
+{
+    let mut bytes = vec![0u8; len];
+    api_control::copy_from_user(arg, &mut bytes)?;
+
+    let mut control_files = CONTROL_FILES.lock();
+    let Some(ControlFileState::Vm(vm)) = control_files.get_mut(&control_file) else {
+        return ax_err!(NotFound);
+    };
+    set(vm, bytes);
+    Ok(0)
+}
+
+fn get_vcpu_blob<F>(control_file: api_control::ControlFileId, arg: usize, get: F) -> AxResult<isize>
+where
+    F: FnOnce(&VcpuFileState) -> &Vec<u8>,
+{
+    let bytes = {
+        let control_files = CONTROL_FILES.lock();
+        let Some(ControlFileState::Vcpu(vcpu)) = control_files.get(&control_file) else {
+            return ax_err!(NotFound);
+        };
+        get(vcpu).clone()
+    };
+    api_control::copy_to_user(arg, &bytes)?;
+    Ok(0)
+}
+
+fn set_vcpu_blob<F>(
+    control_file: api_control::ControlFileId,
+    arg: usize,
+    len: usize,
+    set: F,
+) -> AxResult<isize>
+where
+    F: FnOnce(&mut VcpuFileState, Vec<u8>),
+{
+    let mut bytes = vec![0u8; len];
+    api_control::copy_from_user(arg, &mut bytes)?;
+
+    let mut control_files = CONTROL_FILES.lock();
+    let Some(ControlFileState::Vcpu(vcpu)) = control_files.get_mut(&control_file) else {
+        return ax_err!(NotFound);
+    };
+    set(vcpu, bytes);
+    Ok(0)
+}
+
+fn get_tsc_khz(control_file: api_control::ControlFileId) -> AxResult<isize> {
+    let control_files = CONTROL_FILES.lock();
+    let Some(ControlFileState::Vm(vm)) = control_files.get(&control_file) else {
+        return ax_err!(NotFound);
+    };
+    Ok(vm.tsc_khz as isize)
+}
+
+fn set_tsc_khz(control_file: api_control::ControlFileId, khz: usize) -> AxResult<isize> {
+    let khz = u32::try_from(khz).map_err(|_| AxError::InvalidInput)?;
+    let mut control_files = CONTROL_FILES.lock();
+    let Some(ControlFileState::Vm(vm)) = control_files.get_mut(&control_file) else {
+        return ax_err!(NotFound);
+    };
+    vm.tsc_khz = khz;
+    Ok(0)
+}
+
+fn set_signal_mask(control_file: api_control::ControlFileId, arg: usize) -> AxResult<isize> {
+    let len = read_u32_user(arg)? as usize;
+    if len > KVM_SIGNAL_MASK_MAX_LEN {
+        return ax_err!(InvalidInput);
+    }
+    let mut signal_mask = vec![0u8; len];
+    if len != 0 {
+        api_control::copy_from_user(
+            checked_add(arg, KVM_SIGNAL_MASK_SIZE as usize)?,
+            &mut signal_mask,
+        )?;
+    }
+
+    let mut control_files = CONTROL_FILES.lock();
+    let Some(ControlFileState::Vcpu(vcpu)) = control_files.get_mut(&control_file) else {
+        return ax_err!(NotFound);
+    };
+    vcpu.signal_mask = signal_mask;
+    Ok(0)
+}
+
+fn enable_cap(arg: usize) -> AxResult<isize> {
+    let enable_cap = read_enable_cap(arg)?;
+    if enable_cap.flags != 0 || enable_cap.args.iter().any(|arg| *arg != 0) {
+        return ax_err!(Unsupported);
+    }
+    if check_extension(enable_cap.cap as usize) == 0 {
+        return ax_err!(Unsupported);
+    }
     Ok(0)
 }
 
@@ -651,6 +857,8 @@ fn vcpu_ioctl(control_file: api_control::ControlFileId, cmd: u32, arg: usize) ->
         KVM_SET_SREGS => set_kvm_sregs(control_file, arg),
         KVM_GET_MSRS => get_msrs(control_file, arg),
         KVM_SET_MSRS => set_msrs(control_file, arg),
+        KVM_SET_SIGNAL_MASK => set_signal_mask(control_file, arg),
+        KVM_GET_FPU => get_vcpu_blob(control_file, arg, |vcpu| &vcpu.fpu),
         KVM_SET_FPU => set_fpu(control_file, arg),
         KVM_GET_LAPIC => get_lapic(control_file, arg),
         KVM_SET_LAPIC => set_lapic(control_file, arg),
@@ -662,6 +870,44 @@ fn vcpu_ioctl(control_file: api_control::ControlFileId, cmd: u32, arg: usize) ->
         KVM_INTERRUPT => kvm_interrupt(control_file, arg),
         KVM_GET_MP_STATE => get_mp_state(control_file, arg),
         KVM_SET_MP_STATE => set_mp_state(control_file, arg),
+        KVM_GET_VCPU_EVENTS => get_vcpu_blob(control_file, arg, |vcpu| &vcpu.vcpu_events),
+        KVM_SET_VCPU_EVENTS => set_vcpu_blob(
+            control_file,
+            arg,
+            KVM_X86_VCPU_EVENTS_SIZE as usize,
+            |vcpu, bytes| {
+                vcpu.vcpu_events = bytes;
+            },
+        ),
+        KVM_GET_DEBUGREGS => get_vcpu_blob(control_file, arg, |vcpu| &vcpu.debugregs),
+        KVM_SET_DEBUGREGS => set_vcpu_blob(
+            control_file,
+            arg,
+            KVM_X86_DEBUGREGS_SIZE as usize,
+            |vcpu, bytes| {
+                vcpu.debugregs = bytes;
+            },
+        ),
+        KVM_GET_XSAVE | KVM_GET_XSAVE2 => get_vcpu_blob(control_file, arg, |vcpu| &vcpu.xsave),
+        KVM_SET_XSAVE => set_vcpu_blob(
+            control_file,
+            arg,
+            KVM_X86_XSAVE_SIZE as usize,
+            |vcpu, bytes| {
+                vcpu.xsave = bytes;
+            },
+        ),
+        KVM_GET_XCRS => get_vcpu_blob(control_file, arg, |vcpu| &vcpu.xcrs),
+        KVM_SET_XCRS => set_vcpu_blob(
+            control_file,
+            arg,
+            KVM_X86_XCRS_SIZE as usize,
+            |vcpu, bytes| {
+                vcpu.xcrs = bytes;
+            },
+        ),
+        KVM_KVMCLOCK_CTRL => Ok(0),
+        KVM_ENABLE_CAP => enable_cap(arg),
         _ => {
             debug!("unsupported KVM vCPU ioctl cmd={cmd:#x} arg={arg:#x}");
             Err(AxError::Unsupported)
@@ -1432,6 +1678,11 @@ fn create_vcpu_file(control_file: api_control::ControlFileId, vcpu_id: usize) ->
                 cpuid: Vec::new(),
                 msrs: BTreeMap::new(),
                 fpu: default_fpu(),
+                vcpu_events: vec![0; KVM_X86_VCPU_EVENTS_SIZE as usize],
+                debugregs: default_debugregs(),
+                xsave: vec![0; KVM_X86_XSAVE_SIZE as usize],
+                xcrs: default_xcrs(),
+                signal_mask: Vec::new(),
                 lapic: vec![0; KVM_X86_LAPIC_STATE_SIZE as usize],
             }),
         );
@@ -1504,6 +1755,23 @@ fn read_irqfd(arg: usize) -> AxResult<KvmIrqFd> {
         gsi: u32::from_ne_bytes(bytes[4..8].try_into().unwrap()),
         flags: u32::from_ne_bytes(bytes[8..12].try_into().unwrap()),
         resamplefd: u32::from_ne_bytes(bytes[12..16].try_into().unwrap()),
+    })
+}
+
+fn read_enable_cap(arg: usize) -> AxResult<KvmEnableCap> {
+    let mut bytes = [0u8; KVM_ENABLE_CAP_SIZE as usize];
+    api_control::copy_from_user(arg, &mut bytes)?;
+
+    let mut args = [0u64; 4];
+    for (index, arg) in args.iter_mut().enumerate() {
+        let offset = 8 + index * 8;
+        *arg = u64::from_ne_bytes(bytes[offset..offset + 8].try_into().unwrap());
+    }
+
+    Ok(KvmEnableCap {
+        cap: u32::from_ne_bytes(bytes[0..4].try_into().unwrap()),
+        flags: u32::from_ne_bytes(bytes[4..8].try_into().unwrap()),
+        args,
     })
 }
 
@@ -1978,6 +2246,20 @@ fn default_fpu() -> Vec<u8> {
     fpu[128..130].copy_from_slice(&0x37fu16.to_ne_bytes());
     fpu[408..412].copy_from_slice(&0x1f80u32.to_ne_bytes());
     fpu
+}
+
+fn default_debugregs() -> Vec<u8> {
+    let mut debugregs = vec![0; KVM_X86_DEBUGREGS_SIZE as usize];
+    debugregs[40..48].copy_from_slice(&0x400u64.to_ne_bytes());
+    debugregs
+}
+
+fn default_xcrs() -> Vec<u8> {
+    let mut xcrs = vec![0; KVM_X86_XCRS_SIZE as usize];
+    xcrs[0..4].copy_from_slice(&1u32.to_ne_bytes());
+    xcrs[8..12].copy_from_slice(&0u32.to_ne_bytes());
+    xcrs[16..24].copy_from_slice(&1u64.to_ne_bytes());
+    xcrs
 }
 
 fn set_user_memory_region(
