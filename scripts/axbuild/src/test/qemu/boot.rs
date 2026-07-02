@@ -297,7 +297,7 @@ pub(super) fn ensure_drive_snapshot_on(drive: &mut String) {
 }
 
 pub(super) fn cargo_dynamic_platform_boot_arch(cargo: &Cargo) -> Option<DynamicPlatformBootArch> {
-    if !cargo_dynamic_platform_features(cargo).any(dynamic_platform_feature) {
+    if !cargo_uses_dynamic_platform_boot(cargo) {
         return None;
     }
 
@@ -308,6 +308,11 @@ pub(super) fn cargo_dynamic_platform_boot_arch(cargo: &Cargo) -> Option<DynamicP
     } else {
         None
     }
+}
+
+fn cargo_uses_dynamic_platform_boot(cargo: &Cargo) -> bool {
+    cargo_dynamic_platform_features(cargo).any(dynamic_platform_feature)
+        || cargo.package == "axvisor"
 }
 
 pub(super) fn cargo_target_is_dynamic_x86_64(target: &str) -> bool {
