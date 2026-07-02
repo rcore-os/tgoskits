@@ -412,7 +412,7 @@ impl AxVM {
             let setup_config = <AxArchVCpuImpl as axvcpu::AxArchVCpu>::SetupConfig::default();
             #[cfg(target_arch = "x86_64")]
             let setup_config = crate::vcpu::AxVCpuSetupConfig {
-                emulate_com1: inner_mut
+                intercept_com1: inner_mut
                     .config
                     .emu_devices()
                     .iter()

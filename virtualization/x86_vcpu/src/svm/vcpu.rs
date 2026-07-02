@@ -375,7 +375,7 @@ impl SvmVcpu {
         self.iopm
             .set_intercept_of_range(X86_PIT_PORT_BASE as u32, X86_PIT_PORT_COUNT, true);
         self.iopm.set_intercept(X86_PIT_SPEAKER_PORT as u32, true);
-        if config.emulate_com1 {
+        if config.intercept_com1 {
             self.iopm
                 .set_intercept_of_range(X86_COM1_PORT_BASE as u32, X86_COM1_PORT_COUNT, true);
         }

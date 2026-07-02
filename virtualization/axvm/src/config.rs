@@ -19,8 +19,9 @@ use alloc::{string::String, vec::Vec};
 
 use axaddrspace::GuestPhysAddr;
 pub use axvmconfig::{
-    AxVMCrateConfig, EmulatedDeviceConfig, PassThroughAddressConfig, PassThroughDeviceConfig,
-    VMBootProtocol, VMInterruptMode, VMType, VmMemConfig, VmMemMappingType,
+    AxVMCrateConfig, EmulatedDeviceConfig, EmulatedDeviceType, PassThroughAddressConfig,
+    PassThroughDeviceConfig, VMBootProtocol, VMInterruptMode, VMType, VmMemConfig,
+    VmMemMappingType,
 };
 
 use crate::VMMemoryRegion;
@@ -180,7 +181,7 @@ impl AxVMConfig {
             },
             cpu_config: AxVCpuConfig::default(),
             image_config: VMImageConfig::default(),
-            emu_devices: Vec::new(),
+            emu_devices: host_controlled_emu_devices(),
             pass_through_devices: Vec::new(),
             excluded_devices: Vec::new(),
             pass_through_addresses: Vec::new(),
@@ -315,6 +316,20 @@ impl AxVMConfig {
         self.cpu_config.bsp_entry = GuestPhysAddr::from(new_load + bsp_offset);
         self.cpu_config.ap_entry = GuestPhysAddr::from(new_load + ap_offset);
     }
+}
+
+#[cfg(target_arch = "x86_64")]
+fn host_controlled_emu_devices() -> Vec<EmulatedDeviceConfig> {
+    alloc::vec![EmulatedDeviceConfig {
+        name: "kvm-com1".into(),
+        emu_type: EmulatedDeviceType::Console,
+        ..Default::default()
+    }]
+}
+
+#[cfg(not(target_arch = "x86_64"))]
+fn host_controlled_emu_devices() -> Vec<EmulatedDeviceConfig> {
+    Vec::new()
 }
 
 /// Represents the list of physical CPUs available for the VM.

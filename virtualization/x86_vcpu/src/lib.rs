@@ -32,8 +32,8 @@ mod test_utils;
 /// x86 vCPU setup configuration.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct X86VCpuSetupConfig {
-    /// Intercept COM1 PIO ports and route them to an emulated serial device.
-    pub emulate_com1: bool,
+    /// Intercept COM1 PIO ports so the VMM path can emulate or forward them.
+    pub intercept_com1: bool,
 }
 
 #[cfg(any(feature = "vmx", feature = "svm"))]
