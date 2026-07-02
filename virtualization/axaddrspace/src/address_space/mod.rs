@@ -18,24 +18,22 @@ use core::fmt;
 use ax_errno::{AxResult, ax_err};
 use ax_memory_addr::{MemoryAddr, PhysAddr, is_aligned_4k};
 use ax_memory_set::{MemoryArea, MemorySet};
-use ax_page_table_multiarch::PagingHandler;
-use axvm_types::{GuestPhysAddr, GuestPhysAddrRange};
+use axvm_types::{GuestPhysAddr, GuestPhysAddrRange, MappingFlags};
 
-use crate::{mapping_err_to_ax_err, npt::NestedPageTable as PageTable};
+use crate::{NestedPageTableOps, mapping_err_to_ax_err};
 
 mod backend;
 
-pub use ax_page_table_entry::MappingFlags;
 pub use backend::Backend;
 
 /// The virtual memory address space.
-pub struct AddrSpace<H: PagingHandler> {
+pub struct AddrSpace<Npt: NestedPageTableOps> {
     va_range: GuestPhysAddrRange,
-    areas: MemorySet<Backend<H>>,
-    pt: PageTable<H>,
+    areas: MemorySet<Backend<Npt>>,
+    pt: Npt,
 }
 
-impl<H: PagingHandler> AddrSpace<H> {
+impl<Npt: NestedPageTableOps> AddrSpace<Npt> {
     /// Returns the address space base.
     pub const fn base(&self) -> GuestPhysAddr {
         self.va_range.start
@@ -52,13 +50,18 @@ impl<H: PagingHandler> AddrSpace<H> {
     }
 
     /// Returns the reference to the inner page table.
-    pub const fn page_table(&self) -> &PageTable<H> {
+    pub const fn page_table(&self) -> &Npt {
         &self.pt
     }
 
     /// Returns the root physical address of the inner page table.
     pub fn page_table_root(&self) -> PhysAddr {
         self.pt.root_paddr()
+    }
+
+    /// Returns the number of page-table levels used by the inner page table.
+    pub fn page_table_levels(&self) -> usize {
+        self.pt.levels()
     }
 
     /// Checks if the address space contains the given address range.
@@ -68,11 +71,11 @@ impl<H: PagingHandler> AddrSpace<H> {
     }
 
     /// Creates a new empty address space with the architecture default page table level.
-    pub fn new_empty(level: usize, base: GuestPhysAddr, size: usize) -> AxResult<Self> {
+    pub fn new_empty(page_table: Npt, base: GuestPhysAddr, size: usize) -> AxResult<Self> {
         Ok(Self {
             va_range: GuestPhysAddrRange::from_start_size(base, size),
             areas: MemorySet::new(),
-            pt: PageTable::<H>::new(level)?,
+            pt: page_table,
         })
     }
 
@@ -232,7 +235,7 @@ impl<H: PagingHandler> AddrSpace<H> {
 
                 v.push(unsafe {
                     core::slice::from_raw_parts_mut(
-                        H::phys_to_virt(start_paddr).as_mut_ptr(),
+                        self.pt.phys_to_virt(start_paddr).as_mut_ptr(),
                         (end_va - start.as_usize()).into(),
                     )
                 });
@@ -263,7 +266,7 @@ impl<H: PagingHandler> AddrSpace<H> {
     }
 }
 
-impl<H: PagingHandler> fmt::Debug for AddrSpace<H> {
+impl<Npt: NestedPageTableOps> fmt::Debug for AddrSpace<Npt> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         f.debug_struct("AddrSpace")
             .field("va_range", &self.va_range)
@@ -273,7 +276,7 @@ impl<H: PagingHandler> fmt::Debug for AddrSpace<H> {
     }
 }
 
-impl<H: PagingHandler> Drop for AddrSpace<H> {
+impl<Npt: NestedPageTableOps> Drop for AddrSpace<Npt> {
     fn drop(&mut self) {
         self.clear();
     }

@@ -13,13 +13,12 @@
 // limitations under the License.
 
 use ax_memory_addr::PhysAddr;
-use ax_page_table_multiarch::{MappingFlags, PagingHandler};
-use axvm_types::GuestPhysAddr;
+use axvm_types::{GuestPhysAddr, MappingFlags};
 
 use super::Backend;
-use crate::npt::NestedPageTable as PageTable;
+use crate::NestedPageTableOps;
 
-impl<H: PagingHandler> Backend<H> {
+impl<Npt: NestedPageTableOps> Backend<Npt> {
     /// Creates a new linear mapping backend.
     pub const fn new_linear(pa_to_va_delta: i128) -> Self {
         Self::Linear { pa_to_va_delta }
@@ -35,7 +34,7 @@ impl<H: PagingHandler> Backend<H> {
         start: GuestPhysAddr,
         size: usize,
         flags: MappingFlags,
-        pt: &mut PageTable<H>,
+        pt: &mut Npt,
         pa_to_va_delta: i128,
     ) -> bool {
         let Some(pa_start) = Self::linear_paddr(start, pa_to_va_delta) else {
@@ -67,7 +66,7 @@ impl<H: PagingHandler> Backend<H> {
         &self,
         start: GuestPhysAddr,
         size: usize,
-        pt: &mut PageTable<H>,
+        pt: &mut Npt,
         _pa_to_va_delta: i128,
     ) -> bool {
         debug!("unmap_linear: [{:#x}, {:#x})", start, start + size);

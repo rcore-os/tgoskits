@@ -15,6 +15,8 @@ use crate::{
     vcpu::get_current_vcpu,
 };
 
+mod npt;
+
 pub(crate) struct X86_64Arch;
 
 pub(crate) struct X86VcpuCreateState;
@@ -23,6 +25,7 @@ impl ArchOps for X86_64Arch {
     type VCpu = x86_vcpu::X86ArchVCpu;
     type PerCpu = x86_vcpu::X86ArchPerCpuState;
     type VcpuCreateState = X86VcpuCreateState;
+    type NestedPageTable = npt::NestedPageTable<crate::HostPagingHandler>;
 
     fn has_hardware_support() -> bool {
         x86_vcpu::has_hardware_support()
@@ -52,6 +55,10 @@ impl ArchOps for X86_64Arch {
             config.add_passthrough_port_range(port.base, port.length)?;
         }
         Ok(config)
+    }
+
+    fn new_nested_page_table(levels: usize) -> AxResult<Self::NestedPageTable> {
+        npt::NestedPageTable::new(levels)
     }
 
     fn before_first_run(vm: &crate::AxVMRef, vcpu: &crate::vm::AxVCpuRef) {

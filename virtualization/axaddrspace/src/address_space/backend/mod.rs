@@ -15,10 +15,9 @@
 //! Memory mapping backends.
 
 use ax_memory_set::MappingBackend;
-use ax_page_table_multiarch::{MappingFlags, PagingHandler};
-use axvm_types::GuestPhysAddr;
+use axvm_types::{GuestPhysAddr, MappingFlags};
 
-use crate::npt::NestedPageTable as PageTable;
+use crate::NestedPageTableOps;
 
 mod alloc;
 mod linear;
@@ -31,7 +30,7 @@ mod linear;
 ///   contiguous and their addresses should be known when creating the mapping.
 /// - **Allocation**: used in general, or for lazy mappings. The target physical
 ///   frames are obtained from the global allocator.
-pub enum Backend<H: PagingHandler> {
+pub enum Backend<Npt: NestedPageTableOps> {
     /// Linear mapping backend.
     ///
     /// The offset between the virtual address and the physical address is
@@ -51,12 +50,12 @@ pub enum Backend<H: PagingHandler> {
     Alloc {
         /// Whether to populate the physical frames when creating the mapping.
         populate: bool,
-        /// A phantom data for the paging handler.
-        _phantom: core::marker::PhantomData<H>,
+        /// A phantom data for the nested page table type.
+        _phantom: core::marker::PhantomData<Npt>,
     },
 }
 
-impl<H: PagingHandler> Clone for Backend<H> {
+impl<Npt: NestedPageTableOps> Clone for Backend<Npt> {
     fn clone(&self) -> Self {
         match *self {
             Self::Linear { pa_to_va_delta } => Self::Linear { pa_to_va_delta },
@@ -68,18 +67,12 @@ impl<H: PagingHandler> Clone for Backend<H> {
     }
 }
 
-impl<H: PagingHandler> MappingBackend for Backend<H> {
+impl<Npt: NestedPageTableOps> MappingBackend for Backend<Npt> {
     type Addr = GuestPhysAddr;
     type Flags = MappingFlags;
-    type PageTable = PageTable<H>;
+    type PageTable = Npt;
 
-    fn map(
-        &self,
-        start: GuestPhysAddr,
-        size: usize,
-        flags: MappingFlags,
-        pt: &mut PageTable<H>,
-    ) -> bool {
+    fn map(&self, start: GuestPhysAddr, size: usize, flags: MappingFlags, pt: &mut Npt) -> bool {
         match *self {
             Self::Linear { pa_to_va_delta } => {
                 self.map_linear(start, size, flags, pt, pa_to_va_delta)
@@ -88,7 +81,7 @@ impl<H: PagingHandler> MappingBackend for Backend<H> {
         }
     }
 
-    fn unmap(&self, start: GuestPhysAddr, size: usize, pt: &mut PageTable<H>) -> bool {
+    fn unmap(&self, start: GuestPhysAddr, size: usize, pt: &mut Npt) -> bool {
         match *self {
             Self::Linear { pa_to_va_delta } => self.unmap_linear(start, size, pt, pa_to_va_delta),
             Self::Alloc { populate, .. } => self.unmap_alloc(start, size, pt, populate),
@@ -100,7 +93,7 @@ impl<H: PagingHandler> MappingBackend for Backend<H> {
         start: GuestPhysAddr,
         size: usize,
         new_flags: MappingFlags,
-        page_table: &mut PageTable<H>,
+        page_table: &mut Npt,
     ) -> bool {
         page_table.protect_region(start, size, new_flags)
     }
@@ -119,12 +112,12 @@ impl<H: PagingHandler> MappingBackend for Backend<H> {
     }
 }
 
-impl<H: PagingHandler> Backend<H> {
+impl<Npt: NestedPageTableOps> Backend<Npt> {
     pub(crate) fn handle_page_fault(
         &self,
         vaddr: GuestPhysAddr,
         orig_flags: MappingFlags,
-        page_table: &mut PageTable<H>,
+        page_table: &mut Npt,
     ) -> bool {
         match *self {
             Self::Linear { .. } => false, // Linear mappings should not trigger page faults.

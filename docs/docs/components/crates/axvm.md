@@ -153,7 +153,9 @@ axvm = { workspace = true }
 常见 feature：
 
 - `vmx`：x86 VMX 相关默认路径。
-- `4-level-ept`：控制 EPT 层级相关支持。
+- `svm`：x86 SVM 相关路径。
+
+Nested page table 层级由运行时硬件能力探测和 VM 配置共同决定，不再通过编译期 feature 固定。
 
 ### 4.2 初始化顺序
 1. 先从 `axvmconfig` 或其他来源构造 `AxVMConfig`。

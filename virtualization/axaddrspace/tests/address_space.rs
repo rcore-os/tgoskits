@@ -12,16 +12,18 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#[path = "mock_npt/mod.rs"]
+mod mock_npt;
 mod test_utils;
 
 use core::sync::atomic::Ordering;
 
 use ax_memory_addr::PhysAddr;
-use ax_page_table_entry::MappingFlags;
-use axaddrspace::AddrSpace;
+use axaddrspace::{AddrSpace, MappingFlags};
 use axin::axin;
 use axvm_types::GuestPhysAddr;
-use test_utils::{ALLOC_COUNT, BASE_PADDR, DEALLOC_COUNT, MEMORY_LEN, MockHal, mock_hal_test};
+use mock_npt::MockNestedPageTable;
+use test_utils::{ALLOC_COUNT, BASE_PADDR, DEALLOC_COUNT, MEMORY_LEN, mock_hal_test};
 
 fn mock_hal_test_with_dealloc_count<F, R>(expected_dealloc_count: usize) -> impl FnOnce(F) -> R
 where
@@ -41,10 +43,10 @@ where
 }
 
 /// Generate an address space for the test
-fn setup_test_addr_space() -> (AddrSpace<MockHal>, GuestPhysAddr, usize) {
+fn setup_test_addr_space() -> (AddrSpace<MockNestedPageTable>, GuestPhysAddr, usize) {
     const BASE: GuestPhysAddr = GuestPhysAddr::from_usize(0x10000);
     const SIZE: usize = 0x10000;
-    let addr_space = AddrSpace::<MockHal>::new_empty(4, BASE, SIZE).unwrap();
+    let addr_space = AddrSpace::new_empty(MockNestedPageTable::new(), BASE, SIZE).unwrap();
     (addr_space, BASE, SIZE)
 }
 

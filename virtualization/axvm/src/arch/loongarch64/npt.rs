@@ -2,21 +2,11 @@
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 use core::{arch::asm, fmt};
 
-use ax_page_table_entry::{GenericPTE, MappingFlags};
-use ax_page_table_multiarch::PagingMetaData;
-use axvm_types::{GuestPhysAddr, HostPhysAddr};
+use axvm_types::{HostPhysAddr, MappingFlags};
+use page_table_generic as ptg;
 
 bitflags::bitflags! {
     #[derive(Debug)]
@@ -103,29 +93,6 @@ pub struct LoongArchPTE(u64);
 
 impl LoongArchPTE {
     const PHYS_ADDR_MASK: u64 = 0x0000_ffff_ffff_f000;
-}
-
-impl GenericPTE for LoongArchPTE {
-    fn bits(self) -> usize {
-        self.0 as usize
-    }
-
-    fn new_page(paddr: HostPhysAddr, flags: MappingFlags, is_huge: bool) -> Self {
-        let mut pte_flags = PTEFlags::from(flags);
-        if is_huge {
-            pte_flags |= PTEFlags::GH;
-        }
-        Self(pte_flags.bits() | (paddr.as_usize() as u64 & Self::PHYS_ADDR_MASK))
-    }
-
-    fn new_table(paddr: HostPhysAddr) -> Self {
-        Self(
-            (paddr.as_usize() as u64 & Self::PHYS_ADDR_MASK)
-                | PTEFlags::V.bits()
-                | PTEFlags::P.bits()
-                | PTEFlags::MATL.bits(),
-        )
-    }
 
     fn paddr(&self) -> HostPhysAddr {
         HostPhysAddr::from((self.0 & Self::PHYS_ADDR_MASK) as usize)
@@ -134,34 +101,51 @@ impl GenericPTE for LoongArchPTE {
     fn flags(&self) -> MappingFlags {
         PTEFlags::from_bits_truncate(self.0).into()
     }
+}
 
-    fn set_paddr(&mut self, paddr: HostPhysAddr) {
-        self.0 =
-            (self.0 & !Self::PHYS_ADDR_MASK) | (paddr.as_usize() as u64 & Self::PHYS_ADDR_MASK);
-    }
-
-    fn set_flags(&mut self, flags: MappingFlags, is_huge: bool) {
-        let mut pte_flags = PTEFlags::from(flags);
-        if is_huge {
-            pte_flags |= PTEFlags::GH;
+impl ptg::PageTableEntry for LoongArchPTE {
+    fn from_config(config: ptg::PteConfig) -> Self {
+        if !config.valid {
+            return Self(0);
         }
-        self.0 = (self.0 & Self::PHYS_ADDR_MASK) | pte_flags.bits();
+        let mut flags = if config.is_dir && !config.huge {
+            PTEFlags::V | PTEFlags::P | PTEFlags::MATL
+        } else {
+            PTEFlags::from(config_to_flags(config))
+        };
+        if config.huge {
+            flags |= PTEFlags::GH;
+        }
+        Self(flags.bits() | (config.paddr.raw() as u64 & Self::PHYS_ADDR_MASK))
     }
 
-    fn is_unused(&self) -> bool {
-        self.0 == 0
+    fn to_config(&self, is_dir: bool) -> ptg::PteConfig {
+        let flags = PTEFlags::from_bits_truncate(self.0);
+        let valid = self.valid();
+        let huge = is_dir && flags.contains(PTEFlags::GH);
+        let mapping_flags = MappingFlags::from(flags);
+        ptg::PteConfig {
+            paddr: ptg::PhysAddr::new(self.paddr().as_usize()),
+            valid,
+            read: mapping_flags.contains(MappingFlags::READ),
+            writable: mapping_flags.contains(MappingFlags::WRITE),
+            executable: mapping_flags.contains(MappingFlags::EXECUTE),
+            lower: mapping_flags.contains(MappingFlags::USER),
+            is_dir: is_dir && valid && !huge,
+            huge,
+            mem_attr: if mapping_flags.contains(MappingFlags::DEVICE) {
+                ptg::MemAttributes::Device
+            } else if mapping_flags.contains(MappingFlags::UNCACHED) {
+                ptg::MemAttributes::Uncached
+            } else {
+                ptg::MemAttributes::Normal
+            },
+            ..Default::default()
+        }
     }
 
-    fn is_present(&self) -> bool {
+    fn valid(&self) -> bool {
         PTEFlags::from_bits_truncate(self.0).contains(PTEFlags::V)
-    }
-
-    fn is_huge(&self) -> bool {
-        PTEFlags::from_bits_truncate(self.0).contains(PTEFlags::GH)
-    }
-
-    fn clear(&mut self) {
-        self.0 = 0;
     }
 }
 
@@ -171,7 +155,6 @@ impl fmt::Debug for LoongArchPTE {
             .field("raw", &self.0)
             .field("paddr", &self.paddr())
             .field("flags", &self.flags())
-            .field("is_huge", &self.is_huge())
             .finish()
     }
 }
@@ -179,18 +162,18 @@ impl fmt::Debug for LoongArchPTE {
 #[derive(Copy, Clone)]
 pub struct LoongArchPagingMetaDataL3;
 
-impl PagingMetaData for LoongArchPagingMetaDataL3 {
-    const LEVELS: usize = 3;
-    const VA_MAX_BITS: usize = 39;
-    const PA_MAX_BITS: usize = 48;
+impl ptg::TableMeta for LoongArchPagingMetaDataL3 {
+    type P = LoongArchPTE;
 
-    type VirtAddr = GuestPhysAddr;
+    const PAGE_SIZE: usize = ax_memory_addr::PAGE_SIZE_4K;
+    const LEVEL_BITS: &[usize] = &[9, 9, 9];
+    const MAX_BLOCK_LEVEL: usize = 2;
+    const STRICT_ADDRESS_WIDTH: bool = true;
 
-    fn flush_tlb(vaddr: Option<Self::VirtAddr>) {
+    fn flush(vaddr: Option<ptg::VirtAddr>) {
+        // SAFETY: `invtlb 0x0` invalidates translations globally and does not
+        // dereference memory. It is conservative but safe during VM setup.
         unsafe {
-            // `invtlb 0x6/0x7` may trap on current LVZ bring-up path before the
-            // guest TLB context is fully configured. Use a conservative global
-            // invalidation instead. VM creation/setup is not performance critical.
             let _ = vaddr;
             asm!("invtlb 0x0, $r0, $r0");
             asm!("dbar 0");
@@ -201,14 +184,44 @@ impl PagingMetaData for LoongArchPagingMetaDataL3 {
 #[derive(Copy, Clone)]
 pub struct LoongArchPagingMetaDataL4;
 
-impl PagingMetaData for LoongArchPagingMetaDataL4 {
-    const LEVELS: usize = 4;
-    const VA_MAX_BITS: usize = 48;
-    const PA_MAX_BITS: usize = 48;
+impl ptg::TableMeta for LoongArchPagingMetaDataL4 {
+    type P = LoongArchPTE;
 
-    type VirtAddr = GuestPhysAddr;
+    const PAGE_SIZE: usize = ax_memory_addr::PAGE_SIZE_4K;
+    const LEVEL_BITS: &[usize] = &[9, 9, 9, 9];
+    const MAX_BLOCK_LEVEL: usize = 3;
+    const STRICT_ADDRESS_WIDTH: bool = true;
 
-    fn flush_tlb(vaddr: Option<Self::VirtAddr>) {
-        LoongArchPagingMetaDataL3::flush_tlb(vaddr);
+    fn flush(vaddr: Option<ptg::VirtAddr>) {
+        LoongArchPagingMetaDataL3::flush(vaddr);
     }
+}
+
+pub(crate) type NestedPageTable<H> = crate::arch::npt::LeveledPageTable<
+    LoongArchPagingMetaDataL3,
+    LoongArchPagingMetaDataL4,
+    H,
+    true,
+>;
+
+fn config_to_flags(config: ptg::PteConfig) -> MappingFlags {
+    let mut flags = MappingFlags::empty();
+    if config.read {
+        flags |= MappingFlags::READ;
+    }
+    if config.writable {
+        flags |= MappingFlags::WRITE;
+    }
+    if config.executable {
+        flags |= MappingFlags::EXECUTE;
+    }
+    if config.lower {
+        flags |= MappingFlags::USER;
+    }
+    match config.mem_attr {
+        ptg::MemAttributes::Device => flags |= MappingFlags::DEVICE,
+        ptg::MemAttributes::Uncached => flags |= MappingFlags::UNCACHED,
+        _ => {}
+    }
+    flags
 }

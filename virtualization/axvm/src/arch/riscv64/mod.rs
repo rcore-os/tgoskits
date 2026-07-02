@@ -1,13 +1,18 @@
 use alloc::vec::Vec;
 
 use ax_crate_interface::impl_interface;
-use ax_errno::AxResult;
+use ax_errno::{AxResult, ax_err};
 use ax_memory_addr::{PhysAddr, VirtAddr};
+use axvm_types::NestedPagingConfig;
 use riscv_vcpu::{GprIndex as RiscvGprIndex, host::RiscvVcpuHostIf};
 use riscv_vplic::host::RiscvVplicHostIf;
 
-use super::{ArchOps, VcpuCreateContext, VcpuSetupContext, default_vcpu_affinities};
+use super::{
+    ArchOps, VcpuCreateContext, VcpuSetupContext, default_vcpu_affinities, target_phys_cpu_ids,
+};
 use crate::host::{HostMemory, default_host};
+
+mod npt;
 
 pub(crate) struct Riscv64Arch;
 
@@ -15,9 +20,40 @@ impl ArchOps for Riscv64Arch {
     type VCpu = riscv_vcpu::RISCVVCpu;
     type PerCpu = riscv_vcpu::RISCVPerCpu;
     type VcpuCreateState = ();
+    type NestedPageTable = npt::NestedPageTable<crate::HostPagingHandler>;
 
     fn has_hardware_support() -> bool {
         riscv_vcpu::has_hardware_support()
+    }
+
+    fn guest_page_table_levels(vcpu_mappings: &[(usize, Option<usize>, usize)]) -> AxResult<usize> {
+        let mut levels = riscv_vcpu::max_guest_page_table_levels();
+        for cpu_id in target_phys_cpu_ids(vcpu_mappings) {
+            levels = levels.min(
+                crate::percpu::cpu_max_guest_page_table_levels(cpu_id)
+                    .unwrap_or_else(riscv_vcpu::max_guest_page_table_levels),
+            );
+        }
+        match levels {
+            3 | 4 => Ok(levels),
+            _ => ax_err!(Unsupported, "no supported RISC-V G-stage paging mode"),
+        }
+    }
+
+    fn nested_paging_config(
+        root_paddr: PhysAddr,
+        levels: usize,
+        _vcpu_mappings: &[(usize, Option<usize>, usize)],
+    ) -> AxResult<NestedPagingConfig> {
+        match levels {
+            3 => Ok(NestedPagingConfig::new(root_paddr, 3, 41, 8)),
+            4 => Ok(NestedPagingConfig::new(root_paddr, 4, 50, 9)),
+            _ => ax_err!(InvalidInput, "unsupported RISC-V G-stage levels"),
+        }
+    }
+
+    fn new_nested_page_table(levels: usize) -> AxResult<Self::NestedPageTable> {
+        npt::NestedPageTable::new(levels)
     }
 
     fn new_vcpu_create_state(
@@ -101,7 +137,7 @@ impl RiscvVplicHostIf for RiscvVplicHostIfImpl {
 }
 
 fn register_platform_irq_injector() {
-    axplat_dyn::register_virtual_irq_injector(inject_virtual_irq);
+    crate::irq::register_riscv_virtual_irq_injector(inject_virtual_irq);
 }
 
 fn inject_virtual_irq(irq_id: usize) -> bool {

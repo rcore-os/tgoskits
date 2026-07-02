@@ -22,7 +22,8 @@ use ax_kspin::SpinNoIrq as Mutex;
 #[cfg(target_arch = "x86_64")]
 use axvm_types::InterruptTriggerMode;
 use axvm_types::{
-    GuestPhysAddr, HostPhysAddr, VCpuId, VMId, VmArchPerCpuOps, VmArchVcpuOps, VmExit, VmVcpuState,
+    GuestPhysAddr, NestedPagingConfig, VCpuId, VMId, VmArchPerCpuOps, VmArchVcpuOps, VmExit,
+    VmVcpuState,
 };
 
 /// Mutable runtime state of a virtual CPU.
@@ -68,12 +69,12 @@ impl<A: VmArchVcpuOps> AxVCpu<A> {
     pub fn setup(
         &self,
         entry: GuestPhysAddr,
-        nested_page_table_root: HostPhysAddr,
+        nested_paging: NestedPagingConfig,
         arch_config: A::SetupConfig,
     ) -> AxResult {
         self.manipulate_arch_vcpu(VmVcpuState::Created, VmVcpuState::Free, |arch_vcpu| {
             arch_vcpu.set_entry(entry)?;
-            arch_vcpu.set_nested_page_table_root(nested_page_table_root)?;
+            arch_vcpu.set_nested_page_table(nested_paging)?;
             arch_vcpu.setup(arch_config)?;
             Ok(())
         })

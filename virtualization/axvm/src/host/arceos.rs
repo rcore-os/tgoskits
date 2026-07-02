@@ -15,7 +15,6 @@ use core::{
 
 use ax_errno::AxResult;
 use ax_memory_addr::PAGE_SIZE_4K;
-use ax_page_table_multiarch::PagingHandler;
 use ax_std::{
     os::arceos::{api, modules},
     thread,
@@ -42,11 +41,18 @@ pub(crate) fn arceos_host() -> &'static ArceOsHost {
 
 impl HostMemory for ArceOsHost {
     fn alloc_frame(&self) -> Option<HostPhysAddr> {
-        <modules::ax_hal::paging::PagingHandlerImpl as PagingHandler>::alloc_frame()
+        modules::ax_alloc::global_allocator()
+            .alloc_pages(1, PAGE_SIZE_4K, modules::ax_alloc::UsageKind::PageTable)
+            .map(|vaddr| self.virt_to_phys(vaddr.into()))
+            .ok()
     }
 
     fn dealloc_frame(&self, paddr: HostPhysAddr) {
-        <modules::ax_hal::paging::PagingHandlerImpl as PagingHandler>::dealloc_frame(paddr);
+        modules::ax_alloc::global_allocator().dealloc_pages(
+            self.phys_to_virt(paddr).as_usize(),
+            1,
+            modules::ax_alloc::UsageKind::PageTable,
+        );
     }
 
     fn alloc_contiguous_frames(
@@ -73,7 +79,7 @@ impl HostMemory for ArceOsHost {
     }
 
     fn phys_to_virt(&self, paddr: HostPhysAddr) -> HostVirtAddr {
-        <modules::ax_hal::paging::PagingHandlerImpl as PagingHandler>::phys_to_virt(paddr)
+        modules::ax_hal::mem::phys_to_virt(paddr)
     }
 
     fn virt_to_phys(&self, vaddr: HostVirtAddr) -> HostPhysAddr {

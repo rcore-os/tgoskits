@@ -13,7 +13,9 @@
 // limitations under the License.
 
 use ax_errno::{AxError, AxErrorKind, AxResult};
-use axvm_types::{AccessWidth, GuestPhysAddr, GuestVirtAddr, HostPhysAddr, MappingFlags, VmExit};
+use axvm_types::{
+    AccessWidth, GuestPhysAddr, GuestVirtAddr, MappingFlags, NestedPagingConfig, VmExit,
+};
 use riscv::register::{scause, sie, sstatus};
 use riscv_decode::{
     Instruction,
@@ -162,10 +164,19 @@ impl axvm_types::VmArchVcpuOps for RISCVVCpu {
         Ok(())
     }
 
-    fn set_nested_page_table_root(&mut self, nested_page_table_root: HostPhysAddr) -> AxResult {
-        // AxVM builds a 4-level guest stage-2 page table on RISC-V, so hgatp
-        // must use Sv48x4 as well.
-        self.regs.virtual_hs_csrs.hgatp = 9usize << 60 | usize::from(nested_page_table_root) >> 12;
+    fn set_nested_page_table(&mut self, config: NestedPagingConfig) -> AxResult {
+        let expected_mode = match config.levels {
+            3 => 8,
+            4 => 9,
+            _ => {
+                return Err(AxError::InvalidInput);
+            }
+        };
+        if config.mode != expected_mode || config.root_paddr.as_usize() & 0x3fff != 0 {
+            return Err(AxError::InvalidInput);
+        }
+
+        self.regs.virtual_hs_csrs.hgatp = config.mode << 60 | usize::from(config.root_paddr) >> 12;
         Ok(())
     }
 

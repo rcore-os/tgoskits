@@ -13,9 +13,21 @@
 // limitations under the License.
 
 use ax_memory_addr::{PAGE_SIZE_4K, PhysAddr, VirtAddr};
-use ax_page_table_multiarch::PagingHandler;
 
 use crate::host::{HostMemory, default_host};
+
+/// Host frame operations required by AxVM-owned paging structures.
+pub trait PagingHandler {
+    fn alloc_frame() -> Option<PhysAddr>;
+
+    fn alloc_frames(num: usize, align: usize) -> Option<PhysAddr>;
+
+    fn dealloc_frame(paddr: PhysAddr);
+
+    fn dealloc_frames(paddr: PhysAddr, num: usize);
+
+    fn phys_to_virt(paddr: PhysAddr) -> VirtAddr;
+}
 
 /// Paging handler backed by the AxVM private ArceOS host adapter.
 pub struct HostPagingHandler;
