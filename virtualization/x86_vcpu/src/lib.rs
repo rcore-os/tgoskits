@@ -36,6 +36,10 @@ mod test_utils;
 /// Maximum number of x86 host I/O port ranges configured for one vCPU.
 pub const X86_MAX_PASSTHROUGH_PORT_RANGES: usize = 16;
 
+/// x86 vCPU creation configuration.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct X86VCpuCreateConfig;
+
 /// x86 host I/O port range that should trap and be handled by the VMM.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct X86PassthroughPortRange {

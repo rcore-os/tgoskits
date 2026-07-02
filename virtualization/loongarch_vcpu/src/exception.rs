@@ -6,7 +6,7 @@ use core::{
 };
 
 use ax_errno::AxResult;
-use axvm_types::{AxVCpuExitReason, GuestPhysAddr, MappingFlags, VCpuId, VMId};
+use axvm_types::{GuestPhysAddr, MappingFlags, VCpuId, VMId, VmExit};
 
 use crate::{context_frame::LoongArchContextFrame, host};
 
@@ -655,25 +655,25 @@ fn write_guest_iocsr(
     addr: usize,
     len: usize,
     value: usize,
-) -> Option<AxVCpuExitReason> {
+) -> Option<VmExit> {
     let vcpu = state.vcpu(vcpu_id)?;
     match addr {
-        LOONGARCH_IOCSR_IPI_STATUS => Some(AxVCpuExitReason::Nothing),
+        LOONGARCH_IOCSR_IPI_STATUS => Some(VmExit::Nothing),
         LOONGARCH_IOCSR_IPI_EN => {
             vcpu.ipi_enable.store(value, Ordering::Release);
-            Some(AxVCpuExitReason::Nothing)
+            Some(VmExit::Nothing)
         }
         LOONGARCH_IOCSR_IPI_SET => {
             vcpu.ipi_status.fetch_or(value, Ordering::AcqRel);
             ctx.gcsr_estat |= IPI_BIT;
-            Some(AxVCpuExitReason::Nothing)
+            Some(VmExit::Nothing)
         }
         LOONGARCH_IOCSR_IPI_CLEAR => {
             let new_status = vcpu.ipi_status.fetch_and(!value, Ordering::AcqRel) & !value;
             if new_status == 0 {
                 ctx.gcsr_estat &= !IPI_BIT;
             }
-            Some(AxVCpuExitReason::Nothing)
+            Some(VmExit::Nothing)
         }
         LOONGARCH_IOCSR_IPI_SEND => {
             let target_cpu = (value >> IOCSR_SEND_CPU_SHIFT) & IOCSR_SEND_CPU_MASK;
@@ -695,13 +695,13 @@ fn write_guest_iocsr(
                     action
                 );
             }
-            Some(AxVCpuExitReason::Nothing)
+            Some(VmExit::Nothing)
         }
         LOONGARCH_IOCSR_MAIL_BUF0..=LOONGARCH_IOCSR_MAIL_BUF3 => {
             if let Some(mail_index) = iocsr_mail_buf_index(addr) {
                 vcpu.mail_buf[mail_index].store(value, Ordering::Release);
             }
-            Some(AxVCpuExitReason::Nothing)
+            Some(VmExit::Nothing)
         }
         LOONGARCH_IOCSR_MBUF_SEND => {
             let target_cpu = (value >> IOCSR_SEND_CPU_SHIFT) & IOCSR_SEND_CPU_MASK;
@@ -730,7 +730,7 @@ fn write_guest_iocsr(
             if target_cpu == vcpu_id {
                 ctx.gcsr_estat |= IPI_BIT;
             }
-            Some(AxVCpuExitReason::Nothing)
+            Some(VmExit::Nothing)
         }
         LOONGARCH_IOCSR_ANY_SEND => {
             let target_cpu = (value >> IOCSR_SEND_CPU_SHIFT) & IOCSR_SEND_CPU_MASK;
@@ -746,12 +746,12 @@ fn write_guest_iocsr(
                     LOONGARCH_IOCSR_ANY_SEND_BUF_SHIFT,
                 );
             }
-            Some(AxVCpuExitReason::Nothing)
+            Some(VmExit::Nothing)
         }
         EXTIOI_VIRT_CONFIG => {
             vcpu.eiointc_virt_config.store(value, Ordering::Release);
             update_guest_eiointc_irq(ctx, vcpu);
-            Some(AxVCpuExitReason::Nothing)
+            Some(VmExit::Nothing)
         }
         EIOINTC_NODEMAP_BASE..EIOINTC_NODEMAP_END => {
             write_atomic_u32_slots(
@@ -761,26 +761,26 @@ fn write_guest_iocsr(
                 len,
                 value,
             );
-            Some(AxVCpuExitReason::Nothing)
+            Some(VmExit::Nothing)
         }
         EIOINTC_IPMAP_BASE..EIOINTC_IPMAP_END => {
             write_atomic_u32_slots(&vcpu.eiointc_ipmap, addr, EIOINTC_IPMAP_BASE, len, value);
             update_guest_eiointc_irq(ctx, vcpu);
-            Some(AxVCpuExitReason::Nothing)
+            Some(VmExit::Nothing)
         }
         EIOINTC_ENABLE_BASE..EIOINTC_ENABLE_END => {
             write_atomic_u32_slots(&vcpu.eiointc_enable, addr, EIOINTC_ENABLE_BASE, len, value);
             update_guest_eiointc_irq(ctx, vcpu);
-            Some(AxVCpuExitReason::Nothing)
+            Some(VmExit::Nothing)
         }
         EIOINTC_BOUNCE_BASE..EIOINTC_BOUNCE_END => {
             write_atomic_u32_slots(&vcpu.eiointc_bounce, addr, EIOINTC_BOUNCE_BASE, len, value);
-            Some(AxVCpuExitReason::Nothing)
+            Some(VmExit::Nothing)
         }
         EIOINTC_ISR_COMPAT_BASE..EIOINTC_ISR_COMPAT_END => {
             clear_eiointc_isr_slots(vcpu, addr, EIOINTC_ISR_COMPAT_BASE, len, value);
             update_guest_eiointc_irq(ctx, vcpu);
-            Some(AxVCpuExitReason::Nothing)
+            Some(VmExit::Nothing)
         }
         EIOINTC_ISR_BASE..EIOINTC_ISR_END if is_eiointc_isr_addr(addr) => {
             clear_eiointc_isr_slots(vcpu, addr, EIOINTC_ISR_BASE, len, value);
@@ -793,7 +793,7 @@ fn write_guest_iocsr(
                 addr - EIOINTC_ISR_BASE,
                 read_eiointc_isr_slots(vcpu, addr, EIOINTC_ISR_BASE, len),
             );
-            Some(AxVCpuExitReason::Nothing)
+            Some(VmExit::Nothing)
         }
         EIOINTC_COREMAP_BASE..EIOINTC_COREMAP_END => {
             write_atomic_u32_slots(
@@ -804,9 +804,9 @@ fn write_guest_iocsr(
                 value,
             );
             update_guest_eiointc_irq(ctx, vcpu);
-            Some(AxVCpuExitReason::Nothing)
+            Some(VmExit::Nothing)
         }
-        EIOINTC_GUEST_OWNED_BASE..EIOINTC_GUEST_OWNED_END => Some(AxVCpuExitReason::Nothing),
+        EIOINTC_GUEST_OWNED_BASE..EIOINTC_GUEST_OWNED_END => Some(VmExit::Nothing),
         _ => None,
     }
 }
@@ -995,7 +995,7 @@ fn advance_guest_pc(ctx: &mut LoongArchContextFrame) {
     ctx.advance_guest_pc();
 }
 
-fn emulate_cpucfg(ctx: &mut LoongArchContextFrame, ins: usize) -> AxVCpuExitReason {
+fn emulate_cpucfg(ctx: &mut LoongArchContextFrame, ins: usize) -> VmExit {
     let rd = extract_field(ins, 0, 5);
     let rj = extract_field(ins, 5, 5);
     let cpucfg_idx = ctx.x[rj];
@@ -1013,7 +1013,7 @@ fn emulate_cpucfg(ctx: &mut LoongArchContextFrame, ins: usize) -> AxVCpuExitReas
     }
     ctx.set_gpr(rd, value);
     advance_guest_pc(ctx);
-    AxVCpuExitReason::Nothing
+    VmExit::Nothing
 }
 
 fn emulate_csrx(
@@ -1022,14 +1022,14 @@ fn emulate_csrx(
     vm_id: VMId,
     vcpu_id: VCpuId,
     guest_timer_token: &mut Option<usize>,
-) -> AxVCpuExitReason {
+) -> VmExit {
     let rd = extract_field(ins, 0, 5);
     let rj = extract_field(ins, 5, 5);
     let csr = extract_field(ins, 10, 14);
 
     emulate_guest_csr(ctx, rd, rj, csr, vm_id, vcpu_id, guest_timer_token);
     advance_guest_pc(ctx);
-    AxVCpuExitReason::Nothing
+    VmExit::Nothing
 }
 
 /// Timer CSR numbers (matching GCSR encoding in LoongArch LVZ).
@@ -1307,16 +1307,16 @@ fn emulate_guest_csr(
     ctx.set_gpr(rd, return_value);
 }
 
-fn emulate_cacop(ctx: &mut LoongArchContextFrame, _ins: usize) -> AxVCpuExitReason {
+fn emulate_cacop(ctx: &mut LoongArchContextFrame, _ins: usize) -> VmExit {
     log::trace!(
         "LoongArch GSPR cacop emulation skipped at guest_pc={:#x}",
         get_guest_pc(ctx)
     );
     advance_guest_pc(ctx);
-    AxVCpuExitReason::Nothing
+    VmExit::Nothing
 }
 
-fn emulate_idle(ctx: &mut LoongArchContextFrame, ins: usize) -> AxVCpuExitReason {
+fn emulate_idle(ctx: &mut LoongArchContextFrame, ins: usize) -> VmExit {
     let level = extract_field(ins, 0, 15);
     let pending_enabled = ctx.gcsr_estat & ctx.gcsr_ectl & LOCAL_INTERRUPT_MASK;
     let idle_log_index = IDLE_EXIT_LOGS.fetch_add(1, Ordering::Relaxed);
@@ -1350,10 +1350,10 @@ fn emulate_idle(ctx: &mut LoongArchContextFrame, ins: usize) -> AxVCpuExitReason
             );
         }
         inject_guest_interrupt_at(ctx, vector, get_guest_pc(ctx).wrapping_add(4));
-        return AxVCpuExitReason::Nothing;
+        return VmExit::Nothing;
     }
     advance_guest_pc(ctx);
-    AxVCpuExitReason::Idle
+    VmExit::Idle
 }
 
 fn emulate_iocsr(
@@ -1362,7 +1362,7 @@ fn emulate_iocsr(
     ins: usize,
     vm_id: VMId,
     vcpu_id: VCpuId,
-) -> AxVCpuExitReason {
+) -> VmExit {
     let ty = extract_field(ins, 10, 3);
     let rd = extract_field(ins, 0, 5);
     let rj = extract_field(ins, 5, 5);
@@ -1543,7 +1543,7 @@ fn emulate_iocsr(
     }
 
     advance_guest_pc(ctx);
-    AxVCpuExitReason::Nothing
+    VmExit::Nothing
 }
 
 fn log_eiointc_trace(
@@ -1571,7 +1571,7 @@ fn emulate_gspr(
     vm_id: VMId,
     vcpu_id: VCpuId,
     guest_timer_token: &mut Option<usize>,
-) -> AxVCpuExitReason {
+) -> VmExit {
     let ins = get_badi(ctx) as u32 as usize;
     const OPCODE_CPUCFG: usize = 0b0000000000000000011011;
     const OPCODE_CPUCFG_LEN: usize = 22;
@@ -1640,7 +1640,7 @@ pub fn handle_exception_sync(
     vm_id: VMId,
     vcpu_id: VCpuId,
     guest_timer_token: &mut Option<usize>,
-) -> AxResult<AxVCpuExitReason> {
+) -> AxResult<VmExit> {
     let ecode = get_exception_code(ctx);
     let esubcode = get_exception_subcode(ctx);
     if SYNC_EXIT_LOGS.fetch_add(1, Ordering::Relaxed) < 32 {
@@ -1680,7 +1680,7 @@ pub fn handle_exception_sync(
         let badv = get_badv(ctx);
         if should_inject_guest_virtual_fault(ctx, badv, true) {
             inject_guest_tlb_refill(ctx, badv);
-            return Ok(AxVCpuExitReason::Nothing);
+            return Ok(VmExit::Nothing);
         }
         ctx.sepc = get_guest_pc(ctx);
         if NESTED_FAULT_LOGS.fetch_add(1, Ordering::Relaxed) < 8 {
@@ -1697,7 +1697,7 @@ pub fn handle_exception_sync(
                 ctx.host_estat
             );
         }
-        return Ok(AxVCpuExitReason::NestedPageFault {
+        return Ok(VmExit::NestedPageFault {
             addr: GuestPhysAddr::from(direct_map_guest_addr_to_gpa(badv)),
             access_flags: get_refill_access_flags(ctx),
         });
@@ -1719,7 +1719,7 @@ pub fn handle_exception_sync(
                 ctx.get_a6() as u64,
             ];
             advance_guest_pc(ctx);
-            Ok(AxVCpuExitReason::Hypercall { nr, args })
+            Ok(VmExit::Hypercall { nr, args })
         }
         ECODE_GSPR => Ok(emulate_gspr(
             iocsr_state,
@@ -1732,7 +1732,7 @@ pub fn handle_exception_sync(
             let badv = get_badv(ctx);
             if should_inject_guest_virtual_fault(ctx, badv, false) {
                 inject_guest_regular_exception(ctx, ecode, esubcode, badv);
-                return Ok(AxVCpuExitReason::Nothing);
+                return Ok(VmExit::Nothing);
             }
             let mut access_flags = MappingFlags::empty();
             if matches!(ecode, ECODE_PIS | ECODE_PME) {
@@ -1757,7 +1757,7 @@ pub fn handle_exception_sync(
                     ctx.host_estat
                 );
             }
-            Ok(AxVCpuExitReason::NestedPageFault {
+            Ok(VmExit::NestedPageFault {
                 addr: GuestPhysAddr::from(direct_map_guest_addr_to_gpa(badv)),
                 access_flags,
             })
@@ -1780,7 +1780,7 @@ pub fn handle_exception_sync(
             get_badv(ctx),
             get_badi(ctx)
         ),
-        ECODE_RSE => Ok(AxVCpuExitReason::Halt),
+        ECODE_RSE => Ok(VmExit::Halt),
         _ => panic!(
             "Unhandled synchronous exception: ecode={:#x}, esubcode={:#x}, sepc={:#x}, \
              gera={:#x}, badv={:#x}, badi={:#x}",
@@ -1800,7 +1800,7 @@ pub fn handle_exception_sync(
     result
 }
 
-pub fn handle_exception_irq(ctx: &mut LoongArchContextFrame) -> AxResult<AxVCpuExitReason> {
+pub fn handle_exception_irq(ctx: &mut LoongArchContextFrame) -> AxResult<VmExit> {
     let guest_is = get_guest_interrupt_status(ctx);
     let is = guest_is;
 
@@ -1820,7 +1820,7 @@ pub fn handle_exception_irq(ctx: &mut LoongArchContextFrame) -> AxResult<AxVCpuE
             ack_host_timer_interrupt();
         }
 
-        return Ok(AxVCpuExitReason::ExternalInterrupt {
+        return Ok(VmExit::ExternalInterrupt {
             vector: vector as u64,
         });
     }
@@ -1833,7 +1833,7 @@ pub fn handle_exception_irq(ctx: &mut LoongArchContextFrame) -> AxResult<AxVCpuE
         get_guest_pc(ctx),
         ctx.gcsr_era
     );
-    Ok(AxVCpuExitReason::Nothing)
+    Ok(VmExit::Nothing)
 }
 
 #[cfg(target_arch = "loongarch64")]

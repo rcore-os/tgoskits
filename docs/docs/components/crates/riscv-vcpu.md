@@ -6,7 +6,7 @@
 > 版本：`0.2.2`
 > 文档依据：当前仓库源码、`Cargo.toml`、`README.md`、`trap.S`、`guest_mem.rs` 及其在 `axvm` 中的接入方式
 
-`riscv_vcpu` 是 Axvisor 在 RISC-V 架构上的 vCPU 后端实现。它围绕 RISC-V Hypervisor Extension 组织，负责完成四类核心工作：每核 H 扩展环境准备、vCPU 寄存器与 CSR 上下文保存恢复、客户机进入/退出虚拟化执行、以及把 SBI 调用、外部中断、timer 事件和 guest page fault 转译成 `axvm-types::VmExit` / 兼容名 `AxVCpuExitReason`。
+`riscv_vcpu` 是 Axvisor 在 RISC-V 架构上的 vCPU 后端实现。它围绕 RISC-V Hypervisor Extension 组织，负责完成四类核心工作：每核 H 扩展环境准备、vCPU 寄存器与 CSR 上下文保存恢复、客户机进入/退出虚拟化执行、以及把 SBI 调用、外部中断、timer 事件和 guest page fault 转译成 `axvm-types::VmExit`。
 
 ## 架构设计
 
@@ -24,7 +24,7 @@
 - VS 级 CSR 需要在 vCPU 绑定与解绑时手工保存恢复。
 - 虚拟中断依赖 `hvip` 的 `vseip` / `vstip` / `vssip` 位。
 
-因此，尽管泛型接口里保留了 `set_ept_root()` 这类跨架构命名，实际实现并非 EPT，而是写入 `hgatp`。
+因此，尽管泛型接口里保留了 `set_nested_page_table_root()` 这类跨架构命名，实际实现并非 EPT，而是写入 `hgatp`。
 
 ### 模块结构
 
@@ -105,7 +105,7 @@ flowchart TD
 
 ### 1.5 每核初始化与 H 扩展探测
 
-`RISCVPerCpu<H>` 实现 `AxArchPerCpu`，其核心工作是在 `new()` 时调用 `setup_csrs()`：
+`RISCVPerCpu<H>` 实现 `VmArchPerCpuOps`，其核心工作是在 `new()` 时调用 `setup_csrs()`：
 
 - `hedeleg` 委托一部分同步异常。
 - `hideleg` 委托 VS 级 timer / external / software interrupt。
@@ -119,12 +119,12 @@ flowchart TD
 
 ### 1.6 vCPU 生命周期
 
-`RISCVVCpu` 实现 `AxArchVCpu` 的主要阶段如下：
+`RISCVVCpu` 实现 `VmArchVcpuOps` 的主要阶段如下：
 
 1. `new()`：初始化 guest `a0`/`a1`，建立最小寄存器态。
 2. `setup()`：准备 guest `sstatus` 与 `hstatus`，打开 `SPV`、`VSXL=64`、`SPVP`。
 3. `set_entry()`：写 guest `sepc`。
-4. `set_ept_root()`：把 stage-2 根页表地址编码到 `virtual_hs_csrs.hgatp`。
+4. `set_nested_page_table_root()`：把 stage-2 根页表地址编码到 `virtual_hs_csrs.hgatp`。
 5. `bind()`：把 `vsatp`、`vstvec`、`vsepc`、`vscause`、`vsstatus`、`vsie`、`htimedelta` 等写入硬件，并安装 `hgatp`。
 6. `run()`：临时调整 host `sie/sstatus`，调用 `_run_guest()` 进入客户机，返回后进入 `vmexit_handler()`。
 7. `unbind()`：从硬件读回 VS 级 CSR 和 `hgatp`，清空硬件中的 `hgatp` 并执行 `hfence_gvma_all()`。
@@ -141,7 +141,7 @@ flowchart TD
 
 - Legacy SBI：支持 `SET_TIMER`、`CONSOLE_PUTCHAR`、`CONSOLE_GETCHAR`、`SHUTDOWN`。
 - HSM：把 `HART_START`、`HART_STOP`、`HART_SUSPEND` 转为 `CpuUp`、`CpuDown`、`Halt`。
-- 自定义 `EID_HVC`：转为 `AxVCpuExitReason::Hypercall`。
+- 自定义 `EID_HVC`：转为 `VmExit::Hypercall`。
 - Debug Console Extension (`EID_DBCN`)：支持读写 guest 缓冲区和单字节输出。
 - System Reset：对 shutdown 转为 `SystemDown`。
 - 其余扩展：交给 `RISCVVCpuSbi` 的 `RustSBI` 前向器处理。
@@ -204,19 +204,19 @@ flowchart TD
 - `RISCVVCpu::new()`
 - `setup()`
 - `set_entry()`
-- `set_ept_root()`
+- `set_nested_page_table_root()`
 - `bind()` / `run()` / `unbind()`
 - `has_hardware_support()`
 - `RISCVPerCpu::new()` / `hardware_enable()`
 
 ### 2.3 典型使用场景
 
-在 `axvm` 中，该 crate 会被包装成架构相关的 `AxArchVCpuImpl`：
+在 `axvm` 中，该 crate 会被包装成架构相关的 `ArchVCpu`：
 
 - 创建 VM 时根据配置构建 `RISCVVCpuCreateConfig`
 - 每核先建立 `RISCVPerCpu`
 - 每个 vCPU 安装 guest 入口和 `hgatp`
-- `run_vcpu()` 循环中持续消费 `AxVCpuExitReason`
+- `run_vcpu()` 循环中持续消费 `VmExit`
 
 对调用者而言，`riscv_vcpu` 提供的是“RISC-V 版本的统一 vCPU 后端”，而不是一个直接面向应用的 API。
 
@@ -238,7 +238,7 @@ flowchart TD
 
 ### 主要消费者
 
-- `virtualization/axvm`：把它作为 RISC-V 架构后端重导出为 `AxArchVCpuImpl` 与 `AxVMArchPerCpuImpl`。
+- `virtualization/axvm`：把它作为 RISC-V 架构后端重导出为 `ArchVCpu` 与 `ArchPerCpu`。
 - `os/axvisor`：通过 `axvm` 间接使用，是当前仓库中的实际落地对象。
 
 ### 3.3 关系示意
@@ -260,9 +260,9 @@ graph TD
 1. 为每个物理核创建 `RISCVPerCpu`，并执行 `hardware_enable()` 检查 H 扩展。
 2. 构造 `RISCVVCpuCreateConfig`，设置 `hart_id` 和 `dtb_addr`。
 3. 调用 `new()` 和 `setup()` 初始化 guest 初始态。
-4. 用 `set_entry()` 安装 guest 入口，用 `set_ept_root()` 安装 stage-2 根页表。
+4. 用 `set_entry()` 安装 guest 入口，用 `set_nested_page_table_root()` 安装 stage-2 根页表。
 5. 在每次调度前 `bind()`，执行 `run()`，退出后 `unbind()`。
-6. 根据返回的 `AxVCpuExitReason` 在 `axvm` 中继续处理设备、中断和 hypercall。
+6. 根据返回的 `VmExit` 在 `axvm` 中继续处理设备、中断和 hypercall。
 
 ### 4.2 调试重点
 
@@ -294,7 +294,7 @@ cargo build -p riscv_vcpu --target riscv64gc-unknown-none-elf
 ### 4.4 维护注意事项
 
 - `trap.S` 与 `regs.rs` 的偏移关系非常紧，改动结构体字段顺序必须同步检查汇编偏移宏。
-- `set_ept_root()` 这个名字来自通用抽象，但实现写的是 `hgatp`，文档和代码审查中应避免用 x86 语义误读。
+- `set_nested_page_table_root()` 这个名字来自通用抽象，但实现写的是 `hgatp`，文档和代码审查中应避免用 x86 语义误读。
 - `guest_mem.rs` 通过清空 `vsatp` 访问 GPA，修改时要同步考虑 `hfence_vvma_all()` 语义。
 - `vmexit_handler()` 集中承载了 SBI、timer、external IRQ 和 MMIO trap 语义，属于最敏感路径。
 

@@ -36,44 +36,41 @@ use alloc::vec::Vec;
 use ax_errno::AxResult;
 #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
 use ax_errno::ax_err_type;
-#[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
-use fdt_parser::Fdt;
+use axvmconfig::{AxVMCrateConfig, VMBootProtocol};
 // pub use print::print_fdt;
 #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
 pub use create::update_fdt;
 #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
 pub use device::build_all_node_paths;
 #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
+use fdt_parser::Fdt;
+#[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
 pub use parser::*;
 
-use axvm::config::AxVMConfig;
-use axvmconfig::{AxVMCrateConfig, VMBootProtocol};
-
-#[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
-use crate::config::vmcfg;
+use crate::{boot::BootImageProvider, config::AxVMConfig};
 
 /// Guest DTB artifact produced or patched by the monitor before AxVM owns it.
 #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
 #[derive(Debug, Clone)]
-pub(crate) struct GuestDtbImage {
+pub struct GuestDtbImage {
     bytes: Vec<u8>,
 }
 
 #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
 impl GuestDtbImage {
-    pub(crate) fn new(bytes: Vec<u8>) -> Self {
+    pub fn new(bytes: Vec<u8>) -> Self {
         Self { bytes }
     }
 
-    pub(crate) fn as_bytes(&self) -> &[u8] {
+    pub fn as_bytes(&self) -> &[u8] {
         &self.bytes
     }
 }
 
 /// Initialize LoongArch guest firmware resource handling.
 #[cfg(target_arch = "loongarch64")]
-pub(crate) fn init_guest_boot_resources() {
-    crate::guest_platform::loongarch64::init();
+pub fn init_guest_boot_resources() {
+    crate::boot::guest_platform::loongarch64::init();
 }
 
 #[cfg(target_arch = "loongarch64")]
@@ -81,7 +78,7 @@ fn handle_uefi_fdt_operations(
     vm_config: &mut AxVMConfig,
     vm_create_config: &mut AxVMCrateConfig,
 ) -> AxResult {
-    crate::guest_platform::loongarch64::prepare_uefi_fdt_config(vm_config, vm_create_config)
+    crate::boot::guest_platform::loongarch64::prepare_uefi_fdt_config(vm_config, vm_create_config)
 }
 
 #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
@@ -100,7 +97,7 @@ fn handle_uefi_fdt_operations(
 
 /// Prepare LoongArch guest firmware FDT facts for UEFI boot.
 #[cfg(target_arch = "loongarch64")]
-pub(crate) fn handle_fdt_operations(
+pub fn handle_fdt_operations(
     vm_config: &mut AxVMConfig,
     vm_create_config: &mut AxVMCrateConfig,
 ) -> AxResult {
@@ -117,9 +114,10 @@ pub(crate) fn handle_fdt_operations(
 
 /// Handle all FDT-related operations for guest architectures that boot with DTB.
 #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
-pub(crate) fn handle_fdt_operations(
+pub fn handle_fdt_operations(
     vm_config: &mut AxVMConfig,
     vm_create_config: &mut AxVMCrateConfig,
+    provider: &dyn BootImageProvider,
 ) -> AxResult<Option<GuestDtbImage>> {
     if vm_create_config.kernel.effective_boot_protocol() == VMBootProtocol::Uefi {
         handle_uefi_fdt_operations(vm_config, vm_create_config)?;
@@ -134,7 +132,9 @@ pub(crate) fn handle_fdt_operations(
             .map_err(|e| ax_err_type!(InvalidData, format!("Failed to parse host FDT: {e:#?}")))?;
         set_phys_cpu_sets(vm_config, &host_fdt, vm_create_config)?;
 
-        if let Some(provided_dtb) = get_developer_provided_dtb(vm_config, vm_create_config)? {
+        if let Some(provided_dtb) =
+            get_developer_provided_dtb(vm_config, vm_create_config, provider)?
+        {
             info!("VM[{}] found DTB , parsing...", vm_config.id());
             reserve_excluded_device_ranges(vm_config, vm_create_config, &provided_dtb)?;
             guest_dtb = Some(GuestDtbImage::new(update_provided_fdt(
@@ -153,7 +153,9 @@ pub(crate) fn handle_fdt_operations(
                 vm_create_config,
             )?));
         }
-    } else if let Some(provided_dtb) = get_developer_provided_dtb(vm_config, vm_create_config)? {
+    } else if let Some(provided_dtb) =
+        get_developer_provided_dtb(vm_config, vm_create_config, provider)?
+    {
         info!("VM[{}] found DTB , parsing...", vm_config.id());
         reserve_excluded_device_ranges(vm_config, vm_create_config, &provided_dtb)?;
         guest_dtb = Some(GuestDtbImage::new(update_provided_fdt(
@@ -205,10 +207,12 @@ pub(crate) fn handle_fdt_operations(
 fn get_developer_provided_dtb(
     vm_cfg: &AxVMConfig,
     crate_config: &AxVMCrateConfig,
+    provider: &dyn BootImageProvider,
 ) -> AxResult<Option<Vec<u8>>> {
     match crate_config.kernel.image_location.as_deref() {
         Some("memory") => {
-            let vm_images = vmcfg::get_memory_images()
+            let vm_images = provider
+                .static_vm_images()
                 .iter()
                 .find(|&v| v.id == vm_cfg.id());
 
@@ -217,10 +221,10 @@ fn get_developer_provided_dtb(
                 return Ok(Some(dtb.to_vec()));
             }
         }
-        #[cfg(feature = "fs")]
+        #[cfg(any(feature = "fs", feature = "host-fs"))]
         Some("fs") => {
             if let Some(dtb_path) = &crate_config.kernel.dtb_path {
-                let dtb_buffer = crate::images::fs::read_full_image(dtb_path)?;
+                let dtb_buffer = crate::boot::images::fs::read_full_image(dtb_path, provider)?;
                 info!("DTB file in fs, size: 0x{:x}", dtb_buffer.len());
                 return Ok(Some(dtb_buffer));
             }

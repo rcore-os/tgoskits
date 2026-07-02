@@ -1,8 +1,11 @@
 //! Device construction for VM preparation.
 
+#[cfg(any(target_arch = "aarch64", target_arch = "x86_64"))]
 use alloc::{format, sync::Arc};
 
-use ax_errno::{AxResult, ax_err_type};
+use ax_errno::AxResult;
+#[cfg(any(target_arch = "aarch64", target_arch = "x86_64"))]
+use ax_errno::ax_err_type;
 use axdevice::{AxVmDeviceConfig, AxVmDevices, DeviceBuildContext, DeviceFactoryRegistry};
 #[cfg(target_arch = "aarch64")]
 use axdevice_base::DeviceRegistry as _;

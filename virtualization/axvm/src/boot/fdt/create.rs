@@ -23,20 +23,20 @@ use core::ptr::NonNull;
 use ax_errno::{AxError, AxResult, ax_err_type};
 #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
 use ax_memory_addr::MemoryAddr;
+use axvmconfig::AxVMCrateConfig;
 use fdt_parser::{Fdt, Node};
 
 use super::vm_fdt::{FdtWriter, FdtWriterNode};
 #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
-use crate::images::load_vm_image_from_memory;
+use crate::AxVMRef;
+#[cfg(any(target_arch = "aarch64", target_arch = "riscv64", test))]
+use crate::GuestPhysAddr;
+#[cfg(any(target_arch = "aarch64", target_arch = "riscv64", test))]
+use crate::VMMemoryRegion;
 #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
-use axvm::AxVMRef;
-#[cfg(any(target_arch = "aarch64", target_arch = "riscv64", test))]
-use axvm::GuestPhysAddr;
-#[cfg(any(target_arch = "aarch64", target_arch = "riscv64", test))]
-use axvm::VMMemoryRegion;
-use axvmconfig::AxVMCrateConfig;
+use crate::boot::images::load_vm_image_from_memory;
 
-// use crate::fdt::print::{print_fdt, print_guest_fdt};
+// use crate::boot::fdt::print::{print_fdt, print_guest_fdt};
 
 fn fdt_write_err(err: impl core::fmt::Display) -> AxError {
     ax_err_type!(InvalidData, format!("Failed to write guest FDT: {err}"))
@@ -342,7 +342,7 @@ fn add_memory_node(
 
 #[cfg(any(target_arch = "aarch64", test))]
 fn initrd_range_from_image_config(
-    ramdisk: Option<&axvm::config::RamdiskInfo>,
+    ramdisk: Option<&crate::config::RamdiskInfo>,
 ) -> Option<(u64, u64)> {
     let rd = ramdisk?;
     let start = rd.load_gpa.as_usize() as u64;
@@ -516,7 +516,7 @@ pub fn update_fdt(
 
     let new_fdt_bytes = new_fdt.finish().map_err(fdt_write_err)?;
 
-    // crate::fdt::print::print_guest_fdt(new_fdt_bytes.as_slice());
+    // crate::boot::fdt::print::print_guest_fdt(new_fdt_bytes.as_slice());
     let vm_clone = vm.clone();
     let dest_addr = calculate_dtb_load_addr(vm, new_fdt_bytes.len())?;
     debug!(
@@ -567,7 +567,7 @@ mod tests {
     use fdt_parser::Fdt;
 
     use super::{cpu_node_id, initrd_range_from_image_config, need_cpu_node, sanitize_bootargs};
-    use axvm::{GuestPhysAddr, config::RamdiskInfo};
+    use crate::{GuestPhysAddr, config::RamdiskInfo};
 
     fn test_fdt(dts: &str) -> Fdt<'static> {
         let mut writer = super::FdtWriter::new().unwrap();
@@ -595,7 +595,7 @@ mod tests {
     fn cpu_node_selection_uses_node_id_when_reg_differs() {
         let fdt = test_fdt("cpu@0=200\ncpu@100=0\ncpu@101=100");
         let nodes: Vec<_> = fdt.all_nodes().collect();
-        let paths = crate::fdt::build_all_node_paths(&nodes);
+        let paths = crate::boot::fdt::build_all_node_paths(&nodes);
         let selected: Vec<_> = nodes
             .iter()
             .zip(paths.iter())

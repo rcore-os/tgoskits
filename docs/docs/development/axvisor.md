@@ -100,7 +100,7 @@ os/axvisor/
 | 组件 | 职责 |
 |------|------|
 | `axvm` | VM 抽象：`AxVM`, `AxVMRef`, `VMMemoryRegion`, `VMStatus` |
-| `axvm-types` + `axvm/src/vcpu.rs` | vCPU 协议与 wrapper：`VmArchVcpuOps`, `VmExit` / `AxVCpuExitReason`，状态机管理 |
+| `axvm-types` + `axvm/src/vcpu.rs` | vCPU 协议与 wrapper：`VmArchVcpuOps`, `VmExit` / `VmExit`，状态机管理 |
 | `axdevice` | 虚拟设备框架：passthrough / emulated / excluded |
 | `axvisor_api` | Hypervisor API 接口 |
 | `axaddrspace` | 地址空间管理 |

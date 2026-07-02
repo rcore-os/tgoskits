@@ -7,15 +7,13 @@ use ax_errno::{AxResult, ax_err_type};
 use axdevice::{
     FwCfgInterruptConfig, FwCfgPciConfig, FwCfgPlatformConfig, FwCfgRamRegion, FwCfgSerialConfig,
 };
-use axvm::{AxVMRef, GuestPhysAddr};
 use axvmconfig::{AxVMCrateConfig, EmulatedDeviceType};
-
 pub use resources::{
     LoongArchGuestIrqRoute, get_guest_irq_routes, prepare_uefi_fdt_config,
     prepare_uefi_runtime_config,
 };
 
-use crate::images::load_vm_image_from_memory;
+use crate::{AxVMRef, GuestPhysAddr, boot::images::load_vm_image_from_memory};
 
 pub const UEFI_FIRMWARE_FDT_BASE: usize = 0x0010_0000;
 
@@ -147,7 +145,7 @@ impl GuestPlatform {
 
 pub fn load_firmware_fdt(vm: &AxVMRef, config: &AxVMCrateConfig) -> AxResult {
     let platform = GuestPlatform::discover(vm, config);
-    let fdt = crate::fdt::loongarch64::guest_firmware_dtb::build(&platform)?;
+    let fdt = crate::boot::fdt::loongarch64::guest_firmware_dtb::build(&platform)?;
     debug!(
         "VM[{}] loading LoongArch UEFI firmware FDT: {} bytes at {:#x}",
         config.base.id,

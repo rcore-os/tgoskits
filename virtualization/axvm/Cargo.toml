@@ -55,6 +55,9 @@ axvm-types = { workspace = true }
 axhvc = { workspace = true }
 axdevice = { workspace = true }
 axdevice_base = { workspace = true }
+axvmconfig = { workspace = true, default-features = false }
+fdt-parser = "0.4"
+hashbrown = "0.14"
 [target.'cfg(target_arch = "x86_64")'.dependencies]
 x86_vcpu = { workspace = true }
 x86_vlapic = { workspace = true }

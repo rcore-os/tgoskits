@@ -22,6 +22,8 @@ pub use axvm_types::{
     VMInterruptMode, VMType, VmMemConfig, VmMemMappingType,
 };
 
+use crate::arch::{ArchOps, CurrentArch};
+
 /// Policy used by AxVM when deriving runtime guest boot image addresses.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum GuestBootPolicy {
@@ -40,15 +42,6 @@ pub struct AxVCpuConfig {
     pub bsp_entry: GuestPhysAddr,
     /// The entry address in GPA for the Application Processor (AP).
     pub ap_entry: GuestPhysAddr,
-    /// LoongArch Linux EFI-style boot arguments (a0, a1, a2).
-    #[cfg(target_arch = "loongarch64")]
-    pub boot_args: [usize; 3],
-    /// LoongArch Linux boot stack top.
-    #[cfg(target_arch = "loongarch64")]
-    pub boot_stack_top: usize,
-    /// Whether the LoongArch guest should be entered like firmware after CPU reset.
-    #[cfg(target_arch = "loongarch64")]
-    pub firmware_boot: bool,
 }
 
 /// Ramdisk image information.
@@ -348,10 +341,6 @@ impl PhysCpuList {
     /// - The pCpu affinity mask, `None` if not set.
     /// - The physical id of the vCpu, equal to vCpu id if not provided.
     pub fn get_vcpu_affinities_pcpu_ids(&self) -> Vec<(usize, Option<usize>, usize)> {
-        let mut vcpu_pcpu_tuples = Vec::new();
-        #[cfg(target_arch = "riscv64")]
-        let mut pcpu_mask_flag = false;
-
         if let Some(phys_cpu_ids) = &self.phys_cpu_ids
             && self.cpu_num != phys_cpu_ids.len()
         {
@@ -360,39 +349,11 @@ impl PhysCpuList {
                 self.cpu_num, self.phys_cpu_ids
             );
         }
-
-        for vcpu_id in 0..self.cpu_num {
-            vcpu_pcpu_tuples.push((vcpu_id, None, vcpu_id));
-        }
-
-        #[cfg(target_arch = "riscv64")]
-        if let Some(phys_cpu_sets) = &self.phys_cpu_sets {
-            pcpu_mask_flag = true;
-            for (vcpu_id, pcpu_mask_bitmap) in phys_cpu_sets.iter().enumerate() {
-                vcpu_pcpu_tuples[vcpu_id].1 = Some(*pcpu_mask_bitmap);
-            }
-        }
-
-        #[cfg(not(target_arch = "riscv64"))]
-        if let Some(phys_cpu_sets) = &self.phys_cpu_sets {
-            for (vcpu_id, pcpu_mask_bitmap) in phys_cpu_sets.iter().enumerate() {
-                vcpu_pcpu_tuples[vcpu_id].1 = Some(*pcpu_mask_bitmap);
-            }
-        }
-
-        if let Some(phys_cpu_ids) = &self.phys_cpu_ids {
-            for (vcpu_id, phys_id) in phys_cpu_ids.iter().enumerate() {
-                vcpu_pcpu_tuples[vcpu_id].2 = *phys_id;
-                #[cfg(target_arch = "riscv64")]
-                {
-                    if !pcpu_mask_flag {
-                        // if don't assign pcpu mask yet, assign it manually
-                        vcpu_pcpu_tuples[vcpu_id].1 = Some(1 << (*phys_id));
-                    }
-                }
-            }
-        }
-        vcpu_pcpu_tuples
+        CurrentArch::vcpu_affinities(
+            self.cpu_num,
+            self.phys_cpu_ids.as_deref(),
+            self.phys_cpu_sets.as_deref(),
+        )
     }
 
     /// Returns the number of CPUs.

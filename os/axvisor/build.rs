@@ -284,7 +284,7 @@ fn generate_guest_img_loading_functions(
             };
 
             memory_images.push(quote! {
-                MemoryImage {
+                axvm::boot::StaticVmImage {
                     id: #id,
                     kernel: include_bytes!(#kernel),
                     dtb: #dtb,
@@ -296,22 +296,8 @@ fn generate_guest_img_loading_functions(
     }
 
     let output = quote! {
-        /// One guest image data from memory.
-        pub struct MemoryImage{
-            /// vm id in config file
-            pub id: usize,
-            /// kernel image
-            pub kernel: &'static [u8],
-            /// dtb image
-            pub dtb: Option<&'static [u8]>,
-            /// bios image
-            pub bios: Option<&'static [u8]>,
-            /// ramdisk image
-            pub ramdisk: Option<&'static [u8]>,
-        }
-
         /// Get memory images from config file.
-        pub fn get_memory_images() -> &'static [MemoryImage] {
+        pub fn get_memory_images() -> &'static [axvm::boot::StaticVmImage] {
             &[
                 #(#memory_images),*
             ]
@@ -337,25 +323,20 @@ fn generate_firmware_img_loading_functions(
             let bios = bios.display().to_string();
 
             firmware_images.push(quote! {
-                FirmwareImage {
+                axvm::boot::StaticVmImage {
                     id: #id,
+                    kernel: &[],
+                    dtb: None,
                     bios: include_bytes!(#bios),
+                    ramdisk: None,
                 }
             });
         }
     }
 
     let output = quote! {
-        /// One guest firmware image loaded from the build host.
-        pub struct FirmwareImage {
-            /// vm id in config file
-            pub id: usize,
-            /// boot firmware image
-            pub bios: &'static [u8],
-        }
-
         /// Get firmware images from config file.
-        pub fn get_firmware_images() -> &'static [FirmwareImage] {
+        pub fn get_firmware_images() -> &'static [axvm::boot::StaticVmImage] {
             &[
                 #(#firmware_images),*
             ]
