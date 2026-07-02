@@ -10,7 +10,6 @@ fn prepare_request_prefers_cli_over_snapshot() {
 package = "from-snapshot"
 arch = "riscv64"
 target = "snapshot-target"
-plat_dyn = false
 
 [qemu]
 qemu_config = "configs/snapshot-qemu.toml"
@@ -30,7 +29,6 @@ uboot_config = "configs/snapshot-uboot.toml"
             package: Some("from-cli".into()),
             arch: Some("aarch64".into()),
             target: Some(DEFAULT_ARCEOS_TARGET.into()),
-            plat_dyn: Some(true),
             smp: Some(4),
             debug: true,
         },
@@ -41,7 +39,6 @@ uboot_config = "configs/snapshot-uboot.toml"
 
     assert_eq!(request.package, "from-cli");
     assert_eq!(request.target, DEFAULT_ARCEOS_TARGET);
-    assert_eq!(request.plat_dyn, Some(true));
     assert_eq!(request.smp, Some(4));
     assert!(request.debug);
     assert_eq!(
@@ -53,7 +50,6 @@ uboot_config = "configs/snapshot-uboot.toml"
     assert_eq!(snapshot.package.as_deref(), Some("from-cli"));
     assert_eq!(snapshot.arch.as_deref(), Some("aarch64"));
     assert_eq!(snapshot.target.as_deref(), Some(DEFAULT_ARCEOS_TARGET));
-    assert_eq!(snapshot.plat_dyn, Some(true));
     assert_eq!(snapshot.smp, Some(4));
     assert_eq!(
         snapshot.qemu.qemu_config,
@@ -85,7 +81,6 @@ qemu_config = "configs/qemu.toml"
     assert_eq!(request.package, "arceos-helloworld");
     assert_eq!(request.arch, DEFAULT_ARCEOS_ARCH);
     assert_eq!(request.target, DEFAULT_ARCEOS_TARGET);
-    assert_eq!(request.plat_dyn, None);
     assert_eq!(
         request.qemu_config,
         Some(root.path().join("configs/qemu.toml"))
@@ -104,7 +99,6 @@ fn prepare_request_inherits_snapshot_config_when_no_explicit_selectors() {
         r#"
 package = "arceos-helloworld"
 target = "aarch64-unknown-none-softfloat"
-plat_dyn = true
 features = []
 log = "Info"
 max_cpu_num = 1
@@ -149,7 +143,6 @@ fn prepare_request_explicit_config_uses_package_and_target_selectors() {
         r#"
 package = "arceos-helloworld"
 target = "aarch64-unknown-none-softfloat"
-plat_dyn = true
 features = []
 log = "Info"
 "#,
@@ -178,7 +171,6 @@ qemu_config = "configs/qemu.toml"
             package: None,
             arch: None,
             target: None,
-            plat_dyn: None,
             smp: None,
             debug: false,
         },
@@ -207,7 +199,6 @@ fn prepare_request_explicit_package_does_not_inherit_snapshot_config() {
         r#"
 package = "arceos-helloworld"
 target = "aarch64-unknown-none-softfloat"
-plat_dyn = true
 "#,
     )
     .unwrap();
@@ -252,7 +243,7 @@ config = "configs/orangepi.toml"
 }
 
 #[test]
-fn prepare_request_explicit_config_drops_snapshot_plat_dyn() {
+fn prepare_request_explicit_config_drops_snapshot_platform_mode() {
     let root = tempdir().unwrap();
     write_snapshot_text(
         root.path(),
@@ -261,7 +252,6 @@ fn prepare_request_explicit_config_drops_snapshot_plat_dyn() {
 package = "from-snapshot"
 arch = "riscv64"
 target = "riscv64gc-unknown-none-elf"
-plat_dyn = false
 smp = 4
 
 [qemu]
@@ -279,7 +269,6 @@ qemu_config = "configs/snapshot-qemu.toml"
             package: Some("arceos-test-suit".into()),
             arch: None,
             target: Some("riscv64gc-unknown-none-elf".into()),
-            plat_dyn: None,
             smp: None,
             debug: false,
         },
@@ -289,10 +278,8 @@ qemu_config = "configs/snapshot-qemu.toml"
     .unwrap();
 
     assert_eq!(request.package, "arceos-test-suit");
-    assert_eq!(request.plat_dyn, None);
     assert_eq!(request.smp, None);
     assert_eq!(request.qemu_config, None);
-    assert_eq!(snapshot.plat_dyn, None);
     assert_eq!(snapshot.smp, None);
     assert_eq!(snapshot.qemu.qemu_config, None);
 }
@@ -319,7 +306,6 @@ fn prepare_request_resolves_arceos_target_from_arch() {
             package: Some("arceos-helloworld".into()),
             arch: Some("x86_64".into()),
             target: None,
-            plat_dyn: None,
             smp: None,
             debug: false,
         },
@@ -458,7 +444,6 @@ uboot_config = "configs/uboot-aarch64.toml"
             package: None,
             arch: None,
             target: Some("riscv64gc-unknown-none-elf".into()),
-            plat_dyn: None,
             smp: None,
             debug: false,
         },

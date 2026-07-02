@@ -1,5 +1,4 @@
 target = "loongarch64-unknown-none-softfloat"
-axconfig_overrides = ["plat.phys-memory-size=0x8000_0000"]
 log = "Warn"
 features = [
   "ax-hal/plat-dyn",

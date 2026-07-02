@@ -17,12 +17,7 @@ fn repo_metadata() -> cargo_metadata::Metadata {
     build::workspace_metadata().unwrap()
 }
 
-fn request(
-    package: &str,
-    target: &str,
-    plat_dyn: Option<bool>,
-    build_info_path: PathBuf,
-) -> ResolvedBuildRequest {
+fn request(package: &str, target: &str, build_info_path: PathBuf) -> ResolvedBuildRequest {
     ResolvedBuildRequest {
         package: package.to_string(),
         arch: if target.starts_with("x86_64") {
@@ -37,7 +32,6 @@ fn request(
             "unknown".to_string()
         },
         target: target.to_string(),
-        plat_dyn,
         smp: None,
         debug: false,
         build_info_path,
@@ -49,7 +43,7 @@ fn request(
 #[test]
 fn resolves_dynamic_platform_features_and_args() {
     let mut build_info = ArceosBuildInfo::default();
-    build_info.resolve_features("arceos-helloworld", "aarch64-unknown-none-softfloat", true);
+    build_info.resolve_features("arceos-helloworld", "aarch64-unknown-none-softfloat");
 
     assert!(build_info.features.contains(&"ax-std/plat-dyn".to_string()));
     assert!(!build_info.features.contains(&"ax-hal/plat-dyn".to_string()));
@@ -64,46 +58,6 @@ fn resolves_dynamic_platform_features_and_args() {
 }
 
 #[test]
-fn resolves_non_dynamic_aarch64_to_defplat_without_static_default() {
-    let mut build_info = ArceosBuildInfo::default();
-    build_info.resolve_features("arceos-helloworld", "aarch64-unknown-none-softfloat", false);
-
-    assert!(build_info.features.contains(&"ax-hal/defplat".to_string()));
-    assert!(
-        !build_info
-            .features
-            .contains(&"ax-hal/aarch64-qemu-virt".to_string())
-    );
-    assert!(!build_info.features.contains(&"ax-std/plat-dyn".to_string()));
-
-    let args = ArceosBuildInfo::build_cargo_args("aarch64-unknown-none-softfloat", &[]);
-    assert!(
-        args.windows(2)
-            .any(|pair| pair == ["-Z", "build-std=core,alloc"])
-    );
-    assert!(!args.iter().any(|arg| arg.contains("-Clink-arg=-T")));
-}
-
-#[test]
-fn preparing_c_app_non_dynamic_aarch64_without_custom_platform_fails() {
-    let metadata = repo_metadata();
-    let mut build_info = ArceosBuildInfo::default();
-    let result = build_info.prepare_non_dynamic_platform_for(
-        "arceos-helloworld",
-        "aarch64-unknown-none-softfloat",
-        false,
-        &metadata,
-    );
-
-    assert!(
-        result
-            .unwrap_err()
-            .to_string()
-            .contains("no default platform package is registered for arch `aarch64`")
-    );
-}
-
-#[test]
 fn max_cpu_num_adds_smp_feature_for_std_build() {
     let metadata = repo_metadata();
     let mut build_info = ArceosBuildInfo {
@@ -115,7 +69,6 @@ fn max_cpu_num_adds_smp_feature_for_std_build() {
     build_info.resolve_features_with_metadata(
         "starryos",
         "aarch64-unknown-none-softfloat",
-        false,
         &metadata,
     );
 
@@ -168,7 +121,7 @@ fn resolve_build_info_path_in_dir_prefers_existing_bare_name() {
 fn load_build_info_creates_missing_default_file() {
     let root = tempdir().unwrap();
     let path = root.path().join(".build-target.toml");
-    let request = request("arceos-helloworld", "target", None, path.clone());
+    let request = request("arceos-helloworld", "target", path.clone());
 
     let build_info = load_build_info(&request).unwrap();
 
@@ -266,7 +219,7 @@ log = "Warn"
 "#,
     )
     .unwrap();
-    let request = request("arceos-helloworld", "target", None, path.clone());
+    let request = request("arceos-helloworld", "target", path.clone());
 
     let build_info = load_build_info(&request).unwrap();
 
@@ -300,22 +253,14 @@ BACKTRACE = "y"
     let request = request(
         "arceos-test-suit",
         "aarch64-unknown-none-softfloat",
-        None,
         path.clone(),
     );
 
     let build_info = load_build_info(&request).unwrap();
 
-    assert!(build_info.plat_dyn);
-
     let metadata = repo_metadata();
     let cargo = build_info
-        .into_prepared_base_cargo_config_with_metadata(
-            &request.package,
-            &request.target,
-            request.plat_dyn,
-            &metadata,
-        )
+        .into_prepared_base_cargo_config_with_metadata(&request.package, &request.target, &metadata)
         .unwrap();
 
     assert!(cargo.features.contains(&"ax-std/plat-dyn".to_string()));
@@ -325,33 +270,6 @@ BACKTRACE = "y"
             .ends_with("scripts/targets/std/pie/aarch64-unknown-linux-musl.json")
     );
     assert!(!cargo.env.contains_key("AX_CONFIG_PATH"));
-}
-
-#[test]
-fn load_build_info_preserves_explicit_non_dynamic_aarch64() {
-    let root = tempdir().unwrap();
-    let path = root
-        .path()
-        .join("build-aarch64-unknown-none-softfloat.toml");
-    fs::write(
-        &path,
-        r#"
-features = ["ax-std"]
-log = "Info"
-plat_dyn = false
-"#,
-    )
-    .unwrap();
-    let request = request(
-        "arceos-helloworld",
-        "aarch64-unknown-none-softfloat",
-        None,
-        path,
-    );
-
-    let build_info = load_build_info(&request).unwrap();
-
-    assert!(!build_info.plat_dyn);
 }
 
 #[test]
@@ -368,20 +286,13 @@ max_cpu_num = 4
 "#,
     )
     .unwrap();
-    let request = request("arceos-test-suit", "riscv64gc-unknown-none-elf", None, path);
+    let request = request("arceos-test-suit", "riscv64gc-unknown-none-elf", path);
 
     let build_info = load_build_info(&request).unwrap();
 
-    assert!(build_info.plat_dyn);
-
     let metadata = repo_metadata();
     let cargo = build_info
-        .into_prepared_base_cargo_config_with_metadata(
-            &request.package,
-            &request.target,
-            request.plat_dyn,
-            &metadata,
-        )
+        .into_prepared_base_cargo_config_with_metadata(&request.package, &request.target, &metadata)
         .unwrap();
 
     assert!(cargo.features.contains(&"ax-std/plat-dyn".to_string()));
@@ -415,22 +326,14 @@ log = "Warn"
     let request = request(
         "arceos-test-suit",
         "loongarch64-unknown-none-softfloat",
-        None,
         path,
     );
 
     let build_info = load_build_info(&request).unwrap();
 
-    assert!(build_info.plat_dyn);
-
     let metadata = repo_metadata();
     let cargo = build_info
-        .into_prepared_base_cargo_config_with_metadata(
-            &request.package,
-            &request.target,
-            request.plat_dyn,
-            &metadata,
-        )
+        .into_prepared_base_cargo_config_with_metadata(&request.package, &request.target, &metadata)
         .unwrap();
 
     assert!(cargo.features.contains(&"ax-std/plat-dyn".to_string()));
@@ -482,7 +385,6 @@ fn prepared_cargo_config_uses_unified_std_target() {
     .into_prepared_base_cargo_config_with_metadata(
         "arceos-helloworld",
         "aarch64-unknown-none-softfloat",
-        None,
         &metadata,
     )
     .unwrap();
@@ -509,7 +411,6 @@ fn c_app_cargo_config_uses_builtin_bare_target_without_json_spec() {
     let request = request(
         "arceos-helloworld",
         "loongarch64-unknown-none-softfloat",
-        None,
         build_config,
     );
     let cargo = load_c_app_cargo_config(&request).unwrap();
@@ -531,7 +432,6 @@ fn to_cargo_config_maps_max_cpu_num_to_smp_env_for_dynamic_platforms() {
     let request = request(
         "arceos-helloworld",
         "aarch64-unknown-none-softfloat",
-        Some(true),
         root.path().join(".build.toml"),
     );
 
@@ -540,12 +440,7 @@ fn to_cargo_config_maps_max_cpu_num_to_smp_env_for_dynamic_platforms() {
         max_cpu_num: Some(4),
         ..ArceosBuildInfo::default()
     }
-    .into_prepared_base_cargo_config_with_metadata(
-        &request.package,
-        &request.target,
-        request.plat_dyn,
-        &metadata,
-    )
+    .into_prepared_base_cargo_config_with_metadata(&request.package, &request.target, &metadata)
     .unwrap();
 
     assert_eq!(cargo.env.get("SMP"), Some(&"4".to_string()));
@@ -559,7 +454,6 @@ fn prepared_cargo_config_defaults_x86_64_to_dynamic_platform() {
         .into_prepared_base_cargo_config_with_metadata(
             "arceos-helloworld",
             "x86_64-unknown-none",
-            None,
             &metadata,
         )
         .unwrap();
@@ -572,28 +466,4 @@ fn prepared_cargo_config_defaults_x86_64_to_dynamic_platform() {
     );
     assert!(cargo.features.contains(&"ax-std/plat-dyn".to_string()));
     assert!(!cargo.features.contains(&"ax-hal/x86-pc".to_string()));
-}
-
-#[test]
-fn resolve_effective_plat_dyn_uses_override_and_target_support() {
-    assert!(build::resolve_effective_plat_dyn(
-        "aarch64-unknown-none-softfloat",
-        true,
-        None
-    ));
-    assert!(!build::resolve_effective_plat_dyn(
-        "aarch64-unknown-none-softfloat",
-        true,
-        Some(false)
-    ));
-    assert!(build::resolve_effective_plat_dyn(
-        "riscv64gc-unknown-none-elf",
-        true,
-        None
-    ));
-    assert!(build::resolve_effective_plat_dyn(
-        "x86_64-unknown-none",
-        true,
-        Some(true)
-    ));
 }

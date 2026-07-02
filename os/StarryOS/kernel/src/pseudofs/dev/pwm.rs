@@ -1,5 +1,6 @@
 use alloc::{borrow::Cow, boxed::Box, format, sync::Arc, vec::Vec};
 
+use ax_hal::mem::{PhysAddr, phys_to_virt};
 use ax_sync::Mutex;
 use axfs_ng_vfs::{VfsError, VfsResult};
 use sg200x_bsp::{
@@ -49,7 +50,8 @@ impl PwmSysfsState {
     fn new() -> Self {
         let mut chips = Vec::with_capacity(PWM_SYSFS_CHIPS as usize);
         for index in 0..PWM_SYSFS_CHIPS {
-            let pwm_addr = PWM0_BASE + index as usize * 0x1000 + ax_config::plat::PHYS_VIRT_OFFSET;
+            let pwm_paddr = PWM0_BASE + index as usize * 0x1000;
+            let pwm_addr = phys_to_virt(PhysAddr::from_usize(pwm_paddr)).as_usize();
             let pwm = unsafe { Pwm::new(pwm_addr) };
             chips.push(PwmChipState {
                 pwm,

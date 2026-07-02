@@ -101,7 +101,7 @@ graph TD
 
 ## 三层架构
 
-三层架构将关注点清晰地分离：CLI 层提供用户友好的命令行接口；axbuild 层负责 OS 特有的流程编排（如 ArceOS 的 axconfig 生成、StarryOS 的 rootfs 管理、Axvisor 的 VM 配置注入）；ostool 层则封装了与外部工具（cargo、QEMU、ostool-server）的直接交互，处理环境变量设置、进程管理等底层细节。
+三层架构将关注点清晰地分离：CLI 层提供用户友好的命令行接口；axbuild 层负责 OS 特有的流程编排（如动态平台 feature 装配、StarryOS 的 rootfs 管理、Axvisor 的 VM 配置注入）；ostool 层则封装了与外部工具（cargo、QEMU、ostool-server）的直接交互，处理环境变量设置、进程管理等底层细节。
 
 ```mermaid
 flowchart TB

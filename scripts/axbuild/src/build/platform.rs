@@ -1,21 +1,6 @@
 use super::{info::AxFeaturePrefixFamily, *};
 
-pub(super) fn default_plat_dyn() -> bool {
-    true
-}
-
-pub(super) fn is_default_plat_dyn(value: &bool) -> bool {
-    *value
-}
-
-pub(crate) fn resolve_effective_plat_dyn(
-    target: &str,
-    configured_plat_dyn: bool,
-    plat_dyn_override: Option<bool>,
-) -> bool {
-    plat_dyn_override.unwrap_or(configured_plat_dyn) && supports_platform_dynamic(target)
-}
-
+#[cfg(test)]
 pub(super) fn supports_platform_dynamic(target: &str) -> bool {
     target.starts_with("aarch64-")
         || target.starts_with("loongarch64-")
@@ -25,11 +10,6 @@ pub(super) fn supports_platform_dynamic(target: &str) -> bool {
 
 pub(super) fn default_to_bin_for_target(target: &str) -> bool {
     !target.starts_with("x86_64-") && !target.starts_with("loongarch64-")
-}
-
-pub(super) fn default_to_bin_for_target_config(target: &str, plat_dyn: bool) -> bool {
-    default_to_bin_for_target(target)
-        || (plat_dyn && (target.starts_with("x86_64-") || target.starts_with("loongarch64-")))
 }
 
 pub(super) fn normalize_legacy_feature_alias(feature: &str) -> String {
@@ -207,14 +187,6 @@ pub(crate) fn default_build_info_path_in_workspace(
         .join(format!("build-{target}.toml"))
 }
 
-pub(super) fn generated_axconfig_path(package: &str, target: &str) -> anyhow::Result<PathBuf> {
-    Ok(axbuild_tmp_dir(&crate::context::workspace_root_path()?)
-        .join("axconfig")
-        .join(package)
-        .join(target)
-        .join(".axconfig.toml"))
-}
-
 pub(super) fn feature_family_from_existing_features(
     features: &[String],
 ) -> Option<AxFeaturePrefixFamily> {
@@ -243,19 +215,6 @@ pub(crate) fn cached_workspace_metadata() -> anyhow::Result<&'static Metadata> {
 
     cached_metadata_result(
         METADATA.get_or_init(|| workspace_metadata().map_err(|err| format!("{err:#}"))),
-    )
-}
-
-pub(super) fn workspace_metadata_with_deps() -> anyhow::Result<Metadata> {
-    let manifest_path = workspace_manifest_path()?;
-    crate::context::workspace_metadata_root_manifest_with_deps(&manifest_path)
-}
-
-pub(crate) fn cached_workspace_metadata_with_deps() -> anyhow::Result<&'static Metadata> {
-    static METADATA: OnceLock<anyhow::Result<Metadata, String>> = OnceLock::new();
-
-    cached_metadata_result(
-        METADATA.get_or_init(|| workspace_metadata_with_deps().map_err(|err| format!("{err:#}"))),
     )
 }
 
@@ -304,24 +263,7 @@ pub(super) fn detect_ax_feature_prefix_family(
     }
 }
 
-pub(super) fn has_myplat_feature(features: &[String]) -> bool {
-    features.iter().any(|feature| {
-        matches!(
-            feature.as_str(),
-            "myplat" | "ax-std/myplat" | "ax-feat/myplat" | "ax-hal/myplat"
-        )
-    })
-}
-
-pub(super) fn has_defplat_feature(features: &[String]) -> bool {
-    features.iter().any(|feature| {
-        matches!(
-            feature.as_str(),
-            "defplat" | "ax-std/defplat" | "ax-feat/defplat" | "ax-hal/defplat"
-        )
-    })
-}
-
+#[cfg(test)]
 pub(super) fn ax_hal_platform_feature_name<'a>(
     feature: &'a str,
     metadata: Option<&Metadata>,
@@ -339,49 +281,18 @@ pub(super) fn ax_hal_platform_feature_name<'a>(
     }
 }
 
+#[cfg(test)]
 pub(super) fn is_known_ax_hal_platform_feature(_platform: &str) -> bool {
     false
 }
 
-pub(super) fn has_ax_hal_platform_feature(
-    features: &[String],
-    metadata: Option<&Metadata>,
-) -> bool {
-    features
-        .iter()
-        .any(|feature| ax_hal_platform_feature_name(feature, metadata).is_some())
-}
-
-pub(super) fn default_ax_hal_platform_feature(
-    target: &str,
-    metadata: Option<&Metadata>,
-) -> anyhow::Result<String> {
-    let arch = target_arch_name(target)?;
-    if let Some(metadata) = metadata
-        && let Some(platform) = platform_packages(metadata)
-            .into_iter()
-            .find(|platform| {
-                platform.metadata.arch == arch
-                    && platform.metadata.default_for_arch
-                    && !platform.metadata.dynamic
-            })
-            .map(|platform| platform.metadata.platform)
-    {
-        return Ok(format!("ax-hal/{platform}"));
-    }
-
-    Err(anyhow!(
-        "no static default ax-hal platform for arch `{arch}`"
-    ))
-}
-
+#[cfg(test)]
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default)]
 #[serde(rename_all = "kebab-case")]
 pub(super) struct AxplatMetadata {
     platform: String,
     arch: String,
-    config: Option<PathBuf>,
     default_for_arch: bool,
     dynamic: bool,
 }
@@ -393,13 +304,14 @@ pub(super) struct AxstdMetadata {
     features: Vec<String>,
 }
 
+#[cfg(test)]
 #[derive(Debug, Clone)]
 pub(super) struct PlatformPackage {
     package: String,
-    manifest_dir: PathBuf,
     metadata: AxplatMetadata,
 }
 
+#[cfg(test)]
 pub(super) fn platform_metadata(package: &Package) -> Option<AxplatMetadata> {
     package
         .metadata
@@ -423,362 +335,25 @@ pub(super) fn std_package_metadata_features(package: &str, metadata: &Metadata) 
         .unwrap_or_default()
 }
 
+#[cfg(test)]
 pub(super) fn platform_packages(metadata: &Metadata) -> Vec<PlatformPackage> {
     metadata
         .packages
         .iter()
         .filter_map(|package| {
             let metadata = platform_metadata(package)?;
-            let manifest_dir = Path::new(package.manifest_path.as_std_path())
-                .parent()?
-                .to_path_buf();
             Some(PlatformPackage {
                 package: package.name.to_string(),
-                manifest_dir,
                 metadata,
             })
         })
         .collect()
 }
 
+#[cfg(test)]
 pub(super) fn platform_package_by_name(metadata: &Metadata, platform_name: &str) -> Option<String> {
     platform_packages(metadata)
         .into_iter()
         .find(|platform| platform.metadata.platform == platform_name)
         .map(|platform| platform.package)
-}
-
-pub(super) fn platform_package_by_name_with_workspace_fallback(
-    metadata: &Metadata,
-    platform_name: &str,
-) -> Option<String> {
-    platform_package_by_name(metadata, platform_name).or_else(|| {
-        cached_workspace_metadata()
-            .ok()
-            .and_then(|metadata| platform_package_by_name(metadata, platform_name))
-    })
-}
-
-pub(super) fn default_platform_package(metadata: &Metadata, arch: &str) -> Option<String> {
-    platform_packages(metadata)
-        .into_iter()
-        .find(|platform| {
-            platform.metadata.arch == arch
-                && platform.metadata.default_for_arch
-                && !platform.metadata.dynamic
-        })
-        .map(|platform| platform.package)
-}
-
-pub(super) fn default_platform_package_with_workspace_fallback(
-    metadata: &Metadata,
-    arch: &str,
-) -> Option<String> {
-    default_platform_package(metadata, arch).or_else(|| {
-        cached_workspace_metadata()
-            .ok()
-            .and_then(|metadata| default_platform_package(metadata, arch))
-    })
-}
-
-pub(super) fn platform_config_path_from_metadata(
-    platform_package: &str,
-    metadata: &Metadata,
-) -> Option<PathBuf> {
-    platform_packages(metadata)
-        .into_iter()
-        .find(|platform| platform.package == platform_package)
-        .and_then(|platform| {
-            platform
-                .metadata
-                .config
-                .map(|config| platform.manifest_dir.join(config))
-        })
-        .filter(|path| path.exists())
-}
-
-pub(super) fn ax_hal_platform_package(platform: &str, metadata: &Metadata) -> Option<String> {
-    platform_package_by_name_with_workspace_fallback(metadata, platform)
-}
-
-pub(super) fn require_default_platform_package(
-    metadata: &Metadata,
-    arch: &str,
-) -> anyhow::Result<String> {
-    default_platform_package_with_workspace_fallback(metadata, arch)
-        .ok_or_else(|| anyhow!("no default platform package is registered for arch `{arch}`"))
-}
-
-pub(super) fn resolve_platform_package(
-    package: &str,
-    target: &str,
-    features: &[String],
-    metadata: &Metadata,
-) -> anyhow::Result<String> {
-    let arch = target_arch_name(target)?;
-    let package_info = workspace_package(metadata, package)?;
-
-    if let Some(platform) = features
-        .iter()
-        .find_map(|feature| ax_hal_platform_feature_name(feature, Some(metadata)))
-        .and_then(|platform| ax_hal_platform_package(platform, metadata))
-    {
-        return Ok(platform);
-    }
-
-    let explicit_platform_features: Vec<_> = features
-        .iter()
-        .map(|feature| {
-            feature
-                .strip_prefix("ax-feat/")
-                .or_else(|| feature.strip_prefix("ax-std/"))
-                .unwrap_or(feature.as_str())
-        })
-        .filter(|feature| {
-            !matches!(
-                *feature,
-                "ax-std" | "ax-feat" | "plat-dyn" | "defplat" | "myplat"
-            )
-        })
-        .collect();
-
-    if let Some(platform) =
-        explicit_platform_package_from_features(package_info, &explicit_platform_features, metadata)
-    {
-        return Ok(platform);
-    }
-
-    if has_myplat_feature(features)
-        && let Some(dep) = package_info
-            .dependencies
-            .iter()
-            .find(|dep| myplat_dependency_matches_arch(&dep.name, arch))
-    {
-        return Ok(dep.name.clone());
-    }
-
-    require_default_platform_package(metadata, arch)
-}
-
-pub(super) fn target_arch_name(target: &str) -> anyhow::Result<&'static str> {
-    if target.starts_with("aarch64-") {
-        Ok("aarch64")
-    } else if target.starts_with("x86_64-") {
-        Ok("x86_64")
-    } else if target.starts_with("riscv64") {
-        Ok("riscv64")
-    } else if target.starts_with("loongarch64-") {
-        Ok("loongarch64")
-    } else {
-        Err(anyhow!("unsupported target triple `{target}`"))
-    }
-}
-
-pub(super) fn explicit_platform_package_from_features(
-    package_info: &Package,
-    explicit_features: &[&str],
-    metadata: &Metadata,
-) -> Option<String> {
-    explicit_features
-        .iter()
-        .find_map(|feature| platform_package_by_name_with_workspace_fallback(metadata, feature))
-        .or_else(|| {
-            package_info
-                .dependencies
-                .iter()
-                .find(|dep| {
-                    dependency_is_platform(&dep.name)
-                        && explicit_features.iter().any(|feature| {
-                            *feature == dep.name
-                                || *feature == linker_platform_name(&dep.name)
-                                || feature_enables_dependency(package_info, feature, &dep.name)
-                        })
-                })
-                .map(|dep| dep.name.clone())
-        })
-}
-
-pub(super) fn dependency_is_platform(dep_name: &str) -> bool {
-    dep_name.starts_with("axplat-") || dep_name.starts_with("ax-plat-")
-}
-
-pub(super) fn feature_enables_dependency(
-    package_info: &Package,
-    feature: &str,
-    dep_name: &str,
-) -> bool {
-    package_info.features.get(feature).is_some_and(|items| {
-        items
-            .iter()
-            .any(|item| item == dep_name || item == &format!("dep:{dep_name}"))
-    })
-}
-
-pub(super) fn myplat_dependency_matches_arch(dep_name: &str, arch: &str) -> bool {
-    myplat_dependency_prefixes_for_arch(arch)
-        .iter()
-        .any(|prefix| dep_name.starts_with(prefix))
-}
-
-pub(super) fn myplat_dependency_prefixes_for_arch(arch: &str) -> &'static [&'static str] {
-    match arch {
-        "x86_64" => &["axplat-x86-", "axplat-x86_64-", "ax-plat-x86-"],
-        "aarch64" => &["axplat-aarch64-", "ax-plat-aarch64-"],
-        "riscv64" => &["axplat-riscv64-", "ax-plat-riscv64-"],
-        "loongarch64" => &["axplat-loongarch64-", "ax-plat-loongarch64-"],
-        _ => &[],
-    }
-}
-
-pub(super) fn linker_platform_name(platform_package: &str) -> &str {
-    platform_package
-        .strip_prefix("axplat-")
-        .or_else(|| platform_package.strip_prefix("ax-plat-"))
-        .unwrap_or(platform_package)
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct ResolvedPlatformConfig {
-    pub(crate) package: String,
-    pub(crate) config_path: PathBuf,
-    pub(crate) name: String,
-}
-
-pub(crate) fn resolve_platform_config(
-    package: &str,
-    target: &str,
-    features: &[String],
-    metadata: &Metadata,
-) -> anyhow::Result<ResolvedPlatformConfig> {
-    let platform_package = resolve_platform_package(package, target, features, metadata)?;
-    resolve_platform_config_by_package(&platform_package, metadata)
-}
-
-pub(crate) fn resolve_platform_config_by_package(
-    platform_package: &str,
-    metadata: &Metadata,
-) -> anyhow::Result<ResolvedPlatformConfig> {
-    let deps_metadata = cached_workspace_metadata_with_deps()
-        .context("failed to load dependency metadata for platform config resolution")?;
-    resolve_platform_config_by_package_with_metadata(platform_package, metadata, deps_metadata)
-}
-
-pub(crate) fn resolve_platform_config_by_package_with_metadata(
-    platform_package: &str,
-    metadata: &Metadata,
-    deps_metadata: &Metadata,
-) -> anyhow::Result<ResolvedPlatformConfig> {
-    let config_path = resolve_platform_config_path(platform_package, metadata, deps_metadata)?;
-    let name = read_platform_name(&config_path)
-        .unwrap_or_else(|| linker_platform_name(platform_package).to_string());
-    Ok(ResolvedPlatformConfig {
-        package: platform_package.to_string(),
-        config_path,
-        name,
-    })
-}
-
-pub(crate) fn resolve_platform_config_path(
-    platform_package: &str,
-    metadata: &Metadata,
-    deps_metadata: &Metadata,
-) -> anyhow::Result<PathBuf> {
-    if let Some(local_path) = find_local_platform_config_path(platform_package, metadata)? {
-        return Ok(local_path);
-    }
-    if let Some(local_path) = find_local_platform_config_path(platform_package, deps_metadata)? {
-        return Ok(local_path);
-    }
-
-    bail!(
-        "failed to resolve platform config for `{}`. Ensure the platform crate is a workspace \
-         member or dependency and contains an axconfig.toml next to its Cargo.toml",
-        platform_package
-    );
-}
-
-pub(super) fn find_local_platform_config_path(
-    platform_package: &str,
-    metadata: &Metadata,
-) -> anyhow::Result<Option<PathBuf>> {
-    if let Some(candidate) = platform_config_path_from_metadata(platform_package, metadata) {
-        return Ok(Some(candidate));
-    }
-
-    if let Some(pkg) = metadata_package(metadata, platform_package) {
-        let candidate = Path::new(pkg.manifest_path.as_std_path())
-            .parent()
-            .map(|dir| dir.join("axconfig.toml"));
-        if let Some(candidate) = candidate
-            && candidate.exists()
-        {
-            return Ok(Some(candidate));
-        }
-    }
-
-    let workspace_root = crate::context::workspace_root_path()?;
-    let platform_candidate = workspace_root
-        .join("platforms")
-        .join(platform_package)
-        .join("axconfig.toml");
-
-    Ok(platform_candidate.exists().then_some(platform_candidate))
-}
-
-pub(super) fn read_platform_name(platform_config: &Path) -> Option<String> {
-    read_config_string(&[platform_config.to_path_buf()], "platform").ok()
-}
-
-pub(crate) fn generate_axconfig(
-    workspace_root: &Path,
-    target: &str,
-    platform_name: &str,
-    platform_config: &Path,
-    out_config: &Path,
-    max_cpu_num: Option<usize>,
-    axconfig_overrides: &[String],
-) -> anyhow::Result<()> {
-    let defconfig = resolve_defconfig_path(workspace_root)?;
-    if let Some(parent) = out_config.parent() {
-        fs::create_dir_all(parent).with_context(|| {
-            format!(
-                "failed to create OUT_CONFIG parent directory {}",
-                parent.display()
-            )
-        })?;
-    }
-
-    let arch = target_arch_name(target)?;
-    let mut writes = vec![
-        format!("arch=\"{arch}\""),
-        format!("platform=\"{platform_name}\""),
-    ];
-    if let Some(max_cpu_num) = max_cpu_num {
-        writes.push(format!("plat.max-cpu-num={max_cpu_num}"));
-    }
-    writes.extend(axconfig_overrides.iter().cloned());
-
-    generate_config(&GenerateOptions {
-        specs: vec![defconfig, platform_config.to_path_buf()],
-        oldconfig: None,
-        output: Some(out_config.to_path_buf()),
-        fmt: ax_config_gen::OutputFormat::Toml,
-        writes,
-        keep_backup: false,
-    })
-    .context("failed to generate axconfig")?;
-
-    Ok(())
-}
-
-pub(super) fn resolve_defconfig_path(workspace_root: &Path) -> anyhow::Result<PathBuf> {
-    let path = workspace_root.join("os/arceos/configs/defconfig.toml");
-    if path.exists() {
-        Ok(path)
-    } else {
-        Err(anyhow::anyhow!(
-            "defconfig.toml not found at {}",
-            path.display()
-        ))
-    }
 }

@@ -25,8 +25,6 @@ use selection::{
 use timing::print_clippy_timing;
 
 pub(super) const DEFAULT_FEATURE: &str = "default";
-pub(super) const AX_CONFIG_PATH_ENV: &str = "AX_CONFIG_PATH";
-pub(super) const AXCONFIG_FILE: &str = "axconfig.toml";
 pub(super) const AXSTD_STD_PACKAGE: &str = "ax-std";
 pub(super) const AXSTD_STD_DEFAULT_FEATURE: &str = "default";
 pub(super) const AXSTD_STD_CLIPPY_FEATURES: &str = "std-compat,plat-dyn,fs,multitask,irq,net";

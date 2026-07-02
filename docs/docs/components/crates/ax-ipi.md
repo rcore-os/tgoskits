@@ -77,24 +77,6 @@ flowchart TD
 ```mermaid
 graph LR
     ax-hal["ax-hal (ipi)"] --> ax-ipi["ax-ipi"]
-    axconfig["ax-config"] --> ax-ipi
-    ax_kspin["ax-kspin"] --> ax-ipi
-    ax_lazyinit["ax-lazyinit"] --> ax-ipi
-    ax-percpu["ax-percpu"] --> ax-ipi
-
-    ax-ipi --> ax-runtime["ax-runtime"]
-    ax-ipi --> ax-api["ax-api"]
-    ax-ipi --> ax-feat["ax-feat"]
-```
-
-### 直接依赖
-- `ax-hal`：真正的 IPI 发送原语来自这里。
-- `axconfig`：广播时需要 `MAX_CPU_NUM`。
-- `ax-kspin`：保护每 CPU 队列。
-- `ax-lazyinit`：按 CPU 惰性初始化队列。
-- `ax-percpu`：声明每 CPU 静态存储。
-
-### 主要消费者
 - `ax-runtime`：负责在启动链中初始化队列，并在 IRQ 处理里调用 `ipi_handler()`。
 - `ax-api` / `ax-feat`：把 IPI 能力向上层 feature 与 API 暴露。
 

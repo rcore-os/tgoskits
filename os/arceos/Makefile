@@ -2,17 +2,11 @@
 # * General options:
 #     - `ARCH`: Target architecture: x86_64, riscv64, aarch64, loongarch64
 #     - `MYPLAT`: Package name of the target platform crate.
-#     - `PLAT_CONFIG`: Path to the platform configuration file.
-#     - `AXCONFIG`: Config reader/generator command, default is ax-config-gen.
-#     - `AXPLAT_INSPECT`: Optional platform package resolver command, used only
-#       when PLAT_CONFIG is not set.
 #     - `SMP`: Number of CPUs. If not set, use the default value from platform config.
 #     - `MODE`: Build mode: release, debug
 #     - `LOG:` Logging level: warn, error, info, debug, trace
 #     - `V`: Verbose level: (empty), 1, 2
 #     - `TARGET_DIR`: Artifact output directory (cargo target directory)
-#     - `EXTRA_CONFIG`: Extra config specification file
-#     - `OUT_CONFIG`: Final config file that takes effect
 #     - `UIMAGE`: To generate U-Boot image
 #     - `LD_SCRIPT`: Use a custom linker script file.
 #     - `LINKER_SCRIPT_DIRS`: Extra linker script search directories for C apps.
@@ -40,14 +34,7 @@
 # General options
 ARCH ?= x86_64
 MYPLAT ?=
-PLAT_CONFIG ?=
-AXCONFIG ?= ax-config-gen
 TGOSKITS_ROOT ?= $(abspath $(CURDIR)/../..)
-ifneq ($(wildcard $(TGOSKITS_ROOT)/xtask/Cargo.toml),)
-  AXPLAT_INSPECT ?= cd "$(TGOSKITS_ROOT)" && cargo xtask config inspect --makefile
-else
-  AXPLAT_INSPECT ?=
-endif
 SMP ?=
 MODE ?= release
 LOG ?= warn
@@ -55,10 +42,8 @@ V ?=
 DWARF ?=
 LTO ?=
 TARGET_DIR ?= $(PWD)/target
-EXTRA_CONFIG ?=
-OUT_CONFIG ?= $(CURDIR)/.axconfig.toml
 UIMAGE ?= n
-PLAT_DYN ?= n
+PLAT_DYN ?= y
 
 # App options
 A ?= examples/helloworld
@@ -112,8 +97,6 @@ ifneq ($(filter $(or $(MAKECMDGOALS), $(.DEFAULT_GOAL)), all build disasm run ju
 include scripts/make/deps.mk
 # Platform resolving
 include scripts/make/platform.mk
-# Configuration generation
-include scripts/make/config.mk
 # Feature parsing
 include scripts/make/features.mk
 endif
@@ -139,13 +122,7 @@ export AX_TARGET=$(TARGET)
 export AX_IP=$(IP)
 export AX_GW=$(GW)
 
-ifneq ($(filter $(MAKECMDGOALS),unittest unittest_no_fail_fast clippy doc doc_check_missing),)
-  # When running unit tests or other tests unrelated to a specific platform,
-  # set `AX_CONFIG_PATH` to empty for dummy config
-  unexport AX_CONFIG_PATH
-else
-  export AX_CONFIG_PATH=$(OUT_CONFIG)
-endif
+unexport AX_CONFIG_PATH
 
 # Binutils
 CROSS_COMPILE ?= $(ARCH)-linux-musl-
@@ -191,10 +168,10 @@ else ifeq ($(PLAT_NAME), aarch64-bsta1000b)
 endif
 
 defconfig:
-	$(call defconfig)
+	$(error static axconfig generation has been removed; use cargo xtask build configs)
 
 oldconfig:
-	$(call oldconfig)
+	$(error static axconfig generation has been removed; use cargo xtask build configs)
 
 build: $(OUT_DIR) $(FINAL_IMG)
 
@@ -247,7 +224,7 @@ else
 endif
 
 clean: clean_c
-	rm -rf $(APP)/*.bin $(APP)/*.elf $(OUT_CONFIG)
+	rm -rf $(APP)/*.bin $(APP)/*.elf
 	cargo clean --target-dir $(TARGET_DIR)
 
 clean_c::

@@ -65,7 +65,6 @@ os/arceos/
 │   ├── axinput/      # 输入设备
 │   ├── axipi/        # 核间中断
 │   ├── axruntime/    # 运行时初始化，调用 main()
-│   └── axconfig/     # 编译时配置生成
 ├── api/              # 对外 API 层
 │   ├── axfeat/       # 顶层 feature 聚合（单一真相源）
 │   ├── arceos_api/   # 公共 API 和类型
@@ -375,13 +374,12 @@ C 应用覆盖由 `test-suit/arceos/c` 维护；`apps/arceos` 只保留 Rust std
 ```
 platforms/ax-plat-riscv64-custom/
 ├── Cargo.toml
-├── axconfig.toml     # 平台配置（内存布局、SMP 数等）
 ├── build.rs          # 构建脚本
 └── src/
     └── lib.rs        # 实现 console/time/irq 等平台接口
 ```
 
-平台 crate 需要实现的接口由 `axconfig` 和 `axhal` 定义，包括：
+平台 crate 需要实现的接口由 `axplat` / `axhal` 契约定义，包括：
 
 - **console**：`write_text_bytes()` — 字符输出
 - **time**：`current_time()`, `set_oneshot_timer()` — 时钟
@@ -396,15 +394,14 @@ platforms/ax-plat-riscv64-custom/
 
 AArch64、RISC-V QEMU、x86_64 QEMU、LoongArch QEMU 和 SG2002 板卡默认由 `axplat-dyn` 通过 UEFI/设备树/ACPI 等运行时信息加载。仓库不再内置 SG2002 静态平台 crate。
 
-旧 LoongArch QEMU 写法需要迁移：`ax-hal/loongarch64-qemu-virt` 改为 `ax-hal/plat-dyn`，省略 `plat_dyn` 或设为 `true`，命令行不要再写 `--plat loongarch64-qemu-virt`，直接使用 `--arch loongarch64`。动态路径会进入 `axplat-dyn` 和 UEFI/`efi` 启动链路。
+旧 LoongArch QEMU 写法需要迁移：`ax-hal/loongarch64-qemu-virt` 改为 `ax-hal/plat-dyn`，命令行不要再写 `--plat loongarch64-qemu-virt`，直接使用 `--arch loongarch64`。动态路径会进入 `axplat-dyn` 和 UEFI/`efi` 启动链路。
 
 ### 5.3 添加新平台
 
 1. 在 `platforms/` 下创建新 crate
 2. 实现 `axhal` 要求的平台接口
-3. 编写 `axconfig.toml` 配置内存布局和硬件参数
-4. 在根 `Cargo.toml` 中注册为 workspace member
-5. 验证：
+3. 在根 `Cargo.toml` 中注册为 workspace member，并通过 workspace metadata 或动态平台 glue 暴露必要平台信息
+4. 验证：
 
 ```bash
 cargo xtask arceos qemu --package arceos-helloworld --arch <arch> --platform <platform-name>
@@ -471,7 +468,6 @@ fail_regex = ["(?i)\\bpanic(?:ked)?\\b"]
 | `features` | 启用的 ArceOS feature 列表 |
 | `log` | 日志级别（error/warn/info/debug/trace） |
 | `max_cpu_num` | 最大 CPU 数 |
-| `plat_dyn` | 是否使用动态平台 |
 | `args` | QEMU 启动参数 |
 | `success_regex` | 匹配成功的正则 |
 | `fail_regex` | 匹配失败的正则 |

@@ -116,7 +116,7 @@ flowchart TD
 
 ### 1.5 辅助设计与边界
 
-`assert_str_eq!` 是 `ax-plat` 很容易被忽视但非常关键的编译期防错机制。平台包常用它校验 `axconfig` 中的 `PACKAGE` 字符串必须等于 crate 名，从而避免“配置文件写错，但仍勉强编译通过”的错误组合。
+`assert_str_eq!` 是 `ax-plat` 很容易被忽视但非常关键的编译期防错机制。平台包可用它校验编译期声明的包名与 crate 名一致，从而避免“配置文件写错，但仍勉强编译通过”的错误组合。
 
 同时，`ax-plat` 也明确保持边界克制：
 
@@ -226,7 +226,7 @@ graph TD
 3. 使用 `#[impl_plat_interface]` 挂接每个实现。
 4. 编写板级启动代码，在建立最小页表、栈、异常上下文后调用 `ax_plat::call_main()`。
 5. 若支持 SMP，则为次核入口调用 `ax_plat::call_secondary_main()`，并在 `ax-percpu` 中完成次核注册。
-6. 用 `assert_str_eq!` 校验平台包名与配置名一致，避免 `axconfig` 与 crate 错绑。
+6. 用 `assert_str_eq!` 校验平台包名与配置名一致，避免平台声明与 crate 错绑。
 
 ### 4.2 在内核中使用
 

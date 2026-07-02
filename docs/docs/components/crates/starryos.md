@@ -4,7 +4,7 @@
 > 类型：二进制 crate
 > 分层：StarryOS 层 / 启动镜像入口
 > 版本：`0.2.0-preview.2`
-> 文档依据：`Cargo.toml`、`src/main.rs`、`src/init.sh`、`.axconfig.toml`、`.qemu.toml`、`os/StarryOS/README.md`、`os/StarryOS/kernel/src/entry.rs`、`xtask/src/starry/{build.rs,run.rs}`
+> 文档依据：`Cargo.toml`、`src/main.rs`、`src/init.sh`、`.qemu.toml`、`os/StarryOS/README.md`、`os/StarryOS/kernel/src/entry.rs`、`xtask/src/starry/{build.rs,run.rs}`
 
 `starryos` 是 StarryOS 的默认启动镜像包。它不实现 syscall、进程管理或虚拟内存，而是负责把 `ax-feat`、平台配置、`starry-kernel` 和默认 init 命令线装配成一个可启动、可进入交互 shell 的系统镜像。
 
@@ -15,7 +15,7 @@
 从源码和构建链看，`starryos` 是一个非常薄的入口包，但它承担了 StarryOS 对外最直接的一层职责：
 
 - 选择默认 feature 组合。
-- 绑定平台配置与 QEMU 配置。
+- 绑定动态平台构建配置与 QEMU 配置。
 - 指定默认 init 命令行为。
 - 调用 `starry_kernel::entry::init()` 启动真正的内核主线。
 
@@ -63,7 +63,7 @@ flowchart TD
 ### 1.5 包级配置文件的作用
 这个包目录下除了 `main.rs` 以外，还有两个重要配置文件：
 
-- build config：描述平台和硬件布局；RISC-V/AArch64 QEMU 默认走动态平台。
+- build config：描述 feature、环境变量和动态平台行为；RISC-V/AArch64 QEMU 默认走动态平台。
 - `.qemu.toml`：描述包级 QEMU 参数，当前不带 success/fail 正则。
 
 这与 `test-suit/starryos` 不同。`starryos` 是带着本地平台配置和运行配置一起存在的“镜像包”。
@@ -87,7 +87,6 @@ flowchart TD
 ### 2.2 关键入口
 - `src/main.rs`：构造 `args/envs` 并转交给 `starry-kernel`。
 - `src/init.sh`：定义默认启动后进入的 shell 行为。
-- `.axconfig.toml`：定义默认平台配置。
 - `.qemu.toml`：定义包级 QEMU 运行参数。
 
 ### 2.3 关键使用示例
@@ -111,7 +110,7 @@ graph LR
 
 ### 3.2 关键运行时外部条件
 - rootfs / `rootfs-<arch>.img`：由 `cargo xtask starry rootfs` 或 `run` 路径自动准备。
-- 平台配置：由 `.axconfig.toml` 和 `ArceosConfigOverride` 共同决定。
+- 平台配置：由 axbuild BuildInfo、命令行覆盖和动态平台运行时发现共同决定。
 - QEMU 参数：由 `.qemu.toml` 和 xtask 运行参数共同决定。
 
 ## 开发指南
@@ -126,7 +125,7 @@ cargo xtask starry run --arch riscv64 --package starryos
 ### 4.2 适合在这个包里改什么
 1. 默认启动命令、登录 shell 和欢迎信息。
 2. 镜像 feature 组合与平台开关。
-3. 包级 `.axconfig.toml` / `.qemu.toml`。
+3. 包级 build config / `.qemu.toml`。
 
 ### 4.3 不适合在这个包里改什么
 1. syscall 语义问题应改 `starry-kernel`。
@@ -144,7 +143,7 @@ cargo xtask starry run --arch riscv64 --package starryos
 ### 5.2 建议重点验证的场景
 - 默认命令线是否仍能进入交互 shell。
 - `qemu` / `smp` / `plat-dyn` feature 组合是否仍能成功构建。
-- `.axconfig.toml` 修改后平台是否仍能正常 bring-up。
+- BuildInfo 或动态平台 feature 修改后平台是否仍能正常 bring-up。
 - rootfs 自动准备、磁盘挂载和标准输入输出是否正常。
 
 ### 5.3 与 `starryos-test` 的关系

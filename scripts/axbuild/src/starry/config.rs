@@ -221,7 +221,6 @@ log = "Warn"
 target = "aarch64-unknown-none-softfloat"
 features = ["qemu"]
 log = "Warn"
-plat_dyn = false
 "#,
         );
 
@@ -323,7 +322,6 @@ log = "Warn"
 target = "aarch64-unknown-none-softfloat"
 features = ["qemu"]
 log = "Warn"
-plat_dyn = false
 "#,
         );
 

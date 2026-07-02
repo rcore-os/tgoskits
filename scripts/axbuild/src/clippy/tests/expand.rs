@@ -26,7 +26,6 @@ fn feature_expansion_ignores_default() {
                 deps_mode: ClippyDepsMode::NoDeps,
                 target: None,
                 env: Vec::new(),
-                axconfig_override: None,
             },
             ClippyCheck {
                 package: "alpha".into(),
@@ -34,7 +33,6 @@ fn feature_expansion_ignores_default() {
                 deps_mode: ClippyDepsMode::NoDeps,
                 target: None,
                 env: Vec::new(),
-                axconfig_override: None,
             },
             ClippyCheck {
                 package: "alpha".into(),
@@ -42,7 +40,6 @@ fn feature_expansion_ignores_default() {
                 deps_mode: ClippyDepsMode::NoDeps,
                 target: None,
                 env: Vec::new(),
-                axconfig_override: None,
             },
         ]
     );
@@ -320,7 +317,6 @@ fn with_deps_check_omits_no_deps_flag() {
         deps_mode: ClippyDepsMode::WithDeps,
         target: None,
         env: Vec::new(),
-        axconfig_override: None,
     };
 
     assert_eq!(
@@ -337,7 +333,6 @@ fn axstd_default_feature_no_deps_check_keeps_no_deps_flag() {
         deps_mode: ClippyDepsMode::NoDeps,
         target: None,
         env: Vec::new(),
-        axconfig_override: None,
     };
 
     assert_eq!(
@@ -374,7 +369,6 @@ fn package_without_features_yields_only_base_check() {
             deps_mode: ClippyDepsMode::NoDeps,
             target: None,
             env: Vec::new(),
-            axconfig_override: None,
         }]
     );
 }

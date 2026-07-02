@@ -6,7 +6,7 @@
 > 版本：`0.3.0-preview.3`
 > 文档依据：当前仓库源码、`Cargo.toml`、`build.rs`、`link.ld` 及 `os/arceos/modules/axhal`/`ax-driver` 的接入路径
 
-`axplat-dyn` 不是那类“用 `axconfig.toml` 固化板级常量”的常规 `axplat-*` 平台包。它更像一层桥接适配器：把 `somehal` 已经建立好的启动入口、FDT 地址、内存图、时钟、IRQ、电源与 SMP 元数据转译成 `axplat` 的统一契约；同时再补上一条 `ax-driver` 动态设备模型所需的设备探测与 DMA glue。这里的 `dyn` 真正表示“平台事实来自运行时抽象层和探测结果”，而不是“把平台包当作运行时可装卸模块加载”。
+`axplat-dyn` 不是那类“用静态配置文件固化板级常量”的常规 `axplat-*` 平台包。它更像一层桥接适配器：把 `somehal` 已经建立好的启动入口、FDT 地址、内存图、时钟、IRQ、电源与 SMP 元数据转译成 `axplat` 的统一契约；同时再补上一条 `ax-driver` 动态设备模型所需的设备探测与 DMA glue。这里的 `dyn` 真正表示“平台事实来自运行时抽象层和探测结果”，而不是“把平台包当作运行时可装卸模块加载”。
 
 ## 架构设计
 
@@ -21,8 +21,8 @@
 
 这决定了它与普通板级包的一个根本差异：
 
-- 普通 `axplat-*` 平台包主要把编译期 `axconfig.toml` 变成板级常量，再围绕这些常量实现 `axplat` 接口。
-- `axplat-dyn` 则把 `somehal` 暴露的运行时事实直接转成 `axplat` 接口，不以 `axconfig.toml` 为主线。
+- 普通 `axplat-*` 平台包主要把编译期静态配置变成板级常量，再围绕这些常量实现 `axplat` 接口。
+- `axplat-dyn` 则把 `somehal` 暴露的运行时事实直接转成 `axplat` 接口，不以静态配置文件为主线。
 
 ### 模块结构
 
@@ -157,7 +157,7 @@ flowchart TD
 - 与 `axplat` 的边界：`axplat` 定义的是稳定平台契约和入口调用面；`axplat-dyn` 只是其中一个实现者，并不改变接口定义。
 - 与 `ax-plat-macros` 的边界：本 crate 不直接依赖 `ax-plat-macros`，只通过 `axplat` 重新导出的 `#[impl_plat_interface]` 和入口宏参与体系。
 - 与 `somehal` 的边界：真正的“平台事实来源”在 `somehal`，包括入口、内存图、时钟、IRQ、电源与 CPU 元数据；`axplat-dyn` 负责转译，而不是重新探测 CPU 模式或自己管理整套启动环境。
-- 与 `ax-config-gen` 的边界：当前源码中保留了一段被注释掉的 `config` 模块草稿，但现行实现并没有启用 `axconfig.toml -> AX_CONFIG_PATH -> include_configs!` 这条常规平台包主线，因此它不属于典型 `axplat-*` 配置化平台生态。
+- 边界：当前实现不启用旧的静态配置文件生成和 include 路径，因此它不属于典型静态配置化平台生态。
 
 ## 核心功能
 
@@ -234,7 +234,7 @@ graph TD
 
 不适合直接套用它的情况是：
 
-- 你要新做一个常规 `axplat-*` 板级包，并希望走 `axconfig.toml` 配置化主线。
+- 你要新做一个常规 `axplat-*` 板级包，并希望走旧式静态配置化主线。
 - 你需要一个完整的、已覆盖多类别设备的动态驱动模型。本 crate 当前主要只补齐了块设备路径。
 
 ### 4.2 接入主线
@@ -251,7 +251,7 @@ graph TD
 - `VirtIO` block 的 IRQ enable/disable/handle 仍未完成，中断驱动块 I/O 不是当前实现重点。
 - `build.rs` 生成的 `axplat.x` 会把 `__SMP` 固定替换成 `16`；若下层假设变化，需要同步检查链接脚本和启动约定。
 - 当前 crate 根部有 `#![cfg(not(any(windows, unix)))]`，说明主机侧 `cargo test`/`cargo check` 不是它的主要验证面。
-- 源码中虽保留了被注释掉的 `config` 模块草稿，但现行代码并不实际消费 `AX_CONFIG_PATH` 或 `axconfig.toml`。
+- 源码中虽保留了被注释掉的 `config` 模块草稿，但现行代码不实际消费旧式静态配置文件。
 
 ## 测试
 

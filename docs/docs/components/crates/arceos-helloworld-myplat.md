@@ -44,9 +44,6 @@ graph LR
 - `ax-alloc`
 - `ax-allocator`
 - `axbacktrace`
-- `axconfig`
-- `ax-config-gen`
-- `ax-config-macros`
 - `ax-cpu`
 - `ax-display`
 - 另外还有 `62` 个同类项未在此展开

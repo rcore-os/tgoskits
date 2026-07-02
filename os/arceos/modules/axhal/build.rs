@@ -1,7 +1,7 @@
 use std::{
     env, fs,
     io::{Error, ErrorKind, Result},
-    path::{Path, PathBuf},
+    path::PathBuf,
 };
 
 use quote::{format_ident, quote};
@@ -27,7 +27,6 @@ const PLATFORM_FEATURES: &[PlatformFeature] = &[PlatformFeature {
 fn main() {
     println!("cargo:rustc-check-cfg=cfg(plat_dyn)");
     println!("cargo:rerun-if-changed={LINKER_TEMPLATE_NAME}");
-    println!("cargo:rerun-if-env-changed=AX_CONFIG_PATH");
     println!("cargo:rerun-if-env-changed=SMP");
     println!("cargo:rerun-if-env-changed={}", feature_env("host-test"));
     println!("cargo:rerun-if-env-changed={}", feature_env("myplat"));
@@ -159,26 +158,11 @@ struct LinkerConfig {
 }
 
 fn load_linker_config(platform_linker_is_external: bool) -> Result<LinkerConfig> {
-    match env::var("AX_CONFIG_PATH") {
-        Ok(path) => {
-            println!("cargo:rerun-if-changed={path}");
-            read_linker_config(Path::new(&path))
-        }
-        Err(_) if platform_linker_is_external => Ok(external_linker_config()?),
-        Err(_) => Ok(dummy_linker_config()),
+    if platform_linker_is_external {
+        external_linker_config()
+    } else {
+        Ok(dummy_linker_config())
     }
-}
-
-fn read_linker_config(path: &Path) -> Result<LinkerConfig> {
-    let content = fs::read_to_string(path)?;
-    let value: toml::Value = toml::from_str(&content).map_err(invalid_data)?;
-    let platform = get_string(&value, &["platform"])?;
-    Ok(LinkerConfig {
-        is_dummy: platform == "dummy",
-        kernel_base_vaddr: get_usize(&value, &["plat", "kernel-base-vaddr"])?,
-        max_cpu_num: get_usize(&value, &["plat", "max-cpu-num"])?,
-        kernel_base_paddr: get_usize(&value, &["plat", "kernel-base-paddr"])?,
-    })
 }
 
 fn external_linker_config() -> Result<LinkerConfig> {
@@ -197,42 +181,6 @@ fn dummy_linker_config() -> LinkerConfig {
         max_cpu_num: 1,
         kernel_base_paddr: 0,
     }
-}
-
-fn get_string(value: &toml::Value, keys: &[&str]) -> Result<String> {
-    let value = get_value(value, keys)?;
-    value
-        .as_str()
-        .map(str::to_string)
-        .ok_or_else(|| invalid_data(format!("{} must be a string", keys.join("."))))
-}
-
-fn get_usize(value: &toml::Value, keys: &[&str]) -> Result<usize> {
-    let value = get_value(value, keys)?;
-    parse_value_usize(value, keys)
-}
-
-fn parse_value_usize(value: &toml::Value, keys: &[&str]) -> Result<usize> {
-    match value {
-        toml::Value::Integer(value) => usize::try_from(*value)
-            .map_err(|_| invalid_data(format!("{} is out of range", keys.join(".")))),
-        toml::Value::String(value) => parse_usize(value)
-            .map_err(|err| invalid_data(format!("failed to parse {}: {err}", keys.join(".")))),
-        _ => Err(invalid_data(format!(
-            "{} must be an integer or integer string",
-            keys.join(".")
-        ))),
-    }
-}
-
-fn get_value<'a>(value: &'a toml::Value, keys: &[&str]) -> Result<&'a toml::Value> {
-    let mut current = value;
-    for key in keys {
-        current = current
-            .get(*key)
-            .ok_or_else(|| invalid_data(format!("missing config key {}", keys.join("."))))?;
-    }
-    Ok(current)
 }
 
 fn parse_usize(value: &str) -> std::result::Result<usize, std::num::ParseIntError> {

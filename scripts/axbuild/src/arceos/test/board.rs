@@ -143,7 +143,6 @@ fn test_board_build_args(group: &ArceosBoardTestGroup) -> BuildCliArgs {
         package: Some(group.package.clone()),
         arch: None,
         target: Some(group.target.clone()),
-        plat_dyn: Some(true),
         smp: None,
         debug: false,
     }
@@ -166,7 +165,6 @@ mod tests {
             r#"
 package = "arceos-helloworld"
 target = "aarch64-unknown-none-softfloat"
-plat_dyn = true
 features = []
 log = "Info"
 max_cpu_num = 1

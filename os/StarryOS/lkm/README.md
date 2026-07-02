@@ -95,7 +95,7 @@ similar feature gates, the kernel must be built with compatible support.
 
 `cargo xtask starry kmod build` starts from the normal Starry build selectors
 (`--arch`, `--target`, `--config`, `--smp`, `--debug`) and reuses the resolved
-Cargo target, generated axconfig, environment, and normalized feature set. The
+Cargo target, environment, and normalized feature set. The
 module's package features are then applied on top of that context.
 
 ## LTO Requirement

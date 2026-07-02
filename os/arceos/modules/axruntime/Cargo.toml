@@ -116,4 +116,3 @@ spin = {workspace = true, optional = true}
 
 [build-dependencies]
 quote = "1.0"
-toml.workspace = true

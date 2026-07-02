@@ -33,7 +33,7 @@ sidebar_label: "rdrive + rdif 驱动框架"
 ```mermaid
 flowchart TB
     subgraph Sources["平台发现来源"]
-        Static["Static: 平台常量 / ax_config"]
+        Static["Static: 显式平台元数据"]
         Fdt["FDT: device tree"]
         Acpi["ACPI: reserved API / unsupported first"]
     end

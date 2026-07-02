@@ -4,13 +4,10 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use anyhow::{Context, anyhow, bail};
+use anyhow::{Context, anyhow};
 use serde::Deserialize;
 
-use super::{
-    ArgsBoard,
-    build::{ArceosBuildConfig, ArceosBuildFile},
-};
+use super::build::{ArceosBuildConfig, ArceosBuildFile};
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 pub(crate) struct ArceosBoardFile {
@@ -46,9 +43,7 @@ pub(crate) fn board_dir(workspace_root: &Path) -> anyhow::Result<PathBuf> {
 }
 
 pub(crate) fn load_build_file(path: &Path) -> anyhow::Result<ArceosBuildFile> {
-    let file = super::build::load_arceos_build_file(path)?;
-    reject_static_build_config(path, &file.config)?;
-    Ok(file)
+    super::build::load_arceos_build_file(path)
 }
 
 pub(crate) fn load_board_file(path: &Path) -> anyhow::Result<ArceosBoardFile> {
@@ -57,29 +52,7 @@ pub(crate) fn load_board_file(path: &Path) -> anyhow::Result<ArceosBoardFile> {
     crate::build::reject_removed_std_field(path, &contents)?;
     let board_file: ArceosBoardFile = toml::from_str(&contents)
         .with_context(|| format!("failed to parse ArceOS board config {}", path.display()))?;
-    reject_static_build_config(path, &board_file.build_config)?;
     Ok(board_file)
-}
-
-fn reject_static_build_config(path: &Path, config: &ArceosBuildConfig) -> anyhow::Result<()> {
-    if !config.build_info.plat_dyn {
-        bail!(
-            "ArceOS board config {} must use dynamic platform (`plat_dyn = true`); static \
-             platform board configs are not supported by `arceos board/config`",
-            path.display()
-        );
-    }
-    Ok(())
-}
-
-pub(crate) fn reject_static_board_args(args: &ArgsBoard) -> anyhow::Result<()> {
-    if args.build.plat_dyn == Some(false) {
-        bail!(
-            "`arceos board` only supports dynamic platform builds; remove `--plat-dyn false` or \
-             pass `--plat-dyn true`"
-        );
-    }
-    Ok(())
 }
 
 pub(crate) fn board_default_list(workspace_root: &Path) -> anyhow::Result<Vec<Board>> {
@@ -161,7 +134,6 @@ mod tests {
             r#"
 package = "arceos-helloworld"
 target = "aarch64-unknown-none-softfloat"
-plat_dyn = true
 features = []
 log = "Info"
 "#,
@@ -172,7 +144,6 @@ log = "Info"
             r#"
 package = "arceos-helloworld"
 target = "x86_64-unknown-none"
-plat_dyn = true
 features = []
 log = "Info"
 "#,
@@ -185,7 +156,7 @@ log = "Info"
     }
 
     #[test]
-    fn load_board_rejects_static_platform_template() {
+    fn load_board_accepts_dynamic_platform_template_without_plat_dyn_field() {
         let root = tempdir().unwrap();
         write_workspace(root.path());
         let path = board_dir(root.path()).unwrap().join("static.toml");
@@ -195,14 +166,13 @@ log = "Info"
             r#"
 package = "arceos-helloworld"
 target = "aarch64-unknown-none-softfloat"
-plat_dyn = false
 features = []
 log = "Info"
 "#,
         )
         .unwrap();
 
-        let err = load_board_file(&path).unwrap_err().to_string();
-        assert!(err.contains("dynamic platform"));
+        let board = load_board_file(&path).unwrap();
+        assert_eq!(board.target, "aarch64-unknown-none-softfloat");
     }
 }

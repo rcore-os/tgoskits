@@ -20,13 +20,11 @@ use crate::{
 };
 
 pub(crate) fn default_starry_build_info_for_target(target: &str) -> StarryBuildInfo {
-    let mut build_info = StarryBuildInfo::default();
-    if build_info.effective_plat_dyn(target, None) {
-        build_info.features = Vec::new();
-    } else {
-        build_info.features = vec!["qemu".to_string()];
+    let _ = target;
+    StarryBuildInfo {
+        features: Vec::new(),
+        ..StarryBuildInfo::default()
     }
-    build_info
 }
 
 pub(crate) fn resolve_build_info_path(
@@ -120,22 +118,18 @@ pub(crate) fn load_cargo_config(request: &ResolvedStarryRequest) -> anyhow::Resu
     if let Some(smp) = request.smp {
         build_info.max_cpu_num = Some(smp);
     }
-    let plat_dyn = build_info.effective_plat_dyn(&request.target, request.plat_dyn);
     let mut cargo = build_info.into_prepared_base_cargo_config_with_metadata(
         &request.package,
         &request.target,
-        request.plat_dyn,
         metadata,
     )?;
-    if plat_dyn {
-        cargo.features.retain(|feature| {
-            !matches!(
-                feature.as_str(),
-                "ax-feat/plat-dyn" | "ax-std/plat-dyn" | "starry-kernel/plat-dyn"
-            )
-        });
-        cargo.features.push("plat-dyn".to_string());
-    }
+    cargo.features.retain(|feature| {
+        !matches!(
+            feature.as_str(),
+            "ax-feat/plat-dyn" | "ax-std/plat-dyn" | "starry-kernel/plat-dyn"
+        )
+    });
+    cargo.features.push("plat-dyn".to_string());
     patch_starry_cargo_config(&mut cargo, request, metadata)?;
     Ok(cargo)
 }

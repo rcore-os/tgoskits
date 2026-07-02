@@ -6,7 +6,7 @@
 > 版本：`0.3.0-preview.3`
 > 文档依据：`Cargo.toml`、`src/lib.rs`、`src/arceos/mod.rs`、`src/arceos/build.rs`、`src/arceos/ostool.rs`、`src/arceos/config.rs`、`src/arceos/features.rs`、`src/axvisor/image/mod.rs`、`src/axvisor/xtest/mod.rs`
 
-`axbuild` 是当前工作区里承上启下的宿主侧构建基础库。它不属于目标镜像，也不参与内核热路径；它负责把“应用配置、平台配置、feature 装配、QEMU 参数、产物路径”这些宿主机侧信息整理成可执行的构建/运行计划，并复用 `ax-config-gen` 配置引擎库和 `ostool` 构建桥接能力。
+`axbuild` 是当前工作区里承上启下的宿主侧构建基础库。它不属于目标镜像，也不参与内核热路径；它负责把“应用配置、动态平台选择、feature 装配、QEMU 参数、产物路径”这些宿主机侧信息整理成可执行的构建/运行计划，并复用 `ostool` 构建桥接能力。
 
 ## 架构设计
 ### 设计定位
@@ -24,7 +24,7 @@
 ```mermaid
 flowchart TD
     A["ArceosConfig / Override"] --> B["resolve_effective_smp + resolve_platform"]
-    B --> C["调用配置引擎库生成 .axconfig.toml"]
+    B --> C["准备动态平台 features / linker 参数"]
     C --> D["FeatureResolver 计算 ax_features / lib_features"]
     D --> E["ostool::build_cargo_spec"]
     E --> F["ostool 执行 cargo build / qemu"]
@@ -32,12 +32,12 @@ flowchart TD
 
 其中几个实现细节非常关键：
 
-- `prepare_artifacts()` 会先解析架构、平台、SMP、内存、feature 等信息。
-- `generate_config()` 会调用 `ax-config-gen` 库接口，把 defconfig、平台配置和命令行覆写合成为 `.axconfig.toml`。
-- `resolve_platform_config_path()` 会通过 Cargo metadata 和仓库内平台目录找到平台配置文件。
+- `prepare_artifacts()` 会先解析架构、SMP、内存、feature 等信息。
+- 静态平台配置生成路径已经移除；动态平台是当前唯一维护的构建路径。
+- `PlatformResolver` 负责决定动态平台相关 feature、链接参数和构建时环境。
 - `is_c_app()` 会读取应用 `Cargo.toml`，通过是否出现 `ax-libc` 判断这是 C 应用还是 Rust 应用。
 
-因此，`axbuild` 是把配置链、feature 链和实际构建链连接起来的中枢。
+因此，`axbuild` 是把 BuildInfo 配置、feature 链和实际构建链连接起来的中枢。
 
 ### 1.3 feature 装配的真实策略
 `src/arceos/features.rs` 说明 `axbuild` 并不是简单把用户输入的 feature 原样透传给 Cargo，而是做了分层解析：
@@ -59,7 +59,6 @@ flowchart TD
 - `AX_LOG`
 - `AX_IP`
 - `AX_GW`
-- `AX_CONFIG_PATH`
 
 同时还会按 `plat-dyn` 与否选择不同链接脚本参数。由此可以看到：
 
@@ -79,7 +78,7 @@ flowchart TD
 ## 核心功能
 ### 功能概览
 - 解析和合并 ArceOS 构建配置。
-- 生成 `.axconfig.toml`、必要的 `.qemu.toml` 等中间产物。
+- 生成必要的 `.qemu.toml` 等宿主侧中间产物。
 - 计算模块 feature 与库 feature 的正确装配方式。
 - 调用 `ostool` 完成 `cargo build` 或 QEMU 运行。
 - 为 Axvisor 提供镜像管理和 QEMU 测试辅助。
@@ -112,7 +111,6 @@ flowchart TD
 ```mermaid
 graph LR
     xtask["tg-xtask / Axvisor xtask"] --> axbuild["axbuild"]
-    axbuild --> ax_config_gen["ax-config-gen 配置引擎库"]
     axbuild --> ostool["ostool"]
     axbuild --> axvmconfig["axvmconfig"]
 ```
@@ -145,12 +143,11 @@ graph LR
 1. 不要把目标机运行时代码放进 `axbuild`，它必须保持宿主侧纯工具属性。
 2. 改 feature 逻辑时，要同时检查 `FeatureResolver` 与 `ostool::build_features()`。
 3. 改平台解析逻辑时，要一起检查 Cargo metadata 查找路径和链接脚本参数生成。
-4. 改 `.axconfig.toml` 生成路径时，要确保 `AX_CONFIG_PATH` 环境变量同步更新。
-5. C 应用与 Rust 应用的分流依赖 `is_c_app()`，相关逻辑改动要谨慎。
+4. C 应用与 Rust 应用的分流依赖 `is_c_app()`，相关逻辑改动要谨慎。
 
 ### 4.3 推荐验证路径
 - 先跑单元测试，确认 feature、QEMU 参数和配置推导逻辑不回归。
-- 再做一次最小 ArceOS 构建，确认 `.axconfig.toml` 能正确生成。
+- 再做一次最小 ArceOS 构建，确认动态平台 feature 和链接参数能正确装配。
 - 涉及 QEMU 行为时，再做一次宿主侧运行验证。
 - 改 Axvisor 相关模块时，还应验证镜像下载或 xtest 流程。
 
@@ -171,8 +168,8 @@ graph LR
 - Axvisor 镜像规格解析
 
 ### 5.3 建议继续加强的点
-- 配置引擎库调用失败时的错误路径
-- 平台配置路径探测失败时的诊断信息
+- 静态平台请求被拒绝时的错误路径
+- 动态平台链接参数探测失败时的诊断信息
 - `is_c_app()` 对不同应用布局的识别
 - Axvisor 镜像下载和解压的更细粒度测试
 

@@ -69,11 +69,6 @@ impl Starry {
         )?;
         let mut request = Self::qemu_test_request(request);
         if let Some(default_board) = default_board {
-            request.plat_dyn = Some(
-                default_board
-                    .build_info
-                    .effective_plat_dyn(&default_board.target, None),
-            );
             request.build_info_override = Some(default_board.build_info);
         } else {
             anyhow::bail!(
@@ -379,7 +374,6 @@ impl Starry {
         let mut request = request.clone();
         request.build_info_path = build_config_path.to_path_buf();
         request.build_info_override = None;
-        request.plat_dyn = None;
         request
     }
 

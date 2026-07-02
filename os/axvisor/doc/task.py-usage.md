@@ -99,7 +99,7 @@ cp .hvconfig.prod.toml .hvconfig.toml && ./scripts/task.py run
 
 #### --plat (平台)
 
-指定目标平台，系统会自动从 `platforms/{plat}/axconfig.toml` 读取对应的架构和包配置。
+指定目标平台。旧的静态平台配置文件路径已经不再作为 ArceOS 动态平台构建链路的一部分；迁移旧命令时优先使用 `--arch` 与动态平台 feature。
 
 ```bash
 --plat aarch64-generic
@@ -213,11 +213,11 @@ cp .hvconfig.prod.toml .hvconfig.toml && ./task.py run
 2. **平台配置找不到**
 
    ```text
-   警告：平台配置文件 platforms/xxx/axconfig.toml 不存在
+   静态平台配置文件不存在或不再受支持
    ```
 
-   - 检查平台名称是否正确
-   - 确保对应的平台目录存在
+   - 检查平台名称是否仍受当前构建链支持
+   - 优先迁移到动态平台构建路径
 
 3. **TOML 库缺失**
 

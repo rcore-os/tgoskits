@@ -28,14 +28,14 @@
 - `src/irq.rs`：IRQ 处理桥接层，负责 trap handler 注册、IRQ hook、与 `ax_plat::irq` 的派发对接。
 - `src/paging.rs`：页表处理桥接层，向 `ax-page-table-multiarch` 提供 `PagingHandlerImpl`，并在不同 ISA 下导出统一的页表类型。
 - `src/tls.rs`：内核态 TLS 布局与 `TlsArea` 管理，仅在 `tls` feature 启用时进入构建。
-- `build.rs` + `linker.lds.S`：根据 `axconfig` 注入链接脚本参数，例如内核基址、CPU 数、段布局等。
+- `build.rs` + `linker.lds.S`：生成链接脚本参数并配合动态平台链接路径完成内核段布局。
 
 ### 1.3 关键数据结构与全局对象
 - `BOOTARG`：保存引导阶段传入的参数，后续由 DTB/FDT 解析流程读取。
 - `ALL_MEM_REGIONS`：统一后的物理内存区域视图，是 `ax-alloc`、`ax-runtime` 等模块做内存初始化的基础。
 - `CURRENT_TASK_PTR`：每 CPU 当前任务指针，供调度与上下文切换路径读取。
 - `IRQ_HOOK`：可注册的 IRQ 钩子，用于平台 IRQ 分发前后的附加处理。
-- `CPU_NUM`：在 `smp` 场景下，取平台声明 CPU 数与 `ax_config::plat::MAX_CPU_NUM` 的较小值。
+- `CPU_NUM`：在 `smp` 场景下，由平台运行时发现结果决定最终可用 CPU 数。
 - `PagingHandlerImpl`：把页表帧申请/释放与地址翻译能力接到上层页表实现中。
 - `TlsArea`：内核态线程局部存储块管理对象，仅在 TLS 打开时参与主线。
 
@@ -117,32 +117,6 @@ let bootargs = ax-hal::dtb::get_chosen_bootargs();
 graph LR
     ax-cpu["ax-cpu"] --> ax-hal["ax-hal"]
     axplat["axplat / axplat-*"] --> ax-hal
-    axconfig["ax-config"] --> ax-hal
-    ax-alloc["ax-alloc (paging)"] --> ax-hal
-    page_table["ax-page-table-multiarch"] --> ax-hal
-
-    ax-hal --> ax-runtime["ax-runtime"]
-    ax-hal --> ax-mm["ax-mm"]
-    ax-hal --> ax-task["ax-task"]
-    ax-hal --> ax-driver["ax-driver"]
-    ax-hal --> starry["starry-kernel"]
-    ax-hal --> axvisor["axvisor"]
-```
-
-### 直接依赖
-- `axplat` 与各 `axplat-*` 平台 crate：提供控制台、内存、时间、中断、电源、每 CPU 等真实平台实现。
-- `ax-cpu`：提供 ISA 级 trap、上下文与汇编抽象。
-- `axconfig`：提供 `MAX_CPU_NUM`、平台名、地址布局等静态配置。
-- `ax-page-table-multiarch`：在 `paging` feature 下提供多架构页表核心实现。
-- `ax-alloc`：在页表/虚拟化路径下承担帧或内存块来源。
-
-### 间接依赖
-- 各类驱动能力接口，如 `rdrive`、`rdif-block` 和其它 `rdif-*`，会通过平台与上层模块间接参与 bring-up。
-- `ax-percpu`、`kernel_guard`、`memory_addr` 等基础组件通过 `ax-cpu`、`axplat` 或 `paging` 路径提供底层支持。
-
-### 3.3 关键直接消费者
-- `ax-runtime`：系统 bring-up 总控，是 `ax-hal` 的第一直接消费者。
-- `ax-mm`：使用 `paging`、地址转换与内存区域信息。
 - `ax-task`：使用 CPU 本地状态、时间、IRQ、TLS 与上下文相关能力。
 - `ax-driver`、`ax-net`、`ax-fs*`：通过时间、中断、设备树和平台资源完成硬件接线。
 - `starry-kernel`：复用 `UserContext`、分页、时间和控制台能力。

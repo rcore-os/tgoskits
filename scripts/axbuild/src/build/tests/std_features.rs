@@ -80,7 +80,6 @@ fn std_build_cargo_config_builds_fake_lib_before_app() {
     .into_prepared_base_cargo_config_with_metadata(
         "arceos-helloworld",
         "x86_64-unknown-none",
-        None,
         &metadata,
     )
     .unwrap();

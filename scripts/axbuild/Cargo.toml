@@ -11,7 +11,6 @@ description = "An OS build lib toolkit used by arceos"
 
 [target.'cfg(any(windows, unix))'.dependencies]
 anyhow = { workspace = true }
-ax-config-gen = { workspace = true }
 axvmconfig = { workspace = true, features = ["std"] }
 cargo_metadata = "0.23"
 chrono = { version = "0.4", features = ["serde"] }

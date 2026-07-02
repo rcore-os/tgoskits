@@ -18,7 +18,7 @@ fn std_build_uses_package_axstd_metadata_for_ax_std_features() {
         ..BuildInfo::default()
     };
 
-    info.resolve_std_features_with_metadata("std-app", "x86_64-unknown-none", true, &metadata);
+    info.resolve_std_features_with_metadata("std-app", "x86_64-unknown-none", &metadata);
     let mut envs = HashMap::new();
     pass_std_build_nested_features(
         &mut envs,
@@ -50,14 +50,12 @@ fn std_build_uses_package_axstd_metadata_for_ax_std_features() {
 fn std_build_auto_enables_app_arceos_feature_when_declared() {
     let metadata = repo_metadata();
     let cargo = BuildInfo {
-        plat_dyn: true,
         features: Vec::new(),
         ..BuildInfo::default()
     }
     .into_prepared_base_cargo_config_with_metadata(
         "arceos-helloworld",
         "x86_64-unknown-none",
-        None,
         &metadata,
     )
     .unwrap();
@@ -75,10 +73,9 @@ fn std_build_does_not_inject_arceos_feature_when_app_lacks_it() {
 }
 
 #[test]
-fn std_build_plat_dyn_uses_dynamic_platform_features_without_static_hal_platform() {
+fn std_build_uses_dynamic_platform_features_without_static_hal_platform() {
     let metadata = repo_metadata();
     let cargo = BuildInfo {
-        plat_dyn: true,
         features: vec![
             "ax-std".to_string(),
             "ax-driver/virtio-net".to_string(),
@@ -89,7 +86,6 @@ fn std_build_plat_dyn_uses_dynamic_platform_features_without_static_hal_platform
     .into_prepared_base_cargo_config_with_metadata(
         "arceos-httpclient",
         "aarch64-unknown-none-softfloat",
-        None,
         &metadata,
     )
     .unwrap();
@@ -125,7 +121,6 @@ fn std_build_aarch64_defaults_to_dynamic_platform() {
     .into_prepared_base_cargo_config_with_metadata(
         "arceos-helloworld",
         "aarch64-unknown-none-softfloat",
-        None,
         &metadata,
     )
     .unwrap();
@@ -161,7 +156,6 @@ fn std_build_config_preserves_backtrace_rustflags_from_env() {
         .into_prepared_base_cargo_config_with_metadata(
             "arceos-helloworld",
             "x86_64-unknown-none",
-            None,
             &metadata,
         )
         .unwrap();
@@ -184,7 +178,6 @@ fn std_build_config_enables_stack_protector_from_feature() {
         .into_prepared_base_cargo_config_with_metadata(
             "arceos-helloworld",
             "x86_64-unknown-none",
-            None,
             &metadata,
         )
         .unwrap();
