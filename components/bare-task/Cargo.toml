@@ -1,0 +1,22 @@
+[package]
+name = "bare-task"
+version = "0.1.0"
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+keywords.workspace = true
+categories.workspace = true
+description = "OS-independent task scheduling core with trait-ffi host hooks"
+
+[features]
+default = []
+std = []
+host-test = ["std"]
+smp = []
+ipi = ["smp"]
+irq = []
+
+[dependencies]
+trait-ffi = "0.2.4"
+

@@ -75,6 +75,7 @@ cfg_if::cfg_if! {
         mod sched_tracepoint;
         mod irq_notify;
         mod irq_wake;
+        mod bare_adapter;
         pub mod local;
         mod wait_queue;
 

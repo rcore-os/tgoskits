@@ -169,7 +169,7 @@ rbpf = { version = "0.4", default-features = false }
 [dev-dependencies]
 axtest.workspace = true
 ax-hal.workspace = true
-ax-std = { workspace = true, features = ["ext-ld", "fs", "multitask", "irq"] }
+ax-std = { workspace = true, features = ["ext-ld", "fs", "multitask"] }
 
 [[test]]
 name = "axtest_kernel"

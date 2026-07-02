@@ -999,7 +999,7 @@ impl AxRunQueue {
     ) -> bool {
         // If the task's state matches `current_state`, set its state to `Ready` and
         // put it back to the run queue (except idle task).
-        if task.transition_state(current_state, TaskState::Ready) && !task.is_idle() {
+        if bare_task::make_ready(core::ops::Deref::deref(task.as_ref()), current_state) {
             #[cfg(feature = "smp")]
             let waking_current_task = current_state == TaskState::Blocked
                 && self.cpu_id == this_cpu_id()

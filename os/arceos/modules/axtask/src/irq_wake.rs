@@ -6,7 +6,7 @@
 //! separate handle that may call into the scheduler directly.
 
 use alloc::sync::Arc;
-use core::sync::atomic::{AtomicBool, AtomicPtr, Ordering};
+use core::sync::atomic::{AtomicBool, Ordering};
 
 use ax_hal::percpu::this_cpu_id;
 use ax_kernel_guard::NoPreemptIrqSave;
@@ -25,41 +25,7 @@ static HOST_TEST_IRQ_WAKE_QUEUE: spin::Once<IrqWakeQueue> = spin::Once::new();
 #[ax_percpu::def_percpu]
 static IRQ_WAKE_DRAINING: AtomicBool = AtomicBool::new(false);
 
-/// Coalesced wake bits.
-pub type WakeBits = u64;
-
-/// Monotonic wake sequence.
-pub type WakeSeq = u64;
-
-/// Result returned by wake operations.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub struct WakeResult {
-    woke: bool,
-    local: bool,
-    remote: bool,
-}
-
-impl WakeResult {
-    /// Returns whether this call transitioned the task into the pending wake list.
-    pub const fn woke(self) -> bool {
-        self.woke
-    }
-
-    /// Returns whether the IRQ epilogue should run scheduler wake processing.
-    pub const fn should_resched(self) -> bool {
-        self.woke
-    }
-
-    /// Returns whether the target task is on the current CPU.
-    pub const fn local(self) -> bool {
-        self.local
-    }
-
-    /// Returns whether the target task is on another CPU.
-    pub const fn remote(self) -> bool {
-        self.remote
-    }
-}
+pub use bare_task::{WakeBits, WakeResult, WakeSeq};
 
 #[derive(Clone)]
 struct WakeHandle {
@@ -146,11 +112,7 @@ impl HardIrqWaker {
         task.publish_irq_wake_bits(bits);
         task.bump_irq_wake_seq();
         if !task.mark_irq_wake_pending() {
-            return WakeResult {
-                woke: false,
-                local: false,
-                remote: false,
-            };
+            return WakeResult::default();
         }
 
         let target_cpu = task.cpu_id() as usize;
@@ -172,11 +134,7 @@ impl HardIrqWaker {
         };
         #[cfg(not(all(feature = "smp", any(feature = "ipi", feature = "irq-wake-ipi"))))]
         let remote = false;
-        WakeResult {
-            woke: true,
-            local,
-            remote,
-        }
+        WakeResult::new(true, local, remote)
     }
 }
 
@@ -248,19 +206,11 @@ impl TaskWaker {
             .is_some_and(|current| current.ptr_eq(&task))
             && task.transition_state(crate::TaskState::Blocked, crate::TaskState::Running)
         {
-            return WakeResult {
-                woke: true,
-                local,
-                remote: false,
-            };
+            return WakeResult::new(true, local, false);
         }
 
         let woke = crate::run_queue::wake_task_from_irq_queue(task);
-        WakeResult {
-            woke,
-            local,
-            remote: woke && !local,
-        }
+        WakeResult::new(woke, local, woke && !local)
     }
 }
 
@@ -359,13 +309,13 @@ fn irq_wake_queue_for_cpu(cpu_id: usize) -> Option<&'static IrqWakeQueue> {
 }
 
 struct IrqWakeQueue {
-    head: AtomicPtr<AxTask>,
+    core: bare_task::IrqWakeQueueCore,
 }
 
 impl IrqWakeQueue {
     const fn new() -> Self {
         Self {
-            head: AtomicPtr::new(core::ptr::null_mut()),
+            core: bare_task::IrqWakeQueueCore::new(),
         }
     }
 
@@ -374,43 +324,20 @@ impl IrqWakeQueue {
         // Keep the task alive before publishing the raw pointer. Exactly one
         // extra reference is consumed by the drain path with `Arc::from_raw`.
         unsafe { Arc::increment_strong_count(task_ptr) };
-        let mut head = self.head.load(Ordering::Acquire);
-        loop {
-            task.set_irq_wake_next(head);
-            match self.head.compare_exchange_weak(
-                head,
-                task_ptr,
-                Ordering::AcqRel,
-                Ordering::Acquire,
-            ) {
-                Ok(_) => return,
-                Err(next) => {
-                    head = next;
-                    // The pointer was not published; retain the extra Arc and retry.
-                }
-            }
-        }
+        self.core.push(task_ptr.cast::<()>(), |next| {
+            task.set_irq_wake_next(next.cast::<AxTask>());
+        });
     }
 
     fn pop(&self) -> Option<AxTaskRef> {
-        loop {
-            let head = self.head.load(Ordering::Acquire);
-            if head.is_null() {
-                return None;
-            }
-            let task = unsafe { &*head };
-            let next = task.irq_wake_next();
-            if self
-                .head
-                .compare_exchange(head, next, Ordering::AcqRel, Ordering::Acquire)
-                .is_ok()
-            {
-                return Some(unsafe { Arc::from_raw(head) });
-            }
-        }
+        let head = self.core.pop(|node| {
+            let task = unsafe { &*node.cast::<AxTask>() };
+            task.irq_wake_next().cast::<()>()
+        })?;
+        Some(unsafe { Arc::from_raw(head.cast::<AxTask>()) })
     }
 
     fn is_empty(&self) -> bool {
-        self.head.load(Ordering::Acquire).is_null()
+        self.core.is_empty()
     }
 }

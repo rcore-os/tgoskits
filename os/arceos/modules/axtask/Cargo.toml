@@ -29,6 +29,7 @@ multitask = [
   "dep:ax-lazyinit",
   "dep:ax-memory-addr",
   "dep:ax-percpu",
+  "dep:bare-task",
   "dep:spin",
   "dep:ax-timer-list",
 ]
@@ -81,6 +82,7 @@ ax-percpu = {workspace = true, optional = true}
 ax-sched = { workspace = true, optional = true }
 ax-timer-list = {workspace = true, optional = true}
 axpoll = {workspace = true, optional = true}
+bare-task = {workspace = true, optional = true}
 cfg-if.workspace = true
 extern-trait = {version = "0.4", optional = true}
 futures-util = {version = "0.3", default-features = false, optional = true, features = [

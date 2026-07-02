@@ -5,12 +5,12 @@ use core::{
     fmt,
     future::poll_fn,
     pin::pin,
-    sync::atomic::{AtomicBool, Ordering},
     task::{Context, Poll, Waker},
 };
 
 use ax_errno::AxError;
 use ax_kernel_guard::NoPreemptIrqSave;
+use bare_task::BlockOnWakeState;
 
 use crate::{AxTaskRef, TaskWaker, current, current_run_queue};
 
@@ -22,19 +22,15 @@ pub use time::*;
 
 struct AxWaker {
     task: TaskWaker,
-    woke: AtomicBool,
+    wake_state: BlockOnWakeState,
 }
 
 impl AxWaker {
     fn new(task: &AxTaskRef) -> Arc<Self> {
         Arc::new(AxWaker {
             task: TaskWaker::new(task.clone()),
-            woke: AtomicBool::new(false),
+            wake_state: BlockOnWakeState::new(),
         })
-    }
-
-    fn take_woke(&self) -> bool {
-        self.woke.swap(false, Ordering::AcqRel)
     }
 
     fn irq_seq(&self) -> u64 {
@@ -42,7 +38,8 @@ impl AxWaker {
     }
 
     fn should_repoll(&self, observed_irq_seq: u64) -> bool {
-        self.take_woke() || self.irq_seq() != observed_irq_seq
+        self.wake_state
+            .should_repoll(observed_irq_seq, self.irq_seq())
     }
 }
 
@@ -52,7 +49,7 @@ impl Wake for AxWaker {
     }
 
     fn wake_by_ref(self: &Arc<Self>) {
-        self.woke.store(true, Ordering::Release);
+        self.wake_state.mark_woke();
         let _ = self.task.wake(0);
     }
 }

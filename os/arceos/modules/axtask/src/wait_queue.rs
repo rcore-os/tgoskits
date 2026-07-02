@@ -1,7 +1,6 @@
-use alloc::collections::VecDeque;
-
 use ax_kernel_guard::NoPreemptIrqSave;
 use ax_kspin::{SpinNoIrq, SpinNoIrqGuard};
+use bare_task::WaitQueueCore;
 
 use crate::{AxTaskRef, CurrentTask, current_run_queue, select_wake_run_queue};
 
@@ -29,10 +28,10 @@ use crate::{AxTaskRef, CurrentTask, current_run_queue, select_wake_run_queue};
 /// assert_eq!(VALUE.load(Ordering::Acquire), 1);
 /// ```
 pub struct WaitQueue {
-    queue: SpinNoIrq<VecDeque<AxTaskRef>>,
+    queue: SpinNoIrq<WaitQueueCore<AxTaskRef>>,
 }
 
-pub(crate) type WaitQueueGuard<'a> = SpinNoIrqGuard<'a, VecDeque<AxTaskRef>>;
+pub(crate) type WaitQueueGuard<'a> = SpinNoIrqGuard<'a, WaitQueueCore<AxTaskRef>>;
 
 impl Default for WaitQueue {
     fn default() -> Self {
@@ -44,7 +43,7 @@ impl WaitQueue {
     /// Creates an empty wait queue.
     pub const fn new() -> Self {
         Self {
-            queue: SpinNoIrq::new(VecDeque::new()),
+            queue: SpinNoIrq::new(WaitQueueCore::new()),
         }
     }
 

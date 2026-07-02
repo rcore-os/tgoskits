@@ -1,84 +1,19 @@
-use alloc::{collections::BTreeMap, string::String, vec::Vec};
+use alloc::string::String;
 use core::{
     fmt,
     pin::Pin,
     sync::atomic::{AtomicBool, AtomicU64, Ordering},
-    task::{Context, Poll, Waker},
+    task::{Context, Poll},
     time::Duration,
 };
 
 use ax_errno::AxError;
 use ax_hal::time::{TimeValue, monotonic_time, wall_time};
 use ax_kspin::SpinNoIrq;
+use bare_task::{TimerKey, TimerRuntimeCore};
 use futures_util::{FutureExt, select_biased};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-struct TimerKey {
-    deadline: TimeValue,
-    key: u64,
-}
-
-struct TimerRuntime {
-    key: u64,
-    wheel: BTreeMap<TimerKey, Waker>,
-}
-
-impl TimerRuntime {
-    const fn new() -> Self {
-        TimerRuntime {
-            key: 0,
-            wheel: BTreeMap::new(),
-        }
-    }
-
-    fn add(&mut self, deadline: TimeValue) -> Option<TimerKey> {
-        if deadline <= monotonic_time() {
-            return None;
-        }
-
-        let key = TimerKey {
-            deadline,
-            key: self.key,
-        };
-        self.wheel.insert(key, Waker::noop().clone());
-        self.key += 1;
-
-        Some(key)
-    }
-
-    fn poll(&mut self, key: &TimerKey, cx: &mut Context<'_>) -> Poll<()> {
-        if let Some(w) = self.wheel.get_mut(key) {
-            *w = cx.waker().clone();
-            Poll::Pending
-        } else {
-            Poll::Ready(())
-        }
-    }
-
-    fn cancel(&mut self, key: &TimerKey) {
-        self.wheel.remove(key);
-    }
-
-    fn next_deadline(&self) -> Option<TimeValue> {
-        self.wheel.keys().next().map(|key| key.deadline)
-    }
-
-    fn take_expired(&mut self, now: TimeValue) -> Vec<Waker> {
-        if self.wheel.is_empty() {
-            return Vec::new();
-        }
-
-        let pending = self.wheel.split_off(&TimerKey {
-            deadline: now,
-            key: u64::MAX,
-        });
-
-        let expired = core::mem::replace(&mut self.wheel, pending);
-        expired.into_values().collect()
-    }
-}
-
-static TIMER_RUNTIME: SpinNoIrq<TimerRuntime> = SpinNoIrq::new(TimerRuntime::new());
+static TIMER_RUNTIME: SpinNoIrq<TimerRuntimeCore> = SpinNoIrq::new(TimerRuntimeCore::new());
 static TIMER_SIGNAL: crate::HardIrqSignal = crate::HardIrqSignal::new();
 static TIMER_SERVICE_SPAWNED: AtomicBool = AtomicBool::new(false);
 static TIMER_SERVICE_PENDING: AtomicBool = AtomicBool::new(false);
@@ -105,7 +40,7 @@ pub(crate) fn next_timer_deadline() -> Option<TimeValue> {
     (deadline != 0).then(|| TimeValue::from_nanos(deadline))
 }
 
-fn with_runtime<R>(f: impl FnOnce(&mut TimerRuntime) -> R) -> R {
+fn with_runtime<R>(f: impl FnOnce(&mut TimerRuntimeCore) -> R) -> R {
     f(&mut TIMER_RUNTIME.lock())
 }
 
@@ -113,8 +48,8 @@ fn deadline_to_nanos(deadline: TimeValue) -> u64 {
     deadline.as_nanos().min(u64::MAX as u128) as u64
 }
 
-fn update_next_deadline(runtime: &TimerRuntime) {
-    let deadline = runtime.next_deadline().map_or(0, deadline_to_nanos);
+fn update_next_deadline(runtime: &TimerRuntimeCore) {
+    let deadline = runtime.next_deadline_nanos().unwrap_or(0);
     NEXT_DEADLINE_NANOS.store(deadline, Ordering::Release);
 }
 
@@ -140,8 +75,9 @@ fn drain_expired_timers() {
     loop {
         TIMER_SERVICE_PENDING.store(false, Ordering::Release);
         let now = monotonic_time();
+        let now_nanos = deadline_to_nanos(now);
         let expired = with_runtime(|runtime| {
-            let expired = runtime.take_expired(now);
+            let expired = runtime.take_expired(now_nanos);
             update_next_deadline(runtime);
             expired
         });
@@ -169,7 +105,7 @@ impl Future for TimerFuture {
     type Output = ();
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        with_runtime(|r| r.poll(&self.0, cx))
+        with_runtime(|r| r.poll(&self.0, cx.waker()))
     }
 }
 
@@ -190,8 +126,10 @@ pub async fn sleep(duration: Duration) {
 /// Waits until the monotonic `deadline` is reached.
 pub async fn sleep_until(deadline: TimeValue) {
     ensure_timer_service_spawned();
+    let deadline_nanos = deadline_to_nanos(deadline);
+    let now_nanos = deadline_to_nanos(monotonic_time());
     let key = with_runtime(|runtime| {
-        let key = runtime.add(deadline);
+        let key = runtime.add(deadline_nanos, now_nanos);
         update_next_deadline(runtime);
         key
     });
@@ -268,8 +206,11 @@ fn wall_deadline_to_monotonic(deadline: TimeValue) -> TimeValue {
 
 #[cfg(test)]
 mod tests {
-    use alloc::{sync::Arc, task::Wake, vec::Vec};
-    use core::sync::atomic::{AtomicUsize, Ordering};
+    use alloc::{sync::Arc, task::Wake};
+    use core::{
+        sync::atomic::{AtomicUsize, Ordering},
+        task::Waker,
+    };
 
     use super::*;
 
@@ -287,16 +228,18 @@ mod tests {
 
     #[test]
     fn timer_runtime_takes_expired_wakers_without_waking_under_lock() {
-        let mut runtime = TimerRuntime::new();
+        let mut runtime = TimerRuntimeCore::new();
         let counter = Arc::new(WakeCounter(AtomicUsize::new(0)));
         let waker = Waker::from(counter.clone());
-        let mut cx = Context::from_waker(&waker);
 
         let deadline = monotonic_time() + Duration::from_millis(1);
-        let key = runtime.add(deadline).expect("future timer should be armed");
-        assert!(runtime.poll(&key, &mut cx).is_pending());
+        let deadline_nanos = deadline_to_nanos(deadline);
+        let key = runtime
+            .add(deadline_nanos, deadline_to_nanos(monotonic_time()))
+            .expect("future timer should be armed");
+        assert!(runtime.poll(&key, &waker).is_pending());
 
-        let expired: Vec<Waker> = runtime.take_expired(deadline + Duration::from_millis(1));
+        let expired = runtime.take_expired(deadline_to_nanos(deadline + Duration::from_millis(1)));
         assert_eq!(counter.0.load(Ordering::Acquire), 0);
         assert_eq!(expired.len(), 1);
 
