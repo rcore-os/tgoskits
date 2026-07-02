@@ -1,52 +1,6 @@
 board_type = "OrangePi-5-Plus"
 shell_prefix = "root@starry:/root #"
-shell_init_cmd = """
-echo STARRY_PWM_SMOKE_BEGIN
-ok=1
-for c in 0 1 4 5; do
-  base=/sys/class/pwm/pwmchip$c
-  if [ ! -d "$base" ]; then
-    echo STARRY_PWM_MISSING pwmchip$c
-    ok=0
-    continue
-  fi
-
-  npwm=$(cat "$base/npwm" 2>/dev/null)
-  if [ "$npwm" != "1" ]; then
-    echo STARRY_PWM_BAD_NPWM pwmchip$c "$npwm"
-    ok=0
-  fi
-
-  echo 0 > "$base/unexport" 2>/dev/null
-  echo 0 > "$base/export" || ok=0
-  ch=$base/pwm0
-  if [ ! -d "$ch" ]; then
-    echo STARRY_PWM_EXPORT_FAILED pwmchip$c
-    ok=0
-    continue
-  fi
-
-  echo 1000000 > "$ch/period" || ok=0
-  echo 300000 > "$ch/duty_cycle" || ok=0
-  echo 0 > "$ch/enable" || ok=0
-  period=$(cat "$ch/period" 2>/dev/null)
-  duty=$(cat "$ch/duty_cycle" 2>/dev/null)
-  enable=$(cat "$ch/enable" 2>/dev/null)
-  if [ "$period" != "1000000" ] || [ "$duty" != "300000" ] || [ "$enable" != "0" ]; then
-    echo STARRY_PWM_BAD_ATTR pwmchip$c "$period" "$duty" "$enable"
-    ok=0
-  fi
-
-  echo 0 > "$ch/enable" 2>/dev/null
-  echo 0 > "$base/unexport" || ok=0
-done
-
-if [ "$ok" = "1" ]; then
-  echo STARRY_PWM_SMOKE_OK
-else
-  echo STARRY_PWM_SMOKE_FAILED
-fi
-"""
+shell_init_cmd = "p=STARRY_PWM_; s=SMOKE_; ok=1; echo ${p}${s}BEGIN; for c in 0 1 4 5; do b=/sys/class/pwm/pwmchip$c; [ -d $b ] || { echo PWM$c:missing; ok=0; continue; }; n=$(cat $b/npwm 2>/dev/null); echo 0 >$b/unexport 2>/dev/null; echo 0 >$b/export || ok=0; ch=$b/pwm0; [ -d $ch ] || { echo PWM$c:nochan; ok=0; continue; }; echo 1000000 >$ch/period || ok=0; echo 300000 >$ch/duty_cycle || ok=0; echo 0 >$ch/enable || ok=0; r=$(cat $ch/period 2>/dev/null):$(cat $ch/duty_cycle 2>/dev/null):$(cat $ch/enable 2>/dev/null); echo 0 >$b/unexport; u=$?; echo PWM$c:$n:$r:u$u; [ \"$n:$r:$u\" = \"1:1000000:300000:0:0\" ] || ok=0; done; [ $ok = 1 ] && echo ${p}${s}OK || echo ${p}${s}FAILED"
 success_regex = ["(?m)^STARRY_PWM_SMOKE_OK\\s*$"]
 fail_regex = [
   '(?i)\bpanic(?:ked)?\b',
@@ -54,10 +8,6 @@ fail_regex = [
   '(?i)SIGSEGV',
   'exit with code: 139',
   "(?i)(cat|sh): .*not found",
-  "(?m)^STARRY_PWM_MISSING\\b",
-  "(?m)^STARRY_PWM_BAD_NPWM\\b",
-  "(?m)^STARRY_PWM_EXPORT_FAILED\\b",
-  "(?m)^STARRY_PWM_BAD_ATTR\\b",
   "(?m)^STARRY_PWM_SMOKE_FAILED\\s*$",
 ]
 timeout = 180
