@@ -62,17 +62,17 @@ flowchart TD
 
 除默认值差异外，各架构还有一些需要注意的特殊行为：
 
-- **动态平台**：构建系统固定走动态平台路径，Build Info 中不再提供平台模式开关。
+- **动态平台**：构建系统固定走 `axplat-dyn` 路径，Build Info 中不再提供平台选择开关。
 - **to_bin**：通用 ArceOS/Starry std 构建会生成 raw binary；Axvisor 另有覆盖：`aarch64`/`riscv64` 生成 bin，`x86_64`/`loongarch64` 保留 ELF。
 - **LoongArch QEMU**：运行 Axvisor loongarch64 时自动搜索 LVZ 版 QEMU（详见 [运行](./run#loongarch-特殊处理)）
 
-LoongArch QEMU 现在默认走动态平台，不再以静态平台 crate 作为当前平台路径。旧配置中的 `ax-hal/loongarch64-qemu-virt` 或 `--plat loongarch64-qemu-virt` 应迁移为动态平台写法：保留 `--arch loongarch64`，并按需保留 `axplat-dyn/efi` 等真实启动链或设备 feature。
+LoongArch QEMU 现在默认走 `axplat-dyn`，不再以静态平台 crate 作为当前平台路径。旧配置中的 `ax-hal/loongarch64-qemu-virt` 或 `--plat loongarch64-qemu-virt` 应迁移为动态平台写法：保留 `--arch loongarch64`，并按需保留 UEFI/设备等真实启动链能力开关；这些不是平台选择项。
 
 ### 扩展字段
 
-`ArchSpec` 除了 arch ↔ target 映射外，还为每个架构定义了用于 rootfs 管理、StarryOS 默认平台和 C 测试交叉编译的扩展字段：
+`ArchSpec` 除了 arch ↔ target 映射外，还为每个架构定义了用于 rootfs 管理、StarryOS 平台路径和 C 测试交叉编译的扩展字段：
 
-| 架构 | 默认 rootfs 镜像 | StarryOS 默认平台 | GNU 工具前缀 | qemu-user 二进制 |
+| 架构 | 默认 rootfs 镜像 | StarryOS 平台路径 | GNU 工具前缀 | qemu-user 二进制 |
 |------|-----------------|------------------|-------------|-----------------|
 | `aarch64` | `rootfs-aarch64-alpine.img` | 动态平台 | `aarch64-linux-musl` | `qemu-aarch64-static` |
 | `x86_64` | `rootfs-x86_64-alpine.img` | 动态平台 | `x86_64-linux-musl` | `qemu-x86_64-static` |

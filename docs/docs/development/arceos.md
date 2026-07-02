@@ -367,44 +367,36 @@ C 应用覆盖由 `test-suit/arceos/c` 维护；`apps/arceos` 只保留 Rust std
 
 ## 5. 平台开发
 
-### 5.1 平台 crate 结构
+### 5.1 动态平台扩展点
 
-外部自定义平台通常以 `ax-plat-<arch>-<board>` 命名，例如 `ax-plat-riscv64-custom`：
+仓库内置平台路径固定为 `axplat-dyn`。新增板卡或 QEMU 变体时，优先把平台事实接入运行时发现链路：
 
-```
-platforms/ax-plat-riscv64-custom/
-├── Cargo.toml
-├── build.rs          # 构建脚本
-└── src/
-    └── lib.rs        # 实现 console/time/irq 等平台接口
-```
+- **somehal**：启动入口、FDT/ACPI/UEFI、内存图、CPU、时钟和中断事实来源。
+- **axplat-dyn**：把 somehal 的运行时事实转成 `ax-plat` 契约，并接入设备探测 glue。
+- **ax-driver / rdrive**：通过 FDT/ACPI/PCI 或外部自定义 probe 注册设备。
 
-平台 crate 需要实现的接口由 `axplat` / `axhal` 契约定义，包括：
-
-- **console**：`write_text_bytes()` — 字符输出
-- **time**：`current_time()`, `set_oneshot_timer()` — 时钟
-- **irq**：`set_extern_irq_handler()`, `enable_irq()` — 中断管理
+外部 `ax-plat-*` crate 只作为兼容边界存在，不是当前仓库内置维护路径，也不再通过 build feature 或 `--platform` 在内置构建链中选择。
 
 ### 5.2 平台目录
 
 | 目录 | 内容 |
 |------|------|
-| `platforms/` | 工作区内 `ax-plat-*` 平台 crate |
+| `platforms/` | 工作区内平台契约和动态平台实现；当前内置平台路径为 `axplat-dyn` |
 | `platforms/axplat-dyn/` | 动态平台加载（UEFI/FDT/ACPI 运行时平台事实与设备探测 glue） |
 
-AArch64、RISC-V QEMU、x86_64 QEMU、LoongArch QEMU 和 SG2002 板卡默认由 `axplat-dyn` 通过 UEFI/设备树/ACPI 等运行时信息加载。仓库不再内置 SG2002 静态平台 crate。
+AArch64、RISC-V QEMU、x86_64 QEMU、LoongArch QEMU 和 SG2002 板卡默认由 `axplat-dyn` 通过 UEFI/设备树/ACPI 等运行时信息加载。仓库不再内置 SG2002 或其他板级静态平台 crate。
 
 旧 LoongArch QEMU 写法需要迁移：移除 `ax-hal/loongarch64-qemu-virt`，命令行不要再写 `--plat loongarch64-qemu-virt`，直接使用 `--arch loongarch64`。动态路径会进入 `axplat-dyn` 和 UEFI/`efi` 启动链路。
 
-### 5.3 添加新平台
+### 5.3 添加板卡支持
 
-1. 在 `platforms/` 下创建新 crate
-2. 实现 `axhal` 要求的平台接口
-3. 在根 `Cargo.toml` 中注册为 workspace member，并通过 workspace metadata 或动态平台 glue 暴露必要平台信息
+1. 确认固件表、FDT/ACPI 或 UEFI 能描述必要硬件资源。
+2. 在 `somehal` 或 `axplat-dyn` glue 中补齐运行时事实转译。
+3. 在 `ax-driver`/`rdrive` 中补齐对应设备 probe 或外部自定义 probe。
 4. 验证：
 
 ```bash
-cargo xtask arceos qemu --package arceos-helloworld --arch <arch> --platform <platform-name>
+cargo xtask arceos qemu --package arceos-helloworld --arch <arch>
 ```
 
 ---

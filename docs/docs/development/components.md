@@ -63,7 +63,7 @@ flowchart TD
    例如 `ax-hal`、`ax-task`、`ax-driver`、`ax-net`
 
 3. 通过平台和配置接到最终系统  
-   例如 `axplat-*`、`platforms/axplat-dyn`、Axvisor 的 `configs/board/*.toml`
+   例如内置动态平台 `platforms/axplat-dyn`、外部自定义 `ax-plat-*` 兼容包、Axvisor 的 `configs/board/*.toml`
 
 ### 2.1 依赖统计
 
@@ -346,8 +346,8 @@ cargo xtask qemu \
 
 若修改涉及板级能力，还需同时关注：
 
-- `platforms/*`
 - `platforms/axplat-dyn`
+- 外部自定义 `ax-plat-*` 兼容包（若改动显式面向它们）
 - `os/axvisor/configs/board/*.toml`
 
 ## 9. 测试与质量检查

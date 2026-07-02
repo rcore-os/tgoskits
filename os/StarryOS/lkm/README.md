@@ -65,7 +65,8 @@ ax-std = { workspace = true, features = [...] }
 ```
 
 Add lower-level ArceOS crates such as `ax-hal`, `ax-driver`, or `axplat-dyn`
-only when the module directly uses their APIs or forwards their features.
+only when the module directly uses their APIs. Do not use module features to
+select a platform path; the kernel build always provides `axplat-dyn`.
 
 Do not depend on a different version of `starry-kernel`, `ax-std`, `ax-feat`,
 or platform crates. A Rust kmod may contain undefined Rust `core`/`alloc` and
@@ -86,7 +87,7 @@ example SMP:
 ```toml
 [features]
 default = []
-smp = ["ax-feat/smp", "axplat-dyn?/smp", "ax-hal/smp"]
+smp = ["ax-feat/smp", "ax-hal/smp"]
 ```
 
 The same applies to board and device features. If a module needs a symbol or

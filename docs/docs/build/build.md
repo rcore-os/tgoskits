@@ -24,7 +24,7 @@ flowchart TD
     E --> E1["文件不存在 → 默认模板<br/>写入 tmp/axbuild/config/&lt;pkg&gt;/build-&lt;target&gt;.toml"]
     E1 --> F["5. Feature 解析"]
     F --> G["6. 动态平台装配"]
-    G --> G1["选择动态平台 target / axplat.x<br/>过滤旧平台 feature"]
+    G --> G1["选择动态平台 target / axplat.x<br/>过滤旧平台选择项"]
     G1 --> H["7. Cargo 配置组装"]
     H --> I["8. ostool 执行 (cargo build)"]
 ```
@@ -32,7 +32,7 @@ flowchart TD
 **后续构建**时，三类配置文件均已存在，流程简化为：
 - **阶段 2**：从已有 Snapshot 加载参数，与 CLI 合并
 - **阶段 4**：直接 TOML 反序列化已有 Build Info 文件（用户可手动编辑该文件调整配置）
-- **阶段 6**：动态平台 target、链接脚本与旧平台 feature 过滤重新计算
+- **阶段 6**：动态平台 target、链接脚本与旧平台选择项过滤重新计算
 
 三类配置文件的详细说明见 [参数与配置](/docs/build/configuration)，底层执行见 [运行](/docs/build/run)。
 
@@ -146,7 +146,7 @@ flowchart TD
     A[resolve_features] --> B["检测 feature 前缀族<br/>通过依赖关系确定 ax-std 或 ax-feat"]
     B --> B1{检测失败?}
     B1 -->|是| B2["回退到已有 features 中的前缀<br/>最终默认 ax-std"]
-    B1 -->|否| C["清理已存在的平台 feature<br/>(去掉 defplat/myplat/plat-dyn)"]
+    B1 -->|否| C["清理旧平台选择项<br/>(去掉 defplat/myplat/plat-dyn)"]
     B2 --> C
     C --> I{max_cpu_num > 1?}
     I -->|是| J["注入 {prefix}/smp"]
@@ -154,7 +154,7 @@ flowchart TD
     J --> K
 ```
 
-Feature 解析需要处理多个维度：feature 前缀族（通过分析包的 Cargo.toml 依赖关系确定使用 `ax-std` 还是 `ax-feat` 前缀）、旧平台 feature 过滤、以及 SMP 支持。
+Feature 解析需要处理多个维度：feature 前缀族（通过分析包的 Cargo.toml 依赖关系确定使用 `ax-std` 还是 `ax-feat` 前缀）、旧平台选择项过滤、以及 SMP 支持。
 
 **前缀族检测**通过检查包的直接依赖来确定：如果包依赖 `ax-std` 则使用 `ax-std/` 前缀，依赖 `ax-feat` 则使用 `ax-feat/` 前缀。当检测失败（包不直接依赖两者）时，会回退到已有 features 列表中的前缀线索，最终默认使用 `ax-std`。
 
@@ -162,11 +162,11 @@ Feature 解析需要处理多个维度：feature 前缀族（通过分析包的 
 
 ## 6. 动态平台装配
 
-当前构建链以动态平台为唯一维护路径。Build config 不再提供平台模式开关，旧 `plat_dyn` 字段会被拒绝；构建过程不再生成 `.axconfig.toml`。
+当前构建链以 `axplat-dyn` 为唯一维护路径。Build config 不再提供平台选择开关，旧 `plat_dyn` 字段会被拒绝；构建过程不再生成 `.axconfig.toml`。
 
 ```mermaid
 flowchart TD
-    A["target 支持动态平台"] --> B["过滤旧平台 feature"]
+    A["target 使用动态平台"] --> B["过滤旧平台选择项"]
     B --> C["选择 PIE target JSON"]
     C --> D["使用 axplat.x 链接脚本"]
     D --> E["Cargo 配置组装"]
@@ -174,7 +174,7 @@ flowchart TD
 
 动态平台下，硬件信息来自启动时的固件表、FDT/ACPI 和 `somehal`/`axplat-dyn` 运行时发现结果；`axbuild` 不再合并平台 `axconfig.toml`，也不再向 Cargo 注入 `AX_CONFIG_PATH`。
 
-LoongArch QEMU 已迁移到默认动态平台。旧写法 `ax-hal/loongarch64-qemu-virt` 或 `--plat loongarch64-qemu-virt` 不再表示当前推荐路径；应改为 `--arch loongarch64`，并按需保留 `axplat-dyn/efi` 等真实启动链 feature。
+LoongArch QEMU 已迁移到默认 `axplat-dyn` 路径。旧写法 `ax-hal/loongarch64-qemu-virt` 或 `--plat loongarch64-qemu-virt` 不再表示当前推荐路径；应改为 `--arch loongarch64`，并按需保留 UEFI/设备等真实启动链能力开关；这些不是平台选择项。
 
 ## 7. Cargo 配置组装
 
@@ -196,11 +196,11 @@ Cargo {
 
 各子系统的额外补丁：
 - **StarryOS**：注入 `AX_ARCH`、`AX_TARGET`
-- **Axvisor**：注入 `AX_ARCH`、`AX_TARGET`、`AXVISOR_VM_CONFIGS`；额外过滤旧平台 feature
+- **Axvisor**：注入 `AX_ARCH`、`AX_TARGET`、`AXVISOR_VM_CONFIGS`；额外过滤旧平台选择项
 
 此阶段将前面所有阶段的输出（Build Info 中的 features 和环境变量、arch 解析的 target、动态平台 target 配置）组装为 ostool 能理解的 `Cargo` 配置结构体。动态平台使用 `axplat.x`，支持运行时平台注册和固件表发现。
 
-**Axvisor 平台 feature 过滤**：Axvisor 的旧 board 配置文件中可能声明静态平台或动态平台占位 feature。`axbuild` 在 feature 解析阶段过滤这些旧写法，避免平台模式 feature 泄漏到最终 Cargo 配置。
+**Axvisor 旧平台选择项过滤**：Axvisor 的旧 board 配置文件中可能声明旧静态平台或 `plat-dyn` 占位项。`axbuild` 在 feature 解析阶段过滤这些旧写法，避免平台选择项泄漏到最终 Cargo 配置。
 
 ## 8. 执行
 

@@ -6,7 +6,7 @@
 > 版本：`0.2.0-preview.2`
 > 文档依据：`Cargo.toml`、`src/main.rs`、`src/init.sh`、`.qemu.toml`、`os/StarryOS/README.md`、`os/StarryOS/kernel/src/entry.rs`、`xtask/src/starry/{build.rs,run.rs}`
 
-`starryos` 是 StarryOS 的默认启动镜像包。它不实现 syscall、进程管理或虚拟内存，而是负责把 `ax-feat`、平台配置、`starry-kernel` 和默认 init 命令线装配成一个可启动、可进入交互 shell 的系统镜像。
+`starryos` 是 StarryOS 的默认启动镜像包。它不实现 syscall、进程管理或虚拟内存，而是负责把 `ax-feat` 能力组合、运行配置、`starry-kernel` 和默认 init 命令线装配成一个可启动、可进入交互 shell 的系统镜像。
 
 换句话说，`starryos` 负责的是“把内核打包成一个能启动的 StarryOS 镜像”，而不是“内核本体”。真正的系统核心仍在 `starry-kernel`。
 
@@ -105,12 +105,12 @@ graph LR
 ```
 
 ### 直接依赖
-- `ax-feat`：把底层 ArceOS 运行时、驱动和平台 feature 接到镜像入口包上。
+- `ax-feat`：把底层 ArceOS 运行时和驱动能力 feature 接到镜像入口包上。
 - `starry-kernel`：真正的内核实现，`starryos` 只在 `main()` 里调用其入口。
 
 ### 3.2 关键运行时外部条件
 - rootfs / `rootfs-<arch>.img`：由 `cargo xtask starry rootfs` 或 `run` 路径自动准备。
-- 动态平台启动链：由 axbuild BuildInfo、命令行覆盖和 `axplat-dyn` 运行时发现共同决定。
+- 动态平台启动链配置：由 axbuild BuildInfo、命令行覆盖和 `axplat-dyn` 运行时发现共同决定；平台本身不再由 feature 选择。
 - QEMU 参数：由 `.qemu.toml` 和 xtask 运行参数共同决定。
 
 ## 开发指南

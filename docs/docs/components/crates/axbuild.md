@@ -6,7 +6,7 @@
 > 版本：`0.3.0-preview.3`
 > 文档依据：`Cargo.toml`、`src/lib.rs`、`src/arceos/mod.rs`、`src/arceos/build.rs`、`src/arceos/ostool.rs`、`src/arceos/config.rs`、`src/arceos/features.rs`、`src/axvisor/image/mod.rs`、`src/axvisor/xtest/mod.rs`
 
-`axbuild` 是当前工作区里承上启下的宿主侧构建基础库。它不属于目标镜像，也不参与内核热路径；它负责把“应用配置、动态平台选择、feature 装配、QEMU 参数、产物路径”这些宿主机侧信息整理成可执行的构建/运行计划，并复用 `ostool` 构建桥接能力。
+`axbuild` 是当前工作区里承上启下的宿主侧构建基础库。它不属于目标镜像，也不参与内核热路径；它负责把“应用配置、`axplat-dyn` target/linker 装配、feature 装配、QEMU 参数、产物路径”这些宿主机侧信息整理成可执行的构建/运行计划，并复用 `ostool` 构建桥接能力。
 
 ## 架构设计
 ### 设计定位
@@ -24,7 +24,7 @@
 ```mermaid
 flowchart TD
     A["ArceosConfig / Override"] --> B["resolve_effective_smp + resolve_platform"]
-    B --> C["准备动态平台 features / linker 参数"]
+    B --> C["准备动态平台 target / linker 参数"]
     C --> D["FeatureResolver 计算 ax_features / lib_features"]
     D --> E["ostool::build_cargo_spec"]
     E --> F["ostool 执行 cargo build / qemu"]
@@ -33,8 +33,8 @@ flowchart TD
 其中几个实现细节非常关键：
 
 - `prepare_artifacts()` 会先解析架构、SMP、内存、feature 等信息。
-- 静态平台配置生成路径已经移除；动态平台是当前唯一维护的构建路径。
-- `PlatformResolver` 负责决定动态平台相关 feature、链接参数和构建时环境。
+- 静态平台配置生成路径已经移除；`axplat-dyn` 是当前唯一维护的构建路径。
+- `PlatformResolver` 负责决定动态平台 target、链接参数和构建时环境。
 - `is_c_app()` 会读取应用 `Cargo.toml`，通过是否出现 `ax-libc` 判断这是 C 应用还是 Rust 应用。
 
 因此，`axbuild` 是把 BuildInfo 配置、feature 链和实际构建链连接起来的中枢。
@@ -42,7 +42,7 @@ flowchart TD
 ### 1.3 feature 装配的真实策略
 `axbuild` 并不是简单把用户输入的 feature 原样透传给 Cargo，而是做了分层解析：
 
-- 旧别名和已移除的平台 feature 会先被归一化或过滤。
+- 旧别名和已移除的平台选择项会先被归一化或过滤。
 - 普通能力 feature，例如 `fs`、`net`、`multitask`，会根据应用实际依赖选择 `ax-std/`、`ax-feat/` 或 `ax-libc/` 前缀。
 - `max_cpu_num > 1` 时才注入对应前缀的 `smp`。
 
@@ -143,7 +143,7 @@ graph LR
 
 ### 4.3 推荐验证路径
 - 先跑单元测试，确认 feature、QEMU 参数和配置推导逻辑不回归。
-- 再做一次最小 ArceOS 构建，确认动态平台 feature 和链接参数能正确装配。
+- 再做一次最小 ArceOS 构建，确认动态平台 target、链接参数和运行时平台路径能正确装配。
 - 涉及 QEMU 行为时，再做一次宿主侧运行验证。
 - 改 Axvisor 相关模块时，还应验证镜像下载或 xtest 流程。
 
@@ -164,7 +164,7 @@ graph LR
 - Axvisor 镜像规格解析
 
 ### 5.3 建议继续加强的点
-- 静态平台请求被拒绝时的错误路径
+- 旧平台选择请求被拒绝时的错误路径
 - 动态平台链接参数探测失败时的诊断信息
 - `is_c_app()` 对不同应用布局的识别
 - Axvisor 镜像下载和解压的更细粒度测试
@@ -177,7 +177,7 @@ graph LR
 
 ## 跨项目定位
 ### ArceOS
-对 ArceOS 来说，`axbuild` 是宿主侧构建总控：它把配置文件、平台选择、feature 装配、产物输出和 QEMU 运行串成一条一致的工具链。
+对 ArceOS 来说，`axbuild` 是宿主侧构建总控：它把配置文件、`axplat-dyn` 构建装配、feature 装配、产物输出和 QEMU 运行串成一条一致的工具链。
 
 ### StarryOS
 StarryOS 通过根工作区的命令系统复用 `axbuild` 的 ArceOS 构建能力，因此它在 StarryOS 中承担的是“共享构建后端”角色，而不是 StarryOS 私有逻辑。
