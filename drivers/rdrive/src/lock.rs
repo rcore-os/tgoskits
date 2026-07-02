@@ -175,6 +175,10 @@ impl LockInner {
         }
 
         let freed = pack(generation.wrapping_add(1), OWNER_FREE);
+        // The Release half is load-bearing: the dead holder's device writes
+        // reach the reaper via the exit path's scheduler barriers, and this
+        // Release is what carries them onward to the next acquirer's
+        // Acquire-CAS. Do not weaken below AcqRel's Release half.
         self.borrowed
             .compare_exchange(current, freed, Ordering::AcqRel, Ordering::Relaxed)
             .is_ok()
