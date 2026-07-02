@@ -1071,7 +1071,18 @@ static void test_build_script_wave(void)
 
     int reaped = 0;
     int loops = 0;
-    while (reaped < BUILD_SCRIPT_WAVE && loops++ < MAX_LOOPS) {
+    while (loops++ < MAX_LOOPS) {
+        int pending_output = 0;
+        for (int i = 0; i < BUILD_SCRIPT_WAVE; i++) {
+            if (!children[i].out_eof || !children[i].err_eof) {
+                pending_output = 1;
+                break;
+            }
+        }
+        if (reaped >= BUILD_SCRIPT_WAVE && !pending_output) {
+            break;
+        }
+
         struct pollfd pfds[BUILD_SCRIPT_WAVE * 2];
         int child_index[BUILD_SCRIPT_WAVE * 2];
         int is_stderr[BUILD_SCRIPT_WAVE * 2];
