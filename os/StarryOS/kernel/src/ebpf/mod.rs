@@ -20,6 +20,7 @@ use alloc::{collections::btree_map::BTreeMap, sync::Arc, vec};
 use ax_errno::{AxError, AxResult};
 use ax_io::Read;
 use ax_lazyinit::LazyInit;
+use ax_task::current;
 use kbpf_basic::{
     helper::RawBPFHelperFn,
     linux_bpf::{bpf_attr, bpf_cmd},
@@ -44,12 +45,70 @@ use crate::{
     kprobe::KernelRawMutex,
     mm::VmBytes,
     perf::raw_tracepoint::bpf_raw_tracepoint_open,
+    task::AsThread,
 };
 
 /// The global BPF helper-function table (id → `RawBPFHelperFn`). Populated by
 /// `init_ebpf()` at kernel start so map/prog/jit code can resolve helpers
 /// without re-running the kbpf-basic init on every call.
 pub static BPF_HELPER_FUN_SET: LazyInit<BTreeMap<u32, RawBPFHelperFn>> = LazyInit::new();
+
+/// BPF helper ID for `bpf_probe_read` (legacy, address-space-agnostic).
+const BPF_FUNC_PROBE_READ: u32 = 4;
+/// BPF helper ID for `bpf_get_current_pid_tgid`. kbpf-basic does not register
+/// this helper, so we implement it directly in StarryOS.
+const BPF_FUNC_GET_CURRENT_PID_TGID: u32 = 14;
+/// BPF helper ID for `bpf_get_current_comm`. kbpf-basic does not register
+/// this helper, so we implement it directly in StarryOS.
+const BPF_FUNC_GET_CURRENT_COMM: u32 = 16;
+/// BPF helper ID for `bpf_probe_read_kernel`. kbpf-basic only registers
+/// `bpf_probe_read` so we alias 113 onto the same raw helper.
+const BPF_FUNC_PROBE_READ_KERNEL: u32 = 113;
+
+/// `bpf_get_current_pid_tgid()` — returns `(tgid << 32) | tid` of the
+/// currently running task, matching the Linux kernel helper ABI.
+fn bpf_get_current_pid_tgid(_a: u64, _b: u64, _c: u64, _d: u64, _e: u64) -> u64 {
+    let task = current();
+    let tgid = task.as_thread().proc_data.proc.pid() as u64;
+    let pid = task.as_thread().tid() as u64;
+    (tgid << 32) | pid
+}
+
+/// `bpf_get_current_comm(char *buf, u32 size_of_buf)` — copies the current
+/// task's comm (name) into `buf` using `strscpy_pad` semantics: at most
+/// `size_of_buf - 1` bytes are copied, a NUL terminator is always written,
+/// and remaining bytes are zero-padded. Returns 0, matching the Linux
+/// kernel helper ABI.
+fn bpf_get_current_comm(buf: u64, size_of_buf: u64, _c: u64, _d: u64, _e: u64) -> u64 {
+    let size = size_of_buf as usize;
+    if buf == 0 {
+        return 0;
+    }
+
+    let task = current();
+    let comm = task.name();
+    let comm_bytes = comm.as_bytes();
+
+    if size == 0 {
+        return 0;
+    }
+
+    // Copy at most size-1 bytes to leave room for the NUL terminator.
+    let copy_len = comm_bytes.len().min(size.saturating_sub(1));
+
+    // SAFETY: `buf` is a kernel-space pointer validated by the eBPF verifier
+    // before the helper is invoked.
+    unsafe {
+        core::ptr::copy_nonoverlapping(comm_bytes.as_ptr(), buf as *mut u8, copy_len);
+        // Always NUL-terminate at `buf[copy_len]`.
+        (buf as *mut u8).add(copy_len).write(0);
+        // Zero-pad the remainder.
+        if copy_len + 1 < size {
+            core::ptr::write_bytes((buf as *mut u8).add(copy_len + 1), 0, size - copy_len - 1);
+        }
+    }
+    0
+}
 
 /// Initialize the BPF subsystem: build the helper-function table from
 /// `kbpf-basic`. Must be called before `sys_bpf(BPF_PROG_LOAD)` so loaded
@@ -61,9 +120,14 @@ pub fn init_ebpf() {
     // tracepoint program uses to pull fields out of its sample buffer.
     // kbpf-basic only registers the legacy `bpf_probe_read` (id 4), whose raw
     // reader is address-space-agnostic in this VM, so alias 113 onto it.
-    if let Some(&probe_read) = set.get(&4) {
-        set.entry(113).or_insert(probe_read);
+    if let Some(&probe_read) = set.get(&BPF_FUNC_PROBE_READ) {
+        set.entry(BPF_FUNC_PROBE_READ_KERNEL).or_insert(probe_read);
     }
+    // Register helpers that kbpf-basic does not yet provide (#14, #16).
+    set.entry(BPF_FUNC_GET_CURRENT_PID_TGID)
+        .or_insert(bpf_get_current_pid_tgid);
+    set.entry(BPF_FUNC_GET_CURRENT_COMM)
+        .or_insert(bpf_get_current_comm);
     BPF_HELPER_FUN_SET.init_once(set);
 }
 
