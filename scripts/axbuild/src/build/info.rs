@@ -249,6 +249,7 @@ impl BuildInfo {
 
         if self.max_cpu_num.is_some_and(|max_cpu_num| max_cpu_num > 1) {
             self.features.push("smp".to_string());
+            self.features.push("ipi".to_string());
         }
         self.features.push("smp".to_string());
 
@@ -284,6 +285,7 @@ impl BuildInfo {
 
         if self.max_cpu_num.is_some_and(|max_cpu_num| max_cpu_num > 1) {
             self.features.push(format!("{}smp", prefix_family.prefix()));
+            self.features.push(format!("{}ipi", prefix_family.prefix()));
         }
 
         self.features.sort();

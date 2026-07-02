@@ -195,6 +195,7 @@ pub(crate) struct VcpuSetupContext<'a> {
     pub(crate) interrupt_mode: VMInterruptMode,
     pub(crate) emulates_console: bool,
     pub(crate) passthrough_ports: &'a [PassThroughPortConfig],
+    pub(crate) memory_regions: &'a [crate::vm::VMMemoryRegion],
     pub(crate) firmware_boot: bool,
 }
 

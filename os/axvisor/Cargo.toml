@@ -67,7 +67,7 @@ log = "0.4"
 
 # System dependent modules provided by ArceOS.
 ax-std = { workspace = true, features = ["ext-ld", "paging", "irq", "multitask", "task-ext", "smp", "hv"] }
-ax-hal = { workspace = true, features = ["paging", "irq", "smp", "hv"] }
+ax-hal = { workspace = true, features = ["paging", "irq", "smp", "hv", "axvisor-linker"] }
 # System dependent modules provided by ArceOS-Hypervisor (bare-metal only)
 # ax-runtime = { version = "=0.3.0-preview.1", features = ["alloc", "irq", "paging", "smp", "multitask"] }
 axvm = { workspace = true, default-features = false }
