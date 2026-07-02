@@ -9,8 +9,6 @@ use crate::pseudofs::{
     SimpleFileOperation, SimpleFileOps, SimpleFs, SpecialFsFile,
 };
 
-const NANOS_PER_SECOND: u64 = 1_000_000_000;
-
 mod platform;
 
 /// Returns a [`DirMaker`] for `/sys/class/pwm`, to be embedded into the

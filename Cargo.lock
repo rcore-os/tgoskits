@@ -6378,6 +6378,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "rdif-pwm"
+version = "0.1.0"
+dependencies = [
+ "rdif-base",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "rdif-serial"
 version = "0.9.0"
 dependencies = [
@@ -6764,6 +6772,14 @@ dependencies = [
  "mbarrier",
  "rdif-base",
  "tock-registers 0.10.1",
+]
+
+[[package]]
+name = "rockchip-pwm"
+version = "0.1.0"
+dependencies = [
+ "rdif-base",
+ "rdif-pwm",
 ]
 
 [[package]]
@@ -7706,9 +7722,11 @@ dependencies = [
  "rbpf",
  "rdif-block",
  "rdif-pinctrl",
+ "rdif-pwm",
  "rdrive",
  "ringbuf",
  "riscv",
+ "rockchip-pwm",
  "scope-local",
  "sg2002-tpu",
  "sg200x-bsp",
