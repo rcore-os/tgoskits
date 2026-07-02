@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.11](https://github.com/rcore-os/tgoskits/compare/starry-vm-v0.5.10...starry-vm-v0.5.11) - 2026-07-02
+
+### Other
+
+- updated the following local packages: ax-errno
+
 ## [0.5.10](https://github.com/rcore-os/tgoskits/compare/starry-vm-v0.5.9...starry-vm-v0.5.10) - 2026-06-09
 
 ### Fixed
