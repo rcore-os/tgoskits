@@ -1,4 +1,4 @@
-# doomgeneric Wayland 集成测试!
+# doomgeneric Wayland 集成测试
 
 在 StarryOS 上运行 Weston (DRM backend + GL/llvmpipe 渲染器) 作为 Wayland
 compositor，然后通过 doomgeneric (SDL2 Wayland 输出) 运行 Doom 游戏，
