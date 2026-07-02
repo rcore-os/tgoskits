@@ -178,7 +178,7 @@ enum Counter {
 /// `mmap(perf_fd)`.
 ///
 /// Ownership mirrors [`super::bpf::BpfPerfEventWrapper`]: the strong
-/// `Arc<GlobalPage>` is handed to the user VMA via `DeviceMmap::Physical`'s
+/// `Arc<GlobalPage>` is handed to the user VMA via `DeviceMmap::PhysicalCached`'s
 /// retainer, and the event keeps only a `Weak`. `ring_vaddr` / `ring_len`
 /// describe the kernel mapping the IRQ handler writes into; they are valid for
 /// as long as some VMA pins the pages (i.e. while [`RingState::is_mapped`]).
@@ -1170,7 +1170,7 @@ impl PerfEventOps for HwPerfEvent {
         let (pages, ring_vaddr, paddr) = alloc_sampling_ring(len)?;
 
         // Hand the sole strong ref to the caller (threaded into the VMA via
-        // `DeviceMmap::Physical`'s retainer); keep only a `Weak`. See `bpf.rs`
+        // `DeviceMmap::PhysicalCached`'s retainer); keep only a `Weak`. See `bpf.rs`
         // for the ownership/UAF rationale.
         sampling.ring = Some(RingState {
             pages: Arc::downgrade(&pages),

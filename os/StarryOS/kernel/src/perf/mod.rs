@@ -135,7 +135,7 @@ pub trait PerfEventOps: Pollable + Send + Sync + Debug {
     /// Allocate the user-visible ringbuf and return its physical start
     /// address (length is the user-supplied mmap length, page-aligned)
     /// together with a retainer that owns the backing pages. The caller
-    /// threads the retainer into `DeviceMmap::Physical(.., Some(anchor))`
+    /// threads the retainer into `DeviceMmap::PhysicalCached(.., Some(anchor))`
     /// so the pages stay live for as long as the user mapping exists, even
     /// after `close(perf_fd)`. Only `bpf::BpfPerfEventWrapper` overrides
     /// this; the other variants (kprobe/tracepoint/raw-tp/uprobe wrappers)
@@ -426,7 +426,16 @@ impl FileLike for PerfEvent {
         // Anchor the ringbuf pages to the VMA: the retainer keeps them alive
         // until `munmap`/exit, so closing the perf fd can't free memory the
         // user address space still maps. See `BpfPerfEventWrapper::pages`.
-        Ok(DeviceMmap::Physical(
+        //
+        // CACHEABLE, not `Physical`/`UNCACHED`: these are RAM pages the kernel
+        // writes through its cacheable linear map (the mmap-page header, the
+        // sample ring, the rdpmc counter page) and userspace reads back. Both
+        // are Normal Inner-Shareable cacheable mappings of the same physical
+        // page, so the hardware keeps them coherent with no explicit
+        // maintenance. An `UNCACHED` user mapping reads stale zeros on real
+        // silicon (the kernel's cached writes never reach RAM) — a bug QEMU
+        // hides because it models no caches.
+        Ok(DeviceMmap::PhysicalCached(
             PhysAddrRange::from_start_size(paddr, len),
             Some(anchor),
         ))
