@@ -7,7 +7,7 @@ use rdrive::{
 };
 
 use super::{fdt::FdtProbe, init_epoch_offset, loongson_decode::toy_to_unix_timestamp};
-use crate::mmio::{firmware_addr_to_phys, iomap_firmware_device};
+use crate::mmio::{firmware_reg_paddr, firmware_reg_size, iomap_firmware_reg};
 
 crate::model_register!(
     name: "loongson rtc",
@@ -115,9 +115,9 @@ fn map_loongson_fdt_reg(
     };
 
     let fw_addr = base_reg.address as usize;
-    let paddr = firmware_addr_to_phys(fw_addr);
-    let size = base_reg.size.unwrap_or(0x1000) as usize;
-    let mmio = iomap_firmware_device("loongson rtc", fw_addr, size)?;
+    let paddr = firmware_reg_paddr(base_reg.address);
+    let size = firmware_reg_size(base_reg.size, 0x1000);
+    let mmio = iomap_firmware_reg("loongson rtc", base_reg.address, base_reg.size, 0x1000)?;
     log::debug!(
         "probing loongson rtc: node={}, reg={fw_addr:#x}, paddr={paddr:#x}, vaddr={:#x}, \
          size={size:#x}",

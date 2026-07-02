@@ -8,6 +8,22 @@ pub fn iomap(addr: usize, size: usize) -> Result<NonNull<u8>, OnProbeError> {
         .map(|mmio| mmio.as_nonnull_ptr())
 }
 
+// Firmware tables can carry CPU-visible aliases, for example LoongArch DMW
+// addresses. Normalize those addresses before crossing into the physical MMIO
+// mapping backend.
+pub(crate) fn iomap_firmware_reg(
+    device_name: &str,
+    addr: u64,
+    size: Option<u64>,
+    default_size: usize,
+) -> Result<NonNull<u8>, OnProbeError> {
+    iomap_firmware_device(
+        device_name,
+        addr as usize,
+        firmware_reg_size(size, default_size),
+    )
+}
+
 pub(crate) fn iomap_firmware_device(
     device_name: &str,
     addr: usize,
@@ -21,6 +37,14 @@ pub(crate) fn iomap_firmware_device(
 
     let paddr = firmware_addr_to_phys(addr);
     iomap(paddr, size)
+}
+
+pub(crate) fn firmware_reg_paddr(addr: u64) -> usize {
+    firmware_addr_to_phys(addr as usize)
+}
+
+pub(crate) fn firmware_reg_size(size: Option<u64>, default_size: usize) -> usize {
+    size.unwrap_or(default_size as u64) as usize
 }
 
 pub(crate) fn firmware_addr_to_phys(addr: usize) -> usize {

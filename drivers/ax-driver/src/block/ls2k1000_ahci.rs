@@ -21,7 +21,7 @@ use rdrive::{
 use super::PlatformDeviceBlock;
 use crate::{
     BindingInfo, binding_info_from_fdt,
-    mmio::{firmware_addr_to_phys, iomap_firmware_device},
+    mmio::{firmware_reg_paddr, firmware_reg_size, iomap_firmware_reg},
 };
 
 const REG_CAP: usize = 0x00;
@@ -1249,10 +1249,10 @@ fn probe_fdt(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
         .next()
         .ok_or_else(|| OnProbeError::other(format!("[{}] has no reg", info.node.name())))?;
     let fw_addr = reg.address as usize;
-    let paddr = firmware_addr_to_phys(fw_addr);
-    let size = reg.size.unwrap_or(DEFAULT_MMIO_SIZE as u64) as usize;
+    let paddr = firmware_reg_paddr(reg.address);
+    let size = firmware_reg_size(reg.size, DEFAULT_MMIO_SIZE);
     let ports_implemented = ports_implemented(&info);
-    let mmio = iomap_firmware_device(DEVICE_NAME, fw_addr, size)?;
+    let mmio = iomap_firmware_reg(DEVICE_NAME, reg.address, reg.size, DEFAULT_MMIO_SIZE)?;
     let vaddr = mmio.as_ptr() as usize;
 
     AHCI_MMIO_BASE.store(mmio.as_ptr() as usize, Ordering::Release);

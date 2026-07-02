@@ -21,7 +21,7 @@ use rdrive::{
 use crate::mmio::loongarch_uncached_addr;
 use crate::{
     BindingInfo, DriverGeneric, binding_info_from_fdt,
-    mmio::{firmware_addr_to_phys, iomap_firmware_device},
+    mmio::{firmware_reg_paddr, firmware_reg_size, iomap_firmware_reg},
     net::PlatformDeviceNet,
 };
 
@@ -1058,7 +1058,7 @@ fn probe_fdt(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
         .next()
         .ok_or_else(|| OnProbeError::other(format!("[{}] has no reg", info.node.name())))?;
     let fw_addr = reg.address as usize;
-    let paddr = firmware_addr_to_phys(fw_addr);
+    let paddr = firmware_reg_paddr(reg.address);
     if paddr != GMAC0_PADDR {
         warn!(
             "{DEVICE_NAME}: skip unsupported GMAC node {} at paddr={paddr:#x}",
@@ -1066,8 +1066,8 @@ fn probe_fdt(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
         );
         return Err(OnProbeError::NotMatch);
     }
-    let size = reg.size.unwrap_or(DEFAULT_MMIO_SIZE as u64) as usize;
-    let mmio = iomap_firmware_device(DEVICE_NAME, fw_addr, size)?;
+    let size = firmware_reg_size(reg.size, DEFAULT_MMIO_SIZE);
+    let mmio = iomap_firmware_reg(DEVICE_NAME, reg.address, reg.size, DEFAULT_MMIO_SIZE)?;
     let vaddr = mmio.as_ptr() as usize;
     let mac_address = mac_address_from_fdt(&info);
     let phy_mode = phy_mode_from_fdt(&info);
