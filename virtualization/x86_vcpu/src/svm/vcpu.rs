@@ -46,7 +46,6 @@ const X86_IOAPIC_SIZE: usize = 0x1000;
 const X86_LOCAL_APIC_BASE: usize = 0xfee0_0000;
 const X86_LOCAL_APIC_SIZE: usize = 0x1000;
 const X86_LOCAL_APIC_EOI_OFFSET: usize = 0xb0;
-
 const APIC_BASE_MSR: u32 = 0x1b;
 const IA32_UMWAIT_CONTROL: u32 = 0xe1;
 const AMD64_DE_CFG: u32 = 0xc001_1029;
@@ -308,12 +307,9 @@ impl SvmVcpu {
                 + InterceptCrRw::WRITE_CR3::SET
                 + InterceptCrRw::WRITE_CR4::SET,
         );
-        // Match the VMX path: let the guest handle normal exceptions itself,
-        // while keeping #UD intercepted for unsupported instruction handling.
         control
             .intercept_exceptions
             .modify(InterceptExceptions::UD::SET);
-
         for intercept in [
             SvmIntercept::INTR,
             SvmIntercept::NMI,
@@ -397,7 +393,7 @@ impl SvmVcpu {
         let cr0 = vmcb.state.cr0.get();
 
         if efer & EFER_LMA != 0 {
-            if cs_attr & (1 << 13) != 0 {
+            if cs_attr & (1 << 9) != 0 {
                 VmCpuMode::Mode64
             } else {
                 VmCpuMode::Compatibility
@@ -720,10 +716,12 @@ impl SvmVcpu {
         const LEAF_PROCESSOR_EXTENDED_STATE_ENUMERATION: u32 = 0xd;
         const LEAF_EXTENDED_FEATURE_INFO: u32 = 0x8000_0001;
         const LEAF_SVM_FEATURES: u32 = 0x8000_000a;
-        const EAX_FREQUENCY_INFO: u32 = 0x16;
+        const LEAF_FREQUENCY_INFO: u32 = 0x16;
         const LEAF_HYPERVISOR_INFO: u32 = 0x4000_0000;
         const LEAF_HYPERVISOR_FEATURE: u32 = 0x4000_0001;
-        const VENDOR_STR: &[u8; 12] = b"RVMRVMRVMRVM";
+        const FALLBACK_TSC_FREQUENCY_MHZ: u32 = 3_000;
+        const KVM_CLOCKSOURCE2_FEATURE: u32 = 1 << 3;
+        const VENDOR_STR: &[u8; 12] = b"KVMKVMKVM\0\0\0";
         let vendor_regs = [
             u32::from_le_bytes([VENDOR_STR[0], VENDOR_STR[1], VENDOR_STR[2], VENDOR_STR[3]]),
             u32::from_le_bytes([VENDOR_STR[4], VENDOR_STR[5], VENDOR_STR[6], VENDOR_STR[7]]),
@@ -818,13 +816,12 @@ impl SvmVcpu {
                 edx: vendor_regs[2],
             },
             LEAF_HYPERVISOR_FEATURE => CpuIdResult {
-                eax: 0,
+                eax: KVM_CLOCKSOURCE2_FEATURE,
                 ebx: 0,
                 ecx: 0,
                 edx: 0,
             },
-            EAX_FREQUENCY_INFO => {
-                const FALLBACK_TSC_FREQUENCY_MHZ: u32 = 3_000;
+            LEAF_FREQUENCY_INFO => {
                 let mut res = cpuid!(regs_clone.rax, regs_clone.rcx);
                 if res.eax == 0 {
                     let frequency_mhz =

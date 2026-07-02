@@ -137,17 +137,36 @@ impl SvmVcpu {
 }
 
 fn read_segment(segment: &VmcbSegment) -> KvmSegment {
-    KvmSegment::from_access_rights(
-        segment.selector.get(),
-        segment.base.get(),
-        segment.limit.get(),
-        segment.attr.get() as u32,
-    )
+    let attr = segment.attr.get();
+    KvmSegment {
+        base: segment.base.get(),
+        limit: segment.limit.get(),
+        selector: segment.selector.get(),
+        type_: (attr & 0xf) as u8,
+        s: ((attr >> 4) & 1) as u8,
+        dpl: ((attr >> 5) & 0x3) as u8,
+        present: ((attr >> 7) & 1) as u8,
+        avl: ((attr >> 8) & 1) as u8,
+        l: ((attr >> 9) & 1) as u8,
+        db: ((attr >> 10) & 1) as u8,
+        g: ((attr >> 11) & 1) as u8,
+        unusable: u8::from(attr & (1 << 7) == 0),
+    }
 }
 
 fn write_segment(segment: &mut VmcbSegment, value: KvmSegment) {
+    let present = value.present & u8::from(value.unusable == 0);
+    let attr = (value.type_ as u16)
+        | ((value.s as u16) << 4)
+        | ((value.dpl as u16) << 5)
+        | ((present as u16) << 7)
+        | ((value.avl as u16) << 8)
+        | ((value.l as u16) << 9)
+        | ((value.db as u16) << 10)
+        | ((value.g as u16) << 11);
+
     segment.selector.set(value.selector);
     segment.base.set(value.base);
     segment.limit.set(value.limit);
-    segment.attr.set(value.access_rights() as u16);
+    segment.attr.set(attr);
 }

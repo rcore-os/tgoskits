@@ -198,6 +198,7 @@ impl KvmSregs {
     }
 }
 
+#[cfg_attr(not(feature = "vmx"), allow(dead_code))]
 impl KvmSegment {
     pub(crate) fn from_access_rights(
         selector: u16,

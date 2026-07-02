@@ -184,7 +184,7 @@ impl AxVMConfig {
             emu_devices: host_controlled_emu_devices(),
             pass_through_devices: Vec::new(),
             excluded_devices: Vec::new(),
-            pass_through_addresses: Vec::new(),
+            pass_through_addresses: host_controlled_passthrough_addresses(),
             spi_list: Vec::new(),
             interrupt_mode: VMInterruptMode::NoIrq,
         }
@@ -320,15 +320,42 @@ impl AxVMConfig {
 
 #[cfg(target_arch = "x86_64")]
 fn host_controlled_emu_devices() -> Vec<EmulatedDeviceConfig> {
-    alloc::vec![EmulatedDeviceConfig {
-        name: "kvm-com1".into(),
-        emu_type: EmulatedDeviceType::Console,
-        ..Default::default()
-    }]
+    alloc::vec![
+        EmulatedDeviceConfig {
+            name: "kvm-com1".into(),
+            emu_type: EmulatedDeviceType::Console,
+            ..Default::default()
+        },
+        EmulatedDeviceConfig {
+            name: "kvm-ioapic".into(),
+            base_gpa: 0xfec0_0000,
+            length: 0x1000,
+            emu_type: EmulatedDeviceType::X86IoApic,
+            ..Default::default()
+        },
+        EmulatedDeviceConfig {
+            name: "kvm-pit".into(),
+            emu_type: EmulatedDeviceType::X86Pit,
+            ..Default::default()
+        },
+    ]
 }
 
 #[cfg(not(target_arch = "x86_64"))]
 fn host_controlled_emu_devices() -> Vec<EmulatedDeviceConfig> {
+    Vec::new()
+}
+
+#[cfg(target_arch = "x86_64")]
+fn host_controlled_passthrough_addresses() -> Vec<PassThroughAddressConfig> {
+    alloc::vec![PassThroughAddressConfig {
+        base_gpa: 0xfed8_0000,
+        length: 0x1000,
+    }]
+}
+
+#[cfg(not(target_arch = "x86_64"))]
+fn host_controlled_passthrough_addresses() -> Vec<PassThroughAddressConfig> {
     Vec::new()
 }
 

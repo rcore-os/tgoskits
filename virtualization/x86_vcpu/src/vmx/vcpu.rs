@@ -1419,10 +1419,12 @@ impl VmxVcpu {
         const LEAF_FEATURE_INFO: u32 = 0x1;
         const LEAF_STRUCTURED_EXTENDED_FEATURE_FLAGS_ENUMERATION: u32 = 0x7;
         const LEAF_PROCESSOR_EXTENDED_STATE_ENUMERATION: u32 = 0xd;
-        const EAX_FREQUENCY_INFO: u32 = 0x16;
+        const LEAF_FREQUENCY_INFO: u32 = 0x16;
         const LEAF_HYPERVISOR_INFO: u32 = 0x4000_0000;
         const LEAF_HYPERVISOR_FEATURE: u32 = 0x4000_0001;
-        const VENDOR_STR: &[u8; 12] = b"RVMRVMRVMRVM";
+        const FALLBACK_TSC_FREQUENCY_MHZ: u32 = 3_000;
+        const KVM_CLOCKSOURCE2_FEATURE: u32 = 1 << 3;
+        const VENDOR_STR: &[u8; 12] = b"KVMKVMKVM\0\0\0";
         let vendor_regs = unsafe { &*(VENDOR_STR.as_ptr() as *const [u32; 3]) };
 
         let regs_clone = *self.regs_mut();
@@ -1480,13 +1482,12 @@ impl VmxVcpu {
                 edx: vendor_regs[2],
             },
             LEAF_HYPERVISOR_FEATURE => CpuIdResult {
-                eax: 0,
+                eax: KVM_CLOCKSOURCE2_FEATURE,
                 ebx: 0,
                 ecx: 0,
                 edx: 0,
             },
-            EAX_FREQUENCY_INFO => {
-                const FALLBACK_TSC_FREQUENCY_MHZ: u32 = 3_000;
+            LEAF_FREQUENCY_INFO => {
                 let mut res = cpuid!(regs_clone.rax, regs_clone.rcx);
                 if res.eax == 0 {
                     let frequency_mhz =
@@ -1506,7 +1507,6 @@ impl VmxVcpu {
             "VM exit: CPUID({:#x}, {:#x}): {:?}",
             regs_clone.rax, regs_clone.rcx, res
         );
-
         let regs = self.regs_mut();
         regs.rax = res.eax as _;
         regs.rbx = res.ebx as _;

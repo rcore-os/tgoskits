@@ -21,6 +21,8 @@ use ax_errno::{AxError, AxErrorKind, AxResult, ax_err};
 use ax_kspin::SpinNoIrq as Mutex;
 use axaddrspace::{GuestPhysAddr, HostPhysAddr, MappingFlags, device::AccessWidth};
 use axvcpu::AxVCpuExitReason;
+#[cfg(target_arch = "x86_64")]
+use axvcpu::InterruptTriggerMode;
 use axvisor_api::{
     control::{self as api_control, ControlOps},
     task::{self as api_task, TaskHandle, TaskOptions},
@@ -214,6 +216,18 @@ const KVM_IOEVENTFD_VALID_FLAGS: u32 =
 const KVM_INTERRUPT_SET: u32 = u32::MAX;
 const KVM_INTERRUPT_UNSET: u32 = u32::MAX - 1;
 #[cfg(target_arch = "x86_64")]
+const MSR_KVM_WALL_CLOCK_NEW: usize = 0x4b56_4d00;
+#[cfg(target_arch = "x86_64")]
+const MSR_KVM_SYSTEM_TIME_NEW: usize = 0x4b56_4d01;
+#[cfg(target_arch = "x86_64")]
+const KVM_SYSTEM_TIME_ENABLE: u64 = 1;
+#[cfg(target_arch = "x86_64")]
+const KVM_ENOSYS: isize = 1000;
+#[cfg(target_arch = "x86_64")]
+const KVM_HC_CLOCK_PAIRING: u64 = 9;
+#[cfg(target_arch = "x86_64")]
+const PVCLOCK_TSC_STABLE_BIT: u8 = 1 << 0;
+#[cfg(target_arch = "x86_64")]
 const KVM_RUN_REQUEST_INTERRUPT_WINDOW_OFFSET: usize = 0;
 const KVM_RUN_IMMEDIATE_EXIT_OFFSET: usize = 1;
 const KVM_RUN_EXIT_REASON_OFFSET: usize = 8;
@@ -245,7 +259,6 @@ const KVM_EXIT_FAIL_ENTRY: u32 = 9;
 const KVM_EXIT_INTR: u32 = 10;
 const KVM_EXIT_INTERNAL_ERROR: u32 = 17;
 const KVM_EXIT_MEMORY_FAULT: u32 = 39;
-const KVM_RUN_MAX_INTERNAL_EXITS: usize = 1024;
 #[cfg(target_arch = "x86_64")]
 const KVM_CPUID_FLAG_SIGNIFICANT_INDEX: u32 = 1;
 #[cfg(target_arch = "riscv64")]
@@ -332,6 +345,29 @@ struct PendingIoRead {
     width: axaddrspace::device::AccessWidth,
 }
 
+#[cfg(target_arch = "x86_64")]
+#[repr(C, packed)]
+#[derive(Clone, Copy, Debug, Default)]
+struct PvClockWallClock {
+    version: u32,
+    sec: u32,
+    nsec: u32,
+}
+
+#[cfg(target_arch = "x86_64")]
+#[repr(C, packed)]
+#[derive(Clone, Copy, Debug, Default)]
+struct PvClockVcpuTimeInfo {
+    version: u32,
+    pad0: u32,
+    tsc_timestamp: u64,
+    system_time: u64,
+    tsc_to_system_mul: u32,
+    tsc_shift: i8,
+    flags: u8,
+    pad: [u8; 2],
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct MemorySlot {
     flags: u32,
@@ -367,7 +403,7 @@ struct IrqFdKey {
 struct IrqFd {
     user_fd_ref: api_control::UserFdRefId,
     cancel: Arc<AtomicBool>,
-    task: TaskHandle,
+    _task: TaskHandle,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -818,31 +854,50 @@ fn update_irqfd(control_file: api_control::ControlFileId, irqfd: KvmIrqFd) -> Ax
         None
     };
 
-    let mut control_files = CONTROL_FILES.lock();
-    let Some(ControlFileState::Vm(vm)) = control_files.get_mut(&control_file) else {
-        if let Some(user_fd_ref) = user_fd_ref {
-            let _ = api_control::release_user_fd_ref(user_fd_ref);
-        }
-        return ax_err!(NotFound);
-    };
-
     let old_irqfd = if irqfd.flags & KVM_IRQFD_FLAG_DEASSIGN != 0 {
+        let mut control_files = CONTROL_FILES.lock();
+        let Some(ControlFileState::Vm(vm)) = control_files.get_mut(&control_file) else {
+            return ax_err!(NotFound);
+        };
         Some(vm.irqfds.remove(&key).ok_or(AxError::NotFound)?)
     } else {
-        let old_irqfd = vm.irqfds.remove(&key);
+        {
+            let control_files = CONTROL_FILES.lock();
+            if !matches!(
+                control_files.get(&control_file),
+                Some(ControlFileState::Vm(_))
+            ) {
+                if let Some(user_fd_ref) = user_fd_ref {
+                    let _ = api_control::release_user_fd_ref(user_fd_ref);
+                }
+                return ax_err!(NotFound);
+            }
+        }
+
         let user_fd_ref = user_fd_ref.unwrap();
         let (cancel, task) = start_irqfd_listener(control_file, irqfd.gsi, user_fd_ref);
+
+        let mut control_files = CONTROL_FILES.lock();
+        let Some(ControlFileState::Vm(vm)) = control_files.get_mut(&control_file) else {
+            drop(control_files);
+            stop_irqfd(IrqFd {
+                user_fd_ref,
+                cancel,
+                _task: task,
+            });
+            return ax_err!(NotFound);
+        };
+        let old_irqfd = vm.irqfds.remove(&key);
         vm.irqfds.insert(
             key,
             IrqFd {
                 user_fd_ref,
                 cancel,
-                task,
+                _task: task,
             },
         );
         old_irqfd
     };
-    drop(control_files);
 
     if let Some(old_irqfd) = old_irqfd {
         stop_irqfd(old_irqfd);
@@ -1020,7 +1075,16 @@ fn get_vcpu(control_file: api_control::ControlFileId) -> AxResult<axvm::AxVCpuRe
 }
 
 fn run_vcpu_file(control_file: api_control::ControlFileId) -> AxResult<isize> {
-    let (vm, vcpu_id, vcpu, mp_state, pending_mmio_read, pending_io_read) = {
+    let (
+        vm,
+        vcpu_id,
+        vcpu,
+        mp_state,
+        pending_mmio_read,
+        pending_io_read,
+        irqchip_created,
+        pit2_created,
+    ) = {
         let mut control_files = CONTROL_FILES.lock();
         let Some(ControlFileState::Vcpu(vcpu)) = control_files.get(&control_file) else {
             return ax_err!(NotFound);
@@ -1028,6 +1092,8 @@ fn run_vcpu_file(control_file: api_control::ControlFileId) -> AxResult<isize> {
         let Some(ControlFileState::Vm(vm)) = control_files.get(&vcpu.vm_file) else {
             return ax_err!(NotFound);
         };
+        let irqchip_created = vm.irqchip_created;
+        let pit2_created = vm.pit2_created;
         let vm = vm.vm.clone();
         let vcpu_id = vcpu.vcpu_id as usize;
         let mp_state = vcpu.mp_state;
@@ -1049,8 +1115,14 @@ fn run_vcpu_file(control_file: api_control::ControlFileId) -> AxResult<isize> {
             mp_state,
             pending_mmio_read,
             pending_io_read,
+            irqchip_created,
+            pit2_created,
         )
     };
+    #[cfg(not(target_arch = "x86_64"))]
+    let _ = (irqchip_created, pit2_created);
+
+    let _context_guard = crate::context::bind_current_vcpu_context(vm.id(), vcpu_id);
 
     if mp_state == KVM_MP_STATE_STOPPED {
         write_vcpu_run_u32(control_file, KVM_RUN_EXIT_REASON_OFFSET, KVM_EXIT_INTR)?;
@@ -1074,7 +1146,6 @@ fn run_vcpu_file(control_file: api_control::ControlFileId) -> AxResult<isize> {
         return Err(AxErrorKind::Interrupted.into());
     }
 
-    let mut internal_exits = 0;
     let exit_reason = loop {
         update_x86_vcpu_run_interrupt_state(control_file, &vcpu)?;
         if read_vcpu_run_u8(control_file, KVM_RUN_IMMEDIATE_EXIT_OFFSET)? != 0 {
@@ -1092,6 +1163,17 @@ fn run_vcpu_file(control_file: api_control::ControlFileId) -> AxResult<isize> {
             }
         };
 
+        #[cfg(target_arch = "x86_64")]
+        if handle_x86_in_kernel_device_exit(
+            &vm,
+            &vcpu,
+            irqchip_created,
+            pit2_created,
+            &exit_reason,
+        )? {
+            continue;
+        }
+
         match exit_reason {
             AxVCpuExitReason::Nothing
             | AxVCpuExitReason::PreemptionTimer
@@ -1099,10 +1181,6 @@ fn run_vcpu_file(control_file: api_control::ControlFileId) -> AxResult<isize> {
             | AxVCpuExitReason::InterruptEnd { .. } => {
                 crate::vmm::vcpus::handle_internal_exit(&vm, &vcpu, &exit_reason);
                 axvisor_api::task::yield_now();
-                internal_exits += 1;
-                if internal_exits >= KVM_RUN_MAX_INTERNAL_EXITS {
-                    break KVM_EXIT_INTR;
-                }
             }
             AxVCpuExitReason::MmioWrite { addr, width, data }
                 if signal_matching_ioeventfd(
@@ -1111,10 +1189,7 @@ fn run_vcpu_file(control_file: api_control::ControlFileId) -> AxResult<isize> {
                     width,
                     data,
                     false,
-                )? =>
-            {
-                internal_exits = 0;
-            }
+                )? => {}
             AxVCpuExitReason::IoWrite { port, width, data }
                 if signal_matching_ioeventfd(
                     control_file,
@@ -1122,9 +1197,20 @@ fn run_vcpu_file(control_file: api_control::ControlFileId) -> AxResult<isize> {
                     width,
                     data,
                     true,
-                )? =>
+                )? => {}
+            #[cfg(target_arch = "x86_64")]
+            AxVCpuExitReason::SysRegWrite { addr, value }
+                if handle_x86_kvm_msr_write(&vm, addr.addr(), value)? =>
             {
-                internal_exits = 0;
+                axvisor_api::task::yield_now();
+            }
+            #[cfg(target_arch = "x86_64")]
+            AxVCpuExitReason::Hypercall {
+                nr: KVM_HC_CLOCK_PAIRING,
+                ..
+            } => {
+                vcpu.set_gpr(X86_RAX_REG_INDEX, (-KVM_ENOSYS) as usize);
+                axvisor_api::task::yield_now();
             }
             #[cfg(target_arch = "riscv64")]
             AxVCpuExitReason::CpuUp {
@@ -1141,10 +1227,6 @@ fn run_vcpu_file(control_file: api_control::ControlFileId) -> AxResult<isize> {
                     arg,
                 )?;
                 axvisor_api::task::yield_now();
-                internal_exits += 1;
-                if internal_exits >= KVM_RUN_MAX_INTERNAL_EXITS {
-                    break KVM_EXIT_INTR;
-                }
             }
             #[cfg(target_arch = "riscv64")]
             AxVCpuExitReason::SendIPI {
@@ -1164,20 +1246,120 @@ fn run_vcpu_file(control_file: api_control::ControlFileId) -> AxResult<isize> {
                     vector as usize,
                 )?;
                 axvisor_api::task::yield_now();
-                internal_exits += 1;
-                if internal_exits >= KVM_RUN_MAX_INTERNAL_EXITS {
-                    break KVM_EXIT_INTR;
-                }
             }
             exit_reason => {
-                prepare_userspace_exit(control_file, &exit_reason)?;
                 let kvm_reason = kvm_exit_reason(&exit_reason);
+                prepare_userspace_exit(control_file, &exit_reason)?;
                 break kvm_reason;
             }
         }
     };
     write_vcpu_run_u32(control_file, KVM_RUN_EXIT_REASON_OFFSET, exit_reason)?;
     Ok(0)
+}
+
+#[cfg(target_arch = "x86_64")]
+fn handle_x86_kvm_msr_write(vm: &AxVMRef, msr: usize, value: u64) -> AxResult<bool> {
+    match msr {
+        MSR_KVM_WALL_CLOCK_NEW => {
+            write_kvm_wall_clock(vm, GuestPhysAddr::from(value as usize))?;
+            Ok(true)
+        }
+        MSR_KVM_SYSTEM_TIME_NEW => {
+            if value & KVM_SYSTEM_TIME_ENABLE != 0 {
+                let gpa = GuestPhysAddr::from((value & !KVM_SYSTEM_TIME_ENABLE) as usize);
+                write_kvm_system_time(vm, gpa)?;
+            }
+            Ok(true)
+        }
+        _ => Ok(false),
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+fn write_kvm_wall_clock(vm: &AxVMRef, gpa: GuestPhysAddr) -> AxResult {
+    let now_ns = axvisor_api::time::current_time_nanos() as u64;
+    let wall_clock = PvClockWallClock {
+        version: 2,
+        sec: (now_ns / 1_000_000_000) as u32,
+        nsec: (now_ns % 1_000_000_000) as u32,
+    };
+    vm.write_to_guest_of(gpa, &wall_clock)
+}
+
+#[cfg(target_arch = "x86_64")]
+fn write_kvm_system_time(vm: &AxVMRef, gpa: GuestPhysAddr) -> AxResult {
+    let tsc_khz = default_tsc_khz().max(1);
+    let info = PvClockVcpuTimeInfo {
+        version: 2,
+        pad0: 0,
+        tsc_timestamp: unsafe { core::arch::x86_64::_rdtsc() },
+        system_time: axvisor_api::time::current_time_nanos() as u64,
+        tsc_to_system_mul: tsc_to_system_mul(tsc_khz),
+        tsc_shift: 0,
+        flags: PVCLOCK_TSC_STABLE_BIT,
+        pad: [0; 2],
+    };
+    vm.write_to_guest_of(gpa, &info)
+}
+
+#[cfg(target_arch = "x86_64")]
+fn tsc_to_system_mul(tsc_khz: u32) -> u32 {
+    (((1_000_000u128) << 32) / u128::from(tsc_khz)).min(u128::from(u32::MAX)) as u32
+}
+
+#[cfg(target_arch = "x86_64")]
+fn handle_x86_in_kernel_device_exit(
+    vm: &AxVMRef,
+    vcpu: &axvm::AxVCpuRef,
+    irqchip_created: bool,
+    pit2_created: bool,
+    exit_reason: &AxVCpuExitReason,
+) -> AxResult<bool> {
+    match exit_reason {
+        AxVCpuExitReason::MmioRead {
+            addr,
+            width,
+            reg,
+            reg_width,
+            signed_ext,
+        } if irqchip_created && vm.get_devices().find_mmio_dev(*addr).is_some() => {
+            let raw = vm.get_devices().handle_mmio_read(*addr, *width)?;
+            let masked = raw & access_width_mask(*width);
+            let val = if *signed_ext {
+                sign_extend_value(masked, *width)
+            } else {
+                masked & access_width_mask(*reg_width)
+            };
+            vcpu.set_gpr(*reg, val);
+            Ok(true)
+        }
+        AxVCpuExitReason::MmioWrite { addr, width, data }
+            if irqchip_created && vm.get_devices().find_mmio_dev(*addr).is_some() =>
+        {
+            vm.get_devices()
+                .handle_mmio_write(*addr, *width, *data as usize)?;
+            Ok(true)
+        }
+        AxVCpuExitReason::IoRead { port, width } if pit2_created && is_x86_pit_port(*port) => {
+            let val = vm.get_devices().handle_port_read(*port, *width)?;
+            vcpu.set_gpr(0, val);
+            Ok(true)
+        }
+        AxVCpuExitReason::IoWrite { port, width, data }
+            if pit2_created && is_x86_pit_port(*port) =>
+        {
+            vm.get_devices()
+                .handle_port_write(*port, *width, *data as usize)?;
+            Ok(true)
+        }
+        _ => Ok(false),
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+fn is_x86_pit_port(port: axaddrspace::device::Port) -> bool {
+    matches!(port.number(), 0x40..=0x43 | 0x61)
 }
 
 #[cfg(target_arch = "riscv64")]
@@ -1912,7 +2094,7 @@ fn start_irqfd_listener(
 
 fn stop_irqfd(irqfd: IrqFd) {
     irqfd.cancel.store(true, Ordering::Release);
-    api_task::join_task(irqfd.task);
+    let _ = api_control::write_user_fd_ref(irqfd.user_fd_ref, &1u64.to_ne_bytes());
     let _ = api_control::release_user_fd_ref(irqfd.user_fd_ref);
 }
 
@@ -1926,6 +2108,9 @@ fn irqfd_listener_loop(
         let mut bytes = [0u8; 8];
         match api_control::read_user_fd_ref(user_fd_ref, &mut bytes) {
             Ok(read_len) if read_len == core::mem::size_of::<u64>() => {
+                if cancel.load(Ordering::Acquire) {
+                    break;
+                }
                 if u64::from_ne_bytes(bytes) != 0
                     && let Err(err) = inject_irqfd_gsi(vm_file, gsi)
                 {
@@ -1950,31 +2135,43 @@ fn irqfd_listener_loop(
 }
 
 fn inject_irqfd_gsi(control_file: api_control::ControlFileId, gsi: u32) -> AxResult {
-    let (vm, vector) = {
+    let (vm, route) = {
         let control_files = CONTROL_FILES.lock();
         let Some(ControlFileState::Vm(vm)) = control_files.get(&control_file) else {
             return ax_err!(NotFound);
         };
-        let vector = vm
+        let route = vm
             .gsi_routes
             .get(&gsi)
-            .map(gsi_route_vector)
-            .unwrap_or_else(|| legacy_gsi_vector(gsi));
-        (vm.vm.clone(), vector)
+            .copied()
+            .unwrap_or(GsiRoute::IrqChip { pin: gsi });
+        (vm.vm.clone(), route)
     };
 
-    vm.vcpu(0)
-        .ok_or(AxError::InvalidInput)?
-        .inject_interrupt(vector as usize)
-}
+    let vcpu = vm.vcpu(0).ok_or(AxError::InvalidInput)?;
 
-fn gsi_route_vector(route: &GsiRoute) -> u8 {
-    match *route {
-        GsiRoute::IrqChip { pin } => legacy_gsi_vector(pin),
-        GsiRoute::Msi { vector } => vector,
+    match route {
+        #[cfg(target_arch = "x86_64")]
+        GsiRoute::IrqChip { pin } => {
+            let Some(irq) = vm.get_devices().x86_ioapic_assert_gsi(pin as usize) else {
+                return Ok(());
+            };
+            vcpu.inject_interrupt_with_trigger(
+                irq.vector as usize,
+                if irq.level_triggered {
+                    InterruptTriggerMode::LevelTriggered
+                } else {
+                    InterruptTriggerMode::EdgeTriggered
+                },
+            )
+        }
+        #[cfg(not(target_arch = "x86_64"))]
+        GsiRoute::IrqChip { pin } => vcpu.inject_interrupt(legacy_gsi_vector(pin) as usize),
+        GsiRoute::Msi { vector } => vcpu.inject_interrupt(vector as usize),
     }
 }
 
+#[cfg(not(target_arch = "x86_64"))]
 fn legacy_gsi_vector(gsi: u32) -> u8 {
     0x20u8.saturating_add(gsi.min(0xdf) as u8)
 }
@@ -2286,6 +2483,17 @@ fn push_host_cpuid(entries: &mut Vec<KvmCpuidEntry2>, function: u32, index: u32,
     let mut entry = host_cpuid(function, index);
     entry.flags = flags;
     entries.push(entry);
+}
+
+#[cfg(target_arch = "x86_64")]
+fn host_tsc_frequency_mhz() -> u32 {
+    const FALLBACK_TSC_FREQUENCY_MHZ: u32 = 3_000;
+    axvisor_api::arch::host_tsc_frequency_mhz().unwrap_or(FALLBACK_TSC_FREQUENCY_MHZ)
+}
+
+#[cfg(target_arch = "x86_64")]
+fn default_tsc_khz() -> u32 {
+    host_tsc_frequency_mhz().saturating_mul(1_000)
 }
 
 #[cfg(target_arch = "x86_64")]

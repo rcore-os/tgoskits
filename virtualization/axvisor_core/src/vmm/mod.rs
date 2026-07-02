@@ -31,7 +31,7 @@ pub mod fdt;
 
 use core::sync::atomic::{AtomicUsize, Ordering};
 
-use ax_errno::{AxResult, ax_err_type};
+use ax_errno::{AxError, AxResult};
 use ax_lazyinit::LazyInit;
 use axvisor_api::{
     api_impl,
@@ -128,13 +128,13 @@ pub fn with_vm_and_vcpu_on_pcpu(
         && context.vm_id == vm_id
         && context.vcpu_id == vcpu_id
     {
-        with_vm_and_vcpu(vm_id, vcpu_id, f).ok_or_else(|| ax_err_type!(NotFound))?;
+        with_vm_and_vcpu(vm_id, vcpu_id, f).ok_or(AxError::NotFound)?;
         return Ok(());
     }
 
     drop(guard);
 
-    vcpus::with_vcpu_task(vm_id, vcpu_id, |_| ()).ok_or_else(|| ax_err_type!(NotFound))?;
+    vcpus::with_vcpu_task(vm_id, vcpu_id, |_| ()).ok_or(AxError::NotFound)?;
 
     ax_errno::ax_err!(
         Unsupported,
