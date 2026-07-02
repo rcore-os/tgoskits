@@ -101,6 +101,12 @@ pub trait ControlIf {
     /// higher-level protocol semantics imposed on those bytes.
     fn write_user_fd_ref(user_fd_ref: UserFdRefId, buf: &[u8]) -> AxResult<usize>;
 
+    /// Reads raw bytes from a previously retained userspace fd.
+    ///
+    /// The host must not block indefinitely. If the fd is not currently
+    /// readable, it should return [`ax_errno::AxErrorKind::WouldBlock`].
+    fn read_user_fd_ref(user_fd_ref: UserFdRefId, buf: &mut [u8]) -> AxResult<usize>;
+
     /// Releases a previously retained userspace fd.
     fn release_user_fd_ref(user_fd_ref: UserFdRefId) -> AxResult;
 
