@@ -5,6 +5,7 @@ use alloc::{
     string::String,
     sync::{Arc, Weak},
 };
+use core::fmt;
 
 #[cfg(feature = "lockdep")]
 use ax_kernel_guard::IrqSave;
@@ -341,19 +342,104 @@ pub fn exit(exit_code: i32) -> ! {
     current_run_queue::<NoPreemptIrqSave>().exit_current(exit_code)
 }
 
-fn current_preempt_count() -> usize {
-    #[cfg(feature = "preempt")]
+fn current_irq_context() -> bool {
+    #[cfg(feature = "irq")]
     {
-        current_may_uninit().map_or(0, |curr| curr.preempt_count())
+        ax_hal::irq::in_irq_context()
     }
-    #[cfg(not(feature = "preempt"))]
+    #[cfg(not(feature = "irq"))]
     {
-        0
+        false
     }
 }
 
-fn current_task_id() -> Option<u64> {
-    current_may_uninit().map(|curr| curr.id().as_u64())
+#[derive(Clone, Copy)]
+struct AtomicContextReasons {
+    irq_disabled: bool,
+    irq_context: bool,
+    preempt_disabled: bool,
+}
+
+impl AtomicContextReasons {
+    const fn is_atomic(self) -> bool {
+        self.irq_disabled || self.irq_context || self.preempt_disabled
+    }
+}
+
+impl fmt::Display for AtomicContextReasons {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut wrote_any = false;
+        f.write_str("[")?;
+        if self.irq_disabled {
+            f.write_str("irq_disabled")?;
+            wrote_any = true;
+        }
+        if self.irq_context {
+            if wrote_any {
+                f.write_str(",")?;
+            }
+            f.write_str("irq_context")?;
+            wrote_any = true;
+        }
+        if self.preempt_disabled {
+            if wrote_any {
+                f.write_str(",")?;
+            }
+            f.write_str("preempt_disabled")?;
+            wrote_any = true;
+        }
+        if !wrote_any {
+            f.write_str("none")?;
+        }
+        f.write_str("]")
+    }
+}
+
+#[derive(Clone, Copy)]
+struct AtomicContextSnapshot {
+    irq_enabled: bool,
+    irq_context: bool,
+    preempt_count: usize,
+    cpu_id: usize,
+    task_id: Option<u64>,
+    task_state: Option<TaskState>,
+}
+
+impl AtomicContextSnapshot {
+    fn capture() -> Self {
+        let current = current_may_uninit();
+        let preempt_count = {
+            #[cfg(feature = "preempt")]
+            {
+                current.as_ref().map_or(0, |curr| curr.preempt_count())
+            }
+            #[cfg(not(feature = "preempt"))]
+            {
+                0
+            }
+        };
+
+        Self {
+            irq_enabled: ax_hal::asm::irqs_enabled(),
+            irq_context: current_irq_context(),
+            preempt_count,
+            cpu_id: ax_hal::percpu::this_cpu_id(),
+            task_id: current.as_ref().map(|curr| curr.id().as_u64()),
+            task_state: current.as_ref().map(|curr| curr.state()),
+        }
+    }
+
+    fn reasons(self) -> AtomicContextReasons {
+        AtomicContextReasons {
+            irq_disabled: !self.irq_enabled,
+            irq_context: self.irq_context,
+            preempt_disabled: self.preempt_count != 0,
+        }
+    }
+
+    fn is_atomic(self) -> bool {
+        self.reasons().is_atomic()
+    }
 }
 
 /// Returns whether the current context is atomic, meaning sleeping or
@@ -361,18 +447,8 @@ fn current_task_id() -> Option<u64> {
 ///
 /// This matches the intent of Linux's `might_sleep()`: catch misuse from
 /// IRQ-disabled or preempt-disabled regions before a sleep-like action happens.
-pub(crate) fn in_atomic_context() -> bool {
-    #[cfg(feature = "irq")]
-    if !ax_hal::asm::irqs_enabled() {
-        return true;
-    }
-
-    #[cfg(feature = "preempt")]
-    if current_preempt_count() != 0 {
-        return true;
-    }
-
-    false
+pub fn in_atomic_context() -> bool {
+    AtomicContextSnapshot::capture().is_atomic()
 }
 
 /// Marks an operation as one that may sleep or reschedule.
@@ -380,16 +456,52 @@ pub(crate) fn in_atomic_context() -> bool {
 /// Panics if it is executed in an atomic context.
 #[track_caller]
 pub fn might_sleep() {
-    if in_atomic_context() {
-        panic!(
-            "sleeping or rescheduling is not allowed in atomic context: irq_enabled={}, \
-             preempt_count={}, cpu_id={}, task_id={:?}",
-            ax_hal::asm::irqs_enabled(),
-            current_preempt_count(),
-            ax_hal::percpu::this_cpu_id(),
-            current_task_id()
-        );
+    let snapshot = AtomicContextSnapshot::capture();
+    if snapshot.is_atomic() {
+        panic_atomic_sleep(snapshot, core::panic::Location::caller());
     }
+}
+
+#[cfg(not(feature = "lockdep"))]
+fn panic_atomic_sleep(
+    snapshot: AtomicContextSnapshot,
+    caller: &'static core::panic::Location<'static>,
+) -> ! {
+    panic!(
+        "sleeping or rescheduling is not allowed in atomic context: caller={}, reasons={}, \
+         irq_enabled={}, irq_context={}, preempt_count={}, cpu_id={}, task_id={:?}, \
+         task_state={:?}",
+        caller,
+        snapshot.reasons(),
+        snapshot.irq_enabled,
+        snapshot.irq_context,
+        snapshot.preempt_count,
+        snapshot.cpu_id,
+        snapshot.task_id,
+        snapshot.task_state
+    );
+}
+
+#[cfg(feature = "lockdep")]
+fn panic_atomic_sleep(
+    snapshot: AtomicContextSnapshot,
+    caller: &'static core::panic::Location<'static>,
+) -> ! {
+    let held_locks = ax_kspin::lockdep::current_task_held_lock_snapshot();
+    panic!(
+        "sleeping or rescheduling is not allowed in atomic context: caller={}, reasons={}, \
+         irq_enabled={}, irq_context={}, preempt_count={}, cpu_id={}, task_id={:?}, \
+         task_state={:?}, held_locks={}",
+        caller,
+        snapshot.reasons(),
+        snapshot.irq_enabled,
+        snapshot.irq_context,
+        snapshot.preempt_count,
+        snapshot.cpu_id,
+        snapshot.task_id,
+        snapshot.task_state,
+        held_locks
+    );
 }
 
 /// Wakes a task that may be sleeping, ensuring it can observe a newly-

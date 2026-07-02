@@ -174,6 +174,11 @@ fn registry() -> &'static Registry<PlatIrqOps> {
     IRQ_REGISTRY.call_once(|| Registry::new(PlatIrqOps))
 }
 
+/// Returns whether the current CPU is dispatching an IRQ action.
+pub fn in_irq_context() -> bool {
+    IN_IRQ_CONTEXT.with_current(|in_irq| *in_irq)
+}
+
 /// Requests an IRQ action through the dynamic IRQ framework.
 pub fn request_irq(irq: IrqId, request: IrqRequest) -> Result<IrqHandle, IrqError> {
     let auto_enable = request.auto_enable_mode();

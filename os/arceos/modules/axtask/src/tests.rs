@@ -9,6 +9,8 @@ use std::{
 };
 
 use ax_errno::{AxError, AxResult};
+#[cfg(feature = "preempt")]
+use ax_kernel_guard::NoPreempt;
 use axpoll::{IoEvents, Pollable};
 
 #[cfg(feature = "irq")]
@@ -79,6 +81,57 @@ impl Pollable for CountingPollable {
 const RAW_TASK_STACK_SIZE: usize = 0x10000;
 #[cfg(not(any(feature = "lockdep", feature = "preempt")))]
 const RAW_TASK_STACK_SIZE: usize = 0x1000;
+
+#[cfg(all(feature = "lockdep", feature = "preempt"))]
+static HELD_LOCK_DIAGNOSTIC_LOCK: ax_kspin::SpinNoPreempt<()> = ax_kspin::SpinNoPreempt::new(());
+
+#[cfg(feature = "preempt")]
+fn panic_payload_message(payload: &(dyn core::any::Any + Send)) -> &str {
+    if let Some(message) = payload.downcast_ref::<String>() {
+        message.as_str()
+    } else if let Some(message) = payload.downcast_ref::<&'static str>() {
+        message
+    } else {
+        "<non-string panic payload>"
+    }
+}
+
+#[test]
+#[cfg(all(feature = "lockdep", feature = "preempt"))]
+fn might_sleep_reports_held_lock_stack() {
+    run_in_test_scheduler(|| {
+        let result = catch_unwind(AssertUnwindSafe(|| {
+            let _guard = HELD_LOCK_DIAGNOSTIC_LOCK.lock();
+            ax_task::might_sleep();
+        }));
+        let panic = result.expect_err("might_sleep should reject sleep under spin lock");
+        let message = panic_payload_message(panic.as_ref());
+
+        assert!(message.contains("held_locks=[#0 top:"), "{message}");
+        assert!(message.contains("kind=spin"), "{message}");
+        assert!(message.contains("sleep_forbidden=true"), "{message}");
+        assert!(message.contains("acquired_at="), "{message}");
+    });
+}
+
+#[test]
+#[cfg(feature = "preempt")]
+fn might_sleep_reports_preempt_disabled_reason() {
+    run_in_test_scheduler(|| {
+        let result = catch_unwind(AssertUnwindSafe(|| {
+            let _guard = NoPreempt::new();
+            ax_task::might_sleep();
+        }));
+        let panic = result.expect_err("might_sleep should reject preempt-disabled context");
+        let message = panic_payload_message(panic.as_ref());
+
+        assert!(message.contains("caller="), "{message}");
+        assert!(message.contains("reasons=[preempt_disabled]"), "{message}");
+        assert!(message.contains("preempt_count=1"), "{message}");
+        assert!(message.contains("irq_context=false"), "{message}");
+        assert!(message.contains("task_state=Some(Running)"), "{message}");
+    });
+}
 
 #[test]
 fn poll_io_ready_operation_wins_over_pending_interrupt() {
