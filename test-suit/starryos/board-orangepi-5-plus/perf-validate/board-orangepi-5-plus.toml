@@ -2,7 +2,8 @@
 #
 # The `perf-validate` binary must already be on the board's ext4 rootfs (the
 # xtask deploys the KERNEL only). Cross-compile + scp it first with `deploy.sh`,
-# which installs it to /root/perf-validate (see README.md).
+# which installs it to /usr/local/bin/perf-validate (the shared ext4 that
+# StarryOS mounts as /, alongside the perf 6.6 binary). See README.md.
 #
 # It auto-discovers topology and prints PASS/FAIL/SKIP/INFO per check, then:
 #   BOARD_PERF_SUMMARY ...
@@ -17,7 +18,7 @@
 # after partial output times out instead of matching an early line.
 board_type   = "OrangePi-5-Plus"
 shell_prefix = "root@starry:/root #"
-shell_init_cmd = "cd /root && ./perf-validate"
+shell_init_cmd = "/usr/local/bin/perf-validate"
 success_regex = ['(?m)^BOARD_PERF_VALIDATE_VERDICT (FULL|PARTIAL)\s*$']
 fail_regex = [
   '(?m)^BOARD_PERF_VALIDATE_VERDICT (FAIL|INVALID)',
