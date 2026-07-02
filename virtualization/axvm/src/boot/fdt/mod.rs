@@ -47,7 +47,9 @@ use fdt_parser::Fdt;
 #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
 pub use parser::*;
 
-use crate::{boot::BootImageProvider, config::AxVMConfig};
+#[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
+use crate::boot::BootImageProvider;
+use crate::config::AxVMConfig;
 
 /// Guest DTB artifact produced or patched by the monitor before AxVM owns it.
 #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]

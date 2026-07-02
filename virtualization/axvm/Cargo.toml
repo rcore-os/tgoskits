@@ -66,6 +66,7 @@ axplat-dyn = { workspace = true, optional = true, default-features = false }
 riscv_vcpu = { workspace = true }
 riscv_vplic = { workspace = true }
 [target.'cfg(target_arch = "loongarch64")'.dependencies]
+ax-driver = { workspace = true }
 ax-plat = { workspace = true }
 loongarch_vcpu = { workspace = true }
 [target.'cfg(target_arch = "aarch64")'.dependencies]

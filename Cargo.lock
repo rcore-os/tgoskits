@@ -1537,6 +1537,7 @@ dependencies = [
  "arm_vgic",
  "ax-cpumask",
  "ax-crate-interface",
+ "ax-driver",
  "ax-errno 0.6.0",
  "ax-hal",
  "ax-kernel-guard",

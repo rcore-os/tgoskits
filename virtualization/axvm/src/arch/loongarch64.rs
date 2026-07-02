@@ -14,7 +14,7 @@ pub(crate) struct LoongArch64Arch;
 impl ArchOps for LoongArch64Arch {
     type VCpu = loongarch_vcpu::LoongArchVCpu;
     type PerCpu = loongarch_vcpu::LoongArchPerCpu;
-    type VcpuCreateState = loongarch_vcpu::LoongArchIocsrState;
+    type VcpuCreateState = loongarch_vcpu::LoongArchIocsrStateRef;
 
     fn has_hardware_support() -> bool {
         loongarch_vcpu::has_hardware_support()

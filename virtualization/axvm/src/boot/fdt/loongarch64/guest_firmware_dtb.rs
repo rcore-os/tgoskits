@@ -1,4 +1,4 @@
-use alloc::{format, vec};
+use alloc::{format, vec, vec::Vec};
 
 use ax_errno::{AxError, AxResult, ax_err_type};
 

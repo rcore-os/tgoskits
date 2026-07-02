@@ -769,6 +769,8 @@ fn fill_vm_region(load_addr: GuestPhysAddr, size: usize, byte: u8, vm: AxVMRef) 
 
 #[cfg(any(feature = "fs", feature = "host-fs"))]
 pub mod fs {
+    #[cfg(target_arch = "loongarch64")]
+    use alloc::boxed::Box;
     use alloc::vec::Vec;
 
     use ax_errno::{AxResult, ax_err, ax_err_type};

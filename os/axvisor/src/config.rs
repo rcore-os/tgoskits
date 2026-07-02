@@ -22,7 +22,7 @@ use core::sync::atomic::{AtomicBool, Ordering};
 use ax_errno::{AxResult, ax_err_type};
 #[cfg(all(feature = "fs", target_arch = "x86_64"))]
 use axvm::InterruptTriggerMode;
-#[cfg(any(target_arch = "x86_64", target_arch = "loongarch64"))]
+#[cfg(target_arch = "x86_64")]
 use axvm::config::VMBootProtocol;
 use axvm::{
     AxVM, GuestPhysAddr,
