@@ -15,6 +15,7 @@ const DEFAULT_LIOINTC_SIZE: usize = 0x40;
 const DEFAULT_LIOINTC_ISR_PADDR: usize = 0x1fe0_1040;
 const DEFAULT_LIOINTC_ISR_SIZE: usize = 0x10;
 const DEFAULT_CASCADE_IRQ: usize = 2;
+const PARENT_INT_COUNT: usize = 4;
 
 const LOONGARCH_PADDR_MASK: usize = (1usize << 48) - 1;
 const LOONGARCH_UNCACHED_DMW_BASE: usize = 0x8000_0000_0000_0000;
@@ -31,7 +32,7 @@ const CPU_HWI_BASE_IRQ: usize = 2;
 const ROUTE_INT_COUNT: usize = 4;
 
 static REGISTERED: AtomicBool = AtomicBool::new(false);
-static CASCADE_IRQ: AtomicUsize = AtomicUsize::new(usize::MAX);
+static CASCADE_IRQ_MASK: AtomicUsize = AtomicUsize::new(0);
 
 module_driver!(
     name: "Loongson LS2K1000 LIOINTC",
@@ -48,16 +49,30 @@ module_driver!(
 );
 
 pub fn is_cascade_irq(irq: usize) -> bool {
-    REGISTERED.load(Ordering::Acquire) && CASCADE_IRQ.load(Ordering::Acquire) == irq
+    REGISTERED.load(Ordering::Acquire)
+        && irq < usize::BITS as usize
+        && (CASCADE_IRQ_MASK.load(Ordering::Acquire) & (1usize << irq)) != 0
 }
 
-pub fn claim_irq() -> Option<crate::irq::IrqId> {
-    let input = with_liointc("claiming LIOINTC IRQ", |intc| intc.claim_irq()).flatten()?;
-    liointc_irq(input)
+pub fn claim_irq(raw: usize) -> Option<crate::irq::IrqId> {
+    with_liointc("claiming LIOINTC IRQ", |domain, intc| {
+        if !intc.handles_cascade_irq(raw) {
+            return None;
+        }
+        intc.claim_irq()
+            .map(|input| crate::irq::IrqId::new(domain, crate::irq::HwIrq(input as u32)))
+    })
 }
 
-pub fn complete_irq(input: usize) {
-    with_liointc("completing LIOINTC IRQ", |intc| intc.complete_irq(input));
+pub fn complete_irq(irq: crate::irq::IrqId) {
+    with_liointc("completing LIOINTC IRQ", |domain, intc| {
+        if domain == irq.domain {
+            intc.complete_irq(irq.hwirq.0 as usize);
+            Some(())
+        } else {
+            None
+        }
+    });
 }
 
 fn probe_liointc_fdt(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
@@ -82,7 +97,8 @@ fn probe_liointc_fdt(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
         .as_ref()
         .and_then(|reg| reg.size)
         .unwrap_or(DEFAULT_LIOINTC_ISR_SIZE as u64) as usize;
-    let cascade_irq = cascade_irq_from_fdt(&info).unwrap_or(DEFAULT_CASCADE_IRQ);
+    let parent_irqs = parent_irqs_from_fdt(&info);
+    let parent_int_map = parent_int_map_from_fdt(&info, &parent_irqs);
 
     register_liointc(
         dev,
@@ -91,7 +107,8 @@ fn probe_liointc_fdt(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
         reg_size,
         isr_addr,
         isr_size,
-        cascade_irq,
+        parent_irqs,
+        parent_int_map,
     )
 }
 
@@ -102,21 +119,29 @@ fn register_liointc(
     reg_size: usize,
     isr_addr: usize,
     isr_size: usize,
-    cascade_irq: usize,
+    parent_irqs: [Option<usize>; PARENT_INT_COUNT],
+    parent_int_map: [u32; PARENT_INT_COUNT],
 ) -> Result<(), OnProbeError> {
     let reg_paddr = firmware_addr_to_phys(reg_addr);
     let isr_paddr = firmware_addr_to_phys(isr_addr);
-    let intc = LioIntc::new(reg_paddr, reg_size, isr_paddr, isr_size, cascade_irq)?;
+    let intc = LioIntc::new(
+        reg_paddr,
+        reg_size,
+        isr_paddr,
+        isr_size,
+        parent_irqs,
+        parent_int_map,
+    )?;
     intc.init();
 
     info!(
         "probing LS2K1000 LIOINTC: node={}, regs={reg_addr:#x}->{:#x}, isr={isr_addr:#x}->{:#x}, \
-         cascade_irq={}, route={:#04x}, inputs={}",
+         parent_irqs={:?}, parent_int_map={:#x?}, inputs={}",
         node_name,
         intc.regs.as_ptr() as usize,
         intc.isr.as_ptr() as usize,
-        intc.cascade_irq,
-        intc.route_value(),
+        intc.parent_irqs,
+        intc.parent_int_map,
         LIOINTC_VECTOR_COUNT,
     );
 
@@ -125,33 +150,69 @@ fn register_liointc(
         crate::irq::IrqDomainKind::LoongArchLioIntc,
     )
     .map_err(|err| OnProbeError::other(format!("failed to register LIOINTC domain: {err:?}")))?;
+    let cascade_mask = intc.cascade_irq_mask();
+    for cascade_irq in intc.parent_irqs.into_iter().flatten() {
+        someboot::irq::irq_set_enable(someboot::irq::IrqId::new(cascade_irq), true);
+    }
     dev.register(rdif_intc::Intc::new(domain, intc));
-    CASCADE_IRQ.store(cascade_irq, Ordering::Release);
+    CASCADE_IRQ_MASK.fetch_or(cascade_mask, Ordering::AcqRel);
     REGISTERED.store(true, Ordering::Release);
-    someboot::irq::irq_set_enable(someboot::irq::IrqId::new(cascade_irq), true);
     Ok(())
 }
 
-fn liointc_irq(input: usize) -> Option<crate::irq::IrqId> {
-    let domain = crate::irq::domain_by_kind_fast(crate::irq::IrqDomainKind::LoongArchLioIntc)?;
-    Some(crate::irq::IrqId::new(
-        domain,
-        crate::irq::HwIrq(input as u32),
-    ))
+fn parent_irqs_from_fdt(info: &rdrive::register::FdtInfo<'_>) -> [Option<usize>; PARENT_INT_COUNT] {
+    let mut parent_irqs = [None; PARENT_INT_COUNT];
+    let mut any = false;
+
+    for interrupt in info.interrupts() {
+        let Some(irq) = fdt_first_cell_vector(&interrupt.specifier) else {
+            continue;
+        };
+        set_parent_irq(&mut parent_irqs, irq);
+        any = true;
+    }
+
+    if !any && let Some(prop) = info.node.as_node().get_property("interrupts") {
+        for irq in prop.get_u32_iter() {
+            set_parent_irq(&mut parent_irqs, irq as usize);
+            any = true;
+        }
+    }
+
+    if !any {
+        set_parent_irq(&mut parent_irqs, DEFAULT_CASCADE_IRQ);
+    }
+    parent_irqs
 }
 
-fn cascade_irq_from_fdt(info: &rdrive::register::FdtInfo<'_>) -> Option<usize> {
-    info.interrupts()
-        .into_iter()
-        .next()
-        .and_then(|interrupt| fdt_first_cell_vector(&interrupt.specifier))
-        .or_else(|| {
-            info.node
-                .as_node()
-                .get_property("interrupts")
-                .and_then(|prop| prop.get_u32_iter().next())
-                .map(|irq| irq as usize)
-        })
+fn set_parent_irq(parent_irqs: &mut [Option<usize>; PARENT_INT_COUNT], irq: usize) {
+    let index = parent_index_from_cpu_irq(irq).unwrap_or_else(|| {
+        warn!("LIOINTC parent IRQ {irq} is outside CPU HWI range; treating it as parent INT0");
+        0
+    });
+    parent_irqs[index] = Some(irq);
+}
+
+fn parent_index_from_cpu_irq(irq: usize) -> Option<usize> {
+    irq.checked_sub(CPU_HWI_BASE_IRQ)
+        .filter(|index| *index < PARENT_INT_COUNT)
+}
+
+fn parent_int_map_from_fdt(
+    info: &rdrive::register::FdtInfo<'_>,
+    parent_irqs: &[Option<usize>; PARENT_INT_COUNT],
+) -> [u32; PARENT_INT_COUNT] {
+    let mut parent_int_map = [0; PARENT_INT_COUNT];
+    if let Some(prop) = info.node.as_node().get_property("loongson,parent_int_map") {
+        for (index, map) in prop.get_u32_iter().take(PARENT_INT_COUNT).enumerate() {
+            parent_int_map[index] = map;
+        }
+    }
+    if parent_int_map.iter().all(|map| *map == 0) {
+        let parent_index = parent_irqs.iter().position(Option::is_some).unwrap_or(0);
+        parent_int_map[parent_index] = u32::MAX;
+    }
+    parent_int_map
 }
 
 fn firmware_addr_to_phys(addr: usize) -> usize {
@@ -168,40 +229,34 @@ fn uncached_ptr(paddr: usize, size: usize, name: &str) -> Result<NonNull<u8>, On
         .ok_or_else(|| OnProbeError::other(format!("LS2K1000 LIOINTC {name} pointer is null")))
 }
 
-fn route_int_bit(cascade_irq: usize) -> u8 {
-    let Some(input) = cascade_irq.checked_sub(CPU_HWI_BASE_IRQ) else {
-        warn!(
-            "LIOINTC cascade IRQ {cascade_irq} is below CPU HWI base {CPU_HWI_BASE_IRQ}; routing \
-             through INT0"
-        );
-        return 1 << ROUTE_INT_SHIFT;
-    };
-    if input >= ROUTE_INT_COUNT {
-        warn!(
-            "LIOINTC cascade IRQ {cascade_irq} exceeds routeable HWI range; routing through INT0"
-        );
-        return 1 << ROUTE_INT_SHIFT;
-    }
-    1 << (ROUTE_INT_SHIFT + input)
+fn route_int_bit(parent_index: usize) -> u8 {
+    debug_assert!(parent_index < ROUTE_INT_COUNT);
+    1 << (ROUTE_INT_SHIFT + parent_index)
 }
 
-fn with_liointc<R>(op: &str, f: impl FnOnce(&mut LioIntc) -> R) -> Option<R> {
+fn with_liointc<R>(
+    op: &str,
+    mut f: impl FnMut(crate::irq::IrqDomainId, &mut LioIntc) -> Option<R>,
+) -> Option<R> {
     if !REGISTERED.load(Ordering::Acquire) || !rdrive::is_initialized() {
         return None;
     }
 
     for intc in rdrive::get_list::<rdif_intc::Intc>() {
-        let Ok(intc) = intc.downcast::<LioIntc>() else {
-            continue;
-        };
         let Ok(mut intc) = intc.try_lock() else {
             warn!("failed to lock LS2K1000 LIOINTC when {op}");
             return None;
         };
-        return Some(f(&mut intc));
+        let domain = intc.domain();
+        let Some(liointc) = intc.typed_mut::<LioIntc>() else {
+            continue;
+        };
+        if let Some(result) = f(domain, liointc) {
+            return Some(result);
+        }
     }
 
-    warn!("LS2K1000 LIOINTC is not registered when {op}");
+    debug!("LS2K1000 LIOINTC has no matching controller when {op}");
     None
 }
 
@@ -211,7 +266,8 @@ struct LioIntc {
     reg_size: usize,
     isr_size: usize,
     enabled: u32,
-    cascade_irq: usize,
+    parent_irqs: [Option<usize>; PARENT_INT_COUNT],
+    parent_int_map: [u32; PARENT_INT_COUNT],
 }
 
 unsafe impl Send for LioIntc {}
@@ -222,7 +278,8 @@ impl LioIntc {
         reg_size: usize,
         isr_paddr: usize,
         isr_size: usize,
-        cascade_irq: usize,
+        parent_irqs: [Option<usize>; PARENT_INT_COUNT],
+        parent_int_map: [u32; PARENT_INT_COUNT],
     ) -> Result<Self, OnProbeError> {
         Ok(Self {
             regs: uncached_ptr(reg_paddr, reg_size, "register")?,
@@ -230,13 +287,14 @@ impl LioIntc {
             reg_size,
             isr_size,
             enabled: 0,
-            cascade_irq,
+            parent_irqs,
+            parent_int_map,
         })
     }
 
     fn init(&self) {
         for irq in 0..LIOINTC_VECTOR_COUNT {
-            self.write_route(irq, self.route_value());
+            self.write_route(irq, self.route_value_for_input(irq));
         }
 
         self.write_reg_u32(REG_DISABLE, u32::MAX);
@@ -245,8 +303,37 @@ impl LioIntc {
         self.write_reg_u32(REG_POLARITY, 0);
     }
 
-    fn route_value(&self) -> u8 {
-        ROUTE_CPU0 | route_int_bit(self.cascade_irq)
+    fn route_value_for_input(&self, input: usize) -> u8 {
+        let parent_index = self.parent_index_for_input(input).unwrap_or_else(|| {
+            warn!("LIOINTC input {input} has no usable parent INT route; routing through INT0");
+            0
+        });
+        ROUTE_CPU0 | route_int_bit(parent_index)
+    }
+
+    fn parent_index_for_input(&self, input: usize) -> Option<usize> {
+        let bit = 1u32.checked_shl(input as u32)?;
+        self.parent_int_map
+            .iter()
+            .enumerate()
+            .find(|(index, map)| self.parent_irqs[*index].is_some() && (*map & bit) != 0)
+            .map(|(index, _)| index)
+            .or_else(|| self.parent_irqs.iter().position(Option::is_some))
+    }
+
+    fn cascade_irq_mask(&self) -> usize {
+        self.parent_irqs
+            .into_iter()
+            .flatten()
+            .filter(|irq| *irq < usize::BITS as usize)
+            .fold(0usize, |mask, irq| mask | (1usize << irq))
+    }
+
+    fn handles_cascade_irq(&self, irq: usize) -> bool {
+        self.parent_irqs
+            .into_iter()
+            .flatten()
+            .any(|parent| parent == irq)
     }
 
     fn enable_irq(&mut self, input: usize) -> bool {

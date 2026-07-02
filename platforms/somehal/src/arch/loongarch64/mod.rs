@@ -178,16 +178,11 @@ impl PlatOp for Plat {
 
     fn begin_irq(raw: usize) -> Option<Self::ActiveIrq> {
         if liointc::is_cascade_irq(raw) {
-            let Some(irq) = liointc::claim_irq() else {
+            let Some(irq) = liointc::claim_irq(raw) else {
                 debug!("Spurious LoongArch LIOINTC interrupt");
                 return None;
             };
-            return Some(ActiveIrq::new(
-                irq,
-                Completion::LioIntc {
-                    irq: irq.hwirq.0 as usize,
-                },
-            ));
+            return Some(ActiveIrq::new(irq, Completion::LioIntc { irq }));
         }
 
         match classify_cpu_irq(
@@ -278,7 +273,7 @@ impl PlatOp for Plat {
 enum Completion {
     None,
     EioIntc { irq: usize },
-    LioIntc { irq: usize },
+    LioIntc { irq: IrqId },
 }
 
 pub struct ActiveIrq {
