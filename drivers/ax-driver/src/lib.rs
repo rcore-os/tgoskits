@@ -72,6 +72,8 @@ pub mod vsock;
 pub mod jpeg;
 #[cfg(feature = "pci")]
 pub mod pci;
+#[cfg(feature = "rk3588-pwm")]
+pub mod pwm;
 #[cfg(feature = "rga")]
 pub mod rga;
 #[cfg(feature = "rknpu")]

@@ -24,10 +24,8 @@ memtrack = ["ax-feat/backtrace", "ax-alloc/tracking"]
 rknpu = ["ax-driver/rknpu", "dep:ax-dma"]
 jpeg = ["ax-driver/jpeg", "dep:ax-dma"]
 rk3588-pwm = [
-    "ax-driver/rockchip-soc",
-    "dep:rdif-pinctrl",
+    "ax-driver/rk3588-pwm",
     "dep:rdif-pwm",
-    "dep:rockchip-pwm",
 ]
 std-compat = []
 k230-kpu = ["ax-feat/xuantie-c9xx", "dep:axklib", "dep:k230-kpu"]
@@ -110,7 +108,6 @@ axfs-ng-vfs = { workspace = true }
 rdif-block = { workspace = true }
 rdif-pinctrl = { workspace = true, optional = true }
 rdif-pwm = { workspace = true, optional = true }
-rockchip-pwm = { workspace = true, optional = true }
 ax-io = { workspace = true }
 axpoll = { workspace = true }
 bitflags = "2.10"
