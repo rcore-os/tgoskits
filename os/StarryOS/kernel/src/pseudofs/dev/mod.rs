@@ -29,7 +29,7 @@ pub mod ion;
 mod memtrack;
 #[cfg(feature = "sg2002")]
 mod pinmux;
-#[cfg(feature = "sg2002")]
+#[cfg(any(feature = "sg2002", feature = "rk3588-pwm"))]
 pub(super) mod pwm;
 mod rtc;
 #[cfg(feature = "sg2002")]

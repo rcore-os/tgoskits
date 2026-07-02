@@ -110,6 +110,12 @@ starfive-jh7110-dwmmc = [
     "dep:sdmmc-protocol",
     "sdmmc-protocol/sdio",
 ]
+rk3588-pwm = [
+    "plat-dyn",
+    "rockchip-soc",
+    "dep:rdif-pwm",
+    "dep:rockchip-pwm",
+]
 rk3588-pcie = [
     "pci",
     "plat-dyn",
@@ -155,12 +161,14 @@ rdif-serial = { workspace = true, optional = true }
 rdif-intc.workspace = true
 rdif-pcie = { workspace = true, optional = true }
 rdif-pinctrl = { workspace = true, optional = true }
+rdif-pwm = { workspace = true, optional = true }
 rdif-vsock = { workspace = true, optional = true }
 realtek-rtl8125 = { workspace = true, optional = true }
 rdrive.workspace = true
 rdrive-macros.workspace = true
 rk3588-pci = { workspace = true, optional = true }
 rockchip-npu = { workspace = true, optional = true }
+rockchip-pwm = { workspace = true, optional = true }
 rockchip-rga = { workspace = true, optional = true }
 rockchip-jpeg = { workspace = true, optional = true }
 rockchip-pm = { workspace = true, optional = true }
