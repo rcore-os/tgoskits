@@ -1,9 +1,12 @@
 //! Deterministic host virtual SMP and IRQ runtime for tests.
 
-use alloc::{boxed::Box, collections::VecDeque, sync::Arc, vec::Vec};
+use alloc::{boxed::Box, sync::Arc, vec::Vec};
 use core::sync::atomic::{AtomicU64, Ordering};
 
-use crate::{CpuId, CpuMask, HardIrqWaker, TaskCore, TaskId, TaskRef, TaskState, WakeResult};
+use crate::{
+    BareCpuCore, BareTaskRuntime, CpuId, CpuMask, FifoScheduler, HardIrqWaker, IpiEvent, TaskCore,
+    TaskId, TaskRef, TaskState, WakeResult,
+};
 
 /// Virtual IRQ identifier.
 #[repr(transparent)]
@@ -49,30 +52,20 @@ impl VirtualRegisters {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum IpiEvent {
-    Reschedule,
-    IrqWakeDrain,
-}
-
 /// Virtual CPU state.
 pub struct HostCpu {
     /// Virtual registers.
     pub regs: VirtualRegisters,
-    run_queue: VecDeque<TaskRef>,
-    irq_wake_queue: VecDeque<TaskRef>,
-    ipi_queue: VecDeque<IpiEvent>,
+    core: Arc<BareCpuCore<FifoScheduler<TaskRef>>>,
     delivered_ipis: usize,
     delivered_irqs: usize,
 }
 
 impl HostCpu {
-    fn new(cpu_id: CpuId) -> Self {
+    fn new(cpu_id: CpuId, core: Arc<BareCpuCore<FifoScheduler<TaskRef>>>) -> Self {
         Self {
             regs: VirtualRegisters::new(cpu_id),
-            run_queue: VecDeque::new(),
-            irq_wake_queue: VecDeque::new(),
-            ipi_queue: VecDeque::new(),
+            core,
             delivered_ipis: 0,
             delivered_irqs: 0,
         }
@@ -80,7 +73,7 @@ impl HostCpu {
 
     /// Returns the number of runnable tasks queued on this CPU.
     pub fn run_queue_len(&self) -> usize {
-        self.run_queue.len()
+        self.core.run_queue_len()
     }
 
     /// Returns the number of delivered virtual IRQ callbacks.
@@ -114,6 +107,7 @@ struct TimerEvent {
 
 /// Deterministic virtual SMP runtime.
 pub struct HostSmpRuntime {
+    task_runtime: BareTaskRuntime<FifoScheduler<TaskRef>>,
     cpus: Vec<HostCpu>,
     irqs: Vec<IrqLine>,
     now_nanos: u64,
@@ -128,8 +122,17 @@ impl HostSmpRuntime {
     /// Creates a virtual runtime with `cpu_count` CPUs.
     pub fn new(cpu_count: usize) -> Self {
         assert!(cpu_count > 0);
+        let task_runtime = BareTaskRuntime::new();
+        let cpus = (0..cpu_count)
+            .map(|cpu| {
+                let cpu_id = CpuId(cpu);
+                let core = task_runtime.add_cpu(cpu_id, FifoScheduler::new());
+                HostCpu::new(cpu_id, core)
+            })
+            .collect();
         let mut runtime = Self {
-            cpus: (0..cpu_count).map(|cpu| HostCpu::new(CpuId(cpu))).collect(),
+            task_runtime,
+            cpus,
             irqs: Vec::new(),
             now_nanos: 0,
             next_task_id: AtomicU64::new(1),
@@ -251,56 +254,38 @@ impl HostSmpRuntime {
 
     /// Sends a virtual IPI event to a CPU.
     pub fn send_ipi_reschedule(&mut self, cpu: CpuId) {
-        self.cpus[cpu.0].ipi_queue.push_back(IpiEvent::Reschedule);
-        self.raise_irq(self.ipi_irq);
+        if self.cpus[cpu.0].core.request_ipi(IpiEvent::Reschedule) {
+            self.raise_irq(self.ipi_irq);
+        }
     }
 
     /// Sends a virtual IRQ-wake IPI event to a CPU.
     pub fn send_ipi_irq_wake(&mut self, cpu: CpuId) {
-        self.cpus[cpu.0].ipi_queue.push_back(IpiEvent::IrqWakeDrain);
-        self.raise_irq(self.ipi_irq);
+        if self.cpus[cpu.0].core.request_ipi(IpiEvent::IrqWakeDrain) {
+            self.raise_irq(self.ipi_irq);
+        }
     }
 
     fn drain_ipi_queue(&mut self, cpu: CpuId) {
-        while let Some(event) = self.cpus[cpu.0].ipi_queue.pop_front() {
-            self.cpus[cpu.0].delivered_ipis += 1;
-            match event {
-                IpiEvent::Reschedule => self.cpus[cpu.0].regs.need_resched = true,
-                IpiEvent::IrqWakeDrain => {
-                    self.drain_irq_wake_queue(cpu);
-                }
-            }
+        let events = self.task_runtime.on_ipi_irq(cpu);
+        self.cpus[cpu.0].delivered_ipis += events.count();
+        if events.contains(IpiEvent::Reschedule) {
+            self.cpus[cpu.0].regs.need_resched = true;
         }
     }
 
     /// Publishes a hard IRQ wake and inserts the task into its target CPU queue.
     pub fn wake_from_irq(&mut self, waker: &HardIrqWaker, bits: u64) -> WakeResult {
-        let (task, result) = waker.wake_from_irq(bits);
-        let Some(task) = task else {
-            return result;
-        };
+        let result = self.task_runtime.wake_from_irq(waker, bits);
         if result.woke() {
-            let cpu = task.cpu_id();
-            self.cpus[cpu.0].irq_wake_queue.push_back(task);
-            self.cpus[cpu.0].regs.need_resched = true;
-            return WakeResult::new(true, false, true);
+            self.raise_irq(self.ipi_irq);
         }
         result
     }
 
     /// Drains one CPU's hard IRQ wake queue.
     pub fn drain_irq_wake_queue(&mut self, cpu: CpuId) -> usize {
-        let mut drained = 0;
-        while let Some(task) = self.cpus[cpu.0].irq_wake_queue.pop_front() {
-            if !task.take_wake_pending() {
-                continue;
-            }
-            if task.transition_state(TaskState::Blocked, TaskState::Ready) {
-                self.cpus[cpu.0].run_queue.push_back(task);
-                drained += 1;
-            }
-        }
-        drained
+        self.task_runtime.drain_irq_wake_queue(cpu)
     }
 
     /// Runs the virtual IRQ epilogue on `cpu`.
@@ -354,7 +339,7 @@ impl HostSmpRuntime {
         }
         for task in expired {
             task.set_state(TaskState::Ready);
-            self.cpus[cpu.0].run_queue.push_back(task);
+            self.task_runtime.add_ready_task(cpu, task);
             self.cpus[cpu.0].regs.need_resched = true;
         }
     }

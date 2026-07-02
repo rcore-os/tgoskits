@@ -1145,7 +1145,6 @@ dependencies = [
  "ax-memory-addr",
  "ax-mm",
  "ax-percpu",
- "ax-sched",
  "ax-timer-list",
  "axpoll",
  "bare-task",

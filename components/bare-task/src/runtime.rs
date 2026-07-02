@@ -1,6 +1,6 @@
 //! State-driven runtime event primitives.
 
-use alloc::vec::Vec;
+use alloc::{sync::Arc, task::Wake, vec::Vec};
 use core::{
     sync::atomic::{AtomicU64, Ordering},
     task::{Context, Poll, Waker},
@@ -40,6 +40,57 @@ impl BlockOnWakeState {
 impl Default for BlockOnWakeState {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+/// Host task wake capability used by [`BlockOnThreadWaker`].
+pub trait BlockOnTaskWake: Clone + Send + Sync + 'static {
+    /// Wakes the host task in task context.
+    fn wake_task(&self);
+
+    /// Returns the host task wake sequence.
+    fn wake_seq(&self) -> u64;
+}
+
+/// Generic thread-hosted `block_on` waker core.
+pub struct BlockOnThreadWaker<W: BlockOnTaskWake> {
+    task_wake: W,
+    wake_state: BlockOnWakeState,
+}
+
+impl<W: BlockOnTaskWake> BlockOnThreadWaker<W> {
+    /// Creates a reference-counted waker core.
+    pub fn new(task_wake: W) -> Arc<Self> {
+        Arc::new(Self {
+            task_wake,
+            wake_state: BlockOnWakeState::new(),
+        })
+    }
+
+    /// Builds a Rust [`Waker`] for polling a future.
+    pub fn waker(self: &Arc<Self>) -> Waker {
+        Waker::from(self.clone())
+    }
+
+    /// Returns the current task wake sequence.
+    pub fn wake_seq(&self) -> u64 {
+        self.task_wake.wake_seq()
+    }
+
+    /// Returns whether the host should re-poll before parking.
+    pub fn should_repoll(&self, observed_seq: u64) -> bool {
+        self.wake_state.should_repoll(observed_seq, self.wake_seq())
+    }
+}
+
+impl<W: BlockOnTaskWake> Wake for BlockOnThreadWaker<W> {
+    fn wake(self: Arc<Self>) {
+        self.wake_by_ref();
+    }
+
+    fn wake_by_ref(self: &Arc<Self>) {
+        self.wake_state.mark_woke();
+        self.task_wake.wake_task();
     }
 }
 
@@ -168,11 +219,12 @@ impl RuntimeEventCore {
 
     fn register_waker(&self, waker: &Waker) {
         let mut waiters = self.waiters.lock();
-        if waiters
+        if let Some(existing) = waiters
             .wakers
             .iter()
-            .any(|existing| existing.will_wake(waker))
+            .position(|existing| existing.will_wake(waker))
         {
+            waiters.wakers[existing] = waker.clone();
             return;
         }
         waiters.wakers.push(waker.clone());
@@ -240,5 +292,100 @@ mod tests {
         state.mark_woke();
         assert!(state.should_repoll(1, 1));
         assert!(state.should_repoll(1, 2));
+    }
+
+    #[test]
+    fn block_on_thread_waker_marks_local_wake_and_calls_task_wake() {
+        #[derive(Clone)]
+        struct HostWake(Arc<AtomicUsize>);
+
+        impl crate::BlockOnTaskWake for HostWake {
+            fn wake_task(&self) {
+                self.0.fetch_add(1, Ordering::AcqRel);
+            }
+
+            fn wake_seq(&self) -> u64 {
+                self.0.load(Ordering::Acquire) as u64
+            }
+        }
+
+        let wake_count = Arc::new(AtomicUsize::new(0));
+        let thread_waker = crate::BlockOnThreadWaker::new(HostWake(wake_count.clone()));
+        let observed = thread_waker.wake_seq();
+        let waker = thread_waker.waker();
+
+        waker.wake_by_ref();
+
+        assert_eq!(wake_count.load(Ordering::Acquire), 1);
+        assert!(thread_waker.should_repoll(observed));
+    }
+
+    #[test]
+    fn bare_cpu_core_coalesces_ipi_pending_bits() {
+        let cpu = crate::BareCpuCore::<crate::FifoScheduler<crate::TaskRef>>::new(
+            crate::CpuId(0),
+            crate::FifoScheduler::new(),
+        );
+
+        assert!(cpu.request_ipi(crate::IpiEvent::Reschedule));
+        assert!(!cpu.request_ipi(crate::IpiEvent::Reschedule));
+        assert!(cpu.request_ipi(crate::IpiEvent::IrqWakeDrain));
+
+        let events = cpu.take_pending_ipis();
+        assert_eq!(
+            events,
+            crate::IpiEvents::from_events(&[
+                crate::IpiEvent::Reschedule,
+                crate::IpiEvent::IrqWakeDrain,
+            ])
+        );
+        assert!(cpu.take_pending_ipis().is_empty());
+    }
+
+    #[test]
+    fn bare_runtime_hard_irq_wake_queues_task_until_epilogue() {
+        let runtime = crate::BareTaskRuntime::<crate::FifoScheduler<crate::TaskRef>>::new();
+        let cpu = runtime.add_cpu(crate::CpuId(0), crate::FifoScheduler::new());
+        let task = TestTask::new_core(1, crate::CpuId(0));
+        task.set_state(crate::TaskState::Blocked);
+        let waker = crate::TaskWaker::new(task.clone()).to_hard_irq_waker();
+
+        let wake = runtime.wake_from_irq(&waker, 0b11);
+
+        assert!(wake.woke());
+        assert_eq!(task.state(), crate::TaskState::Blocked);
+        assert_eq!(cpu.run_queue_len(), 0);
+        assert_eq!(runtime.drain_irq_wake_queue(crate::CpuId(0)), 1);
+        assert_eq!(task.state(), crate::TaskState::Ready);
+        assert_eq!(cpu.run_queue_len(), 1);
+        assert_eq!(waker.take_bits(), 0b11);
+    }
+
+    #[test]
+    fn bare_runtime_timer_irq_marks_service_and_drains_in_task_context() {
+        let runtime = crate::BareTaskRuntime::<crate::FifoScheduler<crate::TaskRef>>::new();
+        let cpu = runtime.add_cpu(crate::CpuId(0), crate::FifoScheduler::new());
+        let task = TestTask::new_core(1, crate::CpuId(0));
+        task.set_state(crate::TaskState::Blocked);
+
+        runtime.add_task_timer(crate::CpuId(0), 10, task.clone());
+        assert!(!cpu.timer_service_pending());
+
+        runtime.on_timer_irq(crate::CpuId(0), 10);
+
+        assert!(cpu.timer_service_pending());
+        assert_eq!(task.state(), crate::TaskState::Blocked);
+        assert_eq!(runtime.drain_timer_service(crate::CpuId(0), 10), 1);
+        assert!(!cpu.timer_service_pending());
+        assert_eq!(task.state(), crate::TaskState::Ready);
+        assert_eq!(cpu.run_queue_len(), 1);
+    }
+
+    struct TestTask;
+
+    impl TestTask {
+        fn new_core(id: u64, cpu: crate::CpuId) -> crate::TaskRef {
+            Arc::new(crate::TaskCore::new(crate::TaskId(id), cpu))
+        }
     }
 }

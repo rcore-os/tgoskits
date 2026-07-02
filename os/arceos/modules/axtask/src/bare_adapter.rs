@@ -32,7 +32,7 @@ impl_trait! {
         }
 
         fn irqs_enabled() -> bool {
-            true
+            ax_hal::asm::irqs_enabled()
         }
 
         fn in_irq_context() -> bool {

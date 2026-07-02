@@ -1,18 +1,12 @@
 //! Future support.
 
-use alloc::{sync::Arc, task::Wake};
-use core::{
-    fmt,
-    future::poll_fn,
-    pin::pin,
-    task::{Context, Poll, Waker},
-};
+use core::{fmt, future::poll_fn, pin::pin, task::Poll};
 
 use ax_errno::AxError;
 use ax_kernel_guard::NoPreemptIrqSave;
-use bare_task::BlockOnWakeState;
+use bare_task::{BlockOnTaskWake, BlockOnThreadWaker};
 
-use crate::{AxTaskRef, TaskWaker, current, current_run_queue};
+use crate::{TaskWaker, current, current_run_queue};
 
 mod poll;
 pub use poll::*;
@@ -20,37 +14,16 @@ pub use poll::*;
 mod time;
 pub use time::*;
 
-struct AxWaker {
-    task: TaskWaker,
-    wake_state: BlockOnWakeState,
-}
+#[derive(Clone)]
+struct AxBlockOnWake(TaskWaker);
 
-impl AxWaker {
-    fn new(task: &AxTaskRef) -> Arc<Self> {
-        Arc::new(AxWaker {
-            task: TaskWaker::new(task.clone()),
-            wake_state: BlockOnWakeState::new(),
-        })
+impl BlockOnTaskWake for AxBlockOnWake {
+    fn wake_task(&self) {
+        let _ = self.0.wake(0);
     }
 
-    fn irq_seq(&self) -> u64 {
-        self.task.seq()
-    }
-
-    fn should_repoll(&self, observed_irq_seq: u64) -> bool {
-        self.wake_state
-            .should_repoll(observed_irq_seq, self.irq_seq())
-    }
-}
-
-impl Wake for AxWaker {
-    fn wake(self: Arc<Self>) {
-        self.wake_by_ref();
-    }
-
-    fn wake_by_ref(self: &Arc<Self>) {
-        self.wake_state.mark_woke();
-        let _ = self.task.wake(0);
+    fn wake_seq(&self) -> u64 {
+        self.0.seq()
     }
 }
 
@@ -70,12 +43,12 @@ pub fn block_on<F: IntoFuture>(f: F) -> F::Output {
     let curr = current();
     let task = curr.clone();
 
-    let axwaker = AxWaker::new(&task);
-    let waker = Waker::from(axwaker.clone());
-    let mut cx = Context::from_waker(&waker);
+    let axwaker = BlockOnThreadWaker::new(AxBlockOnWake(TaskWaker::new(task.clone())));
+    let waker = axwaker.waker();
+    let mut cx = core::task::Context::from_waker(&waker);
 
     loop {
-        let observed_irq_seq = axwaker.irq_seq();
+        let observed_irq_seq = axwaker.wake_seq();
         match fut.as_mut().poll(&mut cx) {
             Poll::Pending => {
                 // Before sleeping, check if a signal has arrived. If so,

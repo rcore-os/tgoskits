@@ -545,6 +545,14 @@ impl BlockDeviceHandle {
         })
     }
 
+    pub fn drain_pending_requests(&self) -> usize {
+        self.with_drain(|| {
+            let keys = self.pending.lock().active_keys();
+            let mut poller = DeviceRequestPoller { device: self };
+            CompletionDrain::new(&self.pending, &mut poller).poll_keys(&keys)
+        })
+    }
+
     pub fn drain_hint(&self, hint: CompletionHint) -> usize {
         self.with_drain(|| {
             let mut poller = DeviceRequestPoller { device: self };
@@ -1369,14 +1377,23 @@ fn mark_block_drain_device_from_irq(device_index: usize) {
     notify_drain_from_irq();
 }
 
-fn block_drain_has_pending() -> bool {
-    BLOCK_DRAIN_FULL_SCAN.load(Ordering::Acquire)
-        || BLOCK_DRAIN_DEVICE_BITS.load(Ordering::Acquire) != 0
+fn runtime_has_ready_bridge(runtime: &BlockRuntime) -> bool {
+    runtime
+        .devices()
+        .iter()
+        .any(|device| device.bridge().drain_ready())
 }
 
-fn take_block_drain_selection() -> DrainSelection {
+fn block_drain_has_pending(runtime: &BlockRuntime) -> bool {
+    BLOCK_DRAIN_FULL_SCAN.load(Ordering::Acquire)
+        || BLOCK_DRAIN_DEVICE_BITS.load(Ordering::Acquire) != 0
+        || runtime_has_ready_bridge(runtime)
+}
+
+fn take_block_drain_selection(runtime: &BlockRuntime) -> DrainSelection {
     DrainSelection {
-        full_scan: BLOCK_DRAIN_FULL_SCAN.swap(false, Ordering::AcqRel),
+        full_scan: BLOCK_DRAIN_FULL_SCAN.swap(false, Ordering::AcqRel)
+            || runtime_has_ready_bridge(runtime),
         device_bits: BLOCK_DRAIN_DEVICE_BITS.swap(0, Ordering::AcqRel),
     }
 }
@@ -1386,22 +1403,40 @@ fn drain_selection_contains(selection: DrainSelection, device_index: usize) -> b
         || (device_index < u64::BITS as usize && selection.device_bits & (1 << device_index) != 0)
 }
 
+fn drain_selected_device(device_index: usize, device: &BlockDeviceHandle) {
+    device.drain_events();
+    if device.bridge().drain_ready() {
+        set_block_drain_pending(device_index);
+    }
+}
+
+fn scan_block_drain_sources(runtime: &BlockRuntime) -> bool {
+    let mut completed = 0;
+    for (device_index, device) in runtime.devices().iter().enumerate() {
+        completed += device.drain_pending_requests();
+        if device.bridge().drain_ready() {
+            set_block_drain_pending(device_index);
+        }
+    }
+    completed != 0 || block_drain_has_pending(runtime)
+}
+
 fn spawn_block_drain_task(runtime: Arc<BlockRuntime>) {
     BLOCK_DRAIN_SPAWNED.call_once(|| {
         spawn_task(
             String::from("block_drain"),
             Box::new(move || {
                 loop {
-                    if !block_drain_has_pending() {
+                    if !block_drain_has_pending(&runtime) && !scan_block_drain_sources(&runtime) {
                         wait_for_drain_notification();
                     }
-                    if !block_drain_has_pending() {
+                    if !block_drain_has_pending(&runtime) && !scan_block_drain_sources(&runtime) {
                         continue;
                     }
-                    let selection = take_block_drain_selection();
+                    let selection = take_block_drain_selection(&runtime);
                     for (device_index, device) in runtime.devices().iter().enumerate() {
                         if drain_selection_contains(selection, device_index) {
-                            device.drain_events();
+                            drain_selected_device(device_index, device);
                         }
                     }
                 }
@@ -1615,4 +1650,162 @@ pub fn map_blk_err_to_ax_err(err: BlkError) -> AxError {
 #[cfg(feature = "ext4")]
 fn queue_ids_from_bits(bits: u64) -> impl Iterator<Item = usize> {
     (0..u64::BITS as usize).filter(move |queue_id| bits & (1 << queue_id) != 0)
+}
+
+#[cfg(test)]
+mod tests {
+    use alloc::sync::Arc;
+    use core::sync::atomic::Ordering;
+    use std::sync::Mutex;
+
+    use rdif_block::{QueueLimits, RequestStatus};
+
+    use super::*;
+
+    static BLOCK_DRAIN_TEST_LOCK: Mutex<()> = Mutex::new(());
+
+    struct BusyDrainQueue;
+
+    // SAFETY: This test queue never retains request segment references beyond
+    // `submit_request`; the test does not submit any request through it.
+    unsafe impl IQueue for BusyDrainQueue {
+        fn id(&self) -> usize {
+            0
+        }
+
+        fn info(&self) -> QueueInfo {
+            QueueInfo {
+                id: 0,
+                device: DeviceInfo::new(16, 512),
+                limits: QueueLimits::simple(512, u64::MAX),
+            }
+        }
+
+        fn submit_request(&mut self, _request: Request<'_>) -> Result<RequestId, BlkError> {
+            Ok(RequestId::new(1))
+        }
+
+        fn poll_request(&mut self, _request: RequestId) -> Result<RequestStatus, BlkError> {
+            Ok(RequestStatus::Pending)
+        }
+    }
+
+    struct ReadyWithoutHintQueue;
+
+    // SAFETY: This test queue never retains request segment references beyond
+    // `submit_request`; the test inserts pending requests directly.
+    unsafe impl IQueue for ReadyWithoutHintQueue {
+        fn id(&self) -> usize {
+            0
+        }
+
+        fn info(&self) -> QueueInfo {
+            QueueInfo {
+                id: 0,
+                device: DeviceInfo::new(16, 512),
+                limits: QueueLimits::simple(512, u64::MAX),
+            }
+        }
+
+        fn submit_request(&mut self, _request: Request<'_>) -> Result<RequestId, BlkError> {
+            Ok(RequestId::new(7))
+        }
+
+        fn poll_request(&mut self, _request: RequestId) -> Result<RequestStatus, BlkError> {
+            Ok(RequestStatus::Complete)
+        }
+    }
+
+    #[test]
+    fn drain_selection_rearms_device_when_core_drain_is_busy() {
+        let _guard = BLOCK_DRAIN_TEST_LOCK.lock().unwrap();
+        BLOCK_DRAIN_DEVICE_BITS.store(0, Ordering::Release);
+        BLOCK_DRAIN_FULL_SCAN.store(false, Ordering::Release);
+
+        let bridge = Arc::new(BlockIrqBridge::new());
+        let device = BlockDeviceHandle::new(
+            "busy-drain",
+            [Box::new(BusyDrainQueue) as Box<dyn IQueue>],
+            bridge.clone(),
+            BlockRuntimeConfig::new(Arc::new(NoopDrainWake)),
+        )
+        .unwrap();
+
+        bridge.record_hint(CompletionHint::Queue { queue_id: 0 });
+        set_block_drain_pending(0);
+        let mut runtime = BlockRuntime::new();
+        runtime.push_device(device.clone());
+
+        let selection = take_block_drain_selection(&runtime);
+        assert!(drain_selection_contains(selection, 0));
+        assert_eq!(BLOCK_DRAIN_DEVICE_BITS.load(Ordering::Acquire), 0);
+
+        device.drain_running.store(true, Ordering::Release);
+        drain_selected_device(0, &device);
+        device.drain_running.store(false, Ordering::Release);
+
+        assert!(bridge.drain_ready());
+        assert_ne!(BLOCK_DRAIN_DEVICE_BITS.load(Ordering::Acquire) & 1, 0);
+
+        BLOCK_DRAIN_DEVICE_BITS.store(0, Ordering::Release);
+        BLOCK_DRAIN_FULL_SCAN.store(false, Ordering::Release);
+    }
+
+    #[test]
+    fn drain_selection_scans_backend_state_when_global_bit_is_lost() {
+        let _guard = BLOCK_DRAIN_TEST_LOCK.lock().unwrap();
+        BLOCK_DRAIN_DEVICE_BITS.store(0, Ordering::Release);
+        BLOCK_DRAIN_FULL_SCAN.store(false, Ordering::Release);
+
+        let bridge = Arc::new(BlockIrqBridge::new());
+        let device = BlockDeviceHandle::new(
+            "lost-drain-bit",
+            [Box::new(BusyDrainQueue) as Box<dyn IQueue>],
+            bridge.clone(),
+            BlockRuntimeConfig::new(Arc::new(NoopDrainWake)),
+        )
+        .unwrap();
+        let mut runtime = BlockRuntime::new();
+        runtime.push_device(device);
+
+        bridge.record_hint(CompletionHint::Queue { queue_id: 0 });
+        assert!(block_drain_has_pending(&runtime));
+
+        let selection = take_block_drain_selection(&runtime);
+        assert!(selection.full_scan);
+        assert!(drain_selection_contains(selection, 0));
+
+        BLOCK_DRAIN_DEVICE_BITS.store(0, Ordering::Release);
+        BLOCK_DRAIN_FULL_SCAN.store(false, Ordering::Release);
+    }
+
+    #[test]
+    fn drain_worker_scans_pending_backend_state_before_sleep() {
+        let _guard = BLOCK_DRAIN_TEST_LOCK.lock().unwrap();
+        BLOCK_DRAIN_DEVICE_BITS.store(0, Ordering::Release);
+        BLOCK_DRAIN_FULL_SCAN.store(false, Ordering::Release);
+
+        let bridge = Arc::new(BlockIrqBridge::new());
+        let device = BlockDeviceHandle::new(
+            "ready-without-hint",
+            [Box::new(ReadyWithoutHintQueue) as Box<dyn IQueue>],
+            bridge,
+            BlockRuntimeConfig::new(Arc::new(NoopDrainWake)),
+        )
+        .unwrap();
+        let key = device
+            .pending
+            .lock()
+            .insert_submitted(0, RequestId::new(7), None, None)
+            .unwrap();
+        let mut runtime = BlockRuntime::new();
+        runtime.push_device(device.clone());
+
+        assert!(!block_drain_has_pending(&runtime));
+        assert!(scan_block_drain_sources(&runtime));
+        assert!(device.pending.lock().result(key).is_some());
+
+        BLOCK_DRAIN_DEVICE_BITS.store(0, Ordering::Release);
+        BLOCK_DRAIN_FULL_SCAN.store(false, Ordering::Release);
+    }
 }

@@ -11,8 +11,10 @@ extern crate alloc;
 use trait_ffi::*;
 
 pub mod core;
+pub mod cpu;
 pub mod local;
 pub mod os;
+pub mod run_queue;
 pub mod runtime;
 pub mod scheduler;
 pub mod sync;
@@ -25,9 +27,17 @@ pub mod host;
 
 pub use core::{CpuId, CpuMask, TaskCore, TaskId, TaskRef, TaskState};
 
+pub use cpu::{BareCpuCore, BareTaskRuntime, IpiEvent, IpiEvents, ReadyTaskFromCore};
 pub use local::{LocalExecutorCore, LocalSpawnerCore, SpawnLocalError};
-pub use runtime::{BlockOnWakeState, RuntimeEventCore, RuntimeEventSeq, RuntimeEventValue};
-pub use scheduler::{FifoScheduler, RoundRobinScheduler, Scheduler, TaskOps, make_ready};
+pub use run_queue::{RunQueueCore, ScheduledTask};
+pub use runtime::{
+    BlockOnTaskWake, BlockOnThreadWaker, BlockOnWakeState, RuntimeEventCore, RuntimeEventSeq,
+    RuntimeEventValue,
+};
+pub use scheduler::{
+    BaseScheduler, CFSTask, CFScheduler, FifoScheduler, FifoTask, RRScheduler, RRTask, TaskOps,
+    make_ready,
+};
 pub use timer::{TimerKey, TimerRuntimeCore};
 pub use wait_queue::WaitQueueCore;
 pub use wake::{HardIrqWaker, IrqWakeQueueCore, TaskWaker, WakeBits, WakeResult, WakeSeq};

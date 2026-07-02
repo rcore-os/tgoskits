@@ -19,9 +19,9 @@
 //!   the `multitask` and `preempt` features if it is enabled.
 //! - `host-test`: Use host-safe fallbacks for unit tests.
 //!
-//! [1]: ax_sched::FifoScheduler
-//! [2]: ax_sched::RRScheduler
-//! [3]: ax_sched::CFScheduler
+//! [1]: bare_task::FifoScheduler
+//! [2]: bare_task::RRScheduler
+//! [3]: bare_task::CFScheduler
 
 #![cfg_attr(any(not(test), target_os = "none"), no_std)]
 #![cfg_attr(all(test, target_os = "none"), no_main)]

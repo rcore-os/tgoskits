@@ -46,15 +46,15 @@ pub fn default_task_stack_size() -> usize {
 cfg_if::cfg_if! {
     if #[cfg(feature = "sched-rr")] {
         const MAX_TIME_SLICE: usize = 5;
-        pub(crate) type AxTask = ax_sched::RRTask<TaskInner, MAX_TIME_SLICE>;
-        pub(crate) type Scheduler = ax_sched::RRScheduler<TaskInner, MAX_TIME_SLICE>;
+        pub(crate) type AxTask = bare_task::RRTask<TaskInner, MAX_TIME_SLICE>;
+        pub(crate) type Scheduler = bare_task::RRScheduler<TaskInner, MAX_TIME_SLICE>;
     } else if #[cfg(feature = "sched-cfs")] {
-        pub(crate) type AxTask = ax_sched::CFSTask<TaskInner>;
-        pub(crate) type Scheduler = ax_sched::CFScheduler<TaskInner>;
+        pub(crate) type AxTask = bare_task::CFSTask<TaskInner>;
+        pub(crate) type Scheduler = bare_task::CFScheduler<TaskInner>;
     } else {
         // If no scheduler features are set, use FIFO as the default.
-        pub(crate) type AxTask = ax_sched::FifoTask<TaskInner>;
-        pub(crate) type Scheduler = ax_sched::FifoScheduler<TaskInner>;
+        pub(crate) type AxTask = bare_task::FifoTask<TaskInner>;
+        pub(crate) type Scheduler = bare_task::FifoScheduler<TaskInner>;
     }
 }
 
@@ -188,7 +188,9 @@ pub fn on_timer_tick() {
 /// Handles a hardware timer interrupt.
 pub fn on_timer_irq(scheduler_tick: bool) {
     use ax_kernel_guard::NoOp;
+    current_run_queue::<NoOp>().mark_timer_irq_pending();
     crate::timers::check_events(scheduler_tick);
+    current_run_queue::<NoOp>().clear_timer_service_pending();
     if scheduler_tick {
         // Since irq and preemption are both disabled here,
         // we can get current run queue with the default `ax_kernel_guard::NoOp`.
