@@ -820,9 +820,10 @@ Ethernet IRQ:
 
 OOB RX:
   wake_net_task_irq()
-  -> OOB_RX_SIGNAL.wake()
-  -> {ifname}-oob-poll task
-  -> request_poll()
+  -> NET_IRQ_NOTIFY.notify_irq()
+  -> NET_POLL_WAKE.notify_one_from_irq()
+  -> net-poll worker wakes devices
+  -> {ifname}-rx worker re-checks Device::recv()
 ```
 
 IRQ handler 不进入 `SERVICE`、`SOCKET_SET` 或 Router。它只读取 driver IRQ event 并唤醒任务上下文，由 worker 或 net-poll 在可阻塞上下文中继续处理。

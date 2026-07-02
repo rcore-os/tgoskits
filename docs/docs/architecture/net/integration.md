@@ -137,7 +137,7 @@ ax_net::register_device_with_config(driver, config);
 ax_net::init_vsock(vsock_devs);
 ```
 
-如果平台没有 vsock 设备，也应调用空列表初始化，使上层查询得到明确的“已初始化但无设备”状态。vsock 不参与 IP 路由、ARP、DNS 或 Ethernet dataplane；它只复用 `ax-net` 的 socket facade 和 poll 语义。
+`init_vsock()` 只注册传入列表中的第一个设备；空列表只会记录 warning，不建立额外的“无设备但已初始化”状态。没有注册设备时，AF_VSOCK 的 listen/connect/send 路径会在 `device::vsock_*()` 返回 `NotFound`。vsock 不参与 IP 路由、ARP、DNS 或 Ethernet dataplane；它只复用 `ax-net` 的 socket facade 和 poll 语义。
 
 ## ArceOS API 层
 
