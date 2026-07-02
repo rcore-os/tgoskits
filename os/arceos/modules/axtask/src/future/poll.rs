@@ -9,9 +9,9 @@ use ax_errno::{AxError, AxResult};
 use ax_kspin::SpinNoIrq;
 use axpoll::{IoEvents, PollSet, Pollable};
 
-use crate::{IrqNotify, current};
+use crate::{HardIrqSignal, current};
 
-static IRQ_NOTIFY: IrqNotify = IrqNotify::new();
+static IRQ_NOTIFY: HardIrqSignal = HardIrqSignal::new();
 static DRAIN_SPAWNED: AtomicBool = AtomicBool::new(false);
 static IRQ_STATE: SpinNoIrq<BTreeMap<ax_hal::irq::IrqId, Arc<IrqPollState>>> =
     SpinNoIrq::new(BTreeMap::new());
@@ -106,7 +106,7 @@ pub async fn poll_io<P: Pollable, F: FnMut() -> AxResult<T>, T>(
 /// the IRQ preempted and triggers the slab from interrupt context.
 ///
 /// The IRQ hook here does only what is safe in interrupt context: flip an
-/// already-allocated per-IRQ pending bit and poke an [`IrqNotify`]. The drain
+/// already-allocated per-IRQ pending bit and poke a [`HardIrqSignal`]. The drain
 /// task runs in normal task context and is the only place that locks the
 /// registry or calls `PollSet::wake`.
 pub fn register_irq_waker(irq: ax_hal::irq::IrqId, waker: &core::task::Waker) -> AxResult<()> {

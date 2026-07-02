@@ -16,7 +16,7 @@ use ax_runtime::hal::{
     irq::{AutoEnable, CpuId, IrqAffinity, IrqHandle, IrqId, IrqRequest, ShareMode},
 };
 use ax_sync::Mutex;
-use ax_task::{IrqNotify, IrqTaskWaker, local::RuntimeEvent};
+use ax_task::{HardIrqSignal, HardIrqWaker, local::RuntimeEvent};
 use axpoll::{IoEvents, PollSet};
 use bitflags::bitflags;
 use rdrive::DeviceId as RDriveDeviceId;
@@ -86,13 +86,13 @@ struct SerialBackend {
     events: SerialEvents,
     input_source: Arc<PollSet>,
     output_source: Arc<PollSet>,
-    tx_notify: IrqNotify,
+    tx_notify: HardIrqSignal,
     output_lock: Mutex<()>,
 }
 
 struct SerialEvents {
     event: RuntimeEvent,
-    irq_waker: Once<IrqTaskWaker>,
+    irq_waker: Once<HardIrqWaker>,
     pending_hint: AtomicBool,
     rx_seq: AtomicU64,
     tx_seq: AtomicU64,
@@ -109,7 +109,7 @@ impl SerialEvents {
         }
     }
 
-    fn init_irq_waker(&self, waker: IrqTaskWaker) {
+    fn init_irq_waker(&self, waker: HardIrqWaker) {
         self.irq_waker.call_once(|| waker);
     }
 
@@ -373,7 +373,7 @@ fn new_serial_tty(number: usize, serial: SerialDevice) -> AxResult<SerialTtyEntr
         events: SerialEvents::new(),
         input_source: Arc::new(PollSet::new()),
         output_source: Arc::new(PollSet::new()),
-        tx_notify: IrqNotify::new(),
+        tx_notify: HardIrqSignal::new(),
         output_lock: Mutex::new(()),
     });
 
@@ -591,7 +591,7 @@ fn spawn_serial_event_worker(backend: Arc<SerialBackend>) {
         move || {
             backend
                 .events
-                .init_irq_waker(ax_task::current_irq_task_waker());
+                .init_irq_waker(ax_task::current_hard_irq_waker());
             loop {
                 backend.events.wait();
                 loop {

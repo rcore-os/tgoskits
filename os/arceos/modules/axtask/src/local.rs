@@ -21,7 +21,7 @@ use core::{
 
 use ax_kspin::SpinNoIrq;
 
-use crate::{IrqNotify, IrqTaskWaker, WaitQueue};
+use crate::{HardIrqSignal, HardIrqWaker, TaskWaker, WaitQueue};
 
 /// Mutable sequence cursor for [`RuntimeEvent`].
 #[derive(Debug, Default)]
@@ -69,7 +69,7 @@ pub struct RuntimeEvent {
     seq: AtomicU64,
     bits: AtomicU64,
     waiters: SpinNoIrq<RuntimeEventWaiters>,
-    notify: IrqNotify,
+    notify: HardIrqSignal,
 }
 
 impl RuntimeEvent {
@@ -79,7 +79,7 @@ impl RuntimeEvent {
             seq: AtomicU64::new(0),
             bits: AtomicU64::new(0),
             waiters: SpinNoIrq::new(RuntimeEventWaiters { wakers: Vec::new() }),
-            notify: IrqNotify::new(),
+            notify: HardIrqSignal::new(),
         }
     }
 
@@ -122,8 +122,8 @@ impl RuntimeEvent {
     pub fn publish_from_irq_with(
         &self,
         bits: u64,
-        waker: &IrqTaskWaker,
-    ) -> (RuntimeEventValue, crate::IrqWakeResult) {
+        waker: &HardIrqWaker,
+    ) -> (RuntimeEventValue, crate::WakeResult) {
         let seq = self.publish_state(bits);
         let wake = waker.wake_from_irq(bits);
         (seq, wake)
@@ -283,7 +283,7 @@ impl Wake for LocalTask {
 struct LocalExecutorInner {
     ready: SpinNoIrq<VecDeque<Arc<LocalTask>>>,
     wait: WaitQueue,
-    host_waker: Option<IrqTaskWaker>,
+    host_waker: Option<TaskWaker>,
     active: AtomicBool,
     task_count: AtomicUsize,
 }
@@ -314,7 +314,7 @@ impl LocalExecutor {
             inner: Arc::new(LocalExecutorInner {
                 ready: SpinNoIrq::new(VecDeque::new()),
                 wait: WaitQueue::new(),
-                host_waker: crate::try_current_irq_task_waker(),
+                host_waker: crate::try_current_task_waker(),
                 active: AtomicBool::new(false),
                 task_count: AtomicUsize::new(0),
             }),

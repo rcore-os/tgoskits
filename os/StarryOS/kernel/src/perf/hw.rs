@@ -37,7 +37,7 @@ use ax_hal::mem::virt_to_phys;
 #[cfg(target_arch = "aarch64")]
 use ax_memory_addr::PhysAddr;
 #[cfg(target_arch = "aarch64")]
-use ax_task::IrqNotify;
+use ax_task::HardIrqSignal;
 #[cfg(target_arch = "aarch64")]
 use axpoll::PollSet;
 use axpoll::{IoEvents, Pollable};
@@ -204,10 +204,10 @@ impl RingState {
 /// Sampling state attached to a `HwPerfEvent` when `attr.sample_period > 0`.
 ///
 /// Holds the period and `sample_type`, the deferred poll machinery (mirroring
-/// [`super::bpf::BpfPerfEventWrapper`]: a `PollSet` woken by an `IrqNotify` via a
+/// [`super::bpf::BpfPerfEventWrapper`]: a `PollSet` woken by an `HardIrqSignal` via a
 /// background worker), and — once `mmap(perf_fd)` runs — the ring buffer.
 ///
-/// The `notify` `Arc` is the strong reference that keeps the `IrqNotify` alive
+/// The `notify` `Arc` is the strong reference that keeps the `HardIrqSignal` alive
 /// for the registered [`SampleSlot`]'s raw pointer (see [`super::sampling`]):
 /// teardown unregisters the slot before this `SamplingState` (and thus the
 /// `Arc`) drops.
@@ -226,7 +226,7 @@ struct SamplingState {
     /// Readiness set readers wait on; woken (with `IoEvents::IN`) by the worker.
     poll_ready: Arc<PollSet>,
     /// IRQ-safe notification the overflow handler pokes; drained by the worker.
-    notify: Arc<IrqNotify>,
+    notify: Arc<HardIrqSignal>,
     /// Liveness flag for the worker; cleared on drop to stop it.
     poll_alive: Arc<AtomicBool>,
     /// The ring buffer pages, `Some` after the first `mmap(perf_fd)`.
@@ -255,7 +255,7 @@ impl core::fmt::Debug for SamplingState {
 #[cfg(target_arch = "aarch64")]
 fn start_sampling_notify_worker(
     poll_ready: Arc<PollSet>,
-    notify: Arc<IrqNotify>,
+    notify: Arc<HardIrqSignal>,
     poll_alive: Arc<AtomicBool>,
 ) {
     ax_task::spawn_with_name(
@@ -384,7 +384,7 @@ impl HwPerfEvent {
     /// 3. clear the per-CPU `SampleSlot` (`unregister`) — the handler can no
     ///    longer reach the `notify` pointer,
     ///
-    /// after which it is safe for the owning `Arc<IrqNotify>` / `Arc<GlobalPage>`
+    /// after which it is safe for the owning `Arc<HardIrqSignal>` / `Arc<GlobalPage>`
     /// to drop. Idempotent: safe to call from both `disable` and `Drop`.
     fn teardown_sampling_irq(&self) {
         if self.sampling.is_none() {
@@ -456,7 +456,7 @@ impl Drop for HwPerfEvent {
             return;
         }
         // For sampling events, mask the IRQ, stop the counter, and clear the
-        // registry slot BEFORE the `Arc<IrqNotify>`/`Arc<GlobalPage>` held in
+        // registry slot BEFORE the `Arc<HardIrqSignal>`/`Arc<GlobalPage>` held in
         // `sampling` drop, so the overflow handler can never dereference a
         // freed `notify` pointer or write into freed ring pages.
         self.teardown_sampling_irq();
@@ -807,7 +807,7 @@ fn device_mmap_per_task(
     // Spawn the deferred worker (mirrors the M2 path): it turns IRQ-context
     // `notify_irq` pokes into `axpoll` `IoEvents::IN` wakeups.
     let poll_ready = Arc::new(PollSet::new());
-    let notify = Arc::new(IrqNotify::new());
+    let notify = Arc::new(HardIrqSignal::new());
     let poll_alive = Arc::new(AtomicBool::new(true));
     start_sampling_notify_worker(poll_ready.clone(), notify.clone(), poll_alive.clone());
 
@@ -961,7 +961,7 @@ pub fn perf_event_open_hw(attr: &perf_event_attr, pid: i32) -> AxResult<HwPerfEv
     // until a mapping appears); this matches the M2 scope.
     let sampling = if is_sampling {
         let poll_ready = Arc::new(PollSet::new());
-        let notify = Arc::new(IrqNotify::new());
+        let notify = Arc::new(HardIrqSignal::new());
         let poll_alive = Arc::new(AtomicBool::new(true));
         start_sampling_notify_worker(poll_ready.clone(), notify.clone(), poll_alive.clone());
         Some(SamplingState {

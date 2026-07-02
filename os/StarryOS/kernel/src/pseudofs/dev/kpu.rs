@@ -7,7 +7,7 @@ use core::{
 
 use ax_memory_addr::{PhysAddr, PhysAddrRange};
 use ax_runtime::hal::cpu::asm::user_copy;
-use ax_task::{IrqNotify, WaitQueue};
+use ax_task::{HardIrqSignal, WaitQueue};
 use axfs_ng_vfs::{DeviceId, NodeFlags, VfsError, VfsResult};
 use k230_kpu::{
     CommandRange, KPU_CFG_PADDR, KPU_CFG_SIZE, KPU_INFO_F_FAKE_OUTPUT, KPU_INFO_F_FDT,
@@ -29,7 +29,7 @@ const KPU_IRQ_WAIT_TIMEOUT: Duration = Duration::from_millis(100);
 // K230 exposes one KPU instance. If a future platform exposes more instances,
 // move this IRQ state into per-device storage.
 static KPU_IRQ_COUNT: AtomicU64 = AtomicU64::new(0);
-static KPU_IRQ_NOTIFY: IrqNotify = IrqNotify::new();
+static KPU_IRQ_NOTIFY: HardIrqSignal = HardIrqSignal::new();
 static KPU_DONE_WQ: WaitQueue = WaitQueue::new();
 
 pub struct KpuDevice {

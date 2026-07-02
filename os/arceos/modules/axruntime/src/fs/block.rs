@@ -43,7 +43,7 @@ static TASK_OPS: RuntimeTaskOps = RuntimeTaskOps;
 static BLOCK_IO_WAIT_WQ: ax_task::WaitQueue = ax_task::WaitQueue::new();
 static BLOCK_DRAIN_NOTIFY_PENDING: AtomicBool = AtomicBool::new(false);
 static BLOCK_DRAIN_WAIT_WQ: ax_task::WaitQueue = ax_task::WaitQueue::new();
-static BLOCK_DRAIN_IRQ_WAKER: spin::Once<ax_task::IrqTaskWaker> = spin::Once::new();
+static BLOCK_DRAIN_IRQ_WAKER: spin::Once<ax_task::HardIrqWaker> = spin::Once::new();
 static IRQ_REGISTRAR: RuntimeBlockIrqRegistrar = RuntimeBlockIrqRegistrar;
 
 struct RuntimeTaskOps;
@@ -90,7 +90,7 @@ impl BlockTaskOps for RuntimeTaskOps {
     }
 
     fn wait_for_drain_notification(&self) {
-        BLOCK_DRAIN_IRQ_WAKER.call_once(ax_task::current_irq_task_waker);
+        BLOCK_DRAIN_IRQ_WAKER.call_once(ax_task::current_hard_irq_waker);
         BLOCK_DRAIN_WAIT_WQ.wait_until(|| BLOCK_DRAIN_NOTIFY_PENDING.swap(false, Ordering::AcqRel));
     }
 

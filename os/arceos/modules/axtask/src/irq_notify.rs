@@ -6,32 +6,33 @@ use core::{
 
 use ax_kernel_guard::NoPreemptIrqSave;
 
-struct IrqNotifyWaiter {
+struct HardIrqSignalWaiter {
     task_id: u64,
     generation: u64,
-    waker: crate::IrqTaskWaker,
+    irq_waker: crate::HardIrqWaker,
+    task_waker: crate::TaskWaker,
 }
 
 /// IRQ-safe deferred notification primitive.
 ///
-/// `IrqNotify` separates a hard-IRQ notification from the slow work that must
+/// `HardIrqSignal` separates a hard-IRQ notification from the slow work that must
 /// run in task context. IRQ handlers call [`notify_irq`](Self::notify_irq) to
 /// publish a pending bit and wake a deferred worker. The worker then drains the
 /// bit and performs the expensive work, such as polling a device or waking
 /// `axpoll` waiters.
-pub struct IrqNotify {
+pub struct HardIrqSignal {
     pending: AtomicBool,
-    active_waiter: AtomicPtr<IrqNotifyWaiter>,
-    waiters: ax_kspin::SpinNoIrq<Vec<Arc<IrqNotifyWaiter>>>,
+    active_waiter: AtomicPtr<HardIrqSignalWaiter>,
+    waiters: ax_kspin::SpinNoIrq<Vec<Arc<HardIrqSignalWaiter>>>,
 }
 
-impl Default for IrqNotify {
+impl Default for HardIrqSignal {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl IrqNotify {
+impl HardIrqSignal {
     /// Creates an empty notification object.
     pub const fn new() -> Self {
         Self {
@@ -55,9 +56,9 @@ impl IrqNotify {
         let waiter = self.active_waiter.load(Ordering::Acquire);
         if !waiter.is_null() {
             // SAFETY: waiter nodes are ref-counted and retained in `self.waiters`
-            // until the `IrqNotify` is dropped. IRQ producers must still follow
+            // until the `HardIrqSignal` is dropped. IRQ producers must still follow
             // the owning device's normal disable/synchronize-before-drop rule.
-            let _ = unsafe { &*waiter }.waker.wake_from_irq(0);
+            let _ = unsafe { &*waiter }.irq_waker.wake_from_irq(0);
         }
     }
 
@@ -75,7 +76,7 @@ impl IrqNotify {
         let waiter = self.active_waiter.load(Ordering::Acquire);
         if !waiter.is_null() {
             // SAFETY: see `wake_active_from_irq`.
-            let _ = unsafe { &*waiter }.waker.wake(0);
+            let _ = unsafe { &*waiter }.task_waker.wake(0);
         }
     }
 
@@ -90,7 +91,7 @@ impl IrqNotify {
     /// a timeout wait queue whose predicate checks [`is_pending`](Self::is_pending).
     #[track_caller]
     pub fn arm_current_task(&self) {
-        self.init_irq_waker();
+        self.init_hard_irq_waker();
     }
 
     /// Drains the pending bit.
@@ -111,7 +112,7 @@ impl IrqNotify {
     #[track_caller]
     pub fn wait_until(&self, condition: impl Fn() -> bool) {
         crate::api::might_sleep();
-        self.init_irq_waker();
+        self.init_hard_irq_waker();
         loop {
             if self.should_stop_waiting(&condition) {
                 return;
@@ -127,11 +128,11 @@ impl IrqNotify {
         ready || notified
     }
 
-    fn init_irq_waker(&self) {
-        self.arm_irq_waker(crate::current_irq_task_waker());
+    fn init_hard_irq_waker(&self) {
+        self.arm_task_waker(crate::current_task_waker());
     }
 
-    fn arm_irq_waker(&self, waker: crate::IrqTaskWaker) {
+    fn arm_task_waker(&self, waker: crate::TaskWaker) {
         let task_id = waker.task_id();
         let generation = waker.generation();
         let mut waiters = self.waiters.lock();
@@ -139,20 +140,21 @@ impl IrqNotify {
             .iter()
             .position(|waiter| waiter.task_id == task_id && waiter.generation == generation)
         {
-            Arc::as_ptr(&waiters[index]) as *mut IrqNotifyWaiter
+            Arc::as_ptr(&waiters[index]) as *mut HardIrqSignalWaiter
         } else {
-            waiters.push(Arc::new(IrqNotifyWaiter {
+            waiters.push(Arc::new(HardIrqSignalWaiter {
                 task_id,
                 generation,
-                waker,
+                irq_waker: waker.to_hard_irq_waker(),
+                task_waker: waker,
             }));
-            Arc::as_ptr(waiters.last().expect("just pushed waiter")) as *mut IrqNotifyWaiter
+            Arc::as_ptr(waiters.last().expect("just pushed waiter")) as *mut HardIrqSignalWaiter
         };
         self.active_waiter.store(waiter, Ordering::Release);
     }
 
     #[cfg(test)]
-    pub(crate) fn arm_irq_waker_for_test(&self, waker: crate::IrqTaskWaker) {
-        self.arm_irq_waker(waker);
+    pub(crate) fn arm_irq_waker_for_test(&self, waker: crate::HardIrqWaker) {
+        self.arm_task_waker(crate::TaskWaker::from_hard_irq_waker_for_test(waker));
     }
 }

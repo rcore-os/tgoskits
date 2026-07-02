@@ -20,7 +20,7 @@ use ax_alloc::GlobalPage;
 use ax_errno::{AxError, AxResult};
 use ax_hal::mem::virt_to_phys;
 use ax_memory_addr::{PAGE_SIZE_4K, PhysAddr};
-use ax_task::IrqNotify;
+use ax_task::HardIrqSignal;
 use axpoll::{IoEvents, PollSet, Pollable};
 use kbpf_basic::{
     linux_bpf::{perf_event_mmap_page, perf_event_sample_format},
@@ -70,7 +70,7 @@ const BPF_JIT_MEM_PAGES: usize = 4;
 pub struct BpfPerfEventWrapper {
     inner: BpfPerfEvent,
     poll_ready: Arc<PollSet>,
-    poll_notify: Arc<IrqNotify>,
+    poll_notify: Arc<HardIrqSignal>,
     poll_alive: Arc<AtomicBool>,
     /// Weak handle to the contiguous pages backing the ringbuf. The strong
     /// ref(s) live in the user VMA(s); `strong_count() > 0` means a live
@@ -83,7 +83,7 @@ impl BpfPerfEventWrapper {
     /// Construct the wrapper around a freshly-built `BpfPerfEvent`.
     pub fn new(inner: BpfPerfEvent) -> Self {
         let poll_ready = Arc::new(PollSet::new());
-        let poll_notify = Arc::new(IrqNotify::new());
+        let poll_notify = Arc::new(HardIrqSignal::new());
         let poll_alive = Arc::new(AtomicBool::new(true));
         start_bpf_perf_notify_worker(poll_ready.clone(), poll_notify.clone(), poll_alive.clone());
         Self {
@@ -129,7 +129,7 @@ impl Drop for BpfPerfEventWrapper {
 
 fn start_bpf_perf_notify_worker(
     poll_ready: Arc<PollSet>,
-    poll_notify: Arc<IrqNotify>,
+    poll_notify: Arc<HardIrqSignal>,
     poll_alive: Arc<AtomicBool>,
 ) {
     ax_task::spawn_with_name(

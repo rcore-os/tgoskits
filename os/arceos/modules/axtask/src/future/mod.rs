@@ -12,7 +12,7 @@ use core::{
 use ax_errno::AxError;
 use ax_kernel_guard::NoPreemptIrqSave;
 
-use crate::{AxTaskRef, IrqTaskWaker, current, current_run_queue};
+use crate::{AxTaskRef, TaskWaker, current, current_run_queue};
 
 mod poll;
 pub use poll::*;
@@ -21,14 +21,14 @@ mod time;
 pub use time::*;
 
 struct AxWaker {
-    task: IrqTaskWaker,
+    task: TaskWaker,
     woke: AtomicBool,
 }
 
 impl AxWaker {
     fn new(task: &AxTaskRef) -> Arc<Self> {
         Arc::new(AxWaker {
-            task: IrqTaskWaker::new(task.clone()),
+            task: TaskWaker::new(task.clone()),
             woke: AtomicBool::new(false),
         })
     }

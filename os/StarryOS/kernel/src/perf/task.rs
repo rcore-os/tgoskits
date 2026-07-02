@@ -70,7 +70,7 @@ use core::{
 use ax_alloc::GlobalPage;
 use ax_kspin::SpinNoIrq;
 use ax_runtime::hal::paging::MappingFlags;
-use ax_task::IrqNotify;
+use ax_task::HardIrqSignal;
 
 use super::{
     hw,
@@ -188,9 +188,9 @@ pub struct PerTaskCounter {
     ring_vaddr: AtomicUsize,
     /// Total ring length in bytes (header page + data region); `0` until mapped.
     ring_len: AtomicUsize,
-    /// Raw pointer to the live [`IrqNotify`], or null until mapped. Copied into
+    /// Raw pointer to the live [`HardIrqSignal`], or null until mapped. Copied into
     /// the [`SampleSlot`] in [`perf_sched_in`] so the overflow handler can wake
-    /// the poll worker. Kept alive by the `Arc<IrqNotify>` in [`SamplingAnchors`]
+    /// the poll worker. Kept alive by the `Arc<HardIrqSignal>` in [`SamplingAnchors`]
     /// for as long as a slot may reference it (the slot is unregistered before
     /// the `Arc` drops in [`free_hw`]).
     notify_ptr: AtomicUsize,
@@ -227,7 +227,7 @@ struct SamplingAnchors {
     ring_pages: Arc<GlobalPage>,
     /// IRQ-safe notification the overflow handler pokes; drained by the worker.
     /// Holding this `Arc` keeps `notify_ptr` valid for the registered slot.
-    notify: Arc<IrqNotify>,
+    notify: Arc<HardIrqSignal>,
     /// Readiness set the perf fd's poller waits on; woken (`IoEvents::IN`) by the
     /// worker after each sample lands in the ring.
     poll_ready: Arc<axpoll::PollSet>,
@@ -382,7 +382,7 @@ impl PerTaskCounter {
         ring_pages: Arc<GlobalPage>,
         ring_vaddr: usize,
         ring_len: usize,
-        notify: Arc<IrqNotify>,
+        notify: Arc<HardIrqSignal>,
         poll_ready: Arc<axpoll::PollSet>,
         poll_alive: Arc<AtomicBool>,
     ) {
@@ -1008,7 +1008,7 @@ pub fn on_task_exit(thr: &Thread) {
 /// torn down in the UAF-safe order before the slot/ring `Arc`s drop: stop the
 /// counter, mask the IRQ, then `unregister` the [`SampleSlot`] — so the overflow
 /// handler can no longer reach the ring or `notify` pointer. Only after that are
-/// the [`SamplingAnchors`] (the `Arc<GlobalPage>` ring + `Arc<IrqNotify>`)
+/// the [`SamplingAnchors`] (the `Arc<GlobalPage>` ring + `Arc<HardIrqSignal>`)
 /// dropped and the worker stopped.
 pub fn free_hw(ptc: &PerTaskCounter) {
     if ptc

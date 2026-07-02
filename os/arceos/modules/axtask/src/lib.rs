@@ -85,10 +85,16 @@ cfg_if::cfg_if! {
 
         #[cfg_attr(doc, doc(cfg(feature = "multitask")))]
         pub use self::api::*;
-        pub use self::irq_notify::IrqNotify;
+        pub use self::irq_notify::HardIrqSignal;
+        pub mod wake {
+            pub use super::irq_wake::{
+                HardIrqWaker, TaskWaker, WakeBits, WakeResult, WakeSeq, current_hard_irq_waker,
+                current_task_waker, try_current_task_waker,
+            };
+        }
         pub use self::irq_wake::{
-            IrqTaskWaker, IrqWakeResult, current_irq_task_waker,
-            drain_irq_wake_queue_current_cpu, try_current_irq_task_waker,
+            HardIrqWaker, TaskWaker, WakeBits, WakeResult, WakeSeq, current_hard_irq_waker,
+            current_task_waker, drain_irq_wake_queue_current_cpu, try_current_task_waker,
         };
         pub use self::api::{sleep, sleep_until, yield_now};
         #[cfg(feature = "tracepoint-hooks")]

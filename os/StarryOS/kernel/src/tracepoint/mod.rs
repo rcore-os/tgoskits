@@ -17,7 +17,7 @@ use ax_lazyinit::LazyInit;
 use ax_memory_addr::VirtAddr;
 use ax_runtime::hal::{percpu::this_cpu_id, time::monotonic_time_nanos};
 use ax_sync::Mutex;
-use ax_task::{IrqNotify, current};
+use ax_task::{HardIrqSignal, current};
 use axfs_ng_vfs::NodePermission;
 use axpoll::{IoEvents, PollSet};
 use ktracepoint::*;
@@ -67,7 +67,7 @@ struct TraceState {
     point_map: LazyInit<TracePointMap<KernelTraceAux>>,
     raw_pipe: Mutex<TracePipeRaw>,
     pipe_event: PollSet,
-    pipe_notify: IrqNotify,
+    pipe_notify: HardIrqSignal,
     cmdline_cache: LazyInit<Mutex<TraceCmdLineCache>>,
     ext_tracepoints: LazyInit<BTreeMap<u32, KernelExtTracePoint>>,
 }
@@ -78,7 +78,7 @@ impl TraceState {
             point_map: LazyInit::new(),
             raw_pipe: Mutex::new(TracePipeRaw::new(TRACE_RAW_PIPE_CAPACITY)),
             pipe_event: PollSet::new(),
-            pipe_notify: IrqNotify::new(),
+            pipe_notify: HardIrqSignal::new(),
             cmdline_cache: LazyInit::new(),
             ext_tracepoints: LazyInit::new(),
         }

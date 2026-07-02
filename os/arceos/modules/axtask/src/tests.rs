@@ -15,7 +15,7 @@ use ax_errno::{AxError, AxResult};
 use ax_kernel_guard::NoPreempt;
 use axpoll::{IoEvents, Pollable};
 
-use crate::{IrqNotify, WaitQueue, api as ax_task, current};
+use crate::{HardIrqSignal, WaitQueue, api as ax_task, current};
 
 struct WakeCounter {
     count: AtomicUsize,
@@ -350,7 +350,8 @@ fn local_executor_new_outside_task_context_does_not_panic() {
 fn runtime_event_publish_from_irq_with_wakes_host_task() {
     run_in_test_scheduler(|| {
         let event = crate::local::RuntimeEvent::new();
-        let waker = crate::current_irq_task_waker();
+        let task_waker = crate::current_task_waker();
+        let waker = task_waker.to_hard_irq_waker();
 
         let (seq, wake) = event.publish_from_irq_with(0x20, &waker);
 
@@ -364,7 +365,7 @@ fn runtime_event_publish_from_irq_with_wakes_host_task() {
 #[test]
 fn irq_task_waker_coalesces_and_preserves_bits() {
     run_in_test_scheduler(|| {
-        let waker = crate::current_irq_task_waker();
+        let waker = crate::current_task_waker().to_hard_irq_waker();
         let initial_seq = waker.seq();
 
         let first = waker.wake_from_irq(0x1);
@@ -383,7 +384,7 @@ fn irq_task_waker_coalesces_and_preserves_bits() {
 fn irq_task_waker_restores_current_task_blocked_before_resched() {
     run_in_test_scheduler(|| {
         let current = current().clone();
-        let waker = crate::current_irq_task_waker();
+        let waker = crate::current_task_waker().to_hard_irq_waker();
 
         current.set_state(crate::TaskState::Blocked);
         let result = waker.wake_from_irq(0x4);
@@ -401,7 +402,7 @@ fn irq_task_waker_does_not_keep_task_alive() {
     let task = task.into_arc();
     assert_eq!(Arc::strong_count(&task), 1);
 
-    let waker = crate::irq_wake::IrqTaskWaker::new(task.clone());
+    let waker = crate::wake::TaskWaker::new(task.clone()).to_hard_irq_waker();
     assert_eq!(
         Arc::strong_count(&task),
         1,
@@ -421,7 +422,7 @@ fn irq_task_waker_wakes_blocked_future_task() {
         let task = task.into_arc();
         crate::register_task(&task);
         task.set_state(crate::TaskState::Blocked);
-        let waker = crate::irq_wake::IrqTaskWaker::new(task.clone());
+        let waker = crate::wake::TaskWaker::new(task.clone()).to_hard_irq_waker();
 
         let result = waker.wake_from_irq(0x10);
         assert!(result.should_resched());
@@ -439,7 +440,7 @@ fn irq_task_waker_task_context_wake_bypasses_irq_queue() {
         let task = task.into_arc();
         crate::register_task(&task);
         task.set_state(crate::TaskState::Blocked);
-        let waker = crate::irq_wake::IrqTaskWaker::new(task.clone());
+        let waker = crate::wake::TaskWaker::new(task.clone());
 
         let result = waker.wake(0x80);
         assert!(result.woke());
@@ -464,7 +465,7 @@ fn irq_task_waker_respects_affinity_changed_while_blocked() {
         crate::register_task(&task);
         task.set_state(crate::TaskState::Blocked);
         task.set_cpumask(crate::AxCpuMask::one_shot(REMOTE_CPU));
-        let waker = crate::irq_wake::IrqTaskWaker::new(task.clone());
+        let waker = crate::wake::TaskWaker::new(task.clone()).to_hard_irq_waker();
 
         let result = waker.wake_from_irq(0x20);
         assert!(result.should_resched());
@@ -481,7 +482,7 @@ fn irq_task_waker_is_invalid_after_logical_exit() {
         let task = crate::TaskInner::new(|| {}, "irq-wake-exit-test".into(), RAW_TASK_STACK_SIZE);
         let task = task.into_arc();
         crate::register_task(&task);
-        let waker = crate::irq_wake::IrqTaskWaker::new(task.clone());
+        let waker = crate::wake::TaskWaker::new(task.clone()).to_hard_irq_waker();
 
         task.notify_exit(0);
 
@@ -496,12 +497,12 @@ fn irq_task_waker_is_invalid_after_logical_exit() {
 #[test]
 fn test_irq_notify_rebinds_after_first_waiter_exits() {
     run_in_test_scheduler(|| {
-        let notify = IrqNotify::new();
+        let notify = HardIrqSignal::new();
         let first =
             crate::TaskInner::new(|| {}, "irq-notify-first-waiter".into(), RAW_TASK_STACK_SIZE);
         let first = first.into_arc();
         crate::register_task(&first);
-        let first_waker = crate::irq_wake::IrqTaskWaker::new(first.clone());
+        let first_waker = crate::wake::TaskWaker::new(first.clone()).to_hard_irq_waker();
         notify.arm_irq_waker_for_test(first_waker);
         first.notify_exit(0);
 
@@ -513,7 +514,7 @@ fn test_irq_notify_rebinds_after_first_waiter_exits() {
         let second = second.into_arc();
         crate::register_task(&second);
         second.set_state(crate::TaskState::Blocked);
-        let second_waker = crate::irq_wake::IrqTaskWaker::new(second.clone());
+        let second_waker = crate::wake::TaskWaker::new(second.clone()).to_hard_irq_waker();
         notify.arm_irq_waker_for_test(second_waker);
 
         notify.notify_irq();
@@ -629,7 +630,7 @@ fn test_irq_notify_coalesces_concurrent_irq_callbacks() {
     const NUM_IRQ_THREADS: usize = 8;
     const NOTIFIES_PER_THREAD: usize = 32;
 
-    let notify = Arc::new(IrqNotify::new());
+    let notify = Arc::new(HardIrqSignal::new());
     let barrier = Arc::new(Barrier::new(NUM_IRQ_THREADS));
     let mut handles = Vec::with_capacity(NUM_IRQ_THREADS);
 
@@ -656,7 +657,7 @@ fn test_irq_notify_coalesces_concurrent_irq_callbacks() {
 #[test]
 fn test_irq_notify_wait_observes_notify_before_wait() {
     run_in_test_scheduler(|| {
-        let notify = IrqNotify::new();
+        let notify = HardIrqSignal::new();
 
         notify.notify_irq();
         notify.wait();
@@ -669,40 +670,24 @@ fn test_irq_notify_wait_observes_notify_before_wait() {
 #[test]
 fn test_irq_notify_wakes_sleeping_deferred_worker() {
     run_in_test_scheduler(|| {
-        let notify = Arc::new(IrqNotify::new());
-        let started_wq = Arc::new(WaitQueue::new());
-        let started = Arc::new(AtomicUsize::new(0));
-        let finished = Arc::new(AtomicUsize::new(0));
-
-        let worker = {
-            let notify = notify.clone();
-            let started_wq = started_wq.clone();
-            let started = started.clone();
-            let finished = finished.clone();
-            ax_task::spawn(move || {
-                started.store(1, Ordering::Release);
-                started_wq.notify_one(true);
-
-                notify.wait();
-
-                finished.store(1, Ordering::Release);
-            })
-        };
-
-        started_wq.wait_until(|| started.load(Ordering::Acquire) == 1);
-        assert_eq!(finished.load(Ordering::Acquire), 0);
+        let notify = HardIrqSignal::new();
+        let task = crate::TaskInner::new(
+            || {},
+            "irq-notify-sleeping-worker".into(),
+            RAW_TASK_STACK_SIZE,
+        );
+        let task = task.into_arc();
+        crate::register_task(&task);
+        task.set_state(crate::TaskState::Blocked);
+        notify
+            .arm_irq_waker_for_test(crate::wake::TaskWaker::new(task.clone()).to_hard_irq_waker());
 
         notify.notify_irq();
-        for _ in 0..64 {
-            if finished.load(Ordering::Acquire) == 1 {
-                break;
-            }
-            ax_task::yield_now();
-        }
 
-        assert_eq!(finished.load(Ordering::Acquire), 1);
-        assert!(!notify.drain());
-        assert_eq!(worker.join(), 0);
+        assert!(notify.is_pending());
+        assert_eq!(crate::drain_irq_wake_queue_current_cpu(), 1);
+        assert_eq!(task.state(), crate::TaskState::Ready);
+        assert!(notify.drain());
     });
 }
 
@@ -725,27 +710,17 @@ fn test_irq_notify_wakes_after_concurrent_irq_callbacks() {
     run_in_test_scheduler(|| {
         const NUM_IRQ_THREADS: usize = 6;
 
-        let notify = Arc::new(IrqNotify::new());
-        let started_wq = Arc::new(WaitQueue::new());
-        let started = Arc::new(AtomicUsize::new(0));
-        let finished = Arc::new(AtomicUsize::new(0));
-
-        let worker = {
-            let notify = notify.clone();
-            let started_wq = started_wq.clone();
-            let started = started.clone();
-            let finished = finished.clone();
-            ax_task::spawn(move || {
-                started.store(1, Ordering::Release);
-                started_wq.notify_one(true);
-
-                notify.wait();
-
-                finished.fetch_add(1, Ordering::Release);
-            })
-        };
-
-        started_wq.wait_until(|| started.load(Ordering::Acquire) == 1);
+        let notify = Arc::new(HardIrqSignal::new());
+        let task = crate::TaskInner::new(
+            || {},
+            "irq-notify-concurrent-waiter".into(),
+            RAW_TASK_STACK_SIZE,
+        );
+        let task = task.into_arc();
+        crate::register_task(&task);
+        task.set_state(crate::TaskState::Blocked);
+        notify
+            .arm_irq_waker_for_test(crate::wake::TaskWaker::new(task.clone()).to_hard_irq_waker());
 
         let barrier = Arc::new(Barrier::new(NUM_IRQ_THREADS));
         let mut handles = Vec::with_capacity(NUM_IRQ_THREADS);
@@ -761,20 +736,14 @@ fn test_irq_notify_wakes_after_concurrent_irq_callbacks() {
             handle.join().unwrap();
         }
 
-        for _ in 0..64 {
-            if finished.load(Ordering::Acquire) == 1 {
-                break;
-            }
-            ax_task::yield_now();
-        }
-
-        assert_eq!(finished.load(Ordering::Acquire), 1);
-        assert_eq!(worker.join(), 0);
+        assert!(notify.is_pending());
+        assert_eq!(crate::drain_irq_wake_queue_current_cpu(), 1);
+        assert_eq!(task.state(), crate::TaskState::Ready);
     });
 }
 
 #[test]
-fn test_wait_queue_irq_notify_all_wakes_sleepers() {
+fn test_wait_queue_deferred_notify_all_wakes_sleepers() {
     run_in_test_scheduler(|| {
         const NUM_SLEEPERS: usize = 4;
 
@@ -805,7 +774,7 @@ fn test_wait_queue_irq_notify_all_wakes_sleepers() {
         assert_eq!(finished.load(Ordering::Acquire), 0);
 
         released.store(true, Ordering::Release);
-        wait_queue.notify_all_from_irq();
+        wait_queue.notify_all_deferred();
         for sleeper in sleepers {
             assert_eq!(sleeper.join(), 0);
         }

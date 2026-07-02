@@ -78,7 +78,7 @@ use core::{
 
 use ax_errno::{AxError, AxResult, ax_err_type};
 use ax_sync::Mutex;
-use ax_task::{IrqNotify, WaitQueue};
+use ax_task::{HardIrqSignal, WaitQueue};
 use axpoll::{IoEvents, PollSet};
 use smoltcp::{
     socket::dns::{self, GetQueryResultError, StartQueryError},
@@ -156,7 +156,7 @@ impl Wake for DeferPollWake {
 static WIFI_CONTROLS: LazyLock<Mutex<Vec<(alloc::string::String, rd_net::WifiControlHandle)>>> =
     LazyLock::new(|| Mutex::new(Vec::new()));
 
-static NET_IRQ_NOTIFY: IrqNotify = IrqNotify::new();
+static NET_IRQ_NOTIFY: HardIrqSignal = HardIrqSignal::new();
 
 const DHCP_BOOTSTRAP_ATTEMPTS: usize = 200;
 const DHCP_BOOTSTRAP_POLL_INTERVAL: Duration = Duration::from_millis(10);
