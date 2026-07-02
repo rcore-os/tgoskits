@@ -23,7 +23,7 @@ use alloc::{
 
 use fdt_parser::{Fdt, Node};
 
-use axvm::config::AxVMConfig;
+use crate::config::AxVMConfig;
 
 /// Return the collection of all passthrough devices in the configuration file and newly added devices found
 pub fn find_all_passthrough_devices(vm_cfg: &mut AxVMConfig, fdt: &Fdt) -> Vec<String> {

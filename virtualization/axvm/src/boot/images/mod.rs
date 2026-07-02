@@ -24,11 +24,12 @@ use axvmconfig::VMBootProtocol;
 use axvmconfig::VmMemMappingType;
 use byte_unit::Byte;
 
-use axvm::{AxVMRef, GuestPhysAddr, VMMemoryRegion};
-
-use crate::config::vmcfg;
 #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
-use crate::fdt::GuestDtbImage;
+use crate::boot::fdt::GuestDtbImage;
+use crate::{
+    AxVMRef, GuestPhysAddr, VMMemoryRegion,
+    boot::{BootImageProvider, StaticVmImage},
+};
 
 mod linux;
 #[cfg(target_arch = "x86_64")]
@@ -45,15 +46,18 @@ use x86::mptable as x86_mptable;
 use x86::multiboot as x86_boot;
 
 #[cfg(target_arch = "x86_64")]
-pub fn is_x86_linux_image_config(config: &AxVMCrateConfig) -> bool {
+pub fn is_x86_linux_image_config(
+    config: &AxVMCrateConfig,
+    provider: &dyn BootImageProvider,
+) -> bool {
     if !should_direct_boot_x86_linux(config) {
         return false;
     }
 
     match config.kernel.image_location.as_deref() {
-        Some("memory") => with_memory_image(config, detect_x86_linux_image).is_some(),
-        #[cfg(feature = "fs")]
-        Some("fs") => fs::kernel_read(config, x86_linux::HEADER_READ_SIZE)
+        Some("memory") => with_memory_image(config, provider, detect_x86_linux_image).is_some(),
+        #[cfg(any(feature = "fs", feature = "host-fs"))]
+        Some("fs") => fs::kernel_read(config, provider, x86_linux::HEADER_READ_SIZE)
             .ok()
             .and_then(|data| detect_x86_linux_image(&data))
             .is_some(),
@@ -71,33 +75,46 @@ pub const fn x86_qemu_passthrough_block_intx() -> (u8, u8, u8, usize) {
     )
 }
 
-pub fn get_image_header(config: &AxVMCrateConfig) -> Option<linux::Header> {
+pub fn get_image_header(
+    config: &AxVMCrateConfig,
+    provider: &dyn BootImageProvider,
+) -> Option<linux::Header> {
     match config.kernel.image_location.as_deref() {
-        Some("memory") => with_memory_image(config, linux::Header::parse).flatten(),
-        #[cfg(feature = "fs")]
+        Some("memory") => with_memory_image(config, provider, linux::Header::parse).flatten(),
+        #[cfg(any(feature = "fs", feature = "host-fs"))]
         Some("fs") => {
             let read_size = linux::Header::hdr_size();
-            let data = fs::kernel_read(config, read_size).ok()?;
+            let data = fs::kernel_read(config, provider, read_size).ok()?;
             linux::Header::parse(&data)
         }
         _ => None,
     }
 }
 
-fn with_memory_image<F, R>(config: &AxVMCrateConfig, func: F) -> Option<R>
+fn with_memory_image<F, R>(
+    config: &AxVMCrateConfig,
+    provider: &dyn BootImageProvider,
+    func: F,
+) -> Option<R>
 where
     F: FnOnce(&[u8]) -> R,
 {
-    let vm_images = vmcfg::get_memory_images()
+    let vm_images = provider
+        .static_vm_images()
         .iter()
         .find(|&v| v.id == config.base.id)?;
 
     Some(func(vm_images.kernel))
 }
 
-fn memory_images_for_vm(config: &AxVMCrateConfig) -> AxResult<&'static vmcfg::MemoryImage> {
-    vmcfg::get_memory_images()
+fn memory_images_for_vm(
+    config: &AxVMCrateConfig,
+    provider: &dyn BootImageProvider,
+) -> AxResult<StaticVmImage> {
+    provider
+        .static_vm_images()
         .iter()
+        .copied()
         .find(|&v| v.id == config.base.id)
         .ok_or_else(|| {
             ax_err_type!(
@@ -108,14 +125,20 @@ fn memory_images_for_vm(config: &AxVMCrateConfig) -> AxResult<&'static vmcfg::Me
 }
 
 #[cfg(target_arch = "loongarch64")]
-fn firmware_image_for_vm(config: &AxVMCrateConfig) -> Option<&'static [u8]> {
-    vmcfg::get_firmware_images()
+fn provider_firmware_image_for_vm(
+    config: &AxVMCrateConfig,
+    provider: &dyn BootImageProvider,
+) -> Option<&'static [u8]> {
+    provider
+        .static_firmware_images()
         .iter()
         .find(|&v| v.id == config.base.id)
         .map(|v| v.bios)
+        .flatten()
 }
 
-pub struct ImageLoader {
+pub struct ImageLoader<'a> {
+    provider: &'a dyn BootImageProvider,
     main_memory: VMMemoryRegion,
     vm: AxVMRef,
     config: AxVMCrateConfig,
@@ -126,16 +149,18 @@ pub struct ImageLoader {
     ramdisk_load_gpa: Option<GuestPhysAddr>,
 }
 
-impl ImageLoader {
+impl<'a> ImageLoader<'a> {
     pub fn new(
         main_memory: VMMemoryRegion,
         config: AxVMCrateConfig,
         vm: AxVMRef,
+        provider: &'a dyn BootImageProvider,
         #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))] guest_dtb: Option<
             GuestDtbImage,
         >,
     ) -> Self {
         Self {
+            provider,
             main_memory,
             vm,
             config,
@@ -152,7 +177,7 @@ impl ImageLoader {
         let bytes = dtb.as_bytes();
         let dtb_src = core::ptr::NonNull::new(bytes.as_ptr() as *mut u8)
             .ok_or_else(|| ax_err_type!(InvalidData, "Guest DTB pointer is null"))?;
-        crate::fdt::update_fdt(dtb_src, bytes.len(), self.vm.clone(), &self.config)
+        crate::boot::fdt::update_fdt(dtb_src, bytes.len(), self.vm.clone(), &self.config)
     }
 
     pub fn load(&mut self) -> AxResult {
@@ -173,7 +198,7 @@ impl ImageLoader {
 
         match self.config.kernel.image_location.as_deref() {
             Some("memory") => self.load_vm_images_from_memory(),
-            #[cfg(feature = "fs")]
+            #[cfg(any(feature = "fs", feature = "host-fs"))]
             Some("fs") => fs::load_vm_images_from_filesystem(self),
             _ => ax_err!(
                 InvalidInput,
@@ -187,7 +212,7 @@ impl ImageLoader {
     fn load_vm_images_from_memory(&mut self) -> AxResult {
         debug!("Loading VM[{}] images from memory", self.config.base.id);
 
-        let vm_images = memory_images_for_vm(&self.config)?;
+        let vm_images = memory_images_for_vm(&self.config, self.provider)?;
 
         #[cfg(target_arch = "x86_64")]
         if should_direct_boot_x86_linux(&self.config)
@@ -289,22 +314,25 @@ impl ImageLoader {
             let load_gpa = self.bios_load_gpa.ok_or_else(|| {
                 ax_errno::ax_err_type!(NotFound, "UEFI firmware load addr is missed")
             })?;
+            #[cfg(not(any(feature = "fs", feature = "host-fs")))]
+            let _ = (firmware_path, load_gpa);
 
-            #[cfg(feature = "fs")]
+            #[cfg(any(feature = "fs", feature = "host-fs"))]
             {
                 info!(
                     "Loading UEFI firmware image {} at GPA {:#x}",
                     firmware_path,
                     load_gpa.as_usize()
                 );
-                return fs::load_vm_image(firmware_path, load_gpa, self.vm.clone());
+                return fs::load_vm_image(firmware_path, load_gpa, self.vm.clone(), self.provider);
             }
 
-            #[cfg(not(feature = "fs"))]
+            #[cfg(not(any(feature = "fs", feature = "host-fs")))]
             {
                 return Err(ax_errno::ax_err_type!(
                     Unsupported,
-                    "UEFI firmware path requires the fs feature when no firmware image buffer is available"
+                    "UEFI firmware path requires the fs feature when no firmware image buffer is \
+                     available"
                 ));
             }
         }
@@ -339,16 +367,16 @@ impl ImageLoader {
         kernel: &'static [u8],
         ramdisk: Option<&'static [u8]>,
     ) -> AxResult {
-        let fw_cfg = crate::guest_platform::loongarch64::emulated_fw_cfg(&self.config)?;
+        let fw_cfg = crate::boot::guest_platform::loongarch64::emulated_fw_cfg(&self.config)?;
 
-        self.vm.add_fw_cfg_device(axvm::FwCfgDeviceConfig {
+        self.vm.add_fw_cfg_device(crate::FwCfgDeviceConfig {
             base: GuestPhysAddr::from(fw_cfg.base_gpa),
             size: fw_cfg.length,
             kernel,
             initrd: ramdisk,
             cmdline: self.config.kernel.cmdline.clone(),
             cpu_num: self.config.base.cpu_num as u16,
-            platform: crate::guest_platform::loongarch64::fw_cfg_platform_config(
+            platform: crate::boot::guest_platform::loongarch64::fw_cfg_platform_config(
                 &self.vm,
                 &self.config,
             ),
@@ -374,7 +402,7 @@ impl ImageLoader {
     #[cfg(target_arch = "loongarch64")]
     fn load_loongarch_uefi_firmware_from_memory(&self, bios: Option<&[u8]>) -> AxResult {
         let firmware = bios
-            .or_else(|| firmware_image_for_vm(&self.config))
+            .or_else(|| provider_firmware_image_for_vm(&self.config, self.provider))
             .ok_or_else(|| {
                 ax_err_type!(
                     NotFound,
@@ -402,8 +430,11 @@ impl ImageLoader {
 
     #[cfg(target_arch = "loongarch64")]
     fn load_loongarch_uefi_firmware_dtb(&self) -> AxResult {
-        crate::guest_platform::loongarch64::prepare_uefi_runtime_config(&self.vm, &self.config);
-        crate::guest_platform::loongarch64::load_firmware_fdt(&self.vm, &self.config)
+        crate::boot::guest_platform::loongarch64::prepare_uefi_runtime_config(
+            &self.vm,
+            &self.config,
+        );
+        crate::boot::guest_platform::loongarch64::load_firmware_fdt(&self.vm, &self.config)
     }
 
     #[cfg(target_arch = "x86_64")]
@@ -635,13 +666,13 @@ impl ImageLoader {
         })
     }
 
-    #[cfg(feature = "fs")]
+    #[cfg(any(feature = "fs", feature = "host-fs"))]
     fn load_ramdisk_from_filesystem(&self, ramdisk_path: &str) -> AxResult {
         let load_gpa = self
             .vm
             .with_config(|config| config.image_config.ramdisk.as_ref().map(|r| r.load_gpa))
             .ok_or_else(|| ax_errno::ax_err_type!(NotFound, "Ramdisk load addr is missed"))?;
-        let ramdisk_size = fs::image_size(ramdisk_path)?;
+        let ramdisk_size = fs::image_size(ramdisk_path, self.provider)?;
         self.vm.with_config(|config| {
             if let Some(ref mut rd) = config.image_config.ramdisk {
                 rd.size = Some(ramdisk_size);
@@ -653,7 +684,7 @@ impl ImageLoader {
             ramdisk_size,
             load_gpa.as_usize()
         );
-        fs::load_vm_image(ramdisk_path, load_gpa, self.vm.clone())
+        fs::load_vm_image(ramdisk_path, load_gpa, self.vm.clone(), self.provider)
     }
 }
 
@@ -691,7 +722,7 @@ pub fn load_vm_image_from_memory(
             );
         }
 
-        axvm::clean_dcache_range((region.as_ptr() as usize).into(), bytes_to_write);
+        crate::clean_dcache_range((region.as_ptr() as usize).into(), bytes_to_write);
 
         // Update the position of the buffer.
         buffer_pos += bytes_to_write;
@@ -722,7 +753,7 @@ fn fill_vm_region(load_addr: GuestPhysAddr, size: usize, byte: u8, vm: AxVMRef) 
         unsafe {
             core::ptr::write_bytes(region.as_mut_ptr(), byte, region.len());
         }
-        axvm::clean_dcache_range((region.as_ptr() as usize).into(), region.len());
+        crate::clean_dcache_range((region.as_ptr() as usize).into(), region.len());
         filled_size += region.len();
     }
 
@@ -736,17 +767,23 @@ fn fill_vm_region(load_addr: GuestPhysAddr, size: usize, byte: u8, vm: AxVMRef) 
     }
 }
 
-#[cfg(feature = "fs")]
+#[cfg(any(feature = "fs", feature = "host-fs"))]
 pub mod fs {
+    #[cfg(target_arch = "loongarch64")]
+    use alloc::boxed::Box;
     use alloc::vec::Vec;
 
     use ax_errno::{AxResult, ax_err, ax_err_type};
 
     use super::*;
 
-    pub fn kernel_read(config: &AxVMCrateConfig, read_size: usize) -> AxResult<Vec<u8>> {
+    pub fn kernel_read(
+        config: &AxVMCrateConfig,
+        provider: &dyn BootImageProvider,
+        read_size: usize,
+    ) -> AxResult<Vec<u8>> {
         let file_name = &config.kernel.kernel_path;
-        crate::manager::AxvmManager::read_file_exact(file_name, read_size)
+        provider.read_file_exact(file_name, read_size)
     }
 
     /// Loads the VM image files from the filesystem
@@ -756,11 +793,15 @@ pub mod fs {
         #[cfg(target_arch = "x86_64")]
         {
             if should_direct_boot_x86_linux(&loader.config) {
-                let kernel_probe = kernel_read(&loader.config, x86_linux::HEADER_READ_SIZE);
+                let kernel_probe =
+                    kernel_read(&loader.config, loader.provider, x86_linux::HEADER_READ_SIZE);
                 match kernel_probe {
                     Ok(data) => {
                         if let Some(header) = detect_x86_linux_image(&data) {
-                            let kernel = read_image_file(&loader.config.kernel.kernel_path)?;
+                            let kernel = read_image_file(
+                                &loader.config.kernel.kernel_path,
+                                loader.provider,
+                            )?;
                             return loader.load_x86_linux_images_from_filesystem(header, &kernel);
                         }
                     }
@@ -780,6 +821,7 @@ pub mod fs {
                 &loader.config.kernel.kernel_path,
                 loader.kernel_load_gpa,
                 loader.vm.clone(),
+                loader.provider,
             )?;
         }
         #[cfg(not(target_arch = "loongarch64"))]
@@ -787,6 +829,7 @@ pub mod fs {
             &loader.config.kernel.kernel_path,
             loader.kernel_load_gpa,
             loader.vm.clone(),
+            loader.provider,
         )?;
         // Load boot firmware image if needed.
         if loader.config.kernel.enable_bios
@@ -796,16 +839,26 @@ pub mod fs {
                 #[cfg(target_arch = "x86_64")]
                 {
                     if should_patch_x86_multiboot_info(&loader.config) {
-                        let bios_image = read_image_file(bios_path)?;
+                        let bios_image = read_image_file(bios_path, loader.provider)?;
                         validate_x86_bios_patch_region(&bios_image)?;
                         load_vm_image_from_memory(&bios_image, bios_load_addr, loader.vm.clone())?;
                         loader.load_x86_multiboot_info(&bios_image, bios_load_addr)?;
                     } else {
-                        load_vm_image(bios_path, bios_load_addr, loader.vm.clone())?;
+                        load_vm_image(
+                            bios_path,
+                            bios_load_addr,
+                            loader.vm.clone(),
+                            loader.provider,
+                        )?;
                     }
                 }
                 #[cfg(not(target_arch = "x86_64"))]
-                load_vm_image(bios_path, bios_load_addr, loader.vm.clone())?;
+                load_vm_image(
+                    bios_path,
+                    bios_load_addr,
+                    loader.vm.clone(),
+                    loader.provider,
+                )?;
             } else {
                 return ax_err!(NotFound, "boot firmware load addr is missed");
             }
@@ -842,12 +895,12 @@ pub mod fs {
     }
 
     #[cfg(target_arch = "loongarch64")]
-    impl ImageLoader {
+    impl ImageLoader<'_> {
         fn add_loongarch_uefi_fw_cfg_from_filesystem(&self) -> AxResult {
-            let kernel = read_full_image(&self.config.kernel.kernel_path)?;
+            let kernel = read_full_image(&self.config.kernel.kernel_path, self.provider)?;
             let kernel: &'static [u8] = Box::leak(kernel.into_boxed_slice());
             let ramdisk = if let Some(path) = &self.config.kernel.ramdisk_path {
-                let ramdisk = read_full_image(path)?;
+                let ramdisk = read_full_image(path, self.provider)?;
                 Some(Box::leak(ramdisk.into_boxed_slice()) as &'static [u8])
             } else {
                 None
@@ -864,18 +917,19 @@ pub mod fs {
         }
 
         fn load_loongarch_uefi_firmware_from_filesystem(&self) -> AxResult {
-            let firmware = firmware_image_for_vm(&self.config).ok_or_else(|| {
-                ax_err_type!(
-                    NotFound,
-                    "LoongArch UEFI boot requires a build-time firmware image"
-                )
-            })?;
+            let firmware =
+                provider_firmware_image_for_vm(&self.config, self.provider).ok_or_else(|| {
+                    ax_err_type!(
+                        NotFound,
+                        "LoongArch UEFI boot requires a build-time firmware image"
+                    )
+                })?;
             self.load_loongarch_uefi_firmware_image(firmware)
         }
     }
 
     #[cfg(target_arch = "x86_64")]
-    impl ImageLoader {
+    impl ImageLoader<'_> {
         fn load_x86_linux_images_from_filesystem(
             &mut self,
             header: x86_linux::X86LinuxHeader,
@@ -884,7 +938,7 @@ pub mod fs {
             self.adjust_x86_linux_dma_identity_layout()?;
             let payload = x86_linux_payload(&header, kernel)?;
             let initrd = if let Some(ramdisk_path) = &self.config.kernel.ramdisk_path {
-                let ramdisk_size = image_size(ramdisk_path)?;
+                let ramdisk_size = image_size(ramdisk_path, self.provider)?;
                 Some(x86_linux::X86LinuxRange::new(
                     self.ramdisk_load_gpa()?.as_usize(),
                     ramdisk_size,
@@ -915,8 +969,9 @@ pub mod fs {
         image_path: &str,
         image_load_gpa: GuestPhysAddr,
         vm: AxVMRef,
+        provider: &dyn BootImageProvider,
     ) -> AxResult {
-        let image = crate::manager::AxvmManager::read_file(image_path)?;
+        let image = provider.read_file(image_path)?;
         let image_size = image.len();
 
         let image_load_regions = vm.get_image_load_region(image_load_gpa, image_size)?;
@@ -933,19 +988,19 @@ pub mod fs {
             buffer.copy_from_slice(data);
             offset = end;
 
-            axvm::clean_dcache_range((buffer.as_ptr() as usize).into(), buffer.len());
+            crate::clean_dcache_range((buffer.as_ptr() as usize).into(), buffer.len());
         }
 
         Ok(())
     }
 
     #[cfg(target_arch = "x86_64")]
-    fn read_image_file(image_path: &str) -> AxResult<Vec<u8>> {
-        crate::manager::AxvmManager::read_file(image_path)
+    fn read_image_file(image_path: &str, provider: &dyn BootImageProvider) -> AxResult<Vec<u8>> {
+        provider.read_file(image_path)
     }
 
-    pub fn image_size(file_name: &str) -> AxResult<usize> {
-        crate::manager::AxvmManager::file_size(file_name)
+    pub fn image_size(file_name: &str, provider: &dyn BootImageProvider) -> AxResult<usize> {
+        provider.file_size(file_name)
     }
 
     #[cfg(any(
@@ -953,8 +1008,8 @@ pub mod fs {
         target_arch = "loongarch64",
         target_arch = "riscv64"
     ))]
-    pub fn read_full_image(file_name: &str) -> AxResult<Vec<u8>> {
-        crate::manager::AxvmManager::read_file(file_name)
+    pub fn read_full_image(file_name: &str, provider: &dyn BootImageProvider) -> AxResult<Vec<u8>> {
+        provider.read_file(file_name)
     }
 }
 

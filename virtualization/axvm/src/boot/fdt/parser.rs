@@ -14,29 +14,34 @@
 
 //! FDT parsing and processing functionality.
 
-use alloc::{format, string::ToString, vec, vec::Vec};
+use alloc::{
+    format,
+    string::{String, ToString},
+    vec,
+    vec::Vec,
+};
 
 use ax_errno::{AxResult, ax_err_type};
-use fdt_parser::{Fdt, FdtHeader, PciRange, PciSpace};
-
-#[cfg(target_arch = "aarch64")]
-use crate::fdt::create::update_cpu_node;
-use axvm::{MappingFlags, config::AxVMConfig};
 use axvmconfig::{
     AxVMCrateConfig, PassThroughDeviceConfig, ReservedAddressConfig, VmMemConfig, VmMemMappingType,
 };
+use fdt_parser::{Fdt, FdtHeader, PciRange, PciSpace};
+
+#[cfg(target_arch = "aarch64")]
+use crate::boot::fdt::create::update_cpu_node;
+use crate::{MappingFlags, config::AxVMConfig};
 
 const PAGE_SIZE_4K: usize = 0x1000;
 
 pub fn try_get_host_fdt() -> Option<&'static [u8]> {
     const FDT_VALID_MAGIC: u32 = 0xd00d_feed;
-    let bootarg: usize = axvm::host_fdt_bootarg();
+    let bootarg: usize = crate::host_fdt_bootarg();
     if bootarg == 0 {
         warn!("Boot argument does not contain a host FDT pointer");
         return None;
     }
 
-    let fdt_vaddr = axvm::host_phys_to_virt(bootarg.into());
+    let fdt_vaddr = crate::host_phys_to_virt(bootarg.into());
     let header = unsafe {
         core::slice::from_raw_parts(fdt_vaddr.as_ptr(), core::mem::size_of::<FdtHeader>())
     };
@@ -426,11 +431,14 @@ pub fn parse_reserved_memory_regions(crate_cfg: &mut AxVMCrateConfig, dtb: &[u8]
 
 #[cfg(test)]
 mod tests {
-    use super::{align_reserved_region_4k, reserve_excluded_device_ranges};
-    use crate::fdt::vm_fdt::FdtWriter;
-    use axvm::config::{AxVMConfig, AxVMConfigParams, PhysCpuList};
     use axvm_types::AddressSpacePolicy;
     use axvmconfig::{AxVMCrateConfig, VMDevicesConfig};
+
+    use super::{align_reserved_region_4k, reserve_excluded_device_ranges};
+    use crate::{
+        boot::fdt::vm_fdt::FdtWriter,
+        config::{AxVMConfig, AxVMConfigParams, PhysCpuList},
+    };
 
     fn fdt_with_excluded_devices() -> Vec<u8> {
         let mut writer = FdtWriter::new().unwrap();

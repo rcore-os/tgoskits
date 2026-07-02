@@ -42,7 +42,7 @@ const BOOT_FLAG_MAGIC: u16 = 0xaa55;
 const HEADER_MAGIC: u32 = u32::from_le_bytes(*b"HdrS");
 
 /// Number of bytes needed to parse every field used by [`X86LinuxHeader`].
-#[cfg(any(feature = "fs", test))]
+#[cfg(any(feature = "fs", feature = "host-fs", test))]
 pub const HEADER_READ_SIZE: usize = CMDLINE_SIZE_OFFSET + core::mem::size_of::<u32>();
 
 /// Parsed subset of Linux x86 setup header fields.

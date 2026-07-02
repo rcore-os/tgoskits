@@ -3,10 +3,13 @@ use alloc::{collections::BTreeMap, format, string::String, vec::Vec};
 use ax_errno::{AxResult, ax_err_type};
 use ax_kspin::SpinNoIrq as Mutex;
 use ax_lazyinit::LazyInit;
-use axvm::{AxVMRef, config::AxVMConfig, config::PassThroughDeviceConfig};
 use axvmconfig::AxVMCrateConfig;
 
 use super::UEFI_FIRMWARE_FDT_BASE;
+use crate::{
+    AxVMRef,
+    config::{AxVMConfig, PassThroughDeviceConfig},
+};
 
 static LOONGARCH_GUEST_IRQ_ROUTES: LazyInit<Mutex<BTreeMap<usize, Vec<LoongArchGuestIrqRoute>>>> =
     LazyInit::new();

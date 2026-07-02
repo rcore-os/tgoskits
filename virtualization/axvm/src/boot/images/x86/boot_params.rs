@@ -354,10 +354,8 @@ fn write_u64(buffer: &mut [u8], offset: usize, value: u64) {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        linux::{BOOT_PARAMS_GPA, BOOT_STUB_GPA, BOOT_STUB_SIZE},
-        *,
-    };
+    use super::*;
+    use crate::boot::images::x86::linux::{BOOT_PARAMS_GPA, BOOT_STUB_GPA, BOOT_STUB_SIZE};
 
     const SETUP_SECTS_OFFSET: usize = 0x1f1;
     const BOOT_FLAG_OFFSET: usize = 0x1fe;
@@ -509,10 +507,10 @@ mod tests {
         let image = valid_image();
         let header = X86LinuxHeader::parse(&image).unwrap();
         let layout = valid_layout(&header);
-        let params =
-            BootParamsBuilder::new(&image, header, layout, X86LinuxRange::new(0, 0x20_0000))
-                .build()
-                .unwrap();
+        let mut builder =
+            BootParamsBuilder::new(&image, header, layout, X86LinuxRange::new(0, 0x20_0000));
+        builder.set_command_line("console=ttyS0").unwrap();
+        let params = builder.build().unwrap();
 
         let entries = read_u8(&params, E820_ENTRIES_OFFSET) as usize;
         assert!(entries >= 5);
@@ -542,6 +540,7 @@ mod tests {
             X86LinuxRange::new(0x0960_0000, 0x0800_0000),
         );
         builder.add_ram_range(X86LinuxRange::new(0, 0x10_0000));
+        builder.set_command_line("console=ttyS0").unwrap();
         let params = builder.build().unwrap();
 
         let entries = read_u8(&params, E820_ENTRIES_OFFSET) as usize;
@@ -569,6 +568,7 @@ mod tests {
         let mut builder =
             BootParamsBuilder::new(&image, header, layout, X86LinuxRange::new(0, 0x20_0000));
         builder.add_reserved_range(X86LinuxRange::new(0xfec0_0000, 0x1000));
+        builder.set_command_line("console=ttyS0").unwrap();
         let params = builder.build().unwrap();
 
         let entries = read_u8(&params, E820_ENTRIES_OFFSET) as usize;

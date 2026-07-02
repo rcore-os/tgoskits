@@ -354,9 +354,6 @@ pub enum VmExit {
     },
 }
 
-/// Backward-compatible name for the VM-level exit reason.
-pub type AxVCpuExitReason = VmExit;
-
 /// Architecture-specific vCPU operations consumed by AxVM.
 pub trait VmArchVcpuOps: Sized {
     /// Architecture-specific creation configuration.
@@ -369,7 +366,7 @@ pub trait VmArchVcpuOps: Sized {
     /// Sets the guest entry point.
     fn set_entry(&mut self, entry: GuestPhysAddr) -> AxVmResult;
     /// Sets the nested page table root.
-    fn set_ept_root(&mut self, ept_root: HostPhysAddr) -> AxVmResult;
+    fn set_nested_page_table_root(&mut self, nested_page_table_root: HostPhysAddr) -> AxVmResult;
     /// Completes architecture-specific setup.
     fn setup(&mut self, config: Self::SetupConfig) -> AxVmResult;
     /// Runs the vCPU until a VM exit.
@@ -410,11 +407,6 @@ pub trait VmArchVcpuOps: Sized {
     fn set_return_value(&mut self, val: usize);
 }
 
-/// Backward-compatible name for the architecture vCPU trait.
-pub trait AxArchVCpu: VmArchVcpuOps {}
-
-impl<T: VmArchVcpuOps> AxArchVCpu for T {}
-
 /// Architecture-specific per-CPU virtualization state consumed by AxVM.
 pub trait VmArchPerCpuOps: Sized {
     /// Creates a new per-CPU state.
@@ -430,11 +422,6 @@ pub trait VmArchPerCpuOps: Sized {
         4
     }
 }
-
-/// Backward-compatible name for the architecture per-CPU trait.
-pub trait AxArchPerCpu: VmArchPerCpuOps {}
-
-impl<T: VmArchPerCpuOps> AxArchPerCpu for T {}
 
 /// Execution state of an AxVM-owned vCPU wrapper.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -452,9 +439,6 @@ pub enum VmVcpuState {
     /// vCPU is blocked.
     Blocked = 5,
 }
-
-/// Backward-compatible name for vCPU state.
-pub type VCpuState = VmVcpuState;
 
 /// A part of `AxVMConfig`, which represents guest VM type.
 #[derive(Default, Clone, Copy, PartialEq, Eq, Debug)]
@@ -722,7 +706,7 @@ mod tests {
             Ok(())
         }
 
-        fn set_ept_root(&mut self, _ept_root: HostPhysAddr) -> AxVmResult {
+        fn set_nested_page_table_root(&mut self, _root: HostPhysAddr) -> AxVmResult {
             Ok(())
         }
 
@@ -763,7 +747,8 @@ mod tests {
 
         let mut vcpu = MockVcpu::new(1, 0, ()).unwrap();
         vcpu.set_entry(GuestPhysAddr::from(0x8020_0000)).unwrap();
-        vcpu.set_ept_root(HostPhysAddr::from(0x1000)).unwrap();
+        vcpu.set_nested_page_table_root(HostPhysAddr::from(0x1000))
+            .unwrap();
         vcpu.setup(()).unwrap();
         assert!(matches!(
             vcpu.run().unwrap(),

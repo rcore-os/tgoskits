@@ -570,6 +570,53 @@ mod vm_interrupt_mode_serde {
     }
 }
 
+struct BootProtocolSupport {
+    protocol: VMBootProtocol,
+    supported_arches: &'static [&'static str],
+    requires_firmware_path: bool,
+    requires_firmware_load_addr: bool,
+    optional_firmware_requires_load_addr: bool,
+}
+
+const BOOT_PROTOCOL_MATRIX: &[BootProtocolSupport] = &[
+    BootProtocolSupport {
+        protocol: VMBootProtocol::Direct,
+        supported_arches: &["x86_64", "aarch64", "riscv64", "loongarch64"],
+        requires_firmware_path: false,
+        requires_firmware_load_addr: false,
+        optional_firmware_requires_load_addr: false,
+    },
+    BootProtocolSupport {
+        protocol: VMBootProtocol::Multiboot,
+        supported_arches: &["x86_64"],
+        requires_firmware_path: false,
+        requires_firmware_load_addr: false,
+        optional_firmware_requires_load_addr: true,
+    },
+    BootProtocolSupport {
+        protocol: VMBootProtocol::Uefi,
+        supported_arches: &["x86_64", "loongarch64"],
+        requires_firmware_path: true,
+        requires_firmware_load_addr: true,
+        optional_firmware_requires_load_addr: false,
+    },
+];
+
+fn boot_protocol_support(protocol: VMBootProtocol) -> &'static BootProtocolSupport {
+    BOOT_PROTOCOL_MATRIX
+        .iter()
+        .find(|support| support.protocol == protocol)
+        .expect("all VMBootProtocol variants must be described")
+}
+
+fn boot_protocol_name(protocol: VMBootProtocol) -> &'static str {
+    match protocol {
+        VMBootProtocol::Direct => "direct",
+        VMBootProtocol::Multiboot => "multiboot",
+        VMBootProtocol::Uefi => "uefi",
+    }
+}
+
 /// The configuration structure for the guest VM base info.
 #[cfg_attr(all(feature = "std", any(windows, unix)), derive(schemars::JsonSchema))]
 #[derive(Debug, Default, Clone, serde::Serialize, serde::Deserialize)]
@@ -691,11 +738,9 @@ impl VMKernelConfig {
     }
 
     fn validate_boot_config_for_arch(&self, arch: &str) -> AxResult<()> {
+        let protocol = self.effective_boot_protocol();
         if !self.enable_bios {
-            if matches!(
-                self.effective_boot_protocol(),
-                VMBootProtocol::Multiboot | VMBootProtocol::Uefi
-            ) {
+            if protocol != VMBootProtocol::Direct {
                 return Err(ax_errno::ax_err_type!(
                     InvalidInput,
                     "boot_protocol requires enable_bios = true"
@@ -704,57 +749,48 @@ impl VMKernelConfig {
             return Ok(());
         }
 
-        match self.effective_boot_protocol() {
-            VMBootProtocol::Uefi => {
-                if !matches!(arch, "x86_64" | "loongarch64") {
-                    warn!(
-                        "boot_protocol=uefi is only supported on x86_64 and loongarch64; \
-                         rejecting config on {arch}"
-                    );
-                    return Err(ax_errno::ax_err_type!(
-                        InvalidInput,
-                        "UEFI boot is only supported on x86_64 and loongarch64"
-                    ));
-                }
-                if self.boot_firmware_path().is_none() {
-                    return Err(ax_errno::ax_err_type!(
-                        InvalidInput,
-                        "UEFI boot requires uefi_firmware_path or legacy bios_path"
-                    ));
-                }
-                if self.bios_load_addr.is_none() {
-                    return Err(ax_errno::ax_err_type!(
-                        InvalidInput,
-                        "UEFI boot requires bios_load_addr"
-                    ));
-                }
-            }
-            VMBootProtocol::Multiboot => {
-                if arch != "x86_64" {
-                    warn!(
-                        "boot_protocol=multiboot is only supported on x86_64; rejecting config on \
-                         {arch}"
-                    );
-                    return Err(ax_errno::ax_err_type!(
-                        InvalidInput,
-                        "multiboot firmware boot is only supported on x86_64"
-                    ));
-                }
-                if self.bios_path.is_some() && self.bios_load_addr.is_none() {
-                    return Err(ax_errno::ax_err_type!(
-                        InvalidInput,
-                        "external BIOS boot requires bios_load_addr"
-                    ));
-                }
-            }
-            VMBootProtocol::Direct => {
-                if self.enable_bios {
-                    return Err(ax_errno::ax_err_type!(
-                        InvalidInput,
-                        "direct boot must not set enable_bios = true"
-                    ));
-                }
-            }
+        if protocol == VMBootProtocol::Direct {
+            return Err(ax_errno::ax_err_type!(
+                InvalidInput,
+                "direct boot must not set enable_bios = true"
+            ));
+        }
+
+        let support = boot_protocol_support(protocol);
+        if !support.supported_arches.contains(&arch) {
+            warn!(
+                "boot_protocol={} is only supported on {}; rejecting config on {arch}",
+                boot_protocol_name(protocol),
+                support.supported_arches.join(", ")
+            );
+            return Err(ax_errno::ax_err_type!(
+                InvalidInput,
+                "boot protocol is not supported on this architecture"
+            ));
+        }
+
+        if support.requires_firmware_path && self.boot_firmware_path().is_none() {
+            return Err(ax_errno::ax_err_type!(
+                InvalidInput,
+                "firmware boot requires uefi_firmware_path or legacy bios_path"
+            ));
+        }
+
+        if support.requires_firmware_load_addr && self.bios_load_addr.is_none() {
+            return Err(ax_errno::ax_err_type!(
+                InvalidInput,
+                "firmware boot requires bios_load_addr"
+            ));
+        }
+
+        if support.optional_firmware_requires_load_addr
+            && self.bios_path.is_some()
+            && self.bios_load_addr.is_none()
+        {
+            return Err(ax_errno::ax_err_type!(
+                InvalidInput,
+                "external firmware boot requires bios_load_addr"
+            ));
         }
 
         Ok(())

@@ -104,7 +104,7 @@ fn write_u32(buffer: &mut [u8], offset: usize, value: u32) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::images::x86::linux::{BOOT_PARAMS_GPA, X86LinuxHeader, X86LinuxRange};
+    use crate::boot::images::x86::linux::{BOOT_PARAMS_GPA, X86LinuxHeader, X86LinuxRange};
 
     const SETUP_SECTS_OFFSET: usize = 0x1f1;
     const BOOT_FLAG_OFFSET: usize = 0x1fe;

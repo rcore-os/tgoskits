@@ -16,7 +16,7 @@
 
 - 实现 x86_64 架构下的 `VmArchVcpuOps`
 - 实现每物理 CPU 的 VMX 启停逻辑
-- 将 VMX/SVM exit 原因翻译成 `axvm-types::VmExit` / 兼容名 `AxVCpuExitReason`
+- 将 VMX/SVM exit 原因翻译成 `axvm-types::VmExit`
 
 它不承担：
 
@@ -137,7 +137,7 @@
 
 #### 协议翻译层
 
-如果 exit 不能在本地完全处理，就继续翻译成 `AxVCpuExitReason` 上抛给 `axvm`/VMM，例如：
+如果 exit 不能在本地完全处理，就继续翻译成 `VmExit` 上抛给 `axvm`/VMM，例如：
 
 - `Hypercall`
 - `IoRead` / `IoWrite`
@@ -178,11 +178,11 @@
 
 ### 2.2 关键 API 语义
 
-作为 `AxArchVCpu` 实现，它最关键的接口包括：
+作为 `VmArchVcpuOps` 实现，它最关键的接口包括：
 
 - `new()`
 - `set_entry()`
-- `set_ept_root()`
+- `set_nested_page_table_root()`
 - `setup()`
 - `run()`
 - `bind()`
@@ -201,7 +201,7 @@ flowchart TD
     C --> D[bind 到当前物理 CPU]
     D --> E[vmlaunch/vmresume]
     E --> F[发生 VM-exit]
-    F --> G[内建处理或翻译为 AxVCpuExitReason]
+    F --> G[内建处理或翻译为 VmExit]
     G --> H[高层 VMM 决策]
 ```
 

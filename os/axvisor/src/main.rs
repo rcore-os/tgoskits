@@ -35,15 +35,6 @@ use ax_std as _;
 extern crate ax_std as std;
 
 mod config;
-#[cfg(any(
-    target_arch = "aarch64",
-    target_arch = "loongarch64",
-    target_arch = "riscv64"
-))]
-mod fdt;
-#[cfg(target_arch = "loongarch64")]
-mod guest_platform;
-mod images;
 mod manager;
 mod shell;
 

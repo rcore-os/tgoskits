@@ -12,54 +12,18 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! AxVM-owned vCPU wrapper and architecture selection.
+//! AxVM-owned architecture-independent vCPU wrapper.
 
 use alloc::format;
 use core::{cell::UnsafeCell, mem::MaybeUninit};
 
 use ax_errno::{AxResult, ax_err};
 use ax_kspin::SpinNoIrq as Mutex;
+#[cfg(target_arch = "x86_64")]
+use axvm_types::InterruptTriggerMode;
 use axvm_types::{
-    GuestPhysAddr, HostPhysAddr, InterruptTriggerMode, VCpuId, VMId, VmArchPerCpuOps,
-    VmArchVcpuOps, VmExit, VmVcpuState,
+    GuestPhysAddr, HostPhysAddr, VCpuId, VMId, VmArchPerCpuOps, VmArchVcpuOps, VmExit, VmVcpuState,
 };
-
-cfg_if::cfg_if! {
-    if #[cfg(target_arch = "x86_64")] {
-        pub use x86_vcpu::X86ArchVCpu as AxArchVCpuImpl;
-        pub use x86_vcpu::X86ArchPerCpuState as AxVMArchPerCpuImpl;
-        pub use x86_vcpu::X86VCpuSetupConfig as AxVCpuSetupConfig;
-        #[allow(dead_code)]
-        pub type AxVCpuCreateConfig = ();
-
-        /// x86_64 EPT always uses 4-level page tables.
-        pub fn max_guest_page_table_levels() -> usize { 4 }
-    } else if #[cfg(target_arch = "riscv64")] {
-        pub use riscv_vcpu::RISCVPerCpu as AxVMArchPerCpuImpl;
-        pub use riscv_vcpu::RISCVVCpu as AxArchVCpuImpl;
-        pub use riscv_vcpu::RISCVVCpuCreateConfig as AxVCpuCreateConfig;
-
-        /// RISC-V uses Sv39 or Sv48 for guest page tables. Default to Sv48.
-        pub fn max_guest_page_table_levels() -> usize { 4 }
-    } else if #[cfg(target_arch = "loongarch64")] {
-        pub use loongarch_vcpu::LoongArchPerCpu as AxVMArchPerCpuImpl;
-        pub use loongarch_vcpu::LoongArchVCpu as AxArchVCpuImpl;
-        pub use loongarch_vcpu::LoongArchVCpuCreateConfig as AxVCpuCreateConfig;
-        pub use loongarch_vcpu::LoongArchVCpuSetupConfig as AxVCpuSetupConfig;
-
-        /// LoongArch guests currently use 4-level page tables.
-        pub fn max_guest_page_table_levels() -> usize { 4 }
-    } else if #[cfg(target_arch = "aarch64")] {
-        pub use arm_vcpu::Aarch64PerCpu as AxVMArchPerCpuImpl;
-        pub use arm_vcpu::Aarch64VCpu as AxArchVCpuImpl;
-        pub use arm_vcpu::Aarch64VCpuCreateConfig as AxVCpuCreateConfig;
-        pub use arm_vcpu::Aarch64VCpuSetupConfig as AxVCpuSetupConfig;
-        pub use arm_vcpu::max_guest_page_table_levels;
-    }
-}
-
-/// Backward-compatible AxVM vCPU state name.
-pub type VCpuState = VmVcpuState;
 
 /// Mutable runtime state of a virtual CPU.
 pub struct AxVCpuInnerMut {
@@ -69,7 +33,6 @@ pub struct AxVCpuInnerMut {
 struct AxVCpuInnerConst {
     vm_id: VMId,
     vcpu_id: VCpuId,
-    favor_phys_cpu: usize,
     phys_cpu_set: Option<usize>,
 }
 
@@ -85,7 +48,6 @@ impl<A: VmArchVcpuOps> AxVCpu<A> {
     pub fn new(
         vm_id: VMId,
         vcpu_id: VCpuId,
-        favor_phys_cpu: usize,
         phys_cpu_set: Option<usize>,
         arch_config: A::CreateConfig,
     ) -> AxResult<Self> {
@@ -93,7 +55,6 @@ impl<A: VmArchVcpuOps> AxVCpu<A> {
             inner_const: AxVCpuInnerConst {
                 vm_id,
                 vcpu_id,
-                favor_phys_cpu,
                 phys_cpu_set,
             },
             inner_mut: Mutex::new(AxVCpuInnerMut {
@@ -107,12 +68,12 @@ impl<A: VmArchVcpuOps> AxVCpu<A> {
     pub fn setup(
         &self,
         entry: GuestPhysAddr,
-        ept_root: HostPhysAddr,
+        nested_page_table_root: HostPhysAddr,
         arch_config: A::SetupConfig,
     ) -> AxResult {
         self.manipulate_arch_vcpu(VmVcpuState::Created, VmVcpuState::Free, |arch_vcpu| {
             arch_vcpu.set_entry(entry)?;
-            arch_vcpu.set_ept_root(ept_root)?;
+            arch_vcpu.set_nested_page_table_root(nested_page_table_root)?;
             arch_vcpu.setup(arch_config)?;
             Ok(())
         })
@@ -128,34 +89,14 @@ impl<A: VmArchVcpuOps> AxVCpu<A> {
         self.inner_const.vm_id
     }
 
-    /// Returns the preferred physical CPU.
-    pub const fn favor_phys_cpu(&self) -> usize {
-        self.inner_const.favor_phys_cpu
-    }
-
     /// Returns the allowed physical CPU mask.
     pub const fn phys_cpu_set(&self) -> Option<usize> {
         self.inner_const.phys_cpu_set
     }
 
-    /// Returns whether this vCPU is the bootstrap processor.
-    pub const fn is_bsp(&self) -> bool {
-        self.inner_const.vcpu_id == 0
-    }
-
     /// Returns the current vCPU state.
     pub fn state(&self) -> VmVcpuState {
         self.inner_mut.lock().state
-    }
-
-    /// Sets the vCPU state without checking transitions.
-    ///
-    /// # Safety
-    ///
-    /// This may break the vCPU state machine and must only be used to recover
-    /// from externally synchronized lifecycle transitions.
-    pub unsafe fn set_state(&self, state: VmVcpuState) {
-        self.inner_mut.lock().state = state;
     }
 
     /// Runs `f` if the current state equals `from`, then stores `to`.
@@ -275,6 +216,7 @@ impl<A: VmArchVcpuOps> AxVCpu<A> {
     }
 
     /// Injects an interrupt with trigger-mode metadata.
+    #[cfg(target_arch = "x86_64")]
     pub fn inject_interrupt_with_trigger(
         &self,
         vector: usize,
@@ -282,11 +224,6 @@ impl<A: VmArchVcpuOps> AxVCpu<A> {
     ) -> AxResult {
         self.get_arch_vcpu()
             .inject_interrupt_with_trigger(vector, trigger)
-    }
-
-    /// Handles guest EOI and returns an external EOI vector when needed.
-    pub fn handle_eoi(&self) -> Option<u8> {
-        self.get_arch_vcpu().handle_eoi()
     }
 
     /// Sets the guest return value.
