@@ -192,6 +192,7 @@ const KVM_MP_STATE_SIZE: u32 = 4;
 const KVM_ONE_REG_SIZE: u32 = 16;
 const KVM_REG_LIST_SIZE: u32 = 8;
 const KVM_X86_REGS_SIZE: u32 = 18 * 8;
+const KVM_X86_REGS_RFLAGS_OFFSET: usize = 17 * 8;
 const KVM_X86_SREGS_SIZE: u32 = 312;
 const KVM_X86_FPU_SIZE: u32 = 416;
 const KVM_X86_VCPU_EVENTS_SIZE: u32 = 64;
@@ -202,6 +203,7 @@ const KVM_X86_LAPIC_STATE_SIZE: u32 = 1024;
 const KVM_MP_STATE_RUNNABLE: u32 = 0;
 const KVM_MP_STATE_STOPPED: u32 = 5;
 const KVM_MEM_ALLOWED_FLAGS: u32 = 0;
+const X86_RFLAGS_IF: u64 = 1 << 9;
 const KVM_IOEVENTFD_FLAG_DATAMATCH: u32 = 1 << 0;
 const KVM_IOEVENTFD_FLAG_PIO: u32 = 1 << 1;
 const KVM_IOEVENTFD_FLAG_DEASSIGN: u32 = 1 << 2;
@@ -209,7 +211,12 @@ const KVM_IOEVENTFD_VALID_FLAGS: u32 =
     KVM_IOEVENTFD_FLAG_DATAMATCH | KVM_IOEVENTFD_FLAG_PIO | KVM_IOEVENTFD_FLAG_DEASSIGN;
 const KVM_INTERRUPT_SET: u32 = u32::MAX;
 const KVM_INTERRUPT_UNSET: u32 = u32::MAX - 1;
+const KVM_RUN_REQUEST_INTERRUPT_WINDOW_OFFSET: usize = 0;
+const KVM_RUN_IMMEDIATE_EXIT_OFFSET: usize = 1;
 const KVM_RUN_EXIT_REASON_OFFSET: usize = 8;
+const KVM_RUN_READY_FOR_INTERRUPT_INJECTION_OFFSET: usize = 12;
+const KVM_RUN_IF_FLAG_OFFSET: usize = 13;
+const KVM_RUN_FLAGS_OFFSET: usize = 14;
 const KVM_RUN_IO_DIRECTION_OFFSET: usize = 32;
 const KVM_RUN_IO_SIZE_OFFSET: usize = 33;
 const KVM_RUN_IO_PORT_OFFSET: usize = 34;
@@ -226,6 +233,7 @@ const KVM_EXIT_UNKNOWN: u32 = 0;
 const KVM_EXIT_IO: u32 = 2;
 const KVM_EXIT_HLT: u32 = 5;
 const KVM_EXIT_MMIO: u32 = 6;
+const KVM_EXIT_IRQ_WINDOW_OPEN: u32 = 7;
 const KVM_EXIT_SHUTDOWN: u32 = 8;
 const KVM_EXIT_FAIL_ENTRY: u32 = 9;
 const KVM_EXIT_INTR: u32 = 10;
@@ -1055,8 +1063,23 @@ fn run_vcpu_file(control_file: api_control::ControlFileId) -> AxResult<isize> {
         complete_io_read(control_file, &vcpu, pending)?;
     }
 
+    update_vcpu_run_interrupt_state(control_file, &vcpu)?;
+    if read_vcpu_run_u8(control_file, KVM_RUN_IMMEDIATE_EXIT_OFFSET)? != 0 {
+        return Err(AxErrorKind::Interrupted.into());
+    }
+
     let mut internal_exits = 0;
     let exit_reason = loop {
+        update_vcpu_run_interrupt_state(control_file, &vcpu)?;
+        if read_vcpu_run_u8(control_file, KVM_RUN_IMMEDIATE_EXIT_OFFSET)? != 0 {
+            return Err(AxErrorKind::Interrupted.into());
+        }
+        if read_vcpu_run_u8(control_file, KVM_RUN_REQUEST_INTERRUPT_WINDOW_OFFSET)? != 0
+            && read_vcpu_run_u8(control_file, KVM_RUN_READY_FOR_INTERRUPT_INJECTION_OFFSET)? != 0
+        {
+            break KVM_EXIT_IRQ_WINDOW_OPEN;
+        }
+
         let exit_reason = match vm.run_vcpu_raw(vcpu_id) {
             Ok(exit_reason) => exit_reason,
             Err(err) => {
@@ -1590,6 +1613,37 @@ fn sign_extend_value(value: usize, width: AccessWidth) -> usize {
         AccessWidth::Dword => (value as i32) as isize as usize,
         AccessWidth::Qword => value,
     }
+}
+
+fn update_vcpu_run_interrupt_state(
+    control_file: api_control::ControlFileId,
+    vcpu: &axvm::AxVCpuRef,
+) -> AxResult {
+    let mut regs = [0u8; KVM_X86_REGS_SIZE as usize];
+    let if_flag = if vcpu.get_kvm_regs(&mut regs).is_ok() {
+        let mut rflags_bytes = [0u8; 8];
+        rflags_bytes
+            .copy_from_slice(&regs[KVM_X86_REGS_RFLAGS_OFFSET..KVM_X86_REGS_RFLAGS_OFFSET + 8]);
+        u8::from(u64::from_ne_bytes(rflags_bytes) & X86_RFLAGS_IF != 0)
+    } else {
+        1
+    };
+
+    write_vcpu_run_u8(
+        control_file,
+        KVM_RUN_READY_FOR_INTERRUPT_INJECTION_OFFSET,
+        if_flag,
+    )?;
+    write_vcpu_run_u8(control_file, KVM_RUN_IF_FLAG_OFFSET, if_flag)?;
+    write_vcpu_run_u16(control_file, KVM_RUN_FLAGS_OFFSET, 0)?;
+    Ok(())
+}
+
+fn read_vcpu_run_u8(control_file: api_control::ControlFileId, offset: usize) -> AxResult<u8> {
+    let mmap_area = control_file_mmap_area(control_file)?;
+    let mut value = [0u8; 1];
+    api_control::read_mmap_area(mmap_area, offset, &mut value)?;
+    Ok(value[0])
 }
 
 fn write_vcpu_run_u32(
