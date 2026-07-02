@@ -66,7 +66,7 @@ flowchart TD
 
 - **plat_dyn**：省略时默认请求动态平台；`aarch64`、`x86_64`、`riscv64`、`loongarch64` 支持动态平台，只有显式写 `plat_dyn = false` 才请求静态平台绑定
 - **to_bin**：通用 ArceOS/Starry std 构建中，`default_to_bin_for_target()` 对 `x86_64-*` 和 `loongarch64-*` 返回 `false`，对 `aarch64-*`、`riscv64*` 返回 `true`；但 `default_to_bin_for_target_config()` 在动态平台模式下会让 `x86_64`/`loongarch64` 也生成 raw binary。Axvisor 另有覆盖：`aarch64`/`riscv64` 生成 bin，`x86_64`/`loongarch64` 保留 ELF。
-- **LoongArch QEMU**：运行 Axvisor loongarch64 时自动搜索 LVZ 版 QEMU（详见 [运行](./runtime#loongarch-特殊处理)）
+- **LoongArch QEMU**：运行 Axvisor loongarch64 时自动搜索 LVZ 版 QEMU（详见 [Axvisor 运行 §LoongArch LVZ QEMU](./axvisor/runtime#loongarch-lvz-qemu)）
 
 LoongArch QEMU 现在默认走动态平台，不再以静态平台 crate 作为当前平台路径。旧配置中的 `ax-hal/loongarch64-qemu-virt`、`plat_dyn = false` 或 `--plat loongarch64-qemu-virt` 应迁移为动态平台写法：保留 `--arch loongarch64`，省略 `plat_dyn` 或设为 `true`，并使用 `ax-hal/plat-dyn`、`ax-driver/plat-dyn`、`axplat-dyn` 以及 UEFI/`efi` 启动链路。
 

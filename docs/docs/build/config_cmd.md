@@ -7,7 +7,7 @@ sidebar_label: "Config 辅助命令"
 
 `cargo xtask config` 是 axbuild 暴露的底层配置工具，围绕 ArceOS 的 **axconfig** 体系提供平台包定位、配置项读取、配置文件生成和 Makefile 适配字段检查四项能力。它本质上是把 `axbuild` 内部使用的配置引擎库（`ax_config_gen`）和平台包解析逻辑（`scripts/axbuild/src/build.rs`）直接暴露给用户、Makefile 和调试场景使用，避免重复实现一套平台配置查找逻辑。
 
-> 本命令面向**手动调试和旧 Makefile 兼容**。日常 `cargo xtask <os> build` 流程会自动完成平台配置生成（见 [构建过程](./build_process#6-axconfig-生成)），用户通常不需要直接调用 `cargo xtask config`。
+> 本命令面向**手动调试和旧 Makefile 兼容**。日常 `cargo xtask <os> build` 流程会自动完成平台配置生成（见 [参数与配置 §axconfig](./configuration#axconfig)），用户通常不需要直接调用 `cargo xtask config`。
 
 ## 子命令
 
@@ -25,7 +25,7 @@ cargo xtask config platform-path --package ax-plat-riscv64-custom
 # 输出：/path/to/platforms/ax-plat-riscv64-custom/axconfig.toml
 ```
 
-复用 `build.rs::resolve_platform_config_by_package`：先加载 workspace metadata，在依赖中查找匹配的平台包，按三级回退（workspace metadata → deps metadata → 包名↔目录映射）定位 `axconfig.toml`。找不到时报错。定位算法详见 [构建过程](./build_process#6b-平台配置文件查找)。
+复用 `build.rs::resolve_platform_config_by_package`：先加载 workspace metadata，在依赖中查找匹配的平台包，按三级回退（workspace metadata → deps metadata → 包名↔目录映射）定位 `axconfig.toml`。找不到时报错。定位算法详见 [参数与配置](./configuration#平台配置文件查找)。
 
 ## read
 
@@ -64,7 +64,7 @@ cargo xtask config generate \
 - **untouched**：在 oldconfig 中未设置、使用默认值的项
 - **extra**：在规范中找不到、被忽略的项
 
-`keep_backup: true` 表示会保留旧文件备份。这是 `cargo xtask <os> build` 在 [阶段 6](./build_process#6c-配置合并与生成) 内部调用的同一个函数。
+`keep_backup: true` 表示会保留旧文件备份。这是 `cargo xtask <os> build` 在 [参数与配置 §axconfig](./configuration#axconfig) 内部调用的同一个函数。
 
 ## inspect
 

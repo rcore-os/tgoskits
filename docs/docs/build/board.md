@@ -5,7 +5,7 @@ sidebar_label: "板卡管理"
 
 # 板卡管理
 
-`cargo xtask board` 是顶层板卡管理命令，封装了与 `ostool-server` 的交互。`ostool-server` 运行在连接物理板卡的宿主机上，提供板卡分配、固件部署和串口交互的 API。本命令用于**分配/查看/连接**远程板卡，与 `cargo xtask <os> board`（在板卡上运行 OS，详见 [运行时环境](./runtime#板卡运行)）是两个不同层次：前者管板子，后者把编译产物刷到板子上跑。
+`cargo xtask board` 是顶层板卡管理命令，封装了与 `ostool-server` 的交互。`ostool-server` 运行在连接物理板卡的宿主机上，提供板卡分配、固件部署和串口交互的 API。本命令用于**分配/查看/连接**远程板卡，与 `cargo xtask <os> board`（在板卡上运行 OS，详见 [Axvisor 运行 §板卡运行](./axvisor/runtime#板卡运行) 或 [StarryOS 运行 §板卡运行](./starry/runtime#板卡运行)）是两个不同层次：前者管板子，后者把编译产物刷到板子上跑。
 
 ## 架构概览
 

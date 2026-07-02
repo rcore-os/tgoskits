@@ -125,13 +125,7 @@ axbuild 的每个 `cargo xtask <cmd>` 都对应一篇专门文档。完整的命
 | StarryOS | `cargo xtask starry` | [StarryOS](./starry/overview) |
 | Axvisor | `cargo xtask axvisor` | [Axvisor](./axvisor/overview) |
 
-三套 OS 子系统共享底层的构建/运行/测试框架，差异主要体现在 CLI 命令面、参数默认值和少量特有行为。**共享能力**抽成独立文档，各 OS 目录（`arceos/`、`starry/`、`axvisor/`）只描述各自的特有命令和行为并引用这些共享文档：
-
-| 共享能力 | 文档 |
-|----------|------|
-| 构建过程（八阶段流水线、Feature 解析、axconfig 生成） | [构建过程](./build_process) |
-| 运行时环境（QEMU / U-Boot / 板卡） | [运行时环境](./runtime) |
-| 测试框架（用例发现、分组构建、资产准备、结果判定） | [测试框架](./test_framework) |
+三套 OS 子系统各自有完整的命令文档（构建、运行、测试及其他特有命令），不再有独立的"共享"章节——通用的参数解析、Snapshot、Build Info、axconfig 机制集中在 [参数与配置](./configuration)，各 OS 目录（`arceos/`、`starry/`、`axvisor/`）内含完整的构建/运行/测试文档及该 OS 特有的其他命令（如 StarryOS 的 app/perf/kmod/rootfs）。
 
 ## 三层架构
 

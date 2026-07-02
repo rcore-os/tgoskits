@@ -1,5 +1,5 @@
 ---
-sidebar_position: 2
+sidebar_position: 4
 sidebar_label: "测试"
 ---
 
@@ -7,7 +7,7 @@ sidebar_label: "测试"
 
 ArceOS 的测试覆盖两类用例：**Rust 用例**（统一入口为 `arceos-test-suit`，单个用例由 crate feature 控制）和 **C 用例**（通过 Makefile 构建的 C 语言程序，由 `test_cmd` 文件定义测试序列）。两类用例的发现和处理方式有所不同，但最终都通过 QEMU 运行并使用正则匹配判定结果。
 
-测试编排框架（用例发现、分组构建、资产准备、结果判定）是三套子系统共享的，详见 测试框架(../test_framework)。本文只描述 ArceOS 特有的测试目录结构和两类用例的处理差异。
+测试编排（用例发现、分组构建、资产准备、结果判定）由 `scripts/axbuild/src/test/` 提供统一框架，核心原则是 **OS 只构建一次，逐 case 运行**——具有相同构建配置的用例归入同一 build wrapper，组内共享一次内核编译，然后逐 case 准备资产、运行 QEMU、匹配结果。本文描述 ArceOS 特有的测试目录结构和两类用例的处理差异。
 
 ## 命令
 
