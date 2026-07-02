@@ -57,34 +57,24 @@ sdmmc = [
     "ax-driver/phytium-mci",
 ]
 rockchip-pm = ["ax-driver/rockchip-pm"]
-serial = []
 stack-protector = ["ax-std/stack-protector"]
-plat-dyn = ["dep:axplat-dyn"]
 
 [dependencies]
 spin = { workspace = true }
 
 [target.'cfg(any(not(any(windows, unix)), target_env = "musl"))'.dependencies]
-ax-kspin = { workspace = true }
-ax-lazyinit = { workspace = true }
 log = "0.4"
-byte-unit = { version = "5", default-features = false, features = ["byte"] }
-fdt-parser = "0.4"
-hashbrown = "0.14"
 
 # System dependent modules provided by ArceOS.
-ax-std = { workspace = true, features = ["ext-ld", "paging", "irq", "multitask", "task-ext", "smp", "hv"] }
+ax-std = { workspace = true, features = ["ext-ld", "paging", "irq", "multitask", "task-ext", "smp", "hv", "plat-dyn"] }
 ax-hal = { workspace = true, features = ["paging", "irq", "smp", "hv", "axvisor-linker"] }
 # System dependent modules provided by ArceOS-Hypervisor (bare-metal only)
 # ax-runtime = { version = "=0.3.0-preview.1", features = ["alloc", "irq", "paging", "smp", "multitask"] }
-axvm = { workspace = true, default-features = false }
+axvm = { workspace = true, default-features = false, features = ["plat-dyn"] }
 axvmconfig = { workspace = true, default-features = false }
-axdevice = { workspace = true }
 # System independent crates provided by ArceOS
 ax-errno = { workspace = true }
-ax-memory-addr = { workspace = true }
 ax-driver.workspace = true
-axplat-dyn = { workspace = true, optional = true }
 
 [dev-dependencies]
 axtest.workspace = true

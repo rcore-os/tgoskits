@@ -3,12 +3,6 @@ use anyhow::anyhow;
 use super::metadata::{platform_feature_names, platform_metadata_entries};
 use crate::context::arch_for_target_checked;
 
-const AXVISOR_PLAT_DYN_FEATURES: &[&str] = &[
-    "plat-dyn",
-    "axvm/plat-dyn",
-    "ax-std/plat-dyn",
-    "ax-driver/plat-dyn",
-];
 const REMOVED_AXVISOR_PLATFORM_FEATURES: &[&str] = &["x86-qemu-q35", concat!("riscv64", "-sg2002")];
 
 pub(super) fn normalize_axvisor_feature_surface(
@@ -78,8 +72,8 @@ pub(super) fn reject_unsupported_nested_platform_features(
         .find(|feature| is_axvisor_plat_dyn_feature(feature))
     {
         return Err(anyhow!(
-            "Axvisor build configs enable dynamic platforms by default; remove dynamic platform \
-             features from `features`; found `{feature}`"
+            "Axvisor depends on an ax-std surface with dynamic platform support enabled; remove \
+             dynamic platform features from `features`; found `{feature}`"
         ));
     }
 
@@ -96,11 +90,6 @@ pub(super) fn reject_unsupported_nested_platform_features(
 
 pub(super) fn normalize_axvisor_plat_dyn_features(features: &mut Vec<String>) {
     features.retain(|feature| !is_axvisor_plat_dyn_feature(feature));
-    features.extend(
-        AXVISOR_PLAT_DYN_FEATURES
-            .iter()
-            .map(|feature| (*feature).to_string()),
-    );
 }
 
 pub(super) fn is_axvisor_plat_dyn_feature(feature: &str) -> bool {
@@ -108,12 +97,13 @@ pub(super) fn is_axvisor_plat_dyn_feature(feature: &str) -> bool {
         feature,
         "dyn-plat"
             | "plat-dyn"
+            | "axplat-dyn"
             | "ax-feat/plat-dyn"
             | "ax-hal/plat-dyn"
             | "ax-std/plat-dyn"
             | "axvm/plat-dyn"
             | "ax-driver/plat-dyn"
-    )
+    ) || feature.starts_with("axplat-dyn/")
 }
 
 fn removed_axvisor_platform_feature_name(feature: &str) -> Option<&str> {
