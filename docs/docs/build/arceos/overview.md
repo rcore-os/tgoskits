@@ -57,7 +57,7 @@ ArceOS 把每个可运行的应用建模为 workspace 内的独立 crate（如 `
 
 ### `--plat-dyn` 与动态平台
 
-ArceOS 是动态平台（`axplat-dyn`）的主要受益者：aarch64、x86_64、riscv64、loongarch64 都支持运行时平台注册。`--plat-Dyn` 默认为 true，构建时注入 `ax-std/plat-dyn` feature 并使用 `Taxplat.x` 链接脚本；显式 `--plat-dyn false` 时才回退到静态平台绑定，需要预生成 axconfig（详见 [ArceOS 构建 §axconfig 生成](./build#6-axconfig-生成)）。
+ArceOS 是动态平台（`axplat-dyn`）的主要受益者：aarch64、x86_64、riscv64、loongarch64 都支持运行时平台注册。`--plat-dyn` 默认为 true，构建时注入 `ax-std/plat-dyn` feature 并使用 `Taxplat.x` 链接脚本；显式 `--plat-dyn false` 时才回退到静态平台绑定，需要预生成 axconfig（详见 [ArceOS 构建 §axconfig 生成](./build#6-axconfig-生成)）。
 
 ### Rust 测试：feature 即用例
 

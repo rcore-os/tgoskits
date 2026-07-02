@@ -40,7 +40,7 @@ test-suit/axvisor/
 
 ### `test qemu`
 
-最常用的测试模式，在 QEMU 中启动 Axvisor 和配置的 Guest VM，通过 `qemu-{arch}.toml` 中的 `success_regex`/`fail_regex` 判定结果。资产准备（rootfs、guest 镜像、VM 配置）在测试前完成，详见 运行时环境(../runtime)。
+最常用的测试模式，在 QEMU 中启动 Axvisor 和配置的 Guest VM，通过 `qemu-{arch}.toml` 中的 `success_regex`/`fail_regex` 判定结果。资产准备（rootfs、guest 镜像、VM 配置）在测试前完成，详见 [Axvisor 运行](../runtime)。
 
 ### `test uboot`（Axvisor 独有）
 
