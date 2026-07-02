@@ -6,12 +6,11 @@ use alloc::{collections::BTreeMap, vec::Vec};
 
 use ax_errno::{AxResult, ax_err, ax_err_type};
 use ax_kspin::SpinNoIrq as Mutex;
-use axvcpu::get_current_vcpu;
 use axvm_types::VMId;
 
 use crate::{
     host::{HostPlatform, default_host},
-    vcpu::AxArchVCpuImpl,
+    vcpu::{AxArchVCpuImpl, get_current_vcpu},
     vm::AxVMRef,
 };
 

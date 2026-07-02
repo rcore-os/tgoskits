@@ -409,7 +409,7 @@ dependencies = [
  "ax-crate-interface",
  "ax-errno 0.6.0",
  "ax-percpu",
- "axvcpu",
+ "axvm-types",
  "log",
  "numeric-enum-macro",
  "spin",
@@ -1497,19 +1497,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "axvcpu"
-version = "0.7.2"
-dependencies = [
- "ax-errno 0.6.0",
- "ax-kspin",
- "ax-memory-addr",
- "ax-page-table-entry",
- "ax-percpu",
- "axdevice_base",
- "axvm-types",
-]
-
-[[package]]
 name = "axvisor"
 version = "0.5.15"
 dependencies = [
@@ -1567,7 +1554,6 @@ dependencies = [
  "axdevice_base",
  "axhvc",
  "axplat-dyn",
- "axvcpu",
  "axvm-types",
  "byte-unit",
  "cfg-if",
@@ -1591,6 +1577,7 @@ dependencies = [
  "ax-cpumask",
  "ax-errno 0.6.0",
  "ax-memory-addr",
+ "ax-page-table-entry",
  "ax-page-table-multiarch",
 ]
 
@@ -4857,7 +4844,7 @@ dependencies = [
  "ax-memory-addr",
  "ax-page-table-multiarch",
  "ax-percpu",
- "axvcpu",
+ "axvm-types",
  "log",
  "loongArch64",
 ]
@@ -6657,7 +6644,6 @@ dependencies = [
  "ax-crate-interface",
  "ax-errno 0.6.0",
  "ax-memory-addr",
- "axvcpu",
  "axvm-types",
  "bit_field",
  "bitflags 2.13.0",
@@ -9678,7 +9664,6 @@ dependencies = [
  "ax-errno 0.6.0",
  "ax-memory-addr",
  "axdevice_base",
- "axvcpu",
  "axvm-types",
  "bit_field",
  "bitflags 2.13.0",

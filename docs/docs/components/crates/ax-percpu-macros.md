@@ -125,7 +125,7 @@
 - 平台层定义 `CPU_ID`、`IS_BSP`
 - `ax-hal` 定义当前任务指针
 - `ax-task` 定义 per-CPU 运行队列
-- `axvcpu` 或 `os/axvisor` 定义每核虚拟化状态
+- `axvm` 或 `os/axvisor` 定义每核虚拟化状态
 
 ### 2.3 与 `ax-percpu` 的分工
 
@@ -158,7 +158,7 @@
 - `axplat`
 - `ax-hal`
 - `ax-task`
-- `axvcpu`
+- `axvm`
 - `arm_vcpu`
 - `os/axvisor`
 - `scope-local`
@@ -172,7 +172,7 @@ graph TD
     C --> D[ax-hal]
     D --> E[ax-task]
     D --> F[ax-runtime]
-    B --> G[axvcpu / arm_vcpu]
+    B --> G[axvm / arm_vcpu]
     B --> H[scope-local]
     G --> I[Axvisor]
 ```

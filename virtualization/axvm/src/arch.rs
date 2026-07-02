@@ -8,7 +8,6 @@ mod x86_64 {
     use ax_crate_interface::impl_interface;
     use ax_errno::AxResult;
     use ax_memory_addr::{PhysAddr, VirtAddr};
-    use axvcpu::get_current_vcpu;
     use axvm_types::{InterruptVector, VCpuId, VMId};
     use x86_vcpu::host::X86VcpuHostIf;
     use x86_vlapic::host::X86VlapicHostIf;
@@ -16,7 +15,7 @@ mod x86_64 {
     use crate::{
         host::{HostConsole, HostMemory, HostTime, default_host},
         manager,
-        vcpu::AxArchVCpuImpl,
+        vcpu::{AxArchVCpuImpl, get_current_vcpu},
     };
 
     struct X86VcpuHostIfImpl;

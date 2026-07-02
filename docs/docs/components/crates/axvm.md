@@ -12,7 +12,7 @@
 ### 设计定位
 从职责上看，`axvm` 位于三类组件的交汇处：
 
-- 向下依赖 `axvcpu`、`axaddrspace`、`axdevice` 等组件，承接 vCPU、地址空间和设备模型。
+- 向下依赖 `axvm-types`、各架构 vCPU crate、`axaddrspace`、`axdevice` 等组件，承接 vCPU、地址空间和设备模型。
 - 向外通过 `AxVMHal` 把宿主能力注入进来，例如地址翻译、时间、当前 VM/vCPU/pCPU 信息和中断注入。
 - 向上被 Axvisor 的 `vmm` 层直接调用，作为真正的 VM 实例与生命周期实体。
 
@@ -21,7 +21,7 @@
 ### 模块结构
 - `src/lib.rs`：crate 入口，导出 `AxVM`、`AxVMRef`、`AxVCpuRef`、`VMMemoryRegion`、`VMStatus`、`config`、`AxVMHal` 与 `has_hardware_support()`。
 - `src/vm.rs`：核心实现文件，定义 `AxVM`、内部可变/不可变状态、内存区管理、状态切换、`init()`、`boot()`、`shutdown()`、`run_vcpu()` 等。
-- `src/vcpu.rs`：架构适配层，按 `x86_64`、`riscv64`、`aarch64` 选择具体的 vCPU 实现与建模配置。
+- `src/vcpu.rs`：AxVM 自有 vCPU wrapper、状态机、current-vCPU 绑定和架构适配层，按 `x86_64`、`riscv64`、`aarch64`、`loongarch64` 选择具体后端。
 - `src/hal.rs`：定义 `AxVMHal` trait，规定宿主必须提供的能力边界。
 - `src/config.rs`：把 `axvmconfig` 的 TOML 侧配置转成运行时 `AxVMConfig`、`AxVCpuConfig`、`VMImageConfig`、`PhysCpuList` 等结构。
 
@@ -59,7 +59,7 @@ flowchart TD
 1. `AxVM::new(config)` 创建空的客户机地址空间，并把状态初始化为 `Loading`。
 2. `init()` 负责真正完成 VM 组装：创建 vCPU、合并直通地址区间、建立设备、设置页表根与 vCPU 初始入口。
 3. `boot()` 把状态切换到 `Running`，但不直接执行客户机代码。
-4. 真正执行路径在 `run_vcpu(vcpu_id)`，它循环处理 `AxVCpuExitReason`。
+4. 真正执行路径在 `run_vcpu(vcpu_id)`，它循环处理 `VmExit` / 兼容名 `AxVCpuExitReason`。
 5. `shutdown()` 把 VM 推入停止状态；`Drop` 中会触发资源清理。
 
 当前源码表明：
@@ -74,7 +74,7 @@ flowchart TD
 - `riscv64`：对接 `riscv_vcpu`。
 - `aarch64`：对接 `arm_vcpu`，并与 `arm_vgic` 协作处理中断控制器与虚拟定时设备。
 
-同时，宿主相关能力全部通过 `AxVMHal` 提供，因此 `axvm` 可以保持“虚拟机对象层”而不是“宿主特定实现层”。
+同时，架构 vCPU crate 只保留贴近硬件的后端能力，统一生命周期和运行循环在 `axvm` 中完成。
 
 ## 核心功能
 ### 功能概览
@@ -117,7 +117,7 @@ let exit_reason = vm.run_vcpu(0)?;
 ```mermaid
 graph LR
     axvmconfig["axvmconfig"] --> axvm["axvm"]
-    axvcpu["axvcpu"] --> axvm
+    axvm_types["axvm-types"] --> axvm
     axaddrspace["axaddrspace"] --> axvm
     axdevice["axdevice"] --> axvm
     axdevice_base["axdevice_base"] --> axvm
@@ -128,7 +128,7 @@ graph LR
 ```
 
 ### 直接依赖
-- `axvcpu`：提供统一的 vCPU 抽象和 VM exit 原因。
+- `axvm-types`：提供 VM/vCPU 共享值类型、架构协议 trait 和 VM exit 原因。
 - `axaddrspace`：提供客户机地址空间管理与 GPA 映射能力。
 - `axdevice`、`axdevice_base`：提供虚拟设备与直通设备建模。
 - `axvmconfig`：提供从配置文件到运行时结构的配置来源。

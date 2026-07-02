@@ -25,8 +25,7 @@ use ax_memory_addr::align_up_4k;
 use axaddrspace::{AddrSpace, MappingFlags};
 use axdevice::{AxVmDevices, FwCfg, FwCfgPlatformConfig};
 use axdevice_base::AccessWidth;
-use axvcpu::{AxArchVCpu, AxVCpu, AxVCpuExitReason, VCpuState};
-use axvm_types::{GuestPhysAddr, HostPhysAddr, HostVirtAddr};
+use axvm_types::{AxVCpuExitReason, GuestPhysAddr, HostPhysAddr, HostVirtAddr, VmArchVcpuOps};
 
 use crate::{
     boot::{GuestBootDescription, GuestFdtBuilder},
@@ -35,7 +34,7 @@ use crate::{
     irq::InterruptFabric,
     layout::VmAddressLayout,
     lifecycle::{Machine, StopReason, VmLifecycleError, VmStatus},
-    vcpu::AxArchVCpuImpl,
+    vcpu::{AxArchVCpuImpl, AxVCpu, VCpuState},
 };
 
 pub(crate) mod boot;

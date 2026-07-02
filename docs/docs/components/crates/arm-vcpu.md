@@ -13,7 +13,7 @@
 `arm_vcpu` 的职责边界十分清晰：
 
 - 它实现的是 **AArch64 架构相关的 vCPU 运行时**，不是通用虚拟机资源管理层。
-- 它向上实现 `axvcpu::AxArchVCpu` / `AxArchPerCpu`，由 `axvm` 统一调度和管理。
+- 它向上实现 `axvm-types::VmArchVcpuOps` / `VmArchPerCpuOps`，由 `axvm` 统一调度和管理。
 - 它向下直接操作 EL2 寄存器、异常向量、`VTTBR_EL2`、`VTCR_EL2`、`HCR_EL2` 等硬件虚拟化设施。
 - 它不负责完整的 vGIC 设备模型，也不负责 VM 生命周期编排；这些分别由 `arm_vgic`、`axvm` 和更上层 hypervisor 逻辑承担。
 
@@ -21,7 +21,7 @@
 
 ### 模块结构
 - `src/lib.rs`：crate 入口与对外导出。导出 `Aarch64VCpu`、`Aarch64PerCpu`、配置类型和 `TrapFrame` 别名。
-- `src/vcpu.rs`：vCPU 主体实现，包含 `Aarch64VCpu`、`AxArchVCpu` 实现、`run()` 主线、VM 寄存器恢复与 VM exit 分析。
+- `src/vcpu.rs`：vCPU 主体实现，包含 `Aarch64VCpu`、`VmArchVcpuOps` 实现、`run()` 主线、VM 寄存器恢复与 VM exit 分析。
 - `src/pcpu.rs`：per-CPU 虚拟化状态入口，负责 EL2 向量基址、HCR 与 IRQ 处理回调等本地状态。
 - `src/exception.rs`：异常入口 glue，定义 `vmexit_trampoline`、同步异常处理和 VM exit 归类。
 - `src/exception.S`：真正的 EL2 异常向量与保存/恢复汇编路径。
@@ -113,7 +113,7 @@ let exit = vcpu.run()?;
 ## 依赖关系
 ```mermaid
 graph LR
-    axvcpu["axvcpu"] --> current["arm_vcpu"]
+    axvm_types["axvm-types"] --> current["arm_vcpu"]
     axvisor_api["axvisor_api"] --> current
     axaddrspace["axaddrspace"] --> current
     ax-percpu["ax-percpu"] --> current
@@ -124,7 +124,7 @@ graph LR
 ```
 
 ### 直接依赖
-- `axvcpu`：提供架构无关 vCPU trait 契约。
+- `axvm-types`：提供架构无关 vCPU trait 契约和 VM exit 类型。
 - `axvisor_api`：提供宿主中断注入和架构辅助接口。
 - `axaddrspace`：服务 guest 地址空间 / Stage-2 相关协作。
 - `ax-percpu`：保存 EL2 本地状态。
@@ -228,7 +228,7 @@ graph LR
     current --> axaddrspace["axaddrspace"]
     current --> axdevice_base["axdevice_base"]
     current --> ax_errno["ax-errno"]
-    current --> axvcpu["axvcpu"]
+    current --> axvm_types["axvm-types"]
     current --> axvisor_api["axvisor_api"]
     current --> ax-percpu["ax-percpu"]
     axvm["axvm"] --> current
@@ -238,7 +238,7 @@ graph LR
 - `axaddrspace`
 - `axdevice_base`
 - `ax-errno`
-- `axvcpu`
+- `axvm-types`
 - `axvisor_api`
 - `ax-percpu`
 

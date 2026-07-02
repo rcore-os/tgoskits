@@ -50,7 +50,6 @@ ax-hal = { workspace = true, features = ["ipi"] }
 ax-timer-list = { workspace = true }
 irq-framework = { workspace = true }
 # System dependent modules provided by ArceOS-Hypervisor.
-axvcpu = { workspace = true }
 axaddrspace = { workspace = true }
 axvm-types = { workspace = true }
 axhvc = { workspace = true }

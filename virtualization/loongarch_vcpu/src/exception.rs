@@ -6,7 +6,7 @@ use core::{
 };
 
 use ax_errno::AxResult;
-use axvcpu::{AxVCpuExitReason, GuestPhysAddr, MappingFlags, VCpuId, VMId};
+use axvm_types::{AxVCpuExitReason, GuestPhysAddr, MappingFlags, VCpuId, VMId};
 
 use crate::{context_frame::LoongArchContextFrame, host};
 

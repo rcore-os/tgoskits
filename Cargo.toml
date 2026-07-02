@@ -200,7 +200,6 @@ axhvc = { version = "0.4.9", path = "virtualization/axhvc" }
 axklib = { version = "0.6.6", path = "components/axklib" }
 axplat-dyn = { version = "0.7.6", path = "platforms/axplat-dyn", default-features = false }
 axpoll = { version = "0.4.2", path = "components/axpoll" }
-axvcpu = { version = "0.7.2", path = "virtualization/axvcpu" }
 axvisor = { version = "0.5.15", path = "os/axvisor" }
 axvm = { version = "0.5.17", path = "virtualization/axvm", default-features = false }
 axvm-types = { version = "0.5.13", path = "virtualization/axvm-types" }
