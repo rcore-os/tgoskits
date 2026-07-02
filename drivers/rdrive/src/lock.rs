@@ -30,6 +30,15 @@ impl DeviceOwner {
     pub fn is<T: DriverGeneric>(&self) -> bool {
         unsafe { &*self.lock.ptr }.is::<T>()
     }
+
+    /// Frees this device's lock if it is currently held by `pid`.
+    ///
+    /// Thin visibility shim over [`LockInner::reclaim_if_held_by`] so the
+    /// registry (`manager.rs`) can reclaim locks without reaching into the
+    /// otherwise-private `lock` field.
+    pub(crate) fn reclaim_if_held_by(&self, pid: u32) -> bool {
+        self.lock.reclaim_if_held_by(pid)
+    }
 }
 
 impl Drop for LockInner {
@@ -151,21 +160,13 @@ impl LockInner {
 
     /// Free this lock if it is currently held by `pid`.
     ///
-    /// Used by the death-reclaim path (`reclaim_all_held_by`) so a process
-    /// that dies while holding a device lock doesn't wedge it forever. The
-    /// CAS uses the exact token observed by this call, so a pid reused by a
-    /// brand-new process can never be reclaimed out from under it: any
-    /// intervening acquire/release bumps the generation and the CAS here
-    /// simply fails, harmlessly.
-    // Not yet called from production code: its only caller,
-    // `reclaim_all_held_by`, is wired up in the registry-level follow-up
-    // (manager.rs/lib.rs). `expect` (not `allow`) so this fails to compile
-    // on its own once that caller lands, forcing removal instead of leaving
-    // stale suppression behind. Exercised directly by the unit tests below.
-    #[expect(
-        dead_code,
-        reason = "consumed by the registry-level reclaim_all_held_by follow-up"
-    )]
+    /// Used by the death-reclaim path (`reclaim_all_held_by`, via
+    /// [`DeviceOwner::reclaim_if_held_by`]) so a process that dies while
+    /// holding a device lock doesn't wedge it forever. The CAS uses the
+    /// exact token observed by this call, so a pid reused by a brand-new
+    /// process can never be reclaimed out from under it: any intervening
+    /// acquire/release bumps the generation and the CAS here simply fails,
+    /// harmlessly.
     pub fn reclaim_if_held_by(&self, pid: u32) -> bool {
         let current = self.borrowed.load(Ordering::Relaxed);
         let (generation, owner) = unpack(current);

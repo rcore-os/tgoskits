@@ -84,6 +84,22 @@ impl DeviceContainer {
         }
         result
     }
+
+    /// Frees every device lock in this container currently held by `pid`.
+    ///
+    /// Returns the ids of the devices that were reclaimed. Does no logging
+    /// itself: callers running under a spinlock (see `lib.rs::edit`) should
+    /// keep this call inside the critical section and log the result after
+    /// releasing it.
+    pub fn reclaim_all_held_by(&self, pid: u32) -> Vec<DeviceId> {
+        let mut reclaimed = Vec::new();
+        for (id, dev) in self.devices.iter() {
+            if dev.reclaim_if_held_by(pid) {
+                reclaimed.push(*id);
+            }
+        }
+        reclaimed
+    }
 }
 
 #[cfg(test)]
@@ -257,5 +273,60 @@ mod tests {
             "Expected error when trying to lock an already locked device"
         );
         let _ = device;
+    }
+
+    /// Fixed-pid `Osal` used to acquire a lock as a specific "process" in
+    /// tests, without needing access to `LockInner` (private to lock.rs).
+    struct FixedPidOsal(usize);
+
+    impl crate::Osal for FixedPidOsal {
+        fn get_pid(&self) -> crate::Pid {
+            self.0.into()
+        }
+    }
+
+    #[test]
+    fn test_reclaim_all_held_by() {
+        static OSAL_DEAD: FixedPidOsal = FixedPidOsal(100);
+        static OSAL_LIVE: FixedPidOsal = FixedPidOsal(200);
+
+        let mut container = DeviceContainer::default();
+        let desc_a = Descriptor::new();
+        let id_a = desc_a.device_id;
+        container.insert(desc_a, Empty);
+
+        let desc_b = Descriptor::new();
+        let id_b = desc_b.device_id;
+        container.insert(desc_b, Empty);
+
+        let weak_a = container.get_typed::<Empty>(id_a).unwrap();
+        let weak_b = container.get_typed::<Empty>(id_b).unwrap();
+
+        // pid 100 acquires device A, then dies without ever releasing it.
+        crate::set_osal(&OSAL_DEAD);
+        let guard_a = weak_a.lock().expect("pid 100 acquires device A");
+        core::mem::forget(guard_a);
+
+        // pid 200 legitimately holds device B throughout.
+        crate::set_osal(&OSAL_LIVE);
+        let guard_b = weak_b.lock().expect("pid 200 acquires device B");
+
+        let reclaimed = container.reclaim_all_held_by(100);
+        assert_eq!(
+            reclaimed,
+            vec![id_a],
+            "only the dead pid's device should be reclaimed"
+        );
+
+        assert!(
+            weak_b.try_lock().is_err(),
+            "a live holder's device must not be reclaimed"
+        );
+
+        let guard_a2 = weak_a
+            .try_lock()
+            .expect("device A was freed by the reclaim and can be re-acquired");
+        drop(guard_a2);
+        drop(guard_b);
     }
 }

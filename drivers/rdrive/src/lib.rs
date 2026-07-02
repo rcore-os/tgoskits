@@ -265,6 +265,24 @@ pub fn get_one<T: DriverGeneric>() -> Option<Device<T>> {
     read(|manager| manager.dev_container.get_one())
 }
 
+/// Frees every device lock still held by `pid` (a dead process). Returns the
+/// number of locks reclaimed. PID-reuse-safe: reclaim CASes the exact
+/// observed (generation, owner) token, so a recycled pid that re-acquired
+/// the lock is never stomped.
+pub fn reclaim_all_held_by(pid: u32) -> usize {
+    // Keep the registry spinlock's critical section tiny: only the CAS work
+    // happens inside `edit`; logging happens after it's released.
+    let reclaimed = edit(|manager| manager.dev_container.reclaim_all_held_by(pid));
+    let count = reclaimed.len();
+    for id in reclaimed {
+        warn!(
+            "reclaimed device lock (id={:?}) held by dead pid {}",
+            id, pid
+        );
+    }
+    count
+}
+
 pub fn fdt_phandle_to_device_id(phandle: Phandle) -> Option<DeviceId> {
     probe::fdt::try_system().and_then(|system| system.phandle_to_device_id(phandle))
 }
