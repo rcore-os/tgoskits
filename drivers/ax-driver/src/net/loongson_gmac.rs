@@ -409,7 +409,7 @@ impl GmacRegs {
 
         if config != old_config {
             self.mac.write(GMAC_CONFIG, config);
-            info!(
+            debug!(
                 "{DEVICE_NAME}: MAC link config updated: speed={}Mbps, duplex={}, \
                  config={old_config:#010x}->{config:#010x}",
                 link.speed_mbps,
@@ -523,7 +523,7 @@ impl GmacNet {
         );
 
         match regs.phy_id() {
-            Some(phy_id) => info!("{DEVICE_NAME}: PHY addr={PHY_ADDR}, id={phy_id:#010x}"),
+            Some(phy_id) => debug!("{DEVICE_NAME}: PHY addr={PHY_ADDR}, id={phy_id:#010x}"),
             None => warn!("{DEVICE_NAME}: failed to read PHY id via MDIO"),
         }
 
@@ -559,7 +559,7 @@ impl GmacNet {
         regs.configure_link(link);
         regs.clear_pending_irq();
 
-        info!(
+        debug!(
             "{DEVICE_NAME}: registered MAC {:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
             mac_address[0],
             mac_address[1],
@@ -1073,7 +1073,7 @@ fn probe_fdt(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
     let phy_mode = phy_mode_from_fdt(&info);
     let phy_mode = phy_mode.as_deref().unwrap_or("<unknown>");
 
-    info!(
+    debug!(
         "probing {DEVICE_NAME}: node={}, reg={fw_addr:#x}, paddr={paddr:#x}, vaddr={vaddr:#x}, \
          size={size:#x}, phy_mode={phy_mode}",
         info.node.name(),
@@ -1259,7 +1259,7 @@ fn ring_next(index: usize) -> usize {
 
 fn log_link_state(link: LinkState) {
     if link.up {
-        info!(
+        debug!(
             "{DEVICE_NAME}: link up, speed={}Mbps, duplex={}, rgmii_status={:#x}",
             link.speed_mbps,
             if link.full_duplex { "full" } else { "half" },

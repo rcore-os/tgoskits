@@ -134,7 +134,7 @@ fn register_liointc(
     )?;
     intc.init();
 
-    info!(
+    debug!(
         "probing LS2K1000 LIOINTC: node={}, regs={reg_addr:#x}->{:#x}, isr={isr_addr:#x}->{:#x}, \
          parent_irqs={:?}, parent_int_map={:#x?}, inputs={}",
         node_name,

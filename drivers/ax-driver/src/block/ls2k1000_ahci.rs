@@ -7,7 +7,7 @@ use core::{
 };
 
 use axklib::time::busy_wait;
-use log::{info, trace, warn};
+use log::{debug, info, trace, warn};
 use rdif_block::{
     BlkError, DeviceInfo, DriverGeneric, Event, IQueue, IdList, Interface, IrqHandler,
     IrqSourceInfo, IrqSourceList, QueueInfo, QueueLimits, Request, RequestFlags, RequestId,
@@ -855,7 +855,7 @@ impl AhciController {
         let bohc = read_reg_u32(REG_BOHC);
         let ahci_paddr = AHCI_PADDR.load(Ordering::Acquire);
 
-        info!(
+        debug!(
             "AHCI HBA: base={ahci_paddr:#x}, cap={cap:#010x}, ghc={ghc:#010x}, is={is:#010x}, \
              pi={raw_pi:#010x}, effective_pi={pi:#010x}, vs={vs:#010x}, cap2={cap2:#010x}, \
              bohc={bohc:#010x}"
@@ -1259,7 +1259,7 @@ fn probe_fdt(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
     AHCI_PADDR.store(paddr, Ordering::Release);
     AHCI_PORTS_IMPLEMENTED.store(ports_implemented, Ordering::Release);
 
-    info!(
+    debug!(
         "probing {DEVICE_NAME}: node={}, reg={fw_addr:#x}, paddr={paddr:#x}, vaddr={vaddr:#x}, \
          size={size:#x}, ports_implemented={ports_implemented:#010x}",
         info.node.name(),

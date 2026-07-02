@@ -118,7 +118,7 @@ fn map_loongson_fdt_reg(
     let paddr = firmware_addr_to_phys(fw_addr);
     let size = base_reg.size.unwrap_or(0x1000) as usize;
     let mmio = iomap_firmware_device("loongson rtc", fw_addr, size)?;
-    log::info!(
+    log::debug!(
         "probing loongson rtc: node={}, reg={fw_addr:#x}, paddr={paddr:#x}, vaddr={:#x}, \
          size={size:#x}",
         info.node.name(),
