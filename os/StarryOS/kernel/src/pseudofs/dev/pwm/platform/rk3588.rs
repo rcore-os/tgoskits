@@ -64,31 +64,33 @@ impl PwmHardware {
     }
 
     fn ensure_initialized(&mut self) -> VfsResult<&mut RockchipPwm> {
-        if self.controller.is_some() {
-            return Ok(self.controller.as_mut().unwrap());
+        if self.controller.is_none() {
+            configure_pinctrl(&self.desc)?;
+            configure_clocks(&self.desc)?;
+
+            let base = NonNull::new(
+                ax_mm::iomap(PhysAddr::from_usize(self.desc.base), RK_PWM_MMIO_SIZE)
+                    .map_err(|err| {
+                        warn!("failed to map RK3588 PWM MMIO {:#x}: {err}", self.desc.base);
+                        VfsError::NoMemory
+                    })?
+                    .as_mut_ptr(),
+            )
+            .ok_or(VfsError::NoMemory)?;
+            // The MMIO mapping is kept for the lifetime of this sysfs PWM object.
+            // Access serialization is provided by the global PWM sysfs mutex.
+            let mut controller =
+                unsafe { RockchipPwm::new(base, RK_PWM_CLOCK_HZ, PWM_CHANNELS_PER_CHIP as usize) };
+            controller
+                .init(PwmPolarity::Normal)
+                .map_err(map_pwm_error)?;
+            self.controller = Some(controller);
         }
 
-        configure_pinctrl(&self.desc)?;
-        configure_clocks(&self.desc)?;
-
-        let base = NonNull::new(
-            ax_mm::iomap(PhysAddr::from_usize(self.desc.base), RK_PWM_MMIO_SIZE)
-                .map_err(|err| {
-                    warn!("failed to map RK3588 PWM MMIO {:#x}: {err}", self.desc.base);
-                    VfsError::NoMemory
-                })?
-                .as_mut_ptr(),
-        )
-        .ok_or(VfsError::NoMemory)?;
-        // The MMIO mapping is kept for the lifetime of this sysfs PWM object.
-        // Access serialization is provided by the global PWM sysfs mutex.
-        let mut controller =
-            unsafe { RockchipPwm::new(base, RK_PWM_CLOCK_HZ, PWM_CHANNELS_PER_CHIP as usize) };
-        controller
-            .init(PwmPolarity::Normal)
-            .map_err(map_pwm_error)?;
-        self.controller = Some(controller);
-        Ok(self.controller.as_mut().unwrap())
+        match self.controller.as_mut() {
+            Some(controller) => Ok(controller),
+            None => Err(VfsError::InvalidInput),
+        }
     }
 }
 
