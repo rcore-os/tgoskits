@@ -566,6 +566,7 @@ BT 0 ip=0x1 fp=0x2
             post_build_cmds: Vec::new(),
             to_bin: false,
             bin: None,
+            test: None,
         }
     }
 }

@@ -9,10 +9,10 @@
 
 use ax_errno::{AxResult, ax_err};
 use axvm_types::{
-    AxVCpuExitReason, GuestPhysAddr, HostPhysAddr, VCpuId, VMId, VmArchPerCpuOps, VmArchVcpuOps,
+    GuestPhysAddr, HostPhysAddr, VCpuId, VMId, VmArchPerCpuOps, VmArchVcpuOps, VmExit,
 };
 
-use crate::X86VCpuSetupConfig;
+use crate::{X86VCpuCreateConfig, X86VCpuSetupConfig};
 
 /// Stub per-CPU state; never instantiated in no-backend builds.
 pub struct X86ArchPerCpuState;
@@ -39,10 +39,10 @@ impl VmArchPerCpuOps for X86ArchPerCpuState {
 pub struct X86ArchVCpu;
 
 impl VmArchVcpuOps for X86ArchVCpu {
-    type CreateConfig = ();
+    type CreateConfig = X86VCpuCreateConfig;
     type SetupConfig = X86VCpuSetupConfig;
 
-    fn new(_vm_id: VMId, _vcpu_id: VCpuId, _config: ()) -> AxResult<Self> {
+    fn new(_vm_id: VMId, _vcpu_id: VCpuId, _config: X86VCpuCreateConfig) -> AxResult<Self> {
         ax_err!(Unsupported, "no hypervisor backend (vmx/svm) enabled")
     }
 
@@ -50,7 +50,7 @@ impl VmArchVcpuOps for X86ArchVCpu {
         ax_err!(Unsupported, "no hypervisor backend (vmx/svm) enabled")
     }
 
-    fn set_ept_root(&mut self, _ept_root: HostPhysAddr) -> AxResult {
+    fn set_nested_page_table_root(&mut self, _nested_page_table_root: HostPhysAddr) -> AxResult {
         ax_err!(Unsupported, "no hypervisor backend (vmx/svm) enabled")
     }
 
@@ -58,7 +58,7 @@ impl VmArchVcpuOps for X86ArchVCpu {
         ax_err!(Unsupported, "no hypervisor backend (vmx/svm) enabled")
     }
 
-    fn run(&mut self) -> AxResult<AxVCpuExitReason> {
+    fn run(&mut self) -> AxResult<VmExit> {
         ax_err!(Unsupported, "no hypervisor backend (vmx/svm) enabled")
     }
 

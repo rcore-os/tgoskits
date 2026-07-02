@@ -19,7 +19,7 @@ mod ivc;
 pub mod loongarch_irq;
 pub(crate) mod vcpus;
 #[cfg(target_arch = "x86_64")]
-mod x86_irq;
+pub(crate) mod x86_irq;
 
 use core::sync::atomic::{AtomicUsize, Ordering};
 
@@ -32,7 +32,7 @@ use crate::{StopReason, VmStatus};
 /// The instantiated VM ref type (by `Arc`).
 pub type VMRef = crate::AxVMRef;
 /// The instantiated VCpu ref type (by `Arc`).
-pub type VCpuRef = crate::AxVCpuRef;
+pub type VCpuRef = crate::vm::AxVCpuRef;
 
 static VMM: crate::HostWaitQueueHandle = crate::HostWaitQueueHandle::new();
 

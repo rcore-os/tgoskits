@@ -369,6 +369,61 @@ cargo starry perf --format Svg
 cargo starry kmod build --all
 ```
 
+### perf
+
+`cargo starry perf` 构建 StarryOS 并通过 qperf 进行性能剖析，输出火焰图或 callchain 数据：
+
+```text
+cargo xtask starry perf [options]
+```
+
+| 参数 | 说明 |
+|------|------|
+| `-c/--case` | 性能测试用例名（默认 `boot`） |
+| `--arch` | 目标架构 |
+| `--freq` | 采样频率（Hz，默认 99） |
+| `--format` | 输出格式：`Folded`/`Svg`/`Pprof`/`All`（默认 `All`） |
+| `--mode` | 采样模式：`Tb`（trace buffer，默认）/ `Insn`（指令级） |
+| `--max-depth` | 最大调用栈深度（默认 128） |
+| `--timeout` | 采集超时（秒，默认 20） |
+| `--output-dir`/`--out` | 输出根目录，最终报告位于 `<DIR>/perf/<arch>/latest` |
+| `--host-time`/`--no-host-time` | 收集/禁用 QEMU 进程的 host wall/user/system CPU 时间 |
+| `--host-perf` | 在 host 侧用 `perf stat` 采集 QEMU 进程指标 |
+| `--host-perf-events` | host perf stat 事件（逗号分隔，默认 `task-clock,cycles,...`） |
+| `--shell-init-cmd`/`--workload` | Guest shell 出现 boot 提示后发送的命令 |
+| `--shell-prefix` | 发送 `--shell-init-cmd` 前匹配的提示子串 |
+| `--start-marker`/`--stop-marker` | Guest stdout 标记，控制采样窗口起止 |
+| `--workload-timeout` | 采样窗口超时（秒），超时则停止 QEMU |
+| `--qperf-metrics` | 启用 feature-gated 的 in-guest qperf 指标计数 |
+| `--flamegraph` | 即使 `--format` 非 SVG 也生成火焰图 |
+| `--flamegraph-kind` | 火焰图格式：`Svg`（默认）/`Html`/`Folded` |
+| `--full-stack` | 保留本构建可采集的最深栈 |
+| `--callchain`/`--perf-callchain` | qperf callchain 模式：`Leaf`（最快）/`Fp`（需帧指针）/`Logical` |
+| `--debuginfo`/`--perf-debuginfo` | 添加 DWARF 调试信息并保留符号 |
+| `--force-frame-pointers`/`--perf-force-frame-pointers` | 强制帧指针以支持 FP 解栈 |
+| `--demangle` | 在 qperf-analyzer 中强制 Rust demangle |
+| `--no-truncate` | 火焰图中保留极小帧（min width 设为 0） |
+| `--include-kernel-symbols` | 包含内核符号（StarryOS 默认开启） |
+| `--include-user-symbols` | 包含用户符号（当前 qperf 仅解析内核 ELF） |
+| `--symbol-style` | 折叠栈符号风格：`Full`（默认）/`Short`/`Module` |
+| `--focus` | 为匹配正则的帧生成额外的聚焦折叠栈/火焰图 |
+| `--kernel-filter` | 仅保留内核态帧 |
+| `--smp` | CPU 核数 |
+| `--debug` | debug 构建 |
+
+### kmod build
+
+`cargo starry kmod build` 编译 StarryOS 可加载内核模块（`.ko`）：
+
+```text
+cargo xtask starry kmod build [--arch <ARCH>] [--target <TARGET>] [--config <PATH>] [--smp <N>] [--debug] \
+                              [-m/--module <PATH>... | --all] [--rootfs <IMAGE>]
+```
+
+模块从 `os/StarryOS/lkm/` 目录或 `--module` 显式指定的路径发现（支持目录深度 ≤ 10 的自动查找）。Rust 模块复用 StarryOS 内核构建配置的 Cargo 环境，使用独立链接脚本 `os/StarryOS/scripts/kmod-linker.ld` 把 rlib 部分链接为 ET_REL `.ko`；Linux Kbuild C 模块仅在所选架构与 host 架构相同时调用模块目录自带的 Makefile。`--rootfs` 指定时，所有产物会通过 `debugfs` 注入到镜像的 `/modules/` 目录下。
+
+`--all` 与 `--module` 互斥；两者都未提供时默认扫描 `os/StarryOS/lkm/`。
+
 ---
 
 ## Axvisor

@@ -19,7 +19,7 @@
 可以把 `axvm` 理解为“可被 Hypervisor 编排的 VM 对象层”，而不是顶层 Hypervisor 程序。
 
 ### 模块结构
-- `src/lib.rs`：crate 入口，导出 `AxVM`、`AxVMRef`、`AxVCpuRef`、`VMMemoryRegion`、`VMStatus`、`config`、`AxVMHal` 与 `has_hardware_support()`。
+- `src/lib.rs`：crate 入口，导出 `AxVM`、`AxVMRef`、`VMMemoryRegion`、`VMStatus`、`config`、`AxVMHal` 与 `has_hardware_support()`。
 - `src/vm.rs`：核心实现文件，定义 `AxVM`、内部可变/不可变状态、内存区管理、状态切换、`init()`、`boot()`、`shutdown()`、`run_vcpu()` 等。
 - `src/vcpu.rs`：AxVM 自有 vCPU wrapper、状态机、current-vCPU 绑定和架构适配层，按 `x86_64`、`riscv64`、`aarch64`、`loongarch64` 选择具体后端。
 - `src/hal.rs`：定义 `AxVMHal` trait，规定宿主必须提供的能力边界。
@@ -31,7 +31,7 @@
 - `AxVMInnerMut<H>`：可变状态，包含 `address_space`、`memory_regions`、`config` 和 `vm_status`。
 - `VMMemoryRegion`：记录客户机物理地址、宿主虚拟地址、布局信息和是否需要回收。
 - `VMStatus`：`Loading`、`Loaded`、`Running`、`Suspended`、`Stopping`、`Stopped`，描述 VM 生命周期。
-- `AxVCpuRef<U>`：统一的 vCPU 引用类型，是上层调度与 VM exit 处理的基本单元。
+- `VcpuSnapshot`：对外暴露的架构无关 vCPU 状态快照。
 - `AxVMConfig` / `AxVMCrateConfig`：前者用于运行时 VM 创建，后者更贴近 TOML 配置源。
 
 ### 1.4 VM 生命周期与主线
@@ -59,7 +59,7 @@ flowchart TD
 1. `AxVM::new(config)` 创建空的客户机地址空间，并把状态初始化为 `Loading`。
 2. `init()` 负责真正完成 VM 组装：创建 vCPU、合并直通地址区间、建立设备、设置页表根与 vCPU 初始入口。
 3. `boot()` 把状态切换到 `Running`，但不直接执行客户机代码。
-4. 真正执行路径在 `run_vcpu(vcpu_id)`，它循环处理 `VmExit` / 兼容名 `AxVCpuExitReason`。
+4. 真正执行路径在 `run_vcpu(vcpu_id)`，它循环处理 `VmExit`。
 5. `shutdown()` 把 VM 推入停止状态；`Drop` 中会触发资源清理。
 
 当前源码表明：
@@ -111,7 +111,7 @@ vm.boot()?;
 let exit_reason = vm.run_vcpu(0)?;
 ```
 
-在实际仓库中，这套流程由 `os/axvisor/src/vmm/*` 完成，而不是由普通库使用者直接手写。
+在实际仓库中，这套流程由 `virtualization/axvm/src/runtime/*` 完成，而不是由普通库使用者直接手写。
 
 ## 依赖关系
 ```mermaid

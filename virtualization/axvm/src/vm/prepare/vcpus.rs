@@ -3,27 +3,13 @@
 use alloc::{boxed::Box, sync::Arc, vec::Vec};
 
 use ax_errno::AxResult;
-#[cfg(target_arch = "x86_64")]
-use axvm_types::EmulatedDeviceType;
-use axvm_types::GuestPhysAddr;
-#[cfg(not(any(
-    target_arch = "aarch64",
-    target_arch = "loongarch64",
-    target_arch = "x86_64"
-)))]
-use axvm_types::VmArchVcpuOps;
+use axvm_types::{EmulatedDeviceType, GuestPhysAddr};
 
 use super::super::{AxVCpuRef, AxVMResources, VCpu};
-#[cfg(any(target_arch = "aarch64", target_arch = "loongarch64"))]
-use crate::config::VMInterruptMode;
-#[cfg(not(any(
-    target_arch = "aarch64",
-    target_arch = "loongarch64",
-    target_arch = "x86_64"
-)))]
-use crate::vcpu::AxArchVCpuImpl;
-#[cfg(not(target_arch = "x86_64"))]
-use crate::vcpu::AxVCpuCreateConfig;
+use crate::{
+    arch::{ArchOps, CurrentArch, VcpuCreateContext, VcpuSetupContext},
+    config::{GuestBootPolicy, VMBootProtocol},
+};
 
 pub(super) struct PreparedVcpus {
     vcpus: Vec<AxVCpuRef>,
@@ -36,40 +22,23 @@ impl PreparedVcpus {
         dtb_addr: Option<GuestPhysAddr>,
     ) -> AxResult<Self> {
         let vcpu_id_pcpu_sets = resources.config.phys_cpu_ls.get_vcpu_affinities_pcpu_ids();
-        #[cfg(target_arch = "loongarch64")]
-        let loongarch_iocsr_state = {
-            let vcpu_state_count = vcpu_id_pcpu_sets
-                .iter()
-                .map(|(vcpu_id, ..)| *vcpu_id)
-                .max()
-                .map_or(0, |vcpu_id| vcpu_id + 1);
-            loongarch_vcpu::LoongArchIocsrState::new(vcpu_state_count)?
-        };
+        let create_state = CurrentArch::new_vcpu_create_state(&vcpu_id_pcpu_sets)?;
+        let firmware_boot = guest_uses_firmware_boot(resources);
 
         debug!("dtb_load_gpa: {dtb_addr:?}");
         debug!("id: {vm_id}, VCpuIdPCpuSets: {vcpu_id_pcpu_sets:#x?}");
 
         let mut vcpus = Vec::with_capacity(vcpu_id_pcpu_sets.len());
-        for (vcpu_id, phys_cpu_set, _pcpu_id) in vcpu_id_pcpu_sets {
-            #[cfg(target_arch = "aarch64")]
-            let arch_config = AxVCpuCreateConfig {
-                mpidr_el1: _pcpu_id as _,
-                dtb_addr: dtb_addr.unwrap_or_default().as_usize(),
-            };
-            #[cfg(target_arch = "riscv64")]
-            let arch_config = AxVCpuCreateConfig {
-                hart_id: vcpu_id as _,
-                dtb_addr: dtb_addr.unwrap_or_default().as_usize(),
-            };
-            #[cfg(target_arch = "loongarch64")]
-            let arch_config = AxVCpuCreateConfig {
-                cpu_id: vcpu_id,
-                dtb_addr: dtb_addr.unwrap_or_default().as_usize(),
-                boot_args: resources.config.cpu_config.boot_args,
-                boot_stack_top: resources.config.cpu_config.boot_stack_top,
-                firmware_boot: resources.config.cpu_config.firmware_boot,
-                iocsr_state: loongarch_iocsr_state.clone(),
-            };
+        for (vcpu_id, phys_cpu_set, phys_cpu_id) in vcpu_id_pcpu_sets {
+            let arch_config = CurrentArch::build_vcpu_create_config(
+                &create_state,
+                VcpuCreateContext {
+                    vcpu_id,
+                    phys_cpu_id,
+                    dtb_addr,
+                    firmware_boot,
+                },
+            )?;
 
             // FIXME: VCpu is neither `Send` nor `Sync` by design, check whether
             // 1. we should make it `Send` and `Sync`, or
@@ -78,16 +47,8 @@ impl PreparedVcpus {
             vcpus.push(Arc::new(VCpu::new(
                 vm_id,
                 vcpu_id,
-                0, // Currently not used.
                 phys_cpu_set,
-                #[cfg(target_arch = "aarch64")]
                 arch_config,
-                #[cfg(target_arch = "loongarch64")]
-                arch_config,
-                #[cfg(target_arch = "riscv64")]
-                arch_config,
-                #[cfg(target_arch = "x86_64")]
-                (),
             )?));
         }
 
@@ -96,47 +57,16 @@ impl PreparedVcpus {
 
     pub(super) fn setup(&self, resources: &AxVMResources) -> AxResult {
         for vcpu in &self.vcpus {
-            #[cfg(target_arch = "aarch64")]
-            let setup_config = {
-                let passthrough = resources.config.interrupt_mode() == VMInterruptMode::Passthrough;
-                crate::vcpu::AxVCpuSetupConfig {
-                    passthrough_interrupt: passthrough,
-                    passthrough_timer: passthrough,
-                }
-            };
-            #[cfg(target_arch = "loongarch64")]
-            let setup_config = {
-                let passthrough = resources.config.interrupt_mode() == VMInterruptMode::Passthrough;
-                crate::vcpu::AxVCpuSetupConfig {
-                    passthrough_interrupt: passthrough,
-                    passthrough_timer: passthrough,
-                    boot_args: resources.config.cpu_config.boot_args,
-                    boot_stack_top: resources.config.cpu_config.boot_stack_top,
-                    firmware_boot: resources.config.cpu_config.firmware_boot,
-                }
-            };
-            #[cfg(not(any(
-                target_arch = "aarch64",
-                target_arch = "loongarch64",
-                target_arch = "x86_64"
-            )))]
-            #[allow(clippy::let_unit_value)]
-            let setup_config = <AxArchVCpuImpl as VmArchVcpuOps>::SetupConfig::default();
-            #[cfg(target_arch = "x86_64")]
-            let setup_config = {
-                let mut config = crate::vcpu::AxVCpuSetupConfig {
-                    emulate_com1: resources
-                        .config
-                        .emu_devices()
-                        .iter()
-                        .any(|dev| dev.emu_type == EmulatedDeviceType::Console),
-                    ..Default::default()
-                };
-                for port in resources.config.pass_through_ports() {
-                    config.add_passthrough_port_range(port.base, port.length)?;
-                }
-                config
-            };
+            let setup_config = CurrentArch::build_vcpu_setup_config(VcpuSetupContext {
+                interrupt_mode: resources.config.interrupt_mode(),
+                emulates_console: resources
+                    .config
+                    .emu_devices()
+                    .iter()
+                    .any(|dev| dev.emu_type == EmulatedDeviceType::Console),
+                passthrough_ports: resources.config.pass_through_ports(),
+                firmware_boot: guest_uses_firmware_boot(resources),
+            })?;
 
             let entry = if vcpu.id() == 0 {
                 resources.config.bsp_entry()
@@ -158,4 +88,13 @@ impl PreparedVcpus {
     pub(super) fn into_boxed_slice(self) -> Box<[AxVCpuRef]> {
         self.vcpus.into_boxed_slice()
     }
+}
+
+fn guest_uses_firmware_boot(resources: &AxVMResources) -> bool {
+    matches!(
+        resources.config.boot_policy(),
+        GuestBootPolicy::AdjustKernelForBootProtocol {
+            protocol: VMBootProtocol::Uefi,
+        }
+    )
 }

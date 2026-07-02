@@ -25,7 +25,6 @@ extern crate log;
 
 mod arch;
 pub mod boot;
-mod cache;
 mod host;
 pub mod irq;
 pub mod layout;
@@ -38,13 +37,15 @@ mod timer;
 mod vcpu;
 mod vm;
 
+use crate::arch::ArchOps;
+
 pub mod config;
 
 pub use ax_cpumask::CpuMask;
 pub use ax_page_table_entry::MappingFlags;
 pub use axvm_types::{
-    AccessWidth, AxVCpuExitReason, GuestPhysAddr, HostPhysAddr, InterruptTriggerMode, Port,
-    SysRegAddr, VMId,
+    AccessWidth, GuestPhysAddr, HostPhysAddr, InterruptTriggerMode, Port, SysRegAddr, VMId, VmExit,
+    VmVcpuState,
 };
 pub(crate) use host::{
     paging::HostPagingHandler,
@@ -61,12 +62,13 @@ pub use runtime::loongarch_irq::{
     register_guest_irq_route as register_loongarch_guest_irq_route,
     unregister_guest_irq_routes as unregister_loongarch_guest_irq_routes,
 };
-pub use task::{AsVCpuTask, VCpuTask};
-pub use vcpu::VCpuState;
-pub use vm::{AxVCpuRef, AxVM, AxVMRef, FwCfgDeviceConfig, PreparedMemoryLayout, VMMemoryRegion};
+pub(crate) use task::{AsVCpuTask, VCpuTask};
+pub use vm::{
+    AxVM, AxVMRef, FwCfgDeviceConfig, PreparedMemoryLayout, VMMemoryRegion, VcpuSnapshot,
+};
 
 /// The architecture-independent per-CPU type.
-pub type AxVMPerCpu = vcpu::AxPerCpu<vcpu::AxVMArchPerCpuImpl>;
+pub(crate) type AxVMPerCpu = vcpu::AxPerCpu<arch::ArchPerCpu>;
 
 /// Check and dispatch pending AxVM timer events on the current CPU.
 pub fn check_timer_events() {
@@ -75,7 +77,7 @@ pub fn check_timer_events() {
 
 /// Clean data cache lines covering a host virtual address range.
 pub fn clean_dcache_range(addr: ax_memory_addr::VirtAddr, size: usize) {
-    cache::clean_dcache_range(addr, size);
+    arch::CurrentArch::clean_dcache_range(addr, size);
 }
 
 /// Return the host FDT boot argument physical address.

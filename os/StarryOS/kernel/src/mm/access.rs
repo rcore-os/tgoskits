@@ -368,10 +368,20 @@ fn handle_page_fault(vaddr: VirtAddr, access_flags: MappingFlags) -> bool {
     aspace_arc.lock().handle_page_fault(vaddr, access_flags)
 }
 
+pub const PATH_MAX: usize = 4096;
+
 pub fn vm_load_string(ptr: *const c_char) -> AxResult<String> {
     #[allow(clippy::unnecessary_cast)]
     let bytes = vm_load_until_nul(ptr as *const u8)?;
     String::from_utf8(bytes).map_err(|_| AxError::IllegalBytes)
+}
+
+pub fn vm_load_path_string(ptr: *const c_char) -> AxResult<String> {
+    let path = vm_load_string(ptr)?;
+    if path.len() >= PATH_MAX {
+        return Err(AxError::NameTooLong);
+    }
+    Ok(path)
 }
 
 struct Vm;

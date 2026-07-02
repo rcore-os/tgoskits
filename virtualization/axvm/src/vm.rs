@@ -25,16 +25,17 @@ use ax_memory_addr::align_up_4k;
 use axaddrspace::{AddrSpace, MappingFlags};
 use axdevice::{AxVmDevices, FwCfg, FwCfgPlatformConfig};
 use axdevice_base::AccessWidth;
-use axvm_types::{AxVCpuExitReason, GuestPhysAddr, HostPhysAddr, HostVirtAddr, VmArchVcpuOps};
+use axvm_types::{GuestPhysAddr, HostPhysAddr, HostVirtAddr, VmArchVcpuOps, VmExit, VmVcpuState};
 
 use crate::{
+    arch::{ArchOps, CurrentArch},
     boot::{GuestBootDescription, GuestFdtBuilder},
     config::{AxVMConfig, PhysCpuList, VMInterruptMode},
     host::paging::{HostPagingHandler, virt_to_phys},
     irq::InterruptFabric,
     layout::VmAddressLayout,
     lifecycle::{Machine, StopReason, VmLifecycleError, VmStatus},
-    vcpu::{AxArchVCpuImpl, AxVCpu, VCpuState},
+    vcpu::AxVCpu,
 };
 
 pub(crate) mod boot;
@@ -46,11 +47,22 @@ const VM_ASPACE_BASE: usize = 0x0;
 const VM_ASPACE_SIZE: usize = 0x7fff_ffff_f000;
 
 /// A vCPU with architecture-independent interface.
-type VCpu = AxVCpu<AxArchVCpuImpl>;
+type VCpu = AxVCpu<crate::arch::ArchVCpu>;
 /// A reference to a vCPU.
-pub type AxVCpuRef = Arc<VCpu>;
+pub(crate) type AxVCpuRef = Arc<VCpu>;
 /// A reference to a VM.
 pub type AxVMRef = Arc<AxVM>;
+
+/// Architecture-independent vCPU runtime metadata.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct VcpuSnapshot {
+    /// vCPU identifier inside its VM.
+    pub id: usize,
+    /// Current AxVM wrapper state.
+    pub state: VmVcpuState,
+    /// Optional physical CPU affinity mask.
+    pub phys_cpu_set: Option<usize>,
+}
 
 fn width_mask(width: AccessWidth) -> usize {
     match width {
@@ -111,14 +123,11 @@ pub(crate) struct AxVMResources {
 unsafe impl Send for AxVMResources {}
 unsafe impl Sync for AxVMResources {}
 
+#[allow(dead_code)]
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum PendingInterrupt {
     Normal(usize),
-    #[cfg(target_arch = "loongarch64")]
-    LoongArchExternal {
-        vector: usize,
-        physical_irq: usize,
-    },
+    External { vector: usize, physical_irq: usize },
 }
 
 /// Runtime-only resources owned by Running/Paused/Stopping lifecycle states.
@@ -176,7 +185,7 @@ impl VmRuntimeHandle {
             .lock()
             .entry(vcpu_id)
             .or_default()
-            .push(PendingInterrupt::LoongArchExternal {
+            .push(PendingInterrupt::External {
                 vector,
                 physical_irq,
             });
@@ -249,7 +258,7 @@ impl AxVMResources {
     fn new(config: AxVMConfig) -> AxResult<Self> {
         Ok(Self {
             address_space: AddrSpace::new_empty(
-                crate::vcpu::max_guest_page_table_levels(),
+                CurrentArch::max_guest_page_table_levels(),
                 GuestPhysAddr::from(VM_ASPACE_BASE),
                 VM_ASPACE_SIZE,
             )?,
@@ -465,7 +474,7 @@ impl AxVM {
     /// Retrieves the vCPU corresponding to the given vcpu_id for the VM.
     /// Returns None if the vCPU does not exist.
     #[inline]
-    pub fn vcpu(&self, vcpu_id: usize) -> Option<AxVCpuRef> {
+    pub(crate) fn vcpu(&self, vcpu_id: usize) -> Option<AxVCpuRef> {
         self.vcpu_list().get(vcpu_id).cloned()
     }
 
@@ -478,13 +487,25 @@ impl AxVM {
 
     /// Returns a snapshot of the VM's vCPU references.
     #[inline]
-    pub fn vcpu_list(&self) -> Vec<AxVCpuRef> {
+    pub(crate) fn vcpu_list(&self) -> Vec<AxVCpuRef> {
         self.with_resources(|resources| Ok(resources.vcpu_list()?.to_vec()))
             .unwrap_or_default()
     }
 
-    /// Returns the base address of the two-stage address translation page table for the VM.
-    pub fn ept_root(&self) -> AxResult<HostPhysAddr> {
+    /// Returns architecture-independent vCPU metadata snapshots.
+    pub fn vcpu_snapshots(&self) -> Vec<VcpuSnapshot> {
+        self.vcpu_list()
+            .iter()
+            .map(|vcpu| VcpuSnapshot {
+                id: vcpu.id(),
+                state: vcpu.state(),
+                phys_cpu_set: vcpu.phys_cpu_set(),
+            })
+            .collect()
+    }
+
+    /// Returns the root address of the nested page table for the VM.
+    pub fn nested_page_table_root(&self) -> AxResult<HostPhysAddr> {
         self.with_resources(|resources| Ok(resources.address_space.page_table_root()))
     }
 
@@ -806,16 +827,16 @@ impl AxVM {
     /// * `vcpu_id` - the id of the vCPU to run.
     ///
     /// ## Returns
-    /// * `AxVCpuExitReason` - the exit reason of the vCPU, wrapped in an `AxResult`.
-    pub fn run_vcpu(&self, vcpu_id: usize) -> AxResult<AxVCpuExitReason> {
+    /// * `VmExit` - the exit reason of the vCPU, wrapped in an `AxResult`.
+    pub fn run_vcpu(&self, vcpu_id: usize) -> AxResult<VmExit> {
         let vm_id = self.id();
         let vcpu = self
             .vcpu(vcpu_id)
             .ok_or_else(|| ax_err_type!(InvalidInput, "Invalid vcpu_id"))?;
 
         match vcpu.state() {
-            VCpuState::Free => vcpu.bind()?,
-            VCpuState::Ready => {}
+            VmVcpuState::Free => vcpu.bind()?,
+            VmVcpuState::Ready => {}
             state => {
                 return ax_err!(
                     BadState,
@@ -825,14 +846,14 @@ impl AxVM {
         }
 
         let devices = self.get_devices()?;
-        let run_result = vcpu.with_current_cpu_set(|| -> AxResult<AxVCpuExitReason> {
+        let run_result = vcpu.with_current_cpu_set(|| -> AxResult<VmExit> {
             loop {
                 crate::runtime::vcpus::inject_pending_interrupts(self.id(), vcpu_id, &vcpu);
 
                 let exit_reason = vcpu.run()?;
                 trace!("{exit_reason:#x?}");
                 match exit_reason {
-                    AxVCpuExitReason::MmioRead {
+                    VmExit::MmioRead {
                         addr,
                         width,
                         reg,
@@ -848,21 +869,17 @@ impl AxVM {
                         };
                         vcpu.set_gpr(reg, val);
                     }
-                    AxVCpuExitReason::MmioWrite { addr, width, data } => {
+                    VmExit::MmioWrite { addr, width, data } => {
                         self.handle_mmio_write(addr, width, data as usize)?;
                     }
-                    AxVCpuExitReason::IoRead { port, width } => {
+                    VmExit::IoRead { port, width } => {
                         let val = devices.handle_port_read(port, width)?;
-                        #[cfg(not(target_arch = "riscv64"))]
-                        vcpu.set_gpr(0, val); // The target is always eax/ax/al, todo: handle access_width correctly
-
-                        #[cfg(target_arch = "riscv64")]
-                        vcpu.set_gpr(riscv_vcpu::GprIndex::A0 as usize, val);
+                        CurrentArch::set_io_read_result(&vcpu, val);
                     }
-                    AxVCpuExitReason::IoWrite { port, width, data } => {
+                    VmExit::IoWrite { port, width, data } => {
                         devices.handle_port_write(port, width, data as usize)?;
                     }
-                    AxVCpuExitReason::SysRegRead { addr, reg } => {
+                    VmExit::SysRegRead { addr, reg } => {
                         let val = devices.handle_sys_reg_read(
                             addr,
                             // Generally speaking, the width of system register is fixed and needless to be specified.
@@ -871,16 +888,16 @@ impl AxVM {
                         )?;
                         vcpu.set_gpr(reg, val);
                     }
-                    AxVCpuExitReason::SysRegWrite { addr, value } => {
+                    VmExit::SysRegWrite { addr, value } => {
                         devices.handle_sys_reg_write(addr, AccessWidth::Qword, value as usize)?;
                     }
-                    AxVCpuExitReason::NestedPageFault { addr, access_flags } => {
+                    VmExit::NestedPageFault { addr, access_flags } => {
                         if devices.find_mmio_dev(addr).is_some() {
                             if let Some(mmio_exit) =
                                 vcpu.get_arch_vcpu().decode_mmio_fault(addr, access_flags)
                             {
                                 match mmio_exit {
-                                    AxVCpuExitReason::MmioRead {
+                                    VmExit::MmioRead {
                                         addr,
                                         width,
                                         reg,
@@ -896,16 +913,16 @@ impl AxVM {
                                         };
                                         vcpu.set_gpr(reg, val);
                                     }
-                                    AxVCpuExitReason::MmioWrite { addr, width, data } => {
+                                    VmExit::MmioWrite { addr, width, data } => {
                                         self.handle_mmio_write(addr, width, data as usize)?;
                                     }
                                     exit_reason => break Ok(exit_reason),
                                 }
                             } else {
-                                break Ok(AxVCpuExitReason::NestedPageFault { addr, access_flags });
+                                break Ok(VmExit::NestedPageFault { addr, access_flags });
                             }
                         } else if !self.handle_nested_page_fault(addr, access_flags) {
-                            break Ok(AxVCpuExitReason::NestedPageFault { addr, access_flags });
+                            break Ok(VmExit::NestedPageFault { addr, access_flags });
                         }
                     }
                     exit_reason => break Ok(exit_reason),
@@ -944,13 +961,12 @@ impl AxVM {
         }
 
         devices.handle_mmio_write(addr, width, data)?;
-        #[cfg(target_arch = "loongarch64")]
-        self.drain_loongarch_pch_pic_events();
+        CurrentArch::after_mmio_write(self);
         Ok(())
     }
 
     #[cfg(target_arch = "loongarch64")]
-    fn drain_loongarch_pch_pic_events(&self) {
+    pub(crate) fn drain_loongarch_pch_pic_events(&self) {
         let Ok(devices) = self.get_devices() else {
             return;
         };

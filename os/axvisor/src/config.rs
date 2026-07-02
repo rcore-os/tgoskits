@@ -22,10 +22,11 @@ use core::sync::atomic::{AtomicBool, Ordering};
 use ax_errno::{AxResult, ax_err_type};
 #[cfg(all(feature = "fs", target_arch = "x86_64"))]
 use axvm::InterruptTriggerMode;
-#[cfg(any(target_arch = "x86_64", target_arch = "loongarch64"))]
+#[cfg(target_arch = "x86_64")]
 use axvm::config::VMBootProtocol;
 use axvm::{
     AxVM, GuestPhysAddr,
+    boot::{BootImageProvider, ImageLoader, StaticVmImage, get_image_header},
     config::{
         AxVCpuConfig, AxVMConfig, AxVMConfigParams, GuestBootPolicy, PhysCpuList, RamdiskInfo,
         VMImageConfig,
@@ -33,13 +34,12 @@ use axvm::{
 };
 use axvmconfig::{AxVMCrateConfig, VMType};
 
-#[cfg(any(
-    target_arch = "aarch64",
-    target_arch = "loongarch64",
-    target_arch = "riscv64"
-))]
-use crate::fdt::*;
-use crate::images::ImageLoader;
+#[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
+use axvm::boot::handle_fdt_operations;
+#[cfg(target_arch = "x86_64")]
+use axvm::boot::is_x86_linux_image_config;
+#[cfg(target_arch = "loongarch64")]
+use axvm::boot::{handle_fdt_operations, init_guest_boot_resources};
 
 /// Default BIOS load GPA for x86_64 built-in BIOS.
 #[cfg(target_arch = "x86_64")]
@@ -119,6 +119,7 @@ pub fn init_guest_vms() {
 }
 
 pub fn init_guest_vm(raw_cfg: &str) -> AxResult<usize> {
+    let image_provider = AxvisorBootImageProvider;
     #[allow(unused_mut)]
     let mut vm_create_config = AxVMCrateConfig::from_toml(raw_cfg)
         .map_err(|e| ax_err_type!(InvalidData, format!("Failed to resolve VM config: {e:?}")))?;
@@ -129,7 +130,7 @@ pub fn init_guest_vm(raw_cfg: &str) -> AxResult<usize> {
     ))]
     let release_host_filesystem = vm_config_needs_host_filesystem_release(&vm_create_config);
 
-    if let Some(linux) = super::images::get_image_header(&vm_create_config) {
+    if let Some(linux) = get_image_header(&vm_create_config, &image_provider) {
         debug!(
             "VM[{}] Linux header: {:#x?}",
             vm_create_config.base.id, linux
@@ -141,7 +142,7 @@ pub fn init_guest_vm(raw_cfg: &str) -> AxResult<usize> {
 
     // Handle FDT-related operations for architectures that boot guests with DTB.
     #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
-    let guest_dtb = handle_fdt_operations(&mut vm_config, &mut vm_create_config)?;
+    let guest_dtb = handle_fdt_operations(&mut vm_config, &mut vm_create_config, &image_provider)?;
     #[cfg(target_arch = "loongarch64")]
     handle_fdt_operations(&mut vm_config, &mut vm_create_config)?;
 
@@ -171,9 +172,15 @@ pub fn init_guest_vm(raw_cfg: &str) -> AxResult<usize> {
     info!("VM[{}] created success, loading images...", vm.id());
 
     #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
-    let mut loader = ImageLoader::new(main_mem, vm_create_config, vm.clone(), guest_dtb);
+    let mut loader = ImageLoader::new(
+        main_mem,
+        vm_create_config,
+        vm.clone(),
+        &image_provider,
+        guest_dtb,
+    );
     #[cfg(not(any(target_arch = "aarch64", target_arch = "riscv64")))]
-    let mut loader = ImageLoader::new(main_mem, vm_create_config, vm.clone());
+    let mut loader = ImageLoader::new(main_mem, vm_create_config, vm.clone(), &image_provider);
     loader.load()?;
 
     vm.prepare()
@@ -214,12 +221,6 @@ pub(crate) fn build_axvm_config(cfg: &AxVMCrateConfig) -> AxVMConfig {
         cpu_config: AxVCpuConfig {
             bsp_entry: GuestPhysAddr::from(cfg.kernel.entry_point),
             ap_entry: GuestPhysAddr::from(cfg.kernel.entry_point),
-            #[cfg(target_arch = "loongarch64")]
-            boot_args: [0; 3],
-            #[cfg(target_arch = "loongarch64")]
-            boot_stack_top: 0,
-            #[cfg(target_arch = "loongarch64")]
-            firmware_boot: cfg.kernel.effective_boot_protocol() == VMBootProtocol::Uefi,
         },
         image_config: VMImageConfig {
             kernel_load_gpa: GuestPhysAddr::from(cfg.kernel.kernel_load_addr),
@@ -301,7 +302,7 @@ pub fn host_filesystem_release_required() -> bool {
 
 #[cfg(all(feature = "fs", target_arch = "x86_64"))]
 fn register_x86_host_fs_passthrough_irq_route() {
-    let (_, _, _, guest_gsi) = crate::images::x86_qemu_passthrough_block_intx();
+    let (_, _, _, guest_gsi) = axvm::boot::x86_qemu_passthrough_block_intx();
     let info = x86_host_fs_passthrough_pci_info();
 
     let route = match ax_driver::pci::resolve_intx_binding(info) {
@@ -372,7 +373,7 @@ fn unmask_x86_host_fs_passthrough_intx() {
 fn x86_host_fs_passthrough_pci_info() -> ax_driver::probe::pci::PciInfo {
     use ax_driver::probe::pci::{PciAddress, PciInfo, PciIntxRoute};
 
-    let (device, function, pin, _) = crate::images::x86_qemu_passthrough_block_intx();
+    let (device, function, pin, _) = axvm::boot::x86_qemu_passthrough_block_intx();
     PciInfo {
         address: PciAddress::new(0, 0, device, function),
         interrupt_pin: pin,
@@ -420,7 +421,35 @@ fn x86_intx_forwarding_trigger(binding: &ax_driver::BindingIrq) -> InterruptTrig
 
 #[cfg(target_arch = "x86_64")]
 fn x86_linux_direct_boot_config(config: &AxVMCrateConfig) -> bool {
-    crate::images::is_x86_linux_image_config(config)
+    is_x86_linux_image_config(config, &AxvisorBootImageProvider)
+}
+
+struct AxvisorBootImageProvider;
+
+impl BootImageProvider for AxvisorBootImageProvider {
+    fn static_vm_images(&self) -> &'static [StaticVmImage] {
+        vmcfg::get_memory_images()
+    }
+
+    #[cfg(target_arch = "loongarch64")]
+    fn static_firmware_images(&self) -> &'static [StaticVmImage] {
+        vmcfg::get_firmware_images()
+    }
+
+    #[cfg(feature = "fs")]
+    fn read_file(&self, file_name: &str) -> AxResult<alloc::vec::Vec<u8>> {
+        crate::manager::AxvmManager::read_file(file_name)
+    }
+
+    #[cfg(feature = "fs")]
+    fn read_file_exact(&self, file_name: &str, read_size: usize) -> AxResult<alloc::vec::Vec<u8>> {
+        crate::manager::AxvmManager::read_file_exact(file_name, read_size)
+    }
+
+    #[cfg(feature = "fs")]
+    fn file_size(&self, file_name: &str) -> AxResult<usize> {
+        crate::manager::AxvmManager::file_size(file_name)
+    }
 }
 
 #[cfg(test)]
