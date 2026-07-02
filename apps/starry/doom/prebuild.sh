@@ -22,6 +22,8 @@ ensure_host_packages() {
     command -v install >/dev/null 2>&1 || missing+=(coreutils)
     command -v readelf >/dev/null 2>&1 || missing+=(binutils)
     command -v unzip >/dev/null 2>&1 || missing+=(unzip)
+    # musl-gcc: compile musl-linked binaries on host (avoid qemu-user pitfalls)
+    command -v musl-gcc >/dev/null 2>&1 || missing+=(musl-tools)
     case "$arch" in
         x86_64)  command -v qemu-x86_64-static >/dev/null 2>&1 || missing+=(qemu-user-static) ;;
         aarch64) command -v qemu-aarch64-static >/dev/null 2>&1 || missing+=(qemu-user-static) ;;
@@ -71,8 +73,8 @@ REPO
             add weston weston-backend-drm mesa-gbm \
                 mesa mesa-egl mesa-gl mesa-dri-gallium mesa-utils \
                 libinput libxkbcommon pixman xkeyboard-config \
-                freedoom sdl2 \
-                gcc make musl-dev sdl2-dev sdl2_mixer-dev
+                freedoom sdl2 sdl2_mixer \
+                gcc make musl-dev binutils sdl2-dev sdl2_mixer-dev
 
     # debugfs rdump 可能丢失执行权限，修复关键二进制和动态链接器
     echo "[doom] fixing permissions in staging root..."
@@ -108,27 +110,18 @@ build_doomgeneric() {
         sed -i '/^  renderer =  SDL_CreateRenderer/a\  if (!renderer) {\n    fprintf(stderr, "DG_Init FATAL: SDL_CreateRenderer failed: %s\\n", SDL_GetError());\n    exit(1);\n  }' "$s"
     done
 
-    local qemu_runner
-    case "$arch" in
-        x86_64)  qemu_runner="qemu-x86_64-static" ;;
-        aarch64) qemu_runner="qemu-aarch64-static" ;;
-        *) echo "unsupported arch: $arch" >&2; exit 1 ;;
-    esac
-
-    echo "[doom] compiling doomgeneric inside Alpine chroot..."
-    if command -v chroot >/dev/null 2>&1; then
-        echo "[doom] using chroot + qemu-user approach..."
-        cp "$(which $qemu_runner)" "$staging_root/usr/bin/$qemu_runner"
-        chmod 755 "$staging_root/lib/ld-musl-"* 2>/dev/null || true
-        chmod 755 "$staging_root/usr/bin/make" "$staging_root/usr/bin/gcc" 2>/dev/null || true
-        chroot "$staging_root" /usr/bin/$qemu_runner \
-            /bin/sh -c 'cd /tmp/doomgeneric-src && /usr/bin/make -f Makefile.sdl clean && /usr/bin/make -f Makefile.sdl' 2>&1
-    else
-        QEMU_LD_PREFIX="$staging_root" \
-        LD_LIBRARY_PATH="$staging_root/lib:$staging_root/usr/lib" \
-        "$qemu_runner" -L "$staging_root" \
-            /bin/sh -c 'cd /tmp/doomgeneric-src && make -f Makefile.sdl clean && make -f Makefile.sdl -j4 LDFLAGS="-no-pie"' 2>&1
-    fi
+    echo "[doom] compiling doomgeneric via host musl-gcc..."
+    # 直接在宿主机用 musl-gcc 编译（不经过 qemu-user），避免了所有路径翻译问题。
+    # musl-gcc 产生 linked against musl 的 ELF，与 Alpine 完全兼容。
+    # -I/-L 指向 staging root，让链接器找到 Alpine 的 SDL2 共享库。
+    cd "$host_src" && make -f Makefile.sdl clean && make -f Makefile.sdl -j4 \
+        CC=musl-gcc \
+        CFLAGS="-I$staging_root/usr/include/SDL2 -D_REENTRANT" \
+        LDFLAGS="-no-pie -Wl,--allow-multiple-definition \
+                 -L$staging_root/usr/lib -L$staging_root/lib" \
+        SDL_CFLAGS="" \
+        SDL_LIBS="-lSDL2_mixer -lSDL2" 2>&1 || true
+    cd "$app_dir" 2>/dev/null || true
 
     # 检查编译产物（明确失败）
     if [[ ! -f "$src_dir/doomgeneric" && ! -f "$host_src/doomgeneric" ]]; then
@@ -294,7 +287,8 @@ populate_overlay() {
     # 全面扫描 usr/lib/ 和 lib/ 下所有与 SDL/Wayland/Mesa/音频相关的 .so
     for pattern in libSDL2* libwayland-* libxkbcommon* \
                    libEGL* libGL* libGLES* libgbm* libgallium* libglapi* \
-                   libdrm* libffi* libexpat* libz* libstdc++* \
+                   libLLVM* libdrm* libffi* libexpat* libz* libstdc++* \
+                   libX11* libxcb* \
                    libvorbis* libogg* libmpg123* libopus* libFLAC* \
                    libsndfile* libpulse* libasyncns* liblzma* \
                    libpng* libjpeg* libtiff* libwebp* \
@@ -311,7 +305,10 @@ populate_overlay() {
         done
     done
     # 确保 SDL2_mixer 的 dlopen 加载器能找到音频插件
-    for subdir in usr/lib/sdl2 usr/lib/alsa-lib usr/lib/pulseaudio; do
+    # Mesa 驱动子目录全面扫描（含 pipe、libgl、xorg/modules/dri 等 Mesa 额外 dlopen 路径）
+    for subdir in usr/lib/dri usr/lib/gallium usr/lib/pipe usr/lib/libgl \
+                  usr/lib/gbm usr/lib/xorg/modules/dri \
+                  usr/lib/sdl2 usr/lib/alsa-lib usr/lib/pulseaudio; do
         if [[ -d "$staging_root/$subdir" ]]; then
             mkdir -p "$overlay_dir/$subdir"
             cp -L "$staging_root/$subdir"/*.so "$overlay_dir/$subdir/" 2>/dev/null || true
@@ -352,6 +349,12 @@ populate_overlay() {
         mkdir -p "$overlay_dir/usr/share/libinput"
         find "$staging_root/usr/share/libinput" -type f | while read -r f; do
             install -Dm0644 "$f" "$overlay_dir/usr/share/libinput/$(basename "$f")"
+        done
+    fi
+    if [[ -d "$staging_root/etc/libinput" ]]; then
+        mkdir -p "$overlay_dir/etc/libinput"
+        find "$staging_root/etc/libinput" -type f | while read -r f; do
+            install -Dm0644 "$f" "$overlay_dir/etc/libinput/$(basename "$f")"
         done
     fi
 
