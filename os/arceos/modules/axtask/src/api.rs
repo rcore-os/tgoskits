@@ -430,8 +430,19 @@ impl AtomicContextSnapshot {
     }
 
     fn reasons(self) -> AtomicContextReasons {
+        let irq_disabled = {
+            #[cfg(feature = "irq")]
+            {
+                !self.irq_enabled
+            }
+            #[cfg(not(feature = "irq"))]
+            {
+                false
+            }
+        };
+
         AtomicContextReasons {
-            irq_disabled: !self.irq_enabled,
+            irq_disabled,
             irq_context: self.irq_context,
             preempt_disabled: self.preempt_count != 0,
         }

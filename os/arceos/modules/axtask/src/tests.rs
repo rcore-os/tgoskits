@@ -97,6 +97,15 @@ fn panic_payload_message(payload: &(dyn core::any::Any + Send)) -> &str {
 }
 
 #[test]
+#[cfg(not(any(feature = "irq", feature = "preempt")))]
+fn might_sleep_ignores_irq_state_without_irq_feature() {
+    run_in_test_scheduler(|| {
+        assert_eq!(ax_task::in_atomic_context(), false);
+        ax_task::might_sleep();
+    });
+}
+
+#[test]
 #[cfg(all(feature = "lockdep", feature = "preempt"))]
 fn might_sleep_reports_held_lock_stack() {
     run_in_test_scheduler(|| {
