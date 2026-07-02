@@ -895,31 +895,40 @@ impl AxRunQueue {
             let waking_current_task = current_state == TaskState::Blocked
                 && self.cpu_id == this_cpu_id()
                 && crate::current().ptr_eq(&task);
-            // If the task is blocked, wait for the task to finish its scheduling process.
-            // See `unblock_task()` for details.
-            if current_state == TaskState::Blocked {
-                // Wait for next task's scheduling process to complete.
-                // If the owning (remote) CPU is still in the middle of schedule() with
-                // this task (next task) as prev, wait until it's done referencing the task.
-                //
-                // Pairs with the `clear_prev_task_on_cpu()`.
-                //
-                // Note:
-                // 1. This should be placed after the judgement of `TaskState::Blocked,`,
-                //    because the task may have been woken up by other cores.
-                // 2. This can be placed in the front of `switch_to()`
-                #[cfg(feature = "smp")]
-                {
-                    // A scheduler tracepoint or other IRQ-safe notification can wake the
-                    // task that is currently being switched out on this CPU. Waiting for
-                    // `on_cpu` there would wait for the very switch we are still inside.
-                    if !waking_current_task {
-                        while task.on_cpu() {
-                            // Wait for the task to finish its scheduling process.
-                            core::hint::spin_loop();
-                        }
-                    }
+            // A blocked task woken here may still be finishing its context
+            // switch-out on its owning CPU: `on_cpu == true` means its registers
+            // are not yet fully saved. It must NOT be made runnable (enqueued)
+            // until `on_cpu` is false, or another CPU could resume it with stale
+            // registers. Pairs with `clear_prev_task_on_cpu()`.
+            //
+            // We must NOT busy-spin on `on_cpu` for a task owned by a *remote*
+            // CPU (as the old code did): two CPUs each spinning with IRQs off,
+            // each waiting for the other to reach `clear_prev_task_on_cpu()`, is
+            // a mutual deadlock (whole-board freeze). Instead, hand the enqueue
+            // to the owning CPU via a lock-free stash it drains once its context
+            // is saved. `waking_current_task` (self-wake on this CPU, mid-switch)
+            // keeps the old inline behavior: this CPU finishes the switch in
+            // program order when it returns.
+            #[cfg(feature = "smp")]
+            if current_state == TaskState::Blocked && !waking_current_task && task.on_cpu() {
+                // Record where the task must land, then stash a reference for the
+                // owning CPU to enqueue from `clear_prev_task_on_cpu()`.
+                task.set_cpu_id(self.cpu_id as _);
+                task.stash_wake(task.clone());
+                // Re-check under the SeqCst handshake. If still on its owning CPU,
+                // that CPU drains the stash after its switch completes — done.
+                if task.on_cpu() {
+                    return false;
                 }
+                // `on_cpu` cleared meanwhile: the owning CPU may already have
+                // passed its drain point. Whichever side wins `take_wake` does
+                // the enqueue exactly once.
+                if task.take_wake().is_none() {
+                    // Owner won the swap; it enqueues + kicks the target.
+                    return false;
+                }
+                // We won: the reclaimed reference is dropped here; fall through
+                // and enqueue our own `task` (its context is now saved).
             }
             // TODO: priority
             #[cfg(feature = "smp")]
@@ -1088,7 +1097,8 @@ pub(crate) fn migrate_entry(migrated_task: AxTaskRef) {
     force_kick_remote_cpu(cpu_id);
 }
 
-/// Clear the `on_cpu` field of previous task running on this CPU.
+/// Clear the `on_cpu` field of the previous task running on this CPU, then
+/// complete any cross-core wake that was deferred while it was still `on_cpu`.
 #[cfg(feature = "smp")]
 pub(crate) unsafe fn clear_prev_task_on_cpu() {
     let prev = unsafe { PREV_TASK.current_ref_mut_raw() }
@@ -1096,7 +1106,24 @@ pub(crate) unsafe fn clear_prev_task_on_cpu() {
         .expect("PREV_TASK should have been set by switch_to");
     // Safety: prev_task's Arc is still alive on the caller's stack at this point
     // (switch_to has not yet returned), so the pointer is valid.
-    unsafe { prev.as_ref() }.set_on_cpu(false);
+    let prev = unsafe { prev.as_ref() };
+    // Publish that the context is fully saved. The SeqCst store pairs with the
+    // waker's `on_cpu()`/`take_wake()` handshake in `put_task_with_state`.
+    prev.set_on_cpu(false);
+    // Drain a wake that raced our switch-out. `take_wake` is the single arbiter:
+    // if the waker did not reclaim it (it saw `on_cpu` still true), we get the
+    // owned reference and enqueue it now that the context is saved.
+    if let Some(task) = prev.take_wake() {
+        let target = task.cpu_id() as usize;
+        // Leaf lock: `resched()` already dropped this CPU's scheduler lock before
+        // `switch_to`, so this takes only the target run queue's lock.
+        get_run_queue(target)
+            .scheduler
+            .lock()
+            .put_prev_task(task, false);
+        #[cfg(feature = "ipi")]
+        kick_remote_cpu(target);
+    }
 }
 pub(crate) fn init() {
     let cpu_id = this_cpu_id();

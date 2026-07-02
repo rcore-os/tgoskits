@@ -1,6 +1,8 @@
 use alloc::{boxed::Box, string::String, sync::Arc};
 #[cfg(not(feature = "stack-guard-page"))]
 use core::alloc::Layout;
+#[cfg(feature = "smp")]
+use core::sync::atomic::AtomicPtr;
 #[cfg(any(
     feature = "preempt",
     all(feature = "stack-guard-page", feature = "smp", feature = "ipi")
@@ -96,6 +98,18 @@ pub struct TaskInner {
     /// Used to indicate whether the task is running on a CPU.
     #[cfg(feature = "smp")]
     on_cpu: AtomicBool,
+    /// One-shot cross-core wake handoff.
+    ///
+    /// When a remote CPU wins the `Blocked -> Ready` transition for this task
+    /// while it is still `on_cpu` (its context not yet fully saved on its owning
+    /// CPU), the waker must NOT enqueue it — and must not spin on `on_cpu`
+    /// either (that is the cross-core mutual-wake deadlock). Instead it records
+    /// the target run-queue in `cpu_id` and stashes an owned reference here; the
+    /// owning CPU drains it in `clear_prev_task_on_cpu()` once `on_cpu` is false,
+    /// then enqueues + kicks the target. Holds a `*const AxTask` produced by
+    /// `Arc::into_raw` (null = empty). See `run_queue::put_task_with_state`.
+    #[cfg(feature = "smp")]
+    wake_handoff: AtomicPtr<AxTask>,
 
     /// A ticket ID used to identify the timer event.
     /// Set by `set_timer_ticket()` when creating a timer event in `set_alarm_wakeup()`,
@@ -361,6 +375,8 @@ impl TaskInner {
             cpu_id: AtomicU32::new(0),
             #[cfg(feature = "smp")]
             on_cpu: AtomicBool::new(false),
+            #[cfg(feature = "smp")]
+            wake_handoff: AtomicPtr::new(core::ptr::null_mut()),
             #[cfg(feature = "preempt")]
             need_resched: AtomicBool::new(false),
             #[cfg(feature = "preempt")]
@@ -611,17 +627,52 @@ impl TaskInner {
     /// while it has not finished its scheduling process.
     /// The `on_cpu field is set to `true` when the task is preparing to run on a CPU,
     /// and it is set to `false` when the task has finished its scheduling process in `clear_prev_task_on_cpu()`.
+    ///
+    /// `SeqCst` because it participates in a store-before-load (Dekker) handshake
+    /// with [`Self::stash_wake`]/[`Self::take_wake`] across two distinct atomics
+    /// (`on_cpu` and `wake_handoff`); Acquire/Release would permit the
+    /// "both sides observe the other's stale value" lost-wakeup execution.
     #[cfg(feature = "smp")]
     #[inline]
     pub(crate) fn on_cpu(&self) -> bool {
-        self.on_cpu.load(Ordering::Acquire)
+        self.on_cpu.load(Ordering::SeqCst)
     }
 
-    /// Sets whether the task is running on a CPU.
+    /// Sets whether the task is running on a CPU. `SeqCst`, see [`Self::on_cpu`].
     #[cfg(feature = "smp")]
     #[inline]
     pub(crate) fn set_on_cpu(&self, on_cpu: bool) {
-        self.on_cpu.store(on_cpu, Ordering::Release)
+        self.on_cpu.store(on_cpu, Ordering::SeqCst)
+    }
+
+    /// Stash an owned reference for a deferred cross-core wake (see the
+    /// `wake_handoff` field). Transfers ownership of `task` into the slot via
+    /// `Arc::into_raw`. Must be paired with exactly one [`Self::take_wake`].
+    #[cfg(feature = "smp")]
+    #[inline]
+    pub(crate) fn stash_wake(&self, task: AxTaskRef) {
+        let ptr = Arc::into_raw(task) as *mut AxTask;
+        // SeqCst: ordered with the `on_cpu` handshake (see `on_cpu`).
+        self.wake_handoff.store(ptr, Ordering::SeqCst);
+    }
+
+    /// Atomically consume a stashed deferred-wake reference, if any. Returns the
+    /// owned `AxTaskRef` to exactly one caller (the swap is the single arbiter);
+    /// all other callers get `None`.
+    #[cfg(feature = "smp")]
+    #[inline]
+    pub(crate) fn take_wake(&self) -> Option<AxTaskRef> {
+        let ptr = self
+            .wake_handoff
+            .swap(core::ptr::null_mut(), Ordering::SeqCst);
+        if ptr.is_null() {
+            None
+        } else {
+            // Safety: `ptr` came from `Arc::into_raw` in `stash_wake`, and the
+            // swap guarantees a single consumer, so this reconstructs the unique
+            // owning `Arc` exactly once.
+            Some(unsafe { Arc::from_raw(ptr as *const AxTask) })
+        }
     }
 }
 
