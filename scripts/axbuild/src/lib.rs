@@ -16,6 +16,7 @@ mod config;
 pub mod context;
 mod firmware;
 pub mod image;
+mod ktest;
 mod rootfs;
 mod spin_lint;
 pub mod starry;
@@ -53,6 +54,8 @@ pub(crate) struct SyncLintArgs {
 enum Commands {
     /// Run std tests for the configured workspace package whitelist
     Test,
+    /// Run kernel axtest targets through QEMU or a remote board
+    Ktest(ktest::ArgsKtest),
     /// Run clippy for workspace packages
     Clippy(ClippyArgs),
     /// Run high-confidence atomic ordering checks for suspicious `Relaxed` synchronization
@@ -106,6 +109,7 @@ pub async fn run() -> anyhow::Result<()> {
 async fn run_root_cli(cli: Cli) -> anyhow::Result<()> {
     match cli.command {
         Commands::Test => test::std::run_std_test_command(),
+        Commands::Ktest(args) => ktest::run(args).await,
         Commands::Clippy(args) => {
             ensure_aic8800_firmware().await?;
             clippy::run_workspace_clippy_command(&args)
@@ -122,6 +126,94 @@ async fn run_root_cli(cli: Cli) -> anyhow::Result<()> {
         Commands::Starry { command } => {
             ensure_aic8800_firmware().await?;
             Starry::new()?.execute(command).await
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+
+    use clap::Parser;
+
+    use super::*;
+
+    #[derive(Parser)]
+    struct TestCli {
+        #[command(subcommand)]
+        command: Commands,
+    }
+
+    #[test]
+    fn command_parses_ktest_qemu() {
+        let cli = TestCli::try_parse_from([
+            "xtask",
+            "ktest",
+            "qemu",
+            "-p",
+            "starry-kernel",
+            "--test",
+            "axtest_kernel",
+            "--arch",
+            "x86_64",
+            "--qemu-config",
+            "qemu.toml",
+            "--coverage",
+        ])
+        .unwrap();
+
+        match cli.command {
+            Commands::Ktest(args) => match args.command {
+                ktest::Command::Qemu(args) => {
+                    assert_eq!(args.package, "starry-kernel");
+                    assert_eq!(args.test.as_deref(), Some("axtest_kernel"));
+                    assert_eq!(args.arch.as_deref(), Some("x86_64"));
+                    assert_eq!(args.qemu_config, Some(PathBuf::from("qemu.toml")));
+                    assert!(args.coverage);
+                }
+                _ => panic!("expected ktest qemu command"),
+            },
+            _ => panic!("expected ktest command"),
+        }
+    }
+
+    #[test]
+    fn command_parses_ktest_board() {
+        let cli = TestCli::try_parse_from([
+            "xtask",
+            "ktest",
+            "board",
+            "-p",
+            "starry-kernel",
+            "--test",
+            "axtest_kernel",
+            "-b",
+            "orangepi-5-plus",
+            "--board-config",
+            "board.toml",
+            "--board-type",
+            "OrangePi-5-Plus",
+            "--server",
+            "10.0.0.2",
+            "--port",
+            "9000",
+        ])
+        .unwrap();
+
+        match cli.command {
+            Commands::Ktest(args) => match args.command {
+                ktest::Command::Board(args) => {
+                    assert_eq!(args.package, "starry-kernel");
+                    assert_eq!(args.test, "axtest_kernel");
+                    assert_eq!(args.board, "orangepi-5-plus");
+                    assert_eq!(args.board_config, Some(PathBuf::from("board.toml")));
+                    assert_eq!(args.board_type.as_deref(), Some("OrangePi-5-Plus"));
+                    assert_eq!(args.server.as_deref(), Some("10.0.0.2"));
+                    assert_eq!(args.port, Some(9000));
+                }
+                _ => panic!("expected ktest board command"),
+            },
+            _ => panic!("expected ktest command"),
         }
     }
 }

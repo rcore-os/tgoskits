@@ -31,9 +31,17 @@ path = "src/main.rs"
 [[bin]]
 name = "xtask"
 path = "xtask/src/main.rs"
+test = false
+
+[[test]]
+name = "axtest"
+path = "tests/axtest.rs"
+harness = false
+required-features = ["axtest"]
 
 [features]
 default = []
+axtest = []
 ept-level-4 = ["axvm/4-level-ept"]
 fs = ["ax-std/ext4fs", "ax-std/fatfs", "axvm/host-fs"]
 vmx = ["axvm/vmx"]
@@ -77,6 +85,9 @@ ax-errno = { workspace = true }
 ax-memory-addr = { workspace = true }
 ax-driver.workspace = true
 axplat-dyn = { workspace = true, optional = true }
+
+[dev-dependencies]
+axtest.workspace = true
 
 # xtask dependencies (only used on host platforms)
 [target.'cfg(any(windows, all(unix, not(target_env = "musl"))))'.dependencies]

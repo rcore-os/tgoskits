@@ -51,10 +51,9 @@ sg2002-wifi = [
 ]
 stack-guard-page = ["ax-feat/stack-guard-page"]
 stack-protector = ["ax-feat/stack-protector"]
-axtest = ["dep:axtest"]
+axtest = []
 
 [dependencies]
-axtest = { workspace = true, optional = true }
 ax-feat = { workspace = true, features = [
     "fp-simd",
     "irq",
@@ -166,6 +165,17 @@ ktracepoint = "0.6"
 ksym = "0.6"
 kbpf-basic = "0.6"
 rbpf = { version = "0.4", default-features = false }
+
+[dev-dependencies]
+axtest.workspace = true
+ax-hal.workspace = true
+ax-std = { workspace = true, features = ["ext-ld", "fs", "multitask", "irq"] }
+
+[[test]]
+name = "axtest_kernel"
+path = "tests/axtest_kernel.rs"
+harness = false
+required-features = ["axtest"]
 
 [target.'cfg(target_arch = "x86_64")'.dependencies]
 x86 = "0.52"

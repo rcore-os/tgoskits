@@ -423,7 +423,7 @@ impl AppContext {
         ostool_build::activate_build_config(
             &mut self.invocation,
             &BuildConfig {
-                system: BuildSystem::Cargo(cargo.clone()),
+                system: BuildSystem::Cargo(Box::new(cargo.clone())),
             },
             build_config_path.as_deref(),
         )
