@@ -46,13 +46,15 @@ flowchart TD
 
 | 模块 | 职责 | 关键类型/函数 |
 |------|------|---------------|
-| `suite.rs` | 测试套件目录解析 | `suite_root()`, `group_dir()`, `discover_group_names()` |
-| `qemu.rs` | QEMU 用例发现、分组、结果聚合、SMP 注入、超时缩放 | `discover_qemu_cases()`, `group_cases_by_build_config()`, `finalize_qemu_test_run()`, `apply_smp_qemu_arg()`, `apply_timeout_scale()`, `validate_grouped_qemu_commands()` |
+| `suite.rs` | 测试套件目录解析 | `suite_root()`, `group_dir()`, `discover_group_names()`, `require_group_dir()` |
+| `qemu/` | QEMU 用例发现、分组、结果聚合、SMP 注入、超时缩放、动态平台 boot 补丁 | `discover_qemu_cases()`, `group_cases_by_build_config()`, `finalize_qemu_test_run()`, `apply_smp_qemu_arg()`, `apply_timeout_scale()`, `apply_dynamic_platform_qemu_boot()`, `validate_grouped_qemu_commands()` |
 | `board.rs` | 板级用例发现与结果聚合 | `discover_board_runtime_configs()`, `filter_board_test_groups()`, `finalize_board_test_run()` |
-| `case.rs` | 用例资产编排、pipeline 判定、缓存管理、Grouped runner 生成 | `TestQemuCase`, `CasePipeline`, `CaseAssetConfig`, `CaseAssetLayout`, `PreparedCaseAssets`, `prepare_case_assets()`, `resolve_case_pipeline()`, `apply_grouped_qemu_config()` |
-| `build.rs` | C/Grouped/Python 资产构建、交叉编译环境准备 | `prepare_c_case_assets_sync()`, `prepare_grouped_case_assets_sync()`, `prepare_python_case_assets_sync()`, `CrossCompileSpec`, `HostCrossBuildEnv` |
+| `case/` | 用例资产编排、pipeline 判定、缓存管理、Grouped runner 生成、Host HTTP server | `TestQemuCase`, `CasePipeline`, `CaseAssetConfig`, `CaseAssetLayout`, `PreparedCaseAssets`, `HostHttpServerConfig`, `prepare_case_assets()`, `resolve_case_pipeline()`, `apply_grouped_qemu_config()` |
+| `build/` | C/Grouped/Python 资产构建、交叉编译环境准备、CMake 工具链、prebuild 脚本 | `prepare_c_case_assets_sync()`, `prepare_grouped_case_assets_sync()`, `prepare_python_case_assets_sync()`, `CrossCompileSpec`, `HostCrossBuildEnv` |
+| `host_http.rs` | 测试用 Host HTTP server（QEMU guest 通过 slirp 网关拉取资产） | `HostHttpServerGuard::start()` |
 | `rootfs/` (共享) | Rootfs 内容操作、运行时依赖同步 | `extract_rootfs()`, `inject_overlay()`, `sync_runtime_dependencies()`, `replace_file()` |
-| `std.rs` | Host std 白名单测试 | `run_std_tests()`, `load_std_crates()` |
+| `std.rs` | Host std 白名单测试 | `run_std_test_command()`, `load_std_crates()` |
+| `timing.rs` | 测试耗时计时与汇总 | duration 格式化辅助 |
 
 `suite.rs` 是测试目录结构的入口，提供统一的路径解析函数，使得各子系统无需硬编码自己的测试目录路径。`qemu.rs` 和 `board.rs` 分别封装了 QEMU 和板级测试的发现与结果聚合逻辑。`case.rs` 是资产编排的核心，负责判定用例类型、准备 per-case rootfs 和管理缓存。`build.rs` 处理需要编译步骤的资产（C、Grouped、Python）。
 

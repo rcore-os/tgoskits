@@ -42,21 +42,22 @@ flowchart TD
 
 ```rust
 pub struct AppContext {
-    tool: Tool,               // ostool Tool 实例
+    invocation: Invocation,           // ostool 调用上下文（封装 Tool 与配置）
     build_config_path: Option<PathBuf>,
-    root: PathBuf,            // workspace 根目录
-    axvisor_dir: Option<PathBuf>, // Axvisor 源码目录（惰性初始化）
-    original_path: OsString,  // 原始 PATH（用于 LoongArch 恢复）
+    root: PathBuf,                    // workspace 根目录
+    member_dirs: HashMap<String, PathBuf>, // 已解析的 workspace member 目录缓存
+    original_path: OsString,          // 原始 PATH（用于 LoongArch 恢复）
     debug: bool,
 }
 ```
 
 初始化步骤：
-1. 通过编译期常量 `env!("CARGO_MANIFEST_DIR")` 获取 axbuild crate 所在目录，向上两级定位 workspace root。注意 `env!` 是编译期宏（非 `std::env::var`），路径在编译时即已固定
+1. `find_workspace_root()` 通过编译期常量 `env!("CARGO_MANIFEST_DIR")` 获取 axbuild crate 所在目录，向上查找含 `Cargo.toml`（带 `[workspace]`）的祖先目录定位 workspace root。注意 `env!` 是编译期宏（非 `std::env::var`），路径在编译时即已固定
 2. `support::logging::init_logging()` 配置 tracing subscriber
-3. `Tool::new(ToolConfig::default())` 初始化 ostool 底层工具
+3. `Self::new_invocation()` 初始化 ostool `Invocation`（封装 `Tool` 与 `InvocationOptions`）
+4. **AIC8800 Wi-Fi firmware 自动拉取**：`ensure_aic8800_firmware()` 检查 `components/aic8800/firmware/` 下的 8 个固件文件（来自 `lxowalle/aic8800-sdio-firmware`），缺失时自动下载并验证 SHA-256。此步骤在 `Clippy` 和 `Starry` 命令入口前执行，确保编译 `aic8800` 相关包时 firmware blobs 已就位（其他子系统按需调用）
 
-`AppContext` 是构建和运行的执行上下文，贯穿整个生命周期。`tool` 字段持有 ostool 的 `Tool` 实例，封装了与 cargo、QEMU 等外部工具的交互；`original_path` 保存原始 PATH 环境变量，用于 LoongArch LVZ QEMU 临时修改 PATH 后恢复；`debug` 控制是否输出详细日志。`member_dirs`（`HashMap<String, PathBuf>`）惰性缓存已解析的 workspace member 目录路径，避免同一包在多次构建/测试流程中重复调用 `cargo metadata`。
+`AppContext` 是构建和运行的执行上下文，贯穿整个生命周期。`invocation` 字段持有 ostool 的调用上下文，封装了与 cargo、QEMU 等外部工具的交互；`original_path` 保存原始 PATH 环境变量，用于 LoongArch LVZ QEMU 临时修改 PATH 后通过 `PathRestoreGuard`（RAII）恢复；`debug` 控制是否输出详细日志。`member_dirs`（`HashMap<String, PathBuf>`）惰性缓存已解析的 workspace member 目录路径，避免同一包在多次构建/测试流程中重复调用 `cargo metadata`。
 
 ## 2. 参数解析
 
@@ -84,7 +85,7 @@ clap 解析得到原始 CLI 结构体后，`prepare_*_request()` 函数加载 Sn
 
 合并策略的核心原则是**用户显式指定的参数永远优先**。此外，`arch` 和 `target` 之间存在交叉抑制：当 CLI 指定了 `--arch` 时不会从 Snapshot 继承 `target`（反之亦然），确保两者始终来自同一来源。`qemu_config` 和 `uboot_config` 仅在 `package`、`arch`、`target` 三者都从 Snapshot 继承时才复用，避免将测试场景的配置意外带入正常开发流程。
 
-合并完成后，`ResolvedRequest` 和新的 `CommandSnapshot` 一并产出。**Snapshot 在构建开始前即写回文件**（而非构建成功后），由 `SnapshotPersistence` 枚举控制：用户手动调用的命令使用 `Store`（保留参数供下次复用），测试套件使用 `Discard`（不污染用户的 Snapshot 文件）。设置环境变量 `AXBUILD_NO_SNAPSHOT=1` 可完全跳过 Snapshot 的读写。
+合并完成后，`ResolvedRequest` 和新的 `CommandSnapshot` 一并产出。**Snapshot 在构建开始前即写回文件**（而非构建成功后），由 `SnapshotPersistence` 枚举控制：用户手动调用的命令使用 `Store`（保留参数供下次复用），测试套件使用 `Discard`（不污染用户的 Snapshot 文件）。设置环境变量 `AXBUILD_NO_SNAPSHOT=1` 会禁止本次命令写回 Snapshot；当前实现仍会读取已有 Snapshot，因此要完全摆脱历史参数时需要显式传入关键参数或删除对应的 `tmp/axbuild/.{os}.toml`。
 
 ## 3. Arch / Target 解析
 
@@ -107,14 +108,15 @@ flowchart TD
     D -->|是：后续构建| E["TOML 反序列化<br/>(用户可手动编辑此文件)"]
     D -->|否：初次构建| F["使用默认模板创建"]
     F --> G{子系统?}
-    G -->|Axvisor / StarryOS| H["优先复制<br/>configs/board/ 板卡配置"]
-    G -->|ArceOS| I["写入 BuildInfo::default_for_target()"]
+    G -->|Axvisor| H["优先复制<br/>configs/board/ 默认板卡配置"]
+    G -->|StarryOS| S["写入<br/>default_starry_build_info_for_target()"]
+    G -->|ArceOS| I["写入<br/>ArceosBuildConfig::default_config()"]
     H --> J{找到匹配 board?}
     J -->|是| K["复制到 Build Info 路径"]
-    J -->|否| I
+    J -->|否| X["写入<br/>default_axvisor_build_info()"]
 ```
 
-**初次构建**时文件不存在，`ensure_build_info()` 用默认模板创建并写入。对于 Axvisor 和 StarryOS，优先从各自的 `configs/board/` 目录中查找与当前 target 匹配的默认板卡配置（如 `qemu-aarch64.toml`），找到则直接复制为 Build Info 文件，无需手动编写；未找到时回退到通用默认模板。ArceOS 直接使用 `BuildInfo::default_for_target()` 生成默认值。
+**初次构建**时文件不存在，各子系统会按源码中的策略创建默认配置。ArceOS 写入 `ArceosBuildConfig::default_config()`，即默认 `BuildInfo` 加空的 `app-c` 字段；StarryOS 写入 `default_starry_build_info_for_target()`，目标支持动态平台时会清空默认 features，静态平台时使用 `["qemu"]`；Axvisor 才会优先从 `os/axvisor/configs/board/` 查找与 target 匹配的默认板卡配置并复制，找不到时写入清空 features 的默认 BuildInfo。StarryOS 的板卡默认配置通过 `cargo starry defconfig <board>` 显式生成，不在普通首次构建时自动复制。
 
 **后续构建**时文件已存在，直接 TOML 反序列化。用户可以在两次构建之间手动编辑该文件来调整 features、环境变量等配置（如添加 `paging` feature 或修改 `AX_LOG` 级别），修改会在下次构建时生效。
 
@@ -267,7 +269,7 @@ Cargo {
     package,          // workspace 包名
     features,         // Cargo features
     args,             // 额外参数（链接器脚本等）
-    to_bin,           // 是否 --bin（x86_64 不需要）
+    to_bin,           // 是否把 ELF 继续转换为 raw binary
     ...
 }
 ```
@@ -295,11 +297,11 @@ flowchart TD
     C --> D["构建 cargo build 命令行<br/>(target, features, args)"]
     D --> E["执行编译"]
     E --> F{产物类型?}
-    F -->|"to_bin = true<br/>(aarch64, riscv64, loongarch64)"| G["ELF → raw binary<br/>(llvm-objcopy)"]
-    F -->|"to_bin = false<br/>(x86_64)"| H["ELF 直接使用"]
+    F -->|"to_bin = true<br/>(aarch64/riscv64，或动态平台 x86_64/loongarch64)"| G["ELF → raw binary<br/>(llvm-objcopy)"]
+    F -->|"to_bin = false<br/>(静态 x86_64/loongarch64，Axvisor x86_64/loongarch64)"| H["ELF 直接使用"]
 ```
 
-编译成功后，产物位于 `target/{target}/release/` 或 `target/{target}/debug/` 目录下。对于 aarch64、riscv64、loongarch64（`to_bin = true`），还会调用 `llvm-objcopy` 将 ELF 转为 raw binary，因为裸机环境需要纯二进制格式；x86_64 直接使用 ELF 产物。编译产物供后续的运行（QEMU / U-Boot / Board）或测试阶段使用。
+编译成功后，产物位于 `target/{target}/release/` 或 `target/{target}/debug/` 目录下。`to_bin` 不是简单按架构二分：通用 std 构建中 `aarch64`/`riscv64` 默认转 raw binary，`x86_64`/`loongarch64` 在静态路径下保留 ELF，但动态平台路径会因 `default_to_bin_for_target_config()` 继续生成 bin；Axvisor 在最终补丁阶段覆盖为 `aarch64`/`riscv64` 转 bin、`x86_64`/`loongarch64` 保留 ELF。编译产物供后续的运行（QEMU / U-Boot / Board）或测试阶段使用。
 
 ### 编译期文件写入（write_if_changed）
 
