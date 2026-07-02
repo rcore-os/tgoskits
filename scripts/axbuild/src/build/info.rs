@@ -179,6 +179,7 @@ impl BuildInfo {
             post_build_cmds: vec![],
             to_bin,
             bin: None,
+            test: None,
         }
     }
 

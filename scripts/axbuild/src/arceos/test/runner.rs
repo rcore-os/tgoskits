@@ -393,6 +393,7 @@ mod tests {
                 post_build_cmds: Vec::new(),
                 to_bin: false,
                 bin: None,
+                test: None,
             },
             qemu: QemuConfig::default(),
             host_symbolize_success_regex: Vec::new(),

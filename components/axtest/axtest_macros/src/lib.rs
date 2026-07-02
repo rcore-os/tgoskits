@@ -108,6 +108,19 @@ pub fn def_mod(attr: TokenStream, item: TokenStream) -> TokenStream {
     expanded.into()
 }
 
+/// Define an axtest module and generate the kernel test entry point.
+///
+/// This macro accepts an inline module. Functions marked with Rust's standard
+/// `#[test]` attribute are registered as axtest cases, while the generated
+/// test target entry point runs the common axtest kernel runner.
+#[proc_macro_attribute]
+pub fn tests(attr: TokenStream, item: TokenStream) -> TokenStream {
+    match expand_tests_module(attr.into(), item.into()) {
+        Ok(expanded) => expanded.into(),
+        Err(err) => err.to_compile_error().into(),
+    }
+}
+
 /// Define and register a test case for the `axtest` runtime.
 ///
 /// This macro expands a function into:
@@ -320,4 +333,184 @@ fn expand_axtest(attr: TokenStream, item: TokenStream) -> TokenStream {
     };
 
     expanded.into()
+}
+
+fn expand_tests_module(
+    attr: proc_macro2::TokenStream,
+    item: proc_macro2::TokenStream,
+) -> syn::Result<proc_macro2::TokenStream> {
+    if !attr.is_empty() {
+        return Err(Error::new_spanned(attr, "tests does not accept arguments"));
+    }
+
+    let mut module: ItemMod = syn::parse2(item)?;
+    if module.content.is_none() {
+        return Err(Error::new_spanned(
+            &module,
+            "tests must be applied to an inline module",
+        ));
+    }
+    let (_, items) = module.content.as_mut().expect("inline module checked");
+
+    let old_items = core::mem::take(items);
+    let mut new_items = Vec::with_capacity(old_items.len());
+    for mut item in old_items {
+        if let Item::Fn(func) = &mut item
+            && has_attr(func, "test")
+        {
+            new_items.extend(expand_test_function(func)?);
+            continue;
+        }
+        new_items.push(item);
+    }
+    *items = new_items;
+
+    Ok(quote! {
+        #module
+
+        #[cfg_attr(any(feature = "ax-std", target_os = "none"), unsafe(no_mangle))]
+        fn main() {
+            fn __axtest_print(args: core::fmt::Arguments<'_>) {
+                ax_std::print!("{}", args);
+            }
+
+            fn __axtest_wait_for_coverage_extraction() {
+                const WAIT_NANOS: u64 = 5_000_000_000;
+                let start = ax_hal::time::wall_time_nanos();
+                while ax_hal::time::wall_time_nanos().saturating_sub(start) < WAIT_NANOS {
+                    core::hint::spin_loop();
+                }
+            }
+
+            axtest::run_kernel_tests(
+                axtest::KernelTestConfig::new(__axtest_print, ax_hal::power::system_off)
+                    .with_coverage_wait(__axtest_wait_for_coverage_extraction),
+            );
+        }
+    })
+}
+
+fn has_attr(func: &ItemFn, name: &str) -> bool {
+    func.attrs.iter().any(|attr| attr.path().is_ident(name))
+}
+
+fn expand_test_function(func: &mut ItemFn) -> syn::Result<Vec<Item>> {
+    let fn_name = func.sig.ident.clone();
+    let fn_name_str = fn_name.to_string();
+    let has_return_type = !matches!(func.sig.output, syn::ReturnType::Default);
+    let fn_stmts = func.block.stmts.clone();
+    let vis = func.vis.clone();
+    let mut should_panic = false;
+    let mut ignore = false;
+    let mut ignore_reason: Option<String> = None;
+
+    func.attrs.retain(|attr| {
+        if attr.path().is_ident("test") {
+            return false;
+        }
+        if attr.path().is_ident("ignore") {
+            ignore = true;
+            if let syn::Meta::NameValue(nv) = &attr.meta
+                && let syn::Expr::Lit(syn::ExprLit {
+                    lit: syn::Lit::Str(s),
+                    ..
+                }) = &nv.value
+            {
+                ignore_reason = Some(s.value());
+            }
+            return false;
+        }
+        if attr.path().is_ident("should_panic") {
+            should_panic = true;
+            return false;
+        }
+        true
+    });
+    let fn_attrs = func.attrs.clone();
+
+    let ignore_reason_lit = ignore_reason.unwrap_or_else(|| "ignored".to_string());
+    let execution_mode = if ignore {
+        quote!(axtest::AxTestExecutionMode::Ignore)
+    } else {
+        quote!(axtest::AxTestExecutionMode::Standard)
+    };
+    let static_name = Ident::new(&format!("__axtest_descriptor_{}", fn_name), fn_name.span());
+
+    let wrapper = if has_return_type {
+        quote! {
+            #(#fn_attrs)*
+            #vis fn #fn_name() -> axtest::AxTestResult {
+                let __axtest_desc = #static_name;
+                axtest::call_module_init(module_path!(), __axtest_desc);
+                let __axtest_result = (|| -> axtest::AxTestResult {
+                    #(#fn_stmts)*
+                })();
+                axtest::call_module_exit(module_path!(), __axtest_desc);
+                __axtest_result
+            }
+        }
+    } else {
+        quote! {
+            #(#fn_attrs)*
+            #vis fn #fn_name() -> axtest::AxTestResult {
+                let __axtest_desc = #static_name;
+                axtest::call_module_init(module_path!(), __axtest_desc);
+                let __axtest_result = (|| -> axtest::AxTestResult {
+                    #(#fn_stmts)*
+                    axtest::AxTestResult::Ok
+                })();
+                axtest::call_module_exit(module_path!(), __axtest_desc);
+                __axtest_result
+            }
+        }
+    };
+
+    let file: syn::File = syn::parse2(quote! {
+        #[used]
+        #[unsafe(link_section = ".axtest_array")]
+        #[allow(non_upper_case_globals)]
+        static #static_name: axtest::AxTestDescriptor = axtest::AxTestDescriptor::new(
+            #fn_name_str,
+            module_path!(),
+            #fn_name,
+            "",
+            #should_panic,
+            #ignore_reason_lit,
+            #execution_mode,
+        );
+
+        #wrapper
+    })?;
+    Ok(file.items)
+}
+
+#[cfg(test)]
+mod tests {
+    use proc_macro2::TokenStream as TokenStream2;
+    use quote::quote;
+
+    #[test]
+    fn tests_module_generates_entry_and_descriptors() {
+        let input = quote! {
+            mod tests {
+                #[test]
+                fn smoke() {}
+
+                #[test]
+                #[ignore = "hardware only"]
+                fn ignored() {}
+            }
+        };
+
+        let expanded = super::expand_tests_module(TokenStream2::new(), input)
+            .expect("tests module should expand");
+        let expanded = expanded.to_string();
+
+        assert!(expanded.contains("fn main"));
+        assert!(expanded.contains("feature = \"ax-std\""));
+        assert!(expanded.contains("run_kernel_tests"));
+        assert!(expanded.contains("__axtest_descriptor_smoke"));
+        assert!(expanded.contains("__axtest_descriptor_ignored"));
+        assert!(expanded.contains("hardware only"));
+    }
 }

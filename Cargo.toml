@@ -313,7 +313,7 @@ lock_api = { version = "0.4", default-features = false }
 log = "0.4"
 spin = { version = "0.12", path = "components/spin" }
 atomic-waker = { version = "1.1", default-features = false }
-ostool = { version = "0.23.5" }
+ostool = { version = "0.24.0" }
 riscv = { version = "0.16.1", default-features = false }
 sbi-rt = { version = "0.0.4", default-features = false }
 uefi = "0.37.0"

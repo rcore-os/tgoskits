@@ -1511,6 +1511,7 @@ dependencies = [
  "axbuild",
  "axdevice",
  "axplat-dyn",
+ "axtest",
  "axvm",
  "axvmconfig",
  "byte-unit",
@@ -5376,9 +5377,9 @@ dependencies = [
 
 [[package]]
 name = "ostool"
-version = "0.23.5"
+version = "0.24.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "14149ab21b57e002a6463c775d0f459f232bab08e378ae46ba618a01aec45d5e"
+checksum = "7749b688fbd54bc32b77f56ac86abd82ef8628161bba32cc8cc0d68ca405013a"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -7658,6 +7659,7 @@ dependencies = [
  "ax-page-table-multiarch",
  "ax-percpu",
  "ax-runtime",
+ "ax-std",
  "ax-sync",
  "ax-task",
  "axbacktrace",
@@ -7770,7 +7772,6 @@ dependencies = [
  "ax-std",
  "axbuild",
  "axplat-dyn",
- "axtest",
  "clap",
  "starry-kernel",
  "tokio",

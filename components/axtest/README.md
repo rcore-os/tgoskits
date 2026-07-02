@@ -9,43 +9,57 @@ Entry points are already configured in all three OSes. This guide covers how to 
 ## Running Tests
 
 ```bash
-# ArceOS
-cargo xtask arceos test qemu --test-group axtest --arch aarch64
-
-# StarryOS
-cargo xtask starry test qemu --test-group axtest --arch x86_64
+# StarryOS kernel
+cargo xtask ktest qemu -p starry-kernel --test axtest_kernel --arch x86_64
 
 # Axvisor
-cargo xtask axvisor test qemu --test-group axtest --arch x86_64
+cargo xtask ktest qemu -p axvisor --test axtest --arch x86_64
 
-# List available test cases
-cargo xtask arceos test qemu --test-group axtest --list
+# Remote board
+cargo xtask ktest board -p starry-kernel --test axtest_kernel -b orangepi-5-plus
 ```
 
 ## Writing Test Cases
 
-Add `axtest.workspace = true` to your crate's `Cargo.toml`, then write tests gated with `#[cfg(axtest)]`:
+Add `axtest.workspace = true` to your crate's `Cargo.toml`, then write a
+`harness = false` Cargo test target. The test file only needs the axtest module
+and test cases:
 
 ```rust
-#[cfg(axtest)]
-mod my_tests {
+#![cfg_attr(target_os = "none", no_std)]
+#![cfg_attr(target_os = "none", no_main)]
+
+use ax_std as _;
+
+#[axtest::tests]
+mod tests {
     use axtest::prelude::*;
 
-    #[axtest]
+    #[test]
     fn it_works() {
         ax_assert_eq!(1 + 1, 2);
     }
 }
 ```
 
+The `#[axtest::tests]` macro registers every `#[test]` function in the inline
+module and generates the kernel test entry point. The entry point configures
+printing, runs the suite, emits `AXTEST_SUITE_OK` / `AXTEST_SUITE_FAIL`, dumps
+coverage when enabled, and powers the target off on success.
+
 ### Basic Test
 
 No explicit return needed — `AxTestResult::Ok` is appended automatically on success:
 
 ```rust
-#[axtest]
-fn basic() {
-    ax_assert_eq!(2 + 2, 4);
+#[axtest::tests]
+mod tests {
+    use axtest::prelude::*;
+
+    #[test]
+    fn basic() {
+        ax_assert_eq!(2 + 2, 4);
+    }
 }
 ```
 
@@ -54,11 +68,16 @@ fn basic() {
 Return `AxTestResult` for fine-grained control:
 
 ```rust
-#[axtest]
-fn with_result() -> axtest::AxTestResult {
-    let value = some_computation();
-    ax_assert!(value > 0);
-    axtest::AxTestResult::Ok
+#[axtest::tests]
+mod tests {
+    use axtest::prelude::*;
+
+    #[test]
+    fn with_result() -> axtest::AxTestResult {
+        let value = some_computation();
+        ax_assert!(value > 0);
+        axtest::AxTestResult::Ok
+    }
 }
 ```
 
@@ -75,39 +94,56 @@ Three assertion macros are provided, all `#![no_std]` compatible. They return `A
 Each accepts an optional format message:
 
 ```rust
-#[axtest]
-fn assertions() {
-    ax_assert!(true);
-    ax_assert_eq!(1 + 1, 2, "basic math failed");
-    ax_assert_ne!(a, b, "a should not equal b: {}", a);
+#[axtest::tests]
+mod tests {
+    use axtest::prelude::*;
+
+    #[test]
+    fn assertions() {
+        ax_assert!(true);
+        ax_assert_eq!(1 + 1, 2, "basic math failed");
+        ax_assert_ne!(a, b, "a should not equal b: {}", a);
+    }
 }
 ```
 
 ### Skipping Tests
 
 ```rust
-#[axtest]
-#[ignore]
-fn not_ready_yet() { /* ... */ }
+#[axtest::tests]
+mod tests {
+    use axtest::prelude::*;
 
-#[axtest]
-#[ignore = "requires hardware device X"]
-fn hw_dependent() { /* ... */ }
+    #[test]
+    #[ignore]
+    fn not_ready_yet() { /* ... */ }
+
+    #[test]
+    #[ignore = "requires hardware device X"]
+    fn hw_dependent() { /* ... */ }
+}
 ```
 
 ### Expected Failure
 
 ```rust
-#[axtest]
-#[should_panic]
-fn expected_to_fail() {
-    panic!("this is intentional");
+#[axtest::tests]
+mod tests {
+    use axtest::prelude::*;
+
+    #[test]
+    #[should_panic]
+    fn expected_to_fail() {
+        ax_assert!(false);
+    }
 }
 ```
 
-### Custom Executor
+### Advanced: Custom Executor
 
-Bind a test to a named executor (must be registered via `add_executor` in the entry point):
+Use the lower-level `#[axtest]` attribute when a test needs a named executor or
+when the entry point is custom. Bind a test to a named executor after registering
+it via `add_executor` in the entry point:
 
 ```rust
 #[axtest(custom = "thread")]
@@ -185,9 +221,9 @@ let summary = axtest::init()
 
 ## How It Works
 
-1. `#[axtest]` generates a `static AxTestDescriptor` in the `.axtest_array` linker section
+1. `#[axtest::tests]` converts module-local `#[test]` functions into `AxTestDescriptor`s in the `.axtest_array` linker section
 2. The linker script collects all descriptors into a contiguous array
-3. `axtest::init().run_tests()` reads the array and executes each test
+3. The generated entry point calls `axtest::run_kernel_tests()`
 4. Results are printed in KTAP format with machine-parseable markers
 
 ```
@@ -203,16 +239,12 @@ AXTEST_SUMMARY pass=2 fail=0 skip=0 total=2
 
 ### Build Integration
 
-The build tool injects `--cfg axtest` via `CARGO_ENCODED_RUSTFLAGS` when the test suite build config sets `AXTEST=y`:
+The `ktest` command builds kernel/QEMU/board tests as Cargo `[[test]]` targets with `harness = false`.
+It selects the package with `-p <package>`, the target with `--test <target>`, and injects `--cfg axtest` via `CARGO_ENCODED_RUSTFLAGS`:
 
-```toml
-# test-suit/<os>/axtest/qemu/build-aarch64-unknown-none-softfloat.toml
-target = "aarch64-unknown-none-softfloat"
-features = []
-log = "Info"
-
-[env]
-AXTEST = "y"
+```bash
+cargo xtask ktest qemu -p starry-kernel --test axtest_kernel --arch x86_64
+cargo xtask ktest qemu -p axvisor --test axtest --arch x86_64
 ```
 
 QEMU configs use `success_regex` / `fail_regex` to match the output:
@@ -233,24 +265,10 @@ axtest supports LLVM source-based coverage via [xcover](https://crates.io/crates
 
 ### Running with Coverage
 
-Set `AXTEST_COVERAGE=y` alongside `AXTEST=y`:
-
-```toml
-# test-suit/<os>/axtest/qemu/build-aarch64-unknown-none-softfloat.toml
-target = "aarch64-unknown-none-softfloat"
-features = []
-log = "Info"
-
-[env]
-AXTEST = "y"
-AXTEST_COVERAGE = "y"
-```
-
-Or pass it as a host environment variable:
+Pass `--coverage` to `ktest qemu`:
 
 ```bash
-AXTEST_COVERAGE=y cargo xtask arceos test qemu --test-group axtest --arch aarch64
-AXTEST_COVERAGE=y cargo xtask axvisor test qemu --test-group axtest --arch x86_64
+cargo xtask ktest qemu -p starry-kernel --test axtest_kernel --arch x86_64 --coverage
 ```
 
 The build tool will automatically:
