@@ -90,6 +90,20 @@ pub unsafe fn alloc_coherent_pages(layout: Layout) -> AllocResult<DMAInfo> {
     ALLOCATOR.lock().alloc_coherent_pages(layout)
 }
 
+/// Allocates contiguous DMA pages constrained to 32-bit physical addresses
+/// (< 4 GiB), bypassing the slab byte allocator. The region is mapped uncached.
+///
+/// For IOMMU-bypassed devices (e.g. the RK3588 JPU/RGA/NPU) that program raw
+/// 32-bit DMA addresses into hardware registers and therefore cannot reach
+/// buffers allocated above 4 GiB on large-memory boards.
+///
+/// # Safety
+///
+/// Same safety requirements as [`alloc_coherent`].
+pub unsafe fn alloc_coherent_pages_dma32(layout: Layout) -> AllocResult<DMAInfo> {
+    ALLOCATOR.lock().alloc_coherent_pages_dma32(layout)
+}
+
 /// A bus memory address.
 ///
 /// It's a wrapper type around an [`u64`].

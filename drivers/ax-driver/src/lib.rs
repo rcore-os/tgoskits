@@ -68,6 +68,8 @@ pub mod net;
 #[cfg(feature = "vsock")]
 pub mod vsock;
 
+#[cfg(feature = "jpeg")]
+pub mod jpeg;
 #[cfg(feature = "pci")]
 pub mod pci;
 #[cfg(feature = "rga")]
