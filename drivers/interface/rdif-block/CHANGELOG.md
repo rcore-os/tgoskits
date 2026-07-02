@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.0](https://github.com/rcore-os/tgoskits/compare/rdif-block-v0.10.0...rdif-block-v0.11.0) - 2026-07-02
+
+### Fixed
+
+- *(ci)* prevent Starry qemu hangs in IRQ paths ([#1431](https://github.com/rcore-os/tgoskits/pull/1431))
+
+### Other
+
+- *(rdif-block)* enable boxed sdmmc irq flow ([#1446](https://github.com/rcore-os/tgoskits/pull/1446))
+
 ## [0.10.0](https://github.com/rcore-os/tgoskits/compare/rdif-block-v0.9.1...rdif-block-v0.10.0) - 2026-06-27
 
 ### Added

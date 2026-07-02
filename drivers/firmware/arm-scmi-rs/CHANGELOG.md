@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.5](https://github.com/rcore-os/tgoskits/compare/arm-scmi-rs-v0.1.4...arm-scmi-rs-v0.1.5) - 2026-07-02
+
+### Other
+
+- updated the following local packages: ax-kspin
+
 ## [0.1.4](https://github.com/rcore-os/tgoskits/compare/arm-scmi-rs-v0.1.3...arm-scmi-rs-v0.1.4) - 2026-06-27
 
 ### Fixed

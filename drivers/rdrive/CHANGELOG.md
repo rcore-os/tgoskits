@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.23.3](https://github.com/rcore-os/tgoskits/compare/rdrive-v0.23.2...rdrive-v0.23.3) - 2026-07-02
+
+### Added
+
+- *(axvisor)* support LoongArch Linux guest on QEMU ([#1207](https://github.com/rcore-os/tgoskits/pull/1207))
+- *(kspin)* add lockdep-aware spin rwlock ([#1397](https://github.com/rcore-os/tgoskits/pull/1397))
+
+### Other
+
+- *(rdrive)* apply default FDT pinctrl before probe ([#1458](https://github.com/rcore-os/tgoskits/pull/1458))
+
 ## [0.23.2](https://github.com/rcore-os/tgoskits/compare/rdrive-v0.23.1...rdrive-v0.23.2) - 2026-06-27
 
 ### Fixed
