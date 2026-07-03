@@ -435,8 +435,18 @@ impl TaskInner {
     }
 
     #[inline]
-    pub(crate) fn set_in_wait_queue(&self, in_wait_queue: bool) {
-        self.core.set_in_wait_queue(in_wait_queue);
+    pub(crate) fn is_waiting_on(&self, wait_queue_key: usize) -> bool {
+        self.core.is_waiting_on(wait_queue_key)
+    }
+
+    #[inline]
+    pub(crate) fn set_wait_queue_key(&self, wait_queue_key: usize) {
+        self.core.set_wait_queue_key(wait_queue_key);
+    }
+
+    #[inline]
+    pub(crate) fn clear_wait_queue_key(&self, wait_queue_key: usize) -> bool {
+        self.core.clear_wait_queue_key(wait_queue_key)
     }
 
     /// Returns task's current timer ticket ID.

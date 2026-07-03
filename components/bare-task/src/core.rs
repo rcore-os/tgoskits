@@ -97,7 +97,7 @@ pub struct TaskCore {
     cpu_id: AtomicUsize,
     cpumask: AtomicU64,
     on_cpu: AtomicBool,
-    in_wait_queue: AtomicBool,
+    wait_queue_key: AtomicUsize,
     timer_ticket_id: AtomicU64,
     preempt_pending: AtomicBool,
     force_resched_pending: AtomicBool,
@@ -119,7 +119,7 @@ impl TaskCore {
             cpu_id: AtomicUsize::new(cpu_id.0),
             cpumask: AtomicU64::new(CpuMask::one(cpu_id).bits()),
             on_cpu: AtomicBool::new(false),
-            in_wait_queue: AtomicBool::new(false),
+            wait_queue_key: AtomicUsize::new(0),
             timer_ticket_id: AtomicU64::new(0),
             preempt_pending: AtomicBool::new(false),
             force_resched_pending: AtomicBool::new(false),
@@ -177,12 +177,38 @@ impl TaskCore {
 
     /// Returns whether the task is marked as present in a wait queue.
     pub fn in_wait_queue(&self) -> bool {
-        self.in_wait_queue.load(Ordering::Acquire)
+        self.wait_queue_key.load(Ordering::Acquire) != 0
     }
 
     /// Updates wait-queue membership.
     pub fn set_in_wait_queue(&self, in_wait_queue: bool) {
-        self.in_wait_queue.store(in_wait_queue, Ordering::Release);
+        self.wait_queue_key.store(
+            if in_wait_queue { usize::MAX } else { 0 },
+            Ordering::Release,
+        );
+    }
+
+    /// Returns the wait queue key this task is currently linked to, or zero.
+    pub fn wait_queue_key(&self) -> usize {
+        self.wait_queue_key.load(Ordering::Acquire)
+    }
+
+    /// Returns whether this task is currently linked to `wait_queue_key`.
+    pub fn is_waiting_on(&self, wait_queue_key: usize) -> bool {
+        wait_queue_key != 0 && self.wait_queue_key() == wait_queue_key
+    }
+
+    /// Marks this task as linked to the wait queue identified by `wait_queue_key`.
+    pub fn set_wait_queue_key(&self, wait_queue_key: usize) {
+        assert!(wait_queue_key != 0);
+        self.wait_queue_key.store(wait_queue_key, Ordering::Release);
+    }
+
+    /// Clears the wait queue key only if it still matches `wait_queue_key`.
+    pub fn clear_wait_queue_key(&self, wait_queue_key: usize) -> bool {
+        self.wait_queue_key
+            .compare_exchange(wait_queue_key, 0, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
     }
 
     /// Returns whether this task is still finishing a context switch on a CPU.

@@ -754,6 +754,23 @@ fn test_blocked_resched_abortable_removes_waiter_before_return() {
 }
 
 #[test]
+fn test_stale_wait_queue_entry_does_not_clear_new_wait_membership() {
+    run_in_test_scheduler(|| {
+        let stale_queue = WaitQueue::new();
+        let active_queue = WaitQueue::new();
+
+        stale_queue.push_current_for_test();
+        active_queue.push_current_for_test();
+
+        assert!(current().in_wait_queue());
+        assert!(!stale_queue.notify_one(false));
+        assert!(current().in_wait_queue());
+        assert!(active_queue.notify_one(false));
+        assert!(!current().in_wait_queue());
+    });
+}
+
+#[test]
 fn test_irq_notify_wakes_after_concurrent_irq_callbacks() {
     run_in_test_scheduler(|| {
         const NUM_IRQ_THREADS: usize = 6;

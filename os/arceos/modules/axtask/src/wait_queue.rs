@@ -47,14 +47,19 @@ impl WaitQueue {
         }
     }
 
+    fn key(&self) -> usize {
+        core::ptr::addr_of!(self.queue) as usize
+    }
+
     /// Cancel events by removing the task from the wait queue.
     /// If `from_timer_list` is true, try to remove the task from the timer list.
     fn cancel_events(&self, curr: CurrentTask, _from_timer_list: bool) {
         // A task can be woken by only one event (timer or `notify()`), so remove it from the other queue.
-        if curr.in_wait_queue() {
+        let wait_queue_key = self.key();
+        if curr.is_waiting_on(wait_queue_key) {
             // wake up by timer (timeout).
             self.queue.lock().retain(|t| !curr.ptr_eq(t));
-            curr.set_in_wait_queue(false);
+            curr.clear_wait_queue_key(wait_queue_key);
         }
 
         // Try to cancel a timer event from timer lists.
@@ -74,7 +79,7 @@ impl WaitQueue {
     #[track_caller]
     pub fn wait(&self) {
         crate::api::might_sleep();
-        current_run_queue::<NoPreemptIrqSave>().blocked_resched(self.queue.lock());
+        current_run_queue::<NoPreemptIrqSave>().blocked_resched(self.queue.lock(), self.key());
         self.cancel_events(crate::current(), false);
     }
 
@@ -116,7 +121,7 @@ impl WaitQueue {
         );
         let timeout = loop {
             crate::timers::set_alarm_wakeup(deadline, curr.clone());
-            rq.blocked_resched(self.queue.lock());
+            rq.blocked_resched(self.queue.lock(), self.key());
 
             // Still in the wait queue means the timer path woke us. Re-check
             // the monotonic deadline so an early wake cannot truncate sleeps.
@@ -215,15 +220,20 @@ impl WaitQueue {
     {
         let task = {
             let mut wq = self.queue.lock();
-            match wq.pop_front() {
-                Some(task) => {
-                    func(task.id().as_u64());
-                    task.set_in_wait_queue(false);
-                    Some(task)
-                }
-                None => {
-                    func(0);
-                    None
+            let wait_queue_key = self.key();
+            loop {
+                match wq.pop_front() {
+                    Some(task) if task.clear_wait_queue_key(wait_queue_key) => {
+                        func(task.id().as_u64());
+                        break Some(task);
+                    }
+                    Some(_) => {
+                        continue;
+                    }
+                    None => {
+                        func(0);
+                        break None;
+                    }
                 }
             }
         };
@@ -261,10 +271,21 @@ impl WaitQueue {
     }
 
     fn pop_front(&self) -> Option<AxTaskRef> {
+        let wait_queue_key = self.key();
         let mut wq = self.queue.lock();
-        let task = wq.pop_front()?;
-        task.set_in_wait_queue(false);
-        Some(task)
+        while let Some(task) = wq.pop_front() {
+            if task.clear_wait_queue_key(wait_queue_key) {
+                return Some(task);
+            }
+        }
+        None
+    }
+
+    #[cfg(test)]
+    pub(crate) fn push_current_for_test(&self) {
+        let curr = crate::current();
+        curr.set_wait_queue_key(self.key());
+        self.queue.lock().push_back(curr.clone());
     }
 }
 

@@ -851,13 +851,14 @@ impl<G: BaseGuard> CurrentRunQueueRef<'_, G> {
     }
 
     /// Block the current task, put current task into the wait queue and reschedule.
-    /// Mark the state of current task as `Blocked`, set the `in_wait_queue` flag as true.
+    /// Mark the state of current task as `Blocked` and record this queue as
+    /// the task's current wait-queue membership.
     /// Note:
     ///     1. The caller must hold the lock of the wait queue.
     ///     2. The caller must ensure that the current task is in the running state.
     ///     3. The caller must ensure that the current task is not the idle task.
     ///     4. The lock of the wait queue will be released explicitly after current task is pushed into it.
-    pub fn blocked_resched(&mut self, mut wq_guard: WaitQueueGuard) {
+    pub fn blocked_resched(&mut self, mut wq_guard: WaitQueueGuard, wait_queue_key: usize) {
         let curr = &self.current_task;
         assert!(curr.is_running());
         assert!(!curr.is_idle());
@@ -871,13 +872,12 @@ impl<G: BaseGuard> CurrentRunQueueRef<'_, G> {
         // while holding the lock of the wait queue.
         curr.set_state(TaskState::Blocked);
 
-        // A preemptive future wake can re-enter a wait path before a previous
-        // wait-queue entry has been consumed. Avoid leaving a stale duplicate
-        // waiter that may receive mutex ownership after the task is running.
-        if !curr.in_wait_queue() {
-            curr.set_in_wait_queue(true);
-            wq_guard.push_back(curr.clone());
-        }
+        // Wait-queue membership is keyed by the queue address. If the task was
+        // left in an older queue, that entry becomes stale and the old queue will
+        // discard it without clearing this new membership.
+        wq_guard.retain(|task| !curr.ptr_eq(task));
+        curr.set_wait_queue_key(wait_queue_key);
+        wq_guard.push_back(curr.clone());
         // Drop the lock of wait queue explicitly.
         drop(wq_guard);
 
@@ -909,20 +909,18 @@ impl<G: BaseGuard> CurrentRunQueueRef<'_, G> {
         #[cfg(feature = "preempt")]
         assert!(curr.can_preempt(1));
 
+        let wait_queue_key = core::ptr::from_ref(wait_queue) as usize;
         let mut wq_guard = wait_queue.lock();
         curr.set_state(TaskState::Blocked);
-        if !curr.in_wait_queue() {
-            curr.set_in_wait_queue(true);
-            wq_guard.push_back(curr.clone());
-        }
+        wq_guard.retain(|task| !curr.ptr_eq(task));
+        curr.set_wait_queue_key(wait_queue_key);
+        wq_guard.push_back(curr.clone());
         drop(wq_guard);
 
         if should_abort_sleep() {
             let mut wq_guard = wait_queue.lock();
-            let was_queued = curr.in_wait_queue();
-            if was_queued {
+            if curr.clear_wait_queue_key(wait_queue_key) {
                 wq_guard.retain(|task| !curr.ptr_eq(task));
-                curr.set_in_wait_queue(false);
             }
             drop(wq_guard);
 
