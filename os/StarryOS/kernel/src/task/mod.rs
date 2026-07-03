@@ -24,7 +24,7 @@ use ax_errno::AxResult;
 use ax_kspin::SpinRwLock as RwLock;
 use ax_runtime::hal::{cpu::uspace::UserContext, time::TimeValue};
 use ax_sync::{Mutex, spin::SpinNoIrq};
-use ax_task::{TaskExt, TaskInner, WaitChannel, WaitChannelGuard};
+use ax_task::{TaskExt, TaskInner};
 use axpoll::{IoEvents, PollSet};
 use extern_trait::extern_trait;
 use kernel_elf_parser::AuxEntry;
@@ -559,16 +559,11 @@ impl VforkDone {
 }
 
 /// Waits on a [`PollSet`] after a caller-supplied condition reports no
-/// immediate result, recording `channel` only while the future is pending.
+/// immediate result.
 ///
 /// The condition is checked before and after waker registration, so callers
-/// avoid lost wakeups without owning the wait-channel lifecycle themselves.
-pub async fn wait_on_pollset_with_wchan<T>(
-    poll: &PollSet,
-    channel: WaitChannel,
-    mut check: impl FnMut() -> Option<T>,
-) -> T {
-    let mut wchan_guard = None;
+/// avoid lost wakeups.
+pub async fn wait_on_pollset<T>(poll: &PollSet, mut check: impl FnMut() -> Option<T>) -> T {
     poll_fn(move |cx| {
         if let Some(value) = check() {
             return Poll::Ready(value);
@@ -580,7 +575,6 @@ pub async fn wait_on_pollset_with_wchan<T>(
         if let Some(value) = check() {
             Poll::Ready(value)
         } else {
-            wchan_guard.get_or_insert_with(|| WaitChannelGuard::set(channel));
             Poll::Pending
         }
     })

@@ -33,7 +33,7 @@ use core::ffi::c_int;
 
 use ax_errno::{AxError, AxResult, LinuxError};
 use ax_kspin::SpinRwLock as RwLock;
-use ax_task::{WaitChannel, current};
+use ax_task::current;
 use linux_raw_sys::general::{
     F_GETLK, F_OFD_GETLK, F_OFD_SETLK, F_OFD_SETLKW, F_RDLCK, F_SETLK, F_SETLKW, F_UNLCK, F_WRLCK,
     LOCK_EX, LOCK_NB, LOCK_SH, LOCK_UN, O_ACCMODE, O_RDONLY, O_RDWR, O_WRONLY, SEEK_CUR, SEEK_END,
@@ -626,7 +626,7 @@ pub fn fcntl_setlk(fd: c_int, arg: usize, ofd: bool, wait: bool) -> AxResult<isi
                 // this re-check says they will really sleep, avoiding stale
                 // graph edges for conflicts that already cleared.
                 let wq = lock_waiters(key);
-                wq.wait_if_with_wchan(WaitChannel::FileLockWait, !0u32, None, || {
+                wq.wait_if(!0u32, None, || {
                     let owner = make_owner(ofd, &file);
                     if let Some(pid) = waiter_pid {
                         match PosixLockWaitGuard::try_new(pid, waiting, &owner) {
@@ -961,7 +961,7 @@ pub fn flock_op(fd: c_int, operation: c_int) -> AxResult<isize> {
                 // attempt and the sleep is not lost.
                 let want = kind.unwrap();
                 let wq = flock_waiters(key);
-                wq.wait_if_with_wchan(WaitChannel::FileLockWait, !0u32, None, || {
+                wq.wait_if(!0u32, None, || {
                     let table = FLOCK_LOCKS.read();
                     let Some(entries) = table.get(&key) else {
                         return false;

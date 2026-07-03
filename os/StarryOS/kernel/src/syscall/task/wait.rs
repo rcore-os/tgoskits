@@ -2,7 +2,7 @@ use alloc::{sync::Arc, vec::Vec};
 
 use ax_errno::{AxError, AxResult, LinuxError};
 use ax_task::{
-    WaitChannel, current,
+    current,
     future::{block_on, interruptible},
 };
 use bitflags::bitflags;
@@ -19,7 +19,7 @@ use crate::{
     task::{
         AsThread, JobStatus, ProcessData, decode_wait_status, get_process_data, get_task,
         get_zombie_cred, is_zombie_clone_child, processes, remove_process, traced_zombies_for,
-        unregister_zombie, wait_on_pollset_with_wchan, zombie_wait_parent_tid,
+        unregister_zombie, wait_on_pollset, zombie_wait_parent_tid,
     },
 };
 
@@ -338,9 +338,8 @@ pub fn sys_waitpid(pid: i32, exit_code: *mut i32, options: u32) -> AxResult<isiz
         }
     };
 
-    block_on(interruptible(wait_on_pollset_with_wchan(
+    block_on(interruptible(wait_on_pollset(
         &proc_data.child_exit_event,
-        WaitChannel::DoWait,
         || check_children().transpose(),
     )))?
 }
@@ -472,9 +471,8 @@ pub fn sys_waitid(
         }
     };
 
-    block_on(interruptible(wait_on_pollset_with_wchan(
+    block_on(interruptible(wait_on_pollset(
         &proc_data.child_exit_event,
-        WaitChannel::DoWait,
         || check_children().transpose(),
     )))?
 }

@@ -96,7 +96,6 @@ impl TaskStat {
         let cutime = (cutime_tv.as_millis() / 10) as u64;
         let cstime = (cstime_tv.as_millis() / 10) as u64;
 
-        let wchan = task.wchan().map_or(0, |wc| wc.id() as u64);
         let mem = ProcessMemStats::collect(&proc_data.aspace().lock());
 
         Ok(Self {
@@ -110,7 +109,6 @@ impl TaskStat {
             stime,
             cutime,
             cstime,
-            wchan,
             num_threads: proc.threads().len() as u32,
             vsize: mem.vsize_bytes(),
             rss: mem.rss_pages(),

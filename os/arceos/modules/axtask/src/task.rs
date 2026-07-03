@@ -69,105 +69,6 @@ pub trait TaskExt {
     fn on_leave(&self) {}
 }
 
-/// A wait-channel identifier describing where a blocked task is sleeping.
-///
-/// Labels follow Linux-style kernel wait-site naming conventions rather than
-/// syscall entry point names, so diagnostics reflect the actual blocking
-/// primitive (e.g. `futex_wait` rather than `sys_futex`).
-#[repr(u16)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub enum WaitChannel {
-    /// Not blocked in a known wait; runnable or exiting.
-    None                 = 0,
-    /// Blocked in a generic `WaitQueue` without a more specific label.
-    WaitQueueWait        = 1,
-    /// Blocked in a `WaitQueue` with a timeout.
-    WaitQueueWaitTimeout = 2,
-    /// Blocked on a futex.
-    FutexWait            = 3,
-    /// Blocked in `poll_io` (`poll`/`select`/`epoll` readiness).
-    PollWait             = 4,
-    /// Blocked in `epoll_wait`.
-    EpollWait            = 5,
-    /// Blocked on an explicit timeout / sleep (`schedule_timeout`).
-    ScheduleTimeout      = 6,
-    /// Blocked waiting for a child process (`wait4`/`waitid`).
-    DoWait               = 7,
-    /// Blocked on a file lock (`flock`/`fcntl` lock).
-    FileLockWait         = 8,
-    /// Blocked on a pipe read.
-    PipeReadWait         = 9,
-    /// Blocked on a pipe write.
-    PipeWriteWait        = 10,
-    /// Blocked waiting for a signal.
-    SignalWait           = 11,
-    /// Blocked on a socket / network operation.
-    SocketWait           = 12,
-    /// Blocked for an unspecific reason not covered above.
-    Unknown              = 13,
-}
-
-impl WaitChannel {
-    /// Human-readable ASCII label suitable for `/proc/<pid>/wchan`.
-    pub fn label(&self) -> &'static str {
-        match self {
-            Self::None => "",
-            Self::WaitQueueWait => "wait_queue_wait",
-            Self::WaitQueueWaitTimeout => "wait_queue_wait_timeout",
-            Self::FutexWait => "futex_wait",
-            Self::PollWait => "poll_wait",
-            Self::EpollWait => "epoll_wait",
-            Self::ScheduleTimeout => "schedule_timeout",
-            Self::DoWait => "do_wait",
-            Self::FileLockWait => "file_lock_wait",
-            Self::PipeReadWait => "pipe_read_wait",
-            Self::PipeWriteWait => "pipe_write_wait",
-            Self::SignalWait => "signal_wait",
-            Self::SocketWait => "socket_wait",
-            Self::Unknown => "unknown",
-        }
-    }
-
-    /// Numeric identifier for `/proc/<pid>/stat` wchan field.
-    pub const fn id(self) -> u16 {
-        self as u16
-    }
-}
-
-/// RAII guard that scopes a wait-channel value to the current task's sleep.
-///
-/// Sets the current task's wchan field on construction and clears it on
-/// [`Drop`], ensuring the label is valid only while the task is actually
-/// blocked in the corresponding primitive.
-#[must_use = "WaitChannelGuard is an RAII guard — bind it to a variable so it lives for the sleep \
-              duration"]
-pub struct WaitChannelGuard {
-    previous: Option<WaitChannel>,
-}
-
-impl WaitChannelGuard {
-    /// Sets the current task's wait channel and returns a guard that restores
-    /// the previous state on drop.
-    pub fn set(channel: WaitChannel) -> Self {
-        let curr = crate::current();
-        let previous = curr.set_wchan(Some(channel));
-        Self { previous }
-    }
-
-    /// Returns the channel that this guard represents, if known.
-    pub fn channel(&self) -> Option<WaitChannel> {
-        // The channel we set is the one currently active — just read it from
-        // the current task for simplicity, avoiding extra state in the guard.
-        crate::current().wchan()
-    }
-}
-
-impl Drop for WaitChannelGuard {
-    fn drop(&mut self) {
-        crate::current().set_wchan(self.previous);
-    }
-}
-
 /// The inner task structure.
 pub struct TaskInner {
     id: TaskId,
@@ -222,9 +123,6 @@ pub struct TaskInner {
 
     #[cfg(feature = "task-ext")]
     task_ext: Option<AxTaskExt>,
-
-    /// Current wait-channel (valid only while blocked).
-    wchan: SpinNoIrq<Option<WaitChannel>>,
 
     #[cfg(feature = "tls")]
     tls: TlsArea,
@@ -441,18 +339,6 @@ impl TaskInner {
         self.interrupted.store(true, Ordering::Release);
         self.interrupt_waker.wake();
     }
-
-    /// Returns the current wait channel for this task.
-    #[inline]
-    pub fn wchan(&self) -> Option<WaitChannel> {
-        *self.wchan.lock()
-    }
-
-    /// Sets the current wait channel, returning the previous value.
-    #[inline]
-    pub(crate) fn set_wchan(&self, channel: Option<WaitChannel>) -> Option<WaitChannel> {
-        core::mem::replace(&mut *self.wchan.lock(), channel)
-    }
 }
 
 // private methods
@@ -489,7 +375,6 @@ impl TaskInner {
             ctx: UnsafeCell::new(TaskContext::new()),
             #[cfg(feature = "lockdep")]
             held_locks: UnsafeCell::new(HeldLockStack::new()),
-            wchan: SpinNoIrq::new(None),
             #[cfg(feature = "task-ext")]
             task_ext: None,
             #[cfg(feature = "tls")]

@@ -272,53 +272,7 @@ static void test_poll_two_fds_one_closes(void) {
     close(ctrlfd[1]);
 }
 
-// ─── Test 5: poll close with wchan check ────────────────────────────────
-static void test_poll_close_with_wchan(void) {
-    printf("Test 5: wchan label during pipe-close poll\n");
-    int pipefd[2];
-    TEST(pipe(pipefd) == 0, "pipe created");
-
-    pid_t child = fork();
-    TEST(child >= 0, "fork succeeded");
-
-    if (child == 0) {
-        close(pipefd[0]);
-        (void)!write(pipefd[1], ".", 1);
-        (void)!fsync(pipefd[1]);
-        close(pipefd[1]);
-        _exit(0);
-    }
-
-    close(pipefd[1]);
-
-    // Drain the data first
-    char c;
-    struct pollfd pfd = {.fd = pipefd[0], .events = POLLIN};
-    poll(&pfd, 1, 200);
-    (void)!read(pipefd[0], &c, 1);
-
-    // Now poll should block (or not if pipe already closed)
-    // Check wchan of ourselves — our child should show our wchan
-    pid_t mypid = getpid();
-    printf("  Parent PID=%d, child PID=%d\n", mypid, child);
-
-    // Check if wchan is available for the child (zombie detection)
-    char path[64];
-    snprintf(path, sizeof(path), "/proc/%d/wchan", child);
-    FILE *fp = fopen(path, "r");
-    if (fp) {
-        char wchan[128] = {0};
-        if (fgets(wchan, sizeof(wchan), fp)) {
-            printf("  Child wchan after exit: %s", wchan);
-        }
-        fclose(fp);
-    }
-
-    close(pipefd[0]);
-    waitpid(child, NULL, 0);
-}
-
-// ─── Test 6: epoll LT + close without draining first ────────────────────
+// ─── Test 5: epoll LT + close without draining first ────────────────────
 // Edge case: fd added to epoll, child writes and exits, parent hasn't
 // drained yet.  epoll must deliver both IN (data) and HUP (close).
 static void test_epoll_lt_close_with_data(void) {
@@ -389,7 +343,6 @@ int main(void) {
     test_epoll_pipe_close();
     test_epoll_in_only_detects_close();
     test_poll_two_fds_one_closes();
-    test_poll_close_with_wchan();
     test_epoll_lt_close_with_data();
 
     printf("\n=== Results: %d pass, %d fail ===\n", tests_pass, tests_fail);

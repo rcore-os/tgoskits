@@ -3,9 +3,7 @@ use alloc::collections::VecDeque;
 use ax_kernel_guard::NoPreemptIrqSave;
 use ax_kspin::{SpinNoIrq, SpinNoIrqGuard};
 
-use crate::{
-    AxTaskRef, CurrentTask, WaitChannel, WaitChannelGuard, current_run_queue, select_wake_run_queue,
-};
+use crate::{AxTaskRef, CurrentTask, current_run_queue, select_wake_run_queue};
 
 /// A queue to store sleeping tasks.
 ///
@@ -245,49 +243,6 @@ impl WaitQueue {
         while self.notify_one(resched) {
             // loop until the wait queue is empty
         }
-    }
-
-    // ── Reason-aware wait wrappers ──────────────────────────────────────
-
-    /// Like [`wait`](Self::wait), but records the given wait channel on the
-    /// current task while it is blocked.
-    pub fn wait_with_wchan(&self, channel: WaitChannel) {
-        let _guard = WaitChannelGuard::set(channel);
-        self.wait();
-    }
-
-    /// Like [`wait_until`](Self::wait_until), but records the given wait
-    /// channel on the current task while it is blocked.
-    pub fn wait_until_with_wchan<F>(&self, channel: WaitChannel, condition: F)
-    where
-        F: Fn() -> bool,
-    {
-        let _guard = WaitChannelGuard::set(channel);
-        self.wait_until(condition);
-    }
-
-    /// Like [`wait_timeout`](Self::wait_timeout), but records the given wait
-    /// channel on the current task while it is blocked.
-    #[cfg(feature = "irq")]
-    pub fn wait_timeout_with_wchan(&self, channel: WaitChannel, dur: core::time::Duration) -> bool {
-        let _guard = WaitChannelGuard::set(channel);
-        self.wait_timeout(dur)
-    }
-
-    /// Like [`wait_timeout_until`](Self::wait_timeout_until), but records the
-    /// given wait channel on the current task while it is blocked.
-    #[cfg(feature = "irq")]
-    pub fn wait_timeout_until_with_wchan<F>(
-        &self,
-        channel: WaitChannel,
-        dur: core::time::Duration,
-        condition: F,
-    ) -> bool
-    where
-        F: Fn() -> bool,
-    {
-        let _guard = WaitChannelGuard::set(channel);
-        self.wait_timeout_until(dur, condition)
     }
 
     /// Wakes all tasks from IRQ context.

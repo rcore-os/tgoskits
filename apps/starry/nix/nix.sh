@@ -16,7 +16,7 @@ fail() {
     exit 1
 }
 
-# Dump process state for a given PID (status + wchan + stat)
+# Dump process state for a given PID.
 dump_proc_state() {
     pid="$1"
     label="$2"
@@ -27,14 +27,10 @@ dump_proc_state() {
     echo "NIX_DIAG_PROCSTAT ${label}_STAT_BEGIN"
     cat "/proc/$pid/stat" 2>/dev/null || echo "NIX_DIAG_NO_PROC_STAT"
     echo "NIX_DIAG_PROCSTAT ${label}_STAT_END"
-    echo "NIX_DIAG_PROCSTAT ${label}_WCHAN_BEGIN"
-    cat "/proc/$pid/wchan" 2>/dev/null || echo "NIX_DIAG_NO_WCHAN"
-    echo "NIX_DIAG_PROCSTAT ${label}_WCHAN_END"
 }
 
-# Dump per-thread state. Nix keeps a small worker thread pool, and a process
-# level /proc/<pid>/wchan only shows one task; the stuck waiter can be a
-# different tid.
+# Dump per-thread state. Nix keeps a small worker thread pool, so the stuck
+# waiter can be a different tid.
 dump_thread_states() {
     pid="$1"
     label="$2"
@@ -43,9 +39,8 @@ dump_thread_states() {
         tid=$(basename "$tdir")
         case "$tid" in *[!0-9]*) continue ;; esac
         comm=$(cat "$tdir/comm" 2>/dev/null || echo '?')
-        wchan=$(cat "$tdir/wchan" 2>/dev/null || echo '?')
         stat=$(cat "$tdir/stat" 2>/dev/null || echo '?')
-        echo "TID=$tid COMM=$comm WCHAN=$wchan STAT=$stat"
+        echo "TID=$tid COMM=$comm STAT=$stat"
         echo "NIX_DIAG_THREAD_FD ${label}_${tid}_BEGIN"
         ls -la "$tdir/fd" 2>/dev/null || echo 'NIX_DIAG_NO_THREAD_FD'
         echo "NIX_DIAG_THREAD_FD ${label}_${tid}_END"
