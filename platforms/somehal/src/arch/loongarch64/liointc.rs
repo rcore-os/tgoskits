@@ -1,7 +1,4 @@
-use core::{
-    ptr::NonNull,
-    sync::atomic::{AtomicBool, AtomicUsize, Ordering},
-};
+use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use rdif_intc::Interface;
 use rdrive::{
@@ -9,6 +6,7 @@ use rdrive::{
 };
 
 use super::irq_common::{LIOINTC_VECTOR_COUNT, fdt_first_cell_vector};
+use crate::{common::ioremap, setup::MmioRaw};
 
 const DEFAULT_LIOINTC_PADDR: usize = 0x1fe0_1400;
 const DEFAULT_LIOINTC_SIZE: usize = 0x40;
@@ -16,9 +14,6 @@ const DEFAULT_LIOINTC_ISR_PADDR: usize = 0x1fe0_1040;
 const DEFAULT_LIOINTC_ISR_SIZE: usize = 0x10;
 const DEFAULT_CASCADE_IRQ: usize = 2;
 const PARENT_INT_COUNT: usize = 4;
-
-const LOONGARCH_PADDR_MASK: usize = (1usize << 48) - 1;
-const LOONGARCH_UNCACHED_DMW_BASE: usize = 0x8000_0000_0000_0000;
 
 const ROUTE_BASE: usize = 0x00;
 const REG_ENABLE: usize = 0x28;
@@ -99,40 +94,45 @@ fn probe_liointc_fdt(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
         .unwrap_or(DEFAULT_LIOINTC_ISR_SIZE as u64) as usize;
     let parent_irqs = parent_irqs_from_fdt(&info);
     let parent_int_map = parent_int_map_from_fdt(&info, &parent_irqs);
+    let mmio = LioIntcMmioRegions {
+        regs: LioIntcMmioRegion {
+            addr: reg_addr,
+            size: reg_size,
+        },
+        isr: LioIntcMmioRegion {
+            addr: isr_addr,
+            size: isr_size,
+        },
+    };
 
-    register_liointc(
-        dev,
-        info.node.name(),
-        reg_addr,
-        reg_size,
-        isr_addr,
-        isr_size,
-        parent_irqs,
-        parent_int_map,
-    )
+    register_liointc(dev, info.node.name(), mmio, parent_irqs, parent_int_map)
+}
+
+#[derive(Clone, Copy)]
+struct LioIntcMmioRegion {
+    addr: usize,
+    size: usize,
+}
+
+#[derive(Clone, Copy)]
+struct LioIntcMmioRegions {
+    regs: LioIntcMmioRegion,
+    isr: LioIntcMmioRegion,
 }
 
 fn register_liointc(
     dev: PlatformDevice,
     node_name: &str,
-    reg_addr: usize,
-    reg_size: usize,
-    isr_addr: usize,
-    isr_size: usize,
+    mmio: LioIntcMmioRegions,
     parent_irqs: [Option<usize>; PARENT_INT_COUNT],
     parent_int_map: [u32; PARENT_INT_COUNT],
 ) -> Result<(), OnProbeError> {
-    let reg_paddr = firmware_addr_to_phys(reg_addr);
-    let isr_paddr = firmware_addr_to_phys(isr_addr);
-    let intc = LioIntc::new(
-        reg_paddr,
-        reg_size,
-        isr_paddr,
-        isr_size,
-        parent_irqs,
-        parent_int_map,
-    )?;
+    let regs = map_liointc_mmio(mmio.regs.addr, mmio.regs.size, "register")?;
+    let isr = map_liointc_mmio(mmio.isr.addr, mmio.isr.size, "ISR")?;
+    let intc = LioIntc::new(regs, isr, parent_irqs, parent_int_map);
     intc.init();
+    let reg_addr = mmio.regs.addr;
+    let isr_addr = mmio.isr.addr;
 
     debug!(
         "probing LS2K1000 LIOINTC: node={}, regs={reg_addr:#x}->{:#x}, isr={isr_addr:#x}->{:#x}, \
@@ -215,18 +215,17 @@ fn parent_int_map_from_fdt(
     parent_int_map
 }
 
-fn firmware_addr_to_phys(addr: usize) -> usize {
-    addr & LOONGARCH_PADDR_MASK
-}
-
-fn uncached_ptr(paddr: usize, size: usize, name: &str) -> Result<NonNull<u8>, OnProbeError> {
+fn map_liointc_mmio(addr: usize, size: usize, name: &str) -> Result<MmioRaw, OnProbeError> {
     if size == 0 {
         return Err(OnProbeError::other(format!(
             "LS2K1000 LIOINTC {name} region has zero size"
         )));
     }
-    NonNull::new((LOONGARCH_UNCACHED_DMW_BASE | firmware_addr_to_phys(paddr)) as *mut u8)
-        .ok_or_else(|| OnProbeError::other(format!("LS2K1000 LIOINTC {name} pointer is null")))
+    ioremap(addr as u64, size).map_err(|err| {
+        OnProbeError::other(format!(
+            "failed to map LS2K1000 LIOINTC {name} region: {err:?}"
+        ))
+    })
 }
 
 fn route_int_bit(parent_index: usize) -> u8 {
@@ -261,35 +260,27 @@ fn with_liointc<R>(
 }
 
 struct LioIntc {
-    regs: NonNull<u8>,
-    isr: NonNull<u8>,
-    reg_size: usize,
-    isr_size: usize,
+    regs: MmioRaw,
+    isr: MmioRaw,
     enabled: u32,
     parent_irqs: [Option<usize>; PARENT_INT_COUNT],
     parent_int_map: [u32; PARENT_INT_COUNT],
 }
 
-unsafe impl Send for LioIntc {}
-
 impl LioIntc {
     fn new(
-        reg_paddr: usize,
-        reg_size: usize,
-        isr_paddr: usize,
-        isr_size: usize,
+        regs: MmioRaw,
+        isr: MmioRaw,
         parent_irqs: [Option<usize>; PARENT_INT_COUNT],
         parent_int_map: [u32; PARENT_INT_COUNT],
-    ) -> Result<Self, OnProbeError> {
-        Ok(Self {
-            regs: uncached_ptr(reg_paddr, reg_size, "register")?,
-            isr: uncached_ptr(isr_paddr, isr_size, "ISR")?,
-            reg_size,
-            isr_size,
+    ) -> Self {
+        Self {
+            regs,
+            isr,
             enabled: 0,
             parent_irqs,
             parent_int_map,
-        })
+        }
     }
 
     fn init(&self) {
@@ -364,9 +355,7 @@ impl LioIntc {
     }
 
     fn complete_irq(&mut self, input: usize) {
-        if !self.contains_input(input, "complete") {
-            return;
-        }
+        let _ = self.contains_input(input, "complete");
         // LIOINTC inputs are level-triggered here; the device-side handler
         // clears the source. There is no controller EOI register to write.
     }
@@ -381,25 +370,18 @@ impl LioIntc {
     }
 
     fn write_reg_u32(&self, offset: usize, value: u32) {
-        debug_assert!(offset + core::mem::size_of::<u32>() <= self.reg_size);
-        unsafe {
-            (self.regs.as_ptr().add(offset) as *mut u32).write_volatile(value);
-        }
+        debug_assert!(offset + core::mem::size_of::<u32>() <= self.regs.size());
+        self.regs.write(offset, value);
     }
 
     fn read_isr_u32(&self, offset: usize) -> u32 {
-        debug_assert!(offset + core::mem::size_of::<u32>() <= self.isr_size);
-        unsafe { (self.isr.as_ptr().add(offset) as *const u32).read_volatile() }
+        debug_assert!(offset + core::mem::size_of::<u32>() <= self.isr.size());
+        self.isr.read(offset)
     }
 
     fn write_route(&self, irq: usize, value: u8) {
-        debug_assert!(ROUTE_BASE + irq < self.reg_size);
-        unsafe {
-            self.regs
-                .as_ptr()
-                .add(ROUTE_BASE + irq)
-                .write_volatile(value);
-        }
+        debug_assert!(ROUTE_BASE + irq < self.regs.size());
+        self.regs.write(ROUTE_BASE + irq, value);
     }
 }
 
