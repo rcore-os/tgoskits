@@ -112,7 +112,7 @@ pub fn sys_mknod(path: *const c_char, mode: u32, dev: u64) -> AxResult<isize> {
 }
 
 pub fn sys_chroot(path: *const c_char) -> AxResult<isize> {
-    let path = vm_load_string(path)?;
+    let path = vm_load_path_string(path)?;
     debug!("sys_chroot <= path: {path}");
 
     let mut fs = FS_CONTEXT.lock();
@@ -193,7 +193,7 @@ pub fn sys_mkdirat(dirfd: i32, path: *const c_char, mode: u32) -> AxResult<isize
 pub fn sys_mknodat(dirfd: i32, path: *const c_char, mode: u32, dev: u64) -> Result<isize, AxError> {
     let curr = current();
     let thread = curr.as_thread();
-    let path = vm_load_string(path)?;
+    let path = vm_load_path_string(path)?;
     debug!(
         "sys_mknodat <= dirfd: {}, path: {:?}, mode: {}, dev: {}",
         dirfd, path, mode, dev

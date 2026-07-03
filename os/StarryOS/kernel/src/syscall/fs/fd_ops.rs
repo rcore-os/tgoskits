@@ -438,6 +438,16 @@ pub fn sys_open(path: *const c_char, flags: i32, mode: __kernel_mode_t) -> AxRes
     sys_openat(AT_FDCWD as _, path, flags, mode)
 }
 
+#[cfg(target_arch = "x86_64")]
+pub fn sys_creat(path: *const c_char, mode: __kernel_mode_t) -> AxResult<isize> {
+    sys_openat(
+        AT_FDCWD as _,
+        path,
+        (O_CREAT | O_WRONLY | O_TRUNC) as _,
+        mode,
+    )
+}
+
 pub fn sys_close(fd: c_int) -> AxResult<isize> {
     debug!("sys_close <= {fd}");
     close_file_like(fd)?;

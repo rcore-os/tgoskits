@@ -185,11 +185,24 @@ impl AddrSpace {
         populate: bool,
         backend: Backend,
     ) -> AxResult {
+        self.map_with_reported_flags(start, size, flags, flags, populate, backend)
+    }
+
+    pub fn map_with_reported_flags(
+        &mut self,
+        start: VirtAddr,
+        size: usize,
+        flags: MappingFlags,
+        reported_flags: MappingFlags,
+        populate: bool,
+        backend: Backend,
+    ) -> AxResult {
         self.validate_region(start, size)?;
 
         {
             let _rss = RssAccountingGuard::enter(&self.rss);
-            let area = MemoryArea::new(start, size, flags, backend);
+            let area =
+                MemoryArea::new_with_reported_flags(start, size, flags, reported_flags, backend);
             self.areas.map(area, &mut self.pt, false)?;
         }
         self.vm_stat.on_map((size / PAGE_SIZE_4K) as u64);
@@ -342,10 +355,21 @@ impl AddrSpace {
         flags: MappingFlags,
         backend: Backend,
     ) -> AxResult {
+        self.replace_area_metadata_with_reported_flags(start, size, flags, flags, backend)
+    }
+
+    pub fn replace_area_metadata_with_reported_flags(
+        &mut self,
+        start: VirtAddr,
+        size: usize,
+        flags: MappingFlags,
+        reported_flags: MappingFlags,
+        backend: Backend,
+    ) -> AxResult {
         self.validate_region(start, size)?;
 
         crate::syscall::memfd_on_aspace_replace_metadata(self, start, size, flags, &backend);
-        let area = MemoryArea::new(start, size, flags, backend);
+        let area = MemoryArea::new_with_reported_flags(start, size, flags, reported_flags, backend);
         self.areas.replace_area_metadata(area)?;
         Ok(())
     }
@@ -485,13 +509,27 @@ impl AddrSpace {
     /// Returns an error if the address range is out of the address space or not
     /// aligned.
     pub fn protect(&mut self, start: VirtAddr, size: usize, flags: MappingFlags) -> AxResult {
+        self.protect_with_reported_flags(start, size, flags, flags)
+    }
+
+    pub fn protect_with_reported_flags(
+        &mut self,
+        start: VirtAddr,
+        size: usize,
+        flags: MappingFlags,
+        reported_flags: MappingFlags,
+    ) -> AxResult {
         self.validate_region(start, size)?;
 
         let touched_memfds =
             crate::syscall::memfd_collect_metas_touching_mprotect_range(self, start, size);
         let _rss = RssAccountingGuard::enter(&self.rss);
-        self.areas
-            .protect(start, size, |_| Some(flags), &mut self.pt)?;
+        self.areas.protect_with_reported_flags(
+            start,
+            size,
+            |_, _| Some((flags, reported_flags)),
+            &mut self.pt,
+        )?;
         crate::syscall::memfd_resync_shared_writable_counts_after_mprotect(self, &touched_memfds);
 
         Ok(())
@@ -618,7 +656,13 @@ impl AddrSpace {
                 },
             )?;
 
-            let new_area = MemoryArea::new(area.start(), area.size(), area.flags(), new_backend);
+            let new_area = MemoryArea::new_with_reported_flags(
+                area.start(),
+                area.size(),
+                area.flags(),
+                area.reported_flags(),
+                new_backend,
+            );
             let start = new_area.start();
             {
                 let aspace = guard.deref_mut();

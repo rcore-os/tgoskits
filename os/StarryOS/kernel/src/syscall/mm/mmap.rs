@@ -65,6 +65,23 @@ impl From<MmapProt> for MappingFlags {
     }
 }
 
+fn reported_mapping_flags_from_prot(value: MmapProt) -> MappingFlags {
+    let mut flags = MappingFlags::empty();
+    if value.contains(MmapProt::READ) {
+        flags |= MappingFlags::READ;
+    }
+    if value.contains(MmapProt::WRITE) {
+        flags |= MappingFlags::WRITE;
+    }
+    if value.contains(MmapProt::EXEC) {
+        flags |= MappingFlags::EXECUTE;
+    }
+    if !flags.is_empty() {
+        flags |= MappingFlags::USER;
+    }
+    flags
+}
+
 fn capped_device_map_len(request_len: usize, available_len: usize, page_size: PageSize) -> usize {
     request_len.min(available_len.align_up(page_size))
 }
@@ -275,6 +292,7 @@ pub fn sys_mmap(
             let range = ion_file.phys_range();
             let buffer_len = range.size().align_up(page_size);
             let map_length = length.align_up(page_size);
+            let reported_mapping_flags = reported_mapping_flags_from_prot(permission_flags);
             info!(
                 "Ion buffer mmap: phys_addr=0x{:x}, buffer_size={}, requested_length={}, \
                  map_length={}",
@@ -305,7 +323,14 @@ pub fn sys_mmap(
                 ion_file.buffer().clone(),
             );
             let populate = map_flags.contains(MmapFlags::POPULATE);
-            aspace.map(start, map_length, ion_mapping_flags, populate, backend)?;
+            aspace.map_with_reported_flags(
+                start,
+                map_length,
+                ion_mapping_flags,
+                reported_mapping_flags,
+                populate,
+                backend,
+            )?;
             drop(aspace);
             info!(
                 "Ion buffer mmap success: vaddr=0x{:x}, length={}",
@@ -317,6 +342,7 @@ pub fn sys_mmap(
     }
 
     let mut mapping_flags: MappingFlags = permission_flags.into();
+    let reported_mapping_flags = reported_mapping_flags_from_prot(permission_flags);
 
     let backend = match map_type {
         MmapFlags::SHARED => {
@@ -521,7 +547,14 @@ pub fn sys_mmap(
     };
 
     let populate = map_flags.contains(MmapFlags::POPULATE);
-    aspace.map(start, length, mapping_flags, populate, backend)?;
+    aspace.map_with_reported_flags(
+        start,
+        length,
+        mapping_flags,
+        reported_mapping_flags,
+        populate,
+        backend,
+    )?;
     drop(aspace);
 
     // perf side-band: an executable, file-backed mapping is (almost always) a
@@ -615,7 +648,12 @@ pub fn sys_mprotect(addr: usize, length: usize, prot: u32) -> AxResult<isize> {
             memfd_check_write_seal_for_shared_file_backend(&backend)?;
         }
     }
-    aspace.protect(start_addr, length, permission_flags.into())?;
+    aspace.protect_with_reported_flags(
+        start_addr,
+        length,
+        permission_flags.into(),
+        reported_mapping_flags_from_prot(permission_flags),
+    )?;
 
     Ok(0)
 }
@@ -642,6 +680,7 @@ struct MremapMove<'a> {
     target_size: usize,
     src_backend: &'a Backend,
     flags: MappingFlags,
+    reported_flags: MappingFlags,
     dontunmap: bool,
     src_offset: usize,
 }
@@ -658,17 +697,24 @@ fn mremap_move(
         target_size,
         src_backend,
         flags,
+        reported_flags,
         dontunmap,
         src_offset,
     } = move_args;
     let move_size = src_size.min(target_size);
     let backend = src_backend.relocated(target, src_offset, aspace_ref)?;
 
-    aspace.map(target, target_size, flags, false, backend)?;
+    aspace.map_with_reported_flags(target, target_size, flags, reported_flags, false, backend)?;
 
     if dontunmap {
         let empty = Backend::new_alloc(src, src_backend.page_size(), "");
-        if let Err(e) = aspace.replace_area_metadata(src, move_size, flags, empty) {
+        if let Err(e) = aspace.replace_area_metadata_with_reported_flags(
+            src,
+            move_size,
+            flags,
+            reported_flags,
+            empty,
+        ) {
             let _ = aspace.unmap(target, target_size);
             return Err(e);
         }
@@ -677,7 +723,13 @@ fn mremap_move(
     if let Err(e) = aspace.move_pages(src, target, move_size) {
         if dontunmap {
             aspace
-                .replace_area_metadata(src, move_size, flags, src_backend.clone())
+                .replace_area_metadata_with_reported_flags(
+                    src,
+                    move_size,
+                    flags,
+                    reported_flags,
+                    src_backend.clone(),
+                )
                 .expect("restore source VMA metadata after failed mremap move");
         }
         let _ = aspace.unmap(target, target_size);
@@ -753,7 +805,7 @@ pub fn sys_mremap(
     let aspace_ref = &curr.as_thread().proc_data.aspace();
     let mut aspace = aspace_ref.lock();
 
-    let (vma_start, vma_end, vma_flags, src_backend, shared_pages, page_size) = {
+    let (vma_start, vma_end, vma_flags, vma_reported_flags, src_backend, shared_pages, page_size) = {
         let area = aspace.find_area(addr).ok_or(AxError::BadAddress)?;
         let shared_pages = match area.backend() {
             Backend::Shared(sb) => Some(sb.pages().clone()),
@@ -763,6 +815,7 @@ pub fn sys_mremap(
             area.start(),
             area.end(),
             area.flags(),
+            area.reported_flags(),
             area.backend().clone(),
             shared_pages,
             area.backend().page_size(),
@@ -805,7 +858,14 @@ pub fn sys_mremap(
             .map(VirtAddr::from)
             .ok_or(AxError::InvalidInput)?;
         let backend = Backend::new_shared(backend_start, pages);
-        aspace.map(target, new_size, vma_flags, false, backend)?;
+        aspace.map_with_reported_flags(
+            target,
+            new_size,
+            vma_flags,
+            vma_reported_flags,
+            false,
+            backend,
+        )?;
         return Ok(target.as_usize() as isize);
     }
 
@@ -835,6 +895,7 @@ pub fn sys_mremap(
                 target_size: new_size,
                 src_backend: &src_backend,
                 flags: vma_flags,
+                reported_flags: vma_reported_flags,
                 dontunmap,
                 src_offset,
             },
@@ -863,6 +924,7 @@ pub fn sys_mremap(
                 target_size: new_size,
                 src_backend: &src_backend,
                 flags: vma_flags,
+                reported_flags: vma_reported_flags,
                 dontunmap: true,
                 src_offset,
             },
@@ -895,6 +957,7 @@ pub fn sys_mremap(
             target_size: new_size,
             src_backend: &src_backend,
             flags: vma_flags,
+            reported_flags: vma_reported_flags,
             dontunmap: false,
             src_offset,
         },

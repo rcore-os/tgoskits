@@ -778,7 +778,7 @@ fn render_thread_maps(task: &WeakAxTaskRef) -> VfsResult<String> {
         } = bi;
 
         let flag_end = if is_shared { 's' } else { 'p' };
-        let flags = area.flags();
+        let flags = area.reported_flags();
         let perms = {
             let r = if flags.contains(MappingFlags::READ) {
                 'r'
