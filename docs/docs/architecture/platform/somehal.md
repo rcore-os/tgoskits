@@ -5,13 +5,13 @@ sidebar_label: "somehal 运行时 HAL"
 
 # somehal 运行时 HAL
 
-[platforms/somehal](platforms/somehal) 是位于 `someboot` 与 `axplat-dyn` 之间的多架构运行时 HAL。其设计目标是提供统一的 `PlatOp` 契约，覆盖 AArch64 / LoongArch64 / RISC-V / x86_64，并支持 GICv2/v3 运行时识别、rdrive 设备发现和 ACPI/FDT 双路径。
+`platforms/somehal` 是位于 `someboot` 与 `axplat-dyn` 之间的多架构运行时 HAL。其设计目标是提供统一的 `PlatOp` 契约，覆盖 AArch64 / LoongArch64 / RISC-V / x86_64，并支持 GICv2/v3 运行时识别、rdrive 设备发现和 ACPI/FDT 双路径。
 
 ## crate 概览
 
 `#![no_std]` + `#![cfg_attr(not(test), no_main)]` + `#![feature(used_with_arg)]`。`no_main` 是因为 `somehal` 本身不导出 Rust 入口，而是通过 `someboot::entry` 宏注入。
 
-[platforms/somehal/src/lib.rs](platforms/somehal/src/lib.rs) 的模块组织：
+`platforms/somehal/src/lib.rs` 的模块组织：
 
 ```rust
 mod boot_console;
@@ -71,7 +71,7 @@ pub fn __somehal_secondary_default() -> ! { loop { core::hint::spin_loop(); } }
 
 ## setup.rs — `KernelOp` 契约
 
-[platforms/somehal/src/setup.rs](platforms/somehal/src/setup.rs)：
+`platforms/somehal/src/setup.rs`：
 
 ```rust
 pub use mmio_api::{MapError, MmioAddr, MmioOp, MmioRaw};
@@ -106,13 +106,13 @@ pub fn rdrive_setup() {
 
 随后各架构模块用 `module_driver!`（来自 `rdrive`）注册 probe-time driver：
 
-- ARMv8 通用 timer：`compatible = "arm,armv8-timer"`，见 [platforms/somehal/src/arch/aarch64/systick.rs](platforms/somehal/src/arch/aarch64/systick.rs#L29-L37)。
-- x86 ACPI IOAPIC：`AcpiId { hid: "ACPIIOAP", ... }`，见 [platforms/somehal/src/arch/x86_64/mod.rs](platforms/somehal/src/arch/x86_64/mod.rs)。
+- ARMv8 通用 timer：`compatible = "arm,armv8-timer"`，见 `platforms/somehal/src/arch/aarch64/systick.rs`。
+- x86 ACPI IOAPIC：`AcpiId { hid: "ACPIIOAP", ... }`，见 `platforms/somehal/src/arch/x86_64/mod.rs`。
 - AArch64 GIC：通过 `arm_gic_driver` crate 注册，见下文。
 
 ## irq.rs — IRQ domain 注册表
 
-[platforms/somehal/src/irq.rs](platforms/somehal/src/irq.rs) 维护运行时 IRQ domain 表：
+`platforms/somehal/src/irq.rs` 维护运行时 IRQ domain 表：
 
 ```rust
 static IRQ_DOMAINS: Mutex<Vec<IrqDomain>> = Mutex::new(Vec::new());
@@ -143,7 +143,7 @@ pub struct IrqDomain {
 
 ### `PlatOp` 契约
 
-[platforms/somehal/src/common.rs](platforms/somehal/src/common.rs) 是每个架构后端必须实现的契约：
+`platforms/somehal/src/common.rs` 是每个架构后端必须实现的契约：
 
 ```rust
 pub trait PlatOp {
@@ -166,7 +166,7 @@ pub trait PlatOp {
 }
 ```
 
-外层包装 `ActiveIrq`（[irq.rs](platforms/somehal/src/irq.rs) 约 L228）持有架构特定的 `Plat::ActiveIrq`，`Drop` 时调用控制器的 complete/EOI。
+外层包装 `ActiveIrq`（`irq.rs` 约 L228）持有架构特定的 `Plat::ActiveIrq`，`Drop` 时调用控制器的 complete/EOI。
 
 ### 公共 IRQ free functions
 
@@ -174,14 +174,14 @@ pub trait PlatOp {
 
 ## irq_routing.rs — 架构无关 IRQ 工具
 
-[platforms/somehal/src/irq_routing.rs](platforms/somehal/src/irq_routing.rs) 是与运行 arch 解耦的辅助逻辑（用 `cfg(any(test, target_arch = ...))` 控制），便于单元测试：
+`platforms/somehal/src/irq_routing.rs` 是与运行 arch 解耦的辅助逻辑（用 `cfg(any(test, target_arch = ...))` 控制），便于单元测试：
 
 - **LoongArch**：`classify_cpu_irq`、`cpu_local_hwirq_is_runtime_irq`、`AcpiControllerRoutes`（记录 `AcpiGsiRoute` ↔ `IrqId`，供 `controller_input` 反向查找）。
 - **RISC-V**：`RISCV_S_*_CAUSE` 常量、`classify_riscv_trap`、`riscv_cpu_local_hwirq_is_runtime_irq`、`riscv_cpu_local_irq_from_raw`、`riscv_local_irq_raw`、`riscv_plic_hwirq_from_source`、`riscv_resolve_controller_line`。
 
 ## boot_console.rs — 控制台解析
 
-[platforms/somehal/src/boot_console.rs](platforms/somehal/src/boot_console.rs) 的 `device_id()` 按以下顺序解析硬件 console：
+`platforms/somehal/src/boot_console.rs` 的 `device_id()` 按以下顺序解析硬件 console：
 
 1. **bootargs**：解析 `console=ttyS<n>`、`console=ttyAMA<n>`、`console=tty<n>`、`console=ttynull`。最后一个**硬件** serial 胜出；纯 tty 配置返回 `NoHardwareDevice`。
 2. **ACPI SPCR**：通过 `rdrive::acpi_spcr_console_device_id()`，仅 serial index 0。
@@ -191,16 +191,16 @@ pub trait PlatOp {
 
 ## 架构后端
 
-每个后端在 `platforms/somehal/src/arch/<arch>/mod.rs`（见 [platforms/somehal/src/arch](platforms/somehal/src/arch)）定义 `pub struct Plat;` 并 `impl PlatOp for Plat`。
+每个后端在 `platforms/somehal/src/arch/<arch>/mod.rs`（见 `platforms/somehal/src/arch`）定义 `pub struct Plat;` 并 `impl PlatOp for Plat`。
 
-### AArch64 ([arch/aarch64/mod.rs](platforms/somehal/src/arch/aarch64/mod.rs))
+### AArch64 (`arch/aarch64/mod.rs`)
 
 - 子模块：`gic`（含 `v2` / `v3`）、`systick`。
 - **GIC 版本运行时识别**：`GIC_BACKEND: AtomicU8` 取值 `Backend::{None, V2, V3}`。首次 `init_cpu` 时通过 ICC 支持位自动检测。`gic::init_current_cpu` / `init_cpu(cpu_idx)` 分别处理 BSP 与 secondary。`module_driver!` 通过 `arm_gic_driver` crate 注册 GIC probe。
 - **systick**：注册 `arm,armv8-timer` FDT 驱动，捕获 IRQ 向量；从核上运行 `setup_systick_irq()`。
 - **`resolve_irq_source`**：`AcpiGsi(gsi)` 和 `AcpiGsiRoute(route)` 直接映射到 GIC hwirq（ARM 上没有 IOAPIC 间接层）。
 
-### RISC-V ([arch/riscv64/mod.rs](platforms/somehal/src/arch/riscv64/mod.rs))
+### RISC-V (`arch/riscv64/mod.rs`)
 
 - 子模块：`plic`。
 - CPU-local IRQ（timer/IPI/external）通过 `irq_routing::riscv_*` 分类。
@@ -208,7 +208,7 @@ pub trait PlatOp {
 - `resolve_percpu` 校验是否为运行时 IRQ cause。
 - `send_ipi` 手动遍历 `AllExceptCurrent`。
 
-### LoongArch64 ([arch/loongarch64/mod.rs](platforms/somehal/src/arch/loongarch64/mod.rs))
+### LoongArch64 (`arch/loongarch64/mod.rs`)
 
 - 子模块：`eiointc`、`pch_pic`、`irq_common`。
 - **IOCSR IPI**：`IOCSR_IPI_SEND = 0x1040`，写入值 `(cpu_id << 16) | vector`，可选阻塞位 `1 << 31`。
@@ -217,7 +217,7 @@ pub trait PlatOp {
 - `ActiveIrq` 用 `enum Completion { None, EioIntc { irq } }` 表达完成动作。
 - ACPI GSI 路由：先 `rdrive::probe::acpi::with_acpi(|s| s.routing().resolve_gsi(gsi))`，再按 `AcpiGsiController::PchPic` 分发。
 
-### x86_64 ([arch/x86_64/mod.rs](platforms/somehal/src/arch/x86_64/mod.rs))
+### x86_64 (`arch/x86_64/mod.rs`)
 
 - 子模块：`lapic`、`vector`。
 - 通过 `module_driver!` 注册 ACPI IOAPIC 驱动，`AcpiId { hid: "ACPIIOAP", ... }`。
@@ -228,7 +228,7 @@ pub trait PlatOp {
 
 ## build.rs
 
-[platforms/somehal/build.rs](platforms/somehal/build.rs) 把 [link.ld](platforms/somehal/link.ld) 拷贝到 `${OUT_DIR}/link.x`。`link.ld` 内 `INCLUDE "someboot.x"` 并提供 `__someboot_secondary` / `__somehal_secondary` 的默认回退实现。
+`platforms/somehal/build.rs` 把 `link.ld` 拷贝到 `${OUT_DIR}/link.x`。`link.ld` 内 `INCLUDE "someboot.x"` 并提供 `__someboot_secondary` / `__somehal_secondary` 的默认回退实现。
 
 ## 与上下游的契约
 
@@ -240,4 +240,4 @@ pub trait PlatOp {
 
 - **新增架构**：创建 `src/arch/<arch>/`，定义 `pub struct Plat;` 并实现 `PlatOp`；按需在 `irq_routing.rs` 添加架构无关 helper；通过 `module_driver!` 注册中断控制器。
 - **新增 IRQ domain**：在 `IrqDomainKind` 加枚举值，给 arch 后端在合适时机调用 `register_irq_domain` / `alloc_irq_domain`；添加 per-kind atomic slot 以走 fast path。
-- **新增 console 解析路径**：在 [boot_console.rs](platforms/somehal/src/boot_console.rs) 的 `device_id()` 中按优先级追加；务必补单元测试。
+- **新增 console 解析路径**：在 `boot_console.rs` 的 `device_id()` 中按优先级追加；务必补单元测试。

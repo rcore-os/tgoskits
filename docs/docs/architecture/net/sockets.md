@@ -11,16 +11,16 @@ sidebar_label: "Socket 系统"
 
 | 源码 | 职责 |
 | --- | --- |
-| [socket.rs](net/ax-net/src/socket.rs) | 统一地址、send/recv 选项、`SocketOps` trait、`Socket` 枚举分发 |
-| [general.rs](net/ax-net/src/general.rs) | 通用 socket 选项、超时、nonblocking、`SO_BINDTODEVICE`、poll helper |
-| [wrapper.rs](net/ax-net/src/wrapper.rs) | 全局 smoltcp `SocketSet` 包装和 UDP bind side table |
-| [state.rs](net/ax-net/src/state.rs) | TCP 等 socket 的轻量状态门禁 |
-| [listen_table.rs](net/ax-net/src/listen_table.rs) | TCP listen bucket、SYN/accept 队列、accept waker |
-| [tcp.rs](net/ax-net/src/tcp.rs) | TCP stream socket、端口仲裁、connect/listen/accept、orphan 接入 |
-| [udp.rs](net/ax-net/src/udp.rs) | UDP datagram socket、connected peer、MSG_MORE corking、route-aware source selection |
-| [raw.rs](net/ax-net/src/raw.rs) | Raw IP socket、ICMP loopback、peer filter、deferred RX |
-| [unix/](net/ax-net/src/unix/mod.rs) | Unix stream/datagram transport、abstract/path namespace |
-| [vsock/](net/ax-net/src/vsock/mod.rs) | 可选 AF_VSOCK facade 和 stream transport |
+| `socket.rs` | 统一地址、send/recv 选项、`SocketOps` trait、`Socket` 枚举分发 |
+| `general.rs` | 通用 socket 选项、超时、nonblocking、`SO_BINDTODEVICE`、poll helper |
+| `wrapper.rs` | 全局 smoltcp `SocketSet` 包装和 UDP bind side table |
+| `state.rs` | TCP 等 socket 的轻量状态门禁 |
+| `listen_table.rs` | TCP listen bucket、SYN/accept 队列、accept waker |
+| `tcp.rs` | TCP stream socket、端口仲裁、connect/listen/accept、orphan 接入 |
+| `udp.rs` | UDP datagram socket、connected peer、MSG_MORE corking、route-aware source selection |
+| `raw.rs` | Raw IP socket、ICMP loopback、peer filter、deferred RX |
+| `unix/` | Unix stream/datagram transport、abstract/path namespace |
+| `vsock/` | 可选 AF_VSOCK facade 和 stream transport |
 
 ## 设计边界
 

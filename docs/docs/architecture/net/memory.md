@@ -11,12 +11,12 @@ sidebar_label: "内存与队列"
 
 | 源码 | 职责 |
 | --- | --- |
-| [consts.rs](net/ax-net/src/consts.rs) | socket buffer、Router packet buffer、设备 RX/TX queue 容量 |
-| [router.rs](net/ax-net/src/router.rs) | `BoundedPacketQueue`、`QueuedPacket`、`Router.rx_buffer` / `tx_buffer`、RX/TX worker |
-| [service.rs](net/ax-net/src/service.rs) | `Service::poll()` 中的 RX drain、smoltcp poll、TX dispatch 顺序 |
-| [device/driver.rs](net/ax-net/src/device/driver.rs) | `rd-net` buffer 适配、`VecRxBuffer` / `VecTxBuffer`、RX prefetch |
-| [device/ethernet.rs](net/ax-net/src/device/ethernet.rs) | Ethernet 解封装、ARP pending packet、driver TX buffer 写入 |
-| [tcp.rs](net/ax-net/src/tcp.rs)、[udp.rs](net/ax-net/src/udp.rs)、[raw.rs](net/ax-net/src/raw.rs) | 用户 buffer 与 smoltcp socket buffer 之间的收发拷贝 |
+| `consts.rs` | socket buffer、Router packet buffer、设备 RX/TX queue 容量 |
+| `router.rs` | `BoundedPacketQueue`、`QueuedPacket`、`Router.rx_buffer` / `tx_buffer`、RX/TX worker |
+| `service.rs` | `Service::poll()` 中的 RX drain、smoltcp poll、TX dispatch 顺序 |
+| `device/driver.rs` | `rd-net` buffer 适配、`VecRxBuffer` / `VecTxBuffer`、RX prefetch |
+| `device/ethernet.rs` | Ethernet 解封装、ARP pending packet、driver TX buffer 写入 |
+| `tcp.rs`、`udp.rs`、`raw.rs` | 用户 buffer 与 smoltcp socket buffer 之间的收发拷贝 |
 
 ## 总体模型
 
@@ -93,7 +93,7 @@ flowchart LR
 
 ## 容量常量
 
-默认容量集中在 [consts.rs](net/ax-net/src/consts.rs)：
+默认容量集中在 `consts.rs`：
 
 ```rust
 pub const STANDARD_MTU: usize = 1500;

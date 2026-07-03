@@ -11,13 +11,13 @@ sidebar_label: "运行时流程"
 
 | 流程 | 关键源码 |
 | --- | --- |
-| 初始化 | [lib.rs](net/ax-net/src/lib.rs) `init_network()` |
-| poll 主循环 | [lib.rs](net/ax-net/src/lib.rs) `net_poll_worker()` / `poll_until_idle()` |
-| 协议推进 | [service.rs](net/ax-net/src/service.rs) `Service::poll()` |
-| RX/TX dispatch | [router.rs](net/ax-net/src/router.rs) `Router::poll()` / `Router::dispatch()` |
-| socket wait | [general.rs](net/ax-net/src/general.rs) `send_poller_with()` / `recv_poller_with()` |
-| TCP passive open | [listen_table.rs](net/ax-net/src/listen_table.rs) / [router.rs](net/ax-net/src/router.rs) `snoop_tcp_packet()` |
-| DHCP/DNS | [service.rs](net/ax-net/src/service.rs), [lib.rs](net/ax-net/src/lib.rs) |
+| 初始化 | `lib.rs` `init_network()` |
+| poll 主循环 | `lib.rs` `net_poll_worker()` / `poll_until_idle()` |
+| 协议推进 | `service.rs` `Service::poll()` |
+| RX/TX dispatch | `router.rs` `Router::poll()` / `Router::dispatch()` |
+| socket wait | `general.rs` `send_poller_with()` / `recv_poller_with()` |
+| TCP passive open | `listen_table.rs` / `router.rs` `snoop_tcp_packet()` |
+| DHCP/DNS | `service.rs`, `lib.rs` |
 
 ## 总体时序
 

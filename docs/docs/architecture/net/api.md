@@ -7,7 +7,7 @@ sidebar_label: "对外接口"
 
 `ax-net` 的 public API 面向三类调用方：启动阶段的 runtime、系统 ABI/socket 层，以及设备驱动适配层。API 设计保持一个原则：外部通过稳定的接口 ID、快照和 trait object 访问网络栈，不直接接触 `Service`、`Router`、smoltcp `SocketSet` 等内部对象。
 
-核心 re-export 定义在 [lib.rs](net/ax-net/src/lib.rs)：
+核心 re-export 定义在 `lib.rs`：
 
 ```rust
 pub use self::{
@@ -491,7 +491,7 @@ pub struct TcpInfo {
 
 ## DNS 与名称解析
 
-DNS API 位于 [lib.rs](net/ax-net/src/lib.rs)，使用控制面的 DNS registry 和 route decision。
+DNS API 位于 `lib.rs`，使用控制面的 DNS registry 和 route decision。
 
 ```rust
 pub fn dns_servers() -> Vec<Ipv4Address>;
