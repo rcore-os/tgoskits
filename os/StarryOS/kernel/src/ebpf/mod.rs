@@ -77,8 +77,8 @@ fn bpf_get_current_pid_tgid(_a: u64, _b: u64, _c: u64, _d: u64, _e: u64) -> u64 
 /// `bpf_get_current_comm(char *buf, u32 size_of_buf)` — copies the current
 /// task's comm (name) into `buf` using `strscpy_pad` semantics: at most
 /// `size_of_buf - 1` bytes are copied, a NUL terminator is always written,
-/// and remaining bytes are zero-padded. Returns 0, matching the Linux
-/// kernel helper ABI.
+/// and remaining bytes are zero-padded. Returns 0 on success or `-EINVAL`
+/// when `size_of_buf` is 0, matching the Linux kernel helper ABI.
 fn bpf_get_current_comm(buf: u64, size_of_buf: u64, _c: u64, _d: u64, _e: u64) -> u64 {
     let size = size_of_buf as usize;
     if buf == 0 {
@@ -90,7 +90,7 @@ fn bpf_get_current_comm(buf: u64, size_of_buf: u64, _c: u64, _d: u64, _e: u64) -
     let comm_bytes = comm.as_bytes();
 
     if size == 0 {
-        return 0;
+        return (-22i64) as u64; // -EINVAL
     }
 
     // Copy at most size-1 bytes to leave room for the NUL terminator.
