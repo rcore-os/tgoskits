@@ -525,6 +525,13 @@ impl Router {
         self.devices.get(dev).map(|device| device.interface_id)
     }
 
+    /// Finds the router device index for a public interface id.
+    pub fn device_index_for_interface_id(&self, interface_id: InterfaceId) -> Option<usize> {
+        self.devices
+            .iter()
+            .position(|device| device.interface_id == interface_id)
+    }
+
     /// Returns names of all registered devices.
     pub fn device_names(&self) -> Vec<String> {
         self.devices
