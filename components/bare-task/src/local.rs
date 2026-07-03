@@ -3,11 +3,13 @@
 use alloc::{
     boxed::Box,
     collections::VecDeque,
+    rc::Rc,
     sync::{Arc, Weak},
     task::Wake,
 };
 use core::{
     future::Future,
+    marker::PhantomData,
     pin::Pin,
     sync::atomic::{AtomicBool, AtomicUsize, Ordering},
     task::{Context, Poll, Waker},
@@ -15,7 +17,7 @@ use core::{
 
 use crate::sync::SpinMutex;
 
-type LocalFuture = Pin<Box<dyn Future<Output = ()> + Send + 'static>>;
+type LocalFuture = Pin<Box<dyn Future<Output = ()> + 'static>>;
 
 struct LocalTask {
     future: SpinMutex<Option<LocalFuture>>,
@@ -23,6 +25,15 @@ struct LocalTask {
     completed: AtomicBool,
     executor: Weak<LocalExecutorInner>,
 }
+
+// SAFETY: `LocalTask` is shared with `Waker`, so wake callbacks may run on
+// another CPU. Those callbacks only touch atomics and the executor ready queue.
+// The non-Send future is only accessed from `LocalExecutorCore::poll_ready`;
+// `LocalExecutorCore` and `LocalSpawnerCore` are deliberately !Send.
+unsafe impl Send for LocalTask {}
+// SAFETY: same as the `Send` impl: shared access through a waker never polls or
+// otherwise touches the non-Send future.
+unsafe impl Sync for LocalTask {}
 
 impl LocalTask {
     fn poll(self: &Arc<Self>) {
@@ -87,6 +98,7 @@ struct LocalExecutorInner {
 #[derive(Clone)]
 pub struct LocalExecutorCore {
     inner: Arc<LocalExecutorInner>,
+    _not_send: PhantomData<Rc<()>>,
 }
 
 impl LocalExecutorCore {
@@ -99,6 +111,7 @@ impl LocalExecutorCore {
                 task_count: AtomicUsize::new(0),
                 pend,
             }),
+            _not_send: PhantomData,
         }
     }
 
@@ -106,6 +119,7 @@ impl LocalExecutorCore {
     pub fn spawner(&self) -> LocalSpawnerCore {
         LocalSpawnerCore {
             inner: self.inner.clone(),
+            _not_send: PhantomData,
         }
     }
 
@@ -148,13 +162,14 @@ impl LocalExecutorCore {
 #[derive(Clone)]
 pub struct LocalSpawnerCore {
     inner: Arc<LocalExecutorInner>,
+    _not_send: PhantomData<Rc<()>>,
 }
 
 impl LocalSpawnerCore {
     /// Spawns a future on the local executor.
     pub fn spawn_local<F>(&self, future: F) -> Result<(), SpawnLocalError>
     where
-        F: Future<Output = ()> + Send + 'static,
+        F: Future<Output = ()> + 'static,
     {
         let task = Arc::new(LocalTask {
             future: SpinMutex::new(Some(Box::pin(future))),
@@ -175,8 +190,11 @@ pub struct SpawnLocalError;
 
 #[cfg(test)]
 mod tests {
-    use alloc::sync::Arc;
-    use core::sync::atomic::{AtomicUsize, Ordering};
+    use alloc::{rc::Rc, sync::Arc};
+    use core::{
+        cell::Cell,
+        sync::atomic::{AtomicUsize, Ordering},
+    };
 
     use super::LocalExecutorCore;
 
@@ -202,6 +220,27 @@ mod tests {
         assert_eq!(executor.poll_ready(), 1);
         executor.leave();
         assert_eq!(ran.load(Ordering::Acquire), 1);
+        assert!(!executor.has_live_tasks());
+    }
+
+    #[test]
+    fn local_executor_accepts_non_send_future() {
+        let executor = LocalExecutorCore::new(Arc::new(|| {}));
+        let value = Rc::new(Cell::new(0));
+        let value_for_future = value.clone();
+
+        executor
+            .spawner()
+            .spawn_local(async move {
+                value_for_future.set(1);
+            })
+            .unwrap();
+
+        executor.enter();
+        assert_eq!(executor.poll_ready(), 1);
+        executor.leave();
+
+        assert_eq!(value.get(), 1);
         assert!(!executor.has_live_tasks());
     }
 }

@@ -1,7 +1,7 @@
 use core::{
     any::Any,
     mem::{MaybeUninit, size_of},
-    sync::atomic::{AtomicU64, Ordering},
+    sync::atomic::{AtomicBool, AtomicU64, Ordering},
     time::Duration,
 };
 
@@ -30,6 +30,7 @@ const KPU_IRQ_WAIT_TIMEOUT: Duration = Duration::from_millis(100);
 // move this IRQ state into per-device storage.
 static KPU_IRQ_COUNT: AtomicU64 = AtomicU64::new(0);
 static KPU_IRQ_NOTIFY: HardIrqSignal = HardIrqSignal::new();
+static KPU_IRQ_WORKER_STARTED: AtomicBool = AtomicBool::new(false);
 static KPU_DONE_WQ: WaitQueue = WaitQueue::new();
 
 pub struct KpuDevice {
@@ -86,10 +87,9 @@ impl KpuDevice {
             return Ok(());
         }
         if self.irq_registration.is_some() {
-            KPU_IRQ_NOTIFY.arm_current_task();
+            ensure_kpu_irq_worker();
             let timed_out =
                 KPU_DONE_WQ.wait_timeout_until(KPU_IRQ_WAIT_TIMEOUT, || self.hw.is_done());
-            let _ = KPU_IRQ_NOTIFY.drain();
             if !timed_out {
                 return Ok(());
             }
@@ -453,6 +453,20 @@ fn kpu_irq_handler(_ctx: ax_runtime::hal::irq::IrqContext) -> ax_runtime::hal::i
     KPU_IRQ_COUNT.fetch_add(1, Ordering::AcqRel);
     KPU_IRQ_NOTIFY.notify_irq();
     ax_runtime::hal::irq::IrqReturn::Handled
+}
+
+fn ensure_kpu_irq_worker() {
+    if KPU_IRQ_WORKER_STARTED.swap(true, Ordering::AcqRel) {
+        return;
+    }
+
+    ax_task::spawn_with_name(
+        || loop {
+            KPU_IRQ_NOTIFY.wait();
+            KPU_DONE_WQ.notify_all_deferred();
+        },
+        "kpu-irq".into(),
+    );
 }
 
 fn fallback_irq() -> Option<ax_runtime::hal::irq::IrqId> {

@@ -19,4 +19,3 @@ irq = []
 
 [dependencies]
 trait-ffi = "0.2.4"
-

@@ -237,7 +237,7 @@ impl LocalSpawner {
     /// Spawns a future on the local executor.
     pub fn spawn_local<F>(&self, future: F) -> Result<(), SpawnLocalError>
     where
-        F: Future<Output = ()> + Send + 'static,
+        F: Future<Output = ()> + 'static,
     {
         self.core.spawn_local(future)
     }

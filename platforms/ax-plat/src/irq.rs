@@ -237,11 +237,6 @@ pub fn irq_status(handle: IrqHandle) -> Result<IrqStatus, IrqError> {
     registry().status(handle)
 }
 
-/// Returns whether the current CPU is dispatching a hard IRQ action.
-pub fn in_irq_context() -> bool {
-    PlatIrqOps.in_irq_context()
-}
-
 /// Marks a CPU online for pending per-CPU IRQ enables.
 pub fn cpu_online(cpu: usize) -> Result<(), IrqError> {
     if cpu >= usize::BITS as usize {
