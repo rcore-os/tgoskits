@@ -89,4 +89,3 @@ ax-hal = { workspace = true, features = ["fp-simd"] }
 
 [build-dependencies]
 quote = "1.0"
-toml.workspace = true

@@ -139,7 +139,7 @@
 5. 分发 handler
 6. 结束后 `complete`
 
-这是外部 RISC-V 静态平台或动态平台 PLIC glue 的典型使用模式。
+这是外部自定义 RISC-V 平台或 `axplat-dyn` PLIC glue 的典型使用模式。
 
 ### 2.3 `unsafe` 边界
 

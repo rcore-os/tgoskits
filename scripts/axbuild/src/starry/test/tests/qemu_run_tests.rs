@@ -244,7 +244,6 @@ fn qemu_group_build_context_uses_group_build_config_over_default_override() {
     );
     request.build_info_override = Some(crate::starry::build::StarryBuildInfo {
         max_cpu_num: Some(1),
-        plat_dyn: true,
         ..crate::starry::build::default_starry_build_info_for_target("x86_64-unknown-none")
     });
 
@@ -256,7 +255,7 @@ fn qemu_group_build_context_uses_group_build_config_over_default_override() {
 }
 
 #[test]
-fn qemu_group_build_context_uses_omitted_group_plat_dyn_over_default_request() {
+fn qemu_group_build_context_uses_dynamic_group_platform_over_default_request() {
     let root = tempdir().unwrap();
     let build_config = root
         .path()
@@ -273,10 +272,8 @@ fn qemu_group_build_context_uses_omitted_group_plat_dyn_over_default_request() {
         "aarch64",
         "aarch64-unknown-none-softfloat",
     );
-    request.plat_dyn = Some(false);
     request.build_info_override = Some(crate::starry::build::StarryBuildInfo {
         features: vec!["qemu".to_string()],
-        plat_dyn: false,
         ..crate::starry::build::default_starry_build_info_for_target(
             "aarch64-unknown-none-softfloat",
         )
@@ -285,7 +282,7 @@ fn qemu_group_build_context_uses_omitted_group_plat_dyn_over_default_request() {
     let (_group_request, cargo) =
         Starry::qemu_group_build_context(&request, &build_config).unwrap();
 
-    assert!(cargo.features.contains(&"plat-dyn".to_string()));
+    assert!(!cargo.features.contains(&"plat-dyn".to_string()));
     assert!(!cargo.features.contains(&"ax-feat/plat-dyn".to_string()));
     assert!(
         !cargo

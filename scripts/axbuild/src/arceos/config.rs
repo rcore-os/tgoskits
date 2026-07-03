@@ -59,7 +59,6 @@ fn update_snapshot_for_board(
         package: Some(board.package.clone()),
         arch: Some(arch_for_target_checked(&board.target)?.to_string()),
         target: Some(board.target.clone()),
-        plat_dyn: Some(true),
         smp: board.build_config.build_info.max_cpu_num,
         config: Some(snapshot_path_value(workspace_root, build_config_path)),
         qemu: ArceosQemuSnapshot::default(),
@@ -112,7 +111,6 @@ mod tests {
             r#"
 package = "arceos-helloworld"
 target = "aarch64-unknown-none-softfloat"
-plat_dyn = true
 features = []
 log = "Info"
 max_cpu_num = 1
@@ -122,7 +120,6 @@ max_cpu_num = 1
             package: Some("old-package".to_string()),
             arch: Some("riscv64".to_string()),
             target: Some("riscv64gc-unknown-none-elf".to_string()),
-            plat_dyn: Some(false),
             smp: Some(4),
             config: None,
             qemu: ArceosQemuSnapshot {
@@ -145,7 +142,6 @@ max_cpu_num = 1
         let written = fs::read_to_string(&path).unwrap();
         assert!(written.contains("package = \"arceos-helloworld\""));
         assert!(written.contains("target = \"aarch64-unknown-none-softfloat\""));
-        assert!(written.contains("plat_dyn = true"));
         assert!(!written.contains("axconfig"));
 
         let snapshot = ArceosCommandSnapshot::load(root.path()).unwrap();
@@ -155,7 +151,6 @@ max_cpu_num = 1
             snapshot.target.as_deref(),
             Some("aarch64-unknown-none-softfloat")
         );
-        assert_eq!(snapshot.plat_dyn, Some(true));
         assert_eq!(snapshot.smp, Some(1));
         assert_eq!(
             snapshot.config,
@@ -178,7 +173,6 @@ max_cpu_num = 1
             r#"
 package = "arceos-helloworld"
 target = "aarch64-unknown-none-softfloat"
-plat_dyn = true
 features = []
 log = "Info"
 "#,

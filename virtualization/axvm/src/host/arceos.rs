@@ -342,7 +342,7 @@ impl HostPlatform for ArceOsHost {
                     let _ = CORES.fetch_add(1, Ordering::Release);
                 },
                 alloc::format!("axvm-hv-init-{cpu_id}"),
-                modules::ax_config::TASK_STACK_SIZE,
+                modules::ax_task::default_task_stack_size(),
             );
             task.set_cpumask(<Self as HostCpu>::CpuMask::one_shot(cpu_id));
             modules::ax_task::spawn_task(task);

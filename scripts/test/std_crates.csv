@@ -33,7 +33,6 @@ starry-signal
 starry-vm
 ax-timer-list
 ax-alloc
-ax-config
 ax-display
 ax-driver
 ax-hal

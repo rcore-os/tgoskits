@@ -22,7 +22,6 @@ pub struct BuildCliArgs {
     pub package: Option<String>,
     pub arch: Option<String>,
     pub target: Option<String>,
-    pub plat_dyn: Option<bool>,
     pub smp: Option<usize>,
     pub debug: bool,
 }
@@ -41,7 +40,6 @@ pub struct AxvisorCliArgs {
     pub config: Option<PathBuf>,
     pub arch: Option<String>,
     pub target: Option<String>,
-    pub plat_dyn: Option<bool>,
     pub smp: Option<usize>,
     pub debug: bool,
     pub vmconfigs: Vec<PathBuf>,
@@ -68,8 +66,6 @@ pub struct ArceosCommandSnapshot {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub target: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub plat_dyn: Option<bool>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub smp: Option<usize>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub config: Option<PathBuf>,
@@ -84,7 +80,6 @@ pub struct ResolvedBuildRequest {
     pub package: String,
     pub arch: String,
     pub target: String,
-    pub plat_dyn: Option<bool>,
     pub smp: Option<usize>,
     pub debug: bool,
     pub build_info_path: PathBuf,
@@ -111,8 +106,6 @@ pub struct AxvisorCommandSnapshot {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub target: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub plat_dyn: Option<bool>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub smp: Option<usize>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub config: Option<PathBuf>,
@@ -130,7 +123,6 @@ pub struct ResolvedAxvisorRequest {
     pub axvisor_dir: PathBuf,
     pub arch: String,
     pub target: String,
-    pub plat_dyn: Option<bool>,
     pub smp: Option<usize>,
     pub debug: bool,
     pub build_info_path: PathBuf,
@@ -172,7 +164,6 @@ pub struct ResolvedStarryRequest {
     pub package: String,
     pub arch: String,
     pub target: String,
-    pub plat_dyn: Option<bool>,
     pub smp: Option<usize>,
     pub debug: bool,
     pub build_info_path: PathBuf,

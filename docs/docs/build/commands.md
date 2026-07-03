@@ -37,7 +37,7 @@ cargo arceos qemu --package arceos-httpserver
 
 axbuild 使用 clap 进行命令行参数解析。顶层命令按 `<os> <action>` 模式组织，其中 `<os>` 为 `arceos`、`starry`、`axvisor` 之一。此外还有一些不绑定特定 OS 的横切命令。
 
-命令按能力分为四类：**构建**（`build`）、**运行**（`qemu`/`uboot`/`board`）、**测试**（`test`）、**辅助**（`config`/`board` 管理等）。
+命令按能力分为四类：**构建**（`build`）、**运行**（`qemu`/`uboot`/`board`）、**测试**（`test`）、**辅助**（镜像、板卡和符号化管理等）。
 
 | 命令 | 能力 | 说明 |
 |------|------|------|
@@ -55,7 +55,6 @@ axbuild 使用 clap 进行命令行参数解析。顶层命令按 `<os> <action>
 | `cargo xtask image ...` | 辅助 | Guest 镜像管理（ls/pull/resize/check） |
 | `cargo xtask axloader ...` | 构建/测试 | UEFI bootloader 构建与 HTTP smoke test |
 | `cargo xtask backtrace ...` | 辅助 | host 端 backtrace 符号化 |
-| `cargo xtask config ...` | 辅助 | 配置生成与检查 |
 | `cargo xtask board ...` | 辅助 | 板卡管理（ls/connect/config） |
 
 `cargo xtask <os> qemu` 等运行类命令会先触发构建再执行运行，因此用户通常不需要单独先 `build` 再运行。
@@ -81,13 +80,13 @@ cargo xtask arceos <subcommand> [options]
 
 ### 参数
 
-**通用参数**：`--package`（必需）、`--arch`、`--target`、`--config`、`--plat-dyn`、`--smp`、`--debug`
+**通用参数**：`--package`（必需）、`--arch`、`--target`、`--config`、`--smp`、`--debug`
 
 **QEMU 额外参数**：`--qemu-config`、`--rootfs`
 
 **测试参数**：`--test-group`/`-g`、`--test-case`/`-c`、`--list`/`-l`、`--no-symbolize`、`--keep-qemu-log`；`--arch` 与 `--target`/`--list` 三选一
 
-`--plat-dyn` 控制是否使用动态平台加载（支持 aarch64、x86_64、riscv64 和 loongarch64 QEMU 路径），`--smp` 设置对称多处理器核数。ArceOS 测试支持 Rust 和 C 两类用例，通过 `--test-group` 选择测试组（`rust`、`c` 或自定义）。每个 Rust QEMU 用例运行结束后默认调用 `cargo xtask backtrace symbolize` 符号化捕获的 backtrace 块；`--no-symbolize` 跳过该步骤，`--keep-qemu-log` 保留 QEMU 日志（默认成功符号化后删除）。
+动态平台加载固定启用，`--smp` 设置对称多处理器核数。ArceOS 测试支持 Rust 和 C 两类用例，通过 `--test-group` 选择测试组（`rust`、`c` 或自定义）。每个 Rust QEMU 用例运行结束后默认调用 `cargo xtask backtrace symbolize` 符号化捕获的 backtrace 块；`--no-symbolize` 跳过该步骤，`--keep-qemu-log` 保留 QEMU 日志（默认成功符号化后删除）。
 
 ---
 
@@ -244,7 +243,7 @@ cargo xtask axvisor <subcommand> [options]
 
 ### 参数
 
-**通用参数**：`--arch`、`--target`、`--config`、`--plat-dyn`、`--smp`、`--debug`、`--vmconfigs`
+**通用参数**：`--arch`、`--target`、`--config`、`--smp`、`--debug`、`--vmconfigs`
 
 **QEMU 额外参数**：`--qemu-config`、`--rootfs`
 
@@ -344,19 +343,6 @@ cargo xtask backtrace symbolize --elf <ELF> [--log <LOG>] [--kind <KIND>] [--adj
 | `--ip-bias` | IP 地址偏移（如 KASLR 偏移） |
 
 ---
-
-## 辅助命令
-
-### `cargo xtask config`
-
-配置生成与检查辅助命令：
-
-| 子命令 | 说明 |
-|--------|------|
-| `platform-path --package <pkg>` | 定位平台包的 axconfig.toml 路径 |
-| `read <SPECS...> --read <ITEM>` | 从合并后的配置规格中读取单个配置值 |
-| `generate <SPECS...> --output <PATH>` | 生成合并配置文件，支持 `--oldconfig` 和 `--write KEY=VAL` 覆盖 |
-| `inspect --package <pkg>` | 检查平台配置字段，支持 `--manifest-dir`、`--config`、`--makefile` 参数 |
 
 ### `cargo xtask board`
 

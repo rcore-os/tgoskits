@@ -33,7 +33,7 @@ sidebar_label: "rdrive + rdif 驱动框架"
 ```mermaid
 flowchart TB
     subgraph Sources["平台发现来源"]
-        Static["Static: 平台常量 / ax_config"]
+        Static["Static: 显式平台元数据"]
         Fdt["FDT: device tree"]
         Acpi["ACPI: reserved API / unsupported first"]
     end
@@ -299,7 +299,7 @@ IRQ 路径只返回稳定事件和唤醒等待方；不能在 IRQ handler 中执
 
 Driver Core 只推进硬件状态机。OS Glue 将硬件实例包装成 `rdif-*::Interface` 后通过 `PlatformDevice::register(...)` 注册。除块设备外，Runtime wrapper 从 `rdif-*::Interface` 构建领域运行时对象，供服务层和上层模块使用；块设备服务直接基于 `rdif-block` 的 submit/poll 能力边界组织 volume 和文件系统入口。
 
-自定义平台如果不走 FDT/ACPI/PCI 自动发现，可以在自己的平台初始化阶段调用 `rdrive::init(rdrive::Platform::Static)`，再通过 `rdrive::register_add(DriverRegister { probe_kinds: &[ProbeKind::Static { ... }], ... })` 注册平台私有 probe。probe 回调里可以直接构造硬件对象并调用 `PlatformDevice::register(...)`、领域 adapter 的 `*_with_info(...)`，或 `ax-driver` 暴露的显式 `register_transport*()` helper。`ax-driver` 本身不再提供静态平台自动注册 feature。
+外部自定义平台如果不走 FDT/ACPI/PCI 自动发现，可以在自己的平台初始化阶段调用 `rdrive::init(rdrive::Platform::Static)`，再通过 `rdrive::register_add(DriverRegister { probe_kinds: &[ProbeKind::Static { ... }], ... })` 注册平台私有 probe。这里的 `Static` 是 rdrive 的手动 probe 来源，不是仓库内置静态平台模式。probe 回调里可以直接构造硬件对象并调用 `PlatformDevice::register(...)`、领域 adapter 的 `*_with_info(...)`，或 `ax-driver` 暴露的显式 `register_transport*()` helper。`ax-driver` 本身不再提供静态平台自动注册 feature。
 
 ## 领域 Service 与上层消费
 
@@ -360,7 +360,7 @@ Feature 的职责从“选择 `ax-driver` 子模块和单个 Ax*Device 类型”
 | `virtio-socket` | 链接 `rdif-vsock` / `rd-vsock` probe |
 | `driver-*` | 链接具体硬件 driver core 和 OS glue probe |
 | `bus-*` | 链接总线枚举或控制器 probe，例如 PCIe |
-| `plat-dyn` | 选择 FDT 动态平台来源，不走 `ax_driver_*Ops` 回灌 |
+| 动态平台 | 通过 FDT/ACPI/somehal 平台事实发现设备，不走 `ax_driver_*Ops` 回灌 |
 
 MMIO 与 PCI feature 要分开表达，例如 `virtio-gpu-mmio` 与 `virtio-gpu-pci` 都是 probe module，而不是上层设备类型选择。
 

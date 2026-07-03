@@ -1,3 +1,4 @@
+use ax_hal::mem::{PhysAddr, phys_to_virt};
 use axfs_ng_vfs::{VfsError, VfsResult};
 use rdif_pwm::{DriverGeneric, Interface as PwmInterface, PwmError, PwmPolarity, PwmState};
 use sg200x_bsp::{
@@ -43,7 +44,8 @@ pub(in crate::pseudofs::dev::pwm) fn pwmchip_index(chip_number: u8) -> Option<u8
 
 impl PwmHardware {
     pub(in crate::pseudofs::dev::pwm) fn new(index: u8) -> Self {
-        let pwm_addr = PWM0_BASE + index as usize * 0x1000 + ax_config::plat::PHYS_VIRT_OFFSET;
+        let pwm_paddr = PWM0_BASE + index as usize * 0x1000;
+        let pwm_addr = phys_to_virt(PhysAddr::from_usize(pwm_paddr)).as_usize();
         Self {
             controller: Sg2002Pwm {
                 pwm: unsafe { Pwm::new(pwm_addr) },

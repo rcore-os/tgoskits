@@ -221,7 +221,6 @@ log = "Warn"
 target = "aarch64-unknown-none-softfloat"
 features = ["qemu"]
 log = "Warn"
-plat_dyn = false
 "#,
         );
 
@@ -243,7 +242,6 @@ plat_dyn = false
             r#"
 target = "riscv64gc-unknown-none-elf"
 features = [
-  "plat-dyn",
   "starry-kernel/sg2002",
   "axplat-dyn/thead-mae",
   "ax-driver/cvsd",
@@ -323,7 +321,6 @@ log = "Warn"
 target = "aarch64-unknown-none-softfloat"
 features = ["qemu"]
 log = "Warn"
-plat_dyn = false
 "#,
         );
 

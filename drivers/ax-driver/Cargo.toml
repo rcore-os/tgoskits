@@ -13,7 +13,6 @@ name = "ax_driver"
 [features]
 default = []
 
-plat-dyn = ["dep:fdt-edit"]
 irq = []
 pci = ["dep:ax-kspin", "dep:pcie", "dep:rdif-pcie"]
 
@@ -22,7 +21,7 @@ net = ["dep:ax-kspin", "dep:rd-net"]
 display = ["dep:ax-errno", "dep:rdif-display"]
 input = ["dep:ax-errno", "dep:rdif-input"]
 vsock = ["dep:ax-errno", "dep:rdif-vsock"]
-rtc = ["plat-dyn"]
+rtc = []
 pinctrl = ["dep:rdif-pinctrl", "rdif-pinctrl/fdt"]
 
 virtio-core = ["dep:ax-alloc", "dep:virtio-drivers", "virtio-drivers/alloc"]
@@ -37,37 +36,34 @@ ramdisk = ["block", "dep:ramdisk"]
 bcm2835-sdhci = ["block", "dep:bcm2835-sdhci"]
 ahci = ["block", "pci", "dep:simple-ahci"]
 nvme = ["block", "pci", "dep:nvme-driver"]
-cvsd = ["block", "plat-dyn", "dep:sg200x-bsp"]
+cvsd = ["block", "dep:sg200x-bsp"]
 fxmac = ["net", "dep:ax-alloc", "dep:ax-crate-interface", "dep:fxmac_rs"]
 intel-net = ["net", "pci", "dep:eth-intel"]
 realtek-rtl8125 = ["net", "pci", "dep:realtek-rtl8125"]
 aic8800-wifi = [
     "net",
-    "plat-dyn",
     "dep:aic8800",
     "dep:sdhci-cv1800",
     "dep:sdio-host",
 ]
 
 usb = ["dep:crab-usb"]
-rockchip-dwc-xhci = ["usb", "plat-dyn", "rockchip-soc", "rockchip-pm"]
-xhci-mmio = ["usb", "plat-dyn"]
+rockchip-dwc-xhci = ["usb", "rockchip-soc", "rockchip-pm"]
+xhci-mmio = ["usb"]
 xhci-pci = ["usb", "pci"]
 serial = [
-    "plat-dyn",
     "dep:ax-errno",
     "dep:ax-kernel-guard",
     "dep:ax-kspin",
     "dep:rdif-serial",
     "dep:some-serial",
 ]
-rknpu = ["plat-dyn", "rockchip-pm", "rockchip-soc", "dep:rockchip-npu"]
-rga = ["plat-dyn", "dep:rockchip-rga"]
-jpeg = ["plat-dyn", "rockchip-pm", "rockchip-soc", "dep:rockchip-jpeg"]
+rknpu = ["rockchip-pm", "rockchip-soc", "dep:rockchip-npu"]
+rga = ["dep:rockchip-rga"]
+jpeg = ["rockchip-pm", "rockchip-soc", "dep:rockchip-jpeg"]
 jpu-selftest = ["jpeg"]
 rockchip-sdhci = [
     "block",
-    "plat-dyn",
     "rockchip-pm",
     "rockchip-soc",
     "dep:ax-kspin",
@@ -78,7 +74,6 @@ rockchip-sdhci = [
 ]
 phytium-mci = [
     "block",
-    "plat-dyn",
     "dep:ax-kspin",
     "dep:phytium-mci-host",
     "dep:sdmmc-protocol",
@@ -86,14 +81,12 @@ phytium-mci = [
 ]
 k230-sdhci = [
     "block",
-    "plat-dyn",
     "dep:sdhci-host",
     "dep:sdmmc-protocol",
     "sdmmc-protocol/rdif",
 ]
 rockchip-dwmmc = [
     "block",
-    "plat-dyn",
     "rockchip-pm",
     "rockchip-soc",
     "dep:arm-scmi-rs",
@@ -105,25 +98,22 @@ rockchip-dwmmc = [
 ]
 starfive-jh7110-dwmmc = [
     "block",
-    "plat-dyn",
     "dep:dwmmc-host",
     "dep:sdmmc-protocol",
     "sdmmc-protocol/sdio",
 ]
 rk3588-pwm = [
-    "plat-dyn",
     "rockchip-soc",
     "dep:rdif-pwm",
     "dep:rockchip-pwm",
 ]
 rk3588-pcie = [
     "pci",
-    "plat-dyn",
     "rockchip-soc",
     "rockchip-pm",
     "dep:rk3588-pci",
 ]
-rockchip-soc = ["plat-dyn", "pinctrl", "dep:rdif-clk", "dep:rockchip-soc"]
+rockchip-soc = ["pinctrl", "dep:rdif-clk", "dep:rockchip-soc"]
 rockchip-pm = ["rockchip-soc", "dep:rockchip-pm"]
 list-pci-devices = ["pci"]
 pci-list-devices = ["list-pci-devices"]
@@ -143,7 +133,7 @@ crab-usb = { workspace = true, optional = true }
 dma-api.workspace = true
 dwmmc-host = { workspace = true, optional = true }
 eth-intel = { workspace = true, optional = true }
-fdt-edit = { workspace = true, optional = true }
+fdt-edit = { workspace = true }
 fxmac_rs = { workspace = true, optional = true }
 heapless.workspace = true
 irq-framework.workspace = true

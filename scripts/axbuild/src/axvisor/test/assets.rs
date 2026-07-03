@@ -20,7 +20,6 @@ pub(super) fn arceos_x86_64_guest_request() -> anyhow::Result<ResolvedBuildReque
         package: ARCEOS_QEMU_GUEST_PACKAGE.to_string(),
         arch: "x86_64".to_string(),
         target: target.clone(),
-        plat_dyn: Some(false),
         smp: None,
         debug: false,
         build_info_path: crate::arceos::build::resolve_build_info_path(

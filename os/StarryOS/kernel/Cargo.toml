@@ -29,17 +29,11 @@ rk3588-pwm = [
 ]
 std-compat = []
 k230-kpu = ["ax-feat/xuantie-c9xx", "dep:axklib", "dep:k230-kpu"]
-plat-dyn = [
-    "dep:axplat-dyn",
-    "ax-feat/plat-dyn",
-    "ax-feat/usb",
-    "ax-driver/plat-dyn",
-    "ax-driver/usb",
-]
 vsock = ["ax-feat/vsock"]
 dynamic_debug = ["ipi"]
 sg2002 = [
-    "plat-dyn",
+    "ax-feat/usb",
+    "ax-driver/usb",
     "dep:ax-dma",
     "dep:axklib",
     "dep:rdif-pwm",
@@ -77,7 +71,6 @@ ax-feat = { workspace = true, features = [
 ] }
 
 ax-alloc = { workspace = true }
-ax-config.workspace = true
 ax-crate-interface.workspace = true
 ax-display.workspace = true
 ax-fs-ng = { workspace = true, features = ["vfs"] }
@@ -90,7 +83,7 @@ ax-mm.workspace = true
 ax-net = { workspace = true }
 ax-driver = { workspace = true, features = ["serial", "usb"] }
 axklib = { workspace = true, optional = true }
-axplat-dyn = { workspace = true, optional = true }
+axplat-dyn.workspace = true
 ax-runtime.workspace = true
 ax-sync.workspace = true
 ax-task.workspace = true

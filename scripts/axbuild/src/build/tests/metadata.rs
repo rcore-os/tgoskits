@@ -97,51 +97,15 @@ fn retired_static_platform_features_are_not_ax_hal_platforms() {
 }
 
 #[test]
-fn default_aarch64_platform_feature_falls_back_to_defplat() {
-    let mut info = BuildInfo::default();
-
-    info.resolve_features_with_prefix_family(
-        "arceos-helloworld",
-        "aarch64-unknown-none-softfloat",
-        false,
-        Ok(AxFeaturePrefixFamily::AxStd),
-        None,
-    );
-
-    assert!(info.features.contains(&"ax-hal/defplat".to_string()));
-    assert!(
-        !info
-            .features
-            .contains(&"ax-hal/aarch64-qemu-virt".to_string())
-    );
-}
-
-#[test]
-fn default_loongarch64_dynamic_platform_uses_plat_dyn() {
+fn default_platform_feature_uses_dynamic_platform() {
     let mut info = BuildInfo::default();
 
     info.resolve_features_with_prefix_family(
         "arceos-helloworld",
         "loongarch64-unknown-none-softfloat",
-        true,
         Ok(AxFeaturePrefixFamily::AxStd),
         None,
     );
 
-    assert!(info.features.contains(&"ax-std/plat-dyn".to_string()));
-}
-
-#[test]
-fn default_loongarch64_platform_feature_falls_back_to_defplat() {
-    let mut info = BuildInfo::default();
-
-    info.resolve_features_with_prefix_family(
-        "arceos-helloworld",
-        "loongarch64-unknown-none-softfloat",
-        false,
-        Ok(AxFeaturePrefixFamily::AxStd),
-        None,
-    );
-
-    assert!(info.features.contains(&"ax-hal/defplat".to_string()));
+    assert!(!info.features.contains(&"ax-std/plat-dyn".to_string()));
 }

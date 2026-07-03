@@ -100,15 +100,10 @@ impl RiscvVplicHostIf for RiscvVplicHostIfImpl {
     }
 }
 
-#[cfg(feature = "plat-dyn")]
 fn register_platform_irq_injector() {
     axplat_dyn::register_virtual_irq_injector(inject_virtual_irq);
 }
 
-#[cfg(not(feature = "plat-dyn"))]
-compile_error!("riscv64 Axvisor requires the plat-dyn feature");
-
-#[cfg(feature = "plat-dyn")]
 fn inject_virtual_irq(irq_id: usize) -> bool {
     debug!("injecting RISC-V virtual IRQ id: {irq_id}");
 

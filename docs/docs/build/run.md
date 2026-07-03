@@ -317,7 +317,7 @@ flowchart TD
 | 模式 | 使用场景 | 行为 |
 |------|---------|------|
 | `ReplaceDriveOnly` | Axvisor；StarryOS 动态平台 | 仅替换或插入 `disk0` 驱动参数 |
-| `EnsureDiskBootNet` | ArceOS；StarryOS 静态平台；Starry app/test 中需要补齐 rootfs 与网络基线的场景 | 确保完整的磁盘 + virtio 块设备 + 用户网络基线 |
+| `EnsureDiskBootNet` | ArceOS；Starry app/test 中需要补齐 rootfs 与网络基线的场景 | 确保完整的磁盘 + virtio 块设备 + 用户网络基线 |
 
 **ReplaceDriveOnly**：扫描现有 `-drive` 参数，替换匹配 `id=disk0,if=none,format=raw,file=` 的参数。如果没有匹配的 `-drive`，则在 `virtio-blk-pci,drive=disk0` 或 `virtio-blk-device,drive=disk0` 声明之后插入新的 `-drive` 参数。
 

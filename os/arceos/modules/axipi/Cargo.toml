@@ -19,4 +19,3 @@ ax-percpu.workspace = true
 
 [build-dependencies]
 quote = "1.0"
-toml.workspace = true

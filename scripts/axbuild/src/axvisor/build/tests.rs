@@ -58,7 +58,6 @@ fn request(path: PathBuf, arch: &str, target: &str) -> ResolvedAxvisorRequest {
             .unwrap_or_else(|| PathBuf::from("os/axvisor")),
         arch: arch.to_string(),
         target: target.to_string(),
-        plat_dyn: None,
         smp: None,
         debug: false,
         build_info_path: path,
@@ -172,7 +171,6 @@ log = "Info"
         axvisor_dir: root.path().join("os/axvisor"),
         arch: "aarch64".to_string(),
         target: "aarch64-unknown-none-softfloat".to_string(),
-        plat_dyn: Some(true),
         smp: None,
         debug: false,
         build_info_path: config_path,
@@ -320,7 +318,6 @@ vm_configs = []
         axvisor_dir: root.path().join("os/axvisor"),
         arch: "x86_64".to_string(),
         target: "x86_64-unknown-none".to_string(),
-        plat_dyn: None,
         smp: None,
         debug: false,
         build_info_path: path.clone(),
@@ -349,7 +346,7 @@ vm_configs = []
 }
 
 #[test]
-fn load_cargo_config_rejects_non_dynamic_aarch64_without_custom_platform() {
+fn load_cargo_config_defaults_aarch64_to_dynamic_platform() {
     let root = tempdir().unwrap();
     let config_path = root.path().join(".build.toml");
     fs::write(
@@ -357,31 +354,27 @@ fn load_cargo_config_rejects_non_dynamic_aarch64_without_custom_platform() {
         r#"
 features = ["ax-std", "ept-level-4"]
 log = "Info"
-plat_dyn = false
 "#,
     )
     .unwrap();
 
-    let result = load_cargo_config(&ResolvedAxvisorRequest {
+    let cargo = load_cargo_config(&ResolvedAxvisorRequest {
         package: AXVISOR_PACKAGE.to_string(),
         axvisor_dir: root.path().join("os/axvisor"),
         arch: "aarch64".to_string(),
         target: "aarch64-unknown-none-softfloat".to_string(),
-        plat_dyn: Some(false),
         smp: None,
         debug: false,
         build_info_path: config_path,
         qemu_config: None,
         uboot_config: None,
         vmconfigs: vec![],
-    });
+    })
+    .unwrap();
 
-    assert!(
-        result
-            .unwrap_err()
-            .to_string()
-            .contains("no default platform package is registered for arch `aarch64`")
-    );
+    assert!(!cargo.features.contains(&"plat-dyn".to_string()));
+    assert!(!cargo.features.contains(&"axvm/plat-dyn".to_string()));
+    assert!(!cargo.features.contains(&"ax-driver/plat-dyn".to_string()));
 }
 
 #[test]
@@ -393,7 +386,6 @@ fn load_cargo_config_rejects_removed_nested_axstd_platform_feature() {
         r#"
 features = ["ax-std/x86-qemu-q35", "ept-level-4"]
 log = "Info"
-plat_dyn = false
 "#,
     )
     .unwrap();
@@ -403,7 +395,6 @@ plat_dyn = false
         axvisor_dir: root.path().join("os/axvisor"),
         arch: "x86_64".to_string(),
         target: "x86_64-unknown-none".to_string(),
-        plat_dyn: Some(false),
         smp: None,
         debug: false,
         build_info_path: config_path,
@@ -414,7 +405,6 @@ plat_dyn = false
     .unwrap_err();
 
     assert!(err.to_string().contains("has been removed"));
-    assert!(err.to_string().contains("plat_dyn = true"));
 }
 
 #[test]
@@ -426,7 +416,6 @@ fn load_cargo_config_rejects_removed_x86_q35_platform_feature() {
         r#"
 features = ["ax-hal/x86-qemu-q35", "ept-level-4"]
 log = "Info"
-plat_dyn = false
 "#,
     )
     .unwrap();
@@ -436,7 +425,6 @@ plat_dyn = false
         axvisor_dir: root.path().join("os/axvisor"),
         arch: "x86_64".to_string(),
         target: "x86_64-unknown-none".to_string(),
-        plat_dyn: Some(false),
         smp: None,
         debug: false,
         build_info_path: config_path,
@@ -447,7 +435,6 @@ plat_dyn = false
     .unwrap_err();
 
     assert!(err.to_string().contains("has been removed"));
-    assert!(err.to_string().contains("plat_dyn = true"));
 }
 
 #[test]
@@ -466,7 +453,6 @@ fn load_cargo_config_rejects_removed_sg2002_platform_feature() {
         axvisor_dir: root.path().join("os/axvisor"),
         arch: "riscv64".to_string(),
         target: "riscv64gc-unknown-none-elf".to_string(),
-        plat_dyn: None,
         smp: None,
         debug: false,
         build_info_path: config_path,
@@ -477,7 +463,6 @@ fn load_cargo_config_rejects_removed_sg2002_platform_feature() {
     .unwrap_err();
 
     assert!(err.to_string().contains(removed_sg2002_platform));
-    assert!(err.to_string().contains("plat_dyn = true"));
 }
 
 #[test]
@@ -498,7 +483,6 @@ log = "Info"
         axvisor_dir: root.path().join("os/axvisor"),
         arch: "loongarch64".to_string(),
         target: "loongarch64-unknown-none-softfloat".to_string(),
-        plat_dyn: Some(true),
         smp: None,
         debug: false,
         build_info_path: config_path,
@@ -530,7 +514,6 @@ log = "Info"
         axvisor_dir: root.path().join("os/axvisor"),
         arch: "x86_64".to_string(),
         target: "x86_64-unknown-none".to_string(),
-        plat_dyn: None,
         smp: None,
         debug: false,
         build_info_path: config_path,
@@ -573,7 +556,6 @@ log = "Info"
         axvisor_dir: root.path().join("os/axvisor"),
         arch: "x86_64".to_string(),
         target: "x86_64-unknown-none".to_string(),
-        plat_dyn: None,
         smp: None,
         debug: false,
         build_info_path: config_path,
@@ -611,7 +593,6 @@ log = "Info"
         axvisor_dir: root.path().join("os/axvisor"),
         arch: "x86_64".to_string(),
         target: "x86_64-unknown-none".to_string(),
-        plat_dyn: None,
         smp: None,
         debug: false,
         build_info_path: config_path,
@@ -648,7 +629,6 @@ log = "Info"
         axvisor_dir: root.path().join("os/axvisor"),
         arch: "loongarch64".to_string(),
         target: "loongarch64-unknown-none-softfloat".to_string(),
-        plat_dyn: Some(true),
         smp: None,
         debug: false,
         build_info_path: config_path,

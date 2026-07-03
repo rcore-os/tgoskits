@@ -76,7 +76,7 @@ pub use self::mp::rust_main_secondary;
 
 extern crate alloc;
 
-#[cfg(any(feature = "fs", all(feature = "smp", not(feature = "plat-dyn"))))]
+#[cfg(feature = "fs")]
 pub(crate) fn runtime_default_task_stack_size() -> usize {
     build_info::TASK_STACK_SIZE
 }
@@ -180,10 +180,6 @@ fn is_init_ok() -> bool {
 /// secondary cores call [`rust_main_secondary`].
 #[cfg_attr(not(test), ax_plat::main)]
 pub fn rust_main(cpu_id: usize, arg: usize) -> ! {
-    #[cfg(not(feature = "plat-dyn"))]
-    unsafe {
-        ax_hal::mem::clear_bss()
-    };
     ax_hal::percpu::init_primary(cpu_id);
     // After per-CPU init, before scheduler/IPI/IRQ paths can allocate.
     // This is a no-op for allocator backends that do not need per-CPU state.
@@ -267,10 +263,6 @@ pub fn rust_main(cpu_id: usize, arg: usize) -> ! {
 
     info!("Initialize platform devices...");
     ax_hal::init_later(cpu_id, arg);
-    if cfg!(not(feature = "plat-dyn")) && !rdrive::is_initialized() {
-        rdrive::init(rdrive::Platform::Static)
-            .unwrap_or_else(|err| panic!("failed to initialize static rdrive source: {err:?}"));
-    }
     if rdrive::is_initialized() {
         registers::append_linker_registers();
         rdrive::probe_pre_kernel()
