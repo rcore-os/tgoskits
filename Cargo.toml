@@ -261,6 +261,7 @@ usb-if = { version = "0.7.2", path = "drivers/usb/usb-if" }
 usb-serial = { version = "0.1.0", path = "drivers/usb/usb-serial" }
 dwmmc-host = { version = "0.3.0", path = "drivers/blk/dwmmc-host", default-features = false }
 phytium-mci-host = { version = "0.3.0", path = "drivers/blk/phytium-mci-host", default-features = false }
+cv181x-sdhci = { version = "0.1.0", path = "drivers/blk/cv181x-sdhci", default-features = false }
 sdhci-host = { version = "0.3.0", path = "drivers/blk/sdhci-host", default-features = false }
 sdmmc-protocol = { version = "0.3.0", path = "drivers/blk/sdmmc-protocol", default-features = false }
 smoltcp = { version = "0.13.1", default-features = false }
