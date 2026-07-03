@@ -7,6 +7,7 @@ features = [
   "ax-driver/realtek-rtl8125",
   "ax-driver/rockchip-soc",
   "ax-driver/rockchip-dwc-xhci",
+  "ax-driver/rockchip-ehci",
   "ax-driver/rockchip-sdhci",
   "ax-driver/rockchip-dwmmc",
   "rknpu",
