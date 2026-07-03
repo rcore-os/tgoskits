@@ -113,7 +113,7 @@ flowchart TB
 | 1 | 堆叠层 | 组件层 | `ax-kernel-guard` | `0.3.3` | `components/kernel_guard` |
 | 1 | 堆叠层 | 组件层 | `ax-memory-set` | `0.6.1` | `memory/memory_set` |
 | 1 | 堆叠层 | 组件层 | `ax-page-table-entry` | `0.8.1` | `memory/page_table_entry` |
-| 1 | 堆叠层 | 组件层 | `ax-plat-macros` | `0.3.0` | `components/axplat_crates/axplat-macros` |
+| 1 | 堆叠层 | 组件层 | `ax-plat-macros` | `0.3.8` | `platforms/ax-plat-macros` |
 | 1 | 堆叠层 | 组件层 | `ax-sched` | `0.5.1` | `components/axsched` |
 | 1 | 堆叠层 | 组件层 | `axfs-ng-vfs` | `0.3.1` | `components/axfs-ng-vfs` |
 | 1 | 堆叠层 | 组件层 | `axhvc` | `0.4.0` | `virtualization/axhvc` |

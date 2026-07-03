@@ -77,7 +77,7 @@ pub use irq::register_virtual_irq_injector;
 
 | 组件 | 职责 |
 | --- | --- |
-| `someboot`（`components/`） | 固件入口、UEFI/FDT 获取、重定位、早期页表、BSS、boot stack、SMP 启动准备 |
+| `someboot`（[platforms/someboot](platforms/someboot)） | 固件入口、UEFI/FDT 获取、重定位、早期页表、BSS、boot stack、SMP 启动准备 |
 | `somehal`（[platforms/somehal](platforms/somehal)） | 运行时平台事实：内存图、console、timer、IRQ、power、CPU 拓扑；架构后端实现 `PlatOp` |
 | `axplat-dyn` | 将 `somehal` 能力实现为 `ax-plat` 接口；接入 `rdrive` 设备发现；提供链接脚本 |
 | `ax-hal` | 对上提供稳定 HAL facade |

@@ -40,7 +40,7 @@ flowchart TD
     ArceosApps["ArceOS examples + test-suit/arceos"]
     StarryKernel["os/StarryOS/kernel + components/starry-*"]
     AxvisorRuntime["os/axvisor + virtualization/axvm/axvm-types/axdevice/*"]
-    PlatformCrates["components/axplat_crates/platforms/* + platform/*"]
+    PlatformCrates["platforms/*"]
 
     ReusableCrate --> ArceosModules
     ArceosModules --> ArceosApi
@@ -91,11 +91,11 @@ flowchart TD
 | 你要改什么 | 优先看哪里 | 常见影响面 |
 | --- | --- | --- |
 | 通用基础能力：错误、锁、页表、Per-CPU、容器 | `components/axerrno`、`components/kspin`、`memory/page_table_multiarch`、`components/percpu` | 三套系统都可能受影响 |
-| ArceOS 内核服务：调度、HAL、驱动、网络、文件系统 | `os/arceos/modules/*`、`drivers/*`，以及相关 `memory/*` / `axplat_crates` | ArceOS，且可能波及 StarryOS / Axvisor |
+| ArceOS 内核服务：调度、HAL、驱动、网络、文件系统 | `os/arceos/modules/*`、`drivers/*`，以及相关 `memory/*` / `platforms/*` | ArceOS，且可能波及 StarryOS / Axvisor |
 | ArceOS 的 feature 或应用接口 | `os/arceos/api/axfeat`、`os/arceos/ulib/axstd`、`os/arceos/ulib/axlibc` | ArceOS 应用与上层系统 |
 | StarryOS 的 Linux 兼容行为 | `components/starry-*`、`os/StarryOS/kernel/*` | StarryOS |
 | Hypervisor、vCPU、虚拟设备、VM 管理 | `virtualization/axvm`、`virtualization/axvm-types`、`virtualization/*_vcpu`、`virtualization/axdevice`、`virtualization/axvisor_api`、`os/axvisor/src/*` | Axvisor |
-| 平台、板级适配或 VM 启动配置 | `components/axplat_crates/platforms/*`、`platform/*`、`os/axvisor/configs/*` | 一到多个系统 |
+| 平台、板级适配或 VM 启动配置 | `platforms/*`、`os/axvisor/configs/*` | 一到多个系统 |
 
 若不确定某个 crate 的维护者或来源仓库，可查看 `scripts/repo/repos.csv`，该文件记录了所有 subtree 组件的来源信息。
 

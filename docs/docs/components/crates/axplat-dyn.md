@@ -280,7 +280,7 @@ graph TD
 | 项目 | 位置 | 角色 | 核心作用 |
 | --- | --- | --- | --- |
 | ArceOS | `ax-hal`/`ax-driver` 的实验性平台路径 | 动态平台桥接层 | 把 `somehal` 与 `rdrive` 驱动式能力接到 ArceOS 标准平台/驱动抽象上 |
-| StarryOS | 仅在复用同一模块栈时才可能间接接入 | 非默认平台包路径 | 它不是 `axplat_crates/platforms` 中那类标准发行平台包，只有在共享 ArceOS 底层模块时才会发挥作用 |
+| StarryOS | 通过共享 ArceOS 模块栈间接接入 | 内置动态平台路径 | 平台实现位于 `platforms/axplat-dyn`，在 StarryOS 复用 ArceOS 底层模块时发挥作用 |
 | Axvisor | 宿主侧若共享 `ax-hal`/`ax-driver` 路径时可复用 | 宿主 bring-up 桥接层 | 可为基于 ArceOS 模块栈的宿主环境提供动态平台 glue，但虚拟化核心并不在本 crate 中 |
 
 ## 总结
