@@ -82,16 +82,10 @@ fn makefile_features_use_ax_std_dependency_for_std_build() {
 }
 
 #[test]
-fn retired_static_platform_features_are_not_ax_hal_platforms() {
+fn unknown_ax_hal_features_are_not_platforms() {
     let metadata = repo_metadata();
 
-    for feature in [
-        "ax-hal/aarch64-qemu-virt",
-        "ax-hal/aarch64-raspi",
-        "ax-hal/aarch64-bsta1000b",
-        "ax-hal/aarch64-phytium-pi",
-        "ax-hal/riscv64-visionfive2",
-    ] {
+    for feature in ["ax-hal/not-a-platform", "ax-hal/qemu-board"] {
         assert_eq!(ax_hal_platform_feature_name(feature, Some(&metadata)), None);
     }
 }

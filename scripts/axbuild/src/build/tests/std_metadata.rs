@@ -104,9 +104,10 @@ fn std_build_uses_dynamic_platform_features_without_static_hal_platform() {
         Some(&"aarch64-unknown-none-softfloat".to_string())
     );
     assert!(
-        !cargo
+        cargo
             .features
-            .contains(&"ax-std/aarch64-qemu-virt".to_string())
+            .iter()
+            .all(|feature| !feature.starts_with("ax-std/aarch64-"))
     );
 }
 
@@ -133,9 +134,10 @@ fn std_build_aarch64_defaults_to_dynamic_platform() {
     assert!(cargo.features.contains(&"ax-std/smp".to_string()));
     assert!(cargo.features.contains(&"ax-std/std-compat".to_string()));
     assert!(
-        !cargo
+        cargo
             .features
-            .contains(&"ax-std/aarch64-qemu-virt".to_string())
+            .iter()
+            .all(|feature| !feature.starts_with("ax-std/aarch64-"))
     );
     let config = std::fs::read_to_string(cargo.extra_config.unwrap()).unwrap();
     assert!(!config.contains("--cfg"));

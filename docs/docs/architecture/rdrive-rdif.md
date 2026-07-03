@@ -113,7 +113,7 @@ pub enum ProbeKind {
 
 | backend | 独立状态 | 匹配输入 | probe 输入 | 第一版行为 |
 | --- | --- | --- | --- | --- |
-| `probe::static_` | `System { probed_names }` | `ProbeKind::Static` register name | `PlatformDevice` | 平台 crate 自己注册静态 model driver 并在回调中使用平台常量 |
+| `probe::static_` | `System { probed_names }` | 显式注册的 driver name | `PlatformDevice` | 保留外部平台和板级 glue 的手工注册能力 |
 | `probe::fdt` | `System { fdt, phandle_map, probed }` | compatible + node status | `FdtInfo` + `PlatformDevice` | 保留当前 FDT 能力 |
 | `probe::acpi` | `System { root, routing, pci, probed }` | HID/CID + ACPI device，或空 `ids` 的全局 table probe | `AcpiInfo` + `PlatformDevice` | ACPI source 初始化、MCFG/GSI controller routing、PCI `_PRT` 和普通设备 IRQ route |
 | `probe::pci` | PCIe controller enumerator | vendor/device/class | endpoint + `PlatformDevice` | 保留当前 PCIe 二阶段 probe |
@@ -299,7 +299,7 @@ IRQ 路径只返回稳定事件和唤醒等待方；不能在 IRQ handler 中执
 
 Driver Core 只推进硬件状态机。OS Glue 将硬件实例包装成 `rdif-*::Interface` 后通过 `PlatformDevice::register(...)` 注册。除块设备外，Runtime wrapper 从 `rdif-*::Interface` 构建领域运行时对象，供服务层和上层模块使用；块设备服务直接基于 `rdif-block` 的 submit/poll 能力边界组织 volume 和文件系统入口。
 
-外部自定义平台如果不走 FDT/ACPI/PCI 自动发现，可以在自己的平台初始化阶段调用 `rdrive::init(rdrive::Platform::Static)`，再通过 `rdrive::register_add(DriverRegister { probe_kinds: &[ProbeKind::Static { ... }], ... })` 注册平台私有 probe。这里的 `Static` 是 rdrive 的手动 probe 来源，不是仓库内置静态平台模式。probe 回调里可以直接构造硬件对象并调用 `PlatformDevice::register(...)`、领域 adapter 的 `*_with_info(...)`，或 `ax-driver` 暴露的显式 `register_transport*()` helper。`ax-driver` 本身不再提供静态平台自动注册 feature。
+外部自定义平台应优先提供 FDT、ACPI 或 PCI 可发现的设备描述，再通过对应 probe 注册驱动或设备。没有固件描述的板级 glue 仍可使用 `rdrive::PlatformSource::Static` 和 `ProbeKind::Static` 显式注册设备；这只是驱动 probe 来源，不等同于旧的 `myplat` / `defplat` Cargo feature 平台选择路径。`ax-driver` 本身不再提供旧式平台私有自动注册 feature。
 
 ## 领域 Service 与上层消费
 
@@ -395,7 +395,7 @@ src/
 Phase 1: `rdrive` backend 分发
 
 - 增加 `PlatformSource::{Static,Fdt,Acpi}` 和 `ProbeKind::{Static,Fdt,Acpi,Pci}`。
-- 新增 `probe::static_` 与 `probe::acpi` 模块；ACPI 初始化提供 MCFG、GSI controller routing、PCI `_PRT` 和普通设备 IRQ metadata。
+- 新增 `probe::acpi` 模块；ACPI 初始化提供 MCFG、GSI controller routing、PCI `_PRT` 和普通设备 IRQ metadata。
 - `probe_pre_kernel()` 和 `probe_all()` 改为 backend 分发，保留当前 FDT 与 PCI 能力。
 - `Manager` 保持只管理 register 和 typed device registry。
 

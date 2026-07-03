@@ -25,10 +25,8 @@ pub(super) fn c_config_features(features: &[String]) -> BTreeSet<String> {
                 .or(Some(feature.as_str()))
         })
         .filter(|feature| {
-            !matches!(
-                *feature,
-                "ax-libc" | "ax-feat" | "ax-std" | "defplat" | "myplat" | "plat-dyn"
-            ) && !feature.contains('/')
+            !matches!(*feature, "ax-libc" | "ax-feat" | "ax-std" | "plat-dyn")
+                && !feature.contains('/')
         })
         .map(str::to_string)
         .collect();
@@ -104,9 +102,6 @@ pub(super) fn map_c_app_features(
         }
         match normalized {
             "ax-std" | "ax-feat" | "ax-libc" => {}
-            "defplat" | "myplat" => {
-                features.insert(normalized.to_string());
-            }
             "plat-dyn" => {}
             "smp" => {
                 features.insert("smp".to_string());
@@ -135,8 +130,7 @@ pub(super) fn map_c_app_features(
         if normalized == "plat-dyn" {
             continue;
         }
-        if LIB_FEATURES.contains(&normalized) || matches!(normalized, "defplat" | "myplat" | "smp")
-        {
+        if LIB_FEATURES.contains(&normalized) || normalized == "smp" {
             features.insert(normalized.to_string());
         } else {
             features.insert(format!("ax-feat/{normalized}"));

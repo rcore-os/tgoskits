@@ -1,8 +1,7 @@
 # Available arguments:
 # * General options:
 #     - `ARCH`: Target architecture: x86_64, riscv64, aarch64, loongarch64
-#     - `MYPLAT`: Package name of the target platform crate.
-#     - `SMP`: Number of CPUs. If not set, use the default value from platform config.
+#     - `SMP`: Number of CPUs.
 #     - `MODE`: Build mode: release, debug
 #     - `LOG:` Logging level: warn, error, info, debug, trace
 #     - `V`: Verbose level: (empty), 1, 2
@@ -33,9 +32,8 @@
 
 # General options
 ARCH ?= x86_64
-MYPLAT ?=
 TGOSKITS_ROOT ?= $(abspath $(CURDIR)/../..)
-SMP ?=
+SMP ?= 1
 MODE ?= release
 LOG ?= warn
 V ?=
@@ -43,7 +41,6 @@ DWARF ?=
 LTO ?=
 TARGET_DIR ?= $(PWD)/target
 UIMAGE ?= n
-PLAT_DYN ?= y
 
 # App options
 A ?= examples/helloworld
@@ -59,7 +56,7 @@ GRAPHIC ?= n
 INPUT ?= n
 VSOCK ?= n
 BUS ?= pci
-MEM ?=
+MEM ?= 128M
 ACCEL ?=
 ICOUNT ?= n
 QEMU_ARGS ?=
@@ -95,8 +92,6 @@ endif
 ifneq ($(filter $(or $(MAKECMDGOALS), $(.DEFAULT_GOAL)), all build disasm run justrun debug defconfig oldconfig),)
 # Install dependencies
 include scripts/make/deps.mk
-# Platform resolving
-include scripts/make/platform.mk
 # Feature parsing
 include scripts/make/features.mk
 endif
@@ -115,7 +110,6 @@ else
 endif
 
 export AX_ARCH=$(ARCH)
-export AX_PLATFORM=$(PLAT_NAME)
 export AX_MODE=$(MODE)
 export AX_LOG=$(LOG)
 export AX_TARGET=$(TARGET)
@@ -138,16 +132,11 @@ GDB ?= gdb
 # Paths
 OUT_DIR ?= $(APP)
 LD_SCRIPT ?= $(shell find "$(TARGET_DIR)/$(TARGET)/$(MODE)/build" -path '*/ax-runtime-*/out/linker.x' -printf '%T@ %p\n' 2>/dev/null | sort -rn | sed -n '1s/^[^ ]* //p')
-ifeq ($(PLAT_DYN), y)
-  AXPLAT_OWNER_PREFIX := axplat-dyn-
-else
-  AXPLAT_OWNER_PREFIX := ax-hal-
-endif
-AXPLAT_SCRIPT ?= $(shell find "$(TARGET_DIR)/$(TARGET)/$(MODE)/build" -path "*/$(AXPLAT_OWNER_PREFIX)*/out/axplat.x" -printf '%T@ %p\n' 2>/dev/null | sort -rn | sed -n '1s/^[^ ]* //p')
+AXPLAT_SCRIPT ?= $(shell find "$(TARGET_DIR)/$(TARGET)/$(MODE)/build" -path '*/axplat-dyn-*/out/axplat.x' -printf '%T@ %p\n' 2>/dev/null | sort -rn | sed -n '1s/^[^ ]* //p')
 LINKER_SCRIPT_DIRS ?= $(sort $(dir $(LD_SCRIPT) $(AXPLAT_SCRIPT)))
 
 APP_NAME := $(shell basename $(APP))
-OUT_ELF := $(OUT_DIR)/$(APP_NAME)_$(PLAT_NAME).elf
+OUT_ELF := $(OUT_DIR)/$(APP_NAME)_$(ARCH).elf
 OUT_BIN := $(patsubst %.elf,%.bin,$(OUT_ELF))
 OUT_UIMG := $(patsubst %.elf,%.uimg,$(OUT_ELF))
 ifeq ($(UIMAGE), y)
@@ -161,17 +150,12 @@ all: build
 include scripts/make/utils.mk
 include scripts/make/build.mk
 include scripts/make/qemu.mk
-ifeq ($(PLAT_NAME), aarch64-raspi4)
-  include scripts/make/raspi4.mk
-else ifeq ($(PLAT_NAME), aarch64-bsta1000b)
-  include scripts/make/bsta1000b-fada.mk
-endif
 
 defconfig:
-	$(error static axconfig generation has been removed; use cargo xtask build configs)
+	$(error axconfig generation has been removed; use cargo xtask build configs)
 
 oldconfig:
-	$(error static axconfig generation has been removed; use cargo xtask build configs)
+	$(error axconfig generation has been removed; use cargo xtask build configs)
 
 build: $(OUT_DIR) $(FINAL_IMG)
 

@@ -10,7 +10,7 @@ sidebar_label: "层级关系"
 ```mermaid
 flowchart TB
   direction TB
-  L16["<b>层级 16</b><br/>堆叠层（依赖更底层 crate）<br/>`arceos-affinity`、`arceos-display`、`arceos-exception`、`arceos-fs-shell`、`arceos-irq`、`arceos-memtest`、`arceos-net-echoserver`、`arceos-net-httpclient`、`arceos-net-httpserver`、`arceos-net-udpserver`、`arceos-parallel`、`arceos-priority`、`arceos-sleep`、`arceos-tls`、`arceos-wait-queue`、`arceos-yield`、`arceos-helloworld`、`arceos-helloworld-myplat`、`arceos-httpclient`、`arceos-httpserver` …共22个"]
+  L16["<b>层级 16</b><br/>堆叠层（依赖更底层 crate）<br/>`arceos-affinity`、`arceos-display`、`arceos-exception`、`arceos-fs-shell`、`arceos-irq`、`arceos-memtest`、`arceos-net-echoserver`、`arceos-net-httpclient`、`arceos-net-httpserver`、`arceos-net-udpserver`、`arceos-parallel`、`arceos-priority`、`arceos-sleep`、`arceos-tls`、`arceos-wait-queue`、`arceos-yield`、`arceos-helloworld`、`arceos-httpclient`、`arceos-httpserver` …共21个"]
   classDef ls16 fill:#eceff1,stroke:#455a64,stroke-width:2px,color:#000
   class L16 ls16
   L15["<b>层级 15</b><br/>堆叠层（依赖更底层 crate）<br/>`ax-libc`、`ax-std`、`starryos`、`starryos-test`"]
@@ -113,7 +113,7 @@ flowchart TB
 | 1 | 堆叠层 | 组件层 | `ax-kernel-guard` | `0.3.3` | `components/kernel_guard` |
 | 1 | 堆叠层 | 组件层 | `ax-memory-set` | `0.6.1` | `memory/memory_set` |
 | 1 | 堆叠层 | 组件层 | `ax-page-table-entry` | `0.8.1` | `memory/page_table_entry` |
-| 1 | 堆叠层 | 组件层 | `ax-plat-macros` | `0.3.0` | `components/axplat_crates/axplat-macros` |
+| 1 | 堆叠层 | 组件层 | `ax-plat-macros` | `0.3.8` | `platforms/ax-plat-macros` |
 | 1 | 堆叠层 | 组件层 | `ax-sched` | `0.5.1` | `components/axsched` |
 | 1 | 堆叠层 | 组件层 | `axfs-ng-vfs` | `0.3.1` | `components/axfs-ng-vfs` |
 | 1 | 堆叠层 | 组件层 | `axhvc` | `0.4.0` | `virtualization/axhvc` |
@@ -178,7 +178,6 @@ flowchart TB
 | 15 | 堆叠层 | StarryOS 层 | `starryos` | `0.4.0` | `os/StarryOS/starryos` |
 | 15 | 堆叠层 | 测试层 | `starryos-test` | `0.5.0` | `test-suit/starryos` |
 | 16 | 堆叠层 | ArceOS 层 | `arceos-helloworld` | `0.3.0` | `apps/arceos/helloworld` |
-| 16 | 堆叠层 | ArceOS 层 | `arceos-helloworld-myplat` | `0.3.0` | `apps/arceos/helloworld-myplat` |
 | 16 | 堆叠层 | ArceOS 层 | `arceos-httpclient` | `0.3.0` | `apps/arceos/httpclient` |
 | 16 | 堆叠层 | ArceOS 层 | `arceos-httpserver` | `0.3.0` | `apps/arceos/httpserver` |
 | 16 | 堆叠层 | ArceOS 层 | `arceos-shell` | `0.3.0` | `apps/arceos/shell` |
@@ -220,7 +219,7 @@ flowchart TB
 | 13 | 1 | `ax-feat` |
 | 14 | 3 | `ax-api` `ax-posix-api` `starry-kernel` |
 | 15 | 4 | `ax-libc` `ax-std` `starryos` `starryos-test` |
-| 16 | 22 | `arceos-affinity` `arceos-display` `arceos-exception` `arceos-fs-shell` `arceos-irq` `arceos-memtest` `arceos-net-echoserver` `arceos-net-httpclient` `arceos-net-httpserver` `arceos-net-udpserver` `arceos-parallel` `arceos-priority` `arceos-sleep` `arceos-tls` `arceos-wait-queue` `arceos-yield` `arceos-helloworld` `arceos-helloworld-myplat` `arceos-httpclient` `arceos-httpserver` `arceos-shell` `axvisor` |
+| 16 | 21 | `arceos-affinity` `arceos-display` `arceos-exception` `arceos-fs-shell` `arceos-irq` `arceos-memtest` `arceos-net-echoserver` `arceos-net-httpclient` `arceos-net-httpserver` `arceos-net-udpserver` `arceos-parallel` `arceos-priority` `arceos-sleep` `arceos-tls` `arceos-wait-queue` `arceos-yield` `arceos-helloworld` `arceos-httpclient` `arceos-httpserver` `arceos-shell` `axvisor` |
 ### 4.3 直接依赖 / 被直接依赖（仓库内组件）
 
 下列仅统计**本仓库 129 个 crate 之间**的直接边。
@@ -271,7 +270,6 @@ flowchart TB
 | `ax-fs-vfs` | 1 | Virtual filesystem interfaces used by ArceOS | `ax-errno` | `arceos-fs-shell` `ax-fs` `ax-fs-devfs` `ax-fs-ramfs` |
 | `ax-hal` | 6 | ArceOS hardware abstraction layer, provides unifi… | `ax-alloc` `ax-cpu` `ax-kernel-guard` `ax-memory-addr` `ax-page-table-multiarch` `ax-percpu` `ax-plat` `axplat-dyn` | `ax-api` `ax-dma` `ax-driver` `ax-feat` `ax-fs` `ax-fs-ng` `ax-ipi` `ax-mm` `ax-net` `ax-net` `ax-posix-api` `ax-runtime` `ax-task` `axvisor` `starry-kernel` |
 | `arceos-helloworld` | 16 | ArceOS 示例程序 | `ax-std` | — |
-| `arceos-helloworld-myplat` | 16 | ArceOS 示例程序 | `ax-std` | — |
 | `arceos-httpclient` | 16 | ArceOS 示例程序 | `ax-std` | — |
 | `arceos-httpserver` | 16 | Simple HTTP server. Benchmark with Apache HTTP se… | `ax-std` | — |
 | `ax-input` | 10 | Input device management for ArceOS | `ax-driver` `ax-lazyinit` `ax-sync` | `ax-feat` `ax-runtime` `starry-kernel` |
@@ -298,7 +296,7 @@ flowchart TB
 | `ax-runtime` | 12 | Runtime library of ArceOS | `ax-alloc` `ax-crate-interface` `ax-ctor-bare` `ax-display` `ax-driver` `ax-fs` `ax-fs-ng` `ax-hal` `ax-input` `ax-ipi` `ax-log` `ax-mm` `ax-net` `ax-net` `ax-percpu` `ax-plat` `ax-task` `axbacktrace` `axklib` | `ax-api` `ax-feat` `ax-posix-api` `starry-kernel` |
 | `ax-sched` | 1 | Various scheduler algorithms in a unified interfa… | `ax-linked-list-r4l` | `ax-task` |
 | `arceos-shell` | 16 | ArceOS 示例程序 | `ax-std` | — |
-| `ax-std` | 15 | ArceOS user library with an interface similar to … | `ax-api` `ax-errno` `ax-feat` `ax-io` `ax-kspin` `ax-lazyinit` | `arceos-affinity` `arceos-display` `arceos-exception` `arceos-fs-shell` `arceos-irq` `arceos-memtest` `arceos-net-echoserver` `arceos-net-httpclient` `arceos-net-httpserver` `arceos-net-udpserver` `arceos-parallel` `arceos-priority` `arceos-sleep` `arceos-tls` `arceos-wait-queue` `arceos-yield` `arceos-helloworld` `arceos-helloworld-myplat` `arceos-httpclient` `arceos-httpserver` `arceos-shell` `axvisor` |
+| `ax-std` | 15 | ArceOS user library with an interface similar to … | `ax-api` `ax-errno` `ax-feat` `ax-io` `ax-kspin` `ax-lazyinit` | `arceos-affinity` `arceos-display` `arceos-exception` `arceos-fs-shell` `arceos-irq` `arceos-memtest` `arceos-net-echoserver` `arceos-net-httpclient` `arceos-net-httpserver` `arceos-net-udpserver` `arceos-parallel` `arceos-priority` `arceos-sleep` `arceos-tls` `arceos-wait-queue` `arceos-yield` `arceos-helloworld` `arceos-httpclient` `arceos-httpserver` `arceos-shell` `axvisor` |
 | `ax-sync` | 8 | ArceOS synchronization primitives | `ax-kspin` `ax-task` | `ax-api` `ax-display` `ax-feat` `ax-fs-ng` `ax-input` `ax-net` `ax-net` `ax-posix-api` `starry-kernel` |
 | `ax-task` | 7 | ArceOS task management module | `ax-cpumask` `ax-crate-interface` `ax-errno` `ax-hal` `ax-kernel-guard` `ax-kspin` `ax-lazyinit` `ax-memory-addr` `ax-percpu` `ax-sched` `ax-timer-list` `axpoll` | `ax-api` `ax-feat` `ax-net` `ax-net` `ax-posix-api` `ax-runtime` `ax-sync` `starry-kernel` |
 | `ax-timer-list` | 0 | A list of timed events that will be triggered seq… | — | `ax-task` `axvisor` |

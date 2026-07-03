@@ -44,8 +44,6 @@ members = [
     "components/sdhci-cv1800",
     "components/sdio-host",
     "components/sdio-host2",
-    "components/someboot",
-    "components/somehal-macros",
     "components/starry-process",
     "components/starry-signal",
     "components/starry-vm",
@@ -53,7 +51,9 @@ members = [
     "platforms/ax-plat",
     "platforms/ax-plat-macros",
     "platforms/axplat-dyn",
+    "platforms/someboot",
     "platforms/somehal",
+    "platforms/somehal-macros",
     "components/crate_interface/test_crates/*",
     "components/ctor_bare/ctor_bare",
     "components/ctor_bare/ctor_bare_macros",
@@ -279,11 +279,11 @@ httpboot-protocol = { version = "0.1.0", default-features = false }
 x86_vcpu = { version = "0.5.16", path = "virtualization/x86_vcpu", default-features = false }
 x86_vlapic = { version = "0.4.17", path = "virtualization/x86_vlapic" }
 page-table-generic = { version = "0.7.3", path = "memory/page-table-generic" }
-someboot = { version = "0.3.1", path = "components/someboot" }
+someboot = { version = "0.3.1", path = "platforms/someboot" }
 some-serial = { version = "0.7.0", path = "drivers/serial/some-serial" }
 kernutil = { path = "components/kernutil", version = "0.2.2" }
 ranges-ext = { version = "0.6.4", path = "memory/ranges-ext" }
-somehal-macros = { path = "components/somehal-macros", version = "0.1.4" }
+somehal-macros = { path = "platforms/somehal-macros", version = "0.1.4" }
 kasm-aarch64 = { path = "components/kasm-aarch64", version = "0.2.1" }
 somehal = { version = "0.7.4", path = "platforms/somehal" }
 

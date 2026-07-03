@@ -41,7 +41,7 @@ Host (Linux)
 
 **现象**: QEMU `-m 8G` 但内核只识别 ~510MB。
 
-**根因**: 早期已淘汰的 `axplat-riscv64-qemu-virt` 静态平台路径在 `axconfig.toml` 中硬编码 `phys-memory-size = 0x2000_0000`。
+**根因**: 早期已淘汰的平台配置路径在 `axconfig.toml` 中硬编码 `phys-memory-size = 0x2000_0000`。
 
 **修复**: 当时改为 `phys-memory-size = "0x2_0000_0000"` (8GB)。当前构建链固定使用 `axplat-dyn` + `somehal::mem::memory_map()` 动态检测，无此问题。
 

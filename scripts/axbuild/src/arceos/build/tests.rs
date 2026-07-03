@@ -47,7 +47,6 @@ fn resolves_dynamic_platform_features_and_args() {
 
     assert!(!build_info.features.contains(&"ax-std/plat-dyn".to_string()));
     assert!(!build_info.features.contains(&"ax-hal/plat-dyn".to_string()));
-    assert!(!build_info.features.contains(&"ax-std/defplat".to_string()));
 
     let args = ArceosBuildInfo::build_cargo_args("aarch64-unknown-none-softfloat", &[]);
     assert!(
@@ -297,9 +296,10 @@ max_cpu_num = 4
 
     assert!(!cargo.features.contains(&"ax-std/plat-dyn".to_string()));
     assert!(
-        !cargo
+        cargo
             .features
-            .contains(&"ax-std/riscv64-qemu-virt".to_string())
+            .iter()
+            .all(|feature| !feature.starts_with("ax-std/riscv64-"))
     );
     assert!(
         cargo

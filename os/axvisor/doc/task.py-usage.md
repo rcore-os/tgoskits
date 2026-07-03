@@ -99,13 +99,13 @@ cp .hvconfig.prod.toml .hvconfig.toml && ./scripts/task.py run
 
 #### --plat (旧平台参数)
 
-旧平台选择参数。当前 ArceOS 构建链固定走 `axplat-dyn`，旧的静态平台配置文件路径已经不再作为构建链路的一部分；迁移旧命令时优先使用 `--arch`，不要再手动传平台选择项。
+旧平台选择参数。当前 ArceOS 构建链固定走 `axplat-dyn`，旧的平台配置文件路径已经不再作为构建链路的一部分；迁移旧命令时优先使用 `--arch`，不要再手动传平台选择项。
 
 ```bash
 --arch aarch64
 ```
 
-LoongArch QEMU 当前默认走 `axplat-dyn`，不再通过 `--plat loongarch64-qemu-virt` 选择静态平台 crate。迁移旧命令时，保留 LoongArch 架构选择即可，例如使用 `--arch loongarch64`；构建链会固定走 `axplat-dyn` 与 UEFI/`efi` 启动链路。
+LoongArch QEMU 当前默认走 `axplat-dyn`，不再通过 `--plat` 选择平台 crate。迁移旧命令时，保留 LoongArch 架构选择即可，例如使用 `--arch loongarch64`；构建链会固定走 `axplat-dyn` 与 UEFI/`efi` 启动链路。
 
 **架构特定的 QEMU 参数**：
 
