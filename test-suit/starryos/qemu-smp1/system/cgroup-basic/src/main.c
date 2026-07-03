@@ -262,6 +262,11 @@ int main(void)
         CHECK(nread == 0, "root cgroup.subtree_control is initially empty");
     }
 
+    /* Writing a non-existent controller must fail with EINVAL, not be
+     * silently accepted. */
+    expect_write_errno(CGROUP2_PATH "/cgroup.subtree_control", "+bogus",
+                       EINVAL, "writing +bogus to subtree_control fails with EINVAL");
+
     expect_mkdir_ok(CGROUP2_PATH "/a", "mkdir child cgroup a succeeds");
     expect_path_exists(CGROUP2_PATH "/a", "child cgroup a exists");
     expect_empty_file(CGROUP2_PATH "/a/cgroup.procs",
