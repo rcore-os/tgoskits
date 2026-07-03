@@ -14,16 +14,22 @@ sidebar_label: "验证与调试"
 ```bash
 cargo fmt --check
 cargo metadata --locked --no-deps --format-version 1
-cargo check -p axplat-custom --features irq,smp
-AX_PLATFORM_CRATE=axplat_custom cargo check -p ax-hal --features axplat-custom,irq,smp
 cargo test -p axbuild --lib
 cargo xtask clippy --package axbuild
+```
+
+`axplat-custom` 是不可发布模板，不是 workspace package，也不是 `ax-hal` 的内置依赖。复制并改名为真实平台后，应在根 workspace 和本地 `ax-hal` 增加对应 package / optional dependency / feature，然后再运行：
+
+```bash
+cargo check -p axplat-myplat --features irq,smp
+AX_PLATFORM_CRATE=axplat_myplat cargo check -p ax-hal --features axplat-myplat,irq,smp
 ```
 
 如果修改了具体平台 crate，还应对该 crate 运行 targeted clippy：
 
 ```bash
-cargo xtask clippy --package axplat-custom --package ax-hal
+cargo xtask clippy --package axplat-myplat
+cargo xtask clippy --package ax-hal
 ```
 
 ## QEMU 验证
@@ -36,7 +42,7 @@ cargo xtask starry test qemu --arch riscv64
 cargo xtask axvisor test qemu --arch x86_64 --test-group normal
 ```
 
-自定义平台只有在补齐启动入口、链接脚本、console、timer、内存和 IRQ 后，才应宣称可启动 QEMU。模板 `axplat-custom` 当前只保证接口编译，不代表能运行。
+自定义平台只有在补齐启动入口、链接脚本、console、timer、内存和 IRQ 后，才应宣称可启动 QEMU。模板 `axplat-custom` 只演示接口形状，不参与 workspace 编译，也不代表能运行。
 
 ## 常见失败信号
 

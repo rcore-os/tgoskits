@@ -69,7 +69,6 @@ pub(super) fn is_known_axstd_feature(feature: &str) -> bool {
     matches!(
         feature,
         "smp"
-            | "axplat-custom"
             | "fp-simd"
             | "uspace"
             | "hv"

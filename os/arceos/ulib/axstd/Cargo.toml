@@ -21,10 +21,6 @@ crate-type = ["rlib", "staticlib"]
 [features]
 default = ["alloc", "tls", "fd"]
 
-# Example custom platform crate. Select it together with
-# `AX_PLATFORM_CRATE=axplat_custom`.
-axplat-custom = ["ax-feat/axplat-custom"]
-
 # libc compatibility surface used when ax-std is linked as fake libc for Rust std.
 std-compat = ["ax-alloc/global-allocator", "ax-runtime/std-compat"]
 

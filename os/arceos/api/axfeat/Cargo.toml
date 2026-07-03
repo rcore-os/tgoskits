@@ -10,10 +10,6 @@ license.workspace = true
 [features]
 default = ["alloc"]
 
-# Example custom platform crate. Select it together with
-# `AX_PLATFORM_CRATE=axplat_custom`.
-axplat-custom = ["ax-hal/axplat-custom"]
-
 # Multicore
 smp = ["ax-hal/smp", "ax-runtime/smp", "ax-task?/smp", "ax-kspin/smp"]
 

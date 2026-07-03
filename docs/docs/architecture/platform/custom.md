@@ -5,7 +5,9 @@ sidebar_label: "自定义平台"
 
 # 自定义平台 `axplat-custom`
 
-[platforms/axplat-custom](platforms/axplat-custom)（`publish = false`）是最小自定义平台模板，用来展示如何在不使用 `axplat-dyn` 的情况下实现 `ax-plat` 接口。它不是可直接启动 QEMU 或真实硬件的完整平台；其中的内存、console、timer、IRQ 和 power 实现都是占位逻辑。
+[platforms/axplat-custom](platforms/axplat-custom)（`publish = false`）是最小自定义平台模板，用来展示如何在不使用 `axplat-dyn` 的情况下实现 `ax-plat` 接口。它不是 workspace 成员，也不是可直接启动 QEMU 或真实硬件的完整平台；其中的内存、console、timer、IRQ 和 power 实现都是占位逻辑。
+
+这个目录只作为可复制模板保留，根 `Cargo.toml` 不把它列入 `members` 或 `[workspace.dependencies]`。这样可以避免模板包进入正常构建、clippy、发布打包和 crates.io 依赖解析路径。
 
 ## crate 元数据
 
@@ -27,7 +29,7 @@ crate    = "axplat_custom"
 dynamic  = false
 ```
 
-`dynamic = false` 让 `axbuild` 把它当作静态模板，依赖保持最小：只引入 `ax-plat` 和 `rdrive`。
+复制为真实平台并接入 workspace 后，`dynamic = false` 会让 `axbuild` 把它当作静态平台；依赖应保持最小，只引入 `ax-plat` 和实际需要的设备发现/驱动 glue。
 
 ## lib.rs 与文件结构
 
@@ -64,50 +66,72 @@ pub use time::{enable_timer_irq, try_init_epoch_offset};
 
 ## 使用示例模板
 
-使用示例平台时需要同时做两件事：
+使用自定义平台时需要同时做两件事：
 
-1. 让 Cargo 把 `axplat-custom` 编进依赖图。
+1. 让 Cargo 把你的平台 crate 编进 `ax-hal` 的依赖图。
 2. 让 `ax-hal` 的 build script 生成 `pub extern crate axplat_custom as selected;`。
 
-直接验证 `ax-hal`：
+`axplat-custom` 是 `publish = false` 的模板 crate，不能作为 `ax-hal` 的内置 optional dependency，也不能留在根 workspace dependency 表里。否则 `cargo package -p ax-hal` 会在 crates.io 上解析这个模板包并失败。真实项目应复制模板并在自己的私有 workspace / fork 中给 `ax-hal` 增加对应依赖，例如：
+
+```toml
+# os/arceos/modules/axhal/Cargo.toml
+[features]
+axplat-myplat = ["dep:axplat-myplat"]
+smp = [
+    "axplat-myplat?/smp",
+    "axplat-dyn/smp",
+    "ax-plat/smp",
+]
+irq = [
+    "axplat-myplat?/irq",
+    "ax-plat/irq",
+    "axplat-dyn/irq",
+    "dep:ax-kspin",
+]
+
+[dependencies]
+axplat-myplat = { path = "../../../platforms/axplat-myplat", default-features = false, optional = true }
+```
+
+直接验证本地自定义平台：
 
 ```bash
-AX_PLATFORM_CRATE=axplat_custom \
-cargo check -p ax-hal --features axplat-custom
+AX_PLATFORM_CRATE=axplat_myplat \
+cargo check -p ax-hal --features axplat-myplat
 ```
 
 通过 `ax-feat` 组织 feature 的配置：
 
 ```toml
 features = [
-  "ax-feat/axplat-custom",
+  "ax-feat/axplat-myplat",
 ]
 
 [env]
-AX_PLATFORM_CRATE = "axplat_custom"
+AX_PLATFORM_CRATE = "axplat_myplat"
 ```
 
-Rust std 应用使用 `ax-std/axplat-custom`：
+Rust std 应用可以在自己的 `ax-std`/`ax-feat` feature 转发中加入对应平台 feature 后使用：
 
 ```toml
 features = [
-  "ax-std/axplat-custom",
+  "ax-std/axplat-myplat",
 ]
 
 [env]
-AX_PLATFORM_CRATE = "axplat_custom"
+AX_PLATFORM_CRATE = "axplat_myplat"
 ```
 
-C app 或直接使用 `ax-libc` 的配置可使用 `ax-libc/axplat-custom`。底层 `ax-hal/axplat-custom` 也存在，但普通应用应优先通过自己的上层 feature 前缀转发。
+C app 或直接使用 `ax-libc` 的配置同理：在本地 `ax-libc` / `ax-feat` 中增加 feature 转发，再设置 `AX_PLATFORM_CRATE`。
 
 ## 改名使用
 
 `axplat-custom` 是模板名，不是固定 ABI。用户复制模板并改名为 `myplat` 时，需要同步修改：
 
-- workspace `members` 和 `[workspace.dependencies]` 中的包名与路径。
+- 根 workspace `members` 和 `[workspace.dependencies]` 中新增真实平台的包名与路径。
 - 新平台 `Cargo.toml` 的 `[package].name` 和 `[package.metadata.axplat].crate`。
-- `ax-hal` 中的可选依赖和 feature。
-- `ax-feat`、`ax-std`、`ax-libc` 中对应的 feature 转发。
+- 本地 `ax-hal` 中的可选依赖和 feature。
+- 本地 `ax-feat`、`ax-std`、`ax-libc` 中对应的 feature 转发（如果通过这些上层 crate 选择平台）。
 - Build Info 中的 feature 名，以及 `[env] AX_PLATFORM_CRATE`。
 
 例如包名为 `axplat-myplat` 时，Rust crate 标识符通常是 `axplat_myplat`：
