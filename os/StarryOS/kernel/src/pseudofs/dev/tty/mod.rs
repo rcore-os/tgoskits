@@ -209,10 +209,15 @@ impl<R: TtyRead, W: TtyWrite> DeviceOps for Tty<R, W> {
                     );
                 }
             }
-            TCSBRK | TCSBRKP => {
-                // tcdrain()/tcsendbreak() compatibility. Serial writes are
-                // submitted synchronously to the driver path today, so treat
-                // drain/break requests as completed instead of returning ENOTTY.
+            TCSBRK => {
+                self.writer.drain()?;
+                if arg == 0 {
+                    return Err(AxError::Unsupported);
+                }
+            }
+            TCSBRKP => {
+                self.writer.drain()?;
+                return Err(AxError::Unsupported);
             }
             TIOCSPTLCK => {}
             TIOCGPTN => {

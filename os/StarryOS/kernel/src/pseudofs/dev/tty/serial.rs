@@ -1,5 +1,8 @@
 use alloc::{format, string::String, sync::Arc, vec, vec::Vec};
-use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use core::{
+    sync::atomic::{AtomicBool, AtomicU32, Ordering},
+    time::Duration,
+};
 
 use ax_driver::serial::{
     self as ax_serial, Config, ConfigError, DataBits, OwnerId, Parity, RxFlag, RxItem, RxQueue,
@@ -471,6 +474,23 @@ impl SerialBackend {
         (submit.accepted, outcome)
     }
 
+    fn tx_idle(&self) -> bool {
+        ax_serial::run_on_owner(self.owner, |lease| self.port.tx_idle(lease)).unwrap_or(false)
+    }
+
+    fn drain_tx(&self) -> AxResult<()> {
+        self.ensure_started()?;
+        let _guard = self.output_lock.lock();
+        loop {
+            let outcome = self.service_on_owner(SerialSoftWork::TX_KICK);
+            publish_serial_outcome(self, outcome, false);
+            if self.tx_idle() {
+                return Ok(());
+            }
+            ax_task::sleep(Duration::from_millis(1));
+        }
+    }
+
     fn drain_rx(&self, out: &mut [RxItem]) -> usize {
         self.rx.lock().drain(out)
     }
@@ -645,6 +665,10 @@ impl TtyWrite for SerialWriter {
 
     fn max_sync_echo_bytes(&self) -> usize {
         SERIAL_SYNC_ECHO_LIMIT
+    }
+
+    fn drain(&self) -> AxResult<()> {
+        self.backend.drain_tx()
     }
 
     fn termios_changed(&self, old: &Termios2, new: &Termios2) {
