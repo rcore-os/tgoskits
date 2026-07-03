@@ -21,7 +21,6 @@
 //! the router before Ethernet sees the packet.
 
 use alloc::{boxed::Box, string::String, sync::Arc, vec, vec::Vec};
-use core::ptr::NonNull;
 
 use ax_sync::spin::SpinNoIrq;
 use axpoll::PollSet;
@@ -52,17 +51,10 @@ pub struct EthernetIrqAction {
 }
 
 impl EthernetIrqAction {
-    pub fn new(data: NonNull<()>, handler: unsafe fn(NonNull<()>) -> EthernetIrqOutcome) -> Self {
-        let data = data.as_ptr() as usize;
-        Self::new_boxed(Box::new(move || {
-            let data = NonNull::new(data as *mut ())
-                .expect("ethernet irq action data pointer must be non-null");
-            unsafe { handler(data) }
-        }))
-    }
-
-    pub fn new_boxed(handler: Box<dyn FnMut() -> EthernetIrqOutcome + Send>) -> Self {
-        Self { handler }
+    pub fn new(handler: impl FnMut() -> EthernetIrqOutcome + Send + 'static) -> Self {
+        Self {
+            handler: Box::new(handler),
+        }
     }
 
     /// Runs the IRQ action.
@@ -128,12 +120,6 @@ struct EthernetIrqState {
     poll_ready: Arc<PollSet>,
 }
 
-impl EthernetIrqState {
-    fn handle_irq(&self) -> NetIrqEvents {
-        self.driver.lock().handle_irq()
-    }
-}
-
 pub struct EthernetDevice {
     name: String,
     inner: Arc<EthernetIrqState>,
@@ -142,11 +128,6 @@ pub struct EthernetDevice {
     ip: Option<Ipv4Cidr>,
 
     pending_packets: PacketBuffer<'static, IpAddress>,
-}
-
-unsafe fn handle_ethernet_irq(data: NonNull<()>) -> EthernetIrqOutcome {
-    let state = unsafe { data.cast::<EthernetIrqState>().as_ref() };
-    ethernet_irq_outcome(state.handle_irq())
 }
 
 fn handle_owned_ethernet_irq(handler: &mut dyn EthernetIrqHandler) -> EthernetIrqOutcome {
@@ -193,7 +174,7 @@ impl EthernetDevice {
         let irq = inner.irq_id();
         let registrar = irq.and_then(|_| ETHERNET_IRQ_REGISTRAR.get().copied());
         let irq_handler = registrar.and_then(|_| inner.take_irq_handler());
-        let mut inner = Arc::new(EthernetIrqState {
+        let inner = Arc::new(EthernetIrqState {
             irq,
             irq_registration: spin::Once::new(),
             oob_rx,
@@ -210,26 +191,27 @@ impl EthernetDevice {
         );
         if let Some(irq) = inner.irq {
             if let Some(registrar) = registrar {
-                let action = if let Some(mut irq_handler) = irq_handler {
-                    EthernetIrqAction::new_boxed(Box::new(move || {
+                if let Some(mut irq_handler) = irq_handler {
+                    let action = EthernetIrqAction::new(move || {
                         handle_owned_ethernet_irq(&mut *irq_handler)
-                    }))
+                    });
+                    match registrar.register_shared(&name, irq, action) {
+                        Ok(registration) => {
+                            inner.irq_registration.call_once(|| registration);
+                            inner.driver.lock().enable_irq();
+                        }
+                        Err(err) => {
+                            warn!(
+                                "failed to register ethernet irq handler for {name} irq {irq:?}: \
+                                 {err:?}"
+                            );
+                        }
+                    }
                 } else {
-                    let data =
-                        NonNull::from(Arc::get_mut(&mut inner).expect("new Arc is unique")).cast();
-                    EthernetIrqAction::new(data, handle_ethernet_irq)
-                };
-                match registrar.register_shared(&name, irq, action) {
-                    Ok(registration) => {
-                        inner.irq_registration.call_once(|| registration);
-                        inner.driver.lock().enable_irq();
-                    }
-                    Err(err) => {
-                        warn!(
-                            "failed to register ethernet irq handler for {name} irq {irq:?}: \
-                             {err:?}"
-                        );
-                    }
+                    warn!(
+                        "skip ethernet irq registration for {name} irq {irq:?}: driver did not \
+                         provide an owned IRQ handler"
+                    );
                 }
             } else {
                 warn!(

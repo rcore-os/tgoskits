@@ -24,6 +24,17 @@ impl ArceosBuildConfig {
     }
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Deserialize, Serialize)]
+#[serde(default)]
+pub(crate) struct ArceosBuildFile {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) package: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) target: Option<String>,
+    #[serde(flatten)]
+    pub(crate) config: ArceosBuildConfig,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum ArceosBuildMode {
     RustStd,

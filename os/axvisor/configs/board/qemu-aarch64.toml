@@ -1,5 +1,4 @@
 features = [
-    "ept-level-4",
     "ax-driver/virtio-blk",
     "fs",
 ]

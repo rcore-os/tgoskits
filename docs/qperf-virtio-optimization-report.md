@@ -106,7 +106,7 @@ connect:          state → VSOCK_CONN_MANAGER → self.connection → per-conne
 ### 3.2 Net — TX/RX 共享锁
 
 ```rust
-// platform/axplat-dyn/src/drivers/net/mod.rs:51-61
+// platforms/axplat-dyn/src/drivers/net/mod.rs:51-61
 struct NetState {
     tx_queue: rd_net::TxQueue,
     rx_queue: rd_net::RxQueue,
@@ -122,7 +122,7 @@ pub struct Net {
 ### 3.3 Block — 同步阻塞持锁
 
 ```rust
-// platform/axplat-dyn/src/drivers/blk/mod.rs:16-19
+// platforms/axplat-dyn/src/drivers/blk/mod.rs:16-19
 pub struct Block {
     queue: Mutex<CmdQueue>,
 }

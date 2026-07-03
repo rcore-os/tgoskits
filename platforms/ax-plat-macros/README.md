@@ -18,7 +18,7 @@ English | [中文](README_CN.md)
 `ax-plat-macros` provides Procedural macros for the `axplat` crate. It is maintained as part of the TGOSKits component set and is intended for Rust projects that integrate with ArceOS, AxVisor, or related low-level systems software.
 
 
-> ax-plat-macros was derived from https://github.com/arceos-org/axplat_crates
+> ax-plat-macros was derived from the ArceOS platform crates project.
 
 ## Quick Start
 

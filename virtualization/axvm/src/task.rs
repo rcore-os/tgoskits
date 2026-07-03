@@ -5,9 +5,8 @@ extern crate alloc;
 use alloc::sync::{Arc, Weak};
 
 use crate::{
-    AxVCpuRef,
     host::task::{TaskExt, TaskInner},
-    vm::AxVMRef,
+    vm::{AxVCpuRef, AxVMRef},
 };
 
 /// Task extended data for a vCPU host task.

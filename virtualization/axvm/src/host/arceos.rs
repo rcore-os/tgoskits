@@ -15,7 +15,6 @@ use core::{
 
 use ax_errno::AxResult;
 use ax_memory_addr::PAGE_SIZE_4K;
-use ax_page_table_multiarch::PagingHandler;
 use ax_std::{
     os::arceos::{api, modules},
     thread,
@@ -24,7 +23,10 @@ use axvm_types::{HostPhysAddr, HostVirtAddr};
 
 #[cfg(target_arch = "x86_64")]
 use crate::host::HostConsole;
-use crate::host::{HostCpu, HostMemory, HostPlatform, HostTime};
+use crate::{
+    arch::{ArchOps, CurrentArch},
+    host::{HostCpu, HostMemory, HostPlatform, HostTime},
+};
 
 /// Private default host adapter used by [`crate::AxvmRuntime`].
 pub(crate) struct ArceOsHost;
@@ -39,11 +41,18 @@ pub(crate) fn arceos_host() -> &'static ArceOsHost {
 
 impl HostMemory for ArceOsHost {
     fn alloc_frame(&self) -> Option<HostPhysAddr> {
-        <modules::ax_hal::paging::PagingHandlerImpl as PagingHandler>::alloc_frame()
+        modules::ax_alloc::global_allocator()
+            .alloc_pages(1, PAGE_SIZE_4K, modules::ax_alloc::UsageKind::PageTable)
+            .map(|vaddr| self.virt_to_phys(vaddr.into()))
+            .ok()
     }
 
     fn dealloc_frame(&self, paddr: HostPhysAddr) {
-        <modules::ax_hal::paging::PagingHandlerImpl as PagingHandler>::dealloc_frame(paddr);
+        modules::ax_alloc::global_allocator().dealloc_pages(
+            self.phys_to_virt(paddr).as_usize(),
+            1,
+            modules::ax_alloc::UsageKind::PageTable,
+        );
     }
 
     fn alloc_contiguous_frames(
@@ -70,7 +79,7 @@ impl HostMemory for ArceOsHost {
     }
 
     fn phys_to_virt(&self, paddr: HostPhysAddr) -> HostVirtAddr {
-        <modules::ax_hal::paging::PagingHandlerImpl as PagingHandler>::phys_to_virt(paddr)
+        modules::ax_hal::mem::phys_to_virt(paddr)
     }
 
     fn virt_to_phys(&self, vaddr: HostVirtAddr) -> HostPhysAddr {
@@ -124,7 +133,6 @@ pub(crate) fn handle_host_irq(vector: usize) -> Option<usize> {
     modules::ax_hal::irq::handle_irq(vector).then_some(vector)
 }
 
-#[cfg(not(target_arch = "aarch64"))]
 pub(crate) fn dispatch_host_irq(vector: usize) {
     modules::ax_hal::irq::handle_irq(vector);
 }
@@ -237,15 +245,11 @@ pub(crate) type ArceOsIrqReturn = modules::ax_hal::irq::IrqReturn;
 #[cfg(target_arch = "x86_64")]
 pub(crate) type ArceOsIrqSource = modules::ax_hal::irq::IrqSource;
 #[cfg(target_arch = "x86_64")]
-pub(crate) type ArceOsRawIrqHandler = modules::ax_hal::irq::RawIrqHandler;
-
-#[cfg(target_arch = "x86_64")]
 pub(crate) fn request_shared_irq(
     irq: ArceOsIrqId,
-    handler: ArceOsRawIrqHandler,
-    data: core::ptr::NonNull<()>,
+    handler: impl FnMut(ArceOsIrqContext) -> ArceOsIrqReturn + Send + 'static,
 ) -> Result<ArceOsIrqHandle, ArceOsIrqError> {
-    modules::ax_hal::irq::request_shared_irq(irq, handler, data)
+    modules::ax_hal::irq::request_shared_irq(irq, handler)
 }
 
 #[cfg(target_arch = "x86_64")]
@@ -305,19 +309,7 @@ impl HostConsole for ArceOsHost {
 
 impl HostPlatform for ArceOsHost {
     fn has_hardware_support(&self) -> bool {
-        cfg_if::cfg_if! {
-            if #[cfg(target_arch = "x86_64")] {
-                x86_vcpu::has_hardware_support()
-            } else if #[cfg(target_arch = "riscv64")] {
-                riscv_vcpu::has_hardware_support()
-            } else if #[cfg(target_arch = "loongarch64")] {
-                loongarch_vcpu::has_hardware_support()
-            } else if #[cfg(target_arch = "aarch64")] {
-                arm_vcpu::has_hardware_support()
-            } else {
-                false
-            }
-        }
+        CurrentArch::has_hardware_support()
     }
 
     fn enable_virtualization_on_current_cpu(&self) -> AxResult {
@@ -356,7 +348,7 @@ impl HostPlatform for ArceOsHost {
                     let _ = CORES.fetch_add(1, Ordering::Release);
                 },
                 alloc::format!("axvm-hv-init-{cpu_id}"),
-                modules::ax_config::TASK_STACK_SIZE,
+                modules::ax_task::default_task_stack_size(),
             );
             task.set_cpumask(<Self as HostCpu>::CpuMask::one_shot(cpu_id));
             modules::ax_task::spawn_task(task);
@@ -378,7 +370,7 @@ impl HostPlatform for ArceOsHost {
                 break;
             }
         }
-        crate::arch::register_platform_irq_injector();
+        CurrentArch::register_platform_irq_injector();
         let enabled_count = CORES.load(Ordering::Acquire);
         if enabled_count == cpu_count {
             info!("All cores have enabled hardware virtualization support.");

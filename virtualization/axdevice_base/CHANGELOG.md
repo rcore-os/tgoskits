@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0](https://github.com/rcore-os/tgoskits/compare/axdevice_base-v0.5.1...axdevice_base-v0.6.0) - 2026-07-02
+
+### Other
+
+- *(axvm)* decouple vcpu backends ([#1467](https://github.com/rcore-os/tgoskits/pull/1467))
+
 ## [0.5.1](https://github.com/rcore-os/tgoskits/compare/axdevice_base-v0.5.0...axdevice_base-v0.5.1) - 2026-06-27
 
 ### Fixed

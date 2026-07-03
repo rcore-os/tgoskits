@@ -140,7 +140,8 @@ pub trait EthernetDriver: Send + Sync {
     /// Handles a device interrupt and reports wake-relevant events.
     fn handle_irq(&mut self) -> NetIrqEvents;
     /// Detaches an owned IRQ endpoint for registration into the platform IRQ
-    /// callback. Drivers that return `None` stay on the compatibility path.
+    /// callback. Drivers with a registered IRQ should return `Some`; `None` is
+    /// only for devices that do not use the shared Ethernet IRQ path.
     fn take_irq_handler(&mut self) -> Option<Box<dyn EthernetIrqHandler>> {
         None
     }
@@ -206,7 +207,7 @@ impl RdNetDriver {
         let mac = net.mac_address();
         let tx_queue = net.create_tx_queue().map_err(map_net_error)?;
         let rx_queue = net.create_rx_queue().map_err(map_net_error)?;
-        let irq_handler = irq.as_ref().map(|_| net.irq_handler());
+        let irq_handler = irq.as_ref().and_then(|_| net.take_irq_handler());
 
         Ok(Self {
             name: name.into(),

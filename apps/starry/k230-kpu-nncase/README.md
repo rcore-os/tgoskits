@@ -24,7 +24,7 @@ prebuilt guest binaries. Prepare the official SDK assets under:
 target/official-k230/k230-sdk-src/
 ```
 
-See `docs/k230-kpu-nncase-runtime.md` for the full SDK preparation flow.
+See `docs/docs/architecture/driver/k230-kpu-nncase-runtime.md` for the full SDK preparation flow.
 
 Build the ignored StarryOS guest binaries with:
 

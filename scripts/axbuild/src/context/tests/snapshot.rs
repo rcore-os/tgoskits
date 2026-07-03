@@ -39,8 +39,8 @@ fn snapshot_store_round_trips() {
         package: Some("arceos-helloworld".into()),
         arch: Some("aarch64".into()),
         target: Some("target".into()),
-        plat_dyn: Some(true),
         smp: None,
+        config: Some(PathBuf::from("configs/build.toml")),
         qemu: ArceosQemuSnapshot {
             qemu_config: Some(PathBuf::from("configs/qemu.toml")),
         },
@@ -62,7 +62,6 @@ fn axvisor_snapshot_store_round_trips() {
     let snapshot = AxvisorCommandSnapshot {
         arch: Some("aarch64".into()),
         target: Some(DEFAULT_AXVISOR_TARGET.into()),
-        plat_dyn: Some(false),
         smp: None,
         config: Some(PathBuf::from(
             "tmp/axbuild/config/axvisor/build-aarch64-unknown-none-softfloat.toml",

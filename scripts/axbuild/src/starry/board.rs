@@ -158,7 +158,6 @@ mod tests {
 target = "aarch64-unknown-none-softfloat"
 features = ["qemu"]
 log = "Warn"
-plat_dyn = false
 "#,
         );
         write_board(
@@ -168,7 +167,6 @@ plat_dyn = false
 target = "x86_64-unknown-none"
 features = ["qemu"]
 log = "Warn"
-plat_dyn = false
 "#,
         );
         write_board(
@@ -206,7 +204,6 @@ log = "Info"
 target = "aarch64-unknown-none-softfloat"
 features = ["qemu"]
 log = "Warn"
-plat_dyn = false
 "#,
         );
         write_board(

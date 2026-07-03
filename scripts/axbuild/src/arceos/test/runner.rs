@@ -3,8 +3,9 @@ use std::time::Instant;
 use anyhow::{Context, bail};
 
 use super::{
-    ARCEOS_TEST_SUITE_OS,
+    ARCEOS_AXTEST_GROUP, ARCEOS_TEST_SUITE_OS,
     args::{ArgsTestQemu, reject_removed_rust_package_filter},
+    axtest_qemu::test_axtest_qemu,
     c_qemu::test_c_qemu,
     discovery::selected_qemu_test_groups,
     generic_qemu::test_generic_qemu,
@@ -53,6 +54,12 @@ pub(super) async fn test_qemu(arceos: &mut ArceOS, args: ArgsTestQemu) -> anyhow
                 QemuTestFlow::C => {
                     trees.extend(list_c_qemu_cases(arceos, None, args.test_case.as_deref())?)
                 }
+                QemuTestFlow::Axtest => trees.extend(list_generic_qemu_cases(
+                    arceos,
+                    None,
+                    ARCEOS_AXTEST_GROUP,
+                    args.test_case.as_deref(),
+                )?),
                 QemuTestFlow::Generic(ref group) => trees.extend(list_generic_qemu_cases(
                     arceos,
                     None,
@@ -94,6 +101,12 @@ pub(super) async fn test_qemu(arceos: &mut ArceOS, args: ArgsTestQemu) -> anyhow
                     Some((&arch, &target)),
                     args.test_case.as_deref(),
                 )?),
+                QemuTestFlow::Axtest => trees.extend(list_generic_qemu_cases(
+                    arceos,
+                    Some((&arch, &target)),
+                    ARCEOS_AXTEST_GROUP,
+                    selected_case,
+                )?),
                 QemuTestFlow::Generic(ref group) => trees.extend(list_generic_qemu_cases(
                     arceos,
                     Some((&arch, &target)),
@@ -126,6 +139,20 @@ pub(super) async fn test_qemu(arceos: &mut ArceOS, args: ArgsTestQemu) -> anyhow
                 .await?
             }
             QemuTestFlow::C => test_c_qemu(arceos, &target, args.test_case.as_deref()).await?,
+            QemuTestFlow::Axtest => {
+                test_axtest_qemu(
+                    arceos,
+                    &arch,
+                    &target,
+                    GenericQemuRunOptions {
+                        selected_case,
+                        symbolize_after,
+                        keep_qemu_log,
+                        allow_empty: args.test_group.is_none(),
+                    },
+                )
+                .await?
+            }
             QemuTestFlow::Generic(ref group) => {
                 test_generic_qemu(
                     arceos,
@@ -345,7 +372,6 @@ mod tests {
                 package: ARCEOS_RUST_TEST_PACKAGE.to_string(),
                 arch: "x86_64".to_string(),
                 target: "x86_64-unknown-none".to_string(),
-                plat_dyn: None,
                 smp: None,
                 debug: false,
                 build_info_path: build_config_path.to_path_buf(),
@@ -366,6 +392,7 @@ mod tests {
                 post_build_cmds: Vec::new(),
                 to_bin: false,
                 bin: None,
+                test: None,
             },
             qemu: QemuConfig::default(),
             host_symbolize_success_regex: Vec::new(),

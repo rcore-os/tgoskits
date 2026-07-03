@@ -6,8 +6,8 @@ use ax_kernel_guard::BaseGuard;
 pub use irq_framework::{
     AcpiGsiController, AcpiGsiRoute, AcpiIrqPolarity, AcpiIrqTrigger, AutoEnable, BoxedIrqHandler,
     CpuId, CpuMask, HwIrq, IrqAffinity, IrqContext, IrqDomainId, IrqError, IrqExecution, IrqHandle,
-    IrqId, IrqOps, IrqOutcome, IrqRequest, IrqReturn, IrqScope, IrqSource, IrqStatus,
-    RawIrqHandler, Registry, ShareMode, TrapVector,
+    IrqId, IrqOps, IrqOutcome, IrqRequest, IrqReturn, IrqScope, IrqSource, IrqStatus, Registry,
+    ShareMode, TrapVector,
 };
 use spin::Once;
 
@@ -174,6 +174,11 @@ fn registry() -> &'static Registry<PlatIrqOps> {
     IRQ_REGISTRY.call_once(|| Registry::new(PlatIrqOps))
 }
 
+/// Returns whether the current CPU is dispatching an IRQ action.
+pub fn in_irq_context() -> bool {
+    IN_IRQ_CONTEXT.with_current(|in_irq| *in_irq)
+}
+
 /// Requests an IRQ action through the dynamic IRQ framework.
 pub fn request_irq(irq: IrqId, request: IrqRequest) -> Result<IrqHandle, IrqError> {
     let auto_enable = request.auto_enable_mode();
@@ -190,41 +195,20 @@ pub fn request_irq(irq: IrqId, request: IrqRequest) -> Result<IrqHandle, IrqErro
 /// Requests a shared IRQ action.
 pub fn request_shared_irq(
     irq: IrqId,
-    handler: RawIrqHandler,
-    data: core::ptr::NonNull<()>,
+    handler: impl FnMut(IrqContext) -> IrqReturn + Send + 'static,
 ) -> Result<IrqHandle, IrqError> {
-    request_irq(
-        irq,
-        IrqRequest::new(handler, data).share_mode(ShareMode::Shared),
-    )
-}
-
-/// Requests a boxed IRQ action.
-pub fn request_boxed_irq(irq: IrqId, request: IrqRequest) -> Result<IrqHandle, IrqError> {
-    request_irq(irq, request)
-}
-
-/// Requests a boxed shared IRQ action.
-pub fn request_boxed_shared_irq(
-    irq: IrqId,
-    handler: BoxedIrqHandler,
-) -> Result<IrqHandle, IrqError> {
-    request_irq(
-        irq,
-        IrqRequest::new_boxed(handler).share_mode(ShareMode::Shared),
-    )
+    request_irq(irq, IrqRequest::new(handler).share_mode(ShareMode::Shared))
 }
 
 /// Requests a per-CPU IRQ action.
 pub fn request_percpu_irq(
     irq: IrqId,
     cpus: CpuMask,
-    handler: RawIrqHandler,
-    data: core::ptr::NonNull<()>,
+    handler: impl Fn(IrqContext) -> IrqReturn + Send + Sync + 'static,
 ) -> Result<IrqHandle, IrqError> {
     request_irq(
         irq,
-        IrqRequest::new(handler, data).scope(IrqScope::PerCpu { cpus }),
+        IrqRequest::new_concurrent(handler).scope(IrqScope::PerCpu { cpus }),
     )
 }
 
@@ -342,10 +326,7 @@ pub trait IrqIf {
 
 #[cfg(test)]
 mod tests {
-    use core::{
-        ptr::NonNull,
-        sync::atomic::{AtomicUsize, Ordering},
-    };
+    use core::sync::atomic::{AtomicUsize, Ordering};
 
     use super::*;
     use crate::impl_plat_interface;
@@ -388,15 +369,10 @@ mod tests {
         }
     }
 
-    unsafe fn test_irq_handler(_ctx: IrqContext, _data: NonNull<()>) -> IrqReturn {
-        IrqReturn::Handled
-    }
-
     #[test]
     fn request_irq_auto_enable_no_does_not_enable_line() {
         let irq = IrqId::new(IrqDomainId(0xff), HwIrq(1));
-        let request =
-            IrqRequest::new(test_irq_handler, NonNull::dangling()).auto_enable(AutoEnable::No);
+        let request = IrqRequest::new(|_| IrqReturn::Handled).auto_enable(AutoEnable::No);
 
         ENABLE_CALLS.store(0, Ordering::Relaxed);
         let handle = request_irq(irq, request).unwrap();
@@ -410,7 +386,7 @@ mod tests {
     #[test]
     fn request_irq_rolls_back_action_when_auto_enable_fails() {
         let irq = IrqId::new(IrqDomainId(0xff), HwIrq(2));
-        let request = || IrqRequest::new(test_irq_handler, NonNull::dangling());
+        let request = || IrqRequest::new(|_| IrqReturn::Handled);
 
         ENABLE_CALLS.store(0, Ordering::Relaxed);
         FAIL_ENABLE.store(1, Ordering::Relaxed);

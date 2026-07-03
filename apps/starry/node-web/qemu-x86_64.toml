@@ -1,0 +1,17 @@
+# node-web x86_64 — pug / express / Kotlin-JS web-framework carpet on Node.js 22.
+# x86_64 boots the ELF kernel via the dynamic platform + OVMF (xtask prepares firmware
+# automatically). The rootfs is the per-app rootfs-x86_64-alpine.img. Node runs full V8 JIT
+# (no kernel change).
+args = [
+    "-nographic", "-m", "2048M", "-smp", "1",
+    "-device", "virtio-blk-pci,drive=disk0",
+    "-drive", "id=disk0,if=none,format=raw,file=${workspace}/tmp/axbuild/rootfs/rootfs-x86_64-alpine.img",
+    "-device", "virtio-net-pci,netdev=net0", "-netdev", "user,id=net0",
+]
+uefi = false
+to_bin = false
+shell_prefix = "root@starry:/root #"
+shell_init_cmd = "sh /usr/bin/run-nweb.sh"
+success_regex = ['(?m)^TEST PASSED\s*$']
+fail_regex = ['(?i)\bpanic(?:ked)?\b', '(?m)^TEST FAILED\s*$']
+timeout = 7200

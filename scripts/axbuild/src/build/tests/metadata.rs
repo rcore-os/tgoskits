@@ -82,66 +82,24 @@ fn makefile_features_use_ax_std_dependency_for_std_build() {
 }
 
 #[test]
-fn retired_static_platform_features_are_not_ax_hal_platforms() {
+fn unknown_ax_hal_features_are_not_platforms() {
     let metadata = repo_metadata();
 
-    for feature in [
-        "ax-hal/aarch64-qemu-virt",
-        "ax-hal/aarch64-raspi",
-        "ax-hal/aarch64-bsta1000b",
-        "ax-hal/aarch64-phytium-pi",
-        "ax-hal/riscv64-visionfive2",
-    ] {
+    for feature in ["ax-hal/not-a-platform", "ax-hal/qemu-board"] {
         assert_eq!(ax_hal_platform_feature_name(feature, Some(&metadata)), None);
     }
 }
 
 #[test]
-fn default_aarch64_platform_feature_falls_back_to_defplat() {
-    let mut info = BuildInfo::default();
-
-    info.resolve_features_with_prefix_family(
-        "arceos-helloworld",
-        "aarch64-unknown-none-softfloat",
-        false,
-        Ok(AxFeaturePrefixFamily::AxStd),
-        None,
-    );
-
-    assert!(info.features.contains(&"ax-hal/defplat".to_string()));
-    assert!(
-        !info
-            .features
-            .contains(&"ax-hal/aarch64-qemu-virt".to_string())
-    );
-}
-
-#[test]
-fn default_loongarch64_dynamic_platform_uses_plat_dyn() {
+fn default_platform_feature_uses_dynamic_platform() {
     let mut info = BuildInfo::default();
 
     info.resolve_features_with_prefix_family(
         "arceos-helloworld",
         "loongarch64-unknown-none-softfloat",
-        true,
         Ok(AxFeaturePrefixFamily::AxStd),
         None,
     );
 
-    assert!(info.features.contains(&"ax-std/plat-dyn".to_string()));
-}
-
-#[test]
-fn default_loongarch64_platform_feature_falls_back_to_defplat() {
-    let mut info = BuildInfo::default();
-
-    info.resolve_features_with_prefix_family(
-        "arceos-helloworld",
-        "loongarch64-unknown-none-softfloat",
-        false,
-        Ok(AxFeaturePrefixFamily::AxStd),
-        None,
-    );
-
-    assert!(info.features.contains(&"ax-hal/defplat".to_string()));
+    assert!(!info.features.contains(&"ax-std/plat-dyn".to_string()));
 }

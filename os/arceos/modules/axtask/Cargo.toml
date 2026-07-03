@@ -5,7 +5,7 @@ edition.workspace = true
 license.workspace = true
 name = "ax-task"
 repository = "https://github.com/rcore-os/tgoskits"
-version = "0.5.23"
+version = "0.5.24"
 
 [features]
 default = []
@@ -89,4 +89,3 @@ ax-hal = { workspace = true, features = ["fp-simd"] }
 
 [build-dependencies]
 quote = "1.0"
-toml.workspace = true

@@ -1,7 +1,7 @@
 [package]
 name = "axvm"
 authors = ["aarkegz <aarkegz@gmail.com>"]
-version = "0.5.17"
+version = "0.5.18"
 edition.workspace = true
 categories = ["virtualization", "no-std"]
 description = "Virtual Machine resource management crate for ArceOS's hypervisor variant."
@@ -13,17 +13,18 @@ license = "Apache-2.0"
 default = ["vmx"]
 fs = ["vmx", "ax-std/fs"]
 host-fs = ["ax-std/fs"]
-vmx = ["axaddrspace/vmx", "x86_vcpu/vmx"]
-svm = ["axaddrspace/svm", "x86_vcpu/svm"]
+vmx = ["x86_vcpu/vmx"]
+svm = ["x86_vcpu/svm"]
 sstc = ["riscv_vcpu/sstc"]
-4-level-ept = []
-plat-dyn = ["ax-std/plat-dyn", "dep:axplat-dyn"]
 
 [dependencies]
 log = "0.4"
 cfg-if = "1.0"
 extern-trait = "0.4"
+bit_field = "0.10"
+bitflags = "2.9"
 byte-unit = { version = "5", default-features = false, features = ["byte"] }
+numeric-enum-macro = "0.2"
 spin = { workspace = true }
 
 # System independent crates provided by ArceOS.
@@ -34,9 +35,9 @@ ax-kernel-guard = { workspace = true }
 ax-kspin.workspace = true
 ax-lazyinit = { workspace = true }
 ax-memory-addr = { workspace = true }
-ax-page-table-entry = { workspace = true, features = ["arm-el2"] }
-ax-page-table-multiarch = { workspace = true }
+ax-memory-set = { workspace = true }
 ax-percpu = { workspace = true, features = ["arm-el2"] }
+page-table-generic = { workspace = true }
 ax-std = { workspace = true, features = [
     "paging",
     "irq",
@@ -50,20 +51,24 @@ ax-hal = { workspace = true, features = ["ipi"] }
 ax-timer-list = { workspace = true }
 irq-framework = { workspace = true }
 # System dependent modules provided by ArceOS-Hypervisor.
-axvcpu = { workspace = true }
 axaddrspace = { workspace = true }
 axvm-types = { workspace = true }
 axhvc = { workspace = true }
 axdevice = { workspace = true }
 axdevice_base = { workspace = true }
+axvmconfig = { workspace = true, default-features = false }
+fdt-edit = { workspace = true }
+fdt-raw = { workspace = true }
+hashbrown = "0.14"
 [target.'cfg(target_arch = "x86_64")'.dependencies]
+x86 = "0.52"
 x86_vcpu = { workspace = true }
 x86_vlapic = { workspace = true }
 [target.'cfg(target_arch = "riscv64")'.dependencies]
-axplat-dyn = { workspace = true, optional = true, default-features = false }
 riscv_vcpu = { workspace = true }
 riscv_vplic = { workspace = true }
 [target.'cfg(target_arch = "loongarch64")'.dependencies]
+ax-driver = { workspace = true }
 ax-plat = { workspace = true }
 loongarch_vcpu = { workspace = true }
 [target.'cfg(target_arch = "aarch64")'.dependencies]

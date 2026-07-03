@@ -1,5 +1,4 @@
 features = [
-  "ax-hal/riscv64-qemu-virt",
   "qemu",
   "ax-driver/virtio-blk",
   "ax-driver/virtio-net",
@@ -8,5 +7,4 @@ features = [
   "ax-driver/virtio-socket",
 ]
 log = "Warn"
-plat_dyn = false
 target = "riscv64gc-unknown-none-elf"

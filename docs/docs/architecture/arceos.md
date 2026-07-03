@@ -29,7 +29,7 @@ ArceOS 的 crate 按职责组织成一条从底层平台到上层应用的能力
 flowchart LR
     reusableCrates["ReusableCrates: components/*"]
     platformLayer["PlatformLayer: axplat-* + platforms/*"]
-    requiredModules["RequiredModules: ax-runtime ax-hal axconfig ax-log"]
+    requiredModules["RequiredModules: ax-runtime ax-hal ax-log"]
     optionalModules["OptionalModules: ax-alloc ax-mm ax-task ax-sync ax-driver ax-fs ax-net ..."]
     publicApi["PublicApi: ax-feat ax-api ax-posix-api"]
     userLib["UserLib: ax-std ax-libc"]
@@ -73,11 +73,10 @@ ArceOS 的 17 个模块按重要性分为两类：四个必选模块构成最小
 
 ### 必选模块
 
-无论应用选择哪些 feature，以下四个模块始终参与编译。它们构成了 ArceOS 的最小可运行骨架：能启动、能输出日志、能读取平台配置。
+无论应用选择哪些 feature，以下三个模块始终参与编译。它们构成了 ArceOS 的最小可运行骨架：能启动、能访问平台抽象、能输出日志。
 
 - `ax-runtime`：启动与初始化总控。
 - `ax-hal`：统一硬件抽象层。
-- `axconfig`：平台常量、栈大小、物理内存等构建时参数。
 - `ax-log`：日志输出与格式化。
 
 ### 可选模块
@@ -114,7 +113,6 @@ ArceOS 的 17 个模块按重要性分为两类：四个必选模块构成最小
 | `ax-driver` | `modules/axdriver` | 设备探测与驱动初始化 | `ax-fs`、`ax-net`、`ax-display` |
 | `ax-fs` | `modules/axfs` | 文件系统挂载、文件/目录 API | `ax-driver` |
 | `ax-net` | `net/ax-net` | 统一网络栈、socket 抽象 | `rd-net`、`rdif-vsock`、`smoltcp` |
-| `axconfig` | `modules/axconfig` | 构建期常量与目标参数 | 所有模块 |
 | `ax-log` | `modules/axlog` | 多级日志与格式化输出 | 所有模块 |
 | `ax-fs-ng` | `modules/axfs-ng` | 下一代文件系统 | `ax-driver` |
 | `ax-dma` | `modules/axdma` | DMA 内存分配与管理 | `ax-runtime`、`ax-mm` |

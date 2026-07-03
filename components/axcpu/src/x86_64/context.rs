@@ -188,7 +188,7 @@ const _: () = assert!(core::mem::size_of::<FxsaveArea>() == 512);
 /// XSAVE header, and the 256-byte AVX (`YMM_Hi128`) component. 1024 bytes covers
 /// that with headroom and is a multiple of the required 64-byte alignment.
 ///
-/// [`enable_xsave_features`]: ../../../someboot/src/arch/x86_64/trap.rs
+/// [`enable_xsave_features`]: ../../../../platforms/someboot/src/arch/x86_64/trap.rs
 const XSAVE_AREA_SIZE: usize = 1024;
 
 /// A 64-byte-aligned memory region for the XSAVE/XRSTOR instructions, which save

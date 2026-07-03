@@ -8,11 +8,10 @@ use core::{
 use ax_errno::{AxResult, ax_err, ax_err_type};
 use ax_memory_addr::AddrRange;
 use axdevice_base::{BaseDeviceOps, SysRegAddrRange};
-use axvcpu::{
-    AccessWidth, AxArchVCpu, AxVCpuExitReason, GuestPhysAddr, HostPhysAddr, MappingFlags,
-    NestedPageFaultInfo, Port, SysRegAddr, VCpuId, VMId,
+use axvm_types::{
+    AccessWidth, GuestPhysAddr, GuestVirtAddr, HostPhysAddr, MappingFlags, NestedPageFaultInfo,
+    NestedPagingConfig, Port, SysRegAddr, VCpuId, VMId, VmArchVcpuOps, VmExit,
 };
-use axvm_types::GuestVirtAddr;
 use bit_field::BitField;
 use tock_registers::interfaces::{ReadWriteable, Readable, Writeable};
 use x86::controlregs::Xcr0;
@@ -29,8 +28,8 @@ use super::{
     vmcb::{InterceptCrRw, InterceptExceptions, NestedCtl, VmcbTlbControl, set_vmcb_segment},
 };
 use crate::{
-    X86VCpuSetupConfig, msr::Msr, regs::GeneralRegisters, restore_host_interrupt_flag,
-    x86_real_mode_entry_state, xstate::XState,
+    X86VCpuCreateConfig, X86VCpuSetupConfig, msr::Msr, regs::GeneralRegisters,
+    restore_host_interrupt_flag, x86_real_mode_entry_state, xstate::XState,
 };
 
 const QEMU_EXIT_PORT: u16 = 0x604;
@@ -649,14 +648,14 @@ impl SvmVcpu {
         &mut self,
         exit_info: &super::vmcb::SvmExitInfo,
         msr: u32,
-    ) -> AxResult<AxVCpuExitReason> {
+    ) -> AxResult<VmExit> {
         const VM_EXIT_INSTR_LEN_MSR: u8 = 2;
         let write = exit_info.exit_info_1 != 0;
 
         if write {
             if msr == X2APIC_EOI_MSR {
                 self.advance_rip(VM_EXIT_INSTR_LEN_MSR)?;
-                return Ok(AxVCpuExitReason::InterruptEnd {
+                return Ok(VmExit::InterruptEnd {
                     vector: self.handle_local_apic_eoi(),
                 });
             } else {
@@ -678,7 +677,7 @@ impl SvmVcpu {
         }
 
         self.advance_rip(VM_EXIT_INSTR_LEN_MSR)?;
-        Ok(AxVCpuExitReason::Nothing)
+        Ok(VmExit::Nothing)
     }
 
     fn handle_ignored_msr_access(&mut self, exit_info: &super::vmcb::SvmExitInfo) -> AxResult {
@@ -1042,7 +1041,7 @@ impl SvmVcpu {
         exit_info: &super::vmcb::SvmExitInfo,
         addr: GuestPhysAddr,
         write: bool,
-    ) -> AxResult<Option<(AxVCpuExitReason, u8)>> {
+    ) -> AxResult<Option<(VmExit, u8)>> {
         let addr_usize = addr.as_usize();
         let local_apic =
             (X86_LOCAL_APIC_BASE..X86_LOCAL_APIC_BASE + X86_LOCAL_APIC_SIZE).contains(&addr_usize);
@@ -1100,9 +1099,9 @@ impl SvmVcpu {
                         )?;
                     self.regs_mut()
                         .set_reg_of_index(reg as u8, val as u32 as u64);
-                    AxVCpuExitReason::Nothing
+                    VmExit::Nothing
                 } else {
-                    AxVCpuExitReason::MmioRead {
+                    VmExit::MmioRead {
                         addr,
                         width: AccessWidth::Dword,
                         reg,
@@ -1124,9 +1123,9 @@ impl SvmVcpu {
         addr: GuestPhysAddr,
         data: u64,
         local_apic: bool,
-    ) -> AxResult<AxVCpuExitReason> {
+    ) -> AxResult<VmExit> {
         if !local_apic {
-            return Ok(AxVCpuExitReason::MmioWrite {
+            return Ok(VmExit::MmioWrite {
                 addr,
                 width: AccessWidth::Dword,
                 data,
@@ -1135,7 +1134,7 @@ impl SvmVcpu {
 
         let offset = addr.as_usize() - X86_LOCAL_APIC_BASE;
         if offset == X86_LOCAL_APIC_EOI_OFFSET {
-            return Ok(AxVCpuExitReason::InterruptEnd {
+            return Ok(VmExit::InterruptEnd {
                 vector: self.handle_local_apic_eoi(),
             });
         }
@@ -1146,7 +1145,7 @@ impl SvmVcpu {
             AccessWidth::Dword,
             data as usize,
         )?;
-        Ok(AxVCpuExitReason::Nothing)
+        Ok(VmExit::Nothing)
     }
 
     fn skip_simple_prefixes(&self, rip: &mut GuestVirtAddr, rex: &mut u8) -> AxResult {
@@ -1401,11 +1400,11 @@ fn pending_event_interrupt_type(event: PendingEvent) -> u32 {
     }
 }
 
-fn svm_intr_exit_reason(_vector: Option<u8>) -> AxVCpuExitReason {
+fn svm_intr_exit_reason(_vector: Option<u8>) -> VmExit {
     // SVM_EXIT_INTR is a host IRQ exit point. Unlike VMX external-interrupt
     // exits, VMCB exit_int_info is not a reliable dispatch key for the host
     // IRQ framework, so the caller must let the host consume the pending IRQ.
-    AxVCpuExitReason::PreemptionTimer
+    VmExit::PreemptionTimer
 }
 
 fn service_pending_host_interrupt() {
@@ -1478,8 +1477,8 @@ impl Debug for SvmVcpu {
     }
 }
 
-impl AxArchVCpu for SvmVcpu {
-    type CreateConfig = ();
+impl VmArchVcpuOps for SvmVcpu {
+    type CreateConfig = X86VCpuCreateConfig;
     type SetupConfig = X86VCpuSetupConfig;
 
     fn new(vm_id: VMId, vcpu_id: VCpuId, _config: Self::CreateConfig) -> AxResult<Self> {
@@ -1491,8 +1490,8 @@ impl AxArchVCpu for SvmVcpu {
         Ok(())
     }
 
-    fn set_ept_root(&mut self, ept_root: HostPhysAddr) -> AxResult {
-        self.npt_root = Some(ept_root);
+    fn set_nested_page_table(&mut self, config: NestedPagingConfig) -> AxResult {
+        self.npt_root = Some(config.root_paddr);
         Ok(())
     }
 
@@ -1506,19 +1505,19 @@ impl AxArchVCpu for SvmVcpu {
         self.setup_vmcb(entry, npt_root, config)
     }
 
-    fn run(&mut self) -> AxResult<AxVCpuExitReason> {
+    fn run(&mut self) -> AxResult<VmExit> {
         {
             let exit_info = self.inner_run()?;
             let exit_code = match exit_info.exit_code {
                 Ok(code) => code,
                 Err(code) => {
                     warn!("SVM unknown VM-exit code: {code:#x}, exit_info: {exit_info:#x?}");
-                    return Ok(AxVCpuExitReason::Halt);
+                    return Ok(VmExit::Halt);
                 }
             };
 
             Ok(match exit_code {
-                SvmExitCode::INVALID | SvmExitCode::BUSY => AxVCpuExitReason::FailEntry {
+                SvmExitCode::INVALID | SvmExitCode::BUSY => VmExit::FailEntry {
                     hardware_entry_failure_reason: match exit_code {
                         SvmExitCode::INVALID => u64::MAX,
                         SvmExitCode::BUSY => u64::MAX - 1,
@@ -1527,7 +1526,7 @@ impl AxArchVCpu for SvmVcpu {
                 },
                 SvmExitCode::VMMCALL => {
                     self.advance_rip(3)?;
-                    AxVCpuExitReason::Hypercall {
+                    VmExit::Hypercall {
                         nr: self.regs().rax,
                         args: [
                             self.regs().rdi,
@@ -1541,7 +1540,7 @@ impl AxArchVCpu for SvmVcpu {
                 }
                 SvmExitCode::RDTSC => {
                     self.handle_rdtsc()?;
-                    AxVCpuExitReason::PreemptionTimer
+                    VmExit::PreemptionTimer
                 }
                 SvmExitCode::IOIO => {
                     let (is_in, is_string, is_repeat, width, port) =
@@ -1552,16 +1551,16 @@ impl AxArchVCpu for SvmVcpu {
                     if is_string || is_repeat {
                         warn!("SVM unsupported IOIO exit: {exit_info:#x?}");
                         warn!("VCpu {self:#x?}");
-                        AxVCpuExitReason::Halt
+                        VmExit::Halt
                     } else if is_in {
-                        AxVCpuExitReason::IoRead { port, width }
+                        VmExit::IoRead { port, width }
                     } else if port == Port(QEMU_EXIT_PORT)
                         && width == AccessWidth::Word
                         && self.regs().rax == QEMU_EXIT_MAGIC
                     {
-                        AxVCpuExitReason::SystemDown
+                        VmExit::SystemDown
                     } else {
-                        AxVCpuExitReason::IoWrite {
+                        VmExit::IoWrite {
                             port,
                             width,
                             data: self.regs().rax.get_bits(width.bits_range()),
@@ -1575,12 +1574,12 @@ impl AxArchVCpu for SvmVcpu {
                     } else {
                         self.advance_rip(2)?;
                         if exit_info.exit_info_1 == 0 {
-                            AxVCpuExitReason::SysRegRead {
+                            VmExit::SysRegRead {
                                 addr: SysRegAddr::new(self.regs().rcx as _),
                                 reg: 0,
                             }
                         } else {
-                            AxVCpuExitReason::SysRegWrite {
+                            VmExit::SysRegWrite {
                                 addr: SysRegAddr::new(self.regs().rcx as _),
                                 value: self.read_edx_eax(),
                             }
@@ -1598,7 +1597,7 @@ impl AxArchVCpu for SvmVcpu {
                         self.advance_rip(instr_len)?;
                         mmio_exit
                     } else {
-                        AxVCpuExitReason::NestedPageFault {
+                        VmExit::NestedPageFault {
                             addr: info.fault_guest_paddr,
                             access_flags: info.access_flags,
                         }
@@ -1614,17 +1613,17 @@ impl AxArchVCpu for SvmVcpu {
                 }
                 SvmExitCode::HLT => {
                     self.advance_rip(1)?;
-                    AxVCpuExitReason::PreemptionTimer
+                    VmExit::PreemptionTimer
                 }
                 SvmExitCode::PAUSE => {
                     self.advance_rip(2)?;
-                    AxVCpuExitReason::PreemptionTimer
+                    VmExit::PreemptionTimer
                 }
-                SvmExitCode::SHUTDOWN => AxVCpuExitReason::SystemDown,
+                SvmExitCode::SHUTDOWN => VmExit::SystemDown,
                 _ => {
                     warn!("SVM unsupported VM-exit: {exit_info:#x?}");
                     warn!("VCpu {self:#x?}");
-                    AxVCpuExitReason::Halt
+                    VmExit::Halt
                 }
             })
         }
@@ -1654,7 +1653,7 @@ impl AxArchVCpu for SvmVcpu {
     fn inject_interrupt_with_trigger(
         &mut self,
         vector: usize,
-        trigger: axvcpu::InterruptTriggerMode,
+        trigger: axvm_types::InterruptTriggerMode,
     ) -> AxResult {
         if vector == 0 {
             warn!("interrupt queued in inject_interrupt_with_trigger: vector 0");
@@ -1663,7 +1662,7 @@ impl AxArchVCpu for SvmVcpu {
         self.queue_event_with_trigger(
             vector as u8,
             None,
-            trigger == axvcpu::InterruptTriggerMode::LevelTriggered,
+            trigger == axvm_types::InterruptTriggerMode::LevelTriggered,
         );
         Ok(())
     }
@@ -1681,7 +1680,7 @@ impl AxArchVCpu for SvmVcpu {
 mod tests {
     use core::mem::MaybeUninit;
 
-    use axvcpu::AxVCpuExitReason;
+    use axvm_types::VmExit;
     use tock_registers::interfaces::{Readable, Writeable};
     use x86_64::registers::rflags::RFlags;
 
@@ -1793,7 +1792,7 @@ mod tests {
         let vector = 0x51;
         let exit = svm_intr_exit_reason(Some(vector));
 
-        assert!(matches!(exit, AxVCpuExitReason::PreemptionTimer));
+        assert!(matches!(exit, VmExit::PreemptionTimer));
     }
 
     #[test]

@@ -11,20 +11,26 @@ sidebar_label: "控制面"
 
 | 源码 | 职责 |
 | --- | --- |
-| [config.rs](net/ax-net/src/config.rs) | 控制面公开数据模型：`InterfaceId`、`InterfaceInfo`、`NetworkConfig`、`RouteInfo`、`DeviceBinding` |
-| [service.rs](net/ax-net/src/service.rs) | `NetControl`、接口 registry、DNS registry、DHCP commit、route 查询入口 |
-| [router.rs](net/ax-net/src/router.rs) | `RouteTable`、`Rule`、`RouteDecision`、TX dispatch route lookup |
-| [general.rs](net/ax-net/src/general.rs) | socket 通用选项中的 `SO_BINDTODEVICE` / `DeviceBinding` 存取 |
-| [tcp.rs](net/ax-net/src/tcp.rs)、[udp.rs](net/ax-net/src/udp.rs)、[raw.rs](net/ax-net/src/raw.rs) | connect/send/bind 时使用控制面做地址、路由和设备绑定决策 |
+| `config.rs` | 控制面公开数据模型：`InterfaceId`、`InterfaceInfo`、`NetworkConfig`、`RouteInfo`、`DeviceBinding` |
+| `service.rs` | `NetControl`、接口 registry、DNS registry、DHCP commit、route 查询入口 |
+| `router.rs` | `RouteTable`、`Rule`、`RouteDecision`、TX dispatch route lookup |
+| `general.rs` | socket 通用选项中的 `SO_BINDTODEVICE` / `DeviceBinding` 存取 |
+| `tcp.rs`、`udp.rs`、`raw.rs` | connect/send/bind 时使用控制面做地址、路由和设备绑定决策 |
 
 ## 设计边界
 
 控制面是 `NetControl` 持有的只读状态层，通过 `spin::RwLock` 保护接口 registry、DNS registry 和共享路由表。它的查询接口（`interfaces()`、`select_route()`、`dns_servers()` 等）只持读锁、返回快照，不进入 `Service` 或 `SocketSet` 锁，也不接触设备收发队列。协议状态机推进、包收发和 socket payload 读写全部由数据面的 `Service::poll()` 和设备 worker 在独立的锁层级中完成。
 
+### 无线控制面句柄
+
+`WIFI_CONTROLS` 是一个全局 `Mutex<Vec<(String, rd_net::WifiControlHandle)>>`，存储无线设备的控制面句柄。当无线设备注册时，runtime 在 driver 的 `WifiControlHandle` 被消费进数据面 `EthernetDriver` 之前捕获一份，按接口名索引。这允许 StarryOS wireless-extensions ioctl 或类似的运行时管理接口通过名称找到对应设备的 `WifiControl`，在不需要持有 `Service` 或 `SocketSet` 锁的情况下完成模式切换。
+
 ```mermaid
 flowchart TB
     Config["NetworkConfig / InterfaceConfig"] --> Init["init_network()"]
     Dhcp["DHCP ACK / NAK"] --> Commit["commit_network_state()"]
+    DynDev["register_device_with_config()"] --> Commit
+    Wifi["reconfigure_wifi() STA/AP"] --> Commit
     Bind["bind(addr) / SO_BINDTODEVICE"] --> Binding["DeviceBinding"]
 
     Init --> Control["NetControl"]
@@ -48,13 +54,13 @@ flowchart TB
     Routes --> Dispatch["Router::dispatch()"]
 ```
 
-控制面状态的写入路径只有两个：`init_network()` 构造初始状态，`commit_interface_update()` 在 DHCP ACK/NAK 后原子替换某接口的地址、DNS 和路由规则。两条路径都在 `Service` 锁内执行，确保 smoltcp IP address list 与控制面状态一致更新。
+控制面状态有四类写入路径：`init_network()` 构造初始状态；DHCP ACK/NAK 通过 `commit_interface_update()` 原子替换某接口的地址、DNS 和路由规则；`register_device_with_config()` 运行期新增静态 IPv4 设备；`reconfigure_wifi()` 在 STA/AP 模式切换时更新对应接口 IPv4/DHCP 角色。除初始构造外，这些路径都在 `Service` 锁内同步更新 smoltcp IP address list、`NetControl` 快照和 `RouteTable`，避免数据面与查询面看到不一致状态。
 
 `SharedRouteTable`（`Arc<RwLock<RouteTable>>`）同时被 `NetControl`（查询侧）和 `Router`（TX dispatch 侧）持有，两者指向同一实例。控制面通过 `select_route_with_binding()` 提供 socket 级别的路由查询；`Router::dispatch()` 通过 `select_route_for_source()` 做实际发包时的出接口选择。两者共享同一套路由规则，但查询时机和过滤条件不同。
 
 ## 初始化流程
 
-`init_network()` 是控制面状态的唯一构造入口。它按固定顺序构建 loopback、Ethernet 接口、静态地址、DNS registry 和共享路由表，然后把所有状态提交给 `NetControl` 和 `Service`。
+`init_network()` 是启动阶段控制面状态的构造入口。它按固定顺序构建 loopback、Ethernet 接口、静态地址、DNS registry 和共享路由表，然后把所有状态提交给 `NetControl` 和 `Service`。运行期新增设备和 Wi-Fi 模式切换会在同一套 `NetControl`/`RouteTable` 上追加或替换状态。
 
 ```mermaid
 sequenceDiagram
@@ -357,7 +363,7 @@ pub fn ipv4_config(name: &str) -> Option<Ipv4InterfaceConfig> {
 
 ### RouteTable
 
-`RouteTable` 存在于 [router.rs](net/ax-net/src/router.rs)，被 `Arc<RwLock<_>>` 包装为 `SharedRouteTable`。
+`RouteTable` 存在于 `router.rs`，被 `Arc<RwLock<_>>` 包装为 `SharedRouteTable`。
 
 ```rust
 pub type SharedRouteTable = Arc<RwLock<RouteTable>>;
@@ -810,6 +816,47 @@ pub fn register_static_device(
 ```
 
 这条路径说明控制面不是仅启动时静态表；它也能接收运行期新增接口，并把新接口加入 registry、route table 和 smoltcp address list。
+
+### Wi-Fi 模式切换
+
+`Service` 提供运行时 Wi-Fi 模式切换方法。`reconfigure_as_ap()` 将设备转为 SoftAP 模式并可选启用 DHCP 服务器：
+
+```rust
+pub fn reconfigure_as_ap(
+    &mut self,
+    dev: usize,
+    server_ip: Ipv4Address,
+    prefix_len: u8,
+    client_ip: Option<Ipv4Address>,
+) {
+    let cidr = Ipv4Cidr::new(server_ip, prefix_len);
+    // stop DHCP client if running
+    self.dhcp.retain(|state| state.dev != dev);
+    // atomically update smoltcp IP list, control plane, route table
+    self.commit_network_state(NetworkStateUpdate { /* ... */ });
+    // optionally enable minimal DHCP server
+    if let Some(client_ip) = client_ip {
+        self.dhcp_server = Some(DhcpServer::new(dev, interface.id, server_ip, client_ip, mask));
+    }
+}
+```
+
+`reconfigure_as_sta()` 反过来将设备转为 STA 模式并重启 DHCP client：
+
+```rust
+pub fn reconfigure_as_sta(&mut self, dev: usize, mac: EthernetAddress) {
+    // disable DHCP server if running
+    if self.dhcp_server.as_ref().is_some_and(|s| s.dev == dev) {
+        self.dhcp_server = None;
+    }
+    // clear old address
+    self.commit_network_state(NetworkStateUpdate { ipv4: None, ... });
+    // restart DHCP client
+    self.enable_dhcp(interface_id, dev, name, mac, metric);
+}
+```
+
+这两个方法都是 `Service` 持有锁时调用的，保证 smoltcp IP address list、`NetControl` 状态和 `RouteTable` 原子更新。
 
 ## 并发与锁
 

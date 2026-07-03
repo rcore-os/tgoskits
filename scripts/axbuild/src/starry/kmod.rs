@@ -1,8 +1,8 @@
 //! `cargo xtask starry kmod build` — build StarryOS loadable kernel modules.
 //!
 //! The important part of the upstream Makefile flow is not Make itself. It is
-//! that modules are compiled with the same target, features, generated
-//! axconfig, and Cargo target directory as the kernel. This implementation
+//! that modules are compiled with the same target, features, environment,
+//! and Cargo target directory as the kernel. This implementation
 //! derives a normal Starry Cargo config first, then switches only the package
 //! and output handling for each module crate before partial-linking the module
 //! rlib into an ET_REL `.ko`.

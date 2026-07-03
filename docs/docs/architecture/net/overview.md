@@ -7,27 +7,30 @@ sidebar_label: "概览"
 TGOSKits 的网络能力收敛在 `net/ax-net`。它是 ArceOS、StarryOS 和 Axvisor 共享的统一网络栈，向上提供 TCP、UDP、raw socket、Unix domain socket、可选 vsock、DNS、DHCP、ARP、接口查询和 readiness/poll 能力，向下通过 `EthernetDriver` 能力边界适配真实网卡；当前标准实现是基于 `rd-net` 的 `RdNetDriver`。
 
 ## 源码
-源码位于 [net/ax-net/src/](net/ax-net/src/)，入口 [lib.rs](net/ax-net/src/lib.rs)。Socket backend 包括 IP 类（[tcp.rs](net/ax-net/src/tcp.rs)、[udp.rs](net/ax-net/src/udp.rs)、[raw.rs](net/ax-net/src/raw.rs)，基于 smoltcp）、[unix/](net/ax-net/src/unix/)（自包含 stream/dgram，不经 smoltcp）和可选的 [vsock/](net/ax-net/src/vsock/)（基于 `rdif-vsock` 驱动，含 connection manager 与 ring buffer）。
+源码位于 `net/ax-net/src/`，入口 `lib.rs`。Socket backend 包括 IP 类（`tcp.rs`、`udp.rs`、`raw.rs`，基于 smoltcp）、`unix/`（自包含 stream/dgram，不经 smoltcp）和可选的 `vsock/`（基于 `rdif-vsock` 驱动，含 connection manager 与 ring buffer）。
 
 | 模块 | 角色 | 关键类型 |
 | --- | --- | --- |
-| [lib.rs](net/ax-net/src/lib.rs) | public facade，初始化网络、启动 poll worker、导出 API | `init_network`, `request_poll`, `net_poll_worker` |
-| [config.rs](net/ax-net/src/config.rs) | 配置与接口信息类型 | `InterfaceId`, `NetworkConfig`, `InterfaceInfo`, `DeviceBinding` |
-| [service.rs](net/ax-net/src/service.rs) | 控制面 + 协议核心调度 | `Service`, `NetControl`, `DhcpState` |
-| [router.rs](net/ax-net/src/router.rs) | 路由表、有界队列、smoltcp `Device` 适配 | `Router`, `RouteTable`, `RouteDecision` |
-| [wrapper.rs](net/ax-net/src/wrapper.rs) | 全局 `SocketSet` 包装与端口冲突仲裁 | `SocketSetWrapper` |
-| [socket.rs](net/ax-net/src/socket.rs) | 统一 socket 抽象 | `SocketOps`, `Socket`, `SocketAddrEx` |
-| [options.rs](net/ax-net/src/options.rs) | socket 选项与 `Configurable` trait | `GetSocketOption`, `SetSocketOption`, `TcpInfo` |
-| [general.rs](net/ax-net/src/general.rs) | 通用 socket 选项、非阻塞/超时/poll helper | `GeneralOptions` |
-| [state.rs](net/ax-net/src/state.rs) | socket 状态机锁 | `StateLock`, `StateGuard` |
-| [listen_table.rs](net/ax-net/src/listen_table.rs) | TCP listen/accept 表与 SYN 预创建 | `ListenTable` |
-| [tcp.rs](net/ax-net/src/tcp.rs) / [udp.rs](net/ax-net/src/udp.rs) / [raw.rs](net/ax-net/src/raw.rs) | IP socket 实现 | `TcpSocket`, `UdpSocket`, `RawSocket` |
-| [orphan.rs](net/ax-net/src/orphan.rs) | TCP orphan socket 回收（RFC 793 TIME_WAIT） | `add_orphan`, `reap_orphans` |
-| [dhcp_server.rs](net/ax-net/src/dhcp_server.rs) | 最简 DHCP 服务器（SoftAP 模式） | `DhcpServer` |
-| [unix/](net/ax-net/src/unix/) | Unix domain socket | `UnixSocket`, `Transport` |
-| [vsock/](net/ax-net/src/vsock/) | 可选 vsock 支持（`vsock` feature） | `VsockSocket`, `VsockStreamTransport` |
-| [device/](net/ax-net/src/device/) | loopback、Ethernet、rd-net、vsock 设备适配 | `Device`, `EthernetDevice`, `RdNetDriver` |
-| [consts.rs](net/ax-net/src/consts.rs) | 缓冲区大小等常量 | `STANDARD_MTU`, `SOCKET_BUFFER_SIZE` |
+| `lib.rs` | public facade，初始化网络、启动 poll worker、导出 API | `init_network`, `request_poll`, `net_poll_worker` |
+| `config.rs` | 配置与接口信息类型 | `InterfaceId`, `NetworkConfig`, `InterfaceInfo`, `DeviceBinding` |
+| `service.rs` | 控制面 + 协议核心调度 | `Service`, `NetControl`, `DhcpState` |
+| `router.rs` | 路由表、有界队列、smoltcp `Device` 适配 | `Router`, `RouteTable`, `RouteDecision` |
+| `wrapper.rs` | 全局 `SocketSet` 包装与端口冲突仲裁 | `SocketSetWrapper` |
+| `socket.rs` | 统一 socket 抽象 | `SocketOps`, `Socket`, `SocketAddrEx` |
+| `addr.rs` | 共享地址 helper：临时端口分配（0xc000–0xffff）、listen 地址冲突判定 | `allocate_ephemeral_port`, `listen_addrs_conflict` |
+| `ip_tos.rs` | per-socket egress IP_TOS/traffic-class：smoltcp 不暴露 TOS 设置，在 Router 边界改写发出的 IP 包头 | `EgressIpTosKey` |
+| `rx_meta.rs` | 利用 smoltcp `PacketMeta` id 携带接收侧 QoS 元数据，供 recvmsg cmsg 上报 | `ReceivedTrafficClass` |
+| `options.rs` | socket 选项与 `Configurable` trait | `GetSocketOption`, `SetSocketOption`, `TcpInfo` |
+| `general.rs` | 通用 socket 选项、非阻塞/超时/poll helper | `GeneralOptions` |
+| `state.rs` | socket 状态机锁 | `StateLock`, `StateGuard` |
+| `listen_table.rs` | TCP listen/accept 表与 SYN 预创建 | `ListenTable` |
+| `tcp.rs` / `udp.rs` / `raw.rs` | IP socket 实现 | `TcpSocket`, `UdpSocket`, `RawSocket` |
+| `orphan.rs` | TCP orphan socket 回收（RFC 793 TIME_WAIT） | `add_orphan`, `reap_orphans` |
+| `dhcp_server.rs` | 最简 DHCP 服务器（SoftAP 模式） | `DhcpServer` |
+| `unix/` | Unix domain socket | `UnixSocket`, `Transport` |
+| `vsock/` | 可选 vsock 支持（`vsock` feature） | `VsockSocket`, `VsockStreamTransport` |
+| `device/` | loopback、Ethernet、rd-net、vsock 设备适配 | `Device`, `EthernetDevice`, `RdNetDriver` |
+| `consts.rs` | 缓冲区大小等常量 | `STANDARD_MTU`, `SOCKET_BUFFER_SIZE` |
 
 ## 能力矩阵
 
@@ -46,9 +49,11 @@ TGOSKits 的网络能力收敛在 `net/ax-net`。它是 ArceOS、StarryOS 和 Ax
 | IRQ 感知 | `EthernetIrqRegistrar` + `EthernetIrqAction` + IRQ→wake 转换 | 完整 |
 | Loopback | 零状态 `LoopbackDevice` + `Router::dispatch()` 快速路径 inline 注入 `rx_buffer`，不经设备 worker 和队列分配 | 完整 |
 | TCP orphan 回收 | `orphan.rs`：Drop 后保留 smoltcp socket 直到 FIN/TIME_WAIT 完成，RFC 793 合规 | 完整 |
-| DHCP 服务器（SoftAP） | `dhcp_server.rs`：最简单客户端 DHCP 服务器，Discover→Offer、Request→Ack | 完整 |
-| OOB RX（SDIO Wi-Fi） | `EthernetDevice::new_oob_rx()` + `wake_net_task_irq()` + 独立 poll task | 完整 |
+| DHCP 服务器（SoftAP） | `dhcp_server.rs`：最简单的单客户端 DHCP 服务器，仅支持 Discover→Offer、Request→Ack 交换，不维护租约数据库、不做冲突检测，仅回复配置接口收到的 DHCP 包 | 基础完成 |
+| OOB RX（SDIO Wi-Fi） | `EthernetDevice::new_oob_rx()` + `wake_net_task_irq()` + 现有 `net-poll`/设备 RX worker 唤醒链路 | 完整 |
 | 动态设备注册 | `register_device_with_config()` 运行时添加静态 IP 设备（Wi-Fi AP） | 完整 |
+| Wi-Fi STA/AP 重配 | `register_wifi_control()` 保存无线控制面句柄，`reconfigure_wifi()` 原子切换 STA DHCP 或 SoftAP 静态地址/DHCP server | 基础完成 |
+| QoS/TOS 兼容 | `IP_TOS` 发包时在 Router 边界改写 IP header；`IP_RECVTOS`/`IPV6_RECVTCLASS` 通过 smoltcp `PacketMeta` 返回 cmsg；`SO_PRIORITY` 仅保存兼容值 | 基础完成 |
 
 ## 设计原则
 
@@ -69,9 +74,8 @@ TGOSKits 的网络能力收敛在 `net/ax-net`。它是 ArceOS、StarryOS 和 Ax
 | `{ifname}-tx` worker | 每网卡一个，从 `DeviceHandle::tx_queue` 取包调用 driver send | `device.tx_wake.wait_until()` |
 | 调用者线程 | 应用/内核线程调用 socket API | `StateLock::lock()`、`block_on(poll_io())` |
 | `vsock-poll` worker | vsock 设备轮询，事件分发到 `VSOCK_CONN_MANAGER` | 自适应频率 sleep（100μs→10ms） |
-| `{ifname}-oob-poll` | OOB RX 设备（如 SDIO Wi-Fi）的专用 poll task | `OOB_RX_SIGNAL.wait()` |
 
-`NET_POLL_DEVICE_WAKER` 是全局设备 readiness waker。Router 会把它注册给所有允许触发全局协议栈推进的设备；设备 RX/IRQ/OOB 路径只唤醒 worker 和设置 poll 请求，不直接进入 smoltcp `Interface::poll()`。
+`NET_POLL_DEVICE_WAKER` 是全局设备 readiness waker。Router 会把它注册给所有有 wake source 的设备：IRQ 设备通过平台 IRQ action 唤醒，OOB RX 设备通过外部驱动调用 `wake_net_task_irq()` 唤醒。源码里没有单独的 `{ifname}-oob-poll` 线程；OOB RX 仍复用 `{ifname}-rx` worker 和 `net-poll` worker，不直接进入 smoltcp `Interface::poll()`。
 完整锁类型、锁顺序和禁止模式见[锁与并发](locks.md)。
 
 ### 全局锁顺序
@@ -95,7 +99,7 @@ SERVICE (Mutex<Service>)
 
 ## 核心方案
 
-`ax-net` 采用 **单 smoltcp `Interface` + 多设备 `Router`** 架构。详细设计论证见[架构设计 — Single Interface + Multi-Device Router](architecture.md#single-interface--multi-device-router)。
+`ax-net` 采用 **单 smoltcp `Interface` + 多设备 `Router`** 架构。详细设计论证见`架构设计 — Single Interface + Multi-Device Router`。
 
 ### 与 Linux 实现对比
 

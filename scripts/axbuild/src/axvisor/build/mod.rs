@@ -22,8 +22,8 @@ use ostool::build::config::Cargo;
 use self::{
     config::LoadedAxvisorBuildConfig,
     features::{
-        is_axvisor_plat_dyn_feature, normalize_axvisor_feature_surface,
-        normalize_axvisor_plat_dyn_features, reject_unsupported_nested_platform_features,
+        normalize_axvisor_feature_surface, reject_unsupported_nested_platform_features,
+        remove_dynamic_platform_features,
     },
     load::load_build_config,
     metadata::platform_feature_names,
@@ -60,26 +60,15 @@ fn to_cargo_config(
     );
     let known_platforms = platform_feature_names(metadata);
     reject_unsupported_nested_platform_features(&config.build_info.features, &known_platforms)?;
-    let plat_dyn = config
-        .build_info
-        .effective_plat_dyn(&config.target, request.plat_dyn);
-    normalize_axvisor_feature_surface(
-        &mut config.build_info.features,
-        &config.target,
-        plat_dyn,
-        metadata,
-    )?;
+    normalize_axvisor_feature_surface(&mut config.build_info.features, &config.target, metadata)?;
     let mut cargo = config
         .build_info
         .into_prepared_base_cargo_config_with_metadata(
             &request.package,
             &config.target,
-            request.plat_dyn,
             metadata,
         )?;
-    if plat_dyn {
-        normalize_axvisor_plat_dyn_features(&mut cargo.features);
-    }
+    remove_dynamic_platform_features(&mut cargo.features);
     patch_axvisor_cargo_config(&mut cargo, request, metadata, &config.vm_configs)?;
     Ok(cargo)
 }
@@ -99,14 +88,8 @@ fn patch_axvisor_cargo_config(
     cargo
         .env
         .insert("AX_TARGET".to_string(), request.target.clone());
-    let plat_dyn = cargo
-        .features
-        .iter()
-        .any(|feature| is_axvisor_plat_dyn_feature(feature));
-    normalize_axvisor_feature_surface(&mut cargo.features, &request.target, plat_dyn, metadata)?;
-    if plat_dyn {
-        normalize_axvisor_plat_dyn_features(&mut cargo.features);
-    }
+    normalize_axvisor_feature_surface(&mut cargo.features, &request.target, metadata)?;
+    remove_dynamic_platform_features(&mut cargo.features);
 
     let vmconfigs = if request.vmconfigs.is_empty() {
         config_vmconfigs

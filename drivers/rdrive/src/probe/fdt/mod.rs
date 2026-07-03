@@ -7,6 +7,7 @@ use core::ptr::NonNull;
 
 use ax_kspin::SpinRaw as Mutex;
 pub use fdt_edit::{ClockRef, Fdt, InterruptRef, NodeId, NodeType, Phandle, RegInfo, Status};
+use rdif_pinctrl::PinctrlDevice;
 use spin::Once;
 
 use super::ProbeError;
@@ -80,6 +81,23 @@ impl<'a> FdtInfo<'a> {
     pub fn interrupts(&self) -> Vec<InterruptRef> {
         self.node.interrupts()
     }
+}
+
+fn apply_default_pinctrl(node: NodeType<'_>) -> Result<(), OnProbeError> {
+    let Some(pinctrl) = crate::get_one::<PinctrlDevice>() else {
+        return Ok(());
+    };
+    let mut pinctrl = pinctrl
+        .lock()
+        .map_err(|err| OnProbeError::other(format!("failed to lock PinctrlDevice: {err}")))?;
+    pinctrl
+        .apply_fdt_default_state(system().fdt(), node.as_node())
+        .map_err(|err| {
+            OnProbeError::other(format!(
+                "failed to apply default pinctrl for [{}]: {err}",
+                node.name()
+            ))
+        })
 }
 
 pub struct ProbeFdt<'a> {
@@ -231,20 +249,21 @@ impl System {
             let phandle_map = self.phandle_2_device_id.clone();
 
             debug!("Probe [{}]->[{}]", node.name(), node_info.name);
+            let res = apply_default_pinctrl(node).and_then(|()| {
+                let descriptor = Descriptor {
+                    name: node_info.name,
+                    device_id: id,
+                    irq_parent,
+                };
 
-            let descriptor = Descriptor {
-                name: node_info.name,
-                device_id: id,
-                irq_parent,
-            };
-
-            let res = (node_info.on_probe)(ProbeFdt::new(
-                FdtInfo {
-                    node,
-                    phandle_2_device_id: phandle_map,
-                },
-                PlatformDevice::new(descriptor),
-            ));
+                (node_info.on_probe)(ProbeFdt::new(
+                    FdtInfo {
+                        node,
+                        phandle_2_device_id: phandle_map,
+                    },
+                    PlatformDevice::new(descriptor),
+                ))
+            });
 
             if res.is_ok() {
                 self.populated_paths.lock().insert(node.path(), id);

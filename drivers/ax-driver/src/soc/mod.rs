@@ -12,12 +12,12 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#[cfg(feature = "pinctrl")]
+mod fixed_regulator;
 #[cfg(feature = "rockchip-soc")]
 mod rockchip;
 #[cfg(feature = "rockchip-dwmmc")]
 pub mod scmi;
-#[cfg(feature = "sg2002-placeholder")]
-mod sg2002;
 
 #[cfg(feature = "rockchip-soc")]
 pub use rockchip::{
@@ -61,16 +61,6 @@ impl rdrive::DriverGeneric for RockchipPinCtrl {
 
 #[cfg(not(feature = "rockchip-soc"))]
 impl RockchipPinCtrl {
-    pub fn apply_default_pinctrl(
-        &mut self,
-        node: fdt_edit::NodeType<'_>,
-    ) -> Result<alloc::vec::Vec<()>, rdrive::probe::OnProbeError> {
-        Err(rdrive::probe::OnProbeError::other(alloc::format!(
-            "RK3588 pinctrl support is not enabled for node {}",
-            node.name()
-        )))
-    }
-
     pub fn enable_fixed_regulator(
         &mut self,
         phandle: fdt_edit::Phandle,
