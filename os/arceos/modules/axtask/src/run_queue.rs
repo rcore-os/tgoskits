@@ -780,15 +780,6 @@ impl<G: BaseGuard> CurrentRunQueueRef<'_, G> {
         // while holding the lock of the wait queue.
         curr.set_state(TaskState::Blocked);
 
-        // `in_wait_queue` is only a fast flag. If it goes stale while the
-        // actual queue entry has already been consumed, skipping the enqueue
-        // here would leave the blocked task without the wait-queue-owned
-        // strong reference and it would switch out with only the current-task
-        // slot holding it.
-        if curr.in_wait_queue() && !wq_guard.iter().any(|task| curr.ptr_eq(task)) {
-            curr.set_in_wait_queue(false);
-        }
-
         // A preemptive future wake can re-enter a wait path before a previous
         // wait-queue entry has been consumed. Avoid leaving a stale duplicate
         // waiter that may receive mutex ownership after the task is running.
@@ -804,13 +795,7 @@ impl<G: BaseGuard> CurrentRunQueueRef<'_, G> {
         // see `unblock_task()` for details.
 
         debug!("task block: {}", curr.id_name());
-        // Keep a stack-owned strong reference across the scheduling handoff.
-        // The wait queue normally owns another reference, but a wakeup may
-        // consume that ownership before `switch_to()` finishes committing the
-        // context switch.
-        let task_guard = curr.clone();
         self.inner.resched();
-        drop(task_guard);
     }
 
     /// Block the current task, put current task into the wait queue and reschedule.
@@ -848,11 +833,7 @@ impl<G: BaseGuard> CurrentRunQueueRef<'_, G> {
         while ax_hal::time::monotonic_time() < deadline {
             crate::timers::set_alarm_wakeup(deadline, curr.clone());
             curr.set_state(TaskState::Blocked);
-            // The timer callback owns a clone as well, but an already-expired
-            // deadline can consume that reference before the switch completes.
-            let task_guard = curr.clone();
             self.inner.resched();
-            drop(task_guard);
         }
     }
 

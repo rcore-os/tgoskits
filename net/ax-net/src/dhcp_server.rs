@@ -17,7 +17,7 @@
 use alloc::{vec, vec::Vec};
 
 use smoltcp::{
-    phy::{Checksum, ChecksumCapabilities},
+    phy::ChecksumCapabilities,
     wire::{
         DHCP_CLIENT_PORT, DHCP_SERVER_PORT, DhcpMessageType, DhcpPacket, DhcpRepr, EthernetAddress,
         IpAddress, IpProtocol, Ipv4Address, Ipv4Packet, Ipv4Repr, UdpPacket, UdpRepr,
@@ -28,15 +28,6 @@ use crate::config::InterfaceId;
 
 /// Lease duration advertised in Offer/Ack replies, in seconds.
 const LEASE_SECS: u32 = 86400;
-
-fn dhcp_checksum_caps() -> ChecksumCapabilities {
-    let mut caps = ChecksumCapabilities::default();
-    // DHCP runs over IPv4, where a zero UDP checksum is explicitly allowed.
-    // Keep the IPv4 header checksum but avoid depending on UDP checksum handling
-    // in this hand-built control-plane packet path.
-    caps.udp = Checksum::None;
-    caps
-}
 
 /// Parsed DHCP-over-IPv4/UDP packet.
 pub(crate) struct ParsedDhcp {
@@ -205,7 +196,7 @@ impl DhcpServer {
         };
 
         let mut buffer = vec![0; ipv4_repr.buffer_len() + ipv4_repr.payload_len];
-        let checksum_caps = dhcp_checksum_caps();
+        let checksum_caps = ChecksumCapabilities::default();
         let mut ipv4_packet = Ipv4Packet::new_unchecked(&mut buffer);
         ipv4_repr.emit(&mut ipv4_packet, &checksum_caps);
         let mut udp_packet = UdpPacket::new_unchecked(ipv4_packet.payload_mut());

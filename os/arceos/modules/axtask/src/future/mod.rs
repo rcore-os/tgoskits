@@ -85,12 +85,7 @@ pub fn block_on<F: IntoFuture>(f: F) -> F::Output {
                 let mut rq = current_run_queue::<NoPreemptIrqSave>();
                 let mut woke = axwaker.woke.lock();
                 if !*woke {
-                    // A future-blocked task is not inserted into a wait queue;
-                    // its suspended stack must keep one strong task reference
-                    // alive until the waker upgrades its Weak reference.
-                    let task_guard = task.clone();
                     rq.future_blocked_resched(woke);
-                    drop(task_guard);
                 } else {
                     *woke = false;
                     drop(woke);
