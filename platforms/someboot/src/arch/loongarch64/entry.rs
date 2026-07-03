@@ -13,7 +13,6 @@ const MAX_SECONDARY_BOOT_ARGS: usize = 256;
 const MAX_UBOOT_GO_ARGS: usize = 16;
 const MAX_UBOOT_GO_ARG_LEN: usize = 32;
 const UHI_FDT_ARG0: usize = usize::MAX - 1;
-const LS2K1000_DEFAULT_FDT_PADDR: usize = 0x0a00_0000;
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -180,26 +179,17 @@ fn is_boot_from_uefi() -> bool {
 }
 
 fn setup_non_efi_fdt() {
-    let fw_args = unsafe { [FW_ARG1, FW_ARG2, FW_ARG3] };
+    let (arg0, arg1) = unsafe { (FW_ARG0, FW_ARG1) };
 
-    if unsafe { FW_ARG0 } == UHI_FDT_ARG0 && try_set_fdt_from_addr(fw_args[0]) {
-        return;
-    }
-
-    for addr in fw_args {
-        if try_set_fdt_from_addr(addr) {
-            return;
+    if arg0 == UHI_FDT_ARG0 {
+        try_set_fdt_from_addr(arg1);
+    } else if is_uboot_go_call(arg0, arg1) {
+        if !uboot_go_fdt_arg(arg0, arg1).is_some_and(try_set_fdt_from_addr) {
+            println!("No FDT argument found in U-Boot go argv.");
         }
+    } else {
+        println!("No FDT setup from recognized non-UEFI boot ABI.");
     }
-
-    if is_uboot_go_call(unsafe { FW_ARG0 }, unsafe { FW_ARG1 })
-        && uboot_go_fdt_arg(unsafe { FW_ARG0 }, unsafe { FW_ARG1 })
-            .is_some_and(try_set_fdt_from_addr)
-    {
-        return;
-    }
-
-    try_set_fdt_from_addr(LS2K1000_DEFAULT_FDT_PADDR);
 }
 
 fn looks_like_uboot_go_argc(arg0: usize) -> bool {
