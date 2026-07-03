@@ -1,3 +1,4 @@
+use kernutil::StaticCell;
 use rdif_intc::{AcpiGsiController, AcpiIrqPolarity, AcpiIrqTrigger, Interface};
 use rdrive::{
     DriverGeneric, PlatformDevice, module_driver,
@@ -6,7 +7,11 @@ use rdrive::{
 };
 
 use super::irq_common::{PCH_PIC_VECTOR_COUNT, fdt_first_cell_vector, pch_pic_reg_bit};
-use crate::{common::ioremap, irq_routing::AcpiControllerRoutes, setup::MmioRaw};
+use crate::{
+    common::ioremap,
+    irq_routing::{AcpiControllerRoutes, PchPicCpuInterface},
+    setup::MmioRaw,
+};
 
 const DEFAULT_PCH_PIC_SIZE: usize = 0x400;
 
@@ -15,6 +20,8 @@ const PCH_PIC_MASK: usize = 0x20;
 const PCH_PIC_EDGE: usize = 0x60;
 const PCH_PIC_POL: usize = 0x3e0;
 const PCH_INT_HTVEC: usize = 0x200;
+
+static CPU_IF: StaticCell<PchPicCpuInterface> = StaticCell::uninit();
 
 module_driver!(
     name: "Loongson PCH-PIC",
@@ -36,36 +43,12 @@ module_driver!(
     ],
 );
 
-pub fn irq_for_external_vector(
-    vector: usize,
-) -> Result<Option<rdif_intc::IrqId>, rdif_intc::IrqError> {
-    if !rdrive::is_initialized() {
-        return Ok(None);
-    }
+pub fn irq_for_external_vector(vector: usize) -> Option<rdif_intc::IrqId> {
+    cpu_interface().and_then(|cpu_if| cpu_if.irq_for_external_vector(vector))
+}
 
-    for intc in rdrive::get_list::<rdif_intc::Intc>() {
-        let Ok(pic) = intc.downcast::<PchPic>() else {
-            continue;
-        };
-        let domain = crate::irq::domain_by_owner(intc.descriptor().device_id())
-            .map(|domain| domain.id)
-            .ok_or(rdif_intc::IrqError::Unsupported)?;
-        let Ok(pic) = pic.try_lock() else {
-            warn!("failed to lock Loongson PCH-PIC when resolving vector {vector}");
-            return Err(rdif_intc::IrqError::Busy);
-        };
-        if let Some(irq) = pic.irq_for_external_vector(vector) {
-            return Ok(Some(irq));
-        }
-        if let Some(input) = pic.input_for_external_vector(vector) {
-            return Ok(Some(rdif_intc::IrqId::new(
-                domain,
-                rdif_intc::HwIrq(input as u32),
-            )));
-        }
-    }
-
-    Ok(None)
+fn cpu_interface() -> Option<&'static PchPicCpuInterface> {
+    CPU_IF.is_init().then(|| &*CPU_IF)
 }
 
 pub fn resolve_acpi_route(
@@ -154,11 +137,21 @@ fn register_pch_pic(
         crate::irq::IrqDomainKind::LoongArchPchPic,
     )
     .map_err(|err| OnProbeError::other(format!("failed to register PCH-PIC domain: {err:?}")))?;
-    let pic = PchPic::new(
-        mmio,
-        base_vector,
-        vector_count.unwrap_or(detected_vector_count),
-    );
+    let vector_count = vector_count.unwrap_or(detected_vector_count);
+    let controller_address = mmio.phys_addr().as_usize() as u64;
+    if !CPU_IF.is_init() {
+        CPU_IF.init(PchPicCpuInterface::new(
+            domain,
+            AcpiGsiController::PchPic,
+            controller_address,
+            base_vector,
+            vector_count,
+        ));
+    } else {
+        warn!("Loongson PCH-PIC CPU interface is already initialized");
+    }
+
+    let pic = PchPic::new(mmio, base_vector, vector_count);
     pic.init();
     dev.register(rdif_intc::Intc::new(domain, pic));
     Ok(())
@@ -279,14 +272,6 @@ impl PchPic {
         self.write_w(pol_addr, pol);
     }
 
-    fn irq_for_external_vector(&self, vector: usize) -> Option<rdif_intc::IrqId> {
-        self.routes.irq_for_external_vector(vector)
-    }
-
-    fn input_for_external_vector(&self, vector: usize) -> Option<usize> {
-        self.routes.input_for_vector(vector)
-    }
-
     fn read_w(&self, offset: usize) -> u32 {
         self.mmio.read(offset)
     }
@@ -339,6 +324,10 @@ impl Interface for PchPic {
             return Err(rdif_intc::IrqError::InvalidIrq);
         }
         self.routes.remember_route(route, translation.id)?;
+        let Some(cpu_if) = cpu_interface() else {
+            return Err(rdif_intc::IrqError::Controller);
+        };
+        cpu_if.remember_route(route, translation.id)?;
         self.configure_input(usize::from(route.controller_input), route);
         Ok(())
     }
