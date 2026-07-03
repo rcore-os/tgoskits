@@ -7,7 +7,7 @@ sidebar_label: "能力边界"
 
 `rdif-*` 是能力边界（capability boundary），只定义某类设备向上暴露什么能力，不负责设备发现、iomap、IRQ 注册、任务调度或系统启动顺序。块设备已移除原 runtime crate，`rdif-block` 直接承载设备 LBA 语义的 submit/poll capability boundary；其它领域如网络仍可按需保留 runtime wrapper，负责 waker、poll、blocking API、buffer pool 等运行时行为。
 
-所有 `rdif-*` crate 位于 [drivers/interface/](drivers/interface/)，公共基础是 [rdif-base](drivers/interface/rdif-base/)。
+所有 `rdif-*` crate 位于 `drivers/interface/`，公共基础是 `rdif-base`。
 
 ## 能力边界总览
 
@@ -35,16 +35,16 @@ pub trait DriverGeneric: Send + Any {
 
 ## rdif-block
 
-`rdif-block` 是块设备能力边界，源码位于 [drivers/interface/rdif-block/](drivers/interface/rdif-block/)。块请求不暴露 Linux block layer 的 512B sector 公共单位，而使用真实设备的 `lba` / `block_count` / `logical_block_size`。OS glue 负责把上层 byte offset、FS block、Linux-like sector 或分区 region 转换成设备 LBA。
+`rdif-block` 是块设备能力边界，源码位于 `drivers/interface/rdif-block/`。块请求不暴露 Linux block layer 的 512B sector 公共单位，而使用真实设备的 `lba` / `block_count` / `logical_block_size`。OS glue 负责把上层 byte offset、FS block、Linux-like sector 或分区 region 转换成设备 LBA。
 
 | 源码 | 职责 |
 | --- | --- |
-| [interface.rs](drivers/interface/rdif-block/src/interface.rs) | `Interface` trait、`IrqHandler` |
-| [request.rs](drivers/interface/rdif-block/src/request.rs) | `RequestId`、块请求提交 |
-| [planner.rs](drivers/interface/rdif-block/src/planner.rs) | `QueueTopology`、queue 管理 |
-| [irq.rs](drivers/interface/rdif-block/src/irq.rs) | `IrqSourceInfo`、IRQ 事件 |
-| [info.rs](drivers/interface/rdif-block/src/info.rs) | 设备信息 |
-| [error.rs](drivers/interface/rdif-block/src/error.rs) | `BlockError` |
+| `interface.rs` | `Interface` trait、`IrqHandler` |
+| `request.rs` | `RequestId`、块请求提交 |
+| `planner.rs` | `QueueTopology`、queue 管理 |
+| `irq.rs` | `IrqSourceInfo`、IRQ 事件 |
+| `info.rs` | 设备信息 |
+| `error.rs` | `BlockError` |
 
 接口保留 blk-mq 风格的结构能力：设备可报告 `QueueTopology`，OS 可创建一个或多个 queue，每个 queue 使用 queue-local `RequestId`/tag，经 `submit_request()` 提交、经 `poll_request()` 回收完成。
 

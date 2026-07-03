@@ -24,7 +24,7 @@ MMIO 与 PCI feature 要分开表达，例如 `virtio-gpu-mmio` 与 `virtio-gpu-
 
 ## ax-driver Feature
 
-[drivers/ax-driver/Cargo.toml](drivers/ax-driver/Cargo.toml) 定义了按领域能力和具体硬件组织的 feature。基础 feature 选择能力边界和 runtime：
+`drivers/ax-driver/Cargo.toml` 定义了按领域能力和具体硬件组织的 feature。基础 feature 选择能力边界和 runtime：
 
 | feature | 启用 |
 | --- | --- |

@@ -82,18 +82,18 @@ flowchart TB
 
 | 源码 | 职责 |
 | --- | --- |
-| [drivers/rdrive/src/manager.rs](drivers/rdrive/src/manager.rs) | `Manager`、`DeviceContainer`、类型化设备查询 |
-| [drivers/rdrive/src/register/mod.rs](drivers/rdrive/src/register/mod.rs) | `DriverRegister`、`ProbeKind`、`ProbeLevel`、`ProbePriority`、`RegisterContainer` |
-| [drivers/rdrive/src/probe/mod.rs](drivers/rdrive/src/probe/mod.rs) | `ProbeError`、`OnProbeError`、backend 分发 |
-| [drivers/rdrive/src/probe/static_.rs](drivers/rdrive/src/probe/static_.rs) | Static platform probe |
-| [drivers/rdrive/src/probe/fdt/](drivers/rdrive/src/probe/fdt/) | FDT probe、compatible 匹配 |
-| [drivers/rdrive/src/probe/acpi.rs](drivers/rdrive/src/probe/acpi.rs) | ACPI probe、HID/CID 匹配、MCFG/GSI routing |
-| [drivers/rdrive/src/probe/pci/](drivers/rdrive/src/probe/pci/) | PCIe endpoint 枚举 |
-| [drivers/rdrive/src/driver/mod.rs](drivers/rdrive/src/driver/mod.rs) | `PlatformDevice`、`register()` |
-| [drivers/rdrive/src/descriptor.rs](drivers/rdrive/src/descriptor.rs) | `Descriptor`、`DeviceId` |
-| [drivers/ax-driver/src/lib.rs](drivers/ax-driver/src/lib.rs) | ArceOS glue：`module_driver!`、feature 分发 |
-| [drivers/ax-driver/src/binding_info.rs](drivers/ax-driver/src/binding_info.rs) | `BindingInfo`、IRQ binding 元数据 |
-| [drivers/ax-driver/src/binding_resolver.rs](drivers/ax-driver/src/binding_resolver.rs) | FDT/ACPI/PCI IRQ 解析 |
+| `drivers/rdrive/src/manager.rs` | `Manager`、`DeviceContainer`、类型化设备查询 |
+| `drivers/rdrive/src/register/mod.rs` | `DriverRegister`、`ProbeKind`、`ProbeLevel`、`ProbePriority`、`RegisterContainer` |
+| `drivers/rdrive/src/probe/mod.rs` | `ProbeError`、`OnProbeError`、backend 分发 |
+| `drivers/rdrive/src/probe/static_.rs` | Static platform probe |
+| `drivers/rdrive/src/probe/fdt/` | FDT probe、compatible 匹配 |
+| `drivers/rdrive/src/probe/acpi.rs` | ACPI probe、HID/CID 匹配、MCFG/GSI routing |
+| `drivers/rdrive/src/probe/pci/` | PCIe endpoint 枚举 |
+| `drivers/rdrive/src/driver/mod.rs` | `PlatformDevice`、`register()` |
+| `drivers/rdrive/src/descriptor.rs` | `Descriptor`、`DeviceId` |
+| `drivers/ax-driver/src/lib.rs` | ArceOS glue：`module_driver!`、feature 分发 |
+| `drivers/ax-driver/src/binding_info.rs` | `BindingInfo`、IRQ binding 元数据 |
+| `drivers/ax-driver/src/binding_resolver.rs` | FDT/ACPI/PCI IRQ 解析 |
 
 ## 设计选择
 

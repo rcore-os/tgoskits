@@ -7,7 +7,7 @@ sidebar_label: "设备管理"
 
 `rdrive` 是驱动框架的核心管理 crate。它负责驱动注册（`DriverRegister`）、设备探测（probe）分发、类型化设备 registry 和设备查询。`rdrive` 不包含具体硬件逻辑，也不依赖任何 OS runtime 或平台 HAL。
 
-源码位于 [drivers/rdrive/src/](drivers/rdrive/src/)，入口 [lib.rs](drivers/rdrive/src/lib.rs)。
+源码位于 `drivers/rdrive/src/`，入口 `lib.rs`。
 
 ## 核心 API
 
@@ -38,7 +38,7 @@ pub fn get_list<T: DriverGeneric>() -> Vec<Device<T>>;
 
 ## Manager
 
-`Manager` 是 rdrive 的核心，源码位于 [manager.rs](drivers/rdrive/src/manager.rs)。它只持有两个状态：
+`Manager` 是 rdrive 的核心，源码位于 `manager.rs`。它只持有两个状态：
 
 ```rust
 pub struct Manager {
@@ -62,7 +62,7 @@ pub(crate) fn container() -> &'static Mutex<Manager> { ... }
 
 ## DriverRegister
 
-`DriverRegister` 描述一个驱动的注册信息，源码位于 [register/mod.rs](drivers/rdrive/src/register/mod.rs)：
+`DriverRegister` 描述一个驱动的注册信息，源码位于 `register/mod.rs`：
 
 ```rust
 pub struct DriverRegister {
@@ -116,7 +116,7 @@ pub enum ProbeKind {
 
 ## PlatformDevice 与设备注册
 
-`PlatformDevice` 是 probe 回调中向 registry 注册设备的句柄，源码位于 [driver/mod.rs](drivers/rdrive/src/driver/mod.rs)：
+`PlatformDevice` 是 probe 回调中向 registry 注册设备的句柄，源码位于 `driver/mod.rs`：
 
 ```rust
 pub struct PlatformDevice {

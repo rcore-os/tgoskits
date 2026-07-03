@@ -11,10 +11,10 @@ IRQ 路径使用 domain 化的 `IrqId` 作为运行时注册 key。FDT、ACPI、
 
 | 源码 | 职责 |
 | --- | --- |
-| [drivers/ax-driver/src/binding_info.rs](drivers/ax-driver/src/binding_info.rs) | `BindingInfo`、`BindingIrq`、`BindingIrqSource`、`PciIrqRequirement` |
-| [drivers/ax-driver/src/binding_resolver.rs](drivers/ax-driver/src/binding_resolver.rs) | FDT/ACPI/PCI IRQ binding 解析入口 |
-| [drivers/interface/rdif-base/src/irq.rs](drivers/interface/rdif-base/src/irq.rs) | `IrqId`、`IrqSource` 类型 |
-| [components/irq-framework/](components/irq-framework/) | `AcpiGsiRoute`、IRQ domain 框架 |
+| `drivers/ax-driver/src/binding_info.rs` | `BindingInfo`、`BindingIrq`、`BindingIrqSource`、`PciIrqRequirement` |
+| `drivers/ax-driver/src/binding_resolver.rs` | FDT/ACPI/PCI IRQ binding 解析入口 |
+| `drivers/interface/rdif-base/src/irq.rs` | `IrqId`、`IrqSource` 类型 |
+| `components/irq-framework/` | `AcpiGsiRoute`、IRQ domain 框架 |
 
 ## BindingInfo 模型
 

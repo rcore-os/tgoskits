@@ -15,24 +15,24 @@ TGOSKits 的宿主物理设备能力收敛在 `rdrive + rdif` 驱动框架。它
 
 | 目录 | 角色 | 关键内容 |
 | --- | --- | --- |
-| [drivers/rdrive/](drivers/rdrive/) | 设备管理框架 | `Manager`、`DriverRegister`、`PlatformDevice`、`probe::*` |
-| [drivers/rdrive-macros/](drivers/rdrive-macros/) | 注册宏 | `module_driver!`、linker section 收集 |
-| [drivers/interface/rdif-*/](drivers/interface/) | 能力边界 | `rdif-block`、`rdif-eth`、`rdif-display`、`rdif-input`、`rdif-vsock`、`rdif-intc`、`rdif-pinctrl`、`rdif-pcie`、`rdif-clk`、`rdif-timer`、`rdif-systick`、`rdif-serial`、`rdif-pwm`、`rdif-power` |
-| [drivers/ax-driver/](drivers/ax-driver/) | OS glue / ArceOS 适配 | VirtIO、PCI、SoC、USB、serial、block/net/display/input/vsock binding |
-| [drivers/blk/](drivers/blk/) | 块设备 driver core | `nvme-driver`、`sdhci-host`、`dwmmc-host`、`sdmmc-protocol`、`phytium-mci-host`、`ramdisk` |
-| [drivers/net/](drivers/net/) | 网卡 driver core | `rd-net`、`fxmac_rs`、`eth-intel`、`realtek-rtl8125` |
-| [drivers/gpu/](drivers/gpu/) | 显示/加速 driver core | `rockchip-rga` |
-| [drivers/intc/](drivers/intc/) | 中断控制器 driver core | `arm-gic-driver`、`riscv_plic` |
-| [drivers/pci/](drivers/pci/) | PCIe driver core | `pcie`、`rk3588-pci` |
-| [drivers/usb/](drivers/usb/) | USB driver core | `usb-host`（CrabUSB/xHCI）、`usb-device`、`usb-serial`、`usb-if` |
-| [drivers/serial/](drivers/serial/) | 串口 driver core | `some-serial` |
-| [drivers/soc/](drivers/soc/) | SoC 平台 driver core | `rockchip`（clk/pinctrl/pm） |
-| [drivers/tpu/](drivers/tpu/)、[drivers/npu/](drivers/npu/)、[drivers/vpu/](drivers/vpu/) | AI 加速 driver core | `sg2002-tpu`、`k230-kpu`、`rockchip-npu`、`rockchip-jpeg` |
-| [drivers/pwm/](drivers/pwm/)、[drivers/rtc/](drivers/rtc/) | 平台设备 driver core | `rockchip-pwm`、`arm_pl031` |
-| [drivers/firmware/](drivers/firmware/) | 固件协议 | `arm-scmi-rs` |
-| [drivers/examples/](drivers/examples/) | 设备树样例 | `enumerate/` |
-| [drivers/data/](drivers/data/) | 测试数据 | `qemu.dtb` / `qemu.dts` |
-| [drivers/test_crates/](drivers/test_crates/) | 测试 crate | `driver-tests/` |
+| `drivers/rdrive/` | 设备管理框架 | `Manager`、`DriverRegister`、`PlatformDevice`、`probe::*` |
+| `drivers/rdrive-macros/` | 注册宏 | `module_driver!`、linker section 收集 |
+| `drivers/interface/rdif-*/` | 能力边界 | `rdif-block`、`rdif-eth`、`rdif-display`、`rdif-input`、`rdif-vsock`、`rdif-intc`、`rdif-pinctrl`、`rdif-pcie`、`rdif-clk`、`rdif-timer`、`rdif-systick`、`rdif-serial`、`rdif-pwm`、`rdif-power` |
+| `drivers/ax-driver/` | OS glue / ArceOS 适配 | VirtIO、PCI、SoC、USB、serial、block/net/display/input/vsock binding |
+| `drivers/blk/` | 块设备 driver core | `nvme-driver`、`sdhci-host`、`dwmmc-host`、`sdmmc-protocol`、`phytium-mci-host`、`ramdisk` |
+| `drivers/net/` | 网卡 driver core | `rd-net`、`fxmac_rs`、`eth-intel`、`realtek-rtl8125` |
+| `drivers/gpu/` | 显示/加速 driver core | `rockchip-rga` |
+| `drivers/intc/` | 中断控制器 driver core | `arm-gic-driver`、`riscv_plic` |
+| `drivers/pci/` | PCIe driver core | `pcie`、`rk3588-pci` |
+| `drivers/usb/` | USB driver core | `usb-host`（CrabUSB/xHCI）、`usb-device`、`usb-serial`、`usb-if` |
+| `drivers/serial/` | 串口 driver core | `some-serial` |
+| `drivers/soc/` | SoC 平台 driver core | `rockchip`（clk/pinctrl/pm） |
+| `drivers/tpu/`、`drivers/npu/`、`drivers/vpu/` | AI 加速 driver core | `sg2002-tpu`、`k230-kpu`、`rockchip-npu`、`rockchip-jpeg` |
+| `drivers/pwm/`、`drivers/rtc/` | 平台设备 driver core | `rockchip-pwm`、`arm_pl031` |
+| `drivers/firmware/` | 固件协议 | `arm-scmi-rs` |
+| `drivers/examples/` | 设备树样例 | `enumerate/` |
+| `drivers/data/` | 测试数据 | `qemu.dtb` / `qemu.dts` |
+| `drivers/test_crates/` | 测试 crate | `driver-tests/` |
 
 ## 能力矩阵
 
