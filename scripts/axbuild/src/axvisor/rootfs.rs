@@ -11,12 +11,26 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use anyhow::{Context, anyhow};
+use anyhow::{Context, anyhow, bail};
 use ostool::{build::config::Cargo, run::qemu::QemuConfig};
 use serde::Deserialize;
 
 use super::{Axvisor, build};
-use crate::{context::ResolvedAxvisorRequest, rootfs, test::qemu as qemu_test};
+use crate::{
+    context::ResolvedAxvisorRequest,
+    image::{config::ImageConfig, spec::ImageSpecRef, storage::Storage},
+    rootfs,
+    test::qemu as qemu_test,
+};
+
+const AXVISOR_GUEST_REGISTRY_URL: &str =
+    "https://raw.githubusercontent.com/arceos-hypervisor/axvisor-guest/refs/heads/main/registry/default.toml";
+const X86_LINUX_GUEST_KERNEL_PATH: &str = "/guest/linux/linux-qemu";
+const X86_LINUX_TGOSIMAGE_NAME: &str = "qemu-x86_64";
+const X86_LINUX_TGOSIMAGE_KERNEL_REL_PATHS: &[&str] =
+    &["linux/linux-qemu", "linux-qemu", "qemu-x86_64"];
+const X86_LINUX_AXVISOR_GUEST_IMAGE_NAME: &str = "qemu_x86_64_linux";
+const X86_LINUX_AXVISOR_GUEST_KERNEL_REL_PATHS: &[&str] = &["linux-qemu", "qemu-x86_64"];
 
 #[derive(Deserialize)]
 struct VmRootfsProbe {
@@ -25,6 +39,7 @@ struct VmRootfsProbe {
 
 #[derive(Deserialize)]
 struct VmKernelRootfsProbe {
+    image_location: Option<String>,
     kernel_path: Option<String>,
 }
 
@@ -57,6 +72,7 @@ pub(super) async fn qemu(axvisor: &mut Axvisor, args: super::ArgsQemu) -> anyhow
         axvisor.app.workspace_root(),
         explicit_rootfs.as_deref(),
     )?;
+    prepare_x86_linux_vmconfigs(&mut request, axvisor.app.workspace_root()).await?;
     let cargo = build::load_cargo_config(&request)?;
     let qemu =
         load_patched_qemu_config(axvisor, &request, &cargo, explicit_rootfs.as_deref()).await?;
@@ -115,6 +131,166 @@ pub(crate) fn prepare_loongarch_linux_vmconfigs(
 
     request.vmconfigs = prepared_vmconfigs;
     Ok(())
+}
+
+pub(crate) async fn prepare_x86_linux_vmconfigs(
+    request: &mut ResolvedAxvisorRequest,
+    workspace_root: &Path,
+) -> anyhow::Result<()> {
+    if request.arch != "x86_64" || request.vmconfigs.is_empty() {
+        return Ok(());
+    }
+
+    if !x86_linux_vmconfigs_need_memory_kernel(&request.vmconfigs)? {
+        return Ok(());
+    }
+
+    let guest_kernel_path = ensure_x86_linux_guest_kernel(workspace_root).await?;
+    prepare_x86_linux_vmconfigs_from_kernel_path(request, workspace_root, &guest_kernel_path)
+}
+
+fn prepare_x86_linux_vmconfigs_from_kernel_path(
+    request: &mut ResolvedAxvisorRequest,
+    workspace_root: &Path,
+    guest_kernel_path: &Path,
+) -> anyhow::Result<()> {
+    if request.arch != "x86_64" || request.vmconfigs.is_empty() {
+        return Ok(());
+    }
+
+    let out_dir = workspace_root.join("tmp/axbuild/axvisor/x86_64");
+    let mut prepared_vmconfigs = Vec::with_capacity(request.vmconfigs.len());
+
+    for vmconfig in &request.vmconfigs {
+        let content = fs::read_to_string(vmconfig)
+            .map_err(|e| anyhow!("failed to read vm config {}: {e}", vmconfig.display()))?;
+        if !x86_linux_vmconfig_needs_memory_kernel(&content, vmconfig)? {
+            prepared_vmconfigs.push(vmconfig.clone());
+            continue;
+        }
+
+        let prepared_vmconfig = out_dir.join(
+            vmconfig
+                .file_name()
+                .unwrap_or_else(|| std::ffi::OsStr::new("linux-smp1.toml")),
+        );
+        fs::create_dir_all(&out_dir)
+            .with_context(|| format!("failed to create {}", out_dir.display()))?;
+        let kernel_path = guest_kernel_path.display().to_string();
+        let patched = replace_toml_string_value(
+            &replace_toml_string_value(&content, "image_location", "memory"),
+            "kernel_path",
+            &kernel_path,
+        );
+        fs::write(&prepared_vmconfig, patched)
+            .with_context(|| format!("failed to write {}", prepared_vmconfig.display()))?;
+        prepared_vmconfigs.push(prepared_vmconfig);
+    }
+
+    request.vmconfigs = prepared_vmconfigs;
+    Ok(())
+}
+
+fn x86_linux_vmconfigs_need_memory_kernel(vmconfigs: &[PathBuf]) -> anyhow::Result<bool> {
+    for vmconfig in vmconfigs {
+        let content = fs::read_to_string(vmconfig)
+            .map_err(|e| anyhow!("failed to read vm config {}: {e}", vmconfig.display()))?;
+        if x86_linux_vmconfig_needs_memory_kernel(&content, vmconfig)? {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+fn x86_linux_vmconfig_needs_memory_kernel(content: &str, vmconfig: &Path) -> anyhow::Result<bool> {
+    let probe: VmRootfsProbe = toml::from_str(content)
+        .map_err(|e| anyhow!("failed to parse vm config {}: {e}", vmconfig.display()))?;
+    let Some(kernel) = probe.kernel else {
+        return Ok(false);
+    };
+    Ok(
+        kernel.kernel_path.as_deref() == Some(X86_LINUX_GUEST_KERNEL_PATH)
+            && kernel.image_location.as_deref() != Some("memory"),
+    )
+}
+
+async fn ensure_x86_linux_guest_kernel(workspace_root: &Path) -> anyhow::Result<PathBuf> {
+    let primary_config = ImageConfig::read_config(workspace_root)?;
+    let primary_storage = Storage::new_from_config(&primary_config).await?;
+    let mut errors = Vec::new();
+
+    match pull_guest_kernel_from_storage(
+        &primary_storage,
+        X86_LINUX_TGOSIMAGE_NAME,
+        X86_LINUX_TGOSIMAGE_KERNEL_REL_PATHS,
+    )
+    .await
+    {
+        Ok(path) => return Ok(path),
+        Err(err) => errors.push(format!("{X86_LINUX_TGOSIMAGE_NAME}: {err:#}")),
+    }
+
+    match pull_guest_kernel_from_storage(
+        &primary_storage,
+        X86_LINUX_AXVISOR_GUEST_IMAGE_NAME,
+        X86_LINUX_AXVISOR_GUEST_KERNEL_REL_PATHS,
+    )
+    .await
+    {
+        Ok(path) => return Ok(path),
+        Err(err) => errors.push(format!("{X86_LINUX_AXVISOR_GUEST_IMAGE_NAME}: {err:#}")),
+    }
+
+    let mut fallback_config = primary_config;
+    fallback_config.local_storage = fallback_config.local_storage.join("axvisor-guest");
+    fallback_config.registry = AXVISOR_GUEST_REGISTRY_URL.to_string();
+    let fallback_storage = Storage::new_from_config(&fallback_config).await?;
+    match pull_guest_kernel_from_storage(
+        &fallback_storage,
+        X86_LINUX_AXVISOR_GUEST_IMAGE_NAME,
+        X86_LINUX_AXVISOR_GUEST_KERNEL_REL_PATHS,
+    )
+    .await
+    {
+        Ok(path) => return Ok(path),
+        Err(err) => errors.push(format!(
+            "{X86_LINUX_AXVISOR_GUEST_IMAGE_NAME} from axvisor-guest registry: {err:#}"
+        )),
+    }
+
+    bail!(
+        "failed to prepare x86_64 Linux guest kernel image:\n{}",
+        errors.join("\n")
+    )
+}
+
+async fn pull_guest_kernel_from_storage(
+    storage: &Storage,
+    image_name: &str,
+    kernel_rel_paths: &[&str],
+) -> anyhow::Result<PathBuf> {
+    let extract_dir = storage
+        .pull_image(ImageSpecRef::parse(image_name), None, true)
+        .await?;
+    find_guest_kernel_path(&extract_dir, kernel_rel_paths)
+}
+
+fn find_guest_kernel_path(
+    extract_dir: &Path,
+    kernel_rel_paths: &[&str],
+) -> anyhow::Result<PathBuf> {
+    for kernel_rel_path in kernel_rel_paths {
+        let kernel_path = extract_dir.join(kernel_rel_path);
+        if kernel_path.is_file() {
+            return Ok(kernel_path);
+        }
+    }
+
+    bail!(
+        "image extracted to {} but did not contain any of: {}",
+        extract_dir.display(),
+        kernel_rel_paths.join(", ")
+    )
 }
 
 fn loongarch_uefi_firmware_path(workspace_root: &Path) -> Option<PathBuf> {
@@ -248,7 +424,13 @@ pub(crate) fn infer_rootfs_path(vmconfigs: &[PathBuf]) -> anyhow::Result<Option<
             .map_err(|e| anyhow!("failed to read vm config {}: {e}", vmconfig.display()))?;
         let probe: VmRootfsProbe = toml::from_str(&content)
             .map_err(|e| anyhow!("failed to parse vm config {}: {e}", vmconfig.display()))?;
-        let Some(kernel_path) = probe.kernel.and_then(|kernel| kernel.kernel_path) else {
+        let Some(kernel) = probe.kernel else {
+            continue;
+        };
+        if kernel.image_location.as_deref() == Some("memory") {
+            continue;
+        }
+        let Some(kernel_path) = kernel.kernel_path else {
             continue;
         };
         let rootfs_path = Path::new(&kernel_path)
@@ -358,6 +540,79 @@ kernel_path = "{}"
         .unwrap();
 
         assert_eq!(infer_rootfs_path(&[vmconfig]).unwrap(), None);
+    }
+
+    #[test]
+    fn infer_rootfs_path_skips_memory_kernel_sibling_rootfs() {
+        let root = tempdir().unwrap();
+        let image_dir = root.path().join("image");
+        fs::create_dir_all(&image_dir).unwrap();
+        fs::write(image_dir.join("rootfs.img"), b"rootfs").unwrap();
+        let vmconfig = root.path().join("vm.toml");
+        fs::write(
+            &vmconfig,
+            format!(
+                r#"
+[kernel]
+image_location = "memory"
+kernel_path = "{}"
+"#,
+                image_dir.join("linux-qemu").display()
+            ),
+        )
+        .unwrap();
+
+        assert_eq!(infer_rootfs_path(&[vmconfig]).unwrap(), None);
+    }
+
+    #[test]
+    fn prepare_x86_linux_vmconfigs_patches_rootfs_guest_kernel_to_memory() {
+        let root = tempdir().unwrap();
+        let vmconfig = root.path().join("linux-svm-smp1.toml");
+        fs::write(
+            &vmconfig,
+            r#"
+[kernel]
+image_location = "fs"
+kernel_path = "/guest/linux/linux-qemu"
+"#,
+        )
+        .unwrap();
+        let kernel_path = root.path().join("images/qemu-x86_64/linux/linux-qemu");
+        let mut request = request(root.path(), vec![vmconfig.clone()]);
+        request.arch = "x86_64".to_string();
+        request.target = "x86_64-unknown-none".to_string();
+
+        prepare_x86_linux_vmconfigs_from_kernel_path(&mut request, root.path(), &kernel_path)
+            .unwrap();
+
+        assert_ne!(request.vmconfigs, vec![vmconfig.clone()]);
+        let prepared = request.vmconfigs.first().unwrap();
+        assert_eq!(
+            prepared,
+            &root
+                .path()
+                .join("tmp/axbuild/axvisor/x86_64/linux-svm-smp1.toml")
+        );
+        let content = fs::read_to_string(prepared).unwrap();
+        assert!(content.contains(r#"image_location = "memory""#));
+        assert!(content.contains(&format!(r#"kernel_path = "{}""#, kernel_path.display())));
+        let original = fs::read_to_string(vmconfig).unwrap();
+        assert!(original.contains(r#"image_location = "fs""#));
+        assert!(original.contains(r#"kernel_path = "/guest/linux/linux-qemu""#));
+    }
+
+    #[test]
+    fn find_guest_kernel_path_uses_first_existing_candidate() {
+        let root = tempdir().unwrap();
+        let extract_dir = root.path().join("qemu_x86_64_linux");
+        fs::create_dir_all(&extract_dir).unwrap();
+        fs::write(extract_dir.join("qemu-x86_64"), b"kernel").unwrap();
+
+        assert_eq!(
+            find_guest_kernel_path(&extract_dir, &["linux-qemu", "qemu-x86_64"]).unwrap(),
+            extract_dir.join("qemu-x86_64")
+        );
     }
 
     #[test]

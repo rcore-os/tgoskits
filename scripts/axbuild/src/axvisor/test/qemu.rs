@@ -131,6 +131,11 @@ impl Axvisor {
                 self.app.workspace_root(),
                 None,
             )?;
+            rootfs::prepare_x86_linux_vmconfigs(
+                &mut build_group.request,
+                self.app.workspace_root(),
+            )
+            .await?;
             build_group.cargo = build::load_cargo_config(&build_group.request)?;
             if build_group_needs_arceos_x86_64_guest(&build_group.request) {
                 self.build_arceos_x86_64_guest_image()
