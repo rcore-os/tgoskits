@@ -569,9 +569,12 @@ pub fn do_exit(exit_code: i32, group_exit: bool) {
         let table = futex_table_for_process(&thr.proc_data, &key);
         let guard = table.get(&key);
         if let Some(futex) = guard {
+            // Wake pthread joiners, but do not yield here. The process zombie
+            // state is not published until `process.exit()` below, so yielding
+            // in the middle of exit can leave the parent unable to observe this
+            // task while the exiting thread waits to be scheduled again.
             futex.wq.wake(1, u32::MAX);
         }
-        ax_task::yield_now();
     }
 
     let process = &thr.proc_data.proc;
