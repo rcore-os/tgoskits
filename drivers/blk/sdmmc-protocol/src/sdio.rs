@@ -1061,8 +1061,20 @@ enum MmcSwitchRequestState {
 pub enum CardInitPreference {
     /// Probe SD first, then fall back to MMC.
     SdFirst,
+    /// Probe SD only. Use this when firmware marks the slot `no-mmc`.
+    SdOnly,
     /// Probe MMC first. Use this for controller instances wired to eMMC.
     MmcFirst,
+}
+
+impl CardInitPreference {
+    fn starts_with_sd(self) -> bool {
+        matches!(self, Self::SdFirst | Self::SdOnly)
+    }
+
+    fn allows_mmc_fallback(self) -> bool {
+        matches!(self, Self::SdFirst)
+    }
 }
 
 /// Caller-owned scratch buffers for SD/MMC initialization data commands.
@@ -1855,17 +1867,14 @@ impl<H: SdioHost> SdioSdmmc<H> {
             SdioInitState::PollCmd0 => match self.host.poll_command_response()? {
                 CommandResponsePoll::Pending => Ok(OperationPoll::Pending),
                 CommandResponsePoll::Complete(_) => {
-                    match request.preference {
-                        CardInitPreference::SdFirst => {
-                            let cmd = crate::cmd::cmd8(0x01, 0xAA);
-                            self.host.submit_command(&cmd)?;
-                            request.state = SdioInitState::PollCmd8;
-                        }
-                        CardInitPreference::MmcFirst => {
-                            debug!("sdio: MMC-first init, trying CMD1");
-                            self.host.submit_command(&crate::cmd::cmd1(0))?;
-                            request.state = SdioInitState::PollMmcInitial;
-                        }
+                    if request.preference.starts_with_sd() {
+                        let cmd = crate::cmd::cmd8(0x01, 0xAA);
+                        self.host.submit_command(&cmd)?;
+                        request.state = SdioInitState::PollCmd8;
+                    } else {
+                        debug!("sdio: MMC-first init, trying CMD1");
+                        self.host.submit_command(&crate::cmd::cmd1(0))?;
+                        request.state = SdioInitState::PollMmcInitial;
                     }
                     Ok(OperationPoll::Pending)
                 }
@@ -1902,6 +1911,9 @@ impl<H: SdioHost> SdioSdmmc<H> {
                     Ok(OperationPoll::Pending)
                 }
                 Err(_sd_err) => {
+                    if !request.preference.allows_mmc_fallback() {
+                        return Err(_sd_err);
+                    }
                     debug!(
                         "sdio: ACMD41 prologue failed ({:?}), trying MMC CMD1",
                         _sd_err
@@ -1925,6 +1937,9 @@ impl<H: SdioHost> SdioSdmmc<H> {
                         let elapsed_exceeded =
                             power_up_deadline_passed(&self.host, request.acmd41_started_ms);
                         if request.acmd41_polls >= SdioInitTiming::MAX_POLLS || elapsed_exceeded {
+                            if !request.preference.allows_mmc_fallback() {
+                                return Err(Error::Timeout(ErrorContext::for_cmd(Phase::Init, 41)));
+                            }
                             warn!(
                                 "sdio: ACMD41 timed out after {} polls (~{} ms at the recommended \
                                  cadence), trying MMC CMD1",
@@ -1947,12 +1962,18 @@ impl<H: SdioHost> SdioSdmmc<H> {
                     Ok(OperationPoll::Pending)
                 }
                 Ok(CommandResponsePoll::Complete(_)) => {
+                    if !request.preference.allows_mmc_fallback() {
+                        return Err(Error::BadResponse(ErrorContext::for_cmd(Phase::Init, 41)));
+                    }
                     debug!("sdio: ACMD41 returned bad response, trying MMC CMD1");
                     self.host.submit_command(&crate::cmd::cmd1(0))?;
                     request.state = SdioInitState::PollMmcInitial;
                     Ok(OperationPoll::Pending)
                 }
                 Err(_sd_err) => {
+                    if !request.preference.allows_mmc_fallback() {
+                        return Err(_sd_err);
+                    }
                     debug!("sdio: ACMD41 failed ({:?}), trying MMC CMD1", _sd_err);
                     self.host.submit_command(&crate::cmd::cmd1(0))?;
                     request.state = SdioInitState::PollMmcInitial;
@@ -3437,6 +3458,24 @@ mod tests {
                 .collect::<Vec<_>>(),
             std::vec![1]
         );
+    }
+
+    #[test]
+    fn poll_init_request_sd_only_does_not_fallback_to_cmd1_after_acmd41_timeout() {
+        let mut driver = SdioSdmmc::new(MockHost::with_results(std::vec![Ok(Response::R3(
+            OcrResponse::from_raw(0x00FF_8000),
+        ))]));
+        let mut scratch = SdioInitScratch::new();
+        let mut request = SdioInitRequest::new(CardInitPreference::SdOnly, &mut scratch);
+        request.state = SdioInitState::PollAcmd41;
+        request.sd_v2 = false;
+        request.acmd41_polls = SdioInitTiming::MAX_POLLS;
+
+        assert!(matches!(
+            driver.poll_init_request(&mut request),
+            Err(Error::Timeout(_))
+        ));
+        assert!(driver.host.commands.is_empty());
     }
 
     #[test]

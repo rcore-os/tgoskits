@@ -670,6 +670,7 @@ dependencies = [
  "axklib",
  "bcm2835-sdhci",
  "crab-usb",
+ "cv181x-sdhci",
  "dma-api",
  "dwmmc-host",
  "eth-intel",
@@ -709,7 +710,6 @@ dependencies = [
  "sdhci-host",
  "sdio-host-cv1800",
  "sdmmc-protocol",
- "sg200x-bsp",
  "simple-ahci",
  "some-serial",
  "spin",
@@ -2618,6 +2618,18 @@ dependencies = [
  "unicode-segmentation",
  "unicode-width 0.2.2",
  "xi-unicode",
+]
+
+[[package]]
+name = "cv181x-sdhci"
+version = "0.1.0"
+dependencies = [
+ "dma-api",
+ "mmio-api",
+ "rdif-block",
+ "sdhci-host",
+ "sdio-host2",
+ "sdmmc-protocol",
 ]
 
 [[package]]
