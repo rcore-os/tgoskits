@@ -10,7 +10,11 @@ use rdrive::{
 use sdmmc_protocol::{
     Error, OperationPoll,
     error::Phase,
-    sdio::{CardInfo, CardInitPreference, SdioHost2Adapter, SdioInitScratch, SdioSdmmc},
+    sdio::{
+        card::{CardInfo, SdioSdmmc},
+        host2::SdioHost2Adapter,
+        init::{CardInitPreference, SdioInitScratch},
+    },
 };
 
 use crate::{block::ProbeFdtBlock, mmio::iomap};

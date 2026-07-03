@@ -10,7 +10,7 @@ use core::ptr::NonNull;
 
 use sdhci_host::Sdhci;
 use sdio_host2::{BusWidth, ClockHz, ClockSpeed, RequestPoll, SignalVoltage};
-use sdmmc_protocol::{Error as ProtocolError, sdio::SdioHost2Irq};
+use sdmmc_protocol::{Error as ProtocolError, sdio::host2::SdioHost2Irq};
 
 pub mod rdif;
 
