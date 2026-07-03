@@ -1,7 +1,7 @@
 use core::{any::Any, str};
 
-use ax_config::plat::PHYS_VIRT_OFFSET;
 use ax_errno::AxError;
+use ax_hal::mem::{PhysAddr, phys_to_virt};
 use axfs_ng_vfs::{NodeFlags, VfsResult};
 use bytemuck::AnyBitPattern;
 use starry_vm::VmPtr;
@@ -36,7 +36,7 @@ impl PinmuxDev {
         if offset >= FMUX_SIZE || !offset.is_multiple_of(4) {
             return Err(AxError::InvalidInput);
         }
-        let vaddr = FMUX_PBASE + PHYS_VIRT_OFFSET + offset;
+        let vaddr = phys_to_virt(PhysAddr::from_usize(FMUX_PBASE + offset)).as_usize();
         unsafe {
             core::ptr::write_volatile(vaddr as *mut u32, value);
         }

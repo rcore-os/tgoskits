@@ -109,9 +109,6 @@ flowchart TB
 | `ax-allocator` | 组件层 | `memory/axallocator` | 2 | 2 | [查看](crates/ax-allocator) |
 | `ax-api` | ArceOS 层 | `os/arceos/api/arceos_api` | 17 | 1 | [查看](crates/ax-api) |
 | `ax-arm-pl031` | 组件层 | `drivers/rtc/arm_pl031` | 0 | 1 | [查看](crates/ax-arm-pl031) |
-| `ax-config` | ArceOS 层 | `os/arceos/modules/axconfig` | 1 | 12 | [查看](crates/ax-config) |
-| `ax-config-gen` | 组件层 | `components/axconfig-gen/axconfig-gen` | 0 | 1 | [查看](crates/ax-config-gen) |
-| `ax-config-macros` | 组件层 | `components/axconfig-gen/axconfig-macros` | 1 | 12 | [查看](crates/ax-config-macros) |
 | `ax-cpu` | 组件层 | `components/axcpu` | 6 | 14 | [查看](crates/ax-cpu) |
 | `ax-cpumask` | 组件层 | `components/cpumask` | 0 | 4 | [查看](crates/ax-cpumask) |
 | `ax-crate-interface` | 组件层 | `components/crate_interface` | 0 | 22 | [查看](crates/ax-crate-interface) |

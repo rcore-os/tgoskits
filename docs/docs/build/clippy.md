@@ -5,7 +5,7 @@ sidebar_label: "Clippy 检查"
 
 # Clippy 检查
 
-`cargo xtask clippy` 是 axbuild 对整个 TGOSKits workspace 执行静态检查的统一入口。它不是简单地 `cargo clippy --workspace`：因为 workspace 中混合了 host 端 bin 工具、`#![no_std]` 内核 crate、需要特定 target/feature/axconfig 才能编译的 OS 包，直接全量 clippy 会大量误报。clippy 模块针对每个包按其声明的 feature 矩阵和 docs.rs `metadata.targets` 展开成多个 `ClippyCheck`，再以 `fail-fast` 方式逐一运行，把结果收敛成可读报告。
+`cargo xtask clippy` 是 axbuild 对整个 TGOSKits workspace 执行静态检查的统一入口。它不是简单地 `cargo clippy --workspace`：因为 workspace 中混合了 host 端 bin 工具、`#![no_std]` 内核 crate 和需要特定 target/feature 的 OS 包，直接全量 clippy 会大量误报。clippy 模块针对每个包按其声明的 feature 矩阵和 docs.rs `metadata.targets` 展开成多个 `ClippyCheck`，再以 `fail-fast` 方式逐一运行，把结果收敛成可读报告。
 
 ## 架构概览
 
@@ -25,7 +25,6 @@ flowchart TB
         TARGETS["docs_rs_targets"]
         FEAT["feature_supported_on_clippy_target"]
         ENV["clippy_env / feature_clippy_env"]
-        AXCFG["clippy_axconfig_override"]
         CHECKS["Vec<ClippyCheck>"]
     end
 
@@ -40,7 +39,7 @@ flowchart TB
     end
 
     ARGS --> VALID --> RESOLVE --> SKIP --> TARGETS
-    TARGETS --> FEAT --> ENV --> AXCFG --> CHECKS
+    TARGETS --> FEAT --> ENV --> CHECKS
     CHECKS --> RUN --> PROC --> SUM --> TIME
 ```
 
@@ -50,9 +49,9 @@ flowchart TB
 |----------|------|
 | `scripts/axbuild/src/clippy/mod.rs` | CLI 入口、模块级常量（如 `AXSTD_STD_*`、`AX_HAL_PACKAGE`） |
 | `scripts/axbuild/src/clippy/selection.rs` | 参数校验、包选择（全量 / `--package` / `--since` 增量）、不支持的包过滤 |
-| `scripts/axbuild/src/clippy/check.rs` | `ClippyCheck` / `ClippyCheckKind` / `ClippyDepsMode` / `ClippyAxconfigOverride` 数据模型与 `cargo_args` 构造 |
+| `scripts/axbuild/src/clippy/check.rs` | `ClippyCheck` / `ClippyCheckKind` / `ClippyDepsMode` 数据模型与 `cargo_args` 构造 |
 | `scripts/axbuild/src/clippy/expand.rs` | 把每个包按 feature × target 展开为 `ClippyCheck` 列表 |
-| `scripts/axbuild/src/clippy/env.rs` | 为每个 check 计算所需环境变量（如 `AX_CONFIG_PATH`）与 axconfig override |
+| `scripts/axbuild/src/clippy/env.rs` | 为特殊 check 计算所需环境变量；普通包当前不额外注入环境变量 |
 | `scripts/axbuild/src/clippy/targets.rs` | 从 docs.rs metadata 提取包支持的 target，以及 feature↔target 兼容性判断 |
 | `scripts/axbuild/src/clippy/runner.rs` | `CargoRunner` trait 与 `ProcessCargoRunner`，fail-fast 执行 |
 | `scripts/axbuild/src/clippy/report.rs` | `ClippyRunReport` 聚合与人类可读报告 |
@@ -85,9 +84,9 @@ flowchart TB
 1. **target** 来自 `docs_rs_targets(package)`，从 docs.rs metadata 读取包声明支持的 target；为空时取单个 `None`（host target）。
 2. **feature** 取包 `Cargo.toml` 中除 `default` 外的全部 feature；`ax-std` 额外注入一个名为 `default` 的特殊 feature。
 3. 每个 (target, base) 组合产生一个 base check；`NoDeps` 模式下再为每个该 target 支持的 feature 产生一个 feature check。
-4. feature check 若声明了 axconfig override，则通过 `ClippyAxconfigOverride::generate` 先生成 `axconfig.toml`，并把 `AX_CONFIG_PATH` 注入环境。
+4. feature check 使用对应 feature 名执行；普通包不额外注入构建环境变量。
 
-`ax-std` 的 `default` feature 被特殊重写为 `std-compat,plat-dyn,fs,multitask,irq,net`（常量 `AXSTD_STD_CLIPPY_FEATURES`），target 固定为 `x86_64-unknown-none`，以便在没有真实平台的情况下覆盖 std 兼容层。
+`ax-std` 的 `default` feature 被特殊重写为 `std-compat,fs,multitask,irq,net`（常量 `AXSTD_STD_CLIPPY_FEATURES`），target 固定为 `x86_64-unknown-none`，以便在没有真实平台的情况下覆盖 std 兼容层。
 
 ### target 来源与归一化
 
@@ -120,27 +119,9 @@ targets = ["aarch64-unknown-linux-gnu", "riscv64gc-unknown-none-elf"]
 
 如果一个包的某 feature 直接或间接依赖 `ax-hal/plat-dyn`，但当前 target 的架构不在支持列表中，该 feature check 会被跳过。依赖关系通过解析包 `Cargo.toml` 中该 feature 的 `features` 数组（形如 `ax-hal/plat-dyn` 或 `ax-hal?/plat-dyn`）递归判断。
 
-### 环境变量与 axconfig override
+### 环境变量
 
-`clippy_env(package)` 检查包目录下是否存在 `axconfig.toml`（常量 `AXCONFIG_FILE`），存在则注入 `AX_CONFIG_PATH` 环境变量指向它。这使得依赖编译期配置宏的包（如需要内存布局、SMP 数值的 crate）在 clippy 时也能获得正确的配置。
-
-更复杂的情况是 feature 级别的 axconfig override。包可在 `Cargo.toml` 中声明：
-
-```toml
-[package.metadata.axbuild.clippy-feature-axconfig-overrides]
-my-feature = ["plat.max-cpu-num=8", "plat.phys-memory-size=0x80000000"]
-```
-
-`feature_axconfig_overrides` 解析这段 metadata，返回 `HashMap<feature, Vec<override>>`。当展开到该 feature 的 check 时，`clippy_axconfig_override` 构造一个 `ClippyAxconfigOverride`：
-
-- `target`：当前 check 的 target
-- `platform_config`：包目录下的 `axconfig.toml`
-- `out_config`：`tmp/axbuild/axconfig/<pkg>/<target>/clippy/<feature>/.axconfig.toml`
-- `overrides`：用户声明的键值对
-
-`ClippyAxconfigOverride::generate` 调用 `build::generate_axconfig` 合并 defconfig + 平台 config + overrides，生成专属的 `.axconfig.toml`。`feature_clippy_env` 随后把 `AX_CONFIG_PATH` 指向这个生成的文件（覆盖 base env 中的同名变量）。
-
-`ax-std` 的 `default` feature 走另一条路径：`axstd_std_clippy_env` 调用 `build::prepare_std_build_env` 准备一整套 std 兼容环境（target 固定 `x86_64-unknown-none`，plat-dyn = true）。
+`clippy_env(package)` 当前对普通包返回空环境。`ax-std` 的 `default` feature 走特殊路径：`axstd_std_clippy_env` 调用 `build::prepare_std_build_env` 准备 std 兼容环境，target 固定为 `x86_64-unknown-none`。当前动态平台路径不再生成 `.axconfig.toml`，clippy 也不会注入 `AX_CONFIG_PATH`。
 
 ## 单个 Check 的执行
 
@@ -148,12 +129,12 @@ my-feature = ["plat.max-cpu-num=8", "plat.phys-memory-size=0x80000000"]
 
 - Base check：`clippy -p <pkg>`
 - Feature check：`clippy -p <pkg> --no-default-features --features <feature>`
-- `ax-std` default 特判：替换为 `--features std-compat,plat-dyn,fs,multitask,irq,net`
+- `ax-std` default 特判：替换为 `--features std-compat,fs,multitask,irq,net`
 - `NoDeps`：在 `clippy` 后插入 `--no-deps`，避免依赖 crate 的告警污染结果
 - 有 target：追加 `--target <target>`
 - 固定尾部：`-- -D warnings`（任何告警即失败）
 
-`ProcessCargoRunner::run_clippy` 在执行前如有 axconfig override 会先调 `generate()` 写盘，然后调用 `support::process::run_cargo_status_with_env`，把 `check.env` 中的环境变量（如 `AX_CONFIG_PATH`）传入子进程。
+`ProcessCargoRunner::run_clippy` 调用 `support::process::run_cargo_status_with_env`，把 `check.env` 中的环境变量传入子进程。
 
 ## 执行模型与报告
 
@@ -163,9 +144,8 @@ my-feature = ["plat.max-cpu-num=8", "plat.phys-memory-size=0x80000000"]
 
 `ProcessCargoRunner::run_clippy` 对每个 check 执行：
 
-1. 如果 check 声明了 axconfig override，先调用 `ClippyAxconfigOverride::generate` 生成 `.axconfig.toml`
-2. 调用 `check.cargo_args()` 构造命令行
-3. 调用 `support::process::run_cargo_status_with_env(workspace_root, &args, &check.env)` 执行 cargo clippy 子进程，注入环境变量
+1. 调用 `check.cargo_args()` 构造命令行
+2. 调用 `support::process::run_cargo_status_with_env(workspace_root, &args, &check.env)` 执行 cargo clippy 子进程，注入环境变量
 
 每个 check 执行前打印计划行（`print_clippy_check_plan`），格式形如 `[N/M] <label>`，让用户知道当前进度和剩余数量。成功打印 `ok: <label>`，失败则 bail。
 
@@ -200,7 +180,7 @@ cargo xtask clippy
 cargo xtask clippy --all
 
 # 只检查指定包
-cargo xtask clippy --package axcpu --page_table_multiarch
+cargo xtask clippy --package axcpu --package page_table_multiarch
 
 # 增量：只检查自某个 git ref 以来变更及受影响的包
 cargo xtask clippy --since origin/main

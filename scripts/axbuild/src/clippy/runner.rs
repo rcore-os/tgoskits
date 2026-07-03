@@ -54,9 +54,6 @@ pub(super) struct ProcessCargoRunner;
 
 impl CargoRunner for ProcessCargoRunner {
     fn run_clippy(&mut self, workspace_root: &Path, check: &ClippyCheck) -> anyhow::Result<bool> {
-        if let Some(axconfig_override) = &check.axconfig_override {
-            axconfig_override.generate(workspace_root)?;
-        }
         let args = check.cargo_args();
         run_cargo_status_with_env(workspace_root, &args, &check.env)
     }

@@ -3,41 +3,23 @@
 inspect_platform = $(shell $(AXPLAT_INSPECT) --manifest-dir "$(CARGO_MANIFEST_DIR)" --package $(PLAT_PACKAGE))
 inspect_value = $(strip $(patsubst $(1)=%,%,$(filter $(1)=%,$(platform_info))))
 
-config_value = $(strip $(shell $(AXCONFIG) "$(PLAT_CONFIG)" -r $(1)))
-config_string_value = $(patsubst "%",%,$(call config_value,$(1)))
 platform_package_aliases = $(strip $(1) $(patsubst axplat-%,ax-plat-%,$(1)) $(patsubst ax-plat-%,axplat-%,$(1)))
 
 define validate_config
-  $(if $(strip $(PLAT_PACKAGE)),,$(error PLAT_CONFIG=$(PLAT_CONFIG) is not a valid platform configuration file)) \
+  $(if $(strip $(PLAT_PACKAGE)),,$(error static platform configuration is no longer supported; use cargo xtask for dynamic platform builds)) \
   $(if $(filter $(EXPECTED_PLAT_PACKAGE),$(PLAT_PACKAGE)),,\
     $(error `PLAT_PACKAGE` field mismatch: expected $(EXPECTED_PLAT_PACKAGE), got $(PLAT_PACKAGE)))
 endef
 
 define default_platform_package
-  $(if $(filter x86_64,$(ARCH)),$(error x86_64 no longer has a repo-owned static default platform; use cargo xtask for plat-dyn builds or pass MYPLAT/PLAT_CONFIG explicitly),\
-    $(if $(filter aarch64,$(ARCH)),$(error AArch64 no longer has a repo-owned static default platform; use cargo xtask for plat-dyn builds or pass MYPLAT/PLAT_CONFIG explicitly),\
-      $(if $(filter riscv64,$(ARCH)),$(error RISC-V QEMU no longer has a repo-owned static default platform; use cargo xtask for plat-dyn builds or pass MYPLAT/PLAT_CONFIG explicitly),\
-        $(if $(filter loongarch64,$(ARCH)),$(error LoongArch QEMU no longer has a repo-owned static default platform; use cargo xtask for plat-dyn builds or pass MYPLAT/PLAT_CONFIG explicitly),\
+  $(if $(filter x86_64,$(ARCH)),$(error x86_64 no longer has a repo-owned static default platform; use cargo xtask for dynamic platform builds or pass MYPLAT/PLAT_CONFIG explicitly),\
+    $(if $(filter aarch64,$(ARCH)),$(error AArch64 no longer has a repo-owned static default platform; use cargo xtask for dynamic platform builds or pass MYPLAT/PLAT_CONFIG explicitly),\
+      $(if $(filter riscv64,$(ARCH)),$(error RISC-V QEMU no longer has a repo-owned static default platform; use cargo xtask for dynamic platform builds or pass MYPLAT/PLAT_CONFIG explicitly),\
+        $(if $(filter loongarch64,$(ARCH)),$(error LoongArch QEMU no longer has a repo-owned static default platform; use cargo xtask for dynamic platform builds or pass MYPLAT/PLAT_CONFIG explicitly),\
           $(error "ARCH" must be one of "x86_64", "riscv64", "aarch64" or "loongarch64")))))
 endef
 
-ifneq ($(wildcard $(PLAT_CONFIG)),)
-  PLAT_PACKAGE := $(call config_string_value,package)
-  EXPECTED_PLAT_PACKAGE := $(if $(MYPLAT),$(call platform_package_aliases,$(MYPLAT)),$(PLAT_PACKAGE))
-  PLAT_NAME := $(call config_string_value,platform)
-  PLAT_ARCH := $(call config_string_value,arch)
-  PLAT_SMP := $(call config_value,plat.max-cpu-num)
-  PHYS_MEMORY_SIZE := $(call config_value,plat.phys-memory-size)
-  $(call validate_config)
-
-  _arch := $(PLAT_ARCH)
-  ifeq ($(origin ARCH),command line)
-    ifneq ($(ARCH),$(_arch))
-      $(error "ARCH=$(ARCH)" is not compatible with "PLAT_CONFIG=$(PLAT_CONFIG)")
-    endif
-  endif
-  ARCH := $(_arch)
-else ifeq ($(MYPLAT),)
+ifeq ($(MYPLAT),)
   # `MYPLAT` is not specified, use the default platform for each architecture
   PLAT_PACKAGE := $(strip $(call default_platform_package))
   EXPECTED_PLAT_PACKAGE := $(PLAT_PACKAGE)

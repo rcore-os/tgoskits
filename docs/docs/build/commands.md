@@ -44,7 +44,6 @@ cargo arceos qemu --package arceos-httpserver   # 同上
 | `cargo xtask spin-lint` | vendored `spin` 迁移守护 | [Spin Lint](./spin_lint) |
 | **辅助工具** | | |
 | `cargo xtask board` | 远程板卡管理（ls/connect/config） | [板卡管理](./board) |
-| `cargo xtask config` | axconfig 平台配置工具 | [Config 辅助命令](./config_cmd) |
 | `cargo xtask backtrace` | host 端 backtrace 符号化 | [Backtrace 符号化](./backtrace) |
 | `cargo xtask image` | TGOS rootfs/guest 镜像管理 | [镜像管理](./image) |
 | `cargo xtask axloader` | UEFI bootloader 构建与 HTTP smoke 测试 | [Axloader](./axloader) |
@@ -53,7 +52,7 @@ cargo arceos qemu --package arceos-httpserver   # 同上
 | `cargo xtask starry` | StarryOS 构建/运行/测试/app/perf/kmod | [StarryOS](./starry/overview) |
 | `cargo xtask axvisor` | Axvisor 构建/运行/测试（含 `test uboot`） | [Axvisor](./axvisor/overview) |
 
-通用的参数解析、Snapshot、Build Info、axconfig 机制见 [参数与配置](./configuration)；CI 自动化见 [自动 CI 测试](./ci)。
+通用的参数解析、Snapshot、Build Info 和动态平台构建约定见 [参数与配置](./configuration)；CI 自动化见 [自动 CI 测试](./ci)。
 
 ---
 
@@ -128,23 +127,6 @@ cargo xtask spin-lint
 
 详见 [板卡管理](./board)。
 
-### `config`
-
-axconfig 平台配置工具（手动调试和 Makefile 兼容）。
-
-| 子命令 | 用法 | 说明 |
-|--------|------|------|
-| `platform-path` | `config platform-path --package <PKG>` | 定位平台包的 `axconfig.toml` |
-| `read` | `config read -r <ITEM> <SPEC>...` | 合并配置规范，读取单个配置项 |
-| `generate` | `config generate -o <OUT> <SPEC>... [-c <OLD>] [-w <K=V>...]` | 合并配置规范生成 TOML |
-| `inspect` | `config inspect --package <PKG> [--makefile]` | 输出平台包字段供 Makefile 解析 |
-
-`generate` 参数：`-o/--output <PATH>`（必需）、`-c/--oldconfig <PATH>`（保留旧值）、`-w/--write <table.key=value>`（覆盖项，可重复）。
-
-`inspect` 参数：`--manifest-dir <DIR>`（依赖查找目录）、`--config <PATH>`（显式配置路径）、`--makefile`（单行 key=value 输出）。
-
-详见 [Config 辅助命令](./config_cmd)。
-
 ### `backtrace symbolize`
 
 从日志中提取并符号化 `BACKTRACE_BEGIN/BT/BACKTRACE_END` 块。
@@ -207,7 +189,6 @@ UEFI bootloader（axloader）构建与 HTTP smoke 测试。
 | `-p/--package <PACKAGE>` | ArceOS app 包名（必需） |
 | `--arch <ARCH>` | 目标架构，默认 `aarch64` |
 | `-t/--target <TARGET>` | target triple |
-| `--plat_dyn <true\|false>` | 是否使用动态平台（默认 true） |
 | `--smp <CPUS>` | CPU 核数 |
 | `--debug` | debug 构建 |
 
@@ -236,6 +217,8 @@ UEFI bootloader（axloader）构建与 HTTP smoke 测试。
 |--------|------|
 | `test qemu` | `[--arch \| -t/--target \| --list] [-g/--test-group <G>] [-c/--test-case <C>] [--no-symbolize] [--keep-qemu-log]`（三选一） |
 | `test board` | `[-c/--test-case <C>] [--board <B>] [-b/--board-type <T>] [--server <H>] [--port <P>] [--list]` |
+
+动态平台加载固定启用，Build Info 中不再提供平台选择开关。旧 `plat_dyn` 字段会被拒绝。
 
 ```bash
 cargo arceos build --package arceos-helloworld --arch aarch64
@@ -437,7 +420,6 @@ cargo xtask starry kmod build [--arch <ARCH>] [--target <TARGET>] [--config <PAT
 | `-c/--config <CONFIG>` | 显式 Build Info 路径 |
 | `--arch <ARCH>` | 目标架构，默认 `aarch64` |
 | `-t/--target <TARGET>` | target triple |
-| `--plat_dyn <true\|false>` | 是否使用动态平台 |
 | `--smp <CPUS>` | CPU 核数 |
 | `--debug` | debug 构建 |
 | `--vmconfigs <VMCONFIGS>`（可重复） | Guest VM 配置文件列表 |
@@ -469,6 +451,8 @@ cargo xtask starry kmod build [--arch <ARCH>] [--target <TARGET>] [--config <PAT
 | `test qemu` | `[--arch \| -t/--target \| --list] [-g/--test-group <G>] [-c/--test-case <C>]` | 三选一 |
 | `test uboot` | `-b/--board <BOARD> [--guest <GUEST>] [--uboot-config <P>]` | `--guest` 默认 `linux` |
 | `test board` | `[-g/--test-group <G>] [-c/--test-case <C>] [--board <B>] [-b/--board-type <T>] [--server <H>] [--port <P>] [--list]` | — |
+
+动态平台加载固定启用，旧平台选择 feature 会在构建配置读取和最终 Cargo 配置组装时过滤。
 
 ```bash
 cargo axvisor build

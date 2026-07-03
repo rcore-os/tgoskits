@@ -18,7 +18,6 @@ pub(super) fn test_build_args(package: &str, target: &str, config: &Path) -> Bui
         package: Some(package.to_string()),
         arch: None,
         target: Some(target.to_string()),
-        plat_dyn: None,
         smp: None,
         debug: false,
     }

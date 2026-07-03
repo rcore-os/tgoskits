@@ -99,11 +99,6 @@ impl AppContext {
             && cli.arch.is_none()
             && cli.target.is_none()
             && cli.config.is_none();
-        let plat_dyn = cli.plat_dyn.or_else(|| {
-            inherit_snapshot_runtime
-                .then_some(snapshot.plat_dyn)
-                .flatten()
-        });
         let smp = cli
             .smp
             .or_else(|| inherit_snapshot_runtime.then_some(snapshot.smp).flatten());
@@ -127,7 +122,6 @@ impl AppContext {
             package: package.clone(),
             arch: arch.clone(),
             target: target.clone(),
-            plat_dyn,
             smp,
             debug: cli.debug,
             build_info_path: build_info_path.clone(),
@@ -139,7 +133,6 @@ impl AppContext {
             package: Some(package),
             arch: Some(arch),
             target: Some(target),
-            plat_dyn,
             smp,
             config: Some(snapshot_path_value(&self.root, &build_info_path)),
             qemu: ArceosQemuSnapshot {
@@ -225,7 +218,6 @@ impl AppContext {
             package: STARRY_PACKAGE.to_string(),
             arch: arch.clone(),
             target: target.clone(),
-            plat_dyn: None,
             smp,
             debug: cli.debug,
             build_info_path: build_info_path.clone(),
@@ -314,7 +306,6 @@ impl AppContext {
             }
         });
         let (arch, target) = resolve_axvisor_arch_and_target(effective_arch, effective_target)?;
-        let plat_dyn = cli.plat_dyn.or(snapshot.plat_dyn);
         let smp = cli.smp.or(snapshot.smp);
         let build_info_path = resolve_build_info_path(&axvisor_dir, &target, explicit_config)?;
         let inherit_snapshot_runtime = cli.arch.is_none()
@@ -348,7 +339,6 @@ impl AppContext {
             axvisor_dir,
             arch: arch.clone(),
             target: target.clone(),
-            plat_dyn,
             smp,
             debug: cli.debug,
             build_info_path: build_info_path.clone(),
@@ -360,7 +350,6 @@ impl AppContext {
         let snapshot = AxvisorCommandSnapshot {
             arch: Some(arch),
             target: Some(target),
-            plat_dyn,
             smp,
             config: Some(snapshot_path_value(&self.root, &build_info_path)),
             vmconfigs: vmconfigs

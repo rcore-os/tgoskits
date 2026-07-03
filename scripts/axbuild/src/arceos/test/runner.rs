@@ -372,7 +372,6 @@ mod tests {
                 package: ARCEOS_RUST_TEST_PACKAGE.to_string(),
                 arch: "x86_64".to_string(),
                 target: "x86_64-unknown-none".to_string(),
-                plat_dyn: None,
                 smp: None,
                 debug: false,
                 build_info_path: build_config_path.to_path_buf(),

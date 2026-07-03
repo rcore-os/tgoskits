@@ -53,6 +53,10 @@ pub type PinctrlResult<T> = core::result::Result<T, PinctrlError>;
 pub trait PinCtrlOp {
     fn set_config(&mut self, config: PinConfig) -> PinctrlResult<()>;
 
+    fn set_pull(&mut self, pin: PinId, pull: Pull) -> PinctrlResult<()>;
+
+    fn set_drive(&mut self, pin: PinId, drive: u32) -> PinctrlResult<()>;
+
     fn get_config(&self, pin: PinId) -> PinctrlResult<PinConfig>;
 
     fn gpio_direction(&self, pin: PinId) -> PinctrlResult<GpioDirection>;

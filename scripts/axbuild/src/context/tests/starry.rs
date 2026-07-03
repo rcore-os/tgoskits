@@ -71,7 +71,6 @@ uboot_config = "configs/snapshot-uboot.toml"
     assert_eq!(request.package, STARRY_PACKAGE);
     assert_eq!(request.arch, "aarch64");
     assert_eq!(request.target, "aarch64-unknown-none-softfloat");
-    assert_eq!(request.plat_dyn, None);
     assert_eq!(request.smp, Some(4));
     assert!(request.debug);
     assert_eq!(
@@ -119,7 +118,6 @@ qemu_config = "configs/qemu.toml"
     assert_eq!(request.package, STARRY_PACKAGE);
     assert_eq!(request.arch, DEFAULT_STARRY_ARCH);
     assert_eq!(request.target, DEFAULT_STARRY_TARGET);
-    assert_eq!(request.plat_dyn, None);
     assert_eq!(
         request.build_info_path,
         root.path()
@@ -182,7 +180,6 @@ fn prepare_starry_request_explicit_config_target_overrides_snapshot_target() {
         r#"
 target = "riscv64gc-unknown-none-elf"
 features = [
-    "plat-dyn",
     "starry-kernel/sg2002",
     "axplat-dyn/thead-mae",
 ]

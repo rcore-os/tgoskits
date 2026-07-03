@@ -24,7 +24,6 @@ else ifneq ($(filter $(or $(MAKECMDGOALS), $(.DEFAULT_GOAL)), all build run just
     $(info APP: "$(APP)")
     $(info APP_TYPE: "$(APP_TYPE)")
     $(info FEATURES: "$(FEATURES)")
-    $(info PLAT_CONFIG: "$(PLAT_CONFIG)")
     $(info arceos features: "$(AX_FEAT)")
     $(info lib features: "$(LIB_FEAT)")
     $(info app features: "$(APP_FEAT)")
@@ -45,7 +44,7 @@ else ifneq ($(filter $(or $(MAKECMDGOALS), $(.DEFAULT_GOAL)), all build run just
   endif
 endif
 
-_cargo_build: oldconfig
+_cargo_build:
 	@printf "    $(GREEN_C)Building$(END_C) App: $(APP_NAME), Arch: $(ARCH), Platform: $(PLAT_NAME), App type: $(APP_TYPE)\n"
 ifeq ($(APP_TYPE), rust)
 	$(call cargo_build,$(APP),$(AX_FEAT) $(LIB_FEAT) $(APP_FEAT))
@@ -81,7 +80,7 @@ endif
 $(OUT_UIMG): $(OUT_BIN)
 	$(call run_cmd,mkimage,\
 		-A $(uimg_arch) -O linux -T kernel -C none \
-		-a $(subst _,,$(shell $(AXCONFIG) "$(OUT_CONFIG)" -r plat.kernel-base-paddr)) \
+		-a $(KERNEL_LOAD_PADDR) \
 		-d $(OUT_BIN) $@)
 
 .PHONY: _cargo_build _dwarf

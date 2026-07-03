@@ -1,6 +1,6 @@
 [package]
 name = "ax-libc"
-version = "0.5.22"
+version = "0.5.23"
 repository = "https://github.com/rcore-os/tgoskits"
 edition.workspace = true
 authors = [
@@ -33,7 +33,6 @@ irq = ["ax-posix-api/irq", "ax-feat/irq"]
 # Custom or default platforms
 myplat = ["ax-feat/myplat"]
 defplat = ["ax-feat/defplat"]
-plat-dyn = ["ax-feat/plat-dyn", "ax-posix-api/plat-dyn"]
 
 # Memory
 alloc = ["ax-posix-api/alloc"]

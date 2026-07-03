@@ -12,7 +12,6 @@ mod backtrace;
 mod board;
 mod build;
 mod clippy;
-mod config;
 pub mod context;
 mod firmware;
 pub mod image;
@@ -67,11 +66,6 @@ enum Commands {
         #[command(subcommand)]
         command: board::Command,
     },
-    /// Config generation and inspection helpers
-    Config {
-        #[command(subcommand)]
-        command: config::Command,
-    },
     /// Backtrace host-side helpers
     Backtrace {
         #[command(subcommand)]
@@ -117,7 +111,6 @@ async fn run_root_cli(cli: Cli) -> anyhow::Result<()> {
         Commands::SyncLint(args) => sync_lint::run_sync_lint_command(&args),
         Commands::SpinLint => spin_lint::run_spin_lint_command(),
         Commands::Board { command } => board::execute(command).await,
-        Commands::Config { command } => config::execute(command),
         Commands::Backtrace { command } => backtrace::execute(command),
         Commands::Image(args) => image::run(args).await,
         Commands::Axvisor { command } => Axvisor::new()?.execute(command).await,

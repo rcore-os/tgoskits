@@ -9,11 +9,11 @@ Axvisor 是 TGOSKits 的 Hypervisor 子系统。与 [ArceOS](../arceos/overview)
 
 本目录详细描述 Axvisor 的全部命令。深入的主题有独立文档：
 
-- [Axvisor 构建](./build)：Hypervisor 编译、`defplat→myplat` 归一化、板卡配置自动复制
+- [Axvisor 构建](./build)：Hypervisor 编译、旧平台选择项过滤、板卡配置自动复制
 - [Axvisor 运行](./runtime)：QEMU / U-Boot / 板卡、loongarch64 LVZ QEMU、Guest UEFI firmware
 - [Axvisor 测试](./test)：QEMU / U-Boot / Board 三种测试模式（含 Axvisor 独有的 `test uboot`）
 
-通用的参数解析、Snapshot、Build Info、axconfig 机制详见 [参数与配置](../configuration)。
+通用的参数解析、Snapshot、Build Info 和动态平台构建约定详见 [参数与配置](../configuration)。
 
 ## 子命令
 
@@ -35,7 +35,7 @@ cargo xtask axvisor <subcommand> [options]
 
 ## 参数
 
-**通用参数**（`build` / `qemu` / `uboot` / `board`）：`--arch`、`--target`、`--config`、`--plat-dyn`/`--plat_dyn`、`--smp`、`--debug`、`--vmconfigs`。默认架构 `aarch64`。
+**通用参数**（`build` / `qemu` / `uboot` / `board`）：`--arch`、`--target`、`--config`、`--smp`、`--debug`、`--vmconfigs`。默认架构 `aarch64`。
 
 **QEMU 额外参数**：`--qemu-config <PATH>`、`--rootfs <IMAGE>`
 **Board 额外参数**：`--board-config <PATH>`、`-b/--board-type <TYPE>`、`--server <HOST>`、`--port <PORT>`
@@ -47,9 +47,9 @@ cargo xtask axvisor <subcommand> [options]
 
 Axvisor 的核心特有参数 `--vmconfigs <PATH>...` 指定一个或多个 VM 配置文件列表。每个 VM 配置描述一个 Guest（如 Linux、StarryOS guest）的内存、CPU、设备和启动来源。Axvisor 在 QEMU 运行前会准备所有引用的 rootfs 和 guest 镜像。详见 [Axvisor 构建](./build) 和 [Axvisor 运行](./runtime)。
 
-### `defplat → myplat` feature 归一化
+### 旧平台选择项过滤
 
-Axvisor 的 board 配置声明 `ax-std/defplat`，但 Cargo 编译需要 `ax-std/myplat`。`axbuild` 自动归一化，详见 [Axvisor 构建](./build)。
+Axvisor 旧配置中可能出现 `defplat`、`myplat`、`plat-dyn` 或 `axplat-dyn/*` 等平台选择项。当前构建固定走动态平台路径，`axbuild` 会过滤这些旧 feature；Build Info 中的旧 `plat_dyn` 字段会被拒绝。详见 [Axvisor 构建](./build)。
 
 ### LoongArch LVZ QEMU
 

@@ -1,16 +1,13 @@
 #![feature(used_with_arg)]
 
 use ax_driver::{PlatformDevice, probe::OnProbeError};
-#[cfg(feature = "plat-dyn")]
 use axklib::{
     AxError, AxResult, BoxedIrqHandler, ConcurrentBoxedIrqHandler, IrqCpuMask, IrqHandle, IrqId,
     Klib, PhysAddr, VirtAddr, impl_trait,
 };
 
-#[cfg(feature = "plat-dyn")]
 struct KlibImpl;
 
-#[cfg(feature = "plat-dyn")]
 impl_trait! {
     impl Klib for KlibImpl {
         fn mem_iomap(_addr: PhysAddr, _size: usize) -> AxResult<VirtAddr> {

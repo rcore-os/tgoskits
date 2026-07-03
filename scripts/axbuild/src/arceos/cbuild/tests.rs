@@ -34,11 +34,12 @@ fn c_config_features_skips_nested_cargo_only_features() {
 }
 
 #[test]
-fn c_config_features_treats_dynamic_platform_as_smp() {
+fn c_config_features_ignore_removed_dynamic_platform_feature() {
     let features = c_config_features(&strings(&["plat-dyn", "multitask"]));
 
-    assert!(features.contains("smp"));
     assert!(features.contains("multitask"));
+    assert!(!features.contains("plat-dyn"));
+    assert!(!features.contains("smp"));
 }
 
 #[test]
@@ -111,19 +112,20 @@ fn map_c_app_features_does_not_forward_case_define_features_to_cargo() {
 }
 
 #[test]
-fn map_c_app_features_maps_dynamic_platform_for_axlibc() {
+fn map_c_app_features_ignores_removed_dynamic_platform_feature() {
     let features = map_c_app_features(&strings(&["alloc"]), &strings(&["plat-dyn"]));
 
-    assert!(features.contains(&"plat-dyn".to_string()));
     assert!(features.contains(&"alloc".to_string()));
-    assert!(features.contains(&"smp".to_string()));
+    assert!(!features.contains(&"plat-dyn".to_string()));
+    assert!(!features.contains(&"smp".to_string()));
 }
 
 #[test]
-fn dynamic_c_apps_use_pie_for_every_dynamic_platform() {
+fn c_apps_always_use_pie() {
+    assert!(dynamic_pie_for_c_app(&[]));
     assert!(dynamic_pie_for_c_app(&strings(&["plat-dyn"])));
     assert!(dynamic_pie_for_c_app(&strings(&["ax-std/plat-dyn"])));
-    assert!(!dynamic_pie_for_c_app(&strings(&["smp"])));
+    assert!(dynamic_pie_for_c_app(&strings(&["smp"])));
 }
 
 #[test]
@@ -180,11 +182,11 @@ fn pthread_mutex_header_matches_plain_smp_layout() {
 }
 
 #[test]
-fn pthread_mutex_header_matches_dynamic_platform_smp_layout() {
+fn pthread_mutex_header_ignores_removed_dynamic_platform_feature() {
     let header = pthread_mutex_header_contents(&strings(&["multitask", "plat-dyn"]));
 
-    assert!(header.contains("long __l[6];"));
-    assert!(header.contains("{0, 0, 8, 0, 0, 0}"));
+    assert!(header.contains("long __l[5];"));
+    assert!(header.contains("{0, 8, 0, 0, 0}"));
 }
 
 #[test]
@@ -243,29 +245,22 @@ fn linker_search_dirs_use_current_platform_script_owner() {
 }
 
 #[test]
-fn linker_search_dirs_use_axhal_for_generic_static_platforms() {
+fn linker_search_dirs_use_axplat_dyn_for_generic_dynamic_platforms() {
     let root = tempfile::tempdir().unwrap();
     let target_dir = root.path().join("target");
     let target = "riscv64gc-unknown-none-elf";
     let mode = "release";
     let build_dir = target_dir.join(target).join(mode).join("build");
-    let axhal_out = build_dir.join("ax-hal-abc/out");
+    let axplat_out = build_dir.join("axplat-dyn-abc/out");
     let runtime_out = build_dir.join("ax-runtime-def/out");
-    fs::create_dir_all(&axhal_out).unwrap();
+    fs::create_dir_all(&axplat_out).unwrap();
     fs::create_dir_all(&runtime_out).unwrap();
-    fs::write(axhal_out.join("axplat.x"), "").unwrap();
+    fs::write(axplat_out.join("axplat.x"), "").unwrap();
     fs::write(runtime_out.join(ARCEOS_LINKER_SCRIPT), "").unwrap();
 
-    let dirs = find_linker_search_dirs(
-        &target_dir,
-        target,
-        mode,
-        "custom-board",
-        &strings(&["ax-hal/custom-board"]),
-    )
-    .unwrap();
+    let dirs = find_linker_search_dirs(&target_dir, target, mode, "riscv64-generic", &[]).unwrap();
 
-    assert_eq!(dirs, vec![axhal_out, runtime_out]);
+    assert_eq!(dirs, vec![runtime_out, axplat_out]);
 }
 
 #[test]

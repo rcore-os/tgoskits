@@ -33,11 +33,8 @@ qemu = [
 smp = ["ax-feat/smp", "axplat-dyn?/smp", "ax-hal/smp"]
 
 k230 = [
-  "plat-dyn",
   "starry-kernel/k230-kpu",
   "ax-driver/k230-sdhci",
   "ax-driver/serial",
 ]
-plat-dyn = ["dep:axplat-dyn", "starry-kernel/plat-dyn"]
-
 rknpu = ["ax-driver/rknpu", "starry-kernel/rknpu"]

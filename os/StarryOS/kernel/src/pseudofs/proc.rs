@@ -167,7 +167,7 @@ fn render_cpuinfo() -> String {
 /// `/proc/device-tree/`. Returns `None` when the FDT is unavailable (non-FDT
 /// platform) or the property is missing/empty. Only the JPU/MPP path consumes
 /// this, so it is gated on the `jpeg` feature.
-#[cfg(all(feature = "jpeg", feature = "plat-dyn"))]
+#[cfg(feature = "jpeg")]
 fn read_dt_root_property(name: &str) -> Option<Vec<u8>> {
     rdrive::with_fdt(|fdt| {
         let root = fdt.get_by_path("/")?;
@@ -183,11 +183,6 @@ fn read_dt_root_property(name: &str) -> Option<Vec<u8>> {
         }
         bytes
     })
-}
-
-#[cfg(all(feature = "jpeg", not(feature = "plat-dyn")))]
-fn read_dt_root_property(_name: &str) -> Option<Vec<u8>> {
-    None
 }
 
 #[cfg(target_arch = "riscv64")]

@@ -5,9 +5,9 @@ sidebar_label: "构建"
 
 # Axvisor 构建
 
-`cargo xtask axvisor build` 把用户友好的高层参数转换为 Cargo 能理解的底层编译参数，最终调用 ostool 的 `cargo_build()` 完成 Axvisor（Hypervisor）编译。本节描述 Axvisor 构建的完整流程及其特有行为；通用的参数解析、Snapshot、Build Info、axconfig 机制详见 [参数与配置](../configuration)，运行详见 [Axvisor 运行](./runtime)。
+`cargo xtask axvisor build` 把用户友好的高层参数转换为 Cargo 能理解的底层编译参数，最终调用 ostool 的 `cargo_build()` 完成 Axvisor（Hypervisor）编译。本节描述 Axvisor 构建的完整流程及其特有行为；通用的参数解析、Snapshot、Build Info 和动态平台构建约定详见 [参数与配置](../configuration)，运行详见 [Axvisor 运行](./runtime)。
 
-构建过程分八个阶段，与 [ArceOS](../arceos/build)、[StarryOS](../starry/build) 共享前四个阶段。Axvisor 在 Build Info 默认值、feature 归一化和 VM 配置注入上有独有的行为。
+构建过程与 [ArceOS](../arceos/build)、[StarryOS](../starry/build) 共享参数解析、arch/target 解析和 Build Info 加载逻辑。Axvisor 在 Build Info 默认值、旧平台选择项过滤和 VM 配置注入上有独有的行为。
 
 ## Axvisor 特有行为
 
@@ -23,14 +23,9 @@ Axvisor 默认架构为 `aarch64`（`aarch64-unknown-none-softfloat`）。详见
 
 Axvisor 首次构建时（无 Build Info）会**优先从 `os/axvisor/configs/board/` 查找与 target 匹配的默认板卡配置并复制**到 Build Info 路径（`tmp/axbuild/config/<pkg>/build-<target>.toml`），找不到时才写入清空 features 的默认 BuildInfo。这与 ArceOS（`ArceosBuildConfig::default_config()`）和 StarryOS（`default_starry_build_info_for_target()`）直接写入代码默认值不同。
 
-### `defplat → myplat` feature 归一化
+### 旧平台选择项过滤
 
-Axvisor 的 board 配置通常声明 `ax-std/defplat`（"使用默认平台"），但 Cargo 编译需要 `ax-std/myplat`（"使用自定义平台"）才能正确启用静态平台绑定。`axbuild` 通过 `normalize_axvisor_platform_features()` 在两处执行归一化：
-
-1. **`BuildInfo` 解析后**：把 `defplat` 替换为 `myplat`
-2. **`patch_axvisor_cargo_config()` 最终组装时**：再次归一化，并在既非动态平台又无任何平台 feature 时自动注入 `myplat`
-
-这确保 Axvisor 的静态平台编译始终正确。
+Axvisor 的旧 board 配置中可能声明 `defplat`、`myplat`、`plat-dyn`、`ax-std/plat-dyn`、`axvm/plat-dyn`、`ax-driver/plat-dyn` 或 `axplat-dyn/*` 等历史平台选择项。当前构建固定走动态平台路径，`axbuild` 在 Build Info 读取和最终 Cargo 配置组装时过滤这些 feature，避免旧平台选择项泄漏到当前构建。
 
 ## 注入的环境变量
 
@@ -42,7 +37,7 @@ Axvisor 在 Cargo 配置组装阶段额外注入环境变量（与 ArceOS/Starry
 | `AX_TARGET` | 当前 target triple | 编译期读取 |
 | `AXVISOR_VM_CONFIGS` | `--vmconfigs` 列表 | 编译期读取 VM 配置 |
 
-链接器参数：`plat_dyn=true` 用 `-Clink-arg=-Taxplat.x`，静态平台用 `-Clink-arg=-Tlinker.x -Clink-arg=-no-pie -Clink-arg=-znostart-stop-gc`。
+构建使用动态平台链接脚本 `Taxplat.x`。硬件信息来自启动时的固件表、FDT/ACPI 和 `somehal`/`axplat-dyn` 运行时发现结果；`axbuild` 不再生成 `.axconfig.toml`，也不再向 Cargo 注入 `AX_CONFIG_PATH`。
 
 ## 用法示例
 

@@ -1,7 +1,7 @@
 [package]
 name = "axvm"
 authors = ["aarkegz <aarkegz@gmail.com>"]
-version = "0.5.17"
+version = "0.5.18"
 edition.workspace = true
 categories = ["virtualization", "no-std"]
 description = "Virtual Machine resource management crate for ArceOS's hypervisor variant."
@@ -17,7 +17,6 @@ vmx = ["axaddrspace/vmx", "x86_vcpu/vmx"]
 svm = ["axaddrspace/svm", "x86_vcpu/svm"]
 sstc = ["riscv_vcpu/sstc"]
 4-level-ept = []
-plat-dyn = ["ax-std/plat-dyn", "dep:axplat-dyn"]
 
 [dependencies]
 log = "0.4"
@@ -62,7 +61,7 @@ hashbrown = "0.14"
 x86_vcpu = { workspace = true }
 x86_vlapic = { workspace = true }
 [target.'cfg(target_arch = "riscv64")'.dependencies]
-axplat-dyn = { workspace = true, optional = true, default-features = false }
+axplat-dyn = { workspace = true, default-features = false }
 riscv_vcpu = { workspace = true }
 riscv_vplic = { workspace = true }
 [target.'cfg(target_arch = "loongarch64")'.dependencies]

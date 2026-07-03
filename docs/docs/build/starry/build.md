@@ -5,9 +5,9 @@ sidebar_label: "构建"
 
 # StarryOS 构建
 
-`cargo xtask starry build` 把用户友好的高层参数（`--arch`、`--smp`）转换为 Cargo 能理解的底层编译参数，最终调用 ostool 的 `cargo_build()` 完成 StarryOS 内核编译。本节描述 StarryOS 构建的完整流程及其特有行为；通用的参数解析、Snapshot、Build Info、axconfig 机制详见 [参数与配置](../configuration)，运行详见 [StarryOS 运行](./runtime)。
+`cargo xtask starry build` 把用户友好的高层参数（`--arch`、`--smp`）转换为 Cargo 能理解的底层编译参数，最终调用 ostool 的 `cargo_build()` 完成 StarryOS 内核编译。本节描述 StarryOS 构建的完整流程及其特有行为；通用的参数解析、Snapshot、Build Info 和动态平台构建约定详见 [参数与配置](../configuration)，运行详见 [StarryOS 运行](./runtime)。
 
-构建过程分八个阶段，与 [ArceOS](../arceos/build)、[Axvisor](../axvisor/build) 共享前四个阶段，在 Feature 解析和 Build Info 默认值上分化。
+构建过程与 [ArceOS](../arceos/build)、[Axvisor](../axvisor/build) 共享参数解析、arch/target 解析和 Build Info 加载逻辑，在 Feature 解析和 Build Info 默认值上分化。
 
 ## StarryOS 特有行为
 
@@ -21,11 +21,11 @@ StarryOS 的默认架构是 `riscv64`（`riscv64gc-unknown-none-elf`），与 Ar
 
 ### Build Info 默认值
 
-初次构建时 StarryOS 写入 `default_starry_build_info_for_target()`：目标支持动态平台时会清空默认 features（走动态平台路径），静态平台时使用 `["qemu"]`。这与 ArceOS（`ArceosBuildConfig::default_config()`）和 Axvisor（优先从 `configs/board/` 复制）不同。
+初次构建时 StarryOS 写入 `default_starry_build_info_for_target()`，会清空默认 features 并走动态平台路径。这与 ArceOS（`ArceosBuildConfig::default_config()`）和 Axvisor（优先从 `configs/board/` 复制）不同。
 
-### axconfig 与动态平台
+### 动态平台固定启用
 
-StarryOS 默认走动态平台（`plat_dyn=true`），跳过 axconfig 预生成阶段。需要静态平台时显式写 `plat_dyn = false`，此时需要预生成 `.axconfig.toml`（详见 [参数与配置 §axconfig](../configuration#axconfig)）。
+StarryOS 当前构建固定走 `axplat-dyn` 路径。Build Info 中不再提供平台选择开关，旧 `plat_dyn` 字段会被拒绝；旧平台选择 feature 会在最终 Cargo 配置中被过滤。
 
 ## 注入的环境变量
 
@@ -54,6 +54,4 @@ cargo starry build
 # 多核构建
 cargo starry build --smp 4
 
-# 静态平台构建（需要预生成 axconfig）
-cargo starry build --plat-dyn false
 ```

@@ -26,7 +26,6 @@ flowchart LR
     D --> I1["SyncLint → run_sync_lint()"]
     D --> I2["SpinLint → run_spin_lint()"]
     D --> J["Board → board::execute()"]
-    D --> L["Config → config::execute()"]
     D --> L1["Backtrace → backtrace::execute()"]
     D --> L2["Image → image::run()"]
 ```
@@ -76,7 +75,6 @@ graph TD
         CLIPPY["clippy/<br/>静态检查"]
         SYNC_LINT["sync_lint/<br/>原子序检查"]
         SPIN_LINT["spin_lint.rs<br/>spin 版本校验"]
-        CONFIG["config.rs<br/>配置生成/检查"]
         IMAGE["image/<br/>镜像管理"]
         BACKTRACE["backtrace/<br/>符号化"]
         FIRMWARE["firmware.rs<br/>AIC8800 firmware"]
@@ -111,7 +109,6 @@ axbuild 的每个 `cargo xtask <cmd>` 都对应一篇专门文档。完整的命
 | `sync_lint/`   | `cargo xtask sync-lint`           | [Sync Lint](./sync_lint)        | 用`syn` 识别可疑的 `Relaxed` 原子序同步模式                       |
 | `spin_lint.rs` | `cargo xtask spin-lint`           | [Spin Lint](./spin_lint)        | 守护 vendored`spin` 迁移结果，禁止外部 `spin` 与 `spin::RwLock` |
 | `board.rs`     | `cargo xtask board`               | [板卡管理](./board)             | 远程板卡分配、串口连接与服务器配置                                    |
-| `config.rs`    | `cargo xtask config`              | [Config 辅助命令](./config_cmd) | axconfig 平台包定位、配置读取/生成、Makefile 字段检查                 |
 | `backtrace/`   | `cargo xtask backtrace symbolize` | [Backtrace 符号化](./backtrace) | 把 guest 输出的原始`ip` 地址块符号化为函数+文件:行号                |
 | `image/`       | `cargo xtask image`               | [镜像管理](./image)             | TGOS rootfs/guest 镜像注册表、下载、校验、解压                        |
 | `axloader/`    | `cargo xtask axloader build/test` | [Axloader](./axloader)          | 构建 UEFI bootloader 并用 QEMU + HTTP smoke 验证网络引导              |
@@ -124,11 +121,11 @@ axbuild 的每个 `cargo xtask <cmd>` 都对应一篇专门文档。完整的命
 | StarryOS | `cargo xtask starry`  | [StarryOS](./starry/overview) |
 | Axvisor  | `cargo xtask axvisor` | [Axvisor](./axvisor/overview) |
 
-三套 OS 子系统各自有完整的命令文档（构建、运行、测试及其他特有命令），不再有独立的"共享"章节——通用的参数解析、Snapshot、Build Info、axconfig 机制集中在 [参数与配置](./configuration)，各 OS 目录（`arceos/`、`starry/`、`axvisor/`）内含完整的构建/运行/测试文档及该 OS 特有的其他命令（如 StarryOS 的 app/perf/kmod/rootfs）。
+三套 OS 子系统各自有完整的命令文档（构建、运行、测试及其他特有命令），不再有独立的"共享"章节——通用的参数解析、Snapshot、Build Info 和动态平台构建约定集中在 [参数与配置](./configuration)，各 OS 目录（`arceos/`、`starry/`、`axvisor/`）内含完整的构建/运行/测试文档及该 OS 特有的其他命令（如 StarryOS 的 app/perf/kmod/rootfs）。
 
 ## 三层架构
 
-三层架构将关注点清晰地分离：CLI 层提供用户友好的命令行接口；axbuild 层负责 OS 特有的流程编排（如 ArceOS 的 axconfig 生成、StarryOS 的 rootfs 管理、Axvisor 的 VM 配置注入）；ostool 层则封装了与外部工具（cargo、QEMU、ostool-server）的直接交互，处理环境变量设置、进程管理等底层细节。
+三层架构将关注点清晰地分离：CLI 层提供用户友好的命令行接口；axbuild 层负责 OS 特有的流程编排（如动态平台 target/linker 装配、StarryOS 的 rootfs 管理、Axvisor 的 VM 配置注入）；ostool 层则封装了与外部工具（cargo、QEMU、ostool-server）的直接交互，处理环境变量设置、进程管理等底层细节。
 
 ```mermaid
 flowchart TB

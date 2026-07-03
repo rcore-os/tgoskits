@@ -273,17 +273,11 @@ struct KpuResource {
 
 impl KpuResource {
     fn probe() -> Option<Self> {
-        cfg_if::cfg_if! {
-            if #[cfg(feature = "plat-dyn")] {
-                let resource = Self::from_fdt();
-                if resource.is_none() {
-                    warn!("k230-kpu devfs: canaan,k230-kpu node not found in FDT");
-                }
-                resource
-            } else {
-                Some(Self::fallback(false))
-            }
+        let resource = Self::from_fdt();
+        if resource.is_none() {
+            warn!("k230-kpu devfs: canaan,k230-kpu node not found in FDT");
         }
+        resource
     }
 
     fn fallback(from_fdt: bool) -> Self {
@@ -307,7 +301,6 @@ impl KpuResource {
         }
     }
 
-    #[cfg(feature = "plat-dyn")]
     fn from_fdt() -> Option<Self> {
         rdrive::with_fdt(|fdt| {
             fdt.find_compatible(&["canaan,k230-kpu"])
@@ -317,7 +310,6 @@ impl KpuResource {
         .flatten()
     }
 
-    #[cfg(feature = "plat-dyn")]
     fn from_fdt_node(node: rdrive::probe::fdt::NodeType<'_>) -> Option<Self> {
         if matches!(
             node.as_node().status(),
@@ -460,26 +452,10 @@ fn kpu_irq_handler(_ctx: ax_runtime::hal::irq::IrqContext) -> ax_runtime::hal::i
     ax_runtime::hal::irq::IrqReturn::Handled
 }
 
-#[cfg(feature = "plat-dyn")]
 fn fallback_irq() -> Option<ax_runtime::hal::irq::IrqId> {
     None
 }
 
-#[cfg(not(feature = "plat-dyn"))]
-fn fallback_irq() -> Option<ax_runtime::hal::irq::IrqId> {
-    plic_irq(k230_kpu::KPU_IRQ).ok()
-}
-
-#[cfg(not(feature = "plat-dyn"))]
-fn plic_irq(raw: usize) -> Result<ax_runtime::hal::irq::IrqId, ax_runtime::hal::irq::IrqError> {
-    let hwirq = u32::try_from(raw).map_err(|_| ax_runtime::hal::irq::IrqError::InvalidIrq)?;
-    Ok(ax_runtime::hal::irq::IrqId::new(
-        ax_runtime::hal::irq::RISCV_PLIC_DOMAIN,
-        ax_runtime::hal::irq::HwIrq(hwirq),
-    ))
-}
-
-#[cfg(feature = "plat-dyn")]
 fn decode_fdt_irq(
     interrupts: &[rdrive::probe::fdt::InterruptRef],
 ) -> Result<Option<ax_runtime::hal::irq::IrqId>, ax_runtime::hal::irq::IrqError> {
@@ -495,12 +471,10 @@ fn decode_fdt_irq(
     .map(Some)
 }
 
-#[cfg(feature = "plat-dyn")]
 fn decode_fake_output_region(node: &rdrive::probe::fdt::NodeType<'_>) -> Option<(usize, usize)> {
     decode_named_region(node, "memory-region", "canaan,k230-kpu-qemu-fake-output")
 }
 
-#[cfg(feature = "plat-dyn")]
 fn decode_named_region(
     node: &rdrive::probe::fdt::NodeType<'_>,
     prop_name: &str,

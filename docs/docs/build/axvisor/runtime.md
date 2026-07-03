@@ -68,7 +68,7 @@ Axvisor 的 loongarch64 target 需要带 **LVZ（Loongson Virtualization Extensi
 
 ## 参数
 
-**通用参数**（`qemu` / `uboot` / `board`）：`--arch`、`--target`、`--config`、`--plat-dyn`、`--smp`、`--debug`、`--vmconfigs`。默认架构 `aarch64`。
+**通用参数**（`qemu` / `uboot` / `board`）：`--arch`、`--target`、`--config`、`--smp`、`--debug`、`--vmconfigs`。默认架构 `aarch64`。
 
 **QEMU 额外参数**：`--qemu-config <PATH>`、`--rootfs <IMAGE>`
 **Board 额外参数**：`--board-config <PATH>`、`-b/--board-type <TYPE>`、`--server <HOST>`、`--port <PORT>`
