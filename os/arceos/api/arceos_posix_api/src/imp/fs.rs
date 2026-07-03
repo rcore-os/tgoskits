@@ -1,7 +1,8 @@
 use alloc::sync::Arc;
-use core::ffi::{c_char, c_int};
-#[cfg(not(feature = "use-hermit-types"))]
-use core::mem::size_of;
+use core::{
+    ffi::{c_char, c_int},
+    mem::size_of,
+};
 
 use ax_errno::{LinuxError, LinuxResult};
 use ax_fs_ng::fops::{FileAttrExt, OpenOptions};
@@ -19,11 +20,6 @@ pub struct Directory {
     inner: Mutex<ax_fs_ng::fops::Directory>,
 }
 
-// ============================================================================
-// Linux-style getdents64 implementation (for normal Linux targets)
-// ============================================================================
-
-#[cfg(not(feature = "use-hermit-types"))]
 #[repr(C, packed)]
 struct LinuxDirent64Head {
     d_ino: u64,
@@ -32,13 +28,11 @@ struct LinuxDirent64Head {
     d_type: u8,
 }
 
-#[cfg(not(feature = "use-hermit-types"))]
 struct DirBuffer<'a> {
     buf: &'a mut [u8],
     offset: usize,
 }
 
-#[cfg(not(feature = "use-hermit-types"))]
 impl<'a> DirBuffer<'a> {
     fn new(buf: &'a mut [u8]) -> Self {
         Self { buf, offset: 0 }
@@ -265,9 +259,8 @@ pub fn sys_open(filename: *const c_char, flags: c_int, mode: ctypes::mode_t) -> 
 ///
 /// Reference: Starry OS implementation
 /// Return number of bytes written on success.
-#[cfg(not(feature = "use-hermit-types"))]
 pub unsafe fn sys_getdents64(fd: c_int, buf: *mut u8, len: usize) -> ctypes::ssize_t {
-    debug!("sys_getdents64 (Linux) <= {fd} {:#x} {len}", buf as usize);
+    debug!("sys_getdents64 <= {fd} {:#x} {len}", buf as usize);
     syscall_body!(sys_getdents64, {
         if buf.is_null() || len == 0 {
             return Err(LinuxError::EINVAL);
@@ -291,60 +284,6 @@ pub unsafe fn sys_getdents64(fd: c_int, buf: *mut u8, len: usize) -> ctypes::ssi
                 let d_type = file_type_to_d_type(entry.entry_type());
                 // Linux style: d_ino, d_off both present
                 if !dir_buf.write_entry(1, 0, d_type, entry.name_as_bytes()) {
-                    return Ok(dir_buf.used_len() as ctypes::ssize_t);
-                }
-            }
-        }
-
-        Ok(dir_buf.used_len() as ctypes::ssize_t)
-    })
-}
-
-// ============================================================================
-// Hermit-style sys_getdents64 (Hermit/BSD-like targets)
-// ============================================================================
-
-/// Read directory entries from `fd` into Hermit-style dirent64 buffer.
-///
-/// Reference: Hermit OS official implementation
-/// Parameters:
-/// - `fd`: File Descriptor of the directory in question.
-/// - `buf`: Memory for the kernel to store the filled `Dirent64` objects including
-///   the c-strings with the filenames.
-/// - `len`: Size of the memory region described by `buf` in bytes.
-///
-/// Return:
-/// The number of bytes read into `buf` on success. Zero indicates that no more
-/// entries remain and the directory's read position needs to be reset using `sys_lseek`.
-/// Negative numbers encode errors.
-#[cfg(feature = "use-hermit-types")]
-pub unsafe fn sys_getdents64(fd: c_int, buf: *mut u8, len: usize) -> ctypes::ssize_t {
-    debug!("sys_getdents64 (Hermit) <= {fd} {:#x} {len}", buf as usize);
-    syscall_body!(sys_getdents64, {
-        // Hermit ABI: null buffer or zero-sized buffer are invalid
-        if buf.is_null() || len == 0 {
-            return Err(LinuxError::EINVAL);
-        }
-
-        // Hermit returns EINVAL for invalid directory objects
-        let dir = Directory::from_fd(fd).map_err(|_| LinuxError::EINVAL)?;
-        let mut dir = dir.inner.lock();
-
-        let out = unsafe { core::slice::from_raw_parts_mut(buf, len) };
-        let mut dir_buf = HermitDirBuffer::new(out);
-
-        let mut entries: [ax_fs_ng::fops::DirEntry; 16] =
-            core::array::from_fn(|_| ax_fs_ng::fops::DirEntry::default());
-        loop {
-            let nr = dir.read_dir(&mut entries)?;
-            if nr == 0 {
-                break;
-            }
-
-            for entry in entries.iter().take(nr) {
-                let d_type = file_type_to_d_type(entry.entry_type());
-                // Hermit style: only d_ino and d_type, d_off is not meaningful
-                if !dir_buf.write_entry(1, d_type, entry.name_as_bytes()) {
                     return Ok(dir_buf.used_len() as ctypes::ssize_t);
                 }
             }
