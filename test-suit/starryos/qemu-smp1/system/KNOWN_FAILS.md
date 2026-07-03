@@ -21,4 +21,6 @@ but the grouped CI runner only executes `/usr/bin/starry-test-suit/*`.
 - `test-tgsigqueueinfo`: queued thread signal delivery with `siginfo`.
 - `test-uid-gid-direct-setters`: uid/gid setter boundary matrix semantics.
 - `test-uid-gid-groups`: user namespace `setgroups=deny` behavior.
+- `test-ptrace-gdb`: 19/20 pass, 1 remaining assertion failure on aarch64.
 - `test-uid-gid-res-setters`: setresuid/setresgid boundary matrix semantics.
+- `test-copy-file-range`: 35/37 pass, 2 assertion failures on loongarch64 (cross-process fd: errno=9 EBADF).
