@@ -22,16 +22,19 @@ use ax_cpumask::CpuMask;
 use ax_errno::{AxError, AxResult, ax_err, ax_err_type};
 use ax_kspin::SpinNoIrq as Mutex;
 use ax_memory_addr::align_up_4k;
-use axaddrspace::{AddrSpace, MappingFlags};
+use axaddrspace::AddrSpace;
 use axdevice::{AxVmDevices, FwCfg, FwCfgPlatformConfig};
 use axdevice_base::AccessWidth;
-use axvm_types::{GuestPhysAddr, HostPhysAddr, HostVirtAddr, VmArchVcpuOps, VmExit, VmVcpuState};
+use axvm_types::{
+    GuestPhysAddr, HostPhysAddr, HostVirtAddr, MappingFlags, NestedPagingConfig, VmArchVcpuOps,
+    VmExit, VmVcpuState,
+};
 
 use crate::{
-    arch::{ArchOps, CurrentArch},
+    arch::{ArchNestedPageTable, ArchOps, CurrentArch},
     boot::{GuestBootDescription, GuestFdtBuilder},
     config::{AxVMConfig, PhysCpuList, VMInterruptMode},
-    host::paging::{HostPagingHandler, virt_to_phys},
+    host::paging::virt_to_phys,
     irq::InterruptFabric,
     layout::VmAddressLayout,
     lifecycle::{Machine, StopReason, VmLifecycleError, VmStatus},
@@ -109,7 +112,8 @@ fn write_guest_bytes_to_chunks(chunks: &mut [&mut [u8]], data: &[u8]) -> AxResul
 
 pub(crate) struct AxVMResources {
     // Todo: use more efficient lock.
-    address_space: AddrSpace<HostPagingHandler>,
+    address_space: AddrSpace<ArchNestedPageTable>,
+    nested_paging: NestedPagingConfig,
     memory_regions: Vec<VMMemoryRegion>,
     config: AxVMConfig,
     phys_cpu_ls: PhysCpuList,
@@ -256,12 +260,22 @@ impl VmRuntimeHandle {
 
 impl AxVMResources {
     fn new(config: AxVMConfig) -> AxResult<Self> {
+        let vcpu_mappings = config.phys_cpu_ls.get_vcpu_affinities_pcpu_ids();
+        let page_table_levels = CurrentArch::guest_page_table_levels(&vcpu_mappings)?;
+        let page_table = CurrentArch::new_nested_page_table(page_table_levels)?;
+        let address_space = AddrSpace::new_empty(
+            page_table,
+            GuestPhysAddr::from(VM_ASPACE_BASE),
+            VM_ASPACE_SIZE,
+        )?;
+        let nested_paging = CurrentArch::nested_paging_config(
+            address_space.page_table_root(),
+            page_table_levels,
+            &vcpu_mappings,
+        )?;
         Ok(Self {
-            address_space: AddrSpace::new_empty(
-                CurrentArch::max_guest_page_table_levels(),
-                GuestPhysAddr::from(VM_ASPACE_BASE),
-                VM_ASPACE_SIZE,
-            )?,
+            address_space,
+            nested_paging,
             memory_regions: Vec::new(),
             config,
             phys_cpu_ls: PhysCpuList::default(),

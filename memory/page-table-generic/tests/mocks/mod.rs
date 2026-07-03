@@ -60,7 +60,7 @@ impl Debug for PteImpl {
 
 impl PageTableEntry for PteImpl {
     fn from_config(config: PteConfig) -> Self {
-        let mut pte = Self(0);
+        let pte = Self(0);
 
         // 设置物理地址
         let paddr = config.paddr.raw() >> 12;
@@ -582,6 +582,23 @@ impl FrameAllocator for Fram4k {
         }
     }
 
+    fn alloc_frames(&self, frames: usize, align: usize) -> Option<PhysAddr> {
+        let layout = Layout::from_size_align(4096 * frames, align).unwrap();
+        let ptr = unsafe { alloc::alloc(layout) };
+        if ptr.is_null() {
+            None
+        } else {
+            Some(PhysAddr::new(ptr as usize))
+        }
+    }
+
+    fn dealloc_frames(&self, start: PhysAddr, frames: usize, _frame_size: usize) {
+        let layout = Layout::from_size_align(4096 * frames, 4096 * frames).unwrap();
+        unsafe {
+            alloc::dealloc(start.raw() as *mut u8, layout);
+        }
+    }
+
     fn phys_to_virt(&self, paddr: PhysAddr) -> *mut u8 {
         paddr.raw() as *mut u8
     }
@@ -683,6 +700,43 @@ impl FrameAllocator for TrackedFram4k {
         }
 
         let layout = Layout::from_size_align(4096, 4096).unwrap();
+        unsafe {
+            alloc::dealloc(addr as *mut u8, layout);
+        }
+    }
+
+    fn alloc_frames(&self, frames: usize, align: usize) -> Option<PhysAddr> {
+        let layout = Layout::from_size_align(4096 * frames, align).unwrap();
+        let ptr = unsafe { alloc::alloc(layout) };
+        if ptr.is_null() {
+            return None;
+        }
+        let addr = ptr as usize;
+        unsafe {
+            let tracked_frames = &*self.allocated_frames;
+            let mut tracked_frames = tracked_frames.lock().unwrap();
+            for i in 0..frames {
+                tracked_frames.insert(addr + i * 4096);
+            }
+        }
+        Some(PhysAddr::new(addr))
+    }
+
+    fn dealloc_frames(&self, start: PhysAddr, frames: usize, _frame_size: usize) {
+        let addr = start.raw();
+        unsafe {
+            let tracked_frames = &*self.allocated_frames;
+            let mut tracked_frames = tracked_frames.lock().unwrap();
+            for i in 0..frames {
+                let frame_addr = addr + i * 4096;
+                let removed = tracked_frames.remove(&frame_addr);
+                if !removed {
+                    panic!("尝试释放未跟踪的帧地址: {frame_addr:#x}");
+                }
+            }
+        }
+
+        let layout = Layout::from_size_align(4096 * frames, 4096 * frames).unwrap();
         unsafe {
             alloc::dealloc(addr as *mut u8, layout);
         }

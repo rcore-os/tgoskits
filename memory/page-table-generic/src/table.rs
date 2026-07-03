@@ -74,12 +74,12 @@ impl<T: TableMeta, A: FrameAllocator> PageTableRef<T, A> {
     ///
     /// 调用者必须确保提供的FrameAllocator是有效的，并且在页表生命周期内保持有效
     pub unsafe fn new(allocator: A) -> PagingResult<Self> {
-        let root = Frame::new(allocator)?;
+        let root = Frame::new_root(allocator)?;
         Ok(Self { root })
     }
 
     pub fn from_paddr(paddr: PhysAddr, allocator: A) -> Self {
-        let root = Frame::from_paddr(paddr, allocator);
+        let root = Frame::from_root_paddr(paddr, allocator);
         Self { root }
     }
 
@@ -96,6 +96,7 @@ impl<T: TableMeta, A: FrameAllocator> PageTableRef<T, A> {
                 "Virtual or physical address overflow",
             ));
         }
+        self.validate_address_width(config.vaddr, config.size, "map")?;
 
         self.root.map_range_recursive(MapRecursiveConfig {
             start_vaddr: config.vaddr,
@@ -138,6 +139,7 @@ impl<T: TableMeta, A: FrameAllocator> PageTableRef<T, A> {
                 ));
             }
         };
+        self.validate_address_width(start_vaddr, size, "unmap")?;
 
         self.root.unmap_range_recursive(UnmapRecursiveConfig {
             start_vaddr,
@@ -161,6 +163,7 @@ impl<T: TableMeta, A: FrameAllocator> PageTableRef<T, A> {
                 ));
             }
         };
+        self.validate_address_width(config.start_vaddr, config.size, "unmap_with_config")?;
 
         self.root.unmap_range_recursive(UnmapRecursiveConfig {
             start_vaddr: config.start_vaddr,
@@ -242,6 +245,27 @@ impl<T: TableMeta, A: FrameAllocator> PageTableRef<T, A> {
         Ok(())
     }
 
+    fn validate_address_width(
+        &self,
+        start_vaddr: VirtAddr,
+        size: usize,
+        operation: &'static str,
+    ) -> PagingResult<()> {
+        if !T::STRICT_ADDRESS_WIDTH {
+            return Ok(());
+        }
+        let Some(end) = start_vaddr.raw().checked_add(size) else {
+            return Err(PagingError::address_overflow(
+                "Virtual address range overflow",
+            ));
+        };
+        let last = end.saturating_sub(1);
+        if !Self::is_addr_in_width(start_vaddr.raw()) || !Self::is_addr_in_width(last) {
+            return Err(PagingError::address_overflow(operation));
+        }
+        Ok(())
+    }
+
     pub const fn page_size() -> usize {
         T::PAGE_SIZE
     }
@@ -252,6 +276,14 @@ impl<T: TableMeta, A: FrameAllocator> PageTableRef<T, A> {
 
     pub const fn valid_bits() -> usize {
         Frame::<T, A>::PT_VALID_BITS
+    }
+
+    fn is_addr_in_width(addr: usize) -> bool {
+        let valid_bits = Self::valid_bits();
+        if valid_bits >= usize::BITS as usize {
+            return true;
+        }
+        addr < (1usize << valid_bits)
     }
 
     /// 销毁整个页表结构
@@ -320,6 +352,16 @@ impl<T: TableMeta, A: FrameAllocator> PageTableRef<T, A> {
     ///   - 页表项无效
     ///   - 页表层次结构错误
     pub fn translate(&self, vaddr: VirtAddr) -> PagingResult<(PhysAddr, T::P)> {
+        self.translate_with_level(vaddr)
+            .map(|(phys_addr, pte, _)| (phys_addr, pte))
+    }
+
+    /// Translates a virtual address and returns the matched PTE level.
+    pub fn translate_with_level(&self, vaddr: VirtAddr) -> PagingResult<(PhysAddr, T::P, usize)> {
+        if T::STRICT_ADDRESS_WIDTH && !Self::is_addr_in_width(vaddr.raw()) {
+            return Err(PagingError::address_overflow("translate"));
+        }
+
         let (pte, level) = self
             .root
             .translate_recursive_with_level(vaddr, Frame::<T, A>::PT_LEVEL)?;
@@ -344,7 +386,7 @@ impl<T: TableMeta, A: FrameAllocator> PageTableRef<T, A> {
             )
         };
 
-        Ok((phys_addr, pte))
+        Ok((phys_addr, pte, level))
     }
 
     /// 通过虚拟地址查询物理地址（便利方法）

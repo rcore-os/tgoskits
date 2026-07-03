@@ -15,6 +15,7 @@ pub(crate) fn default_host() -> &'static arceos::ArceOsHost {
     arceos::arceos_host()
 }
 
+pub(crate) use paging::PagingHandler;
 #[cfg(target_arch = "x86_64")]
 pub(crate) use traits::HostConsole;
 pub(crate) use traits::{HostCpu, HostMemory, HostPlatform, HostTime};

@@ -25,7 +25,32 @@ use alloc::{string::String, vec::Vec};
 use core::fmt::{Debug, Display, Formatter, LowerHex, UpperHex};
 
 use ax_memory_addr::{AddrRange, PhysAddr, VirtAddr, def_usize_addr, def_usize_addr_formatter};
-pub use ax_page_table_entry::MappingFlags;
+
+bitflags::bitflags! {
+    /// Generic memory mapping permissions and attributes exchanged between
+    /// AxVM components.
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    pub struct MappingFlags: usize {
+        /// The memory is readable.
+        const READ          = 1 << 0;
+        /// The memory is writable.
+        const WRITE         = 1 << 1;
+        /// The memory is executable.
+        const EXECUTE       = 1 << 2;
+        /// The memory is user accessible.
+        const USER          = 1 << 3;
+        /// The memory is device memory.
+        const DEVICE        = 1 << 4;
+        /// The memory is uncached.
+        const UNCACHED      = 1 << 5;
+    }
+}
+
+impl Debug for MappingFlags {
+    fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
+        Debug::fmt(&self.0, f)
+    }
+}
 
 /// Virtual machine identifier.
 pub type VMId = usize;
@@ -64,6 +89,36 @@ pub type HostVirtAddr = VirtAddr;
 
 /// Host physical address.
 pub type HostPhysAddr = PhysAddr;
+
+/// Architecture-specific nested paging configuration selected by AxVM.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NestedPagingConfig {
+    /// Root physical address of the nested page table.
+    pub root_paddr: HostPhysAddr,
+    /// Number of page-table levels.
+    pub levels: usize,
+    /// Guest physical address width in bits.
+    pub gpa_bits: usize,
+    /// Architecture-specific hardware mode encoding.
+    pub mode: usize,
+}
+
+impl NestedPagingConfig {
+    /// Creates a nested paging configuration.
+    pub const fn new(
+        root_paddr: HostPhysAddr,
+        levels: usize,
+        gpa_bits: usize,
+        mode: usize,
+    ) -> Self {
+        Self {
+            root_paddr,
+            levels,
+            gpa_bits,
+            mode,
+        }
+    }
+}
 
 def_usize_addr! {
     /// Guest virtual address.
@@ -365,8 +420,8 @@ pub trait VmArchVcpuOps: Sized {
     fn new(vm_id: VMId, vcpu_id: VCpuId, config: Self::CreateConfig) -> AxVmResult<Self>;
     /// Sets the guest entry point.
     fn set_entry(&mut self, entry: GuestPhysAddr) -> AxVmResult;
-    /// Sets the nested page table root.
-    fn set_nested_page_table_root(&mut self, nested_page_table_root: HostPhysAddr) -> AxVmResult;
+    /// Sets the nested page table selected by AxVM.
+    fn set_nested_page_table(&mut self, config: NestedPagingConfig) -> AxVmResult;
     /// Completes architecture-specific setup.
     fn setup(&mut self, config: Self::SetupConfig) -> AxVmResult;
     /// Runs the vCPU until a VM exit.
@@ -420,6 +475,13 @@ pub trait VmArchPerCpuOps: Sized {
     /// Returns the max guest page table levels supported by this architecture.
     fn max_guest_page_table_levels(&self) -> usize {
         4
+    }
+    /// Returns the guest physical address width supported by this CPU.
+    fn guest_phys_addr_bits(&self) -> usize {
+        match self.max_guest_page_table_levels() {
+            0..=3 => 39,
+            _ => 48,
+        }
     }
 }
 
@@ -706,7 +768,7 @@ mod tests {
             Ok(())
         }
 
-        fn set_nested_page_table_root(&mut self, _root: HostPhysAddr) -> AxVmResult {
+        fn set_nested_page_table(&mut self, _config: NestedPagingConfig) -> AxVmResult {
             Ok(())
         }
 
@@ -747,8 +809,13 @@ mod tests {
 
         let mut vcpu = MockVcpu::new(1, 0, ()).unwrap();
         vcpu.set_entry(GuestPhysAddr::from(0x8020_0000)).unwrap();
-        vcpu.set_nested_page_table_root(HostPhysAddr::from(0x1000))
-            .unwrap();
+        vcpu.set_nested_page_table(NestedPagingConfig::new(
+            HostPhysAddr::from(0x1000),
+            4,
+            48,
+            0,
+        ))
+        .unwrap();
         vcpu.setup(()).unwrap();
         assert!(matches!(
             vcpu.run().unwrap(),
@@ -872,18 +939,6 @@ impl EmulatedDeviceType {
             // 0x8 => EmulatedDeviceType::SGIR,
             // 0x9 => EmulatedDeviceType::GICR,
             _ => None,
-        }
-    }
-}
-
-#[cfg(any(target_arch = "riscv32", target_arch = "riscv64"))]
-impl ax_page_table_multiarch::riscv::SvVirtAddr for GuestPhysAddr {
-    /// Flushes the TLB for the entire address space.
-    ///
-    /// `hfence.vvma` does not access host memory.
-    fn flush_tlb(_vaddr: Option<Self>) {
-        unsafe {
-            core::arch::asm!("hfence.vvma", options(nostack, nomem, preserves_flags));
         }
     }
 }

@@ -4,11 +4,14 @@ use core::time::Duration;
 use arm_vcpu::host::ArmVcpuHostIf;
 use arm_vgic::host::ArmVgicHostIf;
 use ax_crate_interface::impl_interface;
-use ax_errno::AxResult;
+use ax_errno::{AxResult, ax_err};
 use ax_memory_addr::{PhysAddr, VirtAddr};
+use axvm_types::NestedPagingConfig;
 
-use super::{ArchOps, VcpuCreateContext, VcpuSetupContext};
+use super::{ArchOps, VcpuCreateContext, VcpuSetupContext, target_phys_cpu_ids};
 use crate::host::{HostCpu, HostMemory, HostTime, default_host, gic};
+
+mod npt;
 
 pub(crate) struct Aarch64Arch;
 
@@ -16,6 +19,7 @@ impl ArchOps for Aarch64Arch {
     type VCpu = arm_vcpu::Aarch64VCpu;
     type PerCpu = arm_vcpu::Aarch64PerCpu;
     type VcpuCreateState = ();
+    type NestedPageTable = npt::NestedPageTable<crate::HostPagingHandler>;
 
     fn has_hardware_support() -> bool {
         arm_vcpu::has_hardware_support()
@@ -23,6 +27,57 @@ impl ArchOps for Aarch64Arch {
 
     fn max_guest_page_table_levels() -> usize {
         arm_vcpu::max_guest_page_table_levels()
+    }
+
+    fn guest_page_table_levels(vcpu_mappings: &[(usize, Option<usize>, usize)]) -> AxResult<usize> {
+        let mut selected = usize::MAX;
+        for cpu_id in target_phys_cpu_ids(vcpu_mappings) {
+            let levels = crate::percpu::cpu_max_guest_page_table_levels(cpu_id)
+                .unwrap_or_else(arm_vcpu::max_guest_page_table_levels);
+            if levels == 0 {
+                return ax_err!(
+                    Unsupported,
+                    "AArch64 nested paging is not enabled on target CPU"
+                );
+            }
+            selected = selected.min(levels);
+        }
+        if selected == usize::MAX {
+            selected = arm_vcpu::max_guest_page_table_levels();
+        }
+        match selected {
+            3 | 4 => Ok(selected),
+            _ => ax_err!(Unsupported, "unsupported AArch64 stage-2 page-table levels"),
+        }
+    }
+
+    fn nested_paging_config(
+        root_paddr: PhysAddr,
+        levels: usize,
+        vcpu_mappings: &[(usize, Option<usize>, usize)],
+    ) -> AxResult<NestedPagingConfig> {
+        let mut pa_bits = usize::MAX;
+        for cpu_id in target_phys_cpu_ids(vcpu_mappings) {
+            let bits =
+                crate::percpu::cpu_guest_phys_addr_bits(cpu_id).unwrap_or_else(arm_vcpu::pa_bits);
+            pa_bits = pa_bits.min(bits);
+        }
+        if pa_bits == usize::MAX {
+            pa_bits = arm_vcpu::pa_bits();
+        }
+
+        let gpa_bits = match levels {
+            3 => 39,
+            4 => 48,
+            _ => return ax_err!(InvalidInput, "unsupported AArch64 stage-2 levels"),
+        };
+        Ok(NestedPagingConfig::new(
+            root_paddr, levels, gpa_bits, pa_bits,
+        ))
+    }
+
+    fn new_nested_page_table(levels: usize) -> AxResult<Self::NestedPageTable> {
+        npt::NestedPageTable::new(levels)
     }
 
     fn clean_dcache_range(addr: VirtAddr, size: usize) {

@@ -32,6 +32,8 @@ use ax_std as _;
 mod banner;
 mod config;
 mod manager;
+#[cfg(target_arch = "riscv64")]
+mod platform_irq;
 mod shell;
 
 /// Axvisor kernel entry point.

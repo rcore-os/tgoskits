@@ -24,7 +24,7 @@ use ax_memory_addr::AddrRange;
 use axdevice_base::{BaseDeviceOps, SysRegAddrRange};
 use axvm_types::{
     AccessWidth, GuestPhysAddr, GuestVirtAddr, HostPhysAddr, MappingFlags, NestedPageFaultInfo,
-    Port, SysRegAddr, VCpuId, VMId, VmArchVcpuOps, VmExit,
+    NestedPagingConfig, Port, SysRegAddr, VCpuId, VMId, VmArchVcpuOps, VmExit,
 };
 use bit_field::BitField;
 use raw_cpuid::CpuId;
@@ -1640,8 +1640,8 @@ impl VmArchVcpuOps for VmxVcpu {
         Ok(())
     }
 
-    fn set_nested_page_table_root(&mut self, nested_page_table_root: HostPhysAddr) -> AxResult {
-        self.nested_page_table_root = Some(nested_page_table_root);
+    fn set_nested_page_table(&mut self, config: NestedPagingConfig) -> AxResult {
+        self.nested_page_table_root = Some(config.root_paddr);
         Ok(())
     }
 

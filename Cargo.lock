@@ -1184,17 +1184,11 @@ dependencies = [
  "ax-lazyinit",
  "ax-memory-addr",
  "ax-memory-set",
- "ax-page-table-entry",
- "ax-page-table-multiarch",
  "axin",
  "axvm-types",
- "bit_field",
- "bitflags 2.13.0",
- "cfg-if",
  "lazy_static",
  "log",
- "numeric-enum-macro",
- "x86",
+ "page-table-generic",
 ]
 
 [[package]]
@@ -1471,6 +1465,7 @@ name = "axvisor"
 version = "0.5.16"
 dependencies = [
  "anyhow",
+ "ax-crate-interface",
  "ax-driver",
  "ax-errno 0.6.1",
  "ax-hal",
@@ -1508,8 +1503,7 @@ dependencies = [
  "ax-kspin",
  "ax-lazyinit",
  "ax-memory-addr",
- "ax-page-table-entry",
- "ax-page-table-multiarch",
+ "ax-memory-set",
  "ax-percpu",
  "ax-plat",
  "ax-std",
@@ -1518,9 +1512,10 @@ dependencies = [
  "axdevice",
  "axdevice_base",
  "axhvc",
- "axplat-dyn",
  "axvm-types",
  "axvmconfig",
+ "bit_field",
+ "bitflags 2.13.0",
  "byte-unit",
  "cfg-if",
  "extern-trait",
@@ -1530,11 +1525,14 @@ dependencies = [
  "irq-framework",
  "log",
  "loongarch_vcpu",
+ "numeric-enum-macro",
+ "page-table-generic",
  "rdif-intc",
  "rdrive",
  "riscv_vcpu",
  "riscv_vplic",
  "spin",
+ "x86",
  "x86_vcpu",
  "x86_vlapic",
 ]
@@ -1546,8 +1544,7 @@ dependencies = [
  "ax-cpumask",
  "ax-errno 0.6.1",
  "ax-memory-addr",
- "ax-page-table-entry",
- "ax-page-table-multiarch",
+ "bitflags 2.13.0",
 ]
 
 [[package]]

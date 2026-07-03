@@ -9,12 +9,15 @@ use loongarch_vcpu::host::LoongArchVcpuHostIf;
 use super::{ArchOps, VcpuCreateContext, VcpuSetupContext};
 use crate::host::{HostMemory, HostTime, default_host};
 
+mod npt;
+
 pub(crate) struct LoongArch64Arch;
 
 impl ArchOps for LoongArch64Arch {
     type VCpu = loongarch_vcpu::LoongArchVCpu;
     type PerCpu = loongarch_vcpu::LoongArchPerCpu;
     type VcpuCreateState = loongarch_vcpu::LoongArchIocsrStateRef;
+    type NestedPageTable = npt::NestedPageTable<crate::HostPagingHandler>;
 
     fn has_hardware_support() -> bool {
         loongarch_vcpu::has_hardware_support()
@@ -56,6 +59,10 @@ impl ArchOps for LoongArch64Arch {
             boot_stack_top: 0,
             firmware_boot: ctx.firmware_boot,
         })
+    }
+
+    fn new_nested_page_table(levels: usize) -> AxResult<Self::NestedPageTable> {
+        npt::NestedPageTable::new(levels)
     }
 
     fn register_platform_irq_injector() {

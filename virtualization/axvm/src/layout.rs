@@ -19,10 +19,9 @@ use core::cmp::{max, min};
 
 use ax_errno::{AxResult, ax_err_type};
 use ax_memory_addr::{PAGE_SIZE_4K, align_down_4k};
-use axaddrspace::MappingFlags;
 use axdevice_base::Resource;
 use axvm_types::{
-    AddressSpacePolicy, GuestPhysAddr, HostPhysAddr, PassThroughAddressConfig,
+    AddressSpacePolicy, GuestPhysAddr, HostPhysAddr, MappingFlags, PassThroughAddressConfig,
     PassThroughDeviceConfig,
 };
 
