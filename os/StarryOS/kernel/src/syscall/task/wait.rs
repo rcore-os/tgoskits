@@ -1,7 +1,11 @@
 use alloc::{sync::Arc, vec::Vec};
+use core::{future::poll_fn, task::Poll};
 
 use ax_errno::{AxError, AxResult, LinuxError};
-use ax_task::current;
+use ax_task::{
+    current,
+    future::{block_on, interruptible},
+};
 use bitflags::bitflags;
 use linux_raw_sys::general::{
     __WALL, __WCLONE, __WNOTHREAD, P_ALL, P_PGID, P_PID, P_PIDFD, WCONTINUED, WEXITED, WNOHANG,
@@ -229,78 +233,6 @@ fn waitable_processes(
     candidates
 }
 
-fn waitpid_has_ready_child(
-    children: &[Arc<Process>],
-    target: WaitTarget,
-    options: &WaitPidOptions,
-) -> bool {
-    if children.iter().any(|child| {
-        get_process_data(child.pid()).ok().is_some_and(|data| {
-            let preferred_tid = target.ptrace_preferred_stop_tid(child);
-            if target.ptrace_requires_exact_stop(child) {
-                preferred_tid
-                    .and_then(|tid| data.ptrace_unreported_stop_for(tid))
-                    .is_some()
-            } else {
-                data.ptrace_unreported_stop(preferred_tid).is_some()
-            }
-        })
-    }) {
-        return true;
-    }
-
-    if children.iter().any(|child| child.is_zombie()) {
-        return true;
-    }
-
-    let want_stopped = options.contains(WaitPidOptions::WUNTRACED);
-    let want_continued = options.contains(WaitPidOptions::WCONTINUED);
-    (want_stopped || want_continued)
-        && children.iter().any(|child| {
-            get_process_data(child.pid()).ok().is_some_and(|data| {
-                data.peek_job_status_if(want_stopped, want_continued)
-                    .is_some()
-            })
-        })
-}
-
-fn waitid_has_ready_child(
-    children: &[Arc<Process>],
-    target: WaitTarget,
-    options: &WaitIdOptions,
-) -> bool {
-    if options.contains(WaitIdOptions::WUNTRACED)
-        && children.iter().any(|child| {
-            get_process_data(child.pid()).ok().is_some_and(|data| {
-                let preferred_tid = target.ptrace_preferred_stop_tid(child);
-                if target.ptrace_requires_exact_stop(child) {
-                    preferred_tid
-                        .and_then(|tid| data.ptrace_unreported_stop_for(tid))
-                        .is_some()
-                } else {
-                    data.ptrace_unreported_stop(preferred_tid).is_some()
-                }
-            })
-        })
-    {
-        return true;
-    }
-
-    if options.contains(WaitIdOptions::WEXITED) && children.iter().any(|child| child.is_zombie()) {
-        return true;
-    }
-
-    let want_stopped = options.contains(WaitIdOptions::WUNTRACED);
-    let want_continued = options.contains(WaitIdOptions::WCONTINUED);
-    (want_stopped || want_continued)
-        && children.iter().any(|child| {
-            get_process_data(child.pid()).ok().is_some_and(|data| {
-                data.peek_job_status_if(want_stopped, want_continued)
-                    .is_some()
-            })
-        })
-}
-
 pub fn sys_waitpid(pid: i32, exit_code: *mut i32, options: u32) -> AxResult<isize> {
     let options = WaitPidOptions::from_bits(options).ok_or(AxError::InvalidInput)?;
     info!("sys_waitpid <= pid: {pid:?}, options: {options:?}");
@@ -408,17 +340,26 @@ pub fn sys_waitpid(pid: i32, exit_code: *mut i32, options: u32) -> AxResult<isiz
         }
     };
 
-    loop {
-        if curr.take_interrupt() {
-            return Err(AxError::Interrupted);
+    block_on(interruptible(poll_fn(|cx| {
+        match check_children().transpose() {
+            Some(res) => Poll::Ready(res),
+            None => {
+                // Registration happens from wait task context.
+                unsafe {
+                    proc_data
+                        .child_exit_event
+                        .register(cx.waker(), axpoll::IoEvents::IN)
+                };
+                // A child may exit between the check above and waker
+                // registration. Recheck after registering so that wakeup is
+                // not lost in that race window.
+                match check_children().transpose() {
+                    Some(res) => Poll::Ready(res),
+                    None => Poll::Pending,
+                }
+            }
         }
-        if let Some(res) = check_children().transpose() {
-            return res;
-        }
-        proc_data.child_wait_queue.wait_until(|| {
-            curr.interrupted() || waitpid_has_ready_child(&children, target, &options)
-        });
-    }
+    })))?
 }
 
 pub fn sys_waitid(
@@ -548,15 +489,21 @@ pub fn sys_waitid(
         }
     };
 
-    loop {
-        if curr.take_interrupt() {
-            return Err(AxError::Interrupted);
+    block_on(interruptible(poll_fn(|cx| {
+        match check_children().transpose() {
+            Some(res) => Poll::Ready(res),
+            None => {
+                // Registration happens from wait task context.
+                unsafe {
+                    proc_data
+                        .child_exit_event
+                        .register(cx.waker(), axpoll::IoEvents::IN)
+                };
+                match check_children().transpose() {
+                    Some(res) => Poll::Ready(res),
+                    None => Poll::Pending,
+                }
+            }
         }
-        if let Some(res) = check_children().transpose() {
-            return res;
-        }
-        proc_data.child_wait_queue.wait_until(|| {
-            curr.interrupted() || waitid_has_ready_child(&children, target, &options)
-        });
-    }
+    })))?
 }
