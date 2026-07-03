@@ -377,6 +377,8 @@ impl TaskInner {
         let mut t = Self::new_common(TaskId::allocate(), name, kstack);
         t.is_init = true;
         #[cfg(feature = "smp")]
+        t.set_cpu_id(ax_hal::percpu::this_cpu_id() as u32);
+        #[cfg(feature = "smp")]
         t.set_on_cpu(true);
         if t.name() == "idle" {
             t.is_idle = true;

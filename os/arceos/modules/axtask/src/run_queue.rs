@@ -888,6 +888,41 @@ impl<G: BaseGuard> CurrentRunQueueRef<'_, G> {
         self.inner.resched();
     }
 
+    /// Block the current task in `wq_guard`, then optionally abort before the
+    /// actual context switch.
+    ///
+    /// The abort predicate runs after the task has been linked into the wait
+    /// queue, but after the wait-queue lock is dropped. This preserves the
+    /// notify-before-sleep race protocol without forcing arbitrary predicates
+    /// to run under the wait-queue lock.
+    pub fn blocked_resched_abortable(
+        &mut self,
+        mut wq_guard: WaitQueueGuard,
+        should_abort_sleep: impl Fn() -> bool,
+    ) {
+        let curr = &self.current_task;
+        assert!(curr.is_running());
+        assert!(!curr.is_idle());
+        // Current expected preempt count is 2.
+        // 1 for `NoPreemptIrqSave`, 1 for wait queue's `SpinNoIrq`.
+        #[cfg(feature = "preempt")]
+        assert!(curr.can_preempt(2));
+
+        curr.set_state(TaskState::Blocked);
+        if !curr.in_wait_queue() {
+            curr.set_in_wait_queue(true);
+            wq_guard.push_back(curr.clone());
+        }
+        drop(wq_guard);
+
+        if should_abort_sleep() && curr.transition_state(TaskState::Blocked, TaskState::Running) {
+            return;
+        }
+
+        debug!("task block: {}", curr.id_name());
+        self.inner.resched();
+    }
+
     /// Block the current task, put current task into the wait queue and reschedule.
     /// This is special just for future.
     pub fn future_blocked_resched(&mut self, should_abort_sleep: impl Fn() -> bool) {

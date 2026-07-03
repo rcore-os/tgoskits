@@ -91,13 +91,12 @@ impl WaitQueue {
         crate::api::might_sleep();
         let curr = crate::current();
         loop {
-            let mut rq = current_run_queue::<NoPreemptIrqSave>();
-            let wq = self.queue.lock();
             if condition() {
                 break;
             }
-
-            rq.blocked_resched(wq);
+            let mut rq = current_run_queue::<NoPreemptIrqSave>();
+            let wq = self.queue.lock();
+            rq.blocked_resched_abortable(wq, &condition);
             // Preemption may occur here.
         }
         self.cancel_events(curr, false);
@@ -155,18 +154,20 @@ impl WaitQueue {
         );
         let mut timeout = true;
         loop {
-            let mut rq = current_run_queue::<NoPreemptIrqSave>();
             if ax_hal::time::monotonic_time() >= deadline {
                 break;
             }
-            let wq = self.queue.lock();
             if condition() {
                 timeout = false;
                 break;
             }
 
+            let mut rq = current_run_queue::<NoPreemptIrqSave>();
+            let wq = self.queue.lock();
             crate::timers::set_alarm_wakeup(deadline, curr.clone());
-            rq.blocked_resched(wq);
+            rq.blocked_resched_abortable(wq, || {
+                condition() || ax_hal::time::monotonic_time() >= deadline
+            });
             // Preemption may occur here.
         }
         // Always try to remove the task from the timer list.

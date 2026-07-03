@@ -725,6 +725,21 @@ fn test_future_blocked_resched_aborts_when_event_arrives_before_sleep() {
 }
 
 #[test]
+fn test_wait_until_rechecks_after_queueing_without_sleeping() {
+    run_in_test_scheduler(|| {
+        let wait_queue = WaitQueue::new();
+        let checks = AtomicUsize::new(0);
+
+        wait_queue.wait_until(|| checks.fetch_add(1, Ordering::AcqRel) != 0);
+
+        assert!(checks.load(Ordering::Acquire) >= 2);
+        assert_eq!(current().state(), crate::TaskState::Running);
+        assert!(!current().in_wait_queue());
+        assert!(!wait_queue.notify_one(false));
+    });
+}
+
+#[test]
 fn test_irq_notify_wakes_after_concurrent_irq_callbacks() {
     run_in_test_scheduler(|| {
         const NUM_IRQ_THREADS: usize = 6;
