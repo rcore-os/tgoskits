@@ -11,6 +11,11 @@ pub fn iomap(addr: usize, size: usize) -> Result<NonNull<u8>, OnProbeError> {
 // Firmware tables can carry CPU-visible aliases, for example LoongArch DMW
 // addresses. Normalize those addresses before crossing into the physical MMIO
 // mapping backend.
+#[cfg(any(
+    feature = "ls2k1000-ahci",
+    feature = "ls2k1000-gmac",
+    all(feature = "rtc", target_arch = "loongarch64"),
+))]
 pub(crate) fn iomap_firmware_reg(
     device_name: &str,
     addr: u64,
@@ -24,6 +29,12 @@ pub(crate) fn iomap_firmware_reg(
     )
 }
 
+#[cfg(any(
+    feature = "serial",
+    feature = "ls2k1000-ahci",
+    feature = "ls2k1000-gmac",
+    all(feature = "rtc", target_arch = "loongarch64"),
+))]
 pub(crate) fn iomap_firmware_device(
     device_name: &str,
     addr: usize,
@@ -39,14 +50,30 @@ pub(crate) fn iomap_firmware_device(
     iomap(paddr, size)
 }
 
+#[cfg(any(
+    feature = "ls2k1000-ahci",
+    feature = "ls2k1000-gmac",
+    all(feature = "rtc", target_arch = "loongarch64"),
+))]
 pub(crate) fn firmware_reg_paddr(addr: u64) -> usize {
     firmware_addr_to_phys(addr as usize)
 }
 
+#[cfg(any(
+    feature = "ls2k1000-ahci",
+    feature = "ls2k1000-gmac",
+    all(feature = "rtc", target_arch = "loongarch64"),
+))]
 pub(crate) fn firmware_reg_size(size: Option<u64>, default_size: usize) -> usize {
     size.unwrap_or(default_size as u64) as usize
 }
 
+#[cfg(any(
+    feature = "serial",
+    feature = "ls2k1000-ahci",
+    feature = "ls2k1000-gmac",
+    all(feature = "rtc", target_arch = "loongarch64"),
+))]
 pub(crate) fn firmware_addr_to_phys(addr: usize) -> usize {
     #[cfg(target_arch = "loongarch64")]
     {
@@ -60,7 +87,7 @@ pub(crate) fn firmware_addr_to_phys(addr: usize) -> usize {
     }
 }
 
-#[cfg(target_arch = "loongarch64")]
+#[cfg(all(target_arch = "loongarch64", feature = "ls2k1000-gmac"))]
 pub(crate) fn loongarch_uncached_addr(addr: usize) -> usize {
     // Used for DMA aliases that must bypass cache. Device MMIO should go
     // through iomap(), whose LoongArch backend already returns uncached DMW.

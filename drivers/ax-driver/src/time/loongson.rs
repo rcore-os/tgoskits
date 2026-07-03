@@ -3,10 +3,10 @@ use rdrive::{
         OnProbeError,
         acpi::{AcpiId, ProbeAcpi},
     },
-    register::ProbeKind,
+    register::{ProbeFdt, ProbeKind},
 };
 
-use super::{fdt::FdtProbe, init_epoch_offset, loongson_decode::toy_to_unix_timestamp};
+use super::{init_epoch_offset, loongson_decode::toy_to_unix_timestamp};
 use crate::mmio::{firmware_reg_paddr, firmware_reg_size, iomap_firmware_reg};
 
 crate::model_register!(
@@ -32,7 +32,7 @@ crate::model_register!(
     ],
 );
 
-fn probe_loongson_fdt(probe: FdtProbe<'_>) -> Result<(), OnProbeError> {
+fn probe_loongson_fdt(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
     let info = probe.info();
     let mmio_base = map_loongson_fdt_reg(info)?;
     let unix_timestamp = read_unix_timestamp(mmio_base.as_ptr());
