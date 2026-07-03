@@ -1,3 +1,8 @@
+---
+sidebar_position: 3
+sidebar_label: "xHCI Route String"
+---
+
 # xHCI Route String 分析与实现
 
 ## 概述

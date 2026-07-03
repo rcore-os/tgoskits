@@ -1,3 +1,8 @@
+---
+sidebar_position: 2
+sidebar_label: "RK3588 设备发现"
+---
+
 # RK3588 USB3 设备发现流程完整分析
 
 ## 概述

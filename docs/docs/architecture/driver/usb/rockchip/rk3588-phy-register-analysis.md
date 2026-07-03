@@ -1,3 +1,8 @@
+---
+sidebar_position: 3
+sidebar_label: "DWC3 PHY 寄存器"
+---
+
 # RK3588 DWC3 PHY 寄存器访问问题分析
 
 ## 问题描述

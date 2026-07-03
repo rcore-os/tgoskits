@@ -1,3 +1,8 @@
+---
+sidebar_position: 5
+sidebar_label: "usb@fc400000 依赖"
+---
+
 # usb@fc400000 依赖关系图
 
 ## 概述

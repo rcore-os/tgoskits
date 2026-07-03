@@ -1,6 +1,11 @@
+---
+sidebar_position: 30
+sidebar_label: "K230 Runtime"
+---
+
 # StarryOS K230 NNCase Runtime Demo
 
-Chinese version: `docs/k230-kpu-nncase-runtime.zh.md`.
+Chinese version: `k230-kpu-nncase-runtime.zh.md`.
 
 This document records the K230 KPU/NPU runtime demo added for the StarryOS K230
 QEMU path. The operator-facing app lives under
