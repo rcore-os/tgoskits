@@ -758,15 +758,20 @@ fn test_stale_wait_queue_entry_does_not_clear_new_wait_membership() {
     run_in_test_scheduler(|| {
         let stale_queue = WaitQueue::new();
         let active_queue = WaitQueue::new();
+        let task =
+            crate::TaskInner::new(|| {}, "stale-key-waiter".into(), RAW_TASK_STACK_SIZE).into_arc();
 
-        stale_queue.push_current_for_test();
-        active_queue.push_current_for_test();
+        crate::register_task(&task);
+        task.set_state(crate::TaskState::Blocked);
+        stale_queue.push_task_for_test(task.clone());
+        active_queue.push_task_for_test(task.clone());
 
-        assert!(current().in_wait_queue());
+        assert!(task.in_wait_queue());
         assert!(!stale_queue.notify_one(false));
-        assert!(current().in_wait_queue());
+        assert!(task.in_wait_queue());
         assert!(active_queue.notify_one(false));
-        assert!(!current().in_wait_queue());
+        assert_eq!(task.state(), crate::TaskState::Ready);
+        assert!(!task.in_wait_queue());
     });
 }
 
@@ -789,6 +794,30 @@ fn test_wake_task_clears_raw_wait_queue_membership() {
 
         assert_eq!(task.state(), crate::TaskState::Ready);
         assert!(!task.in_wait_queue());
+        assert!(!wait_queue.notify_one(false));
+    });
+}
+
+#[test]
+fn test_wait_queue_notify_one_ignores_ready_stale_waiter() {
+    run_in_test_scheduler(|| {
+        let wait_queue = WaitQueue::new();
+        let stale = crate::TaskInner::new(|| {}, "ready-stale-waiter".into(), RAW_TASK_STACK_SIZE)
+            .into_arc();
+        let blocked =
+            crate::TaskInner::new(|| {}, "blocked-waiter".into(), RAW_TASK_STACK_SIZE).into_arc();
+
+        crate::register_task(&stale);
+        crate::register_task(&blocked);
+        stale.set_state(crate::TaskState::Ready);
+        blocked.set_state(crate::TaskState::Blocked);
+        wait_queue.push_task_for_test(stale.clone());
+        wait_queue.push_task_for_test(blocked.clone());
+
+        assert!(wait_queue.notify_one(false));
+        assert_eq!(blocked.state(), crate::TaskState::Ready);
+        assert!(!stale.in_wait_queue());
+        assert!(!blocked.in_wait_queue());
         assert!(!wait_queue.notify_one(false));
     });
 }

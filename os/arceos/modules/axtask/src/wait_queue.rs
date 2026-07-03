@@ -182,10 +182,10 @@ impl WaitQueue {
     /// If `resched` is true, the current task will be preempted when the
     /// preemption is enabled.
     pub fn notify_one(&self, resched: bool) -> bool {
-        let task = self.pop_front();
-        if let Some(task) = task {
-            unblock_one_task(task, resched);
-            return true;
+        while let Some(task) = self.pop_front() {
+            if unblock_one_task(task, resched) {
+                return true;
+            }
         }
         false
     }
@@ -282,20 +282,13 @@ impl WaitQueue {
     }
 
     #[cfg(test)]
-    pub(crate) fn push_current_for_test(&self) {
-        let curr = crate::current();
-        curr.set_wait_queue_key(self.key());
-        self.queue.lock().push_back(curr.clone());
-    }
-
-    #[cfg(test)]
     pub(crate) fn push_task_for_test(&self, task: AxTaskRef) {
         task.set_wait_queue_key(self.key());
         self.queue.lock().push_back(task);
     }
 }
 
-fn unblock_one_task(task: AxTaskRef, resched: bool) {
+fn unblock_one_task(task: AxTaskRef, resched: bool) -> bool {
     // Select run queue by the CPU set of the task.
-    let _ = select_wake_run_queue::<NoPreemptIrqSave>(&task).unblock_task(task, resched);
+    select_wake_run_queue::<NoPreemptIrqSave>(&task).unblock_task(task, resched)
 }
