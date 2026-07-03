@@ -740,6 +740,20 @@ fn test_wait_until_rechecks_after_queueing_without_sleeping() {
 }
 
 #[test]
+fn test_blocked_resched_abortable_removes_waiter_before_return() {
+    run_in_test_scheduler(|| {
+        let wait_queue = ax_kspin::SpinNoIrq::new(bare_task::WaitQueueCore::new());
+        let aborted = crate::current_run_queue::<ax_kernel_guard::NoPreemptIrqSave>()
+            .blocked_resched_abortable(&wait_queue, || true);
+
+        assert!(aborted);
+        assert_eq!(current().state(), crate::TaskState::Running);
+        assert!(!current().in_wait_queue());
+        assert!(wait_queue.lock().is_empty());
+    });
+}
+
+#[test]
 fn test_irq_notify_wakes_after_concurrent_irq_callbacks() {
     run_in_test_scheduler(|| {
         const NUM_IRQ_THREADS: usize = 6;

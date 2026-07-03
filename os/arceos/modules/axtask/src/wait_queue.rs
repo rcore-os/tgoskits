@@ -95,8 +95,7 @@ impl WaitQueue {
                 break;
             }
             let mut rq = current_run_queue::<NoPreemptIrqSave>();
-            let wq = self.queue.lock();
-            rq.blocked_resched_abortable(wq, &condition);
+            rq.blocked_resched_abortable(&self.queue, &condition);
             // Preemption may occur here.
         }
         self.cancel_events(curr, false);
@@ -163,9 +162,8 @@ impl WaitQueue {
             }
 
             let mut rq = current_run_queue::<NoPreemptIrqSave>();
-            let wq = self.queue.lock();
             crate::timers::set_alarm_wakeup(deadline, curr.clone());
-            rq.blocked_resched_abortable(wq, || {
+            rq.blocked_resched_abortable(&self.queue, || {
                 condition() || ax_hal::time::monotonic_time() >= deadline
             });
             // Preemption may occur here.

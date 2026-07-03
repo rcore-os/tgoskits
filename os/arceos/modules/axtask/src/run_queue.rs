@@ -9,6 +9,7 @@ use core::sync::atomic::{AtomicBool, Ordering};
 
 use ax_hal::percpu::this_cpu_id;
 use ax_kernel_guard::BaseGuard;
+use ax_kspin::SpinNoIrq;
 use ax_lazyinit::LazyInit;
 use ax_memory_addr::VirtAddr;
 #[cfg(all(
@@ -17,7 +18,7 @@ use ax_memory_addr::VirtAddr;
     not(all(test, feature = "host-test"))
 ))]
 use bare_task::IpiEvent;
-use bare_task::{BareCpuCore, CpuId};
+use bare_task::{BareCpuCore, CpuId, WaitQueueCore};
 
 use crate::{
     AxCpuMask, AxTaskRef, Scheduler, TaskInner, WaitQueue,
@@ -892,22 +893,23 @@ impl<G: BaseGuard> CurrentRunQueueRef<'_, G> {
     /// actual context switch.
     ///
     /// The abort predicate runs after the task has been linked into the wait
-    /// queue, but after the wait-queue lock is dropped. This preserves the
-    /// notify-before-sleep race protocol without forcing arbitrary predicates
-    /// to run under the wait-queue lock.
+    /// queue, but after the wait-queue lock is dropped. If it aborts the sleep,
+    /// the task is removed from the same wait queue before returning to keep
+    /// wait-queue membership and task state in sync.
     pub fn blocked_resched_abortable(
         &mut self,
-        mut wq_guard: WaitQueueGuard,
+        wait_queue: &SpinNoIrq<WaitQueueCore<AxTaskRef>>,
         should_abort_sleep: impl Fn() -> bool,
-    ) {
+    ) -> bool {
         let curr = &self.current_task;
         assert!(curr.is_running());
         assert!(!curr.is_idle());
-        // Current expected preempt count is 2.
-        // 1 for `NoPreemptIrqSave`, 1 for wait queue's `SpinNoIrq`.
+        // Current expected preempt count is 1 for `NoPreemptIrqSave`.
+        // This helper takes the wait-queue lock after the check below.
         #[cfg(feature = "preempt")]
-        assert!(curr.can_preempt(2));
+        assert!(curr.can_preempt(1));
 
+        let mut wq_guard = wait_queue.lock();
         curr.set_state(TaskState::Blocked);
         if !curr.in_wait_queue() {
             curr.set_in_wait_queue(true);
@@ -915,12 +917,23 @@ impl<G: BaseGuard> CurrentRunQueueRef<'_, G> {
         }
         drop(wq_guard);
 
-        if should_abort_sleep() && curr.transition_state(TaskState::Blocked, TaskState::Running) {
-            return;
+        if should_abort_sleep() {
+            let mut wq_guard = wait_queue.lock();
+            let was_queued = curr.in_wait_queue();
+            if was_queued {
+                wq_guard.retain(|task| !curr.ptr_eq(task));
+                curr.set_in_wait_queue(false);
+            }
+            drop(wq_guard);
+
+            if curr.transition_state(TaskState::Blocked, TaskState::Running) {
+                return true;
+            }
         }
 
         debug!("task block: {}", curr.id_name());
         self.inner.resched();
+        false
     }
 
     /// Block the current task, put current task into the wait queue and reschedule.
