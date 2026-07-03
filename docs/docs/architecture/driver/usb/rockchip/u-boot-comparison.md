@@ -1,3 +1,8 @@
+---
+sidebar_position: 4
+sidebar_label: "u-boot 流程对比"
+---
+
 # u-boot USB 初始化流程对比分析
 
 ## 概述

@@ -1,3 +1,8 @@
+---
+sidebar_position: 31
+sidebar_label: "K230 Runtime (中文)"
+---
+
 # StarryOS K230 NNCase Runtime Demo
 
 本文记录 StarryOS K230 QEMU 路径上的 KPU/NPU runtime demo。面向使用者和

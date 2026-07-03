@@ -9,7 +9,7 @@ sidebar_label: "设备发现"
 
 ## 入口：`rdrive_setup`
 
-`somehal` 是仓库内默认的设备发现驱动器。其唯一入口在 [platforms/somehal/src/driver.rs](platforms/somehal/src/driver.rs)：
+`somehal` 是仓库内默认的设备发现驱动器。其唯一入口在 `platforms/somehal/src/driver.rs`：
 
 ```rust
 pub fn rdrive_setup() {
@@ -29,7 +29,7 @@ pub fn rdrive_setup() {
 
 `rdrive_setup()` 由 `axplat-dyn` 的 `init_later` 经 `somehal::post_paging()` 间接调用（见 [dynamic.md](dynamic.md)）。外部平台也可以自行调用 `rdrive::init(rdrive::Platform::Static)`，由平台代码注册静态设备。
 
-随后 [platforms/axplat-dyn/src/drivers/mod.rs](platforms/axplat-dyn/src/drivers/mod.rs) 调用：
+随后 `platforms/axplat-dyn/src/drivers/mod.rs` 调用：
 
 ```rust
 pub fn probe_all_devices() -> Result<(), AxError> {
@@ -79,9 +79,9 @@ somehal 的架构后端通过 `rdrive::module_driver!` 注册一系列内置 dri
 
 | 驱动 | compatible / AcpiId | 源码 |
 | --- | --- | --- |
-| ARMv8 通用 timer | `arm,armv8-timer` | [platforms/somehal/src/arch/aarch64/systick.rs](platforms/somehal/src/arch/aarch64/systick.rs#L29-L37) |
-| ARM GIC（v2/v3） | 由 `arm_gic_driver` crate 注册 | [platforms/somehal/src/arch/aarch64/gic/mod.rs](platforms/somehal/src/arch/aarch64/gic/mod.rs) |
-| x86 ACPI IOAPIC | `ACPIIOAP` | [platforms/somehal/src/arch/x86_64/mod.rs](platforms/somehal/src/arch/x86_64/mod.rs) |
+| ARMv8 通用 timer | `arm,armv8-timer` | `platforms/somehal/src/arch/aarch64/systick.rs` |
+| ARM GIC（v2/v3） | 由 `arm_gic_driver` crate 注册 | `platforms/somehal/src/arch/aarch64/gic/mod.rs` |
+| x86 ACPI IOAPIC | `ACPIIOAP` | `platforms/somehal/src/arch/x86_64/mod.rs` |
 
 `module_driver!` 在编译期生成一个 `DriverRegister` 项并放到 `.init_array`/特殊段中，`rdrive::init` 完成后会扫描这些项并建立索引。
 
@@ -98,7 +98,7 @@ somehal 的架构后端通过 `rdrive::module_driver!` 注册一系列内置 dri
 
 ### IRQ domain 与设备绑定
 
-[platforms/somehal/src/irq.rs](platforms/somehal/src/irq.rs) 维护 `IRQ_DOMAINS: Mutex<Vec<IrqDomain>>`，每个 domain 归属于一个 `rdrive::Device<Intc>`。当驱动需要把硬件 IRQ 转成全局 `IrqId` 时：
+`platforms/somehal/src/irq.rs` 维护 `IRQ_DOMAINS: Mutex<Vec<IrqDomain>>`，每个 domain 归属于一个 `rdrive::Device<Intc>`。当驱动需要把硬件 IRQ 转成全局 `IrqId` 时：
 
 1. 通过 `domain_by_kind_fast(IrqDomainKind::AArch64Gic)` 等拿到 domain id。
 2. `IrqId::new(domain_id, HwIrq(hwirq))` 构造全局 IRQ 标识。
@@ -117,4 +117,4 @@ somehal 的架构后端通过 `rdrive::module_driver!` 注册一系列内置 dri
 - **IRQ**：通过 `rdif-intc` 表达 controller 能力；`somehal` 把硬件 IRQ 翻译成 `ax_plat::irq::IrqId` 后交给上层。
 - **Firmware metadata**：FDT 节点指针、ACPI 资源描述应停留在 probe boundary，不进入 driver 内部数据结构。
 
-更完整的驱动路径见 [rdrive + rdif 驱动框架](../rdrive-rdif.md)。
+更完整的驱动路径见 [驱动框架](../driver/overview.md)。

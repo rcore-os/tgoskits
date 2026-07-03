@@ -11,11 +11,11 @@ sidebar_label: "控制面"
 
 | 源码 | 职责 |
 | --- | --- |
-| [config.rs](net/ax-net/src/config.rs) | 控制面公开数据模型：`InterfaceId`、`InterfaceInfo`、`NetworkConfig`、`RouteInfo`、`DeviceBinding` |
-| [service.rs](net/ax-net/src/service.rs) | `NetControl`、接口 registry、DNS registry、DHCP commit、route 查询入口 |
-| [router.rs](net/ax-net/src/router.rs) | `RouteTable`、`Rule`、`RouteDecision`、TX dispatch route lookup |
-| [general.rs](net/ax-net/src/general.rs) | socket 通用选项中的 `SO_BINDTODEVICE` / `DeviceBinding` 存取 |
-| [tcp.rs](net/ax-net/src/tcp.rs)、[udp.rs](net/ax-net/src/udp.rs)、[raw.rs](net/ax-net/src/raw.rs) | connect/send/bind 时使用控制面做地址、路由和设备绑定决策 |
+| `config.rs` | 控制面公开数据模型：`InterfaceId`、`InterfaceInfo`、`NetworkConfig`、`RouteInfo`、`DeviceBinding` |
+| `service.rs` | `NetControl`、接口 registry、DNS registry、DHCP commit、route 查询入口 |
+| `router.rs` | `RouteTable`、`Rule`、`RouteDecision`、TX dispatch route lookup |
+| `general.rs` | socket 通用选项中的 `SO_BINDTODEVICE` / `DeviceBinding` 存取 |
+| `tcp.rs`、`udp.rs`、`raw.rs` | connect/send/bind 时使用控制面做地址、路由和设备绑定决策 |
 
 ## 设计边界
 
@@ -363,7 +363,7 @@ pub fn ipv4_config(name: &str) -> Option<Ipv4InterfaceConfig> {
 
 ### RouteTable
 
-`RouteTable` 存在于 [router.rs](net/ax-net/src/router.rs)，被 `Arc<RwLock<_>>` 包装为 `SharedRouteTable`。
+`RouteTable` 存在于 `router.rs`，被 `Arc<RwLock<_>>` 包装为 `SharedRouteTable`。
 
 ```rust
 pub type SharedRouteTable = Arc<RwLock<RouteTable>>;

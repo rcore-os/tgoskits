@@ -11,13 +11,13 @@ sidebar_label: "配置参考"
 
 | 配置域 | 源码 |
 | --- | --- |
-| feature | [Cargo.toml](net/ax-net/Cargo.toml) |
-| 接口配置模型 | [config.rs](net/ax-net/src/config.rs) |
-| 初始化解析与校验 | [lib.rs](net/ax-net/src/lib.rs) `init_network()` |
-| 缓冲区/队列常量 | [consts.rs](net/ax-net/src/consts.rs) |
-| TCP keepalive / TCP_INFO 默认值 | [tcp.rs](net/ax-net/src/tcp.rs) |
-| DHCP/DNS 默认值 | [lib.rs](net/ax-net/src/lib.rs), [service.rs](net/ax-net/src/service.rs) |
-| Ethernet ARP 默认值 | [device/ethernet.rs](net/ax-net/src/device/ethernet.rs) |
+| feature | `Cargo.toml` |
+| 接口配置模型 | `config.rs` |
+| 初始化解析与校验 | `lib.rs` `init_network()` |
+| 缓冲区/队列常量 | `consts.rs` |
+| TCP keepalive / TCP_INFO 默认值 | `tcp.rs` |
+| DHCP/DNS 默认值 | `lib.rs`, `service.rs` |
+| Ethernet ARP 默认值 | `device/ethernet.rs` |
 
 ## 构建配置
 
@@ -255,7 +255,7 @@ pub fn wake_net_task_irq();
 
 ## 资源预算
 
-缓冲区和队列常量集中定义在 [consts.rs](net/ax-net/src/consts.rs)。这些值共同决定嵌入式目标上的默认内存占用。
+缓冲区和队列常量集中定义在 `consts.rs`。这些值共同决定嵌入式目标上的默认内存占用。
 
 ### Socket Buffer
 

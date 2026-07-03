@@ -1,3 +1,8 @@
+---
+sidebar_position: 2
+sidebar_label: "DWC3 DMA 寻址"
+---
+
 # RK3588 DWC3 DMA 寻址能力分析
 
 ## 问题现象

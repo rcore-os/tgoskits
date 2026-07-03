@@ -5,7 +5,7 @@ sidebar_label: "动态平台"
 
 # 动态平台 `axplat-dyn`
 
-`axplat-dyn` 是当前仓库默认维护的平台实现（[platforms/axplat-dyn](platforms/axplat-dyn)）。它不把板级常量写死在 Cargo feature 中，而是通过 `someboot` / `somehal` 在启动时获取平台事实，再把这些事实适配成 `ax-plat` 接口。
+`axplat-dyn` 是当前仓库默认维护的平台实现（`platforms/axplat-dyn`）。它不把板级常量写死在 Cargo feature 中，而是通过 `someboot` / `somehal` 在启动时获取平台事实，再把这些事实适配成 `ax-plat` 接口。
 
 ## crate 元数据与 feature
 
@@ -36,7 +36,7 @@ dynamic  = true
 
 ## lib.rs 总览
 
-[platforms/axplat-dyn/src/lib.rs](platforms/axplat-dyn/src/lib.rs)：
+`platforms/axplat-dyn/src/lib.rs`：
 
 ```rust
 #![no_std]
@@ -77,8 +77,8 @@ pub use irq::register_virtual_irq_injector;
 
 | 组件 | 职责 |
 | --- | --- |
-| `someboot`（[platforms/someboot](platforms/someboot)） | 固件入口、UEFI/FDT 获取、重定位、早期页表、BSS、boot stack、SMP 启动准备 |
-| `somehal`（[platforms/somehal](platforms/somehal)） | 运行时平台事实：内存图、console、timer、IRQ、power、CPU 拓扑；架构后端实现 `PlatOp` |
+| `someboot`（`platforms/someboot`） | 固件入口、UEFI/FDT 获取、重定位、早期页表、BSS、boot stack、SMP 启动准备 |
+| `somehal`（`platforms/somehal`） | 运行时平台事实：内存图、console、timer、IRQ、power、CPU 拓扑；架构后端实现 `PlatOp` |
 | `axplat-dyn` | 将 `somehal` 能力实现为 `ax-plat` 接口；接入 `rdrive` 设备发现；提供链接脚本 |
 | `ax-hal` | 对上提供稳定 HAL facade |
 
@@ -97,7 +97,7 @@ flowchart TD
 
 ## boot.rs — 入口与 boot stack
 
-[platforms/axplat-dyn/src/boot.rs](platforms/axplat-dyn/src/boot.rs) 把 `somehal::entry` 与 `ax_plat::call_main` 桥接：
+`platforms/axplat-dyn/src/boot.rs` 把 `somehal::entry` 与 `ax_plat::call_main` 桥接：
 
 ```rust
 #[somehal::entry(Kernel)]
@@ -134,7 +134,7 @@ fn platform_name() -> &'static str {
 
 ## init.rs — 两阶段初始化
 
-[platforms/axplat-dyn/src/init.rs](platforms/axplat-dyn/src/init.rs)：
+`platforms/axplat-dyn/src/init.rs`：
 
 - `init_early`：在 aarch64/loongarch64 且开启 `fp-simd` 时启用 FP/SIMD；调用 `somehal::timer::enable()` 启动系统时钟。
 - `init_later`：调用 `somehal::post_paging()`（内部完成 `someboot::post_allocator()` + `driver::rdrive_setup()`）；若启用 `rtc` feature 且目标是 loongarch64，则通过 `try_init_epoch_offset()` 从固件 RTC 读取 epoch。
@@ -143,7 +143,7 @@ fn platform_name() -> &'static str {
 
 ## mem.rs — 内存视图构造
 
-[platforms/axplat-dyn/src/mem.rs](platforms/axplat-dyn/src/mem.rs) 在首次访问时通过 `spin::Once` + `heapless::Vec` 懒构造三张静态表：
+`platforms/axplat-dyn/src/mem.rs` 在首次访问时通过 `spin::Once` + `heapless::Vec` 懒构造三张静态表：
 
 | 列表 | 容量 | 来源 |
 | --- | --- | --- |
@@ -157,7 +157,7 @@ fn platform_name() -> &'static str {
 
 ## console.rs — 控制台适配
 
-[platforms/axplat-dyn/src/console.rs](platforms/axplat-dyn/src/console.rs) 把 `ax_plat::console::ConsoleIf` 转发到 `somehal::console`：
+`platforms/axplat-dyn/src/console.rs` 把 `ax_plat::console::ConsoleIf` 转发到 `somehal::console`：
 
 ```rust
 fn write_bytes(bytes) { somehal::console::_write_bytes(bytes) }
@@ -170,7 +170,7 @@ x86_64 上特别处理：当 IRQ 向量落在 PCI INTx 区间时，通过 `ax_pl
 
 ## power.rs — 关机与 SMP boot
 
-[platforms/axplat-dyn/src/power.rs](platforms/axplat-dyn/src/power.rs)：
+`platforms/axplat-dyn/src/power.rs`：
 
 ```rust
 fn cpu_num() -> usize { somehal::smp::cpu_meta_list().count() }
@@ -181,7 +181,7 @@ fn cpu_boot(cpu_id, stack_top_paddr) { somehal::power::cpu_on(cpu_id, stack_top_
 
 ## generic_timer.rs — TimeIf 实现
 
-[platforms/axplat-dyn/src/generic_timer.rs](platforms/axplat-dyn/src/generic_timer.rs) 为 `struct GenericTimer` 实现 `ax_plat::time::TimeIf`：
+`platforms/axplat-dyn/src/generic_timer.rs` 为 `struct GenericTimer` 实现 `ax_plat::time::TimeIf`：
 
 ```rust
 fn current_ticks()        -> u64  { somehal::timer::ticks() }
@@ -197,7 +197,7 @@ fn set_oneshot_timer(ns)          {
 
 ## irq.rs — IrqIf 实现
 
-[platforms/axplat-dyn/src/irq.rs](platforms/axplat-dyn/src/irq.rs) 是平台与中断子系统交互的核心：
+`platforms/axplat-dyn/src/irq.rs` 是平台与中断子系统交互的核心：
 
 ```rust
 fn handle(vector) {
@@ -217,7 +217,7 @@ fn handle(vector) {
 
 ### irq/loongarch64_hv.rs — guest IRQ 路由表
 
-[platforms/axplat-dyn/src/irq/loongarch64_hv.rs](platforms/axplat-dyn/src/irq/loongarch64_hv.rs) 实现 `LoongArchHvIrqIf`，用 256 槽静态表把物理 IRQ ↔ `(vm_id, vcpu_id, guest_vector)` 关联起来：
+`platforms/axplat-dyn/src/irq/loongarch64_hv.rs` 实现 `LoongArchHvIrqIf`，用 256 槽静态表把物理 IRQ ↔ `(vm_id, vcpu_id, guest_vector)` 关联起来：
 
 ```rust
 static GUEST_IRQ_ROUTES:   [AtomicUsize; 256] = ...;
@@ -229,7 +229,7 @@ const LOONGARCH_IRQ_TRACE_LIMIT: usize = 80;
 
 ## drivers/mod.rs — 设备 probe
 
-整个模块只有一个函数 ([platforms/axplat-dyn/src/drivers/mod.rs](platforms/axplat-dyn/src/drivers/mod.rs))：
+整个模块只有一个函数 (`platforms/axplat-dyn/src/drivers/mod.rs`)：
 
 ```rust
 pub fn probe_all_devices() -> Result<(), AxError> {
@@ -245,7 +245,7 @@ pub fn probe_all_devices() -> Result<(), AxError> {
 
 ## build.rs — 链接脚本生成
 
-[platforms/axplat-dyn/build.rs](platforms/axplat-dyn/build.rs) 从 [link.ld](platforms/axplat-dyn/link.ld) 模板生成 `axplat.x`：
+`platforms/axplat-dyn/build.rs` 从 `link.ld` 模板生成 `axplat.x`：
 
 - `INCLUDE "link.x"` 引入 somehal/someboot 提供的脚本。
 - 把 `{{SMP}}` 占位符替换成 `SMP` 环境变量（默认 16）。
