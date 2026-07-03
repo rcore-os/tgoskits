@@ -8,7 +8,7 @@ use dma_api::DeviceDma;
 use mmio_api::MmioRaw;
 use sdmmc_protocol::{
     error::{Error, ErrorContext, Phase},
-    sdio::{BusWidth, SdioIrqHandle, SignalVoltage},
+    sdio::host::{BusWidth, SdioIrqHandle, SignalVoltage},
 };
 use volatile::VolatilePtr;
 
@@ -312,7 +312,7 @@ impl PhytiumMci {
         );
 
         self.program_timing(TimingTable::sd_for_speed(
-            sdmmc_protocol::sdio::ClockSpeed::Identification,
+            sdmmc_protocol::sdio::host::ClockSpeed::Identification,
         )?)?;
         self.dma_poisoned = false;
         Ok(())

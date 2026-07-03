@@ -19,7 +19,12 @@ use sdmmc_protocol::{Error, error::Phase};
 #[cfg(not(test))]
 use sdmmc_protocol::{
     OperationPoll,
-    sdio::{BusWidth, CardInfo, CardInitPreference, SdioHost2Adapter, SdioInitScratch, SdioSdmmc},
+    sdio::{
+        card::{CardInfo, SdioSdmmc},
+        host::BusWidth,
+        host2::SdioHost2Adapter,
+        init::{CardInitPreference, SdioInitScratch},
+    },
 };
 
 #[cfg(not(test))]

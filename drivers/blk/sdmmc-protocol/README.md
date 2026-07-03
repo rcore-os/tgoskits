@@ -15,6 +15,7 @@ It provides:
 - EXT_CSD helpers for eMMC capacity, bus-width, and timing capability fields
 - A SPI-mode SD card driver over a small transport trait
 - A SDIO/native-mode host-controller abstraction and driver skeleton
+- An optional RDIF block-device bridge for SDIO-backed host crates
 - One shared `Error` type with command/phase context for protocol and host errors
 
 The SPI path has protocol-level unit tests and basic block read/write support.
@@ -29,10 +30,12 @@ combinations listed under [Validated host backends](#validated-host-backends).
 default = ["spi"]
 spi = []
 sdio = []
+rdif = ["sdio", "dep:rdif-block"]
 ```
 
 - `spi`: enables the SPI transport and `SpiSdmmc` driver.
 - `sdio`: enables the SDIO host abstraction and `SdioSdmmc` driver.
+- `rdif`: enables the RDIF block-device adapter for SDIO-backed host crates.
 
 Diagnostics use the `log` crate. Configure a logger in the caller if runtime
 messages are needed.
@@ -110,7 +113,11 @@ the published RCA itself, so hosts no longer need to snoop R6 responses:
 ```rust
 use sdmmc_protocol::{Command, CommandResponsePoll, DataCommandPoll, Error, OperationPoll, Response};
 use core::task::Waker;
-use sdmmc_protocol::sdio::{BusWidth, ClockSpeed, SdioHost, SdioInitScratch, SdioSdmmc};
+use sdmmc_protocol::sdio::{
+    card::SdioSdmmc,
+    host::{BusWidth, ClockSpeed, SdioHost},
+    init::SdioInitScratch,
+};
 
 struct MySdioHost;
 struct MyDataRequest<'a>(&'a mut [u8]);
@@ -215,6 +222,45 @@ the protocol layer then enforces wall-clock deadlines (1 s for power-up,
 no matter how fast or slow the caller polls. Hosts that return `None` (the
 default) keep the pure poll-counter behavior.
 
+### SDIO module boundaries
+
+The `sdio` feature is split by capability:
+
+- `sdio::host`: host-controller capabilities, IRQ events, and bus operations.
+- `sdio::host2`: compatibility adapter for `sdio-host2` physical hosts,
+  including request ownership and DMA recovery.
+- `sdio::card`: `SdioSdmmc`, card information, and ordinary command/block I/O
+  request wrappers.
+- `sdio::init`: initialization scratch storage, probe preference, and the
+  submit/poll initialization state machine.
+
+The historical `sdmmc_protocol::sdio::*` re-exports remain available for
+callers that have not migrated to the capability submodules yet.
+
+## RDIF Block Bridge
+
+The `rdif` feature adapts an initialized `SdioSdmmc` card to `rdif-block`
+without pulling OS runtime policy into the protocol crate. Its public modules
+match the ownership boundary:
+
+- `rdif::config`: block size constants, `BlockConfig`, queue limits, device
+  info, card-address translation, and error/transfer-mode helpers.
+- `rdif::host`: the `BlockHost` capability boundary plus the `SdioHost2Adapter`
+  request-slot adapter.
+- `rdif::device`: `BlockDevice` and `rdif_block::Interface` integration.
+- `rdif::queue`: `BlockQueue` submit/poll behavior for FIFO and owned-DMA
+  queues.
+- `rdif::split`: FIFO single-block split state.
+- `rdif::owned`: owned-DMA submit, completion, cancel, and shutdown handling.
+- `rdif::irq`: the top-half IRQ bridge, which consumes a host IRQ endpoint and
+  never enters the shared card core.
+- `rdif::shared_core`: the task-context borrow gate shared by device control
+  and queues.
+
+The historical `sdmmc_protocol::rdif::*` re-exports remain available for
+compatibility, while new code should prefer the submodule where each capability
+is defined.
+
 ## Command Helpers
 
 The `cmd` module contains helpers for common commands:
@@ -247,12 +293,19 @@ Run SDIO-only compilation and tests:
 cargo test --no-default-features --features sdio
 ```
 
+Run the SDIO plus RDIF block-bridge tests:
+
+```bash
+cargo test --no-default-features --features sdio,rdif
+```
+
 Run all feature combinations used during development:
 
 ```bash
 cargo fmt --check
 cargo test
 cargo test --no-default-features --features sdio
+cargo test --no-default-features --features sdio,rdif
 cargo test --all-features
 ```
 

@@ -1,15 +1,12 @@
 //! RDIF block-device adapter for [`crate::Cv181xSdhci`].
 
-pub use protocol_rdif::{BlockConfig, BlockDevice, BlockQueue};
 pub use rdif_block::{
     BInterface, BIrqHandler, BOwnedQueue, BQueue, BlkError, IQueue, IQueueOwned, Interface,
     OwnedRequest, PollError, QueueHandle, Request, RequestId as RdifRequestId,
     RequestPoll as OwnedRequestPoll, RequestStatus, SubmitError,
 };
-use sdmmc_protocol::{
-    rdif as protocol_rdif,
-    sdio::{SdioHost2Adapter, SdioSdmmc},
-};
+pub use sdmmc_protocol::rdif::{config::BlockConfig, device::BlockDevice, queue::BlockQueue};
+use sdmmc_protocol::sdio::{card::SdioSdmmc, host2::SdioHost2Adapter};
 
 use crate::Cv181xSdhci;
 
@@ -30,6 +27,8 @@ pub const fn fifo_config(
 
 #[cfg(test)]
 mod tests {
+    use sdmmc_protocol::rdif as protocol_rdif;
+
     use super::*;
 
     #[test]

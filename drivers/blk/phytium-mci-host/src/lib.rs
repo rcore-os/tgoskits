@@ -43,7 +43,7 @@ use sdmmc_protocol::{
     DataCommandPoll, OperationPoll,
     cmd::{Command, DataDirection},
     error::{Error, ErrorContext, Phase},
-    sdio::{
+    sdio::host::{
         BusWidth, ClockSpeed, HostEvent, HostEventKind, HostEventSource, ReadyBusRequest,
         SdioBusOp, SdioHost as ProtocolSdioHost, SdioIrqHost, SignalVoltage, poll_ready_bus_op,
         submit_ready_bus_op,
@@ -1195,7 +1195,7 @@ mod tests {
         BlockTransferMode,
         cmd::CMD0,
         response::ResponseType,
-        sdio::{ClockSpeed, SignalVoltage},
+        sdio::host::{ClockSpeed, SignalVoltage},
     };
 
     use crate::{
