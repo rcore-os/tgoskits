@@ -11,8 +11,6 @@ use crate::mem::phys_to_virt;
 pub(crate) static mut FDT_ADDR: usize = 0;
 static FDT: StaticCell<fdt_edit::Fdt> = StaticCell::uninit();
 
-const FDT_MAGIC: u32 = 0xd00d_feed;
-const FDT_HEADER_SIZE: usize = 40;
 const MAX_FDT_SIZE: usize = 16 * 1024 * 1024;
 
 pub fn fdt_addr() -> Option<*mut u8> {
@@ -33,12 +31,12 @@ pub fn fdt_addr_phys() -> Option<usize> {
 
 #[cfg(target_arch = "loongarch64")]
 pub(crate) fn set_fdt_addr_phys_if_valid(fdt_addr: usize) -> bool {
-    if fdt_addr == 0 || !fdt_addr.is_multiple_of(4) {
+    if fdt_addr == 0 {
         return false;
     }
 
     let ptr = phys_to_virt(fdt_addr);
-    if fdt_total_size(ptr.cast_const()).is_none() {
+    if fdt_total_size(ptr).is_none() {
         return false;
     }
 
@@ -78,7 +76,7 @@ pub(crate) fn save_fdt() {
     let Some(src) = fdt_addr() else {
         return;
     };
-    let Some(size) = fdt_total_size(src.cast_const()) else {
+    let Some(size) = fdt_total_size(src) else {
         return;
     };
     let slice = unsafe { core::slice::from_raw_parts(src as *const u8, size) };
@@ -93,48 +91,19 @@ pub(crate) fn save_fdt() {
     }
 }
 
-fn fdt_total_size(ptr: *const u8) -> Option<usize> {
+fn fdt_total_size(ptr: *mut u8) -> Option<usize> {
     if ptr.is_null() {
         return None;
     }
 
-    let magic = unsafe { read_be_u32(ptr, 0) };
-    if magic != FDT_MAGIC {
-        return None;
-    }
-
-    let total_size = unsafe { read_be_u32(ptr, 4) } as usize;
-    if !(FDT_HEADER_SIZE..=MAX_FDT_SIZE).contains(&total_size) {
-        return None;
-    }
-
-    let off_dt_struct = unsafe { read_be_u32(ptr, 8) } as usize;
-    let off_dt_strings = unsafe { read_be_u32(ptr, 12) } as usize;
-    let off_mem_rsvmap = unsafe { read_be_u32(ptr, 16) } as usize;
-    if !valid_fdt_block_offset(off_dt_struct, total_size)
-        || !valid_fdt_block_offset(off_dt_strings, total_size)
-        || !valid_fdt_block_offset(off_mem_rsvmap, total_size)
-    {
-        return None;
-    }
-
-    Some(total_size)
-}
-
-fn valid_fdt_block_offset(offset: usize, total_size: usize) -> bool {
-    (FDT_HEADER_SIZE..total_size).contains(&offset) && offset.is_multiple_of(4)
-}
-
-unsafe fn read_be_u32(ptr: *const u8, offset: usize) -> u32 {
-    let bytes = unsafe {
-        [
-            core::ptr::read(ptr.add(offset)),
-            core::ptr::read(ptr.add(offset + 1)),
-            core::ptr::read(ptr.add(offset + 2)),
-            core::ptr::read(ptr.add(offset + 3)),
-        ]
-    };
-    u32::from_be_bytes(bytes)
+    // SAFETY: callers pass a firmware-provided candidate that is already
+    // reachable through the current early address mapping. `Header::from_ptr`
+    // only reads the fixed-size header and validates its FDT magic.
+    let header = unsafe { fdt_raw::Header::from_ptr(ptr).ok()? };
+    let total_size = header.totalsize as usize;
+    (core::mem::size_of::<fdt_raw::Header>()..=MAX_FDT_SIZE)
+        .contains(&total_size)
+        .then_some(total_size)
 }
 
 fn cpu_nodes_from_fdt<'a>(fdt: fdt_raw::Fdt<'a>) -> impl Iterator<Item = fdt_raw::Node<'a>> + 'a {
