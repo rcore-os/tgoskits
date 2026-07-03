@@ -212,6 +212,108 @@ static void test_mmap_min(void)
     expect_mmap_einval("mmap length zero -> EINVAL", 0, PROT_READ);
 }
 
+struct mmap_maps_case {
+    int prot;
+    int flags;
+    const char *expected;
+};
+
+static int read_maps_perms(void *addr, char perms[5])
+{
+    FILE *maps = fopen("/proc/self/maps", "r");
+    unsigned long target = (unsigned long)addr;
+    char line[256];
+
+    if (!maps) {
+        return -1;
+    }
+
+    while (fgets(line, sizeof(line), maps)) {
+        unsigned long start = 0;
+        unsigned long end = 0;
+        char found[5] = {0};
+
+        if (sscanf(line, "%lx-%lx %4s", &start, &end, found) == 3 &&
+            start == target && target < end) {
+            memcpy(perms, found, sizeof(found));
+            fclose(maps);
+            return 0;
+        }
+    }
+
+    fclose(maps);
+    errno = ENOENT;
+    return -1;
+}
+
+static void expect_mmap_maps_perms(const struct mmap_maps_case *tc)
+{
+    long pagesize = sysconf(_SC_PAGESIZE);
+    int guard_flags = (tc->flags & MAP_PRIVATE) ? MAP_SHARED : MAP_PRIVATE;
+    void *addr1;
+    void *addr2;
+    char perms[5] = {0};
+    char name[96];
+
+    if (pagesize <= 0) {
+        CHECK(0, "mmap maps perms setup pagesize");
+        return;
+    }
+
+    addr1 = mmap(NULL, (size_t)pagesize * 2, PROT_NONE,
+                 MAP_ANONYMOUS | guard_flags, -1, 0);
+    if (addr1 == MAP_FAILED) {
+        CHECK(0, "mmap maps perms setup guard mapping");
+        return;
+    }
+
+    addr2 = mmap((char *)addr1 + pagesize, (size_t)pagesize, tc->prot,
+                 tc->flags | MAP_FIXED, -1, 0);
+    if (addr2 == MAP_FAILED) {
+        munmap(addr1, (size_t)pagesize * 2);
+        CHECK(0, "mmap maps perms setup fixed mapping");
+        return;
+    }
+
+    snprintf(name, sizeof(name), "mmap /proc/self/maps perms %s", tc->expected);
+    if (read_maps_perms(addr2, perms) != 0) {
+        CHECK(0, name);
+    } else {
+        CHECK(strcmp(perms, tc->expected) == 0, name);
+        if (strcmp(perms, tc->expected) != 0) {
+            printf("    expected=%s found=%s\n", tc->expected, perms);
+        }
+    }
+
+    munmap(addr1, (size_t)pagesize * 2);
+}
+
+static void test_mmap_maps_min(void)
+{
+    static const struct mmap_maps_case tcases[] = {
+        {PROT_NONE, MAP_ANONYMOUS | MAP_PRIVATE, "---p"},
+        {PROT_NONE, MAP_ANONYMOUS | MAP_SHARED, "---s"},
+        {PROT_READ, MAP_ANONYMOUS | MAP_PRIVATE, "r--p"},
+        {PROT_READ, MAP_ANONYMOUS | MAP_SHARED, "r--s"},
+        {PROT_WRITE, MAP_ANONYMOUS | MAP_PRIVATE, "-w-p"},
+        {PROT_WRITE, MAP_ANONYMOUS | MAP_SHARED, "-w-s"},
+        {PROT_READ | PROT_WRITE, MAP_ANONYMOUS | MAP_PRIVATE, "rw-p"},
+        {PROT_READ | PROT_WRITE, MAP_ANONYMOUS | MAP_SHARED, "rw-s"},
+        {PROT_READ | PROT_EXEC, MAP_ANONYMOUS | MAP_PRIVATE, "r-xp"},
+        {PROT_READ | PROT_EXEC, MAP_ANONYMOUS | MAP_SHARED, "r-xs"},
+        {PROT_WRITE | PROT_EXEC, MAP_ANONYMOUS | MAP_PRIVATE, "-wxp"},
+        {PROT_WRITE | PROT_EXEC, MAP_ANONYMOUS | MAP_SHARED, "-wxs"},
+        {PROT_READ | PROT_WRITE | PROT_EXEC, MAP_ANONYMOUS | MAP_PRIVATE, "rwxp"},
+        {PROT_READ | PROT_WRITE | PROT_EXEC, MAP_ANONYMOUS | MAP_SHARED, "rwxs"},
+    };
+    size_t i;
+
+    printf("[TEST] mmap /proc/self/maps permissions\n");
+    for (i = 0; i < sizeof(tcases) / sizeof(tcases[0]); i++) {
+        expect_mmap_maps_perms(&tcases[i]);
+    }
+}
+
 static char *make_long_path(void)
 {
     char *path = malloc(PATH_MAX + 1);
@@ -281,6 +383,7 @@ int main(void)
 
     test_openat2_min();
     test_mmap_min();
+    test_mmap_maps_min();
     test_pathmax_min();
 
     printf("------------------------------------------------\n");
