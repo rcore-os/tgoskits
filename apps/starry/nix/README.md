@@ -42,29 +42,15 @@ connected once mount namespace isolation is available in StarryOS.
 | Script | Mode | Runs? |
 |--------|------|-------|
 | `nix-nosandbox` | `builtins.toFile` store-path write (no builder) | ✅ CI |
-| `nix-nixpkgs` | `pkgs.stdenv.mkDerivation` (requires nixpkgs) | ❌ deferred (see below) |
 | `nix` | `nix-build --option sandbox true` (full derivation builder) | ❌ blocked (mount ns + socketpair) |
 
 `test_nix.sh` runs only the `nix-nosandbox` phase. The sandbox test (`nix.sh`)
 is blocked until mount namespace isolation is ready.
 
-### nixpkgs / `stdenv.mkDerivation` — not planned at this stage
-
-Per project discussion on PR #1125 and teacher guidance, nixpkgs testing
-is deferred. `stdenv.mkDerivation` requires:
-
-- **Mount namespace isolation** (`unshare(CLONE_NEWNS)`) for the Nix download
-  subsystem, which fetches nixpkgs tarballs and substitutes during build;
-- A working `builtins.fetchTarball` that can download and unpack pinned
-  nixpkgs revisions from GitHub through Nix's download worker threads.
-
-These require kernel-level namespace support that is not yet available in
-StarryOS. The `nix-nixpkgs` script source is committed for reference but
-is intentionally excluded from `test_nix.sh`. Re-enable when mount namespace
-isolation lands.
-- Install prebuilt Nix (apk) → `nix --version` gate → store-path write via `builtins.toFile`
-- Build log `.lock` / `.drv` files exercise the rsext4 open-unlink lifecycle
-- Sandbox detection: `grep` build log for `disabling sandbox` → call `fail()`
+nixpkgs / `stdenv.mkDerivation` testing is tracked on a separate branch and is
+intentionally not part of this smoke test; it requires mount namespace
+isolation and a working `builtins.fetchTarball` download path that StarryOS
+does not yet provide.
 
 ## Kernel Regression Tests
 
@@ -87,9 +73,8 @@ See `test-suit/starryos/qemu-smp1/system/`.
 apps/starry/nix/
 ├── prebuild.sh          # apk add nix into staging rootfs
 ├── nix.sh               # sandbox-enabled nix-build (blocked, not CI)
-├── nix-nosandbox.sh     # builtins.derivation (CI gate, ~30s)
-├── nix-nixpkgs.sh       # stdenv.mkDerivation (deferred, requires mount ns)
-├── test_nix.sh          # nosandbox only (nixpkgs intentionally skipped)
+├── nix-nosandbox.sh     # builtins.toFile store-path write (CI gate)
+├── test_nix.sh          # nosandbox only
 ├── build-x86_64-unknown-none.toml
 ├── build-aarch64-unknown-none-softfloat.toml
 ├── qemu-x86_64.toml     # 1200s timeout, shell_init_cmd=test_nix.sh

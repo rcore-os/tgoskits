@@ -156,32 +156,6 @@ copy_runtime_dependencies() {
     done
 }
 
-prepare_nixpkgs_tarball() {
-    local nixpkgs_rev="06278c77b5d162e62df170fec307e83f1812d94b"
-    local tarball_url="https://github.com/NixOS/nixpkgs/archive/${nixpkgs_rev}.tar.gz"
-    local tarball_dest="$overlay_dir/nixpkgs.tar.gz"
-
-    if [[ -f "$tarball_dest" ]]; then
-        echo "nixpkgs tarball already cached at $tarball_dest"
-        return 0
-    fi
-
-    echo "downloading nixpkgs tarball from $tarball_url"
-    if command -v curl >/dev/null 2>&1; then
-        curl -fL --retry 5 --retry-all-errors --connect-timeout 30 -o "$tarball_dest" "$tarball_url" || {
-            echo "curl download failed, retrying..."
-            curl -fL --retry 5 --retry-all-errors --connect-timeout 30 -o "$tarball_dest" "$tarball_url"
-        }
-    elif command -v wget >/dev/null 2>&1; then
-        wget --tries=5 --timeout=30 -O "$tarball_dest" "$tarball_url"
-    else
-        echo "error: no download tool available (curl or wget required)" >&2
-        exit 1
-    fi
-
-    echo "nixpkgs tarball downloaded ($(du -h "$tarball_dest" | cut -f1))"
-}
-
 populate_overlay() {
     copy_runtime_dependencies /usr/bin/nix
 
@@ -194,15 +168,7 @@ populate_overlay() {
     # requires mount namespace isolation not yet available in StarryOS.
     # The nix binary must be kept as /usr/bin/nix (already copied above).
     install -Dm0755 "$app_dir/nix-nosandbox.sh" "$overlay_dir/usr/bin/nix-nosandbox"
-    install -Dm0755 "$app_dir/nix-nixpkgs.sh" "$overlay_dir/usr/bin/nix-nixpkgs"
     install -Dm0755 "$app_dir/test_nix.sh" "$overlay_dir/usr/bin/test_nix.sh"
-
-    # Inject nixpkgs tarball for the nixpkgs test.
-    # The guest cannot use builtins.fetchTarball because Nix's download
-    # subsystem requires unshare(CLONE_NEWNS) which StarryOS does not
-    # support.  Instead we download on the host during prebuild and inject
-    # the tarball; the guest extracts it and imports locally.
-    prepare_nixpkgs_tarball
 
     echo "overlay populated"
 }

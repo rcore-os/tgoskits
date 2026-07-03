@@ -24,6 +24,5 @@ fail_regex = [
     '(?i)\\bpanic(?:ked)?\\b',
     '(?i)\\bfatal\\b',
     "(?m)^NIX_NOSANDBOX_TEST_FAILED\\s*$",
-    "(?m)^NIX_NIXPKGS_TEST_FAILED\\s*$",
 ]
 timeout = 1200
