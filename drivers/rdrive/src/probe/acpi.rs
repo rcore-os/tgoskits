@@ -891,6 +891,15 @@ pub fn check_root(root: AcpiRoot) -> Result<(), DriverError> {
 
 pub fn init(root: AcpiRoot) -> Result<(), DriverError> {
     let system = System::new(root)?;
+    init_system(system)
+}
+
+pub fn init_without_aml(root: AcpiRoot) -> Result<(), DriverError> {
+    let system = System::new_without_aml(root)?;
+    init_system(system)
+}
+
+fn init_system(system: System) -> Result<(), DriverError> {
     info!(
         "ACPI initialized: {} PCI ECAM region(s), {} IOAPIC(s), {} PCH-PIC(s)",
         system.pci_ecam_regions().len(),
@@ -1160,6 +1169,10 @@ struct AcpiPciRoot {
 
 impl System {
     pub fn new(root: AcpiRoot) -> Result<Self, DriverError> {
+        Self::new_with_options(root, true)
+    }
+
+    pub fn new_without_aml(root: AcpiRoot) -> Result<Self, DriverError> {
         Self::new_with_options(root, false)
     }
 
@@ -1401,17 +1414,20 @@ impl System {
     }
 
     fn device_infos(&self) -> Result<Vec<AcpiDeviceInfo>, ProbeError> {
+        let Some(interpreter) = &self.interpreter else {
+            return Ok(Vec::new());
+        };
         let mut devices = Vec::new();
-        let mut namespace = self.interpreter.namespace.lock().clone();
+        let mut namespace = interpreter.namespace.lock().clone();
         namespace
             .traverse(|path, level| {
                 if level.kind != NamespaceLevelKind::Device {
                     return Ok(true);
                 }
-                let Some((hid, cids)) = acpi_device_ids(&self.interpreter, path)? else {
+                let Some((hid, cids)) = acpi_device_ids(interpreter, path)? else {
                     return Ok(true);
                 };
-                let resources = read_device_resources(&self.interpreter, path, &self.routing)?;
+                let resources = read_device_resources(interpreter, path, &self.routing)?;
                 devices.push(AcpiDeviceInfo {
                     path: path.as_string(),
                     hid: Some(hid),

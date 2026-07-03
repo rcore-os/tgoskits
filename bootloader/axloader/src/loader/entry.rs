@@ -76,6 +76,9 @@ pub fn exit_boot_services_and_jump(entry_point: u64) -> Result<(), JumpError> {
 pub fn jump_to_uefi_entry(entry_point: u64) -> Result<(), JumpError> {
     let entry_point = usize::try_from(entry_point).map_err(|_| JumpError::EntryAddressTooLarge)?;
     let system_table = uefi::table::system_table_raw().ok_or(JumpError::SystemTableUnavailable)?;
+    // This handoff intentionally reuses axloader's image handle. It is only
+    // suitable for loaded entries that use the UEFI system table but do not
+    // query LoadedImage or other image-handle-specific protocols.
     unsafe {
         call_uefi_entry_point(
             entry_point,
