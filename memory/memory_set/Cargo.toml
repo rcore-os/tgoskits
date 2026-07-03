@@ -3,7 +3,7 @@ name = "ax-memory-set"
 description = "Data structures and operations for managing memory mappings"
 keywords = ["arceos", "virtual-memory", "memory-area", "mmap"]
 
-version = "0.6.10"
+version = "0.6.11"
 repository = "https://github.com/rcore-os/tgoskits"
 edition.workspace = true
 authors = ["Yuekai Jia <equation618@gmail.com>", "aarkegz <aarkegz@gmail.com>"]

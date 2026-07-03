@@ -63,7 +63,7 @@ impl StdCargoConfig {
     }
 }
 
-pub(super) fn std_build_target_for(target: &str, plat_dyn: bool) -> anyhow::Result<StdBuildTarget> {
+pub(super) fn std_build_target_for(target: &str) -> anyhow::Result<StdBuildTarget> {
     let (target_name, tool_prefix) = if target.starts_with("x86_64-") {
         ("x86_64-unknown-linux-musl", "x86_64-linux-musl")
     } else if target.starts_with("aarch64-") {
@@ -85,9 +85,7 @@ pub(super) fn std_build_target_for(target: &str, plat_dyn: bool) -> anyhow::Resu
 
     Ok(StdBuildTarget {
         target_name: target_name.to_string(),
-        target: std_target_json_path(target_name, plat_dyn)
-            .display()
-            .to_string(),
+        target: std_target_json_path(target_name).display().to_string(),
         cargo_args: vec!["-Z".to_string(), "json-target-spec".to_string()],
         env,
     })
@@ -224,68 +222,29 @@ fn musl_gcc_include_dir(toolchain_root: &Path, tool_prefix: &str) -> Option<Path
         .find(|path| path.is_dir())
 }
 
-pub(super) fn std_target_json_path(target: &str, plat_dyn: bool) -> PathBuf {
+pub(super) fn std_target_json_path(target: &str) -> PathBuf {
     let path = Path::new(TARGET_JSON_ROOT).join(STD_TARGET_DIR);
-    if plat_dyn {
-        path.join(PIE_TARGET_DIR).join(format!("{target}.json"))
-    } else {
-        path.join(format!("{target}.json"))
-    }
+    path.join(PIE_TARGET_DIR).join(format!("{target}.json"))
 }
 
 pub(crate) fn prepare_std_build_env(
     envs: &mut HashMap<String, String>,
     target: &str,
-    plat_dyn: bool,
     metadata: &Metadata,
 ) -> anyhow::Result<()> {
-    prepare_std_build_env_for_package(
-        envs,
-        AXSTD_STD_PACKAGE,
-        target,
-        plat_dyn,
-        &[],
-        metadata,
-        &[],
-    )
+    prepare_std_build_env_for_package(envs, AXSTD_STD_PACKAGE, target, &[], metadata)
 }
 
 pub(super) fn prepare_std_build_env_for_package(
     envs: &mut HashMap<String, String>,
     package: &str,
     target: &str,
-    plat_dyn: bool,
     features: &[String],
     metadata: &Metadata,
-    axconfig_overrides: &[String],
 ) -> anyhow::Result<()> {
     envs.insert("AX_TARGET".to_string(), target.to_string());
 
-    if plat_dyn {
-        return Ok(());
-    }
-
-    let platform_config = resolve_platform_config(package, target, features, metadata)?;
-    let out_config = generated_axconfig_path(package, target)?;
-    generate_axconfig(
-        &crate::context::workspace_root_path()?,
-        target,
-        &platform_config.name,
-        &platform_config.config_path,
-        &out_config,
-        envs.get("SMP")
-            .map(|smp| {
-                smp.parse()
-                    .with_context(|| format!("invalid SMP value `{smp}`"))
-            })
-            .transpose()?,
-        axconfig_overrides,
-    )?;
-    envs.insert(
-        "AX_CONFIG_PATH".to_string(),
-        out_config.display().to_string(),
-    );
-    envs.insert("AX_PLATFORM".to_string(), platform_config.name);
+    let _ = (package, features, metadata);
     Ok(())
 }
 
@@ -299,6 +258,9 @@ pub(super) fn pass_std_build_nested_features(
 
     for feature in features.drain(..) {
         let feature = normalize_std_feature(&feature);
+        if is_removed_dynamic_platform_feature(&feature) {
+            continue;
+        }
         if matches!(feature.as_str(), "ax-std" | "ax-feat") {
             continue;
         }
@@ -368,18 +330,12 @@ pub(super) fn axstd_feature_is_available(feature: &str, axstd_features: &[String
 pub(super) fn std_cargo_config_path(
     target: &str,
     linker: &Path,
-    plat_dyn: bool,
     extra_rustflags: &[String],
 ) -> anyhow::Result<PathBuf> {
-    let mode = std_link_mode_suffix(plat_dyn);
-    let path = std_build_dir()?.join(format!("config-{target}-{mode}.toml"));
+    let path = std_build_dir()?.join(format!("config-{target}-dynamic.toml"));
     let config = toml::to_string_pretty(&StdCargoConfig::new(target, linker, extra_rustflags))?;
     write_if_changed(&path, &config)?;
     Ok(path)
-}
-
-pub(super) fn std_link_mode_suffix(plat_dyn: bool) -> &'static str {
-    if plat_dyn { "dynamic" } else { "static" }
 }
 
 pub(super) fn std_fake_lib_dir(target: &str) -> anyhow::Result<PathBuf> {
@@ -395,14 +351,9 @@ pub(super) fn std_fake_lib_dir(target: &str) -> anyhow::Result<PathBuf> {
 pub(super) fn std_linker_wrapper_path(
     target: &str,
     fake_lib_dir: &Path,
-    plat_dyn: bool,
 ) -> anyhow::Result<PathBuf> {
-    let mode = std_link_mode_suffix(plat_dyn);
-    let path = std_build_dir()?.join(format!("linker-{target}-{mode}.sh"));
-    write_if_changed(
-        &path,
-        &std_linker_wrapper_script(target, fake_lib_dir, plat_dyn)?,
-    )?;
+    let path = std_build_dir()?.join(format!("linker-{target}-dynamic.sh"));
+    write_if_changed(&path, &std_linker_wrapper_script(target, fake_lib_dir)?)?;
     set_executable(&path)?;
     Ok(path)
 }
@@ -494,10 +445,8 @@ create_empty_archive "$fake_dir/libunwind.a"
 pub(super) fn std_linker_wrapper_script(
     target: &str,
     fake_lib_dir: &Path,
-    plat_dyn: bool,
 ) -> anyhow::Result<String> {
     let machine = lld_machine_for_std_target(target)?;
-    let dynamic_platform = if plat_dyn { "1" } else { "0" };
     Ok(format!(
         r#"#!/usr/bin/env bash
 set -euo pipefail
@@ -507,7 +456,6 @@ target_name={}
 lld_args=("-m" "{}")
 link_search_dirs=()
 archive_args=()
-dynamic_platform={}
 
 add_link_search_dir() {{
     local dir="$1"
@@ -594,30 +542,17 @@ add_arg() {{
             return
             ;;
         -static-pie)
-            if [[ "$dynamic_platform" == "1" ]]; then
-                append_lld_arg "-pie"
-            else
-                append_lld_arg "-static"
-                append_lld_arg "-no-pie"
-            fi
+            append_lld_arg "-pie"
             return
             ;;
         -static)
-            if [[ "$dynamic_platform" == "0" ]]; then
-                append_lld_arg "-static"
-            fi
             return
             ;;
         -pie)
-            if [[ "$dynamic_platform" == "1" ]]; then
-                append_lld_arg "-pie"
-            fi
+            append_lld_arg "-pie"
             return
             ;;
         -no-pie)
-            if [[ "$dynamic_platform" == "0" ]]; then
-                append_lld_arg "-no-pie"
-            fi
             return
             ;;
         -nostartfiles|-nodefaultlibs|-nostdlib|-m*)
@@ -656,7 +591,6 @@ exec rust-lld -flavor gnu "${{lld_args[@]}}"
         shell_single_quote(&fake_lib_dir.display().to_string()),
         shell_single_quote(target),
         machine,
-        dynamic_platform,
     ))
 }
 

@@ -17,26 +17,26 @@
 //! This crate provides the `xtask` binary for building, running, and managing
 //! the Axvisor hypervisor project.
 
-#![cfg_attr(not(any(windows, unix)), no_main)]
-#![cfg_attr(not(any(windows, unix)), no_std)]
+#![cfg_attr(not(any(windows, all(unix, not(target_env = "musl")))), no_main)]
+#![cfg_attr(not(any(windows, all(unix, not(target_env = "musl")))), no_std)]
 
-#[cfg(not(any(windows, unix)))]
+#[cfg(not(any(windows, all(unix, not(target_env = "musl")))))]
 mod lang;
 
-#[cfg(any(windows, unix))]
+#[cfg(any(windows, all(unix, not(target_env = "musl"))))]
 use std::{
     ffi::OsString,
     path::{Path, PathBuf},
 };
 
-#[cfg(any(windows, unix))]
+#[cfg(any(windows, all(unix, not(target_env = "musl"))))]
 #[derive(clap::Parser)]
 struct Cli {
     #[command(subcommand)]
     command: axbuild::axvisor::Command,
 }
 
-#[cfg(any(windows, unix))]
+#[cfg(any(windows, all(unix, not(target_env = "musl"))))]
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     use clap::Parser;
@@ -52,7 +52,29 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-#[cfg(any(windows, unix))]
+#[cfg(not(any(windows, all(unix, not(target_env = "musl")))))]
+#[unsafe(no_mangle)]
+fn main() -> ! {
+    loop {
+        core::hint::spin_loop();
+    }
+}
+
+#[cfg(not(any(windows, all(unix, not(target_env = "musl")))))]
+#[rustfmt::skip]
+#[unsafe(no_mangle)]
+extern "C" fn _head() -> ! {
+    main()
+}
+
+#[cfg(not(any(windows, all(unix, not(target_env = "musl")))))]
+#[rustfmt::skip]
+#[unsafe(no_mangle)]
+extern "C" fn kernel_entry() -> ! {
+    main()
+}
+
+#[cfg(any(windows, all(unix, not(target_env = "musl"))))]
 fn normalize_legacy_args(args: impl IntoIterator<Item = OsString>) -> Vec<OsString> {
     args.into_iter()
         .map(|arg| match arg.to_str() {
@@ -65,7 +87,7 @@ fn normalize_legacy_args(args: impl IntoIterator<Item = OsString>) -> Vec<OsStri
         .collect()
 }
 
-#[cfg(any(windows, unix))]
+#[cfg(any(windows, all(unix, not(target_env = "musl"))))]
 fn workspace_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
@@ -74,7 +96,7 @@ fn workspace_root() -> PathBuf {
         .expect("failed to locate workspace root from os/axvisor")
 }
 
-#[cfg(any(windows, unix))]
+#[cfg(any(windows, all(unix, not(target_env = "musl"))))]
 fn normalize_command_paths(
     command: &mut axbuild::axvisor::Command,
     invocation_dir: &Path,
@@ -113,7 +135,7 @@ fn normalize_command_paths(
     }
 }
 
-#[cfg(any(windows, unix))]
+#[cfg(any(windows, all(unix, not(target_env = "musl"))))]
 fn normalize_build_paths(
     args: &mut axbuild::axvisor::ArgsBuild,
     invocation_dir: &Path,
@@ -125,7 +147,7 @@ fn normalize_build_paths(
     }
 }
 
-#[cfg(any(windows, unix))]
+#[cfg(any(windows, all(unix, not(target_env = "musl"))))]
 fn normalize_existing_path(
     path: &mut Option<PathBuf>,
     invocation_dir: &Path,
@@ -136,7 +158,7 @@ fn normalize_existing_path(
     }
 }
 
-#[cfg(any(windows, unix))]
+#[cfg(any(windows, all(unix, not(target_env = "musl"))))]
 fn resolve_existing_path(path: &Path, invocation_dir: &Path, workspace_root: &Path) -> PathBuf {
     if path.is_absolute() {
         return path.to_path_buf();
@@ -151,7 +173,7 @@ fn resolve_existing_path(path: &Path, invocation_dir: &Path, workspace_root: &Pa
     }
 }
 
-#[cfg(any(windows, unix))]
+#[cfg(any(windows, all(unix, not(target_env = "musl"))))]
 fn normalize_output_path(path: &mut Option<PathBuf>, invocation_dir: &Path) {
     if let Some(path) = path
         && path.is_relative()

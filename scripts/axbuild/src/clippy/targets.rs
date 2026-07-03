@@ -17,10 +17,7 @@ const CLIPPY_TARGET_ALIASES: &[(&str, &str)] = &[
     ),
 ];
 
-const AX_HAL_PLATFORM_FEATURE_TARGET_ARCHES: &[(&str, &[&str])] = &[
-    ("plat-dyn", &["aarch64", "loongarch64", "riscv64", "x86_64"]),
-    ("riscv64-sg2002", &["riscv64"]),
-];
+const AX_HAL_PLATFORM_FEATURE_TARGET_ARCHES: &[(&str, &[&str])] = &[];
 
 #[derive(Debug, Default, Deserialize)]
 struct PackageDocsMetadata {

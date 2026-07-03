@@ -166,8 +166,6 @@ if [ -f os/arceos/modules/axalloc/Cargo.toml ] && [ -s os/arceos/modules/axalloc
 fi
 
 export RUSTFLAGS="-Ccodegen-units=16 -Copt-level=0 -Cincremental=false -Clink-arg=-Tlinker.x -Clink-arg=-no-pie -Clink-arg=-znostart-stop-gc"
-export AX_CONFIG_PATH=/opt/starryos/.axconfig.toml
-echo "[self-compile] AX_CONFIG_PATH=\$AX_CONFIG_PATH"
 echo "[self-compile] Rustc version: \$(rustc --version 2>/dev/null || echo 'unknown')"
 echo "[self-compile] Cargo version: \$(cargo --version 2>/dev/null || echo 'unknown')"
 echo "[self-compile] Starting cargo build (target=${TARGET}, jobs=\$CARGO_BUILD_JOBS)..."
@@ -218,13 +216,6 @@ LINKER_X="$KERNEL_DIR2/linker.x"
 if [ -n "$LINKER_X" ] && [ -f "$LINKER_X" ]; then
     sudo cp "$LINKER_X" "$MNT_DIR/opt/starryos/linker.x"
     info "linker.x injected"
-fi
-
-# Inject .axconfig.toml
-HOST_AXCONFIG="$REPO_ROOT/tmp/axbuild/axconfig/starryos/${TARGET}/.axconfig.toml"
-if [ -f "$HOST_AXCONFIG" ]; then
-    sudo cp "$HOST_AXCONFIG" "$MNT_DIR/opt/starryos/.axconfig.toml"
-    info ".axconfig.toml injected"
 fi
 
 # Inject axalloc Cargo.toml (may have been removed by e2fsck on prior runs)

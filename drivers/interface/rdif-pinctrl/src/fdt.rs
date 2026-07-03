@@ -211,7 +211,7 @@ mod tests {
         ConfigSetting, Direction, DriverGeneric, FdtPinctrl, FdtPinctrlParser, FunctionId,
         GpioBank, GpioBankId, GpioLineHandle, GpioLineId, GpioRange, GroupId, Interface,
         MuxSetting, MuxValue, PinConfig, PinDesc, PinFunction, PinGroup, PinId, PinState,
-        PinctrlError, StateName,
+        PinctrlDevice, PinctrlError, StateName,
     };
 
     struct TestParser;
@@ -482,6 +482,55 @@ mod tests {
     }
 
     #[test]
+    fn pinctrl_device_applies_fdt_default_state_with_registered_parser() {
+        let (fdt, consumer) = fdt_with_consumer(&["default"], &[10]);
+        let mut device = PinctrlDevice::with_fdt_parser(Recorder::new(), TestParser);
+
+        device
+            .apply_fdt_default_state(&fdt, fdt.node(consumer).unwrap())
+            .unwrap();
+
+        assert_eq!(
+            device.typed_ref::<Recorder>().unwrap().calls,
+            vec!["mux", "config"]
+        );
+    }
+
+    #[test]
+    fn pinctrl_device_skips_fdt_default_state_without_property_or_parser() {
+        let (fdt, consumer) = fdt_with_consumer(&["default"], &[10]);
+        let mut without_parser = PinctrlDevice::new(Recorder::new());
+        without_parser
+            .apply_fdt_default_state(&fdt, fdt.node(consumer).unwrap())
+            .unwrap();
+        assert!(
+            without_parser
+                .typed_ref::<Recorder>()
+                .unwrap()
+                .calls
+                .is_empty()
+        );
+
+        let mut fdt_without_pinctrl = Fdt::new();
+        let root = fdt_without_pinctrl.root_id();
+        let consumer_without_pinctrl = fdt_without_pinctrl.add_node(root, Node::new("consumer"));
+        let mut with_parser = PinctrlDevice::with_fdt_parser(Recorder::new(), TestParser);
+        with_parser
+            .apply_fdt_default_state(
+                &fdt_without_pinctrl,
+                fdt_without_pinctrl.node(consumer_without_pinctrl).unwrap(),
+            )
+            .unwrap();
+        assert!(
+            with_parser
+                .typed_ref::<Recorder>()
+                .unwrap()
+                .calls
+                .is_empty()
+        );
+    }
+
+    #[test]
     fn fixed_regulator_uses_gpio_flags_and_enable_active_low_for_output_value() {
         let mut fdt = Fdt::new();
         let root = fdt.root_id();
@@ -587,6 +636,57 @@ mod tests {
             PinId::new(34),
             PinConfig::OutputValue(true)
         )));
+    }
+
+    #[test]
+    fn pinctrl_device_applies_fdt_fixed_regulator_with_registered_parser() {
+        let mut fdt = Fdt::new();
+        let root = fdt.root_id();
+        fdt.add_node(
+            root,
+            node_with_props("gpio1@0", &[prop_u32s("phandle", &[20])]),
+        );
+        let regulator = fdt.add_node(
+            root,
+            node_with_props("vbus-regulator", &[prop_u32s("gpios", &[20, 5, 0])]),
+        );
+        let mut device = PinctrlDevice::with_fdt_parser(Recorder::new(), TestParser);
+
+        device
+            .apply_fdt_fixed_regulator(&fdt, fdt.node(regulator).unwrap(), "fixed-regulator")
+            .unwrap();
+
+        assert!(
+            device
+                .typed_ref::<Recorder>()
+                .unwrap()
+                .configs
+                .contains(&ConfigSetting::pin(
+                    PinId::new(37),
+                    PinConfig::OutputValue(true)
+                ))
+        );
+    }
+
+    #[test]
+    fn pinctrl_device_skips_fdt_fixed_regulator_without_parser() {
+        let mut fdt = Fdt::new();
+        let root = fdt.root_id();
+        fdt.add_node(
+            root,
+            node_with_props("gpio1@0", &[prop_u32s("phandle", &[20])]),
+        );
+        let regulator = fdt.add_node(
+            root,
+            node_with_props("vbus-regulator", &[prop_u32s("gpios", &[20, 5, 0])]),
+        );
+        let mut device = PinctrlDevice::new(Recorder::new());
+
+        device
+            .apply_fdt_fixed_regulator(&fdt, fdt.node(regulator).unwrap(), "fixed-regulator")
+            .unwrap();
+
+        assert!(device.typed_ref::<Recorder>().unwrap().configs.is_empty());
     }
 
     #[test]

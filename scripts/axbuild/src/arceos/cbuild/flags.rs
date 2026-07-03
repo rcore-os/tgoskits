@@ -106,5 +106,5 @@ fn pthread_mutex_layout(features: &[String]) -> (usize, &'static str) {
 }
 
 fn has_effective_smp(features: &[String]) -> bool {
-    has_feature(features, "smp") || has_feature(features, "plat-dyn")
+    has_feature(features, "smp")
 }

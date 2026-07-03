@@ -17,13 +17,23 @@
 use alloc::{string::String, vec::Vec};
 
 pub use axvm_types::{
-    EmulatedDeviceConfig, GuestPhysAddr, PassThroughAddressConfig, PassThroughDeviceConfig,
-    PassThroughPortConfig, VMBootProtocol, VMInterruptMode, VMType, VmMemConfig, VmMemMappingType,
+    AddressSpacePolicy, EmulatedDeviceConfig, GuestPhysAddr, PassThroughAddressConfig,
+    PassThroughDeviceConfig, PassThroughPortConfig, ReservedAddressConfig, VMBootProtocol,
+    VMInterruptMode, VMType, VmMemConfig, VmMemMappingType,
 };
 
-use crate::VMMemoryRegion;
+use crate::arch::{ArchOps, CurrentArch};
 
-const BIOS_RESERVED_SIZE: usize = 2 * 1024 * 1024;
+/// Policy used by AxVM when deriving runtime guest boot image addresses.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum GuestBootPolicy {
+    /// Keep the load addresses exactly as provided by the VM config.
+    #[default]
+    KeepConfigured,
+    /// Adjust the kernel load address for boot protocols that require a
+    /// reserved area inside the primary guest memory region.
+    AdjustKernelForBootProtocol { protocol: VMBootProtocol },
+}
 
 /// A part of `AxVMConfig`, which represents a `VCpu`.
 #[derive(Clone, Copy, Debug, Default)]
@@ -32,15 +42,6 @@ pub struct AxVCpuConfig {
     pub bsp_entry: GuestPhysAddr,
     /// The entry address in GPA for the Application Processor (AP).
     pub ap_entry: GuestPhysAddr,
-    /// LoongArch Linux EFI-style boot arguments (a0, a1, a2).
-    #[cfg(target_arch = "loongarch64")]
-    pub boot_args: [usize; 3],
-    /// LoongArch Linux boot stack top.
-    #[cfg(target_arch = "loongarch64")]
-    pub boot_stack_top: usize,
-    /// Whether the LoongArch guest should be entered like firmware after CPU reset.
-    #[cfg(target_arch = "loongarch64")]
-    pub firmware_boot: bool,
 }
 
 /// Ramdisk image information.
@@ -83,7 +84,11 @@ pub struct AxVMConfig {
     pass_through_devices: Vec<PassThroughDeviceConfig>,
     excluded_devices: Vec<Vec<String>>,
     pass_through_addresses: Vec<PassThroughAddressConfig>,
+    reserved_address_ranges: Vec<ReservedAddressConfig>,
     pass_through_ports: Vec<PassThroughPortConfig>,
+    address_space_policy: AddressSpacePolicy,
+    memory_regions: Vec<VmMemConfig>,
+    boot_policy: GuestBootPolicy,
     // TODO: improve interrupt passthrough
     spi_list: Vec<u32>,
     interrupt_mode: VMInterruptMode,
@@ -102,28 +107,12 @@ pub struct AxVMConfigParams {
     pub pass_through_devices: Vec<PassThroughDeviceConfig>,
     pub excluded_devices: Vec<Vec<String>>,
     pub pass_through_addresses: Vec<PassThroughAddressConfig>,
+    pub reserved_address_ranges: Vec<ReservedAddressConfig>,
     pub pass_through_ports: Vec<PassThroughPortConfig>,
+    pub address_space_policy: AddressSpacePolicy,
+    pub memory_regions: Vec<VmMemConfig>,
+    pub boot_policy: GuestBootPolicy,
     pub interrupt_mode: VMInterruptMode,
-}
-
-pub fn adjusted_kernel_load_gpa(
-    main_memory: &VMMemoryRegion,
-    boot_protocol: VMBootProtocol,
-    bios_load_gpa: Option<GuestPhysAddr>,
-) -> Option<GuestPhysAddr> {
-    if boot_protocol == VMBootProtocol::Uefi {
-        return None;
-    }
-
-    if !main_memory.is_identical() {
-        return None;
-    }
-
-    let mut kernel_addr = main_memory.gpa;
-    if boot_protocol == VMBootProtocol::Multiboot && bios_load_gpa.is_some() {
-        kernel_addr += BIOS_RESERVED_SIZE;
-    }
-    Some(kernel_addr)
 }
 
 impl AxVMConfig {
@@ -139,7 +128,11 @@ impl AxVMConfig {
             pass_through_devices: params.pass_through_devices,
             excluded_devices: params.excluded_devices,
             pass_through_addresses: params.pass_through_addresses,
+            reserved_address_ranges: params.reserved_address_ranges,
             pass_through_ports: params.pass_through_ports,
+            address_space_policy: params.address_space_policy,
+            memory_regions: params.memory_regions,
+            boot_policy: params.boot_policy,
             spi_list: Vec::new(),
             interrupt_mode: params.interrupt_mode,
         }
@@ -212,26 +205,45 @@ impl AxVMConfig {
         &self.pass_through_addresses
     }
 
+    /// Returns guest address ranges reserved from default passthrough mapping.
+    pub fn reserved_address_ranges(&self) -> &Vec<ReservedAddressConfig> {
+        &self.reserved_address_ranges
+    }
+
+    /// Adds a guest address range reserved from default passthrough mapping.
+    pub fn add_reserved_address_range(&mut self, range: ReservedAddressConfig) {
+        self.reserved_address_ranges.push(range);
+    }
+
     /// Returns the list of passthrough host I/O port configurations.
     pub fn pass_through_ports(&self) -> &Vec<PassThroughPortConfig> {
         &self.pass_through_ports
     }
-    // /// Returns configurations related to VM memory regions.
-    // pub fn memory_regions(&self) -> Vec<VmMemConfig> {
-    //     &self.memory_regions
-    // }
 
-    // /// Adds a new memory region to the VM configuration.
-    // pub fn add_memory_region(&mut self, region: VmMemConfig) {
-    //     self.memory_regions.push(region);
-    // }
+    /// Returns the guest physical address space population policy.
+    pub fn address_space_policy(&self) -> AddressSpacePolicy {
+        self.address_space_policy
+    }
 
-    // /// Checks if the VM memory regions contain a specific range.
-    // pub fn contains_memory_range(&self, range: &Range<usize>) -> bool {
-    //     self.memory_regions
-    //         .iter()
-    //         .any(|region| region.gpa <= range.start && region.gpa + region.size >= range.end)
-    // }
+    /// Returns configurations related to VM memory regions.
+    pub fn memory_regions(&self) -> &[VmMemConfig] {
+        &self.memory_regions
+    }
+
+    /// Replaces configurations related to VM memory regions.
+    pub fn set_memory_regions(&mut self, memory_regions: Vec<VmMemConfig>) {
+        self.memory_regions = memory_regions;
+    }
+
+    /// Returns the policy used to adjust runtime boot image addresses.
+    pub fn boot_policy(&self) -> GuestBootPolicy {
+        self.boot_policy
+    }
+
+    /// Sets the policy used to adjust runtime boot image addresses.
+    pub fn set_boot_policy(&mut self, boot_policy: GuestBootPolicy) {
+        self.boot_policy = boot_policy;
+    }
 
     /// Returns configurations related to VM emulated devices.
     pub fn emu_devices(&self) -> &Vec<EmulatedDeviceConfig> {
@@ -329,10 +341,6 @@ impl PhysCpuList {
     /// - The pCpu affinity mask, `None` if not set.
     /// - The physical id of the vCpu, equal to vCpu id if not provided.
     pub fn get_vcpu_affinities_pcpu_ids(&self) -> Vec<(usize, Option<usize>, usize)> {
-        let mut vcpu_pcpu_tuples = Vec::new();
-        #[cfg(target_arch = "riscv64")]
-        let mut pcpu_mask_flag = false;
-
         if let Some(phys_cpu_ids) = &self.phys_cpu_ids
             && self.cpu_num != phys_cpu_ids.len()
         {
@@ -341,39 +349,11 @@ impl PhysCpuList {
                 self.cpu_num, self.phys_cpu_ids
             );
         }
-
-        for vcpu_id in 0..self.cpu_num {
-            vcpu_pcpu_tuples.push((vcpu_id, None, vcpu_id));
-        }
-
-        #[cfg(target_arch = "riscv64")]
-        if let Some(phys_cpu_sets) = &self.phys_cpu_sets {
-            pcpu_mask_flag = true;
-            for (vcpu_id, pcpu_mask_bitmap) in phys_cpu_sets.iter().enumerate() {
-                vcpu_pcpu_tuples[vcpu_id].1 = Some(*pcpu_mask_bitmap);
-            }
-        }
-
-        #[cfg(not(target_arch = "riscv64"))]
-        if let Some(phys_cpu_sets) = &self.phys_cpu_sets {
-            for (vcpu_id, pcpu_mask_bitmap) in phys_cpu_sets.iter().enumerate() {
-                vcpu_pcpu_tuples[vcpu_id].1 = Some(*pcpu_mask_bitmap);
-            }
-        }
-
-        if let Some(phys_cpu_ids) = &self.phys_cpu_ids {
-            for (vcpu_id, phys_id) in phys_cpu_ids.iter().enumerate() {
-                vcpu_pcpu_tuples[vcpu_id].2 = *phys_id;
-                #[cfg(target_arch = "riscv64")]
-                {
-                    if !pcpu_mask_flag {
-                        // if don't assign pcpu mask yet, assign it manually
-                        vcpu_pcpu_tuples[vcpu_id].1 = Some(1 << (*phys_id));
-                    }
-                }
-            }
-        }
-        vcpu_pcpu_tuples
+        CurrentArch::vcpu_affinities(
+            self.cpu_num,
+            self.phys_cpu_ids.as_deref(),
+            self.phys_cpu_sets.as_deref(),
+        )
     }
 
     /// Returns the number of CPUs.
@@ -399,5 +379,39 @@ impl PhysCpuList {
     /// Sets the CPU IDs exposed to the guest.
     pub fn set_guest_phys_cpu_ids(&mut self, phys_cpu_ids: Vec<usize>) {
         self.phys_cpu_ids = Some(phys_cpu_ids);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use alloc::vec;
+
+    use super::*;
+
+    fn memory_region(gpa: usize, size: usize, map_type: VmMemMappingType) -> VmMemConfig {
+        VmMemConfig {
+            gpa,
+            size,
+            flags: 0x7,
+            map_type,
+        }
+    }
+
+    #[test]
+    fn set_memory_regions_replaces_stale_snapshot_after_config_enrichment() {
+        let main_memory = memory_region(0x8000_0000, 0x200000, VmMemMappingType::MapIdentical);
+        let reserved_memory = memory_region(0x110000, 0x10000, VmMemMappingType::MapReserved);
+        let mut config = AxVMConfig::default_for_test(1, "linux");
+
+        config.set_memory_regions(vec![main_memory.clone()]);
+        assert_eq!(config.memory_regions().len(), 1);
+
+        config.set_memory_regions(vec![main_memory, reserved_memory]);
+
+        let regions = config.memory_regions();
+        assert_eq!(regions.len(), 2);
+        assert_eq!(regions[1].gpa, 0x110000);
+        assert_eq!(regions[1].size, 0x10000);
+        assert_eq!(regions[1].map_type, VmMemMappingType::MapReserved);
     }
 }

@@ -1,47 +1,28 @@
 use super::*;
 
 #[test]
-fn std_build_target_maps_arceos_targets_to_linux_musl_by_link_mode() {
+fn std_build_target_maps_arceos_targets_to_dynamic_linux_musl_specs() {
     let cases = [
         (
             "x86_64-unknown-none",
-            false,
-            "scripts/targets/std/x86_64-unknown-linux-musl.json",
+            "scripts/targets/std/pie/x86_64-unknown-linux-musl.json",
         ),
         (
             "aarch64-unknown-none-softfloat",
-            false,
-            "scripts/targets/std/aarch64-unknown-linux-musl.json",
-        ),
-        (
-            "aarch64-unknown-none-softfloat",
-            true,
             "scripts/targets/std/pie/aarch64-unknown-linux-musl.json",
         ),
         (
             "riscv64gc-unknown-none-elf",
-            false,
-            "scripts/targets/std/riscv64gc-unknown-linux-musl.json",
-        ),
-        (
-            "riscv64gc-unknown-none-elf",
-            true,
             "scripts/targets/std/pie/riscv64gc-unknown-linux-musl.json",
         ),
         (
             "loongarch64-unknown-none-softfloat",
-            false,
-            "scripts/targets/std/loongarch64-unknown-linux-musl.json",
-        ),
-        (
-            "loongarch64-unknown-none-softfloat",
-            true,
             "scripts/targets/std/pie/loongarch64-unknown-linux-musl.json",
         ),
     ];
 
-    for (bare_target, plat_dyn, expected_path) in cases {
-        let mapped = std_build_target_for(bare_target, plat_dyn).unwrap();
+    for (bare_target, expected_path) in cases {
+        let mapped = std_build_target_for(bare_target).unwrap();
         assert!(mapped.target.ends_with(expected_path));
         assert!(
             mapped
@@ -55,7 +36,7 @@ fn std_build_target_maps_arceos_targets_to_linux_musl_by_link_mode() {
         );
     }
 
-    let riscv = std_build_target_for("riscv64gc-unknown-none-elf", true).unwrap();
+    let riscv = std_build_target_for("riscv64gc-unknown-none-elf").unwrap();
     assert_eq!(
         riscv.env.get("CC_riscv64gc_unknown_linux_musl"),
         Some(&"riscv64-linux-musl-cc".to_string())

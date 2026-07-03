@@ -99,7 +99,6 @@ fn axvisor_request(path: PathBuf, arch: &str, target: &str) -> ResolvedAxvisorRe
         axvisor_dir: PathBuf::from("/tmp/os/axvisor"),
         arch: arch.to_string(),
         target: target.to_string(),
-        plat_dyn: None,
         smp: None,
         debug: false,
         build_info_path: path,
@@ -244,20 +243,6 @@ fn qemu_test_request_ignores_inherited_smp() {
     let request = Axvisor::qemu_test_request(request);
 
     assert_eq!(request.smp, None);
-}
-
-#[test]
-fn qemu_test_request_ignores_inherited_plat_dyn() {
-    let mut request = axvisor_request(
-        PathBuf::from("/tmp/build-x86_64-unknown-none.toml"),
-        "x86_64",
-        "x86_64-unknown-none",
-    );
-    request.plat_dyn = Some(true);
-
-    let request = Axvisor::qemu_test_request(request);
-
-    assert_eq!(request.plat_dyn, None);
 }
 
 #[test]

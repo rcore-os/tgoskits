@@ -330,6 +330,6 @@ pub fn spawn_alarm_task() {
     ax_task::spawn_raw(
         || block_on(alarm_task()),
         "alarm_task".to_owned(),
-        ax_config::TASK_STACK_SIZE,
+        ax_task::default_task_stack_size(),
     );
 }

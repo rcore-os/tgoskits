@@ -11,13 +11,13 @@ sidebar_label: "配置参考"
 
 | 配置域 | 源码 |
 | --- | --- |
-| feature | [Cargo.toml](net/ax-net/Cargo.toml) |
-| 接口配置模型 | [config.rs](net/ax-net/src/config.rs) |
-| 初始化解析与校验 | [lib.rs](net/ax-net/src/lib.rs) `init_network()` |
-| 缓冲区/队列常量 | [consts.rs](net/ax-net/src/consts.rs) |
-| TCP keepalive / TCP_INFO 默认值 | [tcp.rs](net/ax-net/src/tcp.rs) |
-| DHCP/DNS 默认值 | [lib.rs](net/ax-net/src/lib.rs), [service.rs](net/ax-net/src/service.rs) |
-| Ethernet ARP 默认值 | [device/ethernet.rs](net/ax-net/src/device/ethernet.rs) |
+| feature | `Cargo.toml` |
+| 接口配置模型 | `config.rs` |
+| 初始化解析与校验 | `lib.rs` `init_network()` |
+| 缓冲区/队列常量 | `consts.rs` |
+| TCP keepalive / TCP_INFO 默认值 | `tcp.rs` |
+| DHCP/DNS 默认值 | `lib.rs`, `service.rs` |
+| Ethernet ARP 默认值 | `device/ethernet.rs` |
 
 ## 构建配置
 
@@ -52,12 +52,16 @@ vsock = ["dep:rdif-vsock"]
 - `medium-ip`
 - `proto-ipv4`
 - `proto-ipv6`
+- `packetmeta-id`（携带 RX 侧 ingress 元数据，供 `rx_meta` 模块传递接收侧 QoS）
 - `socket-raw`
 - `socket-icmp`
 - `socket-udp`
 - `socket-tcp`
 - `socket-dhcpv4`
 - `socket-dns`
+- `iface-max-addr-count-8`（允许 `Interface` 同时保存最多 8 个 IP 地址，支撑 loopback + 多 Ethernet 静态地址）
+
+此外 `Cargo.toml` 中注释保留了 `fragmentation-buffer-size` / `reassembly-buffer-size` 等分片/重组能力，但当前未启用。
 
 Router 对 smoltcp 暴露 `Medium::Ip`，Ethernet frame 处理在 `EthernetDevice` 中完成。
 
@@ -247,11 +251,11 @@ pub fn wake_net_task_irq();
 - `dhcp_server_client_ip` 存在时启用内置单客户端 DHCP server。
 - 调用 `request_poll()` 让 net-poll worker 看到新状态。
 
-`dedicated_poll = true` 时，驱动侧收到 out-of-band RX 事件后调用 `wake_net_task_irq()`。
+`dedicated_poll = true` 时，驱动侧收到 out-of-band RX 事件后调用 `wake_net_task_irq()`。源码不会创建专门的 OOB poll 线程；该调用发布 IRQ-like pending 状态并唤醒 `net-poll` worker，随后 Router 唤醒对应设备 RX worker 重新 poll 设备。
 
 ## 资源预算
 
-缓冲区和队列常量集中定义在 [consts.rs](net/ax-net/src/consts.rs)。这些值共同决定嵌入式目标上的默认内存占用。
+缓冲区和队列常量集中定义在 `consts.rs`。这些值共同决定嵌入式目标上的默认内存占用。
 
 ### Socket Buffer
 

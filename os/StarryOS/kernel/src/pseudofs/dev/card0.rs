@@ -37,7 +37,6 @@ use alloc::{
 };
 use core::{
     any::Any,
-    ptr::NonNull,
     sync::atomic::{AtomicU32, AtomicU64, Ordering},
     task::Context,
 };
@@ -408,10 +407,15 @@ impl Card0 {
             return;
         };
 
-        let data = NonNull::from(self.as_ref()).cast();
-        let request = ax_runtime::hal::irq::IrqRequest::new(card0_irq_handler, data)
-            .share_mode(ax_runtime::hal::irq::ShareMode::Shared)
-            .auto_enable(ax_runtime::hal::irq::AutoEnable::No);
+        let request = ax_runtime::hal::irq::IrqRequest::new(|_| {
+            if ax_display::framebuffer_handle_irq() {
+                ax_runtime::hal::irq::IrqReturn::Handled
+            } else {
+                ax_runtime::hal::irq::IrqReturn::Unhandled
+            }
+        })
+        .share_mode(ax_runtime::hal::irq::ShareMode::Shared)
+        .auto_enable(ax_runtime::hal::irq::AutoEnable::No);
         match ax_runtime::hal::irq::request_irq(irq, request) {
             Ok(handle) => {
                 self.irq_handle.call_once(|| handle);
@@ -640,17 +644,6 @@ impl DeviceOps for Card0 {
 
     fn flags(&self) -> NodeFlags {
         NodeFlags::NON_CACHEABLE | NodeFlags::STREAM
-    }
-}
-
-unsafe fn card0_irq_handler(
-    _ctx: ax_runtime::hal::irq::IrqContext,
-    _data: NonNull<()>,
-) -> ax_runtime::hal::irq::IrqReturn {
-    if ax_display::framebuffer_handle_irq() {
-        ax_runtime::hal::irq::IrqReturn::Handled
-    } else {
-        ax_runtime::hal::irq::IrqReturn::Unhandled
     }
 }
 

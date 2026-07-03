@@ -14,7 +14,7 @@
 
 use aarch64_cpu::registers::*;
 use ax_errno::AxResult;
-use axvcpu::{AxArchVCpu, AxVCpuExitReason, GuestPhysAddr, HostPhysAddr, SysRegAddr};
+use axvm_types::{GuestPhysAddr, NestedPagingConfig, SysRegAddr, VmArchVcpuOps, VmExit};
 
 use crate::{
     TrapFrame,
@@ -82,7 +82,7 @@ pub struct Aarch64VCpuSetupConfig {
     pub passthrough_timer: bool,
 }
 
-impl axvcpu::AxArchVCpu for Aarch64VCpu {
+impl axvm_types::VmArchVcpuOps for Aarch64VCpu {
     type CreateConfig = Aarch64VCpuCreateConfig;
 
     type SetupConfig = Aarch64VCpuSetupConfig;
@@ -110,13 +110,19 @@ impl axvcpu::AxArchVCpu for Aarch64VCpu {
         Ok(())
     }
 
-    fn set_ept_root(&mut self, ept_root: HostPhysAddr) -> AxResult {
-        debug!("set vcpu ept root:{ept_root:#x}");
-        self.guest_system_regs.vttbr_el2 = ept_root.as_usize() as u64;
+    fn set_nested_page_table(&mut self, config: NestedPagingConfig) -> AxResult {
+        debug!("set vcpu stage-2 root:{:#x}", config.root_paddr);
+        self.guest_system_regs.vttbr_el2 = config.root_paddr.as_usize() as u64;
+        let pa_bits = if config.mode == 0 {
+            pa_bits()
+        } else {
+            config.mode
+        };
+        self.guest_system_regs.vtcr_el2 = vtcr_for_config(config.levels, config.gpa_bits, pa_bits);
         Ok(())
     }
 
-    fn run(&mut self) -> AxResult<AxVCpuExitReason> {
+    fn run(&mut self) -> AxResult<VmExit> {
         unsafe {
             core::arch::asm!("msr daifset, #2");
         }
@@ -191,12 +197,12 @@ impl Aarch64VCpu {
         self.guest_system_regs.sctlr_el1 = 0x30C50830;
         self.guest_system_regs.pmcr_el0 = 0;
 
-        self.guest_system_regs.vtcr_el2 = probe_vtcr_support()
-            + (VTCR_EL2::TG0::Granule4KB
-                + VTCR_EL2::SH0::Inner
-                + VTCR_EL2::ORGN0::NormalWBRAWA
-                + VTCR_EL2::IRGN0::NormalWBRAWA)
-                .value;
+        if self.guest_system_regs.vtcr_el2 == 0 {
+            let pa_bits = pa_bits();
+            let levels = max_gpt_level(pa_bits);
+            let gpa_bits = if levels == 3 { 39 } else { 48 };
+            self.guest_system_regs.vtcr_el2 = vtcr_for_config(levels, gpa_bits, pa_bits);
+        }
 
         let mut hcr_el2 =
             HCR_EL2::VM::Enable + HCR_EL2::TSC::EnableTrapEl1SmcToEl2 + HCR_EL2::RW::EL1IsAarch64;
@@ -302,10 +308,10 @@ impl Aarch64VCpu {
     /// - `exit_reason`: The reason why the VM-Exit happened in [`TrapKind`].
     ///
     /// Returns:
-    /// - [`AxVCpuExitReason`]: a wrappered VM-Exit reason needed to be handled by the hypervisor.
+    /// - [`VmExit`]: a wrappered VM-Exit reason needed to be handled by the hypervisor.
     ///
     /// This function may panic for unhandled exceptions.
-    fn vmexit_handler(&mut self, exit_reason: TrapKind) -> AxResult<AxVCpuExitReason> {
+    fn vmexit_handler(&mut self, exit_reason: TrapKind) -> AxResult<VmExit> {
         trace!(
             "Aarch64VCpu vmexit_handler() esr:{:#x} ctx:{:#x?}",
             exception_class_value(),
@@ -327,14 +333,14 @@ impl Aarch64VCpu {
 
         let result = match exit_reason {
             TrapKind::Synchronous => handle_exception_sync(&mut self.ctx),
-            TrapKind::Irq => Ok(AxVCpuExitReason::ExternalInterrupt {
+            TrapKind::Irq => Ok(VmExit::ExternalInterrupt {
                 vector: crate::host::fetch_irq() as u64,
             }),
             _ => panic!("Unhandled exception {:?}", exit_reason),
         };
 
         match result {
-            Ok(AxVCpuExitReason::SysRegRead { addr, reg }) => {
+            Ok(VmExit::SysRegRead { addr, reg }) => {
                 if let Some(exit_reason) =
                     self.builtin_sysreg_access_handler(addr, false, 0, reg)?
                 {
@@ -343,7 +349,7 @@ impl Aarch64VCpu {
 
                 result
             }
-            Ok(AxVCpuExitReason::SysRegWrite { addr, value }) => {
+            Ok(VmExit::SysRegWrite { addr, value }) => {
                 if let Some(exit_reason) =
                     self.builtin_sysreg_access_handler(addr, true, value, 0)?
                 {
@@ -365,7 +371,7 @@ impl Aarch64VCpu {
         write: bool,
         value: u64,
         reg: usize,
-    ) -> AxResult<Option<AxVCpuExitReason>> {
+    ) -> AxResult<Option<VmExit>> {
         const SYSREG_ICC_SGI1R_EL1: SysRegAddr = SysRegAddr::new(0x3A_3016); // ICC_SGI1R_EL1
 
         match (addr, write) {
@@ -381,7 +387,7 @@ impl Aarch64VCpu {
                 if irm {
                     debug!("arm_vcpu ICC_SGI1R_EL1 write: irm == 1, send to all except self");
 
-                    return Ok(Some(AxVCpuExitReason::SendIPI {
+                    return Ok(Some(VmExit::SendIPI {
                         target_cpu: 0,
                         target_cpu_aux: 0,
                         send_to_all: true,
@@ -400,7 +406,7 @@ impl Aarch64VCpu {
                      intid:{intid:#x} target_list:{target_list:#x}"
                 );
 
-                Ok(Some(AxVCpuExitReason::SendIPI {
+                Ok(Some(VmExit::SendIPI {
                     target_cpu: (aff3 << 24) | (aff2 << 16) | (aff1 << 8),
                     target_cpu_aux: target_list,
                     send_to_all: false,
@@ -411,7 +417,7 @@ impl Aarch64VCpu {
             (SYSREG_ICC_SGI1R_EL1, false) => {
                 // ICC_SGI1R_EL1 is WO, we take it as RAZ.
                 self.set_gpr(reg, 0);
-                Ok(Some(AxVCpuExitReason::Nothing))
+                Ok(Some(VmExit::Nothing))
             }
             _ => {
                 // If the system register access is not handled by the VCpu itself,
@@ -452,12 +458,10 @@ pub(crate) fn max_gpt_level(pa_bits: usize) -> usize {
     }
 }
 
-fn probe_vtcr_support() -> u64 {
-    let pa_bits = pa_bits();
-
-    let mut val = match max_gpt_level(pa_bits) {
-        4 => VTCR_EL2::SL0::Granule4KBLevel0 + VTCR_EL2::T0SZ.val(64 - 48),
-        _ => VTCR_EL2::SL0::Granule4KBLevel1 + VTCR_EL2::T0SZ.val(64 - 39),
+fn vtcr_for_config(levels: usize, gpa_bits: usize, pa_bits: usize) -> u64 {
+    let mut val = match levels {
+        4 => VTCR_EL2::SL0::Granule4KBLevel0 + VTCR_EL2::T0SZ.val((64 - gpa_bits) as u64),
+        _ => VTCR_EL2::SL0::Granule4KBLevel1 + VTCR_EL2::T0SZ.val((64 - gpa_bits) as u64),
     };
 
     match pa_bits {
@@ -469,6 +473,11 @@ fn probe_vtcr_support() -> u64 {
         36..=39 => val += VTCR_EL2::PS::PA_36B_64GB,
         _ => val += VTCR_EL2::PS::PA_32B_4GB,
     }
+
+    val += VTCR_EL2::TG0::Granule4KB
+        + VTCR_EL2::SH0::Inner
+        + VTCR_EL2::ORGN0::NormalWBRAWA
+        + VTCR_EL2::IRGN0::NormalWBRAWA;
 
     val.value
 }

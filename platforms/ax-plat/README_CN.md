@@ -18,7 +18,7 @@
 `ax-plat` 提供了 This crate provides a unified abstraction layer for diverse hardware platforms。它是 TGOSKits 组件集合的一部分，可用于集成 ArceOS、AxVisor 及相关底层系统软件的 Rust 项目。
 
 
-> ax-plat 派生自 https://github.com/arceos-org/axplat_crates
+> ax-plat 派生自 ArceOS 平台 crate 项目。
 
 ## 快速开始
 

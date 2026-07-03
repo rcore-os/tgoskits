@@ -1,6 +1,4 @@
-features = [
-    "ept-level-4",
-]
+features = []
 log = "Info"
 target = "aarch64-unknown-none-softfloat"
 vm_configs = ["os/axvisor/configs/vms/rdk-s100/linux-smp1.toml"]

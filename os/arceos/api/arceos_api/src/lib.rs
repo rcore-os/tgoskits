@@ -22,7 +22,8 @@ pub use ax_errno::{AxError, AxResult};
 
 /// Platform-specific constants and parameters.
 pub mod config {
-    pub use ax_config::*;
+    /// Stack size used when callers do not provide an explicit task stack.
+    pub const TASK_STACK_SIZE: usize = 0x40000;
 }
 
 /// System operations.
@@ -402,7 +403,6 @@ pub mod io {
 pub mod modules {
     #[cfg(feature = "alloc")]
     pub use ax_alloc;
-    pub use ax_config;
     #[cfg(feature = "display")]
     pub use ax_display;
     #[cfg(feature = "dma")]

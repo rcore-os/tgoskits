@@ -19,7 +19,7 @@ use dma_api::DeviceDma;
 use mmio_api::MmioRaw;
 use sdmmc_protocol::{
     error::{Error, ErrorContext, Phase},
-    sdio::{ClockSpeed, SignalVoltage},
+    sdio::host::{ClockSpeed, SignalVoltage},
 };
 use volatile::VolatilePtr;
 
@@ -581,8 +581,8 @@ impl DwMmc {
 
     /// Set bus width. DW_mshc encodes width in CTYPE: bit 0 of `width4`
     /// = 4-bit, bit 0 of `width8` = 8-bit; both clear = 1-bit.
-    pub(crate) fn set_card_type(&mut self, width: sdmmc_protocol::sdio::BusWidth) {
-        use sdmmc_protocol::sdio::BusWidth;
+    pub(crate) fn set_card_type(&mut self, width: sdmmc_protocol::sdio::host::BusWidth) {
+        use sdmmc_protocol::sdio::host::BusWidth;
         let ct = match width {
             BusWidth::Bit1 => CType::new(),
             BusWidth::Bit4 => CType::new().with_width4(1),

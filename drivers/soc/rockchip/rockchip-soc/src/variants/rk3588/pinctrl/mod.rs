@@ -106,6 +106,14 @@ impl PinCtrl {
         Ok(())
     }
 
+    pub fn set_pull(&mut self, pin: PinId, pull: crate::Pull) -> PinctrlResult<()> {
+        self.pinctrl.set_pull(pin, pull)
+    }
+
+    pub fn set_drive(&mut self, pin: PinId, drive: u32) -> PinctrlResult<()> {
+        self.pinctrl.set_drive(pin, drive)
+    }
+
     pub fn get_config(&self, pin: PinId) -> PinctrlResult<PinConfig> {
         // 获取 IomuxReg（组内偏移）
         let iomux_reg = self.bank(pin).iomux[pin.pin_in_bank() as usize / 8];
@@ -136,6 +144,14 @@ impl PinCtrl {
 impl PinCtrlOp for PinCtrl {
     fn set_config(&mut self, config: PinConfig) -> PinctrlResult<()> {
         self.set_config(config)
+    }
+
+    fn set_pull(&mut self, pin: PinId, pull: crate::Pull) -> PinctrlResult<()> {
+        self.set_pull(pin, pull)
+    }
+
+    fn set_drive(&mut self, pin: PinId, drive: u32) -> PinctrlResult<()> {
+        self.set_drive(pin, drive)
     }
 
     fn get_config(&self, pin: PinId) -> PinctrlResult<PinConfig> {

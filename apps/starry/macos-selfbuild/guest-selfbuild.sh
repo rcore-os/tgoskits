@@ -19,7 +19,7 @@ build_package="starryos"
 build_bin="starryos"
 build_std="core,alloc"
 build_std_features="compiler-builtins-mem"
-features="${FEATURES:-plat-dyn,ax-driver/virtio-blk,ax-driver/virtio-net,smp}"
+features="${FEATURES:-ax-driver/virtio-blk,ax-driver/virtio-net,smp}"
 cargo_verbose="${CARGO_VERBOSE:-0}"
 artifact_to_bin="${ARTIFACT_TO_BIN:-1}"
 kallsyms_reserved="${STARRY_KALLSYMS_RESERVED:-16M}"
@@ -289,14 +289,6 @@ patch_starry_kallsyms_reserve() {
 
 patch_starry_kallsyms_reserve
 
-if [ -n "${AX_CONFIG_PATH:-}" ]; then
-    export AX_CONFIG_PATH
-elif [ -f "$(pwd)/os/StarryOS/.axconfig.toml" ]; then
-    export AX_CONFIG_PATH="$(pwd)/os/StarryOS/.axconfig.toml"
-else
-    unset AX_CONFIG_PATH
-fi
-
 rustflags="${LINK_RUSTFLAGS:-}"
 if [ -n "${EXTRA_RUSTFLAGS:-}" ]; then
     rustflags="${rustflags} ${EXTRA_RUSTFLAGS}"
@@ -332,7 +324,6 @@ echo "target_dir=${target_dir}"
 echo "artifact_dir=${artifact_dir}"
 echo "work_dir=$(pwd)"
 echo "cargo_home=${CARGO_HOME}"
-echo "ax_config_path=${AX_CONFIG_PATH:-}"
 echo "libclang_path=${LIBCLANG_PATH:-}"
 echo "rustflags=${RUSTFLAGS}"
 echo "host_rustflags=-C target-feature=-crt-static"

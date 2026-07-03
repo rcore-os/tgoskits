@@ -1,7 +1,7 @@
 use std::{
     env, fs,
     io::{Error, ErrorKind, Result},
-    path::{Path, PathBuf},
+    path::PathBuf,
 };
 
 use quote::quote;
@@ -11,7 +11,6 @@ const DEFAULT_CPU_CAPACITY: usize = 16;
 const DEFAULT_TASK_STACK_SIZE: usize = 0x40000;
 
 fn main() -> Result<()> {
-    println!("cargo:rerun-if-env-changed=AX_CONFIG_PATH");
     println!("cargo:rerun-if-env-changed=SMP");
 
     let config = TaskConfig::load()?;
@@ -38,15 +37,9 @@ struct TaskConfig {
 
 impl TaskConfig {
     fn load() -> Result<Self> {
-        let mut config = match env::var("AX_CONFIG_PATH") {
-            Ok(path) => {
-                println!("cargo:rerun-if-changed={path}");
-                Self::from_ax_config(Path::new(&path))?
-            }
-            Err(_) => Self {
-                cpu_capacity: DEFAULT_CPU_CAPACITY,
-                task_stack_size: DEFAULT_TASK_STACK_SIZE,
-            },
+        let mut config = Self {
+            cpu_capacity: DEFAULT_CPU_CAPACITY,
+            task_stack_size: DEFAULT_TASK_STACK_SIZE,
         };
 
         if let Ok(smp) = env::var("SMP") {
@@ -56,43 +49,6 @@ impl TaskConfig {
 
         Ok(config)
     }
-
-    fn from_ax_config(path: &Path) -> Result<Self> {
-        let content = fs::read_to_string(path)?;
-        let value: toml::Value = toml::from_str(&content).map_err(invalid_data)?;
-        Ok(Self {
-            cpu_capacity: get_usize(&value, &["plat", "max-cpu-num"])?,
-            task_stack_size: get_usize(&value, &["task-stack-size"])?,
-        })
-    }
-}
-
-fn get_usize(value: &toml::Value, keys: &[&str]) -> Result<usize> {
-    let value = get_value(value, keys)?;
-    parse_value_usize(value, keys)
-}
-
-fn parse_value_usize(value: &toml::Value, keys: &[&str]) -> Result<usize> {
-    match value {
-        toml::Value::Integer(value) => usize::try_from(*value)
-            .map_err(|_| invalid_data(format!("{} is out of range", keys.join(".")))),
-        toml::Value::String(value) => parse_usize(value)
-            .map_err(|err| invalid_data(format!("failed to parse {}: {err}", keys.join(".")))),
-        _ => Err(invalid_data(format!(
-            "{} must be an integer or integer string",
-            keys.join(".")
-        ))),
-    }
-}
-
-fn get_value<'a>(value: &'a toml::Value, keys: &[&str]) -> Result<&'a toml::Value> {
-    let mut current = value;
-    for key in keys {
-        current = current
-            .get(*key)
-            .ok_or_else(|| invalid_data(format!("missing config key {}", keys.join("."))))?;
-    }
-    Ok(current)
 }
 
 fn parse_usize(value: &str) -> std::result::Result<usize, std::num::ParseIntError> {

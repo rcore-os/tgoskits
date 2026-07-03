@@ -24,7 +24,6 @@ pub(crate) fn load_cargo_config(request: &ResolvedBuildRequest) -> anyhow::Resul
     build_info.into_prepared_base_cargo_config_with_metadata(
         &request.package,
         &request.target,
-        request.plat_dyn,
         metadata,
     )
 }
@@ -39,21 +38,8 @@ pub(crate) fn load_c_app_cargo_config(request: &ResolvedBuildRequest) -> anyhow:
         Some(metadata),
     )?
     .build_info;
-    let plat_dyn = build_info.effective_plat_dyn(&request.target, request.plat_dyn);
-
     build_info.validated_max_cpu_num()?;
-    build_info.prepare_non_dynamic_platform_for(
-        &request.package,
-        &request.target,
-        plat_dyn,
-        metadata,
-    )?;
-    build_info.resolve_features_with_metadata(
-        &request.package,
-        &request.target,
-        plat_dyn,
-        metadata,
-    );
+    build_info.resolve_features_with_metadata(&request.package, &request.target, metadata);
     let rustflags = build::toolchain_rustflags_for_features(&build_info.env, &build_info.features);
     let args = ArceosBuildInfo::build_cargo_args(&request.target, &rustflags);
 

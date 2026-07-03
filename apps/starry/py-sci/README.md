@@ -54,4 +54,4 @@ BLAS/OpenMP 线程数固定为 1，然后执行 `python3 /root/pysci/run_pysci.p
 - aarch64：`-cpu cortex-a72`（NEON 与 64 位特性集）。
 - riscv64：`-cpu rv64`。
 - loongarch64：`-machine virt -cpu la464`，动态平台（`build-loongarch64*.toml` 带
-  `ax-driver/serial`，不含 `ax-hal/loongarch64-qemu-virt` / `plat-static` / `plat_dyn=false`）。
+  `ax-driver/serial`，不再使用已退休的静态 LoongArch 平台写法）。

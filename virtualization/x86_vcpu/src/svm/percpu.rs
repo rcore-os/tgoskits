@@ -1,5 +1,5 @@
 use ax_errno::{AxResult, ax_err};
-use axvcpu::AxArchPerCpu;
+use axvm_types::VmArchPerCpuOps;
 
 use crate::{
     host::PhysFrame,
@@ -19,7 +19,7 @@ pub struct SvmPerCpuState {
     hsave_page: PhysFrame,
 }
 
-impl AxArchPerCpu for SvmPerCpuState {
+impl VmArchPerCpuOps for SvmPerCpuState {
     fn new(_cpu_id: usize) -> AxResult<Self> {
         Ok(Self {
             hsave_page: unsafe { PhysFrame::uninit() },

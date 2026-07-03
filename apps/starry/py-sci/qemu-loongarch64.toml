@@ -1,7 +1,7 @@
 # py-sci loongarch64 — Python scientific-computing carpet on musl-native CPython3.
-# Platform: dynamic (axplat-dyn) — build-loongarch64*.toml carries ax-driver/serial and no
-# ax-hal/loongarch64-qemu-virt / plat-static / plat_dyn=false (mirrors aarch64/riscv64); the
-# static platform lacks the serial console binding ("/dev/console has no serial TTY binding"
+# Platform: dynamic (axplat-dyn) — build-loongarch64*.toml carries ax-driver/serial and does not
+# opt out of dynamic platform mode; the retired static LoongArch path lacked the serial console
+# binding ("/dev/console has no serial TTY binding"
 # -> 7.88s early exit). uefi=false / to_bin=true is the dynamic platform's raw-binary boot path.
 args = [
     "-machine", "virt", "-cpu", "la464", "-nographic", "-m", "2048M", "-smp", "1",

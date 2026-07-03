@@ -32,7 +32,7 @@ use core::{
     any::Any,
     ffi::c_void,
     fmt::Debug,
-    sync::atomic::{AtomicU64, Ordering},
+    sync::atomic::{AtomicBool, AtomicU64, Ordering},
 };
 
 use ax_errno::{AxError, AxResult};
@@ -203,6 +203,10 @@ pub struct PerfEvent {
     /// Unique, stable perf-event id (see [`NEXT_PERF_EVENT_ID`]). Returned by
     /// `PERF_EVENT_IOC_ID` and used as the `read_format` `PERF_FORMAT_ID` value.
     id: u64,
+    /// O_NONBLOCK flag set via `fcntl(F_SETFL)`. When true, operations that
+    /// would block (e.g. reading from an empty ring buffer) should return
+    /// `EAGAIN` instead.
+    nonblocking: AtomicBool,
 }
 
 impl Debug for PerfEvent {
@@ -220,6 +224,7 @@ impl PerfEvent {
         PerfEvent {
             event: SpinNoPreempt::new(event),
             id,
+            nonblocking: AtomicBool::new(false),
         }
     }
 
@@ -395,6 +400,15 @@ impl FileLike for PerfEvent {
             PhysAddrRange::from_start_size(paddr, len),
             Some(anchor),
         ))
+    }
+
+    fn nonblocking(&self) -> bool {
+        self.nonblocking.load(Ordering::Acquire)
+    }
+
+    fn set_nonblocking(&self, on: bool) -> AxResult {
+        self.nonblocking.store(on, Ordering::Release);
+        Ok(())
     }
 }
 

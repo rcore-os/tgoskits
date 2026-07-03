@@ -1,0 +1,14 @@
+[package]
+authors.workspace = true
+categories = ["embedded", "hardware-support", "no-std"]
+description = "Low-level device layer for Rockchip PWM controllers."
+edition.workspace = true
+keywords = ["rockchip", "pwm", "driver"]
+license.workspace = true
+name = "rockchip-pwm"
+repository.workspace = true
+version = "0.1.0"
+
+[dependencies]
+rdif-base.workspace = true
+rdif-pwm.workspace = true

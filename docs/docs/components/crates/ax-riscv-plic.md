@@ -4,7 +4,7 @@
 > 类型：库 crate
 > 分层：组件层 / RISC-V 物理中断控制器封装层
 > 版本：`0.4.0`
-> 文档依据：当前仓库源码、`Cargo.toml`、`README.md`、`src/lib.rs` 以及 `ax-plat-riscv64-sg2002` 的集成代码
+> 文档依据：当前仓库源码、`Cargo.toml`、`README.md`、`src/lib.rs` 以及 RISC-V 平台集成代码
 
 `ax-riscv-plic` 是针对 RISC-V PLIC 的 typed MMIO 封装库。它把平台级中断控制器的寄存器布局、优先级、使能位图、threshold 和 claim/complete 等操作建模成一套安全边界明确的 Rust API。它不是完整的中断子系统，也不是虚拟 PLIC；它只负责“给定一个物理 PLIC MMIO 基址，如何按规范读写它”。
 
@@ -139,7 +139,7 @@
 5. 分发 handler
 6. 结束后 `complete`
 
-这正是 `ax-plat-riscv64-sg2002` 当前的使用模式。
+这是外部自定义 RISC-V 平台或 `axplat-dyn` PLIC glue 的典型使用模式。
 
 ### 2.3 `unsafe` 边界
 
@@ -161,9 +161,7 @@
 
 ### 主要消费者
 
-当前仓库中最直接的物理消费者是：
-
-- `ax-plat-riscv64-sg2002` 的 IRQ 实现
+当前仓库中最直接的物理消费者是 RISC-V 平台 glue 的 IRQ 实现。
 
 与它关系紧密但非直接依赖的组件包括：
 
@@ -174,7 +172,7 @@
 
 ```mermaid
 graph TD
-    A[ax-riscv-plic] --> B[ax-plat-riscv64-sg2002 irq]
+    A[ax-riscv-plic] --> B[RISC-V platform IRQ glue]
     B --> C[ax-hal IRQ]
     C --> D[ArceOS / StarryOS]
     E[riscv_vplic] -.相关但非直接依赖.-> A

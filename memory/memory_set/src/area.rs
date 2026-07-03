@@ -12,6 +12,7 @@ use crate::{MappingBackend, MappingError, MappingResult};
 pub struct MemoryArea<B: MappingBackend> {
     va_range: AddrRange<B::Addr>,
     flags: B::Flags,
+    reported_flags: B::Flags,
     backend: B,
 }
 
@@ -22,9 +23,28 @@ impl<B: MappingBackend> MemoryArea<B> {
     ///
     /// Panics if `start + size` overflows.
     pub fn new(start: B::Addr, size: usize, flags: B::Flags, backend: B) -> Self {
+        Self::new_with_reported_flags(start, size, flags, flags, backend)
+    }
+
+    /// Creates a new memory area with separate backend and reported flags.
+    ///
+    /// `flags` are used for page-table/backend operations. `reported_flags`
+    /// are metadata exposed through introspection interfaces such as procfs.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `start + size` overflows.
+    pub fn new_with_reported_flags(
+        start: B::Addr,
+        size: usize,
+        flags: B::Flags,
+        reported_flags: B::Flags,
+        backend: B,
+    ) -> Self {
         Self {
             va_range: AddrRange::from_start_size(start, size),
             flags,
+            reported_flags,
             backend,
         }
     }
@@ -37,6 +57,11 @@ impl<B: MappingBackend> MemoryArea<B> {
     /// Returns the memory flags, e.g., the permission bits.
     pub const fn flags(&self) -> B::Flags {
         self.flags
+    }
+
+    /// Returns the permission flags reported to user-visible introspection.
+    pub const fn reported_flags(&self) -> B::Flags {
+        self.reported_flags
     }
 
     /// Returns the start address of the memory area.
@@ -61,9 +86,14 @@ impl<B: MappingBackend> MemoryArea<B> {
 }
 
 impl<B: MappingBackend> MemoryArea<B> {
-    /// Changes the flags.
-    pub(crate) fn set_flags(&mut self, new_flags: B::Flags) {
+    /// Changes backend/page-table flags and reported flags together.
+    pub(crate) fn set_flags_with_reported_flags(
+        &mut self,
+        new_flags: B::Flags,
+        new_reported_flags: B::Flags,
+    ) {
         self.flags = new_flags;
+        self.reported_flags = new_reported_flags;
     }
 
     /// Maps the whole memory area in the page table.
@@ -220,12 +250,13 @@ impl<B: MappingBackend> MemoryArea<B> {
                 .split(align_diff)
                 .expect("backend should be splittable");
 
-            let new_area = Self::new(
+            let new_area = Self::new_with_reported_flags(
                 pos,
                 // Use wrapping_sub_addr to avoid overflow check. It is safe because
                 // `pos` is within the memory area.
                 self.end().wrapping_sub_addr(pos),
                 self.flags,
+                self.reported_flags,
                 right,
             );
             self.va_range.end = pos;
@@ -245,6 +276,7 @@ where
         f.debug_struct("MemoryArea")
             .field("va_range", &self.va_range)
             .field("flags", &self.flags)
+            .field("reported_flags", &self.reported_flags)
             .finish()
     }
 }

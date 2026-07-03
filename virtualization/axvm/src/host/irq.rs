@@ -1,6 +1,5 @@
 //! Host IRQ facade for AxVM runtime glue.
 
-use core::ptr::NonNull;
 #[cfg(test)]
 use core::sync::atomic::{AtomicUsize, Ordering};
 
@@ -18,10 +17,9 @@ pub(crate) fn make_irq_id(domain: u16, hwirq: u32) -> IrqId {
 
 pub(crate) fn request_shared_irq(
     irq: IrqId,
-    handler: arceos::ArceOsRawIrqHandler,
-    data: NonNull<()>,
+    handler: impl FnMut(IrqContext) -> IrqReturn + Send + 'static,
 ) -> Result<arceos::ArceOsIrqHandle, arceos::ArceOsIrqError> {
-    arceos::request_shared_irq(irq, handler, data)
+    arceos::request_shared_irq(irq, handler)
 }
 
 #[cfg(test)]

@@ -7,28 +7,64 @@ use crate::{
     ConfigSetting, ConfigTarget, FunctionId, GpioBank, GpioBankId, GpioIrqHandler, GpioIrqSourceId,
     GpioIrqSourceInfo, GpioRange, GroupId, PinDesc, PinFunction, PinGroup, PinState, PinctrlError,
 };
+#[cfg(feature = "fdt")]
+use crate::{FdtPinctrl, FdtPinctrlParser};
+
+#[cfg(feature = "fdt")]
+pub type BFdtPinctrlParser = Box<dyn FdtPinctrlParser + Send>;
 
 pub type BPinctrl = Box<dyn Interface>;
 pub type BGpioBank = Box<dyn GpioBank>;
 pub type BGpioIrqHandler = Box<dyn GpioIrqHandler>;
 
-pub struct PinctrlDevice(BPinctrl);
+pub struct PinctrlDevice {
+    interface: BPinctrl,
+    #[cfg(feature = "fdt")]
+    fdt_parser: Option<BFdtPinctrlParser>,
+}
 
 impl PinctrlDevice {
     pub fn new(interface: impl Interface + 'static) -> Self {
-        Self(Box::new(interface))
+        Self {
+            interface: Box::new(interface),
+            #[cfg(feature = "fdt")]
+            fdt_parser: None,
+        }
+    }
+
+    #[cfg(feature = "fdt")]
+    pub fn with_fdt_parser(
+        interface: impl Interface + 'static,
+        parser: impl FdtPinctrlParser + Send + 'static,
+    ) -> Self {
+        Self {
+            interface: Box::new(interface),
+            fdt_parser: Some(Box::new(parser)),
+        }
     }
 
     pub fn boxed(interface: BPinctrl) -> Self {
-        Self(interface)
+        Self {
+            interface,
+            #[cfg(feature = "fdt")]
+            fdt_parser: None,
+        }
+    }
+
+    #[cfg(feature = "fdt")]
+    pub fn boxed_with_fdt_parser(interface: BPinctrl, parser: BFdtPinctrlParser) -> Self {
+        Self {
+            interface,
+            fdt_parser: Some(parser),
+        }
     }
 
     pub fn interface(&self) -> &dyn Interface {
-        self.0.as_ref()
+        self.interface.as_ref()
     }
 
     pub fn interface_mut(&mut self) -> &mut dyn Interface {
-        self.0.as_mut()
+        self.interface.as_mut()
     }
 
     pub fn typed_ref<T: Interface>(&self) -> Option<&T> {
@@ -38,69 +74,112 @@ impl PinctrlDevice {
     pub fn typed_mut<T: Interface>(&mut self) -> Option<&mut T> {
         self.raw_any_mut()?.downcast_mut()
     }
+
+    #[cfg(feature = "fdt")]
+    pub fn fdt_parser(&self) -> Option<&dyn FdtPinctrlParser> {
+        self.fdt_parser
+            .as_deref()
+            .map(|parser| parser as &dyn FdtPinctrlParser)
+    }
+
+    #[cfg(feature = "fdt")]
+    pub fn apply_fdt_default_state(
+        &mut self,
+        fdt: &fdt_edit::Fdt,
+        node: &fdt_edit::Node,
+    ) -> Result<(), PinctrlError> {
+        if node.get_property("pinctrl-0").is_none() {
+            return Ok(());
+        }
+        let Self {
+            interface,
+            fdt_parser,
+        } = self;
+        let Some(parser) = fdt_parser.as_deref() else {
+            return Ok(());
+        };
+        FdtPinctrl::apply_state_from_consumer(interface.as_mut(), fdt, node, 0, parser)
+    }
+
+    #[cfg(feature = "fdt")]
+    pub fn apply_fdt_fixed_regulator(
+        &mut self,
+        fdt: &fdt_edit::Fdt,
+        regulator_node: &fdt_edit::Node,
+        owner: &str,
+    ) -> Result<(), PinctrlError> {
+        let Self {
+            interface,
+            fdt_parser,
+        } = self;
+        let Some(parser) = fdt_parser.as_deref() else {
+            return Ok(());
+        };
+        FdtPinctrl::apply_fixed_regulator(interface.as_mut(), fdt, regulator_node, parser, owner)
+    }
 }
 
 impl DriverGeneric for PinctrlDevice {
     fn name(&self) -> &str {
-        self.0.name()
+        self.interface.name()
     }
 
     fn raw_any(&self) -> Option<&dyn Any> {
-        Some(self.0.as_ref() as &dyn Any)
+        Some(self.interface.as_ref() as &dyn Any)
     }
 
     fn raw_any_mut(&mut self) -> Option<&mut dyn Any> {
-        Some(self.0.as_mut() as &mut dyn Any)
+        Some(self.interface.as_mut() as &mut dyn Any)
     }
 }
 
 impl Interface for PinctrlDevice {
     fn pins(&self) -> &[PinDesc] {
-        self.0.pins()
+        self.interface.pins()
     }
 
     fn groups(&self) -> &[PinGroup] {
-        self.0.groups()
+        self.interface.groups()
     }
 
     fn functions(&self) -> &[PinFunction] {
-        self.0.functions()
+        self.interface.functions()
     }
 
     fn gpio_ranges(&self) -> &[GpioRange] {
-        self.0.gpio_ranges()
+        self.interface.gpio_ranges()
     }
 
     fn can_mux(&self, group: GroupId, function: FunctionId) -> bool {
-        self.0.can_mux(group, function)
+        self.interface.can_mux(group, function)
     }
 
     fn validate_state(&self, state: &PinState) -> Result<(), PinctrlError> {
-        self.0.validate_state(state)
+        self.interface.validate_state(state)
     }
 
     fn apply_state(&mut self, state: &PinState) -> Result<(), PinctrlError> {
-        self.0.apply_state(state)
+        self.interface.apply_state(state)
     }
 
     fn apply_mux(&mut self, setting: &crate::MuxSetting) -> Result<(), PinctrlError> {
-        self.0.apply_mux(setting)
+        self.interface.apply_mux(setting)
     }
 
     fn apply_config(&mut self, setting: &ConfigSetting) -> Result<(), PinctrlError> {
-        self.0.apply_config(setting)
+        self.interface.apply_config(setting)
     }
 
     fn create_gpio_bank(&mut self, bank_id: GpioBankId) -> Option<BGpioBank> {
-        self.0.create_gpio_bank(bank_id)
+        self.interface.create_gpio_bank(bank_id)
     }
 
     fn irq_sources(&self) -> Vec<GpioIrqSourceInfo> {
-        self.0.irq_sources()
+        self.interface.irq_sources()
     }
 
     fn take_irq_handler(&mut self, source_id: GpioIrqSourceId) -> Option<BGpioIrqHandler> {
-        self.0.take_irq_handler(source_id)
+        self.interface.take_irq_handler(source_id)
     }
 }
 

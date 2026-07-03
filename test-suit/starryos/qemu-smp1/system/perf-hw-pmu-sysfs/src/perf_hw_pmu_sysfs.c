@@ -410,6 +410,7 @@ int main(void) {
     for (uint64_t i = 0; i < 20000000ull; i++) {
         spin += i;
     }
+    (void)spin;
 
     (void)ioctl(efd, PERF_EVENT_IOC_DISABLE, 0);
 

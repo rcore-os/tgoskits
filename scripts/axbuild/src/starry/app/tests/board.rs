@@ -101,8 +101,7 @@ fn board_default_target_picks_matching_build_config() {
         root.path(),
         "demo",
         "build-riscv64gc-unknown-none-elf.toml",
-        "target = \"riscv64gc-unknown-none-elf\"\nenv = {}\nfeatures = []\nlog = \
-         \"Info\"\nplat_dyn = false\n",
+        "target = \"riscv64gc-unknown-none-elf\"\nenv = {}\nfeatures = []\nlog = \"Info\"\n",
     );
     write_board_default(
         root.path(),

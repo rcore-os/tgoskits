@@ -22,6 +22,24 @@ pub trait FrameAllocator: Clone + Sync + Send + 'static {
     fn dealloc_frame(&self, frame: PhysAddr);
 
     fn phys_to_virt(&self, paddr: PhysAddr) -> *mut u8;
+
+    fn alloc_frames(&self, frames: usize, _align: usize) -> Option<PhysAddr> {
+        if frames == 1 {
+            self.alloc_frame()
+        } else {
+            None
+        }
+    }
+
+    fn dealloc_frames(&self, start: PhysAddr, frames: usize, frame_size: usize) {
+        if frames == 1 {
+            self.dealloc_frame(start);
+            return;
+        }
+        for i in 0..frames {
+            self.dealloc_frame(PhysAddr::new(start.raw() + i * frame_size));
+        }
+    }
 }
 
 pub trait TableMeta: Sync + Send + Clone + Copy + 'static {
@@ -35,6 +53,9 @@ pub trait TableMeta: Sync + Send + Clone + Copy + 'static {
 
     /// 大页最高支持的级别
     const MAX_BLOCK_LEVEL: usize;
+
+    /// Whether addresses must fit the address width described by [`LEVEL_BITS`].
+    const STRICT_ADDRESS_WIDTH: bool = false;
 
     /// 刷新TLB
     fn flush(vaddr: Option<VirtAddr>);

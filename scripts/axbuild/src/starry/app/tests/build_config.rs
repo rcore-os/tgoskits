@@ -46,8 +46,7 @@ fn rejects_mismatched_build_target_filename() {
         root.path(),
         "demo",
         "build-aarch64-unknown-none-softfloat.toml",
-        "target = \"x86_64-unknown-none\"\nenv = {}\nfeatures = []\nlog = \"Info\"\nplat_dyn = \
-         false\n",
+        "target = \"x86_64-unknown-none\"\nenv = {}\nfeatures = []\nlog = \"Info\"\n",
     );
 
     let err = discover_case_build_config(
@@ -67,7 +66,7 @@ fn qemu_build_config_comes_from_app_dir() {
         root.path(),
         "codex-cli",
         "build-x86_64-unknown-none.toml",
-        "target = \"x86_64-unknown-none\"\nfeatures = []\nlog = \"Info\"\nplat_dyn = false\n",
+        "target = \"x86_64-unknown-none\"\nfeatures = []\nlog = \"Info\"\n",
     );
     write_case_file(
         root.path(),
@@ -96,14 +95,13 @@ fn qemu_build_config_can_come_from_nearest_parent() {
         root.path(),
         "qemu-smp1",
         "build-x86_64-unknown-none.toml",
-        "target = \"x86_64-unknown-none\"\nfeatures = []\nlog = \"Info\"\nplat_dyn = false\n",
+        "target = \"x86_64-unknown-none\"\nfeatures = []\nlog = \"Info\"\n",
     );
     let inner = write_case_file(
         root.path(),
         "qemu-smp1/nested",
         "build-x86_64-unknown-none.toml",
-        "target = \"x86_64-unknown-none\"\nfeatures = [\"nearest\"]\nlog = \"Info\"\nplat_dyn = \
-         false\n",
+        "target = \"x86_64-unknown-none\"\nfeatures = [\"nearest\"]\nlog = \"Info\"\n",
     );
     write_case_file(
         root.path(),
@@ -138,7 +136,7 @@ fn qemu_build_config_rejects_legacy_arch_name() {
         root.path(),
         "codex-cli",
         "build-x86_64.toml",
-        "target = \"x86_64-unknown-none\"\nfeatures = []\nlog = \"Info\"\nplat_dyn = false\n",
+        "target = \"x86_64-unknown-none\"\nfeatures = []\nlog = \"Info\"\n",
     );
     write_case_file(
         root.path(),

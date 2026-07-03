@@ -58,6 +58,7 @@ __pycache__/
 .codex
 .agents
 .image.toml
+coverage/
 third_party/
 os/StarryOS-REF
 .Ds_Store

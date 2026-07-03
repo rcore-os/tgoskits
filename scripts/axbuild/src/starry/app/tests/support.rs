@@ -17,9 +17,7 @@ pub(super) fn write_board_default(root: &Path, board_name: &str, target: &str) -
     fs::create_dir_all(path.parent().unwrap()).unwrap();
     fs::write(
         &path,
-        format!(
-            "target = \"{target}\"\nenv = {{}}\nfeatures = []\nlog = \"Info\"\nplat_dyn = true\n"
-        ),
+        format!("target = \"{target}\"\nenv = {{}}\nfeatures = []\nlog = \"Info\"\n"),
     )
     .unwrap();
     path

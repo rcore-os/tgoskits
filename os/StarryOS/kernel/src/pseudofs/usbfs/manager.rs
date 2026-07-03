@@ -15,7 +15,7 @@ use crab_usb::{
     usb_if::{
         endpoint::{RequestId, TransferCompletion, TransferRequest},
         err::{TransferError, USBError},
-        host::ControlSetup,
+        host::{ControlSetup, hub::Speed},
         transfer::{Direction, Recipient, Request, RequestType},
     },
 };
@@ -45,6 +45,7 @@ pub(super) struct UsbHostState {
     pub(super) device_id: RDriveDeviceId,
     pub(super) bus_num: u8,
     pub(super) irq: Option<IrqId>,
+    pub(super) root_hub_speed: Speed,
     pub(super) needs_probe: bool,
     pub(super) next_device_num: u8,
     pub(super) stable_id_to_device_num: BTreeMap<usize, u8>,
@@ -373,7 +374,7 @@ impl UsbFsManager {
                 },
                 UsbDeviceRecord {
                     host_device_id: host.device_id,
-                    snapshot: root_hub_snapshot(host.bus_num),
+                    snapshot: root_hub_snapshot(host.bus_num, host.root_hub_speed),
                     present: true,
                     unopened_info: None,
                     live_device: None,
@@ -1359,6 +1360,7 @@ pub(super) fn discover_hosts() -> (Vec<UsbHostState>, Vec<PendingUsbIrqSlot>) {
                     }
                 }
             });
+        let root_hub_speed = guard.root_hub_speed();
         let irq_handler = guard
             .take_event_handler()
             .map(|handler| (host_irq, handler));
@@ -1377,6 +1379,7 @@ pub(super) fn discover_hosts() -> (Vec<UsbHostState>, Vec<PendingUsbIrqSlot>) {
             device_id,
             bus_num,
             irq: host_irq,
+            root_hub_speed,
             needs_probe: true,
             next_device_num: 1,
             stable_id_to_device_num: BTreeMap::new(),

@@ -18,7 +18,7 @@ use core::time::Duration;
 use dwmmc_host::{CardDetect, DwMmc, HostClock, rdif as dwmmc_rdif};
 use fdt_edit::{Node, Phandle};
 use log::{info, warn};
-use rdif_pinctrl::PinctrlDevice;
+use rdif_pinctrl::{FdtPinctrl, PinctrlDevice};
 use rdrive::{
     probe::OnProbeError,
     register::{FdtInfo, ProbeFdt},
@@ -26,7 +26,11 @@ use rdrive::{
 use sdmmc_protocol::{
     Error, OperationPoll,
     error::{ErrorContext, Phase},
-    sdio::{CardInfo, SdioHost2Adapter, SdioInitScratch, SdioSdmmc},
+    sdio::{
+        card::{CardInfo, SdioSdmmc},
+        host2::SdioHost2Adapter,
+        init::SdioInitScratch,
+    },
 };
 
 use super::clock::{
@@ -35,7 +39,7 @@ use super::clock::{
 use crate::{
     block::ProbeFdtBlock,
     mmio::iomap,
-    soc::{RockchipPinCtrl, rk3588_enable_power_domain},
+    soc::{RockchipFdtPinctrlParser, rk3588_enable_power_domain},
 };
 
 const DWMMC_STABLE_REFERENCE_CLOCK: u32 = 50_000_000;
@@ -213,13 +217,9 @@ fn apply_rockchip_sd_resources(info: &FdtInfo<'_>) -> Result<(), OnProbeError> {
     let mut pinctrl = pinctrl
         .lock()
         .map_err(|err| OnProbeError::other(format!("failed to lock PinctrlDevice: {err}")))?;
-    let pinctrl = pinctrl
-        .typed_mut::<RockchipPinCtrl>()
-        .ok_or_else(|| OnProbeError::other("PinctrlDevice is not backed by RockchipPinCtrl"))?;
-    pinctrl.apply_default_pinctrl(info.node)?;
     for (name, supply) in sd_supply_phandles(info.node.as_node()) {
         if supply_has_fixed_gpio_enable(info, supply)? {
-            pinctrl.enable_fixed_regulator(supply)?;
+            enable_fixed_regulator_with_pinctrl(&mut pinctrl, info, supply)?;
         } else {
             info!(
                 "[{}] {name} phandle {:?} is not a fixed GPIO regulator; skip pinctrl enable",
@@ -230,6 +230,42 @@ fn apply_rockchip_sd_resources(info: &FdtInfo<'_>) -> Result<(), OnProbeError> {
     }
     enable_power_domains(parse_power_domains(info.node.as_node())?)?;
     enable_node_clocks(info, "SDMMC");
+    Ok(())
+}
+
+fn enable_fixed_regulator_with_pinctrl(
+    pinctrl: &mut PinctrlDevice,
+    info: &FdtInfo<'_>,
+    supply: Phandle,
+) -> Result<(), OnProbeError> {
+    let regulator = info.get_by_phandle(supply).ok_or_else(|| {
+        OnProbeError::other(format!("SDMMC regulator phandle {supply:?} not found"))
+    })?;
+    let fdt = rdrive::with_fdt(Clone::clone)
+        .ok_or_else(|| OnProbeError::other("live FDT not found for SDMMC regulator"))?;
+    FdtPinctrl::apply_fixed_regulator(
+        pinctrl,
+        &fdt,
+        regulator.as_node(),
+        &RockchipFdtPinctrlParser,
+        "rockchip-sd-regulator",
+    )
+    .map_err(|err| {
+        OnProbeError::other(format!(
+            "failed to enable SDMMC regulator {supply:?} via pinctrl: {err}"
+        ))
+    })?;
+
+    let startup_delay_us = regulator
+        .as_node()
+        .get_property("startup-delay-us")
+        .and_then(|prop| prop.get_u32())
+        .unwrap_or(0);
+    if startup_delay_us != 0 {
+        axklib::time::busy_wait(core::time::Duration::from_micros(u64::from(
+            startup_delay_us,
+        )));
+    }
     Ok(())
 }
 

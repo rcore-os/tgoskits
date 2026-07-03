@@ -247,7 +247,7 @@ flowchart TD
 - `axvm`
 - `axdevice`
 - `axdevice_base`
-- `axvcpu`
+- `axvm`
 - `arm_vcpu`
 - `arm_vgic`
 - `riscv_vcpu`
@@ -263,7 +263,7 @@ graph TD
     C[ax-page-table-entry / ax-page-table-multiarch] --> B
     B --> D[axvm]
     B --> E[axdevice]
-    B --> F[axvcpu]
+    B --> F[axvm]
     B --> G[axvisor_api]
     D --> H[Axvisor]
 ```

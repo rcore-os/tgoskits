@@ -8,7 +8,7 @@ use core::{
 use crate::{
     CpuId, IrqAffinity, IrqContext, IrqError, IrqExecution, IrqHandle, IrqId, IrqOps, IrqOutcome,
     IrqRequest, IrqReturn, IrqScope, IrqStatus,
-    action::{Action, ActionHandler},
+    action::Action,
     descriptor::{Descriptor, action_matches_cpu, recompute_scope_line_desired},
     lock::MetadataLock,
 };
@@ -266,7 +266,7 @@ impl<O: IrqOps> Registry<O> {
     }
 
     fn validate_request(&self, request: &IrqRequest) -> Result<(), IrqError> {
-        if request.is_boxed() && request.execution == IrqExecution::Concurrent {
+        if request.execution == IrqExecution::Concurrent && !request.supports_concurrent() {
             return Err(IrqError::Busy);
         }
         if let IrqScope::PerCpu { cpus } = request.scope
@@ -736,18 +736,6 @@ impl<O: IrqOps> Registry<O> {
 
     fn state_ref(&self) -> &RegistryState {
         unsafe { &*self.state.get() }
-    }
-}
-
-impl Action {
-    fn call(&self, ctx: IrqContext) -> IrqReturn {
-        match &self.handler {
-            ActionHandler::Raw { handler, data } => unsafe { handler(ctx, *data) },
-            ActionHandler::Boxed(handler) => {
-                let handler = unsafe { &mut *handler.get() };
-                handler(ctx)
-            }
-        }
     }
 }
 

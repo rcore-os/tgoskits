@@ -25,7 +25,7 @@ use starry_vm::{vm_read_slice, vm_write_slice};
 
 use crate::{
     file::{fd_is_path, resolve_at},
-    mm::vm_load_string,
+    mm::{vm_load_path_string, vm_load_string},
     pseudofs::overlay,
 };
 
@@ -88,7 +88,7 @@ fn read_value(value: *const u8, size: usize) -> AxResult<Vec<u8>> {
 
 /// Resolve a path argument used by path-based xattr syscalls.
 fn resolve_path(path: *const c_char, nofollow: bool) -> AxResult<Location> {
-    let path = vm_load_string(path)?;
+    let path = vm_load_path_string(path)?;
     let flags = if nofollow { AT_SYMLINK_NOFOLLOW } else { 0 };
     resolve_at(AT_FDCWD, Some(&path), flags)?
         .into_file()

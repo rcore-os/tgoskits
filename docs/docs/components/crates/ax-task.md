@@ -123,23 +123,8 @@ let wq = ax-task::WaitQueue::new();
 graph LR
     ax-hal["ax-hal"] --> ax-task["ax-task"]
     axsched["ax-sched"] --> ax-task
-    axconfig["ax-config"] --> ax-task
-    kernel_guard["kernel_guard"] --> ax-task
-    axpoll["axpoll"] --> ax-task
-    cpumask["cpumask"] --> ax-task
-
-    ax-task --> ax-runtime["ax-runtime"]
-    ax-task --> ax-sync["ax-sync"]
-    ax-task --> ax-api["ax-api"]
-    ax-task --> ax-posix-api["ax-posix-api"]
-    ax-task --> starry["starry-kernel"]
-    ax-task --> axvisor["axvisor (via ax-std/indirect)"]
-```
-
-### 直接依赖
 - `ax-hal`：任务上下文、当前 CPU、时间、IRQ、TLS 与上下文切换能力来源。
 - `axsched`：具体调度算法实现。
-- `axconfig`：任务栈大小、CPU 数量上限等静态配置来源。
 - `kernel_guard`：抢占关闭/恢复的接口桥接。
 - `axpoll`：异步 poll 与 I/O 等待适配。
 - `cpumask`、`ax-percpu`、`ax-kspin`：SMP 与每核运行队列支持。

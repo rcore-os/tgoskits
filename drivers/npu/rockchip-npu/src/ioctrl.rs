@@ -40,6 +40,20 @@ pub struct RknpuMemMap {
     pub offset: u64,
 }
 
+/// Arguments for destroying a GEM object (releasing its handle).
+///
+/// Corresponds to C `struct rknpu_mem_destroy`.
+#[repr(C)]
+#[derive(Debug, Clone, Default)]
+pub struct RknpuMemDestroy {
+    /// handle of the gem object to destroy.
+    pub handle: u32,
+    /// just padding to be 64-bit aligned.
+    pub reserved: u32,
+    /// address of the RKNPU memory object (informational; the handle identifies it).
+    pub obj_addr: u64,
+}
+
 /// 任务提交结构体
 ///
 /// 对应 C 结构体 `rknpu_submit`

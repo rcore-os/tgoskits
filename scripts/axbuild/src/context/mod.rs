@@ -33,9 +33,8 @@ mod workspace;
 pub(crate) use arch::{
     CrossCompileSpec, arch_for_target_checked, cross_compile_spec_for_arch_checked,
     default_rootfs_image_for_arch, resolve_arceos_arch_and_target, resolve_axvisor_arch_and_target,
-    resolve_starry_arch_and_target, starry_arch_for_target_checked,
-    starry_default_platform_for_arch_checked, starry_target_for_arch_checked, supported_arches,
-    supported_targets, validate_supported_target,
+    resolve_starry_arch_and_target, starry_arch_for_target_checked, starry_target_for_arch_checked,
+    supported_arches, supported_targets, validate_supported_target,
 };
 pub(crate) use resolve::{AxvisorRequestPaths, snapshot_path_value};
 pub use types::{
@@ -220,6 +219,30 @@ impl AppContext {
         result
     }
 
+    pub(crate) async fn run_qemu_with_axtest_coverage(
+        &mut self,
+        cargo: &Cargo,
+        mut qemu: QemuConfig,
+        capture_backtrace: Option<crate::backtrace::BacktraceQemuCapture>,
+    ) -> anyhow::Result<()> {
+        if !crate::support::axtest_coverage::enabled(cargo) {
+            return self.run_qemu(cargo, qemu, capture_backtrace).await;
+        }
+
+        let paths = crate::support::axtest_coverage::AxtestCoveragePaths::new(
+            self.workspace_root(),
+            &cargo.package,
+            &cargo.target,
+        )?;
+        crate::support::axtest_coverage::apply_qemu_monitor(&mut qemu, &paths);
+        crate::support::axtest_coverage::update_success_regex(&mut qemu);
+        let capture = crate::support::axtest_coverage::AxtestCoverageCaptureGuard::install(&paths)
+            .context("failed to install axtest coverage capture")?;
+        let result = self.run_qemu(cargo, qemu, capture_backtrace).await;
+        capture.finish()?;
+        result
+    }
+
     pub(crate) async fn run_prepared_qemu(
         &mut self,
         qemu: QemuConfig,
@@ -399,7 +422,7 @@ impl AppContext {
         ostool_build::activate_build_config(
             &mut self.invocation,
             &BuildConfig {
-                system: BuildSystem::Cargo(cargo.clone()),
+                system: BuildSystem::Cargo(Box::new(cargo.clone())),
             },
             build_config_path.as_deref(),
         )

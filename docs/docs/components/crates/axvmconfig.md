@@ -4,7 +4,7 @@
 > 类型：库 + 二进制混合 crate
 > 分层：组件层 / 虚拟机配置模型
 > 版本：`0.2.2`
-> 文档依据：当前仓库源码、`Cargo.toml`、`README.md`、`src/lib.rs`、`src/tool.rs`、`virtualization/axvm/src/config.rs` 与 `os/axvisor/src/vmm/config.rs`
+> 文档依据：当前仓库源码、`Cargo.toml`、`README.md`、`src/lib.rs`、`src/tool.rs`、`virtualization/axvm/src/config.rs` 与 `os/axvisor/src/config.rs`
 
 `axvmconfig` 是 Axvisor 虚拟机配置链路的静态模型层。它的职责不是直接创建 VM，也不是直接操作页表或设备，而是把 TOML 中描述的 VM 元信息、镜像布局、内存区域、模拟设备、直通设备和中断模式转换成一组稳定的数据结构；这些结构随后被 `axvm` 转成运行时 `AxVMConfig`，再由 `os/axvisor` 继续执行内存分配、镜像加载、FDT 处理和 VM 实例化。
 
@@ -177,7 +177,7 @@ flowchart TD
 - 各类镜像 load addr 转为 `GuestPhysAddr`
 - 设备配置整体搬运进运行时配置
 
-而 `os/axvisor/src/vmm/config.rs` 则负责：
+而 `os/axvisor/src/config.rs` 则负责：
 
 - 调 `AxVMCrateConfig::from_toml()` 解析原始配置
 - 在 AArch64 上做 FDT 相关调整

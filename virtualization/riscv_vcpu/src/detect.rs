@@ -29,6 +29,7 @@ use riscv::{
         stvec::{self, Stvec, TrapMode},
     },
 };
+use riscv_h::register::hgatp::{self, Hgatp, HgatpValues};
 
 /// Detect if hypervisor extension exists on current hart environment
 ///
@@ -40,6 +41,34 @@ pub fn detect_h_extension() -> bool {
     });
     // return the answer from output flag. 0 => success, 2 => failed, illegal instruction
     ans != 2
+}
+
+/// Returns the maximum supported RISC-V G-stage page-table levels.
+pub fn max_guest_page_table_levels() -> usize {
+    if !detect_h_extension() {
+        return 0;
+    }
+    if detect_hgatp_mode(HgatpValues::Sv48x4) {
+        4
+    } else if detect_hgatp_mode(HgatpValues::Sv39x4) {
+        3
+    } else {
+        0
+    }
+}
+
+fn detect_hgatp_mode(mode: HgatpValues) -> bool {
+    let saved = hgatp::read();
+    let mut candidate = Hgatp::from_bits(0);
+    candidate.set_mode(mode);
+    unsafe {
+        candidate.write();
+    }
+    let supported = ((hgatp::read().bits() >> 60) & 0xf) == mode as usize;
+    unsafe {
+        saved.write();
+    }
+    supported
 }
 
 // Tries to execute all instructions defined in clojure `f`.

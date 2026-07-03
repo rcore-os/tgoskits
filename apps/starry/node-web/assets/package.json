@@ -1,0 +1,11 @@
+{
+  "name": "starry-node-web-carpets",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Pinned dependencies for the StarryOS node-web web-framework carpets (pug template engine + express over IPv4 loopback). node_modules is provisioned by prebuild.sh via `npm ci`; it is NOT committed to the source tree.",
+  "license": "MIT",
+  "dependencies": {
+    "express": "4.21.2",
+    "pug": "3.0.3"
+  }
+}

@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.7](https://github.com/rcore-os/tgoskits/compare/realtek-rtl8125-v0.2.6...realtek-rtl8125-v0.2.7) - 2026-07-02
+
+### Other
+
+- *(net)* split IRQ handlers from NIC queues ([#1435](https://github.com/rcore-os/tgoskits/pull/1435))
+
 ## [0.2.6](https://github.com/rcore-os/tgoskits/compare/realtek-rtl8125-v0.2.5...realtek-rtl8125-v0.2.6) - 2026-06-27
 
 ### Added

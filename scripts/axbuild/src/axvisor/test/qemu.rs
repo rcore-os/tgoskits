@@ -253,7 +253,6 @@ impl Axvisor {
     }
 
     pub(super) fn qemu_test_request(mut request: ResolvedAxvisorRequest) -> ResolvedAxvisorRequest {
-        request.plat_dyn = None;
         request.smp = None;
         request.vmconfigs.clear();
         request
@@ -374,7 +373,6 @@ fn axvisor_qemu_test_build_args(arch: &str, config: Option<PathBuf>) -> AxvisorC
         config,
         arch: Some(arch.to_string()),
         target: None,
-        plat_dyn: None,
         smp: None,
         debug: false,
         vmconfigs: Vec::new(),

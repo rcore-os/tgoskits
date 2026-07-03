@@ -33,7 +33,6 @@
 graph LR
     current["ax-api"]
     current --> ax-alloc["ax-alloc"]
-    current --> axconfig["ax-config"]
     current --> ax-display["ax-display"]
     current --> ax_dma["ax-dma"]
     current --> ax-driver["ax-driver"]
@@ -45,7 +44,6 @@ graph LR
 
 ### 直接依赖
 - `ax-alloc`
-- `axconfig`
 - `ax-display`
 - `ax-dma`
 - `ax-driver`
@@ -63,8 +61,6 @@ graph LR
 - `axaddrspace`
 - `ax-allocator`
 - `axbacktrace`
-- `ax-config-gen`
-- `ax-config-macros`
 - `ax-cpu`
 - `rdrive`
 - `rdif-block`

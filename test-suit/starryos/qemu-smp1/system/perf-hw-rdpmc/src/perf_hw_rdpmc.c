@@ -185,6 +185,7 @@ int main(void) {
     for (uint64_t i = 0; i < 20000000ull; i++) {
         spin += i;
     }
+    (void)spin;
 
     /* EL0 read via mrs (the rdpmc path) and the syscall read, back to back. */
     uint64_t rd = read_pmccntr_el0();

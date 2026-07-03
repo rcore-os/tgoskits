@@ -24,6 +24,21 @@ use axvm_types::VMInterruptMode;
 #[cfg(target_arch = "riscv64")]
 pub(crate) mod riscv;
 
+/// Host platform hook for registering the RISC-V physical IRQ injector.
+#[cfg(target_arch = "riscv64")]
+#[ax_crate_interface::def_interface]
+pub trait RiscvPlatformIrqInjectorIf {
+    /// Registers a callback that forwards a physical IRQ line into the current guest.
+    fn register_virtual_irq_injector(injector: fn(usize) -> bool);
+}
+
+#[cfg(target_arch = "riscv64")]
+pub(crate) fn register_riscv_virtual_irq_injector(injector: fn(usize) -> bool) {
+    ax_crate_interface::call_interface!(RiscvPlatformIrqInjectorIf::register_virtual_irq_injector(
+        injector
+    ));
+}
+
 /// Resolves device interrupt lines against one VM's interrupt backend.
 ///
 /// The fabric owns only the backend capability. It never owns or references the

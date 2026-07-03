@@ -146,7 +146,7 @@ flowchart TD
 `axvm` 才是 `axdevice` 的主要上层：
 
 - `axvm` 负责构建客户机地址空间，建立线性映射和 Stage-2/EPT。
-- `axvm` 负责在 vCPU 退出循环中把 `AxVCpuExitReason` 变成对 `AxVmDevices::handle_*()` 的调用。
+- `axvm` 负责在 vCPU 退出循环中把 `VmExit` 变成对 `AxVmDevices::handle_*()` 的调用。
 - 某些附加设备（如系统寄存器设备）也可能在 `axvm` 层再通过 `add_sys_reg_dev()` 注入。
 
 换言之，`axdevice` 是 per-VM device table，而 `axvm` 是把这个 table 纳入 VM 执行模型的调度者。

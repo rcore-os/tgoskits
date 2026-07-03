@@ -6,12 +6,12 @@ use alloc::{collections::BTreeMap, vec::Vec};
 
 use ax_errno::{AxResult, ax_err, ax_err_type};
 use ax_kspin::SpinNoIrq as Mutex;
-use axvcpu::get_current_vcpu;
 use axvm_types::VMId;
 
 use crate::{
+    arch::ArchVCpu,
     host::{HostPlatform, default_host},
-    vcpu::AxArchVCpuImpl,
+    vcpu::get_current_vcpu,
     vm::AxVMRef,
 };
 
@@ -100,17 +100,17 @@ pub(crate) fn inject_vm_vcpu_interrupt(vm_id: VMId, vcpu_id: usize, vector: usiz
 
 /// Return the current VM ID from the vCPU currently executing on this CPU.
 pub fn current_vm_id() -> Option<VMId> {
-    get_current_vcpu::<AxArchVCpuImpl>().map(|vcpu| vcpu.vm_id())
+    get_current_vcpu::<ArchVCpu>().map(|vcpu| vcpu.vm_id())
 }
 
 /// Return the current vCPU ID from the vCPU currently executing on this CPU.
 pub fn current_vcpu_id() -> Option<usize> {
-    get_current_vcpu::<AxArchVCpuImpl>().map(|vcpu| vcpu.id())
+    get_current_vcpu::<ArchVCpu>().map(|vcpu| vcpu.id())
 }
 
 /// Inject a virtual interrupt into the vCPU currently executing on this CPU.
 pub fn inject_current_vcpu_interrupt(vector: usize) -> AxResult {
-    let vcpu = get_current_vcpu::<AxArchVCpuImpl>()
+    let vcpu = get_current_vcpu::<ArchVCpu>()
         .ok_or_else(|| ax_err_type!(BadState, "current vCPU is not set"))?;
     vcpu.inject_interrupt(vector)
 }

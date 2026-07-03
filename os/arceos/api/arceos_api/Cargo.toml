@@ -1,6 +1,6 @@
 [package]
 name = "ax-api"
-version = "0.6.3"
+version = "0.6.4"
 repository = "https://github.com/rcore-os/tgoskits"
 edition.workspace = true
 authors = ["Yuekai Jia <equation618@gmail.com>"]
@@ -27,7 +27,6 @@ dummy-if-not-enabled = []
 
 [dependencies]
 ax-alloc = { workspace = true, optional = true }
-ax-config.workspace = true
 ax-display = { workspace = true, optional = true }
 ax-dma = { workspace = true, optional = true }
 ax-errno.workspace = true

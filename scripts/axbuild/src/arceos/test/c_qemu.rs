@@ -205,7 +205,6 @@ async fn build_and_run_c_test(
             package: Some("ax-libc".to_string()),
             arch: None,
             target: Some(target.to_string()),
-            plat_dyn: None,
             smp: None,
             debug: false,
         },

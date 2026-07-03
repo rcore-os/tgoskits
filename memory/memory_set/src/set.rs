@@ -332,12 +332,30 @@ impl<B: MappingBackend> MemorySet<B> {
         update_flags: impl Fn(B::Flags) -> Option<B::Flags>,
         page_table: &mut B::PageTable,
     ) -> MappingResult {
+        self.protect_with_reported_flags(
+            start,
+            size,
+            |flags, _reported_flags| update_flags(flags).map(|new_flags| (new_flags, new_flags)),
+            page_table,
+        )
+    }
+
+    /// Change backend/page-table flags and reported flags within the given range.
+    pub fn protect_with_reported_flags(
+        &mut self,
+        start: B::Addr,
+        size: usize,
+        update_flags: impl Fn(B::Flags, B::Flags) -> Option<(B::Flags, B::Flags)>,
+        page_table: &mut B::PageTable,
+    ) -> MappingResult {
         let end = start.checked_add(size).ok_or(MappingError::InvalidParam)?;
         let mut to_insert = Vec::new();
         for (&area_start, area) in self.areas.iter_mut() {
             let area_end = area.end();
 
-            if let Some(new_flags) = update_flags(area.flags()) {
+            if let Some((new_flags, new_reported_flags)) =
+                update_flags(area.flags(), area.reported_flags())
+            {
                 if area_start >= end {
                     // [ prot ]
                     //          [ area ]
@@ -350,7 +368,7 @@ impl<B: MappingBackend> MemorySet<B> {
                     // [   prot   ]
                     //   [ area ]
                     area.protect_area(new_flags, page_table)?;
-                    area.set_flags(new_flags);
+                    area.set_flags_with_reported_flags(new_flags, new_reported_flags);
                 } else if area_start < start && area_end > end {
                     //        [ prot ]
                     // [ left | area | right ]
@@ -358,7 +376,7 @@ impl<B: MappingBackend> MemorySet<B> {
                     let right_part = middle_part.split(end).unwrap();
 
                     middle_part.protect_area(new_flags, page_table)?;
-                    middle_part.set_flags(new_flags);
+                    middle_part.set_flags_with_reported_flags(new_flags, new_reported_flags);
 
                     to_insert.push((right_part.start(), right_part));
                     to_insert.push((middle_part.start(), middle_part));
@@ -367,7 +385,7 @@ impl<B: MappingBackend> MemorySet<B> {
                     //   [  area | right ]
                     let right_part = area.split(end).unwrap();
                     area.protect_area(new_flags, page_table)?;
-                    area.set_flags(new_flags);
+                    area.set_flags_with_reported_flags(new_flags, new_reported_flags);
 
                     to_insert.push((right_part.start(), right_part));
                 } else {
@@ -375,7 +393,7 @@ impl<B: MappingBackend> MemorySet<B> {
                     // [ left |  area ]
                     let mut right_part = area.split(start).unwrap();
                     right_part.protect_area(new_flags, page_table)?;
-                    right_part.set_flags(new_flags);
+                    right_part.set_flags_with_reported_flags(new_flags, new_reported_flags);
 
                     to_insert.push((right_part.start(), right_part));
                 }

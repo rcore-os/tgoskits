@@ -1,0 +1,8 @@
+cmake_minimum_required(VERSION 3.20)
+project(syscall-test-ltp-pilot-min C)
+set(CMAKE_C_STANDARD 11)
+set(CMAKE_C_STANDARD_REQUIRED ON)
+set(CMAKE_C_EXTENSIONS OFF)
+add_executable(syscall-test-ltp-pilot-min src/main.c)
+target_compile_options(syscall-test-ltp-pilot-min PRIVATE -Wall -Wextra -Werror)
+install(TARGETS syscall-test-ltp-pilot-min RUNTIME DESTINATION usr/bin/starry-test-suit)

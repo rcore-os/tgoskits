@@ -1,6 +1,6 @@
 [package]
 name = "loongarch_vcpu"
-version = "0.5.8"
+version = "0.5.9"
 edition.workspace = true
 authors = ["RCore Team <yuchen@tsinghua.edu.cn>"]
 description = "LoongArch VCPU implementation for ArceOS Hypervisor"
@@ -21,5 +21,5 @@ ax-percpu = { workspace = true }
 ax-memory-addr = { workspace = true }
 ax-page-table-multiarch = { workspace = true }
 ax-crate-interface = { workspace = true }
-axvcpu = { workspace = true }
+axvm-types = { workspace = true }
 loongArch64 = "0.2"

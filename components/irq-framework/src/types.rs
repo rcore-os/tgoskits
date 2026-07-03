@@ -1,5 +1,4 @@
 use alloc::boxed::Box;
-use core::ptr::NonNull;
 
 /// An IRQ controller domain id.
 #[repr(transparent)]
@@ -298,18 +297,15 @@ pub struct IrqContext {
     pub cpu: CpuId,
 }
 
-/// Raw IRQ handler ABI.
-pub type RawIrqHandler = unsafe fn(ctx: IrqContext, data: NonNull<()>) -> IrqReturn;
-
 /// Boxed IRQ handler ABI.
 pub type BoxedIrqHandler = Box<dyn FnMut(IrqContext) -> IrqReturn + Send + 'static>;
 
+/// Boxed IRQ handler ABI for callbacks that may run concurrently.
+pub type ConcurrentBoxedIrqHandler = Box<dyn Fn(IrqContext) -> IrqReturn + Send + Sync + 'static>;
+
 pub(crate) enum IrqHandler {
-    Raw {
-        handler: RawIrqHandler,
-        data: NonNull<()>,
-    },
-    Boxed(BoxedIrqHandler),
+    NonReentrant(BoxedIrqHandler),
+    Concurrent(ConcurrentBoxedIrqHandler),
 }
 
 /// External capabilities supplied by the OS/platform adapter.
@@ -373,21 +369,9 @@ pub struct IrqRequest {
 
 impl IrqRequest {
     /// Creates a new exclusive, global, auto-enabled IRQ request.
-    pub fn new(handler: RawIrqHandler, data: NonNull<()>) -> Self {
+    pub fn new(handler: impl FnMut(IrqContext) -> IrqReturn + Send + 'static) -> Self {
         Self {
-            handler: Some(IrqHandler::Raw { handler, data }),
-            scope: IrqScope::Global,
-            affinity: IrqAffinity::Any,
-            execution: IrqExecution::Concurrent,
-            share_mode: ShareMode::Exclusive,
-            auto_enable: AutoEnable::Yes,
-        }
-    }
-
-    /// Creates a new exclusive, global, auto-enabled boxed IRQ request.
-    pub fn new_boxed(handler: BoxedIrqHandler) -> Self {
-        Self {
-            handler: Some(IrqHandler::Boxed(handler)),
+            handler: Some(IrqHandler::NonReentrant(Box::new(handler))),
             scope: IrqScope::Global,
             affinity: IrqAffinity::Any,
             execution: IrqExecution::NonReentrant,
@@ -396,8 +380,22 @@ impl IrqRequest {
         }
     }
 
-    pub(crate) fn is_boxed(&self) -> bool {
-        matches!(self.handler.as_ref(), Some(IrqHandler::Boxed(_)))
+    /// Creates a new exclusive, global, auto-enabled concurrent IRQ request.
+    pub fn new_concurrent(
+        handler: impl Fn(IrqContext) -> IrqReturn + Send + Sync + 'static,
+    ) -> Self {
+        Self {
+            handler: Some(IrqHandler::Concurrent(Box::new(handler))),
+            scope: IrqScope::Global,
+            affinity: IrqAffinity::Any,
+            execution: IrqExecution::Concurrent,
+            share_mode: ShareMode::Exclusive,
+            auto_enable: AutoEnable::Yes,
+        }
+    }
+
+    pub(crate) fn supports_concurrent(&self) -> bool {
+        matches!(self.handler.as_ref(), Some(IrqHandler::Concurrent(_)))
     }
 
     /// Sets the IRQ scope.

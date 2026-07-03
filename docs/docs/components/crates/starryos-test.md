@@ -68,10 +68,10 @@ flowchart TD
 ### 1.5 与 `starryos` 的边界
 `starryos-test` 和 `starryos` 当前共享同一内核入口、同一默认 init 脚本逻辑，但边界仍然很明确：
 
-- `starryos`：默认人工运行入口，带本地 `.axconfig.toml` / `.qemu.toml`。
+- `starryos`：默认人工运行入口，带本地 build config / `.qemu.toml`。
 - `starryos-test`：默认自动化回归入口，依赖 xtask 注入 run scope、rootfs 准备和 QEMU 正则判据。
 
-`test-suit/starryos` 目录当前没有自己的 `.axconfig.toml` 或 `.qemu.toml`，这也进一步说明它的测试配置主要来自 xtask，而不是包内静态 dotfile。
+`test-suit/starryos` 目录当前没有自己的 `.qemu.toml`，这也进一步说明它的测试配置主要来自 xtask，而不是包内静态 dotfile。
 
 ## 核心功能
 ### 功能概览
@@ -148,7 +148,7 @@ cargo xtask starry run --arch riscv64 --package starryos-test
 ### 5.2 建议重点验证的场景
 - `cargo starry test qemu` 是否仍能稳定进入成功正则。
 - rootfs 产物目录解析是否仍正确。
-- `qemu` / `smp` / `plat-dyn` 组合下是否仍能完成 bring-up。
+- `smp` 与设备 feature 组合下是否仍能完成 bring-up。
 - 若引入测试专属初始化脚本，是否与普通 `starryos` 入口形成清晰边界。
 
 ### 5.3 覆盖率要求

@@ -17,6 +17,11 @@ bitflags! {
     }
 }
 
+#[cfg(target_arch = "x86_64")]
+pub fn sys_eventfd(initval: u32) -> AxResult<isize> {
+    sys_eventfd2(initval, 0)
+}
+
 // Create an eventfd and install it into the current file descriptor table.
 pub fn sys_eventfd2(initval: u32, flags: u32) -> AxResult<isize> {
     debug!(

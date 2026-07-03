@@ -55,14 +55,21 @@ pub(crate) fn read_toml_with_rejector(
 }
 
 pub(crate) fn reject_removed_std_field(path: &Path, contents: &str) -> anyhow::Result<()> {
-    if let Ok(table) = toml::from_str::<toml::Table>(contents)
-        && table.contains_key("std")
-    {
-        bail!(
-            "build config {} uses removed `std` field; std-aware Rust builds are now the default, \
-             remove `std = ...`",
-            path.display()
-        );
+    if let Ok(table) = toml::from_str::<toml::Table>(contents) {
+        if table.contains_key("std") {
+            bail!(
+                "build config {} uses removed `std` field; std-aware Rust builds are now the \
+                 default, remove `std = ...`",
+                path.display()
+            );
+        }
+        if table.contains_key("plat_dyn") {
+            bail!(
+                "build config {} uses removed `plat_dyn` field; dynamic platform builds are now \
+                 the only supported platform mode, remove `plat_dyn = ...`",
+                path.display()
+            );
+        }
     }
 
     Ok(())

@@ -1,20 +1,17 @@
 extern crate alloc;
 
-#[cfg(plat_dyn)]
 use alloc::format;
 
 use log::debug;
-#[cfg(plat_dyn)]
-use rdrive::probe::pci::PciInfo;
 use rdrive::{
     PlatformDevice,
     probe::{
         OnProbeError,
         acpi::{AcpiId, ProbeAcpi},
+        pci::PciInfo,
     },
 };
 
-#[cfg(plat_dyn)]
 use crate::BindingIrq;
 
 crate::model_register!(
@@ -56,7 +53,6 @@ fn probe_acpi_ecam(probe: ProbeAcpi<'_>) -> Result<(), OnProbeError> {
     }
 }
 
-#[cfg(plat_dyn)]
 pub(crate) fn acpi_irq_for_endpoint(info: PciInfo) -> Result<Option<BindingIrq>, OnProbeError> {
     let Some(result) = rdrive::probe::acpi::with_acpi(|acpi| acpi.pci_irq_for_endpoint(info))
     else {

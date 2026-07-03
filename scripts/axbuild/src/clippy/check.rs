@@ -1,8 +1,3 @@
-use std::path::{Path, PathBuf};
-
-use anyhow::Context;
-use ax_config_gen::read_config_string;
-
 use super::{AXSTD_STD_CLIPPY_FEATURES, AXSTD_STD_DEFAULT_FEATURE, AXSTD_STD_PACKAGE};
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -24,44 +19,6 @@ pub(super) struct ClippyCheck {
     pub(super) deps_mode: ClippyDepsMode,
     pub(super) target: Option<String>,
     pub(super) env: Vec<(String, String)>,
-    pub(super) axconfig_override: Option<ClippyAxconfigOverride>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub(super) struct ClippyAxconfigOverride {
-    pub(super) target: String,
-    pub(super) platform_config: PathBuf,
-    pub(super) out_config: PathBuf,
-    pub(super) overrides: Vec<String>,
-}
-
-impl ClippyAxconfigOverride {
-    pub(super) fn generate(&self, workspace_root: &Path) -> anyhow::Result<()> {
-        let platform_name =
-            read_config_string(std::slice::from_ref(&self.platform_config), "platform")
-                .with_context(|| {
-                    format!(
-                        "failed to read platform name from {}",
-                        self.platform_config.display()
-                    )
-                })?;
-
-        crate::build::generate_axconfig(
-            workspace_root,
-            &self.target,
-            &platform_name,
-            &self.platform_config,
-            &self.out_config,
-            None,
-            &self.overrides,
-        )
-        .with_context(|| {
-            format!(
-                "failed to generate clippy axconfig override at {}",
-                self.out_config.display()
-            )
-        })
-    }
 }
 
 impl ClippyCheck {

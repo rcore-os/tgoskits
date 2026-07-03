@@ -234,7 +234,7 @@ pub(super) async fn run_rust_qemu_case(
 
     arceos
         .app
-        .run_qemu(&case.cargo, case.qemu.clone(), capture_backtrace)
+        .run_qemu_with_axtest_coverage(&case.cargo, case.qemu.clone(), capture_backtrace)
         .await
         .with_context(|| format!("failed to run ArceOS rust qemu test case `{case_name}`"))?;
 
@@ -566,6 +566,7 @@ BT 0 ip=0x1 fp=0x2
             post_build_cmds: Vec::new(),
             to_bin: false,
             bin: None,
+            test: None,
         }
     }
 }

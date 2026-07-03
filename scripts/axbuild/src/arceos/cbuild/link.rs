@@ -25,22 +25,13 @@ pub(super) fn find_link_scripts(
     platform: &str,
     features: &[String],
 ) -> anyhow::Result<LinkScripts> {
-    if has_feature(features, "plat-dyn") {
-        let script = find_final_linker_script(target_dir, target, mode)?;
-        let search_dirs = find_dynamic_linker_search_dirs(target_dir, target, mode)?;
-        return Ok(LinkScripts {
-            script,
-            search_dirs,
-            pie: true,
-        });
-    }
-
     let script = find_final_linker_script(target_dir, target, mode)?;
-    let search_dirs = find_linker_search_dirs(target_dir, target, mode, platform, features)?;
+    let search_dirs = find_dynamic_linker_search_dirs(target_dir, target, mode)?;
+    let _ = (platform, features);
     Ok(LinkScripts {
         script,
         search_dirs,
-        pie: false,
+        pie: true,
     })
 }
 
@@ -91,6 +82,7 @@ pub(super) fn find_final_linker_script(
         })
 }
 
+#[cfg(test)]
 pub(super) fn find_linker_search_dirs(
     target_dir: &Path,
     target: &str,
@@ -102,11 +94,8 @@ pub(super) fn find_linker_search_dirs(
     let mut dirs = BTreeSet::new();
     let runtime_out = latest_out_dir_with_script(&build_dir, "ax-runtime-", ARCEOS_LINKER_SCRIPT)?;
     dirs.insert(runtime_out);
-    let platform_out = latest_out_dir_with_script(
-        &build_dir,
-        platform_linker_owner_prefix(features),
-        "axplat.x",
-    )?;
+    let platform_out = latest_out_dir_with_script(&build_dir, "axplat-dyn-", "axplat.x")?;
+    let _ = features;
     dirs.insert(platform_out);
 
     Ok(dirs.into_iter().collect())
@@ -187,14 +176,6 @@ fn latest_out_dir_with_script(
                 package_prefix
             )
         })
-}
-
-fn platform_linker_owner_prefix(features: &[String]) -> &'static str {
-    if has_feature(features, "plat-dyn") {
-        return "axplat-dyn-";
-    }
-
-    "ax-hal-"
 }
 
 pub(super) fn link_c_app(

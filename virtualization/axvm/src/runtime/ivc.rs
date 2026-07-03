@@ -21,9 +21,8 @@ use alloc::{
 
 use ax_errno::AxResult;
 use ax_kspin::SpinNoIrq as Mutex;
-use ax_page_table_multiarch::PagingHandler;
 
-use crate::{GuestPhysAddr, HostPhysAddr};
+use crate::{GuestPhysAddr, HostPhysAddr, host::PagingHandler};
 
 /// A global btree map to store IVC channels,
 /// indexed by (publisher_vm_id, channel_key).

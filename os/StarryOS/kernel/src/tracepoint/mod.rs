@@ -27,6 +27,11 @@ use crate::{
     task::AsThread,
 };
 
+/// Maximum number of trace records kept in the raw trace pipe ring buffer.
+const TRACE_RAW_PIPE_CAPACITY: usize = 4096;
+/// Maximum number of PID→cmdline entries in the command-line cache.
+const TRACE_CMDLINE_CACHE_SIZE: usize = 4096;
+
 // The registry entry is locked from the tracepoint fire path, which for
 // `sched:sched_switch` runs inside `axtask::switch_to` (IRQ off,
 // preemption disabled). A sleeping `ax_sync::Mutex` would trip the
@@ -71,7 +76,7 @@ impl TraceState {
     const fn new() -> Self {
         Self {
             point_map: LazyInit::new(),
-            raw_pipe: Mutex::new(TracePipeRaw::new(4096)),
+            raw_pipe: Mutex::new(TracePipeRaw::new(TRACE_RAW_PIPE_CAPACITY)),
             pipe_event: PollSet::new(),
             pipe_notify: IrqNotify::new(),
             cmdline_cache: LazyInit::new(),
@@ -277,7 +282,7 @@ pub fn tracepoint_init() -> AxResult<()> {
     TRACE_STATE
         .cmdline_cache
         .init_once(Mutex::new(TraceCmdLineCache::new(
-            NonZero::new(4096).unwrap(),
+            NonZero::new(TRACE_CMDLINE_CACHE_SIZE).unwrap(),
         )));
     start_trace_pipe_notify_worker();
     Ok(())

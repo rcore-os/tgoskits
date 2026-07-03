@@ -75,5 +75,5 @@ cargo xtask axvisor test board --board orangepi-5-plus-linux
 若需要继续理解测试分组、QEMU/U-Boot/board 三条链路的实现细节，可以继续阅读：
 
 - [Axvisor 开发指南](/docs/development/axvisor)
-- [Axvisor 测试套件设计](/docs/build/test/axvisor)
+- [Axvisor 测试套件设计](/docs/build/axvisor/test)
 - [CI 自动测试实现](/docs/build/ci)

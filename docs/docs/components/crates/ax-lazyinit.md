@@ -88,7 +88,7 @@ graph LR
 
 ### 主要消费者
 - ArceOS 模块：`ax-task`、`ax-mm`、`ax-ipi`、`ax-fs`、`ax-net`、`ax-display`、`ax-input` 等。
-- 平台层：`axplat-dyn`、`ax-plat-riscv64-sg2002` 等平台 glue。
+- 平台层：`axplat-dyn` 和外部自定义平台 glue。
 - Axvisor：如 `vmm/timer.rs` 的 `TimerList`、DTB 缓存等。
 
 ## 开发指南

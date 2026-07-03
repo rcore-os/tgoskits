@@ -83,7 +83,7 @@ PATH="$PWD/target/qemu-k230-docker-build:$PATH" \
   cargo xtask starry app qemu -t k230-kpu-nncase --arch riscv64
 ```
 
-See `k230-kpu-nncase/README.md` and `docs/k230-kpu-nncase-runtime.md` for the
+See `k230-kpu-nncase/README.md` and `docs/docs/architecture/driver/k230-kpu-nncase-runtime.md` for the
 asset preparation flow.
 
 ## macOS AArch64 Self-Build

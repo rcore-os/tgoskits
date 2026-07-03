@@ -10,7 +10,7 @@ The upstream StarryOS kmod build flow is Makefile-based:
 1. Discover module crates under `modules/`.
 2. Re-enter the normal kernel build scripts with `KMOD=y APP=<module>`.
 3. Compile the module crate with the same target, features, target directory,
-   rustflags, and `.axconfig.toml` as the kernel build.
+   rustflags, and environment as the kernel build.
 4. Convert the module crate rlib into an ET_REL `.ko` with:
 
    ```text
@@ -26,7 +26,7 @@ artifacts whenever the compilation inputs match.
 
 The existing tgoskits `cargo xtask starry kmod build` implementation bypassed
 that context by directly running `cargo build --manifest-path`. That loses the
-Starry-specific target JSON, generated axconfig, feature normalization, platform
+Starry-specific target JSON, feature normalization, platform
 selection, and kallsyms-compatible kernel configuration, so it is not a correct
 migration of the upstream flow.
 
@@ -48,8 +48,8 @@ The `starry kmod build` command should:
    - disable ELF-to-bin conversion,
    - remove Starry kernel-only kallsyms and uimage post-processing hooks.
 6. Keep the target, features, Cargo args, and environment intact. In
-   particular, preserve `AX_CONFIG_PATH`, `AX_PLATFORM`, `AX_ARCH`,
-   `AX_TARGET`, `SMP`, target JSON arguments, and build-std arguments.
+   particular, preserve `AX_PLATFORM`, `AX_ARCH`, `AX_TARGET`, `SMP`, target
+   JSON arguments, and build-std arguments.
 7. Locate the produced module rlib from Cargo metadata, then partial-link it
    with `os/StarryOS/scripts/kmod-linker.ld`.
 8. Write `.ko` files next to the kernel ELF under `target/<target>/release/`.

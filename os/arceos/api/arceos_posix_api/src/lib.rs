@@ -21,7 +21,8 @@ mod imp;
 
 /// Platform-specific constants and parameters.
 pub mod config {
-    pub use ax_config::*;
+    /// Stack size used when callers do not provide an explicit task stack.
+    pub const TASK_STACK_SIZE: usize = 0x40000;
 }
 
 /// POSIX C types.

@@ -7,11 +7,11 @@ mod types;
 
 use std::path::{Path, PathBuf};
 
-pub(crate) use c_app::{load_arceos_build_config, load_arceos_build_mode};
+pub(crate) use c_app::{load_arceos_build_config, load_arceos_build_file, load_arceos_build_mode};
 pub(crate) use cargo_config::{load_c_app_cargo_config, load_cargo_config};
 pub(crate) use info::resolve_build_info_path;
 pub use ostool::build::config::LogLevel;
-pub(crate) use types::{ArceosBuildConfig, ArceosBuildInfo, ArceosBuildMode};
+pub(crate) use types::{ArceosBuildConfig, ArceosBuildFile, ArceosBuildInfo, ArceosBuildMode};
 
 pub(crate) fn resolve_app_c_dir(config_path: &Path, app_c: &Path) -> anyhow::Result<PathBuf> {
     c_app::resolve_app_c_dir(config_path, app_c)

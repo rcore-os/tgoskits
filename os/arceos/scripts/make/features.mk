@@ -42,16 +42,6 @@ ax_feat :=
 lib_feat :=
 direct_feat :=
 
-ifeq ($(PLAT_DYN),y)
-  ax_feat += plat-dyn
-else
-  ifneq ($(MYPLAT),)
-    ax_feat += myplat
-  else
-    ax_feat += defplat
-  endif
-endif
-
 ifeq ($(filter $(LOG),off error warn info debug trace),)
   $(error "LOG" must be one of "off", "error", "warn", "info", "debug", "trace")
 endif

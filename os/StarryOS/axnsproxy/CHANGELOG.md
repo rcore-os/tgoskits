@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.5](https://github.com/rcore-os/tgoskits/compare/axnsproxy-v0.2.4...axnsproxy-v0.2.5) - 2026-07-02
+
+### Other
+
+- *(build)* generate build.rs Rust sources with quote ([#1422](https://github.com/rcore-os/tgoskits/pull/1422))
+
 ## [0.2.4](https://github.com/rcore-os/tgoskits/compare/axnsproxy-v0.2.3...axnsproxy-v0.2.4) - 2026-06-27
 
 ### Other

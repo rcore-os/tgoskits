@@ -35,20 +35,22 @@
 //!
 //! // request a shared IRQ action
 //! let irq = axklib::irq::try_legacy_irq(32)?;
-//! let handle = axklib::irq::request_shared(irq, my_irq_handler, data)?;
+//! let handle = axklib::irq::request_shared(irq, my_irq_handler)?;
 //! ```
 
 #![no_std]
 // #![allow(missing_docs)]
 
-use core::{ptr::NonNull, time::Duration};
+extern crate alloc;
+
+use core::time::Duration;
 
 pub use ax_errno::{AxError, AxResult};
 pub use ax_memory_addr::{PhysAddr, VirtAddr};
 pub use irq_framework::{
-    AutoEnable as IrqAutoEnable, BoxedIrqHandler, CpuId as IrqCpuId, CpuMask as IrqCpuMask,
-    IrqAffinity, IrqContext, IrqError, IrqExecution, IrqHandle, IrqId, IrqOutcome, IrqRequest,
-    IrqReturn, IrqScope, IrqStatus, RawIrqHandler, ShareMode as IrqShareMode,
+    AutoEnable as IrqAutoEnable, BoxedIrqHandler, ConcurrentBoxedIrqHandler, CpuId as IrqCpuId,
+    CpuMask as IrqCpuMask, IrqAffinity, IrqContext, IrqError, IrqExecution, IrqHandle, IrqId,
+    IrqOutcome, IrqRequest, IrqReturn, IrqScope, IrqStatus, ShareMode as IrqShareMode,
 };
 use trait_ffi::*;
 
@@ -156,25 +158,16 @@ pub trait Klib {
     fn irq_set_enable(irq: IrqId, enabled: bool) -> AxResult;
 
     /// Request a shared IRQ action and return its handle on success.
-    fn irq_request_shared(
-        irq: IrqId,
-        handler: RawIrqHandler,
-        data: NonNull<()>,
-    ) -> AxResult<IrqHandle>;
+    fn irq_request_shared(irq: IrqId, handler: BoxedIrqHandler) -> AxResult<IrqHandle>;
 
     /// Request a shared IRQ action without enabling it.
-    fn irq_request_shared_disabled(
-        irq: IrqId,
-        handler: RawIrqHandler,
-        data: NonNull<()>,
-    ) -> AxResult<IrqHandle>;
+    fn irq_request_shared_disabled(irq: IrqId, handler: BoxedIrqHandler) -> AxResult<IrqHandle>;
 
     /// Request a per-CPU IRQ action and return its handle on success.
     fn irq_request_percpu(
         irq: IrqId,
         cpus: IrqCpuMask,
-        handler: RawIrqHandler,
-        data: NonNull<()>,
+        handler: ConcurrentBoxedIrqHandler,
     ) -> AxResult<IrqHandle>;
 
     /// Free an IRQ action previously returned by a request function.
@@ -229,15 +222,39 @@ pub mod time {
 /// Convenience re-exports for IRQ operations.
 pub mod irq {
     pub use super::{
-        BoxedIrqHandler, IrqAffinity, IrqAutoEnable as AutoEnable, IrqContext, IrqCpuId as CpuId,
-        IrqCpuMask as CpuMask, IrqError, IrqExecution, IrqHandle, IrqId, IrqNumber, IrqOutcome,
-        IrqRequest, IrqReturn, IrqScope, IrqShareMode as ShareMode, IrqStatus, RawIrqHandler,
+        BoxedIrqHandler, ConcurrentBoxedIrqHandler, IrqAffinity, IrqAutoEnable as AutoEnable,
+        IrqContext, IrqCpuId as CpuId, IrqCpuMask as CpuMask, IrqError, IrqExecution, IrqHandle,
+        IrqId, IrqNumber, IrqOutcome, IrqRequest, IrqReturn, IrqScope, IrqShareMode as ShareMode,
+        IrqStatus,
         klib::{
             irq_disable as disable, irq_enable as enable, irq_free as free,
-            irq_request_percpu as request_percpu, irq_request_shared as request_shared,
-            irq_request_shared_disabled as request_shared_disabled,
             irq_run_on_cpu_sync as run_on_cpu_sync, irq_set_enable as set_enable,
         },
         legacy_irq, legacy_irq_raw, try_legacy_irq,
     };
+
+    /// Request a shared IRQ action and return its handle on success.
+    pub fn request_shared(
+        irq: IrqId,
+        handler: impl FnMut(IrqContext) -> IrqReturn + Send + 'static,
+    ) -> super::AxResult<IrqHandle> {
+        super::klib::irq_request_shared(irq, alloc::boxed::Box::new(handler))
+    }
+
+    /// Request a shared IRQ action without enabling it.
+    pub fn request_shared_disabled(
+        irq: IrqId,
+        handler: impl FnMut(IrqContext) -> IrqReturn + Send + 'static,
+    ) -> super::AxResult<IrqHandle> {
+        super::klib::irq_request_shared_disabled(irq, alloc::boxed::Box::new(handler))
+    }
+
+    /// Request a per-CPU IRQ action and return its handle on success.
+    pub fn request_percpu(
+        irq: IrqId,
+        cpus: CpuMask,
+        handler: impl Fn(IrqContext) -> IrqReturn + Send + Sync + 'static,
+    ) -> super::AxResult<IrqHandle> {
+        super::klib::irq_request_percpu(irq, cpus, alloc::boxed::Box::new(handler))
+    }
 }

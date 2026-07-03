@@ -6,7 +6,7 @@
 > 版本：`0.1.0`
 > 文档依据：当前仓库源码、`Cargo.toml`、`README.md`、`README.zh-cn.md`、`src/lib.rs`、`axvisor_api_proc` 与 `os/axvisor/src/hal/mod.rs`
 
-`axvisor_api` 是 Axvisor 多 crate 架构中的“窄腰层”。它试图解决的问题不是页表、设备或 vCPU 本身，而是：在不把每个组件都做成泛型 HAL trait 大杂烩的前提下，如何把宿主 hypervisor 必须提供的能力统一暴露给 `arm_vcpu`、`riscv_vcpu`、`arm_vgic`、`axvcpu` 等组件。
+`axvisor_api` 是 Axvisor 多 crate 架构中的“窄腰层”。它试图解决的问题不是页表、设备或 vCPU 本身，而是：在不把每个组件都做成泛型 HAL trait 大杂烩的前提下，如何把宿主 hypervisor 必须提供的能力统一暴露给 `arm_vcpu`、`riscv_vcpu`、`arm_vgic`、`axvm` 等组件。
 
 ## 架构设计
 
@@ -194,7 +194,7 @@ flowchart TD
 
 - `riscv_vcpu`、`riscv_vplic` 使用 `memory::phys_to_virt()` 做宿主侧 MMIO 访问
 - `arm_vcpu` 使用 `arch::hardware_inject_virtual_interrupt()` 走 AArch64 快速注入路径
-- `axvcpu` 和其它组件通过 `vmm::current_vm_id()` / `current_vcpu_id()` 获取上下文
+- `axvm` 和其它组件通过 `vmm::current_vm_id()` / `current_vcpu_id()` 获取上下文
 
 ### 2.3 适用场景
 
@@ -221,7 +221,7 @@ flowchart TD
 - `riscv_vcpu`
 - `riscv_vplic`
 - `x86_vcpu`
-- `axvcpu`
+- `axvm`
 - `os/axvisor` 同时也是实现方
 
 ### 3.3 关系示意
@@ -231,7 +231,7 @@ graph TD
     A[axvisor_api_proc] --> B[axvisor_api]
     C[ax-crate-interface] --> B
     D[axaddrspace] --> B
-    B --> E[arm_vcpu / arm_vgic / riscv_vcpu / riscv_vplic / axvcpu]
+    B --> E[arm_vcpu / arm_vgic / riscv_vcpu / riscv_vplic / axvm]
     F[os/axvisor::hal] --> B
 ```
 
@@ -286,7 +286,7 @@ graph TD
 | --- | --- | --- | --- |
 | ArceOS | 宿主能力提供侧 | 不是直接消费者，而是能力来源 | `axvisor_api` 最终很多实现都转发到 ArceOS 的 `ax-hal`、`ax-alloc`、时间与中断设施 |
 | StarryOS | 当前仓库未见直接依赖 | 非核心路径 | 当前仓库中 StarryOS 没有直接依赖 `axvisor_api` |
-| Axvisor | 多 crate 生态的公共接口中枢 | Hypervisor 组件窄腰层 | 把宿主实现细节与组件调用面隔开，是 `arm_vcpu`、`riscv_vcpu`、`axvcpu`、`arm_vgic` 等组件共享的统一服务面 |
+| Axvisor | 多 crate 生态的公共接口中枢 | Hypervisor 组件窄腰层 | 把宿主实现细节与组件调用面隔开，是 `arm_vcpu`、`riscv_vcpu`、`axvm`、`arm_vgic` 等组件共享的统一服务面 |
 
 ## 总结
 

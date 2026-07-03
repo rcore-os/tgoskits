@@ -26,9 +26,41 @@ const LOCK_SUBCLASS_MASK: usize = (1 << LOCK_SUBCLASS_BITS) - 1;
 pub type LockSubclass = u32;
 pub const DEFAULT_LOCK_SUBCLASS: LockSubclass = 0;
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum HeldLockKind {
+    Spin,
+    SpinRwLock,
+    Mutex,
+    Other,
+}
+
+impl HeldLockKind {
+    fn from_label(label: &'static str) -> Self {
+        match label {
+            "spin" | "spin lock" => Self::Spin,
+            "spin-rwlock" | "spin rwlock" => Self::SpinRwLock,
+            "mutex" => Self::Mutex,
+            _ => Self::Other,
+        }
+    }
+}
+
+impl fmt::Display for HeldLockKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Spin => f.write_str("spin"),
+            Self::SpinRwLock => f.write_str("spin-rwlock"),
+            Self::Mutex => f.write_str("mutex"),
+            Self::Other => f.write_str("other"),
+        }
+    }
+}
+
 #[derive(Clone, Copy)]
 pub struct HeldLock {
     pub class_id: u32,
+    pub kind: HeldLockKind,
+    pub sleep_forbidden: bool,
     pub addr: usize,
     pub caller: &'static Location<'static>,
 }
@@ -38,6 +70,8 @@ impl HeldLock {
     const fn placeholder() -> Self {
         Self {
             class_id: 0,
+            kind: HeldLockKind::Other,
+            sleep_forbidden: false,
             addr: 0,
             caller: Location::caller(),
         }
@@ -48,6 +82,8 @@ impl fmt::Debug for HeldLock {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("HeldLock")
             .field("class_id", &self.class_id)
+            .field("kind", &self.kind)
+            .field("sleep_forbidden", &self.sleep_forbidden)
             .field("addr", &format_args!("{:#x}", self.addr))
             .field("caller", &self.caller)
             .finish()
@@ -58,8 +94,8 @@ impl fmt::Display for HeldLock {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "class={} addr={:#x} acquired_at={}",
-            self.class_id, self.addr, self.caller
+            "kind={} sleep_forbidden={} class={} addr={:#x} acquired_at={}",
+            self.kind, self.sleep_forbidden, self.class_id, self.addr, self.caller
         )
     }
 }
@@ -200,6 +236,28 @@ impl fmt::Debug for HeldLockSnapshot {
     }
 }
 
+impl fmt::Display for HeldLockSnapshot {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if self.depth == 0 {
+            return f.write_str("[]");
+        }
+
+        f.write_str("[")?;
+        for (index, held) in self.iter().enumerate() {
+            if index != 0 {
+                f.write_str("; ")?;
+            }
+            let relation = if index + 1 == self.depth {
+                "top"
+            } else {
+                "held"
+            };
+            write!(f, "#{index} {relation}: {held}")?;
+        }
+        f.write_str("]")
+    }
+}
+
 #[derive(Clone, Copy)]
 struct HeldLockSubclassSnapshot {
     values: [LockSubclass; MAX_HELD_LOCK_SNAPSHOT],
@@ -223,8 +281,13 @@ impl fmt::Display for HeldLockDisplay<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "class={} subclass={} addr={:#x} acquired_at={}",
-            self.held.class_id, self.subclass, self.held.addr, self.held.caller
+            "kind={} sleep_forbidden={} class={} subclass={} addr={:#x} acquired_at={}",
+            self.held.kind,
+            self.held.sleep_forbidden,
+            self.held.class_id,
+            self.subclass,
+            self.held.addr,
+            self.held.caller
         )
     }
 }
@@ -319,6 +382,8 @@ impl Default for LockdepMap {
 pub struct PreparedAcquire {
     state: LockdepState,
     held_before: HeldLockSnapshot,
+    kind: HeldLockKind,
+    sleep_forbidden: bool,
 }
 
 impl PreparedAcquire {
@@ -456,14 +521,16 @@ impl LockGraph {
         &mut self,
         held_before: &HeldLockSnapshot,
         held_locks: &mut HeldLockStack,
-        state: LockdepState,
+        prepared: PreparedAcquire,
         addr: usize,
     ) {
-        self.record_edges(held_before, state.class_id);
+        self.record_edges(held_before, prepared.state.class_id);
         held_locks.push(HeldLock {
-            class_id: state.class_id,
+            class_id: prepared.state.class_id,
+            kind: prepared.kind,
+            sleep_forbidden: prepared.sleep_forbidden,
             addr,
-            caller: state.caller,
+            caller: prepared.state.caller,
         });
     }
 }
@@ -756,9 +823,38 @@ pub fn prepare_acquire_with_snapshot_nested(
     held_before: HeldLockSnapshot,
     subclass: LockSubclass,
 ) -> PreparedAcquire {
-    prepare_acquire_with_snapshot_result(map, addr, caller, held_before, subclass).unwrap_or_else(
-        |(err, state)| fatal_on_lockdep_error(err, lock_kind, state, addr, &held_before),
+    prepare_acquire_with_snapshot_nested_with_sleep(
+        map,
+        lock_kind,
+        addr,
+        caller,
+        held_before,
+        subclass,
+        true,
     )
+}
+
+pub fn prepare_acquire_with_snapshot_nested_with_sleep(
+    map: &LockdepMap,
+    lock_kind: &'static str,
+    addr: usize,
+    caller: &'static Location<'static>,
+    held_before: HeldLockSnapshot,
+    subclass: LockSubclass,
+    sleep_forbidden: bool,
+) -> PreparedAcquire {
+    prepare_acquire_with_snapshot_result(
+        map,
+        lock_kind,
+        addr,
+        caller,
+        held_before,
+        subclass,
+        sleep_forbidden,
+    )
+    .unwrap_or_else(|(err, state)| {
+        fatal_on_lockdep_error(err, lock_kind, state, addr, &held_before)
+    })
 }
 
 pub fn prepare_acquire_with_snapshot_checked(
@@ -786,22 +882,29 @@ pub fn prepare_acquire_with_snapshot_checked_nested(
     held_before: HeldLockSnapshot,
     subclass: LockSubclass,
 ) -> Result<PreparedAcquire, LockdepCheckError> {
-    prepare_acquire_with_snapshot_result(map, addr, caller, held_before, subclass)
+    prepare_acquire_with_snapshot_result(map, _lock_kind, addr, caller, held_before, subclass, true)
         .map_err(|(err, _state)| err)
 }
 
 fn prepare_acquire_with_snapshot_result(
     map: &LockdepMap,
+    lock_kind: &'static str,
     addr: usize,
     caller: &'static Location<'static>,
     held_before: HeldLockSnapshot,
     subclass: LockSubclass,
+    sleep_forbidden: bool,
 ) -> Result<PreparedAcquire, (LockdepCheckError, LockdepState)> {
     let class_key = caller as *const Location<'static>;
     let state = ensure_class(map, class_key, subclass);
     with_graph(|graph| graph.check_can_acquire(&held_before, addr, state.class_id))
         .map_err(|err| (err, state))?;
-    Ok(PreparedAcquire { state, held_before })
+    Ok(PreparedAcquire {
+        state,
+        held_before,
+        kind: HeldLockKind::from_label(lock_kind),
+        sleep_forbidden,
+    })
 }
 
 fn fatal_on_lockdep_error(
@@ -889,15 +992,15 @@ pub fn finish_acquire_with_stack(
     addr: usize,
     held_locks: &mut HeldLockStack,
 ) {
-    with_graph(|graph| {
-        graph.record_acquire(&prepared.held_before, held_locks, prepared.state, addr)
-    });
+    with_graph(|graph| graph.record_acquire(&prepared.held_before, held_locks, prepared, addr));
 }
 
 pub fn finish_acquire_task(prepared: PreparedAcquire, addr: usize) {
     with_graph(|graph| graph.record_edges(&prepared.held_before, prepared.state.class_id));
     push_current_task_held_lock(HeldLock {
         class_id: prepared.state.class_id,
+        kind: prepared.kind,
+        sleep_forbidden: prepared.sleep_forbidden,
         addr,
         caller: prepared.state.caller,
     });
@@ -923,10 +1026,14 @@ mod tests {
     fn held_lock_display_includes_class_addr_and_location() {
         let held = HeldLock {
             class_id: 3,
+            kind: HeldLockKind::Spin,
+            sleep_forbidden: true,
             addr: 0x1234,
             caller: Location::caller(),
         };
         let rendered = held.to_string();
+        assert!(rendered.contains("kind=spin"));
+        assert!(rendered.contains("sleep_forbidden=true"));
         assert!(rendered.contains("class=3"));
         assert!(rendered.contains("addr=0x1234"));
         assert!(rendered.contains("acquired_at="));
@@ -938,7 +1045,7 @@ mod tests {
         assert_eq!(core::mem::size_of::<HeldLock>(), 24);
         assert_eq!(core::mem::size_of::<HeldLockStack>(), 776);
         assert_eq!(core::mem::size_of::<HeldLockSnapshot>(), 776);
-        assert_eq!(core::mem::size_of::<PreparedAcquire>(), 792);
+        assert_eq!(core::mem::size_of::<PreparedAcquire>(), 800);
     }
 
     #[test]
@@ -947,11 +1054,15 @@ mod tests {
         let mut snapshot = HeldLockSnapshot::new();
         snapshot.push(HeldLock {
             class_id: 2,
+            kind: HeldLockKind::Spin,
+            sleep_forbidden: true,
             addr: 0x10,
             caller,
         });
         snapshot.push(HeldLock {
             class_id: 3,
+            kind: HeldLockKind::Mutex,
+            sleep_forbidden: false,
             addr: 0x20,
             caller,
         });
@@ -963,8 +1074,8 @@ mod tests {
             },
         }
         .to_string();
-        assert!(rendered.contains("[0] held: class=2"));
-        assert!(rendered.contains("[1] top: class=3"));
+        assert!(rendered.contains("[0] held: kind=spin sleep_forbidden=true class=2"));
+        assert!(rendered.contains("[1] top: kind=mutex sleep_forbidden=false class=3"));
     }
 
     #[test]
@@ -1017,6 +1128,8 @@ mod tests {
                     let mut entries = [HeldLock::placeholder(); MAX_HELD_LOCK_SNAPSHOT];
                     entries[0] = HeldLock {
                         class_id: parent_class,
+                        kind: HeldLockKind::Spin,
+                        sleep_forbidden: true,
                         addr: &parent as *const _ as usize,
                         caller: Location::caller(),
                     };
@@ -1044,6 +1157,8 @@ mod tests {
                 let mut entries = [HeldLock::placeholder(); MAX_HELD_LOCK_SNAPSHOT];
                 entries[0] = HeldLock {
                     class_id: child_acquire.class_id(),
+                    kind: HeldLockKind::Spin,
+                    sleep_forbidden: true,
                     addr: &child as *const _ as usize,
                     caller: Location::caller(),
                 };

@@ -15,7 +15,7 @@ use ax_errno::{AxError, AxResult};
 use kbpf_basic::perf::{PerfProbeArgs, PerfProbeConfig};
 use kprobe::ProbeBuilder;
 
-use super::kprobe::{ProbePerfEvent, ProbeTy};
+use super::kprobe::{PROBE_CONFIG_ENTRY, PROBE_CONFIG_RETURN, ProbePerfEvent, ProbeTy};
 use crate::{
     kprobe::KprobeAuxiliary,
     task::{AsThread, get_task},
@@ -74,13 +74,13 @@ fn perf_probe_arg_to_uprobe_builder(
 /// Build a uprobe perf event from `perf_event_open` args.
 pub fn perf_event_open_uprobe(args: PerfProbeArgs) -> AxResult<ProbePerfEvent> {
     let probe = match args.config {
-        PerfProbeConfig::Raw(0) => {
+        PerfProbeConfig::Raw(PROBE_CONFIG_ENTRY) => {
             let builder = perf_probe_arg_to_uprobe_builder(&args)?;
             ProbeTy::Uprobe(crate::uprobe::register_uprobe(builder))
         }
-        PerfProbeConfig::Raw(1) => {
+        PerfProbeConfig::Raw(PROBE_CONFIG_RETURN) => {
             // uretprobe — not implemented for user space yet.
-            warn!("uprobe: uretprobe (config=1) is not yet supported");
+            warn!("uprobe: uretprobe is not yet supported");
             return Err(AxError::Unsupported);
         }
         other => {

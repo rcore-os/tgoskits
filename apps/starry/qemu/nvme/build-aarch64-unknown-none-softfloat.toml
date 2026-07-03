@@ -1,6 +1,5 @@
 features = [
   "qemu",
-  "ax-driver/plat-dyn",
   "ax-driver/nvme",
   "ax-driver/virtio-gpu",
   "ax-driver/virtio-input",

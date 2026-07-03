@@ -1,0 +1,15 @@
+[package]
+name = "arceos-axtest-suit"
+version = "0.1.0"
+edition.workspace = true
+publish = false
+
+[features]
+default = []
+std = []
+ax-std = ["dep:ax-hal", "dep:ax-std"]
+
+[dependencies]
+ax-hal = { workspace = true, optional = true }
+ax-std = { workspace = true, optional = true }
+axtest.workspace = true

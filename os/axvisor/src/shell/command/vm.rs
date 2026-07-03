@@ -20,7 +20,7 @@ use std::{
     vec::Vec,
 };
 
-use axvm::{StopReason, VCpuState, VmStatus};
+use axvm::{StopReason, VmStatus, VmVcpuState};
 #[cfg(feature = "fs")]
 use std::fs::read_to_string;
 
@@ -429,11 +429,11 @@ fn suspend_vm_by_id(vm_id: usize) {
                 // Check if all VCpus are in blocked state
                 if let Some(vm) = crate::manager::AxvmManager::vm_by_id(vm_id) {
                     let vcpu_states: Vec<_> =
-                        vm.vcpu_list().iter().map(|vcpu| vcpu.state()).collect();
+                        vm.vcpu_snapshots().iter().map(|vcpu| vcpu.state).collect();
 
                     let blocked_count = vcpu_states
                         .iter()
-                        .filter(|s| matches!(s, VCpuState::Blocked))
+                        .filter(|s| matches!(s, VmVcpuState::Blocked))
                         .count();
 
                     if blocked_count == vcpu_states.len() {
@@ -709,22 +709,22 @@ fn vm_list(cmd: &ParsedCommand) {
 
             // Get VCpu ID list
             let vcpu_ids: Vec<String> = vm
-                .vcpu_list()
+                .vcpu_snapshots()
                 .iter()
-                .map(|vcpu| vcpu.id().to_string())
+                .map(|vcpu| vcpu.id.to_string())
                 .collect();
             let vcpu_id_list = vcpu_ids.join(",");
 
             // Get VCpu state summary
             let mut state_counts = std::collections::BTreeMap::new();
-            for vcpu in vm.vcpu_list() {
-                let state = match vcpu.state() {
-                    VCpuState::Free => "Free",
-                    VCpuState::Running => "Run",
-                    VCpuState::Blocked => "Blk",
-                    VCpuState::Invalid => "Inv",
-                    VCpuState::Created => "Cre",
-                    VCpuState::Ready => "Rdy",
+            for vcpu in vm.vcpu_snapshots() {
+                let state = match vcpu.state {
+                    VmVcpuState::Free => "Free",
+                    VmVcpuState::Running => "Run",
+                    VmVcpuState::Blocked => "Blk",
+                    VmVcpuState::Invalid => "Inv",
+                    VmVcpuState::Created => "Cre",
+                    VmVcpuState::Ready => "Rdy",
                 };
                 *state_counts.entry(state).or_insert(0) += 1;
             }
@@ -820,14 +820,14 @@ fn show_vm_basic_details(vm_id: usize, show_config: bool, show_stats: bool) {
         println!();
         println!("VCPU Summary:");
         let mut state_counts = std::collections::BTreeMap::new();
-        for vcpu in vm.vcpu_list() {
-            let state = match vcpu.state() {
-                VCpuState::Free => "Free",
-                VCpuState::Running => "Running",
-                VCpuState::Blocked => "Blocked",
-                VCpuState::Invalid => "Invalid",
-                VCpuState::Created => "Created",
-                VCpuState::Ready => "Ready",
+        for vcpu in vm.vcpu_snapshots() {
+            let state = match vcpu.state {
+                VmVcpuState::Free => "Free",
+                VmVcpuState::Running => "Running",
+                VmVcpuState::Blocked => "Blocked",
+                VmVcpuState::Invalid => "Invalid",
+                VmVcpuState::Created => "Created",
+                VmVcpuState::Ready => "Ready",
             };
             *state_counts.entry(state).or_insert(0) += 1;
         }
@@ -891,9 +891,9 @@ fn show_vm_full_details(vm_id: usize) {
         // Calculate total memory
         let total_memory: usize = vm.memory_regions().iter().map(|region| region.size()).sum();
         println!("  Memory:    {}", format_memory_size(total_memory));
-        match vm.ept_root() {
-            Ok(root) => println!("  EPT Root:  {:#x}", root.as_usize()),
-            Err(err) => println!("  EPT Root:  unavailable ({:?})", err),
+        match vm.nested_page_table_root() {
+            Ok(root) => println!("  NPT Root:  {:#x}", root.as_usize()),
+            Err(err) => println!("  NPT Root:  unavailable ({:?})", err),
         }
 
         // Add state-specific information
@@ -928,14 +928,14 @@ fn show_vm_full_details(vm_id: usize) {
 
         // Count VCpu states for summary
         let mut state_counts = std::collections::BTreeMap::new();
-        for vcpu in vm.vcpu_list() {
-            let state = match vcpu.state() {
-                VCpuState::Free => "Free",
-                VCpuState::Running => "Running",
-                VCpuState::Blocked => "Blocked",
-                VCpuState::Invalid => "Invalid",
-                VCpuState::Created => "Created",
-                VCpuState::Ready => "Ready",
+        for vcpu in vm.vcpu_snapshots() {
+            let state = match vcpu.state {
+                VmVcpuState::Free => "Free",
+                VmVcpuState::Running => "Running",
+                VmVcpuState::Blocked => "Blocked",
+                VmVcpuState::Invalid => "Invalid",
+                VmVcpuState::Created => "Created",
+                VmVcpuState::Ready => "Ready",
             };
             *state_counts.entry(state).or_insert(0) += 1;
         }
@@ -948,25 +948,23 @@ fn show_vm_full_details(vm_id: usize) {
         println!("  Summary: {}", summary.join(", "));
         println!();
 
-        for vcpu in vm.vcpu_list() {
-            let vcpu_state = match vcpu.state() {
-                VCpuState::Free => "Free",
-                VCpuState::Running => "Running",
-                VCpuState::Blocked => "Blocked",
-                VCpuState::Invalid => "Invalid",
-                VCpuState::Created => "Created",
-                VCpuState::Ready => "Ready",
+        for vcpu in vm.vcpu_snapshots() {
+            let vcpu_state = match vcpu.state {
+                VmVcpuState::Free => "Free",
+                VmVcpuState::Running => "Running",
+                VmVcpuState::Blocked => "Blocked",
+                VmVcpuState::Invalid => "Invalid",
+                VmVcpuState::Created => "Created",
+                VmVcpuState::Ready => "Ready",
             };
 
-            if let Some(phys_cpu_set) = vcpu.phys_cpu_set() {
+            if let Some(phys_cpu_set) = vcpu.phys_cpu_set {
                 println!(
                     "  VCPU {}: {} (Affinity: {:#x})",
-                    vcpu.id(),
-                    vcpu_state,
-                    phys_cpu_set
+                    vcpu.id, vcpu_state, phys_cpu_set
                 );
             } else {
-                println!("  VCPU {}: {} (No affinity)", vcpu.id(), vcpu_state);
+                println!("  VCPU {}: {} (No affinity)", vcpu.id, vcpu_state);
             }
         }
 

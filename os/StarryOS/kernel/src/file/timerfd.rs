@@ -103,7 +103,7 @@ impl Timerfd {
         ax_task::spawn_raw(
             move || block_on(run_timer(weak)),
             "timerfd".to_owned(),
-            ax_config::TASK_STACK_SIZE,
+            ax_task::default_task_stack_size(),
         );
         Ok(this)
     }

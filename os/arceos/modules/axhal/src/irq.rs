@@ -6,12 +6,11 @@ pub use ax_plat::irq::{
     AutoEnable, BoxedIrqHandler, CPU_LOCAL_IRQ_DOMAIN, CpuId, CpuMask, HwIrq, IrqAffinity,
     IrqContext, IrqDomainId, IrqError, IrqExecution, IrqHandle, IrqId, IrqNumber, IrqOutcome,
     IrqRequest, IrqReturn, IrqScope, IrqSource, IrqStatus, LEGACY_IRQ_DOMAIN,
-    LOONGARCH_EIOINTC_DOMAIN, LOONGARCH_PCH_PIC_DOMAIN, RISCV_PLIC_DOMAIN, RawIrqHandler,
-    ShareMode, TrapVector, X86_IOAPIC_DOMAIN, X86_LAPIC_DOMAIN, cpu_online, disable_irq,
-    dispatch_irq, enable_irq, free_irq, handle, irq_status, legacy_irq, legacy_irq_raw,
-    request_boxed_irq, request_boxed_shared_irq, request_irq, request_percpu_irq,
-    request_shared_irq, resolve_irq_source, resolve_percpu_irq, run_on_cpu_sync, set_enable,
-    set_run_on_cpu_sync, synchronize_irq, try_legacy_irq,
+    LOONGARCH_EIOINTC_DOMAIN, LOONGARCH_PCH_PIC_DOMAIN, RISCV_PLIC_DOMAIN, ShareMode, TrapVector,
+    X86_IOAPIC_DOMAIN, X86_LAPIC_DOMAIN, cpu_online, disable_irq, dispatch_irq, enable_irq,
+    free_irq, handle, in_irq_context, irq_status, legacy_irq, legacy_irq_raw, request_irq,
+    request_percpu_irq, request_shared_irq, resolve_irq_source, resolve_percpu_irq,
+    run_on_cpu_sync, set_enable, set_run_on_cpu_sync, synchronize_irq, try_legacy_irq,
 };
 #[cfg(feature = "ipi")]
 pub use ax_plat::irq::{IpiTarget, send_ipi};

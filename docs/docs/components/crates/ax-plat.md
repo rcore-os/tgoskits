@@ -116,7 +116,7 @@ flowchart TD
 
 ### 1.5 辅助设计与边界
 
-`assert_str_eq!` 是 `ax-plat` 很容易被忽视但非常关键的编译期防错机制。平台包常用它校验 `axconfig` 中的 `PACKAGE` 字符串必须等于 crate 名，从而避免“配置文件写错，但仍勉强编译通过”的错误组合。
+`assert_str_eq!` 是 `ax-plat` 很容易被忽视但非常关键的编译期防错机制。平台包可用它校验编译期声明的包名与 crate 名一致，从而避免“配置文件写错，但仍勉强编译通过”的错误组合。
 
 同时，`ax-plat` 也明确保持边界克制：
 
@@ -195,7 +195,7 @@ impl ax_plat::init::InitIf for InitIfImpl {
 
 ### 3.2 被谁依赖
 
-- 所有具体平台包：如 `ax-plat-riscv64-sg2002`；x86_64、AArch64、RISC-V QEMU 和 LoongArch QEMU 默认路径通过 `axplat-dyn` 运行时发现平台。
+- 外部自定义 `ax-plat-*` 平台包；x86_64、AArch64、RISC-V QEMU、LoongArch QEMU 和 SG2002 默认路径通过 `axplat-dyn` 运行时发现平台。
 - `ax-hal`：通过选择某个 `ax-plat-*` 平台包把平台实现纳入构建。
 - 上层 ArceOS/StarryOS/Axvisor 宿主侧内核：通常通过 `ax-hal` 间接消费，而不是直接依赖 `ax-plat`。
 
@@ -226,7 +226,7 @@ graph TD
 3. 使用 `#[impl_plat_interface]` 挂接每个实现。
 4. 编写板级启动代码，在建立最小页表、栈、异常上下文后调用 `ax_plat::call_main()`。
 5. 若支持 SMP，则为次核入口调用 `ax_plat::call_secondary_main()`，并在 `ax-percpu` 中完成次核注册。
-6. 用 `assert_str_eq!` 校验平台包名与配置名一致，避免 `axconfig` 与 crate 错绑。
+6. 用 `assert_str_eq!` 校验平台包名与配置名一致，避免平台声明与 crate 错绑。
 
 ### 4.2 在内核中使用
 
@@ -243,7 +243,7 @@ ax-plat = { workspace = true, features = ["irq", "smp"] }
 cargo build -p ax-plat --all-features
 ```
 
-真正的整机验证一般在平台包或 `ax-hal` 所在工程中完成，例如为某个内核选择 `riscv64-sg2002` 等静态目标平台；x86_64、AArch64、RISC-V QEMU 和 LoongArch QEMU 默认走动态平台路径。
+真正的整机验证一般在平台包或 `ax-hal` 所在工程中完成；仓库内置板卡默认走动态平台路径，外部自定义平台应在自己的平台包中验证。
 
 ### 4.3 常见注意事项
 

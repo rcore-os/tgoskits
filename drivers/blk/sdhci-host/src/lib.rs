@@ -3,8 +3,8 @@
 //! This crate ports the [SD Host Controller Standard Specification][sdhci]
 //! v3.x register layout and PIO data path into a physical
 //! [`sdio_host2::SdioHost`] implementation that
-//! [`sdmmc_protocol::sdio::SdioSdmmc`] drives through
-//! [`sdmmc_protocol::sdio::SdioSdmmc::new_host2`].
+//! [`sdmmc_protocol::sdio::card::SdioSdmmc`] drives through
+//! [`sdmmc_protocol::sdio::card::SdioSdmmc::new_host2`].
 //!
 //! # Scope
 //!
@@ -24,7 +24,7 @@
 //! use core::ptr::NonNull;
 //!
 //! use sdhci_host::Sdhci;
-//! use sdmmc_protocol::sdio::{SdioInitScratch, SdioSdmmc};
+//! use sdmmc_protocol::sdio::{card::SdioSdmmc, init::SdioInitScratch};
 //!
 //! let mmio = NonNull::new(0xFE31_0000 as *mut u8).unwrap();
 //! let host = unsafe { Sdhci::new(mmio) };
@@ -103,7 +103,7 @@ use sdmmc_protocol::{
     DataCommandPoll, OperationPoll,
     cmd::{Command, DataDirection},
     error::{Error, ErrorContext, Phase},
-    sdio::{
+    sdio::host::{
         BusWidth, ClockSpeed, HostEvent, HostEventKind, HostEventSource, ReadyBusRequest,
         SdioBusOp, SdioHost as ProtocolSdioHost, SdioIrqHandle, SdioIrqHost, SignalVoltage,
         poll_ready_bus_op, submit_ready_bus_op,
@@ -1820,7 +1820,7 @@ mod tests {
 
     #[test]
     fn event_reports_data_completion_source_for_runtime_wakeup() {
-        use sdmmc_protocol::sdio::{HostEvent, HostEventKind, HostEventSource};
+        use sdmmc_protocol::sdio::host::{HostEvent, HostEventKind, HostEventSource};
 
         let event = event_from_status(NORMAL_INT_XFER_COMPLETE, 0);
 
@@ -1831,7 +1831,7 @@ mod tests {
 
     #[test]
     fn merged_command_and_data_irq_reports_queue_ready() {
-        use sdmmc_protocol::sdio::{HostEvent, HostEventKind, HostEventSource};
+        use sdmmc_protocol::sdio::host::{HostEvent, HostEventKind, HostEventSource};
 
         let event = event_from_status(NORMAL_INT_CMD_COMPLETE | NORMAL_INT_XFER_COMPLETE, 0);
 

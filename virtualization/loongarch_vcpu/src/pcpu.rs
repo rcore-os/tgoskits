@@ -1,5 +1,5 @@
 use ax_errno::AxResult;
-use axvcpu::AxArchPerCpu;
+use axvm_types::VmArchPerCpuOps;
 
 use crate::registers::{
     CSR_EENTRY, csr_read, csr_write, gcsr_eentry_read, gstat_read, gstat_write,
@@ -15,7 +15,7 @@ pub struct LoongArchPerCpu {
     pub enabled: bool,
 }
 
-impl AxArchPerCpu for LoongArchPerCpu {
+impl VmArchPerCpuOps for LoongArchPerCpu {
     fn new(cpu_id: usize) -> AxResult<Self> {
         Ok(Self {
             cpu_id,

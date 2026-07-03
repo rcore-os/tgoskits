@@ -20,13 +20,14 @@ impl LockdepAcquire {
     #[track_caller]
     pub(crate) fn prepare_nested(lock: &RawMutex, is_try: bool, subclass: LockSubclass) -> Self {
         let addr = lock as *const _ as *const () as usize;
-        let prepared = common::prepare_acquire_with_snapshot_nested(
+        let prepared = common::prepare_acquire_with_snapshot_nested_with_sleep(
             &lock.lockdep,
             "mutex",
             addr,
             Location::caller(),
             current_held_locks(),
             subclass,
+            false,
         );
         let inner = ax_lockdep::Lockdep::prepare("mutex", addr, is_try, None);
         Self {

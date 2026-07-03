@@ -11,6 +11,8 @@ pub struct ArgsTest {
 pub enum TestCommand {
     /// Run ArceOS QEMU test suites (Rust + C by default)
     Qemu(ArgsTestQemu),
+    /// Run ArceOS remote board test suite
+    Board(ArgsTestBoard),
 }
 
 #[derive(Args, Debug, Clone)]
@@ -69,6 +71,36 @@ pub struct ArgsTestQemu {
     pub keep_qemu_log: bool,
 }
 
+#[derive(Args, Debug, Clone, Default)]
+pub struct ArgsTestBoard {
+    #[arg(
+        short = 'c',
+        long = "test-case",
+        value_name = "CASE",
+        help = "Run only one ArceOS board test case"
+    )]
+    pub test_case: Option<String>,
+
+    #[arg(
+        long,
+        value_name = "BOARD",
+        help = "Run all ArceOS board test cases for one board"
+    )]
+    pub board: Option<String>,
+
+    #[arg(short = 'b', long = "board-type", value_name = "BOARD_TYPE")]
+    pub board_type: Option<String>,
+
+    #[arg(long)]
+    pub server: Option<String>,
+
+    #[arg(long)]
+    pub port: Option<u16>,
+
+    #[arg(short = 'l', long, help = "List discovered ArceOS board test cases")]
+    pub list: bool,
+}
+
 pub(super) fn reject_removed_rust_package_filter(args: &ArgsTestQemu) -> anyhow::Result<()> {
     if args.package.is_empty() {
         return Ok(());
@@ -107,6 +139,7 @@ mod tests {
                     assert!(!args.only_rust);
                     assert!(!args.only_c);
                 }
+                _ => panic!("expected qemu test command"),
             },
             _ => panic!("expected test command"),
         }
@@ -139,6 +172,7 @@ mod tests {
                     assert!(args.only_rust);
                     assert!(!args.only_c);
                 }
+                _ => panic!("expected qemu test command"),
             },
             _ => panic!("expected test command"),
         }
@@ -171,6 +205,7 @@ mod tests {
                     assert!(!args.only_rust);
                     assert!(args.only_c);
                 }
+                _ => panic!("expected qemu test command"),
             },
             _ => panic!("expected test command"),
         }
@@ -226,6 +261,47 @@ mod tests {
                     assert!(!args.only_rust);
                     assert!(!args.only_c);
                 }
+                _ => panic!("expected qemu test command"),
+            },
+            _ => panic!("expected test command"),
+        }
+    }
+
+    #[test]
+    fn command_parses_test_board() {
+        #[derive(Parser)]
+        struct Cli {
+            #[command(subcommand)]
+            command: Command,
+        }
+
+        let cli = Cli::try_parse_from([
+            "arceos",
+            "test",
+            "board",
+            "-c",
+            "boot",
+            "--board",
+            "orangepi-5-plus",
+            "-b",
+            "OrangePi-5-Plus",
+            "--server",
+            "10.0.0.2",
+            "--port",
+            "9000",
+        ])
+        .unwrap();
+
+        match cli.command {
+            Command::Test(args) => match args.command {
+                TestCommand::Board(args) => {
+                    assert_eq!(args.test_case.as_deref(), Some("boot"));
+                    assert_eq!(args.board.as_deref(), Some("orangepi-5-plus"));
+                    assert_eq!(args.board_type.as_deref(), Some("OrangePi-5-Plus"));
+                    assert_eq!(args.server.as_deref(), Some("10.0.0.2"));
+                    assert_eq!(args.port, Some(9000));
+                }
+                _ => panic!("expected board test command"),
             },
             _ => panic!("expected test command"),
         }

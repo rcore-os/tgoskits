@@ -179,6 +179,7 @@ int main(void) {
     for (uint64_t i = 0; i < 80000000ull; i++) {
         spin += i;
     }
+    (void)spin;
     (void)ioctl(efd, PERF_EVENT_IOC_DISABLE, 0);
 
     uint64_t data_head = meta->data_head;

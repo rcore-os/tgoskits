@@ -1,14 +1,17 @@
 use std::{
     collections::HashSet,
     fs,
-    path::{Component, Path, PathBuf},
+    path::{Path, PathBuf},
 };
 
 use anyhow::{Context, bail};
 use toml::Value;
 use walkdir::{DirEntry, WalkDir};
 
-const MAIN_SPIN_PATH: &str = "components/spin";
+const SPIN_VERSION_REQ: &str = "=0.12.0";
+const SPIN_LOCKFILE_VERSION: &str = "0.12.0";
+const CRATES_IO_SOURCE: &str = "registry+https://github.com/rust-lang/crates.io-index";
+const ALLOWED_SPIN_FEATURES: &[&str] = &["lock_api", "once", "lazylock"];
 const FORBIDDEN_SPIN_RWLOCK_PATTERNS: &[&str] =
     &["spin::RwLock", "spin::rwlock", "use spin::RwLock"];
 
@@ -69,7 +72,7 @@ pub(crate) fn run_spin_lint_command() -> anyhow::Result<()> {
 
 fn lint_workspace(workspace_root: &Path) -> anyhow::Result<Vec<Finding>> {
     let mut findings = Vec::new();
-    check_vendored_spin_crates(workspace_root, &mut findings)?;
+    check_no_local_spin_packages(workspace_root, &mut findings)?;
     check_root_manifest(workspace_root, &mut findings)?;
     check_workspace_manifests(workspace_root, &mut findings)?;
     check_no_spin_rwlock_usage(workspace_root, &mut findings)?;
@@ -77,108 +80,19 @@ fn lint_workspace(workspace_root: &Path) -> anyhow::Result<Vec<Finding>> {
     Ok(findings)
 }
 
-fn check_vendored_spin_crates(
+fn check_no_local_spin_packages(
     workspace_root: &Path,
     findings: &mut Vec<Finding>,
 ) -> anyhow::Result<()> {
-    check_vendored_spin_crate(
-        workspace_root,
-        MAIN_SPIN_PATH,
-        "0.12.0",
-        "main migration copy",
-        findings,
-    )?;
-    check_forbidden_spin_crate_paths(workspace_root, findings)
-}
-
-fn check_vendored_spin_crate(
-    workspace_root: &Path,
-    relative_path: &str,
-    expected_version: &str,
-    label: &str,
-    findings: &mut Vec<Finding>,
-) -> anyhow::Result<()> {
-    let manifest_path = workspace_root.join(relative_path).join("Cargo.toml");
-    let Some(manifest) = read_toml_if_present(&manifest_path)? else {
-        findings.push(Finding::new(
-            &manifest_path,
-            label,
-            "vendored spin manifest is missing",
-            format!("restore `{relative_path}` or update spin-lint if the migration copy changed"),
-        ));
-        return Ok(());
-    };
-
-    let package = manifest.get("package").and_then(Value::as_table);
-    let name = package
-        .and_then(|table| table.get("name"))
-        .and_then(Value::as_str);
-    let version = package
-        .and_then(|table| table.get("version"))
-        .and_then(Value::as_str);
-
-    if name != Some("spin") || version != Some(expected_version) {
-        findings.push(Finding::new(
-            &manifest_path,
-            label,
-            format!(
-                "expected package `spin` version `{expected_version}`, found name `{:?}` version \
-                 `{:?}`",
-                name, version
-            ),
-            format!(
-                "keep `{relative_path}` as the registered vendored spin {expected_version} copy"
-            ),
-        ));
-    }
-
-    let features = manifest.get("features").and_then(Value::as_table);
-    if let Some(features) = features {
-        if features.contains_key("rwlock") {
-            findings.push(Finding::new(
-                &manifest_path,
-                "features.rwlock",
-                "vendored spin must not expose the upstream rwlock feature",
-                "use `ax_kspin::SpinRwLock` instead of restoring `spin::RwLock`",
-            ));
-        }
-        if let Some(default_features) = features.get("default").and_then(Value::as_array) {
-            for (index, feature) in default_features.iter().enumerate() {
-                if feature.as_str() == Some("rwlock") {
-                    findings.push(Finding::new(
-                        &manifest_path,
-                        format!("features.default[{index}]"),
-                        "vendored spin default features must not include rwlock",
-                        "remove `rwlock` from the default feature set",
-                    ));
-                }
-            }
-        }
-    }
-
-    Ok(())
-}
-
-fn check_forbidden_spin_crate_paths(
-    workspace_root: &Path,
-    findings: &mut Vec<Finding>,
-) -> anyhow::Result<()> {
-    let registered_manifest =
-        normalize_path(&workspace_root.join(MAIN_SPIN_PATH).join("Cargo.toml"));
-
     for entry in WalkDir::new(workspace_root)
         .into_iter()
-        .filter_entry(should_visit_spin_crate_entry)
+        .filter_entry(should_visit_manifest_entry)
     {
         let entry = entry.context("failed to walk workspace files")?;
         if !entry.file_type().is_file() || entry.file_name() != "Cargo.toml" {
             continue;
         }
         let manifest_path = entry.path();
-        if normalize_path(manifest_path) == registered_manifest {
-            continue;
-        }
-
         let manifest = read_toml(manifest_path)?;
         let package_name = manifest
             .get("package")
@@ -191,18 +105,16 @@ fn check_forbidden_spin_crate_paths(
 
         findings.push(Finding::new(
             manifest_path,
-            "legacy spin migration copy",
-            "unregistered vendored spin copy is not allowed",
-            format!(
-                "remove this package; only `{MAIN_SPIN_PATH}` may remain until migration completes"
-            ),
+            "package.name",
+            "local package named `spin` is not allowed",
+            "remove the vendored package and depend on crates.io `spin` through the workspace",
         ));
     }
 
     Ok(())
 }
 
-fn should_visit_spin_crate_entry(entry: &DirEntry) -> bool {
+fn should_visit_manifest_entry(entry: &DirEntry) -> bool {
     !entry.file_type().is_dir() || !is_ignored_dir_name(entry)
 }
 
@@ -210,14 +122,13 @@ fn check_root_manifest(workspace_root: &Path, findings: &mut Vec<Finding>) -> an
     let manifest_path = workspace_root.join("Cargo.toml");
     let manifest = read_toml(&manifest_path)?;
 
-    check_workspace_spin_dependency(workspace_root, &manifest_path, &manifest, findings);
+    check_workspace_spin_dependency(&manifest_path, &manifest, findings);
     check_no_spin_patches(&manifest_path, &manifest, findings);
 
     Ok(())
 }
 
 fn check_workspace_spin_dependency(
-    workspace_root: &Path,
     manifest_path: &Path,
     manifest: &Value,
     findings: &mut Vec<Finding>,
@@ -234,40 +145,56 @@ fn check_workspace_spin_dependency(
             manifest_path,
             "workspace.dependencies.spin",
             "missing workspace spin dependency",
-            format!("add `spin = {{ version = \"0.12\", path = \"{MAIN_SPIN_PATH}\" }}`"),
+            format!(
+                "add `spin = {{ version = \"{SPIN_VERSION_REQ}\", default-features = false, \
+                 features = [\"lock_api\", \"once\", \"lazylock\"] }}`"
+            ),
         ));
         return;
     };
 
     match dependency {
         Value::Table(table) => {
-            check_no_external_source(
+            check_no_source_override(
                 manifest_path,
                 "workspace.dependencies.spin",
                 table,
                 findings,
             );
-            check_dependency_version(
+            check_no_package_rename(
                 manifest_path,
                 "workspace.dependencies.spin",
                 table,
                 findings,
             );
-            check_dependency_path(
-                workspace_root,
-                workspace_root,
+            check_exact_dependency_version(
                 manifest_path,
                 "workspace.dependencies.spin",
                 table,
-                &[MAIN_SPIN_PATH],
+                findings,
+            );
+            check_default_features_disabled(
+                manifest_path,
+                "workspace.dependencies.spin",
+                table,
+                findings,
+            );
+            check_allowed_features(
+                manifest_path,
+                "workspace.dependencies.spin",
+                table,
+                true,
                 findings,
             );
         }
         _ => findings.push(Finding::new(
             manifest_path,
             "workspace.dependencies.spin",
-            "workspace spin dependency must be a table with a local path",
-            format!("use `spin = {{ version = \"0.12\", path = \"{MAIN_SPIN_PATH}\" }}`"),
+            "workspace spin dependency must be a table",
+            format!(
+                "use `spin = {{ version = \"{SPIN_VERSION_REQ}\", default-features = false, \
+                 features = [\"lock_api\", \"once\", \"lazylock\"] }}`"
+            ),
         )),
     }
 }
@@ -290,7 +217,7 @@ fn check_no_spin_patches(manifest_path: &Path, manifest: &Value, findings: &mut 
             manifest_path,
             format!("patch.crates-io.{key}"),
             "crates.io patch for package `spin` is not allowed",
-            "use the workspace dependency or an explicit path dependency for project crates",
+            "use the crates.io `spin` package through the root workspace dependency",
         ));
     }
 }
@@ -301,7 +228,7 @@ fn check_workspace_manifests(
 ) -> anyhow::Result<()> {
     for entry in WalkDir::new(workspace_root)
         .into_iter()
-        .filter_entry(|entry| should_visit_entry(workspace_root, entry))
+        .filter_entry(should_visit_manifest_entry)
     {
         let entry = entry.context("failed to walk workspace files")?;
         if !entry.file_type().is_file() || entry.file_name() != "Cargo.toml" {
@@ -313,24 +240,9 @@ fn check_workspace_manifests(
         }
 
         let manifest = read_toml(manifest_path)?;
-        check_manifest_dependency_tables(
-            workspace_root,
-            manifest_path,
-            manifest_path.parent().unwrap_or(workspace_root),
-            &manifest,
-            findings,
-        );
+        check_manifest_dependency_tables(manifest_path, &manifest, findings);
     }
     Ok(())
-}
-
-fn should_visit_entry(workspace_root: &Path, entry: &DirEntry) -> bool {
-    if !entry.file_type().is_dir() {
-        return true;
-    }
-    let path = entry.path();
-    path == workspace_root
-        || !is_ignored_dir_name(entry) && !path_is_under(workspace_root, path, MAIN_SPIN_PATH)
 }
 
 fn is_ignored_dir_name(entry: &DirEntry) -> bool {
@@ -341,9 +253,7 @@ fn is_ignored_dir_name(entry: &DirEntry) -> bool {
 }
 
 fn check_manifest_dependency_tables(
-    workspace_root: &Path,
     manifest_path: &Path,
-    manifest_dir: &Path,
     value: &Value,
     findings: &mut Vec<Finding>,
 ) {
@@ -357,32 +267,17 @@ fn check_manifest_dependency_tables(
             "dependencies" | "dev-dependencies" | "build-dependencies"
         ) && let Some(dependencies) = value.as_table()
         {
-            check_spin_dependency_table(
-                workspace_root,
-                manifest_path,
-                manifest_dir,
-                key,
-                dependencies,
-                findings,
-            );
+            check_spin_dependency_table(manifest_path, key, dependencies, findings);
         }
 
         if value.is_table() {
-            check_manifest_dependency_tables(
-                workspace_root,
-                manifest_path,
-                manifest_dir,
-                value,
-                findings,
-            );
+            check_manifest_dependency_tables(manifest_path, value, findings);
         }
     }
 }
 
 fn check_spin_dependency_table(
-    workspace_root: &Path,
     manifest_path: &Path,
-    manifest_dir: &Path,
     table_name: &str,
     dependencies: &toml::Table,
     findings: &mut Vec<Finding>,
@@ -398,47 +293,44 @@ fn check_spin_dependency_table(
                 findings.push(Finding::new(
                     manifest_path,
                     location,
-                    format!("spin version requirement `{version_req}` resolves through crates.io"),
-                    "use `spin = { workspace = true }` or an explicit path to a registered local \
-                     copy",
+                    format!("spin version requirement `{version_req}` enables default features"),
+                    "use `spin = { workspace = true }` or an explicit table with \
+                     `default-features = false`",
                 ));
             }
             Value::Table(table) => {
-                check_no_external_source(manifest_path, &location, table, findings);
-                if table.get("workspace").and_then(Value::as_bool) == Some(true) {
-                    continue;
+                if dependency_name != "spin" {
+                    findings.push(Finding::new(
+                        manifest_path,
+                        &location,
+                        "renamed spin dependency is not allowed",
+                        "use `spin = { workspace = true }` so all crates share the same safe \
+                         feature set",
+                    ));
                 }
-                if table.contains_key("path") {
-                    check_dependency_version(manifest_path, &location, table, findings);
-                    check_dependency_path(
-                        manifest_dir,
-                        workspace_root,
+                check_no_package_rename(manifest_path, &location, table, findings);
+                check_no_source_override(manifest_path, &location, table, findings);
+                if table.get("workspace").and_then(Value::as_bool) == Some(true) {
+                    check_workspace_dependency_has_no_overrides(
                         manifest_path,
                         &location,
                         table,
-                        &[MAIN_SPIN_PATH],
                         findings,
                     );
                     continue;
                 }
-                findings.push(Finding::new(
-                    manifest_path,
-                    location,
-                    "spin dependency must not rely on crates.io version resolution",
-                    "use `spin = { workspace = true }` or an explicit path to a registered local \
-                     copy",
-                ));
+                check_exact_dependency_version(manifest_path, &location, table, findings);
+                check_default_features_disabled(manifest_path, &location, table, findings);
+                check_allowed_features(manifest_path, &location, table, false, findings);
             }
             _ => findings.push(Finding::new(
                 manifest_path,
                 location,
                 "spin dependency must be a string or table",
-                "use `spin = { workspace = true }` or the registered local path",
+                "use `spin = { workspace = true }`",
             )),
         }
     }
-
-    let _ = workspace_root;
 }
 
 fn is_spin_dependency(key: &str, value: &Value) -> bool {
@@ -456,7 +348,7 @@ fn check_no_spin_rwlock_usage(
 ) -> anyhow::Result<()> {
     for entry in WalkDir::new(workspace_root)
         .into_iter()
-        .filter_entry(|entry| should_visit_source_entry(workspace_root, entry))
+        .filter_entry(should_visit_source_entry)
     {
         let entry = entry.context("failed to walk workspace source files")?;
         if !entry.file_type().is_file()
@@ -488,14 +380,8 @@ fn check_no_spin_rwlock_usage(
     Ok(())
 }
 
-fn should_visit_source_entry(workspace_root: &Path, entry: &DirEntry) -> bool {
-    if !entry.file_type().is_dir() {
-        return true;
-    }
-    let path = entry.path();
-    path == workspace_root
-        || !is_ignored_source_dir_name(entry)
-            && !path_is_under(workspace_root, path, MAIN_SPIN_PATH)
+fn should_visit_source_entry(entry: &DirEntry) -> bool {
+    !entry.file_type().is_dir() || !is_ignored_source_dir_name(entry)
 }
 
 fn is_ignored_source_dir_name(entry: &DirEntry) -> bool {
@@ -505,92 +391,169 @@ fn is_ignored_source_dir_name(entry: &DirEntry) -> bool {
     )
 }
 
-fn check_no_external_source(
+fn check_no_source_override(
     manifest_path: &Path,
     location: impl Into<String>,
     table: &toml::Table,
     findings: &mut Vec<Finding>,
 ) {
     let location = location.into();
-    for key in ["registry", "git"] {
+    for key in ["path", "git", "registry"] {
         if table.contains_key(key) {
             findings.push(Finding::new(
                 manifest_path,
                 format!("{location}.{key}"),
                 format!("spin dependency must not specify `{key}`"),
-                "route spin through the root workspace dependency or an explicit local path",
+                "depend on crates.io `spin` through the root workspace dependency",
             ));
         }
     }
 }
 
-fn check_dependency_version(
+fn check_no_package_rename(
     manifest_path: &Path,
     location: impl Into<String>,
     table: &toml::Table,
     findings: &mut Vec<Finding>,
 ) {
     let location = location.into();
-    let Some(version_req) = table.get("version").and_then(Value::as_str) else {
-        return;
-    };
-    if !is_allowed_spin_version_req(version_req) {
+    if table.contains_key("package") {
         findings.push(Finding::new(
             manifest_path,
-            format!("{location}.version"),
-            format!("spin version requirement `{version_req}` is not registered"),
-            "use the workspace dependency or the vendored migration version",
+            format!("{location}.package"),
+            "spin dependency must not rename package `spin`",
+            "use the dependency key `spin` directly",
         ));
     }
 }
 
-fn check_dependency_path(
-    actual_base_dir: &Path,
-    allowed_base_dir: &Path,
+fn check_exact_dependency_version(
     manifest_path: &Path,
     location: impl Into<String>,
     table: &toml::Table,
-    allowed_relative_paths: &[&str],
     findings: &mut Vec<Finding>,
 ) {
     let location = location.into();
-    let Some(path) = table.get("path").and_then(Value::as_str) else {
+    let version_req = table.get("version").and_then(Value::as_str);
+    if version_req != Some(SPIN_VERSION_REQ) {
         findings.push(Finding::new(
             manifest_path,
-            format!("{location}.path"),
-            "spin dependency must point at a registered local migration copy",
+            format!("{location}.version"),
             format!(
-                "use one of: {}",
-                allowed_relative_paths
-                    .iter()
-                    .map(|path| format!("`{path}`"))
-                    .collect::<Vec<_>>()
-                    .join(", ")
+                "spin dependency version must stay at {SPIN_VERSION_REQ}, found `{}`",
+                version_req.unwrap_or("<missing>")
             ),
+            format!("pin spin with `version = \"{SPIN_VERSION_REQ}\"`"),
+        ));
+    }
+}
+
+fn check_default_features_disabled(
+    manifest_path: &Path,
+    location: impl Into<String>,
+    table: &toml::Table,
+    findings: &mut Vec<Finding>,
+) {
+    let location = location.into();
+    match table.get("default-features") {
+        Some(Value::Boolean(false)) => {}
+        Some(Value::Boolean(true)) | None => findings.push(Finding::new(
+            manifest_path,
+            format!("{location}.default-features"),
+            "spin default features must be disabled",
+            "set `default-features = false` so upstream mutex/rwlock features stay unavailable",
+        )),
+        Some(_) => findings.push(Finding::new(
+            manifest_path,
+            format!("{location}.default-features"),
+            "spin default-features must be a boolean",
+            "set `default-features = false`",
+        )),
+    }
+}
+
+fn check_workspace_dependency_has_no_overrides(
+    manifest_path: &Path,
+    location: impl Into<String>,
+    table: &toml::Table,
+    findings: &mut Vec<Finding>,
+) {
+    let location = location.into();
+    for key in ["features", "default-features", "version"] {
+        if table.contains_key(key) {
+            findings.push(Finding::new(
+                manifest_path,
+                format!("{location}.{key}"),
+                "workspace spin dependency must not override workspace spin features",
+                "use exactly `spin = { workspace = true }`",
+            ));
+        }
+    }
+}
+
+fn check_allowed_features(
+    manifest_path: &Path,
+    location: impl Into<String>,
+    table: &toml::Table,
+    require_all: bool,
+    findings: &mut Vec<Finding>,
+) {
+    let location = location.into();
+    let Some(features) = table.get("features") else {
+        if require_all {
+            findings.push(Finding::new(
+                manifest_path,
+                format!("{location}.features"),
+                "workspace spin dependency must list allowed features",
+                "enable exactly `lock_api`, `once`, and `lazylock`",
+            ));
+        }
+        return;
+    };
+
+    let Some(feature_values) = features.as_array() else {
+        findings.push(Finding::new(
+            manifest_path,
+            format!("{location}.features"),
+            "spin features must be an array",
+            "use `features = [\"lock_api\", \"once\", \"lazylock\"]`",
         ));
         return;
     };
 
-    let actual = normalize_path(&actual_base_dir.join(path));
-    let allowed = allowed_relative_paths
-        .iter()
-        .map(|allowed| normalize_path(&allowed_base_dir.join(allowed)))
-        .collect::<Vec<_>>();
+    let mut seen = HashSet::new();
+    for (index, feature) in feature_values.iter().enumerate() {
+        let Some(feature) = feature.as_str() else {
+            findings.push(Finding::new(
+                manifest_path,
+                format!("{location}.features[{index}]"),
+                "spin feature names must be strings",
+                "remove the non-string feature entry",
+            ));
+            continue;
+        };
+        if !ALLOWED_SPIN_FEATURES.contains(&feature) {
+            findings.push(Finding::new(
+                manifest_path,
+                format!("{location}.features[{index}]"),
+                format!("spin feature `{feature}` is not allowed"),
+                "only `lock_api`, `once`, and `lazylock` may be enabled",
+            ));
+        }
+        seen.insert(feature);
+    }
 
-    if !allowed.contains(&actual) {
-        findings.push(Finding::new(
-            manifest_path,
-            format!("{location}.path"),
-            format!("spin dependency path `{path}` is not registered"),
-            format!(
-                "use one of: {}",
-                allowed_relative_paths
-                    .iter()
-                    .map(|path| format!("`{path}`"))
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            ),
-        ));
+    if require_all {
+        for required in ALLOWED_SPIN_FEATURES {
+            if !seen.contains(required) {
+                findings.push(Finding::new(
+                    manifest_path,
+                    format!("{location}.features"),
+                    format!("workspace spin dependency must enable feature `{required}`"),
+                    "enable exactly `lock_api`, `once`, and `lazylock`",
+                ));
+            }
+        }
     }
 }
 
@@ -626,32 +589,30 @@ fn check_lockfile(workspace_root: &Path, findings: &mut Vec<Finding>) -> anyhow:
         let source = table.get("source").and_then(Value::as_str);
         let has_checksum = table.contains_key("checksum");
 
-        if let Some(source) = source {
+        if version != SPIN_LOCKFILE_VERSION {
             findings.push(Finding::new(
                 &lock_path,
                 &location,
                 format!(
-                    "external spin package appears in the resolved dependency graph from \
-                     `{source}`"
+                    "spin lockfile version must stay at {SPIN_LOCKFILE_VERSION}, found `{version}`"
                 ),
-                "remove the dependency chain or disable the upstream feature that pulls crates.io \
-                 `spin`; do not add a crates.io patch",
+                format!("use crates.io `spin` {SPIN_LOCKFILE_VERSION}"),
             ));
         }
-        if has_checksum {
+        if source != Some(CRATES_IO_SOURCE) {
             findings.push(Finding::new(
                 &lock_path,
                 &location,
-                "external spin package has a registry checksum",
-                "local path spin packages must not carry a crates.io checksum in Cargo.lock",
+                "spin lockfile entry must use crates.io registry source",
+                format!("regenerate Cargo.lock so source is `{CRATES_IO_SOURCE}`"),
             ));
         }
-        if source.is_none() && !has_checksum && version != "0.12.0" {
+        if !has_checksum {
             findings.push(Finding::new(
                 &lock_path,
                 &location,
-                format!("local spin version `{version}` is not registered for the migration"),
-                format!("use the vendored `{MAIN_SPIN_PATH}` package or remove the dependency"),
+                "spin lockfile entry must have a registry checksum",
+                "regenerate Cargo.lock from crates.io",
             ));
         }
     }
@@ -663,45 +624,6 @@ fn read_toml(path: &Path) -> anyhow::Result<Value> {
     let contents =
         fs::read_to_string(path).with_context(|| format!("failed to read {}", path.display()))?;
     toml::from_str(&contents).with_context(|| format!("failed to parse {}", path.display()))
-}
-
-fn read_toml_if_present(path: &Path) -> anyhow::Result<Option<Value>> {
-    match fs::read_to_string(path) {
-        Ok(contents) => {
-            Ok(Some(toml::from_str(&contents).with_context(|| {
-                format!("failed to parse {}", path.display())
-            })?))
-        }
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(err) => Err(err).with_context(|| format!("failed to read {}", path.display())),
-    }
-}
-
-fn is_allowed_spin_version_req(version_req: &str) -> bool {
-    matches!(
-        version_req.trim(),
-        "0.12" | "0.12.0" | "^0.12" | "^0.12.0" | "=0.12.0"
-    )
-}
-
-fn path_is_under(workspace_root: &Path, path: &Path, relative_parent: &str) -> bool {
-    normalize_path(path).starts_with(normalize_path(&workspace_root.join(relative_parent)))
-}
-
-fn normalize_path(path: &Path) -> PathBuf {
-    let mut normalized = PathBuf::new();
-    for component in path.components() {
-        match component {
-            Component::Prefix(prefix) => normalized.push(prefix.as_os_str()),
-            Component::RootDir => normalized.push(component.as_os_str()),
-            Component::CurDir => {}
-            Component::ParentDir => {
-                normalized.pop();
-            }
-            Component::Normal(part) => normalized.push(part),
-        }
-    }
-    normalized
 }
 
 #[cfg(test)]
@@ -725,16 +647,7 @@ mod tests {
 members = ["crate"]
 
 [workspace.dependencies]
-spin = { version = "0.12", path = "components/spin" }
-"#,
-        );
-        write_file(
-            root,
-            "components/spin/Cargo.toml",
-            r#"
-[package]
-name = "spin"
-version = "0.12.0"
+spin = { version = "=0.12.0", default-features = false, features = ["lock_api", "once", "lazylock"] }
 "#,
         );
         write_file(
@@ -757,12 +670,14 @@ spin = { workspace = true }
 [[package]]
 name = "spin"
 version = "0.12.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "abc"
 "#,
         );
     }
 
     #[test]
-    fn accepts_workspace_spin_dependency_without_crates_io_patch() {
+    fn accepts_workspace_registry_spin_dependency_without_crates_io_patch() {
         let root = tempfile::tempdir().unwrap();
         write_minimal_workspace(root.path());
 
@@ -783,7 +698,7 @@ version = "0.12.0"
 members = ["crate"]
 
 [workspace.dependencies]
-spin = { version = "0.12", path = "components/spin" }
+spin = { version = "=0.12.0", default-features = false, features = ["lock_api", "once", "lazylock"] }
 
 [patch.crates-io]
 spin = { path = "components/spin" }
@@ -800,7 +715,105 @@ spin = { path = "components/spin" }
     }
 
     #[test]
-    fn rejects_explicit_external_manifest_source() {
+    fn rejects_vendored_spin_copy() {
+        let root = tempfile::tempdir().unwrap();
+        write_minimal_workspace(root.path());
+        write_file(
+            root.path(),
+            "components/spin/Cargo.toml",
+            r#"
+[package]
+name = "spin"
+version = "0.12.0"
+"#,
+        );
+
+        let findings = lint_workspace(root.path()).unwrap();
+
+        assert!(
+            findings
+                .iter()
+                .any(|finding| finding.message.contains("local package named `spin`"))
+        );
+    }
+
+    #[test]
+    fn rejects_root_path_workspace_spin_dependency() {
+        let root = tempfile::tempdir().unwrap();
+        write_minimal_workspace(root.path());
+        write_file(
+            root.path(),
+            "Cargo.toml",
+            r#"
+[workspace]
+members = ["crate"]
+
+[workspace.dependencies]
+spin = { version = "=0.12.0", path = "components/spin", default-features = false, features = ["lock_api", "once", "lazylock"] }
+"#,
+        );
+
+        let findings = lint_workspace(root.path()).unwrap();
+
+        assert!(
+            findings
+                .iter()
+                .any(|finding| finding.location == "workspace.dependencies.spin.path")
+        );
+    }
+
+    #[test]
+    fn rejects_root_spin_default_features_enabled() {
+        let root = tempfile::tempdir().unwrap();
+        write_minimal_workspace(root.path());
+        write_file(
+            root.path(),
+            "Cargo.toml",
+            r#"
+[workspace]
+members = ["crate"]
+
+[workspace.dependencies]
+spin = { version = "=0.12.0", default-features = true, features = ["lock_api", "once", "lazylock"] }
+"#,
+        );
+
+        let findings = lint_workspace(root.path()).unwrap();
+
+        assert!(findings.iter().any(|finding| {
+            finding
+                .message
+                .contains("default features must be disabled")
+        }));
+    }
+
+    #[test]
+    fn rejects_root_spin_rwlock_feature() {
+        let root = tempfile::tempdir().unwrap();
+        write_minimal_workspace(root.path());
+        write_file(
+            root.path(),
+            "Cargo.toml",
+            r#"
+[workspace]
+members = ["crate"]
+
+[workspace.dependencies]
+spin = { version = "=0.12.0", default-features = false, features = ["lock_api", "once", "lazylock", "rwlock"] }
+"#,
+        );
+
+        let findings = lint_workspace(root.path()).unwrap();
+
+        assert!(
+            findings
+                .iter()
+                .any(|finding| finding.message.contains("feature `rwlock` is not allowed"))
+        );
+    }
+
+    #[test]
+    fn accepts_explicit_registry_spin_dependency_with_allowed_features() {
         let root = tempfile::tempdir().unwrap();
         write_minimal_workspace(root.path());
         write_file(
@@ -813,17 +826,13 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-spin = { version = "0.12", registry = "crates-io" }
+spin = { version = "=0.12.0", default-features = false, features = ["once"] }
 "#,
         );
 
         let findings = lint_workspace(root.path()).unwrap();
 
-        assert!(
-            findings
-                .iter()
-                .any(|finding| finding.message.contains("must not specify `registry`"))
-        );
+        assert!(findings.is_empty(), "{findings:#?}");
     }
 
     #[test]
@@ -840,7 +849,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-spin = { version = "0.12", default-features = false, features = ["once"] }
+spin = "0.12"
 "#,
         );
 
@@ -849,7 +858,61 @@ spin = { version = "0.12", default-features = false, features = ["once"] }
         assert!(
             findings
                 .iter()
-                .any(|finding| finding.message.contains("crates.io version resolution"))
+                .any(|finding| finding.message.contains("default features"))
+        );
+    }
+
+    #[test]
+    fn rejects_explicit_spin_dependency_without_default_features_false() {
+        let root = tempfile::tempdir().unwrap();
+        write_minimal_workspace(root.path());
+        write_file(
+            root.path(),
+            "crate/Cargo.toml",
+            r#"
+[package]
+name = "crate"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+spin = { version = "=0.12.0", features = ["once"] }
+"#,
+        );
+
+        let findings = lint_workspace(root.path()).unwrap();
+
+        assert!(findings.iter().any(|finding| {
+            finding
+                .message
+                .contains("default features must be disabled")
+        }));
+    }
+
+    #[test]
+    fn rejects_explicit_spin_dependency_with_rwlock_feature() {
+        let root = tempfile::tempdir().unwrap();
+        write_minimal_workspace(root.path());
+        write_file(
+            root.path(),
+            "crate/Cargo.toml",
+            r#"
+[package]
+name = "crate"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+spin = { version = "=0.12.0", default-features = false, features = ["once", "rwlock"] }
+"#,
+        );
+
+        let findings = lint_workspace(root.path()).unwrap();
+
+        assert!(
+            findings
+                .iter()
+                .any(|finding| finding.message.contains("feature `rwlock` is not allowed"))
         );
     }
 
@@ -867,7 +930,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-spin_compat = { package = "spin", version = "0.12" }
+spin_compat = { package = "spin", version = "=0.12.0", default-features = false, features = ["once"] }
 "#,
         );
 
@@ -881,7 +944,34 @@ spin_compat = { package = "spin", version = "0.12" }
     }
 
     #[test]
-    fn rejects_transitive_external_spin_lockfile_entry() {
+    fn rejects_workspace_spin_dependency_feature_override() {
+        let root = tempfile::tempdir().unwrap();
+        write_minimal_workspace(root.path());
+        write_file(
+            root.path(),
+            "crate/Cargo.toml",
+            r#"
+[package]
+name = "crate"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+spin = { workspace = true, features = ["rwlock"] }
+"#,
+        );
+
+        let findings = lint_workspace(root.path()).unwrap();
+
+        assert!(findings.iter().any(|finding| {
+            finding
+                .message
+                .contains("must not override workspace spin features")
+        }));
+    }
+
+    #[test]
+    fn rejects_lockfile_without_registry_source() {
         let root = tempfile::tempdir().unwrap();
         write_minimal_workspace(root.path());
         write_file(
@@ -889,19 +979,8 @@ spin_compat = { package = "spin", version = "0.12" }
             "Cargo.lock",
             r#"
 [[package]]
-name = "dependency"
-version = "0.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "abc"
-dependencies = [
- "spin 0.10.0",
-]
-
-[[package]]
 name = "spin"
-version = "0.10.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "def"
+version = "0.12.0"
 "#,
         );
 
@@ -910,12 +989,12 @@ checksum = "def"
         assert!(
             findings
                 .iter()
-                .any(|finding| finding.message.contains("resolved dependency graph"))
+                .any(|finding| finding.message.contains("registry source"))
         );
     }
 
     #[test]
-    fn rejects_external_spin_current_migration_version() {
+    fn rejects_lockfile_without_checksum() {
         let root = tempfile::tempdir().unwrap();
         write_minimal_workspace(root.path());
         write_file(
@@ -926,7 +1005,6 @@ checksum = "def"
 name = "spin"
 version = "0.12.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "abc"
 "#,
         );
 
@@ -935,7 +1013,7 @@ checksum = "abc"
         assert!(
             findings
                 .iter()
-                .any(|finding| finding.message.contains("resolved dependency graph"))
+                .any(|finding| finding.message.contains("registry checksum"))
         );
     }
 
@@ -960,39 +1038,7 @@ checksum = "abc"
         assert!(
             findings
                 .iter()
-                .any(|finding| finding.message.contains("resolved dependency graph"))
-        );
-    }
-
-    #[test]
-    fn rejects_vendored_spin_rwlock_feature() {
-        let root = tempfile::tempdir().unwrap();
-        write_minimal_workspace(root.path());
-        write_file(
-            root.path(),
-            "components/spin/Cargo.toml",
-            r#"
-[package]
-name = "spin"
-version = "0.12.0"
-
-[features]
-default = ["rwlock", "once"]
-rwlock = []
-"#,
-        );
-
-        let findings = lint_workspace(root.path()).unwrap();
-
-        assert!(
-            findings
-                .iter()
-                .any(|finding| finding.message.contains("must not expose"))
-        );
-        assert!(
-            findings
-                .iter()
-                .any(|finding| finding.message.contains("must not include rwlock"))
+                .any(|finding| finding.message.contains("must stay at 0.12.0"))
         );
     }
 
@@ -1017,74 +1063,5 @@ pub fn bad() {
                 .iter()
                 .any(|finding| finding.message.contains("forbidden `spin::RwLock`"))
         );
-    }
-
-    #[test]
-    fn rejects_unregistered_local_spin_version() {
-        let root = tempfile::tempdir().unwrap();
-        write_minimal_workspace(root.path());
-        write_file(
-            root.path(),
-            "Cargo.lock",
-            r#"
-[[package]]
-name = "spin"
-version = "0.10.0"
-"#,
-        );
-
-        let findings = lint_workspace(root.path()).unwrap();
-
-        assert!(
-            findings
-                .iter()
-                .any(|finding| finding.message.contains("not registered"))
-        );
-    }
-
-    #[test]
-    fn rejects_legacy_vendored_spin_copy() {
-        let root = tempfile::tempdir().unwrap();
-        write_minimal_workspace(root.path());
-        write_file(
-            root.path(),
-            "components/spin-0.10/Cargo.toml",
-            r#"
-[package]
-name = "spin"
-version = "0.10.0"
-"#,
-        );
-
-        let findings = lint_workspace(root.path()).unwrap();
-
-        assert!(
-            findings
-                .iter()
-                .any(|finding| finding.message.contains("unregistered vendored spin copy"))
-        );
-    }
-
-    #[test]
-    fn accepts_registered_manifest_path_relative_to_crate() {
-        let root = tempfile::tempdir().unwrap();
-        write_minimal_workspace(root.path());
-        write_file(
-            root.path(),
-            "crate/Cargo.toml",
-            r#"
-[package]
-name = "crate"
-version = "0.1.0"
-edition = "2021"
-
-[dependencies]
-spin = { version = "0.12", path = "../components/spin" }
-"#,
-        );
-
-        let findings = lint_workspace(root.path()).unwrap();
-
-        assert!(findings.is_empty(), "{findings:#?}");
     }
 }

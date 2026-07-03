@@ -25,7 +25,7 @@
 //! use core::ptr::NonNull;
 //!
 //! use dwmmc_host::DwMmc;
-//! use sdmmc_protocol::sdio::{SdioInitScratch, SdioSdmmc};
+//! use sdmmc_protocol::sdio::{card::SdioSdmmc, init::SdioInitScratch};
 //!
 //! // SAFETY: 0xFE2B_0000 must point at a valid DW_mshc register file
 //! // the caller has exclusive access to.
@@ -77,7 +77,7 @@ use sdmmc_protocol::{
     DataCommandPoll, OperationPoll,
     cmd::{Command, DataDirection},
     error::{Error, ErrorContext, Phase},
-    sdio::{
+    sdio::host::{
         BusWidth, ClockSpeed, HostEvent, HostEventKind, HostEventSource, ReadyBusRequest,
         SdioBusOp, SdioHost as ProtocolSdioHost, SdioIrqHandle, SdioIrqHost, SignalVoltage,
         poll_ready_bus_op, submit_ready_bus_op,
@@ -1453,7 +1453,7 @@ mod tests {
 
     #[test]
     fn event_reports_data_completion_source_for_runtime_wakeup() {
-        use sdmmc_protocol::sdio::{HostEvent, HostEventKind, HostEventSource};
+        use sdmmc_protocol::sdio::host::{HostEvent, HostEventKind, HostEventSource};
 
         let raw = crate::regs::RIntSts::new()
             .with_data_transfer_over(true)

@@ -7,7 +7,7 @@ sidebar_label: "对外接口"
 
 `ax-net` 的 public API 面向三类调用方：启动阶段的 runtime、系统 ABI/socket 层，以及设备驱动适配层。API 设计保持一个原则：外部通过稳定的接口 ID、快照和 trait object 访问网络栈，不直接接触 `Service`、`Router`、smoltcp `SocketSet` 等内部对象。
 
-核心 re-export 定义在 [lib.rs](net/ax-net/src/lib.rs)：
+核心 re-export 定义在 `lib.rs`：
 
 ```rust
 pub use self::{
@@ -137,10 +137,13 @@ pub fn request_poll();
 
 ```rust
 pub fn request_poll() {
-    NET_POLL_REQUESTED.store(true, Ordering::Release);
-    NET_POLL_WAKE.notify_one(true);
+    publish_poll_request(&NET_POLL_REQUESTED, || {
+        NET_POLL_WAKE.notify_one(true);
+    });
 }
 ```
+
+`publish_poll_request()` 使用 `swap(false→true)` 合并重复请求：只有从未 pending 变为 pending 的第一次调用会真正 `notify_one()`。这样 socket 热路径可以频繁请求协议推进，而不会在 worker 尚未消费请求时制造重复唤醒。
 
 ### Vsock 初始化
 
@@ -155,6 +158,8 @@ pub type VsockDeviceList = Vec<VsockDevice>;
 ```
 
 vsock 不进入 smoltcp `SocketSet`，也不实现 `ax-net` 内部 IP `Device` trait。它通过 `rdif_vsock::Interface` 和 vsock connection manager 进入 AF_VSOCK socket backend。
+
+`init_vsock()` 只会注册传入列表中的第一个设备；列表为空时仅记录 warning，不创建“已初始化但无设备”的独立状态位。AF_VSOCK 后续操作若没有设备，会在 `device::vsock_*()` 路径返回 `NotFound`。
 
 ## 运行时查询
 
@@ -452,23 +457,26 @@ pub struct TcpInfo {
 | Option | 主要实现者 | 语义 |
 | --- | --- | --- |
 | `ReuseAddress` | `GeneralOptions`，UDP/TCP bind 路径读取 | UDP 设置后跳过 wrapper UDP bind side table；TCP 仍受 `TCP_BOUND_PORTS` 和 `ListenTable` 的 wildcard/specific 冲突规则约束 |
-| `Error` | `GeneralOptions` | 返回并清理 socket error 状态；当前主要作为 Linux ABI 兼容字段 |
-| `DontRoute` | `GeneralOptions` | 保存标志位；普通发送路径仍由控制面 route decision 决定接口 |
-| `SendBuffer` / `ReceiveBuffer` | `GeneralOptions`、Unix stream/datagram、vsock | 对 IP socket 主要返回配置值或默认预算；Unix/vsock 按各自 ring/queue 容量返回 |
-| `SendBufferForce` | `GeneralOptions` | 兼容 `SO_SNDBUFFORCE` 风格入口，语义上等价设置发送缓冲区预算 |
-| `KeepAlive` | `GeneralOptions` + TCP | 通用标志由 `GeneralOptions` 保存；TCP backend 同步到 smoltcp keep-alive 配置 |
+| `Error` | `GeneralOptions` / TCP override | 通用返回 0；TCP connect 失败后通过 pending error 返回并清理 |
+| `DontRoute` | 当前未实现为 socket option | `SetSocketOption::DontRoute` 会落到 `ENOPROTOOPT`；`MSG_DONTROUTE` 也尚未改变普通 route decision |
+| `SendBuffer` / `ReceiveBuffer` | TCP/UDP/raw/Unix stream 等具体 backend | IP socket 返回固定 buffer 预算；`GeneralOptions` 只接受 set buffer TODO，不实际调整已分配缓冲区 |
+| `SendBufferForce` | 当前未实现 | 返回 `ENOPROTOOPT` |
+| `KeepAlive` | TCP | TCP backend 同步到 smoltcp keep-alive 配置；非 TCP backend 返回不支持 |
 | `SendTimeout` / `ReceiveTimeout` | `GeneralOptions` | 被 `send_poller*` / `recv_poller*` 使用，决定阻塞等待超时 |
 | `PassCredentials` | Unix stream/datagram | 保存或接受 Linux `SO_PASSCRED` 语义；credentials 由 Unix transport 生成 |
 | `PeerCredentials` | Unix stream/datagram | 返回 `UnixCredentials { pid, uid, gid }`，uid/gid 当前使用内核默认值 |
 | `SocketType` / `SocketProtocol` / `SocketDomain` | `GeneralOptions` | 由 socket 创建时写入，用于 `getsockopt()` 返回 Linux ABI 可见值 |
 | `BindToDevice` | `GeneralOptions` | 保存 `DeviceBinding`，影响 route lookup 和设备 waker 注册 |
+| `Priority` | `GeneralOptions` | 保存 `SO_PRIORITY`，只允许 `0..=6`；当前不影响 Router 或设备队列调度 |
 | `NoDelay` | TCP | 映射 TCP_NODELAY 行为 |
 | `MaxSegment` | TCP | 返回或设置 TCP MSS 相关兼容值，受 smoltcp 能力限制 |
 | `TcpKeepIdle` / `TcpKeepInterval` / `TcpKeepCount` | TCP | 校验 Linux 兼容范围后同步到 TCP keepalive 配置 |
 | `TcpUserTimeout` | TCP | 保存 Linux `TCP_USER_TIMEOUT` 兼容值 |
 | `TcpInfo` | TCP | 从 smoltcp socket 状态和本地默认值合成 `TCP_INFO` snapshot |
-| `Ttl` | raw / IP socket backend | raw socket 使用该值控制发送 TTL |
-| `RecvErr` | `GeneralOptions` | 保存 IP_RECVERR 兼容标志；当前不提供完整 Linux error queue |
+| `Ttl` | UDP / raw | UDP 映射 smoltcp hop limit；raw socket 使用该值构造发送 IP header |
+| `IpTos` | `GeneralOptions` + TCP/UDP/raw | ECN 位会被清除；TCP/UDP 在 Router dispatch 时按 socket policy 改写 header，raw 发送时直接改写 |
+| `RecvTos` / `RecvTrafficClass` | `GeneralOptions` + UDP recv | UDP `recvmsg()` 可从 ingress packet metadata 生成 IPv4 TOS 或 IPv6 traffic-class cmsg |
+| `RecvErr` | `GeneralOptions` | `getsockopt()` 返回 false，`setsockopt()` 作为 TODO 占位接受但不保存；当前不提供完整 Linux error queue |
 | `NonBlocking` | `GeneralOptions` | 与 `MSG_DONTWAIT` 不同，修改 socket 自身阻塞属性 |
 
 ### TCP_INFO
@@ -483,7 +491,7 @@ pub struct TcpInfo {
 
 ## DNS 与名称解析
 
-DNS API 位于 [lib.rs](net/ax-net/src/lib.rs)，使用控制面的 DNS registry 和 route decision。
+DNS API 位于 `lib.rs`，使用控制面的 DNS registry 和 route decision。
 
 ```rust
 pub fn dns_servers() -> Vec<Ipv4Address>;
@@ -621,7 +629,30 @@ pub fn wake_net_task_irq();
 - 启动该设备的 RX/TX worker。
 - 可选启用内置单客户端 DHCP server。
 
-`dedicated_poll = true` 时，设备 RX readiness 不走 Ethernet IRQ registrar，而由外部驱动线程调用 `wake_net_task_irq()` 唤醒 OOB poll task。
+`dedicated_poll = true` 时，设备 RX readiness 不走 Ethernet IRQ registrar，而由外部驱动线程调用 `wake_net_task_irq()` 唤醒 `net-poll` worker；Router 也会为这种 OOB RX 设备注册 readiness poll set，使 `{ifname}-rx` worker 重新检查设备。
+
+### Wi-Fi 控制 API
+
+运行期 Wi-Fi 模式切换使用单独的控制面句柄注册，不把无线 firmware 操作塞进数据面 driver 锁里：
+
+```rust
+pub fn register_wifi_control(name: &str, handle: rd_net::WifiControlHandle);
+
+pub enum WifiMode<'a> {
+    Station { ssid: &'a str, password: &'a str },
+    AccessPoint {
+        ssid: &'a [u8],
+        channel: u8,
+        ip: [u8; 4],
+        prefix_len: u8,
+        dhcp_client_ip: Option<[u8; 4]>,
+    },
+}
+
+pub fn reconfigure_wifi(name: &str, mode: WifiMode<'_>) -> AxResult<()>;
+```
+
+`reconfigure_wifi()` 先通过 `WifiControlHandle` 执行 STA connect 或 open SoftAP，再在 `Service` 锁内更新对应接口的 IPv4/DHCP 角色。STA 模式清空旧静态地址并启用 DHCP client；AP 模式安装静态地址并可选启用内置单客户端 DHCP server。
 
 ## Unix Namespace API
 

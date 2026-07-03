@@ -14,7 +14,7 @@
 
 use ax_errno::{AxResult, ax_err, ax_err_type};
 use ax_memory_addr::PAGE_SIZE_4K as PAGE_SIZE;
-use axvcpu::AxArchPerCpu;
+use axvm_types::VmArchPerCpuOps;
 use x86::bits64::vmx;
 use x86_64::registers::control::{Cr0, Cr4, Cr4Flags};
 
@@ -47,7 +47,7 @@ pub struct VmxPerCpuState {
     vmx_region: VmxRegion,
 }
 
-impl AxArchPerCpu for VmxPerCpuState {
+impl VmArchPerCpuOps for VmxPerCpuState {
     fn new(_cpu_id: usize) -> AxResult<Self> {
         Ok(Self {
             vmcs_revision_id: 0,

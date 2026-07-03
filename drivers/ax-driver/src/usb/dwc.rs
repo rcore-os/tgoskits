@@ -13,7 +13,6 @@ use crab_usb::{
 };
 use fdt_edit::{ClockRef, Fdt, Node, NodeType, Phandle, RegFixed};
 use log::{debug, info, warn};
-use rdif_pinctrl::{FdtPinctrl, PinctrlDevice};
 use rdrive::{
     probe::OnProbeError,
     register::{FdtInfo, ProbeFdt},
@@ -23,9 +22,7 @@ use rockchip_pm::{PowerDomain, RockchipPM};
 use super::{ProbeFdtUsbHost, usb_kernel};
 use crate::{
     mmio::iomap,
-    soc::{
-        RockchipFdtPinctrlParser, rk3588_enable_clock, rk3588_reset_assert, rk3588_reset_deassert,
-    },
+    soc::{rk3588_enable_clock, rk3588_reset_assert, rk3588_reset_deassert},
 };
 
 const DRIVER_NAME: &str = "usb-dwc-xhci";
@@ -74,7 +71,6 @@ struct Usb2PhyResources {
     port_name: String,
     reg: usize,
     grf: Phandle,
-    supply: Option<Phandle>,
     resets: Vec<ResetSpec>,
     clocks: Vec<ClockSpec>,
 }
@@ -123,7 +119,6 @@ fn probe(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
 
     enable_power_domains(&resources.power_domains)?;
     enable_clocks(&resources.clocks);
-    enable_vbus(&fdt, resources.usb2.supply)?;
 
     let ctrl = map_reg(resources.ctrl)?;
     let phy = map_reg(resources.usbdp.reg)?;
@@ -237,7 +232,6 @@ fn collect_usb2_phy(fdt: &Fdt, port_phandle: Phandle) -> Result<Usb2PhyResources
         port_name: port.name().to_string(),
         reg,
         grf,
-        supply: get_phandle_prop(port.as_node(), "phy-supply"),
         resets: parse_resets(phy)?,
         clocks: clock_specs(phy.clocks()),
     })
@@ -453,34 +447,6 @@ fn enable_clocks(clocks: &[ClockSpec]) {
             ),
         }
     }
-}
-
-fn enable_vbus(fdt: &Fdt, supply: Option<Phandle>) -> Result<(), OnProbeError> {
-    let Some(supply) = supply else {
-        debug!("DWC xHCI USB2 PHY has no phy-supply; skip VBUS pinctrl");
-        return Ok(());
-    };
-
-    let regulator = fdt.get_by_phandle(supply).ok_or_else(|| {
-        OnProbeError::other(format!(
-            "DWC xHCI VBUS regulator phandle {supply:?} not found"
-        ))
-    })?;
-    let pinctrl = rdrive::get_one::<PinctrlDevice>()
-        .ok_or_else(|| OnProbeError::other("PinctrlDevice not found for DWC xHCI VBUS"))?;
-    let mut pinctrl = pinctrl
-        .lock()
-        .map_err(|err| OnProbeError::other(format!("failed to lock PinctrlDevice: {err}")))?;
-    FdtPinctrl::apply_fixed_regulator(
-        &mut *pinctrl,
-        fdt,
-        regulator.as_node(),
-        &RockchipFdtPinctrlParser,
-        "dwc-xhci-vbus",
-    )
-    .map_err(|err| {
-        OnProbeError::other(format!("failed to enable DWC xHCI VBUS via pinctrl: {err}"))
-    })
 }
 
 fn clock_specs(clocks: Vec<ClockRef>) -> Vec<ClockSpec> {

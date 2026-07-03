@@ -1,6 +1,6 @@
 [package]
 name = "ax-input"
-version = "0.5.21"
+version = "0.6.0"
 repository.workspace = true
 edition.workspace = true
 authors.workspace = true

@@ -16,7 +16,6 @@ fn package_failures_abort_remaining_checks() {
             deps_mode: ClippyDepsMode::NoDeps,
             target: None,
             env: Vec::new(),
-            axconfig_override: None,
         },
         ClippyCheck {
             package: "alpha".into(),
@@ -24,7 +23,6 @@ fn package_failures_abort_remaining_checks() {
             deps_mode: ClippyDepsMode::NoDeps,
             target: None,
             env: Vec::new(),
-            axconfig_override: None,
         },
         ClippyCheck {
             package: "beta".into(),
@@ -32,7 +30,6 @@ fn package_failures_abort_remaining_checks() {
             deps_mode: ClippyDepsMode::NoDeps,
             target: None,
             env: Vec::new(),
-            axconfig_override: None,
         },
     ];
     let mut runner = FakeCargoRunner::new(&[

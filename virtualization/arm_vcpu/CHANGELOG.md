@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.15](https://github.com/rcore-os/tgoskits/compare/arm_vcpu-v0.5.14...arm_vcpu-v0.5.15) - 2026-07-02
+
+### Other
+
+- *(axvm)* decouple axvisor arch logic ([#1471](https://github.com/rcore-os/tgoskits/pull/1471))
+- *(axvm)* decouple vcpu backends ([#1467](https://github.com/rcore-os/tgoskits/pull/1467))
+
 ## [0.5.14](https://github.com/rcore-os/tgoskits/compare/arm_vcpu-v0.5.13...arm_vcpu-v0.5.14) - 2026-06-27
 
 ### Other
@@ -64,7 +71,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - *(repo)* split non-USB clippy cleanups ([#372](https://github.com/rcore-os/tgoskits/pull/372))
 ## 0.1.1
 
-- Support the new 4-level-ept feature. By default, level 3 ept is used. After enabling this feature, level 4 ept is used.
+- Support the former four-level EPT build option. By default, level 3 EPT is used. After enabling this option, level 4 EPT is used.
 
 ## 0.1.0
 

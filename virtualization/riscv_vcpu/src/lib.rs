@@ -33,7 +33,7 @@ mod trap;
 mod vcpu;
 mod vpmu;
 
-pub use detect::detect_h_extension as has_hardware_support;
+pub use detect::{detect_h_extension as has_hardware_support, max_guest_page_table_levels};
 pub use regs::GprIndex;
 
 pub use self::{percpu::RISCVPerCpu, vcpu::RISCVVCpu};

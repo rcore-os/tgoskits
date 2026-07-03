@@ -10,7 +10,6 @@ fn prepare_axvisor_request_prefers_cli_over_snapshot() {
 config = "os/axvisor/.build.toml"
 arch = "riscv64"
 target = "riscv64gc-unknown-none-elf"
-plat_dyn = false
 vmconfigs = ["tmp/snapshot-vm.toml"]
 
 [qemu]
@@ -30,7 +29,6 @@ uboot_config = "configs/snapshot-uboot.toml"
             config: Some(PathBuf::from("/tmp/custom-build.toml")),
             arch: Some("aarch64".into()),
             target: Some(DEFAULT_AXVISOR_TARGET.into()),
-            plat_dyn: Some(true),
             smp: Some(6),
             debug: true,
             vmconfigs: vec![
@@ -46,7 +44,6 @@ uboot_config = "configs/snapshot-uboot.toml"
     assert_eq!(request.package, crate::axvisor::build::AXVISOR_PACKAGE);
     assert_eq!(request.arch, DEFAULT_AXVISOR_ARCH);
     assert_eq!(request.target, DEFAULT_AXVISOR_TARGET);
-    assert_eq!(request.plat_dyn, Some(true));
     assert_eq!(request.smp, Some(6));
     assert!(request.debug);
     assert_eq!(
@@ -68,7 +65,6 @@ uboot_config = "configs/snapshot-uboot.toml"
     );
     assert_eq!(snapshot.arch.as_deref(), Some(DEFAULT_AXVISOR_ARCH));
     assert_eq!(snapshot.target.as_deref(), Some(DEFAULT_AXVISOR_TARGET));
-    assert_eq!(snapshot.plat_dyn, Some(true));
     assert_eq!(snapshot.smp, Some(6));
     assert_eq!(
         snapshot.vmconfigs,
@@ -115,7 +111,6 @@ uboot_config = "configs/uboot.toml"
 
     assert_eq!(request.arch, DEFAULT_AXVISOR_ARCH);
     assert_eq!(request.target, DEFAULT_AXVISOR_TARGET);
-    assert_eq!(request.plat_dyn, None);
     assert_eq!(
         request.build_info_path,
         root.path()
@@ -165,7 +160,6 @@ fn prepare_axvisor_request_resolves_target_from_arch() {
             config: None,
             arch: Some("x86_64".into()),
             target: None,
-            plat_dyn: None,
             smp: None,
             debug: false,
             vmconfigs: vec![],
@@ -215,7 +209,6 @@ uboot_config = "configs/uboot-aarch64.toml"
             config: None,
             arch: Some("x86_64".into()),
             target: None,
-            plat_dyn: None,
             smp: None,
             debug: false,
             vmconfigs: vec![],
@@ -264,7 +257,6 @@ target = "loongarch64-unknown-none-softfloat"
             config: None,
             arch: Some("x86_64".into()),
             target: None,
-            plat_dyn: None,
             smp: None,
             debug: false,
             vmconfigs: vec![],
@@ -359,7 +351,6 @@ vmconfigs = ["os/axvisor/configs/vms/qemu/x86_64/linux-vmx-smp1.toml"]
             config: Some(explicit.clone()),
             arch: None,
             target: None,
-            plat_dyn: None,
             smp: None,
             debug: false,
             vmconfigs: vec![],

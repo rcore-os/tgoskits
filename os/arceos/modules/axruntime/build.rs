@@ -1,7 +1,7 @@
 use std::{
     env, fs,
     io::{Error, ErrorKind, Result},
-    path::{Path, PathBuf},
+    path::PathBuf,
 };
 
 use quote::quote;
@@ -10,6 +10,8 @@ const LINKER_TEMPLATE_NAME: &str = "runtime.ld";
 const FINAL_LINKER_SCRIPT_NAME: &str = "linker.x";
 const EXT_LINKER_SCRIPT_NAME: &str = "runtime.x";
 const BUILD_INFO_NAME: &str = "build_info.rs";
+const AXTEST_COVERAGE_RUNTIME_SECTIONS_PLACEHOLDER: &str = "%AXTEST_COVERAGE_RUNTIME_SECTIONS%";
+const AXTEST_COVERAGE_OUTPUT_SECTIONS_PLACEHOLDER: &str = "%AXTEST_COVERAGE_OUTPUT_SECTIONS%";
 const DEFAULT_CPU_CAPACITY: usize = 16;
 const DEFAULT_TASK_STACK_SIZE: usize = 0x40000;
 const DEFAULT_TICKS_PER_SEC: usize = 100;
@@ -17,12 +19,21 @@ const DEFAULT_TICKS_PER_SEC: usize = 100;
 fn main() -> Result<()> {
     println!("cargo:rerun-if-changed={LINKER_TEMPLATE_NAME}");
     println!("cargo:rerun-if-env-changed=CARGO_FEATURE_EXT_LD");
-    println!("cargo:rerun-if-env-changed=AX_CONFIG_PATH");
     println!("cargo:rerun-if-env-changed=SMP");
     println!("cargo:rerun-if-env-changed=DWARF");
+    println!("cargo:rerun-if-env-changed=AXTEST_COVERAGE");
 
     let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
-    let ld_content = fs::read_to_string(LINKER_TEMPLATE_NAME)?.replace("%DWARF%", dwarf_sections());
+    let ld_content = fs::read_to_string(LINKER_TEMPLATE_NAME)?
+        .replace("%DWARF%", dwarf_sections())
+        .replace(
+            AXTEST_COVERAGE_RUNTIME_SECTIONS_PLACEHOLDER,
+            axtest_coverage_runtime_sections(),
+        )
+        .replace(
+            AXTEST_COVERAGE_OUTPUT_SECTIONS_PLACEHOLDER,
+            axtest_coverage_output_sections(),
+        );
     let linker_script_name = if env::var_os("CARGO_FEATURE_EXT_LD").is_some() {
         EXT_LINKER_SCRIPT_NAME
     } else {
@@ -35,6 +46,55 @@ fn main() -> Result<()> {
     println!("cargo:rustc-link-search={}", out_dir.display());
 
     Ok(())
+}
+
+fn axtest_coverage_enabled() -> bool {
+    env::var("AXTEST_COVERAGE").ok().is_some_and(|value| {
+        matches!(
+            value.trim().to_ascii_lowercase().as_str(),
+            "y" | "yes" | "1" | "true" | "on"
+        )
+    })
+}
+
+fn axtest_coverage_runtime_sections() -> &'static str {
+    if axtest_coverage_enabled() {
+        r#"
+        . = ALIGN(0x10);
+        __start___llvm_prf_data = .;
+        KEEP(*(__llvm_prf_data))
+        __stop___llvm_prf_data = .;
+
+        . = ALIGN(0x10);
+        __start___llvm_prf_cnts = .;
+        KEEP(*(__llvm_prf_cnts))
+        __stop___llvm_prf_cnts = .;
+
+        . = ALIGN(0x10);
+        __start___llvm_prf_bits = .;
+        KEEP(*(__llvm_prf_bits))
+        __stop___llvm_prf_bits = .;
+
+        . = ALIGN(0x10);
+        __start___llvm_prf_vnds = .;
+        KEEP(*(__llvm_prf_vnds))
+        __stop___llvm_prf_vnds = .;"#
+    } else {
+        ""
+    }
+}
+
+fn axtest_coverage_output_sections() -> &'static str {
+    if axtest_coverage_enabled() {
+        r#"    __llvm_prf_names : AT(ADDR(__llvm_prf_names) - AX_LINKER_LOAD_OFFSET) ALIGN(0x10) {
+        __start___llvm_prf_names = .;
+        KEEP(*(__llvm_prf_names))
+        __stop___llvm_prf_names = .;
+    }
+"#
+    } else {
+        ""
+    }
 }
 
 fn build_info_source() -> Result<String> {
@@ -59,7 +119,7 @@ fn build_info_source_from(arch: &str, target: &str, mode: &str, config: RuntimeC
         #[cfg(feature = "smp")]
         pub const CPU_CAPACITY: usize = #cpu_capacity;
 
-        #[cfg(any(feature = "fs", all(feature = "smp", not(feature = "plat-dyn"))))]
+        #[cfg(feature = "fs")]
         pub const TASK_STACK_SIZE: usize = #task_stack_size;
 
         #[cfg(feature = "irq")]
@@ -77,16 +137,10 @@ struct RuntimeConfig {
 
 impl RuntimeConfig {
     fn load() -> Result<Self> {
-        let mut config = match env::var("AX_CONFIG_PATH") {
-            Ok(path) => {
-                println!("cargo:rerun-if-changed={path}");
-                Self::from_ax_config(Path::new(&path))?
-            }
-            Err(_) => Self {
-                cpu_capacity: DEFAULT_CPU_CAPACITY,
-                task_stack_size: DEFAULT_TASK_STACK_SIZE,
-                ticks_per_sec: DEFAULT_TICKS_PER_SEC,
-            },
+        let mut config = Self {
+            cpu_capacity: DEFAULT_CPU_CAPACITY,
+            task_stack_size: DEFAULT_TASK_STACK_SIZE,
+            ticks_per_sec: DEFAULT_TICKS_PER_SEC,
         };
 
         if let Ok(smp) = env::var("SMP") {
@@ -96,44 +150,6 @@ impl RuntimeConfig {
 
         Ok(config)
     }
-
-    fn from_ax_config(path: &Path) -> Result<Self> {
-        let content = fs::read_to_string(path)?;
-        let value: toml::Value = toml::from_str(&content).map_err(invalid_data)?;
-        Ok(Self {
-            cpu_capacity: get_usize(&value, &["plat", "max-cpu-num"])?,
-            task_stack_size: get_usize(&value, &["task-stack-size"])?,
-            ticks_per_sec: get_usize(&value, &["ticks-per-sec"])?,
-        })
-    }
-}
-
-fn get_usize(value: &toml::Value, keys: &[&str]) -> Result<usize> {
-    let value = get_value(value, keys)?;
-    parse_value_usize(value, keys)
-}
-
-fn parse_value_usize(value: &toml::Value, keys: &[&str]) -> Result<usize> {
-    match value {
-        toml::Value::Integer(value) => usize::try_from(*value)
-            .map_err(|_| invalid_data(format!("{} is out of range", keys.join(".")))),
-        toml::Value::String(value) => parse_usize(value)
-            .map_err(|err| invalid_data(format!("failed to parse {}: {err}", keys.join(".")))),
-        _ => Err(invalid_data(format!(
-            "{} must be an integer or integer string",
-            keys.join(".")
-        ))),
-    }
-}
-
-fn get_value<'a>(value: &'a toml::Value, keys: &[&str]) -> Result<&'a toml::Value> {
-    let mut current = value;
-    for key in keys {
-        current = current
-            .get(*key)
-            .ok_or_else(|| invalid_data(format!("missing config key {}", keys.join("."))))?;
-    }
-    Ok(current)
 }
 
 fn parse_usize(value: &str) -> std::result::Result<usize, std::num::ParseIntError> {
@@ -205,8 +221,7 @@ mod tests {
                 "pub const MODE: &str = \"release\";\n",
                 "#[cfg(feature = \"smp\")]\n",
                 "pub const CPU_CAPACITY: usize = 16usize;\n",
-                "#[cfg(any(feature = \"fs\", all(feature = \"smp\", not(feature = \
-                 \"plat-dyn\"))))]\n",
+                "#[cfg(feature = \"fs\")]\n",
                 "pub const TASK_STACK_SIZE: usize = 262144usize;\n",
                 "#[cfg(feature = \"irq\")]\n",
                 "pub const TICKS_PER_SEC: usize = 100usize;\n",

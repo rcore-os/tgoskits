@@ -35,7 +35,11 @@ pub fn sys_pipe2(fds: *mut [c_int; 2], flags: u32) -> AxResult<isize> {
         .add_to_fd_table(cloexec)
         .inspect_err(|_| close_file_like(read_fd).unwrap())?;
 
-    fds.vm_write([read_fd, write_fd])?;
+    if let Err(err) = fds.vm_write([read_fd, write_fd]) {
+        close_file_like(read_fd).ok();
+        close_file_like(write_fd).ok();
+        return Err(err.into());
+    }
 
     debug!(
         "sys_pipe2 <= fds: {:?}, flags: {:?}",

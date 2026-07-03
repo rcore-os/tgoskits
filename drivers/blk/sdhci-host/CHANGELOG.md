@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0](https://github.com/rcore-os/tgoskits/compare/sdhci-host-v0.2.0...sdhci-host-v0.3.0) - 2026-07-02
+
+### Other
+
+- *(rdif-block)* enable boxed sdmmc irq flow ([#1446](https://github.com/rcore-os/tgoskits/pull/1446))
+
 ## [0.2.0](https://github.com/rcore-os/tgoskits/compare/sdhci-host-v0.1.5...sdhci-host-v0.2.0) - 2026-06-27
 
 ### Added

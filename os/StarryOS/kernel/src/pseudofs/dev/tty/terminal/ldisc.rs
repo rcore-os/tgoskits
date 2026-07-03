@@ -77,6 +77,10 @@ pub trait TtyWrite: Send + Sync + 'static {
         }
     }
 
+    fn drain(&self) -> AxResult<()> {
+        Ok(())
+    }
+
     fn termios_changed(&self, _old: &Termios2, _new: &Termios2) {}
 }
 

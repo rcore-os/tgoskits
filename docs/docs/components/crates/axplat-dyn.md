@@ -6,7 +6,7 @@
 > 版本：`0.3.0-preview.3`
 > 文档依据：当前仓库源码、`Cargo.toml`、`build.rs`、`link.ld` 及 `os/arceos/modules/axhal`/`ax-driver` 的接入路径
 
-`axplat-dyn` 不是那类“用 `axconfig.toml` 固化板级常量”的常规 `axplat-*` 平台包。它更像一层桥接适配器：把 `somehal` 已经建立好的启动入口、FDT 地址、内存图、时钟、IRQ、电源与 SMP 元数据转译成 `axplat` 的统一契约；同时再补上一条 `ax-driver` 动态设备模型所需的设备探测与 DMA glue。这里的 `dyn` 真正表示“平台事实来自运行时抽象层和探测结果”，而不是“把平台包当作运行时可装卸模块加载”。
+`axplat-dyn` 不是那类“用静态配置文件固化板级常量”的常规 `axplat-*` 平台包。它更像一层桥接适配器：把 `somehal` 已经建立好的启动入口、FDT 地址、内存图、时钟、IRQ、电源与 SMP 元数据转译成 `axplat` 的统一契约；同时再补上一条 `ax-driver` 动态设备模型所需的设备探测与 DMA glue。这里的 `dyn` 真正表示“平台事实来自运行时抽象层和探测结果”，而不是“把平台包当作运行时可装卸模块加载”。
 
 ## 架构设计
 
@@ -21,8 +21,8 @@
 
 这决定了它与普通板级包的一个根本差异：
 
-- 普通 `axplat-*` 平台包主要把编译期 `axconfig.toml` 变成板级常量，再围绕这些常量实现 `axplat` 接口。
-- `axplat-dyn` 则把 `somehal` 暴露的运行时事实直接转成 `axplat` 接口，不以 `axconfig.toml` 为主线。
+- 普通 `axplat-*` 平台包主要把编译期静态配置变成板级常量，再围绕这些常量实现 `axplat` 接口。
+- `axplat-dyn` 则把 `somehal` 暴露的运行时事实直接转成 `axplat` 接口，不以静态配置文件为主线。
 
 ### 模块结构
 
@@ -97,7 +97,7 @@ flowchart TD
 - `phys_to_virt()` / `virt_to_phys()` 直接转发到 `somehal::mem`
 - `kernel_aspace()` 来自 `somehal::mem::kernel_space()`
 
-此外，`_percpu_base_ptr()` 通过 `somehal::smp::percpu_data_ptr()` 向 `ax-percpu` crate 提供每核数据基址。这也解释了为什么 `ax-hal::mem` 在 `plat-dyn` 模式下不再额外注入一套传统平台包的内核保留区逻辑：此路径默认信任 `somehal` 给出的内存事实已经包含 `KImage` 和 `PerCpuData`。
+此外，`_percpu_base_ptr()` 通过 `somehal::smp::percpu_data_ptr()` 向 `ax-percpu` crate 提供每核数据基址。这也解释了为什么 `ax-hal::mem` 不再额外注入一套传统平台包的内核保留区逻辑：当前路径默认信任 `somehal` 给出的内存事实已经包含 `KImage` 和 `PerCpuData`。
 
 #### 时间、中断与电源
 
@@ -157,7 +157,7 @@ flowchart TD
 - 与 `axplat` 的边界：`axplat` 定义的是稳定平台契约和入口调用面；`axplat-dyn` 只是其中一个实现者，并不改变接口定义。
 - 与 `ax-plat-macros` 的边界：本 crate 不直接依赖 `ax-plat-macros`，只通过 `axplat` 重新导出的 `#[impl_plat_interface]` 和入口宏参与体系。
 - 与 `somehal` 的边界：真正的“平台事实来源”在 `somehal`，包括入口、内存图、时钟、IRQ、电源与 CPU 元数据；`axplat-dyn` 负责转译，而不是重新探测 CPU 模式或自己管理整套启动环境。
-- 与 `ax-config-gen` 的边界：当前源码中保留了一段被注释掉的 `config` 模块草稿，但现行实现并没有启用 `axconfig.toml -> AX_CONFIG_PATH -> include_configs!` 这条常规平台包主线，因此它不属于典型 `axplat-*` 配置化平台生态。
+- 边界：当前实现不启用旧的静态配置文件生成和 include 路径，因此它不属于典型静态配置化平台生态。
 
 ## 核心功能
 
@@ -165,8 +165,8 @@ flowchart TD
 
 - 作为 `somehal` 到 `axplat` 的桥接层，提供统一的启动、内存、时间、中断和电源接口实现。
 - 通过 `build.rs + link.ld` 生成适配当前内核镜像的 `axplat.x` 链接脚本扩展。
-- 让 `ax-hal` 可通过 `plat-dyn` feature 接入这一动态平台路径。
-- 让 `ax-driver` 可通过 `dyn` feature 复用其设备探测与动态块设备封装。
+- 作为 `ax-hal` 的固定平台实现依赖接入这一动态平台路径。
+- 让 `ax-driver` 复用其设备探测与动态块设备封装。
 - 通过 `hv`、`uspace`、`smp`、`irq` feature 把能力向 `somehal` 和 `axplat` 两侧传播。
 
 ### 2.2 feature 行为
@@ -203,8 +203,8 @@ flowchart TD
 
 ### 主要消费者
 
-- `os/arceos/modules/axhal`：通过 `plat-dyn` feature 选择该平台路径。
-- `drivers/ax-driver`：通过 `dyn` feature 调用其动态设备探测入口。
+- `os/arceos/modules/axhal`：固定依赖该平台路径。
+- `drivers/ax-driver`：调用其动态设备探测入口。
 - 进一步依赖上述模块的 ArceOS 系统镜像，以及复用同一模块栈的其它内核工程。
 
 ### 3.3 依赖关系示意
@@ -215,8 +215,8 @@ graph TD
     C[axplat] --> B
     D[rdrive / rdif-block / dma-api / ax-driver] --> B
 
-    B --> E[ax-hal: plat-dyn]
-    B --> F[ax-driver: dyn]
+    B --> E[ax-hal]
+    B --> F[ax-driver]
 
     E --> G[ArceOS]
     F --> G
@@ -230,16 +230,16 @@ graph TD
 适合使用 `axplat-dyn` 的情况是：
 
 - 你已经有 `somehal` 这层更底部的平台抽象，希望把它接进 `axplat`/`ax-hal`。
-- 你需要的是“运行时探测 + 动态设备模型”，而不是“固定板级参数 + 静态平台包”。
+- 你需要的是“运行时探测 + 动态设备模型”，而不是“固定板级参数 + 独立平台包”。
 
 不适合直接套用它的情况是：
 
-- 你要新做一个常规 `axplat-*` 板级包，并希望走 `axconfig.toml` 配置化主线。
+- 你要在仓库外维护一个自定义 `ax-plat-*` 平台包；这属于外部兼容边界，不是仓库内置平台主线。
 - 你需要一个完整的、已覆盖多类别设备的动态驱动模型。本 crate 当前主要只补齐了块设备路径。
 
 ### 4.2 接入主线
 
-1. 在上层内核构建中启用 `ax-hal` 的 `plat-dyn` feature；若需要动态设备探测，再启用 `ax-driver` 的 `dyn` 相关 feature。
+1. 上层内核构建固定经过 `ax-hal` → `axplat-dyn` 路径；若需要特定设备探测，再启用对应设备能力 feature。这些 feature 只表示设备或启动链能力，不表示平台选择。
 2. 确保目标是裸机环境，而不是 `unix`/`windows` 宿主机构建路径。
 3. 让 `somehal` 提供入口、FDT、内存图、控制台、时钟、中断和电源实现。
 4. 由 `boot.rs` 把控制流统一转到 `ax_plat::call_main()`，随后上层只通过 `axplat` 接口使用平台能力。
@@ -251,7 +251,7 @@ graph TD
 - `VirtIO` block 的 IRQ enable/disable/handle 仍未完成，中断驱动块 I/O 不是当前实现重点。
 - `build.rs` 生成的 `axplat.x` 会把 `__SMP` 固定替换成 `16`；若下层假设变化，需要同步检查链接脚本和启动约定。
 - 当前 crate 根部有 `#![cfg(not(any(windows, unix)))]`，说明主机侧 `cargo test`/`cargo check` 不是它的主要验证面。
-- 源码中虽保留了被注释掉的 `config` 模块草稿，但现行代码并不实际消费 `AX_CONFIG_PATH` 或 `axconfig.toml`。
+- 源码中虽保留了被注释掉的 `config` 模块草稿，但现行代码不实际消费旧式静态配置文件。
 
 ## 测试
 
@@ -280,7 +280,7 @@ graph TD
 | 项目 | 位置 | 角色 | 核心作用 |
 | --- | --- | --- | --- |
 | ArceOS | `ax-hal`/`ax-driver` 的实验性平台路径 | 动态平台桥接层 | 把 `somehal` 与 `rdrive` 驱动式能力接到 ArceOS 标准平台/驱动抽象上 |
-| StarryOS | 仅在复用同一模块栈时才可能间接接入 | 非默认平台包路径 | 它不是 `axplat_crates/platforms` 中那类标准发行平台包，只有在共享 ArceOS 底层模块时才会发挥作用 |
+| StarryOS | 通过共享 ArceOS 模块栈间接接入 | 内置动态平台路径 | 平台实现位于 `platforms/axplat-dyn`，在 StarryOS 复用 ArceOS 底层模块时发挥作用 |
 | Axvisor | 宿主侧若共享 `ax-hal`/`ax-driver` 路径时可复用 | 宿主 bring-up 桥接层 | 可为基于 ArceOS 模块栈的宿主环境提供动态平台 glue，但虚拟化核心并不在本 crate 中 |
 
 ## 总结

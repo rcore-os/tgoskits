@@ -106,7 +106,7 @@ log = "Info"
             "a-board",
             r#"
 target = "aarch64-unknown-none-softfloat"
-features = ["ept-level-4"]
+features = []
 log = "Info"
 "#,
         );
@@ -134,7 +134,7 @@ log = "Info"
             "qemu-aarch64",
             r#"
 target = "aarch64-unknown-none-softfloat"
-features = ["ept-level-4"]
+features = []
 log = "Info"
 "#,
         );
@@ -143,7 +143,7 @@ log = "Info"
             "qemu-riscv64",
             r#"
 target = "riscv64gc-unknown-none-elf"
-features = ["ept-level-4"]
+features = []
 log = "Info"
 "#,
         );

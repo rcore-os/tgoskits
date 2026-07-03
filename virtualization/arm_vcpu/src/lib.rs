@@ -45,6 +45,11 @@ pub fn max_guest_page_table_levels() -> usize {
     vcpu::max_gpt_level(vcpu::pa_bits())
 }
 
+/// Returns the physical address width reported by the current CPU.
+pub fn pa_bits() -> usize {
+    vcpu::pa_bits()
+}
+
 /// Return if current platform support virtualization extension.
 pub fn has_hardware_support() -> bool {
     // Hint:

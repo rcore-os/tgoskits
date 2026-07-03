@@ -1,7 +1,4 @@
-use core::{
-    ptr::NonNull,
-    sync::atomic::{AtomicBool, AtomicUsize, Ordering},
-};
+use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use ax_kspin::SpinRaw as Mutex;
 
@@ -259,11 +256,7 @@ pub fn enable_ioapic_irq_forwarding(vm: &VMRef, vcpu: &VCpuRef) {
                     continue;
                 }
 
-                match irq::request_shared_irq(
-                    host_irq,
-                    ioapic_irq_forwarding_handler,
-                    NonNull::dangling(),
-                ) {
+                match irq::request_shared_irq(host_irq, ioapic_irq_forwarding_handler) {
                     Ok(handle) => {
                         IOAPIC_IRQ_HANDLES[gsi].store(handle.id() as usize, Ordering::Release);
                         registered += 1;
@@ -552,10 +545,7 @@ fn unmask_forwarded_host_gsi(gsi: usize) {
     IOAPIC_IRQ_MASKED.fetch_and(!bit, Ordering::AcqRel);
 }
 
-unsafe fn ioapic_irq_forwarding_handler(
-    ctx: irq::IrqContext,
-    _data: NonNull<()>,
-) -> irq::IrqReturn {
+fn ioapic_irq_forwarding_handler(ctx: irq::IrqContext) -> irq::IrqReturn {
     let Some(gsi) = guest_gsi_for_host_irq(ctx.irq) else {
         return irq::IrqReturn::Unhandled;
     };

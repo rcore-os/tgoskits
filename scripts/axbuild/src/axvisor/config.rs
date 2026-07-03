@@ -87,7 +87,6 @@ vm_configs = []
         let existing_snapshot = AxvisorCommandSnapshot {
             arch: Some(DEFAULT_AXVISOR_ARCH.to_string()),
             target: Some(DEFAULT_AXVISOR_TARGET.to_string()),
-            plat_dyn: Some(false),
             smp: None,
             config: Some(PathBuf::from("os/axvisor/.build-aarch64.toml")),
             vmconfigs: vec![PathBuf::from("tmp/vm1.toml")],
@@ -124,7 +123,6 @@ vm_configs = []
             snapshot.target.as_deref(),
             Some("aarch64-unknown-none-softfloat")
         );
-        assert_eq!(snapshot.plat_dyn, existing_snapshot.plat_dyn);
         assert_eq!(snapshot.vmconfigs, existing_snapshot.vmconfigs);
         assert_eq!(snapshot.qemu.qemu_config, Some(qemu_config));
     }

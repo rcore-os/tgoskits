@@ -1,4 +1,4 @@
-use sdmmc_protocol::{error::Error, sdio::ClockSpeed};
+use sdmmc_protocol::{error::Error, sdio::host::ClockSpeed};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MediaKind {

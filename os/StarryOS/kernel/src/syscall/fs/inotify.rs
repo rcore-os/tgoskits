@@ -6,7 +6,7 @@ use linux_raw_sys::general::{AT_FDCWD, IN_CLOEXEC, IN_NONBLOCK};
 
 use crate::{
     file::{FileLike, add_file_like, get_file_like, inotify::Inotify, resolve_at},
-    mm::vm_load_string,
+    mm::vm_load_path_string,
 };
 
 pub fn sys_inotify_init1(flags: u32) -> AxResult<isize> {
@@ -23,7 +23,7 @@ pub fn sys_inotify_init1(flags: u32) -> AxResult<isize> {
 }
 
 pub fn sys_inotify_add_watch(fd: c_int, path: *const c_char, mask: u32) -> AxResult<isize> {
-    let path = vm_load_string(path)?;
+    let path = vm_load_path_string(path)?;
     debug!("sys_inotify_add_watch <= fd: {fd}, path: {path}, mask: {mask}");
 
     let resolved_path = resolve_at(AT_FDCWD, Some(&path), 0)?

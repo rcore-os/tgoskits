@@ -88,12 +88,13 @@ pub fn get_vm_config_template(params: VmTemplateParams) -> AxVMCrateConfig {
         },
         // Device configuration - starts empty, can be customized
         devices: VMDevicesConfig {
-            emu_devices: vec![],                // No emulated devices by default
-            passthrough_devices: vec![],        // No passthrough devices by default
-            interrupt_mode: Default::default(), // Use default interrupt mode
-            excluded_devices: vec![],           // No excluded devices by default
-            passthrough_addresses: vec![],      // No passthrough addresses by default
-            passthrough_ports: vec![],          // No passthrough ports by default
+            address_space_policy: Default::default(), // Virtualized address space by default
+            emu_devices: vec![],                      // No emulated devices by default
+            passthrough_devices: vec![],              // No passthrough devices by default
+            interrupt_mode: Default::default(),       // Use default interrupt mode
+            excluded_devices: vec![],                 // No excluded devices by default
+            passthrough_addresses: vec![],            // No passthrough addresses by default
+            passthrough_ports: vec![],                // No passthrough ports by default
         },
     }
 }
