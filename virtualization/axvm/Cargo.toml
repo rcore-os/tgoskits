@@ -55,7 +55,8 @@ axhvc = { workspace = true }
 axdevice = { workspace = true }
 axdevice_base = { workspace = true }
 axvmconfig = { workspace = true, default-features = false }
-fdt-parser = "0.4"
+fdt-edit = { workspace = true }
+fdt-raw = { workspace = true }
 hashbrown = "0.14"
 [target.'cfg(target_arch = "x86_64")'.dependencies]
 x86_vcpu = { workspace = true }
