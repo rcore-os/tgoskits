@@ -17,7 +17,9 @@
 #include <string.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
+#include <sys/statfs.h>
 #include <sys/inotify.h>
+#include <sys/xattr.h>
 #include <sys/syscall.h>
 #include <unistd.h>
 
@@ -385,10 +387,22 @@ static void expect_path_errno(const char *name, int ret, int expected)
     CHECK(ret == -1 && errno == expected, name);
 }
 
+static void expect_ret_errno(const char *name, long ret, int expected)
+{
+    CHECK(ret == -1 && errno == expected, name);
+}
+
+struct test_file_handle {
+    unsigned int handle_bytes;
+    int handle_type;
+    unsigned char f_handle[8];
+};
+
 static void test_pathmax_min(void)
 {
     char *path = make_long_path();
     struct stat st;
+    struct statfs sfs;
     int ifd;
 #ifdef SYS_statx
     long statx_buf[64];
@@ -426,6 +440,33 @@ static void test_pathmax_min(void)
               "inotify_add_watch long path -> ENAMETOOLONG");
         close(ifd);
     }
+
+    errno = 0;
+    expect_ret_errno("mknod long path -> ENAMETOOLONG",
+                     mknod(path, S_IFIFO | 0600, 0), ENAMETOOLONG);
+
+    errno = 0;
+    expect_ret_errno("statfs long path -> ENAMETOOLONG", statfs(path, &sfs),
+                     ENAMETOOLONG);
+
+#ifdef SYS_name_to_handle_at
+    {
+        struct test_file_handle handle = {
+            .handle_bytes = sizeof(handle.f_handle),
+        };
+        int mount_id = -1;
+
+        errno = 0;
+        expect_ret_errno("name_to_handle_at long path -> ENAMETOOLONG",
+                         syscall(SYS_name_to_handle_at, AT_FDCWD, path, &handle,
+                                 &mount_id, 0),
+                         ENAMETOOLONG);
+    }
+#endif
+
+    errno = 0;
+    expect_ret_errno("getxattr long path -> ENAMETOOLONG",
+                     getxattr(path, "user.test", NULL, 0), ENAMETOOLONG);
 
     free(path);
 }
