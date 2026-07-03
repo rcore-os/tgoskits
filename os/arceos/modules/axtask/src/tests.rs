@@ -771,6 +771,29 @@ fn test_stale_wait_queue_entry_does_not_clear_new_wait_membership() {
 }
 
 #[test]
+fn test_wake_task_clears_raw_wait_queue_membership() {
+    run_in_test_scheduler(|| {
+        let wait_queue = WaitQueue::new();
+        let task = crate::TaskInner::new(
+            || {},
+            "raw-waitqueue-interrupt-test".into(),
+            RAW_TASK_STACK_SIZE,
+        );
+        let task = task.into_arc();
+        crate::register_task(&task);
+        task.set_state(crate::TaskState::Blocked);
+        wait_queue.push_task_for_test(task.clone());
+
+        assert!(task.in_wait_queue());
+        crate::wake_task(&task);
+
+        assert_eq!(task.state(), crate::TaskState::Ready);
+        assert!(!task.in_wait_queue());
+        assert!(!wait_queue.notify_one(false));
+    });
+}
+
+#[test]
 fn test_irq_notify_wakes_after_concurrent_irq_callbacks() {
     run_in_test_scheduler(|| {
         const NUM_IRQ_THREADS: usize = 6;

@@ -508,18 +508,18 @@ pub fn wake_task(task: &AxTaskRef) {
     // unblocks the task via the registered waker callback.
     task.interrupt();
 
-    // For tasks blocked on a raw WaitQueue, interrupt_waker.wake() is a
-    // no-op (no waker registered). Force-unblock by transitioning the task
-    // from Blocked to Ready and placing it on the run queue of its
-    // affinity CPU.
+    // For tasks blocked on a raw WaitQueue, interrupt_waker.wake() is a no-op
+    // (no waker registered). Clear the unknown wait-queue membership before
+    // force-unblocking so the original queue will discard its stale node later
+    // instead of consuming a future notify for this already-ready task.
     //
     // SAFETY: unblock_task uses a CAS on the task state (Blocked → Ready),
     // so if the task is concurrently being woken by its WaitQueue, the CAS
-    // fails and this is a harmless no-op. The stale entry in the WaitQueue
-    // is benign: when WaitQueue::notify_one eventually pops it, the
-    // subsequent unblock_task call will again CAS-fail (task already Ready
-    // or Running).
+    // fails and this is a harmless no-op. Clearing the wait-queue key is also
+    // harmless in that race: a waiter popped by its queue has already cleared
+    // the same key, and a remaining queue node is stale by construction.
     if task.state() == TaskState::Blocked {
+        task.clear_wait_queue_membership();
         let mut rq = select_run_queue::<NoPreemptIrqSave>(task);
         rq.unblock_task(task.clone(), false);
     }

@@ -449,6 +449,11 @@ impl TaskInner {
         self.core.clear_wait_queue_key(wait_queue_key)
     }
 
+    #[inline]
+    pub(crate) fn clear_wait_queue_membership(&self) -> bool {
+        self.core.take_wait_queue_key() != 0
+    }
+
     /// Returns task's current timer ticket ID.
     #[inline]
     pub(crate) fn timer_ticket(&self) -> u64 {

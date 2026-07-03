@@ -287,6 +287,12 @@ impl WaitQueue {
         curr.set_wait_queue_key(self.key());
         self.queue.lock().push_back(curr.clone());
     }
+
+    #[cfg(test)]
+    pub(crate) fn push_task_for_test(&self, task: AxTaskRef) {
+        task.set_wait_queue_key(self.key());
+        self.queue.lock().push_back(task);
+    }
 }
 
 fn unblock_one_task(task: AxTaskRef, resched: bool) {

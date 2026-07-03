@@ -211,6 +211,11 @@ impl TaskCore {
             .is_ok()
     }
 
+    /// Clears any current wait queue membership and returns its previous key.
+    pub fn take_wait_queue_key(&self) -> usize {
+        self.wait_queue_key.swap(0, Ordering::AcqRel)
+    }
+
     /// Returns whether this task is still finishing a context switch on a CPU.
     pub fn on_cpu(&self) -> bool {
         self.on_cpu.load(Ordering::Acquire)
