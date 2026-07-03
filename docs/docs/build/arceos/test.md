@@ -1,18 +1,20 @@
 ---
-sidebar_position: 5
-sidebar_label: "ArceOS 测试"
+sidebar_position: 4
+sidebar_label: "测试"
 ---
 
 # ArceOS 测试
 
 ArceOS 的测试覆盖两类用例：**Rust 用例**（统一入口为 `arceos-test-suit`，单个用例由 crate feature 控制）和 **C 用例**（通过 Makefile 构建的 C 语言程序，由 `test_cmd` 文件定义测试序列）。两类用例的发现和处理方式有所不同，但最终都通过 QEMU 运行并使用正则匹配判定结果。
 
+测试编排（用例发现、分组构建、资产准备、结果判定）由 `scripts/axbuild/src/test/` 提供统一框架，核心原则是 **OS 只构建一次，逐 case 运行**——具有相同构建配置的用例归入同一 build wrapper，组内共享一次内核编译，然后逐 case 准备资产、运行 QEMU、匹配结果。本文描述 ArceOS 特有的测试目录结构和两类用例的处理差异。
+
 ## 命令
 
 通过 `cargo xtask arceos test qemu` 触发 ArceOS 测试，支持按架构、测试组和用例名过滤：
 
 ```text
-cargo xtask arceos test qemu --arch <arch> [--test-group <group>] [--test-case <case>] 
+cargo xtask arceos test qemu --arch <arch> [--test-group <group>] [--test-case <case>]
 ```
 
 ArceOS 测试命令支持通过 `--test-group` 选择测试组（`rust`、`c` 或自定义组），通过 `--test-case` 过滤特定用例。不指定 `--test-group` 时默认运行所有组。Rust 组中 `--test-case` 直接使用 feature 名，例如 `task-yield`；不指定时运行 `all` feature。

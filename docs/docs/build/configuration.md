@@ -9,7 +9,7 @@ axbuild 管理两类核心配置文件：Snapshot 为 CLI 提供参数回退，B
 
 1. **Snapshot**（`tmp/axbuild/.{os}.toml`）—— 最近一次命令参数的持久化，使短命令可以复用之前的 `--arch`、`--package` 等参数
 2. **Build Info**（`tmp/axbuild/config/<package>/build-<target>.toml`）—— 构建配置核心，描述 features、环境变量和平台行为
-此外，**Arch / Target 映射**是三类配置文件的共享基础，维护 arch ↔ target 的对应关系和子系统默认值。三套子系统共享这套配置框架，但各有自己的默认值和定制行为。所有配置逻辑集中在 `scripts/axbuild/src/context/` 和 `scripts/axbuild/src/build.rs` 中。
+此外，**Arch / Target 映射**是配置解析的共享基础，维护 arch ↔ target 的对应关系和子系统默认值。三套子系统共享这套配置框架，但各有自己的默认值和定制行为。所有配置逻辑集中在 `scripts/axbuild/src/context/` 和 `scripts/axbuild/src/build.rs` 中。
 
 ## Arch / Target 映射
 
@@ -64,7 +64,7 @@ flowchart TD
 
 - **动态平台**：构建系统固定走 `axplat-dyn` 路径，Build Info 中不再提供平台选择开关。
 - **to_bin**：通用 ArceOS/Starry std 构建会生成 raw binary；Axvisor 另有覆盖：`aarch64`/`riscv64` 生成 bin，`x86_64`/`loongarch64` 保留 ELF。
-- **LoongArch QEMU**：运行 Axvisor loongarch64 时自动搜索 LVZ 版 QEMU（详见 [运行](./run#loongarch-特殊处理)）
+- **LoongArch QEMU**：运行 Axvisor loongarch64 时自动搜索 LVZ 版 QEMU（详见 [Axvisor 运行 §LoongArch LVZ QEMU](./axvisor/runtime#loongarch-lvz-qemu)）
 
 LoongArch QEMU 现在默认走 `axplat-dyn`，不再以静态平台 crate 作为当前平台路径。旧配置中的 `ax-hal/loongarch64-qemu-virt` 或 `--plat loongarch64-qemu-virt` 应迁移为动态平台写法：保留 `--arch loongarch64`，并按需保留 UEFI/设备等真实启动链能力开关；这些不是平台选择项。
 
