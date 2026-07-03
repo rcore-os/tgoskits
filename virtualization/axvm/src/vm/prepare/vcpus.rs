@@ -76,11 +76,7 @@ impl PreparedVcpus {
 
             debug!("Setting up vCPU[{}] entry at {:#x}", vcpu.id(), entry);
 
-            vcpu.setup(
-                entry,
-                resources.address_space.page_table_root(),
-                setup_config,
-            )?;
+            vcpu.setup(entry, resources.nested_paging, setup_config)?;
         }
         Ok(())
     }

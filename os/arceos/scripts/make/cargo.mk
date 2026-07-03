@@ -19,15 +19,9 @@ build_args := \
 
 RUSTFLAGS := -A unsafe_op_in_unsafe_fn
 
-ifeq ($(PLAT_DYN),y)
-  build_args += -Z build-std=core,alloc
-endif
+build_args += -Z build-std=core,alloc
 
-ifeq ($(PLAT_DYN),y)
-  RUSTFLAGS_LINK_ARGS := -C relocation-model=pic -C link-arg=-pie -C link-arg=-znostart-stop-gc -C link-arg=-Tlinker.x
-else
-  RUSTFLAGS_LINK_ARGS := -C link-arg=-Tlinker.x -C link-arg=-no-pie -C link-arg=-znostart-stop-gc
-endif
+RUSTFLAGS_LINK_ARGS := -C relocation-model=pic -C link-arg=-pie -C link-arg=-znostart-stop-gc -C link-arg=-Tlinker.x
 RUSTDOCFLAGS := -Z unstable-options --enable-index-page -D rustdoc::broken_intra_doc_links
 
 ifeq ($(MAKECMDGOALS), doc_check_missing)

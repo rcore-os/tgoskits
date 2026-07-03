@@ -9,7 +9,7 @@
 
 use ax_errno::{AxResult, ax_err};
 use axvm_types::{
-    GuestPhysAddr, HostPhysAddr, VCpuId, VMId, VmArchPerCpuOps, VmArchVcpuOps, VmExit,
+    GuestPhysAddr, NestedPagingConfig, VCpuId, VMId, VmArchPerCpuOps, VmArchVcpuOps, VmExit,
 };
 
 use crate::{X86VCpuCreateConfig, X86VCpuSetupConfig};
@@ -50,7 +50,7 @@ impl VmArchVcpuOps for X86ArchVCpu {
         ax_err!(Unsupported, "no hypervisor backend (vmx/svm) enabled")
     }
 
-    fn set_nested_page_table_root(&mut self, _nested_page_table_root: HostPhysAddr) -> AxResult {
+    fn set_nested_page_table(&mut self, _config: NestedPagingConfig) -> AxResult {
         ax_err!(Unsupported, "no hypervisor backend (vmx/svm) enabled")
     }
 

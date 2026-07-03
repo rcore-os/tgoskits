@@ -100,6 +100,7 @@ sidebar_label: "锁使用问题跟踪"
 - VFS cache / user_data guard 内不应执行文件系统、socket、设备等后端回调。应先复制出必要的 `Arc` 或小状态，再释放 guard。
 - 文件系统粗锁包住 block I/O 是当前最大的未完成项。把 `SpinNoPreempt` 改成 `SpinNoIrq` 只是关闭 IRQ 重入风险，不代表 I/O under spin lock 合理。
 - 早期启动阶段的 `might_sleep()` 误伤和真实运行期 atomic sleep bug 需要区分。长期方向是让启动阶段进入更清晰的 sleepability 状态，或把 rootfs / pseudofs 初始化移动到正常任务上下文。
+- `might_sleep()` 已纳入显式 IRQ context，并能在 `lockdep` 构建下输出 held-lock stack；held non-sleep lock 作为直接触发条件仍待后续阶段。锁策略调整仍应先消除 spin guard 内的 fault、alloc、I/O、callback，而不是依赖诊断机制长期兜底；详细计划见 [`might_sleep` 后续增强计划](./might-sleep-followups.md)。
 
 ## 复查命令
 

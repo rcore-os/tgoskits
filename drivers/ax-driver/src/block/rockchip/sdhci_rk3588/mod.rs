@@ -29,7 +29,11 @@ use sdhci_host::{HostClock, HostResetHook, Sdhci, rdif as sdhci_rdif};
 use sdmmc_protocol::{
     Error, OperationPoll,
     error::{ErrorContext, Phase},
-    sdio::{CardInfo, CardInitPreference, SdioHost2Adapter, SdioInitScratch, SdioSdmmc},
+    sdio::{
+        card::{CardInfo, SdioSdmmc},
+        host2::SdioHost2Adapter,
+        init::{CardInitPreference, SdioInitScratch},
+    },
 };
 use spin::Once;
 
@@ -528,7 +532,7 @@ mod tests {
     #[test]
     fn rk3588_adma_queue_limits_expose_sdhci_window() {
         let config = rockchip_sdhci_rdif_config(8, test_dma());
-        let limits = sdmmc_protocol::rdif::queue_limits(&config, config.dma_mask);
+        let limits = sdmmc_protocol::rdif::config::queue_limits(&config, config.dma_mask);
 
         assert_eq!(limits.max_blocks_per_request, sdhci_host::ADMA2_MAX_BLOCKS);
         assert_eq!(limits.max_segment_size, sdhci_host::ADMA2_MAX_TRANSFER_SIZE);
@@ -685,7 +689,7 @@ mod tests {
 
     impl dma_api::DmaOp for TestDma {
         fn page_size(&self) -> usize {
-            sdmmc_protocol::rdif::BLOCK_SIZE
+            sdmmc_protocol::rdif::config::BLOCK_SIZE
         }
 
         unsafe fn alloc_contiguous(

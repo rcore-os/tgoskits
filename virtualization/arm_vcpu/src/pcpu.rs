@@ -88,4 +88,8 @@ impl VmArchPerCpuOps for Aarch64PerCpu {
     fn max_guest_page_table_levels(&self) -> usize {
         crate::vcpu::max_gpt_level(crate::vcpu::pa_bits())
     }
+
+    fn guest_phys_addr_bits(&self) -> usize {
+        crate::vcpu::pa_bits()
+    }
 }

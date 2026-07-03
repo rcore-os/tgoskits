@@ -26,7 +26,11 @@ use rdrive::{
 use sdmmc_protocol::{
     Error, OperationPoll,
     error::{ErrorContext, Phase},
-    sdio::{CardInfo, SdioHost2Adapter, SdioInitScratch, SdioSdmmc},
+    sdio::{
+        card::{CardInfo, SdioSdmmc},
+        host2::SdioHost2Adapter,
+        init::SdioInitScratch,
+    },
 };
 
 use super::clock::{

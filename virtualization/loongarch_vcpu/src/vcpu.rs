@@ -3,7 +3,10 @@ use ax_errno::AxResult;
 use ax_errno::ax_err;
 #[cfg(target_arch = "loongarch64")]
 use ax_memory_addr::VirtAddr;
-use axvm_types::{GuestPhysAddr, HostPhysAddr, MappingFlags, VCpuId, VMId, VmArchVcpuOps, VmExit};
+use axvm_types::{
+    GuestPhysAddr, HostPhysAddr, MappingFlags, NestedPagingConfig, VCpuId, VMId, VmArchVcpuOps,
+    VmExit,
+};
 #[cfg(target_arch = "loongarch64")]
 use loongArch64::register::prmd;
 
@@ -177,8 +180,8 @@ impl VmArchVcpuOps for LoongArchVCpu {
         Ok(())
     }
 
-    fn set_nested_page_table_root(&mut self, nested_page_table_root: HostPhysAddr) -> AxResult {
-        self.stage2_root = nested_page_table_root;
+    fn set_nested_page_table(&mut self, config: NestedPagingConfig) -> AxResult {
+        self.stage2_root = config.root_paddr;
         Ok(())
     }
 

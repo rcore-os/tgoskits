@@ -60,7 +60,7 @@ impl<'a, T: TableMeta, A: FrameAllocator> PageTableWalker<'a, T, A> {
         // 初始化栈，从根页表开始
         if walker.config.start_vaddr < walker.config.end_vaddr {
             let root_state = WalkState {
-                frame: Frame::from_paddr(page_table.root.paddr, page_table.root.allocator.clone()),
+                frame: page_table.root.clone(),
                 level: Frame::<T, A>::PT_LEVEL,
                 index: 0,
                 base_vaddr: VirtAddr::new(0),
@@ -88,7 +88,7 @@ impl<'a, T: TableMeta, A: FrameAllocator> PageTableWalker<'a, T, A> {
             let state = self.stack.last_mut().unwrap();
 
             // 检查当前级别是否还有更多条目
-            if state.index >= Frame::<T, A>::LEN {
+            if state.index >= state.frame.len() {
                 self.stack.pop();
                 continue;
             }

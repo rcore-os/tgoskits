@@ -309,13 +309,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "arceos-helloworld-myplat"
-version = "0.3.1"
-dependencies = [
- "ax-std",
-]
-
-[[package]]
 name = "arceos-httpclient"
 version = "0.1.0"
 dependencies = [
@@ -670,6 +663,7 @@ dependencies = [
  "axklib",
  "bcm2835-sdhci",
  "crab-usb",
+ "cv181x-sdhci",
  "dma-api",
  "dwmmc-host",
  "eth-intel",
@@ -709,7 +703,6 @@ dependencies = [
  "sdhci-host",
  "sdio-host-cv1800",
  "sdmmc-protocol",
- "sg200x-bsp",
  "simple-ahci",
  "some-serial",
  "spin",
@@ -1184,17 +1177,11 @@ dependencies = [
  "ax-lazyinit",
  "ax-memory-addr",
  "ax-memory-set",
- "ax-page-table-entry",
- "ax-page-table-multiarch",
  "axin",
  "axvm-types",
- "bit_field",
- "bitflags 2.13.0",
- "cfg-if",
  "lazy_static",
  "log",
- "numeric-enum-macro",
- "x86",
+ "page-table-generic",
 ]
 
 [[package]]
@@ -1471,6 +1458,7 @@ name = "axvisor"
 version = "0.5.16"
 dependencies = [
  "anyhow",
+ "ax-crate-interface",
  "ax-driver",
  "ax-errno 0.6.1",
  "ax-hal",
@@ -1508,8 +1496,7 @@ dependencies = [
  "ax-kspin",
  "ax-lazyinit",
  "ax-memory-addr",
- "ax-page-table-entry",
- "ax-page-table-multiarch",
+ "ax-memory-set",
  "ax-percpu",
  "ax-plat",
  "ax-std",
@@ -1518,9 +1505,10 @@ dependencies = [
  "axdevice",
  "axdevice_base",
  "axhvc",
- "axplat-dyn",
  "axvm-types",
  "axvmconfig",
+ "bit_field",
+ "bitflags 2.13.0",
  "byte-unit",
  "cfg-if",
  "extern-trait",
@@ -1530,11 +1518,14 @@ dependencies = [
  "irq-framework",
  "log",
  "loongarch_vcpu",
+ "numeric-enum-macro",
+ "page-table-generic",
  "rdif-intc",
  "rdrive",
  "riscv_vcpu",
  "riscv_vplic",
  "spin",
+ "x86",
  "x86_vcpu",
  "x86_vlapic",
 ]
@@ -1546,8 +1537,7 @@ dependencies = [
  "ax-cpumask",
  "ax-errno 0.6.1",
  "ax-memory-addr",
- "ax-page-table-entry",
- "ax-page-table-multiarch",
+ "bitflags 2.13.0",
 ]
 
 [[package]]
@@ -2618,6 +2608,18 @@ dependencies = [
  "unicode-segmentation",
  "unicode-width 0.2.2",
  "xi-unicode",
+]
+
+[[package]]
+name = "cv181x-sdhci"
+version = "0.1.0"
+dependencies = [
+ "dma-api",
+ "mmio-api",
+ "rdif-block",
+ "sdhci-host",
+ "sdio-host2",
+ "sdmmc-protocol",
 ]
 
 [[package]]
@@ -7576,6 +7578,8 @@ dependencies = [
 [[package]]
 name = "spin"
 version = "0.12.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1527984ca054dfca79333baec451042863f485fbee01b7bf6d911de915cac865"
 dependencies = [
  "lock_api",
 ]

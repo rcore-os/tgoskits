@@ -3,9 +3,11 @@
 use alloc::vec::Vec;
 
 use ax_errno::AxResult;
-use ax_memory_addr::VirtAddr;
+use ax_memory_addr::{PhysAddr, VirtAddr};
+use axaddrspace::NestedPageTableOps;
 use axvm_types::{
-    GuestPhysAddr, PassThroughPortConfig, VMInterruptMode, VmArchPerCpuOps, VmArchVcpuOps,
+    GuestPhysAddr, NestedPagingConfig, PassThroughPortConfig, VMInterruptMode, VmArchPerCpuOps,
+    VmArchVcpuOps,
 };
 
 use crate::CpuMask;
@@ -14,6 +16,7 @@ use crate::CpuMask;
 mod aarch64;
 #[cfg(target_arch = "loongarch64")]
 mod loongarch64;
+mod npt;
 #[cfg(target_arch = "riscv64")]
 mod riscv64;
 #[cfg(target_arch = "x86_64")]
@@ -30,6 +33,7 @@ pub(crate) type CurrentArch = x86_64::X86_64Arch;
 
 pub(crate) type ArchVCpu = <CurrentArch as ArchOps>::VCpu;
 pub(crate) type ArchPerCpu = <CurrentArch as ArchOps>::PerCpu;
+pub(crate) type ArchNestedPageTable = <CurrentArch as ArchOps>::NestedPageTable;
 
 #[allow(dead_code)]
 pub(crate) struct VcpuCreateContext {
@@ -51,12 +55,39 @@ pub(crate) trait ArchOps {
     type VCpu: VmArchVcpuOps;
     type PerCpu: VmArchPerCpuOps;
     type VcpuCreateState;
+    type NestedPageTable: NestedPageTableOps;
 
     fn has_hardware_support() -> bool;
 
     fn max_guest_page_table_levels() -> usize {
         4
     }
+
+    fn guest_page_table_levels(vcpu_mappings: &[(usize, Option<usize>, usize)]) -> AxResult<usize> {
+        let mut levels = Self::max_guest_page_table_levels();
+        for cpu_id in target_phys_cpu_ids(vcpu_mappings) {
+            levels = levels.min(
+                crate::percpu::cpu_max_guest_page_table_levels(cpu_id)
+                    .unwrap_or_else(Self::max_guest_page_table_levels),
+            );
+        }
+        Ok(levels)
+    }
+
+    fn nested_paging_config(
+        root_paddr: PhysAddr,
+        levels: usize,
+        _vcpu_mappings: &[(usize, Option<usize>, usize)],
+    ) -> AxResult<NestedPagingConfig> {
+        let gpa_bits = match levels {
+            3 => 39,
+            4 => 48,
+            _ => return ax_errno::ax_err!(InvalidInput, "unsupported nested page-table levels"),
+        };
+        Ok(NestedPagingConfig::new(root_paddr, levels, gpa_bits, 0))
+    }
+
+    fn new_nested_page_table(levels: usize) -> AxResult<Self::NestedPageTable>;
 
     fn clean_dcache_range(_addr: VirtAddr, _size: usize) {}
 
@@ -188,6 +219,22 @@ pub(crate) trait ArchOps {
     fn on_last_vcpu_exit(_vm_id: usize) {}
 
     fn after_mmio_write(_vm: &crate::AxVM) {}
+}
+
+pub(crate) fn target_phys_cpu_ids(vcpu_mappings: &[(usize, Option<usize>, usize)]) -> Vec<usize> {
+    let mut cpu_ids = Vec::new();
+    for (_, maybe_mask, phys_id) in vcpu_mappings {
+        if let Some(mask) = maybe_mask {
+            for cpu_id in 0..usize::BITS as usize {
+                if mask & (1usize << cpu_id) != 0 && !cpu_ids.contains(&cpu_id) {
+                    cpu_ids.push(cpu_id);
+                }
+            }
+        } else if !cpu_ids.contains(phys_id) {
+            cpu_ids.push(*phys_id);
+        }
+    }
+    cpu_ids
 }
 
 pub(crate) fn default_vcpu_affinities(

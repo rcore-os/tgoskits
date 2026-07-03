@@ -289,7 +289,7 @@ fn qemu_group_build_context_uses_dynamic_group_platform_over_default_request() {
             .features
             .contains(&"starry-kernel/plat-dyn".to_string())
     );
-    assert!(!cargo.features.contains(&"qemu".to_string()));
+    assert!(cargo.features.contains(&"qemu".to_string()));
     assert!(
         cargo
             .target

@@ -15,11 +15,7 @@ ifeq ($(ARCH), x86_64)
 else ifeq ($(ARCH), riscv64)
   machine := virt
 else ifeq ($(ARCH), aarch64)
-  ifeq ($(PLAT_NAME), aarch64-raspi4)
-    machine := raspi4b
-  else
-    machine := virt
-  endif
+  machine := virt
 else ifeq ($(ARCH), loongarch64)
   machine := virt
 endif

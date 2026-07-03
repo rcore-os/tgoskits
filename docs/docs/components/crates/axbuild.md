@@ -33,7 +33,7 @@ flowchart TD
 其中几个实现细节非常关键：
 
 - `prepare_artifacts()` 会先解析架构、SMP、内存、feature 等信息。
-- 静态平台配置生成路径已经移除；`axplat-dyn` 是当前唯一维护的构建路径。
+- 旧平台配置生成路径已经移除；`axplat-dyn` 是当前唯一维护的构建路径。
 - `PlatformResolver` 负责决定动态平台 target、链接参数和构建时环境。
 - `is_c_app()` 会读取应用 `Cargo.toml`，通过是否出现 `ax-libc` 判断这是 C 应用还是 Rust 应用。
 

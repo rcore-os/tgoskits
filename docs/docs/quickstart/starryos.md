@@ -180,10 +180,10 @@ cargo starry test board --board orangepi-5-plus --server <ip> --port <port>
 cargo starry test board --board licheerv-nano-sg2002 --server <ip> --port <port>
 ```
 
-详细说明见：[StarryOS 测试套件设计](/docs/build/test/starry)
+详细说明见：[StarryOS 测试套件设计](/docs/build/starry/test)
 
 若需要继续了解 case 结构、rootfs 组织方式和测试实现细节，可以继续阅读：
 
 - [StarryOS 开发指南](/docs/development/starryos)
-- [StarryOS 测试套件设计](/docs/build/test/starry)
+- [StarryOS 测试套件设计](/docs/build/starry/test)
 - [QEMU 运行](/docs/build/overview)

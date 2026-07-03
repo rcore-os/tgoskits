@@ -24,7 +24,7 @@ drivers/<device-type>/<crate-name>
 drivers/<device-type>/<vendor-or-family>/<crate-name>
 ```
 
-Use descriptive device-type directories for reusable crates. For example, a new reusable block device may live under `drivers/block/<vendor>/<crate>`. Existing platform glue may use shorter historical module names such as `platform/axplat-dyn/src/drivers/blk`; keep those names when editing that layer.
+Use descriptive device-type directories for reusable crates. For example, a new reusable block device may live under `drivers/block/<vendor>/<crate>`. Existing platform glue may use shorter historical module names such as `platforms/axplat-dyn/src/drivers/blk`; keep those names when editing that layer.
 
 Existing examples:
 
@@ -42,13 +42,13 @@ When adding a new reusable crate:
 
 Runtime/platform integration belongs elsewhere:
 
-- `platform/axplat-dyn/src/drivers/<type>/...` for dynamic platform/FDT/probe glue.
-- `platform/axplat-dyn/src/drivers/soc/<vendor>/...` for SoC platform glue.
+- `platforms/axplat-dyn/src/drivers/<type>/...` for dynamic platform/FDT/probe glue.
+- `platforms/axplat-dyn/src/drivers/soc/<vendor>/...` for SoC platform glue.
 - `components/axdriver_crates/axdriver_<type>` for common ArceOS-facing driver traits/adapters.
 
 For block devices in `axplat-dyn`, the integration path is:
 
-- probe/FDT/MMIO setup in `platform/axplat-dyn/src/drivers/blk/<driver>.rs`
+- probe/FDT/MMIO setup in `platforms/axplat-dyn/src/drivers/blk/<driver>.rs`
 - expose the portable driver as `rdif_block::Interface`
 - expose queues as `rdif_block::IQueue` with `submit_request()` / `poll_request()`
 - register boxed `rdif_block::Interface` devices through the ArceOS driver glue and `rdrive`

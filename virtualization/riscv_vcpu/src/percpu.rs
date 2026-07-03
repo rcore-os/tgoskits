@@ -46,6 +46,18 @@ impl VmArchPerCpuOps for RISCVPerCpu {
     fn hardware_disable(&mut self) -> AxResult<()> {
         unimplemented!()
     }
+
+    fn max_guest_page_table_levels(&self) -> usize {
+        crate::max_guest_page_table_levels()
+    }
+
+    fn guest_phys_addr_bits(&self) -> usize {
+        match crate::max_guest_page_table_levels() {
+            3 => 41,
+            4 => 50,
+            _ => 0,
+        }
+    }
 }
 
 /// Initialize (H)S-level CSRs to a reasonable state.

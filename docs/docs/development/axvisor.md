@@ -298,7 +298,7 @@ passthrough_devices = [["/"]]
 ```toml
 # qemu-aarch64.toml
 env = { AX_IP = "10.0.2.15", AX_GW = "10.0.2.2" }
-features = ["ept-level-4", "ax-std/bus-mmio", "fs"]
+features = ["ax-std/bus-mmio", "fs"]
 log = "Info"
 vm_configs = []   # 注意：默认为空，需手动指定或通过 setup_qemu.sh 生成
 ```
@@ -391,7 +391,7 @@ Axvisor 测试配置与 StarryOS 类似，使用 shell 交互模式：
 ```toml
 # build config
 vm_configs = ["os/axvisor/configs/vms/qemu/aarch64/linux-smp1.toml"]
-features = ["ept-level-4", "ax-std/bus-mmio", "fs"]
+features = ["ax-std/bus-mmio", "fs"]
 ```
 
 ```toml

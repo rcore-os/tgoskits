@@ -42,10 +42,9 @@ use crate::arch::ArchOps;
 pub mod config;
 
 pub use ax_cpumask::CpuMask;
-pub use ax_page_table_entry::MappingFlags;
 pub use axvm_types::{
-    AccessWidth, GuestPhysAddr, HostPhysAddr, InterruptTriggerMode, Port, SysRegAddr, VMId, VmExit,
-    VmVcpuState,
+    AccessWidth, GuestPhysAddr, HostPhysAddr, InterruptTriggerMode, MappingFlags, Port, SysRegAddr,
+    VMId, VmExit, VmVcpuState,
 };
 pub(crate) use host::{
     paging::HostPagingHandler,

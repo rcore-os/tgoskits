@@ -36,7 +36,12 @@ ramdisk = ["block", "dep:ramdisk"]
 bcm2835-sdhci = ["block", "dep:bcm2835-sdhci"]
 ahci = ["block", "pci", "dep:simple-ahci"]
 nvme = ["block", "pci", "dep:nvme-driver"]
-cvsd = ["block", "dep:sg200x-bsp"]
+cvsd = [
+    "block",
+    "dep:cv181x-sdhci",
+    "dep:sdmmc-protocol",
+    "sdmmc-protocol/rdif",
+]
 fxmac = ["net", "dep:ax-alloc", "dep:ax-crate-interface", "dep:fxmac_rs"]
 intel-net = ["net", "pci", "dep:eth-intel"]
 realtek-rtl8125 = ["net", "pci", "dep:realtek-rtl8125"]
@@ -49,6 +54,7 @@ aic8800-wifi = [
 
 usb = ["dep:crab-usb"]
 rockchip-dwc-xhci = ["usb", "rockchip-soc", "rockchip-pm"]
+rockchip-ehci = ["usb", "rockchip-soc", "rockchip-pm"]
 xhci-mmio = ["usb"]
 xhci-pci = ["usb", "pci"]
 serial = [
@@ -130,6 +136,7 @@ ax-kspin = { workspace = true, optional = true }
 axklib.workspace = true
 bcm2835-sdhci = { workspace = true, optional = true }
 crab-usb = { workspace = true, optional = true }
+cv181x-sdhci = { workspace = true, optional = true }
 dma-api.workspace = true
 dwmmc-host = { workspace = true, optional = true }
 eth-intel = { workspace = true, optional = true }
@@ -168,7 +175,6 @@ sdhci-host = { workspace = true, optional = true }
 sdhci-cv1800 = { workspace = true, optional = true }
 sdio-host = { workspace = true, optional = true }
 sdmmc-protocol = { workspace = true, default-features = false, optional = true }
-sg200x-bsp = { workspace = true, optional = true }
 simple-ahci = { workspace = true, optional = true }
 some-serial = { workspace = true, optional = true }
 spin.workspace = true

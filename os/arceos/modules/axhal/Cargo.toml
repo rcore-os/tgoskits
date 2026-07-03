@@ -40,8 +40,6 @@ hv = [
 axvisor-linker = []
 
 host-test = []
-myplat = []
-defplat = []
 
 default = []
 ipi = ["irq"]

@@ -100,10 +100,10 @@ cargo xtask arceos test qemu --target riscv64gc-unknown-none-elf --only-c
 cargo xtask arceos test qemu --target aarch64-unknown-none-softfloat --test-group rust --test-case task-affinity
 ```
 
-详细说明见：[ArceOS 测试套件设计](/docs/build/test/arceos)
+详细说明见：[ArceOS 测试套件设计](/docs/build/arceos/test)
 
 若需要继续理解 ArceOS 的模块层、组件关系或测试实现，可以继续阅读：
 
 - [ArceOS 开发指南](/docs/development/arceos)
-- [ArceOS 测试套件设计](/docs/build/test/arceos)
+- [ArceOS 测试套件设计](/docs/build/arceos/test)
 - [组件开发指南](/docs/development/components)

@@ -84,8 +84,7 @@ apps/arceos/
 ├── thread_test/
 ├── tokio_test/
 ├── arce_agent/
-├── shell/
-└── helloworld-myplat/
+└── shell/
 ```
 
 ---
@@ -384,9 +383,9 @@ C 应用覆盖由 `test-suit/arceos/c` 维护；`apps/arceos` 只保留 Rust std
 | `platforms/` | 工作区内平台契约和动态平台实现；当前内置平台路径为 `axplat-dyn` |
 | `platforms/axplat-dyn/` | 动态平台加载（UEFI/FDT/ACPI 运行时平台事实与设备探测 glue） |
 
-AArch64、RISC-V QEMU、x86_64 QEMU、LoongArch QEMU 和 SG2002 板卡默认由 `axplat-dyn` 通过 UEFI/设备树/ACPI 等运行时信息加载。仓库不再内置 SG2002 或其他板级静态平台 crate。
+AArch64、RISC-V QEMU、x86_64 QEMU、LoongArch QEMU 和 SG2002 板卡默认由 `axplat-dyn` 通过 UEFI/设备树/ACPI 等运行时信息加载。仓库不再内置 SG2002 或其他固定板级平台 crate。
 
-旧 LoongArch QEMU 写法需要迁移：移除 `ax-hal/loongarch64-qemu-virt`，命令行不要再写 `--plat loongarch64-qemu-virt`，直接使用 `--arch loongarch64`。动态路径会进入 `axplat-dyn` 和 UEFI/`efi` 启动链路。
+旧的按平台 feature 或 `--plat` 选择实现的写法需要迁移：直接使用 `--arch` 选择目标架构。动态路径会进入 `axplat-dyn` 和 UEFI/FDT/ACPI 启动链路。
 
 ### 5.3 添加板卡支持
 

@@ -25,7 +25,7 @@ use crate::{
         Directory, File, FileLike, Pipe, get_file_like,
         memfd::{F_SEAL_GROW, F_SEAL_WRITE, Memfd},
     },
-    mm::{IoVec, IoVectorBuf, UserConstPtr, VmBytesMut},
+    mm::{IoVec, IoVectorBuf, UserConstPtr, VmBytesMut, vm_load_path_string},
     task::AsThread,
 };
 
@@ -197,8 +197,8 @@ pub fn sys_lseek(fd: c_int, offset: __kernel_off_t, whence: c_int) -> AxResult<i
     Err(AxError::from(LinuxError::ESPIPE))
 }
 
-pub fn sys_truncate(path: UserConstPtr<c_char>, length: __kernel_off_t) -> AxResult<isize> {
-    let path = path.get_as_str()?;
+pub fn sys_truncate(path: *const c_char, length: __kernel_off_t) -> AxResult<isize> {
+    let path = vm_load_path_string(path)?;
     debug!("sys_truncate <= {path:?} {length}");
     if path.is_empty() {
         return Err(AxError::from(LinuxError::ENOENT));
@@ -208,7 +208,7 @@ pub fn sys_truncate(path: UserConstPtr<c_char>, length: __kernel_off_t) -> AxRes
     }
     let file = OpenOptions::new()
         .write(true)
-        .open(&FS_CONTEXT.lock(), path)?
+        .open(&FS_CONTEXT.lock(), &path)?
         .into_file()?;
     if (length as u64) > u32::MAX as u64 * 4096 {
         return Err(AxError::from(LinuxError::EFBIG));

@@ -58,9 +58,9 @@ pub(super) fn map_guest_address_space(
         GuestPhysAddr::from(X86_APIC_ACCESS_GPA),
         x86_apic_access_page_addr(),
         ax_memory_addr::PAGE_SIZE_4K,
-        axaddrspace::MappingFlags::DEVICE
-            | axaddrspace::MappingFlags::READ
-            | axaddrspace::MappingFlags::WRITE,
+        axvm_types::MappingFlags::DEVICE
+            | axvm_types::MappingFlags::READ
+            | axvm_types::MappingFlags::WRITE,
     )?;
 
     Ok(())

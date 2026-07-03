@@ -140,21 +140,12 @@ fn patch_starry_cargo_config(
     request: &ResolvedStarryRequest,
     metadata: &Metadata,
 ) -> anyhow::Result<()> {
-    let platform = crate::context::starry_default_platform_for_arch_checked(&request.arch)?;
-    let uses_default_qemu_platform = uses_default_qemu_platform(&cargo.features);
-
     cargo.package = request.package.clone();
     ensure_starry_bin_arg(&mut cargo.args, &request.package, metadata)?;
     apply_starry_bin_override(cargo)?;
     cargo
         .features
         .retain(|feature| !is_removed_dynamic_platform_feature(feature));
-    remove_qemu_feature_for_dynamic_platform(cargo);
-    if uses_default_qemu_platform {
-        cargo.features.push("qemu".to_string());
-        cargo.features.sort();
-        cargo.features.dedup();
-    }
 
     cargo
         .env
@@ -162,12 +153,6 @@ fn patch_starry_cargo_config(
     cargo
         .env
         .insert("AX_TARGET".to_string(), request.target.clone());
-    if uses_default_qemu_platform && let Some(platform) = platform {
-        cargo
-            .env
-            .entry("AX_PLATFORM".to_string())
-            .or_insert_with(|| platform.to_string());
-    }
 
     Ok(())
 }
@@ -568,10 +553,6 @@ fn temp_file_path(path: &Path, suffix: &str) -> anyhow::Result<PathBuf> {
     Ok(parent.join(format!(".{name}.{suffix}.{}.tmp", std::process::id())))
 }
 
-fn remove_qemu_feature_for_dynamic_platform(cargo: &mut Cargo) {
-    cargo.features.retain(|feature| feature != "qemu");
-}
-
 fn is_removed_dynamic_platform_feature(feature: &str) -> bool {
     matches!(
         feature,
@@ -581,23 +562,6 @@ fn is_removed_dynamic_platform_feature(feature: &str) -> bool {
             | "starry-kernel/plat-dyn"
             | "ax-hal/plat-dyn"
     )
-}
-
-fn uses_default_qemu_platform(features: &[String]) -> bool {
-    let has_static_platform = features.iter().any(|feature| {
-        matches!(
-            feature.as_str(),
-            "defplat" | "ax-feat/defplat" | "ax-std/defplat"
-        )
-    });
-    let has_custom = features.iter().any(|feature| {
-        matches!(
-            feature.as_str(),
-            "myplat" | "ax-feat/myplat" | "ax-std/myplat" | "ax-hal/myplat"
-        )
-    });
-
-    has_static_platform && !has_custom
 }
 
 fn apply_starry_bin_override(cargo: &mut Cargo) -> anyhow::Result<()> {

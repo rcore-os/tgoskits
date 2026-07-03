@@ -29,7 +29,7 @@ pub(super) fn declares_removed_plat_dyn_field(content: &str) -> bool {
         .is_some_and(|table| table.contains_key("plat_dyn"))
 }
 
-pub(super) fn declares_static_platform(content: &str) -> bool {
+pub(super) fn declares_removed_platform_feature(content: &str) -> bool {
     let Ok(table) = toml::from_str::<toml::Table>(content) else {
         return false;
     };
@@ -40,19 +40,19 @@ pub(super) fn declares_static_platform(content: &str) -> bool {
     features
         .iter()
         .filter_map(|feature| feature.as_str())
-        .any(is_static_platform_feature)
+        .any(is_removed_platform_feature)
 }
 
-fn is_static_platform_feature(feature: &str) -> bool {
+fn is_removed_platform_feature(feature: &str) -> bool {
     ax_hal_platform_feature_name(feature, None).is_some_and(|platform| platform != "plat-dyn")
 }
 
 #[test]
-fn declares_static_platform_ignores_removed_ax_driver_static_feature() {
+fn declares_removed_platform_feature_ignores_removed_ax_driver_feature() {
     let feature = concat!("ax-driver/", "plat", "-static");
     let content = format!("features = [\"{feature}\"]\n");
 
-    assert!(!declares_static_platform(&content));
+    assert!(!declares_removed_platform_feature(&content));
 }
 
 pub(super) fn checked_in_build_config_roots(workspace: &Path) -> [PathBuf; 4] {

@@ -116,7 +116,7 @@ flowchart TB
 | `ax-ctor-bare-macros` | 组件层 | `components/ctor_bare/ctor_bare_macros` | 0 | 1 | [查看](crates/ax-ctor-bare-macros) |
 | `ax-display` | ArceOS 层 | `os/arceos/modules/axdisplay` | 3 | 4 | [查看](crates/ax-display) |
 | `ax-dma` | ArceOS 层 | `os/arceos/modules/axdma` | 7 | 2 | [查看](crates/ax-dma) |
-| `ax-driver` | ArceOS 层 | `drivers/ax-driver` | 15 | 10 | [查看](crates/ax-driver) |
+| `ax-driver` | ArceOS 层 | `drivers/ax-driver` | 15 | 10 | [查看](../architecture/driver/overview) |
 | `ax-errno` | 组件层 | `components/axerrno` | 0 | 36 | [查看](crates/ax-errno) |
 | `ax-feat` | ArceOS 层 | `os/arceos/api/axfeat` | 16 | 7 | [查看](crates/ax-feat) |
 | `ax-fs` | ArceOS 层 | `os/arceos/modules/axfs` | 10 | 4 | [查看](crates/ax-fs) |
@@ -126,7 +126,6 @@ flowchart TB
 | `ax-fs-vfs` | 组件层 | `components/axfs_crates/axfs_vfs` | 1 | 4 | [查看](crates/ax-fs-vfs) |
 | `ax-hal` | ArceOS 层 | `os/arceos/modules/axhal` | 13 | 15 | [查看](crates/ax-hal) |
 | `arceos-helloworld` | ArceOS 层 | `apps/arceos/helloworld` | 1 | 0 | [查看](crates/arceos-helloworld) |
-| `arceos-helloworld-myplat` | ArceOS 层 | `apps/arceos/helloworld-myplat` | 8 | 0 | [查看](crates/arceos-helloworld-myplat) |
 | `arceos-httpclient` | ArceOS 层 | `apps/arceos/httpclient` | 1 | 0 | [查看](crates/arceos-httpclient) |
 | `arceos-httpserver` | ArceOS 层 | `apps/arceos/httpserver` | 1 | 0 | [查看](crates/arceos-httpserver) |
 | `ax-input` | ArceOS 层 | `os/arceos/modules/axinput` | 3 | 3 | [查看](crates/ax-input) |

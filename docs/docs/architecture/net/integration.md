@@ -11,16 +11,16 @@ sidebar_label: "系统集成"
 
 | 源码 | 集成职责 |
 | --- | --- |
-| [os/arceos/modules/axruntime/src/devices.rs](os/arceos/modules/axruntime/src/devices.rs) | runtime 侧设备收集、IRQ 注册、`init_network()`、动态 Wi-Fi/SoftAP 注册、vsock 初始化 |
-| [os/arceos/modules/axruntime/src/irq.rs](os/arceos/modules/axruntime/src/irq.rs) | 将 platform IRQ 注册能力适配为 `ax_net::EthernetIrqRegistrar` |
-| [os/arceos/modules/axruntime/src/unix_ns.rs](os/arceos/modules/axruntime/src/unix_ns.rs) | 将 ArceOS 文件系统命名空间适配为 Unix socket namespace |
-| [os/StarryOS/kernel/src/file/net.rs](os/StarryOS/kernel/src/file/net.rs) | Linux `ifreq`/`SIOCGIF*`/`FIONREAD` 等网络 ioctl 适配 |
-| [os/StarryOS/kernel/src/file/packet.rs](os/StarryOS/kernel/src/file/packet.rs) | `AF_PACKET`、`sockaddr_ll`、packet socket ioctl 和模拟 ARP reply |
-| [os/StarryOS/kernel/src/file/netlink.rs](os/StarryOS/kernel/src/file/netlink.rs) | `RTM_GETLINK`、`RTM_GETADDR` 等 netlink 查询 |
-| [os/StarryOS/kernel/src/syscall/net/opt.rs](os/StarryOS/kernel/src/syscall/net/opt.rs) | `getsockopt()`/`setsockopt()`，包括 `SO_BINDTODEVICE` |
-| [os/StarryOS/kernel/src/pseudofs/proc.rs](os/StarryOS/kernel/src/pseudofs/proc.rs) | `/proc/net/arp`、`/proc/net/dev` 等 procfs 视图 |
-| [net/ax-net/src/lib.rs](net/ax-net/src/lib.rs) | `init_network()`、`register_device_with_config()`、`init_vsock()`、public facade |
-| [net/ax-net/src/config.rs](net/ax-net/src/config.rs) | `NetworkConfig`、`InterfaceInfo`、`InterfaceId`、`DeviceBinding` 等跨系统数据模型 |
+| `os/arceos/modules/axruntime/src/devices.rs` | runtime 侧设备收集、IRQ 注册、`init_network()`、动态 Wi-Fi/SoftAP 注册、vsock 初始化 |
+| `os/arceos/modules/axruntime/src/irq.rs` | 将 platform IRQ 注册能力适配为 `ax_net::EthernetIrqRegistrar` |
+| `os/arceos/modules/axruntime/src/unix_ns.rs` | 将 ArceOS 文件系统命名空间适配为 Unix socket namespace |
+| `os/StarryOS/kernel/src/file/net.rs` | Linux `ifreq`/`SIOCGIF*`/`FIONREAD` 等网络 ioctl 适配 |
+| `os/StarryOS/kernel/src/file/packet.rs` | `AF_PACKET`、`sockaddr_ll`、packet socket ioctl 和模拟 ARP reply |
+| `os/StarryOS/kernel/src/file/netlink.rs` | `RTM_GETLINK`、`RTM_GETADDR` 等 netlink 查询 |
+| `os/StarryOS/kernel/src/syscall/net/opt.rs` | `getsockopt()`/`setsockopt()`，包括 `SO_BINDTODEVICE` |
+| `os/StarryOS/kernel/src/pseudofs/proc.rs` | `/proc/net/arp`、`/proc/net/dev` 等 procfs 视图 |
+| `net/ax-net/src/lib.rs` | `init_network()`、`register_device_with_config()`、`init_vsock()`、public facade |
+| `net/ax-net/src/config.rs` | `NetworkConfig`、`InterfaceInfo`、`InterfaceId`、`DeviceBinding` 等跨系统数据模型 |
 
 ## 集成模型
 

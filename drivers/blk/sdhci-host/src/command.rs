@@ -609,7 +609,7 @@ fn read_r2(host: &Sdhci) -> [u8; 16] {
 mod tests {
     use core::ptr::NonNull;
 
-    use sdmmc_protocol::{DataDirection, cmd::cmd17, sdio::SdioIrqHandle};
+    use sdmmc_protocol::{DataDirection, cmd::cmd17, sdio::host::SdioIrqHandle};
 
     use super::*;
 

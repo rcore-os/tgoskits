@@ -14,7 +14,7 @@
 
 use aarch64_cpu::registers::*;
 use ax_errno::AxResult;
-use axvm_types::{GuestPhysAddr, HostPhysAddr, SysRegAddr, VmArchVcpuOps, VmExit};
+use axvm_types::{GuestPhysAddr, NestedPagingConfig, SysRegAddr, VmArchVcpuOps, VmExit};
 
 use crate::{
     TrapFrame,
@@ -110,9 +110,15 @@ impl axvm_types::VmArchVcpuOps for Aarch64VCpu {
         Ok(())
     }
 
-    fn set_nested_page_table_root(&mut self, nested_page_table_root: HostPhysAddr) -> AxResult {
-        debug!("set vcpu stage-2 root:{nested_page_table_root:#x}");
-        self.guest_system_regs.vttbr_el2 = nested_page_table_root.as_usize() as u64;
+    fn set_nested_page_table(&mut self, config: NestedPagingConfig) -> AxResult {
+        debug!("set vcpu stage-2 root:{:#x}", config.root_paddr);
+        self.guest_system_regs.vttbr_el2 = config.root_paddr.as_usize() as u64;
+        let pa_bits = if config.mode == 0 {
+            pa_bits()
+        } else {
+            config.mode
+        };
+        self.guest_system_regs.vtcr_el2 = vtcr_for_config(config.levels, config.gpa_bits, pa_bits);
         Ok(())
     }
 
@@ -191,12 +197,12 @@ impl Aarch64VCpu {
         self.guest_system_regs.sctlr_el1 = 0x30C50830;
         self.guest_system_regs.pmcr_el0 = 0;
 
-        self.guest_system_regs.vtcr_el2 = probe_vtcr_support()
-            + (VTCR_EL2::TG0::Granule4KB
-                + VTCR_EL2::SH0::Inner
-                + VTCR_EL2::ORGN0::NormalWBRAWA
-                + VTCR_EL2::IRGN0::NormalWBRAWA)
-                .value;
+        if self.guest_system_regs.vtcr_el2 == 0 {
+            let pa_bits = pa_bits();
+            let levels = max_gpt_level(pa_bits);
+            let gpa_bits = if levels == 3 { 39 } else { 48 };
+            self.guest_system_regs.vtcr_el2 = vtcr_for_config(levels, gpa_bits, pa_bits);
+        }
 
         let mut hcr_el2 =
             HCR_EL2::VM::Enable + HCR_EL2::TSC::EnableTrapEl1SmcToEl2 + HCR_EL2::RW::EL1IsAarch64;
@@ -452,12 +458,10 @@ pub(crate) fn max_gpt_level(pa_bits: usize) -> usize {
     }
 }
 
-fn probe_vtcr_support() -> u64 {
-    let pa_bits = pa_bits();
-
-    let mut val = match max_gpt_level(pa_bits) {
-        4 => VTCR_EL2::SL0::Granule4KBLevel0 + VTCR_EL2::T0SZ.val(64 - 48),
-        _ => VTCR_EL2::SL0::Granule4KBLevel1 + VTCR_EL2::T0SZ.val(64 - 39),
+fn vtcr_for_config(levels: usize, gpa_bits: usize, pa_bits: usize) -> u64 {
+    let mut val = match levels {
+        4 => VTCR_EL2::SL0::Granule4KBLevel0 + VTCR_EL2::T0SZ.val((64 - gpa_bits) as u64),
+        _ => VTCR_EL2::SL0::Granule4KBLevel1 + VTCR_EL2::T0SZ.val((64 - gpa_bits) as u64),
     };
 
     match pa_bits {
@@ -469,6 +473,11 @@ fn probe_vtcr_support() -> u64 {
         36..=39 => val += VTCR_EL2::PS::PA_36B_64GB,
         _ => val += VTCR_EL2::PS::PA_32B_4GB,
     }
+
+    val += VTCR_EL2::TG0::Granule4KB
+        + VTCR_EL2::SH0::Inner
+        + VTCR_EL2::ORGN0::NormalWBRAWA
+        + VTCR_EL2::IRGN0::NormalWBRAWA;
 
     val.value
 }
