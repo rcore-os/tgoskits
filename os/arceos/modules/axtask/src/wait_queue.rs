@@ -206,11 +206,11 @@ impl WaitQueue {
 
     /// Wakes up one task in the wait queue and runs a callback on it.
     ///
-    /// The callback `func` is invoked while holding the wait-queue lock and
-    /// before the selected task is unblocked. It receives the task's ID as a
-    /// `u64` when a task is available, or `0` if the wait queue is empty.
-    /// This can be used for lock handoff or other bookkeeping associated with
-    /// the waking task.
+    /// The callback `func` receives the task ID only when a task is actually
+    /// unblocked. Stale entries that no longer belong to this queue, or tasks
+    /// that have already been made runnable by another wake path, are skipped
+    /// and do not consume this notification. The callback receives `0` only if
+    /// no task can be woken.
     ///
     /// If `resched` is true, the current task will be preempted when the
     /// preemption is enabled.
@@ -218,30 +218,14 @@ impl WaitQueue {
     where
         F: Fn(u64),
     {
-        let task = {
-            let mut wq = self.queue.lock();
-            let wait_queue_key = self.key();
-            loop {
-                match wq.pop_front() {
-                    Some(task) if task.clear_wait_queue_key(wait_queue_key) => {
-                        func(task.id().as_u64());
-                        break Some(task);
-                    }
-                    Some(_) => {
-                        continue;
-                    }
-                    None => {
-                        func(0);
-                        break None;
-                    }
-                }
+        while let Some(task) = self.pop_front() {
+            let task_id = task.id().as_u64();
+            if unblock_one_task(task, resched) {
+                func(task_id);
+                return true;
             }
-        };
-
-        if let Some(task) = task {
-            unblock_one_task(task, resched);
-            return true;
         }
+        func(0);
         false
     }
 

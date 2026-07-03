@@ -823,6 +823,36 @@ fn test_wait_queue_notify_one_ignores_ready_stale_waiter() {
 }
 
 #[test]
+fn test_wait_queue_notify_one_with_ignores_ready_stale_waiter() {
+    run_in_test_scheduler(|| {
+        let wait_queue = WaitQueue::new();
+        let stale =
+            crate::TaskInner::new(|| {}, "ready-stale-with".into(), RAW_TASK_STACK_SIZE).into_arc();
+        let blocked =
+            crate::TaskInner::new(|| {}, "blocked-with".into(), RAW_TASK_STACK_SIZE).into_arc();
+
+        crate::register_task(&stale);
+        crate::register_task(&blocked);
+        stale.set_state(crate::TaskState::Ready);
+        blocked.set_state(crate::TaskState::Blocked);
+        wait_queue.push_task_for_test(stale.clone());
+        wait_queue.push_task_for_test(blocked.clone());
+
+        let observed = AtomicUsize::new(usize::MAX);
+        assert!(wait_queue.notify_one_with(false, |task_id| {
+            observed.store(task_id as usize, Ordering::Release);
+        }));
+        assert_eq!(
+            observed.load(Ordering::Acquire),
+            blocked.id().as_u64() as usize
+        );
+        assert_eq!(blocked.state(), crate::TaskState::Ready);
+        assert!(!stale.in_wait_queue());
+        assert!(!blocked.in_wait_queue());
+    });
+}
+
+#[test]
 fn test_irq_notify_wakes_after_concurrent_irq_callbacks() {
     run_in_test_scheduler(|| {
         const NUM_IRQ_THREADS: usize = 6;
