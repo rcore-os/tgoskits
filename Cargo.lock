@@ -570,6 +570,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "ax-cgroup"
+version = "0.1.0"
+dependencies = [
+ "ax-errno 0.6.0",
+ "ax-kspin",
+ "ax-lazyinit",
+ "axfs-ng-vfs",
+ "log",
+]
+
+[[package]]
 name = "ax-config"
 version = "0.5.14"
 dependencies = [
@@ -7634,6 +7645,7 @@ name = "starry-kernel"
 version = "0.6.5"
 dependencies = [
  "ax-alloc",
+ "ax-cgroup",
  "ax-config",
  "ax-cpu",
  "ax-crate-interface",
