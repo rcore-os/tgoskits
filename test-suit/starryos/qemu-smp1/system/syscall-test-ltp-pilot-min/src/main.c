@@ -468,6 +468,10 @@ static void test_pathmax_min(void)
     expect_ret_errno("getxattr long path -> ENAMETOOLONG",
                      getxattr(path, "user.test", NULL, 0), ENAMETOOLONG);
 
+    errno = 0;
+    expect_ret_errno("truncate long path -> ENAMETOOLONG", truncate(path, 0),
+                     ENAMETOOLONG);
+
     free(path);
 }
 

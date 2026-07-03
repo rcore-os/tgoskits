@@ -253,7 +253,7 @@ pub fn handle_syscall(uctx: &mut UserContext) {
         Sysno::write => sys_write(uctx.arg0() as _, uctx.arg1() as _, uctx.arg2() as _),
         Sysno::writev => sys_writev(uctx.arg0() as _, uctx.arg1() as _, uctx.arg2() as _),
         Sysno::lseek => sys_lseek(uctx.arg0() as _, uctx.arg1() as _, uctx.arg2() as _),
-        Sysno::truncate => sys_truncate(uctx.arg0().into(), uctx.arg1() as _),
+        Sysno::truncate => sys_truncate(uctx.arg0() as _, uctx.arg1() as _),
         Sysno::ftruncate => sys_ftruncate(uctx.arg0() as _, uctx.arg1() as _),
         Sysno::fallocate => sys_fallocate(
             uctx.arg0() as _,
