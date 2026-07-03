@@ -1,0 +1,20 @@
+board_type = "AKA-00-SG2002"
+dtb_file = "os/StarryOS/configs/board/aka-00-sg2002.dtb"
+kernel_load_addr = "0x80200000"
+fit_load_addr = "0x82200000"
+bootm_addr = "0x82200000"
+success_regex = [
+  "(?m)^SG2002_DWC2_MSC_READ_OK .*$",
+  "(?m)^AXTEST_SUITE_OK\\s*$",
+]
+fail_regex = [
+  "(?i)\\bpanic(?:ked)?\\b",
+  "(?i)segmentation fault",
+  "(?i)SIGSEGV",
+  "exit with code: 139",
+  "(?m)^SG2002_DWC2_MSC_FAIL .*$",
+  "AXTEST_SUITE_FAIL",
+  "AXTEST_CASE status=fail",
+]
+timeout = 600
+

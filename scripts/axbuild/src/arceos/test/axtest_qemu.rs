@@ -1,5 +1,5 @@
 use super::{
-    ARCEOS_AXTEST_GROUP,
+    ARCEOS_AXTEST_GROUP, ARCEOS_AXTEST_RUSTFLAGS,
     assets::arceos_test_group_dir,
     discovery::{discover_qemu_cases_in_dir, discover_qemu_cases_in_dir_allow_empty},
     runner::run_prepared_qemu_groups,
@@ -7,8 +7,6 @@ use super::{
     types::GenericQemuRunOptions,
 };
 use crate::{arceos::ArceOS, build::append_encoded_rustflags};
-
-const AXTEST_RUSTFLAGS: &[&str] = &["--cfg", "axtest", "--check-cfg", "cfg(axtest)"];
 
 pub(super) async fn test_axtest_qemu(
     arceos: &mut ArceOS,
@@ -45,7 +43,7 @@ pub(super) async fn test_axtest_qemu(
     );
     let mut prepared = prepare_rust_qemu_cases(arceos, target, cases).await?;
     for case in &mut prepared {
-        append_encoded_rustflags(&mut case.cargo, AXTEST_RUSTFLAGS);
+        append_encoded_rustflags(&mut case.cargo, ARCEOS_AXTEST_RUSTFLAGS);
         if crate::support::axtest_coverage::enabled(&case.cargo) {
             crate::support::axtest_coverage::prepare_cargo(&mut case.cargo);
         }

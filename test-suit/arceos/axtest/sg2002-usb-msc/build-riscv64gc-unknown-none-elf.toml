@@ -1,0 +1,14 @@
+package = "arceos-axtest-sg2002-usb-msc"
+target = "riscv64gc-unknown-none-elf"
+features = [
+  "ax-std",
+  "irq",
+  "multitask",
+  "dma",
+  "ax-task/multitask",
+  "axplat-dyn/thead-mae",
+  "ax-driver/serial",
+  "ax-driver/sg2002-dwc2",
+]
+log = "Info"
+max_cpu_num = 1
