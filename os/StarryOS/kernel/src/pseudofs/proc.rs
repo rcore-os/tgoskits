@@ -162,6 +162,29 @@ fn render_cpuinfo() -> String {
     buf
 }
 
+/// Read a root-node device-tree property as its raw bytes (NUL-separated,
+/// NUL-terminated string list), exactly as Linux exposes under
+/// `/proc/device-tree/`. Returns `None` when the FDT is unavailable (non-FDT
+/// platform) or the property is missing/empty. Only the JPU/MPP path consumes
+/// this, so it is gated on the `jpeg` feature.
+#[cfg(feature = "jpeg")]
+fn read_dt_root_property(name: &str) -> Option<Vec<u8>> {
+    rdrive::with_fdt(|fdt| {
+        let root = fdt.get_by_path("/")?;
+        let prop = root.as_node().get_property(name)?;
+        (!prop.data.is_empty()).then(|| prop.data.clone())
+    })
+    .flatten()
+    .map(|mut bytes| {
+        // Real OF always NUL-terminates; guard a malformed blob. Do NOT flatten
+        // interior NULs — consumers (e.g. librockchip_mpp) expect raw bytes.
+        if bytes.last() != Some(&0) {
+            bytes.push(0);
+        }
+        bytes
+    })
+}
+
 #[cfg(target_arch = "riscv64")]
 fn render_cpu_entry(buf: &mut String, idx: usize) {
     let _ = writeln!(buf, "processor\t: {idx}");
@@ -1502,6 +1525,30 @@ fn builder(fs: Arc<SimpleFs>) -> DirMaker {
 
         SimpleDir::new_maker(fs.clone(), Arc::new(net))
     });
+
+    // /proc/device-tree/{compatible,model} — minimal Open Firmware view from the
+    // live FDT, so SoC-detecting userspace (e.g. librockchip_mpp's read_soc_name)
+    // can identify the chip. Built only for the JPU/MPP path (`jpeg` feature) and
+    // only when a real FDT actually provides the values; the raw bytes are exposed
+    // verbatim and never fabricated on non-FDT platforms. A full FDT mirror is
+    // unnecessary (only MPP reads device-tree; librga/rknn use their own nodes).
+    #[cfg(feature = "jpeg")]
+    if let Some(compatible) = read_dt_root_property("compatible") {
+        root.add("device-tree", {
+            let mut dt = DirMapping::new();
+            dt.add(
+                "compatible",
+                SimpleFile::new_regular(fs.clone(), move || Ok(compatible.clone())),
+            );
+            if let Some(model) = read_dt_root_property("model") {
+                dt.add(
+                    "model",
+                    SimpleFile::new_regular(fs.clone(), move || Ok(model.clone())),
+                );
+            }
+            SimpleDir::new_maker(fs.clone(), Arc::new(dt))
+        });
+    }
 
     root.add("dynamic_debug", {
         let mut dynamic_debug = DirMapping::new();

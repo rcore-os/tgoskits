@@ -13,7 +13,7 @@
 `arm_vcpu` 的职责边界十分清晰：
 
 - 它实现的是 **AArch64 架构相关的 vCPU 运行时**，不是通用虚拟机资源管理层。
-- 它向上实现 `axvcpu::AxArchVCpu` / `AxArchPerCpu`，由 `axvm` 统一调度和管理。
+- 它向上实现 `axvm-types::VmArchVcpuOps` / `VmArchPerCpuOps`，由 `axvm` 统一调度和管理。
 - 它向下直接操作 EL2 寄存器、异常向量、`VTTBR_EL2`、`VTCR_EL2`、`HCR_EL2` 等硬件虚拟化设施。
 - 它不负责完整的 vGIC 设备模型，也不负责 VM 生命周期编排；这些分别由 `arm_vgic`、`axvm` 和更上层 hypervisor 逻辑承担。
 
@@ -21,7 +21,7 @@
 
 ### 模块结构
 - `src/lib.rs`：crate 入口与对外导出。导出 `Aarch64VCpu`、`Aarch64PerCpu`、配置类型和 `TrapFrame` 别名。
-- `src/vcpu.rs`：vCPU 主体实现，包含 `Aarch64VCpu`、`AxArchVCpu` 实现、`run()` 主线、VM 寄存器恢复与 VM exit 分析。
+- `src/vcpu.rs`：vCPU 主体实现，包含 `Aarch64VCpu`、`VmArchVcpuOps` 实现、`run()` 主线、VM 寄存器恢复与 VM exit 分析。
 - `src/pcpu.rs`：per-CPU 虚拟化状态入口，负责 EL2 向量基址、HCR 与 IRQ 处理回调等本地状态。
 - `src/exception.rs`：异常入口 glue，定义 `vmexit_trampoline`、同步异常处理和 VM exit 归类。
 - `src/exception.S`：真正的 EL2 异常向量与保存/恢复汇编路径。
@@ -48,7 +48,7 @@
 ```mermaid
 flowchart TD
     A["Aarch64VCpu::new"] --> B["setup / init_hv"]
-    B --> C["set_entry / set_ept_root"]
+    B --> C["set_entry / set_nested_page_table_root"]
     C --> D["run()"]
     D --> E["save_host_sp_el0"]
     E --> F["restore_vm_system_regs"]
@@ -57,17 +57,17 @@ flowchart TD
     H --> I["exception.S 保存 Guest 上下文"]
     I --> J["vmexit_trampoline 切回宿主栈"]
     J --> K["vmexit_handler"]
-    K --> L["生成 AxVCpuExitReason"]
+    K --> L["生成 VmExit"]
 ```
 
 可以进一步拆解为：
 
 1. `new()` 只构造基本上下文，并把 DTB 地址写到约定参数寄存器。
 2. `setup()` / `init_hv()` 配置 `SPSR_EL2`、`VTCR_EL2`、`HCR_EL2`、`VMPIDR_EL2` 等虚拟化状态。
-3. `set_entry()` 设置 guest 入口 PC；`set_ept_root()` 设置 `VTTBR_EL2`。
+3. `set_entry()` 设置 guest 入口 PC；`set_nested_page_table_root()` 设置 `VTTBR_EL2`。
 4. `run()` 先保存宿主 `SP_EL0`，再恢复 guest 系统寄存器，最后通过裸函数 `run_guest()` 跳到 `context_vm_entry` 并 `eret` 进入 guest。
 5. guest 一旦因同步异常、IRQ 或系统寄存器 trap 回到 EL2，`exception.S` 会把 guest 上下文写回 `Aarch64VCpu`，再通过 `vmexit_trampoline` 切回宿主栈。
-6. `vmexit_handler()` 把硬件 trap 归类为 `AxVCpuExitReason`，再交给上层 hypervisor 处理。
+6. `vmexit_handler()` 把硬件 trap 归类为 `VmExit`，再交给上层 hypervisor 处理。
 
 ### 1.5 VM exit 与内建处理逻辑
 `arm_vcpu` 的 VM exit 路径不是简单“返回异常号”，而是做了明确分类：
@@ -79,7 +79,7 @@ flowchart TD
 这说明 `arm_vcpu` 不只是“上下文切换器”，它同时承担了第一层 trap 解码器的角色。
 
 ### 1.6 与 GIC、中断与 Stage-2 页表的关系
-- `set_ept_root()` 实际写的是 `VTTBR_EL2`，即 Stage-2 根页表基址。
+- `set_nested_page_table_root()` 实际写的是 `VTTBR_EL2`，即 Stage-2 根页表基址。
 - `VTCR_EL2` 会根据 `ID_AA64MMFR0_EL1` 探测宿主支持的物理地址位宽和页表层级。
 - `HCR_EL2` 会根据配置选择虚拟中断或物理直通中断行为。
 - 真正的“虚拟中断注入”并不在本 crate 内建模，而是调用 `axvisor_api::arch::hardware_inject_virtual_interrupt()`，与 `arm_vgic` 形成分工。
@@ -88,32 +88,32 @@ flowchart TD
 ### 功能概览
 - 创建和维护 AArch64 guest 上下文。
 - 在 EL2 和 guest EL1/EL0 之间切换执行。
-- 解析常见 VM exit 并生成 `AxVCpuExitReason`。
+- 解析常见 VM exit 并生成 `VmExit`。
 - 提供 per-CPU EL2 本地状态管理。
 - 与宿主 HAL / 中断注入接口协作完成 IRQ 路径。
 
 ### 使用场景
 - `Aarch64VCpu::new()` / `setup()`：构造 vCPU 并初始化 EL2 虚拟化寄存器。
 - `set_entry()`：设置 guest 起始执行地址。
-- `set_ept_root()`：安装 Stage-2 根页表。
+- `set_nested_page_table_root()`：安装 Stage-2 根页表。
 - `run()`：进入 guest 并等待下一次 VM exit。
 - `inject_interrupt()`：调用宿主侧架构 API 注入虚拟中断。
 
 ### 使用方式
-`arm_vcpu` 并不直接作为最终业务 API 暴露给用户，典型用法是由 `axvm` 绑定为当前架构的 `AxArchVCpuImpl`：
+`arm_vcpu` 并不直接作为最终业务 API 暴露给用户，典型用法是由 `axvm` 绑定为当前架构的 `ArchVCpu`：
 
 ```rust
 let mut vcpu = Aarch64VCpu::<MyHal>::new(vcpu_id, dtb_addr)?;
 vcpu.setup(config)?;
 vcpu.set_entry(entry_gpa);
-vcpu.set_ept_root(stage2_root);
+vcpu.set_nested_page_table_root(stage2_root);
 let exit = vcpu.run()?;
 ```
 
 ## 依赖关系
 ```mermaid
 graph LR
-    axvcpu["axvcpu"] --> current["arm_vcpu"]
+    axvm_types["axvm-types"] --> current["arm_vcpu"]
     axvisor_api["axvisor_api"] --> current
     axaddrspace["axaddrspace"] --> current
     ax-percpu["ax-percpu"] --> current
@@ -124,7 +124,7 @@ graph LR
 ```
 
 ### 直接依赖
-- `axvcpu`：提供架构无关 vCPU trait 契约。
+- `axvm-types`：提供架构无关 vCPU trait 契约和 VM exit 类型。
 - `axvisor_api`：提供宿主中断注入和架构辅助接口。
 - `axaddrspace`：服务 guest 地址空间 / Stage-2 相关协作。
 - `ax-percpu`：保存 EL2 本地状态。
@@ -164,7 +164,7 @@ arm_vcpu = { workspace = true }
 ### 单元测试
 - `VTCR_EL2` 参数计算与寄存器位域解析。
 - ESR/ISS/FAR/HPFAR 到 GPA 的合成逻辑。
-- `AxVCpuExitReason` 映射中那些可纯 Rust 验证的分支。
+- `VmExit` 映射中那些可纯 Rust 验证的分支。
 
 ### 集成测试
 - Axvisor + aarch64 场景下的 guest 启动、HVC、SMC、MMIO、IPI 与定时器路径。
@@ -228,7 +228,7 @@ graph LR
     current --> axaddrspace["axaddrspace"]
     current --> axdevice_base["axdevice_base"]
     current --> ax_errno["ax-errno"]
-    current --> axvcpu["axvcpu"]
+    current --> axvm_types["axvm-types"]
     current --> axvisor_api["axvisor_api"]
     current --> ax-percpu["ax-percpu"]
     axvm["axvm"] --> current
@@ -238,7 +238,7 @@ graph LR
 - `axaddrspace`
 - `axdevice_base`
 - `ax-errno`
-- `axvcpu`
+- `axvm-types`
 - `axvisor_api`
 - `ax-percpu`
 

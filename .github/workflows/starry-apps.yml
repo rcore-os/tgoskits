@@ -5,6 +5,12 @@ on:
     # GitHub cron uses UTC. This runs at 02:00 Beijing time (UTC+8).
     - cron: "0 18 * * *"
   workflow_dispatch:
+    inputs:
+      run_clippy_all:
+        description: Run the full workspace clippy audit before Starry app smoke.
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -20,6 +26,7 @@ concurrency:
 jobs:
   scheduled_clippy_all:
     name: Scheduled clippy all
+    if: github.event_name == 'schedule' || inputs.run_clippy_all
     runs-on: ubuntu-latest
     container:
       image: ghcr.io/rcore-os/tgoskits-container:latest

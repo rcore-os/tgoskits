@@ -7,7 +7,7 @@ use core::{alloc::Layout, cell::UnsafeCell};
 
 use dma_api::{ContiguousBuffer, ContiguousBufferPool, DeviceDma, DmaDirection, DmaOp};
 use futures::task::AtomicWaker;
-pub use rdif_eth::*;
+pub use rdif_eth::{IrqHandler as InterfaceIrqHandler, *};
 
 fn other_error(msg: &'static str) -> NetError {
     NetError::Other(Box::new(KError::Unknown(msg)))
@@ -171,10 +171,15 @@ impl Net {
         Ok(rx)
     }
 
-    pub fn irq_handler(&self) -> IrqHandler {
-        IrqHandler {
+    pub fn take_irq_handler(&mut self) -> Option<IrqHandler> {
+        let irq_guard = self.irq_guard();
+        let handler = self.interface().take_irq_handler();
+        drop(irq_guard);
+
+        handler.map(|handler| IrqHandler {
             inner: self.inner.clone(),
-        }
+            handler,
+        })
     }
 
     /// Detaches a standalone control-plane handle for this device.
@@ -248,8 +253,10 @@ fn make_pool(
 
 pub struct IrqHandler {
     inner: Arc<NetInner>,
+    handler: rdif_eth::BIrqHandler,
 }
 
+unsafe impl Send for IrqHandler {}
 unsafe impl Sync for IrqHandler {}
 
 impl IrqHandler {
@@ -270,16 +277,15 @@ impl IrqHandler {
     /// identify/acknowledge the interrupt source and publish queue event bits.
     /// Runtime queue wakers must be invoked later from task/deferred context
     /// through [`handle`](Self::handle).
-    pub fn handle_irq(&self) -> rdif_eth::Event {
-        let iface = unsafe { &mut **self.inner.interface.get() };
-        iface.handle_irq()
+    pub fn handle_irq(&mut self) -> rdif_eth::Event {
+        self.handler.handle_irq()
     }
 
     /// Handles a device interrupt and wakes registered queue waiters.
     ///
     /// Use this only from task/deferred context. Hard IRQ callbacks should call
     /// [`handle_irq`](Self::handle_irq) and defer waker execution.
-    pub fn handle(&self) {
+    pub fn handle(&mut self) {
         let event = self.handle_irq();
         for id in event.tx_queue.iter() {
             self.inner.tx_wakers.wake(id);
@@ -582,6 +588,7 @@ mod tests {
     struct TestInterface {
         irq_events: Event,
         handle_calls: Arc<AtomicUsize>,
+        owned_irq_handler: Option<rdif_eth::BIrqHandler>,
     }
 
     impl DriverGeneric for TestInterface {
@@ -623,6 +630,22 @@ mod tests {
             self.handle_calls.fetch_add(1, Ordering::AcqRel);
             self.irq_events
         }
+
+        fn take_irq_handler(&mut self) -> Option<rdif_eth::BIrqHandler> {
+            self.owned_irq_handler.take()
+        }
+    }
+
+    struct OwnedTestIrqHandler {
+        irq_events: Event,
+        handle_calls: Arc<AtomicUsize>,
+    }
+
+    impl rdif_eth::IrqHandler for OwnedTestIrqHandler {
+        fn handle_irq(&mut self) -> Event {
+            self.handle_calls.fetch_add(1, Ordering::AcqRel);
+            self.irq_events
+        }
     }
 
     fn count_waker(counter: Arc<AtomicUsize>) -> Waker {
@@ -660,14 +683,19 @@ mod tests {
         rx.insert(3);
         let mut tx = IdList::none();
         tx.insert(5);
-        let handle_calls = Arc::new(AtomicUsize::new(0));
-        let net = Net::new(
+        let interface_calls = Arc::new(AtomicUsize::new(0));
+        let irq_calls = Arc::new(AtomicUsize::new(0));
+        let mut net = Net::new(
             TestInterface {
-                irq_events: Event {
-                    tx_queue: tx,
-                    rx_queue: rx,
-                },
-                handle_calls: Arc::clone(&handle_calls),
+                irq_events: Event::none(),
+                handle_calls: Arc::clone(&interface_calls),
+                owned_irq_handler: Some(Box::new(OwnedTestIrqHandler {
+                    irq_events: Event {
+                        tx_queue: tx,
+                        rx_queue: rx,
+                    },
+                    handle_calls: Arc::clone(&irq_calls),
+                })),
             },
             &DMA,
         );
@@ -682,13 +710,63 @@ mod tests {
             .register(5)
             .register(&count_waker(Arc::clone(&tx_wake_count)));
 
-        let irq = net.irq_handler();
+        let mut irq = net.take_irq_handler().unwrap();
         let events = irq.handle_irq();
 
         assert!(events.rx_queue.contains(3));
         assert!(events.tx_queue.contains(5));
-        assert_eq!(handle_calls.load(Ordering::Acquire), 1);
+        assert_eq!(irq_calls.load(Ordering::Acquire), 1);
+        assert_eq!(interface_calls.load(Ordering::Acquire), 0);
         assert_eq!(rx_wake_count.load(Ordering::Acquire), 0);
         assert_eq!(tx_wake_count.load(Ordering::Acquire), 0);
+    }
+
+    #[test]
+    fn irq_handler_requires_owned_endpoint() {
+        static DMA: TestDma = TestDma;
+        let handle_calls = Arc::new(AtomicUsize::new(0));
+        let mut net = Net::new(
+            TestInterface {
+                irq_events: Event::none(),
+                handle_calls,
+                owned_irq_handler: None,
+            },
+            &DMA,
+        );
+
+        assert!(net.take_irq_handler().is_none());
+    }
+
+    #[test]
+    fn irq_handler_uses_owned_endpoint() {
+        static DMA: TestDma = TestDma;
+        let mut rx = IdList::none();
+        rx.insert(1);
+        let mut tx = IdList::none();
+        tx.insert(2);
+        let fallback_calls = Arc::new(AtomicUsize::new(0));
+        let owned_calls = Arc::new(AtomicUsize::new(0));
+        let mut net = Net::new(
+            TestInterface {
+                irq_events: Event::none(),
+                handle_calls: Arc::clone(&fallback_calls),
+                owned_irq_handler: Some(Box::new(OwnedTestIrqHandler {
+                    irq_events: Event {
+                        tx_queue: tx,
+                        rx_queue: rx,
+                    },
+                    handle_calls: Arc::clone(&owned_calls),
+                })),
+            },
+            &DMA,
+        );
+
+        let mut irq = net.take_irq_handler().unwrap();
+        let events = irq.handle_irq();
+
+        assert!(events.rx_queue.contains(1));
+        assert!(events.tx_queue.contains(2));
+        assert_eq!(owned_calls.load(Ordering::Acquire), 1);
+        assert_eq!(fallback_calls.load(Ordering::Acquire), 0);
     }
 }

@@ -12,7 +12,7 @@
 - 目录角色：ArceOS 用户库层
 - crate 形态：库 crate
 - 工作区位置：子工作区 `os/arceos`
-- feature 视角：主要通过 `alloc`、`defplat`、`epoll`、`fd`、`fp-simd`、`fs`、`irq`、`multitask`、`myplat`、`net` 等（另有 4 个 feature） 控制编译期能力装配。
+- feature 视角：主要通过 `alloc`、`epoll`、`fd`、`fp-simd`、`fs`、`irq`、`multitask`、`net` 等能力 feature 控制编译期能力装配；`defplat`/`myplat` 仅为旧配置兼容占位，不再表示平台选择。
 - 关键数据结构：可直接观察到的关键数据结构/对象包括 `MemoryControlBlock`、`CTRL_BLK_SIZE`。
 
 ### 模块结构
@@ -56,9 +56,6 @@ graph LR
 - `ax-alloc`
 - `ax-allocator`
 - `axbacktrace`
-- `axconfig`
-- `ax-config-gen`
-- `ax-config-macros`
 - `ax-cpu`
 - `ax-display`
 - `ax-dma`

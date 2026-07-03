@@ -1,6 +1,4 @@
-use alloc::{boxed::Box, sync::Arc, vec::Vec};
-
-use ax_kspin::SpinRaw as Mutex;
+use alloc::{boxed::Box, vec::Vec};
 
 use crate::{
     BlkError, DeviceInfo, DriverGeneric, IrqHandler, IrqSourceList, OwnedRequest, PollError,
@@ -116,53 +114,6 @@ impl Drop for QueueHandle {
     }
 }
 
-#[derive(Clone)]
-pub struct IrqHandlerSlot {
-    inner: Arc<Mutex<Option<BIrqHandler>>>,
-}
-
-impl IrqHandlerSlot {
-    pub fn new(handler: BIrqHandler) -> Self {
-        Self {
-            inner: Arc::new(Mutex::new(Some(handler))),
-        }
-    }
-
-    pub fn take(&self) -> Option<IrqHandlerHandle> {
-        let handler = self.inner.lock().take()?;
-        Some(IrqHandlerHandle {
-            slot: Self {
-                inner: Arc::clone(&self.inner),
-            },
-            handler: Some(handler),
-        })
-    }
-}
-
-pub struct IrqHandlerHandle {
-    slot: IrqHandlerSlot,
-    handler: Option<BIrqHandler>,
-}
-
-impl IrqHandler for IrqHandlerHandle {
-    fn handle_irq(&self) -> crate::Event {
-        self.handler
-            .as_ref()
-            .expect("IRQ handler handle must contain handler")
-            .handle_irq()
-    }
-}
-
-impl Drop for IrqHandlerHandle {
-    fn drop(&mut self) {
-        if let Some(handler) = self.handler.take() {
-            let mut slot = self.slot.inner.lock();
-            debug_assert!(slot.is_none());
-            *slot = Some(handler);
-        }
-    }
-}
-
 /// A request queue for one block device hardware/software queue.
 ///
 /// # Safety
@@ -215,10 +166,13 @@ mod tests {
     use super::*;
     use crate::{DeviceInfo, Event, QueueLimits, RequestOp};
 
-    struct NoopIrq;
+    struct NoopIrq {
+        calls: usize,
+    }
 
     impl IrqHandler for NoopIrq {
-        fn handle_irq(&self) -> Event {
+        fn handle_irq(&mut self) -> Event {
+            self.calls += 1;
             let mut event = Event::none();
             event.queues.insert(1);
             event
@@ -260,8 +214,10 @@ mod tests {
         assert_queue::<Queue>();
         assert_irq_handler::<NoopIrq>();
 
-        let event = NoopIrq.handle_irq();
+        let mut irq = NoopIrq { calls: 0 };
+        let event = irq.handle_irq();
         assert!(event.queues.contains(1));
+        assert_eq!(irq.calls, 1);
     }
 
     #[derive(Default)]
@@ -330,16 +286,23 @@ mod tests {
         assert_eq!(limits.max_inflight, 1);
     }
 
+    struct CountingIrq {
+        count: usize,
+    }
+
+    impl IrqHandler for CountingIrq {
+        fn handle_irq(&mut self) -> Event {
+            self.count += 1;
+            Event::from_queue_bits(self.count as u64)
+        }
+    }
+
     #[test]
-    fn irq_handler_slot_returns_handler_on_drop() {
-        let slot = IrqHandlerSlot::new(Box::new(NoopIrq));
-        let handler = slot.take().unwrap();
+    fn boxed_irq_handler_is_move_only_and_mutable() {
+        let mut handler: BIrqHandler = Box::new(CountingIrq { count: 0 });
 
-        assert!(slot.take().is_none());
-        assert!(handler.handle_irq().queues.contains(1));
-
-        drop(handler);
-        assert!(slot.take().is_some());
+        assert_eq!(handler.handle_irq().queues.bits(), 1);
+        assert_eq!(handler.handle_irq().queues.bits(), 2);
     }
 
     struct OwnedQueue;

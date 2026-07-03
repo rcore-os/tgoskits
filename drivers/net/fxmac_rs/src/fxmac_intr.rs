@@ -6,7 +6,7 @@
 use alloc::boxed::Box;
 use core::sync::atomic::{AtomicPtr, Ordering};
 
-use crate::{fxmac::*, fxmac_const::*, fxmac_dma::*};
+use crate::{FXmacIrqStatus, fxmac::*, fxmac_const::*, fxmac_dma::*};
 
 // XMAC
 pub const FXMAC_NUM: u32 = 4;
@@ -83,6 +83,15 @@ pub static XMAC: AtomicPtr<FXmac> = AtomicPtr::new(core::ptr::null_mut());
 ///
 /// Currently only single-queue operation is fully supported.
 pub fn FXmacIntrHandler(vector: i32, instance_p: &mut FXmac) {
+    let reg_isr: u32 = read_reg((instance_p.config.base_address + FXMAC_ISR_OFFSET) as *const u32);
+    FXmacIntrHandlerWithStatus(vector, instance_p, FXmacIrqStatus::from_raw(reg_isr));
+}
+
+pub(crate) fn FXmacIntrHandlerWithStatus(
+    vector: i32,
+    instance_p: &mut FXmac,
+    status: FXmacIrqStatus,
+) {
     assert!(instance_p.is_ready == FT_COMPONENT_IS_READY);
 
     // 0 ~ FXMAC_QUEUE_MAX_NUM ,Index queue number
@@ -96,8 +105,7 @@ pub fn FXmacIntrHandler(vector: i32, instance_p: &mut FXmac) {
     // call. However, in most of the places where the user's error handler
     // is called, this ISR exits because it is expected that the user will
     // reset the device in nearly all instances.
-    let mut reg_isr: u32 =
-        read_reg((instance_p.config.base_address + FXMAC_ISR_OFFSET) as *const u32);
+    let mut reg_isr: u32 = status.raw();
 
     info!(
         "+++++++++ IRQ num vector={}, Interrupt Status ISR={:#x}, tx_queue_id={}, rx_queue_id={}",

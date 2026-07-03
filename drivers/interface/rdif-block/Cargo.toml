@@ -7,7 +7,7 @@ keywords = ["os", "driver"]
 license = "MIT"
 name = "rdif-block"
 repository.workspace = true
-version = "0.10.0"
+version = "0.11.0"
 
 [dependencies]
 ax-kspin = {workspace = true}

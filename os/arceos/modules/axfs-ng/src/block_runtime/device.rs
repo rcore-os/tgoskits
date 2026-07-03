@@ -1,5 +1,8 @@
 use alloc::{boxed::Box, format, string::String, sync::Arc, vec::Vec};
-use core::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use core::{
+    sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
+    time::Duration,
+};
 
 use ax_errno::{AxError, AxResult};
 use dma_api::{DeviceDma, DmaDirection, DmaDomainId};
@@ -12,25 +15,27 @@ use rdif_block::{
 };
 
 use super::{
-    BlockIrqBridge, DmaBufferGuard, DrainEvents, PendingTable, PollClaim, PollProgress, RequestKey,
-    RuntimeDmaBuffer, new_owned_dma_buffer,
+    BlockIrqBridge, CompletionDrain, CompletionSink, DmaBufferGuard, DrainEvents, PendingTable,
+    PollOutcome, RequestKey, RequestPoller, RuntimeDmaBuffer, RuntimeEventLatch,
+    new_owned_dma_buffer,
 };
 use crate::os::{
     BlockIrqOutcome, BlockIrqRegistration, current_task_id, dma_op, notify_drain,
     notify_drain_from_irq, notify_waiters, register_shared_block_irq, spawn_task,
-    sync::IrqMutex as SpinNoIrq, task_wait_until, task_yield, wait_for_drain_notification,
+    sync::IrqMutex as SpinNoIrq, task_wait_timeout, task_yield, wait_for_drain_notification,
     wake_task,
 };
 
 const DEFAULT_MAX_TRANSFER_BYTES: usize = 1024 * 1024;
 const DEFAULT_SUBMIT_WINDOW: usize = 32;
+const IRQ_COMPLETION_REPOLL_TIMEOUT: Duration = Duration::from_millis(1);
 
 fn runtime_device_dma(domain: DmaDomainId, dma_mask: u64) -> Result<DeviceDma, BlkError> {
     let dma_op = dma_op().ok_or(BlkError::Io)?;
     Ok(DeviceDma::new(domain, dma_mask, dma_op))
 }
 
-type CompletionRecord = (RequestId, Result<(), BlkError>);
+type CompletionRecord = (RequestId, Result<(), BlkError>, Option<RuntimeDmaBuffer>);
 
 static BLOCK_DRAIN_DEVICE_BITS: AtomicU64 = AtomicU64::new(0);
 static BLOCK_DRAIN_FULL_SCAN: AtomicBool = AtomicBool::new(false);
@@ -50,12 +55,6 @@ struct ActiveQueue {
     index: usize,
     queue_id: usize,
     window: usize,
-}
-
-struct ClaimedQueueBatch {
-    queue_id: usize,
-    claimed: Vec<RequestKey>,
-    driver_ids: Vec<RequestId>,
 }
 
 struct QueueProgressWaiter {
@@ -171,11 +170,10 @@ impl BlockRuntimeConfig {
 pub struct BlockDeviceHandle {
     name: String,
     queues: Box<[SpinNoIrq<QueueRuntime>]>,
-    driver_queue_map: [Option<usize>; u64::BITS as usize],
+    event_latch: RuntimeEventLatch,
     pending: SpinNoIrq<PendingTable>,
     queue_progress_waiters: SpinNoIrq<Vec<QueueProgressWaiter>>,
     barrier_waiters: SpinNoIrq<Vec<BarrierWaiter>>,
-    bridge: Arc<BlockIrqBridge>,
     drain_wake: Arc<dyn BlockDrainWake>,
     submit_window: usize,
     completion_mode: AtomicUsize,
@@ -341,11 +339,11 @@ impl BlockIrqAction {
         }
     }
 
-    pub fn run(&self) -> BlockIrqOutcome {
+    pub fn run(&mut self) -> BlockIrqOutcome {
         let event = self.handler.handle_irq();
         if self.device.record_driver_event(event) {
             self.device.drain_wake.wake_drain_from_irq();
-            BlockIrqOutcome::Handled
+            BlockIrqOutcome::Wake
         } else {
             BlockIrqOutcome::Handled
         }
@@ -439,11 +437,10 @@ impl BlockDeviceHandle {
         Ok(Arc::new(Self {
             name: name.into(),
             queues: queues.into_boxed_slice(),
-            driver_queue_map,
+            event_latch: RuntimeEventLatch::new(bridge, driver_queue_map),
             pending: SpinNoIrq::new(PendingTable::new()),
             queue_progress_waiters: SpinNoIrq::new(Vec::new()),
             barrier_waiters: SpinNoIrq::new(Vec::new()),
-            bridge,
             drain_wake: config.drain_wake,
             submit_window: config.submit_window.max(1),
             completion_mode: AtomicUsize::new(config.completion_mode.as_usize()),
@@ -455,7 +452,7 @@ impl BlockDeviceHandle {
     }
 
     pub fn bridge(&self) -> Arc<BlockIrqBridge> {
-        self.bridge.clone()
+        self.event_latch.bridge()
     }
 
     pub fn name(&self) -> &str {
@@ -492,17 +489,20 @@ impl BlockDeviceHandle {
 
     pub fn drain_events(&self) -> usize {
         self.with_drain(|| {
-            let events = self.bridge.take_events();
+            let events = self.event_latch.bridge().take_events();
             self.drain_given_events(events)
         })
     }
 
     pub fn drain_hint(&self, hint: CompletionHint) -> usize {
-        self.with_drain(|| self.drain_one_hint(hint))
+        self.with_drain(|| {
+            let mut poller = DeviceRequestPoller { device: self };
+            CompletionDrain::new(&self.pending, &mut poller).drain_hint(hint)
+        })
     }
 
     pub fn record_driver_event(&self, event: rdif_block::Event) -> bool {
-        self.record_translated_event(event, false)
+        self.event_latch.record_driver_event(event)
     }
 
     #[cfg(test)]
@@ -512,7 +512,7 @@ impl BlockDeviceHandle {
 
     #[cfg(test)]
     pub(crate) fn pending_queue_ready_events(&self) -> u64 {
-        self.bridge.take_events().queue_bits
+        self.event_latch.bridge().take_events().queue_bits
     }
 
     fn with_drain(&self, f: impl FnOnce() -> usize) -> usize {
@@ -529,242 +529,20 @@ impl BlockDeviceHandle {
     }
 
     fn drain_given_events(&self, events: DrainEvents) -> usize {
-        let mut completed = 0;
-        for hint in events.hints.iter() {
-            completed += self.drain_one_hint(hint);
-        }
-        for queue_id in queue_ids_from_bits(events.queue_bits) {
-            completed += self.drain_queue(queue_id);
-        }
-        completed
+        let mut poller = DeviceRequestPoller { device: self };
+        CompletionDrain::new(&self.pending, &mut poller).drain_events(events)
     }
 
-    fn runtime_queue_id(&self, driver_queue_id: usize) -> Option<usize> {
-        self.driver_queue_map
-            .get(driver_queue_id)
-            .copied()
-            .flatten()
-    }
-
-    fn record_translated_event(&self, event: rdif_block::Event, pending_only: bool) -> bool {
-        let pending_queue_bits = pending_only.then(|| self.pending.lock().pending_queue_bits());
-        let mut translated = rdif_block::Event::none();
-        for driver_queue_id in event.queues.iter() {
-            if let Some(runtime_queue_id) = self.runtime_queue_id(driver_queue_id)
-                && pending_queue_bits.is_none_or(|bits| bits & (1 << runtime_queue_id) != 0)
-            {
-                translated.queues.insert(runtime_queue_id);
-            }
+    fn wake_drain_after_irq_submit(&self) {
+        if self.completion_mode() == BlockCompletionMode::IrqDriven {
+            self.drain_wake.wake_drain();
         }
-        for hint in event.completions.iter() {
-            if let Some(hint) = self.translate_driver_hint(hint)
-                && pending_queue_bits.is_none_or(|bits| bits & (1 << hint.queue_id()) != 0)
-            {
-                translated.push_hint(hint);
-            }
-        }
-        if translated.is_empty() {
-            return false;
-        }
-        self.bridge.record_event(translated);
-        true
-    }
-
-    fn translate_driver_hint(&self, hint: CompletionHint) -> Option<CompletionHint> {
-        let queue_id = self.runtime_queue_id(hint.queue_id())?;
-        Some(match hint {
-            CompletionHint::Queue { .. } => CompletionHint::Queue { queue_id },
-            CompletionHint::Request { request_id, .. } => CompletionHint::Request {
-                queue_id,
-                request_id,
-            },
-            CompletionHint::Batch { ids, .. } => CompletionHint::Batch { queue_id, ids },
-        })
-    }
-
-    fn drain_one_hint(&self, hint: CompletionHint) -> usize {
-        match hint {
-            CompletionHint::Queue { queue_id } => self.drain_queue(queue_id),
-            CompletionHint::Request {
-                queue_id,
-                request_id,
-            } => {
-                let keys = self.matching_driver_keys(queue_id, &[request_id]);
-                self.poll_batch(&keys)
-            }
-            CompletionHint::Batch { queue_id, ids } => {
-                let ids = ids.iter().collect::<Vec<_>>();
-                let keys = self.matching_driver_keys(queue_id, &ids);
-                self.poll_batch(&keys)
-            }
-        }
-    }
-
-    fn drain_queue(&self, queue_id: usize) -> usize {
-        let keys = self.pending.lock().keys_for_queue(queue_id);
-        self.poll_batch(&keys)
-    }
-
-    fn matching_driver_keys(&self, queue_id: usize, ids: &[RequestId]) -> Vec<RequestKey> {
-        self.pending.lock().matching_driver_keys(queue_id, ids)
-    }
-
-    fn poll_batch(&self, keys: &[RequestKey]) -> usize {
-        let batches = self.claim_poll_batches(keys);
-        if batches.is_empty() {
-            return 0;
-        }
-
-        let mut completed = 0;
-        for batch in batches {
-            let result = self.poll_queue_completions(batch.queue_id, &batch.driver_ids);
-            let query_failed = result.is_err();
-            let mut sink = DeviceCompletionSink {
-                device: self,
-                completed: 0,
-                terminal: Vec::new(),
-                claimed: batch
-                    .claimed
-                    .iter()
-                    .copied()
-                    .zip(batch.driver_ids.iter().copied())
-                    .map(|(key, request_id)| (request_id, key))
-                    .collect(),
-            };
-            if let Ok(completions) = result {
-                for (request_id, result) in completions {
-                    sink.complete(request_id, result);
-                }
-            }
-            if query_failed {
-                self.bridge.record_queue_ready(batch.queue_id);
-                self.drain_wake.wake_drain();
-            }
-            let terminal = sink.terminal.clone();
-            completed += sink.completed;
-            for key in batch.claimed {
-                if terminal.contains(&key) {
-                    continue;
-                }
-                if query_failed {
-                    self.release_claimed_poll(key);
-                } else {
-                    let progress = self.pending.lock().finish_pending_poll(key);
-                    match progress {
-                        PollProgress::Pending | PollProgress::Complete => {}
-                        PollProgress::Repoll => {
-                            let submitted = self
-                                .pending
-                                .lock()
-                                .request(key)
-                                .map(|request| request.submitted_request());
-                            let completed_key = match submitted {
-                                Some(request) => {
-                                    let result =
-                                        self.poll_request(request.queue_id, request.request_id);
-                                    self.finish_poll(key, result).unwrap_or(false)
-                                }
-                                None => false,
-                            };
-                            completed += usize::from(completed_key);
-                        }
-                    }
-                }
-            }
-        }
-        completed
-    }
-
-    fn release_claimed_poll(&self, key: RequestKey) {
-        while let PollProgress::Repoll = self.pending.lock().finish_pending_poll(key) {}
-    }
-
-    fn claim_poll_batches(&self, keys: &[RequestKey]) -> Vec<ClaimedQueueBatch> {
-        let mut batches: Vec<ClaimedQueueBatch> = Vec::new();
-        let mut pending = self.pending.lock();
-        for &key in keys {
-            if pending.begin_poll(key) != PollClaim::Claimed {
-                continue;
-            }
-            let submitted = pending
-                .request(key)
-                .expect("claimed request must remain present")
-                .submitted_request();
-            if let Some(batch) = batches
-                .iter_mut()
-                .find(|batch| batch.queue_id == submitted.queue_id)
-            {
-                batch.claimed.push(key);
-                batch.driver_ids.push(submitted.request_id);
-            } else {
-                let mut batch = ClaimedQueueBatch {
-                    queue_id: submitted.queue_id,
-                    claimed: Vec::new(),
-                    driver_ids: Vec::new(),
-                };
-                batch.claimed.push(key);
-                batch.driver_ids.push(submitted.request_id);
-                batches.push(batch);
-            }
-        }
-        batches
     }
 
     #[cfg(feature = "ext4")]
     fn poll_one(&self, key: RequestKey) -> bool {
-        if self.pending.lock().begin_poll(key) != PollClaim::Claimed {
-            return false;
-        }
-        self.poll_claimed_one(key)
-    }
-
-    #[cfg(feature = "ext4")]
-    fn poll_claimed_one(&self, key: RequestKey) -> bool {
-        loop {
-            let submitted = match self.pending.lock().request(key) {
-                Some(request) => request.submitted_request(),
-                None => return false,
-            };
-            let result = self.poll_request(submitted.queue_id, submitted.request_id);
-            if let Some(completed) = self.finish_poll(key, result) {
-                return completed;
-            }
-        }
-    }
-
-    fn finish_poll(
-        &self,
-        key: RequestKey,
-        mut result: Result<RequestStatus, BlkError>,
-    ) -> Option<bool> {
-        loop {
-            match result {
-                Ok(RequestStatus::Pending) => {
-                    let progress = self.pending.lock().finish_pending_poll(key);
-                    match progress {
-                        PollProgress::Pending | PollProgress::Complete => return Some(false),
-                        PollProgress::Repoll => {
-                            let submitted = self
-                                .pending
-                                .lock()
-                                .request(key)
-                                .map(|request| request.submitted_request())?;
-                            result = self.poll_request(submitted.queue_id, submitted.request_id);
-                        }
-                    }
-                }
-                Ok(RequestStatus::Complete) => {
-                    let task_id = self.pending.lock().complete(key, Ok(()));
-                    self.wake_completed_request(key, task_id);
-                    return Some(true);
-                }
-                Err(err) => {
-                    let task_id = self.pending.lock().complete(key, Err(err));
-                    self.wake_completed_request(key, task_id);
-                    return Some(true);
-                }
-            }
-        }
+        let mut poller = DeviceRequestPoller { device: self };
+        CompletionDrain::new(&self.pending, &mut poller).poll_one(key)
     }
 
     fn wake_completed_request(&self, key: RequestKey, task_id: Option<u64>) {
@@ -772,10 +550,10 @@ impl BlockDeviceHandle {
         if let Some(queue_id) = queue_id {
             self.wake_queue_progress(queue_id);
         }
+        notify_waiters();
         if let Some(task_id) = task_id {
             wake_task(task_id);
         }
-        notify_waiters();
     }
 
     fn queue_id_for_key(&self, key: RequestKey) -> Option<usize> {
@@ -799,10 +577,10 @@ impl BlockDeviceHandle {
             }
             matching
         };
+        notify_waiters();
         for task_id in waiters {
             wake_task(task_id);
         }
-        notify_waiters();
     }
 
     pub(crate) fn read_blocks(&self, block_id: u64, buf: &mut [u8]) -> AxResult {
@@ -836,6 +614,7 @@ impl BlockDeviceHandle {
                         .insert_submitted(info.id, request_id, None)
                         .map_err(map_blk_err_to_ax_err)?;
                     drop(queue);
+                    self.wake_drain_after_irq_submit();
                     return self.wait_for_completion(key, None);
                 }
                 Err(BlkError::Retry) => {
@@ -935,7 +714,11 @@ impl BlockDeviceHandle {
                 let mut queue = self.queues[active_queue.index].lock();
                 let info = queue.info;
                 match self.submit_chunk(&mut queue, info, op, direction, chunk, write_src) {
-                    Ok(entry) => active.push(entry),
+                    Ok(entry) => {
+                        drop(queue);
+                        self.wake_drain_after_irq_submit();
+                        active.push(entry);
+                    }
                     Err(BlkError::Retry) => {
                         deferred_chunk = Some((active_queue.index, chunk));
                         next_byte_offset = next_byte_offset.min(chunk.byte_offset);
@@ -1186,6 +969,11 @@ impl BlockDeviceHandle {
         self.poll_batch(&keys)
     }
 
+    fn poll_batch(&self, keys: &[RequestKey]) -> usize {
+        let mut poller = DeviceRequestPoller { device: self };
+        CompletionDrain::new(&self.pending, &mut poller).poll_keys(keys)
+    }
+
     fn harvest_active(
         &self,
         active: &mut Vec<WindowEntry>,
@@ -1257,13 +1045,8 @@ impl BlockDeviceHandle {
         if self.completion_mode() == BlockCompletionMode::Polling {
             return self.polling_wait_for_any_key(&keys);
         }
-        if task_id != 0 {
-            task_wait_until(|| {
-                keys.iter()
-                    .any(|&key| self.pending.lock().result(key).is_some())
-            });
-        } else {
-            core::hint::spin_loop();
+        if self.irq_wait_or_timeout(task_id) {
+            let _ = self.poll_batch(&keys);
         }
         Ok(())
     }
@@ -1286,12 +1069,21 @@ impl BlockDeviceHandle {
             self.remove_queue_progress_waiter(queue_id, task_id);
             return Ok(self.polling_wait_for_queue_empty(queue_id));
         }
-        if task_id != 0 {
-            task_wait_until(|| self.pending.lock().keys_for_queue(queue_id).is_empty());
-        } else {
-            core::hint::spin_loop();
+        loop {
+            let timed_out = self.irq_wait_or_timeout(task_id);
+            let keys = self.pending.lock().keys_for_queue(queue_id);
+            if keys.is_empty() {
+                self.remove_queue_progress_waiter(queue_id, task_id);
+                return Ok(true);
+            }
+            if timed_out {
+                let _ = self.poll_batch(&keys);
+                if self.pending.lock().keys_for_queue(queue_id).is_empty() {
+                    self.remove_queue_progress_waiter(queue_id, task_id);
+                    return Ok(true);
+                }
+            }
         }
-        Ok(true)
     }
 
     fn remove_queue_progress_waiter(&self, queue_id: usize, task_id: u64) {
@@ -1316,6 +1108,15 @@ impl BlockDeviceHandle {
                 return Ok(());
             }
             core::hint::spin_loop();
+        }
+    }
+
+    fn irq_wait_or_timeout(&self, task_id: u64) -> bool {
+        if task_id != 0 {
+            task_wait_timeout(IRQ_COMPLETION_REPOLL_TIMEOUT)
+        } else {
+            core::hint::spin_loop();
+            true
         }
     }
 
@@ -1354,16 +1155,8 @@ impl BlockDeviceHandle {
                         self.polling_wait_for_any_key(&[key])?;
                         continue;
                     }
-                    if task_id != 0 {
-                        task_wait_until(|| {
-                            self.pending
-                                .lock()
-                                .request(key)
-                                .and_then(|request| request.result())
-                                .is_some()
-                        });
-                    } else {
-                        core::hint::spin_loop();
+                    if self.irq_wait_or_timeout(task_id) {
+                        let _ = self.poll_one(key);
                     }
                 }
             }
@@ -1572,17 +1365,17 @@ impl BlockDeviceHandle {
         &self,
         queue_id: usize,
         request_id: RequestId,
-    ) -> Result<RequestStatus, BlkError> {
+    ) -> Result<PollOutcome, BlkError> {
         let queue = self.queue_by_runtime_id(queue_id)?;
         let mut queue = queue.lock();
         match &mut queue.queue {
-            RuntimeQueue::Legacy(legacy) => legacy.poll_request(request_id),
+            RuntimeQueue::Legacy(legacy) => Ok(match legacy.poll_request(request_id)? {
+                RequestStatus::Pending => PollOutcome::Pending,
+                RequestStatus::Complete => PollOutcome::complete(Ok(())),
+            }),
             RuntimeQueue::Owned(owned) => match owned.poll_request(request_id)? {
-                OwnedRequestPoll::Pending => Ok(RequestStatus::Pending),
-                OwnedRequestPoll::Ready(completed) => {
-                    self.finish_owned_completion(queue_id, completed);
-                    Ok(RequestStatus::Complete)
-                }
+                OwnedRequestPoll::Pending => Ok(PollOutcome::Pending),
+                OwnedRequestPoll::Ready(completed) => Ok(poll_outcome_from_owned(completed)),
             },
         }
     }
@@ -1606,10 +1399,8 @@ impl BlockDeviceHandle {
                     match owned.poll_request(request_id)? {
                         OwnedRequestPoll::Pending => {}
                         OwnedRequestPoll::Ready(completed) => {
-                            let result = completed.result;
-                            let id = completed.id;
-                            self.finish_owned_completion(queue_id, completed);
-                            completions.push((id, result));
+                            let rdif_block::CompletedRequest { id, result, data } = completed;
+                            completions.push((id, result, data.map(RuntimeDmaBuffer::Owned)));
                         }
                     }
                 }
@@ -1621,23 +1412,49 @@ impl BlockDeviceHandle {
     fn queue_by_runtime_id(&self, queue_id: usize) -> Result<&SpinNoIrq<QueueRuntime>, BlkError> {
         self.queues.get(queue_id).ok_or(BlkError::InvalidRequest)
     }
+}
 
-    fn finish_owned_completion(&self, queue_id: usize, completed: rdif_block::CompletedRequest) {
-        let key = self
-            .pending
-            .lock()
-            .matching_driver_keys(queue_id, &[completed.id])
-            .into_iter()
-            .next();
-        let Some(key) = key else {
-            return;
-        };
-        let buffer = completed.data.map(RuntimeDmaBuffer::Owned);
-        let task_id = self
-            .pending
-            .lock()
-            .complete_with_buffer(key, completed.result, buffer);
-        self.wake_completed_request(key, task_id);
+struct DeviceRequestPoller<'a> {
+    device: &'a BlockDeviceHandle,
+}
+
+impl RequestPoller for DeviceRequestPoller<'_> {
+    fn poll_request(
+        &mut self,
+        queue_id: usize,
+        request_id: RequestId,
+    ) -> Result<PollOutcome, BlkError> {
+        self.device.poll_request(queue_id, request_id)
+    }
+
+    fn poll_completions(
+        &mut self,
+        queue_id: usize,
+        request_ids: &[RequestId],
+        sink: &mut dyn CompletionSink,
+    ) -> Result<(), BlkError> {
+        for (request_id, result, buffer) in
+            self.device.poll_queue_completions(queue_id, request_ids)?
+        {
+            sink.complete_with_buffer(request_id, result, buffer);
+        }
+        Ok(())
+    }
+
+    fn poll_batch_query_failed(&mut self, queue_id: usize) {
+        self.device
+            .event_latch
+            .bridge()
+            .record_queue_ready(queue_id);
+        self.device.drain_wake.wake_drain();
+    }
+
+    fn completed_request(&mut self, queue_id: usize, task_id: Option<u64>) {
+        self.device.wake_queue_progress(queue_id);
+        notify_waiters();
+        if let Some(task_id) = task_id {
+            wake_task(task_id);
+        }
     }
 }
 
@@ -1675,34 +1492,15 @@ struct CollectCompletionSink {
 
 impl RdifCompletionSink for CollectCompletionSink {
     fn complete(&mut self, request: RequestId, result: Result<(), BlkError>) {
-        self.completions.push((request, result));
+        self.completions.push((request, result, None));
     }
 }
 
-struct DeviceCompletionSink<'a> {
-    device: &'a BlockDeviceHandle,
-    completed: usize,
-    terminal: Vec<RequestKey>,
-    claimed: Vec<(RequestId, RequestKey)>,
-}
-
-impl DeviceCompletionSink<'_> {
-    fn complete(&mut self, request_id: RequestId, result: Result<(), BlkError>) {
-        if let Some((_, key)) = self
-            .claimed
-            .iter()
-            .copied()
-            .find(|(candidate, _)| *candidate == request_id)
-        {
-            self.complete_runtime(key, result);
-        }
-    }
-
-    fn complete_runtime(&mut self, key: RequestKey, result: Result<(), BlkError>) {
-        let task_id = self.device.pending.lock().complete(key, result);
-        self.device.wake_completed_request(key, task_id);
-        self.terminal.push(key);
-        self.completed += 1;
+fn poll_outcome_from_owned(completed: rdif_block::CompletedRequest) -> PollOutcome {
+    let rdif_block::CompletedRequest { result, data, .. } = completed;
+    PollOutcome::Complete {
+        result,
+        buffer: data.map(RuntimeDmaBuffer::Owned),
     }
 }
 
@@ -1764,6 +1562,7 @@ pub fn map_blk_err_to_ax_err(err: BlkError) -> AxError {
     }
 }
 
+#[cfg(feature = "ext4")]
 fn queue_ids_from_bits(bits: u64) -> impl Iterator<Item = usize> {
     (0..u64::BITS as usize).filter(move |queue_id| bits & (1 << queue_id) != 0)
 }

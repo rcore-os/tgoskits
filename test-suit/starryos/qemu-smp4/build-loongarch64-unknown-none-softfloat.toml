@@ -2,6 +2,7 @@ target = "loongarch64-unknown-none-softfloat"
 log = "Warn"
 features = [
   "ax-driver/nvme",
+  "ax-driver/virtio-blk",
   "ax-driver/virtio-net",
   "ax-driver/virtio-gpu",
   "ax-driver/virtio-input",

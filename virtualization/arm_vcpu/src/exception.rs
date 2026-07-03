@@ -14,7 +14,7 @@
 
 use aarch64_cpu::registers::{ESR_EL2, HCR_EL2, Readable, SCTLR_EL1, VTCR_EL2, VTTBR_EL2};
 use ax_errno::{AxError, AxResult};
-use axvcpu::{AccessWidth, AxVCpuExitReason, GuestPhysAddr, SysRegAddr};
+use axvm_types::{AccessWidth, GuestPhysAddr, SysRegAddr, VmExit};
 use log::error;
 
 use crate::{
@@ -74,7 +74,7 @@ core::arch::global_asm!(
 ///
 /// # Returns
 ///
-/// An `AxResult` containing an `AxVCpuExitReason` indicating the reason for the VM exit.
+/// An `AxResult` containing an `VmExit` indicating the reason for the VM exit.
 /// This could be due to a hypervisor call (`Hypercall`) or other reasons such as data aborts.
 ///
 /// # Panics
@@ -82,7 +82,7 @@ core::arch::global_asm!(
 /// If an unhandled exception class is encountered, the function will panic, outputting
 /// details about the exception including the instruction pointer, faulting address, exception
 /// syndrome register (ESR), and system control registers.
-pub fn handle_exception_sync(ctx: &mut TrapFrame) -> AxResult<AxVCpuExitReason> {
+pub fn handle_exception_sync(ctx: &mut TrapFrame) -> AxResult<VmExit> {
     match exception_class() {
         Some(ESR_EL2::EC::Value::DataAbortLowerEL) => {
             let elr = ctx.exception_pc();
@@ -106,7 +106,7 @@ pub fn handle_exception_sync(ctx: &mut TrapFrame) -> AxResult<AxVCpuExitReason> 
             // And arm64 hcall implementation uses `x0` to specify the hcall number.
             // For more details on the hypervisor call (HVC) mechanism and the use of general-purpose registers,
             // refer to the [Linux Kernel documentation on KVM ARM hypervisor ABI](https://github.com/torvalds/linux/blob/master/Documentation/virt/kvm/arm/hyp-abi.rst).
-            Ok(AxVCpuExitReason::Hypercall {
+            Ok(VmExit::Hypercall {
                 nr: ctx.gpr[0],
                 args: [
                     ctx.gpr[1], ctx.gpr[2], ctx.gpr[3], ctx.gpr[4], ctx.gpr[5], ctx.gpr[6],
@@ -138,7 +138,7 @@ pub fn handle_exception_sync(ctx: &mut TrapFrame) -> AxResult<AxVCpuExitReason> 
     }
 }
 
-fn handle_data_abort(context_frame: &mut TrapFrame) -> AxResult<AxVCpuExitReason> {
+fn handle_data_abort(context_frame: &mut TrapFrame) -> AxResult<VmExit> {
     let addr = exception_fault_addr()?;
     let access_width = exception_data_abort_access_width();
     let is_write = exception_data_abort_access_is_write();
@@ -180,13 +180,13 @@ fn handle_data_abort(context_frame: &mut TrapFrame) -> AxResult<AxVCpuExitReason
     }
 
     if is_write {
-        return Ok(AxVCpuExitReason::MmioWrite {
+        return Ok(VmExit::MmioWrite {
             addr,
             width,
             data: context_frame.gpr(reg) as u64,
         });
     }
-    Ok(AxVCpuExitReason::MmioRead {
+    Ok(VmExit::MmioRead {
         addr,
         width,
         reg,
@@ -204,9 +204,9 @@ fn handle_data_abort(context_frame: &mut TrapFrame) -> AxResult<AxVCpuExitReason
 /// * `context_frame` - A mutable reference to the trap frame containing the CPU state.
 ///
 /// # Returns
-/// * `AxResult<AxVCpuExitReason>` - An `AxResult` containing an `AxVCpuExitReason` indicating
+/// * `AxResult<VmExit>` - An `AxResult` containing an `VmExit` indicating
 ///   whether the operation was a read or write and the relevant details.
-fn handle_system_register(context_frame: &mut TrapFrame) -> AxResult<AxVCpuExitReason> {
+fn handle_system_register(context_frame: &mut TrapFrame) -> AxResult<VmExit> {
     let iss = ESR_EL2.read(ESR_EL2::ISS);
 
     let addr = exception_sysreg_addr(iss.try_into().unwrap());
@@ -216,12 +216,12 @@ fn handle_system_register(context_frame: &mut TrapFrame) -> AxResult<AxVCpuExitR
     let reg = exception_sysreg_gpr(iss) as usize;
     context_frame.set_exception_pc(val);
     if write {
-        return Ok(AxVCpuExitReason::SysRegWrite {
+        return Ok(VmExit::SysRegWrite {
             addr: SysRegAddr::new(addr),
             value: context_frame.gpr(reg) as u64,
         });
     }
-    Ok(AxVCpuExitReason::SysRegRead {
+    Ok(VmExit::SysRegRead {
         addr: SysRegAddr::new(addr),
         reg,
     })
@@ -234,7 +234,7 @@ fn handle_system_register(context_frame: &mut TrapFrame) -> AxResult<AxVCpuExitR
 /// calling convention is used) is a psci call. This function handles them all.
 ///
 /// Returns `None` if the HVC is not a psci call.
-fn handle_psci_call(ctx: &mut TrapFrame) -> Option<AxResult<AxVCpuExitReason>> {
+fn handle_psci_call(ctx: &mut TrapFrame) -> Option<AxResult<VmExit>> {
     const PSCI_FN_RANGE_32: core::ops::RangeInclusive<u64> = 0x8400_0000..=0x8400_001F;
     const PSCI_FN_RANGE_64: core::ops::RangeInclusive<u64> = 0xC400_0000..=0xC400_001F;
 
@@ -257,13 +257,13 @@ fn handle_psci_call(ctx: &mut TrapFrame) -> Option<AxResult<AxVCpuExitReason>> {
     };
 
     match fn_offset {
-        Some(PSCI_FN_CPU_OFF) => Some(Ok(AxVCpuExitReason::CpuDown { _state: ctx.gpr[1] })),
-        Some(PSCI_FN_CPU_ON) => Some(Ok(AxVCpuExitReason::CpuUp {
+        Some(PSCI_FN_CPU_OFF) => Some(Ok(VmExit::CpuDown { _state: ctx.gpr[1] })),
+        Some(PSCI_FN_CPU_ON) => Some(Ok(VmExit::CpuUp {
             target_cpu: ctx.gpr[1],
             entry_point: GuestPhysAddr::from(ctx.gpr[2] as usize),
             arg: ctx.gpr[3],
         })),
-        Some(PSCI_FN_SYSTEM_OFF) => Some(Ok(AxVCpuExitReason::SystemDown)),
+        Some(PSCI_FN_SYSTEM_OFF) => Some(Ok(VmExit::SystemDown)),
         // We just forward these request to the ATF directly.
         Some(PSCI_FN_VERSION..PSCI_FN_END) => None,
         _ => None,
@@ -274,7 +274,7 @@ fn handle_psci_call(ctx: &mut TrapFrame) -> Option<AxResult<AxVCpuExitReason>> {
 ///
 /// This function will judge if the SMC call is a PSCI call, if so, it will handle it as a PSCI call.
 /// Otherwise, it will forward the SMC call to the ATF directly.
-fn handle_smc64_exception(ctx: &mut TrapFrame) -> AxResult<AxVCpuExitReason> {
+fn handle_smc64_exception(ctx: &mut TrapFrame) -> AxResult<VmExit> {
     // Is this a psci call?
     if let Some(result) = handle_psci_call(ctx) {
         result
@@ -283,7 +283,7 @@ fn handle_smc64_exception(ctx: &mut TrapFrame) -> AxResult<AxVCpuExitReason> {
         // The args are from lower EL, so it is safe to call the ATF.
         (ctx.gpr[0], ctx.gpr[1], ctx.gpr[2], ctx.gpr[3]) =
             unsafe { crate::smc::smc_call(ctx.gpr[0], ctx.gpr[1], ctx.gpr[2], ctx.gpr[3]) };
-        Ok(AxVCpuExitReason::Nothing)
+        Ok(VmExit::Nothing)
     }
 }
 
@@ -292,7 +292,7 @@ fn handle_smc64_exception(ctx: &mut TrapFrame) -> AxResult<AxVCpuExitReason> {
 /// which is provided by the host callback.
 #[unsafe(no_mangle)]
 fn current_el_irq_handler(_tf: &mut TrapFrame) {
-    // TODO: consider if returning AxVCpuExitReason::ExternalInterrupt (or another enum variant) is
+    // TODO: consider if returning VmExit::ExternalInterrupt (or another enum variant) is
     // better than directly calling the handler here.
     crate::host::handle_irq()
 }

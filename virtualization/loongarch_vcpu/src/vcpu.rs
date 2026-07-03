@@ -3,9 +3,7 @@ use ax_errno::AxResult;
 use ax_errno::ax_err;
 #[cfg(target_arch = "loongarch64")]
 use ax_memory_addr::VirtAddr;
-use axvcpu::{
-    AxArchVCpu, AxVCpuExitReason, GuestPhysAddr, HostPhysAddr, MappingFlags, VCpuId, VMId,
-};
+use axvm_types::{GuestPhysAddr, HostPhysAddr, MappingFlags, VCpuId, VMId, VmArchVcpuOps, VmExit};
 #[cfg(target_arch = "loongarch64")]
 use loongArch64::register::prmd;
 
@@ -137,7 +135,7 @@ pub struct LoongArchVCpuSetupConfig {
     pub firmware_boot: bool,
 }
 
-impl AxArchVCpu for LoongArchVCpu {
+impl VmArchVcpuOps for LoongArchVCpu {
     type CreateConfig = LoongArchVCpuCreateConfig;
     type SetupConfig = LoongArchVCpuSetupConfig;
 
@@ -179,8 +177,8 @@ impl AxArchVCpu for LoongArchVCpu {
         Ok(())
     }
 
-    fn set_ept_root(&mut self, ept_root: HostPhysAddr) -> AxResult {
-        self.stage2_root = ept_root;
+    fn set_nested_page_table_root(&mut self, nested_page_table_root: HostPhysAddr) -> AxResult {
+        self.stage2_root = nested_page_table_root;
         Ok(())
     }
 
@@ -197,7 +195,7 @@ impl AxArchVCpu for LoongArchVCpu {
         Ok(())
     }
 
-    fn run(&mut self) -> AxResult<AxVCpuExitReason> {
+    fn run(&mut self) -> AxResult<VmExit> {
         #[cfg(target_arch = "loongarch64")]
         {
             unsafe {
@@ -271,7 +269,7 @@ impl AxArchVCpu for LoongArchVCpu {
         &mut self,
         fault_addr: GuestPhysAddr,
         access_flags: MappingFlags,
-    ) -> Option<AxVCpuExitReason> {
+    ) -> Option<VmExit> {
         let gcsr_badi = self.ctx.gcsr_badi;
         let exit =
             crate::mmio::decode_mmio_fault(&mut self.ctx, self.last_badi, fault_addr, access_flags)
@@ -569,7 +567,7 @@ impl LoongArchVCpu {
     }
 
     #[cfg(target_arch = "loongarch64")]
-    fn vmexit_handler(&mut self, exit_reason: TrapKind) -> AxResult<AxVCpuExitReason> {
+    fn vmexit_handler(&mut self, exit_reason: TrapKind) -> AxResult<VmExit> {
         self.last_badi = if self.ctx.host_badi != 0 {
             self.ctx.host_badi
         } else {

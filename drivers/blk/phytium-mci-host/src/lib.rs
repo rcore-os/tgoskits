@@ -45,8 +45,8 @@ use sdmmc_protocol::{
     error::{Error, ErrorContext, Phase},
     sdio::{
         BusWidth, ClockSpeed, HostEvent, HostEventKind, HostEventSource, ReadyBusRequest,
-        SdioBusOp, SdioHost as ProtocolSdioHost, SdioIrqHandle, SdioIrqHost, SignalVoltage,
-        poll_ready_bus_op, submit_ready_bus_op,
+        SdioBusOp, SdioHost as ProtocolSdioHost, SdioIrqHost, SignalVoltage, poll_ready_bus_op,
+        submit_ready_bus_op,
     },
 };
 
@@ -236,8 +236,7 @@ enum PhytiumVoltageState {
 const PHYTIUM_RESET_POLLS: u32 = 1_000_000;
 const PHYTIUM_CLOCK_POLLS: u32 = 1_000_000;
 
-/// Cloneable, sync-safe Phytium MCI IRQ top-half handle.
-#[derive(Clone)]
+/// Owned Phytium MCI IRQ top-half endpoint.
 pub struct PhytiumMciIrqHandle {
     pub(crate) irq: Arc<host::IrqCore>,
 }
@@ -340,8 +339,8 @@ impl ProtocolSdioHost for PhytiumMci {
         Ok(())
     }
 
-    fn handle_irq(&mut self) -> Self::Event {
-        self.irq_handle().handle_irq()
+    fn completion_irq_enabled(&self) -> bool {
+        PhytiumMci::completion_irq_enabled(self)
     }
 
     fn submit_bus_op(&mut self, op: SdioBusOp) -> Result<Self::BusRequest, Error> {
@@ -356,12 +355,8 @@ impl ProtocolSdioHost for PhytiumMci {
 impl SdioIrqHost for PhytiumMci {
     type IrqHandle = PhytiumMciIrqHandle;
 
-    fn irq_handle(&self) -> Self::IrqHandle {
-        PhytiumMci::irq_handle(self)
-    }
-
-    fn completion_irq_enabled(&self) -> bool {
-        PhytiumMci::completion_irq_enabled(self)
+    fn irq_handle(&mut self) -> Self::IrqHandle {
+        PhytiumMci::irq_endpoint(self)
     }
 }
 

@@ -14,7 +14,6 @@ mod tests {
     };
 
     use ax_errno::AxError;
-    use ax_kspin::SpinRaw as SpinNoIrq;
     use dma_api::{DeviceDma, DmaDomainId};
     use rdif_block::{
         BlkError, CompletionHint, DeviceInfo, DriverGeneric, IQueue, IQueueOwned, Interface,
@@ -23,10 +22,11 @@ mod tests {
     };
 
     use super::*;
-    use crate::os::{BlockTaskOps, install_dma_op, set_task_ops};
+    use crate::os::{BlockTaskOps, install_dma_op, set_task_ops, sync::IrqMutex as SpinNoIrq};
 
     static TEST_TASK_OPS: TestTaskOps = TestTaskOps;
     static NEXT_TEST_TASK_ID: AtomicU64 = AtomicU64::new(1_000_000);
+    static TEST_TIMEOUT_WAITS: AtomicUsize = AtomicUsize::new(0);
     static TEST_TASKS: OnceLock<StdMutex<HashMap<u64, StdArc<TestTaskState>>>> = OnceLock::new();
     static TEST_TASK_LOCK: StdMutex<()> = StdMutex::new(());
 
@@ -57,6 +57,10 @@ mod tests {
         }
 
         fn task_yield(&self) {
+            std::thread::yield_now();
+        }
+
+        fn task_wait(&self) {
             if !test_task_is_blocking() {
                 std::thread::yield_now();
                 return;
@@ -69,8 +73,23 @@ mod tests {
             *ready = false;
         }
 
-        fn task_wait(&self) {
-            self.task_yield();
+        fn task_wait_timeout(&self, dur: core::time::Duration) -> bool {
+            if !test_task_is_blocking() {
+                std::thread::yield_now();
+                return true;
+            }
+            let state = current_test_task_state();
+            let mut ready = state.ready.lock().unwrap();
+            if !*ready {
+                let (next_ready, timeout) = state.cvar.wait_timeout(ready, dur).unwrap();
+                ready = next_ready;
+                if timeout.timed_out() {
+                    TEST_TIMEOUT_WAITS.fetch_add(1, Ordering::Relaxed);
+                    return true;
+                }
+            }
+            *ready = false;
+            false
         }
 
         fn task_wait_until(&self, condition: &dyn Fn() -> bool) {
@@ -134,7 +153,9 @@ mod tests {
     }
 
     fn test_task_guard() -> std::sync::MutexGuard<'static, ()> {
-        TEST_TASK_LOCK.lock().unwrap()
+        let guard = TEST_TASK_LOCK.lock().unwrap();
+        clear_test_tasks();
+        guard
     }
 
     struct TestTaskGuard {
@@ -181,6 +202,12 @@ mod tests {
 
     fn test_tasks() -> &'static StdMutex<HashMap<u64, StdArc<TestTaskState>>> {
         TEST_TASKS.get_or_init(|| StdMutex::new(HashMap::new()))
+    }
+
+    fn clear_test_tasks() {
+        if let Some(tasks) = TEST_TASKS.get() {
+            tasks.lock().unwrap().clear();
+        }
     }
 
     struct ChannelDrainWake {
@@ -265,12 +292,13 @@ mod tests {
             &mut self,
             queue_id: usize,
             request_id: RequestId,
-        ) -> Result<RequestStatus, BlkError> {
+        ) -> Result<PollOutcome, BlkError> {
             let key = (queue_id, request_id);
             self.polled.push(key);
             self.completions
                 .remove(&key)
                 .unwrap_or(Ok(RequestStatus::Pending))
+                .map(poll_outcome_from_status)
         }
     }
 
@@ -304,9 +332,9 @@ mod tests {
             &mut self,
             _queue_id: usize,
             _request_id: RequestId,
-        ) -> Result<RequestStatus, BlkError> {
+        ) -> Result<PollOutcome, BlkError> {
             self.single_polls += 1;
-            Ok(RequestStatus::Pending)
+            Ok(PollOutcome::Pending)
         }
 
         fn poll_completions(
@@ -661,17 +689,24 @@ mod tests {
             &mut self,
             _queue_id: usize,
             _request_id: RequestId,
-        ) -> Result<RequestStatus, BlkError> {
+        ) -> Result<PollOutcome, BlkError> {
             self.polls += 1;
             if self.polls == 1 {
                 assert_eq!(
                     self.pending.lock().begin_poll(self.key),
                     PollClaim::AlreadyPolling
                 );
-                Ok(RequestStatus::Pending)
+                Ok(PollOutcome::Pending)
             } else {
-                Ok(RequestStatus::Complete)
+                Ok(PollOutcome::complete(Ok(())))
             }
+        }
+    }
+
+    fn poll_outcome_from_status(status: RequestStatus) -> PollOutcome {
+        match status {
+            RequestStatus::Pending => PollOutcome::Pending,
+            RequestStatus::Complete => PollOutcome::complete(Ok(())),
         }
     }
 
@@ -1323,7 +1358,7 @@ mod tests {
     }
 
     #[test]
-    fn irq_driven_wait_does_not_self_schedule_drain() {
+    fn irq_driven_submit_schedules_initial_drain() {
         let _guard = test_task_guard();
         let bridge = Arc::new(BlockIrqBridge::new());
         let (tx, rx) = mpsc::channel();
@@ -1331,7 +1366,7 @@ mod tests {
         config.completion_mode = BlockCompletionMode::IrqDriven;
         let device = BlockDeviceHandle::new(
             "mock",
-            [Box::new(MockQueue::with_pending_polls_before_complete(2)) as Box<dyn IQueue>],
+            [Box::new(MockQueue::with_pending_polls_before_complete(3)) as Box<dyn IQueue>],
             bridge.clone(),
             config,
         )
@@ -1344,16 +1379,43 @@ mod tests {
             buf
         });
 
-        assert!(
-            rx.recv_timeout(std::time::Duration::from_millis(100))
-                .is_err()
-        );
+        rx.recv_timeout(std::time::Duration::from_secs(1))
+            .expect("IRQ-driven submit must schedule a task-side drain after pending publish");
+        assert_eq!(device.drain_events(), 0);
         assert_eq!(device.pending_queue_ready_events(), 0);
-        bridge.record_hint(CompletionHint::Queue { queue_id: 0 });
-        assert_eq!(device.drain_events(), 1);
+        assert_eq!(drain_queue_hint_until_complete(&device, &bridge, 0, 1), 1);
 
         let buf = handle.join().unwrap();
         assert_eq!(buf[0], 5);
+    }
+
+    #[test]
+    fn irq_driven_wait_repolls_when_completion_irq_is_lost() {
+        let _guard = test_task_guard();
+        TEST_TIMEOUT_WAITS.store(0, Ordering::Relaxed);
+        let bridge = Arc::new(BlockIrqBridge::new());
+        let mut config = irq_driven_config();
+        config.submit_window = 1;
+        let device = BlockDeviceHandle::new(
+            "mock",
+            [Box::new(MockQueue::with_pending_polls_before_complete(4)) as Box<dyn IQueue>],
+            bridge,
+            config,
+        )
+        .unwrap();
+
+        let fs_dev = device.clone();
+        let handle = std::thread::spawn(move || {
+            let mut buf = alloc::vec![0u8; 512];
+            with_blocking_task(|| fs_dev.read_blocks(8, &mut buf)).unwrap();
+            buf
+        });
+
+        let buf = handle.join().unwrap();
+
+        assert_eq!(buf[0], 8);
+        assert_eq!(device.pending_count_for_queue(0), 0);
+        assert!(TEST_TIMEOUT_WAITS.load(Ordering::Relaxed) > 0);
     }
 
     #[test]
@@ -1588,6 +1650,42 @@ mod tests {
         assert_eq!(events.queue_bits, 1 << 1);
     }
 
+    struct StaticIrqHandler {
+        event: rdif_block::Event,
+    }
+
+    impl rdif_block::IrqHandler for StaticIrqHandler {
+        fn handle_irq(&mut self) -> rdif_block::Event {
+            self.event
+        }
+    }
+
+    #[test]
+    fn block_irq_action_records_event_without_pending_lock_filter() {
+        let _guard = test_task_guard();
+        let bridge = Arc::new(BlockIrqBridge::new());
+        let device = BlockDeviceHandle::new(
+            "mock",
+            [Box::new(MockQueue::with_id(11)) as Box<dyn IQueue>],
+            bridge.clone(),
+            irq_driven_config(),
+        )
+        .unwrap();
+
+        let mut action = BlockIrqAction::new(
+            Box::new(StaticIrqHandler {
+                event: rdif_block::Event::from_queue_bits(1 << 11),
+            }),
+            device,
+            0,
+        );
+
+        assert_eq!(action.run(), crate::os::BlockIrqOutcome::Wake);
+
+        let events = bridge.take_events();
+        assert_eq!(events.queue_bits, 1);
+    }
+
     #[test]
     fn irq_event_before_pending_insert_is_not_dropped() {
         let _guard = test_task_guard();
@@ -1600,8 +1698,8 @@ mod tests {
         )
         .unwrap();
 
-        let action = BlockIrqAction::new(Box::new(QueueEventIrqHandler), device.clone(), 0);
-        assert_eq!(action.run(), crate::os::BlockIrqOutcome::Handled);
+        let mut action = BlockIrqAction::new(Box::new(QueueEventIrqHandler), device.clone(), 0);
+        assert_eq!(action.run(), crate::os::BlockIrqOutcome::Wake);
         let events = device.bridge().take_events();
         assert_eq!(events.queue_bits, 1);
     }
@@ -1609,7 +1707,7 @@ mod tests {
     struct QueueEventIrqHandler;
 
     impl rdif_block::IrqHandler for QueueEventIrqHandler {
-        fn handle_irq(&self) -> rdif_block::Event {
+        fn handle_irq(&mut self) -> rdif_block::Event {
             rdif_block::Event::from_queue_bits(1)
         }
     }

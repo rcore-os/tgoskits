@@ -76,7 +76,7 @@ pub use self::mp::rust_main_secondary;
 
 extern crate alloc;
 
-#[cfg(any(feature = "fs", all(feature = "smp", not(feature = "plat-dyn"))))]
+#[cfg(feature = "fs")]
 pub(crate) fn runtime_default_task_stack_size() -> usize {
     build_info::TASK_STACK_SIZE
 }
@@ -180,10 +180,6 @@ fn is_init_ok() -> bool {
 /// secondary cores call [`rust_main_secondary`].
 #[cfg_attr(not(test), ax_plat::main)]
 pub fn rust_main(cpu_id: usize, arg: usize) -> ! {
-    #[cfg(not(feature = "plat-dyn"))]
-    unsafe {
-        ax_hal::mem::clear_bss()
-    };
     ax_hal::percpu::init_primary(cpu_id);
     // After per-CPU init, before scheduler/IPI/IRQ paths can allocate.
     // This is a no-op for allocator backends that do not need per-CPU state.
@@ -267,10 +263,6 @@ pub fn rust_main(cpu_id: usize, arg: usize) -> ! {
 
     info!("Initialize platform devices...");
     ax_hal::init_later(cpu_id, arg);
-    if cfg!(not(feature = "plat-dyn")) && !rdrive::is_initialized() {
-        rdrive::init(rdrive::Platform::Static)
-            .unwrap_or_else(|err| panic!("failed to initialize static rdrive source: {err:?}"));
-    }
     if rdrive::is_initialized() {
         registers::append_linker_registers();
         rdrive::probe_pre_kernel()
@@ -313,31 +305,17 @@ pub fn rust_main(cpu_id: usize, arg: usize) -> ! {
 
     fs::init(ax_hal::boot::bootargs());
 
-    #[cfg(all(feature = "display", feature = "plat-dyn"))]
-    devices::init_dyn_display();
+    #[cfg(feature = "display")]
+    devices::init_display();
 
-    #[cfg(all(feature = "display", not(feature = "plat-dyn")))]
-    devices::init_static_display();
+    #[cfg(feature = "input")]
+    devices::init_input();
 
-    #[cfg(all(feature = "input", feature = "plat-dyn"))]
-    devices::init_dyn_input();
+    #[cfg(feature = "net")]
+    devices::init_net();
 
-    #[cfg(all(feature = "input", not(feature = "plat-dyn")))]
-    devices::init_static_input();
-
-    cfg_if::cfg_if! {
-        if #[cfg(all(feature = "net", feature = "plat-dyn"))] {
-            devices::init_dyn_net();
-        } else if #[cfg(all(feature = "net", not(feature = "plat-dyn")))] {
-            devices::init_static_net();
-        }
-    }
-
-    #[cfg(all(feature = "vsock", feature = "plat-dyn"))]
-    devices::init_dyn_vsock();
-
-    #[cfg(all(feature = "vsock", not(feature = "plat-dyn")))]
-    devices::init_static_vsock();
+    #[cfg(feature = "vsock")]
+    devices::init_vsock();
 
     #[cfg(feature = "smp")]
     self::mp::start_secondary_cpus(cpu_id);
@@ -431,27 +409,16 @@ fn init_interrupt() {
 
 #[cfg(feature = "irq")]
 pub(crate) fn init_percpu_irq(cpu_id: usize) {
-    use core::ptr::NonNull;
-
-    fn unit_data() -> NonNull<()> {
-        NonNull::dangling()
-    }
-
     ax_hal::irq::cpu_online(cpu_id).expect("failed to mark CPU online for IRQ framework");
     ax_hal::irq::init_common_irq_handler();
 
     if ax_hal::percpu::this_cpu_is_bsp() {
         let cpus = ax_hal::irq::CpuMask::first_n(ax_hal::cpu_num());
-        ax_hal::irq::request_percpu_irq(
-            ax_hal::time::irq_num(),
-            cpus,
-            timer_irq_handler,
-            unit_data(),
-        )
-        .expect("failed to register timer IRQ handler");
+        ax_hal::irq::request_percpu_irq(ax_hal::time::irq_num(), cpus, timer_irq_handler)
+            .expect("failed to register timer IRQ handler");
 
         #[cfg(any(feature = "ipi", feature = "wake-ipi"))]
-        ax_hal::irq::request_percpu_irq(ax_hal::irq::ipi_irq(), cpus, ipi_irq_handler, unit_data())
+        ax_hal::irq::request_percpu_irq(ax_hal::irq::ipi_irq(), cpus, ipi_irq_handler)
             .expect("failed to register IPI IRQ handler");
     }
 
@@ -530,10 +497,7 @@ fn program_next_timer() {
 }
 
 #[cfg(feature = "irq")]
-unsafe fn timer_irq_handler(
-    ctx: ax_hal::irq::IrqContext,
-    _data: core::ptr::NonNull<()>,
-) -> ax_hal::irq::IrqReturn {
+fn timer_irq_handler(ctx: ax_hal::irq::IrqContext) -> ax_hal::irq::IrqReturn {
     let _ = ctx;
     #[cfg(feature = "multitask")]
     let scheduler_tick = advance_periodic_timer(ax_hal::time::monotonic_time_nanos());
@@ -546,19 +510,13 @@ unsafe fn timer_irq_handler(
 }
 
 #[cfg(all(feature = "irq", feature = "ipi"))]
-unsafe fn ipi_irq_handler(
-    _ctx: ax_hal::irq::IrqContext,
-    _data: core::ptr::NonNull<()>,
-) -> ax_hal::irq::IrqReturn {
+fn ipi_irq_handler(_ctx: ax_hal::irq::IrqContext) -> ax_hal::irq::IrqReturn {
     ax_ipi::ipi_handler();
     ax_hal::irq::IrqReturn::Handled
 }
 
 #[cfg(all(feature = "irq", feature = "wake-ipi", not(feature = "ipi")))]
-unsafe fn ipi_irq_handler(
-    _ctx: ax_hal::irq::IrqContext,
-    _data: core::ptr::NonNull<()>,
-) -> ax_hal::irq::IrqReturn {
+fn ipi_irq_handler(_ctx: ax_hal::irq::IrqContext) -> ax_hal::irq::IrqReturn {
     ax_hal::irq::IrqReturn::Handled
 }
 

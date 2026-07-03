@@ -12,7 +12,7 @@
 - 目录角色：ArceOS 示例程序
 - crate 形态：二进制 crate
 - 工作区位置：子工作区 `os/arceos`
-- feature 视角：这是保留给旧静态平台路径的示例；当前 LoongArch QEMU 默认测试路径和 x86_64、AArch64、RISC-V QEMU 一样走动态平台。
+- feature 视角：这是保留给旧外部自定义平台实验的示例；当前仓库内置构建路径统一走 `axplat-dyn`，不再通过 `myplat`/`defplat` 选择平台。
 - 关键数据结构：该 crate 暴露的数据结构较少，关键复杂度主要体现在模块协作、trait 约束或初始化时序。
 
 ### 模块结构
@@ -44,9 +44,6 @@ graph LR
 - `ax-alloc`
 - `ax-allocator`
 - `axbacktrace`
-- `axconfig`
-- `ax-config-gen`
-- `ax-config-macros`
 - `ax-cpu`
 - `ax-display`
 - 另外还有 `62` 个同类项未在此展开

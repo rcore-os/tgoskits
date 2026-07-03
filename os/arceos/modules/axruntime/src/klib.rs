@@ -15,8 +15,8 @@ use core::time::Duration;
 #[cfg(feature = "paging")]
 use ax_memory_addr::MemoryAddr;
 use axklib::{
-    AxError, AxResult, IrqCpuId, IrqCpuMask, IrqError, IrqHandle, IrqId, Klib, PhysAddr,
-    RawIrqHandler, VirtAddr, impl_trait,
+    AxError, AxResult, BoxedIrqHandler, ConcurrentBoxedIrqHandler, IrqCpuId, IrqCpuMask, IrqError,
+    IrqHandle, IrqId, Klib, PhysAddr, VirtAddr, impl_trait,
 };
 
 struct KlibImpl;
@@ -221,12 +221,11 @@ impl_trait! {
 
         fn irq_request_shared(
             _irq: IrqId,
-            _handler: RawIrqHandler,
-            _data: core::ptr::NonNull<()>,
+            _handler: BoxedIrqHandler,
         ) -> AxResult<IrqHandle> {
             #[cfg(feature = "irq")]
             {
-                ax_hal::irq::request_shared_irq(_irq, _handler, _data).map_err(map_irq_error)
+                ax_hal::irq::request_shared_irq(_irq, _handler).map_err(map_irq_error)
             }
             #[cfg(not(feature = "irq"))]
             {
@@ -236,14 +235,13 @@ impl_trait! {
 
         fn irq_request_shared_disabled(
             _irq: IrqId,
-            _handler: RawIrqHandler,
-            _data: core::ptr::NonNull<()>,
+            _handler: BoxedIrqHandler,
         ) -> AxResult<IrqHandle> {
             #[cfg(feature = "irq")]
             {
                 ax_hal::irq::request_irq(
                     _irq,
-                    ax_hal::irq::IrqRequest::new(_handler, _data)
+                    ax_hal::irq::IrqRequest::new(_handler)
                         .share_mode(ax_hal::irq::ShareMode::Shared)
                         .auto_enable(ax_hal::irq::AutoEnable::No),
                 )
@@ -258,12 +256,11 @@ impl_trait! {
         fn irq_request_percpu(
             _irq: IrqId,
             _cpus: IrqCpuMask,
-            _handler: RawIrqHandler,
-            _data: core::ptr::NonNull<()>,
+            _handler: ConcurrentBoxedIrqHandler,
         ) -> AxResult<IrqHandle> {
             #[cfg(feature = "irq")]
             {
-                ax_hal::irq::request_percpu_irq(_irq, _cpus, _handler, _data)
+                ax_hal::irq::request_percpu_irq(_irq, _cpus, _handler)
                     .map_err(map_irq_error)
             }
             #[cfg(not(feature = "irq"))]

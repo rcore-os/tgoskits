@@ -21,6 +21,18 @@
 - `pci/*`：处理 PCI/FDT 探测、BAR/window 资源和平台相关 PCIe glue。
 - `soc/*`、`usb/*`、`serial/*`、`time.rs`：承载 SoC、USB、串口和 RTC 等平台设备 glue。
 
+## 自定义平台接入
+
+`ax-driver` 不再提供面向旧静态平台的自动注册 feature，也不再通过 feature 选择平台探测路径。仓库内置平台路径默认使用 FDT/ACPI/PCI probe 注册设备；自行实现的外部平台如果不使用现有动态探测机制，应在平台初始化阶段直接向 `rdrive` 注册驱动或设备。
+
+推荐做法是：
+
+- 平台初始化 `rdrive::init(rdrive::Platform::Static)` 或合适的多来源 `init_sources(...)`。
+- 用 `rdrive::register_add(DriverRegister { probe_kinds: &[ProbeKind::Static { ... }], ... })` 注册平台私有 probe。
+- 在 probe 回调里构造硬件实例，并调用 `PlatformDevice::register(...)`、`PlatformDevice::*_with_info(...)` 或具体驱动暴露的 `register_transport*()` helper。
+
+这样自定义平台可以自由决定设备枚举顺序、MMIO 映射、IRQ 解析和 DMA 策略，而不需要依赖 `ax-driver` 内置的自动注册兼容层。
+
 ## 依赖关系
 
 ```mermaid

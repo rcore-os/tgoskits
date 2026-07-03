@@ -1,6 +1,6 @@
 use super::*;
 
-fn env_truthy(env: &HashMap<String, String>, key: &str) -> bool {
+pub(crate) fn env_truthy(env: &HashMap<String, String>, key: &str) -> bool {
     env.get(key).is_some_and(|value| {
         matches!(
             value.trim().to_ascii_lowercase().as_str(),
@@ -47,6 +47,15 @@ pub(crate) fn toolchain_rustflags_for_features(
         flags.push("-Zstack-protector=strong".to_string());
     }
     flags
+}
+
+pub(crate) fn append_encoded_rustflags(cargo: &mut Cargo, flags: &[&str]) {
+    const KEY: &str = "CARGO_ENCODED_RUSTFLAGS";
+    let value = cargo.env.entry(KEY.to_string()).or_default();
+    if !value.is_empty() {
+        value.push('\x1f');
+    }
+    value.push_str(&flags.join("\x1f"));
 }
 
 /// Whether the build config enables target backtrace support (frame pointers / unwind).
@@ -97,15 +106,6 @@ pub struct BuildInfo {
     /// Maximum number of CPUs to expose to the build.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_cpu_num: Option<usize>,
-    /// Additional config value overrides applied when generating `.axconfig.toml`.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub axconfig_overrides: Vec<String>,
-    /// Whether to use the dynamic platform linker flow when supported.
-    #[serde(
-        default = "default_plat_dyn",
-        skip_serializing_if = "is_default_plat_dyn"
-    )]
-    pub plat_dyn: bool,
 }
 
 impl BuildInfo {
@@ -117,10 +117,6 @@ impl BuildInfo {
             .collect();
         self.features = features;
         self
-    }
-
-    pub(crate) fn effective_plat_dyn(&self, target: &str, plat_dyn_override: Option<bool>) -> bool {
-        resolve_effective_plat_dyn(target, self.plat_dyn, plat_dyn_override)
     }
 
     pub(crate) fn prepare_log_env(&mut self) {
@@ -170,6 +166,7 @@ impl BuildInfo {
             post_build_cmds: vec![],
             to_bin,
             bin: None,
+            test: None,
         }
     }
 
@@ -189,16 +186,13 @@ impl BuildInfo {
         mut self,
         package: &str,
         target: &str,
-        plat_dyn_override: Option<bool>,
         metadata: &Metadata,
     ) -> anyhow::Result<Cargo> {
         self.validated_max_cpu_num()?;
-        let plat_dyn = self.effective_plat_dyn(target, plat_dyn_override);
-        self.resolve_std_features_with_metadata(package, target, plat_dyn, metadata);
-        let axconfig_overrides = self.axconfig_overrides.clone();
-        let std_target = std_build_target_for(target, plat_dyn)?;
+        self.resolve_std_features_with_metadata(package, target, metadata);
+        let std_target = std_build_target_for(target)?;
         let fake_lib_dir = std_fake_lib_dir(&std_target.target_name)?;
-        let wrapper = std_linker_wrapper_path(&std_target.target_name, &fake_lib_dir, plat_dyn)?;
+        let wrapper = std_linker_wrapper_path(&std_target.target_name, &fake_lib_dir)?;
         let mut cargo = self.into_base_cargo_config_with_log(
             package.to_string(),
             std_target.target.clone(),
@@ -209,10 +203,8 @@ impl BuildInfo {
             &mut cargo.env,
             package,
             target,
-            plat_dyn,
             &cargo.features,
             metadata,
-            &axconfig_overrides,
         )?;
         let app_features = package_feature_names(package, metadata)?;
         let axstd_features = package_feature_names(AXSTD_STD_PACKAGE, metadata)?;
@@ -230,11 +222,11 @@ impl BuildInfo {
         );
         let rustflags = toolchain_rustflags_for_features(&cargo.env, &cargo.features);
         cargo.extra_config = Some(
-            std_cargo_config_path(&std_target.target_name, &wrapper, plat_dyn, &rustflags)?
+            std_cargo_config_path(&std_target.target_name, &wrapper, &rustflags)?
                 .display()
                 .to_string(),
         );
-        cargo.to_bin = default_to_bin_for_target_config(target, plat_dyn);
+        cargo.to_bin = true;
         Ok(cargo)
     }
 
@@ -243,6 +235,7 @@ impl BuildInfo {
             .features
             .iter()
             .map(|feature| normalize_std_feature(feature))
+            .filter(|feature| !is_removed_dynamic_platform_feature(feature))
             .collect();
         self.features.sort();
         self.features.dedup();
@@ -252,9 +245,9 @@ impl BuildInfo {
         &mut self,
         package: &str,
         target: &str,
-        plat_dyn: bool,
         metadata: &Metadata,
     ) {
+        let _ = target;
         self.features
             .extend(std_package_metadata_features(package, metadata));
         self.resolve_std_features();
@@ -262,67 +255,20 @@ impl BuildInfo {
         if self.max_cpu_num.is_some_and(|max_cpu_num| max_cpu_num > 1) {
             self.features.push("smp".to_string());
         }
-        if plat_dyn {
-            self.features.push("smp".to_string());
-            self.features.push("plat-dyn".to_string());
-            self.features.push("ax-driver/plat-dyn".to_string());
-        } else if !has_myplat_feature(&self.features)
-            && !has_defplat_feature(&self.features)
-            && !has_ax_hal_platform_feature(&self.features, Some(metadata))
-        {
-            self.features.push(
-                default_ax_hal_platform_feature(target, Some(metadata))
-                    .unwrap_or_else(|_| "ax-hal/defplat".to_string()),
-            );
-        }
+        self.features.push("smp".to_string());
 
         self.resolve_std_features();
-    }
-
-    pub(crate) fn prepare_non_dynamic_platform_for(
-        &mut self,
-        package: &str,
-        target: &str,
-        plat_dyn: bool,
-        metadata: &Metadata,
-    ) -> anyhow::Result<()> {
-        if plat_dyn {
-            return Ok(());
-        }
-
-        let platform = resolve_platform_config(package, target, &self.features, metadata)?;
-        let out_config = generated_axconfig_path(package, target)?;
-
-        generate_axconfig(
-            &crate::context::workspace_root_path()?,
-            target,
-            &platform.name,
-            &platform.config_path,
-            &out_config,
-            self.validated_max_cpu_num()?,
-            &self.axconfig_overrides,
-        )?;
-
-        self.env.insert(
-            "AX_CONFIG_PATH".to_string(),
-            out_config.display().to_string(),
-        );
-        self.env.insert("AX_PLATFORM".to_string(), platform.name);
-
-        Ok(())
     }
 
     pub(crate) fn resolve_features_with_metadata(
         &mut self,
         package: &str,
         target: &str,
-        plat_dyn: bool,
         metadata: &Metadata,
     ) {
         self.resolve_features_with_prefix_family(
             package,
             target,
-            plat_dyn,
             detect_ax_feature_prefix_family(package, metadata),
             Some(metadata),
         );
@@ -332,13 +278,11 @@ impl BuildInfo {
         &mut self,
         package: &str,
         target: &str,
-        plat_dyn: bool,
         prefix_family: anyhow::Result<AxFeaturePrefixFamily>,
         metadata: Option<&Metadata>,
     ) {
         let prefix_family = self.resolve_ax_feature_prefix_family(package, prefix_family);
-        let has_myplat = has_myplat_feature(&self.features);
-        let has_defplat = has_defplat_feature(&self.features);
+        let _ = (target, metadata);
 
         self.features.retain(|feature| {
             !matches!(
@@ -355,40 +299,12 @@ impl BuildInfo {
             )
         });
 
-        if plat_dyn {
-            self.features
-                .push(format!("{}plat-dyn", prefix_family.prefix()));
-        } else if has_myplat {
-            self.features
-                .push(format!("{}myplat", prefix_family.prefix()));
-        } else if has_defplat {
-            self.features
-                .push(format!("{}defplat", prefix_family.prefix()));
-        }
-
         if self.max_cpu_num.is_some_and(|max_cpu_num| max_cpu_num > 1) {
             self.features.push(format!("{}smp", prefix_family.prefix()));
         }
-        self.push_platform_feature(target, plat_dyn, has_myplat, metadata);
 
         self.features.sort();
         self.features.dedup();
-    }
-
-    fn push_platform_feature(
-        &mut self,
-        target: &str,
-        plat_dyn: bool,
-        has_myplat: bool,
-        metadata: Option<&Metadata>,
-    ) {
-        if plat_dyn || has_myplat || has_ax_hal_platform_feature(&self.features, metadata) {
-            return;
-        }
-
-        let feature = default_ax_hal_platform_feature(target, metadata)
-            .unwrap_or_else(|_| "ax-hal/defplat".to_string());
-        self.features.push(feature);
     }
 
     fn resolve_ax_feature_prefix_family(
@@ -432,15 +348,12 @@ impl BuildInfo {
     }
 
     #[cfg(test)]
-    pub(crate) fn resolve_features(&mut self, package: &str, target: &str, plat_dyn: bool) {
+    pub(crate) fn resolve_features(&mut self, package: &str, target: &str) {
         match workspace_metadata() {
-            Ok(metadata) => {
-                self.resolve_features_with_metadata(package, target, plat_dyn, &metadata)
-            }
+            Ok(metadata) => self.resolve_features_with_metadata(package, target, &metadata),
             Err(err) => self.resolve_features_with_prefix_family(
                 package,
                 target,
-                plat_dyn,
                 Err(err.context("failed to load workspace metadata")),
                 None,
             ),
@@ -485,8 +398,6 @@ impl Default for BuildInfo {
             log: LogLevel::Warn,
             features: vec!["ax-std".to_string()],
             max_cpu_num: None,
-            axconfig_overrides: Vec::new(),
-            plat_dyn: true,
         }
     }
 }

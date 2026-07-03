@@ -59,9 +59,15 @@ fn bug_ext4_dir_ops_is_in_system_grouped_qemu_case() {
 fn starry_system_grouped_qemu_configs_report_subcase_timing() {
     let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
 
-    for group in ["qemu-smp1", "qemu-smp4"] {
+    for (group, arches) in [
+        (
+            "qemu-smp1",
+            &["aarch64", "loongarch64", "riscv64", "x86_64"][..],
+        ),
+        ("qemu-smp4", &["aarch64", "loongarch64", "x86_64"][..]),
+    ] {
         let system_dir = workspace_root.join(format!("test-suit/starryos/{group}/system"));
-        for arch in ["aarch64", "loongarch64", "riscv64", "x86_64"] {
+        for arch in arches {
             let path = system_dir.join(format!("qemu-{arch}.toml"));
             let content = fs::read_to_string(&path).unwrap();
             let config: toml::Value = toml::from_str(&content).unwrap();
@@ -156,10 +162,114 @@ fn signal_interrupt_eintr_subcase_bounds_child_wait() {
         source_path.display()
     );
     assert!(
+        source.contains("read_ready_byte(")
+            && source.contains("errno == EINTR")
+            && source.contains("parent read child ready pipe"),
+        "{} must retry the parent ready-pipe read on EINTR and report why it failed",
+        source_path.display()
+    );
+    assert!(
         !source.contains("waitpid(child, &status, 0)"),
         "{} must not let a stuck child consume the whole grouped QEMU timeout",
         source_path.display()
     );
+}
+
+#[test]
+fn tty_console_input_burst_uses_injected_guest_script() {
+    let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let case_dir = workspace_root.join("test-suit/starryos/qemu-smp1/tty-console-input-burst");
+    let script_path = case_dir.join("sh/tty-input-burst.sh");
+    assert!(
+        script_path.is_file(),
+        "{} must inject the burst script through the rootfs instead of pasting it over the console",
+        script_path.display()
+    );
+
+    let script = fs::read_to_string(&script_path)
+        .unwrap_or_else(|err| panic!("failed to read {}: {err}", script_path.display()));
+    assert!(
+        script.contains("while [ \"$i\" -lt 120 ]")
+            && script.contains("STARRY_TTY_INPUT_BURST_PASSED"),
+        "{} must preserve the burst payload checks and success marker",
+        script_path.display()
+    );
+
+    for arch in ["aarch64", "loongarch64", "riscv64", "x86_64"] {
+        let path = case_dir.join(format!("qemu-{arch}.toml"));
+        let content = fs::read_to_string(&path).unwrap();
+        let config: toml::Value = toml::from_str(&content).unwrap();
+        let command = config
+            .get("shell_init_cmd")
+            .and_then(toml::Value::as_str)
+            .unwrap_or_default();
+
+        assert_eq!(
+            command,
+            "/usr/bin/tty-input-burst.sh",
+            "{} must only send a short command through the console",
+            path.display()
+        );
+        assert!(
+            !content.contains("cat > /tmp/tty-input-burst.sh"),
+            "{} must not paste a long heredoc through the console",
+            path.display()
+        );
+    }
+}
+
+#[test]
+fn riscv64_smp4_system_case_is_disabled() {
+    let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let smp1_config = workspace_root.join("test-suit/starryos/qemu-smp1/system/qemu-riscv64.toml");
+    let smp4_config = workspace_root.join("test-suit/starryos/qemu-smp4/system/qemu-riscv64.toml");
+
+    assert!(
+        smp1_config.is_file(),
+        "{} must keep riscv64 system smoke coverage",
+        smp1_config.display()
+    );
+    assert!(
+        !smp4_config.exists(),
+        "{} must remain disabled until riscv64 qemu-smp4 system probes stop consuming the grouped \
+         QEMU timeout in CI",
+        smp4_config.display()
+    );
+}
+
+#[test]
+fn smp4_affinity_flaky_arches_are_filtered() {
+    let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let cases = [
+        (
+            "affinity-bug-sched-affinity-migrate",
+            "^(aarch64|x86_64)",
+            "bug-sched-affinity-migrate skipped on loongarch64/riscv64 qemu-smp4",
+        ),
+        (
+            "affinity-bug-sched-affinity-pid",
+            "^(aarch64|x86_64)",
+            "bug-sched-affinity-pid skipped on loongarch64/riscv64 qemu-smp4",
+        ),
+    ];
+
+    for (case, arch_regex, skip_message) in cases {
+        let cmake_path = workspace_root
+            .join("test-suit/starryos/qemu-smp4/system")
+            .join(case)
+            .join("CMakeLists.txt");
+        let cmake = fs::read_to_string(&cmake_path)
+            .unwrap_or_else(|err| panic!("failed to read {}: {err}", cmake_path.display()));
+
+        assert!(
+            cmake.contains("starry_arch_filtered_executable")
+                && cmake.contains(arch_regex)
+                && cmake.contains(skip_message),
+            "{} must skip flaky qemu-smp4 affinity probes instead of letting them consume the \
+             grouped QEMU timeout",
+            cmake_path.display()
+        );
+    }
 }
 
 #[test]

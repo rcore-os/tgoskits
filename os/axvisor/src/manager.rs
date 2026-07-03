@@ -59,6 +59,11 @@ impl AxvmManager {
         AxvmRuntime::resume_vm(vm_id)
     }
 
+    /// Reset a VM by ID.
+    pub fn reset_vm(vm_id: VMId) -> AxResult {
+        AxvmRuntime::reset_vm(vm_id)
+    }
+
     /// Remove a VM by ID.
     pub fn remove_vm(vm_id: VMId) -> Option<AxVMRef> {
         #[cfg(target_arch = "loongarch64")]
@@ -223,7 +228,7 @@ impl AxvmManager {
 
 #[cfg(target_arch = "loongarch64")]
 pub(crate) fn register_loongarch_passthrough_irq_routes(vm_id: VMId) {
-    let routes = crate::guest_platform::loongarch64::get_guest_irq_routes(vm_id);
+    let routes = axvm::boot::guest_platform::loongarch64::get_guest_irq_routes(vm_id);
     if routes.is_empty() {
         if let Some(vm) = axvm::get_vm_by_id(vm_id) {
             let passthrough = vm.with_config(|cfg| !cfg.pass_through_devices().is_empty());

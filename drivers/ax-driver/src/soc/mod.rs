@@ -12,17 +12,17 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#[cfg(feature = "pinctrl")]
+mod fixed_regulator;
 #[cfg(feature = "rockchip-soc")]
 mod rockchip;
 #[cfg(feature = "rockchip-dwmmc")]
 pub mod scmi;
-#[cfg(feature = "sg2002-placeholder")]
-mod sg2002;
 
 #[cfg(feature = "rockchip-soc")]
 pub use rockchip::{
-    RockchipPinCtrl, rk3588_enable_clock, rk3588_enable_power_domain, rk3588_reset_assert,
-    rk3588_reset_deassert, rk3588_set_clock_rate,
+    RockchipFdtPinctrlParser, RockchipPinCtrl, rk3588_enable_clock, rk3588_enable_power_domain,
+    rk3588_reset_assert, rk3588_reset_deassert, rk3588_set_clock_rate,
 };
 
 #[cfg(not(feature = "rockchip-soc"))]
@@ -48,6 +48,9 @@ pub fn rk3588_enable_power_domain(domain: usize) -> Result<(), alloc::string::St
 
 #[cfg(not(feature = "rockchip-soc"))]
 pub struct RockchipPinCtrl;
+
+#[cfg(not(feature = "rockchip-soc"))]
+pub struct RockchipFdtPinctrlParser;
 
 #[cfg(not(feature = "rockchip-soc"))]
 impl rdrive::DriverGeneric for RockchipPinCtrl {

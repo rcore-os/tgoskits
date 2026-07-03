@@ -1,66 +1,52 @@
+use core::time::Duration;
+use std::{ptr::NonNull, sync::Mutex};
+
 #[cfg(feature = "pci")]
 use ax_driver::PciIrqRequirement;
-#[cfg(feature = "plat-dyn")]
-use ax_driver::binding_info_from_acpi_route;
-#[cfg(feature = "plat-dyn")]
-use ax_driver::binding_info_from_fdt;
 #[cfg(feature = "pci")]
 use ax_driver::binding_info_from_pci;
-#[cfg(feature = "plat-dyn")]
-use ax_driver::{BindingIrq, BindingIrqSource};
+use ax_driver::{
+    BindingIrq, BindingIrqSource, binding_info_from_acpi_route, binding_info_from_fdt,
+    binding_irq_from_named_fdt_interrupt,
+};
+use axklib::{
+    AxError, AxResult, BoxedIrqHandler, ConcurrentBoxedIrqHandler, IrqCpuMask, IrqHandle, IrqId,
+    Klib, PhysAddr, VirtAddr, impl_trait,
+};
+use fdt_edit::{Fdt, Node, Phandle, Property};
 #[cfg(feature = "pci")]
 use rdrive::probe::pci::{PciAddress, PciInfo};
-#[cfg(feature = "plat-dyn")]
-use {
-    axklib::{
-        AxError, AxResult, IrqCpuMask, IrqHandle, IrqId, Klib, PhysAddr, RawIrqHandler, VirtAddr,
-        impl_trait,
+use rdrive::{
+    DriverGeneric, Platform, PlatformDevice,
+    probe::{
+        OnProbeError,
+        acpi::{AcpiGsiController, AcpiGsiRoute, AcpiIrqPolarity, AcpiIrqTrigger},
     },
-    core::time::Duration,
-    fdt_edit::{Fdt, Node, Property},
-    rdrive::{
-        DriverGeneric, Platform, PlatformDevice,
-        probe::{
-            OnProbeError,
-            acpi::{AcpiGsiController, AcpiGsiRoute, AcpiIrqPolarity, AcpiIrqTrigger},
-        },
-        register::{DriverRegister, ProbeFdt, ProbeKind, ProbeLevel, ProbePriority},
-    },
-    std::ptr::NonNull,
-    std::sync::Mutex,
+    register::{DriverRegister, ProbeFdt, ProbeKind, ProbeLevel, ProbePriority},
 };
 
-#[cfg(feature = "plat-dyn")]
 static CAPTURED_IRQ: Mutex<Option<Option<BindingIrq>>> = Mutex::new(None);
-#[cfg(feature = "plat-dyn")]
 static SETUP_SPECIFIER: Mutex<Option<Vec<u32>>> = Mutex::new(None);
-#[cfg(feature = "plat-dyn")]
 static SETUP_ACPI_ROUTE: Mutex<Option<AcpiGsiRoute>> = Mutex::new(None);
 
-#[cfg(feature = "plat-dyn")]
 const TEST_INTC_DOMAIN: irq_framework::IrqDomainId = irq_framework::IrqDomainId(0);
 
-#[cfg(feature = "plat-dyn")]
 static TEST_INTC_PROBE_KINDS: &[ProbeKind] = &[ProbeKind::Fdt {
     compatibles: &["test,intc"],
     on_probe: register_test_intc,
 }];
 
-#[cfg(feature = "plat-dyn")]
 static TEST_DEVICE_PROBE_KINDS: &[ProbeKind] = &[ProbeKind::Fdt {
     compatibles: &["test,binding-info"],
     on_probe: capture_binding_info,
 }];
 
-#[cfg(feature = "plat-dyn")]
 static STATIC_INTC_PROBE_KINDS: &[ProbeKind] = &[ProbeKind::Static {
     on_probe: register_static_test_intc,
 }];
 
-#[cfg(feature = "plat-dyn")]
 struct KlibImpl;
 
-#[cfg(feature = "plat-dyn")]
 impl_trait! {
     impl Klib for KlibImpl {
         fn mem_iomap(_addr: PhysAddr, _size: usize) -> AxResult<VirtAddr> {
@@ -101,16 +87,14 @@ impl_trait! {
 
         fn irq_request_shared(
             _irq: IrqId,
-            _handler: RawIrqHandler,
-            _data: core::ptr::NonNull<()>,
+            _handler: BoxedIrqHandler,
         ) -> AxResult<IrqHandle> {
             Err(AxError::Unsupported)
         }
 
         fn irq_request_shared_disabled(
             _irq: IrqId,
-            _handler: RawIrqHandler,
-            _data: core::ptr::NonNull<()>,
+            _handler: BoxedIrqHandler,
         ) -> AxResult<IrqHandle> {
             Err(AxError::Unsupported)
         }
@@ -118,8 +102,7 @@ impl_trait! {
         fn irq_request_percpu(
             _irq: IrqId,
             _cpus: IrqCpuMask,
-            _handler: RawIrqHandler,
-            _data: core::ptr::NonNull<()>,
+            _handler: ConcurrentBoxedIrqHandler,
         ) -> AxResult<IrqHandle> {
             Err(AxError::Unsupported)
         }
@@ -172,7 +155,6 @@ fn required_pci_binding_info_reports_unresolved_irq() {
     assert!(err.to_string().contains("failed to resolve IRQ"));
 }
 
-#[cfg(feature = "plat-dyn")]
 #[test]
 fn fdt_binding_info_carries_first_irq_specifier_without_setup() {
     *CAPTURED_IRQ.lock().unwrap() = None;
@@ -201,11 +183,57 @@ fn fdt_binding_info_carries_first_irq_specifier_without_setup() {
         panic!("expected captured FDT interrupt binding");
     };
     assert_eq!(spec.cells, vec![0, 42, 4]);
-    assert_ne!(u64::from(spec.controller), 0);
+    let controller = rdrive::fdt_phandle_to_device_id(Phandle::from(1)).unwrap();
+    assert_eq!(spec.controller, controller);
     assert_eq!(*SETUP_SPECIFIER.lock().unwrap(), None);
 }
 
-#[cfg(feature = "plat-dyn")]
+#[test]
+fn named_fdt_interrupt_binding_selects_matching_specifier() {
+    *CAPTURED_IRQ.lock().unwrap() = None;
+    *SETUP_SPECIFIER.lock().unwrap() = None;
+
+    let fdt_data = Box::leak(Box::new(minimal_irq_fdt().encode()));
+    let fdt_addr = NonNull::new(fdt_data.as_ref().as_ptr() as *mut u8).unwrap();
+
+    rdrive::init(Platform::Fdt { addr: fdt_addr }).unwrap();
+    rdrive::register_add(DriverRegister {
+        name: "binding-info-fdt-test-intc",
+        level: ProbeLevel::PostKernel,
+        priority: ProbePriority::INTC,
+        probe_kinds: TEST_INTC_PROBE_KINDS,
+    });
+    rdrive::register_add(DriverRegister {
+        name: "binding-info-fdt-test-device",
+        level: ProbeLevel::PostKernel,
+        priority: ProbePriority::DEFAULT,
+        probe_kinds: TEST_DEVICE_PROBE_KINDS,
+    });
+    rdrive::probe_all(true).unwrap();
+
+    let captured = CAPTURED_IRQ.lock().unwrap().clone();
+    let Some(Some(BindingIrq::Source(BindingIrqSource::FdtInterrupt(first)))) = captured else {
+        panic!("expected captured FDT interrupt binding");
+    };
+    assert_eq!(first.cells, vec![0, 42, 4]);
+
+    let irq = rdrive::with_fdt(|fdt| {
+        let node = fdt.find_compatible(&["test,binding-info"]).pop().unwrap();
+        binding_irq_from_named_fdt_interrupt(&node, "backup")
+    })
+    .unwrap()
+    .unwrap()
+    .unwrap();
+
+    let BindingIrq::Source(BindingIrqSource::FdtInterrupt(spec)) = irq else {
+        panic!("expected named FDT interrupt binding");
+    };
+    let controller = rdrive::fdt_phandle_to_device_id(Phandle::from(1)).unwrap();
+    assert_eq!(spec.controller, controller);
+    assert_eq!(spec.cells, vec![0, 43, 4]);
+    assert_eq!(*SETUP_SPECIFIER.lock().unwrap(), None);
+}
+
 #[test]
 fn acpi_binding_info_preserves_route_without_setup() {
     *SETUP_ACPI_ROUTE.lock().unwrap() = None;
@@ -232,17 +260,14 @@ fn acpi_binding_info_preserves_route_without_setup() {
     );
 }
 
-#[cfg(feature = "plat-dyn")]
 struct TestIntc;
 
-#[cfg(feature = "plat-dyn")]
 impl DriverGeneric for TestIntc {
     fn name(&self) -> &str {
         "test-intc"
     }
 }
 
-#[cfg(feature = "plat-dyn")]
 impl rdif_intc::Interface for TestIntc {
     fn supports_acpi_gsi(&self, route: &AcpiGsiRoute) -> bool {
         *route == acpi_route()
@@ -277,7 +302,6 @@ impl rdif_intc::Interface for TestIntc {
     }
 }
 
-#[cfg(feature = "plat-dyn")]
 fn register_test_intc(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
     probe
         .into_platform_device()
@@ -285,13 +309,11 @@ fn register_test_intc(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
     Ok(())
 }
 
-#[cfg(feature = "plat-dyn")]
 fn register_static_test_intc(plat_dev: PlatformDevice) -> Result<(), OnProbeError> {
     plat_dev.register(rdif_intc::Intc::new(TEST_INTC_DOMAIN, TestIntc));
     Ok(())
 }
 
-#[cfg(feature = "plat-dyn")]
 fn ensure_rdrive_static_intc() {
     if !rdrive::is_initialized() {
         rdrive::init(Platform::Static).unwrap();
@@ -310,13 +332,11 @@ fn ensure_rdrive_static_intc() {
     }
 }
 
-#[cfg(feature = "plat-dyn")]
 fn capture_binding_info(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
     *CAPTURED_IRQ.lock().unwrap() = Some(binding_info_from_fdt(probe.info())?.irq_cloned());
     Ok(())
 }
 
-#[cfg(feature = "plat-dyn")]
 fn minimal_irq_fdt() -> Fdt {
     let mut fdt = Fdt::new();
     let root = fdt.root_id();
@@ -360,7 +380,6 @@ fn minimal_irq_fdt() -> Fdt {
     fdt
 }
 
-#[cfg(feature = "plat-dyn")]
 fn acpi_route() -> AcpiGsiRoute {
     AcpiGsiRoute {
         gsi: 32,
@@ -374,7 +393,6 @@ fn acpi_route() -> AcpiGsiRoute {
     }
 }
 
-#[cfg(feature = "plat-dyn")]
 fn prop_u32s(name: &str, values: &[u32]) -> Property {
     let mut data = Vec::new();
     for value in values {
@@ -383,7 +401,6 @@ fn prop_u32s(name: &str, values: &[u32]) -> Property {
     Property::new(name, data)
 }
 
-#[cfg(feature = "plat-dyn")]
 fn prop_strs(name: &str, values: &[&str]) -> Property {
     let mut data = Vec::new();
     for value in values {

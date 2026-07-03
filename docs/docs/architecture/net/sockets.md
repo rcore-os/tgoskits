@@ -155,6 +155,10 @@ pub(crate) struct GeneralOptions {
     send_timeout_nanos: AtomicU64,
     recv_timeout_nanos: AtomicU64,
     bound_if: AtomicU32,
+    ip_tos: AtomicU8,
+    recv_tos: AtomicBool,
+    recv_traffic_class: AtomicBool,
+    priority: AtomicI32,
     socket_type: AtomicI32,
     domain: i32,
     protocol: i32,
@@ -189,6 +193,12 @@ pub fn device_binding(&self) -> DeviceBinding {
     }
 }
 ```
+
+QoS 相关选项也集中在这里保存：
+
+- `ip_tos`：`setsockopt(IP_TOS)` 写入时会清掉 ECN 两位；TCP/UDP 通过 `ip_tos.rs` 注册 per-socket egress policy，Router dispatch 时改写 IPv4 DSCP/ECN 或 IPv6 traffic class；raw socket 在构造 IP header 后直接改写。
+- `recv_tos` / `recv_traffic_class`：UDP `recvmsg()` 根据 `rx_meta.rs` 放在 smoltcp `PacketMeta.id` 中的 ingress metadata 生成 `IpCmsg::Ipv4Tos` 或 `IpCmsg::Ipv6TrafficClass`。
+- `priority`：`SO_PRIORITY` 仅接受 Linux 普通非特权范围 `0..=6` 并保存数值；当前不参与设备队列调度。
 
 ### SocketSetWrapper
 

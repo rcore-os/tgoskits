@@ -94,8 +94,11 @@ impl<H: PagingHandler> AddrSpace<H> {
         if !start_vaddr.is_aligned_4k() || !start_paddr.is_aligned_4k() || !is_aligned_4k(size) {
             return ax_err!(InvalidInput, "address not aligned");
         }
+        if start_paddr.as_usize().checked_add(size).is_none() {
+            return ax_err!(InvalidInput, "physical address range overflow");
+        }
 
-        let offset = start_vaddr.as_usize() - start_paddr.as_usize();
+        let offset = start_vaddr.as_usize() as i128 - start_paddr.as_usize() as i128;
         let area = MemoryArea::new(start_vaddr, size, flags, Backend::new_linear(offset));
         self.areas
             .map(area, &mut self.pt, false)

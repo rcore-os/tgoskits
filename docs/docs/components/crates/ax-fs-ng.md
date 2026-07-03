@@ -63,9 +63,6 @@ graph LR
 - `axaddrspace`
 - `ax-allocator`
 - `axbacktrace`
-- `axconfig`
-- `ax-config-gen`
-- `ax-config-macros`
 - `ax-cpu`
 - `ax-dma`
 - `rdrive`

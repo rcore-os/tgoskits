@@ -1,0 +1,17 @@
+{
+  "name": "starry-node-lib-carpets",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Pinned devDependencies for the StarryOS node-lib library carpets (less / stylus / sass / @babel/core + presets / terser / eslint). node_modules is provisioned by prebuild.sh via `npm ci`; it is NOT committed to the source tree.",
+  "license": "MIT",
+  "devDependencies": {
+    "@babel/core": "7.26.0",
+    "@babel/preset-react": "7.26.3",
+    "@babel/preset-typescript": "7.26.0",
+    "eslint": "9.18.0",
+    "less": "4.2.2",
+    "sass": "1.83.4",
+    "stylus": "0.64.0",
+    "terser": "5.37.0"
+  }
+}

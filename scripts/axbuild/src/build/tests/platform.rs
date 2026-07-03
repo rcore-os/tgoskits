@@ -1,7 +1,7 @@
 use super::*;
 
 #[test]
-fn std_build_plat_dyn_stays_on_arceos_rust_dependency() {
+fn std_build_platform_feature_stays_on_arceos_rust_dependency() {
     let mut info = BuildInfo {
         features: vec!["ax-feat/plat-dyn".to_string(), "alloc".to_string()],
         ..BuildInfo::default()
@@ -18,16 +18,7 @@ fn std_build_plat_dyn_stays_on_arceos_rust_dependency() {
 #[test]
 fn x86_64_defaults_to_dynamic_platform() {
     assert!(supports_platform_dynamic("x86_64-unknown-none"));
-    assert!(BuildInfo::default().plat_dyn);
-    assert!(resolve_effective_plat_dyn(
-        "x86_64-unknown-none",
-        true,
-        None
-    ));
-    assert!(default_to_bin_for_target_config(
-        "x86_64-unknown-none",
-        true
-    ));
+    assert!(!default_to_bin_for_target("x86_64-unknown-none"));
 }
 
 #[test]
@@ -35,27 +26,14 @@ fn loongarch64_defaults_to_dynamic_platform_when_supported() {
     assert!(supports_platform_dynamic(
         "loongarch64-unknown-none-softfloat"
     ));
-    assert!(BuildInfo::default().plat_dyn);
-    assert!(resolve_effective_plat_dyn(
-        "loongarch64-unknown-none-softfloat",
-        true,
-        None
-    ));
-    assert!(default_to_bin_for_target_config(
-        "loongarch64-unknown-none-softfloat",
-        true
+    assert!(!default_to_bin_for_target(
+        "loongarch64-unknown-none-softfloat"
     ));
 }
 
 #[test]
 fn unsupported_targets_do_not_effectively_enable_dynamic_platform() {
     assert!(!supports_platform_dynamic("armv7-unknown-none-eabi"));
-    assert!(BuildInfo::default().plat_dyn);
-    assert!(!resolve_effective_plat_dyn(
-        "armv7-unknown-none-eabi",
-        true,
-        None
-    ));
 }
 
 #[test]

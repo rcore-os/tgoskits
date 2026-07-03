@@ -14,7 +14,7 @@ pub use error::BlkError;
 pub use info::{DeviceInfo, QueueInfo, QueueLimits};
 pub use interface::{
     BInterface, BIrqHandler, BOwnedQueue, BQueue, CompletionSink, IQueue, IQueueOwned, Interface,
-    IrqHandlerHandle, IrqHandlerSlot, QueueHandle,
+    QueueHandle,
 };
 pub use irq::{
     CompletionHint, CompletionIds, CompletionList, Event, IdList, IrqHandler, IrqSourceInfo,

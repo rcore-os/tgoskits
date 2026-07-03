@@ -13,8 +13,7 @@
 // limitations under the License.
 
 use ax_errno::{AxError, AxErrorKind, AxResult};
-use axvcpu::{AccessWidth, AxVCpuExitReason, GuestPhysAddr, HostPhysAddr, MappingFlags};
-use axvm_types::GuestVirtAddr;
+use axvm_types::{AccessWidth, GuestPhysAddr, GuestVirtAddr, HostPhysAddr, MappingFlags, VmExit};
 use riscv::register::{scause, sie, sstatus};
 use riscv_decode::{
     Instruction,
@@ -78,13 +77,13 @@ struct RISCVVCpuSbi {
 /// Result of reading an instruction for virtual-instruction emulation.
 enum VirtualInstructionRead {
     Instruction(u32),
-    Handled(AxVCpuExitReason),
+    Handled(VmExit),
 }
 
 /// Result of decoding the trapped guest load/store instruction.
 enum InstructionDecode {
     Decoded(Instruction, usize),
-    Handled(AxVCpuExitReason),
+    Handled(VmExit),
 }
 
 impl Default for RISCVVCpuSbi {
@@ -97,7 +96,7 @@ impl Default for RISCVVCpuSbi {
     }
 }
 
-impl axvcpu::AxArchVCpu for RISCVVCpu {
+impl axvm_types::VmArchVcpuOps for RISCVVCpu {
     type CreateConfig = RISCVVCpuCreateConfig;
 
     type SetupConfig = ();
@@ -163,14 +162,14 @@ impl axvcpu::AxArchVCpu for RISCVVCpu {
         Ok(())
     }
 
-    fn set_ept_root(&mut self, ept_root: HostPhysAddr) -> AxResult {
+    fn set_nested_page_table_root(&mut self, nested_page_table_root: HostPhysAddr) -> AxResult {
         // AxVM builds a 4-level guest stage-2 page table on RISC-V, so hgatp
         // must use Sv48x4 as well.
-        self.regs.virtual_hs_csrs.hgatp = 9usize << 60 | usize::from(ept_root) >> 12;
+        self.regs.virtual_hs_csrs.hgatp = 9usize << 60 | usize::from(nested_page_table_root) >> 12;
         Ok(())
     }
 
-    fn run(&mut self) -> AxResult<AxVCpuExitReason> {
+    fn run(&mut self) -> AxResult<VmExit> {
         unsafe {
             sstatus::clear_sie();
             sie::set_sext();
@@ -380,26 +379,26 @@ impl RISCVVCpu {
     fn handle_guest_instruction_fetch_fault(
         &mut self,
         fault: guest_mem::GuestInstructionFetchFault,
-    ) -> AxResult<AxVCpuExitReason> {
+    ) -> AxResult<VmExit> {
         match fault {
             // HLVX reports load-class faults, but the emulated operation is a
             // guest instruction fetch. Convert them before injecting to VS mode.
             guest_mem::GuestInstructionFetchFault::PageFault { addr } => {
                 self.inject_guest_exception(Exception::InstructionPageFault, addr);
-                Ok(AxVCpuExitReason::Nothing)
+                Ok(VmExit::Nothing)
             }
             guest_mem::GuestInstructionFetchFault::AccessFault { addr } => {
                 self.inject_guest_exception(Exception::InstructionFault, addr);
-                Ok(AxVCpuExitReason::Nothing)
+                Ok(VmExit::Nothing)
             }
             guest_mem::GuestInstructionFetchFault::Misaligned { addr } => {
                 self.inject_guest_exception(Exception::InstructionMisaligned, addr);
-                Ok(AxVCpuExitReason::Nothing)
+                Ok(VmExit::Nothing)
             }
             guest_mem::GuestInstructionFetchFault::GuestPageFault { addr } => {
                 // G-stage faults must stay visible to AxVM so it can populate or
                 // reject the nested mapping.
-                Ok(AxVCpuExitReason::NestedPageFault {
+                Ok(VmExit::NestedPageFault {
                     addr,
                     access_flags: MappingFlags::EXECUTE,
                 })
@@ -418,7 +417,7 @@ impl RISCVVCpu {
         }
     }
 
-    fn vmexit_handler(&mut self) -> AxResult<AxVCpuExitReason> {
+    fn vmexit_handler(&mut self) -> AxResult<VmExit> {
         self.regs.trap_csrs.load_from_hw();
 
         let scause = scause::read();
@@ -470,7 +469,7 @@ impl RISCVVCpu {
                         }
                         legacy::LEGACY_SHUTDOWN => {
                             // sbi_call_legacy_0(LEGACY_SHUTDOWN)
-                            return Ok(AxVCpuExitReason::SystemDown);
+                            return Ok(VmExit::SystemDown);
                         }
                         _ => {
                             warn!(
@@ -484,11 +483,11 @@ impl RISCVVCpu {
                             self.sbi.pmu.record_set_timer();
                             self.program_guest_timer(param[0]);
                             self.sbi_return(RET_SUCCESS, 0);
-                            return Ok(AxVCpuExitReason::Nothing);
+                            return Ok(VmExit::Nothing);
                         }
                         _ => {
                             self.sbi_return(RET_ERR_NOT_SUPPORTED, 0);
-                            return Ok(AxVCpuExitReason::Nothing);
+                            return Ok(VmExit::Nothing);
                         }
                     },
                     // Handle HSM extension
@@ -498,28 +497,28 @@ impl RISCVVCpu {
                             let start_addr = a[1];
                             let opaque = a[2];
                             self.advance_pc(4);
-                            return Ok(AxVCpuExitReason::CpuUp {
+                            return Ok(VmExit::CpuUp {
                                 target_cpu: hartid as _,
                                 entry_point: GuestPhysAddr::from(start_addr),
                                 arg: opaque as _,
                             });
                         }
                         hsm::HART_STOP => {
-                            return Ok(AxVCpuExitReason::CpuDown { _state: 0 });
+                            return Ok(VmExit::CpuDown { _state: 0 });
                         }
                         hsm::HART_SUSPEND => {
                             // Todo: support these parameters.
                             let _suspend_type = a[0];
                             let _resume_addr = a[1];
                             let _opaque = a[2];
-                            return Ok(AxVCpuExitReason::Halt);
+                            return Ok(VmExit::Halt);
                         }
                         _ => todo!(),
                     },
                     // Handle hypercall
                     EID_HVC => {
                         self.advance_pc(4);
-                        return Ok(AxVCpuExitReason::Hypercall {
+                        return Ok(VmExit::Hypercall {
                             nr: function_id as _,
                             args: [
                                 param[0] as _,
@@ -540,7 +539,7 @@ impl RISCVVCpu {
 
                             if num_bytes == 0 {
                                 self.sbi_return(RET_SUCCESS, 0);
-                                return Ok(AxVCpuExitReason::Nothing);
+                                return Ok(VmExit::Nothing);
                             }
 
                             let mut buf = alloc::vec![0u8; num_bytes];
@@ -556,7 +555,7 @@ impl RISCVVCpu {
                                 self.sbi_return(RET_ERR_FAILED, 0);
                             }
 
-                            return Ok(AxVCpuExitReason::Nothing);
+                            return Ok(VmExit::Nothing);
                         }
                         // Read to memory region from debug console.
                         FID_CONSOLE_READ => {
@@ -565,7 +564,7 @@ impl RISCVVCpu {
 
                             if num_bytes == 0 {
                                 self.sbi_return(RET_SUCCESS, 0);
-                                return Ok(AxVCpuExitReason::Nothing);
+                                return Ok(VmExit::Nothing);
                             }
 
                             let mut buf = alloc::vec![0u8; num_bytes];
@@ -585,19 +584,19 @@ impl RISCVVCpu {
                                 self.sbi_return(ret.error, ret.value);
                             }
 
-                            return Ok(AxVCpuExitReason::Nothing);
+                            return Ok(VmExit::Nothing);
                         }
                         // Write a single byte to debug console.
                         FID_CONSOLE_WRITE_BYTE => {
                             let byte = (param[0] & 0xff) as u8;
                             print_byte(byte);
                             self.sbi_return(RET_SUCCESS, 0);
-                            return Ok(AxVCpuExitReason::Nothing);
+                            return Ok(VmExit::Nothing);
                         }
                         // Unknown FID.
                         _ => {
                             self.sbi_return(RET_ERR_NOT_SUPPORTED, 0);
-                            return Ok(AxVCpuExitReason::Nothing);
+                            return Ok(VmExit::Nothing);
                         }
                     },
                     srst::EID_SRST => match function_id {
@@ -605,14 +604,14 @@ impl RISCVVCpu {
                             let reset_type = param[0];
                             if reset_type == srst::RESET_TYPE_SHUTDOWN as _ {
                                 // Shutdown the system.
-                                return Ok(AxVCpuExitReason::SystemDown);
+                                return Ok(VmExit::SystemDown);
                             } else {
                                 unimplemented!("Unsupported reset type {}", reset_type);
                             }
                         }
                         _ => {
                             self.sbi_return(RET_ERR_NOT_SUPPORTED, 0);
-                            return Ok(AxVCpuExitReason::Nothing);
+                            return Ok(VmExit::Nothing);
                         }
                     },
                     pmu::EID_PMU => {
@@ -658,7 +657,7 @@ impl RISCVVCpu {
                 };
 
                 self.advance_pc(4);
-                Ok(AxVCpuExitReason::Nothing)
+                Ok(VmExit::Nothing)
             }
             Trap::Exception(Exception::VirtualInstruction) => self.handle_virtual_instruction(),
             Trap::Interrupt(Interrupt::SupervisorTimer) => {
@@ -669,7 +668,7 @@ impl RISCVVCpu {
                     sie::clear_stimer();
                 }
 
-                Ok(AxVCpuExitReason::Nothing)
+                Ok(VmExit::Nothing)
             }
             Trap::Interrupt(Interrupt::SupervisorExternal) => {
                 // 9 == Interrupt::SupervisorExternal
@@ -677,7 +676,7 @@ impl RISCVVCpu {
                 // It's a great fault in the `riscv` crate that `Interrupt` and `Exception` are not
                 // explicitly numbered, and they provide no way to convert them to a number. Also,
                 // `as usize` will give use a wrong value.
-                Ok(AxVCpuExitReason::ExternalInterrupt { vector: S_EXT as _ })
+                Ok(VmExit::ExternalInterrupt { vector: S_EXT as _ })
             }
             Trap::Exception(
                 gpf @ (Exception::LoadGuestPageFault | Exception::StoreGuestPageFault),
@@ -713,7 +712,7 @@ impl RISCVVCpu {
     }
 
     #[cfg(feature = "sstc")]
-    fn handle_virtual_instruction(&mut self) -> AxResult<AxVCpuExitReason> {
+    fn handle_virtual_instruction(&mut self) -> AxResult<VmExit> {
         let instr = match self.read_virtual_instruction()? {
             VirtualInstructionRead::Instruction(instr) => instr,
             VirtualInstructionRead::Handled(exit_reason) => return Ok(exit_reason),
@@ -799,11 +798,11 @@ impl RISCVVCpu {
         }
 
         self.advance_pc(4);
-        Ok(AxVCpuExitReason::Nothing)
+        Ok(VmExit::Nothing)
     }
 
     #[cfg(not(feature = "sstc"))]
-    fn handle_virtual_instruction(&mut self) -> AxResult<AxVCpuExitReason> {
+    fn handle_virtual_instruction(&mut self) -> AxResult<VmExit> {
         self.sbi.pmu.record_illegal_insn();
         Err(ax_errno::ax_err_type!(
             Unsupported,
@@ -901,7 +900,7 @@ impl RISCVVCpu {
     }
 
     /// Handle a guest page fault. Return an exit reason.
-    fn handle_guest_page_fault(&mut self, _writing: bool) -> AxResult<AxVCpuExitReason> {
+    fn handle_guest_page_fault(&mut self, _writing: bool) -> AxResult<VmExit> {
         let fault_addr = self.regs.trap_csrs.gpt_page_fault_addr();
         let sepc = self.regs.guest_regs.sepc;
         let sepc_vaddr = GuestVirtAddr::from(sepc);
@@ -979,7 +978,7 @@ impl RISCVVCpu {
             },
             _ => {
                 // Not a load or store instruction, so we cannot handle it here, return a nested page fault.
-                return Ok(AxVCpuExitReason::NestedPageFault {
+                return Ok(VmExit::NestedPageFault {
                     addr: fault_addr,
                     access_flags: MappingFlags::empty(),
                 });
@@ -996,7 +995,7 @@ impl RISCVVCpu {
                 signed_ext,
             } => {
                 self.sbi.pmu.record_access_load();
-                AxVCpuExitReason::MmioRead {
+                VmExit::MmioRead {
                     addr: fault_addr,
                     width,
                     reg: i.rd() as _,
@@ -1012,7 +1011,7 @@ impl RISCVVCpu {
                     GprIndex::from_raw(source_reg).unwrap_unchecked()
                 });
 
-                AxVCpuExitReason::MmioWrite {
+                VmExit::MmioWrite {
                     addr: fault_addr,
                     width,
                     data: value as _,

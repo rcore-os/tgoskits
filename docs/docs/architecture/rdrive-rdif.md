@@ -11,7 +11,7 @@ sidebar_label: "rdrive + rdif 驱动框架"
 
 ## 非目标与硬约束
 
-本轮只处理宿主侧物理设备，包括 ArceOS、StarryOS、Axvisor 在真实平台或 QEMU 平台上使用的块设备、网卡、中断控制器、时钟、显示、输入、vsock、PCIe、USB host 等设备。
+本轮只处理宿主侧物理设备，包括 ArceOS、StarryOS、Axvisor 在真实平台或 QEMU 平台上使用的块设备、网卡、中断控制器、pinctrl/GPIO、时钟、显示、输入、vsock、PCIe、USB host 等设备。
 
 架构硬约束如下：
 
@@ -33,7 +33,7 @@ sidebar_label: "rdrive + rdif 驱动框架"
 ```mermaid
 flowchart TB
     subgraph Sources["平台发现来源"]
-        Static["Static: 平台常量 / ax_config"]
+        Static["Static: 显式平台元数据"]
         Fdt["FDT: device tree"]
         Acpi["ACPI: reserved API / unsupported first"]
     end
@@ -56,7 +56,7 @@ flowchart TB
         RdifDisplay["rdif-display"]
         RdifInput["rdif-input"]
         RdifVsock["rdif-vsock"]
-        RdifPlatform["rdif-intc / pcie / clk / timer / serial"]
+        RdifPlatform["rdif-intc / pinctrl / pcie / clk / timer / serial"]
     end
 
     subgraph Services["领域 service"]
@@ -211,7 +211,7 @@ sequenceDiagram
 - 无中断的设备注册为 `None`；PCI required IRQ 最终无结果时返回 probe error，optional IRQ 允许注册为 `None`。
 - `ax-runtime`、`ax-hal`、`ax-net-ng`、StarryOS usbfs 等上层以 `IrqId` 注册 handler。需要处理 firmware source 的地方应先经 `resolve_irq_source(...)`，不应自行做 `usize` 算术换算。
 
-网络 IRQ 的 runtime 适配也遵循同一方向。`ax-net-ng` 只暴露网络领域自己的 `EthernetIrqAction`、`EthernetIrqOutcome` 和注册错误类型，不再在公开 registrar trait 中泄漏 `ax-hal::irq::{RawIrqHandler, IrqContext, IrqReturn, IrqError}`。`ax-runtime` 持有 HAL IRQ registration，并把 HAL raw handler trampoline 适配到 `EthernetIrqAction`；因此网络 runtime 只描述“是否需要唤醒 poll 方”，HAL ABI 留在 ArceOS runtime 边界内。
+网络 IRQ 的 runtime 适配也遵循同一方向。`ax-net-ng` 只暴露网络领域自己的 `EthernetIrqAction`、`EthernetIrqOutcome` 和注册错误类型，不再在公开 registrar trait 中泄漏 HAL IRQ 细节。`ax-runtime` 持有 HAL IRQ registration，并把 `EthernetIrqAction` 放入 boxed HAL callback；因此网络 runtime 只描述“是否需要唤醒 poll 方”，HAL 注册形态留在 ArceOS runtime 边界内。
 
 ## Capability Boundary
 
@@ -224,7 +224,13 @@ sequenceDiagram
 | 显示 | `rdif-display` | `rd-display` | display service、Starry fb |
 | 输入 | `rdif-input` | `rd-input` | input service、Starry input |
 | vsock | `rdif-vsock` | `rd-vsock` | vsock service |
-| 平台设备 | `rdif-intc`、`rdif-pcie`、`rdif-clk`、`rdif-timer`、`rdif-systick`、`rdif-serial` | 按需 | HAL、Axvisor backend、平台 glue |
+| 平台设备 | `rdif-intc`、`rdif-pinctrl`、`rdif-pcie`、`rdif-clk`、`rdif-timer`、`rdif-systick`、`rdif-serial` | 按需 | HAL、Axvisor backend、平台 glue |
+
+`rdif-pinctrl` 是 pinctrl、GPIO、GPIO IRQ 的能力边界，分成三个独立 endpoint：`Interface`、`GpioBank`、`GpioIrqHandler`。`Interface` 只描述 pins/groups/functions/configs/states 这些 Linux pinctrl 模型中的稳定语义，但用 `PinId`、`GroupId`、`FunctionId`、`GpioLineId`、`MuxValue` 和 typed `PinConfig` 表达，不引入全局字符串 registry、packed `unsigned long` config、devm/module/debugfs 语义。`PinState` 应用顺序固定为先 mux 再 pin config。
+
+GPIO line 所有权通过 `GpioLineHandle` 表达。consumer 先向 `GpioBank` request line，后续 direction/read/write 必须带 handle，避免裸 `PinId` 被多个调用方重复配置。GPIO IRQ 与 GPIO control path 分离：`Interface::take_irq_handler(source_id)` 把 `Box<dyn GpioIrqHandler>` 所有权移交给 OS runtime，runtime 再把 handler move 进 IRQ registration closure；task/control path 不共享 handler。`GpioIrqHandler::handle_irq()` 只返回 pending line mask、edge/level/error/overflow 事件，不做 OS wakeup、任务调度、IRQ 注册或 GPIO consumer 回调。
+
+FDT/ACPI 解析不进入 `rdif-pinctrl` portable core。`rdrive` / `ax-driver` probe glue 负责把 FDT consumer node 的 `pinctrl-names` + `pinctrl-N`、SoC-specific `rockchip,pins`、`gpio-ranges`、`gpios` / `gpio` 等解析成 `PinState`、`MuxSetting`、`PinConfig` 或 `GpioLineId`。ACPI 第一版只暴露 `AcpiPinStateSpec` / `AcpiGpioLineSpec` 这类 typed metadata；仓库尚无 Linux-style ACPI pinctrl state parser 时，probe glue 必须返回明确的 `PinctrlError::UnsupportedFirmware(FirmwareKind::Acpi)`，不能静默 fallback。
 
 `rdif-block` 的块请求不暴露 Linux block layer 的 512B sector 公共单位，而使用真实设备的 `lba` / `block_count` / `logical_block_size`。OS glue 负责把上层 byte offset、FS block、Linux-like sector 或分区 region 转换成设备 LBA。接口保留 blk-mq 风格的结构能力：设备可报告 `QueueTopology`，OS 可创建一个或多个 queue，每个 queue 使用 queue-local `RequestId`/tag，经 `submit_request()` 提交、经 `poll_request()` 回收完成。
 
@@ -288,10 +294,12 @@ IRQ 路径只返回稳定事件和唤醒等待方；不能在 IRQ handler 中执
 | --- | --- | --- | --- |
 | Driver Core | `drivers/<type>/<device>` | `no_std`、寄存器/队列/描述符、`mmio-api`、`dma-api` 小边界 | `ax-driver`、`ax-hal`、`axplat-dyn`、`rdrive::PlatformDevice` |
 | Capability Boundary | `drivers/interface/rdif-*` | `rdif-base`、小型错误和事件类型 | 平台、runtime、任务调度 |
-| OS Glue | `drivers/ax-driver` 或平台 crate | `rdrive::module_driver!`、FDT/PCI/Static probe、iomap、IRQ setup、DMA op | 上层 FS/NET 策略 |
+| OS Glue | `drivers/ax-driver` 或平台 crate | `rdrive::module_driver!`、FDT/PCI probe、显式 Static probe、iomap、IRQ setup、DMA op | 上层 FS/NET 策略 |
 | Runtime | `drivers/*/rd-*`，块设备除外 | `rdif-*`、waker、poll/blocking wrapper、buffer pool | probe、设备树、ACPI、平台选择 |
 
 Driver Core 只推进硬件状态机。OS Glue 将硬件实例包装成 `rdif-*::Interface` 后通过 `PlatformDevice::register(...)` 注册。除块设备外，Runtime wrapper 从 `rdif-*::Interface` 构建领域运行时对象，供服务层和上层模块使用；块设备服务直接基于 `rdif-block` 的 submit/poll 能力边界组织 volume 和文件系统入口。
+
+外部自定义平台如果不走 FDT/ACPI/PCI 自动发现，可以在自己的平台初始化阶段调用 `rdrive::init(rdrive::Platform::Static)`，再通过 `rdrive::register_add(DriverRegister { probe_kinds: &[ProbeKind::Static { ... }], ... })` 注册平台私有 probe。这里的 `Static` 是 rdrive 的手动 probe 来源，不是仓库内置静态平台模式。probe 回调里可以直接构造硬件对象并调用 `PlatformDevice::register(...)`、领域 adapter 的 `*_with_info(...)`，或 `ax-driver` 暴露的显式 `register_transport*()` helper。`ax-driver` 本身不再提供静态平台自动注册 feature。
 
 ## 领域 Service 与上层消费
 
@@ -352,7 +360,7 @@ Feature 的职责从“选择 `ax-driver` 子模块和单个 Ax*Device 类型”
 | `virtio-socket` | 链接 `rdif-vsock` / `rd-vsock` probe |
 | `driver-*` | 链接具体硬件 driver core 和 OS glue probe |
 | `bus-*` | 链接总线枚举或控制器 probe，例如 PCIe |
-| `plat-dyn` | 选择 FDT 动态平台来源，不走 `ax_driver_*Ops` 回灌 |
+| 动态平台 | 通过 FDT/ACPI/somehal 平台事实发现设备，不走 `ax_driver_*Ops` 回灌 |
 
 MMIO 与 PCI feature 要分开表达，例如 `virtio-gpu-mmio` 与 `virtio-gpu-pci` 都是 probe module，而不是上层设备类型选择。
 
@@ -376,7 +384,7 @@ src/
 | 文件 | 当前问题 | 拆分方向 |
 | --- | --- | --- |
 | `platforms/axplat-dyn/src/drivers/pci/rk3588.rs` | 单文件超过 600 行 | RC init、ATU/window、MSI/IRQ、config space、FDT glue |
-| `platforms/axplat-dyn/src/drivers/blk/rockchip_sd.rs` | 单文件超过 600 行 | probe/FDT、clock/tuning、card init、rdif-block adapter |
+| `drivers/ax-driver/src/block/rockchip/sd/mod.rs` | 单文件超过 600 行 | probe/FDT、clock/tuning、card init、rdif-block adapter |
 | `platforms/axplat-dyn/src/drivers/blk/mod.rs` | 容器、adapter、IRQ、FDT decode 混杂 | registry、adapter、irq、probe |
 | `platforms/axplat-dyn/src/drivers/mod.rs` | 设备收集、iomap、DMA 混杂 | device collection、iomap、dma |
 

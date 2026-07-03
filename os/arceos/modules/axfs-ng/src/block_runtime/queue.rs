@@ -1,6 +1,6 @@
-use rdif_block::{BlkError, CompletionHint, RequestId, RequestStatus};
+use rdif_block::{BlkError, CompletionHint, RequestId};
 
-use super::{DrainEvents, PendingTable, PollClaim, PollProgress, RequestKey};
+use super::{DrainEvents, PendingTable, PollClaim, PollProgress, RequestKey, RuntimeDmaBuffer};
 use crate::os::{sync::IrqMutex as SpinNoIrq, wake_task};
 
 struct ClaimedQueueBatch {
@@ -14,7 +14,7 @@ pub trait RequestPoller {
         &mut self,
         queue_id: usize,
         request_id: RequestId,
-    ) -> Result<RequestStatus, BlkError>;
+    ) -> Result<PollOutcome, BlkError>;
 
     fn poll_completions(
         &mut self,
@@ -24,17 +24,67 @@ pub trait RequestPoller {
     ) -> Result<(), BlkError> {
         for &request_id in request_ids {
             match self.poll_request(queue_id, request_id) {
-                Ok(RequestStatus::Pending) => {}
-                Ok(RequestStatus::Complete) => sink.complete(request_id, Ok(())),
+                Ok(PollOutcome::Pending) => {}
+                Ok(PollOutcome::Complete { result, buffer }) => {
+                    sink.complete_with_buffer(request_id, result, buffer);
+                }
                 Err(err) => sink.complete(request_id, Err(err)),
             }
         }
         Ok(())
     }
+
+    fn poll_batch_query_failed(&mut self, queue_id: usize) {
+        let _ = queue_id;
+    }
+
+    fn completed_request(&mut self, queue_id: usize, task_id: Option<u64>) {
+        let _ = queue_id;
+        if let Some(task_id) = task_id {
+            wake_task(task_id);
+        }
+    }
+}
+
+pub enum PollOutcome {
+    Pending,
+    Complete {
+        result: Result<(), BlkError>,
+        buffer: Option<RuntimeDmaBuffer>,
+    },
+}
+
+impl PollOutcome {
+    pub const fn complete(result: Result<(), BlkError>) -> Self {
+        Self::Complete {
+            result,
+            buffer: None,
+        }
+    }
+
+    pub const fn complete_with_buffer(
+        result: Result<(), BlkError>,
+        buffer: RuntimeDmaBuffer,
+    ) -> Self {
+        Self::Complete {
+            result,
+            buffer: Some(buffer),
+        }
+    }
 }
 
 pub trait CompletionSink {
     fn complete(&mut self, request_id: RequestId, result: Result<(), BlkError>);
+
+    fn complete_with_buffer(
+        &mut self,
+        request_id: RequestId,
+        result: Result<(), BlkError>,
+        buffer: Option<RuntimeDmaBuffer>,
+    ) {
+        let _ = buffer;
+        self.complete(request_id, result);
+    }
 }
 
 pub struct CompletionDrain<'a, P> {
@@ -77,6 +127,17 @@ impl<'a, P: RequestPoller> CompletionDrain<'a, P> {
         self.poll_batch(&keys)
     }
 
+    pub fn poll_keys(&mut self, keys: &[RequestKey]) -> usize {
+        self.poll_batch(keys)
+    }
+
+    pub fn poll_one(&mut self, key: RequestKey) -> bool {
+        if self.pending.lock().begin_poll(key) != PollClaim::Claimed {
+            return false;
+        }
+        self.poll_claimed_one(key)
+    }
+
     fn poll_matching_driver_requests(&mut self, queue_id: usize, ids: &[RequestId]) -> usize {
         let keys = self.matching_driver_keys(queue_id, ids);
         self.poll_batch(&keys)
@@ -99,8 +160,6 @@ impl<'a, P: RequestPoller> CompletionDrain<'a, P> {
         let mut completed = 0;
         for batch in batches {
             let mut sink = DrainCompletionSink {
-                pending: self.pending,
-                completed: 0,
                 terminal: alloc::vec::Vec::new(),
                 claimed: batch
                     .claimed
@@ -114,10 +173,28 @@ impl<'a, P: RequestPoller> CompletionDrain<'a, P> {
                 .poller
                 .poll_completions(batch.queue_id, &batch.driver_ids, &mut sink)
                 .is_err();
-            let terminal = sink.terminal.clone();
-            completed += sink.completed;
+            let terminal = sink.terminal;
+            let terminal_keys = terminal
+                .iter()
+                .map(|(key, ..)| *key)
+                .collect::<alloc::vec::Vec<_>>();
+            for (key, result, buffer) in terminal {
+                let queue_id = self
+                    .pending
+                    .lock()
+                    .request(key)
+                    .map(|request| request.submitted_request().queue_id);
+                let task_id = self
+                    .pending
+                    .lock()
+                    .complete_with_buffer(key, result, buffer);
+                if let Some(queue_id) = queue_id {
+                    self.poller.completed_request(queue_id, task_id);
+                }
+                completed += 1;
+            }
             for key in batch.claimed {
-                if terminal.contains(&key) {
+                if terminal_keys.contains(&key) {
                     continue;
                 }
                 if query_failed {
@@ -131,6 +208,9 @@ impl<'a, P: RequestPoller> CompletionDrain<'a, P> {
                         }
                     }
                 }
+            }
+            if query_failed {
+                self.poller.poll_batch_query_failed(batch.queue_id);
             }
         }
         completed
@@ -180,51 +260,53 @@ impl<'a, P: RequestPoller> CompletionDrain<'a, P> {
             let result = self
                 .poller
                 .poll_request(submitted.queue_id, submitted.request_id);
-            let wake = match result {
-                Ok(RequestStatus::Pending) => match self.pending.lock().finish_pending_poll(key) {
-                    PollProgress::Pending => None,
+            match result {
+                Ok(PollOutcome::Pending) => match self.pending.lock().finish_pending_poll(key) {
+                    PollProgress::Pending | PollProgress::Complete => return false,
                     PollProgress::Repoll => continue,
-                    PollProgress::Complete => None,
                 },
-                Ok(RequestStatus::Complete) => self.pending.lock().complete(key, Ok(())),
-                Err(err) => self.pending.lock().complete(key, Err(err)),
+                Ok(PollOutcome::Complete { result, buffer }) => {
+                    let wake = self
+                        .pending
+                        .lock()
+                        .complete_with_buffer(key, result, buffer);
+                    self.poller.completed_request(submitted.queue_id, wake);
+                    return true;
+                }
+                Err(err) => {
+                    let wake = self.pending.lock().complete(key, Err(err));
+                    self.poller.completed_request(submitted.queue_id, wake);
+                    return true;
+                }
             };
-            if let Some(task_id) = wake {
-                wake_task(task_id);
-            }
-            return !matches!(result, Ok(RequestStatus::Pending));
         }
     }
 }
 
-struct DrainCompletionSink<'a> {
-    pending: &'a SpinNoIrq<PendingTable>,
-    completed: usize,
-    terminal: alloc::vec::Vec<RequestKey>,
+struct DrainCompletionSink {
+    terminal: alloc::vec::Vec<(RequestKey, Result<(), BlkError>, Option<RuntimeDmaBuffer>)>,
     claimed: alloc::vec::Vec<(RequestId, RequestKey)>,
 }
 
-impl CompletionSink for DrainCompletionSink<'_> {
+impl CompletionSink for DrainCompletionSink {
     fn complete(&mut self, request_id: RequestId, result: Result<(), BlkError>) {
+        self.complete_with_buffer(request_id, result, None);
+    }
+
+    fn complete_with_buffer(
+        &mut self,
+        request_id: RequestId,
+        result: Result<(), BlkError>,
+        buffer: Option<RuntimeDmaBuffer>,
+    ) {
         if let Some((_, runtime_key)) = self
             .claimed
             .iter()
             .copied()
             .find(|(candidate, _)| *candidate == request_id)
         {
-            self.complete_runtime(runtime_key, result);
+            self.terminal.push((runtime_key, result, buffer));
         }
-    }
-}
-
-impl DrainCompletionSink<'_> {
-    fn complete_runtime(&mut self, runtime_key: RequestKey, result: Result<(), BlkError>) {
-        let token = self.pending.lock().complete(runtime_key, result);
-        if let Some(task_id) = token {
-            wake_task(task_id);
-        }
-        self.terminal.push(runtime_key);
-        self.completed += 1;
     }
 }
 

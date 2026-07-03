@@ -8,6 +8,9 @@ use super::refs::git_safe_directory_args;
 pub(super) const ROOT_MANIFEST: &str = "Cargo.toml";
 const WORKSPACE_TABLE: &str = "workspace";
 const WORKSPACE_DEPENDENCIES_TABLE: &str = "dependencies";
+const WORKSPACE_PACKAGE_TABLE: &str = "package";
+const WORKSPACE_METADATA_TABLE: &str = "metadata";
+const PROFILE_TABLE: &str = "profile";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum RootManifestChange {
@@ -67,7 +70,7 @@ pub(super) fn classify_root_manifest_change(
     let old: Value = toml::from_str(old_manifest).context("failed to parse old root Cargo.toml")?;
     let new: Value = toml::from_str(new_manifest).context("failed to parse new root Cargo.toml")?;
 
-    if without_workspace_dependencies(old.clone()) != without_workspace_dependencies(new.clone()) {
+    if dependency_resolution_surface(old.clone()) != dependency_resolution_surface(new.clone()) {
         return Ok(RootManifestChange::Hard);
     }
 
@@ -100,13 +103,18 @@ pub(super) fn classify_root_manifest_change(
     Ok(RootManifestChange::LocalWorkspaceDependencies(changed))
 }
 
-fn without_workspace_dependencies(mut manifest: Value) -> Value {
+fn dependency_resolution_surface(mut manifest: Value) -> Value {
     if let Some(workspace) = manifest
         .get_mut(WORKSPACE_TABLE)
         .and_then(Value::as_table_mut)
     {
         workspace.remove(WORKSPACE_DEPENDENCIES_TABLE);
+        workspace.remove(WORKSPACE_PACKAGE_TABLE);
+        workspace.remove(WORKSPACE_METADATA_TABLE);
     }
+    manifest
+        .as_table_mut()
+        .map(|table| table.remove(PROFILE_TABLE));
     manifest
 }
 

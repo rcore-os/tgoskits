@@ -21,7 +21,6 @@
 //! the router before Ethernet sees the packet.
 
 use alloc::{boxed::Box, string::String, sync::Arc, vec, vec::Vec};
-use core::ptr::NonNull;
 
 use ax_sync::spin::SpinNoIrq;
 use axpoll::PollSet;
@@ -39,7 +38,7 @@ use smoltcp::{
 use crate::{
     config::InterfaceId,
     consts::{ETHERNET_MAX_PENDING_PACKETS, STANDARD_MTU},
-    device::{ArpEntry, Device, EthernetDriver, NetDeviceError, NetIrqEvents},
+    device::{ArpEntry, Device, EthernetDriver, EthernetIrqHandler, NetDeviceError, NetIrqEvents},
 };
 
 const EMPTY_MAC: EthernetAddress = EthernetAddress([0; 6]);
@@ -47,34 +46,22 @@ const EMPTY_MAC: EthernetAddress = EthernetAddress([0; 6]);
 pub trait EthernetIrqRegistration: Send + Sync {}
 
 /// Opaque action installed into a platform IRQ registrar.
-#[derive(Clone, Copy)]
 pub struct EthernetIrqAction {
-    data: NonNull<()>,
-    handler: unsafe fn(NonNull<()>) -> EthernetIrqOutcome,
+    handler: Box<dyn FnMut() -> EthernetIrqOutcome + Send>,
 }
 
 impl EthernetIrqAction {
-    pub const fn new(
-        data: NonNull<()>,
-        handler: unsafe fn(NonNull<()>) -> EthernetIrqOutcome,
-    ) -> Self {
-        Self { data, handler }
+    pub fn new(handler: impl FnMut() -> EthernetIrqOutcome + Send + 'static) -> Self {
+        Self {
+            handler: Box::new(handler),
+        }
     }
 
     /// Runs the IRQ action.
-    ///
-    /// # Safety
-    ///
-    /// The caller must ensure `data` still points to the Ethernet IRQ state
-    /// expected by `handler`, and that the associated registration is still
-    /// alive while the handler runs.
-    pub unsafe fn run(self) -> EthernetIrqOutcome {
-        unsafe { (self.handler)(self.data) }
+    pub fn run(&mut self) -> EthernetIrqOutcome {
+        (self.handler)()
     }
 }
-
-unsafe impl Send for EthernetIrqAction {}
-unsafe impl Sync for EthernetIrqAction {}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum EthernetIrqOutcome {
@@ -133,12 +120,6 @@ struct EthernetIrqState {
     poll_ready: Arc<PollSet>,
 }
 
-impl EthernetIrqState {
-    fn handle_irq(&self) -> NetIrqEvents {
-        self.driver.lock().handle_irq()
-    }
-}
-
 pub struct EthernetDevice {
     name: String,
     inner: Arc<EthernetIrqState>,
@@ -149,9 +130,11 @@ pub struct EthernetDevice {
     pending_packets: PacketBuffer<'static, IpAddress>,
 }
 
-unsafe fn handle_ethernet_irq(data: NonNull<()>) -> EthernetIrqOutcome {
-    let state = unsafe { data.cast::<EthernetIrqState>().as_ref() };
-    let events = state.handle_irq();
+fn handle_owned_ethernet_irq(handler: &mut dyn EthernetIrqHandler) -> EthernetIrqOutcome {
+    ethernet_irq_outcome(handler.handle_irq())
+}
+
+fn ethernet_irq_outcome(events: NetIrqEvents) -> EthernetIrqOutcome {
     if events.intersects(NetIrqEvents::RX_READY | NetIrqEvents::RX_ERROR | NetIrqEvents::TX_DONE) {
         crate::wake_net_task_irq();
         return EthernetIrqOutcome::Wake;
@@ -184,12 +167,14 @@ impl EthernetDevice {
 
     fn new_inner(
         name: String,
-        inner: Box<dyn EthernetDriver>,
+        mut inner: Box<dyn EthernetDriver>,
         ip: Option<Ipv4Cidr>,
         oob_rx: bool,
     ) -> Self {
         let irq = inner.irq_id();
-        let mut inner = Arc::new(EthernetIrqState {
+        let registrar = irq.and_then(|_| ETHERNET_IRQ_REGISTRAR.get().copied());
+        let irq_handler = registrar.and_then(|_| inner.take_irq_handler());
+        let inner = Arc::new(EthernetIrqState {
             irq,
             irq_registration: spin::Once::new(),
             oob_rx,
@@ -205,20 +190,28 @@ impl EthernetDevice {
             ],
         );
         if let Some(irq) = inner.irq {
-            let data = NonNull::from(Arc::get_mut(&mut inner).expect("new Arc is unique")).cast();
-            if let Some(registrar) = ETHERNET_IRQ_REGISTRAR.get().copied() {
-                let action = EthernetIrqAction::new(data, handle_ethernet_irq);
-                match registrar.register_shared(&name, irq, action) {
-                    Ok(registration) => {
-                        inner.irq_registration.call_once(|| registration);
-                        inner.driver.lock().enable_irq();
+            if let Some(registrar) = registrar {
+                if let Some(mut irq_handler) = irq_handler {
+                    let action = EthernetIrqAction::new(move || {
+                        handle_owned_ethernet_irq(&mut *irq_handler)
+                    });
+                    match registrar.register_shared(&name, irq, action) {
+                        Ok(registration) => {
+                            inner.irq_registration.call_once(|| registration);
+                            inner.driver.lock().enable_irq();
+                        }
+                        Err(err) => {
+                            warn!(
+                                "failed to register ethernet irq handler for {name} irq {irq:?}: \
+                                 {err:?}"
+                            );
+                        }
                     }
-                    Err(err) => {
-                        warn!(
-                            "failed to register ethernet irq handler for {name} irq {irq:?}: \
-                             {err:?}"
-                        );
-                    }
+                } else {
+                    warn!(
+                        "skip ethernet irq registration for {name} irq {irq:?}: driver did not \
+                         provide an owned IRQ handler"
+                    );
                 }
             } else {
                 warn!(

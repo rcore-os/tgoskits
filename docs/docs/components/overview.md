@@ -109,9 +109,6 @@ flowchart TB
 | `ax-allocator` | 组件层 | `memory/axallocator` | 2 | 2 | [查看](crates/ax-allocator) |
 | `ax-api` | ArceOS 层 | `os/arceos/api/arceos_api` | 17 | 1 | [查看](crates/ax-api) |
 | `ax-arm-pl031` | 组件层 | `drivers/rtc/arm_pl031` | 0 | 1 | [查看](crates/ax-arm-pl031) |
-| `ax-config` | ArceOS 层 | `os/arceos/modules/axconfig` | 1 | 12 | [查看](crates/ax-config) |
-| `ax-config-gen` | 组件层 | `components/axconfig-gen/axconfig-gen` | 0 | 1 | [查看](crates/ax-config-gen) |
-| `ax-config-macros` | 组件层 | `components/axconfig-gen/axconfig-macros` | 1 | 12 | [查看](crates/ax-config-macros) |
 | `ax-cpu` | 组件层 | `components/axcpu` | 6 | 14 | [查看](crates/ax-cpu) |
 | `ax-cpumask` | 组件层 | `components/cpumask` | 0 | 4 | [查看](crates/ax-cpumask) |
 | `ax-crate-interface` | 组件层 | `components/crate_interface` | 0 | 22 | [查看](crates/ax-crate-interface) |
@@ -168,7 +165,6 @@ flowchart TB
 | `axklib` | 组件层 | `components/axklib` | 2 | 3 | [查看](crates/axklib) |
 | `axplat-dyn` | 平台层 | `platforms/axplat-dyn` | 11 | 2 | [查看](crates/axplat-dyn) |
 | `axpoll` | 组件层 | `components/axpoll` | 0 | 5 | [查看](crates/axpoll) |
-| `axvcpu` | 组件层 | `virtualization/axvcpu` | 5 | 5 | [查看](crates/axvcpu) |
 | `axvisor` | Axvisor 层 | `os/axvisor` | 27 | 0 | [查看](crates/axvisor) |
 | `axvisor_api` | 组件层 | `virtualization/axvisor_api` | 5 | 10 | [查看](crates/axvisor-api) |
 | `axvisor_api_proc` | 组件层 | `virtualization/axvisor_api_proc` | 0 | 1 | [查看](crates/axvisor-api-proc) |

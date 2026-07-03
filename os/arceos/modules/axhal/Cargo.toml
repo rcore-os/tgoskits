@@ -1,6 +1,6 @@
 [package]
 name = "ax-hal"
-version = "0.5.22"
+version = "0.5.23"
 repository = "https://github.com/rcore-os/tgoskits"
 edition.workspace = true
 authors = ["Yuekai Jia <equation618@gmail.com>"]
@@ -9,47 +9,38 @@ license.workspace = true
 
 [features]
 smp = [
-    "ax-plat-riscv64-sg2002?/smp",
-    "axplat-dyn?/smp",
+    "axplat-dyn/smp",
     "ax-plat/smp",
 ]
 irq = [
-    "ax-plat-riscv64-sg2002?/irq",
     "ax-plat/irq",
-    "axplat-dyn?/irq",
+    "axplat-dyn/irq",
     "dep:ax-kspin",
 ]
 fp-simd = [
     "ax-cpu/fp-simd",
-    "ax-plat-riscv64-sg2002?/fp-simd",
-    "axplat-dyn?/fp-simd",
+    "axplat-dyn/fp-simd",
 ]
 xuantie-c9xx = ["ax-cpu/xuantie-c9xx"]
-rtc = [
-    "ax-plat-riscv64-sg2002?/rtc",
-    "axplat-dyn?/rtc",
-]
+rtc = ["axplat-dyn/rtc"]
 paging = [
     "dep:ax-alloc",
     "dep:ax-page-table-multiarch",
     "ax-page-table-multiarch/ax-errno",
 ]
 tls = ["ax-cpu/tls"]
-uspace = ["paging", "ax-cpu/uspace", "axplat-dyn?/uspace"]
+uspace = ["paging", "ax-cpu/uspace", "axplat-dyn/uspace"]
 hv = [
     "paging",
     "ax-cpu/arm-el2",
     "ax-cpu/exception-table",
     "ax-percpu/arm-el2",
-    "axplat-dyn?/hv",
+    "axplat-dyn/hv",
 ]
 axvisor-linker = []
 
-# Custom or default platforms
 host-test = []
 myplat = []
-plat-dyn = ["axplat-dyn"]
-riscv64-sg2002 = ["dep:ax-plat-riscv64-sg2002"]
 defplat = []
 
 default = []
@@ -68,13 +59,9 @@ log.workspace = true
 ax-memory-addr.workspace = true
 ax-page-table-multiarch = { workspace = true, optional = true }
 ax-percpu = { workspace = true, features = ["non-zero-vma"] }
-axplat-dyn = { workspace = true, default-features = false, optional = true }
+axplat-dyn = { workspace = true, default-features = false }
 rdrive.workspace = true
 spin.workspace = true
 
-[target.'cfg(target_arch = "riscv64")'.dependencies]
-ax-plat-riscv64-sg2002 = { workspace = true, optional = true }
-
 [build-dependencies]
 quote = "1.0"
-toml.workspace = true

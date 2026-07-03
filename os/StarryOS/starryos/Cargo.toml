@@ -11,7 +11,7 @@ edition.workspace = true
 license.workspace = true
 name = "starryos"
 repository.workspace = true
-version = "0.5.19"
+version = "0.5.20"
 
 [features]
 default = []
@@ -24,31 +24,17 @@ qemu = [
   "starry-kernel/input",
   "starry-kernel/vsock", # auxiliary features
 ]
-smp = ["ax-feat/smp", "axplat-dyn?/smp", "ax-hal/smp", "starry-kernel/ipi"]
+smp = ["ax-feat/smp", "axplat-dyn/smp", "ax-hal/smp", "starry-kernel/ipi"]
 
-sg2002 = [
-  "ax-hal/riscv64-sg2002",
-  "starry-kernel/sg2002",
-]
-sg2002-wifi = [
-  "ax-hal/riscv64-sg2002",
-  "starry-kernel/sg2002-wifi",
-]
-sg2002-dyn = [
-  "plat-dyn",
-  "axplat-dyn/thead-mae",
-  "starry-kernel/sg2002",
-  "ax-driver/sg2002-placeholder",
-]
 k230 = [
-  "plat-dyn",
   "starry-kernel/k230-kpu",
   "ax-driver/k230-sdhci",
   "ax-driver/serial",
 ]
-plat-dyn = ["dep:axplat-dyn", "starry-kernel/plat-dyn"]
 
 rknpu = ["ax-driver/rknpu", "starry-kernel/rknpu"]
+jpeg = ["ax-driver/jpeg", "starry-kernel/jpeg"]
+rk3588-pwm = ["starry-kernel/rk3588-pwm"]
 std-compat = ["starry-kernel/std-compat"]
 stack-protector = ["ax-std/stack-protector", "starry-kernel/stack-protector"]
 
@@ -65,7 +51,7 @@ ax-feat = { workspace = true, features = ["ext-ld", "fs-times", "irq"] }
 ax-std = { workspace = true, features = ["ext-ld", "fs", "multitask", "irq"] }
 ax-driver.workspace = true
 ax-hal.workspace = true
-axplat-dyn = { workspace = true, optional = true }
+axplat-dyn.workspace = true
 starry-kernel = { workspace = true, features = ["dev-log", "ext4"] }
 
 [target.'cfg(any(windows, all(unix, not(target_env = "musl"))))'.dependencies]

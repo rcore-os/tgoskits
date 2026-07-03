@@ -213,7 +213,6 @@ fn axvisor_board_test_build_args(group: &BoardTestGroup) -> AxvisorCliArgs {
         config: Some(group.build_config.clone()),
         arch: None,
         target: None,
-        plat_dyn: None,
         smp: None,
         debug: false,
         vmconfigs: Vec::new(),

@@ -227,6 +227,12 @@ enum SdhciClockState {
     ExternalSetClock {
         target_hz: u32,
     },
+    ExternalPrepareHost {
+        target_hz: u32,
+    },
+    ExternalStart {
+        target_hz: u32,
+    },
     ExternalEnable {
         polls: u32,
     },
@@ -256,15 +262,17 @@ const SDHCI_CLOCK_POLLS: u32 = 1_000;
 const SDHCI_TUNING_POLLS: u32 = 1_000_000;
 const SDHCI_VOLTAGE_SWITCH_DELAY_MS: u64 = 5;
 
-/// Cloneable, sync-safe SDHCI IRQ top-half handle.
-#[derive(Clone)]
+/// Owned SDHCI IRQ top-half endpoint.
 pub struct SdhciIrqHandle {
     irq: Arc<host::IrqCore>,
 }
 
 impl ProtocolSdioHost for Sdhci {
     type Event = Event;
-    type DataRequest<'a> = DataRequest<'a>;
+    type DataRequest<'a>
+        = DataRequest<'a>
+    where
+        Self: 'a;
     type BusRequest = ReadyBusRequest;
 
     fn submit_command(&mut self, cmd: &Command) -> Result<(), Error> {
@@ -376,11 +384,16 @@ impl ProtocolSdioHost for Sdhci {
         self.write_u8(REG_HOST_CONTROL1, ctrl);
 
         // External-clock mode: gate SD clock off, ask the platform CRU to
-        // retune the reference clock, then bring SD clock back up at 1:1.
-        if let Some(cb) = self.ext_clock {
+        // retune the reference clock, let platform glue configure host-side
+        // clock registers, then bring SD clock back up at 1:1.
+        if self.ext_clock.is_some() {
             self.disable_sd_clock();
-            cb.set_clock(target_hz)?;
-            return self.enable_clock_external();
+            let clock = self.ext_clock.take().ok_or(Error::InvalidArgument)?;
+            let effective_hz = clock.effective_clock_hz(target_hz);
+            clock.set_clock(effective_hz)?;
+            clock.prepare_host_clock(self, effective_hz)?;
+            self.ext_clock = Some(clock);
+            return self.enable_clock_passthrough(effective_hz);
         }
 
         let base = self.base_clock_hz();
@@ -533,8 +546,8 @@ impl ProtocolSdioHost for Sdhci {
         Ok(())
     }
 
-    fn handle_irq(&mut self) -> Self::Event {
-        self.irq_handle().handle_irq()
+    fn completion_irq_enabled(&self) -> bool {
+        Sdhci::completion_irq_enabled(self)
     }
 
     fn submit_bus_op(&mut self, op: SdioBusOp) -> Result<Self::BusRequest, Error> {
@@ -549,12 +562,8 @@ impl ProtocolSdioHost for Sdhci {
 impl SdioIrqHost for Sdhci {
     type IrqHandle = SdhciIrqHandle;
 
-    fn irq_handle(&self) -> Self::IrqHandle {
-        Sdhci::irq_handle(self)
-    }
-
-    fn completion_irq_enabled(&self) -> bool {
-        Sdhci::completion_irq_enabled(self)
+    fn irq_handle(&mut self) -> Self::IrqHandle {
+        Sdhci::irq_endpoint(self)
     }
 }
 
@@ -957,7 +966,7 @@ impl Sdhci {
             sdio_host2::BusOp::PowerOff => Ok(BusRequestState::PowerOff),
             sdio_host2::BusOp::SetClock(speed) => self.prepare_host2_clock(speed),
             sdio_host2::BusOp::SetClockHz(sdio_host2::ClockHz(hz)) => {
-                if self.base_clock_hz() == 0 {
+                if self.ext_clock.is_none() && self.base_clock_hz() == 0 {
                     return Err(sdio_host2::Error::Controller);
                 }
                 Ok(BusRequestState::SetClock(SdhciClockState::Start {
@@ -1087,6 +1096,11 @@ impl Sdhci {
         polls: &mut u32,
     ) -> Result<sdio_host2::RequestPoll<()>, sdio_host2::Error> {
         if !*started {
+            if mask == RESET_ALL
+                && let Some(hook) = self.reset_hook
+            {
+                hook.before_reset_all(self).map_err(map_protocol_error)?;
+            }
             self.write_u8(REG_SOFTWARE_RESET, mask);
             *started = true;
         }
@@ -1140,9 +1154,27 @@ impl Sdhci {
                 Ok(sdio_host2::RequestPoll::Pending)
             }
             SdhciClockState::ExternalSetClock { target_hz } => {
-                let clock = self.ext_clock.ok_or(sdio_host2::Error::Controller)?;
-                clock.set_clock(target_hz).map_err(map_protocol_error)?;
-                self.start_external_clock();
+                let clock = self
+                    .ext_clock
+                    .as_ref()
+                    .ok_or(sdio_host2::Error::Controller)?;
+                let effective_hz = clock.effective_clock_hz(target_hz);
+                clock.set_clock(effective_hz).map_err(map_protocol_error)?;
+                *state = SdhciClockState::ExternalPrepareHost {
+                    target_hz: effective_hz,
+                };
+                Ok(sdio_host2::RequestPoll::Pending)
+            }
+            SdhciClockState::ExternalPrepareHost { target_hz } => {
+                let clock = self.ext_clock.take().ok_or(sdio_host2::Error::Controller)?;
+                let result = clock.prepare_host_clock(self, target_hz);
+                self.ext_clock = Some(clock);
+                result.map_err(map_protocol_error)?;
+                *state = SdhciClockState::ExternalStart { target_hz };
+                Ok(sdio_host2::RequestPoll::Pending)
+            }
+            SdhciClockState::ExternalStart { target_hz } => {
+                self.start_passthrough_clock(target_hz);
                 *state = SdhciClockState::ExternalEnable { polls: 0 };
                 Ok(sdio_host2::RequestPoll::Pending)
             }
@@ -1166,11 +1198,6 @@ impl Sdhci {
         let clk_ctrl = ((div & 0xFF) << 8) | ((div & 0x300) >> 2) | CLOCK_INTERNAL_ENABLE;
         self.write_u16(REG_CLOCK_CONTROL, clk_ctrl);
         Ok(())
-    }
-
-    fn start_external_clock(&mut self) {
-        self.write_u16(REG_CLOCK_CONTROL, 0);
-        self.write_u16(REG_CLOCK_CONTROL, CLOCK_INTERNAL_ENABLE);
     }
 
     fn poll_clock_stable(
@@ -1338,6 +1365,9 @@ impl Sdhci {
 
     fn reset_controller_for_host2_abort(&mut self) -> Result<(), sdio_host2::Error> {
         let was_irq_enabled = self.completion_irq_enabled();
+        if let Some(hook) = self.reset_hook {
+            hook.before_reset_all(self).map_err(map_protocol_error)?;
+        }
         self.write_u8(REG_SOFTWARE_RESET, RESET_ALL);
         if !self.reset_with_mask_best_effort(RESET_ALL) {
             return Err(sdio_host2::Error::Timeout);
@@ -1355,7 +1385,7 @@ impl Sdhci {
     }
 
     fn restore_completion_irq_after_reset(&mut self, was_irq_enabled: bool) {
-        self.enable_interrupts();
+        self.enable_polling_interrupt_status();
         if was_irq_enabled {
             self.enable_completion_irq();
         }
@@ -1494,6 +1524,19 @@ fn sdhci_clock_divisor(base_clock_hz: u32, target_hz: u32) -> u16 {
         }
     }
     0x3FF
+}
+
+pub(crate) fn sdhci_clock_divisor_with_quirk(
+    base_clock_hz: u32,
+    target_hz: u32,
+    div_zero_broken: bool,
+) -> u16 {
+    let div = sdhci_clock_divisor(base_clock_hz, target_hz);
+    if div_zero_broken && div == 0 && base_clock_hz <= 25_000_000 {
+        1
+    } else {
+        div
+    }
 }
 
 fn submit_read_with_dma_fifo_fallback(
@@ -1691,7 +1734,7 @@ impl Sdhci {
         }
     }
 
-    pub fn irq_handle(&self) -> SdhciIrqHandle {
+    pub fn irq_endpoint(&mut self) -> SdhciIrqHandle {
         SdhciIrqHandle {
             irq: self.irq.clone(),
         }
@@ -1699,33 +1742,37 @@ impl Sdhci {
 
     /// Read and acknowledge pending controller status, returning a stable
     /// event for OS glue to translate into wakeups or worker scheduling.
-    pub fn handle_irq(&self) -> Event {
-        self.irq_handle().handle_irq()
+    pub fn handle_irq(&mut self) -> Event {
+        handle_irq_core(&self.irq)
     }
 }
 
 impl SdioIrqHandle for SdhciIrqHandle {
     type Event = Event;
 
-    fn handle_irq(&self) -> Self::Event {
-        let generation = self.irq.state.generation();
-        let normal = read_u16(self.irq.base_addr, REG_NORMAL_INT_STATUS);
-        let error = if normal & NORMAL_INT_ERROR != 0 {
-            read_u16(self.irq.base_addr, REG_ERROR_INT_STATUS)
-        } else {
-            0
-        };
-
-        if normal != 0 {
-            write_u16(self.irq.base_addr, REG_NORMAL_INT_STATUS, normal);
-        }
-        if error != 0 {
-            write_u16(self.irq.base_addr, REG_ERROR_INT_STATUS, error);
-        }
-        self.irq.state.cache_if_current(generation, normal, error);
-
-        event_from_status(normal, error)
+    fn handle_irq(&mut self) -> Self::Event {
+        handle_irq_core(&self.irq)
     }
+}
+
+fn handle_irq_core(irq: &host::IrqCore) -> Event {
+    let generation = irq.state.generation();
+    let normal = read_u16(irq.base_addr, REG_NORMAL_INT_STATUS);
+    let error = if normal & NORMAL_INT_ERROR != 0 {
+        read_u16(irq.base_addr, REG_ERROR_INT_STATUS)
+    } else {
+        0
+    };
+
+    if normal != 0 {
+        write_u16(irq.base_addr, REG_NORMAL_INT_STATUS, normal);
+    }
+    if error != 0 {
+        write_u16(irq.base_addr, REG_ERROR_INT_STATUS, error);
+    }
+    irq.state.cache_if_current(generation, normal, error);
+
+    event_from_status(normal, error)
 }
 
 fn read_u16(base_addr: usize, off: usize) -> u16 {
@@ -1933,18 +1980,140 @@ mod tests {
     }
 
     #[test]
-    fn irq_handle_acks_and_caches_status_without_mutable_host() {
+    fn clock_div_zero_quirk_uses_nonzero_divider_for_low_external_clock() {
+        assert_eq!(sdhci_clock_divisor_with_quirk(375_000, 375_000, false), 0);
+        assert_eq!(sdhci_clock_divisor_with_quirk(375_000, 375_000, true), 1);
+        assert_eq!(
+            sdhci_clock_divisor_with_quirk(50_000_000, 50_000_000, true),
+            0
+        );
+    }
+
+    #[test]
+    fn external_clock_host_stage_runs_before_sd_clock_output_is_reenabled() {
+        #[repr(align(4))]
+        struct FakeRegs([u8; 0x100]);
+
+        struct Clock;
+
+        impl HostClock for Clock {
+            fn set_clock(&self, _target_hz: u32) -> Result<(), Error> {
+                Ok(())
+            }
+
+            fn clock_div_zero_broken(&self) -> bool {
+                true
+            }
+
+            fn prepare_host_clock(&self, host: &mut Sdhci, target_hz: u32) -> Result<(), Error> {
+                assert_eq!(target_hz, 400_000);
+                assert_eq!(host.read_u16(REG_CLOCK_CONTROL) & CLOCK_SD_ENABLE, 0);
+                host.write_u32(REG_CAPABILITIES_HIGH, 0xc10c);
+                Ok(())
+            }
+        }
+
+        let mut regs = FakeRegs([0; 0x100]);
+        let base = NonNull::new(regs.0.as_mut_ptr()).unwrap();
+        let mut host = unsafe { Sdhci::new(base) };
+        host.write_u16(
+            REG_CLOCK_CONTROL,
+            CLOCK_INTERNAL_ENABLE | CLOCK_INTERNAL_STABLE | CLOCK_SD_ENABLE,
+        );
+        host.set_external_clock(Clock);
+
+        assert!(matches!(
+            <Sdhci as ProtocolSdioHost>::set_clock(&mut host, ClockSpeed::Identification),
+            Err(Error::Timeout(_))
+        ));
+
+        assert_eq!(host.read_u32(REG_CAPABILITIES_HIGH), 0xc10c);
+        assert_eq!(host.read_u16(REG_CLOCK_CONTROL), CLOCK_INTERNAL_ENABLE);
+    }
+
+    #[test]
+    fn host2_external_clock_runs_host_stage_before_enable() {
+        #[repr(align(4))]
+        struct FakeRegs([u8; 0x100]);
+
+        struct Clock;
+
+        impl HostClock for Clock {
+            fn set_clock(&self, _target_hz: u32) -> Result<(), Error> {
+                Ok(())
+            }
+
+            fn clock_div_zero_broken(&self) -> bool {
+                true
+            }
+
+            fn prepare_host_clock(&self, host: &mut Sdhci, target_hz: u32) -> Result<(), Error> {
+                assert_eq!(target_hz, 400_000);
+                assert_eq!(host.read_u16(REG_CLOCK_CONTROL) & CLOCK_SD_ENABLE, 0);
+                host.write_u32(REG_CAPABILITIES_HIGH, 0x5d17);
+                Ok(())
+            }
+        }
+
+        let mut regs = FakeRegs([0; 0x100]);
+        let base = NonNull::new(regs.0.as_mut_ptr()).unwrap();
+        let mut host = unsafe { Sdhci::new(base) };
+        host.write_u16(
+            REG_CLOCK_CONTROL,
+            CLOCK_INTERNAL_ENABLE | CLOCK_INTERNAL_STABLE | CLOCK_SD_ENABLE,
+        );
+        host.set_external_clock(Clock);
+        let mut request = unsafe {
+            <Sdhci as sdio_host2::SdioHost>::submit_bus_op(
+                &mut host,
+                sdio_host2::BusOp::SetClock(ClockSpeed::Identification),
+            )
+        }
+        .unwrap();
+
+        assert!(matches!(
+            <Sdhci as sdio_host2::SdioHost>::poll_bus_op(&mut host, &mut request),
+            Ok(sdio_host2::RequestPoll::Pending)
+        ));
+        assert!(matches!(
+            <Sdhci as sdio_host2::SdioHost>::poll_bus_op(&mut host, &mut request),
+            Ok(sdio_host2::RequestPoll::Pending)
+        ));
+        assert!(matches!(
+            <Sdhci as sdio_host2::SdioHost>::poll_bus_op(&mut host, &mut request),
+            Ok(sdio_host2::RequestPoll::Pending)
+        ));
+        assert!(matches!(
+            <Sdhci as sdio_host2::SdioHost>::poll_bus_op(&mut host, &mut request),
+            Ok(sdio_host2::RequestPoll::Pending)
+        ));
+        assert_eq!(host.read_u16(REG_CLOCK_CONTROL), CLOCK_INTERNAL_ENABLE);
+        host.write_u16(
+            REG_CLOCK_CONTROL,
+            host.read_u16(REG_CLOCK_CONTROL) | CLOCK_INTERNAL_STABLE,
+        );
+        assert!(matches!(
+            <Sdhci as sdio_host2::SdioHost>::poll_bus_op(&mut host, &mut request),
+            Ok(sdio_host2::RequestPoll::Ready(Ok(())))
+        ));
+
+        assert_eq!(host.read_u32(REG_CAPABILITIES_HIGH), 0x5d17);
+        assert_ne!(host.read_u16(REG_CLOCK_CONTROL) & CLOCK_SD_ENABLE, 0);
+    }
+
+    #[test]
+    fn owned_irq_endpoint_acks_and_caches_status() {
         #[repr(align(4))]
         struct FakeRegs([u8; 0x100]);
 
         let mut regs = FakeRegs([0; 0x100]);
         let base = NonNull::new(regs.0.as_mut_ptr()).unwrap();
-        let host = unsafe { Sdhci::new(base) };
+        let mut host = unsafe { Sdhci::new(base) };
         host.irq.state.begin_request();
         host.write_u16(REG_NORMAL_INT_STATUS, NORMAL_INT_ERROR);
         host.write_u16(REG_ERROR_INT_STATUS, ERROR_INT_DATA_TIMEOUT);
 
-        let handle = host.irq_handle().clone();
+        let mut handle = host.irq_endpoint();
 
         assert_eq!(
             handle.handle_irq(),

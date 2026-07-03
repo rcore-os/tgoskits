@@ -24,9 +24,11 @@ extern crate alloc;
 extern crate log;
 
 mod arch;
-mod cache;
+pub mod boot;
 mod host;
 pub mod irq;
+pub mod layout;
+pub mod lifecycle;
 mod manager;
 mod percpu;
 mod runtime;
@@ -35,18 +37,22 @@ mod timer;
 mod vcpu;
 mod vm;
 
+use crate::arch::ArchOps;
+
 pub mod config;
 
 pub use ax_cpumask::CpuMask;
 pub use ax_page_table_entry::MappingFlags;
-pub use axdevice_base::{AccessWidth, Port, SysRegAddr};
-pub use axvcpu::{AxVCpuExitReason, InterruptTriggerMode, VCpuState};
-pub use axvm_types::{GuestPhysAddr, HostPhysAddr, VMId};
+pub use axvm_types::{
+    AccessWidth, GuestPhysAddr, HostPhysAddr, InterruptTriggerMode, Port, SysRegAddr, VMId, VmExit,
+    VmVcpuState,
+};
 pub(crate) use host::{
     paging::HostPagingHandler,
     task::{AxTaskExt, AxTaskRef, TaskInner, WaitQueue, WaitQueueHandle as HostWaitQueueHandle},
 };
 pub use irq::InterruptFabric;
+pub use lifecycle::{StopReason, VmLifecycleError, VmStatus};
 pub use manager::{
     AxvmRuntime, current_vcpu_id, current_vm_id, get_vm_by_id, get_vm_list,
     inject_current_vcpu_interrupt, register_vm,
@@ -56,11 +62,13 @@ pub use runtime::loongarch_irq::{
     register_guest_irq_route as register_loongarch_guest_irq_route,
     unregister_guest_irq_routes as unregister_loongarch_guest_irq_routes,
 };
-pub use task::{AsVCpuTask, VCpuTask};
-pub use vm::{AxVCpuRef, AxVM, AxVMRef, FwCfgDeviceConfig, VMMemoryRegion, VMStatus};
+pub(crate) use task::{AsVCpuTask, VCpuTask};
+pub use vm::{
+    AxVM, AxVMRef, FwCfgDeviceConfig, PreparedMemoryLayout, VMMemoryRegion, VcpuSnapshot,
+};
 
 /// The architecture-independent per-CPU type.
-pub type AxVMPerCpu = axvcpu::AxPerCpu<vcpu::AxVMArchPerCpuImpl>;
+pub(crate) type AxVMPerCpu = vcpu::AxPerCpu<arch::ArchPerCpu>;
 
 /// Check and dispatch pending AxVM timer events on the current CPU.
 pub fn check_timer_events() {
@@ -69,7 +77,7 @@ pub fn check_timer_events() {
 
 /// Clean data cache lines covering a host virtual address range.
 pub fn clean_dcache_range(addr: ax_memory_addr::VirtAddr, size: usize) {
-    cache::clean_dcache_range(addr, size);
+    arch::CurrentArch::clean_dcache_range(addr, size);
 }
 
 /// Return the host FDT boot argument physical address.

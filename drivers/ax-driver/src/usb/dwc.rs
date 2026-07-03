@@ -22,7 +22,7 @@ use rockchip_pm::{PowerDomain, RockchipPM};
 use super::{ProbeFdtUsbHost, usb_kernel};
 use crate::{
     mmio::iomap,
-    soc::{RockchipPinCtrl, rk3588_enable_clock, rk3588_reset_assert, rk3588_reset_deassert},
+    soc::{rk3588_enable_clock, rk3588_reset_assert, rk3588_reset_deassert},
 };
 
 const DRIVER_NAME: &str = "usb-dwc-xhci";
@@ -71,7 +71,6 @@ struct Usb2PhyResources {
     port_name: String,
     reg: usize,
     grf: Phandle,
-    supply: Option<Phandle>,
     resets: Vec<ResetSpec>,
     clocks: Vec<ClockSpec>,
 }
@@ -120,7 +119,6 @@ fn probe(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
 
     enable_power_domains(&resources.power_domains)?;
     enable_clocks(&resources.clocks);
-    enable_vbus(resources.usb2.supply)?;
 
     let ctrl = map_reg(resources.ctrl)?;
     let phy = map_reg(resources.usbdp.reg)?;
@@ -234,7 +232,6 @@ fn collect_usb2_phy(fdt: &Fdt, port_phandle: Phandle) -> Result<Usb2PhyResources
         port_name: port.name().to_string(),
         reg,
         grf,
-        supply: get_phandle_prop(port.as_node(), "phy-supply"),
         resets: parse_resets(phy)?,
         clocks: clock_specs(phy.clocks()),
     })
@@ -450,20 +447,6 @@ fn enable_clocks(clocks: &[ClockSpec]) {
             ),
         }
     }
-}
-
-fn enable_vbus(supply: Option<Phandle>) -> Result<(), OnProbeError> {
-    let Some(supply) = supply else {
-        debug!("DWC xHCI USB2 PHY has no phy-supply; skip VBUS pinctrl");
-        return Ok(());
-    };
-
-    let pinctrl = rdrive::get_one::<RockchipPinCtrl>()
-        .ok_or_else(|| OnProbeError::other("RockchipPinCtrl not found for DWC xHCI VBUS"))?;
-    let mut pinctrl = pinctrl
-        .lock()
-        .map_err(|err| OnProbeError::other(format!("failed to lock RockchipPinCtrl: {err}")))?;
-    pinctrl.enable_fixed_regulator(supply)
 }
 
 fn clock_specs(clocks: Vec<ClockRef>) -> Vec<ClockSpec> {

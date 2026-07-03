@@ -10,8 +10,6 @@ mod summary;
 mod symbols;
 mod toolchain;
 
-use std::path::PathBuf;
-
 use anyhow::bail;
 
 use super::{ArgsBuild, ArgsPerf, PerfFlamegraphKind, PerfFormat, Starry, build, rootfs};
@@ -65,8 +63,7 @@ pub(super) async fn run(starry: &mut Starry, args: ArgsPerf) -> anyhow::Result<(
     args_support::apply_perf_cargo_features(&mut cargo, &args);
     let qemu = rootfs::load_patched_qemu_config(starry, &request, &cargo, None, true).await?;
     let elf = build_output.elf_path().to_path_buf();
-    let axconfig_path = cargo.env.get("AX_CONFIG_PATH").map(PathBuf::from);
-    let text_range = symbols::detect_kernel_text_range(&elf, axconfig_path.as_deref())?;
+    let text_range = symbols::detect_kernel_text_range(&elf)?;
     qemu::write_qemu_config(&outputs, &tools, &args, &arch, qemu.args, text_range)?;
 
     let kernel_bin = symbols::kernel_bin_path(starry.app.workspace_root(), &target, args.debug);

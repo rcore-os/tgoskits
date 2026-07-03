@@ -5,7 +5,7 @@ edition.workspace = true
 license.workspace = true
 name = "ax-runtime"
 repository = "https://github.com/rcore-os/tgoskits"
-version = "0.8.2"
+version = "0.9.0"
 
 [features]
 default = []
@@ -21,8 +21,10 @@ wake-ipi = ["irq", "ax-hal/ipi"]
 irq = [
   "ax-hal/irq",
   "ax-task?/irq",
+  "dep:ax-kspin",
   "dep:ax-percpu",
   "dep:axklib",
+  "dep:rdif-intc",
   "ax-driver/irq",
 ]
 multitask = ["ax-task/multitask"]
@@ -32,18 +34,6 @@ smp = ["ax-hal/smp", "ax-task?/smp"]
 stack-guard-page = ["multitask", "paging", "ax-task/stack-guard-page"]
 stack-protector = []
 tls = ["ax-hal/tls", "ax-task?/tls"]
-
-plat-dyn = [
-  "ax-driver/plat-dyn",
-  "ax-hal/plat-dyn",
-  "dep:rdif-intc",
-  "paging",
-  "irq",
-  "rtc",
-  "smp",
-  "stack-guard-page",
-  "tls",
-]
 
 display = ["dep:ax-display", "ax-driver/display"]
 fs = [
@@ -68,7 +58,6 @@ net = ["dep:ax-net", "dep:rd-net", "dep:spin", "dep:axklib", "ax-driver/net"]
 # the ArceOS runtime glue (the driver cores are OS-independent) before probing.
 aic8800-wifi = [
   "net",
-  "plat-dyn",
   "multitask",
   "ax-driver/aic8800-wifi",
   "dep:aic8800",
@@ -90,6 +79,7 @@ axfs-ng-vfs = {workspace = true, optional = true}
 ax-hal = {workspace = true}
 ax-input = {workspace = true, optional = true}
 ax-ipi = {workspace = true, optional = true}
+ax-kspin = {workspace = true, optional = true}
 ax-lazyinit = {workspace = true}
 ax-log = {workspace = true}
 ax-memory-addr = {workspace = true}
@@ -114,4 +104,3 @@ spin = {workspace = true, optional = true}
 
 [build-dependencies]
 quote = "1.0"
-toml.workspace = true

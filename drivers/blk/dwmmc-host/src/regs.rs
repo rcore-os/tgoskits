@@ -94,6 +94,10 @@ pub struct RegisterBlock {
     pub pldmnd: u32,
     /// Descriptor List Base Address Register
     pub dbaddr: u32,
+    /// Internal DMAC Status Register (write-1-to-clear).
+    pub idsts: u32,
+    /// Internal DMAC Interrupt Enable Register.
+    pub idinten: u32,
 }
 
 /// Control Register
@@ -224,6 +228,8 @@ impl RIntSts {
     pub fn error(&self) -> bool {
         self.response_timeout()
             || self.data_read_timeout()
+            || self.host_timeout()
+            || self.fifo_under_over_run()
             || self.start_bit_error()
             || self.end_bit_error()
             || self.data_crc_error()

@@ -1,16 +1,13 @@
 #![feature(used_with_arg)]
 
 use ax_driver::{PlatformDevice, probe::OnProbeError};
-#[cfg(feature = "plat-dyn")]
 use axklib::{
-    AxError, AxResult, IrqCpuMask, IrqHandle, IrqId, Klib, PhysAddr, RawIrqHandler, VirtAddr,
-    impl_trait,
+    AxError, AxResult, BoxedIrqHandler, ConcurrentBoxedIrqHandler, IrqCpuMask, IrqHandle, IrqId,
+    Klib, PhysAddr, VirtAddr, impl_trait,
 };
 
-#[cfg(feature = "plat-dyn")]
 struct KlibImpl;
 
-#[cfg(feature = "plat-dyn")]
 impl_trait! {
     impl Klib for KlibImpl {
         fn mem_iomap(_addr: PhysAddr, _size: usize) -> AxResult<VirtAddr> {
@@ -55,16 +52,14 @@ impl_trait! {
 
         fn irq_request_shared(
             _irq: IrqId,
-            _handler: RawIrqHandler,
-            _data: core::ptr::NonNull<()>,
+            _handler: BoxedIrqHandler,
         ) -> AxResult<IrqHandle> {
             Err(AxError::Unsupported)
         }
 
         fn irq_request_shared_disabled(
             _irq: IrqId,
-            _handler: RawIrqHandler,
-            _data: core::ptr::NonNull<()>,
+            _handler: BoxedIrqHandler,
         ) -> AxResult<IrqHandle> {
             Err(AxError::Unsupported)
         }
@@ -72,8 +67,7 @@ impl_trait! {
         fn irq_request_percpu(
             _irq: IrqId,
             _cpus: IrqCpuMask,
-            _handler: RawIrqHandler,
-            _data: core::ptr::NonNull<()>,
+            _handler: ConcurrentBoxedIrqHandler,
         ) -> AxResult<IrqHandle> {
             Err(AxError::Unsupported)
         }

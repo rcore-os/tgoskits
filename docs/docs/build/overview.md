@@ -21,11 +21,15 @@ flowchart LR
     D --> E["Arceos → ArceOS::execute()"]
     D --> F["Starry → Starry::execute()"]
     D --> G["Axvisor → Axvisor::execute()"]
+    D --> G1["Axloader → Axloader::execute()"]
     D --> H["Test → std::run_std_test()"]
     D --> I["Clippy → run_workspace_clippy()"]
-    D --> J["SyncLint → run_sync_lint()"]
-    D --> K["Board → board::execute()"]
+    D --> I1["SyncLint → run_sync_lint()"]
+    D --> I2["SpinLint → run_spin_lint()"]
+    D --> J["Board → board::execute()"]
     D --> L["Config → config::execute()"]
+    D --> L1["Backtrace → backtrace::execute()"]
+    D --> L2["Image → image::run()"]
 ```
 
 `xtask/src/main.rs` 仅调用 `axbuild::run()` 并映射退出码，所有业务逻辑封装在 `scripts/axbuild` 中，这使得 axbuild 既可以作为 xtask 的后端使用，也可以作为独立库被其他工具集成。
@@ -61,17 +65,22 @@ graph TD
 
     subgraph OS["子系统"]
         ARCEOS["arceos/<br/>构建/运行/测试"]
-        STARRY["starry/<br/>构建/运行/测试"]
+        STARRY["starry/<br/>构建/运行/测试/app/perf/kmod"]
         AXVISOR["axvisor/<br/>构建/运行/测试"]
+        AXLOADER["axloader/<br/>UEFI 构建/测试"]
     end
 
     subgraph SHARED["共享基础设施"]
         TEST["test/<br/>用例发现/资产/判定"]
         ROOTFS["rootfs/<br/>rootfs 管理"]
         BOARD["board.rs<br/>板卡管理"]
-        CLIPPY["clippy.rs<br/>静态检查"]
-        SYNC_LINT["sync_lint.rs<br/>原子序检查"]
+        CLIPPY["clippy/<br/>静态检查"]
+        SYNC_LINT["sync_lint/<br/>原子序检查"]
+        SPIN_LINT["spin_lint.rs<br/>spin 版本校验"]
         CONFIG["config.rs<br/>配置生成/检查"]
+        IMAGE["image/<br/>镜像管理"]
+        BACKTRACE["backtrace/<br/>符号化"]
+        FIRMWARE["firmware.rs<br/>AIC8800 firmware"]
         SUPPORT["support/<br/>日志/命令/下载"]
     end
 
@@ -79,15 +88,20 @@ graph TD
     CLI_CMD --> OS
     OS --> TEST
     OS --> ROOTFS
+    OS --> IMAGE
     OS --> BOARD
     OS --> SUPPORT
+    IMAGE --> ROOTFS
+    ROOTFS --> SUPPORT
 ```
 
 `context/` 是整个系统的配置中枢：`arch.rs` 维护架构与 target triple 的双向映射；`resolve.rs` 将 CLI 参数与 Snapshot 合并为 `ResolvedRequest`；`snapshot.rs` 将最近一次的参数持久化到 `.{os}.toml` 文件中，使得后续的短命令可以复用之前的配置。
 
+`image/` 统一管理 rootfs 和 Guest 镜像的注册表、拉取、校验和缓存（详见 [镜像管理](./image)），`rootfs/` 的下载逻辑已收敛到 `image/storage.rs`，`rootfs/` 自身仅保留 `inject`（内容注入）、`qemu`（参数补丁）、`runtime`（依赖同步）和 `resize`（扩容）四块。
+
 ## 三层架构
 
-三层架构将关注点清晰地分离：CLI 层提供用户友好的命令行接口；axbuild 层负责 OS 特有的流程编排（如 ArceOS 的 axconfig 生成、StarryOS 的 rootfs 管理、Axvisor 的 VM 配置注入）；ostool 层则封装了与外部工具（cargo、QEMU、ostool-server）的直接交互，处理环境变量设置、进程管理等底层细节。
+三层架构将关注点清晰地分离：CLI 层提供用户友好的命令行接口；axbuild 层负责 OS 特有的流程编排（如动态平台 target/linker 装配、StarryOS 的 rootfs 管理、Axvisor 的 VM 配置注入）；ostool 层则封装了与外部工具（cargo、QEMU、ostool-server）的直接交互，处理环境变量设置、进程管理等底层细节。
 
 ```mermaid
 flowchart TB

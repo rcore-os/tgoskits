@@ -77,7 +77,7 @@ tgoskits/
 ├── components/                # 独立可复用组件 crate（Git Subtree 管理）
 │   ├── axsched/               # 调度算法（CFS、RR、多级反馈队列）
 │   ├── axallocator/           # 内存分配器（bitmap、buddy 等策略）
-│   ├── axvm / axvcpu / axdevice/  # 虚拟化抽象（VM / vCPU / 虚拟设备）
+│   ├── axvm / axvm-types / axdevice/  # 虚拟化抽象（VM / vCPU 协议 / 虚拟设备）
 │   ├── starry-process/        # StarryOS 进程管理
 │   ├── starry-signal/         # StarryOS 信号机制
 │   ├── arm_vcpu / riscv_vcpu / x86_vcpu/  # 架构相关 vCPU
@@ -99,7 +99,6 @@ tgoskits/
 │       └── xtask/             # Axvisor 专用构建任务
 ├── platforms/                  # 平台适配层
 │   ├── axplat-dyn/            # 动态平台支持
-│   ├── ax-plat-riscv64-sg2002/ # RISC-V SG2002 静态平台
 │   └── somehal/                # 动态平台底层运行时/固件桥接
 ├── drivers/                   # SoC 专用驱动（RK3588 时钟 / NPU / 电源管理）
 ├── test-suit/                 # 系统级测试套件
@@ -208,7 +207,7 @@ flowchart TD
 
     subgraph virt_components["虚拟化组件"]
         axvm["axvm"]
-        axvcpu["axvcpu"]
+        axvm_types["axvm-types"]
         axdev["axdevice"]
     end
 
@@ -226,7 +225,7 @@ flowchart TD
 
 | 能力域 | 实现要点 |
 |--------|---------|
-| 虚拟化抽象 | `axvm`（VM 管理）、`axvcpu`（vCPU 抽象）、`axdevice`（虚拟设备） |
+| 虚拟化抽象 | `axvm`（VM 与 vCPU wrapper/run loop）、`axvm-types`（共享 vCPU/exit 协议）、`axdevice`（虚拟设备） |
 | 架构支持 | ARM vCPU/VGIC、RISC-V vCPU/vPLIC、x86 vCPU/vLAPIC |
 | Guest 支持 | Linux（AArch64 / RISC-V）、ArceOS、RT-Thread、Nimbos |
 | 配置体系 | 板级配置（`configs/board/*.toml`）+ VM 配置（`configs/vms/**/*.toml`）双层结构 |

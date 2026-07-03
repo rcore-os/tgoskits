@@ -24,7 +24,10 @@ use axvm_types::{HostPhysAddr, HostVirtAddr};
 
 #[cfg(target_arch = "x86_64")]
 use crate::host::HostConsole;
-use crate::host::{HostCpu, HostMemory, HostPlatform, HostTime};
+use crate::{
+    arch::{ArchOps, CurrentArch},
+    host::{HostCpu, HostMemory, HostPlatform, HostTime},
+};
 
 /// Private default host adapter used by [`crate::AxvmRuntime`].
 pub(crate) struct ArceOsHost;
@@ -124,7 +127,6 @@ pub(crate) fn handle_host_irq(vector: usize) -> Option<usize> {
     modules::ax_hal::irq::handle_irq(vector).then_some(vector)
 }
 
-#[cfg(not(target_arch = "aarch64"))]
 pub(crate) fn dispatch_host_irq(vector: usize) {
     modules::ax_hal::irq::handle_irq(vector);
 }
@@ -188,6 +190,10 @@ pub(crate) fn spawn_task(task: ArceOsTaskInner) -> ArceOsAxTaskRef {
     modules::ax_task::spawn_task(task)
 }
 
+pub(crate) fn yield_now() {
+    thread::yield_now();
+}
+
 pub(crate) fn wait_queue_wait_until(
     queue: &api::task::AxWaitQueueHandle,
     condition: impl Fn() -> bool,
@@ -233,15 +239,11 @@ pub(crate) type ArceOsIrqReturn = modules::ax_hal::irq::IrqReturn;
 #[cfg(target_arch = "x86_64")]
 pub(crate) type ArceOsIrqSource = modules::ax_hal::irq::IrqSource;
 #[cfg(target_arch = "x86_64")]
-pub(crate) type ArceOsRawIrqHandler = modules::ax_hal::irq::RawIrqHandler;
-
-#[cfg(target_arch = "x86_64")]
 pub(crate) fn request_shared_irq(
     irq: ArceOsIrqId,
-    handler: ArceOsRawIrqHandler,
-    data: core::ptr::NonNull<()>,
+    handler: impl FnMut(ArceOsIrqContext) -> ArceOsIrqReturn + Send + 'static,
 ) -> Result<ArceOsIrqHandle, ArceOsIrqError> {
-    modules::ax_hal::irq::request_shared_irq(irq, handler, data)
+    modules::ax_hal::irq::request_shared_irq(irq, handler)
 }
 
 #[cfg(target_arch = "x86_64")]
@@ -301,19 +303,7 @@ impl HostConsole for ArceOsHost {
 
 impl HostPlatform for ArceOsHost {
     fn has_hardware_support(&self) -> bool {
-        cfg_if::cfg_if! {
-            if #[cfg(target_arch = "x86_64")] {
-                x86_vcpu::has_hardware_support()
-            } else if #[cfg(target_arch = "riscv64")] {
-                riscv_vcpu::has_hardware_support()
-            } else if #[cfg(target_arch = "loongarch64")] {
-                loongarch_vcpu::has_hardware_support()
-            } else if #[cfg(target_arch = "aarch64")] {
-                arm_vcpu::has_hardware_support()
-            } else {
-                false
-            }
-        }
+        CurrentArch::has_hardware_support()
     }
 
     fn enable_virtualization_on_current_cpu(&self) -> AxResult {
@@ -352,7 +342,7 @@ impl HostPlatform for ArceOsHost {
                     let _ = CORES.fetch_add(1, Ordering::Release);
                 },
                 alloc::format!("axvm-hv-init-{cpu_id}"),
-                modules::ax_config::TASK_STACK_SIZE,
+                modules::ax_task::default_task_stack_size(),
             );
             task.set_cpumask(<Self as HostCpu>::CpuMask::one_shot(cpu_id));
             modules::ax_task::spawn_task(task);
@@ -374,7 +364,7 @@ impl HostPlatform for ArceOsHost {
                 break;
             }
         }
-        crate::arch::register_platform_irq_injector();
+        CurrentArch::register_platform_irq_injector();
         let enabled_count = CORES.load(Ordering::Acquire);
         if enabled_count == cpu_count {
             info!("All cores have enabled hardware virtualization support.");

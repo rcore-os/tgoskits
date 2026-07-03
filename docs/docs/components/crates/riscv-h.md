@@ -175,7 +175,7 @@ graph TD
     A[riscv-h]
     A --> B[riscv_vcpu]
     A --> C[riscv_vplic]
-    B --> D[axvcpu]
+    B --> D[axvm-types]
     B --> E[axaddrspace]
     B --> F[axvm / Axvisor]
 ```

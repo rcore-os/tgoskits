@@ -503,7 +503,9 @@ mod tests {
         fs::create_dir_all(path.parent().unwrap()).unwrap();
         fs::write(
             &path,
-            "target = \"riscv64gc-unknown-none-elf\"\nfeatures = [\"sg2002\"]\nlog = \"Info\"\n",
+            "target = \"riscv64gc-unknown-none-elf\"\nfeatures = [\n  \
+             \"starry-kernel/sg2002\",\n  \"axplat-dyn/thead-mae\",\n  \"ax-driver/cvsd\",\n  \
+             \"ax-driver/serial\",\n]\nlog = \"Info\"\n",
         )
         .unwrap();
         fs::write(path.with_extension("its"), "ITS_TEMPLATE").unwrap();

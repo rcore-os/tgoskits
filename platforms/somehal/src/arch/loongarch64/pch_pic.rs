@@ -1,17 +1,12 @@
-use core::sync::atomic::{AtomicUsize, Ordering};
-
-use rdif_intc::{AcpiIrqPolarity, AcpiIrqTrigger, Interface};
+use rdif_intc::{AcpiGsiController, AcpiIrqPolarity, AcpiIrqTrigger, Interface};
 use rdrive::{
     DriverGeneric, PlatformDevice, module_driver,
-    probe::{
-        OnProbeError,
-        acpi::{AcpiGsiController, AcpiPchPic},
-    },
+    probe::{OnProbeError, acpi::AcpiPchPic},
     register::{ProbeAcpi, ProbeFdt},
 };
 
 use super::irq_common::{PCH_PIC_VECTOR_COUNT, fdt_first_cell_vector, pch_pic_reg_bit};
-use crate::{common::ioremap, setup::MmioRaw};
+use crate::{common::ioremap, irq_routing::AcpiControllerRoutes, setup::MmioRaw};
 
 const DEFAULT_PCH_PIC_SIZE: usize = 0x400;
 
@@ -20,11 +15,6 @@ const PCH_PIC_MASK: usize = 0x20;
 const PCH_PIC_EDGE: usize = 0x60;
 const PCH_PIC_POL: usize = 0x3e0;
 const PCH_INT_HTVEC: usize = 0x200;
-
-const UNREGISTERED_PCH_PIC_BASE_VECTOR: usize = usize::MAX;
-
-static PCH_PIC_BASE_VECTOR: AtomicUsize = AtomicUsize::new(UNREGISTERED_PCH_PIC_BASE_VECTOR);
-static PCH_PIC_RUNTIME_VECTOR_COUNT: AtomicUsize = AtomicUsize::new(0);
 
 module_driver!(
     name: "Loongson PCH-PIC",
@@ -46,27 +36,49 @@ module_driver!(
     ],
 );
 
-pub fn input_for_vector(vector: usize) -> Option<usize> {
-    let base = PCH_PIC_BASE_VECTOR.load(Ordering::Acquire);
-    let count = PCH_PIC_RUNTIME_VECTOR_COUNT.load(Ordering::Acquire);
-    if base == UNREGISTERED_PCH_PIC_BASE_VECTOR || count == 0 {
-        return None;
+pub fn irq_for_external_vector(
+    vector: usize,
+) -> Result<Option<rdif_intc::IrqId>, rdif_intc::IrqError> {
+    if !rdrive::is_initialized() {
+        return Ok(None);
     }
-    vector.checked_sub(base).filter(|input| *input < count)
+
+    for intc in rdrive::get_list::<rdif_intc::Intc>() {
+        let Ok(pic) = intc.downcast::<PchPic>() else {
+            continue;
+        };
+        let domain = crate::irq::domain_by_owner(intc.descriptor().device_id())
+            .map(|domain| domain.id)
+            .ok_or(rdif_intc::IrqError::Unsupported)?;
+        let Ok(pic) = pic.try_lock() else {
+            warn!("failed to lock Loongson PCH-PIC when resolving vector {vector}");
+            return Err(rdif_intc::IrqError::Busy);
+        };
+        if let Some(irq) = pic.irq_for_external_vector(vector) {
+            return Ok(Some(irq));
+        }
+        if let Some(input) = pic.input_for_external_vector(vector) {
+            return Ok(Some(rdif_intc::IrqId::new(
+                domain,
+                rdif_intc::HwIrq(input as u32),
+            )));
+        }
+    }
+
+    Ok(None)
 }
 
-pub fn setup_acpi_route(route: &rdif_intc::AcpiGsiRoute) -> Option<usize> {
-    with_pch_pic("setting up PCH-PIC ACPI route", |pic| {
-        if !pic.supports_acpi_gsi(route) {
-            return None;
-        }
-        let domain = crate::irq::domain_by_owner(pic.owner)?.id;
-        let translation =
-            rdif_intc::IrqTranslation::from_controller(domain, pic.translate_acpi(route).ok()?);
-        pic.configure_acpi(&translation, route).ok()?;
-        Some(translation.id.hwirq.0 as usize)
-    })
-    .flatten()
+pub fn resolve_acpi_route(
+    route: &rdif_intc::AcpiGsiRoute,
+) -> Result<rdif_intc::IrqId, rdif_intc::IrqError> {
+    let intc = pch_pic_controller_for_route(route)?;
+    let mut intc = intc.try_lock().map_err(|_| rdif_intc::IrqError::Busy)?;
+    if !intc.supports_acpi_gsi(route) {
+        return Err(rdif_intc::IrqError::Unsupported);
+    }
+    let translation = intc.translate_acpi(route)?;
+    intc.configure_acpi(&translation, route)?;
+    Ok(translation.id)
 }
 
 fn probe_pch_pic_fdt(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
@@ -143,14 +155,11 @@ fn register_pch_pic(
     )
     .map_err(|err| OnProbeError::other(format!("failed to register PCH-PIC domain: {err:?}")))?;
     let pic = PchPic::new(
-        dev.descriptor.device_id(),
         mmio,
         base_vector,
         vector_count.unwrap_or(detected_vector_count),
     );
     pic.init();
-    PCH_PIC_BASE_VECTOR.store(pic.base_vector, Ordering::Release);
-    PCH_PIC_RUNTIME_VECTOR_COUNT.store(pic.vector_count, Ordering::Release);
     dev.register(rdif_intc::Intc::new(domain, pic));
     Ok(())
 }
@@ -160,45 +169,51 @@ fn detect_vector_count(mmio: &MmioRaw) -> Option<usize> {
     (count <= PCH_PIC_VECTOR_COUNT).then_some(count)
 }
 
-fn with_pch_pic<R>(op: &str, f: impl FnOnce(&mut PchPic) -> R) -> Option<R> {
+fn pch_pic_controller_for_route(
+    route: &rdif_intc::AcpiGsiRoute,
+) -> Result<rdrive::Device<rdif_intc::Intc>, rdif_intc::IrqError> {
     if !rdrive::is_initialized() {
-        return None;
+        return Err(rdif_intc::IrqError::Controller);
     }
 
     for intc in rdrive::get_list::<rdif_intc::Intc>() {
-        let Ok(intc) = intc.downcast::<PchPic>() else {
+        let Ok(pic) = intc.downcast::<PchPic>() else {
             continue;
         };
-        let Ok(mut intc) = intc.try_lock() else {
-            warn!("failed to lock Loongson PCH-PIC when {op}");
-            return None;
+        let Ok(guard) = pic.try_lock() else {
+            warn!("failed to lock Loongson PCH-PIC when resolving ACPI route");
+            return Err(rdif_intc::IrqError::Busy);
         };
-        return Some(f(&mut intc));
+        let supported = guard.supports_acpi_gsi(route);
+        drop(guard);
+        if supported {
+            return Ok(intc);
+        }
     }
 
-    warn!("Loongson PCH-PIC is not registered when {op}");
-    None
+    warn!(
+        "Loongson PCH-PIC is not registered for ACPI route controller={:?} address={:#x} input={}",
+        route.controller, route.controller_address, route.controller_input
+    );
+    Err(rdif_intc::IrqError::Unsupported)
 }
 
 struct PchPic {
-    owner: rdrive::DeviceId,
     mmio: MmioRaw,
-    base_vector: usize,
-    vector_count: usize,
+    routes: AcpiControllerRoutes,
 }
 
 impl PchPic {
-    fn new(
-        owner: rdrive::DeviceId,
-        mmio: MmioRaw,
-        base_vector: usize,
-        vector_count: usize,
-    ) -> Self {
+    fn new(mmio: MmioRaw, base_vector: usize, vector_count: usize) -> Self {
+        let controller_address = mmio.phys_addr().as_usize() as u64;
         Self {
-            owner,
             mmio,
-            base_vector,
-            vector_count,
+            routes: AcpiControllerRoutes::new(
+                AcpiGsiController::PchPic,
+                controller_address,
+                base_vector,
+                vector_count,
+            ),
         }
     }
 
@@ -230,27 +245,18 @@ impl PchPic {
     }
 
     fn vector_for_input(&self, input: usize) -> Option<usize> {
-        (input < self.vector_count).then_some(self.base_vector + input)
+        self.routes.vector_for_input(input)
     }
 
     fn input_for_vector(&self, vector: usize, op: &str) -> Option<usize> {
-        let Some(input) = vector.checked_sub(self.base_vector) else {
+        let input = self.routes.input_for_vector(vector);
+        if input.is_none() {
             warn!(
-                "skip {op} for PCH-PIC vector {vector} below base {}",
-                self.base_vector
+                "skip {op} for out-of-range PCH-PIC vector {vector}, vector count {}",
+                self.routes.vector_count()
             );
-            return None;
-        };
-
-        if input < self.vector_count {
-            Some(input)
-        } else {
-            warn!(
-                "skip {op} for out-of-range PCH-PIC vector {vector}, base {}, count {}",
-                self.base_vector, self.vector_count
-            );
-            None
         }
+        input
     }
 
     fn configure_input(&mut self, input: usize, route: &rdif_intc::AcpiGsiRoute) {
@@ -273,16 +279,12 @@ impl PchPic {
         self.write_w(pol_addr, pol);
     }
 
-    fn vector_for_acpi_route(&self, route: &rdif_intc::AcpiGsiRoute) -> Option<usize> {
-        if route.controller != AcpiGsiController::PchPic {
-            return None;
-        }
-        let input = usize::from(route.controller_input);
-        if input < self.vector_count {
-            Some(self.base_vector + input)
-        } else {
-            None
-        }
+    fn irq_for_external_vector(&self, vector: usize) -> Option<rdif_intc::IrqId> {
+        self.routes.irq_for_external_vector(vector)
+    }
+
+    fn input_for_external_vector(&self, vector: usize) -> Option<usize> {
+        self.routes.input_for_vector(vector)
     }
 
     fn read_w(&self, offset: usize) -> u32 {
@@ -306,8 +308,7 @@ impl DriverGeneric for PchPic {
 
 impl Interface for PchPic {
     fn supports_acpi_gsi(&self, route: &rdif_intc::AcpiGsiRoute) -> bool {
-        route.controller_address == self.mmio.phys_addr().as_usize() as u64
-            && self.vector_for_acpi_route(route).is_some()
+        self.routes.supports_acpi_gsi(route)
     }
 
     fn translate_acpi(
@@ -337,6 +338,7 @@ impl Interface for PchPic {
         if translation.id.hwirq != rdif_intc::HwIrq(u32::from(route.controller_input)) {
             return Err(rdif_intc::IrqError::InvalidIrq);
         }
+        self.routes.remember_route(route, translation.id)?;
         self.configure_input(usize::from(route.controller_input), route);
         Ok(())
     }
@@ -349,10 +351,10 @@ impl Interface for PchPic {
             warn!("empty PCH-PIC interrupt specifier");
             return Err(rdif_intc::IrqError::InvalidIrq);
         };
-        if input >= self.vector_count {
+        if input >= self.routes.vector_count() {
             warn!(
                 "PCH-PIC interrupt input {input} exceeds vector count {}",
-                self.vector_count
+                self.routes.vector_count()
             );
             return Err(rdif_intc::IrqError::InvalidIrq);
         }
