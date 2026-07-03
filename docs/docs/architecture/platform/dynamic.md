@@ -19,7 +19,7 @@ crate    = "axplat_dyn"
 dynamic  = true
 ```
 
-`dynamic = true` 是它区别于 `axplat-custom` 的关键标志，被 `axbuild` xtask 识别。
+`dynamic = true` 表示它由启动时发现平台事实，而不是静态板级平台包提供固定事实；该标志会被 `axbuild` xtask 识别。
 
 | feature | 默认 | 启用的能力 |
 | --- | --- | --- |

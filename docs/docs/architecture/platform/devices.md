@@ -1,5 +1,5 @@
 ---
-sidebar_position: 5
+sidebar_position: 4
 sidebar_label: "设备发现"
 ---
 
@@ -27,7 +27,7 @@ pub fn rdrive_setup() {
 }
 ```
 
-`rdrive_setup()` 由 `axplat-dyn` 的 `init_later` 经 `somehal::post_paging()` 间接调用（见 [dynamic.md](dynamic.md)）。`axplat-custom` 走另一条路：调用 `rdrive::init(rdrive::Platform::Static)`，由平台代码自己注册设备。
+`rdrive_setup()` 由 `axplat-dyn` 的 `init_later` 经 `somehal::post_paging()` 间接调用（见 [dynamic.md](dynamic.md)）。外部平台也可以自行调用 `rdrive::init(rdrive::Platform::Static)`，由平台代码注册静态设备。
 
 随后 [platforms/axplat-dyn/src/drivers/mod.rs](platforms/axplat-dyn/src/drivers/mod.rs) 调用：
 

@@ -182,7 +182,7 @@ static IS_BSP:  bool  = false;
 pub extern crate axplat_dyn as selected;
 ```
 
-默认 crate 标识符是 `axplat_dyn`。自定义平台通过环境变量覆盖：
+默认 crate 标识符是 `axplat_dyn`。外部平台通过环境变量覆盖：
 
 ```bash
 AX_PLATFORM_CRATE=axplat_myplat cargo check -p ax-hal --features axplat-myplat
@@ -192,7 +192,7 @@ AX_PLATFORM_CRATE=axplat_myplat cargo check -p ax-hal --features axplat-myplat
 
 ## Feature 传播
 
-平台 feature 需要在本地使用方沿调用层级转发。仓库里的 `axplat-custom` 是 `publish = false` 模板，不会作为 `ax-hal` 的内置依赖发布到 crates.io；真实平台需要在自己的 workspace / fork 中给 `ax-hal` 增加 optional dependency 和 feature，再按需向上层转发：
+平台 feature 需要在本地使用方沿调用层级转发。外部平台需要在自己的 workspace / fork 中给 `ax-hal` 增加 optional dependency 和 feature，再按需向上层转发：
 
 | 使用层 | 示例 feature |
 | --- | --- |
@@ -206,7 +206,7 @@ AX_PLATFORM_CRATE=axplat_myplat cargo check -p ax-hal --features axplat-myplat
 ## 不变量
 
 - 平台 crate 实现的是链接期全局接口，不是运行时插件。`ax-crate-interface` 只为每个 `*If` trait 保留一个实现槽。
-- `axplat-dyn` 与另一个自定义平台同时进入最终链接时，会因为重复实现 `ax-plat` crate-interface 符号而失败。
+- `axplat-dyn` 与另一个外部平台同时进入最终链接时，会因为重复实现 `ax-plat` crate-interface 符号而失败。
 - `smp`、`irq`、`hv`、`uspace` 等能力 feature 必须同时满足平台实现和上层 runtime 的需求。例如 `axplat-dyn` 的 `hv` feature 会同时开启 `somehal/hv` 和 `ax-cpu/arm-el2`。
 - `AX_PLATFORM_CRATE` 只决定 `ax-hal` 生成哪个 crate 标识符；Cargo 仍需要通过 `ax-hal` 自己的 feature/依赖把该 crate 放进依赖图。
 - `unsafe extern "Rust"` 入口符号的调用方必须确保 `cpu_id`、`arg` 语义与平台宏文档一致：`arg` 通常是 bootloader 传下来的 device tree blob 地址。
