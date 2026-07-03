@@ -475,6 +475,59 @@ static void test_pathmax_min(void)
     free(path);
 }
 
+static void test_raw_alias_min(void)
+{
+    printf("[TEST] raw syscall alias minimal conformance\n");
+
+#ifdef SYS_creat
+    {
+        const char *path = "ltp-pilot-raw-creat";
+        struct stat st;
+        long fd;
+
+        unlink(path);
+        errno = 0;
+        fd = syscall(SYS_creat, path, 0600);
+        CHECK(fd >= 0, "raw SYS_creat creates a file");
+        if (fd >= 0) {
+            CHECK(close((int)fd) == 0, "raw SYS_creat close fd");
+            CHECK(stat(path, &st) == 0 && S_ISREG(st.st_mode),
+                  "raw SYS_creat result is a regular file");
+            unlink(path);
+        }
+    }
+#else
+    CHECK(1, "raw SYS_creat not available on this arch");
+#endif
+
+#ifdef SYS_eventfd
+    {
+        uint64_t value = 0;
+        long fd;
+
+        errno = 0;
+        fd = syscall(SYS_eventfd, 7);
+        CHECK(fd >= 0, "raw SYS_eventfd creates an eventfd");
+        if (fd >= 0) {
+            CHECK(read((int)fd, &value, sizeof(value)) == (ssize_t)sizeof(value) &&
+                      value == 7,
+                  "raw SYS_eventfd preserves initval");
+            close((int)fd);
+        }
+    }
+#else
+    CHECK(1, "raw SYS_eventfd not available on this arch");
+#endif
+
+#ifdef SYS_eventfd2
+    errno = 0;
+    expect_ret_errno("raw SYS_eventfd2 unknown flag -> EINVAL",
+                     syscall(SYS_eventfd2, 0, 0x80000000U), EINVAL);
+#else
+    CHECK(1, "raw SYS_eventfd2 not available on this arch");
+#endif
+}
+
 int main(void)
 {
     printf("================================================\n");
@@ -486,6 +539,7 @@ int main(void)
     test_mmap_maps_min();
     test_pathmax_min();
     test_pipe_efault_min();
+    test_raw_alias_min();
 
     printf("------------------------------------------------\n");
     printf("  DONE: %d pass, %d fail\n", pass_count, fail_count);
