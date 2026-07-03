@@ -600,6 +600,19 @@ impl DriverGeneric for GmacNet {
     }
 }
 
+struct GmacIrqHandler {
+    inner: Arc<SpinNoIrq<GmacState>>,
+}
+
+impl rd_net::InterfaceIrqHandler for GmacIrqHandler {
+    fn handle_irq(&mut self) -> Event {
+        let Some(mut inner) = self.inner.try_lock() else {
+            return Event::none();
+        };
+        handle_gmac_irq(&mut inner)
+    }
+}
+
 impl Interface for GmacNet {
     fn mac_address(&self) -> [u8; 6] {
         self.mac_address
@@ -641,43 +654,53 @@ impl Interface for GmacNet {
     }
 
     fn handle_irq(&mut self) -> Event {
-        let inner = self.inner.lock();
-        let status = inner.regs.dma.read(DMA_STATUS);
-        if status == 0 || status == u32::MAX {
-            return Event::none();
-        }
-
-        inner.regs.dma.write(DMA_STATUS, status);
-        if status & GMAC_LINE_INTF_INTR != 0 {
-            let _ = inner.regs.mac.read(GMAC_INTERRUPT_STATUS);
-            let _ = inner.regs.mac.read(GMAC_INTERRUPT_MASK);
-            if inner.regs.mac.read(GMAC_INTERRUPT_STATUS) & MAC_RGMII_INT_STATUS != 0 {
-                let link = inner.regs.link_state();
-                log_link_state(link);
-                inner.regs.configure_link(link);
-            }
-        }
-        if status & DMA_INT_BUS_ERROR != 0 {
-            warn!("{DEVICE_NAME}: fatal DMA bus error, status={status:#010x}");
-        }
-        if status & DMA_INT_RX_STOPPED != 0 {
-            warn!("{DEVICE_NAME}: RX process stopped, restarting");
-            inner.regs.dma.set_bits(DMA_CONTROL, DMA_RX_START);
-            inner.regs.resume_rx();
-        }
-
-        let mut event = Event::none();
-        if status & (DMA_INT_TX_COMPLETED | DMA_INT_TX_NO_BUFFER | DMA_INT_TX_STOPPED) != 0 {
-            event.tx_queue.insert(QUEUE_ID0);
-        }
-        if status & (DMA_INT_RX_COMPLETED | DMA_INT_RX_NO_BUFFER | DMA_INT_RX_OVERFLOW) != 0 {
-            event.rx_queue.insert(QUEUE_ID0);
-        }
-        if status & (GMAC_MMC_INTR | GMAC_PMT_INTR) != 0 {
-            debug!("{DEVICE_NAME}: MAC side interrupt status={status:#010x}");
-        }
-        event
+        let mut inner = self.inner.lock();
+        handle_gmac_irq(&mut inner)
     }
+
+    fn take_irq_handler(&mut self) -> Option<rd_net::BIrqHandler> {
+        Some(Box::new(GmacIrqHandler {
+            inner: self.inner.clone(),
+        }))
+    }
+}
+
+fn handle_gmac_irq(inner: &mut GmacState) -> Event {
+    let status = inner.regs.dma.read(DMA_STATUS);
+    if status == 0 || status == u32::MAX {
+        return Event::none();
+    }
+
+    inner.regs.dma.write(DMA_STATUS, status);
+    if status & GMAC_LINE_INTF_INTR != 0 {
+        let _ = inner.regs.mac.read(GMAC_INTERRUPT_STATUS);
+        let _ = inner.regs.mac.read(GMAC_INTERRUPT_MASK);
+        if inner.regs.mac.read(GMAC_INTERRUPT_STATUS) & MAC_RGMII_INT_STATUS != 0 {
+            let link = inner.regs.link_state();
+            log_link_state(link);
+            inner.regs.configure_link(link);
+        }
+    }
+    if status & DMA_INT_BUS_ERROR != 0 {
+        warn!("{DEVICE_NAME}: fatal DMA bus error, status={status:#010x}");
+    }
+    if status & DMA_INT_RX_STOPPED != 0 {
+        warn!("{DEVICE_NAME}: RX process stopped, restarting");
+        inner.regs.dma.set_bits(DMA_CONTROL, DMA_RX_START);
+        inner.regs.resume_rx();
+    }
+
+    let mut event = Event::none();
+    if status & (DMA_INT_TX_COMPLETED | DMA_INT_TX_NO_BUFFER | DMA_INT_TX_STOPPED) != 0 {
+        event.tx_queue.insert(QUEUE_ID0);
+    }
+    if status & (DMA_INT_RX_COMPLETED | DMA_INT_RX_NO_BUFFER | DMA_INT_RX_OVERFLOW) != 0 {
+        event.rx_queue.insert(QUEUE_ID0);
+    }
+    if status & (GMAC_MMC_INTR | GMAC_PMT_INTR) != 0 {
+        debug!("{DEVICE_NAME}: MAC side interrupt status={status:#010x}");
+    }
+    event
 }
 
 #[derive(Clone, Copy)]
