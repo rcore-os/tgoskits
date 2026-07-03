@@ -2,8 +2,9 @@ use alloc::{format, string::String, sync::Arc, vec, vec::Vec};
 use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 use ax_driver::serial::{
-    self as ax_serial, Config, ConfigError, OwnerId, RxFlag, RxItem, RxQueue, SerialDevice,
-    SerialIrqHandler, SerialIrqOutcome, SerialPort, SerialSoftWork, TxQueue,
+    self as ax_serial, Config, ConfigError, DataBits, OwnerId, Parity, RxFlag, RxItem, RxQueue,
+    SerialDevice, SerialIrqHandler, SerialIrqOutcome, SerialPort, SerialSoftWork, StopBits,
+    TxQueue,
 };
 use ax_errno::{AxError, AxResult};
 use ax_kspin::SpinNoIrq;
@@ -24,7 +25,7 @@ use super::{
     terminal::{
         Terminal,
         ldisc::{ProcessMode, TtyConfig, TtyRead, TtyWrite},
-        termios::Termios2,
+        termios::{Termios2, TermiosParity},
     },
 };
 use crate::pseudofs::DeviceOps;
@@ -483,6 +484,32 @@ fn startup_baudrate(current: u32) -> u32 {
     }
 }
 
+fn serial_config_from_termios(termios: &Termios2) -> Config {
+    let mut config = Config::new()
+        .data_bits(match termios.data_bits() {
+            5 => DataBits::Five,
+            6 => DataBits::Six,
+            7 => DataBits::Seven,
+            _ => DataBits::Eight,
+        })
+        .stop_bits(if termios.stop_bits() == 2 {
+            StopBits::Two
+        } else {
+            StopBits::One
+        })
+        .parity(match termios.parity() {
+            TermiosParity::None => Parity::None,
+            TermiosParity::Odd => Parity::Odd,
+            TermiosParity::Even => Parity::Even,
+            TermiosParity::Mark => Parity::Mark,
+            TermiosParity::Space => Parity::Space,
+        });
+    if let Some(baudrate) = termios.baudrate() {
+        config = config.baudrate(baudrate);
+    }
+    config
+}
+
 fn spawn_serial_event_worker(backend: Arc<SerialBackend>) {
     let task_name = format!("{}-event", backend.tty_name);
     ax_task::spawn_with_name(
@@ -621,10 +648,11 @@ impl TtyWrite for SerialWriter {
     }
 
     fn termios_changed(&self, old: &Termios2, new: &Termios2) {
-        let Some(new_baud) = new.baudrate() else {
-            return;
-        };
-        if old.baudrate() == Some(new_baud) {
+        if old.baudrate() == new.baudrate()
+            && old.data_bits() == new.data_bits()
+            && old.stop_bits() == new.stop_bits()
+            && old.parity() == new.parity()
+        {
             return;
         }
         if self.backend.ensure_started().is_err() {
@@ -632,10 +660,10 @@ impl TtyWrite for SerialWriter {
         }
         if let Err(err) = self
             .backend
-            .set_port_config(&Config::new().baudrate(new_baud))
+            .set_port_config(&serial_config_from_termios(new))
         {
             warn!(
-                "{} failed to set baudrate {new_baud} on {}: {:?}",
+                "{} failed to apply termios on {}: {:?}",
                 self.backend.tty_name, self.backend.name, err
             );
         }

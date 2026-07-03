@@ -7,8 +7,9 @@ use axklib::irq::{CpuId, IrqError, run_on_cpu_sync};
 use fdt_edit::{Fdt, RegFixed};
 use log::warn;
 pub use rdif_serial::{
-    Config, ConfigError, OwnerId, OwnerLease, RawUart, RxFlag, RxItem, RxQueue, SerialCounters,
-    SerialIrqHandler, SerialIrqOutcome, SerialParts, SerialPort, SerialSoftWork, TxQueue,
+    Config, ConfigError, DataBits, OwnerId, OwnerLease, Parity, RawUart, RxFlag, RxItem, RxQueue,
+    SerialCounters, SerialIrqHandler, SerialIrqOutcome, SerialParts, SerialPort, SerialSoftWork,
+    StopBits, TxQueue,
 };
 use rdrive::{Device, DeviceId, DriverGeneric, probe::acpi::AcpiInfo, register::FdtInfo};
 
