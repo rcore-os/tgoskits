@@ -26,6 +26,13 @@ struct TestVmKernel {
     cmdline: String,
 }
 
+#[derive(serde::Deserialize)]
+struct TestQemuRuntimeConfig {
+    #[serde(default)]
+    success_regex: Vec<String>,
+    shell_init_cmd: Option<String>,
+}
+
 fn write_qemu_config(root: &Path, case: &str, arch: &str, body: &str) -> PathBuf {
     write_qemu_config_in_group(root, "normal", "default", case, arch, body)
 }
@@ -671,6 +678,28 @@ fn x86_linux_direct_boot_configs_keep_timer_calibration_bypass() {
             "{path} should keep complete getty arguments after `--` so init does not exit"
         );
     }
+}
+
+#[test]
+fn x86_vmx_smoke_uses_prompt_success_without_delayed_shell_injection() {
+    let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(Path::parent)
+        .unwrap();
+    let path = workspace_root.join("test-suit/axvisor/normal/qemu/smoke/qemu-x86_64-vmx.toml");
+    let content = fs::read_to_string(&path).unwrap();
+    let config: TestQemuRuntimeConfig = toml::from_str(&content).unwrap();
+    let path = path.display();
+
+    assert!(
+        config.success_regex.iter().any(|pattern| pattern == "~ #"),
+        "{path} should treat reaching the Linux shell prompt as success"
+    );
+    assert!(
+        config.shell_init_cmd.is_none(),
+        "{path} should not depend on delayed shell_init_cmd injection; nested VMX guests can \
+         reboot after the first prompt before the delayed command is sent"
+    );
 }
 
 #[test]

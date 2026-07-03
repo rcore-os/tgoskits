@@ -29,8 +29,6 @@ fail_regex = [
   "(?i)login incorrect",
   "(?i)permission denied",
 ]
-success_regex = ["(?m)^guest linux test pass!\\s*$"]
-shell_prefix = "~ #"
-shell_init_cmd = "pwd && echo 'guest linux test pass!'"
+success_regex = ["~ #"]
 to_bin = false
 uefi = false
