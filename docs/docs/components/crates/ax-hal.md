@@ -67,7 +67,7 @@ flowchart TD
 `ax-hal` 的架构设计遵循“ISA 与板级分离”的原则：
 
 - `ax-cpu` 负责 ISA 级能力，如 `asm`、`TaskContext`、`TrapFrame`、trap 编号与可选 `uspace` 支持。
-- `axplat` 负责平台/机器级能力，如控制台、物理内存布局、时钟、中断控制器、电源管理与 CPU 启动。默认实现是 `axplat-dyn`，自定义平台可通过 `AX_PLATFORM_CRATE` 和对应 `ax-hal` feature 接入。
+- `axplat` 负责平台/机器级能力，如控制台、物理内存布局、时钟、中断控制器、电源管理与 CPU 启动。默认实现是 `axplat-dyn`，自定义平台可通过 `AX_PLATFORM_CRATE` 和对应 `ax-hal` feature 接入；完整契约见 [平台层 / 平台契约](../../architecture/platform/contract)。
 - `ax-hal` 把二者统一包装成上层可依赖的稳定接口，例如 `console`、`power`、`trap`、`context`、`mem`、`time`、`irq`、`paging`。
 
 因此，修改 `ax-hal` 时要始终区分：

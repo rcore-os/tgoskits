@@ -23,15 +23,7 @@
 
 ## 自定义平台接入
 
-`ax-driver` 不再提供面向旧平台私有路径的自动注册 feature，也不再通过 feature 选择平台探测路径。仓库内置平台路径默认使用 FDT/ACPI/PCI probe 注册设备；自行实现的外部平台应优先提供可发现的设备描述并通过对应 probe 接入。没有固件描述时，可以使用 `rdrive::Platform::Static` / `PlatformSource::Static` 和 `ProbeKind::Static` 做显式设备注册。
-
-推荐做法是：
-
-- 平台初始化 `rdrive::init(rdrive::Platform::Fdt { ... })`、`rdrive::init(rdrive::Platform::Acpi(...))`、`rdrive::init(rdrive::Platform::Static)` 或合适的多来源 `init_sources(...)`。
-- 用 `rdrive::register_add(DriverRegister { probe_kinds: &[ProbeKind::Fdt { ... }]、&[ProbeKind::Acpi { ... }] 或 &[ProbeKind::Static { ... }], ... })` 注册设备 probe。
-- 在 probe 回调里构造硬件实例，并调用 `PlatformDevice::register(...)`、`PlatformDevice::*_with_info(...)` 或具体驱动暴露的设备注册 helper。
-
-这样自定义平台可以自由决定设备枚举顺序、MMIO 映射、IRQ 解析和 DMA 策略，而不需要依赖旧 `myplat` / `defplat` feature 或 `ax-driver` 内置的自动注册兼容层。
+`ax-driver` 不再提供面向旧平台私有路径的自动注册 feature，也不再通过 feature 选择平台探测路径。仓库内置平台路径默认使用 FDT/ACPI/PCI probe 注册设备；外部平台应优先提供可发现的设备描述，缺少固件描述时再使用 `rdrive::Platform::Static` / `PlatformSource::Static` 和 `ProbeKind::Static` 做显式设备注册。完整平台侧接入方式见 [平台层 / 设备发现](../../architecture/platform/devices)。
 
 ## 依赖关系
 

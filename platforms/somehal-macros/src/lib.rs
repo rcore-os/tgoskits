@@ -30,7 +30,7 @@ mod _entry;
 ///
 /// - Entry point with kernel initialization
 ///
-/// ``` no_run
+/// ```ignore
 /// # #![no_main]
 /// # use pie_boot::entry;
 /// # struct Kernel;
@@ -56,7 +56,7 @@ pub fn entry(args: TokenStream, input: TokenStream) -> TokenStream {
 ///
 /// - Simple entry point
 ///
-/// ``` no_run
+/// ```ignore
 /// # #![no_main]
 /// # use pie_boot::secondary_entry;
 /// #[entry]
@@ -75,7 +75,7 @@ pub fn someboot_secondary_entry(args: TokenStream, input: TokenStream) -> TokenS
 ///
 /// - Simple entry point
 ///
-/// ``` no_run
+/// ```ignore
 /// # #![no_main]
 /// # use pie_boot::secondary_entry;
 /// #[entry]

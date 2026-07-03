@@ -62,7 +62,7 @@ flowchart TD
 
 除默认值差异外，各架构还有一些需要注意的特殊行为：
 
-- **默认动态平台**：构建系统默认走 `axplat-dyn` 路径，Build Info 中不再提供旧平台选择开关。独立自定义平台通过 `AX_PLATFORM_CRATE` 和对应 `ax-hal` feature 显式选择。
+- **默认动态平台**：构建系统默认走 `axplat-dyn` 路径，Build Info 中不再提供旧平台选择开关。独立自定义平台通过 `AX_PLATFORM_CRATE` 和对应 `ax-hal` feature 显式选择，详见 [平台层 / 自定义平台](../architecture/platform/custom)。
 - **to_bin**：通用 ArceOS/Starry std 构建会生成 raw binary；Axvisor 另有覆盖：`aarch64`/`riscv64` 生成 bin，`x86_64`/`loongarch64` 保留 ELF。
 - **LoongArch QEMU**：运行 Axvisor loongarch64 时自动搜索 LVZ 版 QEMU（详见 [Axvisor 运行 §LoongArch LVZ QEMU](./axvisor/runtime#loongarch-lvz-qemu)）
 
