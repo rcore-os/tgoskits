@@ -166,20 +166,15 @@ impl RdifPinctrl for RockchipPinCtrl {
         };
 
         match setting.config {
-            rdif_pinctrl::PinConfig::Bias(bias) => {
-                let mut config = self.current_or_default_config(pin);
-                config.pull = rockchip_pull_from_rdif_bias(bias);
-                self.inner
-                    .set_config(config)
-                    .map_err(|_| RdifPinctrlError::InvalidConfig)
-            }
+            rdif_pinctrl::PinConfig::Bias(bias) => self
+                .inner
+                .set_pull(pin, rockchip_pull_from_rdif_bias(bias))
+                .map_err(|_| RdifPinctrlError::InvalidConfig),
             rdif_pinctrl::PinConfig::Vendor { param, value }
                 if param == ROCKCHIP_PIN_CONFIG_DRIVE_RAW =>
             {
-                let mut config = self.current_or_default_config(pin);
-                config.drive = Some(value);
                 self.inner
-                    .set_config(config)
+                    .set_drive(pin, value)
                     .map_err(|_| RdifPinctrlError::InvalidConfig)
             }
             rdif_pinctrl::PinConfig::InputEnable(true) => self
@@ -204,17 +199,6 @@ impl RdifPinctrl for RockchipPinCtrl {
             | rdif_pinctrl::PinConfig::LowPowerMode(_)
             | rdif_pinctrl::PinConfig::Vendor { .. } => Err(RdifPinctrlError::NotSupported),
         }
-    }
-}
-
-impl RockchipPinCtrl {
-    fn current_or_default_config(&self, pin: RockchipPinId) -> RockchipPinConfig {
-        self.inner.get_config(pin).unwrap_or(RockchipPinConfig {
-            id: pin,
-            mux: Iomux::from_bits_truncate(0),
-            pull: Pull::Disabled,
-            drive: None,
-        })
     }
 }
 

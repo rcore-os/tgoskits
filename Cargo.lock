@@ -690,6 +690,7 @@ dependencies = [
  "rdif-intc",
  "rdif-pcie",
  "rdif-pinctrl",
+ "rdif-pwm",
  "rdif-serial",
  "rdif-vsock",
  "rdrive",
@@ -700,6 +701,7 @@ dependencies = [
  "rockchip-jpeg",
  "rockchip-npu",
  "rockchip-pm",
+ "rockchip-pwm",
  "rockchip-rga",
  "rockchip-soc",
  "sdhci-cv1800",
@@ -6337,6 +6339,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "rdif-pwm"
+version = "0.1.0"
+dependencies = [
+ "rdif-base",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "rdif-serial"
 version = "0.9.0"
 dependencies = [
@@ -6723,6 +6733,14 @@ dependencies = [
  "mbarrier",
  "rdif-base",
  "tock-registers 0.10.1",
+]
+
+[[package]]
+name = "rockchip-pwm"
+version = "0.1.0"
+dependencies = [
+ "rdif-base",
+ "rdif-pwm",
 ]
 
 [[package]]
@@ -7663,6 +7681,8 @@ dependencies = [
  "rand 0.10.1",
  "rbpf",
  "rdif-block",
+ "rdif-pinctrl",
+ "rdif-pwm",
  "rdrive",
  "ringbuf",
  "riscv",
