@@ -2,8 +2,6 @@ use anyhow::anyhow;
 
 use super::metadata::platform_feature_names;
 
-const REMOVED_AXVISOR_PLATFORM_FEATURES: &[&str] = &["x86-qemu-q35", concat!("riscv64", "-sg2002")];
-
 pub(super) fn normalize_axvisor_feature_surface(
     features: &mut Vec<String>,
     target: &str,
@@ -27,16 +25,6 @@ pub(super) fn reject_unsupported_nested_platform_features(
     features: &[String],
     known_platforms: &[String],
 ) -> anyhow::Result<()> {
-    if let Some(feature) = features
-        .iter()
-        .find(|feature| removed_axvisor_platform_feature_name(feature).is_some())
-    {
-        return Err(anyhow!(
-            "Axvisor platform feature `{feature}` has been removed; use a dynamic platform board \
-             config"
-        ));
-    }
-
     if let Some(feature) = features
         .iter()
         .find(|feature| is_removed_dynamic_platform_feature(feature))
@@ -76,18 +64,6 @@ pub(super) fn is_removed_dynamic_platform_feature(feature: &str) -> bool {
     ) || feature.starts_with("axplat-dyn/")
 }
 
-fn removed_axvisor_platform_feature_name(feature: &str) -> Option<&str> {
-    let name = feature
-        .strip_prefix("ax-hal/")
-        .or_else(|| feature.strip_prefix("ax-std/"))
-        .or_else(|| feature.strip_prefix("ax-feat/"))
-        .unwrap_or(feature);
-    REMOVED_AXVISOR_PLATFORM_FEATURES
-        .iter()
-        .find(|platform| **platform == name)
-        .copied()
-}
-
 fn nested_platform_feature_name<'a>(
     feature: &'a str,
     known_platforms: &[String],
@@ -108,6 +84,5 @@ fn ax_hal_platform_feature_name<'a>(
 }
 
 fn is_platform_control_feature(name: &str, known_platforms: &[String]) -> bool {
-    matches!(name, "plat-dyn" | "defplat" | "myplat")
-        || known_platforms.iter().any(|platform| platform == name)
+    name == "plat-dyn" || known_platforms.iter().any(|platform| platform == name)
 }

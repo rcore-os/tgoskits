@@ -30,10 +30,6 @@ fp-simd = ["ax-feat/fp-simd"]
 # Interrupts
 irq = ["ax-posix-api/irq", "ax-feat/irq"]
 
-# Custom or default platforms
-myplat = ["ax-feat/myplat"]
-defplat = ["ax-feat/defplat"]
-
 # Memory
 alloc = ["ax-posix-api/alloc"]
 tls = ["alloc", "ax-feat/tls"]

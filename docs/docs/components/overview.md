@@ -126,7 +126,6 @@ flowchart TB
 | `ax-fs-vfs` | 组件层 | `components/axfs_crates/axfs_vfs` | 1 | 4 | [查看](crates/ax-fs-vfs) |
 | `ax-hal` | ArceOS 层 | `os/arceos/modules/axhal` | 13 | 15 | [查看](crates/ax-hal) |
 | `arceos-helloworld` | ArceOS 层 | `apps/arceos/helloworld` | 1 | 0 | [查看](crates/arceos-helloworld) |
-| `arceos-helloworld-myplat` | ArceOS 层 | `apps/arceos/helloworld-myplat` | 8 | 0 | [查看](crates/arceos-helloworld-myplat) |
 | `arceos-httpclient` | ArceOS 层 | `apps/arceos/httpclient` | 1 | 0 | [查看](crates/arceos-httpclient) |
 | `arceos-httpserver` | ArceOS 层 | `apps/arceos/httpserver` | 1 | 0 | [查看](crates/arceos-httpserver) |
 | `ax-input` | ArceOS 层 | `os/arceos/modules/axinput` | 3 | 3 | [查看](crates/ax-input) |

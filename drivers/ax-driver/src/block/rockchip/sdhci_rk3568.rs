@@ -21,7 +21,11 @@ use sdhci_host::{HostClock, HostResetHook, Sdhci, rdif as sdhci_rdif};
 use sdmmc_protocol::{
     Error, OperationPoll,
     error::{ErrorContext, Phase},
-    sdio::{CardInfo, CardInitPreference, SdioHost2Adapter, SdioInitScratch, SdioSdmmc},
+    sdio::{
+        card::{CardInfo, SdioSdmmc},
+        host2::SdioHost2Adapter,
+        init::{CardInitPreference, SdioInitScratch},
+    },
 };
 
 use super::clock::RockchipClockOps;
@@ -358,10 +362,10 @@ mod tests {
             true,
             axklib::dma::device_with_mask(u32::MAX as u64),
         );
-        let limits = sdmmc_protocol::rdif::queue_limits(&config, u32::MAX as u64);
+        let limits = sdmmc_protocol::rdif::config::queue_limits(&config, u32::MAX as u64);
 
         assert!(limits.max_blocks_per_request > 1);
-        assert!(limits.max_segment_size > sdmmc_protocol::rdif::BLOCK_SIZE);
+        assert!(limits.max_segment_size > sdmmc_protocol::rdif::config::BLOCK_SIZE);
         assert_eq!(limits.max_segments, 1);
     }
 }

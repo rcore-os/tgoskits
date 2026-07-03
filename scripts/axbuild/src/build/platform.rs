@@ -74,8 +74,6 @@ pub(super) fn is_known_axstd_feature(feature: &str) -> bool {
             | "hv"
             | "irq"
             | "ipi"
-            | "myplat"
-            | "defplat"
             | "alloc"
             | "paging"
             | "dma"

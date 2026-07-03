@@ -14,7 +14,7 @@ pub fn enable_timer_irq() {
     {}
 
     #[cfg(not(any(test, feature = "host-test")))]
-    axplat_dyn::enable_timer_irq();
+    crate::platform::enable_timer_irq();
 }
 
 pub fn try_init_epoch_offset(epoch_time_nanos: u64) -> bool {
@@ -25,5 +25,5 @@ pub fn try_init_epoch_offset(epoch_time_nanos: u64) -> bool {
     }
 
     #[cfg(not(any(test, feature = "host-test")))]
-    axplat_dyn::try_init_epoch_offset(epoch_time_nanos)
+    crate::platform::try_init_epoch_offset(epoch_time_nanos)
 }

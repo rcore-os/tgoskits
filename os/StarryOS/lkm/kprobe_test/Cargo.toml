@@ -23,9 +23,7 @@ kprobe.workspace = true
 
 [features]
 default = []
-myplat = ["ax-feat/myplat"]
 qemu = [
-  "ax-feat/defplat",
   "ax-feat/irq",
   "ax-feat/rtc",
   "ax-feat/display",

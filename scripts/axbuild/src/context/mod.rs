@@ -33,9 +33,8 @@ mod workspace;
 pub(crate) use arch::{
     CrossCompileSpec, arch_for_target_checked, cross_compile_spec_for_arch_checked,
     default_rootfs_image_for_arch, resolve_arceos_arch_and_target, resolve_axvisor_arch_and_target,
-    resolve_starry_arch_and_target, starry_arch_for_target_checked,
-    starry_default_platform_for_arch_checked, starry_target_for_arch_checked, supported_arches,
-    supported_targets, validate_supported_target,
+    resolve_starry_arch_and_target, starry_arch_for_target_checked, starry_target_for_arch_checked,
+    supported_arches, supported_targets, validate_supported_target,
 };
 pub(crate) use resolve::{AxvisorRequestPaths, snapshot_path_value};
 pub use types::{
