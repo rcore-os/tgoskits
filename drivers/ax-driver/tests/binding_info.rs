@@ -28,6 +28,7 @@ use rdrive::{
 static CAPTURED_IRQ: Mutex<Option<Option<BindingIrq>>> = Mutex::new(None);
 static SETUP_SPECIFIER: Mutex<Option<Vec<u32>>> = Mutex::new(None);
 static SETUP_ACPI_ROUTE: Mutex<Option<AcpiGsiRoute>> = Mutex::new(None);
+static RDRIVE_TEST_LOCK: Mutex<()> = Mutex::new(());
 
 const TEST_INTC_DOMAIN: irq_framework::IrqDomainId = irq_framework::IrqDomainId(0);
 
@@ -153,19 +154,11 @@ fn required_pci_binding_info_reports_unresolved_irq() {
 
 #[test]
 fn fdt_binding_info_carries_first_irq_specifier_without_setup() {
+    let _guard = RDRIVE_TEST_LOCK.lock().unwrap();
     *CAPTURED_IRQ.lock().unwrap() = None;
     *SETUP_SPECIFIER.lock().unwrap() = None;
 
-    let fdt_data = Box::leak(Box::new(minimal_irq_fdt().encode()));
-    let fdt_addr = NonNull::new(fdt_data.as_ref().as_ptr() as *mut u8).unwrap();
-
-    rdrive::init(Platform::Fdt { addr: fdt_addr }).unwrap();
-    rdrive::register_add(DriverRegister {
-        name: "binding-info-fdt-test-intc",
-        level: ProbeLevel::PostKernel,
-        priority: ProbePriority::INTC,
-        probe_kinds: TEST_INTC_PROBE_KINDS,
-    });
+    ensure_rdrive_test_intc();
     rdrive::register_add(DriverRegister {
         name: "binding-info-fdt-test-device",
         level: ProbeLevel::PostKernel,
@@ -186,32 +179,11 @@ fn fdt_binding_info_carries_first_irq_specifier_without_setup() {
 
 #[test]
 fn named_fdt_interrupt_binding_selects_matching_specifier() {
+    let _guard = RDRIVE_TEST_LOCK.lock().unwrap();
     *CAPTURED_IRQ.lock().unwrap() = None;
     *SETUP_SPECIFIER.lock().unwrap() = None;
 
-    let fdt_data = Box::leak(Box::new(minimal_irq_fdt().encode()));
-    let fdt_addr = NonNull::new(fdt_data.as_ref().as_ptr() as *mut u8).unwrap();
-
-    rdrive::init(Platform::Fdt { addr: fdt_addr }).unwrap();
-    rdrive::register_add(DriverRegister {
-        name: "binding-info-fdt-test-intc",
-        level: ProbeLevel::PostKernel,
-        priority: ProbePriority::INTC,
-        probe_kinds: TEST_INTC_PROBE_KINDS,
-    });
-    rdrive::register_add(DriverRegister {
-        name: "binding-info-fdt-test-device",
-        level: ProbeLevel::PostKernel,
-        priority: ProbePriority::DEFAULT,
-        probe_kinds: TEST_DEVICE_PROBE_KINDS,
-    });
-    rdrive::probe_all(true).unwrap();
-
-    let captured = CAPTURED_IRQ.lock().unwrap().clone();
-    let Some(Some(BindingIrq::Source(BindingIrqSource::FdtInterrupt(first)))) = captured else {
-        panic!("expected captured FDT interrupt binding");
-    };
-    assert_eq!(first.cells, vec![0, 42, 4]);
+    ensure_rdrive_fdt_initialized();
 
     let irq = rdrive::with_fdt(|fdt| {
         let node = fdt.find_compatible(&["test,binding-info"]).pop().unwrap();
@@ -232,6 +204,7 @@ fn named_fdt_interrupt_binding_selects_matching_specifier() {
 
 #[test]
 fn acpi_binding_info_preserves_route_without_setup() {
+    let _guard = RDRIVE_TEST_LOCK.lock().unwrap();
     *SETUP_ACPI_ROUTE.lock().unwrap() = None;
     ensure_rdrive_test_intc();
 
@@ -305,24 +278,27 @@ fn register_test_intc(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
     Ok(())
 }
 
-fn ensure_rdrive_test_intc() {
+fn ensure_rdrive_fdt_initialized() {
     if !rdrive::is_initialized() {
         let fdt_data = Box::leak(Box::new(minimal_irq_fdt().encode()));
         let fdt_addr = NonNull::new(fdt_data.as_ref().as_ptr() as *mut u8).unwrap();
         rdrive::init(Platform::Fdt { addr: fdt_addr }).unwrap();
     }
-    let has_acpi_intc = rdrive::get_list::<rdif_intc::Intc>()
-        .iter()
-        .any(|intc| intc.descriptor().name.starts_with("ACPI IOAPIC"));
-    if !has_acpi_intc {
-        rdrive::register_add(DriverRegister {
-            name: "ACPI IOAPIC binding-info-test",
-            level: ProbeLevel::PostKernel,
-            priority: ProbePriority::INTC,
-            probe_kinds: TEST_INTC_PROBE_KINDS,
-        });
-        rdrive::probe_all(true).unwrap();
+}
+
+fn ensure_rdrive_test_intc() {
+    ensure_rdrive_fdt_initialized();
+    let controller = rdrive::fdt_phandle_to_device_id(Phandle::from(1)).unwrap();
+    if rdrive::get::<rdif_intc::Intc>(controller).is_ok() {
+        return;
     }
+    rdrive::register_add(DriverRegister {
+        name: "binding-info-fdt-test-intc",
+        level: ProbeLevel::PostKernel,
+        priority: ProbePriority::INTC,
+        probe_kinds: TEST_INTC_PROBE_KINDS,
+    });
+    rdrive::probe_all(true).unwrap();
 }
 
 fn capture_binding_info(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
