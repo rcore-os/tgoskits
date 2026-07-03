@@ -12,7 +12,7 @@
 - 目录角色：ArceOS 用户库层
 - crate 形态：库 crate
 - 工作区位置：子工作区 `os/arceos`
-- feature 视角：主要通过 `alloc`、`epoll`、`fd`、`fp-simd`、`fs`、`multitask`、`net` 等能力 feature 控制编译期能力装配；`defplat`/`myplat` 仅为旧配置兼容占位，不再表示平台选择，IRQ 作为基础能力默认存在。
+- feature 视角：主要通过 `alloc`、`epoll`、`fd`、`fp-simd`、`fs`、`multitask`、`net` 等能力 feature 控制编译期能力装配；平台实现固定由动态平台路径提供，IRQ 作为基础能力默认存在。
 - 关键数据结构：可直接观察到的关键数据结构/对象包括 `MemoryControlBlock`、`CTRL_BLK_SIZE`。
 
 ### 模块结构

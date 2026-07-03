@@ -27,10 +27,6 @@ smp = ["ax-posix-api/smp"]
 # Floating point/SIMD
 fp-simd = ["ax-feat/fp-simd"]
 
-# Custom or default platforms
-myplat = ["ax-feat/myplat"]
-defplat = ["ax-feat/defplat"]
-
 # Memory
 alloc = ["ax-posix-api/alloc"]
 tls = ["alloc", "ax-feat/tls"]

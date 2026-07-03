@@ -24,7 +24,6 @@ kprobe.workspace = true
 [features]
 default = []
 qemu = [
-  "ax-feat/defplat",
   "ax-feat/rtc",
   "ax-feat/display",
   "starry-kernel/input",
