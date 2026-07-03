@@ -17,6 +17,7 @@
 #include <string.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
+#include <sys/inotify.h>
 #include <sys/syscall.h>
 #include <unistd.h>
 
@@ -334,6 +335,48 @@ static char *make_long_path(void)
     return path;
 }
 
+static void test_pipe_efault_min(void)
+{
+    int marker;
+    int fds[2] = {-1, -1};
+    long ret;
+
+    printf("[TEST] pipe bad user pointer rollback\n");
+
+    marker = open("/dev/null", O_RDONLY);
+    if (marker < 0) {
+        marker = open(".", O_RDONLY | O_DIRECTORY);
+    }
+    CHECK(marker >= 0, "pipe rollback setup marker fd");
+    if (marker < 0) {
+        return;
+    }
+
+#ifdef SYS_pipe2
+    errno = 0;
+    ret = syscall(SYS_pipe2, (int *)-1, 0);
+    CHECK(ret == -1 && errno == EFAULT, "pipe2 bad user fd array -> EFAULT");
+#else
+    errno = ENOSYS;
+    ret = -1;
+    CHECK(0, "pipe2 syscall number available");
+#endif
+
+    if (ret == -1 && errno == EFAULT) {
+        CHECK(pipe(fds) == 0, "pipe succeeds after pipe2 EFAULT");
+        if (fds[0] >= 0 && fds[1] >= 0) {
+            CHECK(fds[0] == marker + 1 && fds[1] == marker + 2,
+                  "pipe2 EFAULT does not leak allocated fds");
+        }
+    }
+
+    if (fds[0] >= 0)
+        close(fds[0]);
+    if (fds[1] >= 0)
+        close(fds[1]);
+    close(marker);
+}
+
 static void expect_path_errno(const char *name, int ret, int expected)
 {
     if (ret >= 0) {
@@ -346,6 +389,7 @@ static void test_pathmax_min(void)
 {
     char *path = make_long_path();
     struct stat st;
+    int ifd;
 #ifdef SYS_statx
     long statx_buf[64];
 #endif
@@ -371,6 +415,17 @@ static void test_pathmax_min(void)
     errno = 0;
     expect_path_errno("openat long path -> ENAMETOOLONG", openat(AT_FDCWD, path, O_RDONLY),
                       ENAMETOOLONG);
+    errno = 0;
+    expect_path_errno("chroot long path -> ENAMETOOLONG", chroot(path), ENAMETOOLONG);
+
+    ifd = inotify_init1(IN_CLOEXEC);
+    CHECK(ifd >= 0, "inotify setup fd");
+    if (ifd >= 0) {
+        errno = 0;
+        CHECK(inotify_add_watch(ifd, path, IN_MODIFY) == -1 && errno == ENAMETOOLONG,
+              "inotify_add_watch long path -> ENAMETOOLONG");
+        close(ifd);
+    }
 
     free(path);
 }
@@ -385,6 +440,7 @@ int main(void)
     test_mmap_min();
     test_mmap_maps_min();
     test_pathmax_min();
+    test_pipe_efault_min();
 
     printf("------------------------------------------------\n");
     printf("  DONE: %d pass, %d fail\n", pass_count, fail_count);
