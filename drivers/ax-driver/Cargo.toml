@@ -49,6 +49,7 @@ aic8800-wifi = [
 
 usb = ["dep:crab-usb"]
 rockchip-dwc-xhci = ["usb", "rockchip-soc", "rockchip-pm"]
+rockchip-ehci = ["usb", "rockchip-soc", "rockchip-pm"]
 xhci-mmio = ["usb"]
 xhci-pci = ["usb", "pci"]
 serial = [
