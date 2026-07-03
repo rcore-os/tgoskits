@@ -107,7 +107,7 @@ pub enum ProbeKind {
 
 | backend | 独立状态 | 匹配输入 | probe 输入 | 职责 |
 | --- | --- | --- | --- | --- |
-| `probe::static_` | `System { probed_names }` | `ProbeKind::Static` register name | `PlatformDevice` | 平台 crate 注册静态 model driver |
+| `probe::static_` | `System { probed_names }` | 显式注册的 driver name | `PlatformDevice` | 保留外部平台和板级 glue 的手工注册能力 |
 | `probe::fdt` | `System { fdt, phandle_map, probed }` | compatible + node status | `FdtInfo` + `PlatformDevice` | FDT 设备树解析与匹配 |
 | `probe::acpi` | `System { root, routing, pci, probed }` | HID/CID + ACPI device | `AcpiInfo` + `PlatformDevice` | ACPI source、MCFG/GSI routing、PCI `_PRT` |
 | `probe::pci` | PCIe controller enumerator | vendor/device/class | endpoint + `PlatformDevice` | PCIe 二阶段 endpoint probe |

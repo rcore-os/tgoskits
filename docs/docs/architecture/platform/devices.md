@@ -117,4 +117,4 @@ somehal 的架构后端通过 `rdrive::module_driver!` 注册一系列内置 dri
 - **IRQ**：通过 `rdif-intc` 表达 controller 能力；`somehal` 把硬件 IRQ 翻译成 `ax_plat::irq::IrqId` 后交给上层。
 - **Firmware metadata**：FDT 节点指针、ACPI 资源描述应停留在 probe boundary，不进入 driver 内部数据结构。
 
-更完整的驱动路径见 [rdrive + rdif 驱动框架](../rdrive-rdif.md)。
+更完整的驱动路径见 [驱动框架](../driver/overview.md)。

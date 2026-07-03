@@ -61,7 +61,7 @@ sequenceDiagram
 
 ## Static backend
 
-`probe::static_` 用于不走 FDT/ACPI/PCI 自动发现的外部自定义平台。外部平台在自己的初始化阶段：
+外部自定义平台应优先提供 FDT、ACPI 或 PCI 可发现的设备描述，再通过对应 probe 注册驱动或设备。没有固件描述的板级 glue 仍可使用 `rdrive::Platform::Static` / `PlatformSource::Static` 和 `ProbeKind::Static` 显式注册设备：
 
 ```rust
 rdrive::init(rdrive::Platform::Static).expect("rdrive init");
@@ -73,9 +73,9 @@ rdrive::register_add(DriverRegister {
 });
 ```
 
-probe 回调里可以直接构造硬件对象并调用 `PlatformDevice::register(...)`、领域 adapter 的 `*_with_info(...)`，或 `ax-driver` 暴露的显式 `register_transport*()` helper。`ax-driver` 本身不再提供静态平台自动注册 feature。
+probe 回调里可以直接构造硬件对象并调用 `PlatformDevice::register(...)`、领域 adapter 的 `*_with_info(...)`，或 `ax-driver` 暴露的显式 `register_transport*()` helper。
 
-这里的 `Static` 是 rdrive 的手动 probe 来源，不是仓库内置静态平台模式。
+这里的 `Static` 只是驱动 probe 来源，不等同于旧的 `myplat` / `defplat` Cargo feature 平台选择路径。`ax-driver` 本身不再提供旧式平台私有自动注册 feature。仓库默认的设备发现驱动器 `somehal` 走 FDT/ACPI 自动发现，详见[设备发现](../platform/devices.md)。
 
 ## FDT backend
 

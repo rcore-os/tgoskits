@@ -12,7 +12,7 @@ sidebar_label: "迁移与验收"
 ### Phase 1: rdrive backend 分发
 
 - 增加 `PlatformSource::{Static,Fdt,Acpi}` 和 `ProbeKind::{Static,Fdt,Acpi,Pci}`。
-- 新增 `probe::static_` 与 `probe::acpi` 模块；ACPI 初始化提供 MCFG、GSI controller routing、PCI `_PRT` 和普通设备 IRQ metadata。
+- 新增 `probe::acpi` 模块；ACPI 初始化提供 MCFG、GSI controller routing、PCI `_PRT` 和普通设备 IRQ metadata。
 - `probe_pre_kernel()` 和 `probe_all()` 改为 backend 分发，保留当前 FDT 与 PCI 能力。
 - `Manager` 保持只管理 register 和 typed device registry。
 
