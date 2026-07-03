@@ -10,6 +10,10 @@ license.workspace = true
 [features]
 default = ["alloc"]
 
+# Example custom platform crate. Select it together with
+# `AX_PLATFORM_CRATE=axplat_custom`.
+axplat-custom = ["ax-hal/axplat-custom"]
+
 # Multicore
 smp = ["ax-hal/smp", "ax-runtime/smp", "ax-task?/smp", "ax-kspin/smp"]
 
@@ -26,10 +30,7 @@ irq = ["ax-hal/irq", "ax-runtime/irq", "ax-task?/irq", "ax-driver?/irq"]
 ipi = ["irq", "dep:ax-ipi", "ax-hal/ipi", "ax-runtime/ipi", "ax-task?/ipi"]
 wake-ipi = ["irq", "ax-hal/ipi", "ax-runtime/wake-ipi"]
 
-# Custom or default platforms
 ext-ld = ["ax-runtime/ext-ld"]
-myplat = ["ax-hal/myplat"]
-defplat = ["ax-hal/defplat"]
 
 # Memory
 alloc = ["ax-alloc"]

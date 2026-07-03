@@ -8,13 +8,16 @@ description = "ArceOS hardware abstraction layer, provides unified APIs for plat
 license.workspace = true
 
 [features]
+axplat-custom = ["dep:axplat-custom"]
 smp = [
     "axplat-dyn/smp",
+    "axplat-custom?/smp",
     "ax-plat/smp",
 ]
 irq = [
     "ax-plat/irq",
     "axplat-dyn/irq",
+    "axplat-custom?/irq",
     "dep:ax-kspin",
 ]
 fp-simd = [
@@ -40,8 +43,6 @@ hv = [
 axvisor-linker = []
 
 host-test = []
-myplat = []
-defplat = []
 
 default = []
 ipi = ["irq"]
@@ -60,6 +61,7 @@ ax-memory-addr.workspace = true
 ax-page-table-multiarch = { workspace = true, optional = true }
 ax-percpu = { workspace = true, features = ["non-zero-vma"] }
 axplat-dyn = { workspace = true, default-features = false }
+axplat-custom = { workspace = true, default-features = false, optional = true }
 rdrive.workspace = true
 spin.workspace = true
 

@@ -17,7 +17,7 @@ use fdt_edit::{Fdt, Node, Phandle, Property};
 #[cfg(feature = "pci")]
 use rdrive::probe::pci::{PciAddress, PciInfo};
 use rdrive::{
-    DriverGeneric, Platform, PlatformDevice,
+    DriverGeneric, Platform,
     probe::{
         OnProbeError,
         acpi::{AcpiGsiController, AcpiGsiRoute, AcpiIrqPolarity, AcpiIrqTrigger},
@@ -39,10 +39,6 @@ static TEST_INTC_PROBE_KINDS: &[ProbeKind] = &[ProbeKind::Fdt {
 static TEST_DEVICE_PROBE_KINDS: &[ProbeKind] = &[ProbeKind::Fdt {
     compatibles: &["test,binding-info"],
     on_probe: capture_binding_info,
-}];
-
-static STATIC_INTC_PROBE_KINDS: &[ProbeKind] = &[ProbeKind::Static {
-    on_probe: register_static_test_intc,
 }];
 
 struct KlibImpl;
@@ -237,7 +233,7 @@ fn named_fdt_interrupt_binding_selects_matching_specifier() {
 #[test]
 fn acpi_binding_info_preserves_route_without_setup() {
     *SETUP_ACPI_ROUTE.lock().unwrap() = None;
-    ensure_rdrive_static_intc();
+    ensure_rdrive_test_intc();
 
     let info = binding_info_from_acpi_route("\\_SB.TEST", Some(acpi_route())).unwrap();
 
@@ -309,14 +305,11 @@ fn register_test_intc(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
     Ok(())
 }
 
-fn register_static_test_intc(plat_dev: PlatformDevice) -> Result<(), OnProbeError> {
-    plat_dev.register(rdif_intc::Intc::new(TEST_INTC_DOMAIN, TestIntc));
-    Ok(())
-}
-
-fn ensure_rdrive_static_intc() {
+fn ensure_rdrive_test_intc() {
     if !rdrive::is_initialized() {
-        rdrive::init(Platform::Static).unwrap();
+        let fdt_data = Box::leak(Box::new(minimal_irq_fdt().encode()));
+        let fdt_addr = NonNull::new(fdt_data.as_ref().as_ptr() as *mut u8).unwrap();
+        rdrive::init(Platform::Fdt { addr: fdt_addr }).unwrap();
     }
     let has_acpi_intc = rdrive::get_list::<rdif_intc::Intc>()
         .iter()
@@ -326,7 +319,7 @@ fn ensure_rdrive_static_intc() {
             name: "ACPI IOAPIC binding-info-test",
             level: ProbeLevel::PostKernel,
             priority: ProbePriority::INTC,
-            probe_kinds: STATIC_INTC_PROBE_KINDS,
+            probe_kinds: TEST_INTC_PROBE_KINDS,
         });
         rdrive::probe_all(true).unwrap();
     }

@@ -1,5 +1,4 @@
 features = [
-  "ax-hal/riscv64-qemu-virt",
   "qemu",
   "ax-driver/virtio-blk",
   "ax-driver/virtio-net",

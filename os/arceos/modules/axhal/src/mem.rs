@@ -83,7 +83,7 @@ pub fn boot_stack_bounds(cpu_id: usize) -> (VirtAddr, usize) {
     }
 
     #[cfg(not(any(test, feature = "host-test")))]
-    axplat_dyn::boot_stack_bounds(cpu_id)
+    crate::platform::boot_stack_bounds(cpu_id)
 }
 
 /// Fills the `.bss` section with zeros.

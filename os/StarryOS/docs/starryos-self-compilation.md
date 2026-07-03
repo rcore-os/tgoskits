@@ -43,7 +43,7 @@
 
 **现象**: QEMU `-m 8G`，但 `phys_ram_ranges()` 只返回 `[0x804f0000, 0xa0000000)`（~510MB）。
 
-**根因**: 早期已淘汰的 RISC-V QEMU 静态平台路径依赖 axconfig 中的固定内存大小，`phys_ram_ranges()` 会按该常量计算可用内存，忽略 FDT 中的实际物理 RAM。
+**根因**: 早期已淘汰的 RISC-V QEMU 平台配置路径依赖 axconfig 中的固定内存大小，`phys_ram_ranges()` 会按该常量计算可用内存，忽略 FDT 中的实际物理 RAM。
 
 **修复**: RISC-V QEMU 默认构建改走 `axplat-dyn`，`axplat-dyn/src/mem.rs` 的 `phys_ram_ranges()` 从 `somehal::mem::memory_map()` 动态读取 Free 区域。
 

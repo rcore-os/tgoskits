@@ -314,7 +314,7 @@ fn patch_starry_cargo_config_preserves_request_package() {
 }
 
 #[test]
-fn patch_starry_cargo_config_skips_qemu_for_dynamic_platforms() {
+fn patch_starry_cargo_config_keeps_dynamic_platform_without_qemu() {
     let request = request(
         PathBuf::from("/tmp/.build.toml"),
         "aarch64",
@@ -360,7 +360,7 @@ fn patch_starry_cargo_config_skips_qemu_for_dynamic_platforms() {
 }
 
 #[test]
-fn patch_starry_cargo_config_removes_qemu_for_dynamic_platforms() {
+fn patch_starry_cargo_config_keeps_qemu_as_capability_feature() {
     let request = request(
         PathBuf::from("/tmp/.build.toml"),
         "aarch64",
@@ -382,7 +382,7 @@ fn patch_starry_cargo_config_removes_qemu_for_dynamic_platforms() {
     patch_starry_cargo_config(&mut cargo, &request, &metadata).unwrap();
 
     assert!(!cargo.features.contains(&"plat-dyn".to_string()));
-    assert!(!cargo.features.contains(&"qemu".to_string()));
+    assert!(cargo.features.contains(&"qemu".to_string()));
     assert!(!cargo.env.contains_key("AX_PLATFORM"));
 }
 
@@ -411,30 +411,6 @@ fn patch_starry_cargo_config_keeps_loongarch64_dynamic_platform_dynamic() {
     assert!(!cargo.features.contains(&"ax-hal/plat-dyn".to_string()));
     assert!(cargo.features.contains(&"axplat-dyn/efi".to_string()));
     assert!(!cargo.env.contains_key("AX_PLATFORM"));
-}
-
-#[test]
-fn aarch64_has_no_static_starry_default_platform() {
-    assert_eq!(
-        crate::context::starry_default_platform_for_arch_checked("aarch64").unwrap(),
-        None
-    );
-}
-
-#[test]
-fn riscv64_has_no_starry_default_platform() {
-    assert_eq!(
-        crate::context::starry_default_platform_for_arch_checked("riscv64").unwrap(),
-        None
-    );
-}
-
-#[test]
-fn loongarch64_has_no_starry_default_platform() {
-    assert_eq!(
-        crate::context::starry_default_platform_for_arch_checked("loongarch64").unwrap(),
-        None
-    );
 }
 
 #[test]

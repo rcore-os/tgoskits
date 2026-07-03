@@ -53,6 +53,7 @@ members = [
     "platforms/ax-plat",
     "platforms/ax-plat-macros",
     "platforms/axplat-dyn",
+    "platforms/axplat-custom",
     "platforms/somehal",
     "components/crate_interface/test_crates/*",
     "components/ctor_bare/ctor_bare",
@@ -174,6 +175,7 @@ ax-percpu = { version = "0.4.13", path = "components/percpu/percpu" }
 ax-percpu-macros = { version = "0.4.10", path = "components/percpu/percpu_macros" }
 ax-plat = { version = "0.9.0", path = "platforms/ax-plat" }
 ax-plat-macros = { version = "0.3.8", path = "platforms/ax-plat-macros" }
+axplat-custom = { version = "0.1.0", path = "platforms/axplat-custom", default-features = false }
 ax-posix-api = { version = "0.5.24", path = "os/arceos/api/arceos_posix_api" }
 ax-riscv-plic = { version = "0.4.9", path = "drivers/intc/riscv_plic" }
 ax-runtime = { version = "0.9.0", path = "os/arceos/modules/axruntime" }

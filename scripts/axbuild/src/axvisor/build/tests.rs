@@ -337,10 +337,8 @@ vm_configs = []
     assert!(!cargo.features.contains(&"ax-std/plat-dyn".to_string()));
     assert!(!cargo.features.contains(&"axvm/plat-dyn".to_string()));
     assert!(!cargo.features.contains(&"ax-driver/plat-dyn".to_string()));
-    assert!(!cargo.features.contains(&"ax-std/defplat".to_string()));
     assert!(!cargo.features.contains(&"ax-std/x86-pc".to_string()));
     assert!(!cargo.features.contains(&"ax-hal/x86-pc".to_string()));
-    assert!(!cargo.features.contains(&"ax-hal/x86-qemu-q35".to_string()));
 }
 
 #[test]
@@ -373,94 +371,6 @@ log = "Info"
     assert!(!cargo.features.contains(&"plat-dyn".to_string()));
     assert!(!cargo.features.contains(&"axvm/plat-dyn".to_string()));
     assert!(!cargo.features.contains(&"ax-driver/plat-dyn".to_string()));
-}
-
-#[test]
-fn load_cargo_config_rejects_removed_nested_axstd_platform_feature() {
-    let root = tempdir().unwrap();
-    let config_path = root.path().join(".build.toml");
-    fs::write(
-        &config_path,
-        r#"
-features = ["ax-std/x86-qemu-q35"]
-log = "Info"
-"#,
-    )
-    .unwrap();
-
-    let err = load_cargo_config(&ResolvedAxvisorRequest {
-        package: AXVISOR_PACKAGE.to_string(),
-        axvisor_dir: root.path().join("os/axvisor"),
-        arch: "x86_64".to_string(),
-        target: "x86_64-unknown-none".to_string(),
-        smp: None,
-        debug: false,
-        build_info_path: config_path,
-        qemu_config: None,
-        uboot_config: None,
-        vmconfigs: vec![],
-    })
-    .unwrap_err();
-
-    assert!(err.to_string().contains("has been removed"));
-}
-
-#[test]
-fn load_cargo_config_rejects_removed_x86_q35_platform_feature() {
-    let root = tempdir().unwrap();
-    let config_path = root.path().join(".build.toml");
-    fs::write(
-        &config_path,
-        r#"
-features = ["ax-hal/x86-qemu-q35"]
-log = "Info"
-"#,
-    )
-    .unwrap();
-
-    let err = load_cargo_config(&ResolvedAxvisorRequest {
-        package: AXVISOR_PACKAGE.to_string(),
-        axvisor_dir: root.path().join("os/axvisor"),
-        arch: "x86_64".to_string(),
-        target: "x86_64-unknown-none".to_string(),
-        smp: None,
-        debug: false,
-        build_info_path: config_path,
-        qemu_config: None,
-        uboot_config: None,
-        vmconfigs: vec![],
-    })
-    .unwrap_err();
-
-    assert!(err.to_string().contains("has been removed"));
-}
-
-#[test]
-fn load_cargo_config_rejects_removed_sg2002_platform_feature() {
-    let root = tempdir().unwrap();
-    let config_path = root.path().join(".build.toml");
-    let removed_sg2002_platform = concat!("ax-hal/", "riscv64", "-sg2002");
-    fs::write(
-        &config_path,
-        format!("features = [\"{removed_sg2002_platform}\", \"fs\"]\nlog = \"Info\"\n"),
-    )
-    .unwrap();
-
-    let err = load_cargo_config(&ResolvedAxvisorRequest {
-        package: AXVISOR_PACKAGE.to_string(),
-        axvisor_dir: root.path().join("os/axvisor"),
-        arch: "riscv64".to_string(),
-        target: "riscv64gc-unknown-none-elf".to_string(),
-        smp: None,
-        debug: false,
-        build_info_path: config_path,
-        qemu_config: None,
-        uboot_config: None,
-        vmconfigs: vec![],
-    })
-    .unwrap_err();
-
-    assert!(err.to_string().contains(removed_sg2002_platform));
 }
 
 #[test]
@@ -527,7 +437,6 @@ log = "Info"
     assert!(!cargo.features.contains(&"ax-driver/plat-dyn".to_string()));
     assert!(!cargo.features.contains(&"dyn-plat".to_string()));
     assert!(!cargo.features.contains(&"ax-hal/x86-pc".to_string()));
-    assert!(!cargo.features.contains(&"ax-hal/x86-qemu-q35".to_string()));
     let removed_static_driver_feature = concat!("ax-driver/", "plat", "-static");
     assert!(
         !cargo
@@ -567,7 +476,6 @@ log = "Info"
     assert!(!cargo.features.contains(&"ax-std/plat-dyn".to_string()));
     assert!(!cargo.features.contains(&"axvm/plat-dyn".to_string()));
     assert!(!cargo.features.contains(&"ax-driver/plat-dyn".to_string()));
-    assert!(!cargo.features.contains(&"ax-hal/x86-qemu-q35".to_string()));
     assert!(!cargo.features.contains(&"ax-hal/x86-pc".to_string()));
 }
 

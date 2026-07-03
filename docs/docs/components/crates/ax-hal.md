@@ -12,9 +12,9 @@
 ### 设计定位
 `ax-hal` 处在三层之间：
 
-- 向下连接 `ax-cpu` 与 `axplat-dyn`，分别承接 ISA 级抽象和运行时平台事实。
+- 向下连接 `ax-cpu` 与选中的 `axplat-*` 平台 crate，分别承接 ISA 级抽象和平台事实；默认平台实现是 `axplat-dyn`。
 - 向上为 `ax-runtime`、`ax-mm`、`ax-task`、`ax-driver` 等模块提供统一 API。
-- 固定链接动态平台实现，并通过功能 feature 控制 IRQ、分页、TLS、SMP、用户态等能力。
+- 通过 `AX_PLATFORM_CRATE` 选择平台实现，并通过功能 feature 控制 IRQ、分页、TLS、SMP、用户态等能力。
 
 这意味着 `ax-hal` 的核心价值不是“算法复杂”，而是“边界清晰”与“初始化顺序正确”。它本质上是 ArceOS 运行时的硬件语义总入口。
 
@@ -28,7 +28,7 @@
 - `src/irq.rs`：IRQ 处理桥接层，负责 trap handler 注册、IRQ hook、与 `ax_plat::irq` 的派发对接。
 - `src/paging.rs`：页表处理桥接层，向 `ax-page-table-multiarch` 提供 `PagingHandlerImpl`，并在不同 ISA 下导出统一的页表类型。
 - `src/tls.rs`：内核态 TLS 布局与 `TlsArea` 管理，仅在 `tls` feature 启用时进入构建。
-- `build.rs` + `linker.lds.S`：生成链接脚本参数并配合动态平台链接路径完成内核段布局。
+- `build.rs` + `linker.lds.S`：生成选中平台 crate 的导入代码、SMP build info，并配合链接路径完成内核段布局。
 
 ### 1.3 关键数据结构与全局对象
 - `BOOTARG`：保存引导阶段传入的参数，后续由 DTB/FDT 解析流程读取。
@@ -67,7 +67,7 @@ flowchart TD
 `ax-hal` 的架构设计遵循“ISA 与板级分离”的原则：
 
 - `ax-cpu` 负责 ISA 级能力，如 `asm`、`TaskContext`、`TrapFrame`、trap 编号与可选 `uspace` 支持。
-- `axplat` 负责平台/机器级能力，如控制台、物理内存布局、时钟、中断控制器、电源管理与 CPU 启动。
+- `axplat` 负责平台/机器级能力，如控制台、物理内存布局、时钟、中断控制器、电源管理与 CPU 启动。默认实现是 `axplat-dyn`，自定义平台可通过 `AX_PLATFORM_CRATE` 和对应 `ax-hal` feature 接入。
 - `ax-hal` 把二者统一包装成上层可依赖的稳定接口，例如 `console`、`power`、`trap`、`context`、`mem`、`time`、`irq`、`paging`。
 
 因此，修改 `ax-hal` 时要始终区分：

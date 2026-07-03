@@ -42,10 +42,6 @@ ax_feat :=
 lib_feat :=
 direct_feat :=
 
-ifneq ($(MYPLAT),)
-  ax_feat += myplat
-endif
-
 ifeq ($(filter $(LOG),off error warn info debug trace),)
   $(error "LOG" must be one of "off", "error", "warn", "info", "debug", "trace")
 endif

@@ -1,7 +1,6 @@
 # node-lib loongarch64 — less/stylus/scss/babel/terser/eslint library carpet on Node.js v22.22.2.
-# Platform: dynamic (axplat-dyn), same as aarch64/riscv64 — build-loongarch64*.toml carries no
-# ax-hal/loongarch64-qemu-virt / plat-static / plat_dyn=false (mirrors the riscv64 dynamic
-# config); uefi=false / to_bin=true is the dynamic platform's raw-binary boot path. The rootfs
+# Platform: dynamic (axplat-dyn), same as aarch64/riscv64. The build config carries no old
+# platform selector; uefi=false / to_bin=true is the dynamic platform's raw-binary boot path. The rootfs
 # is the per-app rootfs-loongarch64-alpine.img which prebuild.sh grows to 2 GiB. Full V8 JIT.
 args = [
     "-machine", "virt", "-cpu", "la464", "-nographic", "-m", "2048M", "-smp", "1",

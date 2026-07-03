@@ -309,13 +309,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "arceos-helloworld-myplat"
-version = "0.3.1"
-dependencies = [
- "ax-std",
-]
-
-[[package]]
 name = "arceos-httpclient"
 version = "0.1.0"
 dependencies = [
@@ -794,6 +787,7 @@ dependencies = [
  "ax-page-table-multiarch",
  "ax-percpu",
  "ax-plat",
+ "axplat-custom",
  "axplat-dyn",
  "cfg-if",
  "fdt-parser",
@@ -1359,6 +1353,14 @@ dependencies = [
 [[package]]
 name = "axpanic"
 version = "0.1.1"
+
+[[package]]
+name = "axplat-custom"
+version = "0.1.0"
+dependencies = [
+ "ax-plat",
+ "rdrive",
+]
 
 [[package]]
 name = "axplat-dyn"

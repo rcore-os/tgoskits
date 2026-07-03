@@ -287,15 +287,7 @@ impl BuildInfo {
         self.features.retain(|feature| {
             !matches!(
                 feature.as_str(),
-                "plat-dyn"
-                    | "defplat"
-                    | "myplat"
-                    | "ax-std/plat-dyn"
-                    | "ax-std/defplat"
-                    | "ax-std/myplat"
-                    | "ax-feat/plat-dyn"
-                    | "ax-feat/defplat"
-                    | "ax-feat/myplat"
+                "plat-dyn" | "ax-std/plat-dyn" | "ax-feat/plat-dyn"
             )
         });
 

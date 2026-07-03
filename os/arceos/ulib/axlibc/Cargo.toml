@@ -21,6 +21,10 @@ crate-type = ["staticlib"]
 [features]
 default = []
 
+# Example custom platform crate. Select it together with
+# `AX_PLATFORM_CRATE=axplat_custom`.
+axplat-custom = ["ax-feat/axplat-custom"]
+
 # Multicore
 smp = ["ax-posix-api/smp"]
 
@@ -29,10 +33,6 @@ fp-simd = ["ax-feat/fp-simd"]
 
 # Interrupts
 irq = ["ax-posix-api/irq", "ax-feat/irq"]
-
-# Custom or default platforms
-myplat = ["ax-feat/myplat"]
-defplat = ["ax-feat/defplat"]
 
 # Memory
 alloc = ["ax-posix-api/alloc"]
