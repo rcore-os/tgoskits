@@ -127,8 +127,8 @@ fn panic_payload_message(payload: &(dyn core::any::Any + Send)) -> &str {
 }
 
 #[test]
-#[cfg(not(any(feature = "irq", feature = "preempt")))]
-fn might_sleep_ignores_irq_state_without_irq_feature() {
+#[cfg(not(feature = "preempt"))]
+fn might_sleep_ignores_irq_state_without_preempt_feature() {
     run_in_test_scheduler(|| {
         assert_eq!(ax_task::in_atomic_context(), false);
         ax_task::might_sleep();
@@ -429,6 +429,25 @@ fn irq_task_waker_wakes_blocked_future_task() {
         assert_eq!(waker.take_bits(), 0x10);
         assert_eq!(crate::drain_irq_wake_queue_current_cpu(), 1);
         assert_eq!(task.state(), crate::TaskState::Ready);
+    });
+}
+
+#[test]
+fn task_timer_wakeup_is_deferred_through_irq_wake_queue() {
+    run_in_test_scheduler(|| {
+        let task = current().clone();
+        task.set_state(crate::TaskState::Blocked);
+
+        crate::timers::set_alarm_wakeup(ax_hal::time::monotonic_time(), task.clone());
+        crate::timers::check_events(false);
+
+        assert_eq!(
+            task.state(),
+            crate::TaskState::Blocked,
+            "timer hard IRQ must only enqueue an IRQ wake before epilogue drain",
+        );
+        assert_eq!(crate::drain_irq_wake_queue_current_cpu(), 1);
+        assert_eq!(task.state(), crate::TaskState::Running);
     });
 }
 
